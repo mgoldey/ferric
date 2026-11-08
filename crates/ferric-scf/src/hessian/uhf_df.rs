@@ -17,6 +17,11 @@ pub(super) struct OpenShellDensities<'a> {
     pub total: &'a Array2<f64>,
     /// Occupied counts `[n_α, n_β]`.
     pub nocc: [usize; 2],
+    /// Exact-exchange fraction of the skeleton (1 for Hartree-Fock, the
+    /// global-hybrid `a` for UKS, 0 for a pure functional).
+    pub k_skeleton: f64,
+    /// The same for the first-order Fock matrices.
+    pub k_fock: f64,
 }
 
 /// The two-electron half of an open-shell Hessian: the skeleton, the
@@ -69,6 +74,8 @@ pub(super) fn uhf_hessian_parts_with(
             beta: db,
             total: &d,
             nocc,
+            k_skeleton: 1.0,
+            k_fock: 1.0,
         },
         config,
         || uhf_occupied_factors(uhf, nocc, [da, db]),
@@ -116,6 +123,8 @@ pub(super) fn open_shell_two_electron(
         beta: db,
         total: d,
         nocc,
+        k_skeleton,
+        k_fock,
     } = dens;
     let natoms = mol.atoms.len();
     let route = crate::gradient::active_df_route(res);
@@ -159,13 +168,21 @@ pub(super) fn open_shell_two_electron(
                 .filter(|x| x.ncols() > 0)
                 .map(|x| crate::hessian_df_k::RikChannel { x, alpha })
                 .collect();
-            Some(crate::hessian_df_k::rik_channel_terms(
-                mol,
-                prep,
-                r,
-                &channels,
-                rik_mutants,
-            )?)
+            let mut terms =
+                crate::hessian_df_k::rik_channel_terms(mol, prep, r, &channels, rik_mutants)?;
+            // Every RI-K piece is linear in the channel weight at fixed X, so
+            // the Kohn-Sham fraction scales skeleton and K^x separately.
+            if k_skeleton != 1.0 {
+                terms.skeleton *= k_skeleton;
+            }
+            if k_fock != 1.0 {
+                for ch in terms.channels.iter_mut() {
+                    for k in ch.first_order_fock.iter_mut() {
+                        *k *= k_fock;
+                    }
+                }
+            }
+            Some(terms)
         }
         _ => None,
     };
@@ -199,13 +216,24 @@ pub(super) fn open_shell_two_electron(
     // Four-centre skeleton: only the parts of Γ that stayed exact.
     let max_d = max_abs(d);
     let mut two_electron = match (&rij, &rik) {
-        (None, None) => {
+        (None, None) if k_skeleton == 1.0 => {
             let gam = |mu, nu, la, sg| gamma_uhf(d, da, db, mu, nu, la, sg);
             skeleton_hess_2e(prep, op, bounds, natoms, max_d, &gam)?
         }
+        (None, None) => {
+            let c_k = 0.5 * k_skeleton;
+            let gam = |mu: usize, nu: usize, la: usize, sg: usize| {
+                0.5 * d[(mu, nu)] * d[(la, sg)]
+                    - c_k * (da[(mu, la)] * da[(nu, sg)] + db[(mu, la)] * db[(nu, sg)])
+            };
+            skeleton_hess_2e(prep, op, bounds, natoms, max_d, &gam)?
+        }
+        (Some(_), None) if k_skeleton == 0.0 => Array2::<f64>::zeros((3 * natoms, 3 * natoms)),
         (Some(_), None) => {
-            let gam_k =
-                |mu, nu, la, sg| -0.5 * (da[(mu, la)] * da[(nu, sg)] + db[(mu, la)] * db[(nu, sg)]);
+            let c_k = 0.5 * k_skeleton;
+            let gam_k = |mu: usize, nu: usize, la: usize, sg: usize| {
+                -c_k * (da[(mu, la)] * da[(nu, sg)] + db[(mu, la)] * db[(nu, sg)])
+            };
             skeleton_hess_2e(prep, op, bounds, natoms, max_d, &gam_k)?
         }
         (None, Some(_)) => {
@@ -225,7 +253,7 @@ pub(super) fn open_shell_two_electron(
     let specs = [da, db].map(|ds| FockSpec {
         coulomb: if rij.is_some() { &no_density } else { d },
         exchange: if rik.is_some() { &no_density } else { ds },
-        k_scale: 1.0,
+        k_scale: k_fock,
     });
     let mut first = first_order_ao(prep, op, bounds, natoms, extra, &specs)?;
     if let Some(rij) = &rij {
