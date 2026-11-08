@@ -301,10 +301,14 @@ pub fn uks_hessian_parts_with(
     mode: GridMode,
 ) -> Result<UhfHessianParts, FerricError> {
     uks_refusal(mol, prep, uks, config)?;
+    // Opt-in stage timing (`FERRIC_TIMING=1`), whole calls only.
+    let mut phases = ferric_core::timing::PhaseAccumulator::new().report_on_drop("UKS Hessian");
     let exx = grid.exact_exchange();
     let hf = checklist_config(uks, config, exx)?;
     check_supported_except_functional(Reference::Uhf, mol, prep, op, bounds, uks, &hf)?;
+    let t = phases.begin("Fock consistency check");
     let diff = uks_fock_residual(ctx, mol, prep, bounds, uks, grid)?;
+    phases.stop(t);
     if diff > FOCK_CONSISTENCY_TOL {
         return Err(FerricError::General(format!(
             "the SCF result is not a converged UKS solution (with the Coulomb and exchange \
@@ -321,8 +325,11 @@ pub fn uks_hessian_parts_with(
     let d = da + db;
     let w = build_energy_weighted_density_uhf(uks, prep, nocc[0], nocc[1])?;
     let nuclear = nuclear_term(mol, &hf);
+    let t = phases.begin("1e + overlap skeleton");
     let one_electron = skeleton_hess_1e(prep, natoms, &[], &d)?;
     let overlap = skeleton_hess_overlap(prep, natoms, &w)?;
+    phases.stop(t);
+    let t = phases.begin("2e skeleton + J/K first-order");
     let mut fitted = open_shell_two_electron(
         mol,
         prep,
@@ -343,10 +350,15 @@ pub fn uks_hessian_parts_with(
         &mutants.rik,
         &UhfDfMutants::default(),
     )?;
+    phases.stop(t);
     let geo = XcGeometry::new(mol, prep)?;
     let pol: PolarizedKs<'_> = grid.polarized()?;
+    let t = phases.begin("XC skeleton (2nd derivative)");
     fitted.two_electron += &pol.skeleton_hessian_for(mode, &geo, [da, db], &mutants.xc)?;
+    phases.stop(t);
+    let t = phases.begin("XC first-order Fock");
     let vx = pol.first_order_fock_for(mode, &geo, [da, db], &mutants.xc)?;
+    phases.stop(t);
     for (f1, v1) in fitted.first.f1.iter_mut().zip(&vx) {
         for (f, v) in f1.iter_mut().zip(v1) {
             *f += v;
@@ -357,12 +369,18 @@ pub fn uks_hessian_parts_with(
         spin: mutants.xc.spin,
         ..XcMutants::default()
     };
+    let t = phases.begin("XC response kernel build");
     let kernel = pol.response(&geo, [da, db], mutants.response_fxc, &kernel_mutants)?;
+    phases.stop(t);
     let kernel_fn = |d1: [&Array2<f64>; 2]| kernel.apply(d1);
     let g = TwoElectronBuilder::new(ctx, prep, bounds)?
         .fitted(fitted.df_j.take(), fitted.df_k.take(), false)
         .with_uks_xc_response(&kernel_fn, exx * mutants.response_exx);
+    let t = phases.begin("coupled UKS CPHF");
     let resp = ucphf_response_with(&g, uks, nocc, &fitted.first)?;
+    phases.stop(t);
+    g.report_phases("UKS CPHF G builds");
+    report_cphf_iterations("UKS", &resp);
     Ok(parts_from_terms(
         [nuclear, one_electron, overlap, fitted.two_electron],
         resp,

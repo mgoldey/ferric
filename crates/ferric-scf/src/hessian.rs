@@ -1977,7 +1977,7 @@ fn skeleton_hess_2e<G>(
     gam: &G,
 ) -> Result<Array2<f64>, FerricError>
 where
-    G: Fn(usize, usize, usize, usize) -> f64,
+    G: Fn(usize, usize, usize, usize) -> f64 + Sync,
 {
     let quads = screened_quartets_with(prep.nshells(), bounds, max_d * max_d, HESS_2E_SCREEN);
     let _quads_charge = ferric_core::memory::pool::reserve_global(
@@ -1991,20 +1991,47 @@ where
         prep.shell_offsets(),
         prep.shell_to_atom(),
     );
-    let mut eng = Engine::new_2e_deriv2(op, prep, 1e-14)?;
-    let mut h = Array2::<f64>::zeros((3 * natoms, 3 * natoms));
-    let mut g = Vec::new();
-    for &(s1, s2, s3, s4) in &quads {
-        let blk = QuartetBlock::new(dims, offs, sh2at, s1, s2, s3, s4);
-        perm_summed_gamma(&blk, gam, &mut g);
-        let Some(dq) = eng.compute_eri_deriv2_quartet(prep, s1, s2, s3, s4) else {
-            continue;
-        };
-        let vals = contract_blocks(dq, &g);
-        scatter_unique_pairs(&mut h, &vals, &blk.atoms);
-    }
+    // Parallel over fixed quartet groups (one engine per rayon worker), the
+    // group sums added in group order: independent of the thread count.
+    let pool = EnginePool::from_fn(|| Engine::new_2e_deriv2(op, prep, 1e-14))?;
+    let n3 = 3 * natoms;
+    let (group, n_groups) = quartet_groups(quads.len());
+    let mut h = Array2::<f64>::zeros((n3, n3));
+    crate::reduce::grouped_deterministic_sum(
+        &mut h,
+        n_groups,
+        n3,
+        crate::reduce::default_band_bytes(),
+        |grp| {
+            let mut hp = Array2::<f64>::zeros((n3, n3));
+            let mut g = Vec::new();
+            let hi = ((grp + 1) * group).min(quads.len());
+            for &(s1, s2, s3, s4) in &quads[grp * group..hi] {
+                let blk = QuartetBlock::new(dims, offs, sh2at, s1, s2, s3, s4);
+                perm_summed_gamma(&blk, gam, &mut g);
+                pool.with(|eng| {
+                    if let Some(dq) = eng.compute_eri_deriv2_quartet(prep, s1, s2, s3, s4) {
+                        let vals = contract_blocks(dq, &g);
+                        scatter_unique_pairs(&mut hp, &vals, &blk.atoms);
+                    }
+                });
+            }
+            Ok(hp)
+        },
+    )?;
     Ok(h)
 }
+
+/// `(group size, group count)` for the parallel derivative-integral loops:
+/// at most [`MAX_QUARTET_GROUPS`] groups (each folds its own partial, so the
+/// count bounds the partials allocated), a pure function of the quartet count.
+fn quartet_groups(n_quads: usize) -> (usize, usize) {
+    let group = n_quads.div_ceil(MAX_QUARTET_GROUPS).max(1);
+    (group, n_quads.div_ceil(group).max(1))
+}
+
+/// Most quartet groups of [`quartet_groups`].
+const MAX_QUARTET_GROUPS: usize = 96;
 
 /// `out[idx] = Σ_perms Γ` for every AO quartet of `blk`, in the row-major
 /// `[n1][n2][n3][n4]` order of libint2's blocks.
@@ -2177,24 +2204,56 @@ fn deriv1_g_matrices(
         prep.shell_offsets(),
         prep.shell_to_atom(),
     );
-    let mut eng = Engine::new_2e_deriv(op, prep, 1e-14)?;
-    let mut g = vec![vec![Array2::<f64>::zeros((nbf, nbf)); 3 * natoms]; specs.len()];
-    let mut v = Vec::new();
-    for &(s1, s2, s3, s4) in &quads {
-        let blk = QuartetBlock::new(dims, offs, sh2at, s1, s2, s3, s4);
-        let Some(dq) = eng.compute_eri_deriv_quartet(prep, s1, s2, s3, s4) else {
-            continue;
-        };
-        for atom in distinct_atoms(&blk.atoms) {
-            for a in 0..3 {
-                atom_summed_deriv(dq, &blk, atom, a, &mut v);
-                for (gs, spec) in g.iter_mut().zip(specs) {
-                    scatter_g(&mut gs[3 * atom + a], &v, &blk, spec);
-                }
+    // Parallel over fixed quartet groups (one engine per rayon worker); each
+    // group fills a stacked (specs·3N·nbf, nbf) partial, the partials added in
+    // group order: independent of the thread count.
+    let pool = EnginePool::from_fn(|| Engine::new_2e_deriv(op, prep, 1e-14))?;
+    let n3 = 3 * natoms;
+    let nmat = specs.len() * n3;
+    let (group, n_groups) = quartet_groups(quads.len());
+    let mut acc = Array2::<f64>::zeros((nmat * nbf, nbf));
+    crate::reduce::grouped_deterministic_sum(
+        &mut acc,
+        n_groups,
+        nbf,
+        crate::reduce::default_band_bytes() / nmat.max(1),
+        |grp| {
+            let mut g = vec![vec![Array2::<f64>::zeros((nbf, nbf)); n3]; specs.len()];
+            let mut v = Vec::new();
+            let hi = ((grp + 1) * group).min(quads.len());
+            for &(s1, s2, s3, s4) in &quads[grp * group..hi] {
+                let blk = QuartetBlock::new(dims, offs, sh2at, s1, s2, s3, s4);
+                pool.with(|eng| {
+                    let Some(dq) = eng.compute_eri_deriv_quartet(prep, s1, s2, s3, s4) else {
+                        return;
+                    };
+                    for atom in distinct_atoms(&blk.atoms) {
+                        for a in 0..3 {
+                            atom_summed_deriv(dq, &blk, atom, a, &mut v);
+                            for (gs, spec) in g.iter_mut().zip(specs) {
+                                scatter_g(&mut gs[3 * atom + a], &v, &blk, spec);
+                            }
+                        }
+                    }
+                });
             }
-        }
-    }
-    Ok(g)
+            let mut part = Array2::<f64>::zeros((nmat * nbf, nbf));
+            for (i, m) in g.iter().flatten().enumerate() {
+                part.slice_mut(s![i * nbf..(i + 1) * nbf, ..]).assign(m);
+            }
+            Ok(part)
+        },
+    )?;
+    Ok((0..specs.len())
+        .map(|sp| {
+            (0..n3)
+                .map(|x| {
+                    let i = sp * n3 + x;
+                    acc.slice(s![i * nbf..(i + 1) * nbf, ..]).to_owned()
+                })
+                .collect()
+        })
+        .collect())
 }
 
 /// The distinct atoms among a quartet's four shell centres.
@@ -2384,6 +2443,9 @@ struct TwoElectronBuilder<'a> {
     /// `J(D1_α + D1_β) − a K(D1_σ) + V1^σ_xc[D1_α, D1_β]`; `None` for every
     /// Hartree-Fock path.
     uks_xc: Option<(&'a UksXcResponseFn<'a>, f64)>,
+    /// `FERRIC_TIMING` phase totals of the `G` builds (exact J/K, fitted J,
+    /// fitted K, XC kernel); inert when timing is off.
+    phases: std::cell::RefCell<ferric_core::timing::PhaseAccumulator>,
 }
 
 /// RHF-only options of the CPHF `G`.
@@ -2427,6 +2489,7 @@ impl<'a> TwoElectronBuilder<'a> {
             rhf_g: RhfG::default(),
             uhf_mutants: UhfDfMutants::default(),
             uks_xc: None,
+            phases: Default::default(),
         })
     }
 
@@ -2473,6 +2536,24 @@ impl<'a> TwoElectronBuilder<'a> {
     /// directions shrink with the residual, and the absolute J/K screen would
     /// otherwise drop a growing share of their coupling.
     fn jk(&self, d: &Array2<f64>) -> Result<(Array2<f64>, Array2<f64>), FerricError> {
+        self.timed("exact J/K build", || self.jk_untimed(d))
+    }
+
+    /// Run `f`, adding its wall time to `label` in [`Self::phases`] (inert
+    /// when `FERRIC_TIMING` is off).
+    fn timed<T>(&self, label: &'static str, f: impl FnOnce() -> T) -> T {
+        let token = self.phases.borrow().begin(label);
+        let out = f();
+        self.phases.borrow_mut().stop(token);
+        out
+    }
+
+    /// Print the `G` phase table under `title` (`FERRIC_TIMING` only).
+    fn report_phases(&self, title: &str) {
+        self.phases.borrow().report(title);
+    }
+
+    fn jk_untimed(&self, d: &Array2<f64>) -> Result<(Array2<f64>, Array2<f64>), FerricError> {
         let n = d.nrows();
         let mut j = Array2::<f64>::zeros((n, n));
         let mut k = Array2::<f64>::zeros((n, n));
@@ -2516,16 +2597,16 @@ impl<'a> TwoElectronBuilder<'a> {
             };
             if let Some(df) = &self.df_j {
                 j = Array2::<f64>::zeros(d.dim());
-                df.borrow_mut().build(d, &mut j)?;
+                self.timed("fitted J build", || df.borrow_mut().build(d, &mut j))?;
             }
             if exx != 0.0 {
                 if let Some(df) = &self.df_k {
                     k = Array2::<f64>::zeros(d.dim());
-                    df.borrow_mut().build(d, &mut k)?;
+                    self.timed("fitted K build", || df.borrow_mut().build(d, &mut k))?;
                 }
                 j.scaled_add(-0.5 * exx, &k);
             }
-            j += &xc(d);
+            j += &self.timed("XC kernel apply", || xc(d));
             return Ok(j);
         }
         if self.df_j.is_none() && self.df_k.is_none() && !self.rhf_g.swap_jk {
@@ -2549,6 +2630,123 @@ impl<'a> TwoElectronBuilder<'a> {
         Ok(j)
     }
 
+    /// Whether `G` is a Kohn-Sham one (closed shell or UKS): those CPHF/CPKS
+    /// solves run every nuclear coordinate in one block ([`Self::g_rhf_many`],
+    /// [`Self::g_uhf_many`]); Hartree-Fock keeps the per-coordinate solve.
+    fn is_kohn_sham(&self) -> bool {
+        self.rhf_g.xc.is_some() || self.uks_xc.is_some()
+    }
+
+    /// The exact Coulomb matrices of `jd` and exchange matrices of `kd` from
+    /// one quartet pass ([`crate::rhf::build_multi_jk_with_pool_homogeneous`]).
+    fn multi_jk(
+        &self,
+        jd: &[&Array2<f64>],
+        kd: &[&Array2<f64>],
+    ) -> Result<(Vec<Array2<f64>>, Vec<Array2<f64>>), FerricError> {
+        self.timed("exact J/K build (block)", || {
+            crate::rhf::build_multi_jk_with_pool_homogeneous(
+                self.ctx,
+                self.prep,
+                self.bounds,
+                CPHF_JK_THRESH,
+                jd,
+                kd,
+                &self.pool,
+                crate::reduce::default_band_bytes(),
+            )
+        })
+    }
+
+    /// [`Self::g_rhf`] of many densities: the exact J (and K of a hybrid the
+    /// SCF did not fit) of all of them in one quartet pass. Kohn-Sham only.
+    fn g_rhf_many(&self, ds: &[Array2<f64>]) -> Result<Vec<Array2<f64>>, FerricError> {
+        use crate::fock::{JBuilder, KBuilder};
+        let Some(xc) = self.rhf_g.xc else {
+            return ds.iter().map(|d| self.g_rhf(d)).collect();
+        };
+        let exx = self.rhf_g.exx;
+        let exact_j = self.df_j.is_none();
+        let exact_k = exx != 0.0 && self.df_k.is_none();
+        let refs: Vec<&Array2<f64>> = ds.iter().collect();
+        let none: [&Array2<f64>; 0] = [];
+        let (js, ks) = self.multi_jk(
+            if exact_j { &refs } else { &none },
+            if exact_k { &refs } else { &none },
+        )?;
+        let mut out = Vec::with_capacity(ds.len());
+        for (i, d) in ds.iter().enumerate() {
+            let mut j = match &self.df_j {
+                Some(df) => {
+                    let mut j = Array2::<f64>::zeros(d.dim());
+                    self.timed("fitted J build", || df.borrow_mut().build(d, &mut j))?;
+                    j
+                }
+                None => js[i].clone(),
+            };
+            if exx != 0.0 {
+                let k = match &self.df_k {
+                    Some(df) => {
+                        let mut k = Array2::<f64>::zeros(d.dim());
+                        self.timed("fitted K build", || df.borrow_mut().build(d, &mut k))?;
+                        k
+                    }
+                    None => ks[i].clone(),
+                };
+                j.scaled_add(-0.5 * exx, &k);
+            }
+            j += &self.timed("XC kernel apply", || xc(d));
+            out.push(j);
+        }
+        Ok(out)
+    }
+
+    /// [`Self::g_uhf`] of many spin-density pairs: for UKS the exact J of every
+    /// total density (and the K of every spin density of a hybrid the SCF did
+    /// not fit) in one quartet pass; Hartree-Fock pairs one at a time.
+    fn g_uhf_many(&self, ds: &[[Array2<f64>; 2]]) -> Result<Vec<[Array2<f64>; 2]>, FerricError> {
+        let Some((xc, exx)) = self.uks_xc else {
+            return ds.iter().map(|d| self.g_uhf(d)).collect();
+        };
+        let exact_j = self.df_j.is_none();
+        let exact_k = exx != 0.0 && self.df_k.is_none();
+        let totals: Vec<Array2<f64>> = if exact_j {
+            ds.iter().map(|d| &d[0] + &d[1]).collect()
+        } else {
+            Vec::new()
+        };
+        let jd: Vec<&Array2<f64>> = totals.iter().collect();
+        let kd: Vec<&Array2<f64>> = if exact_k {
+            ds.iter().flat_map(|d| [&d[0], &d[1]]).collect()
+        } else {
+            Vec::new()
+        };
+        let (js, ks) = self.multi_jk(&jd, &kd)?;
+        let mut out = Vec::with_capacity(ds.len());
+        for (i, d) in ds.iter().enumerate() {
+            let j = match &self.df_j {
+                Some(df) => self.fitted_coulomb(df, d)?,
+                None => js[i].clone(),
+            };
+            let k = if exx == 0.0 {
+                None
+            } else if let Some(df) = &self.df_k {
+                Some(self.fitted_exchange(df, d)?)
+            } else {
+                Some([ks[2 * i].clone(), ks[2 * i + 1].clone()])
+            };
+            let [va, vb] = self.timed("XC kernel apply", || xc([&d[0], &d[1]]));
+            let mut ga = &j + &va;
+            let mut gb = j + &vb;
+            if let Some([ka, kb]) = k {
+                ga.scaled_add(-exx, &ka);
+                gb.scaled_add(-exx, &kb);
+            }
+            out.push([ga, gb]);
+        }
+        Ok(out)
+    }
+
     /// UHF spin potentials `v_σ = J(D_α + D_β) − K(D_σ)` for spin densities
     /// `d = [D_α, D_β]` (PySCF `gen_response` of a UHF object, `hermi = 1`).
     fn g_uhf(&self, d: &[Array2<f64>; 2]) -> Result<[Array2<f64>; 2], FerricError> {
@@ -2569,16 +2767,26 @@ impl<'a> TwoElectronBuilder<'a> {
         exx: f64,
     ) -> Result<[Array2<f64>; 2], FerricError> {
         let zero = || Array2::<f64>::zeros(d[0].dim());
-        let (mut j, mut k) = if exx == 0.0 {
-            let j = match &self.df_j {
-                Some(_) => zero(),
-                None => self.jk(&(&d[0] + &d[1]))?.0,
-            };
-            (j, [zero(), zero()])
-        } else if self.df_j.is_some() && self.df_k.is_some() {
-            (zero(), [zero(), zero()])
+        // The exact quartet pass builds only what is not fitted: J alone for a
+        // pure functional, J and both spin K in ONE pass for a hybrid.
+        let exact_j = self.df_j.is_none();
+        let exact_k = exx != 0.0 && self.df_k.is_none();
+        let (mut j, mut k) = if exact_j || exact_k {
+            let (j, k) = self.timed("exact J/K build", || {
+                crate::rhf::build_spin_jk_with_pool_homogeneous(
+                    self.ctx,
+                    self.prep,
+                    self.bounds,
+                    CPHF_JK_THRESH,
+                    [&d[0], &d[1]],
+                    exact_k,
+                    &self.pool,
+                    crate::reduce::default_band_bytes(),
+                )
+            })?;
+            (j, k.unwrap_or_else(|| [zero(), zero()]))
         } else {
-            self.exact_spin_jk(d)?
+            (zero(), [zero(), zero()])
         };
         if let Some(df) = &self.df_j {
             j = self.fitted_coulomb(df, d)?;
@@ -2588,7 +2796,7 @@ impl<'a> TwoElectronBuilder<'a> {
                 k = self.fitted_exchange(df, d)?;
             }
         }
-        let v = xc([&d[0], &d[1]]);
+        let v = self.timed("XC kernel apply", || xc([&d[0], &d[1]]));
         let [va, vb] = v;
         let [ka, kb] = k;
         let mut ga = &j + &va;
@@ -2643,7 +2851,7 @@ impl<'a> TwoElectronBuilder<'a> {
             &d[0] + &d[1]
         };
         let mut j = Array2::<f64>::zeros(total.dim());
-        df.borrow_mut().build(&total, &mut j)?;
+        self.timed("fitted J build", || df.borrow_mut().build(&total, &mut j))?;
         Ok(j)
     }
 
@@ -2664,7 +2872,7 @@ impl<'a> TwoElectronBuilder<'a> {
             } else {
                 &d[sp]
             };
-            df.borrow_mut().build(dens, &mut k[sp])?;
+            self.timed("fitted K build", || df.borrow_mut().build(dens, &mut k[sp]))?;
         }
         Ok(k)
     }
@@ -2706,6 +2914,11 @@ fn cpks_response_with(
     let frame = MoFrame::new(rhf.mos_r(), rhf.eps_r(), nocc, 2.0);
     let h1_mo = frame.to_mo_all(&first.f1[0]);
     let s1_mo = frame.to_mo_all(&first.s1);
+    if g.is_kohn_sham() {
+        let sols = solve_cphf_block(g, &frame, &h1_mo, &s1_mo)?;
+        let raw = assemble_response(&h1_mo, &s1_mo, &sols, &frame);
+        return Ok(ResponseTerm::new(raw, &sols));
+    }
     let mut sols = Vec::with_capacity(h1_mo.len());
     for (x, (h1, s1)) in h1_mo.iter().zip(&s1_mo).enumerate() {
         sols.push(solve_cphf_one(g, &frame, h1, s1).map_err(|e| at_coordinate(x, e))?);
@@ -2755,29 +2968,58 @@ fn ucphf_response_with(
         frames[0].to_mo_all(&first.s1),
         frames[1].to_mo_all(&first.s1),
     ];
-    let mut sols: [Vec<CphfSolution>; 2] = [Vec::new(), Vec::new()];
-    for x in 0..first.s1.len() {
-        let [sa, sb] = solve_ucphf_one(
-            g,
-            &frames,
-            [&h1_mo[0][x], &h1_mo[1][x]],
-            [&s1_mo[0][x], &s1_mo[1][x]],
-        )
-        .map_err(|e| at_coordinate(x, e))?;
-        sols[0].push(sa);
-        sols[1].push(sb);
-    }
+    let sols = if g.is_kohn_sham() {
+        solve_ucphf_block(g, &frames, &h1_mo, &s1_mo)?
+    } else {
+        let mut sols: [Vec<CphfSolution>; 2] = [Vec::new(), Vec::new()];
+        for x in 0..first.s1.len() {
+            let [sa, sb] = solve_ucphf_one(
+                g,
+                &frames,
+                [&h1_mo[0][x], &h1_mo[1][x]],
+                [&s1_mo[0][x], &s1_mo[1][x]],
+            )
+            .map_err(|e| at_coordinate(x, e))?;
+            sols[0].push(sa);
+            sols[1].push(sb);
+        }
+        sols
+    };
     let raw = assemble_response(&h1_mo[0], &s1_mo[0], &sols[0], &frames[0])
         + assemble_response(&h1_mo[1], &s1_mo[1], &sols[1], &frames[1]);
     // The α and β solutions share one coupled solve: same iterations/residual.
     Ok(ResponseTerm::new(raw, &sols[0]))
 }
 
+/// `FERRIC_TIMING` only: the CPHF iteration count per nuclear coordinate.
+fn report_cphf_iterations(what: &str, resp: &ResponseTerm) {
+    if ferric_core::timing::enabled() {
+        let total: usize = resp.iterations.iter().sum();
+        eprintln!(
+            "[timing] {what} CPHF: {} coordinates, {total} iterations (max {}), max residual {:.1e}",
+            resp.iterations.len(),
+            resp.iterations.iter().max().copied().unwrap_or(0),
+            resp.max_residual
+        );
+    }
+}
+
+/// Prefix of every response-solve (CPHF/CPKS) failure [`at_coordinate`]
+/// names: a non-positive orbital-Hessian curvature or no convergence.
+const CPHF_FAILURE_PREFIX: &str = "CPHF for nuclear coordinate";
+
+/// Whether `e` is a failure of the coupled-perturbed response solve (as
+/// opposed to the SCF, a refusal or an integral error): the one error
+/// `HessianMethod::Auto` answers with the finite-difference Hessian for UKS.
+pub(crate) fn is_response_failure(e: &FerricError) -> bool {
+    matches!(e, FerricError::Convergence(m) if m.starts_with(CPHF_FAILURE_PREFIX))
+}
+
 /// Name the nuclear coordinate in a CPHF convergence error.
 fn at_coordinate(x: usize, e: FerricError) -> FerricError {
     match e {
         FerricError::Convergence(msg) => FerricError::Convergence(format!(
-            "CPHF for nuclear coordinate {x} (atom {}, axis {}): {msg}",
+            "{CPHF_FAILURE_PREFIX} {x} (atom {}, axis {}): {msg}",
             x / 3,
             x % 3
         )),
@@ -2817,6 +3059,242 @@ fn solve_cphf_one(
         &g_tot,
         (iterations, residual),
     ))
+}
+
+/// Coordinates per block of [`solve_cphf_block`] / [`solve_ucphf_block`]:
+/// as many as keep the stacked response matrices of one J/K pass (`per_coord`
+/// `nbf × nbf` matrices each) within [`CPHF_BLOCK_BYTES`], at least one. A
+/// pure function of the system size, never of the thread count.
+fn cphf_block_len(nbf: usize, per_coord: usize) -> usize {
+    let bytes = (per_coord * nbf * nbf * std::mem::size_of::<f64>()).max(1);
+    (CPHF_BLOCK_BYTES / bytes).max(1)
+}
+
+/// Budget of the stacked response matrices one block J/K pass holds per
+/// partial (see [`cphf_block_len`]).
+const CPHF_BLOCK_BYTES: usize = 32 << 20;
+
+/// [`solve_cphf_one`] for every coordinate, the coordinates of a block solved
+/// in lockstep ([`pcg_block`]) so each iteration builds the exact J/K of all
+/// of them in one quartet pass ([`TwoElectronBuilder::g_rhf_many`]). Each
+/// coordinate runs exactly [`pcg`]'s recurrence.
+fn solve_cphf_block(
+    g: &TwoElectronBuilder<'_>,
+    frame: &MoFrame<'_>,
+    h1: &[Array2<f64>],
+    s1: &[Array2<f64>],
+) -> Result<Vec<CphfSolution>, FerricError> {
+    let nocc = frame.nocc();
+    let block = cphf_block_len(frame.c.nrows(), 2);
+    let mut out = Vec::with_capacity(h1.len());
+    for x0 in (0..h1.len()).step_by(block) {
+        let xs = x0..(x0 + block).min(h1.len());
+        let s1_oo: Vec<Array2<f64>> = xs
+            .clone()
+            .map(|x| s1[x].slice(s![..nocc, ..]).to_owned())
+            .collect();
+        let occ: Vec<Array2<f64>> = s1_oo.iter().map(|s| frame.occupied_density(s)).collect();
+        let g_oo = g.g_rhf_many(&occ)?;
+        let rhs: Vec<Array2<f64>> = xs
+            .clone()
+            .zip(&g_oo)
+            .map(|(x, goo)| cphf_rhs(frame, &h1[x], &s1[x], goo))
+            .collect();
+        let precond = vec![frame.denom.clone(); rhs.len()];
+        let response = |us: &[&Array2<f64>]| -> Result<Vec<Array2<f64>>, FerricError> {
+            let dens: Vec<Array2<f64>> = us.iter().map(|u| frame.response_density(u)).collect();
+            g.g_rhf_many(&dens)
+        };
+        let matvec = |us: &[&Array2<f64>]| -> Result<Vec<Array2<f64>>, FerricError> {
+            Ok(response(us)?
+                .iter()
+                .zip(us)
+                .map(|(gu, u)| &frame.denom * *u + frame.vo(gu))
+                .collect())
+        };
+        let solved =
+            pcg_block(matvec, &rhs, &precond).map_err(|(i, e)| at_coordinate(x0 + i, e))?;
+        let xs_vo: Vec<&Array2<f64>> = solved.iter().map(|s| &s.0).collect();
+        let g1 = response(&xs_vo)?;
+        for (((x, (u_vo, it, res)), goo), g1) in xs.zip(solved).zip(g_oo).zip(g1) {
+            out.push(finish_cphf(
+                frame,
+                &h1[x],
+                &s1[x].slice(s![..nocc, ..]).to_owned(),
+                u_vo,
+                &(goo + &g1),
+                (it, res),
+            ));
+        }
+    }
+    Ok(out)
+}
+
+/// [`solve_ucphf_one`] for every coordinate, block by block in lockstep as
+/// [`solve_cphf_block`] ([`TwoElectronBuilder::g_uhf_many`]).
+fn solve_ucphf_block(
+    g: &TwoElectronBuilder<'_>,
+    frames: &[MoFrame<'_>; 2],
+    h1: &[Vec<Array2<f64>>; 2],
+    s1: &[Vec<Array2<f64>>; 2],
+) -> Result<[Vec<CphfSolution>; 2], FerricError> {
+    let ncoord = h1[0].len();
+    let block = cphf_block_len(frames[0].c.nrows(), 3);
+    let mut out: [Vec<CphfSolution>; 2] = [Vec::new(), Vec::new()];
+    let s1_oo = |sp: usize, x: usize| s1[sp][x].slice(s![..frames[sp].nocc(), ..]).to_owned();
+    for x0 in (0..ncoord).step_by(block) {
+        let xs = x0..(x0 + block).min(ncoord);
+        let occ: Vec<[Array2<f64>; 2]> = xs
+            .clone()
+            .map(|x| [0, 1].map(|sp| frames[sp].occupied_density(&s1_oo(sp, x))))
+            .collect();
+        let g_oo = g.g_uhf_many(&occ)?;
+        let rhs: Vec<Array2<f64>> = xs
+            .clone()
+            .zip(&g_oo)
+            .map(|(x, goo)| {
+                pack(&[0, 1].map(|sp| cphf_rhs(&frames[sp], &h1[sp][x], &s1[sp][x], &goo[sp])))
+            })
+            .collect();
+        let precond = vec![pack(&[frames[0].denom.clone(), frames[1].denom.clone()]); rhs.len()];
+        let response = |vs: &[&Array2<f64>]| -> Result<Vec<[Array2<f64>; 2]>, FerricError> {
+            let dens: Vec<[Array2<f64>; 2]> = vs
+                .iter()
+                .map(|v| {
+                    let u = unpack(v, frames);
+                    [0, 1].map(|sp| frames[sp].response_density(&u[sp]))
+                })
+                .collect();
+            g.g_uhf_many(&dens)
+        };
+        let matvec = |vs: &[&Array2<f64>]| -> Result<Vec<Array2<f64>>, FerricError> {
+            Ok(response(vs)?
+                .iter()
+                .zip(vs)
+                .map(|(r, v)| {
+                    let u = unpack(v, frames);
+                    pack(&[0, 1].map(|sp| &frames[sp].denom * &u[sp] + frames[sp].vo(&r[sp])))
+                })
+                .collect())
+        };
+        let solved =
+            pcg_block(matvec, &rhs, &precond).map_err(|(i, e)| at_coordinate(x0 + i, e))?;
+        let xs_vec: Vec<&Array2<f64>> = solved.iter().map(|s| &s.0).collect();
+        let v1 = response(&xs_vec)?;
+        for (((x, (xv, it, res)), [goa, gob]), [va, vb]) in xs.zip(solved).zip(g_oo).zip(v1) {
+            let [ua, ub] = unpack(&xv, frames);
+            let stats = (it, res);
+            out[0].push(finish_cphf(
+                &frames[0],
+                &h1[0][x],
+                &s1_oo(0, x),
+                ua,
+                &(goa + &va),
+                stats,
+            ));
+            out[1].push(finish_cphf(
+                &frames[1],
+                &h1[1][x],
+                &s1_oo(1, x),
+                ub,
+                &(gob + &vb),
+                stats,
+            ));
+        }
+    }
+    Ok(out)
+}
+
+/// [`pcg`] for several independent systems in lockstep: each runs exactly
+/// [`pcg`]'s recurrence and stops on its own, and `apply` sees the search
+/// directions of all still-running systems at once (one batched operator
+/// application per iteration). An error carries the index of its system.
+fn pcg_block<F>(
+    mut apply: F,
+    rhs: &[Array2<f64>],
+    precond: &[Array2<f64>],
+) -> Result<Vec<(Array2<f64>, usize, f64)>, (usize, FerricError)>
+where
+    F: FnMut(&[&Array2<f64>]) -> Result<Vec<Array2<f64>>, FerricError>,
+{
+    struct State {
+        x: Array2<f64>,
+        r: Array2<f64>,
+        p: Array2<f64>,
+        rz: f64,
+        res: f64,
+        done: Option<usize>,
+    }
+    let tol = CPHF_TOL;
+    let dot = |a: &Array2<f64>, b: &Array2<f64>| (a * b).sum();
+    let xs: Vec<Array2<f64>> = rhs.iter().zip(precond).map(|(b, m)| b / m).collect();
+    let ax = apply(&xs.iter().collect::<Vec<_>>()).map_err(|e| (0, e))?;
+    let mut st: Vec<State> = xs
+        .into_iter()
+        .zip(ax)
+        .zip(rhs.iter().zip(precond))
+        .map(|((x, ax), (b, m))| {
+            let r = b - &ax;
+            let res = max_abs(&r);
+            let z = &r / m;
+            let rz = dot(&r, &z);
+            State {
+                x,
+                r,
+                p: z,
+                rz,
+                res,
+                done: (res < tol).then_some(0),
+            }
+        })
+        .collect();
+    for it in 1..=CPHF_MAX_ITER {
+        let active: Vec<usize> = (0..st.len()).filter(|&i| st[i].done.is_none()).collect();
+        if active.is_empty() {
+            break;
+        }
+        let ps: Vec<&Array2<f64>> = active.iter().map(|&i| &st[i].p).collect();
+        let aps = apply(&ps).map_err(|e| (active[0], e))?;
+        for (&i, ap) in active.iter().zip(aps) {
+            let s = &mut st[i];
+            let pap = dot(&s.p, &ap);
+            if pap.is_nan() || pap <= 0.0 {
+                return Err((
+                    i,
+                    FerricError::Convergence(format!(
+                        "orbital Hessian is not positive definite (pᵀAp = {pap:.3e} at \
+                         iteration {it}); the SCF reference is not a stable minimum"
+                    )),
+                ));
+            }
+            let alpha = s.rz / pap;
+            s.x.scaled_add(alpha, &s.p);
+            s.r.scaled_add(-alpha, &ap);
+            s.res = max_abs(&s.r);
+            if s.res < tol {
+                s.done = Some(it);
+                continue;
+            }
+            let z = &s.r / &precond[i];
+            let rz_new = dot(&s.r, &z);
+            s.p = &z + &(rz_new / s.rz * &s.p);
+            s.rz = rz_new;
+        }
+    }
+    st.into_iter()
+        .enumerate()
+        .map(|(i, s)| match s.done {
+            Some(it) => Ok((s.x, it, s.res)),
+            None => Err((
+                i,
+                FerricError::Convergence(format!(
+                    "CPHF did not converge in {CPHF_MAX_ITER} iterations (max |residual| \
+                     {:.3e} > {tol:.0e})",
+                    s.res
+                )),
+            )),
+        })
+        .collect()
 }
 
 /// The RHF/RKS CPHF operator `A·U = Δε ∘ U + G(D¹[U])_vo` on a vo block.

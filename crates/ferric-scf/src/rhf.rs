@@ -4041,6 +4041,236 @@ pub fn build_jk_with_pool_homogeneous(
     Ok(n)
 }
 
+/// Open-shell response potentials in ONE quartet pass: `J(D_α + D_β)` and,
+/// with `exchange`, `K(D_α)` and `K(D_β)` (`None` without), homogeneous in
+/// `(D_α, D_β)` as [`build_jk_with_pool_homogeneous`] is in `D`: both spin
+/// densities are scaled by the [`pow2_normalizer`] of their joint `max|D|`
+/// before the build and the matrices by its inverse after.
+///
+/// It replaces two closed-shell `(J, K)` builds (one per spin) in the UHF/UKS
+/// CPHF: the integrals are computed once and contracted with both spins
+/// (`JkMode::Uhf`), or only J is built for a pure functional (`JkMode::JOnly`).
+/// The quartet screen is the six-pairing one on `|D_α| + |D_β|`, which bounds
+/// all three matrices. Fold order is a pure function of the shell-pair list,
+/// so the result does not depend on the thread count.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_spin_jk_with_pool_homogeneous(
+    ctx: &ParallelContext,
+    prep: &PreparedBasis,
+    bounds: &SchwarzBounds,
+    thresh: f64,
+    d: [&Array2<f64>; 2],
+    exchange: bool,
+    pool: &crate::engine_pool::EnginePool,
+    band_bytes: usize,
+) -> Result<(Array2<f64>, Option<[Array2<f64>; 2]>), FerricError> {
+    use crate::quartet_scatter::{
+        build_d_max_shell_spin_sum, canonical_bra_pairs, scatter_bra_pair, DensityScreen, JkMode,
+    };
+    ctx.check_interrupted()?;
+    let nbf = prep.nbasis();
+    let zero = || Array2::<f64>::zeros((nbf, nbf));
+    let dmax = d
+        .iter()
+        .flat_map(|m| m.iter())
+        .fold(0.0_f64, |m, v| m.max(v.abs()));
+    let Some((scale, inv_scale)) = pow2_normalizer(dmax) else {
+        return Ok((zero(), exchange.then(|| [zero(), zero()])));
+    };
+    let (ua, ub) = (inv_scale * d[0], inv_scale * d[1]);
+    let total = &ua + &ub;
+    let dims = prep.shell_dims();
+    let offs = prep.shell_offsets();
+    let d_max_shell = build_d_max_shell_spin_sum(prep, &ua, &ub);
+    let screen = DensityScreen::SixPair(&d_max_shell);
+    let shell_pairs = ctx.stripe(canonical_bra_pairs(prep.nshells()));
+    let n_pairs = shell_pairs.len();
+    let group_size = crate::reduce::deterministic_group_size(n_pairs);
+    let n_groups = n_pairs.div_ceil(group_size.max(1)).max(1);
+    let run = |g: usize, mode: &mut JkMode<'_>| {
+        let lo = g * group_size;
+        let hi = (lo + group_size).min(n_pairs);
+        for &(s1, s2) in &shell_pairs[lo..hi] {
+            if ferric_core::INTERRUPT.load(std::sync::atomic::Ordering::Relaxed) {
+                continue;
+            }
+            pool.with(|engine| {
+                scatter_bra_pair(
+                    engine,
+                    prep,
+                    dims,
+                    offs,
+                    &bounds.q,
+                    bounds.csb_m.as_ref(),
+                    bounds.csam_x.as_ref(),
+                    &screen,
+                    thresh,
+                    &total,
+                    s1,
+                    s2,
+                    mode,
+                    true,
+                );
+            });
+        }
+    };
+    let mut j = zero();
+    let k = if exchange {
+        let (mut ka, mut kb) = (zero(), zero());
+        crate::reduce::grouped_deterministic_sum_triple(
+            &mut j,
+            &mut ka,
+            &mut kb,
+            n_groups,
+            nbf,
+            band_bytes,
+            |g| {
+                let mut mode = JkMode::new_uhf(nbf, &ua, &ub);
+                run(g, &mut mode);
+                match mode {
+                    JkMode::Uhf(j, ka, kb, _, _) => Ok((j, ka, kb)),
+                    _ => unreachable!("JkMode::Uhf in, JkMode::Uhf out"),
+                }
+            },
+        )?;
+        crate::reduce::reduce_partial_across_ranks(ctx, &mut ka);
+        crate::reduce::reduce_partial_across_ranks(ctx, &mut kb);
+        Some([scale * ka, scale * kb])
+    } else {
+        crate::reduce::grouped_deterministic_sum(&mut j, n_groups, nbf, band_bytes, |g| {
+            let mut mode = JkMode::new_j(nbf);
+            run(g, &mut mode);
+            match mode {
+                JkMode::JOnly(j) => Ok(j),
+                _ => unreachable!("JkMode::JOnly in, JkMode::JOnly out"),
+            }
+        })?;
+        None
+    };
+    crate::reduce::reduce_partial_across_ranks(ctx, &mut j);
+    Ok((scale * j, k))
+}
+
+/// Coulomb matrices of every `jd` density and exchange matrices of every `kd`
+/// density from ONE quartet pass (the block CPHF/CPKS solves every nuclear
+/// coordinate at once, so the integrals are computed once per iteration, not
+/// once per coordinate). Homogeneous in each density separately, as
+/// [`build_jk_with_pool_homogeneous`]: each is scaled by its own
+/// [`pow2_normalizer`] before the build and its matrix by the inverse after
+/// (a zero density gives zero matrices). The quartet screen is the
+/// six-pairing one on the elementwise max of all the scaled `|D|`, a bound
+/// for every density. Fold order is a pure function of the shell-pair list,
+/// so the result does not depend on the thread count.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_multi_jk_with_pool_homogeneous(
+    ctx: &ParallelContext,
+    prep: &PreparedBasis,
+    bounds: &SchwarzBounds,
+    thresh: f64,
+    jd: &[&Array2<f64>],
+    kd: &[&Array2<f64>],
+    pool: &crate::engine_pool::EnginePool,
+    band_bytes: usize,
+) -> Result<(Vec<Array2<f64>>, Vec<Array2<f64>>), FerricError> {
+    use crate::quartet_scatter::{
+        build_d_max_shell, canonical_bra_pairs, scatter_bra_pair, DensityScreen, JkMode,
+    };
+    use ndarray::{Array3, Axis};
+    ctx.check_interrupted()?;
+    let nbf = prep.nbasis();
+    // Each density scaled into max|D| ∈ (½, 1], stacked (nbf, nbf, m).
+    let stack = |ds: &[&Array2<f64>]| -> (Array3<f64>, Vec<f64>) {
+        let mut out = Array3::<f64>::zeros((nbf, nbf, ds.len()));
+        let mut scales = Vec::with_capacity(ds.len());
+        for (i, d) in ds.iter().enumerate() {
+            let dmax = d.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
+            match pow2_normalizer(dmax) {
+                Some((scale, inv)) => {
+                    out.index_axis_mut(Axis(2), i).assign(&(inv * *d));
+                    scales.push(scale);
+                }
+                None => scales.push(0.0),
+            }
+        }
+        (out, scales)
+    };
+    let (jst, jscale) = stack(jd);
+    let (kst, kscale) = stack(kd);
+    let mut dabs = Array2::<f64>::zeros((nbf, nbf));
+    for st in [&jst, &kst] {
+        for ((mu, nu, _), v) in st.indexed_iter() {
+            let a = &mut dabs[(mu, nu)];
+            *a = a.max(v.abs());
+        }
+    }
+    let d_max_shell = build_d_max_shell(prep, &dabs);
+    let screen = DensityScreen::SixPair(&d_max_shell);
+    let dims = prep.shell_dims();
+    let offs = prep.shell_offsets();
+    let shell_pairs = ctx.stripe(canonical_bra_pairs(prep.nshells()));
+    let n_pairs = shell_pairs.len();
+    let group_size = crate::reduce::deterministic_group_size(n_pairs);
+    let n_groups = n_pairs.div_ceil(group_size.max(1)).max(1);
+    let (mj, mk) = (jd.len(), kd.len());
+    let m = (mj + mk).max(1);
+    // One (nbf², mj + mk) partial per group: the band budget is shared by the
+    // m matrices each partial holds.
+    let mut acc = Array2::<f64>::zeros((nbf * nbf, mj + mk));
+    crate::reduce::grouped_deterministic_sum(&mut acc, n_groups, nbf, band_bytes / m, |g| {
+        let lo = g * group_size;
+        let hi = (lo + group_size).min(n_pairs);
+        let mut mode = JkMode::new_multi(&jst, &kst);
+        for &(s1, s2) in &shell_pairs[lo..hi] {
+            if ferric_core::INTERRUPT.load(std::sync::atomic::Ordering::Relaxed) {
+                continue;
+            }
+            pool.with(|engine| {
+                scatter_bra_pair(
+                    engine,
+                    prep,
+                    dims,
+                    offs,
+                    &bounds.q,
+                    bounds.csb_m.as_ref(),
+                    bounds.csam_x.as_ref(),
+                    &screen,
+                    thresh,
+                    &dabs,
+                    s1,
+                    s2,
+                    &mut mode,
+                    true,
+                );
+            });
+        }
+        let JkMode::Multi(multi) = mode else {
+            unreachable!("JkMode::Multi in, JkMode::Multi out")
+        };
+        let mut part = Array2::<f64>::zeros((nbf * nbf, mj + mk));
+        let flat = |a: Array3<f64>, n: usize| {
+            a.into_shape_with_order((nbf * nbf, n))
+                .expect("a standard-layout (nbf, nbf, n) stack")
+        };
+        part.slice_mut(ndarray::s![.., ..mj])
+            .assign(&flat(multi.j, mj));
+        part.slice_mut(ndarray::s![.., mj..])
+            .assign(&flat(multi.k, mk));
+        Ok(part)
+    })?;
+    crate::reduce::reduce_partial_across_ranks(ctx, &mut acc);
+    let unstack = |lo: usize, scales: &[f64]| -> Vec<Array2<f64>> {
+        scales
+            .iter()
+            .enumerate()
+            .map(|(i, &sc)| {
+                let col = acc.column(lo + i).to_owned();
+                sc * col.into_shape_with_order((nbf, nbf)).expect("nbf² entries")
+            })
+            .collect()
+    };
+    Ok((unstack(0, &jscale), unstack(mj, &kscale)))
+}
+
 /// Default linear-dependence threshold for canonical orthogonalization:
 /// eigenvectors of the overlap matrix with eigenvalue below this are dropped from
 /// the variational space. PySCF's default is ~1e-6 to 1e-7; 1e-6 is conservative.

@@ -82,6 +82,22 @@ struct PolKernel {
     mask: [Array1<f64>; 2],
 }
 
+impl PolKernel {
+    /// The points `c0..c1`.
+    fn slice(&self, c0: usize, c1: usize) -> Self {
+        PolKernel {
+            exc: self
+                .exc
+                .slice(s![c0.min(self.exc.len())..c1.min(self.exc.len())])
+                .to_owned(),
+            vr: self.vr.slice(s![.., c0..c1]).to_owned(),
+            vs: self.vs.slice(s![.., c0..c1]).to_owned(),
+            k2: self.k2.slice(s![.., .., c0..c1]).to_owned(),
+            mask: [0, 1].map(|s| self.mask[s].slice(s![c0..c1]).to_owned()),
+        }
+    }
+}
+
 /// A spin-polarized batch: the closed-shell [`Batch`] view of each spin
 /// (shared AO planes; `p = P^s`, `rho = ρ_s`, `fw = F^s`, `grad = (Q^s, g^s,
 /// G^s)`; its `k` is unused) and the polarized kernel.
@@ -526,7 +542,8 @@ impl<'a> PolarizedKs<'a> {
     }
 
     /// The MOVING-grid skeleton (points riding their home atom, Becke weights
-    /// differentiated), `(3N, 3N)`.
+    /// differentiated), `(3N, 3N)`. Batches run in parallel and are added in
+    /// batch order.
     pub fn skeleton_hessian_moving(
         &self,
         geo: &XcGeometry<'_>,
@@ -537,31 +554,43 @@ impl<'a> PolarizedKs<'a> {
         let riding = grid.riding_for(geo)?;
         let mm = &m.moving;
         let n3 = 3 * geo.natoms();
+        let ranges = grid.home_ranges(riding, mm.unsplit_batches);
         let mut h = Array2::<f64>::zeros((n3, n3));
-        for (g0, g1, home) in grid.home_ranges(riding, mm.unsplit_batches) {
-            let b = self.batch(geo, d, (g0, g1), Level::Third, true, m)?;
-            let mut gh = Self::batch_skeleton(geo, d, &b, m);
-            let f = &b.rho * &b.k.exc;
-            let wd = weight_derivatives(geo.mol, riding, (g0, g1), &grid.pts, home, Some(&f));
-            if let Some(w2f) = &wd.hess_f {
-                gh.scaled_add(mm.weight_hess, w2f);
-            }
-            let der = Self::spin_derivatives(geo, &b);
-            let df = Self::f_derivative(&b, &der);
-            if mm.riding_cross {
-                let c = riding_derivatives(&wd.grad, home).dot(&df.t());
-                h.scaled_add(mm.weight_cross, &(&c + &c.t()));
-            } else {
-                let c = wd.grad.dot(&df.t());
-                gh.scaled_add(mm.weight_cross, &(&c + &c.t()));
-            }
-            h += &translation_fill(gh.view(), home, mm.fill);
-        }
+        fold_batches(
+            &ranges,
+            2 * n3 * n3,
+            |&(g0, g1, home)| {
+                let b = self.batch(geo, d, (g0, g1), Level::Third, true, m)?;
+                let mut gh = Self::batch_skeleton(geo, d, &b, m);
+                let f = &b.rho * &b.k.exc;
+                let wd = weight_derivatives(geo.mol, riding, (g0, g1), &grid.pts, home, Some(&f));
+                if let Some(w2f) = &wd.hess_f {
+                    gh.scaled_add(mm.weight_hess, w2f);
+                }
+                let der = Self::spin_derivatives(geo, &b);
+                let df = Self::f_derivative(&b, &der);
+                let mut riding_cross = None;
+                if mm.riding_cross {
+                    let c = riding_derivatives(&wd.grad, home).dot(&df.t());
+                    riding_cross = Some(&c + &c.t());
+                } else {
+                    let c = wd.grad.dot(&df.t());
+                    gh.scaled_add(mm.weight_cross, &(&c + &c.t()));
+                }
+                Ok((riding_cross, translation_fill(gh.view(), home, mm.fill)))
+            },
+            |(riding_cross, filled)| {
+                if let Some(c) = riding_cross {
+                    h.scaled_add(mm.weight_cross, &c);
+                }
+                h += &filled;
+            },
+        )?;
         Ok(h)
     }
 
     /// `∂V^s/∂x` at fixed spin densities on the MOVING grid: `[α, β]`, each of
-    /// length 3N.
+    /// length 3N. Batches run in parallel and are added in batch order.
     pub fn first_order_fock_moving(
         &self,
         geo: &XcGeometry<'_>,
@@ -573,42 +602,62 @@ impl<'a> PolarizedKs<'a> {
         let mm = &m.moving;
         let nbf = d[0].nrows();
         let n3 = 3 * geo.natoms();
-        let mut v = [0, 1].map(|_| vec![Array2::<f64>::zeros((nbf, nbf)); n3]);
-        for (g0, g1, home) in grid.home_ranges(riding, mm.unsplit_batches) {
-            let b = self.batch(geo, d, (g0, g1), Level::Hess, true, m)?;
-            let der = Self::spin_derivatives(geo, &b);
-            let w1 = weight_derivatives(geo.mol, riding, (g0, g1), &grid.pts, home, None).grad;
-            let g = b.spins[0]
-                .grad
-                .as_ref()
-                .zip(b.spins[1].grad.as_ref())
-                .map(|(a, bb)| [&a.g, &bb.g]);
-            let gus = g.map(|g| [gu(&b.k, g, 0), gu(&b.k, g, 1)]);
-            for x in (0..n3).filter(|x| x / 3 != home) {
-                let r = Self::coordinate_response(&b, &der, x, &m.spin);
-                let wx = w1.row(x).to_owned();
-                for (s, (df, dg)) in r.iter().enumerate() {
-                    let ao = &b.spins[s].ao;
-                    let mut c = m.fock_fxc * vmat(ao, df, dg.as_ref());
-                    let fw = &(&wx * &b.k.vr.row(s)) * &b.k.mask[s];
-                    let gw = gus
-                        .as_ref()
-                        .map(|gu| &gu[s] * &wx.view().insert_axis(Axis(0)));
-                    c.scaled_add(mm.fock_weight, &vmat(ao, &fw, gw.as_ref()));
-                    v[s][x] += &c;
-                    v[s][3 * home + x % 3].scaled_add(mm.fill, &c);
+        let ranges = grid.home_ranges(riding, mm.unsplit_batches);
+        let zero = || [0, 1].map(|_| vec![Array2::<f64>::zeros((nbf, nbf)); n3]);
+        let mut v = zero();
+        fold_batches(
+            &ranges,
+            2 * n3 * nbf * nbf,
+            |&(g0, g1, home)| {
+                let mut part = zero();
+                let b = self.batch(geo, d, (g0, g1), Level::Hess, true, m)?;
+                let der = Self::spin_derivatives(geo, &b);
+                let w1 = weight_derivatives(geo.mol, riding, (g0, g1), &grid.pts, home, None).grad;
+                let g = b.spins[0]
+                    .grad
+                    .as_ref()
+                    .zip(b.spins[1].grad.as_ref())
+                    .map(|(a, bb)| [&a.g, &bb.g]);
+                let gus = g.map(|g| [gu(&b.k, g, 0), gu(&b.k, g, 1)]);
+                for x in (0..n3).filter(|x| x / 3 != home) {
+                    let r = Self::coordinate_response(&b, &der, x, &m.spin);
+                    let wx = w1.row(x).to_owned();
+                    for (s, (df, dg)) in r.iter().enumerate() {
+                        // The kernel term and the weight term in ONE V matrix
+                        // (V is linear in its weights).
+                        let wf = &(&wx * &b.k.vr.row(s)) * &b.k.mask[s];
+                        let fw = m.fock_fxc * df + mm.fock_weight * &wf;
+                        let gw = match (dg, gus.as_ref()) {
+                            (Some(dg), Some(gu)) => {
+                                let wg = &gu[s] * &wx.view().insert_axis(Axis(0));
+                                Some(m.fock_fxc * dg + mm.fock_weight * &wg)
+                            }
+                            _ => None,
+                        };
+                        let c = vmat(&b.spins[s].ao, &fw, gw.as_ref());
+                        part[s][x] += &c;
+                        part[s][3 * home + x % 3].scaled_add(mm.fill, &c);
+                    }
                 }
-            }
-            for (s, vs) in v.iter_mut().enumerate() {
-                FixedGridKs::add_ao_derivative_fock(
-                    geo,
-                    &b.spins[s],
-                    m.fock_vxc,
-                    Some((home, mm.fill)),
-                    vs,
-                );
-            }
-        }
+                for (s, ps) in part.iter_mut().enumerate() {
+                    FixedGridKs::add_ao_derivative_fock(
+                        geo,
+                        &b.spins[s],
+                        m.fock_vxc,
+                        Some((home, mm.fill)),
+                        ps,
+                    );
+                }
+                Ok(part)
+            },
+            |part| {
+                for (vs, ps) in v.iter_mut().zip(&part) {
+                    for (vx, px) in vs.iter_mut().zip(ps) {
+                        *vx += px;
+                    }
+                }
+            },
+        )?;
         Ok(v)
     }
 
@@ -778,40 +827,49 @@ pub struct PolarizedXcResponse {
 }
 
 impl PolarizedXcResponse {
-    /// The XC potential responses of both spins to `(d1[0], d1[1])`.
+    /// The XC potential responses of both spins to `(d1[0], d1[1])`: point
+    /// chunks in parallel, added in chunk order.
     pub fn apply(&self, d1: [&Array2<f64>; 2]) -> [Array2<f64>; 2] {
-        let pd = d1.map(|x| x.dot(&self.chi));
-        let rho1 = [0, 1].map(|s| (&self.chi * &pd[s]).sum_axis(Axis(0)));
-        let g1 = self.dchi.as_ref().map(|dchi| {
-            [0, 1].map(|s| {
-                let mut g1 = Array2::<f64>::zeros((3, self.chi.ncols()));
-                for gam in 0..3 {
-                    g1.row_mut(gam).assign(
-                        &(2.0 * (&dchi.index_axis(Axis(0), gam) * &pd[s]).sum_axis(Axis(0))),
-                    );
-                }
-                g1
-            })
-        });
+        let nbf = self.chi.nrows();
+        let mut v = [0, 1].map(|_| Array2::<f64>::zeros((nbf, nbf)));
+        let chunks = response_chunks(self.chi.ncols());
+        fold_batches(
+            &chunks,
+            2 * nbf * nbf,
+            |&(c0, c1)| Ok(self.apply_chunk(d1, c0, c1)),
+            |[pa, pb]| {
+                v[0] += &pa;
+                v[1] += &pb;
+            },
+        )
+        .expect("the response kernel chunks are infallible");
+        v
+    }
+
+    /// The contribution of the points `c0..c1`.
+    fn apply_chunk(&self, d1: [&Array2<f64>; 2], c0: usize, c1: usize) -> [Array2<f64>; 2] {
+        let chi = self.chi.slice(s![.., c0..c1]);
+        let dchi = self.dchi.as_ref().map(|d| d.slice(s![.., .., c0..c1]));
+        let pd = d1.map(|x| x.dot(&chi));
+        let rho1 = [0, 1].map(|s| (&chi * &pd[s]).sum_axis(Axis(0)));
+        let g1 = dchi.map(|dchi| [0, 1].map(|s| gradient_response(dchi, &pd[s])));
+        let k = self.k.slice(c0, c1);
+        let w = self.w.slice(s![c0..c1]).to_owned();
+        let g = self
+            .g
+            .as_ref()
+            .map(|g| [0, 1].map(|s| g[s].slice(s![.., c0..c1]).to_owned()));
         let r = pol_response(
-            &self.k,
-            &self.w,
-            self.g.as_ref().map(|g| [&g[0], &g[1]]),
+            &k,
+            &w,
+            g.as_ref().map(|g| [&g[0], &g[1]]),
             [&rho1[0], &rho1[1]],
             g1.as_ref().map(|g| [&g[0], &g[1]]),
             &self.spin,
         );
         r.map(|(df, dg)| {
-            let mut v = scale_cols(&self.chi, &(self.factor * &df)).dot(&self.chi.t());
-            if let (Some(dg), Some(dchi)) = (dg, self.dchi.as_ref()) {
-                for gam in 0..3 {
-                    let gw = self.factor * &dg.row(gam).to_owned();
-                    let t = scale_view(dchi.index_axis(Axis(0), gam), &gw).dot(&self.chi.t());
-                    v += &t;
-                    v += &t.t();
-                }
-            }
-            v
+            let gw = dg.map(|dg| self.factor * dg);
+            vmat_views(chi, dchi, &(self.factor * &df), gw.as_ref())
         })
     }
 }

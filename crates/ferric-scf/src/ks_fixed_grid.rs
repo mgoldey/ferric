@@ -366,6 +366,19 @@ struct Kernel {
 }
 
 impl Kernel {
+    /// The points `c0..c1`.
+    fn slice(&self, c0: usize, c1: usize) -> Self {
+        let f = |a: &Array1<f64>| a.slice(s![c0..c1]).to_owned();
+        Kernel {
+            exc: f(&self.exc),
+            fr: f(&self.fr),
+            fs: f(&self.fs),
+            frr: f(&self.frr),
+            frs: f(&self.frs),
+            fss: f(&self.fss),
+        }
+    }
+
     fn zeros(n: usize) -> Self {
         let z = || Array1::<f64>::zeros(n);
         Kernel {
@@ -448,17 +461,29 @@ fn scale_view(m: ndarray::ArrayView2<'_, f64>, v: &Array1<f64>) -> Array2<f64> {
 
 /// `V[F, G]` for the AOs of `ao` (symmetric by construction).
 fn vmat(ao: &Ao, fw: &Array1<f64>, gw: Option<&Array2<f64>>) -> Array2<f64> {
-    let mut v = scale_cols(&ao.chi, fw).dot(&ao.chi.t());
-    if let Some(gw) = gw {
-        let dchi = ao.dchi();
+    vmat_views(ao.chi.view(), ao.dchi.as_ref().map(|d| d.view()), fw, gw)
+}
+
+/// `V[F, G]_μν = Σ_g F χ_μ χ_ν + G_γ (∂γχ_μ χ_ν + χ_μ ∂γχ_ν)` as `M + Mᵀ` with
+/// `M = (½ F χ + Σ_γ G_γ ∂γχ) χᵀ`: ONE `nbf × npts × nbf` product (not one
+/// per term), exactly symmetric. `dchi` is read only when `gw` is given.
+fn vmat_views(
+    chi: ArrayView2<'_, f64>,
+    dchi: Option<ndarray::ArrayView3<'_, f64>>,
+    fw: &Array1<f64>,
+    gw: Option<&Array2<f64>>,
+) -> Array2<f64> {
+    let mut a = &chi * &(0.5 * fw).insert_axis(Axis(0));
+    if let (Some(gw), Some(dchi)) = (gw, dchi) {
         for gam in 0..3 {
-            let t =
-                scale_view(dchi.index_axis(Axis(0), gam), &gw.row(gam).to_owned()).dot(&ao.chi.t());
-            v += &t;
-            v += &t.t();
+            ndarray::Zip::from(&mut a)
+                .and(&dchi.index_axis(Axis(0), gam))
+                .and_broadcast(&gw.row(gam).insert_axis(Axis(0)))
+                .for_each(|a, &d, &g| *a += g * d);
         }
     }
-    v
+    let m = a.dot(&chi.t());
+    &m + &m.t()
 }
 
 /// Response of the weights `(F, G)` to a first-order density `(ρ1, g1)`.
@@ -1099,7 +1124,8 @@ impl FixedGridKs {
 
     /// The second nuclear derivative of `E_xc` at fixed density on the MOVING
     /// grid (points riding their home atom, Becke weights differentiated),
-    /// `(3N, 3N)`. See the module doc.
+    /// `(3N, 3N)`. See the module doc. Batches run in parallel and are added in
+    /// batch order (`fold_batches`).
     pub fn skeleton_hessian_moving(
         &self,
         geo: &XcGeometry<'_>,
@@ -1109,30 +1135,43 @@ impl FixedGridKs {
         let riding = self.riding_for(geo)?;
         let mm = &m.moving;
         let n3 = 3 * geo.natoms();
+        let ranges = self.home_ranges(riding, mm.unsplit_batches);
         let mut h = Array2::<f64>::zeros((n3, n3));
-        for (g0, g1, home) in self.home_ranges(riding, mm.unsplit_batches) {
-            let b = self.batch(geo, d, (g0, g1), Level::Third, true, m.gradient_terms)?;
-            let mut g = Self::batch_skeleton(geo, d, &b, m);
-            let f = &b.rho * &b.k.exc;
-            let wd = weight_derivatives(geo.mol, riding, (g0, g1), &self.pts, home, Some(&f));
-            if let Some(w2f) = &wd.hess_f {
-                g.scaled_add(mm.weight_hess, w2f);
-            }
-            let df = Self::f_derivative(geo, &b);
-            if mm.riding_cross {
-                let c = riding_derivatives(&wd.grad, home).dot(&df.t());
-                h.scaled_add(mm.weight_cross, &(&c + &c.t()));
-            } else {
-                let c = wd.grad.dot(&df.t());
-                g.scaled_add(mm.weight_cross, &(&c + &c.t()));
-            }
-            h += &translation_fill(g.view(), home, mm.fill);
-        }
+        fold_batches(
+            &ranges,
+            2 * n3 * n3,
+            |&(g0, g1, home)| {
+                let b = self.batch(geo, d, (g0, g1), Level::Third, true, m.gradient_terms)?;
+                let mut g = Self::batch_skeleton(geo, d, &b, m);
+                let f = &b.rho * &b.k.exc;
+                let wd = weight_derivatives(geo.mol, riding, (g0, g1), &self.pts, home, Some(&f));
+                if let Some(w2f) = &wd.hess_f {
+                    g.scaled_add(mm.weight_hess, w2f);
+                }
+                let df = Self::f_derivative(geo, &b);
+                let mut riding_cross = None;
+                if mm.riding_cross {
+                    let c = riding_derivatives(&wd.grad, home).dot(&df.t());
+                    riding_cross = Some(&c + &c.t());
+                } else {
+                    let c = wd.grad.dot(&df.t());
+                    g.scaled_add(mm.weight_cross, &(&c + &c.t()));
+                }
+                Ok((riding_cross, translation_fill(g.view(), home, mm.fill)))
+            },
+            |(riding_cross, filled)| {
+                if let Some(c) = riding_cross {
+                    h.scaled_add(mm.weight_cross, &c);
+                }
+                h += &filled;
+            },
+        )?;
         Ok(h)
     }
 
     /// `∂V_xc/∂R_x` at fixed density on the MOVING grid for every coordinate
     /// `x = 3·atom + axis` (symmetric, `nbf × nbf` each). See the module doc.
+    /// Batches run in parallel and are added in batch order (`fold_batches`).
     pub fn first_order_fock_moving(
         &self,
         geo: &XcGeometry<'_>,
@@ -1143,42 +1182,59 @@ impl FixedGridKs {
         let mm = &m.moving;
         let nbf = d.nrows();
         let n3 = 3 * geo.natoms();
+        let ranges = self.home_ranges(riding, mm.unsplit_batches);
         let mut v = vec![Array2::<f64>::zeros((nbf, nbf)); n3];
-        for (g0, g1, home) in self.home_ranges(riding, mm.unsplit_batches) {
-            let b = self.batch(geo, d, (g0, g1), Level::Hess, true, m.gradient_terms)?;
-            let rx = Self::rho_derivative(geo, &b);
-            let gx = b.grad.as_ref().map(|_| Self::grad_rho_derivative(geo, &b));
-            let w1 = weight_derivatives(geo.mol, riding, (g0, g1), &self.pts, home, None).grad;
-            for x in (0..n3).filter(|x| x / 3 != home) {
-                let g1x = gx.as_ref().map(|gx| gx.index_axis(Axis(0), x).to_owned());
-                let (df, dg) = weights_response(
-                    &b.k,
-                    &b.w,
-                    b.grad.as_ref().map(|g| &g.g),
-                    &rx.row(x).to_owned(),
-                    g1x.as_ref(),
-                );
-                let mut c = m.fock_fxc * vmat(&b.ao, &df, dg.as_ref());
-                c.scaled_add(
-                    mm.fock_weight,
-                    &Self::weight_fock(&b, &w1.row(x).to_owned()),
-                );
-                v[x] += &c;
-                v[3 * home + x % 3].scaled_add(mm.fill, &c);
-            }
-            Self::add_ao_derivative_fock(geo, &b, m.fock_vxc, Some((home, mm.fill)), &mut v);
-        }
+        fold_batches(
+            &ranges,
+            n3 * nbf * nbf,
+            |&(g0, g1, home)| {
+                let mut part = vec![Array2::<f64>::zeros((nbf, nbf)); n3];
+                let b = self.batch(geo, d, (g0, g1), Level::Hess, true, m.gradient_terms)?;
+                let rx = Self::rho_derivative(geo, &b);
+                let gx = b.grad.as_ref().map(|_| Self::grad_rho_derivative(geo, &b));
+                let w1 = weight_derivatives(geo.mol, riding, (g0, g1), &self.pts, home, None).grad;
+                for x in (0..n3).filter(|x| x / 3 != home) {
+                    let g1x = gx.as_ref().map(|gx| gx.index_axis(Axis(0), x).to_owned());
+                    let (df, dg) = weights_response(
+                        &b.k,
+                        &b.w,
+                        b.grad.as_ref().map(|g| &g.g),
+                        &rx.row(x).to_owned(),
+                        g1x.as_ref(),
+                    );
+                    // The kernel term and the weight term in ONE V matrix
+                    // (V is linear in its weights).
+                    let (wf, wg) = Self::weight_terms(&b, &w1.row(x).to_owned());
+                    let fw = m.fock_fxc * &df + mm.fock_weight * &wf;
+                    let gw = match (dg, wg) {
+                        (Some(dg), Some(wg)) => Some(m.fock_fxc * &dg + mm.fock_weight * &wg),
+                        _ => None,
+                    };
+                    let c = vmat(&b.ao, &fw, gw.as_ref());
+                    part[x] += &c;
+                    part[3 * home + x % 3].scaled_add(mm.fill, &c);
+                }
+                Self::add_ao_derivative_fock(geo, &b, m.fock_vxc, Some((home, mm.fill)), &mut part);
+                Ok(part)
+            },
+            |part| {
+                for (vx, px) in v.iter_mut().zip(&part) {
+                    *vx += px;
+                }
+            },
+        )?;
         Ok(v)
     }
 
-    /// `V[W'_x f_ρ, 2 W'_x f_σ ∇ρ]` of a batch for the weight derivative `wx`.
-    fn weight_fock(b: &Batch, wx: &Array1<f64>) -> Array2<f64> {
+    /// The weights `(W'_x f_ρ, 2 W'_x f_σ ∇ρ)` of `V` for the weight
+    /// derivative `wx` of a batch.
+    fn weight_terms(b: &Batch, wx: &Array1<f64>) -> (Array1<f64>, Option<Array2<f64>>) {
         let fw = wx * &b.k.fr;
         let gw = b.grad.as_ref().map(|gp| {
             let coef = 2.0 * &(wx * &b.k.fs);
             &gp.g * &coef.insert_axis(Axis(0))
         });
-        vmat(&b.ao, &fw, gw.as_ref())
+        (fw, gw)
     }
 
     /// The kernel `D1 ↦ V1[D1]` of the response, with the AOs and the
@@ -1217,6 +1273,42 @@ impl FixedGridKs {
         }
         Ok(resp)
     }
+}
+
+/// Largest live set (bytes) of per-batch results [`fold_batches`] holds
+/// before folding them.
+const BATCH_BAND_BYTES: usize = 512 << 20;
+
+/// Most per-batch results [`fold_batches`] holds at once.
+const MAX_BATCH_BAND: usize = 24;
+
+/// `batch` over `ranges` in parallel, in bands of a width set by the result
+/// size `partial_elems` (f64s) alone, each band's results handed to `fold` in
+/// ascending batch order. Every result is computed by a rayon worker (BLAS at
+/// the process baseline) and folded in the serial loop's order, so the sum does
+/// not depend on the thread count.
+fn fold_batches<R, T, B, F>(
+    ranges: &[R],
+    partial_elems: usize,
+    batch: B,
+    mut fold: F,
+) -> Result<(), FerricError>
+where
+    R: Sync,
+    T: Send,
+    B: Fn(&R) -> Result<T, FerricError> + Sync,
+    F: FnMut(T),
+{
+    let bytes = partial_elems.max(1) * std::mem::size_of::<f64>();
+    let band = (BATCH_BAND_BYTES / bytes).clamp(1, MAX_BATCH_BAND);
+    for chunk in ranges.chunks(band) {
+        let parts = chunk
+            .par_iter()
+            .map(&batch)
+            .collect::<Result<Vec<T>, FerricError>>()?;
+        parts.into_iter().for_each(&mut fold);
+    }
+    Ok(())
 }
 
 /// Point-fixed Becke weight derivatives of one batch.
@@ -1324,30 +1416,58 @@ pub struct XcResponse {
 }
 
 impl XcResponse {
-    /// The XC potential response to the density change `d1`.
+    /// The XC potential response to the density change `d1`: point chunks in
+    /// parallel (fixed chunks of `RESPONSE_CHUNK` points), added in chunk order.
     pub fn apply(&self, d1: &Array2<f64>) -> Array2<f64> {
-        let pd = d1.dot(&self.chi);
-        let rho1 = (&self.chi * &pd).sum_axis(Axis(0));
-        let g1 = self.dchi.as_ref().map(|dchi| {
-            let mut g1 = Array2::<f64>::zeros((3, self.chi.ncols()));
-            for gam in 0..3 {
-                g1.row_mut(gam)
-                    .assign(&(2.0 * (&dchi.index_axis(Axis(0), gam) * &pd).sum_axis(Axis(0))));
-            }
-            g1
-        });
-        let (df, dg) = weights_response(&self.k, &self.w, self.g.as_ref(), &rho1, g1.as_ref());
-        let mut v = scale_cols(&self.chi, &(self.factor * &df)).dot(&self.chi.t());
-        if let (Some(dg), Some(dchi)) = (dg, self.dchi.as_ref()) {
-            for gam in 0..3 {
-                let gw = self.factor * &dg.row(gam).to_owned();
-                let t = scale_view(dchi.index_axis(Axis(0), gam), &gw).dot(&self.chi.t());
-                v += &t;
-                v += &t.t();
-            }
-        }
+        let nbf = self.chi.nrows();
+        let mut v = Array2::<f64>::zeros((nbf, nbf));
+        let chunks = response_chunks(self.chi.ncols());
+        fold_batches(
+            &chunks,
+            nbf * nbf,
+            |&(c0, c1)| Ok(self.apply_chunk(d1, c0, c1)),
+            |p| v += &p,
+        )
+        .expect("the response kernel chunks are infallible");
         v
     }
+
+    /// The contribution of the points `c0..c1`.
+    fn apply_chunk(&self, d1: &Array2<f64>, c0: usize, c1: usize) -> Array2<f64> {
+        let chi = self.chi.slice(s![.., c0..c1]);
+        let dchi = self.dchi.as_ref().map(|d| d.slice(s![.., .., c0..c1]));
+        let pd = d1.dot(&chi);
+        let rho1 = (&chi * &pd).sum_axis(Axis(0));
+        let g1 = dchi.map(|dchi| gradient_response(dchi, &pd));
+        let k = self.k.slice(c0, c1);
+        let w = self.w.slice(s![c0..c1]).to_owned();
+        let g = self.g.as_ref().map(|g| g.slice(s![.., c0..c1]).to_owned());
+        let (df, dg) = weights_response(&k, &w, g.as_ref(), &rho1, g1.as_ref());
+        let gw = dg.map(|dg| self.factor * dg);
+        vmat_views(chi, dchi, &(self.factor * &df), gw.as_ref())
+    }
+}
+
+/// Points per parallel task of the CPHF kernel products.
+const RESPONSE_CHUNK: usize = 1024;
+
+/// The point chunks `(c0, c1)` of a resident response table of `npts` points
+/// (a pure function of `npts`, never of the thread count).
+fn response_chunks(npts: usize) -> Vec<(usize, usize)> {
+    (0..npts)
+        .step_by(RESPONSE_CHUNK)
+        .map(|c0| (c0, (c0 + RESPONSE_CHUNK).min(npts)))
+        .collect()
+}
+
+/// `g1_γ = 2 Σ_μ ∂γχ_μ (D1 χ)_μ` from `pd = D1 χ`, `(3, npts)`.
+fn gradient_response(dchi: ndarray::ArrayView3<'_, f64>, pd: &Array2<f64>) -> Array2<f64> {
+    let mut g1 = Array2::<f64>::zeros((3, pd.ncols()));
+    for gam in 0..3 {
+        g1.row_mut(gam)
+            .assign(&(2.0 * (&dchi.index_axis(Axis(0), gam) * pd).sum_axis(Axis(0))));
+    }
+    g1
 }
 
 /// [`FixedGridKs`] at one geometry as the SCF's [`XcBuilder`] (global-hybrid
