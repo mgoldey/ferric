@@ -402,10 +402,11 @@ translations and rotations projected out. The Hessian is:
   needs a libint2 with second derivatives (the build
   `scripts/install-libint.sh` installs).
 - **Analytic on the moving grid** for closed-shell Kohn-Sham (`ksdft`, or
-  `rhf` with a functional): LDA and GGA functionals, pure or global hybrid,
-  exact or density-fitted J and K, Becke weight response included, so it is
-  the Hessian of the surface the KS gradient differentiates. One SCF plus a
-  coupled-perturbed KS solve.
+  `rhf` with a functional) and UKS: LDA and GGA functionals, pure or global
+  hybrid, exact or density-fitted J and K, Becke weight response included, so
+  it is the Hessian of the surface the KS gradient differentiates. One SCF plus
+  a coupled-perturbed KS solve (all nuclear coordinates solved together, one
+  J/K integral pass per iteration).
 - **Central finite differences of the analytic gradient** everywhere else
   (ROKS, meta-GGA, VV10, range-separated hybrids, KS with an ECP or an
   external potential, pruned grids, `[dft] dispersion`, RI J/K with an
@@ -438,13 +439,33 @@ default 75×110 grid, a GGA above about 8,100 basis functions × atoms, e.g.
 about 30 atoms at def2-SVP) run finite differences; `"analytic-moving-grid"`
 refuses them before the SCF.
 
+For UKS, `"auto"` takes the analytic Hessian at every size: measured
+(def2-SVP, default grid, exact J/K, 6 cores, wall seconds including the SCF,
+median of 3 where shown) it is 2.4 to 4.4 times faster than `"fd"`:
+
+| radical | atoms | basis functions | PBE analytic / fd | B3LYP analytic / fd |
+|---|---|---|---|---|
+| NH2 | 3 | 24 | 0.96 / 3.38 | 1.09 / 4.42 |
+| CH3 | 4 | 29 | 1.56 / 6.16 | 1.77 / 7.69 |
+| C2H5 | 7 | 53 | 10.1 / 27.0 | 12.6 / 35.2 |
+| C6H5 | 11 | 109 | 103 / 330 (1 run) | 156 / 407 (1 run) |
+| C4H9 | 13 | 101 | 96.9 / 266 (1 run) | 137 / 331 (1 run) |
+| C9H11 | 20 | 181 | 763 / 2628 (1 run each) | — |
+
+There is no crossover to place: the finite-difference route never won.
+
 The choice is made before the SCF. An error the analytic path raises after the
 SCF (for ROHF: the stored spin Fock matrices differing from those rebuilt from
 the final densities by more than 1e-4 Ha, which a loose `density_conv` can
 cause; a response solve that does not converge; non-positive orbital curvature;
 a first-order rotation above 10 rad/Bohr) is returned as an error under
 `"auto"` too, never retried with finite differences; the same holds for the
-moving-grid KS Hessian (a non-converged SCF included).
+moving-grid KS Hessian (a non-converged SCF included), with one exception: a
+UKS coupled-perturbed solve that fails (non-positive orbital curvature or no
+convergence) makes `"auto"` run `"fd"` instead, with a warning. The measured
+case is OH (²Π): its β π hole rotates about the bond at no energy cost, an
+exact zero mode of the orbital Hessian, and the solve meets a curvature of
+−1.9e-10; `"analytic-moving-grid"` still reports that error.
 
 **Transition states and IRC (Python only, closed shell).**
 `ferric.run_saddle(mol, basis_name, xc=...)` searches for a first-order saddle
