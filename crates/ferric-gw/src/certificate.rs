@@ -15,7 +15,7 @@ use ferric_core::certificate::{Certificate, Grade};
 use ferric_rpa::config::{PdepRpaConfig, QuadratureScheme};
 
 use crate::bse::BseResult;
-use crate::{GwConfig, GwResult, UGwResult};
+use crate::{GwConfig, GwMethod, GwResult, UGwResult};
 
 /// The quadrature size of the matched-settings PySCF comparison.
 pub const MATCHED_N_QUAD: usize = 100;
@@ -159,15 +159,20 @@ pub fn gw_certificate(
     )
 }
 
-/// The warning of an open-shell GW run on a KS (UKS or ROKS) reference.
+/// The warning of an open-shell GW run on a KS reference outside what is
+/// compared: a ROKS reference, or eigenvalue self-consistency (U-evGW₀,
+/// U-evGW) or U-COHSEX on a UKS reference. U-G0W0 on a UKS reference is
+/// compared against the grid-free U-dRPA pole sum (OH, CH3, NH2 / cc-pVDZ)
+/// and converged in n_quad at the default (`tests/validation_gw_defaults.rs`),
+/// so it carries no warning.
 pub const OPEN_SHELL_KS_WARNING: &str =
-    "U-GW on an open-shell KS reference is outside the calibrated defaults: on OH and NH2 \
-     (UKS/PBE, cc-pVDZ) frontier quasiparticle energies are not converged in n_quad even \
-     at 80-100 points (OH beta HOMO moves 66 meV between them) and the NH2 alpha HOMO root \
-     does not converge";
+    "U-GW on an open-shell KS reference is compared only for U-G0W0 on a UKS reference \
+     (OH, CH3, NH2 / cc-pVDZ, against the grid-free U-dRPA pole sum); a ROKS reference and \
+     U-evGW0 / U-evGW / U-COHSEX on a KS reference are not compared";
 
 /// Open-shell GW (`gw`, multiplicity > 1). `ks_reference` is whether the
-/// reference is UKS or ROKS (a v_xc diagonal entered the QP equation).
+/// reference is UKS or ROKS (a v_xc diagonal entered the QP equation); the
+/// reference certificate's capability (`uhf` / `rohf`) tells the two apart.
 pub fn u_gw_certificate(
     reference: &Certificate,
     aux: &str,
@@ -177,7 +182,7 @@ pub fn u_gw_certificate(
     ks_reference: bool,
 ) -> Certificate {
     let mut base = gw_base(reference, aux, rpa, gw);
-    if ks_reference {
+    if ks_reference && (reference.capability != "uhf" || gw.method != GwMethod::G0W0) {
         base.push_warning(OPEN_SHELL_KS_WARNING);
     }
     gw_convergence(

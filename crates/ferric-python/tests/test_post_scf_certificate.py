@@ -161,12 +161,20 @@ def test_u_gw_certificate_is_graded_on_the_open_shell_reference():
     assert c["grade"] == "proven_narrow"
     assert any("n_quad = 8" in w for w in c["warnings"]), c
     assert not any("open-shell KS reference" in w for w in c["warnings"]), c
-    # A UKS reference is outside the calibration and says so, even at the
-    # default quadrature.
+    # U-G0W0 on a UKS reference is compared (against the grid-free U-dRPA
+    # pole sum) and converged at the default quadrature: no warning.
     k = ferric.run_u_gw(oh, bs, aux, xc="pbe", qp_mos=(3, 6)).certificate
     assert k["grade"] == "proven_narrow"
-    assert any("open-shell KS reference" in w for w in k["warnings"]), k
+    assert not any("open-shell KS reference" in w for w in k["warnings"]), k
     assert not any("n_quad = " in w for w in k["warnings"]), k
+    # Eigenvalue self-consistency on UKS is not compared and says so. (A ROKS
+    # reference warns too, but run_u_gw(xc=..., reference="rohf") on OH fails
+    # in the full-rank PDEP eigh on main as of 2026-11-08, LAPACK code 69, at
+    # STO-3G, 6-31G and cc-pVDZ alike, so it cannot be exercised here.)
+    ev = ferric.run_u_gw(
+        oh, bs, aux, xc="pbe", method="evgw0", qp_mos=(3, 6)
+    ).certificate
+    assert any("open-shell KS reference" in w for w in ev["warnings"]), ev
     assert c["build"]["commit"] == ferric.build_info()["commit"]
     # A ROHF reference is accepted and carries the same method row.
     r = ferric.run_u_gw(

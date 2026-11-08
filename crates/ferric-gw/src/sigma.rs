@@ -296,23 +296,9 @@ pub fn sigma_c_at_z(
     // replacing n_act·n_quad scalar O(m_modes²) forms with n_quad GEMMs. The
     // summation order differs from the old scalar loop (BLAS vs nested-scalar), so
     // results agree to machine precision, not bit-identically.
-    let v = m_proj.index_axis(ndarray::Axis(1), m_idx); // (m_modes, n_act)
-    let v = v.as_standard_layout(); // ensure contiguous for GEMM
-
     // w_nk[(n, k)] = screened element W_{mn}(iω_k), real.
-    let mut w_nk = Array2::<f64>::zeros((n_act, n_quad));
-    // `v` is loop-invariant, so materialize the owned copy ONCE rather than
-    // re-allocating an (m_modes × n_act) array on every quadrature node.
-    // `sigma_c_at_z` is called ~n_quad times per QP state, so the old
-    // in-loop `v.to_owned()` was pure allocation churn. Elementwise product
-    // and summation order are unchanged, so this is bit-identical.
-    let v_owned = v.to_owned();
-    for k in 0..n_quad {
-        let wv = with_blas_threads(opt_in_blas_threads(), || inv_diel_freq[k].dot(&v)); // (m_modes, n_act)
-                                                                                        // Column-wise dot: W_{n,k} = Σ_α V[α,n]·WV[α,n].
-        let col = (&v_owned * &wv).sum_axis(ndarray::Axis(0)); // (n_act,)
-        w_nk.column_mut(k).assign(&col);
-    }
+    let w_nk = screened_elements(m_idx, m_proj, inv_diel_freq);
+    debug_assert_eq!(w_nk.dim(), (n_act, n_quad));
 
     let mut sigma = Complex64::new(0.0, 0.0);
     for n_idx in 0..n_act {
@@ -327,6 +313,247 @@ pub fn sigma_c_at_z(
         sigma += diff * inner;
     }
     -Complex64::new(1.0 / std::f64::consts::PI, 0.0) * sigma
+}
+
+/// Screened matrix elements `W_{mn}(iω_k) = Mᵀ_{mn} · W̃_d(iω_k) · M_{mn}` for
+/// every active `n` and every matrix in `w_tilde` (one GEMM per matrix).
+/// Returns `(n_act, w_tilde.len())`.
+fn screened_elements(
+    m_idx: usize,
+    m_proj: &ndarray::Array3<f64>,
+    w_tilde: &[Array2<f64>],
+) -> Array2<f64> {
+    // For a fixed m_idx, V = M[:, m_idx, :] is (m_modes × n_act); W̃_d(iω_k)
+    // depends only on k and V only on n, so the per-(n,k) quadratic form
+    // vᵀ·W̃_d·v is one BLAS3 GEMM per frequency:
+    //   WV_k = W̃_d(iω_k) · V ;  W_{n,k} = Σ_α V[α,n] · WV_k[α,n].
+    let v = m_proj.index_axis(ndarray::Axis(1), m_idx); // (m_modes, n_act)
+    let v = v.as_standard_layout(); // ensure contiguous for GEMM
+    let n_act = v.ncols();
+    let mut w_nk = Array2::<f64>::zeros((n_act, w_tilde.len()));
+    // `v` is loop-invariant: materialize the owned copy once.
+    let v_owned = v.to_owned();
+    for (k, wt) in w_tilde.iter().enumerate() {
+        let wv = with_blas_threads(opt_in_blas_threads(), || wt.dot(&v)); // (m_modes, n_act)
+        let col = (&v_owned * &wv).sum_axis(ndarray::Axis(0)); // (n_act,)
+        w_nk.column_mut(k).assign(&col);
+    }
+    w_nk
+}
+
+/// `ln(1e6)`: where `n·ln ρ(x0)` exceeds it, [`ProductQuadrature`] uses the
+/// plain Gauss–Legendre sum (see `cauchy`).
+const PRODUCT_RULE_MAX_LN_GROWTH: f64 = 13.815_510_557_964_274;
+
+/// The W quadrature seen as a Gauss–Legendre rule in `x`, for
+/// [`sigma_c_at_z_product`].
+///
+/// `ω = u₀(1+x)/(1−x)` maps GL nodes `x_k ∈ (−1, 1)` to the PDEP
+/// frequencies. `u₀` is recovered from the nodes themselves
+/// (`ω(x)·ω(−x) = u₀²`, GL nodes are symmetric), so this works for every
+/// scheme that is scaled Gauss–Legendre (`gauss-legendre` and `minimax`,
+/// whose `u₀` is optimized per grid) and refuses anything else (the
+/// Chebyshev tan-map), checked by the rule's own moments.
+#[derive(Debug, Clone)]
+pub struct ProductQuadrature {
+    x: Vec<f64>,
+    wx: Vec<f64>,
+    /// Barycentric weights of the nodes (normalized, any common factor
+    /// cancels).
+    lam: Vec<f64>,
+    u0: f64,
+}
+
+impl ProductQuadrature {
+    /// From the PDEP quadrature (`pdep.quad_freqs`, `pdep.quad_weights`).
+    /// `None` when the rule is not a scaled Gauss–Legendre rule.
+    pub fn from_scaled_gauss_legendre(quad_freqs: &[f64], quad_weights: &[f64]) -> Option<Self> {
+        let n = quad_freqs.len();
+        if n < 2 || quad_weights.len() != n {
+            return None;
+        }
+        let mut idx: Vec<usize> = (0..n).collect();
+        idx.sort_by(|&a, &b| quad_freqs[a].total_cmp(&quad_freqs[b]));
+        let w_sorted: Vec<f64> = idx.iter().map(|&k| quad_freqs[k]).collect();
+        let u0 = (w_sorted[0] * w_sorted[n - 1]).sqrt();
+        if !(u0.is_finite() && u0 > 0.0) {
+            return None;
+        }
+        // x_k and the plain GL weight, in the caller's node order.
+        let x: Vec<f64> = quad_freqs.iter().map(|&w| (w - u0) / (w + u0)).collect();
+        let wx: Vec<f64> = x
+            .iter()
+            .zip(quad_weights)
+            .map(|(&xk, &wk)| wk * (1.0 - xk).powi(2) / (2.0 * u0))
+            .collect();
+        // A Gauss–Legendre rule integrates x^j exactly on [−1, 1] for
+        // j ≤ 2n − 1; checking j = 0, 1, 2, 4 refuses any other map.
+        let moment = |j: i32| -> f64 { x.iter().zip(&wx).map(|(&a, &b)| b * a.powi(j)).sum() };
+        let exact = |j: i32| {
+            if j % 2 == 0 {
+                2.0 / (j as f64 + 1.0)
+            } else {
+                0.0
+            }
+        };
+        for j in [0, 1, 2, 4] {
+            if j < 2 * n as i32 && (moment(j) - exact(j)).abs() > 1e-10 {
+                return None;
+            }
+        }
+        // Barycentric weights λ_k = 1/Π_{j≠k}(x_k − x_j), accumulated in logs
+        // (the raw products underflow for a few hundred nodes).
+        let mut lw = vec![0.0f64; n];
+        let mut sg = vec![1.0f64; n];
+        for k in 0..n {
+            for j in 0..n {
+                if j != k {
+                    let d = x[k] - x[j];
+                    if d == 0.0 {
+                        return None;
+                    }
+                    lw[k] -= d.abs().ln();
+                    if d < 0.0 {
+                        sg[k] = -sg[k];
+                    }
+                }
+            }
+        }
+        let lmax = lw.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        let lam = lw
+            .iter()
+            .zip(&sg)
+            .map(|(&l, &s)| s * (l - lmax).exp())
+            .collect();
+        Some(Self { x, wx, lam, u0 })
+    }
+
+    /// `∫₋₁¹ P(x)/(x − x0) dx` for the polynomial `P` interpolating `p` at
+    /// the nodes: `P(x0)·ln((1−x0)/(−1−x0)) + Σ_k w_k (p_k − P(x0))/(x_k − x0)`,
+    /// exact because the second integrand is a polynomial of degree n − 2.
+    ///
+    /// Far from the interval the plain Gauss–Legendre sum is used instead:
+    /// for `x0` on the Bernstein ellipse of parameter `ρ` its error is
+    /// `O(ρ^{−2n})`, while the barycentric interpolant loses `ρ^n` to
+    /// cancellation there (its weights sum to zero), so the switch at
+    /// `ρ^n = 1e6` keeps both sides below ~1e-10 relative.
+    fn cauchy(&self, p: &[f64], x0: Complex64) -> Complex64 {
+        if !(x0.re.is_finite() && x0.im.is_finite()) {
+            return Complex64::new(0.0, 0.0);
+        }
+        let one = Complex64::new(1.0, 0.0);
+        let r = (x0 + (x0 * x0 - one).sqrt()).norm();
+        let rho = r.max(1.0 / r.max(f64::MIN_POSITIVE));
+        if (self.x.len() as f64) * rho.ln() > PRODUCT_RULE_MAX_LN_GROWTH {
+            return self
+                .x
+                .iter()
+                .zip(&self.wx)
+                .zip(p)
+                .map(|((&xk, &wk), &pk)| Complex64::new(wk * pk, 0.0) / (xk - x0))
+                .sum();
+        }
+        // Barycentric (second form) value of the interpolant at x0.
+        let mut num = Complex64::new(0.0, 0.0);
+        let mut den = Complex64::new(0.0, 0.0);
+        for (k, &xk) in self.x.iter().enumerate() {
+            let d = x0 - xk;
+            if d.norm() == 0.0 {
+                // x0 is a node (only possible for real x0, i.e. d = 0 at
+                // ω = node): the log term is then infinite; never reached
+                // on the continuation line, where Im x0 ≠ 0 unless ε_n = ε_F.
+                return Complex64::new(f64::NAN, f64::NAN);
+            }
+            let t = self.lam[k] / d;
+            num += t * p[k];
+            den += t;
+        }
+        let p0 = num / den;
+        if !(p0.re.is_finite() && p0.im.is_finite()) {
+            // Barycentric breakdown (den underflowed): the plain rule.
+            return self
+                .x
+                .iter()
+                .zip(&self.wx)
+                .zip(p)
+                .map(|((&xk, &wk), &pk)| Complex64::new(wk * pk, 0.0) / (xk - x0))
+                .sum();
+        }
+        let log_term = ((one - x0) / (-one - x0)).ln();
+        let mut s = p0 * log_term;
+        for (k, &xk) in self.x.iter().enumerate() {
+            s += (Complex64::new(self.wx[k] * p[k], 0.0) - self.wx[k] * p0) / (xk - x0);
+        }
+        s
+    }
+}
+
+/// Σ_c(m, z) by PRODUCT INTEGRATION of the frequency integral: same
+/// quantity as [`sigma_c_at_z`], with the kernel integrated exactly against
+/// the polynomial interpolant of `W_mn(iω')` through the quadrature nodes.
+///
+/// # Why
+///
+/// The kernel `a/(a² + ω'²)`, `a = z − ε_n`, peaks at `ω' = Im z` with
+/// width `|Re z − ε_n|`. On the continuation line `z = ε_F + iω` that width
+/// is the distance of `ε_n` from `ε_F`, which is small whenever a state sits
+/// near the Fermi level: above all the PER-SPIN mid-gap `ε_F,σ` of a UKS
+/// radical (OH/cc-pVDZ@PBE: β HOMO and LUMO 0.015 Ha either side of
+/// `ε_F,β`). The plain Gauss–Legendre sum of [`sigma_c_at_z`] cannot
+/// resolve it: against the exact Casida pole sum its worst error at the
+/// Padé nodes is 0.11 Ha at 100 points and 0.02 Ha at 400, and the Padé
+/// continuation turns that into QP energies that move by 0.1–2 eV with the
+/// grid. Here the kernel costs nothing; the only error left is how well a
+/// degree-(n−1) polynomial in `x` represents W, which is the smooth part.
+///
+/// # How
+///
+/// With `ω' = u₀(1+x)/(1−x)`, exactly
+/// `a/(a² + ω'²) dω' = (i/2)·[1/(x − x₁) − 1/(x − x₂)] dx`,
+/// `x₁ = (a − iu₀)/(a + iu₀)`, `x₂ = 1/x₁` (the `1/(1−x)` parts of the two
+/// partial fractions cancel), and each Cauchy-type integral is done exactly
+/// for the interpolant ([`ProductQuadrature`]). A frequency-independent W
+/// gives `(π/2)·sgn(Re a)` exactly (the COHSEX limit) at any grid.
+pub fn sigma_c_at_z_product(
+    m_idx: usize,
+    z: Complex64,
+    m_proj: &ndarray::Array3<f64>,
+    inv_diel_freq: &[Array2<f64>],
+    pq: &ProductQuadrature,
+    eps_act: &[f64],
+) -> Complex64 {
+    let w_nk = screened_elements(m_idx, m_proj, inv_diel_freq);
+    let iu0 = Complex64::new(0.0, pq.u0);
+    let half_i = Complex64::new(0.0, 0.5);
+    let mut sigma = Complex64::new(0.0, 0.0);
+    let mut p = vec![0.0f64; w_nk.ncols()];
+    for (n_idx, &eps_n) in eps_act.iter().enumerate() {
+        for (k, pk) in p.iter_mut().enumerate() {
+            *pk = w_nk[(n_idx, k)];
+        }
+        let a = z - Complex64::new(eps_n, 0.0);
+        let x1 = (a - iu0) / (a + iu0);
+        let x2 = Complex64::new(1.0, 0.0) / x1;
+        sigma += half_i * (pq.cauchy(&p, x1) - pq.cauchy(&p, x2));
+    }
+    -Complex64::new(1.0 / std::f64::consts::PI, 0.0) * sigma
+}
+
+/// The imaginary-axis frequencies ω at which [`solve_qp_for_mo`] samples
+/// Σ_c(ε_F + iω) for the Padé fit, in node order (PySCF `_get_ac_idx` on
+/// `{0} ∪ GL(100, u₀ = 0.5)`, see the body of [`solve_qp_for_mo_with`]).
+pub(crate) fn pade_support_omegas(pade_npts: usize) -> Vec<f64> {
+    let npts = if pade_npts == 0 { 18 } else { pade_npts };
+    const STEP_RATIO: f64 = 2.0 / 3.0;
+    let nw_eval = 100usize;
+    let (leg_freqs, _leg_wts) = ferric_rpa::quadrature::gauss_legendre_nodes(nw_eval, 0.5);
+    let mut eval_grid: Vec<f64> = Vec::with_capacity(nw_eval + 1);
+    eval_grid.push(0.0);
+    eval_grid.extend_from_slice(&leg_freqs);
+    pade_node_indices(eval_grid.len(), npts, STEP_RATIO, 1)
+        .into_iter()
+        .map(|i| eval_grid[i])
+        .collect()
 }
 
 /// Per-MO QP solve given a fixed (m_proj, w_α(iω), quadrature, propagator-ε)
@@ -354,6 +581,41 @@ pub(crate) fn solve_qp_for_mo(
     // several eV — so Σ_c must be evaluated at the shifted energy, not post-hoc.
     static_shift: f64,
 ) -> Result<(f64, f64, f64, bool), FerricError> {
+    solve_qp_for_mo_with(
+        m_loc,
+        eps_m_mf,
+        m_proj,
+        inv_diel_freq,
+        quad_weights,
+        quad_freqs,
+        eps_prop,
+        pade_npts,
+        newton_damp,
+        ef,
+        static_shift,
+        None,
+    )
+}
+
+/// [`solve_qp_for_mo`] with an optional product-integration rule. `Some`
+/// samples Σ_c(ε_F + iω) at the Padé nodes with [`sigma_c_at_z_product`]
+/// (the open-shell drivers); `None` is the plain quadrature of
+/// [`sigma_c_at_z`], bit-identical to the original `solve_qp_for_mo`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn solve_qp_for_mo_with(
+    m_loc: usize,
+    eps_m_mf: f64,
+    m_proj: &ndarray::Array3<f64>,
+    inv_diel_freq: &[Array2<f64>],
+    quad_weights: &[f64],
+    quad_freqs: &[f64],
+    eps_prop: &[f64],
+    pade_npts: usize,
+    newton_damp: f64,
+    ef: f64,
+    static_shift: f64,
+    product: Option<&ProductQuadrature>,
+) -> Result<(f64, f64, f64, bool), FerricError> {
     // Padé analytic-continuation nodes, matching PySCF gw_ac.
     //
     // Σc(z) is analytic (closed-form ω-integral over the PDEP quadrature, see
@@ -365,29 +627,18 @@ pub(crate) fn solve_qp_for_mo(
     // right answer for @HF (ε_HOMO≈ε_F ⇒ short extrapolation) but swung @PBE by
     // eV per molecule (small gap ⇒ ε_HOMO far from ε_F ⇒ long extrapolation on
     // the wrong nodes). See the gw-ks-sigma-c-offset diagnosis.
-    let npts = if pade_npts == 0 { 18 } else { pade_npts };
-    const STEP_RATIO: f64 = 2.0 / 3.0;
+    //
     // Dense scaled-Legendre evaluation grid (u0=0.5 matches PySCF
     // _get_scaled_legendre_roots and ferric's own GW quadrature), prepended with
-    // ω=0, then sub-sampled. Use a grid comfortably larger than npts so the
-    // decreasing-step selection is meaningful (PySCF's default nw is 100).
-    let nw_eval = 100usize;
-    let (leg_freqs, _leg_wts) = ferric_rpa::quadrature::gauss_legendre_nodes(nw_eval, 0.5);
-    let mut eval_grid: Vec<f64> = Vec::with_capacity(nw_eval + 1);
-    eval_grid.push(0.0);
-    eval_grid.extend_from_slice(&leg_freqs);
-    // idx_start = 1 (PySCF default): skip the ω=0 node as the first fit point but
-    // keep it available; the decreasing step still lands nodes near it.
-    let idx = pade_node_indices(eval_grid.len(), npts, STEP_RATIO, 1);
+    // ω=0, then sub-sampled with idx_start = 1 (PySCF default) -- see
+    // `pade_support_omegas`.
+    let omegas = pade_support_omegas(pade_npts);
     // Sample Σ_c on the Fermi-shifted imaginary axis z = ef + iω'.
-    let z_nodes: Vec<Complex64> = idx
-        .iter()
-        .map(|&i| Complex64::new(ef, eval_grid[i]))
-        .collect();
+    let z_nodes: Vec<Complex64> = omegas.iter().map(|&w| Complex64::new(ef, w)).collect();
     let f_vals: Vec<Complex64> = z_nodes
         .iter()
-        .map(|&z| {
-            sigma_c_at_z(
+        .map(|&z| match product {
+            None => sigma_c_at_z(
                 m_loc,
                 z,
                 m_proj,
@@ -395,7 +646,8 @@ pub(crate) fn solve_qp_for_mo(
                 quad_weights,
                 quad_freqs,
                 eps_prop,
-            )
+            ),
+            Some(pq) => sigma_c_at_z_product(m_loc, z, m_proj, inv_diel_freq, pq, eps_prop),
         })
         .collect();
     let pade = PadeCF::fit(z_nodes, &f_vals)?;
@@ -431,8 +683,80 @@ pub(crate) fn solve_qp_for_mo(
             break;
         }
     }
+    if !newton_converged {
+        // Newton from the linearized start can wander when the QP equation has
+        // several roots close together (satellite structure of Σc near the
+        // QP energy: NH2/cc-pVDZ U-G0W0@UKS α HOMO, exact roots −11.81 eV with
+        // Z = 0.62 and −10.09 eV with Z = 0.24). Fall back to the root with
+        // the largest spectral weight -- the quasiparticle, by definition --
+        // which is a property of the equation, not of where the search began.
+        if let Some(x) = qp_root_by_weight(&pade, eps_m_mf, static_shift) {
+            eps_curr = x;
+            newton_converged = true;
+        }
+    }
     let sc_final = pade.eval(Complex64::new(eps_curr, 0.0)).re;
     Ok((eps_curr, sc_final, z_renorm, newton_converged))
+}
+
+/// Half-width (Ha) of the window [`qp_root_by_weight`] searches, centred on
+/// `ε_mf + Δ` (the QP energy without Σc).
+const QP_ROOT_WINDOW_HA: f64 = 1.0;
+/// Samples across that window (step 5e-4 Ha, 14 meV).
+const QP_ROOT_SAMPLES: usize = 4001;
+
+/// Every root of `f(ω) = ω − ε_mf − Δ − Re C(ω)` within
+/// `ε_mf + Δ ± QP_ROOT_WINDOW_HA`, with its weight `Z = 1/(1 − C'(ω))`;
+/// returns the root of largest `Z ∈ (0, 1]`, or `None` if there is none.
+///
+/// A sign change of `f` between two samples is a root unless it is a pole of
+/// the Padé model, where `|f|` is large on both sides (the same `|f| < 0.5`
+/// test as `scripts/validation/gen_gw.py` `_qp_roots_in_window`). Roots
+/// closer together than the 5e-4 Ha step can be missed in pairs; the
+/// weight criterion only needs the dominant one.
+pub(crate) fn qp_root_by_weight(pade: &PadeCF, eps_m_mf: f64, static_shift: f64) -> Option<f64> {
+    let c = eps_m_mf + static_shift;
+    let f = |x: f64| x - c - pade.eval(Complex64::new(x, 0.0)).re;
+    let lo = c - QP_ROOT_WINDOW_HA;
+    let step = 2.0 * QP_ROOT_WINDOW_HA / (QP_ROOT_SAMPLES - 1) as f64;
+    let mut best: Option<(f64, f64)> = None;
+    let mut x_prev = lo;
+    let mut f_prev = f(lo);
+    for i in 1..QP_ROOT_SAMPLES {
+        let x = lo + step * i as f64;
+        let fx = f(x);
+        if f_prev.is_finite()
+            && fx.is_finite()
+            && f_prev.signum() != fx.signum()
+            && f_prev.abs() < 0.5
+            && fx.abs() < 0.5
+        {
+            // Bisection to 1e-12 Ha (the bracket is 5e-4 wide: 30 halvings).
+            let (mut a, mut b, mut fa) = (x_prev, x, f_prev);
+            for _ in 0..40 {
+                let m = 0.5 * (a + b);
+                let fm = f(m);
+                if fm.signum() == fa.signum() {
+                    a = m;
+                    fa = fm;
+                } else {
+                    b = m;
+                }
+                if b - a < 1e-12 {
+                    break;
+                }
+            }
+            let root = 0.5 * (a + b);
+            let dsc = pade.deriv_real(root, 1e-5).re;
+            let z = 1.0 / (1.0 - dsc);
+            if z > 0.0 && z <= 1.0 && best.is_none_or(|(_, zb)| z > zb) {
+                best = Some((root, z));
+            }
+        }
+        x_prev = x;
+        f_prev = fx;
+    }
+    best.map(|(x, _)| x)
 }
 
 /// Run G0W0. `vxc_diag`, if given (KS reference), is the absolute-MO-indexed
@@ -1164,6 +1488,10 @@ mod tests {
             0.0,
         )
         .expect("well-conditioned Padé fit must not error");
+        // The damped Newton exhausts its budget; the largest-weight fallback
+        // (`qp_root_by_weight`) finds no root with Z in (0, 1] in this toy
+        // 8-node Padé model (measured), so the flag must stay false: an
+        // unsolved state is still reported as unsolved.
         assert!(
             !converged,
             "expected the heavily-damped Newton to exhaust its 30-iteration budget \
@@ -1173,7 +1501,7 @@ mod tests {
 
         // Same system, undamped: must converge — proves the flag tracks the
         // solve outcome and not the system construction.
-        let (_e, _s, _z2, converged_full) = solve_qp_for_mo(
+        let (_e_full, _s, _z2, converged_full) = solve_qp_for_mo(
             0,
             eps_act[0],
             &m_proj,
@@ -1190,6 +1518,70 @@ mod tests {
         assert!(
             converged_full,
             "undamped Newton on the same system must converge"
+        );
+    }
+
+    /// `qp_root_by_weight` picks the root of LARGEST weight, not the nearest:
+    /// a two-pole Σc model whose QP equation has three roots, the one nearest
+    /// ε_mf a weak satellite next to a pole (−0.4954, Z 0.05), the
+    /// quasiparticle further away (−0.4211, Z 0.73), and a second satellite
+    /// (−0.7736, Z 0.21).
+    #[test]
+    fn qp_root_by_weight_prefers_the_quasiparticle_over_a_satellite() {
+        // Σc(ω) = s1/(ω − p1) + s2/(ω − p2), continued exactly by a Thiele
+        // fraction from enough imaginary-axis nodes ([1/2] needs 4).
+        let (s1, p1, s2, p2) = (0.02_f64, -0.70_f64, 0.0005_f64, -0.49_f64);
+        let sig = |z: Complex64| s1 / (z - p1) + s2 / (z - p2);
+        let z: Vec<Complex64> = [0.05, 0.3, 1.0, 4.0]
+            .iter()
+            .map(|&w| Complex64::new(-0.3, w))
+            .collect();
+        let f: Vec<Complex64> = z.iter().map(|&zz| sig(zz)).collect();
+        let pade = PadeCF::fit(z, &f).unwrap();
+        let e0 = -0.5;
+        let x = qp_root_by_weight(&pade, e0, 0.0).expect("a root");
+        let g = |w: f64| w - e0 - sig(Complex64::new(w, 0.0)).re;
+        let dz = |w: f64| {
+            let h = 1e-6;
+            let d = (sig(Complex64::new(w + h, 0.0)).re - sig(Complex64::new(w - h, 0.0)).re)
+                / (2.0 * h);
+            1.0 / (1.0 - d)
+        };
+        assert!(g(x).abs() < 1e-9, "not a root: f({x}) = {}", g(x));
+        // Every other root found by a dense scan has a smaller weight.
+        let mut others = Vec::new();
+        let mut prev = (-1.5_f64, g(-1.5));
+        for i in 1..200_001 {
+            let w = -1.5 + 2.0 * i as f64 / 200_000.0;
+            let gw = g(w);
+            if prev.1.signum() != gw.signum() && prev.1.abs() < 0.5 && gw.abs() < 0.5 {
+                others.push(0.5 * (prev.0 + w));
+            }
+            prev = (w, gw);
+        }
+        assert_eq!(others.len(), 3, "fixture lost a root: {others:?}");
+        for r in others.iter().filter(|r| (*r - x).abs() > 1e-4) {
+            assert!(
+                dz(*r) < dz(x),
+                "root {r} (Z {}) outweighs the pick {x} (Z {})",
+                dz(*r),
+                dz(x)
+            );
+        }
+        // Discriminating: the pick is NOT the root nearest ε_mf.
+        let nearest = others
+            .iter()
+            .copied()
+            .min_by(|a, b| (a - e0).abs().total_cmp(&(b - e0).abs()))
+            .unwrap();
+        assert!(
+            (nearest - x).abs() > 0.05,
+            "nearest root {nearest} coincides with the pick {x}: the test cannot tell \
+             largest-weight from nearest"
+        );
+        assert!(
+            (x + 0.4211).abs() < 1e-3,
+            "pick {x}, expected the Z = 0.73 root −0.4211"
         );
     }
 
@@ -1308,4 +1700,160 @@ mod tests {
     // entries cannot reach this call chain to produce duplicate `z_nodes`.
     // The node-index port is pinned against PySCF in
     // `pade_node_indices_matches_pyscf_get_ac_idx`.
+
+    /// A fixture whose occupied/virtual frontier pair sits 0.015 Ha either
+    /// side of ε_F (the per-spin mid-gap geometry of the OH/cc-pVDZ@PBE β
+    /// channel), returned as (m_proj, eps_act, n_occ).
+    fn near_fermi_fixture() -> (ndarray::Array3<f64>, Vec<f64>, usize) {
+        let (m_proj, _, _, _, _) = one_mode_fixture();
+        (m_proj, vec![-0.9_f64, -0.215, -0.185, 0.7], 2)
+    }
+
+    fn single_pole_w(freqs: &[f64], big_omega: f64, s: f64) -> Vec<Array2<f64>> {
+        freqs
+            .iter()
+            .map(|&w| {
+                Array2::from_elem(
+                    (1, 1),
+                    -2.0 * big_omega * s / (w * w + big_omega * big_omega),
+                )
+            })
+            .collect()
+    }
+
+    fn single_pole_exact(
+        m_proj: &ndarray::Array3<f64>,
+        eps_act: &[f64],
+        n_occ: usize,
+        m: usize,
+        z: Complex64,
+        big_omega: f64,
+        s: f64,
+    ) -> Complex64 {
+        let mut want = Complex64::new(0.0, 0.0);
+        for (n, &eps_n) in eps_act.iter().enumerate() {
+            let pole = if n < n_occ { big_omega } else { -big_omega };
+            want += Complex64::new(m_proj[(0, m, n)].powi(2) * s, 0.0) / (z - eps_n + pole);
+        }
+        want
+    }
+
+    /// Worst |Σc − closed form| over every state and the Padé support
+    /// frequencies, plain quadrature vs product integration, on an n-point
+    /// GL(u0 = 0.5) W grid. W is single-pole with Ω = 0.054 Ha, OH's lowest
+    /// U-dRPA excitation at UKS/PBE (1.48 eV).
+    fn near_fermi_errors(n: usize) -> (f64, f64) {
+        let (m_proj, eps_act, n_occ) = near_fermi_fixture();
+        let (big_omega, s) = (0.054_f64, 0.15_f64);
+        let (freqs, weights) = ferric_rpa::quadrature::gauss_legendre_nodes(n, 0.5);
+        let w = single_pole_w(&freqs, big_omega, s);
+        let pq = ProductQuadrature::from_scaled_gauss_legendre(&freqs, &weights)
+            .expect("scaled Gauss-Legendre is recognised");
+        let ef = fermi_level(&eps_act, n_occ);
+        let (mut plain, mut prod) = (0.0_f64, 0.0_f64);
+        for m in 0..4 {
+            for &im in &pade_support_omegas(0) {
+                let z = Complex64::new(ef, im);
+                let want = single_pole_exact(&m_proj, &eps_act, n_occ, m, z, big_omega, s);
+                let a = sigma_c_at_z(m, z, &m_proj, &w, &weights, &freqs, &eps_act);
+                let b = sigma_c_at_z_product(m, z, &m_proj, &w, &pq, &eps_act);
+                plain = plain.max((a - want).norm());
+                prod = prod.max((b - want).norm());
+            }
+        }
+        (plain, prod)
+    }
+
+    /// The defect the product rule fixes, as a unit test: with states
+    /// 0.015 Ha from ε_F the plain Gauss–Legendre sum misses the closed-form
+    /// Σc at the Padé nodes and does not converge in n (the kernel's ridge
+    /// at ω' = ω is narrower than the grid), while product integration
+    /// converges at W's own rate. The plain rows are the negative control
+    /// proving the fixture reaches the ridge.
+    #[test]
+    fn product_rule_converges_where_the_plain_quadrature_cannot() {
+        let mut rows = Vec::new();
+        for n in [20, 40, 100] {
+            let (plain, prod) = near_fermi_errors(n);
+            eprintln!("n = {n:3}: plain {plain:.3e}  product {prod:.3e}");
+            rows.push((n, plain, prod));
+        }
+        let at = |n: usize| rows.iter().find(|r| r.0 == n).copied().unwrap();
+        let (_, plain40, prod40) = at(40);
+        let (_, plain100, prod100) = at(100);
+        assert!(
+            prod40 < PRODUCT_BAR_40,
+            "product rule at 40 points: {prod40:.3e}"
+        );
+        assert!(
+            prod100 < PRODUCT_BAR_100,
+            "product rule at 100 points: {prod100:.3e}"
+        );
+        assert!(
+            plain40 > 1e3 * PRODUCT_BAR_40 && plain100 > 1e3 * PRODUCT_BAR_100,
+            "the plain quadrature should miss the near-ε_F fixture badly \
+             (40: {plain40:.3e}, 100: {plain100:.3e}); if it does not, the fixture \
+             no longer reaches the ridge and the product bars test nothing"
+        );
+    }
+    // MEASURED (2026-11-08): product 8.8e-10 at 40, 1.2e-15 at 100; plain
+    // 9.2e-3 at 40, 5.9e-4 at 100 (and 4.5e-2 at 20).
+    const PRODUCT_BAR_40: f64 = 1e-8;
+    const PRODUCT_BAR_100: f64 = 1e-12;
+
+    /// Exactness anchor: a frequency-independent W makes the interpolant
+    /// exact, so product integration must give the COHSEX limit
+    /// −½ Σ_n w₀ M²_mn sgn(Re z − ε_n) to rounding at ANY grid, on and off
+    /// the real axis, including states 1e-6 Ha from ε_F.
+    #[test]
+    fn product_rule_is_exact_for_a_static_w() {
+        let (m_proj, _, _, _, _) = one_mode_fixture();
+        let eps_act = vec![-0.9_f64, -0.200_001, -0.199_999, 0.7];
+        let w0 = -0.3_f64;
+        for n in [6, 20, 100] {
+            let (freqs, weights) = ferric_rpa::quadrature::gauss_legendre_nodes(n, 0.5);
+            let w: Vec<Array2<f64>> = freqs
+                .iter()
+                .map(|_| Array2::from_elem((1, 1), w0))
+                .collect();
+            let pq = ProductQuadrature::from_scaled_gauss_legendre(&freqs, &weights).unwrap();
+            let mut worst = 0.0_f64;
+            for m in 0..4 {
+                for &im in &[1e-5_f64, 0.01, 0.5, 3.0, 400.0] {
+                    let z = Complex64::new(-0.2, im);
+                    let got = sigma_c_at_z_product(m, z, &m_proj, &w, &pq, &eps_act);
+                    let want: f64 = eps_act
+                        .iter()
+                        .enumerate()
+                        .map(|(k, &e)| -0.5 * w0 * m_proj[(0, m, k)].powi(2) * (z.re - e).signum())
+                        .sum();
+                    worst = worst.max((got - Complex64::new(want, 0.0)).norm());
+                }
+            }
+            eprintln!("static W, n = {n}: {worst:.3e}");
+            assert!(
+                worst < 1e-12,
+                "static W, n = {n}: product rule off by {worst:.3e}"
+            );
+        }
+    }
+
+    /// The rule is recognised for scaled Gauss–Legendre at any u0 (the
+    /// minimax scheme's) and refused for the Chebyshev tan-map, whose nodes
+    /// are not a Gauss–Legendre rule in x.
+    #[test]
+    fn product_rule_detects_scaled_gauss_legendre_only() {
+        for u0 in [0.2, 0.5, 1.7] {
+            let (f, w) = ferric_rpa::quadrature::gauss_legendre_nodes(30, u0);
+            let pq = ProductQuadrature::from_scaled_gauss_legendre(&f, &w)
+                .unwrap_or_else(|| panic!("GL u0 = {u0} not recognised"));
+            assert!(
+                (pq.u0 - u0).abs() < 1e-12 * u0,
+                "u0 {u0} recovered as {}",
+                pq.u0
+            );
+        }
+        let (f, w) = ferric_rpa::quadrature::chebyshev_tan_nodes(30, 0.5);
+        assert!(ProductQuadrature::from_scaled_gauss_legendre(&f, &w).is_none());
+    }
 }

@@ -22,7 +22,7 @@
 //! | G0W0@HF, frozen core 1 | H2O / cc-pVDZ | `gw_ac`, `frozen = 1` |
 //! | G0W0@HF + ECP | I2, Xe, Ag2 / aug-cc-pVDZ-PP (def2-tzvp-rifit) | `gw_ac`, same inline ECP |
 //! | U-G0W0@UHF | OH, CH3, NH2 / cc-pVDZ, aug-cc-pVDZ; O2 (³Σg⁻), CH2 (³B1) / aug-cc-pVDZ | `ugw_ac` on a stability-checked UHF |
-//! | U-G0W0@UKS/PBE | OH, CH3, NH2 / cc-pVDZ | `ugw_ac` Σc(iω) on a stability-checked exact-J UKS/PBE, textbook Thiele, QP solved in numpy with Σx − v_xc inside the QP equation (block `u_g0w0_uks_pbe`) |
+//! | U-G0W0@UKS/PBE | OH, CH3, NH2 / cc-pVDZ | `ugw_ac` Σc(iω) on a stability-checked exact-J UKS/PBE (the plain integral), and the grid-free U-dRPA pole sum at the same Padé nodes, textbook Thiele, ferric's root rule, Σx − v_xc inside the QP equation (block `u_g0w0_uks_pbe`, sub-block `exact`) |
 //! | COHSEX@HF | H2O, N2 / cc-pVDZ | numpy on PySCF's Lpq and Π(0) |
 //! | COHSEX@PBE | H2O, N2 / cc-pVDZ | same numpy on the `g0w0_pbe` RKS orbitals + PySCF Σx(DF) − v_xc (`vhf_df = True`, ferric's density floor) |
 //! | evGW₀@HF, evGW@HF | H2O / cc-pVDZ | PySCF `gw_ac.get_sigma` iterated as ferric iterates |
@@ -132,16 +132,17 @@
 //! | QP energies, closed shell @HF | 1.32e-7 | `TOL_QP` 1e-6 |
 //! | QP energies, @PBE | 6.2e-8 | `TOL_QP_PBE` 1e-6 |
 //! | QP energies, ECP | 2.5e-6 | `TOL_QP_ECP` 2e-5 |
-//! | QP energies, U-G0W0 | 7.0e-6 (OH/cc-pVDZ, marginal); others ≤ 8.7e-7 | `TOL_QP_U` 3e-5 |
+//! | QP energies, U-G0W0@UHF vs the grid-free `exact` block | 1.2e-5 (OH/cc-pVDZ β LUMO+2, an ill-conditioned continuation); others ≤ 3.8e-8 | `TOL_QP_U` 3e-5 |
 //! | COHSEX | 9.4e-10 | `TOL_COHSEX` 1e-8 |
 //! | COHSEX@PBE | 1.19e-9 | `TOL_COHSEX_KS` 1e-8 |
 //! | evGW₀ / evGW | 5.7e-7 | `TOL_EV` 5e-6 |
 //! | Σx (DF) | 4.9e-9 | `TOL_SX` 3e-8 |
 //! | Σx (DF), ECP | 4.6e-6 | `TOL_SX_ECP` 2e-5 |
 //! | Σc(ef + iω) at the Padé nodes (no continuation) | 8.6e-11 | `TOL_SIGMA_C_IW` 1e-9 |
-//! | U-G0W0@UKS: Σc(ef_σ + iω) at the Padé nodes | 8.7e-9 (OH β); CH3 3.0e-11 | `TOL_SIGMA_C_IW_UKS` 1e-7 |
+//! | U-G0W0@UKS: plain-quadrature Σc(ef_σ + iω) vs PySCF at the Padé nodes | 8.7e-9 (OH β); CH3 3.0e-11 | `TOL_SIGMA_C_IW_UKS` 1e-7 |
+//! | U-G0W0@UKS: product-rule Σc(ef_σ + iω) vs the exact pole sum | 4.4e-10 (CH3 β) | `TOL_SIGMA_C_IW_UKS_EXACT` 1e-8 |
 //! | U-G0W0@UKS: v_xc diagonal | 7.1e-10 | `TOL_VXC_UKS` 1e-8 |
-//! | U-G0W0@UKS: QP energies vs textbook (single-root orbitals) | 2.6e-8 | `TOL_QP_UKS` 3e-7 |
+//! | U-G0W0@UKS: QP energies vs the `exact` reference (every orbital) | 2.7e-8 (OH α) | `TOL_QP_UKS` 3e-7 |
 //! | SCF energy | 4.7e-11 (ECP: 5.1e-8, Ag2) | `TOL_E_SCF` 1e-9, `TOL_E_SCF_ECP` 2.5e-7 |
 //! | ε_mf | 3.6e-9 | `TOL_EPS_MF` 3e-8 |
 //! | ε_mf, ECP | 2.9e-6 | `TOL_EPS_MF_ECP` 1e-5 |
@@ -1225,12 +1226,21 @@ fn check_u_spin(ctx: &str, r: &Value, spin: &str, orbs: &[usize], res: &UGwResul
             "{ctx}: QP residual {resid:.2e} Ha at MO {p}"
         );
     }
+    // The grid-free reference (`exact`: U-dRPA pole sum at the Padé nodes,
+    // gen_gw.py --uhf-exact-only), which is what run_u_gw's product-rule Σc
+    // reproduces; PySCF's own nw = 100 plain quadrature is off by up to
+    // ~1.5 meV here (OH/cc-pVDZ β LUMO+2), recorded in the JSON.
+    let q = if r.pointer(&format!("{p}/exact")).is_some() {
+        format!("{p}/exact")
+    } else {
+        p.clone()
+    };
     check_vec(
         &ctx,
         "sigma_c(eps_qp)",
         orbs,
         sc.as_slice().unwrap(),
-        &vec_f64(r, &format!("{p}/sigma_c_at_qp"), &ctx),
+        &vec_f64(r, &format!("{q}/sigma_c_at_qp"), &ctx),
         TOL_QP_U,
     );
     check_vec(
@@ -1238,7 +1248,7 @@ fn check_u_spin(ctx: &str, r: &Value, spin: &str, orbs: &[usize], res: &UGwResul
         "eps_qp",
         orbs,
         eps_qp.as_slice().unwrap(),
-        &vec_f64(r, &format!("{p}/eps_qp"), &ctx),
+        &vec_f64(r, &format!("{q}/eps_qp"), &ctx),
         TOL_QP_U,
     );
     eps_qp.to_vec()
@@ -1349,32 +1359,18 @@ fn u_g0w0_triplets_o2_ch2_vs_pyscf_ugw_ac() {
 /// U-G0W0@UKS: Σc(ef_σ + iω) at the Padé nodes. Measured 3.0e-11 (CH3) to
 /// 8.7e-9 Ha (OH β, whose ε_mf also agrees least well, 1.0e-9).
 const TOL_SIGMA_C_IW_UKS: f64 = 1e-7;
-/// U-G0W0@UKS QP energies vs the textbook reference, single-root orbitals
-/// only (see `unique_root_orbs`). Measured ≤ 2.6e-8 Ha (CH3 β).
+/// U-G0W0@UKS: ferric's product-rule Σc(ef_σ + iω) (what `run_u_gw` uses)
+/// vs the grid-free U-dRPA pole sum at the Padé nodes (block `exact`).
+/// Measured ≤ 4.4e-10 Ha (CH3 β); the plain quadrature at the same 100
+/// points misses by 1.9e-3 (CH3) to 0.11 Ha (OH β).
+const TOL_SIGMA_C_IW_UKS_EXACT: f64 = 1e-8;
+/// U-G0W0@UKS QP energies vs the `exact` reference (ferric's root rule on
+/// the continuation of the exact Σc), every orbital, multi-root ones
+/// included. Measured ≤ 2.7e-8 Ha (OH α HOMO−2).
 const TOL_QP_UKS: f64 = 3e-7;
 /// v_xc diagonal (ferric `vxc_diagonal_mo` vs PySCF UGWAC `vxc`).
 /// Measured ≤ 7.1e-10 Ha (OH β).
 const TOL_VXC_UKS: f64 = 1e-8;
-
-/// Positions (into `orbs`) whose textbook QP equation has exactly one root
-/// within 1 Ha, as the generator counted (`ac/qp_roots_within_1ha_textbook`).
-/// Where it has several (NH2 α MOs 3 and 4 have three each: satellite
-/// structure of Σc near the QP energy), the root is a property of the solver's
-/// start, not of the method, so comparing it tests nothing about GW; ferric's
-/// Newton also reports those as unconverged. Every other quantity (ε_mf, v_xc,
-/// Σx, Σc on the imaginary axis) is still compared for all orbitals.
-fn unique_root_orbs(r: &Value, p: &str, ctx: &str) -> Vec<usize> {
-    let n = vec_usize(r, &format!("{p}/ac/qp_roots_within_1ha_textbook"), ctx);
-    let keep: Vec<usize> = (0..n.len()).filter(|&k| n[k] == 1).collect();
-    assert!(
-        !keep.is_empty(),
-        "{ctx}: no single-root orbital left to compare — the QP check would be vacuous"
-    );
-    if keep.len() < n.len() {
-        eprintln!("{ctx}: QP comparison skips multi-root positions (root counts {n:?})");
-    }
-    keep
-}
 
 fn uks_pbe_config() -> RhfConfig {
     RhfConfig {
@@ -1523,14 +1519,22 @@ fn u_gw_at_uks(
 
 /// ferric Σc(ef_σ + iω) at the reference's Padé nodes for one spin, from
 /// the U-GW result's own PDEP (build_full_b_both_spins → redress with the α
-/// metric, as run_u_gw does → project → sigma_c_at_z). No continuation.
+/// metric, as run_u_gw does → project → Σc). No continuation. `product`
+/// selects `sigma_c_at_z_product` (what `run_u_gw` uses) instead of the
+/// plain-quadrature `sigma_c_at_z` (what PySCF's `get_sigma` computes).
 fn ferric_u_sigma_c_iw(
     sys: &Sys,
     scf: &ScfResult,
     res: &UGwResult,
     spin: &str,
     ctx: &str,
+    product: bool,
 ) -> (Vec<Vec<f64>>, Vec<Vec<f64>>) {
+    let pq = ferric_gw::sigma::ProductQuadrature::from_scaled_gauss_legendre(
+        &res.pdep.quad_freqs,
+        &res.pdep.quad_weights,
+    )
+    .expect("the validated W grid is scaled Gauss-Legendre");
     let p = format!("/u_g0w0_uks_pbe/{spin}");
     let orbs = vec_usize(&sys.r, "/u_g0w0_uks_pbe/orbs", ctx);
     let omegas = vec_f64(&sys.r, &format!("{p}/ac/ac_nodes_omega"), ctx);
@@ -1575,15 +1579,27 @@ fn ferric_u_sigma_c_iw(
         let vals: Vec<Complex64> = omegas
             .iter()
             .map(|&w| {
-                ferric_gw::sigma::sigma_c_at_z(
-                    m_loc,
-                    Complex64::new(ef_ref, w),
-                    &m_proj,
-                    inv,
-                    &res.pdep.quad_weights,
-                    &res.pdep.quad_freqs,
-                    &mo_s.eps_act,
-                )
+                let z = Complex64::new(ef_ref, w);
+                if product {
+                    ferric_gw::sigma::sigma_c_at_z_product(
+                        m_loc,
+                        z,
+                        &m_proj,
+                        inv,
+                        &pq,
+                        &mo_s.eps_act,
+                    )
+                } else {
+                    ferric_gw::sigma::sigma_c_at_z(
+                        m_loc,
+                        z,
+                        &m_proj,
+                        inv,
+                        &res.pdep.quad_weights,
+                        &res.pdep.quad_freqs,
+                        &mo_s.eps_act,
+                    )
+                }
             })
             .collect();
         re.push(vals.iter().map(|z| z.re).collect());
@@ -1622,10 +1638,10 @@ fn u_g0w0_uks_sigma_c_case(system: &str) {
     ] {
         let c = format!("{ctx} {spin}");
         let p = format!("/u_g0w0_uks_pbe/{spin}");
-        let keep = unique_root_orbs(&sys.r, &p, &c);
+        // Every state has a root: Newton, or the largest-weight fallback.
         assert!(
-            keep.iter().all(|&k| conv[k]),
-            "{c}: QP Newton not converged on a single-root orbital"
+            conv.iter().all(|&k| k),
+            "{c}: a QP solve returned no root: {conv:?}"
         );
         check_vec(
             &c,
@@ -1654,28 +1670,46 @@ fn u_g0w0_uks_sigma_c_case(system: &str) {
         );
         // ferric's own QP equation, with Σx − v_xc INSIDE it, is satisfied
         // (Σc is reported at the root).
-        for &k in &keep {
-            let q = orbs[k];
+        for (k, &q) in orbs.iter().enumerate() {
             let resid = eps_qp[k] - eps_mf[k] - (sx[k] - vxc[q]) - sc[k];
             assert!(
                 resid.abs() < TOL_RESID,
                 "{c}: shifted QP residual {resid:.2e} Ha at MO {q}"
             );
         }
-        // Σc on the imaginary axis, no continuation.
-        let got = ferric_u_sigma_c_iw(&sys, &scf, &res, spin, &c);
+        // Σc on the imaginary axis, no continuation. (1) The plain quadrature
+        // is PySCF's `get_sigma` integral: same numbers at nw = 100.
+        let got = ferric_u_sigma_c_iw(&sys, &scf, &res, spin, &c, false);
         let want = (
             mat_f64(&sys.r, &format!("{p}/ac/sigma_c_iw_nodes_re"), &c),
             mat_f64(&sys.r, &format!("{p}/ac/sigma_c_iw_nodes_im"), &c),
         );
         let worst = sigma_c_iw_worst(&c, &orbs, &got, &want);
         eprintln!(
-            "{c}: Σc(ef+iω) worst |d| {worst:.3e} Ha ({:.6} meV)",
+            "{c}: plain Σc(ef+iω) vs PySCF nw = 100: worst |d| {worst:.3e} Ha ({:.6} meV)",
             worst * HA_TO_EV * 1e3
         );
         assert!(
             worst < TOL_SIGMA_C_IW_UKS,
             "{c}: Σc(ef + iω) differs from PySCF by {worst:.2e} Ha (bar {TOL_SIGMA_C_IW_UKS:.0e})"
+        );
+        // (2) The product rule run_u_gw uses is the grid-free pole sum.
+        let got_pr = ferric_u_sigma_c_iw(&sys, &scf, &res, spin, &c, true);
+        let want_ex = (
+            mat_f64(&sys.r, &format!("{p}/exact/sigma_c_iw_nodes_re"), &c),
+            mat_f64(&sys.r, &format!("{p}/exact/sigma_c_iw_nodes_im"), &c),
+        );
+        let worst_pr = sigma_c_iw_worst(&c, &orbs, &got_pr, &want_ex);
+        // Control: the plain quadrature at the same 100 points misses it.
+        let worst_plain_ex = sigma_c_iw_worst(&c, &orbs, &got, &want_ex);
+        eprintln!(
+            "{c}: product Σc(ef+iω) vs the exact pole sum: worst |d| {worst_pr:.3e} Ha; \
+             plain quadrature {worst_plain_ex:.3e} Ha"
+        );
+        assert!(
+            worst_pr < TOL_SIGMA_C_IW_UKS_EXACT,
+            "{c}: product-rule Σc(ef + iω) differs from the exact pole sum by {worst_pr:.2e} Ha \
+             (bar {TOL_SIGMA_C_IW_UKS_EXACT:.0e})"
         );
     }
 }
@@ -1692,14 +1726,14 @@ fn u_g0w0_uks_qp_case(system: &str) {
     for (spin, eps_qp) in [("alpha", &res.eps_qp_a), ("beta", &res.eps_qp_b)] {
         let c = format!("{ctx} {spin}");
         let p = format!("/u_g0w0_uks_pbe/{spin}");
-        let keep = unique_root_orbs(&sys.r, &p, &c);
-        let pick = |v: &[f64]| keep.iter().map(|&k| v[k]).collect::<Vec<f64>>();
-        let got_all = eps_qp.as_slice().unwrap();
-        let got = pick(got_all);
-        let got = got.as_slice();
-        let orbs: Vec<usize> = keep.iter().map(|&k| orbs[k]).collect();
-        let textbook = pick(&vec_f64(&sys.r, &format!("{p}/eps_qp"), &c));
-        let posthoc = pick(&vec_f64(&sys.r, &format!("{p}/eps_qp_posthoc"), &c));
+        // Every orbital, multi-root ones included: the reference applies
+        // ferric's own root rule (Newton, else largest weight) to the
+        // continuation of the EXACT Σc(ef + iω) (gen_gw.py `ferric_qp_rule`).
+        let got = eps_qp.as_slice().unwrap();
+        let orbs = orbs.clone();
+        let textbook = vec_f64(&sys.r, &format!("{p}/exact/eps_qp"), &c);
+        let posthoc = vec_f64(&sys.r, &format!("{p}/exact/eps_qp_posthoc"), &c);
+        let pick = |v: &[f64]| v.to_vec();
         let max_d = |want: &[f64]| {
             got.iter()
                 .zip(want)
@@ -1738,6 +1772,23 @@ fn u_g0w0_uks_qp_case(system: &str) {
             &pick(&vec_f64(&sys.r, &format!("/u_g0w0_uhf/{spin}/eps_qp"), &c)),
             TOL_QP_UKS,
             MUST_MISS_FACTOR,
+        );
+        // Control: the W frequency integral matters — ferric misses PySCF's
+        // plain nw = 100 quadrature (the old reference of this row).
+        let pyscf_nw100 = vec_f64(&sys.r, &format!("{p}/eps_qp"), &c);
+        let d_old = got
+            .iter()
+            .zip(&pyscf_nw100)
+            .map(|(g, w)| (g - w).abs())
+            .fold(0.0_f64, f64::max);
+        eprintln!(
+            "{c}: max |d| vs PySCF ugw_ac nw = 100 (plain quadrature) {:.3} meV",
+            d_old * HA_TO_EV * 1e3
+        );
+        assert!(
+            d_old > MUST_MISS_FACTOR * TOL_QP_UKS,
+            "{c}: ferric agrees with PySCF's unconverged nw = 100 quadrature to {d_old:.2e} Ha; \
+             the product rule is not reaching the QP solve"
         );
     }
 }

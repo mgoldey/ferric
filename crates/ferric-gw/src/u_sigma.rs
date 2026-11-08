@@ -26,7 +26,7 @@
 
 use crate::cohsex::{project_b_into_pdep, sigma_x_diag};
 use crate::mo_b::MoB;
-use crate::sigma::{fermi_level, solve_qp_for_mo, warn_if_unconverged};
+use crate::sigma::{fermi_level, solve_qp_for_mo_with, warn_if_unconverged, ProductQuadrature};
 use crate::w_pdep;
 use crate::{GwConfig, UGwResult};
 use ferric_core::FerricError;
@@ -93,6 +93,10 @@ pub fn run_u_g0w0(
     })?;
     let quad_freqs = pdep.quad_freqs.clone();
     let quad_weights = pdep.quad_weights.clone();
+    // Product integration of the W frequency integral (see
+    // `sigma::sigma_c_at_z_product`); `None` for a non-Gauss–Legendre rule,
+    // which then keeps the plain quadrature.
+    let product = ProductQuadrature::from_scaled_gauss_legendre(&quad_freqs, &quad_weights);
 
     let (eps_qp_a, eps_mf_a, sx_a, sc_a, z_a, conv_a) = qp_per_spin_g0w0(
         mo_b_a,
@@ -104,6 +108,7 @@ pub fn run_u_g0w0(
         &qp_range,
         gw_cfg,
         vxc_diag.map(|(a, _)| a),
+        product.as_ref(),
     )?;
     let (eps_qp_b, eps_mf_b, sx_b, sc_b, z_b, conv_b) = qp_per_spin_g0w0(
         mo_b_b,
@@ -115,6 +120,7 @@ pub fn run_u_g0w0(
         &qp_range,
         gw_cfg,
         vxc_diag.map(|(_, b)| b),
+        product.as_ref(),
     )?;
     let mo_indices: Vec<usize> = qp_range.collect();
     warn_if_unconverged("U-G0W0 (alpha)", &mo_indices, &conv_a);
@@ -153,6 +159,7 @@ fn qp_per_spin_g0w0(
     qp_range: &std::ops::Range<usize>,
     gw_cfg: &GwConfig,
     vxc_diag: Option<&Array1<f64>>,
+    product: Option<&ProductQuadrature>,
 ) -> Result<
     (
         Array1<f64>,
@@ -188,7 +195,7 @@ fn qp_per_spin_g0w0(
             Some(v) => sigma_x_all[m_loc] - v[mo_abs],
             None => 0.0,
         };
-        let (eps_qp_m, sc_final, z_renorm, converged) = solve_qp_for_mo(
+        let (eps_qp_m, sc_final, z_renorm, converged) = solve_qp_for_mo_with(
             m_loc,
             eps_m,
             m_proj,
@@ -200,6 +207,7 @@ fn qp_per_spin_g0w0(
             gw_cfg.qp_newton_damp,
             ef,
             shift,
+            product,
         )?;
         Ok((
             eps_m,
@@ -280,6 +288,9 @@ pub fn run_u_evgw0(
         )
     })?;
 
+    let product =
+        ProductQuadrature::from_scaled_gauss_legendre(&pdep.quad_freqs, &pdep.quad_weights);
+
     let mo_indices: Vec<usize> = qp_range.clone().collect();
     let first_act_a = mo_b_a.first_act;
     let first_act_b = mo_b_b.first_act;
@@ -337,7 +348,7 @@ pub fn run_u_evgw0(
         let solve_one = |(idx, &mo_abs): (usize, &usize)| {
             let mla = mo_abs - first_act_a;
             let mlb = mo_abs - first_act_b;
-            let ra = solve_qp_for_mo(
+            let ra = solve_qp_for_mo_with(
                 mla,
                 mo_b_a.eps_act[mla],
                 &m_proj_a,
@@ -349,8 +360,9 @@ pub fn run_u_evgw0(
                 gw_cfg.qp_newton_damp,
                 ef_a,
                 shifts_a[idx],
+                product.as_ref(),
             )?;
-            let rb = solve_qp_for_mo(
+            let rb = solve_qp_for_mo_with(
                 mlb,
                 mo_b_b.eps_act[mlb],
                 &m_proj_b,
@@ -362,6 +374,7 @@ pub fn run_u_evgw0(
                 gw_cfg.qp_newton_damp,
                 ef_b,
                 shifts_b[idx],
+                product.as_ref(),
             )?;
             Ok((ra, rb))
         };
@@ -560,12 +573,16 @@ pub fn run_u_evgw(
             eps_prop_a[mo_abs - first_act_a] = eps_qp_a[idx];
             eps_prop_b[mo_abs - first_act_b] = eps_qp_b[idx];
         }
+        let product = ProductQuadrature::from_scaled_gauss_legendre(
+            &current_pdep.quad_freqs,
+            &current_pdep.quad_weights,
+        );
         let mut max_dev = 0.0_f64;
         // Frozen (m_proj, W, eps_prop) snapshot ⇒ independent per-state solves.
         let solve_one = |(idx, &mo_abs): (usize, &usize)| {
             let mla = mo_abs - first_act_a;
             let mlb = mo_abs - first_act_b;
-            let ra = solve_qp_for_mo(
+            let ra = solve_qp_for_mo_with(
                 mla,
                 mo_b_a.eps_act[mla],
                 &m_proj_a,
@@ -577,8 +594,9 @@ pub fn run_u_evgw(
                 gw_cfg.qp_newton_damp,
                 ef_a,
                 shifts_a[idx],
+                product.as_ref(),
             )?;
-            let rb = solve_qp_for_mo(
+            let rb = solve_qp_for_mo_with(
                 mlb,
                 mo_b_b.eps_act[mlb],
                 &m_proj_b,
@@ -590,6 +608,7 @@ pub fn run_u_evgw(
                 gw_cfg.qp_newton_damp,
                 ef_b,
                 shifts_b[idx],
+                product.as_ref(),
             )?;
             Ok((ra, rb))
         };

@@ -41,10 +41,12 @@
 //! 50 and 60, and by 27 meV between 80 and 100, so the validated setting is
 //! itself not converged there. LiH was dropped from the set for the same
 //! reason (its Li 1s at @HF and its HOMO at @PBE never settle in n_quad).
-//! Nor U-G0W0@UKS/PBE: on OH and NH2 the frontier states move by up to
-//! 66 meV between n_quad = 80 and 100 (OH β HOMO), and the NH2 α HOMO QP
-//! root does not converge at any n_quad; those runs carry
-//! `certificate::OPEN_SHELL_KS_WARNING` instead of a bar.
+//! U-G0W0@UKS/PBE (OH, NH2) has its own, tighter n_quad bar
+//! (`UKS_NQUAD_BAR_MEV`, below): before 2026-11-08 its frontier states moved
+//! by up to 66 meV between n_quad = 80 and 100, because the plain
+//! Gauss–Legendre sum cannot resolve the Σc kernel's ridge when a state
+//! sits 0.015 Ha from the per-spin ε_F; the U drivers now integrate the
+//! kernel exactly (`sigma::sigma_c_at_z_product`).
 //!
 //! # Physics vs artifact hypothesis
 //!
@@ -340,4 +342,105 @@ fn u_g0w0_uhf_oh_defaults_within_bar() {
     let d = go(&default_pdep(DEFAULT_N_QUAD), &GwConfig::default());
     assert_defaults_within_bar("oh U-G0W0@UHF alpha", [v.0, d.0, d.0]);
     assert_defaults_within_bar("oh U-G0W0@UHF beta", [v.1, d.1, d.1]);
+}
+
+/// U-G0W0@UKS/PBE (OH, NH2): the frequency integral of Σc is done by product
+/// integration (`sigma::sigma_c_at_z_product`), so the frontier QP energies
+/// converge in n_quad. MEASURED 2026-11-08 (wiki/notes/ugw-uks-2026-11-08):
+/// OH and NH2 frontier states agree between n_quad = 40 and 100 to
+/// ≤ 0.005 meV; with the old plain quadrature the OH β HOMO moved 66 meV
+/// between 80 and 100 and was off by up to 1.7 eV at 40.
+const UKS_NQUAD_BAR_MEV: f64 = 1.0;
+/// The negative control's grid: product integration at 16 points still
+/// misses by 10–23 meV on these frontier states (prototype, notes).
+const UKS_COARSE_N_QUAD: usize = 16;
+
+/// UKS/PBE as `run_u_gw(xc = "pbe")` builds it (RI-J/K, MOM after 5),
+/// returning a closure that runs U-G0W0 at given settings and yields the
+/// frontier QP energies ([α HOMO, α LUMO], [β HOMO, β LUMO]), asserting
+/// every QP solve returned a root.
+fn uks_frontier(system: &str) -> impl Fn(&PdepRpaConfig, &GwConfig) -> [[f64; 2]; 2] {
+    let sys = load(system, 2);
+    let cfg = RhfConfig {
+        mom_after_iter: 5,
+        ..scf_config(Some("pbe"))
+    };
+    let scf = solve_uhf(&sys.ctx, &sys.mol, &sys.obs, &sys.bounds, &cfg)
+        .unwrap_or_else(|e| panic!("{system}: UKS failed: {e:?}"));
+    assert!(scf.converged, "{system}: UKS did not converge");
+    let g = KsGradGrids::from_config(&cfg);
+    let (va, vb) = vxc_diagonal_mo_on_grids(&sys.mol, &sys.obs_bs, "pbe", &scf, &g.main, &g.nlc)
+        .unwrap_or_else(|e| panic!("{system}: v_xc: {e:?}"));
+    let ne = usize::try_from(sys.mol.nelec()).unwrap();
+    let (na, nb) = (ne.div_ceil(2), ne / 2);
+    let label = sys.label.clone();
+    move |pdep: &PdepRpaConfig, gw: &GwConfig| {
+        let r = run_u_gw(
+            &sys.mol,
+            &sys.obs,
+            &sys.dfbs,
+            Operator::coulomb(),
+            &scf,
+            pdep,
+            gw,
+            Some((&va, &vb)),
+        )
+        .unwrap_or_else(|e| panic!("{label}: run_u_gw failed: {e:?}"));
+        assert!(
+            r.qp_converged_a.iter().chain(&r.qp_converged_b).all(|&c| c),
+            "{label}: a U-G0W0@UKS QP solve returned no root"
+        );
+        [
+            frontier(&r.mo_indices, r.eps_qp_a.as_slice().unwrap(), na),
+            frontier(&r.mo_indices, r.eps_qp_b.as_slice().unwrap(), nb),
+        ]
+    }
+}
+
+fn pdep_at(n_quad: usize, trunc: f64) -> PdepRpaConfig {
+    PdepRpaConfig {
+        trunc_thresh: trunc,
+        ..default_pdep(n_quad)
+    }
+}
+
+/// U-G0W0@UKS converges in n_quad: the default grid (40) vs 100 at full
+/// rank within `UKS_NQUAD_BAR_MEV`; the full defaults within the row's
+/// `BAR_MEV`; and the coarse control (16 points) MISSES the 1 meV bar, so
+/// the comparison sees the frequency grid.
+fn uks_case(system: &str) {
+    let go = uks_frontier(system);
+    let gw0 = GwConfig::default();
+    let v = go(&pdep_at(100, 0.0), &gw0);
+    let d40 = go(&pdep_at(DEFAULT_N_QUAD, 0.0), &gw0);
+    let coarse = go(&pdep_at(UKS_COARSE_N_QUAD, 0.0), &gw0);
+    let defaults = go(&default_pdep(DEFAULT_N_QUAD), &gw0);
+    let mut worst_coarse = 0.0_f64;
+    for (s, spin) in ["alpha", "beta"].iter().enumerate() {
+        let ctx = format!("{system} U-G0W0@UKS {spin}");
+        let w = worst_mev(&ctx, "n_quad = 40", d40[s], v[s]);
+        assert!(
+            w <= UKS_NQUAD_BAR_MEV,
+            "{ctx}: n_quad 40 vs 100 differ by {w:.4} meV > {UKS_NQUAD_BAR_MEV} meV"
+        );
+        assert_defaults_within_bar(&ctx, [v[s], defaults[s], defaults[s]]);
+        worst_coarse = worst_coarse.max(worst_mev(&ctx, "n_quad = 16", coarse[s], v[s]));
+    }
+    assert!(
+        worst_coarse > UKS_NQUAD_BAR_MEV,
+        "{system} U-G0W0@UKS: n_quad = {UKS_COARSE_N_QUAD} misses n_quad = 100 by only \
+         {worst_coarse:.4} meV; the comparison does not see the frequency grid"
+    );
+}
+
+#[test]
+#[ignore = "validation: GW defaults vs validated settings"]
+fn u_g0w0_uks_oh_converges_in_n_quad() {
+    uks_case("oh");
+}
+
+#[test]
+#[ignore = "validation: GW defaults vs validated settings"]
+fn u_g0w0_uks_nh2_converges_in_n_quad() {
+    uks_case("nh2");
 }
