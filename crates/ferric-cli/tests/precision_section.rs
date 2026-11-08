@@ -97,6 +97,11 @@ fn water(kind: &str, extra: &str) -> String {
     )
 }
 
+/// Pins the f64 RI-J tensor. RI-J storage defaults to f32 (c316c5dad), which the
+/// precision record lists as the mixed `dfj-f32` kernel; tests about other
+/// kernels or the `[precision]` section pin f64 so the record shows only those.
+const F64_RIJ: &str = "[scf]\nri_j_precision = \"f64\"\n";
+
 fn f64_record() -> serde_json::Value {
     serde_json::json!({"precision": "f64", "counter_scope": "process", "kernels": []})
 }
@@ -122,7 +127,11 @@ fn an_f64_section_and_its_alias_are_bit_identical_to_no_section() {
         let mut energies = Vec::new();
         for (arm, extra) in &arms {
             let tag = format!("bitid_{}_{arm}", kind.replace('-', "_"));
-            let (out, recs) = run(&tag, &water(kind, &format!("{dft}{extra}")), true);
+            // RI-J storage defaults to f32 (recorded as the `dfj-f32` kernel);
+            // this test is about the `[precision]` section, so every arm pins
+            // the f64 RI-J tensor.
+            let body = format!("{dft}{extra}{F64_RIJ}");
+            let (out, recs) = run(&tag, &water(kind, &body), true);
             assert!(out.status.success(), "{kind}/{arm}: {}", stderr(&out));
             let end = record(&recs, "run_end");
             assert_eq!(end["extra"]["precision"], f64_record(), "{kind}/{arm}");
@@ -315,7 +324,7 @@ fn the_run_log_record_covers_mp2_kernels_with_no_record_of_their_own() {
     let mp2 = "[mp2]\nauxbasis = \"cc-pvdz-ri\"\n";
     let (out, recs) = run(
         "whole_run_scs_mp2",
-        &water("scs-mp2", &format!("{mp2}{MIXED_RIMP2}")),
+        &water("scs-mp2", &format!("{mp2}{MIXED_RIMP2}{F64_RIJ}")),
         true,
     );
     assert!(out.status.success(), "{}", stderr(&out));
@@ -331,7 +340,7 @@ fn the_run_log_record_covers_mp2_kernels_with_no_record_of_their_own() {
 
     let (out, recs) = run(
         "whole_run_b2plyp",
-        &water("b2plyp", &format!("{mp2}{MIXED_RIMP2}")),
+        &water("b2plyp", &format!("{mp2}{MIXED_RIMP2}{F64_RIJ}")),
         true,
     );
     assert!(out.status.success(), "{}", stderr(&out));
