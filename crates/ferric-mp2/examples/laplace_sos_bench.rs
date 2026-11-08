@@ -2,7 +2,7 @@
 //! counters of each formulation on one RHF reference.
 //!
 //! usage: laplace_sos_bench <xyz> <basis> <aux> <frozen_core> <budget_gb> <spec>...
-//!   spec = mo | ao | ao-sparse:R | local:R | local:VIR:TAU:OCC   (radii in Bohr, TAU Schwarz)
+//!   spec = mo | ao | ao-sparse:R | local:R | local:VIR:TAU:OCC[:ETAU]   (radii Bohr, TAU Schwarz, ETAU Hartree)
 //!
 //! `local:R` is the production radius rule (`LocalRadii::from_cutoff`);
 //! `local:VIR:TAU:OCC` sets the three truncation thresholds separately.
@@ -77,12 +77,13 @@ fn main() {
     for spec in &a[6..] {
         let parts: Vec<&str> = spec.split(':').collect();
         let t = Instant::now();
-        let e_os = if parts.len() == 4 && parts[0] == "local" {
+        let e_os = if (parts.len() == 4 || parts.len() == 5) && parts[0] == "local" {
             let f = |k: usize| -> f64 { parts[k].parse().expect("radius") };
             let radii = LocalRadii {
                 vir: f(1),
                 pair_tau: f(2),
                 occ: f(3),
+                energy_tau: if parts.len() == 5 { f(4) } else { 0.0 },
             };
             let mut lp = LaplaceMp2::new(7);
             lp.memory_budget_bytes = budget;

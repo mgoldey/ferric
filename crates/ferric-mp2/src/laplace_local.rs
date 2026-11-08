@@ -92,6 +92,12 @@ pub struct LocalRadii {
     pub pair_tau: f64,
     /// T1: LMO coefficient support radius, Bohr. Costs integrals only.
     pub occ: f64,
+    /// TE (optional energy cut, applied AFTER T2 and the whitening): keep
+    /// `(i,a)` only when `s_ia = (ia|ia)/(f_aa - f_ii) ≥ energy_tau` (Hartree),
+    /// with `(ia|ia) = Σ_P (B̂^P_ia)²` and the diagonal localized Fock
+    /// elements. Selects per LMO by a pair-energy-like score instead of
+    /// distance. `0.0` is vacuous.
+    pub energy_tau: f64,
 }
 
 impl LocalRadii {
@@ -103,6 +109,7 @@ impl LocalRadii {
             vir: r,
             pair_tau: Self::PAIR_TAU,
             occ: r.max(Self::OCC_FLOOR),
+            energy_tau: 0.0,
         }
     }
 
@@ -118,8 +125,10 @@ pub struct LocalStats {
     /// Active (localized) occupied orbitals and localized virtuals.
     pub n_lmo: usize,
     pub n_lvo: usize,
-    /// `|T| = Σ_i |V_i|`, the inner GEMM dimension (MO path: `n_lmo·n_lvo`).
+    /// `|T| = Σ_i |V_i|`, the inner GEMM dimension (MO path: `n_lmo·n_lvo`),
+    /// after the energy cut, and the geometric `|T|` before it.
     pub t_size: usize,
+    pub t_size_geom: usize,
     /// Mean and max `|V_i|`.
     pub vdom_mean: f64,
     pub vdom_max: usize,
@@ -143,12 +152,13 @@ impl std::fmt::Display for LocalStats {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "sos-local: n_lmo={} n_lvo={} t_size={} t_full={} vdom_mean={:.1} vdom_max={} \
+            "sos-local: n_lmo={} n_lvo={} t_size={} t_geom={} t_full={} vdom_mean={:.1} vdom_max={} \
              ao_mean={:.1} pairs={} shell_pairs={}/{} boys_conv={} t_spaces={:.3} \
              t_eri3={:.3} t_whiten={:.3} t_points={:.3}",
             self.n_lmo,
             self.n_lvo,
             self.t_size,
+            self.t_size_geom,
             self.n_lmo * self.n_lvo,
             self.vdom_mean,
             self.vdom_max,
@@ -250,25 +260,7 @@ fn build_local_domains(
         t_off[i + 1] = t_off[i] + v.len();
     }
 
-    // T3: partners share at least one LVO.
-    let mut lmos_of_lvo: Vec<Vec<usize>> = vec![Vec::new(); n_lvo];
-    for (i, v) in vir.iter().enumerate() {
-        for &a in v {
-            lmos_of_lvo[a].push(i);
-        }
-    }
-    let nbrs: Vec<Vec<usize>> = vir
-        .iter()
-        .map(|v| {
-            let mut seen = vec![false; n_lmo];
-            for &a in v {
-                for &j in &lmos_of_lvo[a] {
-                    seen[j] = true;
-                }
-            }
-            (0..n_lmo).filter(|&j| seen[j]).collect()
-        })
-        .collect();
+    let nbrs = partners(&vir, n_lvo);
 
     let mut owners: std::collections::BTreeMap<(usize, usize), Vec<(u32, u8)>> = Default::default();
     for i in 0..n_lmo {
@@ -296,6 +288,62 @@ fn build_local_domains(
         nbrs,
         pair_owners: owners.into_iter().collect(),
     }
+}
+
+/// T3: `j` is a partner of `i` when `V_i` and `V_j` share an LVO.
+fn partners(vir: &[Vec<usize>], n_lvo: usize) -> Vec<Vec<usize>> {
+    let n_lmo = vir.len();
+    let mut lmos_of_lvo: Vec<Vec<usize>> = vec![Vec::new(); n_lvo];
+    for (i, v) in vir.iter().enumerate() {
+        for &a in v {
+            lmos_of_lvo[a].push(i);
+        }
+    }
+    vir.iter()
+        .map(|v| {
+            let mut seen = vec![false; n_lmo];
+            for &a in v {
+                for &j in &lmos_of_lvo[a] {
+                    seen[j] = true;
+                }
+            }
+            (0..n_lmo).filter(|&j| seen[j]).collect()
+        })
+        .collect()
+}
+
+/// TE: keep the `(i,a)` columns of `Ĥ` whose score `(ia|ia)/(f_aa - f_ii)`
+/// reaches `tau`; rebuild `V_i`, the `T` offsets and the T3 partners.
+fn energy_cut(
+    h_hat: Array2<f64>,
+    dom: &mut LocalDomains,
+    f_occ: &[f64],
+    f_vir: &[f64],
+    tau: f64,
+    n_lvo: usize,
+) -> Array2<f64> {
+    let mut keep_cols = Vec::new();
+    let mut new_vir = Vec::with_capacity(dom.vir.len());
+    for (i, v) in dom.vir.iter().enumerate() {
+        let mut kept = Vec::new();
+        for (q, &a) in v.iter().enumerate() {
+            let col = dom.t_off[i] + q;
+            let norm2: f64 = h_hat.column(col).iter().map(|x| x * x).sum();
+            if norm2 / (f_vir[a] - f_occ[i]) >= tau {
+                kept.push(a);
+                keep_cols.push(col);
+            }
+        }
+        new_vir.push(kept);
+    }
+    let mut t_off = vec![0usize; new_vir.len() + 1];
+    for (i, v) in new_vir.iter().enumerate() {
+        t_off[i + 1] = t_off[i] + v.len();
+    }
+    dom.nbrs = partners(&new_vir, n_lvo);
+    dom.vir = new_vir;
+    dom.t_off = t_off;
+    h_hat.select(ndarray::Axis(1), &keep_cols)
 }
 
 /// Occupied half transform `X^P_{iλ} = Σ_{μ∈D1_i} L_{μi}(P|μλ)`, `λ ∈ N_i`,
@@ -461,7 +509,7 @@ pub fn sos_local_energy(
         }
     }
     let q_sh = ferric_integrals::schwarz::schwarz(op, obs)?;
-    let dom = build_local_domains(&boys.centers, &vir_c, obs, &q_sh, radii);
+    let mut dom = build_local_domains(&boys.centers, &vir_c, obs, &q_sh, radii);
     st.n_lmo = c_occ.ncols();
     st.n_lvo = c_vl.ncols();
     st.t_size = *dom.t_off.last().unwrap();
@@ -508,6 +556,26 @@ pub fn sos_local_energy(
     drop(h);
     drop(v_inv_sqrt);
     st.t_whiten = t2.elapsed().as_secs_f64();
+
+    st.t_size_geom = st.t_size;
+    let h_hat = if radii.energy_tau > 0.0 {
+        // Diagonal localized Fock elements from the exact rotations:
+        // f_ii = Σ_k U_ki² ε_k, f_aa = Σ_b R_ba² ε_b.
+        let f_occ: Vec<f64> = (0..u.ncols())
+            .map(|i| (0..u.nrows()).map(|k| u[(k, i)].powi(2) * eps_o[k]).sum())
+            .collect();
+        let f_vir: Vec<f64> = (0..r.ncols())
+            .map(|a| (0..r.nrows()).map(|b| r[(b, a)].powi(2) * eps_v[b]).sum())
+            .collect();
+        let cut = energy_cut(h_hat, &mut dom, &f_occ, &f_vir, radii.energy_tau, st.n_lvo);
+        st.t_size = *dom.t_off.last().unwrap();
+        st.vdom_max = dom.vir.iter().map(Vec::len).max().unwrap_or(0);
+        st.vdom_mean = st.t_size as f64 / st.n_lmo.max(1) as f64;
+        st.n_pairs = dom.nbrs.iter().map(Vec::len).sum();
+        cut
+    } else {
+        h_hat
+    };
 
     let t3 = Instant::now();
     let e_os: f64 = points

@@ -8529,6 +8529,10 @@ impl PySosMp2Result {
 ///     APPROXIMATE variant: it discards AO pairs outside every orbital domain,
 ///     converging to `"ao"` as `domain_cutoff_bohr` grows. Requires that
 ///     argument; passing it with `"mo"`/`"ao"` raises rather than being ignored.
+///     The cutoff changes the energy only, not the cost.
+///   - `"local"` — Boys LMOs x VV-HV localized virtuals; each LMO keeps the
+///     virtuals within `domain_cutoff_bohr` (required). APPROXIMATE; the radius
+///     sets the size of the dense Gram GEMM, so it changes cost and memory.
 ///
 /// An unrecognized value raises rather than silently running the default.
 ///

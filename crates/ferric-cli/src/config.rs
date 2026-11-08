@@ -1558,6 +1558,10 @@ pub struct Mp2Cfg {
     ///                    inside the quadrature loop.
     ///   "ao-sparse"    — "ao" with the pseudo-densities restricted to
     ///                    Boys-orbital AO domains; needs `domain_cutoff_bohr`.
+    ///                    The cutoff changes the energy only, not the cost.
+    ///   "local"        — Boys LMOs x VV-HV localized virtuals; each LMO keeps
+    ///                    the virtuals within `domain_cutoff_bohr`. The radius
+    ///                    sets the size of the dense Gram GEMM (approximate).
     ///
     /// "mo" and "ao" compute the SAME quantity and agree to round-off (asserted
     /// in `ferric-mp2`'s tests). The AO path is the correctness reference for
@@ -1568,16 +1572,17 @@ pub struct Mp2Cfg {
     ///
     /// Distinct from `formulation`, which selects the rs-mp2-rpa Δ-form.
     pub sos_formulation: Option<String>,
-    /// Domain radius in **Bohr** for `sos_formulation = "ao-sparse"`.
+    /// Domain radius in **Bohr** for `sos_formulation = "ao-sparse"` or `"local"`.
     ///
-    /// Required by that formulation and REJECTED by the other two — there is no
-    /// safe default (the right radius is system- and basis-dependent) and
-    /// silently ignoring it on an exact path would run a different method than
-    /// the one configured.
+    /// Required by those two formulations and REJECTED by the exact ones —
+    /// there is no safe default (the right radius is system- and
+    /// basis-dependent) and silently ignoring it on an exact path would run a
+    /// different method than the one configured.
     ///
-    /// This is the one SOS variant that is APPROXIMATE: it discards AO pairs
-    /// lying outside every Boys-orbital domain. It converges to `"ao"` as the
-    /// radius grows.
+    /// Both are APPROXIMATE and converge to the exact energy as the radius
+    /// grows: "ao-sparse" discards AO pairs outside every Boys-orbital domain,
+    /// "local" discards localized virtuals farther than the radius from each
+    /// Boys orbital.
     pub domain_cutoff_bohr: Option<f64>,
     /// SR-MP2 + LR-RPA formulation (for rs-mp2-rpa):
     ///
