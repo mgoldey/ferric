@@ -244,18 +244,106 @@ impl RiJPrecision {
         }
     }
 
-    /// The precision an SCF requests for `requested`: an explicit value wins;
-    /// unset is [`Self::DEFAULT`], except that a `[gpu]` mode that may build J
-    /// on the device keeps the f64 tensor the device path needs.
+    /// The precision a single-point SCF requests for `requested`:
+    /// [`resolve_ri_j_precision`] with [`RiJTask::Energy`].
     pub fn resolve(requested: Option<Self>) -> Self {
-        requested.unwrap_or_else(|| {
-            if device_may_take_j() {
-                Self::F64
-            } else {
-                Self::DEFAULT
-            }
-        })
+        resolve_ri_j_precision(RiJTask::Energy, requested).precision
     }
+}
+
+/// What the SCF's energy is used for, as far as the RI-J storage default is
+/// concerned (`RhfConfig::ri_j_task`).
+///
+/// The f32 tensor re-rounds every stored integral when an atom moves, so its
+/// energy surface is jagged: MEASURED on sulfamethoxazole PBE/def2-SVP, an FD
+/// gradient (step 2e-3 Bohr) misses the analytic one by 2.1e-4 Ha/Bohr under
+/// f32 against 9.5e-7 under f64, and the ~9e-7 Ha jitter between nearby
+/// geometries is the size of the optimizer's default `e_conv` (1e-6). Tasks
+/// that walk or difference nearby geometries therefore default to f64.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum RiJTask {
+    /// Single-point energy (and anything computed at one geometry: SCF,
+    /// properties, TDDFT, GW, MP2, a single gradient). Unset precision is
+    /// [`RiJPrecision::DEFAULT`] (f32).
+    #[default]
+    Energy,
+    /// Geometry and frequency tasks: optimization, harmonic frequencies,
+    /// saddle search, IRC. Unset precision is f64.
+    Geometry,
+}
+
+impl RiJTask {
+    /// The task spelling used in run logs and certificates.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Energy => "energy",
+            Self::Geometry => "geometry",
+        }
+    }
+}
+
+/// Why [`resolve_ri_j_precision`] chose its precision.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum RiJPrecisionSource {
+    /// The caller set `ri_j_precision`; it always wins.
+    Explicit,
+    /// Unset on a [`RiJTask::Geometry`] task: f64.
+    GeometryTaskDefault,
+    /// Unset with a `[gpu]` mode that may build J on the device: f64.
+    DeviceDefault,
+    /// Unset on a single-point task: [`RiJPrecision::DEFAULT`].
+    Default,
+    /// Unset, on a library path that fixes its own default instead of
+    /// following [`resolve_ri_j_precision`] (the DF-increments scheme keeps
+    /// f64 because its DF error is what it measures).
+    PathDefault,
+}
+
+impl RiJPrecisionSource {
+    /// Spelling used in the run log (`precision_source`) and certificate.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Explicit => "explicit",
+            Self::GeometryTaskDefault => "geometry-task default",
+            Self::DeviceDefault => "gpu default",
+            Self::Default => "default",
+            Self::PathDefault => "path default",
+        }
+    }
+}
+
+/// A requested RI-J storage precision and why it was chosen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ResolvedRiJPrecision {
+    /// The precision the RI-J tensor is requested at (an f32 request may
+    /// still fall back to f64 when the f32 tier declines; the builder's
+    /// [`RiJ::precision`](crate::split_rij::RiJ::precision) says what ran).
+    pub precision: RiJPrecision,
+    /// Why.
+    pub source: RiJPrecisionSource,
+}
+
+/// THE resolution rule for an unset or set `ri_j_precision`, used by every
+/// SCF (RHF/UHF/ROHF and their KS forms):
+///
+/// 1. an explicit value always wins (f32 in an optimization is honoured);
+/// 2. unset on a [`RiJTask::Geometry`] task is f64;
+/// 3. unset with a `[gpu]` mode that may build J on the device is f64 (the
+///    device RI-J needs the f64 tensor);
+/// 4. otherwise [`RiJPrecision::DEFAULT`] (f32).
+pub fn resolve_ri_j_precision(
+    task: RiJTask,
+    explicit: Option<RiJPrecision>,
+) -> ResolvedRiJPrecision {
+    let (precision, source) = match (explicit, task) {
+        (Some(p), _) => (p, RiJPrecisionSource::Explicit),
+        (None, RiJTask::Geometry) => (RiJPrecision::F64, RiJPrecisionSource::GeometryTaskDefault),
+        (None, RiJTask::Energy) if device_may_take_j() => {
+            (RiJPrecision::F64, RiJPrecisionSource::DeviceDefault)
+        }
+        (None, RiJTask::Energy) => (RiJPrecision::DEFAULT, RiJPrecisionSource::Default),
+    };
+    ResolvedRiJPrecision { precision, source }
 }
 
 impl std::fmt::Display for RiJPrecision {

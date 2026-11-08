@@ -195,6 +195,11 @@ default (half the memory; about 1e-7 Ha per atom of energy shift, see
 than `"f32"`/`"f64"` raises `ValueError`, and `dft.ri_j_precision` says which
 was used. Drivers with more than one iterative stage (`run_frequencies`,
 `run_cdft`, the MP2 family, GW, TDDFT, ...) spell it `scf_ri_j_precision`.
+The geometry and frequency drivers (`run_optimize`, `run_optimize_uhf`,
+`run_optimize_qmmm`, `run_frequencies`, `run_saddle`, `run_irc`) default to
+the f64 tensor instead, because the f32 energy surface jitters between nearby
+geometries; `scf_ri_j_precision="f32"` there is still honoured, and the
+certificate's `ri-j` entry says which was requested and why.
 `dispersion="d3bj"` adds Grimme D3(BJ);
 the result then carries `e_scf`, `e_dispersion` and their sum in
 `total_energy`. `with_gradient=True` also returns the analytic nuclear gradient

@@ -682,11 +682,24 @@ fn parse_diis_flavor(diis: Option<&str>) -> PyResult<ferric_scf::diis::DiisFlavo
 }
 
 /// Parse the `ri_j_precision` / `scf_ri_j_precision` kwarg (strict: `"f32"`
-/// or `"f64"`, anything else is a `ValueError`; `None` = the default, f32).
+/// or `"f64"`, anything else is a `ValueError`; `None` = the default: f32,
+/// f64 on the geometry entry points, see [`geometry_task_scf`]).
 fn parse_ri_j_precision(s: Option<&str>) -> PyResult<Option<ferric_scf::df_j::RiJPrecision>> {
     s.map(ferric_scf::df_j::RiJPrecision::parse_config_str)
         .transpose()
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+}
+
+/// The geometry/frequency entry points' (`run_optimize*`, `run_frequencies`,
+/// `run_saddle`, `run_irc`) one call on their SCF config: mark it a geometry
+/// task, so an unset `scf_ri_j_precision` resolves to f64 (the f32 RI-J
+/// energy surface is jagged between nearby geometries), and apply an explicit
+/// `scf_ri_j_precision`, which always wins. The certificate's `ri-j` entry
+/// records the precision and why.
+fn geometry_task_scf(cfg: &mut RhfConfig, scf_ri_j_precision: Option<&str>) -> PyResult<()> {
+    cfg.ri_j_task = ferric_scf::df_j::RiJTask::Geometry;
+    cfg.ri_j_precision = parse_ri_j_precision(scf_ri_j_precision)?;
+    Ok(())
 }
 
 /// Parse the `guess` kwarg into `RhfConfig::use_sad_guess` (strict — unknown
@@ -1182,7 +1195,8 @@ fn warn_rhf_not_converged(py: Python<'_>, r: &ferric_scf::result::ScfResult, con
 ///                   ValueError. Ignored without RI-J. The result's
 ///                   `ri_j_precision` says what was used. Same as the CLI
 ///                   `[scf] ri_j_precision`; drivers with more than one
-///                   iterative stage spell it `scf_ri_j_precision`.
+///                   iterative stage spell it `scf_ri_j_precision`. The
+///                   geometry/frequency drivers default to "f64".
 /// External perturbation:
 ///   point_charges   list of (q, x, y, z) classical point charges (Hartree
 ///                   atomic units; coordinates in Bohr) added to the one-electron
@@ -3287,7 +3301,7 @@ fn run_optimize_qmmm(
     let move_mm = parse_move_mm(py, move_mm)?;
 
     let mut scf = RhfConfig::default();
-    scf.ri_j_precision = parse_ri_j_precision(scf_ri_j_precision)?;
+    geometry_task_scf(&mut scf, scf_ri_j_precision)?;
     ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv).apply(&mut scf);
     let opt = OptimizeConfig {
         max_steps: max_steps.unwrap_or(100),
@@ -4600,6 +4614,9 @@ fn run_optimize(
         ..Default::default()
     };
     ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv).apply(&mut rhf_config);
+    // Exact J/K here (no `xc`, no aux kwargs), so RI-J never runs; marked
+    // anyway so the certificate's reference SCF matches the driver's.
+    geometry_task_scf(&mut rhf_config, None)?;
     // Apply the ECP before optimizing: each SCF derives its occupations from
     // `Molecule::nelec()`, which counts ALL electrons until `apply_ecp` has
     // run. Without this an ECP basis (aug-cc-pvdz-pp, Z >= 37) would optimize
@@ -4676,6 +4693,9 @@ fn run_optimize_uhf(
         ..Default::default()
     };
     ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv).apply(&mut uhf_config);
+    // Exact J/K here (no `xc`, no aux kwargs), so RI-J never runs; marked
+    // anyway so the certificate's reference SCF matches the driver's.
+    geometry_task_scf(&mut uhf_config, None)?;
     // Apply the ECP before optimizing: each SCF derives its occupations from
     // `Molecule::nelec()`, which counts ALL electrons until `apply_ecp` has
     // run. Without this an ECP basis (aug-cc-pvdz-pp, Z >= 37) would optimize
@@ -4978,7 +4998,7 @@ fn run_frequencies(
     // Unset = exact J/K (unchanged); same opt-out spellings as run_rhf.
     scf_cfg.df_j_aux = df_j_aux.map(ferric_scf::rhf::normalize_df_aux);
     scf_cfg.df_k_aux = df_k_aux.map(ferric_scf::rhf::normalize_df_aux);
-    scf_cfg.ri_j_precision = parse_ri_j_precision(scf_ri_j_precision)?;
+    geometry_task_scf(&mut scf_cfg, scf_ri_j_precision)?;
     let mut fcfg = FrequencyConfig {
         reference: refr,
         hessian: HessianMethod::parse_config_str(hessian)
@@ -13264,13 +13284,17 @@ fn parse_saddle_hessian(
 /// step's converged orbitals (`ferric_scf::warm_start`); False re-guesses
 /// every step's SCF. The finite-difference Hessians stay cold (as in
 /// `run_frequencies`, warm FD Hessians are noisier at equal convergence).
+///
+/// `scf_ri_j_precision` (`"f32"` or `"f64"`; RI-J runs with `xc`): unset is
+/// `"f64"`, as for every geometry task (the f32 RI-J surface jitters between
+/// nearby geometries); an explicit `"f32"` is honoured.
 #[pyfunction]
 #[pyo3(signature = (
     mol, basis_name, xc=None, multiplicity=None,
     max_steps=None, trust_radius=None, follow_mode=None, delta=None,
     point_charges=None, external_field=None, hessian="fd",
     scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None,
-    scf_warm_start=None,
+    scf_warm_start=None, scf_ri_j_precision=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_saddle(
@@ -13289,6 +13313,7 @@ fn run_saddle(
     scf_energy_conv: Option<f64>,
     scf_density_conv: Option<f64>,
     scf_warm_start: Option<bool>,
+    scf_ri_j_precision: Option<&str>,
 ) -> PyResult<PySaddleResult> {
     use ferric_scf::frequencies::{harmonic_frequencies, FrequencyConfig, FrequencyReference};
     use ferric_scf::gradient::rhf_gradient;
@@ -13349,6 +13374,7 @@ fn run_saddle(
         ..Default::default()
     };
     ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv).apply(&mut scf_cfg);
+    geometry_task_scf(&mut scf_cfg, scf_ri_j_precision)?;
     let mut cfg = SaddleConfig::default();
     if let Some(v) = max_steps {
         cfg.max_steps = v;
@@ -13499,13 +13525,17 @@ fn run_saddle(
 /// `scf_warm_start` (default True): each point's SCF starts from the previous
 /// point's converged orbitals (`ferric_scf::warm_start`); False re-guesses
 /// every SCF.
+///
+/// `scf_ri_j_precision` (`"f32"` or `"f64"`; RI-J runs with `xc`): unset is
+/// `"f64"`, as for every geometry task (the f32 RI-J surface jitters between
+/// nearby geometries); an explicit `"f32"` is honoured.
 #[pyfunction]
 #[pyo3(signature = (
     mol, basis_name, mode, xc=None, multiplicity=None,
     step=None, max_steps=None, g_max_thresh=None, initial_displacement=None,
     point_charges=None, external_field=None,
     scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None,
-    scf_warm_start=None,
+    scf_warm_start=None, scf_ri_j_precision=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_irc(
@@ -13524,6 +13554,7 @@ fn run_irc(
     scf_energy_conv: Option<f64>,
     scf_density_conv: Option<f64>,
     scf_warm_start: Option<bool>,
+    scf_ri_j_precision: Option<&str>,
 ) -> PyResult<PyIrcResult> {
     use ferric_scf::gradient::rhf_gradient;
     use ferric_scf::irc::{follow_irc, IrcConfig};
@@ -13561,6 +13592,7 @@ fn run_irc(
         ..Default::default()
     };
     ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv).apply(&mut scf_cfg);
+    geometry_task_scf(&mut scf_cfg, scf_ri_j_precision)?;
     let mut cfg = IrcConfig::default();
     if let Some(v) = step {
         cfg.step = v;

@@ -299,6 +299,7 @@ fn config_fields(config: &RhfConfig, out: &mut Vec<IdentityField>) -> (f64, f64)
         df_j_aux,
         df_k_aux,
         ri_j_precision,
+        ri_j_task,
         integral_thresh,
         screening,
         // Which converged state the iteration lands in: see `StateSelecting`. Only
@@ -369,6 +370,8 @@ fn config_fields(config: &RhfConfig, out: &mut Vec<IdentityField>) -> (f64, f64)
         ("df_j_aux", format!("{df_j_aux:?}")),
         ("df_k_aux", format!("{df_k_aux:?}")),
         ("ri_j_precision", format!("{ri_j_precision:?}")),
+        // Picks the default of an unset `ri_j_precision` (f64 for geometry).
+        ("ri_j_task", format!("{ri_j_task:?}")),
         ("integral_thresh", format!("{integral_thresh:?}")),
         ("screening", format!("{screening:?}")),
     ];

@@ -939,6 +939,9 @@ fn identity_table() -> Vec<(&'static str, FieldClass, Mutator)> {
         ("ri_j_precision", Route, |s| {
             s.config.ri_j_precision = Some(crate::df_j::RiJPrecision::F64)
         }),
+        ("ri_j_task", Route, |s| {
+            s.config.ri_j_task = crate::df_j::RiJTask::Geometry
+        }),
         ("integral_thresh", Route, |s| {
             s.config.integral_thresh = 1e-11
         }),

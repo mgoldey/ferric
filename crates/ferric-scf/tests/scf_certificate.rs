@@ -88,20 +88,29 @@ fn ri_j_is_reported_from_the_route_the_solver_ran() {
     assert_eq!(names(&c), ["ri-j"]);
     assert_eq!(
         c.approximations[0].detail,
-        "aux def2-universal-jkfit, f32 tensor storage"
+        "aux def2-universal-jkfit, f32 tensor storage (requested f32: default)"
     );
     assert_eq!(c.grade, Grade::Proven);
 
     // An explicit f64 is honoured and recorded.
     let f64_cfg = RhfConfig {
         ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
-        ..cfg
+        ..cfg.clone()
     };
     let (mol, r) = solve(WATER, 1, &f64_cfg);
     let c = scf_certificate(&mol, &r, &f64_cfg);
     assert_eq!(
         c.approximations[0].detail,
-        "aux def2-universal-jkfit, f64 tensor storage"
+        "aux def2-universal-jkfit, f64 tensor storage (requested f64: explicit)"
+    );
+
+    // A geometry task with nothing set records the f64 task default.
+    let geom_cfg = cfg.for_geometry_task();
+    let (mol, r) = solve(WATER, 1, &geom_cfg);
+    let c = scf_certificate(&mol, &r, &geom_cfg);
+    assert_eq!(
+        c.approximations[0].detail,
+        "aux def2-universal-jkfit, f64 tensor storage (requested f64: geometry-task default)"
     );
 }
 

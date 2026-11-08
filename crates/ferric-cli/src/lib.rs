@@ -226,6 +226,17 @@ pub fn unsupported_method_message(method: &str) -> String {
 /// `config_doc_tests.rs`.
 pub const SUPPORTED_TASKS: &[&str] = &["energy", "optimize", "frequencies"];
 
+/// The RI-J storage default's task class for a `method.task`: `optimize` and
+/// `frequencies` are [`RiJTask::Geometry`](ferric_scf::df_j::RiJTask) (an
+/// unset `[scf] ri_j_precision` resolves to f64), everything else `Energy`
+/// (f32). An explicit `ri_j_precision` wins either way.
+pub fn ri_j_task_for(task: &str) -> ferric_scf::df_j::RiJTask {
+    match task {
+        "optimize" | "frequencies" => ferric_scf::df_j::RiJTask::Geometry,
+        _ => ferric_scf::df_j::RiJTask::Energy,
+    }
+}
+
 /// The error text for an unrecognised `method.task`, listing every entry of
 /// [`SUPPORTED_TASKS`] (`expected energy, optimize, or frequencies`).
 pub fn unsupported_task_message(task: &str) -> String {
@@ -742,11 +753,15 @@ pub fn run(args: Vec<String>) {
         // Shared spelling parser: "exact"/"none"/"off"/"conventional" mean
         // the same "" (no density fitting) as in the Python bindings.
         df_j_aux: cfg.scf.df_j_aux_resolved().or(df_j_default),
-        // Validated in `load_config`; `None` = the library default (f32).
+        // Validated in `load_config`; `None` = the default for `ri_j_task`.
         ri_j_precision: cfg.scf.ri_j_precision_resolved().unwrap_or_else(|e| {
             eprintln!("error: {e}");
             std::process::exit(1);
         }),
+        // The one place the CLI picks the RI-J default by task: optimize and
+        // frequencies resolve an unset precision to f64 (the f32 surface is
+        // jagged), an energy run to f32; an explicit value always wins.
+        ri_j_task: ri_j_task_for(task),
         // RIJCOSX: `k_builder = "cosx"` replaces RI-K, so the RI-K default
         // is not applied under it (an explicit `df_k_aux` next to COSX is
         // refused by the SCF as a conflict).
@@ -890,9 +905,14 @@ pub fn run(args: Vec<String>) {
                 "density_conv": cfg.scf.density_conv,
                 "df_j_aux": rhf_config.df_j_aux,
                 "df_k_aux": rhf_config.df_k_aux,
-                // As requested (`null` = default); the run's `ri_j_tensor`
-                // note records the precision the tensor was stored at.
+                // As requested (`null` = default), the precision that
+                // resolves to and why (`explicit`, `geometry-task default`,
+                // ...); the run's `ri_j_tensor` note records the precision
+                // the tensor was stored at.
                 "ri_j_precision": rhf_config.ri_j_precision.map(|p| p.as_str()),
+                "ri_j_precision_resolved": rhf_config.resolved_ri_j_precision().precision.as_str(),
+                "ri_j_precision_source": rhf_config.resolved_ri_j_precision().source.as_str(),
+                "ri_j_task": rhf_config.ri_j_task.as_str(),
                 // The EFFECTIVE J/K route (what the SCF builds), not the
                 // raw `[scf] jk` key: rs-mp2-rpa with no `jk` is "rijk", and
                 // a `k_builder` that density fitting overrides is null.

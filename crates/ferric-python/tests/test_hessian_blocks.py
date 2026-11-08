@@ -26,7 +26,8 @@ HI = "2\n\nH 0 0 0\nI 0 0 1.609\n"
 # f64 references at bars below the f32 default's effect (site/src/methods/scf.md,
 # "RI-J tensor precision").
 TIGHT = {"energy_conv": 1e-11, "density_conv": 1e-10, "ri_j_precision": "f64"}
-FREQ_TIGHT = {f"scf_{k}": v for k, v in TIGHT.items()}  # run_frequencies spelling
+# run_frequencies spelling, without the RI-J pin: frequencies default to f64.
+FREQ_TIGHT = {f"scf_{k}": v for k, v in TIGHT.items() if k != "ri_j_precision"}
 
 
 def _ints(xyz: str, basis: str):

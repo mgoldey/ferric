@@ -320,8 +320,16 @@ pub fn solve_rhf_with_df_increments(
         0.0,
         // The increments correct an EXACT reference Fock matrix, so their DF
         // error is what the scheme measures: f64 unless asked otherwise.
-        base.ri_j_precision
-            .unwrap_or(crate::df_j::RiJPrecision::F64),
+        match base.ri_j_precision {
+            Some(precision) => crate::df_j::ResolvedRiJPrecision {
+                precision,
+                source: crate::df_j::RiJPrecisionSource::Explicit,
+            },
+            None => crate::df_j::ResolvedRiJPrecision {
+                precision: crate::df_j::RiJPrecision::F64,
+                source: crate::df_j::RiJPrecisionSource::PathDefault,
+            },
+        },
     )?;
     let mut df_j = df_j_opt.ok_or_else(|| {
         FerricError::General(

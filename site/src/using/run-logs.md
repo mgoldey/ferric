@@ -60,7 +60,9 @@ Written before any expensive work, so it survives a job killed in the first
 iteration. Carries the ferric version, the git SHA the binary was built from
 (`null` if the build had no checkout; a `-dirty` suffix means uncommitted
 changes were compiled in), a UTC timestamp, the resolved config (including the
-memory budget in effect, not the key as written) and the molecule.
+memory budget in effect, not the key as written; `ri_j_precision` as written
+next to `ri_j_precision_resolved`, `ri_j_precision_source` and `ri_j_task`,
+which say what an omitted value became and why) and the molecule.
 
 ### `scf_iter`
 
@@ -108,8 +110,10 @@ can't be misread that way.
 ### `ri_j_tensor`
 
 One per SCF that builds an RI-J tensor: `aux` (the auxiliary basis),
-`precision_requested` (`"f32"` or `"f64"`, the resolved `[scf] ri_j_precision`)
-and `precision` (what the tensor was actually stored at: an f32 request falls
+`precision_requested` (`"f32"` or `"f64"`, the resolved `[scf] ri_j_precision`),
+`precision_source` (why: `"explicit"`, `"geometry-task default"` for
+`task = "optimize"`/`"frequencies"`, `"gpu default"`, `"default"`, or
+`"path default"` for a library path that fixes its own) and `precision` (what the tensor was actually stored at: an f32 request falls
 back to f64 when the f32 tensor does not fit or `jk_storage` keeps it out of
 core, and Split-RI-J reports f64). See
 [RI-J tensor precision](../methods/scf.md#ri-j-tensor-precision).

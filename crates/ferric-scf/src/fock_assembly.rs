@@ -25,7 +25,7 @@
 //! are convergence-critical — folding them into one spin-generic driver is a
 //! separate, carefully-validated refactor, not a drive-by extraction.
 
-use crate::df_j::{DfJ, RiJPrecision};
+use crate::df_j::{DfJ, ResolvedRiJPrecision, RiJPrecision};
 use crate::df_k::DfK;
 use crate::fock::KBuilder;
 use crate::split_rij::RiJ;
@@ -66,8 +66,8 @@ pub(crate) const DEFAULT_JK_AUX: &str = "def2-universal-jkfit";
 /// [`PairScreen`](ferric_integrals::three_index_source::PairScreen). `<= 0`
 /// keeps every pair. A source shared with DF-K is never screened.
 ///
-/// `j_precision` is the RESOLVED [`RiJPrecision`] of the RI-J tensor
-/// (`RiJPrecision::resolve(config.ri_j_precision)`); the builder's own
+/// `j_precision` is the RESOLVED [`RiJPrecision`] of the RI-J tensor and why
+/// (`config.resolved_ri_j_precision()`); the builder's own
 /// [`RiJ::precision`](crate::split_rij::RiJ::precision) says what was used
 /// (an f32 request falls back to f64 when the f32 tier declines, and
 /// Split-RI-J has no tensor).
@@ -81,8 +81,9 @@ pub(crate) fn build_df_jk<'a>(
     k_aux: Option<&str>,
     ooc_budget: usize,
     j_pair_thresh: f64,
-    j_precision: RiJPrecision,
+    resolved: ResolvedRiJPrecision,
 ) -> Result<(Option<RiJ<'a>>, Option<DfK<'a>>), FerricError> {
+    let j_precision = resolved.precision;
     let out = build_df_jk_impl(
         ctx,
         mol,
@@ -101,6 +102,7 @@ pub(crate) fn build_df_jk<'a>(
             serde_json::json!({
                 "aux": j_aux,
                 "precision_requested": j_precision.as_str(),
+                "precision_source": resolved.source.as_str(),
                 "precision": j.precision().as_str(),
             }),
         );

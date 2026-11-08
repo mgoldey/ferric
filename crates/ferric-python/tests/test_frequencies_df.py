@@ -16,13 +16,12 @@ import ferric
 WATER = "3\n\nO 0 0 0.117\nH 0 0.757 -0.467\nH 0 -0.757 -0.467\n"
 NH2 = "3\n\nN 0 0 0\nH 0 0.802 0.597\nH 0 -0.802 0.597\n"
 AUX = "cc-pvdz-ri"
-# RI-J pinned to the f64 tensor: these compare against finite differences or
-# f64 references at bars below the f32 default's effect (site/src/methods/scf.md,
-# "RI-J tensor precision").
+# No RI-J precision pin: run_frequencies defaults to the f64 tensor (a
+# frequency task; site/src/methods/scf.md, "RI-J tensor precision"), which these
+# finite-difference comparisons need.
 TIGHT = {
     "scf_energy_conv": 1e-10,
     "scf_density_conv": 1e-9,
-    "scf_ri_j_precision": "f64",
 }
 
 

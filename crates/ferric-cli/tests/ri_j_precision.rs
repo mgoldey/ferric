@@ -1,5 +1,9 @@
 //! `[scf] ri_j_precision`, end to end through the CLI: the default stores the
-//! RI-J tensor as f32, `"f64"` and `"f32"` are honoured as given, the run log
+//! RI-J tensor as f32 for `task = "energy"` and f64 for `task = "optimize"` /
+//! `"frequencies"` (Matt 2026-11-08: the f32 surface is jagged between nearby
+//! geometries), `"f64"` and `"f32"` are honoured as given on every task, the
+//! run log records the requested precision and why (`run_start` header,
+//! `ri_j_tensor` `precision_source`), the run log
 //! records the precision the tensor was stored at (`ri_j_tensor`) and the
 //! certificate names it, the f64 run equals the library `solve_rhf` with
 //! `ri_j_precision: Some(F64)` bit for bit, and an unknown value is refused
@@ -39,6 +43,10 @@ fn workspace_root() -> PathBuf {
 const SCF: &str = "max_iter = 200\nenergy_conv = 1e-12\ndensity_conv = 1e-10\n";
 
 fn input(tag: &str, scf_extra: &str) -> PathBuf {
+    input_task(tag, "energy", scf_extra)
+}
+
+fn input_task(tag: &str, task: &str, scf_extra: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("ferric-rijp-{}-{tag}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let toml = dir.join("in.toml");
@@ -47,7 +55,7 @@ fn input(tag: &str, scf_extra: &str) -> PathBuf {
         &toml,
         format!(
             "[molecule]\nxyz = \"{xyz}\"\n[basis]\nname = \"6-31g\"\n[method]\nkind = \"rhf\"\n\
-             task = \"energy\"\n[output]\njson = \"{json}\"\n[scf]\n{SCF}\
+             task = \"{task}\"\n[output]\njson = \"{json}\"\n[scf]\n{SCF}\
              df_j_aux = \"def2-universal-jkfit\"\n{scf_extra}",
             xyz = xyz.display(),
             json = dir.join("run.jsonl").display(),
@@ -135,7 +143,10 @@ fn library_energy(p: RiJPrecision) -> f64 {
 fn the_default_is_f32_and_each_explicit_value_is_honoured_and_recorded() {
     let (d_used, d_e, d_cert) = outcome(&input("default", ""));
     assert_eq!(d_used, "f32", "default");
-    assert!(d_cert.ends_with("f32 tensor storage"), "{d_cert}");
+    assert!(
+        d_cert.ends_with("f32 tensor storage (requested f32: default)"),
+        "{d_cert}"
+    );
 
     let (f32_used, f32_e, _) = outcome(&input("f32", "ri_j_precision = \"f32\"\n"));
     assert_eq!(f32_used, "f32");
@@ -143,7 +154,10 @@ fn the_default_is_f32_and_each_explicit_value_is_honoured_and_recorded() {
 
     let (f64_used, f64_e, f64_cert) = outcome(&input("f64", "ri_j_precision = \"f64\"\n"));
     assert_eq!(f64_used, "f64");
-    assert!(f64_cert.ends_with("f64 tensor storage"), "{f64_cert}");
+    assert!(
+        f64_cert.ends_with("f64 tensor storage (requested f64: explicit)"),
+        "{f64_cert}"
+    );
     assert_ne!(
         f64_e.to_bits(),
         d_e.to_bits(),
@@ -152,6 +166,124 @@ fn the_default_is_f32_and_each_explicit_value_is_honoured_and_recorded() {
     // The CLI's f64 run is the library's f64 run.
     assert_eq!(f64_e.to_bits(), library_energy(RiJPrecision::F64).to_bits());
     assert_eq!(d_e.to_bits(), library_energy(RiJPrecision::F32).to_bits());
+}
+
+/// The run-start header's `(ri_j_precision, resolved, source, task)`.
+fn header(toml: &Path) -> (serde_json::Value, String, String, String) {
+    let start = records(toml, "run_start");
+    let c = &start.first().expect("run_start")["config"];
+    let s = |k: &str| {
+        c[k].as_str()
+            .unwrap_or_else(|| panic!("{k}: {c}"))
+            .to_string()
+    };
+    (
+        c["ri_j_precision"].clone(),
+        s("ri_j_precision_resolved"),
+        s("ri_j_precision_source"),
+        s("ri_j_task"),
+    )
+}
+
+/// The molecule's `ri_j_tensor` records (the MINAO free-atom SCFs pin f64
+/// explicitly and are left out): `(precision, precision_source)` of each.
+fn molecule_tensors(toml: &Path) -> Vec<(String, String)> {
+    let all = records(toml, "ri_j_tensor");
+    let pairs: Vec<(String, String)> = all
+        .iter()
+        .map(|r| {
+            (
+                r["precision"].as_str().unwrap().to_string(),
+                r["precision_source"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    // Free-atom guess SCFs are f64/explicit; keep everything else, plus the
+    // last record (the molecule's own SCF at the final geometry) always.
+    let mut out: Vec<_> = pairs[..pairs.len().saturating_sub(1)]
+        .iter()
+        .filter(|(p, src)| !(p == "f64" && src == "explicit"))
+        .cloned()
+        .collect();
+    out.extend(pairs.last().cloned());
+    out
+}
+
+/// Geometry and frequency tasks default to the f64 tensor (recorded as the
+/// task default), an explicit `"f32"` is honoured for them (recorded as
+/// explicit), and the same input as `task = "energy"` still defaults to f32.
+#[test]
+fn geometry_and_frequency_tasks_default_to_f64_and_honour_an_explicit_f32() {
+    const OPT: &str = "[optimize]\nmax_steps = 2\n";
+    for task in ["optimize", "frequencies"] {
+        let extra_default = if task == "optimize" { OPT } else { "" };
+        // Unset: f64, because of the task.
+        let toml = input_task(&format!("{task}-default"), task, extra_default);
+        let o = run(&toml);
+        assert!(o.status.success(), "{task}: {}", text(&o));
+        assert_eq!(
+            header(&toml),
+            (
+                serde_json::Value::Null,
+                "f64".into(),
+                "geometry-task default".into(),
+                "geometry".into()
+            ),
+            "{task}"
+        );
+        let tensors = molecule_tensors(&toml);
+        assert!(!tensors.is_empty(), "{task}: no ri_j_tensor record");
+        for t in &tensors {
+            assert_eq!(
+                (t.0.as_str(), t.1.as_str()),
+                ("f64", "geometry-task default"),
+                "{task}: {tensors:?}"
+            );
+        }
+
+        // Explicit f32 wins.
+        let extra = format!("ri_j_precision = \"f32\"\n{extra_default}");
+        let toml = input_task(&format!("{task}-f32"), task, &extra);
+        let o = run(&toml);
+        assert!(o.status.success(), "{task} f32: {}", text(&o));
+        assert_eq!(
+            header(&toml),
+            (
+                serde_json::Value::from("f32"),
+                "f32".into(),
+                "explicit".into(),
+                "geometry".into()
+            ),
+            "{task} f32"
+        );
+        let tensors = molecule_tensors(&toml);
+        assert!(
+            tensors.iter().any(|t| t.0 == "f32" && t.1 == "explicit"),
+            "{task} f32: {tensors:?}"
+        );
+        assert!(
+            tensors.iter().all(|t| t.1 != "geometry-task default"),
+            "{task} f32: {tensors:?}"
+        );
+    }
+
+    // A single point keeps the f32 default (and says why).
+    let toml = input("energy-header", "");
+    let o = run(&toml);
+    assert!(o.status.success(), "{}", text(&o));
+    assert_eq!(
+        header(&toml),
+        (
+            serde_json::Value::Null,
+            "f32".into(),
+            "default".into(),
+            "energy".into()
+        )
+    );
+    assert_eq!(
+        molecule_tensors(&toml).last().unwrap(),
+        &("f32".to_string(), "default".to_string())
+    );
 }
 
 #[test]

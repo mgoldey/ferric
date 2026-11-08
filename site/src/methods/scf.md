@@ -93,8 +93,9 @@ derived in [DFT derivations](./dft-derivations.md).
 
 ### RI-J tensor precision
 
-The RI-J three-index tensor is stored as **f32 by default**
-(`[scf] ri_j_precision = "f32"`; Python `ri_j_precision=`, or
+The RI-J three-index tensor is stored as **f32 by default for single
+points** and **f64 by default for geometry and frequency tasks**
+(`[scf] ri_j_precision = "f32"|"f64"`; Python `ri_j_precision=`, or
 `scf_ri_j_precision=` on drivers with more than one iterative stage;
 library `RhfConfig::ri_j_precision`). Each integral is rounded to the
 nearest f32 once; both RI-J contractions multiply the stored values by f64
@@ -103,8 +104,20 @@ J itself stay f64. The tensor takes half the memory. `"f64"` stores the
 tensor in f64 and reproduces the former default bit for bit (measured:
 identical energies, gradients and iteration counts for water and
 sulfamethoxazole, PBE and B3LYP, and RHF with RI-J). An explicit value
-always wins; omitted, the default is f32 except under a `[gpu]` mode that may
-build J on the device, which needs the f64 tensor. An f32 request falls back
+always wins. Omitted, the precision is resolved in one place
+(`ferric_scf::df_j::resolve_ri_j_precision`, from `RhfConfig::ri_j_task`):
+
+| task | omitted `ri_j_precision` resolves to |
+|---|---|
+| CLI `task = "optimize"` / `"frequencies"`; Python `run_optimize`, `run_optimize_uhf`, `run_optimize_qmmm`, `run_frequencies`, `run_saddle`, `run_irc`; library `optimize_geometry*`, `harmonic_frequencies*`, `optimize_qmmm` | f64 (geometry-task default) |
+| everything else (energies, SCF, gradients at one geometry, TDDFT, GW, MP2, ...) | f32, or f64 under a `[gpu]` mode that may build J on the device (it needs the f64 tensor) |
+
+The geometry default is f64 because the f32 surface is jagged (below):
+optimizers and finite-difference Hessians compare energies and gradients at
+nearby geometries, where the f32 jitter is as large as the convergence
+criteria. `ri_j_precision = "f32"` in an optimisation is still honoured.
+
+An f32 request falls back
 to f64 (with a notice) when the f32 tensor does not fit in memory or
 `jk_storage` is `disk`/`direct`; Split-RI-J has no tensor. The free-atom
 SCFs of the MINAO guess always use f64.
@@ -122,12 +135,17 @@ differences of the PBE/def2-SVP energy (SCF converged to 1e-10 Ha): at a
 on water and 2.1e-4 Ha/Bohr on sulfamethoxazole, against 5e-7 and 9.5e-7 with
 f64, i.e. an energy jitter of about 2e-7 Ha (water) and 9e-7 Ha
 (sulfamethoxazole) between nearby geometries; at a 5e-3 Bohr step the f32
-residual fell to 3.6e-6 and 2.2e-5 Ha/Bohr. Use `ri_j_precision = "f64"` for
-finite-difference work on energies and for geometry optimisations whose
-energy-change criterion is at or below 1e-6 Ha on drug-sized molecules. The
-precision used is recorded in the certificate (`ri-j` entry: "aux …, f32
-tensor storage"), the run log (`ri_j_tensor` record, plus a `dfj-f32` entry
-in the precision record) and `result.ri_j_precision` in Python.
+residual fell to 3.6e-6 and 2.2e-5 Ha/Bohr. That jitter is the size of the
+optimiser's default energy-change criterion (1e-6 Ha), which is why geometry
+and frequency tasks default to f64; for your own finite-difference work on
+single-point energies, set `ri_j_precision = "f64"`. The precision used and
+why is recorded in the certificate (`ri-j` entry: "aux …, f64 tensor storage
+(requested f64: geometry-task default)"; the reason is `explicit`,
+`geometry-task default`, `gpu default` or `default`), the run log (the
+`run_start` header's `ri_j_precision_resolved` / `ri_j_precision_source` /
+`ri_j_task`, each `ri_j_tensor` record's `precision_source`, plus a
+`dfj-f32` entry in the precision record) and `result.ri_j_precision` in
+Python.
 
 Measured, def2-SVP, `def2-universal-jkfit`, default grid and thresholds,
 f32 minus f64 (2026-11-07):
