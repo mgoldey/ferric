@@ -696,9 +696,9 @@ impl<'a> DfJ<'a> {
     ) -> Result<Self, FerricError> {
         // Cholesky (dpotrf), NOT the LU inverse this used to form: see the
         // `v_chol` field doc for why an explicit inverse is numerically wrong
-        // here. Also sidesteps the multi-threaded dgetrf_parallel stack
-        // overflow the LU path was exposed to (openblas-rayon-dgetrf-crash;
-        // `.cholesky()` was never observed to crash at these sizes). A metric
+        // here. (The old LU path's "dgetrf_parallel crash" at >1 BLAS thread
+        // was a 2 MiB thread stack, not LU itself; `init_threading` now gives
+        // every thread enough stack — see ferric_core::blas_threads.) A metric
         // that is not numerically positive definite is a hard error, never a
         // silently garbage inverse.
         let v_chol = v.factorizec(UPLO::Lower).map_err(|e| {

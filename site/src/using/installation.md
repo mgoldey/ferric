@@ -189,8 +189,9 @@ OPENBLAS_NUM_THREADS=1 cargo test --workspace
 `.cargo/config.toml` sets `OPENBLAS_NUM_THREADS=1` for cargo-invoked
 processes only when the variable is unset (its `[env]` entry has no
 `force = true`, so an exported value wins). The prefix above makes this command
-use 1 regardless of your shell. Do not raise it above 1; see
-[Threading](#threading).
+use 1 regardless of your shell; see [Threading](#threading). It also sets
+`FERRIC_BLAS_THREADS=1` (tests run concurrently in one process, and the BLAS
+thread count is process-wide) and `RUST_MIN_STACK` to 64 MiB.
 The Python binding tests are pytest, not cargo; see
 [CONTRIBUTING.md](https://github.com/mgoldey/ferric/blob/main/CONTRIBUTING.md).
 
@@ -362,12 +363,15 @@ The shortest way to use the device is one line in the input, `gpu = "on"` (f64) 
 
 ## Threading
 
-The `ferric` binary and `import ferric` pin OpenBLAS to one thread when
-`OPENBLAS_NUM_THREADS` is unset, and honour the variable when it is set
-(`cargo` sets it to 1 through `.cargo/config.toml`, but only when it is unset,
-so an exported value reaches cargo-launched processes). Leave it unset or at 1.
-ferric uses rayon for its parallelism; a threaded OpenBLAS on top of that
-oversubscribes the machine, and its LU routines can crash when called from
-rayon workers. For throughput
-across many independent jobs, prefer many single-threaded processes over one
-multi-threaded job.
+`RAYON_NUM_THREADS` sets ferric's thread count (default: every logical CPU;
+the physical core count is usually faster). Parallel regions run OpenBLAS at
+one thread unless `OPENBLAS_NUM_THREADS` is set (`cargo` sets it to 1 through
+`.cargo/config.toml`, only when it is unset); leave it unset, since rayon ×
+BLAS threads above the core count oversubscribes the machine. Serial sections
+(the per-iteration Fock diagonalization and DIIS commutator, other dense linear
+algebra between parallel regions) run OpenBLAS at
+[`[parallel] blas_threads`](../reference/input.md#parallel), default the rayon
+thread count; set it to 1 for results bit-identical across thread counts. See
+[Sharp bits](./sharp-bits.md#two-blas-thread-counts-parallel-regions-and-serial-sections).
+For throughput across many independent jobs, prefer many single-threaded
+processes over one multi-threaded job.

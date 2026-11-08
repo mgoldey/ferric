@@ -363,8 +363,8 @@ fn v_inv_sqrt_lindep(v: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
     // drop; `metric_lindep_cut` places the cut so that none does.
     // `crate::df_gradient` decomposes the same metric with the same solver and
     // the same cut rule, so energy and gradient classify every mode identically.
-    // Opt-in BLAS raise via FERRIC_BLAS_THREADS (default 1, unchanged
-    // behavior); opt_in_blas_threads()'s rayon-worker self-guard also covers
+    // Opt-in BLAS raise via FERRIC_BLAS_THREADS (default: the rayon pool size; 1 on a rayon
+    // worker); opt_in_blas_threads()'s rayon-worker self-guard also covers
     // any caller reached from a single-thread rayon pool (e.g. free-atom SAD),
     // resolving to 1 there regardless of the env var.
     let t_st = ferric_core::timing::Stage::start("dfk:metric-eigh");

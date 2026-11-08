@@ -2007,12 +2007,18 @@ pub(crate) fn diagonalize(
     f: &Array2<f64>,
     s_inv_sqrt: &Array2<f64>,
 ) -> Result<(Vec<f64>, Array2<f64>), FerricError> {
-    let f_prime = s_inv_sqrt.dot(f).dot(s_inv_sqrt);
-    let (evals, evecs) = f_prime
-        .eigh(ndarray_linalg::UPLO::Upper)
-        .map_err(|e| FerricError::Lapack(format!("F diag: {e}")))?;
-    let c = s_inv_sqrt.dot(&evecs);
-    Ok((evals.to_vec(), c))
+    // Serial section (outside any rayon region): serial BLAS thread count.
+    ferric_integrals::blas_threads::with_blas_threads(
+        ferric_integrals::blas_threads::opt_in_blas_threads(),
+        || {
+            let f_prime = s_inv_sqrt.dot(f).dot(s_inv_sqrt);
+            let (evals, evecs) = f_prime
+                .eigh(ndarray_linalg::UPLO::Upper)
+                .map_err(|e| FerricError::Lapack(format!("F diag: {e}")))?;
+            let c = s_inv_sqrt.dot(&evecs);
+            Ok((evals.to_vec(), c))
+        },
+    )
 }
 
 #[cfg(test)]

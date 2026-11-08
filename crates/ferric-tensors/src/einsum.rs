@@ -776,7 +776,7 @@ fn gemm_row_banded(
         || rayon::current_thread_index().is_some();
     if serial {
         // Preserve the EXISTING opt-in BLAS behavior for the serial path
-        // (default 1; raised only by FERRIC_BLAS_THREADS, and forced back to 1
+        // (default: the rayon pool size, and forced back to 1
         // by the resolver's own guard when this runs on a rayon worker).
         with_blas_threads(opt_in_blas_threads(), || gemm_kblocked(left, right, out));
         return;

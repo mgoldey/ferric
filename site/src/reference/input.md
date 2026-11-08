@@ -331,6 +331,12 @@ Read when `task = "frequencies"`.
 | `budget_gb` | float | auto | finite and > 0 | Precedence: this key, then `FERRIC_MEM_BUDGET_GB`, then the legacy `FERRIC_OOC_BUDGET_GB`/`FERRIC_ERI3_BUDGET_GB`, then 0.8 × available RAM, then 2 GiB. A value of 0, a negative value or NaN is an error; omit the key for auto. It bounds the ledgered allocations, not total process memory. |
 | `three_index_budget_gb` | float | — | | Deprecated alias. `budget_gb` wins if both are set. |
 
+## `[parallel]`
+
+| Key | Type | Default | Allowed values | Notes |
+|---|---|---|---|---|
+| `blas_threads` | int | rayon thread count | ≥ 1 | OpenBLAS threads for serial sections: the per-iteration Fock diagonalization, the DIIS commutator, the orthogonalizer and density GEMMs and the other dense linear algebra that runs outside parallel regions. Precedence: this key, then `FERRIC_BLAS_THREADS`, then the rayon thread count (`RAYON_NUM_THREADS`, default every logical CPU). `1` makes results bit-identical across thread counts; any other value lets OpenBLAS split reductions by thread count, which moves energies at the 1e-13 Ha level. Parallel regions (integrals, J/K, XC) always run OpenBLAS at 1 thread unless `OPENBLAS_NUM_THREADS` is set; rayon × BLAS threads above the core count oversubscribes the machine. The PDEP Lanczos/Davidson eigensolvers use 1 unless this key, `FERRIC_BLAS_THREADS` or `FERRIC_LANCZOS_BLAS_THREADS` is set. The run prints the resolved counts on a `[ferric] threads:` line. |
+
 ## `[gpu]`
 
 Optional CUDA backend. A default build has no GPU code: there `mode = "on"` is an error and `mode = "auto"` prints a notice and runs on the CPU. A GPU run is deterministic run to run on one device but is not bit-identical to the CPU run (a different summation order, like `FERRIC_BLAS_THREADS` above 1).

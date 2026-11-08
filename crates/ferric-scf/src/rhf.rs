@@ -2902,17 +2902,18 @@ fn solve_rhf_impl(
 
         // DIIS error: e = FDS - SDF. Runs once per SCF iteration, serially
         // (this whole loop body is outside any rayon region — the JK build
-        // above is the only rayon-parallel step and has already returned).
-        // Opt-in BLAS raise via FERRIC_BLAS_THREADS (default 1, unchanged
-        // behavior): opt_in_blas_threads()'s rayon-worker self-guard also
-        // protects the SAD/free-atom path, which calls solve_rhf from inside
-        // guess.rs's run_serial_pool (a 1-thread rayon pool — still "inside
-        // rayon" for the guard's purposes, so it always resolves to 1 there).
+        // above is the only rayon-parallel step and has already returned), so
+        // it runs at the serial BLAS thread count (`opt_in_blas_threads`:
+        // default = the rayon pool size; `[parallel] blas_threads = 1` for
+        // results bit-identical across thread counts). On a rayon worker (the
+        // SAD/free-atom SCFs in guess.rs's one-thread pool, or a caller's
+        // `pool.install`) it resolves to 1.
         // Zero-alloc: writes into the buffers hoisted above the loop. Same
         // dgemm calls in the same association as `f.dot(&d).dot(&s)` /
         // `s.dot(&d).dot(&f)`, so bit-identical (see the hoist comment).
         let commutator_t = phases.begin("diis_commutator");
         with_blas_threads(opt_in_blas_threads(), || {
+            crate::blas_probe::record(&crate::blas_probe::DIIS_COMMUTATOR);
             general_mat_mul(1.0, &f, &d, 0.0, &mut fd_tmp);
             general_mat_mul(1.0, &fd_tmp, &s, 0.0, &mut fds);
             general_mat_mul(1.0, &s, &d, 0.0, &mut fd_tmp);
@@ -4092,8 +4093,8 @@ pub(crate) fn lindep_thresh() -> f64 {
 pub(crate) fn canonical_orthogonalizer(s: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
     let n = s.nrows();
     // Runs once at SCF setup, serially (called before the iteration loop, no
-    // enclosing rayon region). Opt-in BLAS raise (default 1, unchanged
-    // behavior) — see the DIIS FDS/SDF comment above for the SAD/free-atom
+    // enclosing rayon region). Opt-in BLAS raise (default: the rayon pool size; 1 on a rayon
+    // worker) — see the DIIS FDS/SDF comment above for the SAD/free-atom
     // protection argument (identical here: opt_in_blas_threads()'s
     // rayon-worker self-guard resolves to 1 inside guess.rs's run_serial_pool).
     let (s_evals, s_evecs) = with_blas_threads(opt_in_blas_threads(), || {

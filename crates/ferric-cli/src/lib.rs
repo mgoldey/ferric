@@ -375,9 +375,11 @@ fn print_df_guess_outcome(
 }
 
 pub fn run(args: Vec<String>) {
-    // Safe-by-default threading: pin OpenBLAS to 1 thread (rayon owns ferric's
-    // parallelism) unless the user explicitly set OPENBLAS_NUM_THREADS. Without
-    // this, running the release binary directly oversubscribes rayon × BLAS.
+    // Threading model (see ferric_core::blas_threads): thread stacks large
+    // enough for threaded LAPACK on any thread, OpenBLAS at 1 thread in
+    // parallel regions unless the user set OPENBLAS_NUM_THREADS, and serial
+    // sections at `[parallel] blas_threads` (set after the TOML is read).
+    // Must run before anything spawns a thread.
     ferric_integrals::blas_threads::init_threading();
     let ctx = ParallelContext::new();
     if args.len() == 2 && (args[1] == "--version" || args[1] == "-V") {
@@ -436,6 +438,17 @@ pub fn run(args: Vec<String>) {
         }
     };
     cfg.scf.verbose = cfg.scf.verbose || cli_verbose;
+    // Only a written key overrides: an absent `[parallel]` keeps whatever the
+    // host process set (`ferric.set_blas_threads` before `ferric.run_cli`).
+    if let Some(n) = cfg.parallel.blas_threads {
+        ferric_integrals::blas_threads::set_serial_blas_threads(Some(n));
+    }
+    eprintln!(
+        "[ferric] threads: rayon {}, OpenBLAS {} in parallel regions, {} in serial sections",
+        rayon::current_num_threads(),
+        ferric_integrals::blas_threads::current_blas_threads(),
+        ferric_integrals::blas_threads::opt_in_blas_threads(),
+    );
     if let Err(e) = install_integral_settings(&cfg.scf) {
         eprintln!("error: {e}");
         std::process::exit(1);
