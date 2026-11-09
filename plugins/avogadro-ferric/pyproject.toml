@@ -1,0 +1,139 @@
+################################################################################
+# avogadro-ferric: ferric quantum chemistry inside Avogadro 2 (package plugin)
+# Protocol notes and the verification log are in README.md.
+################################################################################
+[project]
+name = "avogadro-ferric"
+version = "0.1.0"
+description = "Avogadro 2 plugin: ferric SCF energies/gradients, charges, ESP, optimization, frequencies, orbitals and CLI input generation"
+readme = "README.md"
+license = "MIT OR Apache-2.0"
+authors = [{ name = "Matthew Goldey", email = "matthew.goldey@gmail.com" }]
+# ferric publishes cp310-cp313 manylinux x86_64 wheels only.
+requires-python = ">=3.10,<3.14"
+dependencies = [
+    # 0.1.0rc10 has run_qmmm / run_optimize_qmmm / FrequencyResult.normal_modes.
+    # Orbital export also needs BasisSet.shells() and DftResult.mo_coefficients(),
+    # which are newer than rc10 (the Orbitals command says so when they are missing).
+    "ferric>=0.1.0rc10",
+    "numpy>=2.0",
+]
+
+[project.scripts]
+avogadro-ferric = "avogadro_ferric:main"
+
+[build-system]
+requires = ["uv_build>=0.10.2,<0.11.0"]
+build-backend = "uv_build"
+
+################################################################################
+# Pixi (mandatory for Avogadro package plugins, even with no conda deps)
+################################################################################
+[tool.pixi.workspace]
+channels = ["conda-forge"]
+platforms = ["linux-64"]
+
+[tool.pixi.pypi-dependencies]
+avogadro-ferric = { path = ".", editable = true }
+
+[tool.pixi.dependencies]
+python = ">=3.10,<3.14"
+
+[tool.pixi.tasks]
+
+################################################################################
+# Avogadro metadata (read by avogadrolibs 2.1.0 qtgui/packagemanager.cpp)
+################################################################################
+[tool.avogadro]
+minimum-avogadro-version = "2.1.0"
+
+[[tool.avogadro.energy-models]]
+identifier = "ferric"
+model-name = "ferric (QM)"
+description = "ferric SCF energy and analytic gradient (HF / KS-DFT; method and basis from Extensions > ferric > Configure...)"
+input-format = "cjson"
+support.gradients = true
+support.ions = true
+support.radicals = true
+support.unit-cell = false
+support.elements = "1-36"
+
+[[tool.avogadro.electrostatic-models]]
+identifier = "ferric_lowdin"
+model-name = "ferric Lowdin"
+description = "Lowdin charges and the full QM electrostatic potential from a ferric RHF/RKS SCF"
+input-format = "cjson"
+input-cjson = true
+support.charges = true
+support.potentials = true
+support.elements = "1-36"
+
+[[tool.avogadro.electrostatic-models]]
+identifier = "ferric_hirshfeld"
+model-name = "ferric Hirshfeld"
+description = "Hirshfeld charges and the full QM electrostatic potential from a ferric RHF/RKS SCF"
+input-format = "cjson"
+input-cjson = true
+support.charges = true
+support.potentials = true
+support.elements = "1-36"
+
+[[tool.avogadro.electrostatic-models]]
+identifier = "ferric_chelpg"
+model-name = "ferric CHELPG"
+description = "CHELPG (ESP-fitted) charges and the full QM electrostatic potential from a ferric RHF/RKS SCF"
+input-format = "cjson"
+input-cjson = true
+support.charges = true
+support.potentials = true
+support.elements = "1-36"
+
+[[tool.avogadro.input-generators]]
+identifier = "ferric_input"
+program-name = "ferric"
+input-format = "cjson"
+support.molecular = true
+support.periodic = false
+user-options = "src/avogadro_ferric/data/input_options.toml"
+highlight-styles = "src/avogadro_ferric/data/syntax.toml"
+
+[[tool.avogadro.menu-commands]]
+identifier = "sp"
+input-format = "cjson"
+menu = "Extensions"
+submenu = "ferric"
+item = "Single Point"
+menu-priorities = [150, 900]
+
+[[tool.avogadro.menu-commands]]
+identifier = "opt"
+input-format = "cjson"
+menu = "Extensions"
+submenu = "ferric"
+item = "Optimize Geometry"
+menu-priorities = [150, 800]
+
+[[tool.avogadro.menu-commands]]
+identifier = "freq"
+input-format = "cjson"
+menu = "Extensions"
+submenu = "ferric"
+item = "Frequencies"
+menu-priorities = [150, 700]
+
+[[tool.avogadro.menu-commands]]
+identifier = "orbitals"
+input-format = "cjson"
+menu = "Extensions"
+submenu = "ferric"
+item = "Molecular Orbitals"
+menu-priorities = [150, 600]
+
+[[tool.avogadro.menu-commands]]
+identifier = "config"
+input-format = "cjson"
+user-options = "dynamic"
+menu = "Extensions"
+submenu = "ferric"
+item = "Configure…"
+menu-priorities = [150, 100]

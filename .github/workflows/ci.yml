@@ -2704,6 +2704,16 @@ jobs:
           uv run --no-sync pytest crates/ferric-python/tests/ \
             --cov=ferric --cov-report=lcov:python-ext-coverage.lcov -q
 
+      - name: pytest -- avogadro-ferric plugin (plugins/avogadro-ferric)
+        # The Avogadro 2 plugin's tests drive its entry point as Avogadro does
+        # (subprocess, JSON on stdin) against the extension built above; they
+        # need no Avogadro. Provisional for the same reason as the step above:
+        # it has not yet run green in CI.
+        continue-on-error: true
+        env:
+          OPENBLAS_NUM_THREADS: "1"
+        run: uv run --no-sync pytest plugins/avogadro-ferric/tests -q
+
       - name: Upload Python extension coverage artifact
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
