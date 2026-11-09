@@ -605,7 +605,10 @@ impl ThreeIndexSource {
         if dressed_beside == 0 || memory_tier(nao, naux, budget_bytes).is_none() {
             return false;
         }
-        let full = naux.saturating_mul(nao).saturating_mul(nao).saturating_mul(8);
+        let full = naux
+            .saturating_mul(nao)
+            .saturating_mul(nao)
+            .saturating_mul(8);
         let packed = naux.saturating_mul(packed_pair_len(nao)).saturating_mul(8);
         let held = full.min(packed).saturating_add(dressed_beside);
         let streamed = dressed_beside.saturating_add(Self::dress_stream_bytes_for(nao, naux));
@@ -736,12 +739,22 @@ mod tests {
         assert!(want(packed + band - 1));
         assert!(want(band + stream));
         assert!(!want(band + stream - 1), "the band and its stream must fit");
-        assert!(!ThreeIndexSource::dress_first_wanted(nao, naux, 12 << 30, 0));
+        assert!(!ThreeIndexSource::dress_first_wanted(
+            nao,
+            naux,
+            12 << 30,
+            0
+        ));
         // A raw no memory tier holds is placed as before (spill / recompute).
         let tiny = (100, 4000);
         let b = tiny.1 * packed_pair_len(tiny.0) * 8;
         assert!(memory_tier(tiny.0, tiny.1, b / 2).is_none());
-        assert!(!ThreeIndexSource::dress_first_wanted(tiny.0, tiny.1, b / 2, b / 4));
+        assert!(!ThreeIndexSource::dress_first_wanted(
+            tiny.0,
+            tiny.1,
+            b / 2,
+            b / 4
+        ));
     }
 
     #[test]
