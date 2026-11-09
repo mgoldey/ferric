@@ -154,9 +154,10 @@ fn oh_uks_lda_converges_to_the_stationary_ground_state_not_a_stagnated_one() {
     let cfg = lda(1e-4, 0);
     let pins0 = degenerate_flip_pins_on_this_thread();
     let r = solve(&sys, &cfg);
-    assert_eq!(
-        degenerate_flip_pins_on_this_thread() - pins0,
-        1,
+    // >= 1: each frontier start of the default guess
+    // (`uhf::FRONTIER_GUESS_ROTATIONS`) is its own solve with its own pin.
+    assert!(
+        degenerate_flip_pins_on_this_thread() - pins0 >= 1,
         "the degenerate flip did not engage the pin"
     );
     let err_max = r.convergence.as_ref().map(|c| c.err_max).unwrap();
