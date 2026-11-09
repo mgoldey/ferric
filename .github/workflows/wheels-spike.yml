@@ -274,6 +274,20 @@ jobs:
           "$VPY" -m pip install -q wheelhouse/*.whl
           cp scripts/wheel_spike_smoke.py "$RUNNER_TEMP/"
           cd "$RUNNER_TEMP"
-          "$VPY" wheel_spike_smoke.py "$E_WATER_LINUX" --broad 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
+          export PYTHONUNBUFFERED=1
+          "$VPY" wheel_spike_smoke.py "$E_WATER_LINUX" 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
           if [ "$RUNNER_OS" = Windows ]; then FERRIC="$RUNNER_TEMP/v/Scripts/ferric.exe"; else FERRIC="$RUNNER_TEMP/v/bin/ferric"; fi
           "$FERRIC" --help | head -5
+          # Each broad case in its own process: a native abort (e.g. a libint2
+          # assert) must not hide the other cases. Failures are reported, and
+          # fail the step at the end.
+          bad=0
+          for c in $("$VPY" wheel_spike_smoke.py --list | tr -d '\r'); do
+            set +e
+            "$VPY" wheel_spike_smoke.py --case "$c" > case.out 2>&1
+            rc=$?
+            set -e
+            grep -E "^BROAD|Assertion|Error|error" case.out | head -5 | tee -a "$GITHUB_STEP_SUMMARY"
+            if [ "$rc" != 0 ]; then echo "BROAD $c EXIT $rc" | tee -a "$GITHUB_STEP_SUMMARY"; bad=1; fi
+          done
+          exit $bad
