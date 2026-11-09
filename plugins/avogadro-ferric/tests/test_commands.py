@@ -235,3 +235,37 @@ def test_unknown_method_is_refused(plugin_env):
     env = plugin_env()
     out, _ = run_plugin(env, ["config"], {"options": {"method": "MP2"}})
     assert "unknown method" in out["error"]
+
+
+# ---------------------------------------------------------------- per-run dialog
+
+
+def test_job_commands_ask_for_method_and_basis(plugin_env):
+    """Single Point / Optimize / Frequencies / Orbitals open a method + basis
+    dialog (user-options = "dynamic"), pre-filled from the Configure defaults."""
+    import tomllib
+
+    from avoferric_testlib import PLUGIN_DIR
+
+    meta = tomllib.loads((PLUGIN_DIR / "pyproject.toml").read_text(encoding="utf-8"))
+    cmds = {c["identifier"]: c for c in meta["tool"]["avogadro"]["menu-commands"]}
+    for ident in ("sp", "opt", "freq", "orbitals"):
+        assert cmds[ident].get("user-options") == "dynamic", ident
+    env = plugin_env(method="B3LYP", basis="cc-pvdz")
+    for ident in ("sp", "opt", "freq", "orbitals"):
+        out, _ = run_plugin(env, [ident, "--user-options"], {})
+        opts = out["userOptions"]
+        assert set(opts) == {"method", "basis"}, ident
+        assert all("type" in v for v in opts.values())
+        assert opts["method"]["values"][opts["method"]["default"]] == "B3LYP"
+        assert opts["basis"]["values"][opts["basis"]["default"]] == "cc-pvdz"
+
+
+def test_dialog_choice_overrides_the_default_for_one_run(plugin_env):
+    env = plugin_env(method="PBE", basis="def2-svp")
+    payload = menu_input(WATER, options={"method": "HF", "basis": "sto-3g"})
+    out, _ = run_plugin(env, ["sp"], payload)
+    assert "RHF/sto-3g" in out["message"], out["message"]
+    # The stored default is untouched.
+    stored = json.loads(open(env["AVOGADRO_FERRIC_CONFIG"], encoding="utf-8").read())
+    assert stored["method"] == "PBE" and stored["basis"] == "def2-svp"

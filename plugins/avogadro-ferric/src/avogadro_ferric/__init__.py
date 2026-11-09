@@ -71,7 +71,9 @@ def run(args, stdin=None) -> dict | None:
 
         if args.feature == "config":
             return commands.configure({}, want_options=True)
-        return {"userOptions": {}}
+        # Do not read stdin here: Avogadro may not send (or close) it for an
+        # options request.
+        return {"userOptions": config.job_options(config.load())}
 
     avo_input = _read_json(stdin)
     if args.feature in CHARGE_MODELS:
