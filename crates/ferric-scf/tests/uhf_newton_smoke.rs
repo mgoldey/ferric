@@ -318,6 +318,8 @@ fn uhf_hessian_matvec_matches_finite_difference() {
         fxc: None,
         thresh: 1e-12,
         ooc_budget: ferric_core::memory::resolve_budget_bytes(None),
+        j_response: None,
+        k_response: None,
     };
     let pool = ferric_scf::engine_pool::EnginePool::new(bounds.op, &prep, 1e-14).unwrap();
     let (hk_a, hk_b) =

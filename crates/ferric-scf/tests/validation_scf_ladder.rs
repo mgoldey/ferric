@@ -491,6 +491,8 @@ fn external_check(sys: &System, res: &ScfResult, r: &Value, uhf_cross: bool) {
             fxc: None,
             thresh: RhfConfig::default().integral_thresh,
             ooc_budget: ferric_core::memory::resolve_budget_bytes(None),
+            j_response: None,
+            k_response: None,
         };
         let st = uhf_internal_stability(&sys.ctx, &inp, &StabilityConfig::default())
             .unwrap_or_else(|e| panic!("{ctx}: external analysis failed: {e:?}"));

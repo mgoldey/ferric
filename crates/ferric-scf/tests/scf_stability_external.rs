@@ -281,6 +281,8 @@ fn uhf_inputs_at_rhf_point<'a>(s: &'a Rhf) -> UhfNewtonInputs<'a> {
         fxc: None,
         thresh: RhfConfig::default().integral_thresh,
         ooc_budget: ferric_core::memory::resolve_budget_bytes(None),
+        j_response: None,
+        k_response: None,
     }
 }
 

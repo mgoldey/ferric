@@ -616,6 +616,8 @@ fn newton_inputs<'a>(
         fxc: None,
         thresh: 1e-12,
         ooc_budget: 0,
+        j_response: None,
+        k_response: None,
     }
 }
 

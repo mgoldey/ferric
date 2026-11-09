@@ -492,6 +492,8 @@ fn augmented_lambda_min(s: &System, r: &CdftResult) -> (f64, String) {
         fxc: None,
         thresh: RhfConfig::default().integral_thresh,
         ooc_budget: 0,
+        j_response: None,
+        k_response: None,
     };
     let res = uhf_internal_stability(&s.ctx, &inputs, &StabilityConfig::default())
         .unwrap_or_else(|e| panic!("{}: stability analysis failed: {e:?}", s.tag));

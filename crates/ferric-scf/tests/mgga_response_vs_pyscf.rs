@@ -252,6 +252,8 @@ fn nh2_uks_r2scan_hessian_matches_pyscf() {
         fxc: Some(fxc),
         thresh: cfg.integral_thresh,
         ooc_budget: ferric_core::memory::resolve_budget_bytes(None),
+        j_response: None,
+        k_response: None,
     };
     let n = c_a.nrows();
     let (da, db) = ((n - na) * na, (n - nb) * nb);

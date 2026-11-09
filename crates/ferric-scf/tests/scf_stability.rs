@@ -216,6 +216,8 @@ fn uhf_inputs<'a>(st: &'a UhfState) -> UhfNewtonInputs<'a> {
         fxc: None,
         thresh: 1e-12,
         ooc_budget: ferric_core::memory::resolve_budget_bytes(None),
+        j_response: None,
+        k_response: None,
     }
 }
 

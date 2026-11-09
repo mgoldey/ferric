@@ -1332,6 +1332,8 @@ fn augmented_instability(
         fxc: None,
         thresh: config.integral_thresh,
         ooc_budget: 0,
+        j_response: None,
+        k_response: None,
     };
     match crate::stability::uhf_internal_stability(
         ctx,

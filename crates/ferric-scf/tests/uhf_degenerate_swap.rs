@@ -10,9 +10,22 @@
 //!   −73.4899520144 with `err_max` 0.136; the next extrapolation gives it ~0
 //!   weight, D freezes, and the ΔP gate ACCEPTED it, 0.586 Ha high.
 //!
-//! The guard (`uhf::UhfExitGate`) accepts the swap at the stationary point,
-//! vetoes the stagnated state, and — only after a swap — returns MOs whose
-//! aufbau density is the returned density. A MOM state keeps main's C and eps.
+//! The guard (`uhf::UhfExitGate`) vetoes the stagnated state. The swap itself
+//! is no longer accepted: a degenerate flip engages the occupation pin
+//! (`uhf::FlipPin`) and the run converges, by the ordinary gate, on the held
+//! non-aufbau state, whose returned MOs build the returned density. A MOM
+//! state keeps main's C and eps.
+//!
+//! CI-only failures this file had (PR #630): the exits moved by 2.4e-8 Ha and
+//! the MOM state came out aufbau on the CI kernels only. The guess Fock leaves
+//! the β π pair exactly degenerate, so the hole's starting orientation was
+//! whatever LAPACK's rounding picked, and on the DFT grid the hole energy
+//! depends on that orientation at the 1e-8..1e-7 Ha level. The guess now
+//! takes a canonical basis inside a degenerate frontier pair
+//! (`uhf::canonical_frontier_basis`). Evidence it is the mechanism: with it,
+//! the B3LYP twin in `rsh_orbital_hessian.rs` lands locally on exactly the CI
+//! Newton energy (−75.7319387216), and a guess rotated 0.1 rad off the axis
+//! reproduces the CI DIIS energy (−75.7319370340) to all ten printed digits.
 
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
@@ -23,14 +36,19 @@ use ferric_scf::df_j::RiJPrecision;
 use ferric_scf::hessian::uhf_hessian;
 use ferric_scf::rhf::RhfConfig;
 use ferric_scf::screening::SchwarzBounds;
-use ferric_scf::uhf::solve_uhf;
+use ferric_scf::uhf::{degenerate_flip_pins_on_this_thread, solve_uhf};
 use ferric_scf::ScfResult;
 use ndarray::{s, Array2};
 
 const OH: &str = "2\nOH doublet\nO 0.0 0.0 0.0\nH 0.0 0.0 0.98\n";
 
-/// The stationary UKS-LDA/STO-3G ground state of OH at this geometry.
-const E_GROUND: f64 = -74.0755553242;
+/// The stationary UKS-LDA/STO-3G ground state of OH at this geometry, as
+/// reached deterministically from the canonical guess (energy_conv 1e-7,
+/// density_conv 1e-9). The hole-orientation minimum is 8e-10 lower
+/// (−74.0755553219, `uhf_oh_orientation.rs`); a second local minimum at the
+/// grid's other C4 orientation is 1.0e-7 higher. The pre-pin constant
+/// (−74.0755553242) was a swap exit at a rounding-chosen orientation.
+const E_GROUND: f64 = -74.0755553211;
 /// The stagnated non-aufbau state the unguarded gate accepted.
 const E_STAGNATED: f64 = -73.4899520144;
 /// α/β occupied counts of the OH doublet.
@@ -134,7 +152,13 @@ fn hessian_state_refusal(sys: &Oh, r: &ScfResult, cfg: &RhfConfig) -> String {
 fn oh_uks_lda_converges_to_the_stationary_ground_state_not_a_stagnated_one() {
     let sys = oh();
     let cfg = lda(1e-4, 0);
+    let pins0 = degenerate_flip_pins_on_this_thread();
     let r = solve(&sys, &cfg);
+    assert_eq!(
+        degenerate_flip_pins_on_this_thread() - pins0,
+        1,
+        "the degenerate flip did not engage the pin"
+    );
     let err_max = r.convergence.as_ref().map(|c| c.err_max).unwrap();
     println!(
         "OH UKS-LDA: E {:.10} in {} iters (converged={}, err_max={err_max:.3e})",
@@ -161,11 +185,15 @@ fn oh_uks_lda_converges_to_the_stationary_ground_state_not_a_stagnated_one() {
         "orbital gradient {err_max:.3e} at the accepted state"
     );
 
-    // Accepted as a degenerate swap, so the returned MOs are reordered to
-    // build the returned density (aufbau of C reproduces D) ...
+    // The held β state is non-aufbau, so its returned MOs are D's
+    // semicanonical orbitals and build D to rounding (MEASURED 8.9e-16). The
+    // aufbau α misses D by the exit's own convergence: D comes from the
+    // previous iteration's MOs, and the ΔP gate accepts dp_max up to
+    // 10·density_conv (MEASURED 9.0e-5 at density_conv 1e-4; the old 1e-5 bar
+    // held only because the swap exit happened to come at err_max 9e-7).
     let (da, db) = aufbau_deviation(&r);
     assert!(
-        da < 1e-5 && db < 1e-5,
+        db < 1e-5 && da < 10.0 * cfg.density_conv,
         "MOs inconsistent with the density: |D(C_occ) - D| alpha {da:.2e}, beta {db:.2e}"
     );
     let eps_b = r.eps_beta.as_ref().unwrap();
@@ -186,7 +214,7 @@ fn oh_uks_lda_converges_to_the_stationary_ground_state_not_a_stagnated_one() {
     assert_eq!(r.iterations, ITERATIONS, "iteration count moved");
 }
 
-/// MEASURED on this branch (see the PR body for the per-iteration table).
+/// MEASURED: flip pinned at iteration 5, ΔP/ΔE exit at 6.
 const ITERATIONS: usize = 6;
 
 /// A tight `density_conv` must still converge on a degenerate open shell.
