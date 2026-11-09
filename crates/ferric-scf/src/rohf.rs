@@ -1357,7 +1357,10 @@ fn solve_rohf_impl(
                 None => f_eff,
             };
             let (eps, c_f) = diag.run(&f_eff)?;
-            let (eps, c_f) = guard.relabel(&c, eps, c_f, &s);
+            // Keep the converged occupation (see `exit_labels`): index aufbau
+            // here would hand back the other determinant of a ROKS state whose
+            // effective-Fock spectrum is not in aufbau order.
+            let (eps, c_f) = guard.exit_labels(&c, eps, c_f, &s);
             let (d_a_f, d_b_f) = build_rohf_densities(&c_f, nocc_double, nocc_open);
             let density_total = &d_a_f + &d_b_f;
             // Stability analysis is NOT available for a ROHF/ROKS reference:
@@ -1634,7 +1637,7 @@ fn solve_rohf_impl(
     // convergence LADDER can carry them into the next rung.
     let (eps_last, c_last) =
         diagonalize(&f_eff_last, &s_inv_sqrt).unwrap_or_else(|_| (vec![0.0; c.ncols()], c.clone()));
-    let (eps_last, c_last) = guard.relabel(&c, eps_last, c_last, &s);
+    let (eps_last, c_last) = guard.exit_labels(&c, eps_last, c_last, &s);
     let density_total = &d_a + &d_b;
     Ok(ScfResult {
         guess_basis: None,

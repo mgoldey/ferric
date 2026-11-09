@@ -987,3 +987,35 @@ fn closed_shell_refuses_laplace_with_inverse_dielectric() {
         .to_string();
     assert!(e.contains("need_inv_dielectric_freq"), "{e}");
 }
+
+/// A reference whose occupied block is not below its virtual block (negative
+/// per-spin gap) must be refused with the gap, not fed to χ₀ as NaN scale
+/// factors (which surfaced as "Full-rank PDEP eigh failed ... return_code =
+/// 69"). The β HOMO/LUMO energies of an OH/STO-3G UHF are swapped by hand.
+/// Control: the unswapped reference runs.
+#[test]
+fn u_pdep_rpa_refuses_a_negative_spin_gap() {
+    let ctx = ParallelContext::default();
+    let mol = Molecule::parse_xyz("2\n\nO 0 0 0\nH 0 0 0.97\n", 0, 2).unwrap();
+    let op = Operator::coulomb();
+    let obs = PreparedBasis::new(&mol, &basis::bundled("sto-3g").unwrap()).unwrap();
+    let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+    let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+    let uhf = solve_uhf(&ctx, &mol, &obs, &bounds, &UhfConfig::default()).unwrap();
+    assert!(uhf.converged);
+    let mut cfg = cfg_full_basis();
+    cfg.quadrature.n_points = 8;
+    let control =
+        run_u_pdep_rpa(&mol, &obs, &dfbs, op, &uhf, &cfg).expect("control: gapped UHF must run");
+    assert!(control.e_rpa.is_finite() && control.e_rpa < 0.0);
+
+    let mut bad = uhf.clone();
+    let eb = bad.eps_beta.as_mut().unwrap();
+    eb.swap(3, 4); // nocc_beta = 4
+    let err = run_u_pdep_rpa(&mol, &obs, &dfbs, op, &bad, &cfg).unwrap_err();
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("beta orbital energies are not gapped"),
+        "{msg}"
+    );
+}
