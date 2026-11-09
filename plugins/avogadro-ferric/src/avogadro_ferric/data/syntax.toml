@@ -1,0 +1,23 @@
+# Syntax highlighting for generated ferric TOML inputs. Each top-level key is a
+# style name; the generator tags its .toml file with highlightStyles = ["ferric"].
+# Later rules win where they overlap, so comments come last.
+
+[[ferric.rules]]
+format.preset = "keyword"
+patterns = [{ regexp = '^\s*\[[A-Za-z_.]+\]' }]
+
+[[ferric.rules]]
+format.preset = "property"
+patterns = [{ regexp = '^\s*[A-Za-z_]+(?=\s*=)' }]
+
+[[ferric.rules]]
+format.preset = "literal"
+patterns = [
+    { regexp = '"[^"]*"' },
+    { regexp = '(?<=[=\s])[-+]?[0-9][0-9.eE+-]*\b' },
+    { regexp = '\b(true|false)\b' },
+]
+
+[[ferric.rules]]
+format.preset = "comment"
+patterns = [{ regexp = '#.*$' }]
