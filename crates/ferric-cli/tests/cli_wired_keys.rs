@@ -1006,9 +1006,13 @@ fn frequencies_hessian_key_selects_the_construction() {
 #[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn jk_storage_places_the_tensor_without_changing_the_energy() {
+    // f64 RI-J pinned: the f32 tier exists only in memory, so `disk`/`direct`
+    // fall back to f64 by design (`DfJ::new_for_jk`) and an f32 reference
+    // would differ from them by the f32 rounding (2.2e-7 Ha on CI), not by
+    // the placement this test is about.
     let job = |storage: &str, budget: &str| {
         let extra = format!(
-            "[memory]\nbudget_gb = {budget}\n{TIGHT}jk_storage = \"{storage}\"\n[dft]\nfunctional = \"PBE\"\n"
+            "[memory]\nbudget_gb = {budget}\n{TIGHT}jk_storage = \"{storage}\"\nri_j_precision = \"f64\"\n[dft]\nfunctional = \"PBE\"\n"
         );
         body("alkane_3.xyz", 1, "def2-svp", "ksdft", &extra)
     };
