@@ -3715,6 +3715,60 @@ mod tests {
         }
     }
 
+    /// Wiring: the UHF guess applies `canonical_frontier_basis` to a spin
+    /// whose degenerate frontier straddles the occupation (OH β, the π
+    /// pair). The canonical basis is recognisable: its second vector has an
+    /// exactly zero coefficient on the pivot AO (the AO row of largest
+    /// cluster norm) and its first is positive there. LAPACK's basis inside the
+    /// pair is not of that form locally (the uncanonicalised default run lands
+    /// on a different hole orientation, −74.0755553219 vs −74.0755553211), so
+    /// removing the call fails this.
+    #[test]
+    fn uhf_guess_canonicalises_the_straddling_beta_pi_pair() {
+        let mol = Molecule::parse_xyz("2\nOH\nO 0 0 0\nH 0 0 0.98\n", 0, 2).unwrap();
+        let bs = basis::bundled("sto-3g").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let bounds =
+            SchwarzBounds::compute(ferric_integrals::operator::Operator::coulomb(), &prep).unwrap();
+        let s = oneelectron::overlap(&prep);
+        let h = oneelectron::hcore(&prep);
+        let x = crate::rhf::canonical_orthogonalizer(&s).unwrap();
+        let plain = crate::symmetric::PlainDiag::Rect(&x);
+        let da = crate::symmetric::FockDiag::new(None, &s, plain).unwrap();
+        let db = crate::symmetric::FockDiag::new(None, &s, plain).unwrap();
+        let config = UhfConfig {
+            xc: Some("LDA".into()),
+            ..Default::default()
+        };
+        let (_, cb) = uhf_guess_mos(
+            &ParallelContext::default(),
+            &mol,
+            &prep,
+            &bounds,
+            &config,
+            &h,
+            (&da, &db),
+        )
+        .unwrap()
+        .expect("MINAO guess");
+        let (i, a) = (3usize, 4usize); // β: 4 occupied, the π pair is columns 3, 4
+        let pair = cb.slice(ndarray::s![.., i..=a]);
+        let norm = |u: usize| pair.row(u).dot(&pair.row(u));
+        let p = (0..pair.nrows())
+            .max_by(|&u, &v| norm(u).total_cmp(&norm(v)).then(v.cmp(&u)))
+            .unwrap();
+        assert!(
+            cb[(p, i)] > 0.1,
+            "first pair vector not pivoted: {}",
+            cb[(p, i)]
+        );
+        assert!(
+            cb[(p, a)].abs() < 1e-12,
+            "second pair vector has {:.2e} on the pivot AO: guess not canonicalised",
+            cb[(p, a)]
+        );
+    }
+
     /// The degenerate-flip pin engages on the flip signature only (KS, aufbau
     /// by design, orbital-sized ΔP at a small gradient and a ΔE below
     /// SWAP_MAX_DE), returns no exit, clears DIIS, and once engaged suppresses

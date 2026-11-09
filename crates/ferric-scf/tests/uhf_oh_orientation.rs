@@ -254,3 +254,40 @@ fn oh_uks_lda_descends_to_the_minimum_from_inside_its_basin() {
     // the minimum, inside the stability noise floor).
     assert!(energies[0] <= r0.energy + 1e-12);
 }
+
+/// Under RI-J (the CLI default) the held state converges too: the TRAH
+/// matvec takes the Fock's own DF-J response
+/// (`UhfNewtonInputs::j_response`).
+///
+/// MEASURED with the exact four-centre δJ in the matvec instead: the
+/// DF-vs-exact kernel mismatch put ~2e-5 Ha/rad² of curvature on the
+/// hole mode, every TRAH step realised twice its prediction (ρ = 2.00), and
+/// the 13° run crept along the mode to `max_iter` (CLI defaults: 5° in 139
+/// iterations, 13° unconverged at 200). With the DF-J response: 12 and 8.
+#[test]
+fn oh_uks_lda_ri_j_converges_at_tilted_orientations() {
+    let cfg = RhfConfig {
+        df_j_aux: Some("def2-universal-jkfit".to_string()),
+        ..lda(1e-10, 1e-9)
+    };
+    for tilt in [5.0, 13.0] {
+        let s = sys(tilt);
+        let r = solve_uhf(
+            &ParallelContext::default(),
+            &s.mol,
+            &s.prep,
+            &s.bounds,
+            &cfg,
+        )
+        .unwrap_or_else(|e| panic!("{tilt}° RI-J: {e}"));
+        println!(
+            "{tilt:5.1}° RI-J: E {:.10} in {} iters",
+            r.energy, r.iterations
+        );
+        assert!(
+            r.converged && r.iterations <= 30,
+            "{tilt}°: {} iterations",
+            r.iterations
+        );
+    }
+}
