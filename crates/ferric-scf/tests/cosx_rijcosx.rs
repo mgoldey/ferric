@@ -43,6 +43,7 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_scf::cosx_gradient::{cosx_exchange_gradient, scf_exchange_is_cosx};
 use ferric_scf::cosx_k::{CosxConfig, CosxHalfTransform, CosxK};
+use ferric_scf::df_j::RiJPrecision;
 use ferric_scf::fock::KBuilder;
 use ferric_scf::gradient::{
     build_energy_weighted_density, gradient_task_config, oneelectron_gradient,
@@ -147,6 +148,9 @@ fn cfg(xc: Option<&str>, j_fit: bool, cosx: Option<CosxConfig>) -> RhfConfig {
         energy_conv: 1e-8,
         density_conv: 1e-10,
         max_iter: 300,
+        // The gradients here are checked against finite differences of the
+        // energy, which the f32 RI-J tensor makes jagged; pin f64.
+        ri_j_precision: Some(RiJPrecision::F64),
         ..Default::default()
     }
 }
