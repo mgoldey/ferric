@@ -104,6 +104,8 @@ pub(crate) mod driver;
 /// J/K builder traits and composite Fock matrix assembly.
 pub mod fock;
 pub(crate) mod fock_assembly;
+#[doc(hidden)]
+pub use fock_assembly::dress_first_count_for_test;
 #[cfg(test)]
 mod ks_vxc_tests;
 /// Range-separated hybrid ω-tuning via IP/EA condition.

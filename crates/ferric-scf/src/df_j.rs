@@ -750,6 +750,35 @@ impl<'a> DfJ<'a> {
         Self::from_source_and_metric(source, v, budget_bytes, ctx)
     }
 
+    /// [`DfJ::from_source`] for a raw tensor NOT held in memory (spilled or
+    /// recomputed, e.g. the dress-first raw of a shared RI-JK setup): its f32
+    /// tier built by one streamed pass when `precision` asks for f32 and that
+    /// tensor fits the budget and the pool. Otherwise `source` is handed back
+    /// unchanged (`Ok(Err(source))`) and nothing is reported: the caller then
+    /// takes its own route (Split-RI-J, or the stored f64 tensor with the
+    /// notice of [`DfJ::from_source`]).
+    ///
+    /// The values are those of [`DfJ::from_source`] on a resident tensor (the
+    /// rounding of the same integrals), so J is too. No f64 exit, as there.
+    pub(crate) fn from_streamed_source_f32(
+        source: ThreeIndexSource,
+        op: Operator,
+        dfbs: &PreparedBasis,
+        budget_bytes: usize,
+        ctx: Option<&'a ParallelContext>,
+        precision: RiJPrecision,
+    ) -> Result<Result<Self, ThreeIndexSource>, FerricError> {
+        if source.is_resident() || !dfj_f32_wanted(precision) {
+            return Ok(Err(source));
+        }
+        let (source, declined) = source.into_ri_j_f32(budget_bytes, f32_rounding())?;
+        if declined.is_some() {
+            return Ok(Err(source));
+        }
+        let v = coulomb_metric_2c(op, dfbs)?;
+        Self::from_source_and_metric(source, v, budget_bytes, ctx).map(Ok)
+    }
+
     /// Let [`Self::f64_exit_coulomb_energy`] recompute this f32 tensor's
     /// integrals in f64: re-prepares the two bases from `mol` (the recompute
     /// tier's own recipe) and keeps them. A no-op for an f64 tensor. The bases
