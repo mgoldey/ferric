@@ -18,6 +18,10 @@ on:
         description: "conda | small"
         required: false
         default: conda
+      native_from_run:
+        description: "reuse native-small artifacts from this run id"
+        required: false
+        default: ""
 
 # Per run (superseded runs are cancelled by hand), so a single-leg retry does
 # not cancel other legs still in flight.
@@ -30,3 +34,4 @@ jobs:
     with:
       legs: ${{ inputs.legs }}
       libint: ${{ inputs.libint }}
+      native_from_run: ${{ inputs.native_from_run }}

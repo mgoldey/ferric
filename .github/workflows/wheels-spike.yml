@@ -23,6 +23,10 @@ on:
         description: "conda (conda-forge libint2 2.13.1 + libxc) or small (ferric's export + libxc from source)"
         required: false
         default: conda
+      native_from_run:
+        description: "libint=small: reuse native-small-<leg> artifacts from this run id instead of rebuilding"
+        required: false
+        default: ""
   # GitHub only dispatches workflow files that exist on the default branch, so
   # on this branch wheels.yml is a dispatch-only shim that calls this file.
   workflow_call:
@@ -35,6 +39,10 @@ on:
         type: string
         required: false
         default: conda
+      native_from_run:
+        type: string
+        required: false
+        default: ""
 
 env:
   CARGO_TERM_COLOR: always
@@ -54,7 +62,7 @@ jobs:
   # how long the libint2 build takes on each hosted runner and whether the
   # export compiles with Apple clang / clang-cl at all.
   native-small:
-    if: inputs.libint == 'small'
+    if: inputs.libint == 'small' && inputs.native_from_run == ''
     strategy:
       fail-fast: false
       matrix:
@@ -206,6 +214,17 @@ jobs:
         with:
           name: native-small-${{ matrix.leg }}
           path: native
+          run-id: ${{ inputs.native_from_run != '' && inputs.native_from_run || github.run_id }}
+          github-token: ${{ github.token }}
+
+      # libint2 2.7.2's C++ headers are not Windows-clean (basis.h includes
+      # <unistd.h>; ferric's 2.7.2 boys.h override uses posix_memalign and
+      # std::max(size_t, 32ul)). Upstream fixed both by 2.13; applied here in CI
+      # only -- the override's .patch pins its bytes. See the script's doc.
+      - name: Windows fixes for libint2 2.7.2 headers (spike, CI only)
+        if: inputs.libint == 'small' && runner.os == 'Windows'
+        run: |
+          python scripts/wheel_spike_win_libint272.py native crates/ferric-integrals/shim/libint2_overrides/2.7.2/libint2/boys.h
 
       - uses: ilammy/msvc-dev-cmd@v1
         if: runner.os == 'Windows'
