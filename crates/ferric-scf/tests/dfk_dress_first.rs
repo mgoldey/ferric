@@ -70,11 +70,7 @@ fn metric(naux: usize) -> Array2<f64> {
     })
 }
 
-fn packed_bits(
-    raw: &mut ThreeIndexSource,
-    m: &Array2<f64>,
-    band: (usize, usize),
-) -> Vec<u64> {
+fn packed_bits(raw: &mut ThreeIndexSource, m: &Array2<f64>, band: (usize, usize)) -> Vec<u64> {
     let out = ThreeIndexSource::build_dressed_band_packed(
         raw,
         m,
@@ -85,7 +81,10 @@ fn packed_bits(
     )
     .unwrap();
     let PackedDressOutcome::Built(src) = out else {
-        panic!("the packed f64 band was not built (raw spilled: {})", raw.is_spilled_for_test());
+        panic!(
+            "the packed f64 band was not built (raw spilled: {})",
+            raw.is_spilled_for_test()
+        );
     };
     match src.dressed_packed() {
         Some(DressedRows::F64(rows)) => rows.iter().map(|x| x.to_bits()).collect(),
@@ -102,7 +101,10 @@ fn streamed_raw_dresses_the_packed_band_bitwise() {
     let aux = PreparedBasis::new(&mol, &basis::bundled(AUX).unwrap()).unwrap();
     let (naux, nao) = (aux.nbasis(), obs.nbasis());
     assert_eq!(nao % 2, 1, "fixture must have an odd nao");
-    assert!(naux > 2 * 128, "fixture must cross the Q grid twice: naux {naux}");
+    assert!(
+        naux > 2 * 128,
+        "fixture must cross the Q grid twice: naux {naux}"
+    );
     let op = Operator::coulomb();
     let m = metric(naux);
     let ample = usize::MAX / 4;
@@ -113,16 +115,25 @@ fn streamed_raw_dresses_the_packed_band_bitwise() {
         let reference = packed_bits(&mut dense, &m, band);
         let mut packed = ThreeIndexSource::build(op, &obs, &aux, packed_budget).unwrap();
         assert!(packed.is_packed_incore_for_test());
-        assert!(reference == packed_bits(&mut packed, &m, band), "{band:?}: packed raw");
+        assert!(
+            reference == packed_bits(&mut packed, &m, band),
+            "{band:?}: packed raw"
+        );
         let mut stream = ThreeIndexSource::build_dress_stream(op, &mol, &obs, &aux, ample).unwrap();
         assert!(!stream.is_resident());
-        assert!(reference == packed_bits(&mut stream, &m, band), "{band:?}: recomputed raw");
+        assert!(
+            reference == packed_bits(&mut stream, &m, band),
+            "{band:?}: recomputed raw"
+        );
         set_jk_storage(Some(JkStorage::Disk));
         let spilled = ThreeIndexSource::build_for_jk(op, &mol, &obs, &aux, ample, (0, naux), true);
         set_jk_storage(None);
         let mut spilled = spilled.unwrap();
         assert!(spilled.is_spilled_for_test());
-        assert!(reference == packed_bits(&mut spilled, &m, band), "{band:?}: spilled raw");
+        assert!(
+            reference == packed_bits(&mut spilled, &m, band),
+            "{band:?}: spilled raw"
+        );
     }
 }
 
@@ -138,7 +149,9 @@ fn dress_first_scf_is_bitwise_the_resident_run() {
     let stream = ThreeIndexSource::dress_stream_bytes_for(nao, naux);
     assert!(stream < dressed, "no budget band at this size");
     let budget = dressed + stream + (dressed - stream) / 2;
-    assert!(ThreeIndexSource::dress_first_wanted(nao, naux, budget, dressed));
+    assert!(ThreeIndexSource::dress_first_wanted(
+        nao, naux, budget, dressed
+    ));
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
     let ctx = ParallelContext::default();
