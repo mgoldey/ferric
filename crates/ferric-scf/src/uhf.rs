@@ -2588,25 +2588,7 @@ impl UhfExitGate {
         // A degenerate flip engages the occupation pin instead of being
         // accepted (see `FlipPin`); once held, no flip is left to accept.
         let ks = it.xc_active.contains(&true);
-        if self.pin.is_none()
-            && ks
-            && crate::rhf::aufbau_by_design(config)
-            && degenerate_flip(it.sig, it.err_max, prev_err_max, it.iter)
-        {
-            let keep_current = it.de_signed <= 0.0;
-            self.pin = Some(FlipPin::Engage { keep_current });
-            FLIP_PINS.with(|c| c.set(c.get() + 1));
-            if crate::rhf::scf_trace() {
-                eprintln!(
-                    "UHF iter={}: degenerate flip (dE {:.3e}, dp_max {:.3}, err_max {:.3e}): \
-                     occupation pinned on the {} end",
-                    it.iter,
-                    it.de_signed,
-                    it.sig.dp_max,
-                    it.err_max,
-                    if keep_current { "current" } else { "previous" }
-                );
-            }
+        if ks && self.try_engage_pin(&it, config, prev_err_max) {
             diis.reset();
             return (None, false);
         }
@@ -2644,6 +2626,38 @@ impl UhfExitGate {
             diis.reset();
         }
         (exit, swap && exit.is_some())
+    }
+
+    /// Engage the occupation pin if this KS iteration is a degenerate flip
+    /// (and no pin is set and the config is aufbau by design). The pin keeps
+    /// whichever end of the flip has the lower energy.
+    fn try_engage_pin(
+        &mut self,
+        it: &UhfIterGradients<'_>,
+        config: &UhfConfig,
+        prev_err_max: f64,
+    ) -> bool {
+        if self.pin.is_some()
+            || !crate::rhf::aufbau_by_design(config)
+            || !degenerate_flip(it.sig, it.err_max, prev_err_max, it.iter)
+        {
+            return false;
+        }
+        let keep_current = it.de_signed <= 0.0;
+        self.pin = Some(FlipPin::Engage { keep_current });
+        FLIP_PINS.with(|c| c.set(c.get() + 1));
+        if crate::rhf::scf_trace() {
+            eprintln!(
+                "UHF iter={}: degenerate flip (dE {:.3e}, dp_max {:.3}, err_max {:.3e}): \
+                 occupation pinned on the {} end",
+                it.iter,
+                it.de_signed,
+                it.sig.dp_max,
+                it.err_max,
+                if keep_current { "current" } else { "previous" }
+            );
+        }
+        true
     }
 
     fn record(&self) -> Option<crate::result::GradientVetoes> {
