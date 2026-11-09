@@ -1292,7 +1292,9 @@ pub fn run_pdep_rpa_from_parts(
 fn ungapped(eps_occ: &[f64], eps_vir: &[f64]) -> Option<(f64, f64)> {
     let homo = eps_occ.iter().copied().fold(f64::NEG_INFINITY, f64::max);
     let lumo = eps_vir.iter().copied().fold(f64::INFINITY, f64::min);
-    let gapped = homo.is_finite() && lumo.is_finite() && lumo - homo > 0.0;
+    // f64::max/min skip a NaN, so check every energy, not just the extremes.
+    let finite = eps_occ.iter().chain(eps_vir).all(|e| e.is_finite());
+    let gapped = finite && homo.is_finite() && lumo.is_finite() && lumo - homo > 0.0;
     (!gapped).then_some((homo, lumo))
 }
 

@@ -1018,4 +1018,15 @@ fn u_pdep_rpa_refuses_a_negative_spin_gap() {
         msg.contains("beta orbital energies are not gapped"),
         "{msg}"
     );
+
+    // A NaN that is not the HOMO: f64::max skips it, so the extremes alone
+    // still look gapped. Every energy must be checked.
+    let mut nan = uhf.clone();
+    nan.eps_beta.as_mut().unwrap()[1] = f64::NAN;
+    let err = run_u_pdep_rpa(&mol, &obs, &dfbs, op, &nan, &cfg).unwrap_err();
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("beta orbital energies are not gapped"),
+        "{msg}"
+    );
 }

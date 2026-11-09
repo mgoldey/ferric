@@ -224,6 +224,7 @@ fn build_df_jk_impl<'a>(
                         op,
                         &dfbs,
                         ooc_budget,
+                        df_k.as_ref().map_or(0, DfK::resident_tensor_bytes),
                         Some(ctx),
                         j_precision,
                     )? {

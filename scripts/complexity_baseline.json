@@ -55800,8 +55800,12 @@
     "mi": 98.5336785668859
   },
   "crates/ferric-rpa/src/lib.rs::ungapped": {
-    "cc": 3.0,
-    "mi": 110.40937152354644
+    "cc": 5.0,
+    "mi": 103.95213899104237
+  },
+  "crates/ferric-rpa/src/lib.rs::ungapped::<anonymous>": {
+    "cc": 1.0,
+    "mi": 157.8484854211024
   },
   "crates/ferric-rpa/src/mpi_rpa.rs::eval_eigenvalues_at_frequencies_mpi": {
     "cc": 10.0,
@@ -61709,7 +61713,7 @@
   },
   "crates/ferric-scf/src/df_j.rs::impl:DfJ<'a>#1::from_streamed_source_f32": {
     "cc": 6.0,
-    "mi": 90.50565782335634
+    "mi": 85.89544168471468
   },
   "crates/ferric-scf/src/df_j.rs::impl:DfJ<'a>#1::new": {
     "cc": 1.0,
@@ -61942,6 +61946,18 @@
   "crates/ferric-scf/src/df_j.rs::set_dfj_f32_for_test": {
     "cc": 4.0,
     "mi": 109.29471494567869
+  },
+  "crates/ferric-scf/src/df_j.rs::streamed_f32_ri_j_fits_beside_the_resident_band": {
+    "cc": 3.0,
+    "mi": 74.1004823435123
+  },
+  "crates/ferric-scf/src/df_j.rs::streamed_f32_ri_j_fits_beside_the_resident_band::<anonymous>": {
+    "cc": 1.0,
+    "mi": 148.81982763581016
+  },
+  "crates/ferric-scf/src/df_j.rs::streamed_f32_ri_j_fits_beside_the_resident_band::<anonymous>#1": {
+    "cc": 1.0,
+    "mi": 104.38667497733994
   },
   "crates/ferric-scf/src/df_j.rs::unpack_symmetric": {
     "cc": 3.0,
@@ -63817,7 +63833,7 @@
   },
   "crates/ferric-scf/src/fock_assembly.rs::build_df_jk_impl": {
     "cc": 32.0,
-    "mi": 36.530006400868615
+    "mi": 36.34430421012986
   },
   "crates/ferric-scf/src/fock_assembly.rs::build_df_jk_impl::<anonymous>": {
     "cc": 1.0,
