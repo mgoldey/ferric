@@ -3,7 +3,7 @@
 //!
 //! The dressed tensor `B[P,μν] = Σ_Q V^{-1/2}_{PQ} (Q|μν)` is exactly symmetric
 //! in μν: the dressing computes the packed lower triangle only and expands it
-//! ([`super::dress_band_in_core`]). The
+//! (`super::dress_band_in_core`). The
 //! square in-core tier therefore stores every off-diagonal twice. Every consumer
 //! of the dressed tensor reads the lower triangle and nothing else, or can be
 //! fed it unpacked one chunk at a time:
@@ -25,13 +25,13 @@
 //!
 //! # The dressing into a packed band
 //!
-//! The square in-core dressing ([`super::dress_band_in_core`]) already
+//! The square in-core dressing (`super::dress_band_in_core`) already
 //! accumulates the packed lower triangle and only then expands it to squares.
 //! The f64 packed tier runs the same accumulation
-//! ([`super::dress_resident_into_packed`]) and skips the expansion, so its
+//! (`super::dress_resident_into_packed`) and skips the expansion, so its
 //! values are the square tier's lower triangle bit for bit. The f32 tier issues
-//! the same GEMMs per [`super::DRESS_COL_BLOCK`] packed column tile (all band
-//! rows, ascending [`super::DRESS_K_BLOCK`] Q blocks) into a per-worker f64
+//! the same GEMMs per `super::DRESS_COL_BLOCK` packed column tile (all band
+//! rows, ascending `super::DRESS_K_BLOCK` Q blocks) into a per-worker f64
 //! tile, then rounds the tile once (to nearest) into the f32 band; only the
 //! output's leading dimension differs from the f64 route, which moves no bit.
 //! So the ONLY single-precision operation is that one rounding per stored

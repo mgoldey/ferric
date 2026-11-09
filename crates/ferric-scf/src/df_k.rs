@@ -39,7 +39,7 @@
 //! can be handed it unpacked one aux chunk at a time, so on the CPU the band
 //! is held as the packed lower triangle
 //! (`ferric_integrals::three_index_source::dressed_packed`): half the square
-//! tensor at f64, a quarter at f32 ([`RiKPrecision`]). The square f64 tensor is
+//! tensor at f64, a quarter at f32 ([`RiKPrecision`](crate::df_k::RiKPrecision)). The square f64 tensor is
 //! kept when a `[gpu]` mode may build K on the device (its upload reads it);
 //! a band that does not fit in core is spilled as before.
 //!
