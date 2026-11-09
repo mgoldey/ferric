@@ -101,6 +101,14 @@ jobs:
             # conda-forge's osx-arm64 libraries target macOS 11.0; osx-64 10.13.
             export MACOSX_DEPLOYMENT_TARGET=$([ "$(uname -m)" = arm64 ] && echo 11.0 || echo 10.13)
           fi
+          if [ "$RUNNER_OS" = Windows ]; then
+            # Git-for-Windows' /usr/bin/link (coreutils) shadows MSVC link.exe
+            # in a login bash; pin the MSVC one for rustc and CMake/Ninja.
+            MSVC_BIN="$(dirname "$(which cl)")"
+            export PATH="$MSVC_BIN:$PATH"
+            export CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER="$MSVC_BIN/link.exe"
+            which link
+          fi
           PY='${{ steps.py.outputs.python-path }}'
           "$PY" -m pip install -q "maturin>=1.7,<2"
           start=$(date +%s)
