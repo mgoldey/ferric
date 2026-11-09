@@ -67,6 +67,7 @@ jobs:
             libxc-c=6.2.2
             openblas
             eigen=3.4.0
+            libboost-headers
             cmake
             ninja
             pkg-config
