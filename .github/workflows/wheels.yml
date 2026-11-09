@@ -14,6 +14,10 @@ on:
         description: "JSON list: macos-arm64, macos-x86_64, windows-x86_64"
         required: false
         default: '["macos-arm64","macos-x86_64","windows-x86_64"]'
+      libint:
+        description: "conda | small"
+        required: false
+        default: conda
 
 # Per run (superseded runs are cancelled by hand), so a single-leg retry does
 # not cancel other legs still in flight.
@@ -25,3 +29,4 @@ jobs:
     uses: ./.github/workflows/wheels-spike.yml
     with:
       legs: ${{ inputs.legs }}
+      libint: ${{ inputs.libint }}

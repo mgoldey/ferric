@@ -1,14 +1,16 @@
 name: Wheels spike (macOS / Windows)
 
 # SPIKE ONLY (branch spike/wheels-mac-win). Answers "what does it take to ship
-# ferric wheels for macOS and Windows": native deps from conda-forge (libint2
-# 2.13.1, libxc 6.2.2, OpenBLAS, Eigen), maturin build, delocate/delvewheel
+# ferric wheels for macOS and Windows": native deps from conda-forge (OpenBLAS,
+# Eigen, and either conda-forge's libint2 2.13.1 + libxc 6.2.2 [libint=conda]
+# or ferric's small libint2 2.7.2 export + libxc 6.2.2 built from source here
+# [libint=small], as the Linux wheels do), maturin build, delocate/delvewheel
 # repair, then `import ferric; run_rhf(water, sto-3g)` from the repaired wheel
 # in a fresh venv with the conda prefix HIDDEN (so a missing bundled library
 # fails instead of being found in the build environment).
 #
-# workflow_dispatch ONLY: no push/pull_request/schedule/tag triggers, uploads
-# nothing anywhere except this run's artifacts.
+# workflow_dispatch / workflow_call ONLY: no push/pull_request/schedule/tag
+# triggers; uploads nothing anywhere except this run's artifacts.
 
 on:
   workflow_dispatch:
@@ -17,6 +19,10 @@ on:
         description: "JSON list of matrix legs to run (macos-arm64, macos-x86_64, windows-x86_64)"
         required: false
         default: '["macos-arm64","macos-x86_64","windows-x86_64"]'
+      libint:
+        description: "conda (conda-forge libint2 2.13.1 + libxc) or small (ferric's export + libxc from source)"
+        required: false
+        default: conda
   # GitHub only dispatches workflow files that exist on the default branch, so
   # on this branch wheels.yml is a dispatch-only shim that calls this file.
   workflow_call:
@@ -25,6 +31,10 @@ on:
         type: string
         required: false
         default: '["macos-arm64","macos-x86_64","windows-x86_64"]'
+      libint:
+        type: string
+        required: false
+        default: conda
 
 env:
   CARGO_TERM_COLOR: always
@@ -33,14 +43,109 @@ env:
   # Linux value of the same script (mainline build, 2026-11-09).
   # Linux, same script: dft-pbe/sto-3g -75.2261674834, rimp2/cc-pvdz -76.2308014541.
   E_WATER_LINUX: "-74.963146800039"
+  # Same pins as .github/workflows/wheels.yml on main.
+  LIBINT_VERSION: "2.7.2"
+  LIBINT_URL: https://github.com/mgoldey/ferric/releases/download/libint-2.7.2-ferric-small-1/libint-2.7.2-ferric-small-1.tgz
+  LIBINT_SHA256: 123b744cd744b19c4ca8401b3a58ed7fca3680bc638519edd806501b5919a48b  # pragma: allowlist secret
+  LIBXC_VERSION: "6.2.2"
 
 jobs:
-  wheel:
+  # ferric's small libint2 export + libxc, from source, per platform. Measures
+  # how long the libint2 build takes on each hosted runner and whether the
+  # export compiles with Apple clang / clang-cl at all.
+  native-small:
+    if: inputs.libint == 'small'
     strategy:
       fail-fast: false
       matrix:
         leg: ${{ fromJSON(inputs.legs) }}
-    name: ${{ matrix.leg }}
+    name: native-small ${{ matrix.leg }}
+    runs-on: ${{ matrix.leg == 'macos-arm64' && 'macos-15' || (matrix.leg == 'macos-x86_64' && 'macos-15-intel' || 'windows-latest') }}
+    timeout-minutes: 340
+    defaults:
+      run:
+        shell: bash -el {0}
+    steps:
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: nd
+          init-shell: bash
+          create-args: >-
+            -c conda-forge
+            eigen=3.4.0
+            cmake
+            ninja
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+
+      - name: Build libint2 (small export) + libxc from source
+        run: |
+          set -euo pipefail
+          OUT="$GITHUB_WORKSPACE/native"
+          if [ "$RUNNER_OS" = Windows ]; then
+            CP="$(cygpath -m "$CONDA_PREFIX/Library")"
+            OUT="$(cygpath -m "$OUT")"
+            MSVC_BIN="$(dirname "$(which cl)")"
+            export PATH="$MSVC_BIN:/c/Program Files/LLVM/bin:$PATH"
+            export CC=clang-cl CXX=clang-cl
+            XC_SHARED=OFF
+          else
+            CP="$CONDA_PREFIX"
+            export MACOSX_DEPLOYMENT_TARGET=$([ "$(uname -m)" = arm64 ] && echo 11.0 || echo 10.13)
+            XC_SHARED=ON
+          fi
+          mkdir -p "$OUT/include" src
+          cp -r "$CP/include/eigen3" "$OUT/include/"
+          NPROC=$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo "$NUMBER_OF_PROCESSORS")
+          echo "cores: $NPROC"; "${CXX:-c++}" --version | head -1
+          cd src
+          curl -sSL -o libint-small.tgz "$LIBINT_URL"
+          if command -v sha256sum >/dev/null; then SHA="sha256sum"; else SHA="shasum -a 256"; fi
+          echo "$LIBINT_SHA256  libint-small.tgz" | $SHA -c -
+          tar xzf libint-small.tgz
+          curl -sSL -o libxc.tgz "https://gitlab.com/libxc/libxc/-/archive/${LIBXC_VERSION}/libxc-${LIBXC_VERSION}.tar.gz"
+          tar xzf libxc.tgz
+
+          t0=$(date +%s)
+          cmake -S "libxc-${LIBXC_VERSION}" -B build-xc -G Ninja \
+            -DCMAKE_INSTALL_PREFIX="$OUT" -DCMAKE_INSTALL_LIBDIR=lib \
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DDISABLE_KXC=OFF \
+            -DBUILD_SHARED_LIBS=$XC_SHARED
+          cmake --build build-xc
+          cmake --install build-xc
+          t1=$(date +%s)
+          echo "LIBXC_BUILD_SECONDS=$((t1 - t0))" | tee -a "$GITHUB_STEP_SUMMARY"
+
+          cmake -S "libint-${LIBINT_VERSION}" -B build-int -G Ninja \
+            -DCMAKE_INSTALL_PREFIX="$OUT" -DCMAKE_INSTALL_LIBDIR=lib \
+            -DCMAKE_PREFIX_PATH="$CP" \
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-int 2>&1 | awk 'NR % 500 == 1 || /error|FAILED/'
+          cmake --install build-int
+          t2=$(date +%s)
+          echo "LIBINT_BUILD_SECONDS=$((t2 - t1))" | tee -a "$GITHUB_STEP_SUMMARY"
+          ls -la "$OUT/lib" "$OUT/bin" 2>/dev/null || true
+          du -sh "$OUT/lib"/* | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: native-small-${{ matrix.leg }}
+          path: |
+            native/
+            !native/share/**
+          retention-days: 3
+
+  wheel:
+    needs: native-small
+    if: ${{ !cancelled() && (needs.native-small.result == 'success' || needs.native-small.result == 'skipped') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        leg: ${{ fromJSON(inputs.legs) }}
+    name: wheel ${{ matrix.leg }} (${{ inputs.libint }})
     # (A matrix `include` keyed on leg would ADD unlisted legs, so map here.)
     runs-on: ${{ matrix.leg == 'macos-arm64' && 'macos-15' || (matrix.leg == 'macos-x86_64' && 'macos-15-intel' || 'windows-latest') }}
     timeout-minutes: 150
@@ -63,14 +168,18 @@ jobs:
           init-shell: bash
           create-args: >-
             -c conda-forge
-            libint=2.13.1
-            libxc-c=6.2.2
+            ${{ inputs.libint == 'conda' && 'libint=2.13.1 libxc-c=6.2.2 libboost-headers' || '' }}
             openblas
             eigen=3.4.0
-            libboost-headers
             cmake
             ninja
             pkg-config
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        if: inputs.libint == 'small'
+        with:
+          name: native-small-${{ matrix.leg }}
+          path: native
 
       - uses: ilammy/msvc-dev-cmd@v1
         if: runner.os == 'Windows'
@@ -81,23 +190,25 @@ jobs:
           rustc --version; cargo --version
           if [ "$RUNNER_OS" = Windows ]; then
             P="$(cygpath -m "$CONDA_PREFIX/Library")"
-            which cl link || true
+            S="$(cygpath -m "$GITHUB_WORKSPACE/native")"
           else
             P="$CONDA_PREFIX"
+            S="$GITHUB_WORKSPACE/native"
             clang --version | head -1
           fi
-          echo "NATIVE_PREFIX=$P" >> "$GITHUB_ENV"
-          ls "$P/lib" | head -80
-          ls "$P/include" | head -40
-          grep -E "LIBINT_MAX_AM|MAX_DERIV" "$P/include/libint2/config.h" | head
-          ls "$P/bin" | grep -i -E "dll|openblas|xc|int2" | head -20 || true
+          if [ '${{ inputs.libint }}' = small ]; then L="$S"; else L="$P"; S="$P"; fi
+          echo "NATIVE_PREFIX=$P" >> "$GITHUB_ENV"   # conda: OpenBLAS (+ Eigen)
+          echo "LIBS_PREFIX=$S" >> "$GITHUB_ENV"     # libint2 + libxc
+          echo "LIBINT2_PREFIX=$L" >> "$GITHUB_ENV"
+          ls "$P/lib" | head -60
+          ls "$S/lib" | head -40
+          grep -E "LIBINT_MAX_AM|MAX_DERIV" "$L/include/libint2/config.h" | head
 
       - name: Build wheel (maturin --release)
         run: |
           set -euo pipefail
-          export LIBINT2_PREFIX="$NATIVE_PREFIX"
           export PKG_CONFIG_PATH="$NATIVE_PREFIX/lib/pkgconfig"
-          export RUSTFLAGS="-L native=$NATIVE_PREFIX/lib"
+          export RUSTFLAGS="-L native=$LIBS_PREFIX/lib -L native=$NATIVE_PREFIX/lib"
           if [ "$RUNNER_OS" = macOS ]; then
             # conda-forge's osx-arm64 libraries target macOS 11.0; osx-64 10.13.
             export MACOSX_DEPLOYMENT_TARGET=$([ "$(uname -m)" = arm64 ] && echo 11.0 || echo 10.13)
@@ -105,17 +216,15 @@ jobs:
           if [ "$RUNNER_OS" = Windows ]; then
             # Git-for-Windows' /usr/bin/link (coreutils) shadows MSVC link.exe
             # in a login bash; pin the MSVC one for rustc and CMake/Ninja.
-            MSVC_BIN="$(dirname "$(which cl)")"
-            export PATH="$MSVC_BIN:$PATH"
-            export CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER="$MSVC_BIN/link.exe"
-            which link
             # libecpint (and shim.cc) use variable-length arrays, which cl.exe
             # rejects (C2131). clang-cl is MSVC-ABI and accepts them; it is
             # also what conda-forge builds libint2 with on win-64. CC/CXX are
             # read by both cc-rs (shim) and CMake (libecpint).
+            MSVC_BIN="$(dirname "$(which cl)")"
             export PATH="$MSVC_BIN:/c/Program Files/LLVM/bin:$PATH"
+            export CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER="$MSVC_BIN/link.exe"
             export CC=clang-cl CXX=clang-cl
-            which clang-cl && clang-cl --version | head -1
+            which link clang-cl && clang-cl --version | head -1
           fi
           PY='${{ steps.py.outputs.python-path }}'
           "$PY" -m pip install -q "maturin>=1.7,<2"
@@ -131,12 +240,12 @@ jobs:
           if [ "$RUNNER_OS" = macOS ]; then
             "$PY" -m pip install -q delocate
             delocate-listdeps --all dist/*.whl || true
-            DYLD_LIBRARY_PATH="$NATIVE_PREFIX/lib" delocate-wheel -v -w wheelhouse dist/*.whl
+            DYLD_LIBRARY_PATH="$LIBS_PREFIX/lib:$NATIVE_PREFIX/lib" delocate-wheel -v -w wheelhouse dist/*.whl
             delocate-listdeps --all wheelhouse/*.whl
           else
             "$PY" -m pip install -q delvewheel
-            "$PY" -m delvewheel show --add-path "$NATIVE_PREFIX/bin" dist/*.whl
-            "$PY" -m delvewheel repair --add-path "$NATIVE_PREFIX/bin" -w wheelhouse dist/*.whl
+            "$PY" -m delvewheel show --add-path "$LIBS_PREFIX/bin;$NATIVE_PREFIX/bin" dist/*.whl
+            "$PY" -m delvewheel repair --add-path "$LIBS_PREFIX/bin;$NATIVE_PREFIX/bin" -w wheelhouse dist/*.whl
           fi
           ls -la wheelhouse
           "$PY" -c "import sys,zipfile;z=zipfile.ZipFile(sys.argv[1]);[print(f'{i.file_size:>12} {i.compress_size:>12} {i.filename}') for i in z.infolist() if not i.filename.endswith('.py')]" wheelhouse/*.whl
@@ -144,17 +253,19 @@ jobs:
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: spike-wheel-${{ matrix.leg }}
+          name: spike-wheel-${{ matrix.leg }}-${{ inputs.libint }}
           path: wheelhouse/*.whl
           retention-days: 7
 
-      # Plain (non-login) bash: no micromamba activation, and the conda root is
-      # renamed away so nothing outside the wheel can satisfy a library load.
-      - name: Smoke test from the repaired wheel (conda prefix hidden)
+      # Plain (non-login) bash: no micromamba activation, and the conda root
+      # and the from-source prefix are renamed away so nothing outside the
+      # wheel can satisfy a library load.
+      - name: Smoke test from the repaired wheel (build prefixes hidden)
         shell: bash {0}
         run: |
           set -euo pipefail
           mv "$MAMBA_ROOT_PREFIX" "$MAMBA_ROOT_PREFIX.hidden"
+          if [ -d native ]; then mv native native.hidden; fi
           PY='${{ steps.py.outputs.python-path }}'
           "$PY" -m venv "$RUNNER_TEMP/v"
           if [ "$RUNNER_OS" = Windows ]; then VPY="$RUNNER_TEMP/v/Scripts/python.exe"; else VPY="$RUNNER_TEMP/v/bin/python"; fi
@@ -164,4 +275,3 @@ jobs:
           "$VPY" wheel_spike_smoke.py "$E_WATER_LINUX" --broad 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
           if [ "$RUNNER_OS" = Windows ]; then FERRIC="$RUNNER_TEMP/v/Scripts/ferric.exe"; else FERRIC="$RUNNER_TEMP/v/bin/ferric"; fi
           "$FERRIC" --help | head -5
-
