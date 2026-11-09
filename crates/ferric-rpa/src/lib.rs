@@ -1439,6 +1439,33 @@ pub fn run_u_pdep_rpa(
     let eps_vir_b: Vec<f64> =
         eps_b_full[inter_b.nocc_total..inter_b.nocc_total + inter_b.nvir].to_vec();
 
+    // χ₀'s scale factors are sqrt(2 e_ia / (ω² + e_ia²)): a non-positive or
+    // non-finite e_ia makes them NaN, which used to surface only as an opaque
+    // LAPACK failure in the full-rank eigh. Refuse it here with the gap, as
+    // `run_u_pdep_rpa_from_parts` already does. (A ROHF/ROKS reference whose
+    // returned orbitals and stored spin Focks belonged to different
+    // determinants produced exactly this; see `OccupationGuard::exit_labels`.)
+    for (label, eo, ev) in [
+        ("alpha", &eps_occ_a, &eps_vir_a),
+        ("beta", &eps_occ_b, &eps_vir_b),
+    ] {
+        if eo.is_empty() || ev.is_empty() {
+            continue;
+        }
+        let homo = eo.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        let lumo = ev.iter().copied().fold(f64::INFINITY, f64::min);
+        if !(homo.is_finite() && lumo.is_finite() && lumo - homo > 0.0) {
+            return Err(FerricError::General(format!(
+                "run_u_pdep_rpa: {label} orbital energies are not gapped (HOMO {homo}, LUMO \
+                 {lumo}, gap {}); every e_ia = ε_a − ε_i must be finite and > 0 for χ₀. On a \
+                 ROHF/ROKS reference these are the semi-canonical energies of the SCF's own \
+                 spin Fock, so a negative gap means the reference's occupied block is not \
+                 the lowest of its spin Fock (a non-aufbau state)",
+                lumo - homo
+            )));
+        }
+    }
+
     // Everything below reads only the two intermediates, the four energy
     // slices and `config` (no mol/obs/dfbs/rhf), so it is shared verbatim with
     // `run_u_pdep_rpa_from_parts` — bit-identical by construction.
