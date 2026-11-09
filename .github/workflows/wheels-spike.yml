@@ -16,11 +16,15 @@ on:
       legs:
         description: "JSON list of matrix legs to run (macos-arm64, macos-x86_64, windows-x86_64)"
         required: false
-        default: '["macos-arm64","windows-x86_64"]'
-
-concurrency:
-  group: wheels-spike-${{ github.ref }}
-  cancel-in-progress: true
+        default: '["macos-arm64","macos-x86_64","windows-x86_64"]'
+  # GitHub only dispatches workflow files that exist on the default branch, so
+  # on this branch wheels.yml is a dispatch-only shim that calls this file.
+  workflow_call:
+    inputs:
+      legs:
+        type: string
+        required: false
+        default: '["macos-arm64","macos-x86_64","windows-x86_64"]'
 
 env:
   CARGO_TERM_COLOR: always
