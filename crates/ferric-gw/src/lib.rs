@@ -89,10 +89,12 @@ fn with_inv_dielectric(cfg: &PdepRpaConfig) -> PdepRpaConfig {
 /// The bar is 10 meV on HOMO and LUMO, and
 /// `tests/validation_gw_defaults.rs` pins it. Those @PBE numbers were taken
 /// with the plain Gauss–Legendre Σc sum, which does not converge in n_quad
-/// for states far from ε_F. Since 2026-11-09 every driver integrates the Σc
-/// kernel exactly against the interpolated W (`sigma::sigma_c_at_z_product`),
-/// and the whole QP window (HOMO−2 … LUMO+2) of G0W0@PBE (CH2O, NH3) and of
-/// U-G0W0@UKS (OH, NH2) has its own 1 meV bar between 40 and 100 points.
+/// for states far from ε_F. Since 2026-11-09 every driver on the default
+/// scaled Gauss–Legendre grid integrates the Σc kernel exactly against the
+/// interpolated W (`sigma::sigma_c_at_z_product`); other grids (e.g.
+/// Chebyshev–Tan) keep the plain sum. Between 40 and 100 points the whole QP
+/// window (HOMO−2 … LUMO+2) of G0W0@PBE (CH2O, NH3) has a 1 meV bar, and so
+/// do the α/β frontier states (HOMO, LUMO) of U-G0W0@UKS (OH, NH2).
 pub const DEFAULT_N_QUAD: usize = 40;
 
 /// Top-level GW configuration.
