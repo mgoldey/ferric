@@ -849,14 +849,22 @@ mod tests {
         let prep =
             PreparedBasis::new(&mol, &ferric_core::basis::bundled("def2-svp").unwrap()).unwrap();
         let aux = ferric_core::basis::bundled(DEFAULT_JK_AUX).unwrap();
-        let (nao, naux) = (prep.nbasis(), PreparedBasis::new(&mol, &aux).unwrap().nbasis());
+        let (nao, naux) = (
+            prep.nbasis(),
+            PreparedBasis::new(&mol, &aux).unwrap().nbasis(),
+        );
         let dressed = DfK::packed_band_bytes(naux, nao, RiKPrecision::F64);
         let stream = ThreeIndexSource::dress_stream_bytes_for(nao, naux);
         // Raw packed is the band's size: the route's budget band is
         // (dressed + stream, 2·dressed], reachable only when stream < dressed.
-        assert!(stream < dressed, "fixture too small: stream {stream} vs band {dressed}");
+        assert!(
+            stream < dressed,
+            "fixture too small: stream {stream} vs band {dressed}"
+        );
         let budget = dressed + stream + (dressed - stream) / 2;
-        assert!(ThreeIndexSource::dress_first_wanted(nao, naux, budget, dressed));
+        assert!(ThreeIndexSource::dress_first_wanted(
+            nao, naux, budget, dressed
+        ));
         let ctx = ParallelContext::default();
         let op = Operator::coulomb();
         let build = |budget: usize| {
@@ -876,14 +884,21 @@ mod tests {
         };
         let taken = dress_first_count_for_test();
         let (j_ref, k_ref) = build(usize::MAX / 4);
-        assert_eq!(dress_first_count_for_test(), taken, "ample budget took the route");
+        assert_eq!(
+            dress_first_count_for_test(),
+            taken,
+            "ample budget took the route"
+        );
         let (j_new, k_new) = build(budget);
         assert_eq!(dress_first_count_for_test(), taken + 1, "route not taken");
         let (mut j_ref, mut k_ref) = (j_ref.unwrap(), k_ref.unwrap());
         let (mut j_new, mut k_new) = (j_new.unwrap(), k_new.unwrap());
         assert!(k_new.is_packed(), "dressed band not held packed");
         assert_eq!(k_new.resident_tensor_bytes(), dressed);
-        assert!(matches!(j_new, RiJ::Stored(_)), "J not from a stored tensor");
+        assert!(
+            matches!(j_new, RiJ::Stored(_)),
+            "J not from a stored tensor"
+        );
         assert_eq!(j_new.precision(), RiJPrecision::F32);
         // A symmetric, non-idempotent density with mixed signs.
         let d = Array2::from_shape_fn((nao, nao), |(i, j)| {
@@ -901,8 +916,16 @@ mod tests {
             out
         };
         let bits = |a: &Array2<f64>| a.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
-        assert_eq!(bits(&run_k(&mut k_ref)), bits(&run_k(&mut k_new)), "K moved");
-        assert_eq!(bits(&run_j(&mut j_ref)), bits(&run_j(&mut j_new)), "J moved");
+        assert_eq!(
+            bits(&run_k(&mut k_ref)),
+            bits(&run_k(&mut k_new)),
+            "K moved"
+        );
+        assert_eq!(
+            bits(&run_j(&mut j_ref)),
+            bits(&run_j(&mut j_new)),
+            "J moved"
+        );
     }
 
     /// The four routes `resolve_k_builder`'s warning can name. The two
