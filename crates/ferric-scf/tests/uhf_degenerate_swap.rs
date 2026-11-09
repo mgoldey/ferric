@@ -19,6 +19,7 @@ use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
+use ferric_scf::df_j::RiJPrecision;
 use ferric_scf::hessian::uhf_hessian;
 use ferric_scf::rhf::RhfConfig;
 use ferric_scf::screening::SchwarzBounds;
@@ -56,6 +57,9 @@ fn lda(density_conv: f64, mom_after_iter: usize) -> RhfConfig {
         density_conv,
         max_iter: 400,
         mom_after_iter,
+        // OH's near-degenerate β π pair resolves energies at the 1e-8 Ha level,
+        // below the f32 RI-J tensor's rounding, so these tests pin f64.
+        ri_j_precision: Some(RiJPrecision::F64),
         ..Default::default()
     }
 }

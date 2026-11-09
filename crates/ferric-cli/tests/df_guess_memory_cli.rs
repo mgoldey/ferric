@@ -112,7 +112,11 @@ fn a_tensor_that_fits_the_budget_once_but_not_twice_still_runs_the_guess() {
         String::from_utf8_lossy(&ample.stderr)
     );
 
-    let (band, e_band) = run("band", needed as f64 * 1.5 / gib);
+    // The band, measured with FERRIC_OOC_TRACE: the budget holds the square
+    // dressed tensor (>= needed) but not the packed raw tensor beside the packed
+    // dressed one plus its dressing scratch (~1.02-1.03 x needed for this
+    // system). At 1.25 x both packed tensors fit and nothing spills.
+    let (band, e_band) = run("band", needed as f64 * 1.005 / gib);
     let stderr = String::from_utf8_lossy(&band.stderr);
     assert!(!stderr.contains("SCF failed"), "{stderr}");
     assert!(

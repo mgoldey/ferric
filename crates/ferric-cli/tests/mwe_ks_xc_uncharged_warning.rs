@@ -70,6 +70,8 @@ fn a_budget_that_holds_raw_but_not_xc_runs_and_says_so() {
     let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
     let aux = basis::bundled("def2-universal-jkfit").unwrap();
     let aux = PreparedBasis::new(&mol, &aux).unwrap();
+    // The budget is sized against the square f64 RI-J tensor, so the run pins
+    // `ri_j_precision = "f64"` (the default f32 tensor is half this size).
     let tensor = aux.nbasis() * obs.nbasis() * obs.nbasis() * 8;
     let budget_gb = (23 * tensor / 2) as f64 / (1u64 << 30) as f64;
 
@@ -84,6 +86,7 @@ fn a_budget_that_holds_raw_but_not_xc_runs_and_says_so() {
             "[molecule]\nxyz = \"testdata/molecules/water.xyz\"\n\
              [basis]\nname = \"cc-pvdz\"\n\
              [method]\nkind = \"ksdft\"\n\
+             [scf]\nri_j_precision = \"f64\"\n\
              [dft]\nfunctional = \"PBE\"\ngrid_prune = \"none\"\ngrid_weight_cut = 0\n\
              [memory]\nbudget_gb = {budget_gb:.9}\n"
         ),

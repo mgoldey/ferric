@@ -1123,9 +1123,9 @@ def exact_sigma_c(Lpq_s, e_s, nocc_s, om, rho, p):
 
     def f(z):
         z = np.asarray(z, dtype=complex)
-        return np.sum(w[None] / (z.reshape(-1, 1, 1) - poles[None]), axis=(1, 2)).reshape(
-            z.shape
-        )
+        return np.sum(
+            w[None] / (z.reshape(-1, 1, 1) - poles[None]), axis=(1, 2)
+        ).reshape(z.shape)
 
     return f, poles.ravel(), w.ravel()
 
@@ -1169,7 +1169,10 @@ def ferric_qp_rule(sc_re, e0, shift):
 
     def d(x, hh=h):
         return (
-            -sc_re(x + 2 * hh) + 8 * sc_re(x + hh) - 8 * sc_re(x - hh) + sc_re(x - 2 * hh)
+            -sc_re(x + 2 * hh)
+            + 8 * sc_re(x + hh)
+            - 8 * sc_re(x - hh)
+            + sc_re(x - 2 * hh)
         ) / (12 * hh)
 
     z = min(max(1.0 / (1.0 - d(e0)), 0.0), 1.5)
@@ -1684,7 +1687,7 @@ def main(argv):
         for s in rest or sorted(OPEN):
             gen_uhf_exact_only(s)
         return
-    want =set(argv) or (set(CLOSED) | set(ECP) | set(OPEN))
+    want = set(argv) or (set(CLOSED) | set(ECP) | set(OPEN))
     for s in CLOSED:
         if s in want:
             gen_closed(s)

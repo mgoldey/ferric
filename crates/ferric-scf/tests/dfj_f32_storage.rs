@@ -681,7 +681,9 @@ fn f32_by_default_and_f64_opt_out_is_the_old_path() {
     };
     let bits = |m: &Array2<f64>| m.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
 
-    // The default builds f32.
+    // The default builds f32 (the GPU feature resolves to f64, so the counter
+    // baseline is only read on the CPU build).
+    #[cfg(not(feature = "gpu"))]
     let k0 = kernel_counters()[MixedKernel::DfjF32.index()];
     let mut by_default = new(RiJPrecision::resolve(None));
     let mut j0 = Array2::zeros((n, n));
