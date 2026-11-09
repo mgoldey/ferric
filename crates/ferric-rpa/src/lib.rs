@@ -1175,9 +1175,7 @@ pub fn run_pdep_rpa_from_parts(
             eps_vir.len()
         ));
     }
-    let homo = eps_occ.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    let lumo = eps_vir.iter().copied().fold(f64::INFINITY, f64::min);
-    if !(homo.is_finite() && lumo.is_finite() && lumo - homo > 0.0) {
+    if let Some((homo, lumo)) = ungapped(eps_occ, eps_vir) {
         return err(format!(
             "every e_ia = ε_a − ε_i must be finite and > 0 (HOMO {homo}, LUMO {lumo}); the dRPA \
              frequency integral is undefined otherwise"
@@ -1287,6 +1285,15 @@ pub fn run_pdep_rpa_from_parts(
         e_rpa_dft_diag,
         eigensolver_converged: lz.converged,
     })
+}
+
+/// `Some((HOMO, LUMO))` when the occupied/virtual energies do not have a
+/// finite, positive gap (every χ₀ denominator e_ia = ε_a − ε_i must be > 0).
+fn ungapped(eps_occ: &[f64], eps_vir: &[f64]) -> Option<(f64, f64)> {
+    let homo = eps_occ.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let lumo = eps_vir.iter().copied().fold(f64::INFINITY, f64::min);
+    let gapped = homo.is_finite() && lumo.is_finite() && lumo - homo > 0.0;
+    (!gapped).then_some((homo, lumo))
 }
 
 /// Open-shell PDEP-RPA energy (UHF or ROHF reference).
@@ -1452,9 +1459,7 @@ pub fn run_u_pdep_rpa(
         if eo.is_empty() || ev.is_empty() {
             continue;
         }
-        let homo = eo.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-        let lumo = ev.iter().copied().fold(f64::INFINITY, f64::min);
-        if !(homo.is_finite() && lumo.is_finite() && lumo - homo > 0.0) {
+        if let Some((homo, lumo)) = ungapped(eo, ev) {
             return Err(FerricError::General(format!(
                 "run_u_pdep_rpa: {label} orbital energies are not gapped (HOMO {homo}, LUMO \
                  {lumo}, gap {}); every e_ia = ε_a − ε_i must be finite and > 0 for χ₀. On a \
@@ -1590,9 +1595,7 @@ pub fn run_u_pdep_rpa_from_parts(
             continue;
         }
         any_nonempty = true;
-        let homo = eo.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-        let lumo = ev.iter().copied().fold(f64::INFINITY, f64::min);
-        if !(homo.is_finite() && lumo.is_finite() && lumo - homo > 0.0) {
+        if let Some((homo, lumo)) = ungapped(eo, ev) {
             return err(format!(
                 "{label}: every e_ia = ε_a − ε_i must be finite and > 0 (HOMO {homo}, LUMO \
                  {lumo}); the dRPA frequency integral is undefined otherwise"

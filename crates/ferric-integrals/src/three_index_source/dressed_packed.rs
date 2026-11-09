@@ -55,8 +55,8 @@
 //! gathered Q panel) is soft-charged, as is a streamed raw's block.
 use super::{
     charge_three_index_soft, dress_packed_q_block, dress_resident_into_packed, dress_tile,
-    packed_column_runs,
-    packed_pair_len, Backend, F32Rounding, ThreeIndexSource, DRESS_COL_BLOCK, DRESS_K_BLOCK,
+    packed_column_runs, packed_pair_len, Backend, F32Rounding, ThreeIndexSource, DRESS_COL_BLOCK,
+    DRESS_K_BLOCK,
 };
 use ferric_core::FerricError;
 use ndarray::{Array2, ArrayView2};
