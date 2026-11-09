@@ -16,7 +16,7 @@
 //!     --test validation_gw_defaults --run-ignored only
 //! ```
 //!
-//! # The calibration this pins (2026-11-06)
+//! # The calibration this pins (2026-11-06, plain Σc quadrature)
 //!
 //! One knob at a time from the validated settings, H2O, NH3, CH4, CO, N2, HF,
 //! C2H4, CH2O at cc-pVDZ (H2O, NH3, N2 also at aug-cc-pVDZ), OH and NH2
@@ -33,15 +33,19 @@
 //! `BAR_MEV` = 10 meV. Why that bar: it is an order of magnitude below the
 //! ~0.1 eV scatter between GW codes on GW100 and below the basis-set error of
 //! cc-pVDZ, so the defaults do not change any conclusion drawn at the
-//! validated settings. A coarser bar (20 meV) would have accepted the old
-//! n_quad = 20, which misses by 21.5 meV on NH3.
+//! validated settings.
 //!
-//! NOT covered by the bar: orbitals below HOMO at a KS start. At @PBE,
-//! HOMO−1 of CH2O and NH3/cc-pVDZ moves by 0.1–0.4 eV between n_quad = 40,
-//! 50 and 60, and by 27 meV between 80 and 100, so the validated setting is
-//! itself not converged there. LiH was dropped from the set for the same
-//! reason (its Li 1s at @HF and its HOMO at @PBE never settle in n_quad).
-//! U-G0W0@UKS/PBE (OH, NH2) has its own, tighter n_quad bar
+//! Since 2026-11-09 the closed-shell drivers integrate the Σc kernel exactly
+//! too (`sigma::sigma_c_at_z_product`; wiki/notes/gw-deep-states-2026-11-09).
+//! Most of the n_quad error above was the plain sum's: the pinned @PBE cases
+//! are now ≤ 0.27 meV at the defaults (CH2O HOMO), and the WHOLE default
+//! window HOMO−2 … LUMO+2 of G0W0@PBE (CH2O, NH3) moves ≤ 0.06 meV between
+//! n_quad 40 and 100 (`CLOSED_NQUAD_BAR_MEV`); before, CH2O HOMO−1 moved
+//! 282 meV. The old n_quad = 20 control no longer misses 10 meV (NH3 HOMO
+//! 0.5 meV), so the frequency-grid control is the window test's 16 points
+//! (30–35 meV). LiH was dropped from the set in 2026-11-06 (its Li 1s at @HF
+//! and its HOMO at @PBE never settled in n_quad; not re-measured).
+//! U-G0W0@UKS/PBE (OH, NH2) has its own n_quad bar
 //! (`UKS_NQUAD_BAR_MEV`, below): before 2026-11-08 its frontier states moved
 //! by up to 66 meV between n_quad = 80 and 100, because the plain
 //! Gauss–Legendre sum cannot resolve the Σc kernel's ridge when a state
@@ -53,9 +57,9 @@
 //! * If the defaults are good enough, the default run and the validated run
 //!   differ by the measured few meV.
 //! * If the test cannot see the knob (the default is not what the run used,
-//!   or `n_points` does not reach W), the two runs agree to µeV, and the
-//!   n_quad = 20 negative control below also agrees. That control must MISS by
-//!   more than `BAR_MEV` (measured 21.5 meV), so this file fails if it is blind.
+//!   or `n_points` does not reach W), the two runs agree to µeV, and so does
+//!   the n_quad = 16 control of the window tests, which must MISS by more than
+//!   their 1 meV bar (measured 30–35 meV), so this file fails if it is blind.
 
 use std::path::{Path, PathBuf};
 
@@ -75,8 +79,6 @@ use ferric_scf::uhf::solve_uhf;
 const HA_TO_MEV: f64 = 27_211.386_245_988;
 /// Worst |ΔE_QP| on HOMO and LUMO the defaults may show (see the module doc).
 const BAR_MEV: f64 = 10.0;
-/// The old default n_quad, the negative control.
-const OLD_N_QUAD: usize = 20;
 
 fn workspace_root() -> PathBuf {
     let looks_like_root = |p: &Path| {
@@ -203,8 +205,8 @@ fn worst_mev(ctx: &str, what: &str, a: [f64; 2], b: [f64; 2]) -> f64 {
     w
 }
 
-/// Closed shell: (validated, defaults, n_quad = 20) frontier QP energies.
-fn closed(system: &str, xc: Option<&str>, method: GwMethod) -> [[f64; 2]; 3] {
+/// Closed shell: (validated, defaults) frontier QP energies.
+fn closed(system: &str, xc: Option<&str>, method: GwMethod) -> [[f64; 2]; 2] {
     let sys = load(system, 1);
     let cfg = scf_config(xc);
     let scf = solve_rhf(
@@ -251,11 +253,10 @@ fn closed(system: &str, xc: Option<&str>, method: GwMethod) -> [[f64; 2]; 3] {
     [
         go(&validated_pdep(), &validated_gw(method)),
         go(&default_pdep(DEFAULT_N_QUAD), &gw_default),
-        go(&default_pdep(OLD_N_QUAD), &gw_default),
     ]
 }
 
-fn assert_defaults_within_bar(ctx: &str, e: [[f64; 2]; 3]) -> f64 {
+fn assert_defaults_within_bar(ctx: &str, e: [[f64; 2]; 2]) -> f64 {
     let w = worst_mev(ctx, "defaults", e[1], e[0]);
     assert!(
         w <= BAR_MEV,
@@ -267,19 +268,11 @@ fn assert_defaults_within_bar(ctx: &str, e: [[f64; 2]; 3]) -> f64 {
 // The default values themselves are pinned in `gw_defaults_pinned.rs`, which
 // runs in every shard; every test here is validation tier.
 
-/// The worst case of the calibration (NH3 HOMO, 5.7 meV at 40 points) and
-/// the negative control (21.5 meV at the old 20 points).
+/// NH3: the worst HOMO of the 2026-11-06 calibration (plain quadrature).
 #[test]
 #[ignore = "validation: GW defaults vs validated settings"]
-fn g0w0_pbe_nh3_defaults_within_bar_and_old_default_misses() {
-    let e = closed("nh3", Some("pbe"), GwMethod::G0W0);
-    assert_defaults_within_bar("nh3 G0W0@PBE", e);
-    let old = worst_mev("nh3 G0W0@PBE", "n_quad = 20", e[2], e[0]);
-    assert!(
-        old > BAR_MEV,
-        "nh3 G0W0@PBE: n_quad = 20 misses by only {old:.3} meV (measured 21.5); the \
-         comparison does not see the frequency grid"
-    );
+fn g0w0_pbe_nh3_defaults_within_bar() {
+    assert_defaults_within_bar("nh3 G0W0@PBE", closed("nh3", Some("pbe"), GwMethod::G0W0));
 }
 
 /// CH2O: the worst LUMO of the calibration (9.3 meV at 30 points, 3.6 at 40).
@@ -340,8 +333,106 @@ fn u_g0w0_uhf_oh_defaults_within_bar() {
     };
     let v = go(&validated_pdep(), &validated_gw(GwMethod::G0W0));
     let d = go(&default_pdep(DEFAULT_N_QUAD), &GwConfig::default());
-    assert_defaults_within_bar("oh U-G0W0@UHF alpha", [v.0, d.0, d.0]);
-    assert_defaults_within_bar("oh U-G0W0@UHF beta", [v.1, d.1, d.1]);
+    assert_defaults_within_bar("oh U-G0W0@UHF alpha", [v.0, d.0]);
+    assert_defaults_within_bar("oh U-G0W0@UHF beta", [v.1, d.1]);
+}
+
+/// Closed-shell G0W0@PBE over the WHOLE default window (HOMO−2 … LUMO+2):
+/// the run_gw drivers integrate the Σc kernel exactly
+/// (`sigma::sigma_c_at_z_product`), so every window state converges in
+/// n_quad. MEASURED 2026-11-09 (wiki/notes/gw-deep-states-2026-11-09), the
+/// plain Gauss–Legendre sum vs the exact dRPA pole sum: CH2O/cc-pVDZ HOMO−1
+/// −281 / +1.1 / −1.6 meV at 40 / 100 / 200 points, NH3 HOMO−1 +126 / +111 /
+/// −48 meV; the product rule ≤ 0.06 meV from 40 points on.
+const CLOSED_NQUAD_BAR_MEV: f64 = 1.0;
+/// The negative control's grid.
+const CLOSED_COARSE_N_QUAD: usize = 16;
+
+/// run_gw on one closed-shell KS SCF (as `run_gw(xc=...)` builds it), as a
+/// closure of n_quad returning every window QP energy (Ha) and asserting
+/// every QP solve returned a root.
+fn closed_window(system: &str, xc: &str) -> impl Fn(usize) -> Vec<f64> {
+    let sys = load(system, 1);
+    let cfg = scf_config(Some(xc));
+    let scf = solve_rhf(
+        &sys.ctx,
+        &sys.mol,
+        &sys.obs,
+        Operator::coulomb(),
+        &sys.bounds,
+        &cfg,
+    )
+    .unwrap_or_else(|e| panic!("{}: SCF failed: {e:?}", sys.label));
+    assert!(scf.converged, "{}: SCF did not converge", sys.label);
+    let g = KsGradGrids::from_config(&cfg);
+    let vxc = vxc_diagonal_mo_on_grids(&sys.mol, &sys.obs_bs, xc, &scf, &g.main, &g.nlc)
+        .unwrap_or_else(|e| panic!("{}: v_xc: {e:?}", sys.label))
+        .0;
+    move |n_quad: usize| {
+        let r = run_gw(
+            &sys.mol,
+            &sys.obs,
+            &sys.dfbs,
+            Operator::coulomb(),
+            &scf,
+            &pdep_at(n_quad, 0.0),
+            &GwConfig::default(),
+            Some(&vxc),
+        )
+        .unwrap_or_else(|e| panic!("{}: run_gw failed: {e:?}", sys.label));
+        assert!(
+            r.qp_converged.iter().all(|&c| c),
+            "{}: a QP solve returned no root",
+            sys.label
+        );
+        r.eps_qp.to_vec()
+    }
+}
+
+/// max over the window of |a − b| in meV, printing each state.
+fn window_worst_mev(ctx: &str, what: &str, a: &[f64], b: &[f64]) -> f64 {
+    assert_eq!(a.len(), b.len(), "{ctx}: window length");
+    let mut w = 0.0_f64;
+    for (k, (x, y)) in a.iter().zip(b).enumerate() {
+        let d = (x - y).abs() * HA_TO_MEV;
+        eprintln!(
+            "{ctx}: {what} window state {k}: {x:+.8} vs n_quad 100 {y:+.8} Ha, |d| {d:.4} meV"
+        );
+        w = w.max(d);
+    }
+    w
+}
+
+/// n_quad 40 (the default) vs 100 within `CLOSED_NQUAD_BAR_MEV` on every
+/// window state; the coarse control MISSES that bar, so the comparison sees
+/// the frequency grid.
+fn closed_nquad_case(system: &str) {
+    let go = closed_window(system, "pbe");
+    let ctx = format!("{system} G0W0@PBE");
+    let v = go(100);
+    let w40 = window_worst_mev(&ctx, "n_quad = 40", &go(DEFAULT_N_QUAD), &v);
+    assert!(
+        w40 <= CLOSED_NQUAD_BAR_MEV,
+        "{ctx}: n_quad 40 vs 100 differ by {w40:.4} meV > {CLOSED_NQUAD_BAR_MEV} meV on the window"
+    );
+    let wc = window_worst_mev(&ctx, "n_quad = 16", &go(CLOSED_COARSE_N_QUAD), &v);
+    assert!(
+        wc > CLOSED_NQUAD_BAR_MEV,
+        "{ctx}: n_quad = {CLOSED_COARSE_N_QUAD} misses n_quad = 100 by only {wc:.4} meV; the \
+         comparison does not see the frequency grid"
+    );
+}
+
+#[test]
+#[ignore = "validation: GW defaults vs validated settings"]
+fn g0w0_pbe_ch2o_window_converges_in_n_quad() {
+    closed_nquad_case("ch2o");
+}
+
+#[test]
+#[ignore = "validation: GW defaults vs validated settings"]
+fn g0w0_pbe_nh3_window_converges_in_n_quad() {
+    closed_nquad_case("nh3");
 }
 
 /// U-G0W0@UKS/PBE (OH, NH2): the frequency integral of Σc is done by product
@@ -423,7 +514,7 @@ fn uks_case(system: &str) {
             w <= UKS_NQUAD_BAR_MEV,
             "{ctx}: n_quad 40 vs 100 differ by {w:.4} meV > {UKS_NQUAD_BAR_MEV} meV"
         );
-        assert_defaults_within_bar(&ctx, [v[s], defaults[s], defaults[s]]);
+        assert_defaults_within_bar(&ctx, [v[s], defaults[s]]);
         worst_coarse = worst_coarse.max(worst_mev(&ctx, "n_quad = 16", coarse[s], v[s]));
     }
     assert!(

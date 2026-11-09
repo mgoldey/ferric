@@ -564,6 +564,16 @@ pub(crate) fn pade_support_omegas(pade_npts: usize) -> Vec<f64> {
 /// `|f'| < 1e-3` (near a Σ_c pole) or because it ran out of iterations without
 /// the step shrinking below tolerance, the returned `ε_qp` is the *last
 /// iterate*, not a converged root — this flag is what lets callers detect that.
+///
+/// Σ_c(ε_F + iω) at the Padé nodes is product-integrated
+/// ([`sigma_c_at_z_product`]) whenever the W quadrature is a scaled
+/// Gauss–Legendre rule, and falls back to the plain sum of [`sigma_c_at_z`]
+/// otherwise. The closed-shell drivers (G0W0, evGW₀, evGW, and the MPI
+/// sweep) all come through here. Measured against the exact Casida pole sum
+/// (wiki/notes/gw-deep-states-2026-11-09): the plain sum does not converge
+/// in `n_quad` for states away from the frontier (H2O/cc-pVDZ G0W0@PBE
+/// HOMO−2: +136, −102, −9.7 meV from the exact-Σc QP at 40, 100, 200
+/// points), the product rule is within 0.004 meV from 40 points on.
 pub(crate) fn solve_qp_for_mo(
     m_loc: usize,
     eps_m_mf: f64,
@@ -593,14 +603,14 @@ pub(crate) fn solve_qp_for_mo(
         newton_damp,
         ef,
         static_shift,
-        None,
+        ProductQuadrature::from_scaled_gauss_legendre(quad_freqs, quad_weights).as_ref(),
     )
 }
 
-/// [`solve_qp_for_mo`] with an optional product-integration rule. `Some`
-/// samples Σ_c(ε_F + iω) at the Padé nodes with [`sigma_c_at_z_product`]
-/// (the open-shell drivers); `None` is the plain quadrature of
-/// [`sigma_c_at_z`], bit-identical to the original `solve_qp_for_mo`.
+/// [`solve_qp_for_mo`] with the product-integration rule passed in (the
+/// open-shell drivers build it once). `Some` samples Σ_c(ε_F + iω) at the
+/// Padé nodes with [`sigma_c_at_z_product`]; `None` is the plain quadrature
+/// of [`sigma_c_at_z`].
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn solve_qp_for_mo_with(
     m_loc: usize,
@@ -814,7 +824,7 @@ pub fn run_g0w0(
     // Each MO's QP solve is independent, so parallelize over the QP index;
     // per-state summation order is unchanged.
     //
-    // NOT "no BLAS inside" — `solve_qp_for_mo` reaches `sigma_c_at_z`, which
+    // NOT "no BLAS inside" — `solve_qp_for_mo` reaches `screened_elements`, which
     // runs a real `inv_diel_freq[k].dot(&v)` GEMM per quadrature node. This is
     // safe because `opt_in_blas_threads` (ferric-core/src/blas_threads.rs)
     // force-pins BLAS to 1 thread whenever it is called from inside a rayon
@@ -1798,6 +1808,48 @@ mod tests {
     }
     // MEASURED (2026-11-08): product 8.8e-10 at 40, 1.2e-15 at 100; plain
     // 9.2e-3 at 40, 5.9e-4 at 100 (and 4.5e-2 at 20).
+
+    /// The closed-shell drivers (G0W0, evGW₀, evGW, MPI) solve the QP
+    /// equation through `solve_qp_for_mo`, which must sample Σc with the
+    /// product rule for a scaled Gauss–Legendre W grid: its result equals
+    /// `solve_qp_for_mo_with(Some(rule))` and MISSES the plain quadrature
+    /// (`None`) on the near-ε_F fixture, for every state.
+    #[test]
+    fn closed_shell_qp_solve_uses_the_product_rule() {
+        let (m_proj, eps_act, n_occ) = near_fermi_fixture();
+        let (freqs, weights) = ferric_rpa::quadrature::gauss_legendre_nodes(40, 0.5);
+        let w = single_pole_w(&freqs, 0.054, 0.15);
+        let pq = ProductQuadrature::from_scaled_gauss_legendre(&freqs, &weights).unwrap();
+        let ef = fermi_level(&eps_act, n_occ);
+        let mut worst_plain_gap = 0.0_f64;
+        for m in 0..eps_act.len() {
+            let solve = |rule: Option<&ProductQuadrature>| {
+                solve_qp_for_mo_with(
+                    m, eps_act[m], &m_proj, &w, &weights, &freqs, &eps_act, 0, 1.0, ef, 0.0, rule,
+                )
+                .unwrap()
+                .0
+            };
+            let got = solve_qp_for_mo(
+                m, eps_act[m], &m_proj, &w, &weights, &freqs, &eps_act, 0, 1.0, ef, 0.0,
+            )
+            .unwrap()
+            .0;
+            let (prod, plain) = (solve(Some(&pq)), solve(None));
+            eprintln!("state {m}: solve_qp_for_mo {got:.10} product {prod:.10} plain {plain:.10}");
+            assert_eq!(
+                got.to_bits(),
+                prod.to_bits(),
+                "state {m}: not the product rule"
+            );
+            worst_plain_gap = worst_plain_gap.max((got - plain).abs());
+        }
+        assert!(
+            worst_plain_gap > 1e-4,
+            "the plain quadrature agrees with the product rule to {worst_plain_gap:.2e} Ha on \
+             the near-ε_F fixture, so this test cannot tell which one the drivers use"
+        );
+    }
     const PRODUCT_BAR_40: f64 = 1e-8;
     const PRODUCT_BAR_100: f64 = 1e-12;
 

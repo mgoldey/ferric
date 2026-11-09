@@ -87,10 +87,12 @@ fn with_inv_dielectric(cfg: &PdepRpaConfig) -> PdepRpaConfig {
 /// 21.5 meV at 20 points (NH3/cc-pVDZ HOMO), 9.3 meV at 30 and 5.7 meV at 40,
 /// and it does not fall monotonically with n_quad (3.3 meV at 60, 1.5 at 50).
 /// The bar is 10 meV on HOMO and LUMO, and
-/// `tests/validation_gw_defaults.rs` pins it. U-G0W0 on a UKS reference
-/// (OH, NH2 / UKS-PBE) has its own 1 meV bar between 40 and 100 points
-/// (measured ≤ 0.005 meV), which holds because the open-shell drivers
-/// integrate the Σc kernel exactly (`sigma::sigma_c_at_z_product`).
+/// `tests/validation_gw_defaults.rs` pins it. Those @PBE numbers were taken
+/// with the plain Gauss–Legendre Σc sum, which does not converge in n_quad
+/// for states far from ε_F. Since 2026-11-09 every driver integrates the Σc
+/// kernel exactly against the interpolated W (`sigma::sigma_c_at_z_product`),
+/// and the whole QP window (HOMO−2 … LUMO+2) of G0W0@PBE (CH2O, NH3) and of
+/// U-G0W0@UKS (OH, NH2) has its own 1 meV bar between 40 and 100 points.
 pub const DEFAULT_N_QUAD: usize = 40;
 
 /// Top-level GW configuration.
