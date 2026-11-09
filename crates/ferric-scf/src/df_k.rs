@@ -735,8 +735,9 @@ impl<'a> DfK<'a> {
     }
 
     /// Shared tail of both constructors: dress `raw` into this rank's band,
-    /// held packed at `precision` when the packed tier takes it (CPU, raw
-    /// resident, band fits), else in the square / spilled layouts.
+    /// held packed at `precision` when the packed tier takes it (CPU, the band
+    /// fits, and raw resident or, for f64, streamed once), else in the square /
+    /// spilled layouts.
     fn from_raw(
         raw: &mut ThreeIndexSource,
         dfbs: &PreparedBasis,
@@ -852,6 +853,16 @@ impl<'a> DfK<'a> {
             RiKPrecision::F64 => DressedLayout::PackedF64,
         };
         ThreeIndexSource::dressed_band_bytes(band, nao, layout)
+    }
+
+    /// Would a [`DfK`] at `precision` dress a STREAMED (spilled or recomputed)
+    /// raw tensor into its packed band? Only the f64 packed tier does
+    /// (`ThreeIndexSource::build_dressed_band_packed`); the f32 tier and the
+    /// square tensor of a device mode need raw resident.
+    pub(crate) fn dresses_streamed_raw_packed(precision: RiKPrecision) -> bool {
+        !device_may_take_k()
+            && effective_precision(precision) == RiKPrecision::F64
+            && !square_forced()
     }
 
     /// The storage precision of the dressed tensor (after any fallback).

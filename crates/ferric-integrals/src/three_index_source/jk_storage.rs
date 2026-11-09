@@ -570,6 +570,78 @@ impl ThreeIndexSource {
         )
     }
 
+    /// Bytes a dress-first raw source ([`Self::build_dress_stream`]) holds while
+    /// DF-K dresses from it: its block's charge (`DRESS_K_BLOCK` unpacked rows,
+    /// never touched by the packed stream) and the dressing's recompute stream
+    /// (`DRESS_K_BLOCK` rows, unpacked plus packed).
+    pub fn dress_stream_bytes_for(nao: usize, naux: usize) -> usize {
+        let rows = super::DRESS_K_BLOCK.min(naux.max(1));
+        let row = nao.saturating_mul(nao).saturating_mul(8);
+        let pair = packed_pair_len(nao).saturating_mul(8);
+        rows.saturating_mul(row.saturating_mul(2).saturating_add(pair))
+    }
+
+    /// Should the shared RI-JK raw tensor (`naux` rows) be streamed ONCE to
+    /// dress DF-K ("dress first") instead of held beside DF-K's dressed band
+    /// of `dressed_beside` bytes?
+    ///
+    /// True when the memory tiers would hold raw ([`memory_tier`]) but raw
+    /// (unpacked, or packed) and the band do not fit the budget together,
+    /// while the band and the dressing's stream
+    /// ([`Self::dress_stream_bytes_for`]) do. Otherwise the existing placement
+    /// stands: raw held beside the band, which then is dressed in core when
+    /// the pool admits it and spilled when not, or raw spilled / recomputed
+    /// when no memory tier holds it alone.
+    ///
+    /// The budget alone decides (never the live pool), so the route is a
+    /// function of the shapes and `[memory] budget_gb`. Pure: pinned in
+    /// milliseconds by `dress_first_band` below.
+    pub fn dress_first_wanted(
+        nao: usize,
+        naux: usize,
+        budget_bytes: usize,
+        dressed_beside: usize,
+    ) -> bool {
+        if dressed_beside == 0 || memory_tier(nao, naux, budget_bytes).is_none() {
+            return false;
+        }
+        let full = naux.saturating_mul(nao).saturating_mul(nao).saturating_mul(8);
+        let packed = naux.saturating_mul(packed_pair_len(nao)).saturating_mul(8);
+        let held = full.min(packed).saturating_add(dressed_beside);
+        let streamed = dressed_beside.saturating_add(Self::dress_stream_bytes_for(nao, naux));
+        held > budget_bytes && streamed <= budget_bytes
+    }
+
+    /// The raw tensor of a dress-first RI-JK setup ([`Self::dress_first_wanted`]):
+    /// the recompute backend over the full aux range with a `DRESS_K_BLOCK`-row
+    /// block, so nothing is held but the block. DF-K dresses from it in one
+    /// streamed pass (bitwise the resident dressing); it is then either turned
+    /// into RI-J's f32 tensor by one more streamed pass or dropped for
+    /// Split-RI-J. Every value is the in-core tier's (`eri3_block` is pure).
+    pub fn build_dress_stream(
+        op: Operator,
+        mol: &ferric_core::mol::Molecule,
+        obs: &PreparedBasis,
+        dfbs: &PreparedBasis,
+        budget_bytes: usize,
+    ) -> Result<Self, FerricError> {
+        let (nao, naux) = (obs.nbasis(), dfbs.nbasis());
+        let rows = super::DRESS_K_BLOCK.min(naux.max(1));
+        // `build_recompute_band` sizes its block to half the budget it is given.
+        let block_budget = (2 * rows * nao * nao * 8).min(budget_bytes);
+        if super::ooc_trace() {
+            eprintln!(
+                "[OOC build] jk_storage={} nao={nao} band=[0,{naux}) budget={:.2}GB -> \
+                 Recompute (dress first: streamed once for DF-K, {rows}-row block)",
+                jk_storage(),
+                budget_bytes as f64 / 1e9,
+            );
+        }
+        let obs = Arc::new(PreparedBasis::new(mol, obs.basis_set())?);
+        let dfbs = Arc::new(PreparedBasis::new(mol, dfbs.basis_set())?);
+        Self::build_recompute_band(op, obs, dfbs, block_budget, (0, naux), None)
+    }
+
     /// The Schwarz pair-screened in-core tier for an RI-J-only source
     /// ([`super::PairScreen`]), or `Ok(None)` when it is not taken: the policy
     /// is `disk`/`direct` (the user's instruction to keep the tensor out of
@@ -645,6 +717,32 @@ impl ThreeIndexSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The dress-first band is exactly (band + stream, raw + band]: an ample
+    /// budget never takes it (the existing route is untouched), a budget that
+    /// cannot hold the band and its stream does not either, and no band
+    /// (`dressed_beside = 0`, a J-only source) never does. C32/def2-SVP's
+    /// shapes (nao 778, naux 3588, def2-universal-jkfit), at its 12 GiB budget.
+    #[test]
+    fn dress_first_band() {
+        let (nao, naux) = (778, 3588);
+        let packed = naux * packed_pair_len(nao) * 8;
+        let band = packed;
+        let stream = ThreeIndexSource::dress_stream_bytes_for(nao, naux);
+        let want = |budget| ThreeIndexSource::dress_first_wanted(nao, naux, budget, band);
+        assert!(want(12 << 30), "C32/def2-SVP at 12 GiB must dress first");
+        assert!(!want(usize::MAX / 4), "an ample budget keeps raw resident");
+        assert!(!want(packed + band), "raw and band fit together");
+        assert!(want(packed + band - 1));
+        assert!(want(band + stream));
+        assert!(!want(band + stream - 1), "the band and its stream must fit");
+        assert!(!ThreeIndexSource::dress_first_wanted(nao, naux, 12 << 30, 0));
+        // A raw no memory tier holds is placed as before (spill / recompute).
+        let tiny = (100, 4000);
+        let b = tiny.1 * packed_pair_len(tiny.0) * 8;
+        assert!(memory_tier(tiny.0, tiny.1, b / 2).is_none());
+        assert!(!ThreeIndexSource::dress_first_wanted(tiny.0, tiny.1, b / 2, b / 4));
+    }
 
     #[test]
     fn parse_round_trips_and_rejects_unknown() {

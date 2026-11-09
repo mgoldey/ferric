@@ -34,6 +34,7 @@ use ferric_core::parallel::ParallelContext;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
+use ferric_integrals::three_index_source::{jk_storage, JkStorage};
 use ndarray::Array2;
 
 /// Default JK-fit auxiliary basis when the caller hasn't set one (the same
@@ -182,12 +183,15 @@ fn build_df_jk_impl<'a>(
             // a shared source would either over-allocate DfJ or under-feed DfK.
             // Multi-rank keeps the independent builds below.
             if ctx.size <= 1 {
+                use ferric_integrals::three_index_source::ThreeIndexSource;
                 let naux = dfbs.nbasis();
                 // Leave room for the packed dressed band DF-K will hold beside
                 // the raw tensor (`DfK::packed_band_bytes`).
                 let beside = DfK::packed_band_bytes(naux, prep.nbasis(), k_precision);
-                let mut raw =
-                    ferric_integrals::three_index_source::ThreeIndexSource::build_for_jk_beside(
+                let mut raw = if dress_first(op, (prep, &dfbs), ooc_budget, beside, k_precision) {
+                    ThreeIndexSource::build_dress_stream(op, mol, prep, &dfbs, ooc_budget)?
+                } else {
+                    ThreeIndexSource::build_for_jk_beside(
                         op,
                         mol,
                         prep,
@@ -196,7 +200,8 @@ fn build_df_jk_impl<'a>(
                         (0, naux),
                         true,
                         beside,
-                    )?;
+                    )?
+                };
                 let df_k = Some(DfK::from_full_raw_with_precision(
                     &mut raw,
                     prep,
@@ -206,10 +211,32 @@ fn build_df_jk_impl<'a>(
                     Some(ctx),
                     k_precision,
                 )?);
-                // DF-K has its dressed copy now. Split-RI-J for J when asked,
-                // or under `auto` when the raw tensor was spilled or is
-                // recomputed (J would pay that every pass): the raw tensor is
-                // then freed here instead of kept for J.
+                // DF-K has its dressed copy now. A raw tensor that was spilled
+                // or is recomputed becomes RI-J's f32 tensor by one streamed
+                // pass under `auto` when f32 is asked for and fits beside the
+                // dressed band (the values the resident route stores).
+                // Otherwise Split-RI-J for J when asked, or under `auto` when
+                // raw is not resident (J would pay that every pass): the raw
+                // tensor is then freed here instead of kept for J.
+                let raw = if jk_storage() == JkStorage::Auto {
+                    match DfJ::from_streamed_source_f32(
+                        raw,
+                        op,
+                        &dfbs,
+                        ooc_budget,
+                        Some(ctx),
+                        j_precision,
+                    )? {
+                        Ok(j) => {
+                            let mut df_j = Some(RiJ::Stored(j));
+                            yield_device_to_k(&mut df_j, &df_k);
+                            return Ok((df_j, df_k));
+                        }
+                        Err(raw) => raw,
+                    }
+                } else {
+                    raw
+                };
                 let mut df_j = Some(
                     if split_j_for_shared_raw(op, prep, &dfbs, raw.is_resident()) {
                         drop(raw);
@@ -285,6 +312,58 @@ fn build_df_jk_impl<'a>(
     };
     yield_device_to_k(&mut df_j, &df_k);
     Ok((df_j, df_k))
+}
+
+/// Dress-first RI-JK ([`ThreeIndexSource::dress_first_wanted`]) for a shared
+/// raw tensor: its memory tiers would hold it, but not beside DF-K's dressed
+/// band of `dressed` bytes, which fits alone. Raw is then recomputed in one
+/// streamed pass to dress K (bitwise the resident dressing) and not held; J
+/// takes RI-J's f32 tensor by a second streamed pass when that fits, else
+/// Split-RI-J. The run this reroutes held raw and spilled the dressed band,
+/// re-reading it every iteration.
+///
+/// `auto` and `split` only (the others name raw's placement), single rank, a
+/// DF-K that dresses a streamed raw into its packed f64 band
+/// ([`DfK::dresses_streamed_raw_packed`]), and an operator and bases Split-RI-J
+/// supports (so J never falls back to recomputing raw every pass).
+///
+/// [`ThreeIndexSource::dress_first_wanted`]: ferric_integrals::three_index_source::ThreeIndexSource::dress_first_wanted
+fn dress_first(
+    op: Operator,
+    (prep, dfbs): (&PreparedBasis, &PreparedBasis),
+    budget: usize,
+    dressed: usize,
+    k_precision: crate::df_k::RiKPrecision,
+) -> bool {
+    use ferric_integrals::three_index_source::ThreeIndexSource;
+    let (nao, naux) = (prep.nbasis(), dfbs.nbasis());
+    let taken = matches!(jk_storage(), JkStorage::Auto | JkStorage::Split)
+        && DfK::dresses_streamed_raw_packed(k_precision)
+        && ThreeIndexSource::dress_first_wanted(nao, naux, budget, dressed)
+        && crate::split_rij::SplitRiJ::supports(op, prep, dfbs);
+    if taken {
+        DRESS_FIRST_TAKEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let packed = naux * nao * (nao + 1) / 2 * 8;
+        eprintln!(
+            "[jk_storage] {}: the raw 3-index tensor ({:.2} GB packed) and DF-K's dressed \
+             band ({:.2} GB) do not fit the memory budget ({:.2} GB) together; raw is \
+             recomputed once to dress K and not held",
+            jk_storage(),
+            packed as f64 / 1e9,
+            dressed as f64 / 1e9,
+            budget as f64 / 1e9,
+        );
+    }
+    taken
+}
+
+static DRESS_FIRST_TAKEN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// How many shared RI-JK setups in this process took the dress-first route
+/// ([`dress_first`]). Test hook.
+#[doc(hidden)]
+pub fn dress_first_count_for_test() -> usize {
+    DRESS_FIRST_TAKEN.load(std::sync::atomic::Ordering::SeqCst)
 }
 
 /// `jk_storage = "split"` asked for, but J is built from a stored tensor:
@@ -746,6 +825,85 @@ pub(crate) fn subtract_rsh_exchange(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Dress first, at a budget where raw and DF-K's packed band do not fit
+    /// together but the band and the dressing's stream do: DF-K holds just the
+    /// packed f64 band, RI-J its f32 tensor, and both give bitwise the J and K
+    /// of the resident route (ample budget). Exactness anchor of the route:
+    /// at one BLAS thread nothing it changes may reach a bit.
+    #[test]
+    fn dress_first_is_bitwise_the_resident_route() {
+        use crate::df_k::RiKPrecision;
+        use crate::fock::{JBuilder, KBuilder};
+        use ferric_integrals::three_index_source::ThreeIndexSource;
+        assert_eq!(
+            std::env::var("OPENBLAS_NUM_THREADS").as_deref(),
+            Ok("1"),
+            "bit-identity holds at one BLAS thread; run with OPENBLAS_NUM_THREADS=1"
+        );
+        let path = format!(
+            "{}/../../testdata/molecules/alkane_6.xyz",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let mol = Molecule::load_xyz(&path).unwrap();
+        let prep =
+            PreparedBasis::new(&mol, &ferric_core::basis::bundled("def2-svp").unwrap()).unwrap();
+        let aux = ferric_core::basis::bundled(DEFAULT_JK_AUX).unwrap();
+        let (nao, naux) = (prep.nbasis(), PreparedBasis::new(&mol, &aux).unwrap().nbasis());
+        let dressed = DfK::packed_band_bytes(naux, nao, RiKPrecision::F64);
+        let stream = ThreeIndexSource::dress_stream_bytes_for(nao, naux);
+        // Raw packed is the band's size: the route's budget band is
+        // (dressed + stream, 2·dressed], reachable only when stream < dressed.
+        assert!(stream < dressed, "fixture too small: stream {stream} vs band {dressed}");
+        let budget = dressed + stream + (dressed - stream) / 2;
+        assert!(ThreeIndexSource::dress_first_wanted(nao, naux, budget, dressed));
+        let ctx = ParallelContext::default();
+        let op = Operator::coulomb();
+        let build = |budget: usize| {
+            build_df_jk_impl(
+                &ctx,
+                &mol,
+                op,
+                &prep,
+                Some(DEFAULT_JK_AUX),
+                Some(DEFAULT_JK_AUX),
+                budget,
+                0.0,
+                RiJPrecision::F32,
+                RiKPrecision::F64,
+            )
+            .unwrap()
+        };
+        let taken = dress_first_count_for_test();
+        let (j_ref, k_ref) = build(usize::MAX / 4);
+        assert_eq!(dress_first_count_for_test(), taken, "ample budget took the route");
+        let (j_new, k_new) = build(budget);
+        assert_eq!(dress_first_count_for_test(), taken + 1, "route not taken");
+        let (mut j_ref, mut k_ref) = (j_ref.unwrap(), k_ref.unwrap());
+        let (mut j_new, mut k_new) = (j_new.unwrap(), k_new.unwrap());
+        assert!(k_new.is_packed(), "dressed band not held packed");
+        assert_eq!(k_new.resident_tensor_bytes(), dressed);
+        assert!(matches!(j_new, RiJ::Stored(_)), "J not from a stored tensor");
+        assert_eq!(j_new.precision(), RiJPrecision::F32);
+        // A symmetric, non-idempotent density with mixed signs.
+        let d = Array2::from_shape_fn((nao, nao), |(i, j)| {
+            let (a, b) = (i.min(j) as f64, i.max(j) as f64);
+            0.4 / (b - a + 1.0) - 0.03 * ((a + 2.0 * b) % 5.0)
+        });
+        let run_j = |j: &mut RiJ<'_>| {
+            let mut out = Array2::zeros((nao, nao));
+            j.build(&d, &mut out).unwrap();
+            out
+        };
+        let run_k = |k: &mut DfK<'_>| {
+            let mut out = Array2::zeros((nao, nao));
+            k.build(&d, &mut out).unwrap();
+            out
+        };
+        let bits = |a: &Array2<f64>| a.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+        assert_eq!(bits(&run_k(&mut k_ref)), bits(&run_k(&mut k_new)), "K moved");
+        assert_eq!(bits(&run_j(&mut j_ref)), bits(&run_j(&mut j_new)), "J moved");
+    }
 
     /// The four routes `resolve_k_builder`'s warning can name. The two
     /// `df_k_present = false` cases with `need_k = false` or `omega > 0` are

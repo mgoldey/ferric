@@ -41,14 +41,21 @@
 //!
 //! # When this tier is taken
 //!
-//! Only with the raw tensor resident as the full square or the packed triangle
-//! (the shared RI-JK raw of `build_for_jk` under the memory tiers): a spilled or
-//! recomputed raw keeps the existing dressing paths (square in core or packed
-//! on disk), as does a band that does not fit the budget and the pool. Memory:
-//! the band is hard-charged at its stored size; the f32 tier's per-worker f64
-//! column tile (and, for a dense raw, gathered Q panel) is soft-charged.
+//! With the raw tensor resident as the full square or the packed triangle (the
+//! shared RI-JK raw of `build_for_jk` under the memory tiers), at either
+//! precision. A spilled or recomputed raw is streamed once in ascending
+//! `super::DRESS_K_BLOCK` Q blocks into the f64 band
+//! (`super::dress_packed_q_block`, the streamed routes' GEMMs: the same per-tile
+//! GEMM sequence as the resident fast path, so the band is bitwise the resident
+//! one at one BLAS thread); the f32 tier keeps declining a streamed raw (it
+//! would need the f64 band beside it). A band that does not fit the budget and
+//! the pool declines too, and the caller keeps the existing dressing paths
+//! (square in core or packed on disk). Memory: the band is hard-charged at its
+//! stored size; the f32 tier's per-worker f64 column tile (and, for a dense raw,
+//! gathered Q panel) is soft-charged, as is a streamed raw's block.
 use super::{
-    charge_three_index_soft, dress_resident_into_packed, dress_tile, packed_column_runs,
+    charge_three_index_soft, dress_packed_q_block, dress_resident_into_packed, dress_tile,
+    packed_column_runs,
     packed_pair_len, Backend, F32Rounding, ThreeIndexSource, DRESS_COL_BLOCK, DRESS_K_BLOCK,
 };
 use ferric_core::FerricError;
@@ -219,7 +226,7 @@ impl ThreeIndexSource {
     /// `rounding` is the f32 rounding mode (a test mutation besides `Nearest`).
     /// See the module docs for when this declines ([`PackedDressOutcome::NotTaken`]).
     pub fn build_dressed_band_packed(
-        raw: &ThreeIndexSource,
+        raw: &mut ThreeIndexSource,
         m: &Array2<f64>,
         budget_bytes: usize,
         (band_p0, band_p1): (usize, usize),
@@ -239,7 +246,9 @@ impl ThreeIndexSource {
         let nao = raw.nao();
         let pair = packed_pair_len(nao);
         let band = band_p1 - band_p0;
-        if raw.incore_flat().is_none() && raw.packed_flat().is_none() {
+        // A spilled or recomputed raw is streamed once into the f64 band.
+        let streamed = raw.incore_flat().is_none() && raw.packed_flat().is_none();
+        if streamed && (layout != DressedLayout::PackedF64 || !raw.supports_packed_stream()) {
             return Ok(PackedDressOutcome::NotTaken);
         }
         let needed = Self::dressed_band_bytes(band, nao, layout);
@@ -259,7 +268,13 @@ impl ThreeIndexSource {
             0
         };
         let scratch = workers * (panel + tile);
-        if needed.saturating_add(scratch) > budget_bytes {
+        // A streamed raw's block is charged by the stream itself.
+        let stream = if streamed {
+            raw.dress_stream_bytes()
+        } else {
+            0
+        };
+        if needed.saturating_add(scratch).saturating_add(stream) > budget_bytes {
             return Ok(PackedDressOutcome::NotTaken);
         }
         let label = match layout {
@@ -274,16 +289,24 @@ impl ThreeIndexSource {
         if super::ooc_trace() {
             eprintln!(
                 "[OOC dress] naux={naux} band=[{band_p0},{band_p1}) nao={nao} needed={:.2}GB \
-                 budget={:.2}GB -> {layout:?}",
+                 budget={:.2}GB -> {layout:?}{}",
                 needed as f64 / 1e9,
                 budget_bytes as f64 / 1e9,
+                if streamed { " (raw streamed once)" } else { "" },
             );
         }
         let backend = match layout {
             DressedLayout::PackedF64 => {
                 let mut out = Array2::<f64>::zeros((band, pair));
                 let t_st = ferric_core::timing::Stage::start("dfk:dress-gemm");
-                dress_resident_into_packed(raw, m, band_p0, out.view_mut())?;
+                if streamed {
+                    raw.for_each_dress_k_block_packed(|q0, rblk| {
+                        dress_packed_q_block(m, (band_p0, q0), &rblk, out.view_mut());
+                        Ok(())
+                    })?;
+                } else {
+                    dress_resident_into_packed(raw, m, band_p0, out.view_mut())?;
+                }
                 t_st.end();
                 Backend::InCorePacked {
                     packed: out,
