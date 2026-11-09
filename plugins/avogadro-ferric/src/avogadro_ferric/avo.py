@@ -74,13 +74,14 @@ def job_from_input(avo_input: dict, cfg: dict | None = None) -> Job:
     props = cjson.get("properties", {}) or {}
     charge = avo_input.get("charge", props.get("totalCharge", 0))
     mult = avo_input.get("spin", props.get("totalSpinMultiplicity", 1))
+    chosen = config.job_settings(cfg, avo_input.get("options") or {})
     job = Job(
         numbers=numbers,
         coords_angstrom=coords,
         charge=int(charge or 0),
         multiplicity=int(mult or 1),
-        method=str(cfg["method"]),
-        basis=str(cfg["basis"]),
+        method=str(chosen["method"]),
+        basis=str(chosen["basis"]),
     )
     job.check()
     return job

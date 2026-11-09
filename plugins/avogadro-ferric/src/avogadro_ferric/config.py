@@ -133,6 +133,34 @@ def user_options(cfg: dict) -> dict:
     }
 
 
+def job_options(cfg: dict) -> dict:
+    """The dialog shown before Single Point / Optimize / Frequencies / Orbitals:
+    method and basis, pre-filled from the Configure... defaults. A choice here
+    applies to this run only. Charge and multiplicity are not asked: Avogadro
+    sends the molecule's own with every command."""
+    full = user_options(cfg)
+    return {"method": full["method"], "basis": full["basis"]}
+
+
+def _pick(values: list, value):
+    """A stringList reply may be the index or the string; return the string."""
+    if isinstance(value, int) and not isinstance(value, bool):
+        return values[value]
+    if str(value).lower() not in [v.lower() for v in values]:
+        raise ValueError(f"unknown value {value!r}; expected one of {values}")
+    return value
+
+
+def job_settings(cfg: dict, options: dict) -> dict:
+    """Method/basis for one run: the dialog's choice, else the stored default."""
+    return {
+        "method": _pick(METHODS, options["method"])
+        if "method" in options
+        else cfg["method"],
+        "basis": _pick(BASES, options["basis"]) if "basis" in options else cfg["basis"],
+    }
+
+
 def update_from_options(options: dict) -> dict:
     """Merge the dialog's reply into the stored config and save it."""
     cfg = load()

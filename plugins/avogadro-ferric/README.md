@@ -16,9 +16,13 @@ ferric ships wheels for that platform only.
 | Extensions > ferric > Molecular Orbitals | | Basis set and MOs, so Avogadro draws orbitals |
 | Extensions > ferric > Configure… | | Defaults: method, basis, charge model, threads, memory |
 
-The method (HF or a functional: LDA, PBE, BLYP, BP86, PBE0, B3LYP, r2SCAN),
-the basis, the charge model, the thread count and the memory budget come from
-**Configure…**. Charge and multiplicity come from the molecule
+Single Point, Optimize Geometry, Frequencies and Molecular Orbitals each open
+a dialog for the method (HF or a functional: LDA, PBE, BLYP, BP86, PBE0,
+B3LYP, r2SCAN) and the basis, pre-filled from **Configure…**; the choice
+applies to that run only. Configure… sets those defaults plus the charge
+model, thread count and memory budget. The energy model **ferric (QM)** has no
+dialog of its own (Avogadro gives energy models none), so it always uses the
+Configure… defaults. Charge and multiplicity come from the molecule
 (Avogadro's Molecule Properties). If the multiplicity is above 1, the
 calculation runs unrestricted (UHF or UKS).
 
