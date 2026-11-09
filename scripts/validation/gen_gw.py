@@ -1559,6 +1559,172 @@ def gen_uhf_exact_only(system):
         common.write_reference(ROW, system, basis_name, payload)
 
 
+def exact_r_drpa(Lpq, mo_energy, nocc):
+    """Closed-shell (singlet) direct RPA by Casida on the RI Lpq:
+    C = D^2 + 4 D^1/2 K D^1/2, rho = sqrt(2) L_ia (X+Y). Equal to
+    `exact_u_drpa` on the spin-duplicated problem (asserted by
+    `closed_exact_block`); the triplet half carries no Coulomb residue."""
+    np = _np()
+    e = np.asarray(mo_energy)
+    lia = Lpq[:, :nocc, nocc:].reshape(Lpq.shape[0], -1)
+    d = (e[nocc:][None, :] - e[:nocc][:, None]).ravel()
+    assert d.min() > 0, "non-positive orbital gap"
+    sd = np.sqrt(d)
+    w2, z = np.linalg.eigh(np.diag(d * d) + 4.0 * (sd[:, None] * (lia.T @ lia) * sd[None, :]))
+    assert w2.min() > 0, "dRPA instability"
+    om = np.sqrt(w2)
+    return om, np.sqrt(2.0) * (lia @ (sd[:, None] * z / np.sqrt(om)[None, :]))
+
+
+def closed_exact_block(gw, mf, blk, ks):
+    """The grid-free reference of one closed-shell G0W0 block: Sigma_c(ef + iw)
+    at the 18 Pade nodes from the exact dRPA pole sum (no W frequency grid),
+    textbook Thiele through those values, ferric's root rule (`ferric_qp_rule`).
+    Static shift Sigma_x(DF) - v_xc for a KS block (as ferric), 0 at @HF (ferric
+    passes no v_xc there). Also stores the exact real-axis roots (largest Z
+    first), which measure the analytic continuation itself."""
+    np = _np()
+    from pyscf.gw.utils.ac_grid import _get_ac_idx, _get_scaled_legendre_roots
+
+    lpq = np.asarray(gw.Lpq)
+    e = np.asarray(mf.mo_energy, dtype=float)
+    nocc = int(gw.nocc)
+    assert lpq.shape[1] == len(e), "frozen core is not supported here"
+    om, rho = exact_r_drpa(lpq, e, nocc)
+    # Anchor: the closed-shell Casida equals the spin-duplicated U Casida.
+    om_u, rho_u = exact_u_drpa(np.array([lpq, lpq]), [e, e], (nocc, nocc))
+    # The stored block's ef (the z at which the plain nodes were sampled),
+    # after checking the re-solved SCF is the same state.
+    ef_now = 0.5 * (e[nocc - 1] + e[nocc])
+    ef = float(blk["ef"])
+    assert abs(ef_now - ef) < 1e-8, f"ef {ef_now} vs stored {ef}"
+    zz = ef + 1j * np.array([0.0, 0.3, 2.0])
+    p0 = blk["orbs"][0]
+    d_anchor = float(
+        np.max(np.abs(exact_sigma_c(lpq, e, nocc, om, rho, p0)[0](zz)
+                      - exact_sigma_c(lpq, e, nocc, om_u, rho_u, p0)[0](zz)))
+    )
+    assert d_anchor < 1e-10, f"closed vs U Casida: {d_anchor:.2e} Ha"
+    leg, _ = _get_scaled_legendre_roots(NW, X0)
+    eval_f = np.concatenate(([0.0], leg))
+    idx = _get_ac_idx(len(eval_f), npts=PADE_NPTS, step_ratio=PADE_STEP_RATIO)
+    zn = ef + 1j * eval_f[idx]
+    out = {
+        "construction": "closed-shell dRPA Casida pole sum on GWAC's Lpq "
+        "(exact_r_drpa), Sigma_c at the 18 Pade nodes, textbook Thiele, "
+        "ferric_qp_rule; no W frequency grid (gen_gw.py --closed-exact-only)",
+        "static_shift": "sigma_x_df - v_mf" if ks else "0 (HF)",
+        "closed_vs_u_casida_anchor": d_anchor,
+        "omega_lowest": [float(x) for x in om[:6]],
+        "sigma_c_iw_nodes_re": [],
+        "sigma_c_iw_nodes_im": [],
+        "eps_qp": [],
+        "sigma_c_at_qp": [],
+        "root_rule": [],
+        "real_axis_top_roots": [],
+    }
+    for ip, p in enumerate(blk["orbs"]):
+        f, poles, wts = exact_sigma_c(lpq, e, nocc, om, rho, p)
+        fn = f(zn)
+        a = thiele_coeffs(fn[:, None], zn)[:, 0]
+        shift = blk["sigma_x_df"][ip] - blk["v_mf"][ip] if ks else 0.0
+
+        def sc_re(w, a=a):
+            return thiele_eval(w + 0.0j, zn, a).real
+
+        root, rule = ferric_qp_rule(sc_re, float(e[p]), shift)
+        out["sigma_c_iw_nodes_re"].append([float(x) for x in fn.real])
+        out["sigma_c_iw_nodes_im"].append([float(x) for x in fn.imag])
+        out["eps_qp"].append(root)
+        out["sigma_c_at_qp"].append(float(sc_re(root)))
+        out["root_rule"].append(rule)
+        out["real_axis_top_roots"].append(
+            [list(t) for t in exact_real_axis_roots(f, poles, wts, float(e[p]), shift)[:3]]
+        )
+    out["pyscf_nw100_eps_qp_minus_exact_max"] = float(
+        max(abs(x - y) for x, y in zip(out["eps_qp"], blk["eps_qp"]))
+    )
+    return out
+
+
+def gen_closed_exact_only(system):
+    """Add `g0w0_hf/exact` and (where present) `g0w0_pbe/exact` to every basis
+    of a closed-shell system (`closed_exact_block`). The SCF is re-solved and
+    must reproduce the stored energy to 1e-9 Ha; every other block stays
+    byte-for-byte."""
+    import json
+
+    xyz_rel, bases = CLOSED[system]
+    xyz = common.MOL_DIR / xyz_rel
+    ha_mev = 27211.386245988
+    for basis_name in bases:
+        path = common.reference_path(ROW, system, basis_name)
+        payload = json.loads(path.read_text())
+        aux_name = AUX_FOR[basis_name]
+        mol, symbols, _c, _ll = mol_and_prov_base(xyz, basis_name)
+        aux = aux_dict(aux_name, symbols)
+        mf, _ = rhf_exact(mol)
+        assert abs(mf.e_tot - payload["rhf"]["energy"]) < 1e-9, "RHF state"
+        blocks = [("g0w0_hf", mf, False)]
+        if "g0w0_pbe" in payload:
+            mks = rks_pbe_exact(mol)
+            assert abs(mks.e_tot - payload["g0w0_pbe"]["rks_energy"]) < 1e-9, "RKS state"
+            blocks.append(("g0w0_pbe", mks, True))
+        for name, m, ks in blocks:
+            blk = payload[name]
+            gw, _ = run_gwac(m, aux, blk["orbs"], vhf_df=ks, nw=20, nw2=NW)
+            blk["exact"] = closed_exact_block(gw, m, blk, ks)
+            x = blk["exact"]
+            print(
+                f"{system}/{basis_name} {name}: exact eps_qp "
+                f"{[round(v * 27.211386245988, 4) for v in x['eps_qp']]} eV, "
+                f"|PySCF nw100 - exact| max "
+                f"{x['pyscf_nw100_eps_qp_minus_exact_max'] * ha_mev:.3f} meV, "
+                f"rule {x['root_rule']}",
+                flush=True,
+            )
+        prov = payload.pop("provenance")
+        prov["g0w0_closed_exact_generated"] = {
+            "git_head": common.git_head(),
+            "mode": "gen_gw.py --closed-exact-only (other blocks untouched)",
+        }
+        payload["provenance"] = prov
+        common.write_reference(ROW, system, basis_name, payload)
+
+
+def gen_ecp_exact_only(system):
+    """`gen_closed_exact_only` for an ECP row: adds `g0w0_hf/exact` only."""
+    import json
+
+    xyz = common.MOL_DIR / ECP[system]
+    basis_name = ECP_BASIS
+    ecp_json = common.basis_json_path(basis_name)
+    path = common.reference_path(ROW, system, basis_name)
+    payload = json.loads(path.read_text())
+    mol, symbols, _c, _ll = mol_and_prov_base(xyz, basis_name, ecp_json=ecp_json)
+    aux = aux_dict(AUX_FOR[basis_name], symbols)
+    mf, _ = rhf_exact(mol)
+    assert abs(mf.e_tot - payload["rhf"]["energy"]) < 1e-9, "RHF state"
+    blk = payload["g0w0_hf"]
+    gw, _ = run_gwac(mf, aux, blk["orbs"], nw=20, nw2=NW)
+    blk["exact"] = closed_exact_block(gw, mf, blk, False)
+    x = blk["exact"]
+    print(
+        f"{system}/{basis_name} g0w0_hf: exact eps_qp "
+        f"{[round(v * 27.211386245988, 4) for v in x['eps_qp']]} eV, |PySCF nw100 - exact| max "
+        f"{x['pyscf_nw100_eps_qp_minus_exact_max'] * 27211.386245988:.3f} meV, "
+        f"rule {x['root_rule']}",
+        flush=True,
+    )
+    prov = payload.pop("provenance")
+    prov["g0w0_closed_exact_generated"] = {
+        "git_head": common.git_head(),
+        "mode": "gen_gw.py --closed-exact-only (other blocks untouched)",
+    }
+    payload["provenance"] = prov
+    common.write_reference(ROW, system, basis_name, payload)
+
+
 def _print_uks(system, basis_name, payload):
     ha = 27.211386245988
     blk = payload["u_g0w0_uks_pbe"]
@@ -1680,6 +1846,15 @@ def main(argv):
         rest = [a for a in argv if a != "--uks-only"]
         for s in rest or sorted({sys_ for sys_, _ in UKS_CASES}):
             gen_open_uks_only(s)
+        return
+    if "--closed-exact-only" in argv:
+        # Add only the grid-free `exact` sub-blocks of the closed-shell G0W0 rows.
+        rest = [a for a in argv if a != "--closed-exact-only"]
+        for s in rest or sorted(CLOSED) + sorted(ECP):
+            if s in ECP:
+                gen_ecp_exact_only(s)
+            else:
+                gen_closed_exact_only(s)
         return
     if "--uhf-exact-only" in argv:
         # Add only the grid-free `exact` sub-block of the U-G0W0@UHF rows.
