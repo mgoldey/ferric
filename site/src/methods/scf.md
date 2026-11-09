@@ -204,10 +204,19 @@ library `RhfConfig::ri_k_precision`) chooses the stored precision:
 
 When J and K share one auxiliary basis, the raw tensor RI-J keeps is held
 packed instead of unpacked whenever the unpacked one would not leave room
-for the dressed band beside it. A `[gpu]` mode that may build K on the
-device keeps the square f64 tensor (the device upload reads it). A band that
-does not fit in memory is still spilled (packed f64 on disk), with a notice
-when `"f32"` was asked for.
+for the dressed band beside it. When even the packed raw tensor and the
+dressed band do not fit `[memory] budget_gb` together but the band does
+("dress first", `jk_storage = "auto"` or `"split"`, f64 RI-K, one rank,
+Coulomb operator), the raw tensor is not held at all: its integrals are
+computed once in 128-row blocks and dressed straight into the packed band
+(the same matrix products in the same order, so K is bitwise unchanged).
+J then gets its f32 tensor by a second pass over the integrals when
+`ri_j_precision = "f32"` and it fits beside the band (bitwise the J the
+shared tensor would have given), and Split-RI-J otherwise; a notice names
+the route. A `[gpu]` mode that may build K on the device keeps the square
+f64 tensor (the device upload reads it). A band that does not fit in memory
+is still spilled (packed f64 on disk), with a notice when `"f32"` was asked
+for.
 
 Measured, def2-SVP, `def2-universal-jkfit`, `density_conv = 1e-8`, CLI,
 f32 minus f64 RI-K storage (2026-11-08; RI-J f64 in both):
