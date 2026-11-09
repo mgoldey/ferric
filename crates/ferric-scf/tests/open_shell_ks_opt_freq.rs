@@ -237,10 +237,12 @@ fn uks_frequencies_run_and_give_one_vibrational_mode_for_a_diatomic() {
 /// `hessian = "auto"` answers a failed UKS response solve with the
 /// finite-difference Hessian. OH / STO-3G PBE is the measured case: its β π
 /// hole can rotate about the bond at no energy cost, an exact zero mode of the
-/// UKS orbital Hessian, and the CPHF meets a `pᵀAp` of about −2e-10 there. The
-/// explicit analytic route must still report that failure (it is a refusal of
-/// the analytic method, not noise to hide), and `Auto` must return the
-/// finite-difference result bit for bit.
+/// UKS orbital Hessian, and the CPHF meets a `pᵀAp` of about −2e-10 there on
+/// some machines (not on the CI runners: the sign is rounding-level). So the
+/// failure is forced through `hessian::fail_ucphf_for_test`. The explicit
+/// analytic route must still report it (a refusal of the analytic method, not
+/// noise to hide), and `Auto` must return the finite-difference result bit for
+/// bit.
 ///
 /// MUTATION-CHECKED: with the fallback arm of `auto_uks_moving_grid` removed,
 /// `Auto` returns the CPHF error and this test (and the diatomic test above)
@@ -266,14 +268,23 @@ fn auto_falls_back_to_finite_differences_when_the_uks_response_solve_fails() {
             },
         )
     };
+    struct Forced;
+    impl Drop for Forced {
+        fn drop(&mut self) {
+            ferric_scf::hessian::fail_ucphf_for_test(false);
+        }
+    }
+    let forced = Forced;
+    ferric_scf::hessian::fail_ucphf_for_test(true);
     let err = run(HessianMethod::AnalyticMovingGrid)
-        .expect_err("the analytic UKS route must fail on the OH pi-hole zero mode");
+        .expect_err("the analytic UKS route must report the forced response failure");
     let msg = err.to_string();
     assert!(
         msg.contains("CPHF for nuclear coordinate"),
         "the explicit route must name the response failure: {msg}"
     );
     let auto = run(HessianMethod::Auto).expect("Auto must fall back to finite differences");
+    drop(forced);
     let fd = run(HessianMethod::FiniteDifference).unwrap();
     assert_eq!(auto.hessian_source, HessianSource::FiniteDifference);
     assert_eq!(

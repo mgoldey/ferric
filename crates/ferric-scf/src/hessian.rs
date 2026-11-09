@@ -3012,6 +3012,19 @@ fn report_cphf_iterations(what: &str, resp: &ResponseTerm) {
     }
 }
 
+static UCPHF_FAIL_FOR_TEST: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Make every UKS (block) CPHF solve from now on fail as a response
+/// failure (`true`), or solve normally again (`false`). Test hook for the
+/// `hessian = "auto"` fallback: the natural trigger (the OH π-hole zero mode,
+/// `pᵀAp` ~ −2e-10) is rounding-level and does not fail on every machine.
+/// Process-wide, so tests that use it serialise.
+#[doc(hidden)]
+pub fn fail_ucphf_for_test(on: bool) {
+    UCPHF_FAIL_FOR_TEST.store(on, std::sync::atomic::Ordering::SeqCst);
+}
+
 /// Prefix of every response-solve (CPHF/CPKS) failure [`at_coordinate`]
 /// names: a non-positive orbital-Hessian curvature or no convergence.
 const CPHF_FAILURE_PREFIX: &str = "CPHF for nuclear coordinate";
@@ -3146,6 +3159,12 @@ fn solve_ucphf_block(
     h1: &[Vec<Array2<f64>>; 2],
     s1: &[Vec<Array2<f64>>; 2],
 ) -> Result<[Vec<CphfSolution>; 2], FerricError> {
+    if UCPHF_FAIL_FOR_TEST.load(std::sync::atomic::Ordering::SeqCst) {
+        return Err(at_coordinate(
+            0,
+            FerricError::Convergence("failure forced by fail_ucphf_for_test".into()),
+        ));
+    }
     let ncoord = h1[0].len();
     let block = cphf_block_len(frames[0].c.nrows(), 3);
     let mut out: [Vec<CphfSolution>; 2] = [Vec::new(), Vec::new()];

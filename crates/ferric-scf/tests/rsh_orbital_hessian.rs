@@ -48,6 +48,7 @@ use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
+use ferric_scf::df_j::RiJPrecision;
 use ferric_scf::result::{stationarity_tol, ScfResult};
 use ferric_scf::rhf::RhfConfig;
 use ferric_scf::screening::SchwarzBounds;
@@ -273,6 +274,9 @@ fn omega_zero_hybrid_newton_still_matches_diis() {
         energy_conv: 1e-9,
         density_conv: 1e-7,
         max_iter: 300,
+        // The stationarity bound is ~2e-9 Ha; the f32 RI-J energy surface is
+        // jagged above that (DIIS and Newton exit 1.7e-6 apart on CI), so pin f64.
+        ri_j_precision: Some(RiJPrecision::F64),
         ..Default::default()
     };
     let cfg_newton = RhfConfig {

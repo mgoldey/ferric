@@ -245,8 +245,11 @@ fn memory_policy_refusal_stops_a_guess_run_for_the_dressed_tensor() {
     let (mol, prep) = water();
     let needed = tensor_bytes(&mol, &prep);
     let _policy = MemoryPolicy::set();
-    // Raw fits, its dressed twin does not: this used to spill to disk.
-    install_global(MemoryPool::with_capacity_bytes(needed + needed / 2));
+    // Raw fits, its dressed twin does not: this used to spill to disk. The raw
+    // build is admitted at the square size, then both tensors are held as
+    // packed triangles (about 0.52 x needed each here, FERRIC_OOC_TRACE), so
+    // the band is [needed, ~1.04 x needed): a pool just above the square.
+    install_global(MemoryPool::with_capacity_bytes(needed + needed / 100));
     let got = run(needed * 16, None);
     clear_global();
     let err = got
