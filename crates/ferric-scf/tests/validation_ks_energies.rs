@@ -136,6 +136,7 @@ use ferric_core::parallel::ParallelContext;
 use ferric_dft::grid::AtomicGridConfig;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
+use ferric_scf::df_j::RiJPrecision;
 use ferric_scf::ladder::{default_ladder_from, solve_rhf_ladder};
 use ferric_scf::rhf::RhfConfig;
 use ferric_scf::screening::SchwarzBounds;
@@ -327,6 +328,9 @@ fn uks_config(xc: &str) -> RhfConfig {
         xc: Some(ferric_xc(xc).into()),
         df_j_aux,
         df_k_aux,
+        // The PySCF references fit J in f64; pin it (the f32 RI-J default's
+        // storage rounding is 1e-7..1e-6 Ha, far above this test's bar).
+        ri_j_precision: Some(RiJPrecision::F64),
         max_iter: 500,
         energy_conv: 1e-10,
         density_conv: 1e-7,
@@ -356,6 +360,9 @@ fn rks_config(xc: &str) -> RhfConfig {
         xc: Some(ferric_xc(xc).into()),
         df_j_aux: Some(df_j_aux),
         df_k_aux,
+        // The PySCF references fit J in f64; pin it (the f32 RI-J default's
+        // storage rounding is 1e-7..1e-6 Ha, far above this test's bar).
+        ri_j_precision: Some(RiJPrecision::F64),
         energy_conv: 1e-10,
         density_conv: 1e-8,
         // The references are PySCF on the flat (75,110) grid (generator: prune=None),

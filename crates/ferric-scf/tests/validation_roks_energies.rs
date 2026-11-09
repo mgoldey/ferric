@@ -122,6 +122,7 @@ use ferric_core::parallel::ParallelContext;
 use ferric_dft::grid::AtomicGridConfig;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
+use ferric_scf::df_j::RiJPrecision;
 use ferric_scf::rhf::RhfConfig;
 use ferric_scf::rohf::solve_rohf;
 use ferric_scf::screening::SchwarzBounds;
@@ -224,6 +225,9 @@ fn roks_config(xc: &str) -> RhfConfig {
         xc: Some(ferric_xc(xc).into()),
         df_j_aux: Some(AUX.to_string()),
         df_k_aux,
+        // The PySCF references fit J in f64; pin it (the f32 RI-J default's
+        // storage rounding is 1e-7..1e-6 Ha, far above this test's bar).
+        ri_j_precision: Some(RiJPrecision::F64),
         max_iter: 500,
         energy_conv: 1e-10,
         // Same as the UKS half of the KS-DFT row (validation_ks_energies.rs).
