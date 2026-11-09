@@ -75,6 +75,7 @@ jobs:
             eigen=3.4.0
             cmake
             ninja
+            llvm-tools
 
       - uses: ilammy/msvc-dev-cmd@v1
         if: runner.os == 'Windows'
@@ -125,12 +126,35 @@ jobs:
             -DCMAKE_PREFIX_PATH="$CP" \
             -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
             -DCMAKE_BUILD_TYPE=Release
-          cmake --build build-int 2>&1 | awk 'NR % 500 == 1 || /error|FAILED/'
+          # Full log kept (uploaded below). If the build fails, show why; on
+          # macOS retry ONLY the archive step with llvm-ar (objects are reused):
+          # run 42710765800 compiled all 16838 objects and then failed at
+          # `libint2.a`, with the archiver's message hidden by a log filter.
+          if ! cmake --build build-int > "$GITHUB_WORKSPACE/build-int.log" 2>&1; then
+            tc=$(date +%s)
+            echo "LIBINT_COMPILE_SECONDS_TO_FAILURE=$((tc - t1))" | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "::warning::libint2 build failed; tail of the log follows"
+            tail -40 "$GITHUB_WORKSPACE/build-int.log"
+            grep -c "Building CXX" "$GITHUB_WORKSPACE/build-int.log" || true
+            if [ "$RUNNER_OS" != macOS ]; then exit 1; fi
+            ls "$CONDA_PREFIX/bin" | grep -i -E "llvm-(ar|ranlib)" || true
+            cmake -S "libint-${LIBINT_VERSION}" -B build-int \
+              -DCMAKE_AR="$CONDA_PREFIX/bin/llvm-ar" -DCMAKE_RANLIB="$CONDA_PREFIX/bin/llvm-ranlib"
+            cmake --build build-int > "$GITHUB_WORKSPACE/build-int-retry.log" 2>&1 || { tail -40 "$GITHUB_WORKSPACE/build-int-retry.log"; exit 1; }
+            echo "LIBINT_ARCHIVE_RETRY=llvm-ar OK" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
           cmake --install build-int
           t2=$(date +%s)
           echo "LIBINT_BUILD_SECONDS=$((t2 - t1))" | tee -a "$GITHUB_STEP_SUMMARY"
           ls -la "$OUT/lib" "$OUT/bin" 2>/dev/null || true
           du -sh "$OUT/lib"/* | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: native-small-log-${{ matrix.leg }}
+          path: build-int*.log
+          retention-days: 7
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
