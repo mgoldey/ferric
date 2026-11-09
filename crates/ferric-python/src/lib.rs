@@ -224,6 +224,26 @@ impl PyBasisSet {
     fn elements(&self) -> Vec<i32> {
         self.inner.elements()
     }
+    /// The contracted shells this basis places on element `z`, in the order
+    /// they enter the AO basis on every atom of that element: one
+    /// `(l, pure, exponents, coefficients)` tuple per shell. Exponents are in
+    /// Bohr^-2. Coefficients are the contraction coefficients as stored (after
+    /// the load-time renormalisation to unit self-overlap); libint2 multiplies
+    /// in each primitive's normalisation when it builds the shell, so they are
+    /// coefficients of NORMALISED primitives. Raises `ValueError` when the
+    /// basis has no shells for `z`.
+    fn shells(&self, z: i32) -> PyResult<Vec<(i32, bool, Vec<f64>, Vec<f64>)>> {
+        let shells = self.inner.for_element(z).ok_or_else(|| {
+            pyo3::exceptions::PyValueError::new_err(format!(
+                "{}",
+                self.inner.missing_element_error(z)
+            ))
+        })?;
+        Ok(shells
+            .iter()
+            .map(|s| (s.l, s.pure, s.exponents.clone(), s.coefficients.clone()))
+            .collect())
+    }
     /// Load a basis set from a Basis Set Exchange JSON file (the format of
     /// ferric's bundled sets). Contractions are renormalised to unit
     /// self-overlap exactly as for the bundled sets. Raises `ValueError` on
@@ -9839,6 +9859,18 @@ impl PyDftResult {
 
     fn density<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
         PyArray2::from_array(py, &self.density_data)
+    }
+
+    /// Kohn-Sham orbital energies (Hartree), ascending: the eigenvalues of
+    /// the converged Fock matrix, one per column of `mo_coefficients()`.
+    fn orbital_energies<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        PyArray1::from_vec(py, self.scf_data.eps_alpha.clone())
+    }
+
+    /// Kohn-Sham MO coefficients C (n_bf x n_mo), column k = MO k in
+    /// ascending energy order (the matrix `eval_mo_on_points` indexes).
+    fn mo_coefficients<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        PyArray2::from_array(py, &self.scf_data.mos_alpha)
     }
 
     /// Number of SCF iterations actually performed.

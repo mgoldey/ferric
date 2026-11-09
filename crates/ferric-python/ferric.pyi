@@ -481,6 +481,11 @@ class BasisSet:
         """Atomic numbers this basis has shells for, ascending."""
         ...
 
+    def shells(self, z: int) -> list[tuple[int, bool, list[float], list[float]]]:
+        """Shells on element `z` in AO order: (l, pure, exponents [Bohr^-2],
+        coefficients of normalised primitives). ValueError if `z` is absent."""
+        ...
+
     @staticmethod
     def from_bse_json(path: str) -> BasisSet:
         """Load a Basis Set Exchange JSON file (contractions renormalised)."""
@@ -1315,6 +1320,13 @@ class FrequencyResult:
         ...
 
     @property
+    def normal_modes(self) -> list[list[float]]:
+        """Cartesian displacement vector of each mode (one row per entry of
+        `frequencies`, 3N values ordered [x0, y0, z0, x1, ...]): the
+        mass-weighted eigenvector divided by sqrt(m), not normalised."""
+        ...
+
+    @property
     def energy(self) -> float:
         """Electronic energy at the undisplaced geometry (KS + dispersion with `dispersion=`)."""
         ...
@@ -1990,6 +2002,14 @@ class DftResult:
 
     def density(self) -> NDArray[np.float64]:
         """AO-basis density matrix (n_bf x n_bf)."""
+        ...
+
+    def orbital_energies(self) -> NDArray[np.float64]:
+        """Kohn-Sham orbital energies (Hartree), ascending; one per MO column."""
+        ...
+
+    def mo_coefficients(self) -> NDArray[np.float64]:
+        """Kohn-Sham MO coefficients (n_bf x n_mo), column k = MO k, ascending energy."""
         ...
 
     def gradient(self) -> NDArray[np.float64] | None:
