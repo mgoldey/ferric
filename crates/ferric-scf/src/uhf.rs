@@ -1505,6 +1505,7 @@ fn solve_uhf_impl(
                 err: [&err_a, &err_b],
                 x: &x,
                 xc_active: [xc_contrib.is_some(), inj_xc.is_some()],
+                de_signed: energy - mon.prev_e,
             },
             config,
             &mut diis,
@@ -1547,7 +1548,11 @@ fn solve_uhf_impl(
             // aufbau state of F[D]; then the spin gets D's semicanonical
             // orbitals instead (`exit_mos_building_density`; not under MOM or
             // symmetry blocking, see `exit_eigenpairs`).
-            if crate::rhf::aufbau_by_design(config) {
+            // A pinned state is non-aufbau by construction (its flip was
+            // MEASURED not to lower E, see `FlipPin`): the one-step model drop
+            // is its inverted gap, not a stationarity defect. Its
+            // stationarity is the gate's: ΔP/ΔE plus the gradient veto.
+            if crate::rhf::aufbau_by_design(config) && !exit_gate.pinned() {
                 let (ea, _) = diag_a.run(&f_a)?;
                 let (eb, _) = diag_b.run(&f_b)?;
                 if let Some(rep) = last_report.as_mut() {
@@ -1710,9 +1715,24 @@ fn solve_uhf_impl(
         // CoH/def2-SVP UHF (`tests/saddle_repair_compare.rs`), that threw a
         // 100 mHa escape back onto the saddle. Pinned by the N2/STO-3G RHF and
         // O2/STO-3G UHF hand-off-after-rejection cases in `trah_hard_case.rs`.
-        let trah_armed = config
+        // A held degenerate-flip pin (`FlipPin`) arms TRAH whatever
+        // `trah_trigger` says: the held state's hole-orientation mode is
+        // nearly flat (curvature at the grid-anisotropy level) and its
+        // Roothaan coupling has the inverted pair's NEGATIVE denominator, so
+        // DIIS either parks on a stationary orientation of either curvature
+        // or wanders (MEASURED on OH, pin under DIIS: 5° and 13° tilts never
+        // converged, err_max parked at 2e-8..5e-8 for 190 iterations; a
+        // virtual-block shift instead walked the energy UP by 2e-6 Ha). TRAH
+        // rotates the held orbitals with the true Hessian, keeps the
+        // occupation by construction, and descends.
+        let pin_held = exit_gate.held();
+        if pin_held && trah_state.is_none() {
+            trah_state = Some(crate::trah::TrahState::new(config.trah));
+        }
+        let trah_armed = (config
             .trah_trigger
             .is_some_and(|t| err_max < t || trah_engaged)
+            || pin_held)
             && iter > 3
             && k_mix.omega == 0.0
             && !crate::rohf::xc_is_metagga(config.xc.as_deref())
@@ -1852,6 +1872,7 @@ fn solve_uhf_impl(
                 let fxc_storage = fxc_store.as_ref().map(|s| s.response());
                 let fxc_ref: Option<&crate::rohf_newton::FxcResponse<'_>> = fxc_storage.as_deref();
 
+                let (fitted_j, fitted_k) = fitted_responses(df_j.as_mut(), df_k.as_mut());
                 let inputs = crate::uhf_newton::UhfNewtonInputs {
                     prep,
                     bounds,
@@ -1866,6 +1887,8 @@ fn solve_uhf_impl(
                     fxc: fxc_ref,
                     thresh: config.integral_thresh,
                     ooc_budget,
+                    j_response: fitted_j.as_deref(),
+                    k_response: fitted_k.as_deref(),
                 };
                 let radius = trah_state
                     .as_ref()
@@ -1938,6 +1961,15 @@ fn solve_uhf_impl(
                 }
             }
             trah_took_step = !declined;
+            // A held pin whose TRAH model has nothing left to gain is done:
+            // re-evaluate at this same density (ΔP = 0 is already recorded)
+            // and let the gate end the run. Falling through to DIIS instead
+            // extrapolated from the pre-TRAH history and threw the converged
+            // state away (MEASURED on OH at 71° tilt: err_max 3.7e-9 → an
+            // orbital-sized jump, E up 3.1e-6 Ha).
+            if declined && pin_held {
+                continue;
+            }
         }
         if trah_took_step {
             continue;
@@ -2045,6 +2077,7 @@ fn solve_uhf_impl(
             let fxc_storage = fxc_store.as_ref().map(|s| s.response());
             let fxc_ref: Option<&crate::rohf_newton::FxcResponse<'_>> = fxc_storage.as_deref();
 
+            let (fitted_j, fitted_k) = fitted_responses(df_j.as_mut(), df_k.as_mut());
             let inputs = crate::uhf_newton::UhfNewtonInputs {
                 prep,
                 bounds,
@@ -2059,6 +2092,8 @@ fn solve_uhf_impl(
                 fxc: fxc_ref,
                 thresh: config.integral_thresh,
                 ooc_budget,
+                j_response: fitted_j.as_deref(),
+                k_response: fitted_k.as_deref(),
             };
             let (c_a_n, c_b_n, _kmax) = crate::uhf_newton::uhf_newton_step(
                 ctx,
@@ -2083,6 +2118,13 @@ fn solve_uhf_impl(
         // Coupled DIIS extrapolation: one set of coefficients applied to
         // both spin Fock histories.
         let (mut f_a_new, mut f_b_new) = diis.step_pair(&f_a, &f_b, &err_a, &err_b);
+        // Degenerate-flip pin (`FlipPin`). `None` unless a flip engaged it.
+        let flip_pin = exit_gate.take_pin();
+        let pin_now = flip_pin.is_some_and(|p| {
+            p != FlipPin::Engage {
+                keep_current: false,
+            }
+        });
         // Optional level shift on each spin's virtual–virtual block, applied
         // after DIIS so the DIIS error / convergence criterion remains
         // anchored to the unshifted Fock. Rational-damped by err_max so the
@@ -2109,8 +2151,15 @@ fn solve_uhf_impl(
         let (mut eps_a_new, mut c_a_new) = diag_a.run(&f_a_new)?;
         let (mut eps_b_new, mut c_b_new) = diag_b.run(&f_b_new)?;
 
+        // Degenerate-flip pin: hold the occupied set by maximum overlap, from
+        // the current occupation (`keep_current`) or from the one this aufbau
+        // step returns to.
+        if flip_pin == Some(FlipPin::Engage { keep_current: true }) {
+            mom_ref_a = Some(c_a.slice(ndarray::s![.., ..nocc_a]).to_owned());
+            mom_ref_b = Some(c_b.slice(ndarray::s![.., ..nocc_b]).to_owned());
+        }
         // MOM occupied-orbital selection (per spin) from iter mom_after_iter+1.
-        if config.mom_after_iter > 0 && iter > config.mom_after_iter {
+        if (config.mom_after_iter > 0 && iter > config.mom_after_iter) || pin_now {
             (c_a_new, eps_a_new) = mom_pin(c_a_new, eps_a_new, &s, mom_ref_a.as_ref(), nocc_a);
             (c_b_new, eps_b_new) = mom_pin(c_b_new, eps_b_new, &s, mom_ref_b.as_ref(), nocc_b);
         }
@@ -2118,7 +2167,7 @@ fn solve_uhf_impl(
         c_b = c_b_new;
         // Update MOM references to the (possibly reordered) occupied blocks, so
         // the next iter pins against the most recent accepted occupation.
-        if config.mom_after_iter > 0 && iter >= config.mom_after_iter {
+        if (config.mom_after_iter > 0 && iter >= config.mom_after_iter) || flip_pin.is_some() {
             mom_ref_a = Some(c_a.slice(ndarray::s![.., ..nocc_a]).to_owned());
             mom_ref_b = Some(c_b.slice(ndarray::s![.., ..nocc_b]).to_owned());
         }
@@ -2183,6 +2232,38 @@ fn solve_uhf_impl(
         convergence: last_report,
         precision: Default::default(),
     })
+}
+
+/// The Newton/TRAH matvec responses of the Fock's own density-fitted J and
+/// (ω = 0) K builders, so the orbital Hessian differentiates the energy the
+/// SCF evaluates (`UhfNewtonInputs::j_response`). `None` for a builder that
+/// is not density-fitted: the matvec's exact four-centre response is then the
+/// Fock's own kernel.
+#[allow(clippy::type_complexity)]
+fn fitted_responses<'b, 'e: 'b>(
+    df_j: Option<&'b mut crate::split_rij::RiJ<'e>>,
+    df_k: Option<&'b mut crate::df_k::DfK<'e>>,
+) -> (
+    Option<Box<crate::uhf_newton::AoResponse<'b>>>,
+    Option<Box<crate::uhf_newton::AoResponse<'b>>>,
+) {
+    let j = df_j.map(|b| {
+        let cell = std::cell::RefCell::new(b);
+        Box::new(move |dd: &Array2<f64>| {
+            let mut out = Array2::<f64>::zeros(dd.raw_dim());
+            JBuilder::build(&mut **cell.borrow_mut(), dd, &mut out)?;
+            Ok(out)
+        }) as Box<crate::uhf_newton::AoResponse<'b>>
+    });
+    let k = df_k.map(|b| {
+        let cell = std::cell::RefCell::new(b);
+        Box::new(move |dd: &Array2<f64>| {
+            let mut out = Array2::<f64>::zeros(dd.raw_dim());
+            KBuilder::build(&mut **cell.borrow_mut(), dd, &mut out)?;
+            Ok(out)
+        }) as Box<crate::uhf_newton::AoResponse<'b>>
+    });
+    (j, k)
 }
 
 /// Post-convergence internal stability analysis for a UHF/UKS solution.
@@ -2278,6 +2359,8 @@ fn stability_uhf<'r>(
         fxc: fxc_ref,
         thresh: config.integral_thresh,
         ooc_budget,
+        j_response: None,
+        k_response: None,
     };
     match crate::stability::uhf_internal_stability(
         ctx,
@@ -2383,6 +2466,9 @@ struct UhfIterGradients<'a> {
     /// Whether an XC functional is active: (the SCF's own, an injected one).
     /// Either makes this Kohn-Sham.
     xc_active: [bool; 2],
+    /// `E_k − E_{k−1}` (signed; meaningful only when `sig.de` is finite):
+    /// which end of a degenerate flip is lower.
+    de_signed: f64,
 }
 
 /// The UHF convergence decision: the shared ΔP/ΔE gate
@@ -2402,6 +2488,80 @@ struct UhfExitGate {
     veto: crate::rhf::GradientVeto,
     /// The previous iteration's AO `err_max` (∞ before the first).
     prev_err_max: Option<f64>,
+    /// The degenerate-flip occupation pin ([`FlipPin`]); `None` until a flip
+    /// engages it, which on a system without a degenerate flip is never.
+    pin: Option<FlipPin>,
+}
+
+/// The occupation pin engaged at a Kohn-Sham degenerate flip.
+///
+/// MEASURED on OH ²Π UKS-LDA/STO-3G (`tests/uhf_oh_orientation.rs`): the
+/// integer-occupation stationary state is NOT aufbau. Its occupied β π lies
+/// 5.0e-3 Ha above the empty β π (the one-step model drop, the same on every
+/// grid from 75x110 to 150x590, so it is the functional's self-interaction,
+/// not quadrature), and aufbau moves the hole π_x ↔ π_y every iteration.
+/// Physically the two ends are degenerate; on the DFT grid they are not: with
+/// the bond off the z axis the flip changes E by 2.6e-6..3.3e-6 Ha on the
+/// production grid, 2e-9..6e-9 at 75x302 and 6e-11..4e-10 at 99x590 (with the
+/// bond ON z the grid's C4 symmetry makes the two ends exactly equal). The
+/// swap acceptance ([`degenerate_swap_converged`]) needs that ΔE below
+/// `min(energy_conv, 1e-5)`, so tilted orientations cycled to `max_iter`; and
+/// where it did accept, the hole's orientation was whatever the eigensolver's
+/// rounding picked inside the degenerate pair.
+///
+/// The pin replaces acceptance with convergence: at the first flip that looks
+/// degenerate ([`degenerate_flip`]) the occupation is held from then on by
+/// maximum overlap (the MOM rule, `mom_pin`) on the LOWER end of the flip, and
+/// DIIS restarts from a clean history (its history mixes both ends). The run
+/// then converges through the ordinary ΔP/ΔE gate and gradient veto to a
+/// stationary non-aufbau state. Kohn-Sham only (a Hartree-Fock minimiser is
+/// aufbau; OH UHF converges aufbau at every orientation), and only where the
+/// occupation is aufbau by design (`rhf::aufbau_by_design`: not under a
+/// configured MOM, smearing, `fractional_occ` or `irrep_nelec`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FlipPin {
+    /// Engaged this iteration; the next occupation update applies it. `true`:
+    /// the current density is the lower end, so hold its occupied set now.
+    /// `false`: the previous one was lower, so take this aufbau step (back to
+    /// that end) and hold its result.
+    Engage { keep_current: bool },
+    /// Held: each later occupation update is maximum-overlap with the last.
+    Held,
+}
+
+std::thread_local! {
+    static FLIP_PINS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Number of degenerate-flip occupation pins engaged by UHF/UKS solves on the
+/// calling thread (test hook: reachability of the pin).
+#[doc(hidden)]
+pub fn degenerate_flip_pins_on_this_thread() -> usize {
+    FLIP_PINS.with(|c| c.get())
+}
+
+/// Largest AO orbital gradient (`err_max`, at both ends) at which a flip may
+/// engage the pin: the veto floor ([`crate::rhf::VETO_MIN_ORBITAL_GRADIENT`]).
+/// MEASURED on OH: the first degenerate flips come at `err_max` 3e-4 → 6e-5
+/// (iterations 4-5).
+const FLIP_PIN_MAX_GRADIENT: f64 = crate::rhf::VETO_MIN_ORBITAL_GRADIENT;
+/// Whether this iteration is a degenerate flip: an orbital-sized density move
+/// (`dp_max > 0.5`) between two near-stationary densities (`err_max` below
+/// [`FLIP_PIN_MAX_GRADIENT`] at both ends) that changed the energy by less
+/// than [`SWAP_MAX_DE`]. A non-degenerate occupation change near a stationary
+/// point moves E by about the frontier gap (the one-step model puts OH's
+/// inverted π pair at 5e-3 Ha), not by 1e-5.
+fn degenerate_flip(
+    sig: crate::rhf::ConvergenceSignals,
+    err_max: f64,
+    prev_err_max: f64,
+    iter: usize,
+) -> bool {
+    iter > 2
+        && sig.dp_max > 0.5
+        && err_max < FLIP_PIN_MAX_GRADIENT
+        && prev_err_max < FLIP_PIN_MAX_GRADIENT
+        && sig.de < SWAP_MAX_DE
 }
 
 impl UhfExitGate {
@@ -2425,8 +2585,39 @@ impl UhfExitGate {
             .replace(it.err_max)
             .unwrap_or(f64::INFINITY);
         let plain = crate::rhf::scf_converged(it.sig, econv, dconv);
+        // A degenerate flip engages the occupation pin instead of being
+        // accepted (see `FlipPin`); once held, no flip is left to accept.
+        let ks = it.xc_active.contains(&true);
+        if self.pin.is_none()
+            && ks
+            && crate::rhf::aufbau_by_design(config)
+            && degenerate_flip(it.sig, it.err_max, prev_err_max, it.iter)
+        {
+            let keep_current = it.de_signed <= 0.0;
+            self.pin = Some(FlipPin::Engage { keep_current });
+            FLIP_PINS.with(|c| c.set(c.get() + 1));
+            if crate::rhf::scf_trace() {
+                eprintln!(
+                    "UHF iter={}: degenerate flip (dE {:.3e}, dp_max {:.3}, err_max {:.3e}): \
+                     occupation pinned on the {} end",
+                    it.iter,
+                    it.de_signed,
+                    it.sig.dp_max,
+                    it.err_max,
+                    if keep_current { "current" } else { "previous" }
+                );
+            }
+            diis.reset();
+            return (None, false);
+        }
+        // Never under a pin: the ΔP of the iteration after an `Engage {
+        // keep_current: false }` is that engage's own deliberate flip back,
+        // and accepting it exited at whatever hole orientation the run
+        // started from (MEASURED: a guess rotated 0.5 rad inside the π pair
+        // exited at iteration 4, 8.9e-8 Ha above the minimum).
         let swap = plain.is_none()
-            && it.xc_active.contains(&true)
+            && ks
+            && self.pin.is_none()
             && degenerate_swap_converged(it.sig, it.err_max, prev_err_max, it.iter, econv, dconv);
         let settled = if swap {
             Some(ScfExit::Converged)
@@ -2457,6 +2648,27 @@ impl UhfExitGate {
 
     fn record(&self) -> Option<crate::result::GradientVetoes> {
         self.veto.record()
+    }
+
+    /// Whether the degenerate-flip pin has engaged (pending or held).
+    fn pinned(&self) -> bool {
+        self.pin.is_some()
+    }
+
+    /// Whether the pin holds an occupation already applied (the iteration
+    /// after it engaged, onward).
+    fn held(&self) -> bool {
+        self.pin == Some(FlipPin::Held)
+    }
+
+    /// The pin to apply at this iteration's occupation update, advancing an
+    /// `Engage` to `Held`.
+    fn take_pin(&mut self) -> Option<FlipPin> {
+        let p = self.pin;
+        if p.is_some() {
+            self.pin = Some(FlipPin::Held);
+        }
+        p
     }
 }
 
@@ -3027,7 +3239,20 @@ fn uhf_guess_mos(
     //   F_σ = h + J[D_α + D_β] − K[D_σ].
     let f_guess = h + &j - &k_spin;
     match (diags.0.run(&f_guess), diags.1.run(&f_guess)) {
-        (Ok((_, ca)), Ok((_, cb))) => Ok(Some((ca, cb))),
+        (Ok((ea, ca)), Ok((eb, cb))) => {
+            let (nocc_a, nocc_b) = nocc_ab(mol)?;
+            let canon = |eps: &[f64], c: Array2<f64>, nocc: usize, blocked: bool| {
+                if blocked {
+                    c
+                } else {
+                    canonical_frontier_basis(eps, c, nocc)
+                }
+            };
+            Ok(Some((
+                canon(&ea, ca, nocc_a, diags.0.is_blocked()),
+                canon(&eb, cb, nocc_b, diags.1.is_blocked()),
+            )))
+        }
         (Err(e), _) | (_, Err(e)) => {
             if crate::rhf::scf_trace() {
                 eprintln!("UHF guess: diagonalizing the guess Fock failed ({e:?}); using hcore");
@@ -3035,6 +3260,86 @@ fn uhf_guess_mos(
             Ok(None)
         }
     }
+}
+
+/// Eigenvalues closer than this (Ha) to the frontier form one degenerate
+/// cluster for [`canonical_frontier_basis`]. A symmetric guess density
+/// (MINAO, atom-centred) leaves a linear radical's π pair degenerate to
+/// rounding (1e-14), far inside it.
+const GUESS_DEGENERATE_TOL: f64 = 1e-8;
+
+/// Replace the eigensolver's arbitrary basis of a degenerate cluster that
+/// STRADDLES the occupation boundary (`lo < nocc < hi`) by a canonical one.
+///
+/// Inside an exactly degenerate eigenspace LAPACK returns some orthonormal
+/// basis decided by rounding, so which member the guess occupies — e.g. the
+/// orientation of OH's β π hole — differed between machines and moved the
+/// converged energy by the grid anisotropy of the hole orientation (CI vs
+/// local: 2.4e-8 Ha on OH UKS-LDA/STO-3G with the bond on z). The canonical
+/// basis is a pivoted Gram-Schmidt on AO rows: the first vector is the
+/// cluster combination with the most weight on the AO carrying the largest
+/// cluster norm (lowest AO index on a tie within 1e-10), positive there; the
+/// next is the same within the orthogonal remainder, and so on. Rotating
+/// within the cluster keeps C S-orthonormal and every eigenvalue unchanged.
+///
+/// A cluster wholly occupied or wholly virtual leaves every density
+/// unchanged, so it is left alone: the result is bit-identical unless the
+/// guess genuinely has to pick inside a degenerate frontier.
+fn canonical_frontier_basis(eps: &[f64], mut c: Array2<f64>, nocc: usize) -> Array2<f64> {
+    let m = eps.len();
+    if nocc == 0 || nocc >= m {
+        return c;
+    }
+    let mut lo = nocc - 1;
+    while lo > 0 && (eps[nocc - 1] - eps[lo - 1]).abs() < GUESS_DEGENERATE_TOL {
+        lo -= 1;
+    }
+    let mut hi = nocc;
+    while hi < m && (eps[hi] - eps[nocc - 1]).abs() < GUESS_DEGENERATE_TOL {
+        hi += 1;
+    }
+    if hi == nocc {
+        return c;
+    }
+    let k = hi - lo;
+    let block = c.slice(ndarray::s![.., lo..hi]).to_owned();
+    // Remaining cluster subspace, as an orthonormal basis of R^k (columns).
+    let mut rest = Array2::<f64>::eye(k);
+    let mut out = Array2::<f64>::zeros((c.nrows(), k));
+    for col in 0..k {
+        let proj = block.dot(&rest); // n × (k − col)
+        let norms: Vec<f64> = proj.rows().into_iter().map(|r| r.dot(&r)).collect();
+        let max = norms.iter().cloned().fold(0.0f64, f64::max);
+        let p = norms
+            .iter()
+            .position(|&v| v >= max - 1e-10)
+            .expect("a non-empty cluster has a largest AO row");
+        // u ∝ restᵀ-coordinates of the pivot row, then back to R^k.
+        let w = proj.row(p).to_owned();
+        let u = rest.dot(&w) / w.dot(&w).sqrt();
+        out.column_mut(col).assign(&block.dot(&u));
+        // Deflate: orthonormal basis of rest's span ⟂ u.
+        let mut next = Vec::new();
+        for j in 0..rest.ncols() {
+            let mut v = rest.column(j).to_owned();
+            v -= &(v.dot(&u) * &u);
+            for q in &next {
+                let q: &ndarray::Array1<f64> = q;
+                v -= &(v.dot(q) * q);
+            }
+            let nv = v.dot(&v).sqrt();
+            if nv > 1e-8 && next.len() < rest.ncols() - 1 {
+                next.push(v / nv);
+            }
+        }
+        let mut r2 = Array2::<f64>::zeros((k, next.len()));
+        for (j, v) in next.iter().enumerate() {
+            r2.column_mut(j).assign(v);
+        }
+        rest = r2;
+    }
+    c.slice_mut(ndarray::s![.., lo..hi]).assign(&out);
+    c
 }
 
 /// Injected-path counterpart of [`uhf_guess_mos`] for an explicit
@@ -3136,6 +3441,7 @@ mod tests {
                 err: [&err, &err],
                 x: &x,
                 xc_active: [true, false],
+                de_signed: 0.0,
             },
             &config,
             &mut diis,
@@ -3181,6 +3487,7 @@ mod tests {
                     err: [&err, &err],
                     x: &x,
                     xc_active: [true, false],
+                    de_signed: 0.0,
                 },
                 &config,
                 &mut diis,
@@ -3362,6 +3669,178 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The canonical basis of a straddling degenerate cluster does not depend
+    /// on the basis the eigensolver returned inside it (any rotation of the
+    /// pair gives the same columns), keeps C S-orthonormal (here S = I), and
+    /// leaves a non-straddling cluster bit-identical. Mutation-checked: without
+    /// the canonicalisation the rotated inputs differ by O(0.3).
+    #[test]
+    fn canonical_frontier_basis_is_rotation_invariant_and_local() {
+        let n = 4;
+        let base = Array2::<f64>::eye(n);
+        let eps = vec![-1.0, -0.5, -0.5, 0.3];
+        let rotate = |theta: f64| {
+            let mut c = base.clone();
+            let (u, v) = (base.column(1).to_owned(), base.column(2).to_owned());
+            c.column_mut(1)
+                .assign(&(theta.cos() * &u + theta.sin() * &v));
+            c.column_mut(2)
+                .assign(&(-theta.sin() * &u + theta.cos() * &v));
+            c
+        };
+        let reference = canonical_frontier_basis(&eps, rotate(0.0), 2);
+        for theta in [0.3, 1.1, 2.0, -0.7] {
+            let got = canonical_frontier_basis(&eps, rotate(theta), 2);
+            let diff = (&got - &reference)
+                .iter()
+                .fold(0.0f64, |m, v| m.max(v.abs()));
+            assert!(
+                diff < 1e-12,
+                "θ = {theta}: canonical basis moved by {diff:.2e}"
+            );
+            let ortho = (got.t().dot(&got) - Array2::<f64>::eye(n))
+                .iter()
+                .fold(0.0f64, |m, v| m.max(v.abs()));
+            assert!(
+                ortho < 1e-12,
+                "θ = {theta}: lost orthonormality {ortho:.2e}"
+            );
+        }
+        // Wholly occupied (nocc = 3) or wholly virtual (nocc = 1): untouched.
+        for nocc in [1usize, 3] {
+            let c = rotate(0.7);
+            assert_eq!(canonical_frontier_basis(&eps, c.clone(), nocc), c);
+        }
+    }
+
+    /// The degenerate-flip pin engages on the flip signature only (KS, aufbau
+    /// by design, orbital-sized ΔP at a small gradient and a ΔE below
+    /// SWAP_MAX_DE), returns no exit, clears DIIS, and once engaged suppresses
+    /// the swap acceptance. Arithmetic-free wiring of `UhfExitGate::decide`.
+    #[test]
+    fn degenerate_flip_engages_the_pin_instead_of_accepting_the_swap() {
+        let n = 2;
+        let x = Array2::<f64>::eye(n);
+        let err = Array2::<f64>::zeros((n, n));
+        let f = |v: f64| Array2::from_elem((n, n), v);
+        let it = |iter: usize, de: f64, dp: f64, err_max: f64, ks: bool, de_signed: f64| {
+            (iter, signals(de, dp), err_max, ks, de_signed)
+        };
+        let decide = |gate: &mut UhfExitGate,
+                      diis: &mut Diis,
+                      config: &UhfConfig,
+                      (iter, sig, err_max, ks, de_signed): (
+            usize,
+            crate::rhf::ConvergenceSignals,
+            f64,
+            bool,
+            f64,
+        )| {
+            gate.decide(
+                &mut None,
+                UhfIterGradients {
+                    iter,
+                    sig,
+                    err_max,
+                    err: [&err, &err],
+                    x: &x,
+                    xc_active: [ks, false],
+                    de_signed,
+                },
+                config,
+                diis,
+                false,
+                &mut None,
+            )
+        };
+        let config = UhfConfig {
+            density_conv: 1e-6,
+            energy_conv: 1e-7,
+            ..Default::default()
+        };
+        // Signature at iteration 6 (iteration 5 sets prev_err_max).
+        let mut gate = UhfExitGate::default();
+        let mut diis = Diis::new(6);
+        diis.step_pair(&f(1.0), &f(1.0), &f(0.3), &f(0.1));
+        diis.step_pair(&f(2.0), &f(2.0), &f(0.2), &f(0.05));
+        let _ = decide(
+            &mut gate,
+            &mut diis,
+            &config,
+            it(5, 1e-5, 0.9, 1e-4, true, 0.0),
+        );
+        let (exit, swapped) = decide(
+            &mut gate,
+            &mut diis,
+            &config,
+            it(6, 1e-9, 0.98, 5e-7, true, 1e-9),
+        );
+        assert!(exit.is_none() && !swapped, "a flip must not exit");
+        assert_eq!(
+            gate.pin,
+            Some(FlipPin::Engage {
+                keep_current: false
+            })
+        );
+        let (fa, _) = diis.step_pair(&f(5.0), &f(5.0), &f(0.4), &f(0.4));
+        assert_eq!(fa, f(5.0), "DIIS history was not cleared at the pin");
+        assert_eq!(
+            gate.take_pin(),
+            Some(FlipPin::Engage {
+                keep_current: false
+            })
+        );
+        assert!(gate.held());
+        // Held: the same swap signature (which alone would satisfy
+        // `degenerate_swap_converged`) is no longer accepted.
+        let (exit, swapped) = decide(
+            &mut gate,
+            &mut diis,
+            &config,
+            it(7, 1e-9, 0.98, 5e-7, true, -1e-9),
+        );
+        assert!(exit.is_none() && !swapped, "a held pin accepted a swap");
+
+        // Not KS, a large ΔE, or a large gradient: no pin.
+        for (case, args) in [
+            ("HF", it(6, 1e-9, 0.98, 5e-7, false, 0.0)),
+            ("dE", it(6, 2e-5, 0.98, 5e-7, true, 0.0)),
+            ("gradient", it(6, 1e-9, 0.98, 2e-3, true, 0.0)),
+            ("dP", it(6, 1e-9, 0.4, 5e-7, true, 0.0)),
+        ] {
+            let mut gate = UhfExitGate::default();
+            let mut diis = Diis::new(6);
+            let _ = decide(
+                &mut gate,
+                &mut diis,
+                &config,
+                it(5, 1e-5, 0.9, 1e-4, true, 0.0),
+            );
+            let _ = decide(&mut gate, &mut diis, &config, args);
+            assert!(gate.pin.is_none(), "{case}: the pin engaged");
+        }
+        // Configured MOM: occupation not aufbau by design, no pin.
+        let mom = UhfConfig {
+            mom_after_iter: 3,
+            ..config.clone()
+        };
+        let mut gate = UhfExitGate::default();
+        let mut diis = Diis::new(6);
+        let _ = decide(
+            &mut gate,
+            &mut diis,
+            &mom,
+            it(5, 1e-5, 0.9, 1e-4, true, 0.0),
+        );
+        let _ = decide(
+            &mut gate,
+            &mut diis,
+            &mom,
+            it(6, 1e-9, 0.98, 5e-7, true, 0.0),
+        );
+        assert!(gate.pin.is_none(), "MOM config engaged the pin");
     }
 
     /// The swap gradient bound is `max(density_conv, 1e-6)`: at a tight

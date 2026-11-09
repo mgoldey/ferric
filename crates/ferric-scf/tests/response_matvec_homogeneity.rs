@@ -169,6 +169,8 @@ fn uhf_matvec_is_homogeneous() {
         fxc: None,
         thresh: RhfConfig::default().integral_thresh,
         ooc_budget: ferric_core::memory::resolve_budget_bytes(None),
+        j_response: None,
+        k_response: None,
     };
     let pool = EnginePool::new(s.bounds.op, &s.prep, 1e-14).unwrap();
     let nv = s.c.ncols() - s.nocc;

@@ -437,6 +437,8 @@ fn uhf_inputs<'a>(
         fxc: None,
         thresh: RhfConfig::default().integral_thresh,
         ooc_budget: ferric_core::memory::resolve_budget_bytes(None),
+        j_response: None,
+        k_response: None,
     }
 }
 

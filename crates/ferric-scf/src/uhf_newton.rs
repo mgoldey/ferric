@@ -35,6 +35,11 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ndarray::Array2;
 use ndarray_linalg::Solve;
 
+/// An AO response linear in its density argument: `δD ↦ δJ[δD]` or
+/// `δD_σ ↦ δK[δD_σ]`, built by the SAME (density-fitted) builder the Fock was
+/// assembled from.
+pub type AoResponse<'a> = dyn Fn(&Array2<f64>) -> Result<Array2<f64>, FerricError> + 'a;
+
 /// Inputs to one UHF/UKS Newton step.
 pub struct UhfNewtonInputs<'a> {
     pub prep: &'a PreparedBasis,
@@ -67,6 +72,18 @@ pub struct UhfNewtonInputs<'a> {
     /// `reduce::resolve_band_bytes` — never affects results, only the
     /// live-set/parallel width of the deterministic reduction.
     pub ooc_budget: usize,
+    /// Coulomb response of the Fock's own DF-J (`δJ[δD_total]`). `None`: the
+    /// exact four-centre δJ, which is what a direct-J Fock differentiates.
+    /// Under DF-J the exact δJ is a DIFFERENT kernel from the one the energy
+    /// uses: MEASURED on OH ²Π UKS-LDA/STO-3G with def2-universal-jkfit, the
+    /// mismatch puts ~2e-5 Ha/rad² of curvature on the hole-orientation mode
+    /// whose true curvature is ~1e-6, so every TRAH step there realised twice
+    /// its prediction (ρ = 2.00) and the run crept to `max_iter`.
+    pub j_response: Option<&'a AoResponse<'a>>,
+    /// Exchange response of the Fock's own ω = 0 DF-K (`δK[δD_σ]`, per spin,
+    /// scaled by `k_mix_sr` here as the exact one is). `None`: exact δK.
+    /// Ignored on the RSH path (`rsh`), which already uses the Fock's fitters.
+    pub k_response: Option<&'a AoResponse<'a>>,
 }
 
 /// One damped-Newton step on UHF/UKS MO coefficients.
@@ -188,19 +205,25 @@ pub fn hessian_matvec(
     // δJ on δD_total; δK per spin.
     let band_bytes = crate::reduce::resolve_band_bytes(inp.ooc_budget);
     let dd_tot = &dd_a_ao + &dd_b_ao;
-    let mut dj = Array2::<f64>::zeros((n, n));
-    let mut dk_dum = Array2::<f64>::zeros((n, n));
-    build_jk_with_pool_homogeneous(
-        ctx,
-        inp.prep,
-        inp.bounds,
-        inp.thresh,
-        &dd_tot,
-        &mut dj,
-        &mut dk_dum,
-        pool,
-        band_bytes,
-    )?;
+    let dj = match inp.j_response {
+        Some(jr) => jr(&dd_tot)?,
+        None => {
+            let mut dj = Array2::<f64>::zeros((n, n));
+            let mut dk_dum = Array2::<f64>::zeros((n, n));
+            build_jk_with_pool_homogeneous(
+                ctx,
+                inp.prep,
+                inp.bounds,
+                inp.thresh,
+                &dd_tot,
+                &mut dj,
+                &mut dk_dum,
+                pool,
+                band_bytes,
+            )?;
+            dj
+        }
+    };
 
     // Per-spin exchange response. The RSH branch is the ONLY branch that
     // touches ω: it builds c_SR·δK[erfc(ω)] + c_LR·δK[erf(ω)] from the Fock's
@@ -212,6 +235,9 @@ pub fn hessian_matvec(
         let dk_a = rsh.exchange_response(&dd_a_ao)?;
         let dk_b = rsh.exchange_response(&dd_b_ao)?;
         (&dj - &dk_a, &dj - &dk_b)
+    } else if let Some(kr) = inp.k_response {
+        let c_k = inp.k_mix_sr;
+        (&dj - &(c_k * &kr(&dd_a_ao)?), &dj - &(c_k * &kr(&dd_b_ao)?))
     } else {
         let mut dk_a = Array2::<f64>::zeros((n, n));
         let mut dk_b = Array2::<f64>::zeros((n, n));

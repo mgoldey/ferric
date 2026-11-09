@@ -144,6 +144,8 @@ fn omega_zero_matvec_is_deterministic_through_the_none_path() {
         fxc: None,
         thresh: cfg.integral_thresh,
         ooc_budget: ferric_core::memory::resolve_budget_bytes(None),
+        j_response: None,
+        k_response: None,
     };
 
     let mut rng = Xorshift64(0x9E3779B97F4A7C15);
@@ -274,8 +276,16 @@ fn omega_zero_hybrid_newton_still_matches_diis() {
         energy_conv: 1e-9,
         density_conv: 1e-7,
         max_iter: 300,
-        // The stationarity bound is ~2e-9 Ha; the f32 RI-J energy surface is
-        // jagged above that (DIIS and Newton exit 1.7e-6 apart on CI), so pin f64.
+        // The stationarity bound is ~2e-9 Ha, below f32 RI-J rounding: pin f64.
+        // The 1.7e-6 CI gap (DIIS −75.7319370340, Newton −75.7319387216) was
+        // NOT RI-J: the guess left the β π hole's orientation to LAPACK
+        // rounding, and on the DFT grid that orientation has several
+        // stationary points (MEASURED production grid: minima −75.7319387216
+        // and −75.7319390077, saddles −75.7319370340 and −75.7319378500, with
+        // stability lambda_min ±1e-4). The canonical guess basis
+        // (`uhf::canonical_frontier_basis`) starts both runs on the same
+        // orientation; both now exit at −75.7319387216 (a minimum,
+        // lambda_min +1.33e-4).
         ri_j_precision: Some(RiJPrecision::F64),
         ..Default::default()
     };
@@ -914,6 +924,8 @@ fn omega_zero_matvec_matches_the_pre_292_reference() {
         fxc: None,
         thresh: G292_THRESH,
         ooc_budget: G292_OOC_BUDGET,
+        j_response: None,
+        k_response: None,
     };
     let pool = ferric_scf::engine_pool::EnginePool::new(
         bounds.op,
@@ -1027,6 +1039,8 @@ fn omega_zero_production_stability_takes_the_coulomb_arm() {
         fxc: None,
         thresh: cfg.integral_thresh,
         ooc_budget: ferric_core::memory::resolve_budget_bytes(None),
+        j_response: None,
+        k_response: None,
     };
     let mine = uhf_internal_stability(&ctx, &inputs, &StabilityConfig::default()).unwrap();
     // Not a symmetry zero mode: a vanishing lambda_min here would make the

@@ -305,6 +305,8 @@ fn post_descent_mos(sys: &Sys, upper: &CdftResult) -> (Array2<f64>, Array2<f64>)
         fxc: None,
         thresh: 1e-12,
         ooc_budget: 0,
+        j_response: None,
+        k_response: None,
     };
     let st = uhf_internal_stability(
         &sys.ctx,
