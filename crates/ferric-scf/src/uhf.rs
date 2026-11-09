@@ -217,13 +217,119 @@ pub fn solve_uhf_best_effort(
     config: &UhfConfig,
     initial_mos: Option<(&Array2<f64>, &Array2<f64>)>,
 ) -> Result<ScfResult, FerricError> {
-    let first = solve_uhf_fockmod(ctx, mol, prep, bounds, config, initial_mos, None)?;
+    let solve_one =
+        |theta: f64| solve_uhf_frontier_start(ctx, mol, prep, bounds, config, initial_mos, theta);
+    let (best, degenerate) = solve_one(0.0)?;
+    if !frontier_starts_apply(degenerate, initial_mos.is_some(), config) {
+        return Ok(best);
+    }
+    Ok(lowest_frontier_start(
+        best,
+        &FRONTIER_GUESS_ROTATIONS[1..],
+        |t| solve_one(t).map(|(r, _)| r),
+    ))
+}
+
+/// One start of [`solve_uhf_best_effort`]: the SCF from the guess with its
+/// frontier rotated by `theta` (see [`FRONTIER_GUESS_ROTATIONS`]), then the
+/// stability descent when configured. Also returns whether the guess had a
+/// straddling degenerate frontier cluster.
+fn solve_uhf_frontier_start(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bounds: &SchwarzBounds,
+    config: &UhfConfig,
+    initial_mos: Option<(&Array2<f64>, &Array2<f64>)>,
+    theta: f64,
+) -> Result<(ScfResult, bool), FerricError> {
+    let (first, degenerate) = with_frontier_rotation(theta, || {
+        solve_uhf_fockmod(ctx, mol, prep, bounds, config, initial_mos, None)
+    });
+    let first = first?;
     if !config.scf_stability_descent {
-        return Ok(first);
+        return Ok((first, degenerate));
     }
     let report = first.guess_basis.clone();
     let r = stability_descent(ctx, mol, prep, bounds, config, first);
-    Ok(crate::basis2::carry_report(r, report))
+    Ok((crate::basis2::carry_report(r, report), degenerate))
+}
+
+/// Whether [`solve_uhf_best_effort`] tries the other frontier starts: the
+/// built guess had a straddling degenerate cluster (`degenerate`; never with
+/// caller-supplied MOs), the run is Kohn-Sham (Hartree-Fock has no grid, so
+/// the orientations are exactly equivalent), and the occupation is aufbau by
+/// design (not under MOM, smearing, `fractional_occ` or `irrep_nelec`).
+fn frontier_starts_apply(degenerate: bool, explicit_guess: bool, config: &UhfConfig) -> bool {
+    degenerate && !explicit_guess && config.xc.is_some() && crate::rhf::aufbau_by_design(config)
+}
+
+/// Rotations (rad) of the guess hole inside a straddling degenerate frontier
+/// cluster tried by [`solve_uhf_best_effort`] for Kohn-Sham; the first is the
+/// canonical basis itself ([`canonical_frontier_basis`]).
+///
+/// The hole orientations of a degenerate open shell are physically
+/// equivalent; on a DFT grid they are not, and the SCF energy as a function
+/// of the orientation has several local minima (grid quadrature ripple).
+/// MEASURED on OH ²Π UKS/PBE/cc-pVDZ, flat 75x110 grid, bond on z (hole angle
+/// φ from the spin-density quadrupole): stable minima at φ = 0 (axis,
+/// −75.6448988103), φ = ±0.345 (−75.6448989187, the lowest, PySCF's state)
+/// and φ = ±0.634 (−75.6448984257), and a saddle at φ = 0.503. The canonical
+/// basis puts the hole ON a grid mirror plane (φ = 0), where symmetry holds
+/// the SCF on the axis state, 1.08e-7 Ha above the lowest. Guess rotations
+/// 0, π/8, π/4, 3π/8 reached φ = 0, 0.345, 0.345 (only through the stability
+/// descent: π/4 is the grid's diagonal mirror plane, which holds the SCF on a
+/// saddle) and 0.345; 16 rotations over [0, π) reached all four states.
+/// π/4 is therefore not sampled. With the bond on a grid axis, π/8 and 3π/8
+/// are mirror images (equal energy, the earlier is kept); off axis they
+/// sample [0, π/2) together with 0 (the other half is the flipped hole, which
+/// aufbau and the `FlipPin` explore). No finite set is guaranteed to contain
+/// the lowest grid minimum; this one never returns a state above the
+/// canonical start's.
+const FRONTIER_GUESS_ROTATIONS: [f64; 3] = [
+    0.0,
+    std::f64::consts::FRAC_PI_8,
+    3.0 * std::f64::consts::FRAC_PI_8,
+];
+
+/// Energy a later frontier start must beat the incumbent by to replace it
+/// (Ha): above the converged-energy noise of a tight SCF, so symmetry-
+/// equivalent starts (equal energy up to rounding) keep the earliest and the
+/// selection stays deterministic. The minima it separates differ by 1e-8 and
+/// more.
+const FRONTIER_START_MIN_GAIN: f64 = 1e-10;
+
+/// Run the remaining frontier starts and keep the best: a converged state
+/// beats an unconverged one, a state not proven unstable beats a saddle, and
+/// otherwise the lower energy (by [`FRONTIER_START_MIN_GAIN`]) wins. A start
+/// that errors is skipped: it can only fail to improve on `best`.
+fn lowest_frontier_start(
+    mut best: ScfResult,
+    thetas: &[f64],
+    mut solve: impl FnMut(f64) -> Result<ScfResult, FerricError>,
+) -> ScfResult {
+    let rank = |r: &ScfResult| {
+        let unstable = r
+            .stability
+            .as_ref()
+            .is_some_and(|s| s.verdict() == crate::stability::StabilityVerdict::Unstable);
+        (r.converged, !unstable)
+    };
+    for &theta in thetas {
+        let Ok(r) = solve(theta) else { continue };
+        let (rk, bk) = (rank(&r), rank(&best));
+        if crate::rhf::scf_trace() {
+            eprintln!(
+                "UHF frontier start θ = {theta:.4}: E {:.10} (converged {}, not unstable {}); \
+                 incumbent {:.10}",
+                r.energy, rk.0, rk.1, best.energy
+            );
+        }
+        if rk > bk || (rk == bk && r.energy < best.energy - FRONTIER_START_MIN_GAIN) {
+            best = r;
+        }
+    }
+    best
 }
 
 /// Step sizes tried when following a downhill eigenvector, in radians.
@@ -3255,16 +3361,9 @@ fn uhf_guess_mos(
     match (diags.0.run(&f_guess), diags.1.run(&f_guess)) {
         (Ok((ea, ca)), Ok((eb, cb))) => {
             let (nocc_a, nocc_b) = nocc_ab(mol)?;
-            let canon = |eps: &[f64], c: Array2<f64>, nocc: usize, blocked: bool| {
-                if blocked {
-                    c
-                } else {
-                    canonical_frontier_basis(eps, c, nocc)
-                }
-            };
             Ok(Some((
-                canon(&ea, ca, nocc_a, diags.0.is_blocked()),
-                canon(&eb, cb, nocc_b, diags.1.is_blocked()),
+                guess_frontier_basis(&ea, ca, nocc_a, diags.0.is_blocked()),
+                guess_frontier_basis(&eb, cb, nocc_b, diags.1.is_blocked()),
             )))
         }
         (Err(e), _) | (_, Err(e)) => {
@@ -3274,6 +3373,27 @@ fn uhf_guess_mos(
             Ok(None)
         }
     }
+}
+
+/// One spin's guess MOs with a straddling degenerate frontier cluster put in
+/// the canonical basis ([`canonical_frontier_basis`]) and then rotated by the
+/// thread's frontier rotation ([`with_frontier_rotation`]), which is told
+/// that such a cluster was found. Unchanged when the spin is symmetry blocked
+/// or has no straddling cluster.
+fn guess_frontier_basis(eps: &[f64], c: Array2<f64>, nocc: usize, blocked: bool) -> Array2<f64> {
+    if blocked || straddling_frontier_cluster(eps, nocc).is_none() {
+        return c;
+    }
+    let mut c = canonical_frontier_basis(eps, c, nocc);
+    let theta = GUESS_FRONTIER.with(|g| {
+        let (theta, _) = g.get();
+        g.set((theta, true));
+        theta
+    });
+    if theta != 0.0 {
+        rotate_frontier_pair(&mut c, nocc, theta);
+    }
+    c
 }
 
 /// Eigenvalues closer than this (Ha) to the frontier form one degenerate
@@ -3300,21 +3420,9 @@ const GUESS_DEGENERATE_TOL: f64 = 1e-8;
 /// unchanged, so it is left alone: the result is bit-identical unless the
 /// guess genuinely has to pick inside a degenerate frontier.
 fn canonical_frontier_basis(eps: &[f64], mut c: Array2<f64>, nocc: usize) -> Array2<f64> {
-    let m = eps.len();
-    if nocc == 0 || nocc >= m {
+    let Some((lo, hi)) = straddling_frontier_cluster(eps, nocc) else {
         return c;
-    }
-    let mut lo = nocc - 1;
-    while lo > 0 && (eps[nocc - 1] - eps[lo - 1]).abs() < GUESS_DEGENERATE_TOL {
-        lo -= 1;
-    }
-    let mut hi = nocc;
-    while hi < m && (eps[hi] - eps[nocc - 1]).abs() < GUESS_DEGENERATE_TOL {
-        hi += 1;
-    }
-    if hi == nocc {
-        return c;
-    }
+    };
     let k = hi - lo;
     let block = c.slice(ndarray::s![.., lo..hi]).to_owned();
     // Remaining cluster subspace, as an orthonormal basis of R^k (columns).
@@ -3354,6 +3462,52 @@ fn canonical_frontier_basis(eps: &[f64], mut c: Array2<f64>, nocc: usize) -> Arr
     }
     c.slice_mut(ndarray::s![.., lo..hi]).assign(&out);
     c
+}
+
+/// The degenerate cluster `[lo, hi)` (eigenvalues within
+/// [`GUESS_DEGENERATE_TOL`] of the highest occupied) when it straddles the
+/// occupation boundary (`lo < nocc < hi`), else `None`.
+fn straddling_frontier_cluster(eps: &[f64], nocc: usize) -> Option<(usize, usize)> {
+    let m = eps.len();
+    if nocc == 0 || nocc >= m {
+        return None;
+    }
+    let mut lo = nocc - 1;
+    while lo > 0 && (eps[nocc - 1] - eps[lo - 1]).abs() < GUESS_DEGENERATE_TOL {
+        lo -= 1;
+    }
+    let mut hi = nocc;
+    while hi < m && (eps[hi] - eps[nocc - 1]).abs() < GUESS_DEGENERATE_TOL {
+        hi += 1;
+    }
+    (hi > nocc).then_some((lo, hi))
+}
+
+/// Rotate the last occupied and first virtual column of `c` by `theta`
+/// (both inside the straddling degenerate cluster, so C stays orthonormal
+/// and the guess Fock's eigenvalues are unchanged).
+fn rotate_frontier_pair(c: &mut Array2<f64>, nocc: usize, theta: f64) {
+    let (ci, ca) = (c.column(nocc - 1).to_owned(), c.column(nocc).to_owned());
+    let (cs, sn) = (theta.cos(), theta.sin());
+    c.column_mut(nocc - 1).assign(&(cs * &ci + sn * &ca));
+    c.column_mut(nocc).assign(&(-sn * &ci + cs * &ca));
+}
+
+std::thread_local! {
+    /// (rotation applied inside a straddling degenerate guess cluster,
+    /// whether such a cluster was found) for the guess built on this thread;
+    /// set and read by [`with_frontier_rotation`].
+    static GUESS_FRONTIER: std::cell::Cell<(f64, bool)> = const { std::cell::Cell::new((0.0, false)) };
+}
+
+/// Run `f` with the guess frontier rotated by `theta` inside any straddling
+/// degenerate cluster ([`canonical_frontier_basis`]); also returns whether
+/// the guess had such a cluster. The previous state is restored.
+fn with_frontier_rotation<T>(theta: f64, f: impl FnOnce() -> T) -> (T, bool) {
+    let prev = GUESS_FRONTIER.with(|g| g.replace((theta, false)));
+    let out = f();
+    let (_, found) = GUESS_FRONTIER.with(|g| g.replace(prev));
+    (out, found)
 }
 
 /// Injected-path counterpart of [`uhf_guess_mos`] for an explicit

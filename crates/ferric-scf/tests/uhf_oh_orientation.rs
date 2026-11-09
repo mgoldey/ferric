@@ -143,7 +143,9 @@ fn oh_uks_lda_converges_stationary_at_every_orientation() {
              warnings {warns}, |D(C_occ)-D| {miss:.1e}",
             r.energy, r.iterations
         );
-        if !(r.converged && r.iterations <= 30 && pins == 1 && warns == 0 && err_max < 1e-7)
+        // pins >= 1: each frontier start (`uhf::FRONTIER_GUESS_ROTATIONS`)
+        // is its own solve and engages its own pin.
+        if !(r.converged && r.iterations <= 30 && pins >= 1 && warns == 0 && err_max < 1e-7)
             || miss > 1e-6
         {
             failures.push(format!(
@@ -221,9 +223,11 @@ fn rotate_beta_hole(r: &ScfResult, theta: f64) -> (Array2<f64>, Array2<f64>) {
 /// and π/4 end at −74.0755552216, a second local minimum (lambda_min
 /// +1.1e-7) 1.0e-7 Ha higher. So the hole-orientation dependence is bounded by
 /// the grid anisotropy (1.0e-7 Ha here), and is not removed by any local
-/// optimiser; the default guess is made deterministic instead
-/// (`uhf::canonical_frontier_basis`). Before the pin the 0.1..0.5 starts
-/// spread 9.3e-8 Ha. Bar for the basin: 2e-9 (measured spread 0).
+/// optimiser; the default guess is made deterministic
+/// (`uhf::canonical_frontier_basis`) and tries a few hole orientations,
+/// keeping the lowest (`uhf::FRONTIER_GUESS_ROTATIONS`; here every start ends
+/// within 8e-10 of the minimum). Before the pin the 0.1..0.5 starts spread
+/// 9.3e-8 Ha. Bar for the basin: 2e-9 (measured spread 0).
 #[test]
 fn oh_uks_lda_descends_to_the_minimum_from_inside_its_basin() {
     let s = sys(0.0);
@@ -290,4 +294,56 @@ fn oh_uks_lda_ri_j_converges_at_tilted_orientations() {
             r.iterations
         );
     }
+}
+
+/// The default (MINAO) guess reaches the LOWEST hole-orientation minimum of
+/// OH ²Π UKS/PBE/cc-pVDZ on the flat 75x110 grid with the bond on z — the
+/// state PySCF's lowest-of-three-starts reference has
+/// (testdata/reference/validation/gw/oh_cc-pvdz.json, `u_g0w0_uks_pbe/uks`).
+///
+/// The canonical guess basis (`uhf::canonical_frontier_basis`) puts the β
+/// hole on a grid mirror plane, which holds the SCF on the axis state
+/// −75.6448988103, a stable local minimum 1.08e-7 Ha above the reference
+/// (stability lambda_min +1.23e-4 at both). MEASURED before the frontier
+/// starts (`uhf::FRONTIER_GUESS_ROTATIONS`): −75.6448988103, |d| 1.08e-7,
+/// fails; after: −75.6448989187, |d| < 1e-10. The bar, 1e-9, is the
+/// validation_gw UKS energy tolerance; the nearest other state is 1.08e-7
+/// away. The hole mode is stiff here (no degenerate flip: no pin engages),
+/// so this is about which minimum, not about convergence.
+#[test]
+fn oh_uks_pbe_default_guess_reaches_the_lowest_hole_orientation() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let text =
+        std::fs::read_to_string(root.join("testdata/reference/validation/gw/oh_cc-pvdz.json"))
+            .expect("OH GW reference JSON");
+    let r: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let e_ref = r["u_g0w0_uks_pbe"]["uks"]["energy"].as_f64().unwrap();
+    let mol = Molecule::parse_xyz("2\nOH\nO 0 0 0\nH 0 0 0.9697\n", 0, 2).unwrap();
+    let bs = basis::bundled("cc-pvdz").unwrap();
+    let prep = PreparedBasis::new(&mol, &bs).unwrap();
+    let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
+    let cfg = RhfConfig {
+        xc: Some("pbe".into()),
+        // Exact J/K and the flat grid, as the reference.
+        df_j_aux: Some(String::new()),
+        df_k_aux: Some(String::new()),
+        dft_grid: Some(ferric_dft::grid::AtomicGridConfig::default()),
+        max_iter: 200,
+        energy_conv: 1e-11,
+        density_conv: 1e-9,
+        ..Default::default()
+    };
+    let res =
+        solve_uhf(&ParallelContext::default(), &mol, &prep, &bounds, &cfg).expect("OH UKS/PBE");
+    println!(
+        "OH UKS/PBE/cc-pVDZ: E {:.10} in {} iters, reference {e_ref:.10}, |d| {:.2e}",
+        res.energy,
+        res.iterations,
+        (res.energy - e_ref).abs()
+    );
+    assert!(
+        (res.energy - e_ref).abs() < 1e-9,
+        "OH UKS/PBE default guess ended at {:.10}, not the lowest hole orientation {e_ref:.10}",
+        res.energy
+    );
 }
