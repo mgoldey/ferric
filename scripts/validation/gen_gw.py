@@ -1585,7 +1585,9 @@ def exact_r_drpa(Lpq, mo_energy, nocc):
     d = (e[nocc:][None, :] - e[:nocc][:, None]).ravel()
     assert d.min() > 0, "non-positive orbital gap"
     sd = np.sqrt(d)
-    w2, z = np.linalg.eigh(np.diag(d * d) + 4.0 * (sd[:, None] * (lia.T @ lia) * sd[None, :]))
+    w2, z = np.linalg.eigh(
+        np.diag(d * d) + 4.0 * (sd[:, None] * (lia.T @ lia) * sd[None, :])
+    )
     assert w2.min() > 0, "dRPA instability"
     om = np.sqrt(w2)
     return om, np.sqrt(2.0) * (lia @ (sd[:, None] * z / np.sqrt(om)[None, :]))
@@ -1616,8 +1618,12 @@ def closed_exact_block(gw, mf, blk, ks):
     zz = ef + 1j * np.array([0.0, 0.3, 2.0])
     p0 = blk["orbs"][0]
     d_anchor = float(
-        np.max(np.abs(exact_sigma_c(lpq, e, nocc, om, rho, p0)[0](zz)
-                      - exact_sigma_c(lpq, e, nocc, om_u, rho_u, p0)[0](zz)))
+        np.max(
+            np.abs(
+                exact_sigma_c(lpq, e, nocc, om, rho, p0)[0](zz)
+                - exact_sigma_c(lpq, e, nocc, om_u, rho_u, p0)[0](zz)
+            )
+        )
     )
     assert d_anchor < 1e-10, f"closed vs U Casida: {d_anchor:.2e} Ha"
     leg, _ = _get_scaled_legendre_roots(NW, X0)
@@ -1654,7 +1660,10 @@ def closed_exact_block(gw, mf, blk, ks):
         out["sigma_c_at_qp"].append(float(sc_re(root)))
         out["root_rule"].append(rule)
         out["real_axis_top_roots"].append(
-            [list(t) for t in exact_real_axis_roots(f, poles, wts, float(e[p]), shift)[:3]]
+            [
+                list(t)
+                for t in exact_real_axis_roots(f, poles, wts, float(e[p]), shift)[:3]
+            ]
         )
     out["pyscf_nw100_eps_qp_minus_exact_max"] = float(
         max(abs(x - y) for x, y in zip(out["eps_qp"], blk["eps_qp"]))
@@ -1683,7 +1692,9 @@ def gen_closed_exact_only(system):
         blocks = [("g0w0_hf", mf, False)]
         if "g0w0_pbe" in payload:
             mks = rks_pbe_exact(mol)
-            assert abs(mks.e_tot - payload["g0w0_pbe"]["rks_energy"]) < 1e-9, "RKS state"
+            assert abs(mks.e_tot - payload["g0w0_pbe"]["rks_energy"]) < 1e-9, (
+                "RKS state"
+            )
             blocks.append(("g0w0_pbe", mks, True))
         for name, m, ks in blocks:
             blk = payload[name]
