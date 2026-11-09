@@ -39,6 +39,12 @@ fn main() {
     // --- libint2 shim ---
     let mut shim_build = cc::Build::new();
     shim_build.cpp(true).file("shim/shim.cc");
+    // SPIKE: C++ exceptions must be on under MSVC-ABI compilers (cl/clang-cl):
+    // every shim entry point catches libint2 throws before the C ABI.
+    let msvc_abi = std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc");
+    if msvc_abi {
+        shim_build.flag("/EHsc");
+    }
     if let Some((dir, terf)) = &boys_override {
         // MUST precede every libint2 include dir: shim.cc reaches boys.h via
         // engine.impl.h's `#include <libint2/boys.h>`, and the first -I wins.
@@ -89,6 +95,9 @@ fn main() {
         .flag_if_supported("-O2")
         .flag_if_supported("-Wno-deprecated-declarations")
         .flag_if_supported("-Wno-unused-parameter");
+    if msvc_abi {
+        ecp_build.flag("/EHsc");
+    }
     for inc in &ecpint_include_dirs {
         ecp_build.include(inc);
     }
