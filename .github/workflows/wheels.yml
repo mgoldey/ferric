@@ -8,12 +8,20 @@ name: Wheels
 # pull_request, schedule or tag triggers.
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      legs:
+        description: "JSON list: macos-arm64, macos-x86_64, windows-x86_64"
+        required: false
+        default: '["macos-arm64","macos-x86_64","windows-x86_64"]'
 
+# Per run (superseded runs are cancelled by hand), so a single-leg retry does
+# not cancel other legs still in flight.
 concurrency:
-  group: wheels-spike-${{ github.ref }}
-  cancel-in-progress: true
+  group: wheels-spike-${{ github.run_id }}
 
 jobs:
   spike:
     uses: ./.github/workflows/wheels-spike.yml
+    with:
+      legs: ${{ inputs.legs }}
