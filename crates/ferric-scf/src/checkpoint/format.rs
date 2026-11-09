@@ -605,12 +605,21 @@ fn temp_path(path: &Path, prefix: &str) -> PathBuf {
 
 /// The open file is still what `temp` names, so no cleaner removed it between its
 /// creation and its lock.
+#[cfg(unix)]
 fn still_named(file: &File, temp: &Path) -> bool {
     use std::os::unix::fs::MetadataExt;
     match (file.metadata(), fs::symlink_metadata(temp)) {
         (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
         _ => false,
     }
+}
+
+/// SPIKE (spike/wheels-mac-win): Windows has no stable (dev, ino) in std;
+/// a path that still exists is accepted. Weaker than the unix check: needs
+/// GetFileInformationByHandle (volume serial + file index) for parity.
+#[cfg(not(unix))]
+fn still_named(file: &File, temp: &Path) -> bool {
+    file.metadata().is_ok() && fs::symlink_metadata(temp).is_ok()
 }
 
 /// Create and lock a new temp file. The lock is what marks a writer as alive: the

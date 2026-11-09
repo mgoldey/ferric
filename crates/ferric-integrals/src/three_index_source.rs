@@ -20,7 +20,84 @@ use ferric_core::FerricError;
 use ndarray::{Array2, Array3, ArrayView3};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::os::unix::io::AsRawFd;
+
+/// Platform shims for the spill file (SPIKE spike/wheels-mac-win). Linux keeps
+/// the original posix_fadvise / O_DIRECT / pread behaviour; macOS has pread but
+/// no posix_fadvise or O_DIRECT; Windows has positional reads via seek_read.
+mod spill_os {
+    use std::fs::File;
+
+    pub const FADV_SEQUENTIAL: i32 = 0;
+    pub const FADV_DONTNEED: i32 = 1;
+
+    /// Advisory page-cache hint; a no-op off Linux.
+    #[allow(unused_variables)]
+    pub fn fadvise(file: &File, off: u64, len: u64, advice: i32) {
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::io::AsRawFd;
+            let adv = if advice == FADV_SEQUENTIAL {
+                libc::POSIX_FADV_SEQUENTIAL
+            } else {
+                libc::POSIX_FADV_DONTNEED
+            };
+            // SAFETY: valid fd owned by `file`; advisory only.
+            unsafe {
+                libc::posix_fadvise(file.as_raw_fd(), off as libc::off_t, len as libc::off_t, adv);
+            }
+        }
+    }
+
+    pub fn read_at(file: &File, buf: &mut [u8], off: u64) -> std::io::Result<usize> {
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::FileExt::read_at(file, buf, off)
+        }
+        #[cfg(windows)]
+        {
+            std::os::windows::fs::FileExt::seek_read(file, buf, off)
+        }
+    }
+
+    pub fn read_exact_at(file: &File, mut buf: &mut [u8], mut off: u64) -> std::io::Result<()> {
+        while !buf.is_empty() {
+            match read_at(file, buf, off) {
+                Ok(0) => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::UnexpectedEof,
+                        "failed to fill whole buffer",
+                    ))
+                }
+                Ok(n) => {
+                    buf = &mut buf[n..];
+                    off += n as u64;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
+    }
+
+    /// Re-open the spill file with O_DIRECT (Linux only: needs /proc/self/fd).
+    #[allow(unused_variables)]
+    pub fn open_direct_handle(file: &File) -> Option<File> {
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            use std::os::unix::io::AsRawFd;
+            std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_DIRECT)
+                .open(format!("/proc/self/fd/{}", file.as_raw_fd()))
+                .ok()
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            None
+        }
+    }
+}
 
 /// `FERRIC_OOC_TRACE` descriptor: 3-index in-core/spill decision trace (env-only
 /// debug toggle). NOTE behavior change: previously `.is_ok()` (any value, incl.
@@ -806,13 +883,8 @@ fn dress_band_to_spill(
 fn drop_page_cache(file: &File) {
     // DONTNEED only drops CLEAN pages; flush dirty pages to disk first.
     let _ = file.sync_data();
-    let fd = file.as_raw_fd();
-    // offset 0, len 0 == "to end of file".
-    // SAFETY: fd is a valid open file descriptor (from as_raw_fd on a live
-    // File). posix_fadvise with DONTNEED is advisory and cannot corrupt data.
-    unsafe {
-        libc::posix_fadvise(fd, 0, 0, libc::POSIX_FADV_DONTNEED);
-    }
+    // offset 0, len 0 == "to end of file". Advisory; no-op off Linux.
+    spill_os::fadvise(file, 0, 0, spill_os::FADV_DONTNEED);
 }
 
 // ---------------------------------------------------------------------------
@@ -883,6 +955,13 @@ fn spill_dir() -> std::path::PathBuf {
 /// would refuse every spill on any system whose `statvfs` we cannot read, which
 /// is a worse failure than the one being fixed. The caller degrades to the old
 /// (unchecked) behaviour in that case — but still warns.
+#[cfg(not(unix))]
+fn free_bytes_at(_path: &std::path::Path) -> Option<u64> {
+    // SPIKE: no Windows probe yet (GetDiskFreeSpaceExW); "could not measure".
+    None
+}
+
+#[cfg(unix)]
 fn free_bytes_at(path: &std::path::Path) -> Option<u64> {
     use std::os::unix::ffi::OsStrExt;
     let c_path = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
@@ -2359,20 +2438,14 @@ const DIRECT_ALIGN: usize = 4096;
 /// SATA SSD, buffered 64 MiB reads ran at 359 MB/s and direct ones at 515 MB/s,
 /// and the cgroup-charged cache never fills with spill pages.
 fn open_direct(file: &File, probe_len: usize) -> Option<File> {
-    use std::os::unix::fs::{FileExt, OpenOptionsExt};
-    let direct = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_DIRECT)
-        .open(format!("/proc/self/fd/{}", file.as_raw_fd()))
-        .ok()?;
+    let direct = spill_os::open_direct_handle(file)?;
     if probe_len == 0 {
         return None;
     }
     let mut raw = vec![0.0_f64; (DIRECT_ALIGN + DIRECT_ALIGN) / 8];
     let bytes: &mut [u8] = bytemuck::cast_slice_mut(&mut raw[..]);
     let s0 = bytes.as_ptr().align_offset(DIRECT_ALIGN);
-    direct
-        .read_at(&mut bytes[s0..s0 + DIRECT_ALIGN], 0)
+    spill_os::read_at(&direct, &mut bytes[s0..s0 + DIRECT_ALIGN], 0)
         .ok()
         .map(|_| direct)
 }
@@ -2394,13 +2467,12 @@ fn read_spill_block(
     pair: usize,
     (l0, b): (usize, usize),
 ) -> Result<SpillRead, FerricError> {
-    use std::os::unix::fs::FileExt;
     let err = |e: std::io::Error| FerricError::General(format!("spill read: {e}"));
     let off = l0 * pair * 8;
     let len = b * pair * 8;
     let Some(direct) = direct else {
         let mut buf = vec![0.0_f64; b * pair];
-        file.read_exact_at(bytemuck::cast_slice_mut(&mut buf[..]), off as u64)
+        spill_os::read_exact_at(file, bytemuck::cast_slice_mut(&mut buf[..]), off as u64)
             .map_err(err)?;
         return Ok(SpillRead { l0, buf, start: 0 });
     };
@@ -2413,8 +2485,7 @@ fn read_spill_block(
     let mut done = 0usize;
     while done < need {
         // A short read is legal at the end of the file; zero progress is not.
-        let got = direct
-            .read_at(&mut bytes[s0 + done..s0 + total], (off_a + done) as u64)
+        let got = spill_os::read_at(direct, &mut bytes[s0 + done..s0 + total], (off_a + done) as u64)
             .map_err(err)?;
         if got == 0 {
             return Err(FerricError::General(
@@ -2443,26 +2514,20 @@ fn stream_spill_packed(
     f: impl FnMut(PackedBlock<'_>) -> Result<(), FerricError>,
 ) -> Result<(), FerricError> {
     let file: &File = file;
-    let fd = file.as_raw_fd();
     let direct = open_direct(file, band * pair);
     if direct.is_none() {
-        // SAFETY: fd is a valid open descriptor owned by `file`; advisory only.
-        unsafe {
-            libc::posix_fadvise(fd, 0, 0, libc::POSIX_FADV_SEQUENTIAL);
-        }
+        spill_os::fadvise(file, 0, 0, spill_os::FADV_SEQUENTIAL);
     }
     let read = |l0: usize, b: usize| {
         let got = read_spill_block(file, direct.as_ref(), pair, (l0, b));
         if direct.is_none() {
-            // SAFETY: as above; DONTNEED on a range already copied out.
-            unsafe {
-                libc::posix_fadvise(
-                    fd,
-                    (l0 * pair * 8) as libc::off_t,
-                    (b * pair * 8) as libc::off_t,
-                    libc::POSIX_FADV_DONTNEED,
-                );
-            }
+            // DONTNEED on a range already copied out (advisory).
+            spill_os::fadvise(
+                file,
+                (l0 * pair * 8) as u64,
+                (b * pair * 8) as u64,
+                spill_os::FADV_DONTNEED,
+            );
         }
         got
     };

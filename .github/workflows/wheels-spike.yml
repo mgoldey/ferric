@@ -1,0 +1,147 @@
+name: Wheels spike (macOS / Windows)
+
+# SPIKE ONLY (branch spike/wheels-mac-win). Answers "what does it take to ship
+# ferric wheels for macOS and Windows": native deps from conda-forge (libint2
+# 2.13.1, libxc 6.2.2, OpenBLAS, Eigen), maturin build, delocate/delvewheel
+# repair, then `import ferric; run_rhf(water, sto-3g)` from the repaired wheel
+# in a fresh venv with the conda prefix HIDDEN (so a missing bundled library
+# fails instead of being found in the build environment).
+#
+# workflow_dispatch ONLY: no push/pull_request/schedule/tag triggers, uploads
+# nothing anywhere except this run's artifacts.
+
+on:
+  workflow_dispatch:
+    inputs:
+      legs:
+        description: "JSON list of matrix legs to run (macos-arm64, macos-x86_64, windows-x86_64)"
+        required: false
+        default: '["macos-arm64","windows-x86_64"]'
+
+concurrency:
+  group: wheels-spike-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  OPENBLAS_NUM_THREADS: "1"
+  PYTHON_VERSION: "3.12"
+  # Linux value of the same script (mainline build, 2026-11-09).
+  # Linux, same script: dft-pbe/sto-3g -75.2261674834, rimp2/cc-pvdz -76.2308014541.
+  E_WATER_LINUX: "-74.963146800039"
+
+jobs:
+  wheel:
+    strategy:
+      fail-fast: false
+      matrix:
+        leg: ${{ fromJSON(inputs.legs) }}
+    name: ${{ matrix.leg }}
+    # (A matrix `include` keyed on leg would ADD unlisted legs, so map here.)
+    runs-on: ${{ matrix.leg == 'macos-arm64' && 'macos-14' || (matrix.leg == 'macos-x86_64' && 'macos-15-intel' || 'windows-latest') }}
+    timeout-minutes: 150
+    defaults:
+      run:
+        shell: bash -el {0}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        id: py
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      # Native deps from conda-forge. No python in this env on purpose: the
+      # wheel is built for, and tested with, setup-python's interpreter.
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: nd
+          init-shell: bash
+          create-args: >-
+            -c conda-forge
+            libint=2.13.1
+            libxc-c=6.2.2
+            openblas
+            eigen=3.4.0
+            cmake
+            ninja
+            pkg-config
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+
+      - name: Toolchain + prefix layout
+        run: |
+          set -x
+          rustc --version; cargo --version
+          if [ "$RUNNER_OS" = Windows ]; then
+            P="$(cygpath -m "$CONDA_PREFIX/Library")"
+            which cl link || true
+          else
+            P="$CONDA_PREFIX"
+            clang --version | head -1
+          fi
+          echo "NATIVE_PREFIX=$P" >> "$GITHUB_ENV"
+          ls "$P/lib" | head -80
+          ls "$P/include" | head -40
+          grep -E "LIBINT_MAX_AM|MAX_DERIV" "$P/include/libint2/config.h" | head
+          ls "$P/bin" | grep -i -E "dll|openblas|xc|int2" | head -20 || true
+
+      - name: Build wheel (maturin --release)
+        run: |
+          set -euo pipefail
+          export LIBINT2_PREFIX="$NATIVE_PREFIX"
+          export PKG_CONFIG_PATH="$NATIVE_PREFIX/lib/pkgconfig"
+          export RUSTFLAGS="-L native=$NATIVE_PREFIX/lib"
+          if [ "$RUNNER_OS" = macOS ]; then
+            # conda-forge's osx-arm64 libraries target macOS 11.0; osx-64 10.13.
+            export MACOSX_DEPLOYMENT_TARGET=$([ "$(uname -m)" = arm64 ] && echo 11.0 || echo 10.13)
+          fi
+          PY='${{ steps.py.outputs.python-path }}'
+          "$PY" -m pip install -q "maturin>=1.7,<2"
+          start=$(date +%s)
+          "$PY" -m maturin build --release -i "$PY" --out dist 2>&1 | tee build.log
+          echo "BUILD_SECONDS=$(( $(date +%s) - start ))" | tee -a "$GITHUB_STEP_SUMMARY"
+          ls -la dist
+
+      - name: Repair (delocate / delvewheel)
+        run: |
+          set -euo pipefail
+          PY='${{ steps.py.outputs.python-path }}'
+          if [ "$RUNNER_OS" = macOS ]; then
+            "$PY" -m pip install -q delocate
+            delocate-listdeps --all dist/*.whl || true
+            DYLD_LIBRARY_PATH="$NATIVE_PREFIX/lib" delocate-wheel -v -w wheelhouse dist/*.whl
+            delocate-listdeps --all wheelhouse/*.whl
+          else
+            "$PY" -m pip install -q delvewheel
+            "$PY" -m delvewheel show --add-path "$NATIVE_PREFIX/bin" dist/*.whl
+            "$PY" -m delvewheel repair --add-path "$NATIVE_PREFIX/bin" -w wheelhouse dist/*.whl
+          fi
+          ls -la wheelhouse
+          "$PY" -c "import sys,zipfile;z=zipfile.ZipFile(sys.argv[1]);[print(f'{i.file_size:>12} {i.compress_size:>12} {i.filename}') for i in z.infolist() if not i.filename.endswith('.py')]" wheelhouse/*.whl
+          du -h wheelhouse/*.whl | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: spike-wheel-${{ matrix.leg }}
+          path: wheelhouse/*.whl
+          retention-days: 7
+
+      # Plain (non-login) bash: no micromamba activation, and the conda root is
+      # renamed away so nothing outside the wheel can satisfy a library load.
+      - name: Smoke test from the repaired wheel (conda prefix hidden)
+        shell: bash {0}
+        run: |
+          set -euo pipefail
+          mv "$MAMBA_ROOT_PREFIX" "$MAMBA_ROOT_PREFIX.hidden"
+          PY='${{ steps.py.outputs.python-path }}'
+          "$PY" -m venv "$RUNNER_TEMP/v"
+          if [ "$RUNNER_OS" = Windows ]; then VPY="$RUNNER_TEMP/v/Scripts/python.exe"; else VPY="$RUNNER_TEMP/v/bin/python"; fi
+          "$VPY" -m pip install -q wheelhouse/*.whl
+          cp scripts/wheel_spike_smoke.py "$RUNNER_TEMP/"
+          cd "$RUNNER_TEMP"
+          "$VPY" wheel_spike_smoke.py "$E_WATER_LINUX" --broad 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ "$RUNNER_OS" = Windows ]; then FERRIC="$RUNNER_TEMP/v/Scripts/ferric.exe"; else FERRIC="$RUNNER_TEMP/v/bin/ferric"; fi
+          "$FERRIC" --help | head -5
+

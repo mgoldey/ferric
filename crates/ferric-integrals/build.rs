@@ -70,10 +70,13 @@ fn main() {
             },
             None,
         )
-        .flag("-std=c++17")
-        .flag("-O2")
-        .flag("-Wno-deprecated-declarations")
-        .flag("-Wno-unused-parameter")
+        // SPIKE: `.std()` maps to -std=c++17 (gcc/clang) or /std:c++17 (MSVC,
+        // whose default C++14 cannot compile libint2's headers).
+        .std("c++17")
+        .define("_USE_MATH_DEFINES", None) // M_PI under MSVC
+        .flag_if_supported("-O2")
+        .flag_if_supported("-Wno-deprecated-declarations")
+        .flag_if_supported("-Wno-unused-parameter")
         .compile("ferric_shim");
 
     // --- ECP shim (new): wraps libecpint's ECPIntegrator into a C-ABI matrix call ---
@@ -81,10 +84,11 @@ fn main() {
     ecp_build
         .cpp(true)
         .file("shim/ecp_shim.cc")
-        .flag("-std=c++11")
-        .flag("-O2")
-        .flag("-Wno-deprecated-declarations")
-        .flag("-Wno-unused-parameter");
+        .std("c++14")
+        .define("_USE_MATH_DEFINES", None)
+        .flag_if_supported("-O2")
+        .flag_if_supported("-Wno-deprecated-declarations")
+        .flag_if_supported("-Wno-unused-parameter");
     for inc in &ecpint_include_dirs {
         ecp_build.include(inc);
     }
@@ -107,7 +111,13 @@ fn main() {
     // Lets the libint_max_am test read the very params header it compiled against.
     println!("cargo:rustc-env=FERRIC_LIBINT_ROOT={libint_root}");
     println!("cargo:rustc-link-lib=dylib=openblas");
-    println!("cargo:rustc-link-lib=dylib=stdc++");
+    // SPIKE: the C++ runtime is libstdc++ only on Linux. macOS ships libc++
+    // and MSVC links its own runtime.
+    match std::env::var("CARGO_CFG_TARGET_OS").as_deref() {
+        Ok("macos") => println!("cargo:rustc-link-lib=dylib=c++"),
+        Ok("windows") => {}
+        _ => println!("cargo:rustc-link-lib=dylib=stdc++"),
+    }
 
     // libecpint link (static): ecpint + its internal Faddeeva
     println!(
@@ -251,7 +261,15 @@ fn build_libecpint() -> (PathBuf, Vec<PathBuf>) {
     // libecpint installs static archives flat into <build>/libecpint.a and
     // external/Faddeeva/libFaddeeva.a. We build in place (no install) and link
     // from the build tree.
-    let ecpint_a = build_dir.join("src/libecpint.a");
+    let msvc = std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc");
+    // SPIKE: MSVC archives are `ecpint.lib`; Ninja (single-config) keeps
+    // them out of a Release/ subdirectory.
+    let (ecpint_name, faddeeva_name) = if msvc {
+        ("ecpint.lib", "Faddeeva.lib")
+    } else {
+        ("libecpint.a", "libFaddeeva.a")
+    };
+    let ecpint_a = build_dir.join("src").join(ecpint_name);
 
     if !ecpint_a.exists() {
         // libecpint's code generator writes qgen.hpp into the SOURCE tree
@@ -264,7 +282,11 @@ fn build_libecpint() -> (PathBuf, Vec<PathBuf>) {
         // (#525). Restore the mtime when the bytes did not change.
         let _qgen_guard = MtimeGuard::new(src_dir.join("include/libecpint/qgen.hpp"));
         // Configure.
-        let status = Command::new("cmake")
+        let mut configure = Command::new("cmake");
+        if msvc {
+            configure.arg("-G").arg("Ninja");
+        }
+        let status = configure
             .current_dir(&build_dir)
             .arg(&src_dir)
             .arg("-DCMAKE_BUILD_TYPE=Release")
@@ -297,9 +319,9 @@ fn build_libecpint() -> (PathBuf, Vec<PathBuf>) {
     // both next to each other so a single -L search dir resolves them.
     let lib_out = out_dir.join("libecpint-lib");
     std::fs::create_dir_all(&lib_out).expect("create libecpint lib dir");
-    std::fs::copy(&ecpint_a, lib_out.join("libecpint.a")).expect("copy libecpint.a");
-    let faddeeva_a = build_dir.join("external/Faddeeva/libFaddeeva.a");
-    std::fs::copy(&faddeeva_a, lib_out.join("libFaddeeva.a")).expect("copy libFaddeeva.a");
+    std::fs::copy(&ecpint_a, lib_out.join(ecpint_name)).expect("copy libecpint archive");
+    let faddeeva_a = build_dir.join("external/Faddeeva").join(faddeeva_name);
+    std::fs::copy(&faddeeva_a, lib_out.join(faddeeva_name)).expect("copy Faddeeva archive");
 
     // The generated config.hpp lives in the build tree's include dir.
     let include_dirs = vec![
