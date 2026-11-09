@@ -990,7 +990,8 @@ def u_spin_block(mf, gw, s, orbs):
 #   `posthoc_minus_textbook_max` records the size of the difference.
 #
 # Matched recipe (the closed-shell @PBE block's, per spin):
-#   * UKS/PBE, EXACT J (no density fitting), (75,110) unpruned Becke grid,
+#   * UKS/PBE, EXACT J (no density fitting), (75,110) unpruned Becke grid
+#     (OH: (99,590), see UKS_GRID below; the block records it as `grid`),
 #     Becke-1988 radii, stability-followed from 3 guesses (common.run_open_shell).
 #   * ferric's XC density floor, SPIN-POLARIZED form (ferric-dft vxc.rs
 #     `semilocal_vxc_polarized_scratch`): V^sigma is zeroed where
@@ -1024,6 +1025,17 @@ def u_spin_block(mf, gw, s, orbs):
 
 UKS_CASES = {("oh", "cc-pvdz"), ("ch3", "cc-pvdz"), ("nh2", "cc-pvdz")}
 
+# PBE grid of the `u_g0w0_uks_pbe` block, per system (recorded in the block as
+# `grid`; the Rust test runs ferric on it). MAIN_GRID except where the open
+# shell has a degenerate hole: OH 2Pi's beta hole can sit at any angle in its
+# pi pair, and on (75,110) the energy vs that angle ripples with the angular
+# grid (stationary states 1.4e-6 Ha apart, stable ones 4.9e-7, beta orbital
+# energies 5.4e-6), so which ripple minimum a run lands in decides the row. On
+# (99,590) the ripple is below the row's bars (ferric, 10 hole orientations,
+# 2026-11-09: E spread 1.4e-10 Ha, orbital-energy spread 1.9e-9 Ha;
+# scripts/queue/out/oh-grid-2026-11-09/). (99,302) is not: 6.3e-9 / 1.8e-7.
+UKS_GRID = {"oh": (99, 590)}
+
 
 def _apply_density_floor_polarized(mf, floor):
     """ferric's spin-polarized XC floor: V^sigma = 0 where rho_sigma <= floor
@@ -1045,14 +1057,14 @@ def _apply_density_floor_polarized(mf, floor):
     ni.eval_xc_eff = floored
 
 
-def uks_pbe_factory(density_floor=FERRIC_DENSITY_FLOOR):
+def uks_pbe_factory(density_floor=FERRIC_DENSITY_FLOOR, grid=MAIN_GRID):
     from pyscf import dft
 
     def factory(mol):
         mf = dft.UKS(mol, xc="PBE,PBE")
         if density_floor is not None:
             _apply_density_floor_polarized(mf, density_floor)
-        mf.grids.atom_grid = MAIN_GRID
+        mf.grids.atom_grid = grid
         mf.grids.prune = None
         mf.grids.radii_adjust = dft.radi.becke_atomic_radii_adjust
         return mf
@@ -1388,13 +1400,13 @@ def u_exact_spin(gw, mf, s, orbs, zn, exact_rpa, tb):
     return blk
 
 
-def u_g0w0_uks_pbe_block(mol, aux, orbs):
+def u_g0w0_uks_pbe_block(mol, aux, orbs, grid=MAIN_GRID):
     uks, mf = common.run_open_shell(
         mol,
         "uks",
         conv_tol=CONV_TOL,
         conv_tol_grad=CONV_TOL_GRAD,
-        mf_factory=uks_pbe_factory(),
+        mf_factory=uks_pbe_factory(grid=grid),
         return_mf=True,
     )
     na, nb = mol.nelec
@@ -1416,7 +1428,7 @@ def u_g0w0_uks_pbe_block(mol, aux, orbs):
             "uks",
             conv_tol=CONV_TOL,
             conv_tol_grad=CONV_TOL_GRAD,
-            mf_factory=uks_pbe_factory(density_floor=None),
+            mf_factory=uks_pbe_factory(density_floor=None, grid=grid),
             return_mf=True,
         )[1]
         shift_max = float(
@@ -1431,6 +1443,7 @@ def u_g0w0_uks_pbe_block(mol, aux, orbs):
     return {
         "orbs": orbs,
         "xc": "PBE",
+        "grid": list(grid),
         "j": "exact (no density fitting)",
         "density_floor": FERRIC_DENSITY_FLOOR,
         "density_floor_form": "spin-polarized: V^sigma zeroed where rho_sigma <= floor",
@@ -1463,7 +1476,9 @@ def gen_open_uks_only(system):
         assert payload["nao"] == mol.nao_nr() and payload["aux"] == aux_name
         aux = aux_dict(aux_name, symbols)
         orbs = payload["u_g0w0_uhf"]["orbs"]
-        payload["u_g0w0_uks_pbe"] = u_g0w0_uks_pbe_block(mol, aux, orbs)
+        payload["u_g0w0_uks_pbe"] = u_g0w0_uks_pbe_block(
+            mol, aux, orbs, grid=UKS_GRID.get(system, MAIN_GRID)
+        )
         prov = payload.pop("provenance")
         blocks = prov.setdefault("blocks", [])
         if "u_g0w0_uks_pbe" not in blocks:
@@ -1789,7 +1804,9 @@ def gen_open(system):
             payload["diagnostics"]["old_recipe"] = old_u_recipe(mol, aux, orbs)
         blocks = ["uhf", "u_g0w0_uhf", "diagnostics"]
         if (system, basis_name) in UKS_CASES:
-            payload["u_g0w0_uks_pbe"] = u_g0w0_uks_pbe_block(mol, aux, orbs)
+            payload["u_g0w0_uks_pbe"] = u_g0w0_uks_pbe_block(
+                mol, aux, orbs, grid=UKS_GRID.get(system, MAIN_GRID)
+            )
             blocks.append("u_g0w0_uks_pbe")
         payload["provenance"] = provenance(
             xyz,

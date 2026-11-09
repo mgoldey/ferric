@@ -43,7 +43,8 @@ use ndarray::{s, Array2};
 const OH: &str = "2\nOH doublet\nO 0.0 0.0 0.0\nH 0.0 0.0 0.98\n";
 
 /// The stationary UKS-LDA/STO-3G ground state of OH at this geometry, as
-/// reached deterministically from the canonical guess (energy_conv 1e-7,
+/// reached deterministically from the default guess (the canonical pair
+/// turned by `uhf::GUESS_HOLE_ANGLE`, and the unturned one alike; energy_conv 1e-7,
 /// density_conv 1e-9). The hole-orientation minimum is 8e-10 lower
 /// (−74.0755553219, `uhf_oh_orientation.rs`); a second local minimum at the
 /// grid's other C4 orientation is 1.0e-7 higher. The pre-pin constant
@@ -154,10 +155,9 @@ fn oh_uks_lda_converges_to_the_stationary_ground_state_not_a_stagnated_one() {
     let cfg = lda(1e-4, 0);
     let pins0 = degenerate_flip_pins_on_this_thread();
     let r = solve(&sys, &cfg);
-    // >= 1: each frontier start of the default guess
-    // (`uhf::FRONTIER_GUESS_ROTATIONS`) is its own solve with its own pin.
-    assert!(
-        degenerate_flip_pins_on_this_thread() - pins0 >= 1,
+    assert_eq!(
+        degenerate_flip_pins_on_this_thread() - pins0,
+        1,
         "the degenerate flip did not engage the pin"
     );
     let err_max = r.convergence.as_ref().map(|c| c.err_max).unwrap();
@@ -176,8 +176,16 @@ fn oh_uks_lda_converges_to_the_stationary_ground_state_not_a_stagnated_one() {
         "accepted the stagnated non-stationary state {:.10}",
         r.energy
     );
+    // density_conv 1e-4 stops the hole wherever it is on its flat
+    // orientation mode, so the exit energy sits anywhere inside the grid's
+    // hole-orientation ripple. MEASURED with the guess hole turned by 0,
+    // π/16, π/8, 3π/16, π/4 (scripts/queue/out/oh-grid-2026-11-09/
+    // swap_configs.log): −74.0755553159, −..553066, −..552621, −..552265,
+    // −..552164, a 1.0e-7 spread (the ripple: the two orientation minima of
+    // this grid are 1.0e-7 apart, `uhf_oh_orientation.rs`). Bar 2e-7; the
+    // stagnated state it guards against is 0.586 Ha away.
     assert!(
-        (r.energy - E_GROUND).abs() <= 1e-8,
+        (r.energy - E_GROUND).abs() <= 2e-7,
         "E {:.10} vs stationary ground state {E_GROUND:.10}",
         r.energy
     );

@@ -105,12 +105,17 @@ const TILTS: [f64; 8] = [0.0, 5.0, 13.0, 30.0, 45.0, 60.0, 71.0, 90.0];
 /// iterations of the flip, no non-stationary warning fires, and the returned
 /// MOs build the returned density.
 ///
-/// MEASURED after the pin: 8-12 iterations; `err_max` 1.5e-10..2.5e-8; every
-/// stability `lambda_min` at or above -2.2e-7 (inside the 1e-6 noise floor).
-/// The 2.5e-8 (13°) is a stiff-mode residual: the TRAH step that would remove
-/// it is 2.8e-9 long (below the ΔP gate's 10·density_conv) and worth 8e-18 Ha,
-/// so the gradient bar is the gate's own scale, 100·density_conv = 1e-7. The
-/// oscillation it replaces never converged and sat at 1e-7..1e-6.
+/// MEASURED after the pin: 8-15 iterations; `err_max` 1.0e-10..1.03e-7 (the
+/// largest at 13°: 2.5e-8 from the unturned canonical guess, 1.03e-7 from the
+/// default one turned by `uhf::GUESS_HOLE_ANGLE`); every stability
+/// `lambda_min` at or above -2.2e-7 (inside the 1e-6 noise floor). The 13°
+/// residual is a stiff-mode one: the TRAH step that would remove the 2.5e-8
+/// is 2.8e-9 long (curvature ~9 Ha; below the ΔP gate's 10·density_conv) and
+/// worth 8e-18 Ha. Bar: a step just under the gate (10·density_conv) along
+/// the stiffest rotation, whose curvature is at most the occupied-virtual
+/// span (18.6 Ha MEASURED, O 1s to the top STO-3G virtual), leaves a gradient up to
+/// ~1.9e-7, so 2e-7. The oscillation it replaces never converged (the
+/// `converged` and iteration checks catch it) and sat at 1e-7..1e-6.
 #[test]
 fn oh_uks_lda_converges_stationary_at_every_orientation() {
     let cfg = lda(1e-10, 1e-9);
@@ -143,9 +148,7 @@ fn oh_uks_lda_converges_stationary_at_every_orientation() {
              warnings {warns}, |D(C_occ)-D| {miss:.1e}",
             r.energy, r.iterations
         );
-        // pins >= 1: each frontier start (`uhf::FRONTIER_GUESS_ROTATIONS`)
-        // is its own solve and engages its own pin.
-        if !(r.converged && r.iterations <= 30 && pins >= 1 && warns == 0 && err_max < 1e-7)
+        if !(r.converged && r.iterations <= 30 && pins == 1 && warns == 0 && err_max < 2e-7)
             || miss > 1e-6
         {
             failures.push(format!(
@@ -223,11 +226,11 @@ fn rotate_beta_hole(r: &ScfResult, theta: f64) -> (Array2<f64>, Array2<f64>) {
 /// and π/4 end at −74.0755552216, a second local minimum (lambda_min
 /// +1.1e-7) 1.0e-7 Ha higher. So the hole-orientation dependence is bounded by
 /// the grid anisotropy (1.0e-7 Ha here), and is not removed by any local
-/// optimiser; the default guess is made deterministic
-/// (`uhf::canonical_frontier_basis`) and tries a few hole orientations,
-/// keeping the lowest (`uhf::FRONTIER_GUESS_ROTATIONS`; here every start ends
-/// within 8e-10 of the minimum). Before the pin the 0.1..0.5 starts spread
-/// 9.3e-8 Ha. Bar for the basin: 2e-9 (measured spread 0).
+/// optimiser; the default guess is made deterministic instead
+/// (`uhf::canonical_frontier_basis`, turned by `uhf::GUESS_HOLE_ANGLE`; it
+/// ends 7e-10 above the minimum, as the unturned canonical start did). Before
+/// the pin the 0.1..0.5 starts spread 9.3e-8 Ha. Bar for the basin: 2e-9
+/// (measured spread 0).
 #[test]
 fn oh_uks_lda_descends_to_the_minimum_from_inside_its_basin() {
     let s = sys(0.0);
@@ -296,54 +299,104 @@ fn oh_uks_lda_ri_j_converges_at_tilted_orientations() {
     }
 }
 
-/// The default (MINAO) guess reaches the LOWEST hole-orientation minimum of
-/// OH ²Π UKS/PBE/cc-pVDZ on the flat 75x110 grid with the bond on z — the
-/// state PySCF's lowest-of-three-starts reference has
-/// (testdata/reference/validation/gw/oh_cc-pvdz.json, `u_g0w0_uks_pbe/uks`).
+/// Hole orientation of a bond-on-z ²Π state, folded by the grid's C4v
+/// symmetry about z into [0, π/4]: φ = ½ atan2(2Q_xy, Q_xx − Q_yy) of the
+/// spin density's second moment about the origin; φ, −φ and φ ± π/2 are
+/// grid-equivalent.
+fn folded_hole_angle(prep: &PreparedBasis, r: &ScfResult) -> f64 {
+    let m = ferric_integrals::oneelectron::second_moment(prep, [0.0; 3]).unwrap();
+    let ds = &r.density_alpha - r.density_beta.as_ref().unwrap();
+    let tr = |a: &Array2<f64>| (a * &ds).sum();
+    let phi = 0.5 * (2.0 * tr(&m[1])).atan2(tr(&m[0]) - tr(&m[3]));
+    let f = phi.abs() % std::f64::consts::FRAC_PI_2;
+    f.min(std::f64::consts::FRAC_PI_2 - f)
+}
+
+/// On the (99,590) grid the OH ²Π UKS/PBE/cc-pVDZ state does not depend on
+/// where in its π pair the β hole ends up: two starts that end at different
+/// hole orientations agree in energy and in every window orbital energy to
+/// within the validation_gw bars. That is what lets
+/// `validation_gw` `u_g0w0_uks_pbe_oh_*` compare against PySCF on that grid
+/// without caring which ripple state either code lands in (gen_gw.py
+/// `UKS_GRID`).
 ///
-/// The canonical guess basis (`uhf::canonical_frontier_basis`) puts the β
-/// hole on a grid mirror plane, which holds the SCF on the axis state
-/// −75.6448988103, a stable local minimum 1.08e-7 Ha above the reference
-/// (stability lambda_min +1.23e-4 at both). MEASURED before the frontier
-/// starts (`uhf::FRONTIER_GUESS_ROTATIONS`): −75.6448988103, |d| 1.08e-7,
-/// fails; after: −75.6448989187, |d| < 1e-10. The bar, 1e-9, is the
-/// validation_gw UKS energy tolerance; the nearest other state is 1.08e-7
-/// away. The hole mode is stiff here (no degenerate flip: no pin engages),
-/// so this is about which minimum, not about convergence.
+/// The two starts: the default (MINAO) guess, whose hole is turned
+/// `uhf::GUESS_HOLE_ANGLE` = π/8 off the pivot AO, and the core-Hamiltonian
+/// guess (not turned, hole on the x axis). MEASURED (bond on z, 2026-11-09):
+/// on (99,590) E −75.64489417899 / −75.64489417893 (|d| 6e-11), folded hole
+/// angles 0.393 / 0.008 rad; over 10 starts the spread is 1.4e-10 Ha in E and
+/// 1.9e-9 Ha in the orbital energies (scripts/queue/out/oh-grid-2026-11-09/).
+/// On (75,110) the same two starts end 1.08e-7 Ha apart (the grid-ripple
+/// minima the old reference had to pick between) — mutation check: this
+/// test on (75,110) fails. Bars: `TOL_E_SCF` 1e-9 and `TOL_EPS_MF` 3e-8 of
+/// validation_gw. The angle check keeps it from passing vacuously (both
+/// starts ending on one orientation).
 #[test]
-fn oh_uks_pbe_default_guess_reaches_the_lowest_hole_orientation() {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let text =
-        std::fs::read_to_string(root.join("testdata/reference/validation/gw/oh_cc-pvdz.json"))
-            .expect("OH GW reference JSON");
-    let r: serde_json::Value = serde_json::from_str(&text).unwrap();
-    let e_ref = r["u_g0w0_uks_pbe"]["uks"]["energy"].as_f64().unwrap();
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
+fn oh_uks_pbe_hole_orientation_is_below_the_gw_bars_on_99x590() {
     let mol = Molecule::parse_xyz("2\nOH\nO 0 0 0\nH 0 0 0.9697\n", 0, 2).unwrap();
     let bs = basis::bundled("cc-pvdz").unwrap();
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
     let cfg = RhfConfig {
         xc: Some("pbe".into()),
-        // Exact J/K and the flat grid, as the reference.
+        // Exact J/K and the flat grid, as validation_gw's OH UKS row.
         df_j_aux: Some(String::new()),
         df_k_aux: Some(String::new()),
-        dft_grid: Some(ferric_dft::grid::AtomicGridConfig::default()),
+        dft_grid: Some(ferric_dft::grid::AtomicGridConfig {
+            n_radial: 99,
+            n_angular: 590,
+            ..Default::default()
+        }),
         max_iter: 200,
         energy_conv: 1e-11,
         density_conv: 1e-9,
         ..Default::default()
     };
-    let res =
-        solve_uhf(&ParallelContext::default(), &mol, &prep, &bounds, &cfg).expect("OH UKS/PBE");
-    println!(
-        "OH UKS/PBE/cc-pVDZ: E {:.10} in {} iters, reference {e_ref:.10}, |d| {:.2e}",
-        res.energy,
-        res.iterations,
-        (res.energy - e_ref).abs()
+    let hcore = RhfConfig {
+        use_sad_guess: false,
+        ..cfg.clone()
+    };
+    let ctx = ParallelContext::default();
+    let runs: Vec<ScfResult> = [("default guess", &cfg), ("core-Hamiltonian guess", &hcore)]
+        .into_iter()
+        .map(|(name, c)| {
+            let r =
+                solve_uhf(&ctx, &mol, &prep, &bounds, c).unwrap_or_else(|e| panic!("{name}: {e}"));
+            println!(
+                "{name}: E {:.11} in {} iters, folded hole angle {:.3} rad",
+                r.energy,
+                r.iterations,
+                folded_hole_angle(&prep, &r)
+            );
+            r
+        })
+        .collect();
+    let (a, b) = (&runs[0], &runs[1]);
+    let d_angle = (folded_hole_angle(&prep, a) - folded_hole_angle(&prep, b)).abs();
+    assert!(
+        d_angle > 0.1,
+        "both starts ended at one hole orientation (folded angles differ by {d_angle:.3} rad): \
+         the comparison below would not test the ripple"
+    );
+    let d_e = (a.energy - b.energy).abs();
+    // Window of the GW row (orbitals 2..=7), both spins.
+    let window = |r: &ScfResult| {
+        let mut v = r.eps_alpha[2..8].to_vec();
+        v.extend_from_slice(&r.eps_beta.as_ref().unwrap()[2..8]);
+        v
+    };
+    let d_eps = window(a)
+        .iter()
+        .zip(window(b))
+        .fold(0.0f64, |m, (x, y)| m.max((x - y).abs()));
+    println!("|dE| {d_e:.2e} Ha, max |d eps| {d_eps:.2e} Ha");
+    assert!(
+        d_e < 1e-9,
+        "hole orientations differ by {d_e:.2e} Ha on (99,590)"
     );
     assert!(
-        (res.energy - e_ref).abs() < 1e-9,
-        "OH UKS/PBE default guess ended at {:.10}, not the lowest hole orientation {e_ref:.10}",
-        res.energy
+        d_eps < 3e-8,
+        "orbital energies differ by {d_eps:.2e} Ha between hole orientations on (99,590)"
     );
 }

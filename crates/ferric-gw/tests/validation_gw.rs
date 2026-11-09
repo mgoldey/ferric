@@ -83,7 +83,8 @@
 //!   HF reference ferric applies no shift and PySCF's vk − v_mf is 0 (the
 //!   generator records it at ≤1e-13 Ha).
 //! * SCF: exact 4-index integrals on both sides (PBE: `df_j_aux = Some("")`;
-//!   grid (75,110) unpruned Becke, ferric's default).
+//!   grid (75,110) unpruned Becke, ferric's default; OH's UKS/PBE block is
+//!   on (99,590), see `uks_grid`).
 //! * Open shell: ferric uses a PER-SPIN mid-gap Fermi level (u_sigma.rs)
 //!   where `ugw_ac` uses one common ef; the generator runs `ugw_ac` once per
 //!   spin with ef overridden. MEASURED: the two conventions differ by ≤4 µeV
@@ -1435,22 +1436,44 @@ fn u_g0w0_triplets_o2_ch2_vs_pyscf_ugw_ac() {
 // `u_g0w0_uks_pbe_*_qp` checks the QP energies against both roots.
 
 /// U-G0W0@UKS: Σc(ef_σ + iω) at the Padé nodes. Measured 3.0e-11 (CH3) to
-/// 8.7e-9 Ha (OH β, whose ε_mf also agrees least well, 1.0e-9).
+/// 8.7e-9 Ha on the (75,110) blocks; OH on its (99,590) block (2026-11-09):
+/// 2.4e-8 Ha (β LUMO).
 const TOL_SIGMA_C_IW_UKS: f64 = 1e-7;
 /// U-G0W0@UKS: ferric's product-rule Σc(ef_σ + iω) (what `run_u_gw` uses)
 /// vs the grid-free U-dRPA pole sum at the Padé nodes (block `exact`).
-/// Measured ≤ 4.4e-10 Ha (CH3 β); the plain quadrature at the same 100
-/// points misses by 1.9e-3 (CH3) to 0.11 Ha (OH β).
+/// Measured ≤ 5.2e-10 Ha (OH β, (99,590) block; CH3 β 4.4e-10); the plain
+/// quadrature at the same 100 points misses by 1.9e-3 (CH3) to 0.11 Ha (OH β).
 const TOL_SIGMA_C_IW_UKS_EXACT: f64 = 1e-8;
 /// U-G0W0@UKS QP energies vs the `exact` reference (ferric's root rule on
 /// the continuation of the exact Σc), every orbital, multi-root ones
-/// included. Measured ≤ 2.7e-8 Ha (OH α HOMO−2).
+/// included. Measured ≤ 2.7e-8 Ha (OH α HOMO−2 on the former (75,110)
+/// block; 1.5e-8 on its (99,590) block).
 const TOL_QP_UKS: f64 = 3e-7;
 /// v_xc diagonal (ferric `vxc_diagonal_mo` vs PySCF UGWAC `vxc`).
-/// Measured ≤ 7.1e-10 Ha (OH β).
+/// Measured ≤ 7.1e-10 Ha on the (75,110) blocks; OH on its (99,590)
+/// block: 2.4e-9 Ha (β LUMO).
 const TOL_VXC_UKS: f64 = 1e-8;
 
-fn uks_pbe_config() -> RhfConfig {
+/// The flat (unpruned, uncut) PBE grid the `u_g0w0_uks_pbe` block was
+/// generated on: the block's own `grid` (gen_gw.py `UKS_GRID`; OH is on
+/// (99,590)), or, for blocks written before it was recorded, the file's
+/// `provenance/grid` (75,110).
+fn uks_grid(sys: &Sys) -> AtomicGridConfig {
+    let g = sys
+        .r
+        .pointer("/u_g0w0_uks_pbe/grid")
+        .or_else(|| sys.r.pointer("/provenance/grid"))
+        .and_then(Value::as_array)
+        .unwrap_or_else(|| panic!("{}: no UKS grid in the reference", sys.label));
+    let n = |k: usize| g[k].as_u64().expect("grid entry") as usize;
+    AtomicGridConfig {
+        n_radial: n(0),
+        n_angular: n(1),
+        ..AtomicGridConfig::default()
+    }
+}
+
+fn uks_pbe_config(grid: &AtomicGridConfig) -> RhfConfig {
     RhfConfig {
         xc: Some("pbe".into()),
         // Exact J, as the reference (an empty name is the explicit "no
@@ -1459,9 +1482,9 @@ fn uks_pbe_config() -> RhfConfig {
         // that choice is the fitting error, not what this row measures.
         df_j_aux: Some(String::new()),
         df_k_aux: Some(String::new()),
-        // The references are PySCF on the flat (75,110) grid (gen_gw.py),
-        // not the pruned KS default AtomicGridConfig::production().
-        dft_grid: Some(AtomicGridConfig::default()),
+        // The references are PySCF on a flat grid ([`uks_grid`]), not the
+        // pruned KS default AtomicGridConfig::production().
+        dft_grid: Some(grid.clone()),
         ..uhf_config()
     }
 }
@@ -1470,34 +1493,35 @@ fn uks_pbe_config() -> RhfConfig {
 ///
 /// The reference is the LOWEST stable state over three PySCF starts
 /// (`common.run_open_shell`), so ferric runs three starts too and applies the
-/// same rule ([`select_lowest_stable`]). OH ²Π
-/// needs that: on the (75,110) grid the π-hole orientation is a near-zero mode
-/// with more than one stationary state. Measured (ferric, cc-pVDZ, 2026-10-22):
-/// two internally STABLE states, −75.6448989187 (λ_min +1.23e-4, the
-/// reference) and −75.6448984257 (λ_min +9.0e-5, 4.93e-7 higher, which
-/// PySCF's own `minao` start reaches to < 1e-10: `guess_scan` in the JSON),
-/// and an UNSTABLE one at −75.6448978044 (λ_min −9.6e-5; the hole turned 45°).
-/// Which basin the MINAO start falls into is decided by perturbations far below
-/// any physics: the libint ERI precision change 1e-14 → 1e-20 (8d1961c32,
-/// which moves E_J by ~1e-9) moved it from the first to the second (issue
-/// #516). The core-Hamiltonian start reaches the reference state there.
-/// Mutation-checked: shifting the MINAO start's energy to e_ref − 2e-9 fails
-/// the "none below the reference" assert; dropping the core-Hamiltonian
-/// start fails the "lowest is the reference" assert (lowest 4.93e-7 off).
+/// same rule ([`select_lowest_stable`]).
+///
+/// OH ²Π: the β hole can sit at any angle in its π pair. Physically every
+/// angle is the same state; on a DFT grid the energy ripples with the angle.
+/// MEASURED (ferric, cc-pVDZ, bond on z, 2026-11-09, 10 starts: the default
+/// guess, the core Hamiltonian, and the default state's hole turned by
+/// 0.1..π/4; scripts/queue/out/oh-grid-2026-11-09/): on (75,110) they end on
+/// five stationary states spanning 1.38e-6 Ha (the three stable ones 4.93e-7,
+/// β orbital energies 5.4e-6), so which ripple minimum a start reached
+/// decided the row (issue #516, a5be0e8cd); on (99,302) 6.3e-9 Ha / 1.8e-7;
+/// on (99,590) 1.4e-10 Ha / 1.9e-9, every state marginal (|λ_min| ≤ 2e-8).
+/// OH's block is therefore generated and run on (99,590) ([`uks_grid`]):
+/// the spread is 7x below `TOL_E_SCF` and 16x below `TOL_EPS_MF`, so any
+/// start that converges is the reference state.
 fn uks_pbe(sys: &Sys) -> ScfResult {
     let e_ref = num(&sys.r, "/u_g0w0_uks_pbe/uks/energy", &sys.label);
+    let grid = uks_grid(sys);
     let steered = RhfConfig {
         level_shift: 0.5,
         mom_after_iter: 5,
-        ..uks_pbe_config()
+        ..uks_pbe_config(&grid)
     };
     let hcore = RhfConfig {
         use_sad_guess: false,
-        ..uks_pbe_config()
+        ..uks_pbe_config(&grid)
     };
     let mut runs = Vec::new();
     for (name, cfg) in [
-        ("stability-descent", uks_pbe_config()),
+        ("stability-descent", uks_pbe_config(&grid)),
         ("ls0.5+MOM5", steered),
         ("hcore guess", hcore),
     ] {
@@ -1578,8 +1602,16 @@ fn u_gw_at_uks(
     scf: &ScfResult,
     orbs: &[usize],
 ) -> (UGwResult, ndarray::Array1<f64>, ndarray::Array1<f64>) {
-    let (va, vb) = vxc_diagonal_mo(&sys.mol, &sys.obs_bs, "pbe", scf)
-        .unwrap_or_else(|e| panic!("{}: vxc_diagonal_mo: {e:?}", sys.label));
+    // V_xc on the SCF's own grid (the reference's: PySCF's gw.vxc uses mf's).
+    let (va, vb) = vxc_diagonal_mo_on_grids(
+        &sys.mol,
+        &sys.obs_bs,
+        "pbe",
+        scf,
+        &uks_grid(sys),
+        &AtomicGridConfig::default_nlc(),
+    )
+    .unwrap_or_else(|e| panic!("{}: vxc_diagonal_mo: {e:?}", sys.label));
     let res = run_u_gw(
         &sys.mol,
         &sys.obs,
