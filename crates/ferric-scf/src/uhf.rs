@@ -217,119 +217,13 @@ pub fn solve_uhf_best_effort(
     config: &UhfConfig,
     initial_mos: Option<(&Array2<f64>, &Array2<f64>)>,
 ) -> Result<ScfResult, FerricError> {
-    let solve_one =
-        |theta: f64| solve_uhf_frontier_start(ctx, mol, prep, bounds, config, initial_mos, theta);
-    let (best, degenerate) = solve_one(0.0)?;
-    if !frontier_starts_apply(degenerate, initial_mos.is_some(), config) {
-        return Ok(best);
-    }
-    Ok(lowest_frontier_start(
-        best,
-        &FRONTIER_GUESS_ROTATIONS[1..],
-        |t| solve_one(t).map(|(r, _)| r),
-    ))
-}
-
-/// One start of [`solve_uhf_best_effort`]: the SCF from the guess with its
-/// frontier rotated by `theta` (see [`FRONTIER_GUESS_ROTATIONS`]), then the
-/// stability descent when configured. Also returns whether the guess had a
-/// straddling degenerate frontier cluster.
-fn solve_uhf_frontier_start(
-    ctx: &ParallelContext,
-    mol: &Molecule,
-    prep: &PreparedBasis,
-    bounds: &SchwarzBounds,
-    config: &UhfConfig,
-    initial_mos: Option<(&Array2<f64>, &Array2<f64>)>,
-    theta: f64,
-) -> Result<(ScfResult, bool), FerricError> {
-    let (first, degenerate) = with_frontier_rotation(theta, || {
-        solve_uhf_fockmod(ctx, mol, prep, bounds, config, initial_mos, None)
-    });
-    let first = first?;
+    let first = solve_uhf_fockmod(ctx, mol, prep, bounds, config, initial_mos, None)?;
     if !config.scf_stability_descent {
-        return Ok((first, degenerate));
+        return Ok(first);
     }
     let report = first.guess_basis.clone();
     let r = stability_descent(ctx, mol, prep, bounds, config, first);
-    Ok((crate::basis2::carry_report(r, report), degenerate))
-}
-
-/// Whether [`solve_uhf_best_effort`] tries the other frontier starts: the
-/// built guess had a straddling degenerate cluster (`degenerate`; never with
-/// caller-supplied MOs), the run is Kohn-Sham (Hartree-Fock has no grid, so
-/// the orientations are exactly equivalent), and the occupation is aufbau by
-/// design (not under MOM, smearing, `fractional_occ` or `irrep_nelec`).
-fn frontier_starts_apply(degenerate: bool, explicit_guess: bool, config: &UhfConfig) -> bool {
-    degenerate && !explicit_guess && config.xc.is_some() && crate::rhf::aufbau_by_design(config)
-}
-
-/// Rotations (rad) of the guess hole inside a straddling degenerate frontier
-/// cluster tried by [`solve_uhf_best_effort`] for Kohn-Sham; the first is the
-/// canonical basis itself ([`canonical_frontier_basis`]).
-///
-/// The hole orientations of a degenerate open shell are physically
-/// equivalent; on a DFT grid they are not, and the SCF energy as a function
-/// of the orientation has several local minima (grid quadrature ripple).
-/// MEASURED on OH ²Π UKS/PBE/cc-pVDZ, flat 75x110 grid, bond on z (hole angle
-/// φ from the spin-density quadrupole): stable minima at φ = 0 (axis,
-/// −75.6448988103), φ = ±0.345 (−75.6448989187, the lowest, PySCF's state)
-/// and φ = ±0.634 (−75.6448984257), and a saddle at φ = 0.503. The canonical
-/// basis puts the hole ON a grid mirror plane (φ = 0), where symmetry holds
-/// the SCF on the axis state, 1.08e-7 Ha above the lowest. Guess rotations
-/// 0, π/8, π/4, 3π/8 reached φ = 0, 0.345, 0.345 (only through the stability
-/// descent: π/4 is the grid's diagonal mirror plane, which holds the SCF on a
-/// saddle) and 0.345; 16 rotations over [0, π) reached all four states.
-/// π/4 is therefore not sampled. With the bond on a grid axis, π/8 and 3π/8
-/// are mirror images (equal energy, the earlier is kept); off axis they
-/// sample [0, π/2) together with 0 (the other half is the flipped hole, which
-/// aufbau and the `FlipPin` explore). No finite set is guaranteed to contain
-/// the lowest grid minimum; this one never returns a state above the
-/// canonical start's.
-const FRONTIER_GUESS_ROTATIONS: [f64; 3] = [
-    0.0,
-    std::f64::consts::FRAC_PI_8,
-    3.0 * std::f64::consts::FRAC_PI_8,
-];
-
-/// Energy a later frontier start must beat the incumbent by to replace it
-/// (Ha): above the converged-energy noise of a tight SCF, so symmetry-
-/// equivalent starts (equal energy up to rounding) keep the earliest and the
-/// selection stays deterministic. The minima it separates differ by 1e-8 and
-/// more.
-const FRONTIER_START_MIN_GAIN: f64 = 1e-10;
-
-/// Run the remaining frontier starts and keep the best: a converged state
-/// beats an unconverged one, a state not proven unstable beats a saddle, and
-/// otherwise the lower energy (by [`FRONTIER_START_MIN_GAIN`]) wins. A start
-/// that errors is skipped: it can only fail to improve on `best`.
-fn lowest_frontier_start(
-    mut best: ScfResult,
-    thetas: &[f64],
-    mut solve: impl FnMut(f64) -> Result<ScfResult, FerricError>,
-) -> ScfResult {
-    let rank = |r: &ScfResult| {
-        let unstable = r
-            .stability
-            .as_ref()
-            .is_some_and(|s| s.verdict() == crate::stability::StabilityVerdict::Unstable);
-        (r.converged, !unstable)
-    };
-    for &theta in thetas {
-        let Ok(r) = solve(theta) else { continue };
-        let (rk, bk) = (rank(&r), rank(&best));
-        if crate::rhf::scf_trace() {
-            eprintln!(
-                "UHF frontier start θ = {theta:.4}: E {:.10} (converged {}, not unstable {}); \
-                 incumbent {:.10}",
-                r.energy, rk.0, rk.1, best.energy
-            );
-        }
-        if rk > bk || (rk == bk && r.energy < best.energy - FRONTIER_START_MIN_GAIN) {
-            best = r;
-        }
-    }
-    best
+    Ok(crate::basis2::carry_report(r, report))
 }
 
 /// Step sizes tried when following a downhill eigenvector, in radians.
@@ -2827,10 +2721,14 @@ fn degenerate_swap_converged(
 /// only when that spin's density is integer. `d_occ` is the occupied-block
 /// cache that built the exit density, `Some` exactly when `D = C_occ·C_occᵀ`
 /// (see `spin_density_and_occ`); a fractional ensemble density has no integer
-/// occupied set to identify, so it keeps the aufbau eigenpairs. A MOM exit is
-/// never a swap acceptance, so it is never reordered.
-fn reorder_exit_mos(swapped: bool, d_occ: Option<&Array2<f64>>) -> bool {
-    swapped && d_occ.is_some()
+/// occupied set to identify, so it keeps the aufbau eigenpairs. Never under
+/// MOM (`mom`): a MOM state is non-aufbau by design and keeps main's C and
+/// eps (`occupied_by_density`), even when its exit IS a swap acceptance —
+/// MEASURED: OH UKS-LDA/STO-3G with MOM from iteration 3 and the guess hole
+/// off the grid's mirror planes drifts along the flat hole mode and exits on
+/// a ΔP = 0.66 swap at iteration 11 (`uhf_degenerate_swap.rs`).
+fn reorder_exit_mos(swapped: bool, mom: bool, d_occ: Option<&Array2<f64>>) -> bool {
+    swapped && !mom && d_occ.is_some()
 }
 
 /// Order one spin's eigenpairs so the first `nocc` columns are the
@@ -2901,7 +2799,7 @@ fn exit_eigenpairs(
         spin.s,
         spin.d,
         nocc,
-        reorder_exit_mos(swapped, spin.d_occ),
+        reorder_exit_mos(swapped, mom, spin.d_occ),
     );
     if diag.is_blocked() {
         return Ok(eig);
@@ -3376,25 +3274,47 @@ fn uhf_guess_mos(
 }
 
 /// One spin's guess MOs with a straddling degenerate frontier cluster put in
-/// the canonical basis ([`canonical_frontier_basis`]) and then rotated by the
-/// thread's frontier rotation ([`with_frontier_rotation`]), which is told
-/// that such a cluster was found. Unchanged when the spin is symmetry blocked
-/// or has no straddling cluster.
+/// the canonical basis ([`canonical_frontier_basis`]) and then turned by
+/// [`GUESS_HOLE_ANGLE`] inside the cluster. Unchanged when the spin is
+/// symmetry blocked or has no straddling cluster.
 fn guess_frontier_basis(eps: &[f64], c: Array2<f64>, nocc: usize, blocked: bool) -> Array2<f64> {
     if blocked || straddling_frontier_cluster(eps, nocc).is_none() {
         return c;
     }
     let mut c = canonical_frontier_basis(eps, c, nocc);
-    let theta = GUESS_FRONTIER.with(|g| {
-        let (theta, _) = g.get();
-        g.set((theta, true));
-        theta
-    });
-    if theta != 0.0 {
-        rotate_frontier_pair(&mut c, nocc, theta);
-    }
+    rotate_frontier_pair(&mut c, nocc, GUESS_HOLE_ANGLE);
     c
 }
+
+/// Fixed rotation (rad) of the guess hole away from the canonical pivot
+/// inside a straddling degenerate frontier cluster ([`guess_frontier_basis`]).
+///
+/// The hole orientations of a degenerate open shell are physically
+/// equivalent; on a DFT grid they are not, and the energy as a function of
+/// the orientation ripples with the angular grid. Lebedev grids have
+/// octahedral symmetry: about a molecular axis that lies on a grid axis the
+/// mirror planes are at multiples of π/4 from the coordinate axes, and the
+/// canonical pivot (an AO, e.g. O p_x) lies on one of them. A hole started
+/// ON a mirror plane is held there by symmetry, on whatever stationary point
+/// of the ripple sits on that plane, minimum or saddle. π/8 is the angle
+/// farthest from both neighbouring planes (0 and π/4), so no grid symmetry
+/// holds the start. One fixed angle, one start: which ripple state a run ends
+/// in is a property of the grid, not of the method, and is not searched for;
+/// tests that compare against another code use a grid on which the ripple is
+/// below their bar.
+///
+/// MEASURED (OH ²Π, bond tilted 0..90° off z; scripts/queue/out/
+/// oh-grid-2026-11-09/ in the commit that set this): UKS/PBE/cc-pVDZ, flat
+/// 75x110, bond on z: rotations 0 and π/2 end on the axis minimum, π/4 on a
+/// saddle, π/8 on the lowest stable state in 25 iterations. Off the grid
+/// axis there is no plane to avoid: over 8 tilts (flat 75x110 and the
+/// production grid alike) π/8 ends on a ripple saddle (λ_min ≈ −1e-4,
+/// ≤ 2.5e-6 Ha above the lowest state found) at 4 tilts, exactly where the
+/// unrotated start does, and no fixed angle tried avoided them all (flat
+/// 75x110: 3π/16 at 1 tilt, π/16 at 4, 3π/8 at 3, π/4 at 6). UKS/LDA/STO-3G on
+/// the production grid (`uhf_oh_orientation.rs`'s sweep): no saddle at any
+/// tilt for any of these angles.
+const GUESS_HOLE_ANGLE: f64 = std::f64::consts::FRAC_PI_8;
 
 /// Eigenvalues closer than this (Ha) to the frontier form one degenerate
 /// cluster for [`canonical_frontier_basis`]. A symmetric guess density
@@ -3491,23 +3411,6 @@ fn rotate_frontier_pair(c: &mut Array2<f64>, nocc: usize, theta: f64) {
     let (cs, sn) = (theta.cos(), theta.sin());
     c.column_mut(nocc - 1).assign(&(cs * &ci + sn * &ca));
     c.column_mut(nocc).assign(&(-sn * &ci + cs * &ca));
-}
-
-std::thread_local! {
-    /// (rotation applied inside a straddling degenerate guess cluster,
-    /// whether such a cluster was found) for the guess built on this thread;
-    /// set and read by [`with_frontier_rotation`].
-    static GUESS_FRONTIER: std::cell::Cell<(f64, bool)> = const { std::cell::Cell::new((0.0, false)) };
-}
-
-/// Run `f` with the guess frontier rotated by `theta` inside any straddling
-/// degenerate cluster ([`canonical_frontier_basis`]); also returns whether
-/// the guess had such a cluster. The previous state is restored.
-fn with_frontier_rotation<T>(theta: f64, f: impl FnOnce() -> T) -> (T, bool) {
-    let prev = GUESS_FRONTIER.with(|g| g.replace((theta, false)));
-    let out = f();
-    let (_, found) = GUESS_FRONTIER.with(|g| g.replace(prev));
-    (out, found)
 }
 
 /// Injected-path counterpart of [`uhf_guess_mos`] for an explicit
@@ -3680,7 +3583,7 @@ mod tests {
             &x,
             &d,
             1,
-            reorder_exit_mos(swapped, d_occ.as_ref()),
+            reorder_exit_mos(swapped, false, d_occ.as_ref()),
         );
         let occ = c_int.slice(ndarray::s![.., ..1]);
         assert_eq!(
@@ -3689,11 +3592,12 @@ mod tests {
             "integer-density exit MOs do not build D"
         );
         // A fractional spin (no cache) keeps the aufbau eigenpairs.
-        assert!(!reorder_exit_mos(swapped, None));
+        assert!(!reorder_exit_mos(swapped, false, None));
         let (eps_f, c_f) = occupied_by_density((eps.clone(), c.clone()), &x, &d, 1, false);
         assert_eq!((eps_f, c_f), (eps, c));
-        // No swap (a plain or MOM exit): never reordered.
-        assert!(!reorder_exit_mos(false, d_occ.as_ref()));
+        // No swap (a plain exit), or a swap under MOM: never reordered.
+        assert!(!reorder_exit_mos(false, false, d_occ.as_ref()));
+        assert!(!reorder_exit_mos(swapped, true, d_occ.as_ref()));
     }
 
     /// `exit_mos_building_density`: the gate and the construction, on a
@@ -3883,14 +3787,13 @@ mod tests {
         }
     }
 
-    /// Wiring: the UHF guess applies `canonical_frontier_basis` to a spin
-    /// whose degenerate frontier straddles the occupation (OH β, the π
-    /// pair). The canonical basis is recognisable: its second vector has an
-    /// exactly zero coefficient on the pivot AO (the AO row of largest
-    /// cluster norm) and its first is positive there. LAPACK's basis inside the
-    /// pair is not of that form locally (the uncanonicalised default run lands
-    /// on a different hole orientation, −74.0755553219 vs −74.0755553211), so
-    /// removing the call fails this.
+    /// Wiring: the UHF guess applies `canonical_frontier_basis` and then the
+    /// fixed `GUESS_HOLE_ANGLE` turn to a spin whose degenerate frontier
+    /// straddles the occupation (OH β, the π pair). Recognisable on the pivot
+    /// AO (the AO row of largest cluster norm, invariant under rotations in the
+    /// pair): the canonical basis has (c, 0) there with c > 0, so the turned
+    /// pair has (c cos θ, −c sin θ). Removing the canonicalisation (LAPACK's
+    /// rounding-chosen basis) or the turn fails this.
     #[test]
     fn uhf_guess_canonicalises_the_straddling_beta_pi_pair() {
         let mol = Molecule::parse_xyz("2\nOH\nO 0 0 0\nH 0 0 0.98\n", 0, 2).unwrap();
@@ -3925,14 +3828,13 @@ mod tests {
         let p = (0..pair.nrows())
             .max_by(|&u, &v| norm(u).total_cmp(&norm(v)).then(v.cmp(&u)))
             .unwrap();
+        let c = norm(p).sqrt();
+        let (want_i, want_a) = (c * GUESS_HOLE_ANGLE.cos(), -c * GUESS_HOLE_ANGLE.sin());
         assert!(
-            cb[(p, i)] > 0.1,
-            "first pair vector not pivoted: {}",
-            cb[(p, i)]
-        );
-        assert!(
-            cb[(p, a)].abs() < 1e-12,
-            "second pair vector has {:.2e} on the pivot AO: guess not canonicalised",
+            c > 0.1 && (cb[(p, i)] - want_i).abs() < 1e-12 && (cb[(p, a)] - want_a).abs() < 1e-12,
+            "pivot-AO coefficients ({:.6e}, {:.6e}) of the β pair, want ({want_i:.6e}, \
+             {want_a:.6e}): guess not canonicalised and turned by GUESS_HOLE_ANGLE",
+            cb[(p, i)],
             cb[(p, a)]
         );
     }

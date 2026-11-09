@@ -283,9 +283,10 @@ fn omega_zero_hybrid_newton_still_matches_diis() {
         // stationary points (MEASURED production grid: minima −75.7319387216
         // and −75.7319390077, saddles −75.7319370340 and −75.7319378500, with
         // stability lambda_min ±1e-4). The canonical guess basis
-        // (`uhf::canonical_frontier_basis`) starts both runs on the same
-        // orientation; both now exit at −75.7319387216 (a minimum,
-        // lambda_min +1.33e-4).
+        // (`uhf::canonical_frontier_basis`, turned by `uhf::GUESS_HOLE_ANGLE`)
+        // starts both runs on the same orientation; both now exit at
+        // −75.7319390077 (the lower of the two minima; DIIS 22 iterations,
+        // Newton 14, |dE| 9e-12).
         ri_j_precision: Some(RiJPrecision::F64),
         ..Default::default()
     };
