@@ -309,8 +309,13 @@ fn analytic(r: &Ref, m: &KsFixedGridMutants) -> Array2<f64> {
 
 /// Step of the finite differences, Bohr.
 const H_FD: f64 = 5e-4;
-/// Gradient vs FD of the energy, Ha/Bohr.
-const TOL_GRAD_FD: f64 = 3e-9;
+/// Gradient vs FD of the energy, Ha/Bohr. The floor is the energy's rounding
+/// noise over the step (~5e-13 Ha / 5e-4 Bohr ~ 1e-9): measured 1.3-1.7e-9 with
+/// the DF-K metric V^-1/2 from dsyev, 2.3-2.7e-9 locally and 4.4e-9 on the CI
+/// runners from dsyevd (bisected to c4b398d4d, 2026-11-08). A missing or wrong
+/// gradient term misses by orders of magnitude more (the RI-K fitting error
+/// alone is ~5e-6 in the Hessian below).
+const TOL_GRAD_FD: f64 = 1e-8;
 /// Hessian vs FD of the RI-K gradient, Ha/Bohr^2 (re-converged SCFs, stencil
 /// second derivatives of the 3c and 2c integrals). Measured 7.3e-11 to
 /// 8.9e-11 at STO-3G and 1.4e-8 (hybrid LDA) to 4.2e-8 (PBE0) at 6-31G, where

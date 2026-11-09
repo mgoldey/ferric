@@ -409,6 +409,8 @@ fn uhf_dfk_trah_refreshes_the_occupied_orbital_cache() {
         trah_trigger: Some(1e-2),
         df_j_aux: Some("def2-universal-jkfit".into()),
         df_k_aux: Some("def2-universal-jkfit".into()),
+        // The golden below is an f64 RI-J energy at 1e-8.
+        ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
         ..Default::default()
     };
     let r0 = ferric_scf::trah::TRAH_STEPS_REJECTED.load(Relaxed);
