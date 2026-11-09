@@ -753,7 +753,8 @@ impl<'a> DfJ<'a> {
     /// [`DfJ::from_source`] for a raw tensor NOT held in memory (spilled or
     /// recomputed, e.g. the dress-first raw of a shared RI-JK setup): its f32
     /// tier built by one streamed pass when `precision` asks for f32 and that
-    /// tensor fits the budget and the pool. Otherwise `source` is handed back
+    /// tensor fits the budget left beside `beside_bytes` already held (the
+    /// dressed DF-K band) and the pool. Otherwise `source` is handed back
     /// unchanged (`Ok(Err(source))`) and nothing is reported: the caller then
     /// takes its own route (Split-RI-J, or the stored f64 tensor with the
     /// notice of [`DfJ::from_source`]).
@@ -765,13 +766,18 @@ impl<'a> DfJ<'a> {
         op: Operator,
         dfbs: &PreparedBasis,
         budget_bytes: usize,
+        beside_bytes: usize,
         ctx: Option<&'a ParallelContext>,
         precision: RiJPrecision,
     ) -> Result<Result<Self, ThreeIndexSource>, FerricError> {
         if source.is_resident() || !dfj_f32_wanted(precision) {
             return Ok(Err(source));
         }
-        let (source, declined) = source.into_ri_j_f32(budget_bytes, f32_rounding())?;
+        // The fit is checked against what is left beside the resident band:
+        // without a global pool nothing else would stop both being held over
+        // budget. The constructed DfJ keeps the full budget for its own blocking.
+        let room = budget_bytes.saturating_sub(beside_bytes);
+        let (source, declined) = source.into_ri_j_f32(room, f32_rounding())?;
         if declined.is_some() {
             return Ok(Err(source));
         }
@@ -1500,6 +1506,52 @@ mod tests {
     use ferric_core::mol::Molecule;
     use ferric_core::parallel::ParallelContext;
     use ndarray::Array2;
+
+    /// The streamed f32 RI-J tensor is declined when it does not fit in the
+    /// budget left beside what is already held (the dressed DF-K band), and
+    /// built when it does. Without a global pool nothing else stops both
+    /// being resident over budget (CodeRabbit, PR #631).
+    #[test]
+    fn streamed_f32_ri_j_fits_beside_the_resident_band() {
+        use ferric_integrals::three_index_source::ThreeIndexSource;
+        let mol =
+            Molecule::parse_xyz("3\n\nO 0 0 0\nH 0 0.76 0.59\nH 0 -0.76 0.59\n", 0, 1).unwrap();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("def2-svp").unwrap()).unwrap();
+        let dfbs =
+            PreparedBasis::new(&mol, &basis::bundled("def2-universal-jkfit").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let budget = 1usize << 30;
+        let need =
+            ThreeIndexSource::ri_j_f32_bytes(dfbs.nbasis(), obs.nbasis() * (obs.nbasis() + 1) / 2);
+        let stream =
+            || ThreeIndexSource::build_dress_stream(op, &mol, &obs, &dfbs, budget).unwrap();
+        assert!(
+            !stream().is_resident(),
+            "fixture: the dress stream must not be resident"
+        );
+        let try_build = |beside: usize| {
+            DfJ::from_streamed_source_f32(
+                stream(),
+                op,
+                &dfbs,
+                budget,
+                beside,
+                None,
+                RiJPrecision::F32,
+            )
+            .unwrap()
+            .is_ok()
+        };
+        assert!(try_build(0), "fits alone: must be built");
+        assert!(
+            try_build(budget - need),
+            "fits exactly beside: must be built"
+        );
+        assert!(
+            !try_build(budget - need + 1),
+            "one byte over beside the band: must be declined"
+        );
+    }
 
     /// Pass 2 has the bits of the accumulator it replaced (`grouped_deterministic_sum`
     /// over `dot`), at any thread count and band, from a dirty scratch, over several
