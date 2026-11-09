@@ -109,6 +109,13 @@ jobs:
             export PATH="$MSVC_BIN:$PATH"
             export CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER="$MSVC_BIN/link.exe"
             which link
+            # libecpint (and shim.cc) use variable-length arrays, which cl.exe
+            # rejects (C2131). clang-cl is MSVC-ABI and accepts them; it is
+            # also what conda-forge builds libint2 with on win-64. CC/CXX are
+            # read by both cc-rs (shim) and CMake (libecpint).
+            export PATH="$MSVC_BIN:/c/Program Files/LLVM/bin:$PATH"
+            export CC=clang-cl CXX=clang-cl
+            which clang-cl && clang-cl --version | head -1
           fi
           PY='${{ steps.py.outputs.python-path }}'
           "$PY" -m pip install -q "maturin>=1.7,<2"
