@@ -105,7 +105,9 @@ jobs:
           echo "$LIBINT_SHA256  libint-small.tgz" | $SHA -c -
           tar xzf libint-small.tgz
           curl -sSL -o libxc.tgz "https://gitlab.com/libxc/libxc/-/archive/${LIBXC_VERSION}/libxc-${LIBXC_VERSION}.tar.gz"
-          tar xzf libxc.tgz
+          # The libxc tarball carries two doc symlinks (ChangeLog, README) that
+          # Git-for-Windows tar cannot create (exit 2); neither is needed.
+          tar --exclude="libxc-${LIBXC_VERSION}/ChangeLog" --exclude="libxc-${LIBXC_VERSION}/README" -xzf libxc.tgz
 
           t0=$(date +%s)
           cmake -S "libxc-${LIBXC_VERSION}" -B build-xc -G Ninja \
