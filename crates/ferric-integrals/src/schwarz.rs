@@ -119,7 +119,11 @@ pub const TERFC_SCHWARZ_MAX_L: i32 = 4;
 /// Validated terfc parameter box: r0 in [0.3, 2.5] Angstrom and
 /// r0*omega in (0, 8.9] (the shipped tables end at s = 80). Outside it the
 /// bound has not been checked against true integrals and is refused.
+///
+/// This constant is the (lower, upper) r0 range in Angstrom.
 pub const TERFC_SCHWARZ_R0_ANG: (f64, f64) = (0.3, 2.5);
+/// Upper end of the validated `r0 * omega` range (dimensionless, both in
+/// Bohr units); see [`TERFC_SCHWARZ_R0_ANG`].
 pub const TERFC_SCHWARZ_MAX_R0_OMEGA: f64 = 8.9;
 
 /// The operator-parameter half of the terfc validated box (no basis needed),

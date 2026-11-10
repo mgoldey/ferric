@@ -13,11 +13,17 @@ use ndarray::Array2;
 /// Energy components (Hartree) and their sum.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct MmEnergy {
+    /// Harmonic bond-stretch energy.
     pub bond: f64,
+    /// Harmonic angle-bend energy.
     pub angle: f64,
+    /// Periodic torsion energy.
     pub torsion: f64,
+    /// Lennard-Jones energy over non-excluded pairs (1-4 pairs scaled).
     pub lj: f64,
+    /// Coulomb energy over non-excluded pairs (1-4 pairs scaled).
     pub coulomb: f64,
+    /// Sum of the five components.
     pub total: f64,
 }
 

@@ -105,7 +105,11 @@ pub fn gaussian_xi_table(lebedev_order: usize) -> Result<f64, FerricError> {
 /// the exact formulas.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SdKind {
+    /// Each tessera is a bare point charge, with the GEPOL self-energy
+    /// constant `ξ = 1.0694` in the diagonal terms.
     PointCharge,
+    /// Each tessera is a Gaussian charge of width `charge_exp` (PySCF
+    /// `get_D_S`); `erf`-attenuated off-diagonal terms. The default.
     GaussianSmeared,
 }
 

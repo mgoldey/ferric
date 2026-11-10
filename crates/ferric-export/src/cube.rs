@@ -9,8 +9,11 @@ use thiserror::Error;
 #[derive(Error, Debug)]
 #[non_exhaustive]
 pub enum ExportError {
+    /// Creating or writing the output file failed.
     #[error("IO Error: {0}")]
     Io(#[from] std::io::Error),
+    /// Any other failure, as a message: an NPZ serialization error or
+    /// inconsistent inputs (e.g. `esp_surface` without `esp_points`).
     #[error("Export error: {0}")]
     Other(String),
 }
