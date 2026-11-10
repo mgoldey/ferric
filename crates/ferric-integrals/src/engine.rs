@@ -5,6 +5,7 @@
 //! and reused across shell loops.
 
 use crate::basis_bridge::PreparedBasis;
+use crate::capability::{require_libint_class, LibintClass};
 use crate::ffi;
 use crate::ffi::CAtom;
 use crate::operator::{Operator, OperatorKind};
@@ -585,6 +586,7 @@ impl Engine {
         prep: &PreparedBasis,
         precision: f64,
     ) -> Result<Self, FerricError> {
+        require_libint_class(LibintClass::OneBody, 1, prep.max_l(), prep.max_l())?;
         // SAFETY: FFI call with valid PreparedBasis metadata. Null-checked below.
         let handle = unsafe {
             ffi::scf_engine_create_deriv(op_kind, 0.0, prep.max_nprim(), prep.max_l(), precision)
@@ -611,6 +613,7 @@ impl Engine {
         prep: &PreparedBasis,
         precision: f64,
     ) -> Result<Self, FerricError> {
+        require_libint_class(LibintClass::FourCentre, 1, prep.max_l(), prep.max_l())?;
         let max_fn = prep.shell_dims().iter().copied().max().unwrap_or(1);
         let mut handles = Vec::new();
         let n_comp = if op.is_composite {
@@ -1412,6 +1415,7 @@ impl Engine {
         precision: f64,
     ) -> Result<Self, FerricError> {
         require_deriv2_support()?;
+        require_libint_class(LibintClass::OneBody, 2, prep.max_l(), prep.max_l())?;
         // SAFETY: FFI call with valid PreparedBasis metadata. Null-checked below.
         let handle = unsafe {
             ffi::scf_engine_create_deriv2(op_kind, 0.0, prep.max_nprim(), prep.max_l(), precision)
@@ -1436,6 +1440,7 @@ impl Engine {
         precision: f64,
     ) -> Result<Self, FerricError> {
         require_deriv2_support()?;
+        require_libint_class(LibintClass::FourCentre, 2, prep.max_l(), prep.max_l())?;
         // Owned by an Engine from the start, so its Drop releases every handle
         // created so far on ANY early return: an unsupported later component
         // (operator_kind_to_ffi) as well as a null handle.
@@ -1585,6 +1590,7 @@ impl Engine {
         dfbs: &PreparedBasis,
         precision: f64,
     ) -> Result<Self, FerricError> {
+        require_libint_class(LibintClass::ThreeCentre, 1, dfbs.max_l(), obs.max_l())?;
         let max_nprim = obs.max_nprim().max(dfbs.max_nprim());
         let max_l = obs.max_l().max(dfbs.max_l());
         let max_fn_obs = obs.shell_dims().iter().copied().max().unwrap_or(1);
@@ -1630,6 +1636,7 @@ impl Engine {
         dfbs: &PreparedBasis,
         precision: f64,
     ) -> Result<Self, FerricError> {
+        require_libint_class(LibintClass::TwoCentre, 1, dfbs.max_l(), dfbs.max_l())?;
         let max_fn = dfbs.shell_dims().iter().copied().max().unwrap_or(1);
         let mut handles = Vec::new();
 

@@ -980,14 +980,125 @@ int scf_libint_max_deriv_order(void) {
 #define SCF_AM_1B2 (-1)
 #endif
 
+/* A class whose task libint2 did not generate (LIBINT2_TASK_EXISTS_<task>
+ * defined as 0) has no build functions of its own: an engine for it falls
+ * back to libint2's "default" task and the first compute ASSERTS ("null build
+ * function ptr"), e.g. conda-forge's win-64 2.13.1, which has no 4-centre
+ * second derivatives. Report such a class as absent (-1) even if its MAX_AM
+ * macro happens to be defined. */
+#if defined(LIBINT2_TASK_EXISTS_4eri) && !LIBINT2_TASK_EXISTS_4eri
+#undef SCF_AM_ERI0
+#define SCF_AM_ERI0 (-1)
+#endif
+#if defined(LIBINT2_TASK_EXISTS_4eri1) && !LIBINT2_TASK_EXISTS_4eri1
+#undef SCF_AM_ERI1
+#define SCF_AM_ERI1 (-1)
+#endif
+#if defined(LIBINT2_TASK_EXISTS_4eri2) && !LIBINT2_TASK_EXISTS_4eri2
+#undef SCF_AM_ERI2
+#define SCF_AM_ERI2 (-1)
+#endif
+#if defined(LIBINT2_TASK_EXISTS_3eri) && !LIBINT2_TASK_EXISTS_3eri
+#undef SCF_AM_3ERI0
+#define SCF_AM_3ERI0 (-1)
+#endif
+#if defined(LIBINT2_TASK_EXISTS_3eri1) && !LIBINT2_TASK_EXISTS_3eri1
+#undef SCF_AM_3ERI1
+#define SCF_AM_3ERI1 (-1)
+#endif
+#if defined(LIBINT2_TASK_EXISTS_3eri2) && !LIBINT2_TASK_EXISTS_3eri2
+#undef SCF_AM_3ERI2
+#define SCF_AM_3ERI2 (-1)
+#endif
+#if defined(LIBINT2_TASK_EXISTS_2eri) && !LIBINT2_TASK_EXISTS_2eri
+#undef SCF_AM_2ERI0
+#define SCF_AM_2ERI0 (-1)
+#endif
+#if defined(LIBINT2_TASK_EXISTS_2eri1) && !LIBINT2_TASK_EXISTS_2eri1
+#undef SCF_AM_2ERI1
+#define SCF_AM_2ERI1 (-1)
+#endif
+#if defined(LIBINT2_TASK_EXISTS_2eri2) && !LIBINT2_TASK_EXISTS_2eri2
+#undef SCF_AM_2ERI2
+#define SCF_AM_2ERI2 (-1)
+#endif
+#if defined(LIBINT2_TASK_EXISTS_2overlap) && !LIBINT2_TASK_EXISTS_2overlap
+#undef SCF_AM_1B0
+#define SCF_AM_1B0 (-1)
+#endif
+#if defined(LIBINT2_TASK_EXISTS_2overlap1) && !LIBINT2_TASK_EXISTS_2overlap1
+#undef SCF_AM_1B1
+#define SCF_AM_1B1 (-1)
+#endif
+#if defined(LIBINT2_TASK_EXISTS_2overlap2) && !LIBINT2_TASK_EXISTS_2overlap2
+#undef SCF_AM_1B2
+#define SCF_AM_1B2 (-1)
+#endif
+
+/* libint2's default-class limit per derivative order: the ket (non-auxiliary)
+ * shells of a centre-dependent 3- or 2-centre class are generated only up to
+ * it (see the FERRIC_TERF_3ERI_UNIFORM_MAX_AM note further down). */
+#ifdef LIBINT2_MAX_AM_default
+#define SCF_AM_DEFAULT0 LIBINT2_MAX_AM_default
+#else
+#define SCF_AM_DEFAULT0 (-1)
+#endif
+#ifdef LIBINT2_MAX_AM_default1
+#define SCF_AM_DEFAULT1 LIBINT2_MAX_AM_default1
+#else
+#define SCF_AM_DEFAULT1 (-1)
+#endif
+#ifdef LIBINT2_MAX_AM_default2
+#define SCF_AM_DEFAULT2 LIBINT2_MAX_AM_default2
+#else
+#define SCF_AM_DEFAULT2 (-1)
+#endif
+#if defined(LIBINT2_CENTER_DEPENDENT_MAX_AM_3eri) && LIBINT2_CENTER_DEPENDENT_MAX_AM_3eri
+#define SCF_AM_3ERIK0 (SCF_AM_3ERI0 < 0 ? -1 : SCF_AM_DEFAULT0)
+#else
+#define SCF_AM_3ERIK0 SCF_AM_3ERI0
+#endif
+#if defined(LIBINT2_CENTER_DEPENDENT_MAX_AM_3eri1) && LIBINT2_CENTER_DEPENDENT_MAX_AM_3eri1
+#define SCF_AM_3ERIK1 (SCF_AM_3ERI1 < 0 ? -1 : SCF_AM_DEFAULT1)
+#else
+#define SCF_AM_3ERIK1 SCF_AM_3ERI1
+#endif
+#if defined(LIBINT2_CENTER_DEPENDENT_MAX_AM_3eri2) && LIBINT2_CENTER_DEPENDENT_MAX_AM_3eri2
+#define SCF_AM_3ERIK2 (SCF_AM_3ERI2 < 0 ? -1 : SCF_AM_DEFAULT2)
+#else
+#define SCF_AM_3ERIK2 SCF_AM_3ERI2
+#endif
+#if defined(LIBINT2_CENTER_DEPENDENT_MAX_AM_2eri) && LIBINT2_CENTER_DEPENDENT_MAX_AM_2eri
+#define SCF_AM_2ERIK0 (SCF_AM_2ERI0 < 0 ? -1 : SCF_AM_DEFAULT0)
+#else
+#define SCF_AM_2ERIK0 SCF_AM_2ERI0
+#endif
+#if defined(LIBINT2_CENTER_DEPENDENT_MAX_AM_2eri1) && LIBINT2_CENTER_DEPENDENT_MAX_AM_2eri1
+#define SCF_AM_2ERIK1 (SCF_AM_2ERI1 < 0 ? -1 : SCF_AM_DEFAULT1)
+#else
+#define SCF_AM_2ERIK1 SCF_AM_2ERI1
+#endif
+#if defined(LIBINT2_CENTER_DEPENDENT_MAX_AM_2eri2) && LIBINT2_CENTER_DEPENDENT_MAX_AM_2eri2
+#define SCF_AM_2ERIK2 (SCF_AM_2ERI2 < 0 ? -1 : SCF_AM_DEFAULT2)
+#else
+#define SCF_AM_2ERIK2 SCF_AM_2ERI2
+#endif
+
+/* cls 0..3 are the public classes (ferric_integrals::LIBINT_AM_CLASSES:
+ * eri, eri3, eri2, onebody; for eri3/eri2 the limit of the bra = auxiliary
+ * shell). cls 4 and 5 are the KET shells of eri3 (the two orbital shells) and
+ * eri2: the same limit unless the class is centre-dependent, then libint2's
+ * default-class limit. Rust: ferric_integrals::capability. */
 int scf_libint_max_am(int cls, int deriv) {
-    static const int table[4][3] = {
+    static const int table[6][3] = {
         {SCF_AM_ERI0, SCF_AM_ERI1, SCF_AM_ERI2},
         {SCF_AM_3ERI0, SCF_AM_3ERI1, SCF_AM_3ERI2},
         {SCF_AM_2ERI0, SCF_AM_2ERI1, SCF_AM_2ERI2},
         {SCF_AM_1B0, SCF_AM_1B1, SCF_AM_1B2},
+        {SCF_AM_3ERIK0, SCF_AM_3ERIK1, SCF_AM_3ERIK2},
+        {SCF_AM_2ERIK0, SCF_AM_2ERIK1, SCF_AM_2ERIK2},
     };
-    if (cls < 0 || cls > 3 || deriv < 0 || deriv > 2) return -1;
+    if (cls < 0 || cls > 5 || deriv < 0 || deriv > 2) return -1;
     return table[cls][deriv];
 }
 

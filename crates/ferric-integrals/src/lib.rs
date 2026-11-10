@@ -22,6 +22,8 @@ pub mod basis_bridge;
 pub mod blas_threads;
 /// Complementary auxiliary basis sets (CABS) for F12 methods.
 pub mod cabs;
+/// Per-integral-class libint2 capability checks (refuse instead of a libint2 assert).
+pub mod capability;
 /// Per-grid-point three-center-one-electron AO blocks `A^g_{mu,nu}` for
 /// seminumerical exchange (COSX / sn-LinK).
 pub mod cosx_a;
