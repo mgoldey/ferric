@@ -25,18 +25,27 @@ the molecule; multiplicity above 1 runs unrestricted.
 
 ## Install
 
-In Avogadro, open Extensions > Plugins > Manage Plugins… and install
-`ferric` from the online catalog. Avogadro runs `pixi install` in the plugin
-directory, and that installs ferric from PyPI. If your Avogadro's catalog does
-not list it yet, install it by hand.
+A listing in Avogadro's online plugin catalog has been submitted. Once it is
+listed, open Extensions > Manage Plugins… and install `ferric`. Until then,
+install by hand:
 
-To install by hand, copy `plugins/avogadro-ferric` into Avogadro's plugin
-directory and run `pixi install` there:
+1. Clone the plugin into Avogadro's plugin directory. It is mirrored on its
+   own at [github.com/mgoldey/avogadro-ferric](https://github.com/mgoldey/avogadro-ferric),
+   so you do not need the whole ferric repository:
 
-- native Avogadro: `~/.local/share/OpenChemistry/Avogadro/plugins/`
-- Flathub Avogadro:
-  `~/.var/app/org.openchemistry.Avogadro2/data/OpenChemistry/Avogadro/plugins/`
-  (run pixi as `flatpak run --command=pixi org.openchemistry.Avogadro2 install --manifest-path <plugin>/pyproject.toml`)
+   ```sh
+   git clone https://github.com/mgoldey/avogadro-ferric.git <plugins>/avogadro-ferric
+   ```
+
+   where `<plugins>` is `~/.local/share/OpenChemistry/Avogadro/plugins` for a
+   native Avogadro, or
+   `~/.var/app/org.openchemistry.Avogadro2/data/OpenChemistry/Avogadro/plugins`
+   for the Flathub build.
+2. Install its environment, which installs ferric from PyPI:
+   `pixi install --manifest-path <plugins>/avogadro-ferric/pyproject.toml`
+   (Flathub: `flatpak run --command=pixi org.openchemistry.Avogadro2 install --manifest-path …`).
+3. Start or restart Avogadro and answer Yes to "Install updated plugins?
+   avogadro-ferric". The menus appear only after that.
 
 The plugin README covers using a local ferric build instead of PyPI.
 
@@ -59,8 +68,8 @@ own, and the exported orbitals, evaluated by a port of Avogadro's evaluator,
 against `ferric.eval_mo_on_points` to 1e-10. They pass against the ferric
 0.1.0rc11 wheel from PyPI.
 
-Inside Avogadro 2.1.0 (Flathub), the energy model's energies and forces
-matched ferric's to 1e-10 kJ/mol, and Avogadro's optimizer on the ferric
+Inside Avogadro 2.1.0 (Flathub), the energy model's energies matched ferric's
+to 1e-10 kJ/mol and its forces to 4e-11 kJ/mol/Å, and Avogadro's optimizer on the ferric
 surface reached ferric's own minimum to 3e-5 Å. The menu commands and orbital
 rendering were checked against the avogadrolibs source rather than in the
 GUI. The plugin README has the details, the units and conventions, and a
