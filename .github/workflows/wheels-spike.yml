@@ -129,27 +129,29 @@ jobs:
           t1=$(date +%s)
           echo "LIBXC_BUILD_SECONDS=$((t1 - t0))" | tee -a "$GITHUB_STEP_SUMMARY"
 
+          # macOS: Apple's /usr/bin/ar cannot read the @response file CMake's
+          # Ninja generator uses for 16838 objects ("ar: @CMakeFiles/libint2.rsp:
+          # No such file or directory", runs 42710765800 and 42722710215, after
+          # ~80-92 min of compiling). llvm-ar reads @rsp files; set it at the
+          # FIRST configure (a re-configure with -DCMAKE_AR did not change the
+          # archive rule in run 42722710215).
+          AR_ARGS=()
+          if [ "$RUNNER_OS" = macOS ]; then AR_ARGS=(-DCMAKE_AR="$CONDA_PREFIX/bin/llvm-ar"); fi
           cmake -S "libint-${LIBINT_VERSION}" -B build-int -G Ninja \
             -DCMAKE_INSTALL_PREFIX="$OUT" -DCMAKE_INSTALL_LIBDIR=lib \
             -DCMAKE_PREFIX_PATH="$CP" \
             -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
-            -DCMAKE_BUILD_TYPE=Release
-          # Full log kept (uploaded below). If the build fails, show why; on
-          # macOS retry ONLY the archive step with llvm-ar (objects are reused):
-          # run 42710765800 compiled all 16838 objects and then failed at
-          # `libint2.a`, with the archiver's message hidden by a log filter.
+            -DCMAKE_BUILD_TYPE=Release "${AR_ARGS[@]}"
+          grep -E "^CMAKE_AR|^CMAKE_RANLIB" build-int/CMakeCache.txt || true
           if ! cmake --build build-int > "$GITHUB_WORKSPACE/build-int.log" 2>&1; then
             tc=$(date +%s)
             echo "LIBINT_COMPILE_SECONDS_TO_FAILURE=$((tc - t1))" | tee -a "$GITHUB_STEP_SUMMARY"
             echo "::warning::libint2 build failed; tail of the log follows"
             tail -40 "$GITHUB_WORKSPACE/build-int.log"
-            grep -c "Building CXX" "$GITHUB_WORKSPACE/build-int.log" || true
             if [ "$RUNNER_OS" != macOS ]; then exit 1; fi
-            ls "$CONDA_PREFIX/bin" | grep -i -E "llvm-(ar|ranlib)" || true
-            cmake -S "libint-${LIBINT_VERSION}" -B build-int \
-              -DCMAKE_AR="$CONDA_PREFIX/bin/llvm-ar" -DCMAKE_RANLIB="$CONDA_PREFIX/bin/llvm-ranlib"
-            cmake --build build-int > "$GITHUB_WORKSPACE/build-int-retry.log" 2>&1 || { tail -40 "$GITHUB_WORKSPACE/build-int-retry.log"; exit 1; }
-            echo "LIBINT_ARCHIVE_RETRY=llvm-ar OK" | tee -a "$GITHUB_STEP_SUMMARY"
+            # Fallback: archive the already-compiled objects by hand.
+            (cd build-int && rm -f libint2.a && "$CONDA_PREFIX/bin/llvm-ar" qcs libint2.a @CMakeFiles/libint2.rsp && /usr/bin/ranlib libint2.a)
+            echo "LIBINT_ARCHIVE_FALLBACK=llvm-ar OK" | tee -a "$GITHUB_STEP_SUMMARY"
           fi
           cmake --install build-int
           t2=$(date +%s)
