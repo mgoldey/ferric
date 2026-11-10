@@ -132,7 +132,10 @@ def case_freq_fd():
 def energy_case(run, ref, tol):
     def case():
         r = run()
-        e = r.energy
+        # RHF results name it `energy`; DFT and RI-MP2 results `total_energy`.
+        name = next((n for n in ("total_energy", "energy") if hasattr(r, n)), None)
+        assert name, f"{type(r).__name__} has no total_energy/energy"
+        e = getattr(r, name)
         assert getattr(r, "converged", True), "not converged"
         assert abs(e - ref) < tol, (
             f"E = {e:.12f}, Linux {ref:.12f}, |dE| = {abs(e - ref):.2e} > {tol:g}"
