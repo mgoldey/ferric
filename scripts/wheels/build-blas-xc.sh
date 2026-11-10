@@ -77,6 +77,13 @@ if [ "$OS" = Darwin ]; then
   done
   otool -D "$PREFIX"/lib/libopenblas.0.dylib "$PREFIX"/lib/libxc.*.dylib
 else
+  # OpenBLAS 0.3.27's ctest/CMakeLists.txt (configured unconditionally) has
+  # `if (USE_OPENMP AND (${CMAKE_Fortran_COMPILER_ID} STREQUAL GNU) ...)`:
+  # with no Fortran compiler the unquoted variable is empty and the if() does
+  # not parse ("Unknown arguments specified"). Quote it.
+  sed -i 's/(${CMAKE_Fortran_COMPILER_ID} STREQUAL GNU)/("${CMAKE_Fortran_COMPILER_ID}" STREQUAL GNU)/' \
+    "OpenBLAS-${OPENBLAS_VERSION}/ctest/CMakeLists.txt"
+  grep -c '"${CMAKE_Fortran_COMPILER_ID}" STREQUAL GNU' "OpenBLAS-${OPENBLAS_VERSION}/ctest/CMakeLists.txt"
   cmake -S "OpenBLAS-${OPENBLAS_VERSION}" -B build-ob -G Ninja \
     -DCMAKE_INSTALL_PREFIX="$PREFIX" -DCMAKE_INSTALL_LIBDIR=lib \
     -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_BUILD_TYPE=Release \
