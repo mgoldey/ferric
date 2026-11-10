@@ -241,6 +241,8 @@ pub struct GammaLmp2Config {
     /// residual, so the molecular LMP2's relaxed Hylleraas default does not
     /// apply.
     pub cg_rtol: f64,
+    /// Iteration cap of the ragged CG amplitude solve (`shifted`: 400; must
+    /// be >= 1). Not converging is an error.
     pub cg_max_iter: usize,
     /// Integral-free R⁻⁶ pair gate constant (molecular `pair_gate_cal`),
     /// with MINIMUM-IMAGE centroid distances and `σ_i = √Ω_i`. `None` = off.
@@ -259,6 +261,8 @@ pub struct GammaLmp2Config {
     pub eps_gate: GammaEpsGate,
     /// Distance convention for every distance above.
     pub distance: PeriodicDistance,
+    /// Berghold/Resta localisation settings for the occupied and valence
+    /// virtual orbitals (`shifted`: [`LocalizationConfig::default`]).
     pub localization: LocalizationConfig,
     /// Also run canonical [`gamma_mp2`] on the same B (honesty printout;
     /// `e_corr_canonical` is NaN when false).
@@ -740,12 +744,17 @@ impl RestaOperator {
 /// Outcome of [`berghold_localize`].
 #[derive(Debug, Clone)]
 pub struct LocalizationInfo {
-    /// Functional `Σ_c w_c Σ_i X_c,ii²` at the start / at the end.
+    /// Functional `Σ_c w_c Σ_i X_c,ii²` at the start.
     pub f_initial: f64,
+    /// Functional `Σ_c w_c Σ_i X_c,ii²` at the end.
     pub f_final: f64,
+    /// Jacobi sweeps performed.
     pub sweeps: usize,
     /// max over i<j of |∂f/∂θ_ij| at the end (0 at a stationary point).
     pub max_gradient: f64,
+    /// Largest rotation angle of the last sweep below `angle_tol` (or at most
+    /// one orbital). Always `true` in a returned value: non-convergence is an
+    /// error.
     pub converged: bool,
 }
 
@@ -1120,7 +1129,10 @@ pub struct GammaLocalSpaces {
     pub c_occ: Array2<f64>,
     /// VV-HV virtuals, `(nao, nv)`: valence first, then hard.
     pub c_vir: Array2<f64>,
+    /// Number of valence (projected minimal-basis) virtuals, the leading
+    /// columns of `c_vir`.
     pub n_valence: usize,
+    /// Number of hard virtuals, the trailing columns of `c_vir`.
     pub n_hard: usize,
     /// `C_oᵀ F C_o + occ_shift·1` (shifted per the denominator table).
     pub f_oo: Array2<f64>,
@@ -1129,17 +1141,28 @@ pub struct GammaLocalSpaces {
     /// Periodic centroids of the occupied / virtual orbitals (Bohr, in the
     /// cell's parallelepiped; compare only via minimum image).
     pub occ_centers: Vec<[f64; 3]>,
+    /// Periodic centroids of the virtual orbitals (Bohr), same convention as
+    /// `occ_centers`.
     pub vir_centers: Vec<[f64; 3]>,
     /// Resta spreads Ω_i of the occupieds (Bohr²).
     pub occ_spreads: Vec<f64>,
+    /// Gamma-point Madelung constant `v_M` of the cell.
     pub madelung: f64,
+    /// Shift added to the diagonal of `f_oo` (0, −v_M or +v_M).
     pub occ_shift: f64,
+    /// Core orbitals excluded from `c_occ`.
     pub frozen_core: usize,
+    /// Doubly occupied orbitals of the reference, `nelec / 2` (frozen core included).
     pub nocc_total: usize,
+    /// Outcome of the occupied localisation.
     pub loc_occ: LocalizationInfo,
+    /// Outcome of the valence-virtual localisation (`None` when there are no
+    /// valence virtuals).
     pub loc_valence_virtuals: Option<LocalizationInfo>,
-    /// VV-HV construction checks (errors above 1e-8).
+    /// VV-HV orthonormality check: `max |C_vᵀ S C_v − 1|` (errors above 1e-8).
     pub vvhv_dev_orth: f64,
+    /// VV-HV span check: deviation from unitarity of the overlap between the
+    /// VV-HV and canonical virtual spaces (errors above 1e-8).
     pub vvhv_dev_span: f64,
 }
 
@@ -1511,9 +1534,14 @@ impl GammaPairIntegrals {
 /// Stage timings (s).
 #[derive(Debug, Clone, Default)]
 pub struct GammaLmp2Timings {
+    /// Localised-space construction (0 when the spaces were passed in via
+    /// [`gamma_lmp2_with_spaces`]).
     pub t_spaces_s: f64,
+    /// Pair-integral and ragged-block assembly.
     pub t_assembly_s: f64,
+    /// Ragged CG amplitude solve and pair energies.
     pub t_solve_s: f64,
+    /// Canonical reference energy (0 when `compute_reference` is false).
     pub t_reference_s: f64,
 }
 
@@ -1534,6 +1562,7 @@ pub struct UniformHeadInfo {
 #[derive(Debug, Clone)]
 #[must_use]
 pub struct GammaLmp2Result {
+    /// LMP2 correlation energy (linear form over the retained blocks), Ha per cell.
     pub e_corr: f64,
     /// `rhf.energy + e_corr`.
     pub e_total: f64,
@@ -1557,27 +1586,48 @@ pub struct GammaLmp2Result {
     pub pairs_kept: usize,
     /// Retained partners per occupied i (ordered pairs (i, ·)).
     pub partners: Vec<usize>,
+    /// `pairs_kept / no²`.
     pub pair_fraction: f64,
     /// Retained (i,a,j,b) elements / (no·nv)².
     pub keep_fraction: f64,
     /// Unique off-diagonal pairs removed by the R⁻⁶ gate / by the cutoff.
     pub n_pairs_gated: usize,
+    /// Unique off-diagonal pairs removed by `pair_cutoff_bohr`.
     pub n_pairs_cut: usize,
+    /// Mean over occupied i of the number of virtuals in i's domain (the
+    /// union of `a` over retained blocks (i, ·)).
     pub dom_mean: f64,
+    /// Maximum over occupied i of the virtual-domain size.
     pub dom_max: usize,
+    /// Mean number of aux functions used per unique pair i ≤ j with a
+    /// retained block (`naux` for the global B; the domain size with
+    /// `fit_radius_bohr`).
     pub aux_dom_mean: f64,
+    /// Maximum of the per-pair aux count.
     pub aux_dom_max: usize,
+    /// Iterations of the ragged CG solve.
     pub cg_iterations: usize,
+    /// Final relative residual of the ragged CG solve.
     pub cg_relres: f64,
+    /// Always `true` in a returned value: CG non-convergence is an error.
     pub cg_converged: bool,
+    /// Valence virtuals in the VV-HV space.
     pub n_valence_virt: usize,
+    /// Hard virtuals in the VV-HV space.
     pub n_hard_virt: usize,
+    /// Correlated (active) occupied orbitals.
     pub nocc_active: usize,
+    /// Virtual orbitals.
     pub nvir: usize,
+    /// Gamma-point Madelung constant `v_M` of the cell.
     pub madelung: f64,
+    /// Shift added to every active occupied ε (0, −v_M or +v_M).
     pub occ_shift: f64,
+    /// Floating-point operations of one ragged amplitude matvec.
     pub ragged_flops_per_matvec: u64,
+    /// Flops of the dense matvec, `2 (no² nv³ + no³ nv²)`, for comparison.
     pub dense_flops_per_matvec: u64,
+    /// Stage wall-clock seconds.
     pub timings: GammaLmp2Timings,
 }
 

@@ -22,8 +22,11 @@ use crate::config::{QuadratureConfig, QuadratureScheme};
 /// that pre-bake the Fourier transform into the weights.
 #[derive(Debug, Clone)]
 pub struct MinimaxJointQuadrature {
+    /// Imaginary-time nodes τ_l at which χ₀(τ) is built.
     pub tau_points: Vec<f64>,
+    /// Imaginary-frequency nodes ω_k at which Π(iω) is evaluated.
     pub omega_points: Vec<f64>,
+    /// Weights of the ω-integral of the RPA trace-log, one per `omega_points` entry.
     pub omega_weights: Vec<f64>,
     /// W_lk matrix flattened: shape (n_omega, n_tau)
     /// Maps tau-domain values to the omega-domain directly.

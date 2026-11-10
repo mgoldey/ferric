@@ -80,6 +80,8 @@ pub struct DynamicPolarizability {
 #[derive(Debug, Clone)]
 #[must_use]
 pub struct C6Result {
+    /// The per-atom and molecular α(iω) on the Casimir–Polder grid from which
+    /// the C6 coefficients below were integrated.
     pub per_atom_dynamic: DynamicPolarizability,
     /// Isotropic C6^{AB}, shape (N, N), a.u. Per-atom PAIR tensor — see the
     /// CONSUMER WARNING on [`C6Result`] before summing this to approximate
@@ -100,8 +102,13 @@ pub struct C6Result {
 /// Partition scheme for the per-atom decomposition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DispersionPartition {
+    /// Becke fuzzy-cell weights. The `Default` of this enum and the default
+    /// for the TS/MBD C6 sources ([`C6Source::default_partition`]).
     #[default]
     Becke,
+    /// Hirshfeld (proatom-density) weights. The default for the PDEP C6
+    /// source; the dynamic per-atom path is closed-shell only and falls back
+    /// to Becke for open-shell references.
     Hirshfeld,
 }
 
@@ -399,10 +406,11 @@ pub fn ts_dynamic_polarizability(
 /// response: at ω=0 it reproduces the static per-atom α exactly, and it carries
 /// the true RPA frequency dependence rather than a single-pole London model.
 ///
-/// `partition` selects the atomic decomposition. Becke is the default and the
-/// only fully frequency-dependent path today; `Hirshfeld` currently falls back
-/// to Becke (a dedicated Hirshfeld-dynamic grid path is future work) and emits
-/// no error so callers get a usable result.
+/// `partition` selects the atomic decomposition. `Hirshfeld` uses the
+/// Hirshfeld dynamic per-atom path for a restricted (closed-shell) reference
+/// and silently falls back to Becke for an unrestricted/open-shell one, which
+/// has a per-spin branch only on the Becke path. The molecular α(iω) is
+/// partition-independent.
 #[allow(clippy::too_many_arguments)]
 pub fn pdep_dynamic_polarizability(
     mol: &Molecule,

@@ -109,8 +109,9 @@ pub struct TdaDftResult {
     /// Retained so callers can do STATE CHARACTER matching (dominant (i,a)
     /// pair, transition dipole direction) rather than nearest-energy matching.
     pub x: Array2<f64>,
-    /// Number of occupied / virtual orbitals in the active (ia) window.
+    /// Number of occupied orbitals in the active (ia) window.
     pub nocc: usize,
+    /// Number of virtual orbitals in the active (ia) window.
     pub nvir: usize,
     /// Exact-exchange fraction actually used on the `−c_HF (ij|ab)` term.
     pub c_hf: f64,

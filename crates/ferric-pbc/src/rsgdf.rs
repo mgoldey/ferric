@@ -351,11 +351,13 @@ pub struct RsGdfStats {
     pub naux_kept: usize,
     /// Metric eigenvalues `<= lindep` dropped.
     pub n_dropped: usize,
-    /// Smallest / largest metric eigenvalue.
+    /// Smallest metric eigenvalue.
     pub metric_eig_min: f64,
+    /// Largest metric eigenvalue.
     pub metric_eig_max: f64,
-    /// The ω and precision used.
+    /// The Ewald split ω used (Bohr⁻¹).
     pub omega: f64,
+    /// The per-term truncation target used ([`RsGdfConfig::precision`]).
     pub precision: f64,
     /// Pair images `L` visited.
     pub n_pair_images: usize,
@@ -369,17 +371,20 @@ pub struct RsGdfStats {
     pub n_sr3_triplets_ordered: usize,
     /// Shifted 2-centre shell pairs computed (SR metric).
     pub n_sr2_pairs: usize,
-    /// Half-sphere G vectors (LR) and the `pair_ft` chunks they used.
+    /// Half-sphere G vectors (LR).
     pub n_g_half: usize,
+    /// `pair_ft` chunks the LR G vectors were processed in.
     pub n_g_chunks: usize,
-    /// max |J2 − J2ᵀ| and max |J3\[μν\] − J3\[νμ\]| before symmetrisation
-    /// (truncation / image-set defects show up here). The Gamma SR 3-centre
-    /// part is exactly symmetric by construction (s2), so `asym_j3` measures
-    /// the LR and G = 0 parts only.
+    /// max |J2 − J2ᵀ| before symmetrisation (truncation / image-set defects
+    /// show up here).
     pub asym_j2: f64,
+    /// max |J3\[μν\] − J3\[νμ\]| before symmetrisation. The Gamma SR
+    /// 3-centre part is exactly symmetric by construction (s2), so this
+    /// measures the LR and G = 0 parts only.
     pub asym_j3: f64,
-    /// Resolved budget and the bytes reserved before the LR chunks.
+    /// Resolved memory budget (bytes).
     pub budget_bytes: usize,
+    /// Bytes reserved on the build's ledger before the LR chunks.
     pub resident_bytes: usize,
 }
 

@@ -82,10 +82,14 @@ impl StageClock {
 /// One leaf stage: accumulated wall/CPU seconds over `calls` timed calls.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StageTiming {
+    /// Stage label.
     pub name: &'static str,
+    /// Accumulated wall-clock seconds.
     pub wall_s: f64,
-    /// `None` when the process CPU clock is unavailable.
+    /// Accumulated process CPU seconds; `None` when the process CPU clock is
+    /// unavailable.
     pub cpu_s: Option<f64>,
+    /// Number of timed calls accumulated.
     pub calls: u64,
 }
 

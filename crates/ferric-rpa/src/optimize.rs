@@ -24,9 +24,14 @@ use ndarray::{Array1, Array2};
 #[derive(Debug, Clone)]
 #[must_use]
 pub struct RpaOptimizeResult {
+    /// Geometry after the last BFGS step (coordinates in Bohr).
     pub mol: Molecule,
+    /// Total energy E_RHF + E_c^RPA at `mol`, Hartree.
     pub energy: f64,
+    /// Number of BFGS steps taken.
     pub steps: usize,
+    /// Whether |ΔE| < `e_conv`, max |g| < `g_max_thresh` and RMS g <
+    /// `g_rms_thresh` were all met before `max_steps`.
     pub converged: bool,
     /// Per-SCF warm-start records in evaluation order: each step's reference
     /// RHF followed by its `6N` displaced RHFs (see `ferric_scf::warm_start`;

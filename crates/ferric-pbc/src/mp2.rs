@@ -184,8 +184,9 @@ pub struct GammaMp2Result {
     pub madelung: f64,
     /// Shift actually added to every active occupied ε (0, −v_M or +v_M).
     pub occ_shift: f64,
-    /// Correlated occupied / virtual counts.
+    /// Correlated (active) occupied orbitals.
     pub nocc_active: usize,
+    /// Correlated virtual orbitals.
     pub nvir: usize,
     /// Rows of the fitted B (`None` for the dense oracle).
     pub naux: Option<usize>,
