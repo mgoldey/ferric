@@ -94,8 +94,10 @@ jobs:
       - name: Toolchain and cache key
         id: key
         env:
-          PLATFORM: ${{ matrix.platform }}
-          PART: ${{ matrix.part }}
+          # Not PLATFORM: MSVC's developer environment sets `Platform`, and
+          # Windows environment names are case-insensitive.
+          NATIVE_PLATFORM: ${{ matrix.platform }}
+          NATIVE_PART: ${{ matrix.part }}
         run: |
           set -euo pipefail
           if [ "$RUNNER_OS" = Windows ]; then
@@ -110,25 +112,25 @@ jobs:
             cc_ver="$(clang-cl --version | head -1)"
             cc="clangcl$(clang-cl --version | sed -n 's/.*clang version \([0-9]*\)\..*/\1/p' | head -1)"
             echo "EIGEN_PREFIX=$(cygpath -m "$CONDA_PREFIX/Library")" >> "$GITHUB_ENV"
-            echo "PREFIX=$(cygpath -m "$GITHUB_WORKSPACE/native-$PART")" >> "$GITHUB_ENV"
+            echo "PREFIX=$(cygpath -m "$GITHUB_WORKSPACE/native-$NATIVE_PART")" >> "$GITHUB_ENV"
             os="$(cmd //c ver | tr -d '\r' | sed -n 's/.*Version \([0-9]*\.[0-9]*\.[0-9]*\).*/win\1/p')"
           else
             cc_ver="$(clang --version | head -1)"
             cc="appleclang$(clang --version | sed -n 's/.*clang version \([0-9]*\)\..*/\1/p' | head -1)"
             echo "EIGEN_PREFIX=$CONDA_PREFIX" >> "$GITHUB_ENV"
             echo "LLVM_AR=$CONDA_PREFIX/bin/llvm-ar" >> "$GITHUB_ENV"
-            echo "PREFIX=$GITHUB_WORKSPACE/native-$PART" >> "$GITHUB_ENV"
+            echo "PREFIX=$GITHUB_WORKSPACE/native-$NATIVE_PART" >> "$GITHUB_ENV"
             os="macos$(sw_vers -productVersion | cut -d. -f1)-$(uname -m)"
           fi
           echo "compiler: $cc_ver"
           [ -n "$cc" ] && [ "$cc" != clangcl ] && [ "$cc" != appleclang ] || { echo "::error::could not read the compiler version from: $cc_ver"; exit 1; }
-          if [ "$PART" = libint2 ]; then
+          if [ "$NATIVE_PART" = libint2 ]; then
             src="libint${LIBINT_VERSION}-${LIBINT_SHA256}-eigen${EIGEN_VERSION}"
           else
             src="openblas${OPENBLAS_VERSION}-libxc${LIBXC_VERSION}-eigen${EIGEN_VERSION}"
           fi
-          script="$(sha256sum "scripts/wheels/build-$PART.sh" 2>/dev/null || shasum -a 256 "scripts/wheels/build-$PART.sh")"
-          key="native-macwin-${NATIVE_MACWIN_CACHE_VERSION}-${PART}-${PLATFORM}-${os}-${cc}-${src}-script${script:0:16}"
+          script="$(sha256sum "scripts/wheels/build-$NATIVE_PART.sh" 2>/dev/null || shasum -a 256 "scripts/wheels/build-$NATIVE_PART.sh")"
+          key="native-macwin-${NATIVE_MACWIN_CACHE_VERSION}-${NATIVE_PART}-${NATIVE_PLATFORM}-${os}-${cc}-${src}-script${script:0:16}"
           echo "key=$key" >> "$GITHUB_OUTPUT"
           echo "cache key: $key"
 

@@ -10,11 +10,12 @@ name: Wheels
 # on -- a `.so`/`.a` built on one is not guaranteed loadable/linkable on the
 # other, so this workflow builds its own native deps inside the container.
 #
-# Wheels: Linux x86_64 ONLY (plus one sdist, see build-sdist). No macOS, no Windows -- ferric's build.rs hardcodes
-# `/usr/include/eigen3` and links `libint2`/`libecpint` as Unix static
-# archives (`cargo:rustc-link-lib=static=...`) with a C++ shim compiled by
-# `cc`; none of that is portable to a MSVC or Apple-clang toolchain without
-# work nobody has scoped, let alone tested. Scope this to what is proven.
+# Wheels: Linux x86_64 (this file's jobs, plus one sdist, see build-sdist),
+# and macOS arm64 + Windows x86_64 from two reusable workflows this file
+# calls: native-deps-macwin.yml (their native deps, built from source and
+# cached) and wheels-macwin.yml (build, delocate/delvewheel repair, smoke on
+# a fresh runner). Those wheels go through release-check and publish with the
+# Linux ones; the Linux jobs below do not depend on them.
 #
 # RELEASING: push a `vX.Y.Z` tag; nothing to commit. The tag supplies the
 # version (main carries a `.devN` placeholder); see "RELEASING" in build-wheels.
@@ -1087,6 +1088,17 @@ jobs:
           # inspect. Tag runs: 0 = the repository's default retention.
           retention-days: ${{ !startsWith(github.ref, 'refs/tags/') && 3 || 0 }}
 
+  # macOS arm64 + Windows x86_64: native deps (cached; a cold libint2 build is
+  # 77-91 min) and then the cp310-cp313 wheels + their smoke tests. The
+  # wheels are uploaded as `wheels-<platform>-cp3.NN`; release-check checks
+  # them per platform and publish uploads them with the Linux set.
+  native-deps-macwin:
+    uses: ./.github/workflows/native-deps-macwin.yml
+
+  wheels-macwin:
+    needs: native-deps-macwin
+    uses: ./.github/workflows/wheels-macwin.yml
+
   # Allocator-perturbation canary in the RELEASE toolchain (#433 item 4).
   # ci.yml's malloc-perturb job runs on ubuntu-22.04 against libint2 2.13.1
   # built there; the 2.7.2-specific TennoGmEval table-edge tests (#440) and the
@@ -1953,7 +1965,7 @@ jobs:
   # cheapest available brake on an accidental tag push publishing a bad
   # wheel -- consider turning that on before the first real release.
   publish:
-    needs: [build-wheels, build-sdist, smoke-test, release-check]
+    needs: [build-wheels, build-sdist, smoke-test, wheels-macwin, release-check]
     # THIS GUARD IS THE ONLY THING STANDING BETWEEN A NIGHTLY CRON RUN AND A
     # REAL PYPI UPLOAD -- treat any change near it as a publish-safety change,
     # not a cosmetic one. On a `schedule` (or `workflow_dispatch`) event,
@@ -1976,9 +1988,10 @@ jobs:
       contents: read
       id-token: write  # OIDC trusted publishing -- no PYPI_API_TOKEN secret
     steps:
-      # pattern + merge-multiple: pulls all four wheels-cp3.NN artifacts
-      # (built separately per Python version above) into one flat dist/ --
-      # gh-action-pypi-publish uploads everything it finds there in one go.
+      # pattern + merge-multiple: pulls all twelve wheels-* artifacts (Linux
+      # wheels-cp3.NN, plus wheels-macos-arm64-cp3.NN and
+      # wheels-windows-x86_64-cp3.NN from wheels-macwin) into one flat dist/
+      # -- gh-action-pypi-publish uploads everything it finds there in one go.
       # `wheels-*` does NOT match `gh-largeam-wheels-*` (or `mpi-wheels-*`):
       # artifact patterns match the whole name.
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -2020,11 +2033,15 @@ jobs:
             exit 1
           fi
           count=$(ls dist/*.whl | wc -l)
-          echo "wheel count: $count (expect 4: cp310, cp311, cp312, cp313)"
-          if [[ "$count" -ne 4 ]]; then
-            echo "::error::expected 4 wheels, found $count -- refusing to publish a partial release"
+          echo "wheel count: $count (expect 12: cp310-cp313 x manylinux_2_28_x86_64, macosx arm64, win_amd64)"
+          if [[ "$count" -ne 12 ]]; then
+            echo "::error::expected 12 wheels, found $count -- refusing to publish a partial release"
             exit 1
           fi
+          for plat in manylinux_2_28_x86_64 macosx_11_0_arm64 win_amd64; do
+            n="$(ls dist/*.whl | grep -c "$plat" || true)"
+            [ "$n" -eq 4 ] || { echo "::error::expected 4 $plat wheels, found $n"; exit 1; }
+          done
           # Exactly one sdist, named for the tag.
           if [[ ! -f "dist/ferric-${tag_version}.tar.gz" || "$(ls dist/*.tar.gz | wc -l)" -ne 1 ]]; then
             echo "::error::expected exactly dist/ferric-${tag_version}.tar.gz as the sdist"
@@ -2105,7 +2122,8 @@ jobs:
   # real files. scripts/release-check.py (stdlib only) does the checking:
   # names, METADATA/WHEEL/PKG-INFO, one wheel per CPython per variant, the
   # bundled-libint2 rule per variant, size limits, the two libint2 licence
-  # texts, and that SHA256SUMS covers exactly these 11 files.
+  # texts, the macOS arm64 and Windows x86_64 sets (--platform-dir), and that
+  # SHA256SUMS covers exactly these 19 files.
   #
   # Its outputs, as the `release-meta` artifact: SHA256SUMS (publish refuses
   # any file not listed in it with the same hash), notes.md and the licence
@@ -2116,7 +2134,7 @@ jobs:
   # `id-token: write` of publish or the `contents: write` of github-release.
   # No workflow_dispatch inputs: see publish's guard comment.
   release-check:
-    needs: [smoke-test, build-sdist, fetch-libint-large]
+    needs: [smoke-test, build-sdist, fetch-libint-large, wheels-macwin]
     runs-on: ubuntu-22.04
     timeout-minutes: 15
     permissions:
@@ -2130,12 +2148,26 @@ jobs:
             scripts/release-check.py
           sparse-checkout-cone-mode: false
 
-      # `wheels-*` does NOT match `gh-largeam-wheels-*` (or `mpi-wheels-*`):
+      # `wheels-cp*`: the Linux PyPI set only (wheels-cp3.NN). It does NOT
+      # match `gh-largeam-wheels-*`, `mpi-wheels-*` or the macOS/Windows
+      # `wheels-<platform>-cp3.NN` sets (downloaded per platform below):
       # artifact patterns match the whole name.
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          pattern: wheels-*
+          pattern: wheels-cp*
           path: dist/pypi
+          merge-multiple: true
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: wheels-macos-arm64-*
+          path: dist/macos-arm64
+          merge-multiple: true
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: wheels-windows-x86_64-*
+          path: dist/windows-x86_64
           merge-multiple: true
 
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -2165,13 +2197,15 @@ jobs:
           echo "version: $version"
           echo "RELEASE_VERSION=$version" >> "$GITHUB_ENV"
           mkdir -p release release-meta
-          cp dist/pypi/* dist/largeam/* dist/licenses/* release/
+          cp dist/pypi/* dist/macos-arm64/* dist/windows-x86_64/* dist/largeam/* dist/licenses/* release/
           (cd release && sha256sum -- * > ../release-meta/SHA256SUMS)
           cat release-meta/SHA256SUMS
           python3 scripts/release-check.py check \
             --version "$version" \
             --pypi-dir dist/pypi --largeam-dir dist/largeam \
             --licenses-dir dist/licenses \
+            --platform-dir macosx_11_0_arm64=dist/macos-arm64 \
+            --platform-dir win_amd64=dist/windows-x86_64 \
             --sha256sums release-meta/SHA256SUMS \
             --build-tag "$LARGE_BUILD_TAG" --summary "$GITHUB_STEP_SUMMARY"
           python3 scripts/release-check.py notes --version "$version" --build-tag "$LARGE_BUILD_TAG" > release-meta/notes.md
@@ -2202,10 +2236,10 @@ jobs:
           echo "pip ($(python3 --version)) picked: $picked"
           echo "pip picked \`$picked\` when both variants were on one index." >> "$GITHUB_STEP_SUMMARY"
 
-  # Attaches the release's files to a GitHub release for the tag: the four
-  # PyPI wheels and the sdist (the same bytes PyPI got), the four
-  # large-libint wheels, the two libint2 licence texts (LGPL-3.0-only) and
-  # SHA256SUMS over those 11 files: 12 assets.
+  # Attaches the release's files to a GitHub release for the tag: the twelve
+  # PyPI wheels (Linux, macOS arm64, Windows x86_64) and the sdist (the same
+  # bytes PyPI got), the four large-libint wheels, the two libint2 licence
+  # texts (LGPL-3.0-only) and SHA256SUMS over those 19 files: 20 assets.
   #
   # needs: [publish, release-check], so the release page never lists a
   # version PyPI does not have, and a failed largeam build (which publish
@@ -2270,8 +2304,8 @@ jobs:
           set -euo pipefail
           cp release-meta/libint2-LICENSE.txt release-meta/libint2-COPYING.LESSER.txt release/
           n="$(ls release | wc -l)"
-          [ "$n" -eq 11 ] || { echo "::error::expected 11 release files (4 + 1 + 4 + 2 licence texts), found $n"; ls -l release; exit 1; }
-          [ "$(wc -l < release-meta/SHA256SUMS)" -eq 11 ] || { echo "::error::SHA256SUMS does not list 11 files"; cat release-meta/SHA256SUMS; exit 1; }
+          [ "$n" -eq 19 ] || { echo "::error::expected 19 release files (12 + 1 + 4 + 2 licence texts), found $n"; ls -l release; exit 1; }
+          [ "$(wc -l < release-meta/SHA256SUMS)" -eq 19 ] || { echo "::error::SHA256SUMS does not list 19 files"; cat release-meta/SHA256SUMS; exit 1; }
           (cd release && sha256sum -c ../release-meta/SHA256SUMS)
           cp release-meta/SHA256SUMS release/
           ls -l release

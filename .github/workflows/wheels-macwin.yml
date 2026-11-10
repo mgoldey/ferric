@@ -1,0 +1,313 @@
+name: Wheels (macOS arm64, Windows x86_64)
+
+# The macOS arm64 and Windows x86_64 wheels of a ferric release, cp310-cp313.
+# Reusable only (workflow_call): wheels.yml calls it after
+# native-deps-macwin.yml, and release-check / publish / github-release there
+# pick up the wheels it uploads. The Linux wheels are built by wheels.yml
+# itself and are untouched by this file.
+#
+# Per platform and CPython version:
+#   build: maturin --release against the native-deps prefix (ferric's small
+#          libint2 export linked statically, OpenBLAS and libxc), the same
+#          release identity gates as the Linux build (clean tagged tree, the
+#          tag's version stamped and verified, FERRIC_RELEASE_BUILD), repair
+#          with delocate (macOS) / delvewheel (Windows), the bundled
+#          libraries' licence texts added, PyPI's 100 MiB limit checked.
+#   smoke: on a FRESH runner that never saw the build prefix, install the
+#          wheel into a new venv and run scripts/wheels/smoke.py (the Linux
+#          smoke test's checks plus energies compared with Linux), then the
+#          docs' Python snippets, as wheels.yml smoke-test does.
+#
+# Artifact names are a publish-safety control, as in wheels.yml: the wheels
+# are `wheels-<platform>-cp3.NN`, which wheels.yml's publish (`wheels-*`)
+# uploads; release-check checks them per platform. The 2026-11-09 spike
+# (wiki/notes/wheels-mac-win-2026-11-09) measured an arm64 wheel at 94.1 MB
+# and a Windows one at 91.4 MB, 90% and 87% of PyPI's limit.
+
+on:
+  workflow_call:
+    inputs:
+      platforms:
+        description: JSON list of platforms (macos-arm64, windows-x86_64)
+        type: string
+        required: false
+        default: '["macos-arm64", "windows-x86_64"]'
+      native-run-id:
+        description: Take the native-* artifacts from this run instead of the current one (development reuse)
+        type: string
+        required: false
+        default: ""
+
+env:
+  CARGO_TERM_COLOR: always
+  # rayon owns ferric's parallelism (see wheels.yml). No OPENBLAS_CORETYPE:
+  # these OpenBLAS builds have one fixed kernel TARGET, and Haswell would be
+  # meaningless on arm64.
+  OPENBLAS_NUM_THREADS: "1"
+  MACOSX_DEPLOYMENT_TARGET: "11.0"
+  MATURIN_VERSION: "1.16.0"
+  DELOCATE_VERSION: "0.13.0"
+  DELVEWHEEL_VERSION: "1.13.2"
+
+jobs:
+  build:
+    name: build ${{ matrix.platform }} cp${{ matrix.python-version }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: ${{ fromJSON(inputs.platforms) }}
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    runs-on: ${{ matrix.platform == 'macos-arm64' && 'macos-15' || 'windows-2025' }}
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash -el {0}
+    steps:
+      # The wheel's Python sources must not depend on the runner's git
+      # settings: Windows images default to core.autocrlf=true.
+      - name: Check out with LF line endings
+        if: runner.os == 'Windows'
+        run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      # Same gate as wheels.yml build-wheels' step of the same name.
+      - name: Record build identity (host, before any edit)
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse HEAD)"
+          if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+            echo "::error::tracked files are modified before the build:"; git status --porcelain --untracked-files=no; exit 1
+          fi
+          if [ "$sha" != "$GITHUB_SHA" ]; then
+            echo "::error::checked-out HEAD $sha != GITHUB_SHA $GITHUB_SHA"; exit 1
+          fi
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            tagged="$(git rev-parse "refs/tags/${GITHUB_REF_NAME}^{commit}")"
+            if [ "$tagged" != "$sha" ]; then
+              echo "::error::HEAD $sha is not the tagged commit $tagged"; exit 1
+            fi
+          fi
+          {
+            echo "FERRIC_RELEASE_BUILD=1"
+            echo "FERRIC_GIT_SHA=$sha"
+            echo "FERRIC_GIT_DIRTY=0"
+          } >> "$GITHUB_ENV"
+          echo "identity: $sha clean"
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        id: py
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Stamp the version from the tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -euo pipefail
+          "${{ steps.py.outputs.python-path }}" scripts/wheels/stamp_version.py "$GITHUB_REF_NAME"
+
+      # Build tools only: CMake + Ninja (build.rs builds the vendored
+      # libecpint with them) and pkg-config (openblas-src finds OpenBLAS
+      # through it). No library from this environment is linked.
+      - uses: mamba-org/setup-micromamba@add3a49764cedee8ee24e82dfde87f5bc2914462 # v2.0.7
+        with:
+          environment-name: tools
+          init-shell: bash
+          create-args: >-
+            -c conda-forge
+            cmake
+            ninja
+            pkg-config
+
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+        if: runner.os == 'Windows'
+
+      # native-libint2-<platform> + native-blas-xc-<platform>, merged into
+      # one prefix.
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: native-*-${{ matrix.platform }}
+          merge-multiple: true
+          path: native
+          run-id: ${{ inputs.native-run-id != '' && inputs.native-run-id || github.run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Build wheel (maturin --release)
+        run: |
+          set -euo pipefail
+          echo "native/" >> .git/info/exclude
+          if [ "$RUNNER_OS" = Windows ]; then
+            P="$(cygpath -m "$GITHUB_WORKSPACE/native")"
+            # Git-for-Windows' /usr/bin/link (coreutils) shadows MSVC's
+            # link.exe in a login bash: pin the MSVC linker for rustc, and
+            # put MSVC and LLVM first for cc-rs and CMake. clang-cl, not
+            # cl.exe: the vendored libecpint uses C99 variable-length
+            # arrays, which cl.exe rejects.
+            MSVC_BIN="$(dirname "$(which cl)")"
+            export PATH="$MSVC_BIN:/c/Program Files/LLVM/bin:$PATH"
+            export CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER="$MSVC_BIN/link.exe"
+            export CC=clang-cl CXX=clang-cl
+            which link clang-cl; clang-cl --version | head -1
+          else
+            P="$GITHUB_WORKSPACE/native"
+            clang --version | head -1
+          fi
+          export LIBINT2_PREFIX="$P"
+          # Fail the build, not warn, if the 2.7.2 boys.h override cannot be
+          # applied (issue #234), as the Linux wheels do.
+          export FERRIC_REQUIRE_PATCHED_BOYS=1
+          export PKG_CONFIG_PATH="$P/lib/pkgconfig"
+          export RUSTFLAGS="-L native=$P/lib"
+          pkg-config --libs --cflags openblas
+          PY='${{ steps.py.outputs.python-path }}'
+          "$PY" -m pip install -q "maturin==${MATURIN_VERSION}"
+          rustc --version
+          start=$(date +%s)
+          "$PY" -m maturin build --release -i "$PY" --out dist
+          echo "BUILD_SECONDS ${{ matrix.platform }} cp${{ matrix.python-version }}: $(( $(date +%s) - start ))" | tee -a "$GITHUB_STEP_SUMMARY"
+          ls -l dist
+
+      - name: Repair (delocate / delvewheel)
+        run: |
+          set -euo pipefail
+          PY='${{ steps.py.outputs.python-path }}'
+          P="$GITHUB_WORKSPACE/native"
+          if [ "$RUNNER_OS" = macOS ]; then
+            "$PY" -m pip install -q "delocate==${DELOCATE_VERSION}"
+            DYLD_LIBRARY_PATH="$P/lib" delocate-listdeps --all dist/*.whl
+            # --require-target-macos-version: fail if a bundled library needs
+            # a newer macOS than the wheel's tag claims.
+            DYLD_LIBRARY_PATH="$P/lib" delocate-wheel -v \
+              --require-target-macos-version "$MACOSX_DEPLOYMENT_TARGET" \
+              -w wheelhouse dist/*.whl
+            delocate-listdeps --all wheelhouse/*.whl
+          else
+            W="$(cygpath -w "$P/bin")"
+            "$PY" -m pip install -q "delvewheel==${DELVEWHEEL_VERSION}"
+            "$PY" -m delvewheel show --add-path "$W" dist/*.whl
+            "$PY" -m delvewheel repair --add-path "$W" -w wheelhouse dist/*.whl
+          fi
+          ls -l wheelhouse
+          [ "$(ls wheelhouse/*.whl | wc -l)" -eq 1 ] || { echo "::error::expected one repaired wheel"; exit 1; }
+
+      # libint2 is LGPL-3.0-only and statically linked; the others are
+      # bundled or compiled in. Their texts go into the wheel's dist-info.
+      - name: Add the bundled libraries' licence texts
+        run: |
+          set -euo pipefail
+          lic=native/licenses
+          head -23 crates/ferric-integrals/shim/libecpint/external/Faddeeva/Faddeeva.cpp \
+            > "$RUNNER_TEMP/Faddeeva-LICENSE.txt"
+          cp crates/ferric-integrals/shim/libecpint/LICENSE "$RUNNER_TEMP/libecpint-LICENSE.txt"
+          files=(
+            "$lic/libint2-LICENSE.txt" "$lic/libint2-COPYING.txt" "$lic/libint2-COPYING.LESSER.txt"
+            "$lic/libxc-COPYING.txt" "$lic/OpenBLAS-LICENSE.txt" "$lic/eigen-COPYING.MPL2.txt"
+            "$RUNNER_TEMP/libecpint-LICENSE.txt" "$RUNNER_TEMP/Faddeeva-LICENSE.txt"
+          )
+          ls -l "${files[@]}"
+          grep -q "GNU LESSER GENERAL PUBLIC LICENSE" "$lic/libint2-COPYING.LESSER.txt"
+          grep -q "Mozilla Public License" "$lic/libxc-COPYING.txt"
+          "${{ steps.py.outputs.python-path }}" scripts/wheels/add_licenses.py wheelhouse/*.whl "${files[@]}"
+
+      # PyPI refuses files over 100 MiB (warehouse MAX_FILESIZE) unless the
+      # project has an increase: fail here, with the size, not at upload.
+      - name: Wheel size / contents sanity check
+        run: |
+          set -euo pipefail
+          whl="$(ls wheelhouse/*.whl)"
+          PY='${{ steps.py.outputs.python-path }}'
+          "$PY" - "$whl" <<'PY'
+          import sys, zipfile
+          path = sys.argv[1]
+          with zipfile.ZipFile(path) as z:
+              infos = z.infolist()
+          for i in infos:
+              if not i.filename.endswith(".py"):
+                  print(f"{i.file_size:>12} {i.compress_size:>12} {i.filename}")
+          PY
+          size=$(wc -c < "$whl" | tr -d ' ')
+          limit=$((100 * 1024 * 1024))
+          echo "$(basename "$whl"): $size bytes ($((size * 100 / limit))% of PyPI's $limit-byte limit)" | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ "$size" -ge "$limit" ]; then
+            echo "::error::$(basename "$whl") is $size bytes, over PyPI's $limit-byte (100 MiB) limit"
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: wheels-${{ matrix.platform }}-cp${{ matrix.python-version }}
+          path: wheelhouse/*.whl
+          if-no-files-found: error
+          retention-days: ${{ !startsWith(github.ref, 'refs/tags/') && 3 || 0 }}
+
+  smoke:
+    name: smoke ${{ matrix.platform }} cp${{ matrix.python-version }}
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: ${{ fromJSON(inputs.platforms) }}
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    runs-on: ${{ matrix.platform == 'macos-arm64' && 'macos-15' || 'windows-2025' }}
+    timeout-minutes: 30
+    defaults:
+      run:
+        # Plain bash: nothing here may come from a build environment.
+        shell: bash
+    steps:
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        id: py
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: wheels-${{ matrix.platform }}-cp${{ matrix.python-version }}
+          path: dist
+
+      # Only the smoke script, the docs and the docs runner: the import must
+      # resolve to the installed wheel, never to a source tree.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          path: src
+          persist-credentials: false
+          sparse-checkout: |
+            scripts/wheels/smoke.py
+            scripts/check_doc_snippets.py
+            site/src
+            README.md
+          sparse-checkout-cone-mode: false
+
+      - name: Install the wheel into a fresh venv
+        run: |
+          set -euo pipefail
+          "${{ steps.py.outputs.python-path }}" -m venv "$RUNNER_TEMP/v"
+          if [ "$RUNNER_OS" = Windows ]; then B="$RUNNER_TEMP/v/Scripts"; else B="$RUNNER_TEMP/v/bin"; fi
+          echo "$B" >> "$GITHUB_PATH"
+          "$B/python" -m pip install -q --upgrade pip
+          # --only-binary: a dependency with no wheel for this platform must
+          # fail here, not compile from an sdist (wheels.yml smoke-test).
+          "$B/python" -m pip install --only-binary=:all: dist/*.whl
+          "$B/python" -m pip show ferric
+
+      - name: Smoke test (scripts/wheels/smoke.py, each case in its own process)
+        env:
+          EXPECT_SHA: ${{ github.sha }}
+          PYTHONUNBUFFERED: "1"
+        run: |
+          set -euo pipefail
+          cp src/scripts/wheels/smoke.py "$RUNNER_TEMP/"
+          cd "$RUNNER_TEMP"
+          python -c "import sys; print(sys.executable)"
+          # The CLI reports the libint2 limits on its `libint:` line
+          # (wheels.yml smoke-test asserts the same line for its pypi wheels).
+          ferric --version | tr -d '\r' | tee version.txt
+          want="libint: 2.7.2 (eri 6,6,3; eri3 6,6; eri2 6,6; onebody 6,6,6; g12 none)"
+          grep -qxF "$want" version.txt || { echo "::error::ferric --version lacks the line: $want"; exit 1; }
+          python smoke.py --all 2>&1 | tee smoke.log
+          grep -E '^CASE |^SMOKE ' smoke.log >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Docs snippets -- run the marked Python examples and compare output
+        run: python src/scripts/check_doc_snippets.py --root src
