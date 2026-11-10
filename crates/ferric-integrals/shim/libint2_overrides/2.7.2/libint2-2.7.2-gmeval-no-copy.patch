@@ -1,6 +1,6 @@
 --- a/include/libint2/boys.h
 +++ b/include/libint2/boys.h
-@@ -18,6 +18,40 @@
+@@ -18,6 +18,46 @@
   *
   */
  
@@ -29,6 +29,12 @@
 + *  T < 0.5 mmax + 6 (T < 1e-2 at mmax == 0) the unstable upward recursion
 + *  eval_urr is replaced by a graded Gauss-Legendre quadrature of the defining
 + *  integral; all other arguments give bit-identical results.
++ *  Windows portability, as upstream libint2 >= 2.8 and the 2.13.1 override:
++ *  under _MSC_VER posix_memalign maps to _aligned_malloc and the two tables
++ *  are released with the matching _aligned_free (posix_memfree, plain free
++ *  elsewhere); TennoGmEval's alignment is std::max(sizeof(Real), (size_t)32)
++ *  instead of 32ul, which does not deduce where unsigned long is 32-bit. On
++ *  LP64 (Linux, macOS) both spellings are the same call on the same type.
 + *  crates/ferric-integrals/build.rs puts this
 + *  directory first on the shim's include path ONLY when the libint2 prefix's
 + *  own boys.h is byte-identical to the stock 2.7.2 file above, or to that
@@ -41,7 +47,7 @@
  #ifndef _libint2_src_lib_libint_boys_h_
  #define _libint2_src_lib_libint_boys_h_
  
-@@ -27,6 +61,8 @@
+@@ -27,6 +67,8 @@
  #include <cstdlib>
  #include <cmath>
  #include <stdexcept>
@@ -50,17 +56,36 @@
  #include <libint2/util/vector.h>
  #include <cassert>
  #include <vector>
-@@ -35,6 +71,9 @@
+@@ -35,6 +77,19 @@
  #include <mutex>
  #include <type_traits>
  #include <memory>
 +#ifdef FERRIC_LIBINT2_TERF_BOYS
 +#include <array>
 +#endif
++
++#ifdef _MSC_VER
++#include <malloc.h>
++#include <cerrno>
++#define posix_memalign(p, a, s) \
++  (((*(p)) = _aligned_malloc((s), (a))), *(p) ? 0 : errno)
++#define posix_memfree(p) ((_aligned_free((p))))
++#else
++#define posix_memfree(p) ((free((p))))
++#endif
  
  // from now on at least C++11 is required by default
  #include <libint2/util/cxxstd.h>
-@@ -324,7 +363,14 @@
+@@ -290,7 +345,7 @@
+       }
+       ~FmEval_Chebyshev7() {
+         if (mmax >= 0) {
+-          free(c);
++          posix_memfree(c);
+         }
+       }
+ 
+@@ -324,7 +379,14 @@
  
          // large T => use upward recursion
          // cost = 1 div + 1 sqrt + (1 + 2*(m-1)) muls
@@ -76,7 +101,16 @@
            const double one_over_x = 1/x;
            Fm[0] = 0.88622692545275801365 * sqrt(one_over_x); // see Eq. (9.8.9) in Helgaker-Jorgensen-Olsen
            if (m_max == 0)
-@@ -922,7 +968,11 @@
+@@ -881,7 +943,7 @@
+ 
+       ~TennoGmEval() {
+         if (c_ != nullptr)
+-          free(c_);
++          posix_memfree(c_);
+       }
+ 
+       /// Singleton interface allows to manage the lone instance; adjusts max m values as needed in thread-safe fashion
+@@ -922,7 +984,11 @@
          assert(T >= 0);
          const auto U = 0.25 * zeta * zeta * one_over_rho;
          assert(U >= 0);
@@ -89,7 +123,7 @@
            eval_urr<false>(Gm, T, U, /* zeta_over_two_rho = */ 0, mmax);
          } else {
            interpolate_Gm<false>(Gm, T, U, /* zeta_over_two_rho = */ 0, mmax);
-@@ -944,16 +994,96 @@
+@@ -944,16 +1010,96 @@
          assert(T >= 0);
          const auto U = 0.25 * zeta * zeta * one_over_rho;
          assert(U > 0);  // integral factorizes into 2 overlaps for U = 0
@@ -186,7 +220,7 @@
        /// Computes G_0 and (optionally) G_{-1}
        /// @tparam compute_Gm1, if true, compute G_0 and G_{-1}, otherwise G_0 only
        /// @param[in] T the value of \f$ T \f$
-@@ -987,8 +1117,8 @@
+@@ -987,8 +1133,8 @@
            const Real lambda = sqrt_U + sqrt_T;
            const Real sqrtPi_over_4 = sqrtPi * 0.25;
            const Real pfac = sqrtPi_over_4;
@@ -197,7 +231,7 @@
  
            G_m1 = compute_Gm1 ? pfac * (erfc_k + erfc_l) * oo_sqrt_U : 0.0;
            G_0 = pfac * (erfc_k - erfc_l) * oo_sqrt_T;
-@@ -996,6 +1126,20 @@
+@@ -996,6 +1142,20 @@
          else {  // T = 0, U > 0
            const Real exp_U = exp(U);
            const Real sqrt_U = sqrt(U);
@@ -218,7 +252,7 @@
            if (compute_Gm1) {
              const Real sqrtPi_over_2 = sqrtPi * 0.5;
              const Real oo_sqrt_U = compute_Gm1 ? (1 / sqrt_U) : 0;
-@@ -1008,6 +1152,106 @@
+@@ -1008,6 +1168,106 @@
          return std::make_tuple(G_0, G_m1);
        }
  
@@ -325,7 +359,7 @@
        /// Computes core integrals by upward recursion from \f$ G_{-1} (T,U) \f$ and \f$ G_0 (T,U) \f$
        /// this is unstable for small T, so use when interpolation does not apply.
        /// @tparam[in] Exp if true, will compute core integrals of the exponential operator, otherwise will compute Yukawa
-@@ -1031,8 +1275,8 @@
+@@ -1031,8 +1291,8 @@
          const Real lambda = sqrt_U + sqrt_T;
          const Real sqrtPi_over_4(0.44311346272637900682454187083528629569938736403060);
          const Real pfac = sqrtPi_over_4;
@@ -336,7 +370,7 @@
  
          Real Gmm1; // will contain G[m-1]
          Real Gm; // will contain G[m]
-@@ -1103,11 +1347,25 @@
+@@ -1103,11 +1363,25 @@
          };
  
          // which interval does this T fall into?
@@ -364,7 +398,16 @@
          // precomputed 1 / 10^(cheb_table_uminlog10 + K)
          constexpr Real one_over_10K[] = {1. / detail::pow10(cheb_table_uminlog10),
                                                 1. / detail::pow10(cheb_table_uminlog10+1),
-@@ -1572,6 +1830,38 @@
+@@ -1313,7 +1587,7 @@
+ 
+         // get memory
+         void* result;
+-        int status = posix_memalign(&result, std::max(sizeof(Real), 32ul), (mmax_ - mmin_ + 1) * cheb_table_nintervals * ORDERp1 * ORDERp1 * sizeof(Real));
++        int status = posix_memalign(&result, std::max(sizeof(Real), (size_t)32), (mmax_ - mmin_ + 1) * cheb_table_nintervals * ORDERp1 * ORDERp1 * sizeof(Real));
+         if (status != 0) {
+           if (status == EINVAL)
+             throw std::logic_error(
+@@ -1572,6 +1846,38 @@
        ExpensiveNumbers<Real> numbers_;
    };
  
@@ -403,7 +446,7 @@
    template <typename GmEvalFunction>
    struct GenericGmEval : private GmEvalFunction {
  
-@@ -1587,7 +1877,17 @@
+@@ -1587,7 +1893,17 @@
        template <typename Real, typename... ExtraArgs>
        void eval(Real* Gm, Real rho, Real T, int mmax, ExtraArgs... args) const {
          assert(mmax <= mmax_);
@@ -422,7 +465,7 @@
        }
  
        /// @return the maximum value of m for which the \f$ G_m(\rho, T) \f$ can be computed with this object
-@@ -1598,6 +1898,20 @@
+@@ -1598,6 +1914,20 @@
      private:
        int mmax_;
        Real precision_;
@@ -443,7 +486,7 @@
    };
  
    // these Gm engines need extra scratch data
-@@ -1725,10 +2039,12 @@
+@@ -1725,10 +2055,12 @@
    /// core integral evaluator for \f$ \mathrm{erfc}(\omega r) / r \f$ kernel
    /// @note need extra scratch for Boys function values,
    ///       since need to call Boys engine twice
@@ -459,7 +502,7 @@
      typedef Real value_type;
  
      #ifndef LIBINT_USER_DEFINED_REAL
-@@ -1737,17 +2053,27 @@
+@@ -1737,17 +2069,27 @@
      using FmEvalType = libint2::FmEval_Reference<scalar_type>;
  #endif
  
@@ -493,7 +536,7 @@
                         mmax);
  
          using std::sqrt;
-@@ -1755,7 +2081,7 @@
+@@ -1755,7 +2097,7 @@
              sqrt(omega2_over_omega2_plus_rho);
          for (auto m = 0; m <= mmax;
               ++m, ooversqrto2prho_exp_2mplus1 *= omega2_over_omega2_plus_rho) {
@@ -502,7 +545,7 @@
          }
        }
      }
-@@ -1764,6 +2090,52 @@
+@@ -1764,6 +2106,52 @@
        std::shared_ptr<const FmEvalType> fm_eval_;  // need for odd K
    };
  

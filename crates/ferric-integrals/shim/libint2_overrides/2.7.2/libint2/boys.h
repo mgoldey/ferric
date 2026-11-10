@@ -43,6 +43,12 @@
  *  T < 0.5 mmax + 6 (T < 1e-2 at mmax == 0) the unstable upward recursion
  *  eval_urr is replaced by a graded Gauss-Legendre quadrature of the defining
  *  integral; all other arguments give bit-identical results.
+ *  Windows portability, as upstream libint2 >= 2.8 and the 2.13.1 override:
+ *  under _MSC_VER posix_memalign maps to _aligned_malloc and the two tables
+ *  are released with the matching _aligned_free (posix_memfree, plain free
+ *  elsewhere); TennoGmEval's alignment is std::max(sizeof(Real), (size_t)32)
+ *  instead of 32ul, which does not deduce where unsigned long is 32-bit. On
+ *  LP64 (Linux, macOS) both spellings are the same call on the same type.
  *  crates/ferric-integrals/build.rs puts this
  *  directory first on the shim's include path ONLY when the libint2 prefix's
  *  own boys.h is byte-identical to the stock 2.7.2 file above, or to that
@@ -73,6 +79,16 @@
 #include <memory>
 #ifdef FERRIC_LIBINT2_TERF_BOYS
 #include <array>
+#endif
+
+#ifdef _MSC_VER
+#include <malloc.h>
+#include <cerrno>
+#define posix_memalign(p, a, s) \
+  (((*(p)) = _aligned_malloc((s), (a))), *(p) ? 0 : errno)
+#define posix_memfree(p) ((_aligned_free((p))))
+#else
+#define posix_memfree(p) ((free((p))))
 #endif
 
 // from now on at least C++11 is required by default
@@ -329,7 +345,7 @@ namespace libint2 {
       }
       ~FmEval_Chebyshev7() {
         if (mmax >= 0) {
-          free(c);
+          posix_memfree(c);
         }
       }
 
@@ -927,7 +943,7 @@ namespace libint2 {
 
       ~TennoGmEval() {
         if (c_ != nullptr)
-          free(c_);
+          posix_memfree(c_);
       }
 
       /// Singleton interface allows to manage the lone instance; adjusts max m values as needed in thread-safe fashion
@@ -1571,7 +1587,7 @@ namespace libint2 {
 
         // get memory
         void* result;
-        int status = posix_memalign(&result, std::max(sizeof(Real), 32ul), (mmax_ - mmin_ + 1) * cheb_table_nintervals * ORDERp1 * ORDERp1 * sizeof(Real));
+        int status = posix_memalign(&result, std::max(sizeof(Real), (size_t)32), (mmax_ - mmin_ + 1) * cheb_table_nintervals * ORDERp1 * ORDERp1 * sizeof(Real));
         if (status != 0) {
           if (status == EINVAL)
             throw std::logic_error(

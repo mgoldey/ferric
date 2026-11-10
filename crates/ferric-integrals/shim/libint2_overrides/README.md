@@ -10,8 +10,15 @@ inside an install prefix of that version reproduces the file byte for byte.
 | `2.13.1/` | conda-forge `libint-2.13.1-h83f5b4b_0.conda` (`scripts/install-libint.sh`) | `890ab0261a2be2517d3d4cedfd7d07e2a1c6be7b6f057dc7ea2ea418e17067c1` | `0x0f6f0c23194e18ad` |
 
 Override sha256 (what `patch -p1` of the committed `.patch` onto the stock file reproduces): 2.7.2
-`749c96f3042412a03d0d5efc68be12c75d48552d1c81315fdc25a105b89df43a`, 2.13.1
+`3a419864297b2d39b7f4a0b5edd54d2497b43b98ae40e0bac5c39c55506f93c9`, 2.13.1
 `14c8bdfd4d8fb41e0c4e5091de1c45e84fe5f5840c6cdcfb1c40419a368f343e`.
+
+Windows (MSVC) portability: both overrides map `posix_memalign` to `_aligned_malloc` under `_MSC_VER`, free the two
+Chebyshev tables with the matching `posix_memfree` (`_aligned_free` there, `free` elsewhere) and spell `TennoGmEval`'s
+alignment `std::max(sizeof(Real), (size_t)32)`. The 2.13.1 copy has this from upstream; the 2.7.2 copy carries the same
+block (upstream fixed it after 2.7.2), so on Linux and macOS the 2.7.2 override compiles to the same calls as before.
+2.7.2's `libint2/basis.h` (not overridden) also includes `<unistd.h>` unconditionally; under MSVC, `build.rs` supplies
+a stub for it (`build_support/cxx_target.rs`, `MSVC_UNISTD_STUB`), so the stock export tarball needs no change.
 
 The #433 fix is the same in both. The sections below describe it with the 2.7.2 names. The `TennoGmEval` table-edge
 changes (issue #436, section "Third change") exist ONLY in the 2.7.2 override; 2.13.1 already has them in stock form.
