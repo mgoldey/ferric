@@ -103,6 +103,17 @@ shells or gradients is tabulated in
 > capability is graded (Proven / Smoke / Spike) against independent references
 > on the same page. Read it before relying on a result.
 
+## Use it from Avogadro
+
+The [`avogadro-ferric`](plugins/avogadro-ferric/) plugin runs ferric from
+inside [Avogadro 2](https://avogadro.cc) (2.1.0 or later, Linux x86_64): QM
+energies and gradients for Avogadro's optimizer, Löwdin, Hirshfeld and CHELPG
+charges with the QM electrostatic potential, single points, geometry
+optimization, animated frequencies, molecular orbitals, and a ferric input
+generator. See the
+[Avogadro plugin](https://matthew.thegoldeys.com/ferric/using/avogadro.html)
+page.
+
 ## Why it exists
 
 ferric is organized around **electronic response**: how the density reacts to a
