@@ -42,6 +42,21 @@ CASES = {
             water(), ferric.BasisSet.bundled("cc-pvdz"), ferric.BasisSet.bundled("cc-pvdz-ri")
         )
     ),
+    # Discriminators for the Linux vs macOS/Windows PBE offset (3.2e-7 Ha):
+    # RI-J storage precision, grid pruning, and a functional with no gradient.
+    "pbe-rij64/sto-3g": lambda: energy(
+        ferric.run_dft(
+            water(), ferric.BasisSet.bundled("sto-3g"), functional="PBE", ri_j_precision="f64"
+        )
+    ),
+    "pbe-flatgrid/sto-3g": lambda: energy(
+        ferric.run_dft(
+            water(), ferric.BasisSet.bundled("sto-3g"), functional="PBE", grid_prune="none"
+        )
+    ),
+    "lda/sto-3g": lambda: energy(
+        ferric.run_dft(water(), ferric.BasisSet.bundled("sto-3g"), functional="LDA")
+    ),
     "pbe-grad/sto-3g": lambda: str(
         ferric.run_dft(
             water(), ferric.BasisSet.bundled("sto-3g"), functional="PBE", with_gradient=True
