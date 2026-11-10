@@ -42,6 +42,44 @@ The closed-shell $\mathbf{\Pi}$ carries the prefactor 4; with identical spin cha
 
 The Boys-screened $\chi_0$ is closed-shell only: its screened tiles and localized orbital energies are built from the restricted MOs and Fock matrix.
 
+## Dispersion: Casimir-Polder C6
+
+`dispersion::casimir_polder_c6` turns per-atom dynamic polarizabilities on the
+imaginary-frequency quadrature $(\omega_k, w_k)$ into pair coefficients:
+
+$$ C_6^{AB} = \frac{3}{\pi}\int_0^\infty \bar\alpha^A(i\omega)\,\bar\alpha^B(i\omega)\,d\omega \approx \frac{3}{\pi}\sum_k w_k\,\bar\alpha^A(i\omega_k)\,\bar\alpha^B(i\omega_k),\qquad \bar\alpha = \tfrac13\operatorname{Tr}\alpha, $$
+
+and, element by element (no tensor contraction), the anisotropic
+$C^{AB}_{6,ij} = \frac{3}{\pi}\sum_k w_k\,\alpha^A_{ij}(i\omega_k)\,\alpha^B_{ij}(i\omega_k)$.
+Two sources feed it.
+
+**Tkatchenko-Scheffler single pole** (`ts_dynamic_polarizability`,
+`mbd::ts_atom_params`). With the Hirshfeld volume ratio $r_A$ and the
+free-atom $\alpha^{\rm free}$, $C_6^{\rm free}$ (TS PRL 2009 Table I for
+$Z \le 18$; Gould and Bučko 2016 for $Z = 19$–$54$, Pd α from Jerabek et al. 2018; other $Z$ is an error):
+
+$$ \alpha_A = r_A\,\alpha^{\rm free},\quad C_{6,A} = r_A^2\,C_6^{\rm free},\quad \bar\alpha_A(i\omega) = \frac{\alpha_A}{1+(\omega/\omega_A)^2},\quad \omega_A = \frac{4}{3}\frac{C_{6,A}}{\alpha_A^2}. $$
+
+$\omega_A$ follows from the single-pole integral
+$\frac{3}{\pi}\int_0^\infty \alpha_A^2(1+\omega^2/\omega_A^2)^{-2}\,d\omega = \frac34\alpha_A^2\omega_A = C_{6,A}$.
+The tensor is $\bar\alpha_A(i\omega)$ times the static tensor normalized to
+unit isotropic average, so only the shape comes from the molecular calculation.
+
+**PDEP-RPA** (`pdep_dynamic_polarizability`,
+`properties::pdep_polarizability_becke_dynamic` / `_hirshfeld_dynamic`). The
+per-atom tensor is the Krishtal-Senet-Van Alsenoy intrinsic polarizability
+(JCP 125, 034312 (2006)),
+$\alpha^A_{dj}(i\omega) = \langle m^A_d|R(i\omega)|\mu_j\rangle$, with the
+atom-weighted dipole $m^A_d = w_A(\mathbf r)(r-R_A)_d$ on the bra and the
+molecular dipole on the ket. $R(i\omega)$ is the RI response with
+$g_{ia}(\omega) = e_{ia}/(\omega^2+e_{ia}^2)$ and the screened dielectric
+$\tilde\epsilon(\omega) = \mathbf 1 + 4\tilde B\,\mathrm{diag}(g(\omega))\,\tilde B^{\mathsf T}$
+(closed shell). At $\omega = 0$, $g_{ia} = 1/e_{ia}$ and the static per-atom
+tensor is recovered. The molecular tensor $\alpha_{\rm mol} = \langle\mu|R|\mu\rangle$
+is not the atom sum: $\alpha_{\rm CT} = \alpha_{\rm mol} - \sum_A\alpha^A$ is the
+field-induced charge transfer between atoms (`charge_transfer_remainder`,
+`_dynamic`).
+
 ## Literature Citations
 
 1. **PDEP Eigenpotentials:** F. Gygi and G. Galli, *Phys. Rev. B* **65**, 220102(R) (2002).
