@@ -40,15 +40,15 @@ pub mod becke_hessian;
 pub mod cdft;
 /// Electron density ρ, gradient ∇ρ, and kinetic-energy density τ on grid points.
 pub mod density_on_grid;
-/// XC kernel (f_xc) for Newton-step SCF solvers (LDA and GGA).
+/// XC kernels (f_xc) for Newton-step SCF and linear response: LDA, GGA and τ-only meta-GGA.
 pub mod fxc;
 /// Analytical XC nuclear gradients with grid response terms.
 pub mod gradient;
 /// Grid point storage and atom-to-grid-point mapping.
 pub mod grid;
-/// High-level Kohn-Sham driver: grid+χ cache, V_xc accumulation into Fock matrix.
+/// `KsXc` / `KsXcUks`: the Kohn-Sham XC contribution to the SCF Fock matrix, integrated by the batched [`xc_batch`] path.
 pub mod ks;
-/// Lebedev angular quadrature nodes and weights (up to order 131).
+/// Lebedev angular quadrature nodes and weights (6 to 590 points); re-export of `ferric_quadrature::lebedev`.
 pub mod lebedev;
 /// libxc bindings: functional evaluation (exc, vxc, fxc) for LDA/GGA/mGGA/hybrid.
 pub mod libxc;
@@ -57,7 +57,7 @@ pub mod libxc;
 pub mod lr_kernel;
 /// Grid pruning strategies for reducing angular quadrature near nuclei.
 pub mod prune;
-/// Radial quadrature: Treutler-Ahlrichs M4 and Mura-Knowles log grids.
+/// Radial quadrature: the Treutler-Ahlrichs M4 grid.
 pub mod radial;
 /// VV10 nonlocal correlation functional.
 pub mod vv10;

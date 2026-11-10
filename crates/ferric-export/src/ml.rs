@@ -15,10 +15,10 @@ pub struct ChargeSchemes<'a> {
     pub mulliken: Option<&'a [f64]>,
     /// CHELPG (ESP-fitted) atomic charges — structurally different from the
     /// three population-partition schemes above (see
-    /// `ferric_rpa::properties::chelpg_charges`).
+    /// `ferric_scf::properties::chelpg_charges`).
     pub chelpg: Option<&'a [f64]>,
     /// RESP (restrained ESP-fitted) atomic charges (see
-    /// `ferric_rpa::properties::resp_charges`).
+    /// `ferric_scf::properties::resp_charges`).
     pub resp: Option<&'a [f64]>,
 }
 

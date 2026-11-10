@@ -38,7 +38,7 @@ The `elements` module provides a compile-time lookup table mapping:
 `ferric` parses basis sets into native `Shell` structures. Two parser formats are supported:
 
 ### BSE-JSON format
-The Basis Set Exchange JSON schema. Bundled basis sets (embedded via `include_str!` at build-time) are compiled in this format under `src/basis/bundled/`.
+The Basis Set Exchange JSON schema. Bundled basis sets (packed by `build.rs` into one shell-deduplicated, deflated blob embedded with `include_bytes!` and inflated once per process in `basis/packed.rs`) are compiled in this format under `src/basis/bundled/`.
 
 ### Gaussian-94 (G94) format
 A standard plain-text format listing contractions for each element. This format is supported by the custom G94 parser for custom external basis sets.

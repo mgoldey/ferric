@@ -92,7 +92,7 @@ impl LdaFxcKernel {
         if xc.funcs.iter().any(|f| f.family() != FunctionalFamily::Lda) {
             return Err(
                 "LdaFxcKernel: all sub-functionals must be LDA-family for the f_xc \
-                 response. GGA response not implemented yet."
+                 response; use GgaFxcKernel for GGA functionals."
                     .to_string(),
             );
         }

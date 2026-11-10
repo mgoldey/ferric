@@ -21,7 +21,11 @@ where the coefficients $c_i$ are found by solving the DIIS system.
 ## Continuous Fast Multipole Method (CFMM)
 To avoid the $O(N^4)$ cost of direct ERI evaluation, CFMM treats the long-range Coulomb interaction using multipole expansions:
 $$J(\mathbf{r}) \approx \sum_{l,m} M_{lm} \frac{Y_{lm}(\theta, \phi)}{r^{l+1}}$$
-This allows for $O(N)$ scaling in the Coulomb build.
+A hierarchical FMM (M2M/L2L translations) makes the far-field Coulomb build
+$O(N)$. ferric's `cfmm` module is behind the off-by-default `cfmm-incomplete`
+feature: its far field is a flat leaf-to-leaf M2L with no M2M/L2L pass, so it
+does not have that asymptotic scaling, and it is slower than `DirectJ`. It
+reproduces the direct J to ~1e-14 in the all-near-field limit.
 
 ## Kohn-Sham XC Hessian terms (fixed and moving grid)
 Implemented in `src/ks_fixed_grid.rs` (closed-shell LDA/GGA and global

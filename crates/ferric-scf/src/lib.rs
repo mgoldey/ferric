@@ -1,14 +1,24 @@
-//! Self-consistent field (SCF) solvers for Hartree-Fock theory.
+//! Self-consistent field solvers: Hartree-Fock and Kohn-Sham, closed and open shell.
 //!
-//! This crate implements:
-//!
-//! - **Closed-shell RHF** ([`rhf::solve_rhf`]) with DIIS convergence acceleration
-//!   and Schwarz integral screening
-//! - **Analytical RHF nuclear gradients** ([`gradient::rhf_gradient`]) including
-//!   one-electron, two-electron, and nuclear repulsion contributions
-//! - **DIIS extrapolation** ([`diis::Diis`]) for accelerating SCF convergence
-//! - **Schwarz screening** ([`screening::SchwarzBounds`]) for integral prescreening
-//! - **Core Hamiltonian initial guess** ([`guess::hcore_guess`])
+//! - **SCF drivers**: [`rhf::solve_rhf`], [`uhf::solve_uhf`] and
+//!   [`rohf::solve_rohf`]. Kohn-Sham runs through the same drivers with
+//!   [`rhf::RhfConfig::xc`] set; `UhfConfig` and `RohfConfig` are aliases of
+//!   `RhfConfig`. Every driver returns a [`result::ScfResult`].
+//! - **J/K builders**: integral-direct ([`direct_j`], [`direct_k`],
+//!   [`direct_jk`]), LinK ([`link_k`]), density fitting ([`df_j`], [`df_k`]),
+//!   split-RI-J ([`split_rij`]) and COSX ([`cosx_k`]), behind the
+//!   [`fock::JBuilder`] / [`fock::KBuilder`] traits.
+//! - **Convergence**: DIIS ([`diis::Diis`]), MOM ([`mom`]), level shifts,
+//!   second-order Newton and TRAH solvers, and SCF stability analysis ([`stability`]).
+//! - **Derivatives**: nuclear gradients ([`gradient::rhf_gradient`] and the
+//!   open-shell/KS variants), analytic Hessians and harmonic frequencies
+//!   ([`frequencies`]), geometry optimization ([`optimize`]), transition-state
+//!   search ([`saddle`]) and IRC ([`irc`]).
+//! - **Environment**: point charges and fields through
+//!   `RhfConfig.external_potential`, COSMO ([`cosmo`]), IEF-PCM via
+//!   `ferric-pcm`, QM/MM ([`qmmm`]) and Thole polarizable embedding ([`polarizable`]).
+//! - **Screening and guesses**: Schwarz/CSAM/CSB bounds ([`screening`]) and the
+//!   core-Hamiltonian guess ([`guess::hcore_guess`]).
 
 // needless_range_loop: DIIS coefficient and MO-index loops read clearer with
 // explicit indices than with iterator/enumerate chains.
@@ -114,7 +124,8 @@ pub mod omega_tuning;
 pub mod pairs;
 /// QQR distance-dependent screening adapter for the SCF layer.
 pub mod qqr;
-/// Schwarz-based integral screening re-exports.
+/// Integral screening bounds: the [`screening::Bound`] trait and the Schwarz,
+/// CSAM and CSB estimators.
 pub mod screening;
 /// Semi-canonical orbital transformation for frozen-core post-HF.
 pub mod semicanonical;
@@ -133,7 +144,6 @@ pub mod reduce;
 /// down to `ferric-integrals` so integral-level code (schwarz, 3-index) can use
 /// it too. Kept here so existing `ferric_scf::engine_pool::…` paths still work.
 pub use ferric_integrals::engine_pool;
-/// Closed-shell restricted Hartree-Fock solver.
 pub mod aurora;
 pub mod basis2;
 /// Analytic nuclear gradient of the COSX exchange energy (plain, and overlap-fitted via a Z-vector).
@@ -243,9 +253,6 @@ pub mod hessian_df_stencil;
 pub mod hessian_ecp;
 mod hessian_field;
 mod hessian_smeared;
-/// Transition-state search by partitioned rational function optimization.
-/// `optimize` MINIMIZES; a saddle needs one direction climbed, so it is a
-/// separate driver rather than a flag.
 pub mod irc;
 /// Geometry optimization via L-BFGS with energy/gradient convergence.
 pub mod optimize;
@@ -277,8 +284,8 @@ pub use frequencies::{harmonic_frequencies, FrequencyConfig, FrequencyReference,
 /// See the `cfmm` module docs for the full status list.
 #[cfg(feature = "cfmm-incomplete")]
 pub mod cfmm;
-/// QM/MM system setup: atom selection, link atoms, embedding charges.
 pub mod polarizable;
+/// QM/MM system setup: atom selection, link atoms, embedding charges.
 pub mod qmmm;
 pub use qmmm::{BoundaryChargeScheme, QmSelection, QmmmAtom, QmmmSystem};
 /// Jacob's ladder solver: run a sequence of methods (HF→DFT→MP2→…) reusing orbitals.

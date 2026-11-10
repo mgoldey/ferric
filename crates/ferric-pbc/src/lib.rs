@@ -1,4 +1,10 @@
-//! Periodic-boundary-condition primitives for ferric — Stages 0-1 (library only).
+//! 3-D periodic Gaussian-basis electronic structure for ferric: Gamma-point and
+//! k-point SCF, MP2 and dRPA, forces and stress, used by the CLI `[cell]`
+//! section and the Python `run_*_{gamma,kpts}` functions.
+//!
+//! Provenance notes in this crate cite `reference/pbc/` prototypes
+//! (`pbc_*.py`, `FINDINGS.md`, `stage1-design.md`). Only `reference/pbc/bench/`
+//! is in the repository; the rest are not.
 //!
 //! * [`lattice`] — [`Cell`]: a [`Molecule`](ferric_core::mol::Molecule)
 //!   plus three lattice vectors, with volume, reciprocal vectors, real-space
@@ -79,8 +85,9 @@
 //!   Madelung-shifted denominators as at Gamma.
 //!
 //! * [`ecp`] — periodic ECPs: the `apply_ecp` guard ([`check_ecp_applied`])
-//!   and the Bloch sum `V_ECP(k) = Σ_L e^{ik·L} V_L` over libecpint's
-//!   per-shell-pair kernel (`ferric_ecp_block`), added into `h` by
+//!   and the Bloch sum `V_ECP(k) = Σ_L e^{ik·L} V_L` over the per-shell-pair
+//!   kernel `ferric_integrals::ecp::ecp_block_spherical` (quadrature backend by
+//!   default, libecpint by `FERRIC_ECP_BACKEND`), added into `h` by
 //!   `periodic_hcore` / `periodic_hcore_kpts`; FINDINGS "Iteration 14".
 //!   The Gamma force term (`periodic_ecp_gradient`, the three moving centres
 //!   bra / ket image / ECP image over the energy's own triples) is added to

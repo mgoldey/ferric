@@ -1,4 +1,5 @@
-//! Maximum-Overlap Method (MOM) for ROHF/ROKS orbital ordering.
+//! Maximum-Overlap Method (MOM) orbital ordering, used by the RHF, UHF and
+//! ROHF (and KS) drivers when `mom_after_iter` is set.
 //!
 //! After diagonalizing the Fock matrix to get a new C, MOM picks the
 //! `n_closed` and `n_open` new MOs that have maximum *AO-overlap* with the

@@ -682,9 +682,9 @@ reference.
 
 | Name | Purpose | CLI |
 |---|---|---|
-| `run_ccd` | CCD correlation energy. | — |
+| `run_ccd` | CCD correlation energy. | `ccd` |
 | `run_ccsd` | Spin-adapted closed-shell CCSD. | `ccsd` |
-| `run_ccsd_t` | CCSD plus the spin-adapted (T) correction. | — |
+| `run_ccsd_t` | CCSD plus the spin-adapted (T) correction. | `ccsd(t)` |
 | `CcResult` | `correlation_energy` and `t_correction` (`None` without triples). No reference energy. | |
 
 ### RPA, GW and excited states

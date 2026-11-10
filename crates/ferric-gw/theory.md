@@ -126,7 +126,7 @@ feeds this W through `sigma_c_at_z` on the 100-point grid and asserts the
 closed form to 1e-8 Ha at $z = \epsilon_F + i\{0, 0.1, 0.6, 2\}$ (measured
 2.3e-9, the quadrature error of that grid).
 
-**Product integration (open shell).** On the continuation line
+**Product integration.** On the continuation line
 $z = \epsilon_F + i\omega$ the kernel $a/(a^2+\omega'^2)$, $a = z - \epsilon_n$,
 peaks at $\omega' = \omega$ with width $|\epsilon_F - \epsilon_n|$. When a
 state sits close to $\epsilon_F$ the plain Gauss–Legendre sum cannot resolve
@@ -147,8 +147,10 @@ error. Measured (OH, NH2 / cc-pVDZ@PBE): node error vs the pole sum 2e-8 Ha at
 `u0` is recovered from the nodes; a non-GL rule (Chebyshev tan-map) keeps the
 plain sum. Tests: `sigma::tests::product_rule_*`; `tests/validation_gw.rs`
 `u_g0w0_uks_pbe_*`; `tests/validation_gw_defaults.rs` `u_g0w0_uks_*`. The
-closed-shell drivers still use the plain sum (its @PBE HOMO−1 non-convergence
-in $n_{\rm quad}$ is plausibly the same ridge; not measured).
+closed-shell drivers (G0W0, evGW₀, evGW and the MPI sweep) use the same rule
+through `solve_qp_for_mo`. On H2O/cc-pVDZ G0W0@PBE HOMO−2 the plain sum sits
++136, −102 and −9.7 meV from the exact-Σc root at 40, 100 and 200 points; the
+product rule is within 0.004 meV from 40 points on.
 
 Further checks: `sigma::tests::sigma_c_blas3_matches_scalar_reference`
 (GEMM vs scalar loop); `tests/validation_gw.rs`
@@ -371,7 +373,7 @@ Grades as published on the site (`site/src/reference/validation.md`):
 
 | Capability | Grade | What is established |
 |---|---|---|
-| G0W0, evGW₀, evGW, COHSEX (closed shell), U-G0W0, U-COHSEX | Smoke | Implementation matches PySCF `gw_ac`/`ugw_ac` or a numpy build at **matched settings** (`n_quad = 100`, `trunc_thresh = 0`): G0W0@HF ≤1.3e-7 Ha, @PBE ≤6.2e-8, ECP ≤2.5e-6, U-G0W0@UHF ≤3.8e-8 (OH/cc-pVDZ β LUMO+2 1.2e-5) and U-G0W0@UKS ≤2.7e-8 against the grid-free U-dRPA pole sum (§4, product integration), COHSEX ≤1.2e-9, evGW ≤5.7e-7, U-COHSEX ≤3.3e-9. CLI defaults are coarser (the 20-point grid moves the H₂O@PBE HOMO by 13 meV); truncated PDEP is not validated. |
+| G0W0, evGW₀, evGW, COHSEX (closed shell), U-G0W0, U-COHSEX | Proven (narrow) | At **matched settings** (`n_quad = 100`, `trunc_thresh = 0`), against the grid-free dRPA pole sum: G0W0@HF ≤1.2e-8 Ha, @PBE ≤1.8e-8, U-G0W0@UHF ≤1.2e-5, U-G0W0@UKS ≤2.7e-8 (§4, product integration); against PySCF `gw_ac`: G0W0@HF ≤1.6e-7; ECP ≤2.5e-6, COHSEX ≤1.2e-9, evGW ≤5.7e-7, U-COHSEX ≤3.3e-9. At the defaults (`n_quad = 40`, `trunc_thresh = 1e-4`) HOMO and LUMO stay within 10 meV of matched settings. Narrow: the analytic continuation limits states far from ε_F with split spectral weight. |
 | BSE-TDA | Smoke | Lowest five singlets match a numpy BSE-TDA to 1.8e-10 Ha given the same QP energies (H₂O, NH₃, CH₂O). |
 | RPAx static α | Smoke | Matches an independent numpy kernel to 5.3e-9 relative; the physics is not established (water/cc-pVDZ@PBE, scissor 0.36 Ha: 5.20 vs DOSD 9.64 a.u.); C6 from the dynamic kernel is ~63% low. |
 

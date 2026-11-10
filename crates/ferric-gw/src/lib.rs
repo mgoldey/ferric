@@ -1,10 +1,9 @@
-//! Ferric GW spike: G0W0, COHSEX, evGW₀, evGW, sc-COHSEX.
+//! Ferric GW: G0W0, COHSEX, evGW₀, evGW and sc-COHSEX on closed-shell
+//! (RHF/RKS) and open-shell (UHF/UKS, ROHF/ROKS) references, plus BSE-TDA.
 //!
 //! Built on top of `ferric-rpa`'s PDEP eigenpotential basis as a low-rank
-//! representation of the screened Coulomb interaction W(iω). See
-//! `docs/superpowers/specs/2026-05-19-rpa-to-gw-spike-design.md`.
-//!
-//! Spike scope: closed-shell, HF reference, cc-pVDZ-scale, validation on H₂O.
+//! representation of the screened Coulomb interaction W(iω). Equations are in
+//! `crates/ferric-gw/theory.md`.
 
 // Self-energy kernels intrinsically thread many quantities (G, W, orbital
 // energies, frequency grid, QP indices); bundling them into structs would only
@@ -38,11 +37,12 @@ pub mod mo_b;
 pub mod mpi_gw;
 /// Pade continued-fraction analytic continuation from imaginary to real axis.
 pub mod pade;
-/// Quasiparticle Newton solver: find QP pole of Dyson equation.
+/// Placeholder module; the quasiparticle Newton solve lives in [`sigma`].
 pub mod qp;
 /// Closed-shell GW self-energy: Sigma_c, QP solver, G0W0/evGW0/evGW dispatch.
 pub mod sigma;
-/// TDHF/RPAx static polarizability (dense A/B formulation).
+/// Closed-shell singlet TDA-DFT excitation energies on an RKS reference (a
+/// validated spike; TDHF/RPAx polarizability is in [`bse`]).
 pub mod tddft;
 /// Spin-unrestricted COHSEX.
 pub mod u_cohsex;

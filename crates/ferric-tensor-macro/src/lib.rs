@@ -18,8 +18,7 @@
 //! The emitted call to `einsum_binary_batched` (and the scalar-result unwrap)
 //! `.expect()`s the `Result<_, TensorError>` rather than propagating it. This
 //! was evaluated against this codebase's general "never panic on
-//! data-dependent conditions, propagate `Result`" convention (see
-//! `docs/guide/dev/03-reliability-conventions.md`) and judged a deliberate,
+//! data-dependent conditions, propagate `Result`" convention and judged a deliberate,
 //! narrower exception — analogous to Rust's own array-index-out-of-bounds
 //! panic:
 //!

@@ -2,8 +2,8 @@
 //!
 //! Structurally modeled on `ferric_rpa::davidson` (subspace expansion,
 //! Rayleigh–Ritz on the small projected matrix, residual/convergence check,
-//! restart), but with a CI-native matvec (`sigma = H c` via the Slater–Condon
-//! [`crate::hamiltonian::sigma`] build) and the standard CI diagonal
+//! restart), but with a caller-supplied CI matvec (`sigma = H c`; the driver
+//! passes [`crate::sigma::DirectSigma::apply`]) and the standard CI diagonal
 //! preconditioner `t = r / (H_ii - lambda)`.
 //!
 //! Phase A targets a single lowest root, so this is a plain (block size 1)

@@ -211,8 +211,10 @@ The code's `dk_dr`, `dw0_dr`, `dw0_dg` (`vv10.rs:966`) are $\rho$ times the
 partial derivatives: the $\rho_i$ prefactor of $E_{nl}$ is folded in.
 $V_{nl}$ is assembled by `add_vv10_scratch` (`vv10.rs:1373`) with the closed-shell
 GGA form $w v_\rho\chi_\mu\chi_\nu + 2 w v_\sigma\nabla\rho\cdot(\chi_\mu\nabla\chi_\nu+\chi_\nu\nabla\chi_\mu)$
-(`vv10.rs:1425`). Points with $\rho < 10^{-8}$ are excluded from the pair sum;
-$\partial\omega_0/\partial\sigma$ is set to zero where $\sigma \le 10^{-8}$.
+(`vv10.rs:1425`). Points with $\rho < 10^{-8}$ are excluded from the pair sum.
+$\rho\,\partial\omega_0/\partial\sigma = C\sigma/(\rho^3\omega_0)$ is kept at every active
+point, including $\sigma \le 10^{-8}$: $\omega_0$ depends on $\sigma$ wherever $\rho$ is
+active, so $V_{nl} = \partial E_{nl}/\partial D$.
 
 - Proof: `scripts/dft_vv10_potential_sympy.py` (two-point grid with self pairs,
   exact; the constants; module-doc $\Phi$ form).
@@ -220,12 +222,10 @@ $\partial\omega_0/\partial\sigma$ is set to zero where $\sigma \le 10^{-8}$.
   (per-point FD, $10^{-8}$), `vv10::tests::potential_tangent_is_the_derivative_of_production_vnl`,
   `vv10::tests::screen_matches_dense_exactly_in_the_trivial_limit`,
   `ferric-scf/tests/dft_gradient_wb97xv.rs` (ωB97X-V nuclear gradient vs FD).
-- **Open issue (T015).** The AO matrix $V_{nl}$ is not exactly $\partial E_{nl}/\partial D$:
-  on NH$_2$/6-31G, $\mathrm{FD}(E) - \mathrm{Tr}[VX] = -1.31\times10^{-7}$
-  ($3.6\times10^{-6}$ relative), constant over step sizes, while ωB97X without VV10
-  agrees to $8.6\times10^{-14}$ (`test_xc_blocks.py::test_vxc_is_the_derivative_of_exc`,
-  strict xfail). The per-point partials above are exact, so the residual lies
-  elsewhere on the $D\to(\rho,\sigma)\to V$ path; cause not identified.
+- `vv10::tests::vsig_is_the_sigma_derivative_at_low_gradient_points` (FD of
+  $E_{nl}$ along $\sigma$ at active low-gradient points, $10^{-5}$ relative) and
+  `test_xc_blocks.py::test_vxc_is_the_derivative_of_exc`, which includes
+  ωB97X-V: $\mathrm{Tr}[V_{nl}X]$ equals the FD derivative of $E_{nl}$.
 
 ## XC nuclear gradient: AO-derivative and grid-response terms
 
@@ -267,4 +267,3 @@ with $D\to D^\sigma$, $\mathbf{G}^\sigma$ in place of $2v_\sigma\nabla\rho$.
 
 - $\sum_b \partial w_g/\partial\mathbf R_b = 0$ for the assembled weight1 rows
   (`grid.rs:673`); covered only end to end through the KS gradients.
-- The VV10 AO-matrix residual (T015, above).

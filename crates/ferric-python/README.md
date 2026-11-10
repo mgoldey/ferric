@@ -88,7 +88,7 @@ exchange is built* for when each pays.
   Runs Spin-Component Scaled MP2.
 * **`run_ccsd_t(mol: Molecule, basis_set: BasisSet, auxbasis: BasisSet, frozen_core: int = None, k_builder: str = None) -> CcResult`**:
   Runs Coupled Cluster CCSD(T) correlation calculations.
-* **`run_pdep_rpa(mol: Molecule, basis_set: BasisSet, auxbasis: BasisSet, frozen_core: int = None, n_quad: int = None, quadrature: str = None, u0: float = None, trunc_thresh: float = None, davidson_conv_thresh: float = None, run_diagnostics: bool = False, k_builder: str = None) -> PdepRpaResult`**:
+* **`run_pdep_rpa(mol: Molecule, basis_set: BasisSet, auxbasis: BasisSet, frozen_core: int = None, n_quad: int = None, quadrature: str = None, u0: float = None, trunc_thresh: float = None, eigensolver_conv_thresh: float = None, run_diagnostics: bool = False, k_builder: str = None) -> PdepRpaResult`**:
   Runs PDEP-RPA calculations.
 
 ---

@@ -14,7 +14,7 @@ where $\mathbf{\chi}_0(i\omega)$ is the independent-particle polarizability and 
 
 Instead of explicitly constructing and diagonalizing the large dense dielectric matrix $\mathbf{\epsilon}(i\omega)$ at each frequency point, the PDEP approach uses the rapid decay of the dielectric operator's spectrum.
 
-1. **Static Dielectric Eigenpotentials:** The static ($\omega=0$) dielectric operator $\mathbf{\epsilon}(0)$ is diagonalized iteratively using the Davidson algorithm to find the dominant eigenpotentials (often called plasmon density eigenpotentials) $|V_\alpha\rangle$:
+1. **Static Dielectric Eigenpotentials:** The static ($\omega=0$) dielectric operator $\mathbf{\epsilon}(0)$ is diagonalized iteratively (block Lanczos by default, `Eigensolver::Lanczos`; Davidson is selectable) to find the dominant eigenpotentials (often called plasmon density eigenpotentials) $|V_\alpha\rangle$:
    $$ \mathbf{\epsilon}(0) |V_\alpha\rangle = \lambda_\alpha(0) |V_\alpha\rangle $$
    Because the eigenvalues decay steeply, only a small number of eigenpotentials with eigenvalues $\lambda_\alpha(0) > \epsilon_{\text{trunc}}$ need to be retained. They form a compressed, system-adapted basis.
 
