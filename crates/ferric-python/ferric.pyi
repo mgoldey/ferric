@@ -55,15 +55,6 @@ class BuildInfo(TypedDict):
 def build_info() -> BuildInfo:
     """Which build of ferric is loaded. All values are fixed at compile time."""
 
-def _set_libint_max_am_for_test(
-    table: list[list[int]] | None = None,
-) -> list[list[int]]:
-    """Test hook, not public API: override the per-class libint2 capability
-    table ferric checks before derivative integrals (6 rows: 4-centre,
-    3-centre bra, 2-centre bra, one-body, 3-centre ket, 2-centre ket; 3
-    derivative orders; -1 = not generated). ``None`` restores the linked
-    table. Process-wide. Returns the linked table."""
-
 def set_blas_threads(n: int | None = None) -> None:
     """OpenBLAS threads for serial sections (Fock diagonalization, DIIS, dense
     linear algebra outside parallel regions), for the rest of the process.
