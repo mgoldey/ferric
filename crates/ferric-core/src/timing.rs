@@ -57,6 +57,8 @@ pub struct Stage {
 }
 
 impl Stage {
+    /// Start timing the stage `label`; reads the clock only when timing is
+    /// [`enabled`].
     #[inline]
     pub fn start(label: &'static str) -> Self {
         Stage {
@@ -69,6 +71,8 @@ impl Stage {
         }
     }
 
+    /// Print `[timing] <label> <elapsed> ms` to stderr; prints nothing when
+    /// timing was disabled at [`Stage::start`].
     #[inline]
     pub fn end(self) {
         if let Some(t0) = self.t0 {
@@ -109,6 +113,7 @@ pub struct PhaseAccumulator {
 }
 
 impl PhaseAccumulator {
+    /// An accumulator with no phases recorded (same as `Default`).
     pub fn new() -> Self {
         Self {
             phases: Vec::new(),

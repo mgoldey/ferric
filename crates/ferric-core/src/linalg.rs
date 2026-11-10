@@ -65,7 +65,11 @@ use ndarray::{Array2, ArrayView2, Axis};
 /// `ndarray_linalg::UPLO` so call sites read the same.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Uplo {
+    /// Passed to LAPACK as `'L'` on a column-major copy of `a`, so the
+    /// entries `a[[i, j]]` with `i >= j` are read.
     Upper,
+    /// Passed to LAPACK as `'U'`, so LAPACK reads the entries `a[[i, j]]`
+    /// with `i <= j`.
     Lower,
 }
 
@@ -76,8 +80,8 @@ pub enum Uplo {
 /// the normalized eigenvector for `evals[i]` — identical convention to
 /// `ndarray_linalg::Eigh::eigh(UPLO::…)`.
 ///
-/// `a` MUST be square and symmetric (only the `uplo` triangle is read, exactly
-/// like `dsyev`/`eigh`). A non-zero LAPACK `info` return surfaces as
+/// `a` MUST be square and symmetric (only one triangle is read; see [`Uplo`]
+/// for which). A non-zero LAPACK `info` return surfaces as
 /// [`FerricError::Lapack`] rather than a panic.
 pub fn eigh_dc(a: &Array2<f64>, uplo: Uplo) -> Result<(Vec<f64>, Array2<f64>), FerricError> {
     let (nrows, ncols) = a.dim();
@@ -105,11 +109,10 @@ pub fn eigh_dc(a: &Array2<f64>, uplo: Uplo) -> Result<(Vec<f64>, Array2<f64>), F
         }
     }
 
-    // `uplo` names a triangle of `a` in ndarray's row-major sense. Our `buf` is
-    // column-major, so the same bytes present the *opposite* triangle to
-    // LAPACK. Flip the flag so LAPACK reads the triangle the caller intended.
-    // (For a symmetric matrix the result is identical either way, but flip for
-    // honesty / correctness under a non-symmetric input passed by mistake.)
+    // The flag is flipped relative to `uplo`. `buf` holds `a` itself in
+    // column-major order (not its transpose), so the flip makes `Uplo::Upper`
+    // read the lower triangle of `a` as indexed (see `Uplo`). For a symmetric
+    // matrix the result is identical either way.
     let uplo_lapack: c_char = match uplo {
         Uplo::Upper => b'L' as c_char,
         Uplo::Lower => b'U' as c_char,

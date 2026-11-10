@@ -48,11 +48,17 @@ pub const fn gpu_compiled() -> bool {
 /// Static facts about a usable device, captured at probe time.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GpuInfo {
+    /// CUDA device ordinal that was probed.
     pub ordinal: usize,
+    /// Device name reported by the driver.
     pub name: String,
+    /// Compute capability, major part.
     pub cc_major: i32,
+    /// Compute capability, minor part.
     pub cc_minor: i32,
+    /// Free device memory (bytes) at probe time (`cuMemGetInfo`).
     pub free_bytes: usize,
+    /// Total device memory (bytes) at probe time.
     pub total_bytes: usize,
 }
 
@@ -62,7 +68,11 @@ pub enum GpuStatus {
     /// Built without `--features gpu`.
     NotCompiled,
     /// Built with the feature, but no usable device (reason is user-facing).
-    Unavailable { reason: String },
+    Unavailable {
+        /// User-facing reason no device is in use: a failed probe (prefixed
+        /// `GPU <ordinal>: `), mode off, or a malformed GPU setting.
+        reason: String,
+    },
     /// A device is initialised and its cuBLAS handle exists.
     Ready(GpuInfo),
 }

@@ -63,7 +63,9 @@ pub struct ParallelContext {
     /// reduction path is a no-op — byte-identical to the serial engine.
     #[cfg(feature = "mpi")]
     mpi_active: bool,
+    /// This process's MPI rank (0 without MPI).
     pub rank: usize,
+    /// Number of MPI ranks (1 without MPI).
     pub size: usize,
 }
 

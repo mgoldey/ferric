@@ -87,8 +87,11 @@ pub const MIN_SAMPLES: usize = 3;
 /// One row of the process table.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProcStat {
+    /// Process id (the field before the parenthesised name).
     pub pid: u32,
+    /// Parent process id.
     pub ppid: u32,
+    /// Command name: the text between the first `(` and the last `)`.
     pub name: String,
     /// Start time in clock ticks since boot.
     pub start: u64,
@@ -160,13 +163,24 @@ pub fn descendants(table: &[ProcStat], root: u32) -> HashSet<u32> {
 /// Result of a sampling run. `valid == false` is never quotable.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Summary {
+    /// `true` when no failure was recorded and at least [`MIN_SAMPLES`]
+    /// intervals were sampled.
     pub valid: bool,
     /// Why the summary is invalid (empty when valid).
     pub failure: String,
+    /// Number of sampled intervals (zero when the run was invalidated by a
+    /// recorded failure).
     pub samples: usize,
+    /// Sum of the sampled interval lengths, in seconds.
     pub seconds: f64,
+    /// Total CPU time of all non-harness processes divided by `seconds`
+    /// (cores); NaN when invalid.
     pub mean_total_cores: f64,
+    /// Largest per-interval CPU use of any one non-harness process (cores);
+    /// NaN when invalid. Informational, not a quotability criterion.
     pub max_single_cores: f64,
+    /// Number of intervals in which some non-harness process exceeded
+    /// [`SPIKE_CORES`].
     pub spike_seconds: usize,
     /// Top offenders by total CPU seconds: (name truncated, cpu seconds).
     pub top3: Vec<(String, f64)>,
@@ -191,7 +205,10 @@ impl Summary {
 /// One one-second sample of the non-harness load.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Sample {
+    /// CPU time of all non-harness processes in the interval divided by the
+    /// interval length (cores).
     pub total_cores: f64,
+    /// Largest CPU use of any one non-harness process in the interval (cores).
     pub max_single_cores: f64,
 }
 
@@ -297,6 +314,8 @@ impl Accumulator {
         tops
     }
 
+    /// Summarise the run. Invalid (see [`Summary::failed`]) if any failure was
+    /// recorded or fewer than [`MIN_SAMPLES`] intervals were sampled.
     pub fn summary(&self) -> Summary {
         if let Some(reason) = &self.invalid {
             return Summary::failed(reason);
@@ -360,6 +379,9 @@ fn sample_once(acc: &mut Accumulator, me: u32, dt: f64) {
 }
 
 impl Sampler {
+    /// Spawn the sampler thread. It records a baseline table at once, then
+    /// accounts an interval roughly every second until stopped, plus a final
+    /// interval at stop if at least 0.25 s has elapsed since the last one.
     pub fn start() -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let flag = Arc::clone(&stop);

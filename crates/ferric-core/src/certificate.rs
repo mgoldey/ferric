@@ -212,6 +212,7 @@ pub struct BuildStamp {
 }
 
 impl BuildStamp {
+    /// A stamp from its three parts, stored as given.
     pub fn new(version: impl Into<String>, commit: impl Into<String>, dirty: Option<bool>) -> Self {
         BuildStamp {
             version: version.into(),
@@ -242,6 +243,7 @@ pub struct MeasuredError {
     pub quantity: String,
     /// The largest absolute deviation recorded, in `units`. Finite, >= 0.
     pub value: f64,
+    /// Units of `value`, e.g. `"Ha"`.
     pub units: String,
     /// The reference code or data, e.g. `"PySCF 2.6"`.
     pub reference: String,
@@ -279,7 +281,10 @@ impl MeasuredError {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Approximation {
+    /// Short identifier, e.g. `"ri"`, `"frozen-core"`, `"local"`; a name taken
+    /// over from an SCF reference is prefixed `"scf "`.
     pub name: String,
+    /// Free-text settings of the approximation, e.g. `"aux cc-pvdz-ri"`.
     pub detail: String,
 }
 
@@ -291,11 +296,17 @@ pub struct Certificate {
     pub capability: String,
     /// `None` until a top-level artifact stamps it.
     pub build: Option<BuildStamp>,
+    /// Validation grade. The constructors take it from [`METHOD_KIND_GRADES`]
+    /// (or [`Grade::Ungraded`]); the builder methods only lower it
+    /// ([`Certificate::cap_grade`]).
     pub grade: Grade,
     /// Where `grade` came from: [`GRADE_SOURCE_PAGE`] for a table hit,
     /// `None` for [`Grade::Ungraded`] with no recorded source.
     pub grade_source: Option<String>,
+    /// The capability's recorded error against an independent reference,
+    /// when one is attached.
     pub measured_error: Option<MeasuredError>,
+    /// Approximations in effect, in the order recorded.
     pub approximations: Vec<Approximation>,
     /// [`PrecisionRecord::to_json`] of the result, when attached.
     pub precision: Option<serde_json::Value>,
@@ -404,21 +415,27 @@ impl Certificate {
         }
     }
 
+    /// Set the build stamp, replacing any already held.
     pub fn with_build(mut self, build: BuildStamp) -> Self {
         self.build = Some(build);
         self
     }
 
+    /// Attach `record` as JSON ([`PrecisionRecord::to_json`]), replacing any
+    /// precision already held.
     pub fn with_precision(mut self, record: &PrecisionRecord) -> Self {
         self.precision = Some(record.to_json());
         self
     }
 
+    /// Attach the measured error, replacing any already held. The grade is not
+    /// changed.
     pub fn with_measured_error(mut self, e: MeasuredError) -> Self {
         self.measured_error = Some(e);
         self
     }
 
+    /// Append one approximation `(name, detail)`; duplicates are kept.
     pub fn with_approximation(
         mut self,
         name: impl Into<String>,

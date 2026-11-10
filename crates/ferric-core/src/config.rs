@@ -53,8 +53,11 @@ impl ConfigSource {
 /// A resolved setting plus where it came from and the env var it *would* read.
 #[derive(Debug, Clone, Copy)]
 pub struct Resolved<T> {
+    /// The value that won the precedence chain.
     pub value: T,
+    /// Which channel supplied `value`.
     pub source: ConfigSource,
+    /// The setting's env var name, also used as the audit-line label.
     pub env_name: &'static str,
 }
 
@@ -75,9 +78,16 @@ impl<T: std::fmt::Display> Resolved<T> {
 /// string form becomes `T`; `validate` rejects out-of-range values LOUDLY
 /// (returns `Err` — no silent fallback to the default on a malformed override).
 pub struct ConfigVar<T: 'static> {
+    /// Env var consulted when no explicit value is given.
     pub env_name: &'static str,
+    /// Value used when neither an explicit value nor the env var is set; it is
+    /// returned without passing through `validate`.
     pub default: T,
+    /// Converts the (trimmed) env string to `T`; an `Err` is returned to the
+    /// caller of [`resolve`](Self::resolve).
     pub parse: fn(&str) -> Result<T, String>,
+    /// Range check applied to explicit and env-supplied values; an `Err` is
+    /// returned to the caller of [`resolve`](Self::resolve).
     pub validate: fn(&T) -> Result<(), String>,
 }
 

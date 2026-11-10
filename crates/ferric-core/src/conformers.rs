@@ -80,39 +80,63 @@ pub enum ConformerError {
     Empty,
     /// Conformer `index` has a different atom count than the reference (index 0).
     AtomCountMismatch {
+        /// Position of the offending conformer in the input.
         index: usize,
+        /// Atom count of conformer 0.
         expected: usize,
+        /// Atom count of conformer `index`.
         found: usize,
     },
     /// Conformer `index` disagrees with the reference on atom `atom`: element,
     /// ghost flag, or ECP core count. Averaging across these silently corrupts
     /// every property, so it is a hard error.
     CompositionMismatch {
+        /// Position of the offending conformer in the input.
         index: usize,
+        /// Index of the first disagreeing atom.
         atom: usize,
+        /// Conformer 0's atom, rendered as `[@]Sym (Z=.., n_core_ecp=..)`.
         expected: String,
+        /// Conformer `index`'s atom, in the same rendering.
         found: String,
     },
     /// Conformer `index` has a different total charge or spin multiplicity than
     /// the reference. These are different electronic states, not conformers.
     StateMismatch {
+        /// Position of the offending conformer in the input.
         index: usize,
+        /// `(charge, multiplicity)` of conformer 0.
         expected: (i32, usize),
+        /// `(charge, multiplicity)` of conformer `index`.
         found: (i32, usize),
     },
     /// The number of energies does not match the number of conformers.
     EnergyCountMismatch {
+        /// Number of molecules supplied.
         n_conformers: usize,
+        /// Number of energies supplied.
         n_energies: usize,
     },
     /// A supplied energy is not finite (NaN/inf), typically an unconverged SCF
-    /// that was not checked before being pushed into the ensemble.
-    NonFiniteEnergy { index: usize },
+    /// that was not checked before being pushed into the ensemble. Also
+    /// returned when a conformer has no energy set yet.
+    NonFiniteEnergy {
+        /// Position of the offending conformer.
+        index: usize,
+    },
     /// Temperature is not strictly positive and finite.
     BadTemperature(f64),
     /// A per-conformer property vector has the wrong length, or the individual
-    /// property values have inconsistent shapes.
-    PropertyShapeMismatch { expected: usize, found: usize },
+    /// property values have inconsistent shapes. Also returned by
+    /// `ConformerEnsemble::set_energy` for an out-of-range index (then `found`
+    /// is `index + 1`).
+    PropertyShapeMismatch {
+        /// Required length: the conformer/weight count, or the length of the
+        /// first conformer's value (row) for a within-property shape check.
+        expected: usize,
+        /// Length actually supplied.
+        found: usize,
+    },
 }
 
 impl std::fmt::Display for ConformerError {
@@ -529,6 +553,7 @@ pub fn boltzmann_weights(
 ///   averaged property is the honest uncertainty.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EnsembleDiagnostics {
+    /// Number of conformers in the ensemble.
     pub n_conformers: usize,
     /// Conformers with `E_i - E_min <= kT`. Always >= 1 (the minimum itself).
     pub n_within_kt: usize,
@@ -544,6 +569,7 @@ pub struct EnsembleDiagnostics {
     /// conformers actually contributing. 1.0 for a single dominant conformer,
     /// `N` for `N` degenerate ones.
     pub effective_n_conformers: f64,
+    /// Temperature (K) the weights and `kT` windows were evaluated at.
     pub temperature_k: f64,
 }
 

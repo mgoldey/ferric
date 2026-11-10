@@ -10,9 +10,13 @@ use ndarray::Array2;
 /// charges).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PointCharge {
+    /// Charge in units of the elementary charge (may be fractional).
     pub q: f64,
+    /// x coordinate (Bohr).
     pub x: f64,
+    /// y coordinate (Bohr).
     pub y: f64,
+    /// z coordinate (Bohr).
     pub z: f64,
 }
 
@@ -25,9 +29,13 @@ pub struct PointCharge {
 /// [`ExternalPotential::smeared_charges`]).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SmearedCharge {
+    /// Total charge of the Gaussian distribution (elementary charges).
     pub q: f64,
+    /// x coordinate of the Gaussian centre (Bohr).
     pub x: f64,
+    /// y coordinate of the Gaussian centre (Bohr).
     pub y: f64,
+    /// z coordinate of the Gaussian centre (Bohr).
     pub z: f64,
     /// Gaussian width in Bohr (`ζ = 1/width²`). Must be `> 0`.
     pub width: f64,
@@ -39,6 +47,7 @@ pub struct SmearedCharge {
 /// field) — every consumer must treat this as a true no-op.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ExternalPotential {
+    /// Fixed classical point charges. Empty by default.
     pub point_charges: Vec<PointCharge>,
     /// Gaussian-smeared classical charges (see [`SmearedCharge`]). Empty by
     /// default: every consumer of this struct must take the exact same code
@@ -46,6 +55,9 @@ pub struct ExternalPotential {
     /// identical (this is `is_empty`'s and `hcore_with_external`'s exactness
     /// anchor).
     pub smeared_charges: Vec<SmearedCharge>,
+    /// Uniform electric field `E = [E_x, E_y, E_z]` (atomic units, lab
+    /// frame); a charge `q` at `R` gains energy `-q E·R` (see
+    /// [`ExternalPotential::field_nuclear_energy`]). `None` means no field.
     pub field: Option<[f64; 3]>,
 }
 
