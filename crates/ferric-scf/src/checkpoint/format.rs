@@ -605,12 +605,59 @@ fn temp_path(path: &Path, prefix: &str) -> PathBuf {
 
 /// The open file is still what `temp` names, so no cleaner removed it between its
 /// creation and its lock.
+#[cfg(unix)]
 fn still_named(file: &File, temp: &Path) -> bool {
     use std::os::unix::fs::MetadataExt;
     match (file.metadata(), fs::symlink_metadata(temp)) {
         (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
         _ => false,
     }
+}
+
+/// The open file is still what `temp` names, so no cleaner removed it between its
+/// creation and its lock. Windows has no (dev, ino) in stable std; its file
+/// identity is (volume serial number, file index), read from the open handle and
+/// from a second handle on `temp` opened without following a reparse point (as
+/// unix uses `symlink_metadata`). Creation times are NOT an identity there: file
+/// system tunnelling gives a file re-created under a just-deleted name the old
+/// creation time.
+#[cfg(windows)]
+fn still_named(file: &File, temp: &Path) -> bool {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+    };
+    let Ok(named) = OpenOptions::new()
+        .access_mode(0)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
+        .open(temp)
+    else {
+        return false;
+    };
+    match (windows_file_id(file), windows_file_id(&named)) {
+        (Some(a), Some(b)) => a == b,
+        _ => false,
+    }
+}
+
+/// (volume serial number, 64-bit file index) of an open handle.
+#[cfg(windows)]
+fn windows_file_id(file: &File) -> Option<(u32, u64)> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+    };
+    let mut info = std::mem::MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::uninit();
+    // SAFETY: the handle belongs to a live `File` borrowed for the whole call,
+    // and `info` is a correctly sized, aligned out-parameter the call only writes.
+    let ok = unsafe { GetFileInformationByHandle(file.as_raw_handle(), info.as_mut_ptr()) };
+    if ok == 0 {
+        return None;
+    }
+    // SAFETY: a nonzero return means the call filled `info`.
+    let info = unsafe { info.assume_init() };
+    let index = (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow);
+    Some((info.dwVolumeSerialNumber, index))
 }
 
 /// Create and lock a new temp file. The lock is what marks a writer as alive: the
