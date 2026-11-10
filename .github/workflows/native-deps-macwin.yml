@@ -1,0 +1,178 @@
+name: Native deps (macOS arm64, Windows x86_64)
+
+# The C/C++ libraries ferric's macOS arm64 and Windows x86_64 wheels link,
+# built from source and cached: ferric's small libint2 2.7.2 export (static),
+# OpenBLAS (fixed kernel TARGET, C LAPACK, pthreads), libxc and Eigen's
+# headers. The non-Linux twin of wheels.yml's build-native-deps job.
+#
+# Reusable only (workflow_call): wheels.yml calls it for releases and nightly
+# runs; other workflows (e.g. a test-suite run on these platforms) may call it
+# too. It uploads, per platform P in {macos-arm64, windows-x86_64}, two
+# artifacts that together form ONE install prefix:
+#   native-libint2-P   libint2 (include/, lib/, licenses/)
+#   native-blas-xc-P   OpenBLAS, libxc, Eigen headers (include/, lib/, bin/, licenses/)
+# Download both into the same directory:
+#   actions/download-artifact with `pattern: native-*-P` and `merge-multiple: true`.
+# How to build against the prefix is in scripts/wheels/README.md.
+#
+# CACHES. Two actions/cache entries per platform, so a change to one part
+# does not rebuild the other: libint2 is the long pole (77 min on macos-15,
+# 91 min on windows-2025, measured by the 2026-11-09 spike), OpenBLAS + libxc
+# take minutes. Each key holds everything that changes its bytes: the runner
+# image's OS, the compiler's major version, the pinned source versions (and
+# the libint2 export's sha256) and the sha256 of the build script itself.
+# Caches are scoped per branch: a branch can restore its own and main's.
+# GitHub's repository cache budget is 10 GB, shared with ci.yml and the Linux
+# wheels' native-deps entry; see the cache sizes in scripts/wheels/README.md.
+#
+# Each part job is the ONLY writer of its key in a run (one job per platform
+# and part), so there is no save race (wheels.yml build-native-deps' comment
+# has the history of the race this avoids).
+
+on:
+  workflow_call:
+    inputs:
+      platforms:
+        description: JSON list of platforms to build (macos-arm64, windows-x86_64)
+        type: string
+        required: false
+        default: '["macos-arm64", "windows-x86_64"]'
+
+env:
+  # Same pins as wheels.yml's Linux native deps.
+  LIBINT_VERSION: "2.7.2"
+  LIBINT_URL: https://github.com/mgoldey/ferric/releases/download/libint-2.7.2-ferric-small-1/libint-2.7.2-ferric-small-1.tgz
+  LIBINT_SHA256: 123b744cd744b19c4ca8401b3a58ed7fca3680bc638519edd806501b5919a48b  # pragma: allowlist secret
+  OPENBLAS_VERSION: "0.3.27"
+  LIBXC_VERSION: "6.2.2"
+  EIGEN_VERSION: "3.4.0"
+  # Wheels claim macOS 11+ (the first arm64 macOS); every native object must
+  # target it too, or delocate raises the wheel's platform tag.
+  MACOSX_DEPLOYMENT_TARGET: "11.0"
+  # Bump to drop every cache entry this file writes.
+  NATIVE_MACWIN_CACHE_VERSION: v1
+
+jobs:
+  native:
+    name: native ${{ matrix.part }} ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: ${{ fromJSON(inputs.platforms) }}
+        part: [libint2, blas-xc]
+    runs-on: ${{ matrix.platform == 'macos-arm64' && 'macos-15' || 'windows-2025' }}
+    # A cold libint2 build is 77-91 min; 340 of the hosted job's 360.
+    timeout-minutes: 340
+    defaults:
+      run:
+        # Login shell: micromamba's activation lives in the profile.
+        shell: bash -el {0}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts/wheels
+          sparse-checkout-cone-mode: false
+
+      # Build tools only (CMake, Ninja, Eigen's CMake package, llvm-ar). No
+      # library from this environment is linked into anything.
+      - uses: mamba-org/setup-micromamba@add3a49764cedee8ee24e82dfde87f5bc2914462 # v2.0.7
+        with:
+          environment-name: nd
+          init-shell: bash
+          create-args: >-
+            -c conda-forge
+            eigen=${{ env.EIGEN_VERSION }}
+            cmake
+            ninja
+            llvm-tools
+
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+        if: runner.os == 'Windows'
+
+      # Compiler (clang-cl on Windows, Apple clang on macOS) and the cache key.
+      - name: Toolchain and cache key
+        id: key
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          PART: ${{ matrix.part }}
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" = Windows ]; then
+            # Git-for-Windows' /usr/bin/link (coreutils) shadows MSVC's
+            # link.exe in a login bash, whose profile puts /usr/bin first
+            # again in every step: each step re-prepends MSVC_BIN.
+            MSVC_BIN="$(dirname "$(which cl)")"
+            echo "MSVC_BIN=$MSVC_BIN" >> "$GITHUB_ENV"
+            export PATH="$MSVC_BIN:/c/Program Files/LLVM/bin:$PATH"
+            echo "CC=clang-cl" >> "$GITHUB_ENV"
+            echo "CXX=clang-cl" >> "$GITHUB_ENV"
+            cc_ver="$(clang-cl --version | head -1)"
+            cc="clangcl$(clang-cl --version | sed -n 's/.*clang version \([0-9]*\)\..*/\1/p' | head -1)"
+            echo "EIGEN_PREFIX=$(cygpath -m "$CONDA_PREFIX/Library")" >> "$GITHUB_ENV"
+            echo "PREFIX=$(cygpath -m "$GITHUB_WORKSPACE/native-$PART")" >> "$GITHUB_ENV"
+            os="$(cmd //c ver | tr -d '\r' | sed -n 's/.*Version \([0-9]*\.[0-9]*\.[0-9]*\).*/win\1/p')"
+          else
+            cc_ver="$(clang --version | head -1)"
+            cc="appleclang$(clang --version | sed -n 's/.*clang version \([0-9]*\)\..*/\1/p' | head -1)"
+            echo "EIGEN_PREFIX=$CONDA_PREFIX" >> "$GITHUB_ENV"
+            echo "LLVM_AR=$CONDA_PREFIX/bin/llvm-ar" >> "$GITHUB_ENV"
+            echo "PREFIX=$GITHUB_WORKSPACE/native-$PART" >> "$GITHUB_ENV"
+            os="macos$(sw_vers -productVersion | cut -d. -f1)-$(uname -m)"
+          fi
+          echo "compiler: $cc_ver"
+          [ -n "$cc" ] && [ "$cc" != clangcl ] && [ "$cc" != appleclang ] || { echo "::error::could not read the compiler version from: $cc_ver"; exit 1; }
+          if [ "$PART" = libint2 ]; then
+            src="libint${LIBINT_VERSION}-${LIBINT_SHA256}-eigen${EIGEN_VERSION}"
+          else
+            src="openblas${OPENBLAS_VERSION}-libxc${LIBXC_VERSION}-eigen${EIGEN_VERSION}"
+          fi
+          script="$(sha256sum "scripts/wheels/build-$PART.sh" 2>/dev/null || shasum -a 256 "scripts/wheels/build-$PART.sh")"
+          key="native-macwin-${NATIVE_MACWIN_CACHE_VERSION}-${PART}-${PLATFORM}-${os}-${cc}-${src}-script${script:0:16}"
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+          echo "cache key: $key"
+
+      - name: Restore cache
+        id: cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: native-${{ matrix.part }}
+          key: ${{ steps.key.outputs.key }}
+
+      - name: Build ${{ matrix.part }}
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" = Windows ]; then
+            export PATH="$MSVC_BIN:/c/Program Files/LLVM/bin:$PATH"
+            which link clang-cl
+          fi
+          t0=$(date +%s)
+          bash "scripts/wheels/build-${{ matrix.part }}.sh" "$PREFIX"
+          echo "BUILD_SECONDS ${{ matrix.part }} ${{ matrix.platform }}: $(($(date +%s) - t0))" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # Only after a successful build, never on a hit: a failed or cancelled
+      # build must not poison later runs with a partial prefix.
+      - name: Save cache
+        if: success() && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: native-${{ matrix.part }}
+          key: ${{ steps.key.outputs.key }}
+
+      - name: Prefix contents
+        run: |
+          set -euo pipefail
+          du -sh "native-${{ matrix.part }}" | tee -a "$GITHUB_STEP_SUMMARY"
+          du -sh native-${{ matrix.part }}/*/ | tee -a "$GITHUB_STEP_SUMMARY"
+          ls -l native-${{ matrix.part }}/lib native-${{ matrix.part }}/licenses
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: native-${{ matrix.part }}-${{ matrix.platform }}
+          path: native-${{ matrix.part }}/
+          if-no-files-found: error
+          # Long enough for another branch's workflow to reuse this run's
+          # build by run id (download-artifact run-id) while its own cache is
+          # cold.
+          retention-days: 7
