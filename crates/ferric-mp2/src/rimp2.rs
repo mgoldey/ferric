@@ -23,6 +23,7 @@ use ndarray_linalg::{Cholesky, Eigh, UPLO};
 /// Configuration for RI-MP2.
 #[derive(Debug, Clone, Default)]
 pub struct RiMp2Config {
+    /// Number of lowest occupied orbitals excluded from correlation.
     pub frozen_core: usize,
     /// Optional resident-bytes ceiling for the 3-index MO transform. `None` →
     /// the unified resolver ([`ferric_core::memory::resolve_budget_bytes`]) picks
@@ -1478,6 +1479,9 @@ pub fn ri_mp2(
 /// `oo_rimp2_gradient.rs` takes `&Mp2Intermediates`).
 #[derive(Debug)]
 pub struct Mp2Intermediates {
+    /// Closed-shell MP2 amplitudes `t_ij^ab = (ia|jb)/(ε_i+ε_j−ε_a−ε_b)`,
+    /// flat C-order `(nocc·nvir)²` with index `(i·nvir+a)·nocc·nvir + j·nvir+b`
+    /// (active occupieds only).
     pub t2: Vec<f64>,
     /// B^P_{ia}, shape (naux, nocc*nvir), occ-vir block
     pub b_ov: Array2<f64>,
@@ -1492,13 +1496,22 @@ pub struct Mp2Intermediates {
     pub b_vv: Option<Array2<f64>>,
     /// V^{-1/2} matrix, shape (naux, naux)
     pub v_inv_sqrt: Array2<f64>,
+    /// Unrelaxed MP2 occupied-occupied density correction, (nocc, nocc),
+    /// from `oo_rimp2::build_mp2_density`.
     pub p_oo: Array2<f64>,
+    /// Unrelaxed MP2 virtual-virtual density correction, (nvir, nvir).
     pub p_vv: Array2<f64>,
+    /// Active (non-frozen) occupied orbitals.
     pub nocc: usize,
+    /// Virtual orbitals (all orbitals above `nocc_total`).
     pub nvir: usize,
+    /// All doubly occupied orbitals, frozen core included.
     pub nocc_total: usize,
+    /// MO index of the first active occupied (= `frozen_core`).
     pub first_occ: usize,
+    /// Number of auxiliary basis functions (`dfbs.nbasis()` for the molecular builders).
     pub naux: usize,
+    /// Unscaled MP2 correlation energy `e_os + e_ss` (Hartree).
     pub e_mp2: f64,
     /// RAII charge against the shared [`MemoryPool`](ferric_core::memory::pool::MemoryPool)
     /// for `b_ov` + `b_oo` + `b_vv`, held for as long as those tensors are.
@@ -1627,10 +1640,15 @@ pub struct RpaIntermediates {
     ///
     /// Only the eigenpotential back-transform reads it; no energy does.
     pub v_inv_sqrt: Array2<f64>,
+    /// Active (non-frozen) occupied orbitals.
     pub nocc: usize,
+    /// Virtual orbitals (all orbitals above `nocc_total`).
     pub nvir: usize,
+    /// All doubly occupied orbitals, frozen core included.
     pub nocc_total: usize,
+    /// MO index of the first active occupied (= `frozen_core`).
     pub first_occ: usize,
+    /// Number of auxiliary basis functions (`dfbs.nbasis()` for the molecular builders).
     pub naux: usize,
 }
 

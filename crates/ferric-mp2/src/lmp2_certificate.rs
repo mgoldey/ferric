@@ -68,11 +68,17 @@ pub fn operator_label(op: &Operator) -> String {
 /// The integral-direct locality maps of a run.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DirectMaps {
+    /// [`DirectConfig::aux_radius_bohr`] (Bohr).
     pub aux_radius: f64,
+    /// [`DirectConfig::virt_radius_bohr`] (Bohr); `None` keeps all virtuals.
     pub virt_radius: Option<f64>,
+    /// [`DirectConfig::ao_tail`].
     pub ao_tail: f64,
+    /// [`DirectConfig::schwarz_skip`].
     pub schwarz_skip: f64,
+    /// [`DirectConfig::batch_merge`].
     pub batch_merge: usize,
+    /// [`DirectConfig::virt_schwarz_kappa`].
     pub virt_schwarz_kappa: Option<f64>,
 }
 
@@ -94,9 +100,13 @@ impl From<&DirectConfig> for DirectMaps {
 /// triangular solves, and whitenings reused from the κ screen.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PairFitCounters {
+    /// [`DirectStats::n_pair_groups`].
     pub n_pair_groups: usize,
+    /// [`DirectStats::n_distinct_occ_per_group`].
     pub n_distinct_occ_per_group: f64,
+    /// [`DirectStats::n_trsm`].
     pub n_trsm: usize,
+    /// [`DirectStats::n_w_reused`].
     pub n_w_reused: usize,
 }
 
@@ -121,6 +131,8 @@ pub struct SystemShape {
 }
 
 impl SystemShape {
+    /// Classify `mol` (gyration ratio of its atom positions) and `obs_bs`
+    /// (smallest primitive exponent over the elements present).
     pub fn new(mol: &Molecule, obs_bs: &BasisSet) -> Self {
         Self {
             gyration_ratio: gyration_ratio(mol),
@@ -128,10 +140,12 @@ impl SystemShape {
         }
     }
 
+    /// `gyration_ratio <= ONE_D_RATIO_MAX`: the alkane-like 1-D shape label.
     pub fn one_d(&self) -> bool {
         self.gyration_ratio <= ONE_D_RATIO_MAX
     }
 
+    /// `min_exponent < DIFFUSE_EXPONENT_MIN`: the basis counts as diffuse.
     pub fn diffuse(&self) -> bool {
         self.min_exponent < DIFFUSE_EXPONENT_MIN
     }
@@ -167,12 +181,19 @@ fn min_exponent(mol: &Molecule, obs_bs: &BasisSet) -> f64 {
 /// One certificate value, typed for both serializers.
 #[derive(Debug, Clone, PartialEq)]
 pub enum CertValue {
+    /// Absent value (JSON `null`, Python `None`).
     Null,
+    /// Boolean.
     Bool(bool),
+    /// Non-negative integer (counts, byte sizes).
     Usize(usize),
+    /// Floating-point value.
     F64(f64),
+    /// String.
     Str(String),
+    /// List of strings (the warning lists).
     StrList(Vec<String>),
+    /// Nested key/value entries, in serialization order.
     Map(Vec<(&'static str, CertValue)>),
 }
 
@@ -185,12 +206,19 @@ impl From<Option<f64>> for CertValue {
 /// The certificate itself; see the module doc.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Lmp2Certificate {
+    /// Local scheme name; always `"amplitude-threshold"`.
     pub scheme: &'static str,
+    /// The amplitude threshold ε of the run.
     pub eps: f64,
+    /// [`AmplitudeLmp2Result::keep_fraction`].
     pub keep_fraction: f64,
+    /// [`AmplitudeLmp2Result::pair_fraction`].
     pub pair_fraction: f64,
+    /// [`AmplitudeLmp2Result::n_pairs_gated`].
     pub n_pairs_gated: usize,
+    /// [`AmplitudeLmp2Config::pair_gate_cal`]; `None` when the gate is off.
     pub gate_cal: Option<f64>,
+    /// Whether the run used the integral-direct assembly.
     pub integral_direct: bool,
     /// `None` on the in-core (global-B) path.
     pub maps: Option<DirectMaps>,
@@ -224,19 +252,28 @@ pub struct Lmp2Certificate {
     /// Always true: a PCG that runs out of iterations fails the run, so no
     /// certificate is written for it.
     pub cg_converged: bool,
+    /// Frozen-core orbital count of the run.
     pub frozen_core: usize,
     /// [`operator_label`] of the run's operator; the ε record is Coulomb.
     pub operator: String,
-    /// Size of the PCG gather plan (bytes) and the matvec path the solve
-    /// ran ("planned" or "indexed", the plan-free fallback when the plan
-    /// did not fit the memory budget).
+    /// Size of the PCG gather plan (bytes), reported whether or not it was
+    /// built.
     pub solve_plan_bytes: usize,
     /// Bytes resident beside the plan for the whole solve (ragged system +
     /// PCG vectors); the plan was admitted against the budget minus this.
     pub solve_resident_bytes: usize,
+    /// The matvec path the solve ran: `"planned"`, or `"indexed"` (the
+    /// plan-free fallback when the plan did not fit the memory budget).
     pub matvec_path: &'static str,
+    /// Validation statement: `Proven (narrow)` at ε = 0 (the exactness
+    /// anchor), otherwise "measured error map, not validated".
     pub validation_grade: String,
+    /// The measured C4/C8 recovery record quoted against this ε (with an
+    /// operator caveat when the run is not Coulomb), or the exact-limit
+    /// note at ε = 0.
     pub eps_trust: String,
+    /// Ways the run sits outside the measured record (ε, gate, shape,
+    /// diffuse basis, operator).
     pub warnings: Vec<String>,
     /// Where the solve's tolerance leaves the energy error above, or without,
     /// its bound. Separate from `warnings`, which describe the measured record.
@@ -244,6 +281,9 @@ pub struct Lmp2Certificate {
 }
 
 impl Lmp2Certificate {
+    /// Build the certificate from the run's config, optional integral-direct
+    /// config, result, system classification and operator. `pair_fit` starts
+    /// unset; see [`Self::with_direct_stats`].
     pub fn new(
         cfg: &AmplitudeLmp2Config,
         direct: Option<&DirectConfig>,

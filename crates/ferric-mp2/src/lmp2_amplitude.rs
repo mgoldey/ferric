@@ -96,6 +96,7 @@ pub struct AmplitudeLmp2Config {
     /// The single threshold ε on |(ia|jb)| in the localized basis (Eq. 8).
     /// ε = 0 keeps everything (the exactness-anchor limit).
     pub eps: f64,
+    /// Number of lowest occupied orbitals excluded from correlation.
     pub frozen_core: usize,
     /// PCG relative-residual target. `None` (the default) is the adaptive
     /// policy: [`LMP2_CG_RTOL_DEFAULT`], continued to a tighter tolerance if
@@ -176,17 +177,26 @@ impl Default for AmplitudeLmp2Config {
 #[derive(Debug, Clone)]
 #[must_use]
 pub struct AmplitudeLmp2Result {
+    /// Local MP2 correlation energy (Hylleraas functional at the PCG
+    /// amplitudes, Hartree).
     pub e_corr: f64,
+    /// Reference SCF energy plus `e_corr` (Hartree).
     pub e_total: f64,
     /// Canonical RI-MP2 on the same (mol, obs, dfbs, op, frozen_core) —
     /// the independent-construction reference; at ε=0 `e_corr` must match
     /// this to CG tolerance. NaN unless `compute_reference` was set (the
     /// default is off).
     pub e_corr_canonical_ri: f64,
+    /// Kept fraction of the `(no·nv)²` amplitude entries after the ε mask.
     pub keep_fraction: f64,
+    /// Ordered occupied pairs `(i,j)` carrying a block, as a fraction of `no²`.
     pub pair_fraction: f64,
+    /// Mean over occupied `i` of the number of distinct virtuals appearing in
+    /// the domains of `i`'s pair blocks.
     pub dom_mean: f64,
+    /// Maximum over occupied `i` of the same per-orbital virtual-domain size.
     pub dom_max: usize,
+    /// PCG iterations over the whole solve, tightening included.
     pub cg_iterations: usize,
     /// The PCG's recursive relative residual.
     pub cg_relres: f64,
@@ -197,28 +207,37 @@ pub struct AmplitudeLmp2Result {
     /// ([`solve_under_rtol_policy`]). Whether the energy-error target was met
     /// is a separate question: [`CgRtolOutcome::target_met`].
     pub cg_converged: bool,
+    /// Valence virtuals in the VV-HV space ([`VvHv::n_valence`]).
     pub n_valence_virt: usize,
+    /// Hard virtuals in the VV-HV space ([`VvHv::n_hard`]).
     pub n_hard_virt: usize,
     /// Multiply-add count of one ragged matvec vs its dense equivalent
     /// (2·(no²·nv³ + no³·nv²)) — the counter pair the prototype's scaling
     /// table quotes.
     pub ragged_flops_per_matvec: u64,
+    /// Dense-equivalent multiply-add count of one matvec,
+    /// `2·(no²·nv³ + no³·nv²)`.
     pub dense_flops_per_matvec: u64,
     /// Unique off-diagonal pairs removed by the integral-free gate
     /// (0 when the gate is off or eps = 0).
     pub n_pairs_gated: usize,
-    /// Mean/max per-pair aux contraction length (== naux when the
-    /// ε-linked aux truncation is off).
+    /// Mean per-pair aux contraction length (== naux when the ε-linked aux
+    /// truncation is off; in the integral-direct path, the mean strip row
+    /// count).
     pub aux_dom_mean: f64,
+    /// Maximum per-pair aux contraction length (same conventions as
+    /// `aux_dom_mean`).
     pub aux_dom_max: usize,
     /// κ estimate of the diagonally preconditioned CG operator from the CG
     /// coefficients ([`crate::ragged::lanczos_kappa`]; a lower bound, NaN
     /// when undefined). The 1e-6 default gives it fewer iterations, so values
     /// are not comparable with runs from before that default.
     pub cg_lanczos_kappa_est: f64,
-    /// In-block retained-pattern density (kept / (|Da|·|Db|)) over the pair
-    /// blocks: mean and min (0 when there are no blocks).
+    /// Mean in-block retained-pattern density (kept / (|Da|·|Db|)) over the
+    /// pair blocks (0 when there are no blocks).
     pub block_density_mean: f64,
+    /// Minimum in-block retained-pattern density over the pair blocks (0
+    /// when there are no blocks).
     pub block_density_min: f64,
     /// Unordered pairs (i ≤ j) that carry a block.
     pub n_pairs_unique: usize,
@@ -241,6 +260,7 @@ pub struct AmplitudeLmp2Result {
     /// The matvec the PCG ran: planned when the plan fit the memory budget,
     /// otherwise the plan-free indexed one (bitwise the same result).
     pub matvec_path: MatvecPath,
+    /// Per-stage wall-clock seconds.
     pub timings: StageTimings,
     /// Which VV-HV build produced the virtual space, with its counters.
     pub virtual_space: crate::vvhv_local::VirtualSpaceReport,
@@ -259,6 +279,8 @@ pub enum CgRtolSource {
 }
 
 impl CgRtolSource {
+    /// Kebab-case label for printouts (`"adaptive-default"`,
+    /// `"strict-no-gap"`, `"explicit"`).
     pub fn as_str(self) -> &'static str {
         match self {
             CgRtolSource::AdaptiveDefault => "adaptive-default",
@@ -271,6 +293,7 @@ impl CgRtolSource {
 /// What the tolerance policy did on one solve.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CgRtolOutcome {
+    /// Where the starting tolerance came from.
     pub source: CgRtolSource,
     /// The last tolerance the PCG ran to.
     pub rtol_used: f64,
@@ -289,15 +312,25 @@ pub struct CgRtolOutcome {
 /// by lowering `target_ha`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum CgRtolPolicy {
+    /// Run the PCG to exactly this relative residual, with no tightening.
     Explicit(f64),
+    /// Start at `start` and tighten while the solver-error bound exceeds
+    /// `target_ha`, never below `floor`; with no positive gap (bound
+    /// undefined) the solve runs at `floor`.
     Adaptive {
+        /// Initial relative-residual tolerance.
         start: f64,
+        /// Tightest relative-residual tolerance the policy will use.
         floor: f64,
+        /// Target (Hartree) for [`cg_energy_error_bound`].
         target_ha: f64,
     },
 }
 
 impl CgRtolPolicy {
+    /// `Some(x)` → [`CgRtolPolicy::Explicit`]`(x)`; `None` → the adaptive
+    /// default ([`LMP2_CG_RTOL_DEFAULT`] → [`LMP2_CG_RTOL_STRICT`],
+    /// target [`LMP2_CG_ENERGY_ERROR_TARGET`]).
     pub fn from_config(cg_rtol: Option<f64>) -> Self {
         cg_rtol.map_or(
             CgRtolPolicy::Adaptive {
@@ -389,8 +422,12 @@ pub struct StageTimings {
     /// Occupied Boys localization + localized-space setup
     /// (`localized_spaces`): part of `t_assembly_s`, reported on its own.
     pub t_loc_s: f64,
+    /// Localized basis (Boys, Fock blocks, RI factors) plus ragged pair-block
+    /// assembly.
     pub t_assembly_s: f64,
+    /// PCG solve and energy evaluation.
     pub t_solve_s: f64,
+    /// Opt-in canonical RI-MP2 reference; 0 when it was not computed.
     pub t_reference_s: f64,
 }
 
@@ -399,7 +436,9 @@ pub struct StageTimings {
 pub struct VvHv {
     /// (nao, nvir) — valence virtuals first, then hard virtuals.
     pub c_vloc: Array2<f64>,
+    /// Number of valence virtuals (the leading columns of `c_vloc`).
     pub n_valence: usize,
+    /// Number of hard virtuals (the trailing columns of `c_vloc`).
     pub n_hard: usize,
 }
 
@@ -1113,9 +1152,13 @@ pub fn verify_vvhv(
 pub struct LocalizedProblem {
     /// (no·nv, no·nv), row index i·nv+a — (ia|jb) in the localized basis.
     pub j_dense: Array2<f64>,
+    /// Fock matrix in the localized active occupieds, `C_loccᵀ F C_locc`, (no, no).
     pub f_oo: Array2<f64>,
+    /// Fock matrix in the localized virtuals, `C_vlocᵀ F C_vloc`, (nv, nv).
     pub f_vv: Array2<f64>,
+    /// Number of active (non-frozen) occupied orbitals.
     pub no: usize,
+    /// Number of localized virtual orbitals.
     pub nv: usize,
     /// Boys-localized active occupied coefficients, (nao, no) — exposed so
     /// downstream methods (LinLCCD ladders) can transform additional blocks
@@ -1149,12 +1192,19 @@ pub struct LocalizedProblem {
 /// and the raw + whitening RI pieces.
 #[derive(Debug, Clone)]
 pub struct LocalizedBasis {
+    /// Boys-localized active occupied coefficients, (nao, no).
     pub c_locc: Array2<f64>,
+    /// Fock matrix in the localized active occupieds, `C_loccᵀ F C_locc`, (no, no).
     pub f_oo: Array2<f64>,
+    /// Fock matrix in the localized virtuals, `C_vlocᵀ F C_vloc`, (nv, nv).
     pub f_vv: Array2<f64>,
+    /// Boys centroids of the active localized occupieds, (no, 3) Bohr.
     pub occ_centers: Array2<f64>,
+    /// Orbital spreads σᵢ = sqrt(⟨r²⟩ − |⟨r⟩|²), Bohr.
     pub occ_spreads: Vec<f64>,
+    /// Number of active (non-frozen) occupied orbitals.
     pub no: usize,
+    /// Number of localized virtual orbitals.
     pub nv: usize,
     /// UNWHITENED (P|ia), (naux, no·nv).
     pub b_flat: Array2<f64>,
@@ -1169,17 +1219,24 @@ pub struct LocalizedBasis {
 /// (`assemble_basis`) and integral-direct (`crate::lmp2_direct`) assemblies.
 #[derive(Debug, Clone)]
 pub struct LocalizedSpaces {
+    /// Boys-localized active occupied coefficients, (nao, no).
     pub c_locc: Array2<f64>,
     /// Copy of the caller's VV-HV virtuals, (nao, nv).
     pub c_vloc: Array2<f64>,
+    /// Fock matrix in the localized active occupieds, `C_loccᵀ F C_locc`, (no, no).
     pub f_oo: Array2<f64>,
+    /// Fock matrix in the localized virtuals, `C_vlocᵀ F C_vloc`, (nv, nv).
     pub f_vv: Array2<f64>,
+    /// Boys centroids of the active localized occupieds, (no, 3) Bohr.
     pub occ_centers: Array2<f64>,
+    /// Orbital spreads σᵢ = sqrt(⟨r²⟩ − |⟨r⟩|²), Bohr.
     pub occ_spreads: Vec<f64>,
     /// Dipole centroids ⟨a|r|a⟩ of the localized virtuals, (nv, 3) Bohr —
     /// the distance rule for the direct path's virtual domains.
     pub virt_centers: Array2<f64>,
+    /// Number of active (non-frozen) occupied orbitals.
     pub no: usize,
+    /// Number of localized virtual orbitals.
     pub nv: usize,
 }
 
@@ -1677,7 +1734,9 @@ pub fn tightened_cg_rtol(
 
 /// What [`solve_under_rtol_policy`] returns; its PCG always converged.
 pub struct PolicySolve {
+    /// The converged PCG solve and the plan-vs-indexed matvec decision.
     pub budgeted: BudgetedSolve,
+    /// Which tolerance the solve ran to, and whether the bound met its target.
     pub outcome: CgRtolOutcome,
     /// The stationary energy of the final amplitudes.
     pub e_hylleraas: f64,

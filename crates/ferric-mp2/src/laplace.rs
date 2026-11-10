@@ -368,9 +368,13 @@ impl SparseBSlice {
 #[derive(Debug, Clone)]
 #[must_use]
 pub struct LaplaceMp2Result {
+    /// Reference SCF energy plus `mp2_corr` (Hartree).
     pub total_energy: f64,
+    /// Unscaled MP2 correlation energy, `e_os + e_ss` (Hartree).
     pub mp2_corr: f64,
+    /// Opposite-spin component (Hartree).
     pub e_os: f64,
+    /// Same-spin component (Hartree).
     pub e_ss: f64,
 }
 
@@ -691,8 +695,13 @@ fn weighted_b_mo(
 /// Laplace-transform MP2 energy builder.
 #[derive(Debug, Clone)]
 pub struct LaplaceMp2 {
+    /// Number of minimax quadrature points (the tables cover 3, 5 and 7).
     pub n_quad: usize,
+    /// Rescaled Laplace exponents `t_k`; empty until a `compute_*` call fits
+    /// the quadrature to the orbital-energy gap range.
     pub points: Vec<f64>,
+    /// Rescaled weights `w_k` matching `points`, with
+    /// `1/x ≈ Σ_k w_k exp(-t_k x)`; empty until fitted.
     pub weights: Vec<f64>,
     /// Caller's explicit memory ceiling, threaded into the 3-index budget and
     /// the AO-path pre-flight. `None` resolves through

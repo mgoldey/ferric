@@ -175,8 +175,11 @@ impl Default for AttenuatedMp2Config {
 #[derive(Debug, Clone)]
 #[must_use]
 pub struct AttenuatedMp2Result {
+    /// Correlation energy (Hartree): `config.scaling × spin_components.e_total`.
     pub mp2_corr: f64,
+    /// Reference SCF energy plus `mp2_corr` (Hartree).
     pub total_energy: f64,
+    /// Unscaled opposite-/same-spin components under the attenuated operator.
     pub spin_components: SpinComponents,
 }
 

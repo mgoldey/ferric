@@ -55,9 +55,16 @@ use std::cell::RefCell;
 /// Configuration for OO-RI-MP2.
 #[derive(Debug, Clone)]
 pub struct OoRiMp2Config {
+    /// Maximum orbital-optimization iterations; reaching it returns the
+    /// current point with `converged = false`.
     pub max_iter: usize,
+    /// Converged when the orbital-gradient norm drops below this, or below
+    /// `10 × grad_conv` once the energy change is under `energy_conv`.
     pub grad_conv: f64,
+    /// Energy-change threshold (Hartree) for the secondary stopping test
+    /// described on `grad_conv`.
     pub energy_conv: f64,
+    /// Number of lowest occupied orbitals excluded from correlation.
     pub frozen_core: usize,
     /// Level shift for the approximate diagonal Hessian (Ha).
     /// Regularizes the Newton step when orbital energy gaps are small.

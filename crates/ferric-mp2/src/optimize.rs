@@ -28,9 +28,14 @@ use ndarray::{Array1, Array2};
 #[derive(Debug, Clone)]
 #[must_use]
 pub struct RiMp2OptimizeResult {
+    /// Final geometry (coordinates in Bohr).
     pub mol: Molecule,
+    /// RHF + RI-MP2 total energy at the final geometry (Hartree).
     pub energy: f64,
+    /// BFGS steps taken.
     pub steps: usize,
+    /// Whether the energy-change, max-gradient and RMS-gradient criteria of
+    /// the `OptimizeConfig` were all met within `max_steps`.
     pub converged: bool,
     /// Per-evaluation SCF warm-start records, in order (see
     /// `ferric_scf::warm_start`; every record is cold `Disabled` when

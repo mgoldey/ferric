@@ -33,11 +33,15 @@ pub struct Mp2DoubleHybridConfig {
 /// Predefined double-hybrid parameter sets.
 #[derive(Debug, Clone, Copy)]
 pub enum DoubleHybridKind {
+    /// B2PLYP: `c_os = c_ss = 0.27`.
     B2plyp,
+    /// DSD-PBEP86: `c_os = 0.56`, `c_ss = 0.29`.
     DsdPbep86,
 }
 
 impl DoubleHybridKind {
+    /// MP2 scaling for this parameter set, with no frozen core and an
+    /// auto-sized memory budget.
     pub fn mp2_config(&self) -> Mp2DoubleHybridConfig {
         match self {
             Self::B2plyp => Mp2DoubleHybridConfig {
@@ -55,6 +59,8 @@ impl DoubleHybridKind {
         }
     }
 
+    /// Functional name for the KS reference (`"B2PLYP"` / `"DSD-PBEP86"`);
+    /// the Python binding passes it as the KS config's `xc`.
     pub fn xc_name(&self) -> &'static str {
         match self {
             Self::B2plyp => "B2PLYP",
@@ -67,11 +73,17 @@ impl DoubleHybridKind {
 #[derive(Debug, Clone)]
 #[must_use]
 pub struct Mp2DoubleHybridResult {
+    /// `e_ks + e_corr_scaled` (Hartree).
     pub total_energy: f64,
+    /// Energy of the converged KS reference (Hartree).
     pub e_ks: f64,
+    /// Unscaled RI-MP2 opposite-/same-spin components on the KS orbitals.
     pub spin_components: SpinComponents,
+    /// `c_os × e_os + c_ss × e_ss` (Hartree).
     pub e_corr_scaled: f64,
+    /// Opposite-spin scaling used, copied from the config.
     pub c_os: f64,
+    /// Same-spin scaling used, copied from the config.
     pub c_ss: f64,
 }
 
