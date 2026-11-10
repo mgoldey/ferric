@@ -27,12 +27,8 @@ use ferric_scf::screening::SchwarzBounds;
 use std::time::Instant;
 
 fn vm_hwm_mb() -> f64 {
-    let s = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
-    s.lines()
-        .find(|l| l.starts_with("VmHWM:"))
-        .and_then(|l| l.split_whitespace().nth(1))
-        .and_then(|v| v.parse::<f64>().ok())
-        .map_or(f64::NAN, |kb| kb / 1024.0)
+    ferric_core::memory::sys::own_peak_rss_bytes()
+        .map_or(f64::NAN, |b| b as f64 / (1024.0 * 1024.0))
 }
 
 fn main() {

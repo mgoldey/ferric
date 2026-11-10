@@ -21,6 +21,19 @@ mpi = { workspace = true, optional = true }
 cudarc = { workspace = true, optional = true }
 libloading = { workspace = true, optional = true }
 
+# Platform memory probes (src/memory/sys.rs). Both are already in Cargo.lock;
+# neither is built on Linux, which reads /proc.
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_ProcessStatus",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+] }
+
 [features]
 default = []
 mpi = ["dep:mpi"]

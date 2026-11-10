@@ -566,36 +566,22 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
     (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
-/// Total (user + system) CPU seconds for this process, from
-/// `/proc/self/stat`. `None` off Linux or on any parse failure — an
-/// observability helper never fails a run.
+/// Total (user + system) CPU seconds for this process (Linux
+/// `/proc/self/stat`, macOS `getrusage`, Windows `GetProcessTimes`). `None` on
+/// an unsupported platform or any parse failure — an observability helper
+/// never fails a run.
 fn cpu_seconds() -> Option<f64> {
-    let s = std::fs::read_to_string("/proc/self/stat").ok()?;
-    // Field 14 (utime) and 15 (stime), 1-based, AFTER the comm field — which
-    // may itself contain spaces and parentheses, so split at the LAST ')'.
-    let rest = s.rsplit_once(')')?.1;
-    let f: Vec<&str> = rest.split_whitespace().collect();
-    // `rest` starts at field 3 (state), so utime/stime are indices 11 and 12.
-    let utime = f.get(11)?.parse::<u64>().ok()?;
-    let stime = f.get(12)?.parse::<u64>().ok()?;
-    // USER_HZ is 100 on every Linux target ferric builds for.
-    Some((utime + stime) as f64 / 100.0)
+    ferric_core::memory::sys::own_cpu_seconds()
 }
 
-/// Peak resident set size in bytes, from `/proc/self/status`'s `VmHWM`.
+/// Peak resident set size in bytes (Linux `VmHWM`, macOS `ru_maxrss`, Windows
+/// `PeakWorkingSetSize`).
 ///
-/// `VmHWM` (high-water mark), not `VmRSS`: a post-mortem reader wants the peak
-/// the run actually reached, not whatever happened to be resident at exit.
-/// `None` off Linux or on any parse failure.
+/// The high-water mark, not the current RSS: a post-mortem reader wants the
+/// peak the run actually reached, not whatever happened to be resident at
+/// exit. `None` on an unsupported platform or any parse failure.
 fn peak_rss_bytes() -> Option<u64> {
-    let s = std::fs::read_to_string("/proc/self/status").ok()?;
-    for line in s.lines() {
-        if let Some(rest) = line.strip_prefix("VmHWM:") {
-            let kb = rest.split_whitespace().next()?.parse::<u64>().ok()?;
-            return Some(kb.saturating_mul(1024));
-        }
-    }
-    None
+    ferric_core::memory::sys::own_peak_rss_bytes().map(|b| b as u64)
 }
 
 /// Default log path for a run whose input file is `input`: the input's path

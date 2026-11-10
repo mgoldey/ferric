@@ -21,8 +21,13 @@
 //!    kept working for back-compat. If both are set, the smaller wins (the more
 //!    conservative ceiling).
 //! 4. Auto: `0.8 × detect_available_bytes()` — 80% of detected available RAM
-//!    (cgroup limit ∧ `/proc/meminfo MemAvailable`), leaving headroom.
-//! 5. Final fallback: `DEFAULT_BUDGET_BYTES` (2 GiB) when detection fails.
+//!    (Linux: cgroup limit ∧ `/proc/meminfo MemAvailable`; macOS:
+//!    `host_statistics64` free + inactive pages; Windows: `GlobalMemoryStatusEx`
+//!    — see [`sys`](crate::memory::sys)), leaving headroom.
+//! 5. Final fallback: `DEFAULT_BUDGET_BYTES` (2 GiB) when detection fails. This
+//!    is never silent: the first time a process lands here it prints one stderr
+//!    warning naming the value and how to set `[memory] budget_gb` /
+//!    `FERRIC_MEM_BUDGET_GB`.
 //!
 //! The resolved value and the source it came from are returned together by
 //! `resolve_budget` (see `BudgetResolution`) so callers can log the audit
@@ -38,6 +43,8 @@
 /// account for, rather than a ceiling every call site re-reads independently.
 pub mod plan;
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 /// `MemoryPool` (`pool::MemoryPool`): the process-global ledger that
 /// reservations DEBIT and release, so two subsystems cannot each be handed the
 /// whole ceiling. `plan` describes; `pool` accounts.
@@ -46,6 +53,11 @@ pub mod pool;
 /// Lightweight, opt-in memory measurement helpers (`trace::current_rss_bytes`,
 /// `trace::trace_enabled`).
 pub mod trace;
+
+/// Per-platform probes (Linux `/proc`, macOS sysctl/mach/getrusage, Windows
+/// `GlobalMemoryStatusEx`/`GetProcessMemoryInfo`) for available RAM, this
+/// process's RSS / peak RSS, and its CPU time.
+pub mod sys;
 
 /// Final fallback budget when nothing else resolves: 2 GiB.
 pub const DEFAULT_BUDGET_BYTES: usize = 2 * 1024 * 1024 * 1024;
@@ -146,7 +158,51 @@ fn env_gib_bytes(var: &str) -> Option<usize> {
 
 /// Resolve the memory budget in bytes together with its source. See the module
 /// docs for the precedence chain.
+///
+/// Landing on [`BudgetSource::Fallback`] prints a once-per-process stderr
+/// warning ([`fallback_warning`]).
 pub fn resolve_budget(explicit: Option<usize>) -> BudgetResolution {
+    resolve_budget_with(explicit, detect_available_bytes, |msg| {
+        warn_once(&FALLBACK_WARNED, msg, |m| eprintln!("{m}"));
+    })
+}
+
+/// Set once the fallback warning has been printed in this process.
+static FALLBACK_WARNED: AtomicBool = AtomicBool::new(false);
+
+/// The warning printed when no budget is set and available memory cannot be
+/// detected on this platform.
+#[must_use]
+pub fn fallback_warning() -> String {
+    format!(
+        "ferric WARNING: could not detect available memory on this platform ({}); \
+         using the fixed fallback memory budget of {:.2} GiB. Set [memory] budget_gb \
+         in the input (memory_budget_gb in Python) or the {ENV_UNIFIED} environment \
+         variable to choose one.",
+        std::env::consts::OS,
+        DEFAULT_BUDGET_BYTES as f64 / (1024.0 * 1024.0 * 1024.0),
+    )
+}
+
+/// Run `emit(msg)` the first time this is called with `flag`, never again.
+/// Returns whether it emitted.
+pub fn warn_once(flag: &AtomicBool, msg: &str, emit: impl FnOnce(&str)) -> bool {
+    if flag.swap(true, Ordering::Relaxed) {
+        return false;
+    }
+    emit(msg);
+    true
+}
+
+/// [`resolve_budget`] with the detector and the fallback reporter injected:
+/// the seam tests use to drive a failing detector without touching the
+/// machine. `on_fallback` receives [`fallback_warning`] exactly when the
+/// result is [`BudgetSource::Fallback`].
+pub fn resolve_budget_with(
+    explicit: Option<usize>,
+    detect: impl FnOnce() -> Option<usize>,
+    on_fallback: impl FnOnce(&str),
+) -> BudgetResolution {
     // 1. Explicit config / kwarg (0 is treated as "unset" — a real budget is >0).
     if let Some(b) = explicit {
         if b > 0 {
@@ -190,7 +246,7 @@ pub fn resolve_budget(explicit: Option<usize>) -> BudgetResolution {
         (None, None) => {}
     }
     // 4. Auto: 0.8 × detected available RAM.
-    if let Some(avail) = detect_available_bytes() {
+    if let Some(avail) = detect() {
         let budget = (avail as f64 * AUTO_FRACTION) as usize;
         if budget > 0 {
             return BudgetResolution {
@@ -199,7 +255,8 @@ pub fn resolve_budget(explicit: Option<usize>) -> BudgetResolution {
             };
         }
     }
-    // 5. Final fallback.
+    // 5. Final fallback, loudly.
+    on_fallback(&fallback_warning());
     BudgetResolution {
         bytes: DEFAULT_BUDGET_BYTES,
         source: BudgetSource::Fallback,
@@ -308,17 +365,17 @@ pub fn parse_vm_rss_bytes(contents: &str) -> Option<usize> {
     None
 }
 
-/// Read the CURRENT process's resident set size (RSS) in bytes by parsing
-/// `/proc/self/status`'s `VmRSS:` line. `None` on any failure (non-Linux, the
-/// file is unreadable/sandboxed, or the field is missing/malformed) — this is
+/// Read the CURRENT process's resident set size (RSS) in bytes: Linux
+/// `/proc/self/status` `VmRSS:`, macOS `proc_pidinfo`, Windows
+/// `GetProcessMemoryInfo` (see [`sys::own_rss_bytes`]). `None` on any failure
+/// (an unsupported platform, a sandboxed `/proc`, a malformed field) — this is
 /// a pure observability helper for the stage-seam RSS safety net
 /// ([`crate`]-external callers use it via `warn_if_rss_over`-style helpers in
 /// `ferric-rpa`), so it must NEVER panic mid-computation; a monitoring probe
 /// failing silently is fine, a monitoring probe crashing the job it's
 /// watching is not.
 pub fn read_own_rss_bytes() -> Option<usize> {
-    let contents = std::fs::read_to_string("/proc/self/status").ok()?;
-    parse_vm_rss_bytes(&contents)
+    sys::own_rss_bytes()
 }
 
 /// Fraction of the budget a composing gate may hand out, holding the rest back
@@ -353,8 +410,9 @@ pub const BUDGET_HEADROOM_FRACTION: f64 = 0.9;
 ///
 /// # Behaviour at the edges, each pinned by `mwe_budget_gates_compose.rs`
 ///
-/// * `resident_bytes = None` (RSS unreadable — a container or non-Linux) is
-///   treated as "nothing resident", preserving the previous behaviour exactly.
+/// * `resident_bytes = None` (RSS unreadable — a sandbox or an unsupported
+///   platform) is treated as "nothing resident", preserving the previous
+///   behaviour exactly. [`available_budget_now`] says so once on stderr.
 ///   Treating it as "nothing available" would refuse every job on such a
 ///   system; observability must never break the computation it watches.
 /// * Over-subscription saturates at 0 rather than wrapping. `budget - rss`
@@ -373,7 +431,24 @@ pub fn available_budget_bytes(budget_bytes: usize, resident_bytes: Option<usize>
 /// The convenience form for gate call sites. Kept separate so the arithmetic
 /// stays a pure function that tests can drive without allocating.
 pub fn available_budget_now(budget_bytes: usize) -> usize {
-    available_budget_bytes(budget_bytes, read_own_rss_bytes())
+    available_budget_bytes(budget_bytes, rss_for_gate())
+}
+
+/// [`read_own_rss_bytes`], saying once per process when it cannot be read
+/// (budget gates then cannot see resident memory).
+fn rss_for_gate() -> Option<usize> {
+    static RSS_WARNED: AtomicBool = AtomicBool::new(false);
+    let rss = read_own_rss_bytes();
+    if rss.is_some() {
+        return rss;
+    }
+    warn_once(
+        &RSS_WARNED,
+        "ferric WARNING: cannot read this process's resident memory on this \
+         platform; memory-budget gates will not count memory already in use",
+        |m| eprintln!("{m}"),
+    );
+    None
 }
 
 /// Stage-seam RSS safety net: if the CURRENT process's RSS exceeds
@@ -418,9 +493,7 @@ pub fn resolve_budget_after(explicit: Option<usize>, planned_bytes: usize) -> Bu
     if res.source != BudgetSource::AutoDetected {
         return res;
     }
-    let meminfo = std::fs::read_to_string("/proc/meminfo")
-        .ok()
-        .and_then(|s| parse_meminfo_available(&s));
+    let meminfo = sys::available_ram_bytes();
     match auto_budget_after(detect_cgroup_limit_bytes(), meminfo, planned_bytes) {
         Some(bytes) if bytes > 0 => BudgetResolution { bytes, ..res },
         _ => res,
@@ -450,18 +523,18 @@ pub fn auto_budget_after(
 }
 
 /// Detect available memory in bytes: the minimum of any active cgroup memory
-/// limit and `/proc/meminfo`'s `MemAvailable`. Returns `None` if nothing can be
-/// read (non-Linux, sandboxed, or missing files) so the caller falls back.
+/// limit (Linux only) and the platform's available-RAM figure
+/// ([`sys::available_ram_bytes`]). Returns `None` if nothing can be read
+/// (unsupported platform, sandboxed, or missing files) so the caller falls back.
 ///
 /// - cgroup v2: `/sys/fs/cgroup/memory.max` (`"max"` means no limit).
 /// - cgroup v1: `/sys/fs/cgroup/memory/memory.limit_in_bytes` (a sentinel near
 ///   `u64::MAX`/`i64::MAX` means no limit).
-/// - `/proc/meminfo` `MemAvailable:` (kB).
+/// - Linux `/proc/meminfo` `MemAvailable:` (kB); macOS `host_statistics64`;
+///   Windows `GlobalMemoryStatusEx`.
 pub fn detect_available_bytes() -> Option<usize> {
     let cgroup = detect_cgroup_limit_bytes();
-    let meminfo = std::fs::read_to_string("/proc/meminfo")
-        .ok()
-        .and_then(|s| parse_meminfo_available(&s));
+    let meminfo = sys::available_ram_bytes();
     match (cgroup, meminfo) {
         (Some(c), Some(m)) => Some(c.min(m)),
         (Some(c), None) => Some(c),
@@ -496,6 +569,9 @@ pub fn detect_available_bytes() -> Option<usize> {
 /// whole ancestry (a child cannot exceed its parent), so this walks from the
 /// process's own cgroup up to the root and takes the smallest real limit found.
 fn detect_cgroup_limit_bytes() -> Option<usize> {
+    if !cfg!(target_os = "linux") {
+        return None;
+    }
     if let Some(b) = detect_cgroup_v2_limit_bytes() {
         return Some(b);
     }
@@ -803,6 +879,51 @@ mod tests {
         ));
         assert!(r.bytes > 0);
         clear_budget_env();
+    }
+
+    /// A failing detector with nothing set must land on the 2 GiB fallback AND
+    /// hand the reporter a message naming the value and both ways to set one.
+    /// Every other source must not report.
+    #[test]
+    fn failing_detector_falls_back_loudly() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_budget_env();
+        let mut seen: Option<String> = None;
+        let r = resolve_budget_with(None, || None, |m| seen = Some(m.to_string()));
+        assert_eq!(r.source, BudgetSource::Fallback);
+        assert_eq!(r.bytes, DEFAULT_BUDGET_BYTES);
+        let msg = seen.expect("fallback must be reported");
+        assert!(msg.contains("2.00 GiB"), "{msg}");
+        assert!(msg.contains("[memory] budget_gb"), "{msg}");
+        assert!(msg.contains(ENV_UNIFIED), "{msg}");
+
+        // A zero reading is a failed detection too.
+        let mut zero_seen = false;
+        let r = resolve_budget_with(None, || Some(0), |_| zero_seen = true);
+        assert_eq!(r.source, BudgetSource::Fallback);
+        assert!(zero_seen);
+
+        // Detected, env and explicit budgets are silent.
+        let mut quiet = true;
+        let r = resolve_budget_with(None, || Some(1000), |_| quiet = false);
+        assert_eq!((r.source, r.bytes), (BudgetSource::AutoDetected, 800));
+        let r = resolve_budget_with(Some(5), || None, |_| quiet = false);
+        assert_eq!(r.source, BudgetSource::Explicit);
+        std::env::set_var(ENV_UNIFIED, "3");
+        let r = resolve_budget_with(None, || None, |_| quiet = false);
+        assert_eq!(r.source, BudgetSource::UnifiedEnv);
+        clear_budget_env();
+        assert!(quiet, "a non-fallback source reported a fallback");
+    }
+
+    #[test]
+    fn warn_once_emits_exactly_once_per_flag() {
+        let flag = AtomicBool::new(false);
+        let mut n = 0;
+        assert!(warn_once(&flag, "x", |_| n += 1));
+        assert!(!warn_once(&flag, "x", |_| n += 1));
+        assert!(!warn_once(&flag, "x", |_| n += 1));
+        assert_eq!(n, 1);
     }
 
     // ---- Item 3: stage-seam RSS safety net ----

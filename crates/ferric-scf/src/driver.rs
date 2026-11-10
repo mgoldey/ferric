@@ -848,9 +848,7 @@ mod raw_budget_tests {
     fn auto_budget_allows_for_planned_xc_memory() {
         let x = 1usize << 30;
         let res = ferric_core::memory::resolve_budget(None);
-        let meminfo = std::fs::read_to_string("/proc/meminfo")
-            .ok()
-            .and_then(|s| ferric_core::memory::parse_meminfo_available(&s));
+        let meminfo = ferric_core::memory::sys::available_ram_bytes();
         let live = ferric_core::memory::detect_available_bytes();
         if res.source != ferric_core::memory::BudgetSource::AutoDetected
             || meminfo.is_none_or(|m| m < 4 * x)
