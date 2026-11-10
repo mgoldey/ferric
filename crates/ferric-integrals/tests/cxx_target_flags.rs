@@ -116,3 +116,23 @@ fn msvc_unistd_stub_supplies_what_basis_h_uses() {
     assert!(MSVC_UNISTD_STUB.contains("#define S_ISDIR"));
     assert!(MSVC_UNISTD_STUB.starts_with("#pragma once"));
 }
+
+/// The static libint2 archive each target links (the Windows wheel's
+/// export is `int2.lib`, which build.rs once linked as a dylib and reported
+/// as shared), and the MSVC import-library ambiguity.
+#[test]
+fn libint_static_archive_per_target() {
+    assert_eq!(LINUX.libint_static_archive(), "libint2.a");
+    assert_eq!(MACOS.libint_static_archive(), "libint2.a");
+    assert_eq!(WIN_GNU.libint_static_archive(), "libint2.a");
+    assert_eq!(WIN_MSVC.libint_static_archive(), "int2.lib");
+    // An archive alone is static everywhere.
+    for t in [LINUX, MACOS, WIN_GNU, WIN_MSVC] {
+        assert!(t.libint_is_static(true, false), "{t:?}");
+        assert!(!t.libint_is_static(false, false), "{t:?}");
+    }
+    // MSVC: int2.lib next to bin/int2.dll is an import library.
+    assert!(!WIN_MSVC.libint_is_static(true, true));
+    // Elsewhere a stray DLL changes nothing (libint2.a is never an import lib).
+    assert!(LINUX.libint_is_static(true, true));
+}

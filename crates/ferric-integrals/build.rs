@@ -66,7 +66,6 @@ fn main() {
         // $PREFIX/include/eigen3. Listed before the system path so the
         // environment's Eigen wins over any system copy.
         .include(format!("{libint_root}/include/eigen3"))
-        .include("/usr/include/eigen3")
         // STEP 4: opt in to the libint2-native terf operator. Requires a
         // libint2 patched with Operator::terf (see
         // wiki/perf-tasks/patches/libint2-terf-*.patch) selected via
@@ -79,6 +78,12 @@ fn main() {
             },
             None,
         );
+    // The system Eigen, after the prefix's. Not on Windows, which has no
+    // /usr/include. cc-rs puts every -I before every -D, so the Linux compile
+    // line is unchanged by adding it here rather than in the chain above.
+    if target_os != "windows" {
+        shim_build.include("/usr/include/eigen3");
+    }
     if let Some(dir) = compat_header_dir(target) {
         // Searched last: stands in only for headers the toolchain lacks.
         shim_build.include(dir);
@@ -112,7 +117,13 @@ fn main() {
     // conda-forge 2.13.1 build, which ships libint2.so only; that script sets
     // its SONAME to the absolute path, so binaries find it at run time without
     // an rpath.
-    if std::path::Path::new(&format!("{libint_root}/lib/libint2.a")).exists() {
+    // MSVC: the static archive is int2.lib (cxx_target.rs).
+    let libint_archive = format!("{libint_root}/lib/{}", target.libint_static_archive());
+    let libint_dll = format!("{libint_root}/bin/int2.dll");
+    if target.libint_is_static(
+        std::path::Path::new(&libint_archive).exists(),
+        std::path::Path::new(&libint_dll).exists(),
+    ) {
         println!("cargo:rustc-link-lib=static=int2");
         println!("cargo:rustc-env=FERRIC_LIBINT_LINKAGE=static");
     } else {
