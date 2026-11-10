@@ -105,6 +105,25 @@ impl CxxTarget<'_> {
         }
     }
 
+    /// File name of a STATIC libint2 archive under `<prefix>/lib`: CMake
+    /// names it `int2.lib` under MSVC and `libint2.a` elsewhere. Under MSVC
+    /// a shared build also leaves an `int2.lib` (its import library), so
+    /// build.rs treats it as static only when no `bin/int2.dll` sits beside it
+    /// (see [`CxxTarget::libint_is_static`]).
+    pub fn libint_static_archive(&self) -> &'static str {
+        if self.msvc_abi() {
+            "int2.lib"
+        } else {
+            "libint2.a"
+        }
+    }
+
+    /// Whether the libint2 under a prefix links statically, given which of
+    /// `lib/<libint_static_archive()>` and `bin/int2.dll` exist there.
+    pub fn libint_is_static(&self, archive_exists: bool, dll_exists: bool) -> bool {
+        archive_exists && !(self.msvc_abi() && dll_exists)
+    }
+
     /// File names of the libecpint and Faddeeva static archives CMake builds.
     pub fn ecpint_archives(&self) -> (&'static str, &'static str) {
         if self.msvc_abi() {
