@@ -110,6 +110,25 @@ pub struct PhaseAccumulator {
     /// the table and kept out of `TOTAL`, which would otherwise count the
     /// overlapped wall time twice.
     overlapped: Vec<PhaseTotal>,
+    /// Sub-phases timed INSIDE another timed phase (e.g. the RI-J and DF-K
+    /// builds inside the SCF's `jk_build`). Reported below the table and kept
+    /// out of `TOTAL`, since their parent already counts that wall time.
+    nested: Vec<PhaseTotal>,
+}
+
+/// Fold `secs` into `label`'s row of `rows`, creating it on first sight.
+fn fold_row(rows: &mut Vec<PhaseTotal>, label: &'static str, secs: f64) {
+    match rows.iter_mut().find(|p| p.label == label) {
+        Some(p) => {
+            p.secs += secs;
+            p.calls += 1;
+        }
+        None => rows.push(PhaseTotal {
+            label,
+            secs,
+            calls: 1,
+        }),
+    }
 }
 
 impl PhaseAccumulator {
@@ -118,7 +137,26 @@ impl PhaseAccumulator {
         Self {
             phases: Vec::new(),
             overlapped: Vec::new(),
+            nested: Vec::new(),
         }
+    }
+
+    /// End a region opened by [`PhaseAccumulator::begin`] as a NESTED
+    /// sub-phase of an enclosing timed phase: shown in the report under its
+    /// parent, excluded from [`PhaseAccumulator::total_secs`] (the parent
+    /// already counts it). A `None` token is a no-op.
+    #[inline]
+    pub fn stop_nested(&mut self, token: Option<(&'static str, Instant)>) {
+        let Some((label, t0)) = token else { return };
+        fold_row(&mut self.nested, label, t0.elapsed().as_secs_f64());
+    }
+
+    /// Accumulated seconds for one nested sub-phase (`None` if never timed).
+    pub fn nested_secs_for(&self, label: &str) -> Option<f64> {
+        self.nested
+            .iter()
+            .find(|p| p.label == label)
+            .map(|p| p.secs)
     }
 
     /// Fold `dt` (measured by the caller, e.g. inside one arm of a
@@ -256,6 +294,19 @@ impl PhaseAccumulator {
             "[timing]   {:<32} {:>10.3}",
             "TOTAL (timed phases)", total
         );
+        if !self.nested.is_empty() {
+            let _ = writeln!(
+                out,
+                "[timing]   nested (inside a phase above, not in TOTAL):"
+            );
+            for p in &self.nested {
+                let _ = writeln!(
+                    out,
+                    "[timing]   >{:<31} {:>10.3} {:>8}",
+                    p.label, p.secs, p.calls
+                );
+            }
+        }
         if !self.overlapped.is_empty() {
             let _ = writeln!(out, "[timing]   overlapped (concurrent, not in TOTAL):");
             for p in &self.overlapped {
@@ -370,6 +421,33 @@ mod tests {
         assert_eq!(guard.secs_for("region").is_some(), enabled());
     }
 
+    /// A nested sub-phase is recorded (when enabled) but never counted in
+    /// `TOTAL`: its parent phase already holds that wall time, so adding it
+    /// would double-count.
+    #[test]
+    fn nested_sub_phases_stay_out_of_the_total() {
+        let mut acc = PhaseAccumulator::new();
+        let outer = acc.begin("parent");
+        let inner = acc.begin("child");
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        acc.stop_nested(inner);
+        acc.stop(outer);
+        if enabled() {
+            let parent = acc.secs_for("parent").expect("parent timed");
+            let child = acc.nested_secs_for("child").expect("child timed");
+            assert!(child > 0.0 && child <= parent);
+            assert_eq!(
+                acc.secs_for("child"),
+                None,
+                "child must not be a top-level row"
+            );
+            assert_eq!(acc.total_secs(), parent);
+        } else {
+            assert_eq!(acc.nested_secs_for("child"), None);
+            assert_eq!(acc.total_secs(), 0.0);
+        }
+    }
+
     /// `enabled()` is fixed per process, so in an untimed run the ON-only
     /// assertions above (coalescing; single evaluation in `time`'s enabled
     /// branch) never execute. Re-run the timing tests in a child with
@@ -395,6 +473,7 @@ mod tests {
         for name in [
             "repeated_labels_accumulate_into_one_row ... ok",
             "time_runs_the_closure_exactly_once ... ok",
+            "nested_sub_phases_stay_out_of_the_total ... ok",
         ] {
             assert!(
                 stdout.contains(name),

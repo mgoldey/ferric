@@ -2755,7 +2755,9 @@ fn solve_rhf_impl(
                     e_xc_joined = Some(e);
                     JXC_OVERLAP_BUILDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 } else {
+                    let t = phases.begin("jk:ri_j");
                     dfj.build(&d, &mut j_buf)?;
+                    phases.stop_nested(t);
                 }
             } else {
                 let dj = direct_j.as_mut().expect("DirectJ built before loop");
@@ -2786,6 +2788,7 @@ fn solve_rhf_impl(
                 // applied, a single Fock build agrees with the density path to
                 // 2 ulp (rel 5e-16, dfk_occ_single harness) and full SCF matches
                 // in both energy and iteration count.
+                let t = phases.begin("jk:df_k");
                 match d_occ.as_ref() {
                     Some(c_occ) => {
                         dfk.build_from_occ(c_occ, &mut k_buf)?;
@@ -2795,6 +2798,7 @@ fn solve_rhf_impl(
                         dfk.build_from_density_factor(&d, &mut k_buf)?;
                     }
                 }
+                phases.stop_nested(t);
             } else if let Some(dk) = direct_k.as_mut() {
                 // Only reached when `k_buf` is consumed (k_buf_consumed): for
                 // pure DFT and RSH `direct_k` is None and k_buf stays zero,
