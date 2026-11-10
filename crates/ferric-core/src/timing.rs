@@ -294,29 +294,18 @@ impl PhaseAccumulator {
             "[timing]   {:<32} {:>10.3}",
             "TOTAL (timed phases)", total
         );
-        if !self.nested.is_empty() {
-            let _ = writeln!(
-                out,
-                "[timing]   nested (inside a phase above, not in TOTAL):"
-            );
-            for p in &self.nested {
-                let _ = writeln!(
-                    out,
-                    "[timing]   >{:<31} {:>10.3} {:>8}",
-                    p.label, p.secs, p.calls
-                );
-            }
-        }
-        if !self.overlapped.is_empty() {
-            let _ = writeln!(out, "[timing]   overlapped (concurrent, not in TOTAL):");
-            for p in &self.overlapped {
-                let _ = writeln!(
-                    out,
-                    "[timing]   ~{:<31} {:>10.3} {:>8}",
-                    p.label, p.secs, p.calls
-                );
-            }
-        }
+        side_table(
+            &mut out,
+            "nested (inside a phase above, not in TOTAL)",
+            '>',
+            &self.nested,
+        );
+        side_table(
+            &mut out,
+            "overlapped (concurrent, not in TOTAL)",
+            '~',
+            &self.overlapped,
+        );
         let _ = std::io::stderr().lock().write_all(out.as_bytes());
     }
     /// Wrap this accumulator in a guard that prints its table (via
@@ -358,6 +347,23 @@ impl std::ops::DerefMut for ReportOnDrop {
 impl Drop for ReportOnDrop {
     fn drop(&mut self) {
         self.acc.report(self.title);
+    }
+}
+
+/// Append a titled side table (phases outside TOTAL) to `out`; nothing when
+/// `phases` is empty. `mark` prefixes each label (`>` nested, `~` overlapped).
+fn side_table(out: &mut String, title: &str, mark: char, phases: &[PhaseTotal]) {
+    use std::fmt::Write as _;
+    if phases.is_empty() {
+        return;
+    }
+    let _ = writeln!(out, "[timing]   {title}:");
+    for p in phases {
+        let _ = writeln!(
+            out,
+            "[timing]   {mark}{:<31} {:>10.3} {:>8}",
+            p.label, p.secs, p.calls
+        );
     }
 }
 
