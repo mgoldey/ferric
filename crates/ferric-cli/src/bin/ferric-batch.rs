@@ -1,3 +1,19 @@
+//! `ferric-batch`: run one `ferric` input template over every `*.xyz` file
+//! in a directory.
+//!
+//! ```text
+//! ferric-batch [--jobs N] <template.toml> <xyz_dir> <output_dir>
+//! ```
+//!
+//! For each `<stem>.xyz` the template's `{XYZ_FILE}` placeholder is replaced
+//! with that file's path and written to `<output_dir>/<stem>.toml`; a child
+//! `ferric` process (the sibling binary, else `ferric` on `PATH`) runs it with
+//! stdout and stderr captured to `<stem>.out` and `<stem>.err`. Up to `N`
+//! children (default 1) run at once, each with `OPENBLAS_NUM_THREADS=1` and
+//! `RAYON_NUM_THREADS=1`; the resolved memory budget is divided among the
+//! concurrent children through `FERRIC_MEM_BUDGET_GB` and the child TOMLs'
+//! `[memory] budget_gb`. The process exits 1 if any job fails.
+
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};

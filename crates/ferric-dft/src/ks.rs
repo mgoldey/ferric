@@ -40,8 +40,11 @@ use crate::xc_trait::{KMix, UksXcContribution, XcCommit, XcContribution, XcMemor
 #[derive(Error, Debug)]
 #[non_exhaustive]
 pub enum KsXcError {
+    /// Evaluating basis functions on grid points failed (e.g. an unsupported
+    /// angular momentum).
     #[error("AO evaluation failed: {0:?}")]
     Eval(GtoEvalError),
+    /// Resolving or initialising the functional through libxc failed.
     #[error("libxc resolver failed: {0}")]
     Libxc(LibxcError),
     /// The pool refused a plane with no fallback.
@@ -52,11 +55,18 @@ pub enum KsXcError {
          but the budget is {budget_gb:.2} GB — raise [memory] budget_gb / \
          FERRIC_MEM_BUDGET_GB, use a smaller grid, or a smaller basis"
     )]
+    /// The VV10 NLC AO cache, which has no recompute fallback, does not fit
+    /// the memory budget.
     OverBudget {
+        /// Bytes required, in GB (10⁹ bytes).
         needed_gb: f64,
+        /// Bytes available from the pool or budget, in GB (10⁹ bytes).
         budget_gb: f64,
+        /// Number of basis functions.
         nbf: usize,
+        /// Point count of the grid being sized.
         npts: usize,
+        /// Message suffix naming the VV10 NLC grid's share.
         vv10: &'static str,
     },
     /// Grid construction failed. In practice this is angular-order pruning
@@ -760,7 +770,9 @@ fn mixed_vxc_allowed(xc: &XcDef, ladder: &MixedLadder, ds: &[&Array2<f64>]) -> b
 /// (see [`crate::xc_batch`]) + optional VV10 NLC grid and its dense AO cache.
 #[derive(Debug)]
 pub struct KsXc {
+    /// The functional, resolved with `nspin = 1`.
     pub xc: XcDef,
+    /// Main integration grid (Becke-weighted points), in Bohr.
     pub grid: Vec<GridPoint>,
     /// Batched, screened main grid (and its resident AO blocks, if any).
     screened: ScreenedGrid,
@@ -770,8 +782,12 @@ pub struct KsXc {
     /// drop first. Inert when no pool is installed (which keeps the
     /// unbudgeted path identical).
     _charge: Reservation,
+    /// VV10 NLC grid, present exactly when `xc.vv10` is `Some`.
     pub nlc_grid: Option<Vec<GridPoint>>,
+    /// AO values on the NLC grid, shape `(nbf, n_nlc_points)`.
     pub nlc_chi: Option<Array2<f64>>,
+    /// AO gradients on the NLC grid, shape `(3, nbf, n_nlc_points)`, axis 0
+    /// in `x, y, z` order.
     pub nlc_dchi: Option<Array3<f64>>,
     /// VV10's scratch, sized for the NLC grid. (`add_xc` takes `&self`, hence
     /// the Mutex; uncontended — one lock per Fock build.)
@@ -1205,14 +1221,20 @@ impl XcContribution for KsXc {
 /// added equally to V_α and V_β.
 #[derive(Debug)]
 pub struct KsXcUks {
+    /// The functional, resolved with `nspin = 2`.
     pub xc: XcDef,
+    /// Main integration grid (Becke-weighted points), in Bohr.
     pub grid: Vec<GridPoint>,
     /// See `KsXc::screened`.
     screened: ScreenedGrid,
     /// See `KsXc::_charge`.
     _charge: Reservation,
+    /// VV10 NLC grid, present exactly when `xc.vv10` is `Some`.
     pub nlc_grid: Option<Vec<GridPoint>>,
+    /// AO values on the NLC grid, shape `(nbf, n_nlc_points)`.
     pub nlc_chi: Option<Array2<f64>>,
+    /// AO gradients on the NLC grid, shape `(3, nbf, n_nlc_points)`, axis 0
+    /// in `x, y, z` order.
     pub nlc_dchi: Option<Array3<f64>>,
     /// See `KsXc::nlc_scratch`.
     nlc_scratch: Mutex<VxcScratch>,

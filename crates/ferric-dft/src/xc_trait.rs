@@ -21,6 +21,8 @@ pub struct XcMemoryPlan {
 /// What `commit_storage` decided.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct XcCommit {
+    /// Whether the main grid's AO blocks are held resident; `false` means
+    /// they are re-evaluated on every Fock build.
     pub resident: bool,
     /// Bytes that run without a pool charge.
     pub uncharged_bytes: usize,
@@ -58,8 +60,13 @@ pub trait XcStorage {
 /// existing `F = h + 2J − K` path with a single full-Coulomb K.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct KMix {
+    /// Exact-exchange coefficient on the short-range (erfc) K; the global
+    /// fraction when `omega == 0`.
     pub sr: f64,
+    /// Exact-exchange coefficient on the long-range (erf) K; equals `sr` for
+    /// a plain hybrid.
     pub lr: f64,
+    /// Range-separation parameter ω (Bohr⁻¹); `0` for no range separation.
     pub omega: f64,
 }
 

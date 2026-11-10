@@ -72,10 +72,18 @@ fn live_mask_restricted(rho_a: &[f64], rho_b: &[f64], floor: DensityFloor) -> [V
 /// Build once at SCF setup; reuse the closure across Newton iterations.
 #[derive(Debug)]
 pub struct LdaFxcKernel {
+    /// The functional; must be resolved with `nspin = 2`, since the kernel
+    /// evaluates libxc's polarized second derivatives.
     pub xc: XcDef,
+    /// The SCF grid rebuilt from the `AtomicGridConfig` passed to `new`
+    /// (pruning honoured).
     pub grid: Vec<GridPoint>,
-    pub chi: Array2<f64>,  // (nbf, npts)
-    pub dchi: Array3<f64>, // (3, nbf, npts) — unused for LDA but kept for symmetry
+    /// AO values on `grid`, shape `(nbf, npts)`.
+    pub chi: Array2<f64>,
+    /// AO gradients on `grid`, shape `(3, nbf, npts)`. The LDA response uses
+    /// no density gradients; this is passed to the shared density evaluator,
+    /// whose gradient output is discarded.
+    pub dchi: Array3<f64>,
     /// Pre-scaled χ scratch reused across Newton iterations (`apply_with_ref`
     /// takes `&self`, hence the Mutex; uncontended — one lock per matvec).
     scratch: Mutex<VxcScratch>,
@@ -264,10 +272,17 @@ impl LdaFxcKernel {
 /// returns them as such, so the σ-coupling terms vanish).
 #[derive(Debug)]
 pub struct GgaFxcKernel {
+    /// The functional; must be resolved with `nspin = 2`, since the kernel
+    /// evaluates libxc's polarized second derivatives.
     pub xc: XcDef,
+    /// The SCF grid rebuilt from the `AtomicGridConfig` passed to `new`
+    /// (pruning honoured).
     pub grid: Vec<GridPoint>,
-    pub chi: Array2<f64>,  // (nbf, npts)
-    pub dchi: Array3<f64>, // (3, nbf, npts)
+    /// AO values on `grid`, shape `(nbf, npts)`.
+    pub chi: Array2<f64>,
+    /// AO gradients on `grid`, shape `(3, nbf, npts)`, axis 0 in `x, y, z`
+    /// order.
+    pub dchi: Array3<f64>,
     /// Pre-scaled χ / ∇χ scratch reused across Newton iterations.
     scratch: Mutex<VxcScratch>,
 }
@@ -913,10 +928,17 @@ pub struct MggaFxcReference {
 /// is also the exactness anchor (`mgga_kernel_on_gga_functional_equals_gga_kernel`).
 #[derive(Debug)]
 pub struct MggaFxcKernel {
+    /// The functional; must be resolved with `nspin = 2`, since the kernel
+    /// evaluates libxc's polarized second derivatives.
     pub xc: XcDef,
+    /// The SCF grid rebuilt from the `AtomicGridConfig` passed to `new`
+    /// (pruning honoured).
     pub grid: Vec<GridPoint>,
-    pub chi: Array2<f64>,  // (nbf, npts)
-    pub dchi: Array3<f64>, // (3, nbf, npts)
+    /// AO values on `grid`, shape `(nbf, npts)`.
+    pub chi: Array2<f64>,
+    /// AO gradients on `grid`, shape `(3, nbf, npts)`, axis 0 in `x, y, z`
+    /// order.
+    pub dchi: Array3<f64>,
     scratch: Mutex<VxcScratch>,
 }
 

@@ -242,8 +242,11 @@ impl Default for XcBatchConfig {
 /// Summary of a screened grid, for tests and benchmarks.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct XcScreeningStats {
+    /// Number of point batches the grid was split into.
     pub nbatches: usize,
+    /// Total grid points over all batches.
     pub npts: usize,
+    /// Number of basis functions.
     pub nbf: usize,
     /// Σ_b nact_b·nb_b / (nbf·npts): fraction of (function, point) pairs kept.
     pub active_fraction: f64,

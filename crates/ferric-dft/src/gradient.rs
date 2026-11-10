@@ -320,10 +320,14 @@ fn build_mdchi(d: &Array2<f64>, dchi: &Array3<f64>) -> Array3<f64> {
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum KsGradError {
+    /// A component functional's family is not handled by the selected
+    /// gradient routine (e.g. a GGA passed to the LDA-only path).
     #[error("XC family {0:?} not supported in this gradient path")]
     UnsupportedFamily(FunctionalFamily),
+    /// Resolving the functional through libxc failed.
     #[error("libxc resolver failed: {0}")]
     Libxc(LibxcError),
+    /// Evaluating basis functions or their derivatives on the grid failed.
     #[error("AO eval failed: {0:?}")]
     AoEval(crate::ao_grid::GtoEvalError),
     /// The gradient's declared working set does not fit the memory budget.

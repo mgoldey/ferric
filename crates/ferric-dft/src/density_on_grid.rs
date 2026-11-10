@@ -119,9 +119,13 @@ pub fn eval_density_closed(
 ///   `sigma`           : (3, npts) — rows are σ_αα, σ_αβ, σ_ββ
 #[derive(Debug, Clone)]
 pub struct UksDensityGrid {
+    /// α density per point, length `npts`.
     pub rho_a: Array1<f64>,
+    /// β density per point, length `npts`.
     pub rho_b: Array1<f64>,
+    /// ∇ρ_α, shape `(3, npts)`, rows `x, y, z`.
     pub grad_a: Array2<f64>,
+    /// ∇ρ_β, shape `(3, npts)`, rows `x, y, z`.
     pub grad_b: Array2<f64>,
     /// (3, npts) — sigma[(0, g)] = σ_αα, sigma[(1, g)] = σ_αβ, sigma[(2, g)] = σ_ββ.
     pub sigma: Array2<f64>,

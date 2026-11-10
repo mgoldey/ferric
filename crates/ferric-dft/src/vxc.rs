@@ -466,13 +466,21 @@ pub fn semilocal_vxc_closed_scratch(
 /// Per-point libxc outputs for a spin-polarized evaluation, each summed over
 /// the component functionals with their mixing weights.
 pub struct PolarizedKernel {
+    /// ε_xc, the XC energy per particle (`E_xc = Σ_g w_g ρ_g ε_xc(g)`).
     pub exc: Array1<f64>,
+    /// ∂f/∂ρ_α (`f = ρ ε_xc`).
     pub vrho_a: Array1<f64>,
+    /// ∂f/∂ρ_β.
     pub vrho_b: Array1<f64>,
+    /// ∂f/∂σ_αα; zero for LDA components.
     pub vsigma_aa: Array1<f64>,
+    /// ∂f/∂σ_αβ; zero for LDA components.
     pub vsigma_ab: Array1<f64>,
+    /// ∂f/∂σ_ββ; zero for LDA components.
     pub vsigma_bb: Array1<f64>,
+    /// ∂f/∂τ_α; zero unless a component is a meta-GGA.
     pub vtau_a: Array1<f64>,
+    /// ∂f/∂τ_β; zero unless a component is a meta-GGA.
     pub vtau_b: Array1<f64>,
     /// The density floor of the evaluated definition
     /// ([`DensityFloor::for_xc`]); consumers gate each spin with it.

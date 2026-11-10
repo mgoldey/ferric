@@ -76,11 +76,17 @@ pub struct AmplitudeLinLccdConfig {
     /// Threshold ε on |(ia|jb)| (Eq-8 symmetric test, swap-closed); 0 keeps
     /// everything (the exactness-anchor limit).
     pub eps: f64,
+    /// Number of lowest occupied MOs excluded from the localized occupied
+    /// space.
     pub frozen_core: usize,
-    /// Strict by design: LinLCCD's energy is the LINEAR form, first order in
+    /// Relative residual tolerance of the ragged PCG amplitude solve. Strict
+    /// by design: LinLCCD's energy is the LINEAR form, first order in
     /// the residual, so LMP2's relaxed Hylleraas default does not apply.
     pub cg_rtol: f64,
+    /// PCG iteration cap; reaching it without meeting `cg_rtol` is an error.
     pub cg_max_iter: usize,
+    /// Byte budget forwarded to the RI 3-index build blocking; `None`
+    /// auto-resolves.
     pub eri3_budget_bytes: Option<usize>,
     /// Integral-free pair gate (see `lmp2_amplitude`); direct path only —
     /// gated pairs are never assembled, and the hh Gram's gated columns
@@ -106,11 +112,18 @@ impl Default for AmplitudeLinLccdConfig {
 #[derive(Debug, Clone)]
 #[must_use]
 pub struct AmplitudeLinLccdResult {
+    /// LinLCCD correlation energy (Hartree) from the linear energy form
+    /// `Σ (ia|jb)(2 T_iajb − T_ibja)` over the kept pattern.
     pub e_corr: f64,
+    /// Reference SCF energy plus `e_corr` (Hartree).
     pub e_total: f64,
+    /// Kept `(ia, jb)` amplitude entries divided by `(no·nv)²`.
     pub keep_fraction: f64,
+    /// PCG iterations taken by the amplitude solve.
     pub cg_iterations: usize,
+    /// Final PCG relative residual `‖r‖ / ‖b‖`.
     pub cg_relres: f64,
+    /// Always `true`: a solve that does not converge returns an error instead.
     pub cg_converged: bool,
 }
 

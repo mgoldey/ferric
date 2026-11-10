@@ -1202,6 +1202,7 @@ impl LocalScheme {
         }
     }
 
+    /// The TOML spelling of the scheme (inverse of `parse_config_str`).
     pub fn as_str(self) -> &'static str {
         match self {
             LocalScheme::None => "none",
@@ -1279,12 +1280,25 @@ pub struct LocalCfg {
 /// them).
 #[derive(Debug, Clone, PartialEq)]
 pub struct LocalDirectKnobs {
+    /// `[local] aux_radius`: aux fit-domain radius (Bohr), > 0. Default 10.0.
     pub aux_radius: f64,
+    /// `[local] virt_radius`: virtual domain radius on dipole centroids
+    /// (Bohr), > 0. Default 12.0.
     pub virt_radius: f64,
+    /// `[local] ao_tail`: AO-support shell threshold on max |C|, >= 0.
+    /// Default 1e-3.
     pub ao_tail: f64,
+    /// `[local] schwarz_skip`: Cauchy–Schwarz triple cut on the batch
+    /// integral stream, >= 0. Default 1e-5.
     pub schwarz_skip: f64,
+    /// `[local] batch_merge`: nearest-atom batches merged per integral pass,
+    /// >= 1. Default 4.
     pub batch_merge: usize,
+    /// `[local] gate_cal`: R⁻⁶ pair-gate calibration constant (> 0); `None`
+    /// keeps every pair.
     pub gate_cal: Option<f64>,
+    /// `[local] virt_schwarz_kappa`: ε-linked Schwarz virtual-candidate
+    /// screen κ (> 0); `None` disables the screen.
     pub virt_schwarz_kappa: Option<f64>,
 }
 
@@ -1549,6 +1563,9 @@ impl CcCfg {
 #[derive(Deserialize, Serialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct Mp2Cfg {
+    /// `[mp2] auxbasis`: bundled RI auxiliary basis for the correlated
+    /// methods. Default `DEFAULT_CORRELATION_AUX` (`"cc-pvdz-ri"`); the
+    /// `tda`/`tddft` kinds default to `TDDFT_DEFAULT_AUX` instead.
     pub auxbasis: Option<String>,
     /// Core orbitals excluded from the correlation treatment: an explicit
     /// count, or `"auto"` for the standard small-core count of this molecule.

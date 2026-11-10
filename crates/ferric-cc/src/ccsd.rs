@@ -130,6 +130,20 @@ pub fn ccsd_memory_plan(shape: CcsdShape, budget_bytes: Option<usize>) -> Memory
     plan
 }
 
+/// Spin-orbital RI-CCSD correlation energy on a restricted (RHF) reference.
+///
+/// The occupied count is the number of negative orbital energies in
+/// `rhf.eps_r()`; `cfg.frozen_core` of them are frozen. Integrals are built
+/// with operator `op` from the auxiliary basis `dfbs`. The returned `t1` is
+/// `(2·no, 2·nv)` and `t2` is `(2·no, 2·no, 2·nv, 2·nv)` in spin orbitals.
+/// Convergence is `|ΔE| < min(cfg.energy_conv, 1e-9)` Hartree; DIIS acts on
+/// `t2` only.
+///
+/// # Errors
+///
+/// Fails before allocating when the memory plan exceeds the budget, and
+/// returns `FerricError::Convergence` after `cfg.max_iter` iterations
+/// without convergence.
 pub fn ccsd(
     _mol: &Molecule,
     obs: &PreparedBasis,
