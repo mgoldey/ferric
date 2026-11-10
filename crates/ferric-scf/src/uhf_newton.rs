@@ -42,7 +42,9 @@ pub type AoResponse<'a> = dyn Fn(&Array2<f64>) -> Result<Array2<f64>, FerricErro
 
 /// Inputs to one UHF/UKS Newton step.
 pub struct UhfNewtonInputs<'a> {
+    /// The AO basis on the molecule.
     pub prep: &'a PreparedBasis,
+    /// Schwarz bounds for the response J/K builds.
     pub bounds: &'a SchwarzBounds,
     /// α MO coeffs (n × n), columns ordered occ | virt.
     pub c_a: &'a Array2<f64>,
@@ -52,7 +54,9 @@ pub struct UhfNewtonInputs<'a> {
     pub f_a_mo: &'a Array2<f64>,
     /// β Fock in the β-MO basis (current iter).
     pub f_b_mo: &'a Array2<f64>,
+    /// Number of occupied α MOs.
     pub nocc_a: usize,
+    /// Number of occupied β MOs.
     pub nocc_b: usize,
     /// K mixing coefficient for the plain-Coulomb exchange response
     /// (1.0 for HF, c_HF for a global hybrid). Read ONLY when `rsh` is `None`.
@@ -66,6 +70,8 @@ pub struct UhfNewtonInputs<'a> {
     pub rsh: Option<&'a crate::rsh_response::RshResponse<'a>>,
     /// Optional XC-kernel response closure (None for pure UHF).
     pub fxc: Option<&'a FxcResponse<'a>>,
+    /// Integral screening threshold for the response J/K builds (the solvers
+    /// pass `RhfConfig::integral_thresh`).
     pub thresh: f64,
     /// Solver-resolved memory budget (see `rhf::resolve_three_index_budget`),
     /// used to size the `build_jk_with_pool` reduction band via

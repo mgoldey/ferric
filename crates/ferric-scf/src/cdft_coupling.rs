@@ -143,7 +143,9 @@ pub struct DiabaticState<'a> {
     pub c_a: &'a Array2<f64>,
     /// β MO coefficients (nbf, nbf); occupied = first `nocc_b` columns.
     pub c_b: &'a Array2<f64>,
+    /// Number of occupied α MOs.
     pub nocc_a: usize,
+    /// Number of occupied β MOs.
     pub nocc_b: usize,
     /// State energy (CdftResult.scf.energy).
     pub energy: f64,
@@ -160,9 +162,16 @@ pub struct DiabaticState<'a> {
 #[derive(Debug, Clone, Copy)]
 #[must_use]
 pub struct HabResult {
+    /// Coupling `H_ab` after symmetric orthogonalization (Hartree). When
+    /// `|1 − S_ab²| < 1e-10` the states are treated as identical and this is
+    /// `e_a`.
     pub h_ab: f64,
+    /// Determinant overlap `S_ab = ⟨Ψ_a|Ψ_b⟩` (product of the α and β
+    /// occupied-overlap determinants).
     pub s_ab: f64,
+    /// State A energy, copied from [`DiabaticState::energy`].
     pub e_a: f64,
+    /// State B energy, copied from [`DiabaticState::energy`].
     pub e_b: f64,
 }
 

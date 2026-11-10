@@ -192,13 +192,21 @@ pub struct RohfSecondOrderInfo {
 /// (AO, incl. XC) and their MO transforms, total energy.
 #[derive(Debug, Clone)]
 pub struct RohfPoint {
+    /// MO coefficients, AO rows by MO columns (closed | open | virtual).
     pub c: Array2<f64>,
+    /// AO α density from the closed and open MOs of `c`.
     pub d_a: Array2<f64>,
+    /// AO β density from the closed MOs of `c`.
     pub d_b: Array2<f64>,
+    /// AO α spin Fock at `(d_a, d_b)`, including `V_xc^α`.
     pub f_a: Array2<f64>,
+    /// AO β spin Fock at `(d_a, d_b)`, including `V_xc^β`.
     pub f_b: Array2<f64>,
+    /// `Cᵀ F_α C`.
     pub f_a_mo: Array2<f64>,
+    /// `Cᵀ F_β C`.
     pub f_b_mo: Array2<f64>,
+    /// Total energy at `(d_a, d_b)` (Hartree), from the orbital model.
     pub energy: f64,
 }
 

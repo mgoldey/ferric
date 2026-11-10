@@ -2203,7 +2203,9 @@ impl JBuilder for SplitRiJ {
 // and boxing the common (stored) case would only add an indirection.
 #[allow(clippy::large_enum_variant)]
 pub enum RiJ<'a> {
+    /// Stored three-index tensor ([`DfJ`](crate::df_j::DfJ)).
     Stored(crate::df_j::DfJ<'a>),
+    /// Direct Split-RI-J.
     Split(Box<SplitRiJ>),
 }
 

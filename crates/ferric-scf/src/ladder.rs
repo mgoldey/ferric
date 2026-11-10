@@ -21,11 +21,16 @@ pub struct Rung {
     pub restart: bool,
 }
 
+/// What one finished rung of a ladder did.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RungOutcome {
+    /// SCF iterations the rung ran, against the rung's own `max_iter`.
     pub iters: usize,
+    /// The rung's exit reason.
     pub exit: ScfExit,
+    /// Always `f64::NAN`: neither ladder driver fills it in.
     pub final_err_max: f64, // best-effort; set to f64::NAN if not surfaced
+    /// The rung's final total energy (Hartree).
     pub final_energy: f64,
 }
 
@@ -33,9 +38,16 @@ pub struct RungOutcome {
 #[derive(Debug, Clone)]
 #[must_use]
 pub struct LadderResult {
+    /// The first converged rung's result; if none converged, the
+    /// lowest-energy rung's result.
     pub result: ScfResult,
+    /// Whether some rung converged.
     pub converged: bool,
+    /// Index of the converged rung. When none converged, the index of the
+    /// lowest-energy rung for [`solve_rhf_ladder`] and of the last rung for
+    /// [`solve_rohf_ladder`].
     pub rung_reached: usize,
+    /// One entry per rung that ran, in order.
     pub rung_outcomes: Vec<RungOutcome>,
 }
 

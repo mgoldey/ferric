@@ -137,7 +137,9 @@ const COSMO_XI: f64 = 3.8;
 ///   future need to reproduce the pre-2026-07-19 numbers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SMatrixKind {
+    /// Bare point-charge segments with the fixed `xi_COSMO = 3.8` diagonal.
     PointCharge,
+    /// PySCF-style Gaussian-smeared segments (the default).
     GaussianSmeared,
 }
 

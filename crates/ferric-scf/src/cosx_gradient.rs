@@ -870,8 +870,9 @@ pub struct FittedResponse {
     /// The Lagrangian energy-weighted density `W` (replaces the usual
     /// `sum w_o C_o e_o C_o^T`; spin-summed for UHF).
     pub w: Array2<f64>,
-    /// GMRES iterations and final relative residual.
+    /// GMRES iterations taken.
     pub iterations: usize,
+    /// Final GMRES relative residual.
     pub rel_residual: f64,
 }
 

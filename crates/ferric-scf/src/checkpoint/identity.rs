@@ -39,8 +39,13 @@ pub enum FieldClass {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct IdentityField {
+    /// Field key, e.g. `spin`, `nao`, `basis[Z=8]`, or a `RhfConfig` field
+    /// name; fields are matched across files by this key.
     pub name: String,
+    /// How a mismatch in this field is treated.
     pub class: FieldClass,
+    /// Canonical text of the value; basis, ECP, density and other bulky data
+    /// enter as FNV-1a hashes of explicit text or bytes.
     pub value: String,
 }
 
@@ -49,8 +54,14 @@ pub struct IdentityField {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BuildStamp {
+    /// Package version string; shown in messages, not used to decide whether
+    /// two builds are the same.
     pub version: String,
+    /// Source commit hash, `None` when unknown. Two stamps are the same build
+    /// only when both commits are known and equal.
     pub commit: Option<String>,
+    /// Whether the working tree had uncommitted changes, `None` when unknown.
+    /// Only `Some(false)` on both sides counts as the same build.
     pub dirty: Option<bool>,
 }
 
@@ -81,11 +92,18 @@ impl std::fmt::Display for BuildStamp {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ScfIdentity {
+    /// Every compared field except coordinates and the two convergence
+    /// thresholds, in construction order.
     pub fields: Vec<IdentityField>,
     /// Bohr, atom order. Not in `fields` because a guess reports the max shift.
     pub coords_bohr: Vec<[f64; 3]>,
+    /// `RhfConfig::energy_conv`. A skip requires the file's value to be no
+    /// larger than the current one; a guess ignores it.
     pub energy_conv: f64,
+    /// `RhfConfig::density_conv`, compared like `energy_conv`.
     pub density_conv: f64,
+    /// Number of AO basis functions for this molecule and basis (spherical
+    /// `2l+1` or Cartesian `(l+1)(l+2)/2` per shell); fixes the matrix shapes.
     pub nao: usize,
     /// For messages only: the data decides, so an alias of the same basis passes.
     pub basis_name: String,
@@ -570,16 +588,24 @@ pub enum ReadMode {
     Guess,
     /// Replace the SCF. `allow_other_build` is the explicit override; it exists
     /// only here, so it cannot be passed under a guess.
-    Skip { allow_other_build: bool },
+    Skip {
+        /// Accept a file from a different (or not provably identical) build.
+        allow_other_build: bool,
+    },
 }
 
 /// One field that differs. `file`/`current` are `None` if the field is absent
 /// from that side, which is how a field added by a newer build appears.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Mismatch {
+    /// [`IdentityField::name`] of the field, or `coordinates` / `build` for
+    /// the two comparisons made outside `fields`.
     pub name: String,
+    /// The field's class, which decides error, warning or log.
     pub class: FieldClass,
+    /// The file's value, as canonical text.
     pub file: Option<String>,
+    /// The current calculation's value, as canonical text.
     pub current: Option<String>,
 }
 
@@ -619,7 +645,10 @@ pub struct ReadVerdict {
     pub file_build: BuildStamp,
     /// Set when a skip crossed builds on the explicit override. Goes in the result.
     pub build_override_used: bool,
+    /// [`Checkpoint::file_hash`]: the checksum read from disk, `None` for a
+    /// checkpoint that was never read from a file.
     pub file_hash: Option<u64>,
+    /// [`FORMAT_VERSION`] of this build (a read already refused any other).
     pub format_version: u64,
 }
 
