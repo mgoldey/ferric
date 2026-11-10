@@ -112,7 +112,7 @@ def molecular_orbitals(avo_input: dict) -> dict:
     ):
         raise RuntimeError(
             "orbital export needs a ferric with BasisSet.shells() and "
-            "DftResult.mo_coefficients() (newer than 0.1.0rc10)"
+            "DftResult.mo_coefficients() (ferric 0.1.0rc11 or newer)"
         )
     avo.progress(f"ferric {job.label}: SCF")
     mol, bs, res = engine.closed_shell_scf(job)

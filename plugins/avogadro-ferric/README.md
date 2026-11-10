@@ -29,7 +29,7 @@ calculation runs unrestricted (UHF or UKS).
 ## Install
 
 **From Avogadro.** Open Extensions > Plugins > Manage Plugins… and install
-from this directory or from the git repository. Avogadro runs `pixi install`
+`ferric` from the online catalog, or install from this directory. Avogadro runs `pixi install`
 in the plugin directory. That installs `ferric` from PyPI (wheels for
 CPython 3.10 to 3.13, manylinux x86_64).
 
@@ -59,10 +59,11 @@ pixi run --manifest-path <plugin>/pyproject.toml python -m pip install --force-r
 plugin directory.) `python -c "import ferric; print(ferric.__build__)"`
 inside the environment tells you which build is loaded.
 
-**Feature levels by ferric version.** The PyPI release 0.1.0rc10 covers
-everything except Molecular Orbitals. That command needs
-`BasisSet.shells()` and `DftResult.mo_coefficients()`, which came after rc10.
-Without them the command says so and does nothing.
+**ferric version.** The plugin requires ferric 0.1.0rc11 or newer, the first
+PyPI release with `BasisSet.shells()` and `DftResult.mo_coefficients()`, which
+Molecular Orbitals needs. If an older ferric is loaded (for example a local
+build), every other command still works, and Molecular Orbitals says what is
+missing and does nothing.
 
 ## Units and conventions (from the avogadrolibs 2.1.0 source)
 
@@ -212,6 +213,10 @@ What was checked in the real application, and how:
   - orbital rendering. Orbitals were checked against a Python port of
     Avogadro's evaluator, not the C++ one.
 
+- **ferric 0.1.0rc11 from PyPI (2026-11-10).** All 46 plugin tests pass
+  against the published rc11 wheel (`dirty: False`, CPython 3.12) in a clean
+  venv, the orbital tests included; under rc10 those were skipped.
+
 Manual check (about 5 minutes):
 
 1. Start Avogadro. When it asks "Install updated plugins? avogadro-ferric",
@@ -227,10 +232,9 @@ Manual check (about 5 minutes):
    Optimize Geometry, or drag an H with the Auto Optimize tool. The geometry
    should relax smoothly to r(OH) ≈ 0.975 Å and a 102° angle.
 5. Run Input > ferric…, generate and save `job.toml` + `job.xyz` into one
-   folder, and run `ferric job.toml` there. Molecular Orbitals needs a ferric
-   newer than rc10 in the plugin's environment (see "Using a local ferric
-   build"). With one, the Orbitals panel should list the MOs and draw the
-   HOMO.
+   folder, and run `ferric job.toml` there.
+6. Run Extensions > ferric > Molecular Orbitals. The Orbitals panel should
+   list the MOs and draw the HOMO.
 
 Removing the install:
 - the plugin directory

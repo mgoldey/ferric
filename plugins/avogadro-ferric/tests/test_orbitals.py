@@ -18,7 +18,7 @@ import ferric
 pytestmark = pytest.mark.skipif(
     not hasattr(ferric.BasisSet, "shells")
     or not hasattr(ferric.DftResult, "mo_coefficients"),
-    reason="needs BasisSet.shells / DftResult.mo_coefficients (ferric newer than 0.1.0rc10)",
+    reason="needs BasisSet.shells / DftResult.mo_coefficients (ferric 0.1.0rc11 or newer)",
 )
 
 XYZ = "3\n\n" + "".join(f"{s} {a[1]} {a[2]} {a[3]}\n" for s, a in zip("OHH", WATER))

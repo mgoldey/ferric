@@ -12,10 +12,10 @@ authors = [{ name = "Matthew Goldey", email = "matthew.goldey@gmail.com" }]
 # ferric publishes cp310-cp313 manylinux x86_64 wheels only.
 requires-python = ">=3.10,<3.14"
 dependencies = [
-    # 0.1.0rc10 has run_qmmm / run_optimize_qmmm / FrequencyResult.normal_modes.
-    # Orbital export also needs BasisSet.shells() and DftResult.mo_coefficients(),
-    # which are newer than rc10 (the Orbitals command says so when they are missing).
-    "ferric>=0.1.0rc10",
+    # 0.1.0rc11 is the first release with everything the plugin calls: run_qmmm,
+    # run_optimize_qmmm and FrequencyResult.normal_modes (rc10 had those), plus
+    # BasisSet.shells() and DftResult.mo_coefficients() for orbital export.
+    "ferric>=0.1.0rc11",
     "numpy>=2.0",
 ]
 
