@@ -243,7 +243,10 @@ def test_unknown_method_is_refused(plugin_env):
 def test_job_commands_ask_for_method_and_basis(plugin_env):
     """Single Point / Optimize / Frequencies / Orbitals open a method + basis
     dialog (user-options = "dynamic"), pre-filled from the Configure defaults."""
-    import tomllib
+    try:
+        import tomllib
+    except ModuleNotFoundError:  # Python 3.10
+        tomllib = pytest.importorskip("tomli")
 
     from avoferric_testlib import PLUGIN_DIR
 

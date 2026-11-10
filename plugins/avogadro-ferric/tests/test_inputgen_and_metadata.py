@@ -75,6 +75,19 @@ def test_generated_input_runs_with_the_ferric_cli(
     assert expect.lower() in (proc.stdout + proc.stderr).lower()
 
 
+@pytest.mark.parametrize("brk", ["\n", "\r\n", "\r"])
+def test_a_multiline_title_stays_a_comment(plugin_env, brk):
+    """A line break in the Title must not start a live TOML line (CodeRabbit,
+    PR #632): `Title = "water<LF>unknown = 1"` used to emit `unknown = 1`."""
+    env = plugin_env()
+    out = _gen(env, WATER, Title=f"water{brk}unknown = 1")
+    files = {f["filename"]: f["contents"] for f in out["files"]}
+    parsed = tomllib.loads(files["job.toml"])
+    assert "unknown" not in parsed
+    assert files["job.toml"].splitlines()[0] == "# water unknown = 1"
+    assert files["job.xyz"].splitlines()[1] == "water unknown = 1"
+
+
 def test_the_cli_check_is_strict(plugin_env, tmp_path):
     """The parse gate can fail: an unknown key in a generated section is refused."""
     env = plugin_env()
