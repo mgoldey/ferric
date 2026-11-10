@@ -118,7 +118,9 @@ fi
 missing=0
 for sym in dsyevd_ dsyev_ dgetrf_ dgetri_ dpotrf_ dpotrs_ dsyrk_ dgemm_ sgemm_ \
            cblas_dgemm cblas_sgemm openblas_set_num_threads openblas_get_num_threads; do
-  printf '%s\n' "$exports" | grep -qx "$sym" || { echo "::error::OpenBLAS does not export $sym"; missing=1; }
+  # A here-string, not `printf | grep -q`: under pipefail grep -q exiting
+  # early SIGPIPEs printf, which read as a missing symbol.
+  grep -qx "$sym" <<< "$exports" || { echo "::error::OpenBLAS does not export $sym"; missing=1; }
 done
 [ "$missing" = 0 ] && echo "OpenBLAS exports every symbol ferric calls"
 [ "$missing" = 0 ]
