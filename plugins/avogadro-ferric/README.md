@@ -28,22 +28,31 @@ calculation runs unrestricted (UHF or UKS).
 
 ## Install
 
-**From Avogadro.** Open Extensions > Plugins > Manage Plugins… and install
-`ferric` from the online catalog, or install from this directory. Avogadro runs `pixi install`
-in the plugin directory. That installs `ferric` from PyPI (wheels for
-CPython 3.10 to 3.13, manylinux x86_64).
+The plugin is developed in the ferric repository at `plugins/avogadro-ferric`
+and mirrored, on its own, at
+[github.com/mgoldey/avogadro-ferric](https://github.com/mgoldey/avogadro-ferric).
+Either way, `pixi install` in the plugin directory installs `ferric` from PyPI
+(wheels for CPython 3.10 to 3.13, manylinux x86_64).
 
-**By hand** (for example in the Flathub build, where the plugin directory is
-`~/.var/app/org.openchemistry.Avogadro2/data/OpenChemistry/Avogadro/plugins/`):
+**From Avogadro's online catalog.** A listing in Avogadro's plugin index has
+been submitted. Once it is listed, open Extensions > Manage Plugins… and
+install `ferric`. Until then, install by hand.
+
+**By hand.** Copy the plugin into Avogadro's plugin directory, install its
+environment, then start (or restart) Avogadro and answer Yes when it asks
+"Install updated plugins? avogadro-ferric". The menus appear only after that.
+In the Flathub build:
 
 ```sh
-cp -r plugins/avogadro-ferric ~/.var/app/org.openchemistry.Avogadro2/data/OpenChemistry/Avogadro/plugins/
+P=~/.var/app/org.openchemistry.Avogadro2/data/OpenChemistry/Avogadro/plugins
+git clone https://github.com/mgoldey/avogadro-ferric.git "$P/avogadro-ferric"
 flatpak run --command=pixi org.openchemistry.Avogadro2 install \
-    --manifest-path ~/.var/app/org.openchemistry.Avogadro2/data/OpenChemistry/Avogadro/plugins/avogadro-ferric/pyproject.toml
+    --manifest-path "$P/avogadro-ferric/pyproject.toml"
 ```
 
 On a native (non-Flatpak) Avogadro the plugin directory is
-`~/.local/share/OpenChemistry/Avogadro/plugins/`.
+`~/.local/share/OpenChemistry/Avogadro/plugins/`, and `pixi install
+--manifest-path …` runs with your own pixi.
 
 **Using a local ferric build instead of PyPI.** Avogadro runs
 `pixi run --as-is avogadro-ferric …` in the plugin directory. Any `ferric`
@@ -61,16 +70,17 @@ inside the environment tells you which build is loaded.
 
 **ferric version.** The plugin requires ferric 0.1.0rc11 or newer, the first
 PyPI release with `BasisSet.shells()` and `DftResult.mo_coefficients()`, which
-Molecular Orbitals needs. If an older ferric is loaded (for example a local
-build), every other command still works, and Molecular Orbitals says what is
-missing and does nothing.
+Molecular Orbitals needs. With ferric 0.1.0rc10 loaded (for example an older
+local build), every other command works, and Molecular Orbitals says what is
+missing and does nothing. Releases before rc10 lack other calls the plugin
+makes, such as `FrequencyResult.normal_modes`, and are not supported.
 
 ## Units and conventions (from the avogadrolibs 2.1.0 source)
 
 - **Energy model.** It replies in kJ/mol and kJ/mol/Å, and the value is the
   gradient dE/dx (Avogadro negates it to get forces). ferric's values are
   converted with ferric's own constants: 1 Hartree = 2625.49962 kJ/mol and
-  1 Bohr = 0.52917721092 Å (CODATA 2010, `crates/ferric-core/src/units.rs`).
+  1 Bohr = 0.52917721092 Å (CODATA 2010, ferric's `crates/ferric-core/src/units.rs`).
 - **Charges** are in units of e. **Potentials** are in e/Å, the unit of
   Avogadro's own Σ q/r fallback (`calc/chargemodel.cpp`). That is ferric's
   Hartree/e × 1.8897.
@@ -127,8 +137,10 @@ The threads setting sets `RAYON_NUM_THREADS`, and the memory setting sets
 
 ## Tests
 
+From the plugin directory:
+
 ```sh
-OPENBLAS_NUM_THREADS=1 python -m pytest plugins/avogadro-ferric/tests -q
+OPENBLAS_NUM_THREADS=1 python -m pytest tests -q
 ```
 
 The tests drive `python -m avogadro_ferric` exactly as Avogadro does: one
