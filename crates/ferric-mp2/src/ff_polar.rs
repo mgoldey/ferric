@@ -73,8 +73,10 @@ use crate::zvector::build_relaxed_density_ao;
 ///   few % (a known MP2 density distinction, not an error).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DensityMode {
+    /// Orbital-relaxed density (SCF + P_oo/P_vv + Z-vector); the default.
     #[default]
     Relaxed,
+    /// Unrelaxed density (Z-vector term set to zero).
     Unrelaxed,
 }
 

@@ -165,11 +165,13 @@ impl Default for DirectConfig {
 /// inferred.
 #[derive(Debug, Clone, Default)]
 pub struct DirectStats {
-    /// Per-occupied strip aux rows (functions), mean/max.
+    /// Mean per-occupied strip aux rows (functions).
     pub strip_rows_mean: f64,
+    /// Maximum per-occupied strip aux rows (functions).
     pub strip_rows_max: usize,
-    /// Per-occupied strip virtual columns, mean/max.
+    /// Mean per-occupied strip virtual columns.
     pub strip_cols_mean: f64,
+    /// Maximum per-occupied strip virtual columns.
     pub strip_cols_max: usize,
     /// Total bytes held by all strips (the peak 3-index working set).
     pub strip_bytes_total: usize,
@@ -181,11 +183,14 @@ pub struct DirectStats {
     pub n_eri3_skipped: u64,
     /// (P|Q) metric shell pairs evaluated (of nshdf·(nshdf+1)/2 total).
     pub n_metric_shell_pairs: usize,
-    /// Pair virtual-candidate columns |C_ij| after the Schwarz screen
-    /// (mean/max over unique surviving pairs; equals the V_i ∪ V_j union
-    /// sizes when `virt_schwarz_kappa` is off).
+    /// Mean pair virtual-candidate columns |C_ij| after the Schwarz screen,
+    /// over unique surviving pairs (the V_i ∪ V_j union sizes when
+    /// `virt_schwarz_kappa` is off).
     pub virt_cand_mean: f64,
+    /// Maximum of the same |C_ij| over unique surviving pairs.
     pub virt_cand_max: usize,
+    /// Stages 1+2 wall seconds: pair gate, per-occupied distance/support maps
+    /// and integral batches (integral-free).
     pub t_maps_s: f64,
     /// Stage-3 wall seconds (all batch workers).
     pub t_eri3_s: f64,
@@ -193,13 +198,18 @@ pub struct DirectStats {
     /// and summed over workers (thread-seconds; NOT CPU time — a descheduled
     /// worker still accrues): the integral fill (libint evaluation +
     /// scatter into the slab) and the half-transform into the strips. Their
-    /// sum is below the workers' total by the per-batch setup.
+    /// sum is below the workers' total by the per-batch setup. This field is
+    /// the fill.
     pub t_eri3_fill_thread_s: f64,
     /// The fill split into evaluation and scatter: only with
     /// [`DirectConfig::split_eri3_timers`] (NaN otherwise). The clock is read
     /// per 64-shell-pair chunk, not per triple.
     pub t_eri3_eval_thread_s: f64,
+    /// The scatter half of the fill split (NaN unless
+    /// [`DirectConfig::split_eri3_timers`]).
     pub t_eri3_scatter_thread_s: f64,
+    /// Half-transform thread-seconds, summed over workers (see
+    /// `t_eri3_fill_thread_s`).
     pub t_eri3_transform_thread_s: f64,
     /// The serial prefix of `t_eri3_s`, wall seconds: the construction check
     /// and the shell-pair / aux Schwarz factors, before any batch worker runs.
@@ -213,15 +223,21 @@ pub struct DirectStats {
     /// exploit; batch pass only). On the aux-major pass `transform_flops` counts
     /// its own contraction and the second counter stays 0.
     pub transform_flops: f64,
+    /// Half-transform flops restricted to each occupied's own AO support (see
+    /// `transform_flops`; 0 on the aux-major pass).
     pub transform_flops_own_support: f64,
     /// Integrals libint wrote, and shell triples it screened to nothing. Only
     /// with [`DirectConfig::split_eri3_timers`] (0 otherwise).
     pub n_eri3_integrals: u64,
+    /// Shell triples libint screened to nothing (0 unless
+    /// [`DirectConfig::split_eri3_timers`]).
     pub n_eri3_null_blocks: u64,
     /// [`Eri3Pass::AuxMajor`]: largest one-task scratch (slab + half-transformed
     /// slab + occupied coefficients), and how many tasks the scratch budget lets
     /// run at once. 0 on the batch pass.
     pub aux_major_task_bytes_max: usize,
+    /// [`Eri3Pass::AuxMajor`]: tasks the scratch budget lets run at once
+    /// (0 on the batch pass).
     pub aux_major_concurrency: usize,
     /// [`Eri3Pass::AuxMajor`]: the most tasks actually observed in flight at once
     /// (0 on the batch pass). Never above `aux_major_concurrency`.
@@ -232,9 +248,14 @@ pub struct DirectStats {
     /// Integral batches run (aux-shell tasks on the aux-major pass), and the max/mean wall seconds of one batch
     /// worker (the load-balance counter: max ≫ mean is a tail imbalance).
     pub n_batches: usize,
+    /// Longest wall seconds of one batch worker.
     pub batch_work_max_s: f64,
+    /// Mean wall seconds of one batch worker.
     pub batch_work_mean_s: f64,
+    /// Wall seconds evaluating the needed (P|Q) metric shell pairs.
     pub t_metric_s: f64,
+    /// Stage-5 wall seconds: the optional Schwarz virtual-candidate screen,
+    /// per-pair-domain fits and ragged assembly.
     pub t_pairs_s: f64,
     /// Stage-5 pair-domain groups (one V_DD Cholesky each).
     pub n_pair_groups: usize,

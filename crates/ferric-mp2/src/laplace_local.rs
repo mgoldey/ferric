@@ -122,29 +122,36 @@ impl LocalRadii {
 /// Structural counters and stage timings of one `local` evaluation.
 #[derive(Debug, Clone, Default)]
 pub struct LocalStats {
-    /// Active (localized) occupied orbitals and localized virtuals.
+    /// Active (localized) occupied orbitals.
     pub n_lmo: usize,
+    /// Localized virtual orbitals.
     pub n_lvo: usize,
     /// `|T| = Σ_i |V_i|`, the inner GEMM dimension (MO path: `n_lmo·n_lvo`),
-    /// after the energy cut, and the geometric `|T|` before it.
+    /// after the energy cut.
     pub t_size: usize,
+    /// The geometric `|T|`, before the energy cut.
     pub t_size_geom: usize,
-    /// Mean and max `|V_i|`.
+    /// Mean virtual-domain size `|V_i|`.
     pub vdom_mean: f64,
+    /// Largest virtual-domain size `|V_i|`.
     pub vdom_max: usize,
     /// Mean AO neighbourhood `|N_i|` (TA).
     pub ao_mean: f64,
     /// Kept ordered `(i, j)` occupied pairs (T3), including `i = j`.
     pub n_pairs: usize,
-    /// Distinct shell pairs whose 3-index integrals are evaluated, and the total.
+    /// Distinct shell pairs whose 3-index integrals are evaluated.
     pub n_shell_pairs: usize,
+    /// All unique orbital-basis shell pairs, `nsh·(nsh+1)/2`.
     pub n_shell_pairs_total: usize,
+    /// Convergence flag of the Boys occupied localization.
     pub boys_converged: bool,
-    /// Wall seconds: Boys + VV-HV + domains, integrals + half transform,
-    /// whitening, quadrature points.
+    /// Wall seconds in Boys + VV-HV + domain construction.
     pub t_spaces: f64,
+    /// Wall seconds in 3-index integrals + half transform.
     pub t_eri3: f64,
+    /// Wall seconds in the RI whitening.
     pub t_whiten: f64,
+    /// Wall seconds over the Laplace quadrature points.
     pub t_points: f64,
 }
 

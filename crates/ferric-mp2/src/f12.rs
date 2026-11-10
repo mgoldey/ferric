@@ -40,7 +40,9 @@ pub struct Cabs {
     pub s_rr: Array2<f64>,
     /// Cross overlap S_OR, shape (nobs, nri).
     pub s_or: Array2<f64>,
+    /// Number of orbital-basis (OBS) AO functions.
     pub nobs: usize,
+    /// Number of RIBS AO functions (OBS plus auxiliary, `nobs + naux`).
     pub nri: usize,
     /// Number of retained CABS functions (≈ nri − nobs).
     pub ncabs: usize,

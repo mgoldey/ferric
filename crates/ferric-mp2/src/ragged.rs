@@ -302,18 +302,28 @@ where
 /// spectrum for free (see [`lanczos_kappa`]).
 #[derive(Debug, Clone, Default)]
 pub struct CgTrace {
+    /// Step length `α_k` of each iteration, in order.
     pub alphas: Vec<f64>,
+    /// Direction-update coefficient `β_k` applied before iteration `k+1`.
     pub betas: Vec<f64>,
 }
 
 /// Everything one ragged PCG solve returns.
 #[derive(Debug, Clone)]
 pub struct RaggedSolve {
+    /// Amplitude blocks, one `(|Da|, |Db|)` array per pair in `rg.pairs` order,
+    /// zero outside the retained pattern.
     pub t: Vec<Array2<f64>>,
+    /// PCG iterations (matvecs) performed.
     pub iterations: usize,
+    /// Recursive relative residual `‖r‖ / ‖P J‖` at the last iteration
+    /// (0 when `‖P J‖ = 0`).
     pub relres: f64,
+    /// Whether the final tolerance was reached within `max_iter`.
     pub converged: bool,
+    /// Multiply-add count per matvec, averaged over the iterations.
     pub flops_per_matvec: u64,
+    /// CG coefficients of the solve.
     pub trace: CgTrace,
 }
 
@@ -322,11 +332,14 @@ pub struct RaggedSolve {
 /// every matvec, no extra memory). Bitwise the same result either way.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MatvecPath {
+    /// Through a prebuilt [`SolvePlan`].
     Planned,
+    /// Through [`matvec_indexed`], with no plan.
     Indexed,
 }
 
 impl MatvecPath {
+    /// Lower-case label for printouts (`"planned"` / `"indexed"`).
     pub fn as_str(self) -> &'static str {
         match self {
             MatvecPath::Planned => "planned",
@@ -341,8 +354,12 @@ impl MatvecPath {
 /// ([`solve_resident_bytes`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PlanDecision {
+    /// The matvec the solve ran.
     pub path: MatvecPath,
+    /// Size of the solve plan in bytes, whether or not it was built.
     pub plan_bytes: usize,
+    /// Bytes resident beside the plan for the whole solve (`rg` plus the PCG
+    /// vectors).
     pub resident_bytes: usize,
 }
 
@@ -379,7 +396,9 @@ pub fn solve_ragged_budgeted(
 /// energy needs one more matvec). Holds the plan's pool reservation for as
 /// long as the plan lives.
 pub struct BudgetedSolve {
+    /// The PCG result.
     pub solve: RaggedSolve,
+    /// Which matvec ran and the byte counts behind that choice.
     pub decision: PlanDecision,
     plan: Option<SolvePlan>,
     _charge: Option<ferric_core::memory::pool::Reservation>,

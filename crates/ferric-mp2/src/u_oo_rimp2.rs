@@ -40,14 +40,22 @@ use ndarray::Array2;
 /// Configuration for U-OO-RI-MP2.
 #[derive(Debug, Clone)]
 pub struct UOoRiMp2Config {
+    /// Maximum orbital-optimization iterations; reaching it returns the
+    /// current point with `converged = false`.
     pub max_iter: usize,
+    /// Converged when the combined α+β orbital-gradient norm drops below this, or below
+    /// `10 × grad_conv` once the energy change is under `energy_conv`.
     pub grad_conv: f64,
+    /// Energy-change threshold (Hartree) for the secondary stopping test
+    /// described on `grad_conv`.
     pub energy_conv: f64,
+    /// Number of lowest occupied orbitals per spin excluded from correlation.
     pub frozen_core: usize,
     /// Level shift on the approximate diagonal Hessian (Ha).
     pub level_shift: f64,
     /// DIIS subspace size for orbital rotations (per spin).
     pub diis_size: usize,
+    /// Whether to DIIS-extrapolate the orbital rotations.
     pub use_diis: bool,
     /// Cap on |κ| per element (radians) to keep steps in the trust region.
     pub max_kappa: f64,
@@ -89,16 +97,28 @@ impl Default for UOoRiMp2Config {
 #[derive(Debug, Clone)]
 #[must_use]
 pub struct UOoRiMp2Result {
+    /// `hf_energy + mp2_corr` at the final orbitals (Hartree).
     pub total_energy: f64,
+    /// Energy of the UHF determinant built from the final orbitals (Hartree).
     pub hf_energy: f64,
+    /// UMP2 correlation energy at the final orbitals (Hartree).
     pub mp2_corr: f64,
+    /// Spin-resolved (αα, ββ, αβ) pieces of `mp2_corr`.
     pub components: URiMp2Components,
+    /// Whether a gradient/energy stopping test was met; `false` after
+    /// `max_iter` or a stuck-step bailout (the result is still returned).
     pub converged: bool,
+    /// Iterations performed.
     pub iterations: usize,
+    /// Combined α+β orbital-gradient norm at the last evaluation.
     pub grad_norm: f64,
+    /// α MO coefficients, (nao, nmo), in the α semicanonical frame.
     pub mos_alpha: Array2<f64>,
+    /// β MO coefficients, (nao, nmo), in the β semicanonical frame.
     pub mos_beta: Array2<f64>,
+    /// α semicanonical orbital energies (Hartree), the MP2 denominators used.
     pub eps_alpha: Vec<f64>,
+    /// β semicanonical orbital energies (Hartree), the MP2 denominators used.
     pub eps_beta: Vec<f64>,
 }
 

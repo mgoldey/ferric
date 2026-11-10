@@ -76,6 +76,8 @@ impl VirtualSpace {
         }
     }
 
+    /// The selector spelling (`"dense"` / `"local"`), the inverse of
+    /// [`Self::parse_config_str`].
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Dense => "dense",
@@ -202,30 +204,38 @@ pub struct LocalVvhvStats {
     pub n_groups: usize,
     /// Block-sparse products formed.
     pub n_products: usize,
-    /// Atom-group blocks kept / dropped by the thresholds, over every
-    /// truncated product and conversion.
+    /// Atom-group blocks kept by the thresholds, over every truncated
+    /// product and conversion.
     pub blocks_kept: u64,
+    /// Atom-group blocks dropped by the thresholds, over the same operations.
     pub blocks_dropped: u64,
-    /// Domain-local solve neighbourhood sizes (AOs), mean / max.
+    /// Mean domain-local solve neighbourhood size (AOs).
     pub solve_domain_aos_mean: f64,
+    /// Largest domain-local solve neighbourhood size (AOs).
     pub solve_domain_aos_max: usize,
     /// Trace-correcting purification iterations of the valence projector.
     pub purification_iterations: usize,
-    /// Newton-Schulz iterations: valence Löwdin, hard-virtual Löwdin, guard.
+    /// Newton-Schulz iterations of the valence Löwdin orthogonalization.
     pub ns_iterations_valence: usize,
+    /// Newton-Schulz iterations of the hard-virtual Löwdin orthogonalization.
     pub ns_iterations_hard: usize,
+    /// Newton-Schulz iterations of the guard step.
     pub ns_iterations_guard: usize,
-    /// Pivoted-Cholesky pivots taken (valence + hard) and heap pops.
+    /// Heap pops of the heap-pivoted Cholesky, summed over the valence and
+    /// hard-virtual selections.
     pub heap_pops: u64,
     /// Per-atom Fock blocks diagonalized (hard-virtual pseudo-canonicalization).
     pub n_fock_atom_blocks: usize,
-    /// Boys sweeps, and pair rotations evaluated / skipped by the screen.
+    /// Boys sweeps.
     pub boys_sweeps: usize,
+    /// Boys pair rotations evaluated.
     pub boys_pairs_evaluated: u64,
+    /// Boys pair rotations skipped by the screen.
     pub boys_pairs_screened: u64,
-    /// Mean / max block-row fill (kept blocks per block row, as a fraction of
-    /// the groups) of the final virtual coefficients.
+    /// Mean block-row fill (kept blocks per block row, as a fraction of the
+    /// groups) of the final virtual coefficients.
     pub cv_row_fill_mean: f64,
+    /// Largest block-row fill of the final virtual coefficients.
     pub cv_row_fill_max: f64,
     /// Wall seconds of the build (excluding the construction check).
     pub t_build_s: f64,
@@ -240,12 +250,15 @@ pub enum VirtualSpaceReport {
     Dense,
     /// The local build, with the thresholds it ran at and its counters.
     Local {
+        /// Thresholds the build ran at.
         config: LocalVvhvConfig,
+        /// Sparsity counters and timers of the build.
         stats: LocalVvhvStats,
     },
 }
 
 impl VirtualSpaceReport {
+    /// Label of the build: `"caller-supplied"`, `"dense"` or `"local"`.
     pub fn build(&self) -> &'static str {
         match self {
             Self::CallerSupplied => "caller-supplied",
@@ -377,8 +390,11 @@ impl VirtualSpaceReport {
 /// counters.
 #[derive(Debug, Clone)]
 pub struct LocalVvhv {
+    /// The localized virtual space.
     pub vv: VvHv,
+    /// AO index of each selected hard-virtual candidate, in pivot order.
     pub hard_aos: Vec<usize>,
+    /// Counters and timers of the build.
     pub stats: LocalVvhvStats,
 }
 

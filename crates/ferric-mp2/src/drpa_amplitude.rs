@@ -65,9 +65,15 @@ pub struct AmplitudeDrpaConfig {
     /// Threshold ε on |B_iajb| = |2(ia|jb)| in the localized basis; 0 keeps
     /// everything (the exactness-anchor limit).
     pub eps: f64,
+    /// Number of lowest occupied orbitals excluded from correlation.
     pub frozen_core: usize,
+    /// Fixed-point stopping tolerance on ‖R‖/‖B‖ (pattern-projected Riccati
+    /// residual relative to the norm of B); see also `eps_rtol_factor`.
     pub fp_rtol: f64,
+    /// Maximum fixed-point iterations; exceeding it is an error.
     pub fp_max_iter: usize,
+    /// Memory budget (bytes) for the blocked 3-index MO transform, forwarded
+    /// to the LMP2 assembly and the canonical reference; `None` auto-sizes.
     pub eri3_budget_bytes: Option<usize>,
     /// Integral-free pair gate (see `lmp2_amplitude`); gated pairs are
     /// never assembled in the ragged path.
@@ -132,7 +138,9 @@ fn effective_fp_rtol(cfg: &AmplitudeDrpaConfig) -> f64 {
 #[derive(Debug, Clone)]
 #[must_use]
 pub struct AmplitudeDrpaResult {
+    /// dRPA correlation energy ½ Σ B∘T over the kept pattern (Hartree).
     pub e_corr: f64,
+    /// Reference SCF energy plus `e_corr` (Hartree).
     pub e_total: f64,
     /// Canonical plasmon-formula dRPA on the exactly semicanonicalized
     /// recomputed Fock — the independent-construction reference (eigenvalue
@@ -140,10 +148,17 @@ pub struct AmplitudeDrpaResult {
     /// integrals and the Fock operator). NaN unless `compute_reference` was
     /// set (the default is off).
     pub e_corr_plasmon_canonical: f64,
+    /// Kept fraction of the `(no·nv)²` amplitude entries after the ε mask.
     pub keep_fraction: f64,
+    /// Fraction of the `no²` occupied pairs `(i,j)` retained in the amplitude
+    /// pattern.
     pub pair_fraction: f64,
+    /// Fixed-point iterations performed.
     pub iterations: usize,
+    /// Final ‖R‖/‖B‖ of the Riccati residual (in the ragged path with DIIS,
+    /// re-measured on the returned amplitudes).
     pub relres: f64,
+    /// Always `true` on `Ok`: a run that misses `fp_rtol` returns an error.
     pub converged: bool,
 }
 

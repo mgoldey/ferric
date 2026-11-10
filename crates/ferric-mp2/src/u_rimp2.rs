@@ -28,9 +28,13 @@ use ndarray::{Array2, Array3, Array4, ArrayView2};
 /// Components of the U-RI-MP2 correlation energy.
 #[derive(Debug, Clone, PartialEq)]
 pub struct URiMp2Components {
+    /// αα same-spin correlation energy, `¼ Σ t^αα K^αα` (Hartree).
     pub e_aa: f64,
+    /// ββ same-spin correlation energy, `¼ Σ t^ββ K^ββ` (Hartree).
     pub e_bb: f64,
+    /// αβ opposite-spin correlation energy, `Σ t^αβ (ia|JB)` (Hartree).
     pub e_ab: f64,
+    /// `e_aa + e_bb + e_ab` (Hartree).
     pub e_total: f64,
 }
 
@@ -38,8 +42,11 @@ pub struct URiMp2Components {
 #[derive(Debug, Clone)]
 #[must_use]
 pub struct URiMp2Result {
+    /// Spin-resolved correlation energy.
     pub components: URiMp2Components,
+    /// UMP2 correlation energy, equal to `components.e_total` (Hartree).
     pub mp2_corr: f64,
+    /// Reference SCF energy plus `mp2_corr` (Hartree).
     pub total_energy: f64,
     /// Precision provenance of the correlation energy (see
     /// `RiMp2Result::precision`).
@@ -79,13 +86,23 @@ impl std::fmt::Display for URiMp2Result {
 /// `&UMp2Amplitudes`, and it is constructed at exactly one site).
 #[derive(Debug)]
 pub struct UMp2Amplitudes {
+    /// α-spin RI intermediates (`b_ov` over active α occupieds × α virtuals).
     pub inter_a: RpaIntermediates,
+    /// β-spin RI intermediates.
     pub inter_b: RpaIntermediates,
+    /// α orbital energies (Hartree), all MOs, used in the denominators.
     pub eps_a: Vec<f64>,
+    /// β orbital energies (Hartree), all MOs, used in the denominators.
     pub eps_b: Vec<f64>,
+    /// αα amplitudes `t[i,j,a,b] = [(ia|jb) − (ib|ja)] / D` with
+    /// `D = ε_i + ε_j − ε_a − ε_b`, shape `(nocc_α, nocc_α, nvir_α, nvir_α)`.
     pub t_aa: Array4<f64>,
+    /// ββ amplitudes, same form and layout as `t_aa`.
     pub t_bb: Array4<f64>,
+    /// αβ amplitudes `t[i,J,a,B] = (ia|JB) / D`, shape
+    /// `(nocc_α, nocc_β, nvir_α, nvir_β)`.
     pub t_ab: Array4<f64>,
+    /// Energies accumulated while building the amplitudes.
     pub components: URiMp2Components,
     /// RAII charges against the shared memory pool for everything this struct
     /// owns, held for as long as the struct is.
@@ -927,13 +944,16 @@ fn build_opposite_spin_amplitudes(
 /// Density conservation per spin: tr(P^σ_oo) + tr(P^σ_vv) = 0.
 #[derive(Debug, Clone)]
 pub struct UMp2Density {
+    /// α occupied-occupied correction, `(nocc_α, nocc_α)`.
     pub p_oo_a: Array2<f64>,
+    /// α virtual-virtual correction, `(nvir_α, nvir_α)`.
     pub p_vv_a: Array2<f64>,
+    /// β occupied-occupied correction, `(nocc_β, nocc_β)`.
     pub p_oo_b: Array2<f64>,
+    /// β virtual-virtual correction, `(nvir_β, nvir_β)`.
     pub p_vv_b: Array2<f64>,
 }
 
-/// Build the UMP2 relaxed density matrices (occ-occ and vir-vir blocks, both spins) from converged amplitudes.
 /// Build the unrelaxed MP2 one-particle density matrices from UHF amplitudes.
 pub fn build_u_mp2_density(amps: &UMp2Amplitudes) -> UMp2Density {
     let t_aa = &amps.t_aa;
@@ -1050,6 +1070,23 @@ pub fn build_u_mp2_density(amps: &UMp2Amplitudes) -> UMp2Density {
     }
 }
 
+/// Per-block decomposition of the unrelaxed integral-response gradient.
+///
+/// `same_a`/`same_b` are the σσ-block contributions to `g^σ` (αα for α,
+/// ββ for β). `ab_a`/`ab_b` are the αβ-block contributions to each spin.
+/// The full block-wise gradient is `same_σ + ab_σ`.
+#[derive(Debug, Clone)]
+pub struct UMp2GradientBlocks {
+    /// αα-block contribution to `g^α`, shape `(nvir_α, nocc_α)`.
+    pub same_a: Array2<f64>,
+    /// ββ-block contribution to `g^β`, shape `(nvir_β, nocc_β)`.
+    pub same_b: Array2<f64>,
+    /// αβ-block contribution to `g^α`, shape `(nvir_α, nocc_α)`.
+    pub ab_a: Array2<f64>,
+    /// αβ-block contribution to `g^β`, shape `(nvir_β, nocc_β)`.
+    pub ab_b: Array2<f64>,
+}
+
 /// Compute the U-MP2 orbital gradient `g^σ_{ai} = ∂E_MP2/∂κ^σ_{ai}` at fixed
 /// orbital energies (integral-response only). FD-validated on OH/cc-pVDZ to
 /// ~1e-10 vs in-Rust per-block finite differences with the Cayley convention
@@ -1072,19 +1109,6 @@ pub fn build_u_mp2_density(amps: &UMp2Amplitudes) -> UMp2Density {
 /// (the `t` and `K` derivatives are equal) while the αβ block picks up
 /// a `2×` factor (both t and (ia|JB) depend on the same integral).
 ///
-/// Per-block decomposition of the unrelaxed integral-response gradient.
-///
-/// `same_a`/`same_b` are the σσ-block contributions to `g^σ` (αα for α,
-/// ββ for β). `ab_a`/`ab_b` are the αβ-block contributions to each spin.
-/// The full block-wise gradient is `same_σ + ab_σ`.
-#[derive(Debug, Clone)]
-pub struct UMp2GradientBlocks {
-    pub same_a: Array2<f64>,
-    pub same_b: Array2<f64>,
-    pub ab_a: Array2<f64>,
-    pub ab_b: Array2<f64>,
-}
-
 /// `budget_bytes` is the caller-resolved memory ceiling for the VVOV panel
 /// width below (threaded from the caller's already-resolved
 /// `resolve_budget_bytes(config.memory_budget_bytes)` — see
