@@ -977,6 +977,26 @@ fn device_may_take_j() -> bool {
     }
 }
 
+/// Is a usable device configured for this process (`[gpu] mode` not off and
+/// the device probed Ready)? The device RI-J and XC-grid paths decline on a
+/// rayon worker, so the SCF's J ∥ XC overlap (both stages inside one
+/// `rayon::join`) would keep them on the CPU every iteration, silently. The
+/// SCF skips the overlap when this is true.
+pub(crate) fn device_ready_for_scf() -> bool {
+    #[cfg(feature = "gpu")]
+    {
+        ferric_core::gpu::settings().mode != ferric_core::gpu::GpuMode::Off
+            && matches!(
+                ferric_core::gpu::status(),
+                ferric_core::gpu::GpuStatus::Ready(_)
+            )
+    }
+    #[cfg(not(feature = "gpu"))]
+    {
+        false
+    }
+}
+
 /// Aux-chunk width for one block's rayon fan-out. Mirrors DF-K's sizing
 /// (`4096 / n`, clamped to [4, 64]): wide enough that each chunk's GEMV runs a
 /// non-trivial contraction even for small n, capped so per-chunk scratch stays
