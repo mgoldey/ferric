@@ -405,6 +405,8 @@ impl Vv10Screen {
 /// Energy, potentials and work counters from a screened VV10 evaluation.
 #[derive(Debug, Clone)]
 pub struct Vv10ScreenedResult {
+    /// VV10 nonlocal correlation energy (Hartree), `Σ_g w_g ρ_g (β + ½ Φ_g)`
+    /// over active points, including the constant `β` term.
     pub e_nl: f64,
     /// d(E_nl)/d(rho) per grid point (per unit weight). EMPTY when the screen
     /// has `far_field = true` (energy-only mode, see [`Vv10Screen`]).
@@ -1127,10 +1129,17 @@ pub fn compute_vv10_damped_energy_scan(
 /// V_B). Not used by any production path.
 #[derive(Debug, Clone, Copy)]
 pub enum Vv10Weight {
+    /// The production damping: factor `1` for [`Vv10Damping::None`],
+    /// `1 − terfc²` for the terfc damping.
     Damping(Vv10Damping),
+    /// Factor `(1 − terfc(R; r0, ω))^power`.
     TerfPower {
+        /// terfc seam centre `r0` (Bohr).
         r0_bohr: f64,
+        /// Decoupled seam parameter ω (Bohr⁻¹); `None` uses the width linked
+        /// to `r0`.
         omega_bohr_inv: Option<f64>,
+        /// Exponent applied to `terf = 1 − terfc`.
         power: i32,
     },
 }

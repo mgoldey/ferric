@@ -706,7 +706,9 @@ pub fn ssf_smoothing(nu: f64) -> f64 {
 /// radius of the size adjustment).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NeighbourAtom {
+    /// Position (Bohr).
     pub xyz: [f64; 3],
+    /// Atomic number.
     pub z: i32,
 }
 

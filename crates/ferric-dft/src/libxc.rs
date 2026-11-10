@@ -240,27 +240,51 @@ impl SendPtr {
 // Public error type
 // ---------------------------------------------------------------------------
 
+/// Errors from creating, configuring or evaluating a libxc functional.
 #[derive(Error, Debug)]
 #[non_exhaustive]
 pub enum LibxcError {
+    /// `xc_functional_get_number` does not know this name.
     #[error("unknown libxc functional name: {0}")]
     UnknownName(String),
+    /// `xc_func_init` returned a nonzero status for a known functional.
     #[error("xc_func_init failed for {name}: rc={rc}")]
-    InitFailed { name: String, rc: c_int },
+    InitFailed {
+        /// Functional name passed by the caller.
+        name: String,
+        /// libxc's return code.
+        rc: c_int,
+    },
+    /// The name contains an interior NUL byte and cannot become a C string.
     #[error("CString conversion failed: {0}")]
     BadName(String),
+    /// `xc_func_alloc` returned a null pointer.
     #[error("xc_func_alloc returned null")]
     AllocFailed,
+    /// A functional or evaluation libxc offers but ferric does not support
+    /// (e.g. meta-GGAs other than SCAN / r2SCAN / TPSS, or a missing fxc).
     #[error("unsupported functional: {0}")]
     Unsupported(String),
+    /// External parameters were set on a functional that has none.
     #[error("this functional exposes no external parameters")]
     NoExtParams,
+    /// The number of external parameters supplied differs from libxc's count.
     #[error("external parameter count mismatch: functional expects {expected}, got {got}")]
-    ExtParamCount { expected: usize, got: usize },
+    ExtParamCount {
+        /// Count libxc reports for the functional.
+        expected: usize,
+        /// Count supplied.
+        got: usize,
+    },
+    /// A named external parameter does not match libxc's parameter name at
+    /// that position.
     #[error("external parameter {position} is named {actual:?}, expected {expected:?}")]
     ExtParamName {
+        /// Zero-based parameter index.
         position: usize,
+        /// Name libxc reports at `position`.
         actual: String,
+        /// Name the caller expected.
         expected: String,
     },
 }
@@ -275,11 +299,19 @@ impl From<LibxcError> for ferric_core::error::FerricError {
 // Functional family
 // ---------------------------------------------------------------------------
 
+/// Which density ingredients and exact-exchange treatment a functional
+/// needs. [`xc_def_from_name`] assigns it explicitly; [`XcFunctional::new`]
+/// only guesses from the name (`HYB_` → `HybridGga`, `LDA*` → `Lda`, else
+/// `Gga`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FunctionalFamily {
+    /// Density only (also used for a raw `HYB_LDA_*` global hybrid).
     Lda,
+    /// Density and its gradient (σ = |∇ρ|²), no exact exchange.
     Gga,
+    /// Global hybrid with a fixed exact-exchange fraction (ω = 0).
     HybridGga,
+    /// Range-separated hybrid (libxc CAM coefficients with ω ≠ 0).
     RangeSepGga,
     /// Semilocal meta-GGA (needs the kinetic-energy density τ). ferric supports
     /// SCAN / r2SCAN / TPSS — none of which need the density Laplacian.
@@ -304,6 +336,8 @@ pub enum FunctionalFamily {
 /// → `c_sr = 0.167`, `c_lr = 1.0` (long-range-corrected: 100% HF at long range).
 #[derive(Debug, Clone, Copy)]
 pub struct CamCoeffs {
+    /// Range-separation parameter ω of the erf/erfc split, as libxc reports
+    /// it (Bohr⁻¹).
     pub omega: f64,
     /// Short-range exact-exchange coefficient (`cam_alpha + cam_beta` in libxc).
     pub c_sr: f64,
@@ -314,7 +348,9 @@ pub struct CamCoeffs {
 /// Non-local VV10 correlation parameters.
 #[derive(Debug, Clone, Copy)]
 pub struct Vv10Params {
+    /// VV10 `C` in `ω₀² = C (|∇ρ|²/ρ²)² + (4π/3) ρ`.
     pub c: f64,
+    /// VV10 `b`, entering `κ = b · (3π/2) · (9π)^(−1/6) · ρ^(1/6)`.
     pub b: f64,
 }
 
@@ -337,11 +373,17 @@ pub struct Vv10Params {
 /// points, so a transposed ρ×τ or σ×τ block fails it).
 #[derive(Debug, Clone)]
 pub struct MggaFxcPolarized {
+    /// ∂²f/∂ρ∂ρ, 3 entries per point.
     pub v2rho2: Vec<f64>,
+    /// ∂²f/∂ρ∂σ, 6 entries per point.
     pub v2rhosigma: Vec<f64>,
+    /// ∂²f/∂ρ∂τ, 4 entries per point.
     pub v2rhotau: Vec<f64>,
+    /// ∂²f/∂σ∂σ (upper triangle), 6 entries per point.
     pub v2sigma2: Vec<f64>,
+    /// ∂²f/∂σ∂τ, 6 entries per point.
     pub v2sigmatau: Vec<f64>,
+    /// ∂²f/∂τ∂τ, 3 entries per point.
     pub v2tau2: Vec<f64>,
 }
 
@@ -367,6 +409,8 @@ impl MggaFxcPolarized {
 pub struct XcFunctional {
     ptr: *mut ffi::XcFuncOpaque,
     family: FunctionalFamily,
+    /// libxc spin mode the handle was initialised with: 1 = unpolarized,
+    /// 2 = polarized (`XC_UNPOLARIZED` / `XC_POLARIZED`).
     pub nspin: u32,
     /// libxc's internal functional ID (from `xc_functional_get_number`).
     /// Kept so the chunked-parallel evaluation path (`par_chunks`, below) can
@@ -1293,8 +1337,14 @@ fn infer_family_from_name(name: &str) -> FunctionalFamily {
 /// optional plain-hybrid exact-exchange mixing fraction.
 #[derive(Debug)]
 pub struct XcDef {
+    /// libxc component handles whose contributions are summed (scaled by
+    /// `weights` when present), e.g. an exchange + correlation pair.
     pub funcs: Vec<XcFunctional>,
+    /// Range-separation coefficients for a range-separated hybrid; `None`
+    /// otherwise.
     pub cam: Option<CamCoeffs>,
+    /// VV10 nonlocal-correlation parameters when the functional carries
+    /// them; `None` otherwise.
     pub vv10: Option<Vv10Params>,
     /// For plain hybrids (ω=0), the exact-exchange fraction.
     pub b3lyp_mix: Option<f64>,

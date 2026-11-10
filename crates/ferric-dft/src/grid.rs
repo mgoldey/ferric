@@ -94,15 +94,22 @@ pub(crate) fn grid_response_bytes(npts: usize, natoms: usize) -> usize {
 /// One grid point.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GridPoint {
+    /// Cartesian position (Bohr).
     pub xyz: [f64; 3],
+    /// Quadrature weight: radial × Lebedev angular weight times the Becke
+    /// partition weight of `home_atom`.
     pub weight: f64,
+    /// Index of the atom whose atomic grid generated this point.
     pub home_atom: usize,
 }
 
 /// Configuration for a Becke-Lebedev atomic grid.
 #[derive(Debug, Clone)]
 pub struct AtomicGridConfig {
+    /// Radial points per atom.
     pub n_radial: usize,
+    /// Lebedev angular points per radial shell (the maximum order when
+    /// `prune` lowers it on some shells).
     pub n_angular: usize,
     /// Angular-order pruning scheme, or `None` for the flat (unpruned) grid.
     ///

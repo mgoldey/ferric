@@ -9,7 +9,6 @@
 
 use ndarray::{Array2, Array4};
 
-/// Spin-orbital coupled-cluster doubles (CCD).
 /// Elements held by an amplitude DIIS ring at steady state.
 ///
 /// `Diis::step` clones BOTH of its arguments into SEPARATE ring histories on
@@ -40,6 +39,7 @@ pub fn diis_history_elems(per_tensor_elems: usize, subspace: usize) -> usize {
         .saturating_mul(subspace.max(1))
 }
 
+/// Spin-orbital coupled-cluster doubles (CCD).
 pub mod ccd;
 /// Spin-orbital CCSD (coupled-cluster singles and doubles).
 pub mod ccsd;
@@ -92,10 +92,23 @@ pub use ferric_mp2::pair_energy_screen;
 /// Configuration for coupled-cluster iterations (CCD, CCSD).
 #[derive(Debug, Clone, PartialEq)]
 pub struct CcConfig {
+    /// Number of lowest-energy occupied MOs excluded from the correlation
+    /// treatment; more than the occupied count is an error
+    /// (`ferric_mp2::rimp2::active_occ`).
     pub frozen_core: usize,
+    /// Maximum amplitude iterations; exhausting them returns
+    /// `FerricError::Convergence`.
     pub max_iter: usize,
+    /// Convergence threshold on the change in correlation energy between
+    /// iterations (Hartree). The CCSD drivers (`ccsd`, `ccsd_closed_shell`)
+    /// use `min(energy_conv, 1e-9)`; `ccd` ignores it and uses a fixed 1e-10;
+    /// the LinLCCD drivers use it as given.
     pub energy_conv: f64,
+    /// Not read by any driver in this crate: the drivers call DIIS on every
+    /// iteration, and it extrapolates once two vectors are stored.
     pub diis_start: usize,
+    /// Number of amplitude/error vectors kept in the DIIS ring (`0` is
+    /// treated as `1`); see [`diis_history_elems`] for the memory it holds.
     pub diis_subspace: usize,
     /// Optional resident-bytes ceiling for the dense tensors a CC method
     /// materializes. `None` → resolved via
@@ -240,8 +253,15 @@ impl CcConfig {
 #[derive(Debug, Clone)]
 #[must_use]
 pub struct CcResult {
+    /// Correlation energy (Hartree), excluding the reference energy.
     pub correlation_energy: f64,
+    /// Singles amplitudes indexed `(i, a)`; `None` for doubles-only methods
+    /// (CCD, LinLCCD).
     pub t1: Option<Array2<f64>>,
+    /// Doubles amplitudes indexed `(i, j, a, b)` over the active occupied and
+    /// virtual orbitals: spin orbitals for `ccd`, `ccsd` and `linlccd`,
+    /// spatial orbitals for `ccsd_closed_shell`; other drivers document their
+    /// own layout.
     pub t2: Array4<f64>,
     /// The particle-particle ladder route closed-shell CCSD took (with
     /// [`CcsdLadder::Auto`] resolved). `None` for every other solver.

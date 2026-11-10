@@ -30,6 +30,7 @@ pub enum SpinChannel {
 pub struct Constraint {
     /// Atom indices forming the fragment.
     pub fragment: Vec<usize>,
+    /// Whether the constraint targets the total or the α − β population.
     pub spin: SpinChannel,
     /// Target population N_C^target (electrons).
     pub target: f64,

@@ -1,3 +1,12 @@
+//! The `ferric` command-line driver as a library.
+//!
+//! [`run`] parses the command line, loads the TOML input, sets up threading,
+//! integral precision and the memory budget, and dispatches on
+//! `[method] kind` to the matching solver crate, printing results and the
+//! JSON Lines run log. The `ferric` and `ferric-cli` binaries call [`main`];
+//! `ferric-python`'s console-script entry point calls [`run`] with Python's
+//! `sys.argv`.
+
 mod config;
 mod gpu_flag;
 mod periodic;
@@ -385,6 +394,15 @@ fn print_df_guess_outcome(
     );
 }
 
+/// Run one CLI invocation. `args` has the shape of a process argv
+/// (`[program, user_args...]`; element 0 is never read): `<input.toml>` plus
+/// the optional flags
+/// `--verbose`/`-v`, `--json <path>`, `--no-json`, `--gpu <preset>`,
+/// `--version`/`-V` and `--help`/`-h`.
+///
+/// Errors are reported on stderr and terminate the process through
+/// `std::process::exit` (status 2 for usage errors, 1 for input or run
+/// errors) rather than being returned.
 pub fn run(args: Vec<String>) {
     // Threading model (see ferric_core::blas_threads): thread stacks large
     // enough for threaded LAPACK on any thread, OpenBLAS at 1 thread in

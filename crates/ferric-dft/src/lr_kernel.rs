@@ -85,12 +85,20 @@ pub struct SingletResponseXc {
 /// meta-GGA. Built at D_α = D_β = ½D.
 #[derive(Debug)]
 pub enum SingletKernel {
+    /// No meta-GGA component: the GGA kernel (which also covers LDA and
+    /// global-hybrid semilocal parts).
     Gga {
+        /// The kernel and its grid / AO data.
         kernel: GgaFxcKernel,
+        /// Reference α/β densities at D_α = D_β.
         reference: Box<UksDensityGrid>,
     },
+    /// At least one meta-GGA component: the τ-only meta-GGA kernel.
     Mgga {
+        /// The kernel and its grid / AO data.
         kernel: MggaFxcKernel,
+        /// Reference per-point Hessians, gradients and density-floor mask at
+        /// D_α = D_β.
         reference: Box<MggaFxcReference>,
     },
 }

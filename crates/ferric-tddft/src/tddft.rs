@@ -44,14 +44,20 @@ use ndarray_linalg::{Eigh, UPLO};
 /// TDDFT solution method.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TddftMethod {
+    /// Tamm–Dancoff approximation: diagonalize `A` alone (`B = 0`, `Y = 0`).
     Tda,
+    /// Full linear response: solve the `(A, B)` problem through
+    /// `(A−B)^½ (A+B) (A−B)^½ Z = Ω² Z` (dense, `dim = nocc·nvir`).
     Casida,
 }
 
 /// Configuration for a TDDFT calculation.
 #[derive(Debug, Clone)]
 pub struct TddftConfig {
+    /// Number of lowest positive singlet roots returned (capped at
+    /// `nocc·nvir`).
     pub n_roots: usize,
+    /// TDA or full Casida response.
     pub method: TddftMethod,
     /// Optional resident-bytes ceiling for the dense `(ia, jb)` matrices and
     /// the RI 3-index build. `None` → resolved via
@@ -120,6 +126,7 @@ pub struct TddftResult {
     pub oscillator_strengths: Vec<f64>,
     /// `<0|r|n>` (a.u., origin at 0), same ordering as the energies.
     pub transition_dipoles: Vec<[f64; 3]>,
+    /// Solution method the roots were obtained with (copied from the config).
     pub method: TddftMethod,
     /// Exact-exchange fraction actually used on the `−c_HF` terms.
     pub c_hf: f64,
