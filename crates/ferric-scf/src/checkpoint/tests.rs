@@ -1610,6 +1610,10 @@ fn a_write_does_not_remove_the_temp_file_of_a_writer_still_running() {
     }
 }
 
+// Unix only: creating a symlink on Windows needs SeCreateSymbolicLinkPrivilege
+// (Developer Mode or an elevated process), which a test cannot assume, and
+// `std::os::unix::fs::symlink` does not exist there.
+#[cfg(unix)]
 #[test]
 fn a_symlink_at_the_path_is_refused_and_left_as_it_was() {
     let dir = Scratch::new();
@@ -2110,9 +2114,20 @@ fn writer_stopped_at(path: &Path, stage: &str) -> std::process::Child {
 fn kill_writer_at(path: &Path, stage: &str) {
     let mut child = writer_stopped_at(path, stage);
     child.kill().unwrap();
-    let status = child.wait().unwrap();
+    assert_killed(child.wait().unwrap(), stage);
+}
+
+#[cfg(unix)]
+fn assert_killed(status: std::process::ExitStatus, stage: &str) {
     use std::os::unix::process::ExitStatusExt;
     assert_eq!(status.signal(), Some(9), "{stage}: {status:?}");
+}
+
+/// Windows: `Child::kill` is TerminateProcess, which has no signal; the writer
+/// must still have died rather than finished.
+#[cfg(not(unix))]
+fn assert_killed(status: std::process::ExitStatus, stage: &str) {
+    assert!(!status.success(), "{stage}: {status:?}");
 }
 
 const BEFORE_RENAME_STAGES: [&str; 3] = ["PartWritten", "TempWritten", "BeforeRename"];

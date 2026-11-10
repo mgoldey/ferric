@@ -1,0 +1,287 @@
+name: Platform tests (macOS / Windows)
+
+# Runs a representative slice of the Rust test suite and the whole Python
+# binding suite on macOS arm64 (macos-15) and Windows x86_64 (windows-latest),
+# the two platforms the wheels ship for besides Linux. ci.yml stays the Linux
+# gate; nothing here changes it.
+#
+# NON-BLOCKING: this workflow is not a required check. Make it one only after
+# it has gone green twice on main.
+#
+# Rust slice: ferric-core (lib + integration tests, incl. memory::sys and
+# memory::tests), ferric-integrals (lib + integration tests), ferric-scf lib
+# tests. Python: crates/ferric-python/tests against a wheel built and repaired
+# (delocate / delvewheel) on the same runner, installed into a fresh venv with
+# the build prefixes hidden, exactly as a user would get it.
+#
+# Tests that cannot run off Linux carry a precondition `#[ignore = "..."]` /
+# `#[cfg(...)]` (Rust) or `skipif` (Python) with the reason; the list is in
+# the step summary of every run (`-rs`).
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'pyproject.toml'
+      - 'testdata/**'
+      - 'examples/*.toml'
+      - 'scripts/ci-platform-env.sh'
+      - '.config/nextest.toml'
+      - '.github/workflows/platform-tests.yml'
+  workflow_dispatch: {}
+  # DEV ONLY (remove before ready): GitHub dispatches only workflow files on
+  # the default branch, so iterating on this new file needs a push trigger.
+  push:
+    branches: [feat/wheels-portability]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  OPENBLAS_NUM_THREADS: "1"
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  CARGO_INCREMENTAL: "0"
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  rust:
+    name: rust ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: bash -el {0}
+    env:
+      # Same pin as ci.yml: tests never auto-detect the budget from a shared
+      # runner's momentary MemAvailable.
+      FERRIC_MEM_BUDGET_GB: "3"
+    steps:
+      # The boys.h override tests compare committed bytes (.patch, override
+      # header) exactly; CRLF conversion on the Windows checkout breaks that.
+      - name: No CRLF conversion
+        shell: bash
+        run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      # NATIVE DEPS (placeholder): conda-forge libint2 2.13.1 + libxc +
+      # OpenBLAS + Eigen. To be replaced by the release wheels' own
+      # from-source libint2/libxc (wheels.yml build-native-deps).
+      - uses: mamba-org/setup-micromamba@add3a49764cedee8ee24e82dfde87f5bc2914462 # v2.0.7
+        with:
+          environment-name: nd
+          init-shell: bash
+          create-args: >-
+            -c conda-forge
+            libint=2.13.1 libxc-c=6.2.2 libboost-headers
+            openblas eigen=3.4.0 cmake ninja pkg-config
+
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+        if: runner.os == 'Windows'
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch @ 2026-09-16
+
+      - name: Restore cargo cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-v3-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-v3-${{ runner.os }}-
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@26e9283f268b880168bdbd2c545dfcd60ec2c6ab # v2.87.13
+        with:
+          tool: cargo-nextest
+
+      - name: Native prefix
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then P="$CONDA_PREFIX/Library"; else P="$CONDA_PREFIX"; fi
+          echo "DEPS_PREFIX=$P" >> "$GITHUB_ENV"
+          echo "LIBS_PREFIX=$P" >> "$GITHUB_ENV"
+
+      - name: Build tests
+        run: |
+          set -euo pipefail
+          source scripts/ci-platform-env.sh
+          rustc --version; cargo --version; "${CXX:-c++}" --version | head -1
+          cargo nextest list --locked -p ferric-core -p ferric-integrals > /dev/null
+          cargo nextest list --locked -p ferric-scf --lib > /dev/null
+
+      - name: Test ferric-core + ferric-integrals
+        run: |
+          set -euo pipefail
+          source scripts/ci-platform-env.sh
+          cargo nextest run --locked --profile ci --no-tests=fail \
+            -p ferric-core -p ferric-integrals 2>&1 | tee nextest-core-integrals.log
+          echo "### ferric-core + ferric-integrals" >> "$GITHUB_STEP_SUMMARY"
+          grep -E "Summary|SKIP|FAIL" nextest-core-integrals.log | tail -20 >> "$GITHUB_STEP_SUMMARY" || true
+
+      - name: Test ferric-scf (lib)
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          source scripts/ci-platform-env.sh
+          cargo nextest run --locked --profile ci --no-tests=fail \
+            -p ferric-scf --lib 2>&1 | tee nextest-scf.log
+          echo "### ferric-scf --lib" >> "$GITHUB_STEP_SUMMARY"
+          grep -E "Summary|FAIL" nextest-scf.log | tail -20 >> "$GITHUB_STEP_SUMMARY" || true
+
+      - name: Upload test logs
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: rust-tests-${{ matrix.os }}
+          path: |
+            nextest-*.log
+            target/nextest/ci/junit.xml
+          retention-days: 14
+
+  python:
+    name: python ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: bash -el {0}
+    steps:
+      - name: No CRLF conversion
+        shell: bash
+        run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        id: py
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      # NATIVE DEPS (placeholder): see the rust job.
+      - uses: mamba-org/setup-micromamba@add3a49764cedee8ee24e82dfde87f5bc2914462 # v2.0.7
+        with:
+          environment-name: nd
+          init-shell: bash
+          create-args: >-
+            -c conda-forge
+            libint=2.13.1 libxc-c=6.2.2 libboost-headers
+            openblas eigen=3.4.0 cmake ninja pkg-config
+
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+        if: runner.os == 'Windows'
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch @ 2026-09-16
+
+      - name: Restore cargo cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-v3-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-v3-${{ runner.os }}-
+
+      - name: Native prefix
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then P="$CONDA_PREFIX/Library"; else P="$CONDA_PREFIX"; fi
+          echo "DEPS_PREFIX=$P" >> "$GITHUB_ENV"
+          echo "LIBS_PREFIX=$P" >> "$GITHUB_ENV"
+
+      - name: Build wheel (maturin --release)
+        run: |
+          set -euo pipefail
+          source scripts/ci-platform-env.sh
+          PY='${{ steps.py.outputs.python-path }}'
+          "$PY" -m pip install -q "maturin>=1.7,<2"
+          "$PY" -m maturin build --release --locked -i "$PY" --out dist
+          ls -la dist
+
+      - name: Repair (delocate / delvewheel)
+        run: |
+          set -euo pipefail
+          source scripts/ci-platform-env.sh
+          PY='${{ steps.py.outputs.python-path }}'
+          if [ "$RUNNER_OS" = macOS ]; then
+            "$PY" -m pip install -q delocate
+            DYLD_LIBRARY_PATH="$LIBS_PREFIX/lib:$DEPS_PREFIX/lib" delocate-wheel -v -w wheelhouse dist/*.whl
+          else
+            "$PY" -m pip install -q delvewheel
+            "$PY" -m delvewheel repair --add-path "$LIBS_PREFIX/bin;$DEPS_PREFIX/bin" -w wheelhouse dist/*.whl
+          fi
+          ls -la wheelhouse
+
+      # Plain bash from here on: no micromamba activation, and the conda root
+      # is renamed away so nothing outside the wheel can satisfy a library load.
+      - name: Install the wheel into a fresh venv (build prefixes hidden)
+        shell: bash {0}
+        run: |
+          set -euo pipefail
+          mv "$MAMBA_ROOT_PREFIX" "$MAMBA_ROOT_PREFIX.hidden"
+          PY='${{ steps.py.outputs.python-path }}'
+          "$PY" -m venv "$RUNNER_TEMP/v"
+          if [ "$RUNNER_OS" = Windows ]; then
+            VPY="$RUNNER_TEMP/v/Scripts/python.exe"; FERRIC="$RUNNER_TEMP/v/Scripts/ferric.exe"
+          else
+            VPY="$RUNNER_TEMP/v/bin/python"; FERRIC="$RUNNER_TEMP/v/bin/ferric"
+          fi
+          echo "VPY=$VPY" >> "$GITHUB_ENV"
+          echo "FERRIC=$FERRIC" >> "$GITHUB_ENV"
+          "$VPY" -m pip install -q wheelhouse/*.whl
+          "$VPY" -m pip install -q numpy scipy h5py sympy matplotlib "pytest>=9.1.1"
+          # The suite skips ITSELF when `import ferric` fails, which would read
+          # as green. Import here, outside pytest, so that fails the job.
+          "$VPY" -c "import ferric; print(ferric.__file__); print(ferric.build_info())"
+
+      # PR #633 ported memory detection to macOS/Windows: with no budget set,
+      # the CLI must report the auto-detected budget, not the 2 GiB fallback.
+      - name: Memory budget is auto-detected
+        shell: bash {0}
+        run: |
+          set -euo pipefail
+          unset FERRIC_MEM_BUDGET_GB FERRIC_OOC_BUDGET_GB FERRIC_ERI3_BUDGET_GB
+          "$FERRIC" examples/water-rhf.toml > rhf.out 2> rhf.err || { cat rhf.out rhf.err; exit 1; }
+          LINE="$(grep -a "memory budget:" rhf.err)"
+          echo "$LINE" | tee -a "$GITHUB_STEP_SUMMARY"
+          grep -aF "[source: auto (0.8 × available RAM)]" <<<"$LINE"
+
+      - name: pytest crates/ferric-python/tests
+        shell: bash {0}
+        env:
+          FERRIC_MEM_BUDGET_GB: "3"
+          PYTHONUNBUFFERED: "1"
+        run: |
+          set -uo pipefail
+          # Tests that shell out to the `ferric` console script find the venv's.
+          export PATH="$(dirname "$VPY"):$PATH"
+          "$VPY" -m pytest crates/ferric-python/tests -q -rs -p no:cacheprovider \
+            --junitxml=pytest-junit.xml 2>&1 | tee pytest.log
+          rc=${PIPESTATUS[0]}
+          echo "### pytest (${{ matrix.os }})" >> "$GITHUB_STEP_SUMMARY"
+          grep -aE "^(SKIPPED|FAILED|ERROR)|passed|failed" pytest.log | tail -80 >> "$GITHUB_STEP_SUMMARY" || true
+          exit "$rc"
+
+      - name: Upload test logs
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: python-tests-${{ matrix.os }}
+          path: |
+            pytest.log
+            pytest-junit.xml
+            rhf.err
+          retention-days: 14
