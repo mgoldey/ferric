@@ -95,10 +95,7 @@ pub fn filetime_ticks_to_seconds(high: u32, low: u32) -> f64 {
 #[must_use]
 pub fn parse_status_kb_field(contents: &str, field: &str) -> Option<usize> {
     for line in contents.lines() {
-        if let Some(rest) = line
-            .strip_prefix(field)
-            .and_then(|r| r.strip_prefix(':'))
-        {
+        if let Some(rest) = line.strip_prefix(field).and_then(|r| r.strip_prefix(':')) {
             let kb = rest.split_whitespace().next()?.parse::<u64>().ok()?;
             return Some(clamp_u64(kb.saturating_mul(1024)));
         }
