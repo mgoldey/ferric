@@ -8,6 +8,7 @@ pub mod dressed_packed;
 pub mod f32_store;
 pub mod jk_storage;
 pub mod pair_screen;
+mod spill_os;
 pub use dressed_packed::{DressedLayout, DressedRows, PackedDressOutcome};
 pub use f32_store::{F32Declined, F32Outcome, F32Rounding, F32_UNDERFLOW_ABS};
 pub use jk_storage::{jk_storage, set_jk_storage, validate_jk_storage, JkStorage};
@@ -18,9 +19,9 @@ use crate::operator::Operator;
 use ferric_core::memory::plan::{Lifetime, MemoryPlan};
 use ferric_core::FerricError;
 use ndarray::{Array2, Array3, ArrayView3};
+use spill_os::{free_bytes_at, Advice};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::os::unix::io::AsRawFd;
 
 /// `FERRIC_OOC_TRACE` descriptor: 3-index in-core/spill decision trace (env-only
 /// debug toggle). NOTE behavior change: previously `.is_ok()` (any value, incl.
@@ -806,13 +807,8 @@ fn dress_band_to_spill(
 fn drop_page_cache(file: &File) {
     // DONTNEED only drops CLEAN pages; flush dirty pages to disk first.
     let _ = file.sync_data();
-    let fd = file.as_raw_fd();
-    // offset 0, len 0 == "to end of file".
-    // SAFETY: fd is a valid open file descriptor (from as_raw_fd on a live
-    // File). posix_fadvise with DONTNEED is advisory and cannot corrupt data.
-    unsafe {
-        libc::posix_fadvise(fd, 0, 0, libc::POSIX_FADV_DONTNEED);
-    }
+    // offset 0, len 0 == "to end of file". Advisory; a no-op off Linux.
+    spill_os::fadvise(file, 0, 0, Advice::DontNeed);
 }
 
 // ---------------------------------------------------------------------------
@@ -871,54 +867,7 @@ fn spill_dir() -> std::path::PathBuf {
     std::env::temp_dir()
 }
 
-/// Free bytes available to an unprivileged process on the filesystem holding
-/// `path`, or `None` if the path cannot be statted.
-///
-/// `f_bavail` (not `f_bfree`): the reserved-blocks pool that `f_bfree` includes
-/// is unavailable to a normal ferric process, so `f_bfree` would over-promise by
-/// the usual 5% root reservation.
-///
-/// `None` on failure is deliberate. A missing/unstattable spill directory means
-/// the probe could not measure, not that the disk is full: fabricating `0` there
-/// would refuse every spill on any system whose `statvfs` we cannot read, which
-/// is a worse failure than the one being fixed. The caller degrades to the old
-/// (unchecked) behaviour in that case — but still warns.
-fn free_bytes_at(path: &std::path::Path) -> Option<u64> {
-    use std::os::unix::ffi::OsStrExt;
-    let c_path = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
-    // SAFETY: `c_path` is a valid NUL-terminated C string that outlives the
-    // call, and `buf` is a correctly-sized, properly-aligned `statvfs` we hand
-    // over exclusively for the duration of the call. `statvfs` only writes into
-    // `buf` and returns 0/-1.
-    let mut buf = std::mem::MaybeUninit::<libc::statvfs>::uninit();
-    let rc = unsafe { libc::statvfs(c_path.as_ptr(), buf.as_mut_ptr()) };
-    if rc != 0 {
-        return None;
-    }
-    // SAFETY: statvfs returned 0, so `buf` is fully initialized.
-    let st = unsafe { buf.assume_init() };
-    // f_frsize is the fragment size the f_b* counts are expressed in.
-    //
-    // The widening goes through `try_from` because libc's statvfs field types
-    // are PLATFORM-DEPENDENT (`u64` on linux-gnu, `u32` on some 32-bit targets,
-    // `c_ulong` in general). `as` would be a same-type cast here and a lossy one
-    // elsewhere; `u64::from` is not implemented for every candidate type. This
-    // form compiles unchanged on all of them, and the `ok()?` arm is genuinely
-    // unreachable on any target where the field is unsigned and ≤64 bits —
-    // which is all of them — so it degrades to "could not measure", never to a
-    // fabricated figure.
-    //
-    // clippy's `useless_conversion` fires because on THIS target (linux-gnu)
-    // the fields already are `u64`, making the conversion an identity. Allowed
-    // rather than removed: dropping it would silently truncate on any target
-    // where the field is narrower, and re-adding it under a `cfg` for a
-    // one-line widening is worse than the lint.
-    #[allow(clippy::useless_conversion)]
-    let frsize = u64::try_from(st.f_frsize).ok()?;
-    #[allow(clippy::useless_conversion)]
-    let bavail = u64::try_from(st.f_bavail).ok()?;
-    frsize.checked_mul(bavail)
-}
+// `free_bytes_at` (the free-space probe) lives in `spill_os`.
 
 /// The spill preflight: refuse a write that the destination cannot hold with
 /// headroom to spare.
@@ -2359,20 +2308,14 @@ const DIRECT_ALIGN: usize = 4096;
 /// SATA SSD, buffered 64 MiB reads ran at 359 MB/s and direct ones at 515 MB/s,
 /// and the cgroup-charged cache never fills with spill pages.
 fn open_direct(file: &File, probe_len: usize) -> Option<File> {
-    use std::os::unix::fs::{FileExt, OpenOptionsExt};
-    let direct = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_DIRECT)
-        .open(format!("/proc/self/fd/{}", file.as_raw_fd()))
-        .ok()?;
+    let direct = spill_os::open_direct_handle(file)?;
     if probe_len == 0 {
         return None;
     }
     let mut raw = vec![0.0_f64; (DIRECT_ALIGN + DIRECT_ALIGN) / 8];
     let bytes: &mut [u8] = bytemuck::cast_slice_mut(&mut raw[..]);
     let s0 = bytes.as_ptr().align_offset(DIRECT_ALIGN);
-    direct
-        .read_at(&mut bytes[s0..s0 + DIRECT_ALIGN], 0)
+    spill_os::read_at(&direct, &mut bytes[s0..s0 + DIRECT_ALIGN], 0)
         .ok()
         .map(|_| direct)
 }
@@ -2394,13 +2337,12 @@ fn read_spill_block(
     pair: usize,
     (l0, b): (usize, usize),
 ) -> Result<SpillRead, FerricError> {
-    use std::os::unix::fs::FileExt;
     let err = |e: std::io::Error| FerricError::General(format!("spill read: {e}"));
     let off = l0 * pair * 8;
     let len = b * pair * 8;
     let Some(direct) = direct else {
         let mut buf = vec![0.0_f64; b * pair];
-        file.read_exact_at(bytemuck::cast_slice_mut(&mut buf[..]), off as u64)
+        spill_os::read_exact_at(file, bytemuck::cast_slice_mut(&mut buf[..]), off as u64)
             .map_err(err)?;
         return Ok(SpillRead { l0, buf, start: 0 });
     };
@@ -2413,9 +2355,12 @@ fn read_spill_block(
     let mut done = 0usize;
     while done < need {
         // A short read is legal at the end of the file; zero progress is not.
-        let got = direct
-            .read_at(&mut bytes[s0 + done..s0 + total], (off_a + done) as u64)
-            .map_err(err)?;
+        let got = spill_os::read_at(
+            direct,
+            &mut bytes[s0 + done..s0 + total],
+            (off_a + done) as u64,
+        )
+        .map_err(err)?;
         if got == 0 {
             return Err(FerricError::General(
                 "spill read: unexpected end of file".into(),
@@ -2443,26 +2388,20 @@ fn stream_spill_packed(
     f: impl FnMut(PackedBlock<'_>) -> Result<(), FerricError>,
 ) -> Result<(), FerricError> {
     let file: &File = file;
-    let fd = file.as_raw_fd();
     let direct = open_direct(file, band * pair);
     if direct.is_none() {
-        // SAFETY: fd is a valid open descriptor owned by `file`; advisory only.
-        unsafe {
-            libc::posix_fadvise(fd, 0, 0, libc::POSIX_FADV_SEQUENTIAL);
-        }
+        spill_os::fadvise(file, 0, 0, Advice::Sequential);
     }
     let read = |l0: usize, b: usize| {
         let got = read_spill_block(file, direct.as_ref(), pair, (l0, b));
         if direct.is_none() {
-            // SAFETY: as above; DONTNEED on a range already copied out.
-            unsafe {
-                libc::posix_fadvise(
-                    fd,
-                    (l0 * pair * 8) as libc::off_t,
-                    (b * pair * 8) as libc::off_t,
-                    libc::POSIX_FADV_DONTNEED,
-                );
-            }
+            // DONTNEED on a range already copied out (advisory).
+            spill_os::fadvise(
+                file,
+                (l0 * pair * 8) as u64,
+                (b * pair * 8) as u64,
+                Advice::DontNeed,
+            );
         }
         got
     };
