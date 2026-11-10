@@ -73,8 +73,9 @@ fn check_bse_dense_alloc(
 pub struct BseResult {
     /// Singlet excitation energies Ω_n (Hartree), ascending.
     pub omega: Vec<f64>,
-    /// Number of occupied / virtual orbitals in the BSE window (frozen-core aware).
+    /// Number of active occupied orbitals in the BSE window (frozen core excluded).
     pub nocc: usize,
+    /// Number of virtual orbitals in the BSE window (all virtuals).
     pub nvir: usize,
     /// GW quasiparticle energies used for the diagonal (active block, Ha).
     pub eps_qp: Vec<f64>,
@@ -691,7 +692,9 @@ pub struct BseC6Result {
     pub alpha_iso: Vec<f64>,
     /// Static isotropic α (= α(iω=0)).
     pub alpha_static: f64,
+    /// Number of active occupied orbitals in the (ia) space (frozen core excluded).
     pub nocc: usize,
+    /// Number of virtual orbitals in the (ia) space (all virtuals).
     pub nvir: usize,
 }
 
@@ -1305,7 +1308,9 @@ pub struct RpaxStaticPolarizabilityResult {
     pub tensor: [[f64; 3]; 3],
     /// Isotropic average (1/3) Tr α.
     pub iso: f64,
+    /// Number of active occupied orbitals in the (ia) space (frozen core excluded).
     pub nocc: usize,
+    /// Number of virtual orbitals in the (ia) space (all virtuals).
     pub nvir: usize,
 }
 

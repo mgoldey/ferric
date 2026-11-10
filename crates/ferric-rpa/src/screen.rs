@@ -72,8 +72,11 @@ use ndarray_linalg::{Cholesky, UPLO};
 /// occupied orbitals.
 #[derive(Debug, Clone)]
 pub struct ScreenedBov {
+    /// Number of localized active occupied orbitals (columns of `c_occ_loc`).
     pub n_occ_loc: usize,
+    /// Number of virtual orbitals (`nbasis − nocc_total`).
     pub nvir: usize,
+    /// Number of auxiliary basis functions before screening.
     pub naux: usize,
     /// Per-orbital retained aux index list, sorted ascending.
     pub p_lists: Vec<Vec<usize>>,

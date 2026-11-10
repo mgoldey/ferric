@@ -34,6 +34,7 @@ pub struct MoB {
     pub b_full: Array3<f64>,
     /// V^{-1/2}, shape (naux, naux). Same as `RpaIntermediates.v_inv_sqrt`.
     pub v_inv_sqrt: Array2<f64>,
+    /// Number of auxiliary (RI) basis functions; leading dimension of `b_full`.
     pub naux: usize,
     /// Number of active MOs (= n_total_mo - frozen_core).
     pub n_act: usize,

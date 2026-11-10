@@ -259,6 +259,7 @@ impl KPairWalk {
 /// per q) plus the test-only mutation switch.
 #[derive(Debug, Clone, Copy)]
 pub struct KRsGdfConfig {
+    /// The per-q Gamma build settings (default [`RsGdfConfig::default`]).
     pub gdf: RsGdfConfig,
     #[doc(hidden)]
     pub mutation: Option<KRsGdfMutation>,
@@ -285,12 +286,15 @@ pub struct KRsGdfQStats {
     pub trim: bool,
     /// `Some(p)`: not built, read as the conjugate of class `p`.
     pub mirrored_from: Option<usize>,
+    /// Aux functions.
     pub naux: usize,
     /// Metric eigenvectors kept (rows of every B of this class).
     pub naux_kept: usize,
     /// Metric eigenvalues `<= lindep` dropped at this q.
     pub n_dropped: usize,
+    /// Smallest metric eigenvalue at this q.
     pub metric_eig_min: f64,
+    /// Largest metric eigenvalue at this q.
     pub metric_eig_max: f64,
     /// LR K vectors summed (half set at TRIM q, full set otherwise).
     pub n_k_vectors: usize,
@@ -303,12 +307,15 @@ pub struct KRsGdfQStats {
 /// What the build did (counts and conditioning).
 #[derive(Debug, Clone)]
 pub struct KRsGdfStats {
+    /// Number of k-points in the mesh.
     pub nk: usize,
+    /// Aux functions.
     pub naux: usize,
     /// One entry per q class, in class order.
     pub per_q: Vec<KRsGdfQStats>,
     /// q classes built explicitly (the rest by time reversal).
     pub n_q_built: usize,
+    /// Pair images `L` visited.
     pub n_pair_images: usize,
     /// SR 3-centre shell triplets / 2-centre shell pairs (computed ONCE; the
     /// 3-centre walk visits each unordered shell pair once, module doc
@@ -318,14 +325,19 @@ pub struct KRsGdfStats {
     /// transposed half weighted 2, a self-conjugate diagonal task 1): unsplit,
     /// the pre-s2 ordered count, the number to compare benchmarks on.
     pub n_sr3_triplets_ordered: usize,
+    /// Shifted 2-centre shell pairs computed (SR metric).
     pub n_sr2_pairs: usize,
-    /// Residue counts of the pair-image (`R_L`) and aux-image (`R_T`) bins.
+    /// Residue count of the pair-image (`R_L`) bins.
     pub residues_l: usize,
+    /// Residue count of the aux-image (`R_T`) bins.
     pub residues_t: usize,
+    /// `pair_ft` chunks of the LR sums, over all q classes built.
     pub n_lr_chunks: usize,
     /// Complex elements of the resident B.
     pub b_elements: usize,
+    /// Resolved memory budget (bytes).
     pub budget_bytes: usize,
+    /// Bytes reserved on the build's ledger before the SR and LR passes.
     pub resident_bytes: usize,
     /// The range split's partition counters (the Gamma build's names);
     /// empty without a split. They describe the PARENT-basis partition (the

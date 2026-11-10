@@ -703,6 +703,7 @@ pub struct KMp2Result {
     pub madelung: f64,
     /// Shift added to every active occupied ε at every k.
     pub occ_shift: f64,
+    /// Correlated (active) occupied orbitals, the same at every k.
     pub nocc_active: usize,
     /// Virtuals per k.
     pub nvir: Vec<usize>,
@@ -924,9 +925,13 @@ pub struct KDrpaResult {
     pub per_q: Vec<f64>,
     /// `kscf.energy + drpa_corr`.
     pub total_energy: f64,
+    /// Mesh (supercell) Madelung constant.
     pub madelung: f64,
+    /// Shift added to every active occupied ε at every k.
     pub occ_shift: f64,
+    /// Correlated (active) occupied orbitals, the same at every k.
     pub nocc_active: usize,
+    /// Virtuals per k.
     pub nvir: Vec<usize>,
     /// Rows of `Bq` per class.
     pub naux: Vec<usize>,

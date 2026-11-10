@@ -401,14 +401,17 @@ pub struct KGradParts {
     pub nn_sr: Array2<f64>,
     /// Ewald `E_nn`, reciprocal space.
     pub nn_lr: Array2<f64>,
-    /// RS-GDF `dJ3`, orbital centres, SR / LR.
+    /// RS-GDF `dJ3`, orbital centres, SR part.
     pub fit_orb_sr: Array2<f64>,
+    /// RS-GDF `dJ3`, orbital centres, LR part.
     pub fit_orb_lr: Array2<f64>,
-    /// RS-GDF `dJ3`, aux centres, SR / LR.
+    /// RS-GDF `dJ3`, aux centres, SR part.
     pub fit_aux_sr: Array2<f64>,
+    /// RS-GDF `dJ3`, aux centres, LR part.
     pub fit_aux_lr: Array2<f64>,
-    /// RS-GDF metric `Σ Wm dJ2`, SR / LR.
+    /// RS-GDF metric `Σ Wm dJ2`, SR part.
     pub fit_metric_sr: Array2<f64>,
+    /// RS-GDF metric `Σ Wm dJ2`, LR part.
     pub fit_metric_lr: Array2<f64>,
     /// RS-GDF `J3` G = 0 term through `dS`.
     pub fit_g0: Array2<f64>,

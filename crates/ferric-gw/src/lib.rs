@@ -100,6 +100,7 @@ pub const DEFAULT_N_QUAD: usize = 40;
 /// Top-level GW configuration.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GwConfig {
+    /// GW variant to run. Default [`GwMethod::G0W0`].
     pub method: GwMethod,
     /// Range of MOs (absolute indices into the full MO set) for which to
     /// compute quasiparticle energies. Defaults to {HOMO-2..LUMO+2}.
@@ -186,9 +187,12 @@ pub struct GwResult {
     pub eps_qp: Array1<f64>,
     /// Exchange self-energy Σ_x (diagonal MO), Ha.
     pub sigma_x: Array1<f64>,
-    /// Correlation self-energy Σ_c evaluated at the converged QP energy, Ha.
+    /// Correlation self-energy Σ_c, Ha: evaluated at the final QP energy for
+    /// the Newton-solved methods; the static ΔΣ_SEX + Σ_COH for COHSEX.
     pub sigma_c: Array1<f64>,
-    /// Z-factor (renormalization), dimensionless.
+    /// Renormalization factor Z = 1/(1 − ∂Σ_c/∂ω), dimensionless, evaluated
+    /// at the mean-field energy (not the QP root) and clamped to [0, 1.5].
+    /// All 1 for COHSEX.
     pub z_factor: Array1<f64>,
     /// Per-state QP Newton-solve convergence flag, aligned with `mo_indices`.
     /// `false` means the Newton iteration exhausted its step budget (or hit a
@@ -228,26 +232,42 @@ impl std::fmt::Display for GwResult {
 #[derive(Debug, Clone)]
 #[must_use]
 pub struct UGwResult {
+    /// Absolute MO indices for which QP energies were computed, shared by both spins.
     pub mo_indices: Vec<usize>,
+    /// α mean-field (input) orbital energies for `mo_indices`, Ha.
     pub eps_mf_a: Array1<f64>,
+    /// α QP energies (final), Ha.
     pub eps_qp_a: Array1<f64>,
+    /// α exchange self-energy Σ_x (diagonal MO), Ha.
     pub sigma_x_a: Array1<f64>,
+    /// α correlation self-energy Σ_c, Ha: at the final QP energy for the
+    /// Newton-solved methods, the static ΔΣ_SEX + Σ_COH for COHSEX.
     pub sigma_c_a: Array1<f64>,
+    /// α renormalization factor Z = 1/(1 − ∂Σ_c/∂ω) evaluated at the
+    /// mean-field energy and clamped to [0, 1.5]; all 1 for COHSEX.
     pub z_factor_a: Array1<f64>,
+    /// β mean-field (input) orbital energies for `mo_indices`, Ha.
     pub eps_mf_b: Array1<f64>,
+    /// β QP energies (final), Ha.
     pub eps_qp_b: Array1<f64>,
+    /// β exchange self-energy Σ_x (diagonal MO), Ha.
     pub sigma_x_b: Array1<f64>,
+    /// β correlation self-energy Σ_c, Ha (same convention as `sigma_c_a`).
     pub sigma_c_b: Array1<f64>,
+    /// β renormalization factor Z (same convention as `z_factor_a`).
     pub z_factor_b: Array1<f64>,
     /// Per-state QP Newton-solve convergence flags, aligned with `mo_indices`
     /// (α/β channels separately — see `GwResult::qp_converged` for the
     /// per-flag meaning). Always all-`true` for COHSEX.
     pub qp_converged_a: Vec<bool>,
+    /// β-channel counterpart of `qp_converged_a`.
     pub qp_converged_b: Vec<bool>,
+    /// Iteration count for the U-evGW/U-evGW₀ outer loop (0 for non-iterative methods).
     pub n_ev_iter: usize,
     /// Whether the U-evGW/U-evGW₀ outer loop met `ev_conv_thresh` within
     /// `max_ev_iter`. Always `true` for non-iterative methods.
     pub outer_converged: bool,
+    /// Underlying spin-summed PDEP result (so callers can inspect W).
     pub pdep: PdepRpaResult,
 }
 

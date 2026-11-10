@@ -108,6 +108,7 @@ pub struct RsMp2RpaConfig {
     /// = Coulomb holds for every (r0, ω) (anchor-tested). Tables cover
     /// s = (ωr0)² ≤ 80. Ignored for `Erf`.
     pub terf_omega: Option<f64>,
+    /// Number of frozen core orbitals for every MP2 and dRPA call (default 0).
     pub frozen_core: usize,
     /// dRPA solver knobs. Default forces trunc_thresh = 0.0 (full rank):
     /// this is an energy method; PDEP truncation is a production-size opt-in.
@@ -160,8 +161,12 @@ impl Default for RsMp2RpaConfig {
 #[derive(Debug, Clone)]
 #[must_use]
 pub struct RsMp2RpaResult {
+    /// RI-MP2 correlation energy with the full Coulomb operator, Ha.
     pub e_mp2_full: f64,
+    /// RI-MP2 correlation energy with the short-range operator (erfc, or
+    /// terfc for the terf attenuator), Ha.
     pub e_sr_mp2: f64,
+    /// RI-MP2 correlation energy with the long-range operator (erf, or terf), Ha.
     pub e_lr_mp2: f64,
     /// Direct (ring) second-order term with the erf kernel = 2·E_OS\[erf\].
     pub e_dmp2_lr: f64,
@@ -177,6 +182,7 @@ pub struct RsMp2RpaResult {
     pub e_delta_drpa_sr: Option<f64>,
     /// Correlation energy of the selected formulation.
     pub e_corr: f64,
+    /// Reference SCF energy plus `e_corr`, Ha.
     pub total_energy: f64,
 }
 

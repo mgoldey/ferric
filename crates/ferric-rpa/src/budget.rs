@@ -397,6 +397,18 @@ pub fn quad_scratch_bytes(shape: PeakEstimateShape) -> usize {
         .saturating_mul(shape.n_workers.max(1))
 }
 
+/// Upper-bound estimate, in bytes, of the peak resident memory of a PDEP-RPA
+/// run with the given shape.
+///
+/// Sums the terms live at the frequency loop: the RI intermediates (three
+/// `naux²` metric buffers, the `naux·nocc·nvir` `b_ov`, and the
+/// `naux·nao²` AO three-index tensor), the full-rank Lanczos eigensolve
+/// (`2·naux²`), the per-worker quadrature scratch
+/// ([`quad_scratch_bytes`]), the `y` projection, the eigenvector outputs,
+/// the retained inverse-dielectric stack and its per-worker clones when
+/// `need_inv_dielectric` is set, and the per-atom grid term when `grid` is
+/// `Some`. All arithmetic saturates. The contract is to over- rather than
+/// under-estimate.
 pub fn estimate_peak_bytes(shape: PeakEstimateShape) -> usize {
     let PeakEstimateShape {
         naux,

@@ -10,9 +10,13 @@
 /// reformulation as a follow-up.
 #[derive(Debug, Clone, Copy, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub enum Chi0Backend {
+    /// Dense MO-basis χ₀ with the exact energy-gap denominator. Default.
     #[default]
     Dense,
+    /// Minimax-Laplace factorization of the energy-gap denominator.
     Laplace {
+        /// Number of Laplace nodes; only the tabulated sizes 3, 5 and 7 are
+        /// accepted (anything else is an error from `LaplaceQuadrature::new`).
         n_quad: usize,
     },
 }
@@ -64,15 +68,26 @@ pub enum Chi0Backend {
 /// string), not something a caller falls into by omission.
 #[derive(Debug, Clone, Copy, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub enum Chi0Sparsity {
+    /// Canonical dense `(naux × nocc·nvir)` `b_ov` tensor. Default.
     #[default]
     Dense,
+    /// Boys-localized occupied orbitals with per-orbital aux-row screening.
     BoysScreened {
+        /// Aux rows whose per-orbital L∞ norm falls below this are dropped
+        /// (`parse_config_str` default 1e-4).
         thresh: f64,
+        /// Centroid distance pre-filter length scale `r_ref`, Bohr;
+        /// `f64::INFINITY` disables the pre-filter.
         dist_cutoff: f64,
     },
+    /// Resolves to `Dense` or `BoysScreened` by atom count; see [`Chi0Sparsity::resolve`].
     Auto {
+        /// `thresh` of the `BoysScreened` this resolves to (`parse_config_str` default 1e-4).
         boys_thresh: f64,
+        /// Molecules with at least this many atoms resolve to `BoysScreened`
+        /// (`parse_config_str` default 30).
         atom_cutoff: usize,
+        /// `dist_cutoff` (Bohr) of the `BoysScreened` this resolves to.
         dist_cutoff: f64,
     },
 }
@@ -203,8 +218,11 @@ impl Chi0Sparsity {
 /// growing projected dielectric). Davidson is retained for comparison/fallback.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Eigensolver {
+    /// Block Lanczos; a full-rank request is one dense `eigh`. Default.
     #[default]
     Lanczos,
+    /// Davidson; the only backend that reads `eigensolver_max_vecs` and
+    /// `eigensolver_conv_thresh`.
     Davidson,
 }
 
@@ -239,7 +257,10 @@ pub struct PdepRpaConfig {
     /// (Davidson). INERT under [`Eigensolver::Lanczos`] (the default), for the
     /// same reason as `eigensolver_max_vecs`.
     pub eigensolver_conv_thresh: f64,
+    /// Imaginary-frequency quadrature for the ω-integral. Default
+    /// [`QuadratureConfig::default()`] (Gauss-Legendre, 20 points, u₀ = 0.5).
     pub quadrature: QuadratureConfig,
+    /// Sternheimer solver settings. No code path in this crate reads it.
     pub sternheimer: SternheimerConfig,
     /// If true, also compute the full-basis RI-dRPA diagnostic energy (expensive).
     pub run_diagnostics: bool,
@@ -392,6 +413,7 @@ impl PdepRpaConfig {
 /// with `None`, which agrees with this `Default`.
 #[derive(Debug, Clone)]
 pub struct QuadratureConfig {
+    /// Node/weight construction (default [`QuadratureScheme::GaussLegendre`]).
     pub scheme: QuadratureScheme,
     /// Number of quadrature points (default 20; CLI `task = "optimize"` is 16).
     pub n_points: usize,
@@ -416,6 +438,8 @@ impl Default for QuadratureConfig {
     }
 }
 
+/// Imaginary-frequency quadrature rule on [0, ∞) used by
+/// [`crate::quadrature::build_quadrature`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum QuadratureScheme {
     /// Eshuis-Yarkony-Furche modified Gauss-Chebyshev (JCP 2010): Chebyshev-2
@@ -471,7 +495,9 @@ impl QuadratureScheme {
 /// Sternheimer linear solver configuration.
 #[derive(Debug, Clone)]
 pub struct SternheimerConfig {
+    /// Maximum iterations (default 50).
     pub max_iter: usize,
+    /// Convergence threshold (default 1e-8).
     pub conv_thresh: f64,
 }
 

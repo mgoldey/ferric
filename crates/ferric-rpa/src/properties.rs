@@ -1112,7 +1112,17 @@ pub(crate) fn preflight_molecular_path(
     Ok((budget, charge))
 }
 
-/// Test-only re-export of [`dipole_band_width_with_threads`] so the
+#[doc(hidden)]
+/// Fraction of the resolved memory budget that in-flight dipole partials may
+/// occupy: `BAND_BUDGET_NUMER / BAND_BUDGET_DENOM`.
+///
+/// Module-scoped so the band-width tests assert against the SAME constants the
+/// implementation uses. They were function-local, which let a test hardcode the
+/// pre-fraction answer (10) and stay green until the fraction landed.
+const BAND_BUDGET_NUMER: usize = 1;
+const BAND_BUDGET_DENOM: usize = 4;
+
+/// Test-only re-export of the private `dipole_band_width_with_threads` so the
 /// budget-contract MWEs in `tests/mwe_budget_respected.rs` can exercise the
 /// band-width policy at an EXPLICIT worker count, without standing up an SCF
 /// and without inheriting the ambient rayon pool size.
@@ -1124,16 +1134,10 @@ pub(crate) fn preflight_molecular_path(
 /// bug hid. The overage is proportional to worker count (measured on the
 /// 3-atom/nbf=24 shape: 1.0x at 2 threads, 6.0x at 12, 32.0x at 64), so a test
 /// that cannot vary the worker count cannot see the defect at all.
-#[doc(hidden)]
-/// Fraction of the resolved memory budget that in-flight dipole partials may
-/// occupy: `BAND_BUDGET_NUMER / BAND_BUDGET_DENOM`.
 ///
-/// Module-scoped so the band-width tests assert against the SAME constants the
-/// implementation uses. They were function-local, which let a test hardcode the
-/// pre-fraction answer (10) and stay green until the fraction landed.
-const BAND_BUDGET_NUMER: usize = 1;
-const BAND_BUDGET_DENOM: usize = 4;
-
+/// Returns the number of per-atom dipole partials (each
+/// `natoms·3·nbf²` f64s) that fit in a quarter of `budget_bytes`, at least 1.
+/// The current band-width policy does not read `nthreads`.
 pub fn dipole_band_width_for_test(
     natoms: usize,
     nbf: usize,

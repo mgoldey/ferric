@@ -440,20 +440,25 @@ pub struct KOneElectronStress {
     pub n_ecp_triples: usize,
     /// Virial of each overlap weight set handed in (`Σ w dS`), in order.
     pub overlap: Vec<Mat3>,
-    /// Ewald `E_nn`: real space, reciprocal (with volume), background.
+    /// Ewald `E_nn` strain, real-space part.
     pub nn_sr: Mat3,
+    /// Ewald `E_nn` strain, reciprocal-space part (with volume term).
     pub nn_lr: Mat3,
+    /// Ewald `E_nn` strain, neutralising-background part.
     pub nn_background: Mat3,
     /// `Σ D V_LR` recomputed from the strain kernel's `P`.
     pub e_vlr: f64,
     /// `N = (1/N_k) Σ_k tr[D(k) S(k)]`.
     pub electrons: f64,
-    /// Pair images, SR triplets, V_LR G count and pair-FT chunks.
+    /// Lattice images of the orbital pairs visited.
     pub n_images: usize,
+    /// SR attraction shell triplets differentiated.
     pub n_sr_triplets: usize,
     /// Orbital columns the hcore SR derivative walk ran rotated.
     pub hcore_rotated_columns: usize,
+    /// Nonzero G vectors (full sphere) in the V_LR strain sum.
     pub n_g_lr: usize,
+    /// Pair-FT chunks the V_LR strain sum used.
     pub n_chunks: usize,
 }
 
@@ -929,20 +934,25 @@ pub struct KStressParts {
     pub exchange: Mat3,
     /// `−½ (1/N_k) Σ_s Σ_k tr[D_s S D_s S] dv_M/dε` (zero for exxdiv = none).
     pub madelung: Mat3,
-    /// Ewald `E_nn`: real space, reciprocal (with volume), background.
+    /// Ewald `E_nn` strain, real-space part.
     pub nn_sr: Mat3,
+    /// Ewald `E_nn` strain, reciprocal-space part (with volume term).
     pub nn_lr: Mat3,
+    /// Ewald `E_nn` strain, neutralising-background part.
     pub nn_background: Mat3,
-    /// RS-GDF `Σ Z dJ3`: SR, LR (with volume).
+    /// RS-GDF `Σ Z dJ3`, SR part.
     pub fit_j3_sr: Mat3,
+    /// RS-GDF `Σ Z dJ3`, LR part (with volume term).
     pub fit_j3_lr: Mat3,
-    /// RS-GDF `Σ Wm dJ2`: SR, LR (with volume).
+    /// RS-GDF `Σ Wm dJ2`, SR part.
     pub fit_j2_sr: Mat3,
+    /// RS-GDF `Σ Wm dJ2`, LR part (with volume term).
     pub fit_j2_lr: Mat3,
     /// RS-GDF J3 G = 0 through `dS` (`Σ M_g0 dS`).
     pub fit_g0_overlap: Mat3,
-    /// RS-GDF `−δ E_g0` and `+δ c0 qᵀ Wm(0) q`.
+    /// RS-GDF J3 G = 0 volume term `−δ E_g0`.
     pub fit_j3_g0_volume: Mat3,
+    /// RS-GDF J2 G = 0 volume term `+δ c0 qᵀ Wm(0) q`.
     pub fit_j2_g0_volume: Mat3,
     /// RS-GDF range separation: the attenuated fit's `J3` and `J2` LR strain
     /// (with their volume terms, coefficient `c_lr − c_sr`); zero otherwise.
@@ -1037,16 +1047,22 @@ pub struct KStress {
     pub e_exchange: Option<f64>,
     /// Madelung energy `−(v_M/2)(1/N_k) Σ_s Σ_k tr[D_s S D_s S]`.
     pub e_madelung: f64,
-    /// Pair images, SR triplets, V_LR G count, ERI K count, pair-FT chunks.
+    /// Lattice images of the orbital pairs visited by the one-electron strain.
     pub n_images: usize,
+    /// SR attraction shell triplets differentiated.
     pub n_sr_triplets: usize,
     /// Orbital columns the hcore SR derivative walk ran rotated (equals
     /// `PeriodicHcoreK::sr_rotated_columns`; 0 = unrotated).
     pub hcore_rotated_columns: usize,
     /// ECP triples differentiated (the energy's `PeriodicHcoreK::n_ecp_triples`).
     pub n_ecp_triples: usize,
+    /// Nonzero G vectors (full sphere) in the V_LR strain sum.
     pub n_g_lr: usize,
+    /// `K = G + q` vectors visited by the two-electron strain: summed over q
+    /// classes on dense AFT, the fit's LR K count (plus the attenuated fit's,
+    /// when range-separated) on RS-GDF.
     pub n_k_eri: usize,
+    /// Pair-FT chunks of the one- and two-electron strain sums combined.
     pub n_chunks: usize,
     /// Resolved memory budget (bytes).
     pub budget_bytes: usize,

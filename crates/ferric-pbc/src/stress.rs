@@ -283,24 +283,29 @@ pub struct GammaStressParts {
     pub eri: Mat3,
     /// `−(α/2) Σ_σ tr(D_σ S D_σ S) dv_M/dε` (zero for exxdiv = none).
     pub madelung: Mat3,
-    /// Ewald `E_nn`: real-space, reciprocal (with volume), background.
+    /// Ewald `E_nn` strain, real-space part.
     pub nn_sr: Mat3,
+    /// Ewald `E_nn` strain, reciprocal-space part (with volume term).
     pub nn_lr: Mat3,
+    /// Ewald `E_nn` strain, neutralising-background part.
     pub nn_background: Mat3,
     /// XC AO strain term (zero for HF).
     pub xc_ao: Mat3,
     /// XC grid-weight strain term (zero for HF).
     pub xc_weight: Mat3,
-    /// RS-GDF `Σ Y dJ3`: SR, LR (with volume).
+    /// RS-GDF `Σ Y dJ3`, SR part.
     pub fit_j3_sr: Mat3,
+    /// RS-GDF `Σ Y dJ3`, LR part (with volume term).
     pub fit_j3_lr: Mat3,
-    /// RS-GDF `Σ Wm dJ2`: SR, LR (with volume).
+    /// RS-GDF `Σ Wm dJ2`, SR part.
     pub fit_j2_sr: Mat3,
+    /// RS-GDF `Σ Wm dJ2`, LR part (with volume term).
     pub fit_j2_lr: Mat3,
     /// RS-GDF J3 G = 0 through `dS` (`Σ M_g0 dS`).
     pub fit_g0_overlap: Mat3,
-    /// RS-GDF `+δ c0 Σ (Yq)·S` and `+δ c0 qᵀ Wm q`.
+    /// RS-GDF J3 G = 0 volume term `+δ c0 Σ (Yq)·S`.
     pub fit_j3_g0_volume: Mat3,
+    /// RS-GDF J2 G = 0 volume term `+δ c0 qᵀ Wm q`.
     pub fit_j2_g0_volume: Mat3,
 }
 
@@ -373,12 +378,16 @@ pub struct GammaStress {
     pub e_vlr: f64,
     /// Dense-AFT `E_2e` recomputed from the strain kernel's `P` (0 on RS-GDF).
     pub e_eri: f64,
-    /// SR attraction triplets, pair images, half-sphere G counts and pair-FT
-    /// chunks (V_LR + ERI).
+    /// SR attraction shell triplets differentiated.
     pub n_sr_triplets: usize,
+    /// Lattice images of the orbital pairs visited.
     pub n_images: usize,
+    /// Half-sphere G vectors in the V_LR strain sum.
     pub n_g_lr: usize,
+    /// Half-sphere G vectors of the two-electron strain (dense AFT ERI or the
+    /// RS-GDF fit's LR sum).
     pub n_g_eri: usize,
+    /// Pair-FT chunks of the V_LR and two-electron strain sums combined.
     pub n_chunks: usize,
     /// Resolved memory budget (bytes).
     pub budget_bytes: usize,

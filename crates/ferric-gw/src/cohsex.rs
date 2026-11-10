@@ -225,6 +225,18 @@ impl std::ops::Deref for MProj {
     }
 }
 
+/// Projects the dressed MO tensor onto the PDEP modes:
+/// `M[(α, m, n)] = Σ_P v_dressed[(P, α)] · b_full[(P, m, n)]`.
+///
+/// `v_dressed` has shape `(naux, m_modes)`; the result has shape
+/// `(m_modes, n_act, n_act)` and carries a global memory-pool reservation for
+/// its bytes, released when the returned [`MProj`] is dropped.
+///
+/// # Errors
+///
+/// Returns an error if `m_proj + b_full` exceeds the resolved memory budget
+/// (`memory_budget_bytes`, or the auto-detected ceiling when `None`), or if
+/// the global memory-pool reservation for `m_proj` is refused.
 pub fn project_b_into_pdep(
     mo_b: &MoB,
     v_dressed: &Array2<f64>,
