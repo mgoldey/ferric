@@ -12,10 +12,18 @@ use thiserror::Error;
 #[derive(Error, Debug)]
 #[non_exhaustive]
 pub enum GtoEvalError {
+    /// The basis set has no shells for an element present in the molecule.
     #[error("no basis shells for Z={z} in basis set")]
-    MissingElement { z: i32 },
+    MissingElement {
+        /// Atomic number of the uncovered element.
+        z: i32,
+    },
+    /// A shell's angular momentum is beyond what the evaluator implements.
     #[error("angular momentum l={l} not supported for grid evaluation (only s, p, d, f, g)")]
-    UnsupportedL { l: i32 },
+    UnsupportedL {
+        /// The rejected angular momentum.
+        l: i32,
+    },
     /// Pre-flight size guard: the dense AO-on-grid buffer would exceed the memory
     /// budget. Carries the fully-formatted message from
     /// `ferric_core::memory::check_alloc`.
@@ -168,10 +176,16 @@ pub fn check_ao_grid_budget_reserved(
 /// One contracted GTO shell located in space (centered on its parent atom).
 #[derive(Debug, Clone)]
 pub struct LocatedShell<'a> {
+    /// Angular momentum.
     pub l: i32,
+    /// `true` for spherical-harmonic functions, `false` for Cartesian.
     pub pure: bool,
+    /// Primitive exponents, borrowed from the [`BasisSet`].
     pub exponents: &'a [f64],
+    /// Contraction coefficients as stored in the [`BasisSet`], one per
+    /// exponent; the evaluator applies primitive normalization itself.
     pub coefficients: &'a [f64],
+    /// Centre (the parent atom's position), Bohr.
     pub center: [f64; 3],
 }
 
@@ -2038,14 +2052,25 @@ pub fn eval_basis_grad_hess_on_points_unchecked(
 }
 
 /// A 3D Cartesian grid specification for volumetric data.
+///
+/// Point `(ix, iy, iz)` lies at `origin + ix*step_x + iy*step_y + iz*step_z`.
+/// [`eval_basis_on_grid`] reads only the diagonal steps (`step_x[0]`,
+/// `step_y[1]`, `step_z[2]`), so it assumes axis-aligned step vectors.
 #[derive(Debug, Clone)]
 pub struct GridSpec {
+    /// Position of grid point `(0, 0, 0)`, Bohr.
     pub origin: [f64; 3],
+    /// Number of points along the first axis.
     pub n_x: usize,
+    /// Number of points along the second axis.
     pub n_y: usize,
+    /// Number of points along the third axis.
     pub n_z: usize,
+    /// Step vector between consecutive points along the first axis, Bohr.
     pub step_x: [f64; 3],
+    /// Step vector between consecutive points along the second axis, Bohr.
     pub step_y: [f64; 3],
+    /// Step vector between consecutive points along the third axis, Bohr.
     pub step_z: [f64; 3],
 }
 

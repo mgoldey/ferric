@@ -100,8 +100,10 @@ pub struct PcmConfig {
 ///   It changes the solvation energy by ~1e-6 Ha on water and NH3.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum ProbeKind {
+    /// Tesserae couple as point charges (`1/r` kernels). The default.
     #[default]
     Point,
+    /// Tesserae couple as normalized Gaussian charges (`erf(ξ_k r)/r` kernels).
     GaussianSmeared,
 }
 

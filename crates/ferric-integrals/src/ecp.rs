@@ -103,9 +103,13 @@ pub fn ecp_backend() -> Result<EcpBackend, FerricError> {
 /// `gto_norm(l, α)` (i.e. be in the bare-Cartesian convention libecpint expects).
 #[derive(Debug, Clone)]
 pub struct EcpGaussianShell {
+    /// Angular momentum of the shell.
     pub l: i32,
+    /// Shell centre, Bohr.
     pub center: [f64; 3],
+    /// Primitive exponents.
     pub exponents: Vec<f64>,
+    /// Contraction coefficients with [`gto_norm`] folded in, one per exponent.
     pub coefficients: Vec<f64>,
 }
 
@@ -114,10 +118,15 @@ pub struct EcpGaussianShell {
 /// channel is the local term (libecpint determines this).
 #[derive(Debug, Clone)]
 pub struct EcpCenter {
+    /// ECP centre, Bohr.
     pub center: [f64; 3],
+    /// Angular momentum of each primitive.
     pub ams: Vec<i32>,
+    /// Power of r of each primitive (the literal BSE `r_exponents` value).
     pub ns: Vec<i32>,
+    /// Gaussian exponent of each primitive.
     pub exponents: Vec<f64>,
+    /// Coefficient of each primitive.
     pub coefficients: Vec<f64>,
 }
 

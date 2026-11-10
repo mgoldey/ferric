@@ -43,14 +43,22 @@ pub enum OperatorKind {
     Delcgtg2,
 }
 
-/// Maximum number of integral components per shell quartet (rank-2 multipoles: 1+3+6 = 10, but only 8 used for derivatives of up to second order).
+/// Maximum number of primitive components a composite [`Operator`] stores;
+/// [`Operator::composite`] silently drops any beyond this count.
 pub const MAX_COMPONENTS: usize = 8;
 
 /// A two-electron operator with its parameters.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Operator {
+    /// Kernel form. For a composite operator built by [`Operator::composite`]
+    /// this is a placeholder (`Coulomb`); for [`Operator::stg`] it names the
+    /// geminal integral class the fit feeds.
     pub kind: OperatorKind,
+    /// Scalar kernel parameter in Bohr⁻¹: ω for erf/erfc/terf/terfc, ζ for
+    /// Yukawa and Slater geminal, γ for [`Operator::stg`]; 0 for Coulomb.
     pub omega: f64,
+    /// Length parameter in Bohr: r0 for terf/terfc (and [`Operator::terfc_fit`]);
+    /// 0 otherwise.
     pub distance: f64,
     // Composite fields — crate-internal; use `components()` for external access.
     pub(crate) is_composite: bool,
