@@ -126,6 +126,7 @@ pub enum MixedKernel {
 }
 
 impl MixedKernel {
+    /// Every kernel, in bit order (the order of [`MixedKernel::index`]).
     pub const ALL: [MixedKernel; 8] = [
         MixedKernel::RiMp2Energy,
         MixedKernel::CcsdAmplitudes,
@@ -155,6 +156,7 @@ impl MixedKernel {
         (self as u8).trailing_zeros() as usize
     }
 
+    /// The spelling used in `mixed_kernels` lists and provenance records.
     pub const fn name(self) -> &'static str {
         match self {
             MixedKernel::RiMp2Energy => "rimp2-energy",
@@ -191,6 +193,7 @@ impl FromStr for MixedKernel {
 pub struct MixedKernelSet(u8);
 
 impl MixedKernelSet {
+    /// The set with no kernels.
     pub const EMPTY: Self = Self(0);
     /// The kernels whose error-budget row has shipped. Each Phase 4 task that
     /// ships a row extends this constant in the same commit as its gates:
@@ -220,6 +223,7 @@ impl MixedKernelSet {
         .with(MixedKernel::DfkOcc)
         .with(MixedKernel::DfjF32);
 
+    /// This set plus `k`.
     pub const fn with(self, k: MixedKernel) -> Self {
         Self(self.0 | k as u8)
     }
@@ -227,12 +231,15 @@ impl MixedKernelSet {
     pub const fn with_set(self, other: Self) -> Self {
         Self(self.0 | other.0)
     }
+    /// Whether `k` is in the set.
     pub const fn contains(self, k: MixedKernel) -> bool {
         self.0 & (k as u8) != 0
     }
+    /// Whether the set has no kernels.
     pub const fn is_empty(self) -> bool {
         self.0 == 0
     }
+    /// The kernels in the set, in [`MixedKernel::ALL`] order.
     pub fn iter(self) -> impl Iterator<Item = MixedKernel> {
         MixedKernel::ALL
             .into_iter()
@@ -270,6 +277,8 @@ impl fmt::Display for MixedKernelSet {
     }
 }
 
+/// `FERRIC_GPU_PRECISION` (TOML `[precision] mode`, deprecated alias
+/// `[gpu] precision`): `f64` or `mixed`; default [`PRECISION_DEFAULT`].
 pub static GPU_PRECISION: ConfigVar<Precision> = ConfigVar {
     env_name: "FERRIC_GPU_PRECISION",
     default: PRECISION_DEFAULT,
@@ -277,6 +286,9 @@ pub static GPU_PRECISION: ConfigVar<Precision> = ConfigVar {
     validate: accept_any,
 };
 
+/// `FERRIC_GPU_MIXED_KERNELS` (TOML `[precision] mixed_kernels`, deprecated
+/// alias `[gpu] mixed_kernels`): comma-separated kernel names; default
+/// [`MixedKernelSet::SHIPPED`].
 pub static GPU_MIXED_KERNELS: ConfigVar<MixedKernelSet> = ConfigVar {
     env_name: "FERRIC_GPU_MIXED_KERNELS",
     default: MixedKernelSet::SHIPPED,
@@ -325,10 +337,13 @@ pub struct MixedScope {
 }
 
 impl MixedScope {
+    /// Mark `k` as this thread's current mixed kernel until the guard drops.
     pub fn enter(k: MixedKernel) -> Self {
         let prev = SCOPE.replace(Some(k));
         Self { prev }
     }
+    /// The innermost kernel entered on this thread, or `None` outside any
+    /// scope.
     pub fn current() -> Option<MixedKernel> {
         SCOPE.get()
     }

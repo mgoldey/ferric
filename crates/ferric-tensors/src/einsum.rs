@@ -22,10 +22,21 @@ use thiserror::Error;
 pub enum TensorError {
     /// A contracted axis had different lengths in the two operands.
     #[error("contracted-dimension mismatch: left {left} vs right {right}")]
-    ContractedDimMismatch { left: usize, right: usize },
+    ContractedDimMismatch {
+        /// Product of the left operand's contracted-axis extents.
+        left: usize,
+        /// Product of the right operand's contracted-axis extents.
+        right: usize,
+    },
     /// The computed 2D product shape could not be reshaped to the output shape.
     #[error("output reshape failed: product has {got} elements, output shape needs {want}")]
-    OutputReshape { got: usize, want: usize },
+    OutputReshape {
+        /// Element count of the computed product (batch size, if any, times
+        /// left-free size times right-free size).
+        got: usize,
+        /// Element count of the requested output shape (at least 1).
+        want: usize,
+    },
     /// A run-time spec ([`einsum_dyn`]) failed to parse.
     #[error("invalid einsum spec: {0}")]
     Spec(String),

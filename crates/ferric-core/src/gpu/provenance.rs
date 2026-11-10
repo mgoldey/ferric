@@ -48,9 +48,13 @@ pub enum KernelDevice {
     Cpu,
     /// A CUDA device, as probed at install.
     Gpu {
+        /// CUDA device ordinal.
         ordinal: usize,
+        /// Device name reported by the driver.
         name: String,
+        /// Compute capability, major part.
         cc_major: i32,
+        /// Compute capability, minor part.
         cc_minor: i32,
     },
 }
@@ -73,10 +77,18 @@ impl fmt::Display for KernelDevice {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ErrorBound {
     /// No bound was computed for this run; `why` says what exists instead.
-    NoneComputed { why: &'static str },
+    NoneComputed {
+        /// Why no bound exists and what evidence there is instead.
+        why: &'static str,
+    },
     /// A bound computed at runtime from this run's own quantities, in
     /// Hartree, and the name of the estimate that produced it.
-    APosteriori { eh: f64, method: &'static str },
+    APosteriori {
+        /// The bound (Hartree).
+        eh: f64,
+        /// Name of the estimate that produced the bound.
+        method: &'static str,
+    },
 }
 
 /// The precision ladder's counts for one kernel (only kernels behind a ladder
@@ -96,10 +108,12 @@ pub struct LadderRecord {
 /// One kernel's provenance for one result.
 #[derive(Debug, Clone, PartialEq)]
 pub struct KernelRecord {
+    /// The kernel this record describes.
     pub kernel: MixedKernel,
     /// What the installed settings allowed: `Mixed` when `precision = mixed`
-    /// and the kernel is in `mixed_kernels`, else `F64` (the kernel is
-    /// listed only because a test seam ran it).
+    /// and the kernel is in `mixed_kernels` (or, for `dfj-f32`, whose request
+    /// comes from `ri_j_precision`, when it ran mixed), else `F64` (the kernel
+    /// is listed only because one of its counters moved).
     pub requested: Precision,
     /// What ran: `Mixed` when at least one call ran mixed, else `F64`.
     pub mode: Precision,
@@ -113,6 +127,8 @@ pub struct KernelRecord {
     pub calls_f64_fallback: [u64; MixedFallback::ALL.len()],
     /// The precision ladder, for a kernel behind one.
     pub ladder: Option<LadderRecord>,
+    /// The error bound attached to this kernel's contribution; currently
+    /// always [`ErrorBound::NoneComputed`].
     pub error_bound: ErrorBound,
 }
 
@@ -177,6 +193,8 @@ impl PrecisionRecord {
 }
 
 impl KernelRecord {
+    /// This record as one element of the `kernels` array of
+    /// [`PrecisionRecord::to_json`]; a non-finite bound is written as a string.
     pub fn to_json(&self) -> serde_json::Value {
         let device = match &self.device {
             None => serde_json::Value::Null,
@@ -288,6 +306,7 @@ pub struct PrecisionProbe {
 }
 
 impl PrecisionProbe {
+    /// Snapshot the per-kernel counters now.
     pub fn start() -> Self {
         PrecisionProbe {
             before: kernel_counters(),

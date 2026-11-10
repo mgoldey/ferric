@@ -126,6 +126,8 @@ pub fn derive_min_flops(table: &[(usize, f64, f64)]) -> usize {
     }
 }
 
+/// `FERRIC_GPU` / `[gpu] mode`: `off` (default), `auto` or `on`; any spelling
+/// [`parse_toggle`] accepts also maps to `on`/`off`.
 pub static GPU_MODE: ConfigVar<GpuMode> = ConfigVar {
     env_name: "FERRIC_GPU",
     default: GpuMode::Off,
@@ -133,6 +135,8 @@ pub static GPU_MODE: ConfigVar<GpuMode> = ConfigVar {
     validate: accept_any,
 };
 
+/// `FERRIC_GPU_DEVICE` / `[gpu] device`: CUDA device ordinal to probe
+/// (default 0).
 pub static GPU_DEVICE: ConfigVar<usize> = ConfigVar {
     env_name: "FERRIC_GPU_DEVICE",
     default: 0,
@@ -164,6 +168,9 @@ pub static GPU_MEM_GB: ConfigVar<f64> = ConfigVar {
     },
 };
 
+/// `FERRIC_GPU_MIN_FLOPS` / `[gpu] min_flops`: smallest `2*m*n*k` the f64
+/// `einsum!` GEMM offload sends to the device (default
+/// [`FERRIC_GPU_MIN_FLOPS_DEFAULT`]).
 pub static GPU_MIN_FLOPS: ConfigVar<usize> = ConfigVar {
     env_name: "FERRIC_GPU_MIN_FLOPS",
     default: FERRIC_GPU_MIN_FLOPS_DEFAULT,
@@ -262,10 +269,16 @@ pub struct GpuSettingsExplicit {
     /// A `--gpu <preset>` command-line flag: outranks `preset` (TOML) and the
     /// env var, and is labelled `command line` in the audit lines.
     pub cli_preset: Option<GpuPreset>,
+    /// `[gpu] preset` (see [`GpuPreset`]).
     pub preset: Option<GpuPreset>,
+    /// `[gpu] mode` (see [`GPU_MODE`]).
     pub mode: Option<GpuMode>,
+    /// `[gpu] device`: CUDA device ordinal.
     pub device: Option<usize>,
+    /// `[gpu] memory_gb`: device-pool capacity in GB (decimal); must be
+    /// finite and > 0 when given.
     pub memory_gb: Option<f64>,
+    /// `[gpu] min_flops` (see [`GPU_MIN_FLOPS`]).
     pub min_flops: Option<usize>,
     /// `[gpu] precision`: deprecated alias of `[precision] mode`
     /// ([`Self::precision_section`]).
@@ -301,11 +314,19 @@ impl GpuSettingsExplicit {
 /// Resolved GPU settings.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GpuSettings {
+    /// Whether and how the GPU backend is used.
     pub mode: GpuMode,
+    /// CUDA device ordinal.
     pub device: usize,
+    /// Device-pool capacity in GB (decimal); `None` sizes the pool at 80% of
+    /// the free device memory seen at probe.
     pub memory_gb: Option<f64>,
+    /// Smallest `2*m*n*k` the f64 `einsum!` GEMM offload sends to the device.
     pub min_flops: usize,
+    /// `f64`, or `mixed` for the kernels in `mixed_kernels`.
     pub precision: Precision,
+    /// Kernels allowed to run in mixed precision when `precision` is `mixed`
+    /// (see [`GpuSettings::mixed_allows`]).
     pub mixed_kernels: MixedKernelSet,
 }
 

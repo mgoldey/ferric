@@ -20,10 +20,15 @@ use crate::units::ANGSTROM_TO_BOHR;
 /// nuclear-attraction one-electron integrals.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Atom {
+    /// Element symbol as written in the input, without the ghost `@` prefix.
     pub symbol: String,
+    /// Atomic number of the element (also for ghosts and ECP atoms).
     pub z: i32,
+    /// x coordinate (Bohr).
     pub x: f64,
+    /// y coordinate (Bohr).
     pub y: f64,
+    /// z coordinate (Bohr); named `zpos` because `z` is the atomic number.
     pub zpos: f64,
     /// `true` if this is a ghost (basis-only) center: zero nuclear charge, zero electrons.
     pub ghost: bool,
@@ -108,8 +113,12 @@ fn validate_electron_multiplicity_parity(
 /// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct Molecule {
+    /// Atoms (including ghost centres) in input order.
     pub atoms: Vec<Atom>,
+    /// Net molecular charge (elementary charges); [`Molecule::nelec`] is the sum
+    /// of [`Atom::effective_z`] minus this.
     pub charge: i32,
+    /// Spin multiplicity 2S+1.
     pub multiplicity: usize,
 }
 

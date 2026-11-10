@@ -19,9 +19,15 @@ use std::str::FromStr;
 /// otherwise Cartesian Gaussians are used ((l+1)(l+2)/2 functions).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Shell {
+    /// Angular momentum quantum number (0=s, 1=p, 2=d, ...).
     pub l: i32,
+    /// `true` for spherical-harmonic (2l+1) functions, `false` for Cartesian.
     pub pure: bool,
+    /// Primitive Gaussian exponents (Bohr⁻²), one per primitive.
     pub exponents: Vec<f64>,
+    /// Contraction coefficients over unit-normalized primitives, parallel to
+    /// `exponents`; the BSE-JSON and Gaussian-94 loaders rescale them so the
+    /// contracted function has unit self-overlap.
     pub coefficients: Vec<f64>,
 }
 
@@ -41,6 +47,9 @@ pub struct Shell {
 /// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct BasisSet {
+    /// For [`bundled`] sets, the requested name trimmed and lowercased; for
+    /// [`load_bse_json`], the file's `name` field (the path if absent); for
+    /// [`load_g94`], the path.
     pub name: String,
     /// Map from atomic number Z to the list of shells for that element.
     pub shells: HashMap<i32, Vec<Shell>>,
