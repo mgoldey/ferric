@@ -26,6 +26,11 @@ thiserror = { workspace = true }
 zip = { version = "2", default-features = false }
 mpi = { workspace = true, optional = true }
 
+[target.'cfg(windows)'.dependencies]
+# checkpoint/format.rs `still_named`: file identity (volume serial + file index),
+# the Windows counterpart of unix (dev, ino). Already in Cargo.lock via tempfile.
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
+
 [features]
 default = []
 mpi = ["dep:mpi", "ferric-core/mpi"]
