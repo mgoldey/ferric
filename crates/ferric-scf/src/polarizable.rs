@@ -186,9 +186,13 @@ pub(crate) fn norm_int_p_shell(zeta: f64) -> f64 {
 /// (Bohr^3).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PolarizableSite {
+    /// x coordinate, Bohr.
     pub x: f64,
+    /// y coordinate, Bohr.
     pub y: f64,
+    /// z coordinate, Bohr.
     pub z: f64,
+    /// Isotropic polarisability, Bohr^3.
     pub alpha: f64,
 }
 
@@ -196,6 +200,7 @@ pub struct PolarizableSite {
 /// doc for the full model.
 #[derive(Debug, Clone)]
 pub struct PolarizableSites {
+    /// The sites; `exclusions` index into this list.
     pub sites: Vec<PolarizableSite>,
     /// Thole damping parameter. `Some(2.1304)` (use [`DEFAULT_THOLE_A`]) is
     /// the conventional default; `None` disables damping (bare 1/r^3

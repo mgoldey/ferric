@@ -656,10 +656,16 @@ fn noise_floor_of(cfg: &StabilityConfig, residual: f64) -> f64 {
 /// Lowest eigenpair from a fallible matvec, with residual reporting.
 #[derive(Debug, Clone)]
 pub struct LowestEigenpair {
+    /// Lowest Ritz value found.
     pub eigenvalue: f64,
+    /// The corresponding Ritz vector, length `dim`.
     pub eigenvector: Vec<f64>,
+    /// Residual norm `‖Hv − θv‖` of that vector.
     pub residual: f64,
+    /// Davidson iterations run (0 for the exact `dim == 1` case).
     pub iterations: usize,
+    /// Whether the iteration met the convergence test (see
+    /// [`davidson_lowest`]).
     pub converged: bool,
 }
 

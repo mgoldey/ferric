@@ -68,8 +68,11 @@ impl ScfJkMode {
 /// user actually typed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ScfJkKeys {
+    /// Key that selects the [`ScfJkMode`].
     pub mode: &'static str,
+    /// Key that names the JK-fitting basis.
     pub aux: &'static str,
+    /// Key that selects the exchange builder for an exact reference.
     pub k_builder: &'static str,
 }
 
@@ -99,7 +102,10 @@ pub const OO_REBUILDS_EXACT_JK: &str = "orbital-optimised MP2 rebuilds exact fou
 /// (`None` exactly when the mode is [`ScfJkMode::Exact`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScfJk {
+    /// How J and K are built.
     pub mode: ScfJkMode,
+    /// JK-fitting basis name; `None` exactly when `mode` is
+    /// [`ScfJkMode::Exact`].
     pub aux: Option<String>,
     /// The exchange builder an `"exact"` reference keeps (`k_builder` as
     /// given, e.g. "link" or "cosx"); `None` for the fitted modes, whose

@@ -570,8 +570,9 @@ pub struct CosxFinalPass {
     /// `e_scf_grid` plus the final-grid exchange correction; this is what
     /// `ScfResult::energy` reports.
     pub e_final: f64,
-    /// Exchange-grid points of the SCF grid and of the final grid.
+    /// Exchange-grid points of the SCF grid.
     pub npts_scf: usize,
+    /// Exchange-grid points of the final grid.
     pub npts_final: usize,
 }
 
@@ -784,10 +785,12 @@ pub struct CosxTimings {
     /// pair_flops * points` (`Md3c1e::pair_flops_per_point`); 0.0 when the
     /// router is off or nothing is kept.
     pub route_f32_flop_share: f64,
-    /// Raw numerator and denominator of `route_f32_flop_share`: flops per
-    /// point x points, summed over F32 units / over all kept units (0 when the
-    /// router is off, the flop table is only built for a nonzero multiplier).
+    /// Numerator of `route_f32_flop_share`: flops per point x points, summed
+    /// over F32 units (0 when the router is off; the flop table is only built
+    /// for a nonzero multiplier).
     pub route_f32_flops: u64,
+    /// Denominator of `route_f32_flop_share`: the same sum over all kept
+    /// units (0 when the router is off).
     pub route_flops: u64,
     /// Units actually computed by the f32 block (`CosxConfig::f32_route`).
     pub f32_blocks: usize,

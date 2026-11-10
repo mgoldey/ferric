@@ -111,20 +111,30 @@ pub(crate) fn xc_is_metagga(xc_name: Option<&str>) -> bool {
 /// GGA, and τ-only meta-GGA; VV10 has no kernel here and must be refused by
 /// the caller).
 pub enum FxcKernelStore {
+    /// Every component of the functional is LDA.
     Lda {
+        /// The LDA kernel on the integration grid.
         kernel: Box<ferric_dft::fxc::LdaFxcKernel>,
+        /// Reference α density on the grid points.
         rho_a0: Vec<f64>,
+        /// Reference β density on the grid points.
         rho_b0: Vec<f64>,
     },
+    /// GGA, global hybrid or range-separated GGA (any non-LDA, non-meta-GGA
+    /// functional).
     Gga {
+        /// The GGA kernel on the integration grid.
         kernel: Box<ferric_dft::fxc::GgaFxcKernel>,
+        /// Reference per-spin densities and gradients on the grid.
         ref_dens: Box<ferric_dft::density_on_grid::UksDensityGrid>,
     },
     /// τ-only meta-GGA (SCAN / r2SCAN / TPSS): the RKS/UKS Newton steps,
     /// RKS/UKS internal stability, the RKS/UKS/ROKS Z-vector and the Python
     /// response blocks apply it. ROKS Newton/AH and TRAH keep meta-GGA on DIIS.
     Mgga {
+        /// The meta-GGA kernel on the integration grid.
         kernel: Box<ferric_dft::fxc::MggaFxcKernel>,
+        /// Reference-density quantities the kernel is evaluated at.
         reference: Box<ferric_dft::fxc::MggaFxcReference>,
     },
 }

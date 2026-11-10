@@ -98,10 +98,15 @@ use crate::screening::SchwarzBounds;
 /// would double-count them. Coordinates are in **Bohr**.
 #[derive(Debug, Clone)]
 pub struct QmmmAtom {
+    /// Element symbol (label for `z`).
     pub symbol: String,
+    /// Atomic number.
     pub z: i32,
+    /// x coordinate, Bohr.
     pub x: f64,
+    /// y coordinate, Bohr.
     pub y: f64,
+    /// z coordinate, Bohr (named `z_pos` because `z` is the atomic number).
     pub z_pos: f64,
     /// MM partial charge in units of e. Typically fractional (a force-field
     /// charge). Only used if this atom lands in the MM region.
@@ -282,6 +287,7 @@ impl BoundaryChargeScheme {
 /// the two real atoms (half each, since the midpoint is their mean).
 #[derive(Debug, Clone, PartialEq)]
 pub struct BoundaryCharge {
+    /// Charge in units of e.
     pub q: f64,
     /// Position in Bohr.
     pub position: [f64; 3],
@@ -304,7 +310,12 @@ pub enum QmSelection {
     /// would normally expand the selection to whole residues first; that is
     /// the caller's job (build the index list and use [`QmSelection::Indices`]),
     /// or use [`QmSelection::WithinRadiusWholeResidues`].
-    WithinRadius { seeds: Vec<usize>, radius: f64 },
+    WithinRadius {
+        /// Seed atom indices into the full atom list; always QM.
+        seeds: Vec<usize>,
+        /// Selection radius in Bohr, measured atom-to-atom.
+        radius: f64,
+    },
     /// Like [`QmSelection::WithinRadius`], but a residue joins the QM region
     /// **in full** if any of its atoms lands within `radius` of any seed —
     /// no sidechain is cut mid-residue.
@@ -316,8 +327,11 @@ pub enum QmSelection {
     /// no-op on top of [`QmSelection::WithinRadius`] — the same seeds/radius
     /// select the same QM/MM split, byte for byte.
     WithinRadiusWholeResidues {
+        /// Seed atom indices into the full atom list; always QM.
         seeds: Vec<usize>,
+        /// Selection radius in Bohr, measured atom-to-atom.
         radius: f64,
+        /// Residue id of each atom, indexed like the full atom list.
         residue_ids: Vec<usize>,
     },
 }
@@ -1925,17 +1939,25 @@ pub enum MoveMm {
 /// `run_qmmm`'s KS setup).
 #[derive(Debug, Clone, PartialEq)]
 pub enum QmmmMethod {
+    /// Restricted Hartree-Fock (`solve_rhf`, `xc = None`).
     Rhf,
+    /// Unrestricted Hartree-Fock (`solve_uhf`, `xc = None`).
     Uhf,
+    /// Restricted Kohn-Sham with the named functional.
     Rks(String),
+    /// Unrestricted Kohn-Sham with the named functional.
     Uks(String),
 }
 
 /// Configuration for [`optimize_qmmm`].
 #[derive(Debug, Clone)]
 pub struct QmmmOptimizeConfig {
+    /// SCF reference for the QM region.
     pub method: QmmmMethod,
+    /// Which MM atoms are free coordinates.
     pub move_mm: MoveMm,
+    /// BFGS settings (step cap, trust radius, convergence thresholds, SCF
+    /// warm start), passed to `optimize_coordinates`.
     pub opt: crate::optimize::OptimizeConfig,
     /// The MM force field. `None` means no MM energy/gradient terms at all —
     /// the same "all-zero" contract [`qmmm_mm_terms`] documents. Required
@@ -1957,7 +1979,10 @@ pub struct QmmmOptimizeResult {
     pub system: QmmmSystem,
     /// Total energy (SCF + MM force-field terms) at the final geometry.
     pub energy: f64,
+    /// Whether the energy change and the max and RMS components of the
+    /// free-atom gradient all fell below the `opt` thresholds.
     pub converged: bool,
+    /// BFGS steps taken (coordinate updates), at most `opt.max_steps`.
     pub steps: usize,
     /// Total energy at every step, in order (length `steps + 1`).
     pub energies: Vec<f64>,
@@ -2084,7 +2109,7 @@ pub(crate) fn qmmm_qm_energy_and_gradient_warm(
 /// link atoms and boundary charges are the exact derivative of what gets
 /// evaluated), runs the configured SCF in the resulting embedding potential,
 /// adds any [`qmmm_mm_terms`] contribution, and projects the gradient down to
-/// only the FREE atoms' rows before the BFGS line search sees them (so it
+/// only the FREE atoms' rows before the BFGS driver sees them (so it
 /// never tries to move an atom `move_mm` excluded).
 ///
 /// Requires `cfg.mm_topology` whenever `cfg.move_mm != MoveMm::None`

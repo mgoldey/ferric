@@ -144,7 +144,9 @@ pub struct SaddleResult {
     /// The geometry the search arrived at. Valid to inspect even when
     /// `converged` is false -- it is where the search stopped.
     pub mol: Molecule,
+    /// Energy at `mol`, Hartree.
     pub energy: f64,
+    /// P-RFO steps taken before the gradient converged or `max_steps` ran out.
     pub steps: usize,
     /// Whether the GRADIENT converged. This alone does NOT mean a transition
     /// state was found: see `n_imaginary`.

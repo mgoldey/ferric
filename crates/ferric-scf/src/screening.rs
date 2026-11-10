@@ -38,9 +38,15 @@ pub trait Bound: Sync + Send {
 #[derive(Debug, Clone)]
 #[must_use = "Schwarz bounds are expensive to compute; dropping them wastes work"]
 pub struct SchwarzBounds {
+    /// Shell-pair Schwarz factors from `ferric_integrals::schwarz::schwarz`
+    /// (`Q[P][Q] ≈ sqrt|(PQ|PQ)|`, so `|(PQ|RS)| ≤ Q[P][Q]·Q[R][S]`),
+    /// `nshells x nshells`, for `op`.
     pub q: Array2<f64>,
+    /// Per-shell row maximum of `q`: `q_shell[P] = max_Q q[P][Q]`.
     pub q_shell: Vec<f64>,
+    /// The two-electron operator the factors were computed for.
     pub op: Operator,
+    /// Number of shells in the basis.
     pub nshells: usize,
     /// CSB `M` table, `M[P][Q] = sqrt(max_{µ∈P,λ∈Q} |(µµ|λλ)|)`, built for the
     /// SAME `op` as `q`. `None` (the default, and what [`Self::compute`]
@@ -568,9 +574,13 @@ impl CsamBounds {
 /// because the enum is the more general shape and one adapter at this seam is
 /// easier to audit than two.
 pub enum LinkBound<'a> {
+    /// Owned plain Schwarz bounds (CSB/CSAM tables, if attached, still apply).
     Schwarz(SchwarzBounds),
+    /// Borrowed bounds; applies whatever table the borrowed value carries.
     SchwarzRef(&'a SchwarzBounds),
+    /// Owned CSB bound.
     Csb(CsbBounds),
+    /// Owned CSAM estimate (non-rigorous).
     Csam(CsamBounds),
 }
 

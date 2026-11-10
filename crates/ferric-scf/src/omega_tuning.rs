@@ -86,8 +86,9 @@ use ndarray::Array2;
 pub struct OmegaTuneConfig {
     /// RSH functional name (must carry a libxc `_omega` parameter).
     pub functional: String,
-    /// Search bracket, Bohr⁻¹.
+    /// Lower end of the search bracket, Bohr⁻¹.
     pub omega_lo: f64,
+    /// Upper end of the search bracket, Bohr⁻¹.
     pub omega_hi: f64,
     /// Convergence width on ω (Bohr⁻¹).
     pub omega_tol: f64,
@@ -198,10 +199,13 @@ pub enum OmegaSeed {
     /// continuation was off, or this was the first evaluation and there was no
     /// neighbour to continue from.
     Default,
-    /// Converged orbitals of an earlier evaluation at this ω (Bohr⁻¹) — the
-    /// one NEAREST in ω among those already evaluated, which under
-    /// golden-section search is generally not the previous one.
-    Continued { from_omega: f64 },
+    /// Converged orbitals of an earlier evaluation — the one NEAREST in ω
+    /// among those already evaluated, which under golden-section search is
+    /// generally not the previous one.
+    Continued {
+        /// The ω (Bohr⁻¹) of the evaluation the orbitals came from.
+        from_omega: f64,
+    },
 }
 
 impl std::fmt::Display for OmegaSeed {
@@ -325,9 +329,13 @@ impl CationStability {
 /// this point belongs on the same J curve as its neighbours.
 #[derive(Debug, Clone, Copy)]
 pub struct OmegaEval {
+    /// The range-separation parameter evaluated, Bohr⁻¹.
     pub omega: f64,
+    /// HOMO eigenvalue of the neutral (Hartree).
     pub eps_homo: f64,
+    /// ΔSCF ionization potential `E(N−1) − E(N)` (Hartree).
     pub ip_delta_scf: f64,
+    /// Koopmans residual `ε_HOMO + IP` (Hartree); zero at the tuned ω.
     pub j: f64,
     /// Cation total energy (Ha) — the ΔSCF IP's E(N−1) term, kept so a branch
     /// switch can be read off the energies and not only off the flag.
@@ -362,10 +370,14 @@ pub struct OmegaEval {
 #[derive(Debug, Clone)]
 #[must_use]
 pub struct OmegaTuneResult {
+    /// The tuned ω* (Bohr⁻¹): the evaluated ω with the smallest `|J|`.
     pub omega: f64,
     /// J(ω*) — the residual Koopmans violation at the tuned ω.
     pub j: f64,
+    /// Every evaluation, in the order the golden-section search made them.
     pub evals: Vec<OmegaEval>,
+    /// Whether the bracket narrowed below `omega_tol` before `max_evals`
+    /// evaluations were spent.
     pub converged: bool,
     /// Human-readable account of every evaluation whose cation changed
     /// branch, `None` when the check found nothing (or was disabled — read

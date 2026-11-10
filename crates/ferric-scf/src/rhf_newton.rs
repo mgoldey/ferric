@@ -55,12 +55,15 @@ use ndarray_linalg::Solve;
 
 /// Inputs to one RHF/RKS Newton step.
 pub struct RhfNewtonInputs<'a> {
+    /// The AO basis on the molecule.
     pub prep: &'a PreparedBasis,
+    /// Schwarz bounds for the response J/K builds.
     pub bounds: &'a SchwarzBounds,
     /// MO coeffs (n × n), columns ordered occ | virt.
     pub c: &'a Array2<f64>,
     /// Fock in the MO basis (current iter).
     pub f_mo: &'a Array2<f64>,
+    /// Number of doubly occupied MOs.
     pub nocc: usize,
     /// K mixing coefficient for the plain-Coulomb exchange response
     /// (1.0 for HF, c_HF for a global hybrid). Read ONLY when `rsh` is `None`.
@@ -74,6 +77,8 @@ pub struct RhfNewtonInputs<'a> {
     /// Optional XC-kernel response closure (None for pure RHF). Called with the
     /// per-spin restricted density perturbation (δD_α = δD_β = ½·δD_total).
     pub fxc: Option<&'a FxcResponse<'a>>,
+    /// Integral screening threshold for the response J/K builds (the solvers
+    /// pass `RhfConfig::integral_thresh`).
     pub thresh: f64,
     /// Solver-resolved memory budget (see `rhf::resolve_three_index_budget`),
     /// used to size the `build_jk_with_pool` reduction band via

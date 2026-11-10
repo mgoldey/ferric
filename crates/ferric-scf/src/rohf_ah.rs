@@ -25,6 +25,7 @@ use ndarray_linalg::Solve;
 /// driver consumes exactly the same inputs as the PCG driver because the
 /// orbital Hessian matvec is shared.
 pub struct RohfAhInputs<'a, 'b> {
+    /// The inputs of the PCG Newton step, used unchanged.
     pub base: &'a RohfNewtonInputs<'b>,
 }
 

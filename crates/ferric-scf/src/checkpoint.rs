@@ -84,41 +84,95 @@ pub const FORMAT_VERSION: u64 = 1;
 /// Why a checkpoint could not be read, written or trusted.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum CheckpointError {
+    /// The file does not exist (`fs::read` returned `NotFound`).
     #[error("checkpoint {path:?} does not exist")]
-    Missing { path: String },
+    Missing {
+        /// The path as given, rendered with `Path::display`.
+        path: String,
+    },
+    /// Any other filesystem failure, a symlink at the target path, or a path
+    /// with no file name.
     #[error("checkpoint {path:?}: {detail}")]
-    Io { path: String, detail: String },
+    Io {
+        /// The path as given, rendered with `Path::display`.
+        path: String,
+        /// The step that failed and the underlying error text.
+        detail: String,
+    },
+    /// The bytes or the `meta` JSON do not decode: a malformed NPZ, a missing
+    /// or unexpected member, unparsable JSON, or optional members that
+    /// disagree with the spin.
     #[error("checkpoint is not readable: {0}")]
     Format(String),
+    /// The stored `format_version` is not [`FORMAT_VERSION`].
     #[error(
         "checkpoint format_version is {found}; this build reads {}",
         FORMAT_VERSION
     )]
-    Version { found: u64 },
+    Version {
+        /// The version read from the file.
+        found: u64,
+    },
+    /// The stored checksum differs from the one recomputed over the members.
     #[error("checkpoint checksum mismatch: stored {stored:016x}, computed {computed:016x}")]
-    Checksum { stored: u64, computed: u64 },
+    Checksum {
+        /// The `checksum` member as read.
+        stored: u64,
+        /// The checksum recomputed from the other members.
+        computed: u64,
+    },
+    /// An array has the wrong rank, or dimensions inconsistent with the
+    /// identity's `nao` or with its partner array.
     #[error("checkpoint {array}: expected shape {expected}, found {found}")]
     Shape {
+        /// Member name, e.g. `mos_alpha`.
         array: String,
+        /// The required shape, as text.
         expected: String,
+        /// The shape found, as text.
         found: String,
     },
+    /// An array or scalar holds a NaN or an infinity.
     #[error("checkpoint {array} holds a non-finite value")]
-    NonFinite { array: String },
+    NonFinite {
+        /// Member or scalar name, e.g. `density_total` or `energy`.
+        array: String,
+    },
+    /// Identity fields differ in a way the [`ReadMode`] does not tolerate.
     #[error("checkpoint is for a different calculation: {}", identity::describe(.0))]
     Identity(Vec<Mismatch>),
+    /// A skip read across builds without the explicit override.
     #[error("checkpoint was written by build {file}, this is {current}; skipping the SCF across builds needs the explicit override")]
-    OtherBuild { file: String, current: String },
+    OtherBuild {
+        /// The file's [`BuildStamp`], via `Display`.
+        file: String,
+        /// The running [`BuildStamp`], via `Display`.
+        current: String,
+    },
+    /// A skip read of a file whose exit state is not `Converged` or
+    /// `Plateau`, or whose `converged` flag is false.
     #[error("checkpoint exit state {exit} cannot replace an SCF (Converged or Plateau only)")]
-    ExitRefused { exit: String },
+    ExitRefused {
+        /// The file's `ScfExit` in `Debug` form, with a note when
+        /// `converged = false` is the reason.
+        exit: String,
+    },
+    /// A skip read of a mid-run file (one with no [`FinalState`]).
     #[error("checkpoint is a mid-run file, which can seed an SCF but not replace one")]
     MidRun,
+    /// A skip read of a file converged to a looser `energy_conv` or
+    /// `density_conv` than the current calculation requests.
     #[error("checkpoint {field} = {file:e} is looser than the requested {requested:e}")]
     Looser {
+        /// `"energy_conv"` or `"density_conv"`.
         field: String,
+        /// The threshold the file was converged to.
         file: f64,
+        /// The threshold the current calculation requests.
         requested: f64,
     },
+    /// A skip read of a state whose [`FinalState::not_stored`] lists
+    /// `induced_dipoles` or `cosx_final`; carries those names.
     #[error(
         "checkpoint state carries {0:?}, which it does not store, so it cannot replace an SCF"
     )]
@@ -134,13 +188,23 @@ impl From<CheckpointError> for FerricError {
 /// The orbitals and densities, present in every file.
 #[derive(Debug, Clone)]
 pub struct OrbitalState {
+    /// Reference type; must match the identity's `spin` field.
     pub spin: Spin,
+    /// AO total density `D_α + D_β`, `nao x nao`.
     pub density_total: Array2<f64>,
+    /// AO α density, `nao x nao`.
     pub density_alpha: Array2<f64>,
+    /// AO β density, `nao x nao`; `None` exactly when `spin` is `Restricted`.
     pub density_beta: Option<Array2<f64>>,
+    /// α (or restricted) MO coefficients, `nao x nmo` with `nmo <= nao`
+    /// (fewer columns for a linearly dependent basis).
     pub mos_alpha: Array2<f64>,
+    /// β MO coefficients, same shape rule as `mos_alpha`. Always `None` for
+    /// `Restricted`; present exactly when `eps_beta` is.
     pub mos_beta: Option<Array2<f64>>,
+    /// α orbital energies (Hartree), one per column of `mos_alpha`.
     pub eps_alpha: Vec<f64>,
+    /// β orbital energies (Hartree), one per column of `mos_beta`.
     pub eps_beta: Option<Vec<f64>>,
 }
 
@@ -148,22 +212,36 @@ pub struct OrbitalState {
 /// may carry a level shift, so it is not stored.
 #[derive(Debug, Clone)]
 pub struct FinalState {
+    /// `ScfResult::energy`: total SCF energy (Hartree).
     pub energy: f64,
     /// `Tr[D h]`, for the independent check a skip runs against freshly computed
     /// one-electron integrals. The caller supplies it: `ScfResult` does not hold
     /// it.
     pub one_electron_energy: f64,
+    /// Nuclear repulsion energy `Vnn` (Hartree) of the solve, supplied by the
+    /// caller.
     pub nuclear_repulsion: f64,
+    /// `ScfResult::fock_alpha`: converged α AO Fock matrix, `nao x nao` (for
+    /// ROHF the Roothaan effective Fock).
     pub fock_alpha: Array2<f64>,
+    /// `ScfResult::fock_beta`: β AO Fock matrix, `nao x nao`.
     pub fock_beta: Option<Array2<f64>>,
+    /// `ScfResult::rohf_spin_focks`: ROHF/ROKS spin Focks `(F_α, F_β)`, each
+    /// `nao x nao`, stored as the members `rohf_spin_fock_alpha`/`_beta`.
     pub rohf_spin_focks: Option<(Array2<f64>, Array2<f64>)>,
     /// `None` means exact four-centre J/K. Dropping a route here would pair an
     /// RI energy with an exact gradient, silently.
     pub df_jk: Option<DfJkRoute>,
+    /// `ScfResult::exit`; a skip accepts only `Converged` and `Plateau`.
     pub exit: ScfExit,
+    /// `ScfResult::converged`; a skip requires `true`.
     pub converged: bool,
+    /// `ScfResult::iterations`.
     pub iterations: usize,
+    /// `ScfResult::computed_quartets`: two-electron quartets evaluated.
     pub computed_quartets: usize,
+    /// `ScfResult::convergence`: the final-iteration convergence signals and
+    /// thresholds, when the solver recorded them.
     pub convergence: Option<ConvergenceReport>,
     /// `PrecisionRecord::summary()`, for echoing. The record holds `&'static str`
     /// fields, so it is kept as text: a restored mixed-precision run can say what
@@ -179,8 +257,11 @@ pub struct FinalState {
 /// One checkpoint: the file's contents, independent of its bytes.
 #[derive(Debug, Clone)]
 pub struct Checkpoint {
+    /// The build that wrote the state.
     pub build: BuildStamp,
+    /// The calculation the state belongs to; compared by [`Checkpoint::check`].
     pub identity: ScfIdentity,
+    /// MOs, orbital energies and densities.
     pub orbitals: OrbitalState,
     /// `None` for a mid-run file.
     pub final_state: Option<FinalState>,

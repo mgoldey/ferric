@@ -55,7 +55,11 @@ pub(crate) fn xc_record(config_xc: Option<&str>, injected: bool) -> Option<Strin
 #[derive(Debug, Clone)]
 #[must_use = "SCF result contains computed energies and orbitals"]
 pub struct ScfResult {
+    /// Reference type (RHF/RKS, UHF/UKS or ROHF/ROKS), which decides which
+    /// of the optional β fields are populated.
     pub spin: Spin,
+    /// Total energy in Hartree, nuclear repulsion included. With a COSX
+    /// final-grid pass this is [`CosxFinalPass::e_final`](crate::cosx_k::CosxFinalPass::e_final).
     pub energy: f64,
     /// AO total density (D_α + D_β). For Restricted this equals 2·D_α.
     pub density_total: Array2<f64>,

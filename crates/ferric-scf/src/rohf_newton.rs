@@ -35,12 +35,20 @@ pub type FxcResponse<'a> =
 
 /// Inputs to one Newton step.
 pub struct RohfNewtonInputs<'a> {
+    /// The AO basis on the molecule.
     pub prep: &'a PreparedBasis,
+    /// Schwarz bounds for the response J/K builds.
     pub bounds: &'a SchwarzBounds,
+    /// Current MO coefficients, AO rows by MO columns, columns ordered
+    /// closed | open | virtual.
     pub c: &'a Array2<f64>, // MO coeffs (n × n), columns ordered closed | open | virt
+    /// α spin Fock in the MO basis of `c`, current iteration.
     pub f_a_mo: &'a Array2<f64>, // α Fock in MO basis (current iter)
+    /// β spin Fock in the MO basis of `c`, current iteration.
     pub f_b_mo: &'a Array2<f64>, // β Fock in MO basis
+    /// Number of doubly occupied (closed-shell) MOs.
     pub nocc_double: usize,
+    /// Number of singly occupied (open-shell) MOs.
     pub nocc_open: usize,
     /// K mixing coefficient for the plain-Coulomb exchange response
     /// (1.0 for HF, c_HF for a global hybrid). Read ONLY when `rsh` is `None`.
@@ -57,7 +65,11 @@ pub struct RohfNewtonInputs<'a> {
     /// Roothaan Hessian being a third operator, not about the exchange kernel,
     /// and it stands.
     pub rsh: Option<&'a crate::rsh_response::RshResponse<'a>>,
+    /// XC response `(δD_α, δD_β) -> (δV_xc^α, δV_xc^β)` for ROKS; `None` for
+    /// pure ROHF.
     pub fxc: Option<&'a FxcResponse<'a>>,
+    /// Integral screening threshold for the response J/K builds (the solver
+    /// passes `RhfConfig::integral_thresh`).
     pub thresh: f64,
     /// Solver-resolved memory budget (see `rhf::resolve_three_index_budget`),
     /// used to size the `build_jk_with_pool` reduction band via

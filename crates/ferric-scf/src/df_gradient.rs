@@ -129,7 +129,9 @@ const DENSITY_FACTOR_REL_CUT: f64 = 1e-12;
 /// One density-fitted exchange channel: an AO density `D_s` and the weight
 /// `α_s` of `Σ_μνλσ D_μν D_λσ (μλ|νσ)_fit` in the energy.
 pub struct DfKChannel<'a> {
+    /// The AO density `D_s`, `nao x nao`; must be positive semidefinite.
     pub density: &'a Array2<f64>,
+    /// The channel weight `α_s` in the energy expression above.
     pub alpha: f64,
 }
 
@@ -709,7 +711,9 @@ pub enum TwoElectronDensity<'a> {
     Closed(&'a Array2<f64>),
     /// Open shell (UHF/ROHF/UKS/ROKS): per-spin densities.
     Open {
+        /// AO α density.
         alpha: &'a Array2<f64>,
+        /// AO β density.
         beta: &'a Array2<f64>,
     },
 }
@@ -718,7 +722,10 @@ pub enum TwoElectronDensity<'a> {
 /// Some((c_sr, c_lr, ω))` replaces it with `c_sr·K[erfc(ω)] + c_lr·K[erf(ω)]`.
 #[derive(Clone, Copy, Debug)]
 pub struct ExchangeMix {
+    /// Fraction of full-range (ω = 0) exact exchange; used when `rsh` is
+    /// `None`.
     pub c_k: f64,
+    /// `(c_sr, c_lr, ω)` for range-separated exchange, ω in Bohr⁻¹.
     pub rsh: Option<(f64, f64, f64)>,
 }
 

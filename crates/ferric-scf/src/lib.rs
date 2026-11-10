@@ -111,14 +111,14 @@ pub mod properties;
 /// COSMO conductor-like implicit solvation model.
 pub mod cosmo;
 pub(crate) mod driver;
-/// J/K builder traits and composite Fock matrix assembly.
+/// J/K builder traits.
 pub mod fock;
 pub(crate) mod fock_assembly;
 #[doc(hidden)]
 pub use fock_assembly::dress_first_count_for_test;
 #[cfg(test)]
 mod ks_vxc_tests;
-/// Range-separated hybrid ω-tuning via IP/EA condition.
+/// Range-separated hybrid ω-tuning via the IP (ΔSCF Koopmans) condition.
 pub mod omega_tuning;
 /// Significant and density-screened shell-pair lists.
 pub mod pairs;
@@ -285,7 +285,8 @@ pub use frequencies::{harmonic_frequencies, FrequencyConfig, FrequencyReference,
 #[cfg(feature = "cfmm-incomplete")]
 pub mod cfmm;
 pub mod polarizable;
-/// QM/MM system setup: atom selection, link atoms, embedding charges.
+// Documented by the module's own `//!` docs: an outer `///` here would make
+// rustdoc resolve that file's intra-doc links in this (parent) scope.
 pub mod qmmm;
 pub use qmmm::{BoundaryChargeScheme, QmSelection, QmmmAtom, QmmmSystem};
 /// Jacob's ladder solver: run a sequence of methods (HF→DFT→MP2→…) reusing orbitals.

@@ -26,9 +26,17 @@ use ndarray_linalg::Eigh;
 /// Configuration parameters for the RHF solver.
 #[derive(Debug, Clone)]
 pub struct RhfConfig {
+    /// Maximum SCF iterations for one solve (each ladder rung sets its own).
+    /// Default 200.
     pub max_iter: usize,
+    /// Loose bound on the energy change `|ΔE|` (Hartree) between iterations
+    /// in the SCF convergence gate: a "not still descending" check, not the
+    /// accuracy target. Default 1e-3.
     pub energy_conv: f64,
+    /// Convergence threshold on the RMS density change; the max element of
+    /// the change must also be below `10 × density_conv`. Default 1e-6.
     pub density_conv: f64,
+    /// Maximum number of DIIS history vectors. Default 8.
     pub diis_size: usize,
     /// DIIS family: `Pulay` (default, plain commutator DIIS — historical
     /// byte-identical behavior) or `Adiis`/`Ediis` (energy-based variant in the
@@ -42,6 +50,8 @@ pub struct RhfConfig {
     /// `Some(σ)` smears the frontier — a convergence aid for near-degenerate
     /// d-manifolds (TM dimers/metals). See `smearing.rs`.
     pub smearing_sigma: Option<f64>,
+    /// Integral screening threshold for the integral-driven J/K builds.
+    /// Default 1e-12.
     pub integral_thresh: f64,
     /// Choose K matrix builder: "direct" (default), "link", or "cosx"
     /// (seminumerical exchange, see [`crate::cosx_k`]). Honoured by

@@ -117,9 +117,17 @@ const INTERNAL_ANGULAR_TRUST: f64 = 0.3;
 #[derive(Debug, Clone)]
 #[must_use = "optimization result contains the relaxed geometry and energy"]
 pub struct OptimizeResult {
+    /// The molecule at the final geometry (coordinates in Bohr).
     pub mol: Molecule,
+    /// Energy at `mol`, in Hartree.
     pub energy: f64,
+    /// Optimizer steps taken (coordinate updates), at most
+    /// [`OptimizeConfig::max_steps`].
     pub steps: usize,
+    /// Whether, after at least one step, the energy change and the max and
+    /// RMS Cartesian gradient components all fell below
+    /// [`OptimizeConfig::e_conv`], [`OptimizeConfig::g_max_thresh`] and
+    /// [`OptimizeConfig::g_rms_thresh`].
     pub converged: bool,
     /// Energy at every point the optimizer EVALUATED, in order.
     ///

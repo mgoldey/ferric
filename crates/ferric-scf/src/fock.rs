@@ -1,4 +1,4 @@
-//! Fock matrix builder traits and composite builder.
+//! Fock matrix builder traits.
 //!
 //! The [`crate::fock::JBuilder`] and [`crate::fock::KBuilder`] traits abstract the Coulomb and exchange
 //! matrix construction, allowing future pluggable implementations (e.g., LinK, CFMM).
@@ -8,12 +8,22 @@ use ndarray::Array2;
 
 /// Trait for building the Coulomb matrix J from a density matrix.
 pub trait JBuilder {
+    /// Build the Coulomb matrix of the AO density `d` into `j`. Some
+    /// implementations add to `j` and others overwrite it, so callers pass a
+    /// zeroed matrix. Returns the number of ERI quartets computed (0 for the
+    /// density-fitted builders).
     fn build(&mut self, d: &Array2<f64>, j: &mut Array2<f64>) -> Result<usize, FerricError>;
+    /// Drop state cached from earlier builds (CFMM clears its leaf caches);
+    /// a no-op for the stateless builders.
     fn reset(&mut self);
 }
 
 /// Trait for building the exchange matrix K from a density matrix.
 pub trait KBuilder {
+    /// Build the exchange matrix `K_μν = Σ_λσ (μλ|νσ) D_λσ` of the AO density
+    /// `d` into `k`. Some implementations add to `k` and others overwrite it,
+    /// so callers pass a zeroed matrix. Returns the number of ERI quartets
+    /// computed (0 for builders that compute none).
     fn build(&mut self, d: &Array2<f64>, k: &mut Array2<f64>) -> Result<usize, FerricError>;
 
     /// Build K from occupied MO coefficients `c_occ` (an `(n, nocc)` matrix)
@@ -48,7 +58,12 @@ pub trait KBuilder {
         self.build(&d, k)
     }
 
+    /// Prepare for a `build` on `d`; the open-shell solvers call it before
+    /// each per-spin build. LinK rebuilds its density-pair screen here; the
+    /// other builders ignore it.
     fn update_density(&mut self, d: &Array2<f64>);
+    /// Drop density-dependent state from earlier builds (LinK's density-pair
+    /// screen); a no-op for builders that hold none.
     fn reset(&mut self);
 
     /// Exchange-grid point count of a grid-based (COSX) builder; `None` for
