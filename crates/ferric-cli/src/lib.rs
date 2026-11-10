@@ -450,7 +450,7 @@ pub fn run(args: Vec<String>) {
     };
     cfg.scf.verbose = cfg.scf.verbose || cli_verbose;
     // Only a written key overrides: an absent `[parallel]` keeps whatever the
-    // host process set (`ferric.set_blas_threads` before `ferric.run_cli`).
+    // host process set (`ferric.set_blas_threads` before the `ferric` console script, `_cli_main`).
     if let Some(n) = cfg.parallel.blas_threads {
         ferric_integrals::blas_threads::set_serial_blas_threads(Some(n));
     }

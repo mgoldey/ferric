@@ -1,7 +1,7 @@
 //! `ferric` — alias binary for `ferric-cli`, same code, second name.
 //!
-//! Both names are load-bearing: docs/examples invoke `ferric`, while
-//! `ferric-batch` and the bisect scripts shell out to `ferric-cli`.
+//! Both names are in use: docs, examples and `ferric-batch` run `ferric`;
+//! some scripts invoke `ferric-cli`.
 //!
 //! Calls into the `ferric-cli` LIBRARY crate (formerly `main.rs`, moved to
 //! `lib.rs` so `ferric-python`'s `#[pyfunction]` console-script entry point

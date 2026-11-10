@@ -10,7 +10,7 @@
 //!   property averaging (conformer *generation* is out of scope; RDKit does that)
 //! - [`FerricError`] -- unified error type for the workspace
 
-/// Gaussian basis sets: [`BasisSet`](basis::BasisSet), [`Shell`](basis::Shell), BSE-JSON/G94 parsers, 21 bundled sets.
+/// Gaussian basis sets: [`BasisSet`](basis::BasisSet), [`Shell`](basis::Shell), BSE-JSON/G94 parsers, and the bundled-set registry (64 sets plus the def2 ECP file, packed into one compressed blob).
 pub mod basis;
 mod basis_util;
 /// OpenBLAS thread counts (parallel-region baseline, serial sections) and
@@ -35,7 +35,8 @@ pub mod gpu;
 /// Redundant internal coordinates: bond perception, the Wilson B-matrix, and
 /// the internal↔Cartesian step transformations used by the geometry optimizer.
 pub mod internal_coords;
-/// Dense linear algebra helpers (Cholesky, eigenvalue, matrix utilities).
+/// Dense linear algebra helpers: divide-and-conquer symmetric eigensolvers
+/// (`eigh_dc`, `eigvalsh_dc`), a threaded GEMM (`par_gemm`) and an LU log-determinant (`logdet_lu`).
 pub mod linalg;
 /// Memory budget discovery and enforcement.
 pub mod memory;

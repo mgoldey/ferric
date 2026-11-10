@@ -23,7 +23,7 @@ integrals and core, not on each other.
 +---+---+      |           |              |            |
     |          +-----+-----+------+-------+------------+
     |                |     |      |
-    |   +------------v--+ +v------v-----+   ferric-tensors (sparse),
+    |   +------------v--+ +v------v-----+   ferric-tensors (dense),
     |   |ferric-export | |ferric-      |   ferric-quadrature (Laplace/grid roots)
     |   |cube,NPZ,GTO  | |integrals    |   support crates
     |   +--------------+ |libint2 FFI  |
@@ -43,9 +43,10 @@ BSE-JSON / Gaussian-94 parsers. Also the home of shared infrastructure:
 configuration (`ConfigVar`), memory budgets (`MemoryPlan`), the BLAS-thread
 hazard model, and MPI context.
 
-**`ferric-integrals`**: the libint2 FFI and its C++ shim. Coulomb, erf and erfc
-operators; 1-electron, 2-electron, 3-center and 2-center integrals; first
-derivatives. The shim wraps every libint2 call in `try`/`catch` and returns a
+**`ferric-integrals`**: the libint2 FFI and its C++ shim. Coulomb, erf, erfc,
+Yukawa and Slater-geminal operators, fitted Gaussian geminals, and the
+truncated terf/terfc kernels; 1-electron, 2-electron, 3-center and 2-center
+integrals; first derivatives, and second derivatives for the Hessians. The shim wraps every libint2 call in `try`/`catch` and returns a
 sentinel, so a C++ exception never unwinds across the FFI boundary.
 
 **Method crates**: `ferric-scf`, `ferric-mp2`, `ferric-dft`, `ferric-rpa`,

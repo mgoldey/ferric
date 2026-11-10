@@ -31,8 +31,9 @@
 //!   Phase B. Phase A enumerates the *complete* active space with no occupation
 //!   restrictions on any orbital subspace.
 //! * **Open-shell / non-singlet references, S² handling, multiple roots** —
-//!   Phase C. Phase A assumes a closed-shell singlet (`n_alpha == n_beta`) and
-//!   extracts only the single lowest root.
+//!   Phase C. Phase A is meant for a closed-shell singlet reference (the RHF
+//!   orbitals); it does not check `n_alpha == n_beta`, and extracts only the
+//!   single lowest root.
 //! * **CLI / Python wiring** — Phase C. Phase A is a library-only spike with
 //!   `#[test]` validation against PySCF FCI/CASCI.
 //!

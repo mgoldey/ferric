@@ -3,7 +3,7 @@
 This library provides the tensor abstractions used throughout `ferric` by the correlation methods.
 
 ## Storage
-`Tensor<N>` stores dense `f64` data with labelled axes (`crates/ferric-tensors/src/tensor.rs:11`). The crate has no sparse format.
+`Tensor<N>` stores dense `f64` data with labelled axes (`crates/ferric-tensors/src/tensor.rs:16`). The crate has no sparse format.
 The AO-Laplace MP2 code in `ferric-mp2` (`crates/ferric-mp2/src/laplace.rs`) is dense: no $O(N)$ scaling is implemented or measured.
 
 ## Trace Contractions

@@ -1,8 +1,11 @@
 //! Coupled-Cluster methods for ferric.
 //!
-//! Spin-orbital RI-CCD, RI-CCSD, and the CCSD(T) perturbative-triples
-//! correction, all validated against exact-integral / PySCF references.
-//! The infrastructure reuses RI integrals from ferric-mp2.
+//! RI-CCD, RI-CCSD and the CCSD(T) perturbative-triples correction in a
+//! spin-orbital form ([`ccd`], [`ccsd`], [`ccsd_t`]) and a spin-adapted
+//! closed-shell form ([`ccsd_closed_shell`], [`ccsd_t_closed_shell`], which the
+//! CLI `ccsd` / `ccsd(t)` kinds run); LinLCCD(hh) closed shell ([`linlccd`]) and
+//! open shell ([`linlccd_u`]); DLPNO-CCSD(T); and the ωB97X-L-V double hybrid.
+//! Both CCSD forms require a restricted reference. RI integrals come from ferric-mp2.
 
 use ndarray::{Array2, Array4};
 

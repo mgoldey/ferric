@@ -24,9 +24,10 @@
 //!
 //! # Kernel
 //!
-//! One `ferric_ecp_block` call per orbital image `L` (the libecpint
-//! per-shell-pair kernel `ECPIntegral::compute_shell_pair` behind the
-//! exception-safe C shim, `crates/ferric-integrals/shim/ecp_shim.cc`): bra =
+//! One `ferric_integrals::ecp::ecp_block_spherical` call per orbital image `L`
+//! (the per-shell-pair kernel: ferric's quadrature by default, or libecpint's
+//! `ECPIntegral::compute_shell_pair` behind `shim/ecp_shim.cc` when
+//! `FERRIC_ECP_BACKEND=libecpint`): bra =
 //! the home shells, ket = the home shells translated by `L`, ECP centres =
 //! the images `R_C + M` that survive the screen for at least one shell pair,
 //! and a per-(bra shell, ket shell, centre) mask carrying the screen. No
@@ -148,10 +149,11 @@
 //! exactly the energy's triples (one shared `EcpPlan` screen, the
 //! "frozen image set" of the prototype), with the centre derivative
 //! `−(∂_bra + ∂_ket)` per triple (translation invariance). The kernel is
-//! `ferric_ecp_block_deriv` (libecpint's raised/lowered VALUE-integral
-//! shell derivative, true partials also for a shell on its own ECP centre,
-//! where libecpint's `compute_shell_pair_derivative` would report
-//! `A = −B, C = 0`). Do not pin to PySCF 2.13's `ECPscalar_ipnuc`
+//! `ferric_integrals::ecp::ecp_block_deriv_spherical` (quadrature by default;
+//! with `FERRIC_ECP_BACKEND=libecpint`, libecpint's raised/lowered
+//! VALUE-integral shell derivative). The libecpint path gives true partials
+//! also for a shell on its own ECP centre, where libecpint's
+//! `compute_shell_pair_derivative` would report `A = −B, C = 0`. Do not pin to PySCF 2.13's `ECPscalar_ipnuc`
 //! (1.1e-7 off on off-centre elements) or `pbc.gto.ecp.ecp_int` (FINDINGS
 //! Iterations 14 and 22).
 

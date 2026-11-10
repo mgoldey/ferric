@@ -68,7 +68,7 @@ pub mod schwarz;
 /// [`SiteBasis`](site_basis::SiteBasis): one Gaussian per MM site as a fake auxiliary
 /// `PreparedBasis`, used for Gaussian-smeared QM/MM charge potentials and their gradients.
 pub mod site_basis;
-/// [`ThreeIndexSource`](three_index_source::ThreeIndexSource) trait: abstract 3-index tensor provider.
+/// [`ThreeIndexSource`](three_index_source::ThreeIndexSource) struct: the 3-index `(P|μν)` tensor provider (in-core, f32 or spilled storage).
 pub mod three_index_source;
 /// Three-center density-fitting integrals (P|mu nu) with optional batching.
 pub mod threeindex;

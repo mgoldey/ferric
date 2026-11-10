@@ -695,8 +695,8 @@ fn bf_to_atom(
 
 /// Compute the closed-shell semilocal XC nuclear gradient.
 ///
-/// Currently supports **LDA only**. GGA / hybrid-GGA / RSH require AO Hessians
-/// (second derivatives of χ) which are not yet implemented in ao_grid.rs.
+/// LDA-family functionals only; GGA and meta-GGA gradients go through
+/// [`xc_gradient_closed_gga_from_density`] and [`xc_gradient_closed_mgga_from_density`].
 ///
 /// Arguments:
 /// - `mol`: molecule (used for `natoms`)

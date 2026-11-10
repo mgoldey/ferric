@@ -131,24 +131,27 @@ instead, or ROKS with `[rpa] xc` (`examples/oh-ugw-rohf.toml`), semi-canonicaliz
 per spin as for U-PDEP-RPA.
 
 **Accuracy.** Proven (narrow). At matched settings (`[rpa] n_quad = 100`,
-`trunc_thresh = 0`) ferric matches PySCF `gw_ac`/`ugw_ac` to ≤1.3e-7 Ha
-(table below). The defaults are Gauss–Legendre `n_quad = 40` (GW has its
+`trunc_thresh = 0`) G0W0@HF matches PySCF `gw_ac` to ≤1.6e-7 Ha. Against
+the grid-free dRPA pole sum, G0W0@HF and G0W0@PBE agree to ≤1.8e-8 Ha,
+U-G0W0@UKS to ≤2.7e-8 Ha and U-G0W0@UHF to ≤1.2e-5 Ha (table below). Every driver, closed and open shell, integrates
+the Σc frequency kernel exactly against the interpolated W (product
+integration) whenever the frequency grid is the scaled Gauss–Legendre rule;
+other grids fall back to the plain sum. The plain sum cannot resolve the
+kernel for states away from the frontier or close to the per-spin Fermi
+level (the OH β HOMO and LUMO sit 0.015 Ha away); PySCF `gw_ac`/`ugw_ac`
+carry that error. The defaults are Gauss–Legendre `n_quad = 40` (GW has its
 own default; `pdep-rpa` and the other RPA energy kinds use 20),
 `trunc_thresh = 1e-4` and, for evGW₀/evGW, `ev_conv_thresh = 1e-4` Ha. At the
-defaults the HOMO and LUMO stay within 10 meV of the matched settings: the
-worst case is 5.7 meV (G0W0@PBE, NH3/cc-pVDZ HOMO), and HF and UHF starts
-stay below 0.13 meV. The bar does not cover deeper states at a KS start:
-there, HOMO−1 can move by 0.1–0.4 eV with `n_quad` even near 100 points.
-U-G0W0 on a UKS reference is covered with a tighter bar: on OH and NH2 the
-HOMO and LUMO move ≤0.005 meV between `n_quad` 40 and 100. The open-shell
-drivers integrate the Σc frequency kernel exactly against the interpolated W
-(product integration). The plain Gauss–Legendre sum cannot resolve the kernel
-when a state sits close to the per-spin Fermi level, as the OH β HOMO and LUMO
-do (0.015 Ha away). With the plain sum those runs never converged in `n_quad`,
-in ferric or in PySCF `ugw_ac`. When the quasiparticle equation has several
-roots near the solution and Newton fails (NH2 α HOMO), ferric returns the root
-with the largest spectral weight. U-evGW₀, U-evGW and U-COHSEX on a KS
-reference, and any ROKS reference, are not compared, and such runs warn.
+defaults the HOMO and LUMO stay within 10 meV of the matched settings. Every
+quasiparticle state of the default window (HOMO−2 to LUMO+2) of G0W0@PBE
+moves ≤0.06 meV between `n_quad` 40 and 100 (CH2O, NH3), and U-G0W0@UKS on
+OH and NH2 ≤0.005 meV. The analytic continuation limits states far from ε_F
+with split spectral weight: Thiele through the exact Σc(iω) is 45 meV off
+the exact real-axis root on H2O@PBE HOMO−2 and 0.3–0.5 eV on 2s-like valence
+states. When the quasiparticle equation has several roots near the solution
+and Newton fails (NH2 α HOMO), ferric returns the root with the largest
+spectral weight. U-evGW₀, U-evGW and U-COHSEX on a KS reference, and any
+ROKS reference, are not compared, and such runs warn.
 These are numerical errors against ferric's own matched-settings result,
 not the method's error against experiment.
 

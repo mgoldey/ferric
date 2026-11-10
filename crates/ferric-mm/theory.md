@@ -17,7 +17,7 @@ fields published in kcal/mol, Å and degrees are converted once in
 Gradients are $\partial E/\partial\mathbf R$ (not forces). $\mathbf R_a$ is the
 position of atom $a$; $\mathbf r_{ab} = \mathbf R_a - \mathbf R_b$.
 
-Total energy (`energy.rs:85`, `MmEnergy` fields):
+Total energy (`energy.rs:80`, `MmEnergy` fields):
 
 $$E = E_\text{bond} + E_\text{angle} + E_\text{torsion} + E_\text{LJ} + E_\text{Coul}.$$
 
