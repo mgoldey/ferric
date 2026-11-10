@@ -26,8 +26,8 @@
 //!
 //! Asserted per system: the f64 default never consults the ladder and is
 //! bit-identical to the no-ladder seam (structural) and, for water and
-//! benzene, to bits recorded at the pre-ladder merge base
-//! (`f64_default_matches_pre_ladder_golden`); the production ladder (τ = 1e-5,
+//! benzene, to the energies and iteration counts recorded at the pre-ladder
+//! merge base (`f64_default_matches_pre_ladder_golden`, energies to the bar); the production ladder (τ = 1e-5,
 //! both kernels, and `dfk-occ` alone, which pins τ by behaviour and makes a
 //! dropped `dfk-occ` notification visible) and the stress ladder (τ = 0: every
 //! build after the first mixed until the exit; `dfj-pack` only beyond water,
@@ -846,76 +846,78 @@ fn ladder_energy_is_f64_quality_across_system_size_and_mutants_fail() {
     check_rows(&rows);
 }
 
-/// FNV-1a over the bits of a matrix (row-major).
-fn fnv_bits(xs: &Array2<f64>) -> u64 {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for x in xs.iter() {
-        for b in x.to_bits().to_le_bytes() {
-            h ^= u64::from(b);
-            h = h.wrapping_mul(0x0000_0100_0000_01b3);
-        }
-    }
-    h
-}
-
-/// The f64 default against bits recorded WITHOUT the ladder code: the same
+/// The f64 default against energies recorded WITHOUT the ladder code: the same
 /// SCFs (this file's `scf` config, `Arm::F64`) run at b2ec65a9b, the merge
-/// base of this branch, which has no `jk_ladder` and no ladder hooks in the
-/// device dispatchers. Unlike the `F64NoLadder` comparison (the ladder's own
-/// off seam, structural only) this would catch a change the ladder made to
-/// the f64 path itself. Recorded on this box's GTX 1080 (device f64 RI-J runs
-/// in the f64 default), identical in two processes; another device or BLAS
-/// may differ in the last bit, in which case re-record at the merge base.
-/// The Fock hashes were re-recorded on this branch after two intended f64
-/// changes: the DF-K dressing over the μν triangle (exactly symmetric, within
-/// the k-block summation bound of the full-square product but not bitwise) and
-/// iteration 1's K from the factored guess density (`build_from_density_factor`,
-/// equal to the density path to reassociation). The energies and iteration
-/// counts are still the merge base's, bit for bit. Re-record only for an
-/// intended change to the f64 path, and say which here.
+/// base of the ladder branch, which has no `jk_ladder` and no ladder hooks in
+/// the device dispatchers. Unlike the `F64NoLadder` comparison (the ladder's
+/// own off seam, bitwise but structural only) this would catch a change the
+/// ladder made to the f64 path itself, such as a mixed build reaching it.
+/// Recorded on this box's GTX 1080 (device f64 RI-J runs in the f64 default).
+///
+/// Iteration counts are exact. Energies are NOT bitwise: deliberate changes to
+/// the f64 arithmetic move the last bits without touching the ladder (the first
+/// was d1cedaf73, `dsyevd` for the Fock diagonalization; on 2026-11-10 water sat
+/// 2.3e-13 Eh and benzene 1.1e-11 Eh from the golden, same 13 iterations). Two
+/// f64 SCFs that differ only in rounding are what the derived bar bounds (file
+/// docs: `2·T_γ + 2·|dE_exit|`; 3.4e-11 Eh for water, 3.5e-9 Eh for benzene),
+/// so that is the tolerance. It stays five orders below the first-order error
+/// `M` of a mixed build leaking into the f64 path (1e-4 Eh and up), which is
+/// what this test is for; that margin is asserted too. All systems run and
+/// print before anything is asserted.
 #[test]
 fn f64_default_matches_pre_ladder_golden() {
     let _g = GPU.lock().unwrap_or_else(|e| e.into_inner());
     if !ready() {
         return;
     }
-    let golden: [(&str, Molecule, &str, u64, usize, u64); 2] = [
-        (
-            "H2O/cc-pVDZ",
-            water(),
-            "cc-pvdz",
-            0xc053_01b6_0893_26f6,
-            13,
-            0xeba9_589b_6e11_4033,
-        ),
+    let golden: [(&str, Molecule, &str, u64, usize); 2] = [
+        ("H2O/cc-pVDZ", water(), "cc-pvdz", 0xc053_01b6_0893_26f6, 13),
         (
             "C6H6/def2-SVP",
             Molecule::load_xyz("../../testdata/molecules/benzene.xyz").unwrap(),
             "def2-svp",
             0xc06c_d123_b8a0_0188,
             13,
-            0x4823_b275_5a25_d48f,
         ),
     ];
-    for (label, mol, obs, e_bits, iters, fock) in golden {
+    let mut rows = Vec::new();
+    for (label, mol, obs, e_bits, iters) in golden {
         let sys = System::new(label, mol, obs, Kind::Rhf);
         let r = scf(&sys, Arm::F64, Kernels::Both);
-        assert_eq!(r.ladder, LadderCounters::default(), "{label}: stepped");
-        assert_eq!(
-            r.res.energy.to_bits(),
-            e_bits,
-            "{label}: f64 energy {:.15} differs from the pre-ladder golden {:.15}",
-            r.res.energy,
-            f64::from_bits(e_bits)
+        let b = budget(&sys, &r.res);
+        let (bar, m) = (bar_of(&b, &r.res), b.m_mixed);
+        let e_gold = f64::from_bits(e_bits);
+        let de = (r.res.energy - e_gold).abs();
+        eprintln!(
+            "{label}: E {:.15} golden {e_gold:.15} |dE| {de:.2e} (bar {bar:.2e}, M {m:.2e}), {} it (golden {iters})",
+            r.res.energy, r.res.iterations
         );
+        rows.push((label, r, de, iters, bar, m));
+    }
+    for (label, r, de, iters, bar, m) in rows {
+        assert_eq!(r.ladder, LadderCounters::default(), "{label}: stepped");
         assert_eq!(r.res.iterations, iters, "{label}: iterations");
-        assert_eq!(fnv_bits(&r.res.fock_alpha), fock, "{label}: Fock bits");
+        assert!(
+            de <= bar,
+            "{label}: f64 energy {de:e} Eh from the pre-ladder golden, above the bar {bar:e}"
+        );
+        // The tolerance must stay far below what it is meant to detect.
+        assert!(bar < 1e-3 * m, "{label}: bar {bar:e} not below M {m:e}");
     }
 }
 
-/// Open shell: UHF and ROHF (RI-J and both spin DF-K builds; ROHF reaches the
-/// occupied path through its factored spin densities) on H2O⁺/cc-pVDZ at τ = 0,
-/// against the derived bar.
+/// Open shell: UHF and ROHF on H2O⁺/cc-pVDZ, the same split as `sweep`.
+///
+/// * The production ladder (τ = 1e-5) with BOTH kernels: RI-J and both spin
+///   DF-K builds run mixed (ROHF reaches the occupied path through its factored
+///   spin densities), end in f64 by themselves, and land inside the derived bar.
+/// * The τ = 0 stress and its no-exit mutant with `dfj-pack` only, as `sweep`
+///   does beyond water (`Kernels::JOnly`). With `dfk-occ` in every build the
+///   SCF sits on the f32 noise floor and reaches the 1e-9 exit gate only by
+///   chance. Measured on ROHF at d1cedaf73..main (2026-11-10, FERRIC_ROHF_TRACE):
+///   DIIS error 2.5e-8 to 9e-8 and |dE| up to 2e-7 from iteration 8 to 200,
+///   never converging; one rounding change earlier (3008a34b1) the same run
+///   happened to pass the gate at iteration 125 (f64: 12), UHF at 63 (f64: 14).
 #[test]
 fn open_shell_ladder_exits_in_f64() {
     let _g = GPU.lock().unwrap_or_else(|e| e.into_inner());
@@ -935,41 +937,49 @@ fn open_shell_ladder_exits_in_f64() {
         let f = scf(&sys, Arm::F64, Kernels::Both);
         assert_eq!(f.ladder, LadderCounters::default());
         let b = budget(&sys, &f.res);
-        let t0 = scf(&sys, Arm::LadderTau0, Kernels::Both);
-        let mu = scf(&sys, Arm::NoExitRebuild, Kernels::Both);
         let bar = bar_of(&b, &f.res);
-        let bar_mu = bar;
-        let (de, dm) = (
-            (t0.res.energy - f.res.energy).abs(),
-            (mu.res.energy - f.res.energy).abs(),
-        );
+        let prod = scf(&sys, Arm::Ladder, Kernels::Both);
+        let t0 = scf(&sys, Arm::LadderTau0, Kernels::JOnly);
+        let mu = scf(&sys, Arm::NoExitRebuild, Kernels::JOnly);
+        let de = |r: &Run| (r.res.energy - f.res.energy).abs();
+        let (dp, d0, dm) = (de(&prod), de(&t0), de(&mu));
         eprintln!(
-            "{label}: |dE| tau=0 {de:.3e}  no-exit {dm:.3e}  bar {bar:.3e}  M {:.3e}  (ladder {:?})",
-            b.m_mixed, t0.ladder
+            "{label}: |dE| production {dp:.3e}  tau=0 {d0:.3e}  no-exit {dm:.3e}  bar {bar:.3e}  M {:.3e}",
+            b.m_mixed
         );
-        let dens = density_err(&sys, &t0.res, &f.res);
-        eprintln!(
-            "{label}: tau=0 {} it (f64 {})  max|D-D_f64| {:.2e}  max|D-CC^T| {:.2e} (f64 {:.2e})",
-            t0.res.iterations,
-            f.res.iterations,
-            dens.vs_f64,
-            dens.vs_orbitals,
-            density_orbital_gap(&sys, &f.res)
-        );
-        densities.push((label, dens));
-        assert_eq!(t0.ladder.exit_rebuilt_f64, 1, "{label}: no f64 exit");
-        assert!(t0.ladder.builds_mixed >= 1, "{label}: never mixed");
-        check_kernel_provenance(label, kind, Kernels::Both, &t0);
-        assert!(de <= bar, "{label}: |dE| {de:e} above the bar {bar:e}");
+        for (what, r) in [("production", &prod), ("tau=0", &t0)] {
+            let dens = density_err(&sys, &r.res, &f.res);
+            eprintln!(
+                "{label}: {what} {} it (f64 {})  max|D-D_f64| {:.2e}  max|D-CC^T| {:.2e} (f64 {:.2e})  ladder {:?}",
+                r.res.iterations,
+                f.res.iterations,
+                dens.vs_f64,
+                dens.vs_orbitals,
+                density_orbital_gap(&sys, &f.res),
+                r.ladder
+            );
+            densities.push((label, what, dens));
+        }
+        check_arm_counters(&sys, Arm::Ladder, Kernels::Both, &prod, f.res.iterations);
+        check_arm_counters(&sys, Arm::LadderTau0, Kernels::JOnly, &t0, f.res.iterations);
+        check_kernel_provenance(label, kind, Kernels::JOnly, &mu);
         assert!(
-            dm > bar_mu,
-            "{label}: the no-exit mutant {dm:e} is inside its bar {bar_mu:e}"
+            dp <= bar,
+            "{label}: production |dE| {dp:e} above the bar {bar:e}"
         );
-        assert!(dm <= b.m_mixed + bar_mu, "{label}: mutant above its budget");
+        assert!(
+            d0 <= bar,
+            "{label}: tau=0 |dE| {d0:e} above the bar {bar:e}"
+        );
+        assert!(
+            dm > bar,
+            "{label}: the no-exit mutant {dm:e} is inside the bar {bar:e}"
+        );
+        assert!(dm <= b.m_mixed + bar, "{label}: mutant above its budget");
     }
     // After both kinds, so a failure still prints both.
-    for (label, dens) in densities {
-        assert_f64_density(label, "tau=0", dens);
+    for (label, what, dens) in densities {
+        assert_f64_density(label, what, dens);
     }
 }
 
