@@ -2661,8 +2661,11 @@ fn solve_rhf_impl(
     // path, so F and E are bitwise unchanged (`adds_single_potential`, which
     // rules out VV10). Off under MPI: J's all-reduce must stay on the main
     // thread. The rayon-worker BLAS self-guard keeps both arms at 1 BLAS thread.
+    // Off when a device is usable: the device RI-J and XC paths decline on a
+    // rayon worker, so the overlap would keep both on the CPU.
     let jxc_overlap = SCF_JXC_OVERLAP.toggle()
         && ctx.size == 1
+        && !crate::df_j::device_ready_for_scf()
         && inj_jk.is_none()
         && inj_xc.is_none()
         && df_j.is_some()
