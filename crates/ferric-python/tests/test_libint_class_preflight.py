@@ -60,7 +60,7 @@ def test_missing_class_falls_back_or_raises_never_aborts():
 
         pytest.skip(out["skip"])
     assert out["auto"] == "finite-difference"
-    assert "hessian = \"auto\" falls back to finite differences" in proc.stderr
+    assert 'hessian = "auto" falls back to finite differences' in proc.stderr
     assert out["analytic"] is not None
     assert "libint2 integral class unavailable" in out["analytic"]
     assert "second-derivative 4-centre ERI" in out["analytic"]
