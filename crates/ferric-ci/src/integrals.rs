@@ -704,15 +704,10 @@ mod tests {
         }
     }
 
+    /// Peak RSS in KiB (VmHWM on Linux; the platform peak elsewhere), 0 if
+    /// unreadable.
     fn vm_hwm_kib() -> u64 {
-        std::fs::read_to_string("/proc/self/status")
-            .ok()
-            .and_then(|s| {
-                s.lines()
-                    .find_map(|l| l.strip_prefix("VmHWM:"))
-                    .and_then(|r| r.trim().trim_end_matches("kB").trim().parse().ok())
-            })
-            .unwrap_or(0)
+        ferric_core::memory::sys::own_peak_rss_bytes().map_or(0, |b| b as u64 / 1024)
     }
 
     /// Peak-RSS rise over the resident AO block for ONE path (VmHWM never
