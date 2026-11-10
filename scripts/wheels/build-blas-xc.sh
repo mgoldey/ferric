@@ -63,7 +63,9 @@ cp "OpenBLAS-${OPENBLAS_VERSION}/LICENSE" "$PREFIX/licenses/OpenBLAS-LICENSE.txt
 if [ "$OS" = Darwin ]; then
   (
     cd "OpenBLAS-${OPENBLAS_VERSION}"
-    make -j"$NPROC" TARGET=VORTEX DYNAMIC_ARCH=0 USE_THREAD=1 USE_OPENMP=0 \
+    # `libs netlib shared`: `make`'s default also builds OpenBLAS's own test
+    # programs, whose link line (-lto_library) Apple's ld rejects.
+    make -j"$NPROC" libs netlib shared TARGET=VORTEX DYNAMIC_ARCH=0 USE_THREAD=1 USE_OPENMP=0 \
       NUM_THREADS=64 NOFORTRAN=1 C_LAPACK=1 NO_STATIC=1 > ../build-ob.log 2>&1 \
       || { tail -60 ../build-ob.log; exit 1; }
     make PREFIX="$PREFIX" NO_STATIC=1 install > /dev/null

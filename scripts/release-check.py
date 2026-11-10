@@ -11,7 +11,10 @@ Usage:
 
     release-check.py check --version 0.1.0rc8 --pypi-dir dist/pypi \\
         [--largeam-dir dist/largeam --licenses-dir dist/licenses \\
-         --build-tag 1largeam] [--sha256sums SHA256SUMS] [--summary FILE]
+         --build-tag 1largeam] \\
+        [--platform-dir macosx_11_0_arm64=dist/macos-arm64 \\
+         --platform-dir win_amd64=dist/windows-x86_64] \\
+        [--sha256sums SHA256SUMS] [--summary FILE]
     release-check.py notes --version 0.1.0rc8 --build-tag 1largeam
     release-check.py pyproject-version pyproject.toml
 
@@ -34,6 +37,11 @@ What ``check`` asserts, for every file:
   says ``Build: <build-tag>``, whose METADATA has the same name and version,
   which bundles exactly one ``ferric.libs/libint2*`` shared library, and which
   is under GitHub's 2 GiB per-asset limit.
+- Other-platform PyPI sets (``--platform-dir PLATFORM=DIR``, repeatable; the
+  macOS arm64 and Windows x86_64 wheels): in DIR, exactly one wheel per
+  CPython 3.10-3.13 whose platform tag is PLATFORM, with the PyPI set's name,
+  METADATA and WHEEL rules, no bundled libint2 shared library (``.dylib`` /
+  ``.dll`` / ``.so`` named ``libint2*`` or ``int2*``), under 100 MiB.
 - Licence texts (``--licenses-dir``, required with ``--largeam-dir``):
   exactly ``libint2-LICENSE.txt`` and ``libint2-COPYING.LESSER.txt`` (libint2
   is LGPL-3.0-only), each containing its expected phrases.
@@ -133,7 +141,12 @@ def header_values(text: str, key: str) -> list[str]:
 
 
 def check_wheel(
-    rep: Report, path: Path, version: str, variant: str, build_tag: str
+    rep: Report,
+    path: Path,
+    version: str,
+    variant: str,
+    build_tag: str,
+    platform: str = PLATFORM,
 ) -> str | None:
     """Check one wheel; return its CPython tag when the name parses."""
     fields = parse_wheel_name(path.name)
@@ -148,9 +161,9 @@ def check_wheel(
         rep.error(
             f"{path.name}: unexpected python/abi tags {fields['py']}-{fields['abi']}"
         )
-    if PLATFORM not in fields["plat"].split("."):
+    if platform not in fields["plat"].split("."):
         rep.error(
-            f"{path.name}: platform {fields['plat']!r} does not include {PLATFORM}"
+            f"{path.name}: platform {fields['plat']!r} does not include {platform}"
         )
     want_build = build_tag if variant == "largeam" else ""
     if fields["build"] != want_build:
@@ -200,20 +213,40 @@ def check_wheel(
             f"{path.name}: bundles {libint}; the PyPI wheel links the small "
             "libint2 statically"
         )
+    if variant == "pypi" and platform != PLATFORM:
+        # delocate puts libraries in ferric/.dylibs/, delvewheel in
+        # ferric.libs/ with a hash suffix.
+        shared = [
+            n
+            for n in names
+            if re.fullmatch(
+                r"(lib)?int2[^/]*\.(so|dylib|dll)[^/]*", n.rsplit("/", 1)[-1]
+            )
+        ]
+        if shared:
+            rep.error(
+                f"{path.name}: bundles {shared}; the PyPI wheel links the small "
+                "libint2 statically"
+            )
 
     rep.size(path, variant, GITHUB_ASSET_LIMIT if variant == "largeam" else PYPI_LIMIT)
     return fields["py"]
 
 
 def check_wheel_set(
-    rep: Report, wheels: list[Path], version: str, variant: str, build_tag: str
+    rep: Report,
+    wheels: list[Path],
+    version: str,
+    variant: str,
+    build_tag: str,
+    platform: str = PLATFORM,
 ) -> None:
-    tags = [check_wheel(rep, w, version, variant, build_tag) for w in wheels]
+    tags = [check_wheel(rep, w, version, variant, build_tag, platform) for w in wheels]
     if sorted(t for t in tags if t) != sorted(PYTHON_TAGS) or len(wheels) != len(
         PYTHON_TAGS
     ):
         rep.error(
-            f"{variant} set: expected one wheel each for {', '.join(PYTHON_TAGS)}; "
+            f"{variant} {platform} set: expected one wheel each for {', '.join(PYTHON_TAGS)}; "
             f"found {sorted(w.name for w in wheels)}"
         )
 
@@ -343,7 +376,20 @@ def cmd_check(args: argparse.Namespace) -> int:
         license_files = check_licenses(rep, Path(args.licenses_dir))
     elif args.largeam_dir:
         rep.error("--largeam-dir needs --licenses-dir: the wheel bundles LGPL libint2")
-    for p in pypi_files + large_files:
+    platform_files: list[Path] = []
+    platform_sets: list[tuple[str, list[Path]]] = []
+    for spec in args.platform_dir or []:
+        plat, sep, d = spec.partition("=")
+        if not sep or not plat or not d:
+            rep.error(f"--platform-dir {spec!r} is not PLATFORM=DIR")
+            continue
+        if plat == PLATFORM:
+            rep.error(f"--platform-dir {plat}: the Linux set is --pypi-dir")
+            continue
+        files = list_dir(rep, Path(d), (".whl",))
+        platform_sets.append((plat, files))
+        platform_files += files
+    for p in pypi_files + large_files + platform_files:
         if "mpi" in p.name.lower():
             rep.error(
                 f"{p.name}: an MPI-variant file is never released from this workflow"
@@ -357,6 +403,8 @@ def cmd_check(args: argparse.Namespace) -> int:
         args.build_tag,
     )
     check_sdist(rep, [p for p in pypi_files if p.name.endswith(".tar.gz")], version)
+    for plat, files in platform_sets:
+        check_wheel_set(rep, files, version, "pypi", args.build_tag, plat)
     if args.largeam_dir:
         if not args.build_tag:
             rep.error("--largeam-dir needs --build-tag")
@@ -364,7 +412,9 @@ def cmd_check(args: argparse.Namespace) -> int:
             check_wheel_set(rep, large_files, version, "largeam", args.build_tag)
     if args.sha256sums:
         check_sha256sums(
-            rep, Path(args.sha256sums), pypi_files + large_files + license_files
+            rep,
+            Path(args.sha256sums),
+            pypi_files + large_files + platform_files + license_files,
         )
 
     if args.summary:
@@ -445,6 +495,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--largeam-dir")
     p.add_argument("--build-tag", default="")
     p.add_argument("--licenses-dir", help="the libint2 licence texts")
+    p.add_argument(
+        "--platform-dir",
+        action="append",
+        metavar="PLATFORM=DIR",
+        help="a non-Linux PyPI wheel set (repeatable), e.g. win_amd64=dist/win",
+    )
     p.add_argument("--sha256sums", help="a SHA256SUMS file that must cover every file")
     p.add_argument("--summary")
     p.set_defaults(func=cmd_check)

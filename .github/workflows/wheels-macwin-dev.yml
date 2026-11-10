@@ -10,10 +10,14 @@ on:
     branches: [feat/wheels-mac-win]
 
 concurrency:
-  group: wheels-macwin-dev-${{ github.ref }}
-  # Queue, never cancel: a cancelled cold libint2 build wastes ~90 min.
+  group: wheels-macwin-dev-${{ github.sha }}
+  # Per commit, never cancelled: a cancelled cold libint2 build wastes ~90 min.
   cancel-in-progress: false
 
 jobs:
   native-deps:
     uses: ./.github/workflows/native-deps-macwin.yml
+
+  wheels:
+    needs: native-deps
+    uses: ./.github/workflows/wheels-macwin.yml
