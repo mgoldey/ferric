@@ -164,7 +164,7 @@ pub fn uks_moving_grid_hessian_available(
         },
         ..config.clone()
     };
-    super::available(Reference::Uhf, mol, prep, op, &hf).map_err(|e| {
+    super::available(Reference::Uhf, mol, prep, op, &hf, exx > 0.0).map_err(|e| {
         FerricError::General(format!(
             "the analytic UKS Hessian does not support this system (the UHF analytic Hessian's \
              check: {e}); use the finite-difference Hessian"

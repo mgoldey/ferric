@@ -1282,7 +1282,7 @@ pub fn analytic_hessian_available(
     op: Operator,
     config: &RhfConfig,
 ) -> Result<(), FerricError> {
-    available(Reference::Rhf, mol, prep, op, config)
+    available(Reference::Rhf, mol, prep, op, config, true)
 }
 
 /// [`analytic_hessian_available`] for [`rohf_hessian`]: the same checks, any
@@ -1294,7 +1294,7 @@ pub fn analytic_rohf_hessian_available(
     op: Operator,
     config: &RhfConfig,
 ) -> Result<(), FerricError> {
-    available(Reference::Rohf, mol, prep, op, config)
+    available(Reference::Rohf, mol, prep, op, config, true)
 }
 
 /// [`analytic_hessian_available`] for [`uhf_hessian`]: the same checks, except
@@ -1305,27 +1305,69 @@ pub fn analytic_uhf_hessian_available(
     op: Operator,
     config: &RhfConfig,
 ) -> Result<(), FerricError> {
-    available(Reference::Uhf, mol, prep, op, config)
+    available(Reference::Uhf, mol, prep, op, config, true)
 }
 
-/// Build the one-electron and four-centre second-derivative engines: the
-/// probe of `available`. The one-electron and overlap skeletons need them for
-/// every route; the four-centre engine is built even when J and K are both
-/// fitted (it shares its angular-momentum limit with the one-body engines in
-/// every shipped libint, so skipping it would never change the answer).
-fn second_derivative_engines(prep: &PreparedBasis, op: Operator) -> Result<(), FerricError> {
+/// Whether the analytic Hessian evaluates any four-centre integral
+/// derivative: some part of the two-particle density stays exact — Coulomb
+/// unfitted, or exchange present (`exchange`: Hartree-Fock, or a hybrid
+/// functional) and unfitted. With J fitted and K fitted or absent (RI-JK
+/// Hartree-Fock, a pure functional on RI-J) the four-centre skeleton is zero
+/// and never built (`skeleton_hess_2e` is not called), so a libint2 without
+/// four-centre second derivatives (conda-forge win-64 2.13.1) still serves it.
+fn needs_four_centre(config: &RhfConfig, exchange: bool) -> bool {
+    let fitted = |n: &Option<String>| n.as_deref().is_some_and(|v| !v.is_empty());
+    !fitted(&config.df_j_aux) || (exchange && !fitted(&config.df_k_aux))
+}
+
+/// The probe of `available`: the integral classes the Hessian will request
+/// are checked against the linked libint2's per-class table
+/// ([`ferric_integrals::capability::require_libint_class`]) BEFORE any engine
+/// exists — a class libint2 did not generate would otherwise construct fine
+/// and abort the process on its first compute — then the one-electron (and,
+/// when `four_centre`, four-centre) second-derivative engines are built, which
+/// also catches libint2's own `lmax_exceeded`. One-body first derivatives
+/// (first-order core Hamiltonian and overlap) and, with exact terms, the
+/// four-centre first derivatives (first-order Fock) are needed too; the fitted
+/// three-/two-centre first derivatives are `ri_engine_check`'s.
+fn second_derivative_engines(
+    prep: &PreparedBasis,
+    op: Operator,
+    four_centre: bool,
+) -> Result<(), FerricError> {
+    require_hessian_classes(prep.max_l(), four_centre)?;
     Engine::new_1e_deriv2(ffi::OP_NUCLEAR, prep, 1e-14)?;
     Engine::new_1e_deriv2(ffi::OP_OVERLAP, prep, 1e-14)?;
-    Engine::new_2e_deriv2(op, prep, 1e-14)?;
+    if four_centre {
+        Engine::new_2e_deriv2(op, prep, 1e-14)?;
+    }
     Ok(())
 }
 
+/// The libint2 classes `second_derivative_engines` needs, at max shell `l`:
+/// one-body first and second derivatives, plus the four-centre ones when
+/// some two-electron term stays exact.
+fn require_hessian_classes(l: i32, four_centre: bool) -> Result<(), FerricError> {
+    use ferric_integrals::capability::{require_libint_class, LibintClass};
+    let one_body = [(LibintClass::OneBody, 2), (LibintClass::OneBody, 1)];
+    let four = [(LibintClass::FourCentre, 2), (LibintClass::FourCentre, 1)];
+    let extra: &[(LibintClass, usize)] = if four_centre { &four } else { &[] };
+    one_body
+        .iter()
+        .chain(extra)
+        .try_for_each(|&(class, deriv)| require_libint_class(class, deriv, l, l))
+}
+
+/// `exchange`: whether the energy has an exact-exchange term (always for
+/// Hartree-Fock; for Kohn-Sham, a hybrid), which decides with the fitting
+/// bases whether four-centre derivatives are needed ([`needs_four_centre`]).
 fn available(
     reference: Reference,
     mol: &Molecule,
     prep: &PreparedBasis,
     op: Operator,
     config: &RhfConfig,
+    exchange: bool,
 ) -> Result<(), FerricError> {
     preflight(reference, op, config)?;
     if reference == Reference::Rhf && mol.multiplicity != 1 {
@@ -1338,7 +1380,7 @@ fn available(
         return Err(refusal(reference, what));
     }
     ri_engine_check(reference, mol, prep, op, config)?;
-    let engines = second_derivative_engines(prep, op);
+    let engines = second_derivative_engines(prep, op, needs_four_centre(config, exchange));
     engines.map(|_| ()).map_err(|e| {
         FerricError::General(format!(
             "analytic {} Hessian: libint2 cannot build second-derivative engines for \

@@ -13111,6 +13111,39 @@ fn build_info(py: Python<'_>) -> PyResult<Py<pyo3::types::PyDict>> {
     Ok(d.unbind())
 }
 
+/// Test hook (not public API): override the per-class libint2 capability table
+/// ferric checks before building derivative engines
+/// (`ferric_integrals::capability`), so a test can stand in for a libint2 that
+/// lacks a class without swapping libraries. `table` is six rows (4-centre,
+/// 3-centre bra, 2-centre bra, one-body, 3-centre ket, 2-centre ket) of three
+/// derivative orders, `-1` = not generated; `None` restores the linked table.
+/// Process-wide. Returns the linked table.
+#[pyfunction]
+#[pyo3(signature = (table=None))]
+fn _set_libint_max_am_for_test(table: Option<Vec<Vec<i32>>>) -> PyResult<Vec<Vec<i32>>> {
+    use ferric_integrals::capability::{linked_libint_am_table, set_libint_max_am_for_test};
+    let parsed = match table {
+        None => None,
+        Some(rows) => {
+            let mut t = [[-1; 3]; 6];
+            if rows.len() != t.len() || rows.iter().any(|r| r.len() != 3) {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "table must be 6 rows of 3 derivative orders",
+                ));
+            }
+            for (dst, src) in t.iter_mut().zip(&rows) {
+                dst.copy_from_slice(src);
+            }
+            Some(t)
+        }
+    };
+    set_libint_max_am_for_test(parsed);
+    Ok(linked_libint_am_table()
+        .iter()
+        .map(|r| r.to_vec())
+        .collect())
+}
+
 /// The `libint_*` entries of [`build_info`].
 fn add_libint_info(d: &Bound<'_, pyo3::types::PyDict>) -> PyResult<()> {
     d.set_item("libint_version", ferric_integrals::libint_version())?;
@@ -13144,6 +13177,7 @@ fn add_build_identity(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", ferric_build_info::VERSION)?;
     add_build_stamp(m)?;
     m.add_function(wrap_pyfunction!(build_info, m)?)?;
+    m.add_function(wrap_pyfunction!(_set_libint_max_am_for_test, m)?)?;
     m.add_function(wrap_pyfunction!(set_blas_threads, m)?)?;
     m.add_function(wrap_pyfunction!(blas_threads, m)?)
 }

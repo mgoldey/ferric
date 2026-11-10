@@ -276,7 +276,11 @@ int scf_libint_max_deriv_order(void);
  * class and derivative order: cls 0 = 4-centre ERI (LIBINT2_MAX_AM_eri*),
  * 1 = 3-centre ERI (LIBINT2_MAX_AM_3eri*), 2 = 2-centre ERI
  * (LIBINT2_MAX_AM_2eri*), 3 = one-body (LIBINT2_MAX_AM_overlap*); deriv 0..2.
- * Returns -1 when the macro is undefined or the arguments are out of range.
+ * For 1 and 2 this is the bra (auxiliary) shell's limit; cls 4 and 5 are the
+ * KET shells' limits of the 3- and 2-centre classes (libint2's default-class
+ * limit when the class is centre-dependent, else the same as 1 / 2).
+ * Returns -1 when the macro is undefined, the class's task was not generated
+ * (LIBINT2_TASK_EXISTS_<task> 0), or the arguments are out of range.
  * Compile-time constants: cannot fail, needs no libint init. */
 int scf_libint_max_am(int cls, int deriv);
 

@@ -780,7 +780,8 @@ fn auto_uks_moving_grid(
         .and_then(|prep| {
             crate::hessian::uks_moving_grid_hessian_available(mol, &prep, op, scf_config)
         });
-    if supported.is_err() {
+    if let Err(e) = supported {
+        warn_if_libint_lacks_class(&e);
         return Ok(None);
     }
     match harmonic_frequencies_uks_moving_grid(ctx, mol, basis_name, op, scf_config) {
@@ -816,7 +817,8 @@ fn auto_moving_grid(
         .and_then(|prep| {
             crate::hessian::rks_moving_grid_hessian_available(mol, &prep, op, scf_config)
         });
-    if supported.is_err() {
+    if let Err(e) = supported {
+        warn_if_libint_lacks_class(&e);
         return Ok(None);
     }
     let reference = FrequencyReference::Rhf;
@@ -850,7 +852,25 @@ fn analytic_if_selected(
             _ => harmonic_frequencies_analytic(ctx, mol, basis_name, op, scf_config).map(Some),
         },
         (Err(e), HessianMethod::Analytic) => Err(e),
-        (Err(_), _) => Ok(None),
+        (Err(e), _) => {
+            warn_if_libint_lacks_class(&e);
+            Ok(None)
+        }
+    }
+}
+
+/// `Auto`'s finite-difference fallback is silent for a refusal that follows
+/// from the method or the system (an unsupported configuration), but a
+/// libint2 that lacks an integral class the analytic Hessian needs
+/// ([`ferric_integrals::capability::require_libint_class`], e.g. conda-forge
+/// win-64 libint2 has no four-centre second derivatives) is a property of the
+/// installation the user may not expect, so it is said once on stderr.
+fn warn_if_libint_lacks_class(e: &FerricError) {
+    if ferric_integrals::capability::is_libint_class_unavailable(e) {
+        eprintln!(
+            "warning: the analytic Hessian is unavailable with the linked libint2 ({e}); \
+             hessian = \"auto\" falls back to finite differences of the gradient"
+        );
     }
 }
 

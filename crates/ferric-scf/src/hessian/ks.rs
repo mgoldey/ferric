@@ -322,7 +322,15 @@ pub fn rks_moving_grid_hessian_available(
     } else {
         hf
     };
-    super::available(Reference::Rhf, mol, prep, op, &hf).map_err(|e| {
+    super::available(
+        Reference::Rhf,
+        mol,
+        prep,
+        op,
+        &hf,
+        grid.exact_exchange() > 0.0,
+    )
+    .map_err(|e| {
         FerricError::General(format!(
             "the analytic Kohn-Sham Hessian (fixed or moving grid) does not support this system \
              (the closed-shell analytic Hessian's check: {e}); use the finite-difference Hessian"
