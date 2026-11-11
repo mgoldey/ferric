@@ -21,7 +21,6 @@ use ferric_core::parallel::ParallelContext;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ndarray::Array2;
-use ndarray_linalg::Solve;
 use std::cell::Cell;
 
 thread_local! {
@@ -247,22 +246,7 @@ pub fn rohf_newton_step(
     }
 
     // Cayley unitary U = (I − κ/2)^{−1} (I + κ/2). Apply to C: C ← C·U.
-    let half_k = 0.5 * &kappa;
-    let i_eye = Array2::<f64>::eye(n);
-    let a = &i_eye - &half_k;
-    let b = &i_eye + &half_k;
-    // Solve A·U = B columnwise.
-    let mut u = Array2::<f64>::zeros((n, n));
-    for col in 0..n {
-        let bcol = b.column(col).to_owned();
-        let sol = a
-            .solve(&bcol)
-            .map_err(|e| FerricError::Lapack(format!("Cayley solve: {e}")))?;
-        for row in 0..n {
-            u[(row, col)] = sol[row];
-        }
-    }
-    let c_new = inp.c.dot(&u);
+    let c_new = crate::cayley::cayley_rotate(inp.c, &kappa)?;
 
     Ok((c_new, kmax))
 }
