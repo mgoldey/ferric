@@ -46,7 +46,15 @@ def _real_cargo():
 
 REAL_CARGO = _real_cargo()
 
-pytestmark = pytest.mark.skipif(not REAL_CARGO, reason="needs cargo")
+# scripts/ci-gate.sh runs every step under util-linux `flock` and coreutils
+# `timeout` (macOS and Windows have neither), so without them it exits 127.
+pytestmark = [
+    pytest.mark.skipif(not REAL_CARGO, reason="needs cargo"),
+    pytest.mark.skipif(
+        not (shutil.which("flock") and shutil.which("timeout")),
+        reason="needs util-linux flock and coreutils timeout",
+    ),
+]
 
 
 def _env():

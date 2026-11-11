@@ -93,6 +93,12 @@ fn frozen() -> BTreeMap<String, BTreeMap<i32, String>> {
 /// Every (set, element) origin/main shipped loads today with identical
 /// content.
 #[test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "precondition: Linux libm. The hashes are of coefficients renormalized with \
+              f64::powf (basis.rs renormalize_contraction), and pow is not correctly rounded: \
+              on macOS 9 of >1500 pairs hash differently (all high-l cc-pVQZ/-PP)"
+)]
 fn origin_main_elements_are_frozen() {
     let mut changed = Vec::new();
     let mut n = 0usize;
