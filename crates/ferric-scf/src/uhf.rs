@@ -2241,23 +2241,22 @@ fn uks_fxc_response<'s>(
     let Some(x) = x else {
         return Ok(None);
     };
-    let main = config
-        .dft_grid
-        .clone()
-        .unwrap_or_else(ferric_dft::grid::AtomicGridConfig::production);
     let name = config.xc.as_deref().expect("xc_contrib implies Some(xc)");
-    let needed = fxc_kernel_duplicate_bytes(prep.nbasis(), mol.atoms.len(), &main);
-    let avail =
-        ferric_core::memory::available_budget_now(ferric_core::memory::resolve_budget_bytes(
-            (config.three_index_budget_bytes != 0).then_some(config.three_index_budget_bytes),
-        ));
-    crate::rohf::polarized_fxc_response(
-        x,
-        (mol, prep, config, name),
-        d,
-        Some((label, needed, avail)),
-    )
-    .map(Some)
+    // Evaluated only on the dense fallback (it reads this process's RSS).
+    let budget = || {
+        let main = config
+            .dft_grid
+            .clone()
+            .unwrap_or_else(ferric_dft::grid::AtomicGridConfig::production);
+        let needed = fxc_kernel_duplicate_bytes(prep.nbasis(), mol.atoms.len(), &main);
+        let avail =
+            ferric_core::memory::available_budget_now(ferric_core::memory::resolve_budget_bytes(
+                (config.three_index_budget_bytes != 0).then_some(config.three_index_budget_bytes),
+            ));
+        (needed, avail)
+    };
+    crate::rohf::polarized_fxc_response(x, (mol, prep, config, name), d, Some((label, &budget)))
+        .map(Some)
 }
 
 /// Post-convergence internal stability analysis for a UHF/UKS solution.

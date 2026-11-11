@@ -134,8 +134,18 @@ fn rks_pbe_trah_matches_diis_and_engages_the_gga_kernel() {
     let r_diis = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg_diis).unwrap();
 
     let kern_before = ferric_scf::rohf::GGA_FXC_KERNEL_BUILDS.load(Ordering::Relaxed);
+    let (sc0, de0) = (
+        ferric_scf::rohf::screened_fxc_builds_on_this_thread(),
+        ferric_scf::rohf::dense_fxc_builds_on_this_thread(),
+    );
     let before = steps();
     let r_trah = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg_trah).unwrap();
+    // The TRAH matvec's f_xc runs on the SCF's screened grid, as Newton's
+    // does: no dense kernel (second AO cache) may be built.
+    let screened = ferric_scf::rohf::screened_fxc_builds_on_this_thread() - sc0;
+    let dense = ferric_scf::rohf::dense_fxc_builds_on_this_thread() - de0;
+    assert!(screened >= 1, "RKS TRAH built no screened f_xc response");
+    assert_eq!(dense, 0, "RKS TRAH built a dense f_xc kernel");
     let ran = assert_trah_engaged(before, "RKS/PBE/H2O");
     let kernels = ferric_scf::rohf::GGA_FXC_KERNEL_BUILDS
         .load(Ordering::Relaxed)
@@ -192,8 +202,22 @@ fn uks_trah_defers_to_diis_instead_of_cycling_null_steps() {
         ..Default::default()
     };
     let (s0, r0) = (steps(), rejections());
+    let (sc0, de0) = (
+        ferric_scf::rohf::screened_fxc_builds_on_this_thread(),
+        ferric_scf::rohf::dense_fxc_builds_on_this_thread(),
+    );
     let r = solve_uhf(&ctx, &mol, &prep, &bounds, &cfg).unwrap();
     let (ran, rejected) = (steps() - s0, rejections() - r0);
+    // The UKS TRAH f_xc runs on the SCF's screened grid (no dense kernel).
+    assert!(
+        ferric_scf::rohf::screened_fxc_builds_on_this_thread() - sc0 >= 1,
+        "UKS TRAH built no screened f_xc response"
+    );
+    assert_eq!(
+        ferric_scf::rohf::dense_fxc_builds_on_this_thread() - de0,
+        0,
+        "UKS TRAH built a dense f_xc kernel"
+    );
     eprintln!(
         "UKS/PBE/OH/cc-pVDZ TRAH: E={:.10} iters={} trah_steps={ran} rejected={rejected}",
         r.energy, r.iterations

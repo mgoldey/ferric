@@ -115,7 +115,21 @@ fn rohf_ah_h2_triplet_lda_matches_diis() {
         ..cfg_diis.clone()
     };
     let r_diis = solve_rohf(&ctx, &mol, &prep, op, &bounds, &cfg_diis).unwrap();
+    let (sc0, de0) = (
+        ferric_scf::rohf::screened_fxc_builds_on_this_thread(),
+        ferric_scf::rohf::dense_fxc_builds_on_this_thread(),
+    );
     let r_ah = solve_rohf(&ctx, &mol, &prep, op, &bounds, &cfg_ah).unwrap();
+    // The AH step's f_xc runs on the SCF's screened grid (no dense kernel).
+    assert!(
+        ferric_scf::rohf::screened_fxc_builds_on_this_thread() - sc0 >= 1,
+        "ROKS AH built no screened f_xc response"
+    );
+    assert_eq!(
+        ferric_scf::rohf::dense_fxc_builds_on_this_thread() - de0,
+        0,
+        "ROKS AH built a dense f_xc kernel"
+    );
 
     eprintln!(
         "H₂ triplet/LDA  DIIS: E={:.10}, iters={}",

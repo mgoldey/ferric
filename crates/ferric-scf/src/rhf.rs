@@ -643,6 +643,23 @@ impl RhfConfig {
     }
 }
 
+/// The restricted f_xc response of an RKS second-order step (Newton, TRAH,
+/// internal stability) at the closed-shell density `d`: the SCF's own
+/// screened grid when `x` has one, else the dense kernel
+/// ([`crate::rohf::restricted_fxc_response`]). One selection for all three,
+/// so they analyse and step on the same Hessian model.
+fn rks_fxc_response<'s>(
+    x: &'s dyn ferric_dft::xc_trait::XcContribution,
+    (mol, prep, config): (&Molecule, &PreparedBasis, &RhfConfig),
+    d: &Array2<f64>,
+) -> Result<Box<crate::rohf_newton::FxcResponse<'s>>, FerricError> {
+    let name = config
+        .xc
+        .as_deref()
+        .expect("an XC evaluator implies Some(xc)");
+    crate::rohf::restricted_fxc_response(x, (mol, prep, config, name), d)
+}
+
 /// Post-convergence stability analysis for an RHF/RKS solution: BOTH the
 /// internal (singlet) and the external (RHF→UHF, triplet) verdict.
 ///
@@ -671,8 +688,9 @@ impl RhfConfig {
 /// analyses the **HF** orbital Hessian at the **KS** density, producing a
 /// λ_min for an operator nobody asked about, presented with the same
 /// confidence as a correct one. So for `xc.is_some()` this function builds the
-/// SAME [`crate::rohf::FxcKernelStore`] the RKS Newton path builds at the same
-/// restricted reference (`d_α = d_β = ½·D`), and where that kernel cannot be
+/// SAME f_xc response the RKS Newton path builds at the same restricted
+/// reference (`rohf::restricted_fxc_response`: the SCF's screened grid with the
+/// closed-shell total-ρ floor), and where that kernel cannot be
 /// built or does not cover the functional (VV10) it SKIPS with a printed
 /// reason rather than checking the wrong operator. τ-only meta-GGA takes
 /// `FxcKernelStore::Mgga`. Proven, not asserted, by
@@ -688,7 +706,7 @@ fn stability_rhf<'r>(
     f: &Array2<f64>,
     d: &Array2<f64>,
     nocc: usize,
-    has_xc: bool,
+    xc: Option<&'r dyn ferric_dft::xc_trait::XcContribution>,
     k_mix: ferric_dft::xc_trait::KMix,
     ooc_budget: usize,
     rsh: Option<&'r crate::rsh_response::RshResponse<'r>>,
@@ -708,24 +726,13 @@ fn stability_rhf<'r>(
         return (None, None);
     }
 
-    // The f_xc response kernel, at the same restricted reference the RKS Newton
-    // path uses (d_α = d_β = ½·D). `None` only for pure HF.
-    let fxc_store = if has_xc {
-        let grid = config
-            .dft_grid
-            .clone()
-            .unwrap_or_else(ferric_dft::grid::AtomicGridConfig::production);
-        let name = config.xc.as_deref().expect("has_xc implies Some(xc)");
-        let d_half = 0.5 * d;
-        match crate::rohf::FxcKernelStore::build(
-            mol,
-            prep,
-            &grid,
-            name,
-            config.xc_omega,
-            &d_half,
-            &d_half,
-        ) {
+    // The f_xc response, built exactly as the RKS Newton step builds it
+    // (`rohf::restricted_fxc_response`: the SCF's screened grid, closed-shell
+    // total-ρ floor; dense kernel only for an evaluator without a screened
+    // grid). `None` only for pure HF.
+    let has_xc = xc.is_some();
+    let fxc_storage = if let Some(x) = xc {
+        match rks_fxc_response(x, (mol, prep, config), d) {
             Ok(s) => Some(s),
             Err(e) => {
                 eprintln!(
@@ -740,7 +747,6 @@ fn stability_rhf<'r>(
     } else {
         None
     };
-    let fxc_storage = fxc_store.as_ref().map(|s| s.response());
     let fxc_ref: Option<&crate::rohf_newton::FxcResponse<'_>> = fxc_storage.as_deref();
 
     let f_mo = c.t().dot(f).dot(c);
@@ -3230,7 +3236,7 @@ fn solve_rhf_impl(
                         &f,
                         &d,
                         nocc,
-                        xc_contrib.is_some(),
+                        xc_contrib.as_deref(),
                         k_mix,
                         ooc_budget,
                         rsh_response.as_ref(),
@@ -3455,26 +3461,12 @@ fn solve_rhf_impl(
                 let c_cur = last_c.clone();
                 let f_mo = c_cur.t().dot(&f).dot(&c_cur);
 
-                let fxc_store = if xc_contrib.is_some() {
-                    let main = config
-                        .dft_grid
-                        .clone()
-                        .unwrap_or_else(ferric_dft::grid::AtomicGridConfig::production);
-                    let name = config.xc.as_deref().expect("xc_contrib implies Some(xc)");
-                    let d_half = 0.5 * &d;
-                    Some(crate::rohf::FxcKernelStore::build(
-                        mol,
-                        prep,
-                        &main,
-                        name,
-                        config.xc_omega,
-                        &d_half,
-                        &d_half,
-                    )?)
-                } else {
-                    None
-                };
-                let fxc_storage = fxc_store.as_ref().map(|s| s.response());
+                // The f_xc response on the SCF's screened grid, as the Newton
+                // branch builds it (`rohf::restricted_fxc_response`).
+                let fxc_storage = xc_contrib
+                    .as_deref()
+                    .map(|x| rks_fxc_response(x, (mol, prep, config), &d))
+                    .transpose()?;
                 let fxc_ref: Option<&crate::rohf_newton::FxcResponse<'_>> = fxc_storage.as_deref();
 
                 let inputs = crate::rhf_newton::RhfNewtonInputs {
@@ -3694,10 +3686,7 @@ fn solve_rhf_impl(
             // XC evaluator has one (`restricted_fxc`), else on a dense kernel.
             let fxc_storage = xc_contrib
                 .as_deref()
-                .map(|x| {
-                    let name = config.xc.as_deref().expect("xc_contrib implies Some(xc)");
-                    crate::rohf::restricted_fxc_response(x, (mol, prep, config, name), &d)
-                })
+                .map(|x| rks_fxc_response(x, (mol, prep, config), &d))
                 .transpose()?;
             let fxc_ref: Option<&crate::rohf_newton::FxcResponse<'_>> = fxc_storage.as_deref();
 
