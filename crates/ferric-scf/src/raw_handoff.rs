@@ -37,7 +37,7 @@
 //! construction only when a hand-off is installed; a sub-solve without one
 //! shadows the capture and keeps nothing. Kept while the pool holds its
 //! `naux²` f64. The gradient uses a kept decomposition only when the metric
-//! IT builds has the same operator, aux basis name, aux shell centres and
+//! it builds has the same operator, aux basis name, aux shell centres and
 //! exact element bits ([`take_active_metric`]); both sides use the same
 //! `coulomb_metric_2c` + `eigh_dc(Upper)`, so reuse returns what the gradient
 //! would have computed. Independent of the raw tensor: kept also when the
@@ -135,7 +135,7 @@ impl KeptRaw {
 ///
 /// Identified by the operator, the aux basis name, the shell centres of the
 /// aux basis and a hash of the exact bits of `V`; the gradient uses it only
-/// when the metric IT builds hashes to the same bits ([`take_active_metric`]),
+/// when the metric it builds hashes to the same bits ([`take_active_metric`]),
 /// so a decomposition of another geometry, basis, operator or `V`
 /// construction is never used. Holds its memory-pool charge (`naux²` f64 +
 /// `naux`) until dropped.
@@ -555,7 +555,7 @@ pub(crate) fn with_metric_capture<T>(config: &RhfConfig, f: impl FnOnce() -> T) 
     f()
 }
 
-/// Called by DF-K with the `eigh(V) = (lam, u)` it just used for `V^{-1/2}`
+/// Called by DF-K with the `eigh(V) = (lam, u)` it used for `V^{-1/2}`
 /// (`v` the `op` metric of `dfbs`): kept in the capturing hand-off when one is
 /// installed ([`with_metric_capture`]) and the memory pool holds it, else
 /// dropped.
@@ -580,8 +580,10 @@ pub(crate) fn offer_metric(
         return;
     };
     note(&format!(
-        "metric eigh kept: {:.1} MB ({aux}, {op:?}) handed to the gradient",
-        bytes as f64 / 1e6
+        "metric eigh kept: {:.1} MB ({aux}, {:?} omega {}) handed to the gradient",
+        bytes as f64 / 1e6,
+        op.kind,
+        op.omega
     ));
     handoff.put_metric(KeptMetric {
         op,

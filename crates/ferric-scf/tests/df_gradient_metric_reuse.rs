@@ -13,7 +13,7 @@
 //! operator (erfc vs erf, O(1)), or a mis-ordered eigenpair.
 //!
 //! The raw-tensor half of the hand-off is emptied before each reuse gradient,
-//! so these tests compare the metric reuse ALONE.
+//! so these tests compare the metric reuse alone.
 //!
 //! Reachability: the slot holds the expected number of metrics after the SCF
 //! (else "reuse" would silently be a recompute equal to itself), and the
@@ -23,7 +23,7 @@
 //! - `KeptMetric::check` without the bit-hash comparison:
 //!   `mismatched_geometry_metric_is_not_used` fails ("a metric eigh from
 //!   another geometry was used").
-//! - Without the bit-hash AND the operator comparison: also the wB97X case of
+//! - Without the bit-hash and the operator comparison: also the wB97X case of
 //!   `reused_metric_eigh_gradient_equals_recomputed` (the erf pass gets the
 //!   erfc decomposition; needs the reversed slot order below).
 //! - Without the name, shape and bit-hash comparisons:
@@ -116,16 +116,16 @@ fn max_abs_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
 
 /// SCF with a hand-off (raw tensor discarded), gradient reusing the kept
 /// metric `eigh`s, gradient recomputing them; returns max |Δg| after asserting
-/// the reuse really happened for all `n_metrics` metrics.
+/// the reuse happened for all `n_metrics` metrics.
 fn reuse_vs_recompute(s: &Setup, open: bool, cfg: &RhfConfig, n_metrics: usize) -> f64 {
     let base = cfg.clone();
     let cfg = with_fresh_handoff(cfg);
     let res = scf(s, open, &cfg);
     let slot = handoff(&cfg);
     drop(slot.take()); // metric reuse alone
-    // Reverse the kept order (DF-K offers erfc then erf, the order the
-    // gradient asks), so a lookup that ignored which metric it matched
-    // would hand the erf pass the erfc decomposition and fail.
+                       // Reverse the kept order (DF-K offers erfc then erf, the order the
+                       // gradient asks), so a lookup that ignored which metric it matched
+                       // would hand the erf pass the erfc decomposition and fail.
     let mut kept = slot.take_metrics();
     kept.reverse();
     for k in kept {
