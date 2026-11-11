@@ -48,6 +48,24 @@ fn min_diagonal(op: Operator, dfbs: &PreparedBasis) -> f64 {
     lo
 }
 
+/// Minimum TRUE diagonal element `(P_i|P_i)` over all shells. A positive-definite
+/// kernel bounds only these: the in-shell cross elements `(P_x|P_y)` are zero by
+/// symmetry, so their sign is roundoff (-4.6e-22 for erf(0.1) on macOS arm64,
+/// where clang contracts to FMA; exactly zero on Linux).
+fn min_true_diagonal(op: Operator, dfbs: &PreparedBasis) -> f64 {
+    let mut eng = Engine::new_2center(op, dfbs, 0.0).expect("2-center engine");
+    let mut lo = f64::INFINITY;
+    for p in 0..dfbs.nshells() {
+        let block = eng.compute_eri2(dfbs, p, p);
+        let n = (block.len() as f64).sqrt().round() as usize;
+        assert_eq!(n * n, block.len(), "(P|P) block is not square");
+        for i in 0..n {
+            lo = lo.min(block[i * n + i]);
+        }
+    }
+    lo
+}
+
 /// The positive-definite operators must never produce a negative `(P|P)`.
 ///
 /// This is the half that would fail if ferric's engines were broken, so it is
@@ -66,14 +84,14 @@ fn positive_definite_operators_have_nonnegative_diagonals() {
         std::f64::consts::FRAC_1_SQRT_2,
         std::f64::consts::SQRT_2,
     ] {
-        let erf = min_diagonal(Operator::erf(omega), &dfbs);
+        let erf = min_true_diagonal(Operator::erf(omega), &dfbs);
         assert!(
             erf >= 0.0,
             "erf(w={omega}) produced a NEGATIVE 2-center diagonal ({erf:.3e}). erf's transform \
              e^(-k^2/4w^2)/(2 pi^2 k^2) is strictly positive, so this is not a property of the \
              operator — suspect the engine."
         );
-        let erfc = min_diagonal(Operator::erfc(omega), &dfbs);
+        let erfc = min_true_diagonal(Operator::erfc(omega), &dfbs);
         assert!(
             erfc >= 0.0,
             "erfc(w={omega}) produced a NEGATIVE 2-center diagonal ({erfc:.3e}); its transform \
