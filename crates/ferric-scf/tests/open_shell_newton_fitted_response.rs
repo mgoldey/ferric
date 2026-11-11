@@ -240,6 +240,10 @@ fn converged_scf(
 /// Mutation (applied and reverted, 2026-11-11): `response_fock` taking δJ from
 /// an uncounted direct build although `j_response` is lent (the "direct J on
 /// an RI SCF" bug) fails at k_mix = 1 with err/bound 1128.
+/// K-path mutation (applied and reverted, 2026-11-11): dropping the ½ on the
+/// per-spin occupied-pair δK (`½·(K(X+Y) − K(X−Y))` → `K(X+Y) − K(X−Y)`)
+/// fails at k_mix = 1 with |Hκ − FD| 4.75e-2 (rel 7.2e-2), err/bound 1.7e6;
+/// it also exceeds the fitted-vs-direct ceiling below.
 #[test]
 fn uhf_fitted_hvp_matches_finite_difference_of_the_fitted_gradient() {
     use ferric_scf::uhf_newton::{hessian_matvec, UhfNewtonInputs};
@@ -337,13 +341,21 @@ fn uhf_fitted_hvp_matches_finite_difference_of_the_fitted_gradient() {
         let label = format!("UHF k_mix={k_mix}");
         let worst = check_against_fd(&label, &[ha.clone(), hb.clone()], &corr_v, e_g, &mut fd);
         let fit_vs_dir = frob(&(&ha - &da)).hypot(frob(&(&hb - &db)));
+        let scale = frob(&ha).hypot(frob(&hb));
         eprintln!(
             "{label}: fitted vs direct HVP |diff|={fit_vs_dir:.3e} (rel {:.2e}), worst err/bound={worst:.3}",
-            fit_vs_dir / frob(&ha).hypot(frob(&hb))
+            fit_vs_dir / scale
         );
         assert!(
             worst <= 1.0,
             "{label}: fitted HVP outside the FD bound (err/bound {worst:.3})"
+        );
+        // Sanity ceiling, not a precision claim: the fitted and direct HVPs
+        // differ by the JK-fit error, measured at 4.5e-5..1.6e-4 relative.
+        let rel = fit_vs_dir / scale;
+        assert!(
+            rel < 1e-3,
+            "{label}: fitted vs direct HVP rel {rel:.2e} >= 1e-3"
         );
     }
 }
@@ -365,6 +377,9 @@ fn uhf_fitted_hvp_matches_finite_difference_of_the_fitted_gradient() {
 ///
 /// Mutation (applied and reverted, 2026-11-11): the same uncounted direct δJ in
 /// `rohf_newton::response_fock` fails at k_mix = 1 with err/bound 1083.
+/// K-path mutation (applied and reverted, 2026-11-11): κ_β assembled as
+/// [κ_vc ; κ_oc] instead of [κ_oc ; κ_vc] (open rows must come first) fails at
+/// k_mix = 1 with |Hκ − FD| 4.11e-2 (rel 5.0e-2), err/bound 4.3e5.
 #[test]
 fn rohf_fitted_hvp_matches_finite_difference_of_the_fitted_gradient() {
     use ferric_scf::rohf_newton::{hessian_matvec, RohfNewtonInputs};
@@ -489,6 +504,13 @@ fn rohf_fitted_hvp_matches_finite_difference_of_the_fitted_gradient() {
             worst <= 1.0,
             "{label}: fitted HVP outside the FD bound (err/bound {worst:.3})"
         );
+        // Sanity ceiling, not a precision claim: the fitted and direct HVPs
+        // differ by the JK-fit error, measured at 4.5e-5..1.6e-4 relative.
+        let rel = fit_vs_dir / scale;
+        assert!(
+            rel < 1e-3,
+            "{label}: fitted vs direct HVP rel {rel:.2e} >= 1e-3"
+        );
     }
 }
 
@@ -588,11 +610,11 @@ fn rohf_newton_fitted_response_oh_hf() {
 }
 
 /// H2 ³Σ (the system `rohf_newton_smoke` runs ROKS Newton on), not NH2 or OH:
-/// ROKS/B3LYP Newton on NH2/cc-pVDZ and OH/cc-pVDZ does not converge in 200
-/// iterations with the old direct response as well as the fitted one (both
-/// checked 2026-11-11), the
-/// known ROKS-Newton weakness (CLAUDE.md: NH2 PBE Newton 185 vs DIIS 8). NH2
-/// is covered by the ROHF FD anchor above.
+/// at these settings (newton_trigger 1e-2) ROKS/B3LYP Newton on NH2/cc-pVDZ
+/// and OH/cc-pVDZ does not converge in 200 iterations with the old direct
+/// response or the fitted one (DIIS: 9 and 18; measured 2026-11-11, counts in
+/// the gating comment in `solve_rohf`, which also records NH2/6-31G PBE
+/// Newton 185 vs DIIS 8). NH2 is covered by the ROHF FD anchor above.
 #[test]
 fn roks_newton_fitted_response_h2_triplet_b3lyp() {
     newton_matches_diis(H2_TRIPLET, 3, Some("B3LYP"), true, true);
