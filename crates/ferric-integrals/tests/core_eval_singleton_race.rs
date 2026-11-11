@@ -124,12 +124,26 @@ fn run_child(exe: &std::path::Path) -> (Option<ExitStatus>, bool, String) {
     (status, ok, tail)
 }
 
+/// The terminating signal on Unix; Windows has no signals, so a crashed child
+/// reports an exit code (e.g. 0xC0000005) and this is `None`.
+fn terminating_signal(st: &ExitStatus) -> Option<i32> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        st.signal()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = st;
+        None
+    }
+}
+
 /// `exited 0`, `exit code N`, `killed by signal N (SIGSEGV)` or `TIMED OUT`.
 fn describe(status: Option<ExitStatus>) -> String {
-    use std::os::unix::process::ExitStatusExt;
     match status {
         None => format!("TIMED OUT after {CHILD_TIMEOUT:?} (killed)"),
-        Some(st) => match (st.code(), st.signal()) {
+        Some(st) => match (st.code(), terminating_signal(&st)) {
             (Some(c), _) => format!("exit code {c}"),
             (None, Some(sig)) => {
                 let name = match sig {
