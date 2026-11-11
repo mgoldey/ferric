@@ -1173,6 +1173,7 @@ impl XcContribution for KsXc {
         &self,
         xc_pol: &XcDef,
         d: &Array2<f64>,
+        no_pool_budget: &dyn Fn() -> usize,
     ) -> Option<Result<ScreenedFxc<'_>, String>> {
         assert_committed(self.pending.as_ref());
         Some(ScreenedFxc::restricted(
@@ -1180,6 +1181,7 @@ impl XcContribution for KsXc {
             &self.grid,
             xc_pol,
             d,
+            no_pool_budget,
         ))
     }
 
@@ -1529,6 +1531,7 @@ impl UksXcContribution for KsXcUks {
         xc_pol: &XcDef,
         d_a: &Array2<f64>,
         d_b: &Array2<f64>,
+        no_pool_budget: &dyn Fn() -> usize,
     ) -> Option<Result<ScreenedFxc<'_>, String>> {
         assert_committed(self.pending.as_ref());
         Some(ScreenedFxc::polarized(
@@ -1536,6 +1539,7 @@ impl UksXcContribution for KsXcUks {
             &self.grid,
             xc_pol,
             (d_a, d_b),
+            no_pool_budget,
         ))
     }
 

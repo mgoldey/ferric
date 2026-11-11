@@ -2249,11 +2249,7 @@ fn uks_fxc_response<'s>(
             .clone()
             .unwrap_or_else(ferric_dft::grid::AtomicGridConfig::production);
         let needed = fxc_kernel_duplicate_bytes(prep.nbasis(), mol.atoms.len(), &main);
-        let avail =
-            ferric_core::memory::available_budget_now(ferric_core::memory::resolve_budget_bytes(
-                (config.three_index_budget_bytes != 0).then_some(config.three_index_budget_bytes),
-            ));
-        (needed, avail)
+        (needed, crate::rohf::fxc_no_pool_budget(config))
     };
     crate::rohf::polarized_fxc_response(x, (mol, prep, config, name), d, Some((label, &budget)))
         .map(Some)

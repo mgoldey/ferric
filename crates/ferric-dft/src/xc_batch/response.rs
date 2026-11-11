@@ -41,7 +41,7 @@
 
 use ndarray::Array2;
 
-use ferric_core::memory::pool::{reserve_global, Reservation};
+use ferric_core::memory::pool::Reservation;
 use ferric_integrals::blas_threads::with_blas_threads;
 
 use super::{
@@ -208,6 +208,21 @@ fn halved(p: BatchDensity) -> BatchDensity {
     }
 }
 
+/// Charge the kernel cache: to the global pool when one is installed, else
+/// against `no_pool_budget()` (an error when it does not fit). Without the
+/// second branch a no-pool run would build the cache unchecked, since
+/// `reserve_global` is inert there.
+fn reserve_fxc(bytes: usize, no_pool_budget: &dyn Fn() -> usize) -> Result<Reservation, String> {
+    match ferric_core::memory::pool::global() {
+        Some(pool) => pool.reserve(FXC_LABEL, bytes).map_err(|e| e.to_string()),
+        None => {
+            ferric_core::memory::check_alloc(FXC_LABEL, bytes, no_pool_budget())
+                .map_err(|e| e.to_string())?;
+            Ok(Reservation::inert(FXC_LABEL))
+        }
+    }
+}
+
 impl<'g> ScreenedFxc<'g> {
     /// Restricted reference: the closed-shell total density `d`
     /// (ρ_α = ρ_β = ρ/2). `xc_pol` is the functional resolved with
@@ -219,12 +234,13 @@ impl<'g> ScreenedFxc<'g> {
         grid: &'g [GridPoint],
         xc_pol: &XcDef,
         d: &Array2<f64>,
+        no_pool_budget: &dyn Fn() -> usize,
     ) -> Result<Self, String> {
         check_fxc(xc_pol)?;
         let (has_gga, has_mgga) = families(xc_pol);
         let floor = DensityFloor::for_xc(xc_pol);
         let per_pt = 8 * (3 + 3 + if has_mgga { 3 } else { 0 } + 1 + 3);
-        let charge = reserve_global(FXC_LABEL, per_pt * grid.len()).map_err(|e| e.to_string())?;
+        let charge = reserve_fxc(per_pt * grid.len(), no_pool_budget)?;
         let exec = Exec::auto();
         let din = DensityInput::Dense(d);
         let pts = with_blas_threads(exec.blas, || {
@@ -297,12 +313,13 @@ impl<'g> ScreenedFxc<'g> {
         grid: &'g [GridPoint],
         xc_pol: &XcDef,
         (d_a, d_b): (&Array2<f64>, &Array2<f64>),
+        no_pool_budget: &dyn Fn() -> usize,
     ) -> Result<Self, String> {
         check_fxc(xc_pol)?;
         let (has_gga, has_mgga) = families(xc_pol);
         let floor = DensityFloor::for_xc(xc_pol);
         let per_pt = 8 * (std::mem::size_of::<PointHessian>() / 8 + 3 + 6 + 1) + 2;
-        let charge = reserve_global(FXC_LABEL, per_pt * grid.len()).map_err(|e| e.to_string())?;
+        let charge = reserve_fxc(per_pt * grid.len(), no_pool_budget)?;
         let exec = Exec::auto();
         let (ia, ib) = (DensityInput::Dense(d_a), DensityInput::Dense(d_b));
         let pts = with_blas_threads(exec.blas, || {
@@ -724,6 +741,12 @@ mod tests {
     /// (PBE: max|Δ| 2.6e-1 against a bound of 4e-12).
     #[test]
     fn unscreened_restricted_response_equals_dense_kernel() {
+        // KsXc / MggaFxcKernel construction resolves FERRIC_MEM_BUDGET_GB
+        // (checked AO-grid eval); hold the crate-wide env lock so the
+        // budget-shrinking tests in ks/ao_grid cannot race these reads.
+        let _env_guard = crate::TEST_BUDGET_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let (mol, bs, d_a, _) = hf_reference(WATER, 1);
         let d = 2.0 * &d_a;
         let n = d.nrows();
@@ -741,7 +764,10 @@ mod tests {
             )
             .unwrap();
             let xc_pol = xc_def_from_name_nspin(name, 2).unwrap();
-            let sf = ks.restricted_fxc(&xc_pol, &d).unwrap().unwrap();
+            let sf = ks
+                .restricted_fxc(&xc_pol, &d, &|| usize::MAX)
+                .unwrap()
+                .unwrap();
             let got = sf.apply_restricted(&dd);
             let mag = sf.apply_restricted_magnitude(&dd);
             let dense = MggaFxcKernel::new(&mol, &bs, xc_pol, &grid_cfg()).unwrap();
@@ -775,6 +801,12 @@ mod tests {
     /// restricted anchor).
     #[test]
     fn unscreened_polarized_response_equals_dense_kernel() {
+        // KsXc / MggaFxcKernel construction resolves FERRIC_MEM_BUDGET_GB
+        // (checked AO-grid eval); hold the crate-wide env lock so the
+        // budget-shrinking tests in ks/ao_grid cannot race these reads.
+        let _env_guard = crate::TEST_BUDGET_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let (mol, bs, d_a, d_b) = hf_reference(OH, 2);
         let n = d_a.nrows();
         let dd_a = perturbation(n, 0.01, 0x1234_5678_9ABC_DEF1);
@@ -792,7 +824,10 @@ mod tests {
             )
             .unwrap();
             let xc_pol = xc_def_from_name_nspin(name, 2).unwrap();
-            let sf = ks.polarized_fxc(&xc_pol, &d_a, &d_b).unwrap().unwrap();
+            let sf = ks
+                .polarized_fxc(&xc_pol, &d_a, &d_b, &|| usize::MAX)
+                .unwrap()
+                .unwrap();
             let got = sf.apply_polarized(&dd_a, &dd_b);
             let mag = sf.apply_polarized_magnitude(&dd_a, &dd_b);
             let dense = MggaFxcKernel::new(&mol, &bs, xc_pol, &grid_cfg()).unwrap();

@@ -162,6 +162,16 @@ pub(crate) fn note_screened_fxc_build(xc_def: &ferric_dft::libxc::XcDef) {
     }
 }
 
+/// The bytes a no-pool f_xc kernel cache may take: the resolved budget
+/// (`three_index_budget_bytes` when set, else `FERRIC_MEM_BUDGET_GB` / auto)
+/// less this process's live RSS. Read only when no global pool is installed;
+/// with a pool, the screened cache is charged to the pool instead.
+pub(crate) fn fxc_no_pool_budget(config: &RhfConfig) -> usize {
+    ferric_core::memory::available_budget_now(ferric_core::memory::resolve_budget_bytes(
+        (config.three_index_budget_bytes != 0).then_some(config.three_index_budget_bytes),
+    ))
+}
+
 /// The restricted f_xc response for an RKS Newton step at the closed-shell
 /// density `d` (d_α = d_β = ½·d), as the `FxcResponse` closure the Hessian
 /// matvec calls with `(δD_single, δD_single)`.
@@ -183,7 +193,7 @@ pub fn restricted_fxc_response<'s>(
     d: &Array2<f64>,
 ) -> Result<Box<crate::rohf_newton::FxcResponse<'s>>, FerricError> {
     let xc_pol = fxc_xc_def(name, config.xc_omega)?;
-    if let Some(built) = x.restricted_fxc(&xc_pol, d) {
+    if let Some(built) = x.restricted_fxc(&xc_pol, d, &|| fxc_no_pool_budget(config)) {
         let sf = built.map_err(|e| FerricError::General(format!("screened f_xc: {e}")))?;
         note_screened_fxc_build(&xc_pol);
         return Ok(Box::new(move |a: &Array2<f64>, b: &Array2<f64>| {
@@ -213,7 +223,9 @@ pub fn restricted_fxc_response<'s>(
 /// dense [`FxcKernelStore`]. `dense_gate` = `(label, budget)`: on the dense
 /// fallback only, `budget()` gives `(needed, available)` bytes, checked with
 /// `check_alloc` before that path builds its duplicate χ/∇χ cache (the
-/// screened path builds none and never evaluates `budget`).
+/// screened path builds none and never evaluates `budget`; its own kernel
+/// cache is charged to the pool, or checked against [`fxc_no_pool_budget`]
+/// when there is none).
 #[doc(hidden)]
 pub fn polarized_fxc_response<'s>(
     x: &'s dyn ferric_dft::xc_trait::UksXcContribution,
@@ -222,7 +234,7 @@ pub fn polarized_fxc_response<'s>(
     dense_gate: Option<(&str, &dyn Fn() -> (usize, usize))>,
 ) -> Result<Box<crate::rohf_newton::FxcResponse<'s>>, FerricError> {
     let xc_pol = fxc_xc_def(name, config.xc_omega)?;
-    if let Some(built) = x.polarized_fxc(&xc_pol, d_a, d_b) {
+    if let Some(built) = x.polarized_fxc(&xc_pol, d_a, d_b, &|| fxc_no_pool_budget(config)) {
         let sf = built.map_err(|e| FerricError::General(format!("screened f_xc: {e}")))?;
         note_screened_fxc_build(&xc_pol);
         return Ok(Box::new(move |a: &Array2<f64>, b: &Array2<f64>| {

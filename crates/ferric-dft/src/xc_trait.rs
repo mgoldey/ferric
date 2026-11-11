@@ -140,12 +140,17 @@ pub trait XcContribution: XcStorage + Send + Sync {
     /// the functional resolved with `nspin = 2` (and the caller's ω
     /// override). `None`: this evaluator has no screened grid, and the caller
     /// must build the dense kernel itself. The default returns `None`.
+    ///
+    /// `no_pool_budget` is evaluated only when no global memory pool is
+    /// installed: the bytes the kernel cache may take (with a pool, the pool
+    /// is charged instead). Over it, the build errors.
     fn restricted_fxc(
         &self,
         xc_pol: &XcDef,
         d: &Array2<f64>,
+        no_pool_budget: &dyn Fn() -> usize,
     ) -> Option<Result<ScreenedFxc<'_>, String>> {
-        let _ = (xc_pol, d);
+        let _ = (xc_pol, d, no_pool_budget);
         None
     }
 }
@@ -197,8 +202,9 @@ pub trait UksXcContribution: XcStorage + Send + Sync {
         xc_pol: &XcDef,
         d_a: &Array2<f64>,
         d_b: &Array2<f64>,
+        no_pool_budget: &dyn Fn() -> usize,
     ) -> Option<Result<ScreenedFxc<'_>, String>> {
-        let _ = (xc_pol, d_a, d_b);
+        let _ = (xc_pol, d_a, d_b, no_pool_budget);
         None
     }
 }
