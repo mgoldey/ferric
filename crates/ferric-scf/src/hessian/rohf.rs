@@ -82,8 +82,8 @@
 //! `A` is the commutator-form orbital Hessian (half the true Hessian, the
 //! normalisation of `rohf_newton::hessian_matvec`); its `[f, κ]` has the
 //! off-diagonal terms (`vc↔vo` through `(f_α)_oc`, `vo↔oc` through `(f_β)_vo`
-//! ...) that the diagonal-gap form `hessian_matvec` had until 2026-11 omitted
-//! (it now applies them; `tests/rohf_hessian_matvec_fd.rs`). It is solved per nuclear coordinate by
+//! ...) that a diagonal-gap form would omit; `hessian_matvec` applies them
+//! (`tests/rohf_hessian_matvec_fd.rs`). It is solved per nuclear coordinate by
 //! the same Jacobi-preconditioned CG as the UHF response, in the stacked
 //! `(κ_vc, κ_vo, κ_oc)` vector.
 //!

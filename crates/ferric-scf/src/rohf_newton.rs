@@ -154,7 +154,7 @@ pub fn rohf_newton_step(
     //   closed↔virt: both α and β change → (F_α[v,v] + F_β[v,v]) − (F_α[c,c] + F_β[c,c])
     //   open↔virt:   only α changes      → F_α[v,v] − F_α[o,o]
     //   closed↔open: only β changes      → F_β[o,o] − F_β[c,c]
-    // These gaps are the PCG PRECONDITIONER only; the Hessian matvec applies
+    // These gaps are the PCG preconditioner only; the Hessian matvec applies
     // the exact Fock commutator. (F_eff eigenvalues would mix α and β in the
     // wrong proportions for the off-diagonal blocks.)
     let f_a_diag: Vec<f64> = (0..n).map(|i| inp.f_a_mo[(i, i)]).collect();
@@ -174,11 +174,11 @@ pub fn rohf_newton_step(
         .max(arr_max_abs(&g_vo))
         .max(arr_max_abs(&g_oc));
     // Below tolerance κ = 0 already meets the PCG stopping test (its residual
-    // is −g, |g| < cg_conv), so no HVP is computed and the step is ZERO. It
-    // used to be the diagonal guess κ⁰ = −g/Δ, whose residual is unknown: on
-    // a degenerate open shell the open→virtual gap within the degenerate set
-    // is floored at 1e-6, so |g| ~ 2e-8 gave rotations ~0.02 along the flat
-    // hole-orientation mode, and ΔP never reached density_conv (MEASURED
+    // is −g, |g| < cg_conv), so no HVP is computed and the step is zero. A
+    // diagonal guess κ⁰ = −g/Δ has an unknown residual: on a degenerate open
+    // shell the open→virtual gap within the degenerate set is floored at
+    // 1e-6, so |g| ~ 2e-8 gives rotations ~0.02 along the flat
+    // hole-orientation mode, and ΔP never reaches density_conv (MEASURED
     // 2026-11-11, CH ²Π/6-31G PBE, 1e-5 Å off-axis, soscf: E settled to 1e-13
     // by iteration 9, not converged in 200).
     if gmax >= cg_conv {
@@ -317,10 +317,10 @@ fn pcg_refine(
         // Ap = H · p
         let (ap_vc, ap_vo, ap_oc) = hessian_matvec(ctx, inp, &p_vc, &p_vo, &p_oc, pool)?;
         let p_ap: f64 = inner(&p_vc, &ap_vc) + inner(&p_vo, &ap_vo) + inner(&p_oc, &ap_oc);
-        // Steihaug truncation. The exact Hessian is INDEFINITE near a saddle
+        // Steihaug truncation. The exact Hessian is indefinite near a saddle
         // (e.g. a hole in the wrong shell); on negative curvature the CG step
         // α = rᵀz/pᵀAp is negative and would move to the model's stationary
-        // point along p, which is a MAXIMUM there, so Newton could converge
+        // point along p, which is a maximum there, so Newton could converge
         // to the saddle. Instead step along +p to the `max_step` box: the
         // quadratic model m(κ) = gᵀκ + ½κᵀHκ has slope −rᵀp along p at the
         // current iterate (its gradient there is g + Hκ = −r) and curvature
@@ -333,7 +333,7 @@ fn pcg_refine(
         // If κ is already at (or, κ⁰ being unclipped, outside) the box in a
         // component that +p pushes further out, `box_step` gives t = 0 and
         // the step is the current iterate, which the caller then clips: the
-        // earlier "keep the iterate" behaviour, a descent step on the first
+        // "keep the iterate" behaviour, a descent step on the first
         // pass (κ⁰ = −M⁻¹g). MEASURED 2026-11-11 (FERRIC_ROHF_TRACE prints t
         // per truncation): in the two saddle tests' full SCFs, 10 of 16
         // truncations hit t = 0, all in later SCF iterations; none occur in
@@ -453,13 +453,13 @@ pub(crate) fn gradient_blocks_from(
 }
 
 /// Normalisation and exactness (measured by `tests/rohf_hessian_matvec_fd.rs`):
-/// the result is HALF the exact orbital Hessian of `E(C exp κ)` (the
+/// the result is half the exact orbital Hessian of `E(C exp κ)` (the
 /// [`crate::rohf_trah::rohf_exact_hessian_matvec`] product / 2) in every
 /// block, f_xc included. It is symmetric at any point; at a stationary point
 /// it equals d/dκ of the half gradient `gradient_blocks_from`, and away from
 /// one it differs from that (non-symmetric) Jacobian by `½ Σ_σ [κ, [N_σ, f_σ]]`,
-/// a term linear in the gradient. Until 2026-11 the Fock part here was only
-/// the diagonal gap `F[p,p] − F[q,q]` (now the PCG preconditioner).
+/// a term linear in the gradient. The Fock part is the exact commutator; the
+/// diagonal gap `F[p,p] − F[q,q]` is only the PCG preconditioner.
 //
 // Returns the three coupling blocks (vc, vo, oc) of the Hessian-vector product;
 // the tuple mirrors the three input blocks and reads clearer than an alias.
@@ -556,7 +556,7 @@ pub fn hessian_matvec(
     let mut h_vo = pack_block(&df_a_mo, &df_b_mo, nocc_a..n, nc..nocc_a, false); // α
     let mut h_oc = pack_block(&df_b_mo, &df_b_mo, nc..nocc_a, 0..nc, false); // β
 
-    // The Fock-commutator part: the EXACT one of `rohf_trah` (true scale,
+    // The Fock-commutator part: the exact one of `rohf_trah` (true scale,
     // halved to this function's half-gradient normalisation), not the
     // diagonal gap `F[p,p] − F[q,q]`, which misses the oc-coupled terms
     // (13-106 % per-cell error on NH2/OH B3LYP, and on OH's soft π mode
@@ -692,7 +692,7 @@ fn build_diag_perspin(
     let mut out = Array2::<f64>::zeros((nr, nc));
     for (i, r) in rows.enumerate() {
         for (j, c) in cols.clone().enumerate() {
-            // POSITIVE (|gap| + shift, floored at 1e-6): the Steihaug guard in
+            // positive (|gap| + shift, floored at 1e-6): the Steihaug guard in
             // `pcg_refine` needs a positive preconditioner so that κ⁰ = −M⁻¹g
             // is a descent direction. A signed gap is negative exactly where
             // the per-spin Fock order is inverted (a hole in the wrong shell),

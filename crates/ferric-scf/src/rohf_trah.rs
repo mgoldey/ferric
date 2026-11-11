@@ -363,7 +363,7 @@ pub fn rohf_exact_hessian_matvec(
     Ok(packed_hessian_product(&xk, spins, nd, nocc_open))
 }
 
-/// The Fock-commutator part of [`rohf_exact_hessian_matvec`] alone (TRUE
+/// The Fock-commutator part of [`rohf_exact_hessian_matvec`] alone (true
 /// scale): the same product with the response `δF_σ` set to zero. O(n³) MO
 /// algebra, no J/K. `x` is packed vc | vo | oc as everywhere in this module.
 /// The molecular Newton / AH matvec (`rohf_newton::hessian_matvec`) adds half

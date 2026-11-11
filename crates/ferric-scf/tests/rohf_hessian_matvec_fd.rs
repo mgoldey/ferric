@@ -2,12 +2,12 @@
 //! PR-1 of #291, analytic ROHF Hessian; extended to ROKS f_xc with the
 //! 2026-11 Newton fix.)
 //!
-//! The matvec returns, for a rotation kappa with blocks (vc, vo, oc), HALF the
+//! The matvec returns, for a rotation kappa with blocks (vc, vo, oc), half the
 //! Hessian of E(C exp kappa) (g = `gradient_blocks_from`: g_vc = Fa+Fb[v,c],
 //! g_vo = Fa[v,o], g_oc = Fb[o,c]; the TRUE energy gradient is 2 g).
 //!
 //! Method: central FD of g(C Cayley(eps kappa)) with the full per-spin Focks
-//! (+ V_xc for ROKS) rebuilt at every rotated C. That FD is the JACOBIAN
+//! (+ V_xc for ROKS) rebuilt at every rotated C. That FD is the jacobian
 //! d g / d kappa, which equals the (symmetric) Hessian only where g = 0. Away
 //! from stationarity they differ by a term linear in g, derived independently
 //! here from the Jacobi identity (see `grad_corr`):
@@ -24,11 +24,10 @@
 //!   (e.g. the oc column), which a single random direction would hide inside a
 //!   total norm; hence the per-cell ratios and the single-block directions.
 //!   Artifact C (diagonal-Fock approximation): the matvec applies only the
-//!   DIAGONAL Fock gap `F[p,p]-F[q,q]` (a semicanonical form). This WAS the
-//!   production matvec until 2026-11 and this test measured it (error = the
-//!   omitted commutator exactly, 13-106 % per cell on NH2/OH B3LYP). It is
-//!   now the PCG preconditioner only; `mutants` rebuilds the diagonal-gap
-//!   product and requires it to be detected.
+//!   diagonal Fock gap `F[p,p]-F[q,q]` (a semicanonical form). The
+//!   error is the omitted commutator exactly (13-106 % per cell on NH2/OH
+//!   B3LYP). The diagonal gap is the PCG preconditioner only; `mutants`
+//!   rebuilds the diagonal-gap product and requires it to be detected.
 //!   SOURCE MUTATION (2026-11-11, applied, run, reverted): restoring the
 //!   diagonal gap in `hessian_matvec` fails every non-ignored case at the
 //!   converged point, e.g. NH2/6-31G B3LYP dev 6.8e-2 vs bar 7.8e-7,
@@ -323,7 +322,7 @@ fn comm_and_diag(s: &Sys, fa: &Array2<f64>, fb: &Array2<f64>, k: &Blocks) -> (Bl
     (comm, diag)
 }
 
-/// The Hessian-minus-Jacobian term at HALF scale, from the Jacobi identity
+/// The Hessian-minus-Jacobian term at half scale, from the Jacobi identity
 /// (module doc): ¼ read-off(Σ_σ [X, G_σ]), G_σ[i,j] = (n_i − n_j) f_σ[i,j],
 /// read-off out(p,q) = M[q,p] − M[p,q]. Zero at a stationary point.
 fn grad_corr(s: &Sys, fa: &Array2<f64>, fb: &Array2<f64>, k: &Blocks) -> Blocks {
@@ -385,7 +384,7 @@ struct Report {
     rel: f64,
     /// max |grad_corr| (Hessian vs Jacobian; ~0 at a stationary point)
     corr: f64,
-    /// max |commutator - diag| (what the old diagonal-gap matvec omitted)
+    /// max |commutator - diag| (what a diagonal-gap matvec omits)
     omitted: f64,
 }
 
@@ -513,7 +512,7 @@ fn study(s: &Sys, tag: &str, off_converged: f64) {
             "{t}: matvec must equal FD(g) + grad_corr: {:.3e} >= {bar:.3e}",
             rep.dev
         );
-        // Non-vacuity: the old diagonal-gap product must be resolvable here,
+        // Non-vacuity: the diagonal-gap product must be resolvable here,
         // otherwise this point could not tell the exact matvec from it.
         assert!(
             rep.omitted > 10.0 * bar,
