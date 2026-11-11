@@ -52,6 +52,20 @@ use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ndarray::Array2;
 use ndarray_linalg::Solve;
+use std::cell::Cell;
+
+thread_local! {
+    /// Singlet Hessian-vector products computed on this thread (test seam).
+    static HVP_CALLS: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Number of singlet [`hessian_matvec`] calls made on the calling thread so
+/// far. A test seam: the Newton PCG loop is sequential on its caller's thread,
+/// so a per-thread count is race-free under the parallel test harness.
+#[doc(hidden)]
+pub fn hvp_calls_on_this_thread() -> usize {
+    HVP_CALLS.with(Cell::get)
+}
 
 /// Inputs to one RHF/RKS Newton step.
 pub struct RhfNewtonInputs<'a> {
@@ -124,34 +138,13 @@ pub fn rhf_newton_step(
     // Initial guess: diagonal solve κ⁰ = −g / gap.
     let mut k = neg_div(&g, &diag);
 
-    // Early-exit if the gradient is already below tolerance.
+    // Gradient already below tolerance: the step is κ⁰ itself, and the CG
+    // residual (whose first term is an HVP) would never be read, so skip it.
+    // Each HVP is a full response J/K plus f_xc build, and near convergence
+    // this is the common case (wiki/notes/scf-second-order-cost-2026-11).
     let gmax = max_abs(&g);
-    let cg_iters = if gmax < cg_conv { 0 } else { cg_max_iter };
-
-    // Preconditioned conjugate-gradient solve for H·κ = −g.
-    let h0 = hessian_matvec(ctx, inp, &k, &pool)?;
-    let mut r = &neg(&g) - &h0;
-    let mut z = &r / &diag;
-    let mut p = z.clone();
-    let mut rz_old = inner(&r, &z);
-
-    for _it in 0..cg_iters {
-        if max_abs(&r) < cg_conv {
-            break;
-        }
-        let ap = hessian_matvec(ctx, inp, &p, &pool)?;
-        let p_ap = inner(&p, &ap);
-        if p_ap.abs() < 1e-30 {
-            break;
-        }
-        let alpha = rz_old / p_ap;
-        k.zip_mut_with(&p, |k, &v| *k += alpha * v);
-        r.zip_mut_with(&ap, |r, &v| *r -= alpha * v);
-        z = &r / &diag;
-        let rz_new = inner(&r, &z);
-        let beta = rz_new / rz_old;
-        rz_old = rz_new;
-        p.zip_mut_with(&z, |p, &v| *p = v + beta * *p);
+    if gmax >= cg_conv {
+        pcg_refine(ctx, inp, &pool, &g, &diag, &mut k, cg_max_iter, cg_conv)?;
     }
 
     // Trust-radius clip.
@@ -165,6 +158,46 @@ pub fn rhf_newton_step(
     Ok((c_new, kmax))
 }
 
+/// Preconditioned conjugate-gradient refinement of `k` (on entry the diagonal
+/// guess κ⁰) towards H·κ = −g.
+#[allow(clippy::too_many_arguments)]
+fn pcg_refine(
+    ctx: &ParallelContext,
+    inp: &RhfNewtonInputs,
+    pool: &EnginePool,
+    g: &Array2<f64>,
+    diag: &Array2<f64>,
+    k: &mut Array2<f64>,
+    cg_max_iter: usize,
+    cg_conv: f64,
+) -> Result<(), FerricError> {
+    let h0 = hessian_matvec(ctx, inp, k, pool)?;
+    let mut r = &neg(g) - &h0;
+    let mut z = &r / diag;
+    let mut p = z.clone();
+    let mut rz_old = inner(&r, &z);
+
+    for _it in 0..cg_max_iter {
+        if max_abs(&r) < cg_conv {
+            break;
+        }
+        let ap = hessian_matvec(ctx, inp, &p, pool)?;
+        let p_ap = inner(&p, &ap);
+        if p_ap.abs() < 1e-30 {
+            break;
+        }
+        let alpha = rz_old / p_ap;
+        k.zip_mut_with(&p, |k, &v| *k += alpha * v);
+        r.zip_mut_with(&ap, |r, &v| *r -= alpha * v);
+        z = &r / diag;
+        let rz_new = inner(&r, &z);
+        let beta = rz_new / rz_old;
+        rz_old = rz_new;
+        p.zip_mut_with(&z, |p, &v| *p = v + beta * *p);
+    }
+    Ok(())
+}
+
 /// H · κ for the occ→virt block. Public so tests can finite-difference-validate
 /// the matvec directly against the orbital-gradient derivative.
 pub fn hessian_matvec(
@@ -173,6 +206,7 @@ pub fn hessian_matvec(
     k: &Array2<f64>,
     pool: &EnginePool,
 ) -> Result<Array2<f64>, FerricError> {
+    HVP_CALLS.with(|c| c.set(c.get() + 1));
     let n = inp.c.nrows();
     let no = inp.nocc;
 
