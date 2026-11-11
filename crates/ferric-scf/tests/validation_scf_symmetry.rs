@@ -139,6 +139,9 @@ fn ks_cfg(irrep_nelec: Option<Vec<(String, usize)>>) -> RhfConfig {
     RhfConfig {
         symmetry: true,
         xc: Some("PBE".into()),
+        // The PySCF references fit J in f64. The f32 RI-J default moves the
+        // energy by 1e-7..1e-6 Ha, above this test's bar.
+        ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
         density_conv: 1e-10,
         energy_conv: 1e-8,
         max_iter: 200,
