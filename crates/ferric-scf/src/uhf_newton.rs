@@ -79,7 +79,7 @@ pub enum KResponse<'a> {
     /// The SCF's DF-K through its occupied-factor path ([`OccKResponse`]):
     /// each spin's `δK[δD_σ]` from two `nocc`-column builds.
     Occ(&'a OccKResponse<'a>),
-    /// The SCF's UNFITTED exchange builder (`DirectK` on DF-J + direct K;
+    /// The SCF's unfitted exchange builder (`DirectK` on DF-J + direct K;
     /// any linear builder works) on the density: `δD_σ ↦ K[δD_σ]`, one build per spin,
     /// made homogeneous in `δD_σ` by `rhf_newton::unfitted_response`.
     Density(&'a AoResponse<'a>),

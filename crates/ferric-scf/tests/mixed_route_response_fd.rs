@@ -1,4 +1,4 @@
-//! Second-order products on MIXED J/K routes: the Hessian-vector product
+//! Second-order products on mixed J/K routes: the Hessian-vector product
 //! builds each half of the response with the builder the SCF used for that
 //! half of its Fock.
 //!
@@ -12,7 +12,7 @@
 //! (`hessian_matvec_jk`, used by Newton, TRAH and singlet stability), the
 //! triplet matvec (`triplet_hessian_matvec_jk`, external stability), the UHF
 //! matvec (Newton, TRAH, stability) and the ROHF matvec (Newton, AH) equal the
-//! central finite difference of THAT route's orbital gradient, built from the
+//! central finite difference of that route's orbital gradient, built from the
 //! same builders, to a derived bound, with no direct four-centre build.
 //!
 //! COSX runs here in its trivial-screen limit (no density-driven pair screen,
@@ -169,8 +169,8 @@ const ROUTES: [Route; 3] = [Route::RiJCosx, Route::DfJDirectK, Route::DfKDirectJ
 /// production overlap fit, its density-dependent screens at their trivial
 /// limit (see the module doc), no final-grid pass.
 ///
-/// The grid is deliberately COARSE, (20, 26) unpruned: the anchor must be
-/// able to tell COSX's δK from the exact four-centre δK the old code built,
+/// The grid is coarse, (20, 26) unpruned: the anchor must be
+/// able to tell COSX's δK from the exact four-centre δK of a direct response build,
 /// i.e. their difference (the grid error) must exceed the FD bound, whose
 /// rounding term grows with the number of grid points. On flat (50, 110) the
 /// two differ by 2.1e-6 against a bound of 2.6e-6 (measured 2026-11-11), too
@@ -326,7 +326,7 @@ impl<'p> Builders<'p> {
             .with_unfitted_k(self.kb.as_deref_mut())
     }
 
-    /// The OLD lending for this route (before the mixed routes were wired):
+    /// Fitted-only lending for this route:
     /// only the fitted half, so the other half falls to the direct build.
     fn closed_shell_fitted_only(&mut self) -> ferric_scf::rhf_newton::ScfJkResponse<'_, 'p> {
         ferric_scf::rhf_newton::ScfJkResponse::new(self.dfj.as_mut(), self.dfk.as_mut())
@@ -353,11 +353,11 @@ impl<'p> Builders<'p> {
         )
     }
 
-    /// Whether this route's matvec at `k_mix` is a DIFFERENT operator from
-    /// the old one (fitted half lent, other half direct), so the FD anchor
+    /// Whether this route's matvec at `k_mix` is a different operator from
+    /// the fitted-only one (fitted half lent, other half direct), so the FD anchor
     /// itself can tell them apart: only COSX's δK differs from the exact δK
     /// (by its grid error). `DirectJ`/`DirectK` are the exact four-centre
-    /// operator, differing from the old direct build only in their screening
+    /// operator, differing from the direct build only in their screening
     /// (≲ 1e-12); on those routes the counters are what catch a mis-wiring.
     fn differs_from_old(&self, k_mix: f64) -> bool {
         self.route == Route::RiJCosx && k_mix != 0.0
@@ -410,7 +410,7 @@ fn system(xyz: &str, mult: usize, kind: &str) -> System {
 }
 
 /// The anchor's verdict for one case, with the counters. `route_vs_old` is
-/// `‖H_route·κ − H_old·κ‖` with `H_old` the old lending (fitted half only).
+/// `‖H_route·κ − H_old·κ‖` with `H_old` the fitted-only lending.
 fn assert_case(
     label: &str,
     (worst, bound): (f64, f64),
@@ -438,7 +438,7 @@ fn assert_case(
          exactly when that half is consumed ({unfitted} unfitted builds)"
     );
     if differs {
-        // The anchor can tell this route's operator from the old one.
+        // The anchor can tell this route's operator from the fitted-only one.
         assert!(
             route_vs_old > bound,
             "{label}: route and old HVPs differ by {route_vs_old:.3e}, inside the FD \
@@ -447,7 +447,7 @@ fn assert_case(
     }
 }
 
-/// Exactness anchor, closed-shell SINGLET matvec (`hessian_matvec_jk`, the
+/// Exactness anchor, closed-shell singlet matvec (`hessian_matvec_jk`, the
 /// operator of the RHF/RKS Newton step, TRAH and internal stability): on each
 /// mixed route the matvec with the route's builders lent equals the central
 /// FD of that route's gradient `g = [CᵀFC]_vo`, at k_mix = 1 (HF), 0.2
@@ -530,7 +530,7 @@ fn closed_shell_singlet_matvec_matches_fd_on_mixed_routes() {
     }
 }
 
-/// Exactness anchor, closed-shell TRIPLET matvec (`triplet_hessian_matvec_jk`,
+/// Exactness anchor, closed-shell triplet matvec (`triplet_hessian_matvec_jk`,
 /// RHF→UHF external stability): with the route's exchange builder lent, it
 /// equals the central FD of the UHF α gradient `[C_αᵀF_αC_α]_vo` along the
 /// spin-flip rotation `C_α = C·U(hκ)`, `C_β = C·U(−hκ)`, where
@@ -725,7 +725,7 @@ fn uhf_matvec_matches_fd_on_mixed_routes() {
 
 /// Exactness anchor, ROHF/ROKS matvec (`rohf_newton::hessian_matvec`, the
 /// operator of the ROHF Newton and AH steps): on each mixed route it equals
-/// the central FD of the HALF gradient blocks (g_vc = [F_α+F_β]_vc,
+/// the central FD of the half gradient blocks (g_vc = [F_α+F_β]_vc,
 /// g_vo = [F_α]_vo, g_oc = [F_β]_oc, one MO set) once its diagonal gap is
 /// replaced by the full commutator (as in
 /// `open_shell_newton_fitted_response.rs`), at k_mix = 1, 0.2 and 0. NH2 ²B₁.

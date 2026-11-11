@@ -62,7 +62,7 @@ thread_local! {
     /// Direct four-centre response J/K builds made by closed-shell (singlet
     /// and triplet) HVPs (test seam).
     static DIRECT_RESPONSE_BUILDS: Cell<usize> = const { Cell::new(0) };
-    /// Response builds made through one of the SCF's own UNFITTED builders
+    /// Response builds made through one of the SCF's own unfitted builders
     /// (DirectJ, DirectK, COSX) by any second-order product (test seam).
     static UNFITTED_RESPONSE_BUILDS: Cell<usize> = const { Cell::new(0) };
 }
@@ -85,7 +85,7 @@ pub fn direct_response_builds_on_this_thread() -> usize {
 }
 
 /// Number of response J or K builds that went through one of the SCF's own
-/// UNFITTED builders (`DirectJ`, `DirectK`, COSX) on the calling thread so far,
+/// unfitted builders (`DirectJ`, `DirectK`, COSX) on the calling thread so far,
 /// from any closed- or open-shell second-order product (test seam; see
 /// `unfitted_response`).
 #[doc(hidden)]
@@ -96,7 +96,7 @@ pub fn unfitted_response_builds_on_this_thread() -> usize {
 /// `M[δD]` from one of the SCF's own unfitted, linear J or K builders (`DirectJ`,
 /// `DirectK`, COSX), made exactly homogeneous in `δD`.
 ///
-/// Those builders screen on ABSOLUTE thresholds (Schwarz × `max|D|`, COSX's
+/// Those builders screen on absolute thresholds (Schwarz × `max|D|`, COSX's
 /// density-driven pair screen and `|D|` row mask), which is right for a Fock
 /// build and wrong for a response operand whose norm shrinks with the PCG /
 /// Davidson residual. As in [`crate::rhf::build_jk_with_pool_homogeneous`],
@@ -105,7 +105,7 @@ pub fn unfitted_response_builds_on_this_thread() -> usize {
 /// scaled back. A zero `δD` gives zero without a build. `build` receives a
 /// zeroed output (builders may add to it or overwrite it).
 ///
-/// The builder must be a plain linear contraction for an INDEFINITE `δD`:
+/// The builder must be a plain linear contraction for an indefinite `δD`:
 /// `DirectJ`, `DirectK` and COSX are; LinK's density-pair list is not, and is
 /// never lent.
 pub(crate) fn unfitted_response(
@@ -129,11 +129,11 @@ pub(crate) fn unfitted_response(
 
 /// The SCF's own J/K builders, lent to the closed-shell second-order products
 /// (Newton [`hessian_matvec_jk`], TRAH, singlet and triplet stability) so the
-/// response `δJ`/`δK` is the derivative of the Fock the SCF actually builds.
+/// response `δJ`/`δK` is the derivative of the Fock the SCF builds.
 ///
 /// # Why
 ///
-/// An RI-J / DF-K SCF minimises the density-FITTED energy. Its orbital Hessian
+/// An RI-J / DF-K SCF minimises the density-fitted energy. Its orbital Hessian
 /// is the response of the same fitted J and K, on the same `B[P,μ,ν]`. A direct
 /// four-centre response is the second derivative of a different functional:
 /// it is off by the fitting error, which does not shrink with a
@@ -141,7 +141,7 @@ pub(crate) fn unfitted_response(
 /// C8H18/def2-TZVP, where the SCF itself never builds a four-centre integral.
 /// A mixed route (DF-J + direct K, DF-K + conventional J) builds its other
 /// half with an unfitted builder; that half of the response comes from the
-/// SAME builder ([`Self::with_unfitted_j`], [`Self::with_unfitted_k`]). Any
+/// same builder ([`Self::with_unfitted_j`], [`Self::with_unfitted_k`]). Any
 /// linear K builder can be lent (COSX included, FD-anchored); the SCF does not
 /// lend COSX, whose K costs more than the direct build (`rhf::lend_scf_jk`).
 ///
@@ -478,7 +478,7 @@ fn response_jk(
         let (dj, dk) = direct_response_jk(ctx, inp, pool, dd_ao)?;
         return Ok((dj, Some(dk)));
     };
-    // The lent builds below run OUTSIDE the SCF's J/K ladder scope; without
+    // The lent builds below run outside the SCF's J/K ladder scope; without
     // this guard a mixed-precision device kernel would treat them as mixed, and
     // the ± occupied-factor δK would carry an f32 error independent of |κ|.
     let _f64 = crate::jk_ladder::F64BuildScope::enter();
@@ -730,7 +730,7 @@ fn triplet_exchange(
     build_jk_with_pool_homogeneous(
         ctx, inp.prep, inp.bounds, inp.thresh, dd_ao, &mut dj, &mut dk, pool, band_bytes,
     )?;
-    // `dj` is deliberately dropped: see the Cost section. The triplet response
+    // `dj` is dropped: see the Cost section. The triplet response
     // is exchange-only.
     drop(dj);
     Ok(dk)

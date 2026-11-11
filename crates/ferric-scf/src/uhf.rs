@@ -2208,7 +2208,7 @@ fn solve_uhf_impl(
 /// differentiates the energy the SCF evaluates (`UhfNewtonInputs::j_response`).
 ///
 /// Lends nothing (both hooks `None`: the matvec's exact four-centre response,
-/// which is then the Fock's own kernel) unless a FITTED builder exists. An
+/// which is then the Fock's own kernel) unless a fitted builder exists. An
 /// RI-J or DF-K SCF lends it, plus the unfitted half of a mixed route:
 /// `DirectJ` (DF-K + conventional J) or `DirectK` (DF-J + direct K). COSX is
 /// not lent: one COSX K costs more than the direct build it would replace
