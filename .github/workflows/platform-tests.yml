@@ -47,6 +47,10 @@ on:
       - '.github/workflows/platform-tests.yml'
   workflow_dispatch: {}
 
+# Reads the repository and the actions cache, uploads artifacts: nothing more.
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
@@ -84,6 +88,8 @@ jobs:
         run: git config --global core.autocrlf false
 
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       # NATIVE DEPS: the release wheels' own from-source builds (libint2 2.7.2
       # small export, static; OpenBLAS with a fixed TARGET; libxc 6.2.2; Eigen
@@ -187,12 +193,15 @@ jobs:
       - name: Test ferric-core + ferric-integrals
         if: steps.natives.outputs.ready == 'true'
         run: |
-          set -euo pipefail
-          source scripts/ci-platform-env.sh
+          # No `set -e`: the summary must be written when the tests fail too.
+          set -uo pipefail
+          source scripts/ci-platform-env.sh || exit 1
           cargo nextest run --locked --profile ci --no-tests=fail \
             -p ferric-core -p ferric-integrals 2>&1 | tee nextest-core-integrals.log
+          rc=${PIPESTATUS[0]}
           echo "### ferric-core + ferric-integrals" >> "$GITHUB_STEP_SUMMARY"
           grep -E "Summary|SKIP|FAIL" nextest-core-integrals.log | tail -20 >> "$GITHUB_STEP_SUMMARY" || true
+          exit "$rc"
 
       # The k-point code is the only complex Hermitian eigh / complex GEMM
       # user; this pins that layer of the linked OpenBLAS directly.
@@ -207,12 +216,15 @@ jobs:
       - name: Test ferric-scf (lib)
         if: ${{ steps.natives.outputs.ready == 'true' && (!cancelled()) }}
         run: |
-          set -euo pipefail
-          source scripts/ci-platform-env.sh
+          # No `set -e`: the summary must be written when the tests fail too.
+          set -uo pipefail
+          source scripts/ci-platform-env.sh || exit 1
           cargo nextest run --locked --profile ci --no-tests=fail \
             -p ferric-scf --lib 2>&1 | tee nextest-scf.log
+          rc=${PIPESTATUS[0]}
           echo "### ferric-scf --lib" >> "$GITHUB_STEP_SUMMARY"
           grep -E "Summary|FAIL" nextest-scf.log | tail -20 >> "$GITHUB_STEP_SUMMARY" || true
+          exit "$rc"
 
       - name: Upload test logs
         if: ${{ steps.natives.outputs.ready == 'true' && (!cancelled()) }}
@@ -243,6 +255,8 @@ jobs:
         run: git config --global core.autocrlf false
 
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         id: py
