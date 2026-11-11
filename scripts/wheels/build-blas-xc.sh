@@ -20,6 +20,7 @@
 # at 4 threads). The smoke job checks it (scripts/check_wheel_openblas_threads.py).
 #   macOS arm64:     TARGET=VORTEX (Apple M1 and later)
 #   Windows x86_64:  TARGET=HASWELL (AVX2), the Linux wheel's target
+# OPENBLAS_VERSION differs per platform (native-deps-macwin.yml explains why).
 #
 # This file is part of the native-deps cache key: editing it rebuilds this part.
 set -euo pipefail
@@ -82,9 +83,11 @@ else
   # `if (USE_OPENMP AND (${CMAKE_Fortran_COMPILER_ID} STREQUAL GNU) ...)`:
   # with no Fortran compiler the unquoted variable is empty and the if() does
   # not parse ("Unknown arguments specified"). Quote it.
-  sed -i 's/(${CMAKE_Fortran_COMPILER_ID} STREQUAL GNU)/("${CMAKE_Fortran_COMPILER_ID}" STREQUAL GNU)/' \
-    "OpenBLAS-${OPENBLAS_VERSION}/ctest/CMakeLists.txt"
-  grep -c '"${CMAKE_Fortran_COMPILER_ID}" STREQUAL GNU' "OpenBLAS-${OPENBLAS_VERSION}/ctest/CMakeLists.txt"
+  # (Later releases quote it already; patch only when the old form is there.)
+  ct="OpenBLAS-${OPENBLAS_VERSION}/ctest/CMakeLists.txt"
+  if grep -q '(${CMAKE_Fortran_COMPILER_ID} STREQUAL GNU)' "$ct"; then
+    sed -i 's/(${CMAKE_Fortran_COMPILER_ID} STREQUAL GNU)/("${CMAKE_Fortran_COMPILER_ID}" STREQUAL GNU)/' "$ct"
+  fi
   cmake -S "OpenBLAS-${OPENBLAS_VERSION}" -B build-ob -G Ninja \
     -DCMAKE_INSTALL_PREFIX="$PREFIX" -DCMAKE_INSTALL_LIBDIR=lib \
     -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_BUILD_TYPE=Release \
