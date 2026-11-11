@@ -261,7 +261,7 @@ pub(crate) mod reference {
     //! one against it at the derived bound (module doc).
 
     use super::*;
-    use std::sync::Mutex;
+    use std::cell::RefCell;
 
     /// One `dfg:3c-deriv-pass` checked against the old loop.
     #[derive(Clone, Debug)]
@@ -294,19 +294,26 @@ pub(crate) mod reference {
         old: Array2<f64>,
     }
 
-    static CAPTURE: Mutex<Option<Vec<PassCheck>>> = Mutex::new(None);
-    /// Serialises the tests that capture (the capture is process-global).
-    pub(crate) static CAPTURE_LOCK: Mutex<()> = Mutex::new(());
-
-    pub(super) fn capturing() -> bool {
-        CAPTURE.lock().unwrap().is_some()
+    thread_local! {
+        /// Capture of THIS thread's passes. Thread-local, so a concurrently
+        /// running lib test's DF gradient (another thread) is never checked
+        /// or recorded here. The flag is read and the record written on the
+        /// thread that calls [`three_center_deriv_pass`]; the per-shell checks
+        /// on rayon workers receive the flag by value. A gradient that ran the
+        /// pass on another thread would record nothing, which the tests'
+        /// "no 3c-deriv pass ran" assert turns into a failure, never a pass.
+        static CAPTURE: RefCell<Option<Vec<PassCheck>>> = const { RefCell::new(None) };
     }
 
-    /// Run `f` with capture on; return every pass it checked.
+    pub(super) fn capturing() -> bool {
+        CAPTURE.with(|c| c.borrow().is_some())
+    }
+
+    /// Run `f` with capture on for this thread; return every pass it checked.
     pub(crate) fn capture<R>(f: impl FnOnce() -> R) -> (R, Vec<PassCheck>) {
-        *CAPTURE.lock().unwrap() = Some(Vec::new());
+        CAPTURE.with(|c| *c.borrow_mut() = Some(Vec::new()));
         let r = f();
-        let got = CAPTURE.lock().unwrap().take().unwrap_or_default();
+        let got = CAPTURE.with(|c| c.borrow_mut().take().unwrap_or_default());
         (r, got)
     }
 
@@ -338,9 +345,11 @@ pub(crate) mod reference {
             total_max: grad.iter().fold(0.0f64, |m, v| m.max(v.abs())),
             blocks: checks.iter().map(|c| c.blocks).sum(),
         };
-        if let Some(v) = CAPTURE.lock().unwrap().as_mut() {
-            v.push(pc);
-        }
+        CAPTURE.with(|c| {
+            if let Some(v) = c.borrow_mut().as_mut() {
+                v.push(pc);
+            }
+        });
     }
 
     /// The old per-block loop, VERBATIM (2026-11-11, main 37880cd15) apart
@@ -384,28 +393,31 @@ pub(crate) mod reference {
     /// `Σ|t|` and the term count per gradient entry for one block (every
     /// element counted, zero weights included: a superset of both orders'
     /// leaves).
+    #[allow(clippy::too_many_arguments)]
     fn abs_terms_block(
         slab: &Array3<f64>,
         deriv: &[f64],
-        b: &DerivBlock,
+        (np, n1, n2): (usize, usize, usize),
+        (offs1, offs2): (usize, usize),
         sym12: bool,
+        atoms: [usize; 3],
         abs: &mut Array2<f64>,
         cnt: &mut Array2<f64>,
     ) {
-        let bs = b.size();
-        for p in 0..b.np {
-            for i in 0..b.n1 {
-                let mu = b.off1 + i;
-                for j in 0..b.n2 {
-                    let nu = b.off2 + j;
-                    let idx = (p * b.n1 + i) * b.n2 + j;
+        let bs = np * n1 * n2;
+        for p in 0..np {
+            for i in 0..n1 {
+                let mu = offs1 + i;
+                for j in 0..n2 {
+                    let nu = offs2 + j;
+                    let idx = (p * n1 + i) * n2 + j;
                     let gval = if sym12 {
                         slab[(p, mu, nu)] + slab[(p, nu, mu)]
                     } else {
                         slab[(p, mu, nu)]
                     };
                     for k in 0..9 {
-                        let e = (b.atoms[k / 3], k % 3);
+                        let e = (atoms[k / 3], k % 3);
                         abs[e] += (gval * deriv[k * bs + idx]).abs();
                         cnt[e] += 1.0;
                     }
@@ -428,23 +440,33 @@ pub(crate) mod reference {
         let mut abs = Array2::<f64>::zeros((natoms, 3));
         let mut cnt = Array2::<f64>::zeros((natoms, 3));
         let mut blocks = 0;
+        // Block geometry and atoms straight from the bases, as the old loop
+        // read them: independent of the new path's `DerivBlock`.
+        let (dims_obs, offs_obs) = (obs.shell_dims(), obs.shell_offsets());
+        let (sh2at_obs, sh2at_df) = (obs.shell_to_atom(), dfbs.shell_to_atom());
+        let np = dfbs.shell_dims()[sp];
+        let atom_p = sh2at_df[sp];
         for s1 in 0..obs.nshells() {
             for s2 in 0..=s1 {
                 let Some(deriv) = eng.compute_eri3_deriv(obs, dfbs, sp, s1, s2) else {
                     continue;
                 };
                 blocks += 1;
-                let b = DerivBlock::new(obs, dfbs, sp, s1, s2);
+                let shape = (np, dims_obs[s1], dims_obs[s2]);
+                let offs = (offs_obs[s1], offs_obs[s2]);
+                let (atom_1, atom_2) = (sh2at_obs[s1], sh2at_obs[s2]);
+                let sym12 = s1 != s2;
                 contract_block_old(
                     slab,
                     deriv,
-                    (b.np, b.n1, b.n2),
-                    (b.off1, b.off2),
-                    s1 != s2,
-                    (b.atoms[0], b.atoms[1], b.atoms[2]),
+                    shape,
+                    offs,
+                    sym12,
+                    (atom_p, atom_1, atom_2),
                     &mut old,
                 );
-                abs_terms_block(slab, deriv, &b, s1 != s2, &mut abs, &mut cnt);
+                let atoms = [atom_p, atom_1, atom_2];
+                abs_terms_block(slab, deriv, shape, offs, sym12, atoms, &mut abs, &mut cnt);
             }
         }
         let u = f64::EPSILON / 2.0;
@@ -483,18 +505,18 @@ mod tests {
     //! builds).
     //!
     //! MUTATIONS (2026-11-11, each applied alone, run, reverted):
-    //! * `symmetrise_off_shell_blocks` made a no-op (unsymmetrised `G`;
-    //!   first version, which symmetrised the slab in place): all 6 tests
-    //!   FAIL, max |new − old| 0.13-0.70, |Δ|/bound 2e12-4e13.
     //! * `block_weights` with `sym` forced false (unsymmetrised `G`, current
     //!   version): all 6 tests FAIL, max |new − old| 0.13-0.70, |Δ|/bound
     //!   2e12-4e13.
     //! * component 4 (`∂_1 y`) credited to `∂_1 x` in `contract_block`:
     //!   all 6 tests FAIL, max |new − old| 0.13-1.2, |Δ|/bound 1e13-7e14.
+    //! * atoms of `s1` and `s2` swapped in `DerivBlock::new` (the reference
+    //!   reads them from the bases itself): all 6 tests FAIL, max |new − old|
+    //!   0.91-2.3, |Δ|/bound 1e13-1.3e14.
     //!
     //! Unmutated (release, 2026-11-11): max |new − old| 7e-18..6.1e-14,
     //! |Δ|/bound ≤ 0.048 on every pass.
-    use super::reference::{capture, PassCheck, CAPTURE_LOCK};
+    use super::reference::{capture, PassCheck};
     use crate::df_gradient::DFK_GRADIENT_NOISE_FLOOR;
     use crate::gradient::rhf_gradient;
     use crate::ks_gradient::{ks_gradient_closed, ks_gradient_roks, ks_gradient_uks};
@@ -536,7 +558,6 @@ mod tests {
     /// Converge ferric's own SCF, run the case's gradient with capture on and
     /// return every checked `dfg:3c-deriv-pass`.
     fn run(case: &Case<'_>) -> (ScfResult, Vec<PassCheck>) {
-        let _g = CAPTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let bs: BasisSet = basis::bundled(case.basis).unwrap();
         let mol = &case.mol;
         let prep = PreparedBasis::new(mol, &bs).unwrap();
