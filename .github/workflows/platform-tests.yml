@@ -1,7 +1,7 @@
 name: Platform tests (macOS / Windows)
 
 # Runs a representative slice of the Rust test suite and the whole Python
-# binding suite on macOS arm64 (macos-15) and Windows x86_64 (windows-latest),
+# binding suite on macOS arm64 (macos-15) and Windows x86_64 (windows-2025),
 # the two platforms the wheels ship for besides Linux. ci.yml stays the Linux
 # gate; nothing here changes it.
 #
@@ -32,10 +32,6 @@ on:
       - '.config/nextest.toml'
       - '.github/workflows/platform-tests.yml'
   workflow_dispatch: {}
-  # DEV ONLY (remove before ready): GitHub dispatches only workflow files on
-  # the default branch, so iterating on this new file needs a push trigger.
-  push:
-    branches: [feat/wheels-portability]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -47,6 +43,10 @@ env:
   CARGO_PROFILE_DEV_DEBUG: line-tables-only
   CARGO_INCREMENTAL: "0"
   PYTHON_VERSION: "3.12"
+  # Run of native-deps-macwin.yml whose native-*-<platform> artifacts (7-day
+  # retention) these jobs reuse. TEMPORARY: replaced by a cache restore once
+  # that workflow is on main.
+  NATIVE_FROM_RUN: "42926153204"
 
 jobs:
   rust:
@@ -54,7 +54,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-15, windows-latest]
+        include:
+          - { os: macos-15, platform: macos-arm64 }
+          - { os: windows-2025, platform: windows-x86_64 }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 180
     defaults:
@@ -73,17 +75,27 @@ jobs:
 
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      # NATIVE DEPS (placeholder): conda-forge libint2 2.13.1 + libxc +
-      # OpenBLAS + Eigen. To be replaced by the release wheels' own
-      # from-source libint2/libxc (wheels.yml build-native-deps).
+      # NATIVE DEPS: the release wheels' own from-source builds (libint2 2.7.2
+      # small export, static; OpenBLAS 0.3.27 fixed TARGET; libxc 6.2.2; Eigen
+      # 3.4.0), as built by .github/workflows/native-deps-macwin.yml. Reused
+      # from that workflow's run by artifact until it is on main; then this
+      # becomes a cache restore of its keys (scripts/wheels/README.md).
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: native-*-${{ matrix.platform }}
+          merge-multiple: true
+          path: native
+          run-id: ${{ env.NATIVE_FROM_RUN }}
+          github-token: ${{ github.token }}
+
+      # Build tools only (libecpint is a CMake build); nothing here is linked.
       - uses: mamba-org/setup-micromamba@add3a49764cedee8ee24e82dfde87f5bc2914462 # v2.0.7
         with:
           environment-name: nd
           init-shell: bash
           create-args: >-
             -c conda-forge
-            libint=2.13.1 libxc-c=6.2.2 libboost-headers
-            openblas eigen=3.4.0 cmake ninja pkg-config
+            cmake ninja pkg-config
 
       - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
         if: runner.os == 'Windows'
@@ -107,9 +119,8 @@ jobs:
 
       - name: Native prefix
         run: |
-          if [ "$RUNNER_OS" = Windows ]; then P="$CONDA_PREFIX/Library"; else P="$CONDA_PREFIX"; fi
-          echo "DEPS_PREFIX=$P" >> "$GITHUB_ENV"
-          echo "LIBS_PREFIX=$P" >> "$GITHUB_ENV"
+          echo "DEPS_PREFIX=$GITHUB_WORKSPACE/native" >> "$GITHUB_ENV"
+          ls native/lib native/include
 
       - name: Build tests
         run: |
@@ -153,7 +164,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-15, windows-latest]
+        include:
+          - { os: macos-15, platform: macos-arm64 }
+          - { os: windows-2025, platform: windows-x86_64 }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 180
     defaults:
@@ -171,15 +184,27 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      # NATIVE DEPS (placeholder): see the rust job.
+      # NATIVE DEPS: the release wheels' own from-source builds (libint2 2.7.2
+      # small export, static; OpenBLAS 0.3.27 fixed TARGET; libxc 6.2.2; Eigen
+      # 3.4.0), as built by .github/workflows/native-deps-macwin.yml. Reused
+      # from that workflow's run by artifact until it is on main; then this
+      # becomes a cache restore of its keys (scripts/wheels/README.md).
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: native-*-${{ matrix.platform }}
+          merge-multiple: true
+          path: native
+          run-id: ${{ env.NATIVE_FROM_RUN }}
+          github-token: ${{ github.token }}
+
+      # Build tools only (libecpint is a CMake build); nothing here is linked.
       - uses: mamba-org/setup-micromamba@add3a49764cedee8ee24e82dfde87f5bc2914462 # v2.0.7
         with:
           environment-name: nd
           init-shell: bash
           create-args: >-
             -c conda-forge
-            libint=2.13.1 libxc-c=6.2.2 libboost-headers
-            openblas eigen=3.4.0 cmake ninja pkg-config
+            cmake ninja pkg-config
 
       - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
         if: runner.os == 'Windows'
@@ -198,9 +223,8 @@ jobs:
 
       - name: Native prefix
         run: |
-          if [ "$RUNNER_OS" = Windows ]; then P="$CONDA_PREFIX/Library"; else P="$CONDA_PREFIX"; fi
-          echo "DEPS_PREFIX=$P" >> "$GITHUB_ENV"
-          echo "LIBS_PREFIX=$P" >> "$GITHUB_ENV"
+          echo "DEPS_PREFIX=$GITHUB_WORKSPACE/native" >> "$GITHUB_ENV"
+          ls native/lib native/include
 
       - name: Build wheel (maturin --release)
         run: |
@@ -226,12 +250,14 @@ jobs:
           ls -la wheelhouse
 
       # Plain bash from here on: no micromamba activation, and the conda root
-      # is renamed away so nothing outside the wheel can satisfy a library load.
+      # and the native prefix are renamed away so nothing outside the wheel can
+      # satisfy a library load.
       - name: Install the wheel into a fresh venv (build prefixes hidden)
         shell: bash {0}
         run: |
           set -euo pipefail
           mv "$MAMBA_ROOT_PREFIX" "$MAMBA_ROOT_PREFIX.hidden"
+          mv native native.hidden
           PY='${{ steps.py.outputs.python-path }}'
           "$PY" -m venv "$RUNNER_TEMP/v"
           if [ "$RUNNER_OS" = Windows ]; then

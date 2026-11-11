@@ -5,8 +5,9 @@
 # maturin need there. Linux CI never sources it.
 #
 # Inputs (environment):
-#   DEPS_PREFIX   prefix holding OpenBLAS (+ pkg-config file) and Eigen
-#                 (include/eigen3). On Windows a conda env's `Library` dir.
+#   DEPS_PREFIX   prefix holding OpenBLAS (+ lib/pkgconfig/openblas.pc) and
+#                 Eigen (include/eigen3): the merged native-*-<platform>
+#                 artifacts of native-deps-macwin.yml (scripts/wheels/README.md).
 #   LIBS_PREFIX   prefix holding libint2 (include/libint2, lib/) and libxc.
 #                 Defaults to DEPS_PREFIX.
 #
@@ -33,9 +34,9 @@ case "${RUNNER_OS:-}" in
     export CC=clang-cl CXX=clang-cl
     ;;
   macOS)
-    # conda-forge's osx-arm64 libraries target macOS 11.0.
+    # The native deps (native-deps-macwin.yml) are built for macOS 11.0.
     export MACOSX_DEPLOYMENT_TARGET=11.0
-    # Test binaries load conda's dylibs through @rpath; /bin/bash strips
+    # Test binaries load the prefix's dylibs through @rpath; /bin/bash strips
     # DYLD_* (SIP), so this is set here, inside the shell, not in `env:`.
     export DYLD_FALLBACK_LIBRARY_PATH="$LIBS_PREFIX/lib:$DEPS_PREFIX/lib"
     ;;
