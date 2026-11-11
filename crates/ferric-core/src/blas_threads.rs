@@ -38,8 +38,10 @@
 //! `ferric_integrals::blas_threads` re-exports everything from here.
 
 use std::cell::Cell;
-use std::os::raw::c_int;
-use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
+use std::ffi::CStr;
+use std::os::raw::{c_char, c_int};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
+use std::sync::OnceLock;
 
 // OpenBLAS runtime API. Present in the OpenBLAS we link (verified: `nm -D`
 // shows openblas_set_num_threads / openblas_get_num_threads as T). The `#[link]`
@@ -49,6 +51,76 @@ use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
 extern "C" {
     fn openblas_get_num_threads() -> c_int;
     fn openblas_set_num_threads(n: c_int);
+    // Present in every OpenBLAS that has the two above (same link contract).
+    fn openblas_get_config() -> *const c_char;
+}
+
+/// The OpenBLAS build's maximum thread count (`MAX_THREADS=<n>` in
+/// `openblas_get_config()`), read once. OpenBLAS fixes it at BUILD time
+/// (`NUM_THREADS`; unset, the build machine's core count) and
+/// `openblas_set_num_threads` silently clamps every request to it: the
+/// 0.1.0rc11 Linux wheel's OpenBLAS was built with `MAX_THREADS=4`, so a
+/// 12-thread request ran 4 threads while ferric reported 12.
+///
+/// `None` when the config string carries no `MAX_THREADS` (an OpenBLAS too
+/// old to report it): ferric then cannot tell the cap and reports requested
+/// counts as given (the behaviour before the cap was read), and says so once.
+pub fn blas_max_threads() -> Option<usize> {
+    static CAP: OnceLock<Option<usize>> = OnceLock::new();
+    *CAP.get_or_init(|| {
+        let ptr = unsafe { openblas_get_config() };
+        let config = if ptr.is_null() {
+            String::new()
+        } else {
+            unsafe { CStr::from_ptr(ptr) }
+                .to_string_lossy()
+                .into_owned()
+        };
+        let cap = parse_max_threads(&config);
+        if cap.is_none() {
+            eprintln!(
+                "[ferric] warning: cannot read MAX_THREADS from OpenBLAS's config \
+                 ({config:?}); BLAS thread counts are reported as requested, \
+                 not checked against the build's limit"
+            );
+        }
+        cap
+    })
+}
+
+/// `MAX_THREADS=<n>` from an `openblas_get_config()` string.
+#[doc(hidden)]
+pub fn parse_max_threads(config: &str) -> Option<usize> {
+    config
+        .split_whitespace()
+        .find_map(|tok| tok.strip_prefix("MAX_THREADS="))
+        .and_then(|n| n.parse::<usize>().ok())
+        .filter(|&n| n > 0)
+}
+
+/// The thread count OpenBLAS will actually run for a request of `requested`:
+/// the request clamped to [`blas_max_threads`] (as given when the cap is
+/// unknown). Prints a one-time warning the first time a request exceeds the
+/// cap.
+pub fn effective_blas_threads(requested: usize) -> usize {
+    clamp_to_cap(requested.max(1), blas_max_threads())
+}
+
+static CAP_WARNED: AtomicBool = AtomicBool::new(false);
+
+fn clamp_to_cap(requested: usize, cap: Option<usize>) -> usize {
+    match cap {
+        Some(cap) if requested > cap => {
+            if !CAP_WARNED.swap(true, Ordering::SeqCst) {
+                eprintln!(
+                    "[ferric] warning: OpenBLAS was built with MAX_THREADS={cap}; \
+                     requested {requested}, using {cap}"
+                );
+            }
+            cap
+        }
+        _ => requested,
+    }
 }
 
 /// Stack size for every thread the process spawns (rayon workers,
@@ -115,9 +187,13 @@ pub fn init_threading() {
     // who deliberately wants multi-threaded BLAS inside rayon regions).
     if let Ok(v) = std::env::var("OPENBLAS_NUM_THREADS") {
         if let Ok(n) = v.trim().parse::<usize>() {
-            let n = n.max(1) as c_int;
+            let n = effective_blas_threads(n) as c_int;
             unsafe { openblas_set_num_threads(n) };
-            BASELINE.store(n, Ordering::SeqCst);
+            // What OpenBLAS took (clamped to its MAX_THREADS), not the request.
+            BASELINE.store(
+                unsafe { openblas_get_num_threads() }.max(1),
+                Ordering::SeqCst,
+            );
             return;
         }
     }
@@ -174,17 +250,22 @@ pub(crate) const BLAS_THREADS: crate::config::ConfigVar<usize> = crate::config::
 ///
 /// Injection instead of `set_var` in tests: the env is process-global and the
 /// test harness runs tests on parallel threads.
+///
+/// The result is the count OpenBLAS will actually run: a request above the
+/// build's `MAX_THREADS` is clamped ([`effective_blas_threads`], with a
+/// one-time warning), so what ferric reports (Python `blas_threads()`, the
+/// CLI's `[ferric] threads:` line) is what runs.
 #[doc(hidden)]
 pub fn opt_in_blas_threads_with(get: impl Fn(&str) -> Option<String>) -> usize {
     if rayon::current_thread_index().is_some() {
         return 1;
     }
     let explicit = EXPLICIT_SERIAL.load(Ordering::SeqCst);
-    resolve_serial_blas_threads(
+    effective_blas_threads(resolve_serial_blas_threads(
         (explicit > 0).then_some(explicit),
         get,
         rayon::current_num_threads(),
-    )
+    ))
 }
 
 /// The precedence rule behind [`opt_in_blas_threads`], free of process state:
@@ -225,7 +306,9 @@ pub fn current_blas_threads() -> usize {
 /// parallel region, which runs at the baseline. [`opt_in_blas_threads`]
 /// already returns 1 there.
 pub fn with_blas_threads<R>(n: usize, f: impl FnOnce() -> R) -> R {
-    let n = n.max(1) as c_int;
+    // Clamped to OpenBLAS's MAX_THREADS (warning once), so the count this scope
+    // records, and a nested scope restores, is the one OpenBLAS runs.
+    let n = effective_blas_threads(n) as c_int;
     debug_assert!(
         n == 1 || rayon::current_thread_index().is_none(),
         "with_blas_threads({n}) on a rayon worker: serial-section BLAS threads \
@@ -325,10 +408,70 @@ mod tests {
         let _g = GLOBAL_THREAD_STATE
             .lock()
             .unwrap_or_else(|e| e.into_inner());
+        // (clamped to the OpenBLAS build's MAX_THREADS on a bigger host).
         assert_eq!(
             opt_in_blas_threads_with(|_| None),
-            rayon::current_num_threads()
+            effective_blas_threads(rayon::current_num_threads())
         );
+    }
+
+    #[test]
+    fn parses_max_threads_from_the_openblas_config() {
+        // The 0.1.0rc11 Linux wheel's string, verbatim.
+        assert_eq!(
+            parse_max_threads("OpenBLAS 0.3.27 NO_AFFINITY HASWELL MAX_THREADS=4"),
+            Some(4)
+        );
+        assert_eq!(
+            parse_max_threads(
+                "OpenBLAS 0.3.26 NO_LAPACKE DYNAMIC_ARCH NO_AFFINITY Haswell MAX_THREADS=64"
+            ),
+            Some(64)
+        );
+        assert_eq!(parse_max_threads("OpenBLAS 0.3.27 HASWELL"), None);
+        assert_eq!(parse_max_threads(""), None);
+        assert_eq!(parse_max_threads("MAX_THREADS=0"), None);
+    }
+
+    #[test]
+    fn requests_above_the_cap_are_clamped_and_unknown_caps_pass_through() {
+        assert_eq!(clamp_to_cap(12, Some(4)), 4);
+        assert_eq!(clamp_to_cap(4, Some(4)), 4);
+        assert_eq!(clamp_to_cap(3, Some(64)), 3);
+        assert_eq!(clamp_to_cap(500, None), 500);
+    }
+
+    /// The reported serial-section count IS what OpenBLAS runs. The 0.1.0rc11
+    /// wheel reported 12 (`ferric.blas_threads()`) while its OpenBLAS, built
+    /// with MAX_THREADS=4, ran 4. A request far above any build's cap must
+    /// come back as the count `openblas_get_num_threads()` shows after the
+    /// set, which is the linked OpenBLAS's real limit.
+    ///
+    /// Mutation check (2026-11-11): `opt_in_blas_threads_with` returning the
+    /// unclamped request (the pre-fix behaviour) fails here with
+    /// `reported 100000, OpenBLAS runs 64` against the system OpenBLAS
+    /// (MAX_THREADS=64); so does `with_blas_threads` skipping the clamp, on
+    /// the second assertion.
+    #[test]
+    fn reported_serial_threads_equal_what_openblas_runs() {
+        let _g = GLOBAL_THREAD_STATE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let huge = 100_000;
+        set_serial_blas_threads(Some(huge));
+        let reported = opt_in_blas_threads_with(|_| None);
+        let runs = with_blas_threads(reported, || unsafe { openblas_get_num_threads() } as usize);
+        let scope_reports = with_blas_threads(huge, || SCOPE.with(|s| s.get().1) as usize);
+        set_serial_blas_threads(None);
+        assert_eq!(reported, runs, "reported {reported}, OpenBLAS runs {runs}");
+        assert!(reported < huge, "a {huge}-thread request was not clamped");
+        assert_eq!(
+            scope_reports, runs,
+            "with_blas_threads({huge}) recorded {scope_reports}, OpenBLAS runs {runs}"
+        );
+        if let Some(cap) = blas_max_threads() {
+            assert_eq!(runs, cap, "OpenBLAS ran {runs}, its MAX_THREADS is {cap}");
+        }
     }
 
     #[test]
