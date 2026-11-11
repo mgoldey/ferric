@@ -1610,6 +1610,10 @@ fn rhf_stability_descent(
     }
     let nocc = (mol.nelec() / 2) as usize;
     let mut best = first;
+    // Candidates run without the hand-off (their tensors would sit beside
+    // the slot's); once descent starts the first solve's tensor is dropped,
+    // and the gradient recomputes.
+    let cand_config = crate::raw_handoff::without_handoff(config);
     for round in 1..=MAX_DESCENT_ROUNDS {
         let Some(st) = best.stability.as_ref() else {
             eprintln!(
@@ -1640,12 +1644,13 @@ fn rhf_stability_descent(
             best.energy
         );
 
+        crate::raw_handoff::clear_slot(config);
         let mut improved: Option<ScfResult> = None;
         for &step in &DESCENT_STEPS {
             let c_rot = rotate_mos(&best.mos_alpha, &v, nocc, step);
             let c_occ = c_rot.slice(ndarray::s![.., ..nocc]);
             let d0 = 2.0 * c_occ.dot(&c_occ.t());
-            let mut cfg = config.clone();
+            let mut cfg = cand_config.clone();
             cfg.init_guess_density = Some(d0);
             let cand = match solve_rhf_once(ctx, mol, prep, op, bounds, &cfg) {
                 Ok(c) if c.converged => c,
@@ -2318,6 +2323,7 @@ fn solve_rhf_impl(
     // builds/holds only its band of B (memory scales with rank count);
     // size-1 / non-MPI is byte-identical to the serial path.
     let df_fitters_t = phases.begin("setup:df_fitters");
+    crate::raw_handoff::clear_slot(config);
     let (mut df_j, mut df_k) = crate::fock_assembly::build_df_jk(
         ctx,
         mol,

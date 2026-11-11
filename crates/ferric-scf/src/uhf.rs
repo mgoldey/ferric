@@ -327,26 +327,38 @@ fn stability_descent(
             return best;
         };
 
+        // Candidates run without the hand-off (their tensors would sit beside
+        // the slot's); once descent starts the first solve's tensor is
+        // dropped, and the gradient recomputes.
+        crate::raw_handoff::clear_slot(config);
+        let cand_config = crate::raw_handoff::without_handoff(config);
         let mut improved: Option<ScfResult> = None;
         for &step in &DESCENT_STEPS {
             let g_a = rotate_mos(&best.mos_alpha, &va, nocc_a, step);
             let g_b = rotate_mos(&cb0, &vb, nocc_b, step);
-            let cand =
-                match solve_uhf_fockmod(ctx, mol, prep, bounds, config, Some((&g_a, &g_b)), None) {
-                    Ok(c) if c.converged => c,
-                    Ok(c) => {
-                        eprintln!(
-                            "SCF stability descent: step {step} did not converge (E = {:.8}); \
+            let cand = match solve_uhf_fockmod(
+                ctx,
+                mol,
+                prep,
+                bounds,
+                &cand_config,
+                Some((&g_a, &g_b)),
+                None,
+            ) {
+                Ok(c) if c.converged => c,
+                Ok(c) => {
+                    eprintln!(
+                        "SCF stability descent: step {step} did not converge (E = {:.8}); \
                          discarded.",
-                            c.energy
-                        );
-                        continue;
-                    }
-                    Err(e) => {
-                        eprintln!("SCF stability descent: step {step} failed ({e:?}); discarded.");
-                        continue;
-                    }
-                };
+                        c.energy
+                    );
+                    continue;
+                }
+                Err(e) => {
+                    eprintln!("SCF stability descent: step {step} failed ({e:?}); discarded.");
+                    continue;
+                }
+            };
             if accepts_candidate(
                 cand.energy,
                 best.energy,
@@ -982,6 +994,7 @@ fn solve_uhf_impl(
     } else {
         None
     };
+    crate::raw_handoff::clear_slot(config);
     let (mut df_j, mut df_k) = crate::fock_assembly::build_df_jk(
         ctx,
         mol,
