@@ -3503,7 +3503,7 @@ mod tests {
 
     /// Both spill messages name `df_k_aux = ""` (exact K) as the memory
     /// remedy for a density-fitted hybrid, with the RI-K tensor size it saves,
-    /// and say `k_builder` does nothing while RI-K is active — the knob a
+    /// and say `k_builder` does nothing while RI-K is active: the knob a
     /// reader reaches for first and the one that is inert here.
     ///
     /// MUTATION: drop `exact_k_remedy` from either message and this goes RED.

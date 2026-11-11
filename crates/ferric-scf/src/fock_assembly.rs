@@ -561,16 +561,16 @@ pub(crate) fn build_rsh_dfk_pair<'a>(
 ///   ORCA RIJCOSX, Psi4 `DFDIRJ+COSX`). The solvers then take J from `DfJ`
 ///   and K from COSX.
 ///
-/// The IGNORED warning fires for EVERY explicitly passed value the
+/// The IGNORED warning fires for every explicitly passed value the
 /// density-fitted path overrides, `"direct"` included: an inert `"direct"`
 /// is as invisible in the energy as an inert `"link"` (both equal the
 /// default bitwise), so only the warning tells a caller the knob did nothing.
 /// The one `"direct"` it does not fire for is DF-J alone with an ω = 0 exact
-/// exchange the SCF consumes: K then really comes from the direct
+/// exchange the SCF consumes: K then comes from the direct
 /// four-centre builder, so the request is honoured. See
 /// [`k_builder_ignored_warning`].
 ///
-/// `df_k_active` is `df_k.is_some()` AFTER the solver's own auto-defaulting,
+/// `df_k_active` is `df_k.is_some()` after the solver's own auto-defaulting,
 /// plus, in `solve_rhf`, a requested DF-K that was dropped because its K is
 /// never read (pure / RSH functionals). With `k_builder = "cosx"` the solvers
 /// never build the ω = 0 DF-K in the first place (see
@@ -611,9 +611,9 @@ pub(crate) fn resolve_k_builder(
 /// exchange they consume, so `df_k.is_some()` alone misses two runs whose
 /// exchange is density-fitted (or absent) all the same:
 ///
-/// * ω > 0: exchange comes ONLY from the SR/LR fitters (`driver::prepare`
+/// * ω > 0: exchange comes only from the SR/LR fitters (`driver::prepare`
 ///   refuses `df_k_aux = ""` there), and DF-J is off for RSH, so without this
-///   nothing marked the run as overridden and `k_builder = "direct"` was silent;
+///   nothing marks the run as overridden and `k_builder = "direct"` is silent;
 /// * a named `df_k_aux` the solver dropped because the functional uses no
 ///   exact exchange (RHF's `df_k_skipped`).
 pub(crate) fn open_shell_df_k_active(df_k_built: bool, df_k_aux: Option<&str>, omega: f64) -> bool {
@@ -628,7 +628,7 @@ pub(crate) fn open_shell_df_k_active(df_k_built: bool, df_k_aux: Option<&str>, o
 /// `"link"` / `"cosx"` are never honoured once overridden. `"direct"` is
 /// honoured exactly when exchange still comes from the direct four-centre
 /// builder: no DF-K (active or dropped), an exact exchange the SCF consumes,
-/// and ω = 0 — i.e. DF-J alone next to HF or a global hybrid with
+/// and ω = 0, i.e. DF-J alone next to HF or a global hybrid with
 /// `df_k_aux = ""`. Everywhere else (DF-K active, a pure functional, a
 /// range-separated one) `"direct"` names a builder that never runs.
 ///
@@ -1005,12 +1005,11 @@ mod tests {
     }
 
     /// `k_builder = "direct"` under an active DF-K (the `run_dft` hybrid
-    /// default) is as inert as `"link"` and must say so. Before the fix only
-    /// `"link"`/`"cosx"` were warned about, so a `"direct"` that never ran
-    /// was silent.
+    /// default) is as inert as `"link"` and must say so: a warning limited to
+    /// `"link"`/`"cosx"` leaves a `"direct"` that never ran silent.
     ///
     /// MUTATION: restrict the warning to `matches!(kb, "link" | "cosx")`
-    /// again (the pre-fix gate) and the `"direct"` arms go RED.
+    /// and the `"direct"` arms go RED.
     #[test]
     fn direct_overridden_by_density_fitting_is_warned_like_link() {
         // (kb, df_k_active, df_k_present, need_k, omega, expected route)
@@ -1037,7 +1036,7 @@ mod tests {
         }
     }
 
-    /// The one overridden-path `"direct"` that IS honoured: DF-J alone next
+    /// The one overridden-path `"direct"` that is honoured: DF-J alone next
     /// to a consumed ω = 0 exact exchange (HF, or a global hybrid with
     /// `df_k_aux = ""`). K then comes from the direct four-centre builder, so
     /// a warning would be false. `"link"` in the same state is still skipped
@@ -1081,7 +1080,7 @@ mod tests {
             !open_shell_df_k_active(false, Some(""), 0.0),
             "exact sentinel"
         );
-        // RSH under UKS with no DF-J (off for omega > 0): now overridden.
+        // RSH under UKS with no DF-J (off for omega > 0): overridden.
         let active = open_shell_df_k_active(false, None, 0.3);
         assert!(k_builder_ignored_warning("direct", active, false, true, 0.3).is_some());
     }
