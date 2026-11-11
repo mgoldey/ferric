@@ -185,7 +185,15 @@ pub fn rohf_newton_step(
         let k = (&mut k_vc, &mut k_vo, &mut k_oc);
         let g = (&g_vc, &g_vo, &g_oc);
         let diag = (&diag_vc, &diag_vo, &diag_oc);
-        let (its, resid) = pcg_refine(ctx, inp, &pool, g, diag, k, cg_max_iter, cg_conv)?;
+        let (its, resid) = pcg_refine(
+            ctx,
+            inp,
+            &pool,
+            g,
+            diag,
+            k,
+            (cg_max_iter, cg_conv, max_step),
+        )?;
         if crate::rohf::rohf_trace() {
             let kmax = arr_max_abs(&k_vc)
                 .max(arr_max_abs(&k_vo))
@@ -259,8 +267,9 @@ pub fn rohf_newton_step(
 }
 
 /// Preconditioned conjugate-gradient refinement of `(κ_vc, κ_vo, κ_oc)` (on
-/// entry the diagonal guess κ⁰) towards H·κ = −g.
-#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+/// entry the diagonal guess κ⁰) towards H·κ = −g, with Steihaug truncation on
+/// negative curvature (the step then goes to the `max_step` box along it).
+#[allow(clippy::type_complexity)]
 fn pcg_refine(
     ctx: &ParallelContext,
     inp: &RohfNewtonInputs,
@@ -268,8 +277,7 @@ fn pcg_refine(
     (g_vc, g_vo, g_oc): (&Array2<f64>, &Array2<f64>, &Array2<f64>),
     (diag_vc, diag_vo, diag_oc): (&Array2<f64>, &Array2<f64>, &Array2<f64>),
     (k_vc, k_vo, k_oc): (&mut Array2<f64>, &mut Array2<f64>, &mut Array2<f64>),
-    cg_max_iter: usize,
-    cg_conv: f64,
+    (cg_max_iter, cg_conv, max_step): (usize, f64, f64),
 ) -> Result<(usize, f64), FerricError> {
     // Preconditioned conjugate-gradient solve for H·κ = −g.
     //
@@ -310,25 +318,39 @@ fn pcg_refine(
         let (ap_vc, ap_vo, ap_oc) = hessian_matvec(ctx, inp, &p_vc, &p_vo, &p_oc, pool)?;
         let p_ap: f64 = inner(&p_vc, &ap_vc) + inner(&p_vo, &ap_vo) + inner(&p_oc, &ap_oc);
         // Steihaug truncation. The exact Hessian is INDEFINITE near a saddle
-        // (e.g. a hole in the wrong shell), and on negative curvature the CG
-        // step α would move uphill along that direction, so Newton could
-        // converge to the saddle. Stop and keep the current iterate: on the
-        // first pass that is κ⁰ = −M⁻¹g, a descent direction because M is
-        // positive (`build_diag_perspin`); later iterates decrease the
-        // quadratic model.
+        // (e.g. a hole in the wrong shell); on negative curvature the CG step
+        // α = rᵀz/pᵀAp is negative and would move to the model's stationary
+        // point along p, which is a MAXIMUM there, so Newton could converge
+        // to the saddle. Instead step along ±p to the `max_step` box: the
+        // quadratic model m(κ) = gᵀκ + ½κᵀHκ has slope −rᵀp along p at the
+        // current iterate (its gradient there is g + Hκ = −r) and curvature
+        // pᵀAp < 0, so with the sign s = sign(rᵀp) it decreases monotonically
+        // all the way to the boundary. (At κ = 0 the rule is gᵀ(sp) ≤ 0; here
+        // PCG starts at κ⁰, so the model gradient, not g, sets the sign.)
         //
         // Only curvature below −NEG_CURVATURE·|p|² counts. MEASURED 2026-11-11
         // (Rayleigh quotients pᵀAp/|p|² at pᵀAp ≤ 0, half-Hessian, Hartree):
         // the π-hole orientation modes of off-axis ²Π OH/NO under PBE sit at
-        // −2e-7 .. −1.04e-4 (the XC grid's rotational variance, ΔE ~1e-6 Ha
-        // between orientations), the OH/6-31G σ-hole saddle at −0.08 .. −0.15.
-        // Truncating on the former made Newton crawl between grid-degenerate
-        // orientations (NO off-axis 12 → 92 iterations); between −1e-3 and 0
-        // the curvature is treated as flat and CG continues as before. A real
-        // saddle softer than 1e-3 Ha is therefore not escaped by this guard.
+        // −2e-7 .. −1.04e-4 (the XC grid's rotational variance, up to 3.4e-6
+        // Ha between orientations), the OH/6-31G σ-hole saddle at −0.08 ..
+        // −0.15. Truncating on the former made Newton crawl between
+        // grid-degenerate orientations (NO off-axis 12 → 92 iterations);
+        // between −1e-3 and 0 the curvature is treated as flat and CG
+        // continues. A real saddle softer than 1e-3 Ha is therefore not
+        // escaped by this guard.
         let pp = inner(&p_vc, &p_vc) + inner(&p_vo, &p_vo) + inner(&p_oc, &p_oc);
         if p_ap < -NEG_CURVATURE * pp {
             STEIHAUG_TRUNCATIONS.with(|c| c.set(c.get() + 1));
+            let rp = inner(&r_vc, &p_vc) + inner(&r_vo, &p_vo) + inner(&r_oc, &p_oc);
+            let s = if rp >= 0.0 { 1.0 } else { -1.0 };
+            let t = [(&*k_vc, &p_vc), (&*k_vo, &p_vo), (&*k_oc, &p_oc)]
+                .into_iter()
+                .map(|(k, p)| box_step(k, p, s, max_step))
+                .fold(f64::INFINITY, f64::min);
+            let t = if t.is_finite() { t } else { 0.0 };
+            k_vc.zip_mut_with(&p_vc, |k, &v| *k += s * t * v);
+            k_vo.zip_mut_with(&p_vo, |k, &v| *k += s * t * v);
+            k_oc.zip_mut_with(&p_oc, |k, &v| *k += s * t * v);
             break;
         }
         if p_ap.abs() < 1e-30 {
@@ -357,6 +379,24 @@ fn pcg_refine(
     }
 
     Ok((its, resid((&r_vc, &r_vo, &r_oc))))
+}
+
+/// Largest `t ≥ 0` with `|κ_i + s·t·p_i| ≤ max_step` for every component
+/// (∞ when `p` is zero). Components already outside the box give `t = 0`.
+fn box_step(k: &Array2<f64>, p: &Array2<f64>, s: f64, max_step: f64) -> f64 {
+    k.iter()
+        .zip(p.iter())
+        .filter(|(_, &pi)| pi != 0.0)
+        .map(|(&ki, &pi)| {
+            let d = s * pi;
+            let room = if d > 0.0 {
+                max_step - ki
+            } else {
+                max_step + ki
+            };
+            (room / d.abs()).max(0.0)
+        })
+        .fold(f64::INFINITY, f64::min)
 }
 
 /// Compute H · κ for the three κ-blocks.
