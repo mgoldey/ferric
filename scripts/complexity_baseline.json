@@ -63869,7 +63869,7 @@
   },
   "crates/ferric-scf/src/driver.rs::warn_if_rss_over_at_stage": {
     "cc": 1.0,
-    "mi": 128.0374727456536
+    "mi": 105.80550089548417
   },
   "crates/ferric-scf/src/driver.rs::xc_plan": {
     "cc": 3.0,
