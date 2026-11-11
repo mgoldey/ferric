@@ -395,6 +395,10 @@ impl FxcKernelStore {
     }
 }
 
+/// Trust radius (componentwise |κ| clip) of the ROHF/ROKS PCG Newton step,
+/// also used for AH's Newton fallback. Conservative: ROKS Hessians are stiff.
+const ROHF_NEWTON_MAX_STEP: f64 = 0.1;
+
 /// Solve restricted open-shell Hartree-Fock equations.
 ///
 /// Uses `mol.charge` and `mol.multiplicity` to determine doubly/singly
@@ -1618,12 +1622,14 @@ fn solve_rohf_impl(
         //   - MEASURED 2026-11-11 (tests/roks_newton_convergence.rs; energy_conv
         //     1e-9, density_conv 1e-7, max_iter 200; B3LYP with RI-J + DF-K
         //     def2-universal-jkfit, PBE direct), iterations (HVPs), all at the
-        //     DIIS energy within 1e-7 Ha. One HVP costs about one Fock build
-        //     (its J/K + f_xc), so iterations + HVPs is the Fock-equivalent cost:
+        //     DIIS energy within 1e-7 Ha (AH HVP counts vary by a few between
+        //     runs: last-bit thread-count drift moves the Davidson's stop).
+        //     One HVP costs about one Fock build (its J/K + f_xc), so
+        //     iterations + HVPs is the Fock-equivalent cost:
         //                         DIIS  Newton(1e-2)  soscf(1e-3)  AH(1e-2)
         //       NH2/6-31G PBE       8      6 (6)        6 (6)        6 (25)
         //       NH2/cc-pVDZ B3LYP   9      7 (8)        7 (4)        7 (30)
-        //       OH/cc-pVDZ B3LYP   18      8 (18)       9 (18)       8 (38)
+        //       OH/cc-pVDZ B3LYP   18      8 (18)       9 (18)       8 (35-38)
         //     Degenerate ²Π, PBE/6-31G (energy 1e-10 / density 1e-8): OH on-axis
         //     20 / 9 (21) / 11 (20); 1e-5 Å off-axis OH 18 / 10 (24) / 10 (14) /
         //     AH 10 (46), CH 22 / 8 (25) / 10 (22) / AH not converged, NO 26 /
@@ -1697,7 +1703,11 @@ fn solve_rohf_impl(
                 j_response: fitted_j.as_deref(),
                 k_response: fitted_k.as_deref(),
             };
-            let ah_inputs = crate::rohf_ah::RohfAhInputs { base: &inputs };
+            let ah_inputs = crate::rohf_ah::RohfAhInputs {
+                base: &inputs,
+                newton_level_shift: config.level_shift.max(1e-6),
+                newton_max_step: ROHF_NEWTON_MAX_STEP,
+            };
             let (c_new, _kmax) = crate::rohf_ah::rohf_ah_step(
                 ctx,
                 &ah_inputs,
@@ -1706,8 +1716,8 @@ fn solve_rohf_impl(
                 // stops), as with the Newton branch's `cg_conv`: a fixed 1e-7
                 // reported a tighter `density_conv` run converged at |g| up
                 // to 1e-7 (2.6e-10 at density_conv 1e-12 on OH/6-31G).
-                // Below ~1e-8 the Davidson cannot meet it and `rohf_ah_step`
-                // takes the PCG Newton step (`rohf_ah`).
+                // At such tolerances the Davidson can stall short of it, and
+                // `rohf_ah_step` then takes the PCG Newton step (`rohf_ah`).
                 /*davidson_conv=*/
                 config.density_conv.min(1e-7),
                 /*davidson_max_vecs=*/ 50,
@@ -1779,7 +1789,7 @@ fn solve_rohf_impl(
                 ctx,
                 &inputs,
                 config.level_shift.max(1e-6),
-                0.1, // trust radius (conservative — ROKS hessians are stiff)
+                ROHF_NEWTON_MAX_STEP,
                 20,
                 // Below cg_conv the step is zero (ΔP = 0), so a fixed 1e-7
                 // would end a tighter `density_conv` run at |g| ~ 1e-7.

@@ -698,7 +698,8 @@ fn rohf_ah_honours_a_tight_density_conv() {
     );
     assert!(
         g < bar,
-        "|g|max = {g:.3e} >= {bar:.0e} at density_conv 1e-10"
+        "|g|max = {g:.3e} >= {bar:.0e} at density_conv {:.0e}",
+        cfg.density_conv
     );
     assert!(hvps > 0, "no ROHF HVP: AH never engaged");
     assert!(

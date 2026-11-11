@@ -321,12 +321,25 @@ fn pcg_refine(
         // (e.g. a hole in the wrong shell); on negative curvature the CG step
         // α = rᵀz/pᵀAp is negative and would move to the model's stationary
         // point along p, which is a MAXIMUM there, so Newton could converge
-        // to the saddle. Instead step along ±p to the `max_step` box: the
+        // to the saddle. Instead step along +p to the `max_step` box: the
         // quadratic model m(κ) = gᵀκ + ½κᵀHκ has slope −rᵀp along p at the
         // current iterate (its gradient there is g + Hκ = −r) and curvature
-        // pᵀAp < 0, so with the sign s = sign(rᵀp) it decreases monotonically
-        // all the way to the boundary. (At κ = 0 the rule is gᵀ(sp) ≤ 0; here
-        // PCG starts at κ⁰, so the model gradient, not g, sets the sign.)
+        // pᵀAp < 0, so it decreases monotonically all the way to the box
+        // whenever rᵀp ≥ 0. In PCG that always holds: rᵀp = rᵀz + β·rᵀp_prev
+        // and rᵀp_prev = 0 by CG's orthogonality, so rᵀp = rᵀM⁻¹r > 0 (M is
+        // positive, `build_diag_perspin`). No ± choice is needed, and none
+        // is made.
+        //
+        // If κ is already at (or, κ⁰ being unclipped, outside) the box in a
+        // component that +p pushes further out, `box_step` gives t = 0 and
+        // the step is the current iterate, which the caller then clips: the
+        // earlier "keep the iterate" behaviour, a descent step on the first
+        // pass (κ⁰ = −M⁻¹g). MEASURED 2026-11-11 (FERRIC_ROHF_TRACE prints t
+        // per truncation): in the two saddle tests' full SCFs, 10 of 16
+        // truncations hit t = 0, all in later SCF iterations; none occur in
+        // the convergence suites. Restarting from κ = 0 along ±p (sign by
+        // gᵀp ≤ 0) to the box instead was measured and not kept: the same
+        // 20 / 22 iterations, 124 / 125 HVPs against 120 / 124.
         //
         // Only curvature below −NEG_CURVATURE·|p|² counts. MEASURED 2026-11-11
         // (Rayleigh quotients pᵀAp/|p|² at pᵀAp ≤ 0, half-Hessian, Hartree):
@@ -341,16 +354,21 @@ fn pcg_refine(
         let pp = inner(&p_vc, &p_vc) + inner(&p_vo, &p_vo) + inner(&p_oc, &p_oc);
         if p_ap < -NEG_CURVATURE * pp {
             STEIHAUG_TRUNCATIONS.with(|c| c.set(c.get() + 1));
-            let rp = inner(&r_vc, &p_vc) + inner(&r_vo, &p_vo) + inner(&r_oc, &p_oc);
-            let s = if rp >= 0.0 { 1.0 } else { -1.0 };
             let t = [(&*k_vc, &p_vc), (&*k_vo, &p_vo), (&*k_oc, &p_oc)]
                 .into_iter()
-                .map(|(k, p)| box_step(k, p, s, max_step))
+                .map(|(k, p)| box_step(k, p, max_step))
                 .fold(f64::INFINITY, f64::min);
             let t = if t.is_finite() { t } else { 0.0 };
-            k_vc.zip_mut_with(&p_vc, |k, &v| *k += s * t * v);
-            k_vo.zip_mut_with(&p_vo, |k, &v| *k += s * t * v);
-            k_oc.zip_mut_with(&p_oc, |k, &v| *k += s * t * v);
+            if crate::rohf::rohf_trace() {
+                eprintln!(
+                    "ROHF Newton: Steihaug truncation, curvature {:.3e}, step t {t:.3e} along p (|p|max {:.2e})",
+                    p_ap / pp,
+                    arr_max_abs(&p_vc).max(arr_max_abs(&p_vo)).max(arr_max_abs(&p_oc))
+                );
+            }
+            k_vc.zip_mut_with(&p_vc, |k, &v| *k += t * v);
+            k_vo.zip_mut_with(&p_vo, |k, &v| *k += t * v);
+            k_oc.zip_mut_with(&p_oc, |k, &v| *k += t * v);
             break;
         }
         if p_ap.abs() < 1e-30 {
@@ -381,20 +399,20 @@ fn pcg_refine(
     Ok((its, resid((&r_vc, &r_vo, &r_oc))))
 }
 
-/// Largest `t ≥ 0` with `|κ_i + s·t·p_i| ≤ max_step` for every component
-/// (∞ when `p` is zero). Components already outside the box give `t = 0`.
-fn box_step(k: &Array2<f64>, p: &Array2<f64>, s: f64, max_step: f64) -> f64 {
+/// Largest `t ≥ 0` with `|κ_i + t·p_i| ≤ max_step` for every component
+/// (∞ when `p` is zero). A component already at or outside the box in the
+/// direction `p` pushes gives `t = 0`.
+fn box_step(k: &Array2<f64>, p: &Array2<f64>, max_step: f64) -> f64 {
     k.iter()
         .zip(p.iter())
         .filter(|(_, &pi)| pi != 0.0)
         .map(|(&ki, &pi)| {
-            let d = s * pi;
-            let room = if d > 0.0 {
+            let room = if pi > 0.0 {
                 max_step - ki
             } else {
                 max_step + ki
             };
-            (room / d.abs()).max(0.0)
+            (room / pi.abs()).max(0.0)
         })
         .fold(f64::INFINITY, f64::min)
 }

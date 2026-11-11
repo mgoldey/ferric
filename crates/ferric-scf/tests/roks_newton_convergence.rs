@@ -14,10 +14,11 @@
 //!           NH2/cc-pVDZ B3LYP 9 / NC (544) / 136 (309) / 169 (150);
 //!           OH/cc-pVDZ B3LYP 18 / NC (1270) / 167 (695) / NC (193).
 //!   after:  8 / 6 (6) / 6 (6) / 6 (25); 9 / 7 (8) / 7 (4) / 7 (30);
-//!           18 / 8 (18) / 9 (18) / 8 (38).
+//!           18 / 8 (18) / 9 (18) / 8 (35-38).
 //! AH HVPs before tuning its Davidson for one root (n_seed 8, n_block 6,
 //! fixed tolerance 1e-7): 66 / 81 / 117; after (n_seed 2, n_block 2,
-//! tolerance max(1e-7, 1e-2·min(1,‖g‖)·‖g‖)): 25 / 30 / 38 (asserted below the
+//! tolerance max(1e-7, 1e-2·min(1,‖g‖)·‖g‖)): 25 / 30 / 35-38 (the last
+//! varies between runs with last-bit drift; asserted below the
 //! many-root counts, `check`). AH remains the
 //! costliest mode (~4x Newton's Fock-equivalents here).
 //! Mutations (applied, run, reverted): (M1) the Newton branch stepping from
@@ -212,13 +213,21 @@ enum Expect {
     /// off-axis displacement (1e-5 Å) alone would move E by O(1e-10). So the
     /// energy must lie within 1e-5 Ha of DIIS (3x that variance), and nothing
     /// is claimed about which orientation either method picks.
-    GridDegenerateOrientation,
+    ///
+    /// No iteration bound against DIIS: the two converge to DIFFERENT
+    /// stationary points (orientations), so their iteration counts measure
+    /// different paths, and no margin between them can be derived (NO AH
+    /// sits exactly at DIIS's 26). Cost is held instead by `ah_hvps_ceiling`,
+    /// the HVP count of the many-root AH Davidson (n_seed 8, n_block 6) on
+    /// the same case, as in `check`.
+    GridDegenerateOrientation { ah_hvps_ceiling: usize },
 }
 
 /// The #172 degenerate open shells (²Π OH, CH and NO, PBE/6-31G, the F6 test
 /// settings energy_conv 1e-10 / density_conv 1e-8). Every listed mode must
-/// converge in ≤ DIIS iterations, with ≥ 1 ROHF HVP, to the DIIS energy or,
-/// for AH where noted, to a grid-degenerate hole orientation ([`Expect`]).
+/// converge with ≥ 1 ROHF HVP, either to the DIIS energy in ≤ DIIS
+/// iterations or, for AH where noted, to a grid-degenerate hole orientation
+/// in fewer HVPs than the many-root AH Davidson ([`Expect`]).
 ///
 /// MEASURED 2026-11-11, iterations (HVPs), DIIS / Newton / soscf / AH:
 ///   OH on-axis   20 / 9 (21) / 11 (20) / –   (the relabel guard's case;
@@ -229,7 +238,8 @@ enum Expect {
 ///   NO off-axis  26 / 12 (20) / 13 (19) / 26 (251)
 /// AH's Davidson tolerance now follows density_conv (1e-8 here, was a fixed
 /// 1e-7): that costs NO AH one iteration and 25 HVPs (25 (226) before) and
-/// OH one HVP, and leaves NO AH AT the DIIS iteration bound.
+/// OH one HVP. Many-root AH Davidson (the HVP ceilings): OH 116, NO 662;
+/// that mutation (applied, run, reverted) fails both.
 /// Off-axis AH converges on OH and NO, to −75.620835678 and −129.704259565
 /// against DIIS's −75.620834299 and −129.704259009. Those equal the ON-axis
 /// DIIS energies to 1e-9: AH lands on the other π-hole orientation, which is
@@ -246,7 +256,8 @@ enum Expect {
 /// 1e-8).
 #[test]
 fn degenerate_pi_open_shells_second_order_match_diis() {
-    use Expect::{GridDegenerateOrientation as Orient, SameEnergy as Same};
+    use Expect::SameEnergy as Same;
+    let orient = |ah_hvps_ceiling| Expect::GridDegenerateOrientation { ah_hvps_ceiling };
     let mut failures = Vec::new();
     let cases: [(&str, &str, &[(Mode, Expect)]); 4] = [
         (
@@ -260,7 +271,7 @@ fn degenerate_pi_open_shells_second_order_match_diis() {
             &[
                 (Mode::Newton, Same),
                 (Mode::Soscf, Same),
-                (Mode::Ah, Orient),
+                (Mode::Ah, orient(116)),
             ],
         ),
         (
@@ -274,7 +285,7 @@ fn degenerate_pi_open_shells_second_order_match_diis() {
             &[
                 (Mode::Newton, Same),
                 (Mode::Soscf, Same),
-                (Mode::Ah, Orient),
+                (Mode::Ah, orient(662)),
             ],
         ),
     ];
@@ -296,7 +307,7 @@ fn degenerate_pi_open_shells_second_order_match_diis() {
             };
             let bar = match expect {
                 Expect::SameEnergy => 1e-7,
-                Expect::GridDegenerateOrientation => 1e-5,
+                Expect::GridDegenerateOrientation { .. } => 1e-5,
             };
             if (e - e_ref).abs() > bar {
                 failures.push(format!(
@@ -304,7 +315,11 @@ fn degenerate_pi_open_shells_second_order_match_diis() {
                     (e - e_ref).abs()
                 ));
             }
-            if r.iterations > diis.iterations || r.hvps == 0 {
+            let over_budget = match expect {
+                Expect::SameEnergy => r.iterations > diis.iterations,
+                Expect::GridDegenerateOrientation { ah_hvps_ceiling } => r.hvps >= ah_hvps_ceiling,
+            };
+            if over_budget || r.hvps == 0 {
                 failures.push(format!(
                     "{label} {mode:?}: {} iterations (DIIS {}), {} HVPs",
                     r.iterations, diis.iterations, r.hvps
