@@ -33,12 +33,12 @@
 //! and erf metrics of a range-separated hybrid), so the DF-K gradient's
 //! `dfg:metric-eigh` does not diagonalise the same matrix again (~0.3 s per
 //! evaluation at n-dodecane/def2-TZVP B3LYP, naux 1368). DF-K offers it
-//! inside [`with_metric_capture`], which the solvers wrap around their DF-K
+//! inside `with_metric_capture`, which the solvers wrap around their DF-K
 //! construction only when a hand-off is installed; a sub-solve without one
 //! shadows the capture and keeps nothing. Kept while the pool holds its
 //! `naux²` f64. The gradient uses a kept decomposition only when the metric
 //! it builds has the same operator, aux basis name, aux shell centres and
-//! exact element bits ([`take_active_metric`]); both sides use the same
+//! exact element bits (`take_active_metric`); both sides use the same
 //! `coulomb_metric_2c` + `eigh_dc(Upper)`, so reuse returns what the gradient
 //! would have computed. Independent of the raw tensor: kept also when the
 //! tensor is not (f32 RI-J, Split-RI-J, separate J/K aux, RSH).
@@ -135,7 +135,7 @@ impl KeptRaw {
 ///
 /// Identified by the operator, the aux basis name, the shell centres of the
 /// aux basis and a hash of the exact bits of `V`; the gradient uses it only
-/// when the metric it builds hashes to the same bits ([`take_active_metric`]),
+/// when the metric it builds hashes to the same bits (`take_active_metric`),
 /// so a decomposition of another geometry, basis, operator or `V`
 /// construction is never used. Holds its memory-pool charge (`naux²` f64 +
 /// `naux`) until dropped.
@@ -517,11 +517,11 @@ pub(crate) fn take_active(
 thread_local! {
     /// The kept metric decompositions of the gradient running on this thread
     /// ([`with_kept_raw`]); each taken by the first DF-K gradient pass whose
-    /// metric matches it ([`take_active_metric`]).
+    /// metric matches it (`take_active_metric`).
     static ACTIVE_METRICS: RefCell<Vec<KeptMetric>> = const { RefCell::new(Vec::new()) };
 
     /// The hand-off DF-K deposits its metric `eigh` into while
-    /// [`with_metric_capture`] runs on this thread.
+    /// `with_metric_capture` runs on this thread.
     static CAPTURE: RefCell<Option<RawHandoff>> = const { RefCell::new(None) };
 }
 
@@ -557,7 +557,7 @@ pub(crate) fn with_metric_capture<T>(config: &RhfConfig, f: impl FnOnce() -> T) 
 
 /// Called by DF-K with the `eigh(V) = (lam, u)` it used for `V^{-1/2}`
 /// (`v` the `op` metric of `dfbs`): kept in the capturing hand-off when one is
-/// installed ([`with_metric_capture`]) and the memory pool holds it, else
+/// installed (`with_metric_capture`) and the memory pool holds it, else
 /// dropped.
 pub(crate) fn offer_metric(
     op: Operator,
