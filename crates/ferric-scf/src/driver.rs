@@ -524,6 +524,12 @@ pub(crate) fn warn_if_rss_over_at_stage(
 ) {
     let fired =
         ferric_core::memory::warn_if_rss_over(&format!("{variant} {stage}"), ooc_budget, 1.1);
+    note_ri_k_remedy(fired, ri_k_resident_bytes);
+}
+
+/// Prints [`ri_k_memory_remedy`] after an over-budget warning that `fired`
+/// while the run holds a non-empty RI-K tensor.
+fn note_ri_k_remedy(fired: bool, ri_k_resident_bytes: Option<usize>) {
     if let (true, Some(bytes)) = (fired, ri_k_resident_bytes.filter(|&b| b > 0)) {
         eprintln!("{}", ri_k_memory_remedy(bytes));
     }
