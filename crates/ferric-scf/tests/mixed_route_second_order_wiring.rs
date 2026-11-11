@@ -410,3 +410,80 @@ fn stability_on_a_fitted_scf_builds_no_direct_response() {
         }
     }
 }
+
+/// OH ²Π UHF on a FITTED route: the verdict is MARGINAL, the verdict
+/// `validation_scf_stability.rs` asserts with exact integrals. Rotating the β
+/// hole about the axis is an exact zero mode of the energy (PySCF λ₀ = −7e-13
+/// there), and it is a zero mode of the FITTED energy too, so the fitted
+/// response gives |λ_min| far below the 1e-6 Ha noise floor.
+///
+/// The contrast is asserted as well: the EXACT response at the same fitted
+/// point puts curvature above the floor on that mode (measured 5.6e-6 Ha),
+/// which would read STABLE. That curvature belongs to neither energy, which
+/// is why stability analysis uses the SCF's own fitted builders
+/// (`StabilityConfig::noise_floor` docs).
+#[test]
+fn oh_pi_radical_on_a_fitted_route_is_marginal() {
+    use ferric_scf::stability::{StabilityConfig, StabilityVerdict};
+    let s = sys(OH, 2);
+    let cfg = RhfConfig {
+        check_stability: true,
+        ..config(Route::Fitted, 0.0)
+    };
+    let res = solve(&s, Kind::Uhf, &cfg);
+    assert!(res.converged);
+    let st = res.stability.as_ref().expect("stability was requested");
+    let floor = StabilityConfig::default().noise_floor;
+
+    let budget = ferric_core::memory::resolve_budget_bytes(None);
+    let c_a = &res.mos_alpha;
+    let c_b = res.mos_beta.as_ref().unwrap();
+    let f_a = c_a.t().dot(&res.fock_alpha).dot(c_a);
+    let f_b = c_b.t().dot(res.fock_beta.as_ref().unwrap()).dot(c_b);
+    let inp = ferric_scf::uhf_newton::UhfNewtonInputs {
+        prep: &s.prep,
+        bounds: &s.bounds,
+        c_a,
+        c_b,
+        f_a_mo: &f_a,
+        f_b_mo: &f_b,
+        nocc_a: (s.mol.nelec() as usize).div_ceil(2),
+        nocc_b: s.mol.nelec() as usize / 2,
+        k_mix_sr: 1.0,
+        rsh: None,
+        fxc: None,
+        thresh: cfg.integral_thresh,
+        ooc_budget: budget,
+        j_response: None,
+        k_response: None,
+    };
+    let exact =
+        ferric_scf::stability::uhf_internal_stability(&s.ctx, &inp, &StabilityConfig::default())
+            .unwrap();
+    eprintln!(
+        "OH fitted: lambda_min fitted={:.3e} ({:?}), exact response at the same point={:.3e} \
+         ({:?}); floor {floor:.0e}",
+        st.lowest_eigenvalue,
+        st.verdict(),
+        exact.lowest_eigenvalue,
+        exact.verdict()
+    );
+    assert!(st.converged);
+    assert_eq!(
+        st.verdict(),
+        StabilityVerdict::Marginal,
+        "OH ²Π has an exact zero mode: the fitted-route verdict must be MARGINAL ({})",
+        st.summary()
+    );
+    assert!(
+        st.lowest_eigenvalue.abs() < 0.1 * floor,
+        "the zero mode must sit well below the floor on the fitted Hessian ({:.3e})",
+        st.lowest_eigenvalue
+    );
+    assert!(
+        exact.lowest_eigenvalue > floor,
+        "contrast: the exact response at the fitted point should put curvature above the floor \
+         on the zero mode (got {:.3e}); if this fails the fit error moved, re-measure the docs",
+        exact.lowest_eigenvalue
+    );
+}

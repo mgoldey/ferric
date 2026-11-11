@@ -109,6 +109,16 @@ pub struct ScfResult {
     /// even then it means "stable against the rotations
     /// `r.kind` covers" — see [`crate::stability`].
     ///
+    /// The analysed Hessian is that of the SCF's own Fock: on a density-fitted
+    /// route the response J/K come from the same RI-J / DF-K (and the direct
+    /// half of a mixed route from the same `DirectJ` / `DirectK`), so λ is the
+    /// curvature of the FITTED energy. It differs from the exact-integral
+    /// curvature by the fitting error, measured 2e-6 to 5e-6 Ha (rel ~1e-5)
+    /// on water and NH2 / cc-pVDZ, above the default 1e-6 noise floor, and
+    /// that can move a verdict near zero: OH ²Π (an exact zero mode) is
+    /// MARGINAL, as with exact integrals. See
+    /// [`StabilityConfig::noise_floor`](crate::stability::StabilityConfig::noise_floor).
+    ///
     /// Purely diagnostic: an instability never makes the SCF return `Err`.
     pub stability: Option<crate::stability::StabilityResult>,
     /// Post-convergence **EXTERNAL** stability verdict (RHF→UHF, the triplet
