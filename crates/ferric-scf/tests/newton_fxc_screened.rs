@@ -808,3 +808,97 @@ fn uks_newton_screened_fxc_matches_diis_oh_b3lyp() {
 fn roks_newton_screened_fxc_matches_diis_h2_triplet_b3lyp() {
     open_shell_newton_matches_diis("2\nH2\nH 0 0 0\nH 0 0 2.0\n", 3, "B3LYP", true, true);
 }
+
+/// Without a global memory pool (`reserve_global` is inert there) the screened
+/// f_xc kernel cache is still budget-checked: against
+/// `RhfConfig::three_index_budget_bytes` (`rohf::fxc_no_pool_budget`). A
+/// 1-byte budget refuses both the restricted (RKS Newton / TRAH / stability)
+/// and the polarized (UKS / ROKS) build with the kernel's label; an ample
+/// explicit budget builds the same response, bit for bit, as the default
+/// (unset) budget.
+///
+/// Mutations (applied and reverted, 2026-11-11): making `reserve_fxc`'s
+/// no-pool branch return an inert reservation without `check_alloc` (the
+/// pre-fix behaviour) fails "a 1-byte budget must refuse the restricted
+/// cache"; passing `&|| usize::MAX` in place of the budget in the polarized
+/// constructor alone fails "... must refuse the polarized cache".
+#[test]
+fn screened_fxc_cache_is_budget_checked_without_a_pool() {
+    assert!(
+        ferric_core::memory::pool::global().is_none(),
+        "this test binary must not install a global pool"
+    );
+    let mol = water();
+    let bs = basis::bundled("6-31g").unwrap();
+    let prep = PreparedBasis::new(&mol, &bs).unwrap();
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+    let ctx = ParallelContext::default();
+    let hf = solve_rhf(&ctx, &mol, &prep, op, &bounds, &RhfConfig::default()).unwrap();
+    assert!(hf.converged);
+    let d = hf.density_total.clone();
+    let n = d.nrows();
+    let half = 0.5 * &d;
+    let grid = AtomicGridConfig::production();
+    let ks = KsXc::new_with_batch_config(
+        &mol,
+        &bs,
+        "PBE",
+        &grid,
+        &grid,
+        None,
+        None,
+        XcBatchConfig::default(),
+    )
+    .unwrap();
+    let ksu = ferric_dft::ks::KsXcUks::new_with_batch_config(
+        &mol,
+        &bs,
+        "PBE",
+        &grid,
+        &grid,
+        None,
+        None,
+        XcBatchConfig::default(),
+    )
+    .unwrap();
+    let mut rng = Xorshift64(0x5DEE_CE66_D1CE_4E5B);
+    let dd = Array2::<f64>::from_shape_fn((n, n), |_| 0.01 * rng.next_f64());
+    let dd = &dd + &dd.t();
+    let cfg = |bytes: usize| RhfConfig {
+        xc: Some("PBE".into()),
+        three_index_budget_bytes: bytes,
+        ..Default::default()
+    };
+    let label = "f_xc response kernel";
+    let run = |c: &RhfConfig| {
+        let r = restricted_fxc_response(&ks, (&mol, &prep, c, "PBE"), &d).map(|f| f(&dd, &dd).0);
+        let p = ferric_scf::rohf::polarized_fxc_response(
+            &ksu,
+            (&mol, &prep, c, "PBE"),
+            (&half, &half),
+            None,
+        )
+        .map(|f| f(&dd, &dd));
+        (r, p)
+    };
+
+    let (r, p) = run(&cfg(1));
+    let r_err = r.expect_err("a 1-byte budget must refuse the restricted cache");
+    assert!(r_err.to_string().contains(label), "restricted: {r_err}");
+    let p_err = p.expect_err("a 1-byte budget must refuse the polarized cache");
+    assert!(p_err.to_string().contains(label), "polarized: {p_err}");
+
+    let (r0, p0) = run(&cfg(0));
+    let (r1, p1) = run(&cfg(usize::MAX / 2));
+    let (r0, p0, r1, p1) = (r0.unwrap(), p0.unwrap(), r1.unwrap(), p1.unwrap());
+    assert!(frob(&r0) > 0.0, "the response must be non-trivial");
+    assert_eq!(
+        r0, r1,
+        "an ample budget must not change the restricted response"
+    );
+    assert_eq!(
+        p0, p1,
+        "an ample budget must not change the polarized response"
+    );
+}
