@@ -350,7 +350,7 @@ fn step_diff(auxbasis: &str, rot: f64, radius: f64) -> StepDiff {
         exact_full_gap: true,
         ..Default::default()
     };
-    let (_, ex) = rhf_trah_step(&pt.ctx, &inp, radius, &exact_cfg).unwrap();
+    let (_, ex) = rhf_trah_step(&pt.ctx, &inp, None, radius, &exact_cfg).unwrap();
     let mut slot = Some(pt.aux_stale(auxbasis));
     let rcfg = RhfConfig {
         trah: TrahConfig {

@@ -1648,7 +1648,15 @@ fn solve_uhf_impl(
                     k_mix,
                     ooc_budget,
                     fock_mod.is_some(),
-                    rsh_response.as_ref(),
+                    (
+                        rsh_response.as_ref(),
+                        &scf_responses(
+                            df_j.as_mut(),
+                            df_k.as_mut(),
+                            direct_j.as_mut(),
+                            direct_k.as_mut(),
+                        ),
+                    ),
                 )
             } else {
                 None
@@ -1869,7 +1877,12 @@ fn solve_uhf_impl(
                 )?;
                 let fxc_ref: Option<&crate::rohf_newton::FxcResponse<'_>> = fxc_storage.as_deref();
 
-                let (fitted_j, fitted_k) = fitted_responses(df_j.as_mut(), df_k.as_mut());
+                let responses = scf_responses(
+                    df_j.as_mut(),
+                    df_k.as_mut(),
+                    direct_j.as_mut(),
+                    direct_k.as_mut(),
+                );
                 let inputs = crate::uhf_newton::UhfNewtonInputs {
                     prep,
                     bounds,
@@ -1884,8 +1897,8 @@ fn solve_uhf_impl(
                     fxc: fxc_ref,
                     thresh: config.integral_thresh,
                     ooc_budget,
-                    j_response: fitted_j.as_deref(),
-                    k_response: fitted_k.as_deref(),
+                    j_response: responses.j(),
+                    k_response: responses.k(),
                 };
                 let radius = trah_state
                     .as_ref()
@@ -2028,7 +2041,12 @@ fn solve_uhf_impl(
             )?;
             let fxc_ref: Option<&crate::rohf_newton::FxcResponse<'_>> = fxc_storage.as_deref();
 
-            let (fitted_j, fitted_k) = fitted_responses(df_j.as_mut(), df_k.as_mut());
+            let responses = scf_responses(
+                df_j.as_mut(),
+                df_k.as_mut(),
+                direct_j.as_mut(),
+                direct_k.as_mut(),
+            );
             let inputs = crate::uhf_newton::UhfNewtonInputs {
                 prep,
                 bounds,
@@ -2043,8 +2061,8 @@ fn solve_uhf_impl(
                 fxc: fxc_ref,
                 thresh: config.integral_thresh,
                 ooc_budget,
-                j_response: fitted_j.as_deref(),
-                k_response: fitted_k.as_deref(),
+                j_response: responses.j(),
+                k_response: responses.k(),
             };
             let (c_a_n, c_b_n, _kmax) = crate::uhf_newton::uhf_newton_step(
                 ctx,
@@ -2185,40 +2203,35 @@ fn solve_uhf_impl(
     })
 }
 
-/// The Newton/TRAH matvec responses of the Fock's own density-fitted J and
-/// (ω = 0) K builders, so the orbital Hessian differentiates the energy the
-/// SCF evaluates (`UhfNewtonInputs::j_response`). `None` for a builder that
-/// is not density-fitted: the matvec's exact four-centre response is then the
-/// Fock's own kernel. The K hook is the occupied-factor build
+/// The Newton/TRAH/stability matvec responses of the Fock's own J/K builders
+/// ([`crate::uhf_newton::ScfResponses`]), so the orbital Hessian
+/// differentiates the energy the SCF evaluates (`UhfNewtonInputs::j_response`).
+///
+/// Lends nothing (both hooks `None`: the matvec's exact four-centre response,
+/// which is then the Fock's own kernel) unless a FITTED builder exists. An
+/// RI-J or DF-K SCF lends it, plus the unfitted half of a mixed route:
+/// `DirectJ` (DF-K + conventional J) or `DirectK` (DF-J + direct K). COSX is
+/// not lent: one COSX K costs more than the direct build it would replace
+/// (see `rhf::lend_scf_jk`). The DF-K hook is the occupied-factor build
 /// ([`crate::uhf_newton::OccKResponse`]), so a per-spin response costs two
 /// `nocc`-column DF-K builds rather than one `O(naux·n³)` density build.
 /// Shared by the UHF/UKS and ROHF/ROKS second-order steps.
-#[allow(clippy::type_complexity)]
-pub(crate) fn fitted_responses<'b, 'e: 'b>(
+pub(crate) fn scf_responses<'b, 'e: 'b>(
     df_j: Option<&'b mut crate::split_rij::RiJ<'e>>,
     df_k: Option<&'b mut crate::df_k::DfK<'e>>,
-) -> (
-    Option<Box<crate::uhf_newton::AoResponse<'b>>>,
-    Option<Box<crate::uhf_newton::OccKResponse<'b>>>,
-) {
-    let j = df_j.map(|b| {
-        let cell = std::cell::RefCell::new(b);
-        Box::new(move |dd: &Array2<f64>| {
-            let mut out = Array2::<f64>::zeros(dd.raw_dim());
-            JBuilder::build(&mut **cell.borrow_mut(), dd, &mut out)?;
-            Ok(out)
-        }) as Box<crate::uhf_newton::AoResponse<'b>>
-    });
-    let k = df_k.map(|b| {
-        let cell = std::cell::RefCell::new(b);
-        Box::new(move |c_f: &Array2<f64>| {
-            let n = c_f.nrows();
-            let mut out = Array2::<f64>::zeros((n, n));
-            KBuilder::build_from_occ(&mut **cell.borrow_mut(), c_f, &mut out)?;
-            Ok(out)
-        }) as Box<crate::uhf_newton::OccKResponse<'b>>
-    });
-    (j, k)
+    direct_j: Option<&'b mut DirectJ<'e>>,
+    direct_k: Option<&'b mut DirectK<'e>>,
+) -> crate::uhf_newton::ScfResponses<'b> {
+    use crate::uhf_newton::ScfResponses;
+    if df_j.is_none() && df_k.is_none() {
+        return ScfResponses::lend(None, None, None, None);
+    }
+    ScfResponses::lend(
+        df_j.map(|j| j as &'b mut (dyn JBuilder + 'e)),
+        df_k,
+        direct_j.map(|j| j as &'b mut (dyn JBuilder + 'e)),
+        direct_k.map(|k| k as &'b mut (dyn KBuilder + 'e)),
+    )
 }
 
 /// `check_alloc` label of the TRAH step's dense f_xc fallback.
@@ -2292,7 +2305,10 @@ fn stability_uhf<'r>(
     k_mix: ferric_dft::xc_trait::KMix,
     ooc_budget: usize,
     fock_modified: bool,
-    rsh: Option<&'r crate::rsh_response::RshResponse<'r>>,
+    (rsh, responses): (
+        Option<&'r crate::rsh_response::RshResponse<'r>>,
+        &crate::uhf_newton::ScfResponses<'_>,
+    ),
 ) -> Option<crate::stability::StabilityResult> {
     let skip = if fock_modified {
         Some(crate::stability::StabilitySkip::FockModified)
@@ -2348,8 +2364,10 @@ fn stability_uhf<'r>(
         fxc: fxc_ref,
         thresh: config.integral_thresh,
         ooc_budget,
-        j_response: None,
-        k_response: None,
+        // The SCF's own J/K builders (`scf_responses`): the Hessian of the
+        // energy this SCF converged, fitted or mixed-route.
+        j_response: responses.j(),
+        k_response: responses.k(),
     };
     match crate::stability::uhf_internal_stability(
         ctx,

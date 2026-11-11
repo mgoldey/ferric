@@ -489,6 +489,24 @@ pub fn rhf_internal_stability(
     inp: &RhfNewtonInputs,
     cfg: &StabilityConfig,
 ) -> Result<StabilityResult, FerricError> {
+    rhf_internal_stability_jk(ctx, inp, None, cfg)
+}
+
+/// [`rhf_internal_stability`] with the matvec's response J/K from the SCF's
+/// own builders when `jk` lends them
+/// ([`rhf_newton::ScfJkResponse`](crate::rhf_newton::ScfJkResponse)): the
+/// Hessian of the fitted (or mixed-route) energy the SCF converged, rather than of
+/// the exact four-centre one. `None` is [`rhf_internal_stability`].
+///
+/// # Errors
+///
+/// As [`rhf_internal_stability`].
+pub fn rhf_internal_stability_jk(
+    ctx: &ParallelContext,
+    inp: &RhfNewtonInputs,
+    jk: Option<&crate::rhf_newton::ScfJkResponse<'_, '_>>,
+    cfg: &StabilityConfig,
+) -> Result<StabilityResult, FerricError> {
     let n = inp.c.nrows();
     let no = inp.nocc;
     let nv = n - no;
@@ -519,7 +537,7 @@ pub fn rhf_internal_stability(
     let matvec = |v: &[f64]| -> Result<Vec<f64>, FerricError> {
         let k = Array2::from_shape_vec((nv, no), v.to_vec())
             .expect("rotation block shape is (nvirt, nocc) by construction");
-        let h = crate::rhf_newton::hessian_matvec(ctx, inp, &k, &pool)?;
+        let h = crate::rhf_newton::hessian_matvec_jk(ctx, inp, &k, &pool, jk)?;
         Ok(h.iter().copied().collect())
     };
 
@@ -581,6 +599,23 @@ pub fn rhf_external_stability(
     inp: &RhfNewtonInputs,
     cfg: &StabilityConfig,
 ) -> Result<StabilityResult, FerricError> {
+    rhf_external_stability_jk(ctx, inp, None, cfg)
+}
+
+/// [`rhf_external_stability`] with the triplet exchange response from the
+/// SCF's own ω = 0 exchange builder when `jk` lends one
+/// ([`rhf_newton::triplet_hessian_matvec_jk`](crate::rhf_newton::triplet_hessian_matvec_jk)).
+/// `None` is [`rhf_external_stability`].
+///
+/// # Errors
+///
+/// As [`rhf_external_stability`].
+pub fn rhf_external_stability_jk(
+    ctx: &ParallelContext,
+    inp: &RhfNewtonInputs,
+    jk: Option<&crate::rhf_newton::ScfJkResponse<'_, '_>>,
+    cfg: &StabilityConfig,
+) -> Result<StabilityResult, FerricError> {
     if inp.fxc.is_some() {
         return Err(FerricError::General(format!(
             "RHF external (RHF->UHF triplet) stability analysis: {}",
@@ -620,7 +655,7 @@ pub fn rhf_external_stability(
     let matvec = |v: &[f64]| -> Result<Vec<f64>, FerricError> {
         let k = Array2::from_shape_vec((nv, no), v.to_vec())
             .expect("rotation block shape is (nvirt, nocc) by construction");
-        let h = crate::rhf_newton::triplet_hessian_matvec(ctx, inp, &k, &pool)?;
+        let h = crate::rhf_newton::triplet_hessian_matvec_jk(ctx, inp, &k, &pool, jk)?;
         Ok(h.iter().copied().collect())
     };
 

@@ -72329,7 +72329,7 @@
   },
   "crates/ferric-scf/src/rhf.rs::solve_rhf_impl::<anonymous>#24": {
     "cc": 1.0,
-    "mi": 157.8484854211024
+    "mi": 150.10970274203913
   },
   "crates/ferric-scf/src/rhf.rs::solve_rhf_impl::<anonymous>#25": {
     "cc": 1.0,
@@ -72361,7 +72361,7 @@
   },
   "crates/ferric-scf/src/rhf.rs::solve_rhf_impl::<anonymous>#31": {
     "cc": 1.0,
-    "mi": 157.8484854211024
+    "mi": 150.10970274203913
   },
   "crates/ferric-scf/src/rhf.rs::solve_rhf_impl::<anonymous>#32": {
     "cc": 1.0,

@@ -1370,11 +1370,12 @@ pub fn offdiag_gap_correction(f_mo: &Array2<f64>, k: &Array2<f64>, nocc: usize) 
 fn exact_hk(
     ctx: &ParallelContext,
     inp: &crate::rhf_newton::RhfNewtonInputs,
+    jk: Option<&crate::rhf_newton::ScfJkResponse<'_, '_>>,
     cfg: &TrahConfig,
     k: &Array2<f64>,
     pool: &EnginePool,
 ) -> Result<Array2<f64>, FerricError> {
-    let hk = crate::rhf_newton::hessian_matvec(ctx, inp, k, pool)?;
+    let hk = crate::rhf_newton::hessian_matvec_jk(ctx, inp, k, pool, jk)?;
     Ok(if cfg.exact_full_gap {
         hk + offdiag_gap_correction(inp.f_mo, k, inp.nocc)
     } else {
@@ -1470,12 +1471,15 @@ const UHF_ENERGY_SCALE: f64 = 2.0;
 
 /// One TRAH step on RHF/RKS orbitals.
 ///
-/// Reuses [`crate::rhf_newton::hessian_matvec`] verbatim for H·κ. Returns the
-/// rotated MO coefficients and the step record (whose `predicted` the caller
-/// must hand to [`TrahState::record_step`]).
+/// Reuses [`crate::rhf_newton::hessian_matvec_jk`] verbatim for H·κ, with the
+/// response J/K from the SCF's own builders when `jk` lends them (the same
+/// [`crate::rhf_newton::ScfJkResponse`] the Newton step takes; `None` builds
+/// them directly). Returns the rotated MO coefficients and the step record
+/// (whose `predicted` the caller must hand to [`TrahState::record_step`]).
 pub fn rhf_trah_step(
     ctx: &ParallelContext,
     inp: &crate::rhf_newton::RhfNewtonInputs,
+    jk: Option<&crate::rhf_newton::ScfJkResponse<'_, '_>>,
     radius: f64,
     cfg: &TrahConfig,
 ) -> Result<(Array2<f64>, TrahStep), FerricError> {
@@ -1503,7 +1507,7 @@ pub fn rhf_trah_step(
         EXACT_MATVECS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let k = Array2::from_shape_vec((nv, no), v.to_vec())
             .map_err(|e| FerricError::General(format!("TRAH RHF matvec reshape: {e}")))?;
-        let hk = exact_hk(ctx, inp, cfg, &k, &pool)?;
+        let hk = exact_hk(ctx, inp, jk, cfg, &k, &pool)?;
         Ok(hk.iter().copied().collect())
     };
 
@@ -1642,11 +1646,12 @@ pub fn rhf_trah_step_dispatch(
     ),
     cfg: (&crate::rhf::RhfConfig, Option<f64>),
     inp: &crate::rhf_newton::RhfNewtonInputs,
+    jk: Option<&crate::rhf_newton::ScfJkResponse<'_, '_>>,
     radius: f64,
 ) -> Result<(Array2<f64>, TrahStep), FerricError> {
     let (config, xc_k_mix) = cfg;
     if !config.trah.aux_curvature {
-        return rhf_trah_step(ctx, inp, radius, &config.trah);
+        return rhf_trah_step(ctx, inp, jk, radius, &config.trah);
     }
     let (mol, prep, c, nocc) = geom;
     let ax = xc_k_mix.unwrap_or(1.0);

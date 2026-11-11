@@ -16,7 +16,7 @@
 
 use crate::engine_pool::EnginePool;
 use crate::screening::SchwarzBounds;
-use crate::uhf_newton::{direct_jk, AoResponse, OccKResponse};
+use crate::uhf_newton::{direct_jk, AoResponse, KResponse};
 use ferric_core::parallel::ParallelContext;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
@@ -94,10 +94,11 @@ pub struct RohfNewtonInputs<'a> {
     /// [`crate::uhf_newton::UhfNewtonInputs::j_response`]. `None`: the exact
     /// four-centre δJ, which is what a direct-J Fock differentiates.
     pub j_response: Option<&'a AoResponse<'a>>,
-    /// Occupied-factor exchange build of the Fock's own ω = 0 DF-K, as in
+    /// Exchange response of the Fock's own ω = 0 exchange builder (DF-K
+    /// occupied-factor, or the unfitted COSX / `DirectK` density build), as in
     /// [`crate::uhf_newton::UhfNewtonInputs::k_response`]. `None`: exact δK.
     /// Ignored on the RSH path and when `k_mix_sr == 0`.
-    pub k_response: Option<&'a OccKResponse<'a>>,
+    pub k_response: Option<KResponse<'a>>,
 }
 
 /// One damped-Newton step on ROHF/ROKS MO coefficients.
@@ -475,8 +476,8 @@ pub fn hessian_matvec(
 /// `(δF_α, δF_β)` without the XC kernel: `δJ[δD_α + δD_β] − δK_σ` per spin,
 /// with the same builder choice as the UHF matvec (`uhf_newton::response_fock`):
 /// fitted δJ when `inp.j_response` is lent; RSH pair when `inp.rsh` is set;
-/// otherwise δK only when `k_mix_sr != 0`, from the occupied-factor DF-K when
-/// lent, else direct. For the fitted K each spin's δD_σ is written as
+/// otherwise δK only when `k_mix_sr != 0`, from the occupied-factor DF-K or
+/// the unfitted density builder when lent, else direct. For the fitted K each spin's δD_σ is written as
 /// `Y·Xᵀ + X·Yᵀ` over that spin's occupied/unoccupied split:
 /// α: occ = closed+open, κ_α = [κ_vc | κ_vo] (virt rows); β: occ = closed,
 /// κ_β = [κ_oc ; κ_vc] (open rows then virt rows).
@@ -523,7 +524,8 @@ fn response_fock(
         return Ok((dj.clone(), dj));
     }
     let (dk_a, dk_b) = match inp.k_response {
-        Some(kr) => {
+        Some(KResponse::Density(kr)) => (kr(dd_a_ao)?, kr(dd_b_ao)?),
+        Some(KResponse::Occ(kr)) => {
             let (nc, no) = (inp.nocc_double, inp.nocc_open);
             let k_a = ndarray::concatenate![ndarray::Axis(1), *k_vc, *k_vo];
             let k_b = ndarray::concatenate![ndarray::Axis(0), *k_oc, *k_vc];

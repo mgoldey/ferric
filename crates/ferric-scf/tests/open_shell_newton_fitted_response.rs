@@ -293,7 +293,7 @@ fn uhf_fitted_hvp_matches_finite_difference_of_the_fitted_gradient() {
             thresh: 1e-12,
             ooc_budget: budget,
             j_response: Some(&*jr),
-            k_response: (k_mix != 0.0).then_some(&*kr),
+            k_response: (k_mix != 0.0).then_some(ferric_scf::uhf_newton::KResponse::Occ(&*kr)),
         };
         let dir0 = direct_response_builds_on_this_thread();
         let (ha, hb) = hessian_matvec(&ctx, &inp, &ka, &kb, &pool).unwrap();
@@ -437,7 +437,7 @@ fn rohf_fitted_hvp_matches_finite_difference_of_the_fitted_gradient() {
             thresh: 1e-12,
             ooc_budget: budget,
             j_response: Some(&*jr),
-            k_response: (k_mix != 0.0).then_some(&*kr),
+            k_response: (k_mix != 0.0).then_some(ferric_scf::uhf_newton::KResponse::Occ(&*kr)),
         };
         let dir0 = direct_response_builds_on_this_thread();
         let (h_vc, h_vo, h_oc) = hessian_matvec(&ctx, &inp, &k_vc, &k_vo, &k_oc, &pool).unwrap();
