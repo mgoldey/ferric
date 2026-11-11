@@ -275,6 +275,7 @@ jobs:
           persist-credentials: false
           sparse-checkout: |
             scripts/wheels/smoke.py
+            scripts/check_wheel_openblas_threads.py
             scripts/check_doc_snippets.py
             site/src
             README.md
@@ -311,3 +312,12 @@ jobs:
 
       - name: Docs snippets -- run the marked Python examples and compare output
         run: python src/scripts/check_doc_snippets.py --root src
+
+      # The wheel's OpenBLAS must allow 128 threads (NUM_THREADS in
+      # scripts/wheels/build-blas-xc.sh); the same check wheels.yml's Linux
+      # smoke-test runs.
+      - name: Bundled OpenBLAS thread limit
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          python "$GITHUB_WORKSPACE/src/scripts/check_wheel_openblas_threads.py" 128

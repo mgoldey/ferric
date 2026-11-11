@@ -8,7 +8,7 @@ wheels are built by `wheels.yml` itself and do not use anything here.
 | File | Used by | What it does |
 |---|---|---|
 | `build-libint2.sh` | native-deps | Builds ferric's small libint2 2.7.2 export as a static library (`libint2.a` on macOS, `int2.lib` on Windows) |
-| `build-blas-xc.sh` | native-deps | Builds OpenBLAS 0.3.27 (fixed TARGET, C LAPACK, pthreads, `NUM_THREADS=64`) and libxc 6.2.2, and copies in the Eigen 3.4 headers |
+| `build-blas-xc.sh` | native-deps | Builds OpenBLAS 0.3.27 (fixed TARGET, C LAPACK, pthreads, `NUM_THREADS=128`) and libxc 6.2.2, and copies in the Eigen 3.4 headers |
 | `stamp_version.py` | wheels (tags only) | Writes the tag's version into `pyproject.toml` and `crates/ferric-python/Cargo.toml`, then verifies the change with `git diff` (the Linux job does the same in shell) |
 | `add_licenses.py` | wheels | Adds the bundled libraries' licence texts to `dist-info/licenses/third-party/` and updates RECORD |
 | `smoke.py` | wheels (smoke job) | Checks an installed wheel: the Linux smoke cases, plus energies compared with Linux, each case in its own process |

@@ -14,9 +14,10 @@
 # TARGET, no DYNAMIC_ARCH (the runtime dispatch blamed for the Zen 4
 # garbage-numerics incident), pthreads, not OpenMP. Unlike Linux there is no
 # Fortran compiler: LAPACK is OpenBLAS's C translation of reference LAPACK
-# (C_LAPACK), so the wheel needs no libgfortran/libquadmath. NUM_THREADS=64
-# fixes the maximum thread count; left unset it is the build runner's core
-# count (3 or 4).
+# (C_LAPACK), so the wheel needs no libgfortran/libquadmath. NUM_THREADS=128
+# fixes the maximum thread count (conda-forge's value; left unset it is the
+# build runner's core count, 3 or 4, which capped the 0.1.0rc11 Linux wheel
+# at 4 threads). The smoke job checks it (scripts/check_wheel_openblas_threads.py).
 #   macOS arm64:     TARGET=VORTEX (Apple M1 and later)
 #   Windows x86_64:  TARGET=HASWELL (AVX2), the Linux wheel's target
 #
@@ -66,7 +67,7 @@ if [ "$OS" = Darwin ]; then
     # `libs netlib shared`: `make`'s default also builds OpenBLAS's own test
     # programs, whose link line (-lto_library) Apple's ld rejects.
     make -j"$NPROC" libs netlib shared TARGET=VORTEX DYNAMIC_ARCH=0 USE_THREAD=1 USE_OPENMP=0 \
-      NUM_THREADS=64 NOFORTRAN=1 C_LAPACK=1 NO_STATIC=1 > ../build-ob.log 2>&1 \
+      NUM_THREADS=128 NOFORTRAN=1 C_LAPACK=1 NO_STATIC=1 > ../build-ob.log 2>&1 \
       || { tail -60 ../build-ob.log; exit 1; }
     make PREFIX="$PREFIX" NO_STATIC=1 install > /dev/null
   )
@@ -88,7 +89,7 @@ else
     -DCMAKE_INSTALL_PREFIX="$PREFIX" -DCMAKE_INSTALL_LIBDIR=lib \
     -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_BUILD_TYPE=Release \
     -DTARGET=HASWELL -DDYNAMIC_ARCH=OFF -DUSE_THREAD=1 -DUSE_OPENMP=0 \
-    -DNUM_THREADS=64 -DNOFORTRAN=1 -DC_LAPACK=ON -DBUILD_WITHOUT_LAPACK=OFF \
+    -DNUM_THREADS=128 -DNOFORTRAN=1 -DC_LAPACK=ON -DBUILD_WITHOUT_LAPACK=OFF \
     -DBUILD_SHARED_LIBS=ON -DBUILD_STATIC_LIBS=OFF -DBUILD_TESTING=OFF
   cmake --build build-ob > build-ob.log 2>&1 || { tail -80 build-ob.log; exit 1; }
   cmake --install build-ob > /dev/null
