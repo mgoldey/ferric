@@ -415,26 +415,51 @@ fn direct_response_jk(
 }
 
 /// DF-K of the total restricted perturbation `δD = 2·(Y·Xᵀ + X·Yᵀ)` with
-/// `X = C_occ`, `Y = C_virt·κ`, through the SCF's occupied-factor path:
-/// `δD = (X+Y)(X+Y)ᵀ − (X−Y)(X−Y)ᵀ` exactly, and K is linear, so
-/// `δK = K_occ(X+Y) − K_occ(X−Y)`. Two `nocc`-column builds, each the cost of
-/// one SCF DF-K build, instead of the density path's `O(naux·n³)`.
+/// `X = C_occ`, `Y = C_virt·κ`, through the SCF's occupied-factor path
+/// ([`occ_pair_response_k`]).
 fn fitted_response_k(
     dfk: &RefCell<&mut DfK<'_>>,
     c: &Array2<f64>,
     k_ov: &Array2<f64>,
     nocc: usize,
 ) -> Result<Array2<f64>, FerricError> {
+    let mut dfk = dfk.borrow_mut();
+    occ_pair_response_k(
+        &mut |c_occ, out| dfk.build_from_occ(c_occ, out).map(|_| ()),
+        c,
+        k_ov,
+        nocc,
+    )
+}
+
+/// `K[(X+Y)(X+Y)ᵀ − (X−Y)(X−Y)ᵀ] = K[2·(Y·Xᵀ + X·Yᵀ)]` with `X = C[:, ..nocc]`
+/// and `Y = C[:, nocc..]·κ` (`κ` is the `(n − nocc) × nocc` virt×occ block),
+/// from an occupied-factor exchange build `k_occ(C_f, out)` that writes
+/// `K[C_f·C_fᵀ]` into a zeroed `out` ([`KBuilder::build_from_occ`]).
+///
+/// The difference of squares is an exact identity and K is linear, so this is
+/// two `nocc`-column builds (each the cost of one SCF DF-K build) instead of
+/// the density path's `O(naux·n³)`. The closed-shell δD is exactly this; a
+/// single spin's `δD_σ = Y·Xᵀ + X·Yᵀ` is half of it (callers scale by ½,
+/// a power of two). `nocc == 0` gives zero.
+pub(crate) fn occ_pair_response_k(
+    k_occ: &mut dyn FnMut(&Array2<f64>, &mut Array2<f64>) -> Result<(), FerricError>,
+    c: &Array2<f64>,
+    k_ov: &Array2<f64>,
+    nocc: usize,
+) -> Result<Array2<f64>, FerricError> {
     let n = c.nrows();
+    let mut k_plus = Array2::<f64>::zeros((n, n));
+    if nocc == 0 {
+        return Ok(k_plus);
+    }
     let x = c.slice(ndarray::s![.., ..nocc]);
     let y = c.slice(ndarray::s![.., nocc..]).dot(k_ov);
     let plus = &x + &y;
     let minus = &x - &y;
-    let mut k_plus = Array2::<f64>::zeros((n, n));
     let mut k_minus = Array2::<f64>::zeros((n, n));
-    let mut dfk = dfk.borrow_mut();
-    dfk.build_from_occ(&plus, &mut k_plus)?;
-    dfk.build_from_occ(&minus, &mut k_minus)?;
+    k_occ(&plus, &mut k_plus)?;
+    k_occ(&minus, &mut k_minus)?;
     k_plus -= &k_minus;
     Ok(k_plus)
 }

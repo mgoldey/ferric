@@ -1511,6 +1511,9 @@ fn solve_rohf_impl(
             let fxc_storage = fxc_store.as_ref().map(|s| s.response());
             let fxc_ref: Option<&crate::rohf_newton::FxcResponse<'_>> = fxc_storage.as_deref();
 
+            // The response J/K come from this SCF's own RI-J / DF-K (the
+            // energy being converged is the fitted one); `None` keeps direct.
+            let (fitted_j, fitted_k) = crate::uhf::fitted_responses(df_j.as_mut(), df_k.as_mut());
             let inputs = crate::rohf_newton::RohfNewtonInputs {
                 prep,
                 bounds,
@@ -1528,6 +1531,8 @@ fn solve_rohf_impl(
                 fxc: fxc_ref,
                 thresh: config.integral_thresh,
                 ooc_budget,
+                j_response: fitted_j.as_deref(),
+                k_response: fitted_k.as_deref(),
             };
             let ah_inputs = crate::rohf_ah::RohfAhInputs { base: &inputs };
             let (c_new, _kmax) = crate::rohf_ah::rohf_ah_step(
@@ -1578,6 +1583,9 @@ fn solve_rohf_impl(
             let fxc_storage = fxc_store.as_ref().map(|s| s.response());
             let fxc_ref: Option<&crate::rohf_newton::FxcResponse<'_>> = fxc_storage.as_deref();
 
+            // The response J/K come from this SCF's own RI-J / DF-K (the
+            // energy being converged is the fitted one); `None` keeps direct.
+            let (fitted_j, fitted_k) = crate::uhf::fitted_responses(df_j.as_mut(), df_k.as_mut());
             let inputs = crate::rohf_newton::RohfNewtonInputs {
                 prep,
                 bounds,
@@ -1595,6 +1603,8 @@ fn solve_rohf_impl(
                 fxc: fxc_ref,
                 thresh: config.integral_thresh,
                 ooc_budget,
+                j_response: fitted_j.as_deref(),
+                k_response: fitted_k.as_deref(),
             };
             let (c_new, _kmax) = crate::rohf_newton::rohf_newton_step(
                 ctx,

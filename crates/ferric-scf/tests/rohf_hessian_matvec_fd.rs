@@ -232,6 +232,8 @@ fn analytic(s: &Sys, c: &Array2<f64>, fa: &Array2<f64>, fb: &Array2<f64>, k: &Bl
         fxc: None,
         thresh: THRESH,
         ooc_budget: ferric_core::memory::resolve_budget_bytes(None),
+        j_response: None,
+        k_response: None,
     };
     let (a, b, d) = hessian_matvec(&s.ctx, &inp, &k[0], &k[1], &k[2], &pool).unwrap();
     [a, b, d]
