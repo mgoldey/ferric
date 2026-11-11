@@ -553,7 +553,11 @@ pub(crate) fn warn_if_no_safe_gap(cut: &LindepCut, who: &str) {
     }
 }
 
-fn v_inv_sqrt_lindep(v: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
+fn v_inv_sqrt_lindep(
+    op: Operator,
+    dfbs: &PreparedBasis,
+    v: &Array2<f64>,
+) -> Result<Array2<f64>, FerricError> {
     let naux = v.nrows();
     // One-time (naux, naux) setup factorization, called once per SCF
     // construction outside any rayon region. Divide and conquer (`dsyevd`):
@@ -602,6 +606,11 @@ fn v_inv_sqrt_lindep(v: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
     let mut m = Array2::<f64>::zeros((naux, naux));
     ferric_core::linalg::par_gemm(1.0, &u_scaled.view(), &evecs.t(), 0.0, &mut m);
     t_st.end();
+    drop(u_scaled);
+    // The gradient that follows a geometry-task SCF diagonalises this same
+    // metric; hand it this `eigh` (kept only inside a capturing solver,
+    // `crate::raw_handoff::with_metric_capture`).
+    crate::raw_handoff::offer_metric(op, dfbs, v, evals, evecs);
     Ok(m) // (naux, naux)
 }
 
@@ -670,7 +679,7 @@ impl<'a> DfK<'a> {
         // spilling build already uses the whole budget.
         let mut raw = ThreeIndexSource::build(op, obs, dfbs, budget_bytes)?;
         let v = coulomb_metric_2c(op, dfbs)?;
-        let v_inv_sqrt = v_inv_sqrt_lindep(&v)?;
+        let v_inv_sqrt = v_inv_sqrt_lindep(op, dfbs, &v)?;
         Self::from_raw(
             &mut raw,
             dfbs,
@@ -717,7 +726,7 @@ impl<'a> DfK<'a> {
     ) -> Result<Self, FerricError> {
         let _ = obs;
         let v = coulomb_metric_2c(op, dfbs)?;
-        let v_inv_sqrt = v_inv_sqrt_lindep(&v)?;
+        let v_inv_sqrt = v_inv_sqrt_lindep(op, dfbs, &v)?;
         let naux = dfbs.nbasis();
         let (p0, p1) = match ctx {
             Some(c) => c.aux_band(naux),

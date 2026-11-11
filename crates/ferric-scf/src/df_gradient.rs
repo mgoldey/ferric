@@ -341,6 +341,15 @@ fn charge_intermediates(
 thread_local! {
     /// `eri3_block` calls made by `dfg:3c-pass` on this thread (test observable).
     static DFG_3C_BLOCKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Metric `eigh`s computed by the DF-K gradient on this thread (test observable).
+    static DFG_METRIC_EIGHS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// How many auxiliary-metric `eigh`s the DF-K gradient has COMPUTED on this
+/// thread so far (0 added by a pass that reused the SCF's). Test hook.
+#[doc(hidden)]
+pub fn dfg_metric_eighs_computed_for_test() -> usize {
+    DFG_METRIC_EIGHS.with(std::cell::Cell::get)
 }
 
 /// How many raw `(P|μν)` blocks the DF gradient's one pass has COMPUTED on
@@ -668,11 +677,22 @@ fn df_jk_gradient_core(
         // DFK_GRADIENT_NOISE_FLOOR, and the energy's cut (at most
         // LINDEP_CUT_WINDOW · 1e-10 = 1e-8, below the floor) enters the
         // gradient only through the band-energy diagnostic.
+        //
+        // The SCF's DF-K diagonalised this same metric with this same routine
+        // (`v_inv_sqrt_lindep`); a geometry task keeps that `eigh` for here
+        // (`crate::raw_handoff::take_active_metric`), used only when `v` is
+        // bit-identical to the matrix it decomposed.
         let t_e = ferric_core::timing::Stage::start("dfg:metric-eigh");
-        let (lam, u) = with_blas_threads(opt_in_blas_threads(), || {
-            ferric_core::linalg::eigh_dc(&v, ferric_core::linalg::Uplo::Upper)
-        })
-        .map_err(|e| FerricError::Lapack(format!("DF-K gradient: V eigh failed: {e}")))?;
+        let (lam, u) = match crate::raw_handoff::take_active_metric(op, dfbs, &v) {
+            Some(kept) => kept,
+            None => {
+                DFG_METRIC_EIGHS.with(|c| c.set(c.get() + 1));
+                with_blas_threads(opt_in_blas_threads(), || {
+                    ferric_core::linalg::eigh_dc(&v, ferric_core::linalg::Uplo::Upper)
+                })
+                .map_err(|e| FerricError::Lapack(format!("DF-K gradient: V eigh failed: {e}")))?
+            }
+        };
         t_e.end();
         let t_e = ferric_core::timing::Stage::start("dfg:metric-gemms");
         // The energy's cut, by the rule DfK applies (`metric_lindep_cut`).
