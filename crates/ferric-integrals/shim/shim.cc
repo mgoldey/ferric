@@ -21,6 +21,34 @@
 #include <algorithm>
 #include <limits>
 
+#ifdef _WIN32
+// Declared here rather than via <windows.h>, whose min/max macros break Eigen.
+extern "C" __declspec(dllimport) unsigned long __stdcall GetEnvironmentVariableA(
+    const char *name, char *buffer, unsigned long size);
+#endif
+
+// Environment lookup for the shim's knobs (FERRIC_SHELLPAIR_CACHE,
+// FERRIC_TERF_TABLE_DIR, ...). On Windows the CRT's getenv reads a copy of the
+// environment taken at process start, so a variable set later through Rust's
+// std::env::set_var or the Win32 API (Python's os.environ also updates that
+// block) was invisible to the shim. GetEnvironmentVariableA reads the live
+// process block. The returned pointer is valid until the next call on the same
+// thread; every caller below consumes it immediately. Elsewhere this is getenv.
+static const char *ferric_getenv(const char *name) {
+#ifdef _WIN32
+    thread_local std::string buf;
+    unsigned long n = GetEnvironmentVariableA(name, nullptr, 0);
+    if (n == 0) return nullptr;
+    buf.assign(n, '\0');
+    unsigned long got = GetEnvironmentVariableA(name, &buf[0], n);
+    if (got == 0 || got >= n) return nullptr;
+    buf.resize(got);
+    return buf.c_str();
+#else
+    return std::getenv(name);
+#endif
+}
+
 using libint2::Engine;
 using libint2::Operator;
 using libint2::Shell;
@@ -173,7 +201,7 @@ struct ShellPairCache {
     void check_env_once() {
         if (env_checked) return;
         env_checked = true;
-        const char *v = std::getenv("FERRIC_SHELLPAIR_CACHE");
+        const char *v = ferric_getenv("FERRIC_SHELLPAIR_CACHE");
         if (v && (std::strcmp(v, "0") == 0 || std::strcmp(v, "off") == 0 ||
                   std::strcmp(v, "false") == 0 || std::strcmp(v, "OFF") == 0 ||
                   std::strcmp(v, "FALSE") == 0)) {
@@ -715,7 +743,7 @@ int scf_engine_shellpair_cache_enabled(const scf_engine *eng) {
     if (eng->shellpair_cache.env_checked) {
         return eng->shellpair_cache.enabled ? 1 : 0;
     }
-    const char *v = std::getenv("FERRIC_SHELLPAIR_CACHE");
+    const char *v = ferric_getenv("FERRIC_SHELLPAIR_CACHE");
     if (v && (std::strcmp(v, "0") == 0 || std::strcmp(v, "off") == 0 ||
               std::strcmp(v, "false") == 0 || std::strcmp(v, "OFF") == 0 ||
               std::strcmp(v, "FALSE") == 0)) {
@@ -1834,7 +1862,7 @@ bool load_terfc_table(const std::string &path, int pts, double S_max, double s_m
 // Table directory resolution: explicit arg > env FERRIC_TERF_TABLE_DIR.
 std::string resolve_table_dir(const char *table_dir) {
     if (table_dir && table_dir[0] != '\0') return std::string(table_dir);
-    const char *env = std::getenv("FERRIC_TERF_TABLE_DIR");
+    const char *env = ferric_getenv("FERRIC_TERF_TABLE_DIR");
     if (env && env[0] != '\0') return std::string(env);
     return std::string();
 }
@@ -1855,7 +1883,7 @@ std::shared_ptr<TerfcTableSet> get_terfc_tables(const std::string &dir) {
     // fewer points per unit) can be loaded with the correct delta_S/delta_s.
     // Experiment knob only -- the default path is unchanged.
     int ptsdiv = 1;
-    if (const char *e = std::getenv("FERRIC_TERF_PTS_DIV")) {
+    if (const char *e = ferric_getenv("FERRIC_TERF_PTS_DIV")) {
         // Only 1 and 2 are valid: the shipped pts are 16/8/4/2, so any larger
         // divisor drives the last table's pts to 0 and delta = 1.0/0 = inf,
         // silently corrupting every lookup rather than failing.
@@ -2568,7 +2596,7 @@ inline bool terf_aux(const TerfcTableSet &set, double S, double s,
     // only ~I terms set by s rather than N = S + 12*sqrt(S) + 60 set by S.
     // Guarded by FERRIC_TERF_TAIL=0 so the old path stays one env var away.
     static const bool use_tail = [](){
-        const char *e = std::getenv("FERRIC_TERF_TAIL");
+        const char *e = ferric_getenv("FERRIC_TERF_TAIL");
         return !(e && e[0] == '0');
     }();
     if (use_tail) terf_G_tail(S, s, mmax, gser);
@@ -4287,7 +4315,7 @@ extern "C" int scf_terf_libint2_vs_md_eri3(const scf_basis *obs,
             if (max_rel) *max_rel = 0.0;
             return n;
         }
-        if (std::getenv("FERRIC_TERF_DUMP")) {
+        if (ferric_getenv("FERRIC_TERF_DUMP")) {
             std::fprintf(stderr, "block (%d,%d,%d) n=%d  nP=%d n1=%d n2=%d\n",
                          shP, sh1, sh2, n, nP, n1, n2);
             for (int i = 0; i < n && i < 24; ++i) {
@@ -4493,7 +4521,7 @@ extern "C" int scf_terf_asym_probe(int mmax, int reps,
         const double ss[] = {0.05, 0.2, 0.5};
         double worst = 0.0;
         // accuracy first -- per (S,s), so the crossover is chosen from data
-        if (std::getenv("FERRIC_ASYM_DUMP")) {
+        if (ferric_getenv("FERRIC_ASYM_DUMP")) {
             std::fprintf(stderr, "      S      s       worst rel err (m=0..%d)\n", mmax);
             for (double S : {20.,30.,50.,75.,100.,150.,200.,300.,400.,600.}) {
                 for (double sv : {0.05,0.2,0.5,1.0}) {

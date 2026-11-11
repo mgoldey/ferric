@@ -768,6 +768,9 @@ pub(super) fn write_atomic(
     sync_parent(path)
 }
 
+/// Make the rename durable by syncing the directory entry (Unix: fsync of the
+/// parent directory).
+#[cfg(unix)]
 fn sync_parent(path: &Path) -> Result<(), CheckpointError> {
     let parent = match path.parent() {
         Some(p) if !p.as_os_str().is_empty() => p,
@@ -776,6 +779,16 @@ fn sync_parent(path: &Path) -> Result<(), CheckpointError> {
     File::open(parent)
         .and_then(|dir| dir.sync_all())
         .map_err(|e| io_error(path, "cannot sync the directory", &e))
+}
+
+/// Windows has no directory fsync: `File::open` on a directory fails with
+/// "Access is denied" (it needs FILE_FLAG_BACKUP_SEMANTICS), and
+/// FlushFileBuffers on a directory handle is not a supported durability call.
+/// NTFS journals the rename's metadata itself, so there is nothing to do; the
+/// temp file's data was already synced before the rename.
+#[cfg(not(unix))]
+fn sync_parent(_path: &Path) -> Result<(), CheckpointError> {
+    Ok(())
 }
 
 fn read_scalar_u64<R: io::Read + Seek>(
