@@ -389,11 +389,12 @@ impl Checkpoint {
     /// first write it is absent until the rename. Windows has no directory
     /// fsync, so there a power loss right after the rename may leave the
     /// previous state: the old complete file, or no file on a first write (the
-    /// rename itself is not made durable). Never a partial file. A kill can
-    /// leave a `.<name>.tmp.<pid>.<seq>` sibling behind; nothing reads those, and the next write to `path` removes any no
-    /// live writer holds locked. A symlink at `path` is refused, because the
-    /// rename would replace the link and leave its target stale. Returns the
-    /// checksum.
+    /// rename itself is not made durable). Never a partial file.
+    ///
+    /// A kill can leave a `.<name>.tmp.<pid>.<seq>` sibling behind; nothing
+    /// reads those, and the next write to `path` removes any no live writer
+    /// holds locked. A symlink at `path` is refused, because the rename would
+    /// replace the link and leave its target stale. Returns the checksum.
     pub fn write(&self, path: &Path) -> Result<u64, CheckpointError> {
         format::write(self, path, &mut |_| {})
     }
