@@ -3847,9 +3847,12 @@ mod tests {
         let (i, a) = (3usize, 4usize); // β: 4 occupied, the π pair is columns 3, 4
         let pair = cb.slice(ndarray::s![.., i..=a]);
         let norm = |u: usize| pair.row(u).dot(&pair.row(u));
-        let p = (0..pair.nrows())
-            .max_by(|&u, &v| norm(u).total_cmp(&norm(v)).then(v.cmp(&u)))
-            .unwrap();
+        // The same pivot rule as canonical_frontier_basis: the FIRST row within
+        // 1e-10 of the largest norm. The π pair's p_x and p_y rows tie exactly
+        // in exact arithmetic, so a bare max picks whichever rounding favours
+        // (p_y on Windows' OpenBLAS: run 42930383672).
+        let max = (0..pair.nrows()).map(norm).fold(0.0f64, f64::max);
+        let p = (0..pair.nrows()).find(|&u| norm(u) >= max - 1e-10).unwrap();
         let c = norm(p).sqrt();
         let (want_i, want_a) = (c * GUESS_HOLE_ANGLE.cos(), -c * GUESS_HOLE_ANGLE.sin());
         assert!(
