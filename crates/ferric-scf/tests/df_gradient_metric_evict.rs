@@ -10,6 +10,7 @@
 //! - `MemoryPool::reserve` without the evict-and-retry: the forcing
 //!   reservation errors ("fits once the kept metric is evicted").
 //! - The evict closure not freeing the data: `is_evicted` stays false.
+//! - `with_metric_capture` installing `None`: the reachability count fails.
 
 use ferric_core::memory::pool::{self, MemoryPool};
 use ferric_core::mol::Molecule;

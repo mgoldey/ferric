@@ -24,13 +24,16 @@
 //! - `MetricCandidate::accept` without the bit-hash comparison:
 //!   `mismatched_geometry_metric_is_not_used` fails ("a metric eigh from
 //!   another geometry was used").
-//! - Without the bit-hash and the operator comparison: also the wB97X case of
+//! - Without the bit-hash comparison and with `take_active_metric` matching
+//!   on the aux name alone: also the wB97X case of
 //!   `reused_metric_eigh_gradient_equals_recomputed` (the erf pass gets the
 //!   erfc decomposition; needs the reversed slot order below).
-//! - Without the name, shape and bit-hash comparisons:
+//! - Without the aux-name match, the shape and the bit-hash comparisons:
 //!   `mismatched_aux_basis_metric_is_not_used` fails.
 //! - `with_metric_capture` installing `None`: every reuse test fails on the
 //!   reachability count.
+//! - `without_handoff` keeping the hand-off:
+//!   `sub_solve_without_handoff_keeps_no_metric` fails (2 offers).
 
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
