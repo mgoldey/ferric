@@ -14,7 +14,7 @@
 //! for as long as any caller holds it. Instead a driver that runs an SCF and
 //! then its gradient installs a fresh [`RawHandoff`] in the config it hands
 //! both ([`with_fresh_handoff`]); the solver deposits the tensor at its
-//! converged exit, and the gradient dispatchers take it ([`with_kept_raw`])
+//! converged exit, and the gradient dispatchers take it (`with_kept_raw`)
 //! and drop it when the gradient returns. A driver that never asks for a
 //! gradient never installs one, so nothing is held past the SCF.
 //!
