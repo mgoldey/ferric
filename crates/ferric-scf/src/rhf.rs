@@ -3313,8 +3313,10 @@ fn solve_rhf_impl(
         // `tests/trah_off_is_bit_identical.rs`.
         //
         // The gates match the Newton path exactly (iter > 3 so `last_c` is a
-        // real MO set; ω = 0 because the Hessian matvec's K comes from the
-        // plain Coulomb `build_jk`; no meta-GGA: TRAH's auxiliary curvature
+        // real MO set; ω = 0: the matvec can take the SR/LR exchange response
+        // (`rsh_response`), but TRAH has not been enabled or anchored for a
+        // range-separated reference; its matvec builds J/K directly, not with
+        // the SCF's DF builders; no meta-GGA: TRAH's auxiliary curvature
         // model is not anchored for the τ kernel). Anything outside those gates keeps DIIS,
         // for the same reasons documented on the Newton branch below.
         //
@@ -3671,9 +3673,11 @@ fn solve_rhf_impl(
         // `d` (set at the tail of the previous iteration; zeros before iter 2),
         // so the branch is gated to `iter > 3`, matching solve_uhf. For RKS this
         // reuses the SAME LDA/GGA f_xc kernel (via FxcKernelStore) that the
-        // ROKS/UKS Newton paths use (LDA, GGA or τ-only meta-GGA). Gated to
-        // the non-RSH case (ω = 0), since the Newton matvec's K comes from the
-        // plain Coulomb `build_jk`; RSH keeps the DIIS path. Default
+        // ROKS/UKS Newton paths use (LDA, GGA or τ-only meta-GGA). The matvec
+        // builds δJ/δK with this SCF's RI-J / DF-K when it has them (direct
+        // otherwise; see `rhf_newton::ScfJkResponse`) and could take the SR/LR
+        // exchange response, but Newton is not enabled for a range-separated
+        // reference: gated to ω = 0, so RSH keeps the DIIS path. Default
         // newton_trigger = 0 ⇒ this branch never fires and existing RHF/RKS
         // results are unchanged.
         let use_newton = config.newton_trigger > 0.0
