@@ -3720,9 +3720,15 @@ fn solve_rhf_impl(
                 thresh: config.integral_thresh,
                 ooc_budget,
             };
+            // The response J/K come from this SCF's own RI-J / DF-K builders
+            // (the energy being converged is the fitted one); an all-exact SCF
+            // keeps the direct build. See `rhf_newton::ScfJkResponse`.
+            let jk_response = (df_j.is_some() || df_k.is_some())
+                .then(|| crate::rhf_newton::ScfJkResponse::new(df_j.as_mut(), df_k.as_mut()));
             let (c_new, _kmax) = crate::rhf_newton::rhf_newton_step(
                 ctx,
                 &inputs,
+                jk_response.as_ref(),
                 config.level_shift.max(1e-6),
                 0.2, // trust radius
                 20,

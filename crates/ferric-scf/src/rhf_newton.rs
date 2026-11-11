@@ -43,7 +43,9 @@
 //! functions rather than one flag is deliberate — the Newton path must never
 //! be able to pick up the triplet operator by accident.
 
+use crate::df_k::DfK;
 use crate::engine_pool::EnginePool;
+use crate::fock::{JBuilder, KBuilder};
 use crate::rhf::build_jk_with_pool_homogeneous;
 use crate::rohf_newton::FxcResponse;
 use crate::screening::SchwarzBounds;
@@ -52,11 +54,13 @@ use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ndarray::Array2;
 use ndarray_linalg::Solve;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 
 thread_local! {
     /// Singlet Hessian-vector products computed on this thread (test seam).
     static HVP_CALLS: Cell<usize> = const { Cell::new(0) };
+    /// Direct four-centre response J/K builds made by singlet HVPs (test seam).
+    static DIRECT_RESPONSE_BUILDS: Cell<usize> = const { Cell::new(0) };
 }
 
 /// Number of singlet [`hessian_matvec`] calls made on the calling thread so
@@ -65,6 +69,72 @@ thread_local! {
 #[doc(hidden)]
 pub fn hvp_calls_on_this_thread() -> usize {
     HVP_CALLS.with(Cell::get)
+}
+
+/// Number of direct four-centre J/K builds the singlet HVPs made on the
+/// calling thread so far (test seam). Zero across a Newton step means every
+/// response term came from the SCF's fitted builders or was not needed.
+#[doc(hidden)]
+pub fn direct_response_builds_on_this_thread() -> usize {
+    DIRECT_RESPONSE_BUILDS.with(Cell::get)
+}
+
+/// The SCF's own density-fitted J/K builders, lent to the Newton Hessian
+/// matvec ([`hessian_matvec_jk`]) so the response `δJ`/`δK` is the derivative
+/// of the energy the SCF actually converges.
+///
+/// # Why
+///
+/// An RI-J / DF-K SCF minimises the density-FITTED energy. Its orbital Hessian
+/// is the response of the same fitted J and K, on the same `B[P,μ,ν]`. A direct
+/// four-centre response is the second derivative of a different functional:
+/// it is off by the fitting error, which does not shrink with a
+/// finite-difference step, and it cost 55-85 SCF iterations per product at
+/// C8H18/def2-TZVP, where the SCF itself never builds a four-centre integral.
+///
+/// # Which builder answers which term
+///
+/// * `δJ`: the SCF's RI-J when it had one, else the direct build.
+/// * `δK`: only when the Fock consumes exact exchange through the ω = 0 kernel
+///   (`inp.rsh` is `None` and `inp.k_mix_sr != 0`). Then the SCF's DF-K when it
+///   had one, else the direct build. A pure functional builds no K at all.
+///
+/// When a needed term has no fitted builder (DF-J with COSX or direct K, or
+/// DF-K with conventional J), the combined direct
+/// `build_jk_with_pool_homogeneous` runs once and supplies it, as it did for
+/// every term before this type existed.
+///
+/// # Interior mutability
+///
+/// [`JBuilder::build`] and [`KBuilder::build_from_occ`] take `&mut self`; the
+/// matvec takes `&self` inside the sequential PCG loop, so each builder sits in
+/// a [`RefCell`] borrowed and released inside one matvec (the same pattern as
+/// [`crate::rsh_response::RshResponse`]). The builders are BORROWED from the
+/// SCF loop, not rebuilt, so the Newton step reads the identical fitted
+/// tensors the Fock was assembled from.
+pub struct ScfJkResponse<'a, 'd> {
+    j: Option<RefCell<&'a mut (dyn JBuilder + 'd)>>,
+    k: Option<RefCell<&'a mut DfK<'d>>>,
+}
+
+impl<'a, 'd> ScfJkResponse<'a, 'd> {
+    /// Lend the SCF's RI-J builder (`j`) and ω = 0 DF-K builder (`k`); either
+    /// may be `None`, in which case that term comes from the direct build.
+    pub fn new<J: JBuilder + 'd>(j: Option<&'a mut J>, k: Option<&'a mut DfK<'d>>) -> Self {
+        Self {
+            j: j.map(|j| RefCell::new(j as &'a mut (dyn JBuilder + 'd))),
+            k: k.map(RefCell::new),
+        }
+    }
+}
+
+impl std::fmt::Debug for ScfJkResponse<'_, '_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ScfJkResponse")
+            .field("fitted_j", &self.j.is_some())
+            .field("fitted_k", &self.k.is_some())
+            .finish()
+    }
 }
 
 /// Inputs to one RHF/RKS Newton step.
@@ -105,10 +175,13 @@ pub struct RhfNewtonInputs<'a> {
 ///
 /// Returns `(C_new, kmax)` where `kmax` is the ∞-norm of the rotation (a
 /// step-size diagnostic). `level_shift` is added to the diagonal preconditioner
-/// gap; `max_step` is the componentwise trust radius on κ.
+/// gap; `max_step` is the componentwise trust radius on κ. `jk` lends the
+/// SCF's density-fitted J/K builders to every Hessian-vector product (see
+/// [`ScfJkResponse`]); `None` builds the response J and K directly.
 pub fn rhf_newton_step(
     ctx: &ParallelContext,
     inp: &RhfNewtonInputs,
+    jk: Option<&ScfJkResponse<'_, '_>>,
     level_shift: f64,
     max_step: f64,
     cg_max_iter: usize,
@@ -144,7 +217,7 @@ pub fn rhf_newton_step(
     // this is the common case (wiki/notes/scf-second-order-cost-2026-11).
     let gmax = max_abs(&g);
     if gmax >= cg_conv {
-        pcg_refine(ctx, inp, &pool, &g, &diag, &mut k, cg_max_iter, cg_conv)?;
+        pcg_refine(ctx, inp, jk, &pool, &g, &diag, &mut k, cg_max_iter, cg_conv)?;
     }
 
     // Trust-radius clip.
@@ -164,6 +237,7 @@ pub fn rhf_newton_step(
 fn pcg_refine(
     ctx: &ParallelContext,
     inp: &RhfNewtonInputs,
+    jk: Option<&ScfJkResponse<'_, '_>>,
     pool: &EnginePool,
     g: &Array2<f64>,
     diag: &Array2<f64>,
@@ -171,7 +245,7 @@ fn pcg_refine(
     cg_max_iter: usize,
     cg_conv: f64,
 ) -> Result<(), FerricError> {
-    let h0 = hessian_matvec(ctx, inp, k, pool)?;
+    let h0 = hessian_matvec_jk(ctx, inp, k, pool, jk)?;
     let mut r = &neg(g) - &h0;
     let mut z = &r / diag;
     let mut p = z.clone();
@@ -181,7 +255,7 @@ fn pcg_refine(
         if max_abs(&r) < cg_conv {
             break;
         }
-        let ap = hessian_matvec(ctx, inp, &p, pool)?;
+        let ap = hessian_matvec_jk(ctx, inp, &p, pool, jk)?;
         let p_ap = inner(&p, &ap);
         if p_ap.abs() < 1e-30 {
             break;
@@ -198,13 +272,33 @@ fn pcg_refine(
     Ok(())
 }
 
-/// H · κ for the occ→virt block. Public so tests can finite-difference-validate
-/// the matvec directly against the orbital-gradient derivative.
+/// H · κ for the occ→virt block, with the response J and K built directly.
+/// Public so tests can finite-difference-validate the matvec directly against
+/// the orbital-gradient derivative. Identical to [`hessian_matvec_jk`] with
+/// `jk = None`.
 pub fn hessian_matvec(
     ctx: &ParallelContext,
     inp: &RhfNewtonInputs,
     k: &Array2<f64>,
     pool: &EnginePool,
+) -> Result<Array2<f64>, FerricError> {
+    hessian_matvec_jk(ctx, inp, k, pool, None)
+}
+
+/// H · κ for the occ→virt block, with the response J/K from the SCF's own
+/// density-fitted builders when `jk` lends them (see [`ScfJkResponse`] for
+/// which builder answers which term). `None` is the direct build of
+/// [`hessian_matvec`], bit for bit.
+///
+/// # Errors
+///
+/// Propagates a failed J/K build or exchange response.
+pub fn hessian_matvec_jk(
+    ctx: &ParallelContext,
+    inp: &RhfNewtonInputs,
+    k: &Array2<f64>,
+    pool: &EnginePool,
+    jk: Option<&ScfJkResponse<'_, '_>>,
 ) -> Result<Array2<f64>, FerricError> {
     HVP_CALLS.with(|c| c.set(c.get() + 1));
     let n = inp.c.nrows();
@@ -217,23 +311,20 @@ pub fn hessian_matvec(
     // ⇒ δD = 2·δD_single. J and K in the RHF Fock are built on this total D.
     let dd_ao = 2.0 * &dd_single_ao;
 
-    // δJ and δK on the total restricted density perturbation.
-    let mut dj = Array2::<f64>::zeros((n, n));
-    let mut dk = Array2::<f64>::zeros((n, n));
-    let band_bytes = crate::reduce::resolve_band_bytes(inp.ooc_budget);
-    build_jk_with_pool_homogeneous(
-        ctx, inp.prep, inp.bounds, inp.thresh, &dd_ao, &mut dj, &mut dk, pool, band_bytes,
-    )?;
+    // δJ and δK on the total restricted density perturbation. `dk` is `None`
+    // only when `jk` is lent and the Fock consumes no ω = 0 exact exchange.
+    let (dj, dk) = response_jk(ctx, inp, k, pool, jk, &dd_ao)?;
 
     // F = H + J − ½·K_total  ⇒  δF = δJ − ½·δK_total. For ω = 0, K_total =
     // k_mix·K[Coulomb]; for ω ≠ 0 it is c_SR·K[erfc(ω)] + c_LR·K[erf(ω)] from
     // the Fock's own fitters (`scale = 0.5` in `subtract_rsh_exchange`'s
-    // restricted call, which is the ½ here). The ω = 0 arm is the untouched
-    // pre-#314 expression, so a non-RSH run is bit-identical; `dk` is simply
-    // unused on the RSH arm (the combined J+K builder supplies δJ either way).
-    let mut df: Array2<f64> = match inp.rsh {
-        Some(rsh) => &dj - &(0.5 * &rsh.exchange_response(&dd_ao)?),
-        None => &dj - &(0.5 * inp.k_mix_sr * &dk),
+    // restricted call, which is the ½ here). With `jk = None` the ω = 0 arm is
+    // the untouched pre-#314 expression (δK always built, even at k_mix = 0),
+    // so a direct run is bit-identical; `dk` is unused on the RSH arm.
+    let mut df: Array2<f64> = match (inp.rsh, dk) {
+        (Some(rsh), _) => &dj - &(0.5 * &rsh.exchange_response(&dd_ao)?),
+        (None, Some(dk)) => &dj - &(0.5 * inp.k_mix_sr * &dk),
+        (None, None) => dj,
     };
 
     if let Some(fxc) = inp.fxc {
@@ -258,6 +349,90 @@ pub fn hessian_matvec(
     }
 
     Ok(h)
+}
+
+/// `(δJ, δK)` of the total restricted density perturbation `dd_ao`; see
+/// [`ScfJkResponse`]. `δK` is `None` only when `jk` is lent and no ω = 0 exact
+/// exchange is consumed.
+fn response_jk(
+    ctx: &ParallelContext,
+    inp: &RhfNewtonInputs,
+    k_ov: &Array2<f64>,
+    pool: &EnginePool,
+    jk: Option<&ScfJkResponse<'_, '_>>,
+    dd_ao: &Array2<f64>,
+) -> Result<(Array2<f64>, Option<Array2<f64>>), FerricError> {
+    let Some(jk) = jk else {
+        let (dj, dk) = direct_response_jk(ctx, inp, pool, dd_ao)?;
+        return Ok((dj, Some(dk)));
+    };
+    let need_k = inp.rsh.is_none() && inp.k_mix_sr != 0.0;
+    let need_direct = jk.j.is_none() || (need_k && jk.k.is_none());
+    let (mut dj_dir, mut dk_dir) = if need_direct {
+        let (dj, dk) = direct_response_jk(ctx, inp, pool, dd_ao)?;
+        (Some(dj), Some(dk))
+    } else {
+        (None, None)
+    };
+    let dj = match jk.j.as_ref() {
+        Some(cell) => {
+            let mut dj = Array2::<f64>::zeros(dd_ao.raw_dim());
+            cell.borrow_mut().build(dd_ao, &mut dj)?;
+            dj
+        }
+        None => dj_dir
+            .take()
+            .expect("direct δJ built when no fitted J is lent"),
+    };
+    let dk = match (need_k, jk.k.as_ref()) {
+        (false, _) => None,
+        (true, Some(cell)) => Some(fitted_response_k(cell, inp.c, k_ov, inp.nocc)?),
+        (true, None) => dk_dir.take(),
+    };
+    Ok((dj, dk))
+}
+
+/// The direct four-centre `(δJ, δK)` (the only path before [`ScfJkResponse`]).
+fn direct_response_jk(
+    ctx: &ParallelContext,
+    inp: &RhfNewtonInputs,
+    pool: &EnginePool,
+    dd_ao: &Array2<f64>,
+) -> Result<(Array2<f64>, Array2<f64>), FerricError> {
+    DIRECT_RESPONSE_BUILDS.with(|c| c.set(c.get() + 1));
+    let n = dd_ao.nrows();
+    let mut dj = Array2::<f64>::zeros((n, n));
+    let mut dk = Array2::<f64>::zeros((n, n));
+    let band_bytes = crate::reduce::resolve_band_bytes(inp.ooc_budget);
+    build_jk_with_pool_homogeneous(
+        ctx, inp.prep, inp.bounds, inp.thresh, dd_ao, &mut dj, &mut dk, pool, band_bytes,
+    )?;
+    Ok((dj, dk))
+}
+
+/// DF-K of the total restricted perturbation `δD = 2·(Y·Xᵀ + X·Yᵀ)` with
+/// `X = C_occ`, `Y = C_virt·κ`, through the SCF's occupied-factor path:
+/// `δD = (X+Y)(X+Y)ᵀ − (X−Y)(X−Y)ᵀ` exactly, and K is linear, so
+/// `δK = K_occ(X+Y) − K_occ(X−Y)`. Two `nocc`-column builds, each the cost of
+/// one SCF DF-K build, instead of the density path's `O(naux·n³)`.
+fn fitted_response_k(
+    dfk: &RefCell<&mut DfK<'_>>,
+    c: &Array2<f64>,
+    k_ov: &Array2<f64>,
+    nocc: usize,
+) -> Result<Array2<f64>, FerricError> {
+    let n = c.nrows();
+    let x = c.slice(ndarray::s![.., ..nocc]);
+    let y = c.slice(ndarray::s![.., nocc..]).dot(k_ov);
+    let plus = &x + &y;
+    let minus = &x - &y;
+    let mut k_plus = Array2::<f64>::zeros((n, n));
+    let mut k_minus = Array2::<f64>::zeros((n, n));
+    let mut dfk = dfk.borrow_mut();
+    dfk.build_from_occ(&plus, &mut k_plus)?;
+    dfk.build_from_occ(&minus, &mut k_minus)?;
+    k_plus -= &k_minus;
+    Ok(k_plus)
 }
 
 /// **Triplet (RHF→UHF) orbital-Hessian matvec** — the external-stability
