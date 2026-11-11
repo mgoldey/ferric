@@ -642,7 +642,9 @@ functional, or a range-separated one); `direct` with RI-J alone is honoured.
 Both `link` and `cosx` are skipped with
 a warning when the functional uses no exact exchange or is range-separated
 (exchange then comes from the SR/LR fitters). For a Kohn–Sham hybrid, whose
-RI-K is on by default, pass `df_k_aux = ""` to use the direct or LinK builder.
+RI-J and RI-K are on by default, `direct` needs `df_k_aux = ""`; `link` needs
+`df_j_aux = ""` as well, because LinK builds J and K in one four-centre pass,
+which RI-J replaces.
 
 **RIJCOSX.** `k_builder = "cosx"` combines with density-fitted Coulomb: when
 RI-J is active (`df_j_aux` named, or the Kohn–Sham default), J comes from RI-J
