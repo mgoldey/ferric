@@ -10,16 +10,19 @@
 //! s2` (the integral is symmetric in `μν`, only `s1 ≥ s2` is computed) and
 //! `G[p,μ,ν]` when `s1 = s2` (libint returns the full square block).
 //!
-//! The slab is first SYMMETRISED in place, once per aux function and
-//! cache-tiled: every off-shell-diagonal pair `(μ, ν)` gets `G[μ,ν] + G[ν,μ]`
-//! (the same two operands as before, and IEEE addition is commutative, so
-//! every weight is bit-identical to the one the old loop formed), while the
-//! shell-diagonal blocks keep `G` as is. Each block's weights are then
-//! gathered into one contiguous buffer and the nine components are nine
-//! contiguous dot products. The old loop read `G[p,ν,μ]` at stride `nao`
-//! (a transposed slab row) and scattered 27 bounds-checked updates per
-//! element: 1.5 ns per multiply-add, ~25x below the FMA peak (P2 profile,
-//! n-dodecane/def2-TZVP).
+//! Each block's weights are formed ONCE into a contiguous buffer in libint's
+//! `(p, i, j)` order (the same `G[p,μ,ν] + G[p,ν,μ]` sum, operands in the same
+//! order, so every weight is bit-identical to the one the old loop formed;
+//! the transposed operand is read from `n2` short row segments that stay in
+//! L1 across the block), and the nine components are then nine contiguous dot
+//! products. The old loop re-formed each weight inside the element loop and
+//! scattered 27 bounds-checked updates per element: 1.5 ns per multiply-add,
+//! ~25x below the FMA peak (P2 profile, n-dodecane/def2-TZVP). A first
+//! version symmetrised the whole `(np, nao, nao)` slab in place instead; that
+//! full extra pass over the slab (most of whose pairs no non-empty block
+//! reads) cost about 40 % of the saving (MEASURED n-dodecane/def2-TZVP B3LYP,
+//! `dfg:3c-deriv-pass` medians per evaluation: old 4.00 s, in-place
+//! symmetrisation 3.77 s, per-block weights 3.62 s).
 //!
 //! ## What changes numerically
 //!
@@ -39,7 +42,7 @@ use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::engine::Engine;
 use ferric_integrals::operator::Operator;
-use ndarray::{Array1, Array2, Array3, ArrayViewMut2, Axis};
+use ndarray::{Array1, Array2, Array3, Axis};
 use rayon::prelude::*;
 
 /// The weights entering the slab `G_P`: the RI-J coefficients `c = V⁻¹ d`
@@ -53,10 +56,6 @@ pub(super) struct SlabWeights<'a> {
     /// `Γ^s`, one per entry of `factors`.
     pub(super) gammas: &'a [Array2<f64>],
 }
-
-/// Square tile of the in-place symmetrisation (32·32·8 B = 8 KiB per tile
-/// side, both tiles fit L1).
-const SYM_TILE: usize = 32;
 
 /// `Σ_{P,μν} G_P,μν ∂(P|μν)` over every auxiliary shell, `(natoms, 3)`.
 ///
@@ -81,7 +80,6 @@ pub(super) fn three_center_deriv_pass(
             .saturating_mul(n.saturating_mul(n).saturating_add(max_no * max_no))
             .saturating_mul(8),
     )?;
-    let ao_shell = ao_to_shell(obs);
     #[cfg(test)]
     let check = reference::capturing();
 
@@ -95,17 +93,13 @@ pub(super) fn three_center_deriv_pass(
                     .expect("3-center deriv engine (pre-validated)")
             },
             |eng, sp| {
-                let mut slab = weight_slab(dfbs, sp, n, w);
-                #[cfg(test)]
-                let unsym = check.then(|| slab.clone());
-                for mut g in slab.axis_iter_mut(Axis(0)) {
-                    symmetrise_off_shell_blocks(&mut g, &ao_shell);
-                }
-                let (grad, _blocks) = contract_shell(eng, (obs, dfbs), sp, natoms, &slab);
+                let slab = weight_slab(dfbs, sp, n, w);
+                let grad = contract_shell(eng, (obs, dfbs), sp, natoms, &slab);
                 ShellOut {
                     #[cfg(test)]
-                    check: unsym
-                        .map(|s| reference::check_shell(eng, (obs, dfbs), sp, natoms, &s, &grad)),
+                    check: check.then(|| {
+                        reference::check_shell(eng, (obs, dfbs), sp, natoms, &slab, &grad)
+                    }),
                     grad,
                 }
             },
@@ -129,20 +123,6 @@ struct ShellOut {
     check: Option<reference::ShellCheck>,
 }
 
-/// AO function → its shell index.
-fn ao_to_shell(obs: &PreparedBasis) -> Vec<usize> {
-    let mut map = vec![0usize; obs.nbasis()];
-    for (s, (&o, &d)) in obs
-        .shell_offsets()
-        .iter()
-        .zip(obs.shell_dims().iter())
-        .enumerate()
-    {
-        map[o..o + d].fill(s);
-    }
-    map
-}
-
 /// `G[p, μ, ν] = ∂E/∂(P|μν)` for the functions `p` of aux shell `sp`.
 fn weight_slab(dfbs: &PreparedBasis, sp: usize, n: usize, w: &SlabWeights<'_>) -> Array3<f64> {
     let np = dfbs.shell_dims()[sp];
@@ -163,32 +143,6 @@ fn weight_slab(dfbs: &PreparedBasis, sp: usize, n: usize, w: &SlabWeights<'_>) -
         }
     }
     slab
-}
-
-/// In place, `g[μ,ν] = g[ν,μ] = g[μ,ν] + g[ν,μ]` for every pair in DIFFERENT
-/// AO shells; shell-diagonal blocks untouched. Cache-tiled transpose.
-fn symmetrise_off_shell_blocks(g: &mut ArrayViewMut2<'_, f64>, ao_shell: &[usize]) {
-    let n = g.nrows();
-    let s = g
-        .as_slice_mut()
-        .expect("weight slab rows are standard layout");
-    for bi in (0..n).step_by(SYM_TILE) {
-        let ei = (bi + SYM_TILE).min(n);
-        for bj in (bi..n).step_by(SYM_TILE) {
-            let ej = (bj + SYM_TILE).min(n);
-            for mu in bi..ei {
-                let sh_mu = ao_shell[mu];
-                for nu in bj.max(mu + 1)..ej {
-                    if ao_shell[nu] == sh_mu {
-                        continue;
-                    }
-                    let v = s[mu * n + nu] + s[nu * n + mu];
-                    s[mu * n + nu] = v;
-                    s[nu * n + mu] = v;
-                }
-            }
-        }
-    }
 }
 
 /// Shape and atoms of one `(P, s1, s2)` libint block.
@@ -225,65 +179,71 @@ impl DerivBlock {
     }
 }
 
-/// Contract every `(s1 ≥ s2)` block of aux shell `sp` with the SYMMETRISED
-/// slab `w`. Returns the shell's `(natoms, 3)` partial and the number of
-/// non-empty blocks.
+/// Contract every `(s1 ≥ s2)` block of aux shell `sp` with the slab `g`;
+/// the shell's `(natoms, 3)` partial.
 fn contract_shell(
     eng: &mut Engine,
     (obs, dfbs): (&PreparedBasis, &PreparedBasis),
     sp: usize,
     natoms: usize,
-    w: &Array3<f64>,
-) -> (Array2<f64>, usize) {
+    g: &Array3<f64>,
+) -> Array2<f64> {
     let n = obs.nbasis();
-    let w = w.as_slice().expect("weight slab is standard layout");
+    let g = g.as_slice().expect("weight slab is standard layout");
     let mut local = Array2::<f64>::zeros((natoms, 3));
-    let mut gbuf: Vec<f64> = Vec::new();
-    let mut blocks = 0;
+    let mut wbuf: Vec<f64> = Vec::new();
     for s1 in 0..obs.nshells() {
         for s2 in 0..=s1 {
             let Some(deriv) = eng.compute_eri3_deriv(obs, dfbs, sp, s1, s2) else {
                 continue;
             };
-            blocks += 1;
             let b = DerivBlock::new(obs, dfbs, sp, s1, s2);
-            contract_block(w, n, &b, deriv, &mut gbuf, &mut local);
+            block_weights(g, n, &b, s1 != s2, &mut wbuf);
+            contract_block(&wbuf, &b, deriv, &mut local);
         }
     }
-    (local, blocks)
+    local
 }
 
-/// Gather block `b`'s weights from the symmetrised slab `w` (`(np, n, n)`
-/// flat) into `gbuf` in libint's `(p, i, j)` order, then add the nine
-/// component dot products to their atoms.
-fn contract_block(
-    w: &[f64],
-    n: usize,
-    b: &DerivBlock,
-    deriv: &[f64],
-    gbuf: &mut Vec<f64>,
-    local: &mut Array2<f64>,
-) {
-    let bs = b.size();
-    gbuf.clear();
+/// Block `b`'s weights in libint's `(p, i, j)` order from the slab `g`
+/// (`(np, n, n)` flat): `G[p,μ,ν] + G[p,ν,μ]` when `sym` (`s1 ≠ s2`), else
+/// `G[p,μ,ν]` — the old loop's `gval`, operands in the same order.
+fn block_weights(g: &[f64], n: usize, b: &DerivBlock, sym: bool, wbuf: &mut Vec<f64>) {
+    wbuf.clear();
     for p in 0..b.np {
+        let gp = &g[p * n * n..(p + 1) * n * n];
         for i in 0..b.n1 {
-            let row = (p * n + b.off1 + i) * n + b.off2;
-            gbuf.extend_from_slice(&w[row..row + b.n2]);
+            let mu = b.off1 + i;
+            let row = &gp[mu * n + b.off2..mu * n + b.off2 + b.n2];
+            if sym {
+                // The transposed operand: column μ of rows ν ∈ s2.
+                wbuf.extend(
+                    row.iter()
+                        .enumerate()
+                        .map(|(j, &a)| a + gp[(b.off2 + j) * n + mu]),
+                );
+            } else {
+                wbuf.extend_from_slice(row);
+            }
         }
     }
+}
+
+/// Add block `b`'s nine component dot products with its weights `w` to
+/// their atoms (components `[∂_P xyz, ∂_1 xyz, ∂_2 xyz]`).
+fn contract_block(w: &[f64], b: &DerivBlock, deriv: &[f64], local: &mut Array2<f64>) {
+    let bs = b.size();
     for (k, comp) in deriv[..9 * bs].chunks_exact(bs).enumerate() {
-        local[(b.atoms[k / 3], k % 3)] += dot(gbuf, comp);
+        local[(b.atoms[k / 3], k % 3)] += dot(w, comp);
     }
 }
 
 /// `Σ a_k b_k` with four independent partial sums (vectorisable, fixed order).
 fn dot(a: &[f64], b: &[f64]) -> f64 {
-    let ca = a.chunks_exact(4);
-    let cb = b.chunks_exact(4);
-    let (ra, rb) = (ca.remainder(), cb.remainder());
+    let (ca, ra) = a.as_chunks::<4>();
+    let (cb, rb) = b.as_chunks::<4>();
     let mut acc = [0.0f64; 4];
-    for (x, y) in ca.zip(cb) {
+    for (x, y) in ca.iter().zip(cb) {
         for l in 0..4 {
             acc[l] += x[l] * y[l];
         }
@@ -523,8 +483,12 @@ mod tests {
     //! builds).
     //!
     //! MUTATIONS (2026-11-11, each applied alone, run, reverted):
-    //! * `symmetrise_off_shell_blocks` made a no-op (unsymmetrised `G`):
-    //!   all 6 tests FAIL, max |new − old| 0.13-0.70, |Δ|/bound 2e12-4e13.
+    //! * `symmetrise_off_shell_blocks` made a no-op (unsymmetrised `G`;
+    //!   first version, which symmetrised the slab in place): all 6 tests
+    //!   FAIL, max |new − old| 0.13-0.70, |Δ|/bound 2e12-4e13.
+    //! * `block_weights` with `sym` forced false (unsymmetrised `G`, current
+    //!   version): all 6 tests FAIL, max |new − old| 0.13-0.70, |Δ|/bound
+    //!   2e12-4e13.
     //! * component 4 (`∂_1 y`) credited to `∂_1 x` in `contract_block`:
     //!   all 6 tests FAIL, max |new − old| 0.13-1.2, |Δ|/bound 1e13-7e14.
     //!
