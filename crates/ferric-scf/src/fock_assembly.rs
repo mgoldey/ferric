@@ -561,6 +561,15 @@ pub(crate) fn build_rsh_dfk_pair<'a>(
 ///   ORCA RIJCOSX, Psi4 `DFDIRJ+COSX`). The solvers then take J from `DfJ`
 ///   and K from COSX.
 ///
+/// The IGNORED warning fires for EVERY explicitly passed value the
+/// density-fitted path overrides, `"direct"` included: an inert `"direct"`
+/// is as invisible in the energy as an inert `"link"` (both equal the
+/// default bitwise), so only the warning tells a caller the knob did nothing.
+/// The one `"direct"` it does not fire for is DF-J alone with an ω = 0 exact
+/// exchange the SCF consumes: K then really comes from the direct
+/// four-centre builder, so the request is honoured. See
+/// [`k_builder_ignored_warning`].
+///
 /// `df_k_active` is `df_k.is_some()` AFTER the solver's own auto-defaulting,
 /// plus, in `solve_rhf`, a requested DF-K that was dropped because its K is
 /// never read (pure / RSH functionals). With `k_builder = "cosx"` the solvers
@@ -587,16 +596,42 @@ pub(crate) fn resolve_k_builder(
     let pluggable = matches!(kb, "link" | "cosx").then_some(kb);
     let overridden = df_k_active || (df_j_active && kb != "cosx");
     if overridden {
-        if let Some(kind) = pluggable {
-            eprintln!(
-                "[ferric] warning: k_builder = \"{kind}\" is IGNORED because density-fitted J/K is active \
-                 (df_j_aux/df_k_aux set, or auto-defaulted for a functional); {}",
-                exchange_route_when_df_active(df_k_present, need_k, omega)
-            );
+        if let Some(msg) = k_builder_ignored_warning(kb, df_k_active, df_k_present, need_k, omega) {
+            eprintln!("{msg}");
         }
         return Ok(None);
     }
     Ok(pluggable)
+}
+
+/// The IGNORED warning [`resolve_k_builder`] prints for a validated `kb` that
+/// an active density-fitted path overrides (the caller has already decided
+/// `overridden`), or `None` when the request is in fact honoured.
+///
+/// `"link"` / `"cosx"` are never honoured once overridden. `"direct"` is
+/// honoured exactly when exchange still comes from the direct four-centre
+/// builder: no DF-K (active or dropped), an exact exchange the SCF consumes,
+/// and ω = 0 — i.e. DF-J alone next to HF or a global hybrid with
+/// `df_k_aux = ""`. Everywhere else (DF-K active, a pure functional, a
+/// range-separated one) `"direct"` names a builder that never runs.
+///
+/// Pure so the decision is testable without capturing stderr.
+pub(crate) fn k_builder_ignored_warning(
+    kb: &str,
+    df_k_active: bool,
+    df_k_present: bool,
+    need_k: bool,
+    omega: f64,
+) -> Option<String> {
+    let direct_k_runs = !df_k_active && need_k && omega <= 0.0;
+    if kb == "direct" && direct_k_runs {
+        return None;
+    }
+    Some(format!(
+        "[ferric] warning: k_builder = \"{kb}\" is IGNORED because density-fitted J/K is active \
+         (df_j_aux/df_k_aux set, or auto-defaulted for a functional); {}",
+        exchange_route_when_df_active(df_k_present, need_k, omega)
+    ))
 }
 
 /// RIJCOSX: does `k_builder = "cosx"` REPLACE the ω = 0 density-fitted
@@ -950,5 +985,75 @@ mod tests {
             exchange_route_when_df_active(false, true, 0.0),
             "exchange comes from the direct 4-centre builder"
         );
+    }
+
+    /// `k_builder = "direct"` under an active DF-K (the `run_dft` hybrid
+    /// default) is as inert as `"link"` and must say so. Before the fix only
+    /// `"link"`/`"cosx"` were warned about, so a `"direct"` that never ran
+    /// was silent.
+    ///
+    /// MUTATION: restrict the warning to `matches!(kb, "link" | "cosx")`
+    /// again (the pre-fix gate) and the `"direct"` arms go RED.
+    #[test]
+    fn direct_overridden_by_density_fitting_is_warned_like_link() {
+        // (kb, df_k_active, df_k_present, need_k, omega, expected route)
+        let cases = [
+            // Global hybrid / HF with RI-K: exchange from DF-K.
+            ("direct", true, true, true, 0.0, "exchange comes from DF-K"),
+            ("link", true, true, true, 0.0, "exchange comes from DF-K"),
+            // Pure functional under DF-J (+ a dropped DF-K): no K at all.
+            ("direct", true, false, false, 0.0, "no exact exchange"),
+            ("direct", false, false, false, 0.0, "no exact exchange"),
+            // Range-separated: SR/LR fitters, the main DF-K dropped.
+            ("direct", true, false, true, 0.3, "SR/LR density-fitted"),
+        ];
+        for (kb, k_active, k_present, need_k, omega, route) in cases {
+            let msg = k_builder_ignored_warning(kb, k_active, k_present, need_k, omega)
+                .unwrap_or_else(|| panic!("{kb} {k_active} {need_k} {omega}: no warning"));
+            assert!(
+                msg.contains(&format!(
+                    "k_builder = \"{kb}\" is IGNORED because density-fitted J/K is active"
+                )),
+                "{msg}"
+            );
+            assert!(msg.contains(route), "{msg}");
+        }
+    }
+
+    /// The one overridden-path `"direct"` that IS honoured: DF-J alone next
+    /// to a consumed ω = 0 exact exchange (HF, or a global hybrid with
+    /// `df_k_aux = ""`). K then comes from the direct four-centre builder, so
+    /// a warning would be false. `"link"` in the same state is still skipped
+    /// (DF-J replaces the combined pass it rides on) and still warned.
+    ///
+    /// MUTATION: drop the `direct_k_runs` early return and the first assert
+    /// goes RED.
+    #[test]
+    fn direct_beside_df_j_alone_is_honoured_and_silent() {
+        assert_eq!(
+            k_builder_ignored_warning("direct", false, false, true, 0.0),
+            None
+        );
+        let link = k_builder_ignored_warning("link", false, false, true, 0.0)
+            .expect("link under DF-J alone is skipped, so it must warn");
+        assert!(link.contains("direct 4-centre builder"), "{link}");
+    }
+
+    /// Without any density fitting nothing overrides `"direct"`: it resolves
+    /// to the (default) direct builder, `Ok(None)`, with no warning path
+    /// reached; `"link"` resolves to itself. Unchanged by the fix.
+    #[test]
+    fn direct_without_density_fitting_resolves_unchanged() {
+        for need_k in [true, false] {
+            assert_eq!(
+                resolve_k_builder(Some("direct"), false, false, false, need_k, 0.0).unwrap(),
+                None
+            );
+        }
+        assert_eq!(
+            resolve_k_builder(Some("link"), false, false, false, true, 0.0).unwrap(),
+            Some("link")
+        );
+        assert!(resolve_k_builder(Some("bogus"), true, true, true, true, 0.0).is_err());
     }
 }

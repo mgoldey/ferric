@@ -464,12 +464,16 @@ fn rss_for_gate() -> Option<usize> {
 ///
 /// `over_factor` is typically ~1.1 (warn at 10% over budget) — see call sites
 /// in `ferric-rpa` for the production convention.
-pub fn warn_if_rss_over(label: &str, budget_bytes: usize, over_factor: f64) {
+///
+/// Returns whether the warning fired, so a caller that knows a specific
+/// remedy for its stage can append it to the same report.
+pub fn warn_if_rss_over(label: &str, budget_bytes: usize, over_factor: f64) -> bool {
     let Some(rss) = read_own_rss_bytes() else {
-        return;
+        return false;
     };
     let threshold = (budget_bytes as f64 * over_factor) as usize;
-    if rss > threshold {
+    let over = rss > threshold;
+    if over {
         eprintln!(
             "ferric WARNING [{label}]: resident memory {:.2} GB exceeds {:.0}% of the {:.2} GB \
              budget (observability only — this stage already ran; if this recurs, raise \
@@ -479,6 +483,7 @@ pub fn warn_if_rss_over(label: &str, budget_bytes: usize, over_factor: f64) {
             budget_bytes as f64 / 1e9,
         );
     }
+    over
 }
 
 /// [`resolve_budget`], as if `planned_bytes` were already resident.

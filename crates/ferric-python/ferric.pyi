@@ -493,6 +493,16 @@ class BasisSet:
         """Load a Basis Set Exchange JSON file (contractions renormalised)."""
         ...
 
+    def n_functions(self, mol: Molecule) -> int:
+        """Number of basis functions this set places on `mol` (spherical or
+        Cartesian per shell, as the SCF builds them; ghost atoms included).
+        For an orbital basis it is the run's ``nbf``; for an auxiliary
+        (RI/JK-fit) basis it is ``naux``, which sizes the density-fitting
+        tensors: a packed ``(P|mn)`` tensor holds ``naux * nbf * (nbf + 1) / 2``
+        elements (8 bytes each at f64, 4 at f32). Builds no integrals.
+        ValueError when the basis does not cover an element of `mol`."""
+        ...
+
 class AoIntegrals:
     """AO integrals and J/K builds for one molecule in one basis (numpy).
 
@@ -4583,6 +4593,35 @@ def run_dft(
     ValueError with symmetry=True. The blocked SCF is one plain solve (no
     convergence ladder); non-convergence returns converged=False with a
     RuntimeWarning.
+
+    Density fitting is on by default, on ``def2-universal-jkfit``:
+
+    - Coulomb: RI-J for every functional. ``df_j_aux`` names another
+      auxiliary basis; ``df_j_aux=""`` selects conventional four-centre J.
+    - Exchange, by functional:
+
+      - pure (LDA/GGA/meta-GGA): no exact exchange, so no RI-K tensor is
+        built and ``df_k_aux`` has no effect.
+      - global hybrid (B3LYP, PBE0, ...): RI-K on the same auxiliary basis,
+        a SECOND three-index tensor beside RI-J's. RI-J keeps the raw packed
+        ``(P|mn)`` (f32 when it fits, ``ri_j_precision``), RI-K the
+        V^-1/2-dressed packed ``(P|mn)`` (f64, ``ri_k_precision``); each has
+        ``naux * nbf * (nbf + 1) / 2`` elements. ``df_k_aux=""`` selects
+        exact four-centre K and builds no RI-K tensor.
+      - range-separated hybrid (wB97X-V, CAM-B3LYP, ...): exchange only via
+        two RI-K fitters (short-range erfc and long-range erf), each its own
+        dressed tensor; ``df_k_aux=""`` raises ValueError.
+      - ``k_builder="cosx"``: COSX replaces RI-K (RIJCOSX), RI-J stays on; a
+        named ``df_k_aux`` next to it raises.
+
+    - ``k_builder`` (``"direct"``, ``"link"``, ``"cosx"``) picks the
+      exact-exchange builder and is honoured only where exchange is not
+      density-fitted. While RI-K is active (the hybrid default) ``"direct"``
+      and ``"link"`` are IGNORED with a warning, as is any ``k_builder`` for a
+      pure or range-separated functional. Pass ``df_k_aux=""`` with it to run
+      direct or LinK exchange for a hybrid.
+    - ``BasisSet.n_functions(mol)`` gives ``nbf`` (orbital basis) and
+      ``naux`` (auxiliary basis) for a memory estimate.
     """
     ...
 
@@ -4620,7 +4659,41 @@ def run_dft(
     guess_projection: str | None = None,
     grid_weight_cut: float | None = None,
     ri_j_precision: str | None = None,
-) -> SymmetricRhfResult: ...
+) -> SymmetricRhfResult:
+    """Point-group-blocked closed-shell RKS (see the ``symmetry=True``
+    paragraph of the DftResult overload). Same density-fitting defaults:
+
+    Density fitting is on by default, on ``def2-universal-jkfit``:
+
+    - Coulomb: RI-J for every functional. ``df_j_aux`` names another
+      auxiliary basis; ``df_j_aux=""`` selects conventional four-centre J.
+    - Exchange, by functional:
+
+      - pure (LDA/GGA/meta-GGA): no exact exchange, so no RI-K tensor is
+        built and ``df_k_aux`` has no effect.
+      - global hybrid (B3LYP, PBE0, ...): RI-K on the same auxiliary basis,
+        a SECOND three-index tensor beside RI-J's. RI-J keeps the raw packed
+        ``(P|mn)`` (f32 when it fits, ``ri_j_precision``), RI-K the
+        V^-1/2-dressed packed ``(P|mn)`` (f64, ``ri_k_precision``); each has
+        ``naux * nbf * (nbf + 1) / 2`` elements. ``df_k_aux=""`` selects
+        exact four-centre K and builds no RI-K tensor.
+      - range-separated hybrid (wB97X-V, CAM-B3LYP, ...): exchange only via
+        two RI-K fitters (short-range erfc and long-range erf), each its own
+        dressed tensor; ``df_k_aux=""`` raises ValueError.
+      - ``k_builder="cosx"``: COSX replaces RI-K (RIJCOSX), RI-J stays on; a
+        named ``df_k_aux`` next to it raises.
+
+    - ``k_builder`` (``"direct"``, ``"link"``, ``"cosx"``) picks the
+      exact-exchange builder and is honoured only where exchange is not
+      density-fitted. While RI-K is active (the hybrid default) ``"direct"``
+      and ``"link"`` are IGNORED with a warning, as is any ``k_builder`` for a
+      pure or range-separated functional. Pass ``df_k_aux=""`` with it to run
+      direct or LinK exchange for a hybrid.
+    - ``BasisSet.n_functions(mol)`` gives ``nbf`` (orbital basis) and
+      ``naux`` (auxiliary basis) for a memory estimate.
+    """
+    ...
+
 @overload
 def run_dft(
     mol: Molecule,

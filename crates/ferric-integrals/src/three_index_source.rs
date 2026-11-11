@@ -887,14 +887,34 @@ fn check_spill_disk(needed: u64, free: u64, dir: &std::path::Path) -> Result<(),
          (a {:.2} GB safety margin is reserved so the spill cannot fill the partition \
          out from under the rest of the system). Remedies: raise the in-core ceiling so \
          the tensor never spills ([memory] budget_gb / FERRIC_MEM_BUDGET_GB); point the \
-         spill elsewhere (TMPDIR=/path/with/room); use a smaller auxiliary basis; or use \
-         a K builder that does not materialize the 3-index tensor ([scf] k_builder); or \
+         spill elsewhere (TMPDIR=/path/with/room); use a smaller auxiliary basis; {} or \
          recompute the integrals each pass instead of writing them (jk_storage = \"direct\").",
         needed as f64 / 1e9,
         dir.display(),
         free as f64 / 1e9,
         headroom as f64 / 1e9,
+        exact_k_remedy(needed),
     )))
+}
+
+/// The exact-exchange memory remedy both spill messages name.
+///
+/// For HF or a global hybrid whose exchange is density-fitted (RI-K: the
+/// Kohn–Sham default, or a named `df_k_aux`), the SCF holds RI-K's
+/// V^{-1/2}-dressed tensor beside RI-J's raw one. `df_k_aux = ""` selects
+/// exact four-centre K, which builds no three-index tensor for exchange;
+/// `k_builder` only takes effect once RI-K is off. RI-K's packed f64 tensor
+/// is `naux · nao(nao+1)/2 · 8` bytes, which is what a full-band packed f64
+/// spill writes, so `needed` bounds it. A range-separated functional has no
+/// exact-K route, so the remedy is scoped to ω = 0.
+fn exact_k_remedy(needed: u64) -> String {
+    format!(
+        "if exchange is density-fitted for HF or a global hybrid (RI-K, the default for \
+         hybrid functionals), df_k_aux = \"\" selects exact four-centre K, which does not \
+         build RI-K's tensor (up to {:.2} GB; k_builder has no effect while RI-K is active, \
+         and range-separated functionals have no exact-K route);",
+        needed as f64 / 1e9,
+    )
 }
 
 /// The text of the spill warning. Pure so its content is testable; emitted by
@@ -907,11 +927,12 @@ fn spill_warning_text(needed: u64, dir: &std::path::Path) -> String {
          iteration pays roughly (tensor size / disk bandwidth) in pure IO on top of its \
          compute — at {:.2} GB and ~150 MB/s that is ~{:.0} min per iteration. Raise \
          [memory] budget_gb / FERRIC_MEM_BUDGET_GB to keep it in core, or use a smaller \
-         auxiliary basis.",
+         auxiliary basis; {}.",
         needed as f64 / 1e9,
         dir.display(),
         needed as f64 / 1e9,
         (needed as f64 / 150e6) / 60.0,
+        exact_k_remedy(needed).trim_end_matches(';'),
     )
 }
 
@@ -3400,6 +3421,25 @@ mod tests {
             msg.contains("TMPDIR"),
             "must name the spill-dir override: {msg}"
         );
+        assert_names_exact_k_remedy(&msg, "100.00 GB");
+    }
+
+    /// Both spill messages name `df_k_aux = ""` (exact K) as the memory
+    /// remedy for a density-fitted hybrid, with the RI-K tensor size it saves,
+    /// and say `k_builder` does nothing while RI-K is active — the knob a
+    /// reader reaches for first and the one that is inert here.
+    ///
+    /// MUTATION: drop `exact_k_remedy` from either message and this goes RED.
+    fn assert_names_exact_k_remedy(msg: &str, size: &str) {
+        assert!(msg.contains("df_k_aux = \"\""), "must name exact K: {msg}");
+        assert!(
+            msg.contains(&format!("RI-K's tensor (up to {size}")),
+            "must name the RI-K tensor size it saves: {msg}"
+        );
+        assert!(
+            msg.contains("k_builder has no effect while RI-K is active"),
+            "must not point at k_builder as a lever: {msg}"
+        );
     }
 
     /// (a′) The refusal must NOT fire when the write genuinely fits — an
@@ -3477,6 +3517,7 @@ mod tests {
             text.contains("every SCF iteration"),
             "the point of the warning is the per-iteration re-read cost: {text}"
         );
+        assert_names_exact_k_remedy(&text, "55.00 GB");
 
         // The once-latch: a fresh latch admits exactly one caller.
         let latch = std::sync::atomic::AtomicBool::new(false);
