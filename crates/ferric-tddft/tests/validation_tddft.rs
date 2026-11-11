@@ -144,6 +144,10 @@ fn setup_on(refj: &Value, xc: Option<&str>, grid: AtomicGridConfig) -> Setup {
         dft_grid: Some(grid),
         df_j_aux: Some(SCF_JK_AUX.to_string()),
         df_k_aux: Some(SCF_JK_AUX.to_string()),
+        // The PySCF reference SCF fits J in f64. The f32 RI-J default moves
+        // the B3LYP/aug-cc-pVDZ roots by up to 9.4e-5 eV, above
+        // SAME_GRID_BAR_EV.
+        ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
         density_conv: 1e-8,
         max_iter: 200,
         ..Default::default()
