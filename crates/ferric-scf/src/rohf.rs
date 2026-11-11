@@ -206,6 +206,41 @@ pub fn restricted_fxc_response<'s>(
     }))
 }
 
+/// [`restricted_fxc_response`] for a spin-polarized reference `(d_a, d_b)`
+/// (UKS / ROKS Newton, AH and TRAH steps): the SCF's own screened grid when
+/// its XC evaluator has one
+/// ([`ferric_dft::xc_trait::UksXcContribution::polarized_fxc`]), else the
+/// dense [`FxcKernelStore`]. `dense_gate` = `(label, needed, available)`
+/// bytes, checked with `check_alloc` before the dense fallback builds its
+/// duplicate χ/∇χ cache (the screened path builds none).
+#[doc(hidden)]
+pub fn polarized_fxc_response<'s>(
+    x: &'s dyn ferric_dft::xc_trait::UksXcContribution,
+    (mol, prep, config, name): (&Molecule, &PreparedBasis, &RhfConfig, &str),
+    (d_a, d_b): (&Array2<f64>, &Array2<f64>),
+    dense_gate: Option<(&str, usize, usize)>,
+) -> Result<Box<crate::rohf_newton::FxcResponse<'s>>, FerricError> {
+    let xc_pol = fxc_xc_def(name, config.xc_omega)?;
+    if let Some(built) = x.polarized_fxc(&xc_pol, d_a, d_b) {
+        let sf = built.map_err(|e| FerricError::General(format!("screened f_xc: {e}")))?;
+        note_screened_fxc_build(&xc_pol);
+        return Ok(Box::new(move |a: &Array2<f64>, b: &Array2<f64>| {
+            sf.apply_polarized(a, b)
+        }));
+    }
+    if let Some((label, needed, avail)) = dense_gate {
+        ferric_core::memory::check_alloc(label, needed, avail)?;
+    }
+    let grid = config
+        .dft_grid
+        .clone()
+        .unwrap_or_else(ferric_dft::grid::AtomicGridConfig::production);
+    let store = FxcKernelStore::build(mol, prep, &grid, name, config.xc_omega, d_a, d_b)?;
+    Ok(Box::new(move |a: &Array2<f64>, b: &Array2<f64>| {
+        store.response()(a, b)
+    }))
+}
+
 /// The spin-polarized exchange-correlation kernel f_xc at a reference
 /// density, as the Newton steps use it (LDA, GGA, hybrid and range-separated
 /// GGA, and τ-only meta-GGA; VV10 has no kernel here and must be refused by
@@ -1596,28 +1631,18 @@ fn solve_rohf_impl(
             let f_a_mo = c_now.t().dot(&f_a).dot(&c_now);
             let f_b_mo = c_now.t().dot(&f_b).dot(&c_now);
 
-            let fxc_store = if xc_supports_newton_fxc {
-                let main = config
-                    .dft_grid
-                    .clone()
-                    .unwrap_or_else(ferric_dft::grid::AtomicGridConfig::production);
-                let name = config
-                    .xc
-                    .as_deref()
-                    .expect("xc_supports_newton_fxc implies Some(xc)");
-                Some(FxcKernelStore::build(
-                    mol,
-                    prep,
-                    &main,
-                    name,
-                    config.xc_omega,
-                    &d_a,
-                    &d_b,
-                )?)
-            } else {
-                None
-            };
-            let fxc_storage = fxc_store.as_ref().map(|s| s.response());
+            // The f_xc response on the SCF's own screened grid (dense fallback).
+            let fxc_storage = xc_contrib
+                .as_deref()
+                .filter(|_| xc_supports_newton_fxc)
+                .map(|x| {
+                    let name = config
+                        .xc
+                        .as_deref()
+                        .expect("xc_supports_newton_fxc implies Some(xc)");
+                    polarized_fxc_response(x, (mol, prep, config, name), (&d_a, &d_b), None)
+                })
+                .transpose()?;
             let fxc_ref: Option<&crate::rohf_newton::FxcResponse<'_>> = fxc_storage.as_deref();
 
             // The response J/K come from this SCF's own RI-J / DF-K (the
@@ -1668,28 +1693,18 @@ fn solve_rohf_impl(
             // Build the f_xc kernel (LDA or GGA) + reference density (closure
             // target). Kept here so the response closure borrows it; the heavy
             // grid/AO evaluation happens once per Newton step, not per matvec.
-            let fxc_store = if xc_supports_newton_fxc {
-                let main = config
-                    .dft_grid
-                    .clone()
-                    .unwrap_or_else(ferric_dft::grid::AtomicGridConfig::production);
-                let name = config
-                    .xc
-                    .as_deref()
-                    .expect("xc_supports_newton_fxc implies Some(xc)");
-                Some(FxcKernelStore::build(
-                    mol,
-                    prep,
-                    &main,
-                    name,
-                    config.xc_omega,
-                    &d_a,
-                    &d_b,
-                )?)
-            } else {
-                None
-            };
-            let fxc_storage = fxc_store.as_ref().map(|s| s.response());
+            // The f_xc response on the SCF's own screened grid (dense fallback).
+            let fxc_storage = xc_contrib
+                .as_deref()
+                .filter(|_| xc_supports_newton_fxc)
+                .map(|x| {
+                    let name = config
+                        .xc
+                        .as_deref()
+                        .expect("xc_supports_newton_fxc implies Some(xc)");
+                    polarized_fxc_response(x, (mol, prep, config, name), (&d_a, &d_b), None)
+                })
+                .transpose()?;
             let fxc_ref: Option<&crate::rohf_newton::FxcResponse<'_>> = fxc_storage.as_deref();
 
             // The response J/K come from this SCF's own RI-J / DF-K (the

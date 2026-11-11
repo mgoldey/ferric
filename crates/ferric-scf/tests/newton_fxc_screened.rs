@@ -456,3 +456,354 @@ fn rks_newton_screened_fxc_matches_diis_b3lyp() {
 fn rks_newton_screened_fxc_matches_diis_r2scan() {
     newton_matches_diis_screened("r2SCAN", false);
 }
+
+// ── Open shell (UKS, ROKS) ─────────────────────────────────────────────────
+
+const OH: &str = "2\nOH\nO 0 0 0\nH 0 0 0.97\n";
+
+/// Cayley `C·(I − κ/2)⁻¹(I + κ/2)` for an antisymmetric MO-basis κ.
+fn cayley_full(c: &Array2<f64>, kappa: &Array2<f64>) -> Array2<f64> {
+    use ndarray_linalg::Solve;
+    let n = c.nrows();
+    let eye = Array2::<f64>::eye(n);
+    let am = &eye - &(0.5 * kappa);
+    let bm = &eye + &(0.5 * kappa);
+    let mut u = Array2::<f64>::zeros((n, n));
+    for col in 0..n {
+        u.column_mut(col)
+            .assign(&am.solve(&bm.column(col).to_owned()).unwrap());
+    }
+    c.dot(&u)
+}
+
+/// Per-spin elementwise magnitude of the polarized V_xc integrand at
+/// `(d_a, d_b)` (the polarized twin of [`xc_magnitude`]):
+/// `Σ_g w [|v_ρσ||χ||χ| + Σ_a (2|v_σσσ||∂_aρ_σ| + |v_σαβ||∂_aρ_σ̄|)(|χ||∂_aχ| + |∂_aχ||χ|)
+///  + ½|v_τσ| Σ_a |∂_aχ||∂_aχ|]`.
+fn xc_magnitude_uks(
+    mol: &Molecule,
+    bs: &basis::BasisSet,
+    ks: &ferric_dft::ks::KsXcUks,
+    (d_a, d_b): (&Array2<f64>, &Array2<f64>),
+) -> [Array2<f64>; 2] {
+    use ferric_dft::density_on_grid::{eval_density_uks, eval_tau_uks};
+    let pts: Vec<[f64; 3]> = ks.grid.iter().map(|g| g.xyz).collect();
+    let (chi, dchi) = ferric_dft::ao_grid::eval_basis_and_grad_on_points(mol, bs, &pts).unwrap();
+    let dens = eval_density_uks(d_a, d_b, &chi, &dchi);
+    let (ta, tb) = eval_tau_uks(d_a, d_b, &dchi);
+    let k = ferric_dft::vxc::polarized_kernel(&dens, Some((&ta, &tb)), &ks.xc);
+    let w: Vec<f64> = ks.grid.iter().map(|g| g.weight).collect();
+    let ca = chi.mapv(f64::abs);
+    let scaled = |fac: &dyn Fn(usize) -> f64, m: &Array2<f64>| {
+        let mut out = m.clone();
+        for (g, mut col) in out.axis_iter_mut(Axis(1)).enumerate() {
+            col *= fac(g);
+        }
+        out
+    };
+    let spin = |vr: &ndarray::Array1<f64>,
+                vss: &ndarray::Array1<f64>,
+                vt: &ndarray::Array1<f64>,
+                gs: &Array2<f64>,
+                go: &Array2<f64>| {
+        let mut v = scaled(&|g| w[g] * vr[g].abs(), &ca).dot(&ca.t());
+        for ax in 0..3 {
+            let da = dchi.index_axis(Axis(0), ax).mapv(f64::abs);
+            let f = |g: usize| {
+                w[g] * (2.0 * vss[g].abs() * gs[(ax, g)].abs()
+                    + k.vsigma_ab[g].abs() * go[(ax, g)].abs())
+            };
+            let m = scaled(&f, &ca).dot(&da.t());
+            v = v + &m + m.t();
+            v += &scaled(&|g| 0.5 * w[g] * vt[g].abs(), &da).dot(&da.t());
+        }
+        v
+    };
+    [
+        spin(
+            &k.vrho_a,
+            &k.vsigma_aa,
+            &k.vtau_a,
+            &dens.grad_a,
+            &dens.grad_b,
+        ),
+        spin(
+            &k.vrho_b,
+            &k.vsigma_bb,
+            &k.vtau_b,
+            &dens.grad_b,
+            &dens.grad_a,
+        ),
+    ]
+}
+
+/// Exactness anchor, UKS (OH ²Π/cc-pVDZ, PBE, RI-J, production grid and
+/// screening): the UHF Newton matvec with the screened polarized f_xc
+/// response and RI-J lent equals the central FD of the fitted, screened
+/// per-spin gradient g_σ = [C_σᵀ F_σ C_σ]_ai, F_σ = H + J_RI + V_xc^σ[KsXcUks],
+/// along a random coupled rotation (κ_α, κ_β), once the matvec's diagonal gap
+/// is replaced by the exact MO-rotation commutator (the identity of
+/// `open_shell_newton_fitted_response.rs`, which needs no semicanonical
+/// orbitals). Bound as in the RKS anchor, per spin, added in quadrature, with
+/// [`xc_magnitude_uks`] as the XC magnitude. The dense (unscreened, per-spin
+/// gated) `FxcKernelStore` response is evaluated against the same FD.
+#[test]
+fn screened_fxc_hvp_matches_fd_oh_uks_pbe() {
+    use ferric_dft::ks::KsXcUks;
+    use ferric_dft::xc_trait::UksXcContribution;
+    use ferric_scf::rohf::polarized_fxc_response;
+    use ferric_scf::uhf_newton::{hessian_matvec, AoResponse, UhfNewtonInputs};
+    use std::cell::RefCell;
+    let xc = "PBE";
+    let mol = Molecule::parse_xyz(OH, 0, 2).unwrap();
+    let bs = basis::bundled("cc-pvdz").unwrap();
+    let prep = PreparedBasis::new(&mol, &bs).unwrap();
+    let aux = PreparedBasis::new(&mol, &basis::bundled(AUX).unwrap()).unwrap();
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+    let ctx = ParallelContext::default();
+    let budget = ferric_core::memory::resolve_budget_bytes(None);
+    let n = prep.nbasis();
+    let na = (mol.nelec() as usize).div_ceil(2);
+    let nb = mol.nelec() as usize / 2;
+    let grid = AtomicGridConfig::production();
+    let cfg = RhfConfig {
+        xc: Some(xc.into()),
+        energy_conv: 1e-10,
+        density_conv: 1e-8,
+        max_iter: 200,
+        level_shift: 0.2,
+        dft_grid: Some(grid.clone()),
+        df_j_aux: Some(AUX.into()),
+        ri_j_precision: Some(RiJPrecision::F64),
+        ..Default::default()
+    };
+    let res = ferric_scf::uhf::solve_uhf(&ctx, &mol, &prep, &bounds, &cfg).unwrap();
+    assert!(res.converged);
+    let ca = res.mos_alpha.clone();
+    let cb = res.mos_beta.clone().unwrap();
+    let ks = KsXcUks::new_with_batch_config(
+        &mol,
+        &bs,
+        xc,
+        &grid,
+        &grid,
+        None,
+        None,
+        XcBatchConfig::default(),
+    )
+    .unwrap();
+    let h = oneelectron::hcore(&prep);
+    let mut dfj = DfJ::new_with_precision(op, &prep, &aux, budget, RiJPrecision::F64).unwrap();
+    let mut focks = |ca: &Array2<f64>, cb: &Array2<f64>| {
+        let oa = ca.slice(s![.., ..na]);
+        let ob = cb.slice(s![.., ..nb]);
+        let (da, db) = (oa.dot(&oa.t()), ob.dot(&ob.t()));
+        let mut j = Array2::<f64>::zeros((n, n));
+        dfj.build(&(&da + &db), &mut j).unwrap();
+        let mut fa = &h + &j;
+        let mut fb = fa.clone();
+        ks.add_xc_uks(&da, &db, &mut fa, &mut fb);
+        let mag = h.mapv(f64::abs) + j.mapv(f64::abs);
+        (fa, fb, mag, da, db)
+    };
+    let (fa, fb, mag, da, db) = focks(&ca, &cb);
+    let (fa_mo, fb_mo) = (ca.t().dot(&fa).dot(&ca), cb.t().dot(&fb).dot(&cb));
+    let [sxa, sxb] = xc_magnitude_uks(&mol, &bs, &ks, (&da, &db));
+    let (gjk, gxc) = (
+        gamma(n * n + aux.nbasis() + 2 * n),
+        gamma(ks.grid.len() + 6 * n + 64),
+    );
+    let eg = |c: &Array2<f64>, sx: &Array2<f64>, no: usize| {
+        let a = c.mapv(f64::abs);
+        let m = gjk * &mag + gxc * sx;
+        frob(&a.t().dot(&m).dot(&a).slice(s![no.., ..no]).to_owned())
+    };
+    let e_g = eg(&ca, &sxa, na).hypot(eg(&cb, &sxb, nb));
+
+    let mut rng = Xorshift64(0x9E3779B97F4A7C15);
+    let ka = Array2::from_shape_fn((n - na, na), |_| 0.01 * rng.next_f64());
+    let kb = Array2::from_shape_fn((n - nb, nb), |_| 0.01 * rng.next_f64());
+    let full = |blk: &Array2<f64>, no: usize| {
+        let mut k = Array2::<f64>::zeros((n, n));
+        for ((i, j), &v) in blk.indexed_iter() {
+            k[(no + i, j)] = v;
+            k[(j, no + i)] = -v;
+        }
+        k
+    };
+    let (kap_a, kap_b) = (full(&ka, na), full(&kb, nb));
+    let corr = |f_mo: &Array2<f64>, kap: &Array2<f64>, k: &Array2<f64>, no: usize| {
+        let comm = f_mo.dot(kap) - kap.dot(f_mo);
+        let mut c = comm.slice(s![no.., ..no]).to_owned();
+        for ((r, i), v) in c.indexed_iter_mut() {
+            *v -= (f_mo[(no + r, no + r)] - f_mo[(i, i)]) * k[(r, i)];
+        }
+        c
+    };
+    let (corr_a, corr_b) = (corr(&fa_mo, &kap_a, &ka, na), corr(&fb_mo, &kap_b, &kb, nb));
+    let ladder = [4e-3, 2e-3, 1e-3];
+    let fds: Vec<(Array2<f64>, Array2<f64>)> = ladder
+        .iter()
+        .map(|&e| {
+            let mut at = |e: f64| {
+                let (ra, rb) = (
+                    cayley_full(&ca, &(e * &kap_a)),
+                    cayley_full(&cb, &(e * &kap_b)),
+                );
+                let (fa, fb, _, _, _) = focks(&ra, &rb);
+                (
+                    ov_block(&ra.t().dot(&fa).dot(&ra), na),
+                    ov_block(&rb.t().dot(&fb).dot(&rb), nb),
+                )
+            };
+            let (pa, pb) = at(e);
+            let (ma, mb) = at(-e);
+            ((&pa - &ma) / (2.0 * e), (&pb - &mb) / (2.0 * e))
+        })
+        .collect();
+
+    let dfj_h =
+        RefCell::new(DfJ::new_with_precision(op, &prep, &aux, budget, RiJPrecision::F64).unwrap());
+    let jr = Box::new(|dd: &Array2<f64>| {
+        let mut out = Array2::<f64>::zeros(dd.raw_dim());
+        dfj_h.borrow_mut().build(dd, &mut out)?;
+        Ok(out)
+    }) as Box<AoResponse<'_>>;
+    let pool = ferric_scf::engine_pool::EnginePool::new(op, &prep, 1e-14).unwrap();
+    let matvec = |fxc: &ferric_scf::rohf_newton::FxcResponse<'_>| {
+        let inp = UhfNewtonInputs {
+            prep: &prep,
+            bounds: &bounds,
+            c_a: &ca,
+            c_b: &cb,
+            f_a_mo: &fa_mo,
+            f_b_mo: &fb_mo,
+            nocc_a: na,
+            nocc_b: nb,
+            k_mix_sr: 0.0,
+            rsh: None,
+            fxc: Some(fxc),
+            thresh: 1e-12,
+            ooc_budget: budget,
+            j_response: Some(&*jr),
+            k_response: None,
+        };
+        let (ha, hb) = hessian_matvec(&ctx, &inp, &ka, &kb, &pool).unwrap();
+        (&ha + &corr_a, &hb + &corr_b)
+    };
+    let (sc0, de0) = (
+        screened_fxc_builds_on_this_thread(),
+        dense_fxc_builds_on_this_thread(),
+    );
+    let fxc = polarized_fxc_response(&ks, (&mol, &prep, &cfg, xc), (&da, &db), None).unwrap();
+    assert_eq!(
+        (
+            screened_fxc_builds_on_this_thread() - sc0,
+            dense_fxc_builds_on_this_thread() - de0
+        ),
+        (1, 0),
+        "UKS: the response must come from the SCF's screened grid"
+    );
+    let hk = matvec(&*fxc);
+    let store = FxcKernelStore::build(&mol, &prep, &grid, xc, None, &da, &db).unwrap();
+    let dense_resp = store.response();
+    let hk_dense = matvec(&*dense_resp);
+    let pair = |x: &(Array2<f64>, Array2<f64>), y: &(Array2<f64>, Array2<f64>)| {
+        frob(&(&x.0 - &y.0)).hypot(frob(&(&x.1 - &y.1)))
+    };
+    let scale = frob(&hk.0).hypot(frob(&hk.1));
+    let mut worst = 0.0f64;
+    for w in 1..ladder.len() {
+        let hh = ladder[w];
+        let bound = pair(&fds[w - 1], &fds[w]) / 3.0 + 2.0 * e_g / hh;
+        let err = pair(&hk, &fds[w]);
+        eprintln!(
+            "UKS OH {xc} h={hh:.0e}: |Hk-FD|={err:.3e} (rel {:.2e}) |Hk_dense-FD|={:.3e} \
+             bound={bound:.3e} [round {:.3e}]",
+            err / scale,
+            pair(&hk_dense, &fds[w]),
+            2.0 * e_g / hh
+        );
+        worst = worst.max(err / bound);
+    }
+    eprintln!(
+        "UKS OH {xc}: |Hk|={scale:.3e} screened vs dense {:.3e}, worst err/bound {worst:.3e}",
+        pair(&hk, &hk_dense)
+    );
+    assert!(
+        worst <= 1.0,
+        "UKS: the screened-f_xc HVP must match the FD of the fitted, screened gradient \
+         (worst err/bound {worst:.3})"
+    );
+}
+
+/// UKS / ROKS Newton with the screened polarized f_xc response: the energy
+/// equals DIIS's to 1e-7 Ha (as `open_shell_newton_fitted_response`), and
+/// every f_xc response is screened (no dense kernel built). ROKS uses H2 ³Σ
+/// (the system that `open_shell_newton_fitted_response` shows ROKS Newton
+/// converging on; NH2/OH ROKS Newton does not converge, before or after).
+fn open_shell_newton_matches_diis(xyz: &str, mult: usize, xc: &str, hybrid: bool, rohf: bool) {
+    let mol = Molecule::parse_xyz(xyz, 0, mult).unwrap();
+    let prep = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+    let ctx = ParallelContext::default();
+    let cfg_diis = RhfConfig {
+        xc: Some(xc.into()),
+        energy_conv: 1e-9,
+        density_conv: 1e-7,
+        max_iter: 200,
+        df_j_aux: Some(AUX.into()),
+        df_k_aux: hybrid.then(|| AUX.into()),
+        ..Default::default()
+    };
+    let cfg_newton = RhfConfig {
+        newton_trigger: 1e-2,
+        ..cfg_diis.clone()
+    };
+    let solve = |cfg: &RhfConfig| {
+        if rohf {
+            ferric_scf::rohf::solve_rohf(&ctx, &mol, &prep, op, &bounds, cfg).unwrap()
+        } else {
+            ferric_scf::uhf::solve_uhf(&ctx, &mol, &prep, &bounds, cfg).unwrap()
+        }
+    };
+    let r_diis = solve(&cfg_diis);
+    let (s0, d0) = (
+        screened_fxc_builds_on_this_thread(),
+        dense_fxc_builds_on_this_thread(),
+    );
+    let r_newton = solve(&cfg_newton);
+    let screened = screened_fxc_builds_on_this_thread() - s0;
+    let dense = dense_fxc_builds_on_this_thread() - d0;
+    let de = (r_diis.energy - r_newton.energy).abs();
+    let kind = if rohf { "ROKS" } else { "UKS" };
+    eprintln!(
+        "{kind} {xc}: E_diis={:.10} ({} it) E_newton={:.10} ({} it) dE={de:.2e} \
+         screened_fxc={screened} dense_fxc={dense}",
+        r_diis.energy, r_diis.iterations, r_newton.energy, r_newton.iterations
+    );
+    assert!(r_diis.converged && r_newton.converged);
+    assert!(
+        screened >= 1,
+        "{kind} {xc}: no screened f_xc response was built"
+    );
+    assert_eq!(dense, 0, "{kind} {xc}: a dense f_xc kernel was built");
+    assert!(de < 1e-7, "{kind} {xc}: Newton vs DIIS differ by {de:.3e}");
+}
+
+#[test]
+fn uks_newton_screened_fxc_matches_diis_oh_pbe() {
+    open_shell_newton_matches_diis(OH, 2, "PBE", false, false);
+}
+
+#[test]
+fn uks_newton_screened_fxc_matches_diis_oh_b3lyp() {
+    open_shell_newton_matches_diis(OH, 2, "B3LYP", true, false);
+}
+
+#[test]
+fn roks_newton_screened_fxc_matches_diis_h2_triplet_b3lyp() {
+    open_shell_newton_matches_diis("2\nH2\nH 0 0 0\nH 0 0 2.0\n", 3, "B3LYP", true, true);
+}
