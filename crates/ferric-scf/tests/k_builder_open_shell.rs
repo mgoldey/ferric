@@ -563,6 +563,159 @@ fn rohf_df_k_with_link_builder_warns_and_skips() {
     );
 }
 
+// ── (e2) `k_builder = "direct"` under density fitting: warned, not silent ────
+//
+// User report (0.1.0rc10): `run_dft(..., k_builder="direct")` was inert under
+// the auto-defaulted RI-K, bitwise the default energy, and printed nothing,
+// while `"link"` in the same state printed the IGNORED warning. Each child
+// asserts the inertness (bitwise the run without `k_builder`); each parent
+// asserts the warning. MUTATION (recorded in the commit): restoring the
+// link/cosx-only gate in `fock_assembly::k_builder_ignored_warning` turns the
+// three `..._direct_builder_warns` parents RED and leaves the silent-path
+// parent green.
+
+const DF_WARN_DIRECT: &str =
+    "k_builder = \"direct\" is IGNORED because density-fitted J/K is active";
+
+/// DF-J + DF-K at STO-3G: the warning and the inertness do not depend on the
+/// orbital basis, and STO-3G keeps the three SCF pairs cheap.
+fn df_cfg_small(kb: Option<&str>) -> RhfConfig {
+    RhfConfig {
+        df_j_aux: Some("def2-universal-jkfit".into()),
+        df_k_aux: Some("def2-universal-jkfit".into()),
+        ..cfg(kb)
+    }
+}
+
+fn assert_inert(label: &str, plain: &ScfResult, with_kb: &ScfResult) {
+    assert!(
+        plain.converged && with_kb.converged,
+        "{label}: not converged"
+    );
+    assert_eq!(
+        plain.energy.to_bits(),
+        with_kb.energy.to_bits(),
+        "{label}: DF-JK + k_builder=direct must be bitwise the DF-JK run"
+    );
+    assert_eq!(plain.iterations, with_kb.iterations, "{label}");
+}
+
+#[test]
+fn probe_child_uhf_df_k_with_direct_builder() {
+    if !probe_armed() {
+        return;
+    }
+    let (mol, prep, bounds) = setup(CH3_XYZ, 0, 2, "sto-3g", Operator::coulomb());
+    let ctx = ParallelContext::default();
+    let plain = solve_uhf(&ctx, &mol, &prep, &bounds, &df_cfg_small(None)).expect("uhf df");
+    let with_kb = solve_uhf(&ctx, &mol, &prep, &bounds, &df_cfg_small(Some("direct")))
+        .expect("uhf df+direct");
+    assert_inert("UHF", &plain, &with_kb);
+}
+
+#[test]
+fn probe_child_rohf_df_k_with_direct_builder() {
+    if !probe_armed() {
+        return;
+    }
+    let (mol, prep, bounds) = setup(CH3_XYZ, 0, 2, "sto-3g", Operator::coulomb());
+    let ctx = ParallelContext::default();
+    let op = Operator::coulomb();
+    let plain = solve_rohf(&ctx, &mol, &prep, op, &bounds, &df_cfg_small(None)).expect("rohf df");
+    let with_kb = solve_rohf(
+        &ctx,
+        &mol,
+        &prep,
+        op,
+        &bounds,
+        &df_cfg_small(Some("direct")),
+    )
+    .expect("rohf df+direct");
+    assert_inert("ROHF", &plain, &with_kb);
+}
+
+/// The reported case: a global hybrid whose RI-J AND RI-K come from the
+/// Kohn–Sham auto-default (no `df_*_aux` set), as `run_dft` reaches it.
+#[test]
+fn probe_child_rks_auto_df_with_direct_builder() {
+    if !probe_armed() {
+        return;
+    }
+    let (mol, prep, bounds) = setup(WATER_XYZ, 0, 1, "sto-3g", Operator::coulomb());
+    let ctx = ParallelContext::default();
+    let b3lyp = |kb: Option<&str>| RhfConfig {
+        xc: Some("B3LYP".into()),
+        dft_grid: Some(ferric_dft::grid::AtomicGridConfig {
+            n_radial: 25,
+            n_angular: 50,
+            ..Default::default()
+        }),
+        ..cfg(kb)
+    };
+    let op = Operator::coulomb();
+    let plain = solve_rhf(&ctx, &mol, &prep, op, &bounds, &b3lyp(None)).expect("rks");
+    let with_kb =
+        solve_rhf(&ctx, &mol, &prep, op, &bounds, &b3lyp(Some("direct"))).expect("rks+direct");
+    assert_inert("RKS", &plain, &with_kb);
+}
+
+/// No density fitting anywhere: `"direct"` IS the builder used, so the run
+/// must print no IGNORED line at all (closed and open shell).
+#[test]
+fn probe_child_no_df_with_direct_builder() {
+    if !probe_armed() {
+        return;
+    }
+    let ctx = ParallelContext::default();
+    let op = Operator::coulomb();
+    let (mol, prep, bounds) = setup(WATER_XYZ, 0, 1, "sto-3g", op);
+    let r = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg(Some("direct"))).expect("rhf");
+    assert!(r.converged);
+    let (mol, prep, bounds) = setup(CH3_XYZ, 0, 2, "sto-3g", op);
+    let u = solve_uhf(&ctx, &mol, &prep, &bounds, &cfg(Some("direct"))).expect("uhf");
+    assert!(u.converged);
+}
+
+#[test]
+fn uhf_df_k_with_direct_builder_warns() {
+    let (ok, stderr) = run_probe("probe_child_uhf_df_k_with_direct_builder");
+    assert!(ok, "child probe failed (see its output above)");
+    assert!(
+        stderr.contains(DF_WARN_DIRECT),
+        "UHF: DF-K + k_builder=direct did not print the IGNORED warning"
+    );
+}
+
+#[test]
+fn rohf_df_k_with_direct_builder_warns() {
+    let (ok, stderr) = run_probe("probe_child_rohf_df_k_with_direct_builder");
+    assert!(ok, "child probe failed (see its output above)");
+    assert!(
+        stderr.contains(DF_WARN_DIRECT),
+        "ROHF: DF-K + k_builder=direct did not print the IGNORED warning"
+    );
+}
+
+#[test]
+fn rks_auto_df_with_direct_builder_warns() {
+    let (ok, stderr) = run_probe("probe_child_rks_auto_df_with_direct_builder");
+    assert!(ok, "child probe failed (see its output above)");
+    assert!(
+        stderr.contains(DF_WARN_DIRECT) && stderr.contains("exchange comes from DF-K"),
+        "RKS (auto RI-JK): k_builder=direct did not print the IGNORED warning naming DF-K"
+    );
+}
+
+#[test]
+fn direct_builder_without_density_fitting_is_silent() {
+    let (ok, stderr) = run_probe("probe_child_no_df_with_direct_builder");
+    assert!(ok, "child probe failed (see its output above)");
+    assert!(
+        !stderr.contains("IGNORED"),
+        "k_builder=direct with no density fitting must not warn"
+    );
+}
+
 // ── (f) hard errors preserved at the open-shell entry points ─────────────────
 
 #[test]

@@ -186,8 +186,10 @@ print(f"B3LYP {dft.total_energy:.10f}")
 ```
 
 `run_dft` is closed-shell only, and its default functional is LDA. It uses
-density fitting for Coulomb by default (`def2-universal-jkfit`); `run_rhf`
-does not. Pass `df_j_aux="exact"` for conventional four-centre Coulomb when you
+density fitting by default (`def2-universal-jkfit`); `run_rhf` does not. Every
+functional gets RI-J; a global hybrid also gets RI-K, and a range-separated
+one two RI-K fitters (short- and long-range); a pure functional builds no RI-K.
+Pass `df_j_aux="exact"` for conventional four-centre Coulomb when you
 compare against an exact-Coulomb code. The RI-J tensor is stored as f32 by
 default (half the memory; about 1e-7 Ha per atom of energy shift, see
 [RI-J tensor precision](../methods/scf.md#ri-j-tensor-precision));
@@ -200,7 +202,13 @@ The geometry and frequency drivers (`run_optimize`, `run_optimize_uhf`,
 the f64 tensor instead, because the f32 energy surface jitters between nearby
 geometries; `scf_ri_j_precision="f32"` there is still honoured, and the
 certificate's `ri-j` entry says which was requested and why.
-The RI-K tensor (hybrids, HF with `df_k_aux`) is held as its packed
+The RI-K tensor (hybrids, HF with `df_k_aux`) is a second three-index
+tensor beside RI-J's, of `naux * nbf * (nbf + 1) / 2` elements;
+`BasisSet.n_functions(mol)` gives `nbf` and `naux`. For a global hybrid,
+`df_k_aux=""` selects exact four-centre K and builds no RI-K tensor; this is
+also the only way to use `k_builder="direct"` or `"link"` there, since while
+RI-K is active `k_builder` is ignored with a warning. The RI-K tensor is held
+as its packed
 symmetric half; `ri_k_precision="f32"` (opt-in; `scf_ri_k_precision` on
 `run_cdft` and `run_frequencies`) stores it in f32 for another factor of
 two, at a cost described in
