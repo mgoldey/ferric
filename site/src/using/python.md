@@ -203,7 +203,9 @@ the f64 tensor instead, because the f32 energy surface jitters between nearby
 geometries; `scf_ri_j_precision="f32"` there is still honoured, and the
 certificate's `ri-j` entry says which was requested and why.
 The RI-K tensor (hybrids, HF with `df_k_aux`) is a second three-index
-tensor beside RI-J's, of `naux * nbf * (nbf + 1) / 2` elements;
+tensor beside RI-J's, of `naux * nbf * (nbf + 1) / 2` elements
+(`naux * nbf**2` in a `[gpu]` mode that may build K on the device; RI-J's
+tensor has at most that many, as Schwarz pair screening can drop AO pairs);
 `BasisSet.n_functions(mol)` gives `nbf` and `naux`. For a global hybrid,
 `df_k_aux=""` selects exact four-centre K and builds no RI-K tensor; this is
 also the only way to use `k_builder="direct"` or `"link"` there, since while

@@ -262,8 +262,10 @@ impl PyBasisSet {
     /// Cartesian per shell, as the SCF builds them; ghost atoms included).
     /// For an orbital basis it is the `nbf` of the run; for an auxiliary
     /// (RI/JK-fit) basis it is `naux`, which sizes the density-fitting
-    /// tensors: a packed `(P|mn)` tensor holds `naux * nbf * (nbf + 1) / 2`
-    /// elements (8 bytes each at f64, 4 at f32). Builds no integrals.
+    /// tensors: a packed `(P|mn)` tensor holds at most
+    /// `naux * nbf * (nbf + 1) / 2` elements (8 bytes each at f64, 4 at f32;
+    /// see `run_dft` for which tensors a run holds and when one is smaller or
+    /// square). Builds no integrals.
     /// Raises `ValueError` when the basis does not cover an element of `mol`.
     fn n_functions(&self, mol: &PyMolecule) -> PyResult<usize> {
         let prep = PreparedBasis::new(&mol.inner, &self.inner)
@@ -10110,9 +10112,11 @@ fn run_double_hybrid(
 ///   - global hybrid (B3LYP, PBE0, ...): RI-K on the same auxiliary basis,
 ///     a SECOND three-index tensor beside RI-J's. RI-J keeps the raw packed
 ///     `(P|mn)` (f32 when it fits, `ri_j_precision`), RI-K the
-///     V^-1/2-dressed packed `(P|mn)` (f64, `ri_k_precision`); each has
-///     `naux * nbf * (nbf + 1) / 2` elements. `df_k_aux=""` selects exact
-///     four-centre K and builds no RI-K tensor.
+///     V^-1/2-dressed packed `(P|mn)` (f64, `ri_k_precision`). RI-K's has
+///     `naux * nbf * (nbf + 1) / 2` elements (`naux * nbf**2` in a `[gpu]`
+///     mode that may build K on the device); RI-J's has at most that many,
+///     since Schwarz pair screening can drop AO pairs. `df_k_aux=""`
+///     selects exact four-centre K and builds no RI-K tensor.
 ///   - range-separated hybrid (wB97X-V, CAM-B3LYP, ...): exchange only via
 ///     two RI-K fitters (short-range erfc and long-range erf), each its own
 ///     dressed tensor; `df_k_aux=""` raises.
