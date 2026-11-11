@@ -334,6 +334,10 @@ fn dh_tight() -> DoubleHybridConfig {
 /// attenuated metrics with def2-universal-jkfit (the only RSH-K path).
 fn ks_config(exact_j: bool) -> RhfConfig {
     let mut cfg = RhfConfig {
+        // The PySCF RI-J reference fits J in f64. The f32 RI-J default moves
+        // the energy by 1e-7..1e-6 Ha, above TOL_E_KS. The exact-J runs ignore
+        // the field.
+        ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
         max_iter: 300,
         energy_conv: 1e-11,
         density_conv: 1e-9,
