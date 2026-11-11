@@ -39,7 +39,8 @@ use std::cell::Cell;
 thread_local! {
     /// UHF/UKS Hessian-vector products computed on this thread (test seam).
     static HVP_CALLS: Cell<usize> = const { Cell::new(0) };
-    /// Direct four-centre response J/K builds made by those products (test seam).
+    /// Direct four-centre response J/K builds made by the UHF and ROHF products
+    /// (test seam).
     static DIRECT_RESPONSE_BUILDS: Cell<usize> = const { Cell::new(0) };
 }
 
@@ -51,7 +52,8 @@ pub fn hvp_calls_on_this_thread() -> usize {
     HVP_CALLS.with(Cell::get)
 }
 
-/// Number of direct four-centre J/K builds [`hessian_matvec`] made on the
+/// Number of direct four-centre J/K builds the open-shell Hessian-vector
+/// products ([`hessian_matvec`] and `rohf_newton::hessian_matvec`) made on the
 /// calling thread so far (test seam). Zero across a Newton step means every
 /// response term came from the SCF's fitted builders or was not needed.
 #[doc(hidden)]
@@ -67,7 +69,7 @@ pub type AoResponse<'a> = dyn Fn(&Array2<f64>) -> Result<Array2<f64>, FerricErro
 /// [`crate::fock::KBuilder::build_from_occ`] contract, weight 1 per column),
 /// by the SAME density-fitted builder the Fock was assembled from. The matvec
 /// forms each spin's `δK[δD_σ]` from two such builds
-/// ([`crate::rhf_newton::occ_pair_response_k`]), never from the `n × n` δD.
+/// (`rhf_newton::occ_pair_response_k`), never from the `n × n` δD.
 pub type OccKResponse<'a> = dyn Fn(&Array2<f64>) -> Result<Array2<f64>, FerricError> + 'a;
 
 /// Inputs to one UHF/UKS Newton step.
@@ -317,6 +319,12 @@ fn response_fock(
     (k_a, k_b): (&Array2<f64>, &Array2<f64>),
     (dd_a_ao, dd_b_ao): (&Array2<f64>, &Array2<f64>),
 ) -> Result<(Array2<f64>, Array2<f64>), FerricError> {
+    // Every fitted build below (RI-J, the ± occupied-factor DF-K, the RSH
+    // pair) runs OUTSIDE the SCF's J/K ladder scope; without this guard a
+    // mixed-precision device kernel would treat them as mixed, and the ±
+    // occupied-factor δK would carry an f32 error independent of |κ| (as in
+    // `rhf_newton::response_jk`). Direct builds do not consult the scope.
+    let _f64 = crate::jk_ladder::F64BuildScope::enter();
     let dd_tot = dd_a_ao + dd_b_ao;
     let dj = match inp.j_response {
         Some(jr) => jr(&dd_tot)?,

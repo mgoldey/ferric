@@ -232,9 +232,14 @@ fn converged_scf(
 /// m = n² + naux + 2n; the commutator correction adds γ_{2n}‖|F||κ| + |κ||F|‖·h
 /// at most, far below and not counted.
 ///
+/// Measured (2026-11-11, OH ²Π cc-pVDZ): |Hκ − FD| 1.4e-10..9.1e-10 (rel
+/// ≤ 1.3e-9) against bounds 2.5e-8..5.3e-8, worst err/bound 0.033, the error
+/// falling 4× per halving of h (truncation only); fitted vs direct HVP
+/// 3.0e-5..3.1e-5 (rel 4.5e-5..5.4e-5), ~600× the bound; no direct build.
+///
 /// Mutation (applied and reverted, 2026-11-11): `response_fock` taking δJ from
 /// an uncounted direct build although `j_response` is lent (the "direct J on
-/// an RI SCF" bug) — see the report for the measured err/bound.
+/// an RI SCF" bug) fails at k_mix = 1 with err/bound 1128.
 #[test]
 fn uhf_fitted_hvp_matches_finite_difference_of_the_fitted_gradient() {
     use ferric_scf::uhf_newton::{hessian_matvec, UhfNewtonInputs};
@@ -353,6 +358,13 @@ fn uhf_fitted_hvp_matches_finite_difference_of_the_fitted_gradient() {
 /// closed+open, κ_α = [κ_vc | κ_vo]; β: occ = closed, κ_β = [κ_oc ; κ_vc]).
 /// Bound as in the UHF anchor (one gradient evaluation's rounding is the sum
 /// over its blocks; the vc block reads both spins).
+///
+/// Measured (2026-11-11, NH2 ²B₁ cc-pVDZ): |Hκ − FD| 1.7e-10..1.2e-9 against
+/// bounds 8.7e-8..1.9e-7, worst err/bound 0.013; fitted vs direct HVP
+/// 8.2e-5..1.0e-4 (rel 1.0e-4..1.6e-4); no direct build.
+///
+/// Mutation (applied and reverted, 2026-11-11): the same uncounted direct δJ in
+/// `rohf_newton::response_fock` fails at k_mix = 1 with err/bound 1083.
 #[test]
 fn rohf_fitted_hvp_matches_finite_difference_of_the_fitted_gradient() {
     use ferric_scf::rohf_newton::{hessian_matvec, RohfNewtonInputs};
@@ -485,9 +497,15 @@ fn rohf_fitted_hvp_matches_finite_difference_of_the_fitted_gradient() {
 /// runs minimise the same fitted functional on the same grid and stop at
 /// energy_conv 1e-9 / density_conv 1e-7 on their own paths.
 ///
+/// Measured (2026-11-11, cc-pVDZ, def2-universal-jkfit): UHF OH |ΔE| 2.8e-14
+/// (13 HVPs), UKS OH PBE 1.4e-11 (60), UKS OH B3LYP 4.9e-11 (57), ROHF OH
+/// 5.7e-14 (33), ROKS H2 ³Σ B3LYP 2.0e-15 (1); 0 direct builds in all.
+///
 /// Mutation (applied and reverted, 2026-11-11): passing `None` for the fitted
 /// responses at the solver's Newton call site (the pre-fix direct response)
-/// fails every case at the direct-build assert; see the report.
+/// fails at the direct-build assert: UHF 42, UKS PBE 60 (δJ only: no K is built
+/// for a pure functional), UKS B3LYP 198 (in `solve_uhf`); ROHF OH 114 (in
+/// `solve_rohf`). The energies agree either way.
 fn newton_matches_diis(xyz: &str, mult: usize, xc: Option<&str>, hybrid: bool, rohf: bool) {
     let mol = Molecule::parse_xyz(xyz, 0, mult).unwrap();
     let prep = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
@@ -583,8 +601,12 @@ fn roks_newton_fitted_response_h2_triplet_b3lyp() {
 /// A Newton step at a converged point computes no HVP (UHF and ROHF), and a
 /// forced CG solve (cg_conv = 0) does: the positive control.
 ///
+/// Measured (2026-11-11): UHF OH |g|max 8.8e-10, ROHF NH2 1.9e-9 (cg_conv
+/// 1e-7): 0 HVPs each; forced: 11 and 9.
+///
 /// Mutation (applied and reverted, 2026-11-11): the old unconditional
-/// `h0 = H·κ⁰` before the PCG loop — see the report for the counts.
+/// `h0 = H·κ⁰` before the PCG loop fails with a count of 1 (UHF; and ROHF with
+/// the UHF half unmutated).
 #[test]
 fn open_shell_newton_step_computes_no_hvp_at_a_converged_point() {
     use ferric_scf::rohf_newton::{rohf_newton_step, RohfNewtonInputs};

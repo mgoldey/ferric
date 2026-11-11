@@ -499,6 +499,12 @@ fn response_fock(
             dd,
         )
     };
+    // Every fitted build below (RI-J, the ± occupied-factor DF-K, the RSH
+    // pair) runs OUTSIDE the SCF's J/K ladder scope; without this guard a
+    // mixed-precision device kernel would treat them as mixed, and the ±
+    // occupied-factor δK would carry an f32 error independent of |κ| (as in
+    // `rhf_newton::response_jk`). Direct builds do not consult the scope.
+    let _f64 = crate::jk_ladder::F64BuildScope::enter();
     let dd_tot = dd_a_ao + dd_b_ao;
     let dj = match inp.j_response {
         Some(jr) => jr(&dd_tot)?,
