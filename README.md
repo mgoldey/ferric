@@ -15,12 +15,15 @@ pip install ferric      # Linux x86_64, CPython 3.10–3.13
 The wheel needs no compiler. To change ferric itself or to use MPI, build from
 source; see [Installation](https://matthew.thegoldeys.com/ferric/using/installation.html).
 
-| Platform | Wheel on PyPI | Source build |
+| Platform (CPython 3.10–3.13) | Wheel on PyPI | Source build |
 |---|---|---|
-| Linux x86_64 (`manylinux_2_28`), CPython 3.10–3.13 | yes | yes, the only tested platform |
-| Linux aarch64 | no | not tested |
-| macOS (x86_64, arm64) | not yet (wanted; no wheel is built) | not tested |
-| Windows | no | not supported |
+| Linux x86_64 (`manylinux_2_28`) | yes | yes (the reference platform) |
+| macOS arm64, macOS 11+ | yes, after 0.1.0rc11 | tested in CI |
+| Windows x86_64 | yes, after 0.1.0rc11 | tested in CI |
+| Linux aarch64, macOS x86_64 | no | not tested |
+
+The x86_64 wheels need a CPU with AVX2 and FMA (Intel Haswell / AMD Zen or
+later); see [Installation](https://matthew.thegoldeys.com/ferric/using/installation.html).
 
 Each release also publishes an sdist, but it is not a self-contained build:
 it compiles only where libint2 (2.13.1 or the 2.7.2 export the wheels use),

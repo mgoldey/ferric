@@ -784,8 +784,12 @@ fn sync_parent(path: &Path) -> Result<(), CheckpointError> {
 /// Windows has no directory fsync: `File::open` on a directory fails with
 /// "Access is denied" (it needs FILE_FLAG_BACKUP_SEMANTICS), and
 /// FlushFileBuffers on a directory handle is not a supported durability call.
-/// NTFS journals the rename's metadata itself, so there is nothing to do; the
-/// temp file's data was already synced before the rename.
+/// So this branch does NOT sync the directory after the rename: the temp
+/// file's data was synced before the rename, but `fs::rename` gives no
+/// documented power-loss guarantee for the rename itself. The Windows contract
+/// is therefore weaker than Unix's (see `Checkpoint::write`): a crash right
+/// after a write can leave the previous complete file in place of the new one,
+/// never a partial file.
 #[cfg(not(unix))]
 fn sync_parent(_path: &Path) -> Result<(), CheckpointError> {
     Ok(())

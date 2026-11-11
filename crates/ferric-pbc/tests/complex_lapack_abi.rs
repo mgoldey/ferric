@@ -48,8 +48,20 @@ fn naive_matmul(a: &Array2<Complex64>, b: &Array2<Complex64>) -> Array2<Complex6
     })
 }
 
+/// Largest |z|. Panics on a non-finite entry: `f64::max` drops a NaN operand,
+/// so an all-NaN result would otherwise reduce to 0 and pass every check.
 fn max_abs(a: &Array2<Complex64>) -> f64 {
-    a.iter().fold(0.0f64, |m, z| m.max(z.norm()))
+    finite_max(a.iter().map(|z| z.norm()))
+}
+
+fn finite_max(errs: impl Iterator<Item = f64>) -> f64 {
+    errs.fold(0.0f64, |m, e| {
+        assert!(
+            e.is_finite(),
+            "non-finite value {e} in a BLAS/LAPACK result"
+        );
+        m.max(e)
+    })
 }
 
 #[test]
@@ -62,6 +74,10 @@ fn complex_eigh_satisfies_its_definition() {
         let mut f = Array2::<Complex64>::zeros(a.raw_dim().f());
         f.assign(&a);
         let (w, v) = f.eigh(UPLO::Upper).expect("zheev");
+        assert!(
+            w.iter().all(|x| x.is_finite()),
+            "n={n}: non-finite eigenvalues {w}"
+        );
         let lam = Array2::from_diag(&w.mapv(|x| Complex64::new(x, 0.0)));
         let resid = max_abs(&(naive_matmul(&a, &v) - naive_matmul(&v, &lam)));
         let vh = v.t().mapv(|z| z.conj());
@@ -91,10 +107,7 @@ fn complex_dot_matches_naive_products() {
         let x: Array1<Complex64> = b.column(0).to_owned();
         let y = a.dot(&x);
         let want = naive_matmul(&a, &x.clone().insert_axis(ndarray::Axis(1)));
-        let err = y
-            .iter()
-            .zip(want.column(0))
-            .fold(0.0f64, |e, (p, q)| e.max((p - q).norm()));
+        let err = finite_max(y.iter().zip(want.column(0)).map(|(p, q)| (p - q).norm()));
         assert!(err < 1e-12 * k as f64, "gemv {n}x{k}: {err:e}");
 
         let u: Array1<Complex64> = a.row(0).to_owned();
