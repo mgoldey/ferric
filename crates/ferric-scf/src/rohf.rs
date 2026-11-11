@@ -855,6 +855,7 @@ fn solve_rohf_impl(
     } else {
         None
     };
+    crate::raw_handoff::clear_slot(config);
     let (mut df_j, mut df_k) = crate::fock_assembly::build_df_jk(
         ctx,
         mol,

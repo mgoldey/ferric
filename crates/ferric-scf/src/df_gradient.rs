@@ -270,17 +270,59 @@ fn aux_shell_blocks(offsets: &[usize], dims: &[usize], max_rows: usize) -> Vec<(
     blocks
 }
 
-/// Debit the memory pool for the gradient's intermediates (`bytes`). With a
-/// kept raw tensor already held, a pool that cannot take them beside it gets
-/// the tensor back first (dropped, so the pass recomputes, as without it);
-/// otherwise this is the hard reservation it always was.
+/// The `[p0, p1)` aux blocks of the one pass under `budget_bytes`.
+fn pass_blocks(
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    budget_bytes: usize,
+) -> Vec<(usize, usize)> {
+    aux_shell_blocks(
+        dfbs.shell_offsets(),
+        dfbs.shell_dims(),
+        gradient_block_rows(obs.nbasis(), budget_bytes),
+    )
+}
+
+/// Bytes of the widest unpacked `(b, nao, nao)` block of the one pass: what
+/// it holds while computing a block, or while unpacking a packed kept tensor.
+#[doc(hidden)]
+pub fn pass_block_bytes(obs: &PreparedBasis, dfbs: &PreparedBasis, budget_bytes: usize) -> usize {
+    let n = obs.nbasis();
+    pass_blocks(obs, dfbs, budget_bytes)
+        .iter()
+        .map(|&(p0, p1)| p1 - p0)
+        .max()
+        .unwrap_or(0)
+        .saturating_mul(n)
+        .saturating_mul(n)
+        .saturating_mul(8)
+}
+
+/// An upper bound on [`pass_block_bytes`] from the shapes alone (a block can
+/// exceed its row target by less than one aux shell, < 32 functions).
+pub(crate) fn pass_block_bytes_upper_bound(nao: usize, naux: usize, budget_bytes: usize) -> usize {
+    (gradient_block_rows(nao, budget_bytes) + 32)
+        .min(naux)
+        .saturating_mul(nao)
+        .saturating_mul(nao)
+        .saturating_mul(8)
+}
+
+/// Debit the memory pool for the gradient's intermediates (`bytes`) and,
+/// when a kept tensor is read by unpacking (`unpack_block` > 0), its one
+/// unpacked block. With a kept tensor held, a pool that cannot take both
+/// beside it gets the tensor back first (dropped, so the pass recomputes and
+/// reserves its block itself, exactly as without it); otherwise this is the
+/// hard reservation it always was. Returns whether the block is covered.
 fn charge_intermediates(
     bytes: usize,
+    unpack_block: usize,
     raw: Option<KeptRaw>,
 ) -> Result<(ferric_core::memory::pool::Reservation, Option<KeptRaw>), FerricError> {
     const LABEL: &str = "DF-JK gradient metric + exchange intermediates";
     if let Some(kept) = raw {
-        if let Some(r) = ferric_core::memory::pool::try_reserve_global(LABEL, bytes) {
+        let with_block = bytes.saturating_add(unpack_block);
+        if let Some(r) = ferric_core::memory::pool::try_reserve_global(LABEL, with_block) {
             return Ok((r, Some(kept)));
         }
         drop(kept);
@@ -319,6 +361,9 @@ pub fn dfg_3c_blocks_computed_for_test() -> usize {
 /// element; the kept tiers hold exactly those), and every row is contracted
 /// independently, so the result depends neither on the blocking nor on
 /// where the rows came from.
+///
+/// A kept tensor's unpack block (packed tier) was charged with the
+/// intermediates ([`charge_intermediates`]); a computed block is charged here.
 fn three_center_pass(
     (obs, dfbs, op): (&PreparedBasis, &PreparedBasis, Operator),
     j: Option<(&Array2<f64>, bool)>,
@@ -326,13 +371,8 @@ fn three_center_pass(
     budget_bytes: usize,
     kept: Option<&ThreeIndexSource>,
 ) -> Result<(Array1<f64>, Vec<Array2<f64>>), FerricError> {
-    let n = obs.nbasis();
     let naux = dfbs.nbasis();
-    let blocks = aux_shell_blocks(
-        dfbs.shell_offsets(),
-        dfbs.shell_dims(),
-        gradient_block_rows(n, budget_bytes),
-    );
+    let blocks = pass_blocks(obs, dfbs, budget_bytes);
     // (A recompute is reported where the tensor was not kept or not used.)
     if let Some(s) = kept {
         crate::raw_handoff::note(&format!(
@@ -340,20 +380,10 @@ fn three_center_pass(
             s.resident_f64_bytes().unwrap_or(0) as f64 / 1e9
         ));
     }
-    // An unpacked kept tensor is viewed in place; every other route holds one
-    // block (computed, or unpacked from the packed tier).
-    let in_place = kept.is_some_and(|s| s.incore_flat().is_some());
-    let block_bytes = if in_place {
+    let block_bytes = if kept.is_some() {
         0
     } else {
-        blocks
-            .iter()
-            .map(|&(p0, p1)| p1 - p0)
-            .max()
-            .unwrap_or(0)
-            .saturating_mul(n)
-            .saturating_mul(n)
-            .saturating_mul(8)
+        pass_block_bytes(obs, dfbs, budget_bytes)
     };
     let _block_charge = ferric_core::memory::pool::reserve_global(
         "DF-JK gradient 3-index block (computed once, not stored)",
@@ -576,7 +606,17 @@ fn df_jk_gradient_core(
         .iter()
         .map(|(x, _)| 2 * naux * x.ncols() * x.ncols() * 8)
         .sum();
-    let (_charge, raw) = charge_intermediates(k_bytes.saturating_add(5 * naux * naux * 8), raw)?;
+    // An unpacked kept tensor is viewed in place; a packed one is unpacked
+    // one block at a time.
+    let unpack_block = match raw.as_ref() {
+        Some(k) if k.source().incore_flat().is_none() => pass_block_bytes(obs, dfbs, budget_bytes),
+        _ => 0,
+    };
+    let (_charge, raw) = charge_intermediates(
+        k_bytes.saturating_add(5 * naux * naux * 8),
+        unpack_block,
+        raw,
+    )?;
 
     let t_st = ferric_core::timing::Stage::start("dfg:metric2c");
     let v = coulomb_metric_2c(op, dfbs)?;
@@ -1019,7 +1059,7 @@ pub fn routed_two_electron_gradient(
                 &channels(mix.c_k),
                 budget,
                 route.ri_j_precision,
-                crate::raw_handoff::take_active(),
+                crate::raw_handoff::take_active(mol, prep, &dfbs, ja, route.op),
             )?;
         }
         _ => {

@@ -167,6 +167,26 @@ pub fn with_fresh_handoff(config: &RhfConfig) -> RhfConfig {
     }
 }
 
+/// `config` with no hand-off: for a sub-solve inside a solver (the
+/// `guess_basis` secondary SCF, stability-descent candidates), whose tensor
+/// must never reach the slot the outer SCF's gradient reads.
+pub(crate) fn without_handoff(config: &RhfConfig) -> RhfConfig {
+    RhfConfig {
+        raw_handoff: None,
+        ..config.clone()
+    }
+}
+
+/// Empty `config`'s slot (dropping any tensor in it). Every solver calls this
+/// before it builds its own RI-JK tensor, so a tensor from an earlier solve
+/// through the same config is never held beside the new one, and never
+/// outlives an SCF that does not keep its own.
+pub(crate) fn clear_slot(config: &RhfConfig) {
+    if let Some(h) = config.raw_handoff.as_ref() {
+        drop(h.take());
+    }
+}
+
 /// Identity of a geometry in an orbital basis: atomic numbers, ghost flags,
 /// ECP cores, the exact coordinate bits, and the basis name and size.
 pub fn geometry_hash(mol: &Molecule, obs: &PreparedBasis) -> u64 {
@@ -194,8 +214,10 @@ pub(crate) fn note(msg: &str) {
 
 /// Bytes the DF-JK gradient holds beside the three-index tensor (its memory
 /// plane in `df_gradient`): five `(naux, naux)` metric matrices and two
-/// `(naux, m²)` matrices per exchange channel of rank `m`.
-pub(crate) fn gradient_intermediate_bytes(naux: usize, ranks: &[usize]) -> usize {
+/// `(naux, m²)` matrices per exchange channel of rank `m`. (A packed kept
+/// tensor also needs one unpacked block, `df_gradient::pass_block_bytes`.)
+#[doc(hidden)]
+pub fn gradient_intermediate_bytes(naux: usize, ranks: &[usize]) -> usize {
     let k: usize = ranks
         .iter()
         .map(|&m| {
@@ -230,6 +252,9 @@ pub(crate) fn keep_for_gradient(
     let Some(handoff) = config.raw_handoff.as_ref() else {
         return;
     };
+    // Whatever the slot held is stale now: this SCF's tensor replaces it, or
+    // nothing does.
+    drop(handoff.take());
     match kept_raw(ctx, mol, prep, df_j, route, occ) {
         Ok(kept) => {
             note(&format!(
@@ -267,11 +292,19 @@ fn kept_raw(
         Some(RiJ::Split(_)) => return Err("Split-RI-J holds no tensor"),
         None => return Err("no RI-J builder"),
     };
-    let naux = match df_j.as_ref() {
-        Some(RiJ::Stored(j)) => j.naux(),
+    let (naux, packed) = match df_j.as_ref() {
+        Some(RiJ::Stored(j)) => (j.naux(), j.is_packed_raw()),
         _ => unreachable!("checked above"),
     };
-    let held = raw_bytes.saturating_add(gradient_intermediate_bytes(naux, occ));
+    // A packed tensor is read by unpacking one block at a time.
+    let block = if packed {
+        crate::df_gradient::pass_block_bytes_upper_bound(prep.nbasis(), naux, route.budget_bytes)
+    } else {
+        0
+    };
+    let held = raw_bytes
+        .saturating_add(gradient_intermediate_bytes(naux, occ))
+        .saturating_add(block);
     if held > route.budget_bytes {
         return Err("tensor and gradient intermediates exceed the three-index budget");
     }
@@ -311,15 +344,35 @@ impl Drop for ActiveGuard {
 /// gradient entry points are public, many and deep; the fitted pass runs on
 /// the calling thread (no `rayon::join` around it). A pass on another thread
 /// would simply not see it and recompute, which is the correct fallback.
+///
+/// Without a kept tensor the scope still shadows any outer one with `None`,
+/// so a nested gradient that has no hand-off of its own cannot consume it.
 pub(crate) fn with_kept_raw<T>(config: &RhfConfig, f: impl FnOnce() -> T) -> T {
-    let Some(kept) = config.raw_handoff.as_ref().and_then(RawHandoff::take) else {
-        return f();
-    };
-    let _guard = ActiveGuard(ACTIVE.with(|a| a.replace(Some(kept))));
+    let kept = config.raw_handoff.as_ref().and_then(RawHandoff::take);
+    let _guard = ActiveGuard(ACTIVE.with(|a| a.replace(kept)));
     f()
 }
 
-/// The kept tensor installed by [`with_kept_raw`] on this thread, if any.
-pub(crate) fn take_active() -> Option<KeptRaw> {
-    ACTIVE.with(|a| a.borrow_mut().take())
+/// The kept tensor installed by [`with_kept_raw`] on this thread, taken only
+/// when it was built for `aux`/`op` at `mol` in `obs`/`dfbs`
+/// ([`KeptRaw::check`]); otherwise it is left in place (and reported), so a
+/// pass that cannot use it does not drop a tensor another pass could.
+pub(crate) fn take_active(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    aux: &str,
+    op: Operator,
+) -> Option<KeptRaw> {
+    ACTIVE.with(|a| {
+        let mut slot = a.borrow_mut();
+        match slot.as_ref().map(|k| k.check(mol, obs, dfbs, aux, op)) {
+            Some(Ok(())) => slot.take(),
+            Some(Err(why)) => {
+                note(&format!("kept tensor not used ({why}): recomputing"));
+                None
+            }
+            None => None,
+        }
+    })
 }

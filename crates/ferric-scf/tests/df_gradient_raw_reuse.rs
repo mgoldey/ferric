@@ -27,6 +27,10 @@
 //!   block, so `l0 / 2` was an identity and survived.)
 //! - The packed tier unpacking only the lower triangle (upper left zero):
 //!   n-octane fails (5.84e-1 Ha/Bohr).
+//! - No slot clearing (solver entry, `keep_for_gradient`'s take-first) and no
+//!   stripping in `basis2::secondary_config`:
+//!   `guess_basis_tensor_never_reaches_the_gradient` fails ("the slot holds a
+//!   foreign tensor: Err(\"tensor shape differs\")").
 //! - `KeptRaw::check` skipping the geometry comparison:
 //!   `mismatched_geometry_recomputes` fails ("a tensor from another geometry
 //!   was used").
@@ -221,4 +225,35 @@ fn mismatched_geometry_recomputes() {
     let (g_plain, _) = gradient(&b, Ref::Rks, &base, &res_b);
     let d = max_abs_diff(&g_stale, &g_plain);
     assert!(d <= BAR, "mismatched hand-off moved the gradient by {d:e}");
+}
+
+#[test]
+fn guess_basis_tensor_never_reaches_the_gradient() {
+    // The guess_basis secondary SCF (STO-3G) runs through a clone of the
+    // config. Under a budget that keeps ITS tensor but not the main one
+    // (def2-SVP), a slot the secondary SCF could fill — and nobody cleared —
+    // would hand the gradient a tensor in the wrong basis. The slot must hold
+    // the main SCF's tensor or nothing.
+    let s = setup(water());
+    let aux = ferric_core::basis::bundled(AUX).unwrap();
+    let naux = PreparedBasis::new(&s.mol, &aux).unwrap().nbasis();
+    let sto = ferric_core::basis::bundled("sto-3g").unwrap();
+    let nao_s = PreparedBasis::new(&s.mol, &sto).unwrap().nbasis();
+    let nocc = (s.mol.nelec() / 2) as usize;
+    // Secondary unpacked tensor + intermediates fit; the main one does not.
+    let budget = naux * nao_s * nao_s * 8
+        + ferric_scf::raw_handoff::gradient_intermediate_bytes(naux, &[nocc])
+        + 1;
+    let cfg = with_fresh_handoff(&RhfConfig {
+        three_index_budget_bytes: budget,
+        guess_basis: Some(ferric_scf::basis2::GuessBasis::bundled("sto-3g", "fock").unwrap()),
+        ..b3lyp_geometry_config()
+    });
+    let res = scf(&s, Ref::Rks, &cfg);
+    assert!(res.guess_basis.is_some(), "the guess-basis SCF did not run");
+    let dfbs = PreparedBasis::new(&s.mol, &aux).unwrap();
+    if let Some(k) = handoff(&cfg).take() {
+        let check = k.check(&s.mol, &s.prep, &dfbs, AUX, Operator::coulomb());
+        assert!(check.is_ok(), "the slot holds a foreign tensor: {check:?}");
+    }
 }

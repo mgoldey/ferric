@@ -1308,6 +1308,11 @@ impl DfJ<'_> {
         self.source.resident_f64_bytes()
     }
 
+    /// Is the raw tensor the packed f64 in-core tier (read by unpacking)?
+    pub fn is_packed_raw(&self) -> bool {
+        self.source.resident_f64_bytes().is_some() && self.source.incore_flat().is_none()
+    }
+
     /// GLOBAL number of auxiliary functions.
     pub fn naux(&self) -> usize {
         self.source.naux()
