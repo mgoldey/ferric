@@ -788,8 +788,8 @@ fn sync_parent(path: &Path) -> Result<(), CheckpointError> {
 /// file's data was synced before the rename, but `fs::rename` gives no
 /// documented power-loss guarantee for the rename itself. The Windows contract
 /// is therefore weaker than Unix's (see `Checkpoint::write`): a crash right
-/// after a write can leave the previous complete file in place of the new one,
-/// never a partial file.
+/// after a write can leave the previous state (the old complete file, or no
+/// file at all after a first write), never a partial file.
 #[cfg(not(unix))]
 fn sync_parent(_path: &Path) -> Result<(), CheckpointError> {
     Ok(())
