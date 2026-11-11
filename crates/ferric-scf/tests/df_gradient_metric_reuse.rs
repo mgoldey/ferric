@@ -8,7 +8,8 @@
 //! the same BLAS-thread wrapper; the gradient takes the kept decomposition only
 //! when its own `V` hashes to the same bits. Given the same matrix, the same
 //! routine and the same thread count, the recomputed `eigh` is the kept one, so
-//! the expected difference is exactly 0 and the bar is 1e-12 Ha/Bohr. What
+//! the tests assert a difference of exactly 0 (MEASURED 2026-11-11: 0.0 for
+//! water B3LYP, water wB97X and OH UKS B3LYP). What
 //! would move it: a decomposition of another geometry (O(step)), of another
 //! operator (erfc vs erf, O(1)), or a mis-ordered eigenpair.
 //!
@@ -16,11 +17,11 @@
 //! so these tests compare the metric reuse alone.
 //!
 //! Reachability: the slot holds the expected number of metrics after the SCF
-//! (else "reuse" would silently be a recompute equal to itself), and the
+//! (otherwise reuse would be a recompute equal to itself), and the
 //! `dfg:metric-eigh` counter tells reuse (0 eighs) from recompute.
 //!
 //! Mutations seen to fail (2026-11-11):
-//! - `KeptMetric::check` without the bit-hash comparison:
+//! - `MetricCandidate::accept` without the bit-hash comparison:
 //!   `mismatched_geometry_metric_is_not_used` fails ("a metric eigh from
 //!   another geometry was used").
 //! - Without the bit-hash and the operator comparison: also the wB97X case of
@@ -46,8 +47,6 @@ use ndarray::Array2;
 
 const AUX: &str = "def2-universal-jkfit";
 const BASIS: &str = "def2-svp";
-/// The expected difference is exactly 0 (module docs).
-const BAR: f64 = 1e-12;
 
 fn geometry_config(xc: &str, aux: &str) -> RhfConfig {
     RhfConfig {
@@ -122,10 +121,11 @@ fn reuse_vs_recompute(s: &Setup, open: bool, cfg: &RhfConfig, n_metrics: usize) 
     let cfg = with_fresh_handoff(cfg);
     let res = scf(s, open, &cfg);
     let slot = handoff(&cfg);
-    drop(slot.take()); // metric reuse alone
-                       // Reverse the kept order (DF-K offers erfc then erf, the order the
-                       // gradient asks), so a lookup that ignored which metric it matched
-                       // would hand the erf pass the erfc decomposition and fail.
+    // Metric reuse alone: drop the kept raw tensor.
+    drop(slot.take());
+    // Reverse the kept order (DF-K offers erfc then erf, the order the
+    // gradient asks), so a lookup that ignored which metric it matched would
+    // hand the erf pass the erfc decomposition and fail.
     let mut kept = slot.take_metrics();
     kept.reverse();
     for k in kept {
@@ -159,13 +159,13 @@ fn reused_metric_eigh_gradient_equals_recomputed() {
     // ω = 0 hybrid: one Coulomb metric, shared by RI-J and RI-K.
     let d = reuse_vs_recompute(&s, false, &geometry_config("B3LYP", AUX), 1);
     eprintln!("water/def2-SVP B3LYP: max|g_reuse - g_recompute| = {d:.3e}");
-    assert!(d <= BAR, "B3LYP: {d:e}");
+    assert!(d == 0.0, "B3LYP: {d:e}");
 
     // Range-separated hybrid: the erfc and erf metrics (two decompositions,
     // the erf one with dropped modes), each matched to its own operator.
     let d = reuse_vs_recompute(&s, false, &geometry_config("HYB_GGA_XC_WB97X", AUX), 2);
     eprintln!("water/def2-SVP wB97X: max|g_reuse - g_recompute| = {d:.3e}");
-    assert!(d <= BAR, "wB97X: {d:e}");
+    assert!(d == 0.0, "wB97X: {d:e}");
 }
 
 #[test]
@@ -173,7 +173,8 @@ fn reused_metric_eigh_open_shell_gradient_equals_recomputed() {
     let oh = "2\nOH\nO 0.0 0.0 0.0\nH 0.0 0.0 0.97\n";
     let s = setup(Molecule::parse_xyz(oh, 0, 2).expect("OH"));
     let d = reuse_vs_recompute(&s, true, &geometry_config("B3LYP", AUX), 1);
-    assert!(d <= BAR, "OH UKS: {d:e}");
+    eprintln!("OH/def2-SVP UKS B3LYP: max|g_reuse - g_recompute| = {d:.3e}");
+    assert!(d == 0.0, "OH UKS: {d:e}");
 }
 
 /// Geometry B's gradient with geometry A's kept metric in the slot: it must
@@ -203,7 +204,7 @@ fn mismatched_geometry_metric_is_not_used() {
 
     let (g_plain, _) = gradient(&b, false, &base, &res_b);
     let d = max_abs_diff(&g_stale, &g_plain);
-    assert!(d <= BAR, "mismatched hand-off moved the gradient by {d:e}");
+    assert!(d == 0.0, "mismatched hand-off moved the gradient by {d:e}");
 }
 
 /// A gradient fitted in another aux basis than the kept metric's must not
@@ -227,16 +228,28 @@ fn mismatched_aux_basis_metric_is_not_used() {
     assert_eq!(eighs, 1, "a metric eigh in another aux basis was used");
     let (g_plain, _) = gradient(&s, false, &base, &res_b);
     let d = max_abs_diff(&g_stale, &g_plain);
-    assert!(d <= BAR, "mismatched aux moved the gradient by {d:e}");
+    assert!(d == 0.0, "mismatched aux moved the gradient by {d:e}");
 }
 
-/// A solve without a hand-off (an energy-only run) keeps nothing; the
-/// gradient after it recomputes.
+/// A capturing solve whose `guess_basis` secondary SCF (STO-3G, same aux
+/// basis, same geometry) runs through `without_handoff` deposits only the
+/// outer SCF's metric: one offer, one kept metric. The secondary SCF builds
+/// a DF-K of the same metric, so a sub-solve that captured would show up as a
+/// second offer (the slot would still hold one entry, replaced by key).
 #[test]
-fn no_handoff_keeps_no_metric() {
+fn sub_solve_without_handoff_keeps_no_metric() {
     let s = setup(water());
-    let base = geometry_config("B3LYP", AUX);
-    let res = scf(&s, false, &base);
-    let (_, eighs) = gradient(&s, false, &base, &res);
-    assert_eq!(eighs, 1);
+    let cfg = with_fresh_handoff(&RhfConfig {
+        guess_basis: Some(ferric_scf::basis2::GuessBasis::bundled("sto-3g", "fock").unwrap()),
+        ..geometry_config("B3LYP", AUX)
+    });
+    let res = scf(&s, false, &cfg);
+    assert!(res.guess_basis.is_some(), "the guess-basis SCF did not run");
+    let slot = handoff(&cfg);
+    assert_eq!(
+        slot.metric_offers_for_test(),
+        1,
+        "a sub-solve deposited a metric"
+    );
+    assert_eq!(slot.metric_count(), 1, "the outer SCF kept its metric");
 }
