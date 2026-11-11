@@ -1075,7 +1075,11 @@ fn solve_uhf_impl(
     let pluggable_k_kind = crate::fock_assembly::resolve_k_builder(
         config.k_builder.as_deref(),
         df_j.is_some(),
-        df_k.is_some(),
+        crate::fock_assembly::open_shell_df_k_active(
+            df_k.is_some(),
+            config.df_k_aux.as_deref(),
+            k_mix.omega,
+        ),
         df_k.is_some(),
         need_k,
         k_mix.omega,
