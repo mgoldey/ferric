@@ -46,10 +46,6 @@ on:
       - '.config/nextest.toml'
       - '.github/workflows/platform-tests.yml'
   workflow_dispatch: {}
-  # TEMPORARY (feat/wheels-mac-win): one run on the branch, whose ref scope
-  # can restore this branch's native-deps caches; removed in the next commit.
-  push:
-    branches: [feat/wheels-mac-win]
 
 # Reads the repository and the actions cache, uploads artifacts: nothing more.
 permissions:
