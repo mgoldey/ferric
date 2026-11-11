@@ -10,7 +10,7 @@
 //! | [`fadvise`] | `posix_fadvise` | no-op (Apple has no `posix_fadvise`) | no-op |
 //! | [`open_direct_handle`] | `O_DIRECT` via `/proc/self/fd` | `None` (buffered reads) | `None` |
 //! | [`read_at`] / [`read_exact_at`] | `pread` (`FileExt`) | `pread` | `seek_read` |
-//! | [`free_bytes_at`] | `statvfs` | `statvfs` | `None` ("could not measure") |
+//! | [`free_bytes_at`] | `statvfs` | `statvfs` | `GetDiskFreeSpaceExW` |
 //!
 //! The page-cache hints and direct IO are optimisations (see
 //! `drop_page_cache` and `open_direct` in the parent module), so their absence
@@ -134,8 +134,8 @@ pub(super) fn read_exact_at(file: &File, buf: &mut [u8], off: u64) -> std::io::R
 /// the probe could not measure, not that the disk is full: fabricating `0` there
 /// would refuse every spill on any system whose `statvfs` we cannot read, which
 /// is a worse failure than the one being fixed. The caller degrades to the old
-/// (unchecked) behaviour in that case — but still warns. Windows has no probe
-/// yet (`GetDiskFreeSpaceExW` would be one) and always takes that branch.
+/// (unchecked) behaviour in that case — but still warns. Windows uses
+/// `GetDiskFreeSpaceExW` (below).
 #[cfg(unix)]
 pub(super) fn free_bytes_at(path: &std::path::Path) -> Option<u64> {
     use std::os::unix::ffi::OsStrExt;
@@ -176,9 +176,38 @@ pub(super) fn free_bytes_at(path: &std::path::Path) -> Option<u64> {
     frsize.checked_mul(bavail)
 }
 
-/// See the unix variant: no free-space probe on this platform yet, so the
-/// spill preflight takes its documented "could not measure" branch.
-#[cfg(not(unix))]
+/// Windows: `GetDiskFreeSpaceExW`'s caller-available bytes (quota-aware, the
+/// analogue of `f_bavail`). `None` when the path cannot be queried, as on unix.
+#[cfg(windows)]
+pub(super) fn free_bytes_at(path: &std::path::Path) -> Option<u64> {
+    use std::os::windows::ffi::OsStrExt;
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetDiskFreeSpaceExW(
+            directory: *const u16,
+            free_to_caller: *mut u64,
+            total: *mut u64,
+            total_free: *mut u64,
+        ) -> i32;
+    }
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
+    let mut avail = 0u64;
+    // SAFETY: `wide` is NUL-terminated and outlives the call; the two optional
+    // out-pointers may be null per the API, and `avail` is a valid u64.
+    let ok = unsafe {
+        GetDiskFreeSpaceExW(
+            wide.as_ptr(),
+            &mut avail,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    (ok != 0).then_some(avail)
+}
+
+/// No probe on this platform: the spill preflight takes its documented
+/// "could not measure" branch.
+#[cfg(not(any(unix, windows)))]
 pub(super) fn free_bytes_at(path: &std::path::Path) -> Option<u64> {
     let _ = path;
     None

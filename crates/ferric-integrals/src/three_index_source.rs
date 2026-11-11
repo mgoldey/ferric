@@ -3540,9 +3540,9 @@ mod tests {
     /// for a path that does not exist.
     #[test]
     fn free_space_probe_reports_real_paths_and_declines_missing_ones() {
-        let free =
-            free_bytes_at(std::path::Path::new("/tmp")).expect("/tmp must report free space");
-        assert!(free > 0, "/tmp reported 0 bytes free");
+        let tmp = std::env::temp_dir();
+        let free = free_bytes_at(&tmp).expect("the temp dir must report free space");
+        assert!(free > 0, "{} reported 0 bytes free", tmp.display());
         assert_eq!(
             free_bytes_at(std::path::Path::new("/nonexistent-ferric-anchor-path")),
             None,
