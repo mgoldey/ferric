@@ -1302,6 +1302,24 @@ impl DfJ<'_> {
         self.source.is_ri_j_f32()
     }
 
+    /// Bytes of the raw tensor when it is held whole, unscreened and in f64
+    /// ([`ThreeIndexSource::resident_f64_bytes`]); `None` otherwise.
+    pub fn resident_f64_bytes(&self) -> Option<usize> {
+        self.source.resident_f64_bytes()
+    }
+
+    /// GLOBAL number of auxiliary functions.
+    pub fn naux(&self) -> usize {
+        self.source.naux()
+    }
+
+    /// Give up the raw tensor (and its memory-pool charge), dropping the
+    /// metric factor and any device copy: the SCF hands it to its gradient
+    /// (`crate::raw_handoff`).
+    pub(crate) fn into_source(self) -> ThreeIndexSource {
+        self.source
+    }
+
     /// The raw source. Test hook (tier, charged bytes, stored rows).
     #[doc(hidden)]
     pub fn source_mut_for_test(&mut self) -> &mut ThreeIndexSource {

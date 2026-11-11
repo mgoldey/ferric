@@ -1969,6 +1969,58 @@ impl ThreeIndexSource {
         }
     }
 
+    /// Bytes of an f64 tensor held whole and unscreened in memory (the
+    /// unpacked or the packed in-core tier, i.e. every `(P|μν)` of the band
+    /// as `eri3_block` wrote it), or `None` for any other tier: spilled,
+    /// recomputed, pair-screened or f32. Only such a source can stand in for
+    /// a fresh `eri3_block` ([`Self::rows_f64`]).
+    pub fn resident_f64_bytes(&self) -> Option<usize> {
+        match &self.backend {
+            Backend::InCore(eri) => Some(eri.len() * 8),
+            Backend::InCorePacked { packed, .. } => Some(packed.len() * 8),
+            _ => None,
+        }
+    }
+
+    /// The GLOBAL aux rows `[p0, p1)` as a `(p1 - p0, nao, nao)` view with the
+    /// values `eri3_block(op, obs, dfbs, p0, p1)` returns (the packed tier
+    /// stores the lower triangle of that exactly symmetric block, so
+    /// unpacking restores it bit for bit). The unpacked tier is viewed in
+    /// place; the packed tier is unpacked into `scratch` (resized to fit).
+    /// Errors unless [`Self::resident_f64_bytes`] is `Some` and the rows lie
+    /// in the band.
+    pub fn rows_f64<'a>(
+        &'a self,
+        p0: usize,
+        p1: usize,
+        scratch: &'a mut Array3<f64>,
+    ) -> Result<ArrayView3<'a, f64>, FerricError> {
+        if p0 > p1 || p0 < self.band_p0 || p1 > self.band_p1 {
+            return Err(FerricError::General(format!(
+                "rows_f64: rows [{p0}, {p1}) outside the band [{}, {})",
+                self.band_p0, self.band_p1
+            )));
+        }
+        let (l0, l1, nao) = (p0 - self.band_p0, p1 - self.band_p0, self.nao);
+        match &self.backend {
+            Backend::InCore(eri) => Ok(eri.slice(ndarray::s![l0..l1, .., ..])),
+            Backend::InCorePacked { packed, .. } => {
+                if scratch.dim() != (l1 - l0, nao, nao) {
+                    *scratch = Array3::zeros((l1 - l0, nao, nao));
+                }
+                let rows = packed.slice(ndarray::s![l0..l1, ..]);
+                let src = rows.as_slice().ok_or_else(|| {
+                    FerricError::General("rows_f64: packed rows are not contiguous".into())
+                })?;
+                unpack_lower_triangle(src, nao, l1 - l0, scratch);
+                Ok(scratch.view())
+            }
+            _ => Err(FerricError::General(
+                "rows_f64 needs the unpacked or packed f64 in-core tier".into(),
+            )),
+        }
+    }
+
     /// Can [`Self::for_each_packed_block`] serve this source? True for the
     /// packed in-core tier, the disk spill and the recompute backend; false for
     /// the unpacked in-core tensor, which has no packed rows to hand out, and

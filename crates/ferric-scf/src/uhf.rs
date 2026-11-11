@@ -1658,6 +1658,15 @@ fn solve_uhf_impl(
                 }
                 _ => (energy, None),
             };
+            crate::raw_handoff::keep_for_gradient(
+                config,
+                ctx,
+                mol,
+                prep,
+                &mut df_j,
+                df_jk_route.as_ref(),
+                &[nocc_a, nocc_b],
+            );
             return Ok(ScfResult {
                 guess_basis: None,
                 spin: Spin::Unrestricted,

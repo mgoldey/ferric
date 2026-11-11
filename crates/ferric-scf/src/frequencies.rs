@@ -1439,10 +1439,14 @@ fn energy_gradient_and_result(
     // is in effect (then the COSX derivative, or a refusal before the SCF where
     // no COSX gradient exists). A COSX final pass is energy-only: the gradient
     // differentiates the SCF-grid energy, so the geometry task runs without it.
+    // Each arm installs a fresh raw-tensor hand-off: the SCF keeps its raw
+    // RI-JK tensor for the gradient, which takes and drops it.
     match reference {
         FrequencyReference::Rhf => {
             crate::gradient::preflight_cosx_restricted(config)?;
-            let config = &*crate::gradient::gradient_task_config(config);
+            let config = &crate::raw_handoff::with_fresh_handoff(
+                &crate::gradient::gradient_task_config(config),
+            );
             let res = solve_rhf_warm(ctx, mol, &prep, op, &bounds, config, warm)?;
             // `solve_rhf` returns an unconverged SCF as `Ok`; a displaced
             // gradient from it would put noise straight into the Hessian.
@@ -1454,7 +1458,9 @@ fn energy_gradient_and_result(
         }
         FrequencyReference::Uhf => {
             crate::gradient::preflight_cosx_unrestricted(config)?;
-            let config = &*crate::gradient::gradient_task_config(config);
+            let config = &crate::raw_handoff::with_fresh_handoff(
+                &crate::gradient::gradient_task_config(config),
+            );
             let res = solve_uhf_warm(ctx, mol, &prep, &bounds, config, warm)?;
             let grad = crate::gradient::unrestricted_scf_gradient(
                 mol, &prep, &bs, op, &bounds, config, &res,
@@ -1463,7 +1469,9 @@ fn energy_gradient_and_result(
         }
         FrequencyReference::Rohf => {
             crate::gradient::preflight_cosx_restricted_open(config)?;
-            let config = &*crate::gradient::gradient_task_config(config);
+            let config = &crate::raw_handoff::with_fresh_handoff(
+                &crate::gradient::gradient_task_config(config),
+            );
             let res = solve_rohf_warm(ctx, mol, &prep, op, &bounds, config, warm)?;
             let grad = crate::gradient::restricted_open_scf_gradient(
                 mol, &prep, &bs, op, &bounds, config, &res,

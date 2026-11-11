@@ -347,6 +347,8 @@ fn config_fields(config: &RhfConfig, out: &mut Vec<IdentityField>) -> (f64, f64)
         // Asks for a post-SCF diagnostic, whose absence on a restored result reads
         // "not checked".
         check_stability: _,
+        // A hand-off slot for the gradient that follows: moves no number.
+        raw_handoff: _,
     } = config;
     // An empty potential is the same physics as none: every consumer treats it as
     // a no-op, and QM/MM with no MM atoms produces either.

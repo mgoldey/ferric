@@ -96,6 +96,7 @@
 
 use crate::df_j::RiJPrecision;
 use crate::df_k::metric_lindep_cut;
+use crate::raw_handoff::KeptRaw;
 use crate::result::DfJkRoute;
 use crate::screening::SchwarzBounds;
 use ferric_core::linalg::par_gemm;
@@ -105,6 +106,7 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
 use ferric_integrals::engine::Engine;
 use ferric_integrals::operator::Operator;
+use ferric_integrals::three_index_source::ThreeIndexSource;
 use ferric_integrals::threeindex::coulomb_metric_2c;
 use ndarray::{Array1, Array2, Array3, Axis};
 use ndarray_linalg::cholesky::{FactorizeC, SolveC};
@@ -268,6 +270,154 @@ fn aux_shell_blocks(offsets: &[usize], dims: &[usize], max_rows: usize) -> Vec<(
     blocks
 }
 
+/// Debit the memory pool for the gradient's intermediates (`bytes`). With a
+/// kept raw tensor already held, a pool that cannot take them beside it gets
+/// the tensor back first (dropped, so the pass recomputes, as without it);
+/// otherwise this is the hard reservation it always was.
+fn charge_intermediates(
+    bytes: usize,
+    raw: Option<KeptRaw>,
+) -> Result<(ferric_core::memory::pool::Reservation, Option<KeptRaw>), FerricError> {
+    const LABEL: &str = "DF-JK gradient metric + exchange intermediates";
+    if let Some(kept) = raw {
+        if let Some(r) = ferric_core::memory::pool::try_reserve_global(LABEL, bytes) {
+            return Ok((r, Some(kept)));
+        }
+        drop(kept);
+        crate::raw_handoff::note(
+            "kept tensor dropped: the pool cannot hold the gradient intermediates beside it",
+        );
+    }
+    Ok((
+        ferric_core::memory::pool::reserve_global(LABEL, bytes)?,
+        None,
+    ))
+}
+
+thread_local! {
+    /// `eri3_block` calls made by `dfg:3c-pass` on this thread (test observable).
+    static DFG_3C_BLOCKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// How many raw `(P|μν)` blocks the DF gradient's one pass has COMPUTED on
+/// this thread so far (0 added by a pass that read a kept tensor). Test hook.
+#[doc(hidden)]
+pub fn dfg_3c_blocks_computed_for_test() -> usize {
+    DFG_3C_BLOCKS.with(std::cell::Cell::get)
+}
+
+/// The one pass over the raw `(P|μν)`: `d_P = Σ (P|μν) D_μν` for J (`j`:
+/// the density and whether the SCF's RI-J tensor was f32) and `L^s_P = Xᵀ
+/// (P|··) X` per exchange factor.
+///
+/// The rows come from `kept` (the SCF's tensor) when given, else they are
+/// computed one aux-shell-aligned block at a time and never stored: storing
+/// them here (the old `ThreeIndexSource`, in core when it fit the budget)
+/// cost the same integrals plus a resident copy of the whole tensor — 7.6 GB
+/// packed for danuglipron/def2-SVP (nao 724, naux 3635), the job's peak.
+/// Each row's values are the same `eri3_block` writes (write-once per
+/// element; the kept tiers hold exactly those), and every row is contracted
+/// independently, so the result depends neither on the blocking nor on
+/// where the rows came from.
+fn three_center_pass(
+    (obs, dfbs, op): (&PreparedBasis, &PreparedBasis, Operator),
+    j: Option<(&Array2<f64>, bool)>,
+    factors: &[(Array2<f64>, f64)],
+    budget_bytes: usize,
+    kept: Option<&ThreeIndexSource>,
+) -> Result<(Array1<f64>, Vec<Array2<f64>>), FerricError> {
+    let n = obs.nbasis();
+    let naux = dfbs.nbasis();
+    let blocks = aux_shell_blocks(
+        dfbs.shell_offsets(),
+        dfbs.shell_dims(),
+        gradient_block_rows(n, budget_bytes),
+    );
+    // (A recompute is reported where the tensor was not kept or not used.)
+    if let Some(s) = kept {
+        crate::raw_handoff::note(&format!(
+            "dfg:3c-pass reads the SCF's raw tensor ({:.2} GB)",
+            s.resident_f64_bytes().unwrap_or(0) as f64 / 1e9
+        ));
+    }
+    // An unpacked kept tensor is viewed in place; every other route holds one
+    // block (computed, or unpacked from the packed tier).
+    let in_place = kept.is_some_and(|s| s.incore_flat().is_some());
+    let block_bytes = if in_place {
+        0
+    } else {
+        blocks
+            .iter()
+            .map(|&(p0, p1)| p1 - p0)
+            .max()
+            .unwrap_or(0)
+            .saturating_mul(n)
+            .saturating_mul(n)
+            .saturating_mul(8)
+    };
+    let _block_charge = ferric_core::memory::pool::reserve_global(
+        "DF-JK gradient 3-index block (computed once, not stored)",
+        block_bytes,
+    )?;
+    let mut d_p = Array1::<f64>::zeros(naux);
+    let mut ls: Vec<Array2<f64>> = factors
+        .iter()
+        .map(|(x, _)| Array2::<f64>::zeros((naux, x.ncols() * x.ncols())))
+        .collect();
+    let mut scratch = Array3::<f64>::zeros((0, 0, 0));
+    for &(p0, p1) in &blocks {
+        let computed;
+        let data = match kept {
+            Some(s) => s.rows_f64(p0, p1, &mut scratch)?,
+            None => {
+                computed = ferric_integrals::threeindex::eri3_block(op, obs, dfbs, p0, p1)?;
+                DFG_3C_BLOCKS.with(|c| c.set(c.get() + 1));
+                computed.view()
+            }
+        };
+        let b = p1 - p0;
+        if let Some((dj, j_f32)) = j {
+            // Disjoint writes per aux row: order-independent, bit-identical.
+            let vals: Vec<f64> = (0..b)
+                .into_par_iter()
+                .map(|q| {
+                    let row = data.index_axis(Axis(0), q);
+                    if j_f32 {
+                        row.iter()
+                            .zip(dj.iter())
+                            .map(|(&a, c)| f64::from(a as f32) * c)
+                            .sum::<f64>()
+                    } else {
+                        row.iter().zip(dj.iter()).map(|(a, c)| a * c).sum::<f64>()
+                    }
+                })
+                .collect();
+            for (q, val) in vals.into_iter().enumerate() {
+                d_p[p0 + q] = val;
+            }
+        }
+        for ((x, _), l) in factors.iter().zip(ls.iter_mut()) {
+            // L_P = Xᵀ (P|··) X, one (m, m) matrix per aux row.
+            let rows: Vec<Array2<f64>> = (0..b)
+                .into_par_iter()
+                .map(|q| {
+                    let bp = data.index_axis(Axis(0), q);
+                    let t = bp.dot(x);
+                    x.t().dot(&t)
+                })
+                .collect();
+            for (q, lpq) in rows.into_iter().enumerate() {
+                // `iter()` is logical (row-major) order whatever the memory
+                // layout `dot` produced.
+                for (dst, src) in l.row_mut(p0 + q).iter_mut().zip(lpq.iter()) {
+                    *dst = *src;
+                }
+            }
+        }
+    }
+    Ok((d_p, ls))
+}
+
 /// Divided difference of the truncated inverse `f(λ) = 1/λ` (λ kept), `0`
 /// (dropped) — the Daleckii–Krein kernel of `∂M` (see the module doc).
 #[inline]
@@ -339,7 +489,70 @@ pub fn df_jk_gradient_at_precision(
     budget_bytes: usize,
     j_precision: RiJPrecision,
 ) -> Result<Array2<f64>, FerricError> {
-    let j_f32 = j_precision == RiJPrecision::F32;
+    df_jk_gradient_core(
+        natoms,
+        (obs, dfbs, op),
+        j_density,
+        k_channels,
+        budget_bytes,
+        j_precision,
+        None,
+    )
+}
+
+/// [`df_jk_gradient_at_precision`] reading the raw `(P|μν)` from `raw`, the
+/// tensor the SCF kept ([`crate::raw_handoff`]), instead of regenerating it in
+/// the `dfg:3c-pass` stage. `raw` is used only when it was built for `aux`
+/// (the name of `dfbs`), `op`, `mol` and `obs` ([`KeptRaw::check`]) and the
+/// gradient's intermediates fit the memory pool beside it; otherwise it is
+/// dropped and the integrals are recomputed as without it, which
+/// `FERRIC_TIMING` reports. Either way the result equals the recomputed
+/// gradient to rounding: the kept values are `eri3_block`'s (the unpacked
+/// tier holds them, the packed tier their exactly symmetric lower triangle),
+/// and each aux row is contracted independently of the blocking.
+///
+/// Takes `raw` by value so a tensor that does not fit beside the
+/// intermediates is freed before they are allocated.
+#[allow(clippy::too_many_arguments)]
+pub fn df_jk_gradient_with_raw(
+    mol: &Molecule,
+    (obs, dfbs, aux): (&PreparedBasis, &PreparedBasis, &str),
+    op: Operator,
+    j_density: Option<&Array2<f64>>,
+    k_channels: &[DfKChannel<'_>],
+    budget_bytes: usize,
+    j_precision: RiJPrecision,
+    raw: Option<KeptRaw>,
+) -> Result<Array2<f64>, FerricError> {
+    let raw = raw.and_then(|k| match k.check(mol, obs, dfbs, aux, op) {
+        Ok(()) => Some(k),
+        Err(why) => {
+            crate::raw_handoff::note(&format!("kept tensor not used ({why}): recomputing"));
+            None
+        }
+    });
+    df_jk_gradient_core(
+        mol.atoms.len(),
+        (obs, dfbs, op),
+        j_density,
+        k_channels,
+        budget_bytes,
+        j_precision,
+        raw,
+    )
+}
+
+/// Body of [`df_jk_gradient_at_precision`] / [`df_jk_gradient_with_raw`];
+/// `raw` has already been checked against the bases, operator and geometry.
+fn df_jk_gradient_core(
+    natoms: usize,
+    (obs, dfbs, op): (&PreparedBasis, &PreparedBasis, Operator),
+    j_density: Option<&Array2<f64>>,
+    k_channels: &[DfKChannel<'_>],
+    budget_bytes: usize,
+    j_precision: RiJPrecision,
+    raw: Option<KeptRaw>,
+) -> Result<Array2<f64>, FerricError> {
     let n = obs.nbasis();
     let naux = dfbs.nbasis();
     let mut grad = Array2::<f64>::zeros((natoms, 3));
@@ -363,91 +576,20 @@ pub fn df_jk_gradient_at_precision(
         .iter()
         .map(|(x, _)| 2 * naux * x.ncols() * x.ncols() * 8)
         .sum();
-    let _charge = ferric_core::memory::pool::reserve_global(
-        "DF-JK gradient metric + exchange intermediates",
-        k_bytes.saturating_add(5 * naux * naux * 8),
-    )?;
+    let (_charge, raw) = charge_intermediates(k_bytes.saturating_add(5 * naux * naux * 8), raw)?;
 
     let t_st = ferric_core::timing::Stage::start("dfg:metric2c");
     let v = coulomb_metric_2c(op, dfbs)?;
     t_st.end();
     let t_st = ferric_core::timing::Stage::start("dfg:3c-pass");
-
-    // ---- one pass over the raw (P|μν): d_P for J, L^s for K ----
-    // The tensor is read exactly once, so it is computed one aux-shell-aligned
-    // block at a time and never stored: storing it (the old
-    // `ThreeIndexSource`, in core when it fit the budget) cost the same
-    // integrals plus a resident copy of the whole tensor — 7.6 GB packed for
-    // danuglipron/def2-SVP (nao 724, naux 3635), the job's peak. Each row's
-    // values are the same `eri3_block` writes (write-once per element), and
-    // every row is contracted independently, so the result does not depend
-    // on the blocking.
-    let blocks = aux_shell_blocks(
-        dfbs.shell_offsets(),
-        dfbs.shell_dims(),
-        gradient_block_rows(n, budget_bytes),
-    );
-    let block_bytes = blocks
-        .iter()
-        .map(|&(p0, p1)| p1 - p0)
-        .max()
-        .unwrap_or(0)
-        .saturating_mul(n)
-        .saturating_mul(n)
-        .saturating_mul(8);
-    let block_charge = ferric_core::memory::pool::reserve_global(
-        "DF-JK gradient 3-index block (computed once, not stored)",
-        block_bytes,
+    let (d_p, mut ls) = three_center_pass(
+        (obs, dfbs, op),
+        j_density.map(|d| (d, j_precision == RiJPrecision::F32)),
+        &factors,
+        budget_bytes,
+        raw.as_ref().map(KeptRaw::source),
     )?;
-    let mut d_p = Array1::<f64>::zeros(naux);
-    let mut ls: Vec<Array2<f64>> = factors
-        .iter()
-        .map(|(x, _)| Array2::<f64>::zeros((naux, x.ncols() * x.ncols())))
-        .collect();
-    for &(p0, p1) in &blocks {
-        let block = ferric_integrals::threeindex::eri3_block(op, obs, dfbs, p0, p1)?;
-        let b = p1 - p0;
-        let data = &block;
-        if let Some(dj) = j_density {
-            // Disjoint writes per aux row: order-independent, bit-identical.
-            let vals: Vec<f64> = (0..b)
-                .into_par_iter()
-                .map(|q| {
-                    let row = data.index_axis(Axis(0), q);
-                    if j_f32 {
-                        row.iter()
-                            .zip(dj.iter())
-                            .map(|(&a, c)| f64::from(a as f32) * c)
-                            .sum::<f64>()
-                    } else {
-                        row.iter().zip(dj.iter()).map(|(a, c)| a * c).sum::<f64>()
-                    }
-                })
-                .collect();
-            for (q, val) in vals.into_iter().enumerate() {
-                d_p[p0 + q] = val;
-            }
-        }
-        for ((x, _), l) in factors.iter().zip(ls.iter_mut()) {
-            // L_P = Xᵀ (P|··) X, one (m, m) matrix per aux row.
-            let rows: Vec<Array2<f64>> = (0..b)
-                .into_par_iter()
-                .map(|q| {
-                    let bp = data.index_axis(Axis(0), q);
-                    let t = bp.dot(x);
-                    x.t().dot(&t)
-                })
-                .collect();
-            for (q, lpq) in rows.into_iter().enumerate() {
-                // `iter()` is logical (row-major) order whatever the memory
-                // layout `dot` produced.
-                for (dst, src) in l.row_mut(p0 + q).iter_mut().zip(lpq.iter()) {
-                    *dst = *src;
-                }
-            }
-        }
-    }
-    drop(block_charge);
+    drop(raw);
     t_st.end();
     let t_st = ferric_core::timing::Stage::start("dfg:metric-weights");
 
@@ -866,16 +1008,18 @@ pub fn routed_two_electron_gradient(
     let budget = route.budget_bytes;
     match (j_df, k0_df) {
         (Some(ja), Some(ka)) if ja == ka => {
+            // The SCF's raw tensor, when its driver kept one for this
+            // gradient (`crate::raw_handoff::with_kept_raw`).
             let dfbs = aux_basis(mol, ja)?;
-            grad += &df_jk_gradient_at_precision(
-                natoms,
-                prep,
-                &dfbs,
+            grad += &df_jk_gradient_with_raw(
+                mol,
+                (prep, &dfbs, ja),
                 route.op,
                 Some(&d_total),
                 &channels(mix.c_k),
                 budget,
                 route.ri_j_precision,
+                crate::raw_handoff::take_active(),
             )?;
         }
         _ => {
