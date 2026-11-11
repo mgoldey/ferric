@@ -160,13 +160,23 @@ pub fn rohf_newton_step(
     let gmax = arr_max_abs(&g_vc)
         .max(arr_max_abs(&g_vo))
         .max(arr_max_abs(&g_oc));
-    // Below tolerance the step is κ⁰ and the CG residual (whose first term is
-    // an HVP) would never be read, so no HVP is computed (as `rhf_newton_step`).
+    // Below tolerance κ = 0 already meets the PCG stopping test (its residual
+    // is −g, |g| < cg_conv), so no HVP is computed and the step is ZERO. It
+    // used to be the diagonal guess κ⁰ = −g/Δ, whose residual is unknown: on
+    // a degenerate open shell the open→virtual gap within the degenerate set
+    // is floored at 1e-6, so |g| ~ 2e-8 gave rotations ~0.02 along the flat
+    // hole-orientation mode, and ΔP never reached density_conv (MEASURED
+    // 2026-11-11, CH ²Π/6-31G PBE, 1e-5 Å off-axis, soscf: E settled to 1e-13
+    // by iteration 9, not converged in 200).
     if gmax >= cg_conv {
         let k = (&mut k_vc, &mut k_vo, &mut k_oc);
         let g = (&g_vc, &g_vo, &g_oc);
         let diag = (&diag_vc, &diag_vo, &diag_oc);
         pcg_refine(ctx, inp, &pool, g, diag, k, cg_max_iter, cg_conv)?;
+    } else {
+        k_vc.fill(0.0);
+        k_vo.fill(0.0);
+        k_oc.fill(0.0);
     }
 
     // Trust-radius clip.

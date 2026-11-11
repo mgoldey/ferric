@@ -158,8 +158,8 @@ fn check_against_fd(
         let flat: Vec<f64> = v.iter().flat_map(|a| a.iter().copied()).collect();
         Array2::from_shape_vec((1, flat.len()), flat).unwrap()
     };
-    // The exact derivative of the gradient is the matvec with its diagonal
-    // gap replaced by the full MO-rotation commutator.
+    // `analytic + corr` is the exact derivative of the gradient (the
+    // Jacobian the FD measures); `corr` is each caller's documented term.
     let hk = &pack(analytic) + &pack(corr);
     let ladder = [4e-3, 2e-3, 1e-3];
     let fds: Vec<Array2<f64>> = ladder.iter().map(|&h| pack(&fd(h))).collect();
@@ -363,9 +363,9 @@ fn uhf_fitted_hvp_matches_finite_difference_of_the_fitted_gradient() {
 /// Exactness anchor, ROHF/ROKS (NH2 ²B₁): the fitted Roothaan matvec equals
 /// the central FD of the fitted HALF gradient blocks
 /// (g_vc = [F_α+F_β]_vc, g_vo = [F_α]_vo, g_oc = [F_β]_oc, one MO set),
-/// once its diagonal gap is replaced by the full MO-rotation commutator
-/// (`rohf_hessian_matvec_fd.rs` shows that is the only approximation in the
-/// matvec), at k_mix = 1 (ROHF), 0.2 (B3LYP's fraction) and 0. This exercises
+/// plus the Hessian-vs-Jacobian term (the matvec is the exact Hessian since
+/// 2026-11; before, this test added the commutator its diagonal gap omitted),
+/// at k_mix = 1 (ROHF), 0.2 (B3LYP's fraction) and 0. This exercises
 /// the per-spin occupied/unoccupied split the DF-K path builds from (α: occ =
 /// closed+open, κ_α = [κ_vc | κ_vo]; β: occ = closed, κ_β = [κ_oc ; κ_vc]).
 /// Bound as in the UHF anchor (one gradient evaluation's rounding is the sum
@@ -454,22 +454,27 @@ fn rohf_fitted_hvp_matches_finite_difference_of_the_fitted_gradient() {
         let (d_vc, d_vo, d_oc) =
             hessian_matvec(&ctx, &inp_dir, &k_vc, &k_vo, &k_oc, &pool).unwrap();
 
-        // corr = commutator blocks − the matvec's diagonal gaps.
-        let ca_ = fa_mo.dot(&kap) - kap.dot(&fa_mo);
-        let cb_ = fb_mo.dot(&kap) - kap.dot(&fb_mo);
-        let mut corr = blocks(&ca_, &cb_);
-        let fa_d = |p: usize| fa_mo[(p, p)];
-        let fb_d = |p: usize| fb_mo[(p, p)];
-        for ((r, q), v) in corr[0].indexed_iter_mut() {
-            let p = na + r;
-            *v -= (fa_d(p) + fb_d(p) - fa_d(q) - fb_d(q)) * k_vc[(r, q)];
-        }
-        for ((r, j), v) in corr[1].indexed_iter_mut() {
-            *v -= (fa_d(na + r) - fa_d(nc + j)) * k_vo[(r, j)];
-        }
-        for ((r, q), v) in corr[2].indexed_iter_mut() {
-            *v -= (fb_d(nc + r) - fb_d(q)) * k_oc[(r, q)];
-        }
+        // corr = Jacobian − Hessian. Since 2026-11 the matvec is the exact
+        // (symmetric) Hessian of E(C exp κ); the FD here is the Jacobian of
+        // the half gradient, which differs from it by ¼ read-off(Σ_σ [X, G_σ]),
+        // G_σ[i,j] = (n_i − n_j) f_σ[i,j] (Jacobi identity; derived and
+        // FD-verified off stationarity in `rohf_hessian_matvec_fd.rs`). At this
+        // converged point the term is O(|g|·|κ|), but it is kept exact.
+        // (Before the fix this held the omitted commutator − diagonal gap.)
+        let occ_g = |f: &Array2<f64>, nocc: usize| {
+            Array2::from_shape_fn((n, n), |(i, j)| {
+                let o = |k: usize| if k < nocc { 1.0 } else { 0.0 };
+                (o(i) - o(j)) * f[(i, j)]
+            })
+        };
+        let (ga, gb) = (occ_g(&fa_mo, na), occ_g(&fb_mo, nc));
+        let m = kap.dot(&ga) - ga.dot(&kap) + kap.dot(&gb) - gb.dot(&kap);
+        let readoff = -0.25 * (&m.t() - &m);
+        let corr = [
+            readoff.slice(s![na.., ..nc]).to_owned(),
+            readoff.slice(s![na.., nc..na]).to_owned(),
+            readoff.slice(s![nc..na, ..nc]).to_owned(),
+        ];
         let cabs = c.mapv(f64::abs);
         let e_g = blocks(&cabs.t().dot(&ma).dot(&cabs), &cabs.t().dot(&mb).dot(&cabs))
             .iter()
