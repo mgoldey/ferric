@@ -493,6 +493,13 @@ pub struct RhfConfig {
     /// only here gets that refinement on closed-shell LinK alone — legal, just
     /// unusual.
     pub screening: crate::screening::ScreeningKind,
+    /// Internal: the slot through which this config's SCF hands its raw RI-JK
+    /// tensor to the gradient that follows it ([`crate::raw_handoff`]).
+    /// Installed by the drivers that run an SCF and then its gradient
+    /// ([`crate::raw_handoff::with_fresh_handoff`]); `None` (the default)
+    /// keeps nothing.
+    #[doc(hidden)]
+    pub raw_handoff: Option<crate::raw_handoff::RawHandoff>,
 }
 
 impl Default for RhfConfig {
@@ -560,6 +567,7 @@ impl Default for RhfConfig {
             symmetry: false,
             irrep_nelec: None,
             screening: crate::screening::ScreeningKind::default(),
+            raw_handoff: None,
         }
     }
 }
@@ -3243,6 +3251,15 @@ fn solve_rhf_impl(
                     }
                     _ => (energy, None),
                 };
+                crate::raw_handoff::keep_for_gradient(
+                    config,
+                    ctx,
+                    mol,
+                    prep,
+                    &mut df_j,
+                    df_jk_route.as_ref(),
+                    &[nocc],
+                );
                 return Ok(ScfResult {
                     guess_basis: None,
                     spin: Spin::Restricted,

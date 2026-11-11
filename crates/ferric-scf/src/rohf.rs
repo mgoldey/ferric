@@ -1228,8 +1228,21 @@ fn solve_rohf_impl(
         match guard.on_energy(energy, iter, &mut diis, &mut mon, ctx.is_root()) {
             crate::rohf_occupation::GuardStep::Proceed => {}
             crate::rohf_occupation::GuardStep::Continue => continue,
-            crate::rohf_occupation::GuardStep::Return(r) => return Ok(*r),
-            crate::rohf_occupation::GuardStep::Stop(r) => return Ok(*r),
+            crate::rohf_occupation::GuardStep::Return(r)
+            | crate::rohf_occupation::GuardStep::Stop(r) => {
+                if r.converged {
+                    crate::raw_handoff::keep_for_gradient(
+                        config,
+                        ctx,
+                        mol,
+                        prep,
+                        &mut df_j,
+                        df_jk_route.as_ref(),
+                        &[nocc_double + nocc_open, nocc_double],
+                    );
+                }
+                return Ok(*r);
+            }
         }
 
         // Build Roothaan effective Fock (Guest-Saunders, via PySCF projector form).
@@ -1421,6 +1434,17 @@ fn solve_rohf_impl(
             // Swap witness (F6): returned now, or held while its best
             // single-swap neighbours are evaluated on the next passes.
             if let Some(r) = guard.on_converged(result, &f_a, &f_b) {
+                if r.converged {
+                    crate::raw_handoff::keep_for_gradient(
+                        config,
+                        ctx,
+                        mol,
+                        prep,
+                        &mut df_j,
+                        df_jk_route.as_ref(),
+                        &[nocc_double + nocc_open, nocc_double],
+                    );
+                }
                 return Ok(r);
             }
             continue;

@@ -256,6 +256,8 @@ mod hessian_smeared;
 pub mod irc;
 /// Geometry optimization via L-BFGS with energy/gradient convergence.
 pub mod optimize;
+/// The SCF's raw RI-JK tensor handed to the gradient that follows it.
+pub mod raw_handoff;
 pub mod saddle;
 pub mod warm_start;
 pub use frequencies::{harmonic_frequencies, FrequencyConfig, FrequencyReference, FrequencyResult};

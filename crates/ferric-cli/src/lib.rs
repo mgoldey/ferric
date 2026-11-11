@@ -893,6 +893,8 @@ pub fn run(args: Vec<String>) {
                 .collect::<Vec<_>>()
         }),
         symmetry: cfg.scf.symmetry,
+        // The geometry drivers install their own per-evaluation hand-off.
+        raw_handoff: None,
     };
     // A fitted reference (`[scf] jk`, or rs-mp2-rpa's RI-JK default) skips
     // the DF-guess pre-stage below: a density-fitted pre-stage in front of a

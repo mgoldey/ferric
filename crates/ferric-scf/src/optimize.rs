@@ -933,7 +933,10 @@ fn compute_energy_gradient_and_result(
     // Fail before the SCF if the exchange will come from a COSX setup whose
     // gradient is refused (pruned grid, or overlap fit with a KS functional) — not after it.
     crate::gradient::preflight_cosx_restricted(rhf_config)?;
-    let rhf_config = &*crate::gradient::gradient_task_config(rhf_config);
+    // A fresh hand-off per evaluation: the SCF keeps its raw RI-JK tensor for
+    // the gradient below, which takes and drops it (`crate::raw_handoff`).
+    let rhf_config =
+        &crate::raw_handoff::with_fresh_handoff(&crate::gradient::gradient_task_config(rhf_config));
     let t = Stage::start("opt-step:scf");
     let res = solve_rhf_warm(ctx, mol, &prep, op, &bounds, rhf_config, warm)?;
     t.end();
@@ -977,7 +980,10 @@ fn compute_energy_and_gradient_uhf(
     // recorded as a known gap rather than silently assumed to be covered.
     let bounds = SchwarzBounds::compute_for_screening(op, &prep, uhf_config.screening)?;
     crate::gradient::preflight_cosx_unrestricted(uhf_config)?;
-    let uhf_config = &*crate::gradient::gradient_task_config(uhf_config);
+    // A fresh hand-off per evaluation: the SCF keeps its raw RI-JK tensor for
+    // the gradient below, which takes and drops it (`crate::raw_handoff`).
+    let uhf_config =
+        &crate::raw_handoff::with_fresh_handoff(&crate::gradient::gradient_task_config(uhf_config));
     let res = solve_uhf_warm(ctx, mol, &prep, &bounds, uhf_config, warm)?;
     // Exactly `ks_gradient_uks` / `uhf_gradient` unless the SCF's exchange
     // came from COSX (then the COSX derivative; a fitted setup is refused).
@@ -1017,7 +1023,11 @@ fn compute_energy_and_gradient_rohf(
     // fit) is refused BEFORE the SCF; the gradient differentiates the
     // exchange the SCF actually built.
     crate::gradient::preflight_cosx_restricted_open(rohf_config)?;
-    let rohf_config = &*crate::gradient::gradient_task_config(rohf_config);
+    // A fresh hand-off per evaluation: the SCF keeps its raw RI-JK tensor for
+    // the gradient below, which takes and drops it (`crate::raw_handoff`).
+    let rohf_config = &crate::raw_handoff::with_fresh_handoff(
+        &crate::gradient::gradient_task_config(rohf_config),
+    );
     let res = solve_rohf_warm(ctx, mol, &prep, op, &bounds, rohf_config, warm)?;
     let grad = crate::gradient::restricted_open_scf_gradient(
         mol,
