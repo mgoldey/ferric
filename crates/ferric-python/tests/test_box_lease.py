@@ -607,7 +607,12 @@ def test_run_returns_the_command_status_and_runs_nothing_on_expiry(make_box):
     box.finish(a)
 
 
-@pytest.mark.parametrize("sig", [signal.SIGINT, signal.SIGTERM, signal.SIGHUP])
+# By name: Windows' `signal` has no SIGHUP, and this module must still import
+# there (the pytestmark skip above then applies).
+@pytest.mark.parametrize(
+    "sig",
+    [getattr(signal, n) for n in ("SIGINT", "SIGTERM", "SIGHUP") if hasattr(signal, n)],
+)
 def test_a_signal_stops_the_job_and_only_then_frees_the_lease(make_box, sig):
     box = make_box()
     job = box.lease_job("L")
