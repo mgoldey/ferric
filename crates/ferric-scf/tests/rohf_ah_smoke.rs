@@ -77,7 +77,11 @@ fn rohf_ah_step_at_stationary_point_is_noop() {
         j_response: None,
         k_response: None,
     };
-    let ah_inputs = RohfAhInputs { base: &inputs };
+    let ah_inputs = RohfAhInputs {
+        base: &inputs,
+        newton_level_shift: 1e-6,
+        newton_max_step: 0.1,
+    };
 
     let (c_new, kmax) = rohf_ah_step(
         &ctx, &ah_inputs, /*max_step=*/ 0.2, /*davidson_conv=*/ 1e-7,
