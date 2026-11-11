@@ -10102,34 +10102,41 @@ fn run_double_hybrid(
 /// `SymmetricRhfResult` for the symmetrized geometry; `irrep_nelec` pins
 /// electrons per irrep. Refused with `with_gradient` or `dispersion`.
 ///
-/// Density fitting is on by default, on `def2-universal-jkfit`:
+/// Density fitting is on by default. `df_j_aux` and `df_k_aux` are set
+/// independently, each defaulting to `def2-universal-jkfit`, so RI-J and
+/// RI-K can use different auxiliary bases with different sizes (`naux_J` and
+/// `naux_K` below):
 ///
 /// - Coulomb: RI-J for every functional. `df_j_aux` names another auxiliary
-///   basis; `df_j_aux=""` selects conventional four-centre J.
+///   basis; `df_j_aux=""` selects conventional four-centre J. RI-J keeps the
+///   raw packed `(P|mn)` (f32 when it fits, `ri_j_precision`) of at most
+///   `naux_J * nbf * (nbf + 1) / 2` elements (Schwarz pair screening can
+///   drop AO pairs).
 /// - Exchange, by functional:
+///
 ///   - pure (LDA/GGA/meta-GGA): no exact exchange, so no RI-K tensor is
 ///     built and `df_k_aux` has no effect.
-///   - global hybrid (B3LYP, PBE0, ...): RI-K on the same auxiliary basis,
-///     a SECOND three-index tensor beside RI-J's. RI-J keeps the raw packed
-///     `(P|mn)` (f32 when it fits, `ri_j_precision`), RI-K the
-///     V^-1/2-dressed packed `(P|mn)` (f64, `ri_k_precision`). RI-K's has
-///     `naux * nbf * (nbf + 1) / 2` elements (`naux * nbf**2` in a `[gpu]`
-///     mode that may build K on the device); RI-J's has at most that many,
-///     since Schwarz pair screening can drop AO pairs. `df_k_aux=""`
-///     selects exact four-centre K and builds no RI-K tensor.
+///   - global hybrid (B3LYP, PBE0, ...): RI-K, a SECOND three-index tensor
+///     beside RI-J's: the V^-1/2-dressed packed `(P|mn)` (f64,
+///     `ri_k_precision`) of `naux_K * nbf * (nbf + 1) / 2` elements
+///     (`naux_K * nbf**2` in a `[gpu]` mode that may build K on the
+///     device). `df_k_aux=""` selects exact four-centre K and builds no
+///     RI-K tensor.
 ///   - range-separated hybrid (wB97X-V, CAM-B3LYP, ...): exchange only via
 ///     two RI-K fitters (short-range erfc and long-range erf), each its own
-///     dressed tensor; `df_k_aux=""` raises.
-///   - `k_builder="cosx"`: COSX replaces RI-K (RIJCOSX), RI-J stays on; a
-///     named `df_k_aux` next to it raises.
-/// - `k_builder` ("direct", "link", "cosx") picks the exact-exchange builder
-///   and is honoured only where exchange is not density-fitted. While RI-K
-///   is active (the hybrid default) "direct" and "link" are IGNORED with a
-///   warning, as is any `k_builder` for a pure or range-separated
-///   functional. Pass `df_k_aux=""` with it to run direct or LinK exchange
-///   for a hybrid.
-/// - `BasisSet.n_functions(mol)` gives `nbf` (orbital basis) and `naux`
-///   (auxiliary basis) for a memory estimate.
+///     dressed tensor; `df_k_aux=""` raises RuntimeError.
+///   - `k_builder="cosx"`: COSX replaces RI-K (RIJCOSX), RI-J stays on;
+///     a named `df_k_aux` next to it raises.
+///
+/// - `k_builder` (`"direct"`, `"link"`, `"cosx"`) picks the
+///   exact-exchange builder and is honoured only where exchange is not
+///   density-fitted. While RI-K is active (the hybrid default) `"direct"`
+///   and `"link"` are IGNORED with a warning, as is any `k_builder` for a
+///   pure or range-separated functional. For a hybrid, `"direct"` needs
+///   `df_k_aux=""`; `"link"` needs `df_j_aux=""` as well, because LinK
+///   builds J and K in one four-centre pass, which RI-J replaces.
+/// - `BasisSet.n_functions(mol)` gives `nbf` (orbital basis) and the
+///   `naux` of an auxiliary basis, for a memory estimate.
 #[pyfunction]
 #[pyo3(signature = (
     mol, basis_set, functional=None, k_builder=None, with_gradient=false,
