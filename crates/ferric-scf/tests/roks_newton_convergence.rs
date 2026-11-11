@@ -14,10 +14,11 @@
 //!           NH2/cc-pVDZ B3LYP 9 / NC (544) / 136 (309) / 169 (150);
 //!           OH/cc-pVDZ B3LYP 18 / NC (1270) / 167 (695) / NC (193).
 //!   after:  8 / 6 (6) / 6 (6) / 6 (25); 9 / 7 (8) / 7 (4) / 7 (30);
-//!           18 / 8 (18) / 9 (18) / 8 (35).
+//!           18 / 8 (18) / 9 (18) / 8 (38).
 //! AH HVPs before tuning its Davidson for one root (n_seed 8, n_block 6,
 //! fixed tolerance 1e-7): 66 / 81 / 117; after (n_seed 2, n_block 2,
-//! tolerance max(1e-7, 1e-2·min(1,‖g‖)·‖g‖)): 25 / 30 / 35. AH remains the
+//! tolerance max(1e-7, 1e-2·min(1,‖g‖)·‖g‖)): 25 / 30 / 38 (asserted below the
+//! many-root counts, `check`). AH remains the
 //! costliest mode (~4x Newton's Fock-equivalents here).
 //! Mutations (applied, run, reverted): (M1) the Newton branch stepping from
 //! `eig(F_eff)` again fails all three (136 its; NC; NC), even with the exact
@@ -40,7 +41,8 @@ use ferric_core::parallel::ParallelContext;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_scf::rohf::{solve_rohf, RohfConfig};
-use ferric_scf::rohf_newton::hvp_calls_on_this_thread;
+use ferric_scf::rohf_ah::ah_fallbacks_on_this_thread;
+use ferric_scf::rohf_newton::{hvp_calls_on_this_thread, steihaug_truncations_on_this_thread};
 use ferric_scf::screening::SchwarzBounds;
 
 const NH2: &str = "3\nNH2\nN 0 0 0\nH 0 0.80 -0.62\nH 0 -0.80 -0.62\n";
@@ -62,6 +64,10 @@ struct Run {
     energy: Option<f64>,
     iterations: usize,
     hvps: usize,
+    /// AH steps whose Davidson did not converge (PCG Newton taken instead).
+    ah_fallbacks: usize,
+    /// Newton PCG solves stopped on negative curvature.
+    truncations: usize,
 }
 
 fn run(xyz: &str, basis_name: &str, xc: &str, fitted: bool, mode: Mode) -> Run {
@@ -98,31 +104,44 @@ fn run_tol(
         Mode::Soscf => cfg.newton_trigger = 1e-3,
         Mode::Ah => cfg.ah_trigger = 1e-2,
     }
-    let h0 = hvp_calls_on_this_thread();
+    let (h0, f0, t0) = (
+        hvp_calls_on_this_thread(),
+        ah_fallbacks_on_this_thread(),
+        steihaug_truncations_on_this_thread(),
+    );
     let res = solve_rohf(&ctx, &mol, &prep, op, &bounds, &cfg);
     let hvps = hvp_calls_on_this_thread() - h0;
-    match res {
-        Ok(r) if r.converged => Run {
-            energy: Some(r.energy),
-            iterations: r.iterations,
-            hvps,
-        },
-        Ok(r) => Run {
-            energy: None,
-            iterations: r.iterations,
-            hvps,
-        },
-        Err(_) => Run {
-            energy: None,
-            iterations: cfg.max_iter,
-            hvps,
-        },
+    let ah_fallbacks = ah_fallbacks_on_this_thread() - f0;
+    let truncations = steihaug_truncations_on_this_thread() - t0;
+    let (energy, iterations) = match res {
+        Ok(r) if r.converged => (Some(r.energy), r.iterations),
+        Ok(r) => (None, r.iterations),
+        Err(_) => (None, cfg.max_iter),
+    };
+    Run {
+        energy,
+        iterations,
+        hvps,
+        ah_fallbacks,
+        truncations,
     }
 }
 
 /// Run DIIS and every second-order mode; assert each converges to the DIIS
 /// energy within 1e-7 Ha in ≤ DIIS iterations, and that it took HVPs.
-fn check(label: &str, xyz: &str, basis_name: &str, xc: &str, fitted: bool) {
+///
+/// `ah_hvps_before_tuning` is the AH HVP count this system measured with the
+/// Davidson set up for many roots (n_seed 8, n_block 6; module doc). AH must
+/// now take FEWER, which guards the one-root tuning against regression. The
+/// Newton/soscf HVP counts are guarded only through the iteration bound.
+fn check(
+    label: &str,
+    xyz: &str,
+    basis_name: &str,
+    xc: &str,
+    fitted: bool,
+    ah_hvps_before_tuning: usize,
+) {
     let diis = run(xyz, basis_name, xc, fitted, Mode::Diis);
     let e_ref = diis
         .energy
@@ -132,8 +151,8 @@ fn check(label: &str, xyz: &str, basis_name: &str, xc: &str, fitted: bool) {
     for mode in [Mode::Newton, Mode::Soscf, Mode::Ah] {
         let r = run(xyz, basis_name, xc, fitted, mode);
         eprintln!(
-            "{label} {mode:?}: E = {:?}, iters = {}, HVPs = {}",
-            r.energy, r.iterations, r.hvps
+            "{label} {mode:?}: E = {:?}, iters = {}, HVPs = {}, AH fallbacks = {}, truncations = {}",
+            r.energy, r.iterations, r.hvps, r.ah_fallbacks, r.truncations
         );
         let Some(e) = r.energy else {
             failures.push(format!(
@@ -157,23 +176,29 @@ fn check(label: &str, xyz: &str, basis_name: &str, xc: &str, fitted: bool) {
                 r.iterations, diis.iterations
             ));
         }
+        if matches!(mode, Mode::Ah) && r.hvps >= ah_hvps_before_tuning {
+            failures.push(format!(
+                "{label} AH: {} HVPs, not below the {ah_hvps_before_tuning} of the many-root Davidson",
+                r.hvps
+            ));
+        }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
 #[test]
 fn nh2_631g_pbe_second_order_matches_diis() {
-    check("NH2/6-31G PBE", NH2, "6-31g", "PBE", false);
+    check("NH2/6-31G PBE", NH2, "6-31g", "PBE", false, 66);
 }
 
 #[test]
 fn nh2_ccpvdz_b3lyp_fitted_second_order_matches_diis() {
-    check("NH2/cc-pVDZ B3LYP", NH2, "cc-pvdz", "B3LYP", true);
+    check("NH2/cc-pVDZ B3LYP", NH2, "cc-pvdz", "B3LYP", true, 81);
 }
 
 #[test]
 fn oh_ccpvdz_b3lyp_fitted_second_order_matches_diis() {
-    check("OH/cc-pVDZ B3LYP", OH, "cc-pvdz", "B3LYP", true);
+    check("OH/cc-pVDZ B3LYP", OH, "cc-pvdz", "B3LYP", true, 117);
 }
 
 /// How a second-order mode is held against DIIS on a degenerate shell.
@@ -198,10 +223,13 @@ enum Expect {
 /// MEASURED 2026-11-11, iterations (HVPs), DIIS / Newton / soscf / AH:
 ///   OH on-axis   20 / 9 (21) / 11 (20) / –   (the relabel guard's case;
 ///                Newton and soscf did not converge before the fix)
-///   OH off-axis  18 / 10 (24) / 10 (14) / 10 (45)
+///   OH off-axis  18 / 10 (24) / 10 (14) / 10 (46)
 ///   CH off-axis  22 / 8 (25) / 10 (22) / not converged (also before the
 ///                fix; not asserted)
-///   NO off-axis  26 / 12 (20) / 13 (19) / 25 (226)
+///   NO off-axis  26 / 12 (20) / 13 (19) / 26 (251)
+/// AH's Davidson tolerance now follows density_conv (1e-8 here, was a fixed
+/// 1e-7): that costs NO AH one iteration and 25 HVPs (25 (226) before) and
+/// OH one HVP, and leaves NO AH AT the DIIS iteration bound.
 /// Off-axis AH converges on OH and NO, to −75.620835678 and −129.704259565
 /// against DIIS's −75.620834299 and −129.704259009. Those equal the ON-axis
 /// DIIS energies to 1e-9: AH lands on the other π-hole orientation, which is
@@ -259,8 +287,8 @@ fn degenerate_pi_open_shells_second_order_match_diis() {
         for &(mode, expect) in modes {
             let r = run_tol(xyz, "6-31g", "PBE", false, mode, tol);
             eprintln!(
-                "{label} {mode:?}: E = {:?}, iters = {} (DIIS {e_ref:.10}, {}), HVPs = {}",
-                r.energy, r.iterations, diis.iterations, r.hvps
+                "{label} {mode:?}: E = {:?}, iters = {} (DIIS {e_ref:.10}, {}), HVPs = {}, AH fallbacks = {}, truncations = {}",
+                r.energy, r.iterations, diis.iterations, r.hvps, r.ah_fallbacks, r.truncations
             );
             let Some(e) = r.energy else {
                 failures.push(format!("{label} {mode:?}: not converged"));

@@ -436,36 +436,27 @@ impl Saddle {
     }
 }
 
-/// **Newton must not converge to a saddle (Steihaug guard).**
-///
-/// From the σ-hole saddle displaced by ε = 0.05 along its negative-curvature
-/// mode, the exact Newton step −H⁻¹g points BACK to the saddle (uphill), so an
-/// unguarded PCG would return there. With the guard, PCG stops at pᵀAp ≤ 0 and
-/// keeps κ⁰ = −M⁻¹g (M positive), a descent direction.
-///
-/// Hypotheses (before measuring): guard works ⇒ one step lowers E below the
-/// displaced point, and the full SCF ends ≥ 1e-3 Ha below the saddle;
-/// guard missing ⇒ the step raises E toward the saddle, and the SCF returns
-/// to it. Artifact guard: the premise asserts λ_min < 0 at the fixture and
-/// E(displaced) < E(saddle), so a fixture that is not a saddle fails loudly.
-///
-/// MEASURED 2026-11-11: saddle −75.2037249529, displaced −75.2043419012
-/// (λ_min −0.156); guarded step −75.2048250666 (one truncation), full SCF
-/// −75.3618462891 (the ground state). Mutation (guard removed, applied and
-/// reverted): the step returns to −75.2037249233 and the full SCF converges
-/// to the saddle, −75.2037249529.
-#[test]
-fn rohf_newton_does_not_converge_to_a_saddle() {
-    use ferric_scf::rohf_newton::steihaug_truncations_on_this_thread;
+/// One escape run from the σ-hole saddle displaced by `eps` (∞-norm of κ)
+/// along its negative-curvature mode.
+struct Escape {
+    lam: f64,
+    e_d: f64,
+    e_n: f64,
+    truncs: usize,
+    e_full: Option<f64>,
+    hvps_full: usize,
+}
+
+fn escape_from_saddle(s: &Saddle, eps: f64) -> Escape {
+    use ferric_scf::rohf_newton::{hvp_calls_on_this_thread, steihaug_truncations_on_this_thread};
     use ferric_scf::rohf_trah::rohf_cayley_rotate;
-    let s = Saddle::new();
     let (lam, v) = s.lowest_mode(&s.c);
     assert!(
         lam < -1e-2,
         "premise: λ_min at the fixture is negative, got {lam:.3e}"
     );
     let vmax = v.iter().fold(0.0f64, |m, x| m.max(x.abs()));
-    let kappa: Vec<f64> = v.iter().map(|x| 0.05 * x / vmax).collect();
+    let kappa: Vec<f64> = v.iter().map(|x| eps * x / vmax).collect();
     let c_d = rohf_cayley_rotate(&s.c, &kappa, s.nc, 1).unwrap();
     let (fa, fb, e_d) = s.point(&c_d);
     assert!(
@@ -480,10 +471,6 @@ fn rohf_newton_does_not_converge_to_a_saddle() {
     let (c_n, _) = rohf_newton_step(&s.ctx, &inp, 1e-6, 0.1, 20, 1e-7).unwrap();
     let truncs = steihaug_truncations_on_this_thread() - t0;
     let e_n = s.point(&c_n).2;
-    eprintln!(
-        "saddle {:.10}  displaced {e_d:.10}  after one Newton step {e_n:.10}  (λ_min {lam:.3e}, truncations {truncs})",
-        s.e
-    );
 
     // (b) The full solver, seeded with the displaced density, Newton from
     // iteration 4 on (trigger 1.0), occupation guard off.
@@ -493,6 +480,7 @@ fn rohf_newton_does_not_converge_to_a_saddle() {
         newton_trigger: 1.0,
         ..Saddle::cfg()
     };
+    let h0 = hvp_calls_on_this_thread();
     let full = solve_rohf(
         &s.ctx,
         &s.mol,
@@ -501,22 +489,120 @@ fn rohf_newton_does_not_converge_to_a_saddle() {
         &s.bounds,
         &cfg,
     );
-    let e_full = full.as_ref().map(|r| r.energy).ok();
-    eprintln!("full Newton SCF from the displaced density: {e_full:?}");
-
-    assert!(
-        e_n < e_d,
-        "the Newton step went UPHILL toward the saddle: {e_n:.10} >= {e_d:.10}"
+    let hvps_full = hvp_calls_on_this_thread() - h0;
+    let (e_full, iters_full) = match &full {
+        Ok(r) if r.converged => (Some(r.energy), r.iterations),
+        Ok(r) => (None, r.iterations),
+        Err(_) => (None, cfg.max_iter),
+    };
+    eprintln!(
+        "eps {eps:.0e}: saddle {:.10}  displaced {e_d:.10}  one Newton step {e_n:.10}  (λ_min {lam:.3e}, truncations {truncs}); full SCF {e_full:?} in {iters_full} iterations, {hvps_full} HVPs",
+        s.e
     );
-    let e_full = e_full.expect("the Newton SCF must converge");
+    Escape {
+        lam,
+        e_d,
+        e_n,
+        truncs,
+        e_full,
+        hvps_full,
+    }
+}
+
+/// The assertions shared by both displacements: the Newton step goes
+/// downhill, the guard fired, and the full Newton SCF (which must have made
+/// HVPs, so a DIIS-only descent cannot pass) ends ≥ 1e-3 Ha below the saddle.
+fn assert_escapes(s: &Saddle, r: &Escape) {
+    assert!(
+        r.e_n < r.e_d,
+        "the Newton step went UPHILL toward the saddle: {:.10} >= {:.10}",
+        r.e_n,
+        r.e_d
+    );
+    assert!(
+        r.truncs >= 1,
+        "the guard never fired: the test did not reach negative curvature"
+    );
+    assert!(
+        r.hvps_full > 0,
+        "the full SCF made no ROHF HVP: the descent was DIIS's, not Newton's"
+    );
+    let e_full = r.e_full.expect("the Newton SCF must converge");
     assert!(
         e_full < s.e - 1e-3,
         "the Newton SCF converged to (or above) the saddle: {e_full:.10} vs {:.10}",
         s.e
     );
+}
+
+/// **Newton must not converge to a saddle (Steihaug guard), large
+/// displacement.**
+///
+/// From the σ-hole saddle displaced by ε = 0.05 along its negative-curvature
+/// mode, the exact Newton step −H⁻¹g points BACK to the saddle (uphill), so an
+/// unguarded PCG would return there. With the guard, PCG stops at the first
+/// pᵀAp < −1e-3·|p|² and steps along ±p (downhill on the model) to the
+/// trust box.
+///
+/// Hypotheses (before measuring): guard works ⇒ one step lowers E below the
+/// displaced point, and the full SCF ends ≥ 1e-3 Ha below the saddle;
+/// guard missing ⇒ the step raises E toward the saddle, and the SCF returns
+/// to it. Artifact guards: the premise asserts λ_min < 0 at the fixture and
+/// E(displaced) < E(saddle), so a fixture that is not a saddle fails loudly;
+/// the full SCF must make HVPs, so a DIIS-only descent cannot pass.
+///
+/// MEASURED 2026-11-11: saddle −75.2037249529, displaced −75.2043419012
+/// (λ_min −0.156). Step along p: one step −75.2092032194 (one truncation),
+/// full SCF −75.3618462891 (the ground state) in 20 iterations, 120 HVPs.
+/// Keeping the current iterate on truncation instead (the earlier variant):
+/// one step −75.2048250666, full SCF the ground state in 21 iterations,
+/// 127 HVPs.
+/// Mutations (applied, run, reverted): guard removed — the step returns to
+/// −75.2037249233 and the full SCF converges to the saddle, −75.2037249529;
+/// `newton_trigger = 0` in (b) — DIIS alone converges to the saddle
+/// (−75.2037249529, 19 iterations, 0 HVPs), failing the HVP and energy
+/// checks.
+#[test]
+fn rohf_newton_does_not_converge_to_a_saddle() {
+    let s = Saddle::new();
+    let r = escape_from_saddle(&s, 0.05);
+    assert_escapes(&s, &r);
+}
+
+/// **Newton escapes a saddle from a SMALL displacement at better than
+/// gradient-descent speed.**
+///
+/// At ε = 1e-3 the gradient is O(|λ|ε) and the PCG preconditioned guess
+/// κ⁰ = −M⁻¹g moves only O(|λ|ε/M) further; keeping that iterate on
+/// truncation escapes at gradient-descent speed. Stepping along the
+/// negative-curvature direction to the trust box (|κ|∞ = 0.1) instead gains
+/// O(|λ|·0.1²) at once.
+///
+/// Bar, from the quadratic model along the mode: E_d − E_saddle ∝ λ·ε²,
+/// so a step that moves the hole from ε to ε′ along it lowers E by
+/// (ε′²/ε² − 1)·(E_saddle − E_d). The bar is one step lowering E by at least
+/// E_saddle − E_d, i.e. ε′/ε ≥ √2. Keeping κ⁰ = −M⁻¹g gives ε′/ε ≈ 1 + |λ|/M
+/// (M the preconditioner gap of the mode), below √2 unless M < 2.4|λ|;
+/// stepping to the box gives ε′/ε ~ 0.1/ε = 100.
+///
+/// MEASURED 2026-11-11: displaced −75.2037252002 (2.47e-7 below the
+/// saddle); one step along p −75.2062199840 (a 2.49e-3 drop, 1e4× the
+/// bar), full SCF the ground state in 22 iterations, 124 HVPs.
+/// Mutation (keep the current iterate on truncation, the earlier variant;
+/// applied, run, reverted): one step drops 1.95e-7 < 2.47e-7 (ε′/ε ≈ 1.34)
+/// and fails; its full SCF still reaches the ground state, in 26 iterations,
+/// 129 HVPs.
+#[test]
+fn rohf_newton_escapes_a_saddle_from_a_small_displacement() {
+    let s = Saddle::new();
+    let r = escape_from_saddle(&s, 1e-3);
+    assert_escapes(&s, &r);
+    let drop_disp = s.e - r.e_d;
+    let drop_step = r.e_d - r.e_n;
     assert!(
-        truncs >= 1,
-        "the guard never fired: the test did not reach negative curvature"
+        drop_step >= drop_disp,
+        "one Newton step lowered E by {drop_step:.3e}, less than the displacement's own {drop_disp:.3e} (λ_min {:.3e}): gradient-descent speed",
+        r.lam
     );
 }
 
@@ -546,7 +632,85 @@ fn rohf_newton_honours_a_tight_density_conv() {
         &cfg,
     )
     .unwrap();
-    let (fa, fb, _) = s.point(&r.mos_alpha);
+    let g = max_rohf_gradient(&s, &r.mos_alpha);
+    eprintln!(
+        "tight Newton run: E = {:.12}, iters {}, |g|max = {g:.3e}",
+        r.energy, r.iterations
+    );
+    let bar = 10.0 * cfg.density_conv;
+    assert!(
+        g < bar,
+        "|g|max = {g:.3e} >= {bar:.0e} at density_conv 1e-10"
+    );
+}
+
+/// **A tight `density_conv` is honoured by the AH path.** As for Newton,
+/// below its tolerance the AH step is zero (ΔP = 0, so the SCF declares
+/// convergence). The AH tolerance was fixed at 1e-7, so a tighter run was
+/// reported converged at whatever |g| < 1e-7 the last step reached. The
+/// solver now passes min(1e-7, density_conv). Bar 10 × density_conv, as for
+/// Newton, at density_conv 1e-12 (at 1e-10 the old tolerance passes by luck:
+/// its last step lands at 2.6e-10).
+///
+/// Below the Davidson's 1e-8 expansion floor the AH residual tolerance cannot
+/// be met, so the endgame must go through the PCG Newton fallback; the run
+/// asserts that it does (`fallbacks ≥ 1`).
+///
+/// MEASURED 2026-11-11 (OH/6-31G ROHF, SAD guess, AH trigger 1e-2,
+/// density_conv 1e-12): 7 iterations, 41 HVPs, 1 fallback, |g|max 4.7e-14.
+/// Mutations (applied, run, reverted): the fixed 1e-7 tolerance — converged
+/// at |g|max 2.6e-10, 26× the bar; the unconverged eigenvector used without
+/// the fallback — `solve_rohf` returned an error.
+#[test]
+fn rohf_ah_honours_a_tight_density_conv() {
+    use ferric_scf::rohf_ah::ah_fallbacks_on_this_thread;
+    use ferric_scf::rohf_newton::hvp_calls_on_this_thread;
+    let s = Saddle::new();
+    let cfg = RohfConfig {
+        use_sad_guess: true,
+        ah_trigger: 1e-2,
+        density_conv: 1e-12,
+        energy_conv: 1e-12,
+        ..Saddle::cfg()
+    };
+    let (h0, f0) = (hvp_calls_on_this_thread(), ah_fallbacks_on_this_thread());
+    let r = solve_rohf(
+        &s.ctx,
+        &s.mol,
+        &s.prep,
+        Operator::coulomb(),
+        &s.bounds,
+        &cfg,
+    )
+    .unwrap();
+    let hvps = hvp_calls_on_this_thread() - h0;
+    let fallbacks = ah_fallbacks_on_this_thread() - f0;
+    let g = max_rohf_gradient(&s, &r.mos_alpha);
+    eprintln!(
+        "tight AH run: E = {:.12}, converged {}, iters {}, HVPs {hvps}, fallbacks {fallbacks}, |g|max = {g:.3e}",
+        r.energy, r.converged, r.iterations
+    );
+    let bar = 10.0 * cfg.density_conv;
+    assert!(
+        r.converged,
+        "the AH run did not converge in {} iterations",
+        r.iterations
+    );
+    assert!(
+        g < bar,
+        "|g|max = {g:.3e} >= {bar:.0e} at density_conv 1e-10"
+    );
+    assert!(hvps > 0, "no ROHF HVP: AH never engaged");
+    assert!(
+        fallbacks >= 1,
+        "the endgame never reached the unconverged-Davidson fallback (residual tolerance {:.0e} is below the Davidson's 1e-8 expansion floor)",
+        cfg.density_conv
+    );
+}
+
+/// |g|max of the (half) ROHF gradient blocks at `c` (vc, vo, oc).
+fn max_rohf_gradient(s: &Saddle, c: &Array2<f64>) -> f64 {
+    let (fa, fb, _) = s.point(c);
     let (nc, na, n) = (s.nc, s.nc + 1, s.prep.nbasis());
     let mut g = 0.0f64;
     for p in na..n {
@@ -558,13 +722,5 @@ fn rohf_newton_honours_a_tight_density_conv() {
     for q in 0..nc {
         g = g.max(fb[(nc, q)].abs());
     }
-    eprintln!(
-        "tight Newton run: E = {:.12}, iters {}, |g|max = {g:.3e}",
-        r.energy, r.iterations
-    );
-    let bar = 10.0 * cfg.density_conv;
-    assert!(
-        g < bar,
-        "|g|max = {g:.3e} >= {bar:.0e} at density_conv 1e-10"
-    );
+    g
 }

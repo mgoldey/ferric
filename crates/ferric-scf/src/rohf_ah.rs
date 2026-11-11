@@ -20,6 +20,22 @@ use ferric_core::FerricError;
 use ndarray::{Array1, Array2};
 use ndarray_linalg::Solve;
 
+thread_local! {
+    /// AH steps on this thread whose Davidson did not converge (test seam).
+    static AH_FALLBACKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The expansion-vector norm below which `stability::davidson_lowest` adds
+/// no new direction; residual tolerances below it cannot be met.
+const DAVIDSON_EXPANSION_FLOOR: f64 = 1e-8;
+
+/// Number of AH steps on the calling thread that fell back to the PCG Newton
+/// step because the augmented-Hessian Davidson did not converge (test seam).
+#[doc(hidden)]
+pub fn ah_fallbacks_on_this_thread() -> usize {
+    AH_FALLBACKS.with(std::cell::Cell::get)
+}
+
 /// Inputs to one AH Newton step. Wraps `RohfNewtonInputs` directly — the AH
 /// driver consumes exactly the same inputs as the PCG driver because the
 /// orbital Hessian matvec is shared.
@@ -30,7 +46,10 @@ pub struct RohfAhInputs<'a, 'b> {
 
 /// One augmented-Hessian Newton step on ROHF/ROKS MO coefficients.
 ///
-/// Returns updated C and the κ ∞-norm (step-size diagnostic).
+/// Returns updated C and the κ ∞-norm (step-size diagnostic). Below
+/// `|g|max < davidson_conv` the step is zero; if the Davidson solve does not
+/// converge, the PCG Newton step ([`crate::rohf_newton::rohf_newton_step`])
+/// is taken instead, with a warning.
 ///
 /// # Step-length control: clipping, and what it is not
 ///
@@ -182,6 +201,24 @@ pub fn rohf_ah_step(
             "ROHF AH: Davidson converged={} iterations={} residual={:.2e} (tol {:.2e}) lambda={:.3e}",
             result.converged, result.iterations, result.residual, cfg.conv_thresh, result.eigenvalue
         );
+    }
+    // An unconverged eigenvector is not used: take the PCG Newton step (same
+    // inputs, exact Hessian, Steihaug-guarded) from these orbitals instead.
+    // `davidson_lowest` drops expansion vectors of norm ≤ 1e-8, so a residual
+    // tolerance below ~1e-8 is unreachable; that is the tight-`density_conv`
+    // endgame (MEASURED 2026-11-11, OH/6-31G ROHF at density_conv 1e-10: the
+    // last AH step stagnated at residual 6.9e-9 against 1e-10, λ = −2.8e-13).
+    // There the AH and Newton steps agree to O(λ/h), so the fallback is
+    // silent; at a reachable tolerance it is a real failure and warns.
+    if !result.converged {
+        AH_FALLBACKS.with(|c| c.set(c.get() + 1));
+        if cfg.conv_thresh >= DAVIDSON_EXPANSION_FLOOR {
+            eprintln!(
+                "[ferric] WARNING: ROHF AH Davidson did not converge (residual {:.2e} > {:.2e} after {} iterations); taking the PCG Newton step this iteration",
+                result.residual, cfg.conv_thresh, result.iterations
+            );
+        }
+        return crate::rohf_newton::rohf_newton_step(ctx, base, 1e-6, max_step, 20, davidson_conv);
     }
 
     // 4. Extract κ from the lowest eigenvector. Rescale so the leading

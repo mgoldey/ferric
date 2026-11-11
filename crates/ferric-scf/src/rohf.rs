@@ -1623,13 +1623,13 @@ fn solve_rohf_impl(
         //                         DIIS  Newton(1e-2)  soscf(1e-3)  AH(1e-2)
         //       NH2/6-31G PBE       8      6 (6)        6 (6)        6 (25)
         //       NH2/cc-pVDZ B3LYP   9      7 (8)        7 (4)        7 (30)
-        //       OH/cc-pVDZ B3LYP   18      8 (18)       9 (18)       8 (35)
+        //       OH/cc-pVDZ B3LYP   18      8 (18)       9 (18)       8 (38)
         //     Degenerate ²Π, PBE/6-31G (energy 1e-10 / density 1e-8): OH on-axis
         //     20 / 9 (21) / 11 (20); 1e-5 Å off-axis OH 18 / 10 (24) / 10 (14) /
-        //     AH 10 (45), CH 22 / 8 (25) / 10 (22) / AH not converged, NO 26 /
-        //     12 (20) / 13 (19) / AH 25 (226). Off-axis AH lands on the other
+        //     AH 10 (46), CH 22 / 8 (25) / 10 (22) / AH not converged, NO 26 /
+        //     12 (20) / 13 (19) / AH 26 (251). Off-axis AH lands on the other
         //     hole orientation, degenerate up to the XC grid's rotational
-        //     variance (~1e-6 Ha).
+        //     variance (up to 3.4e-6 Ha on OH/6-31G, #172).
         //     Before the fix: NH2 PBE 136 (254) / 21 (31) / 140 (93), NH2 B3LYP
         //     not converged (544) / 136 (309) / 169 (150), OH B3LYP not
         //     converged (1270) / 167 (695) / not converged (193). Both branches
@@ -1699,7 +1699,17 @@ fn solve_rohf_impl(
             };
             let ah_inputs = crate::rohf_ah::RohfAhInputs { base: &inputs };
             let (c_new, _kmax) = crate::rohf_ah::rohf_ah_step(
-                ctx, &ah_inputs, /*max_step=*/ 0.2, /*davidson_conv=*/ 1e-7,
+                ctx,
+                &ah_inputs,
+                /*max_step=*/ 0.2,
+                // Below this |g| the AH step is zero (ΔP = 0, so the SCF
+                // stops), as with the Newton branch's `cg_conv`: a fixed 1e-7
+                // reported a tighter `density_conv` run converged at |g| up
+                // to 1e-7 (2.6e-10 at density_conv 1e-12 on OH/6-31G).
+                // Below ~1e-8 the Davidson cannot meet it and `rohf_ah_step`
+                // takes the PCG Newton step (`rohf_ah`).
+                /*davidson_conv=*/
+                config.density_conv.min(1e-7),
                 /*davidson_max_vecs=*/ 50,
             )?;
             c = c_new;
