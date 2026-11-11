@@ -1399,42 +1399,6 @@ fn gap_diag(f_diag: &[f64], nocc: usize, n: usize) -> Vec<f64> {
     out
 }
 
-/// Apply the Cayley unitary built from an occ→virt block to C: C ← C·U.
-///
-/// Identical construction to `rhf_newton`/`uhf_newton`'s — the exact
-/// orthonormality-preserving rotation, not a truncated exponential.
-fn apply_cayley(
-    c: &Array2<f64>,
-    k_ov: &Array2<f64>,
-    nocc: usize,
-    n: usize,
-) -> Result<Array2<f64>, FerricError> {
-    use ndarray_linalg::Solve;
-    let mut kappa = Array2::<f64>::zeros((n, n));
-    for (ir, a) in (nocc..n).enumerate() {
-        for i in 0..nocc {
-            let v = k_ov[(ir, i)];
-            kappa[(a, i)] = v;
-            kappa[(i, a)] = -v;
-        }
-    }
-    let half = 0.5 * &kappa;
-    let eye = Array2::<f64>::eye(n);
-    let a_mat = &eye - &half;
-    let b_mat = &eye + &half;
-    let mut u = Array2::<f64>::zeros((n, n));
-    for col in 0..n {
-        let bcol = b_mat.column(col).to_owned();
-        let sol = a_mat
-            .solve(&bcol)
-            .map_err(|e| FerricError::Lapack(format!("TRAH Cayley solve: {e}")))?;
-        for row in 0..n {
-            u[(row, col)] = sol[row];
-        }
-    }
-    Ok(c.dot(&u))
-}
-
 /// Energy scale of the packed orbital-rotation coordinates.
 ///
 /// # Why this constant has to exist, and how it was caught
@@ -1518,7 +1482,7 @@ pub fn rhf_trah_step(
     step.predicted_cheap *= RHF_ENERGY_SCALE;
     let k = Array2::from_shape_vec((nv, no), step.kappa.clone())
         .map_err(|e| FerricError::General(format!("TRAH RHF step reshape: {e}")))?;
-    let c_new = apply_cayley(inp.c, &k, no, n)?;
+    let c_new = crate::cayley::apply_cayley_ov(inp.c, &k, no, n)?;
     Ok((c_new, step))
 }
 
@@ -1626,7 +1590,7 @@ pub fn rhf_trah_step_aux(
     step.predicted_cheap *= RHF_ENERGY_SCALE;
     let k = Array2::from_shape_vec((nv, no), step.kappa.clone())
         .map_err(|e| FerricError::General(format!("TRAH aux step reshape: {e}")))?;
-    let c_new = apply_cayley(inp.c, &k, no, n)?;
+    let c_new = crate::cayley::apply_cayley_ov(inp.c, &k, no, n)?;
     Ok((c_new, step))
 }
 
@@ -1772,8 +1736,8 @@ pub fn uhf_trah_step(
         .map_err(|e| FerricError::General(format!("TRAH UHF α step reshape: {e}")))?;
     let kb = Array2::from_shape_vec((nvb, nb), step.kappa[len_a..].to_vec())
         .map_err(|e| FerricError::General(format!("TRAH UHF β step reshape: {e}")))?;
-    let ca = apply_cayley(inp.c_a, &ka, na, n)?;
-    let cb = apply_cayley(inp.c_b, &kb, nb, n)?;
+    let ca = crate::cayley::apply_cayley_ov(inp.c_a, &ka, na, n)?;
+    let cb = crate::cayley::apply_cayley_ov(inp.c_b, &kb, nb, n)?;
     Ok((ca, cb, step))
 }
 

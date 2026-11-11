@@ -1367,7 +1367,6 @@ fn augmented_instability(
 /// precision, unlike a truncated `exp(κ)` — which matters because the rotated
 /// orbitals are fed straight back in as an SCF guess.
 fn rotate_mos(c: &Array2<f64>, k_ov: &Array2<f64>, nocc: usize, eps: f64) -> Array2<f64> {
-    use ndarray_linalg::Solve;
     let n = c.nrows();
     let mut kappa = Array2::<f64>::zeros((n, n));
     for (ir, a) in (nocc..n).enumerate() {
@@ -1380,26 +1379,10 @@ fn rotate_mos(c: &Array2<f64>, k_ov: &Array2<f64>, nocc: usize, eps: f64) -> Arr
             kappa[(i, a)] = -v;
         }
     }
-    let half = 0.5 * &kappa;
-    let eye = Array2::<f64>::eye(n);
-    let am = &eye - &half;
-    let bm = &eye + &half;
-    let mut u = Array2::<f64>::zeros((n, n));
-    for col in 0..n {
-        match am.solve(&bm.column(col).to_owned()) {
-            Ok(sol) => {
-                for row in 0..n {
-                    u[(row, col)] = sol[row];
-                }
-            }
-            // A singular (I − κ/2) cannot happen for antisymmetric κ (its
-            // eigenvalues are 1 ± i·imag), but the solve is fallible, so fall
-            // back to the identity column rather than panicking inside a
-            // best-effort descent.
-            Err(_) => u[(col, col)] = 1.0,
-        }
-    }
-    c.dot(&u)
+    // A singular (I − κ/2) cannot happen for antisymmetric κ (its eigenvalues
+    // are 1 ± i·imag), but the factorization is fallible, so fall back to the
+    // identity rotation rather than panicking inside a best-effort descent.
+    crate::cayley::cayley_rotate(c, &kappa).unwrap_or_else(|_| c.to_owned())
 }
 
 /// Solve J x = b for small k via Gaussian elimination with partial pivoting.
