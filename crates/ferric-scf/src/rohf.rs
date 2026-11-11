@@ -1633,9 +1633,12 @@ fn solve_rohf_impl(
         //     Degenerate ²Π, PBE/6-31G (energy 1e-10 / density 1e-8): OH on-axis
         //     20 / 9 (21) / 11 (20); 1e-5 Å off-axis OH 18 / 10 (24) / 10 (14) /
         //     AH 10 (46), CH 22 / 8 (25) / 10 (22) / AH not converged, NO 26 /
-        //     12 (20) / 13 (19) / AH 26 (251). Off-axis AH lands on the other
-        //     hole orientation, degenerate up to the XC grid's rotational
-        //     variance (up to 3.4e-6 Ha on OH/6-31G, #172).
+        //     12 (20) / 13 (19) / AH 26 (251). Off-axis, which hole
+        //     orientation a run lands in is box dependent: here AH takes the
+        //     other one, on CI Newton/soscf did too (OH, NO). They are
+        //     degenerate up to the XC grid's rotational variance (up to
+        //     3.4e-6 Ha on OH/6-31G, #172), so off-axis no mode is held to
+        //     DIIS's energy closer than 1e-5 Ha.
         //     Before the fix: NH2 PBE 136 (254) / 21 (31) / 140 (93), NH2 B3LYP
         //     not converged (544) / 136 (309) / 169 (150), OH B3LYP not
         //     converged (1270) / 167 (695) / not converged (193). Both branches

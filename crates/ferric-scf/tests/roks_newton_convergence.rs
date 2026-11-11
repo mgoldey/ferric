@@ -205,96 +205,144 @@ fn oh_ccpvdz_b3lyp_fitted_second_order_matches_diis() {
 /// How a second-order mode is held against DIIS on a degenerate shell.
 #[derive(Clone, Copy)]
 enum Expect {
-    /// |E − E_DIIS| ≤ 1e-7 Ha.
+    /// |E − E_DIIS| ≤ 1e-7 Ha in ≤ DIIS iterations. Used ON-axis only, where
+    /// the start (SAD, cylindrically symmetric) and the C∞v geometry give
+    /// DIIS and the second-order modes the same orientation choice. It is
+    /// not strictly pinned: the grid (octahedral Lebedev, Becke weights on
+    /// the axis) leaves E(φ) of the hole angle C4v-symmetric, so axis-aligned
+    /// and diagonal holes are both stationary and differ at the grid
+    /// variance; a box whose last-bit noise tips Newton into the other
+    /// family would fail this bar. Not observed (here or on CI).
     SameEnergy,
-    /// A hole orientation of the degenerate π shell. The orientations are
-    /// degenerate up to the XC grid's rotational variance, which #172 measured
-    /// at up to 3.4e-6 Ha on OH/6-31G (`rohf_degenerate_open_shell.rs`); the
-    /// off-axis displacement (1e-5 Å) alone would move E by O(1e-10). So the
-    /// energy must lie within 1e-5 Ha of DIIS (3x that variance), and nothing
-    /// is claimed about which orientation either method picks.
+    /// A hole orientation of the degenerate π shell. Off-axis (1e-5 Å) the
+    /// orientations are degenerate up to the XC grid's rotational variance,
+    /// which #172 measured at up to 3.4e-6 Ha on OH/6-31G
+    /// (`rohf_degenerate_open_shell.rs`), while the displacement itself
+    /// moves E by O(1e-10). WHICH orientation a run lands in is box
+    /// dependent: CI (2026-11-11, head 1ba3ae744) put off-axis Newton and
+    /// soscf on OH and NO in the other one, |ΔE| 1.27e-6 / 5.57e-7, where
+    /// this box matched DIIS. So the energy bar is 1e-5 Ha (3x the variance)
+    /// and nothing is claimed about which orientation any method picks.
     ///
-    /// No iteration bound against DIIS: the two converge to DIFFERENT
-    /// stationary points (orientations), so their iteration counts measure
-    /// different paths, and no margin between them can be derived (NO AH
-    /// sits exactly at DIIS's 26). Cost is held instead by `ah_hvps_ceiling`,
-    /// the HVP count of the many-root AH Davidson (n_seed 8, n_block 6) on
-    /// the same case, as in `check`.
-    GridDegenerateOrientation { ah_hvps_ceiling: usize },
+    /// Cost is held by an HVP ceiling, not by DIIS's iteration count on the
+    /// same geometry (DIIS may end in the other orientation):
+    /// * Newton / soscf: `(PCG cap 20 + 1) × N`, N the LARGER of DIIS's
+    ///   iteration counts to the two orientations (the off-axis run and the
+    ///   on-axis run of the same molecule). That is a run taking no more
+    ///   Newton steps than DIIS needs for either orientation, every PCG
+    ///   solve at its cap (`solve_rohf` passes cg_max_iter 20; each step
+    ///   makes one more HVP for κ⁰'s residual).
+    /// * AH: the HVP count of the many-root AH Davidson (n_seed 8,
+    ///   n_block 6) on the same case, as in `check`.
+    GridDegenerateOrientation { ah_hvps_ceiling: Option<usize> },
 }
+
+/// HVPs one ROHF Newton step can make: PCG's cap in `solve_rohf` (20) plus
+/// the residual of the diagonal guess κ⁰.
+const MAX_HVPS_PER_NEWTON_STEP: usize = 21;
 
 /// The #172 degenerate open shells (²Π OH, CH and NO, PBE/6-31G, the F6 test
 /// settings energy_conv 1e-10 / density_conv 1e-8). Every listed mode must
-/// converge with ≥ 1 ROHF HVP, either to the DIIS energy in ≤ DIIS
-/// iterations or, for AH where noted, to a grid-degenerate hole orientation
-/// in fewer HVPs than the many-root AH Davidson ([`Expect`]).
+/// converge with ≥ 1 ROHF HVP: on-axis to the DIIS energy in ≤ DIIS
+/// iterations, off-axis to a grid-degenerate hole orientation within the
+/// HVP ceiling ([`Expect`]).
 ///
-/// MEASURED 2026-11-11, iterations (HVPs), DIIS / Newton / soscf / AH:
+/// MEASURED 2026-11-11 on this box, iterations (HVPs), DIIS / Newton /
+/// soscf / AH:
 ///   OH on-axis   20 / 9 (21) / 11 (20) / –   (the relabel guard's case;
 ///                Newton and soscf did not converge before the fix)
 ///   OH off-axis  18 / 10 (24) / 10 (14) / 10 (46)
 ///   CH off-axis  22 / 8 (25) / 10 (22) / not converged (also before the
 ///                fix; not asserted)
 ///   NO off-axis  26 / 12 (20) / 13 (19) / 26 (251)
-/// AH's Davidson tolerance now follows density_conv (1e-8 here, was a fixed
+/// On-axis DIIS (the other orientation's step count): OH 20, CH 20
+/// (−38.402533691, 5.7e-7 from off-axis DIIS), NO 49.
+/// HVP ceilings: Newton/soscf OH 21 × 20 = 420, CH 21 × 22 = 462, NO
+/// 21 × 49 = 1029; AH OH 116, NO 662.
+/// AH's Davidson tolerance follows density_conv (1e-8 here, was a fixed
 /// 1e-7): that costs NO AH one iteration and 25 HVPs (25 (226) before) and
-/// OH one HVP. Many-root AH Davidson (the HVP ceilings): OH 116, NO 662;
-/// that mutation (applied, run, reverted) fails both.
-/// Off-axis AH converges on OH and NO, to −75.620835678 and −129.704259565
-/// against DIIS's −75.620834299 and −129.704259009. Those equal the ON-axis
-/// DIIS energies to 1e-9: AH lands on the other π-hole orientation, which is
-/// degenerate with DIIS's up to the grid's rotational variance. Nothing is
-/// claimed about either being the better state.
-/// The Steihaug threshold is pinned here too: with every pᵀAp ≤ 0 truncated
-/// (threshold 0, applied and reverted), NO off-axis Newton took 92 iterations
-/// (460 HVPs) and soscf 60 (335), crawling between those orientations
-/// (Rayleigh quotients −2e-7..−1e-4; `rohf_newton::NEG_CURVATURE`).
-/// Mutation (applied, run, reverted): the sub-tolerance step returning the
+/// OH one HVP.
+/// Off-axis AH converges on OH and NO to −75.620835678 and −129.704259565
+/// against off-axis DIIS's −75.620834299 and −129.704259009: the other π-hole
+/// orientation, which here equals the ON-axis DIIS energy to 1e-9. On CI the
+/// off-axis Newton/soscf runs landed there too (see [`Expect`]).
+/// The Steihaug threshold is pinned here too: on the earlier keep-the-iterate
+/// truncation, with every pᵀAp ≤ 0 truncated (threshold 0, applied and
+/// reverted), NO off-axis Newton took 92 iterations (460 HVPs) and soscf 60
+/// (335), crawling between those orientations (Rayleigh quotients
+/// −2e-7..−1e-4; `rohf_newton::NEG_CURVATURE`). With the current step along
+/// p, threshold 0 costs NO Newton 23 (121) and soscf 24 (124), OH 10 (27)
+/// and 12 (26), CH unchanged: worse, but inside the ceilings.
+/// Mutations (applied, run, reverted): the sub-tolerance step returning the
 /// diagonal guess κ⁰ = −g/Δ again instead of 0 leaves CH soscf not converged
 /// in 200 iterations (E settled to 1e-13 by iteration 9; |g| ~ 2e-8 / the
 /// 1e-6 floored π gap rotates the hole ~0.02 per step, so ΔP never reaches
-/// 1e-8).
+/// 1e-8). Newton's trust radius cut from 0.1 to 1e-3 (a crawl): CH Newton
+/// 92 iterations, 751 HVPs and soscf 697 exceed the 462 ceiling, and on-axis
+/// OH Newton/soscf take 49/51 iterations against DIIS's 20; fails. The
+/// ceilings are step budgets, NOT a per-step PCG cost bound: PCG cap 200 at
+/// tolerance 1e-14 (about 2× the HVPs per step) still passes.
 #[test]
 fn degenerate_pi_open_shells_second_order_match_diis() {
     use Expect::SameEnergy as Same;
     let orient = |ah_hvps_ceiling| Expect::GridDegenerateOrientation { ah_hvps_ceiling };
+    let newton = orient(None);
     let mut failures = Vec::new();
-    let cases: [(&str, &str, &[(Mode, Expect)]); 4] = [
+    // (label, geometry, the on-axis geometry for an off-axis case, modes)
+    let cases: [(&str, &str, Option<&str>, &[(Mode, Expect)]); 4] = [
         (
             "OH/6-31G PBE on-axis",
             "2\nOH\nO 0 0 0\nH 0 0 0.97\n",
+            None,
             &[(Mode::Newton, Same), (Mode::Soscf, Same)],
         ),
         (
             "OH/6-31G PBE off-axis",
             "2\nOH\nO 0 0 0\nH 1e-5 0 0.97\n",
+            Some("2\nOH\nO 0 0 0\nH 0 0 0.97\n"),
             &[
-                (Mode::Newton, Same),
-                (Mode::Soscf, Same),
-                (Mode::Ah, orient(116)),
+                (Mode::Newton, newton),
+                (Mode::Soscf, newton),
+                (Mode::Ah, orient(Some(116))),
             ],
         ),
         (
             "CH/6-31G PBE off-axis",
             "2\nCH\nC 0 0 0\nH 1e-5 0 1.1199\n",
-            &[(Mode::Newton, Same), (Mode::Soscf, Same)],
+            Some("2\nCH\nC 0 0 0\nH 0 0 1.1199\n"),
+            &[(Mode::Newton, newton), (Mode::Soscf, newton)],
         ),
         (
             "NO/6-31G PBE off-axis",
             "2\nNO\nN 0 0 0\nO 1e-5 0 1.1508\n",
+            Some("2\nNO\nN 0 0 0\nO 0 0 1.1508\n"),
             &[
-                (Mode::Newton, Same),
-                (Mode::Soscf, Same),
-                (Mode::Ah, orient(662)),
+                (Mode::Newton, newton),
+                (Mode::Soscf, newton),
+                (Mode::Ah, orient(Some(662))),
             ],
         ),
     ];
-    for (label, xyz, modes) in cases {
+    for (label, xyz, on_axis, modes) in cases {
         let tol = (1e-10, 1e-8);
         let diis = run_tol(xyz, "6-31g", "PBE", false, Mode::Diis, tol);
         let e_ref = diis
             .energy
             .unwrap_or_else(|| panic!("{label}: DIIS reference did not converge"));
+        // DIIS's iteration count to the other orientation, via the on-axis
+        // geometry (its DIIS lands there; see the doc).
+        let n_steps = match on_axis {
+            Some(on) => {
+                let d = run_tol(on, "6-31g", "PBE", false, Mode::Diis, tol);
+                eprintln!(
+                    "{label}: on-axis DIIS E = {:?}, iters = {}",
+                    d.energy, d.iterations
+                );
+                assert!(d.energy.is_some(), "{label}: on-axis DIIS did not converge");
+                diis.iterations.max(d.iterations)
+            }
+            None => diis.iterations,
+        };
         for &(mode, expect) in modes {
             let r = run_tol(xyz, "6-31g", "PBE", false, mode, tol);
             eprintln!(
@@ -315,15 +363,26 @@ fn degenerate_pi_open_shells_second_order_match_diis() {
                     (e - e_ref).abs()
                 ));
             }
-            let over_budget = match expect {
-                Expect::SameEnergy => r.iterations > diis.iterations,
-                Expect::GridDegenerateOrientation { ah_hvps_ceiling } => r.hvps >= ah_hvps_ceiling,
-            };
-            if over_budget || r.hvps == 0 {
-                failures.push(format!(
-                    "{label} {mode:?}: {} iterations (DIIS {}), {} HVPs",
-                    r.iterations, diis.iterations, r.hvps
-                ));
+            if r.hvps == 0 {
+                failures.push(format!("{label} {mode:?}: no ROHF HVP (vacuous)"));
+            }
+            match expect {
+                Expect::SameEnergy if r.iterations > diis.iterations => {
+                    failures.push(format!(
+                        "{label} {mode:?}: {} iterations > DIIS {}",
+                        r.iterations, diis.iterations
+                    ));
+                }
+                Expect::GridDegenerateOrientation { ah_hvps_ceiling } => {
+                    let ceiling = ah_hvps_ceiling.unwrap_or(MAX_HVPS_PER_NEWTON_STEP * n_steps);
+                    if r.hvps >= ceiling {
+                        failures.push(format!(
+                            "{label} {mode:?}: {} HVPs >= ceiling {ceiling}",
+                            r.hvps
+                        ));
+                    }
+                }
+                _ => {}
             }
         }
     }
