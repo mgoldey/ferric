@@ -46,7 +46,7 @@ env:
   # Run of native-deps-macwin.yml whose native-*-<platform> artifacts (7-day
   # retention) these jobs reuse. TEMPORARY: replaced by a cache restore once
   # that workflow is on main.
-  NATIVE_FROM_RUN: "42926153204"
+  NATIVE_FROM_RUN: "42968024921"
 
 jobs:
   rust:
