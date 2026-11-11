@@ -64,7 +64,9 @@ def set_blas_threads(n: int | None = None) -> None:
     results at the last bit (about 1e-14 relative)."""
 
 def blas_threads() -> int:
-    """The OpenBLAS thread count serial sections use now."""
+    """The OpenBLAS thread count serial sections use now: the requested count
+    clamped to the OpenBLAS build's ``MAX_THREADS`` (a request above it warns
+    once on stderr)."""
 
 class GpuDevice(TypedDict):
     ordinal: int

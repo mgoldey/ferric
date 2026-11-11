@@ -12,14 +12,17 @@ blas_threads``) silently used at most 4 threads. wheels.yml now builds with
 ``NUM_THREADS=$OPENBLAS_MAX_THREADS``; this check runs in the smoke test so
 the cap cannot come back unnoticed.
 
-Two independent checks, both against the library inside the wheel (found
+Three independent checks, all against the library inside the wheel (found
 next to the extension: ``ferric.libs/`` from auditwheel/delvewheel,
 ``ferric/.dylibs/`` from delocate), after ``import ferric`` has loaded it:
 
 1. ``openblas_get_config()`` reports ``MAX_THREADS=<n>`` with n >= N;
 2. ``openblas_set_num_threads(N)`` then ``openblas_get_num_threads()``
    returns N. ``set_num_threads`` clamps to the compiled maximum, not to the
-   machine's cores, so this holds on a 4-core CI runner.
+   machine's cores, so this holds on a 4-core CI runner;
+3. after ``ferric.set_blas_threads(100000)``, ``ferric.blas_threads()`` equals
+   the count OpenBLAS runs (ferric reports the clamped count, not the
+   request).
 
 Standard library only. Run it outside any ferric source tree.
 """
@@ -76,6 +79,26 @@ def main(argv: list[str]) -> int:
     print(f"openblas_set_num_threads({want}) -> openblas_get_num_threads() = {got}")
     if got != want:
         failures.append(f"openblas_set_num_threads({want}) gave {got} threads")
+    # 3. ferric's own report is what OpenBLAS runs: a request far above any
+    #    cap comes back clamped (the rc11 wheel reported the request).
+    import ferric
+
+    huge = 100_000
+    try:
+        ferric.set_blas_threads(huge)
+        reported = ferric.blas_threads()
+    finally:
+        ferric.set_blas_threads(None)
+    lib.openblas_set_num_threads(reported)
+    runs = lib.openblas_get_num_threads()
+    lib.openblas_set_num_threads(before)
+    print(
+        f"ferric.set_blas_threads({huge}) -> ferric.blas_threads() = {reported}, OpenBLAS runs {runs}"
+    )
+    if reported != runs:
+        failures.append(
+            f"ferric.blas_threads() reports {reported}, OpenBLAS runs {runs}"
+        )
     for f in failures:
         print(f"FAIL: {f}")
     if failures:

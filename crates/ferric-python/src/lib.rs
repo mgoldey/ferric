@@ -13205,7 +13205,8 @@ fn set_blas_threads(n: Option<usize>) -> PyResult<()> {
 }
 
 /// The OpenBLAS thread count serial sections use now (see
-/// :func:`set_blas_threads`).
+/// :func:`set_blas_threads`): the request clamped to the OpenBLAS build's
+/// ``MAX_THREADS``, i.e. what OpenBLAS actually runs.
 #[pyfunction]
 fn blas_threads() -> usize {
     ferric_integrals::blas_threads::opt_in_blas_threads()
