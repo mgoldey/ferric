@@ -43,9 +43,6 @@ on:
   push:
     tags:
       - 'v*'
-    # TEMPORARY (feat/wheels-mac-win): rebuild the Windows natives under the
-    # new cache keys on this branch; removed in a later commit.
-    branches: [feat/wheels-mac-win]
   workflow_dispatch: {}
   schedule:
     # 10:53 UTC daily. This workflow was first written by reading ci.yml,
