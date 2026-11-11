@@ -86,6 +86,32 @@ struct PolarizedPoints {
     live: Vec<[bool; 2]>,
 }
 
+impl RestrictedPoints {
+    /// No points: a batch with no kept shell, which every product skips.
+    fn empty() -> Self {
+        Self {
+            u: Vec::new(),
+            s: Vec::new(),
+            t: Vec::new(),
+            gam: Vec::new(),
+            grad: Vec::new(),
+        }
+    }
+}
+
+impl PolarizedPoints {
+    /// See [`RestrictedPoints::empty`].
+    fn empty() -> Self {
+        Self {
+            hess: Vec::new(),
+            vsigma: Vec::new(),
+            grad: Vec::new(),
+            wt: Vec::new(),
+            live: Vec::new(),
+        }
+    }
+}
+
 enum Points {
     Restricted(Vec<RestrictedPoints>),
     Polarized(Vec<PolarizedPoints>),
@@ -209,6 +235,11 @@ impl<'g> ScreenedFxc<'g> {
                 |kxc, bi, _| -> Result<Result<RestrictedPoints, String>, GtoEvalError> {
                     let b = &screened.batches[bi];
                     let nb = b.idx.len();
+                    if b.funcs.is_empty() {
+                        // No kept shell: every product skips this batch, so
+                        // it needs no kernel data (and no libxc call).
+                        return Ok(Ok(RestrictedPoints::empty()));
+                    }
                     let ao = screened.batch_ao(bi, grid)?;
                     let full = batch_density_one(&ao, &din.gather(&b.funcs), nb, has_mgga);
                     let live: Vec<bool> = full
@@ -282,6 +313,10 @@ impl<'g> ScreenedFxc<'g> {
                 |kxc, bi, _| -> Result<Result<PolarizedPoints, String>, GtoEvalError> {
                     let b = &screened.batches[bi];
                     let nb = b.idx.len();
+                    if b.funcs.is_empty() {
+                        // As in the restricted build: never read.
+                        return Ok(Ok(PolarizedPoints::empty()));
+                    }
                     let ao = screened.batch_ao(bi, grid)?;
                     let pa = batch_density_one(&ao, &ia.gather(&b.funcs), nb, has_mgga);
                     let pb = batch_density_one(&ao, &ib.gather(&b.funcs), nb, has_mgga);
@@ -677,10 +712,12 @@ mod tests {
     /// dense [`MggaFxcKernel`] restricted response (the kernel the RKS Newton
     /// and TDDFT paths validated against FD of production V_xc), elementwise,
     /// within 2·γ_m·S: `S` = [`ScreenedFxc::apply_restricted_magnitude`] and
-    /// m = npts + 4·nbf + 64 (the quadrature sum, the density sums, and an
-    /// allowance of 64 for the point algebra and the reference-kernel inputs,
-    /// which the two paths round differently). LDA, GGA, global hybrid and
-    /// τ-only meta-GGA, at ferric's own HF water density.
+    /// m = npts + 4·nbf + 64: the quadrature and density sums (derived), plus
+    /// 64 terms for the point algebra and the reference kernel, whose libxc
+    /// inputs the two paths round differently. That 64 is NOT derived (libxc
+    /// carries no rounding bound); it rests on the measured margin, err/bound
+    /// 1.4e-5..1.2e-4 across these cases. LDA, GGA, global hybrid and τ-only
+    /// meta-GGA, at ferric's own HF water density.
     ///
     /// Mutation (applied and reverted, 2026-11-11): dropping the cross-spin
     /// `H_i,ρβ` column in `restricted_coefficients` fails every functional

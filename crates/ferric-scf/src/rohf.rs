@@ -210,15 +210,16 @@ pub fn restricted_fxc_response<'s>(
 /// (UKS / ROKS Newton, AH and TRAH steps): the SCF's own screened grid when
 /// its XC evaluator has one
 /// ([`ferric_dft::xc_trait::UksXcContribution::polarized_fxc`]), else the
-/// dense [`FxcKernelStore`]. `dense_gate` = `(label, needed, available)`
-/// bytes, checked with `check_alloc` before the dense fallback builds its
-/// duplicate χ/∇χ cache (the screened path builds none).
+/// dense [`FxcKernelStore`]. `dense_gate` = `(label, budget)`: on the dense
+/// fallback only, `budget()` gives `(needed, available)` bytes, checked with
+/// `check_alloc` before that path builds its duplicate χ/∇χ cache (the
+/// screened path builds none and never evaluates `budget`).
 #[doc(hidden)]
 pub fn polarized_fxc_response<'s>(
     x: &'s dyn ferric_dft::xc_trait::UksXcContribution,
     (mol, prep, config, name): (&Molecule, &PreparedBasis, &RhfConfig, &str),
     (d_a, d_b): (&Array2<f64>, &Array2<f64>),
-    dense_gate: Option<(&str, usize, usize)>,
+    dense_gate: Option<(&str, &dyn Fn() -> (usize, usize))>,
 ) -> Result<Box<crate::rohf_newton::FxcResponse<'s>>, FerricError> {
     let xc_pol = fxc_xc_def(name, config.xc_omega)?;
     if let Some(built) = x.polarized_fxc(&xc_pol, d_a, d_b) {
@@ -228,7 +229,8 @@ pub fn polarized_fxc_response<'s>(
             sf.apply_polarized(a, b)
         }));
     }
-    if let Some((label, needed, avail)) = dense_gate {
+    if let Some((label, budget)) = dense_gate {
+        let (needed, avail) = budget();
         ferric_core::memory::check_alloc(label, needed, avail)?;
     }
     let grid = config

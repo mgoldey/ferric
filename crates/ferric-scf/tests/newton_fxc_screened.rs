@@ -162,10 +162,11 @@ struct Anchor {
 /// docs. Bound at step h/2 (Frobenius, derived as in rhf_newton_smoke's
 /// fitted J/K anchor): ‖Hκ − FD(h/2)‖ ≤ ‖FD(h) − FD(h/2)‖/3 + 2·E_g/(h/2),
 /// E_g = ‖ov(|C|ᵀ (γ_m·(|H|+|J|+½k|K|) + γ_x·S_xc) |C|)‖, m = n² + naux + 2n,
-/// x = npts + 6n + 64 (the quadrature, density and MO-transform sums, and an
-/// allowance of 64 per point for libxc and the propagation of the rounded
-/// density into v_xc — an assumption, not a derived constant), S_xc =
-/// [`xc_magnitude`].
+/// S_xc = [`xc_magnitude`], x = npts + 6n + 64. The quadrature, density and
+/// MO-transform sums are derived; the extra 64 (libxc's own rounding and the
+/// rounded density propagated into v_xc) is NOT, since libxc carries no bound.
+/// It rests on the measured margin: err/bound ≤ 9.1e-3 in every FD case here,
+/// 1e-5..1e-4 in the ferric-dft unit anchors that use the same allowance.
 ///
 /// Also evaluates the dense, UNSCREENED `FxcKernelStore` HVP on the same
 /// grid, i.e. the pre-change response, against the same FD.
