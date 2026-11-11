@@ -872,23 +872,6 @@ enum SpillKind {
     RiKDressed,
 }
 
-impl SpillKind {
-    fn latch(self) -> &'static std::sync::atomic::AtomicBool {
-        match self {
-            Self::Raw => &SPILL_WARNED,
-            Self::RiKDressed => &RI_K_SPILL_WARNED,
-        }
-    }
-
-    /// The remedy clause this kind adds, ending in `"; "`, or nothing.
-    fn remedy(self, needed: u64) -> String {
-        match self {
-            Self::Raw => String::new(),
-            Self::RiKDressed => format!("{} ", exact_k_remedy(needed)),
-        }
-    }
-}
-
 /// The directory the spill file is created in.
 ///
 /// `tempfile::tempfile()` (used below) creates an unlinked file in
@@ -910,12 +893,7 @@ fn spill_dir() -> std::path::PathBuf {
 /// [`free_bytes_at`]. The message names the size, the free space and the path,
 /// and lists every remedy, so a user never has to read this file to understand
 /// the refusal (the standard `cosx_k::check_budget` sets).
-fn check_spill_disk(
-    needed: u64,
-    free: u64,
-    dir: &std::path::Path,
-    kind: SpillKind,
-) -> Result<(), FerricError> {
+fn check_spill_disk(needed: u64, free: u64, dir: &std::path::Path) -> Result<(), FerricError> {
     let headroom = SPILL_HEADROOM_BYTES.max((free as f64 * SPILL_HEADROOM_FRACTION) as u64);
     if needed.saturating_add(headroom) <= free {
         return Ok(());
@@ -925,18 +903,33 @@ fn check_spill_disk(
          (a {:.2} GB safety margin is reserved so the spill cannot fill the partition \
          out from under the rest of the system). Remedies: raise the in-core ceiling so \
          the tensor never spills ([memory] budget_gb / FERRIC_MEM_BUDGET_GB); point the \
-         spill elsewhere (TMPDIR=/path/with/room); use a smaller auxiliary basis; {}or \
+         spill elsewhere (TMPDIR=/path/with/room); use a smaller auxiliary basis; or \
          recompute the integrals each pass instead of writing them (jk_storage = \"direct\").",
         needed as f64 / 1e9,
         dir.display(),
         free as f64 / 1e9,
         headroom as f64 / 1e9,
-        kind.remedy(needed),
     )))
 }
 
-/// The exact-exchange memory remedy an RI-K spill names
-/// ([`SpillKind::RiKDressed`] only).
+/// [`check_spill_disk`] for a spill of `kind`: an RI-K refusal also names
+/// [`exact_k_remedy`]; a raw one is unchanged.
+fn check_spill_disk_for(
+    needed: u64,
+    free: u64,
+    dir: &std::path::Path,
+    kind: SpillKind,
+) -> Result<(), FerricError> {
+    match (check_spill_disk(needed, free, dir), kind) {
+        (Err(FerricError::General(m)), SpillKind::RiKDressed) => Err(FerricError::General(
+            format!("{m}{}", exact_k_remedy(needed)),
+        )),
+        (r, _) => r,
+    }
+}
+
+/// The exact-exchange memory remedy an RI-K spill names, as a sentence
+/// appended to the warning or refusal ([`SpillKind::RiKDressed`] only).
 ///
 /// For HF or a global hybrid whose exchange is density-fitted (RI-K: the
 /// Kohn–Sham default, or a named `df_k_aux`), the SCF holds RI-K's
@@ -948,17 +941,17 @@ fn check_spill_disk(
 /// to ω = 0.
 fn exact_k_remedy(needed: u64) -> String {
     format!(
-        "if exchange is density-fitted for HF or a global hybrid (RI-K, the default for \
+        " If exchange is density-fitted for HF or a global hybrid (RI-K, the default for \
          hybrid functionals), df_k_aux = \"\" selects exact four-centre K, which does not \
-         build RI-K's tensor (the {:.2} GB being spilled; k_builder has no effect while RI-K is active, \
-         and range-separated functionals have no exact-K route);",
+         build RI-K's tensor (the {:.2} GB being spilled; k_builder has no effect while RI-K \
+         is active, and range-separated functionals have no exact-K route).",
         needed as f64 / 1e9,
     )
 }
 
 /// The text of the spill warning. Pure so its content is testable; emitted by
 /// [`warn_spill_once`].
-fn spill_warning_text(needed: u64, dir: &std::path::Path, kind: SpillKind) -> String {
+fn spill_warning_text(needed: u64, dir: &std::path::Path) -> String {
     format!(
         "[ferric] warning: 3-index tensor ({:.2} GB) exceeds the memory budget and is being \
          spilled to disk in {}. This is a performance cliff, not just a memory tradeoff: \
@@ -966,28 +959,37 @@ fn spill_warning_text(needed: u64, dir: &std::path::Path, kind: SpillKind) -> St
          iteration pays roughly (tensor size / disk bandwidth) in pure IO on top of its \
          compute — at {:.2} GB and ~150 MB/s that is ~{:.0} min per iteration. Raise \
          [memory] budget_gb / FERRIC_MEM_BUDGET_GB to keep it in core, or use a smaller \
-         auxiliary basis{}.",
+         auxiliary basis.",
         needed as f64 / 1e9,
         dir.display(),
         needed as f64 / 1e9,
         (needed as f64 / 150e6) / 60.0,
-        match kind {
-            SpillKind::Raw => String::new(),
-            SpillKind::RiKDressed => format!("; {}", exact_k_remedy(needed).trim_end_matches(';')),
-        },
     )
 }
 
 /// Emit the spill warning at most once per process. Returns whether it fired
 /// (the return value is what makes the once-ness testable).
-fn warn_spill_once(needed: u64, dir: &std::path::Path, kind: SpillKind) -> bool {
-    if kind
-        .latch()
-        .swap(true, std::sync::atomic::Ordering::Relaxed)
-    {
+fn warn_spill_once(needed: u64, dir: &std::path::Path) -> bool {
+    if SPILL_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
         return false;
     }
-    eprintln!("{}", spill_warning_text(needed, dir, kind));
+    eprintln!("{}", spill_warning_text(needed, dir));
+    true
+}
+
+/// [`warn_spill_once`] for a spill of `kind`. An RI-K spill warns under its
+/// own latch, [`RI_K_SPILL_WARNED`], so a raw tensor that spilled first (RI-J's,
+/// or a post-SCF B tensor) cannot swallow the one warning that names
+/// [`exact_k_remedy`].
+fn warn_spill_once_for(needed: u64, dir: &std::path::Path, kind: SpillKind) -> bool {
+    if kind == SpillKind::Raw {
+        return warn_spill_once(needed, dir);
+    }
+    if RI_K_SPILL_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        return false;
+    }
+    let text = spill_warning_text(needed, dir) + &exact_k_remedy(needed);
+    eprintln!("{text}");
     true
 }
 
@@ -1000,9 +1002,9 @@ fn warn_spill_once(needed: u64, dir: &std::path::Path, kind: SpillKind) -> bool 
 fn preflight_spill(needed_bytes: usize, kind: SpillKind) -> Result<(), FerricError> {
     let dir = spill_dir();
     let needed = needed_bytes as u64;
-    warn_spill_once(needed, &dir, kind);
+    warn_spill_once_for(needed, &dir, kind);
     match free_bytes_at(&dir) {
-        Some(free) => check_spill_disk(needed, free, &dir, kind),
+        Some(free) => check_spill_disk_for(needed, free, &dir, kind),
         // Could not measure: proceed (the pre-existing behaviour) rather than
         // refuse a job on an unreadable statvfs. The warning above already told
         // the user a large write is starting.
@@ -3445,7 +3447,7 @@ mod tests {
         // 100 GB wanted, 1 GB free.
         let needed = 100_000_000_000u64;
         let free = 1_000_000_000u64;
-        let err = check_spill_disk(needed, free, dir, SpillKind::Raw)
+        let err = check_spill_disk(needed, free, dir)
             .expect_err("a 100 GB spill into 1 GB of free space must be refused");
         let msg = err.to_string();
         // The three facts a user needs without reading source.
@@ -3467,21 +3469,30 @@ mod tests {
             msg.contains("TMPDIR"),
             "must name the spill-dir override: {msg}"
         );
-        // A raw spill (RI-J, a post-SCF B tensor) has no RI-K to drop.
-        assert_no_exact_k_remedy(&msg);
-        // The RI-K dressed spill names exact K with ITS size.
-        let rik = check_spill_disk(needed, free, dir, SpillKind::RiKDressed)
-            .expect_err("same refusal for the RI-K band")
-            .to_string();
-        assert_names_exact_k_remedy(&rik, "100.00 GB");
+    }
+
+    /// The refusal names `df_k_aux = ""` with the band's size only for the
+    /// RI-K dressed spill; a raw spill (RI-J, a post-SCF B tensor) has no
+    /// RI-K to drop.
+    #[test]
+    fn spill_refusal_names_exact_k_only_for_the_ri_k_band() {
+        let dir = std::path::Path::new("/tmp");
+        let refuse = |kind| {
+            check_spill_disk_for(100_000_000_000, 1_000_000_000, dir, kind)
+                .expect_err("100 GB into 1 GB free must be refused")
+                .to_string()
+        };
+        assert_no_exact_k_remedy(&refuse(SpillKind::Raw));
+        assert_names_exact_k_remedy(&refuse(SpillKind::RiKDressed), "100.00 GB");
     }
 
     /// A raw spill must not offer `df_k_aux = ""`: the tensor may be RI-J's
     /// or an RI-MP2/RPA/GW B tensor on an exact-SCF reference, where no RI-K
     /// exists and the size would be the wrong tensor's.
     ///
-    /// MUTATION: make `SpillKind::remedy` / the warning ignore the kind (the
-    /// pre-fix unconditional remedy) and this goes RED.
+    /// MUTATION: make `check_spill_disk_for` append the remedy for
+    /// `SpillKind::Raw` too (the pre-fix unconditional remedy) and
+    /// `spill_refusal_names_exact_k_only_for_the_ri_k_band` goes RED.
     fn assert_no_exact_k_remedy(msg: &str) {
         assert!(
             !msg.contains("df_k_aux"),
@@ -3516,7 +3527,7 @@ mod tests {
     fn spill_allowed_when_free_space_is_ample() {
         let dir = std::path::Path::new("/tmp");
         assert!(
-            check_spill_disk(1_000_000_000, 500_000_000_000, dir, SpillKind::Raw).is_ok(),
+            check_spill_disk(1_000_000_000, 500_000_000_000, dir).is_ok(),
             "1 GB into 500 GB free must be allowed"
         );
     }
@@ -3531,23 +3542,23 @@ mod tests {
         let dir = std::path::Path::new("/tmp");
         // Exactly fills the partition: arithmetically OK, operationally fatal.
         assert!(
-            check_spill_disk(100_000_000_000, 100_000_000_000, dir, SpillKind::Raw).is_err(),
+            check_spill_disk(100_000_000_000, 100_000_000_000, dir).is_err(),
             "a write that consumes 100% of free space must be refused"
         );
         // Just inside the absolute floor (2 GB) — still refused.
         assert!(
-            check_spill_disk(99_000_000_000, 100_000_000_000, dir, SpillKind::Raw).is_err(),
+            check_spill_disk(99_000_000_000, 100_000_000_000, dir).is_err(),
             "leaving 1 GB free is below the absolute headroom floor"
         );
         // The percentage arm bites on a large partition where 2 GB would not:
         // 10 TB free, want 9.95 TB → leaves 50 GB, which is under 2% of free.
         assert!(
-            check_spill_disk(9_950_000_000_000, 10_000_000_000_000, dir, SpillKind::Raw).is_err(),
+            check_spill_disk(9_950_000_000_000, 10_000_000_000_000, dir).is_err(),
             "leaving <2% of a large partition must be refused"
         );
         // And the same partition with a comfortable remainder is fine.
         assert!(
-            check_spill_disk(5_000_000_000_000, 10_000_000_000_000, dir, SpillKind::Raw).is_ok(),
+            check_spill_disk(5_000_000_000_000, 10_000_000_000_000, dir).is_ok(),
             "leaving 50% of the partition must be allowed"
         );
     }
@@ -3566,7 +3577,7 @@ mod tests {
     #[test]
     fn spill_warning_is_emitted_once_and_names_the_per_iteration_reread() {
         let dir = std::path::Path::new("/tmp/ferric-spill-anchor");
-        let text = spill_warning_text(55_000_000_000, dir, SpillKind::Raw);
+        let text = spill_warning_text(55_000_000_000, dir);
         assert!(
             text.starts_with("[ferric] warning:"),
             "must match ferric's warning convention: {text}"
@@ -3584,9 +3595,6 @@ mod tests {
             "the point of the warning is the per-iteration re-read cost: {text}"
         );
         assert_no_exact_k_remedy(&text);
-        let rik = spill_warning_text(55_000_000_000, dir, SpillKind::RiKDressed);
-        assert!(rik.contains("every SCF iteration"), "{rik}");
-        assert_names_exact_k_remedy(&rik, "55.00 GB");
 
         // The once-latch: a fresh latch admits exactly one caller.
         let latch = std::sync::atomic::AtomicBool::new(false);
@@ -3605,32 +3613,37 @@ mod tests {
     /// MUTATION: make `warn_spill_once` unconditional and this goes RED.
     #[test]
     fn spill_warning_latch_is_consulted() {
-        // Serialize against any other test that might trip the latch.
-        static GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _g = GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = SPILL_LATCH_GUARD.lock().unwrap_or_else(|e| e.into_inner());
         SPILL_WARNED.store(false, std::sync::atomic::Ordering::Relaxed);
         assert!(
-            warn_spill_once(1_000, std::path::Path::new("/tmp"), SpillKind::Raw),
+            warn_spill_once(1_000, std::path::Path::new("/tmp")),
             "first call must warn"
         );
         assert!(
-            !warn_spill_once(1_000, std::path::Path::new("/tmp"), SpillKind::Raw),
+            !warn_spill_once(1_000, std::path::Path::new("/tmp")),
             "second call must be suppressed by the once-latch"
         );
-        // A raw spill that warned first must not swallow the RI-K warning,
-        // the only one naming the exact-K remedy (separate latch).
-        RI_K_SPILL_WARNED.store(false, std::sync::atomic::Ordering::Relaxed);
-        assert!(
-            warn_spill_once(1_000, std::path::Path::new("/tmp"), SpillKind::RiKDressed),
-            "the RI-K spill warning must fire after a raw one"
-        );
-        assert!(!warn_spill_once(
-            1_000,
-            std::path::Path::new("/tmp"),
-            SpillKind::RiKDressed
-        ));
         SPILL_WARNED.store(false, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Serializes the tests that reset or set the process-wide spill latches.
+    static SPILL_LATCH_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// A raw spill that warned first must not swallow the RI-K warning, the
+    /// only one naming the exact-K remedy: it has its own latch.
+    ///
+    /// MUTATION: route `SpillKind::RiKDressed` through `SPILL_WARNED` and the
+    /// first assert goes RED.
+    #[test]
+    fn ri_k_spill_warning_has_its_own_latch() {
+        let _g = SPILL_LATCH_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::path::Path::new("/tmp");
+        SPILL_WARNED.store(true, std::sync::atomic::Ordering::Relaxed);
         RI_K_SPILL_WARNED.store(false, std::sync::atomic::Ordering::Relaxed);
+        assert!(warn_spill_once_for(1_000, dir, SpillKind::RiKDressed));
+        assert!(!warn_spill_once_for(1_000, dir, SpillKind::RiKDressed));
+        RI_K_SPILL_WARNED.store(false, std::sync::atomic::Ordering::Relaxed);
+        SPILL_WARNED.store(false, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// (b) IN-CORE IS UNTOUCHED. When the tensor fits the budget the new code
