@@ -203,13 +203,16 @@ the f64 tensor instead, because the f32 energy surface jitters between nearby
 geometries; `scf_ri_j_precision="f32"` there is still honoured, and the
 certificate's `ri-j` entry says which was requested and why.
 The RI-K tensor (hybrids, HF with `df_k_aux`) is a second three-index
-tensor beside RI-J's, of `naux * nbf * (nbf + 1) / 2` elements
-(`naux * nbf**2` in a `[gpu]` mode that may build K on the device; RI-J's
-tensor has at most that many, as Schwarz pair screening can drop AO pairs);
-`BasisSet.n_functions(mol)` gives `nbf` and `naux`. For a global hybrid,
-`df_k_aux=""` selects exact four-centre K and builds no RI-K tensor; this is
-also the only way to use `k_builder="direct"` or `"link"` there, since while
-RI-K is active `k_builder` is ignored with a warning. The RI-K tensor is held
+tensor beside RI-J's. `df_j_aux` and `df_k_aux` are independent, so each
+tensor is sized by its own auxiliary basis: RI-K's has
+`naux_K * nbf * (nbf + 1) / 2` elements (`naux_K * nbf**2` in a `[gpu]` mode
+that may build K on the device), RI-J's at most `naux_J * nbf * (nbf + 1) / 2`
+(Schwarz pair screening can drop AO pairs). `BasisSet.n_functions(mol)` gives
+`nbf` and each `naux`. For a global hybrid, `df_k_aux=""` selects exact
+four-centre K and builds no RI-K tensor. While RI-K is active `k_builder` is
+ignored with a warning: `k_builder="direct"` needs `df_k_aux=""`, and
+`"link"` needs `df_j_aux=""` as well, since RI-J replaces the four-centre
+pass LinK builds J and K in. The RI-K tensor is held
 as its packed
 symmetric half; `ri_k_precision="f32"` (opt-in; `scf_ri_k_precision` on
 `run_cdft` and `run_frequencies`) stores it in f32 for another factor of
