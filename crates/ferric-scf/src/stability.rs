@@ -356,9 +356,33 @@ pub struct StabilityConfig {
     /// `davidson_single_root_converges_inside_a_symmetry_block`.
     pub n_block: usize,
     /// Extra safety margin folded into [`StabilityResult::noise_floor`] on top
-    /// of the achieved eigensolver residual. Defaults to `1e-6` Ha: the
-    /// Hessian matvec rebuilds J/K at `integral_thresh`, so eigenvalues below
-    /// roughly this magnitude are not meaningfully resolved.
+    /// of the achieved eigensolver residual. Defaults to `1e-6` Ha: eigenvalues
+    /// below roughly this magnitude are not meaningfully resolved by the
+    /// response builds (integral screening at `integral_thresh`, fitting).
+    ///
+    /// # Which Hessian
+    ///
+    /// The matvec's response J/K come from the SCF's OWN builders, so λ is the
+    /// curvature of the energy the SCF minimised: RI-J / DF-K on a fitted
+    /// route, `DirectJ` / `DirectK` for the direct half of a mixed route, a
+    /// direct four-centre build at `integral_thresh` on an all-exact route
+    /// (and for the K half of RIJCOSX, whose COSX K is not lent; see
+    /// `rhf::lend_scf_jk`). On a fitted route that curvature differs from the
+    /// exact-integral one by the fitting error, which can EXCEED this floor:
+    /// measured at the same converged fitted point (cc-pVDZ,
+    /// def2-universal-jkfit), RHF water internal λ_min 0.350237639 vs
+    /// 0.350241800 with the exact response (4.2e-6 Ha, rel 1.2e-5), external
+    /// 4.9e-6 Ha, UHF NH2 2.0e-6 Ha (rel 2.5e-5).
+    ///
+    /// Near zero this decides the verdict. OH ²Π UHF has an exact zero mode
+    /// (the β hole's rotation about the axis; PySCF λ₀ = −7e-13 with exact
+    /// integrals, asserted MARGINAL by `validation_scf_stability.rs`). On a
+    /// fitted route the fitted Hessian keeps it a zero mode (λ_min 8.8e-10,
+    /// MARGINAL), while the exact response at the same fitted point puts
+    /// 5.6e-6 Ha of curvature on it, which would read STABLE: that curvature
+    /// belongs to neither energy. Pinned by
+    /// `oh_pi_radical_on_a_fitted_route_is_marginal` in
+    /// `tests/mixed_route_second_order_wiring.rs`.
     pub noise_floor: f64,
 }
 
