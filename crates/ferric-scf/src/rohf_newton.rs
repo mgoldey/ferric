@@ -15,13 +15,27 @@
 //! which exactly preserves orthonormality.
 
 use crate::engine_pool::EnginePool;
-use crate::rhf::build_jk_with_pool_homogeneous;
 use crate::screening::SchwarzBounds;
+use crate::uhf_newton::{direct_jk, AoResponse, OccKResponse};
 use ferric_core::parallel::ParallelContext;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ndarray::Array2;
 use ndarray_linalg::Solve;
+use std::cell::Cell;
+
+thread_local! {
+    /// ROHF/ROKS Hessian-vector products computed on this thread (test seam).
+    static HVP_CALLS: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Number of [`hessian_matvec`] calls made on the calling thread so far (test
+/// seam). Direct four-centre builds are counted with the UHF ones, by
+/// [`crate::uhf_newton::direct_response_builds_on_this_thread`].
+#[doc(hidden)]
+pub fn hvp_calls_on_this_thread() -> usize {
+    HVP_CALLS.with(Cell::get)
+}
 
 /// Optional XC kernel callable for ROKS Newton: given (δD_α, δD_β) it returns
 /// the response of the per-spin XC potential (δV_xc^α, δV_xc^β) in AO basis.
@@ -76,6 +90,14 @@ pub struct RohfNewtonInputs<'a> {
     /// `reduce::resolve_band_bytes` — never affects results, only the
     /// live-set/parallel width of the deterministic reduction.
     pub ooc_budget: usize,
+    /// Coulomb response of the Fock's own DF-J (`δJ[δD_α + δD_β]`), as in
+    /// [`crate::uhf_newton::UhfNewtonInputs::j_response`]. `None`: the exact
+    /// four-centre δJ, which is what a direct-J Fock differentiates.
+    pub j_response: Option<&'a AoResponse<'a>>,
+    /// Occupied-factor exchange build of the Fock's own ω = 0 DF-K, as in
+    /// [`crate::uhf_newton::UhfNewtonInputs::k_response`]. `None`: exact δK.
+    /// Ignored on the RSH path and when `k_mix_sr == 0`.
+    pub k_response: Option<&'a OccKResponse<'a>>,
 }
 
 /// One damped-Newton step on ROHF/ROKS MO coefficients.
@@ -137,73 +159,16 @@ pub fn rohf_newton_step(
     let mut k_vo = elemwise_div_neg(&g_vo, &diag_vo);
     let mut k_oc = elemwise_div_neg(&g_oc, &diag_oc);
 
-    // Early-exit if the gradient itself is below tolerance (we're already
-    // at a stationary point — the off-diagonal matvec correction would
-    // only amplify numerical noise).
     let gmax = arr_max_abs(&g_vc)
         .max(arr_max_abs(&g_vo))
         .max(arr_max_abs(&g_oc));
-    let cg_max_iter_effective = if gmax < cg_conv { 0 } else { cg_max_iter };
-
-    // Preconditioned conjugate-gradient solve for H·κ = −g.
-    //
-    // The orbital Hessian is symmetric (and positive-definite near a
-    // minimum), so PCG converges in O(√κ) iterations, vs Jacobi which
-    // diverges whenever the off-diagonal coupling exceeds the |Δε|
-    // diagonal. Preconditioner M = diag(|Δε| + shift); M^{-1} amplifies
-    // long-wavelength modes the way Jacobi does, but inside the
-    // conjugate-direction machinery the divergence is suppressed.
-    //
-    // Standard PCG (Saad, "Iterative Methods", Alg. 9.1) on the packed
-    // (vc, vo, oc) triple.
-    let (h0_vc, h0_vo, h0_oc) = hessian_matvec(ctx, inp, &k_vc, &k_vo, &k_oc, &pool)?;
-    let mut r_vc = sub(&neg(&g_vc), &h0_vc);
-    let mut r_vo = sub(&neg(&g_vo), &h0_vo);
-    let mut r_oc = sub(&neg(&g_oc), &h0_oc);
-
-    let mut z_vc = elemwise_div(&r_vc, &diag_vc);
-    let mut z_vo = elemwise_div(&r_vo, &diag_vo);
-    let mut z_oc = elemwise_div(&r_oc, &diag_oc);
-
-    let mut p_vc = z_vc.clone();
-    let mut p_vo = z_vo.clone();
-    let mut p_oc = z_oc.clone();
-
-    let mut rz_old: f64 = inner(&r_vc, &z_vc) + inner(&r_vo, &z_vo) + inner(&r_oc, &z_oc);
-
-    for _it in 0..cg_max_iter_effective {
-        let max_resid = arr_max_abs(&r_vc)
-            .max(arr_max_abs(&r_vo))
-            .max(arr_max_abs(&r_oc));
-        if max_resid < cg_conv {
-            break;
-        }
-        // Ap = H · p
-        let (ap_vc, ap_vo, ap_oc) = hessian_matvec(ctx, inp, &p_vc, &p_vo, &p_oc, &pool)?;
-        let p_ap: f64 = inner(&p_vc, &ap_vc) + inner(&p_vo, &ap_vo) + inner(&p_oc, &ap_oc);
-        if p_ap.abs() < 1e-30 {
-            break;
-        }
-        let alpha = rz_old / p_ap;
-        // κ ← κ + α p
-        k_vc.zip_mut_with(&p_vc, |k, &v| *k += alpha * v);
-        k_vo.zip_mut_with(&p_vo, |k, &v| *k += alpha * v);
-        k_oc.zip_mut_with(&p_oc, |k, &v| *k += alpha * v);
-        // r ← r − α (A p)
-        r_vc.zip_mut_with(&ap_vc, |r, &v| *r -= alpha * v);
-        r_vo.zip_mut_with(&ap_vo, |r, &v| *r -= alpha * v);
-        r_oc.zip_mut_with(&ap_oc, |r, &v| *r -= alpha * v);
-        // z = M^{-1} r
-        z_vc = elemwise_div(&r_vc, &diag_vc);
-        z_vo = elemwise_div(&r_vo, &diag_vo);
-        z_oc = elemwise_div(&r_oc, &diag_oc);
-        let rz_new: f64 = inner(&r_vc, &z_vc) + inner(&r_vo, &z_vo) + inner(&r_oc, &z_oc);
-        let beta = rz_new / rz_old;
-        rz_old = rz_new;
-        // p ← z + β p
-        p_vc.zip_mut_with(&z_vc, |p, &v| *p = v + beta * *p);
-        p_vo.zip_mut_with(&z_vo, |p, &v| *p = v + beta * *p);
-        p_oc.zip_mut_with(&z_oc, |p, &v| *p = v + beta * *p);
+    // Below tolerance the step is κ⁰ and the CG residual (whose first term is
+    // an HVP) would never be read, so no HVP is computed (as `rhf_newton_step`).
+    if gmax >= cg_conv {
+        let k = (&mut k_vc, &mut k_vo, &mut k_oc);
+        let g = (&g_vc, &g_vo, &g_oc);
+        let diag = (&diag_vc, &diag_vo, &diag_oc);
+        pcg_refine(ctx, inp, &pool, g, diag, k, cg_max_iter, cg_conv)?;
     }
 
     // Trust-radius clip.
@@ -263,6 +228,83 @@ pub fn rohf_newton_step(
     Ok((c_new, kmax))
 }
 
+/// Preconditioned conjugate-gradient refinement of `(κ_vc, κ_vo, κ_oc)` (on
+/// entry the diagonal guess κ⁰) towards H·κ = −g.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn pcg_refine(
+    ctx: &ParallelContext,
+    inp: &RohfNewtonInputs,
+    pool: &EnginePool,
+    (g_vc, g_vo, g_oc): (&Array2<f64>, &Array2<f64>, &Array2<f64>),
+    (diag_vc, diag_vo, diag_oc): (&Array2<f64>, &Array2<f64>, &Array2<f64>),
+    (k_vc, k_vo, k_oc): (&mut Array2<f64>, &mut Array2<f64>, &mut Array2<f64>),
+    cg_max_iter: usize,
+    cg_conv: f64,
+) -> Result<(), FerricError> {
+    // Preconditioned conjugate-gradient solve for H·κ = −g.
+    //
+    // The orbital Hessian is symmetric (and positive-definite near a
+    // minimum), so PCG converges in O(√κ) iterations, vs Jacobi which
+    // diverges whenever the off-diagonal coupling exceeds the |Δε|
+    // diagonal. Preconditioner M = diag(|Δε| + shift); M^{-1} amplifies
+    // long-wavelength modes the way Jacobi does, but inside the
+    // conjugate-direction machinery the divergence is suppressed.
+    //
+    // Standard PCG (Saad, "Iterative Methods", Alg. 9.1) on the packed
+    // (vc, vo, oc) triple.
+    let (h0_vc, h0_vo, h0_oc) = hessian_matvec(ctx, inp, k_vc, k_vo, k_oc, pool)?;
+    let mut r_vc = sub(&neg(g_vc), &h0_vc);
+    let mut r_vo = sub(&neg(g_vo), &h0_vo);
+    let mut r_oc = sub(&neg(g_oc), &h0_oc);
+
+    let mut z_vc = elemwise_div(&r_vc, diag_vc);
+    let mut z_vo = elemwise_div(&r_vo, diag_vo);
+    let mut z_oc = elemwise_div(&r_oc, diag_oc);
+
+    let mut p_vc = z_vc.clone();
+    let mut p_vo = z_vo.clone();
+    let mut p_oc = z_oc.clone();
+
+    let mut rz_old: f64 = inner(&r_vc, &z_vc) + inner(&r_vo, &z_vo) + inner(&r_oc, &z_oc);
+
+    for _it in 0..cg_max_iter {
+        let max_resid = arr_max_abs(&r_vc)
+            .max(arr_max_abs(&r_vo))
+            .max(arr_max_abs(&r_oc));
+        if max_resid < cg_conv {
+            break;
+        }
+        // Ap = H · p
+        let (ap_vc, ap_vo, ap_oc) = hessian_matvec(ctx, inp, &p_vc, &p_vo, &p_oc, pool)?;
+        let p_ap: f64 = inner(&p_vc, &ap_vc) + inner(&p_vo, &ap_vo) + inner(&p_oc, &ap_oc);
+        if p_ap.abs() < 1e-30 {
+            break;
+        }
+        let alpha = rz_old / p_ap;
+        // κ ← κ + α p
+        k_vc.zip_mut_with(&p_vc, |k, &v| *k += alpha * v);
+        k_vo.zip_mut_with(&p_vo, |k, &v| *k += alpha * v);
+        k_oc.zip_mut_with(&p_oc, |k, &v| *k += alpha * v);
+        // r ← r − α (A p)
+        r_vc.zip_mut_with(&ap_vc, |r, &v| *r -= alpha * v);
+        r_vo.zip_mut_with(&ap_vo, |r, &v| *r -= alpha * v);
+        r_oc.zip_mut_with(&ap_oc, |r, &v| *r -= alpha * v);
+        // z = M^{-1} r
+        z_vc = elemwise_div(&r_vc, diag_vc);
+        z_vo = elemwise_div(&r_vo, diag_vo);
+        z_oc = elemwise_div(&r_oc, diag_oc);
+        let rz_new: f64 = inner(&r_vc, &z_vc) + inner(&r_vo, &z_vo) + inner(&r_oc, &z_oc);
+        let beta = rz_new / rz_old;
+        rz_old = rz_new;
+        // p ← z + β p
+        p_vc.zip_mut_with(&z_vc, |p, &v| *p = v + beta * *p);
+        p_vo.zip_mut_with(&z_vo, |p, &v| *p = v + beta * *p);
+        p_oc.zip_mut_with(&z_oc, |p, &v| *p = v + beta * *p);
+    }
+
+    Ok(())
+}
+
 /// Compute H · κ for the three κ-blocks.
 ///
 /// Build α/β AO density perturbations δD_α, δD_β from κ, build J/K on those
@@ -320,6 +362,7 @@ pub fn hessian_matvec(
     k_oc: &Array2<f64>,
     pool: &EnginePool,
 ) -> Result<(Array2<f64>, Array2<f64>, Array2<f64>), FerricError> {
+    HVP_CALLS.with(|c| c.set(c.get() + 1));
     let n = inp.c.nrows();
     let nc = inp.nocc_double;
     let no = inp.nocc_open;
@@ -384,48 +427,8 @@ pub fn hessian_matvec(
     let dd_a_ao = inp.c.dot(&dd_a_mo).dot(&inp.c.t());
     let dd_b_ao = inp.c.dot(&dd_b_mo).dot(&inp.c.t());
 
-    // δJ from δD_total = δD_α + δD_β.
-    let band_bytes = crate::reduce::resolve_band_bytes(inp.ooc_budget);
-    let dd_tot = &dd_a_ao + &dd_b_ao;
-    let mut dj = Array2::<f64>::zeros((n, n));
-    let mut dk_dum = Array2::<f64>::zeros((n, n)); // discarded — we want J only here
-                                                   // Build J on δD_total. We re-use build_jk but only keep J; K is rebuilt per-spin below.
-    build_jk_with_pool_homogeneous(
-        ctx,
-        inp.prep,
-        inp.bounds,
-        inp.thresh,
-        &dd_tot,
-        &mut dj,
-        &mut dk_dum,
-        pool,
-        band_bytes,
-    )?;
-
-    // δK per spin. The RSH branch builds c_SR·δK[erfc(ω)] + c_LR·δK[erf(ω)]
-    // from the Fock's own DF-K fitters (per-spin Fock ⇒ no extra factor, as in
-    // `solve_rohf`'s `subtract_rsh_exchange` calls); the ω = 0 branch is the
-    // untouched pre-#314 code, so a non-RSH run is bit-identical.
-    let (mut df_a, mut df_b) = if let Some(rsh) = inp.rsh {
-        let dk_a = rsh.exchange_response(&dd_a_ao)?;
-        let dk_b = rsh.exchange_response(&dd_b_ao)?;
-        (&dj - &dk_a, &dj - &dk_b)
-    } else {
-        let mut dk_a = Array2::<f64>::zeros((n, n));
-        let mut dk_b = Array2::<f64>::zeros((n, n));
-        let mut j_dum = Array2::<f64>::zeros((n, n));
-        build_jk_with_pool_homogeneous(
-            ctx, inp.prep, inp.bounds, inp.thresh, &dd_a_ao, &mut j_dum, &mut dk_a, pool,
-            band_bytes,
-        )?;
-        j_dum.fill(0.0);
-        build_jk_with_pool_homogeneous(
-            ctx, inp.prep, inp.bounds, inp.thresh, &dd_b_ao, &mut j_dum, &mut dk_b, pool,
-            band_bytes,
-        )?;
-        let c_k = inp.k_mix_sr;
-        (&dj - &(c_k * &dk_a), &dj - &(c_k * &dk_b))
-    };
+    let (mut df_a, mut df_b) =
+        response_fock(ctx, inp, pool, (k_vc, k_vo, k_oc), (&dd_a_ao, &dd_b_ao))?;
 
     if let Some(fxc) = inp.fxc {
         let (dvxc_a, dvxc_b) = fxc(&dd_a_ao, &dd_b_ao);
@@ -467,6 +470,70 @@ pub fn hessian_matvec(
     }
 
     Ok((h_vc, h_vo, h_oc))
+}
+
+/// `(δF_α, δF_β)` without the XC kernel: `δJ[δD_α + δD_β] − δK_σ` per spin,
+/// with the same builder choice as the UHF matvec (`uhf_newton::response_fock`):
+/// fitted δJ when `inp.j_response` is lent; RSH pair when `inp.rsh` is set;
+/// otherwise δK only when `k_mix_sr != 0`, from the occupied-factor DF-K when
+/// lent, else direct. For the fitted K each spin's δD_σ is written as
+/// `Y·Xᵀ + X·Yᵀ` over that spin's occupied/unoccupied split:
+/// α: occ = closed+open, κ_α = [κ_vc | κ_vo] (virt rows); β: occ = closed,
+/// κ_β = [κ_oc ; κ_vc] (open rows then virt rows).
+#[allow(clippy::type_complexity)]
+fn response_fock(
+    ctx: &ParallelContext,
+    inp: &RohfNewtonInputs,
+    pool: &EnginePool,
+    (k_vc, k_vo, k_oc): (&Array2<f64>, &Array2<f64>, &Array2<f64>),
+    (dd_a_ao, dd_b_ao): (&Array2<f64>, &Array2<f64>),
+) -> Result<(Array2<f64>, Array2<f64>), FerricError> {
+    let direct = |dd: &Array2<f64>| {
+        direct_jk(
+            ctx,
+            inp.prep,
+            inp.bounds,
+            inp.thresh,
+            inp.ooc_budget,
+            pool,
+            dd,
+        )
+    };
+    let dd_tot = dd_a_ao + dd_b_ao;
+    let dj = match inp.j_response {
+        Some(jr) => jr(&dd_tot)?,
+        None => direct(&dd_tot)?.0,
+    };
+    // The RSH branch builds c_SR·δK[erfc(ω)] + c_LR·δK[erf(ω)] from the Fock's
+    // own DF-K fitters (per-spin Fock ⇒ no extra factor, as in `solve_rohf`'s
+    // `subtract_rsh_exchange` calls).
+    if let Some(rsh) = inp.rsh {
+        let dk_a = rsh.exchange_response(dd_a_ao)?;
+        let dk_b = rsh.exchange_response(dd_b_ao)?;
+        return Ok((&dj - &dk_a, &dj - &dk_b));
+    }
+    let c_k = inp.k_mix_sr;
+    if c_k == 0.0 {
+        return Ok((dj.clone(), dj));
+    }
+    let (dk_a, dk_b) = match inp.k_response {
+        Some(kr) => {
+            let (nc, no) = (inp.nocc_double, inp.nocc_open);
+            let k_a = ndarray::concatenate![ndarray::Axis(1), *k_vc, *k_vo];
+            let k_b = ndarray::concatenate![ndarray::Axis(0), *k_oc, *k_vc];
+            let mut k_occ = |c: &Array2<f64>, out: &mut Array2<f64>| -> Result<(), FerricError> {
+                *out = kr(c)?;
+                Ok(())
+            };
+            let mut spin = |k_ov: &Array2<f64>, nocc: usize| {
+                crate::rhf_newton::occ_pair_response_k(&mut k_occ, inp.c, k_ov, nocc)
+                    .map(|k| 0.5 * k)
+            };
+            (spin(&k_a, nc + no)?, spin(&k_b, nc)?)
+        }
+        None => (direct(dd_a_ao)?.1, direct(dd_b_ao)?.1),
+    };
+    Ok((&dj - &(c_k * &dk_a), &dj - &(c_k * &dk_b)))
 }
 
 // ---- block helpers ----

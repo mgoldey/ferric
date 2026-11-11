@@ -92,6 +92,8 @@ fn rohf_newton_step_at_stationary_point_is_noop() {
         fxc: None,
         thresh: 1e-12,
         ooc_budget: ferric_core::memory::resolve_budget_bytes(None),
+        j_response: None,
+        k_response: None,
     };
 
     // Sanity-check the gradient norm at the converged point.

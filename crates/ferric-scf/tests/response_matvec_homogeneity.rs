@@ -238,6 +238,8 @@ fn rohf_matvec_is_homogeneous() {
         fxc: None,
         thresh: RhfConfig::default().integral_thresh,
         ooc_budget: ferric_core::memory::resolve_budget_bytes(None),
+        j_response: None,
+        k_response: None,
     };
     let pool = EnginePool::new(bounds.op, &prep, 1e-14).unwrap();
     let nv = c.ncols() - nc - no;

@@ -2260,14 +2260,17 @@ fn solve_uhf_impl(
 /// (ω = 0) K builders, so the orbital Hessian differentiates the energy the
 /// SCF evaluates (`UhfNewtonInputs::j_response`). `None` for a builder that
 /// is not density-fitted: the matvec's exact four-centre response is then the
-/// Fock's own kernel.
+/// Fock's own kernel. The K hook is the occupied-factor build
+/// ([`crate::uhf_newton::OccKResponse`]), so a per-spin response costs two
+/// `nocc`-column DF-K builds rather than one `O(naux·n³)` density build.
+/// Shared by the UHF/UKS and ROHF/ROKS second-order steps.
 #[allow(clippy::type_complexity)]
-fn fitted_responses<'b, 'e: 'b>(
+pub(crate) fn fitted_responses<'b, 'e: 'b>(
     df_j: Option<&'b mut crate::split_rij::RiJ<'e>>,
     df_k: Option<&'b mut crate::df_k::DfK<'e>>,
 ) -> (
     Option<Box<crate::uhf_newton::AoResponse<'b>>>,
-    Option<Box<crate::uhf_newton::AoResponse<'b>>>,
+    Option<Box<crate::uhf_newton::OccKResponse<'b>>>,
 ) {
     let j = df_j.map(|b| {
         let cell = std::cell::RefCell::new(b);
@@ -2279,11 +2282,12 @@ fn fitted_responses<'b, 'e: 'b>(
     });
     let k = df_k.map(|b| {
         let cell = std::cell::RefCell::new(b);
-        Box::new(move |dd: &Array2<f64>| {
-            let mut out = Array2::<f64>::zeros(dd.raw_dim());
-            KBuilder::build(&mut **cell.borrow_mut(), dd, &mut out)?;
+        Box::new(move |c_f: &Array2<f64>| {
+            let n = c_f.nrows();
+            let mut out = Array2::<f64>::zeros((n, n));
+            KBuilder::build_from_occ(&mut **cell.borrow_mut(), c_f, &mut out)?;
             Ok(out)
-        }) as Box<crate::uhf_newton::AoResponse<'b>>
+        }) as Box<crate::uhf_newton::OccKResponse<'b>>
     });
     (j, k)
 }
