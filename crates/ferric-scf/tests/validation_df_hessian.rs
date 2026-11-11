@@ -219,6 +219,9 @@ fn must_miss(ctx: &str, what: &str, got: &Array2<f64>, want: &Array2<f64>, bar: 
 
 fn scf_config(df_j: Option<&str>) -> RhfConfig {
     RhfConfig {
+        // The PySCF references fit J in f64. The f32 RI-J default moves the
+        // energy by 1e-7..1e-6 Ha, above this test's bar.
+        ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
         max_iter: 500,
         energy_conv: 1e-12,
         density_conv: 1e-10,
