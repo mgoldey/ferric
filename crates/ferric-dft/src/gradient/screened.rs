@@ -392,9 +392,18 @@ fn fused_xc_reductions<const ABS: bool>(
         c.as_slice().expect("standard layout"),
     );
     let row = |plane: usize, mu: usize| (plane * nact + mu) * nb;
-    let t_rho: Vec<f64> = co.t_rho.iter().map(|&v| ab(v)).collect();
-    let cb: [Vec<f64>; 3] =
-        std::array::from_fn(|b| c[b * nb..(b + 1) * nb].iter().map(|&v| ab(v)).collect());
+    // ABS = false (production) borrows the coefficients; only the test-side
+    // budget needs absolute-value copies.
+    fn abs_or_borrow<const ABS: bool>(v: &[f64]) -> std::borrow::Cow<'_, [f64]> {
+        if ABS {
+            std::borrow::Cow::Owned(v.iter().map(|x| x.abs()).collect())
+        } else {
+            std::borrow::Cow::Borrowed(v)
+        }
+    }
+    let t_rho = abs_or_borrow::<ABS>(co.t_rho);
+    let cb: [std::borrow::Cow<'_, [f64]>; 3] =
+        std::array::from_fn(|b| abs_or_borrow::<ABS>(&c[b * nb..(b + 1) * nb]));
     let half_tau: Option<Vec<f64>> = co.t_tau.map(|t| t.iter().map(|&v| 0.5 * ab(v)).collect());
 
     let mut rows: [Vec<f64>; 3] = std::array::from_fn(|_| vec![0.0_f64; nact]);
@@ -518,6 +527,12 @@ fn add_weight_response_k<const ABS: bool>(grad: &mut Array2<f64>, w1: &[&[[f64; 
 
 /// Which per-batch kernel a call runs. Production is always `Fused`; the other
 /// two exist for the old-vs-new anchor in this module's tests.
+///
+/// `Legacy` and `Budget` change only the GGA / meta-GGA tails (closed shell
+/// and UKS). The closed-shell LDA branch returns early with the ordinary
+/// signed values under every kernel, so a `Budget` run on an LDA path is NOT
+/// a `Σ|terms|` (its `t > 0` check would fail); the tests use GGA and
+/// meta-GGA only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum BatchKernel {
     /// [`fused_xc_reductions`]: one integrand, two reductions.
@@ -1251,19 +1266,32 @@ mod legacy {
 ///   differs. Each component is then within `2·γ_d·T` of the other, where `T`
 ///   is the component's `Σ|terms|` ([`BatchKernel::Budget`]: the fused
 ///   expression in absolute values, both reductions, plus the weight response)
-///   and `d` bounds the depth of either evaluation tree: `P = 8` rounded
-///   products per term (`w·2·v_σ·∂ρ·2·∂χ·Dχ` is the longest), the per-row
-///   `nb ≤ DEFAULT_MAX_BATCH_PTS` fold plus its 7 (+3 τ) row-dot partials,
-///   the per-column μ fold (`≤ nbf`) plus 3 `Σ_b` terms, the scatter into an
-///   atom over μ (`≤ nbf`), the batch's grid loop (`≤ nb`), the batches of a
-///   group (`≤ npts`, a loose cap) and the `≤ GRAD_TARGET_GROUPS` groups.
+///   and `d` bounds the depth of either evaluation tree, every stage
+///   counted (the legacy tree is the deeper one):
+///   - `P = 8` rounded products per term (`w·2·v_σ·∂ρ·2·∂χ·Dχ` is the
+///     longest);
+///   - the per-row fold over the batch's points (`nb ≤ DEFAULT_MAX_BATCH_PTS`)
+///     plus its 7 (+3 τ) row-dot partials;
+///   - the per-column μ fold (`≤ nbf`, two `col_dot`s added) plus 3 `Σ_b`
+///     terms;
+///   - into one gradient component per batch: two scatter passes over μ
+///     (AO partials and τ partials, `≤ 2·nbf` — the functions of one atom
+///     appear once per pass), the weight-response loop over the batch's
+///     points (`≤ nb`) and the grid loop with up to 3 accumulations per point
+///     (ρ, σ, τ: `≤ 3·nb`);
+///   - the batches of a group (`≤ npts`, a loose cap) and the
+///     `≤ GRAD_TARGET_GROUPS` groups.
 ///   Expected observed: ~1e-15..1e-14 Ha/Bohr; the bound is ~1e-11 relative to
-///   T.
+///   T, about 5e4× the observed |Δ|. It therefore catches whole-term errors
+///   (a dropped or mis-weighted term, 1e-6 and up), not errors below ~1e-9.
 /// * Broken (a reduction that drops the weight, a lost factor 2 or ½, a τ
 ///   term on the wrong axis, a floor applied to the wrong density): a miss of
 ///   a whole gradient term, 1e-6..1e-1 — orders above the bound.
 ///
 /// Mutations seen to fail (applied, run, reverted; see the PR report):
+/// `row_out[mu] = acc` → `row_out[mu] = 0.0` in `fused_xc_reductions` (row
+/// reduction only; columns intact) fails all six tests (five SCF cases at
+/// |Δ| 0.38..0.54, and the synthetic floor-mismatch test);
 /// grid scatter `2.0 *` → `1.0 *` in `closed_tail` fails the three water
 /// cases (|Δ| ~0.3 vs bound ~5e-10), in `open_tail` both NH2 cases; the τ
 /// `0.5 *` in `fused_xc_reductions` → `1.0 *` fails the two SCAN cases only;
@@ -1346,12 +1374,14 @@ mod fused_vs_legacy_tests {
         );
         let npts = crate::grid::build_atomic_grid(&mol, &grid).len();
         let nbf = d_a.nrows();
+        let nb = DEFAULT_MAX_BATCH_PTS;
         let depth = PRODUCT_ROUNDINGS
-            + (DEFAULT_MAX_BATCH_PTS + 10)
-            + (nbf + 3)
-            + nbf
-            + DEFAULT_MAX_BATCH_PTS
-            + npts
+            + (nb + 10) // row fold + row-dot partials
+            + (nbf + 3) // column fold + Σ_b
+            + 2 * nbf // AO + τ scatter passes
+            + nb // weight-response loop
+            + 3 * nb // grid loop, ≤ 3 accumulations per point
+            + npts // batches of a group (loose cap)
             + GRAD_TARGET_GROUPS;
         let g = gamma(depth);
         let mut worst = 0.0_f64;
