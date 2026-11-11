@@ -4,6 +4,11 @@
 
 use ferric_integrals::{libint_g12_max_am, libint_linkage, libint_max_am, libint_max_deriv_order};
 
+#[allow(dead_code)]
+mod cxx {
+    include!("../build_support/cxx_target.rs");
+}
+
 /// `# define NAME <int>` from the compiled-against params header, if present.
 fn header_macro(header: &str, name: &str) -> Option<i32> {
     header.lines().find_map(|line| {
@@ -66,10 +71,27 @@ fn g12_and_linkage_match_the_build() {
     let expected = header_macro(&header, "LIBINT2_SUPPORT_G12")
         .and_then(|_| header_macro(&header, "LIBINT2_MAX_AM_R12kG12"));
     assert_eq!(libint_g12_max_am(), expected);
+    // From the files under the root, by the per-target rule build.rs uses
+    // (build_support/cxx_target.rs, unit-tested in cxx_target_flags.rs):
+    // libint2.a, or int2.lib without a bin/int2.dll under MSVC.
     let root = env!("FERRIC_LIBINT_ROOT");
-    let has_static = std::path::Path::new(&format!("{root}/lib/libint2.a")).exists();
+    let target = cxx::CxxTarget {
+        os: std::env::consts::OS,
+        env: if cfg!(target_env = "msvc") {
+            "msvc"
+        } else if cfg!(target_env = "gnu") {
+            "gnu"
+        } else {
+            ""
+        },
+    };
+    let exists = |rel: String| std::path::Path::new(&format!("{root}/{rel}")).exists();
+    let is_static = target.libint_is_static(
+        exists(format!("lib/{}", target.libint_static_archive())),
+        exists("bin/int2.dll".to_string()),
+    );
     assert_eq!(
         libint_linkage(),
-        if has_static { "static" } else { "shared" }
+        if is_static { "static" } else { "shared" }
     );
 }

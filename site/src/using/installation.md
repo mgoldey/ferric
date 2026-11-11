@@ -9,15 +9,25 @@ There are two ways in. Most people want the first.
 
 ## Fastest: the prebuilt wheel
 
-Wheels are published to PyPI for Linux x86_64 (`manylinux_2_28`),
-CPython 3.10–3.13, and for no other platform:
+Wheels are built for CPython 3.10–3.13 on Linux x86_64 (`manylinux_2_28`),
+macOS arm64 (macOS 11 or later) and Windows x86_64. PyPI releases up to
+0.1.0rc11 carry the Linux wheels only; later releases carry all three.
 
 | Platform | Wheel | Source build |
 |---|---|---|
-| Linux x86_64, CPython 3.10–3.13 | yes | yes (the only tested platform) |
-| Linux aarch64 | no | not tested |
-| macOS (x86_64, arm64) | not yet (wanted; no wheel is built) | not tested |
-| Windows | no | not supported: `build.rs` hardcodes Unix paths and links Unix static archives |
+| Linux x86_64 | yes | yes (the reference platform) |
+| macOS arm64 (Apple Silicon) | yes | tested in CI (platform-tests) |
+| Windows x86_64 | yes | tested in CI (platform-tests; clang-cl, not cl.exe) |
+| Linux aarch64, macOS x86_64 | no | not tested |
+
+**CPU requirement (x86_64 wheels).** The Linux and Windows wheels' OpenBLAS is
+built for one fixed kernel set, Haswell, so they need a CPU with AVX2 and FMA:
+Intel Haswell (2013) or later, AMD Excavator / Zen or later. On an older x86-64
+CPU they stop with an illegal-instruction error. The wheels do
+not use OpenBLAS's runtime CPU dispatch (`DYNAMIC_ARCH`), which once gave wrong
+numbers on a Zen 4 CI runner. On such a CPU, build from source against an
+OpenBLAS built for it. The macOS wheel needs Apple Silicon (OpenBLAS target
+VORTEX).
 
 libint2 and libxc are statically linked into the extension,
 and OpenBLAS ships inside the wheel as a bundled shared library, so nothing

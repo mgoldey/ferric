@@ -383,9 +383,11 @@ impl Checkpoint {
         Ok(ck)
     }
 
-    /// Write atomically: same-directory temp file, `sync_all`, rename, fsync of
-    /// the directory. At every instant `path` holds the old complete file or the
-    /// new complete file. A kill can leave a `.<name>.tmp.<pid>.<seq>` sibling
+    /// Write atomically: same-directory temp file, `sync_all`, rename, and on
+    /// Unix an fsync of the directory. Windows has no directory fsync, so there a
+    /// power loss right after the rename may leave the previous complete file
+    /// (the rename itself is not made durable). At every instant `path` holds
+    /// the old complete file or the new complete file. A kill can leave a `.<name>.tmp.<pid>.<seq>` sibling
     /// behind; nothing reads those, and the next write to `path` removes any no
     /// live writer holds locked. A symlink at `path` is refused, because the
     /// rename would replace the link and leave its target stale. Returns the
