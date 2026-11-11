@@ -1603,7 +1603,7 @@ fn solve_rohf_impl(
         mon.note_energy(energy);
 
         // Pick update strategy. Newton step (if enabled and below trigger)
-        // solves H·κ = −g by PCG from the CURRENT orbitals `c` (H = the exact
+        // solves H·κ = −g by PCG from the current orbitals `c` (H = the exact
         // ROHF/ROKS orbital Hessian, `rohf_newton::hessian_matvec`; the
         // per-spin diagonal Fock gap is only its preconditioner), then rotates
         // C via the Cayley unitary.
@@ -1666,7 +1666,7 @@ fn solve_rohf_impl(
             && (xc_contrib.is_none() || xc_supports_newton_fxc)
             && k_mix.omega == 0.0;
         if use_ah {
-            // Step from the CURRENT orbitals `c`, whose densities built f_a/f_b
+            // Step from the current orbitals `c`, whose densities built f_a/f_b
             // (see the Newton branch below for why not `eig(F_eff)`).
 
             // The f_xc response on the SCF's own screened grid (dense fallback).
@@ -1737,14 +1737,13 @@ fn solve_rohf_impl(
             && err_max < config.newton_trigger
             && (xc_contrib.is_none() || xc_supports_newton_fxc);
         if use_newton {
-            // Step from the CURRENT orbitals `c` — the determinant whose
+            // Step from the current orbitals `c`, the determinant whose
             // densities built f_a/f_b, so `f_a_mo`/`f_b_mo` (above) carry the
-            // true gradient — as the UHF/RHF Newton steps do. Until 2026-11
-            // this branch (and AH) replaced C by `eig(F_eff)` of the SAME
-            // old-density Fock and stepped from there: in that basis the
-            // gradient is ≈ 0 by construction (|g| ~25x too small on NH2
-            // B3LYP), so each "Newton" step was an undamped Roothaan step,
-            // which limit-cycles on these radicals. Occupation labels need no
+            // true gradient, as the UHF/RHF Newton steps do. Replacing C by
+            // `eig(F_eff)` of the same old-density Fock and stepping from
+            // there would put the gradient at ≈ 0 by construction (|g| ~25x
+            // too small on NH2 B3LYP), so each "Newton" step would be an
+            // undamped Roothaan step, which limit-cycles on these radicals. Occupation labels need no
             // `guard.relabel`: `c` already carries the iterate's own closed /
             // open / virtual labels, which the step only rotates.
 

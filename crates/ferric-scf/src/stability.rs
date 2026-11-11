@@ -676,11 +676,11 @@ pub struct LowestEigenpair {
 /// ferric-scf) and takes a *projected-matrix* closure shaped for the
 /// dielectric operator rather than a plain `Hv`; `ferric_ci::davidson` lives
 /// in a crate that depends on this one. (ferric-scf's own projected-matrix
-/// copy, `davidson_local`, was removed in 2026-11: its residual was formed
-/// inside the subspace, identically zero, and the ROHF AH step that used it
-/// never moved; the AH step now calls this function.) What is genuinely new here is that the matvec is
-/// **fallible** — a J/K build inside the orbital Hessian can fail, and that
-/// must propagate as an `Err`, never be unwrapped inside the iteration.
+/// copy, a `davidson_local`, would not do: its residual is formed inside the
+/// subspace and is identically zero, so an ROHF AH step using it never moves;
+/// the AH step calls this function.) The matvec is **fallible**: a J/K build
+/// inside the orbital Hessian can fail, and that must propagate as an `Err`,
+/// never be unwrapped inside the iteration.
 ///
 /// The returned pair is variational (Rayleigh–Ritz over the built subspace),
 /// so `eigenvalue` is an upper bound on the true λ_min even when `converged`

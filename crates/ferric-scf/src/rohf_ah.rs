@@ -83,9 +83,9 @@ pub struct RohfAhInputs<'a, 'b> {
 /// exactly **2 ×** `gradient_blocks` in every block (FD-measured in
 /// `reference/pbc/pbc_rohf_newton.py`, FINDINGS "Iteration 24"; pinned by
 /// `crate::rohf_trah`'s tests). The Hessian used here,
-/// `rohf_newton::hessian_matvec`, is now the exact orbital Hessian too (half
+/// `rohf_newton::hessian_matvec`, is the exact orbital Hessian (half
 /// scale; the per-spin diagonal Fock gap survives only as the Davidson
-/// preconditioner), but this is still a clipped AH step with no ρ test.
+/// preconditioner), but this is a clipped AH step with no ρ test.
 /// [`crate::rohf_trah`] is the ROHF/ROKS trust region on the exact gradient
 /// and Hessian; it currently serves the injected (periodic) path. This
 /// function remains the clipped AH step of the molecular solver, taken from
@@ -149,13 +149,11 @@ pub fn rohf_ah_step(
 
     // 2. The augmented matvec on full vectors `[v₀, κ] ↦ [g·κ, g v₀ + H κ]`.
     //
-    // Until 2026-11 this went through `davidson_local::run_davidson_seeded`,
-    // whose closure returns only the PROJECTED matrix VᵀAV; its residual
-    // V(VᵀAV)y − λVy is zero inside the subspace by construction, so it
-    // "converged" on the seed [1, 0, …] and every AH step was κ = 0. The
-    // branch made progress only because `solve_rohf` rediagonalised F_eff
-    // (a Roothaan step) before calling it. `stability::davidson_lowest`
-    // forms the true residual from Hv.
+    // `stability::davidson_lowest` forms the true residual from Hv. A
+    // projected-matrix Davidson (closure returning only VᵀAV) would not
+    // work here: its residual V(VᵀAV)y − λVy is zero inside the subspace by
+    // construction, so it "converges" on the seed [1, 0, …] and every AH
+    // step is κ = 0.
     let aug_matvec = |v: &[f64]| -> Result<Vec<f64>, FerricError> {
         let v_first = v[0];
         let mut k_vc_local = Array2::<f64>::zeros((nvirt, nc));

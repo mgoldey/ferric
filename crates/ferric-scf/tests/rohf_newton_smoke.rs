@@ -291,8 +291,8 @@ fn roks_h2_triplet_pbe_gga_fxc_newton_engages_and_matches_diis() {
 }
 
 /// Saddle-point fixture: OH/6-31G ROHF from the hcore guess with the
-/// occupation guard OFF converges (DIIS) to the σ-hole stationary point
-/// E = −75.2037249529, which is a SADDLE of the ROHF energy: the exact
+/// occupation guard off converges (DIIS) to the σ-hole stationary point
+/// E = −75.2037249529, which is a saddle of the ROHF energy: the exact
 /// half-Hessian's λ_min there is −0.156 (measured 2026-11-11; the ground state
 /// at −75.3618462891 has λ_min ≈ 0, the flat π-hole orientation mode).
 struct Saddle {
@@ -539,7 +539,7 @@ fn assert_escapes(s: &Saddle, r: &Escape) {
 /// displacement.**
 ///
 /// From the σ-hole saddle displaced by ε = 0.05 along its negative-curvature
-/// mode, the exact Newton step −H⁻¹g points BACK to the saddle (uphill), so an
+/// mode, the exact Newton step −H⁻¹g points back to the saddle (uphill), so an
 /// unguarded PCG would return there. With the guard, PCG stops at the first
 /// pᵀAp < −1e-3·|p|² and steps along ±p (downhill on the model) to the
 /// trust box.
@@ -554,12 +554,12 @@ fn assert_escapes(s: &Saddle, r: &Escape) {
 /// MEASURED 2026-11-11: saddle −75.2037249529, displaced −75.2043419012
 /// (λ_min −0.156). Step along p: one step −75.2092032194 (one truncation),
 /// full SCF −75.3618462891 (the ground state) in 20 iterations, 120 HVPs.
-/// Keeping the current iterate on truncation instead (the earlier variant):
+/// Keeping the current iterate on truncation instead:
 /// one step −75.2048250666, full SCF the ground state in 21 iterations,
 /// 127 HVPs.
-/// Mutations (applied, run, reverted): guard removed — the step returns to
+/// Mutations (applied, run, reverted): guard removed: the step returns to
 /// −75.2037249233 and the full SCF converges to the saddle, −75.2037249529;
-/// `newton_trigger = 0` in (b) — DIIS alone converges to the saddle
+/// `newton_trigger = 0` in (b): DIIS alone converges to the saddle
 /// (−75.2037249529, 19 iterations, 0 HVPs), failing the HVP and energy
 /// checks.
 #[test]
@@ -569,7 +569,7 @@ fn rohf_newton_does_not_converge_to_a_saddle() {
     assert_escapes(&s, &r);
 }
 
-/// **Newton escapes a saddle from a SMALL displacement at better than
+/// **Newton escapes a saddle from a small displacement at better than
 /// gradient-descent speed.**
 ///
 /// At ε = 1e-3 the gradient is O(|λ|ε) and the PCG preconditioned guess
@@ -588,7 +588,7 @@ fn rohf_newton_does_not_converge_to_a_saddle() {
 /// MEASURED 2026-11-11: displaced −75.2037252002 (2.47e-7 below the
 /// saddle); one step along p −75.2062199840 (a 2.49e-3 drop, 1e4× the
 /// bar), full SCF the ground state in 22 iterations, 124 HVPs.
-/// Mutation (keep the current iterate on truncation, the earlier variant;
+/// Mutation (keep the current iterate on truncation;
 /// applied, run, reverted): one step drops 1.95e-7 < 2.47e-7 (ε′/ε ≈ 1.34)
 /// and fails; its full SCF still reaches the ground state, in 26 iterations,
 /// 129 HVPs.
@@ -608,7 +608,7 @@ fn rohf_newton_escapes_a_saddle_from_a_small_displacement() {
 
 /// **A tight `density_conv` is honoured by the Newton path.** Below its PCG
 /// tolerance the Newton step is zero (ΔP = 0), so with the tolerance fixed at
-/// 1e-7 a density_conv = 1e-10 run stopped at |g| ~ 1e-7. The solver now uses
+/// 1e-7 a density_conv = 1e-10 run stopped at |g| ~ 1e-7. The solver uses
 /// min(1e-7, density_conv). MEASURED 2026-11-11 (OH/6-31G ROHF, SAD guess,
 /// Newton trigger 1e-2): |g|max 2.9e-12 in 7 iterations. Bar 10 ×
 /// density_conv. Mutation (the fixed 1e-7 restored, applied and reverted):
@@ -646,10 +646,10 @@ fn rohf_newton_honours_a_tight_density_conv() {
 
 /// **A tight `density_conv` is honoured by the AH path.** As for Newton,
 /// below its tolerance the AH step is zero (ΔP = 0, so the SCF declares
-/// convergence). The AH tolerance was fixed at 1e-7, so a tighter run was
-/// reported converged at whatever |g| < 1e-7 the last step reached. The
-/// solver now passes min(1e-7, density_conv). Bar 10 × density_conv, as for
-/// Newton, at density_conv 1e-12 (at 1e-10 the old tolerance passes by luck:
+/// convergence). A fixed AH tolerance of 1e-7 would report a tighter run
+/// converged at whatever |g| < 1e-7 the last step reached, so the solver
+/// passes min(1e-7, density_conv). Bar 10 × density_conv, as for
+/// Newton, at density_conv 1e-12 (at 1e-10 the fixed tolerance passes by luck:
 /// its last step lands at 2.6e-10).
 ///
 /// Below the Davidson's 1e-8 expansion floor the AH residual tolerance cannot
@@ -658,9 +658,9 @@ fn rohf_newton_honours_a_tight_density_conv() {
 ///
 /// MEASURED 2026-11-11 (OH/6-31G ROHF, SAD guess, AH trigger 1e-2,
 /// density_conv 1e-12): 7 iterations, 41 HVPs, 1 fallback, |g|max 4.7e-14.
-/// Mutations (applied, run, reverted): the fixed 1e-7 tolerance — converged
+/// Mutations (applied, run, reverted): the fixed 1e-7 tolerance: converged
 /// at |g|max 2.6e-10, 26× the bar; the unconverged eigenvector used without
-/// the fallback — `solve_rohf` returned an error.
+/// the fallback: `solve_rohf` returned an error.
 #[test]
 fn rohf_ah_honours_a_tight_density_conv() {
     use ferric_scf::rohf_ah::ah_fallbacks_on_this_thread;

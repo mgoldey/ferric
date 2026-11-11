@@ -1,12 +1,12 @@
 //! ROKS second-order SCF (Newton / soscf / AH) must converge where DIIS does,
 //! to the same state, in no more iterations.
 //!
-//! Before this test's fix, `solve_rohf`'s Newton and AH branches replaced C by
-//! `eig(F_eff)` (built from the OLD density) and evaluated the gradient and
-//! Hessian from the OLD-density spin Focks in that basis. There the gradient
-//! is ≈ 0 by construction, so every "Newton" step was an undamped Roothaan
+//! The "before" rows below use Newton and AH branches that replace C by
+//! `eig(F_eff)` (built from the old density) and evaluate the gradient and
+//! Hessian from the old-density spin Focks in that basis. There the gradient
+//! is ≈ 0 by construction, so every "Newton" step is an undamped Roothaan
 //! step plus a negligible correction, and undamped Roothaan limit-cycles on
-//! these radicals; and the AH step's Davidson returned κ = 0 (its residual was
+//! these radicals; and the AH step's Davidson returns κ = 0 (its residual is
 //! formed inside the subspace). MEASURED on this harness, 2026-11-11,
 //! iterations (HVPs; one HVP ≈ one Fock build), DIIS / Newton 1e-2 / soscf
 //! 1e-3 / AH 1e-2; NC = not converged in 200:
@@ -24,8 +24,8 @@
 //! Mutations (applied, run, reverted): (M1) the Newton branch stepping from
 //! `eig(F_eff)` again fails all three (136 its; NC; NC), even with the exact
 //! Hessian; (M2) the diagonal-gap Fock part restored fails OH only (Newton NC,
-//! soscf 105, AH NC); (M3) the old projected-residual AH Davidson fails all
-//! three, NH2/6-31G PBE as a FALSE convergence 1.13e-6 Ha above DIIS (the
+//! soscf 105, AH NC); (M3) the projected-residual AH Davidson fails all
+//! three, NH2/6-31G PBE as a false convergence 1.13e-6 Ha above DIIS (the
 //! κ = 0 step leaves ΔP = ΔE = 0), caught by the energy check.
 //!
 //! Hypotheses, written before measuring the fix.
@@ -133,7 +133,7 @@ fn run_tol(
 ///
 /// `ah_hvps_before_tuning` is the AH HVP count this system measured with the
 /// Davidson set up for many roots (n_seed 8, n_block 6; module doc). AH must
-/// now take FEWER, which guards the one-root tuning against regression. The
+/// take fewer, which guards the one-root tuning against regression. The
 /// Newton/soscf HVP counts are guarded only through the iteration bound.
 fn check(
     label: &str,
@@ -218,7 +218,7 @@ enum Expect {
     /// orientations are degenerate up to the XC grid's rotational variance,
     /// which #172 measured at up to 3.4e-6 Ha on OH/6-31G
     /// (`rohf_degenerate_open_shell.rs`), while the displacement itself
-    /// moves E by O(1e-10). WHICH orientation a run lands in is box
+    /// moves E by O(1e-10). which orientation a run lands in is box
     /// dependent: CI (2026-11-11, head 1ba3ae744) put off-axis Newton and
     /// soscf on OH and NO in the other one, |ΔE| 1.27e-6 / 5.57e-7, where
     /// this box matched DIIS. So the energy bar is 1e-5 Ha (3x the variance)
@@ -226,7 +226,7 @@ enum Expect {
     ///
     /// Cost is held by an HVP ceiling, not by DIIS's iteration count on the
     /// same geometry (DIIS may end in the other orientation):
-    /// * Newton / soscf: `(PCG cap 20 + 1) × N`, N the LARGER of DIIS's
+    /// * Newton / soscf: `(PCG cap 20 + 1) × N`, N the larger of DIIS's
     ///   iteration counts to the two orientations (the off-axis run and the
     ///   on-axis run of the same molecule). That is a run taking no more
     ///   Newton steps than DIIS needs for either orientation, every PCG
@@ -266,7 +266,7 @@ const MAX_HVPS_PER_NEWTON_STEP: usize = 21;
 /// against off-axis DIIS's −75.620834299 and −129.704259009: the other π-hole
 /// orientation, which here equals the ON-axis DIIS energy to 1e-9. On CI the
 /// off-axis Newton/soscf runs landed there too (see [`Expect`]).
-/// The Steihaug threshold is pinned here too: on the earlier keep-the-iterate
+/// The Steihaug threshold is pinned here too: on the keep-the-iterate
 /// truncation, with every pᵀAp ≤ 0 truncated (threshold 0, applied and
 /// reverted), NO off-axis Newton took 92 iterations (460 HVPs) and soscf 60
 /// (335), crawling between those orientations (Rayleigh quotients
@@ -280,7 +280,7 @@ const MAX_HVPS_PER_NEWTON_STEP: usize = 21;
 /// 1e-8). Newton's trust radius cut from 0.1 to 1e-3 (a crawl): CH Newton
 /// 92 iterations, 751 HVPs and soscf 697 exceed the 462 ceiling, and on-axis
 /// OH Newton/soscf take 49/51 iterations against DIIS's 20; fails. The
-/// ceilings are step budgets, NOT a per-step PCG cost bound: PCG cap 200 at
+/// ceilings are step budgets, not a per-step PCG cost bound: PCG cap 200 at
 /// tolerance 1e-14 (about 2× the HVPs per step) still passes.
 #[test]
 fn degenerate_pi_open_shells_second_order_match_diis() {

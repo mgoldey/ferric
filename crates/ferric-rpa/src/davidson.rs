@@ -196,7 +196,7 @@ where
             let lk = evals[k];
             let vk = ritz.column(k);
 
-            // residual = ε̃ @ vk − lk * vk, formed from the PROJECTED matrix, so it
+            // residual = ε̃ @ vk − lk * vk, formed from the projected matrix, so it
             // is identically zero inside the subspace: safe only because callers
             // seed with n_desired = naux (the full space). ferric-scf's copy of
             // this loop made the ROHF AH step a silent no-op (removed 2026-11).

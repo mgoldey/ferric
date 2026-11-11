@@ -138,8 +138,8 @@
 //! ```
 //!
 //! (the F_β,vo / F_α,oc terms of the vc row use F_α,vo = 0 and F_β,oc = 0).
-//! (`rohf_newton::hessian_matvec` kept only the diagonal Fock entries until
-//! 2026-11; it now applies the exact commutator too.) The Z-vector uses this
+//! (`rohf_newton::hessian_matvec` applies the same exact commutator.) The
+//! Z-vector uses this
 //! full product in its own parametrization and normalization. With
 //! dQ = 2 κ·(2 V_vc, V_vo, V_oc) (κ_vc moves both spins of D_total):
 //!
