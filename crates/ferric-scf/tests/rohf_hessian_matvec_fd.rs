@@ -1,12 +1,20 @@
 //! Is `rohf_newton::hessian_matvec` an EXACT orbital Hessian?  (prerequisite
-//! PR-1 of #291, analytic ROHF Hessian.)
+//! PR-1 of #291, analytic ROHF Hessian; extended to ROKS f_xc with the
+//! 2026-11 Newton fix.)
 //!
-//! The matvec returns, for a rotation kappa with blocks (vc, vo, oc), the three
-//! blocks of d g / d kappa, where g = `gradient_blocks_from` (g_vc = Fa+Fb[v,c],
+//! The matvec returns, for a rotation kappa with blocks (vc, vo, oc), HALF the
+//! Hessian of E(C exp kappa) (g = `gradient_blocks_from`: g_vc = Fa+Fb[v,c],
 //! g_vo = Fa[v,o], g_oc = Fb[o,c]; the TRUE energy gradient is 2 g).
 //!
 //! Method: central FD of g(C Cayley(eps kappa)) with the full per-spin Focks
-//! rebuilt at every rotated C; compared with the analytic matvec.
+//! (+ V_xc for ROKS) rebuilt at every rotated C. That FD is the JACOBIAN
+//! d g / d kappa, which equals the (symmetric) Hessian only where g = 0. Away
+//! from stationarity they differ by a term linear in g, derived independently
+//! here from the Jacobi identity (see `grad_corr`):
+//!   H_true x = J_true x + read-off( ½ Σ_σ [X, [N_σ, f_σ]] ),
+//! so the matvec must equal FD(g) + ¼ read-off(Σ_σ [X, [N_σ, f_σ]]). The
+//! rotated (non-stationary) point checks that correction is resolvable, so a
+//! matvec that returned the Jacobian instead would fail there.
 //!
 //! Hypotheses written BEFORE measuring.
 //!   Physics (matvec exact): matvec/FD = 1 in every (input block, output block)
@@ -16,13 +24,20 @@
 //!   (e.g. the oc column), which a single random direction would hide inside a
 //!   total norm; hence the per-cell ratios and the single-block directions.
 //!   Artifact C (diagonal-Fock approximation): the matvec applies only the
-//!   DIAGONAL Fock gap `F[p,p]-F[q,q]` (a semicanonical form). The exact
-//!   MO-rotation response is the full commutator `F kappa - kappa F`, which has
-//!   off-diagonal terms such as `F_a[v,c] k_oc` and `F_a[v,v'] k_vo`. Predicted:
-//!   an error that is NOT a constant ratio, is zero iff the Focks are diagonal
-//!   in the rotated sub-blocks, and equals the omitted commutator exactly. The
-//!   test computes that omitted piece independently and checks the residual
-//!   against it.
+//!   DIAGONAL Fock gap `F[p,p]-F[q,q]` (a semicanonical form). This WAS the
+//!   production matvec until 2026-11 and this test measured it (error = the
+//!   omitted commutator exactly, 13-106 % per cell on NH2/OH B3LYP). It is
+//!   now the PCG preconditioner only; `mutants` rebuilds the diagonal-gap
+//!   product and requires it to be detected.
+//!   SOURCE MUTATION (2026-11-11, applied, run, reverted): restoring the
+//!   diagonal gap in `hessian_matvec` fails every non-ignored case at the
+//!   converged point, e.g. NH2/6-31G B3LYP dev 6.8e-2 vs bar 7.8e-7,
+//!   NH2/STO-3G 3.5e-2 vs 5.6e-7, CH2t/STO-3G 1.1e-1 vs 2.1e-7.
+//!
+//! MEASURED with the exact matvec (release, 2026-11-11), worst per-cell
+//! |matvec − (FD + corr)| / |FD + corr| over the converged and rotated points:
+//! NH2/6-31G B3LYP 6.6e-10, NH2/cc-pVDZ B3LYP 1.8e-9, OH/cc-pVDZ B3LYP 1.9e-10,
+//! ROHF NH2/CH2t STO-3G and cc-pVDZ ≤ 1.0e-9.
 //!
 //! Pass bars are derived from measured floors (see `fd_floor`): the FD itself is
 //! characterised by an h-sweep and Richardson extrapolation, and the bar is a
@@ -31,12 +46,15 @@
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
+use ferric_dft::grid::AtomicGridConfig;
+use ferric_dft::ks::KsXcUks;
+use ferric_dft::xc_trait::UksXcContribution;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::oneelectron;
 use ferric_integrals::operator::Operator;
 use ferric_scf::engine_pool::EnginePool;
 use ferric_scf::rhf::build_jk;
-use ferric_scf::rohf::{solve_rohf, RohfConfig};
+use ferric_scf::rohf::{solve_rohf, FxcKernelStore, RohfConfig};
 use ferric_scf::rohf_newton::{hessian_matvec, RohfNewtonInputs};
 use ferric_scf::screening::SchwarzBounds;
 use ndarray::Array2;
@@ -58,6 +76,11 @@ impl Xorshift64 {
 }
 
 struct Sys {
+    mol: Molecule,
+    /// ROKS functional (V_xc in `focks`, f_xc in `analytic`); `None` = ROHF.
+    xc: Option<(KsXcUks, String)>,
+    /// Exact-exchange fraction (1 for ROHF).
+    ck: f64,
     prep: PreparedBasis,
     bounds: SchwarzBounds,
     ctx: ParallelContext,
@@ -71,12 +94,31 @@ struct Sys {
 const THRESH: f64 = 1e-12;
 
 fn setup(xyz: &str, mult: usize, basis_name: &str) -> Sys {
+    setup_xc(xyz, mult, basis_name, None)
+}
+
+fn setup_xc(xyz: &str, mult: usize, basis_name: &str, xc_name: Option<&str>) -> Sys {
     let mol = Molecule::parse_xyz(xyz, 0, mult).unwrap();
     let bs = basis::bundled(basis_name).unwrap();
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
     let ctx = ParallelContext::default();
+    // The FD's V_xc and the matvec's f_xc share this grid (the SCF that
+    // supplies the reference orbitals lands at |g| ~1e-11 on it).
+    let xc = xc_name.map(|name| {
+        let ks = KsXcUks::new(
+            &mol,
+            &bs,
+            name,
+            &AtomicGridConfig::production(),
+            &AtomicGridConfig::default_nlc(),
+        )
+        .unwrap();
+        (ks, name.to_string())
+    });
+    let ck = xc.as_ref().map_or(1.0, |(ks, _)| ks.k_mix().sr);
     let cfg = RohfConfig {
+        xc: xc_name.map(str::to_string),
         energy_conv: 1e-11,
         density_conv: 1e-9,
         max_iter: 300,
@@ -89,6 +131,9 @@ fn setup(xyz: &str, mult: usize, basis_name: &str) -> Sys {
     let h = oneelectron::hcore(&prep);
     let n = prep.nbasis();
     Sys {
+        mol,
+        xc,
+        ck,
         prep,
         bounds,
         ctx,
@@ -115,9 +160,12 @@ fn focks(s: &Sys, c: &Array2<f64>) -> (Array2<f64>, Array2<f64>, f64) {
     build_jk(&s.ctx, &s.prep, &s.bounds, THRESH, &da, &mut jd, &mut ka).unwrap();
     jd.fill(0.0);
     build_jk(&s.ctx, &s.prep, &s.bounds, THRESH, &db, &mut jd, &mut kb).unwrap();
-    let fa = &s.h + &j - &ka;
-    let fb = &s.h + &j - &kb;
-    let e = 0.5 * ((&da * &(&s.h + &fa)).sum() + (&db * &(&s.h + &fb)).sum());
+    let mut fa = &s.h + &j - &(s.ck * &ka);
+    let mut fb = &s.h + &j - &(s.ck * &kb);
+    let mut e = 0.5 * ((&da * &(&s.h + &fa)).sum() + (&db * &(&s.h + &fb)).sum());
+    if let Some((ks, _)) = &s.xc {
+        e += ks.add_xc_uks(&da, &db, &mut fa, &mut fb);
+    }
     (c.t().dot(&fa).dot(c), c.t().dot(&fb).dot(c), e)
 }
 
@@ -184,6 +232,9 @@ fn max_abs(b: &Blocks) -> f64 {
         .flat_map(|a| a.iter())
         .fold(0.0, |m, &x| m.max(x.abs()))
 }
+fn amax(a: &Array2<f64>) -> f64 {
+    a.iter().fold(0.0, |m, &x| m.max(x.abs()))
+}
 fn sub(a: &Blocks, b: &Blocks) -> Blocks {
     [&a[0] - &b[0], &a[1] - &b[1], &a[2] - &b[2]]
 }
@@ -219,6 +270,16 @@ fn fd_rich(s: &Sys, c: &Array2<f64>, k: &Blocks, h: f64) -> Blocks {
 
 fn analytic(s: &Sys, c: &Array2<f64>, fa: &Array2<f64>, fb: &Array2<f64>, k: &Blocks) -> Blocks {
     let pool = EnginePool::new(s.bounds.op, &s.prep, 1e-14).unwrap();
+    // f_xc at c's own densities, on the grid `focks` uses.
+    let store = s.xc.as_ref().map(|(_, name)| {
+        let (nc, na) = (s.nc, s.nc + s.no);
+        let ca = c.slice(ndarray::s![.., ..na]);
+        let cb = c.slice(ndarray::s![.., ..nc]);
+        let (da, db) = (ca.dot(&ca.t()), cb.dot(&cb.t()));
+        let grid = AtomicGridConfig::production();
+        FxcKernelStore::build(&s.mol, &s.prep, &grid, name, None, &da, &db).unwrap()
+    });
+    let resp = store.as_ref().map(|st| st.response());
     let inp = RohfNewtonInputs {
         prep: &s.prep,
         bounds: &s.bounds,
@@ -227,9 +288,9 @@ fn analytic(s: &Sys, c: &Array2<f64>, fa: &Array2<f64>, fb: &Array2<f64>, k: &Bl
         f_b_mo: fb,
         nocc_double: s.nc,
         nocc_open: s.no,
-        k_mix_sr: 1.0,
+        k_mix_sr: s.ck,
         rsh: None,
-        fxc: None,
+        fxc: resp.as_deref(),
         thresh: THRESH,
         ooc_budget: ferric_core::memory::resolve_budget_bytes(None),
         j_response: None,
@@ -260,6 +321,29 @@ fn comm_and_diag(s: &Sys, fa: &Array2<f64>, fb: &Array2<f64>, k: &Blocks) -> (Bl
         }
     }
     (comm, diag)
+}
+
+/// The Hessian-minus-Jacobian term at HALF scale, from the Jacobi identity
+/// (module doc): ¼ read-off(Σ_σ [X, G_σ]), G_σ[i,j] = (n_i − n_j) f_σ[i,j],
+/// read-off out(p,q) = M[q,p] − M[p,q]. Zero at a stationary point.
+fn grad_corr(s: &Sys, fa: &Array2<f64>, fb: &Array2<f64>, k: &Blocks) -> Blocks {
+    let (n, nc, na) = (s.n, s.nc, s.nc + s.no);
+    let x = kappa_full(s, k);
+    let mut m = Array2::<f64>::zeros((n, n));
+    for (f, nocc) in [(fa, na), (fb, nc)] {
+        let occ = |i: usize| if i < nocc { 1.0 } else { 0.0 };
+        let g = Array2::from_shape_fn((n, n), |(i, j)| (occ(i) - occ(j)) * f[(i, j)]);
+        m = m + x.dot(&g) - g.dot(&x);
+    }
+    let mut out = k.clone();
+    for (bi, (rows, cols)) in spec(s).into_iter().enumerate() {
+        for (i, p) in rows.enumerate() {
+            for (j, q) in cols.clone().enumerate() {
+                out[bi][(i, j)] = 0.25 * (m[(q, p)] - m[(p, q)]);
+            }
+        }
+    }
+    out
 }
 
 /// Measured FD floor on one direction: worst disagreement between Richardson
@@ -295,11 +379,13 @@ fn cell(mv: &Array2<f64>, fd: &Array2<f64>) -> Cell {
 
 struct Report {
     floor: f64,
-    /// worst |matvec - FD|
-    raw_dev: f64,
-    /// worst |(matvec - diag + commutator) - FD|
-    comm_dev: f64,
-    /// max |commutator - diag| (size of the omitted physics)
+    /// worst |matvec - (FD + grad_corr)|
+    dev: f64,
+    /// worst per-cell |matvec - (FD + grad_corr)| / |FD + grad_corr|
+    rel: f64,
+    /// max |grad_corr| (Hessian vs Jacobian; ~0 at a stationary point)
+    corr: f64,
+    /// max |commutator - diag| (what the old diagonal-gap matvec omitted)
     omitted: f64,
 }
 
@@ -319,36 +405,42 @@ fn analyse(s: &Sys, c: &Array2<f64>, tag: &str) -> Report {
     }
     let mut rep = Report {
         floor: 0.0,
-        raw_dev: 0.0,
-        comm_dev: 0.0,
+        dev: 0.0,
+        rel: 0.0,
+        corr: 0.0,
         omitted: 0.0,
     };
     for (name, k) in &dirs {
         let (fd, floor) = fd_floor(s, c, k);
         let mv = analytic(s, c, &fa, &fb, k);
         let (comm, diag) = comm_and_diag(s, &fa, &fb, k);
-        let pred = add(&sub(&mv, &diag), &comm);
-        let cells = [
-            cell(&mv[0], &fd[0]),
-            cell(&mv[1], &fd[1]),
-            cell(&mv[2], &fd[2]),
-        ];
+        let corr = grad_corr(s, &fa, &fb, k);
+        let reference = add(&fd, &corr);
         eprintln!(
-            "[{tag}] dir {name:5} floor {floor:.2e} |FD| {:.3e} | raw dev {:.3e} | +comm dev {:.3e} | omitted {:.3e}",
+            "[{tag}] dir {name:5} floor {floor:.2e} |FD| {:.3e} | dev {:.3e} | Jacobian dev {:.3e} | grad corr {:.3e} | old gap omitted {:.3e}",
             max_abs(&fd),
+            max_abs(&sub(&mv, &reference)),
             max_abs(&sub(&mv, &fd)),
-            max_abs(&sub(&pred, &fd)),
+            max_abs(&corr),
             max_abs(&sub(&comm, &diag)),
         );
-        for (o, cl) in ["vc", "vo", "oc"].iter().zip(cells.iter()) {
+        for (bi, o) in ["vc", "vo", "oc"].iter().enumerate() {
+            let cl = cell(&mv[bi], &reference[bi]);
+            let r = cl.dev / amax(&reference[bi]).max(1e-300);
             eprintln!(
-                "    out {o}: ratio matvec/FD = {:+.6}  max|dev| = {:.3e}",
-                cl.ratio, cl.dev
+                "    out {o}: ratio matvec/ref = {:+.10}  max|dev| = {:.3e}  rel {:.2e}",
+                cl.ratio, cl.dev, r
             );
+            // A cell whose reference is below the FD floor carries no
+            // relative information (single-block directions leave some
+            // output blocks ~0).
+            if amax(&reference[bi]) > 1e3 * floor.max(1e-12) {
+                rep.rel = rep.rel.max(r);
+            }
         }
         rep.floor = rep.floor.max(floor);
-        rep.raw_dev = rep.raw_dev.max(max_abs(&sub(&mv, &fd)));
-        rep.comm_dev = rep.comm_dev.max(max_abs(&sub(&pred, &fd)));
+        rep.dev = rep.dev.max(max_abs(&sub(&mv, &reference)));
+        rep.corr = rep.corr.max(max_abs(&corr));
         rep.omitted = rep.omitted.max(max_abs(&sub(&comm, &diag)));
     }
     rep
@@ -409,30 +501,34 @@ fn study(s: &Sys, tag: &str, off_converged: f64) {
             let (fa, fb, _) = focks(s, c);
             max_abs(&grad(s, &fa, &fb))
         };
-        eprintln!(
-            "[{t}] |g|max {gmax:.2e}  FD floor {:.2e}  raw dev {:.3e}  comm-corrected dev {:.3e}  omitted-term size {:.3e}",
-            rep.floor, rep.raw_dev, rep.comm_dev, rep.omitted
-        );
         // Bar derived from the measured FD floor: 10x the worst FD
         // self-disagreement, never below 1e-7.
         let bar = (10.0 * rep.floor).max(1e-7);
         eprintln!(
-            "[{t}] bar {bar:.2e}; omitted/bar = {:.1}",
-            rep.omitted / bar
+            "[{t}] |g|max {gmax:.2e}  FD floor {:.2e}  bar {bar:.2e}  dev {:.3e}  worst cell rel {:.2e}  grad corr {:.3e}  old-gap omitted {:.3e}",
+            rep.floor, rep.dev, rep.rel, rep.corr, rep.omitted
         );
         assert!(
-            rep.comm_dev < bar,
-            "{t}: matvec + omitted commutator must equal FD: {:.3e} >= {bar:.3e}",
-            rep.comm_dev
+            rep.dev < bar,
+            "{t}: matvec must equal FD(g) + grad_corr: {:.3e} >= {bar:.3e}",
+            rep.dev
         );
-        // Non-vacuity of the explanation: the omitted term must be resolvable,
-        // otherwise "matvec + commutator == FD" would also hold for the raw
-        // matvec and the check above would say nothing about the commutator.
+        // Non-vacuity: the old diagonal-gap product must be resolvable here,
+        // otherwise this point could not tell the exact matvec from it.
         assert!(
             rep.omitted > 10.0 * bar,
-            "{t}: omitted commutator ({:.3e}) is not resolvable above the bar ({bar:.2e})",
+            "{t}: diagonal-gap error ({:.3e}) is not resolvable above the bar ({bar:.2e})",
             rep.omitted
         );
+        // At the rotated point the Hessian-vs-Jacobian term must be
+        // resolvable too, or a matvec returning the Jacobian would pass.
+        if !converged {
+            assert!(
+                rep.corr > 10.0 * bar,
+                "{t}: gradient correction ({:.3e}) not resolvable above the bar ({bar:.2e})",
+                rep.corr
+            );
+        }
         mutants(s, c, bar, &t);
     }
 }
@@ -442,10 +538,9 @@ fn mutants(s: &Sys, c: &Array2<f64>, bar: f64, tag: &str) {
     let mut rng = Xorshift64(0xA5A5_5A5A_1357_9BDF);
     let k = rand_blocks(s, &mut rng, [true, true, true]);
     let (fd, _) = fd_floor(s, c, &k);
-    let mv = analytic(s, c, &fa, &fb, &k);
-    let (comm, diag) = comm_and_diag(s, &fa, &fb, &k);
-    let good = add(&sub(&mv, &diag), &comm);
-    let dev = |p: &Blocks| max_abs(&sub(p, &fd));
+    let reference = add(&fd, &grad_corr(s, &fa, &fb, &k));
+    let good = analytic(s, c, &fa, &fb, &k);
+    let dev = |p: &Blocks| max_abs(&sub(p, &reference));
     let base = dev(&good);
     eprintln!("[{tag}] mutation: unmutated dev {base:.3e} (bar {bar:.2e})");
     assert!(base < bar);
@@ -470,9 +565,7 @@ fn mutants(s: &Sys, c: &Array2<f64>, bar: f64, tag: &str) {
     // (3) drop the oc input (no closed-open coupling in).
     let mut k_no_oc = k.clone();
     k_no_oc[2].fill(0.0);
-    let mv_no_oc = analytic(s, c, &fa, &fb, &k_no_oc);
-    let (cm, dg) = comm_and_diag(s, &fa, &fb, &k_no_oc);
-    check("drop oc input", add(&sub(&mv_no_oc, &dg), &cm));
+    check("drop oc input", analytic(s, c, &fa, &fb, &k_no_oc));
     // (4) drop the oc output block.
     check(
         "zero oc output",
@@ -483,20 +576,27 @@ fn mutants(s: &Sys, c: &Array2<f64>, bar: f64, tag: &str) {
         ],
     );
     // (5) swap alpha/beta Focks in the inputs.
-    let mv_sw = analytic(s, c, &fb, &fa, &k);
-    let (cs, ds) = comm_and_diag(s, &fb, &fa, &k);
-    check("swap Fa/Fb inputs", add(&sub(&mv_sw, &ds), &cs));
+    check("swap Fa/Fb inputs", analytic(s, c, &fb, &fa, &k));
     // (6) sign flip on the vo output.
     check(
         "flip vo sign",
         [good[0].clone(), good[1].mapv(|x| -x), good[2].clone()],
     );
-    // (7) the raw matvec (diag-gap only, commutator omitted): reported, and
-    //     asserted resolvable in `study`'s caller when the omitted term is.
-    let raw_dev = dev(&mv);
+    // (7) the pre-2026-11 production matvec: the exact Fock part (Jacobian
+    //     commutator + gradient correction) replaced by the diagonal gap.
+    let (comm, diag) = comm_and_diag(s, &fa, &fb, &k);
+    let corr = grad_corr(s, &fa, &fb, &k);
+    check(
+        "diagonal-gap Fock part",
+        add(&sub(&good, &add(&comm, &corr)), &diag),
+    );
+    // (8) the Jacobian instead of the Hessian (correction dropped). Only
+    //     resolvable off stationarity; reported, asserted in `study`.
+    let jac = sub(&good, &corr);
     eprintln!(
-        "[{tag}] raw matvec (diag-gap only) dev {raw_dev:.3e} ({:.1}x bar)",
-        raw_dev / bar
+        "[{tag}] Jacobian-for-Hessian dev {:.3e} ({:.1}x bar)",
+        dev(&jac),
+        dev(&jac) / bar
     );
 }
 
@@ -543,4 +643,33 @@ fn ch2_triplet_ccpvdz_matvec_vs_fd() {
         "cc-pvdz",
     );
     study(&s, "CH2t/cc-pVDZ", 0.05);
+}
+
+/// ROKS/B3LYP with f_xc (the 2026-11 Newton fix's anchor): global hybrid
+/// (c_x 0.2) + GGA kernel, α/β spin coupling. 6-31G keeps it fast enough to
+/// run by default.
+#[test]
+fn nh2_b3lyp_631g_matvec_vs_fd() {
+    let s = setup_xc(
+        "3\nNH2\nN 0 0 0.12\nH 0 0.78 -0.45\nH 0 -0.78 -0.45\n",
+        2,
+        "6-31g",
+        Some("B3LYP"),
+    );
+    study(&s, "NH2/6-31G B3LYP", 0.05);
+}
+
+/// The systems the Newton fix was measured on, at cc-pVDZ.
+#[test]
+#[ignore = "runtime: hundreds of J/K + XC builds at cc-pVDZ; run once, release, quiet box"]
+fn nh2_oh_b3lyp_ccpvdz_matvec_vs_fd() {
+    let nh2 = setup_xc(
+        "3\nNH2\nN 0 0 0\nH 0 0.80 -0.62\nH 0 -0.80 -0.62\n",
+        2,
+        "cc-pvdz",
+        Some("B3LYP"),
+    );
+    study(&nh2, "NH2/cc-pVDZ B3LYP", 0.03);
+    let oh = setup_xc("2\nOH\nO 0 0 0\nH 0 0 0.97\n", 2, "cc-pvdz", Some("B3LYP"));
+    study(&oh, "OH/cc-pVDZ B3LYP", 0.03);
 }

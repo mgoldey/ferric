@@ -141,11 +141,9 @@ pub fn rohf_newton_step(
     //   closed↔virt: both α and β change → (F_α[v,v] + F_β[v,v]) − (F_α[c,c] + F_β[c,c])
     //   open↔virt:   only α changes      → F_α[v,v] − F_α[o,o]
     //   closed↔open: only β changes      → F_β[o,o] − F_β[c,c]
-    // The Hessian matvec applies these same per-spin Fock diagonals
-    // multiplicatively to κ — using F_eff eigenvalues (the previous
-    // implementation) was wrong because F_eff eigenvalues mix α and β
-    // contributions in the wrong proportions for the off-diagonal blocks,
-    // leading to a Newton step that points away from the minimum.
+    // These gaps are the PCG PRECONDITIONER only; the Hessian matvec applies
+    // the exact Fock commutator. (F_eff eigenvalues would mix α and β in the
+    // wrong proportions for the off-diagonal blocks.)
     let f_a_diag: Vec<f64> = (0..n).map(|i| inp.f_a_mo[(i, i)]).collect();
     let f_b_diag: Vec<f64> = (0..n).map(|i| inp.f_b_mo[(i, i)]).collect();
     let f_sum_diag: Vec<f64> = (0..n).map(|i| f_a_diag[i] + f_b_diag[i]).collect();
@@ -341,14 +339,13 @@ pub(crate) fn gradient_blocks_from(
 }
 
 /// Normalisation and exactness (measured by `tests/rohf_hessian_matvec_fd.rs`):
-/// the result is d/dκ of the HALF gradient `gradient_blocks_from`, i.e. half
-/// the true orbital Hessian. The J/K(+XC) response part is exact in every
-/// block. The Fock part is only the DIAGONAL gap `F[p,p] - F[q,q]`, not the
-/// full commutator `F κ - κ F`, so the matvec equals the true derivative only
-/// when the per-spin Focks have no off-diagonal terms in the rotated
-/// sub-blocks (the vc block at a converged point is exact; the vo/oc blocks
-/// and every block away from convergence are not). Adequate as a Newton/PCG
-/// operator; NOT an exact Hessian.
+/// the result is HALF the exact orbital Hessian of `E(C exp κ)` (the
+/// [`crate::rohf_trah::rohf_exact_hessian_matvec`] product / 2) in every
+/// block, f_xc included. It is symmetric at any point; at a stationary point
+/// it equals d/dκ of the half gradient `gradient_blocks_from`, and away from
+/// one it differs from that (non-symmetric) Jacobian by `½ Σ_σ [κ, [N_σ, f_σ]]`,
+/// a term linear in the gradient. Until 2026-11 the Fock part here was only
+/// the diagonal gap `F[p,p] − F[q,q]` (now the PCG preconditioner).
 //
 // Returns the three coupling blocks (vc, vo, oc) of the Hessian-vector product;
 // the tuple mirrors the three input blocks and reads clearer than an alias.
@@ -445,28 +442,26 @@ pub fn hessian_matvec(
     let mut h_vo = pack_block(&df_a_mo, &df_b_mo, nocc_a..n, nc..nocc_a, false); // α
     let mut h_oc = pack_block(&df_b_mo, &df_b_mo, nc..nocc_a, 0..nc, false); // β
 
-    // Per-spin diagonal Fock-commutator: each block uses the diagonal Fock
-    // entries from the spin(s) that actually change occupation in that block.
-    // See preconditioner notes above.
-    let f_a_diag: Vec<f64> = (0..n).map(|i| inp.f_a_mo[(i, i)]).collect();
-    let f_b_diag: Vec<f64> = (0..n).map(|i| inp.f_b_mo[(i, i)]).collect();
-    for (ir, p) in (nocc_a..n).enumerate() {
-        for (ic, q) in (0..nc).enumerate() {
-            let gap = (f_a_diag[p] + f_b_diag[p]) - (f_a_diag[q] + f_b_diag[q]);
-            h_vc[(ir, ic)] += gap * k_vc[(ir, ic)];
-        }
-    }
-    for (ir, p) in (nocc_a..n).enumerate() {
-        for (ic, q) in (nc..nocc_a).enumerate() {
-            let gap = f_a_diag[p] - f_a_diag[q];
-            h_vo[(ir, ic)] += gap * k_vo[(ir, ic)];
-        }
-    }
-    for (ir, p) in (nc..nocc_a).enumerate() {
-        for (ic, q) in (0..nc).enumerate() {
-            let gap = f_b_diag[p] - f_b_diag[q];
-            h_oc[(ir, ic)] += gap * k_oc[(ir, ic)];
-        }
+    // The Fock-commutator part: the EXACT one of `rohf_trah` (true scale,
+    // halved to this function's half-gradient normalisation), not the
+    // diagonal gap `F[p,p] − F[q,q]`, which misses the oc-coupled terms
+    // (13-106 % per-cell error on NH2/OH B3LYP, and on OH's soft π mode
+    // ρ(I − H_gap⁻¹ H) = 2.27, i.e. a divergent Newton iteration). The
+    // diagonal gap stays only as the PCG preconditioner (`build_diag_perspin`).
+    let x: Vec<f64> = k_vc
+        .iter()
+        .chain(k_vo.iter())
+        .chain(k_oc.iter())
+        .copied()
+        .collect();
+    let fock = crate::rohf_trah::rohf_fock_hessian_matvec(inp.f_a_mo, inp.f_b_mo, nc, no, &x);
+    for (h, f) in h_vc
+        .iter_mut()
+        .chain(h_vo.iter_mut())
+        .chain(h_oc.iter_mut())
+        .zip(fock.iter())
+    {
+        *h += 0.5 * f;
     }
 
     Ok((h_vc, h_vo, h_oc))

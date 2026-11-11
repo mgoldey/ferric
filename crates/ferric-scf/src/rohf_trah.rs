@@ -347,39 +347,93 @@ pub fn rohf_exact_hessian_matvec(
             x.len()
         )));
     }
-    let occ_a: Vec<f64> = (0..n).map(|i| if i < na { 1.0 } else { 0.0 }).collect();
-    let occ_b: Vec<f64> = (0..n).map(|i| if i < nd { 1.0 } else { 0.0 }).collect();
     let xk = unpack(x, n, nd, nocc_open);
-    // X_σ = X N_σ − N_σ X: element (i, j) = X[i,j] (n_j − n_i).
-    let xs = |occ: &[f64]| {
-        let mut m = xk.clone();
-        for ((i, j), v) in m.indexed_iter_mut() {
-            *v *= occ[j] - occ[i];
-        }
-        m
-    };
-    let xs_a = xs(occ_a.as_slice());
-    let xs_b = xs(occ_b.as_slice());
+    let (occ_a, occ_b) = occupations(n, nd, na);
+    let xs_a = rotation_per_spin(&xk, &occ_a);
+    let xs_b = rotation_per_spin(&xk, &occ_b);
     let dd_a = c.dot(&xs_a).dot(&c.t());
     let dd_b = c.dot(&xs_b).dot(&c.t());
     let (df_a, df_b) = response(&dd_a, &dd_b)?;
+    let df_a_mo = c.t().dot(&df_a).dot(c);
+    let df_b_mo = c.t().dot(&df_b).dot(c);
+    let spins = [
+        (&occ_a, f_a_mo, &xs_a, Some(&df_a_mo)),
+        (&occ_b, f_b_mo, &xs_b, Some(&df_b_mo)),
+    ];
+    Ok(packed_hessian_product(&xk, spins, nd, nocc_open))
+}
+
+/// The Fock-commutator part of [`rohf_exact_hessian_matvec`] alone (TRUE
+/// scale): the same product with the response `δF_σ` set to zero. O(n³) MO
+/// algebra, no J/K. `x` is packed vc | vo | oc as everywhere in this module.
+/// The molecular Newton / AH matvec (`rohf_newton::hessian_matvec`) adds half
+/// of this to its own (half-scale) J/K + f_xc response.
+pub(crate) fn rohf_fock_hessian_matvec(
+    f_a_mo: &Array2<f64>,
+    f_b_mo: &Array2<f64>,
+    nocc_double: usize,
+    nocc_open: usize,
+    x: &[f64],
+) -> Vec<f64> {
+    let n = f_a_mo.nrows();
+    let (nd, na) = (nocc_double, nocc_double + nocc_open);
+    debug_assert_eq!(x.len(), rohf_rotation_count(n, nd, nocc_open));
+    let xk = unpack(x, n, nd, nocc_open);
+    let (occ_a, occ_b) = occupations(n, nd, na);
+    let xs_a = rotation_per_spin(&xk, &occ_a);
+    let xs_b = rotation_per_spin(&xk, &occ_b);
+    let spins = [(&occ_a, f_a_mo, &xs_a, None), (&occ_b, f_b_mo, &xs_b, None)];
+    packed_hessian_product(&xk, spins, nd, nocc_open)
+}
+
+/// Spin occupations `(n_α, n_β)`: α on closed + open, β on closed.
+fn occupations(n: usize, nd: usize, na: usize) -> (Vec<f64>, Vec<f64>) {
+    let occ_a = (0..n).map(|i| if i < na { 1.0 } else { 0.0 }).collect();
+    let occ_b = (0..n).map(|i| if i < nd { 1.0 } else { 0.0 }).collect();
+    (occ_a, occ_b)
+}
+
+/// `X_σ = X N_σ − N_σ X`: element (i, j) = X[i,j] (n_j − n_i).
+fn rotation_per_spin(xk: &Array2<f64>, occ: &[f64]) -> Array2<f64> {
+    let mut m = xk.clone();
+    for ((i, j), v) in m.indexed_iter_mut() {
+        *v *= occ[j] - occ[i];
+    }
+    m
+}
+
+/// One spin's inputs to [`packed_hessian_product`]: occupations, MO Fock,
+/// `X_σ`, and the MO response Fock (`None` = Fock part only).
+type SpinTerms<'a> = (
+    &'a Vec<f64>,
+    &'a Array2<f64>,
+    &'a Array2<f64>,
+    Option<&'a Array2<f64>>,
+);
+
+/// `Σ_σ ½ Δn A_σ + ½ (X_σ f_σ − f_σ X_σ) + Δn δF_σ`, read off packed (module
+/// doc). With `δF_σ` present the arithmetic is the original single expression.
+fn packed_hessian_product(
+    xk: &Array2<f64>,
+    spins: [SpinTerms<'_>; 2],
+    nd: usize,
+    no: usize,
+) -> Vec<f64> {
+    let n = xk.nrows();
     let mut g = Array2::<f64>::zeros((n, n));
-    for (occ, f, xsig, df_ao) in [
-        (&occ_a, f_a_mo, &xs_a, &df_a),
-        (&occ_b, f_b_mo, &xs_b, &df_b),
-    ] {
-        let df = c.t().dot(df_ao).dot(c);
-        let a = f.dot(&xk) - xk.dot(f);
+    for (occ, f, xsig, df) in spins {
+        let a = f.dot(xk) - xk.dot(f);
         let b = xsig.dot(f) - f.dot(xsig);
         for ((i, j), v) in g.indexed_iter_mut() {
             let dn = occ[i] - occ[j];
-            *v += 0.5 * dn * a[(i, j)] + 0.5 * b[(i, j)] + dn * df[(i, j)];
+            let d = df.map_or(0.0, |m| m[(i, j)]);
+            *v += 0.5 * dn * a[(i, j)] + 0.5 * b[(i, j)] + dn * d;
         }
     }
-    Ok(pairs(n, nd, nocc_open)
+    pairs(n, nd, no)
         .into_iter()
         .map(|(p, q)| g[(q, p)] - g[(p, q)])
-        .collect())
+        .collect()
 }
 
 /// `C · U`, `U` the Cayley unitary `(I − κ/2)⁻¹ (I + κ/2)` of the packed κ.
