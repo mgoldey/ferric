@@ -2372,18 +2372,20 @@ fn solve_rhf_impl(
     // size-1 / non-MPI is byte-identical to the serial path.
     let df_fitters_t = phases.begin("setup:df_fitters");
     crate::raw_handoff::clear_slot(config);
-    let (mut df_j, mut df_k) = crate::fock_assembly::build_df_jk(
-        ctx,
-        mol,
-        op,
-        prep,
-        df_j_aux_eff.as_deref(),
-        df_k_aux_eff.as_deref(),
-        ooc_budget,
-        config.integral_thresh,
-        config.resolved_ri_j_precision(),
-        crate::df_k::RiKPrecision::resolve(config.ri_k_precision),
-    )?;
+    let (mut df_j, mut df_k) = crate::raw_handoff::with_metric_capture(config, || {
+        crate::fock_assembly::build_df_jk(
+            ctx,
+            mol,
+            op,
+            prep,
+            df_j_aux_eff.as_deref(),
+            df_k_aux_eff.as_deref(),
+            ooc_budget,
+            config.integral_thresh,
+            config.resolved_ri_j_precision(),
+            crate::df_k::RiKPrecision::resolve(config.ri_k_precision),
+        )
+    })?;
     phases.stop(df_fitters_t);
     // Record the builders that actually produced the energy, from the SAME
     // effective names just handed to `build_df_jk` (and, for ω > 0, to

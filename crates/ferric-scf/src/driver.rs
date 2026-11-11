@@ -368,15 +368,17 @@ pub(crate) fn prepare<'a>(
                 k_mix.omega
             )));
         }
-        let (sr, lr) = crate::fock_assembly::build_rsh_dfk_pair(
-            ctx,
-            mol,
-            prep,
-            config.df_k_aux.as_deref(),
-            k_mix.omega,
-            ooc_budget,
-            crate::df_k::RiKPrecision::resolve(config.ri_k_precision),
-        )?;
+        let (sr, lr) = crate::raw_handoff::with_metric_capture(config, || {
+            crate::fock_assembly::build_rsh_dfk_pair(
+                ctx,
+                mol,
+                prep,
+                config.df_k_aux.as_deref(),
+                k_mix.omega,
+                ooc_budget,
+                crate::df_k::RiKPrecision::resolve(config.ri_k_precision),
+            )
+        })?;
         (Some(RefCell::new(sr)), Some(RefCell::new(lr)))
     } else {
         (None, None)

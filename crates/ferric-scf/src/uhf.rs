@@ -995,18 +995,20 @@ fn solve_uhf_impl(
         None
     };
     crate::raw_handoff::clear_slot(config);
-    let (mut df_j, mut df_k) = crate::fock_assembly::build_df_jk(
-        ctx,
-        mol,
-        coulomb_op,
-        prep,
-        j_aux_eff,
-        k_aux_eff,
-        ooc_budget,
-        config.integral_thresh,
-        config.resolved_ri_j_precision(),
-        crate::df_k::RiKPrecision::resolve(config.ri_k_precision),
-    )?;
+    let (mut df_j, mut df_k) = crate::raw_handoff::with_metric_capture(config, || {
+        crate::fock_assembly::build_df_jk(
+            ctx,
+            mol,
+            coulomb_op,
+            prep,
+            j_aux_eff,
+            k_aux_eff,
+            ooc_budget,
+            config.integral_thresh,
+            config.resolved_ri_j_precision(),
+            crate::df_k::RiKPrecision::resolve(config.ri_k_precision),
+        )
+    })?;
     // Record the builders that produced the energy (same effective names as
     // `build_df_jk` above and `driver::prepare`'s RSH pair) so the analytic
     // gradient differentiates THIS energy. `None` when nothing is fitted.
