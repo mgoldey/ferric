@@ -46,6 +46,10 @@ on:
       - '.config/nextest.toml'
       - '.github/workflows/platform-tests.yml'
   workflow_dispatch: {}
+  # TEMPORARY (feat/wheels-mac-win): one run on the branch, whose ref scope
+  # can restore this branch's native-deps caches; removed in the next commit.
+  push:
+    branches: [feat/wheels-mac-win]
 
 # Reads the repository and the actions cache, uploads artifacts: nothing more.
 permissions:
@@ -106,7 +110,11 @@ jobs:
         run: |
           set -euo pipefail
           for part in libint2 blas-xc; do
-            echo "$part=$(bash scripts/wheels/native-cache-key.sh "$part" "$NATIVE_PLATFORM")" | tee -a "$GITHUB_OUTPUT"
+            # An assignment, so a failing key script fails the step (inside
+            # `echo "$(...)"` its exit status was lost and the key was empty).
+            key="$(bash scripts/wheels/native-cache-key.sh "$part" "$NATIVE_PLATFORM")"
+            [ -n "$key" ] || { echo "::error::empty native-deps cache key for $part"; exit 1; }
+            echo "$part=$key" | tee -a "$GITHUB_OUTPUT"
           done
 
       - name: Restore native libint2
@@ -278,7 +286,11 @@ jobs:
         run: |
           set -euo pipefail
           for part in libint2 blas-xc; do
-            echo "$part=$(bash scripts/wheels/native-cache-key.sh "$part" "$NATIVE_PLATFORM")" | tee -a "$GITHUB_OUTPUT"
+            # An assignment, so a failing key script fails the step (inside
+            # `echo "$(...)"` its exit status was lost and the key was empty).
+            key="$(bash scripts/wheels/native-cache-key.sh "$part" "$NATIVE_PLATFORM")"
+            [ -n "$key" ] || { echo "::error::empty native-deps cache key for $part"; exit 1; }
+            echo "$part=$key" | tee -a "$GITHUB_OUTPUT"
           done
 
       - name: Restore native libint2

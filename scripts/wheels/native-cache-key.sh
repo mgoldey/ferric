@@ -15,10 +15,14 @@ set -euo pipefail
 part="$1"
 platform="$2"
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-set -a
-# shellcheck disable=SC1091
-. <(grep -E '^[A-Z_0-9]+=' "$root/scripts/wheels/native-pins.env" | sed 's/[[:space:]]*#.*$//')
-set +a
+# eval, not `. <(...)`: macOS's /bin/bash 3.2 sources a process substitution
+# as an empty file, and the pins were silently missing there.
+pins="$(grep -E '^[A-Z_0-9]+=' "$root/scripts/wheels/native-pins.env" | sed 's/[[:space:]]*#.*$//')"
+eval "$pins"
+for v in LIBINT_VERSION LIBINT_SHA256 OPENBLAS_VERSION_MACOS OPENBLAS_VERSION_WINDOWS \
+         LIBXC_VERSION EIGEN_VERSION NATIVE_MACWIN_CACHE_VERSION; do
+  [ -n "${!v:-}" ] || { echo "::error::native-cache-key.sh: $v missing from native-pins.env" >&2; exit 1; }
+done
 
 case "$(uname -s)" in
   Darwin)
