@@ -1858,40 +1858,15 @@ fn solve_uhf_impl(
                 let f_a_mo = c_a.t().dot(&f_a).dot(&c_a);
                 let f_b_mo = c_b.t().dot(&f_b).dot(&c_b);
 
-                // Same duplicate-grid-cache accounting the Newton branch does —
-                // `FxcKernelStore::build` allocates a SECOND chi+dchi cache on
-                // the live KS grid, and `check_ao_grid_budget` cannot see it.
-                let fxc_store = if xc_contrib.is_some() {
-                    let main = config
-                        .dft_grid
-                        .clone()
-                        .unwrap_or_else(ferric_dft::grid::AtomicGridConfig::production);
-                    let name = config.xc.as_deref().expect("xc_contrib implies Some(xc)");
-                    let needed = fxc_kernel_duplicate_bytes(n, mol.atoms.len(), &main);
-                    let avail = ferric_core::memory::available_budget_now(
-                        ferric_core::memory::resolve_budget_bytes(
-                            (config.three_index_budget_bytes != 0)
-                                .then_some(config.three_index_budget_bytes),
-                        ),
-                    );
-                    ferric_core::memory::check_alloc(
-                        "UHF/UKS TRAH f_xc kernel (duplicate chi+dchi cache on the live KS grid)",
-                        needed,
-                        avail,
-                    )?;
-                    Some(crate::rohf::FxcKernelStore::build(
-                        mol,
-                        prep,
-                        &main,
-                        name,
-                        config.xc_omega,
-                        &d_a,
-                        &d_b,
-                    )?)
-                } else {
-                    None
-                };
-                let fxc_storage = fxc_store.as_ref().map(|s| s.response());
+                // The f_xc response, as the Newton branch builds it: on the
+                // KS evaluator's screened grid, else a dense kernel whose
+                // duplicate chi+dchi cache is gated first.
+                let fxc_storage = uks_fxc_response(
+                    xc_contrib.as_deref(),
+                    (mol, prep, config),
+                    (&d_a, &d_b),
+                    TRAH_FXC_LABEL,
+                )?;
                 let fxc_ref: Option<&crate::rohf_newton::FxcResponse<'_>> = fxc_storage.as_deref();
 
                 let (fitted_j, fitted_k) = fitted_responses(df_j.as_mut(), df_k.as_mut());
@@ -2029,74 +2004,28 @@ fn solve_uhf_impl(
             let f_a_mo = c_a.t().dot(&f_a).dot(&c_a);
             let f_b_mo = c_b.t().dot(&f_b).dot(&c_b);
 
-            // Build the f_xc kernel (LDA, GGA or meta-GGA) + reference density
-            // once per Newton step (None for pure UHF). The response closure
-            // borrows it.
+            // The f_xc kernel (LDA, GGA or meta-GGA) at the reference density,
+            // once per Newton step (None for pure UHF); the response closure
+            // owns it. It runs on the SCF's own screened XC grid and AO cache
+            // (`UksXcContribution::polarized_fxc`, `rohf::polarized_fxc_response`).
             //
-            // `FxcKernelStore::build` -> `GgaFxcKernel::new`/`LdaFxcKernel::new`
-            // (ferric-dft/src/fxc.rs) calls `eval_basis_and_grad_on_points` on
-            // THIS SAME `main` grid config, i.e. it allocates a SECOND
-            // (nbf, npts) chi + (3, nbf, npts) dchi cache — 4 planes — that
-            // duplicates the one already resident in `xc_contrib` (the KS grid
-            // cache built once above, at construction, and held live for the
-            // whole SCF loop; it is not dropped before this branch runs).
-            // Measured at the shapes this crate's other memory findings use:
-            // benzene/aug-cc-pVTZ (nbf=414, ~12 atoms, npts=12*8250=99000) one
-            // plane is 414*99000*8 = 328 MB, so the duplicate 4-plane kernel
-            // costs 1.31 GB on top of the 1.31 GB KS cache already resident
-            // (2.62 GB peak where either gate alone only ever saw 1.31 GB);
-            // danuglipron/def2-SVP (nbf=700, 73 atoms, npts=73*8250=602250)
-            // one plane is 700*602250*8 = 3.37 GB, so the duplicate kernel
-            // costs 13.49 GB on top of the 13.49 GB KS cache (26.98 GB peak).
-            // `eval_basis_and_grad_on_points`'s own `check_ao_grid_budget`
-            // gate cannot see any of this: it re-resolves
-            // `resolve_budget_bytes(None)` — the WHOLE ceiling, ignoring
-            // `config.three_index_budget_bytes` AND the live KS cache — so it
-            // independently re-approves the duplicate against 100% of the
-            // budget the KS cache was already charged against.
-            //
-            // Gate it here instead, the way `ks.rs::new_with_omega_budgeted`
-            // gates its OWN grid cache: `available_budget_now` reads this
-            // process's live RSS (which by now already includes the resident
-            // KS cache) and reserves the same 0.9 headroom fraction PySCF
-            // uses, so a duplicate that would not actually fit is a clean
-            // `Err` here rather than a silent OOM three calls deeper. This
-            // does not fix the duplication itself (that requires teaching
-            // `GgaFxcKernel`/`LdaFxcKernel` to borrow `xc_contrib`'s cache
-            // instead of rebuilding it, which lives in ferric-dft, out of
-            // scope for this file) — it only makes the ALREADY-EXISTING
-            // second allocation honestly accounted for before it happens.
-            let fxc_store = if xc_contrib.is_some() {
-                let main = config
-                    .dft_grid
-                    .clone()
-                    .unwrap_or_else(ferric_dft::grid::AtomicGridConfig::production);
-                let name = config.xc.as_deref().expect("xc_contrib implies Some(xc)");
-                let needed = fxc_kernel_duplicate_bytes(n, mol.atoms.len(), &main);
-                let avail = ferric_core::memory::available_budget_now(
-                    ferric_core::memory::resolve_budget_bytes(
-                        (config.three_index_budget_bytes != 0)
-                            .then_some(config.three_index_budget_bytes),
-                    ),
-                );
-                ferric_core::memory::check_alloc(
-                    "UHF/UKS Newton f_xc kernel (duplicate chi+dchi cache on the live KS grid)",
-                    needed,
-                    avail,
-                )?;
-                Some(crate::rohf::FxcKernelStore::build(
-                    mol,
-                    prep,
-                    &main,
-                    name,
-                    config.xc_omega,
-                    &d_a,
-                    &d_b,
-                )?)
-            } else {
-                None
-            };
-            let fxc_storage = fxc_store.as_ref().map(|s| s.response());
+            // Only an evaluator without a screened grid falls back to the dense
+            // `FxcKernelStore`, which builds a SECOND (nbf, npts) chi + (3, nbf,
+            // npts) dchi cache on the same grid: 1.31 GB at benzene/aug-cc-pVTZ,
+            // 13.49 GB at danuglipron/def2-SVP, on top of the KS cache. That
+            // fallback is gated here first: `available_budget_now` reads this
+            // process's live RSS (the resident KS cache included) against the
+            // 0.9 headroom fraction, so a duplicate that would not fit is a
+            // clean `Err` rather than a silent OOM. `check_ao_grid_budget`
+            // inside `eval_basis_and_grad_on_points` cannot see the live KS
+            // cache, so it would re-approve the duplicate against the whole
+            // budget.
+            let fxc_storage = uks_fxc_response(
+                xc_contrib.as_deref(),
+                (mol, prep, config),
+                (&d_a, &d_b),
+                NEWTON_FXC_LABEL,
+            )?;
             let fxc_ref: Option<&crate::rohf_newton::FxcResponse<'_>> = fxc_storage.as_deref();
 
             let (fitted_j, fitted_k) = fitted_responses(df_j.as_mut(), df_k.as_mut());
@@ -2290,6 +2219,45 @@ pub(crate) fn fitted_responses<'b, 'e: 'b>(
         }) as Box<crate::uhf_newton::OccKResponse<'b>>
     });
     (j, k)
+}
+
+/// `check_alloc` label of the TRAH step's dense f_xc fallback.
+const TRAH_FXC_LABEL: &str =
+    "UHF/UKS TRAH f_xc kernel (duplicate chi+dchi cache on the live KS grid)";
+/// `check_alloc` label of the Newton step's dense f_xc fallback.
+const NEWTON_FXC_LABEL: &str =
+    "UHF/UKS Newton f_xc kernel (duplicate chi+dchi cache on the live KS grid)";
+
+/// The UKS f_xc response for a Newton or TRAH step at `(d_a, d_b)` (`None`
+/// for pure UHF, `x = None`)
+/// ([`crate::rohf::polarized_fxc_response`]), with the dense fallback's
+/// duplicate χ/∇χ cache gated under `label` against the live budget.
+fn uks_fxc_response<'s>(
+    x: Option<&'s dyn ferric_dft::xc_trait::UksXcContribution>,
+    (mol, prep, config): (&Molecule, &PreparedBasis, &UhfConfig),
+    d: (&Array2<f64>, &Array2<f64>),
+    label: &str,
+) -> Result<Option<Box<crate::rohf_newton::FxcResponse<'s>>>, FerricError> {
+    let Some(x) = x else {
+        return Ok(None);
+    };
+    let main = config
+        .dft_grid
+        .clone()
+        .unwrap_or_else(ferric_dft::grid::AtomicGridConfig::production);
+    let name = config.xc.as_deref().expect("xc_contrib implies Some(xc)");
+    let needed = fxc_kernel_duplicate_bytes(prep.nbasis(), mol.atoms.len(), &main);
+    let avail =
+        ferric_core::memory::available_budget_now(ferric_core::memory::resolve_budget_bytes(
+            (config.three_index_budget_bytes != 0).then_some(config.three_index_budget_bytes),
+        ));
+    crate::rohf::polarized_fxc_response(
+        x,
+        (mol, prep, config, name),
+        d,
+        Some((label, needed, avail)),
+    )
+    .map(Some)
 }
 
 /// Post-convergence internal stability analysis for a UHF/UKS solution.
