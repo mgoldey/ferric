@@ -27,6 +27,19 @@ use std::cell::Cell;
 thread_local! {
     /// ROHF/ROKS Hessian-vector products computed on this thread (test seam).
     static HVP_CALLS: Cell<usize> = const { Cell::new(0) };
+    /// PCG solves truncated on non-positive curvature on this thread.
+    static STEIHAUG_TRUNCATIONS: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Curvature threshold (Hartree, half-Hessian Rayleigh quotient) below which
+/// a PCG direction counts as negative curvature (see `pcg_refine`).
+const NEG_CURVATURE: f64 = 1e-3;
+
+/// Number of Newton PCG solves on the calling thread that stopped on a
+/// non-positive-curvature direction (Steihaug truncation; test seam).
+#[doc(hidden)]
+pub fn steihaug_truncations_on_this_thread() -> usize {
+    STEIHAUG_TRUNCATIONS.with(Cell::get)
 }
 
 /// Number of [`hessian_matvec`] calls made on the calling thread so far (test
@@ -172,7 +185,16 @@ pub fn rohf_newton_step(
         let k = (&mut k_vc, &mut k_vo, &mut k_oc);
         let g = (&g_vc, &g_vo, &g_oc);
         let diag = (&diag_vc, &diag_vo, &diag_oc);
-        pcg_refine(ctx, inp, &pool, g, diag, k, cg_max_iter, cg_conv)?;
+        let (its, resid) = pcg_refine(ctx, inp, &pool, g, diag, k, cg_max_iter, cg_conv)?;
+        if crate::rohf::rohf_trace() {
+            let kmax = arr_max_abs(&k_vc)
+                .max(arr_max_abs(&k_vo))
+                .max(arr_max_abs(&k_oc));
+            eprintln!(
+                "ROHF Newton: |g|max {gmax:.2e} PCG its {its}/{cg_max_iter} resid {resid:.2e} (tol {cg_conv:.0e}) |κ|max {kmax:.2e} clip {}",
+                kmax > max_step
+            );
+        }
     } else {
         k_vc.fill(0.0);
         k_vo.fill(0.0);
@@ -248,7 +270,7 @@ fn pcg_refine(
     (k_vc, k_vo, k_oc): (&mut Array2<f64>, &mut Array2<f64>, &mut Array2<f64>),
     cg_max_iter: usize,
     cg_conv: f64,
-) -> Result<(), FerricError> {
+) -> Result<(usize, f64), FerricError> {
     // Preconditioned conjugate-gradient solve for H·κ = −g.
     //
     // The orbital Hessian is symmetric (and positive-definite near a
@@ -275,16 +297,40 @@ fn pcg_refine(
 
     let mut rz_old: f64 = inner(&r_vc, &z_vc) + inner(&r_vo, &z_vo) + inner(&r_oc, &z_oc);
 
+    let resid = |r: (&Array2<f64>, &Array2<f64>, &Array2<f64>)| {
+        arr_max_abs(r.0).max(arr_max_abs(r.1)).max(arr_max_abs(r.2))
+    };
+    let mut its = 0;
     for _it in 0..cg_max_iter {
-        let max_resid = arr_max_abs(&r_vc)
-            .max(arr_max_abs(&r_vo))
-            .max(arr_max_abs(&r_oc));
-        if max_resid < cg_conv {
+        if resid((&r_vc, &r_vo, &r_oc)) < cg_conv {
             break;
         }
+        its += 1;
         // Ap = H · p
         let (ap_vc, ap_vo, ap_oc) = hessian_matvec(ctx, inp, &p_vc, &p_vo, &p_oc, pool)?;
         let p_ap: f64 = inner(&p_vc, &ap_vc) + inner(&p_vo, &ap_vo) + inner(&p_oc, &ap_oc);
+        // Steihaug truncation. The exact Hessian is INDEFINITE near a saddle
+        // (e.g. a hole in the wrong shell), and on negative curvature the CG
+        // step α would move uphill along that direction, so Newton could
+        // converge to the saddle. Stop and keep the current iterate: on the
+        // first pass that is κ⁰ = −M⁻¹g, a descent direction because M is
+        // positive (`build_diag_perspin`); later iterates decrease the
+        // quadratic model.
+        //
+        // Only curvature below −NEG_CURVATURE·|p|² counts. MEASURED 2026-11-11
+        // (Rayleigh quotients pᵀAp/|p|² at pᵀAp ≤ 0, half-Hessian, Hartree):
+        // the π-hole orientation modes of off-axis ²Π OH/NO under PBE sit at
+        // −2e-7 .. −1.04e-4 (the XC grid's rotational variance, ΔE ~1e-6 Ha
+        // between orientations), the OH/6-31G σ-hole saddle at −0.08 .. −0.15.
+        // Truncating on the former made Newton crawl between grid-degenerate
+        // orientations (NO off-axis 12 → 92 iterations); between −1e-3 and 0
+        // the curvature is treated as flat and CG continues as before. A real
+        // saddle softer than 1e-3 Ha is therefore not escaped by this guard.
+        let pp = inner(&p_vc, &p_vc) + inner(&p_vo, &p_vo) + inner(&p_oc, &p_oc);
+        if p_ap < -NEG_CURVATURE * pp {
+            STEIHAUG_TRUNCATIONS.with(|c| c.set(c.get() + 1));
+            break;
+        }
         if p_ap.abs() < 1e-30 {
             break;
         }
@@ -310,7 +356,7 @@ fn pcg_refine(
         p_oc.zip_mut_with(&z_oc, |p, &v| *p = v + beta * *p);
     }
 
-    Ok(())
+    Ok((its, resid((&r_vc, &r_vo, &r_oc))))
 }
 
 /// Compute H · κ for the three κ-blocks.
@@ -588,11 +634,13 @@ fn build_diag_perspin(
     let mut out = Array2::<f64>::zeros((nr, nc));
     for (i, r) in rows.enumerate() {
         for (j, c) in cols.clone().enumerate() {
-            // (F[p,p] − F[q,q]) + shift, with a 1e-6 floor for near-degeneracies.
-            // Signed (NOT abs) — for an occ→virt block this is positive and
-            // gives the right Newton step direction when divided into the gradient.
-            let d = (f_diag[r] - f_diag[c]) + shift;
-            out[(i, j)] = if d.abs() < 1e-6 { 1e-6 } else { d };
+            // POSITIVE (|gap| + shift, floored at 1e-6): the Steihaug guard in
+            // `pcg_refine` needs a positive preconditioner so that κ⁰ = −M⁻¹g
+            // is a descent direction. A signed gap is negative exactly where
+            // the per-spin Fock order is inverted (a hole in the wrong shell),
+            // and there it pointed κ⁰ uphill.
+            let d = (f_diag[r] - f_diag[c]).abs() + shift;
+            out[(i, j)] = d.max(1e-6);
         }
     }
     out
