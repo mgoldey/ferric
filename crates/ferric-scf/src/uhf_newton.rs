@@ -33,7 +33,6 @@ use ferric_core::parallel::ParallelContext;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ndarray::Array2;
-use ndarray_linalg::Solve;
 use std::cell::Cell;
 
 thread_local! {
@@ -327,8 +326,8 @@ pub fn uhf_newton_step(
         k_b.mapv_inplace(|x| x * s);
     }
 
-    let c_a_new = apply_cayley(inp.c_a, &k_a, na, n)?;
-    let c_b_new = apply_cayley(inp.c_b, &k_b, nb, n)?;
+    let c_a_new = crate::cayley::apply_cayley_ov(inp.c_a, &k_a, na, n)?;
+    let c_b_new = crate::cayley::apply_cayley_ov(inp.c_b, &k_b, nb, n)?;
     Ok((c_a_new, c_b_new, kmax))
 }
 
@@ -584,39 +583,6 @@ fn build_gap(f_diag: &[f64], nocc: usize, n: usize, shift: f64) -> Array2<f64> {
         }
     }
     out
-}
-
-/// Apply the Cayley unitary built from the occ→virt block to C: C ← C·U.
-fn apply_cayley(
-    c: &Array2<f64>,
-    k_ov: &Array2<f64>,
-    nocc: usize,
-    n: usize,
-) -> Result<Array2<f64>, FerricError> {
-    // Antisymmetric κ in MO basis from the occ→virt block.
-    let mut kappa = Array2::<f64>::zeros((n, n));
-    for (ir, a) in (nocc..n).enumerate() {
-        for i in 0..nocc {
-            let v = k_ov[(ir, i)];
-            kappa[(a, i)] = v;
-            kappa[(i, a)] = -v;
-        }
-    }
-    let half = 0.5 * &kappa;
-    let eye = Array2::<f64>::eye(n);
-    let a_mat = &eye - &half;
-    let b_mat = &eye + &half;
-    let mut u = Array2::<f64>::zeros((n, n));
-    for col in 0..n {
-        let bcol = b_mat.column(col).to_owned();
-        let sol = a_mat
-            .solve(&bcol)
-            .map_err(|e| FerricError::Lapack(format!("UHF Cayley solve: {e}")))?;
-        for row in 0..n {
-            u[(row, col)] = sol[row];
-        }
-    }
-    Ok(c.dot(&u))
 }
 
 fn neg(a: &Array2<f64>) -> Array2<f64> {

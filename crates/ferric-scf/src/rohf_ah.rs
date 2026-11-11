@@ -18,7 +18,6 @@ use crate::rohf_newton::{gradient_blocks, hessian_matvec, RohfNewtonInputs};
 use ferric_core::parallel::ParallelContext;
 use ferric_core::FerricError;
 use ndarray::{Array1, Array2};
-use ndarray_linalg::Solve;
 
 thread_local! {
     /// AH steps on this thread whose Davidson did not converge (test seam).
@@ -304,21 +303,7 @@ pub fn rohf_ah_step(
     }
 
     // 7. Cayley unitary U = (I − κ/2)^{-1} (I + κ/2). Apply to C: C ← C·U.
-    let half_k = 0.5 * &kappa_mo;
-    let i_eye = Array2::<f64>::eye(n);
-    let a = &i_eye - &half_k;
-    let b = &i_eye + &half_k;
-    let mut u = Array2::<f64>::zeros((n, n));
-    for col in 0..n {
-        let bcol = b.column(col).to_owned();
-        let sol = a
-            .solve(&bcol)
-            .map_err(|e| FerricError::Lapack(format!("AH Cayley solve: {e}")))?;
-        for row in 0..n {
-            u[(row, col)] = sol[row];
-        }
-    }
-    let c_new = base.c.dot(&u);
+    let c_new = crate::cayley::cayley_rotate(base.c, &kappa_mo)?;
 
     Ok((c_new, kmax))
 }

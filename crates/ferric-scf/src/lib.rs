@@ -193,6 +193,8 @@ pub use cdft_coupling::{coupling_hab, DiabaticState, HabResult};
 /// Restricted open-shell Hartree-Fock solver (ROHF).
 pub mod rohf;
 pub use rohf::{solve_rohf, RohfConfig};
+/// Shared Cayley orbital rotation `(I − κ/2)⁻¹ (I + κ/2)` (factorized once).
+pub(crate) mod cayley;
 /// Nuclear gradients of density-fitted (RI-J / RI-K / RSH) two-electron
 /// energies, routed by the builders the SCF recorded in `ScfResult::df_jk`.
 pub mod df_gradient;
