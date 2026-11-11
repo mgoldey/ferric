@@ -119,6 +119,15 @@ env:
   # version, so this is a documented BEST GUESS, not a cleared hazard -- see
   # the "OpenBLAS build" step and the PR description.
   OPENBLAS_VERSION: "0.3.27"
+  # OpenBLAS's maximum thread count is fixed at BUILD time (NUM_THREADS).
+  # Unset, it is the build machine's core count: the 0.1.0rc11 wheel, built
+  # on a 4-core runner, reports MAX_THREADS=4, so openblas_set_num_threads(N)
+  # gave at most 4 threads on any machine. 128 is conda-forge's value
+  # (openblas-feedstock recipe/build.sh); numpy/scipy's scipy-openblas wheels
+  # use 64 (MacPython/openblas-libs tools/build_steps.sh). smoke-test fails
+  # if the wheel's OpenBLAS allows fewer (scripts/check_wheel_openblas_threads.py).
+  # Part of the native-deps cache key.
+  OPENBLAS_MAX_THREADS: "128"
   LIBXC_VERSION: "6.2.2"
   EIGEN_VERSION: "3.4.0"
   # SHA-pinned manylinux image for the mpi-wheel job's own `docker run`
@@ -243,7 +252,7 @@ jobs:
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ${{ github.workspace }}/native-deps-cache
-          key: native-deps-${{ env.NATIVE_DEPS_CACHE_VERSION }}-manylinux_2_28-openblas${{ env.OPENBLAS_VERSION }}-libxc${{ env.LIBXC_VERSION }}-libint${{ env.LIBINT_SHA256 }}-eigen${{ env.EIGEN_VERSION }}
+          key: native-deps-${{ env.NATIVE_DEPS_CACHE_VERSION }}-manylinux_2_28-openblas${{ env.OPENBLAS_VERSION }}-threads${{ env.OPENBLAS_MAX_THREADS }}-libxc${{ env.LIBXC_VERSION }}-libint${{ env.LIBINT_SHA256 }}-eigen${{ env.EIGEN_VERSION }}
 
       # Same reasoning as build-wheels' own "Free runner disk space" step
       # (unchanged below) -- this job pulls the same multi-GB manylinux_2_28
@@ -286,6 +295,7 @@ jobs:
           LIBINT_VERSION="$5"
           LIBINT_URL="$6"
           LIBINT_SHA256="$7"
+          OPENBLAS_MAX_THREADS="$8"
           mkdir -p "$PREFIX"
 
           # AlmaLinux 8 base image: gcc-toolset-12 gets us a C++17 compiler new
@@ -365,7 +375,9 @@ jobs:
           wget -q https://github.com/OpenMathLib/OpenBLAS/releases/download/v${OPENBLAS_VERSION}/OpenBLAS-${OPENBLAS_VERSION}.tar.gz
           tar xzf OpenBLAS-${OPENBLAS_VERSION}.tar.gz
           cd OpenBLAS-${OPENBLAS_VERSION}
-          make -j"$NPROC" DYNAMIC_ARCH=0 TARGET=HASWELL USE_THREAD=1 USE_OPENMP=0 NO_STATIC=0 NO_SHARED=0
+          # NUM_THREADS: see OPENBLAS_MAX_THREADS in the workflow env.
+          make -j"$NPROC" DYNAMIC_ARCH=0 TARGET=HASWELL USE_THREAD=1 USE_OPENMP=0 NO_STATIC=0 NO_SHARED=0 \
+            NUM_THREADS="$OPENBLAS_MAX_THREADS"
           make PREFIX="$PREFIX" install
 
           # --- libxc (dynamic; ferric-dft/build.rs: `cargo:rustc-link-lib=xc`) ---
@@ -471,7 +483,8 @@ jobs:
               "${{ github.workspace }}/native-deps-cache" \
               "${{ env.EIGEN_VERSION }}" "${{ env.OPENBLAS_VERSION }}" \
               "${{ env.LIBXC_VERSION }}" "${{ env.LIBINT_VERSION }}" \
-              "${{ env.LIBINT_URL }}" "${{ env.LIBINT_SHA256 }}"
+              "${{ env.LIBINT_URL }}" "${{ env.LIBINT_SHA256 }}" \
+              "${{ env.OPENBLAS_MAX_THREADS }}"
 
       # Mirrors ci.yml's libint2 cache: save is a SEPARATE step that runs
       # ONLY on success() (not always()), and only when this run actually did
@@ -486,7 +499,7 @@ jobs:
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ${{ github.workspace }}/native-deps-cache
-          key: native-deps-${{ env.NATIVE_DEPS_CACHE_VERSION }}-manylinux_2_28-openblas${{ env.OPENBLAS_VERSION }}-libxc${{ env.LIBXC_VERSION }}-libint${{ env.LIBINT_SHA256 }}-eigen${{ env.EIGEN_VERSION }}
+          key: native-deps-${{ env.NATIVE_DEPS_CACHE_VERSION }}-manylinux_2_28-openblas${{ env.OPENBLAS_VERSION }}-threads${{ env.OPENBLAS_MAX_THREADS }}-libxc${{ env.LIBXC_VERSION }}-libint${{ env.LIBINT_SHA256 }}-eigen${{ env.EIGEN_VERSION }}
 
       - name: Keep native-deps-cache out of the wheel / git
         run: echo "native-deps-cache/" >> .git/info/exclude
@@ -1489,6 +1502,7 @@ jobs:
             site/src
             README.md
             scripts/check_doc_snippets.py
+            scripts/check_wheel_openblas_threads.py
           sparse-checkout-cone-mode: false
 
       - name: Docs snippets -- run the marked Python examples and compare output
@@ -1496,6 +1510,15 @@ jobs:
           set -euo pipefail
           source /tmp/smoke-venv/bin/activate
           python3 docs-src/scripts/check_doc_snippets.py --root docs-src
+
+      # The wheel's OpenBLAS must allow OPENBLAS_MAX_THREADS threads (the
+      # 0.1.0rc11 wheel allowed 4: NUM_THREADS was the build runner's cores).
+      - name: Bundled OpenBLAS thread limit
+        run: |
+          set -euo pipefail
+          source /tmp/smoke-venv/bin/activate
+          cd /tmp
+          python3 "$GITHUB_WORKSPACE/docs-src/scripts/check_wheel_openblas_threads.py" "$OPENBLAS_MAX_THREADS"
 
   # Publishes to PyPI via trusted publishing (OIDC) -- no long-lived token in
   # this repo. All three prerequisites this job used to wait on are now met:
