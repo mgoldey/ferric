@@ -366,6 +366,10 @@ fn response_jk(
         let (dj, dk) = direct_response_jk(ctx, inp, pool, dd_ao)?;
         return Ok((dj, Some(dk)));
     };
+    // The fitted builds below run OUTSIDE the SCF's J/K ladder scope; without
+    // this guard a mixed-precision device kernel would treat them as mixed, and
+    // the ± occupied-factor δK would carry an f32 error independent of |κ|.
+    let _f64 = crate::jk_ladder::F64BuildScope::enter();
     let need_k = inp.rsh.is_none() && inp.k_mix_sr != 0.0;
     let need_direct = jk.j.is_none() || (need_k && jk.k.is_none());
     let (mut dj_dir, mut dk_dir) = if need_direct {

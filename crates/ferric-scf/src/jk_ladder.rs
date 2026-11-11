@@ -167,6 +167,37 @@ pub fn scope_allows_mixed() -> Option<bool> {
     SCOPE.with(Cell::get)
 }
 
+/// A J/K build scope that REQUIRES f64 and belongs to no ladder: for density-
+/// fitted builds made outside the SCF's own Fock build, such as the response
+/// J/K of a Newton Hessian-vector product (`crate::rhf_newton`).
+///
+/// Outside any scope [`scope_allows_mixed`] is `None` and the device kernels
+/// treat every build as mixed-eligible. A response `δK` from the ± occupied
+/// factor (`K_occ(X+Y) − K_occ(X−Y)`) would then carry an absolute f32 error of
+/// about `ε₃₂·|K_occ(X)|` whatever `|κ|` is: O(1) relative error late in PCG.
+/// Inside this scope the kernels run f64 (or decline to the host when only the
+/// f32 tensor is resident), so no mixed build happens and none is counted in
+/// the kernel provenance: the scope has no ladder to keep a build for the exit.
+#[must_use = "the f64 requirement holds only while this guard is alive"]
+pub struct F64BuildScope {
+    prev: Option<bool>,
+}
+
+impl F64BuildScope {
+    /// Require f64 J/K builds on this thread until the guard drops.
+    pub fn enter() -> Self {
+        Self {
+            prev: SCOPE.with(|s| s.replace(Some(false))),
+        }
+    }
+}
+
+impl Drop for F64BuildScope {
+    fn drop(&mut self) {
+        SCOPE.with(|s| s.set(self.prev));
+    }
+}
+
 /// `kernel` (`dfj-pack` or `dfk-occ`) ran a device build mixed. Called by the
 /// device dispatchers; the enclosing guard keeps the build for the exit.
 ///

@@ -757,3 +757,37 @@ fn rks_newton_fitted_response_benzene_b3lyp() {
         true,
     );
 }
+
+/// Newton runs only at ω = 0: a range-separated hybrid with `newton_trigger`
+/// set converges on DIIS and computes no Hessian-vector product. Pins the
+/// `k_mix.omega == 0.0` gate in `solve_rhf`, which keeps the SR/LR exchange
+/// response (`rsh_response`) out of the Newton step until that path is
+/// validated end to end.
+///
+/// Mutation (applied and reverted, 2026-11-11): dropping the ω gate from
+/// `use_newton` runs 9 HVPs and fails the count assert.
+#[test]
+fn rsh_newton_trigger_runs_no_hvp() {
+    use ferric_scf::rhf_newton::hvp_calls_on_this_thread;
+    let mol = water();
+    let prep = PreparedBasis::new(&mol, &basis::bundled("def2-svp").unwrap()).unwrap();
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+    let ctx = ParallelContext::default();
+    let cfg = RhfConfig {
+        xc: Some("wB97X-V".into()),
+        energy_conv: 1e-9,
+        density_conv: 1e-7,
+        max_iter: 200,
+        newton_trigger: 1e-2,
+        ..Default::default()
+    };
+    let before = hvp_calls_on_this_thread();
+    let res = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
+    let hvps = hvp_calls_on_this_thread() - before;
+    assert!(
+        res.converged,
+        "wB97X-V water/def2-SVP must converge on DIIS"
+    );
+    assert_eq!(hvps, 0, "Newton must not run at ω != 0 (got {hvps} HVPs)");
+}
