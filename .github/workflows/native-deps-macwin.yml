@@ -39,30 +39,13 @@ on:
         default: '["macos-arm64", "windows-x86_64"]'
 
 env:
-  # Same pins as wheels.yml's Linux native deps.
-  LIBINT_VERSION: "2.7.2"
-  LIBINT_URL: https://github.com/mgoldey/ferric/releases/download/libint-2.7.2-ferric-small-1/libint-2.7.2-ferric-small-1.tgz
-  LIBINT_SHA256: 123b744cd744b19c4ca8401b3a58ed7fca3680bc638519edd806501b5919a48b  # pragma: allowlist secret
-  # OpenBLAS differs per platform. macOS keeps the Linux wheels' 0.3.27.
-  # Windows needs a newer one: its build is clang-cl (MSVC ABI) with
-  # NOFORTRAN + C_LAPACK, and OpenBLAS fixed bugs in exactly that
-  # configuration after 0.3.27 (Changelog.txt): 0.3.30 "fixed several errors
-  # in the C code replacements for the complex and double precision complex
-  # LAPACK functions that get used (only) when compiling with Microsoft C and
-  # NOFORTRAN=1 under MS Windows", 0.3.32 "Fixed an ABI mismatch in the
-  # internal version of CDOT/ZDOT used by the C fallback versions of the
-  # LAPACK source", and 0.3.28 reverted Windows thread management changes
-  # "due to signs of race conditions". With 0.3.27 the Windows wheel gave wrong
-  # complex (k-point PBC) results. The chosen version goes into the cache key.
-  OPENBLAS_VERSION_MACOS: "0.3.27"
-  OPENBLAS_VERSION_WINDOWS: "0.3.34"
-  LIBXC_VERSION: "6.2.2"
-  EIGEN_VERSION: "3.4.0"
+  # Source pins (libint2, OpenBLAS per platform, libxc, Eigen, cache version)
+  # are in scripts/wheels/native-pins.env, loaded into the job env by the
+  # "Pins" step: the same file scripts/wheels/native-cache-key.sh reads, so
+  # this builder and every cache reader (platform-tests.yml) agree on the keys.
   # Wheels claim macOS 11+ (the first arm64 macOS); every native object must
   # target it too, or delocate raises the wheel's platform tag.
   MACOSX_DEPLOYMENT_TARGET: "11.0"
-  # Bump to drop every cache entry this file writes.
-  NATIVE_MACWIN_CACHE_VERSION: v1
 
 jobs:
   native:
@@ -80,11 +63,24 @@ jobs:
         # Login shell: micromamba's activation lives in the profile.
         shell: bash -el {0}
     steps:
+      # LF checkout on Windows too (the runner image defaults to
+      # core.autocrlf=true), so the build scripts are the same bytes on every
+      # platform.
+      - name: Check out with LF line endings
+        if: runner.os == 'Windows'
+        shell: bash
+        run: git config --global core.autocrlf false
+
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
           sparse-checkout: scripts/wheels
           sparse-checkout-cone-mode: false
+
+      - name: Pins
+        run: |
+          set -euo pipefail
+          grep -E '^[A-Z_0-9]+=' scripts/wheels/native-pins.env | sed 's/[[:space:]]*#.*$//' | tee -a "$GITHUB_ENV"
 
       # Build tools only (CMake, Ninja, Eigen's CMake package, llvm-ar). No
       # library from this environment is linked into anything.
@@ -102,7 +98,8 @@ jobs:
       - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
         if: runner.os == 'Windows'
 
-      # Compiler (clang-cl on Windows, Apple clang on macOS) and the cache key.
+      # Compiler environment (clang-cl on Windows, Apple clang on macOS) and
+      # the cache key (scripts/wheels/native-cache-key.sh).
       - name: Toolchain and cache key
         id: key
         env:
@@ -123,28 +120,14 @@ jobs:
             export PATH="$MSVC_BIN:/c/Program Files/LLVM/bin:$PATH"
             echo "CC=clang-cl" >> "$GITHUB_ENV"
             echo "CXX=clang-cl" >> "$GITHUB_ENV"
-            cc_ver="$(clang-cl --version | head -1)"
-            cc="clangcl$(clang-cl --version | sed -n 's/.*clang version \([0-9]*\)\..*/\1/p' | head -1)"
             echo "EIGEN_PREFIX=$(cygpath -m "$CONDA_PREFIX/Library")" >> "$GITHUB_ENV"
             echo "PREFIX=$(cygpath -m "$GITHUB_WORKSPACE/native-$NATIVE_PART")" >> "$GITHUB_ENV"
-            os="$(cmd //c ver | tr -d '\r' | sed -n 's/.*Version \([0-9]*\.[0-9]*\.[0-9]*\).*/win\1/p')"
           else
-            cc_ver="$(clang --version | head -1)"
-            cc="appleclang$(clang --version | sed -n 's/.*clang version \([0-9]*\)\..*/\1/p' | head -1)"
             echo "EIGEN_PREFIX=$CONDA_PREFIX" >> "$GITHUB_ENV"
             echo "LLVM_AR=$CONDA_PREFIX/bin/llvm-ar" >> "$GITHUB_ENV"
             echo "PREFIX=$GITHUB_WORKSPACE/native-$NATIVE_PART" >> "$GITHUB_ENV"
-            os="macos$(sw_vers -productVersion | cut -d. -f1)-$(uname -m)"
           fi
-          echo "compiler: $cc_ver"
-          [ -n "$cc" ] && [ "$cc" != clangcl ] && [ "$cc" != appleclang ] || { echo "::error::could not read the compiler version from: $cc_ver"; exit 1; }
-          if [ "$NATIVE_PART" = libint2 ]; then
-            src="libint${LIBINT_VERSION}-${LIBINT_SHA256}-eigen${EIGEN_VERSION}"
-          else
-            src="openblas${ob}-libxc${LIBXC_VERSION}-eigen${EIGEN_VERSION}"
-          fi
-          script="$(sha256sum "scripts/wheels/build-$NATIVE_PART.sh" 2>/dev/null || shasum -a 256 "scripts/wheels/build-$NATIVE_PART.sh")"
-          key="native-macwin-${NATIVE_MACWIN_CACHE_VERSION}-${NATIVE_PART}-${NATIVE_PLATFORM}-${os}-${cc}-${src}-script${script:0:16}"
+          key="$(bash scripts/wheels/native-cache-key.sh "$NATIVE_PART" "$NATIVE_PLATFORM")"
           echo "key=$key" >> "$GITHUB_OUTPUT"
           echo "cache key: $key"
 

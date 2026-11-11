@@ -8,6 +8,19 @@ name: Platform tests (macOS / Windows)
 # NON-BLOCKING: this workflow is not a required check. Make it one only after
 # it has gone green twice on main.
 #
+# NATIVE DEPS COME FROM THE CACHE, NEVER FROM A BUILD. Both jobs restore the
+# libint2 and OpenBLAS+libxc caches that native-deps-macwin.yml saves (called
+# by wheels.yml: nightly on main, tags), under the keys
+# scripts/wheels/native-cache-key.sh computes from scripts/wheels/native-pins.env
+# (the same script the builder uses). GitHub lets a run restore caches of its
+# own ref and of main, so on a PR this hits once main's nightly has built the
+# current keys. On a MISS (before the first nightly after a merge, after a pin
+# or build-script change, or after cache eviction) every test step is skipped,
+# the job ends green, and a notice plus a step-summary line say
+# "SKIPPED: no native-deps cache ...". It is skipped rather than failed because this
+# check is non-blocking and a cold libint2 build (77-91 min) does not belong in
+# a PR check. A green run is a test result only if that notice is absent.
+#
 # Rust slice: ferric-core (lib + integration tests, incl. memory::sys and
 # memory::tests), ferric-integrals (lib + integration tests), ferric-scf lib
 # tests. Python: crates/ferric-python/tests against a wheel built and repaired
@@ -29,6 +42,7 @@ on:
       - 'testdata/**'
       - 'examples/*.toml'
       - 'scripts/ci-platform-env.sh'
+      - 'scripts/wheels/**'
       - '.config/nextest.toml'
       - '.github/workflows/platform-tests.yml'
   workflow_dispatch: {}
@@ -43,10 +57,6 @@ env:
   CARGO_PROFILE_DEV_DEBUG: line-tables-only
   CARGO_INCREMENTAL: "0"
   PYTHON_VERSION: "3.12"
-  # Run of native-deps-macwin.yml whose native-*-<platform> artifacts (7-day
-  # retention) these jobs reuse. TEMPORARY: replaced by a cache restore once
-  # that workflow is on main.
-  NATIVE_FROM_RUN: "42968024921"
 
 jobs:
   rust:
@@ -76,20 +86,59 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       # NATIVE DEPS: the release wheels' own from-source builds (libint2 2.7.2
-      # small export, static; OpenBLAS 0.3.27 fixed TARGET; libxc 6.2.2; Eigen
-      # 3.4.0), as built by .github/workflows/native-deps-macwin.yml. Reused
-      # from that workflow's run by artifact until it is on main; then this
-      # becomes a cache restore of its keys (scripts/wheels/README.md).
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      # small export, static; OpenBLAS with a fixed TARGET; libxc 6.2.2; Eigen
+      # 3.4.0), restored from the actions/cache entries
+      # .github/workflows/native-deps-macwin.yml saves (keys from
+      # scripts/wheels/native-cache-key.sh, the one definition both use).
+      # NO CACHE, NO TEST: this job never builds the deps itself (a cold
+      # libint2 build is 77-91 min). On a miss every later step is skipped
+      # with a notice and the job ends green; see the header.
+      - name: Native deps cache keys
+        id: nkeys
+        env:
+          NATIVE_PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          for part in libint2 blas-xc; do
+            echo "$part=$(bash scripts/wheels/native-cache-key.sh "$part" "$NATIVE_PLATFORM")" | tee -a "$GITHUB_OUTPUT"
+          done
+
+      - name: Restore native libint2
+        id: c-libint2
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
-          pattern: native-*-${{ matrix.platform }}
-          merge-multiple: true
-          path: native
-          run-id: ${{ env.NATIVE_FROM_RUN }}
-          github-token: ${{ github.token }}
+          path: native-libint2
+          key: ${{ steps.nkeys.outputs.libint2 }}
+
+      - name: Restore native OpenBLAS + libxc
+        id: c-blas-xc
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: native-blas-xc
+          key: ${{ steps.nkeys.outputs.blas-xc }}
+
+      - name: Native deps available?
+        id: natives
+        env:
+          HIT_LIBINT2: ${{ steps.c-libint2.outputs.cache-hit }}
+          HIT_BLAS_XC: ${{ steps.c-blas-xc.outputs.cache-hit }}
+        run: |
+          set -euo pipefail
+          if [ "$HIT_LIBINT2" = true ] && [ "$HIT_BLAS_XC" = true ]; then
+            mkdir -p native
+            cp -R native-libint2/. native/
+            cp -R native-blas-xc/. native/
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            msg="SKIPPED: no native-deps cache for ${{ matrix.platform }} (libint2 hit: ${HIT_LIBINT2:-false}, blas-xc hit: ${HIT_BLAS_XC:-false}). They are built and cached by native-deps-macwin.yml (wheels.yml's nightly on main, or a wheels run on this branch); this run tests nothing."
+            echo "::notice title=platform tests skipped::$msg"
+            echo "$msg" >> "$GITHUB_STEP_SUMMARY"
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          fi
 
       # Build tools only (libecpint is a CMake build); nothing here is linked.
       - uses: mamba-org/setup-micromamba@add3a49764cedee8ee24e82dfde87f5bc2914462 # v2.0.7
+        if: steps.natives.outputs.ready == 'true'
         with:
           environment-name: nd
           init-shell: bash
@@ -98,12 +147,14 @@ jobs:
             cmake ninja pkg-config
 
       - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
-        if: runner.os == 'Windows'
+        if: ${{ steps.natives.outputs.ready == 'true' && (runner.os == 'Windows') }}
 
       - name: Install Rust toolchain
+        if: steps.natives.outputs.ready == 'true'
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch @ 2026-09-16
 
       - name: Restore cargo cache
+        if: steps.natives.outputs.ready == 'true'
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: |
@@ -113,16 +164,19 @@ jobs:
           restore-keys: cargo-v3-${{ runner.os }}-
 
       - name: Install cargo-nextest
+        if: steps.natives.outputs.ready == 'true'
         uses: taiki-e/install-action@26e9283f268b880168bdbd2c545dfcd60ec2c6ab # v2.87.13
         with:
           tool: cargo-nextest
 
       - name: Native prefix
+        if: steps.natives.outputs.ready == 'true'
         run: |
           echo "DEPS_PREFIX=$GITHUB_WORKSPACE/native" >> "$GITHUB_ENV"
           ls native/lib native/include
 
       - name: Build tests
+        if: steps.natives.outputs.ready == 'true'
         run: |
           set -euo pipefail
           source scripts/ci-platform-env.sh
@@ -131,6 +185,7 @@ jobs:
           cargo nextest list --locked -p ferric-scf --lib > /dev/null
 
       - name: Test ferric-core + ferric-integrals
+        if: steps.natives.outputs.ready == 'true'
         run: |
           set -euo pipefail
           source scripts/ci-platform-env.sh
@@ -142,7 +197,7 @@ jobs:
       # The k-point code is the only complex Hermitian eigh / complex GEMM
       # user; this pins that layer of the linked OpenBLAS directly.
       - name: Test complex BLAS/LAPACK ABI (ferric-pbc)
-        if: ${{ !cancelled() }}
+        if: ${{ steps.natives.outputs.ready == 'true' && (!cancelled()) }}
         run: |
           set -euo pipefail
           source scripts/ci-platform-env.sh
@@ -150,7 +205,7 @@ jobs:
             -p ferric-pbc --test complex_lapack_abi 2>&1 | tee nextest-pbc-abi.log
 
       - name: Test ferric-scf (lib)
-        if: ${{ !cancelled() }}
+        if: ${{ steps.natives.outputs.ready == 'true' && (!cancelled()) }}
         run: |
           set -euo pipefail
           source scripts/ci-platform-env.sh
@@ -160,7 +215,7 @@ jobs:
           grep -E "Summary|FAIL" nextest-scf.log | tail -20 >> "$GITHUB_STEP_SUMMARY" || true
 
       - name: Upload test logs
-        if: ${{ !cancelled() }}
+        if: ${{ steps.natives.outputs.ready == 'true' && (!cancelled()) }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: rust-tests-${{ matrix.os }}
@@ -195,20 +250,59 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
 
       # NATIVE DEPS: the release wheels' own from-source builds (libint2 2.7.2
-      # small export, static; OpenBLAS 0.3.27 fixed TARGET; libxc 6.2.2; Eigen
-      # 3.4.0), as built by .github/workflows/native-deps-macwin.yml. Reused
-      # from that workflow's run by artifact until it is on main; then this
-      # becomes a cache restore of its keys (scripts/wheels/README.md).
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      # small export, static; OpenBLAS with a fixed TARGET; libxc 6.2.2; Eigen
+      # 3.4.0), restored from the actions/cache entries
+      # .github/workflows/native-deps-macwin.yml saves (keys from
+      # scripts/wheels/native-cache-key.sh, the one definition both use).
+      # NO CACHE, NO TEST: this job never builds the deps itself (a cold
+      # libint2 build is 77-91 min). On a miss every later step is skipped
+      # with a notice and the job ends green; see the header.
+      - name: Native deps cache keys
+        id: nkeys
+        env:
+          NATIVE_PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          for part in libint2 blas-xc; do
+            echo "$part=$(bash scripts/wheels/native-cache-key.sh "$part" "$NATIVE_PLATFORM")" | tee -a "$GITHUB_OUTPUT"
+          done
+
+      - name: Restore native libint2
+        id: c-libint2
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
-          pattern: native-*-${{ matrix.platform }}
-          merge-multiple: true
-          path: native
-          run-id: ${{ env.NATIVE_FROM_RUN }}
-          github-token: ${{ github.token }}
+          path: native-libint2
+          key: ${{ steps.nkeys.outputs.libint2 }}
+
+      - name: Restore native OpenBLAS + libxc
+        id: c-blas-xc
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: native-blas-xc
+          key: ${{ steps.nkeys.outputs.blas-xc }}
+
+      - name: Native deps available?
+        id: natives
+        env:
+          HIT_LIBINT2: ${{ steps.c-libint2.outputs.cache-hit }}
+          HIT_BLAS_XC: ${{ steps.c-blas-xc.outputs.cache-hit }}
+        run: |
+          set -euo pipefail
+          if [ "$HIT_LIBINT2" = true ] && [ "$HIT_BLAS_XC" = true ]; then
+            mkdir -p native
+            cp -R native-libint2/. native/
+            cp -R native-blas-xc/. native/
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            msg="SKIPPED: no native-deps cache for ${{ matrix.platform }} (libint2 hit: ${HIT_LIBINT2:-false}, blas-xc hit: ${HIT_BLAS_XC:-false}). They are built and cached by native-deps-macwin.yml (wheels.yml's nightly on main, or a wheels run on this branch); this run tests nothing."
+            echo "::notice title=platform tests skipped::$msg"
+            echo "$msg" >> "$GITHUB_STEP_SUMMARY"
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          fi
 
       # Build tools only (libecpint is a CMake build); nothing here is linked.
       - uses: mamba-org/setup-micromamba@add3a49764cedee8ee24e82dfde87f5bc2914462 # v2.0.7
+        if: steps.natives.outputs.ready == 'true'
         with:
           environment-name: nd
           init-shell: bash
@@ -217,12 +311,14 @@ jobs:
             cmake ninja pkg-config
 
       - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
-        if: runner.os == 'Windows'
+        if: ${{ steps.natives.outputs.ready == 'true' && (runner.os == 'Windows') }}
 
       - name: Install Rust toolchain
+        if: steps.natives.outputs.ready == 'true'
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch @ 2026-09-16
 
       - name: Restore cargo cache
+        if: steps.natives.outputs.ready == 'true'
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: |
@@ -232,11 +328,13 @@ jobs:
           restore-keys: cargo-v3-${{ runner.os }}-
 
       - name: Native prefix
+        if: steps.natives.outputs.ready == 'true'
         run: |
           echo "DEPS_PREFIX=$GITHUB_WORKSPACE/native" >> "$GITHUB_ENV"
           ls native/lib native/include
 
       - name: Build wheel (maturin --release)
+        if: steps.natives.outputs.ready == 'true'
         run: |
           set -euo pipefail
           source scripts/ci-platform-env.sh
@@ -246,6 +344,7 @@ jobs:
           ls -la dist
 
       - name: Repair (delocate / delvewheel)
+        if: steps.natives.outputs.ready == 'true'
         run: |
           set -euo pipefail
           source scripts/ci-platform-env.sh
@@ -263,6 +362,7 @@ jobs:
       # and the native prefix are renamed away so nothing outside the wheel can
       # satisfy a library load.
       - name: Install the wheel into a fresh venv (build prefixes hidden)
+        if: steps.natives.outputs.ready == 'true'
         shell: bash {0}
         run: |
           set -euo pipefail
@@ -286,6 +386,7 @@ jobs:
       # PR #633 ported memory detection to macOS/Windows: with no budget set,
       # the CLI must report the auto-detected budget, not the 2 GiB fallback.
       - name: Memory budget is auto-detected
+        if: steps.natives.outputs.ready == 'true'
         shell: bash {0}
         run: |
           set -euo pipefail
@@ -296,6 +397,7 @@ jobs:
           grep -aF "[source: auto (0.8 × available RAM)]" <<<"$LINE"
 
       - name: pytest crates/ferric-python/tests
+        if: steps.natives.outputs.ready == 'true'
         shell: bash {0}
         env:
           FERRIC_MEM_BUDGET_GB: "3"
@@ -315,7 +417,7 @@ jobs:
           exit "$rc"
 
       - name: Upload test logs
-        if: ${{ !cancelled() }}
+        if: ${{ steps.natives.outputs.ready == 'true' && (!cancelled()) }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: python-tests-${{ matrix.os }}

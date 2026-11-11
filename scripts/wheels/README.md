@@ -11,6 +11,8 @@ wheels are built by `wheels.yml` itself and do not use anything here.
 | `build-blas-xc.sh` | native-deps | Builds OpenBLAS (0.3.27 on macOS, 0.3.34 on Windows: see native-deps-macwin.yml) (fixed TARGET, C LAPACK, pthreads, `NUM_THREADS=128`) and libxc 6.2.2, and copies in the Eigen 3.4 headers |
 | `stamp_version.py` | wheels (tags only) | Writes the tag's version into `pyproject.toml` and `crates/ferric-python/Cargo.toml`, then verifies the change with `git diff` (the Linux job does the same in shell) |
 | `add_licenses.py` | wheels | Adds the bundled libraries' licence texts to `dist-info/licenses/third-party/` and updates RECORD |
+| `native-pins.env` | native-deps, platform-tests | Source pins: libint2, OpenBLAS (per platform), libxc, Eigen, and the cache version |
+| `native-cache-key.sh` | native-deps, platform-tests | The single definition of the native-deps cache keys |
 | `smoke.py` | wheels (smoke job) | Checks an installed wheel: the Linux smoke cases, plus energies compared with Linux, each case in its own process |
 
 ## The native-deps prefix
@@ -64,17 +66,19 @@ To run what you built:
 ## Caches
 
 Each platform has two `actions/cache` entries, written only by the
-native-deps jobs:
+native-deps jobs. `native-cache-key.sh <part> <platform>` prints the key:
 
 ```
-native-macwin-v1-libint2-<P>-<os>-<compiler major>-libint2.7.2-<export sha256>-eigen3.4.0-script<sha256[:16] of build-libint2.sh>
-native-macwin-v1-blas-xc-<P>-<os>-<compiler major>-openblas<0.3.27 macOS | 0.3.34 Windows>-libxc6.2.2-eigen3.4.0-script<sha256[:16] of build-blas-xc.sh>
+native-macwin-v1-<part>-<P>-<os>-<compiler major>-<source pins>-script<sha256[:16] of build-<part>.sh, CRs stripped>
 ```
 
-`<os>` is `macos15-arm64` or `win10.0.26100`. `<compiler major>` is
-`appleclang17` or `clangcl20`. Bumping `NATIVE_MACWIN_CACHE_VERSION` in
-native-deps-macwin.yml drops every entry.
+- `<os>` is `macos15-arm64` or `win10.0.26100`.
+- `<compiler major>` is `appleclang17` or `clangcl20`.
+- Bumping `NATIVE_MACWIN_CACHE_VERSION` in `native-pins.env` drops every entry.
 
-A branch can restore its own caches and main's, but not another branch's.
-Until a run on main has saved them, other branches must build cold (about
-90 min for libint2) or reuse a run's artifacts by run id.
+`.github/workflows/platform-tests.yml` restores these same caches. On a miss it
+skips its tests and says so.
+
+A run can restore caches from its own ref and from main, not from another
+branch's. A pull_request run can see only main's caches. Until a run on main
+has saved the current keys, other refs miss.
