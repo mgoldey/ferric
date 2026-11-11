@@ -1599,8 +1599,10 @@ fn solve_rohf_impl(
         mon.note_energy(energy);
 
         // Pick update strategy. Newton step (if enabled and below trigger)
-        // uses per-spin diagonal Fock entries to precondition a PCG solve of
-        // H·κ = −g, then rotates C via the Cayley unitary.
+        // solves H·κ = −g by PCG from the CURRENT orbitals `c` (H = the exact
+        // ROHF/ROKS orbital Hessian, `rohf_newton::hessian_matvec`; the
+        // per-spin diagonal Fock gap is only its preconditioner), then rotates
+        // C via the Cayley unitary.
         //   - HF (xc=None): full Newton with HF orbital Hessian only.
         //   - LDA ROKS: Newton + LDA f_xc kernel response (LdaFxcKernel).
         //   - GGA / hybrid / RSH-GGA ROKS: Newton + GGA f_xc kernel response
@@ -1610,21 +1612,24 @@ fn solve_rohf_impl(
         //     ever supplies the semilocal DFT second-derivative response.
         //   - τ-only meta-GGA ROKS keeps DIIS. The τ kernel exists
         //     (`FxcKernelStore::Mgga`, used by the ROKS Z-vector), but the ROKS
-        //     Newton step on it is not anchored: NH2/6-31G r2SCAN with
-        //     newton_trigger 1e-2 does not converge in 200 iterations (DIIS: 10;
-        //     PBE Newton on the same system: 185 vs DIIS 8).
-        //   - ROKS Newton is slow or stalls on hybrids too. MEASURED 2026-11-11,
-        //     B3LYP/cc-pVDZ, RI-J + DF-K def2-universal-jkfit, energy_conv 1e-9,
-        //     density_conv 1e-7, max_iter 200 (iterations to convergence):
-        //       NH2: DIIS 9; Newton trigger 1e-2: not converged (both the old
-        //            direct HVP response and the fitted one, #644); CLI
-        //            soscf (trigger 1e-3): 136 (old) / 136 (fitted).
-        //       OH:  DIIS 18; trigger 1e-2: not converged (old and fitted);
-        //            soscf: not converged (old) / 184 (fitted).
-        //     Old and fitted HVPs agree at trigger 1e-2 and on NH2, and both
-        //     sit far above DIIS everywhere, so the response kernel is not the
-        //     main cause. Untested hypothesis: the Roothaan matvec's
-        //     diagonal-gap approximation (`rohf_newton::hessian_matvec` doc).
+        //     Newton step on it has not been measured since the 2026-11 fix
+        //     below (before it: NH2/6-31G r2SCAN, newton_trigger 1e-2, not
+        //     converged in 200 iterations vs DIIS 10).
+        //   - MEASURED 2026-11-11 (tests/roks_newton_convergence.rs; energy_conv
+        //     1e-9, density_conv 1e-7, max_iter 200; B3LYP with RI-J + DF-K
+        //     def2-universal-jkfit, PBE direct), iterations to convergence,
+        //     all at the DIIS energy within 1e-7 Ha:
+        //                         DIIS  Newton(1e-2)  soscf(1e-3)  AH(1e-2)
+        //       NH2/6-31G PBE       8        6             6           6
+        //       NH2/cc-pVDZ B3LYP   9        7             7           7
+        //       OH/cc-pVDZ B3LYP   18        8             9           8
+        //     Before the fix the same runs took 136 / 21 / 140 (NH2 PBE),
+        //     not converged / 136 / 169 (NH2 B3LYP), and not converged / 167 /
+        //     not converged (OH): both branches stepped from `eig(F_eff)` of the
+        //     old-density Fock, where the gradient is ≈ 0 by construction
+        //     (an undamped Roothaan step), the Hessian's Fock part was the
+        //     diagonal gap only (decisive for OH's soft π mode), and the AH
+        //     Davidson returned κ = 0 (see `rohf_ah`).
         //
         // `xc_supports_newton_fxc` gates whether an f_xc-accelerated Newton/AH
         // step is taken for this functional. Pure ROHF (xc=None) keeps the
@@ -1640,10 +1645,8 @@ fn solve_rohf_impl(
             && (xc_contrib.is_none() || xc_supports_newton_fxc)
             && k_mix.omega == 0.0;
         if use_ah {
-            let (eps_now, c_now) = diagonalize(&f_eff, &s_inv_sqrt)?;
-            let (_, c_now) = guard.relabel(&c, eps_now, c_now, &s);
-            let f_a_mo = c_now.t().dot(&f_a).dot(&c_now);
-            let f_b_mo = c_now.t().dot(&f_b).dot(&c_now);
+            // Step from the CURRENT orbitals `c`, whose densities built f_a/f_b
+            // (see the Newton branch below for why not `eig(F_eff)`).
 
             // The f_xc response on the SCF's own screened grid (dense fallback).
             let fxc_storage = xc_contrib
@@ -1665,7 +1668,7 @@ fn solve_rohf_impl(
             let inputs = crate::rohf_newton::RohfNewtonInputs {
                 prep,
                 bounds,
-                c: &c_now,
+                c: &c,
                 f_a_mo: &f_a_mo,
                 f_b_mo: &f_b_mo,
                 nocc_double,
@@ -1699,10 +1702,16 @@ fn solve_rohf_impl(
             && err_max < config.newton_trigger
             && (xc_contrib.is_none() || xc_supports_newton_fxc);
         if use_newton {
-            let (eps_now, c_now) = diagonalize(&f_eff, &s_inv_sqrt)?;
-            let (_, c_now) = guard.relabel(&c, eps_now, c_now, &s);
-            let f_a_mo = c_now.t().dot(&f_a).dot(&c_now);
-            let f_b_mo = c_now.t().dot(&f_b).dot(&c_now);
+            // Step from the CURRENT orbitals `c` — the determinant whose
+            // densities built f_a/f_b, so `f_a_mo`/`f_b_mo` (above) carry the
+            // true gradient — as the UHF/RHF Newton steps do. Until 2026-11
+            // this branch (and AH) replaced C by `eig(F_eff)` of the SAME
+            // old-density Fock and stepped from there: in that basis the
+            // gradient is ≈ 0 by construction (|g| ~25x too small on NH2
+            // B3LYP), so each "Newton" step was an undamped Roothaan step,
+            // which limit-cycles on these radicals. Occupation labels need no
+            // `guard.relabel`: `c` already carries the iterate's own closed /
+            // open / virtual labels, which the step only rotates.
 
             // Build the f_xc kernel (LDA or GGA) + reference density (closure
             // target). Kept here so the response closure borrows it; the heavy
@@ -1727,7 +1736,7 @@ fn solve_rohf_impl(
             let inputs = crate::rohf_newton::RohfNewtonInputs {
                 prep,
                 bounds,
-                c: &c_now,
+                c: &c,
                 f_a_mo: &f_a_mo,
                 f_b_mo: &f_b_mo,
                 nocc_double,

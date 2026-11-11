@@ -138,10 +138,9 @@
 //! ```
 //!
 //! (the F_β,vo / F_α,oc terms of the vc row use F_α,vo = 0 and F_β,oc = 0).
-//! `rohf_newton::hessian_matvec` keeps only the diagonal Fock
-//! entries and drops these off-diagonal Fock couplings — adequate for a
-//! damped Newton step, not for an exact linear response — so the Z-vector
-//! uses this full product in its parametrization and normalization. With
+//! (`rohf_newton::hessian_matvec` kept only the diagonal Fock entries until
+//! 2026-11; it now applies the exact commutator too.) The Z-vector uses this
+//! full product in its own parametrization and normalization. With
 //! dQ = 2 κ·(2 V_vc, V_vo, V_oc) (κ_vc moves both spins of D_total):
 //!
 //! ```text
@@ -1391,9 +1390,7 @@ pub struct RestrictedOpenRelaxationGradient {
 /// `config`, or `None`: every [`unsupported_reason`], plus a COSX
 /// configuration the ROKS gradient cannot differentiate (the overlap fit; see
 /// [`crate::gradient::preflight_cosx_restricted_open`]). Nothing ROKS-specific beyond that: the
-/// limits of `rohf_newton::hessian_matvec` (diagonal Fock entries
-/// only, range-separated exchange dropped) do not apply, because the Z-vector
-/// builds its own exact product (see the module doc) with the same response
+/// Z-vector builds its own exact product (see the module doc) with the same response
 /// Fock as the closed-shell and UKS paths, range-separated exchange included.
 pub fn unsupported_reason_roks(config: &RhfConfig) -> Option<String> {
     if let Some(r) = unsupported_reason(config) {

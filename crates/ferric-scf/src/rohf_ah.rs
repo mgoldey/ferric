@@ -13,7 +13,6 @@
 //! avoiding PCG divergence on near-degenerate open-shell ROHF/ROKS
 //! problems (e.g., doublet OH at LDA where the SOMO/HOMO α-α gap vanishes).
 
-use crate::davidson_local::run_davidson_seeded;
 use crate::engine_pool::EnginePool;
 use crate::rohf_newton::{gradient_blocks, hessian_matvec, RohfNewtonInputs};
 use ferric_core::parallel::ParallelContext;
@@ -53,15 +52,14 @@ pub struct RohfAhInputs<'a, 'b> {
 /// packed and the true orbital gradient — is FALSE: the true gradient is
 /// exactly **2 ×** `gradient_blocks` in every block (FD-measured in
 /// `reference/pbc/pbc_rohf_newton.py`, FINDINGS "Iteration 24"; pinned by
-/// `crate::rohf_trah`'s tests). What does NOT carry over by a scalar is the
-/// Hessian used here: `rohf_newton::hessian_matvec` keeps only the per-spin
-/// Fock DIAGONALS, which differs from the exact Hessian by O(off-diagonal f),
-/// so a ρ formed from it is not a true energy ratio away from a
-/// Roothaan-semicanonical basis. [`crate::rohf_trah`] is the ROHF/ROKS trust
-/// region on the exact gradient and Hessian (stepping from the current
-/// orbitals, no `F_eff` diagonalization); it currently serves the injected
-/// (periodic) path. This function remains the clipped, damped-Newton AH step
-/// of the molecular solver.
+/// `crate::rohf_trah`'s tests). The Hessian used here,
+/// `rohf_newton::hessian_matvec`, is now the exact orbital Hessian too (half
+/// scale; the per-spin diagonal Fock gap survives only as the Davidson
+/// preconditioner), but this is still a clipped AH step with no ρ test.
+/// [`crate::rohf_trah`] is the ROHF/ROKS trust region on the exact gradient
+/// and Hessian; it currently serves the injected (periodic) path. This
+/// function remains the clipped AH step of the molecular solver, taken from
+/// the current orbitals.
 pub fn rohf_ah_step(
     ctx: &ParallelContext,
     inp: &RohfAhInputs,
@@ -119,92 +117,69 @@ pub fn rohf_ah_step(
         ferric_integrals::engine_pool::eri_precision(),
     )?;
 
-    // 2. Build the augmented matvec closure. Davidson expects the closure
-    // to return V^T A V given V (the trial subspace).
-    let nc_local = nc;
-    let no_local = no;
-    let aug_matvec = |v: &Array2<f64>, _omega: f64| -> Array2<f64> {
-        let m = v.ncols();
-        let mut av = Array2::<f64>::zeros((n_aug, m));
-        for col in 0..m {
-            let v_col = v.column(col);
-            let v_first = v_col[0];
-            let mut k_vc_local = Array2::<f64>::zeros((nvirt, nc_local));
-            let mut k_vo_local = Array2::<f64>::zeros((nvirt, no_local));
-            let mut k_oc_local = Array2::<f64>::zeros((no_local, nc_local));
-            unpack_three(
-                v_col.slice(ndarray::s![1..]),
-                &mut k_vc_local,
-                &mut k_vo_local,
-                &mut k_oc_local,
-            );
-
-            let (h_vc, h_vo, h_oc) =
-                hessian_matvec(ctx, base, &k_vc_local, &k_vo_local, &k_oc_local, &pool)
-                    .expect("hessian_matvec failed inside Davidson closure");
-
-            // av[0] = g · κ
-            let mut gk: f64 = 0.0;
-            {
-                let mut idx = 0;
-                for &vv in k_vc_local.iter() {
-                    gk += g_flat[idx] * vv;
-                    idx += 1;
-                }
-                for &vv in k_vo_local.iter() {
-                    gk += g_flat[idx] * vv;
-                    idx += 1;
-                }
-                for &vv in k_oc_local.iter() {
-                    gk += g_flat[idx] * vv;
-                    idx += 1;
-                }
-            }
-            av[(0, col)] = gk;
-
-            // av[1..] = g · v_first + H · κ (flattened)
-            let mut idx = 0;
-            for &vv in h_vc.iter() {
-                av[(1 + idx, col)] = g_flat[idx] * v_first + vv;
-                idx += 1;
-            }
-            for &vv in h_vo.iter() {
-                av[(1 + idx, col)] = g_flat[idx] * v_first + vv;
-                idx += 1;
-            }
-            for &vv in h_oc.iter() {
-                av[(1 + idx, col)] = g_flat[idx] * v_first + vv;
-                idx += 1;
-            }
+    // 2. The augmented matvec on full vectors `[v₀, κ] ↦ [g·κ, g v₀ + H κ]`.
+    //
+    // Until 2026-11 this went through `davidson_local::run_davidson_seeded`,
+    // whose closure returns only the PROJECTED matrix VᵀAV; its residual
+    // V(VᵀAV)y − λVy is zero inside the subspace by construction, so it
+    // "converged" on the seed [1, 0, …] and every AH step was κ = 0. The
+    // branch made progress only because `solve_rohf` rediagonalised F_eff
+    // (a Roothaan step) before calling it. `stability::davidson_lowest`
+    // forms the true residual from Hv.
+    let aug_matvec = |v: &[f64]| -> Result<Vec<f64>, FerricError> {
+        let v_first = v[0];
+        let mut k_vc_local = Array2::<f64>::zeros((nvirt, nc));
+        let mut k_vo_local = Array2::<f64>::zeros((nvirt, no));
+        let mut k_oc_local = Array2::<f64>::zeros((no, nc));
+        unpack_three(
+            ndarray::ArrayView1::from(&v[1..]),
+            &mut k_vc_local,
+            &mut k_vo_local,
+            &mut k_oc_local,
+        );
+        let (h_vc, h_vo, h_oc) =
+            hessian_matvec(ctx, base, &k_vc_local, &k_vo_local, &k_oc_local, &pool)?;
+        let mut out = Vec::with_capacity(n_aug);
+        out.push(g_flat.iter().zip(&v[1..]).map(|(g, k)| g * k).sum());
+        for (idx, hk) in h_vc
+            .iter()
+            .chain(h_vo.iter())
+            .chain(h_oc.iter())
+            .enumerate()
+        {
+            out.push(g_flat[idx] * v_first + hk);
         }
-        v.t().dot(&av)
+        Ok(out)
     };
 
-    // 3. Davidson seed: identity column [1, 0, …]^T is the natural seed
-    // because the lowest eigenvector of the AH matrix has a large first
-    // component (we'll rescale by it).
-    let mut seed = Array2::<f64>::zeros((n_aug, 1));
-    seed[(0, 0)] = 1.0;
-
-    let result = run_davidson_seeded(
-        seed,
-        aug_matvec,
-        davidson_conv,
-        davidson_max_vecs,
-        1,
-        /* find_lowest = */ true,
-    )?;
+    // 3. Diagonal for the Davidson preconditioner and block seed: 0 for the
+    // augmented coordinate, the per-spin Fock gaps (as the PCG Newton step's
+    // preconditioner) for κ.
+    // Half scale (this module's), same packing order as κ.
+    let diag: Vec<f64> = std::iter::once(0.0)
+        .chain(
+            crate::rohf_trah::rohf_hessian_diagonal(base.f_a_mo, base.f_b_mo, nc, no)
+                .into_iter()
+                .map(|d| 0.5 * d),
+        )
+        .collect();
+    let cfg = crate::stability::StabilityConfig {
+        conv_thresh: davidson_conv,
+        max_subspace: davidson_max_vecs,
+        ..Default::default()
+    };
+    let result = crate::stability::davidson_lowest(n_aug, aug_matvec, &diag, &cfg)?;
 
     // 4. Extract κ from the lowest eigenvector. Rescale so the leading
     // entry is 1 — this realizes the AH ansatz.
-    let evec = result.eigenvectors.column(0);
+    let evec = &result.eigenvector;
     let first = evec[0];
     if first.abs() < 1e-10 {
         return Err(FerricError::General(
             "AH eigenvector has near-zero leading entry — degeneracy or wrong sign".into(),
         ));
     }
-    let kappa_flat: Array1<f64> = evec.slice(ndarray::s![1..]).mapv(|x| x / first);
+    let kappa_flat: Array1<f64> = evec[1..].iter().map(|x| x / first).collect();
 
     let mut k_vc = Array2::<f64>::zeros((nvirt, nc));
     let mut k_vo = Array2::<f64>::zeros((nvirt, no));
