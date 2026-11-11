@@ -345,7 +345,7 @@ thread_local! {
     static DFG_METRIC_EIGHS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-/// How many auxiliary-metric `eigh`s the DF-K gradient has COMPUTED on this
+/// How many auxiliary-metric `eigh`s the DF-K gradient has computed on this
 /// thread so far (0 added by a pass that reused the SCF's). Test hook.
 #[doc(hidden)]
 pub fn dfg_metric_eighs_computed_for_test() -> usize {
@@ -622,6 +622,14 @@ fn df_jk_gradient_core(
         Some(k) if k.source().incore_flat().is_none() => pass_block_bytes(obs, dfbs, budget_bytes),
         _ => 0,
     };
+    // The SCF's kept `eigh` of this metric, taken before the plane below is
+    // reserved: its evictable charge is credited here and the plane's
+    // `(naux, naux)` matrices include `U`, so the bytes are counted once.
+    let kept_metric = if factors.is_empty() {
+        None
+    } else {
+        crate::raw_handoff::take_active_metric(op, &dfbs.basis_set().name)
+    };
     let (_charge, raw) = charge_intermediates(
         k_bytes.saturating_add(5 * naux * naux * 8),
         unpack_block,
@@ -680,10 +688,10 @@ fn df_jk_gradient_core(
         //
         // The SCF's DF-K diagonalised this same metric with this same routine
         // (`v_inv_sqrt_lindep`); a geometry task keeps that `eigh` for here
-        // (`crate::raw_handoff::take_active_metric`), used only when `v` is
-        // bit-identical to the matrix it decomposed.
+        // (`kept_metric` above), used only when `v` is bit-identical to the
+        // matrix it decomposed.
         let t_e = ferric_core::timing::Stage::start("dfg:metric-eigh");
-        let (lam, u) = match crate::raw_handoff::take_active_metric(op, dfbs, &v) {
+        let (lam, u) = match kept_metric.and_then(|k| k.accept(dfbs, &v)) {
             Some(kept) => kept,
             None => {
                 DFG_METRIC_EIGHS.with(|c| c.set(c.get() + 1));

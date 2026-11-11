@@ -31,14 +31,17 @@
 //! The same slot carries the `eigh(V)` DF-K computed for `V^{-1/2}` of each
 //! auxiliary metric it built ([`KeptMetric`]: the ω = 0 metric, or the erfc
 //! and erf metrics of a range-separated hybrid), so the DF-K gradient's
-//! `dfg:metric-eigh` does not diagonalise the same matrix again (~0.3 s per
-//! evaluation at n-dodecane/def2-TZVP B3LYP, naux 1368). DF-K offers it
+//! `dfg:metric-eigh` does not diagonalise the same matrix again (MEASURED
+//! 2026-11-11: 0.18-0.30 s per evaluation at n-dodecane/def2-TZVP B3LYP,
+//! naux 1368). DF-K offers it
 //! inside `with_metric_capture`, which the solvers wrap around their DF-K
 //! construction only when a hand-off is installed; a sub-solve without one
-//! shadows the capture and keeps nothing. Kept while the pool holds its
-//! `naux²` f64. The gradient uses a kept decomposition only when the metric
+//! shadows the capture and keeps nothing. Its `naux²` f64 are an evictable
+//! pool reservation: debited, counted as available by every sizing and
+//! admission check, and freed when a reservation needs the bytes, so keeping
+//! it changes no SCF memory decision. The gradient uses a kept decomposition only when the metric
 //! it builds has the same operator, aux basis name, aux shell centres and
-//! exact element bits (`take_active_metric`); both sides use the same
+//! exact element bits (`MetricCandidate`); both sides use the same
 //! `coulomb_metric_2c` + `eigh_dc(Upper)`, so reuse returns what the gradient
 //! would have computed. Independent of the raw tensor: kept also when the
 //! tensor is not (f32 RI-J, Split-RI-J, separate J/K aux, RSH).
@@ -135,25 +138,34 @@ impl KeptRaw {
 ///
 /// Identified by the operator, the aux basis name, the shell centres of the
 /// aux basis and a hash of the exact bits of `V`; the gradient uses it only
-/// when the metric it builds hashes to the same bits (`take_active_metric`),
+/// when the metric it builds hashes to the same bits (`MetricCandidate`),
 /// so a decomposition of another geometry, basis, operator or `V`
-/// construction is never used. Holds its memory-pool charge (`naux²` f64 +
-/// `naux`) until dropped.
+/// construction is never used.
+///
+/// Its `naux² + naux` f64 are an evictable pool reservation
+/// ([`ferric_core::memory::pool::EvictableReservation`]): debited, but counted
+/// as available, so no SCF sizing or admission decision sees less room than
+/// it would without it, and any reservation that needs the bytes frees the
+/// decomposition first. The gradient then diagonalises `V` itself.
 pub struct KeptMetric {
     op: Operator,
     aux: String,
     v_hash: u64,
-    lam: Vec<f64>,
-    u: Array2<f64>,
-    _charge: ferric_core::memory::pool::Reservation,
+    naux: usize,
+    data: Arc<Mutex<Option<MetricEigh>>>,
+    charge: ferric_core::memory::pool::EvictableReservation,
 }
+
+/// Eigenvalues and eigenvectors (columns) of a metric.
+type MetricEigh = (Vec<f64>, Array2<f64>);
 
 impl std::fmt::Debug for KeptMetric {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("KeptMetric")
             .field("aux", &self.aux)
             .field("op", &self.op)
-            .field("naux", &self.lam.len())
+            .field("naux", &self.naux)
+            .field("evicted", &self.is_evicted())
             .finish()
     }
 }
@@ -169,27 +181,58 @@ impl KeptMetric {
         self.op
     }
 
-    /// `Ok` when this is the decomposition of `v`, the `op` metric of
-    /// `dfbs`; `Err(why)` otherwise.
-    fn check(
-        &self,
-        op: Operator,
-        dfbs: &PreparedBasis,
-        v: &Array2<f64>,
-    ) -> Result<(), &'static str> {
-        if self.op != op {
-            return Err("operator differs");
-        }
-        if self.aux != dfbs.basis_set().name {
-            return Err("auxiliary basis differs");
-        }
-        if self.lam.len() != v.nrows() || self.u.dim() != v.dim() {
-            return Err("metric shape differs");
-        }
-        if self.v_hash != metric_hash(dfbs, v) {
-            return Err("metric bits differ");
-        }
-        Ok(())
+    /// Has the pool evicted the decomposition (to make room for a
+    /// reservation)?
+    pub fn is_evicted(&self) -> bool {
+        lock_eigh(&self.data).is_none()
+    }
+
+    /// Bytes the pool holds for it (0 once evicted, or with no pool).
+    pub fn reserved_bytes(&self) -> usize {
+        self.charge.bytes()
+    }
+
+    /// The decomposition, leaving it unreserved for the caller to account
+    /// for; `None` when it was evicted.
+    fn into_candidate(self) -> Option<MetricCandidate> {
+        let eigh = lock_eigh(&self.data).take();
+        // Credits the evictable bytes; the caller charges them as its own.
+        drop(self.charge);
+        eigh.map(|(lam, u)| MetricCandidate {
+            v_hash: self.v_hash,
+            lam,
+            u,
+        })
+    }
+}
+
+fn lock_eigh(m: &Mutex<Option<MetricEigh>>) -> std::sync::MutexGuard<'_, Option<MetricEigh>> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// A kept decomposition taken by the gradient for one operator and aux basis,
+/// before the gradient has built `V` ([`take_active_metric`]). It holds no
+/// pool charge: the gradient's metric plane, reserved next, covers its
+/// `naux²` f64.
+pub(crate) struct MetricCandidate {
+    v_hash: u64,
+    lam: Vec<f64>,
+    u: Array2<f64>,
+}
+
+impl MetricCandidate {
+    /// `(λ, U)` when this decomposes exactly `v`, the metric of `dfbs` the
+    /// gradient built (same shape and bits); `None` otherwise.
+    pub(crate) fn accept(self, dfbs: &PreparedBasis, v: &Array2<f64>) -> Option<MetricEigh> {
+        let why = if self.lam.len() != v.nrows() || self.u.dim() != v.dim() {
+            "metric shape differs"
+        } else if self.v_hash != metric_hash(dfbs, v) {
+            "metric bits differ"
+        } else {
+            return Some((self.lam, self.u));
+        };
+        note(&format!("kept metric eigh not used ({why}): recomputing"));
+        None
     }
 }
 
@@ -217,6 +260,7 @@ fn metric_hash(dfbs: &PreparedBasis, v: &Array2<f64>) -> u64 {
 pub struct RawHandoff {
     raw: Arc<Mutex<Option<KeptRaw>>>,
     metrics: Arc<Mutex<Vec<KeptMetric>>>,
+    offers: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl std::fmt::Debug for RawHandoff {
@@ -270,6 +314,18 @@ impl RawHandoff {
     #[doc(hidden)]
     pub fn put_metric_for_test(&self, kept: KeptMetric) {
         self.put_metric(kept);
+    }
+
+    /// How many metric decompositions DF-K has deposited into this slot
+    /// (replaced ones included). Test hook.
+    #[doc(hidden)]
+    pub fn metric_offers_for_test(&self) -> usize {
+        self.offers.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn count_offer(&self) {
+        self.offers
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
     fn put_metric(&self, kept: KeptMetric) {
@@ -557,8 +613,8 @@ pub(crate) fn with_metric_capture<T>(config: &RhfConfig, f: impl FnOnce() -> T) 
 
 /// Called by DF-K with the `eigh(V) = (lam, u)` it used for `V^{-1/2}`
 /// (`v` the `op` metric of `dfbs`): kept in the capturing hand-off when one is
-/// installed (`with_metric_capture`) and the memory pool holds it, else
-/// dropped.
+/// installed (`with_metric_capture`) and the memory pool has the bytes free
+/// (an evictable reservation, see [`KeptMetric`]), else dropped.
 pub(crate) fn offer_metric(
     op: Operator,
     dfbs: &PreparedBasis,
@@ -570,12 +626,24 @@ pub(crate) fn offer_metric(
         return;
     };
     let aux = dfbs.basis_set().name.clone();
+    let naux = lam.len();
     let bytes = (u.len() + lam.len()) * std::mem::size_of::<f64>();
-    let Some(charge) =
-        ferric_core::memory::pool::try_reserve_global("kept DF-K metric eigh", bytes)
-    else {
+    let v_hash = metric_hash(dfbs, v);
+    let data = Arc::new(Mutex::new(Some((lam, u))));
+    let evict_data = Arc::clone(&data);
+    let evict_label = format!("{aux}, {:?} omega {}", op.kind, op.omega);
+    let Some(charge) = ferric_core::memory::pool::reserve_evictable_global(
+        "kept DF-K metric eigh (evictable)",
+        bytes,
+        Box::new(move || {
+            drop(lock_eigh(&evict_data).take());
+            note(&format!(
+                "metric eigh evicted ({evict_label}): a reservation needed the bytes"
+            ));
+        }),
+    ) else {
         note(&format!(
-            "metric eigh not kept ({aux}): the pool cannot hold it"
+            "metric eigh not kept ({aux}): the pool has no free room for it"
         ));
         return;
     };
@@ -585,42 +653,31 @@ pub(crate) fn offer_metric(
         op.kind,
         op.omega
     ));
+    handoff.count_offer();
     handoff.put_metric(KeptMetric {
         op,
         aux,
-        v_hash: metric_hash(dfbs, v),
-        lam,
-        u,
-        _charge: charge,
+        v_hash,
+        naux,
+        data,
+        charge,
     });
 }
 
-/// The kept `eigh` of `v` (the `op` metric of `dfbs`) installed by
-/// [`with_kept_raw`] on this thread, taken only when it decomposes exactly
-/// this matrix ([`KeptMetric::check`]); otherwise `None` and the caller
-/// diagonalises `v` itself.
-pub(crate) fn take_active_metric(
-    op: Operator,
-    dfbs: &PreparedBasis,
-    v: &Array2<f64>,
-) -> Option<(Vec<f64>, Array2<f64>)> {
-    ACTIVE_METRICS.with(|a| {
+/// The kept decomposition for `op` and the aux basis `aux`, installed by
+/// [`with_kept_raw`] on this thread. Taken before the gradient reserves its
+/// metric plane, so its bytes are counted once: the evictable charge is
+/// credited here and the plane covers `U`. `None` when nothing was kept for
+/// this metric or the pool evicted it; the caller then diagonalises `V`.
+pub(crate) fn take_active_metric(op: Operator, aux: &str) -> Option<MetricCandidate> {
+    let kept = ACTIVE_METRICS.with(|a| {
         let mut slot = a.borrow_mut();
-        if slot.is_empty() {
-            return None;
-        }
-        let mut why = "no kept metric for this operator";
-        for i in 0..slot.len() {
-            match slot[i].check(op, dfbs, v) {
-                Ok(()) => {
-                    let k = slot.swap_remove(i);
-                    return Some((k.lam, k.u));
-                }
-                Err(w) if slot[i].op == op => why = w,
-                Err(_) => {}
-            }
-        }
-        note(&format!("kept metric eigh not used ({why}): recomputing"));
-        None
-    })
+        let i = slot.iter().position(|k| k.op == op && k.aux == aux)?;
+        Some(slot.swap_remove(i))
+    })?;
+    let cand = kept.into_candidate();
+    if cand.is_none() {
+        note("kept metric eigh was evicted: recomputing");
+    }
+    cand
 }
