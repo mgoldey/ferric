@@ -94,6 +94,8 @@
 //! iteration), so it is correct under MPI but its memory does not shrink with
 //! rank count.
 
+mod deriv3c;
+
 use crate::df_j::RiJPrecision;
 use crate::df_k::metric_lindep_cut;
 use crate::raw_handoff::KeptRaw;
@@ -583,7 +585,6 @@ fn df_jk_gradient_core(
     j_precision: RiJPrecision,
     raw: Option<KeptRaw>,
 ) -> Result<Array2<f64>, FerricError> {
-    let n = obs.nbasis();
     let naux = dfbs.nbasis();
     let mut grad = Array2::<f64>::zeros((natoms, 3));
 
@@ -736,103 +737,17 @@ fn df_jk_gradient_core(
     t_st.end();
     let t_st = ferric_core::timing::Stage::start("dfg:3c-deriv-pass");
     // ---- three-centre derivative pass, one auxiliary shell per task ----
-    let nsh_obs = obs.nshells();
+    let weights = deriv3c::SlabWeights {
+        j: c_j.as_ref().zip(j_density),
+        factors: &factors,
+        gammas: &gammas,
+    };
+    grad += &deriv3c::three_center_deriv_pass(natoms, (obs, dfbs, op), &weights)?;
+    t_st.end();
     let nsh_df = dfbs.nshells();
-    let dims_obs = obs.shell_dims();
-    let offs_obs = obs.shell_offsets();
     let dims_df = dfbs.shell_dims();
     let offs_df = dfbs.shell_offsets();
-    let sh2at_obs = obs.shell_to_atom();
     let sh2at_df = dfbs.shell_to_atom();
-
-    let max_np = dims_df.iter().copied().max().unwrap_or(0);
-    let workers = rayon::current_num_threads().max(1);
-    let _slab_charge = ferric_core::memory::pool::reserve_global(
-        "DF-JK gradient per-worker 3c weight slabs",
-        workers
-            .saturating_mul(max_np)
-            .saturating_mul(n)
-            .saturating_mul(n)
-            .saturating_mul(8),
-    )?;
-
-    // Surface an engine-construction error serially before the fan-out.
-    Engine::new_3center_deriv(op, obs, dfbs, 1e-14)?;
-    let partials: Vec<Array2<f64>> = (0..nsh_df)
-        .into_par_iter()
-        .map_init(
-            || {
-                Engine::new_3center_deriv(op, obs, dfbs, 1e-14)
-                    .expect("3-center deriv engine (pre-validated)")
-            },
-            |eng, sp| {
-                let np = dims_df[sp];
-                let pf0 = offs_df[sp];
-                let mut local = Array2::<f64>::zeros((natoms, 3));
-                // G[p, μ, ν] = ∂E/∂(P|μν) for this shell's aux functions.
-                let mut slab = Array3::<f64>::zeros((np, n, n));
-                for p in 0..np {
-                    let pf = pf0 + p;
-                    let mut g = slab.index_axis_mut(Axis(0), p);
-                    if let (Some(c), Some(dj)) = (c_j.as_ref(), j_density) {
-                        g.scaled_add(c[pf], dj);
-                    }
-                    for ((x, alpha), gam) in factors.iter().zip(gammas.iter()) {
-                        let m = x.ncols();
-                        let gp = Array2::from_shape_fn((m, m), |(i, j)| gam[(pf, i * m + j)]);
-                        let xg = x.dot(&gp);
-                        let contrib = xg.dot(&x.t());
-                        g.scaled_add(2.0 * alpha, &contrib);
-                    }
-                }
-                let atom_p = sh2at_df[sp];
-                for s1 in 0..nsh_obs {
-                    for s2 in 0..=s1 {
-                        let Some(deriv) = eng.compute_eri3_deriv(obs, dfbs, sp, s1, s2) else {
-                            continue;
-                        };
-                        let n1 = dims_obs[s1];
-                        let n2 = dims_obs[s2];
-                        let block_sz = np * n1 * n2;
-                        let sym12 = s1 != s2;
-                        let atom_1 = sh2at_obs[s1];
-                        let atom_2 = sh2at_obs[s2];
-                        for p in 0..np {
-                            for i in 0..n1 {
-                                let mu = offs_obs[s1] + i;
-                                for j in 0..n2 {
-                                    let nu = offs_obs[s2] + j;
-                                    let idx = (p * n1 + i) * n2 + j;
-                                    let gval = if sym12 {
-                                        slab[(p, mu, nu)] + slab[(p, nu, mu)]
-                                    } else {
-                                        slab[(p, mu, nu)]
-                                    };
-                                    if gval == 0.0 {
-                                        continue;
-                                    }
-                                    // 9 blocks: [dP_xyz, d1_xyz, d2_xyz].
-                                    for coord in 0..3 {
-                                        local[(atom_p, coord)] +=
-                                            gval * deriv[coord * block_sz + idx];
-                                        local[(atom_1, coord)] +=
-                                            gval * deriv[(3 + coord) * block_sz + idx];
-                                        local[(atom_2, coord)] +=
-                                            gval * deriv[(6 + coord) * block_sz + idx];
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                local
-            },
-        )
-        .collect();
-    for p in &partials {
-        grad += p;
-    }
-    t_st.end();
     let t_st = ferric_core::timing::Stage::start("dfg:2c-deriv-pass");
 
     // ---- two-centre metric derivative pass ----
