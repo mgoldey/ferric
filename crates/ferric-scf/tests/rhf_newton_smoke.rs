@@ -295,3 +295,101 @@ fn rhf_hessian_matvec_matches_finite_difference() {
          ladder={rels:?}"
     );
 }
+
+/// Converged water/cc-pVDZ RHF plus the MO-basis Fock rebuilt at its MOs: the
+/// inputs a Newton step sees at a converged point.
+fn converged_water_rhf_inputs() -> (
+    Molecule,
+    PreparedBasis,
+    SchwarzBounds,
+    ndarray::Array2<f64>,
+    ndarray::Array2<f64>,
+    usize,
+) {
+    use ferric_integrals::oneelectron;
+    use ferric_scf::rhf::build_jk;
+    use ndarray::Array2;
+
+    let mol = water();
+    let bs = basis::bundled("cc-pvdz").unwrap();
+    let prep = PreparedBasis::new(&mol, &bs).unwrap();
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+    let ctx = ParallelContext::default();
+    let cfg = RhfConfig {
+        energy_conv: 1e-11,
+        density_conv: 1e-9,
+        max_iter: 200,
+        ..Default::default()
+    };
+    let res = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
+    assert!(res.converged);
+    let n = prep.nbasis();
+    let nocc = mol.nelec() as usize / 2;
+    let c = res.mos_alpha.clone();
+    let cocc = c.slice(ndarray::s![.., ..nocc]);
+    let dtot = 2.0 * cocc.dot(&cocc.t());
+    let mut j = Array2::<f64>::zeros((n, n));
+    let mut k = Array2::<f64>::zeros((n, n));
+    build_jk(&ctx, &prep, &bounds, 1e-12, &dtot, &mut j, &mut k).unwrap();
+    let f = &oneelectron::hcore(&prep) + &j - &(0.5 * &k);
+    let f_mo = c.t().dot(&f).dot(&c);
+    (mol, prep, bounds, c, f_mo, nocc)
+}
+
+/// A Newton step whose orbital gradient is already below `cg_conv` returns the
+/// diagonal step κ⁰ = −g/gap and never reads a Hessian-vector product, so it
+/// must not compute one (each costs a full J/K build plus the f_xc response).
+///
+/// Counts singlet HVPs on this thread through the `hvp_calls_on_this_thread`
+/// seam. Positive control: the same inputs with `cg_conv = 0` (CG forced) must
+/// count at least one HVP, so a seam that never counts cannot pass.
+///
+/// Mutation (applied and reverted, 2026-11-11): restoring the unconditional
+/// `h0 = hessian_matvec(κ⁰)` before the CG loop makes the converged-point count
+/// 1 and this test fails at the `== 0` assert.
+#[test]
+fn rhf_newton_step_computes_no_hvp_at_a_converged_point() {
+    use ferric_scf::rhf_newton::{hvp_calls_on_this_thread, rhf_newton_step, RhfNewtonInputs};
+
+    let (_mol, prep, bounds, c, f_mo, nocc) = converged_water_rhf_inputs();
+    let ctx = ParallelContext::default();
+    let n = prep.nbasis();
+    let cg_conv = 1e-7; // the value solve_rhf passes
+    let gmax = (nocc..n)
+        .flat_map(|a| (0..nocc).map(move |i| (a, i)))
+        .fold(0.0f64, |m, (a, i)| m.max(f_mo[(a, i)].abs()));
+    assert!(
+        gmax < cg_conv,
+        "precondition: converged gradient {gmax:e} must sit below cg_conv {cg_conv:e}"
+    );
+    let inputs = RhfNewtonInputs {
+        prep: &prep,
+        bounds: &bounds,
+        c: &c,
+        f_mo: &f_mo,
+        nocc,
+        k_mix_sr: 1.0,
+        rsh: None,
+        fxc: None,
+        thresh: 1e-12,
+        ooc_budget: ferric_core::memory::resolve_budget_bytes(None),
+    };
+
+    let before = hvp_calls_on_this_thread();
+    let (c_conv, _) = rhf_newton_step(&ctx, &inputs, 1e-6, 0.2, 20, cg_conv).unwrap();
+    let at_converged = hvp_calls_on_this_thread() - before;
+    assert_eq!(
+        at_converged, 0,
+        "a step with |g|max {gmax:e} < cg_conv {cg_conv:e} uses only κ⁰ and must compute no HVP"
+    );
+    assert!(c_conv.iter().all(|v| v.is_finite()));
+
+    let before = hvp_calls_on_this_thread();
+    rhf_newton_step(&ctx, &inputs, 1e-6, 0.2, 20, 0.0).unwrap();
+    let forced = hvp_calls_on_this_thread() - before;
+    assert!(
+        forced >= 1,
+        "positive control: a forced CG solve must count its HVPs (got {forced})"
+    );
+}
