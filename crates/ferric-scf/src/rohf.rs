@@ -1617,22 +1617,31 @@ fn solve_rohf_impl(
         //     converged in 200 iterations vs DIIS 10).
         //   - MEASURED 2026-11-11 (tests/roks_newton_convergence.rs; energy_conv
         //     1e-9, density_conv 1e-7, max_iter 200; B3LYP with RI-J + DF-K
-        //     def2-universal-jkfit, PBE direct), iterations to convergence,
-        //     all at the DIIS energy within 1e-7 Ha:
+        //     def2-universal-jkfit, PBE direct), iterations (HVPs), all at the
+        //     DIIS energy within 1e-7 Ha. One HVP costs about one Fock build
+        //     (its J/K + f_xc), so iterations + HVPs is the Fock-equivalent cost:
         //                         DIIS  Newton(1e-2)  soscf(1e-3)  AH(1e-2)
-        //       NH2/6-31G PBE       8        6             6           6
-        //       NH2/cc-pVDZ B3LYP   9        7             7           7
-        //       OH/cc-pVDZ B3LYP   18        8             9           8
-        //     Degenerate ²Π, PBE/6-31G, 1e-5 Å off-axis (energy 1e-10 /
-        //     density 1e-8): CH 22 / 8 / 10, NO 26 / 12 / 11 (DIIS / Newton /
-        //     soscf); AH does not converge on CH there (nor did it before).
-        //     Before the fix the same runs took 136 / 21 / 140 (NH2 PBE),
-        //     not converged / 136 / 169 (NH2 B3LYP), and not converged / 167 /
-        //     not converged (OH): both branches stepped from `eig(F_eff)` of the
-        //     old-density Fock, where the gradient is ≈ 0 by construction
-        //     (an undamped Roothaan step), the Hessian's Fock part was the
-        //     diagonal gap only (decisive for OH's soft π mode), and the AH
-        //     Davidson returned κ = 0 (see `rohf_ah`).
+        //       NH2/6-31G PBE       8      6 (6)        6 (6)        6 (25)
+        //       NH2/cc-pVDZ B3LYP   9      7 (8)        7 (4)        7 (30)
+        //       OH/cc-pVDZ B3LYP   18      8 (18)       9 (18)       8 (35)
+        //     Degenerate ²Π, PBE/6-31G (energy 1e-10 / density 1e-8): OH on-axis
+        //     20 / 9 (21) / 11 (20); 1e-5 Å off-axis OH 18 / 10 (24) / 10 (14) /
+        //     AH 10 (45), CH 22 / 8 (25) / 10 (22) / AH not converged, NO 26 /
+        //     12 (20) / 13 (19) / AH 25 (226). Off-axis AH lands on the other
+        //     hole orientation, degenerate up to the XC grid's rotational
+        //     variance (~1e-6 Ha).
+        //     Before the fix: NH2 PBE 136 (254) / 21 (31) / 140 (93), NH2 B3LYP
+        //     not converged (544) / 136 (309) / 169 (150), OH B3LYP not
+        //     converged (1270) / 167 (695) / not converged (193). Both branches
+        //     stepped from `eig(F_eff)` of the old-density Fock, where the
+        //     gradient is ≈ 0 by construction (an undamped Roothaan step); the
+        //     Hessian's Fock part was the diagonal gap only (decisive for OH's
+        //     soft π mode); and the AH Davidson returned κ = 0 (see `rohf_ah`).
+        //   - PCG cap 20 and the 0.1 componentwise clip: over the 37 Newton
+        //     steps of that test file PCG needed at most 9 iterations (never
+        //     the cap), and the clip bound in 2 steps, both on CH's near-flat
+        //     π-orientation mode (|κ|max 7.9, 0.76), where it is what keeps the
+        //     step bounded (FERRIC_ROHF_TRACE prints both per step).
         //
         // `xc_supports_newton_fxc` gates whether an f_xc-accelerated Newton/AH
         // step is taken for this functional. Pure ROHF (xc=None) keeps the
@@ -1762,7 +1771,9 @@ fn solve_rohf_impl(
                 config.level_shift.max(1e-6),
                 0.1, // trust radius (conservative — ROKS hessians are stiff)
                 20,
-                1e-7,
+                // Below cg_conv the step is zero (ΔP = 0), so a fixed 1e-7
+                // would end a tighter `density_conv` run at |g| ~ 1e-7.
+                config.density_conv.min(1e-7),
             )?;
             c = c_new;
             let (da_n, db_n) = build_rohf_densities(&c, nocc_double, nocc_open);

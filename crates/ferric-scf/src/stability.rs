@@ -672,12 +672,13 @@ pub struct LowestEigenpair {
 /// Davidson iteration for the algebraically LOWEST eigenvalue of a symmetric
 /// operator supplied as `matvec: v ↦ Hv`.
 ///
-/// This is a third Davidson in the workspace, and that is deliberate rather
-/// than sloppy: `ferric_rpa::davidson` cannot be imported (ferric-rpa depends
-/// on ferric-scf), the in-crate [`davidson_local`](crate::davidson_local) copy
-/// takes a *projected-matrix* closure shaped for the dielectric operator
-/// rather than a plain `Hv`, and `ferric_ci::davidson` lives in a crate that
-/// depends on this one. What is genuinely new here is that the matvec is
+/// `ferric_rpa::davidson` cannot be imported here (ferric-rpa depends on
+/// ferric-scf) and takes a *projected-matrix* closure shaped for the
+/// dielectric operator rather than a plain `Hv`; `ferric_ci::davidson` lives
+/// in a crate that depends on this one. (ferric-scf's own projected-matrix
+/// copy, `davidson_local`, was removed in 2026-11: its residual was formed
+/// inside the subspace, identically zero, and the ROHF AH step that used it
+/// never moved; the AH step now calls this function.) What is genuinely new here is that the matvec is
 /// **fallible** — a J/K build inside the orbital Hessian can fail, and that
 /// must propagate as an `Err`, never be unwrapped inside the iteration.
 ///

@@ -163,12 +163,26 @@ pub fn rohf_ah_step(
                 .map(|d| 0.5 * d),
         )
         .collect();
+    // One root is wanted. n_block = 2 is the minimum `davidson_lowest`'s
+    // correctness rests on (`StabilityConfig::n_block`); n_seed = 2. The
+    // residual tolerance follows the step's needs, as in `rohf_trah`:
+    // max(davidson_conv, 1e-2 · min(1, ‖g‖) · ‖g‖) (‖g‖ the 2-norm of the
+    // half gradient), so a far-from-converged step is not solved to 1e-7.
+    let g2 = g_flat.dot(&g_flat).sqrt();
     let cfg = crate::stability::StabilityConfig {
-        conv_thresh: davidson_conv,
+        conv_thresh: davidson_conv.max(1e-2 * g2.min(1.0) * g2),
         max_subspace: davidson_max_vecs,
+        n_seed: 2,
+        n_block: 2,
         ..Default::default()
     };
     let result = crate::stability::davidson_lowest(n_aug, aug_matvec, &diag, &cfg)?;
+    if crate::rohf::rohf_trace() {
+        eprintln!(
+            "ROHF AH: Davidson converged={} iterations={} residual={:.2e} (tol {:.2e}) lambda={:.3e}",
+            result.converged, result.iterations, result.residual, cfg.conv_thresh, result.eigenvalue
+        );
+    }
 
     // 4. Extract κ from the lowest eigenvector. Rescale so the leading
     // entry is 1 — this realizes the AH ansatz.

@@ -196,7 +196,10 @@ where
             let lk = evals[k];
             let vk = ritz.column(k);
 
-            // residual = ε̃ @ vk − lk * vk
+            // residual = ε̃ @ vk − lk * vk, formed from the PROJECTED matrix, so it
+            // is identically zero inside the subspace: safe only because callers
+            // seed with n_desired = naux (the full space). ferric-scf's copy of
+            // this loop made the ROHF AH step a silent no-op (removed 2026-11).
             let eps_vk = v_mat.dot(&eps_proj.dot(&evecs.column(k)));
             let resid: Array1<f64> = &eps_vk - &(lk * &vk);
             let resid_norm = resid.dot(&resid).sqrt();
