@@ -139,6 +139,16 @@ jobs:
           echo "### ferric-core + ferric-integrals" >> "$GITHUB_STEP_SUMMARY"
           grep -E "Summary|SKIP|FAIL" nextest-core-integrals.log | tail -20 >> "$GITHUB_STEP_SUMMARY" || true
 
+      # The k-point code is the only complex Hermitian eigh / complex GEMM
+      # user; this pins that layer of the linked OpenBLAS directly.
+      - name: Test complex BLAS/LAPACK ABI (ferric-pbc)
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          source scripts/ci-platform-env.sh
+          cargo nextest run --locked --profile ci --no-tests=fail \
+            -p ferric-pbc --test complex_lapack_abi 2>&1 | tee nextest-pbc-abi.log
+
       - name: Test ferric-scf (lib)
         if: ${{ !cancelled() }}
         run: |
@@ -290,6 +300,9 @@ jobs:
         env:
           FERRIC_MEM_BUDGET_GB: "3"
           PYTHONUNBUFFERED: "1"
+          # Many tests read the repo's own UTF-8 sources/docs with a bare
+          # read_text(); Windows' locale default is cp1252.
+          PYTHONUTF8: "1"
         run: |
           set -uo pipefail
           # Tests that shell out to the `ferric` console script find the venv's.

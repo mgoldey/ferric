@@ -20,9 +20,16 @@ drifts from its banner fails here.
 import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
+
+# The hook is a `#!/usr/bin/env bash` script executed directly; Windows cannot
+# exec a shebang file (WinError 193), and git hooks there run under Git's sh.
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32", reason="executes a shebang script directly"
+)
 
 REPO = Path(__file__).resolve().parents[3]
 INSTALLER = REPO / "scripts" / "install-hooks.sh"
