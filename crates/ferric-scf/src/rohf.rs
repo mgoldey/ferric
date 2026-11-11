@@ -1623,6 +1623,9 @@ fn solve_rohf_impl(
         //       NH2/6-31G PBE       8        6             6           6
         //       NH2/cc-pVDZ B3LYP   9        7             7           7
         //       OH/cc-pVDZ B3LYP   18        8             9           8
+        //     Degenerate ²Π, PBE/6-31G, 1e-5 Å off-axis (energy 1e-10 /
+        //     density 1e-8): CH 22 / 8 / 10, NO 26 / 12 / 11 (DIIS / Newton /
+        //     soscf); AH does not converge on CH there (nor did it before).
         //     Before the fix the same runs took 136 / 21 / 140 (NH2 PBE),
         //     not converged / 136 / 169 (NH2 B3LYP), and not converged / 167 /
         //     not converged (OH): both branches stepped from `eig(F_eff)` of the

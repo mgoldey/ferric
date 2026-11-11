@@ -59,6 +59,18 @@ struct Run {
 }
 
 fn run(xyz: &str, basis_name: &str, xc: &str, fitted: bool, mode: Mode) -> Run {
+    run_tol(xyz, basis_name, xc, fitted, mode, (1e-9, 1e-7))
+}
+
+/// `run` at `(energy_conv, density_conv)`.
+fn run_tol(
+    xyz: &str,
+    basis_name: &str,
+    xc: &str,
+    fitted: bool,
+    mode: Mode,
+    (energy_conv, density_conv): (f64, f64),
+) -> Run {
     let mol = Molecule::parse_xyz(xyz, 0, 2).unwrap();
     let prep = PreparedBasis::new(&mol, &basis::bundled(basis_name).unwrap()).unwrap();
     let op = Operator::coulomb();
@@ -67,8 +79,8 @@ fn run(xyz: &str, basis_name: &str, xc: &str, fitted: bool, mode: Mode) -> Run {
     let aux = fitted.then(|| "def2-universal-jkfit".to_string());
     let mut cfg = RohfConfig {
         xc: Some(xc.into()),
-        energy_conv: 1e-9,
-        density_conv: 1e-7,
+        energy_conv,
+        density_conv,
         max_iter: 200,
         df_j_aux: aux.clone(),
         df_k_aux: aux,
@@ -156,4 +168,52 @@ fn nh2_ccpvdz_b3lyp_fitted_second_order_matches_diis() {
 #[test]
 fn oh_ccpvdz_b3lyp_fitted_second_order_matches_diis() {
     check("OH/cc-pVDZ B3LYP", OH, "cc-pvdz", "B3LYP", true);
+}
+
+/// The #172 degenerate open shells (²Π CH and NO, PBE/6-31G, the F6 test
+/// settings energy_conv 1e-10 / density_conv 1e-8), 1e-5 Å off-axis so the
+/// π degeneracy is broken only by the geometry and the grid. Newton and soscf
+/// must reach the DIIS energy (1e-7 Ha) in ≤ DIIS iterations.
+///
+/// MEASURED 2026-11-11 (iterations, DIIS / Newton / soscf): CH 22 / 8 / 10,
+/// NO 26 / 12 / 11. Before the Newton fix both were 174+ or not converged.
+/// Mutation (applied, run, reverted): the sub-tolerance step returning the
+/// diagonal guess κ⁰ = −g/Δ again instead of 0 leaves CH soscf not converged
+/// in 200 iterations (E settled to 1e-13 by iteration 9; |g| ~ 2e-8 / the
+/// 1e-6 floored π gap rotates the hole ~0.02 per step, so ΔP never reaches
+/// 1e-8). AH is not asserted here: on these two off-axis cases it did not
+/// converge before or after the fix (see the PR).
+#[test]
+fn degenerate_pi_open_shells_newton_and_soscf_match_diis() {
+    let mut failures = Vec::new();
+    for (label, xyz) in [
+        ("CH/6-31G PBE", "2\nCH\nC 0 0 0\nH 1e-5 0 1.1199\n"),
+        ("NO/6-31G PBE", "2\nNO\nN 0 0 0\nO 1e-5 0 1.1508\n"),
+    ] {
+        let tol = (1e-10, 1e-8);
+        let diis = run_tol(xyz, "6-31g", "PBE", false, Mode::Diis, tol);
+        let e_ref = diis
+            .energy
+            .unwrap_or_else(|| panic!("{label}: DIIS reference did not converge"));
+        for mode in [Mode::Newton, Mode::Soscf] {
+            let r = run_tol(xyz, "6-31g", "PBE", false, mode, tol);
+            eprintln!(
+                "{label} {mode:?}: E = {:?}, iters = {} (DIIS {e_ref:.10}, {}), HVPs = {}",
+                r.energy, r.iterations, diis.iterations, r.hvps
+            );
+            match r.energy {
+                None => failures.push(format!("{label} {mode:?}: not converged")),
+                Some(e) if (e - e_ref).abs() > 1e-7 => failures.push(format!(
+                    "{label} {mode:?}: |E - E_DIIS| = {:.3e}",
+                    (e - e_ref).abs()
+                )),
+                Some(_) if r.iterations > diis.iterations || r.hvps == 0 => failures.push(format!(
+                    "{label} {mode:?}: {} iterations (DIIS {}), {} HVPs",
+                    r.iterations, diis.iterations, r.hvps
+                )),
+                Some(_) => {}
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
