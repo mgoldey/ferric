@@ -43,9 +43,6 @@ on:
   push:
     tags:
       - 'v*'
-    # TEMPORARY (feat/wheels-mac-win): one end-to-end run on the branch;
-    # removed in the next commit.
-    branches: [feat/wheels-mac-win]
   workflow_dispatch: {}
   schedule:
     # 10:53 UTC daily. This workflow was first written by reading ci.yml,
