@@ -274,6 +274,32 @@ static std::mutex libint_ctor_mutex;
 // nothing measurable.
 static std::mutex libint_init_mutex;
 
+/* libint2's core-integral evaluator singletons (FmEval_Chebyshev7,
+ * TennoGmEval, ...) are NOT thread-safe in instance(m_max): when a caller asks
+ * for a larger m_max than the current instance holds, instance() REPLACES the
+ * function-local static std::shared_ptr (under its own private mutex), while
+ * every other caller reads `instance_->max_m()` and copies `instance_` with no
+ * lock at all. A copy racing that replacement touches the freed old instance
+ * (or its control block): ThreadSanitizer reports a data race between the
+ * shared_ptr operator= and the unlocked max_m() read, then a read of the memory
+ * that operator= freed, and the process SIGSEGVs or aborts in free(). The
+ * pattern is identical in stock 2.7.2 and 2.13.1 and in ferric's boys.h
+ * overrides.
+ *
+ * Engine constructors reach instance() through make_core_eval_pack and already
+ * hold libint_ctor_mutex, so every instance() call made through this shim must
+ * hold it too; then no copy can overlap a replacement. Only the acquisition
+ * needs the lock: the returned shared_ptr keeps its instance alive, and eval()
+ * on a constructed instance is const and thread-safe. A parallel
+ * tenno_table_edge run (engine ctors and the unlocked scf_tenno_gm hook at
+ * different m_max) crashed this way in the wheels perturb canary;
+ * tests/core_eval_singleton_race.rs reproduces it. */
+template <typename CoreEval>
+static std::shared_ptr<const CoreEval> core_eval_instance(int mmax) {
+    std::lock_guard<std::mutex> lock(libint_ctor_mutex);
+    return CoreEval::instance(mmax);
+}
+
 /* Boys function F_0..F_mmax at x through libint2's FmEval_Chebyshev7 (the
  * evaluator behind every Coulomb/erf/erfc core integral), so a test can pin
  * its behaviour independent of any integral geometry (issue #433: x == 117.0
@@ -284,7 +310,7 @@ int scf_boys_fm(double x, int mmax, double *out) {
     if (!out || !std::isfinite(x) || x < 0.0 || mmax < 0 || mmax > 40)
         return SCF_EINVAL;
     try {
-        auto fm = libint2::FmEval_Chebyshev7<double>::instance(mmax);
+        auto fm = core_eval_instance<libint2::FmEval_Chebyshev7<double>>(mmax);
         fm->eval(out, x, mmax);
         return mmax + 1;
     } catch (...) {
@@ -309,7 +335,7 @@ int scf_tenno_gm(int kind, double one_over_rho, double T, int mmax, double zeta,
         !std::isfinite(zeta) || zeta <= 0.0 || mmax < 0 || mmax > 40)
         return SCF_EINVAL;
     try {
-        auto ev = libint2::TennoGmEval<double>::instance(mmax);
+        auto ev = core_eval_instance<libint2::TennoGmEval<double>>(mmax);
         if (kind == 0)
             ev->eval_yukawa(out, one_over_rho, T, static_cast<size_t>(mmax), zeta);
         else
