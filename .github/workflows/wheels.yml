@@ -42,9 +42,6 @@ on:
   push:
     tags:
       - 'v*'
-    # TEMPORARY (fix/linux-openblas-threads): one end-to-end run on the
-    # branch; removed in the next commit.
-    branches: [fix/linux-openblas-threads]
   workflow_dispatch: {}
   schedule:
     # 10:53 UTC daily. This workflow was first written by reading ci.yml,
