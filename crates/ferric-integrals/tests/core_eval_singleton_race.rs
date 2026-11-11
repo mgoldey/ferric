@@ -23,20 +23,20 @@
 //! children.
 
 use ferric_integrals::engine::{boys_fm_chebyshev7, tenno_gm, TennoKind};
+use std::io::Read;
+use std::process::{Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 const CHILD_ENV: &str = "FERRIC_CORE_EVAL_RACE_CHILD";
 const CHILDREN: usize = 40;
 const READERS: usize = 3;
 
 fn hammer(read: impl Fn() + Sync, grow: impl Fn(usize), max_m: usize) {
-    let done = Arc::new(AtomicBool::new(false));
+    let done = AtomicBool::new(false);
     std::thread::scope(|s| {
         for _ in 0..READERS {
-            let done = Arc::clone(&done);
-            let read = &read;
-            s.spawn(move || {
+            s.spawn(|| {
                 while !done.load(Ordering::Relaxed) {
                     read();
                 }
@@ -76,26 +76,92 @@ fn core_eval_race_child() {
     println!("CORE_EVAL_RACE_CHILD_OK");
 }
 
+/// A child that has not finished in this long is hung (a healthy child takes
+/// well under a second); it is killed and counted as a failure.
+const CHILD_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// How a child ended: its exit status (`None` if it was killed on timeout) and
+/// the last lines of its stderr.
+fn run_child(exe: &std::path::Path) -> (Option<ExitStatus>, bool, String) {
+    let mut child = Command::new(exe)
+        .args(["core_eval_race_child", "--exact", "--nocapture"])
+        .env(CHILD_ENV, "1")
+        .env("RUST_TEST_THREADS", "1")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn child");
+    // Drain both pipes on threads so a chatty child cannot block on a full pipe.
+    let mut out_pipe = child.stdout.take().unwrap();
+    let mut err_pipe = child.stderr.take().unwrap();
+    let out_t = std::thread::spawn(move || {
+        let mut s = String::new();
+        out_pipe.read_to_string(&mut s).ok();
+        s
+    });
+    let err_t = std::thread::spawn(move || {
+        let mut s = String::new();
+        err_pipe.read_to_string(&mut s).ok();
+        s
+    });
+    let start = Instant::now();
+    let status = loop {
+        if let Some(st) = child.try_wait().expect("wait child") {
+            break Some(st);
+        }
+        if start.elapsed() > CHILD_TIMEOUT {
+            child.kill().ok();
+            child.wait().ok();
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let stdout = out_t.join().unwrap_or_default();
+    let stderr = err_t.join().unwrap_or_default();
+    let ok = stdout.contains("CORE_EVAL_RACE_CHILD_OK");
+    let lines: Vec<&str> = stderr.lines().collect();
+    let tail = lines[lines.len().saturating_sub(8)..].join("\n");
+    (status, ok, tail)
+}
+
+/// `exited 0`, `exit code N`, `killed by signal N (SIGSEGV)` or `TIMED OUT`.
+fn describe(status: Option<ExitStatus>) -> String {
+    use std::os::unix::process::ExitStatusExt;
+    match status {
+        None => format!("TIMED OUT after {CHILD_TIMEOUT:?} (killed)"),
+        Some(st) => match (st.code(), st.signal()) {
+            (Some(c), _) => format!("exit code {c}"),
+            (None, Some(sig)) => {
+                let name = match sig {
+                    6 => " (SIGABRT)",
+                    7 => " (SIGBUS)",
+                    11 => " (SIGSEGV)",
+                    _ => "",
+                };
+                format!("killed by signal {sig}{name}")
+            }
+            _ => format!("{st:?}"),
+        },
+    }
+}
+
 #[test]
 fn concurrent_core_eval_instance_growth_does_not_crash() {
     let exe = std::env::current_exe().expect("current exe");
     let mut failures = Vec::new();
     for i in 0..CHILDREN {
-        let out = std::process::Command::new(&exe)
-            .args(["core_eval_race_child", "--exact", "--nocapture"])
-            .env(CHILD_ENV, "1")
-            .env("RUST_TEST_THREADS", "1")
-            .output()
-            .expect("spawn child");
-        let ok = out.status.success()
-            && String::from_utf8_lossy(&out.stdout).contains("CORE_EVAL_RACE_CHILD_OK");
-        if !ok {
-            failures.push((i, out.status));
+        let (status, ok, tail) = run_child(&exe);
+        if !(ok && status.is_some_and(|s| s.success())) {
+            failures.push(format!(
+                "child {i}: {}; stderr tail:\n{tail}",
+                describe(status)
+            ));
         }
     }
     assert!(
         failures.is_empty(),
-        "{} of {CHILDREN} children crashed racing the libint2 core-evaluator singleton: {failures:?}",
-        failures.len()
+        "{} of {CHILDREN} children failed racing the libint2 core-evaluator singleton:\n{}",
+        failures.len(),
+        failures.join("\n---\n")
     );
 }
