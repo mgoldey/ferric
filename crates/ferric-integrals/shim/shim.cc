@@ -245,6 +245,42 @@ struct scf_engine {
     Shell                           eri3_shift_slots[3] = {};
 };
 
+#ifdef FERRIC_LIBINT2_TERF
+/* Which terf table set the libint2 terf hook evaluates with. libint2's hook
+ * signature (terf_gm_eval::hook_type) carries no engine context, so every
+ * scf_compute_* entry point that drives eng->engine publishes ITS engine's
+ * table set here for the duration of the call (FERRIC_TERF_HOOK_SCOPE). An
+ * Engine is driven by one thread at a time and libint2 computes on the calling
+ * thread, so a thread_local is exact: the hook always sees the tables the
+ * engine was built with, never another engine's, and never reads the
+ * process-global cache (get_terfc_tables), which a later load of a different
+ * table directory reassigns. The engine owns its shared_ptr for its lifetime,
+ * so the raw pointer cannot dangle during the call. Ordinary engines publish
+ * nullptr, which the terf hook (the only reader) never sees. */
+thread_local const TerfcTableSet *t_terf_hook_tables = nullptr;
+
+class TerfHookTablesScope {
+  public:
+    explicit TerfHookTablesScope(const scf_engine *eng)
+        : prev_(t_terf_hook_tables) {
+        t_terf_hook_tables = eng ? eng->terfc_tables.get() : nullptr;
+    }
+    explicit TerfHookTablesScope(const TerfcTableSet *set)
+        : prev_(t_terf_hook_tables) {
+        t_terf_hook_tables = set;
+    }
+    ~TerfHookTablesScope() { t_terf_hook_tables = prev_; }
+    TerfHookTablesScope(const TerfHookTablesScope &) = delete;
+    TerfHookTablesScope &operator=(const TerfHookTablesScope &) = delete;
+
+  private:
+    const TerfcTableSet *prev_;
+};
+#define FERRIC_TERF_HOOK_SCOPE(eng) TerfHookTablesScope ferric_terf_hook_scope_(eng)
+#else
+#define FERRIC_TERF_HOOK_SCOPE(eng) ((void)(eng))
+#endif
+
 static std::atomic<int> libint_init_count{0};
 
 // libint2's Engine and Shell/BasisSet constructors touch process-global
@@ -571,6 +607,7 @@ int scf_engine_set_point_charges(scf_engine *eng,
 
 int scf_compute_1e_block(scf_engine *eng, const scf_basis *bs,
                            int sh1, int sh2, double *out) {
+    FERRIC_TERF_HOOK_SCOPE(eng);
   try {
     const auto &shells = bs->bs;
     eng->engine.compute(shells[sh1], shells[sh2]);
@@ -605,6 +642,7 @@ int scf_compute_1e_block(scf_engine *eng, const scf_basis *bs,
 int scf_compute_1e_block_shifted(scf_engine *eng, const scf_basis *bs,
                                    int sh1, int sh2, const double *shift,
                                    double *out) {
+    FERRIC_TERF_HOOK_SCOPE(eng);
     if (!eng || !bs || !shift || !out) return SCF_EINVAL;
     const int nsh = static_cast<int>(bs->bs.size());
     if (sh1 < 0 || sh1 >= nsh || sh2 < 0 || sh2 >= nsh) return SCF_EINVAL;
@@ -685,6 +723,7 @@ static inline Engine::compute2_ptr_type quartet_compute_ptr(const Engine &engine
 
 int scf_compute_eri_quartet(scf_engine *eng, const scf_basis *bs,
                               int sh1, int sh2, int sh3, int sh4, double *out) {
+    FERRIC_TERF_HOOK_SCOPE(eng);
   try {
     const auto &shells = bs->bs;
     Engine &engine = eng->engine;
@@ -751,6 +790,7 @@ int scf_engine_shellpair_cache_enabled(const scf_engine *eng) {
 }
 
 int scf_compute_schwarz(scf_engine *eng, const scf_basis *bs, double *qmat) {
+    FERRIC_TERF_HOOK_SCOPE(eng);
   try {
     const int nsh = static_cast<int>(bs->bs.size());
     for (int i = 0; i < nsh; ++i) {
@@ -788,6 +828,7 @@ int scf_compute_schwarz(scf_engine *eng, const scf_basis *bs, double *qmat) {
 
 int scf_compute_1e_deriv_block(scf_engine *eng, const scf_basis *bs,
                                  int sh1, int sh2, double *out) {
+    FERRIC_TERF_HOOK_SCOPE(eng);
 #if LIBINT2_MAX_DERIV_ORDER >= 1
   try {
     const auto &shells = bs->bs;
@@ -838,6 +879,7 @@ int scf_compute_1e_deriv_block(scf_engine *eng, const scf_basis *bs,
 int scf_compute_1e_deriv_block_shifted(scf_engine *eng, const scf_basis *bs,
                                          int sh1, int sh2, const double *shift,
                                          double *out, int out_len) {
+    FERRIC_TERF_HOOK_SCOPE(eng);
 #if LIBINT2_MAX_DERIV_ORDER >= 1
     if (!eng || !bs || !shift || !out || out_len < 0) return SCF_EINVAL;
     const int nsh = static_cast<int>(bs->bs.size());
@@ -885,6 +927,7 @@ int scf_compute_1e_deriv_block_shifted(scf_engine *eng, const scf_basis *bs,
 
 int scf_compute_eri_deriv_quartet(scf_engine *eng, const scf_basis *bs,
                                     int sh1, int sh2, int sh3, int sh4, double *out) {
+    FERRIC_TERF_HOOK_SCOPE(eng);
 #if LIBINT2_MAX_DERIV_ORDER >= 1
   try {
     const auto &shells = bs->bs;
@@ -1161,6 +1204,7 @@ scf_engine *scf_engine_create_deriv2(int op_kind, double omega,
 
 int scf_compute_1e_deriv2_block(scf_engine *eng, const scf_basis *bs,
                                   int sh1, int sh2, double *out, int out_len) {
+    FERRIC_TERF_HOOK_SCOPE(eng);
 #if LIBINT2_MAX_DERIV_ORDER >= 2
   try {
     if (eng->engine.deriv_order() != 2) return SCF_EINVAL;
@@ -1203,6 +1247,7 @@ int scf_compute_1e_deriv2_block(scf_engine *eng, const scf_basis *bs,
 int scf_compute_eri_deriv2_quartet(scf_engine *eng, const scf_basis *bs,
                                      int sh1, int sh2, int sh3, int sh4,
                                      double *out, int out_len) {
+    FERRIC_TERF_HOOK_SCOPE(eng);
 #if LIBINT2_MAX_DERIV_ORDER >= 2
   try {
     if (eng->engine.deriv_order() != 2) return SCF_EINVAL;
@@ -1386,6 +1431,7 @@ scf_engine *scf_engine_create_2center(int op_kind, double omega,
 int scf_compute_eri3(scf_engine *eng, const scf_basis *obs,
                        const scf_basis *dfbs,
                        int shP, int sh1, int sh2, double *out) {
+    FERRIC_TERF_HOOK_SCOPE(eng);
 #if LIBINT2_SUPPORT_ERI3
   try {
     // BraKet::xs_xx rank=3: compute(aux_shell, obs_shell1, obs_shell2)
@@ -1425,6 +1471,7 @@ int scf_compute_eri3_shifted(scf_engine *eng, const scf_basis *obs,
                                const scf_basis *dfbs,
                                int shP, int sh1, int sh2,
                                const double *shifts, double *out) {
+    FERRIC_TERF_HOOK_SCOPE(eng);
 #if LIBINT2_SUPPORT_ERI3
     if (!eng || !obs || !dfbs || !shifts || !out) return SCF_EINVAL;
     const int nobs = static_cast<int>(obs->bs.size());
@@ -1468,6 +1515,7 @@ int scf_compute_eri3_shifted(scf_engine *eng, const scf_basis *obs,
 
 int scf_compute_eri2(scf_engine *eng, const scf_basis *dfbs,
                        int shP, int shQ, double *out) {
+    FERRIC_TERF_HOOK_SCOPE(eng);
 #if LIBINT2_SUPPORT_ERI2
   try {
     // BraKet::xs_xs rank=2: compute(aux_shell_P, aux_shell_Q)
@@ -1504,6 +1552,7 @@ int scf_compute_eri2(scf_engine *eng, const scf_basis *dfbs,
 int scf_compute_eri2_shifted(scf_engine *eng, const scf_basis *dfbs,
                                int shP, int shQ, const double *shiftQ,
                                double *out) {
+    FERRIC_TERF_HOOK_SCOPE(eng);
 #if LIBINT2_SUPPORT_ERI2
     if (!eng || !dfbs || !shiftQ || !out) return SCF_EINVAL;
     const int ndf = static_cast<int>(dfbs->bs.size());
@@ -1584,6 +1633,7 @@ scf_engine *scf_engine_create_2center_deriv(int op_kind, double omega,
 int scf_compute_eri3_deriv(scf_engine *eng, const scf_basis *obs,
                              const scf_basis *dfbs,
                              int shP, int sh1, int sh2, double *out) {
+    FERRIC_TERF_HOOK_SCOPE(eng);
 #if LIBINT2_SUPPORT_ERI3 && LIBINT2_MAX_DERIV_ORDER >= 1
   try {
     eng->engine.compute(dfbs->bs[shP], obs->bs[sh1], obs->bs[sh2]);
@@ -1631,6 +1681,7 @@ int scf_compute_eri3_deriv_shifted(scf_engine *eng, const scf_basis *obs,
                                      int shP, int sh1, int sh2,
                                      const double *shifts, double *out,
                                      int out_len) {
+    FERRIC_TERF_HOOK_SCOPE(eng);
 #if LIBINT2_SUPPORT_ERI3 && LIBINT2_MAX_DERIV_ORDER >= 1
     if (!eng || !obs || !dfbs || !shifts || !out || out_len < 0) return SCF_EINVAL;
     const int nobs = static_cast<int>(obs->bs.size());
@@ -1679,6 +1730,7 @@ int scf_compute_eri3_deriv_shifted(scf_engine *eng, const scf_basis *obs,
 
 int scf_compute_eri2_deriv(scf_engine *eng, const scf_basis *dfbs,
                              int shP, int shQ, double *out) {
+    FERRIC_TERF_HOOK_SCOPE(eng);
 #if LIBINT2_SUPPORT_ERI2 && LIBINT2_MAX_DERIV_ORDER >= 1
   try {
     eng->engine.compute(dfbs->bs[shP], dfbs->bs[shQ]);
@@ -1725,6 +1777,7 @@ int scf_compute_eri2_deriv(scf_engine *eng, const scf_basis *dfbs,
 int scf_compute_eri2_deriv_shifted(scf_engine *eng, const scf_basis *dfbs,
                                      int shP, int shQ, const double *shiftQ,
                                      double *out, int out_len) {
+    FERRIC_TERF_HOOK_SCOPE(eng);
 #if LIBINT2_SUPPORT_ERI2 && LIBINT2_MAX_DERIV_ORDER >= 1
     if (!eng || !dfbs || !shiftQ || !out || out_len < 0) return SCF_EINVAL;
     const int ndf = static_cast<int>(dfbs->bs.size());
@@ -2649,11 +2702,15 @@ inline bool terf_gm_eval_impl(const TerfcTableSet &set, double rho, double T,
  * back here. Signature is fixed by libint2::os_core_ints::terf_gm_eval::hook_type.
  * Returns false only if the tables are unavailable.
  *
- * Thread-safety: get_terfc_tables caches a shared_ptr behind the process-global
- * g_terfc_tables; the tables are immutable once loaded and terf_gm_eval_impl
- * only reads them, so concurrent rayon workers are safe. The FIRST call must
- * happen before threads fan out -- scf_engine_create_terf_libint2 forces the
- * load at engine-construction time for exactly that reason.
+ * Thread-safety: the hook evaluates with the table set its CALLER published in
+ * t_terf_hook_tables (the engine's own terfc_tables, via
+ * FERRIC_TERF_HOOK_SCOPE in every scf_compute_* entry point). It never touches
+ * the process-global cache g_terfc_tables: copying that shared_ptr here,
+ * unlocked, raced get_terfc_tables reassigning it under terfc_tables_mutex
+ * when a different table directory was loaded (the same unlocked-copy-vs-
+ * replace use-after-free as libint2's core-evaluator singletons), and it also
+ * evaluated with the LAST-loaded set instead of the engine's. The tables are
+ * immutable once loaded and terf_gm_eval_impl only reads them.
  */
 // Test-only fault injection (scf_terf_libint2_inject_hook_fault).
 std::atomic<bool> g_terf_hook_fault{false};
@@ -2680,8 +2737,12 @@ bool ferric_terf_libint2_hook(double rho, double T, int mmax, double omega,
             "terf libint2 hook: mmax " + std::to_string(mmax) +
             " is outside the table depth [0, " + std::to_string(TERFC_DIMM) + ")");
     }
-    auto set = g_terfc_tables;          // shared_ptr copy: no torn read
-    if (!set) throw std::runtime_error("terf libint2 hook: terf tables not loaded");
+    const TerfcTableSet *set = t_terf_hook_tables;
+    if (!set) {
+        throw std::runtime_error(
+            "terf libint2 hook: no engine table set in scope (called outside an "
+            "scf_compute_* entry point)");
+    }
     if (!terf_gm_eval_impl(*set, rho, T, mmax, omega, r0, Gm)) {
         // terf_gm_eval_impl only declines rho <= 0 or omega <= 0 (or NaN).
         throw std::invalid_argument("terf libint2 hook: needs rho > 0 and omega > 0");
@@ -4195,8 +4256,16 @@ extern "C" scf_engine *scf_engine_create_terf_libint2(double r0, double omega,
             st = SCF_EUNSUPPORTED;
             return nullptr;
         }
-        libint2::os_core_ints::terf_gm_eval<double>::hook() =
-            &ferric_terf_libint2_hook;
+        // Install the hook ONCE per process. hook() is a plain (non-atomic)
+        // function-pointer static in libint2's header; rewriting it on every
+        // engine creation raced the reads libint2 makes from compute on other
+        // threads' terf engines. The value never changes, and call_once's
+        // completion happens-before any engine this or a later call returns.
+        static std::once_flag terf_hook_once;
+        std::call_once(terf_hook_once, [] {
+            libint2::os_core_ints::terf_gm_eval<double>::hook() =
+                &ferric_terf_libint2_hook;
+        });
 
         libint2::BraKet bk;
         switch (braket) {
@@ -4248,7 +4317,9 @@ extern "C" int scf_terf_libint2_hook_probe(const char *table_dir, double rho,
                                            double r0, double *Gm, int gm_len) {
     try {
         if (!Gm || mmax < 0 || gm_len < mmax + 1) return SCF_EINVAL;
-        if (!get_terfc_tables(resolve_table_dir(table_dir))) return SCF_EUNSUPPORTED;
+        auto set = get_terfc_tables(resolve_table_dir(table_dir));
+        if (!set) return SCF_EUNSUPPORTED;
+        TerfHookTablesScope scope(set.get());   // what libint2's caller publishes
         try {
             return ferric_terf_libint2_hook(rho, T, mmax, omega, r0, Gm)
                        ? SCF_OK
