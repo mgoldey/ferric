@@ -23,7 +23,17 @@
 //! `F64BuildScope::enter()` guard from `rhf_newton::response_jk` makes the HVP
 //! run 2 `dfk-occ` and 1 `dfj-pack` builds mixed (GTX 1080), failing the
 //! zero-count assert. The controls read 1 and 1 in both runs.
-//! Its own binary: the kernel counters and GPU settings are process-wide.
+//!
+//! Open shell (`open_shell_newton_hvp_fitted_jk_runs_f64_under_mixed_settings`):
+//! the same check for the UHF/UKS and ROHF/ROKS matvecs
+//! (`uhf_newton::hessian_matvec`, `rohf_newton::hessian_matvec` with fitted
+//! `j_response`/`k_response`, scoped in their `response_fock`). Mutation
+//! (applied and reverted, 2026-11-11): removing the guard from both
+//! `response_fock`s makes each HVP run 4 `dfk-occ` and 1 `dfj-pack` builds
+//! mixed (UHF and ROHF alike; GTX 1080), failing the zero-count asserts.
+//!
+//! Its own binary: the kernel counters and GPU settings are process-wide, and
+//! the two tests serialise on `SERIAL`.
 use ferric_core::basis;
 use ferric_core::gpu::config::{GpuSettings, GpuSettingsExplicit};
 use ferric_core::gpu::stats::kernel_counters;
@@ -44,6 +54,9 @@ use ferric_scf::screening::SchwarzBounds;
 use ndarray::Array2;
 
 const AUX: &str = "def2-universal-jkfit";
+
+/// The kernel counters and the settings override are process-wide.
+static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn ready() -> bool {
     if !matches!(probe(0), GpuStatus::Ready(_)) {
@@ -102,6 +115,7 @@ fn mixed_count(k: MixedKernel) -> u64 {
 
 #[test]
 fn newton_hvp_fitted_jk_runs_f64_under_mixed_settings() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     if !ready() {
         return;
     }
@@ -187,4 +201,149 @@ fn newton_hvp_fitted_jk_runs_f64_under_mixed_settings() {
     assert!(hk.iter().all(|v| v.is_finite()));
     assert_eq!(dk, 0, "the HVP's response K ran dfk-occ mixed {dk} times");
     assert_eq!(dj, 0, "the HVP's response J ran dfj-pack mixed {dj} times");
+}
+
+#[test]
+fn open_shell_newton_hvp_fitted_jk_runs_f64_under_mixed_settings() {
+    use ferric_scf::uhf_newton::{AoResponse, OccKResponse};
+    use std::cell::RefCell;
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    if !ready() {
+        return;
+    }
+    let mol = Molecule::parse_xyz("2\nOH\nO 0 0 0\nH 0 0 0.97\n", 0, 2).unwrap();
+    let prep = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+    let aux = PreparedBasis::new(&mol, &basis::bundled(AUX).unwrap()).unwrap();
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+    let ctx = ParallelContext::default();
+    let n = prep.nbasis();
+    let (na, nb) = (5usize, 4usize);
+
+    // Orbitals from ferric's own f64 UHF, before any mixed setting is on.
+    let cfg = RhfConfig {
+        energy_conv: 1e-9,
+        density_conv: 1e-7,
+        df_j_aux: Some(AUX.into()),
+        df_k_aux: Some(AUX.into()),
+        ri_j_precision: Some(RiJPrecision::F64),
+        ..Default::default()
+    };
+    let res = ferric_scf::uhf::solve_uhf(&ctx, &mol, &prep, &bounds, &cfg).unwrap();
+    assert!(res.converged);
+    let ca = res.mos_alpha.clone();
+    let cb = res.mos_beta.clone().unwrap();
+    let fa_mo = ca.t().dot(&res.fock_alpha).dot(&ca);
+    let fb_mo = cb.t().dot(res.fock_beta.as_ref().unwrap()).dot(&cb);
+
+    let _mixed = Mixed::on();
+    let budget = ferric_core::memory::resolve_budget_bytes(None);
+    let dfj =
+        RefCell::new(DfJ::new_with_precision(op, &prep, &aux, budget, RiJPrecision::F64).unwrap());
+    let dfk = RefCell::new(DfK::new(op, &prep, &aux, budget).unwrap());
+
+    // Positive control: outside any scope the same DfK runs dfk-occ mixed.
+    let k0 = mixed_count(MixedKernel::DfkOcc);
+    let c_occ = ca.slice(ndarray::s![.., ..na]).to_owned();
+    let mut k_probe = Array2::<f64>::zeros((n, n));
+    dfk.borrow_mut()
+        .build_from_occ(&c_occ, &mut k_probe)
+        .unwrap();
+    let control = mixed_count(MixedKernel::DfkOcc) - k0;
+    assert!(
+        control >= 1,
+        "positive control: an unscoped dfk-occ build must run mixed (got {control})"
+    );
+
+    let jr = Box::new(|dd: &Array2<f64>| {
+        let mut out = Array2::<f64>::zeros(dd.raw_dim());
+        ferric_scf::fock::JBuilder::build(&mut *dfj.borrow_mut(), dd, &mut out)?;
+        Ok(out)
+    }) as Box<AoResponse<'_>>;
+    let kr = Box::new(|cf: &Array2<f64>| {
+        let mut out = Array2::<f64>::zeros((n, n));
+        dfk.borrow_mut().build_from_occ(cf, &mut out)?;
+        Ok(out)
+    }) as Box<OccKResponse<'_>>;
+    let pool = ferric_scf::engine_pool::EnginePool::new(op, &prep, 1e-14).unwrap();
+    let kap = |r: usize, c: usize| {
+        Array2::<f64>::from_shape_fn((r, c), |(a, i)| {
+            1e-3 * (((a * 7 + i * 3) % 11) as f64 - 5.0)
+        })
+    };
+    let counts = || {
+        (
+            mixed_count(MixedKernel::DfkOcc),
+            mixed_count(MixedKernel::DfjPack),
+        )
+    };
+
+    // UHF/UKS matvec.
+    let inp = ferric_scf::uhf_newton::UhfNewtonInputs {
+        prep: &prep,
+        bounds: &bounds,
+        c_a: &ca,
+        c_b: &cb,
+        f_a_mo: &fa_mo,
+        f_b_mo: &fb_mo,
+        nocc_a: na,
+        nocc_b: nb,
+        k_mix_sr: 1.0,
+        rsh: None,
+        fxc: None,
+        thresh: 1e-12,
+        ooc_budget: budget,
+        j_response: Some(&*jr),
+        k_response: Some(&*kr),
+    };
+    let (k1, j1) = counts();
+    let (ha, hb) = ferric_scf::uhf_newton::hessian_matvec(
+        &ctx,
+        &inp,
+        &kap(n - na, na),
+        &kap(n - nb, nb),
+        &pool,
+    )
+    .unwrap();
+    let (k2, j2) = counts();
+    let (uk, uj) = (k2 - k1, j2 - j1);
+
+    // ROHF/ROKS matvec on the α MOs (nc = 4 closed, 1 open).
+    let (nc, no) = (nb, na - nb);
+    let rinp = ferric_scf::rohf_newton::RohfNewtonInputs {
+        prep: &prep,
+        bounds: &bounds,
+        c: &ca,
+        f_a_mo: &fa_mo,
+        f_b_mo: &fa_mo,
+        nocc_double: nc,
+        nocc_open: no,
+        k_mix_sr: 1.0,
+        rsh: None,
+        fxc: None,
+        thresh: 1e-12,
+        ooc_budget: budget,
+        j_response: Some(&*jr),
+        k_response: Some(&*kr),
+    };
+    let (r_vc, r_vo, r_oc) = ferric_scf::rohf_newton::hessian_matvec(
+        &ctx,
+        &rinp,
+        &kap(n - na, nc),
+        &kap(n - na, no),
+        &kap(no, nc),
+        &pool,
+    )
+    .unwrap();
+    let (k3, j3) = counts();
+    let (rk, rj) = (k3 - k2, j3 - j2);
+    eprintln!(
+        "control dfk-occ mixed={control}; UHF HVP dfk-occ mixed={uk} dfj-pack mixed={uj}; \
+         ROHF HVP dfk-occ mixed={rk} dfj-pack mixed={rj}"
+    );
+    for m in [&ha, &hb, &r_vc, &r_vo, &r_oc] {
+        assert!(m.iter().all(|v| v.is_finite()));
+    }
+    assert_eq!((uk, uj), (0, 0), "the UHF HVP's response J/K ran mixed");
+    assert_eq!((rk, rj), (0, 0), "the ROHF HVP's response J/K ran mixed");
 }
