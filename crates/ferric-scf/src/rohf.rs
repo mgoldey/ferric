@@ -106,6 +106,106 @@ pub(crate) fn xc_is_metagga(xc_name: Option<&str>) -> bool {
     }
 }
 
+thread_local! {
+    /// Dense [`FxcKernelStore`] builds on this thread (test seam).
+    static DENSE_FXC_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Screened f_xc responses ([`ferric_dft::xc_batch::ScreenedFxc`]) built
+    /// for a Newton step on this thread (test seam).
+    static SCREENED_FXC_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Dense [`FxcKernelStore`] builds (each a fresh grid and a full χ/∇χ cache)
+/// made on the calling thread so far. A test seam: Newton steps run on their
+/// caller's thread, so the count is race-free under the parallel harness.
+#[doc(hidden)]
+pub fn dense_fxc_builds_on_this_thread() -> usize {
+    DENSE_FXC_BUILDS.with(std::cell::Cell::get)
+}
+
+/// Screened f_xc responses built for Newton steps on the calling thread so
+/// far (test seam; see [`dense_fxc_builds_on_this_thread`]).
+#[doc(hidden)]
+pub fn screened_fxc_builds_on_this_thread() -> usize {
+    SCREENED_FXC_BUILDS.with(std::cell::Cell::get)
+}
+
+/// The functional `xc_name` resolved with `nspin = 2` (libxc's polarized
+/// second derivatives) and the SCF's ω override, as every f_xc kernel needs
+/// it (see [`FxcKernelStore::build`] for why the override matters).
+pub(crate) fn fxc_xc_def(
+    xc_name: &str,
+    omega_override: Option<f64>,
+) -> Result<ferric_dft::libxc::XcDef, FerricError> {
+    match omega_override {
+        Some(w) => ferric_dft::libxc::xc_def_from_name_nspin_omega(xc_name, 2, w),
+        None => ferric_dft::libxc::xc_def_from_name_nspin(xc_name, 2),
+    }
+    .map_err(|e| FerricError::General(format!("fxc def for {xc_name}: {e:?}")))
+}
+
+/// Record a screened f_xc build for a Newton step: the thread-local seam, and
+/// the family counters the dense builds also bump ([`GGA_FXC_KERNEL_BUILDS`],
+/// [`MGGA_FXC_KERNEL_BUILDS`]), so "the GGA / τ kernel engaged" stays
+/// observable whichever path built it.
+pub(crate) fn note_screened_fxc_build(xc_def: &ferric_dft::libxc::XcDef) {
+    use ferric_dft::libxc::FunctionalFamily;
+    SCREENED_FXC_BUILDS.with(|c| c.set(c.get() + 1));
+    let fam = |f: FunctionalFamily| xc_def.funcs.iter().any(|x| x.family() == f);
+    if fam(FunctionalFamily::MetaGga) {
+        MGGA_FXC_KERNEL_BUILDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    } else if xc_def
+        .funcs
+        .iter()
+        .any(|x| x.family() != FunctionalFamily::Lda)
+    {
+        GGA_FXC_KERNEL_BUILDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// The restricted f_xc response for an RKS Newton step at the closed-shell
+/// density `d` (d_α = d_β = ½·d), as the `FxcResponse` closure the Hessian
+/// matvec calls with `(δD_single, δD_single)`.
+///
+/// When the SCF's XC evaluator `x` has a screened grid
+/// ([`ferric_dft::xc_trait::XcContribution::restricted_fxc`]), the response
+/// runs there: the SCF's own batches, screening and AO cache, libxc's second
+/// derivatives evaluated once here, one spin per product. Otherwise it falls
+/// back to the dense [`FxcKernelStore`] on the configured grid.
+///
+/// The screened closure requires equal spin perturbations (the restricted
+/// singlet response is one spin block, added once to the restricted Fock) and
+/// returns that block for both spins. Public for the anchor tests
+/// (`tests/newton_fxc_screened.rs`), which must reach this selection.
+#[doc(hidden)]
+pub fn restricted_fxc_response<'s>(
+    x: &'s dyn ferric_dft::xc_trait::XcContribution,
+    (mol, prep, config, name): (&Molecule, &PreparedBasis, &RhfConfig, &str),
+    d: &Array2<f64>,
+) -> Result<Box<crate::rohf_newton::FxcResponse<'s>>, FerricError> {
+    let xc_pol = fxc_xc_def(name, config.xc_omega)?;
+    if let Some(built) = x.restricted_fxc(&xc_pol, d) {
+        let sf = built.map_err(|e| FerricError::General(format!("screened f_xc: {e}")))?;
+        note_screened_fxc_build(&xc_pol);
+        return Ok(Box::new(move |a: &Array2<f64>, b: &Array2<f64>| {
+            assert!(
+                std::ptr::eq(a, b) || a == b,
+                "the restricted f_xc response needs equal α and β perturbations"
+            );
+            let v = sf.apply_restricted(a);
+            (v.clone(), v)
+        }));
+    }
+    let grid = config
+        .dft_grid
+        .clone()
+        .unwrap_or_else(ferric_dft::grid::AtomicGridConfig::production);
+    let d_half = 0.5 * d;
+    let store = FxcKernelStore::build(mol, prep, &grid, name, config.xc_omega, &d_half, &d_half)?;
+    Ok(Box::new(move |a: &Array2<f64>, b: &Array2<f64>| {
+        store.response()(a, b)
+    }))
+}
+
 /// The spin-polarized exchange-correlation kernel f_xc at a reference
 /// density, as the Newton steps use it (LDA, GGA, hybrid and range-separated
 /// GGA, and τ-only meta-GGA; VV10 has no kernel here and must be refused by
@@ -166,11 +266,8 @@ impl FxcKernelStore {
         d_a: &Array2<f64>,
         d_b: &Array2<f64>,
     ) -> Result<Self, FerricError> {
-        let xc_def = match omega_override {
-            Some(w) => ferric_dft::libxc::xc_def_from_name_nspin_omega(xc_name, 2, w),
-            None => ferric_dft::libxc::xc_def_from_name_nspin(xc_name, 2),
-        }
-        .map_err(|e| FerricError::General(format!("fxc def for {xc_name}: {e:?}")))?;
+        DENSE_FXC_BUILDS.with(|c| c.set(c.get() + 1));
+        let xc_def = fxc_xc_def(xc_name, omega_override)?;
         let is_lda = xc_def
             .funcs
             .iter()

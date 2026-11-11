@@ -31,8 +31,8 @@ use crate::libxc::{xc_def_from_name, xc_def_from_name_nspin, FunctionalFamily, L
 use crate::vv10::add_vv10_scratch;
 use crate::vxc::VxcScratch;
 use crate::xc_batch::{
-    mixed_vxc_requested, owned_shells, AoStorage, DensityInput, Exec, ScreenedGrid, XcBatchConfig,
-    XcScreeningStats,
+    mixed_vxc_requested, owned_shells, AoStorage, DensityInput, Exec, ScreenedFxc, ScreenedGrid,
+    XcBatchConfig, XcScreeningStats,
 };
 use crate::xc_trait::{KMix, UksXcContribution, XcCommit, XcContribution, XcMemoryPlan, XcStorage};
 
@@ -1169,6 +1169,20 @@ impl XcContribution for KsXc {
             && self.xc.vv10.is_some())
     }
 
+    fn restricted_fxc(
+        &self,
+        xc_pol: &XcDef,
+        d: &Array2<f64>,
+    ) -> Option<Result<ScreenedFxc<'_>, String>> {
+        assert_committed(self.pending.as_ref());
+        Some(ScreenedFxc::restricted(
+            &self.screened,
+            &self.grid,
+            xc_pol,
+            d,
+        ))
+    }
+
     fn refine_last_to_f64(&self, f: &mut Array2<f64>) -> bool {
         let Some(b) = self.ladder.take_mixed() else {
             return false;
@@ -1508,6 +1522,21 @@ impl UksXcContribution for KsXcUks {
 
     fn start_scf(&self) {
         self.ladder.reset();
+    }
+
+    fn polarized_fxc(
+        &self,
+        xc_pol: &XcDef,
+        d_a: &Array2<f64>,
+        d_b: &Array2<f64>,
+    ) -> Option<Result<ScreenedFxc<'_>, String>> {
+        assert_committed(self.pending.as_ref());
+        Some(ScreenedFxc::polarized(
+            &self.screened,
+            &self.grid,
+            xc_pol,
+            (d_a, d_b),
+        ))
     }
 
     fn refine_last_to_f64_uks(&self, f_a: &mut Array2<f64>, f_b: &mut Array2<f64>) -> bool {

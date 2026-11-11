@@ -3688,28 +3688,17 @@ fn solve_rhf_impl(
             let c_cur = &last_c;
             let f_mo = c_cur.t().dot(&f).dot(c_cur);
 
-            // Build the f_xc kernel (LDA, GGA or meta-GGA) at the current restricted
-            // reference (d_α = d_β = ½·d) once per Newton step; None for pure HF.
-            let fxc_store = if xc_contrib.is_some() {
-                let main = config
-                    .dft_grid
-                    .clone()
-                    .unwrap_or_else(ferric_dft::grid::AtomicGridConfig::production);
-                let name = config.xc.as_deref().expect("xc_contrib implies Some(xc)");
-                let d_half = 0.5 * &d;
-                Some(crate::rohf::FxcKernelStore::build(
-                    mol,
-                    prep,
-                    &main,
-                    name,
-                    config.xc_omega,
-                    &d_half,
-                    &d_half,
-                )?)
-            } else {
-                None
-            };
-            let fxc_storage = fxc_store.as_ref().map(|s| s.response());
+            // The f_xc kernel (LDA, GGA or meta-GGA) at the current restricted
+            // reference (d_α = d_β = ½·d), once per Newton step; None for pure
+            // HF. It runs on the SCF's own screened grid and AO cache when the
+            // XC evaluator has one (`restricted_fxc`), else on a dense kernel.
+            let fxc_storage = xc_contrib
+                .as_deref()
+                .map(|x| {
+                    let name = config.xc.as_deref().expect("xc_contrib implies Some(xc)");
+                    crate::rohf::restricted_fxc_response(x, (mol, prep, config, name), &d)
+                })
+                .transpose()?;
             let fxc_ref: Option<&crate::rohf_newton::FxcResponse<'_>> = fxc_storage.as_deref();
 
             let inputs = crate::rhf_newton::RhfNewtonInputs {

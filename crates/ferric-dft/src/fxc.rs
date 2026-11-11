@@ -844,19 +844,19 @@ fn dot3(x: &[f64; 3], y: &[f64; 3]) -> f64 {
 }
 
 /// One grid point's reference and perturbation data, per spin `[α, β]`.
-struct PointPerturbation {
+pub(crate) struct PointPerturbation {
     /// Reference ∇ρ_σ.
-    grad: [[f64; 3]; 2],
+    pub(crate) grad: [[f64; 3]; 2],
     /// Perturbation δρ_σ, ∇δρ_σ, δτ_σ.
-    drho: [f64; 2],
-    dgrad: [[f64; 3]; 2],
-    dtau: [f64; 2],
+    pub(crate) drho: [f64; 2],
+    pub(crate) dgrad: [[f64; 3]; 2],
+    pub(crate) dtau: [f64; 2],
 }
 
 /// The linearised potential coefficients at one point, per spin: `u^σ`
 /// (multiplies χ_μχ_ν), `w^σ` (multiplies ∇(χ_μχ_ν)) and `t^σ` (multiplies
 /// ½ ∇χ_μ·∇χ_ν). See [`MggaFxcKernel::apply_with_ref`] for the derivation.
-fn linearize_point(
+pub(crate) fn linearize_point(
     h: &PointHessian,
     vs: &[f64; 3],
     p: &PointPerturbation,
@@ -883,6 +883,45 @@ fn linearize_point(
             2.0 * dv[SBB] * gb[ax] + dv[SAB] * ga[ax] + 2.0 * vs[2] * db[ax] + vs[1] * da[ax];
     }
     ([dv[RA], dv[RB]], w, [dv[TA], dv[TB]])
+}
+
+/// [`linearize_point`] at a RESTRICTED point (ρ_α = ρ_β, so ∇ρ_α = ∇ρ_β = g,
+/// and δρ_α = δρ_β, δτ_α = δτ_β), reduced to the α-spin coefficients that are
+/// linear in the three perturbation scalars `(δρ_α, g·∇δρ_α, δτ_α)`.
+///
+/// With x = (ρ_α, ρ_β, σ_αα, σ_αβ, σ_ββ, τ_α, τ_β) the perturbation is
+/// δx = (a, a, 2b, 2b, 2b, c, c) with a = δρ_α, b = g·∇δρ_α, c = δτ_α
+/// (δσ_αβ = g·∇δρ_β + g·∇δρ_α = 2b). So row i of δv = H δx is
+/// `(H_i,ρα + H_i,ρβ)·a + 2(H_i,σαα + H_i,σαβ + H_i,σββ)·b + (H_i,τα + H_i,τβ)·c`,
+/// and [`linearize_point`]'s α outputs are
+///
+///   u^α = δv_ρα,  t^α = δv_τα,
+///   w^α = (2 δv_σαα + δv_σαβ)·g + (2 v_σαα + v_σαβ)·∇δρ_α.
+///
+/// Returned, each multiplied by the quadrature weight `wt`: the `(a, b, c)`
+/// coefficients of u^α, of `2 δv_σαα + δv_σαβ` and of t^α, and the
+/// ∇δρ_α coefficient `2 v_σαα + v_σαβ`. The β outputs are identical, which is
+/// why a restricted response needs one spin only. Pinned against
+/// [`linearize_point`] by `restricted_coefficients_match_linearize_point`.
+pub(crate) fn restricted_coefficients(
+    h: &PointHessian,
+    vs: &[f64; 3],
+    wt: f64,
+) -> ([f64; 3], [f64; 3], [f64; 3], f64) {
+    let row = |i: usize| {
+        [
+            wt * (h[i][RA] + h[i][RB]),
+            wt * (2.0 * (h[i][SAA] + h[i][SAB] + h[i][SBB])),
+            wt * (h[i][TA] + h[i][TB]),
+        ]
+    };
+    let (ra, saa, sab, ta) = (row(RA), row(SAA), row(SAB), row(TA));
+    let s = [
+        2.0 * saa[0] + sab[0],
+        2.0 * saa[1] + sab[1],
+        2.0 * saa[2] + sab[2],
+    ];
+    (ra, s, ta, wt * (2.0 * vs[0] + vs[1]))
 }
 
 /// Per-spin grid coefficients of the linearised potential, `(u, w, t)` with
@@ -2125,6 +2164,88 @@ mod tests {
             let change = max_abs_diff2(&got.0, &old.0);
             eprintln!("{name}: per-spin vs total-gated δV_α max|Δ| = {change:.3e}");
             assert!(change > 0.0, "{name}: band points did not move the kernel");
+        }
+    }
+
+    /// [`restricted_coefficients`] is an exact regrouping of
+    /// [`linearize_point`]'s spin-α outputs at a restricted point (equal spin
+    /// densities and perturbations): u, w and t agree to the rounding of the
+    /// two evaluation orders. (β equals α only for a spin-symmetric H, which
+    /// libxc's kernel is and these random matrices are not.) Bound (derived): each output is a sum of at most 16
+    /// products of at most 4 factors, so each order is within γ_20·S of the
+    /// exact value, S the same sum on |inputs| (`linearize_point` on absolute
+    /// values bounds both orders' magnitude sums); the difference is within
+    /// 2·γ_20·S. Random H, v_σ and perturbations over 200 points.
+    ///
+    /// Mutation (applied and reverted, 2026-11-11): dropping the ρ_β column
+    /// (`H_i,ρβ`, the αβ cross-spin kernel) from the `a` coefficient fails at
+    /// the first point with |Δu| ≈ 0.5 against a bound of ~1e-14.
+    #[test]
+    fn restricted_coefficients_match_linearize_point() {
+        let mut rng = Xorshift64(0x5DEECE66D);
+        let u = f64::EPSILON / 2.0;
+        let gamma20 = 20.0 * u / (1.0 - 20.0 * u);
+        for _ in 0..200 {
+            let mut h: PointHessian = [[0.0; NVAR]; NVAR];
+            for i in 0..NVAR {
+                for j in i..NVAR {
+                    let v = rng.next_f64();
+                    h[i][j] = v;
+                    h[j][i] = v;
+                }
+            }
+            let vs = [rng.next_f64(), rng.next_f64(), rng.next_f64()];
+            let g = [rng.next_f64(), rng.next_f64(), rng.next_f64()];
+            let d = [rng.next_f64(), rng.next_f64(), rng.next_f64()];
+            let (a, c) = (rng.next_f64(), rng.next_f64());
+            let wt = 0.5 + 0.5 * rng.next_f64().abs();
+            let p = PointPerturbation {
+                grad: [g, g],
+                drho: [a, a],
+                dgrad: [d, d],
+                dtau: [c, c],
+            };
+            let (uu, ww, tt) = linearize_point(&h, &vs, &p);
+            let abs3 = |x: [f64; 3]| [x[0].abs(), x[1].abs(), x[2].abs()];
+            let mut ha = h;
+            for row in ha.iter_mut() {
+                for x in row.iter_mut() {
+                    *x = x.abs();
+                }
+            }
+            let pa = PointPerturbation {
+                grad: [abs3(g), abs3(g)],
+                drho: [a.abs(), a.abs()],
+                dgrad: [abs3(d), abs3(d)],
+                dtau: [c.abs(), c.abs()],
+            };
+            let (um, wm, tm) = linearize_point(&ha, &abs3(vs), &pa);
+            let (cu, cs, ct, cg) = restricted_coefficients(&h, &vs, wt);
+            let b = dot3(&g, &d);
+            let lin = |k: [f64; 3]| k[0] * a + k[1] * b + k[2] * c;
+            let ur = lin(cu);
+            let sr = lin(cs);
+            let tr = lin(ct);
+            {
+                let s = 0;
+                let bound_u = 2.0 * gamma20 * wt * um[s];
+                assert!(
+                    (ur - wt * uu[s]).abs() <= bound_u,
+                    "u[{s}]: {ur} vs {}",
+                    wt * uu[s]
+                );
+                let bound_t = 2.0 * gamma20 * wt * tm[s];
+                assert!((tr - wt * tt[s]).abs() <= bound_t, "t[{s}]");
+                for ax in 0..3 {
+                    let wr = sr * g[ax] + cg * d[ax];
+                    let bound_w = 2.0 * gamma20 * wt * wm[s][ax];
+                    assert!(
+                        (wr - wt * ww[s][ax]).abs() <= bound_w,
+                        "w[{s}][{ax}]: {wr} vs {}",
+                        wt * ww[s][ax]
+                    );
+                }
+            }
         }
     }
 }
