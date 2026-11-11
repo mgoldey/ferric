@@ -84,11 +84,17 @@ def test_n_functions_counts_orbital_and_auxiliary_functions(water):
     # Water: O 1s2s2p (5) + 2 x H 1s = 7 at STO-3G; cc-pVDZ is 14 + 2 x 5 = 24.
     assert sto3g.n_functions(mol) == 7
     assert ferric.BasisSet.bundled("cc-pvdz").n_functions(mol) == 24
-    # The auxiliary count is the same number the integral layer uses.
+    # The auxiliary count, against an independent count from the shell list
+    # (2l+1 per spherical shell, (l+1)(l+2)/2 per Cartesian one): O + 2 H.
     aux = ferric.BasisSet.bundled("def2-universal-jkfit")
-    naux = aux.n_functions(mol)
-    assert naux == ferric.AoIntegrals(mol, aux).nao
-    assert naux > 24
+
+    def per_atom(z):
+        return sum(
+            (2 * am + 1) if pure else (am + 1) * (am + 2) // 2
+            for am, pure, _, _ in aux.shells(z)
+        )
+
+    assert aux.n_functions(mol) == per_atom(8) + 2 * per_atom(1)
 
 
 def test_n_functions_refuses_an_uncovered_element():

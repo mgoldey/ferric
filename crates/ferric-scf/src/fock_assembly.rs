@@ -604,6 +604,23 @@ pub(crate) fn resolve_k_builder(
     Ok(pluggable)
 }
 
+/// `df_k_active` for the open-shell solvers, matching `solve_rhf`'s
+/// `df_k.is_some() || df_k_skipped`.
+///
+/// `solve_uhf` / `solve_rohf` build the main ω = 0 DF-K only for an exact
+/// exchange they consume, so `df_k.is_some()` alone misses two runs whose
+/// exchange is density-fitted (or absent) all the same:
+///
+/// * ω > 0: exchange comes ONLY from the SR/LR fitters (`driver::prepare`
+///   refuses `df_k_aux = ""` there), and DF-J is off for RSH, so without this
+///   nothing marked the run as overridden and `k_builder = "direct"` was silent;
+/// * a named `df_k_aux` the solver dropped because the functional uses no
+///   exact exchange (RHF's `df_k_skipped`).
+pub(crate) fn open_shell_df_k_active(df_k_built: bool, df_k_aux: Option<&str>, omega: f64) -> bool {
+    let requested = df_k_aux.is_some_and(|s| !s.is_empty());
+    df_k_built || omega > 0.0 || requested
+}
+
 /// The IGNORED warning [`resolve_k_builder`] prints for a validated `kb` that
 /// an active density-fitted path overrides (the caller has already decided
 /// `overridden`), or `None` when the request is in fact honoured.
@@ -1037,6 +1054,36 @@ mod tests {
         let link = k_builder_ignored_warning("link", false, false, true, 0.0)
             .expect("link under DF-J alone is skipped, so it must warn");
         assert!(link.contains("direct 4-centre builder"), "{link}");
+    }
+
+    /// The open-shell solvers' `df_k_active` must count the two runs whose
+    /// main DF-K is never built but whose exchange is still not the direct
+    /// builder's: a range-separated functional (SR/LR fitters only) and a
+    /// pure functional with a dropped `df_k_aux`. With them `"direct"` is
+    /// overridden and warned; a plain exact run stays unoverridden.
+    ///
+    /// MUTATION: return `df_k_built` alone (the pre-fix UHF/ROHF argument)
+    /// and the RSH and dropped-aux asserts go RED.
+    #[test]
+    fn open_shell_df_k_active_counts_rsh_and_a_dropped_df_k() {
+        assert!(open_shell_df_k_active(
+            true,
+            Some("def2-universal-jkfit"),
+            0.0
+        ));
+        assert!(open_shell_df_k_active(false, None, 0.3), "RSH");
+        assert!(
+            open_shell_df_k_active(false, Some("def2-universal-jkfit"), 0.0),
+            "pure functional, df_k_aux dropped"
+        );
+        assert!(!open_shell_df_k_active(false, None, 0.0));
+        assert!(
+            !open_shell_df_k_active(false, Some(""), 0.0),
+            "exact sentinel"
+        );
+        // RSH under UKS with no DF-J (off for omega > 0): now overridden.
+        let active = open_shell_df_k_active(false, None, 0.3);
+        assert!(k_builder_ignored_warning("direct", active, false, true, 0.3).is_some());
     }
 
     /// Without any density fitting nothing overrides `"direct"`: it resolves

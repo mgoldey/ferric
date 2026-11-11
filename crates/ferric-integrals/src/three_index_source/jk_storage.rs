@@ -374,7 +374,14 @@ pub fn calibrate(
     let build_s_per_row = seconds.max(1e-9) / (4 * rows) as f64;
     let packed_bytes = band.saturating_mul(pair).saturating_mul(8);
     let spill_fits = free_bytes.is_none_or(|free| {
-        super::check_spill_disk(packed_bytes as u64, free, &super::spill_dir()).is_ok()
+        // Only the fit is read here; the message (and its kind) is unused.
+        super::check_spill_disk(
+            packed_bytes as u64,
+            free,
+            &super::spill_dir(),
+            super::SpillKind::Raw,
+        )
+        .is_ok()
     });
     let io = if spill_fits {
         measure_io(&sample, pair, band, budget_bytes / 8)

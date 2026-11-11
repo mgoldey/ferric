@@ -807,6 +807,36 @@ fn uks_rsh_with_cosx_builder_warns_and_skips() {
     );
 }
 
+/// CHILD: UKS with a range-separated functional and NO density-fitting keys.
+/// `solve_uhf` turns DF-J off for omega > 0 and never builds the main DF-K, so
+/// before `open_shell_df_k_active` nothing marked the run as overridden and
+/// `k_builder = "direct"` was silent although exchange comes only from the
+/// SR/LR fitters. Inert (bitwise) and, per the parent, warned.
+#[test]
+fn probe_child_uks_rsh_with_direct_builder() {
+    if !probe_armed() {
+        return;
+    }
+    let (mol, prep, bounds) = setup(CH3_XYZ, 0, 2, "sto-3g", Operator::coulomb());
+    let ctx = ParallelContext::default();
+    let plain = solve_uhf(&ctx, &mol, &prep, &bounds, &rsh_cfg(None)).expect("uks rsh");
+    let with_kb =
+        solve_uhf(&ctx, &mol, &prep, &bounds, &rsh_cfg(Some("direct"))).expect("uks rsh+direct");
+    assert!(plain.converged && with_kb.converged);
+    assert_eq!(plain.energy.to_bits(), with_kb.energy.to_bits());
+}
+
+#[test]
+fn uks_rsh_with_direct_builder_warns() {
+    let (ok, stderr) = run_probe("probe_child_uks_rsh_with_direct_builder");
+    assert!(ok, "child probe failed (see its output above)");
+    assert!(
+        stderr.contains("k_builder = \"direct\" is IGNORED because")
+            && stderr.contains("SR/LR density-fitted"),
+        "UKS RSH: k_builder=direct did not print the IGNORED warning"
+    );
+}
+
 // ── (d2) LinK per-spin pair lists: where it IS observable ───────────────────
 
 /// Does the per-spin `update_density(D_σ)` change anything, and where?
