@@ -376,7 +376,13 @@ impl From<ferric_core::error::FerricError> for KsGradError {
 /// | 2 | `pa`/`pb` per direction | the UKS `mdchi_a`/`mdchi_b` build loop |
 /// | 1 (×2 UKS) | `phi` = `D·χ` | `eval_density_closed`/`_uks` |
 ///
-/// so 3 covers all of them.
+/// so 3 covers all of them. The screened production path
+/// (`screened::fused_xc_reductions`) builds the AO-derivative term and the
+/// grid-coordinate response from one integrand with `O(nb)` row scratch and
+/// no `(nact, nb)` temporary; its largest transient is the single `D·∂_bχ`
+/// product plane of `d_dot_planes`, so for it the 3 is an upper bound. The
+/// whole-grid `*_dense` / `_batched` references still allocate all 3, and they
+/// share this plan, so the figure is kept.
 ///
 /// # Where this is deliberately conservative
 ///
