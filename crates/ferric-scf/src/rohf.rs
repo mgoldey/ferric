@@ -1467,6 +1467,18 @@ fn solve_rohf_impl(
         //     Newton step on it is not anchored: NH2/6-31G r2SCAN with
         //     newton_trigger 1e-2 does not converge in 200 iterations (DIIS: 10;
         //     PBE Newton on the same system: 185 vs DIIS 8).
+        //   - ROKS Newton is slow or stalls on hybrids too. MEASURED 2026-11-11,
+        //     B3LYP/cc-pVDZ, RI-J + DF-K def2-universal-jkfit, energy_conv 1e-9,
+        //     density_conv 1e-7, max_iter 200 (iterations to convergence):
+        //       NH2: DIIS 9; Newton trigger 1e-2: not converged (both the old
+        //            direct HVP response and the fitted one, #644); CLI
+        //            soscf (trigger 1e-3): 136 (old) / 136 (fitted).
+        //       OH:  DIIS 18; trigger 1e-2: not converged (old and fitted);
+        //            soscf: not converged (old) / 184 (fitted).
+        //     Old and fitted HVPs agree at trigger 1e-2 and on NH2, and both
+        //     sit far above DIIS everywhere, so the response kernel is not the
+        //     main cause. Untested hypothesis: the Roothaan matvec's
+        //     diagonal-gap approximation (`rohf_newton::hessian_matvec` doc).
         //
         // `xc_supports_newton_fxc` gates whether an f_xc-accelerated Newton/AH
         // step is taken for this functional. Pure ROHF (xc=None) keeps the
