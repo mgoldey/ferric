@@ -16,8 +16,11 @@
 //!
 //! The test runs the race in fresh child processes (the singleton only grows
 //! once per process): reader threads hammer `instance(0)` while the main thread
-//! grows `m_max` 1..=max, for both evaluators. Without the lock a child crashes
-//! in roughly 20% of runs on 4 threads; with it, never.
+//! grows `m_max` 1..=max, for both evaluators. MEASURED 2026-11-11 (libint2
+//! 2.7.2 with the override, MALLOC_PERTURB_=1, a 12-core box): without the lock
+//! 100/100 standalone children crashed (SIGSEGV or a glibc abort in free), and
+//! this test failed 40/40 children in each of two runs; with the lock, 0/500
+//! children.
 
 use ferric_integrals::engine::{boys_fm_chebyshev7, tenno_gm, TennoKind};
 use std::sync::atomic::{AtomicBool, Ordering};
