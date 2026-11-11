@@ -59,8 +59,12 @@ use std::cell::{Cell, RefCell};
 thread_local! {
     /// Singlet Hessian-vector products computed on this thread (test seam).
     static HVP_CALLS: Cell<usize> = const { Cell::new(0) };
-    /// Direct four-centre response J/K builds made by singlet HVPs (test seam).
+    /// Direct four-centre response J/K builds made by closed-shell (singlet
+    /// and triplet) HVPs (test seam).
     static DIRECT_RESPONSE_BUILDS: Cell<usize> = const { Cell::new(0) };
+    /// Response builds made through one of the SCF's own UNFITTED builders
+    /// (DirectJ, DirectK, COSX) by any second-order product (test seam).
+    static UNFITTED_RESPONSE_BUILDS: Cell<usize> = const { Cell::new(0) };
 }
 
 /// Number of singlet [`hessian_matvec`] calls made on the calling thread so
@@ -71,17 +75,61 @@ pub fn hvp_calls_on_this_thread() -> usize {
     HVP_CALLS.with(Cell::get)
 }
 
-/// Number of direct four-centre J/K builds the singlet HVPs made on the
-/// calling thread so far (test seam). Zero across a Newton step means every
-/// response term came from the SCF's fitted builders or was not needed.
+/// Number of direct four-centre J/K builds the closed-shell (singlet and
+/// triplet) HVPs made on the calling thread so far (test seam). Zero across a
+/// Newton step means every response term came from the SCF's own builders
+/// (fitted or unfitted) or was not needed.
 #[doc(hidden)]
 pub fn direct_response_builds_on_this_thread() -> usize {
     DIRECT_RESPONSE_BUILDS.with(Cell::get)
 }
 
-/// The SCF's own density-fitted J/K builders, lent to the Newton Hessian
-/// matvec ([`hessian_matvec_jk`]) so the response `δJ`/`δK` is the derivative
-/// of the energy the SCF actually converges.
+/// Number of response J or K builds that went through one of the SCF's own
+/// UNFITTED builders (`DirectJ`, `DirectK`, COSX) on the calling thread so far,
+/// from any closed- or open-shell second-order product (test seam; see
+/// `unfitted_response`).
+#[doc(hidden)]
+pub fn unfitted_response_builds_on_this_thread() -> usize {
+    UNFITTED_RESPONSE_BUILDS.with(Cell::get)
+}
+
+/// `M[δD]` from one of the SCF's own unfitted, linear J or K builders (`DirectJ`,
+/// `DirectK`, COSX), made exactly homogeneous in `δD`.
+///
+/// Those builders screen on ABSOLUTE thresholds (Schwarz × `max|D|`, COSX's
+/// density-driven pair screen and `|D|` row mask), which is right for a Fock
+/// build and wrong for a response operand whose norm shrinks with the PCG /
+/// Davidson residual. As in [`crate::rhf::build_jk_with_pool_homogeneous`],
+/// `δD` is scaled by the [`crate::rhf::pow2_normalizer`] of `max|δD|` (exact,
+/// a power of two) so every screen sees `max|δD| ∈ (½, 1]`, and the result is
+/// scaled back. A zero `δD` gives zero without a build. `build` receives a
+/// zeroed output (builders may add to it or overwrite it).
+///
+/// The builder must be a plain linear contraction for an INDEFINITE `δD`:
+/// `DirectJ`, `DirectK` and COSX are; LinK's density-pair list is not, and is
+/// never lent.
+pub(crate) fn unfitted_response(
+    dd: &Array2<f64>,
+    build: impl FnOnce(&Array2<f64>, &mut Array2<f64>) -> Result<usize, FerricError>,
+) -> Result<Array2<f64>, FerricError> {
+    let mut out = Array2::<f64>::zeros(dd.raw_dim());
+    let dmax = dd.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
+    let Some((scale, inv_scale)) = crate::rhf::pow2_normalizer(dmax) else {
+        return Ok(out);
+    };
+    UNFITTED_RESPONSE_BUILDS.with(|c| c.set(c.get() + 1));
+    if scale == 1.0 {
+        build(dd, &mut out)?;
+    } else {
+        build(&(inv_scale * dd), &mut out)?;
+        out *= scale;
+    }
+    Ok(out)
+}
+
+/// The SCF's own J/K builders, lent to the closed-shell second-order products
+/// (Newton [`hessian_matvec_jk`], TRAH, singlet and triplet stability) so the
+/// response `δJ`/`δK` is the derivative of the Fock the SCF actually builds.
 ///
 /// # Why
 ///
@@ -91,18 +139,26 @@ pub fn direct_response_builds_on_this_thread() -> usize {
 /// it is off by the fitting error, which does not shrink with a
 /// finite-difference step, and it cost 55-85 SCF iterations per product at
 /// C8H18/def2-TZVP, where the SCF itself never builds a four-centre integral.
+/// A mixed route (DF-J + direct K, DF-K + conventional J) builds its other
+/// half with an unfitted builder; that half of the response comes from the
+/// SAME builder ([`Self::with_unfitted_j`], [`Self::with_unfitted_k`]). Any
+/// linear K builder can be lent (COSX included, FD-anchored); the SCF does not
+/// lend COSX, whose K costs more than the direct build (`rhf::lend_scf_jk`).
 ///
 /// # Which builder answers which term
 ///
-/// * `δJ`: the SCF's RI-J when it had one, else the direct build.
+/// * `δJ`: the SCF's RI-J when lent, else its unfitted J builder (`DirectJ`)
+///   when lent, else the direct build.
 /// * `δK`: only when the Fock consumes exact exchange through the ω = 0 kernel
-///   (`inp.rsh` is `None` and `inp.k_mix_sr != 0`). Then the SCF's DF-K when it
-///   had one, else the direct build. A pure functional builds no K at all.
+///   (`inp.rsh` is `None` and `inp.k_mix_sr != 0`). Then the SCF's DF-K
+///   (occupied-factor path) when lent, else its unfitted K builder
+///   (`DirectK`, density path) when lent, else the direct build. A pure
+///   functional builds no K at all.
 ///
-/// When a needed term has no fitted builder (DF-J with COSX or direct K, or
-/// DF-K with conventional J), the combined direct
-/// `build_jk_with_pool_homogeneous` runs once and supplies it, as it did for
-/// every term before this type existed.
+/// The unfitted builders run through `unfitted_response`, which makes their
+/// absolute screens homogeneous in `δD`. When a needed term has no lent
+/// builder, the combined direct `build_jk_with_pool_homogeneous` runs once and
+/// supplies it, as it did for every term before this type existed.
 ///
 /// # Interior mutability
 ///
@@ -115,16 +171,70 @@ pub fn direct_response_builds_on_this_thread() -> usize {
 pub struct ScfJkResponse<'a, 'd> {
     j: Option<RefCell<&'a mut (dyn JBuilder + 'd)>>,
     k: Option<RefCell<&'a mut DfK<'d>>>,
+    j_unfitted: Option<RefCell<&'a mut (dyn JBuilder + 'd)>>,
+    k_unfitted: Option<RefCell<&'a mut (dyn KBuilder + 'd)>>,
 }
 
 impl<'a, 'd> ScfJkResponse<'a, 'd> {
     /// Lend the SCF's RI-J builder (`j`) and ω = 0 DF-K builder (`k`); either
-    /// may be `None`, in which case that term comes from the direct build.
+    /// may be `None`, in which case that term comes from an unfitted builder
+    /// lent with [`Self::with_unfitted_j`] / [`Self::with_unfitted_k`], else
+    /// from the direct build.
     pub fn new<J: JBuilder + 'd>(j: Option<&'a mut J>, k: Option<&'a mut DfK<'d>>) -> Self {
         Self {
             j: j.map(|j| RefCell::new(j as &'a mut (dyn JBuilder + 'd))),
             k: k.map(RefCell::new),
+            j_unfitted: None,
+            k_unfitted: None,
         }
+    }
+
+    /// Lend the SCF's unfitted Coulomb builder (`DirectJ` on a DF-K +
+    /// conventional-J route). Read only when no fitted J is lent.
+    pub fn with_unfitted_j(mut self, j: Option<&'a mut (dyn JBuilder + 'd)>) -> Self {
+        self.j_unfitted = j.map(RefCell::new);
+        self
+    }
+
+    /// Lend the SCF's unfitted ω = 0 exchange builder (`DirectK` on DF-J +
+    /// direct K; any linear builder works, the SCF does not lend COSX). Read
+    /// only when no DF-K is lent. Never LinK: its density-pair list is not
+    /// linear in an indefinite `δD`.
+    pub fn with_unfitted_k(mut self, k: Option<&'a mut (dyn KBuilder + 'd)>) -> Self {
+        self.k_unfitted = k.map(RefCell::new);
+        self
+    }
+
+    /// `δJ[δD]` from a lent builder, or `None` when none is lent.
+    fn j_response(&self, dd: &Array2<f64>) -> Option<Result<Array2<f64>, FerricError>> {
+        if let Some(cell) = self.j.as_ref() {
+            let mut dj = Array2::<f64>::zeros(dd.raw_dim());
+            return Some(cell.borrow_mut().build(dd, &mut dj).map(|_| dj));
+        }
+        let cell = self.j_unfitted.as_ref()?;
+        Some(unfitted_response(dd, |d, out| {
+            cell.borrow_mut().build(d, out)
+        }))
+    }
+
+    /// `δK` of the total restricted perturbation `δD = 2·(Y·Xᵀ + X·Yᵀ)` from a
+    /// lent builder (`dd` is that `δD`), or `None` when none is lent.
+    fn k_response(
+        &self,
+        c: &Array2<f64>,
+        k_ov: &Array2<f64>,
+        nocc: usize,
+        dd: &Array2<f64>,
+    ) -> Option<Result<Array2<f64>, FerricError>> {
+        if let Some(cell) = self.k.as_ref() {
+            return Some(fitted_response_k(cell, c, k_ov, nocc));
+        }
+        let cell = self.k_unfitted.as_ref()?;
+        Some(unfitted_response(dd, |d, out| {
+            let mut kb = cell.borrow_mut();
+            kb.update_density(d);
+            kb.build(d, out)
+        }))
     }
 }
 
@@ -133,6 +243,8 @@ impl std::fmt::Debug for ScfJkResponse<'_, '_> {
         f.debug_struct("ScfJkResponse")
             .field("fitted_j", &self.j.is_some())
             .field("fitted_k", &self.k.is_some())
+            .field("unfitted_j", &self.j_unfitted.is_some())
+            .field("unfitted_k", &self.k_unfitted.is_some())
             .finish()
     }
 }
@@ -366,32 +478,29 @@ fn response_jk(
         let (dj, dk) = direct_response_jk(ctx, inp, pool, dd_ao)?;
         return Ok((dj, Some(dk)));
     };
-    // The fitted builds below run OUTSIDE the SCF's J/K ladder scope; without
+    // The lent builds below run OUTSIDE the SCF's J/K ladder scope; without
     // this guard a mixed-precision device kernel would treat them as mixed, and
     // the ± occupied-factor δK would carry an f32 error independent of |κ|.
     let _f64 = crate::jk_ladder::F64BuildScope::enter();
     let need_k = inp.rsh.is_none() && inp.k_mix_sr != 0.0;
-    let need_direct = jk.j.is_none() || (need_k && jk.k.is_none());
-    let (mut dj_dir, mut dk_dir) = if need_direct {
-        let (dj, dk) = direct_response_jk(ctx, inp, pool, dd_ao)?;
-        (Some(dj), Some(dk))
+    let mut direct: Option<(Array2<f64>, Array2<f64>)> = None;
+    let dj = match jk.j_response(dd_ao) {
+        Some(r) => r?,
+        None => direct
+            .insert(direct_response_jk(ctx, inp, pool, dd_ao)?)
+            .0
+            .clone(),
+    };
+    let dk = if need_k {
+        Some(match jk.k_response(inp.c, k_ov, inp.nocc, dd_ao) {
+            Some(r) => r?,
+            None => match direct.take() {
+                Some((_, dk)) => dk,
+                None => direct_response_jk(ctx, inp, pool, dd_ao)?.1,
+            },
+        })
     } else {
-        (None, None)
-    };
-    let dj = match jk.j.as_ref() {
-        Some(cell) => {
-            let mut dj = Array2::<f64>::zeros(dd_ao.raw_dim());
-            cell.borrow_mut().build(dd_ao, &mut dj)?;
-            dj
-        }
-        None => dj_dir
-            .take()
-            .expect("direct δJ built when no fitted J is lent"),
-    };
-    let dk = match (need_k, jk.k.as_ref()) {
-        (false, _) => None,
-        (true, Some(cell)) => Some(fitted_response_k(cell, inp.c, k_ov, inp.nocc)?),
-        (true, None) => dk_dir.take(),
+        None
     };
     Ok((dj, dk))
 }
@@ -538,6 +647,27 @@ pub fn triplet_hessian_matvec(
     k: &Array2<f64>,
     pool: &EnginePool,
 ) -> Result<Array2<f64>, FerricError> {
+    triplet_hessian_matvec_jk(ctx, inp, k, pool, None)
+}
+
+/// [`triplet_hessian_matvec`] with the exchange response from the SCF's own
+/// ω = 0 exchange builder when `jk` lends one (DF-K through the occupied-factor
+/// path, or COSX / `DirectK` through `unfitted_response`; see
+/// [`ScfJkResponse`]). The triplet channel has no `δJ`, so a lent J builder is
+/// never read and no Coulomb response is built. `None` is
+/// [`triplet_hessian_matvec`] bit for bit (the combined direct build whose
+/// `δJ` is discarded, kept for the UHF-at-RHF anchor; see its Cost section).
+///
+/// # Errors
+///
+/// Propagates a failed J/K build or exchange response.
+pub fn triplet_hessian_matvec_jk(
+    ctx: &ParallelContext,
+    inp: &RhfNewtonInputs,
+    k: &Array2<f64>,
+    pool: &EnginePool,
+    jk: Option<&ScfJkResponse<'_, '_>>,
+) -> Result<Array2<f64>, FerricError> {
     let n = inp.c.nrows();
     let no = inp.nocc;
 
@@ -547,23 +677,13 @@ pub fn triplet_hessian_matvec(
     // classic way to get a plausible-looking wrong operator.
     let dd_ao = 2.0 * &ao_from_ov(inp.c, k, no, n);
 
-    let mut dj = Array2::<f64>::zeros((n, n));
-    let mut dk = Array2::<f64>::zeros((n, n));
-    let band_bytes = crate::reduce::resolve_band_bytes(inp.ooc_budget);
-    build_jk_with_pool_homogeneous(
-        ctx, inp.prep, inp.bounds, inp.thresh, &dd_ao, &mut dj, &mut dk, pool, band_bytes,
-    )?;
-    // `dj` is deliberately dropped: see the Cost section. The triplet response
-    // is exchange-only.
-    drop(dj);
-
     // δF_triplet = −½·δK_total. No δJ, no δV_xc. The exchange that does NOT
     // cancel in this channel is the SAME range-separated combination the Fock
     // builds, so ω ≠ 0 takes the SR/LR response here too; ω = 0 keeps the
     // untouched single-kernel expression.
     let df: Array2<f64> = match inp.rsh {
         Some(rsh) => -0.5 * &rsh.exchange_response(&dd_ao)?,
-        None => -0.5 * inp.k_mix_sr * &dk,
+        None => -0.5 * inp.k_mix_sr * &triplet_exchange(ctx, inp, k, pool, jk, &dd_ao)?,
     };
 
     let df_mo = inp.c.t().dot(&df).dot(inp.c);
@@ -579,6 +699,41 @@ pub fn triplet_hessian_matvec(
     }
 
     Ok(h)
+}
+
+/// `δK[δD]` for the triplet channel: from the SCF's lent ω = 0 exchange
+/// builder when there is one and exact exchange is consumed, else the combined
+/// direct build with its `δJ` discarded (see [`triplet_hessian_matvec`]'s
+/// Cost section). A lent route with `k_mix_sr == 0` builds nothing.
+fn triplet_exchange(
+    ctx: &ParallelContext,
+    inp: &RhfNewtonInputs,
+    k_ov: &Array2<f64>,
+    pool: &EnginePool,
+    jk: Option<&ScfJkResponse<'_, '_>>,
+    dd_ao: &Array2<f64>,
+) -> Result<Array2<f64>, FerricError> {
+    if let Some(jk) = jk {
+        if inp.k_mix_sr == 0.0 {
+            return Ok(Array2::<f64>::zeros(dd_ao.raw_dim()));
+        }
+        let _f64 = crate::jk_ladder::F64BuildScope::enter();
+        if let Some(r) = jk.k_response(inp.c, k_ov, inp.nocc, dd_ao) {
+            return r;
+        }
+    }
+    DIRECT_RESPONSE_BUILDS.with(|c| c.set(c.get() + 1));
+    let n = dd_ao.nrows();
+    let mut dj = Array2::<f64>::zeros((n, n));
+    let mut dk = Array2::<f64>::zeros((n, n));
+    let band_bytes = crate::reduce::resolve_band_bytes(inp.ooc_budget);
+    build_jk_with_pool_homogeneous(
+        ctx, inp.prep, inp.bounds, inp.thresh, dd_ao, &mut dj, &mut dk, pool, band_bytes,
+    )?;
+    // `dj` is deliberately dropped: see the Cost section. The triplet response
+    // is exchange-only.
+    drop(dj);
+    Ok(dk)
 }
 
 // ---- helpers (mirror uhf_newton.rs) ----

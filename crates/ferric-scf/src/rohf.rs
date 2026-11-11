@@ -1685,7 +1685,12 @@ fn solve_rohf_impl(
 
             // The response J/K come from this SCF's own RI-J / DF-K (the
             // energy being converged is the fitted one); `None` keeps direct.
-            let (fitted_j, fitted_k) = crate::uhf::fitted_responses(df_j.as_mut(), df_k.as_mut());
+            let responses = crate::uhf::scf_responses(
+                df_j.as_mut(),
+                df_k.as_mut(),
+                direct_j.as_mut(),
+                direct_k.as_mut(),
+            );
             let inputs = crate::rohf_newton::RohfNewtonInputs {
                 prep,
                 bounds,
@@ -1703,8 +1708,8 @@ fn solve_rohf_impl(
                 fxc: fxc_ref,
                 thresh: config.integral_thresh,
                 ooc_budget,
-                j_response: fitted_j.as_deref(),
-                k_response: fitted_k.as_deref(),
+                j_response: responses.j(),
+                k_response: responses.k(),
             };
             let ah_inputs = crate::rohf_ah::RohfAhInputs {
                 base: &inputs,
@@ -1766,7 +1771,12 @@ fn solve_rohf_impl(
 
             // The response J/K come from this SCF's own RI-J / DF-K (the
             // energy being converged is the fitted one); `None` keeps direct.
-            let (fitted_j, fitted_k) = crate::uhf::fitted_responses(df_j.as_mut(), df_k.as_mut());
+            let responses = crate::uhf::scf_responses(
+                df_j.as_mut(),
+                df_k.as_mut(),
+                direct_j.as_mut(),
+                direct_k.as_mut(),
+            );
             let inputs = crate::rohf_newton::RohfNewtonInputs {
                 prep,
                 bounds,
@@ -1784,8 +1794,8 @@ fn solve_rohf_impl(
                 fxc: fxc_ref,
                 thresh: config.integral_thresh,
                 ooc_budget,
-                j_response: fitted_j.as_deref(),
-                k_response: fitted_k.as_deref(),
+                j_response: responses.j(),
+                k_response: responses.k(),
             };
             let (c_new, _kmax) = crate::rohf_newton::rohf_newton_step(
                 ctx,

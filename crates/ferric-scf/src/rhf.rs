@@ -660,6 +660,43 @@ fn rks_fxc_response<'s>(
     crate::rohf::restricted_fxc_response(x, (mol, prep, config, name), d)
 }
 
+/// The SCF's own J/K builders, lent to a closed-shell second-order product
+/// (Newton, TRAH, singlet/triplet stability) as a
+/// [`crate::rhf_newton::ScfJkResponse`], so the response differentiates the
+/// Fock this SCF builds.
+///
+/// `None` (the all-exact direct response) unless a FITTED builder exists:
+/// an RI-J or DF-K SCF lends it, plus the unfitted half of a mixed route —
+/// `DirectJ` (DF-K + conventional J) or `DirectK` (DF-J + direct K). An SCF
+/// with no fitted builder keeps the direct build bit for bit.
+///
+/// COSX is NOT lent (RIJCOSX keeps the direct K response, as before). The
+/// product would be consistent with the COSX Fock (FD-anchored in
+/// `tests/mixed_route_response_fd.rs`), but one COSX K build costs more than
+/// the combined direct J+K it would replace: measured 2026-11-11 at
+/// C8H18/def2-TZVP (nbf 356, 93788 points, warmed builder), 15-16 s per SCF
+/// `build_from_occ` and 15-22 s per response `build(δD)` against 13 s for the
+/// direct build, so the HVP went 13.2 s → 17.0 s (RHF) and 24.0 s → 30-31 s
+/// (UHF; 30.2-31.3 s over two runs); on water TRAH it took MORE products
+/// (219 → 248), not fewer.
+/// LinK is never lent either (its density-pair list is not linear in an
+/// indefinite δD).
+fn lend_scf_jk<'a, 'd>(
+    df_j: Option<&'a mut crate::split_rij::RiJ<'d>>,
+    df_k: Option<&'a mut crate::df_k::DfK<'d>>,
+    direct_j: Option<&'a mut DirectJ<'d>>,
+    direct_k: Option<&'a mut DirectK<'d>>,
+) -> Option<crate::rhf_newton::ScfJkResponse<'a, 'd>> {
+    if df_j.is_none() && df_k.is_none() {
+        return None;
+    }
+    Some(
+        crate::rhf_newton::ScfJkResponse::new(df_j, df_k)
+            .with_unfitted_j(direct_j.map(|j| j as &'a mut (dyn JBuilder + 'd)))
+            .with_unfitted_k(direct_k.map(|k| k as &'a mut (dyn KBuilder + 'd))),
+    )
+}
+
 /// Post-convergence stability analysis for an RHF/RKS solution: BOTH the
 /// internal (singlet) and the external (RHF→UHF, triplet) verdict.
 ///
@@ -709,7 +746,10 @@ fn stability_rhf<'r>(
     xc: Option<&'r dyn ferric_dft::xc_trait::XcContribution>,
     k_mix: ferric_dft::xc_trait::KMix,
     ooc_budget: usize,
-    rsh: Option<&'r crate::rsh_response::RshResponse<'r>>,
+    (rsh, jk): (
+        Option<&'r crate::rsh_response::RshResponse<'r>>,
+        Option<&crate::rhf_newton::ScfJkResponse<'_, '_>>,
+    ),
 ) -> (
     Option<crate::stability::StabilityResult>,
     Option<crate::stability::StabilityResult>,
@@ -762,9 +802,10 @@ fn stability_rhf<'r>(
         thresh: config.integral_thresh,
         ooc_budget,
     };
-    let internal = match crate::stability::rhf_internal_stability(
+    let internal = match crate::stability::rhf_internal_stability_jk(
         ctx,
         &inputs,
+        jk,
         &crate::stability::StabilityConfig::default(),
     ) {
         Ok(res) => {
@@ -801,9 +842,10 @@ fn stability_rhf<'r>(
         );
         None
     } else {
-        match crate::stability::rhf_external_stability(
+        match crate::stability::rhf_external_stability_jk(
             ctx,
             &inputs,
+            jk,
             &crate::stability::StabilityConfig::default(),
         ) {
             Ok(res) => {
@@ -3226,6 +3268,12 @@ fn solve_rhf_impl(
                 // constructed, so this branch is bit-identical to a build with
                 // no stability support. Diagnostic: it warns, it never Errs.
                 let (stability, stability_external) = if config.check_stability {
+                    let jk_response = lend_scf_jk(
+                        df_j.as_mut(),
+                        df_k.as_mut(),
+                        direct_j.as_mut(),
+                        direct_k.as_mut(),
+                    );
                     stability_rhf(
                         ctx,
                         mol,
@@ -3239,7 +3287,7 @@ fn solve_rhf_impl(
                         xc_contrib.as_deref(),
                         k_mix,
                         ooc_budget,
-                        rsh_response.as_ref(),
+                        (rsh_response.as_ref(), jk_response.as_ref()),
                     )
                 } else {
                     (None, None)
@@ -3321,8 +3369,8 @@ fn solve_rhf_impl(
         // The gates match the Newton path exactly (iter > 3 so `last_c` is a
         // real MO set; ω = 0: the matvec can take the SR/LR exchange response
         // (`rsh_response`), but TRAH has not been enabled or anchored for a
-        // range-separated reference; its matvec builds J/K directly, not with
-        // the SCF's DF builders; no meta-GGA: TRAH's auxiliary curvature
+        // range-separated reference; its matvec takes J/K from the SCF's own
+        // builders, as the Newton step does (`lend_scf_jk`); no meta-GGA: TRAH's auxiliary curvature
         // model is not anchored for the τ kernel). Anything outside those gates keeps DIIS,
         // for the same reasons documented on the Newton branch below.
         //
@@ -3485,12 +3533,20 @@ fn solve_rhf_impl(
                     .as_ref()
                     .map(|s| s.radius())
                     .expect("trah_state is Some inside the armed branch");
+                // The same SCF builders the Newton branch lends (`lend_scf_jk`).
+                let jk_response = lend_scf_jk(
+                    df_j.as_mut(),
+                    df_k.as_mut(),
+                    direct_j.as_mut(),
+                    direct_k.as_mut(),
+                );
                 let (c_new, step) = crate::trah::rhf_trah_step_dispatch(
                     ctx,
                     &mut trah_aux,
                     (mol, prep, c_cur.view(), nocc),
                     (config, xc_contrib.is_some().then_some(k_mix.sr)),
                     &inputs,
+                    jk_response.as_ref(),
                     radius,
                 )?;
                 // Decline a step the model says is worthless. Once the orbital
@@ -3702,11 +3758,16 @@ fn solve_rhf_impl(
                 thresh: config.integral_thresh,
                 ooc_budget,
             };
-            // The response J/K come from this SCF's own RI-J / DF-K builders
-            // (the energy being converged is the fitted one); an all-exact SCF
-            // keeps the direct build. See `rhf_newton::ScfJkResponse`.
-            let jk_response = (df_j.is_some() || df_k.is_some())
-                .then(|| crate::rhf_newton::ScfJkResponse::new(df_j.as_mut(), df_k.as_mut()));
+            // The response J/K come from this SCF's own builders: RI-J / DF-K,
+            // and on a mixed route the unfitted other half (DirectK, DirectJ;
+            // RIJCOSX keeps the direct K, see `lend_scf_jk`). An all-exact SCF keeps the direct build. See
+            // `rhf_newton::ScfJkResponse` and `lend_scf_jk`.
+            let jk_response = lend_scf_jk(
+                df_j.as_mut(),
+                df_k.as_mut(),
+                direct_j.as_mut(),
+                direct_k.as_mut(),
+            );
             let (c_new, _kmax) = crate::rhf_newton::rhf_newton_step(
                 ctx,
                 &inputs,

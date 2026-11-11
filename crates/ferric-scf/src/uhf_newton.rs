@@ -72,6 +72,136 @@ pub type AoResponse<'a> = dyn Fn(&Array2<f64>) -> Result<Array2<f64>, FerricErro
 /// (`rhf_newton::occ_pair_response_k`), never from the `n × n` δD.
 pub type OccKResponse<'a> = dyn Fn(&Array2<f64>) -> Result<Array2<f64>, FerricError> + 'a;
 
+/// The exchange response a second-order product takes from the SCF's own ω = 0
+/// exchange builder.
+#[derive(Clone, Copy)]
+pub enum KResponse<'a> {
+    /// The SCF's DF-K through its occupied-factor path ([`OccKResponse`]):
+    /// each spin's `δK[δD_σ]` from two `nocc`-column builds.
+    Occ(&'a OccKResponse<'a>),
+    /// The SCF's UNFITTED exchange builder (`DirectK` on DF-J + direct K;
+    /// any linear builder works) on the density: `δD_σ ↦ K[δD_σ]`, one build per spin,
+    /// made homogeneous in `δD_σ` by `rhf_newton::unfitted_response`.
+    Density(&'a AoResponse<'a>),
+}
+
+impl std::fmt::Debug for KResponse<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            KResponse::Occ(_) => "KResponse::Occ",
+            KResponse::Density(_) => "KResponse::Density",
+        })
+    }
+}
+
+/// The SCF's own J/K builders as the response hooks of
+/// [`UhfNewtonInputs::j_response`] / [`UhfNewtonInputs::k_response`] (and the
+/// ROHF ones), so the open-shell orbital Hessian differentiates the Fock the
+/// SCF builds:
+///
+/// * `δJ`: the fitted RI-J when lent, else the unfitted J builder (`DirectJ`,
+///   on DF-K + conventional J), else `None` (the matvec's direct build).
+/// * `δK`: the fitted DF-K (occupied-factor path) when lent, else the unfitted
+///   ω = 0 exchange builder (COSX or `DirectK`, density path), else `None`.
+///
+/// Unfitted builders run through `rhf_newton::unfitted_response`, which makes
+/// their absolute screens homogeneous in the response density. Never lend LinK:
+/// its density-pair list is not linear in an indefinite `δD`.
+#[doc(hidden)]
+#[allow(clippy::type_complexity)]
+pub struct ScfResponses<'b> {
+    j: Option<Box<AoResponse<'b>>>,
+    k_occ: Option<Box<OccKResponse<'b>>>,
+    k_density: Option<Box<AoResponse<'b>>>,
+}
+
+impl<'b> ScfResponses<'b> {
+    /// Wrap the lent builders; see the type doc for which one answers which
+    /// term. A fitted builder takes precedence over an unfitted one.
+    pub fn lend<'e: 'b>(
+        fitted_j: Option<&'b mut (dyn crate::fock::JBuilder + 'e)>,
+        fitted_k: Option<&'b mut crate::df_k::DfK<'e>>,
+        unfitted_j: Option<&'b mut (dyn crate::fock::JBuilder + 'e)>,
+        unfitted_k: Option<&'b mut (dyn crate::fock::KBuilder + 'e)>,
+    ) -> Self {
+        use crate::fock::{JBuilder, KBuilder};
+        use crate::rhf_newton::unfitted_response;
+        use std::cell::RefCell;
+        let j = match (fitted_j, unfitted_j) {
+            (Some(b), _) => {
+                let cell = RefCell::new(b);
+                Some(Box::new(move |dd: &Array2<f64>| {
+                    let mut out = Array2::<f64>::zeros(dd.raw_dim());
+                    JBuilder::build(&mut **cell.borrow_mut(), dd, &mut out)?;
+                    Ok(out)
+                }) as Box<AoResponse<'b>>)
+            }
+            (None, Some(b)) => {
+                let cell = RefCell::new(b);
+                Some(Box::new(move |dd: &Array2<f64>| {
+                    unfitted_response(dd, |d, out| {
+                        JBuilder::build(&mut **cell.borrow_mut(), d, out)
+                    })
+                }) as Box<AoResponse<'b>>)
+            }
+            (None, None) => None,
+        };
+        let (k_occ, k_density) = match (fitted_k, unfitted_k) {
+            (Some(b), _) => {
+                let cell = RefCell::new(b);
+                let k = Box::new(move |c_f: &Array2<f64>| {
+                    let n = c_f.nrows();
+                    let mut out = Array2::<f64>::zeros((n, n));
+                    KBuilder::build_from_occ(&mut **cell.borrow_mut(), c_f, &mut out)?;
+                    Ok(out)
+                }) as Box<OccKResponse<'b>>;
+                (Some(k), None)
+            }
+            (None, Some(b)) => {
+                let cell = RefCell::new(b);
+                let k = Box::new(move |dd: &Array2<f64>| {
+                    unfitted_response(dd, |d, out| {
+                        let mut kb = cell.borrow_mut();
+                        kb.update_density(d);
+                        kb.build(d, out)
+                    })
+                }) as Box<AoResponse<'b>>;
+                (None, Some(k))
+            }
+            (None, None) => (None, None),
+        };
+        Self {
+            j,
+            k_occ,
+            k_density,
+        }
+    }
+
+    /// The `j_response` hook.
+    pub fn j(&self) -> Option<&AoResponse<'b>> {
+        self.j.as_deref()
+    }
+
+    /// The `k_response` hook.
+    pub fn k(&self) -> Option<KResponse<'_>> {
+        match (self.k_occ.as_deref(), self.k_density.as_deref()) {
+            (Some(k), _) => Some(KResponse::Occ(k)),
+            (None, Some(k)) => Some(KResponse::Density(k)),
+            (None, None) => None,
+        }
+    }
+}
+
+impl std::fmt::Debug for ScfResponses<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ScfResponses")
+            .field("j", &self.j.is_some())
+            .field("k_occ", &self.k_occ.is_some())
+            .field("k_density", &self.k_density.is_some())
+            .finish()
+    }
+}
+
 /// Inputs to one UHF/UKS Newton step.
 pub struct UhfNewtonInputs<'a> {
     /// The AO basis on the molecule.
@@ -118,13 +248,14 @@ pub struct UhfNewtonInputs<'a> {
     /// whose true curvature is ~1e-6, so every TRAH step there realised twice
     /// its prediction (ρ = 2.00) and the run crept to `max_iter`.
     pub j_response: Option<&'a AoResponse<'a>>,
-    /// Occupied-factor exchange build of the Fock's own ω = 0 DF-K
-    /// ([`OccKResponse`]); the matvec forms `δK[δD_σ]` per spin from it and
-    /// scales by `k_mix_sr` as it does the exact one. `None`: exact δK.
-    /// Ignored on the RSH path (`rsh`), which already uses the Fock's fitters,
-    /// and when `k_mix_sr == 0` (no exact exchange is consumed, so none is
-    /// built by either path).
-    pub k_response: Option<&'a OccKResponse<'a>>,
+    /// Exchange response of the Fock's own ω = 0 exchange builder
+    /// ([`KResponse`]): the DF-K occupied-factor build, or the unfitted COSX /
+    /// `DirectK` density build of a mixed route. The matvec forms `δK[δD_σ]`
+    /// per spin from it and scales by `k_mix_sr` as it does the exact one.
+    /// `None`: exact δK. Ignored on the RSH path (`rsh`), which already uses
+    /// the Fock's fitters, and when `k_mix_sr == 0` (no exact exchange is
+    /// consumed, so none is built by either path).
+    pub k_response: Option<KResponse<'a>>,
 }
 
 /// One damped-Newton step on UHF/UKS MO coefficients.
@@ -305,11 +436,12 @@ pub fn hessian_matvec(
 
 /// `(δF_α, δF_β)` without the XC kernel: `δJ[δD_α + δD_β] − δK_σ` per spin.
 ///
-/// * `δJ`: the Fock's own fitted J (`inp.j_response`) when lent, else direct.
+/// * `δJ`: the Fock's own J builder (`inp.j_response`) when lent, else direct.
 /// * `δK_σ`: the RSH SR/LR pair when `inp.rsh` is set; otherwise only when the
 ///   Fock consumes ω = 0 exact exchange (`k_mix_sr != 0`), from the Fock's own
 ///   DF-K through the occupied-factor path when lent
-///   (`½·occ_pair_response_k`, since `δD_σ = Y·Xᵀ + X·Yᵀ`), else direct. A pure
+///   (`½·occ_pair_response_k`, since `δD_σ = Y·Xᵀ + X·Yᵀ`), or from its
+///   unfitted builder on `δD_σ` ([`KResponse::Density`]), else direct. A pure
 ///   functional builds no K: the old code built two direct K's and scaled them
 ///   by 0, so dropping them leaves `δF` bit-identical.
 fn response_fock(
@@ -357,7 +489,8 @@ fn response_fock(
         return Ok((dj.clone(), dj));
     }
     let (dk_a, dk_b) = match inp.k_response {
-        Some(kr) => {
+        Some(KResponse::Density(kr)) => (kr(dd_a_ao)?, kr(dd_b_ao)?),
+        Some(KResponse::Occ(kr)) => {
             let mut k_occ = |c: &Array2<f64>, out: &mut Array2<f64>| -> Result<(), FerricError> {
                 *out = kr(c)?;
                 Ok(())

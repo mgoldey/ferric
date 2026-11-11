@@ -294,7 +294,7 @@ fn open_shell_newton_hvp_fitted_jk_runs_f64_under_mixed_settings() {
         thresh: 1e-12,
         ooc_budget: budget,
         j_response: Some(&*jr),
-        k_response: Some(&*kr),
+        k_response: Some(ferric_scf::uhf_newton::KResponse::Occ(&*kr)),
     };
     let (k1, j1) = counts();
     let (ha, hb) = ferric_scf::uhf_newton::hessian_matvec(
@@ -324,7 +324,7 @@ fn open_shell_newton_hvp_fitted_jk_runs_f64_under_mixed_settings() {
         thresh: 1e-12,
         ooc_budget: budget,
         j_response: Some(&*jr),
-        k_response: Some(&*kr),
+        k_response: Some(ferric_scf::uhf_newton::KResponse::Occ(&*kr)),
     };
     let (r_vc, r_vo, r_oc) = ferric_scf::rohf_newton::hessian_matvec(
         &ctx,
