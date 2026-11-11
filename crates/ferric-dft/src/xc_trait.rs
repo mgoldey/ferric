@@ -6,6 +6,9 @@
 
 use ndarray::Array2;
 
+use crate::libxc::XcDef;
+use crate::xc_batch::ScreenedFxc;
+
 /// What a deferred XC evaluator means to hold, known before RI-J/K setup.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct XcMemoryPlan {
@@ -130,6 +133,21 @@ pub trait XcContribution: XcStorage + Send + Sync {
         let _ = f;
         false
     }
+
+    /// The XC-kernel response at the restricted reference `d` (total
+    /// closed-shell density) on this evaluator's own screened grid and AO
+    /// cache, for a second-order SCF step; see [`ScreenedFxc`]. `xc_pol` is
+    /// the functional resolved with `nspin = 2` (and the caller's ω
+    /// override). `None`: this evaluator has no screened grid, and the caller
+    /// must build the dense kernel itself. The default returns `None`.
+    fn restricted_fxc(
+        &self,
+        xc_pol: &XcDef,
+        d: &Array2<f64>,
+    ) -> Option<Result<ScreenedFxc<'_>, String>> {
+        let _ = (xc_pol, d);
+        None
+    }
 }
 
 /// Spin-polarized analog of `XcContribution`. Takes separate α/β densities
@@ -170,5 +188,17 @@ pub trait UksXcContribution: XcStorage + Send + Sync {
     fn refine_last_to_f64_uks(&self, f_a: &mut Array2<f64>, f_b: &mut Array2<f64>) -> bool {
         let _ = (f_a, f_b);
         false
+    }
+
+    /// [`XcContribution::restricted_fxc`] for a spin-polarized reference
+    /// `(d_a, d_b)`. The default returns `None`.
+    fn polarized_fxc(
+        &self,
+        xc_pol: &XcDef,
+        d_a: &Array2<f64>,
+        d_b: &Array2<f64>,
+    ) -> Option<Result<ScreenedFxc<'_>, String>> {
+        let _ = (xc_pol, d_a, d_b);
+        None
     }
 }
