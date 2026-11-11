@@ -362,13 +362,13 @@ pub struct StabilityConfig {
     ///
     /// # Which Hessian
     ///
-    /// The matvec's response J/K come from the SCF's OWN builders, so λ is the
+    /// The matvec's response J/K come from the SCF's own builders, so λ is the
     /// curvature of the energy the SCF minimised: RI-J / DF-K on a fitted
     /// route, `DirectJ` / `DirectK` for the direct half of a mixed route, a
     /// direct four-centre build at `integral_thresh` on an all-exact route
     /// (and for the K half of RIJCOSX, whose COSX K is not lent; see
     /// `rhf::lend_scf_jk`). On a fitted route that curvature differs from the
-    /// exact-integral one by the fitting error, which can EXCEED this floor:
+    /// exact-integral one by the fitting error, which can exceed this floor:
     /// measured at the same converged fitted point (cc-pVDZ,
     /// def2-universal-jkfit), RHF water internal λ_min 0.350237639 vs
     /// 0.350241800 with the exact response (4.2e-6 Ha, rel 1.2e-5), external

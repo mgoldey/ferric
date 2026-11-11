@@ -665,19 +665,19 @@ fn rks_fxc_response<'s>(
 /// [`crate::rhf_newton::ScfJkResponse`], so the response differentiates the
 /// Fock this SCF builds.
 ///
-/// `None` (the all-exact direct response) unless a FITTED builder exists:
-/// an RI-J or DF-K SCF lends it, plus the unfitted half of a mixed route —
+/// `None` (the all-exact direct response) unless a fitted builder exists:
+/// an RI-J or DF-K SCF lends it, plus the unfitted half of a mixed route:
 /// `DirectJ` (DF-K + conventional J) or `DirectK` (DF-J + direct K). An SCF
 /// with no fitted builder keeps the direct build bit for bit.
 ///
-/// COSX is NOT lent (RIJCOSX keeps the direct K response, as before). The
+/// COSX is not lent (RIJCOSX keeps the direct K response). The
 /// product would be consistent with the COSX Fock (FD-anchored in
 /// `tests/mixed_route_response_fd.rs`), but one COSX K build costs more than
 /// the combined direct J+K it would replace: measured 2026-11-11 at
 /// C8H18/def2-TZVP (nbf 356, 93788 points, warmed builder), 15-16 s per SCF
 /// `build_from_occ` and 15-22 s per response `build(δD)` against 13 s for the
 /// direct build, so the HVP went 13.2 s → 17.0 s (RHF) and 24.0 s → 30-31 s
-/// (UHF; 30.2-31.3 s over two runs); on water TRAH it took MORE products
+/// (UHF; 30.2-31.3 s over two runs); on water TRAH it took more products
 /// (219 → 248), not fewer.
 /// LinK is never lent either (its density-pair list is not linear in an
 /// indefinite δD).

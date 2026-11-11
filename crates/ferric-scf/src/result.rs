@@ -112,7 +112,7 @@ pub struct ScfResult {
     /// The analysed Hessian is that of the SCF's own Fock: on a density-fitted
     /// route the response J/K come from the same RI-J / DF-K (and the direct
     /// half of a mixed route from the same `DirectJ` / `DirectK`), so λ is the
-    /// curvature of the FITTED energy. It differs from the exact-integral
+    /// curvature of the fitted energy. It differs from the exact-integral
     /// curvature by the fitting error, measured 2e-6 to 5e-6 Ha (rel ~1e-5)
     /// on water and NH2 / cc-pVDZ, above the default 1e-6 noise floor, and
     /// that can move a verdict near zero: OH ²Π (an exact zero mode) is

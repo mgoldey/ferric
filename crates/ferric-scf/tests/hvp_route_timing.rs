@@ -1,13 +1,13 @@
-//! MEASUREMENT harness (ignored): wall time of one second-order product on
-//! each J/K route, with the response J/K built the old way and the new way.
+//! measurement harness (ignored): wall time of one second-order product on
+//! each J/K route, with the response J/K built by the direct build (before) and by the SCF's own builders (after).
 //!
-//! "Before" is the exact pre-change code path, reached through the same API:
+//! "Before" is the direct-response path, reached through the same API:
 //! * mixed routes: only the fitted half lent (`ScfJkResponse::new(j, k)` /
-//!   `ScfResponses::lend(j, k, None, None)`), so the other half fell to the
+//!   `ScfResponses::lend(j, k, None, None)`), so the other half falls to the
 //!   combined direct four-centre build;
 //! * fitted route, TRAH / stability: nothing lent (the direct build both used).
 //!
-//! The `RiJCosx` rows time the option NOT taken: lending the SCF's COSX K.
+//! The `RiJCosx` rows time the option not taken: lending the SCF's COSX K.
 //! It measured slower than the direct build it would replace (2026-11-11,
 //! C8H18/def2-TZVP: RHF 13.2 → 17.0 s, UHF 24.0 → 30.2-31.3 s per product; one
 //! warmed COSX build 15-16 s vs 13 s for the combined direct J+K), so the SCF

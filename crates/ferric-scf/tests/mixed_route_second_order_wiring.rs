@@ -1,4 +1,4 @@
-//! The SCF solvers lend their OWN J/K builders to every second-order product:
+//! The SCF solvers lend their own J/K builders to every second-order product:
 //! Newton on the mixed routes with a direct half (DF-J + direct K, DF-K +
 //! conventional J), and TRAH and stability analysis on fitted routes. The
 //! matvecs themselves are FD-anchored in `mixed_route_response_fd.rs`; these
@@ -6,7 +6,7 @@
 //! route's unfitted builder answers its half, and the converged energies match
 //! DIIS.
 //!
-//! RIJCOSX is the exception, pinned here as a decision: its COSX K is NOT lent
+//! RIJCOSX is the exception, pinned here as a decision: its COSX K is not lent
 //! (one COSX K costs more than the direct J+K it would replace; measurements
 //! in `rhf::lend_scf_jk`), so its K half stays the direct response and only
 //! the RI-J half is the SCF's own.
@@ -146,7 +146,7 @@ fn assert_lending(route: Route, hvps: usize, direct: usize, unfitted: usize, wha
     }
 }
 
-/// Newton on a mixed route converges to the DIIS energy of the SAME route,
+/// Newton on a mixed route converges to the DIIS energy of the same route,
 /// with the lending `assert_lending` pins for that route.
 ///
 /// Bar: 1e-7 Ha, as in `open_shell_newton_fitted_response.rs`: both runs
@@ -284,7 +284,7 @@ fn uhf_trah_rijcosx() {
     trah_matches_diis_on_route(OH, 2, Kind::Uhf, Route::RiJCosx);
 }
 
-/// `check_stability` on a fitted SCF analyses the Hessian of the FITTED
+/// `check_stability` on a fitted SCF analyses the Hessian of the fitted
 /// energy: no direct response build runs in either RHF channel (internal
 /// singlet, external triplet) or in the UHF analysis, and λ_min differs from
 /// the exact-response λ_min at the converged point by the fitting error only.
@@ -299,7 +299,7 @@ fn stability_on_a_fitted_scf_builds_no_direct_response() {
         // NH2 ²B₁, not OH ²Π: OH's λ_min is the exact zero mode of the
         // degenerate π hole's orientation, where a relative comparison is
         // meaningless (measured 2026-11-11: fitted-response λ_min 8.8e-10,
-        // exact-response 5.6e-6 at the same fitted SCF point -- the exact
+        // exact-response 5.6e-6 at the same fitted SCF point. The exact
         // response puts spurious curvature on that mode, which is the
         // mismatch `UhfNewtonInputs::j_response` documents for TRAH).
         let (xyz, mult) = if kind == Kind::Rhf {
@@ -411,13 +411,13 @@ fn stability_on_a_fitted_scf_builds_no_direct_response() {
     }
 }
 
-/// OH ²Π UHF on a FITTED route: the verdict is MARGINAL, the verdict
+/// OH ²Π UHF on a fitted route: the verdict is MARGINAL, the verdict
 /// `validation_scf_stability.rs` asserts with exact integrals. Rotating the β
 /// hole about the axis is an exact zero mode of the energy (PySCF λ₀ = −7e-13
-/// there), and it is a zero mode of the FITTED energy too, so the fitted
+/// there), and it is a zero mode of the fitted energy too, so the fitted
 /// response gives |λ_min| far below the 1e-6 Ha noise floor.
 ///
-/// The contrast is asserted as well: the EXACT response at the same fitted
+/// The contrast is asserted as well: the exact response at the same fitted
 /// point puts curvature above the floor on that mode (measured 5.6e-6 Ha),
 /// which would read STABLE. That curvature belongs to neither energy, which
 /// is why stability analysis uses the SCF's own fitted builders
