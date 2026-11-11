@@ -19,9 +19,17 @@
 //! (else "reuse" would silently be a recompute equal to itself), and the
 //! `dfg:metric-eigh` counter tells reuse (0 eighs) from recompute.
 //!
-//! Mutations seen to fail: see the commit message / report
-//! (`KeptMetric::check` without the bit-hash comparison; `take_active_metric`
-//! ignoring the operator; no capture scope around DF-K construction).
+//! Mutations seen to fail (2026-11-11):
+//! - `KeptMetric::check` without the bit-hash comparison:
+//!   `mismatched_geometry_metric_is_not_used` fails ("a metric eigh from
+//!   another geometry was used").
+//! - Without the bit-hash AND the operator comparison: also the wB97X case of
+//!   `reused_metric_eigh_gradient_equals_recomputed` (the erf pass gets the
+//!   erfc decomposition; needs the reversed slot order below).
+//! - Without the name, shape and bit-hash comparisons:
+//!   `mismatched_aux_basis_metric_is_not_used` fails.
+//! - `with_metric_capture` installing `None`: every reuse test fails on the
+//!   reachability count.
 
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
@@ -115,6 +123,14 @@ fn reuse_vs_recompute(s: &Setup, open: bool, cfg: &RhfConfig, n_metrics: usize) 
     let res = scf(s, open, &cfg);
     let slot = handoff(&cfg);
     drop(slot.take()); // metric reuse alone
+    // Reverse the kept order (DF-K offers erfc then erf, the order the
+    // gradient asks), so a lookup that ignored which metric it matched
+    // would hand the erf pass the erfc decomposition and fail.
+    let mut kept = slot.take_metrics();
+    kept.reverse();
+    for k in kept {
+        slot.put_metric_for_test(k);
+    }
     assert_eq!(
         slot.metric_count(),
         n_metrics,
