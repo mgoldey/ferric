@@ -10116,7 +10116,7 @@ fn run_double_hybrid(
 ///
 ///   - pure (LDA/GGA/meta-GGA): no exact exchange, so no RI-K tensor is
 ///     built and `df_k_aux` has no effect.
-///   - global hybrid (B3LYP, PBE0, ...): RI-K, a SECOND three-index tensor
+///   - global hybrid (B3LYP, PBE0, ...): RI-K, a second three-index tensor
 ///     beside RI-J's: the V^-1/2-dressed packed `(P|mn)` (f64,
 ///     `ri_k_precision`) of `naux_K * nbf * (nbf + 1) / 2` elements
 ///     (`naux_K * nbf**2` in a `[gpu]` mode that may build K on the

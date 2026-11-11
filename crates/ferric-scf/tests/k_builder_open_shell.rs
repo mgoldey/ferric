@@ -634,7 +634,7 @@ fn probe_child_rohf_df_k_with_direct_builder() {
     assert_inert("ROHF", &plain, &with_kb);
 }
 
-/// The reported case: a global hybrid whose RI-J AND RI-K come from the
+/// The reported case: a global hybrid whose RI-J and RI-K come from the
 /// Kohn–Sham auto-default (no `df_*_aux` set), as `run_dft` reaches it.
 #[test]
 fn probe_child_rks_auto_df_with_direct_builder() {
@@ -659,7 +659,7 @@ fn probe_child_rks_auto_df_with_direct_builder() {
     assert_inert("RKS", &plain, &with_kb);
 }
 
-/// No density fitting anywhere: `"direct"` IS the builder used, so the run
+/// No density fitting anywhere: `"direct"` is the builder used, so the run
 /// must print no IGNORED line at all (closed and open shell).
 #[test]
 fn probe_child_no_df_with_direct_builder() {
@@ -807,10 +807,10 @@ fn uks_rsh_with_cosx_builder_warns_and_skips() {
     );
 }
 
-/// CHILD: UKS with a range-separated functional and NO density-fitting keys.
+/// CHILD: UKS with a range-separated functional and no density-fitting keys.
 /// `solve_uhf` turns DF-J off for omega > 0 and never builds the main DF-K, so
-/// before `open_shell_df_k_active` nothing marked the run as overridden and
-/// `k_builder = "direct"` was silent although exchange comes only from the
+/// without `open_shell_df_k_active` nothing marks the run as overridden and
+/// `k_builder = "direct"` is silent although exchange comes only from the
 /// SR/LR fitters. Inert (bitwise) and, per the parent, warned.
 #[test]
 fn probe_child_uks_rsh_with_direct_builder() {
