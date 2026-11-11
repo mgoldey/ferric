@@ -636,9 +636,13 @@ build K_α and K_β from one builder instance, refreshing its density-dependent
 state per spin. Whether LinK is the faster choice for a given system is a
 separate question from whether it is honoured; see the cost note above, which
 is being re-measured. `link` is skipped with a warning, never silently,
-whenever density-fitted J/K is active; both `link` and `cosx` are skipped with
+whenever density-fitted J/K is active, and so is an explicit `direct` whenever
+exchange is not built by the direct four-centre builder (RI-K active, a pure
+functional, or a range-separated one); `direct` with RI-J alone is honoured.
+Both `link` and `cosx` are skipped with
 a warning when the functional uses no exact exchange or is range-separated
-(exchange then comes from the SR/LR fitters).
+(exchange then comes from the SR/LR fitters). For a Kohn–Sham hybrid, whose
+RI-K is on by default, pass `df_k_aux = ""` to use the direct or LinK builder.
 
 **RIJCOSX.** `k_builder = "cosx"` combines with density-fitted Coulomb: when
 RI-J is active (`df_j_aux` named, or the Kohn–Sham default), J comes from RI-J

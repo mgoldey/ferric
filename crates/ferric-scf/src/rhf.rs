@@ -2660,7 +2660,12 @@ fn solve_rhf_impl(
     const INCREMENTAL_FULL_REBUILD_EVERY: usize = 8;
 
     crate::driver::commit_xc(xc_contrib.as_deref_mut())?;
-    crate::driver::warn_if_rss_over_at_stage("RHF", "setup", ooc_budget);
+    crate::driver::warn_if_rss_over_at_stage(
+        "RHF",
+        "setup",
+        ooc_budget,
+        df_k.as_ref().map(crate::df_k::DfK::resident_tensor_bytes),
+    );
     if let Some(x) = xc_contrib.as_ref() {
         x.start_scf();
     }
@@ -3218,7 +3223,12 @@ fn solve_rhf_impl(
                     }
                 }
                 let density_alpha = 0.5 * &d;
-                crate::driver::warn_if_rss_over_at_stage("RHF", "converged", ooc_budget);
+                crate::driver::warn_if_rss_over_at_stage(
+                    "RHF",
+                    "converged",
+                    ooc_budget,
+                    df_k.as_ref().map(crate::df_k::DfK::resident_tensor_bytes),
+                );
 
                 // ── Opt-in internal stability analysis (RHF/RKS singlet) ─────
                 // Runs ONLY at a converged exit and ONLY when the flag is set;

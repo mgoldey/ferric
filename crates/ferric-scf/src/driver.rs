@@ -508,8 +508,36 @@ pub(crate) fn warn_if_diis_history_large(
 /// variant and stage in the warning line so a recurring over-budget RSS is
 /// traceable to a specific solver/point in the run. `variant` is e.g. "RHF",
 /// "UHF", "ROHF"; `stage` is e.g. "setup" or "converged".
-pub(crate) fn warn_if_rss_over_at_stage(variant: &str, stage: &str, ooc_budget: usize) {
-    ferric_core::memory::warn_if_rss_over(&format!("{variant} {stage}"), ooc_budget, 1.1);
+///
+/// `ri_k_resident_bytes`: the in-core size of the ω = 0 RI-K (DF-K) tensor
+/// when the run holds one. When the warning fires with a non-zero size, it
+/// is followed by [`ri_k_memory_remedy`], since that tensor is a whole second
+/// three-index allocation beside RI-J's for a hybrid functional and
+/// `k_builder` (the knob a reader reaches for) does nothing while it is live.
+pub(crate) fn warn_if_rss_over_at_stage(
+    variant: &str,
+    stage: &str,
+    ooc_budget: usize,
+    ri_k_resident_bytes: Option<usize>,
+) {
+    let fired =
+        ferric_core::memory::warn_if_rss_over(&format!("{variant} {stage}"), ooc_budget, 1.1);
+    if let (true, Some(bytes)) = (fired, ri_k_resident_bytes.filter(|&b| b > 0)) {
+        eprintln!("{}", ri_k_memory_remedy(bytes));
+    }
+}
+
+/// The memory remedy for a run holding an ω = 0 RI-K tensor of `bytes`:
+/// `df_k_aux = ""` selects exact four-centre K, which holds no three-index
+/// tensor for exchange (and is the reference RI-K approximates). Pure so its
+/// content is testable.
+pub(crate) fn ri_k_memory_remedy(bytes: usize) -> String {
+    format!(
+        "ferric NOTE: density-fitted exchange (RI-K) holds {:.2} GB of this; \
+         df_k_aux=\"\" (Python) / [scf] df_k_aux = \"\" selects exact four-centre K and \
+         does not build that tensor (k_builder has no effect while RI-K is active)",
+        bytes as f64 / 1e9
+    )
 }
 
 /// Diagonalize a Fock matrix in the rectangular canonical-orthogonal basis
@@ -786,6 +814,26 @@ mod monitor_tests {
         m.record_density_change(&a, &b);
         let s = m.signals(-1.5 + 1e-9);
         assert!(s.de < 1e-8 && s.dp_rms.is_finite() && s.dp_max.is_finite());
+    }
+}
+
+#[cfg(test)]
+mod ri_k_remedy_tests {
+    use super::ri_k_memory_remedy;
+
+    /// The over-budget RSS note names exact K (`df_k_aux = ""`) as the remedy
+    /// for a held RI-K tensor, with its size, and says `k_builder` is inert
+    /// while RI-K is active.
+    ///
+    /// MUTATION: drop the size or the `df_k_aux` spelling from the format
+    /// string and this goes RED.
+    #[test]
+    fn ri_k_remedy_names_exact_k_and_the_tensor_size() {
+        let msg = ri_k_memory_remedy(4_510_000_000);
+        assert!(msg.contains("4.51 GB"), "{msg}");
+        assert!(msg.contains("df_k_aux=\"\""), "{msg}");
+        assert!(msg.contains("[scf] df_k_aux = \"\""), "{msg}");
+        assert!(msg.contains("k_builder has no effect"), "{msg}");
     }
 }
 
