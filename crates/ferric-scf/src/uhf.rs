@@ -589,8 +589,9 @@ pub fn solve_uhf_from_spin_densities(
     hook: Option<crate::fock::SpinFockHook<'_>>,
 ) -> Result<ScfResult, FerricError> {
     let s = ferric_integrals::oneelectron::overlap(prep);
-    let c_a = spin_natural_orbitals(&s, densities.0)?;
-    let c_b = spin_natural_orbitals(&s, densities.1)?;
+    let (nocc_a, nocc_b) = nocc_ab(mol)?;
+    let c_a = spin_natural_orbitals(&s, densities.0, nocc_a, "alpha")?;
+    let c_b = spin_natural_orbitals(&s, densities.1, nocc_b, "beta")?;
     let Some(hook) = hook else {
         return solve_uhf_with_guess(ctx, mol, prep, bounds, config, Some((&c_a, &c_b)));
     };
@@ -613,10 +614,13 @@ pub fn solve_uhf_from_spin_densities(
 /// the kept span; dropped near-linear-dependent directions are zero columns,
 /// as the solver's own diagonalization pads them. For `D = C_o C_oᵀ` with
 /// S-orthonormal `C_o` (`k` columns) the first `k` columns span `C_o`, so
-/// they rebuild `D` to round-off.
+/// they rebuild `D` to round-off. The kept span must hold the spin's `nocc`
+/// occupied orbitals (`spin` names it in the error).
 pub(crate) fn spin_natural_orbitals(
     s: &Array2<f64>,
     d: &Array2<f64>,
+    nocc: usize,
+    spin: &str,
 ) -> Result<Array2<f64>, FerricError> {
     let n = s.nrows();
     if d.dim() != (n, n) {
@@ -626,6 +630,13 @@ pub(crate) fn spin_natural_orbitals(
         )));
     }
     let x = crate::rhf::canonical_orthogonalizer(s)?;
+    if nocc > x.ncols() {
+        return Err(FerricError::General(format!(
+            "UHF: {nocc} {spin}-occupied orbitals exceed the {} orthogonalized functions \
+             the overlap retains",
+            x.ncols()
+        )));
+    }
     let xs = x.t().dot(s);
     let (_, u) = descending_eigh(&xs.dot(d).dot(&xs.t()))?;
     Ok(padded(&x.dot(&u), n))
@@ -3549,6 +3560,24 @@ mod tests {
     use ferric_core::external_potential::{ExternalPotential, PointCharge};
     use ferric_core::parallel::ParallelContext;
     use ferric_integrals::oneelectron;
+
+    /// Overlap of rank 2 on 3 functions (functions 0 and 1 identical): the
+    /// canonical orthogonalizer keeps 2 directions, so a spin with 3
+    /// occupied orbitals cannot start from a density, and one with 2 can.
+    #[test]
+    fn spin_density_start_refuses_more_occupied_than_the_kept_rank() {
+        let s = ndarray::arr2(&[[1.0, 1.0, 0.0], [1.0, 1.0, 0.0], [0.0, 0.0, 1.0]]);
+        let d = Array2::<f64>::zeros((3, 3));
+        assert_eq!(crate::rhf::canonical_orthogonalizer(&s).unwrap().ncols(), 2);
+        let msg = spin_natural_orbitals(&s, &d, 3, "beta")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            msg.contains("3 beta-occupied") && msg.contains("2 orthogonalized"),
+            "{msg}"
+        );
+        assert!(spin_natural_orbitals(&s, &d, 2, "beta").is_ok());
+    }
 
     fn signals(de: f64, dp: f64) -> crate::rhf::ConvergenceSignals {
         crate::rhf::ConvergenceSignals {
