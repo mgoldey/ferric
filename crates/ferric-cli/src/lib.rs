@@ -919,6 +919,7 @@ pub fn run(args: Vec<String>) {
     let ri_j_resolved = rhf_config.resolved_ri_j_precision(ferric_core::gpu::DeviceSite {
         nbf: prep.nbasis(),
         jxc_overlap: rhf_config.xc.is_some() && rhf_config.df_k_aux.is_none(),
+        cpu_f64: false,
     });
     if let Some(rl) = ferric_scf::runlog::log() {
         ferric_scf::runlog::set_build_identity(

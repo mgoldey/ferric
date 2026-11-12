@@ -72,6 +72,7 @@ use ndarray_linalg::cholesky::Cholesky;
 const SITE: ferric_core::gpu::DeviceSite = ferric_core::gpu::DeviceSite {
     nbf: 10,
     jxc_overlap: false,
+    cpu_f64: false,
 };
 use ndarray_linalg::{Eigh, UPLO};
 use std::sync::Mutex;

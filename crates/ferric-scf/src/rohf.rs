@@ -1090,6 +1090,7 @@ fn solve_rohf_impl(
             config.resolved_ri_j_precision(ferric_core::gpu::DeviceSite {
                 nbf: prep.nbasis(),
                 jxc_overlap: xc_contrib.is_some() && k_aux_eff.is_none(),
+                cpu_f64: false,
             }),
             crate::df_k::RiKPrecision::resolve(config.ri_k_precision, prep.nbasis()),
         )

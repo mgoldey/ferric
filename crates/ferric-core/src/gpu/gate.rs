@@ -35,6 +35,32 @@
 //! tensor (4.8 GB) takes the pool and J yields to it. Earlier T019 rows
 //! (C8/SVP RI-J 0.15 s device against 0.11 s CPU, C12/TZVP 1.15) agree.
 //!
+//! # RI-J against the f64 CPU tensor
+//!
+//! A geometry or frequency task (and an explicit `ri_j_precision = "f64"`)
+//! keeps the f64 tensor on the CPU, which is slower per build than the f32
+//! default. Same protocol, `task = "optimize"` with `max_steps = 1` (two SCFs
+//! and a gradient; `jk:ri_j` rows summed over all builds), RHF, `off` against
+//! `on`, 2 interleaved runs per cell, foreign load 0.25-0.50 cores:
+//!
+//! ```text
+//!  system         nbf   RI-J ms/build      DF-K ms/build      wall s
+//!                       off   on  off/on   off    on  off/on   off    on
+//!  C12/def2-SVP   298    67   29  2.34     146   169  0.86    12.8  12.8
+//!  C16/def2-SVP   394   150   61  2.45     405   648  0.62    30.1  34.4
+//!  C10/def2-TZVP  442   124   49  2.52     265   288  0.92    21.5  20.8
+//!  C12/def2-TZVP  528   215   80  2.68     527   476  1.11    37.3  33.9
+//!  C14/def2-TZVP  614   349  352  0.99    1016   700  1.45    62.6  56.8
+//! ```
+//!
+//! The device wins by 2.3-2.7x at every size from 298 through 528. At 614 J
+//! yields the card to K and runs on the CPU in both arms. `auto` therefore
+//! takes RI-J at `nbf` >= [`AUTO_MIN_NBF_RI_J_F64`] (298, the smallest size
+//! measured) when the CPU tensor is f64, and at [`AUTO_MIN_NBF_RI_J`] when it
+//! is f32. DF-K keeps one threshold: its ratios here repeat the table above.
+//! The wall column includes the device DF-K that `on` also takes, which loses
+//! at the SVP sizes and is gated off under `auto`.
+//!
 //! # Why the measure is `nbf`
 //!
 //! A FLOP-count gate does not describe the data: n-hexadecane/def2-SVP and
@@ -96,6 +122,9 @@ pub struct DeviceSite {
     /// pure or range-separated functional, whose J build overlaps the XC
     /// digest on the CPU.
     pub jxc_overlap: bool,
+    /// The CPU RI-J tensor is f64 (a geometry or frequency task, or an
+    /// explicit `ri_j_precision = "f64"`), not the f32 default.
+    pub cpu_f64: bool,
 }
 
 impl DeviceSite {
@@ -105,12 +134,27 @@ impl DeviceSite {
         Self {
             nbf,
             jxc_overlap: false,
+            cpu_f64: false,
+        }
+    }
+
+    /// A site with no J || XC overlap whose CPU RI-J tensor is f64.
+    pub fn f64_tensor(nbf: usize) -> Self {
+        Self {
+            nbf,
+            jxc_overlap: false,
+            cpu_f64: true,
         }
     }
 }
 
 /// Smallest `nbf` at which `auto` takes the device RI-J build.
 pub const AUTO_MIN_NBF_RI_J: usize = 512;
+
+/// Smallest `nbf` at which `auto` takes the device RI-J build when the CPU
+/// tensor is f64 (the smallest measured size, where the device is 2.3-2.7x
+/// faster per build; sizes below it were not measured).
+pub const AUTO_MIN_NBF_RI_J_F64: usize = 298;
 
 /// Smallest `nbf` at which `auto` takes the device DF-K build.
 pub const AUTO_MIN_NBF_DF_K: usize = 512;
@@ -123,7 +167,14 @@ pub fn routes_to_device(mode: GpuMode, path: AutoPath, site: DeviceSite) -> bool
         GpuMode::Off => false,
         GpuMode::On => true,
         GpuMode::Auto => match path {
-            AutoPath::RiJ => auto_ri_j(site, AUTO_MIN_NBF_RI_J),
+            AutoPath::RiJ => auto_ri_j(
+                site,
+                if site.cpu_f64 {
+                    AUTO_MIN_NBF_RI_J_F64
+                } else {
+                    AUTO_MIN_NBF_RI_J
+                },
+            ),
             AutoPath::DfK => site.nbf >= AUTO_MIN_NBF_DF_K,
         },
     }
@@ -144,7 +195,11 @@ mod tests {
     const SMALL: usize = 64;
 
     fn site(nbf: usize, jxc_overlap: bool) -> DeviceSite {
-        DeviceSite { nbf, jxc_overlap }
+        DeviceSite {
+            nbf,
+            jxc_overlap,
+            cpu_f64: false,
+        }
     }
 
     #[test]
@@ -187,6 +242,41 @@ mod tests {
         for n in [298, 394, 442, 490, 528, 614, BIG] {
             assert!(!at(n, true), "pure functional, nbf {n}");
         }
+    }
+
+    #[test]
+    fn auto_ri_j_threshold_depends_on_the_cpu_tensor_precision() {
+        let at = |n, f64t| {
+            routes_to_device(
+                GpuMode::Auto,
+                AutoPath::RiJ,
+                DeviceSite {
+                    nbf: n,
+                    jxc_overlap: false,
+                    cpu_f64: f64t,
+                },
+            )
+        };
+        // f64 CPU tensor: the device wins at every measured size from 298.
+        assert!(!at(AUTO_MIN_NBF_RI_J_F64 - 1, true));
+        for n in [298, 394, 442, 490, 528] {
+            assert!(at(n, true), "f64 tensor, nbf {n}");
+        }
+        // f32 CPU tensor: the same sizes below 512 stay on the CPU.
+        for n in [298, 394, 442, 490] {
+            assert!(!at(n, false), "f32 tensor, nbf {n}");
+        }
+        assert!(at(AUTO_MIN_NBF_RI_J, false));
+        // The pure-functional rule outranks the precision branch.
+        assert!(!routes_to_device(
+            GpuMode::Auto,
+            AutoPath::RiJ,
+            DeviceSite {
+                nbf: BIG,
+                jxc_overlap: true,
+                cpu_f64: true
+            }
+        ));
     }
 
     #[test]
