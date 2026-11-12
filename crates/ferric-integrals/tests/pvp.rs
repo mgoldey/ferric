@@ -128,18 +128,35 @@ fn same_centre_s_and_p_match_the_closed_forms() {
     let centre = [0.3, -0.2, 0.5];
     let prep = ghost_prep(
         &[centre],
-        &[vec![shell(0, &[a]), shell(0, &[b]), shell(1, &[a]), shell(1, &[b])]],
+        &[vec![
+            shell(0, &[a]),
+            shell(0, &[b]),
+            shell(1, &[a]),
+            shell(1, &[b]),
+        ]],
     );
     // A charge on the centre, then one off it (D = 0.9 and 1.7).
-    let cases: [(f64, [f64; 3]); 3] = [(1.0, [0.0, 0.0, 0.0]), (1.0, [0.0, 0.9, 0.0]), (2.0, [1.0, 1.2, -0.6])];
+    let cases: [(f64, [f64; 3]); 3] = [
+        (1.0, [0.0, 0.0, 0.0]),
+        (1.0, [0.0, 0.9, 0.0]),
+        (2.0, [1.0, 1.2, -0.6]),
+    ];
     for (q, off) in cases {
         let d = (off[0] * off[0] + off[1] * off[1] + off[2] * off[2]).sqrt();
-        let c = pc(q, centre[0] + off[0], centre[1] + off[1], centre[2] + off[2]);
+        let c = pc(
+            q,
+            centre[0] + off[0],
+            centre[1] + off[1],
+            centre[2] + off[2],
+        );
         let w = pvp(&prep, &[c]).unwrap();
         for (i, j, ea, eb) in [(0, 0, a, a), (0, 1, a, b), (1, 1, b, b)] {
             let want = -4.0 * ea * eb * q * norm_s(ea) * norm_s(eb) * i2(ea + eb, d);
             let got = w[(i, j)];
-            eprintln!("s/s ({i},{j}) D={d:.3}: rel dev {:.2e}", (got - want).abs() / want.abs());
+            eprintln!(
+                "s/s ({i},{j}) D={d:.3}: rel dev {:.2e}",
+                (got - want).abs() / want.abs()
+            );
             assert!(
                 (got - want).abs() <= ROUNDING_REL * want.abs(),
                 "s/s ({i},{j}) D={d}: pvp {got:.16e} closed form {want:.16e}"
@@ -175,7 +192,12 @@ fn fd_cross_block(
     let nb0 = ghost_prep(&[pos[0]], &shells[..1]).nbasis();
     let mut acc: Option<Array2<f64>> = None;
     for a in 0..3 {
-        for (sa, sb, sign) in [(1.0, 1.0, 1.0), (1.0, -1.0, -1.0), (-1.0, 1.0, -1.0), (-1.0, -1.0, 1.0)] {
+        for (sa, sb, sign) in [
+            (1.0, 1.0, 1.0),
+            (1.0, -1.0, -1.0),
+            (-1.0, 1.0, -1.0),
+            (-1.0, -1.0, 1.0),
+        ] {
             let mut p = *pos;
             p[0][a] += sa * h;
             p[1][a] += sb * h;
@@ -199,7 +221,11 @@ fn pvp_matches_mixed_fd_of_nuclear_attraction() {
         vec![shell(0, &[1.1]), shell(1, &[0.8]), shell(2, &[0.9])],
         vec![shell(0, &[0.6]), shell(1, &[1.4]), shell(2, &[0.7])],
     ];
-    let charges = [pc(3.0, 0.0, 0.0, 0.0), pc(1.0, 1.3, -0.4, 0.8), pc(0.5, -0.9, 1.1, -0.3)];
+    let charges = [
+        pc(3.0, 0.0, 0.0, 0.0),
+        pc(1.0, 1.3, -0.4, 0.8),
+        pc(0.5, -0.9, 1.1, -0.3),
+    ];
     let a = [0.2, 0.1, -0.3];
     let separate = [0.9, -0.5, 0.6];
     for (label, pos) in [("coincident", [a, a]), ("separate", [a, separate])] {
@@ -222,7 +248,10 @@ fn pvp_matches_mixed_fd_of_nuclear_attraction() {
         let scale = wb.iter().fold(0.0f64, |m, v| m.max(v.abs()));
         eprintln!("{label}: max |W| {scale:.3e}, worst |W - FD(h)| / bar = {worst:.3e}");
         assert!(scale > 0.1, "{label}: block is trivially small ({scale})");
-        assert!(worst <= 1.0, "{label}: pvp vs FD exceeds the derived bar by {worst:.2}x");
+        assert!(
+            worst <= 1.0,
+            "{label}: pvp vs FD exceeds the derived bar by {worst:.2}x"
+        );
     }
 }
 
@@ -240,13 +269,21 @@ fn pvp_is_symmetric_and_linear_in_the_charges() {
     let charges: Vec<PointCharge> = (0..CHARGE_CHUNK + 3)
         .map(|k| {
             let t = k as f64;
-            pc(0.5 + 0.25 * t, (0.7 * t).sin(), (1.3 * t).cos(), 0.2 * t - 1.0)
+            pc(
+                0.5 + 0.25 * t,
+                (0.7 * t).sin(),
+                (1.3 * t).cos(),
+                0.2 * t - 1.0,
+            )
         })
         .collect();
     let w = pvp(&prep, &charges).unwrap();
     let scale = w.iter().fold(0.0f64, |m, v| m.max(v.abs()));
     let asym = (&w - &w.t()).iter().fold(0.0f64, |m, v| m.max(v.abs()));
-    assert!(asym <= ROUNDING_REL * scale, "asymmetry {asym:.3e} at scale {scale:.3e}");
+    assert!(
+        asym <= ROUNDING_REL * scale,
+        "asymmetry {asym:.3e} at scale {scale:.3e}"
+    );
     let mut sum = Array2::<f64>::zeros(w.dim());
     for c in &charges {
         sum = sum + pvp(&prep, std::slice::from_ref(c)).unwrap();

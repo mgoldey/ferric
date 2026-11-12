@@ -10,11 +10,11 @@
 //! mixed bra-centre/ket-centre second derivative is
 //! `d^2 <m|V|n> / dA_a dB_a = <d_a m | V | d_a n>`, and `W` is the sum of
 //! the three blocks `(bra a, ket a)`, coordinates `a` and `3 + a` of
-//! [`Engine::compute_1e_deriv2_block`]. libint2 reports these two centres
+//! [`crate::engine::Engine::compute_1e_deriv2_block`]. libint2 reports these two centres
 //! separately even when bra and ket sit on the same atom, and the charges'
 //! own coordinates (`6..`) do not enter this block.
 //!
-//! The charges are worked through in chunks of [`CHARGE_CHUNK`]: the result
+//! The charges are worked through in chunks of [`crate::pvp::CHARGE_CHUNK`]: the result
 //! is linear in the charges, and a chunk keeps the second-derivative buffer
 //! at `O(chunk^2)` blocks instead of `O(natoms^2)`.
 //!
