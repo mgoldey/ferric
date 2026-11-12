@@ -129,11 +129,14 @@ def _longest_main_thread_stall(call):
     A measurement with no samples raises."""
     go = threading.Event()
     done = threading.Event()
+    errors = []
 
     def work():
         go.wait()
         try:
             call()
+        except BaseException as exc:  # re-raised on the main thread after join
+            errors.append(exc)
         finally:
             done.set()
 
@@ -150,6 +153,8 @@ def _longest_main_thread_stall(call):
         samples += 1
     t.join()
     end = time.perf_counter()
+    if errors:
+        raise errors[0]
     if samples < 2:  # the initial sample plus at least one in the loop
         raise RuntimeError("GIL measurement recorded no samples")
     return max(gap, end - last), end - start

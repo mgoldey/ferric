@@ -18,8 +18,9 @@ variables. For each selected row this script:
 
 5. accepts the mutation only when that run fails on an assertion: the test's
    own thread panics at an `assert!`, `assert_eq!` or `assert_ne!` line of a
-   file under the crate's `tests/` directory. A compile error, any other
-   panic, a crash or a timeout is rejected;
+   file under the crate's `tests/` directory, and the panic message is not an
+   `unwrap()` payload or the literal of an `.expect("...")` call on that line.
+   A compile error, any other panic, a crash or a timeout is rejected;
 6. removes the scratch worktree.
 
 With --write the result of every accepted row is written back to the ledger:
@@ -50,6 +51,11 @@ REPO = Path(__file__).resolve().parents[1]
 LEDGER = Path("testdata/mutations/ledger.json")
 ASSERT_LINE = re.compile(r"\b(assert|assert_eq|assert_ne)!\s*\(")
 # Rust >= 1.89 prints the thread id: "thread 'name' (1234) panicked at".
+# Payloads of `Option::unwrap`/`Result::unwrap` panics, and the literal of an
+# `.expect("...")` call: a panic carrying one of these on an assertion line
+# comes from the unwrap or expect, not from the assertion comparing.
+UNWRAP_PANIC = re.compile(r"^called `(Option|Result)::unwrap(_err)?\(\)` on an? `")
+EXPECT_CALL = re.compile(r'\.expect\(\s*"((?:[^"\\]|\\.)*)"')
 PANIC = re.compile(r"^thread '([^']*)'(?: \(\d+\))? panicked at (\S+?):(\d+):\d+:\s*$")
 
 CAUGHT = "assertion failure"
@@ -152,6 +158,12 @@ def classify(out, rc, row, wt):
         src = Path(wt, path)
         text = src.read_text().splitlines() if src.is_file() else []
         if not (0 < lineno <= len(text) and ASSERT_LINE.search(text[lineno - 1])):
+            return "panic outside an assertion", where
+        line_text = text[lineno - 1]
+        raised_by_unwrap = UNWRAP_PANIC.match(message) or any(
+            message.startswith(m) for m in EXPECT_CALL.findall(line_text)
+        )
+        if raised_by_unwrap:
             return "panic outside an assertion", where
         return CAUGHT, where
     return "crashed", {"rc": rc, "tail": lines[-5:]}

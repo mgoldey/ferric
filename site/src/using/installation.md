@@ -143,7 +143,7 @@ platform without a wheel (only Linux x86_64 is tested; see the table above).
 
 ### Prerequisites
 
-- **Rust 1.75+**: install via [rustup](https://rustup.rs/)
+- **Rust 1.87+**: install via [rustup](https://rustup.rs/)
 - **libint2 2.13.1**: the conda-forge Linux x86-64 build, which includes
   second-derivative integrals; `scripts/install-libint.sh` downloads it (checksum
   pinned) and needs `curl`, `python3`, `zstd` and `patchelf`
