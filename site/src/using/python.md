@@ -493,6 +493,27 @@ against the Rust drivers: `rhf_from_blocks.py` (DIIS RHF from `hcore()` and
 `cis_from_blocks.py` (singlet CIS from `df_mo` or `ao2mo`, equal to
 `run_tddft(method="tda")` and PySCF `TDA`).
 
+### Fock hooks and starting densities
+
+`fock_hook=hook` on `run_rhf` and `run_dft` adds one density-dependent term:
+`hook(D)` receives the total density every iteration and returns `(E, V)`.
+`run_uhf` and `run_rohf` take `hook(D_a, D_b) -> (E, V_a, V_b)`.
+
+| Rule | Detail |
+|---|---|
+| Symmetry of V | `max \|V - Vᵀ\|` at most `4 n ε ‖V‖_F` (n = nao), the round-off of a product chain of up to four GEMMs; the driver uses `½ (V + Vᵀ)`. A larger asymmetry raises `ValueError`. |
+| `run_dft` ladder | Every convergence-ladder rung runs with the hook. Rungs that switch on SOSCF run without it, keeping their level shift, ADIIS and smearing: the SOSCF orbital Hessian does not include the hook. |
+| Energy noise floor | Round-off in the hook term grows with ‖V‖. MEASURED 2026-11-11, HF-in-PBE projection embedding of water/cc-pVDZ (O as subsystem A): the final \|ΔE\| after 200 iterations is 4.6e-10 Ha at μ = 1e7 and 4.1e-9 Ha at μ = 1e8, so `energy_conv=1e-11` does not converge there. Set `energy_conv` above that floor. |
+
+`dm0=D` on `run_rhf` and `run_dft` starts the SCF from a total closed-shell AO
+density `(nao, nao)`, such as a previous run's `density()`; the first Fock
+matrix is built from it. `D` must be finite, symmetric within the bound above
+and hold the system's electron count, `|tr(D S) − N| ≤ n² ε Σ|D_ij S_ij|`, the
+round-off of the trace. A density of another charge state raises `ValueError`.
+A converged density of an identical run restarts in at most two iterations.
+`dm0` with `guess=` or `guess_basis=` raises `ValueError`. The open-shell
+drivers take no `dm0`.
+
 Not exposed: the Rust-side structs (`PreparedBasis`, `Engine`, screening
 bounds), method intermediates (CC amplitudes, GW self-energies, PDEP
 eigenpairs) and periodic (PBC) integrals. Those stay behind the drivers.

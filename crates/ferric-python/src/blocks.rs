@@ -2182,9 +2182,86 @@ impl PyUcphf {
     }
 }
 
-/// Largest `max |V - V^T|` a Fock hook may return. An asymmetric V would
-/// make the Fock matrix non-Hermitian and the eigensolve meaningless.
-const HOOK_SYMMETRY_TOL: f64 = 1e-10;
+/// Largest `max |M - M^T|` that round-off can put into an `(n, n)` matrix
+/// `M` that is symmetric in exact arithmetic: `4 n ε ‖M‖_F`.
+///
+/// Derivation. An element of a computed product `A B` with inner dimension
+/// `n` carries an error of at most `γ_n (|A| |B|)_ij`, with
+/// `γ_n = n u / (1 - n u) ≈ n ε / 2` (Higham, Accuracy and Stability of
+/// Numerical Algorithms, 2nd ed., §3.5). `M_ij` and `M_ji` are summed in
+/// different orders, so their difference is at most twice that,
+/// `n ε (|A| |B|)_ij`. A chain of `m` products adds `m` such terms; the
+/// factor 4 admits `m = 4`, which covers `μ S C Cᵀ S` (three GEMMs and a
+/// scale). `(|A| |B|)_ij` is replaced by `‖M‖_F`, which assumes the product
+/// has no cancellation larger than `‖M‖_F / max |M_ij|`. A hook that returns
+/// `μ S C_B C_Bᵀ S` with `μ = 1e6` on water/cc-pVDZ (n = 24) differs from
+/// its transpose by 2.3e-10, below this bound; an operator built with a
+/// wrong formula (for example `μ S C Cᵀ`) differs at `O(‖M‖)` and stays
+/// rejected.
+pub(crate) fn roundoff_symmetry_tol(m: &Array2<f64>) -> f64 {
+    let norm_f = m.iter().map(|x| x * x).sum::<f64>().sqrt();
+    4.0 * m.nrows() as f64 * f64::EPSILON * norm_f
+}
+
+/// `½ (M + Mᵀ)`. Bit-identical to `M` when `M` is exactly symmetric:
+/// `x + x = 2x` and `2x · ½ = x` are exact in binary floating point.
+pub(crate) fn symmetrized(m: &Array2<f64>) -> Array2<f64> {
+    (m + &m.t()) * 0.5
+}
+
+/// Largest `|tr(D S) - N|` that round-off leaves in the electron count of a
+/// closed-shell density `D = 2 C Cᵀ` built from S-orthonormal orbitals:
+/// `n² ε Σ_ij |D_ij S_ij|`.
+///
+/// Derivation. `tr(D S) = Σ_ij D_ij S_ij` is a sum of `n²` products; its
+/// recursive-summation error is at most `γ_{n²} Σ |D_ij S_ij|`, with
+/// `γ_{n²} ≈ n² ε / 2` (Higham §3.1). The factor 2 admits an error of the
+/// same order from forming `D` itself. Any mixture of such densities (damping,
+/// a converged SCF density) keeps the exact count, so a larger deviation
+/// means `D` belongs to a different electron count or is not normalized.
+fn electron_count_tol(d: &Array2<f64>, s: &Array2<f64>) -> f64 {
+    let n = d.nrows() as f64;
+    let abs_sum: f64 = d.iter().zip(s.iter()).map(|(x, y)| (x * y).abs()).sum();
+    n * n * f64::EPSILON * abs_sum
+}
+
+/// A closed-shell starting density `dm0` (AO basis, total, `(nao, nao)`)
+/// checked against the system the SCF will solve: finite, square of the
+/// basis dimension, symmetric to round-off ([`roundoff_symmetry_tol`]) and
+/// holding `nelec` electrons (`tr(D S)`, [`electron_count_tol`]). Returns
+/// `½ (D + Dᵀ)`. `who` names the Python entry point in errors.
+pub(crate) fn checked_dm0(
+    dm0: Option<PyReadonlyArray2<'_, f64>>,
+    prep: &PreparedBasis,
+    nelec: f64,
+    who: &str,
+) -> PyResult<Option<Array2<f64>>> {
+    let Some(dm0) = dm0 else {
+        return Ok(None);
+    };
+    let n = prep.nbasis();
+    let d = checked_square(dm0, n, &format!("{who}: dm0"))?;
+    let asym = asymmetry(&d, &format!("{who}: dm0"))?;
+    let tol = roundoff_symmetry_tol(&d);
+    if asym > tol {
+        return Err(PyValueError::new_err(format!(
+            "{who}: dm0 is not symmetric (max |D - D^T| = {asym:.3e}, above the round-off \
+             bound 4 n eps ||D||_F = {tol:.3e})"
+        )));
+    }
+    let d = symmetrized(&d);
+    let s = oneelectron::overlap(prep);
+    let count = d.iter().zip(s.iter()).map(|(x, y)| x * y).sum::<f64>();
+    let tol = electron_count_tol(&d, &s);
+    if (count - nelec).abs() > tol {
+        return Err(PyValueError::new_err(format!(
+            "{who}: dm0 holds tr(D S) = {count:.12} electrons, the system has {nelec} \
+             (|difference| above the round-off bound n^2 eps sum|D*S| = {tol:.3e}); \
+             dm0 must be the total closed-shell density for this molecule, charge and basis"
+        )));
+    }
+    Ok(Some(d))
+}
 
 /// A Python `hook(D) -> (E, V)` as an `RhfFockHook`. The SCF runs with the
 /// GIL released, so each call re-acquires it. A Python exception, or a
@@ -2211,8 +2288,10 @@ impl PyFockHook {
         })
     }
 
-    /// Copy one returned potential and check it is `(nao, nao)` and
-    /// symmetric.
+    /// Copy one returned potential, check it is `(nao, nao)` and symmetric
+    /// to round-off ([`roundoff_symmetry_tol`]), and return `½ (V + Vᵀ)`.
+    /// An asymmetry above that bound is a programming error in the hook and
+    /// raises.
     fn potential(&self, v: PyReadonlyArray2<'_, f64>, name: &str) -> PyResult<Array2<f64>> {
         let v = v.as_array().to_owned();
         let n = self.nao;
@@ -2223,12 +2302,14 @@ impl PyFockHook {
             )));
         }
         let asym = asymmetry(&v, &format!("fock_hook's {name}"))?;
-        if asym > HOOK_SYMMETRY_TOL {
+        let tol = roundoff_symmetry_tol(&v);
+        if asym > tol {
             return Err(PyValueError::new_err(format!(
-                "fock_hook returned a non-symmetric {name} (max |{name} - {name}^T| = {asym:.3e})"
+                "fock_hook returned a non-symmetric {name} (max |{name} - {name}^T| = {asym:.3e}, \
+                 above the round-off bound 4 n eps ||{name}||_F = {tol:.3e})"
             )));
         }
-        Ok(v)
+        Ok(symmetrized(&v))
     }
 
     fn energy(e: f64) -> PyResult<f64> {
@@ -2372,9 +2453,8 @@ pub(crate) fn solve_rhf_hooked(
     h.finish(r)
 }
 
-/// `run_dft`'s SCF: the convergence ladder, or with a `fock_hook` its first
-/// rung only (later rungs switch on SOSCF, whose orbital Hessian would not
-/// include the hook). `hooked` carries the hook with `run_dft`'s
+/// `run_dft`'s SCF: the convergence ladder, plain or with a `fock_hook`
+/// ([`solve_hooked_ladder`]). `hooked` carries the hook with `run_dft`'s
 /// `with_gradient` and `dispersion is not None` flags: neither the analytic
 /// gradient nor the dispersion terms would include the hook, so both are
 /// refused before the SCF.
@@ -2404,9 +2484,77 @@ pub(crate) fn solve_ks_ladder(
         Some((_, true, _)) => refuse("with_gradient=True"),
         Some((_, _, true)) => refuse("dispersion"),
         Some((hook, false, false)) => {
-            solve_rhf_hooked(py, ctx, mol, prep, op, bounds, &ladder[0].config, hook)
+            solve_hooked_ladder(py, ctx, mol, prep, op, bounds, ladder, hook)
         }
     }
+}
+
+/// A ladder rung as the hooked solve runs it: SOSCF (`newton_trigger`) off,
+/// every other accelerator of the rung (ADIIS, level shift, smearing) kept.
+/// The SOSCF orbital Hessian does not include the hook
+/// ([`ferric_scf::rhf::validate_fock_hook`]).
+fn hooked_rung_config(rung: &ferric_scf::ladder::Rung) -> ferric_scf::rhf::RhfConfig {
+    let mut cfg = rung.config.clone();
+    cfg.newton_trigger = 0.0;
+    cfg
+}
+
+/// The KS convergence ladder with a Python `hook(D) -> (E, V)` applied on
+/// every rung: each rung runs `solve_rhf_with_hook` from the previous rung's
+/// final density (as `ferric_scf::ladder::solve_rhf_ladder` carries it), with
+/// [`hooked_rung_config`]'s settings. Returns the first converged rung's
+/// result, or the lowest-energy rung's when none converges (as the plain
+/// ladder does). Rung 0 is the call
+/// `solve_rhf_hooked` makes, so a run that converges there is unchanged.
+#[allow(clippy::too_many_arguments)]
+fn solve_hooked_ladder(
+    py: Python<'_>,
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    ladder: &[ferric_scf::ladder::Rung],
+    hook: &Bound<'_, PyAny>,
+) -> PyResult<ferric_scf::result::ScfResult> {
+    let configs: Vec<_> = ladder.iter().map(hooked_rung_config).collect();
+    for cfg in &configs {
+        ferric_scf::rhf::validate_fock_hook(cfg)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    }
+    let mut h = PyFockHook::new(hook, prep.nbasis())?;
+    let r = py.allow_threads(|| {
+        let mut f = |d: &Array2<f64>| h.call(d);
+        let mut carried: Option<Array2<f64>> = None;
+        let mut best = None;
+        for (i, (rung, cfg)) in ladder.iter().zip(&configs).enumerate() {
+            let mut cfg = cfg.clone();
+            if let (false, Some(d)) = (rung.restart, carried.take()) {
+                cfg.init_guess_density = Some(d);
+            }
+            let r = ferric_scf::rhf::solve_rhf_with_hook(ctx, mol, prep, op, bounds, &cfg, &mut f)?;
+            eprintln!(
+                "[scf-ladder] hooked rung {i}/{} -> {:?} after {}/{} iters, E = {:.10}",
+                ladder.len() - 1,
+                r.exit,
+                r.iterations,
+                cfg.max_iter,
+                r.energy
+            );
+            if r.converged {
+                return Ok(r);
+            }
+            carried = Some(r.density_total.clone());
+            if best
+                .as_ref()
+                .is_none_or(|b: &ferric_scf::result::ScfResult| r.energy < b.energy)
+            {
+                best = Some(r);
+            }
+        }
+        best.ok_or_else(|| FerricError::General("empty SCF ladder".into()))
+    });
+    h.finish(r)
 }
 
 /// `run_dft(symmetry=True)` refusals: the existing ones, plus a `fock_hook`

@@ -788,6 +788,25 @@ fn parse_guess_basis(
     }
 }
 
+/// Refuse `dm0=` next to `guess=` or `guess_basis=`: each names a starting
+/// point, and the SCF would honour only one of them (`dm0` outranks both).
+fn refuse_dm0_with_guess(
+    who: &str,
+    has_dm0: bool,
+    guess: Option<&str>,
+    guess_basis: Option<&str>,
+) -> PyResult<()> {
+    let other = match (guess, guess_basis) {
+        _ if !has_dm0 => return Ok(()),
+        (Some(_), _) => "guess",
+        (None, Some(_)) => "guess_basis",
+        (None, None) => return Ok(()),
+    };
+    Err(pyo3::exceptions::PyValueError::new_err(format!(
+        "{who}: dm0 and {other} both set the starting point; pass one of them"
+    )))
+}
+
 /// The secondary-basis guess report as a dict (`basis`, `projection`,
 /// `iterations`, `energy`, `nbasis_guess`, `nbasis_target`, `converged`,
 /// `unconverged_reason`, `used_as_guess`), or `None` when no
@@ -1353,7 +1372,7 @@ fn parse_ri_k_precision(s: Option<&str>) -> PyResult<Option<ferric_scf::df_k::Ri
     cosx_grid=None, cosx_final_pass=None, cosx_final_grid=None, cosx_overlap_fit=None,
     aurora=None, trah_trigger=None, symmetry=false, irrep_nelec=None,
     fock_hook=None,
-    guess_basis=None, guess_projection=None, ri_j_precision=None,
+    guess_basis=None, guess_projection=None, ri_j_precision=None, dm0=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_rhf(
@@ -1394,7 +1413,9 @@ fn run_rhf(
     guess_basis: Option<&str>,
     guess_projection: Option<&str>,
     ri_j_precision: Option<&str>,
+    dm0: Option<numpy::PyReadonlyArray2<'_, f64>>,
 ) -> PyResult<PyObject> {
+    refuse_dm0_with_guess("run_rhf", dm0.is_some(), guess, guess_basis)?;
     let guess_basis = parse_guess_basis(guess_basis, guess_projection)?;
     // The descent needs a stability verdict to act on, so the kwarg turns on
     // both halves (as run_uhf does).
@@ -1407,6 +1428,7 @@ fn run_rhf(
     let prep = PreparedBasis::new(&emol, &basis_set.inner).map_err(make_err)?;
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
+    let init_guess_density = blocks::checked_dm0(dm0, &prep, emol.nelec() as f64, "run_rhf")?;
     // Defaults mirror the CLI `[scf]` section (config.rs) so CLI and Python agree.
     let mut config = RhfConfig {
         max_iter: max_iter.unwrap_or_else(default_scf_max_iter),
@@ -1434,6 +1456,7 @@ fn run_rhf(
         newton_trigger: if soscf.unwrap_or(false) { 1e-3 } else { 0.0 },
         use_sad_guess: parse_guess(guess)?,
         guess_basis,
+        init_guess_density,
         external_potential: build_external_potential_with_smeared(
             point_charges,
             smeared_charges,
@@ -10192,6 +10215,7 @@ fn run_double_hybrid(
     cosx_grid=None, cosx_final_pass=None, cosx_final_grid=None, cosx_overlap_fit=None,
     symmetry=false, irrep_nelec=None, fock_hook=None,
     guess_basis=None, guess_projection=None, grid_weight_cut=None, ri_j_precision=None,
+    dm0=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_dft(
@@ -10227,7 +10251,9 @@ fn run_dft(
     guess_projection: Option<&str>,
     grid_weight_cut: Option<f64>,
     ri_j_precision: Option<&str>,
+    dm0: Option<numpy::PyReadonlyArray2<'_, f64>>,
 ) -> PyResult<PyObject> {
+    refuse_dm0_with_guess("run_dft", dm0.is_some(), None, guess_basis)?;
     let guess_basis = parse_guess_basis(guess_basis, guess_projection)?;
     // Refuse an (E, grad-E) pair that does not belong to the same surface.
     //
@@ -10249,6 +10275,8 @@ fn run_dft(
     let xc_name = functional.unwrap_or("LDA").to_string();
     cfg.xc = Some(xc_name.clone());
     cfg.guess_basis = guess_basis;
+    // Rung 0 starts from dm0; later rungs carry the previous rung's density.
+    cfg.init_guess_density = blocks::checked_dm0(dm0, &prep, emol.nelec() as f64, "run_dft")?;
     // Resolve `dispersion=` BEFORE the SCF: an unknown spelling or a
     // functional with no published parameters must not cost an SCF first.
     let dispersion = dispersion
@@ -10734,6 +10762,7 @@ fn run_ksdft(
         guess_projection,
         grid_weight_cut,
         ri_j_precision,
+        None,
     )
 }
 
