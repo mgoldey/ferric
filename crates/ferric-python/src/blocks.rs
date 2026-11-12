@@ -2620,7 +2620,9 @@ pub(crate) fn solve_rhf_hooked(
 }
 
 /// `run_dft`'s SCF: the convergence ladder, plain or with a `fock_hook`
-/// ([`solve_hooked_ladder`]). `hooked` carries the hook with `run_dft`'s
+/// ([`solve_hooked_ladder`]), returning the result with the config of the
+/// rung that produced it (its level shift, smearing, ...), which the
+/// certificate records. `hooked` carries the hook with `run_dft`'s
 /// `with_gradient` and `dispersion is not None` flags: neither the analytic
 /// gradient nor the dispersion terms would include the hook, so both are
 /// refused before the SCF.
@@ -2634,19 +2636,25 @@ pub(crate) fn solve_ks_ladder(
     bounds: &SchwarzBounds,
     ladder: &[ferric_scf::ladder::Rung],
     hooked: Option<(&Bound<'_, PyAny>, bool, bool)>,
-) -> PyResult<ferric_scf::result::ScfResult> {
+) -> PyResult<(ferric_scf::result::ScfResult, ferric_scf::rhf::RhfConfig)> {
     let refuse = |what: &str| {
         Err(PyValueError::new_err(format!(
             "run_dft: fock_hook cannot be combined with {what}"
         )))
     };
     match hooked {
-        None => py
-            .allow_threads(|| {
-                ferric_scf::ladder::solve_rhf_ladder(ctx, mol, prep, op, bounds, ladder)
-            })
-            .map(|lr| lr.result)
-            .map_err(make_err),
+        None => {
+            let lr = py
+                .allow_threads(|| {
+                    ferric_scf::ladder::solve_rhf_ladder(ctx, mol, prep, op, bounds, ladder)
+                })
+                .map_err(make_err)?;
+            let cfg = ladder
+                .get(lr.rung_reached)
+                .map(|r| r.config.clone())
+                .ok_or_else(|| make_err("SCF ladder reported a rung it does not have"))?;
+            Ok((lr.result, cfg))
+        }
         Some((_, true, _)) => refuse("with_gradient=True"),
         Some((_, _, true)) => refuse("dispersion"),
         Some((hook, false, false)) => {
@@ -2670,7 +2678,7 @@ fn hooked_rung_config(rung: &ferric_scf::ladder::Rung) -> ferric_scf::rhf::RhfCo
 /// final density (as `ferric_scf::ladder::solve_rhf_ladder` carries it), with
 /// [`hooked_rung_config`]'s settings. Returns the first converged rung's
 /// result, or the lowest-energy rung's when none converges (as the plain
-/// ladder does). Rung 0 is the call
+/// ladder does), with that rung's [`hooked_rung_config`]. Rung 0 is the call
 /// `solve_rhf_hooked` makes, so a run that converges there is unchanged.
 #[allow(clippy::too_many_arguments)]
 fn solve_hooked_ladder(
@@ -2682,7 +2690,7 @@ fn solve_hooked_ladder(
     bounds: &SchwarzBounds,
     ladder: &[ferric_scf::ladder::Rung],
     hook: &Bound<'_, PyAny>,
-) -> PyResult<ferric_scf::result::ScfResult> {
+) -> PyResult<(ferric_scf::result::ScfResult, ferric_scf::rhf::RhfConfig)> {
     let configs: Vec<_> = ladder.iter().map(hooked_rung_config).collect();
     for cfg in &configs {
         ferric_scf::rhf::validate_fock_hook(cfg)
@@ -2723,20 +2731,24 @@ fn solve_hooked_ladder(
                 guess_report = r.guess_basis.clone();
             }
             if r.converged {
-                return Ok(with_report(r, &guess_report));
+                return Ok((with_report(r, &guess_report), i));
             }
             carried = Some(r.density_total.clone());
             if best
                 .as_ref()
-                .is_none_or(|b: &ferric_scf::result::ScfResult| r.energy < b.energy)
+                .is_none_or(|(b, _): &(ferric_scf::result::ScfResult, usize)| r.energy < b.energy)
             {
-                best = Some(r);
+                best = Some((r, i));
             }
         }
-        best.map(|b| with_report(b, &guess_report))
+        best.map(|(b, i)| (with_report(b, &guess_report), i))
             .ok_or_else(|| FerricError::General("empty SCF ladder".into()))
     });
-    h.finish(r)
+    let (rung, r) = match r {
+        Ok((r, i)) => (i, Ok(r)),
+        Err(e) => (0, Err(e)),
+    };
+    Ok((h.finish(r)?, configs[rung].clone()))
 }
 
 /// `run_dft(symmetry=True)` refusals: the existing ones, plus a `fock_hook`
