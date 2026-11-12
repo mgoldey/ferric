@@ -106,6 +106,13 @@ pub fn run_system(sys: &System) -> Run {
     let res = run_cas_ci(&mol, &prep, &rhf, ci_cfg)
         .unwrap_or_else(|e| panic!("{}: CAS-CI failed: {e:?}", sys.name));
     assert!(res.converged, "{}: Davidson did not converge", sys.name);
+    // The RDM bounds are derived from CONV_THRESH, so the root must meet it.
+    assert!(
+        res.residual_norm < CONV_THRESH,
+        "{}: CI residual {:e} >= CONV_THRESH {CONV_THRESH:e}",
+        sys.name,
+        res.residual_norm
+    );
     let space = DeterminantSpace {
         alpha_strings: enumerate_strings(sys.n_active, sys.n_elec.0),
         beta_strings: enumerate_strings(sys.n_active, sys.n_elec.1),

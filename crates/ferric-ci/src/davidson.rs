@@ -174,7 +174,8 @@ where
         let tnorm = t.dot(&t).sqrt();
         if !(tnorm > NULL_DIRECTION_REL * t0norm) {
             // New direction is null (already spanned): no further progress.
-            converged = resid_norm < conv_thresh * 10.0;
+            // The residual was checked against `conv_thresh` above and missed
+            // it, so the solve stops unconverged.
             break;
         }
         t.mapv_inplace(|x| x / tnorm);
@@ -232,6 +233,49 @@ mod tests {
             }
         }
         h
+    }
+
+    /// `‖Hx − θx‖` of a returned eigenpair.
+    fn residual(h: &Array2<f64>, r: &CiDavidsonResult) -> f64 {
+        let x = Array1::from(r.eigenvector.clone());
+        let res = &h.dot(&x) - &(r.eigenvalue * &x);
+        res.dot(&res).sqrt()
+    }
+
+    /// The null-direction exit (the correction is already spanned, so the
+    /// subspace cannot grow) stops an unconverged solve. The operator is
+    /// `H + E` with `E` antisymmetric of size 1e-6, so no Ritz pair has a
+    /// residual near round-off: a solve asked for 1e-300 grows the subspace
+    /// to the full space and leaves through that exit at a floor `r0` of the
+    /// order of `E`. Thresholds from `r0/5` to `r0/2` are below that floor
+    /// and must not be reported met.
+    #[test]
+    fn null_direction_exit_is_not_converged() {
+        let n = 16;
+        let h = spread_matrix(n);
+        let mut a = h.clone();
+        for i in 0..n {
+            for j in 0..i {
+                let e = 1e-6 * (((i * 7 + j * 3) % 11) as f64 - 5.0) / 5.0;
+                a[(i, j)] += e;
+                a[(j, i)] -= e;
+            }
+        }
+        let diag: Vec<f64> = (0..n).map(|i| a[(i, i)]).collect();
+        let mv = |c: &[f64]| a.dot(&Array1::from(c.to_vec())).to_vec();
+        let floor = davidson_lowest(n, mv, &diag, 1e-300, n, 100).unwrap();
+        assert!(!floor.converged, "1e-300 reported met");
+        let r0 = residual(&a, &floor);
+        assert!(r0 > 1e-9, "floor residual {r0:e} is not above round-off");
+        for f in [0.2, 0.3, 0.5] {
+            let thresh = f * r0;
+            let r = davidson_lowest(n, mv, &diag, thresh, n, 100).unwrap();
+            assert!(
+                !r.converged,
+                "converged at threshold {thresh:e}, residual {:e} (floor {r0:e})",
+                residual(&a, &r)
+            );
+        }
     }
 
     #[test]
