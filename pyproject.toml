@@ -37,7 +37,6 @@ authors = [{ name = "Matthew Goldey", email = "matthew.goldey@gmail.com" }]
 requires-python = ">=3.10"
 dependencies = [
     "numpy>=2.0.0",
-    "gemmi>=0.7",
 ]
 
 # `pip install ferric` puts `ferric` on PATH -- calls straight into

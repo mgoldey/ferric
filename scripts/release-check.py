@@ -28,8 +28,9 @@ What ``check`` asserts, for every file:
   ``ferric-<version>-cp3NN-cp3NN-<platform>.whl`` with NO build tag and a
   ``manylinux_2_28_x86_64`` platform; its METADATA says ``Name: ferric`` and
   ``Version: <version>``; its WHEEL file has no ``Build:`` line; it bundles no
-  libint2 shared library (the small libint2 is static); it is under PyPI's
-  100 MiB per-file limit. Exactly one sdist, ``ferric-<version>.tar.gz``,
+  libint2 shared library (the small libint2 is static); its extension module
+  has no ``.symtab`` section (built with ``maturin build --strip``); it is
+  under PyPI's 100 MiB per-file limit. Exactly one sdist, ``ferric-<version>.tar.gz``,
   whose PKG-INFO says the same version, also under 100 MiB. No file name
   contains ``mpi``.
 - Large-libint set (when ``--largeam-dir`` is given): the same four CPython
@@ -56,6 +57,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import re
+import struct
 import sys
 import tarfile
 import zipfile
@@ -138,6 +140,70 @@ def header_values(text: str, key: str) -> list[str]:
         if sep and k.strip() == key:
             out.append(v.strip())
     return out
+
+
+def elf_section_names(fh) -> list[str] | None:
+    """Section names of a little-endian ELF64 file object, or None if it is not one.
+
+    Reads only the ELF header, the section header table and ``.shstrtab``, so
+    it works on a seekable zip member without extracting the extension.
+    """
+    head = fh.read(64)
+    if len(head) < 64 or head[:4] != b"\x7fELF" or head[4] != 2 or head[5] != 1:
+        return None
+    (shoff,) = struct.unpack_from("<Q", head, 0x28)
+    shentsize, shnum, shstrndx = struct.unpack_from("<HHH", head, 0x3A)
+    if shoff == 0 or shnum == 0:
+        return []
+    fh.seek(shoff)
+    table = fh.read(shentsize * shnum)
+    if len(table) != shentsize * shnum:
+        return None
+    # Elf64_Shdr: name u32 @0, type u32 @4, flags u64 @8, addr u64 @16,
+    # offset u64 @24, size u64 @32.
+    entries = [
+        struct.unpack_from("<IIQQQQ", table, i * shentsize) for i in range(shnum)
+    ]
+    _, _, _, _, stroff, strsize = entries[shstrndx]
+    fh.seek(stroff)
+    strtab = fh.read(strsize)
+    return [
+        strtab[e[0] : strtab.index(b"\0", e[0])].decode("ascii", "replace")
+        for e in entries
+    ]
+
+
+def check_extension_stripped(rep: Report, path: Path) -> None:
+    """A Linux wheel's extension module must not carry ``.symtab``.
+
+    The symbol table is 13 MB of the unpacked extension (about 3 MB of the zipped
+    wheel) and nothing at run time reads it; the PyPI wheel sits close to the
+    100 MiB limit.
+    """
+    try:
+        with zipfile.ZipFile(path) as zf:
+            members = [
+                n
+                for n in zf.namelist()
+                if re.fullmatch(rf"{NAME}/{NAME}\.[^/]*\.so", n)
+            ]
+            if len(members) != 1:
+                rep.error(
+                    f"{path.name}: expected one {NAME}/{NAME}.*.so extension, "
+                    f"found {members}"
+                )
+                return
+            with zf.open(members[0]) as fh:
+                names = elf_section_names(fh)
+    except zipfile.BadZipFile:
+        return  # already reported by check_wheel
+    if names is None:
+        rep.error(f"{path.name}: {members[0]} is not an ELF64 little-endian file")
+    elif ".symtab" in names:
+        rep.error(
+            f"{path.name}: {members[0]} still has a .symtab section; "
+            "build the wheel with `maturin build --strip`"
+        )
 
 
 def check_wheel(
@@ -228,6 +294,9 @@ def check_wheel(
                 f"{path.name}: bundles {shared}; the PyPI wheel links the small "
                 "libint2 statically"
             )
+
+    if variant == "pypi" and platform == PLATFORM:
+        check_extension_stripped(rep, path)
 
     rep.size(path, variant, GITHUB_ASSET_LIMIT if variant == "largeam" else PYPI_LIMIT)
     return fields["py"]
