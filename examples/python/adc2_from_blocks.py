@@ -74,6 +74,8 @@ def adc2_singlets(
     ``order`` is 1 (the first-order singles block alone) or 2. Each ADC(2)
     root is the fixed point of its own eigenvalue of the omega-dependent
     singles matrix, started from the static (second-order singles) root."""
+    if order not in (1, 2):
+        raise ValueError(f"order must be 1 or 2, got {order!r}")
     g, eps, no = spin_orbital_integrals(ints, mf)
     o, v = slice(0, no), slice(no, None)
     eo, ev = eps[o], eps[v]

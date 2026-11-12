@@ -36,6 +36,8 @@ PYSCF_REF = ROOT / "testdata" / "reference" / "block_ports_pyscf.json"
 
 def legendre_frequencies(n: int, x0: float = 0.5) -> tuple[np.ndarray, np.ndarray]:
     """Nodes and weights of the mapped Gauss-Legendre rule on [0, inf)."""
+    if not x0 > 0.0:
+        raise ValueError(f"x0 must be positive, got {x0!r}")
     t, w = np.polynomial.legendre.leggauss(n)
     return x0 * (1.0 + t) / (1.0 - t), w * 2.0 * x0 / (1.0 - t) ** 2
 

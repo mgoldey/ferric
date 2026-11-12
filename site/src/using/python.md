@@ -846,7 +846,10 @@ Notes for writing a port:
   Ha at mu = 1e6. PySCF's reference has the same c to 4e-5 relative.
   Extrapolate in 1/mu rather than raising mu: at mu = 1e7
   `run_dft(fock_hook=)` does not converge in 200 iterations from its own
-  guess, and the drivers take no starting density.
+  guess. `dm0=` supplies a starting density to every driver, but a better
+  start does not remove the energy noise floor of the hook term (see
+  "Energy noise floor" above), which sets the limit on `energy_conv` at
+  large mu.
 - A subsystem SCF with N_A electrons is a `Molecule` with all nuclei and
   charge +N_B; the hook adds v_emb, so no ghost atoms or new integrals are
   needed.
