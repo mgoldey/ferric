@@ -49141,7 +49141,7 @@
   },
   "crates/ferric-python/src/blocks.rs::impl:PyFockHook::call": {
     "cc": 2.0,
-    "mi": 120.63013439913706
+    "mi": 108.9
   },
   "crates/ferric-python/src/blocks.rs::impl:PyFockHook::call::<anonymous>": {
     "cc": 1.0,
@@ -49149,7 +49149,7 @@
   },
   "crates/ferric-python/src/blocks.rs::impl:PyFockHook::call_spin": {
     "cc": 2.0,
-    "mi": 107.98082185228952
+    "mi": 99.9
   },
   "crates/ferric-python/src/blocks.rs::impl:PyFockHook::call_spin::<anonymous>": {
     "cc": 1.0,
@@ -49476,8 +49476,8 @@
     "mi": 160.0060069647112
   },
   "crates/ferric-python/src/blocks.rs::solve_open_shell": {
-    "cc": 11.0,
-    "mi": 75.15445431767937
+    "cc": 16.0,
+    "mi": 65.2
   },
   "crates/ferric-python/src/blocks.rs::solve_open_shell::<anonymous>": {
     "cc": 3.0,
