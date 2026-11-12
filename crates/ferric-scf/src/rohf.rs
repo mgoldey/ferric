@@ -884,18 +884,15 @@ fn solve_rohf_impl(
             "ROHF: nocc_a + nocc_b != nelec".into(),
         ));
     }
-    // S^{-1/2}
-    let (s_evals, s_evecs) = s
-        .eigh(ndarray_linalg::UPLO::Upper)
-        .map_err(|e| FerricError::Lapack(format!("S diag: {e}")))?;
-    let mut u_scaled = s_evecs.clone();
-    for i in 0..n {
-        let scale = 1.0 / s_evals[i].sqrt();
-        for mu in 0..n {
-            u_scaled[(mu, i)] *= scale;
-        }
+    // S^{-1/2}, or the retained-rank X when the overlap is near-singular.
+    let s_inv_sqrt = rohf_orthogonalizer(&s)?;
+    if nocc_a > s_inv_sqrt.ncols() {
+        return Err(FerricError::General(format!(
+            "ROHF: {nocc_a} alpha-occupied orbitals exceed the {} orthogonalized \
+             functions the overlap retains",
+            s_inv_sqrt.ncols()
+        )));
     }
-    let s_inv_sqrt = u_scaled.dot(&s_evecs.t());
     // Fock diagonalizer: global by default, per-irrep under point-group blocking.
     let diag = crate::symmetric::FockDiag::new(
         sym,
@@ -986,11 +983,7 @@ fn solve_rohf_impl(
             )?,
             None => {
                 let _ = hcore_guess(&s, &h, nocc_a.max(1))?;
-                let h_prime = s_inv_sqrt.dot(&h).dot(&s_inv_sqrt);
-                let (_, c_prime) = h_prime
-                    .eigh(ndarray_linalg::UPLO::Upper)
-                    .map_err(|e| FerricError::Lapack(format!("H' diag: {e}")))?;
-                s_inv_sqrt.dot(&c_prime)
+                core_guess_mos(&h, &s_inv_sqrt)?
             }
         }
     } else {
@@ -2338,10 +2331,58 @@ pub(crate) fn roothaan_fock(
     f_sym
 }
 
+/// The ROHF orthogonalizer. When every overlap eigenvalue is at or above
+/// the linear-dependence threshold (`rhf::lindep_thresh`) it is the
+/// symmetric `S^{-1/2}` (`n x n`); otherwise it is the canonical `X`
+/// (`n x m`, `m` the retained rank) of `rhf::canonical_orthogonalizer`, as
+/// in RHF and UHF, so a near-null overlap mode is dropped rather than
+/// scaled by `1/sqrt(λ)`. [`diagonalize`] and [`core_guess_mos`] accept
+/// either shape.
+pub(crate) fn rohf_orthogonalizer(s: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
+    let n = s.nrows();
+    let (s_evals, s_evecs) = s
+        .eigh(ndarray_linalg::UPLO::Upper)
+        .map_err(|e| FerricError::Lapack(format!("S diag: {e}")))?;
+    let thresh = crate::rhf::lindep_thresh();
+    if s_evals.iter().any(|&l| !(l >= thresh)) {
+        return crate::rhf::canonical_orthogonalizer(s);
+    }
+    let mut u_scaled = s_evecs.clone();
+    for i in 0..n {
+        let scale = 1.0 / s_evals[i].sqrt();
+        for mu in 0..n {
+            u_scaled[(mu, i)] *= scale;
+        }
+    }
+    Ok(u_scaled.dot(&s_evecs.t()))
+}
+
+/// Eigenvectors of the core Hamiltonian `h` in the orthonormal basis of `x`
+/// ([`rohf_orthogonalizer`]), in the AO basis and ascending. A rectangular
+/// `x` gives `n` columns, the last `n − m` zero (as
+/// `driver::diagonalize_rect`).
+pub(crate) fn core_guess_mos(h: &Array2<f64>, x: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
+    if x.ncols() != x.nrows() {
+        return Ok(crate::driver::diagonalize_rect(h, x)?.1);
+    }
+    let h_prime = x.dot(h).dot(x);
+    let (_, c_prime) = h_prime
+        .eigh(ndarray_linalg::UPLO::Upper)
+        .map_err(|e| FerricError::Lapack(format!("H' diag: {e}")))?;
+    Ok(x.dot(&c_prime))
+}
+
+/// Eigenpairs of `f` in the orthonormal basis of `s_inv_sqrt`
+/// ([`rohf_orthogonalizer`]): the symmetric transform when it is square,
+/// `driver::diagonalize_rect` (padded to `n` columns, padded eigenvalues
+/// `1e6`) when it is the rectangular retained-rank `X`.
 pub(crate) fn diagonalize(
     f: &Array2<f64>,
     s_inv_sqrt: &Array2<f64>,
 ) -> Result<(Vec<f64>, Array2<f64>), FerricError> {
+    if s_inv_sqrt.ncols() != s_inv_sqrt.nrows() {
+        return crate::driver::diagonalize_rect(f, s_inv_sqrt);
+    }
     // Serial section (outside any rayon region): serial BLAS thread count.
     ferric_integrals::blas_threads::with_blas_threads(
         ferric_integrals::blas_threads::opt_in_blas_threads(),

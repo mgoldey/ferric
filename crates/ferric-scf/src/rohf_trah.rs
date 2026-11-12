@@ -1003,18 +1003,8 @@ pub fn solve_rohf_injected_second_order<'a>(
     }
 
     // Guess, as solve_rohf_injected: initial_mos > init_guess_density (via the
-    // INJECTED builders) > the core guess (symmetric S^{-1/2}).
-    let (s_evals, s_evecs) = s
-        .eigh(UPLO::Upper)
-        .map_err(|e| FerricError::Lapack(format!("S diag: {e}")))?;
-    let mut u_scaled = s_evecs.clone();
-    for i in 0..n {
-        let scale = 1.0 / s_evals[i].sqrt();
-        for mu in 0..n {
-            u_scaled[(mu, i)] *= scale;
-        }
-    }
-    let s_inv_sqrt = u_scaled.dot(&s_evecs.t());
+    // INJECTED builders) > the core guess (`rohf::rohf_orthogonalizer`).
+    let s_inv_sqrt = crate::rohf::rohf_orthogonalizer(&s)?;
     let c0 = if let Some(c0) = initial_mos {
         if c0.dim() != (n, n) {
             return Err(FerricError::General(format!(
@@ -1036,11 +1026,7 @@ pub fn solve_rohf_injected_second_order<'a>(
         )?
     } else {
         let _ = crate::guess::hcore_guess(&s, &h, nocc_a.max(1))?;
-        let h_prime = s_inv_sqrt.dot(&h).dot(&s_inv_sqrt);
-        let (_, c_prime) = h_prime
-            .eigh(UPLO::Upper)
-            .map_err(|e| FerricError::Lapack(format!("H' diag: {e}")))?;
-        s_inv_sqrt.dot(&c_prime)
+        crate::rohf::core_guess_mos(&h, &s_inv_sqrt)?
     };
 
     let mut run_cfg = *cfg;

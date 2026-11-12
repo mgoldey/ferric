@@ -293,7 +293,8 @@ fn resolve_irrep_nelec(
 pub(crate) enum PlainDiag<'a> {
     /// Canonical orthogonalizer `X` (`n x m`): RHF and UHF.
     Rect(&'a Array2<f64>),
-    /// Symmetric `S^{-1/2}`: ROHF.
+    /// ROHF's orthogonalizer (`rohf::rohf_orthogonalizer`): symmetric
+    /// `S^{-1/2}`, or the retained-rank `X` when the overlap is near-singular.
     InvSqrt(&'a Array2<f64>),
 }
 
