@@ -1,0 +1,80 @@
+{
+  "system": "ch3-1",
+  "xyz_angstrom": "4\nch3-1\nC 0.0 0.0 0.0\nH 1.03 0.0 -0.35\nH -0.515 0.892 -0.35\nH -0.515 -0.892 -0.35\n",
+  "basis": "def2-svp",
+  "aux_basis": "def2-svp-rifit",
+  "ecp": "none",
+  "charge": -1,
+  "multiplicity": 1,
+  "nelectron": 10,
+  "nao": 29,
+  "naux": 90,
+  "nocc": 5,
+  "nvir": 24,
+  "n_negative_mo_energies": 4,
+  "n_frozen_core_control": 1,
+  "nuclear_repulsion": 9.645938439713882,
+  "rhf": {
+    "energy": -39.44916497986649,
+    "homo": 0.016204377266735293,
+    "lumo": 0.4350497291372388
+  },
+  "df": {
+    "metric_min_eigenvalue": 0.005741848448279679,
+    "metric_max_eigenvalue": 255.0144705626115
+  },
+  "all_electron": {
+    "frozen_core": 0,
+    "nocc_active": 5,
+    "nvir": 24,
+    "mp2_numpy": -0.1628920378503127,
+    "fock_offdiag_max": 9.382727620101526e-11,
+    "fock_diag_vs_mo_energy_max": 5.720099949257929e-10,
+    "ccsd": {
+      "e_corr": -0.18247024713939647,
+      "t1_norm": 0.019292099982030908,
+      "t1_diagnostic": 0.006100697679091113
+    },
+    "ccsd_t": {
+      "e_t": -0.003984462035611886,
+      "e_corr_ccsd_t": -0.18645470917500837
+    }
+  },
+  "frozen_core": {
+    "frozen_core": 1,
+    "nocc_active": 4,
+    "nvir": 24,
+    "mp2_numpy": -0.15980621766638092,
+    "fock_offdiag_max": 9.382418566136203e-11,
+    "fock_diag_vs_mo_energy_max": 2.24044782726196e-10,
+    "ccsd": {
+      "e_corr": -0.17957022155646185,
+      "t1_norm": 0.019121561943077767,
+      "t1_diagnostic": 0.006760493058414452
+    },
+    "ccsd_t": {
+      "e_t": -0.003943672582093627,
+      "e_corr_ccsd_t": -0.18351389413855548
+    }
+  },
+  "provenance": {
+    "code": "PySCF + numpy",
+    "version": "2.13.1",
+    "numpy": "1.26.4",
+    "scipy": "1.17.1",
+    "reference": "scf.RHF, exact 4-index J/K",
+    "scf_conv_tol": 1e-12,
+    "scf_conv_tol_grad": 1e-09,
+    "correlation_integrals": "DF, gen_cc.df_factor (B = L^-1 (P|mn))",
+    "cc": "gen_cc.run_df_block: pyscf.cc.ccsd.CCSD + ccsd_t.kernel on DF eris",
+    "cc_conv_tol": 1e-12,
+    "cc_conv_tol_normt": 1e-10,
+    "basis_sha256": "559cdaf30424e50e3956d0b9defd67f4447a263c04e09c9c9d3f43d5bdd0ecdd",
+    "aux_basis_sha256": "320fce340c3e53ae33e475139b21a1cd9b4730ff3946c9c7d9969344a0e3b296",
+    "ecp_sha256": "none",
+    "ecp_check": null,
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/gen_pyscf_cc_anion_refs.py",
+    "git_head": "3decd8a5cc453d6c24e5d9fadf55a30c91abbca8"
+  }
+}

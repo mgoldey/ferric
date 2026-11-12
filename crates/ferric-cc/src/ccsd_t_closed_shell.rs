@@ -412,7 +412,7 @@ fn add_v_singles(
 /// [`crate::ccsd_t::ccsd_t`], which remains the reference oracle and is
 /// untouched.
 pub fn ccsd_t_closed_shell(
-    _mol: &Molecule,
+    mol: &Molecule,
     obs: &PreparedBasis,
     dfbs: &PreparedBasis,
     op: Operator,
@@ -424,11 +424,10 @@ pub fn ccsd_t_closed_shell(
         FerricError::General("closed-shell CCSD(T) requires T1 amplitudes".into())
     })?;
 
-    let nbas = obs.nbasis();
-    let nocc_total = rhf.eps_r().iter().filter(|&&e| e < 0.0).count();
+    let (nocc_total, nmo) = crate::helpers::closed_shell_counts(mol, rhf)?;
     let first_occ = cfg.frozen_core;
     let no = active_occ(nocc_total, first_occ)?;
-    let nv = nbas - nocc_total;
+    let nv = nmo - nocc_total;
 
     // Reject spin-orbital amplitudes loudly rather than computing a wrong
     // number from a mis-shaped tensor. (t1 is [no,nv], t2 is [no,no,nv,nv].)
@@ -481,7 +480,7 @@ pub fn ccsd_t_closed_shell(
     let eps = rhf.eps_r();
     let c = rhf.mos_r();
     let c_occ = c.slice(ndarray::s![.., first_occ..nocc_total]).to_owned();
-    let c_vir = c.slice(ndarray::s![.., nocc_total..]).to_owned();
+    let c_vir = c.slice(ndarray::s![.., nocc_total..nmo]).to_owned();
 
     // Dressed RI 3-index MO blocks — identical construction to the CCSD
     // drivers, so the RI error cancels between CCSD and (T).

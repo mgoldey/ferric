@@ -1,0 +1,85 @@
+{
+  "system": "te-2",
+  "xyz_angstrom": "1\nte-2\nTe 0.0 0.0 0.0\n",
+  "basis": "def2-svp",
+  "aux_basis": "def2-svp-rifit",
+  "ecp": "inline in def2-svp",
+  "charge": -2,
+  "multiplicity": 1,
+  "nelectron": 26,
+  "nao": 26,
+  "naux": 114,
+  "nocc": 13,
+  "nvir": 13,
+  "n_negative_mo_energies": 10,
+  "n_frozen_core_control": 4,
+  "nuclear_repulsion": 0.0,
+  "rhf": {
+    "energy": -266.8056052945162,
+    "homo": 0.1933922863964209,
+    "lumo": 0.8460166619298946
+  },
+  "df": {
+    "metric_min_eigenvalue": 1.3751332173876134e-05,
+    "metric_max_eigenvalue": 257.2972408778153
+  },
+  "all_electron": {
+    "frozen_core": 0,
+    "nocc_active": 13,
+    "nvir": 13,
+    "mp2_numpy": -0.12818577619172822,
+    "fock_offdiag_max": 3.970663496231218e-11,
+    "fock_diag_vs_mo_energy_max": 3.9963765630091075e-10,
+    "ccsd": {
+      "e_corr": -0.13494527582226407,
+      "t1_norm": 0.014116432652130285,
+      "t1_diagnostic": 0.002768460213674257
+    },
+    "ccsd_t": {
+      "e_t": -0.0016404142738938106,
+      "e_corr_ccsd_t": -0.13658569009615787
+    }
+  },
+  "frozen_core": {
+    "frozen_core": 4,
+    "nocc_active": 9,
+    "nvir": 13,
+    "mp2_numpy": -0.11467332667403315,
+    "fock_offdiag_max": 3.971006116647828e-11,
+    "fock_diag_vs_mo_energy_max": 3.9961634001883795e-10,
+    "ccsd": {
+      "e_corr": -0.12221037894640138,
+      "t1_norm": 0.014068359575244258,
+      "t1_diagnostic": 0.003315944151941971
+    },
+    "ccsd_t": {
+      "e_t": -0.0013243754201563323,
+      "e_corr_ccsd_t": -0.12353475436655771
+    }
+  },
+  "provenance": {
+    "code": "PySCF + numpy",
+    "version": "2.13.1",
+    "numpy": "1.26.4",
+    "scipy": "1.17.1",
+    "reference": "scf.RHF, exact 4-index J/K",
+    "scf_conv_tol": 1e-12,
+    "scf_conv_tol_grad": 1e-09,
+    "correlation_integrals": "DF, gen_cc.df_factor (B = L^-1 (P|mn))",
+    "cc": "gen_cc.run_df_block: pyscf.cc.ccsd.CCSD + ccsd_t.kernel on DF eris",
+    "cc_conv_tol": 1e-12,
+    "cc_conv_tol_normt": 1e-10,
+    "basis_sha256": "559cdaf30424e50e3956d0b9defd67f4447a263c04e09c9c9d3f43d5bdd0ecdd",
+    "aux_basis_sha256": "320fce340c3e53ae33e475139b21a1cd9b4730ff3946c9c7d9969344a0e3b296",
+    "ecp_sha256": "559cdaf30424e50e3956d0b9defd67f4447a263c04e09c9c9d3f43d5bdd0ecdd",
+    "ecp_check": {
+      "ecp_core_electrons": [
+        28
+      ],
+      "nelectron": 26
+    },
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/gen_pyscf_cc_anion_refs.py",
+    "git_head": "3decd8a5cc453d6c24e5d9fadf55a30c91abbca8"
+  }
+}

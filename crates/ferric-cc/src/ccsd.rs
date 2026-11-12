@@ -27,7 +27,7 @@ use ndarray::{ArrayD, IxDyn};
 
 // Permutation antisymmetrizers P(ij)/P(ab)/P(ij)P(ab) on the i,j,a,b axes are
 // shared with the CCD residual builder — see `helpers.rs`.
-use super::helpers::{p_ab, p_ij, p_ij_ab};
+use super::helpers::{closed_shell_counts, p_ab, p_ij, p_ij_ab};
 
 /// Wrap a `<pq||rs>` ArrayD with axis labels (purely descriptive; einsum! only
 /// uses labels for a debug-mode consistency check).
@@ -132,8 +132,9 @@ pub fn ccsd_memory_plan(shape: CcsdShape, budget_bytes: Option<usize>) -> Memory
 
 /// Spin-orbital RI-CCSD correlation energy on a restricted (RHF) reference.
 ///
-/// The occupied count is the number of negative orbital energies in
-/// `rhf.eps_r()`; `cfg.frozen_core` of them are frozen. Integrals are built
+/// The occupied count is half the electron count of `mol` and the virtual
+/// count is the rest of the retained MOs ([`closed_shell_counts`]);
+/// `cfg.frozen_core` occupied orbitals are frozen. Integrals are built
 /// with operator `op` from the auxiliary basis `dfbs`. The returned `t1` is
 /// `(2·no, 2·nv)` and `t2` is `(2·no, 2·no, 2·nv, 2·nv)` in spin orbitals.
 /// Convergence is `|ΔE| < min(cfg.energy_conv, 1e-9)` Hartree; DIIS acts on
@@ -145,7 +146,7 @@ pub fn ccsd_memory_plan(shape: CcsdShape, budget_bytes: Option<usize>) -> Memory
 /// returns `FerricError::Convergence` after `cfg.max_iter` iterations
 /// without convergence.
 pub fn ccsd(
-    _mol: &Molecule,
+    mol: &Molecule,
     obs: &PreparedBasis,
     dfbs: &PreparedBasis,
     op: Operator,
@@ -153,15 +154,15 @@ pub fn ccsd(
     cfg: &CcConfig,
 ) -> Result<CcResult, FerricError> {
     let nbas = obs.nbasis();
-    let nocc_total = rhf.eps_r().iter().filter(|&&e| e < 0.0).count();
+    let (nocc_total, nmo) = closed_shell_counts(mol, rhf)?;
     let first_occ = cfg.frozen_core;
     let no = active_occ(nocc_total, first_occ)?;
-    let nv = nbas - nocc_total; // spatial virtual
+    let nv = nmo - nocc_total; // spatial virtual
 
     let eps = rhf.eps_r();
     let c = rhf.mos_r();
     let c_occ = c.slice(ndarray::s![.., first_occ..nocc_total]).to_owned();
-    let c_vir = c.slice(ndarray::s![.., nocc_total..]).to_owned();
+    let c_vir = c.slice(ndarray::s![.., nocc_total..nmo]).to_owned();
 
     // Fail-fast size guard, expressed as a [`MemoryPlan`].
     //

@@ -434,7 +434,7 @@ fn triple_block(
 /// `[2nv,2nv,2nv]` block per triple — see the module doc comment for the
 /// full derivation and the peak-memory accounting.
 pub fn ccsd_t(
-    _mol: &Molecule,
+    mol: &Molecule,
     obs: &PreparedBasis,
     dfbs: &PreparedBasis,
     op: Operator,
@@ -447,11 +447,10 @@ pub fn ccsd_t(
         .as_ref()
         .ok_or_else(|| FerricError::General("CCSD(T) requires T1 amplitudes".into()))?;
 
-    let nbas = obs.nbasis();
-    let nocc_total = rhf.eps_r().iter().filter(|&&e| e < 0.0).count();
+    let (nocc_total, nmo) = crate::helpers::closed_shell_counts(mol, rhf)?;
     let first_occ = cfg.frozen_core;
     let no = active_occ(nocc_total, first_occ)?;
-    let nv = nbas - nocc_total; // spatial virtual
+    let nv = nmo - nocc_total; // spatial virtual
     let (no2, nv2) = (2 * no, 2 * nv);
 
     // No valid i<j<k triple unless there are ≥3 occupied spin-orbitals AND
@@ -511,7 +510,7 @@ pub fn ccsd_t(
     let eps = rhf.eps_r();
     let c = rhf.mos_r();
     let c_occ = c.slice(ndarray::s![.., first_occ..nocc_total]).to_owned();
-    let c_vir = c.slice(ndarray::s![.., nocc_total..]).to_owned();
+    let c_vir = c.slice(ndarray::s![.., nocc_total..nmo]).to_owned();
 
     // Dressed RI 3-index MO blocks (same construction as the CCSD driver).
     let v2c = ferric_integrals::threeindex::coulomb_metric_2c(op, dfbs)?;
@@ -943,7 +942,7 @@ mod tests {
 
         // Dummy CCSD result — the guard runs before t1/t2 are consumed.
         let nbas = obs.nbasis();
-        let nocc = rhf.eps_r().iter().filter(|&&e| e < 0.0).count();
+        let nocc = crate::helpers::closed_shell_counts(&mol, &rhf).unwrap().0;
         let nv = nbas - nocc;
         let dummy = CcResult {
             correlation_energy: 0.0,
@@ -997,7 +996,7 @@ mod tests {
 
         // --- Inline OLD dense path, reconstructed from the same intermediates. ---
         let nbas = obs.nbasis();
-        let nocc_total = rhf.eps_r().iter().filter(|&&e| e < 0.0).count();
+        let nocc_total = crate::helpers::closed_shell_counts(&mol, &rhf).unwrap().0;
         let first_occ = 0usize;
         let no = nocc_total - first_occ;
         let nv = nbas - nocc_total;

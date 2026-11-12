@@ -406,16 +406,17 @@ fn ladder_budget_bytes(
 /// The plan shape for these inputs: active occupied, virtual, AO and aux
 /// counts exactly as `ccsd_closed_shell` derives them.
 fn cs_shape(
+    mol: &Molecule,
     obs: &PreparedBasis,
     dfbs: &PreparedBasis,
     rhf: &ScfResult,
     cfg: &CcConfig,
 ) -> Result<CsCcsdShape, FerricError> {
     let nbas = obs.nbasis();
-    let nocc_total = rhf.eps_r().iter().filter(|&&e| e < 0.0).count();
+    let (nocc_total, nmo) = crate::helpers::closed_shell_counts(mol, rhf)?;
     Ok(CsCcsdShape {
         no: active_occ(nocc_total, cfg.frozen_core)?,
-        nv: nbas - nocc_total,
+        nv: nmo - nocc_total,
         nbas,
         naux: dfbs.nbasis(),
         diis_subspace: cfg.diis_subspace,
@@ -425,12 +426,13 @@ fn cs_shape(
 /// The ladder route `ccsd_closed_shell` would take for these inputs right
 /// now, without running it. For callers (the CLI) that report the route.
 pub fn closed_shell_ladder_route(
+    mol: &Molecule,
     obs: &PreparedBasis,
     dfbs: &PreparedBasis,
     rhf: &ScfResult,
     cfg: &CcConfig,
 ) -> Result<LadderRoute, FerricError> {
-    let shape = cs_shape(obs, dfbs, rhf, cfg)?;
+    let shape = cs_shape(mol, obs, dfbs, rhf, cfg)?;
     let pool = ferric_core::memory::pool::global();
     let budget = ladder_budget_bytes(cfg.memory_budget_bytes, pool.as_ref());
     Ok(plan_ladder(shape, cfg, budget)?.route)
@@ -516,22 +518,24 @@ fn ladder_term(
 /// `rhf` must be a closed-shell RHF result (uses `eps_r`/`mos_r`). Returns the
 /// correlation energy plus the converged spatial `t1`/`t2`.
 pub fn ccsd_closed_shell(
-    _mol: &Molecule,
+    mol: &Molecule,
     obs: &PreparedBasis,
     dfbs: &PreparedBasis,
     op: Operator,
     rhf: &ScfResult,
     cfg: &CcConfig,
 ) -> Result<CcResult, FerricError> {
-    let shape = cs_shape(obs, dfbs, rhf, cfg)?;
+    let shape = cs_shape(mol, obs, dfbs, rhf, cfg)?;
     let (no, nv) = (shape.no, shape.nv); // spatial active occ / virtual
     let first_occ = cfg.frozen_core;
-    let nocc_total = shape.nbas - nv;
+    let nocc_total = first_occ + no;
 
     let eps = rhf.eps_r();
     let c = rhf.mos_r();
     let c_occ = c.slice(ndarray::s![.., first_occ..nocc_total]).to_owned();
-    let c_vir = c.slice(ndarray::s![.., nocc_total..]).to_owned();
+    let c_vir = c
+        .slice(ndarray::s![.., nocc_total..nocc_total + nv])
+        .to_owned();
 
     // Fail-fast size guard: the plan and the route are one decision (see
     // `cs_ccsd_memory_plan`, `plan_ladder`). `_charge` lives to the end.
@@ -1211,7 +1215,7 @@ mod tests {
 
         // Dimensions read off the inputs, exactly as the driver derives them.
         let nbas = obs.nbasis();
-        let nocc_total = rhf.eps_r().iter().filter(|&&e| e < 0.0).count();
+        let nocc_total = crate::helpers::closed_shell_counts(&mol, &rhf).unwrap().0;
         let (no, nv) = (nocc_total, nbas - nocc_total);
         let ovvv_pair_bytes = 2 * no * nv.pow(3) * 8;
 
@@ -1319,7 +1323,7 @@ mod tests {
             energy_conv: 1e-10,
             ..Default::default()
         };
-        let nocc = rhf.eps_r().iter().filter(|&&e| e < 0.0).count();
+        let nocc = crate::helpers::closed_shell_counts(&mol, &rhf).unwrap().0;
         let shape = CsCcsdShape {
             no: nocc,
             nv: obs.nbasis() - nocc,
@@ -1347,7 +1351,8 @@ mod tests {
             ..base.clone()
         };
 
-        let route = |cfg: &CcConfig| closed_shell_ladder_route(&obs, &dfbs, &rhf, cfg).unwrap();
+        let route =
+            |cfg: &CcConfig| closed_shell_ladder_route(&mol, &obs, &dfbs, &rhf, cfg).unwrap();
         assert_eq!(
             route(&with_budget(hi)),
             LadderRoute::Dense,
@@ -1434,7 +1439,7 @@ mod tests {
 
         let nbas = obs.nbasis();
         let naux = dfbs.nbasis();
-        let nocc_total = rhf.eps_r().iter().filter(|&&e| e < 0.0).count();
+        let nocc_total = crate::helpers::closed_shell_counts(&mol, &rhf).unwrap().0;
         let (no, nv) = (nocc_total, nbas - nocc_total);
         let (no2, nv2, nv3, nv4) = (no.pow(2), nv.pow(2), nv.pow(3), nv.pow(4));
 
