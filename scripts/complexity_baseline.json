@@ -76149,7 +76149,7 @@
   },
   "crates/ferric-scf/src/uhf.rs::mix_beta_homo_lumo": {
     "cc": 6.0,
-    "mi": 90.55162144861406
+    "mi": 85.09134256815227
   },
   "crates/ferric-scf/src/uhf.rs::mom_pin": {
     "cc": 4.0,
