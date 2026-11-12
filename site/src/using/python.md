@@ -774,3 +774,52 @@ These take `omega`/`r0` in raw Bohr units, unlike the `run_*` drivers.
 | `weighted_stats` | Weighted mean and standard deviation of a scalar property. | — |
 | `weighted_stats_vector` | The same, component-wise, for a vector property. | — |
 | `weighted_stats_tensor` | The same, element-wise, for a rank-2 tensor property. | — |
+
+## Porting published methods
+
+Three published methods run on the [building blocks](#building-blocks) with
+no change to ferric's Rust. The only ferric calls are `AoIntegrals`,
+`XcFunctional`, `Molecule.from_xyz(charge=)` and the `fock_hook` argument of
+`run_rhf` / `run_dft`. Each port is a script in `examples/python/` with under
+100 lines of method code, an exactness anchor against an independent ferric
+construction, and a comparison with PySCF numbers written by
+`scripts/gen_pyscf_block_ports_refs.py` to
+`testdata/reference/block_ports_pyscf.json`. The checks are in
+`crates/ferric-python/tests/test_block_ports.py`.
+
+| Script | Method | Blocks used | Method lines |
+|---|---|---|---|
+| `drpa_from_blocks.py` | RI direct RPA by imaginary-frequency quadrature (Eshuis, Yarkony, Furche, JCP 132, 234114 (2010)) | `df_mo` | 22 |
+| `adc2_from_blocks.py` | singlet ADC(2) excitation energies (Schirmer, PRA 26, 2395 (1982)), spin orbitals | `ao2mo` | 72 |
+| `embedding_from_blocks.py` | projection-based HF-in-DFT and DFT-in-DFT embedding (Manby, Stella, Goodpaster, Miller, JCTC 8, 2564 (2012)), SPADE partition | `veff`, `xc_functional`, `hcore`, `overlap`, `ao_atoms`, `fock_hook` | 59 |
+
+Measured agreement, water and NH3, all electrons (2026-11-11, Hartree):
+
+| Port | Anchor | Anchor residual | PySCF reference | Difference |
+|---|---|---|---|---|
+| dRPA, cc-pVDZ / cc-pVDZ-RI | `run_drpa` (Riccati, no quadrature), 80 nodes | <= 4e-12 | `gw.rpa.RPA`, same 40 nodes | <= 1e-12 |
+| ADC(2), 6-31G | ADC(1) equals `cis_from_blocks` | <= 4e-15 | `adc.RADC`, `"adc(2)"`, `"ee"`, 3 roots | <= 2.7e-9 |
+| Embedding, PBE, cc-pVDZ, heavy atom as A | PBE-in-PBE equals full PBE, extrapolated from mu = 1e5 and 1e6 | <= 1.2e-9 | the same algorithm on PySCF's RKS, flat 99 x 590 grid | 3.5e-8 (water), 1.8e-9 (NH3) |
+
+The embedding comparison is limited by the XC grids: PySCF's HF-in-PBE energy
+moves 2.3e-7 (water) and 2.7e-7 (NH3) between its 99 x 590 and 150 x 974
+grids, and the test's bar is the sum of both codes' grid changes and their
+full-KS difference.
+
+Notes for writing a port:
+
+- `fock_hook` refuses a V that is not symmetric to round-off. A level-shift
+  projector `mu S C C^T S` with mu = 1e6 is asymmetric by 2e-10, so
+  symmetrize it before returning it.
+- At finite mu the subsystem density leaks into B's space and the embedding
+  energy is low by c / mu, with c = 6.96 Ha (water) and 5.44 Ha (NH3): 7e-6
+  Ha at mu = 1e6. PySCF's reference has the same c to 4e-5 relative.
+  Extrapolate in 1/mu rather than raising mu: at mu = 1e7
+  `run_dft(fock_hook=)` does not converge in 200 iterations from its own
+  guess, and the drivers take no starting density.
+- A subsystem SCF with N_A electrons is a `Molecule` with all nuclei and
+  charge +N_B; the hook adds v_emb, so no ghost atoms or new integrals are
+  needed.
+- `ao2mo` returns the full (pq|rs) block, so the spin-orbital ADC(2) port
+  holds (2 nmo)^4 and (2 nocc)^3 (2 nvir)^3 arrays and is for small bases. A
+  density-fitted ADC(2) would build the same intermediates from `df_mo`.
