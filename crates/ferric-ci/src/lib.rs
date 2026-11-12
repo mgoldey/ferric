@@ -61,10 +61,10 @@ pub mod davidson;
 pub mod hamiltonian;
 /// Active-space MO integral transform.
 pub mod integrals;
-/// String-driven direct sigma build (σ1/σ2/σ3).
-pub mod sigma;
 /// Spin-summed 1- and 2-particle reduced density matrices.
 pub mod rdm;
+/// String-driven direct sigma build (σ1/σ2/σ3).
+pub mod sigma;
 /// Determinant-string enumeration (bitmask α/β strings).
 pub mod strings;
 
@@ -341,14 +341,17 @@ pub fn run_cas_ci_on_integrals(
     if config.compute_rdms {
         // Built after the Davidson solve, but charged on top of it: the
         // plan has no stage ordering between Resident reservations.
-        let (per_worker, transient, resident) =
-            rdm::rdm_memory_elems(n_active, na_str, nb_str);
+        let (per_worker, transient, resident) = rdm::rdm_memory_elems(n_active, na_str, nb_str);
         plan.reserve_per_worker(
             "RDM block D = E_rs C",
             per_worker,
             rayon::current_num_threads(),
         );
-        plan.reserve("RDM block results (one batch)", transient, Lifetime::Transient);
+        plan.reserve(
+            "RDM block results (one batch)",
+            transient,
+            Lifetime::Transient,
+        );
         plan.reserve("RDM accumulators and dm1/dm2", resident, Lifetime::Resident);
     }
     // Not charged: per-rayon-worker scratch of `O(n_str)` doubles (σ1/σ2

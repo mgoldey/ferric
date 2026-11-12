@@ -24,7 +24,7 @@
 //!
 //! The step is inverse BFGS in the current orbital frame (no transport of
 //! earlier steps), started from the reciprocal of an approximate diagonal
-//! Hessian ([`CasScfProblem::approx_hessian_diag`], floored), with the
+//! Hessian ([`crate::casscf::CasScfProblem::approx_hessian_diag`], floored), with the
 //! largest step element capped and a reset to the diagonal whenever the
 //! energy rises. This is the optimizer of `scripts/prototypes/casscf_proto.py`.
 //!
@@ -33,7 +33,7 @@
 //! method is limited to bases small enough for that block.
 
 use crate::integrals::{dense_ao_eri, transform_eri_mixed, ActiveSpaceIntegrals};
-use crate::{run_cas_ci_on_integrals, CasCiConfig, CasCiResult, CasCiRdms};
+use crate::{run_cas_ci_on_integrals, CasCiConfig, CasCiRdms, CasCiResult};
 use ferric_core::memory::plan::{Lifetime, MemoryPlan};
 use ferric_core::memory::pool::Reservation;
 use ferric_core::mol::Molecule;
@@ -373,9 +373,10 @@ impl CasScfProblem {
         let paaa = transform_eri_mixed(&self.eri_ao, self.nbas, [c.view(), ca, ca, ca])?;
         let eri_act = paaa[nc * na3..(nc + na) * na3].to_vec();
         let ci = self.solve_ci(ca, &fi_ao, eri_act, e_core, true)?;
-        let rdms = ci.rdms.as_ref().ok_or_else(|| {
-            FerricError::General("CASSCF: CAS-CI returned no RDMs".to_string())
-        })?;
+        let rdms = ci
+            .rdms
+            .as_ref()
+            .ok_or_else(|| FerricError::General("CASSCF: CAS-CI returned no RDMs".to_string()))?;
         let gamma = &rdms.dm1;
         let da = ca.dot(gamma).dot(&ca.t());
         let (j, k) = self.jk(&da);
@@ -552,9 +553,9 @@ pub fn optimize(
     let finish = |pt: CasScfPoint, c: Array2<f64>, it: usize, converged: bool| {
         let grad_norm = norm(&pt.gradient);
         let ci = pt.ci;
-        let rdms = ci.rdms.ok_or_else(|| {
-            FerricError::General("CASSCF: CAS-CI returned no RDMs".to_string())
-        })?;
+        let rdms = ci
+            .rdms
+            .ok_or_else(|| FerricError::General("CASSCF: CAS-CI returned no RDMs".to_string()))?;
         Ok(CasScfResult {
             e_total: ci.e_total,
             e_core: ci.e_core,
@@ -653,7 +654,9 @@ mod tests {
         let mut k = Array2::<f64>::zeros((n, n));
         for p in 0..n {
             for q in 0..p {
-                st = st.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                st = st
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
                 let x = ((st >> 11) as f64 / (1u64 << 53) as f64) - 0.5;
                 k[(p, q)] = x;
                 k[(q, p)] = -x;
