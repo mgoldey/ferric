@@ -312,7 +312,6 @@ fn converged_case(r: &Reference) {
     };
     let res = run_casscf(&mol, &prep, &rhf, &cfg).unwrap();
     assert!(res.converged, "{}: not converged in {} iterations", r.xyz, res.iterations);
-    assert!(res.ci_converged);
     let problem = CasScfProblem::new(&mol, &prep, res.mo_coeff.ncols(), &cfg).unwrap();
     let lam = hessian_min_eig(&problem, &res.mo_coeff, 1e-4);
     assert!(lam > 0.0, "{}: lowest orbital Hessian eigenvalue {lam:e} <= 0", r.xyz);
@@ -387,4 +386,24 @@ fn casscf_refuses_open_shell_and_bad_bookkeeping() {
             "accepted n_core={n_core} n_active={n_active} nel={nel:?}"
         );
     }
+}
+
+/// A CI solve that misses its residual threshold is an error, never a
+/// silently used root: one Davidson iteration cannot reach 1e-10 on 36
+/// determinants.
+#[test]
+fn unconverged_ci_is_an_error() {
+    let (mol, prep, rhf) = setup("water.xyz", "6-31g");
+    let cfg = CasScfConfig {
+        n_active: 4,
+        n_elec_active: (2, 2),
+        n_core: 3,
+        ci_max_iter: 1,
+        ..Default::default()
+    };
+    let msg = match run_casscf(&mol, &prep, &rhf, &cfg) {
+        Ok(r) => panic!("accepted an unconverged CI (E = {})", r.e_total),
+        Err(e) => e.to_string(),
+    };
+    assert!(msg.contains("ci_conv_thresh"), "{msg}");
 }

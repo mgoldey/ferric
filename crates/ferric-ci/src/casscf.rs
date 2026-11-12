@@ -68,7 +68,8 @@ pub struct CasScfConfig {
     pub ci_conv_thresh: f64,
     /// Davidson subspace size.
     pub ci_max_subspace: usize,
-    /// Davidson iteration cap.
+    /// Davidson iteration cap. A CI solve that misses `ci_conv_thresh` is an
+    /// error at any macro iteration.
     pub ci_max_iter: usize,
     /// Memory ceiling in bytes (see [`CasCiConfig::memory_budget_bytes`]).
     /// The dense AO block, the transform chain and the CI are charged to it.
@@ -337,7 +338,18 @@ impl CasScfProblem {
             compute_rdms,
             ..self.ci_config
         };
-        run_cas_ci_on_integrals(ints, &cfg)
+        let ci = run_cas_ci_on_integrals(ints, &cfg)?;
+        // Davidson's flag is the residual criterion ‖Hc − Ec‖ < ci_conv_thresh
+        // (10x that when its correction vector vanishes). The gradient error
+        // is first order in that residual, so an unconverged root is an error.
+        if !ci.converged {
+            return Err(FerricError::General(format!(
+                "CASSCF: CAS-CI Davidson residual {:.2e} did not reach ci_conv_thresh {:e} \
+                 in {} iterations (raise ci_max_iter or ci_max_subspace)",
+                ci.residual_norm, self.ci_config.conv_thresh, ci.iterations
+            )));
+        }
+        Ok(ci)
     }
 
     /// CI-relaxed CAS-CI energy at orbitals `c` (no RDMs, no gradient).
@@ -509,8 +521,6 @@ pub struct CasScfResult {
     pub grad_norm: f64,
     /// Both convergence criteria met before [`CasScfConfig::max_iter`].
     pub converged: bool,
-    /// The final CAS-CI Davidson solve reached its threshold.
-    pub ci_converged: bool,
     /// `‖Hc − Ec‖` of the final CI vector.
     pub ci_residual_norm: f64,
 }
@@ -555,7 +565,6 @@ pub fn optimize(
             iterations: it,
             grad_norm,
             converged,
-            ci_converged: ci.converged,
             ci_residual_norm: ci.residual_norm,
         })
     };

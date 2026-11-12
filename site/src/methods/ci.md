@@ -125,7 +125,7 @@ $\partial E/\partial\kappa_{pq} = 2(F_{pq} - F_{qp})$. Equations:
 | `energy_tol` (`casscf_energy_tol`) | 1e-12 Ha | and the energy change is below this at the same iteration |
 | `max_iter` (`casscf_max_iter`) | 300 | macro iterations |
 | `max_step` (`casscf_max_step`) | 0.2 | cap on the largest step element (rad) |
-| `ci_conv_thresh` | 1e-10 | Davidson residual of every CI solve |
+| `ci_conv_thresh` | 1e-10 | Davidson residual $\lVert Hc - Ec\rVert$ of every CI solve; a solve that misses it returns an error |
 
 The step is inverse BFGS, started from an approximate diagonal orbital
 Hessian and reset to it when the energy rises. A run that reaches the

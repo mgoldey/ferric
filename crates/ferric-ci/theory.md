@@ -292,7 +292,10 @@ skips when $s^\mathsf{T}y \le 10^{-14}$; the inverse resets to the diagonal
 when the energy rises by more than $10^{-10}$ Ha; $\max_k|s_k|$ is capped at
 0.2. $\exp(K)$ is a Taylor series after scaling $K$ to $\infty$-norm $\le \tfrac12$,
 then squaring (`expm_antisymmetric`). Convergence: $\lVert g\rVert_2 < 10^{-7}$
-and $|\Delta E| < 10^{-12}$ Ha at the same iteration (defaults).
+and $|\Delta E| < 10^{-12}$ Ha at the same iteration (defaults). Every CI solve
+must reach the Davidson residual threshold ($10^{-10}$ by default); the
+gradient error is first order in that residual, so a solve that misses it
+is an error, not a warning.
 
 **Limits.** $n_\alpha = n_\beta$ only (an open-shell active space is
 refused: the formulas hold for spin-summed RDMs, but no anchor covers it);

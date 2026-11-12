@@ -233,8 +233,6 @@ struct PyCasScfResult {
     #[pyo3(get)]
     converged: bool,
     #[pyo3(get)]
-    ci_converged: bool,
-    #[pyo3(get)]
     ci_residual_norm: f64,
     #[pyo3(get)]
     n_core: usize,
@@ -377,14 +375,6 @@ fn run_casscf(
         crate::emit_runtime_warning(py, msg.clone());
         cert.push_warning(msg);
     }
-    if !r.ci_converged {
-        let msg = format!(
-            "final CAS-CI Davidson residual {:.2e} did not reach ci_conv_thresh {ci_conv_thresh:e}",
-            r.ci_residual_norm
-        );
-        crate::emit_runtime_warning(py, msg.clone());
-        cert.push_warning(msg);
-    }
     Ok(PyCasScfResult {
         e_total: r.e_total,
         e_core: r.e_core,
@@ -393,7 +383,6 @@ fn run_casscf(
         iterations: r.iterations,
         grad_norm: r.grad_norm,
         converged: r.converged,
-        ci_converged: r.ci_converged,
         ci_residual_norm: r.ci_residual_norm,
         n_core,
         n_alpha_str: ferric_ci::strings::enumerate_strings(n_active, n_elec_active.0).len(),
