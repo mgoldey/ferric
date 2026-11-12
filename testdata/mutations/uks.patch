@@ -1,15 +1,22 @@
-diff --git a/crates/ferric-scf/src/uhf.rs b/crates/ferric-scf/src/uhf.rs
-index 59fd7aaad..4168533b7 100644
---- a/crates/ferric-scf/src/uhf.rs
-+++ b/crates/ferric-scf/src/uhf.rs
-@@ -1346,8 +1346,8 @@ fn solve_uhf_impl(
-             // side re-checks each pair and falls back to the dense D_σ, which
-             // also covers fractional occupations.
-             x.add_xc_uks_occ(
--                (&d_a, &d_b),
--                (d_occ_a.as_ref(), d_occ_b.as_ref()),
-+                (&d_a, &d_a),
-+                (d_occ_a.as_ref(), d_occ_a.as_ref()),
-                 &mut f_a,
-                 &mut f_b,
-             )
+diff --git a/crates/ferric-dft/src/xc_batch.rs b/crates/ferric-dft/src/xc_batch.rs
+index dfc8c95f5..1c39ae8aa 100644
+--- a/crates/ferric-dft/src/xc_batch.rs
++++ b/crates/ferric-dft/src/xc_batch.rs
+@@ -1770,7 +1770,7 @@ impl ScreenedGrid {
+                     let (bx, by, bz) = (grad_b[(0, j)], grad_b[(1, j)], grad_b[(2, j)]);
+                     match c {
+                         0 => ax * ax + ay * ay + az * az,
+-                        1 => ax * bx + ay * by + az * bz,
++                        1 => ax * bx + ay * by + ay * bz,
+                         _ => bx * bx + by * by + bz * bz,
+                     }
+                 });
+@@ -2040,7 +2040,7 @@ impl ScreenedGrid {
+             let (ax, ay, az) = (grad_a[(0, g)], grad_a[(1, g)], grad_a[(2, g)]);
+             let (bx, by, bz) = (grad_b[(0, g)], grad_b[(1, g)], grad_b[(2, g)]);
+             sigma[(0, g)] = ax * ax + ay * ay + az * az;
+-            sigma[(1, g)] = ax * bx + ay * by + az * bz;
++            sigma[(1, g)] = ax * bx + ay * by + ay * bz;
+             sigma[(2, g)] = bx * bx + by * by + bz * bz;
+         }
+         let dens = UksDensityGrid {
