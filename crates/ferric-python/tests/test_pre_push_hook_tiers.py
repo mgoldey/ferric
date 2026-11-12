@@ -141,3 +141,68 @@ def test_unknown_tier_and_unchecked_out_ref_are_refused(repo):
     r = _push(repo, sha="1" * 40)
     assert r.returncode == 1 and "REFUSING" in r.stderr
     assert "CI_GATE_FAST" not in r.stdout  # the gate never ran
+
+
+# ---- the rustfmt check runs in the lint tier -------------------------------
+# The real scripts/ci-gate.sh runs with the knobs the hook's lint tier exports
+# (read back from the stub gate above, not hand-listed) and a fake `cargo` that
+# logs its arguments. Every step that would take the cargo lock is skipped, so
+# the test never queues behind a build on the box.
+
+GATE = REPO / "scripts" / "ci-gate.sh"
+LOCKED_STEPS_OFF = {
+    "CI_GATE_SKIP_CLIPPY": "1",
+    "CI_GATE_SKIP_COMPLEXITY": "1",
+    "CI_GATE_SKIP_DOCS": "1",
+}
+
+
+def _run_gate(tmp_path, repo, fmt_rc, extra=None):
+    lint = _knobs(_push(repo, "lint").stdout)
+    shim = tmp_path / "shim"
+    shim.mkdir()
+    log = tmp_path / "cargo.log"
+    cargo = shim / "cargo"
+    cargo.write_text(
+        "#!/usr/bin/env bash\n"
+        f'echo "$*" >> "{log}"\n'
+        'if [[ "$1" == fmt ]]; then echo "Diff in src/x.rs at line 1:"; '
+        f"exit {fmt_rc}; fi\n"
+        "exit 0\n"
+    )
+    cargo.chmod(0o755)
+    env = {k: v for k, v in os.environ.items() if not k.startswith("CI_GATE_")}
+    env.update(lint)
+    env.update(LOCKED_STEPS_OFF)
+    env.update(extra or {})
+    env["FERRIC_SHIM_DIR"] = str(shim)
+    env["PATH"] = f"{shim}:{env['PATH']}"
+    r = subprocess.run(
+        ["bash", str(GATE)], env=env, capture_output=True, text=True, timeout=120
+    )
+    calls = log.read_text().splitlines() if log.exists() else []
+    return r, calls
+
+
+def test_lint_tier_runs_cargo_fmt_check(tmp_path, repo):
+    r, calls = _run_gate(tmp_path, repo, fmt_rc=0)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert calls == ["fmt --all --check"]
+    assert "-- cargo fmt: PASS --" in r.stdout
+    assert "RESULT: PASS" in r.stdout
+
+
+def test_a_formatting_diff_fails_the_lint_tier(tmp_path, repo):
+    r, calls = _run_gate(tmp_path, repo, fmt_rc=1)
+    assert calls == ["fmt --all --check"]
+    assert r.returncode == 1, r.stdout
+    assert "Diff in src/x.rs" in r.stdout
+    assert "-- cargo fmt: FAIL (exit 1)" in r.stdout
+    assert "RESULT: FAIL" in r.stdout
+
+
+def test_fmt_check_can_be_skipped(tmp_path, repo):
+    r, calls = _run_gate(tmp_path, repo, fmt_rc=1, extra={"CI_GATE_SKIP_FMT": "1"})
+    assert r.returncode == 0, r.stdout
+    assert calls == []
+    assert "-- cargo fmt: SKIPPED (CI_GATE_SKIP_FMT=1) --" in r.stdout
