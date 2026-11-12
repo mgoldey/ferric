@@ -42,6 +42,20 @@ XC grid, a level shift, ECPs, embedding, solvation) and warnings: a Plateau
 exit, a non-`Stable` stability verdict, and an unchecked UHF/UKS stability. An
 unconverged SCF is capped to not graded.
 
+The certificates of `rhf`, `uhf`, `rohf`, `ksdft` and `rimp2` also carry
+`measured_error`: the stated agreement of the solver's headline energy row in
+[Anchors](#anchors), with its reference code and test file. The rows are RHF
+and RI-MP2 under "Bundled basis sets", UHF and ROHF under "UHF and ROHF
+energies", RKS and UKS under "KS-DFT energies: open-shell UKS and second-row
+closed shell", ROKS under its own row, and UMP2 under "Unrestricted RI-MP2".
+`ENERGY_ANCHORS` in `crates/ferric-core/src/certificate/anchors.rs` holds them,
+with the elements, basis sets and functionals each row's test runs, and a test
+keeps it equal to this page. The CLI adds one warning for each element, basis,
+auxiliary basis or functional of the run outside that set. The check is per
+dimension, so a run inside every set can still be a combination no test ran.
+The warning does not change the grade. The Python results carry
+`measured_error` without these warnings.
+
 Post-SCF kinds print a `certificate` block after their result: the MP2 family
 (`rimp2` exact, local and open-shell, `mp3`, `oo-rimp2`, `att-rimp2`, `mp2-v`,
 `scs-mp2`, `scs-mp2-2terfc`, `laplace-mp2`, `laplace-sos-mp2`), `rs-mp2-rpa`,

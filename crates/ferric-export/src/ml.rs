@@ -187,6 +187,11 @@ pub struct NpzBundle<'a> {
     pub polarizability: PolarizabilityBundle<'a>,
     /// C6 dispersion outputs.
     pub dispersion: DispersionBundle<'a>,
+    /// The result certificate as JSON text
+    /// (`ferric_core::certificate::Certificate::to_json`), written as
+    /// `certificate`: its UTF-8 bytes, a `u8` array decoded by
+    /// `np.load(f)["certificate"].tobytes().decode()`.
+    pub certificate: Option<&'a str>,
 }
 
 /// Exports key tensors and metadata for Machine Learning (e.g. Diffusion models)
@@ -482,6 +487,13 @@ pub fn export_npz(path: &str, bundle: &NpzBundle) -> Result<(), ExportError> {
         let mol_c6 = Array1::from_vec(vec![c6.c6_molecular_iso]);
         writer
             .add_array("c6_molecular_iso", &mol_c6)
+            .map_err(|e| ExportError::Other(e.to_string()))?;
+    }
+
+    if let Some(cert) = bundle.certificate {
+        let bytes = Array1::from_vec(cert.as_bytes().to_vec());
+        writer
+            .add_array("certificate", &bytes)
             .map_err(|e| ExportError::Other(e.to_string()))?;
     }
 

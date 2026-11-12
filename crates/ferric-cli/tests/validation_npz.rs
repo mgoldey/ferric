@@ -68,12 +68,13 @@
 //! | alpha_atomic_dynamic | TS shape = exported alpha_atomic / its iso average; single London pole whose ω_A = (4/3)C6_free/α_free² from the TS PRL 2009 free-atom table |
 //! | c6_iso, c6_aniso, c6_molecular_iso | recomputed by numpy-side Casimir–Polder from the exported α(iω), freqs, weights; London C6_AA = (3/4)a²ω_A (quadrature) |
 //!
-//! Key set: EXACTLY the documented set for these knobs (30 keys; `boys_coeffs`
-//! is a `NpzBundle` field the CLI never fills; `alpha_ct_dynamic` is written
-//! only for `c6_source = "pdep"`, and this run uses the TS default). Second test: with nine knobs
-//! off, exactly their keys disappear (`compute_density_matrix = false` also
-//! removes `density_second_moment`, which the CLI derives from the density),
-//! and every remaining value still matches the reference.
+//! Key set: EXACTLY the documented set for these knobs (31 keys, with
+//! `certificate`; `boys_coeffs` is a `NpzBundle` field the CLI never fills;
+//! `alpha_ct_dynamic` is written only for `c6_source = "pdep"`, and this run
+//! uses the TS default). Second test: with nine knobs off, exactly their
+//! keys disappear (`compute_density_matrix = false` also removes
+//! `density_second_moment`, which the CLI derives from the density), and
+//! every remaining value still matches the reference.
 //!
 //! # Physics vs artifact hypotheses
 //!
@@ -165,7 +166,7 @@ const MUST_MISS: f64 = 1000.0;
 
 /// The documented key set for the full run's knobs (all export defaults on,
 /// plus `compute_esp_surface = true`).
-const FULL_KEYS: [&str; 30] = [
+const FULL_KEYS: [&str; 31] = [
     "mo_coeffs",
     "orbital_energies",
     "pdep_eigenvectors",
@@ -196,6 +197,7 @@ const FULL_KEYS: [&str; 30] = [
     "c6_iso",
     "c6_aniso",
     "c6_molecular_iso",
+    "certificate",
 ];
 
 /// Knobs turned OFF in the second test, and the keys each one owns.
@@ -628,7 +630,7 @@ fn check_structure(b: &Bundle, expected: &BTreeSet<String>, c: &mut Checks, ctx:
     for (k, a) in &b.0 {
         let want = match k.as_str() {
             "atomic_numbers" => "<i8",
-            "c6_partition" | "c6_source" => "|u1",
+            "c6_partition" | "c6_source" | "certificate" => "|u1",
             _ => "<f8",
         };
         c.truth(

@@ -7,8 +7,9 @@
 //! changes an energy. The build stamp comes from the reference certificate
 //! (`ferric-cli` and `ferric-python` stamp it).
 
-use ferric_core::certificate::{Certificate, Grade};
+use ferric_core::certificate::{energy_anchor, Certificate, EnergyAnchor, Grade, RunEnvelope};
 use ferric_core::gpu::provenance::PrecisionRecord;
+use ferric_core::mol::Molecule;
 use ferric_integrals::operator::{Operator, OperatorKind};
 
 use crate::attenuated::AttenuatedMp2Config;
@@ -38,7 +39,45 @@ pub fn ri_correlation_certificate(
     }
 }
 
+/// The headline energy anchor of canonical RI-MP2 on the SCF reference
+/// that `reference` certifies: `RI-MP2` on RHF, `U-RI-MP2` on UHF, none on
+/// any other reference.
+pub fn rimp2_energy_anchor(reference: &Certificate) -> Option<&'static EnergyAnchor> {
+    match reference.capability.as_str() {
+        "rhf" => energy_anchor("RI-MP2"),
+        "uhf" => energy_anchor("U-RI-MP2"),
+        _ => None,
+    }
+}
+
+/// `c` (an RI-MP2 certificate on `reference`) with a warning for each way the
+/// run lies outside the anchor of [`rimp2_energy_anchor`]: an element of
+/// `mol`, the orbital basis `basis`, the auxiliary basis `aux`. The grade is
+/// not changed.
+pub fn with_rimp2_envelope(
+    c: Certificate,
+    reference: &Certificate,
+    mol: &Molecule,
+    basis: &str,
+    aux: &str,
+) -> Certificate {
+    let Some(a) = rimp2_energy_anchor(reference) else {
+        return c;
+    };
+    let zs: Vec<i32> = mol.atoms.iter().map(|at| at.z).collect();
+    c.with_envelope(
+        a,
+        &RunEnvelope {
+            atomic_numbers: &zs,
+            basis: Some(basis),
+            aux_basis: Some(aux),
+            functional: None,
+        },
+    )
+}
+
 /// Canonical RI-MP2 (`rimp2`, closed or open shell) run with `cfg`.
+/// `measured_error` is the anchor of [`rimp2_energy_anchor`].
 pub fn rimp2_certificate(
     reference: &Certificate,
     aux: &str,
@@ -48,6 +87,9 @@ pub fn rimp2_certificate(
 ) -> Certificate {
     let mut c = ri_correlation_certificate("rimp2", reference, aux, cfg.frozen_core, op)
         .with_precision(precision);
+    if let Some(a) = rimp2_energy_anchor(reference) {
+        c = c.with_energy_anchor(a);
+    }
     if let Some(m) = cfg.metric_op.as_ref() {
         c = c.with_approximation("ri-metric", operator_label(m));
     }
@@ -335,6 +377,64 @@ mod tests {
         );
         assert_eq!(names(&e), ["scf ri-j", "ri", "operator"]);
         assert_eq!(e.approximations[2].detail, "erfc(omega=0.5)");
+    }
+
+    #[test]
+    fn rimp2_measured_error_follows_the_reference_spin() {
+        let run = |reference: &Certificate| {
+            rimp2_certificate(
+                reference,
+                "cc-pvdz-ri",
+                &RiMp2Config::default(),
+                &Operator::coulomb(),
+                &PrecisionRecord::f64(),
+            )
+        };
+        let closed = run(&rhf());
+        let e = closed.measured_error.as_ref().expect("RI-MP2 anchor");
+        assert_eq!(
+            (e.quantity.as_str(), e.value),
+            ("correlation energy", 2.4e-10)
+        );
+        assert_eq!(
+            e.evidence,
+            "crates/ferric-mp2/tests/validation_basis_coverage.rs"
+        );
+        let open = run(&Certificate::for_method_kind("uhf"));
+        assert_eq!(open.measured_error.as_ref().unwrap().value, 9.2e-10);
+        // A KS reference has no RI-MP2 anchor.
+        assert!(run(&Certificate::for_method_kind("ksdft"))
+            .measured_error
+            .is_none());
+    }
+
+    #[test]
+    fn rimp2_envelope_checks_elements_and_both_basis_sets() {
+        let water = Molecule::parse_xyz("3\n\nO 0 0 0\nH 0 0 1\nH 0 1 0\n", 0, 1).unwrap();
+        let c = rimp2_certificate(
+            &rhf(),
+            "cc-pvdz-ri",
+            &RiMp2Config::default(),
+            &Operator::coulomb(),
+            &PrecisionRecord::f64(),
+        );
+        // Covered: water / cc-pVDZ / cc-pvdz-ri (an alias of cc-pvdz-rifit).
+        let inside = with_rimp2_envelope(c.clone(), &rhf(), &water, "cc-pVDZ", "cc-pvdz-ri");
+        assert_eq!(inside, c);
+        let nh3 = Molecule::parse_xyz("4\n\nN 0 0 0\nH 0 0 1\nH 0 1 0\nH 1 0 0\n", 0, 1).unwrap();
+        let out = with_rimp2_envelope(c.clone(), &rhf(), &nh3, "6-31g", "aug-cc-pvdz-jkfit");
+        assert_eq!(out.grade, c.grade);
+        let w: Vec<&str> = out.warnings.iter().map(String::as_str).collect();
+        assert_eq!(w.len(), 3, "{w:?}");
+        assert!(w[0].starts_with("element N (covered: H, O, Pd)"), "{w:?}");
+        assert!(
+            w[1].starts_with("basis 6-31g is outside the RI-MP2"),
+            "{w:?}"
+        );
+        assert!(
+            w[2].starts_with("auxiliary basis aug-cc-pvdz-jkfit is outside the RI-MP2"),
+            "{w:?}"
+        );
     }
 
     #[test]

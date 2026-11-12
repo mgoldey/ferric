@@ -42,6 +42,7 @@ When the RPA/export pipeline is executed (driven by the `export_npz` configurati
 | `c6_iso` | $(N_{\text{atoms}}, N_{\text{atoms}})$ | `float64` | a.u. | Per-atom-pair isotropic $C_6^{AB}$. A partition convention, not an observable; `c6_iso.sum()` is not the molecular $C_6$. |
 | `c6_aniso` | $(N_{\text{atoms}}, N_{\text{atoms}}, 3, 3)$ | `float64` | a.u. | Per-atom-pair anisotropic $C_6^{AB}{}_{ij}$; same caveat as `c6_iso`. |
 | `c6_molecular_iso` | $(1,)$ | `float64` | a.u. | Molecular isotropic $C_6$, the DOSD-comparable value. Read this, never the `c6_iso` sum. |
+| `certificate` | $(L,)$ | `uint8` | - | UTF-8 bytes of the result certificate as JSON (grade, build, measured error, approximations, warnings; `site/src/reference/validation.md` describes the fields); decode with `json.loads(f["certificate"].tobytes().decode())`. |
 
 ### Enabling keys
 
@@ -50,7 +51,7 @@ The CLI (`kind = "pdep-rpa"`, `[rpa] export_npz = "<path>"`) turns the `compute_
 
 | Keys | TOML knob / condition |
 | :--- | :--- |
-| `coords`, `atomic_numbers`, `pdep_eigenvectors` | always |
+| `coords`, `atomic_numbers`, `pdep_eigenvectors`, `certificate` | always (`certificate` is the PDEP-RPA certificate the CLI prints) |
 | `mo_coeffs`, `orbital_energies`, `orbital_centers`, `orbital_spreads` | restricted reference only |
 | `density_matrix`, `density_second_moment` | `compute_density_matrix` |
 | `dipole` | `compute_dipole` |
