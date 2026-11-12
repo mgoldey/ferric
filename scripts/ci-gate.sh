@@ -19,6 +19,8 @@
 #      is mostly a safety net (e.g. for anyone who runs clippy with
 #      --cap-lints or otherwise bypasses the workspace lints table) and a
 #      place to fail loudly with a clear message if anything DOES fire.
+#   1b. `cargo fmt --all --check` on the whole workspace, in every tier (the
+#      lint tier included). It compiles nothing and takes no cargo lock.
 #
 # Exit code: 0 = clean, 1 = a real failure (test or clippy), a step that timed
 # out while holding the cargo lock (see LOAD AWARENESS below), OR a step that
@@ -42,6 +44,7 @@
 #                          crates (see CLIPPY SCOPE below). CI_GATE_TIER=full
 #                          does the same, with or without the pre-push hook.
 #   CI_GATE_SKIP_TESTS=1   skip the test step (clippy-only gate).
+#   CI_GATE_SKIP_FMT=1     skip the rustfmt check.
 #   CI_GATE_SKIP_COMPLEXITY=1  skip the complexity-regression step.
 #   CI_GATE_SKIP_PYTEST=1  skip the (soft) Python-binding pytest step.
 #   CI_GATE_SKIP_DOCS=1    skip the rustdoc step.
@@ -465,6 +468,26 @@ if [[ "${CI_GATE_SKIP_TESTS:-0}" != "1" ]]; then
         "OPENBLAS_NUM_THREADS=1 $REPO_ROOT/scripts/ferric-limited --max=8G --high=7G -- bash -c '$TEST_CMD'"
 else
     echo "-- cargo test --workspace: SKIPPED (CI_GATE_SKIP_TESTS=1) --"
+fi
+echo
+
+# ---- 1b. cargo fmt --all --check (every tier) ---------------------------
+# CI's fmt job runs the same check. rustfmt compiles nothing, so the step runs
+# outside run_locked (the cargo shim exempts `fmt` from the compile lease too).
+if [[ "${CI_GATE_SKIP_FMT:-0}" != "1" ]]; then
+    echo "-- cargo fmt --all --check --"
+    FMT_OUT="$(cargo fmt --all --check 2>&1)"
+    FMT_RC=$?
+    if [[ $FMT_RC -eq 0 ]]; then
+        echo "-- cargo fmt: PASS --"
+    else
+        echo "$FMT_OUT" | head -60
+        echo "-- cargo fmt: FAIL (exit $FMT_RC); run \`cargo fmt --all\` --"
+        FAILED=1
+        STEP_CHECK_FAILED=1
+    fi
+else
+    echo "-- cargo fmt: SKIPPED (CI_GATE_SKIP_FMT=1) --"
 fi
 echo
 
