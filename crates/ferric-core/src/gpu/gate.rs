@@ -45,11 +45,15 @@
 //! size at which the device wins and keeps winning at every larger measured
 //! size) has no solution in FLOPs and has one in `nbf` for DF-K: it loses at
 //! every measured `nbf` up to 490 and wins at 528 and 614, so the threshold
-//! is 512. For RI-J there is no solution: the device never beats the CPU
-//! default (the f32 tensor) by more than 10%, and at `nbf` 614 it loses, so
-//! `auto` never takes RI-J. The geometry-task case, where the CPU tensor is
-//! f64 and the device took RI-J from 20.1 s to 8.5 s in the 2026-11-10
-//! profile (one run), was not re-measured here and is not taken by `auto`.
+//! is 512. RI-J per build is at parity with the CPU default (f32 tensor) at
+//! every measured size (0.94-1.10, 0.33 at `nbf` 614 where J yields the
+//! card to K and runs on the f64 CPU tensor), so its per-build rows do not
+//! set a threshold. It takes the DF-K threshold because the two share one raw
+//! tensor: with K on the device and J on the CPU the host builds the f32 J
+//! tensor in a second integral pass (C12/def2-TZVP RHF, one run each, before
+//! and after this rule: `setup:df_fitters` 4.5 s with J and K on the device,
+//! 7.3 s with K alone; whole run 13.8 s against 17.6 s). Below the threshold
+//! neither path is taken.
 //! The device needs the
 //! dressed tensor resident (`naux * nbf^2 * 8` bytes against a pool of about
 //! 6.7 GB on the 8 GB card), so the sizes above the largest measured one
@@ -106,7 +110,7 @@ impl DeviceSite {
 }
 
 /// Smallest `nbf` at which `auto` takes the device RI-J build.
-pub const AUTO_MIN_NBF_RI_J: usize = usize::MAX;
+pub const AUTO_MIN_NBF_RI_J: usize = 512;
 
 /// Smallest `nbf` at which `auto` takes the device DF-K build.
 pub const AUTO_MIN_NBF_DF_K: usize = 512;
@@ -176,13 +180,12 @@ mod tests {
     }
 
     #[test]
-    fn auto_never_takes_ri_j_at_the_measured_sizes() {
-        for n in [298, 394, 442, 490, 528, 614] {
-            assert!(!routes_to_device(
-                GpuMode::Auto,
-                AutoPath::RiJ,
-                site(n, false)
-            ));
+    fn auto_ri_j_boundary_is_the_threshold_for_a_hybrid_and_never_for_a_pure_functional() {
+        let at = |n, pure| routes_to_device(GpuMode::Auto, AutoPath::RiJ, site(n, pure));
+        assert!(!at(AUTO_MIN_NBF_RI_J - 1, false));
+        assert!(at(AUTO_MIN_NBF_RI_J, false));
+        for n in [298, 394, 442, 490, 528, 614, BIG] {
+            assert!(!at(n, true), "pure functional, nbf {n}");
         }
     }
 
