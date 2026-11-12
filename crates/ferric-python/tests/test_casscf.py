@@ -122,25 +122,37 @@ def _longest_main_thread_stall(call):
     busy loop; return (longest gap between samples, wall time of the call).
     A binding that holds the GIL through its Rust solve stalls this loop for
     the whole solve, so the gap is about the wall time; one that releases it
-    stalls the loop only for GIL hand-offs (the 5 ms switch interval)."""
+    stalls the loop only for GIL hand-offs (the 5 ms switch interval).
+
+    The worker waits on `go`, which is set only after this thread has taken
+    its first sample, so the sampler is running before the call can start.
+    A measurement with no samples raises."""
+    go = threading.Event()
     done = threading.Event()
 
     def work():
+        go.wait()
         try:
             call()
         finally:
             done.set()
 
     t = threading.Thread(target=work)
-    start = last = time.perf_counter()
     t.start()
+    start = last = time.perf_counter()
+    samples = 1
     gap = 0.0
+    go.set()
     while not done.is_set():
         now = time.perf_counter()
         gap = max(gap, now - last)
         last = now
+        samples += 1
     t.join()
-    return gap, time.perf_counter() - start
+    end = time.perf_counter()
+    if samples < 2:  # the initial sample plus at least one in the loop
+        raise RuntimeError("GIL measurement recorded no samples")
+    return max(gap, end - last), end - start
 
 
 @pytest.mark.parametrize("which", ["casci", "casscf"])
