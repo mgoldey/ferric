@@ -894,6 +894,18 @@ fn spill_dir() -> std::path::PathBuf {
 /// and lists every remedy, so a user never has to read this file to understand
 /// the refusal (the standard `cosx_k::check_budget` sets).
 fn check_spill_disk(needed: u64, free: u64, dir: &std::path::Path) -> Result<(), FerricError> {
+    check_spill_disk_kind(needed, free, dir, SpillKind::Raw)
+}
+
+/// [`check_spill_disk`] with the remedy list for a spill of `kind`. Recomputing
+/// each pass (`jk_storage = "direct"`) applies to a raw tensor only: the RI-K
+/// dressed band is spilled by its own builder regardless of `jk_storage`.
+fn check_spill_disk_kind(
+    needed: u64,
+    free: u64,
+    dir: &std::path::Path,
+    kind: SpillKind,
+) -> Result<(), FerricError> {
     let headroom = SPILL_HEADROOM_BYTES.max((free as f64 * SPILL_HEADROOM_FRACTION) as u64);
     if needed.saturating_add(headroom) <= free {
         return Ok(());
@@ -903,12 +915,17 @@ fn check_spill_disk(needed: u64, free: u64, dir: &std::path::Path) -> Result<(),
          (a {:.2} GB safety margin is reserved so the spill cannot fill the partition \
          out from under the rest of the system). Remedies: raise the in-core ceiling so \
          the tensor never spills ([memory] budget_gb / FERRIC_MEM_BUDGET_GB); point the \
-         spill elsewhere (TMPDIR=/path/with/room); use a smaller auxiliary basis; or \
-         recompute the integrals each pass instead of writing them (jk_storage = \"direct\").",
+         spill elsewhere (TMPDIR=/path/with/room); {}use a smaller auxiliary basis.",
         needed as f64 / 1e9,
         dir.display(),
         free as f64 / 1e9,
         headroom as f64 / 1e9,
+        match kind {
+            SpillKind::Raw =>
+                "recompute the integrals each pass instead of writing them \
+                               (jk_storage = \"direct\"); or ",
+            SpillKind::RiKDressed => "or ",
+        },
     )))
 }
 
@@ -920,7 +937,7 @@ fn check_spill_disk_for(
     dir: &std::path::Path,
     kind: SpillKind,
 ) -> Result<(), FerricError> {
-    match (check_spill_disk(needed, free, dir), kind) {
+    match (check_spill_disk_kind(needed, free, dir, kind), kind) {
         (Err(FerricError::General(m)), SpillKind::RiKDressed) => Err(FerricError::General(
             format!("{m}{}", exact_k_remedy(needed)),
         )),
@@ -3506,6 +3523,14 @@ mod tests {
         };
         assert_no_exact_k_remedy(&refuse(SpillKind::Raw));
         assert_names_exact_k_remedy(&refuse(SpillKind::RiKDressed), "100.00 GB");
+        // jk_storage = "direct" recomputes the raw tensor only; the RI-K band
+        // spills regardless, so its refusal must not offer it.
+        assert!(refuse(SpillKind::Raw).contains("jk_storage = \"direct\""));
+        let rik = refuse(SpillKind::RiKDressed);
+        assert!(
+            !rik.contains("jk_storage"),
+            "RI-K refusal offered jk_storage: {rik}"
+        );
     }
 
     /// A raw spill must not offer `df_k_aux = ""`: the tensor may be RI-J's
