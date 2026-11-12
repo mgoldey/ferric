@@ -643,8 +643,9 @@ Both `link` and `cosx` are skipped with
 a warning when the functional uses no exact exchange or is range-separated
 (exchange then comes from the SR/LR fitters). For a Kohn–Sham hybrid, whose
 RI-J and RI-K are on by default, `direct` needs `df_k_aux = ""`; `link` needs
-`df_j_aux = ""` as well, because LinK builds J and K in one four-centre pass,
-which RI-J replaces.
+`df_j_aux = ""` as well: the resolver keeps `link` only when J is not density
+fitted (COSX is the one K builder it pairs with RI-J), and with RI-J off J
+comes from the direct four-centre J builder.
 
 **RIJCOSX.** `k_builder = "cosx"` combines with density-fitted Coulomb: when
 RI-J is active (`df_j_aux` named, or the Kohn–Sham default), J comes from RI-J

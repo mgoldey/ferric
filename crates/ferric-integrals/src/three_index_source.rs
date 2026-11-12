@@ -982,13 +982,30 @@ fn warn_spill_once(needed: u64, dir: &std::path::Path) -> bool {
 /// or a post-SCF B tensor) cannot swallow the one warning that names
 /// [`exact_k_remedy`].
 fn warn_spill_once_for(needed: u64, dir: &std::path::Path, kind: SpillKind) -> bool {
-    if kind == SpillKind::Raw {
-        return warn_spill_once(needed, dir);
-    }
-    if RI_K_SPILL_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+    warn_spill_once_with(needed, dir, kind, &SPILL_WARNED, &RI_K_SPILL_WARNED)
+}
+
+/// [`warn_spill_once_for`] against the given latches: `raw` for
+/// [`SpillKind::Raw`], `ri_k` for [`SpillKind::RiKDressed`]. Tests pass local
+/// latches, so a spill elsewhere in the process cannot flip them.
+fn warn_spill_once_with(
+    needed: u64,
+    dir: &std::path::Path,
+    kind: SpillKind,
+    raw: &std::sync::atomic::AtomicBool,
+    ri_k: &std::sync::atomic::AtomicBool,
+) -> bool {
+    let latch = match kind {
+        SpillKind::Raw => raw,
+        SpillKind::RiKDressed => ri_k,
+    };
+    if latch.swap(true, std::sync::atomic::Ordering::Relaxed) {
         return false;
     }
-    let text = spill_warning_text(needed, dir) + &exact_k_remedy(needed);
+    let mut text = spill_warning_text(needed, dir);
+    if kind == SpillKind::RiKDressed {
+        text += &exact_k_remedy(needed);
+    }
     eprintln!("{text}");
     true
 }
@@ -3632,18 +3649,39 @@ mod tests {
     /// A raw spill that warned first must not swallow the RI-K warning, the
     /// only one naming the exact-K remedy: it has its own latch.
     ///
-    /// MUTATION: route `SpillKind::RiKDressed` through `SPILL_WARNED` and the
-    /// first assert goes RED.
+    /// The latches are test-local, so a concurrent spill in another test
+    /// cannot set them between the asserts.
+    ///
+    /// Mutation: route `SpillKind::RiKDressed` through the raw latch and the
+    /// first assert fails.
     #[test]
     fn ri_k_spill_warning_has_its_own_latch() {
-        let _g = SPILL_LATCH_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        use std::sync::atomic::{AtomicBool, Ordering};
         let dir = std::path::Path::new("/tmp");
-        SPILL_WARNED.store(true, std::sync::atomic::Ordering::Relaxed);
-        RI_K_SPILL_WARNED.store(false, std::sync::atomic::Ordering::Relaxed);
-        assert!(warn_spill_once_for(1_000, dir, SpillKind::RiKDressed));
-        assert!(!warn_spill_once_for(1_000, dir, SpillKind::RiKDressed));
-        RI_K_SPILL_WARNED.store(false, std::sync::atomic::Ordering::Relaxed);
-        SPILL_WARNED.store(false, std::sync::atomic::Ordering::Relaxed);
+        let raw = AtomicBool::new(true);
+        let ri_k = AtomicBool::new(false);
+        assert!(warn_spill_once_with(
+            1_000,
+            dir,
+            SpillKind::RiKDressed,
+            &raw,
+            &ri_k
+        ));
+        assert!(!warn_spill_once_with(
+            1_000,
+            dir,
+            SpillKind::RiKDressed,
+            &raw,
+            &ri_k
+        ));
+        assert!(!warn_spill_once_with(
+            1_000,
+            dir,
+            SpillKind::Raw,
+            &raw,
+            &ri_k
+        ));
+        assert!(raw.load(Ordering::Relaxed) && ri_k.load(Ordering::Relaxed));
     }
 
     /// (b) IN-CORE IS UNTOUCHED. When the tensor fits the budget the new code
