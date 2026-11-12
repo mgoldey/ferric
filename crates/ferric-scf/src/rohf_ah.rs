@@ -214,11 +214,20 @@ pub fn rohf_ah_step(
             result.converged, result.iterations, result.residual, cfg.conv_thresh, result.eigenvalue
         );
     }
-    // 4. κ from the lowest eigenvector, or the PCG Newton step (same inputs,
-    // exact Hessian, Steihaug-guarded) from these orbitals when the
-    // eigenvector cannot be used (`ah_kappa_or_fallback`).
+    // 4. κ from the lowest eigenvector, a step along the negative mode the
+    // gradient does not see, or the PCG Newton step (same inputs, exact
+    // Hessian, Steihaug-guarded) from these orbitals when the eigenvector
+    // cannot be used (`ah_kappa_or_fallback`).
     let kappa_flat = match ah_kappa_or_fallback(&result) {
         AhKappa::Step(k) => k,
+        AhKappa::NegativeMode(v) => {
+            AH_NEGATIVE_MODE_STEPS.with(|c| c.set(c.get() + 1));
+            eprintln!(
+                "[ferric] WARNING: ROHF AH lowest eigenvector has leading entry {:.2e} (Hessian eigenvalue {:.3e} along a mode orthogonal to the gradient); this iteration steps along that mode to the step bound",
+                result.eigenvector[0], result.eigenvalue
+            );
+            negative_mode_step(&v, g_flat.view(), max_step)
+        }
         AhKappa::Fallback(reason) => {
             AH_FALLBACKS.with(|c| c.set(c.get() + 1));
             report_ah_fallback(&reason, &result, cfg.conv_thresh);
@@ -290,7 +299,9 @@ enum AhFallback {
     /// fallback is silent.
     Unconverged { endgame: bool },
     /// The lowest eigenvector's leading entry is below
-    /// [`AH_MIN_LEADING_ENTRY`] in magnitude, so κ = v[1..]/v[0] is undefined.
+    /// [`AH_MIN_LEADING_ENTRY`] in magnitude, so κ = v[1..]/v[0] is undefined,
+    /// and its eigenvalue is not negative, so there is no descent mode to
+    /// step along.
     ZeroLead,
 }
 
@@ -298,7 +309,35 @@ enum AhFallback {
 #[derive(Debug, PartialEq)]
 enum AhKappa {
     Step(Array1<f64>),
+    /// v of a converged lowest eigenvector [0, v] with a negative eigenvalue:
+    /// a Hessian mode with negative curvature that the gradient does not see.
+    NegativeMode(Array1<f64>),
     Fallback(AhFallback),
+}
+
+thread_local! {
+    static AH_NEGATIVE_MODE_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// AH steps taken along a negative mode orthogonal to the gradient on this
+/// thread.
+pub fn ah_negative_mode_steps_on_this_thread() -> usize {
+    AH_NEGATIVE_MODE_STEPS.with(|c| c.get())
+}
+
+/// κ along the negative mode `v`, signed so gᵀκ ≤ 0 and scaled so its largest
+/// component is `max_step`. The quadratic model changes by gᵀκ + ½λ|κ|², with
+/// λ < 0 the mode's curvature and gᵀv ≈ 0 by construction, so the step lowers
+/// the model by about ½|λ||κ|². Without this step the PCG Newton step, which
+/// starts from −M⁻¹g with a diagonal preconditioner, can leave v unstepped,
+/// and the SCF can converge onto the saddle.
+fn negative_mode_step(v: &Array1<f64>, g: ndarray::ArrayView1<f64>, max_step: f64) -> Array1<f64> {
+    let vmax = v.iter().fold(0.0f64, |m, &x| m.max(x.abs()));
+    if vmax == 0.0 {
+        return Array1::zeros(v.len());
+    }
+    let sign = if g.dot(v) > 0.0 { -1.0 } else { 1.0 };
+    v.mapv(|x| sign * max_step * x / vmax)
 }
 
 /// Smallest |v₀| of the lowest augmented-Hessian eigenvector from which κ is
@@ -322,10 +361,10 @@ const AH_MIN_LEADING_ENTRY: f64 = 1e-10;
 ///
 /// A converged eigenvector with a vanishing leading entry is [0, v] with v a
 /// Hessian eigenvector orthogonal to g, whose eigenvalue lies below the lowest
-/// root coupled to g: a negative mode that the gradient does not see. The AH
-/// ansatz (leading entry 1) has no solution there, and the PCG Newton step,
-/// whose Steihaug guard handles negative curvature along its own directions,
-/// is taken instead.
+/// root coupled to g. The AH ansatz (leading entry 1) has no solution there.
+/// With a negative eigenvalue, v is a negative mode the gradient does not
+/// see, and the step goes along it ([`negative_mode_step`]); otherwise the PCG
+/// Newton step is taken.
 fn ah_kappa_or_fallback(r: &crate::stability::LowestEigenpair) -> AhKappa {
     if !r.converged {
         return AhKappa::Fallback(AhFallback::Unconverged {
@@ -334,6 +373,9 @@ fn ah_kappa_or_fallback(r: &crate::stability::LowestEigenpair) -> AhKappa {
     }
     let first = r.eigenvector[0];
     if first.abs() < AH_MIN_LEADING_ENTRY {
+        if r.eigenvalue < 0.0 {
+            return AhKappa::NegativeMode(r.eigenvector[1..].iter().copied().collect());
+        }
         return AhKappa::Fallback(AhFallback::ZeroLead);
     }
     // Rescale so the leading entry is 1: this realizes the AH ansatz.
@@ -361,7 +403,7 @@ fn report_ah_fallback(
             }
         }
         AhFallback::ZeroLead => eprintln!(
-            "[ferric] WARNING: ROHF AH lowest eigenvector has leading entry {:.2e} (Hessian eigenvalue {:.3e} along a mode orthogonal to the gradient); this iteration takes the PCG Newton step instead of AH",
+            "[ferric] WARNING: ROHF AH lowest eigenvector has leading entry {:.2e} (eigenvalue {:.3e}, no descent mode); this iteration takes the PCG Newton step instead of AH",
             r.eigenvector[0], r.eigenvalue
         ),
     }
@@ -398,8 +440,17 @@ mod tests {
     use crate::stability::LowestEigenpair;
 
     fn pair(eigenvector: Vec<f64>, converged: bool, residual: f64) -> LowestEigenpair {
+        pair_at(-0.1, eigenvector, converged, residual)
+    }
+
+    fn pair_at(
+        eigenvalue: f64,
+        eigenvector: Vec<f64>,
+        converged: bool,
+        residual: f64,
+    ) -> LowestEigenpair {
         LowestEigenpair {
-            eigenvalue: -0.1,
+            eigenvalue,
             eigenvector,
             residual,
             iterations: 5,
@@ -407,19 +458,24 @@ mod tests {
         }
     }
 
-    /// A converged eigenvector [0, v] (a Hessian mode orthogonal to g below
-    /// the gradient-coupled root) falls back to PCG Newton instead of
-    /// dividing by the vanishing leading entry; a usable one gives
-    /// κ = v[1..]/v[0]; an unconverged one falls back, silently only below
-    /// the endgame residual.
+    /// A converged eigenvector [0, v] with a negative eigenvalue (a Hessian
+    /// mode orthogonal to g below the gradient-coupled root) gives the
+    /// negative mode v instead of dividing by the vanishing leading entry;
+    /// with a non-negative eigenvalue it falls back to PCG Newton; a usable
+    /// one gives κ = v[1..]/v[0]; an unconverged one falls back, silently
+    /// only below the endgame residual.
     #[test]
     fn ah_kappa_falls_back_on_a_vanishing_leading_entry() {
         assert_eq!(
             ah_kappa_or_fallback(&pair(vec![1e-12, 0.6, -0.8], true, 1e-9)),
-            AhKappa::Fallback(AhFallback::ZeroLead)
+            AhKappa::NegativeMode(Array1::from(vec![0.6, -0.8]))
         );
         assert_eq!(
             ah_kappa_or_fallback(&pair(vec![-0.0, 1.0, 0.0], true, 1e-9)),
+            AhKappa::NegativeMode(Array1::from(vec![1.0, 0.0]))
+        );
+        assert_eq!(
+            ah_kappa_or_fallback(&pair_at(0.0, vec![0.0, 1.0, 0.0], true, 1e-9)),
             AhKappa::Fallback(AhFallback::ZeroLead)
         );
         assert_eq!(
@@ -433,6 +489,46 @@ mod tests {
         assert_eq!(
             ah_kappa_or_fallback(&pair(vec![0.5, 0.1, -0.2], false, 1e-5)),
             AhKappa::Fallback(AhFallback::Unconverged { endgame: false })
+        );
+    }
+
+    /// The review's case: H = diag(−1, 1), g = (0, 1e-4). The lowest AH
+    /// eigenvector is [0, ±1, 0] (eigenvalue −1). The step goes along the
+    /// negative mode to the bound, signed against g, and lowers the
+    /// quadratic model m(κ) = gᵀκ + ½κᵀHκ by ½·max_step²; a PCG step from
+    /// −M⁻¹g = (0, −1e-4) would leave the first component at zero.
+    #[test]
+    fn negative_mode_step_goes_along_the_mode_to_the_bound_and_downhill() {
+        let h = [-1.0, 1.0];
+        let max_step = 0.1;
+        let model = |k: &Array1<f64>, g: &Array1<f64>| -> f64 {
+            g.dot(k) + 0.5 * (0..2).map(|i| h[i] * k[i] * k[i]).sum::<f64>()
+        };
+        for (g, v) in [
+            (Array1::from(vec![0.0, 1e-4]), Array1::from(vec![1.0, 0.0])),
+            (Array1::from(vec![0.0, 1e-4]), Array1::from(vec![-1.0, 0.0])),
+            (Array1::from(vec![1e-6, 1e-4]), Array1::from(vec![1.0, 0.0])),
+        ] {
+            let k = negative_mode_step(&v, g.view(), max_step);
+            let kmax = k.iter().fold(0.0f64, |m, &x| m.max(x.abs()));
+            assert!(
+                (kmax - max_step).abs() <= 1e-15,
+                "step {k:?} not at the bound"
+            );
+            assert!(g.dot(&k) <= 0.0, "step {k:?} not signed against g {g:?}");
+            let dm = model(&k, &g);
+            assert!(
+                dm <= -0.5 * max_step * max_step + max_step * g[0].abs(),
+                "model change {dm:.3e} for step {k:?}"
+            );
+        }
+        assert_eq!(
+            negative_mode_step(
+                &Array1::zeros(2),
+                Array1::from(vec![0.0, 1.0]).view(),
+                max_step
+            ),
+            Array1::<f64>::zeros(2)
         );
     }
 }

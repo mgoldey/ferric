@@ -106,8 +106,19 @@ class PyscfFci:
         ci = np.asarray(ci).reshape(cistring.num_strings(ncas, nelecas[0]), -1)
         h2 = s.absorb_h1e(h1, eri, ncas, nelecas, 0.5)
         r = s.contract_2e(h2, ci, ncas, nelecas).reshape(ci.shape) - e * ci
+        # PySCF's flag tracks the 1e-14 energy tolerance. The energy error is
+        # second order in the residual, so a residual below RESID_MAX bounds it
+        # near 1e-14 / gap, under every anchor bar.
+        if not s.converged and np.linalg.norm(r) > RESID_MAX:
+            raise RuntimeError(
+                f"CAS-CI residual {np.linalg.norm(r):.1e} after {s.max_cycle} Davidson cycles "
+                f"({ncas} orbitals, {nelecas} electrons)"
+            )
         d1, d2 = s.make_rdm12(ci, ncas, nelecas)
         return CiResult(e, d1, d2, ci, float(np.linalg.norm(r)))
+
+
+RESID_MAX = 1e-7
 
 
 # ---------------------------------------------------------------- CASSCF core
@@ -239,6 +250,9 @@ def casscf(cas, c0, gtol=1e-7, etol=1e-12, max_iter=300, max_step=0.2, hfloor=0.
         x = cas.gradient(c)
         e, g = x["e"], x["g"]
         gn = np.linalg.norm(g)
+        if g.size == 0:
+            # No nonredundant rotations (ncore = 0, ncas = nmo): CAS-CI is the answer.
+            return {"e": e, "c": c, "iters": it, "gnorm": 0.0, "x": x}
         if e_old is not None and abs(e - e_old) < etol and gn < gtol:
             return {"e": e, "c": c, "iters": it, "gnorm": gn, "x": x}
         hd = np.maximum(np.abs(cas.approx_hdiag(x)), hfloor)
@@ -478,7 +492,9 @@ def anchor_ref(solver, gtol, gtol_pyscf):
         mc_f, t_f, g_f = pyscf_casscf(mf_f, ncas, nelecas, gtol_pyscf)
         # E - E_min <= |g|^2 / (2 lambda_min) near a minimum, for each code,
         # plus PySCF's energy-change tolerance.
-        bar = (r["gnorm"] ** 2 + g_f**2) / (2.0 * lam) + mc_f.conv_tol
+        # PySCF's packed gradient omits this script's factor 2 on some
+        # entries, so 2*g_f bounds its norm in this script's convention.
+        bar = (r["gnorm"] ** 2 + (2.0 * g_f) ** 2) / (2.0 * lam) + mc_f.conv_tol
         # (b) PySCF end to end (its own integrals); integral offset included.
         mf_p = pyscf_rhf(pyscf_mol(mol, basis))
         mc_p, t_p, g_p = pyscf_casscf(mf_p, ncas, nelecas, gtol_pyscf)
@@ -536,6 +552,7 @@ def main() -> int:
                     ok = False
     if a.only in (None, "ref"):
         for row in anchor_ref(solver, a.gtol, a.gtol_pyscf):
+            ok &= bool(row["pyscf_converged"][0])
             ok &= abs(row["de_same_ints"]) <= row["bar"]
     log("\nRESULT", "PASS" if ok else "FAIL")
     return 0 if ok else 1
