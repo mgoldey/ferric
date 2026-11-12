@@ -311,11 +311,16 @@ const TOL_SLOPE_WUVV: f64 = 0.1;
 const E2E_LEVEL_SHIFT: f64 = 0.3;
 /// Inner-SCF iteration cap for the end-to-end diabats.
 ///
-/// NOT a round number: 150 sits above the deepest inner solve any of the six
-/// points needs and below the point where a cap raise would cost anything.
-/// Measured 2026-10-03 on this row (release, 99x302, level shift 0.3, started
-/// from NWChem's λ), as the largest `inner_iters` over every main point and
-/// FD probe of the whole outer loop:
+/// 500, the same as `base_config`'s `max_iter`. A cap is an upper bound only:
+/// a solve that converges in 17 iterations cannot see it. The inner cDFT UKS
+/// solve from the default guess is slow and its iteration count is not stable
+/// run to run (2026-11-12: 24 to more than 150 on the same point and build),
+/// so the old 150 left no margin, and a truncated inner solve fails the outer
+/// loop (see `inner_cap_100_is_what_breaks_def2_svp_350`).
+///
+/// The 2026-10-03 measurement that set the old 150, on this row (release,
+/// 99x302, level shift 0.3, started from NWChem's λ), as the largest
+/// `inner_iters` over every main point and FD probe of the whole outer loop:
 ///
 /// | point | deepest inner solve |
 /// |---|---:|
@@ -333,7 +338,7 @@ const E2E_LEVEL_SHIFT: f64 = 0.3;
 /// it. See `inner_cap_100_is_what_breaks_def2_svp_350` for why the old 100 did
 /// not merely slow that point down but made its OUTER loop fail, and
 /// `REPORT-281.md` for the full trace.
-const E2E_INNER_MAX_ITER: usize = 150;
+const E2E_INNER_MAX_ITER: usize = 500;
 /// Deepest inner solve any point of this row needs, measured 2026-10-03
 /// (def2-SVP 3.50 Å, from NWChem's λ; every other point is ≤ 73). The cap
 /// above must EXCEED this, which `inner_cap_100_is_what_breaks_def2_svp_350`
@@ -1436,7 +1441,7 @@ fn inner_cap_100_is_what_breaks_def2_svp_350() {
 
     // The two caps must agree on the FIXED POINT where both reach one: the
     // raise changes the path, not the answer. λ at cap 100's last converged
-    // main point was 2.457063443815 (measured); cap 150 lands at
+    // main point was 2.457063443815 (measured); cap 150 landed at
     // 2.457063436148. Both are within TOL_LAMBDA of NWChem's 2.457063813.
     check(
         &sys.tag,
