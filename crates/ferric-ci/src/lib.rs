@@ -18,6 +18,9 @@
 //! 4. Diagonalizes for the lowest root via a CI-native Davidson solver (with a
 //!    dense-eigensolve fallback used as an independent cross-check in tests) —
 //!    see [`davidson`].
+//! 5. Optionally ([`CasCiConfig::compute_rdms`]) builds the spin-summed 1- and
+//!    2-particle reduced density matrices of that root from the same string
+//!    lists — see [`rdm`].
 //!
 //! The total energy is `E_CASCI = E_core + lambda_min`, where `E_core` is the
 //! nuclear repulsion plus the inactive (frozen-core) electronic energy, and
@@ -34,8 +37,8 @@
 //!   Phase C. Phase A is meant for a closed-shell singlet reference (the RHF
 //!   orbitals); it does not check `n_alpha == n_beta`, and extracts only the
 //!   single lowest root.
-//! * **CLI / Python wiring** — Phase C. Phase A is a library-only spike with
-//!   `#[test]` validation against PySCF FCI/CASCI.
+//! * **CLI wiring.** Python exposes `ferric.run_casci`
+//!   (`crates/ferric-python/src/ci.rs`); there is no CLI `method.kind`.
 //!
 //! ## Scaling
 //!
@@ -54,8 +57,12 @@ pub mod hamiltonian;
 pub mod integrals;
 /// String-driven direct sigma build (σ1/σ2/σ3).
 pub mod sigma;
+/// Spin-summed 1- and 2-particle reduced density matrices.
+pub mod rdm;
 /// Determinant-string enumeration (bitmask α/β strings).
 pub mod strings;
+
+pub use rdm::CasCiRdms;
 
 use ferric_core::memory::plan::{Lifetime, MemoryPlan};
 use ferric_core::mol::Molecule;
@@ -91,6 +98,10 @@ pub struct CasCiConfig {
     /// peak crosses this box between CAS(12,14) (7.2 GB) and CAS(14,16)
     /// (105 GB). See `tests/mwe_casci_has_no_guard.rs`.
     pub memory_budget_bytes: Option<usize>,
+    /// Build the spin-summed 1- and 2-RDMs of the converged root
+    /// ([`CasCiResult::rdms`]). Their scratch is charged to the same memory
+    /// plan as the Davidson subspace; see [`rdm::rdm_memory_elems`].
+    pub compute_rdms: bool,
 }
 
 impl Default for CasCiConfig {
@@ -103,6 +114,7 @@ impl Default for CasCiConfig {
             max_subspace: 50,
             max_iter: 200,
             memory_budget_bytes: None,
+            compute_rdms: false,
         }
     }
 }
@@ -127,6 +139,13 @@ pub struct CasCiResult {
     pub converged: bool,
     /// Davidson iterations taken.
     pub iterations: usize,
+    /// Spin-summed RDMs of `ci_vector` over the active orbitals, when
+    /// [`CasCiConfig::compute_rdms`] is set.
+    pub rdms: Option<CasCiRdms>,
+    /// The active-space integrals the CI Hamiltonian was built from (`h`
+    /// with the inactive-core potential, `(pq|rs)`, `e_core`), so the energy
+    /// can be rebuilt from the RDMs ([`rdm::rdm_energy`]).
+    pub integrals: integrals::ActiveSpaceIntegrals,
 }
 
 impl std::fmt::Display for CasCiResult {
@@ -272,6 +291,19 @@ pub fn run_cas_ci(
         ),
         Lifetime::Resident,
     );
+    if config.compute_rdms {
+        // Built after the Davidson solve, but charged on top of it: the
+        // plan has no stage ordering between Resident reservations.
+        let (per_worker, transient, resident) =
+            rdm::rdm_memory_elems(n_active, na_str, nb_str);
+        plan.reserve_per_worker(
+            "RDM block D = E_rs C",
+            per_worker,
+            rayon::current_num_threads(),
+        );
+        plan.reserve("RDM block results (one batch)", transient, Lifetime::Transient);
+        plan.reserve("RDM accumulators and dm1/dm2", resident, Lifetime::Resident);
+    }
     // Not charged: per-rayon-worker scratch of `O(n_str)` doubles (σ1/σ2
     // row coefficients, the σ3 accumulator), under 0.3 MB per worker even at
     // CAS(14,16) where the subspace above is 105 GB.
@@ -299,6 +331,13 @@ pub fn run_cas_ci(
         config.max_iter,
     )?;
 
+    let rdms = if config.compute_rdms {
+        Some(rdm::spin_summed_rdms(&direct, &dav.eigenvector)?)
+    } else {
+        None
+    };
+    drop(direct);
+
     Ok(CasCiResult {
         e_total: dav.eigenvalue,
         e_active: dav.eigenvalue - ints.e_core,
@@ -307,6 +346,8 @@ pub fn run_cas_ci(
         ci_vector: dav.eigenvector,
         converged: dav.converged,
         iterations: dav.iterations,
+        rdms,
+        integrals: ints,
     })
 }
 

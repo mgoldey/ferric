@@ -43,13 +43,13 @@ use std::collections::HashMap;
 
 /// One single replacement `E_pq |S⟩ = sign |T⟩` (including `p == q`).
 #[derive(Debug, Clone, Copy)]
-struct Excitation {
+pub(crate) struct Excitation {
     /// Flat pair index `p * n + q`.
-    pq: u32,
+    pub(crate) pq: u32,
     /// Index of `T` in the same string list.
-    target: u32,
+    pub(crate) target: u32,
     /// `±1`.
-    sign: f64,
+    pub(crate) sign: f64,
 }
 
 /// For one fixed pair `rs`: every β string `Jβ` with `E_rs|Jβ⟩ = sign|Iβ⟩`.
@@ -99,10 +99,12 @@ fn excitation_lists(strings: &[u64], n: usize) -> Vec<Vec<Excitation>> {
 #[derive(Debug)]
 pub struct DirectSigma<'a> {
     ints: &'a ActiveSpaceIntegrals,
-    n_alpha_str: usize,
-    n_beta_str: usize,
-    alpha: Vec<Vec<Excitation>>,
-    beta: Vec<Vec<Excitation>>,
+    pub(crate) n_alpha_str: usize,
+    pub(crate) n_beta_str: usize,
+    /// Per α string `I`: every `E_pq|I⟩ = ε|T⟩` (also read by [`crate::rdm`]).
+    pub(crate) alpha: Vec<Vec<Excitation>>,
+    /// Per β string, as `alpha`.
+    pub(crate) beta: Vec<Vec<Excitation>>,
     /// β replacements grouped by pair `rs` (length `n²`), for σ3.
     beta_by_pair: Vec<Vec<PairEntry>>,
     /// `g_pq = h_pq − ½ Σ_r (pr|rq)`, flat `p * n + q`.
@@ -144,6 +146,11 @@ impl<'a> DirectSigma<'a> {
             beta_by_pair,
             g,
         }
+    }
+
+    /// Number of active orbitals.
+    pub(crate) fn n_active(&self) -> usize {
+        self.ints.n_active
     }
 
     /// Number of `f64`-sized elements the excitation lists occupy (each

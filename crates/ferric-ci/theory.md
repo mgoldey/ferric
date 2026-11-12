@@ -180,6 +180,61 @@ four $N_\text{det}$ vectors (output, $C^\mathsf{T}$, $\sigma_1^\mathsf{T}$,
 $C'$) and the tables, $16(n_\text{str}^\alpha n^\alpha_\text{exc} +
 2 n_\text{str}^\beta n^\beta_\text{exc})$ bytes.
 
+## Reduced density matrices (`src/rdm.rs`)
+
+Spin-summed RDMs of the real, normalized CI vector $C$ over the active
+orbitals, in the index convention of PySCF `fci.direct_spin1.make_rdm12`:
+
+$$
+\gamma_{pq} = \langle C|E_{pq}|C\rangle ,\qquad
+\Gamma_{pqrs} = \sum_{\sigma\tau}\langle C|a^\dagger_{p\sigma} a^\dagger_{r\tau}
+                 a_{s\tau} a_{q\sigma}|C\rangle
+              = \langle C|E_{pq}E_{rs}|C\rangle - \delta_{qr}\gamma_{ps},
+$$
+
+with $E_{pq} = E^\alpha_{pq} + E^\beta_{pq}$; the second form follows from
+$a_{q\sigma}a^\dagger_{r\tau} = \delta_{qr}\delta_{\sigma\tau} - a^\dagger_{r\tau}a_{q\sigma}$.
+`dm1[p,q]` $=\gamma_{pq}$ and `dm2[p,q,r,s]` $=\Gamma_{pqrs}$. With the
+Hamiltonian above,
+
+$$
+E = E_\text{core} + \sum_{pq} h_{pq}\gamma_{pq}
+  + \tfrac12\sum_{pqrs} (pq|rs)\,\Gamma_{pqrs}.
+$$
+
+Identities for an $N$-electron state: $\operatorname{tr}\gamma = N$,
+$\sum_{pr}\Gamma_{pprr} = N(N-1)$, $\sum_r \Gamma_{pqrr} = (N-1)\gamma_{pq}$,
+$\Gamma_{pqrs} = \Gamma_{rspq}$, and for a real state $\gamma = \gamma^\mathsf{T}$,
+$\Gamma_{pqrs} = \Gamma_{qpsr}$; the eigenvalues of $\gamma$ lie in $[0,2]$.
+
+Construction. For each pair $rs$ form $D_{rs} = E_{rs}C$ from the excitation
+tables of the direct sigma: a table entry $E_{pq}|I\rangle = \epsilon|T\rangle$
+gives $\langle I|E_{qp}|T\rangle = \epsilon$, so
+
+$$
+D_{qp}(I_\alpha,I_\beta) \mathrel{+}= \epsilon\, C(T,I_\beta)\ \ (\alpha\text{ entry of }I_\alpha),
+\qquad
+D_{qp}(I_\alpha,I_\beta) \mathrel{+}= \epsilon\, C(I_\alpha,T)\ \ (\beta\text{ entry of }I_\beta).
+$$
+
+A single $E^\beta$ carries $(-1)^{N_\alpha}$ twice, so the β phase is the
+single-channel one. Then, using $E_{pq}^\dagger = E_{qp}$,
+
+$$
+\gamma_{rs} = \sum_I C(I)\,D_{rs}(I),\qquad
+\langle C|E_{pq}E_{rs}|C\rangle = \sum_I D_{qp}(I)\,D_{rs}(I),
+$$
+
+one $n^2\times n^2$ GEMM $DD^\mathsf{T}$. Writing $D = D^\alpha + D^\beta$, the
+αα, ββ and αβ (cross) parts of $\Gamma$ are the blocks of that product; none is
+assembled separately. The determinants are processed in fixed blocks of α rows
+(about 4096 determinants), each block's $D$ built, contracted and dropped, and
+block results summed in block order, so the result does not depend on the
+thread count. Cost $O(N_\text{det}\,n^4)$ for the GEMM plus
+$O(N_\text{det}(n^\alpha_\text{exc}+n^\beta_\text{exc}))$ for $D$; scratch one
+$n^2\times$block $D$ per worker and 64 block results of $n^4+n^2$ doubles,
+charged to the CAS-CI memory plan when `compute_rdms` is set.
+
 ## Checks
 
 | Check | What it constrains |
@@ -187,4 +242,5 @@ $C'$) and the tables, $16(n_\text{str}^\alpha n^\alpha_\text{exc} +
 | `scripts/casci_slater_condon_phases_sympy.py` | JW matrices obey the CAR; the ascending-creation product is the bit-string basis vector with sign $+1$; a line-for-line port of `general_element` equals the explicit JW $H$ as an exact linear form in symbolic $h_{pq}$, $(pq\|rs)$ for every pair in $(n,N_\alpha,N_\beta)=(4,2,2),(5,3,2),(5,2,3),(5,3,3)$. Four sign mutations and the interleaved order each mismatch; the interleaved $H$ has the same spectrum. |
 | `tests/direct_sigma_vs_naive.rs` | The direct `sigma` against `sigma_naive` (the `general_element` pair loop) on random vectors, element-wise to $10^{-12}$: random 8-fold-symmetric integrals in ten sectors with $N_\alpha \ne N_\beta$, empty and full channels; real H2O/STO-3G integrals for full CI (441 det), 8 electrons in 6 orbitals above a frozen O 1s (225 det) and four unequal-spin sectors; `hamiltonian_diagonal` against the dense diagonal; unit vectors against dense columns. |
 | `tests/slater_condon_brute_force.rs` | The Rust `general_element`, `sigma` (direct) and `hamiltonian_diagonal` against an independent bit-loop second-quantized $H$ on random asymmetric integrals, element-wise to $10^{-12}$, sectors with odd and even $N_\alpha$, every excitation class exercised. |
+| `tests/casci_rdms.rs` | The RDM energy equals $c\cdot Hc$ from the direct sigma to rounding and the Davidson eigenvalue to rounding plus the residual norm; the traces, partial trace and symmetries above; `make_rdm12` (PySCF) of PySCF's dense ground state on ferric's integrals, rotated into the run's orbitals. A dropped β phase, the missing αβ cross terms and a doubled diagonal each fail it. |
 | FCI energies vs PySCF (`src/lib.rs` tests, `tests/validation_casci.rs`) | Spectrum only: blind to sign conventions that are diagonal similarities, and to errors in elements that vanish by point-group symmetry in the test molecules. A $\pm1$ similarity inserted into `general_element` passes all of them; H2/STO-3G has no nontrivial sign at all. |
