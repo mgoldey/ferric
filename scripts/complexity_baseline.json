@@ -12577,7 +12577,7 @@
   },
   "crates/ferric-core/src/memory/pool.rs::impl:MemoryPool::available_bytes": {
     "cc": 1.0,
-    "mi": 122.66555561785901
+    "mi": 114.5
   },
   "crates/ferric-core/src/memory/pool.rs::impl:MemoryPool::capacity_bytes": {
     "cc": 1.0,
@@ -12633,7 +12633,7 @@
   },
   "crates/ferric-core/src/memory/pool.rs::impl:MemoryPool::with_capacity_bytes": {
     "cc": 1.0,
-    "mi": 108.49423434927094
+    "mi": 101.8
   },
   "crates/ferric-core/src/memory/pool.rs::impl:Reservation#1::drop": {
     "cc": 5.0,
