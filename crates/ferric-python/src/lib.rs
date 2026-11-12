@@ -481,6 +481,27 @@ fn stamped_scf_certificate(
     )
 }
 
+/// The certificate an SCF-kind entry point returns (`run_rhf`, `run_uhf`,
+/// `run_rohf`, `run_dft`, `run_ksdft`): [`stamped_scf_certificate`] with a
+/// warning for each way the run on `basis` lies outside the solver's energy
+/// anchor (`ferric_scf::certificate::with_scf_envelope`, the helper the CLI
+/// uses). A post-SCF method's reference certificate carries no envelope
+/// warnings, as in the CLI.
+fn scf_kind_certificate(
+    mol: &Molecule,
+    r: &ScfResult,
+    config: &RhfConfig,
+    basis: &str,
+) -> ferric_core::certificate::Certificate {
+    ferric_scf::certificate::with_scf_envelope(
+        stamped_scf_certificate(mol, r, config),
+        mol,
+        r,
+        config,
+        basis,
+    )
+}
+
 /// The method.kind a geometry/frequency run on `spin` with `config` is graded
 /// under, and the stamped certificate of the SCF at `mol` (one extra SCF: the
 /// geometry and frequency drivers do not return theirs). `Err` carries the
@@ -1028,8 +1049,6 @@ impl PyRhfResult {
     /// or `"ungraded"`, from the `method.kind` matrix of the validation page;
     /// an unconverged SCF is `"ungraded"`), `grade_source`, `measured_error`,
     /// `approximations` (`[{"name", "detail"}]`: RI-J/RI-K, LinK/COSX, XC
-    /// grid, level shift, ECP, embedding, solvation), `precision` and
-    /// `warnings`.
     /// Storage precision of the RI-J tensor the SCF actually used: `"f32"`
     /// (the default) or `"f64"`, or `None` when J was not density-fitted.
     #[getter]
@@ -1043,6 +1062,15 @@ impl PyRhfResult {
     fn ri_k_precision(&self) -> Option<&'static str> {
         self.scf_data.ri_k_precision().map(|p| p.as_str())
     }
+    /// Validation certificate of this result (the dict form of
+    /// `ferric_core::certificate::Certificate`): `capability`, `build`,
+    /// `grade` (`"proven"`, `"proven_narrow"`, `"smoke"`, `"spike"`, `"stub"`
+    /// or `"ungraded"`, from the `method.kind` matrix of the validation page;
+    /// an unconverged SCF is `"ungraded"`), `grade_source`, `measured_error`,
+    /// `approximations` (`[{"name", "detail"}]`: RI-J/RI-K, LinK/COSX, XC
+    /// grid, level shift, ECP, embedding, solvation), `precision` and
+    /// `warnings` (one per element, basis or functional outside the solver's
+    /// energy anchor among them; those do not change the grade).
     #[getter]
     fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
         certificate_dict(py, &self.certificate_data)
@@ -1495,7 +1523,7 @@ fn solve_rhf_outcome(
 ) -> PyResult<PyObject> {
     if let Some(hook) = fock_hook {
         let r = blocks::solve_rhf_hooked(py, ctx, mol, prep, op, bounds, &config, hook)?;
-        return wrap_rhf_result(py, mol, r, config);
+        return wrap_rhf_result(py, mol, &prep.basis_set().name, r, config);
     }
     if config.irrep_nelec.is_some() && !config.symmetry {
         return Err(pyo3::exceptions::PyValueError::new_err(
@@ -1508,24 +1536,27 @@ fn solve_rhf_outcome(
     let r = py
         .allow_threads(|| solve_rhf(ctx, mol, prep, op, bounds, &config))
         .map_err(make_err)?;
-    wrap_rhf_result(py, mol, r, config)
+    wrap_rhf_result(py, mol, &prep.basis_set().name, r, config)
 }
 
-/// Warn if unconverged and wrap a closed-shell solve as an `RhfResult`.
+/// Warn if unconverged and wrap a closed-shell solve on the orbital basis
+/// `basis` as an `RhfResult`.
 fn wrap_rhf_result(
     py: Python<'_>,
     mol: &Molecule,
+    basis: &str,
     r: ScfResult,
     config: RhfConfig,
 ) -> PyResult<PyObject> {
     warn_rhf_not_converged(py, &r, &config);
-    Ok(Py::new(py, PyRhfResult::from_scf(mol, r, config))?.into_any())
+    Ok(Py::new(py, PyRhfResult::from_scf(mol, basis, r, config))?.into_any())
 }
 
 impl PyRhfResult {
-    /// Wrap a closed-shell solve, with its certificate.
-    fn from_scf(mol: &Molecule, r: ScfResult, config: RhfConfig) -> Self {
-        let certificate_data = stamped_scf_certificate(mol, &r, &config);
+    /// Wrap a closed-shell solve on the orbital basis `basis`, with its
+    /// certificate.
+    fn from_scf(mol: &Molecule, basis: &str, r: ScfResult, config: RhfConfig) -> Self {
+        let certificate_data = scf_kind_certificate(mol, &r, &config, basis);
         PyRhfResult {
             energy: r.energy,
             converged: r.converged,
@@ -3468,8 +3499,8 @@ struct PyUhfResult {
 /// `density_beta`/`eps_beta` unset only when the solve has no β channel, so
 /// the fallbacks keep the accessors total.
 impl PyUhfResult {
-    fn from_scf(r: ScfResult, mol: &Molecule, config: &RhfConfig) -> Self {
-        let certificate_data = stamped_scf_certificate(mol, &r, config);
+    fn from_scf(r: ScfResult, mol: &Molecule, config: &RhfConfig, basis: &str) -> Self {
+        let certificate_data = scf_kind_certificate(mol, &r, config, basis);
         PyUhfResult {
             one_step_energy_drop_data: r.convergence.and_then(|c| c.one_step_energy_drop),
             stationarity_tol_data: scf_stationarity_tol(&r),
@@ -3698,7 +3729,7 @@ fn run_uhf(
         &config,
         fock_hook,
     )?;
-    Ok(PyUhfResult::from_scf(r, &emol, &config))
+    Ok(PyUhfResult::from_scf(r, &emol, &config, &basis_set.inner.name))
 }
 
 // ── ROHF (open-shell, spin-pure) ──
@@ -3801,7 +3832,7 @@ fn run_rohf(
         &config,
         fock_hook,
     )?;
-    Ok(PyUhfResult::from_scf(r, &emol, &config))
+    Ok(PyUhfResult::from_scf(r, &emol, &config, &basis_set.inner.name))
 }
 
 // ── Constrained DFT (cDFT) ──
@@ -7039,12 +7070,19 @@ fn rimp2_energies(
         let mp2 = ri_mp2(mol, &prep, &dfbs, op, &scf, mp2_config)?;
         (mp2.mp2_corr, mp2.total_energy, mp2.precision)
     };
-    let certificate = ferric_mp2::certificate::rimp2_certificate(
-        &stamped_scf_certificate(mol, &scf, rhf_config),
+    let reference = stamped_scf_certificate(mol, &scf, rhf_config);
+    let certificate = ferric_mp2::certificate::with_rimp2_envelope(
+        ferric_mp2::certificate::rimp2_certificate(
+            &reference,
+            &auxbasis.name,
+            mp2_config,
+            &op,
+            &precision,
+        ),
+        &reference,
+        mol,
+        &basis_set.name,
         &auxbasis.name,
-        mp2_config,
-        &op,
-        &precision,
     );
     Ok(Rimp2Energies {
         certificate,
@@ -9811,9 +9849,6 @@ impl PyDftResult {
     fn precision(&self, py: Python<'_>) -> PyResult<PyObject> {
         precision_dict(py, &self.scf_data.precision)
     }
-    /// Validation certificate of this result (see `RhfResult.certificate`),
-    /// with a `dispersion` approximation when a correction was added to
-    /// `total_energy`.
     /// Storage precision of the RI-J tensor the SCF actually used: `"f32"`
     /// (the default) or `"f64"`, or `None` when J was not density-fitted.
     #[getter]
@@ -9827,9 +9862,17 @@ impl PyDftResult {
     fn ri_k_precision(&self) -> Option<&'static str> {
         self.scf_data.ri_k_precision().map(|p| p.as_str())
     }
+    /// Validation certificate of this result (see `RhfResult.certificate`),
+    /// with a `dispersion` approximation when a correction was added to
+    /// `total_energy`.
     #[getter]
     fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        let c = stamped_scf_certificate(&self.xc_mol, &self.scf_data, &self.scf_config);
+        let c = scf_kind_certificate(
+            &self.xc_mol,
+            &self.scf_data,
+            &self.scf_config,
+            &self.xc_basis.name,
+        );
         let c = match self.dispersion_model.as_deref() {
             Some(m) => c.with_approximation("dispersion", m),
             None => c,

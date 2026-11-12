@@ -50,11 +50,10 @@ energies", RKS and UKS under "KS-DFT energies: open-shell UKS and second-row
 closed shell", ROKS under its own row, and UMP2 under "Unrestricted RI-MP2".
 `ENERGY_ANCHORS` in `crates/ferric-core/src/certificate/anchors.rs` holds them,
 with the elements, basis sets and functionals each row's test runs, and a test
-keeps it equal to this page. The CLI adds one warning for each element, basis,
-auxiliary basis or functional of the run outside that set. The check is per
-dimension, so a run inside every set can still be a combination no test ran.
-The warning does not change the grade. The Python results carry
-`measured_error` without these warnings.
+keeps it equal to this page. The CLI and the Python results add one warning
+for each element, basis, auxiliary basis or functional of the run outside that
+set. The check is per dimension, so a run inside every set can still be a
+combination no test ran. The warning does not change the grade.
 
 Post-SCF kinds print a `certificate` block after their result: the MP2 family
 (`rimp2` exact, local and open-shell, `mp3`, `oo-rimp2`, `att-rimp2`, `mp2-v`,

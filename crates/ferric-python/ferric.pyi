@@ -897,7 +897,9 @@ class RhfResult:
         ``"smoke"``, ``"spike"``, ``"stub"`` or ``"ungraded"``; an
         unconverged SCF is ``"ungraded"``), ``grade_source``,
         ``measured_error``, ``approximations`` (``[{"name", "detail"}]``),
-        ``precision`` and ``warnings`` (``list[str]``)."""
+        ``precision`` and ``warnings`` (``list[str]``, with one entry per
+        element, basis or functional of the run outside the solver's energy
+        anchor; such a warning does not change the grade)."""
         ...
 
     @property
@@ -1040,7 +1042,9 @@ class UhfResult:
         ``"smoke"``, ``"spike"``, ``"stub"`` or ``"ungraded"``; an
         unconverged SCF is ``"ungraded"``), ``grade_source``,
         ``measured_error``, ``approximations`` (``[{"name", "detail"}]``),
-        ``precision`` and ``warnings`` (``list[str]``)."""
+        ``precision`` and ``warnings`` (``list[str]``, with one entry per
+        element, basis or functional of the run outside the solver's energy
+        anchor; such a warning does not change the grade)."""
         ...
     @property
     def one_step_energy_drop(self) -> float | None:
@@ -1564,7 +1568,8 @@ class RiMp2Result:
         """Validation certificate (schema of ``RhfResult.certificate``):
         ``capability`` (``"rimp2"``; ``"att-rimp2"`` for ``run_terfc_rimp2``), its grade capped by the reference SCF's,
         the method's settings in ``approximations`` and the reference's as
-        ``"scf <name>"``, and ``warnings``."""
+        ``"scf <name>"``, and ``warnings`` (for exact ``"rimp2"``, one per
+        element, basis or auxiliary basis outside the RI-MP2 energy anchor)."""
         ...
 
     @property
@@ -1957,7 +1962,9 @@ class DftResult:
         ``"smoke"``, ``"spike"``, ``"stub"`` or ``"ungraded"``; an
         unconverged SCF is ``"ungraded"``), ``grade_source``,
         ``measured_error``, ``approximations`` (``[{"name", "detail"}]``),
-        ``precision`` and ``warnings`` (``list[str]``)."""
+        ``precision`` and ``warnings`` (``list[str]``, with one entry per
+        element, basis or functional of the run outside the solver's energy
+        anchor; such a warning does not change the grade)."""
         ...
 
     @property
