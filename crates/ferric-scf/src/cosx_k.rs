@@ -220,10 +220,14 @@ impl CosxHalfTransform {
     }
 }
 
-/// Lebedev orders ferric's quadrature tables provide. `ferric_quadrature::lebedev`
-/// PANICS on any other order, so a grid config is validated against this list
-/// up front and rejected with a typed error instead.
-pub const SUPPORTED_ANGULAR_ORDERS: [usize; 9] = [6, 14, 26, 50, 110, 194, 302, 434, 590];
+/// Lebedev orders a COSX grid accepts: every tabulated order except the
+/// three rules with negative weights (74, 230, 266), because the exchange
+/// build factors each grid weight as `sqrt(|w|)`.
+/// `ferric_quadrature::lebedev::lebedev` PANICS on an untabulated order, so
+/// a grid config is validated against this list up front and rejected with a
+/// typed error instead.
+pub const SUPPORTED_ANGULAR_ORDERS: [usize; 29] =
+    ferric_quadrature::lebedev::POSITIVE_WEIGHT_ORDERS;
 
 /// Validate a COSX grid config: positive radial count, a tabulated Lebedev
 /// order, and — when pruned — a peak order the scheme has a region table for.
@@ -235,7 +239,8 @@ pub fn validate_grid(grid: &AtomicGridConfig) -> Result<(), FerricError> {
     }
     if !SUPPORTED_ANGULAR_ORDERS.contains(&grid.n_angular) {
         return Err(FerricError::General(format!(
-            "cosx grid: angular order {} is not tabulated (supported: {:?})",
+            "cosx grid: angular order {} is not a positive-weight Lebedev rule \
+             (supported: {:?})",
             grid.n_angular, SUPPORTED_ANGULAR_ORDERS
         )));
     }
@@ -2582,15 +2587,26 @@ mod tests {
             ..Default::default()
         };
         assert!(validate_grid(&ok).is_ok());
-        let bad_ang = AtomicGridConfig {
+        for (n_angular, why) in [
+            (147, "147 is not tabulated and must be refused, not panic"),
+            (
+                230,
+                "230 has negative weights, which sqrt(|w|) would corrupt",
+            ),
+        ] {
+            let bad_ang = AtomicGridConfig {
+                n_radial: 50,
+                n_angular,
+                ..Default::default()
+            };
+            assert!(validate_grid(&bad_ang).is_err(), "{why}");
+        }
+        assert!(validate_grid(&AtomicGridConfig {
             n_radial: 50,
             n_angular: 146,
             ..Default::default()
-        };
-        assert!(
-            validate_grid(&bad_ang).is_err(),
-            "146 is not tabulated and must be refused, not panic"
-        );
+        })
+        .is_ok());
         // 194 is tabulated; as an sgx peak it is valid, as a 26-point sgx peak not.
         let sgx = AtomicGridConfig {
             n_radial: 35,

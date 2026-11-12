@@ -704,8 +704,8 @@ most of the error (0.02 kcal/mol on an isodesmic alkane reaction at the flat
   matters most: on butane/def2-TZVP the error falls from
   1.2e-4 Ha at 110 points per shell to 4.0e-6 Ha at 302, while going from 50
   to 100 radial shells changes it by 1e-6 or less. Cost grows with the number
-  of points. `angular` must be one of 6, 14, 26, 50, 110, 194, 302, 434 or
-  590. `prune = "sgx"` prunes the grid the way ORCA's GridX and PySCF's SGX
+  of points. `angular` takes any Lebedev order `grid_angular` does except the
+  negative-weight rules 74, 230 and 266. `prune = "sgx"` prunes the grid the way ORCA's GridX and PySCF's SGX
   do: five radial regions per atom (NWChem boundaries on Bragg radii) with
   Lebedev orders from one row, picked by the peak `angular` — at 194 the
   regions get 26/50/110/194/110 points. ferric's pruned COSX energy equals

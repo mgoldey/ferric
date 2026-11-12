@@ -3668,7 +3668,8 @@ def run_rhf(
     solvent: IEF-PCM implicit solvation, as a dielectric constant (> 1.0) or a
     solvent name (water, dmso, methanol, ethanol, acetone, dichloromethane,
     thf, chloroform, toluene, hexane). None = vacuum.
-    pcm_lebedev_order: tesserae per atomic sphere (6/14/26/50/110/302).
+    pcm_lebedev_order: tesserae per atomic sphere (a Lebedev order with
+        positive weights: any `grid_angular` order except 74, 230, 266).
 
     smeared_charges: list of (q, x, y, z, width) Gaussian-smeared classical
     charges (Bohr / Hartree atomic units).
@@ -4628,7 +4629,10 @@ def run_dft(
     `None` (the default) is the production grid: 75x110 pruned with
     `"nwchem-radial"` (50 radial shells for H/He, 66 for Li-Ne) and a 1e-14
     weight cutoff. A size given alone keeps that scheme at that size. `grid_angular`
-    must be a supported Lebedev order (6, 14, 26, 50, 110, 194, 302, 434, 590).
+    must be a supported Lebedev order: 6, 14, 26, 38, 50, 74, 86, 110, 146,
+    170, 194, 230, 266, 302, 350, 434, 590, 770, 974, 1202, 1454, 1730, 2030,
+    2354, 2702, 3074, 3470, 3890, 4334, 4802, 5294 or 5810 (every
+    Lebedev-Laikov rule PySCF has).
     `grid_prune="nwchem"` applies NWChem-style radial-region angular pruning
     (~23% fewer points at 75x110, ~1e-10 Ha), `"nwchem-radial"` (the
     default) also thins light atoms' radial grids; `"none"` is the flat grid;

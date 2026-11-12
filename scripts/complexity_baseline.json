@@ -4328,8 +4328,8 @@
     "mi": 98.974124585721
   },
   "crates/ferric-cli/src/config.rs::grid_keys_are_refused_where_they_cannot_apply": {
-    "cc": 1.0,
-    "mi": 86.40851018455913
+    "cc": 2.0,
+    "mi": 78.18789946948577
   },
   "crates/ferric-cli/src/config.rs::grid_keys_build_the_python_equivalent_grid": {
     "cc": 1.0,
@@ -17576,16 +17576,16 @@
     "mi": 113.95712040763294
   },
   "crates/ferric-dft/src/prune.rs::sgx_region_orders": {
-    "cc": 3.0,
-    "mi": 103.02398053228447
+    "cc": 4.0,
+    "mi": 97.40121828060234
   },
   "crates/ferric-dft/src/prune.rs::sgx_region_orders::<anonymous>": {
     "cc": 1.0,
     "mi": 155.01840677617037
   },
   "crates/ferric-dft/src/prune.rs::sgx_region_orders::<anonymous>#1": {
-    "cc": 1.0,
-    "mi": 124.0572702138623
+    "cc": 2.0,
+    "mi": 110.66998083742513
   },
   "crates/ferric-dft/src/prune.rs::sgx_rows_match_pyscf_and_orca": {
     "cc": 3.0,
@@ -60044,8 +60044,8 @@
     "mi": 103.10861889770635
   },
   "crates/ferric-scf/src/cosmo.rs::config_rejects_invalid_lebedev_order": {
-    "cc": 1.0,
-    "mi": 115.39916855164111
+    "cc": 3.0,
+    "mi": 95.31280566981059
   },
   "crates/ferric-scf/src/cosmo.rs::cosmo_reaction_field": {
     "cc": 27.0,
@@ -60580,8 +60580,8 @@
     "mi": 93.15439921147187
   },
   "crates/ferric-scf/src/cosx_k.rs::grid_validation_rejects_untabulated_orders_and_accepts_tabulated": {
-    "cc": 1.0,
-    "mi": 79.6845736041807
+    "cc": 2.0,
+    "mi": 73.46240102873536
   },
   "crates/ferric-scf/src/cosx_k.rs::half_transform_parser_is_strict_and_round_trips": {
     "cc": 1.0,

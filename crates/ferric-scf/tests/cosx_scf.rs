@@ -204,7 +204,7 @@ fn cosx_config_errors_are_typed() {
     };
     assert!(solve_rhf(&ctx, &mol, &prep, op, &bounds, &bad).is_err());
     let mut cosx = cosx_default();
-    cosx.grid.n_angular = 146;
+    cosx.grid.n_angular = 147;
     let bad_grid = RhfConfig {
         k_builder: Some("cosx".into()),
         cosx,

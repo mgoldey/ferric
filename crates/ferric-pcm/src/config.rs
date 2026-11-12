@@ -27,8 +27,14 @@ pub const NAMED_SOLVENTS: &[(&str, f64)] = &[
 ];
 
 /// Lebedev orders the PCM cavity (`cavity::build_cavity`) and the
-/// Gaussian-smeared S/D ξ table support.
-pub const SUPPORTED_LEBEDEV_ORDERS: [usize; 6] = [6, 14, 26, 50, 110, 302];
+/// Gaussian-smeared S/D ξ table support: every
+/// [`ferric_quadrature::lebedev::SUPPORTED_ORDERS`] entry except the three
+/// rules with negative weights
+/// ([`ferric_quadrature::lebedev::NEGATIVE_WEIGHT_ORDERS`]: 74, 230, 266),
+/// whose weights would give tesserae of negative area. PySCF's `pcm.py`
+/// `XI` table, the source of the ξ values, omits the same three.
+pub const SUPPORTED_LEBEDEV_ORDERS: [usize; 29] =
+    ferric_quadrature::lebedev::POSITIVE_WEIGHT_ORDERS;
 
 /// Dielectric constant of a named solvent from [`NAMED_SOLVENTS`]
 /// (case-insensitive, surrounding whitespace ignored), or `None`.
@@ -57,8 +63,8 @@ pub struct PcmConfig {
     /// cavity spheres. Default 1.2 (matches PySCF/Q-Chem convention).
     #[serde(default = "default_vdw_scale")]
     pub vdw_scale: f64,
-    /// Lebedev order used to tessellate each atomic sphere (6, 14, 26, 50,
-    /// 110, or 302). Default 110.
+    /// Lebedev order used to tessellate each atomic sphere, one of
+    /// [`SUPPORTED_LEBEDEV_ORDERS`]. Default 110.
     #[serde(default = "default_lebedev_order")]
     pub lebedev_order: usize,
     /// Boundary-element S/D matrix formulation. Default
@@ -241,9 +247,32 @@ mod tests {
         assert_eq!(PcmConfig::with_epsilon(4.0).unwrap().epsilon, 4.0);
     }
 
+    /// Catches: a PCM order list that drifts from the Lebedev lookup, admits
+    /// a negative-weight rule, or lacks a ξ value for one of its orders.
+    #[test]
+    fn pcm_orders_are_the_positive_weight_lebedev_orders() {
+        use ferric_quadrature::lebedev::{lebedev, NEGATIVE_WEIGHT_ORDERS, SUPPORTED_ORDERS};
+        let expected: Vec<usize> = SUPPORTED_ORDERS
+            .iter()
+            .copied()
+            .filter(|o| !NEGATIVE_WEIGHT_ORDERS.contains(o))
+            .collect();
+        assert_eq!(SUPPORTED_LEBEDEV_ORDERS.to_vec(), expected);
+        for order in SUPPORTED_ORDERS {
+            let xi = crate::matrices::gaussian_xi_table(order);
+            if SUPPORTED_LEBEDEV_ORDERS.contains(&order) {
+                assert!(lebedev(order).1.iter().all(|&w| w > 0.0), "{order}");
+                let xi = xi.unwrap();
+                assert!((4.8..4.92).contains(&xi), "{order}: xi {xi}");
+            } else {
+                assert!(xi.is_err(), "{order}");
+            }
+        }
+    }
+
     #[test]
     fn with_lebedev_order_refuses_unsupported_orders() {
-        for order in [0, 7, 194] {
+        for order in [0, 7, 74, 230, 266, 6000] {
             assert!(PcmConfig::water().with_lebedev_order(order).is_err());
         }
         for order in SUPPORTED_LEBEDEV_ORDERS {

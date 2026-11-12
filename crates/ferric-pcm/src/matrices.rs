@@ -81,25 +81,57 @@ const XI_SELF: f64 = 1.0694;
 
 /// Per-Lebedev-order Gaussian-charge-width prefactor `XI[ng]` (Table II, Li &
 /// Frisch/Scalmani, J. Chem. Phys. 122, 194110 (2005), as used by PySCF's
-/// `pcm.py`). Only the six orders of
-/// [`crate::config::SUPPORTED_LEBEDEV_ORDERS`], the ones this crate's cavity
-/// construction accepts, are tabulated. Shared with
+/// `pcm.py`; values copied from PySCF 2.13.1's `pyscf.solvent.pcm.XI`). The
+/// orders of [`crate::config::SUPPORTED_LEBEDEV_ORDERS`], the ones this
+/// crate's cavity construction accepts, are tabulated. Shared with
 /// `ferric_scf::cosmo`. Returns `Err` for any other order rather than
 /// silently guessing a value.
 pub fn gaussian_xi_table(lebedev_order: usize) -> Result<f64, FerricError> {
-    match lebedev_order {
-        6 => Ok(4.84566077868),
-        14 => Ok(4.86458714334),
-        26 => Ok(4.85478226219),
-        50 => Ok(4.89250673295),
-        110 => Ok(4.90101060987),
-        302 => Ok(4.90498088169),
-        _ => Err(FerricError::General(format!(
-            "gaussian_xi_table: lebedev_order {lebedev_order} not in the supported set \
-             {{6,14,26,50,110,302}}"
-        ))),
-    }
+    GAUSSIAN_XI
+        .iter()
+        .find(|(order, _)| *order == lebedev_order)
+        .map(|&(_, xi)| xi)
+        .ok_or_else(|| {
+            FerricError::General(format!(
+                "gaussian_xi_table: lebedev_order {lebedev_order} not in the supported set \
+                 {:?}",
+                crate::config::SUPPORTED_LEBEDEV_ORDERS
+            ))
+        })
 }
+
+/// `(order, XI[order])` rows of [`gaussian_xi_table`], ascending.
+const GAUSSIAN_XI: [(usize, f64); 29] = [
+    (6, 4.84566077868),
+    (14, 4.86458714334),
+    (26, 4.85478226219),
+    (38, 4.90105812685),
+    (50, 4.89250673295),
+    (86, 4.8974137258),
+    (110, 4.90101060987),
+    (146, 4.89825187392),
+    (170, 4.90685517725),
+    (194, 4.90337644248),
+    (302, 4.90498088169),
+    (350, 4.86879474832),
+    (434, 4.9056734908),
+    (590, 4.90624071359),
+    (770, 4.90656435779),
+    (974, 4.90685167998),
+    (1202, 4.90704098216),
+    (1454, 4.90721023869),
+    (1730, 4.90733270691),
+    (2030, 4.90744499142),
+    (2354, 4.90753082825),
+    (2702, 4.90760972766),
+    (3074, 4.90767282394),
+    (3470, 4.90773141371),
+    (3890, 4.90777965981),
+    (4334, 4.90782469526),
+    (4802, 4.90749125553),
+    (5294, 4.90762073452),
+    (5810, 4.90792902522),
+];
 
 /// Which S/D (boundary-element) formulation to use. See the module doc for
 /// the exact formulas.
