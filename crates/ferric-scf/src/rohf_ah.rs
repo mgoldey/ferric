@@ -61,9 +61,11 @@ pub struct RohfAhInputs<'a, 'b> {
 /// converge, the PCG Newton step ([`crate::rohf_newton::rohf_newton_step`],
 /// with `inp.newton_level_shift` / `inp.newton_max_step`) is taken instead:
 /// silently when the lowest-root residual is below 1e-7 (the tight-tolerance
-/// stall), with a warning otherwise. The same step, with a warning, is taken
-/// when the lowest eigenvector's leading entry vanishes (a Hessian mode below
-/// the gradient-coupled root and orthogonal to g), where κ is undefined.
+/// stall), with a warning otherwise. When the lowest eigenvector's leading
+/// entry vanishes (a Hessian mode below the gradient-coupled root and
+/// orthogonal to g), κ is undefined, and the step depends on its eigenvalue:
+/// below −residual, a step along that mode to `max_step`, signed downhill;
+/// otherwise the PCG Newton step. Both warn.
 ///
 /// # Step-length control: clipping, and what it is not
 ///
