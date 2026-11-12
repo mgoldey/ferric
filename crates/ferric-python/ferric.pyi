@@ -723,7 +723,8 @@ class XcFunctional:
 
     eval / eval_polarized: semilocal (+ VV10) E_xc and V_xc as the SCF adds them;
     grad / grad_polarized: the XC gradient at fixed density (grid response
-    included); hess / vxc_deriv: its closed-shell Hessian pieces (moving grid).
+    included); hess / vxc_deriv and hess_polarized / vxc_deriv_polarized: its
+    closed-shell and spin-polarized Hessian pieces (moving grid).
     Exact exchange is not included: see exchange_mix."""
 
     @property
@@ -762,12 +763,27 @@ class XcFunctional:
         the XC skeleton of run_frequencies(hessian="analytic-moving-grid"),
         grid response included (the derivative of grad). Closed-shell LDA/GGA,
         pure or global hybrid, on any grid (pruned or flat); meta-GGA, VV10,
-        range-separated or double hybrids and ghost atoms raise ValueError."""
+        range-separated or double hybrids, ghost atoms and ECPs raise
+        ValueError."""
         ...
     def vxc_deriv(self, density: NDArray[np.float64]) -> NDArray[np.float64]:
         """dV_xc / dx at fixed total density, (3N, n, n), same moving grid as
         hess (the derivative of eval's V_xc): the XC part of the first-order
         KS matrix of a CPKS right-hand side. Same limits as hess."""
+        ...
+    def hess_polarized(
+        self, d_a: NDArray[np.float64], d_b: NDArray[np.float64]
+    ) -> NDArray[np.float64]:
+        """d2 E_xc / dx dy at fixed spin densities, (3N, 3N): the XC skeleton of
+        the analytic UKS Hessian (the derivative of grad_polarized).
+        hess_polarized(D/2, D/2) equals hess(D). Same limits as hess."""
+        ...
+    def vxc_deriv_polarized(
+        self, d_a: NDArray[np.float64], d_b: NDArray[np.float64]
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+        """(dV_a / dx, dV_b / dx) at fixed spin densities, each (3N, n, n): the
+        derivatives of eval_polarized's V_a and V_b. At (D/2, D/2) each equals
+        vxc_deriv(D). Same limits as hess."""
         ...
 
 class Cphf:
