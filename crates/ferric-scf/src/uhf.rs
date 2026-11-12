@@ -423,7 +423,7 @@ pub fn accepts_candidate_for_test(cand_e: f64, best_e: f64, improved_e: Option<f
 }
 
 /// (nocc_α, nocc_β) from the molecule's charge and multiplicity.
-fn nocc_ab(mol: &Molecule) -> Result<(usize, usize), FerricError> {
+pub(crate) fn nocc_ab(mol: &Molecule) -> Result<(usize, usize), FerricError> {
     let nelec = mol.nelec() as i64;
     let two_s = mol.multiplicity as i64 - 1;
     if two_s < 0 || nelec < two_s || (nelec - two_s) % 2 != 0 {
@@ -569,6 +569,86 @@ pub fn solve_uhf_with_hook(
         None,
         Some(hook),
     )?)
+}
+
+/// [`solve_uhf`] (`hook = None`) or [`solve_uhf_with_hook`] started from
+/// per-spin AO densities `(D_α, D_β)` instead of the configured guess. Each
+/// spin starts from the natural orbitals of its density
+/// (`spin_natural_orbitals`), so the first iteration runs at `D_σ` itself
+/// when `D_σ` is idempotent with `nocc_σ` electrons (a converged SCF
+/// density), and at its `nocc_σ`-orbital aufbau projection otherwise.
+/// `guess_basis` does not apply. As for any start, a closed shell
+/// (`nocc_α = nocc_β`) has its β HOMO and LUMO turned by 0.1 rad.
+pub fn solve_uhf_from_spin_densities(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bounds: &SchwarzBounds,
+    config: &UhfConfig,
+    densities: (&Array2<f64>, &Array2<f64>),
+    hook: Option<crate::fock::SpinFockHook<'_>>,
+) -> Result<ScfResult, FerricError> {
+    let s = ferric_integrals::oneelectron::overlap(prep);
+    let c_a = spin_natural_orbitals(&s, densities.0)?;
+    let c_b = spin_natural_orbitals(&s, densities.1)?;
+    let Some(hook) = hook else {
+        return solve_uhf_with_guess(ctx, mol, prep, bounds, config, Some((&c_a, &c_b)));
+    };
+    crate::rhf::validate_fock_hook(config)?;
+    err_if_unconverged(solve_uhf_molecular(
+        ctx,
+        mol,
+        prep,
+        bounds,
+        config,
+        Some((&c_a, &c_b)),
+        None,
+        Some(hook),
+    )?)
+}
+
+/// The natural orbitals of a one-spin AO density `d` in the overlap metric
+/// `s`, largest occupation first: `C = X U`, with `X` the canonical
+/// orthogonalizer and `U` the eigenvectors of `Xᵀ S D S X`. `Cᵀ S C = 1` on
+/// the kept span; dropped near-linear-dependent directions are zero columns,
+/// as the solver's own diagonalization pads them. For `D = C_o C_oᵀ` with
+/// S-orthonormal `C_o` (`k` columns) the first `k` columns span `C_o`, so
+/// they rebuild `D` to round-off.
+pub(crate) fn spin_natural_orbitals(
+    s: &Array2<f64>,
+    d: &Array2<f64>,
+) -> Result<Array2<f64>, FerricError> {
+    let n = s.nrows();
+    if d.dim() != (n, n) {
+        return Err(FerricError::General(format!(
+            "UHF/ROHF: spin density shape {:?} != ({n},{n})",
+            d.dim()
+        )));
+    }
+    let x = crate::rhf::canonical_orthogonalizer(s)?;
+    let xs = x.t().dot(s);
+    let (_, u) = descending_eigh(&xs.dot(d).dot(&xs.t()))?;
+    Ok(padded(&x.dot(&u), n))
+}
+
+/// Eigenpairs of a symmetric matrix, largest eigenvalue first.
+pub(crate) fn descending_eigh(m: &Array2<f64>) -> Result<(Vec<f64>, Array2<f64>), FerricError> {
+    use ndarray_linalg::{Eigh, UPLO};
+    let (w, u) = m
+        .eigh(UPLO::Upper)
+        .map_err(|e| FerricError::Lapack(format!("natural orbitals: {e}")))?;
+    let order: Vec<usize> = (0..w.len()).rev().collect();
+    Ok((
+        order.iter().map(|&i| w[i]).collect(),
+        u.select(ndarray::Axis(1), &order),
+    ))
+}
+
+/// `c` with zero columns appended up to `n`.
+pub(crate) fn padded(c: &Array2<f64>, n: usize) -> Array2<f64> {
+    let mut out = Array2::<f64>::zeros((c.nrows(), n));
+    out.slice_mut(ndarray::s![.., ..c.ncols()]).assign(c);
+    out
 }
 
 /// The blocked solve of [`crate::symmetric_open::solve_uhf_symmetric`]: `mol`,

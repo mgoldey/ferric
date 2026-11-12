@@ -623,6 +623,81 @@ pub fn solve_rohf_with_hook(
     }
 }
 
+/// [`solve_rohf`] (`hook = None`) or [`solve_rohf_with_hook`] started from
+/// per-spin AO densities `(D_α, D_β)` instead of the configured guess
+/// (`rohf_spin_density_mos`): the first iteration runs at `(D_α, D_β)`
+/// itself when it is a ROHF pair (`D_β` and `D_α − D_β` idempotent and
+/// S-orthogonal, as at convergence), and at its projection onto one
+/// closed / open / virtual MO set otherwise. `guess_basis` does not apply.
+pub fn solve_rohf_from_spin_densities(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bounds: &SchwarzBounds,
+    config: &RohfConfig,
+    densities: (&Array2<f64>, &Array2<f64>),
+    hook: Option<crate::fock::SpinFockHook<'_>>,
+) -> Result<ScfResult, FerricError> {
+    crate::symmetric::require_symmetry_off(config, "solve_rohf")?;
+    if hook.is_some() {
+        crate::rhf::validate_fock_hook(config)?;
+    }
+    let (_, nocc_double) = crate::uhf::nocc_ab(mol)?;
+    let s = ferric_integrals::oneelectron::overlap(prep);
+    let c0 = rohf_spin_density_mos(&s, densities, nocc_double)?;
+    let r = solve_rohf_impl_recorded(ctx, mol, prep, bounds, config, Some(&c0), None, None, hook)?;
+    if r.converged {
+        Ok(r)
+    } else {
+        Err(FerricError::ScfConvergence {
+            iterations: r.iterations,
+            last_energy: r.energy,
+        })
+    }
+}
+
+/// One ROHF MO set from per-spin densities, columns closed | open | virtual:
+/// the closed shell is the `nocc_double` leading natural orbitals of `D_β`
+/// (`crate::uhf::spin_natural_orbitals`), and the open and virtual orbitals
+/// are the natural orbitals of `D_α` within the S-orthogonal complement of
+/// the closed shell, largest occupation first. For `D_β = C_c C_cᵀ` and `D_α = C_c C_cᵀ + C_o C_oᵀ` (S-orthonormal
+/// `[C_c C_o]`) the closed and open columns rebuild both densities to
+/// round-off.
+pub(crate) fn rohf_spin_density_mos(
+    s: &Array2<f64>,
+    densities: (&Array2<f64>, &Array2<f64>),
+    nocc_double: usize,
+) -> Result<Array2<f64>, FerricError> {
+    let n = s.nrows();
+    for d in [densities.0, densities.1] {
+        if d.dim() != (n, n) {
+            return Err(FerricError::General(format!(
+                "ROHF: spin density shape {:?} != ({n},{n})",
+                d.dim()
+            )));
+        }
+    }
+    let x = crate::rhf::canonical_orthogonalizer(s)?;
+    let m = x.ncols();
+    if nocc_double > m {
+        return Err(FerricError::General(format!(
+            "ROHF: {nocc_double} doubly occupied orbitals exceed the {m} orthogonalized functions"
+        )));
+    }
+    let xs = x.t().dot(s);
+    let in_orthonormal = |d: &Array2<f64>| xs.dot(d).dot(&xs.t());
+    let (_, v) = crate::uhf::descending_eigh(&in_orthonormal(densities.1))?;
+    let rest = v.slice(ndarray::s![.., nocc_double..]).to_owned();
+    let (_, w) =
+        crate::uhf::descending_eigh(&rest.t().dot(&in_orthonormal(densities.0)).dot(&rest))?;
+    let mut u = Array2::<f64>::zeros((m, m));
+    u.slice_mut(ndarray::s![.., ..nocc_double])
+        .assign(&v.slice(ndarray::s![.., ..nocc_double]));
+    u.slice_mut(ndarray::s![.., nocc_double..])
+        .assign(&rest.dot(&w));
+    Ok(crate::uhf::padded(&x.dot(&u), n))
+}
+
 /// The blocked solve of [`crate::symmetric_open::solve_rohf_symmetric`]: `mol`,
 /// `prep` and `bounds` are already in the symmetry frame.
 pub(crate) fn solve_rohf_blocked(

@@ -788,6 +788,24 @@ fn parse_guess_basis(
     }
 }
 
+/// `(n_alpha, n_beta)` from the molecule's electron count (after
+/// `apply_ecp`) and multiplicity; an impossible pair is a `ValueError`
+/// naming `who`.
+fn spin_counts(mol: &Molecule, who: &str) -> PyResult<(usize, usize)> {
+    let nelec = mol.nelec() as i64;
+    let two_s = mol.multiplicity as i64 - 1;
+    if two_s < 0 || nelec < two_s || (nelec - two_s) % 2 != 0 {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "{who}: {nelec} electrons cannot have multiplicity {}",
+            mol.multiplicity
+        )));
+    }
+    Ok((
+        ((nelec + two_s) / 2) as usize,
+        ((nelec - two_s) / 2) as usize,
+    ))
+}
+
 /// Refuse `dm0=` next to `guess=` or `guess_basis=`: each names a starting
 /// point, and the SCF would honour only one of them (`dm0` outranks both).
 fn refuse_dm0_with_guess(
@@ -953,6 +971,35 @@ fn warn_energy_conv_noise_floor(
     if let Some(text) =
         ferric_scf::noise_floor::energy_conv_warning(mol, prep.nbasis(), config, family)
     {
+        emit_runtime_warning(py, format!("{fname}: {text}"));
+    }
+}
+
+/// After a hooked SCF: warn when the hook's noise-floor term (`hook_term`,
+/// [`ferric_scf::noise_floor::hook_floor_term`]) puts a USER-SUPPLIED
+/// `energy_conv` below the floor that [`warn_energy_conv_noise_floor`]
+/// judged it against before the SCF. A zero term never warns.
+#[allow(clippy::too_many_arguments)]
+fn warn_hook_noise_floor(
+    py: Python<'_>,
+    fname: &str,
+    family: ferric_scf::noise_floor::SolverFamily,
+    user_set: bool,
+    mol: &ferric_core::mol::Molecule,
+    prep: &PreparedBasis,
+    config: &RhfConfig,
+    hook_term: f64,
+) {
+    if !user_set {
+        return;
+    }
+    if let Some(text) = ferric_scf::noise_floor::hook_energy_conv_warning(
+        mol,
+        prep.nbasis(),
+        config,
+        family,
+        hook_term,
+    ) {
         emit_runtime_warning(py, format!("{fname}: {text}"));
     }
 }
@@ -1491,7 +1538,10 @@ fn run_rhf(
         &prep,
         &config,
     );
-    solve_rhf_outcome(py, &ctx, &emol, &prep, op, &bounds, config, fock_hook)
+    let user_set = energy_conv.is_some();
+    solve_rhf_outcome(
+        py, &ctx, &emol, &prep, op, &bounds, config, fock_hook, user_set,
+    )
 }
 
 /// A refusal the library classifies as a bad symmetry request
@@ -1533,7 +1583,9 @@ fn solve_symmetric_outcome(
 /// Solve and wrap: the plain `RhfResult` path (unchanged), or with
 /// `config.symmetry` the blocked solve returned as the distinct frame-aware
 /// `SymmetricRhfResult`. A `fock_hook` takes the hooked solve
-/// (`blocks::solve_rhf_hooked`), which refuses symmetry itself.
+/// (`blocks::solve_rhf_hooked`), which refuses symmetry itself, and is
+/// followed by the hook's noise-floor advisory ([`warn_hook_noise_floor`];
+/// `user_set_energy_conv` says whether `energy_conv` was passed).
 #[allow(clippy::too_many_arguments)]
 fn solve_rhf_outcome(
     py: Python<'_>,
@@ -1544,9 +1596,20 @@ fn solve_rhf_outcome(
     bounds: &SchwarzBounds,
     config: RhfConfig,
     fock_hook: Option<&Bound<'_, PyAny>>,
+    user_set_energy_conv: bool,
 ) -> PyResult<PyObject> {
     if let Some(hook) = fock_hook {
-        let r = blocks::solve_rhf_hooked(py, ctx, mol, prep, op, bounds, &config, hook)?;
+        let (r, term) = blocks::solve_rhf_hooked(py, ctx, mol, prep, op, bounds, &config, hook)?;
+        warn_hook_noise_floor(
+            py,
+            "run_rhf",
+            SolverFamily::ClosedShell,
+            user_set_energy_conv,
+            mol,
+            prep,
+            &config,
+            term,
+        );
         return wrap_rhf_result(py, mol, &prep.basis_set().name, r, config);
     }
     if config.irrep_nelec.is_some() && !config.symmetry {
@@ -3650,6 +3713,7 @@ impl PyUhfResult {
     guess=None, stability_descent=None,
     cosx_grid=None, cosx_final_pass=None, cosx_final_grid=None, cosx_overlap_fit=None,
     trah_trigger=None, fock_hook=None, guess_basis=None, guess_projection=None, ri_j_precision=None,
+    dm0=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_uhf(
@@ -3681,7 +3745,9 @@ fn run_uhf(
     guess_basis: Option<&str>,
     guess_projection: Option<&str>,
     ri_j_precision: Option<&str>,
+    dm0: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyUhfResult> {
+    refuse_dm0_with_guess("run_uhf", dm0.is_some(), guess, guess_basis)?;
     let trah_trigger = check_trah_trigger(trah_trigger)?;
     let guess_basis = parse_guess_basis(guess_basis, guess_projection)?;
     // The shared strict parser (same as run_rhf and the CLI): a typo must not
@@ -3696,6 +3762,13 @@ fn run_uhf(
     let prep = PreparedBasis::new(&emol, &basis_set.inner).map_err(make_err)?;
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
+    let dm0 = match dm0 {
+        Some(d) => {
+            let n_spin = spin_counts(&emol, "run_uhf")?;
+            blocks::checked_dm0_spin(Some(d), &prep, n_spin, "run_uhf")?
+        }
+        None => None,
+    };
     // Same defaults as run_rhf / the CLI [scf] section.
     let config = UhfConfig {
         max_iter: max_iter.unwrap_or_else(default_scf_max_iter),
@@ -3742,7 +3815,7 @@ fn run_uhf(
         &prep,
         &config,
     );
-    let r = blocks::solve_open_shell(
+    let (r, term) = blocks::solve_open_shell(
         py,
         blocks::OpenShell::Uhf,
         &ctx,
@@ -3752,7 +3825,18 @@ fn run_uhf(
         &bounds,
         &config,
         fock_hook,
+        dm0.as_ref(),
     )?;
+    warn_hook_noise_floor(
+        py,
+        "run_uhf",
+        SolverFamily::OpenShell,
+        energy_conv.is_some(),
+        &emol,
+        &prep,
+        &config,
+        term,
+    );
     Ok(PyUhfResult::from_scf(
         r,
         &emol,
@@ -3783,7 +3867,7 @@ fn run_uhf(
     integral_thresh=None, k_builder=None, df_j_aux=None, df_k_aux=None, ri_k_precision=None,
     level_shift=None, mom_after_iter=None,
     point_charges=None, external_field=None, memory_budget_gb=None, fock_hook=None,
-    guess_basis=None, guess_projection=None, ri_j_precision=None,
+    guess_basis=None, guess_projection=None, ri_j_precision=None, dm0=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_rohf(
@@ -3808,13 +3892,22 @@ fn run_rohf(
     guess_basis: Option<&str>,
     guess_projection: Option<&str>,
     ri_j_precision: Option<&str>,
+    dm0: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyUhfResult> {
+    refuse_dm0_with_guess("run_rohf", dm0.is_some(), None, guess_basis)?;
     let guess_basis = parse_guess_basis(guess_basis, guess_projection)?;
     let mut emol = mol.inner.clone();
     emol.apply_ecp(&basis_set.inner);
     let prep = PreparedBasis::new(&emol, &basis_set.inner).map_err(make_err)?;
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
+    let dm0 = match dm0 {
+        Some(d) => {
+            let n_spin = spin_counts(&emol, "run_rohf")?;
+            blocks::checked_dm0_spin(Some(d), &prep, n_spin, "run_rohf")?
+        }
+        None => None,
+    };
     // Same defaults as run_rhf / run_uhf / the CLI [scf] section.
     let config: RohfConfig = RhfConfig {
         max_iter: max_iter.unwrap_or_else(default_scf_max_iter),
@@ -3850,7 +3943,7 @@ fn run_rohf(
         &prep,
         &config,
     );
-    let r = blocks::solve_open_shell(
+    let (r, term) = blocks::solve_open_shell(
         py,
         blocks::OpenShell::Rohf,
         &ctx,
@@ -3860,7 +3953,18 @@ fn run_rohf(
         &bounds,
         &config,
         fock_hook,
+        dm0.as_ref(),
     )?;
+    warn_hook_noise_floor(
+        py,
+        "run_rohf",
+        SolverFamily::OpenShell,
+        energy_conv.is_some(),
+        &emol,
+        &prep,
+        &config,
+        term,
+    );
     Ok(PyUhfResult::from_scf(
         r,
         &emol,

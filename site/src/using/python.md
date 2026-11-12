@@ -503,7 +503,7 @@ against the Rust drivers: `rhf_from_blocks.py` (DIIS RHF from `hcore()` and
 |---|---|
 | Symmetry of V | `max \|V - Vᵀ\|` at most `4 n ε ‖V‖_F` (n = nao), the round-off of a product chain of up to four GEMMs; the driver uses `½ (V + Vᵀ)`. A larger asymmetry raises `ValueError`. |
 | `run_dft` ladder | Every convergence-ladder rung runs with the hook. Rungs that switch on SOSCF run without it, keeping their level shift, ADIIS and smearing: the SOSCF orbital Hessian does not include the hook. |
-| Energy noise floor | Round-off in the hook term grows with ‖V‖. MEASURED 2026-11-11, HF-in-PBE projection embedding of water/cc-pVDZ (O as subsystem A): the final \|ΔE\| after 200 iterations is 4.6e-10 Ha at μ = 1e7 and 4.1e-9 Ha at μ = 1e8, so `energy_conv=1e-11` does not converge there. Set `energy_conv` above that floor. |
+| Energy noise floor | Round-off in the hook term adds `ε Σ\|D_ij V_ij\|` to the noise floor of dE (summed over spins for an open-shell hook), with D and V from the hook's last call. A user-set `energy_conv` below the floor including this term emits a `RuntimeWarning` after the SCF; the warning before the SCF cannot include it. MEASURED 2026-11-11, HF-in-PBE projection embedding of water/cc-pVDZ (O as subsystem A, `run_rhf`, exact J/K, three starting guesses): the RMS of dE over iterations 31 to 60 is 1.8e-11 to 2.2e-11 Ha at μ = 1e5, 1.6e-10 to 2.1e-10 at μ = 1e6 and 1.3e-9 to 2.3e-9 at μ = 1e7, against a term of 8.7e-11, 8.7e-10 and 8.7e-9 Ha. The final \|ΔE\| after 200 iterations is 4.6e-10 Ha at μ = 1e7 and 4.1e-9 Ha at μ = 1e8, so `energy_conv=1e-11` does not converge there. |
 
 `dm0=D` on `run_rhf` and `run_dft` starts the SCF from a total closed-shell AO
 density `(nao, nao)`, such as a previous run's `density()`; the first Fock
@@ -511,8 +511,17 @@ matrix is built from it. `D` must be finite, symmetric within the bound above
 and hold the system's electron count, `|tr(D S) − N| ≤ n² ε Σ|D_ij S_ij|`, the
 round-off of the trace. A density of another charge state raises `ValueError`.
 A converged density of an identical run restarts in at most two iterations.
-`dm0` with `guess=` or `guess_basis=` raises `ValueError`. The open-shell
-drivers take no `dm0`.
+`dm0` with `guess=` or `guess_basis=` raises `ValueError`.
+
+`dm0=(D_a, D_b)` on `run_uhf` and `run_rohf` starts from per-spin AO
+densities, such as a previous run's `(density_alpha(), density_beta())`. Each
+`D_s` passes the checks above with the spin's electron count N_s. The start is
+the natural orbitals of each density (for ROHF, the doubly occupied orbitals
+from `D_b` and the singly occupied ones from `D_a` in the rest of the space),
+so a converged open-shell pair is reproduced on the first iteration and restarts in at
+most two. A closed-shell density D is passed as `(D / 2, D / 2)` and gives
+`run_rhf(dm0=D)`'s energy. A closed shell has its β HOMO and LUMO turned by
+0.1 rad, as from any UHF start.
 
 Not exposed: the Rust-side structs (`PreparedBasis`, `Engine`, screening
 bounds), method intermediates (CC amplitudes, GW self-energies, PDEP
