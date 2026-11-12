@@ -34,7 +34,7 @@ def res():
 
 
 def test_converged_energy(res):
-    assert res.converged and res.ci_converged
+    assert res.converged
     assert res.grad_norm < 1e-7
     assert abs(res.e_total - E_PROTO) < E_BAR
     assert res.e_total < res.rhf_energy
@@ -77,3 +77,9 @@ def test_open_shell_active_space_is_an_error():
     mol = ferric.Molecule.from_xyz_string(_H2O)
     with pytest.raises(Exception, match="n_alpha == n_beta"):
         ferric.run_casscf(mol, ferric.BasisSet.bundled("6-31g"), 4, (3, 1))
+
+
+def test_unconverged_ci_raises():
+    mol = ferric.Molecule.from_xyz_string(_H2O)
+    with pytest.raises(Exception, match="ci_conv_thresh"):
+        ferric.run_casscf(mol, ferric.BasisSet.bundled("6-31g"), 4, (2, 2), ci_max_iter=1)

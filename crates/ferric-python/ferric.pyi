@@ -5665,9 +5665,9 @@ class CasScfResult:
     grad_norm: float
     """2-norm of the orbital gradient at ``mo_coeff``."""
     converged: bool
-    ci_converged: bool
-    """The final CAS-CI Davidson solve reached ``ci_conv_thresh``."""
     ci_residual_norm: float
+    """Residual of the final CI vector; a CI solve that misses
+    ``ci_conv_thresh`` at any macro iteration raises instead."""
     n_core: int
     @property
     def ci_vector(self) -> NDArray[np.float64]:
@@ -5690,7 +5690,7 @@ class CasScfResult:
     @property
     def certificate(self) -> dict[str, Any]:
         """Validation certificate: ``capability`` ``"casscf"`` (ungraded);
-        ``warnings`` lists a non-converged macro loop or final CI solve."""
+        ``warnings`` lists a non-converged macro loop."""
         ...
 
 def run_casscf(
