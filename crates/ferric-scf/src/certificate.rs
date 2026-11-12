@@ -169,6 +169,7 @@ fn approximations(
         let req = config.resolved_ri_j_precision(ferric_core::gpu::DeviceSite {
             nbf: result.mos_alpha.nrows(),
             jxc_overlap: result.xc.is_some() && r.k_aux.is_none(),
+            cpu_f64: false,
         });
         out.push((
             "ri-j",

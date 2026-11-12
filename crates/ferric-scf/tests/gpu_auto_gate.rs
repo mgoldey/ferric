@@ -69,6 +69,16 @@ struct Run {
 }
 
 fn run(xyz: &str, basis_name: &str, xc: &str, k_aux: bool) -> Run {
+    run_with(xyz, basis_name, xc, k_aux, None)
+}
+
+fn run_with(
+    xyz: &str,
+    basis_name: &str,
+    xc: &str,
+    k_aux: bool,
+    ri_j_precision: Option<RiJPrecision>,
+) -> Run {
     let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
     let prep = PreparedBasis::new(&mol, &basis::bundled(basis_name).unwrap()).unwrap();
     let op = Operator::coulomb();
@@ -77,6 +87,7 @@ fn run(xyz: &str, basis_name: &str, xc: &str, k_aux: bool) -> Run {
         xc: Some(xc.into()),
         df_j_aux: Some("def2-universal-jkfit".into()),
         df_k_aux: k_aux.then(|| "def2-universal-jkfit".into()),
+        ri_j_precision,
         density_conv: 1e-6,
         max_iter: 3,
         ..Default::default()
@@ -147,4 +158,27 @@ fn above_the_gate_a_hybrid_takes_dfk_and_a_pure_functional_keeps_j_and_the_overl
         "the J || XC overlap did not run under auto"
     );
     assert_eq!(p.ri_j, RiJPrecision::F32);
+}
+
+/// Between the f64 RI-J threshold (298) and the DF-K threshold (512): an f64 CPU
+/// tensor sends J to the device and K stays on the CPU; the f32 default keeps
+/// both on the CPU.
+#[test]
+fn between_the_thresholds_an_f64_cpu_tensor_takes_j_and_not_k() {
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    if !setup() {
+        return;
+    }
+    let xyz = waters(6);
+    let f = run_with(&xyz, "cc-pvtz", "B3LYP", true, Some(RiJPrecision::F64));
+    assert!(f.nbf >= ferric_core::gpu::gate::AUTO_MIN_NBF_RI_J_F64);
+    assert!(f.nbf < ferric_core::gpu::gate::AUTO_MIN_NBF_DF_K);
+    assert!(f.d_dfj > 0, "f64 CPU tensor: J never reached the device");
+    assert_eq!(f.d_dfk, 0, "K reached the device below its threshold");
+    let d = run(&xyz, "cc-pvtz", "B3LYP", true);
+    assert_eq!(
+        (d.d_dfj, d.d_dfk),
+        (0, 0),
+        "f32 default took a device build"
+    );
 }

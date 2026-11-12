@@ -932,7 +932,7 @@ fn pair_screen_for(
         obs,
         v,
         pair_thresh,
-        device_may_take_j(DeviceSite::plain(obs.nbasis())),
+        device_may_take_j(DeviceSite::f64_tensor(obs.nbasis())),
     )
 }
 
@@ -976,7 +976,8 @@ pub fn ri_j_pair_screen_for_test(
 /// packed triangle, so a pair-screened source would only make it decline.
 /// `auto` answers by the size gate and the functional class
 /// ([`ferric_core::gpu::routes_to_device`]); the pair screen asks with the
-/// size alone ([`DeviceSite::plain`]), and only the f64 tier consults it.
+/// size alone with the f64 threshold ([`DeviceSite::f64_tensor`]); only the
+/// f64 tier consults it.
 fn device_may_take_j(site: DeviceSite) -> bool {
     #[cfg(feature = "gpu")]
     {

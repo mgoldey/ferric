@@ -81,6 +81,7 @@ fn first_optimize_energy(p: Option<RiJPrecision>) -> f64 {
 const SITE: ferric_core::gpu::DeviceSite = ferric_core::gpu::DeviceSite {
     nbf: 10,
     jxc_overlap: false,
+    cpu_f64: false,
 };
 
 #[test]
