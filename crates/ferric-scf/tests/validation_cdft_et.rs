@@ -316,7 +316,8 @@ const E2E_LEVEL_SHIFT: f64 = 0.3;
 /// solve from the default guess is slow and its iteration count is not stable
 /// run to run (2026-11-12: 24 to more than 150 on the same point and build),
 /// so the old 150 left no margin, and a truncated inner solve fails the outer
-/// loop (see `inner_cap_100_is_what_breaks_def2_svp_350`).
+/// loop: the outer loop reads a truncated density as "the step went too far"
+/// and backtracks around a λ that was fine (`REPORT-281.md`).
 ///
 /// The 2026-10-03 measurement that set the old 150, on this row (release,
 /// 99x302, level shift 0.3, started from NWChem's λ), as the largest
@@ -335,15 +336,18 @@ const E2E_LEVEL_SHIFT: f64 = 0.3;
 /// 106 — six iterations. The other five are BIT-IDENTICAL at 100 and 150 (same
 /// λ, N, E, outer count and inner counts), so the raise is free for them: a cap
 /// is an upper bound, and a solve that converges in 17 iterations cannot see
-/// it. See `inner_cap_100_is_what_breaks_def2_svp_350` for why the old 100 did
-/// not merely slow that point down but made its OUTER loop fail, and
-/// `REPORT-281.md` for the full trace.
+/// it. `REPORT-281.md` has the full trace of how the old 100 made that
+/// point's OUTER loop fail.
 const E2E_INNER_MAX_ITER: usize = 500;
-/// Deepest inner solve any point of this row needs, measured 2026-10-03
-/// (def2-SVP 3.50 Å, from NWChem's λ; every other point is ≤ 73). The cap
-/// above must EXCEED this, which `inner_cap_100_is_what_breaks_def2_svp_350`
-/// checks at compile time.
-const MEASURED_DEEPEST_INNER: usize = 106;
+/// Deepest inner solve anywhere in this file, measured on CI 2026-11-12 (run
+/// 43292092895, three runners, bit-identical iteration counts): 97, with
+/// def2-SVP 3.50 Å from NWChem's λ now at 24 (106 on 2026-10-03). The cap
+/// above must exceed it; checked at compile time below.
+const MEASURED_DEEPEST_INNER: usize = 97;
+const _: () = assert!(
+    E2E_INNER_MAX_ITER > MEASURED_DEEPEST_INNER,
+    "E2E_INNER_MAX_ITER is at or below the deepest measured inner solve"
+);
 const E2E_MAX_OUTER: usize = 8;
 /// Outer-loop cap for the λ = 0 start (issue #283), as opposed to
 /// `E2E_MAX_OUTER` for the NWChem-started rows.
@@ -1146,11 +1150,10 @@ fn solve_diabat(sys: &System, frag: usize, lambda_init: f64) -> CdftResult {
 /// Hard caps: `E2E_MAX_OUTER` outer × (1 + 1 FD) inner solves ×
 /// `E2E_INNER_MAX_ITER` inner iterations, so a non-converging point fails in
 /// minutes, not the ~30 min the first run took. The inner cap must clear the
-/// deepest solve the row needs (106 iterations, at def2-SVP 3.50 Å) — a cap
-/// below it makes the OUTER loop fail, not merely slow down, because guard 1
-/// reads a truncated inner solve as "the step went too far" and backtracks
-/// away from a λ that was never the problem. See
-/// `inner_cap_100_is_what_breaks_def2_svp_350`.
+/// deepest solve the row needs (`MEASURED_DEEPEST_INNER`) — a cap below it
+/// makes the OUTER loop fail, not merely slow down, because guard 1 reads a
+/// truncated inner solve as "the step went too far" and backtracks away from
+/// a λ that was never the problem (`REPORT-281.md`).
 ///
 /// State B (hole on He2) is the mirror image of A, built by `mirror_det`
 /// (E_B = E_A, λ_B = λ_A by symmetry) instead of a second solve; at one point
@@ -1335,121 +1338,6 @@ fn he2_plus_def2_svp_diabats_and_coupling_match_nwchem() {
 #[ignore = "validation: cDFT-ET coupling (Wu–Van Voorhis)"]
 fn he2_plus_aug_cc_pvdz_diabats_and_coupling_match_nwchem() {
     run_basis("aug-cc-pvdz");
-}
-
-/// NEGATIVE CONTROL for the `E2E_INNER_MAX_ITER` raise (issue #281): the old
-/// cap of 100 must still fail on def2-SVP 3.50 Å, and the new one must pass,
-/// in the SAME test. A fix whose negative control is "revert the const and
-/// re-run by hand" is not pinned by anything.
-///
-/// # What the 100-cap actually did, measured
-///
-/// The inner SCF at this point is slow near the root, not bistable. At
-/// NWChem's starting λ = 2.457063813 it needs **106** iterations; at 100 it is
-/// truncated and reported `converged = false`. The outer loop's guard 1 then
-/// treats that truncated density as "the step went too far" and starts
-/// backtracking — but the step had NOT gone too far, so it backtracks into an
-/// ever-finer neighbourhood of a λ that was always fine, shrinking its trust
-/// radius from 1.0 to 7e-9 in one iteration and spending all 8 outer
-/// iterations on λ values that differ in the 9th decimal.
-///
-/// At 150 the first inner solve converges at 106, the Jacobian is the smooth
-/// −0.1188 it always was, and plain Newton reaches the root in **3** outer
-/// iterations and ~15 s — FASTER in wall time than the failing 100-cap run
-/// (37.5 s), because the failing run spends 8 outer iterations × 100 inner
-/// iterations going nowhere.
-///
-/// # Why this is slowness and not two basins
-///
-/// Fixed-λ solves of every λ the failing run visited, at caps 100/200/400/1000
-/// (`REPORT-281.md` §3): every one converges to N = 0.99999999x and
-/// E = −4.8691602822, never to a second solution. The populations the 100-cap
-/// reported as "converged" values — 1.000861, 1.999360, 1.000018, and at a λ
-/// perturbed by 5e-13 even 0.006568 — are transient DIIS excursions of an
-/// unconverged iterate, which is why they span a factor of 300 while the
-/// converged answer is the same to 1e-11. `hf_mismatch` on every FD pair of
-/// the failing run was 3.5e-10 … 9.3e-10, i.e. inside the measured SAME-basin
-/// band (≤ 7.0e-9) and 5 orders below the cross-basin band (≥ 5.5e-5), so
-/// guard 2 correctly never fired: there was no basin change to detect.
-///
-/// # Why this test is cheap
-///
-/// One geometry, one basis, two diabat solves (~15 s + ~38 s), no reference
-/// JSON beyond λ_start and no coupling evaluation.
-#[test]
-#[ignore = "validation: cDFT-ET coupling (Wu–Van Voorhis)"]
-fn inner_cap_100_is_what_breaks_def2_svp_350() {
-    let (r_tag, basis_name) = ("3.50", "def2-svp");
-    let r = reference(r_tag, basis_name);
-    let sys = load_system(r_tag, basis_name, &r);
-    let lam_ref = num(&r, "/results/converged/state_a/lambda", &sys.tag);
-
-    // The fix: at E2E_INNER_MAX_ITER the point converges to its root.
-    let ok = solve_cdft_uhf(
-        &sys.ctx,
-        &sys.mol,
-        &sys.prep,
-        &sys.bs,
-        &sys.bounds,
-        &diabat_config(0, lam_ref),
-    )
-    .unwrap_or_else(|e| panic!("{}: cap {E2E_INNER_MAX_ITER} must converge: {e:?}", sys.tag));
-    assert!(
-        ok.scf.converged,
-        "{}: cap {E2E_INNER_MAX_ITER} inner SCF not converged",
-        sys.tag
-    );
-    eprintln!(
-        "{}: cap {E2E_INNER_MAX_ITER} -> lam {:+.12} N {:.12} E {:.12} outer {} inner {}",
-        sys.tag, ok.lambdas[0], ok.populations[0], ok.scf.energy, ok.outer_iters, ok.scf.iterations
-    );
-    assert!(
-        (ok.populations[0] - TARGET_N).abs() < TOL_POP,
-        "{}: population {:.12} misses {TARGET_N}",
-        sys.tag,
-        ok.populations[0]
-    );
-    // The deepest inner solve needs 106 iterations (measured): a cap at or
-    // below that is what breaks the point, so the margin is real but thin.
-    // Checked at COMPILE time -- a runtime `assert!` on two consts is what
-    // clippy::assertions_on_constants rejects, and the compile-time form is
-    // strictly stronger: lowering the const cannot even build.
-    const _: () = assert!(
-        E2E_INNER_MAX_ITER > MEASURED_DEEPEST_INNER,
-        "E2E_INNER_MAX_ITER is at or below the measured deepest inner solve \
-         (106) for def2-SVP 3.50 A -- see its doc comment for the per-point table"
-    );
-
-    // The control: at the old cap of 100 the OUTER loop still fails. Not a
-    // skip and not a tolerance — the same solve, one const different.
-    let mut old = diabat_config(0, lam_ref);
-    old.max_iter = 100;
-    let attempt = solve_cdft_uhf(&sys.ctx, &sys.mol, &sys.prep, &sys.bs, &sys.bounds, &old);
-    match &attempt {
-        Err(ferric_core::FerricError::Convergence(msg)) => {
-            eprintln!("{}: cap 100 fails as it did before the fix: {msg}", sys.tag)
-        }
-        Err(e) => panic!("{}: cap 100 failed differently: {e:?}", sys.tag),
-        Ok(got) => panic!(
-            "{}: cap 100 now CONVERGES (lam {:+.12} N {:.12} outer {}). The negative \
-             control is gone: either the inner SCF got faster or something else \
-             changed. Re-measure the per-point deepest inner solve and lower \
-             E2E_INNER_MAX_ITER to match, or drop this test with the evidence.",
-            sys.tag, got.lambdas[0], got.populations[0], got.outer_iters
-        ),
-    }
-
-    // The two caps must agree on the FIXED POINT where both reach one: the
-    // raise changes the path, not the answer. λ at cap 100's last converged
-    // main point was 2.457063443815 (measured); cap 150 landed at
-    // 2.457063436148. Both are within TOL_LAMBDA of NWChem's 2.457063813.
-    check(
-        &sys.tag,
-        "lambda vs NWChem (cap raised)",
-        ok.lambdas[0],
-        lam_ref,
-        TOL_LAMBDA,
-    );
 }
 
 /// Issue #283: the outer loop finds the He₂⁺ diabat from λ = 0, unaided.
