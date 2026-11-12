@@ -171,20 +171,26 @@ Limits:
   convergence is tested on five systems from RHF starts;
 - the dense AO ERI block (`nbasis⁴` doubles) is held for the whole run.
 
-Validation (`crates/ferric-ci/tests/casscf.rs`, measured 2026-11-11):
+Validation (`crates/ferric-ci/tests/casscf.rs`, `casscf_vs_pyscf.rs`,
+`casscf_canonical.rs`, measured 2026-11-11; equations and bars in
+`crates/ferric-ci/theory.md`). PySCF `mcscf.CASSCF` runs on ferric's AO
+integrals from PySCF's own RHF orbitals (`scripts/gen_casscf_refs.py`);
+ferric starts from its own RHF:
 
-| Check | H2O CAS(4,4)/6-31G | N2 CAS(6,6)/6-31G |
-|---|---:|---:|
-| analytic − finite-difference gradient, worst class | 2.4e-10 | 2.0e-10 |
-| converged $E$ (Ha) | -76.0369690965018 | -109.0155467897005 |
-| $E$ − Python prototype (Ha) | -4.3e-14 | 2.3e-13 |
-| macro iterations | 60 | 21 |
+| System, 6-31G | $E$ (Ha) | $E$ − PySCF (Ha) | bar (Ha) | analytic − FD gradient, worst class |
+|---|---:|---:|---:|---:|
+| H2O CAS(4,4) | -76.0369690965018 | -1.5e-11 | 1.0e-10 | 2.4e-10 |
+| N2 CAS(6,6), 1.0977 Å | -109.0155467897006 | -9.9e-14 | 5.2e-12 | 2.0e-10 |
+| N2 CAS(6,6), 1.6 Å | -108.8482292478625 | -5.8e-13 | 5.1e-12 | not run |
+| O2 CAS(8,6), $(n_\alpha, n_\beta) = (5, 3)$ | -149.6367298537082 | -2.6e-13 | 4.0e-12 | 4.6e-10 |
 
-The prototype (`scripts/prototypes/casscf_proto.py`) matches PySCF
-`mcscf.CASSCF` on ferric's AO integrals to 1.4e-12 Ha (H2O) and 1.8e-13 Ha
-(N2). With the active space equal to the full space (H2O and N2, STO-3G) the
-energy equals the full-window `run_cas_ci` to 1e-13 Ha and $2(F - F^\mathsf{T})$
-is below 8e-11.
+The bar is $(\lVert g\rVert^2 + \lVert g_\text{PySCF}\rVert^2)/(2\lambda_\text{min})$
+plus PySCF's energy tolerance and rounding; for H2O it is set by PySCF's
+gradient, 1e-6. With the active space equal to the full space (STO-3G: H2O
+in the $M_s = 0$ and $M_s = 1$ sectors, N2, O2 at $M_s = 1$) the energy equals
+the full-window `run_cas_ci` of the same sector to 1e-13 Ha and
+$2(F - F^\mathsf{T})$ is below 8e-11. Canonicalization moves the energy by at
+most 5.7e-14 Ha; the RDMs of the returned CI vector rebuild it to 2.8e-14 Ha.
 
 ## Limits
 

@@ -401,6 +401,20 @@ All four reach the same minimum as PySCF. PySCF's O2 state has
 $\langle S^2\rangle = 2$. The H2O bar is set by PySCF's gradient
 (`conv_tol_grad` 1e-7 does not converge H2O in 300 macro iterations).
 
+Canonicalization (`tests/casscf_canonical.rs`) at ferric's converged
+orbitals $C_0$; $C_1$ the canonical orbitals, the CI solved again in $C_1$;
+$\delta\gamma = \gamma_1 - U_a^\mathsf{T}\gamma_0U_a$; bars derived in the
+test's module documentation:
+
+| Quantity | H2O CAS(4,4) | N2 CAS(6,6), 1.6 Å | O2 CAS(8,6), (5, 3) |
+|---|---:|---:|---:|
+| $\lvert E_1 - E_0\rvert$ (bar) | 1.4e-14 (8.1e-11) | 5.7e-14 (5.7e-11) | 2.8e-14 (1.1e-10) |
+| $\lvert E_\text{RDM} - E_1\rvert$ (bar) | 1.4e-14 (1.4e-11) | 2.8e-14 (3.1e-11) | 2.8e-14 (7.6e-11) |
+| $\lVert H_1c - E_1c\rVert$ of the returned CI vector | 1.2e-11 | 2.7e-11 | 7.0e-11 |
+| max $\lvert\delta\gamma\rvert$ (bar $2N(\lVert r_0\rVert+\lVert r_1\rVert)/\Delta$) | 4.4e-11 (8.2e-10) | 5.2e-12 (9.8e-9) | 2.4e-11 (7.5e-9) |
+| max off-diagonal $F^T$, core and virtual (bar) | 9.1e-13 (9.2e-11) | 3.7e-13 (2.1e-11) | 4.5e-11 (6.3e-11) |
+| idempotence, worst $\lvert O_{pq}\rvert$ / bar; unconstrained pairs | 0.50; 0 | 0.46; 8 | 0.50; 0 |
+
 **Mutations** (applied to `src/casscf.rs` one at a time, 2026-11-11; max
 $\lvert$analytic − FD$\rvert$ per class, core-active / core-virtual /
 active-virtual):
@@ -414,6 +428,19 @@ active-virtual):
 Each mutation fails the classes whose formula it changes and leaves the
 others at the unmutated error.
 
+Mutations of canonicalization and of the open-shell path (applied to
+`src/casscf.rs` one at a time, 2026-11-11):
+
+| Mutation | Result |
+|---|---|
+| active orbitals rotated, CI vector and RDMs of the old orbitals kept | `casscf_canonical.rs` fails for all three systems: $\lvert E_\text{RDM} - E_1\rvert$ = 3.9e-2 / 0.29 / 0.16 Ha, $\lVert H_1c - E_1c\rVert$ = 0.31 / 0.63 / 0.52, max $\lvert\delta\gamma\rvert$ = 1.7e-2 / 1.3e-10 / 5.1e-3 (H2O / N2 1.6 Å / O2) |
+| $F^A$ dropped from the canonical Fock ($F^I$ only) | `casscf_canonical.rs` fails for all three: max off-diagonal $F^T$ 0.26 / 0.20 / 0.37 against bars near 1e-10; the idempotence check passes (both calls use the same matrix) |
+| CI in the sector $(n_\alpha - 1, n_\beta + 1)$ when $n_\alpha \ne n_\beta$ | H2O (6, 4) full space fails, $\Delta E$ = -0.398 Ha (the singlet). O2 (9, 7) full space, O2 against PySCF and the H2O (3, 1) finite-difference check pass: the O2 $M_s = 0$ sector's lowest root is the $M_s = 0$ component of the same triplet, and the finite difference runs in the same wrong sector. The O2 finite-difference test errors (a Davidson solve in the near-degenerate $M_s = 0$ sector misses its threshold) and the O2 canonicalization test panics on the CI vector length; neither is an assertion |
+
+The spin-sector mutation is caught only where the requested sector's lowest
+state is not the lowest state of the neighbouring sector; the H2O (6, 4)
+full-space case is that check.
+
 ## Checks
 
 | Check | What it constrains |
@@ -422,5 +449,7 @@ others at the unmutated error.
 | `tests/direct_sigma_vs_naive.rs` | The direct `sigma` against `sigma_naive` (the `general_element` pair loop) on random vectors, element-wise to $10^{-12}$: random 8-fold-symmetric integrals in ten sectors with $N_\alpha \ne N_\beta$, empty and full channels; real H2O/STO-3G integrals for full CI (441 det), 8 electrons in 6 orbitals above a frozen O 1s (225 det) and four unequal-spin sectors; `hamiltonian_diagonal` against the dense diagonal; unit vectors against dense columns. |
 | `tests/slater_condon_brute_force.rs` | The Rust `general_element`, `sigma` (direct) and `hamiltonian_diagonal` against an independent bit-loop second-quantized $H$ on random asymmetric integrals, element-wise to $10^{-12}$, sectors with odd and even $N_\alpha$, every excitation class exercised. |
 | `tests/casci_rdms.rs` | The RDM energy equals $c\cdot Hc$ from the direct sigma to rounding and the Davidson eigenvalue to rounding plus the residual norm; the traces, partial trace and symmetries above; `make_rdm12` (PySCF) of PySCF's dense ground state on ferric's integrals, rotated into the run's orbitals. A dropped β phase, the missing αβ cross terms and a doubled diagonal each fail it. |
-| `tests/casscf.rs` | CASSCF: full-space limit (zero $2(F-F^\mathsf{T})$, FCI energy), the analytic orbital gradient against finite differences per rotation class, converged energies against the prototype. Mutation record in the CASSCF section above. |
+| `tests/casscf.rs` | CASSCF: full-space limit (zero $2(F-F^\mathsf{T})$, FCI energy, RDM energy) in closed- and open-shell sectors, the analytic orbital gradient against finite differences per rotation class, converged energies against the prototype. Mutation record in the CASSCF section above. |
+| `tests/casscf_vs_pyscf.rs` | Converged CASSCF energies against `pyscf.mcscf.CASSCF` on ferric's AO integrals from PySCF's own RHF (`scripts/gen_casscf_refs.py`), four systems including an open-shell sector. |
+| `tests/casscf_canonical.rs` | Canonical orbitals: energy, RDM energy and CI eigenvector in the new orbitals, natural orbitals, diagonal core and virtual Fock blocks, idempotence. |
 | FCI energies vs PySCF (`src/lib.rs` tests, `tests/validation_casci.rs`) | Spectrum only: blind to sign conventions that are diagonal similarities, and to errors in elements that vanish by point-group symmetry in the test molecules. A $\pm1$ similarity inserted into `general_element` passes all of them; H2/STO-3G has no nontrivial sign at all. |

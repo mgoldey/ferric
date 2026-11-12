@@ -30,7 +30,7 @@
 //!
 //! Optionally ([`CasScfConfig::canonicalize`]) the returned orbitals are
 //! canonical: the core and virtual blocks of `F^I + F^A` are diagonal and the
-//! active orbitals are natural orbitals (see [`canonicalize`]).
+//! active orbitals are natural orbitals (see [`crate::casscf::canonicalize`]).
 //!
 //! The active space may have `n_alpha != n_beta`: the energy and gradient
 //! depend on the spin-summed RDMs only, and the CI root is the lowest of the
@@ -83,7 +83,7 @@ pub struct CasScfConfig {
     /// Memory ceiling in bytes (see [`CasCiConfig::memory_budget_bytes`]).
     /// The dense AO block, the transform chain and the CI are charged to it.
     pub memory_budget_bytes: Option<usize>,
-    /// Return canonical orbitals ([`canonicalize`]) and
+    /// Return canonical orbitals ([`canonicalize()`]) and
     /// [`CasScfResult::mo_energy`].
     pub canonicalize: bool,
 }
@@ -541,7 +541,7 @@ pub struct CasScfResult {
     /// Core energy `E_nuc + ½ Tr[D^c (h + F^I)]` at those orbitals.
     pub e_core: f64,
     /// Optimized orbitals, `nbas x nmo`: core, active, virtual columns.
-    /// Canonical ([`canonicalize`]) when [`CasScfConfig::canonicalize`] is
+    /// Canonical ([`canonicalize()`]) when [`CasScfConfig::canonicalize`] is
     /// set, otherwise not canonicalized within any block.
     pub mo_coeff: Array2<f64>,
     /// With [`CasScfConfig::canonicalize`], the diagonal of `F^I + F^A` in
