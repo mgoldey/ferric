@@ -950,16 +950,29 @@ fn exact_k_remedy(needed: u64) -> String {
 }
 
 /// The text of the spill warning. Pure so its content is testable; emitted by
-/// [`warn_spill_once_for`].
-fn spill_warning_text(needed: u64, dir: &std::path::Path) -> String {
+/// [`warn_spill_once_for`]. The cost line depends on who reads the tensor: an
+/// RI-K tensor is re-read by `DfK::build` on every SCF iteration; a raw tensor
+/// is RI-J's (also every iteration) or a post-SCF stage's B tensor, read once
+/// per pass of that stage.
+fn spill_warning_text(needed: u64, dir: &std::path::Path, kind: SpillKind) -> String {
+    let (reader, unit) = match kind {
+        SpillKind::RiKDressed => (
+            "DfK::build re-reads the ENTIRE spilled tensor on every SCF iteration, so each \
+             iteration pays",
+            "iteration",
+        ),
+        SpillKind::Raw => (
+            "every pass over it (each SCF iteration for RI-J, each read of a post-SCF \
+             stage) re-reads the ENTIRE spilled tensor, so each pass pays",
+            "pass",
+        ),
+    };
     format!(
         "[ferric] warning: 3-index tensor ({:.2} GB) exceeds the memory budget and is being \
          spilled to disk in {}. This is a performance cliff, not just a memory tradeoff: \
-         DfK::build re-reads the ENTIRE spilled tensor on every SCF iteration, so each \
-         iteration pays roughly (tensor size / disk bandwidth) in pure IO on top of its \
-         compute — at {:.2} GB and ~150 MB/s that is ~{:.0} min per iteration. Raise \
-         [memory] budget_gb / FERRIC_MEM_BUDGET_GB to keep it in core, or use a smaller \
-         auxiliary basis.",
+         {reader} roughly (tensor size / disk bandwidth) in pure IO on top of its compute — \
+         at {:.2} GB and ~150 MB/s that is ~{:.0} min per {unit}. Raise [memory] budget_gb / \
+         FERRIC_MEM_BUDGET_GB to keep it in core, or use a smaller auxiliary basis.",
         needed as f64 / 1e9,
         dir.display(),
         needed as f64 / 1e9,
@@ -994,7 +1007,7 @@ fn warn_spill_once_with(
     if latch.swap(true, std::sync::atomic::Ordering::Relaxed) {
         return false;
     }
-    let mut text = spill_warning_text(needed, dir);
+    let mut text = spill_warning_text(needed, dir, kind);
     if kind == SpillKind::RiKDressed {
         text += &exact_k_remedy(needed);
     }
@@ -3586,7 +3599,7 @@ mod tests {
     #[test]
     fn spill_warning_is_emitted_once_and_names_the_per_iteration_reread() {
         let dir = std::path::Path::new("/tmp/ferric-spill-anchor");
-        let text = spill_warning_text(55_000_000_000, dir);
+        let text = spill_warning_text(55_000_000_000, dir, SpillKind::RiKDressed);
         assert!(
             text.starts_with("[ferric] warning:"),
             "must match ferric's warning convention: {text}"
@@ -3604,6 +3617,12 @@ mod tests {
             "the point of the warning is the per-iteration re-read cost: {text}"
         );
         assert_no_exact_k_remedy(&text);
+        // A raw tensor may be a post-SCF B tensor, which DfK::build never reads.
+        let raw = spill_warning_text(55_000_000_000, dir, SpillKind::Raw);
+        assert!(
+            !raw.contains("DfK::build") && raw.contains("min per pass"),
+            "raw spill text must not claim the DF-K per-iteration re-read: {raw}"
+        );
 
         // The once-latch: a fresh latch admits exactly one caller.
         let latch = std::sync::atomic::AtomicBool::new(false);

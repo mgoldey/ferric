@@ -509,7 +509,15 @@ def anchor_ref(solver, gtol, gtol_pyscf):
         # plus PySCF's energy-change tolerance.
         # PySCF's packed gradient omits this script's factor 2 on some
         # entries, so 2*g_f bounds its norm in this script's convention.
+        if not (np.isfinite(lam) and lam > 0.0):
+            raise RuntimeError(
+                f"{name}: lowest orbital-Hessian eigenvalue {lam} is not a positive "
+                "finite curvature, so the converged point is not a minimum and the "
+                "energy bar is undefined"
+            )
         bar = (r["gnorm"] ** 2 + (2.0 * g_f) ** 2) / (2.0 * lam) + mc_f.conv_tol
+        if not np.isfinite(bar):
+            raise RuntimeError(f"{name}: energy bar is not finite ({bar})")
         # (b) PySCF end to end (its own integrals); integral offset included.
         mf_p = pyscf_rhf(pyscf_mol(mol, basis))
         mc_p, t_p, g_p = pyscf_casscf(mf_p, ncas, nelecas, gtol_pyscf)
