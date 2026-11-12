@@ -1,7 +1,8 @@
-# ferric-ci: determinant phases and Slater–Condon rules
+# ferric-ci: CAS-CI phases, Slater–Condon rules, RDMs and CASSCF
 
-Scope: the CAS-CI Hamiltonian in `src/strings.rs`, `src/hamiltonian.rs` and
-the direct sigma build in `src/sigma.rs`.
+Scope: the CAS-CI Hamiltonian in `src/strings.rs`, `src/hamiltonian.rs`, the
+direct sigma build in `src/sigma.rs`, the RDMs in `src/rdm.rs` and two-step
+CASSCF in `src/casscf.rs`.
 Exact check: `scripts/casci_slater_condon_phases_sympy.py`. Numerical check:
 `tests/slater_condon_brute_force.rs`.
 
@@ -235,6 +236,126 @@ $O(N_\text{det}(n^\alpha_\text{exc}+n^\beta_\text{exc}))$ for $D$; scratch one
 $n^2\times$block $D$ per worker and 64 block results of $n^4+n^2$ doubles,
 charged to the CAS-CI memory plan when `compute_rdms` is set.
 
+## Two-step CASSCF (`src/casscf.rs`)
+
+Orbitals $C = [C_c\,|\,C_a\,|\,C_v]$: $n_c$ doubly occupied core orbitals
+$i,j$, $n_a$ active $t,u,v,w$, virtual $a$; $p,q,r,s$ run over all MOs.
+Real orbitals, single root, spin-summed RDMs of the section above.
+Reference implementation: `scripts/prototypes/casscf_proto.py` with
+`scripts/prototypes/casscf_derivation.md`.
+
+**Energy.** With $D^c = 2C_cC_c^\mathsf{T}$ and $D^a = C_a\gamma C_a^\mathsf{T}$,
+
+$$
+F^I = h + J[D^c] - \tfrac12 K[D^c],\qquad
+F^A = J[D^a] - \tfrac12 K[D^a],\qquad
+E_\text{core} = E_\text{nuc} + \tfrac12\operatorname{Tr}[D^c(h + F^I)],
+$$
+
+the CAS-CI runs on $h_\text{eff} = C_a^\mathsf{T}F^IC_a$, $(tu|vw)$ and
+$E_\text{core}$ (`run_cas_ci_on_integrals`). $J$ and $K$ are contracted
+from a dense AO block, $(pu|vw)$ for all $p$ by four quarter transforms of
+that block (`integrals::transform_eri_mixed`).
+
+**Gradient.** The rotation is $C' = C\exp(K)$, $K_{pq} = \kappa_{pq} = -K_{qp}$
+for $p > q$. With the generalized Fock matrix (MO basis, $F^I$ and $F^A$
+transformed with $C$)
+
+$$
+F_{pi} = 2(F^I_{pi} + F^A_{pi}),\qquad
+F_{pt} = \sum_u F^I_{pu}\gamma_{ut} + \sum_{uvw}(pu|vw)\,\Gamma_{tuvw},\qquad
+F_{pa} = 0,
+$$
+
+$\partial E/\partial\kappa_{pq} = 2(F_{pq} - F_{qp})$. The nonredundant pairs
+are core-active $(t,i)$, core-virtual $(a,i)$, where the gradient is
+$4(F^I_{ai} + F^A_{ai})$, and active-virtual $(a,t)$, where it is $2F_{at}$.
+For any normalized CI vector $c$ with residual $r = Hc - \theta c$,
+$2(F_{pq} - F_{qp}) = \langle c|[E_{pq} - E_{qp}, H]|c\rangle = 2\,c^\mathsf{T}(E_{pq}-E_{qp})\,r$,
+so a redundant element is bounded by $8\lVert r\rVert$ ($\lVert E_{pq}\rVert \le 2$
+for $p\ne q$).
+
+**Step.** Inverse BFGS in the current orbital frame, no transport of earlier
+steps. The initial and reset inverse Hessian is $1/\max(|H_\text{diag}|, 0.05)$
+with the approximate diagonal of Chaban, Schmidt and Gordon, Theor. Chem.
+Acc. 97, 88 (1997), $F^T = F^I + F^A$:
+
+| Pair | $H_\text{diag}$ |
+|---|---|
+| $(a,i)$ | $4(F^T_{aa} - F^T_{ii})$ |
+| $(a,t)$ | $2\gamma_{tt}F^T_{aa} - 2F_{tt}$ |
+| $(t,i)$ | $4(F^T_{tt} - F^T_{ii}) + 2\gamma_{tt}F^T_{ii} - 2F_{tt}$ |
+
+Its median relative error against the finite-difference diagonal is 24-28 %
+(prototype measurement), so it is a preconditioner, not a Hessian. The update
+skips when $s^\mathsf{T}y \le 10^{-14}$; the inverse resets to the diagonal
+when the energy rises by more than $10^{-10}$ Ha; $\max_k|s_k|$ is capped at
+0.2. $\exp(K)$ is a Taylor series after scaling $K$ to $\infty$-norm $\le \tfrac12$,
+then squaring (`expm_antisymmetric`). Convergence: $\lVert g\rVert_2 < 10^{-7}$
+and $|\Delta E| < 10^{-12}$ Ha at the same iteration (defaults).
+
+**Limits.** $n_\alpha = n_\beta$ only (an open-shell active space is
+refused: the formulas hold for spin-summed RDMs, but no anchor covers it);
+lowest root, no state averaging; orbitals not canonicalized on return; dense
+AO block, $n_\text{bas}^4$ doubles, charged to the memory budget. No exact
+orbital Hessian, orbital-CI coupling or augmented-Hessian step.
+
+**Measured (2026-11-11, `tests/casscf.rs`).** Geometries
+`testdata/molecules/water.xyz` and `n2.xyz`, 6-31G, ferric exact-J/K RHF
+start, Davidson threshold $10^{-10}$ ($10^{-11}$ for the FD anchor).
+
+Anchor 1, active space = full space (STO-3G), against `run_cas_ci` over the
+full window:
+
+| System | $N_\text{det}$ | $\Delta E$ (Ha) | max $\lvert 2(F - F^\mathsf{T})\rvert$ | bar $8\lVert r\rVert$ + rounding |
+|---|---:|---:|---:|---:|
+| H2O | 441 | 9.9e-14 | 7.6e-11 | 1.9e-9 |
+| N2 | 14400 | 9.9e-14 | 6.2e-12 | 4.5e-10 |
+
+Anchor 2, analytic gradient against a Richardson-extrapolated 5-point central
+difference ($h = 10^{-3}$, $h/2$) at RHF orbitals rotated by a random
+$\kappa$ (scale 0.05), max over each class, bar $10^{-8}$:
+
+| System | Row | core-active | core-virtual | active-virtual |
+|---|---|---:|---:|---:|
+| H2O CAS(4,4) | max $\lvert g\rvert$ | 6.28 | 5.58 | 0.834 |
+| | FD($h$) − FD($h/2$) | 2.0e-7 | 1.7e-10 | 1.2e-10 |
+| | analytic − FD | 2.4e-10 | 1.2e-10 | 1.5e-10 |
+| N2 CAS(6,6) | max $\lvert g\rvert$ | 2.07 | 6.98 | 0.800 |
+| | FD($h$) − FD($h/2$) | 1.4e-9 | 2.0e-10 | 1.9e-10 |
+| | analytic − FD | 1.8e-10 | 2.0e-10 | 1.6e-10 |
+
+Anchor 3, converged energies against the prototype's committed values, bar
+$(\lVert g\rVert^2 + \lVert g_\text{proto}\rVert^2)/(2\lambda_\text{min}) + 8\varepsilon|E|\sqrt{N_\text{det}}$,
+with $\lambda_\text{min}$ the lowest eigenvalue of the finite-difference
+CI-relaxed orbital Hessian at the converged orbitals:
+
+| Quantity | H2O CAS(4,4)/6-31G | N2 CAS(6,6)/6-31G |
+|---|---:|---:|
+| $E$ (Ha) | -76.0369690965018 | -109.0155467897005 |
+| $E$ prototype (Ha) | -76.0369690965018 | -109.0155467897007 |
+| $\Delta E$ (Ha) | -4.3e-14 | 2.3e-13 |
+| bar (Ha) | 1.1e-12 | 3.9e-12 |
+| $\lVert g\rVert$ / prototype | 4.2e-8 / 9.5e-8 | 3.4e-8 / 3.4e-8 |
+| $\lambda_\text{min}$ (Ha) / note | 0.0195 / 0.0195 | 0.0402 / 0.0402 |
+| macro iterations / prototype | 60 / 62 | 21 / 21 |
+
+The prototype's energies match `pyscf.mcscf.CASSCF` on ferric's AO integrals
+to 1.4e-12 Ha (H2O) and 1.8e-13 Ha (N2).
+
+**Mutations** (applied to `src/casscf.rs` one at a time, 2026-11-11; max
+$\lvert$analytic − FD$\rvert$ per class, core-active / core-virtual /
+active-virtual):
+
+| Mutation | H2O | N2 | Anchor 1 | Anchor 3 |
+|---|---|---|---|---|
+| $F_{pi} = 2F^I_{pi}$ ($F^A$ dropped) | 1.94 / 1.57 / 1.5e-10 | 1.39 / 1.34 / 1.6e-10 | pass (no core) | not converged in 300 |
+| $\Gamma$ term of $F_{pt}$ dropped | 0.567 / 1.2e-10 / 1.91 | 1.17 / 2.0e-10 / 1.71 | fail (6.7, 1.7) | not converged in 300 |
+| core-virtual gradient sign flipped | 2.4e-10 / 11.2 / 1.5e-10 | 1.8e-10 / 14.0 / 1.6e-10 | pass (no core) | not converged in 300 |
+
+Each mutation fails the classes whose formula it changes and leaves the
+others at the unmutated error.
+
 ## Checks
 
 | Check | What it constrains |
@@ -243,4 +364,5 @@ charged to the CAS-CI memory plan when `compute_rdms` is set.
 | `tests/direct_sigma_vs_naive.rs` | The direct `sigma` against `sigma_naive` (the `general_element` pair loop) on random vectors, element-wise to $10^{-12}$: random 8-fold-symmetric integrals in ten sectors with $N_\alpha \ne N_\beta$, empty and full channels; real H2O/STO-3G integrals for full CI (441 det), 8 electrons in 6 orbitals above a frozen O 1s (225 det) and four unequal-spin sectors; `hamiltonian_diagonal` against the dense diagonal; unit vectors against dense columns. |
 | `tests/slater_condon_brute_force.rs` | The Rust `general_element`, `sigma` (direct) and `hamiltonian_diagonal` against an independent bit-loop second-quantized $H$ on random asymmetric integrals, element-wise to $10^{-12}$, sectors with odd and even $N_\alpha$, every excitation class exercised. |
 | `tests/casci_rdms.rs` | The RDM energy equals $c\cdot Hc$ from the direct sigma to rounding and the Davidson eigenvalue to rounding plus the residual norm; the traces, partial trace and symmetries above; `make_rdm12` (PySCF) of PySCF's dense ground state on ferric's integrals, rotated into the run's orbitals. A dropped β phase, the missing αβ cross terms and a doubled diagonal each fail it. |
+| `tests/casscf.rs` | CASSCF: full-space limit (zero $2(F-F^\mathsf{T})$, FCI energy), the analytic orbital gradient against finite differences per rotation class, converged energies against the prototype. Mutation record in the CASSCF section above. |
 | FCI energies vs PySCF (`src/lib.rs` tests, `tests/validation_casci.rs`) | Spectrum only: blind to sign conventions that are diagonal similarities, and to errors in elements that vanish by point-group symmetry in the test molecules. A $\pm1$ similarity inserted into `general_element` passes all of them; H2/STO-3G has no nontrivial sign at all. |

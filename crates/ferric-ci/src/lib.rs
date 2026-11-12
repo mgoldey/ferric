@@ -22,6 +22,10 @@
 //!    2-particle reduced density matrices of that root from the same string
 //!    lists — see [`rdm`].
 //!
+//! [`casscf`] adds two-step CASSCF on top: [`run_cas_ci_on_integrals`] with
+//! RDMs in the current orbitals, the generalized-Fock orbital gradient and an
+//! inverse-BFGS step `C ← C exp(K)`, single root.
+//!
 //! The total energy is `E_CASCI = E_core + lambda_min`, where `E_core` is the
 //! nuclear repulsion plus the inactive (frozen-core) electronic energy, and
 //! `lambda_min` is the lowest eigenvalue of the active-space CI Hamiltonian.
@@ -49,6 +53,8 @@
 //! ([`hamiltonian::dense_hamiltonian`]) and [`hamiltonian::sigma_naive`] are
 //! `O(N_det²)` and are reached only from tests and benchmarks.
 
+/// Two-step CASSCF on top of the CAS-CI solver and its RDMs.
+pub mod casscf;
 /// CI-native Davidson eigensolver for the lowest root.
 pub mod davidson;
 /// Slater-Condon matrix elements and sigma-vector build.
@@ -62,6 +68,7 @@ pub mod rdm;
 /// Determinant-string enumeration (bitmask α/β strings).
 pub mod strings;
 
+pub use casscf::{run_casscf, CasScfConfig, CasScfResult};
 pub use rdm::CasCiRdms;
 
 use ferric_core::memory::plan::{Lifetime, MemoryPlan};
@@ -139,6 +146,9 @@ pub struct CasCiResult {
     pub converged: bool,
     /// Davidson iterations taken.
     pub iterations: usize,
+    /// `‖H c − E c‖` of the returned (normalized) `ci_vector` and `e_total`,
+    /// from one extra sigma build.
+    pub residual_norm: f64,
     /// Spin-summed RDMs of `ci_vector` over the active orbitals, when
     /// [`CasCiConfig::compute_rdms`] is set.
     pub rdms: Option<CasCiRdms>,
@@ -179,23 +189,7 @@ pub fn run_cas_ci(
             "CAS-CI Phase A requires a restricted (closed-shell) RHF reference".to_string(),
         ));
     }
-    if n_active == 0 {
-        return Err(FerricError::General(
-            "CAS-CI: n_active must be >= 1".to_string(),
-        ));
-    }
-    if n_active > 63 {
-        return Err(FerricError::General(format!(
-            "CAS-CI: n_active = {n_active} exceeds the 63-orbital u64-string limit \
-             (spike-scale only)"
-        )));
-    }
-    if n_alpha > n_active || n_beta > n_active {
-        return Err(FerricError::General(format!(
-            "CAS-CI: active electrons per spin (α={n_alpha}, β={n_beta}) cannot exceed \
-             n_active ({n_active})"
-        )));
-    }
+    check_active_config(&config)?;
     // Consistency: inactive orbitals are doubly occupied; the active electrons
     // plus 2*inactive must equal the molecule's electron count.
     let n_inactive = active_start;
@@ -217,6 +211,59 @@ pub fn run_cas_ci(
         n_active,
         config.memory_budget_bytes,
     )?;
+    run_cas_ci_on_integrals(ints, &config)
+}
+
+/// Orbital-window checks shared by [`run_cas_ci`] and
+/// [`run_cas_ci_on_integrals`].
+fn check_active_config(config: &CasCiConfig) -> Result<(), FerricError> {
+    let (n_alpha, n_beta) = config.n_elec_active;
+    let n_active = config.n_active;
+    if n_active == 0 {
+        return Err(FerricError::General(
+            "CAS-CI: n_active must be >= 1".to_string(),
+        ));
+    }
+    if n_active > 63 {
+        return Err(FerricError::General(format!(
+            "CAS-CI: n_active = {n_active} exceeds the 63-orbital u64-string limit \
+             (spike-scale only)"
+        )));
+    }
+    if n_alpha > n_active || n_beta > n_active {
+        return Err(FerricError::General(format!(
+            "CAS-CI: active electrons per spin (α={n_alpha}, β={n_beta}) cannot exceed \
+             n_active ({n_active})"
+        )));
+    }
+    Ok(())
+}
+
+/// CAS-CI on caller-supplied active-space integrals: the lowest root of the
+/// `config.n_elec_active` sector of the Hamiltonian `(ints.h, ints.eri,
+/// ints.e_core)`, with RDMs when [`CasCiConfig::compute_rdms`] is set.
+///
+/// [`CasCiConfig::active_start`] is not read: the integrals already fold the
+/// inactive orbitals into `ints.h` and `ints.e_core`. Two-step CASSCF
+/// ([`casscf`]) calls this once per macro iteration with integrals in the
+/// current orbitals.
+pub fn run_cas_ci_on_integrals(
+    ints: integrals::ActiveSpaceIntegrals,
+    config: &CasCiConfig,
+) -> Result<CasCiResult, FerricError> {
+    check_active_config(config)?;
+    let (n_alpha, n_beta) = config.n_elec_active;
+    let n_active = config.n_active;
+    let n4 = n_active.pow(4);
+    if ints.n_active != n_active || ints.h.dim() != (n_active, n_active) || ints.eri.len() != n4 {
+        return Err(FerricError::General(format!(
+            "CAS-CI: integrals for {} active orbitals (h {:?}, eri len {}) do not match \
+             n_active = {n_active}",
+            ints.n_active,
+            ints.h.dim(),
+            ints.eri.len()
+        )));
+    }
 
     // ---- Determinant space --------------------------------------------
     let alpha_strings = strings::enumerate_strings(n_active, n_alpha);
@@ -336,6 +383,13 @@ pub fn run_cas_ci(
     } else {
         None
     };
+    let hc = direct.apply(&dav.eigenvector);
+    let residual_norm = hc
+        .iter()
+        .zip(&dav.eigenvector)
+        .map(|(h, c)| (h - dav.eigenvalue * c).powi(2))
+        .sum::<f64>()
+        .sqrt();
     drop(direct);
 
     Ok(CasCiResult {
@@ -346,6 +400,7 @@ pub fn run_cas_ci(
         ci_vector: dav.eigenvector,
         converged: dav.converged,
         iterations: dav.iterations,
+        residual_norm,
         rdms,
         integrals: ints,
     })

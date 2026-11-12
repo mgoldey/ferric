@@ -78,7 +78,7 @@ pub fn active_space_integral_elems(nbas: usize, n_needed: usize) -> usize {
 /// only (8-fold permutational symmetry, each scattered to its images),
 /// parallel over shell pairs with per-thread libint engines. No Schwarz
 /// screening. The caller charges the `nbas^4` allocation to a memory plan.
-fn dense_ao_eri(prep: &PreparedBasis) -> Result<Vec<f64>, FerricError> {
+pub(crate) fn dense_ao_eri(prep: &PreparedBasis) -> Result<Vec<f64>, FerricError> {
     ferric_mp2::canonical::dense_ao_eri(prep, Operator::coulomb())
 }
 
@@ -140,6 +140,50 @@ pub(crate) fn transform_eri_quarter_gemm(
     let mut x = ao_eri;
     for _ in 0..4 {
         x = quarter_transform_rotate(x, nbas, &ct)?;
+    }
+    Ok(x)
+}
+
+/// AO→MO transform with a different coefficient block on each index:
+/// `(pq|rs) = Σ C1[mu,p] C2[nu,q] C3[la,r] C4[sg,s] (mu nu|la sg)`.
+///
+/// `ao_eri` is borrowed (laid out as by [`dense_ao_eri`]), so a caller can
+/// keep one AO block and transform it to new orbitals repeatedly, as two-step
+/// CASSCF does. Returns `(pq|rs)` flat-indexed
+/// `[((p*n2+q)*n3+r)*n4+s]` with `n_k = c_k.ncols()`. The first quarter
+/// contracts `sg` with `C4`, so pass the narrowest block last: its output is
+/// `n4·nbas^3`.
+pub(crate) fn transform_eri_mixed(
+    ao_eri: &[f64],
+    nbas: usize,
+    c: [ndarray::ArrayView2<'_, f64>; 4],
+) -> Result<Vec<f64>, FerricError> {
+    if ao_eri.len() != nbas.pow(4) || c.iter().any(|ck| ck.nrows() != nbas) {
+        return Err(FerricError::General(format!(
+            "CAS transform: ao_eri len {} or a C block row count inconsistent with nbas {nbas}",
+            ao_eri.len()
+        )));
+    }
+    let ct = |k: usize| c[k].t().as_standard_layout().into_owned();
+    // First quarter from the borrowed block: out[s, (mu nu la)] = Σ_sg C4[sg,s] x[(mu nu la), sg].
+    let xm = ndarray::ArrayView2::from_shape((nbas.pow(3), nbas), ao_eri)
+        .map_err(|e| FerricError::General(format!("CAS transform shape: {e}")))?;
+    let first = ct(3).dot(&xm.t());
+    let first = if first.is_standard_layout() {
+        first
+    } else {
+        first.as_standard_layout().into_owned()
+    };
+    let (mut x, off) = first.into_raw_vec_and_offset();
+    if off.unwrap_or(0) != 0 {
+        return Err(FerricError::General(
+            "CAS transform: unexpected non-zero array offset".to_string(),
+        ));
+    }
+    // Index order is now [s, mu, nu, la]; the next three quarters contract
+    // la (C3), nu (C2) and mu (C1), each putting its new index first.
+    for k in [2usize, 1, 0] {
+        x = quarter_transform_rotate(x, nbas, &ct(k))?;
     }
     Ok(x)
 }
