@@ -44,11 +44,10 @@
 //! sub-batches of `COSX_SUB_BATCH_POINTS` points (md3c1e: one kernel scratch
 //! per worker). Every parallel write is to its own columns of `G`, the
 //! accumulation order within a column is the fixed shell-pair order, and the
-//! two GEMMs per block run in block order, so at `blas_threads = 1` the result
-//! is bit-identical across rayon thread counts (block and sub-batch partitions
-//! are pure functions of the point count). On the default sparse path those two
-//! GEMMs run between the parallel regions at the serial-section BLAS count
-//! (`opt_in_blas_threads`), which above 1 moves K at the last bit.
+//! two GEMMs per block run in block order (on the sparse path each through
+//! `ferric_core::linalg::par_gemm`, fixed column blocks), so the result is
+//! bit-identical across thread counts (block and sub-batch partitions are pure
+//! functions of the point count).
 //!
 //! # Sparse half transforms
 //!
@@ -95,13 +94,13 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::Instant;
 
+use ferric_core::linalg::par_gemm;
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
 use ferric_core::FerricError;
 use ferric_dft::grid::{build_atomic_grid_pruned, AtomicGridConfig};
 use ferric_integrals::ao_grid::eval_basis_on_points;
 use ferric_integrals::basis_bridge::PreparedBasis;
-use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
 use ferric_integrals::cosx_a::{a_matrix_at_point_with, CosxScreen, PairBounds};
 use ferric_integrals::engine::Engine;
 use ferric_integrals::ffi;
@@ -1580,13 +1579,11 @@ impl<'a> CosxK<'a> {
             let t0 = Instant::now();
             let d_la = gather_block(d, &lam.aos, &a.aos);
             // This block's two GEMMs (F here, Ktilde below) run on the main
-            // thread between the parallel A-build regions, so they take the
-            // serial-section BLAS count; at blas_threads = 1 that is the
-            // single-threaded product.
-            let f_la = with_blas_threads(opt_in_blas_threads(), || {
-                crate::blas_probe::record(&crate::blas_probe::COSX_BLOCK_GEMM);
-                d_la.dot(&x_a)
-            });
+            // thread between the parallel A-build regions. `par_gemm` spreads
+            // each over the rayon pool in fixed column blocks at one BLAS
+            // thread, so K stays independent of the thread count.
+            let mut f_la = Array2::<f64>::zeros((lam.aos.len(), pts.len()));
+            par_gemm(1.0, &d_la.view(), &x_a.view(), 0.0, &mut f_la);
             let mut f = Array2::<f64>::zeros((nbf, pts.len()));
             for (i, &lambda) in lam.aos.iter().enumerate() {
                 f.row_mut(lambda).assign(&f_la.row(i));
@@ -1607,7 +1604,8 @@ impl<'a> CosxK<'a> {
             t.out_ao_frac += b_aos.len() as f64 / nbf as f64;
             if !b_aos.is_empty() {
                 let g_b = gather_rows_same_layout(&g, &b_aos);
-                let prod = with_blas_threads(opt_in_blas_threads(), || x_a.dot(&g_b.t()));
+                let mut prod = Array2::<f64>::zeros((a.aos.len(), b_aos.len()));
+                par_gemm(1.0, &x_a.view(), &g_b.t(), 0.0, &mut prod);
                 scatter_add(ktilde, &a.aos, &b_aos, &prod);
             }
             t.ktilde_s += t0.elapsed().as_secs_f64();
