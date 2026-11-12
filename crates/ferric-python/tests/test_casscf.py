@@ -12,6 +12,9 @@ the prototype's -76.0369690965018 from both gradient norms and the lowest
 orbital Hessian eigenvalue (0.0195 Ha).
 """
 
+import sys
+import threading
+import time
 import warnings
 
 import numpy as np
@@ -75,7 +78,7 @@ def test_non_convergence_warns():
 
 def test_canonicalize_option(res):
     """Canonical orbitals: same energy to the Ritz bound of both CI solves
-    (each residual below 10 x ci_conv_thresh, Davidson's acceptance), natural
+    (each residual below ci_conv_thresh, which CASSCF enforces), natural
     active orbitals (off-diagonal dm1 below 2 N (r0 + r1) / gap, 8.2e-10 for
     this system in the Rust test), ordered Fock diagonals. The bars are derived in
     crates/ferric-ci/tests/casscf_canonical.rs; this checks the binding passes
@@ -86,7 +89,7 @@ def test_canonicalize_option(res):
         mol, ferric.BasisSet.bundled("6-31g"), 4, (2, 2), canonicalize=True
     )
     assert r.converged
-    assert abs(r.e_total - res.e_total) < 2.0 * 10.0 * 1e-10
+    assert abs(r.e_total - res.e_total) < 2.0 * 1e-10
     occ = np.diag(r.dm1)
     assert np.abs(r.dm1 - np.diag(occ)).max() < 8.2e-10
     assert np.all(np.diff(occ) <= 1e-12)
@@ -112,3 +115,45 @@ def test_unconverged_ci_raises():
         ferric.run_casscf(
             mol, ferric.BasisSet.bundled("6-31g"), 4, (2, 2), ci_max_iter=1
         )
+
+
+def _longest_main_thread_stall(call):
+    """Run `call` on a worker thread while this thread samples the clock in a
+    busy loop; return (longest gap between samples, wall time of the call).
+    A binding that holds the GIL through its Rust solve stalls this loop for
+    the whole solve, so the gap is about the wall time; one that releases it
+    stalls the loop only for GIL hand-offs (the 5 ms switch interval)."""
+    done = threading.Event()
+
+    def work():
+        try:
+            call()
+        finally:
+            done.set()
+
+    t = threading.Thread(target=work)
+    start = last = time.perf_counter()
+    t.start()
+    gap = 0.0
+    while not done.is_set():
+        now = time.perf_counter()
+        gap = max(gap, now - last)
+        last = now
+    t.join()
+    return gap, time.perf_counter() - start
+
+
+@pytest.mark.parametrize("which", ["casci", "casscf"])
+def test_solve_releases_the_gil(which):
+    """The SCF and CI solves run with the GIL released: the main thread keeps
+    running for all but a small part of the call. Bar: the longest stall is
+    below half the call's wall time, which a GIL-holding solve (stall ~ the
+    whole call minus Python argument handling) cannot meet; the call is
+    required to last at least 20 switch intervals so the bar is not met by
+    hand-off granularity alone."""
+    mol = ferric.Molecule.from_xyz_string(_H2O)
+    bs = ferric.BasisSet.bundled("cc-pvdz")
+    fn = ferric.run_casci if which == "casci" else ferric.run_casscf
+    gap, wall = _longest_main_thread_stall(lambda: fn(mol, bs, 4, (2, 2)))
+    assert wall > 20 * sys.getswitchinterval(), wall
+    assert gap < 0.5 * wall, (gap, wall)

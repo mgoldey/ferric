@@ -105,6 +105,7 @@ impl PyCasCiResult {
 #[pyo3(signature = (mol, basis_set, n_active, n_elec_active, active_start=None, compute_rdms=true, conv_thresh=1e-9, max_subspace=50, max_iter=200, memory_budget_gb=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None))]
 #[allow(clippy::too_many_arguments)]
 fn run_casci(
+    py: Python<'_>,
     mol: &PyMolecule,
     basis_set: &PyBasisSet,
     n_active: usize,
@@ -146,15 +147,18 @@ fn run_casci(
         budget,
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
     );
-    let rhf = solve_rhf(
-        &ParallelContext::default(),
-        mol,
-        &prep,
-        op,
-        &bounds,
-        &rhf_config,
-    )
-    .map_err(make_err)?;
+    let rhf = py
+        .allow_threads(|| {
+            solve_rhf(
+                &ParallelContext::default(),
+                mol,
+                &prep,
+                op,
+                &bounds,
+                &rhf_config,
+            )
+        })
+        .map_err(make_err)?;
     if !rhf.converged {
         return Err(make_err(ferric_core::FerricError::ScfConvergence {
             iterations: rhf.iterations,
@@ -171,7 +175,9 @@ fn run_casci(
         memory_budget_bytes: budget,
         compute_rdms,
     };
-    let r = ferric_ci::run_cas_ci(mol, &prep, &rhf, cfg).map_err(make_err)?;
+    let r = py
+        .allow_threads(|| ferric_ci::run_cas_ci(mol, &prep, &rhf, cfg))
+        .map_err(make_err)?;
 
     let mut cert = Certificate::ungraded(CAPABILITY).with_build(BuildStamp::new(
         ferric_build_info::VERSION,
@@ -348,15 +354,18 @@ fn run_casscf(
         budget,
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
     );
-    let rhf = solve_rhf(
-        &ParallelContext::default(),
-        mol,
-        &prep,
-        op,
-        &bounds,
-        &rhf_config,
-    )
-    .map_err(make_err)?;
+    let rhf = py
+        .allow_threads(|| {
+            solve_rhf(
+                &ParallelContext::default(),
+                mol,
+                &prep,
+                op,
+                &bounds,
+                &rhf_config,
+            )
+        })
+        .map_err(make_err)?;
     if !rhf.converged {
         return Err(make_err(ferric_core::FerricError::ScfConvergence {
             iterations: rhf.iterations,
@@ -378,7 +387,9 @@ fn run_casscf(
         canonicalize,
         ..Default::default()
     };
-    let r = ferric_ci::run_casscf(mol, &prep, &rhf, &cfg).map_err(make_err)?;
+    let r = py
+        .allow_threads(|| ferric_ci::run_casscf(mol, &prep, &rhf, &cfg))
+        .map_err(make_err)?;
 
     let mut cert = Certificate::ungraded(CASSCF_CAPABILITY).with_build(BuildStamp::new(
         ferric_build_info::VERSION,
