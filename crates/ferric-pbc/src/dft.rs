@@ -23,11 +23,24 @@
 //! bounds that radius from above and [`PeriodicGrid::build`] refuses a
 //! smaller `D` with [`PeriodicDftError::NeighbourCutoffTooSmall`].
 //!
-//! Partition: SSF by default ([`PartitionScheme::Ssf`], compact support, so a
-//! finite image list is exact and the huge-box limit reproduces the molecular
-//! weights to 1e-16), Becke available. Size-adjustment caveat: with the Bragg
-//! adjustment clipped at `|a| = ½` (e.g. Li–H) the SSF exact zone around an
-//! isolated molecule is only ~0.09 of the lattice spacing (measured).
+//! Partition: SSF by default ([`PartitionScheme::Ssf`]), Becke available.
+//! SSF has compact support: an image `B` at distance `d_B` from a point can
+//! carry weight only if `d_B < κ d_min`, `d_min` the distance to the
+//! point's nearest atom and `κ = (1 + m*)/(1 − m*)` with `m*` the `μ` at
+//! which the size-adjusted `ν` reaches 0.64 (`κ = 4.56` for equal radii,
+//! 5.3 for C–O, 9.6 at the clipped `|a| = ½`, e.g. Li–H). A cutoff `D`
+//! reproduces the untruncated SSF weights only once it exceeds about `κ`
+//! times the covering radius; below that the weights are still a partition
+//! of unity but jump wherever an image crosses `D` from a point, and the
+//! quadrature of those jumps converges erratically with the grid. The
+//! automatic `D` (floor [`DEFAULT_NEIGHBOUR_CUTOFF`]) is below that bound
+//! for typical cells: on H2 a = 4 the D = 10 weights differ from the D = 24
+//! ones by up to 6.9e-4 at (150, 590); on dry ice (cc-pVDZ, covering radius
+//! 4.24 Bohr) the fixed-density `E_xc` moves 3.2e-6 Ha between 200 and 250
+//! radial shells at D = 10 and 7e-9 at D = 20 or with a 2 Bohr
+//! [`PeriodicGridConfig::neighbour_switch`]
+//! (wiki/notes/dryice-pbe-mismatch-2026-11-12.md). In a 20+ Bohr box the
+//! periodic SSF weights reproduce the molecular ones to 1e-16.
 //!
 //! # Default grid: (75, 302), NOT the molecular (75, 110)
 //!
@@ -131,8 +144,9 @@ use rayon::prelude::*;
 pub const DEFAULT_PERIODIC_N_RADIAL: usize = 75;
 /// Default Lebedev order (module doc); 434 / 590 are refinement grids.
 pub const DEFAULT_PERIODIC_N_ANGULAR: usize = 302;
-/// Floor of the automatic neighbour cutoff `D` (Bohr): the prototype's value
-/// for H2 a = 4 (`D = 10` and `14` gave identical grids there).
+/// Floor of the automatic neighbour cutoff `D` (Bohr), the prototype's value
+/// for H2 a = 4. It does not reach the SSF support on that cell (D = 10 and
+/// D = 24 weights differ by up to 6.9e-4 at (150, 590)); see the module doc.
 pub const DEFAULT_NEIGHBOUR_CUTOFF: f64 = 10.0;
 /// Default AO truncation: every image shell whose value and gradient bound
 /// is below this at a point is skipped (prototype `ao_thresh`).
@@ -3492,6 +3506,89 @@ mod switch_tests {
             let e = PeriodicGrid::build(&cell, &bad).unwrap_err().to_string();
             assert!(e.contains("neighbour_switch"), "{e}");
         }
+    }
+}
+
+/// The hard neighbour cutoff `D` against the untruncated SSF partition.
+///
+/// Every `D` gives a partition of unity, but the weights equal the
+/// infinite-crystal SSF weights only once `D` covers the partition's compact
+/// support; below that they jump wherever an image crosses `D` from a point,
+/// and the quadrature of the jump converges erratically in the radial order
+/// (dry ice: wiki/notes/dryice-pbe-mismatch-2026-11-12.md).
+#[cfg(test)]
+mod neighbour_truncation_tests {
+    use super::*;
+    use ferric_core::mol::{Atom, Molecule};
+
+    /// The prototype's H2 cell: cubic 4 Bohr, covering-radius bound below 10.
+    fn h2() -> Cell {
+        let h = |r: [f64; 3]| Atom {
+            symbol: "H".into(),
+            z: 1,
+            x: r[0],
+            y: r[1],
+            zpos: r[2],
+            ghost: false,
+            n_core_ecp: 0,
+        };
+        let mol = Molecule {
+            atoms: vec![h([0.3, 0.2, 0.1]), h([0.35, 0.12, 1.5])],
+            charge: 0,
+            multiplicity: 1,
+        };
+        Cell::new(mol, [[4.0, 0.0, 0.0], [0.0, 4.0, 0.0], [0.0, 0.0, 4.0]]).unwrap()
+    }
+
+    fn grid_at(cell: &Cell, d: f64) -> PeriodicGrid {
+        PeriodicGrid::build(
+            cell,
+            &PeriodicGridConfig {
+                neighbour_cutoff: Some(d),
+                ..PeriodicGridConfig::with_size(30, 50)
+            },
+        )
+        .unwrap()
+    }
+
+    /// `max_g |w_g(a) − w_g(b)|` over the union of two grids built on the
+    /// same radial × angular rule, matching points by home atom and exact
+    /// coordinates (a point a grid dropped has weight 0 there).
+    fn max_weight_change(a: &PeriodicGrid, b: &PeriodicGrid) -> f64 {
+        use std::collections::HashMap;
+        let key = |p: &GridPoint| (p.home_atom, p.xyz.map(f64::to_bits));
+        let mut wb: HashMap<_, f64> = b.points().iter().map(|p| (key(p), p.weight)).collect();
+        let mut dw = 0.0_f64;
+        for p in a.points() {
+            let q = wb.remove(&key(p)).unwrap_or(0.0);
+            dw = dw.max((p.weight - q).abs());
+        }
+        wb.values().fold(dw, |m, w| m.max(w.abs()))
+    }
+
+    /// Trivial limit: past the compact support (~4.6x the covering radius,
+    /// `(1 + 0.64)/(1 − 0.64)` for equal radii) a larger `D` changes no
+    /// weight (measured 5e-23). Bar: roundoff of `P_home / Σ_B P_B` over
+    /// ~10³ neighbours.
+    #[test]
+    fn ssf_weights_do_not_move_past_the_compact_support() {
+        let cell = h2();
+        let dw = max_weight_change(&grid_at(&cell, 20.0), &grid_at(&cell, 24.0));
+        eprintln!("H2 a=4 (30, 50): max |w(D=20) - w(D=24)| = {dw:.3e}");
+        assert!(dw <= 1e-14, "{dw:e}");
+    }
+
+    /// The default floor `D = 10` is NOT past the support on this cell: some
+    /// weights differ from the untruncated ones (measured 1.5e-4 at (30, 50),
+    /// 6.9e-4 at (150, 590)); the bar sits a decade below the measurement.
+    #[test]
+    fn default_cutoff_truncates_ssf_weights() {
+        let cell = h2();
+        let (d, _) = resolve_neighbour_cutoff(&cell, None).unwrap();
+        assert_eq!(d, DEFAULT_NEIGHBOUR_CUTOFF);
+        let dw = max_weight_change(&grid_at(&cell, d), &grid_at(&cell, 24.0));
+        eprintln!("H2 a=4 (30, 50): max |w(D=10) - w(D=24)| = {dw:.3e}");
+        assert!(dw > 1e-5, "{dw:e}");
     }
 }
 

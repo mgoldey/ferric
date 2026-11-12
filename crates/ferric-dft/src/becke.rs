@@ -664,9 +664,12 @@ pub enum PartitionScheme {
     Becke,
     /// Stratmann–Scuseria–Frisch (CPL 257, 213 (1996)), PySCF `stratmann`:
     /// `g = (35m − 35m³ + 21m⁵ − 5m⁷)/16`, `m = ν/0.64`, and `g = ±1` for
-    /// `|ν| ≥ 0.64`. COMPACT support, so a finite image list is exact: the
-    /// default for periodic grids (FINDINGS "Iteration 8": periodic SSF ≡
-    /// molecular SSF to 1e-16 in a 20+ Bohr box, Becke only algebraically).
+    /// `|ν| ≥ 0.64`. COMPACT support: an atom farther than `κ` times the
+    /// point's nearest-atom distance carries no weight (`κ = 1.64/0.36` for
+    /// equal radii, larger with the size adjustment), so an image list that
+    /// covers that radius is exact. The default for periodic grids (FINDINGS
+    /// "Iteration 8": periodic SSF ≡ molecular SSF to 1e-16 in a 20+ Bohr
+    /// box, Becke only algebraically).
     #[default]
     Ssf,
 }
