@@ -188,3 +188,56 @@ def test_dm0_with_another_guess_is_rejected(kwargs):
     d = ferric.run_rhf(mol, bs).density()
     with pytest.raises(ValueError, match="dm0 and"):
         ferric.run_rhf(mol, bs, dm0=d, **kwargs)
+
+
+# ── overflow-safe symmetry bound and symmetrization ──
+
+
+def _const_hook(v):
+    return lambda d: (0.0, v)
+
+
+@pytest.mark.parametrize("scale", [1e200, 1e300])
+def test_huge_asymmetric_hook_is_rejected(scale):
+    # Squaring entries of 1e200 overflows a naive Frobenius norm to inf, and
+    # an infinite bound accepts any asymmetry. The bound is formed on
+    # max|V|-scaled entries, so a 100 percent asymmetry is still rejected.
+    mol, bs, _ = _water("sto-3g")
+    n = ferric.AoIntegrals(mol, bs).overlap().shape[0]
+    v = np.eye(n) * scale
+    v[0, 1] = scale
+    with pytest.raises(ValueError, match="non-symmetric V"):
+        ferric.run_rhf(mol, bs, fock_hook=_const_hook(v))
+
+
+def test_huge_symmetric_hook_passes_the_symmetry_check():
+    mol, bs, _ = _water("sto-3g")
+    n = ferric.AoIntegrals(mol, bs).overlap().shape[0]
+    v = np.eye(n) * 1e200
+    v[0, 1] = v[1, 0] = 1e200
+    try:
+        ferric.run_rhf(mol, bs, fock_hook=_const_hook(v))
+    except Exception as exc:  # the SCF on a 1e200 V need not converge
+        assert "non-symmetric" not in str(exc)
+
+
+def test_symmetrization_does_not_overflow_for_entries_near_float_max():
+    # (V + Vᵀ) overflows to inf for 1.5e308 entries, and the SCF then fails in
+    # the eigensolver; ½V + ½Vᵀ stays finite. V = c I shifts every orbital
+    # energy by c and leaves the orbitals and the electronic structure alone,
+    # so the run converges.
+    mol, bs, _ = _water("sto-3g")
+    n = ferric.AoIntegrals(mol, bs).overlap().shape[0]
+    v = np.eye(n) * 1.5e308
+    res = ferric.run_rhf(mol, bs, fock_hook=_const_hook(v))
+    assert res.converged
+    assert np.isfinite(res.energy)
+
+
+def test_dm0_with_overflowing_entries_is_rejected():
+    # Σ|D_ij S_ij| overflows to inf, which makes the electron-count bound
+    # infinite and any count acceptable.
+    mol, bs, ints = _water("sto-3g")
+    n = ints.overlap().shape[0]
+    with pytest.raises(ValueError, match="not finite"):
+        ferric.run_rhf(mol, bs, dm0=np.eye(n) * 1e308)
