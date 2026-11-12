@@ -3729,7 +3729,7 @@ const ENERGY_ONLY_KINDS: &[&str] = &["ccd", "ccsd(t)", "drpa"];
 
 /// `method.kind`s whose Kohn-Sham reference is chosen by `[rpa] xc` (the same
 /// list `run()` uses to turn `[rpa] xc` into the SCF functional).
-const RPA_XC_KINDS: &[&str] = &["pdep-rpa", "rpa", "gw", "tdhf-static-polarizability"];
+const RPA_XC_KINDS: &[&str] = &["pdep-rpa", "gw", "tdhf-static-polarizability"];
 
 /// The SCF-only kinds. A `[dft] functional` promotes each to Kohn-Sham:
 /// `rhf` -> RKS, `uhf` -> UKS, `rohf` -> ROKS; `ksdft` is KS by definition
@@ -12113,5 +12113,17 @@ mod cli_wired_keys_tests {
             &cfg("pdep-rpa", "energy", 2, "[gw]\nreference = \"rohf\"\n"),
             "\"gw\" only",
         );
+    }
+
+    /// Every kind whose reference `[rpa] xc` selects is a kind `run()`
+    /// accepts; a name outside `SUPPORTED_METHOD_KINDS` would be a dead entry.
+    #[test]
+    fn rpa_xc_kinds_are_all_supported_method_kinds() {
+        for kind in RPA_XC_KINDS {
+            assert!(
+                crate::SUPPORTED_METHOD_KINDS.contains(kind),
+                "RPA_XC_KINDS lists \"{kind}\", which is not a supported method.kind"
+            );
+        }
     }
 }
