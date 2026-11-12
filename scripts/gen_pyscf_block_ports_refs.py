@@ -97,6 +97,42 @@ def drpa(name: str) -> dict:
     }
 
 
+# Residual bar for the ADC Davidson roots. For the symmetric ADC matrix the
+# eigenvalue error is at most r^2 / gap; with the smallest root spacing here
+# (6.4e-3 Ha) a 1e-6 residual leaves under 2e-10 Ha, far inside the 1e-6 Ha
+# the port tests compare at. PySCF's own tol_residual (1e-8) is not reached by
+# this solve (measured 3e-8 to 5.5e-8 at the returned Ritz pairs on water).
+ADC_RESIDUAL_BAR = 1e-6
+
+
+def davidson_residuals(run):
+    """Call `run()` and return (its result, the residual norm of each Ritz pair
+    of the ADC Davidson solve). PySCF's ADC `kernel()` warns and returns the
+    current Ritz values when the solve hits its iteration limit, and the
+    solver's own converged flags are not a usable check (all False on the
+    shipped water/6-31G solve although the roots are stable to 1e-11), so the
+    residual |A x - e x| is evaluated here from the returned Ritz pairs."""
+    from pyscf.lib import linalg_helper
+
+    residuals = []
+    original = linalg_helper.davidson_nosym1
+
+    def recording(aop, *args, **kwargs):
+        _, e, xs = out = original(aop, *args, **kwargs)
+        ax = aop([np.asarray(x) for x in xs])
+        residuals.append(
+            [float(np.linalg.norm(a - ek * x)) for a, ek, x in zip(ax, e, xs)]
+        )
+        return out
+
+    linalg_helper.davidson_nosym1 = recording
+    try:
+        result = run()
+    finally:
+        linalg_helper.davidson_nosym1 = original
+    return result, residuals
+
+
 def adc2(name: str, nroots: int = 3) -> dict:
     mf = converged(scf.RHF(molecule(name, "6-31g")))
     a = adc.RADC(mf)
@@ -105,7 +141,11 @@ def adc2(name: str, nroots: int = 3) -> dict:
     a.conv_tol = 1e-12
     a.tol_residual = 1e-8
     a.compute_properties = False
-    e = a.kernel(nroots=nroots)[0]
+    out, residuals = davidson_residuals(lambda: a.kernel(nroots=nroots))
+    assert len(residuals) == 1 and max(residuals[0]) < ADC_RESIDUAL_BAR, (
+        f"ADC(2) Davidson residuals {residuals} exceed {ADC_RESIDUAL_BAR}"
+    )
+    e = out[0]
     return {
         "basis": "6-31g",
         "rhf_energy": mf.e_tot,
