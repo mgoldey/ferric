@@ -121,6 +121,17 @@ class PyscfFci:
 RESID_MAX = 1e-7
 
 
+def full_space_bar(e: float) -> float:
+    """Bar on |E_proto - E_FCI| when both run on the same integrals.
+
+    Both are PySCF FCI solves of one orbital-invariant problem in two orbital
+    bases, so they differ by each solve's energy tolerance (1e-14 Ha) and the
+    rounding of the two MO transforms, allowed at 1e-13 |E| (about 450 ulps).
+    MEASURED 2026-11-12: |dE| = 1.3e-13 (water/STO-3G), 2.8e-13 (N2/STO-3G).
+    """
+    return 2e-14 + 1e-13 * abs(e)
+
+
 # ---------------------------------------------------------------- CASSCF core
 
 
@@ -309,14 +320,13 @@ def pyscf_rhf(pmol):
 
 
 def anchor_full(solver):
-    """Active space = full space: zero F asymmetry and E = FCI."""
+    """Active space = full space: zero F asymmetry and E = FCI on the same integrals."""
     from pyscf import fci
 
     log("\n== anchor 1: active space = full space ==")
     log(
-        f"{'system':16s} {'ndet':>6s} {'E(proto)':>18s} {'E(PySCF FCI)':>18s} "
-        f"{'dE':>9s} {'dE(RHF)':>9s} {'dE_corr':>9s} {'max|2(F-F^T)|':>14s} "
-        f"{'CI resid':>9s}"
+        f"{'system':16s} {'ndet':>6s} {'E(proto)':>18s} {'E(FCI, same ints)':>18s} "
+        f"{'dE':>9s} {'dE(RHF)':>9s} {'max|2(F-F^T)|':>14s} {'CI resid':>9s}"
     )
     rows = []
     for xyz, basis in (("water.xyz", "sto-3g"), ("n2.xyz", "sto-3g")):
@@ -325,10 +335,16 @@ def anchor_full(solver):
         cas = Cas(ints, 0, nmo, (nel // 2, nel // 2), solver)
         cas.setup_pairs(nmo)
         x = cas.gradient(c)
-        mf = pyscf_rhf(pyscf_mol(mol, basis))
+        # The reference FCI runs on ferric's integrals, so dE tests the
+        # solver alone; the full-space FCI energy does not depend on which
+        # RHF's orbitals it is expanded in.
+        mf = pyscf_rhf_on_ferric_integrals(pyscf_mol(mol, basis), ints)
         fs = fci.FCI(mf)
         fs.conv_tol = 1e-14
+        fs.max_cycle = 500
         e_fci = fs.kernel()[0]
+        if not fs.converged:
+            raise RuntimeError(f"PySCF FCI reference did not converge ({xyz}/{basis})")
         ndet = x["ci"].ci.size
         row = (
             f"{xyz[:-4]}/{basis}",
@@ -337,14 +353,13 @@ def anchor_full(solver):
             e_fci,
             x["e"] - e_fci,
             e_rhf - mf.e_tot,
-            (x["e"] - e_fci) - (e_rhf - mf.e_tot),
             np.abs(x["gmat"]).max(),
             x["ci"].residual,
         )
         rows.append(row)
         log(
             f"{row[0]:16s} {row[1]:6d} {row[2]:18.10f} {row[3]:18.10f} "
-            f"{row[4]:9.1e} {row[5]:9.1e} {row[6]:9.1e} {row[7]:14.1e} {row[8]:9.1e}"
+            f"{row[4]:9.1e} {row[5]:9.1e} {row[6]:14.1e} {row[7]:9.1e}"
         )
     return rows
 
@@ -539,9 +554,12 @@ def main() -> int:
     ok = True
     if a.only in (None, "full"):
         for row in anchor_full(solver):
-            # E_corr is free of the RHF-level integral offset; |2(F-F^T)| is
-            # first order in the CI error, bounded by 10 x the CI residual.
-            ok &= abs(row[6]) <= 1e-8 and row[7] <= max(10.0 * row[8], 1e-12)
+            # Same integrals: dE is the solver difference (full_space_bar).
+            # |2(F-F^T)| is first order in the CI error,
+            # bounded by 10 x the CI residual.
+            ok &= abs(row[4]) <= full_space_bar(row[3]) and row[6] <= max(
+                10.0 * row[7], 1e-12
+            )
     if a.only in (None, "fd"):
         res = anchor_fd(solver, a.fd_step, a.fd_bar)
         for name, r in res.items():

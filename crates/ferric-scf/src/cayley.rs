@@ -17,7 +17,10 @@ use ndarray_linalg::Inverse;
 
 /// `U = (I − κ/2)⁻¹ (I + κ/2)` for an antisymmetric `κ` (computed as
 /// `2 (I − κ/2)⁻¹ − I`, see the module doc). Exactly orthogonal up to
-/// rounding; `= exp(κ)` through second order.
+/// rounding; `= exp(κ)` through second order. The inverse runs at the opt-in
+/// BLAS thread count, so a calling thread needs the stack that
+/// `ferric_core::blas_threads::init_threading` sets for threads spawned after
+/// it (the contract of every `with_blas_threads` site).
 pub(crate) fn cayley_unitary(kappa: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
     let n = kappa.nrows();
     let mut a = Array2::<f64>::eye(n);

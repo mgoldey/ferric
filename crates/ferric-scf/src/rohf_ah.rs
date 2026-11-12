@@ -300,8 +300,8 @@ enum AhFallback {
     Unconverged { endgame: bool },
     /// The lowest eigenvector's leading entry is below
     /// [`AH_MIN_LEADING_ENTRY`] in magnitude, so κ = v[1..]/v[0] is undefined,
-    /// and its eigenvalue is not negative, so there is no descent mode to
-    /// step along.
+    /// and its eigenvalue is not below −residual, so no descent mode is
+    /// established.
     ZeroLead,
 }
 
@@ -362,9 +362,11 @@ const AH_MIN_LEADING_ENTRY: f64 = 1e-10;
 /// A converged eigenvector with a vanishing leading entry is [0, v] with v a
 /// Hessian eigenvector orthogonal to g, whose eigenvalue lies below the lowest
 /// root coupled to g. The AH ansatz (leading entry 1) has no solution there.
-/// With a negative eigenvalue, v is a negative mode the gradient does not
-/// see, and the step goes along it ([`negative_mode_step`]); otherwise the PCG
-/// Newton step is taken.
+/// With an eigenvalue below −residual, v is a negative mode the gradient does
+/// not see, and the step goes along it ([`negative_mode_step`]); otherwise,
+/// including a near-zero eigenvalue whose sign the residual does not resolve,
+/// the PCG Newton step is taken. A full-bound step along a flat mode would
+/// gain only ½|λ||κ|² while its higher-order terms go unchecked.
 fn ah_kappa_or_fallback(r: &crate::stability::LowestEigenpair) -> AhKappa {
     if !r.converged {
         return AhKappa::Fallback(AhFallback::Unconverged {
@@ -373,7 +375,10 @@ fn ah_kappa_or_fallback(r: &crate::stability::LowestEigenpair) -> AhKappa {
     }
     let first = r.eigenvector[0];
     if first.abs() < AH_MIN_LEADING_ENTRY {
-        if r.eigenvalue < 0.0 {
+        // |λ_true − θ| ≤ ‖Hv − θv‖ for a symmetric H, so a θ above −residual
+        // does not establish negative curvature (stability.rs uses the same
+        // bound for `is_stable`).
+        if r.eigenvalue < -r.residual {
             return AhKappa::NegativeMode(r.eigenvector[1..].iter().copied().collect());
         }
         return AhKappa::Fallback(AhFallback::ZeroLead);
@@ -458,10 +463,11 @@ mod tests {
         }
     }
 
-    /// A converged eigenvector [0, v] with a negative eigenvalue (a Hessian
-    /// mode orthogonal to g below the gradient-coupled root) gives the
-    /// negative mode v instead of dividing by the vanishing leading entry;
-    /// with a non-negative eigenvalue it falls back to PCG Newton; a usable
+    /// A converged eigenvector [0, v] with an eigenvalue below −residual (a
+    /// Hessian mode orthogonal to g below the gradient-coupled root) gives
+    /// the negative mode v instead of dividing by the vanishing leading
+    /// entry; with an eigenvalue at or above −residual it falls back to PCG
+    /// Newton; a usable
     /// one gives κ = v[1..]/v[0]; an unconverged one falls back, silently
     /// only below the endgame residual.
     #[test]
@@ -476,6 +482,11 @@ mod tests {
         );
         assert_eq!(
             ah_kappa_or_fallback(&pair_at(0.0, vec![0.0, 1.0, 0.0], true, 1e-9)),
+            AhKappa::Fallback(AhFallback::ZeroLead)
+        );
+        // Negative, but inside the residual: the sign is not established.
+        assert_eq!(
+            ah_kappa_or_fallback(&pair_at(-1e-14, vec![0.0, 1.0, 0.0], true, 1e-9)),
             AhKappa::Fallback(AhFallback::ZeroLead)
         );
         assert_eq!(
