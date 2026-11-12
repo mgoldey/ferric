@@ -61,6 +61,8 @@ pub mod md3c1e;
 pub mod oneelectron;
 /// Integral operator kinds: Coulomb, erf/erfc-attenuated, Yukawa, Slater geminal.
 pub mod operator;
+/// The pVp integral `sum_a <d_a m|V|d_a n>` (spin-free X2C/DKH small-component potential).
+pub mod pvp;
 /// QQR distance-dependent integral screening (Ochsenfeld-style).
 pub mod qqr3;
 /// Schwarz upper bounds for integral screening.
