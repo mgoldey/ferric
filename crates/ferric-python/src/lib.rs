@@ -504,7 +504,7 @@ fn scf_kind_certificate(
         basis,
     );
     if fock_hooked {
-        ferric_scf::certificate::with_fock_hook(c)
+        ferric_scf::certificate::with_fock_hook(c, r, config)
     } else {
         c
     }

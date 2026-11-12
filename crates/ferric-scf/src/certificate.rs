@@ -92,16 +92,21 @@ pub fn scf_certificate(mol: &Molecule, result: &ScfResult, config: &RhfConfig) -
     c
 }
 
-/// `c` for a solve that ran with a caller-supplied Fock hook
-/// (`rhf::solve_rhf_with_hook` and its open-shell counterparts): the hook's
-/// energy term and potential are part of the Hamiltonian, so they are
-/// recorded as an approximation, as an external potential is. The anchor and
-/// grade are kept.
-pub fn with_fock_hook(c: Certificate) -> Certificate {
-    c.with_approximation(
+/// `c` for a solve of `result` with `config` that ran with a caller-supplied
+/// Fock hook (`rhf::solve_rhf_with_hook` and its open-shell counterparts):
+/// the hook's energy term and potential are part of the Hamiltonian, so they
+/// are recorded as an approximation and, as an external potential is
+/// ([`settings_outside_evidence`]), as a setting outside the solver's energy
+/// anchor. The anchor and grade are kept.
+pub fn with_fock_hook(c: Certificate, result: &ScfResult, config: &RhfConfig) -> Certificate {
+    let c = c.with_approximation(
         "fock-hook",
         "caller-supplied energy term and Fock potential added at every SCF iteration",
-    )
+    );
+    match scf_energy_anchor(result, config) {
+        Some(a) => c.with_setting_outside(a, "Fock hook (evidence: vacuum Hamiltonian)"),
+        None => c,
+    }
 }
 
 /// `c` with a warning for each way the run lies outside the solver's energy
@@ -152,6 +157,10 @@ impl JkRoute {
     }
 }
 
+/// Auxiliary basis of every fitted J and K in the evidence runs
+/// (`AUX` in `validation_ks_energies.rs` and `validation_roks_energies.rs`).
+const EVIDENCE_AUX: &str = "def2-universal-jkfit";
+
 /// The settings of the run that change the energy error and differ from
 /// what the anchor's evidence ran, each as `"<setting> <run value>
 /// (evidence: <value>)"`.
@@ -164,10 +173,17 @@ impl JkRoute {
 /// * RKS / UKS (`validation_ks_energies.rs`) and ROKS
 ///   (`validation_roks_energies.rs`): RI-J stored in f64, except exact J for
 ///   a range-separated functional; RI-K (f64, the default) whenever exact
-///   exchange is used; the flat (75, 110) grid with no weight cut
-///   (`AtomicGridConfig::default()`), and the default (50, 50) VV10 grid.
+///   exchange is used; both fitted with `def2-universal-jkfit`; the
+///   functional's published range-separation ω (no `xc_omega`); the flat
+///   (75, 110) grid with no weight cut (`AtomicGridConfig::default()`), and
+///   the default (50, 50) VV10 grid.
+/// * Every anchor: the default integral screening (Schwarz bounds at
+///   `integral_thresh` 1e-12), and the vacuum Hamiltonian (no external
+///   potential, polarizable embedding, COSMO or PCM).
 ///
-/// The J/K routes are what the solver recorded it ran (`result.df_jk`).
+/// The J/K routes and auxiliary sets are what the solver recorded it ran
+/// (`result.df_jk`); auxiliary names are compared after resolving registry
+/// aliases ([`ferric_core::basis::bundled_primary_name`]).
 pub fn settings_outside_evidence(result: &ScfResult, config: &RhfConfig) -> Vec<String> {
     let ks = config.xc.is_some();
     let (k_used, rsh) = exchange_used(config);
@@ -197,6 +213,13 @@ pub fn settings_outside_evidence(result: &ScfResult, config: &RhfConfig) -> Vec<
             ev_j.text("RI-J")
         ));
     } else if run_j == JkRoute::Fitted {
+        if let Some(a) = route.and_then(|r| r.j_aux.as_deref()) {
+            if !same_aux(a, EVIDENCE_AUX) {
+                out.push(format!(
+                    "RI-J auxiliary basis {a} (evidence: {EVIDENCE_AUX})"
+                ));
+            }
+        }
         let p = route.map(|r| r.ri_j_precision);
         if p != Some(crate::df_j::RiJPrecision::F64) {
             let p = p.map_or("unknown".to_string(), |p| p.to_string());
@@ -211,6 +234,16 @@ pub fn settings_outside_evidence(result: &ScfResult, config: &RhfConfig) -> Vec<
                 ev_k.text("RI-K")
             ));
         } else if run_k == JkRoute::Fitted {
+            let aux = route.and_then(|r| {
+                r.k_aux
+                    .as_deref()
+                    .or(r.rsh_k.as_ref().map(|(a, _)| a.as_str()))
+            });
+            if let Some(a) = aux.filter(|a| !same_aux(a, EVIDENCE_AUX)) {
+                out.push(format!(
+                    "RI-K auxiliary basis {a} (evidence: {EVIDENCE_AUX})"
+                ));
+            }
             let p = route.map(|r| r.ri_k_precision);
             if p != Some(crate::df_k::RiKPrecision::F64) {
                 let p = p.map_or("unknown".to_string(), |p| p.to_string());
@@ -218,7 +251,25 @@ pub fn settings_outside_evidence(result: &ScfResult, config: &RhfConfig) -> Vec<
             }
         }
     }
+    out.extend(screening_outside_evidence(config));
     if let Some(xc) = config.xc.as_deref() {
+        if let Some(w) = config.xc_omega {
+            let published = ferric_dft::libxc::xc_def_from_name(xc)
+                .map(|d| ferric_dft::libxc::k_mix_from_xc_def(&d).omega);
+            // A user-typed ω equal to the published one (to rounding) is the
+            // evidence's functional.
+            let same = published
+                .as_ref()
+                .is_ok_and(|&w0| (w - w0).abs() <= 1e-12 * w0.abs().max(1.0));
+            if !same {
+                let ev = published.map_or("the published value".to_string(), |w0| {
+                    format!("published {w0}")
+                });
+                out.push(format!(
+                    "range-separation omega {w} Bohr^-1 (evidence: {ev})"
+                ));
+            }
+        }
         let grids = crate::ks_gradient::KsGradGrids::from_config(config);
         let flat = ferric_dft::grid::AtomicGridConfig::default();
         if !same_grid(&grids.main, &flat) {
@@ -238,7 +289,58 @@ pub fn settings_outside_evidence(result: &ScfResult, config: &RhfConfig) -> Vec<
             ));
         }
     }
+    out.extend(
+        hamiltonian_terms(config)
+            .into_iter()
+            .map(|t| format!("{t} (evidence: vacuum Hamiltonian)")),
+    );
     out
+}
+
+/// Integral screening looser than the evidence's: a threshold above the
+/// default 1e-12 (every evidence test runs it), or the non-rigorous CSAM
+/// estimate in place of a bound.
+fn screening_outside_evidence(config: &RhfConfig) -> Vec<String> {
+    let ev = RhfConfig::default().integral_thresh;
+    let mut out = Vec::new();
+    if config.integral_thresh > ev {
+        out.push(format!(
+            "integral screening threshold {:e} (evidence: {ev:e})",
+            config.integral_thresh
+        ));
+    }
+    if config.screening == crate::screening::ScreeningKind::Csam {
+        out.push("integral screening CSAM estimate (evidence: Schwarz bounds)".to_string());
+    }
+    out
+}
+
+/// The terms of `config` added to the vacuum Hamiltonian, by name.
+fn hamiltonian_terms(config: &RhfConfig) -> Vec<&'static str> {
+    let mut out = Vec::new();
+    if config.external_potential.is_some() {
+        out.push("external potential");
+    }
+    if config.polarizable.is_some() {
+        out.push("polarizable embedding");
+    }
+    if config.cosmo.is_some() {
+        out.push("COSMO solvation");
+    }
+    if config.pcm.is_some() {
+        out.push("PCM solvation");
+    }
+    out
+}
+
+/// Whether auxiliary names `a` and `b` are the same set: the same bundled
+/// set after resolving aliases, else the same name ignoring case.
+fn same_aux(a: &str, b: &str) -> bool {
+    use ferric_core::basis::bundled_primary_name;
+    match (bundled_primary_name(a), bundled_primary_name(b)) {
+        (Some(x), Some(y)) => x == y,
+        _ => a.trim().eq_ignore_ascii_case(b.trim()),
+    }
 }
 
 /// Same points: sizes, pruning and weight cut (`Some(0.0)` is no cut).

@@ -650,6 +650,25 @@ pub fn bundled_names() -> Vec<&'static str> {
     REGISTRY.iter().map(|(_, names)| names[0]).collect()
 }
 
+/// The primary name ([`bundled_names`]) of the bundled set `name` loads
+/// (case-insensitive, registry aliases resolved), or `None` when [`bundled`]
+/// does not know `name`.
+///
+/// ```
+/// use ferric_core::basis::bundled_primary_name;
+///
+/// assert_eq!(bundled_primary_name("DEF2/JK"), Some("def2-universal-jkfit"));
+/// assert_eq!(bundled_primary_name("def2-tzvp/c"), Some("def2-tzvp-rifit"));
+/// assert_eq!(bundled_primary_name("no-such-set"), None);
+/// ```
+pub fn bundled_primary_name(name: &str) -> Option<&'static str> {
+    let cn = canonical_name(name);
+    REGISTRY
+        .iter()
+        .find(|(_, names)| names.contains(&cn.as_str()))
+        .map(|(_, names)| names[0])
+}
+
 /// File stem backing a bundled name (after canonicalization), if any.
 fn registry_stem(canonical: &str) -> Option<&'static str> {
     REGISTRY
