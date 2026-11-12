@@ -61409,7 +61409,7 @@
   },
   "crates/ferric-scf/src/df_j.rs::device_may_take_j": {
     "cc": 1.0,
-    "mi": 108.08994568563422
+    "mi": 99.2
   },
   "crates/ferric-scf/src/df_j.rs::df_j_bit_identical_across_thread_counts": {
     "cc": 5.0,
@@ -61917,7 +61917,7 @@
   },
   "crates/ferric-scf/src/df_j.rs::pair_screen_for": {
     "cc": 1.0,
-    "mi": 110.88120401704333
+    "mi": 100.6
   },
   "crates/ferric-scf/src/df_j.rs::pair_screen_with": {
     "cc": 5.0,
@@ -62413,7 +62413,7 @@
   },
   "crates/ferric-scf/src/df_k.rs::device_may_take_k": {
     "cc": 1.0,
-    "mi": 108.08994568563422
+    "mi": 98.4
   },
   "crates/ferric-scf/src/df_k.rs::df_k_bit_identical_across_thread_counts": {
     "cc": 5.0,
@@ -71953,7 +71953,7 @@
   },
   "crates/ferric-scf/src/rhf.rs::impl:RhfConfig#1::resolved_ri_j_precision": {
     "cc": 1.0,
-    "mi": 132.10127718970193
+    "mi": 118.5
   },
   "crates/ferric-scf/src/rhf.rs::impl:RhfConfig#1::with_check_stability": {
     "cc": 1.0,
