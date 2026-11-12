@@ -24,6 +24,8 @@ ferric-rpa = { path = "../ferric-rpa" }
 ferric-gw = { path = "../ferric-gw" }
 ferric-dft = { path = "../ferric-dft" }
 ferric-cc = { path = "../ferric-cc" }
+# `run_casci` (src/ci.rs).
+ferric-ci = { path = "../ferric-ci" }
 ferric-tddft = { path = "../ferric-tddft" }
 # `ferric.einsum`: the run-time face of the `einsum!` contraction engine.
 ferric-tensors = { path = "../ferric-tensors" }
