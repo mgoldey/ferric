@@ -954,7 +954,10 @@ jobs:
           # targets -- manylinux_2_28's image ships several CPythons under
           # /opt/python, and without `-i` maturin builds abi3/whatever it
           # finds first rather than the version this matrix leg is for.
-          args: --release --out dist -i python${{ matrix.python-version }}
+          # `--strip` removes .symtab/.strtab from the extension (13.4 MB raw,
+          # about 3 MB of the zipped wheel); only debuggers and symbolised Rust
+          # backtraces read them. release-check fails a Linux PyPI wheel that still carries .symtab.
+          args: --release --strip --out dist -i python${{ matrix.python-version }}
           # Runs BEFORE the build, INSIDE THE SAME SHELL SCRIPT that then
           # invokes `maturin build` (maturin-action concatenates
           # before-script-linux and the build command into one generated
@@ -1293,7 +1296,7 @@ jobs:
           source /tmp/smoke-venv/bin/activate
           pip install --upgrade pip
           # Install ONLY the wheel and let pip resolve its declared runtime
-          # dependencies (numpy and gemmi per pyproject.toml) -- deliberately
+          # dependencies (numpy per pyproject.toml) -- deliberately
           # not the repo's source tree or any of its extras (pyscf, vina,
           # meeko, ...), since the point is to prove the WHEEL is
           # self-contained, not to reproduce the dev environment.

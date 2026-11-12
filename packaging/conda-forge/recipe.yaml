@@ -1,0 +1,164 @@
+# conda-forge staged-recipes recipe (recipe format v1) for ferric.
+#
+# NOT SUBMITTED. To submit, copy this file to
+#   staged-recipes/recipes/ferric/recipe.yaml
+# in a fork of https://github.com/conda-forge/staged-recipes and open the PR
+# from there. "ferric" is not a package on conda-forge (checked 2026-11-12).
+#
+# Local check, before submitting:
+#   rattler-build build --recipe packaging/conda-forge/recipe.yaml -c conda-forge
+#
+# What this recipe assumes
+# ------------------------
+# * Source: the PyPI sdist of a release. The sdist carries the whole workspace
+#   (crates/, the vendored libecpint, Cargo.lock) and the licence files. The
+#   version and sha256 below are those of 0.1.0rc11; bump both from the sdist
+#   of the release being packaged:
+#     curl -sL <sdist url> | sha256sum
+#   conda-forge's main channel normally wants a final release, so package
+#   0.1.0 (or later) rather than an rc.
+# * Platform: linux-64 only. Those are the platforms ferric's CI builds and
+#   tests (see site/src/using/installation.md). libint and libxc-c also exist
+#   for osx-64, osx-arm64, win-64 and linux-aarch64 on conda-forge, so adding
+#   a platform means testing it first, not finding packages.
+# * Python: 3.10-3.13 (requires-python >=3.10 in pyproject.toml; pyo3 0.23 in
+#   the workspace Cargo.toml supports up to CPython 3.13).
+# * Native libraries come from conda-forge and are shared, not bundled:
+#     libint   conda-forge/libint-feedstock. 2.13.1 is the Psi4 developers'
+#              generated source (loriab/libint v0.1) and carries second
+#              derivatives. Builds _0 and _1/_2 differ in angular-momentum
+#              limits (_0: 4-centre ERI 7,6,3 and 3-centre 7,7,4; _2: 7,6,4
+#              and 7,7,6), so the host pin is a floor, not a build. The
+#              package's run_exports (libint >=2.13.1,<3) pin the run side.
+#              The stock include/libint2/boys.h is byte-identical across
+#              those builds (sha256 890ab026...7067c1), so ferric's boys.h
+#              override applies; FERRIC_REQUIRE_PATCHED_BOYS=1 below turns a
+#              libint build with a different boys.h into a build error
+#              instead of a silently unpatched binary.
+#     libxc-c  conda-forge/libxc-feedstock, C library, CPU build. ferric uses
+#              opaque handles and accessor functions only
+#              (crates/ferric-dft/src/libxc.rs). The wheels pin libxc 6.2.2;
+#              7.x is the version the KS-DFT validation suite was last run
+#              against (PBE/B3LYP/SCAN within 3e-12 Ha of PySCF).
+#     libopenblas  BLAS and LAPACK. ferric links -lopenblas directly, not the
+#              switchable libblas/liblapack interface, so a user cannot swap
+#              in MKL through the conda mechanism. The pthreads build is
+#              pinned: ferric parallelises with rayon and runs BLAS serial
+#              inside parallel regions (OPENBLAS_NUM_THREADS=1), and an OpenMP
+#              OpenBLAS would add a second runtime. conda-forge's OpenBLAS is
+#              built with DYNAMIC_ARCH, unlike the wheels' fixed Haswell
+#              build, which exists because dispatch once gave wrong numbers
+#              on a Zen 4 CI runner (site/src/using/installation.md). Decide
+#              before submitting whether the package should set
+#              OPENBLAS_CORETYPE=Haswell; this recipe does not.
+#     eigen, libboost-headers: header-only, build time. libint2's
+#              engine.impl.h includes both. crates/ferric-integrals/build.rs
+#              finds Eigen under $LIBINT2_PREFIX/include/eigen3.
+# * libecpint is vendored (crates/ferric-integrals/shim/libecpint) and built
+#   with CMake from build.rs, so cmake and make are build requirements and
+#   its licence is listed under license_file.
+# * An earlier version of this recipe (commit ffcf8e106, deleted in 52cbd225a)
+#   built and passed these tests with rattler-build against libint 2.13.1 and
+#   libxc-c 7.*. This copy has been linted by reading, not built.
+# * Rust crates are fetched during the build, as other conda-forge Rust
+#   packages do; cargo-bundle-licenses writes THIRDPARTY.yml for them.
+
+context:
+  version: "0.1.0rc11"
+  python_min: "3.10"
+
+package:
+  name: ferric
+  version: ${{ version }}
+
+source:
+  url: https://pypi.org/packages/source/f/ferric/ferric-${{ version }}.tar.gz
+  sha256: f20d821788a41463f7a6791c0ad25845ec35ba80ebcc668f32f05e3490fdbdde  # pragma: allowlist secret
+
+build:
+  number: 0
+  skip:
+    - not (linux and x86_64)
+    - match(python, "<3.10") or match(python, ">=3.14")
+  script:
+    # build.rs reads LIBINT2_PREFIX for libint2's headers and library and for
+    # Eigen ($PREFIX/include/eigen3). libxc and OpenBLAS are found through
+    # the -L$PREFIX/lib the conda toolchain adds.
+    - export LIBINT2_PREFIX="$PREFIX"
+    - export FERRIC_REQUIRE_PATCHED_BOYS=1
+    - export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+    - export OPENBLAS_NUM_THREADS=1
+    # The libint2 shim and the workspace are large; bound peak memory.
+    - export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-4}"
+    - cargo-bundle-licenses --format yaml --output THIRDPARTY.yml
+    - ${{ PYTHON }} -m pip install . -vv --no-deps --no-build-isolation
+
+requirements:
+  build:
+    - ${{ compiler('c') }}
+    - ${{ stdlib('c') }}
+    - ${{ compiler('cxx') }}
+    - ${{ compiler('rust') }}
+    - cargo-bundle-licenses
+    - cmake
+    - make
+    - pkg-config
+  host:
+    - python
+    - pip
+    - maturin >=1.0,<2.0
+    - libint >=2.13.1,<3
+    - libxc-c 7.* cpu_*
+    - libopenblas * *pthreads*
+    - eigen >=3.4,<6
+    - libboost-headers
+  run:
+    - python
+    - numpy >=2.0
+
+tests:
+  - python:
+      imports:
+        - ferric
+      pip_check: true
+  - script:
+      interpreter: python
+      env:
+        OPENBLAS_NUM_THREADS: "1"
+      content: |
+        import ferric
+
+        water = """3
+        water
+        O   0.000000   0.000000   0.117790
+        H   0.000000   0.755453  -0.471161
+        H   0.000000  -0.755453  -0.471161
+        """
+        mol = ferric.Molecule.from_xyz_string(water, 0, 1)
+        r = ferric.run_frequencies(mol, "sto-3g")
+        # A libint2 with second derivatives makes the default Hessian analytic.
+        assert r.hessian_source == "analytic", r.hessian_source
+        assert len(r.frequencies) == 3, r.frequencies
+  - script:
+      # [project.scripts] runs the CLI from inside the extension module.
+      - ferric --help
+
+about:
+  homepage: https://github.com/mgoldey/ferric
+  repository: https://github.com/mgoldey/ferric
+  summary: Rust-native quantum chemistry engine with Python bindings
+  description: |
+    ferric computes SCF and Kohn-Sham DFT, RI-MP2, coupled cluster, dRPA, GW,
+    CASCI, TDDFT, PCM/COSMO solvation, QM/MM and periodic Gaussian-basis
+    methods in Rust on top of libint2, libxc and OpenBLAS, with pyo3 Python
+    bindings and a `ferric` command that runs TOML input files.
+  license: MIT OR Apache-2.0
+  license_file:
+    - LICENSE-MIT
+    - LICENSE-APACHE
+    - crates/ferric-integrals/shim/libecpint/LICENSE
+    - THIRDPARTY.yml
+
+extra:
+  recipe-maintainers:
+    - mgoldey
