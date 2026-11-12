@@ -963,6 +963,12 @@ def system(label):
     raise KeyError(label)
 
 
+# The prototype and ferric build the RDMs and E_CAS from the same CI vector and
+# orbitals, so the differences are rounding; 1e-10 is the shared-input bar used
+# by compare_ref.
+CONSISTENCY_BAR = 1e-10
+
+
 def ref_from_casscf(ints, r, nelecas, **kw):
     c = np.asarray(r.mo_coeff)
     ci = np.asarray(r.ci_vector)
@@ -973,11 +979,17 @@ def ref_from_casscf(ints, r, nelecas, **kw):
     d1 = np.abs(back[1] - np.asarray(r.dm1)).max()
     d2 = np.abs(back[2] - np.asarray(r.dm2)).max()
     ecas = ref.ecore + ref.e0
-    return ref, {
+    chk = {
         "dm1_vs_ferric": d1,
         "dm2_vs_ferric": d2,
         "ecas_err": abs(ecas - r.e_total),
     }
+    bad = {k: v for k, v in chk.items() if not v < CONSISTENCY_BAR}
+    if bad:
+        raise RuntimeError(
+            f"prototype reference disagrees with ferric (bar {CONSISTENCY_BAR:.0e}): {bad}"
+        )
+    return ref, chk
 
 
 def fmt_classes(d):
@@ -1330,7 +1342,20 @@ MUTATIONS = (("drop_rdm3", "r"), ("flip_koopmans", "i"), ("omit", "ir"))
 def run_mutations():
     log("\n== mutations: each must fail at least one check ==")
     table = []
-    anchor_size()  # sets SIZE_BAR
+    # The unmutated checks must pass first: a mutation counts as detected only
+    # against a passing baseline. anchor_size() also sets SIZE_BAR.
+    base = {
+        "size": anchor_size(),
+        "mp2": anchor_mp2(),
+        "det": anchor_det(),
+    }
+    for lab in ("h2o", "n2-stretched"):
+        row = compare_ref(lab, None, fd=False)
+        base[lab] = row["max_shared"] < row["bar_shared"]
+    failed = [k for k, v in base.items() if not v]
+    if failed:
+        log(f"  unmutated checks fail {failed}; mutations cannot be judged")
+        return None
     for m in MUTATIONS:
         res = {}
         res["mp2"] = anchor_mp2(m)
@@ -1375,7 +1400,9 @@ def main() -> int:
             r = all([ref_ok(x) for x in rows])
         else:
             tab = run_mutations()
-            r = all(any(not v for v in res.values()) for _, res in tab)
+            r = tab is not None and all(
+                any(not v for v in res.values()) for _, res in tab
+            )
         log(f"[{s}] {'PASS' if r else 'FAIL'}")
         ok &= bool(r)
         if not r and s in ("full", "mp2", "size", "det"):
