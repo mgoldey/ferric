@@ -238,6 +238,11 @@ def test_double_hybrid_certificates_are_spike_with_their_scaling():
         assert c["approximations"][-1]["detail"] == scaling
 
 
+def _own_warnings(c):
+    """The warnings of `c` not carried from its SCF reference."""
+    return [w for w in c["warnings"] if not w.startswith("scf reference: ")]
+
+
 def test_tddft_certificate_reports_the_grid_it_ran_on():
     mol, bs, aux = _setup()
     # HF reference (CIS): no grid, no kernel.
@@ -253,7 +258,10 @@ def test_tddft_certificate_reports_the_grid_it_ran_on():
     assert r.grid == (75, 110, "nwchem-radial", 1e-14)
     grid = next(a for a in c["approximations"] if a["name"] == "response-grid")
     assert grid["detail"] == "(75, 110), nwchemradial, weight cut 1e-14 [default]"
-    assert c["warnings"] == []
+    # The only warnings are the reference's (water / STO-3G with the default
+    # f32 RI-J and pruned grid lies outside the RKS anchor).
+    assert _own_warnings(c) == []
+    assert all("energy anchor" in w for w in c["warnings"]), c["warnings"]
 
     # Meta-GGA: the finer response default is named, and the roots are flagged
     # as grid-sensitive.
@@ -263,7 +271,8 @@ def test_tddft_certificate_reports_the_grid_it_ran_on():
     grid = next(a for a in mc["approximations"] if a["name"] == "response-grid")
     assert grid["detail"].startswith("(150, 434)")
     assert grid["detail"].endswith("[meta-GGA response default]")
-    assert len(mc["warnings"]) == 1 and "grid" in mc["warnings"][0]
+    own = _own_warnings(mc)
+    assert len(own) == 1 and "grid" in own[0]
 
     # An explicit grid choice is recorded as such.
     e = ferric.run_tddft(mol, bs, aux, functional="r2SCAN", n_roots=2, grid_angular=194)

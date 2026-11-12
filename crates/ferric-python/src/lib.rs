@@ -486,8 +486,8 @@ fn stamped_scf_certificate(
 /// `run_rohf`, `run_dft`, `run_ksdft`): [`stamped_scf_certificate`] with a
 /// warning for each way the run on `basis` lies outside the solver's energy
 /// anchor (`ferric_scf::certificate::with_scf_envelope`, the helper the CLI
-/// uses). A post-SCF method's reference certificate carries no envelope
-/// warnings, as in the CLI. `fock_hooked`: the solve ran with a `fock_hook`
+/// uses); a post-SCF method's reference carries the same warnings
+/// ([`reference_certificate`]). `fock_hooked`: the solve ran with a `fock_hook`
 /// (`ferric_scf::certificate::with_fock_hook`).
 fn scf_kind_certificate(
     mol: &Molecule,
@@ -508,6 +508,26 @@ fn scf_kind_certificate(
     } else {
         c
     }
+}
+
+/// The reference certificate a post-SCF method folds in
+/// (`Certificate::with_reference`): [`stamped_scf_certificate`] with the
+/// envelope warnings of the SCF on `basis`
+/// (`ferric_scf::certificate::with_scf_envelope`), so a reference outside its
+/// solver's anchor shows up on the post-SCF certificate.
+fn reference_certificate(
+    mol: &Molecule,
+    r: &ScfResult,
+    config: &RhfConfig,
+    basis: &ferric_core::basis::BasisSet,
+) -> ferric_core::certificate::Certificate {
+    ferric_scf::certificate::with_scf_envelope(
+        stamped_scf_certificate(mol, r, config),
+        mol,
+        r,
+        config,
+        basis,
+    )
 }
 
 /// The method.kind a geometry/frequency run on `spin` with `config` is graded
@@ -7236,7 +7256,7 @@ fn rimp2_energies(
         let mp2 = ri_mp2(mol, &prep, &dfbs, op, &scf, mp2_config)?;
         (mp2.mp2_corr, mp2.total_energy, mp2.precision)
     };
-    let reference = stamped_scf_certificate(mol, &scf, rhf_config);
+    let reference = reference_certificate(mol, &scf, rhf_config, basis_set);
     let certificate = ferric_mp2::certificate::with_rimp2_envelope(
         ferric_mp2::certificate::rimp2_certificate(
             &reference,
@@ -7734,7 +7754,7 @@ fn run_rimp2_local(
     .with_direct_stats(st.as_ref());
     let mut certificate_data = ferric_mp2::certificate::local_rimp2_certificate(
         &cert,
-        &stamped_scf_certificate(&mol.inner, &rhf, rhf_config),
+        &reference_certificate(&mol.inner, &rhf, rhf_config, &basis_set.inner),
     );
     if op.kind != ferric_integrals::operator::OperatorKind::Coulomb {
         certificate_data = certificate_data.with_approximation(
@@ -7967,7 +7987,7 @@ fn run_drpa(
         Some(_) => Some(local_dict(py, eps, r.keep_fraction, false)?),
     };
     let certificate = ferric_mp2::certificate::drpa_certificate(
-        &stamped_scf_certificate(
+        &reference_certificate(
             &mol.inner,
             &rhf,
             &rhf_config_conv(
@@ -7975,6 +7995,7 @@ fn run_drpa(
                 budget_bytes_from_gb(memory_budget_gb),
                 ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
             ),
+            &basis_set.inner,
         ),
         &auxbasis.inner.name,
         fc,
@@ -8082,10 +8103,11 @@ fn run_drpa_scan(
     )
     .map_err(make_err)?;
     let out = pyo3::types::PyList::empty(py);
-    let scf_certificate = stamped_scf_certificate(
+    let scf_certificate = reference_certificate(
         &mol.inner,
         &rhf,
         &rhf_config_budgeted(k_builder, budget_bytes_from_gb(memory_budget_gb)),
+        &basis_set.inner,
     );
     for ((r, eps), wall_s) in results.iter().zip(&eps_list).zip(&per_point_walls) {
         let d = drpa_result_to_dict(py, r, rhf.energy, compute_reference)?;
@@ -8243,7 +8265,7 @@ fn run_linlccd(
     d.set_item("rhf_energy", rhf.energy)?;
     d.set_item("variant", var.as_str())?;
     let certificate = ferric_cc::certificate::linlccd_certificate(
-        &stamped_scf_certificate(
+        &reference_certificate(
             &mol.inner,
             &rhf,
             &rhf_config_conv(
@@ -8251,6 +8273,7 @@ fn run_linlccd(
                 budget,
                 ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
             ),
+            &basis_set.inner,
         ),
         &auxbasis.inner.name,
         fc,
@@ -8550,7 +8573,7 @@ fn run_oo_rimp2(
     // unchanged after `oo_ri_mp2`'s hcore-bug fix.
     let r = oo_ri_mp2(&mol.inner, &prep, &dfbs, op, &bounds, &rhf, &cfg, None).map_err(make_err)?;
     let certificate_data = ferric_mp2::certificate::oo_rimp2_certificate(
-        &stamped_scf_certificate(&mol.inner, &rhf, &rhf_config),
+        &reference_certificate(&mol.inner, &rhf, &rhf_config, &basis_set.inner),
         &auxbasis.inner.name,
         cfg.frozen_core,
         &op,
@@ -8668,7 +8691,7 @@ fn run_mp3(
         e_corr: mp3.e_corr,
         e_total: mp3.e_total,
         certificate_data: ferric_mp2::certificate::mp3_certificate(
-            &stamped_scf_certificate(&mol.inner, &rhf, &rhf_config),
+            &reference_certificate(&mol.inner, &rhf, &rhf_config, &basis_set.inner),
             &auxbasis.inner.name,
             frozen_core.unwrap_or(0),
             &op,
@@ -8772,7 +8795,7 @@ fn run_laplace_mp2(
     )
     .map_err(make_err)?;
     let certificate_data = ferric_mp2::certificate::laplace_mp2_certificate(
-        &stamped_scf_certificate(&mol.inner, &rhf, &rhf_config),
+        &reference_certificate(&mol.inner, &rhf, &rhf_config, &basis_set.inner),
         &auxbasis.inner.name,
         frozen_core.unwrap_or(0),
         &op,
@@ -8936,7 +8959,7 @@ fn run_laplace_sos_mp2(
     )
     .map_err(make_err)?;
     let certificate_data = ferric_mp2::certificate::sos_mp2_certificate(
-        &stamped_scf_certificate(&mol.inner, &rhf, &rhf_config),
+        &reference_certificate(&mol.inner, &rhf, &rhf_config, &basis_set.inner),
         &auxbasis.inner.name,
         &cfg,
         form,
@@ -9056,7 +9079,7 @@ fn run_attenuated_rimp2(
     };
     let r = attenuated_ri_mp2(&mol.inner, &prep, &dfbs, &rhf, &cfg).map_err(make_err)?;
     let certificate_data = ferric_mp2::certificate::att_rimp2_certificate(
-        &stamped_scf_certificate(&mol.inner, &rhf, &rhf_config),
+        &reference_certificate(&mol.inner, &rhf, &rhf_config, &basis_set.inner),
         &auxbasis.inner.name,
         &cfg,
     );
@@ -9130,7 +9153,7 @@ fn run_terfc_rimp2(
     .map_err(make_err)?;
     let certificate_data = ferric_mp2::certificate::ri_correlation_certificate(
         "att-rimp2",
-        &stamped_scf_certificate(&mol.inner, &rhf, &rhf_config),
+        &reference_certificate(&mol.inner, &rhf, &rhf_config, &basis_set.inner),
         &auxbasis.inner.name,
         frozen_core.unwrap_or(0),
         &terfc_op,
@@ -9244,7 +9267,7 @@ fn run_scs_mp2(
     };
     let r = scs_mp2(&mol.inner, &prep, &dfbs, &rhf, &cfg).map_err(make_err)?;
     let certificate_data = ferric_mp2::certificate::scs_mp2_certificate(
-        &stamped_scf_certificate(&mol.inner, &rhf, &rhf_config),
+        &reference_certificate(&mol.inner, &rhf, &rhf_config, &basis_set.inner),
         &auxbasis.inner.name,
         &cfg,
     );
@@ -9317,7 +9340,7 @@ fn run_scs_mp2_2terfc(
     }
     let r = scs_mp2_2terfc(&mol.inner, &prep, &dfbs, &rhf, &cfg).map_err(make_err)?;
     let certificate_data = ferric_mp2::certificate::scs_mp2_2terfc_certificate(
-        &stamped_scf_certificate(&mol.inner, &rhf, &rhf_config),
+        &reference_certificate(&mol.inner, &rhf, &rhf_config, &basis_set.inner),
         &auxbasis.inner.name,
         &cfg,
     );
@@ -9503,7 +9526,7 @@ fn run_mp2_v(
         AttVv10SpinComponents::Unrestricted(_) => unreachable!("closed-shell entry point"),
     };
     let certificate_data = ferric_mp2::certificate::mp2_v_certificate(
-        &stamped_scf_certificate(&mol.inner, &rhf, &rhf_config),
+        &reference_certificate(&mol.inner, &rhf, &rhf_config, &basis_set.inner),
         &auxbasis.inner.name,
         &cfg,
     );
@@ -9623,7 +9646,7 @@ fn run_mp2_v_scan(
     out.set_item("n_nlc_points", r.n_nlc_points)?;
     out.set_item("mp2_coulomb_corr", r.e_c_mp2_coulomb)?;
     let lst = PyList::empty(py);
-    let scf_certificate = stamped_scf_certificate(&mol.inner, &rhf, &rcfg);
+    let scf_certificate = reference_certificate(&mol.inner, &rhf, &rcfg, &basis_set.inner);
     for ((arm, res), scan_arm) in arms.iter().zip(r.arms.iter()).zip(&scan_arms) {
         let d = PyDict::new(py);
         // The config this arm ran with, as `att_mp2_vv10_scan` builds it; the
@@ -9902,7 +9925,7 @@ fn run_rs_mp2_rpa(
     cfg.drpa.memory_budget_bytes = budget_bytes_from_gb(memory_budget_gb);
     let r = ferric_rpa::rs_mp2_lr_rpa(&mol.inner, &prep, &dfbs, &rhf, &cfg).map_err(make_err)?;
     let certificate_data = ferric_rpa::certificate::rs_mp2_rpa_certificate(
-        &stamped_scf_certificate(&mol.inner, &rhf, &cfg_rhf),
+        &reference_certificate(&mol.inner, &rhf, &cfg_rhf, &basis_set.inner),
         &auxbasis.inner.name,
         &cfg,
     );
@@ -10285,7 +10308,7 @@ fn run_double_hybrid(
             DoubleHybridKind::B2plyp => "b2plyp",
             DoubleHybridKind::DsdPbep86 => "dsd-pbep86",
         },
-        &stamped_scf_certificate(&mol.inner, &ks, &cfg),
+        &reference_certificate(&mol.inner, &ks, &cfg, &basis_set.inner),
         &auxbasis.inner.name,
         &mp2_cfg,
     );
@@ -11154,7 +11177,7 @@ fn run_ccd(
     let r = run_ccd_inner(&mol.inner, &prep, &dfbs, op, &rhf, &cfg).map_err(make_err)?;
     let certificate_data = ferric_cc::certificate::cc_certificate(
         "ccd",
-        &stamped_scf_certificate(&mol.inner, &rhf, &rhf_config),
+        &reference_certificate(&mol.inner, &rhf, &rhf_config, &basis_set.inner),
         &auxbasis.inner.name,
         &cfg,
         &r,
@@ -11227,7 +11250,7 @@ fn run_ccsd(
                     last_energy: rhf.energy,
                 });
             }
-            let reference = stamped_scf_certificate(&emol, &rhf, &rhf_config);
+            let reference = reference_certificate(&emol, &rhf, &rhf_config, &basis_set.inner);
             Ok((
                 run_ccsd_cs_inner(&emol, &prep, &dfbs, op, &rhf, &cfg)?,
                 reference,
@@ -11314,7 +11337,7 @@ fn run_ccsd_t(
             }
             let r_cs = run_ccsd_cs_inner(&emol, &prep, &dfbs, op, &rhf, &cfg)?;
             let e_t = run_ccsd_t_cs_inner(&emol, &prep, &dfbs, op, &rhf, &r_cs, &cfg)?;
-            let reference = stamped_scf_certificate(&emol, &rhf, &rhf_config);
+            let reference = reference_certificate(&emol, &rhf, &rhf_config, &basis_set.inner);
             Ok((r_cs, e_t, reference))
         })
         .map_err(make_err)?;
@@ -11554,7 +11577,7 @@ fn run_pdep_rpa(
         );
     }
     let certificate_data = ferric_rpa::certificate::pdep_rpa_certificate(
-        &stamped_scf_certificate(&mol.inner, &rhf, &scf_config),
+        &reference_certificate(&mol.inner, &rhf, &scf_config, &basis_set.inner),
         &auxbasis.inner.name,
         &cfg,
         &r,
@@ -11863,7 +11886,7 @@ fn run_gw(
         );
     }
     let certificate_data = ferric_gw::certificate::gw_certificate(
-        &stamped_scf_certificate(&mol.inner, &scf, &cfg),
+        &reference_certificate(&mol.inner, &scf, &cfg, &basis_set.inner),
         &auxbasis.inner.name,
         &pdep_cfg,
         &gw_cfg,
@@ -12101,7 +12124,7 @@ fn run_u_gw(
         }
         // The certificate's reference is the SCF as solved (a ROKS reference
         // is graded `rohf`), before the semi-canonical conversion below.
-        let ref_cert = stamped_scf_certificate(&mol.inner, &scf, &cfg);
+        let ref_cert = reference_certificate(&mol.inner, &scf, &cfg, &basis_set.inner);
         // ROKS -> semi-canonical per-spin orbitals (what run_u_gw uses
         // internally), so v_xc is diagonalized in the QP equation's own basis;
         // UKS is unchanged.
@@ -12134,7 +12157,7 @@ fn run_u_gw(
                 last_energy: scf.energy,
             }));
         }
-        let ref_cert = stamped_scf_certificate(&mol.inner, &scf, &cfg);
+        let ref_cert = reference_certificate(&mol.inner, &scf, &cfg, &basis_set.inner);
         (scf, None, ref_cert)
     };
     let (scf, vxc_diag, reference_cert) = vxc_diag;
@@ -12426,7 +12449,7 @@ fn run_bse_tda(
     let r =
         run_bse_tda_inner(&mol.inner, &prep, &dfbs, op, &scf, &pdep_cfg, fc).map_err(make_err)?;
     let certificate_data = ferric_gw::certificate::bse_tda_certificate(
-        &stamped_scf_certificate(&mol.inner, &scf, &cfg),
+        &reference_certificate(&mol.inner, &scf, &cfg, &basis_set.inner),
         &auxbasis.inner.name,
         &pdep_cfg,
         &r,
@@ -12632,7 +12655,7 @@ fn run_tdhf_static_polarizability(
     )
     .map_err(make_err)?;
     let certificate_data = ferric_gw::certificate::tdhf_static_polarizability_certificate(
-        &stamped_scf_certificate(&mol.inner, &scf, &cfg),
+        &reference_certificate(&mol.inner, &scf, &cfg, &basis_set.inner),
         &auxbasis.inner.name,
         &pdep_cfg,
         scissor.unwrap_or(0.0),
@@ -12865,7 +12888,7 @@ fn run_tddft(
         .allow_threads(|| ferric_tddft::run_tddft(&emol_tddft, &prep, &dfbs, &scf, &config))
         .map_err(make_err)?;
     let certificate_data = ferric_tddft::certificate::tddft_certificate(
-        &stamped_scf_certificate(&mol.inner, &scf, &scf_cfg),
+        &reference_certificate(&mol.inner, &scf, &scf_cfg, &basis_set.inner),
         &auxbasis.inner.name,
         &config,
         grid_radial.is_some()

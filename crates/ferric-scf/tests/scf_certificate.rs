@@ -23,9 +23,11 @@ use ferric_core::basis::bundled;
 use ferric_core::certificate::{Grade, GRADE_SOURCE_PAGE};
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
+use ferric_dft::grid::AtomicGridConfig;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
-use ferric_scf::certificate::{scf_certificate, with_scf_envelope};
+use ferric_scf::certificate::{scf_certificate, settings_outside_evidence, with_scf_envelope};
+use ferric_scf::df_j::RiJPrecision;
 use ferric_scf::result::ScfResult;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
@@ -230,8 +232,12 @@ fn measured_error_is_the_solver_anchor_and_the_envelope_only_warns() {
     let c = scf_certificate(&oh, &r, &hf);
     assert_eq!(c.measured_error.as_ref().unwrap().value, 4.0e-12);
 
+    // The evidence's J/K and grid settings (f64 RI-J, flat (75, 110) grid),
+    // so the element is the only way this run lies outside.
     let pbe = RhfConfig {
         xc: Some("PBE".into()),
+        ri_j_precision: Some(RiJPrecision::F64),
+        dft_grid: Some(AtomicGridConfig::default()),
         ..Default::default()
     };
     let (water, r) = solve(WATER, 1, &pbe);
@@ -250,4 +256,59 @@ fn measured_error_is_the_solver_anchor_and_the_envelope_only_warns() {
         .last()
         .unwrap()
         .starts_with("element O (covered: H, Si, S, Cl)"));
+}
+
+/// The envelope compares the settings that change the energy error with what
+/// the anchor's evidence ran: RI-J storage, the J/K route and the XC grid.
+/// A default RKS run (f32 RI-J, the pruned production grid) differs on two;
+/// an RHF run with RI-J differs on the J route (the RHF evidence is exact
+/// J/K); the evidence settings themselves give nothing.
+#[test]
+fn envelope_names_each_setting_that_differs_from_the_evidence() {
+    let ev = "is outside the RKS energy anchor (crates/ferric-scf/tests/validation_ks_energies.rs)";
+    let pbe = RhfConfig {
+        xc: Some("PBE".into()),
+        ..Default::default()
+    };
+    let (_, r) = solve(WATER, 1, &pbe);
+    assert_eq!(
+        settings_outside_evidence(&r, &pbe),
+        [
+            "RI-J tensor storage f32 (evidence: f64)".to_string(),
+            "XC grid (75, 110), nwchemradial, weight cut 1e-14 (evidence: (75, 110), flat, \
+             no weight cut)"
+                .to_string(),
+        ]
+    );
+    let (water, r) = solve(WATER, 1, &pbe);
+    let c = scf_certificate(&water, &r, &pbe);
+    let out = with_scf_envelope(c, &water, &r, &pbe, &bundled("def2-svp").unwrap());
+    assert!(
+        out.warnings
+            .iter()
+            .any(|w| w.starts_with("RI-J tensor storage f32") && w.ends_with(ev)),
+        "{:?}",
+        out.warnings
+    );
+
+    let evidence = RhfConfig {
+        ri_j_precision: Some(RiJPrecision::F64),
+        dft_grid: Some(AtomicGridConfig::default()),
+        ..pbe
+    };
+    let (_, r) = solve(WATER, 1, &evidence);
+    assert!(settings_outside_evidence(&r, &evidence).is_empty());
+
+    let df_hf = RhfConfig {
+        df_j_aux: Some("def2-universal-jkfit".into()),
+        ri_j_precision: Some(RiJPrecision::F64),
+        ..Default::default()
+    };
+    let (_, r) = solve(WATER, 1, &df_hf);
+    assert_eq!(
+        settings_outside_evidence(&r, &df_hf),
+        ["Coulomb J RI-J (evidence: exact four-centre)".to_string()]
+    );
+    let (_, r) = solve(WATER, 1, &RhfConfig::default());
+    assert!(settings_outside_evidence(&r, &RhfConfig::default()).is_empty());
 }
