@@ -795,12 +795,17 @@ fn note_build(dd: &DeviceDfJ) {
 /// One device J build: `Ok(true)` means `j` holds the full J (no cross-rank
 /// reduction is needed: the device path never runs under MPI); `Ok(false)` means
 /// run the CPU path (`j` untouched by this call). `solve` is `DfJ`'s own metric
-/// solve; its error is the caller's error, as on the CPU path. Never touches CUDA
-/// when the mode is off or the seam forces the host.
+/// solve; its error is the caller's error, as on the CPU path. `site` is the
+/// SCF's RI-J site (`auto` gates on it). Never touches CUDA when the mode is
+/// off or the seam forces the host.
 pub fn try_build(
     slot: &mut DeviceSlot,
     src: &mut ThreeIndexSource,
-    (ctx, k_reserve): (Option<&ParallelContext>, usize),
+    (ctx, k_reserve, site): (
+        Option<&ParallelContext>,
+        usize,
+        ferric_core::gpu::DeviceSite,
+    ),
     d: &Array2<f64>,
     j: &mut Array2<f64>,
     solve: impl FnOnce(&Array1<f64>) -> Result<Array1<f64>, FerricError>,
@@ -820,17 +825,21 @@ pub fn try_build(
         return Ok(false);
     }
     let n = src.nao();
-    // `auto` takes J only above the measured size gate. The source here is
+    // `auto` takes J only on the sites the gate admits. The source here is
     // the f64 tensor (an f32 one returned above), so the f64 threshold
-    // applies; the functional-class half of the rule is in the tensor layout:
-    // a pure functional's J stays on the f32 CPU tensor, which never reaches
-    // this function.
-    if !ferric_core::gpu::routes_to_device(
-        settings.mode,
-        ferric_core::gpu::AutoPath::RiJ,
-        ferric_core::gpu::DeviceSite::f64_tensor(n),
-    ) {
-        decline(slot, "below the size where the device RI-J wins under auto");
+    // applies, with the SCF's functional class: a pure or range-separated
+    // functional keeps J on the CPU at every size.
+    let f64_site = ferric_core::gpu::DeviceSite { nbf: n, ..site }.with_f64_tensor();
+    if !ferric_core::gpu::routes_to_device(settings.mode, ferric_core::gpu::AutoPath::RiJ, f64_site)
+    {
+        decline(
+            slot,
+            if f64_site.jxc_overlap {
+                "a pure or range-separated functional keeps J on the CPU under auto"
+            } else {
+                "below the size where the device RI-J wins under auto"
+            },
+        );
         return Ok(false);
     }
     if src.naux() == 0 || n == 0 || d.dim() != (n, n) || j.dim() != (n, n) {

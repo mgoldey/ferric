@@ -914,13 +914,11 @@ pub fn run(args: Vec<String>) {
     // in the first SCF iteration. No-op when no log is installed.
     let jk_route = ferric_scf::scf_jk::effective_jk(&rhf_config);
     // The header's request-side estimate; the run's `ri_j_tensor` note records
-    // the precision the tensor was stored at. A Kohn-Sham run with no DF-K
-    // aux named is taken as RI-J only (the J || XC overlap case).
-    let ri_j_resolved = rhf_config.resolved_ri_j_precision(ferric_core::gpu::DeviceSite {
-        nbf: prep.nbasis(),
-        jxc_overlap: rhf_config.xc.is_some() && rhf_config.df_k_aux.is_none(),
-        cpu_f64: false,
-    });
+    // the precision the tensor was stored at. The functional class comes
+    // from the functional's exact exchange, as in the SCF.
+    let ri_j_resolved = rhf_config.resolved_ri_j_precision(
+        ferric_scf::df_j::ri_j_site_for_functional(prep.nbasis(), rhf_config.xc.as_deref()),
+    );
     if let Some(rl) = ferric_scf::runlog::log() {
         ferric_scf::runlog::set_build_identity(
             ferric_build_info::VERSION,

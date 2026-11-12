@@ -1080,11 +1080,10 @@ fn solve_uhf_impl(
             k_aux_eff,
             ooc_budget,
             config.integral_thresh,
-            config.resolved_ri_j_precision(ferric_core::gpu::DeviceSite {
-                nbf: prep.nbasis(),
-                jxc_overlap: xc_contrib.is_some() && k_aux_eff.is_none(),
-                cpu_f64: false,
-            }),
+            config.resolved_ri_j_precision(crate::df_j::ri_j_site(
+                prep.nbasis(),
+                xc_contrib.as_ref().map(|_| k_mix),
+            )),
             crate::df_k::RiKPrecision::resolve(config.ri_k_precision, prep.nbasis()),
         )
     })?;

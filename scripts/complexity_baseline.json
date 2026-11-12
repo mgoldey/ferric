@@ -61997,7 +61997,7 @@
   },
   "crates/ferric-scf/src/df_j.rs::resolve_ri_j_precision": {
     "cc": 6.0,
-    "mi": 95.43004801627382
+    "mi": 90.1
   },
   "crates/ferric-scf/src/df_j.rs::ri_j_pair_screen_for_test": {
     "cc": 2.0,
