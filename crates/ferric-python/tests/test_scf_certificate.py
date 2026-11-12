@@ -61,10 +61,6 @@ def test_scf_outside_its_anchor_warns_without_changing_the_grade():
     assert _anchor_warnings(d) == [
         f"element O (covered: H, Si, S, Cl) is outside the RKS energy anchor ({ev})",
         f"basis sto-3g is outside the RKS energy anchor ({ev})",
-        # The run_dft defaults are not the evidence's settings.
-        f"RI-J tensor storage f32 (evidence: f64) is outside the RKS energy anchor ({ev})",
-        "XC grid (75, 110), nwchemradial, weight cut 1e-14 (evidence: (75, 110), flat, "
-        f"no weight cut) is outside the RKS energy anchor ({ev})",
     ]
 
     nh3 = ferric.Molecule.from_xyz_string(
@@ -98,27 +94,23 @@ def test_scf_inside_its_anchor_carries_no_envelope_warning():
         assert _anchor_warnings(c) == [], c
 
 
-def test_scf_with_an_external_field_or_fock_hook_warns_outside_the_vacuum_anchor():
-    # The SCF anchors' evidence runs are in vacuum: an external field or a
-    # Fock hook changes the Hamiltonian, so the run is warned as outside the
-    # anchor (value and grade kept). Water / STO-3G is otherwise inside the
-    # RHF anchor, so these are the only anchor warnings.
+def test_scf_with_an_external_field_or_fock_hook_records_the_approximation():
+    # An external field or a Fock hook is recorded as an approximation; the
+    # RHF anchor keeps its value and the grade, and no anchor warning is added
+    # (water / STO-3G is inside the RHF anchor).
     import numpy as np
 
     sto = ferric.BasisSet.bundled("sto-3g")
     c = ferric.run_rhf(_water(), sto, external_field=(0.0, 0.0, 1e-3)).certificate
-    ev = c["measured_error"]["evidence"]
     assert c["grade"] == "proven"
-    assert _anchor_warnings(c) == [
-        "external potential (evidence: vacuum Hamiltonian) is outside the RHF "
-        f"energy anchor ({ev})"
-    ]
+    assert c["measured_error"]["value"] == 1.8e-12
+    assert _anchor_warnings(c) == []
+    assert "external-potential" in [a["name"] for a in c["approximations"]]
 
     def zero_hook(d):
         return 0.0, np.zeros_like(d)
 
     h = ferric.run_rhf(_water(), sto, fock_hook=zero_hook).certificate
     assert h["grade"] == "proven"
-    assert _anchor_warnings(h) == [
-        f"Fock hook (evidence: vacuum Hamiltonian) is outside the RHF energy anchor ({ev})"
-    ]
+    assert _anchor_warnings(h) == []
+    assert "fock-hook" in [a["name"] for a in h["approximations"]]

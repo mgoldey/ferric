@@ -21,20 +21,16 @@
 
 use ferric_core::basis::bundled;
 use ferric_core::certificate::{Grade, GRADE_SOURCE_PAGE};
-use ferric_core::external_potential::ExternalPotential;
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
 use ferric_dft::grid::AtomicGridConfig;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
-use ferric_pcm::config::PcmConfig;
-use ferric_scf::certificate::{scf_certificate, settings_outside_evidence, with_scf_envelope};
-use ferric_scf::cosmo::CosmoConfig;
+use ferric_scf::certificate::{scf_certificate, with_scf_envelope};
 use ferric_scf::df_j::RiJPrecision;
-use ferric_scf::polarizable::PolarizableSites;
 use ferric_scf::result::ScfResult;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
-use ferric_scf::screening::{SchwarzBounds, ScreeningKind};
+use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::uhf::solve_uhf;
 
 const WATER: &str = "3\nwater\nO 0.0 0.0 0.1173\nH 0.0 0.7572 -0.4692\nH 0.0 -0.7572 -0.4692\n";
@@ -236,8 +232,7 @@ fn measured_error_is_the_solver_anchor_and_the_envelope_only_warns() {
     let c = scf_certificate(&oh, &r, &hf);
     assert_eq!(c.measured_error.as_ref().unwrap().value, 4.0e-12);
 
-    // The evidence's J/K and grid settings (f64 RI-J, flat (75, 110) grid),
-    // so the element is the only way this run lies outside.
+    // O is outside the def2-SVP KS anchor's elements.
     let pbe = RhfConfig {
         xc: Some("PBE".into()),
         ri_j_precision: Some(RiJPrecision::F64),
@@ -260,207 +255,4 @@ fn measured_error_is_the_solver_anchor_and_the_envelope_only_warns() {
         .last()
         .unwrap()
         .starts_with("element O (covered: H, Si, S, Cl)"));
-}
-
-/// The envelope compares the settings that change the energy error with what
-/// the anchor's evidence ran: RI-J storage, the J/K route and the XC grid.
-/// A default RKS run (f32 RI-J, the pruned production grid) differs on two;
-/// an RHF run with RI-J differs on the J route (the RHF evidence is exact
-/// J/K); the evidence settings themselves give nothing.
-#[test]
-fn envelope_names_each_setting_that_differs_from_the_evidence() {
-    let ev = "is outside the RKS energy anchor (crates/ferric-scf/tests/validation_ks_energies.rs)";
-    let pbe = RhfConfig {
-        xc: Some("PBE".into()),
-        ..Default::default()
-    };
-    let (_, r) = solve(WATER, 1, &pbe);
-    assert_eq!(
-        settings_outside_evidence(&r, &pbe),
-        [
-            "RI-J tensor storage f32 (evidence: f64)".to_string(),
-            "XC grid (75, 110), nwchemradial, weight cut 1e-14 (evidence: (75, 110), flat, \
-             no weight cut)"
-                .to_string(),
-        ]
-    );
-    let (water, r) = solve(WATER, 1, &pbe);
-    let c = scf_certificate(&water, &r, &pbe);
-    let out = with_scf_envelope(c, &water, &r, &pbe, &bundled("def2-svp").unwrap());
-    assert!(
-        out.warnings
-            .iter()
-            .any(|w| w.starts_with("RI-J tensor storage f32") && w.ends_with(ev)),
-        "{:?}",
-        out.warnings
-    );
-
-    let evidence = RhfConfig {
-        ri_j_precision: Some(RiJPrecision::F64),
-        dft_grid: Some(AtomicGridConfig::default()),
-        ..pbe
-    };
-    let (_, r) = solve(WATER, 1, &evidence);
-    assert!(settings_outside_evidence(&r, &evidence).is_empty());
-
-    let df_hf = RhfConfig {
-        df_j_aux: Some("def2-universal-jkfit".into()),
-        ri_j_precision: Some(RiJPrecision::F64),
-        ..Default::default()
-    };
-    let (_, r) = solve(WATER, 1, &df_hf);
-    assert_eq!(
-        settings_outside_evidence(&r, &df_hf),
-        ["Coulomb J RI-J (evidence: exact four-centre)".to_string()]
-    );
-    let (_, r) = solve(WATER, 1, &RhfConfig::default());
-    assert!(settings_outside_evidence(&r, &RhfConfig::default()).is_empty());
-}
-
-/// Integral screening looser than the evidence's default (Schwarz bounds at
-/// 1e-12) is outside the anchor; a tighter threshold and the rigorous CSB
-/// bound are not.
-#[test]
-fn envelope_names_a_looser_integral_screening() {
-    let loose = RhfConfig {
-        integral_thresh: 1e-10,
-        ..Default::default()
-    };
-    let (_, r) = solve(WATER, 1, &loose);
-    assert_eq!(
-        settings_outside_evidence(&r, &loose),
-        ["integral screening threshold 1e-10 (evidence: 1e-12)".to_string()]
-    );
-    let tight = RhfConfig {
-        integral_thresh: 1e-14,
-        screening: ScreeningKind::Csb,
-        ..Default::default()
-    };
-    assert!(settings_outside_evidence(&r, &tight).is_empty());
-    let csam = RhfConfig {
-        screening: ScreeningKind::Csam,
-        ..Default::default()
-    };
-    assert_eq!(
-        settings_outside_evidence(&r, &csam),
-        ["integral screening CSAM estimate (evidence: Schwarz bounds)".to_string()]
-    );
-}
-
-/// The fitted J and K auxiliary sets are compared with the evidence's
-/// `def2-universal-jkfit` after resolving registry aliases: `def2/jk` is the
-/// same set, `def2-svp-rifit` is not.
-#[test]
-fn envelope_names_an_auxiliary_set_that_differs_from_the_evidence() {
-    let evidence = RhfConfig {
-        xc: Some("B3LYP".into()),
-        df_j_aux: Some("DEF2/JK".into()),
-        df_k_aux: Some("def2-svp-jkfit".into()),
-        ri_j_precision: Some(RiJPrecision::F64),
-        dft_grid: Some(AtomicGridConfig::default()),
-        ..Default::default()
-    };
-    let (_, r) = solve(WATER, 1, &evidence);
-    assert!(
-        settings_outside_evidence(&r, &evidence).is_empty(),
-        "{:?}",
-        settings_outside_evidence(&r, &evidence)
-    );
-    let other = RhfConfig {
-        df_j_aux: Some("def2-svp-rifit".into()),
-        df_k_aux: Some("def2-svp/c".into()),
-        ..evidence
-    };
-    let (_, r) = solve(WATER, 1, &other);
-    assert_eq!(
-        settings_outside_evidence(&r, &other),
-        [
-            "RI-J auxiliary basis def2-svp-rifit (evidence: def2-universal-jkfit)".to_string(),
-            "RI-K auxiliary basis def2-svp/c (evidence: def2-universal-jkfit)".to_string(),
-        ]
-    );
-}
-
-/// An `xc_omega` override is outside the anchor unless it equals the
-/// functional's published ω (HSE06: 0.11 Bohr^-1). Only the configuration is
-/// read for this setting, so one solve serves all three configurations.
-#[test]
-fn envelope_names_an_omega_override() {
-    let hse = RhfConfig {
-        xc: Some("HSE06".into()),
-        df_j_aux: Some(String::new()),
-        dft_grid: Some(AtomicGridConfig::default()),
-        ..Default::default()
-    };
-    let (_, r) = solve(WATER, 1, &hse);
-    let omega_lines = |cfg: &RhfConfig| -> Vec<String> {
-        settings_outside_evidence(&r, cfg)
-            .into_iter()
-            .filter(|s| s.starts_with("range-separation omega"))
-            .collect()
-    };
-    assert!(omega_lines(&hse).is_empty());
-    let published = RhfConfig {
-        xc_omega: Some(0.11),
-        ..hse.clone()
-    };
-    assert!(omega_lines(&published).is_empty());
-    let tuned = RhfConfig {
-        xc_omega: Some(0.2),
-        ..hse
-    };
-    assert_eq!(
-        omega_lines(&tuned),
-        ["range-separation omega 0.2 Bohr^-1 (evidence: published 0.11)".to_string()]
-    );
-}
-
-/// A term added to the vacuum Hamiltonian is outside every SCF anchor (the
-/// evidence runs are in vacuum), and the envelope warns on it. The external
-/// field run is solved; COSMO and PCM are read from the configuration only.
-#[test]
-fn envelope_names_a_term_added_to_the_vacuum_hamiltonian() {
-    let field = RhfConfig {
-        external_potential: Some(ExternalPotential {
-            field: Some([0.0, 0.0, 1e-3]),
-            ..Default::default()
-        }),
-        ..Default::default()
-    };
-    let (water, r) = solve(WATER, 1, &field);
-    assert_eq!(
-        settings_outside_evidence(&r, &field),
-        ["external potential (evidence: vacuum Hamiltonian)".to_string()]
-    );
-    let c = scf_certificate(&water, &r, &field);
-    let out = with_scf_envelope(c.clone(), &water, &r, &field, &bundled("sto-3g").unwrap());
-    assert_eq!(
-        out.warnings.len(),
-        c.warnings.len() + 1,
-        "{:?}",
-        out.warnings
-    );
-    assert!(out.warnings.last().unwrap().starts_with(
-        "external potential (evidence: vacuum Hamiltonian) is outside the RHF energy anchor"
-    ));
-    let solvated = RhfConfig {
-        cosmo: Some(CosmoConfig::default()),
-        pcm: Some(PcmConfig::default()),
-        ..Default::default()
-    };
-    assert_eq!(
-        settings_outside_evidence(&r, &solvated),
-        [
-            "COSMO solvation (evidence: vacuum Hamiltonian)".to_string(),
-            "PCM solvation (evidence: vacuum Hamiltonian)".to_string(),
-        ]
-    );
-    let embedded = RhfConfig {
-        polarizable: Some(PolarizableSites::default()),
-        ..Default::default()
-    };
-    assert_eq!(
-        settings_outside_evidence(&r, &embedded),
-        ["polarizable embedding (evidence: vacuum Hamiltonian)".to_string()]
-    );
 }

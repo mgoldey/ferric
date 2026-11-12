@@ -421,14 +421,6 @@ impl Certificate {
         }
         self
     }
-
-    /// Add the [`Self::with_envelope`] warning for one run setting that
-    /// differs from what `anchor`'s evidence ran; `what` names the setting,
-    /// the run's value and the evidence value. The grade is not changed.
-    pub fn with_setting_outside(mut self, anchor: &EnergyAnchor, what: &str) -> Self {
-        self.push_warning(outside_anchor_text(anchor, what));
-        self
-    }
 }
 
 fn outside_anchor_text(anchor: &EnergyAnchor, what: &str) -> String {

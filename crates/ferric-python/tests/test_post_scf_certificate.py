@@ -258,8 +258,8 @@ def test_tddft_certificate_reports_the_grid_it_ran_on():
     assert r.grid == (75, 110, "nwchem-radial", 1e-14)
     grid = next(a for a in c["approximations"] if a["name"] == "response-grid")
     assert grid["detail"] == "(75, 110), nwchemradial, weight cut 1e-14 [default]"
-    # The only warnings are the reference's (water / STO-3G with the default
-    # f32 RI-J and pruned grid lies outside the RKS anchor).
+    # The only warnings are the reference's (water / STO-3G is outside the
+    # RKS anchor).
     assert _own_warnings(c) == []
     assert all("energy anchor" in w for w in c["warnings"]), c["warnings"]
 

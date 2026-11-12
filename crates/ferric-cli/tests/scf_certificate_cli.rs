@@ -96,11 +96,10 @@ fn rhf_prints_and_logs_a_proven_stamped_certificate() {
     assert_eq!(back.grade, ferric_core::certificate::Grade::Proven);
 }
 
-/// An `[external_potential]` changes the Hamiltonian the RHF anchor's
-/// vacuum evidence ran: the run is recorded as such an approximation and
-/// warned as outside the anchor, which keeps its value and the grade.
+/// An `[external_potential]` is recorded as an approximation; the RHF
+/// anchor keeps its value and the grade, and no warning is added.
 #[test]
-fn rhf_with_an_external_potential_warns_outside_the_vacuum_anchor() {
+fn rhf_with_an_external_potential_records_the_approximation() {
     let (_, records) = run(
         "rhf_field",
         "[molecule]\nxyz = \"testdata/molecules/water.xyz\"\n[basis]\nname = \"sto-3g\"\n\
@@ -109,15 +108,7 @@ fn rhf_with_an_external_potential_warns_outside_the_vacuum_anchor() {
     let c = &record(&records, "run_end")["extra"]["certificate"];
     assert_eq!(c["grade"], "proven", "{c}");
     assert_eq!(c["measured_error"]["value"], 1.8e-12, "{c}");
-    let ev = c["measured_error"]["evidence"].as_str().unwrap();
-    assert_eq!(
-        c["warnings"],
-        serde_json::json!([format!(
-            "external potential (evidence: vacuum Hamiltonian) is outside the RHF energy \
-             anchor ({ev})"
-        )]),
-        "{c}"
-    );
+    assert_eq!(c["warnings"], serde_json::json!([]), "{c}");
     assert!(
         c["approximations"]
             .as_array()
@@ -153,8 +144,7 @@ fn uhf_logs_a_certificate_record_with_the_stability_caveat() {
 #[test]
 fn rks_outside_its_anchor_warns_without_changing_the_grade() {
     // The RKS anchor covers H2S, HCl, SiH4 / def2-SVP, def2-TZVP with PBE,
-    // B3LYP, HSE06: water / STO-3G is outside on element and basis, and the
-    // default run on RI-J storage and grid.
+    // B3LYP, HSE06: water / STO-3G is outside on element and basis.
     let (stdout, records) = run(
         "rks_outside",
         "[molecule]\nxyz = \"testdata/molecules/water.xyz\"\n[basis]\nname = \"sto-3g\"\n\
@@ -175,15 +165,6 @@ fn rks_outside_its_anchor_warns_without_changing_the_grade() {
         [
             format!("element O (covered: H, Si, S, Cl) is outside the RKS energy anchor ({ev})"),
             format!("basis sto-3g is outside the RKS energy anchor ({ev})"),
-            // The CLI defaults (f32 RI-J, the pruned production grid) are
-            // not the evidence's settings.
-            format!(
-                "RI-J tensor storage f32 (evidence: f64) is outside the RKS energy anchor ({ev})"
-            ),
-            format!(
-                "XC grid (75, 110), nwchemradial, weight cut 1e-14 (evidence: (75, 110), flat, \
-                 no weight cut) is outside the RKS energy anchor ({ev})"
-            ),
         ],
         "{c}"
     );

@@ -344,8 +344,8 @@ fn tda_and_tddft_log_the_grid_they_ran_on() {
         .find(|a| a["name"] == "response-grid")
         .unwrap_or_else(|| panic!("no response-grid: {c}"));
     assert!(g["detail"].as_str().unwrap().ends_with("[default]"), "{g}");
-    // The only warnings are the reference's: water / STO-3G on the default
-    // grid and f32 RI-J lies outside the RKS anchor.
+    // The only warnings are the reference's (water / STO-3G is outside the
+    // RKS anchor).
     assert!(own_warnings(&c).is_empty(), "{c}");
 
     // A meta-GGA defaults to the finer response grid and says so.
