@@ -950,7 +950,7 @@ fn exact_k_remedy(needed: u64) -> String {
 }
 
 /// The text of the spill warning. Pure so its content is testable; emitted by
-/// [`warn_spill_once`].
+/// [`warn_spill_once_for`].
 fn spill_warning_text(needed: u64, dir: &std::path::Path) -> String {
     format!(
         "[ferric] warning: 3-index tensor ({:.2} GB) exceeds the memory budget and is being \
@@ -967,17 +967,9 @@ fn spill_warning_text(needed: u64, dir: &std::path::Path) -> String {
     )
 }
 
-/// Emit the spill warning at most once per process. Returns whether it fired
-/// (the return value is what makes the once-ness testable).
-fn warn_spill_once(needed: u64, dir: &std::path::Path) -> bool {
-    if SPILL_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-        return false;
-    }
-    eprintln!("{}", spill_warning_text(needed, dir));
-    true
-}
-
-/// [`warn_spill_once`] for a spill of `kind`. An RI-K spill warns under its
+/// Emit the spill warning for a spill of `kind` at most once per process.
+/// Returns whether it fired (the return value is what makes the once-ness
+/// testable). An RI-K spill warns under its
 /// own latch, [`RI_K_SPILL_WARNED`], so a raw tensor that spilled first (RI-J's,
 /// or a post-SCF B tensor) cannot swallow the one warning that names
 /// [`exact_k_remedy`].
@@ -3589,7 +3581,7 @@ mod tests {
     /// `SPILL_WARNED` is the once-latch; this asserts the latch admits exactly
     /// one caller and that the line names the re-read cost.
     ///
-    /// MUTATION: remove the `SPILL_WARNED.swap` guard from `warn_spill_once` (or
+    /// MUTATION: remove the latch `swap` guard from `warn_spill_once_with` (or
     /// make it always return true) and this goes RED.
     #[test]
     fn spill_warning_is_emitted_once_and_names_the_per_iteration_reread() {
@@ -3623,21 +3615,21 @@ mod tests {
         // claim — see `spill_warning_latch_is_consulted`.
     }
 
-    /// (d′) BEHAVIOURAL: the live `warn_spill_once` must consult the latch. Runs
+    /// (d′) BEHAVIOURAL: the live `warn_spill_once_for` must consult the latch. Runs
     /// the real function twice against a locally-reset latch and asserts the
     /// second call reports "already warned".
     ///
-    /// MUTATION: make `warn_spill_once` unconditional and this goes RED.
+    /// MUTATION: make `warn_spill_once_with` unconditional and this goes RED.
     #[test]
     fn spill_warning_latch_is_consulted() {
         let _g = SPILL_LATCH_GUARD.lock().unwrap_or_else(|e| e.into_inner());
         SPILL_WARNED.store(false, std::sync::atomic::Ordering::Relaxed);
         assert!(
-            warn_spill_once(1_000, std::path::Path::new("/tmp")),
+            warn_spill_once_for(1_000, std::path::Path::new("/tmp"), SpillKind::Raw),
             "first call must warn"
         );
         assert!(
-            !warn_spill_once(1_000, std::path::Path::new("/tmp")),
+            !warn_spill_once_for(1_000, std::path::Path::new("/tmp"), SpillKind::Raw),
             "second call must be suppressed by the once-latch"
         );
         SPILL_WARNED.store(false, std::sync::atomic::Ordering::Relaxed);
