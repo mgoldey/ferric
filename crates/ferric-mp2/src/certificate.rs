@@ -86,14 +86,14 @@ pub fn with_rimp2_envelope(
 /// 3-index screening (or the threshold 0, which drops nothing), and all
 /// electrons correlated on an RHF reference (`validation_basis_coverage.rs`
 /// runs `RiMp2Config::default()`). The UHF evidence
-/// (`validation_u_rimp2.rs`) also runs frozen core 2 on HO2, so a UHF
-/// reference is in scope with any frozen core.
+/// (`validation_u_rimp2.rs`) runs frozen core 0 on every system and frozen
+/// core 2 on HO2, so a UHF reference is in scope at exactly those two counts.
 fn in_anchor_scope(reference: &Certificate, cfg: &RiMp2Config, op: &Operator) -> bool {
     op.kind == OperatorKind::Coulomb
         && cfg.kappa.is_none()
         && cfg.metric_op.is_none()
         && cfg.eri3_screen_thresh.is_none_or(|t| t == 0.0)
-        && (cfg.frozen_core == 0 || reference.capability == "uhf")
+        && (cfg.frozen_core == 0 || (reference.capability == "uhf" && cfg.frozen_core == 2))
 }
 
 /// Canonical RI-MP2 (`rimp2`, closed or open shell) run with `cfg`.
@@ -431,8 +431,8 @@ mod tests {
     }
 
     /// The anchor is attached only inside its evidence's settings: each
-    /// setting outside them drops it on its own, and frozen core drops it on
-    /// an RHF reference only.
+    /// setting outside them drops it on its own. Frozen core drops it on an
+    /// RHF reference; on UHF it keeps it at the evidence's counts 0 and 2 only.
     #[test]
     fn rimp2_anchor_is_gated_on_the_evidence_settings() {
         let cert = |reference: &Certificate, cfg: RiMp2Config, op: Operator| {
@@ -465,6 +465,18 @@ mod tests {
                 coul(),
             ),
             ("uhf kappa", uhf.clone(), d().with_kappa(1.1), coul()),
+            (
+                "uhf frozen core 1",
+                uhf.clone(),
+                d().with_frozen_core(1),
+                coul(),
+            ),
+            (
+                "uhf frozen core 3",
+                uhf.clone(),
+                d().with_frozen_core(3),
+                coul(),
+            ),
         ];
         for (what, reference, cfg, op) in outside {
             let c = cert(&reference, cfg, op);
@@ -478,7 +490,8 @@ mod tests {
             );
         }
         let inside = [
-            ("uhf frozen core", uhf.clone(), d().with_frozen_core(2)),
+            ("uhf all electron", uhf.clone(), d()),
+            ("uhf frozen core 2", uhf.clone(), d().with_frozen_core(2)),
             (
                 "eri3 screen 0",
                 rhf(),
