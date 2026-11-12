@@ -205,9 +205,21 @@ fn case(label: &str, xyz: &str, n_core: usize, n_active: usize, nel: (usize, usi
     let mut worst_at = (0usize, 0usize, 0.0f64, 0.0f64);
     let mut free_pairs = 0usize;
     for &(lo, hi) in blocks(nc, na, nmo).iter() {
-        let mmax = maxabs(&m.slice(s![lo..hi, lo..hi]).to_owned());
+        let mblk = m.slice(s![lo..hi, lo..hi]).to_owned();
+        let mmax = maxabs(&mblk);
         let n = (hi - lo) as f64;
-        let delta = 4.0 * EPS * n * mmax;
+        // Backward error of the eigensolver `canonicalize` uses (eigh, lower
+        // triangle, of ½(M + Mᵀ)), measured on this block: the residual
+        // |MV − VΛ| plus the orthogonality loss of V times |M|. LAPACK bounds
+        // it by c·n·ε·|M| with an unstated c, so it is measured, not assumed;
+        // 4nε|M| stays as a floor.
+        let delta = {
+            let sym = 0.5 * (&mblk + &mblk.t());
+            let (w, v) = sym.eigh(UPLO::Lower).unwrap();
+            let resid = maxabs(&(sym.dot(&v) - &v * &w));
+            let orth_v = maxabs(&(v.t().dot(&v) - Array2::<f64>::eye(hi - lo)));
+            (resid + orth_v * mmax).max(4.0 * EPS * n * mmax)
+        };
         let gap = |p: usize, q: usize| (m[(p, p)] - m[(q, q)]).abs();
         for p in lo..hi {
             let mut sum_sq = 0.0;
