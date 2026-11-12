@@ -259,6 +259,21 @@ def test_a_patch_to_the_test_is_not_a_production_mutation(repo):
     assert calls == []
 
 
+def test_a_rename_out_of_production_source_is_not_a_production_mutation(repo):
+    patch = repo / "testdata/mutations/rename.patch"
+    patch.write_text(
+        "diff --git a/crates/demo/src/helper.rs b/crates/demo/tests/helper.rs\n"
+        "similarity index 100%\n"
+        "rename from crates/demo/src/helper.rs\n"
+        "rename to crates/demo/tests/helper.rs\n"
+    )
+    _, (rep,), calls, _ = _run(repo, patch)
+    assert rep["status"] == "not a production mutation", rep
+    assert "crates/demo/tests/helper.rs" in rep["reason"], rep
+    assert "crates/demo/src/helper.rs" not in rep["reason"], rep
+    assert calls == []
+
+
 def test_a_failing_baseline_is_rejected(repo):
     patch = _patch(repo, "two", LIB, "1.0", "2.0")
     _, (rep,), calls, ledger = _run(

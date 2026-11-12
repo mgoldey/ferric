@@ -57,8 +57,13 @@ NOT_SEEN = "not seen to fail"
 
 
 def patch_paths(text):
-    """The files a unified diff changes (its `diff --git a/X b/X` lines)."""
-    return re.findall(r"^diff --git a/(\S+) b/\S+$", text, re.MULTILINE)
+    """Every file a unified diff touches: both sides of each `diff --git a/X b/Y`
+    header and the `rename`/`copy` from/to lines."""
+    paths = []
+    for a, b in re.findall(r"^diff --git a/(.+) b/(.+)$", text, re.MULTILINE):
+        paths += [a, b]
+    paths += re.findall(r"^(?:rename|copy) (?:from|to) (.+)$", text, re.MULTILINE)
+    return list(dict.fromkeys(paths))
 
 
 def production_path(path):
