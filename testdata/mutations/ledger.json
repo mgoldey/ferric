@@ -15,7 +15,7 @@
     {
       "anchor": "UHF",
       "patch": "testdata/mutations/uhf.patch",
-      "mutation": "uhf.rs: the beta Fock matrix subtracts K_alpha instead of K_beta.",
+      "mutation": "uhf.rs: the beta term of the electronic energy traces D_beta against H + F_alpha instead of H + F_beta.",
       "evidence": "crates/ferric-scf/tests/validation_open_shell_scf.rs",
       "test": "uhf_ho2_vs_pyscf",
       "result": null
@@ -26,7 +26,15 @@
       "mutation": "rohf.rs: the beta Fock matrix subtracts K_alpha instead of K_beta.",
       "evidence": "crates/ferric-scf/tests/validation_open_shell_scf.rs",
       "test": "rohf_ho2_vs_pyscf",
-      "result": null
+      "result": {
+        "patch_sha256": "9ef58f54e32696aefda5444a50a946c91bc405f159ca4fa54e64d74c1e146ecf",
+        "base_commit": "afaf50376db407671d10a415eb949be9fd0ae679",
+        "failing_test": "rohf_ho2_vs_pyscf",
+        "assertion": "crates/ferric-scf/tests/validation_open_shell_scf.rs:241",
+        "message": "ho2/6-31g/ROHF: energy -150.319881238879 vs reference -150.108147407523 (|d| 2.12e-1 >= 1e-10)",
+        "baseline_run": true,
+        "date": "2026-11-11"
+      }
     },
     {
       "anchor": "RKS",
@@ -34,12 +42,20 @@
       "mutation": "xc_batch.rs: closed-shell sigma = gx^2 + 2 gy^2 (gz^2 replaced by gy^2) on both density paths.",
       "evidence": "crates/ferric-scf/tests/validation_ks_energies.rs",
       "test": "rks_h2s_pbe_vs_pyscf",
-      "result": null
+      "result": {
+        "patch_sha256": "3f1d21d3ebd341f9872efd5ca4da3c20fc4b7d6e82af49a4350779c06a9e62d7",
+        "base_commit": "afaf50376db407671d10a415eb949be9fd0ae679",
+        "failing_test": "rks_h2s_pbe_vs_pyscf",
+        "assertion": "crates/ferric-scf/tests/validation_ks_energies.rs:378",
+        "message": "h2s/def2-svp/RKS-pbe: energy -399.071001022430 vs reference -399.083122163304 (|d| 1.21e-2 >= 1e-10)",
+        "baseline_run": true,
+        "date": "2026-11-11"
+      }
     },
     {
       "anchor": "UKS",
       "patch": "testdata/mutations/uks.patch",
-      "mutation": "uhf.rs: the UKS XC term is evaluated with D_alpha in place of D_beta.",
+      "mutation": "xc_batch.rs: polarized sigma_ab = ax bx + ay by + ay bz (az bz replaced by ay bz) on both density paths.",
       "evidence": "crates/ferric-scf/tests/validation_ks_energies.rs",
       "test": "uks_nh2_pbe_vs_pyscf",
       "result": null
@@ -50,7 +66,15 @@
       "mutation": "rohf.rs: the ROKS XC term is evaluated with D_alpha in place of D_beta.",
       "evidence": "crates/ferric-scf/tests/validation_roks_energies.rs",
       "test": "roks_nh2_pbe_vs_pyscf",
-      "result": null
+      "result": {
+        "patch_sha256": "176d426b48a77d422aaad57280b5a0acebcae603ae43f7928884a5379cbf8d7f",
+        "base_commit": "afaf50376db407671d10a415eb949be9fd0ae679",
+        "failing_test": "roks_nh2_pbe_vs_pyscf",
+        "assertion": "crates/ferric-scf/tests/validation_roks_energies.rs:250",
+        "message": "nh2/6-31g/ROKS-pbe: energy -56.364363774467 vs reference -55.776390555882 (|d| 5.88e-1 >= 1e-11)",
+        "baseline_run": true,
+        "date": "2026-11-11"
+      }
     },
     {
       "anchor": "RI-MP2",
@@ -69,7 +93,15 @@
       "mutation": "u_rimp2.rs: the beta-beta pair energy uses the alpha orbital energies.",
       "evidence": "crates/ferric-mp2/tests/validation_u_rimp2.rs",
       "test": "u_rimp2_oh_ccpvdz_vs_pyscf_dfump2",
-      "result": null
+      "result": {
+        "patch_sha256": "8c6b8a944f67b90051fff89cd39036117e70dd1798e7002be1bee377a829ff2c",
+        "base_commit": "afaf50376db407671d10a415eb949be9fd0ae679",
+        "failing_test": "u_rimp2_oh_ccpvdz_vs_pyscf_dfump2",
+        "assertion": "crates/ferric-mp2/tests/validation_u_rimp2.rs:173",
+        "message": "oh/cc-pvdz ump2: E_bb -0.011675578481 vs reference -0.011814219831 (|d| 1.39e-4 >= 1e-8)",
+        "baseline_run": true,
+        "date": "2026-11-11"
+      }
     }
   ]
 }

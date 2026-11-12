@@ -55,6 +55,20 @@ for each element, basis, auxiliary basis or functional of the run outside that
 set. The check is per dimension, so a run inside every set can still be a
 combination no test ran. The warning does not change the grade.
 
+Each `ENERGY_ANCHORS` entry also names a production-code mutation that its
+test fails on: a patch under `testdata/mutations/` and a row in
+`testdata/mutations/ledger.json` recording the patch's SHA-256, the commit it
+ran on, the failing test and the assertion that caught it. The ferric-core test
+`mutation_ledger_matches_the_registry` checks on every run that each row's
+evidence file is the registry's and its hash is the patch's, and that every
+anchor has a recorded row or is in the test's pending list. The CI gate does
+not run the patches; run them on demand with
+`box-lease run --label anchor-mutations -- scripts/check_anchor_mutations.py --scratch DIR --write`
+(add `--anchor RHF` to select rows). The script applies each patch in a scratch
+worktree under `DIR`, runs only that anchor's test and accepts the patch only
+when the test fails at one of its own `assert!` lines; a compile error, any
+other panic or a timeout is rejected.
+
 Post-SCF kinds print a `certificate` block after their result: the MP2 family
 (`rimp2` exact, local and open-shell, `mp3`, `oo-rimp2`, `att-rimp2`, `mp2-v`,
 `scs-mp2`, `scs-mp2-2terfc`, `laplace-mp2`, `laplace-sos-mp2`), `rs-mp2-rpa`,
