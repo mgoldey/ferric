@@ -1200,6 +1200,16 @@ impl PyAoIntegrals {
             naux: dfbs.nbasis(),
         })
     }
+    /// pVp `W = Σ_a ⟨∂_a μ|V|∂_a ν⟩` over the nuclei (nao × nao),
+    /// ECP-effective charges as `nuclear()`: PySCF's `int1e_pnucp`, the
+    /// small-component potential `W / (4c²)` of spin-free X2C and DKH.
+    fn pvp<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray2<f64>>> {
+        let prep = &self.prep;
+        let w = py
+            .allow_threads(|| ferric_integrals::pvp::pvp_nuclear(prep))
+            .map_err(make_err)?;
+        Ok(PyArray2::from_owned_array(py, w))
+    }
     fn __repr__(&self) -> String {
         format!(
             "AoIntegrals(basis={:?}, natoms={}, nao={})",

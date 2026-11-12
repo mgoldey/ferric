@@ -717,6 +717,11 @@ class AoIntegrals:
     ) -> DfJk:
         """RI-J/RI-K fitters against `aux`, built once and reused per density."""
         ...
+    def pvp(self) -> NDArray[np.float64]:
+        """pVp W = sum_a <d_a mu|V|d_a nu> over the nuclei (nao x nao),
+        ECP-effective charges as nuclear(): PySCF's int1e_pnucp, the
+        small-component potential W / (4 c^2) of spin-free X2C and DKH."""
+        ...
 
 class XcFunctional:
     """An XC functional on one molecule's grid, from AoIntegrals.xc_functional.
