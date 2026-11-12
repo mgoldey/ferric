@@ -10874,7 +10874,7 @@ fn evaluate_dispersion(
     dispersion=None, df_j_aux=None, df_k_aux=None, ri_k_precision=None,
     grid_radial=None, grid_angular=None, grid_prune=None,
     symmetry=false, irrep_nelec=None, guess_basis=None, guess_projection=None,
-    grid_weight_cut=None, ri_j_precision=None,
+    grid_weight_cut=None, ri_j_precision=None, dm0=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_ksdft(
@@ -10905,6 +10905,7 @@ fn run_ksdft(
     guess_projection: Option<&str>,
     grid_weight_cut: Option<f64>,
     ri_j_precision: Option<&str>,
+    dm0: Option<numpy::PyReadonlyArray2<'_, f64>>,
 ) -> PyResult<PyObject> {
     run_dft(
         py,
@@ -10939,7 +10940,7 @@ fn run_ksdft(
         guess_projection,
         grid_weight_cut,
         ri_j_precision,
-        None,
+        dm0,
     )
 }
 
