@@ -5650,3 +5650,73 @@ def run_casci(
     lowest root of the ``(n_alpha, n_beta)`` sector. ``active_start``
     defaults to ``(N - n_alpha - n_beta) / 2``."""
     ...
+
+class CasScfResult:
+    """Result of run_casscf: two-step CASSCF, single root."""
+
+    e_total: float
+    """CASSCF energy at ``mo_coeff`` (Ha)."""
+    e_core: float
+    """Nuclear repulsion plus the core orbitals' energy at ``mo_coeff``."""
+    rhf_energy: float
+    n_determinants: int
+    iterations: int
+    """Macro iterations (gradient evaluations) taken."""
+    grad_norm: float
+    """2-norm of the orbital gradient at ``mo_coeff``."""
+    converged: bool
+    ci_converged: bool
+    """The final CAS-CI Davidson solve reached ``ci_conv_thresh``."""
+    ci_residual_norm: float
+    n_core: int
+    @property
+    def ci_vector(self) -> NDArray[np.float64]:
+        """CI coefficients, shape ``(n_alpha_strings, n_beta_strings)``, in
+        the optimized active orbitals."""
+        ...
+    @property
+    def dm1(self) -> NDArray[np.float64]:
+        """Spin-summed 1-RDM over the active orbitals."""
+        ...
+    @property
+    def dm2(self) -> NDArray[np.float64]:
+        """Spin-summed 2-RDM, PySCF ``make_rdm12`` convention."""
+        ...
+    @property
+    def mo_coeff(self) -> NDArray[np.float64]:
+        """Optimized orbitals, shape ``(nbasis, nmo)``: core, active and
+        virtual columns, not canonicalized within a block."""
+        ...
+    @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate: ``capability`` ``"casscf"`` (ungraded);
+        ``warnings`` lists a non-converged macro loop or final CI solve."""
+        ...
+
+def run_casscf(
+    mol: Molecule,
+    basis_set: BasisSet,
+    n_active: int,
+    n_elec_active: tuple[int, int],
+    n_core: int | None = None,
+    casscf_grad_tol: float = 1e-7,
+    casscf_energy_tol: float = 1e-12,
+    casscf_max_iter: int = 300,
+    casscf_max_step: float = 0.2,
+    ci_conv_thresh: float = 1e-10,
+    ci_max_subspace: int = 50,
+    ci_max_iter: int = 200,
+    memory_budget_gb: float | None = None,
+    scf_max_iter: int | None = None,
+    scf_energy_conv: float | None = None,
+    scf_density_conv: float | None = None,
+) -> CasScfResult:
+    """Two-step CASSCF from the canonical exact-J/K RHF orbitals:
+    ``n_active`` active orbitals above ``n_core`` doubly occupied ones,
+    lowest root, ``n_alpha == n_beta`` only. Each macro iteration solves the
+    CAS-CI with RDMs and takes an inverse-BFGS orbital step. Converged when
+    ``grad_norm < casscf_grad_tol`` and the energy change is below
+    ``casscf_energy_tol``; otherwise a ``RuntimeWarning`` is emitted and
+    ``converged`` is False. ``n_core`` defaults to
+    ``(N - n_alpha - n_beta) / 2``."""
+    ...

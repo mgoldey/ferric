@@ -1,5 +1,6 @@
 //! `ferric.run_casci`: CAS-CI (`ferric_ci::run_cas_ci`) with spin-summed
-//! 1- and 2-RDMs, on a closed-shell exact-J/K RHF reference.
+//! 1- and 2-RDMs, and `ferric.run_casscf`: two-step CASSCF
+//! (`ferric_ci::run_casscf`), both on a closed-shell exact-J/K RHF reference.
 
 use crate::{
     budget_bytes_from_gb, certificate_dict, make_err, rhf_config_conv, PyBasisSet, PyMolecule,
@@ -211,8 +212,204 @@ fn run_casci(
     })
 }
 
-/// Register `run_casci` and `CasCiResult`.
+/// Library capability name of `run_casscf` on the certificate.
+const CASSCF_CAPABILITY: &str = "casscf";
+
+#[pyclass]
+#[pyo3(name = "CasScfResult")]
+struct PyCasScfResult {
+    #[pyo3(get)]
+    e_total: f64,
+    #[pyo3(get)]
+    e_core: f64,
+    #[pyo3(get)]
+    rhf_energy: f64,
+    #[pyo3(get)]
+    n_determinants: usize,
+    #[pyo3(get)]
+    iterations: usize,
+    #[pyo3(get)]
+    grad_norm: f64,
+    #[pyo3(get)]
+    converged: bool,
+    #[pyo3(get)]
+    ci_converged: bool,
+    #[pyo3(get)]
+    ci_residual_norm: f64,
+    #[pyo3(get)]
+    n_core: usize,
+    n_alpha_str: usize,
+    n_beta_str: usize,
+    ci: Vec<f64>,
+    dm1: Array2<f64>,
+    dm2: Array4<f64>,
+    mo_coeff: Array2<f64>,
+    certificate_data: Certificate,
+}
+
+#[pymethods]
+impl PyCasScfResult {
+    /// CI coefficients, shape `(n_alpha_strings, n_beta_strings)`, in the
+    /// optimized active orbitals.
+    #[getter]
+    fn ci_vector<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray2<f64>>> {
+        let a = Array2::from_shape_vec((self.n_alpha_str, self.n_beta_str), self.ci.clone())
+            .map_err(make_err)?;
+        Ok(a.into_pyarray(py))
+    }
+    /// Spin-summed 1-RDM over the active orbitals.
+    #[getter]
+    fn dm1<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        self.dm1.clone().into_pyarray(py)
+    }
+    /// Spin-summed 2-RDM (PySCF `make_rdm12` convention).
+    #[getter]
+    fn dm2<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray4<f64>> {
+        self.dm2.clone().into_pyarray(py)
+    }
+    /// Optimized orbitals, shape `(nbasis, nmo)`: core, active, virtual.
+    #[getter]
+    fn mo_coeff<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        self.mo_coeff.clone().into_pyarray(py)
+    }
+    /// Validation certificate (schema of `RhfResult.certificate`).
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        certificate_dict(py, &self.certificate_data)
+    }
+    fn __repr__(&self) -> String {
+        format!(
+            "CasScfResult(e_total={:.10}, iterations={}, grad_norm={:.1e}, converged={})",
+            self.e_total, self.iterations, self.grad_norm, self.converged
+        )
+    }
+}
+
+/// Two-step CASSCF from the canonical RHF orbitals: `n_active` active
+/// orbitals above `n_core` doubly occupied ones, single root.
+#[pyfunction]
+#[pyo3(signature = (mol, basis_set, n_active, n_elec_active, n_core=None, casscf_grad_tol=1e-7, casscf_energy_tol=1e-12, casscf_max_iter=300, casscf_max_step=0.2, ci_conv_thresh=1e-10, ci_max_subspace=50, ci_max_iter=200, memory_budget_gb=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None))]
+#[allow(clippy::too_many_arguments)]
+fn run_casscf(
+    py: Python<'_>,
+    mol: &PyMolecule,
+    basis_set: &PyBasisSet,
+    n_active: usize,
+    n_elec_active: (usize, usize),
+    n_core: Option<usize>,
+    casscf_grad_tol: f64,
+    casscf_energy_tol: f64,
+    casscf_max_iter: usize,
+    casscf_max_step: f64,
+    ci_conv_thresh: f64,
+    ci_max_subspace: usize,
+    ci_max_iter: usize,
+    memory_budget_gb: Option<f64>,
+    scf_max_iter: Option<usize>,
+    scf_energy_conv: Option<f64>,
+    scf_density_conv: Option<f64>,
+) -> PyResult<PyCasScfResult> {
+    let nelec = mol.inner.nelec() as usize;
+    let n_act_el = n_elec_active.0 + n_elec_active.1;
+    let n_core = match n_core {
+        Some(s) => s,
+        None => {
+            if n_act_el > nelec || !(nelec - n_act_el).is_multiple_of(2) {
+                return Err(make_err(format!(
+                    "run_casscf: {n_act_el} active electrons do not leave an even core \
+                     count out of {nelec}"
+                )));
+            }
+            (nelec - n_act_el) / 2
+        }
+    };
+    let budget = budget_bytes_from_gb(memory_budget_gb);
+    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
+    let rhf_config = rhf_config_conv(
+        None,
+        budget,
+        ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
+    );
+    let rhf = solve_rhf(
+        &ParallelContext::default(),
+        &mol.inner,
+        &prep,
+        op,
+        &bounds,
+        &rhf_config,
+    )
+    .map_err(make_err)?;
+    if !rhf.converged {
+        return Err(make_err(ferric_core::FerricError::ScfConvergence {
+            iterations: rhf.iterations,
+            last_energy: rhf.energy,
+        }));
+    }
+    let cfg = ferric_ci::CasScfConfig {
+        n_active,
+        n_elec_active,
+        n_core,
+        grad_tol: casscf_grad_tol,
+        energy_tol: casscf_energy_tol,
+        max_iter: casscf_max_iter,
+        max_step: casscf_max_step,
+        ci_conv_thresh,
+        ci_max_subspace,
+        ci_max_iter,
+        memory_budget_bytes: budget,
+        ..Default::default()
+    };
+    let r = ferric_ci::run_casscf(&mol.inner, &prep, &rhf, &cfg).map_err(make_err)?;
+
+    let mut cert = Certificate::ungraded(CASSCF_CAPABILITY).with_build(BuildStamp::new(
+        ferric_build_info::VERSION,
+        ferric_build_info::COMMIT,
+        ferric_build_info::DIRTY,
+    ));
+    if !r.converged {
+        let msg = format!(
+            "CASSCF did not converge in {} macro iterations (|g| = {:.2e}, \
+             casscf_grad_tol {casscf_grad_tol:e}, casscf_energy_tol {casscf_energy_tol:e})",
+            r.iterations, r.grad_norm
+        );
+        crate::emit_runtime_warning(py, msg.clone());
+        cert.push_warning(msg);
+    }
+    if !r.ci_converged {
+        let msg = format!(
+            "final CAS-CI Davidson residual {:.2e} did not reach ci_conv_thresh {ci_conv_thresh:e}",
+            r.ci_residual_norm
+        );
+        crate::emit_runtime_warning(py, msg.clone());
+        cert.push_warning(msg);
+    }
+    Ok(PyCasScfResult {
+        e_total: r.e_total,
+        e_core: r.e_core,
+        rhf_energy: rhf.energy,
+        n_determinants: r.n_determinants,
+        iterations: r.iterations,
+        grad_norm: r.grad_norm,
+        converged: r.converged,
+        ci_converged: r.ci_converged,
+        ci_residual_norm: r.ci_residual_norm,
+        n_core,
+        n_alpha_str: ferric_ci::strings::enumerate_strings(n_active, n_elec_active.0).len(),
+        n_beta_str: ferric_ci::strings::enumerate_strings(n_active, n_elec_active.1).len(),
+        ci: r.ci_vector,
+        dm1: r.rdms.dm1,
+        dm2: r.rdms.dm2,
+        mo_coeff: r.mo_coeff,
+        certificate_data: cert,
+    })
+}
+
+/// Register `run_casci`, `run_casscf` and their result classes.
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_casci, m)?)?;
-    m.add_class::<PyCasCiResult>()
+    m.add_class::<PyCasCiResult>()?;
+    m.add_function(wrap_pyfunction!(run_casscf, m)?)?;
+    m.add_class::<PyCasScfResult>()
 }
