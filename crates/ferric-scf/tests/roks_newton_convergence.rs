@@ -65,7 +65,8 @@ struct Run {
     energy: Option<f64>,
     iterations: usize,
     hvps: usize,
-    /// AH steps whose Davidson did not converge (PCG Newton taken instead).
+    /// AH steps that took the PCG Newton step instead: Davidson did not
+    /// converge, or the lowest eigenvector had a vanishing leading entry.
     ah_fallbacks: usize,
     /// Newton PCG solves stopped on negative curvature.
     truncations: usize,
