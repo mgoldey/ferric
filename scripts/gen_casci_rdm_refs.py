@@ -40,7 +40,9 @@ import sys
 from math import comb
 from pathlib import Path
 
-OUT_DIR = Path(__file__).resolve().parent.parent / "crates/ferric-ci/tests/data/casci_rdm"
+OUT_DIR = (
+    Path(__file__).resolve().parent.parent / "crates/ferric-ci/tests/data/casci_rdm"
+)
 TOL_ANCHOR = 1e-10
 MIN_GAP = 1e-4
 

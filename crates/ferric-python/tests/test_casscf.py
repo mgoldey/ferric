@@ -82,4 +82,6 @@ def test_open_shell_active_space_is_an_error():
 def test_unconverged_ci_raises():
     mol = ferric.Molecule.from_xyz_string(_H2O)
     with pytest.raises(Exception, match="ci_conv_thresh"):
-        ferric.run_casscf(mol, ferric.BasisSet.bundled("6-31g"), 4, (2, 2), ci_max_iter=1)
+        ferric.run_casscf(
+            mol, ferric.BasisSet.bundled("6-31g"), 4, (2, 2), ci_max_iter=1
+        )
