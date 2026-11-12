@@ -3753,7 +3753,12 @@ fn run_uhf(
         &config,
         fock_hook,
     )?;
-    Ok(PyUhfResult::from_scf(r, &emol, &config, &basis_set.inner.name))
+    Ok(PyUhfResult::from_scf(
+        r,
+        &emol,
+        &config,
+        &basis_set.inner.name,
+    ))
 }
 
 // ── ROHF (open-shell, spin-pure) ──
@@ -3856,7 +3861,12 @@ fn run_rohf(
         &config,
         fock_hook,
     )?;
-    Ok(PyUhfResult::from_scf(r, &emol, &config, &basis_set.inner.name))
+    Ok(PyUhfResult::from_scf(
+        r,
+        &emol,
+        &config,
+        &basis_set.inner.name,
+    ))
 }
 
 // ── Constrained DFT (cDFT) ──
