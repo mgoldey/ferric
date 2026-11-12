@@ -2239,28 +2239,94 @@ pub(crate) fn checked_dm0(
     let Some(dm0) = dm0 else {
         return Ok(None);
     };
-    let n = prep.nbasis();
-    let d = checked_square(dm0, n, &format!("{who}: dm0"))?;
-    let asym = asymmetry(&d, &format!("{who}: dm0"))?;
+    let s = oneelectron::overlap(prep);
+    let what = format!("{who}: dm0");
+    let d = checked_start_density(dm0, &s, nelec, &what)?;
+    d.map_err(|(count, tol)| {
+        PyValueError::new_err(format!(
+            "{what} holds tr(D S) = {count:.12} electrons, the system has {nelec} \
+             (|difference| above the round-off bound n^2 eps sum|D*S| = {tol:.3e}); \
+             dm0 must be the total closed-shell density for this molecule, charge and basis"
+        ))
+    })
+    .map(Some)
+}
+
+/// An open-shell starting density pair `dm0 = (D_alpha, D_beta)` checked as
+/// [`checked_dm0`] checks a closed-shell one, per spin: each `D_s` finite,
+/// `(nao, nao)`, symmetric to round-off and holding `n_s` electrons
+/// (`|tr(D_s S) - n_s| <= n^2 eps sum|D_s*S|`). `dm0` must be a tuple or
+/// list of two arrays. Returns the symmetrized pair.
+pub(crate) fn checked_dm0_spin(
+    dm0: Option<&Bound<'_, PyAny>>,
+    prep: &PreparedBasis,
+    n_spin: (usize, usize),
+    who: &str,
+) -> PyResult<Option<(Array2<f64>, Array2<f64>)>> {
+    let Some(dm0) = dm0 else {
+        return Ok(None);
+    };
+    let pair = || {
+        PyValueError::new_err(format!(
+            "{who}: dm0 must be a pair (D_alpha, D_beta) of (n, n) arrays; \
+             for a closed-shell total density D pass (D / 2, D / 2)"
+        ))
+    };
+    let is_pair = dm0.downcast::<pyo3::types::PyTuple>().is_ok()
+        || dm0.downcast::<pyo3::types::PyList>().is_ok();
+    if !is_pair || dm0.len()? != 2 {
+        return Err(pair());
+    }
+    let s = oneelectron::overlap(prep);
+    let mut out = Vec::with_capacity(2);
+    for (i, (name, n_s)) in [("D_alpha", n_spin.0), ("D_beta", n_spin.1)]
+        .into_iter()
+        .enumerate()
+    {
+        let what = format!("{who}: dm0[{i}] ({name})");
+        let d: PyReadonlyArray2<'_, f64> = dm0.get_item(i)?.extract().map_err(|_| pair())?;
+        let d = checked_start_density(d, &s, n_s as f64, &what)?.map_err(|(count, tol)| {
+            PyValueError::new_err(format!(
+                "{what} holds tr(D S) = {count:.12} electrons, the system has {n_s} \
+                 (|difference| above the round-off bound n^2 eps sum|D*S| = {tol:.3e}); \
+                 dm0 must be (D_alpha, D_beta) for this molecule, charge, multiplicity and basis"
+            ))
+        })?;
+        out.push(d);
+    }
+    let d_b = out.pop().expect("two spins");
+    Ok(Some((out.pop().expect("two spins"), d_b)))
+}
+
+/// The checks shared by [`checked_dm0`] and [`checked_dm0_spin`] for one
+/// starting density: shape, finiteness and symmetry raise here (`what`
+/// names it); an electron count `tr(D S)` off `n_electrons` by more than
+/// [`electron_count_tol`] is returned as `Err((count, tol))` for the caller
+/// to word. `Ok(D)` is `½ (D + Dᵀ)`.
+#[allow(clippy::type_complexity)]
+fn checked_start_density(
+    d: PyReadonlyArray2<'_, f64>,
+    s: &Array2<f64>,
+    n_electrons: f64,
+    what: &str,
+) -> PyResult<Result<Array2<f64>, (f64, f64)>> {
+    let d = checked_square(d, s.nrows(), what)?;
+    let asym = asymmetry(&d, what)?;
     let tol = roundoff_symmetry_tol(&d);
     if asym > tol {
         return Err(PyValueError::new_err(format!(
-            "{who}: dm0 is not symmetric (max |D - D^T| = {asym:.3e}, above the round-off \
+            "{what} is not symmetric (max |D - D^T| = {asym:.3e}, above the round-off \
              bound 4 n eps ||D||_F = {tol:.3e})"
         )));
     }
     let d = symmetrized(&d);
-    let s = oneelectron::overlap(prep);
     let count = d.iter().zip(s.iter()).map(|(x, y)| x * y).sum::<f64>();
-    let tol = electron_count_tol(&d, &s);
-    if (count - nelec).abs() > tol {
-        return Err(PyValueError::new_err(format!(
-            "{who}: dm0 holds tr(D S) = {count:.12} electrons, the system has {nelec} \
-             (|difference| above the round-off bound n^2 eps sum|D*S| = {tol:.3e}); \
-             dm0 must be the total closed-shell density for this molecule, charge and basis"
-        )));
-    }
-    Ok(Some(d))
+    let tol = electron_count_tol(&d, s);
+    Ok(if (count - n_electrons).abs() > tol {
+        Err((count, tol))
+    } else {
+        Ok(d)
+    })
 }
 
 /// A Python `hook(D) -> (E, V)` as an `RhfFockHook`. The SCF runs with the
@@ -2271,6 +2337,9 @@ pub(crate) struct PyFockHook {
     callable: Py<PyAny>,
     nao: usize,
     err: Option<PyErr>,
+    /// `sum |D o V|` of the last call (both spins open-shell), the input
+    /// of [`ferric_scf::noise_floor::hook_floor_term`].
+    last_sum_abs_dv: f64,
 }
 
 impl PyFockHook {
@@ -2285,6 +2354,7 @@ impl PyFockHook {
             callable: callable.clone().unbind(),
             nao,
             err: None,
+            last_sum_abs_dv: 0.0,
         })
     }
 
@@ -2363,6 +2433,9 @@ impl PyFockHook {
     /// The closed-shell `FnMut` the SCF calls.
     pub(crate) fn call(&mut self, d: &Array2<f64>) -> Result<(f64, Array2<f64>), FerricError> {
         let r = Python::with_gil(|py| self.eval(py, d));
+        if let Ok((_, v)) = &r {
+            self.last_sum_abs_dv = sum_abs_product(d, v);
+        }
         self.stash(r)
     }
 
@@ -2373,7 +2446,16 @@ impl PyFockHook {
         d_b: &Array2<f64>,
     ) -> Result<(f64, Array2<f64>, Array2<f64>), FerricError> {
         let r = Python::with_gil(|py| self.eval_spin(py, d_a, d_b));
+        if let Ok((_, v_a, v_b)) = &r {
+            self.last_sum_abs_dv = sum_abs_product(d_a, v_a) + sum_abs_product(d_b, v_b);
+        }
         self.stash(r)
+    }
+
+    /// The noise-floor term of the last call
+    /// ([`ferric_scf::noise_floor::hook_floor_term`]); 0 before any call.
+    pub(crate) fn floor_term(&self) -> f64 {
+        ferric_scf::noise_floor::hook_floor_term(self.last_sum_abs_dv)
     }
 
     /// The hook's own error if it raised, otherwise `scf`'s error as usual.
@@ -2382,6 +2464,24 @@ impl PyFockHook {
             (Some(e), _) => Err(e),
             (None, r) => r.map_err(make_err),
         }
+    }
+}
+
+/// `sum_ij |A_ij B_ij|`.
+fn sum_abs_product(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
+    a.iter().zip(b.iter()).map(|(x, y)| (x * y).abs()).sum()
+}
+
+/// Add a hook's noise-floor term to the floor in `r`'s exit report (none
+/// when the configuration is outside the floor model). A zero term leaves
+/// the floor bit-identical.
+fn add_hook_floor(r: &mut ferric_scf::result::ScfResult, term: f64) {
+    if let Some(f) = r
+        .convergence
+        .as_mut()
+        .and_then(|c| c.de_noise_floor.as_mut())
+    {
+        *f += term;
     }
 }
 
@@ -2394,8 +2494,11 @@ pub(crate) enum OpenShell {
 
 /// `run_uhf` / `run_rohf`'s SCF: the plain solve, or with a Python
 /// `hook(D_a, D_b) -> (E, V_a, V_b)` the hooked one
-/// (`solve_uhf_with_hook` / `solve_rohf_with_hook`). Unsupported settings
-/// are a `ValueError` before any work. GIL released for the SCF.
+/// (`solve_uhf_with_hook` / `solve_rohf_with_hook`), started from the
+/// per-spin densities `dm0` when given (`solve_*_from_spin_densities`).
+/// Unsupported settings are a `ValueError` before any work. GIL released
+/// for the SCF. Returns the result, with the hook's noise-floor term added
+/// to its exit report, and that term (0 without a hook).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn solve_open_shell(
     py: Python<'_>,
@@ -2407,31 +2510,46 @@ pub(crate) fn solve_open_shell(
     bounds: &SchwarzBounds,
     config: &ferric_scf::rhf::RhfConfig,
     fock_hook: Option<&Bound<'_, PyAny>>,
-) -> PyResult<ferric_scf::result::ScfResult> {
+    dm0: Option<&(Array2<f64>, Array2<f64>)>,
+) -> PyResult<(ferric_scf::result::ScfResult, f64)> {
     use ferric_scf::{rohf, uhf};
+    let solve = |hook: Option<ferric_scf::fock::SpinFockHook<'_>>| match (kind, dm0, hook) {
+        (OpenShell::Uhf, Some((a, b)), h) => {
+            uhf::solve_uhf_from_spin_densities(ctx, mol, prep, bounds, config, (a, b), h)
+        }
+        (OpenShell::Rohf, Some((a, b)), h) => {
+            rohf::solve_rohf_from_spin_densities(ctx, mol, prep, bounds, config, (a, b), h)
+        }
+        (OpenShell::Uhf, None, None) => uhf::solve_uhf(ctx, mol, prep, bounds, config),
+        (OpenShell::Rohf, None, None) => rohf::solve_rohf(ctx, mol, prep, op, bounds, config),
+        (OpenShell::Uhf, None, Some(h)) => {
+            uhf::solve_uhf_with_hook(ctx, mol, prep, bounds, config, h)
+        }
+        (OpenShell::Rohf, None, Some(h)) => {
+            rohf::solve_rohf_with_hook(ctx, mol, prep, bounds, config, h)
+        }
+    };
     let Some(hook) = fock_hook else {
-        return py
-            .allow_threads(|| match kind {
-                OpenShell::Uhf => uhf::solve_uhf(ctx, mol, prep, bounds, config),
-                OpenShell::Rohf => rohf::solve_rohf(ctx, mol, prep, op, bounds, config),
-            })
-            .map_err(make_err);
+        let r = py.allow_threads(|| solve(None)).map_err(make_err)?;
+        return Ok((r, 0.0));
     };
     ferric_scf::rhf::validate_fock_hook(config)
         .map_err(|e| PyValueError::new_err(e.to_string()))?;
     let mut h = PyFockHook::new(hook, prep.nbasis())?;
     let r = py.allow_threads(|| {
         let mut f = |d_a: &Array2<f64>, d_b: &Array2<f64>| h.call_spin(d_a, d_b);
-        match kind {
-            OpenShell::Uhf => uhf::solve_uhf_with_hook(ctx, mol, prep, bounds, config, &mut f),
-            OpenShell::Rohf => rohf::solve_rohf_with_hook(ctx, mol, prep, bounds, config, &mut f),
-        }
+        solve(Some(&mut f))
     });
-    h.finish(r)
+    let term = h.floor_term();
+    let mut r = h.finish(r)?;
+    add_hook_floor(&mut r, term);
+    Ok((r, term))
 }
 
 /// `solve_rhf_with_hook` with a Python `hook(D) -> (E, V)`, GIL released
 /// for the SCF. Unsupported settings are a `ValueError` before any work.
+/// Returns the result, with the hook's noise-floor term added to its exit
+/// report, and that term.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn solve_rhf_hooked(
     py: Python<'_>,
@@ -2442,7 +2560,7 @@ pub(crate) fn solve_rhf_hooked(
     bounds: &SchwarzBounds,
     config: &ferric_scf::rhf::RhfConfig,
     hook: &Bound<'_, PyAny>,
-) -> PyResult<ferric_scf::result::ScfResult> {
+) -> PyResult<(ferric_scf::result::ScfResult, f64)> {
     ferric_scf::rhf::validate_fock_hook(config)
         .map_err(|e| PyValueError::new_err(e.to_string()))?;
     let mut h = PyFockHook::new(hook, prep.nbasis())?;
@@ -2450,7 +2568,10 @@ pub(crate) fn solve_rhf_hooked(
         let mut f = |d: &Array2<f64>| h.call(d);
         ferric_scf::rhf::solve_rhf_with_hook(ctx, mol, prep, op, bounds, config, &mut f)
     });
-    h.finish(r)
+    let term = h.floor_term();
+    let mut r = h.finish(r)?;
+    add_hook_floor(&mut r, term);
+    Ok((r, term))
 }
 
 /// `run_dft`'s SCF: the convergence ladder, plain or with a `fock_hook`

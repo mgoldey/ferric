@@ -49,6 +49,11 @@
 //! rather than guess. The point-charge / field energy of an embedding is not in
 //! the `|E|` estimate (it enters only the rounding term).
 //!
+//! A Fock hook (`solve_*_with_hook`) adds `eps * sum |D o V|`
+//! ([`crate::noise_floor::hook_floor_term`]), known only once the hook has been called, so the
+//! front ends add it after the SCF
+//! ([`crate::noise_floor::hook_energy_conv_warning`]).
+//!
 //! The functions here are pure and nothing in the solvers reads them back, so
 //! energies and iteration counts are unchanged.
 
@@ -229,6 +234,75 @@ pub fn energy_conv_warning_with(
     )?;
     energy_conv_below_floor(config.energy_conv, floor)
         .then(|| floor_message(config.energy_conv, floor, nbf))
+}
+
+/// The floor a Fock hook adds: `eps * sum_ij |D_ij V_ij|`, with `D` and `V`
+/// the density the hook was last called with and the potential it returned
+/// (summed over both spins for an open-shell hook). It is the rounding of
+/// the hook's energy `E_hook = sum D V` and of the trace with `V` in the
+/// energy sum; a projection operator `mu P` makes it grow linearly in `mu`.
+///
+/// MEASURED on water/cc-pVDZ, the oxygen-in-water projection embedding
+/// (`run_rhf(fock_hook=)`, exact J/K, constant `V`), tail RMS of `|dE|` over
+/// the last 30 of 60 iterations, three starting guesses per point: 1.8e-11 to
+/// 2.2e-11 Ha at `mu = 1e5`, 1.6e-10 to 2.1e-10 at `1e6` and 1.3e-9 to 2.3e-9
+/// at `1e7`, against this term's 8.7e-11, 8.7e-10 and 8.7e-9: linear in `mu`
+/// and 0.15 to 0.26 times the term. The rest of the model gives 1.6e-11 Ha on
+/// that system.
+pub fn hook_floor_term(sum_abs_dv: f64) -> f64 {
+    f64::EPSILON * sum_abs_dv
+}
+
+/// The advisory for a hooked SCF, issued after it: `Some` only when
+/// `energy_conv` is below the floor with the hook term
+/// (`floor + hook_term`, [`hook_floor_term`]) and not below the floor without
+/// it, which [`energy_conv_warning`] has already reported before the SCF. A
+/// zero `hook_term` returns `None`.
+pub fn hook_energy_conv_warning(
+    mol: &Molecule,
+    nbf: usize,
+    config: &crate::rhf::RhfConfig,
+    family: SolverFamily,
+    hook_term: f64,
+) -> Option<String> {
+    hook_energy_conv_warning_with(
+        mol,
+        nbf,
+        config,
+        family,
+        crate::direct_jk::closed_shell_incremental_enabled(
+            config.energy_conv,
+            config.density_conv,
+            config.integral_thresh,
+        ),
+        hook_term,
+    )
+}
+
+/// [`hook_energy_conv_warning`] with the incremental-Fock switch given
+/// explicitly (see [`energy_conv_warning_with`]).
+pub fn hook_energy_conv_warning_with(
+    mol: &Molecule,
+    nbf: usize,
+    config: &crate::rhf::RhfConfig,
+    family: SolverFamily,
+    incremental_enabled: bool,
+    hook_term: f64,
+) -> Option<String> {
+    let floor = floor_for_config(
+        config,
+        estimate_total_energy_abs(mol),
+        nbf,
+        incremental_direct_expected(config, family, incremental_enabled),
+    )?;
+    let with_hook = floor + hook_term;
+    let ec = config.energy_conv;
+    (energy_conv_below_floor(ec, with_hook) && !energy_conv_below_floor(ec, floor)).then(|| {
+        format!(
+            "{} The fock_hook contributes ~{hook_term:.1e} Ha (eps sum|D*V| at the last density).",
+            floor_message(ec, with_hook, nbf)
+        )
+    })
 }
 
 /// The clause shared by the pre-SCF warning and the exit report.
@@ -518,5 +592,32 @@ mod tests {
         );
         c.df_j_aux = Some("def2-universal-jkfit".into());
         assert!(energy_conv_warning_with(&big, 239, &c, SolverFamily::ClosedShell, true).is_none());
+    }
+
+    /// The post-SCF hook advisory fires only on the verdict the hook term
+    /// changes, and a zero term leaves the floor bit-identical.
+    #[test]
+    fn hook_advisory_fires_only_when_the_hook_term_moves_the_verdict() {
+        let mut c = RhfConfig {
+            energy_conv: 1e-9,
+            ..RhfConfig::default()
+        };
+        let fam = SolverFamily::ClosedShell;
+        let floor = floor_for_config(&c, estimate_total_energy_abs(&water()), 7, true).unwrap();
+        assert_eq!((floor + hook_floor_term(0.0)).to_bits(), floor.to_bits());
+        assert!(hook_energy_conv_warning_with(&water(), 7, &c, fam, true, 0.0).is_none());
+        // mu = 1e7 on water/cc-pVDZ: sum|D*V| = 3.9e7, term 8.7e-9 Ha.
+        let term = hook_floor_term(3.9e7);
+        assert!((term - 8.66e-9).abs() < 1e-11, "{term}");
+        let text = hook_energy_conv_warning_with(&water(), 7, &c, fam, true, term).expect("fires");
+        assert!(text.contains("energy_conv 1.0e-9"), "{text}");
+        assert!(text.contains("fock_hook contributes ~8.7e-9 Ha"), "{text}");
+        // Already below the hook-free floor: the pre-SCF advisory said so.
+        c.energy_conv = 1e-16;
+        assert!(energy_conv_warning_with(&water(), 7, &c, fam, true).is_some());
+        assert!(hook_energy_conv_warning_with(&water(), 7, &c, fam, true, term).is_none());
+        // Above the floor with the term: no advisory.
+        c.energy_conv = 1e-6;
+        assert!(hook_energy_conv_warning_with(&water(), 7, &c, fam, true, term).is_none());
     }
 }

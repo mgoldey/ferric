@@ -3748,13 +3748,25 @@ def run_uhf(
     guess_basis: str | None = None,
     guess_projection: str | None = None,
     ri_j_precision: str | None = None,
+    dm0: tuple[NDArray[np.float64], NDArray[np.float64]] | None = None,
 ) -> UhfResult:
     """Unrestricted Hartree-Fock (open-shell). fock_hook=hook adds one
     density-dependent term: hook(D_a, D_b) gets the per-spin densities every
     iteration and returns (E, V_a, V_b); V_s is added to F_s and E to the
     energy, so the result is variational when V_s = dE/dD_s. The exception
     and refusal rules are run_rhf's (stability_descent and trah_trigger raise
-    ValueError with a hook). Note: the exit report (final_* residuals, unmet_criteria, non-convergence RuntimeWarning) is RHF-only today; non-convergence raises. A user-set energy_conv below the estimated (rounding-level) noise floor of dE emits one RuntimeWarning before the SCF starts.
+    ValueError with a hook). Note: the exit report (final_* residuals, unmet_criteria, non-convergence RuntimeWarning) is RHF-only today; non-convergence raises. A user-set energy_conv below the estimated (rounding-level) noise floor of dE emits one RuntimeWarning before the SCF starts; with a fock_hook, one more after it when the hook's term eps * sum|D_s*V_s| puts energy_conv below the floor.
+
+    dm0: starting densities, a pair (D_alpha, D_beta) of AO matrices
+    (nao, nao), such as a previous run's (density_alpha(), density_beta()).
+    Each spin starts from the natural orbitals of its density, so the first
+    iteration runs at (D_alpha, D_beta) when each is idempotent (a converged
+    density) and at its aufbau projection otherwise. Each D_s must be finite,
+    symmetric to round-off and hold the spin's electron count,
+    |tr(D_s S) - N_s| <= n^2 eps sum|D_s*S|; a closed-shell total density D
+    is passed as (D / 2, D / 2). A closed shell (N_alpha = N_beta) has its
+    beta HOMO and LUMO turned by 0.1 rad, as from any start. dm0 with guess=
+    or guess_basis= raises ValueError.
 
 
     cosx_grid / cosx_final_pass / cosx_final_grid / cosx_overlap_fit: COSX
@@ -3791,9 +3803,16 @@ def run_rohf(
     guess_basis: str | None = None,
     guess_projection: str | None = None,
     ri_j_precision: str | None = None,
+    dm0: tuple[NDArray[np.float64], NDArray[np.float64]] | None = None,
 ) -> UhfResult:
     """Restricted Open-Shell Hartree-Fock. fock_hook: as for run_uhf; V_a and
-    V_b enter before the Roothaan effective-Fock combination. Note: the exit report (final_* residuals, unmet_criteria, non-convergence RuntimeWarning) is RHF-only today. A user-set energy_conv below the estimated (rounding-level) noise floor of dE emits one RuntimeWarning before the SCF starts."""
+    V_b enter before the Roothaan effective-Fock combination. Note: the exit report (final_* residuals, unmet_criteria, non-convergence RuntimeWarning) is RHF-only today. A user-set energy_conv below the estimated (rounding-level) noise floor of dE emits one RuntimeWarning before the SCF starts; with a fock_hook, one more after it as for run_uhf.
+
+    dm0: a pair (D_alpha, D_beta) with run_uhf's checks. The start is one MO
+    set: the doubly occupied orbitals are the leading natural orbitals of
+    D_beta, the singly occupied ones those of D_alpha in the rest of the
+    space, so a converged ROHF pair is reproduced on the first iteration.
+    dm0 with guess_basis= raises ValueError."""
     ...
 
 def run_cdft(
