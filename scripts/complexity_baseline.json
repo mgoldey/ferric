@@ -25789,7 +25789,7 @@
   },
   "crates/ferric-integrals/src/three_index_source.rs::spill_warning_is_emitted_once_and_names_the_per_iteration_reread": {
     "cc": 2.0,
-    "mi": 82.92292796616849
+    "mi": 77.7
   },
   "crates/ferric-integrals/src/three_index_source.rs::spill_warning_is_emitted_once_and_names_the_per_iteration_reread::<anonymous>": {
     "cc": 1.0,
@@ -25805,7 +25805,7 @@
   },
   "crates/ferric-integrals/src/three_index_source.rs::spill_warning_text": {
     "cc": 1.0,
-    "mi": 101.69191801296151
+    "mi": 88.3
   },
   "crates/ferric-integrals/src/three_index_source.rs::spilled_accum_rows": {
     "cc": 1.0,
