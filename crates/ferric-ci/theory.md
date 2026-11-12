@@ -1,8 +1,8 @@
 # ferric-ci: CAS-CI phases, Slater–Condon rules, RDMs and CASSCF
 
 Scope: the CAS-CI Hamiltonian in `src/strings.rs`, `src/hamiltonian.rs`, the
-direct sigma build in `src/sigma.rs`, the RDMs in `src/rdm.rs` and two-step
-CASSCF in `src/casscf.rs`.
+direct sigma build in `src/sigma.rs`, the RDMs in `src/rdm.rs`, the NEVPT RDMs
+in `src/rdm3.rs` and two-step CASSCF in `src/casscf.rs`.
 Exact check: `scripts/casci_slater_condon_phases_sympy.py`. Numerical check:
 `tests/slater_condon_brute_force.rs`.
 
@@ -236,6 +236,80 @@ $O(N_\text{det}(n^\alpha_\text{exc}+n^\beta_\text{exc}))$ for $D$; scratch one
 $n^2\times$block $D$ per worker and 64 block results of $n^4+n^2$ doubles,
 charged to the CAS-CI memory plan when `compute_rdms` is set.
 
+## NEVPT RDMs (`src/rdm3.rs`)
+
+Inputs of strongly contracted NEVPT2: the normal-ordered 3-RDM, two
+contractions of the 4-RDM with the active $(aa|aa)$ block, and hole RDMs.
+Definitions (PySCF's, so that `pyscf.mrpt.nevpt2` formulas port directly):
+
+$$
+\Gamma^{(3)}_{p_1q_1p_2q_2p_3q_3} = \sum_{\sigma\tau\upsilon}
+  \langle a^\dagger_{p_1\sigma}a^\dagger_{p_2\tau}a^\dagger_{p_3\upsilon}
+  a_{q_3\upsilon}a_{q_2\tau}a_{q_1\sigma}\rangle ,
+$$
+
+$$
+f^\text{ca}_{abcdef} = \sum_{ijk}(ki|fj)\,\langle E_{ab}E_{cd}E_{ej}E_{ki}\rangle ,\qquad
+f^\text{ac}_{abcdef} = \sum_{ijk}(ik|je)\,\langle E_{ab}E_{cd}E_{jf}E_{ik}\rangle ,
+$$
+
+$$
+\eta^{(k)}_{p_1..p_k,a_1..a_k} = \sum_\text{spins}
+  \langle a_{p_1}\cdots a_{p_k}\,a^\dagger_{a_k}\cdots a^\dagger_{a_1}\rangle .
+$$
+
+$\Gamma^{(3)}$ is `fci.rdm.make_dm1234` + `reorder_dm1234`. $f^\text{ca}$,
+$f^\text{ac}$ are `mrpt.nevpt2._contract4pdm` with kernels
+`NEVPTkern_cedf_aedf`, `NEVPTkern_aedf_ecdf`: contractions of the E-product
+4-RDM, not the normal-ordered one. The einsum comments in PySCF's `make_a16`
+and `make_a22` that list the 4-RDM in the argument order above agree with the
+kernels to $4\times10^{-14}$ on random states; the comment `kbij,rpqjkiac`
+above the first `f3ca` use in `make_a16` does not (difference $\sim 40$).
+$\eta^{(k)}$ is `make_hdm1/2/3` fed with the E-product RDMs of
+`fci.rdm.make_dm123` (PySCF's NEVPT2 driver passes those, not the reordered
+ones); fed with the reordered ones it matches no operator ordering. The
+operator forms above were identified by exhaustive index permutation against
+dense Fock-space expectation values.
+
+Construction. With $X_{rs} = E_{rs}C$ (the $D$ of the 2-RDM build) and
+$\langle C|E_{ab}E_{cd} = (E_{dc}E_{ba}C)^\mathsf{T}$,
+
+$$
+\langle E_{ab}E_{cd}E_{ef}\rangle = \langle E_{dc}X_{ba}|X_{ef}\rangle ,\quad
+f^\text{ca}_{abcdef} = \langle E_{dc}X_{ba}|R_{ef}\rangle ,\quad
+f^\text{ac}_{abcdef} = \langle E_{dc}X_{ba}|R'_{ef}\rangle ,
+$$
+
+with $W_{fj} = \sum_{ki}(ki|fj)X_{ki}$, $R_{ef} = \sum_j E_{ej}W_{fj}$,
+$R'_{ef} = \sum_j E_{jf}W_{ej}$. $X$, $W$, $R$, $R'$ are $n^2$ vectors over all
+determinants ($W$ one GEMM); $L_{dc,ba} = E_{dc}X_{ba}$ is built for one block
+of α rows at a time (about $2^{21}/n^4$ determinants) and contracted as
+$L^\mathsf{T}[X|R|R']$, $n^4\times3n^2$. Blocks are summed in block order.
+No 4-RDM is formed. Then (PySCF `reorder_dm123`)
+
+$$
+\Gamma^{(3)}_{pqrstu} = \langle E_{pq}E_{rs}E_{tu}\rangle
+ - \delta_{qr}\Gamma_{pstu} - \delta_{st}\Gamma_{pqru} - \delta_{qt}\Gamma_{purs}
+ - \delta_{qr}\delta_{st}\gamma_{up}.
+$$
+
+Cost $O(3N_\text{det}n^6)$; memory $4n^2N_\text{det} + 6n^6$ resident plus one
+$L$ block and its $3n^6$ result per worker, reserved through a `MemoryPlan`
+before any allocation (`nevpt_rdm_memory_elems`).
+
+Identities: $\sum_x\Gamma^{(3)}_{pqrsxx} = (N-2)\Gamma_{pqrs}$,
+$\sum_x\eta^{(3)}_{pqx,abx} = (2n-N-2)\eta^{(2)}_{pq,ab}$,
+$\sum_x\eta^{(2)}_{px,ax} = (2n-N-1)\eta^{(1)}_{pa}$; for one determinant
+every RDM is the antisymmetrized product of the spin-resolved $\gamma$
+(particles) or $\eta = 1-\gamma^\mathsf{T}$ (holes). Both are blind to a
+wrong sign or index in the cumulant, which vanishes for one determinant and
+is summed away by a trace.
+
+Dense fallback (`src/lib.rs`). When Davidson stops with $\|r\|\ge$
+`conv_thresh` and $N_\text{det}\le$ `DENSE_SOLVE_MAX_DETS` (1024), the dense
+$H$ is diagonalized (LAPACK `eigh`) and its root kept if its residual is
+smaller; `converged` is then $\|r\| <$ `conv_thresh`.
+
 ## Two-step CASSCF (`src/casscf.rs`)
 
 Orbitals $C = [C_c\,|\,C_a\,|\,C_v]$: $n_c$ doubly occupied core orbitals
@@ -293,7 +367,7 @@ when the energy rises by more than $10^{-10}$ Ha; $\max_k|s_k|$ is capped at
 0.2. $\exp(K)$ is a Taylor series after scaling $K$ to $\infty$-norm $\le \tfrac12$,
 then squaring (`expm_antisymmetric`). Convergence: $\lVert g\rVert_2 < 10^{-7}$
 and $|\Delta E| < 10^{-12}$ Ha at the same iteration (defaults). Every CI solve
-must reach the Davidson residual threshold ($10^{-10}$ by default); the
+must reach the CI residual threshold ($10^{-10}$ by default); the
 gradient error is first order in that residual, so a solve that misses it
 is an error, not a warning.
 
@@ -449,6 +523,7 @@ full-space case is that check.
 | `tests/direct_sigma_vs_naive.rs` | The direct `sigma` against `sigma_naive` (the `general_element` pair loop) on random vectors, element-wise to $10^{-12}$: random 8-fold-symmetric integrals in ten sectors with $N_\alpha \ne N_\beta$, empty and full channels; real H2O/STO-3G integrals for full CI (441 det), 8 electrons in 6 orbitals above a frozen O 1s (225 det) and four unequal-spin sectors; `hamiltonian_diagonal` against the dense diagonal; unit vectors against dense columns. |
 | `tests/slater_condon_brute_force.rs` | The Rust `general_element`, `sigma` (direct) and `hamiltonian_diagonal` against an independent bit-loop second-quantized $H$ on random asymmetric integrals, element-wise to $10^{-12}$, sectors with odd and even $N_\alpha$, every excitation class exercised. |
 | `tests/casci_rdms.rs` | The RDM energy equals $c\cdot Hc$ from the direct sigma to rounding and the Davidson eigenvalue to rounding plus the residual norm; the traces, partial trace and symmetries above; `make_rdm12` (PySCF) of PySCF's dense ground state on ferric's integrals, rotated into the run's orbitals. A dropped β phase, the missing αβ cross terms and a doubled diagonal each fail it. |
+| `tests/casci_rdm3.rs` | NEVPT RDMs on ferric's CI vectors for H2O/6-31G CAS(4,4), N2/cc-pVDZ CAS(6,6) at 1.10 and 2.20 Å (`scripts/gen_casci_rdm3_refs.py`: `make_dm1234` + `reorder_dm1234`, `_contract4pdm`, `make_hdm*` on PySCF's side of the same vector). Anchors first: partial traces (dm3→dm2 ≤ 8.9e-15, hdm3→hdm2 ≤ 1.7e-14) and single determinants (exact zero difference). Against PySCF, element-wise at bar $100N_\text{det}\varepsilon\max|\cdot|$: dm1..dm3 and hdm1..hdm3 ≤ 6e-15 (bars 1.3e-12..6.8e-11); `f3ca`/`f3ac` element-wise 7.1e-15 (H2O, bar 1.8e-11) and through 32 random ±1 projections ≤ 2.8e-12 (bars 7e-8..1e-5). An independent dense Fock-space construction (H2O) gives dm3 5e-16, hdm3 3.5e-15, and `f3ca`/`f3ac` as explicit contractions of a stored E-product 4-RDM to 1.1e-14. Dense fallback: Davidson stopped at max_iter 1 (residual 3.9e-2), conv_thresh 1e-13 met at residual 6.1e-14; dense vs Davidson root on N2 1.10 Å $|\Delta E|$ 1.4e-13 (bar 4.5e-10). Mutations that fail it: β Jordan–Wigner phase forced to +1 (n2_r2.20 dm3 2.32), one index swap in the reorder (0.82), same-spin block omitted (2.84), a swapped destination index of $R'$ (n2_r2.20 f3ac projections 1.7e2), hdm3 coefficient 2→1, an uncommitted MemoryPlan (starved budget not refused), the dense fallback disabled (residual stays 3.9e-2). |
 | `tests/casscf.rs` | CASSCF: full-space limit (zero $2(F-F^\mathsf{T})$, FCI energy, RDM energy) in closed- and open-shell sectors, the analytic orbital gradient against finite differences per rotation class, converged energies against the prototype. Mutation record in the CASSCF section above. |
 | `tests/casscf_vs_pyscf.rs` | Converged CASSCF energies against `pyscf.mcscf.CASSCF` on ferric's AO integrals from PySCF's own RHF (`scripts/gen_casscf_refs.py`), four systems including an open-shell sector. |
 | `tests/casscf_canonical.rs` | Canonical orbitals: energy, RDM energy and CI eigenvector in the new orbitals, natural orbitals, diagonal core and virtual Fock blocks, idempotence. |

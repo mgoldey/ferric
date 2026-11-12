@@ -1,6 +1,4 @@
-//! # ferric-ci — CAS-CI (Complete Active Space Configuration Interaction)
-//!
-//! ## Phase A (this crate): plain CAS-CI
+//! # ferric-ci — CAS-CI, RDMs and two-step CASSCF
 //!
 //! Full CI within a small user-specified active space, on top of a converged
 //! restricted (closed-shell) RHF reference. Given `n_active` active spatial
@@ -15,12 +13,15 @@
 //!    (Knowles–Handy / Olsen σ1/σ2/σ3 over single-excitation string lists) —
 //!    see [`sigma`]. The Slater–Condon rules in [`hamiltonian`] give the
 //!    diagonal and an `O(N_det²)` pair-loop oracle used by the tests.
-//! 4. Diagonalizes for the lowest root via a CI-native Davidson solver (with a
-//!    dense-eigensolve fallback used as an independent cross-check in tests) —
-//!    see [`davidson`].
+//! 4. Diagonalizes for the lowest root via a CI-native Davidson solver — see
+//!    [`davidson`]. When Davidson stops above `conv_thresh` and the space has
+//!    at most [`DENSE_SOLVE_MAX_DETS`] determinants, the dense Hamiltonian is
+//!    diagonalized instead, so thresholds below Davidson's reach are met on
+//!    small spaces.
 //! 5. Optionally ([`CasCiConfig::compute_rdms`]) builds the spin-summed 1- and
 //!    2-particle reduced density matrices of that root from the same string
-//!    lists — see [`rdm`].
+//!    lists — see [`rdm`]. [`rdm3`] adds the 3-RDM, the two `(aa|aa)`-
+//!    contracted 4-RDM intermediates and the hole RDMs used by NEVPT2.
 //!
 //! [`casscf`] adds two-step CASSCF on top: [`run_cas_ci_on_integrals`] with
 //! RDMs in the current orbitals, the generalized-Fock orbital gradient and an
@@ -32,16 +33,16 @@
 //! When the active space is the full MO space (no inactive orbitals), CAS-CI is
 //! exactly FCI in that basis.
 //!
-//! ## Explicitly NOT implemented in Phase A
+//! ## Not implemented
 //!
-//! * **RAS1 / RAS3 hole/particle restrictions** (Restricted Active Space) —
-//!   Phase B. Phase A enumerates the *complete* active space with no occupation
-//!   restrictions on any orbital subspace.
-//! * **Open-shell / non-singlet references, S² handling, multiple roots** —
-//!   Phase C. Phase A is meant for a closed-shell singlet reference (the RHF
-//!   orbitals); it does not check `n_alpha == n_beta`, and extracts only the
-//!   single lowest root.
-//! * **CLI wiring.** Python exposes `ferric.run_casci`
+//! * **RAS1 / RAS3 hole/particle restrictions** (Restricted Active Space): the
+//!   *complete* active space is enumerated with no occupation restrictions on
+//!   any orbital subspace.
+//! * **Open-shell / non-singlet references, S² handling, multiple roots**: the
+//!   reference is a closed-shell RHF; `n_alpha == n_beta` is not checked, and
+//!   only the single lowest root is extracted.
+//! * **NEVPT2 energy.** [`rdm3`] provides its RDM inputs only.
+//! * **CLI wiring.** Python exposes `ferric.run_casci` and `ferric.run_casscf`
 //!   (`crates/ferric-python/src/ci.rs`); there is no CLI `method.kind`.
 //!
 //! ## Scaling
@@ -63,6 +64,8 @@ pub mod hamiltonian;
 pub mod integrals;
 /// Spin-summed 1- and 2-particle reduced density matrices.
 pub mod rdm;
+/// 3-RDM, contracted 4-RDM intermediates and hole RDMs (NEVPT2 inputs).
+pub mod rdm3;
 /// String-driven direct sigma build (σ1/σ2/σ3).
 pub mod sigma;
 /// Determinant-string enumeration (bitmask α/β strings).
@@ -70,6 +73,7 @@ pub mod strings;
 
 pub use casscf::{run_casscf, CasScfConfig, CasScfResult};
 pub use rdm::CasCiRdms;
+pub use rdm3::{hole_rdms, nevpt_rdms, HoleRdms, NevptRdms};
 
 use ferric_core::memory::plan::{Lifetime, MemoryPlan};
 use ferric_core::mol::Molecule;
@@ -88,7 +92,8 @@ pub struct CasCiConfig {
     /// Index of the first active MO. MOs `0..active_start` are the
     /// doubly-occupied inactive (frozen-core) orbitals.
     pub active_start: usize,
-    /// Davidson residual convergence threshold.
+    /// Residual convergence threshold (Davidson, or the dense eigensolve; see
+    /// [`DENSE_SOLVE_MAX_DETS`]).
     pub conv_thresh: f64,
     /// Maximum Davidson subspace dimension before collapse/restart.
     pub max_subspace: usize,
@@ -142,9 +147,11 @@ pub struct CasCiResult {
     pub n_determinants: usize,
     /// Normalized CI coefficient vector, indexed `d = ia * n_beta + ib`.
     pub ci_vector: Vec<f64>,
-    /// Whether the Davidson solve converged to `conv_thresh`.
+    /// Whether the returned root meets `conv_thresh`: Davidson's flag, or,
+    /// after the dense fallback ([`DENSE_SOLVE_MAX_DETS`]), `residual_norm <
+    /// conv_thresh`.
     pub converged: bool,
-    /// Davidson iterations taken.
+    /// Davidson iterations taken (the dense fallback adds none).
     pub iterations: usize,
     /// `‖H c − E c‖` of the returned (normalized) `ci_vector` and `e_total`,
     /// from one extra sigma build.
@@ -191,7 +198,7 @@ pub fn run_cas_ci(
     // ---- Validation ----------------------------------------------------
     if !matches!(rhf.spin, ferric_scf::Spin::Restricted) {
         return Err(FerricError::General(
-            "CAS-CI Phase A requires a restricted (closed-shell) RHF reference".to_string(),
+            "CAS-CI requires a restricted (closed-shell) RHF reference".to_string(),
         ));
     }
     check_active_config(&config)?;
@@ -389,7 +396,7 @@ pub fn run_cas_ci_on_integrals(
     let diag = hamiltonian::hamiltonian_diagonal(&ints, &space);
     let direct = sigma::DirectSigma::new(&ints, &space);
     let matvec = |c: &[f64]| direct.apply(c);
-    let dav = davidson::davidson_lowest(
+    let mut dav = davidson::davidson_lowest(
         ndet,
         matvec,
         &diag,
@@ -397,19 +404,37 @@ pub fn run_cas_ci_on_integrals(
         config.max_subspace,
         config.max_iter,
     )?;
+    let mut residual_norm = eigen_residual(&direct, &dav);
+    if !(dav.converged && residual_norm < config.conv_thresh) && ndet <= DENSE_SOLVE_MAX_DETS {
+        // Davidson's residual floor is set by its Gram-Schmidt round-off and
+        // can sit above a tight threshold; a direct eigensolve reaches the
+        // rounding floor of `H` itself.
+        let mut dense_plan = MemoryPlan::from_global_pool(
+            config.memory_budget_bytes,
+            format!("CAS-CI dense eigensolve (N_det={ndet})"),
+        );
+        dense_plan.reserve(
+            "dense CI Hamiltonian, eigenvectors and eigenvalues",
+            ndet.saturating_mul(ndet)
+                .saturating_mul(2)
+                .saturating_add(ndet),
+            Lifetime::Transient,
+        );
+        let _dense_mem = dense_plan.commit()?;
+        let dense = dense_lowest(&ints, &space, dav.iterations, config.memory_budget_bytes)?;
+        let dense_residual = eigen_residual(&direct, &dense);
+        if dense_residual < residual_norm {
+            dav = dense;
+            residual_norm = dense_residual;
+            dav.converged = residual_norm < config.conv_thresh;
+        }
+    }
 
     let rdms = if config.compute_rdms {
         Some(rdm::spin_summed_rdms(&direct, &dav.eigenvector)?)
     } else {
         None
     };
-    let hc = direct.apply(&dav.eigenvector);
-    let residual_norm = hc
-        .iter()
-        .zip(&dav.eigenvector)
-        .map(|(h, c)| (h - dav.eigenvalue * c).powi(2))
-        .sum::<f64>()
-        .sqrt();
     drop(direct);
 
     Ok(CasCiResult {
@@ -423,6 +448,52 @@ pub fn run_cas_ci_on_integrals(
         residual_norm,
         rdms,
         integrals: ints,
+    })
+}
+
+/// Largest determinant space diagonalized densely when Davidson stops above
+/// `conv_thresh`: the dense `H` and its eigenvectors are `2 · 1024² · 8` B =
+/// 16 MiB, and the eigensolve costs about `10 N_det³` = 1e10 flop at the
+/// limit.
+pub const DENSE_SOLVE_MAX_DETS: usize = 1024;
+
+/// `‖H x − θ x‖` of an eigenpair from the direct sigma.
+fn eigen_residual(direct: &sigma::DirectSigma<'_>, pair: &davidson::CiDavidsonResult) -> f64 {
+    let hc = direct.apply(&pair.eigenvector);
+    hc.iter()
+        .zip(&pair.eigenvector)
+        .map(|(h, c)| (h - pair.eigenvalue * c).powi(2))
+        .sum::<f64>()
+        .sqrt()
+}
+
+/// Lowest eigenpair of the dense CI Hamiltonian (LAPACK `eigh`), with the
+/// sign fixed so the largest-magnitude coefficient is positive. `iterations`
+/// is carried through from the preceding Davidson solve; `converged` is set
+/// by the caller from the residual.
+pub fn dense_lowest(
+    ints: &integrals::ActiveSpaceIntegrals,
+    space: &hamiltonian::DeterminantSpace,
+    iterations: usize,
+    memory_budget_bytes: Option<usize>,
+) -> Result<davidson::CiDavidsonResult, FerricError> {
+    use ndarray_linalg::{Eigh, UPLO};
+    let h = hamiltonian::dense_hamiltonian(ints, space, memory_budget_bytes)?;
+    let (w, v) = h
+        .eigh(UPLO::Lower)
+        .map_err(|e| FerricError::General(format!("CAS-CI dense eigh failed: {e}")))?;
+    let mut x: Vec<f64> = v.column(0).to_vec();
+    let lead = x
+        .iter()
+        .fold(0.0f64, |m, &c| if c.abs() > m.abs() { c } else { m });
+    if lead < 0.0 {
+        x.iter_mut().for_each(|c| *c = -*c);
+    }
+    Ok(davidson::CiDavidsonResult {
+        eigenvalue: w[0],
+        eigenvector: x,
+        iterations,
+        converged: false,
     })
 }
 

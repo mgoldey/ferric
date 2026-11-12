@@ -6,7 +6,7 @@
 //! passes [`crate::sigma::DirectSigma::apply`]) and the standard CI diagonal
 //! preconditioner `t = r / (H_ii - lambda)`.
 //!
-//! Phase A targets a single lowest root, so this is a plain (block size 1)
+//! The driver targets a single lowest root, so this is a plain (block size 1)
 //! Davidson. Multiple roots (block Davidson) are a later phase.
 
 use ferric_core::FerricError;

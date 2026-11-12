@@ -73,7 +73,9 @@ pub struct CasScfConfig {
     pub max_step: f64,
     /// Floor on `|H_diag|` in the initial inverse Hessian.
     pub hdiag_floor: f64,
-    /// Davidson residual threshold of every CAS-CI solve.
+    /// Residual threshold of every CAS-CI solve (Davidson, or the dense
+    /// eigensolve on spaces of at most [`crate::DENSE_SOLVE_MAX_DETS`]
+    /// determinants).
     pub ci_conv_thresh: f64,
     /// Davidson subspace size.
     pub ci_max_subspace: usize,
@@ -367,13 +369,14 @@ impl CasScfProblem {
             ..self.ci_config
         };
         let ci = run_cas_ci_on_integrals(ints, &cfg)?;
-        // Davidson's flag is the residual criterion ‖Hc − Ec‖ < ci_conv_thresh,
-        // relaxed to 10x that when its correction vector vanishes. The
+        // The CI flag is the residual criterion ‖Hc − Ec‖ < ci_conv_thresh
+        // (Davidson relaxes it to 10x when its correction vector vanishes;
+        // the dense fallback sets it from the residual alone). The
         // gradient error is first order in the residual, so the returned
         // root must itself meet ci_conv_thresh.
         if !ci_root_accepted(ci.converged, ci.residual_norm, self.ci_config.conv_thresh) {
             return Err(FerricError::General(format!(
-                "CASSCF: CAS-CI Davidson residual {:.2e} did not reach ci_conv_thresh {:e} \
+                "CASSCF: CAS-CI residual {:.2e} did not reach ci_conv_thresh {:e} \
                  in {} iterations (raise ci_max_iter or ci_max_subspace)",
                 ci.residual_norm, self.ci_config.conv_thresh, ci.iterations
             )));
