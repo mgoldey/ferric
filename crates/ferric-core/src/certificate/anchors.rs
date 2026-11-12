@@ -27,6 +27,7 @@
 //! and the file on disk.
 
 use super::{Certificate, MeasuredError};
+use crate::basis::BasisSet;
 use crate::elements::{symbol_to_z, z_to_symbol};
 
 /// The heading of the table on the grade page that holds the anchors.
@@ -313,20 +314,24 @@ pub fn energy_anchor(method: &str) -> Option<&'static EnergyAnchor> {
     ENERGY_ANCHORS.iter().find(|a| a.method == method)
 }
 
-/// Whether `name` is one of `list`: equal after trimming and lower-casing,
-/// or a bundled set whose shells and ECPs equal those of a listed set (so a
-/// registry alias such as `cc-pvdz-ri` matches `cc-pvdz-rifit`).
-fn basis_listed(list: &[&str], name: &str) -> bool {
-    let cn = crate::basis_util::canonical_name(name);
-    if list.iter().any(|b| *b == cn) {
-        return true;
-    }
-    let Ok(run) = crate::basis::bundled(&cn) else {
-        return false;
+/// Whether `run` is one of the bundled sets in `list` on the elements `zs`:
+/// equal shells and ECP for every element of `zs`. The run's name only
+/// orders the search (a listed set of the same canonical name is tried
+/// first); a loaded file named like a bundled set but with other contractions
+/// is not covered, and a registry alias (`cc-pvdz-ri` for `cc-pvdz-rifit`)
+/// is.
+fn basis_listed(list: &[&str], run: &BasisSet, zs: &[i32]) -> bool {
+    let cn = crate::basis_util::canonical_name(&run.name);
+    let same = |listed: &str| {
+        crate::basis::bundled(listed).is_ok_and(|s| {
+            zs.iter().all(|&z| {
+                s.for_element(z) == run.for_element(z)
+                    && s.ecp_for_element(z) == run.ecp_for_element(z)
+            })
+        })
     };
-    list.iter().any(|b| {
-        crate::basis::bundled(b).is_ok_and(|s| s.shells == run.shells && s.ecps == run.ecps)
-    })
+    list.iter().filter(|b| **b == cn).any(|b| same(b))
+        || list.iter().filter(|b| **b != cn).any(|b| same(b))
 }
 
 impl EnergyAnchor {
@@ -349,14 +354,16 @@ impl EnergyAnchor {
             .find(|&z| !self.elements.iter().any(|s| symbol_to_z(s) == Some(z)))
     }
 
-    /// Whether the test runs orbital basis `name` (aliases included).
-    pub fn covers_basis(&self, name: &str) -> bool {
-        basis_listed(self.basis_sets, name)
+    /// Whether the test runs orbital basis `run` on the elements `zs`: its
+    /// shells and ECPs there equal those of a listed set (aliases included).
+    pub fn covers_basis(&self, run: &BasisSet, zs: &[i32]) -> bool {
+        basis_listed(self.basis_sets, run, zs)
     }
 
-    /// Whether the test runs auxiliary basis `name` (aliases included).
-    pub fn covers_aux_basis(&self, name: &str) -> bool {
-        basis_listed(self.aux_basis_sets, name)
+    /// Whether the test runs auxiliary basis `run` on the elements `zs` (see
+    /// [`Self::covers_basis`]).
+    pub fn covers_aux_basis(&self, run: &BasisSet, zs: &[i32]) -> bool {
+        basis_listed(self.aux_basis_sets, run, zs)
     }
 
     /// Whether the test runs functional `name` (case-insensitive).
@@ -372,10 +379,10 @@ impl EnergyAnchor {
 pub struct RunEnvelope<'a> {
     /// Atomic number of every atom.
     pub atomic_numbers: &'a [i32],
-    /// The orbital basis name.
-    pub basis: Option<&'a str>,
-    /// The auxiliary basis name of the correlation method.
-    pub aux_basis: Option<&'a str>,
+    /// The orbital basis, compared by content on the run's elements.
+    pub basis: Option<&'a BasisSet>,
+    /// The auxiliary basis of the correlation method, compared by content.
+    pub aux_basis: Option<&'a BasisSet>,
     /// The XC functional name.
     pub functional: Option<&'a str>,
 }
@@ -404,11 +411,12 @@ impl Certificate {
                 anchor.elements.join(", ")
             )));
         }
-        if let Some(b) = run.basis.filter(|b| !anchor.covers_basis(b)) {
-            self.push_warning(outside(format!("basis {b}")));
+        let zs = run.atomic_numbers;
+        if let Some(b) = run.basis.filter(|b| !anchor.covers_basis(b, zs)) {
+            self.push_warning(outside(format!("basis {}", b.name)));
         }
-        if let Some(b) = run.aux_basis.filter(|b| !anchor.covers_aux_basis(b)) {
-            self.push_warning(outside(format!("auxiliary basis {b}")));
+        if let Some(b) = run.aux_basis.filter(|b| !anchor.covers_aux_basis(b, zs)) {
+            self.push_warning(outside(format!("auxiliary basis {}", b.name)));
         }
         if let Some(f) = run.functional.filter(|f| !anchor.covers_functional(f)) {
             self.push_warning(outside(format!(
@@ -653,11 +661,13 @@ mod tests {
         let base = Certificate::for_method_kind("ksdft").with_energy_anchor(rks);
         assert_eq!(base.measured_error.as_ref().unwrap().value, 4.2e-12);
         // Inside: H2S / def2-SVP / PBE, any spelling of the names.
+        let bundled = |n: &str| crate::basis::bundled(n).unwrap();
+        let (svp, b631g, ri) = (bundled("DEF2-SVP"), bundled("6-31g"), bundled("cc-pvdz-ri"));
         let inside = base.clone().with_envelope(
             rks,
             &RunEnvelope {
                 atomic_numbers: &[16, 1, 1],
-                basis: Some("DEF2-SVP"),
+                basis: Some(&svp),
                 aux_basis: None,
                 functional: Some("PBE"),
             },
@@ -668,8 +678,8 @@ mod tests {
             rks,
             &RunEnvelope {
                 atomic_numbers: &[1, 8, 7],
-                basis: Some("6-31g"),
-                aux_basis: Some("cc-pvdz-ri"),
+                basis: Some(&b631g),
+                aux_basis: Some(&ri),
                 functional: Some("SCAN"),
             },
         );
@@ -906,15 +916,62 @@ mod tests {
 
     #[test]
     fn registry_aliases_are_covered() {
+        let b = |n: &str| crate::basis::bundled(n).unwrap();
+        let (water, nh3) = ([8, 1, 1], [7, 1, 1, 1]);
         let mp2 = energy_anchor("RI-MP2").unwrap();
-        assert!(mp2.covers_aux_basis("cc-pvdz-ri"));
-        assert!(mp2.covers_aux_basis("CC-PVDZ/C"));
+        assert!(mp2.covers_aux_basis(&b("cc-pvdz-ri"), &water));
+        assert!(mp2.covers_aux_basis(&b("CC-PVDZ/C"), &water));
         assert!(energy_anchor("U-RI-MP2")
             .unwrap()
-            .covers_aux_basis("cc-pvdz-rifit"));
-        assert!(energy_anchor("RHF").unwrap().covers_basis("6-31G(d)"));
+            .covers_aux_basis(&b("cc-pvdz-rifit"), &nh3));
+        assert!(energy_anchor("RHF")
+            .unwrap()
+            .covers_basis(&b("6-31G(d)"), &water));
         // A different set is not an alias.
-        assert!(!mp2.covers_aux_basis("cc-pvtz-ri-not-a-set"));
-        assert!(!mp2.covers_basis("sto-3g"));
+        assert!(!mp2.covers_aux_basis(&b("6-31g"), &water));
+        assert!(!mp2.covers_basis(&b("sto-3g"), &water));
+    }
+
+    /// Coverage is by content: a set carrying a covered set's name but one
+    /// changed contraction coefficient on an element of the run is outside,
+    /// a change on an element the run does not use is not, and a covered
+    /// set under another name is inside.
+    #[test]
+    fn a_loaded_basis_with_a_bundled_name_is_covered_only_if_its_contents_match() {
+        let rhf = energy_anchor("RHF").unwrap();
+        let water = [8, 1, 1];
+        let sto = crate::basis::bundled("sto-3g").unwrap();
+        assert!(
+            rhf.covers_basis(&sto, &water),
+            "precondition: sto-3g is covered"
+        );
+        let mut edited = sto.clone();
+        edited.shells.get_mut(&8).unwrap()[0].coefficients[0] *= 1.01;
+        assert!(!rhf.covers_basis(&edited, &water), "edited O contraction");
+        assert!(rhf.covers_basis(&edited, &[1, 1]), "O is not in the run");
+        let mut renamed = sto.clone();
+        renamed.name = "my-minimal-basis".to_string();
+        assert!(
+            rhf.covers_basis(&renamed, &water),
+            "same contents, other name"
+        );
+        let base = Certificate::for_method_kind("rhf").with_energy_anchor(rhf);
+        let out = base.clone().with_envelope(
+            rhf,
+            &RunEnvelope {
+                atomic_numbers: &water,
+                basis: Some(&edited),
+                ..Default::default()
+            },
+        );
+        assert_eq!(out.warnings.len(), base.warnings.len() + 1);
+        assert!(
+            out.warnings
+                .last()
+                .unwrap()
+                .starts_with("basis sto-3g is outside"),
+            "{:?}",
+            out.warnings
+        );
     }
 }

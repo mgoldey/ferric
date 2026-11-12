@@ -22,6 +22,8 @@ def test_rimp2_certificate():
     assert c["capability"] == "rimp2"
     assert c["grade"] == "proven"
     assert _names(c) == ["ri", "frozen-core"]
+    # The RHF RI-MP2 anchor's evidence correlates all electrons.
+    assert c.get("measured_error") is None
     assert c["approximations"][0]["detail"] == "aux cc-pvdz-ri"
     assert c["build"]["commit"] == ferric.build_info()["commit"]
 

@@ -213,9 +213,13 @@ fn measured_error_is_the_solver_anchor_and_the_envelope_only_warns() {
         ("energy", 1.8e-12, "Ha")
     );
     // Water / STO-3G is inside the RHF anchor: the envelope adds nothing.
-    assert_eq!(with_scf_envelope(c.clone(), &water, &r, &hf, "STO-3G"), c);
+    let sto = bundled("STO-3G").unwrap();
+    assert_eq!(with_scf_envelope(c.clone(), &water, &r, &hf, &sto), c);
     // A basis the anchor never ran: one warning, nothing else moves.
-    let out = with_scf_envelope(c.clone(), &water, &r, &hf, "6-31g(2df,p)");
+    let mut other = sto.clone();
+    other.name = "6-31g(2df,p)".to_string();
+    other.shells.get_mut(&8).unwrap()[0].coefficients[0] *= 1.01;
+    let out = with_scf_envelope(c.clone(), &water, &r, &hf, &other);
     assert_eq!(out.warnings.len(), 1, "{:?}", out.warnings);
     assert!(out.warnings[0].starts_with("basis 6-31g(2df,p) is outside the RHF"));
     let mut back = out.clone();
@@ -233,7 +237,7 @@ fn measured_error_is_the_solver_anchor_and_the_envelope_only_warns() {
     let (water, r) = solve(WATER, 1, &pbe);
     let c = scf_certificate(&water, &r, &pbe);
     assert_eq!(c.measured_error.as_ref().unwrap().value, 4.2e-12);
-    let out = with_scf_envelope(c.clone(), &water, &r, &pbe, "def2-svp");
+    let out = with_scf_envelope(c.clone(), &water, &r, &pbe, &bundled("def2-svp").unwrap());
     assert_eq!(out.grade, c.grade);
     assert_eq!(
         out.warnings.len(),

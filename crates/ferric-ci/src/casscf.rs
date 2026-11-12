@@ -808,9 +808,12 @@ mod tests {
     /// handing the CI the full budget would let the two stages sum past it.
     #[test]
     fn ci_budget_is_the_ceiling_minus_the_ao_reservation() {
-        let mol =
-            Molecule::parse_xyz("3\n\nO 0 0 0.117\nH 0 0.757 -0.467\nH 0 -0.757 -0.467\n", 0, 1)
-                .unwrap();
+        let mol = Molecule::parse_xyz(
+            "3\n\nO 0 0 0.117\nH 0 0.757 -0.467\nH 0 -0.757 -0.467\n",
+            0,
+            1,
+        )
+        .unwrap();
         let bs = ferric_core::basis::bundled("sto-3g").unwrap();
         let prep = PreparedBasis::new(&mol, &bs).unwrap();
         let budget = 64 << 20;
@@ -863,7 +866,10 @@ mod tests {
         let mut got = b0.clone();
         bfgs_inverse_update(&mut got, &s, &g, &g_old);
         let d = (&got - &want).iter().fold(0.0f64, |m, x| m.max(x.abs()));
-        assert!(d < 1e-12, "in-place vs explicit inverse BFGS differ by {d:e}");
+        assert!(
+            d < 1e-12,
+            "in-place vs explicit inverse BFGS differ by {d:e}"
+        );
     }
 
     /// `exp(K)` is orthogonal, `exp(K) exp(−K) = I`, and two half steps

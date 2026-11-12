@@ -92,6 +92,18 @@ pub fn scf_certificate(mol: &Molecule, result: &ScfResult, config: &RhfConfig) -
     c
 }
 
+/// `c` for a solve that ran with a caller-supplied Fock hook
+/// (`rhf::solve_rhf_with_hook` and its open-shell counterparts): the hook's
+/// energy term and potential are part of the Hamiltonian, so they are
+/// recorded as an approximation, as an external potential is. The anchor and
+/// grade are kept.
+pub fn with_fock_hook(c: Certificate) -> Certificate {
+    c.with_approximation(
+        "fock-hook",
+        "caller-supplied energy term and Fock potential added at every SCF iteration",
+    )
+}
+
 /// `c` with a warning for each way the run lies outside the solver's energy
 /// anchor ([`Certificate::with_envelope`]): an element of `mol`, the orbital
 /// basis `basis`, or the functional. The grade is not changed.
@@ -100,7 +112,7 @@ pub fn with_scf_envelope(
     mol: &Molecule,
     result: &ScfResult,
     config: &RhfConfig,
-    basis: &str,
+    basis: &ferric_core::basis::BasisSet,
 ) -> Certificate {
     let Some(a) = scf_energy_anchor(result, config) else {
         return c;

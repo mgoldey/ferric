@@ -121,6 +121,18 @@ def test_hooked_run_dft_continues_the_ladder():
     assert hooked.total_energy == plain.total_energy
 
 
+def test_hooked_run_dft_ladder_keeps_the_first_rungs_guess_basis_report():
+    # Rung 0 runs the secondary-basis guess and stops at max_iter; the rung
+    # that converges starts from its density and runs no guess of its own.
+    mol, bs, _ = _water("6-31g")
+    kw = {"functional": "PBE", "max_iter": 1, "guess_basis": "sto-3g", **TIGHT}
+    plain = ferric.run_dft(mol, bs, **kw)
+    hooked = ferric.run_dft(mol, bs, fock_hook=_zero_hook, **kw)
+    assert plain.converged and hooked.converged
+    assert plain.guess_basis is not None
+    assert hooked.guess_basis == plain.guess_basis
+
+
 # ── dm0 ──
 
 
@@ -241,3 +253,60 @@ def test_dm0_with_overflowing_entries_is_rejected():
     n = ints.overlap().shape[0]
     with pytest.raises(ValueError, match="not finite"):
         ferric.run_rhf(mol, bs, dm0=np.eye(n) * 1e308)
+
+
+# ── hook provenance on the certificate ──
+
+
+def _approx(c):
+    return {a["name"]: a["detail"] for a in c["approximations"]}
+
+
+@pytest.mark.parametrize(
+    "run",
+    [
+        lambda mol, bs, **kw: ferric.run_rhf(mol, bs, **kw),
+        lambda mol, bs, **kw: ferric.run_dft(mol, bs, functional="PBE", **kw),
+    ],
+    ids=["run_rhf", "run_dft"],
+)
+def test_hooked_certificate_records_the_hook_and_keeps_the_anchor(run):
+    mol, bs, _ = _water("sto-3g")
+    plain = run(mol, bs, **TIGHT).certificate
+    hooked = run(mol, bs, fock_hook=_zero_hook, **TIGHT).certificate
+    assert "fock-hook" not in _approx(plain)
+    assert "fock-hook" in _approx(hooked)
+    assert hooked["measured_error"] == plain["measured_error"]
+    assert hooked["grade"] == plain["grade"]
+    rest = dict(_approx(hooked))
+    del rest["fock-hook"]
+    assert rest == _approx(plain)
+
+
+def test_hooked_run_uhf_certificate_records_the_hook():
+    mol, bs, _ = _water("sto-3g", charge=1, multiplicity=2)
+
+    def spin_zero(d_a, d_b):
+        return 0.0, np.zeros_like(d_a), np.zeros_like(d_b)
+
+    plain = ferric.run_uhf(mol, bs, **TIGHT).certificate
+    hooked = ferric.run_uhf(mol, bs, fock_hook=spin_zero, **TIGHT).certificate
+    assert "fock-hook" not in _approx(plain)
+    assert "fock-hook" in _approx(hooked)
+    assert hooked["measured_error"] == plain["measured_error"]
+
+
+# ── dm0 does not reach the free-atom proatoms ──
+
+
+def test_hirshfeld_scf_proatoms_ignore_dm0():
+    # A molecular dm0 (molecule basis dimension) reaching a free-atom SCF is
+    # rejected there and that atom falls back to the Slater proatom, which
+    # moves water's charges by 0.2-0.7 e. The two densities agree to the
+    # density_conv scale (1e-9), so the charges agree far below 1e-6.
+    mol, bs, _ = _water("cc-pvdz")
+    first = ferric.run_rhf(mol, bs, **TIGHT)
+    again = ferric.run_rhf(mol, bs, dm0=first.density(), **TIGHT)
+    q1 = np.array(ferric.hirshfeld_charges(mol, bs, first))
+    q2 = np.array(ferric.hirshfeld_charges(mol, bs, again))
+    assert np.max(np.abs(q1 - q2)) < 1e-6, (q1, q2)

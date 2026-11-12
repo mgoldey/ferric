@@ -2693,6 +2693,18 @@ fn solve_hooked_ladder(
         let mut f = |d: &Array2<f64>| h.call(d);
         let mut carried: Option<Array2<f64>> = None;
         let mut best = None;
+        // The secondary-basis report of the rung that ran that guess: a rung
+        // started from a carried density runs none, and the returned rung
+        // carries this one when it has none of its own (as the plain ladder).
+        let mut guess_report = None;
+        let with_report =
+            |mut r: ferric_scf::result::ScfResult,
+             g: &Option<ferric_scf::basis2::GuessBasisReport>| {
+                if r.guess_basis.is_none() {
+                    r.guess_basis = g.clone();
+                }
+                r
+            };
         for (i, (rung, cfg)) in ladder.iter().zip(&configs).enumerate() {
             let mut cfg = cfg.clone();
             if let (false, Some(d)) = (rung.restart, carried.take()) {
@@ -2707,8 +2719,11 @@ fn solve_hooked_ladder(
                 cfg.max_iter,
                 r.energy
             );
+            if r.guess_basis.is_some() {
+                guess_report = r.guess_basis.clone();
+            }
             if r.converged {
-                return Ok(r);
+                return Ok(with_report(r, &guess_report));
             }
             carried = Some(r.density_total.clone());
             if best
@@ -2718,7 +2733,8 @@ fn solve_hooked_ladder(
                 best = Some(r);
             }
         }
-        best.ok_or_else(|| FerricError::General("empty SCF ladder".into()))
+        best.map(|b| with_report(b, &guess_report))
+            .ok_or_else(|| FerricError::General("empty SCF ladder".into()))
     });
     h.finish(r)
 }

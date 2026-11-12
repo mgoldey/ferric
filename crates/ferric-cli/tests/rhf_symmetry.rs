@@ -263,3 +263,44 @@ fn unsupported_combinations_are_refused_by_name() {
         );
     }
 }
+
+/// The point-group-blocked branch carries the envelope warnings as the
+/// unblocked SCF kinds do: water lies outside the RKS anchor's elements (O),
+/// inside the RHF anchor's (water / 6-31G is a covered run).
+#[test]
+fn symmetric_branch_certificate_carries_the_envelope() {
+    let rks = input(
+        "env-rks",
+        "ksdft",
+        "energy",
+        &format!("[scf]\n{SCF}symmetry = true\n[dft]\nfunctional = \"PBE\"\n"),
+    );
+    let out = run(&rks);
+    assert!(out.status.success(), "{}", text(&out));
+    let warnings = run_end(&rks)["extra"]["certificate"]["warnings"].clone();
+    let w: Vec<&str> = warnings
+        .as_array()
+        .expect("certificate warnings")
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert!(
+        w.iter()
+            .any(|s| s.starts_with("element O (covered: H, Si, S, Cl) is outside the RKS")),
+        "{w:?}"
+    );
+    let rhf = input(
+        "env-rhf",
+        "rhf",
+        "energy",
+        &format!("[scf]\n{SCF}symmetry = true\n"),
+    );
+    assert!(run(&rhf).status.success());
+    let warnings = run_end(&rhf)["extra"]["certificate"]["warnings"].clone();
+    assert!(
+        warnings.as_array().map_or(true, |a| a
+            .iter()
+            .all(|v| !v.as_str().unwrap().contains("outside"))),
+        "{warnings:?}"
+    );
+}
