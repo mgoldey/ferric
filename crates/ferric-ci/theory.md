@@ -271,7 +271,7 @@ $\partial E/\partial\kappa_{pq} = 2(F_{pq} - F_{qp})$. The nonredundant pairs
 are core-active $(t,i)$, core-virtual $(a,i)$, where the gradient is
 $4(F^I_{ai} + F^A_{ai})$, and active-virtual $(a,t)$, where it is $2F_{at}$.
 For any normalized CI vector $c$ with residual $r = Hc - \theta c$,
-$2(F_{pq} - F_{qp}) = \langle c|[E_{pq} - E_{qp}, H]|c\rangle = 2\,c^\mathsf{T}(E_{pq}-E_{qp})\,r$,
+$2(F_{pq} - F_{qp}) = \langle c|[H, E_{pq} - E_{qp}]|c\rangle = -2\,c^\mathsf{T}(E_{pq}-E_{qp})\,r$,
 so a redundant element is bounded by $8\lVert r\rVert$ ($\lVert E_{pq}\rVert \le 2$
 for $p\ne q$).
 

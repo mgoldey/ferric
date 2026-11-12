@@ -14,8 +14,8 @@
 //!
 //! Bars:
 //!
-//! * `2(F_pq − F_qp) = ⟨c|[E_pq − E_qp, H]|c⟩` for the normalized Ritz vector
-//!   `c`, and with `r = Hc − θc` this is `2 cᵀ A r`, `A = E_pq − E_qp`. With
+//! * `2(F_pq − F_qp) = ⟨c|[H, E_pq − E_qp]|c⟩` for the normalized Ritz vector
+//!   `c`, and with `r = Hc − θc` this is `−2 cᵀ A r`, `A = E_pq − E_qp`. With
 //!   `‖E_pq‖ ≤ 2` for `p ≠ q`, `|2(F_pq − F_qp)| ≤ 8 ‖r‖`. Rounding adds
 //!   `4 ε n² max|F|` (a random walk over the `n⁴`-term contraction).
 //! * Two Ritz values of the same Hamiltonian lie within `‖r₁‖ + ‖r₂‖` of its
