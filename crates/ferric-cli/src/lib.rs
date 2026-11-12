@@ -1258,13 +1258,10 @@ pub fn run(args: Vec<String>) {
     // post-SCF method's result is not the SCF's.
     let scf_cert_config = rung_config.as_ref().unwrap_or(&rhf_config);
     let scf_cert = scf_certificate_stamped(&mol, &result, scf_cert_config, dispersion.as_ref());
-    // The printed SCF-kind certificate also carries the envelope warnings;
-    // the reference handed to a post-SCF kind does not.
-    let scf_cert = if matches!(method, "rhf" | "ksdft") {
-        ferric_scf::certificate::with_scf_envelope(scf_cert, &mol, &result, scf_cert_config, &bs)
-    } else {
-        scf_cert
-    };
+    // The envelope warnings ride on the reference too, so a post-SCF
+    // certificate carries them as `scf reference: ...` (`with_reference`).
+    let scf_cert =
+        ferric_scf::certificate::with_scf_envelope(scf_cert, &mol, &result, scf_cert_config, &bs);
 
     match method {
         "rhf" => run_rhf(&cfg, &bs, &prep, &result, &scf_cert),
@@ -4664,7 +4661,13 @@ fn run_wb97x_l_v_arm(
     ref_cfg.xc = Some(ferric_cc::double_hybrid::WB97X_L_V_NAME.to_string());
     ref_cfg.df_j_aux = config::jk_aux_or_default(&rhf_config.df_j_aux);
     ref_cfg.df_k_aux = config::jk_aux_or_default(&rhf_config.df_k_aux);
-    let reference = scf_certificate_stamped(mol, &ks, &ref_cfg, None);
+    let reference = ferric_scf::certificate::with_scf_envelope(
+        scf_certificate_stamped(mol, &ks, &ref_cfg, None),
+        mol,
+        &ks,
+        &ref_cfg,
+        bs,
+    );
     print_and_note_certificate(&ferric_cc::certificate::wb97x_l_v_certificate(
         &reference, aux_name, &dh_cfg,
     ));
@@ -4771,7 +4774,13 @@ fn run_mp2_double_hybrid_arm(
         r.e_corr_scaled, r.c_os, r.c_ss
     );
     println!("  Total        = {:.10} Hartree", r.total_energy);
-    let reference = scf_certificate_stamped(mol, &ks, &ks_cfg, None);
+    let reference = ferric_scf::certificate::with_scf_envelope(
+        scf_certificate_stamped(mol, &ks, &ks_cfg, None),
+        mol,
+        &ks,
+        &ks_cfg,
+        bs,
+    );
     print_and_note_certificate(&ferric_mp2::certificate::mp2_double_hybrid_certificate(
         method, &reference, aux_name, &mp2_cfg,
     ));
@@ -5044,7 +5053,13 @@ fn run_pdep_rpa_arm(
                 eprintln!("error (U-PDEP-RPA): {e}");
                 std::process::exit(1);
             });
-        let reference = scf_certificate_stamped(mol, &uhf_result, &uhf_cfg, None);
+        let reference = ferric_scf::certificate::with_scf_envelope(
+            scf_certificate_stamped(mol, &uhf_result, &uhf_cfg, None),
+            mol,
+            &uhf_result,
+            &uhf_cfg,
+            bs,
+        );
         (rr, "UHF", uhf_result, reference)
     } else {
         let rr = run_pdep_rpa(mol, prep, &dfbs, op, &result, &rpa_cfg).unwrap_or_else(|e| {

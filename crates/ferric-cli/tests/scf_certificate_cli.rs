@@ -121,7 +121,8 @@ fn uhf_logs_a_certificate_record_with_the_stability_caveat() {
 #[test]
 fn rks_outside_its_anchor_warns_without_changing_the_grade() {
     // The RKS anchor covers H2S, HCl, SiH4 / def2-SVP, def2-TZVP with PBE,
-    // B3LYP, HSE06: water / STO-3G is outside on element and basis.
+    // B3LYP, HSE06: water / STO-3G is outside on element and basis, and the
+    // default run on RI-J storage and grid.
     let (stdout, records) = run(
         "rks_outside",
         "[molecule]\nxyz = \"testdata/molecules/water.xyz\"\n[basis]\nname = \"sto-3g\"\n\
@@ -142,6 +143,15 @@ fn rks_outside_its_anchor_warns_without_changing_the_grade() {
         [
             format!("element O (covered: H, Si, S, Cl) is outside the RKS energy anchor ({ev})"),
             format!("basis sto-3g is outside the RKS energy anchor ({ev})"),
+            // The CLI defaults (f32 RI-J, the pruned production grid) are
+            // not the evidence's settings.
+            format!(
+                "RI-J tensor storage f32 (evidence: f64) is outside the RKS energy anchor ({ev})"
+            ),
+            format!(
+                "XC grid (75, 110), nwchemradial, weight cut 1e-14 (evidence: (75, 110), flat, \
+                 no weight cut) is outside the RKS energy anchor ({ev})"
+            ),
         ],
         "{c}"
     );

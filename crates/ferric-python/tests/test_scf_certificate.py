@@ -61,6 +61,10 @@ def test_scf_outside_its_anchor_warns_without_changing_the_grade():
     assert _anchor_warnings(d) == [
         f"element O (covered: H, Si, S, Cl) is outside the RKS energy anchor ({ev})",
         f"basis sto-3g is outside the RKS energy anchor ({ev})",
+        # The run_dft defaults are not the evidence's settings.
+        f"RI-J tensor storage f32 (evidence: f64) is outside the RKS energy anchor ({ev})",
+        "XC grid (75, 110), nwchemradial, weight cut 1e-14 (evidence: (75, 110), flat, "
+        f"no weight cut) is outside the RKS energy anchor ({ev})",
     ]
 
     nh3 = ferric.Molecule.from_xyz_string(

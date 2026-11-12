@@ -98,6 +98,38 @@ fn rimp2_result_carries_its_certificate() {
     assert_eq!(back.grade, ferric_core::certificate::Grade::Proven);
 }
 
+/// OH / cc-pVDZ: U-RI-MP2 covers cc-pVDZ, the UHF anchor (6-31G, def2-SVP)
+/// does not, so the post-SCF certificate carries the reference's envelope
+/// warning.
+#[test]
+fn open_shell_rimp2_carries_the_uhf_reference_envelope_warning() {
+    let (_, records) = run(
+        "u_rimp2_envelope",
+        "[molecule]\nxyz = \"testdata/molecules/oh.xyz\"\nmultiplicity = 2\n[basis]\n\
+         name = \"cc-pvdz\"\n[method]\nkind = \"rimp2\"\n[mp2]\nauxbasis = \"cc-pvdz-ri\"\n",
+    );
+    let c = result_certificate(&records, "rimp2");
+    assert_eq!(c["measured_error"]["value"], 9.2e-10, "{c}");
+    let w: Vec<&str> = c["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| w.as_str().unwrap())
+        .collect();
+    let envelope: Vec<&str> = w
+        .into_iter()
+        .filter(|w| w.contains("energy anchor"))
+        .collect();
+    assert_eq!(
+        envelope,
+        [
+            "scf reference: basis cc-pvdz is outside the UHF energy anchor \
+          (crates/ferric-scf/tests/validation_open_shell_scf.rs)"
+        ],
+        "{c}"
+    );
+}
+
 #[test]
 fn local_drpa_at_finite_eps_is_ungraded() {
     let (_, records) = run(
@@ -312,7 +344,9 @@ fn tda_and_tddft_log_the_grid_they_ran_on() {
         .find(|a| a["name"] == "response-grid")
         .unwrap_or_else(|| panic!("no response-grid: {c}"));
     assert!(g["detail"].as_str().unwrap().ends_with("[default]"), "{g}");
-    assert!(c["warnings"].as_array().unwrap().is_empty(), "{c}");
+    // The only warnings are the reference's: water / STO-3G on the default
+    // grid and f32 RI-J lies outside the RKS anchor.
+    assert!(own_warnings(&c).is_empty(), "{c}");
 
     // A meta-GGA defaults to the finer response grid and says so.
     let (_, records) = run(
@@ -331,5 +365,16 @@ fn tda_and_tddft_log_the_grid_they_ran_on() {
         d.starts_with("(150, 434)") && d.ends_with("[meta-GGA response default]"),
         "{d}"
     );
-    assert_eq!(c["warnings"].as_array().unwrap().len(), 1, "{c}");
+    assert_eq!(own_warnings(&c).len(), 1, "{c}");
+}
+
+/// The warnings of `c` that are not carried from its SCF reference.
+fn own_warnings(c: &serde_json::Value) -> Vec<&str> {
+    c["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| w.as_str().unwrap())
+        .filter(|w| !w.starts_with("scf reference: "))
+        .collect()
 }

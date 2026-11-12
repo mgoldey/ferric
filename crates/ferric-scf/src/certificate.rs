@@ -106,7 +106,8 @@ pub fn with_fock_hook(c: Certificate) -> Certificate {
 
 /// `c` with a warning for each way the run lies outside the solver's energy
 /// anchor ([`Certificate::with_envelope`]): an element of `mol`, the orbital
-/// basis `basis`, or the functional. The grade is not changed.
+/// basis `basis`, the functional, and each setting of
+/// [`settings_outside_evidence`]. The grade is not changed.
 pub fn with_scf_envelope(
     c: Certificate,
     mol: &Molecule,
@@ -118,7 +119,7 @@ pub fn with_scf_envelope(
         return c;
     };
     let zs: Vec<i32> = mol.atoms.iter().map(|at| at.z).collect();
-    c.with_envelope(
+    let mut c = c.with_envelope(
         a,
         &RunEnvelope {
             atomic_numbers: &zs,
@@ -126,7 +127,127 @@ pub fn with_scf_envelope(
             aux_basis: None,
             functional: config.xc.as_deref(),
         },
-    )
+    );
+    for what in settings_outside_evidence(result, config) {
+        c = c.with_setting_outside(a, &what);
+    }
+    c
+}
+
+/// How the Coulomb or exchange matrix was built.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum JkRoute {
+    Exact,
+    Fitted,
+    Cosx,
+}
+
+impl JkRoute {
+    fn text(self, fitted: &str) -> String {
+        match self {
+            JkRoute::Exact => "exact four-centre".to_string(),
+            JkRoute::Fitted => fitted.to_string(),
+            JkRoute::Cosx => "COSX".to_string(),
+        }
+    }
+}
+
+/// The settings of the run that change the energy error and differ from
+/// what the anchor's evidence ran, each as `"<setting> <run value>
+/// (evidence: <value>)"`.
+///
+/// The evidence settings, read from the evidence tests' configs:
+///
+/// * RHF (`validation_basis_coverage.rs`, `orbital_sets_match_pyscf_rhf`),
+///   UHF and ROHF (`validation_open_shell_scf.rs`): exact four-centre J and
+///   K.
+/// * RKS / UKS (`validation_ks_energies.rs`) and ROKS
+///   (`validation_roks_energies.rs`): RI-J stored in f64, except exact J for
+///   a range-separated functional; RI-K (f64, the default) whenever exact
+///   exchange is used; the flat (75, 110) grid with no weight cut
+///   (`AtomicGridConfig::default()`), and the default (50, 50) VV10 grid.
+///
+/// The J/K routes are what the solver recorded it ran (`result.df_jk`).
+pub fn settings_outside_evidence(result: &ScfResult, config: &RhfConfig) -> Vec<String> {
+    let ks = config.xc.is_some();
+    let (k_used, rsh) = exchange_used(config);
+    let route = result.df_jk.as_ref();
+    let run_j = if route.is_some_and(|r| r.j_aux.is_some()) {
+        JkRoute::Fitted
+    } else {
+        JkRoute::Exact
+    };
+    let run_k = if route.is_some_and(|r| r.k_aux.is_some() || r.rsh_k.is_some()) {
+        JkRoute::Fitted
+    } else if config.k_builder.as_deref() == Some("cosx") {
+        JkRoute::Cosx
+    } else {
+        JkRoute::Exact
+    };
+    let (ev_j, ev_k) = match (ks, rsh) {
+        (false, _) => (JkRoute::Exact, JkRoute::Exact),
+        (true, false) => (JkRoute::Fitted, JkRoute::Fitted),
+        (true, true) => (JkRoute::Exact, JkRoute::Fitted),
+    };
+    let mut out = Vec::new();
+    if run_j != ev_j {
+        out.push(format!(
+            "Coulomb J {} (evidence: {})",
+            run_j.text("RI-J"),
+            ev_j.text("RI-J")
+        ));
+    } else if run_j == JkRoute::Fitted {
+        let p = route.map(|r| r.ri_j_precision);
+        if p != Some(crate::df_j::RiJPrecision::F64) {
+            let p = p.map_or("unknown".to_string(), |p| p.to_string());
+            out.push(format!("RI-J tensor storage {p} (evidence: f64)"));
+        }
+    }
+    if k_used {
+        if run_k != ev_k {
+            out.push(format!(
+                "exchange K {} (evidence: {})",
+                run_k.text("RI-K"),
+                ev_k.text("RI-K")
+            ));
+        } else if run_k == JkRoute::Fitted {
+            let p = route.map(|r| r.ri_k_precision);
+            if p != Some(crate::df_k::RiKPrecision::F64) {
+                let p = p.map_or("unknown".to_string(), |p| p.to_string());
+                out.push(format!("RI-K tensor storage {p} (evidence: f64)"));
+            }
+        }
+    }
+    if let Some(xc) = config.xc.as_deref() {
+        let grids = crate::ks_gradient::KsGradGrids::from_config(config);
+        let flat = ferric_dft::grid::AtomicGridConfig::default();
+        if !same_grid(&grids.main, &flat) {
+            out.push(format!(
+                "XC grid {} (evidence: {})",
+                grid_text(&grids.main),
+                grid_text(&flat)
+            ));
+        }
+        let vv10 = ferric_dft::libxc::xc_def_from_name(xc).is_ok_and(|d| d.vv10.is_some());
+        let nlc = ferric_dft::grid::AtomicGridConfig::default_nlc();
+        if vv10 && !same_grid(&grids.nlc, &nlc) {
+            out.push(format!(
+                "VV10 grid {} (evidence: {})",
+                grid_text(&grids.nlc),
+                grid_text(&nlc)
+            ));
+        }
+    }
+    out
+}
+
+/// Same points: sizes, pruning and weight cut (`Some(0.0)` is no cut).
+fn same_grid(
+    a: &ferric_dft::grid::AtomicGridConfig,
+    b: &ferric_dft::grid::AtomicGridConfig,
+) -> bool {
+    let cut = |g: &ferric_dft::grid::AtomicGridConfig| g.weight_cut.filter(|&w| w > 0.0);
+    a.n_radial == b.n_radial && a.n_angular == b.n_angular && a.prune == b.prune && cut(a) == cut(b)
 }
 
 /// Whether exact (HF-type) exchange enters the energy, and whether it is
