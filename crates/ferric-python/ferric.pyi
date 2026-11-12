@@ -4859,6 +4859,7 @@ def run_ksdft(
     guess_projection: str | None = None,
     grid_weight_cut: float | None = None,
     ri_j_precision: str | None = None,
+    dm0: NDArray[np.float64] | None = None,
 ) -> DftResult:
     """Kohn-Sham DFT (closed-shell). Alias of run_dft (same grid_* kwargs,
     grid_weight_cut included).
@@ -4875,6 +4876,7 @@ def run_ksdft(
     parameters, raises ValueError -- there is no spelling that means "compute
     a zero correction".
     symmetry / irrep_nelec: as for run_dft (blocked RKS, SymmetricRhfResult).
+    dm0: as for run_dft (ladder rung 0 starts from it).
     """
     ...
 
@@ -4907,6 +4909,7 @@ def run_ksdft(
     guess_projection: str | None = None,
     grid_weight_cut: float | None = None,
     ri_j_precision: str | None = None,
+    dm0: None = None,
 ) -> SymmetricRhfResult: ...
 @overload
 def run_ksdft(
@@ -4936,6 +4939,7 @@ def run_ksdft(
     guess_projection: str | None = None,
     grid_weight_cut: float | None = None,
     ri_j_precision: str | None = None,
+    dm0: NDArray[np.float64] | None = None,
 ) -> DftResult | SymmetricRhfResult: ...
 def d3bj_energy(mol: Molecule, functional: str, s9: float = 0.0) -> float:
     """Grimme D3(BJ) dispersion energy in Hartree.

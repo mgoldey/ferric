@@ -158,6 +158,15 @@ def test_dft_dm0_from_a_converged_run_restarts_at_the_solution():
     assert abs(again.total_energy - first.total_energy) < TIGHT["energy_conv"]
 
 
+def test_ksdft_alias_forwards_dm0():
+    mol, bs, _ = _water("cc-pvdz")
+    first = ferric.run_ksdft(mol, bs, functional="PBE", **TIGHT)
+    again = ferric.run_ksdft(mol, bs, functional="PBE", dm0=first.density(), **TIGHT)
+    assert first.iterations > 2
+    assert again.iterations <= 2
+    assert abs(again.total_energy - first.total_energy) < TIGHT["energy_conv"]
+
+
 def test_dm0_accepts_a_mixture_of_densities():
     # A damped mixture keeps tr(D S) = N exactly; the bound must admit it.
     mol, bs, _ = _water("cc-pvdz")
