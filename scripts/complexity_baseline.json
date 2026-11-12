@@ -50301,7 +50301,7 @@
   },
   "crates/ferric-python/src/lib.rs::impl:PyDftResult#1::certificate": {
     "cc": 3.0,
-    "mi": 107.17711372091486
+    "mi": 98.8
   },
   "crates/ferric-python/src/lib.rs::impl:PyDftResult#1::cosx_final_pass": {
     "cc": 1.0,
@@ -66413,7 +66413,7 @@
   },
   "crates/ferric-scf/src/hessian/ks.rs::check": {
     "cc": 6.0,
-    "mi": 94.74771541301087
+    "mi": 86.9
   },
   "crates/ferric-scf/src/hessian/ks.rs::check::<anonymous>": {
     "cc": 1.0,

@@ -1087,7 +1087,7 @@ fn rks_fixed_grid_hessian_core(
 /// differentiates.
 ///
 /// The `*_polarized` functions are the spin-polarized pieces at fixed
-/// `(D^α, D^β)` that [`super::uks_moving_grid_hessian`] adds, the second
+/// `(D^α, D^β)` that [`crate::hessian::uks::uks_moving_grid_hessian`] adds, the second
 /// derivatives of the surface `ks_gradient::xc_gradient_open` differentiates.
 ///
 /// Refused with the Hessian's own typed errors: meta-GGA, VV10, range-
@@ -1164,7 +1164,7 @@ pub mod xc_blocks {
     }
 
     /// `∂²E_xc/∂x∂y` at fixed spin densities `(d_a, d_b)`, (3N, 3N), moving
-    /// grid (the XC part of the skeleton of [`super::uks_moving_grid_hessian`]).
+    /// grid (the XC part of the skeleton of [`crate::hessian::uks::uks_moving_grid_hessian`]).
     /// At `d_a = d_b = D/2` it equals [`hess_xc`] at `D`.
     pub fn hess_xc_polarized(
         mol: &Molecule,
@@ -1181,7 +1181,7 @@ pub mod xc_blocks {
 
     /// `[∂V^α_xc/∂x, ∂V^β_xc/∂x]` at fixed spin densities `(d_a, d_b)`, each
     /// of length 3N with `nbf × nbf` entries, moving grid (the XC part of the
-    /// first-order Fock matrices of [`super::uks_moving_grid_hessian`]). At
+    /// first-order Fock matrices of [`crate::hessian::uks::uks_moving_grid_hessian`]). At
     /// `d_a = d_b = D/2` each spin's list equals [`vxc_deriv`] at `D`.
     pub fn vxc_deriv_polarized(
         mol: &Molecule,
