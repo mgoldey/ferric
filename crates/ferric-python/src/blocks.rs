@@ -14,8 +14,10 @@
 //!
 //! `AoIntegrals.xc_functional(name)` returns an `XcFunctional`: E_xc and V_xc
 //! (closed or spin-polarized) and the XC gradient on the SCF's own grid;
-//! `hess(D)` / `vxc_deriv(D)` are the closed-shell XC Hessian pieces
-//! (moving grid, as `run_frequencies(hessian="analytic-moving-grid")`).
+//! `hess(D)` / `vxc_deriv(D)` are the closed-shell XC Hessian pieces and
+//! `hess_polarized(D_a, D_b)` / `vxc_deriv_polarized(D_a, D_b)` the
+//! spin-polarized ones (moving grid, as
+//! `run_frequencies(hessian="analytic-moving-grid")`).
 //!
 //! Response: `XcFunctional.response(D, D1)` (the f_xc kernel), and
 //! `AoIntegrals.cphf(...)` / `ucphf(...)`, the orbital-Hessian product and
@@ -1337,8 +1339,8 @@ impl PyXcFunctional {
         let e = xc.add_xc_uks(d_a, d_b, &mut v_a, &mut v_b);
         Ok((e, v_a, v_b))
     }
-    /// What `hess` / `vxc_deriv` read, after the analytic KS Hessian's
-    /// refusals (a ValueError, before any grid work).
+    /// What `hess` / `vxc_deriv` and their polarized twins read, after the
+    /// analytic KS Hessian's refusals (a ValueError, before any grid work).
     fn hessian_inputs(
         &self,
     ) -> PyResult<(
@@ -1348,7 +1350,7 @@ impl PyXcFunctional {
         &ferric_dft::grid::AtomicGridConfig,
     )> {
         let cfg = &self.grids.main;
-        ferric_scf::hessian::xc_blocks::check(&self.mol, &self.name, cfg)
+        ferric_scf::hessian::xc_blocks::check(&self.mol, &self.bs, &self.name, cfg)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
         Ok((&self.mol, &self.prep, &self.name, cfg))
     }
@@ -1411,8 +1413,9 @@ impl PyXcFunctional {
     /// the XC skeleton of `run_frequencies(hessian="analytic-moving-grid")`,
     /// grid response included (points ride their atom, Becke weights
     /// differentiated), so it is the derivative of `grad`. Closed-shell
-    /// LDA / GGA, pure or global hybrid, on an unpruned grid; anything the
-    /// analytic KS Hessian refuses raises ValueError.
+    /// LDA / GGA, pure or global hybrid, on any grid (pruned or flat);
+    /// anything the analytic KS Hessian refuses (ECPs included) raises
+    /// ValueError.
     fn hess<'py>(
         &self,
         py: Python<'py>,
@@ -1440,6 +1443,61 @@ impl PyXcFunctional {
             .allow_threads(|| ferric_scf::hessian::xc_blocks::vxc_deriv(mol, prep, name, cfg, &d))
             .map_err(make_err)?;
         Ok(PyArray3::from_owned_array(py, stack(v, n)))
+    }
+    /// ∂²E_xc/∂x∂y at fixed spin densities, (3N, 3N): the XC skeleton of the
+    /// analytic UKS Hessian on the moving grid, the derivative of
+    /// `grad_polarized`. `hess_polarized(D/2, D/2)` equals `hess(D)`. Same
+    /// limits as `hess`.
+    fn hess_polarized<'py>(
+        &self,
+        py: Python<'py>,
+        d_a: PyReadonlyArray2<'py, f64>,
+        d_b: PyReadonlyArray2<'py, f64>,
+    ) -> PyResult<Bound<'py, PyArray2<f64>>> {
+        let n = self.prep.nbasis();
+        let (d_a, d_b) = (checked_density(d_a, n)?, checked_density(d_b, n)?);
+        let (mol, prep, name, cfg) = self.hessian_inputs()?;
+        let h = py
+            .allow_threads(|| {
+                ferric_scf::hessian::xc_blocks::hess_xc_polarized(
+                    mol,
+                    prep,
+                    name,
+                    cfg,
+                    [&d_a, &d_b],
+                )
+            })
+            .map_err(make_err)?;
+        Ok(PyArray2::from_owned_array(py, h))
+    }
+    /// `(dV_a/dx, dV_b/dx)` at fixed spin densities, each (3N, n, n): the XC
+    /// part of the first-order UKS matrices, the derivatives of
+    /// `eval_polarized`'s V_a and V_b. At `(D/2, D/2)` each equals
+    /// `vxc_deriv(D)`. Same limits as `hess`.
+    fn vxc_deriv_polarized<'py>(
+        &self,
+        py: Python<'py>,
+        d_a: PyReadonlyArray2<'py, f64>,
+        d_b: PyReadonlyArray2<'py, f64>,
+    ) -> PyResult<(Bound<'py, PyArray3<f64>>, Bound<'py, PyArray3<f64>>)> {
+        let n = self.prep.nbasis();
+        let (d_a, d_b) = (checked_density(d_a, n)?, checked_density(d_b, n)?);
+        let (mol, prep, name, cfg) = self.hessian_inputs()?;
+        let [va, vb] = py
+            .allow_threads(|| {
+                ferric_scf::hessian::xc_blocks::vxc_deriv_polarized(
+                    mol,
+                    prep,
+                    name,
+                    cfg,
+                    [&d_a, &d_b],
+                )
+            })
+            .map_err(make_err)?;
+        Ok((
+            PyArray3::from_owned_array(py, stack(va, n)),
+            PyArray3::from_owned_array(py, stack(vb, n)),
+        ))
     }
     /// XC gradient at fixed total density, (natoms, 3): semilocal with grid
     /// response, plus VV10 (the `run_dft(with_gradient=True)` XC term).

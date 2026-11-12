@@ -1086,19 +1086,23 @@ fn rks_fixed_grid_hessian_core(
 /// derivatives of the surface `ks_gradient::xc_gradient_closed`
 /// differentiates.
 ///
+/// The `*_polarized` functions are the spin-polarized pieces at fixed
+/// `(D^α, D^β)` that [`super::uks_moving_grid_hessian`] adds, the second
+/// derivatives of the surface `ks_gradient::xc_gradient_open` differentiates.
+///
 /// Refused with the Hessian's own typed errors: meta-GGA, VV10, range-
-/// separated and double hybrids, unequal short/long-range exchange and ghost
-/// atoms. A pruned grid is supported: every point still rides its home atom
-/// (`atomic_quadrature_points` follows `cfg.prune`). These are closed-shell only (no
-/// spin-polarized moving-grid skeleton exists).
+/// separated and double hybrids, unequal short/long-range exchange, ghost
+/// atoms and ECPs. A pruned grid is supported: every point still rides its
+/// home atom (`atomic_quadrature_points` follows `cfg.prune`).
 pub mod xc_blocks {
     use super::*;
 
-    /// `Ok` when [`hess_xc`] and [`vxc_deriv`] support `xc_name` on a grid
-    /// built with `cfg` for `mol`; otherwise the analytic KS Hessian's typed
-    /// refusal (no SCF or grid is built).
+    /// `Ok` when every function of this module supports `xc_name` on a grid
+    /// built with `cfg` for `mol` in basis `bs`; otherwise the analytic KS
+    /// Hessian's typed refusal (no SCF or grid is built).
     pub fn check(
         mol: &Molecule,
+        bs: &BasisSet,
         xc_name: &str,
         // Every grid is supported (pruned or flat, with or without a weight
         // cutoff); the argument is kept so callers state the grid they mean.
@@ -1110,16 +1114,23 @@ pub mod xc_blocks {
         if mol.atoms.iter().any(|a| a.ghost) {
             return Err(unsupported("ghost atoms", "ghost-atom XC grid response"));
         }
+        if has_ecp(mol, bs) {
+            return Err(unsupported(
+                "an ECP",
+                "ECP and embedding terms with the XC kernel",
+            ));
+        }
         Ok(())
     }
 
     /// The production grid of `mol` for `xc_name` with `cfg`, after [`check`].
     fn moving_grid(
         mol: &Molecule,
+        prep: &PreparedBasis,
         xc_name: &str,
         cfg: &ferric_dft::grid::AtomicGridConfig,
     ) -> Result<FixedGridKs, FerricError> {
-        check(mol, xc_name, cfg)?;
+        check(mol, prep.basis_set(), xc_name, cfg)?;
         FixedGridKs::new(mol, xc_name, cfg)
     }
 
@@ -1132,7 +1143,7 @@ pub mod xc_blocks {
         cfg: &ferric_dft::grid::AtomicGridConfig,
         d: &Array2<f64>,
     ) -> Result<Array2<f64>, FerricError> {
-        let grid = moving_grid(mol, xc_name, cfg)?;
+        let grid = moving_grid(mol, prep, xc_name, cfg)?;
         let geo = XcGeometry::new(mol, prep)?;
         grid.skeleton_hessian_moving(&geo, d, &XcMutants::default())
     }
@@ -1147,8 +1158,41 @@ pub mod xc_blocks {
         cfg: &ferric_dft::grid::AtomicGridConfig,
         d: &Array2<f64>,
     ) -> Result<Vec<Array2<f64>>, FerricError> {
-        let grid = moving_grid(mol, xc_name, cfg)?;
+        let grid = moving_grid(mol, prep, xc_name, cfg)?;
         let geo = XcGeometry::new(mol, prep)?;
         grid.first_order_fock_moving(&geo, d, &XcMutants::default())
+    }
+
+    /// `∂²E_xc/∂x∂y` at fixed spin densities `(d_a, d_b)`, (3N, 3N), moving
+    /// grid (the XC part of the skeleton of [`super::uks_moving_grid_hessian`]).
+    /// At `d_a = d_b = D/2` it equals [`hess_xc`] at `D`.
+    pub fn hess_xc_polarized(
+        mol: &Molecule,
+        prep: &PreparedBasis,
+        xc_name: &str,
+        cfg: &ferric_dft::grid::AtomicGridConfig,
+        d: [&Array2<f64>; 2],
+    ) -> Result<Array2<f64>, FerricError> {
+        let grid = moving_grid(mol, prep, xc_name, cfg)?;
+        let geo = XcGeometry::new(mol, prep)?;
+        grid.polarized()?
+            .skeleton_hessian_moving(&geo, d, &XcMutants::default())
+    }
+
+    /// `[∂V^α_xc/∂x, ∂V^β_xc/∂x]` at fixed spin densities `(d_a, d_b)`, each
+    /// of length 3N with `nbf × nbf` entries, moving grid (the XC part of the
+    /// first-order Fock matrices of [`super::uks_moving_grid_hessian`]). At
+    /// `d_a = d_b = D/2` each spin's list equals [`vxc_deriv`] at `D`.
+    pub fn vxc_deriv_polarized(
+        mol: &Molecule,
+        prep: &PreparedBasis,
+        xc_name: &str,
+        cfg: &ferric_dft::grid::AtomicGridConfig,
+        d: [&Array2<f64>; 2],
+    ) -> Result<[Vec<Array2<f64>>; 2], FerricError> {
+        let grid = moving_grid(mol, prep, xc_name, cfg)?;
+        let geo = XcGeometry::new(mol, prep)?;
+        grid.polarized()?
+            .first_order_fock_moving(&geo, d, &XcMutants::default())
     }
 }
