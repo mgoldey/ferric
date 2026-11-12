@@ -157,6 +157,26 @@ LOCKED_STEPS_OFF = {
 }
 
 
+def _bash_version():
+    try:
+        out = subprocess.run(
+            ["bash", "-c", 'echo "${BASH_VERSINFO[0]} ${BASH_VERSINFO[1]}"'],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        ).stdout.split()
+        return tuple(int(x) for x in out[:2])
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return (0, 0)
+
+
+# ci-gate.sh opens `exec {GATE_OUT_FD}>&1`, a named file descriptor, which
+# needs bash 4.1; macOS ships bash 3.2.
+needs_gate_bash = pytest.mark.skipif(
+    _bash_version() < (4, 1), reason="ci-gate.sh needs bash >= 4.1"
+)
+
+
 def _run_gate(tmp_path, repo, fmt_rc, extra=None):
     lint = _knobs(_push(repo, "lint").stdout)
     shim = tmp_path / "shim"
@@ -184,6 +204,7 @@ def _run_gate(tmp_path, repo, fmt_rc, extra=None):
     return r, calls
 
 
+@needs_gate_bash
 def test_lint_tier_runs_cargo_fmt_check(tmp_path, repo):
     r, calls = _run_gate(tmp_path, repo, fmt_rc=0)
     assert r.returncode == 0, r.stdout + r.stderr
@@ -192,6 +213,7 @@ def test_lint_tier_runs_cargo_fmt_check(tmp_path, repo):
     assert "RESULT: PASS" in r.stdout
 
 
+@needs_gate_bash
 def test_a_formatting_diff_fails_the_lint_tier(tmp_path, repo):
     r, calls = _run_gate(tmp_path, repo, fmt_rc=1)
     assert calls == ["fmt --all --check"]
@@ -201,6 +223,7 @@ def test_a_formatting_diff_fails_the_lint_tier(tmp_path, repo):
     assert "RESULT: FAIL" in r.stdout
 
 
+@needs_gate_bash
 def test_fmt_check_can_be_skipped(tmp_path, repo):
     r, calls = _run_gate(tmp_path, repo, fmt_rc=1, extra={"CI_GATE_SKIP_FMT": "1"})
     assert r.returncode == 0, r.stdout
