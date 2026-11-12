@@ -487,20 +487,27 @@ fn stamped_scf_certificate(
 /// warning for each way the run on `basis` lies outside the solver's energy
 /// anchor (`ferric_scf::certificate::with_scf_envelope`, the helper the CLI
 /// uses). A post-SCF method's reference certificate carries no envelope
-/// warnings, as in the CLI.
+/// warnings, as in the CLI. `fock_hooked`: the solve ran with a `fock_hook`
+/// (`ferric_scf::certificate::with_fock_hook`).
 fn scf_kind_certificate(
     mol: &Molecule,
     r: &ScfResult,
     config: &RhfConfig,
-    basis: &str,
+    basis: &ferric_core::basis::BasisSet,
+    fock_hooked: bool,
 ) -> ferric_core::certificate::Certificate {
-    ferric_scf::certificate::with_scf_envelope(
+    let c = ferric_scf::certificate::with_scf_envelope(
         stamped_scf_certificate(mol, r, config),
         mol,
         r,
         config,
         basis,
-    )
+    );
+    if fock_hooked {
+        ferric_scf::certificate::with_fock_hook(c)
+    } else {
+        c
+    }
 }
 
 /// The method.kind a geometry/frequency run on `spin` with `config` is graded
@@ -1610,7 +1617,7 @@ fn solve_rhf_outcome(
             &config,
             term,
         );
-        return wrap_rhf_result(py, mol, &prep.basis_set().name, r, config);
+        return wrap_rhf_result(py, mol, prep.basis_set(), r, config, true);
     }
     if config.irrep_nelec.is_some() && !config.symmetry {
         return Err(pyo3::exceptions::PyValueError::new_err(
@@ -1623,7 +1630,7 @@ fn solve_rhf_outcome(
     let r = py
         .allow_threads(|| solve_rhf(ctx, mol, prep, op, bounds, &config))
         .map_err(make_err)?;
-    wrap_rhf_result(py, mol, &prep.basis_set().name, r, config)
+    wrap_rhf_result(py, mol, prep.basis_set(), r, config, false)
 }
 
 /// Warn if unconverged and wrap a closed-shell solve on the orbital basis
@@ -1631,19 +1638,30 @@ fn solve_rhf_outcome(
 fn wrap_rhf_result(
     py: Python<'_>,
     mol: &Molecule,
-    basis: &str,
+    basis: &ferric_core::basis::BasisSet,
     r: ScfResult,
     config: RhfConfig,
+    fock_hooked: bool,
 ) -> PyResult<PyObject> {
     warn_rhf_not_converged(py, &r, &config);
-    Ok(Py::new(py, PyRhfResult::from_scf(mol, basis, r, config))?.into_any())
+    Ok(Py::new(
+        py,
+        PyRhfResult::from_scf(mol, basis, r, config, fock_hooked),
+    )?
+    .into_any())
 }
 
 impl PyRhfResult {
     /// Wrap a closed-shell solve on the orbital basis `basis`, with its
     /// certificate.
-    fn from_scf(mol: &Molecule, basis: &str, r: ScfResult, config: RhfConfig) -> Self {
-        let certificate_data = scf_kind_certificate(mol, &r, &config, basis);
+    fn from_scf(
+        mol: &Molecule,
+        basis: &ferric_core::basis::BasisSet,
+        r: ScfResult,
+        config: RhfConfig,
+        fock_hooked: bool,
+    ) -> Self {
+        let certificate_data = scf_kind_certificate(mol, &r, &config, basis, fock_hooked);
         PyRhfResult {
             energy: r.energy,
             converged: r.converged,
@@ -3586,8 +3604,14 @@ struct PyUhfResult {
 /// `density_beta`/`eps_beta` unset only when the solve has no β channel, so
 /// the fallbacks keep the accessors total.
 impl PyUhfResult {
-    fn from_scf(r: ScfResult, mol: &Molecule, config: &RhfConfig, basis: &str) -> Self {
-        let certificate_data = scf_kind_certificate(mol, &r, config, basis);
+    fn from_scf(
+        r: ScfResult,
+        mol: &Molecule,
+        config: &RhfConfig,
+        basis: &ferric_core::basis::BasisSet,
+        fock_hooked: bool,
+    ) -> Self {
+        let certificate_data = scf_kind_certificate(mol, &r, config, basis, fock_hooked);
         PyUhfResult {
             one_step_energy_drop_data: r.convergence.and_then(|c| c.one_step_energy_drop),
             stationarity_tol_data: scf_stationarity_tol(&r),
@@ -3815,6 +3839,7 @@ fn run_uhf(
         &prep,
         &config,
     );
+    let fock_hooked = fock_hook.is_some();
     let (r, term) = blocks::solve_open_shell(
         py,
         blocks::OpenShell::Uhf,
@@ -3841,7 +3866,8 @@ fn run_uhf(
         r,
         &emol,
         &config,
-        &basis_set.inner.name,
+        &basis_set.inner,
+        fock_hooked,
     ))
 }
 
@@ -3943,6 +3969,7 @@ fn run_rohf(
         &prep,
         &config,
     );
+    let fock_hooked = fock_hook.is_some();
     let (r, term) = blocks::solve_open_shell(
         py,
         blocks::OpenShell::Rohf,
@@ -3969,7 +3996,8 @@ fn run_rohf(
         r,
         &emol,
         &config,
-        &basis_set.inner.name,
+        &basis_set.inner,
+        fock_hooked,
     ))
 }
 
@@ -7219,8 +7247,8 @@ fn rimp2_energies(
         ),
         &reference,
         mol,
-        &basis_set.name,
-        &auxbasis.name,
+        basis_set,
+        auxbasis,
     );
     Ok(Rimp2Energies {
         certificate,
@@ -9948,6 +9976,8 @@ struct PyDftResult {
     /// The base SCF settings (functional, grid, density fitting, thresholds)
     /// this result was solved with; see `PyRhfResult::scf_config`.
     scf_config: RhfConfig,
+    /// The SCF ran with a `fock_hook` (recorded on the certificate).
+    fock_hooked: bool,
 }
 
 impl PyDftResult {
@@ -10009,7 +10039,8 @@ impl PyDftResult {
             &self.xc_mol,
             &self.scf_data,
             &self.scf_config,
-            &self.xc_basis.name,
+            &self.xc_basis,
+            self.fock_hooked,
         );
         let c = match self.dispersion_model.as_deref() {
             Some(m) => c.with_approximation("dispersion", m),
@@ -10473,6 +10504,7 @@ fn run_dft(
     // below is an owned Rust value (`emol` is a clone; `ctx`/`prep`/`bounds`/
     // `ladder` are built above), so nothing Python-borrowed crosses the
     // closure boundary.
+    let fock_hooked = fock_hook.is_some();
     let rhf = blocks::solve_ks_ladder(
         py,
         &ctx,
@@ -10584,6 +10616,7 @@ fn run_dft(
         gradient_data,
         scf_data: rhf,
         scf_config: cfg,
+        fock_hooked,
     };
     Ok(Py::new(py, result)?.into_any())
 }

@@ -52,18 +52,23 @@ pub fn rimp2_energy_anchor(reference: &Certificate) -> Option<&'static EnergyAnc
 
 /// `c` (an RI-MP2 certificate on `reference`) with a warning for each way the
 /// run lies outside the anchor of [`rimp2_energy_anchor`]: an element of
-/// `mol`, the orbital basis `basis`, the auxiliary basis `aux`. The grade is
-/// not changed.
+/// `mol`, the orbital basis `basis`, the auxiliary basis `aux`. A `c` that
+/// does not carry that anchor (its settings are outside the anchor's scope,
+/// see [`rimp2_certificate`]) is returned as is. The grade is not changed.
 pub fn with_rimp2_envelope(
     c: Certificate,
     reference: &Certificate,
     mol: &Molecule,
-    basis: &str,
-    aux: &str,
+    basis: &ferric_core::basis::BasisSet,
+    aux: &ferric_core::basis::BasisSet,
 ) -> Certificate {
     let Some(a) = rimp2_energy_anchor(reference) else {
         return c;
     };
+    // A run outside the anchor's settings carries no anchor to be outside of.
+    if c.measured_error.as_ref() != Some(&a.measured_error()) {
+        return c;
+    }
     let zs: Vec<i32> = mol.atoms.iter().map(|at| at.z).collect();
     c.with_envelope(
         a,
@@ -76,8 +81,24 @@ pub fn with_rimp2_envelope(
     )
 }
 
+/// Whether a run with `cfg` and `op` is what the anchor's evidence test runs:
+/// the Coulomb operator, no κ regularization, no separate fitting metric, no
+/// 3-index screening (or the threshold 0, which drops nothing), and all
+/// electrons correlated on an RHF reference (`validation_basis_coverage.rs`
+/// runs `RiMp2Config::default()`). The UHF evidence
+/// (`validation_u_rimp2.rs`) also runs frozen core 2 on HO2, so a UHF
+/// reference is in scope with any frozen core.
+fn in_anchor_scope(reference: &Certificate, cfg: &RiMp2Config, op: &Operator) -> bool {
+    op.kind == OperatorKind::Coulomb
+        && cfg.kappa.is_none()
+        && cfg.metric_op.is_none()
+        && cfg.eri3_screen_thresh.is_none_or(|t| t == 0.0)
+        && (cfg.frozen_core == 0 || reference.capability == "uhf")
+}
+
 /// Canonical RI-MP2 (`rimp2`, closed or open shell) run with `cfg`.
-/// `measured_error` is the anchor of [`rimp2_energy_anchor`].
+/// `measured_error` is the anchor of [`rimp2_energy_anchor`] when the run is
+/// in the scope its evidence covers (see `in_anchor_scope`); otherwise none.
 pub fn rimp2_certificate(
     reference: &Certificate,
     aux: &str,
@@ -87,7 +108,8 @@ pub fn rimp2_certificate(
 ) -> Certificate {
     let mut c = ri_correlation_certificate("rimp2", reference, aux, cfg.frozen_core, op)
         .with_precision(precision);
-    if let Some(a) = rimp2_energy_anchor(reference) {
+    if let Some(a) = rimp2_energy_anchor(reference).filter(|_| in_anchor_scope(reference, cfg, op))
+    {
         c = c.with_energy_anchor(a);
     }
     if let Some(m) = cfg.metric_op.as_ref() {
@@ -408,6 +430,72 @@ mod tests {
             .is_none());
     }
 
+    /// The anchor is attached only inside its evidence's settings: each
+    /// setting outside them drops it on its own, and frozen core drops it on
+    /// an RHF reference only.
+    #[test]
+    fn rimp2_anchor_is_gated_on_the_evidence_settings() {
+        let cert = |reference: &Certificate, cfg: RiMp2Config, op: Operator| {
+            rimp2_certificate(reference, "cc-pvdz-ri", &cfg, &op, &PrecisionRecord::f64())
+        };
+        let uhf = Certificate::for_method_kind("uhf");
+        let coul = Operator::coulomb;
+        let d = RiMp2Config::default;
+        assert!(cert(&rhf(), d(), coul()).measured_error.is_some());
+        let outside = [
+            ("kappa", rhf(), d().with_kappa(1.1), coul()),
+            ("erfc", rhf(), d(), Operator::erfc(0.5)),
+            ("rhf frozen core", rhf(), d().with_frozen_core(1), coul()),
+            (
+                "metric",
+                rhf(),
+                RiMp2Config {
+                    metric_op: Some(Operator::erfc(0.5)),
+                    ..d()
+                },
+                coul(),
+            ),
+            (
+                "eri3 screen",
+                rhf(),
+                RiMp2Config {
+                    eri3_screen_thresh: Some(1e-10),
+                    ..d()
+                },
+                coul(),
+            ),
+            ("uhf kappa", uhf.clone(), d().with_kappa(1.1), coul()),
+        ];
+        for (what, reference, cfg, op) in outside {
+            let c = cert(&reference, cfg, op);
+            assert!(c.measured_error.is_none(), "{what}: anchor attached");
+            let n_atom = Molecule::parse_xyz("1\n\nN 0 0 0\n", 0, 4).unwrap();
+            let b = ferric_core::basis::bundled("6-31g").unwrap();
+            assert_eq!(
+                with_rimp2_envelope(c.clone(), &reference, &n_atom, &b, &b),
+                c,
+                "{what}: envelope warnings without an anchor"
+            );
+        }
+        let inside = [
+            ("uhf frozen core", uhf.clone(), d().with_frozen_core(2)),
+            (
+                "eri3 screen 0",
+                rhf(),
+                RiMp2Config {
+                    eri3_screen_thresh: Some(0.0),
+                    ..d()
+                },
+            ),
+        ];
+        for (what, reference, cfg) in inside {
+            assert!(
+                cert(&reference, cfg, coul()).measured_error.is_some(),
+                "{what}: anchor missing"
+            );
+        }
+    }
+
     #[test]
     fn rimp2_envelope_checks_elements_and_both_basis_sets() {
         let water = Molecule::parse_xyz("3\n\nO 0 0 0\nH 0 0 1\nH 0 1 0\n", 0, 1).unwrap();
@@ -419,10 +507,18 @@ mod tests {
             &PrecisionRecord::f64(),
         );
         // Covered: water / cc-pVDZ / cc-pvdz-ri (an alias of cc-pvdz-rifit).
-        let inside = with_rimp2_envelope(c.clone(), &rhf(), &water, "cc-pVDZ", "cc-pvdz-ri");
+        let b = |n: &str| ferric_core::basis::bundled(n).unwrap();
+        let inside =
+            with_rimp2_envelope(c.clone(), &rhf(), &water, &b("cc-pVDZ"), &b("cc-pvdz-ri"));
         assert_eq!(inside, c);
         let nh3 = Molecule::parse_xyz("4\n\nN 0 0 0\nH 0 0 1\nH 0 1 0\nH 1 0 0\n", 0, 1).unwrap();
-        let out = with_rimp2_envelope(c.clone(), &rhf(), &nh3, "6-31g", "aug-cc-pvdz-jkfit");
+        let out = with_rimp2_envelope(
+            c.clone(),
+            &rhf(),
+            &nh3,
+            &b("6-31g"),
+            &b("aug-cc-pvdz-jkfit"),
+        );
         assert_eq!(out.grade, c.grade);
         let w: Vec<&str> = out.warnings.iter().map(String::as_str).collect();
         assert_eq!(w.len(), 3, "{w:?}");

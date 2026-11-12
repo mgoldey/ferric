@@ -79,3 +79,20 @@ def test_bad_electron_count_is_an_error():
     mol = ferric.Molecule.from_xyz_string(_H2O)
     with pytest.raises(Exception, match="inactive"):
         ferric.run_casci(mol, ferric.BasisSet.bundled("6-31g"), 4, (2, 1))
+
+
+def test_ecp_basis_zero_correlation_limit_is_the_rhf_energy():
+    # HI / def2-SVP (28-electron ECP on I). The bindings apply the ECP to the
+    # molecule (valence count) and CAS-CI/CASSCF carry V_ECP, so CAS(2,1) on
+    # the RHF HOMO is the RHF determinant. Rust anchor: crates/ferric-ci/tests/
+    # cas_ecp.rs (5.7e-14 Ha). Without apply_ecp the RHF and the CAS share the
+    # wrong all-electron count (54), so the energies still agree; the core
+    # count is what pins the binding.
+    mol = ferric.Molecule.from_xyz_string("2\n\nH 0 0 0\nI 0 0 1.61\n")
+    bs = ferric.BasisSet.bundled("def2-svp")
+    ci = ferric.run_casci(mol, bs, 1, (1, 1))
+    assert abs(ci.e_total - ci.rhf_energy) < 1e-9
+    assert ci.active_start == 12  # 26 valence electrons, 2 active
+    scf = ferric.run_casscf(mol, bs, 1, (1, 1))
+    assert abs(scf.e_total - scf.rhf_energy) < 1e-9
+    assert scf.n_core == 12

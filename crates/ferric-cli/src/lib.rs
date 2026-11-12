@@ -1261,13 +1261,7 @@ pub fn run(args: Vec<String>) {
     // The printed SCF-kind certificate also carries the envelope warnings;
     // the reference handed to a post-SCF kind does not.
     let scf_cert = if matches!(method, "rhf" | "ksdft") {
-        ferric_scf::certificate::with_scf_envelope(
-            scf_cert,
-            &mol,
-            &result,
-            scf_cert_config,
-            &bs.name,
-        )
+        ferric_scf::certificate::with_scf_envelope(scf_cert, &mol, &result, scf_cert_config, &bs)
     } else {
         scf_cert
     };
@@ -1684,7 +1678,14 @@ fn run_symmetric_rhf(
     if !scf.converged {
         eprintln!("warning: SCF did not fully converge (exit {:?})", scf.exit);
     }
-    let cert = scf_certificate_stamped(mol, scf, rhf_config, None).with_approximation(
+    let cert = ferric_scf::certificate::with_scf_envelope(
+        scf_certificate_stamped(mol, scf, rhf_config, None),
+        mol,
+        scf,
+        rhf_config,
+        bs,
+    )
+    .with_approximation(
         "symmetry",
         format!(
             "point group {}, geometry symmetrized by up to {:.3e} Bohr",
@@ -2731,8 +2732,8 @@ fn run_rimp2(
         ),
         scf_cert,
         mol,
-        &bs.name,
-        aux_name,
+        bs,
+        &aux_bs,
     ));
     if let Some(rl) = ferric_scf::runlog::log() {
         // The ANSWER, not the SCF reference `run_end` carries. `scf_converged`
@@ -2849,8 +2850,8 @@ fn run_u_rimp2(
         ),
         scf_cert,
         mol,
-        &bs.name,
-        aux_name,
+        bs,
+        &aux_bs,
     ));
     if let Some(rl) = ferric_scf::runlog::log() {
         rl.result(
@@ -6538,7 +6539,7 @@ fn run_uhf(
         mol,
         &result,
         rhf_config,
-        &bs.name,
+        bs,
     ));
     // task == "optimize" is handled by the top-level dispatch above
     // (optimize_geometry_uhf), which returns before reaching here.
@@ -6607,7 +6608,7 @@ fn run_rohf(
         mol,
         &result,
         rhf_config,
-        &bs.name,
+        bs,
     ));
     // task == "optimize" is handled by the top-level dispatch above
     // (optimize_geometry_rohf), which returns before reaching here.

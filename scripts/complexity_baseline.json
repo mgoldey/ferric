@@ -50881,7 +50881,7 @@
   },
   "crates/ferric-python/src/lib.rs::impl:PyRhfResult#1::from_scf": {
     "cc": 1.0,
-    "mi": 100.16302263193836
+    "mi": 92.84168408096555
   },
   "crates/ferric-python/src/lib.rs::impl:PyRhfResult::__repr__": {
     "cc": 1.0,
@@ -51277,7 +51277,7 @@
   },
   "crates/ferric-python/src/lib.rs::impl:PyUhfResult::from_scf": {
     "cc": 3.0,
-    "mi": 91.98685965921455
+    "mi": 86.47402216829072
   },
   "crates/ferric-python/src/lib.rs::impl:PyUhfResult::from_scf::<anonymous>": {
     "cc": 1.0,
@@ -52040,8 +52040,8 @@
     "mi": 111.60466249192818
   },
   "crates/ferric-python/src/lib.rs::run_rohf": {
-    "cc": 8.0,
-    "mi": 58.46422939534287
+    "cc": 13.0,
+    "mi": 50.920729522185454
   },
   "crates/ferric-python/src/lib.rs::run_rohf::<anonymous>": {
     "cc": 1.0,
@@ -52160,8 +52160,8 @@
     "mi": 153.0837736153568
   },
   "crates/ferric-python/src/lib.rs::run_uhf": {
-    "cc": 11.0,
-    "mi": 51.72676970254197
+    "cc": 16.0,
+    "mi": 45.55246266849181
   },
   "crates/ferric-python/src/lib.rs::run_uhf::<anonymous>": {
     "cc": 1.0,
@@ -52265,7 +52265,7 @@
   },
   "crates/ferric-python/src/lib.rs::solve_rhf_outcome": {
     "cc": 8.0,
-    "mi": 80.51794770983597
+    "mi": 73.62902866630992
   },
   "crates/ferric-python/src/lib.rs::solve_rhf_outcome::<anonymous>": {
     "cc": 1.0,
@@ -52353,7 +52353,7 @@
   },
   "crates/ferric-python/src/lib.rs::wrap_rhf_result": {
     "cc": 2.0,
-    "mi": 107.07583573850347
+    "mi": 97.27129522688361
   },
   "crates/ferric-python/src/lib.rs::write_cube": {
     "cc": 23.0,
