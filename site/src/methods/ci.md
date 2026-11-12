@@ -14,7 +14,7 @@ by `scripts/casci_slater_condon_phases_sympy.py`.
 | | Implemented |
 |---|---|
 | Space | full CI inside `n_active` spatial orbitals; no RAS1/RAS3 restrictions |
-| Reference | restricted (closed-shell) RHF, a singlet with `n_alpha == n_beta` in the active space |
+| Reference | restricted (closed-shell) RHF start; the active-space sector `(n_alpha, n_beta)` may be unequal (see [CASSCF](#casscf)) |
 | Roots | the single lowest root |
 | Solver | CI-native Davidson, diagonal preconditioner `1/(H_ii - λ)` |
 | Entry points | Rust `ferric_ci::run_cas_ci` (re-exported as `ferric::ci`); Python `ferric.run_casci` |
@@ -88,7 +88,7 @@ println!("{res}");            // energy, determinant count, iterations
 ```
 
 `CasCiResult` holds `e_total`, `e_active`, `e_core`, `n_determinants`,
-`ci_vector` (index `ia * n_beta + ib`), `converged`, `iterations`,
+`ci_vector` (index `ia * n_beta_strings + ib`, where `n_beta_strings = C(n_active, n_beta)` is the number of beta strings), `converged`, `iterations`,
 `integrals` and, with `compute_rdms`, `rdms` (`dm1`, `dm2`).
 
 From Python:

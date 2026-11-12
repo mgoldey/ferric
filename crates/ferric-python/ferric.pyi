@@ -3723,7 +3723,7 @@ def run_rhf(
     guess_basis: str | None = None,
     guess_projection: str | None = None,
     ri_j_precision: str | None = None,
-    dm0: NDArray[np.float64] | None = None,
+    dm0: None = None,
 ) -> SymmetricRhfResult: ...
 def run_uhf(
     mol: Molecule,
@@ -4731,7 +4731,7 @@ def run_dft(
     guess_projection: str | None = None,
     grid_weight_cut: float | None = None,
     ri_j_precision: str | None = None,
-    dm0: NDArray[np.float64] | None = None,
+    dm0: None = None,
 ) -> SymmetricRhfResult:
     """Point-group-blocked closed-shell RKS (see the ``symmetry=True``
     paragraph of the DftResult overload). Same density-fitting defaults:

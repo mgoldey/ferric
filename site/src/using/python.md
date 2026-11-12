@@ -851,8 +851,9 @@ Notes for writing a port:
   "Energy noise floor" above), which sets the limit on `energy_conv` at
   large mu.
 - A subsystem SCF with N_A electrons is a `Molecule` with all nuclei and
-  charge +N_B; the hook adds v_emb, so no ghost atoms or new integrals are
+  charge Q_total + N_B, where N_B is the number of electrons assigned to B; the hook adds v_emb, so no ghost atoms or new integrals are
   needed.
 - `ao2mo` returns the full (pq|rs) block, so the spin-orbital ADC(2) port
-  holds (2 nmo)^4 and (2 nocc)^3 (2 nvir)^3 arrays and is for small bases. A
+  holds (2 nmo)^4 arrays and is for small bases; it builds the singles-doubles
+  coupling one occupied pair at a time. A
   density-fitted ADC(2) would build the same intermediates from `df_mo`.
