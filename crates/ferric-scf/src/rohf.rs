@@ -642,9 +642,9 @@ pub fn solve_rohf_from_spin_densities(
     if hook.is_some() {
         crate::rhf::validate_fock_hook(config)?;
     }
-    let (_, nocc_double) = crate::uhf::nocc_ab(mol)?;
+    let (nocc_alpha, nocc_double) = crate::uhf::nocc_ab(mol)?;
     let s = ferric_integrals::oneelectron::overlap(prep);
-    let c0 = rohf_spin_density_mos(&s, densities, nocc_double)?;
+    let c0 = rohf_spin_density_mos(&s, densities, nocc_alpha, nocc_double)?;
     let r = solve_rohf_impl_recorded(ctx, mol, prep, bounds, config, Some(&c0), None, None, hook)?;
     if r.converged {
         Ok(r)
@@ -662,10 +662,12 @@ pub fn solve_rohf_from_spin_densities(
 /// are the natural orbitals of `D_α` within the S-orthogonal complement of
 /// the closed shell, largest occupation first. For `D_β = C_c C_cᵀ` and `D_α = C_c C_cᵀ + C_o C_oᵀ` (S-orthonormal
 /// `[C_c C_o]`) the closed and open columns rebuild both densities to
-/// round-off.
+/// round-off. The retained overlap rank must hold all `nocc_alpha`
+/// (closed + open) occupied orbitals.
 pub(crate) fn rohf_spin_density_mos(
     s: &Array2<f64>,
     densities: (&Array2<f64>, &Array2<f64>),
+    nocc_alpha: usize,
     nocc_double: usize,
 ) -> Result<Array2<f64>, FerricError> {
     let n = s.nrows();
@@ -679,9 +681,10 @@ pub(crate) fn rohf_spin_density_mos(
     }
     let x = crate::rhf::canonical_orthogonalizer(s)?;
     let m = x.ncols();
-    if nocc_double > m {
+    if nocc_double > m || nocc_alpha > m {
         return Err(FerricError::General(format!(
-            "ROHF: {nocc_double} doubly occupied orbitals exceed the {m} orthogonalized functions"
+            "ROHF: {nocc_alpha} alpha-occupied orbitals ({nocc_double} doubly occupied) \
+             exceed the {m} orthogonalized functions the overlap retains"
         )));
     }
     let xs = x.t().dot(s);
@@ -2357,6 +2360,25 @@ pub(crate) fn diagonalize(
 mod tests {
     use super::*;
     use ferric_core::basis;
+
+    /// Overlap of rank 2 on 3 functions: one doubly occupied orbital fits,
+    /// but 3 alpha-occupied orbitals (1 closed + 2 open) do not, so the
+    /// start is refused instead of padding the open block with zero columns.
+    #[test]
+    fn spin_density_start_refuses_more_alpha_occupied_than_the_kept_rank() {
+        let s = ndarray::arr2(&[[1.0, 1.0, 0.0], [1.0, 1.0, 0.0], [0.0, 0.0, 1.0]]);
+        let d = Array2::<f64>::zeros((3, 3));
+        let msg = rohf_spin_density_mos(&s, (&d, &d), 3, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            msg.contains("3 alpha-occupied")
+                && msg.contains("1 doubly")
+                && msg.contains("2 orthogonalized"),
+            "{msg}"
+        );
+        assert!(rohf_spin_density_mos(&s, (&d, &d), 2, 1).is_ok());
+    }
 
     #[test]
     fn test_rohf_h_atom_sto3g() {
