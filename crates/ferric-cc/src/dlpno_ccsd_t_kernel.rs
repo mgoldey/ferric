@@ -1461,7 +1461,7 @@ mod tests {
         let eps = rhf.eps_r();
         let c = rhf.mos_r();
         let nbas = obs.nbasis();
-        let nocc_total = eps.iter().filter(|&&e| e < 0.0).count();
+        let nocc_total = crate::helpers::closed_shell_counts(&mol, &rhf).unwrap().0;
         let no = nocc_total;
         let nv = nbas - nocc_total;
         let c_occ = c.slice(ndarray::s![.., ..nocc_total]).to_owned();

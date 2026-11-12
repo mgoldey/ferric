@@ -1967,7 +1967,7 @@ mod tests {
             crate::ccsd_closed_shell::ccsd_closed_shell(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
 
         let eps = rhf.eps_r();
-        let nocc = eps.iter().filter(|&&e| e < 0.0).count();
+        let nocc = crate::helpers::closed_shell_counts(&mol, &rhf).unwrap().0;
         let nvir = obs.nbasis() - nocc;
         let c = rhf.mos_r();
         let c_occ = c.slice(ndarray::s![.., ..nocc]).to_owned();

@@ -1,5 +1,52 @@
+use ferric_core::mol::Molecule;
+use ferric_core::FerricError;
+use ferric_scf::ScfResult;
 use ferric_tensors::{einsum, permute_to_owned, Axis, Tensor};
 use ndarray::{Array4, ArrayD, IxDyn};
+
+/// Orbital counts of a closed-shell RHF reference, `(nocc, nmo)`.
+///
+/// `nocc` is half of `mol.nelec()`, the doubly occupied count the RHF solver
+/// filled. `nelec` counts valence electrons only once
+/// [`Molecule::apply_ecp`] has run, which is the electron count the SCF
+/// with that basis solved for. The sign of the orbital energies plays no
+/// part: the HOMO of an anion in a basis without diffuse functions can lie
+/// above zero, and counting `eps < 0` then drops an occupied orbital.
+///
+/// `nmo` is the number of MO columns the SCF retained. When the overlap
+/// has near-null modes, the SCF drops them and pads `mos_r()` back to `nbas`
+/// columns with trailing zero columns (orbital energy 1e6); those columns are
+/// not orbitals, so the virtual space is `nocc..nmo`.
+///
+/// # Errors
+///
+/// An odd or negative electron count (not a closed shell), padding columns
+/// that are not trailing, or more occupied orbitals than retained MOs.
+pub fn closed_shell_counts(mol: &Molecule, rhf: &ScfResult) -> Result<(usize, usize), FerricError> {
+    let nelec = mol.nelec();
+    if nelec < 0 || nelec % 2 != 0 {
+        return Err(FerricError::General(format!(
+            "closed-shell CC needs an even, non-negative electron count; this molecule has {nelec}"
+        )));
+    }
+    let nocc = (nelec / 2) as usize;
+    let c = rhf.mos_r();
+    let is_zero = |p: usize| c.column(p).iter().all(|&x| x == 0.0);
+    let nmo = (0..c.ncols()).take_while(|&p| !is_zero(p)).count();
+    if (nmo..c.ncols()).any(|p| !is_zero(p)) {
+        return Err(FerricError::General(format!(
+            "RHF MO coefficients have a zero column at {nmo} followed by nonzero columns; \
+             the dropped linear-dependence columns must trail the retained ones"
+        )));
+    }
+    if nocc > nmo {
+        return Err(FerricError::General(format!(
+            "{nelec} electrons need {nocc} occupied orbitals but the RHF reference retains \
+             only {nmo} MOs"
+        )));
+    }
+    Ok((nocc, nmo))
+}
 
 // --- Permutation antisymmetrizers on the i,j,a,b axes of X[i,j,a,b] ---
 // Shared by the spin-orbital CCD and CCSD residual builders (ccd.rs, ccsd.rs),
