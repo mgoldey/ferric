@@ -1,0 +1,75 @@
+{
+  "about": "One production-code mutation per ENERGY_ANCHORS entry. scripts/check_anchor_mutations.py fills `result`; crates/ferric-core/src/certificate/anchors.rs (mutation_ledger_matches_the_registry) checks every row against the registry and the patch files.",
+  "rows": [
+    {
+      "anchor": "RHF",
+      "patch": "testdata/mutations/rhf.patch",
+      "mutation": "rhf.rs: closed-shell exchange enters the Fock matrix with -1/4 instead of -1/2.",
+      "evidence": "crates/ferric-mp2/tests/validation_basis_coverage.rs",
+      "test": "orbital_sets_match_pyscf_rhf",
+      "env": {
+        "BASIS_COVERAGE_ONLY": "6-31g*/h2o"
+      },
+      "result": null
+    },
+    {
+      "anchor": "UHF",
+      "patch": "testdata/mutations/uhf.patch",
+      "mutation": "uhf.rs: the beta Fock matrix subtracts K_alpha instead of K_beta.",
+      "evidence": "crates/ferric-scf/tests/validation_open_shell_scf.rs",
+      "test": "uhf_ho2_vs_pyscf",
+      "result": null
+    },
+    {
+      "anchor": "ROHF",
+      "patch": "testdata/mutations/rohf.patch",
+      "mutation": "rohf.rs: the beta Fock matrix subtracts K_alpha instead of K_beta.",
+      "evidence": "crates/ferric-scf/tests/validation_open_shell_scf.rs",
+      "test": "rohf_ho2_vs_pyscf",
+      "result": null
+    },
+    {
+      "anchor": "RKS",
+      "patch": "testdata/mutations/rks.patch",
+      "mutation": "xc_batch.rs: closed-shell sigma = gx^2 + 2 gy^2 (gz^2 replaced by gy^2) on both density paths.",
+      "evidence": "crates/ferric-scf/tests/validation_ks_energies.rs",
+      "test": "rks_h2s_pbe_vs_pyscf",
+      "result": null
+    },
+    {
+      "anchor": "UKS",
+      "patch": "testdata/mutations/uks.patch",
+      "mutation": "uhf.rs: the UKS XC term is evaluated with D_alpha in place of D_beta.",
+      "evidence": "crates/ferric-scf/tests/validation_ks_energies.rs",
+      "test": "uks_nh2_pbe_vs_pyscf",
+      "result": null
+    },
+    {
+      "anchor": "ROKS",
+      "patch": "testdata/mutations/roks.patch",
+      "mutation": "rohf.rs: the ROKS XC term is evaluated with D_alpha in place of D_beta.",
+      "evidence": "crates/ferric-scf/tests/validation_roks_energies.rs",
+      "test": "roks_nh2_pbe_vs_pyscf",
+      "result": null
+    },
+    {
+      "anchor": "RI-MP2",
+      "patch": "testdata/mutations/ri-mp2.patch",
+      "mutation": "rimp2.rs: the same-spin pair energy adds the exchange integral (ib|ja) instead of subtracting it.",
+      "evidence": "crates/ferric-mp2/tests/validation_basis_coverage.rs",
+      "test": "auxiliary_sets_match_pyscf_rimp2",
+      "env": {
+        "BASIS_COVERAGE_ONLY": "def2-svp+def2-svp-rifit/h2o"
+      },
+      "result": null
+    },
+    {
+      "anchor": "U-RI-MP2",
+      "patch": "testdata/mutations/u-ri-mp2.patch",
+      "mutation": "u_rimp2.rs: the beta-beta pair energy uses the alpha orbital energies.",
+      "evidence": "crates/ferric-mp2/tests/validation_u_rimp2.rs",
+      "test": "u_rimp2_oh_ccpvdz_vs_pyscf_dfump2",
+      "result": null
+    }
+  ]
+}

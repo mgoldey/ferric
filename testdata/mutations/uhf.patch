@@ -1,0 +1,13 @@
+diff --git a/crates/ferric-scf/src/uhf.rs b/crates/ferric-scf/src/uhf.rs
+index 59fd7aaad..3c1fb628a 100644
+--- a/crates/ferric-scf/src/uhf.rs
++++ b/crates/ferric-scf/src/uhf.rs
+@@ -1334,7 +1334,7 @@ fn solve_uhf_impl(
+                 total_quartets += <DirectK as KBuilder>::build(dk, &d_b, &mut k_b_buf)?;
+             }
+             f_a.scaled_add(-c_k, &k_a_buf);
+-            f_b.scaled_add(-c_k, &k_b_buf);
++            f_b.scaled_add(-c_k, &k_a_buf);
+         }
+         drop(jk_scope);
+ 
