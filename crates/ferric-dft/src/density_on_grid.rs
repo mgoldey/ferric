@@ -255,8 +255,8 @@ pub fn eval_density_uks(
 ///
 /// so τ needs only D and ∇χ — no explicit occupied MO coefficients. This is
 /// PySCF's `eval_rho` meta-GGA path (`dft/numint.py`: `c1 = ∂χ·D`, then
-/// `τ += Σ_μ ∂χ_μ · c1_μ`, finally `τ *= 0.5`), verified against libxc 7.0.0's
-/// unpolarized τ convention (total τ = τ_α + τ_β).
+/// `τ += Σ_μ ∂χ_μ · c1_μ`, finally `τ *= 0.5`), verified against the linked
+/// libxc 5.2.3's unpolarized τ convention (total τ = τ_α + τ_β).
 ///
 /// Passing the **total** D (tr D = N_e) yields the total τ for the unpolarized
 /// libxc kernel; passing a per-spin D_σ (tr D_σ = N_σ) yields τ_σ for the

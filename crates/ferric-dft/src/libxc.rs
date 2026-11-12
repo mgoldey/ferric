@@ -102,8 +102,8 @@ mod ffi {
             vsigma: *mut f64,
         );
 
-        /// Meta-GGA exc + first derivatives. Signature verified against libxc
-        /// 7.0.0 `src/xc.h`:
+        /// Meta-GGA exc + first derivatives. Signature verified against the
+        /// libxc 5.2.3 `/usr/include/xc.h` this crate links:
         /// ```c
         /// void xc_mgga_exc_vxc(const xc_func_type *p, size_t np,
         ///      const double *rho, const double *sigma,
@@ -884,9 +884,9 @@ impl XcFunctional {
     ///   `rho[2g+0]   = ρ_α`,  `rho[2g+1]   = ρ_β`
     ///   `sigma[3g+0] = σ_αα`, `sigma[3g+1] = σ_αβ`, `sigma[3g+2] = σ_ββ`
     ///
-    /// Outputs (libxc symmetric-pack ordering; verified against libxc 7.0.0
-    /// `util.c::internal_counters_set_gga` — 3 / 6 / 6 components per point —
-    /// and PySCF `dft/libxc.py` layout notes):
+    /// Outputs (libxc symmetric-pack ordering; the linked libxc 5.2.3 reports
+    /// 3 / 6 / 6 components per point in `xc_func_type::dim` for a polarized
+    /// GGA, and PySCF `dft/libxc.py` documents the same layout):
     ///   `v2rho2[3g+0]      = ∂²E/∂ρ_α∂ρ_α`
     ///   `v2rho2[3g+1]      = ∂²E/∂ρ_α∂ρ_β`
     ///   `v2rho2[3g+2]      = ∂²E/∂ρ_β∂ρ_β`
