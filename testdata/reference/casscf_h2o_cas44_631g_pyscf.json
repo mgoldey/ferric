@@ -1,0 +1,59 @@
+{
+ "system": "h2o_cas44_631g",
+ "xyz": "3\nwater optimized HF/cc-pVDZ\nO   0.000000   0.000000   0.117790\nH   0.000000   0.755453  -0.471161\nH   0.000000  -0.755453  -0.471161\n",
+ "xyz_source": "water.xyz",
+ "basis": "6-31g",
+ "n_core": 3,
+ "n_active": 4,
+ "n_elec_active": [
+  2,
+  2
+ ],
+ "e_total": -76.03696909648738,
+ "grad_norm_pyscf": 9.850774383116166e-07,
+ "converged": true,
+ "natural_occupations": [
+  1.9781976007780808,
+  1.9751609727425488,
+  0.02363077469217242,
+  0.023010651787200728
+ ],
+ "core_fock_eigenvalues": [
+  -20.554321240757556,
+  -1.075324668246694,
+  -0.5024089413312012
+ ],
+ "virtual_fock_eigenvalues": [
+  0.67603416910169,
+  0.7835667205723276,
+  1.1636898559166562,
+  1.1862783077981054,
+  1.2147950672493093,
+  1.669791423084035
+ ],
+ "s2": 2.5319147427964767e-18,
+ "e_rhf_pyscf_same_integrals": -75.98383111363606,
+ "integral_fingerprint": {
+  "hcore_sum": -241.12651100142432,
+  "overlap_sum": 26.702768202198033,
+  "eri_norm": 16.10200795951548,
+  "e_nuc": 9.189193229309746
+ },
+ "settings": {
+  "start": "PySCF RHF on ferric AO integrals, init_guess=1e",
+  "rhf_conv_tol": 1e-12,
+  "rhf_conv_tol_grad": 1e-08,
+  "mc_conv_tol": 1e-12,
+  "mc_conv_tol_grad": 1e-06,
+  "mc_max_cycle_macro": 300,
+  "fcisolver": "direct_spin1",
+  "fcisolver_conv_tol": 1e-14,
+  "fock_for_eigenvalues": "mc.get_fock() (F^I + F^A) in mc.mo_coeff"
+ },
+ "provenance": {
+  "pyscf_version": "2.13.1",
+  "ferric_commit": "0ec644103b05774c19b4303ab6d200a60bbd9a6c",
+  "ferric_dirty": false,
+  "generator": "scripts/gen_casscf_refs.py"
+ }
+}

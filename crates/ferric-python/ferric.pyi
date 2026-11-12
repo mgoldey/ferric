@@ -5727,7 +5727,15 @@ class CasScfResult:
     @property
     def mo_coeff(self) -> NDArray[np.float64]:
         """Optimized orbitals, shape ``(nbasis, nmo)``: core, active and
-        virtual columns, not canonicalized within a block."""
+        virtual columns. With ``canonicalize=True`` the core and virtual
+        blocks of ``F^I + F^A`` are diagonal (ascending) and the active
+        orbitals are natural orbitals (occupations descending); otherwise
+        they are not canonicalized within a block."""
+        ...
+    @property
+    def mo_energy(self) -> NDArray[np.float64] | None:
+        """Diagonal of ``F^I + F^A`` in ``mo_coeff`` (Ha) with
+        ``canonicalize=True``, else None."""
         ...
     @property
     def certificate(self) -> dict[str, Any]:
@@ -5752,13 +5760,19 @@ def run_casscf(
     scf_max_iter: int | None = None,
     scf_energy_conv: float | None = None,
     scf_density_conv: float | None = None,
+    canonicalize: bool = False,
 ) -> CasScfResult:
     """Two-step CASSCF from the canonical exact-J/K RHF orbitals:
     ``n_active`` active orbitals above ``n_core`` doubly occupied ones,
-    lowest root, ``n_alpha == n_beta`` only. Each macro iteration solves the
-    CAS-CI with RDMs and takes an inverse-BFGS orbital step. Converged when
+    lowest root of the ``(n_alpha, n_beta)`` sector (one restricted orbital
+    set; ``n_alpha != n_beta`` gives the lowest state of that ``M_s``). The
+    molecule must have an even electron count for the RHF start. Each macro
+    iteration solves the CAS-CI with RDMs and takes an inverse-BFGS orbital
+    step. Converged when
     ``grad_norm < casscf_grad_tol`` and the energy change is below
     ``casscf_energy_tol``; otherwise a ``RuntimeWarning`` is emitted and
     ``converged`` is False. ``n_core`` defaults to
-    ``(N - n_alpha - n_beta) / 2``."""
+    ``(N - n_alpha - n_beta) / 2``. ``canonicalize=True`` returns canonical
+    orbitals (see ``CasScfResult.mo_coeff``) with the CI vector and RDMs in
+    them, and fills ``mo_energy``."""
     ...

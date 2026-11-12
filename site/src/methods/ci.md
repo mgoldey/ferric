@@ -19,7 +19,7 @@ by `scripts/casci_slater_condon_phases_sympy.py`.
 | Solver | CI-native Davidson, diagonal preconditioner `1/(H_ii - λ)` |
 | Entry points | Rust `ferric_ci::run_cas_ci` (re-exported as `ferric::ci`); Python `ferric.run_casci` |
 | Density matrices | spin-summed 1- and 2-RDM of the root, opt-in (`compute_rdms`) |
-| Orbital optimization | two-step CASSCF, single root (see [CASSCF](#casscf)) |
+| Orbital optimization | two-step CASSCF, single root of any $(n_\alpha, n_\beta)$ sector, optional canonical orbitals (see [CASSCF](#casscf)) |
 | Not implemented | open-shell or non-singlet references, S² control, multiple roots, state averaging, CLI `method.kind`, spin-resolved RDMs |
 
 With no inactive orbitals the method is FCI in the basis. A call that fails
@@ -138,18 +138,37 @@ import ferric
 mol = ferric.Molecule.from_xyz("water.xyz")
 r = ferric.run_casscf(mol, ferric.BasisSet.bundled("6-31g"), 4, (2, 2))
 print(r.e_total, r.iterations, r.grad_norm, r.converged)
+
+# Canonical orbitals: diagonal core and virtual blocks of F^I + F^A,
+# natural active orbitals; mo_energy is the Fock diagonal.
+rc = ferric.run_casscf(mol, ferric.BasisSet.bundled("6-31g"), 4, (2, 2),
+                       canonicalize=True)
+print(rc.mo_energy, rc.dm1.diagonal())        # occupations, descending
+
+# Lowest M_s = 1 state (a triplet) in the same active space.
+rt = ferric.run_casscf(mol, ferric.BasisSet.bundled("6-31g"), 4, (3, 1))
 ```
+
+`canonicalize = true` (Python `canonicalize=True`) diagonalizes the core and
+virtual blocks of $F^I + F^A$ (ascending) and turns the active orbitals into
+natural orbitals (occupations descending), then solves the CAS-CI again in
+those orbitals, so `ci_vector`, `dm1` and `dm2` are in the returned
+`mo_coeff`. The energy is unchanged. `mo_energy` is the diagonal of
+$F^I + F^A$; it is `None` without canonicalization.
+
+`n_elec_active = (n_alpha, n_beta)` with `n_alpha != n_beta` gives the lowest
+state of that $M_s$ sector, with one restricted orbital set and a doubly
+occupied core. The molecule is given with an even electron count and
+multiplicity 1, because the start is RHF; the sector sets the state.
 
 Limits:
 
 - single root, no state averaging;
-- `n_alpha == n_beta` in the active space; other sectors return an error;
 - the start is the canonical RHF orbitals with the active window directly
-  above the core; there is no orbital selection or reordering;
-- returned orbitals are not canonicalized within the core, active or virtual
-  block;
+  above the core; there is no orbital selection or reordering; odd-electron
+  molecules have no RHF start;
 - the optimizer uses no exact orbital Hessian and no orbital-CI coupling;
-  convergence is tested on two systems from RHF starts only;
+  convergence is tested on five systems from RHF starts;
 - the dense AO ERI block (`nbasis⁴` doubles) is held for the whole run.
 
 Validation (`crates/ferric-ci/tests/casscf.rs`, measured 2026-11-11):

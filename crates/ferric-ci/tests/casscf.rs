@@ -58,6 +58,7 @@
 //! ("Two-step CASSCF").
 
 use ferric_ci::casscf::{optimize, CasScfConfig, CasScfProblem, RotationClass};
+use ferric_ci::rdm::rdm_energy;
 use ferric_ci::{run_cas_ci, run_casscf, CasCiConfig};
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
@@ -109,13 +110,13 @@ fn maxabs<'a>(it: impl IntoIterator<Item = &'a f64>) -> f64 {
 
 // ------------------------------------------------------------ anchor 1
 
-fn full_space_case(xyz: &str, basis_name: &str) {
+fn full_space_case(xyz: &str, basis_name: &str, nel: (usize, usize)) {
     let (mol, prep, rhf) = setup(xyz, basis_name);
     let nmo = rhf.mos_r().ncols();
-    let nel = mol.nelec() as usize;
+    assert_eq!(nel.0 + nel.1, mol.nelec() as usize);
     let cfg = CasScfConfig {
         n_active: nmo,
-        n_elec_active: (nel / 2, nel / 2),
+        n_elec_active: nel,
         n_core: 0,
         ..Default::default()
     };
@@ -137,7 +138,7 @@ fn full_space_case(xyz: &str, basis_name: &str) {
         &rhf,
         CasCiConfig {
             n_active: nmo,
-            n_elec_active: (nel / 2, nel / 2),
+            n_elec_active: nel,
             active_start: 0,
             conv_thresh: cfg.ci_conv_thresh,
             ..Default::default()
@@ -154,6 +155,18 @@ fn full_space_case(xyz: &str, basis_name: &str) {
         fci.n_determinants, pt.e_total, fci.residual_norm
     );
     assert!(gmax <= g_bar, "max|2(F-F^T)| {gmax:e} > {g_bar:e}");
+    // The RDMs the gradient is built from rebuild the energy (bar of
+    // tests/casci_rdms.rs): this covers the sector's RDMs, n_alpha != n_beta
+    // included.
+    let er = rdm_energy(&pt.ci.integrals, pt.rdms());
+    let n4 = (nmo as f64).powi(4);
+    let r_bar = 4.0 * EPS * er.abs_terms * (fci.n_determinants as f64 + n4).sqrt() + r;
+    assert!(
+        (er.e_total - pt.e_total).abs() <= r_bar,
+        "RDM energy {} vs {}",
+        er.e_total,
+        pt.e_total
+    );
     assert!(
         de.abs() <= e_bar,
         "E {} vs FCI {}: {de:e} > {e_bar:e}",
@@ -169,12 +182,26 @@ fn full_space_case(xyz: &str, basis_name: &str) {
 
 #[test]
 fn full_space_h2o_sto3g_is_fci_with_zero_orbital_gradient() {
-    full_space_case("water.xyz", "sto-3g");
+    full_space_case("water.xyz", "sto-3g", (5, 5));
 }
 
 #[test]
 fn full_space_n2_sto3g_is_fci_with_zero_orbital_gradient() {
-    full_space_case("n2.xyz", "sto-3g");
+    full_space_case("n2.xyz", "sto-3g", (7, 7));
+}
+
+/// `M_s = 1` sector (245 determinants), whose lowest root is a triplet above
+/// the singlet ground state, so a CI run in the wrong sector misses
+/// `run_cas_ci` by the singlet-triplet gap.
+#[test]
+fn full_space_h2o_triplet_sector_sto3g_is_fci_with_zero_orbital_gradient() {
+    full_space_case("water.xyz", "sto-3g", (6, 4));
+}
+
+/// `M_s = 1` sector of O2 (1200 determinants) from singlet RHF orbitals.
+#[test]
+fn full_space_o2_triplet_sector_sto3g_is_fci_with_zero_orbital_gradient() {
+    full_space_case("o2.xyz", "sto-3g", (9, 7));
 }
 
 // ------------------------------------------------------------ anchor 2
@@ -289,6 +316,16 @@ fn orbital_gradient_matches_fd_h2o_cas44_631g() {
 #[test]
 fn orbital_gradient_matches_fd_n2_cas66_631g() {
     fd_case("n2.xyz", "6-31g", 4, 6, (3, 3));
+}
+
+#[test]
+fn orbital_gradient_matches_fd_h2o_triplet_cas44_631g() {
+    fd_case("water.xyz", "6-31g", 3, 4, (3, 1));
+}
+
+#[test]
+fn orbital_gradient_matches_fd_o2_triplet_cas86_631g() {
+    fd_case("o2.xyz", "6-31g", 4, 6, (5, 3));
 }
 
 // ------------------------------------------------------------ anchor 3
@@ -407,11 +444,11 @@ fn converged_energy_matches_prototype_n2_cas66_631g() {
 // ------------------------------------------------------------ input checks
 
 #[test]
-fn casscf_refuses_open_shell_and_bad_bookkeeping() {
+fn casscf_refuses_bad_bookkeeping() {
     let (mol, prep, rhf) = setup("water.xyz", "sto-3g");
     let nmo = rhf.mos_r().ncols();
     let bad = [
-        (3, 4, (3, 1)), // n_alpha != n_beta
+        (4, 1, (2, 0)), // 2 alpha electrons in 1 active orbital
         (2, 4, (2, 2)), // 2*2 + 4 != 10
         (3, 9, (2, 2)), // window exceeds nmo
     ];

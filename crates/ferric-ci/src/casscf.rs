@@ -28,6 +28,14 @@
 //! largest step element capped and a reset to the diagonal whenever the
 //! energy rises. This is the optimizer of `scripts/prototypes/casscf_proto.py`.
 //!
+//! Optionally ([`CasScfConfig::canonicalize`]) the returned orbitals are
+//! canonical: the core and virtual blocks of `F^I + F^A` are diagonal and the
+//! active orbitals are natural orbitals (see [`canonicalize`]).
+//!
+//! The active space may have `n_alpha != n_beta`: the energy and gradient
+//! depend on the spin-summed RDMs only, and the CI root is the lowest of the
+//! `(n_alpha, n_beta)` sector. The orbitals stay one restricted set.
+//!
 //! The AO two-electron integrals are held densely (`nbas^4`), and `J`, `K` and
 //! the `(pu|vw)` transform are built from that block every iteration. The
 //! method is limited to bases small enough for that block.
@@ -42,14 +50,15 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::oneelectron::hcore;
 use ferric_scf::ScfResult;
 use ndarray::{s, Array2, ArrayView2};
+use ndarray_linalg::{Eigh, UPLO};
 
 /// Settings of a two-step CASSCF run.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CasScfConfig {
     /// Number of active spatial orbitals.
     pub n_active: usize,
-    /// Active electrons `(n_alpha, n_beta)`. Only `n_alpha == n_beta` is
-    /// accepted.
+    /// Active electrons `(n_alpha, n_beta)`. The CI root is the lowest state
+    /// of that `M_s` sector.
     pub n_elec_active: (usize, usize),
     /// Doubly occupied inactive orbitals below the active space.
     pub n_core: usize,
@@ -74,6 +83,9 @@ pub struct CasScfConfig {
     /// Memory ceiling in bytes (see [`CasCiConfig::memory_budget_bytes`]).
     /// The dense AO block, the transform chain and the CI are charged to it.
     pub memory_budget_bytes: Option<usize>,
+    /// Return canonical orbitals ([`canonicalize`]) and
+    /// [`CasScfResult::mo_energy`].
+    pub canonicalize: bool,
 }
 
 impl Default for CasScfConfig {
@@ -91,6 +103,7 @@ impl Default for CasScfConfig {
             ci_max_subspace: 50,
             ci_max_iter: 200,
             memory_budget_bytes: None,
+            canonicalize: false,
         }
     }
 }
@@ -171,9 +184,9 @@ impl CasScfProblem {
                 "CASSCF: n_active must be >= 1".to_string(),
             ));
         }
-        if na != nb {
+        if na > nact || nb > nact {
             return Err(FerricError::General(format!(
-                "CASSCF: only n_alpha == n_beta active spaces are supported (got α={na}, β={nb})"
+                "CASSCF: active electrons per spin (α={na}, β={nb}) exceed n_active ({nact})"
             )));
         }
         if nc + nact > nmo {
@@ -352,6 +365,29 @@ impl CasScfProblem {
         Ok(ci)
     }
 
+    /// Active Fock matrix `F^A = J[D^a] − ½ K[D^a]`, `D^a = C_a γ C_aᵀ`, in
+    /// the MO basis of `c`, for any symmetric active 1-RDM `gamma`. Linear in
+    /// `gamma`.
+    pub fn active_fock(
+        &self,
+        c: &Array2<f64>,
+        gamma: &Array2<f64>,
+    ) -> Result<Array2<f64>, FerricError> {
+        self.check_orbitals(c)?;
+        let (nc, na) = (self.n_core, self.n_active);
+        if gamma.dim() != (na, na) {
+            return Err(FerricError::General(format!(
+                "CASSCF: active 1-RDM has shape {:?}, expected ({na}, {na})",
+                gamma.dim()
+            )));
+        }
+        let ca = c.slice(s![.., nc..nc + na]);
+        let da = ca.dot(gamma).dot(&ca.t());
+        let (j, k) = self.jk(&da);
+        let fa_ao = &j - &(0.5 * &k);
+        Ok(c.t().dot(&fa_ao).dot(c))
+    }
+
     /// CI-relaxed CAS-CI energy at orbitals `c` (no RDMs, no gradient).
     pub fn energy(&self, c: &Array2<f64>) -> Result<f64, FerricError> {
         self.check_orbitals(c)?;
@@ -378,11 +414,8 @@ impl CasScfProblem {
             .as_ref()
             .ok_or_else(|| FerricError::General("CASSCF: CAS-CI returned no RDMs".to_string()))?;
         let gamma = &rdms.dm1;
-        let da = ca.dot(gamma).dot(&ca.t());
-        let (j, k) = self.jk(&da);
-        let fa_ao = &j - &(0.5 * &k);
         let fi = c.t().dot(&fi_ao).dot(c);
-        let fa = c.t().dot(&fa_ao).dot(c);
+        let fa = self.active_fock(c, gamma)?;
 
         let mut f = Array2::<f64>::zeros((nmo, nmo));
         for p in 0..nmo {
@@ -507,10 +540,17 @@ pub struct CasScfResult {
     pub e_total: f64,
     /// Core energy `E_nuc + ½ Tr[D^c (h + F^I)]` at those orbitals.
     pub e_core: f64,
-    /// Optimized orbitals, `nbas x nmo`: core, active, virtual columns. Not
-    /// canonicalized within any block.
+    /// Optimized orbitals, `nbas x nmo`: core, active, virtual columns.
+    /// Canonical ([`canonicalize`]) when [`CasScfConfig::canonicalize`] is
+    /// set, otherwise not canonicalized within any block.
     pub mo_coeff: Array2<f64>,
-    /// CI vector of the root, indexed `ia * n_beta_str + ib`.
+    /// With [`CasScfConfig::canonicalize`], the diagonal of `F^I + F^A` in
+    /// [`Self::mo_coeff`] (Ha): orbital energies of the core and virtual
+    /// orbitals, and the Fock diagonal of the natural active orbitals.
+    /// `None` otherwise.
+    pub mo_energy: Option<Vec<f64>>,
+    /// CI vector of the root in [`Self::mo_coeff`], indexed
+    /// `ia * n_beta_str + ib`.
     pub ci_vector: Vec<f64>,
     /// Spin-summed RDMs of the root over the active orbitals.
     pub rdms: CasCiRdms,
@@ -524,6 +564,77 @@ pub struct CasScfResult {
     pub converged: bool,
     /// `‖Hc − Ec‖` of the final CI vector.
     pub ci_residual_norm: f64,
+}
+
+/// Canonical orbitals at the point `pt` evaluated at orbitals `c`.
+///
+/// The core and virtual blocks of `F^T = F^I + F^A` (MO basis) are
+/// diagonalized, eigenvalues ascending, and the active orbitals become the
+/// eigenvectors of the 1-RDM `γ`, occupations descending. Each new column
+/// is signed by [`sign_reference`]: its first AO coefficient within a
+/// relative 1e-6 of the largest magnitude is positive (the first index
+/// breaks the ties between symmetry-equivalent atoms). All three rotations
+/// are within the redundant blocks, so the energy and the norm of the
+/// nonredundant gradient are unchanged.
+///
+/// The CAS-CI is solved again in the new orbitals (one
+/// [`CasScfProblem::evaluate`]): the returned point carries the CI vector,
+/// RDMs and Fock matrices in the new orbitals, with the CI vector signed the
+/// same way. `F^I` depends on the core block only through `D^c`, which the
+/// core rotation leaves unchanged, and `F^A` through `D^a = C_a γ C_aᵀ`,
+/// which the active rotation and the transformed CI vector leave unchanged;
+/// so `F^T` in the new orbitals is the rotated `F^T` up to the CI error of
+/// the second solve.
+pub fn canonicalize(
+    problem: &CasScfProblem,
+    c: &Array2<f64>,
+    pt: &CasScfPoint,
+) -> Result<(Array2<f64>, CasScfPoint), FerricError> {
+    problem.check_orbitals(c)?;
+    let (nc, na, nmo) = (problem.n_core, problem.n_active, problem.nmo);
+    let ft = &pt.f_inactive + &pt.f_active;
+    let mut u = Array2::<f64>::zeros((nmo, nmo));
+    let eig_block = |m: ArrayView2<'_, f64>| -> Result<(Vec<f64>, Array2<f64>), FerricError> {
+        let sym = 0.5 * (&m + &m.t());
+        let (w, v) = sym
+            .eigh(UPLO::Lower)
+            .map_err(|e| FerricError::General(format!("CASSCF canonicalize: eigh: {e}")))?;
+        Ok((w.to_vec(), v))
+    };
+    for (lo, hi) in [(0, nc), (nc + na, nmo)] {
+        if hi > lo {
+            let (_, v) = eig_block(ft.slice(s![lo..hi, lo..hi]))?;
+            u.slice_mut(s![lo..hi, lo..hi]).assign(&v);
+        }
+    }
+    let (occ, v) = eig_block(pt.rdms().dm1.view())?;
+    let mut order: Vec<usize> = (0..na).collect();
+    order.sort_by(|&a, &b| occ[b].total_cmp(&occ[a]));
+    for (k, &j) in order.iter().enumerate() {
+        u.slice_mut(s![nc..nc + na, nc + k]).assign(&v.column(j));
+    }
+    let mut c_new = c.dot(&u);
+    for mut col in c_new.columns_mut() {
+        if sign_reference(col.iter().copied()) < 0.0 {
+            col.mapv_inplace(|x| -x);
+        }
+    }
+    let mut pt_new = problem.evaluate(&c_new)?;
+    if sign_reference(pt_new.ci.ci_vector.iter().copied()) < 0.0 {
+        pt_new.ci.ci_vector.iter_mut().for_each(|x| *x = -*x);
+    }
+    Ok((c_new, pt_new))
+}
+
+/// The first element whose magnitude is within a relative 1e-6 of the
+/// largest; its sign fixes the sign of a vector. Elements equal in magnitude
+/// by symmetry (an orbital on two equivalent atoms) resolve to the first
+/// index, so the choice does not depend on rounding.
+pub fn sign_reference(v: impl Iterator<Item = f64> + Clone) -> f64 {
+    let big = v.clone().fold(0.0f64, |m, x| m.max(x.abs()));
+    v.into_iter()
+        .find(|x| x.abs() >= big * (1.0 - 1e-6))
+        .unwrap_or(0.0)
 }
 
 /// Two-step CASSCF from the canonical orbitals of a restricted RHF result.
@@ -551,6 +662,14 @@ pub fn optimize(
 ) -> Result<CasScfResult, FerricError> {
     let npair = problem.pairs().len();
     let finish = |pt: CasScfPoint, c: Array2<f64>, it: usize, converged: bool| {
+        let (c, pt, mo_energy) = if config.canonicalize {
+            let (c, pt) = canonicalize(problem, &c, &pt)?;
+            let ft = &pt.f_inactive + &pt.f_active;
+            let eps = ft.diag().to_vec();
+            (c, pt, Some(eps))
+        } else {
+            (c, pt, None)
+        };
         let grad_norm = norm(&pt.gradient);
         let ci = pt.ci;
         let rdms = ci
@@ -560,6 +679,7 @@ pub fn optimize(
             e_total: ci.e_total,
             e_core: ci.e_core,
             mo_coeff: c,
+            mo_energy,
             ci_vector: ci.ci_vector,
             rdms,
             n_determinants: ci.n_determinants,
