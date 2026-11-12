@@ -86,18 +86,22 @@ pub(crate) fn build_df_jk<'a>(
     k_precision: crate::df_k::RiKPrecision,
 ) -> Result<(Option<RiJ<'a>>, Option<DfK<'a>>), FerricError> {
     let j_precision = resolved.precision;
-    let out = build_df_jk_impl(
+    let mut out = build_df_jk_impl(
         ctx,
         mol,
         op,
         prep,
-        j_aux,
-        k_aux,
+        (j_aux, k_aux),
         ooc_budget,
-        j_pair_thresh,
+        (j_pair_thresh, resolved.site),
         j_precision,
         k_precision,
     )?;
+    // Every stored route (including a tensor shared with DF-K) gates its
+    // device build on the SCF's site.
+    if let Some(j) = out.0.as_mut().and_then(RiJ::as_stored_mut) {
+        j.route_device_by(resolved.site);
+    }
     note_df_k_built(out.1.is_some());
     if let (Some(j), Some(rl)) = (out.0.as_ref(), crate::runlog::log()) {
         rl.note(
@@ -141,10 +145,9 @@ fn build_df_jk_impl<'a>(
     mol: &Molecule,
     op: Operator,
     prep: &PreparedBasis,
-    j_aux: Option<&str>,
-    k_aux: Option<&str>,
+    (j_aux, k_aux): (Option<&str>, Option<&str>),
     ooc_budget: usize,
-    j_pair_thresh: f64,
+    (j_pair_thresh, j_site): (f64, ferric_core::gpu::DeviceSite),
     j_precision: RiJPrecision,
     k_precision: crate::df_k::RiKPrecision,
 ) -> Result<(Option<RiJ<'a>>, Option<DfK<'a>>), FerricError> {
@@ -270,6 +273,7 @@ fn build_df_jk_impl<'a>(
                 Some(ctx),
                 j_pair_thresh,
                 j_precision,
+                j_site,
             )?));
             let df_k = Some(DfK::new_banded_with_precision(
                 op,
@@ -291,7 +295,7 @@ fn build_df_jk_impl<'a>(
             op,
             (prep, &dfbs),
             ooc_budget,
-            j_pair_thresh,
+            (j_pair_thresh, j_site),
             j_precision,
         )?)
     } else {
@@ -395,7 +399,7 @@ fn j_only_builder<'a>(
     op: Operator,
     (prep, dfbs): (&PreparedBasis, &PreparedBasis),
     ooc_budget: usize,
-    j_pair_thresh: f64,
+    (j_pair_thresh, j_site): (f64, ferric_core::gpu::DeviceSite),
     j_precision: RiJPrecision,
 ) -> Result<RiJ<'a>, FerricError> {
     use crate::split_rij::SplitRiJ;
@@ -420,7 +424,7 @@ fn j_only_builder<'a>(
                 op,
                 (prep, dfbs),
                 ooc_budget,
-                j_pair_thresh,
+                (j_pair_thresh, j_site),
                 &v,
                 j_precision,
             ) {
@@ -445,6 +449,7 @@ fn j_only_builder<'a>(
         Some(ctx),
         j_pair_thresh,
         j_precision,
+        j_site,
     )?))
 }
 
@@ -933,10 +938,9 @@ mod tests {
                 &mol,
                 op,
                 &prep,
-                Some(DEFAULT_JK_AUX),
-                Some(DEFAULT_JK_AUX),
+                (Some(DEFAULT_JK_AUX), Some(DEFAULT_JK_AUX)),
                 budget,
-                0.0,
+                (0.0, ferric_core::gpu::DeviceSite::plain(nao)),
                 RiJPrecision::F32,
                 RiKPrecision::F64,
             )

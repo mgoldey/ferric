@@ -141,6 +141,7 @@ impl System {
             None,
             pair_thresh,
             precision(f32),
+            ferric_core::gpu::DeviceSite::plain(self.obs.nbasis()),
         )
         .unwrap();
         assert_eq!(j.is_f32_storage(), f32, "{}: wrong storage", self.label);
@@ -682,6 +683,7 @@ fn f32_by_default_and_f64_opt_out_is_the_old_path() {
             None,
             0.0,
             p,
+            ferric_core::gpu::DeviceSite::plain(sys.obs.nbasis()),
         )
         .unwrap()
     };

@@ -324,10 +324,12 @@ pub fn solve_rhf_with_df_increments(
             Some(precision) => crate::df_j::ResolvedRiJPrecision {
                 precision,
                 source: crate::df_j::RiJPrecisionSource::Explicit,
+                site: ferric_core::gpu::DeviceSite::plain(prep.nbasis()),
             },
             None => crate::df_j::ResolvedRiJPrecision {
                 precision: crate::df_j::RiJPrecision::F64,
                 source: crate::df_j::RiJPrecisionSource::PathDefault,
+                site: ferric_core::gpu::DeviceSite::plain(prep.nbasis()),
             },
         },
         crate::df_k::RiKPrecision::resolve(base.ri_k_precision, prep.nbasis()),

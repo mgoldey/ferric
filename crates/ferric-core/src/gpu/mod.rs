@@ -37,7 +37,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 pub use config::{GpuMode, GpuSettings, GpuSettingsExplicit, PrecisionExplicit};
-pub use gate::{routes_to_device, AutoPath, DeviceSite};
+pub use gate::{routes_to_device, AutoPath, DeviceSite, ExactExchange};
 pub use precision::{MixedKernel, MixedKernelSet, MixedScope, Precision};
 pub use preset::GpuPreset;
 pub use stats::{stats, GpuStatsSnapshot};

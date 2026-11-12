@@ -101,6 +101,15 @@
 //! (T019: `auto` was 6-17% slower than `off` for PBE at every size). The
 //! rule is explicit in [`routes_to_device`] and independent of the RI-J
 //! size gate, so it holds if that gate is later lowered.
+//!
+//! The class is the functional's, from [`DeviceSite::scf`]: no ω = 0 exact
+//! exchange in the main Fock build. A global hybrid builds K beside J
+//! whichever builder makes it (DF-K, COSX, LinK, direct), so it is not in
+//! the class. A functional with a VV10 term is classed by its exchange like
+//! any other, although the SCF does not run the overlap for it: the device
+//! RI-J was not measured for those functionals, and the class keeps their
+//! J on the CPU. The site is carried into the RI-J build, so the f64
+//! tensor's pair screen and the device build ask the gate with it.
 
 use super::config::GpuMode;
 
@@ -114,13 +123,13 @@ pub enum AutoPath {
 }
 
 /// What `auto` needs to know about the problem.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DeviceSite {
     /// Number of basis functions.
     pub nbf: usize,
     /// The SCF builds J with no K beside it and has an XC functional: a
-    /// pure or range-separated functional, whose J build overlaps the XC
-    /// digest on the CPU.
+    /// pure or range-separated functional ([`DeviceSite::scf`]), whose J
+    /// build overlaps the XC digest on the CPU.
     pub jxc_overlap: bool,
     /// The CPU RI-J tensor is f64 (a geometry or frequency task, or an
     /// explicit `ri_j_precision = "f64"`), not the f32 default.
@@ -146,6 +155,40 @@ impl DeviceSite {
             cpu_f64: true,
         }
     }
+
+    /// The RI-J site of an SCF on `nbf` basis functions. `xc` is `None` for
+    /// Hartree-Fock, else the functional's exact exchange. The site is a
+    /// J || XC overlap site exactly when the functional puts no ω = 0
+    /// exact exchange into the main Fock build: a pure functional (no exact
+    /// exchange) or a range-separated one (its K comes from its own SR/LR
+    /// fitters). A global hybrid builds K beside J, whatever builds it
+    /// (DF-K, COSX, LinK or the direct path).
+    pub fn scf(nbf: usize, xc: Option<ExactExchange>) -> Self {
+        Self {
+            nbf,
+            jxc_overlap: xc.is_some_and(|k| !(k.coefficient > 0.0 && k.omega == 0.0)),
+            cpu_f64: false,
+        }
+    }
+
+    /// This site with an f64 CPU RI-J tensor: what the f64 tier of the RI-J
+    /// build asks the gate with, whichever precision was requested.
+    pub fn with_f64_tensor(self) -> Self {
+        Self {
+            cpu_f64: true,
+            ..self
+        }
+    }
+}
+
+/// A functional's exact exchange as the RI-J gate reads it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ExactExchange {
+    /// Exact-exchange coefficient on the short-range K, the global fraction
+    /// when `omega == 0`.
+    pub coefficient: f64,
+    /// Range-separation parameter ω (Bohr⁻¹); `0` for no range separation.
+    pub omega: f64,
 }
 
 /// Smallest `nbf` at which `auto` takes the device RI-J build.
@@ -285,6 +328,70 @@ mod tests {
         assert!(auto_ri_j(site(BIG, false), 512));
         assert!(!auto_ri_j(site(511, false), 512));
         assert!(auto_ri_j(site(512, false), 512));
+    }
+
+    // Exact exchange of the functional classes the SCF sees: PBE (none),
+    // B3LYP (global 0.2, also the COSX case: its K is not a DF-K), wB97X-V
+    // (range-separated, SR 0.167 at ω 0.3).
+    const PURE: ExactExchange = ExactExchange {
+        coefficient: 0.0,
+        omega: 0.0,
+    };
+    const GLOBAL_HYBRID: ExactExchange = ExactExchange {
+        coefficient: 0.2,
+        omega: 0.0,
+    };
+    const RSH: ExactExchange = ExactExchange {
+        coefficient: 0.167,
+        omega: 0.3,
+    };
+
+    #[test]
+    fn scf_site_marks_pure_and_range_separated_functionals_as_overlap_sites() {
+        assert!(!DeviceSite::scf(BIG, None).jxc_overlap, "Hartree-Fock");
+        assert!(DeviceSite::scf(BIG, Some(PURE)).jxc_overlap, "pure");
+        assert!(
+            DeviceSite::scf(BIG, Some(RSH)).jxc_overlap,
+            "range-separated"
+        );
+        assert!(
+            !DeviceSite::scf(BIG, Some(GLOBAL_HYBRID)).jxc_overlap,
+            "global hybrid"
+        );
+        assert!(!DeviceSite::scf(BIG, None).cpu_f64);
+        assert!(DeviceSite::scf(BIG, None).with_f64_tensor().cpu_f64);
+    }
+
+    #[test]
+    fn auto_keeps_a_pure_functional_on_the_cpu_with_the_f64_tensor() {
+        for n in [AUTO_MIN_NBF_RI_J_F64, AUTO_MIN_NBF_RI_J] {
+            let s = DeviceSite::scf(n, Some(PURE)).with_f64_tensor();
+            assert!(
+                !routes_to_device(GpuMode::Auto, AutoPath::RiJ, s),
+                "auto, nbf {n}"
+            );
+            assert!(
+                routes_to_device(GpuMode::On, AutoPath::RiJ, s),
+                "on, nbf {n}"
+            );
+        }
+    }
+
+    #[test]
+    fn auto_takes_a_global_hybrid_and_keeps_a_range_separated_one_on_the_cpu() {
+        let at =
+            |xc, n| routes_to_device(GpuMode::Auto, AutoPath::RiJ, DeviceSite::scf(n, Some(xc)));
+        // A B3LYP COSX run has no DF-K aux but builds K beside J.
+        assert!(at(GLOBAL_HYBRID, AUTO_MIN_NBF_RI_J));
+        assert!(routes_to_device(
+            GpuMode::Auto,
+            AutoPath::RiJ,
+            DeviceSite::scf(AUTO_MIN_NBF_RI_J_F64, Some(GLOBAL_HYBRID)).with_f64_tensor()
+        ));
+        for n in [AUTO_MIN_NBF_RI_J, BIG] {
+            assert!(!at(RSH, n), "range-separated, nbf {n}");
+            assert!(!at(PURE, n), "pure, nbf {n}");
+        }
     }
 
     #[test]

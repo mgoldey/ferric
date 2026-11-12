@@ -160,6 +160,11 @@ pub struct DfJ<'a> {
     /// the J build that runs first each iteration.
     #[cfg(feature = "gpu")]
     k_reserve_bytes: usize,
+    /// The SCF site the device build is gated on ([`DfJ::route_device_by`]);
+    /// `None` for a builder outside an SCF (response and gradient J), which
+    /// has no J || XC overlap.
+    #[cfg(feature = "gpu")]
+    device_site: Option<DeviceSite>,
     /// The bases the f64 exit pass recomputes the integrals from; `Some` only
     /// for an f32-stored tensor whose builder had them (see
     /// [`DfJ::enable_f64_exit`]).
@@ -321,6 +326,38 @@ pub struct ResolvedRiJPrecision {
     pub precision: RiJPrecision,
     /// Why.
     pub source: RiJPrecisionSource,
+    /// The site it was resolved on. The RI-J build asks the device gate with
+    /// it: its f64 tier, whether to keep every pair for the device upload,
+    /// and the device build itself ([`DeviceSite::with_f64_tensor`]).
+    pub site: DeviceSite,
+}
+
+/// The RI-J device site of an SCF on `nbf` basis functions: `xc` is `None`
+/// for Hartree-Fock, else the functional's exchange mix
+/// ([`DeviceSite::scf`]).
+pub fn ri_j_site(nbf: usize, xc: Option<ferric_dft::xc_trait::KMix>) -> DeviceSite {
+    DeviceSite::scf(
+        nbf,
+        xc.map(|k| ferric_core::gpu::ExactExchange {
+            coefficient: k.sr,
+            omega: k.omega,
+        }),
+    )
+}
+
+/// [`ri_j_site`] from a functional name (`None` for Hartree-Fock), for
+/// callers that hold the configuration rather than the built functional. A
+/// name that does not resolve counts as exact exchange, as the SCF would
+/// refuse it.
+pub fn ri_j_site_for_functional(nbf: usize, xc: Option<&str>) -> DeviceSite {
+    ri_j_site(
+        nbf,
+        xc.map(|name| {
+            ferric_dft::libxc::xc_def_from_name(name)
+                .map(|d| ferric_dft::libxc::k_mix_from_xc_def(&d))
+                .unwrap_or_default()
+        }),
+    )
 }
 
 /// THE resolution rule for an unset or set `ri_j_precision`, used by every
@@ -345,7 +382,11 @@ pub fn resolve_ri_j_precision(
         }
         (None, RiJTask::Energy) => (RiJPrecision::DEFAULT, RiJPrecisionSource::Default),
     };
-    ResolvedRiJPrecision { precision, source }
+    ResolvedRiJPrecision {
+        precision,
+        source,
+        site,
+    }
 }
 
 impl std::fmt::Display for RiJPrecision {
@@ -611,6 +652,11 @@ impl<'a> DfJ<'a> {
     /// enabled. When the f32 tensor does not fit, or `jk_storage` is
     /// `disk`/`direct`, the request is reported (stderr and provenance
     /// fallback count) and the f64 placement below is used.
+    ///
+    /// `site` is the SCF's RI-J site ([`ResolvedRiJPrecision::site`]): the
+    /// f64 tier keeps every pair only when the device gate takes J on it, and
+    /// the device build is gated on it ([`DfJ::route_device_by`]).
+    #[allow(clippy::too_many_arguments)]
     pub fn new_for_jk(
         op: Operator,
         mol: &ferric_core::mol::Molecule,
@@ -620,6 +666,7 @@ impl<'a> DfJ<'a> {
         ctx: Option<&'a ParallelContext>,
         pair_thresh: f64,
         precision: RiJPrecision,
+        site: DeviceSite,
     ) -> Result<Self, FerricError> {
         let naux = dfbs.nbasis();
         let band = match ctx {
@@ -638,24 +685,29 @@ impl<'a> DfJ<'a> {
                 pair_thresh,
                 v,
             )? {
+                // The f32 tensor never goes to the device: no site to route by.
                 Ok(me) => return Ok(me),
                 Err(back) => v = back,
             }
         }
-        let source = jk_source(op, mol, (obs, dfbs), budget_bytes, band, pair_thresh, &v)?;
-        Self::from_source_and_metric(source, v, budget_bytes, ctx)
+        let screen = (pair_thresh, site);
+        let source = jk_source(op, mol, (obs, dfbs), budget_bytes, band, screen, &v)?;
+        let mut me = Self::from_source_and_metric(source, v, budget_bytes, ctx)?;
+        me.route_device_by(site);
+        Ok(me)
     }
 
     /// Would [`new_for_jk`](Self::new_for_jk) (single rank, full aux range)
     /// hold its tensor in memory under `jk_storage = "auto"`, in any tier it
     /// could pick: the f32 tier when `precision` asks for it, then the
     /// pair-screened, packed or dense f64 tiers? The same fit checks the
-    /// builders run, without building. `v` is the operator's aux metric.
+    /// builders run, without building. `v` is the operator's aux metric and
+    /// `site` the SCF's RI-J site, as for `new_for_jk`.
     pub(crate) fn stored_fits_in_memory(
         op: Operator,
         (obs, dfbs): (&PreparedBasis, &PreparedBasis),
         budget_bytes: usize,
-        pair_thresh: f64,
+        (pair_thresh, site): (f64, DeviceSite),
         v: &Array2<f64>,
         precision: RiJPrecision,
     ) -> bool {
@@ -667,7 +719,7 @@ impl<'a> DfJ<'a> {
                 return true;
             }
         }
-        let screen = pair_screen_for(op, obs, v, pair_thresh);
+        let screen = pair_screen_for(op, obs, v, pair_thresh, site);
         ThreeIndexSource::ri_j_fits_in_memory(nao, rows, screen.as_deref(), budget_bytes)
     }
 
@@ -844,8 +896,22 @@ impl<'a> DfJ<'a> {
             device: crate::df_j_gpu::DeviceSlot::default(),
             #[cfg(feature = "gpu")]
             k_reserve_bytes: 0,
+            #[cfg(feature = "gpu")]
+            device_site: None,
             f64_exit: None,
         })
+    }
+
+    /// Gate the device build on `site` (the SCF's, from
+    /// [`ResolvedRiJPrecision::site`]) instead of a site with no J || XC
+    /// overlap. A no-op without the `gpu` feature.
+    pub fn route_device_by(&mut self, site: DeviceSite) {
+        #[cfg(feature = "gpu")]
+        {
+            self.device_site = Some(site);
+        }
+        #[cfg(not(feature = "gpu"))]
+        let _ = site;
     }
 
     /// Leave `bytes` of the device pool free when the RI-J tensor is uploaded
@@ -891,17 +957,18 @@ impl DfJ<'_> {
 
 /// The f64 raw tensor `new_for_jk` holds: the pair-screened in-core tier when
 /// [`pair_screen_for`] screens and the compressed band fits, otherwise the full
-/// tensor under `[scf] jk_storage`. `v` is the operator's aux metric.
+/// tensor under `[scf] jk_storage`. `v` is the operator's aux metric, `site`
+/// the SCF's RI-J site.
 fn jk_source(
     op: Operator,
     mol: &ferric_core::mol::Molecule,
     (obs, dfbs): (&PreparedBasis, &PreparedBasis),
     budget_bytes: usize,
     band: (usize, usize),
-    pair_thresh: f64,
+    (pair_thresh, site): (f64, DeviceSite),
     v: &Array2<f64>,
 ) -> Result<ThreeIndexSource, FerricError> {
-    if let Some(screen) = pair_screen_for(op, obs, v, pair_thresh) {
+    if let Some(screen) = pair_screen_for(op, obs, v, pair_thresh, site) {
         let built = ThreeIndexSource::build_pair_screened_for_jk(
             op,
             obs,
@@ -917,22 +984,23 @@ fn jk_source(
     ThreeIndexSource::build_for_jk(op, mol, obs, dfbs, budget_bytes, band, false)
 }
 
-/// The RI-J pair screen for `pair_thresh`, or `None` to keep every pair:
-/// `pair_thresh <= 0`, a device path that may take J, or an operator with no
-/// Schwarz table. `v` is the operator's own aux metric; its diagonal gives
-/// `max_P sqrt((P|P))`.
+/// The f64-tier RI-J pair screen for `pair_thresh`, or `None` to keep every
+/// pair: `pair_thresh <= 0`, a device path that may take J on `site` with the
+/// f64 tensor, or an operator with no Schwarz table. `v` is the operator's
+/// own aux metric; its diagonal gives `max_P sqrt((P|P))`.
 fn pair_screen_for(
     op: Operator,
     obs: &PreparedBasis,
     v: &Array2<f64>,
     pair_thresh: f64,
+    site: DeviceSite,
 ) -> Option<std::sync::Arc<PairScreen>> {
     pair_screen_with(
         op,
         obs,
         v,
         pair_thresh,
-        device_may_take_j(DeviceSite::f64_tensor(obs.nbasis())),
+        device_may_take_j(site.with_f64_tensor()),
     )
 }
 
@@ -958,9 +1026,10 @@ fn pair_screen_with(
         .map(std::sync::Arc::new)
 }
 
-/// The pair screen [`DfJ::new_for_jk`] stores its tensor under, from the same
-/// metric and `pair_screen_for` it uses; `None` when it keeps every pair. Test
-/// hook: lets a memory-plan test size the RI-J plane without building it.
+/// The pair screen [`DfJ::new_for_jk`] stores its f64 tensor under for a
+/// Hartree-Fock or global-hybrid site, from the same metric and
+/// `pair_screen_for` it uses; `None` when it keeps every pair. Test hook: lets
+/// a memory-plan test size the RI-J plane without building it.
 #[doc(hidden)]
 pub fn ri_j_pair_screen_for_test(
     op: Operator,
@@ -968,16 +1037,28 @@ pub fn ri_j_pair_screen_for_test(
     dfbs: &PreparedBasis,
     pair_thresh: f64,
 ) -> Result<Option<std::sync::Arc<PairScreen>>, FerricError> {
+    ri_j_pair_screen_on_site_for_test(op, obs, dfbs, pair_thresh, DeviceSite::plain(obs.nbasis()))
+}
+
+/// [`ri_j_pair_screen_for_test`] on `site`. Test hook.
+#[doc(hidden)]
+pub fn ri_j_pair_screen_on_site_for_test(
+    op: Operator,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    pair_thresh: f64,
+    site: DeviceSite,
+) -> Result<Option<std::sync::Arc<PairScreen>>, FerricError> {
     let v = coulomb_metric_2c(op, dfbs)?;
-    Ok(pair_screen_for(op, obs, &v, pair_thresh))
+    Ok(pair_screen_for(op, obs, &v, pair_thresh, site))
 }
 
 /// Could the device path build this J on `site`? Its upload reads the full
 /// packed triangle, so a pair-screened source would only make it decline.
 /// `auto` answers by the size gate and the functional class
 /// ([`ferric_core::gpu::routes_to_device`]); the pair screen asks with the
-/// size alone with the f64 threshold ([`DeviceSite::f64_tensor`]); only the
-/// f64 tier consults it.
+/// SCF's site and the f64 threshold ([`DeviceSite::with_f64_tensor`]); only
+/// the f64 tier consults it.
 fn device_may_take_j(site: DeviceSite) -> bool {
     #[cfg(feature = "gpu")]
     {
@@ -1465,10 +1546,13 @@ impl JBuilder for DfJ<'_> {
                     .solvec(d_p)
                     .map_err(|e| FerricError::Lapack(format!("DF-J metric solve failed: {e}")))
             };
+            let site = self
+                .device_site
+                .unwrap_or_else(|| DeviceSite::f64_tensor(self.source.nao()));
             if crate::df_j_gpu::try_build(
                 &mut self.device,
                 &mut self.source,
-                (self.ctx, self.k_reserve_bytes),
+                (self.ctx, self.k_reserve_bytes, site),
                 d,
                 j,
                 solve,
@@ -2372,6 +2456,7 @@ mod tests {
                 None,
                 thresh,
                 RiJPrecision::F64,
+                DeviceSite::plain(self.obs.nbasis()),
             )
             .unwrap()
         }
