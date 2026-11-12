@@ -190,7 +190,7 @@ impl CasScfProblem {
                 crate::strings::MAX_ACTIVE_ORBITALS
             )));
         }
-        check_max_step(config)?;
+        check_step_controls(config)?;
         if na > nact || nb > nact {
             return Err(FerricError::General(format!(
                 "CASSCF: active electrons per spin (α={na}, β={nb}) exceed n_active ({nact})"
@@ -678,7 +678,7 @@ pub fn optimize(
     c0: Array2<f64>,
     config: &CasScfConfig,
 ) -> Result<CasScfResult, FerricError> {
-    check_max_step(config)?;
+    check_step_controls(config)?;
     let npair = problem.pairs().len();
     let finish = |pt: CasScfPoint, c: Array2<f64>, it: usize, converged: bool| {
         let (c, pt, mo_energy) = if config.canonicalize {
@@ -765,13 +765,21 @@ fn ci_root_accepted(converged: bool, residual_norm: f64, conv_thresh: f64) -> bo
     converged && residual_norm < conv_thresh
 }
 
-/// A step cap that is not a positive finite number makes every step zero (or
-/// NaN), so the loop would repeat the same CI solve until `max_iter`.
-fn check_max_step(config: &CasScfConfig) -> Result<(), FerricError> {
+/// A step cap or Hessian floor that is not a positive finite number makes
+/// every step zero (or NaN): an infinite floor gives a zero inverse Hessian,
+/// a zero or NaN floor a NaN step where `H_diag` vanishes. The loop would
+/// then repeat the same CI solve until `max_iter`.
+fn check_step_controls(config: &CasScfConfig) -> Result<(), FerricError> {
     if !(config.max_step.is_finite() && config.max_step > 0.0) {
         return Err(FerricError::General(format!(
             "CASSCF: max_step must be a positive finite number of radians, got {}",
             config.max_step
+        )));
+    }
+    if !(config.hdiag_floor.is_finite() && config.hdiag_floor > 0.0) {
+        return Err(FerricError::General(format!(
+            "CASSCF: hdiag_floor must be a positive finite number, got {}",
+            config.hdiag_floor
         )));
     }
     Ok(())
