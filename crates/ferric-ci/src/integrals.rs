@@ -19,7 +19,7 @@ use ferric_core::memory::plan::{Lifetime, MemoryPlan};
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
-use ferric_integrals::oneelectron::hcore;
+use ferric_integrals::oneelectron::hcore_ecp;
 use ferric_integrals::operator::Operator;
 use ferric_scf::ScfResult;
 use ndarray::Array2;
@@ -228,7 +228,7 @@ pub fn build_active_space_integrals(
     let n_inactive = active_start; // doubly-occupied core orbitals
 
     // ---- AO core Hamiltonian ------------------------------------------
-    let h_ao = hcore(prep);
+    let h_ao = hcore_ecp(prep, mol, prep.basis_set());
 
     // ---- Dense AO ERI tensor + transform chain, charged up front -------
     // `memory_budget_bytes` is the caller's `CasCiConfig::memory_budget_bytes`

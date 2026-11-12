@@ -119,7 +119,11 @@ fn run_casci(
     scf_energy_conv: Option<f64>,
     scf_density_conv: Option<f64>,
 ) -> PyResult<PyCasCiResult> {
-    let nelec = mol.inner.nelec() as usize;
+    // The valence count and V_ECP of an ECP basis, as the SCF bindings use.
+    let mut emol = mol.inner.clone();
+    emol.apply_ecp(&basis_set.inner);
+    let mol = &emol;
+    let nelec = mol.nelec() as usize;
     let n_act_el = n_elec_active.0 + n_elec_active.1;
     let active_start = match active_start {
         Some(s) => s,
@@ -134,7 +138,7 @@ fn run_casci(
         }
     };
     let budget = budget_bytes_from_gb(memory_budget_gb);
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
+    let prep = PreparedBasis::new(mol, &basis_set.inner).map_err(make_err)?;
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
     let rhf_config = rhf_config_conv(
@@ -144,7 +148,7 @@ fn run_casci(
     );
     let rhf = solve_rhf(
         &ParallelContext::default(),
-        &mol.inner,
+        mol,
         &prep,
         op,
         &bounds,
@@ -167,7 +171,7 @@ fn run_casci(
         memory_budget_bytes: budget,
         compute_rdms,
     };
-    let r = ferric_ci::run_cas_ci(&mol.inner, &prep, &rhf, cfg).map_err(make_err)?;
+    let r = ferric_ci::run_cas_ci(mol, &prep, &rhf, cfg).map_err(make_err)?;
 
     let mut cert = Certificate::ungraded(CAPABILITY).with_build(BuildStamp::new(
         ferric_build_info::VERSION,
@@ -317,7 +321,11 @@ fn run_casscf(
     scf_density_conv: Option<f64>,
     canonicalize: bool,
 ) -> PyResult<PyCasScfResult> {
-    let nelec = mol.inner.nelec() as usize;
+    // The valence count and V_ECP of an ECP basis, as the SCF bindings use.
+    let mut emol = mol.inner.clone();
+    emol.apply_ecp(&basis_set.inner);
+    let mol = &emol;
+    let nelec = mol.nelec() as usize;
     let n_act_el = n_elec_active.0 + n_elec_active.1;
     let n_core = match n_core {
         Some(s) => s,
@@ -332,7 +340,7 @@ fn run_casscf(
         }
     };
     let budget = budget_bytes_from_gb(memory_budget_gb);
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
+    let prep = PreparedBasis::new(mol, &basis_set.inner).map_err(make_err)?;
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
     let rhf_config = rhf_config_conv(
@@ -342,7 +350,7 @@ fn run_casscf(
     );
     let rhf = solve_rhf(
         &ParallelContext::default(),
-        &mol.inner,
+        mol,
         &prep,
         op,
         &bounds,
@@ -370,7 +378,7 @@ fn run_casscf(
         canonicalize,
         ..Default::default()
     };
-    let r = ferric_ci::run_casscf(&mol.inner, &prep, &rhf, &cfg).map_err(make_err)?;
+    let r = ferric_ci::run_casscf(mol, &prep, &rhf, &cfg).map_err(make_err)?;
 
     let mut cert = Certificate::ungraded(CASSCF_CAPABILITY).with_build(BuildStamp::new(
         ferric_build_info::VERSION,
