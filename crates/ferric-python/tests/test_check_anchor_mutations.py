@@ -118,14 +118,14 @@ def _patch(repo, name, path, old, new):
     return out
 
 
-def _run(repo, patch, *extra, env=None, test="demo_value"):
+def _run(repo, patch, *extra, env=None, test="demo_value", result=None):
     row = {
         "anchor": "DEMO",
         "patch": str(patch.relative_to(repo)),
         "evidence": EVIDENCE,
         "test": test,
         "env": {"DEMO": "1"},
-        "result": None,
+        "result": result,
     }
     ledger = repo / "testdata/mutations/ledger.json"
     ledger.write_text(json.dumps({"rows": [row]}))
@@ -176,6 +176,15 @@ def test_a_mutant_the_test_survives_is_not_seen_to_fail(repo):
     proc, (rep,), calls, ledger = _run(repo, patch, "--write")
     assert rep["status"] == "not seen to fail", rep
     assert len(calls) == 2, "baseline and patched run"
+    assert ledger["rows"][0]["result"] is None
+    assert proc.returncode == 1
+
+
+def test_write_drops_the_result_of_a_row_that_is_no_longer_accepted(repo):
+    stale = {"patch_sha256": "0" * 64, "base_commit": "old", "date": "2000-01-01"}
+    patch = _patch(repo, "comment", LIB, "    1.0\n", "    // no-op\n    1.0\n")
+    proc, (rep,), _, ledger = _run(repo, patch, "--write", result=stale)
+    assert rep["status"] == "not seen to fail", rep
     assert ledger["rows"][0]["result"] is None
     assert proc.returncode == 1
 

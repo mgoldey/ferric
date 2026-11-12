@@ -24,7 +24,8 @@ variables. For each selected row this script:
 
 With --write the result of every accepted row is written back to the ledger:
 the patch's sha256, the base commit, the failing test, the assertion location
-and the first line of its message. The ferric-core test
+and the first line of its message. A selected row that is no longer accepted
+loses its recorded result, so the ledger test reports it as pending. The ferric-core test
 `mutation_ledger_matches_the_registry` checks the ledger against the registry
 and the patch files on every run; this script is run on demand:
 
@@ -280,6 +281,10 @@ def main(argv=None):
                     "baseline_run": r["baseline_run"],
                     "date": today,
                 }
+            else:
+                # A row that is no longer accepted keeps no earlier result: the
+                # ledger test then reports it as pending.
+                row["result"] = None
         ledger_path.write_text(json.dumps(ledger, indent=2) + "\n")
     bad = [r["anchor"] for _, r in reports if r["status"] != CAUGHT]
     print(
