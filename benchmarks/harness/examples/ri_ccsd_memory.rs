@@ -70,7 +70,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ladder,
         ..Default::default()
     };
-    let route = closed_shell_ladder_route(&obs, &dfbs, &rhf, &cfg)?;
+    let route = closed_shell_ladder_route(&mol, &obs, &dfbs, &rhf, &cfg)?;
     println!("system={xyz} nbas={nbas} naux={naux} nocc={nocc} nv={nv} route={route:?}");
 
     match mode.as_str() {
