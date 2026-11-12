@@ -578,7 +578,8 @@ pub fn solve_uhf_with_hook(
 /// when `D_σ` is idempotent with `nocc_σ` electrons (a converged SCF
 /// density), and at its `nocc_σ`-orbital aufbau projection otherwise.
 /// `guess_basis` does not apply. As for any start, a closed shell
-/// (`nocc_α = nocc_β`) has its β HOMO and LUMO turned by 0.1 rad.
+/// (`nocc_α = nocc_β`) has its β HOMO and LUMO turned by 0.1 rad when the
+/// overlap retains a virtual orbital.
 pub fn solve_uhf_from_spin_densities(
     ctx: &ParallelContext,
     mol: &Molecule,
@@ -955,7 +956,7 @@ fn solve_uhf_impl(
     // For genuine open shell (nocc_a > nocc_b), occupying the lowest nocc_σ
     // orbitals per spin is already symmetry-broken. For "forced" UHF on a
     // closed-shell, mix HOMO/LUMO in β with a small angle to break symmetry.
-    mix_beta_homo_lumo(&mut c_b, nocc_a, nocc_b, sym.is_some());
+    mix_beta_homo_lumo(&mut c_b, nocc_a, nocc_b, x.ncols(), sym.is_some());
 
     let mut d_a = density(&c_a, nocc_a);
     let mut d_b = density(&c_b, nocc_b);
@@ -2500,10 +2501,18 @@ pub fn fxc_kernel_duplicate_bytes(
 /// saddle. Skipped under point-group blocking: a blocked closed-shell UHF has
 /// identical alpha and beta blocks and cannot leave `alpha = beta`, so the mix
 /// would only be projected away (symmetry-broken solutions are outside the
-/// blocked space by construction).
-fn mix_beta_homo_lumo(c_b: &mut Array2<f64>, nocc_a: usize, nocc_b: usize, blocked: bool) {
+/// blocked space by construction). Also skipped when the occupied orbitals
+/// fill the `n_retained` functions the overlap keeps: the LUMO column is then
+/// a zero pad, and the rotation would only shrink the HOMO.
+fn mix_beta_homo_lumo(
+    c_b: &mut Array2<f64>,
+    nocc_a: usize,
+    nocc_b: usize,
+    n_retained: usize,
+    blocked: bool,
+) {
     let n = c_b.nrows();
-    if blocked || nocc_a != nocc_b || nocc_a == 0 || nocc_a >= n {
+    if blocked || nocc_a != nocc_b || nocc_a == 0 || nocc_a >= n.min(n_retained) {
         return;
     }
     let theta = 0.1f64;
