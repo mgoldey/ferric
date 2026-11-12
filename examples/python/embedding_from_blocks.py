@@ -107,7 +107,11 @@ def embed(
     e_full, v_full = e_low(d)
     e_sub, v_sub = e_low(d_a)
     p_b = s @ c_b @ c_b.T @ s
-    v_emb = v_full - v_sub + 0.5 * mu * (p_b + p_b.T)
+    # The hook contract needs a symmetric V. v_full - v_sub is a difference of
+    # two separately built potentials, round-off asymmetric; with B empty it
+    # is all round-off and the driver's relative symmetry check rejects it.
+    v_emb = v_full - v_sub + mu * p_b
+    v_emb = 0.5 * (v_emb + v_emb.T)
     mol_a = ferric.Molecule.from_xyz(str(xyz), charge=2 * c_b.shape[1])
 
     def hook(dm):
