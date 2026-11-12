@@ -28,6 +28,24 @@ def test_rimp2_certificate():
     assert c["build"]["commit"] == ferric.build_info()["commit"]
 
 
+def test_rimp2_outside_its_anchor_warns_without_changing_the_grade():
+    # The RI-MP2 anchor (crates/ferric-core/src/certificate/anchors.rs) runs
+    # no STO-3G orbital basis; H, O and cc-pVDZ-RI are covered.
+    mol, bs, aux = _setup()
+    c = ferric.run_rimp2(mol, bs, aux).certificate
+    ev = c["measured_error"]["evidence"]
+    assert c["grade"] == "proven"
+    assert c["warnings"] == [f"basis sto-3g is outside the RI-MP2 energy anchor ({ev})"]
+
+
+def test_rimp2_inside_its_anchor_carries_no_warning():
+    mol, _, aux = _setup()
+    c = ferric.run_rimp2(mol, ferric.BasisSet.bundled("cc-pvdz"), aux).certificate
+    assert c["measured_error"]["value"] == 2.4e-10
+    assert c["measured_error"]["quantity"] == "correlation energy"
+    assert c["warnings"] == []
+
+
 def test_local_rimp2_certificate_is_capped():
     mol, bs, aux = _setup()
     c = ferric.run_rimp2(
