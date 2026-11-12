@@ -447,6 +447,9 @@ def fd_hessian_min_eig(cas, c, h=1e-4):
     return np.linalg.eigvalsh(hes)[0], np.diag(hes)
 
 
+PYSCF_CASSCF_GRAD_FLOOR = 1e-6
+
+
 def pyscf_casscf(mf, ncas, nelecas, gtol):
     from pyscf import mcscf
 
@@ -458,7 +461,21 @@ def pyscf_casscf(mf, ncas, nelecas, gtol):
     mc.fcisolver.conv_tol = 1e-14
     t0 = time.time()
     mc.kernel()
-    return mc, time.time() - t0, float(np.linalg.norm(mc.get_grad()))
+    grad = float(np.linalg.norm(mc.get_grad()))
+    # At conv_tol 1e-12 PySCF's orbital gradient stagnates near 3.5e-7 on
+    # water/6-31G CAS(4,4) and it runs every macro cycle, reporting
+    # converged=False for an energy that is stable to 1e-13, so the flag alone
+    # rejects good references. A run that is unconverged and above
+    # PYSCF_CASSCF_GRAD_FLOOR is a failed solve: the energy error is at most
+    # |g|^2 / (2 lambda_min), and 1e-6 keeps that under 1e-11 Ha for
+    # lambda_min above 0.05.
+    if not mc.converged and grad > PYSCF_CASSCF_GRAD_FLOOR:
+        raise RuntimeError(
+            f"PySCF CASSCF did not converge (|g| {grad:.2e} > "
+            f"{PYSCF_CASSCF_GRAD_FLOOR:.0e} after max_cycle_macro="
+            f"{mc.max_cycle_macro}); its energy is not a reference"
+        )
+    return mc, time.time() - t0, grad
 
 
 def pyscf_rhf_on_ferric_integrals(pmol, ints):
