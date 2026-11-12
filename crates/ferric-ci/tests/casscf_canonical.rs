@@ -18,7 +18,7 @@
 //!    `tests/casci_rdms.rs`).
 //! 3. The returned CI vector is an eigenvector of the Hamiltonian in `C₁`:
 //!    `‖H₁c − E₁c‖` recomputed by the direct sigma is below
-//!    `10 × ci_conv_thresh` (Davidson's acceptance), and `c·H₁c = E₁` to
+//!    `ci_conv_thresh` (CASSCF refuses a root above it), and `c·H₁c = E₁` to
 //!    the rounding bar of 2.
 //! 4. Natural orbitals. With `U_a = C₀,aᵀ S C₁,a`, `δγ = γ₁ − U_aᵀ γ₀ U_a`.
 //!    `U_aᵀ γ₀ U_a` is diagonal to rounding, so `max|offdiag γ₁| ≤ max|δγ| +
@@ -335,10 +335,7 @@ fn case(label: &str, xyz: &str, n_core: usize, n_active: usize, nel: (usize, usi
     assert!(de.abs() <= bar1, "{label}: energy moved by {de:e}");
     assert!(d2 <= bar2 + r1, "{label}: RDM energy off by {d2:e}");
     assert!((rq - e1).abs() <= bar2 + r1, "{label}: c.Hc off");
-    assert!(
-        resid <= 10.0 * cfg.ci_conv_thresh,
-        "{label}: residual {resid:e}"
-    );
+    assert!(resid < cfg.ci_conv_thresh, "{label}: residual {resid:e}");
     assert!(
         maxabs(&dgam) <= bar_dg,
         "{label}: dgamma {:e}",
