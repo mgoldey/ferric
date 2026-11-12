@@ -1,8 +1,9 @@
-# CAS-CI
+# CAS-CI and CASSCF
 
-ferric runs complete-active-space configuration interaction (CAS-CI) from a
-closed-shell RHF reference, from Rust (`ferric_ci::run_cas_ci`) or Python
-(`ferric.run_casci`). The CLI does not expose it.
+ferric runs complete-active-space configuration interaction (CAS-CI) and
+two-step CASSCF from a closed-shell RHF reference, from Rust
+(`ferric_ci::run_cas_ci`, `ferric_ci::run_casscf`) or Python
+(`ferric.run_casci`, `ferric.run_casscf`). The CLI exposes neither.
 
 The Hamiltonian, the determinant phase convention and the Slater-Condon rules
 are derived in `crates/ferric-ci/theory.md`. The phase conventions are checked
@@ -18,7 +19,8 @@ by `scripts/casci_slater_condon_phases_sympy.py`.
 | Solver | CI-native Davidson, diagonal preconditioner `1/(H_ii - λ)` |
 | Entry points | Rust `ferric_ci::run_cas_ci` (re-exported as `ferric::ci`); Python `ferric.run_casci` |
 | Density matrices | spin-summed 1- and 2-RDM of the root, opt-in (`compute_rdms`) |
-| Not implemented | open-shell or non-singlet references, S² control, multiple roots, CLI `method.kind`, spin-resolved RDMs, orbital optimization (CASSCF) |
+| Orbital optimization | two-step CASSCF, single root (see [CASSCF](#casscf)) |
+| Not implemented | open-shell or non-singlet references, S² control, multiple roots, state averaging, CLI `method.kind`, spin-resolved RDMs |
 
 With no inactive orbitals the method is FCI in the basis. A call that fails
 the bookkeeping check, `2 * active_start + n_alpha + n_beta == nelec`, returns
@@ -106,6 +108,64 @@ print(np.linalg.eigvalsh(r.dm1), r.certificate["grade"])   # natural occupations
 $(N - N_\alpha - N_\beta)/2$. The certificate's capability is `casci`; it is
 not graded.
 Defaults: `conv_thresh = 1e-9`, `max_subspace = 50`, `max_iter = 200`.
+
+## CASSCF
+
+`run_casscf` optimizes the orbitals for the lowest CAS-CI root. Each macro
+iteration solves the CAS-CI with RDMs in the current orbitals, builds the
+inactive and active Fock matrices and the generalized Fock matrix $F$, and
+takes an orbital step $C \leftarrow C\exp(K)$ over the core-active,
+core-virtual and active-virtual rotations, with gradient
+$\partial E/\partial\kappa_{pq} = 2(F_{pq} - F_{qp})$. Equations:
+`crates/ferric-ci/theory.md`.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `grad_tol` (Python `casscf_grad_tol`) | 1e-7 | converged when $\lVert g\rVert_2$ is below this |
+| `energy_tol` (`casscf_energy_tol`) | 1e-12 Ha | and the energy change is below this at the same iteration |
+| `max_iter` (`casscf_max_iter`) | 300 | macro iterations |
+| `max_step` (`casscf_max_step`) | 0.2 | cap on the largest step element (rad) |
+| `ci_conv_thresh` | 1e-10 | Davidson residual of every CI solve |
+
+The step is inverse BFGS, started from an approximate diagonal orbital
+Hessian and reset to it when the energy rises. A run that reaches the
+iteration cap returns `converged = false`; Python adds a `RuntimeWarning` and
+a certificate warning (capability `casscf`, ungraded).
+
+```python
+import ferric
+
+mol = ferric.Molecule.from_xyz("water.xyz")
+r = ferric.run_casscf(mol, ferric.BasisSet.bundled("6-31g"), 4, (2, 2))
+print(r.e_total, r.iterations, r.grad_norm, r.converged)
+```
+
+Limits:
+
+- single root, no state averaging;
+- `n_alpha == n_beta` in the active space; other sectors return an error;
+- the start is the canonical RHF orbitals with the active window directly
+  above the core; there is no orbital selection or reordering;
+- returned orbitals are not canonicalized within the core, active or virtual
+  block;
+- the optimizer uses no exact orbital Hessian and no orbital-CI coupling;
+  convergence is tested on two systems from RHF starts only;
+- the dense AO ERI block (`nbasis⁴` doubles) is held for the whole run.
+
+Validation (`crates/ferric-ci/tests/casscf.rs`, measured 2026-11-11):
+
+| Check | H2O CAS(4,4)/6-31G | N2 CAS(6,6)/6-31G |
+|---|---:|---:|
+| analytic − finite-difference gradient, worst class | 2.4e-10 | 2.0e-10 |
+| converged $E$ (Ha) | -76.0369690965018 | -109.0155467897005 |
+| $E$ − Python prototype (Ha) | -4.3e-14 | 2.3e-13 |
+| macro iterations | 60 | 21 |
+
+The prototype (`scripts/prototypes/casscf_proto.py`) matches PySCF
+`mcscf.CASSCF` on ferric's AO integrals to 1.4e-12 Ha (H2O) and 1.8e-13 Ha
+(N2). With the active space equal to the full space (H2O and N2, STO-3G) the
+energy equals the full-window `run_cas_ci` to 1e-13 Ha and $2(F - F^\mathsf{T})$
+is below 8e-11.
 
 ## Limits
 
