@@ -99,7 +99,8 @@ an anchor.
 Two-step: each macro iteration converges the CI, builds g, takes
 s = -B^-1 g with an inverse-BFGS update of B^-1 in the current orbital frame
 (no parallel transport of earlier steps), caps max |s_k| at 0.2, and rotates
-C <- C expm(K(s)). B^-1 resets to 1/H_diag when the energy rises.
+C <- C expm(K(s)). B^-1 resets to 1/H_diag when the energy rises by more than
+1e-10 Ha; a smaller rise keeps it.
 Convergence: |dE| < 1e-12 Ha and ||g||_2 < 1e-7. The CI step uses a dense
 eigensolver up to 2500 determinants and Davidson (warm-started) above.
 
@@ -216,7 +217,7 @@ iterations), `fcisolver.conv_tol` = 1e-14.
 | approx H_diag vs FD diagonal, median / max rel. error | 0.28 / 0.79 | 0.24 / 0.69 |
 
 The two runs are identical for the prototype. PySCF's H2O energy moves by
-1.3e-11 Ha between runs at ||g|| = 1e-6, inside the bar of 2.6e-11 Ha, which
+1.3e-11 Ha between runs at ||g|| = 1e-6, inside the bar of 1.0e-10 Ha, which
 that gradient norm dominates.
 
 The native difference follows the RHF-level offset between ferric's and
