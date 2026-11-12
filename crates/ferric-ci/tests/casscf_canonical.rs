@@ -221,30 +221,74 @@ fn case(label: &str, xyz: &str, n_core: usize, n_active: usize, nel: (usize, usi
             (resid + orth_v * mmax).max(4.0 * EPS * n * mmax)
         };
         let gap = |p: usize, q: usize| (m[(p, p)] - m[(q, q)]).abs();
-        for p in lo..hi {
-            let mut sum_sq = 0.0;
-            for q in lo..hi {
+        let e = |a: usize, b: usize| m[(a, b)].abs() + delta;
+        // Degenerate clusters (transitive closure of pairs whose first-order
+        // mixing 2E_pq/|λp−λq| reaches 0.1): the eigensolver may return any
+        // rotation inside a cluster, so in-cluster elements of O are not
+        // constrained, and perturbation theory treats each cluster as one
+        // degenerate level (N2's π and π* pairs).
+        let nb = hi - lo;
+        let mut cl: Vec<usize> = (0..nb).collect();
+        let find = |cl: &Vec<usize>, mut a: usize| {
+            while cl[a] != a {
+                a = cl[a];
+            }
+            a
+        };
+        for a in 0..nb {
+            for b in a + 1..nb {
+                if 2.0 * e(lo + a, lo + b) >= 0.1 * gap(lo + a, lo + b) {
+                    let (ra, rb) = (find(&cl, a), find(&cl, b));
+                    cl[ra.max(rb)] = ra.min(rb);
+                }
+            }
+        }
+        let cid: Vec<usize> = (0..nb).map(|a| find(&cl, a)).collect();
+        let same = |a: usize, b: usize| cid[a - lo] == cid[b - lo];
+        // Component of new orbital r on old p (p outside r's cluster), from
+        // Rayleigh–Schrödinger theory: first order E_pr/(λr−λp) plus second
+        // order Σ_s E_ps E_sr/((λr−λp)(λr−λs)) over s outside r's cluster,
+        // with E the off-diagonal part of M plus the eigensolver backward
+        // error, times 2.
+        let comp = |p: usize, r: usize| {
+            let first = e(p, r) / gap(r, p);
+            let second: f64 = (lo..hi)
+                .filter(|&s| s != p && !same(s, r))
+                .map(|s| e(p, s) * e(s, r) / (gap(r, p) * gap(r, s)))
+                .sum();
+            2.0 * (first + second)
+        };
+        // New q is a unit combination of its cluster's perturbed orbitals, so
+        // its component on old p is bounded by the root-sum-square over the
+        // cluster. None: in-cluster, or outside the expansion's range.
+        let bar_of = |p: usize, q: usize| -> Option<f64> {
+            if same(p, q) {
+                return None;
+            }
+            let b = (lo..hi)
+                .filter(|&r| same(r, q))
+                .map(|r| comp(p, r).powi(2))
+                .sum::<f64>()
+                .sqrt();
+            (b < 0.1).then_some(b)
+        };
+        for q in lo..hi {
+            // |O_qq − 1| ≈ ½ Σ_p O_pq², bounded by Σ_p bar_pq²; only for a
+            // nondegenerate q (an in-cluster rotation moves the diagonal).
+            let mut sum_sq = if (lo..hi).any(|r| r != q && same(r, q)) {
+                f64::INFINITY
+            } else {
+                0.0
+            };
+            for p in lo..hi {
                 if p == q {
                     continue;
                 }
-                // First order E_qp/(λp−λq) plus the second-order term
-                // Σ_r E_qr E_rp/((λp−λq)(λp−λr)), with E the off-diagonal
-                // part of M plus the eigensolver backward error, times 2.
-                let e = |a: usize, b: usize| m[(a, b)].abs() + delta;
-                let first = e(q, p) / gap(p, q);
-                let second: f64 = (lo..hi)
-                    .filter(|&r| r != p && r != q)
-                    .map(|r| e(q, r) * e(r, p) / (gap(p, q) * gap(p, r)))
-                    .sum();
-                let bar = 2.0 * (first + second);
-                // The expansion holds for bar ≪ 1; above 0.1 (degenerate
-                // or nearly degenerate pairs) the rotation is not
-                // constrained.
-                if bar >= 0.1 {
+                let Some(bar) = bar_of(p, q) else {
                     free_pairs += 1;
                     sum_sq = f64::INFINITY;
                     continue;
-                }
+                };
                 sum_sq += bar * bar;
                 let ratio = o[(p, q)].abs() / (bar + o_round);
                 if ratio > worst {
@@ -254,10 +298,10 @@ fn case(label: &str, xyz: &str, n_core: usize, n_active: usize, nel: (usize, usi
             }
             let bar_d = sum_sq + o_round;
             if bar_d.is_finite() {
-                let ratio = (o[(p, p)] - 1.0).abs() / bar_d;
+                let ratio = (o[(q, q)] - 1.0).abs() / bar_d;
                 if ratio > worst {
                     worst = ratio;
-                    worst_at = (p, p, o[(p, p)] - 1.0, bar_d);
+                    worst_at = (q, q, o[(q, q)] - 1.0, bar_d);
                 }
             }
         }
