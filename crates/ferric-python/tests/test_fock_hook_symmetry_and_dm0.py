@@ -25,7 +25,9 @@ EPS = np.finfo(float).eps
 
 
 def _water(basis: str, charge: int = 0, multiplicity: int = 1):
-    mol = ferric.Molecule.from_xyz_string(WATER, charge=charge, multiplicity=multiplicity)
+    mol = ferric.Molecule.from_xyz_string(
+        WATER, charge=charge, multiplicity=multiplicity
+    )
     bs = ferric.BasisSet.bundled(basis)
     return mol, bs, ferric.AoIntegrals(mol, bs)
 

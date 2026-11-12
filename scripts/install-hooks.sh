@@ -98,7 +98,7 @@ if [[ ! -x "$GATE_SCRIPT" ]]; then
     exit 1
 fi
 
-# Tier selection. The DEFAULT for a push is the LINT tier: clippy on the CHANGED
+# Tier selection. The DEFAULT for a push is the LINT tier: cargo fmt --check, clippy on the CHANGED
 # crates (--all-targets, so it type-checks their targets; dependents are left to
 # CI, see CLIPPY SCOPE in ci-gate.sh), the complexity gate and rustdoc, with BOTH test steps (cargo test and the soft pytest) skipped.
 #
@@ -118,7 +118,7 @@ fi
 # so no rebuild in that worktree could start until it finished.
 #
 # Escalate with CI_GATE_TIER (or set the CI_GATE_* knobs directly):
-#   lint  (default)  clippy + complexity + rustdoc, no tests
+#   lint  (default)  fmt + clippy + complexity + rustdoc, no tests
 #   fast             lint + cargo tests (slowest binaries deferred) + pytest
 #   full             everything, including workspace-wide clippy
 # ---- refuse to gate a tree that is not what is being pushed -------------

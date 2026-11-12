@@ -2,8 +2,6 @@
 PdepRpaResult, GwResult, BseResult, and the MP2-family, dRPA, LinLCCD,
 open-shell GW and RPAx results."""
 
-import pytest
-
 import ferric
 
 _WATER = "3\n\nO 0 0 0.1173\nH 0 0.7572 -0.4692\nH 0 -0.7572 -0.4692\n"
@@ -154,8 +152,8 @@ def test_drpa_and_linlccd_dicts_carry_certificates():
     dl = ferric.run_drpa(mol, bs, aux, local="amplitude-threshold", eps=1e-4)
     assert dl["certificate"]["grade"] == "ungraded"
     assert "local" in _names(dl["certificate"])
-    l = ferric.run_linlccd(mol, bs, aux)
-    _row(l["certificate"], "linlccd", "proven_narrow", ["ri", "variant"])
+    lin = ferric.run_linlccd(mol, bs, aux)
+    _row(lin["certificate"], "linlccd", "proven_narrow", ["ri", "variant"])
     ll = ferric.run_linlccd(mol, bs, aux, local="amplitude-threshold", eps=1e-4)
     assert ll["certificate"]["grade"] == "ungraded"
     assert "local" in _names(ll["certificate"])
