@@ -26,7 +26,7 @@ fn ready() -> bool {
         return false;
     }
     install(GpuSettingsExplicit {
-        mode: Some(GpuMode::Auto),
+        mode: Some(GpuMode::On),
         memory_gb: Some(POOL_GB),
         ..Default::default()
     })

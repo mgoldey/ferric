@@ -49,7 +49,7 @@ fn packed_reuse_under_a_tight_pool_recomputes_instead_of_failing() {
     let dressed = ferric_scf::df_k::DfK::packed_band_bytes(
         naux,
         nao,
-        ferric_scf::df_k::RiKPrecision::resolve(None),
+        ferric_scf::df_k::RiKPrecision::resolve(None, nao),
     );
     let budget = full + dressed - 1;
     let cfg = with_fresh_handoff(

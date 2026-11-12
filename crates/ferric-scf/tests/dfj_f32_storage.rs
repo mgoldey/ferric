@@ -68,6 +68,11 @@ use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ndarray::{Array1, Array2, ArrayView2};
 use ndarray_linalg::cholesky::Cholesky;
+
+const SITE: ferric_core::gpu::DeviceSite = ferric_core::gpu::DeviceSite {
+    nbf: 10,
+    jxc_overlap: false,
+};
 use ndarray_linalg::{Eigh, UPLO};
 use std::sync::Mutex;
 
@@ -650,10 +655,10 @@ fn f32_by_default_and_f64_opt_out_is_the_old_path() {
 
     set_dfj_f32_for_test(None);
     #[cfg(not(feature = "gpu"))]
-    assert_eq!(RiJPrecision::resolve(None), RiJPrecision::F32);
+    assert_eq!(RiJPrecision::resolve(None, SITE), RiJPrecision::F32);
     assert_eq!(RiJPrecision::DEFAULT, RiJPrecision::F32);
     for p in [RiJPrecision::F32, RiJPrecision::F64] {
-        assert_eq!(RiJPrecision::resolve(Some(p)), p, "explicit {p} wins");
+        assert_eq!(RiJPrecision::resolve(Some(p), SITE), p, "explicit {p} wins");
         assert_eq!(RiJPrecision::parse_config_str(p.as_str()).unwrap(), p);
     }
     for bad in ["F32", "fp32", "single", "", "f16"] {
@@ -685,7 +690,7 @@ fn f32_by_default_and_f64_opt_out_is_the_old_path() {
     // baseline is only read on the CPU build).
     #[cfg(not(feature = "gpu"))]
     let k0 = kernel_counters()[MixedKernel::DfjF32.index()];
-    let mut by_default = new(RiJPrecision::resolve(None));
+    let mut by_default = new(RiJPrecision::resolve(None, SITE));
     let mut j0 = Array2::zeros((n, n));
     by_default.build(&d, &mut j0).unwrap();
     #[cfg(not(feature = "gpu"))]

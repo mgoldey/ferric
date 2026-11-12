@@ -181,7 +181,7 @@ fn reused_raw_gradient_equals_recomputed() {
     let dressed = ferric_scf::df_k::DfK::packed_band_bytes(
         naux,
         nao,
-        ferric_scf::df_k::RiKPrecision::resolve(None),
+        ferric_scf::df_k::RiKPrecision::resolve(None, nao),
     );
     let cfg = RhfConfig {
         three_index_budget_bytes: full + dressed - 1,

@@ -13,6 +13,7 @@ pub mod batched;
 pub mod config;
 #[cfg(feature = "gpu")]
 pub mod device;
+pub mod gate;
 #[cfg(feature = "gpu")]
 pub mod gemm;
 #[cfg(feature = "gpu")]
@@ -36,6 +37,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 pub use config::{GpuMode, GpuSettings, GpuSettingsExplicit, PrecisionExplicit};
+pub use gate::{routes_to_device, AutoPath, DeviceSite};
 pub use precision::{MixedKernel, MixedKernelSet, MixedScope, Precision};
 pub use preset::GpuPreset;
 pub use stats::{stats, GpuStatsSnapshot};

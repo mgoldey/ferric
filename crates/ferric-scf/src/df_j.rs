@@ -96,7 +96,7 @@
 use crate::fock::JBuilder;
 use ferric_core::gpu::mixed_host::{gamma, U32, U64};
 use ferric_core::gpu::stats::{note_kernel_mixed, note_mixed_fallback, MixedFallback};
-use ferric_core::gpu::MixedKernel;
+use ferric_core::gpu::{DeviceSite, MixedKernel};
 use ferric_core::parallel::ParallelContext;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
@@ -244,10 +244,10 @@ impl RiJPrecision {
         }
     }
 
-    /// The precision a single-point SCF requests for `requested`:
+    /// The precision a single-point SCF requests for `requested` on `site`:
     /// [`resolve_ri_j_precision`] with [`RiJTask::Energy`].
-    pub fn resolve(requested: Option<Self>) -> Self {
-        resolve_ri_j_precision(RiJTask::Energy, requested).precision
+    pub fn resolve(requested: Option<Self>, site: DeviceSite) -> Self {
+        resolve_ri_j_precision(RiJTask::Energy, requested, site).precision
     }
 }
 
@@ -328,17 +328,19 @@ pub struct ResolvedRiJPrecision {
 ///
 /// 1. an explicit value always wins (f32 in an optimization is honoured);
 /// 2. unset on a [`RiJTask::Geometry`] task is f64;
-/// 3. unset with a `[gpu]` mode that may build J on the device is f64 (the
-///    device RI-J needs the f64 tensor);
+/// 3. unset with a `[gpu]` mode that sends J to the device on `site` (see
+///    [`ferric_core::gpu::routes_to_device`]) is f64 (the device RI-J needs
+///    the f64 tensor);
 /// 4. otherwise [`RiJPrecision::DEFAULT`] (f32).
 pub fn resolve_ri_j_precision(
     task: RiJTask,
     explicit: Option<RiJPrecision>,
+    site: DeviceSite,
 ) -> ResolvedRiJPrecision {
     let (precision, source) = match (explicit, task) {
         (Some(p), _) => (p, RiJPrecisionSource::Explicit),
         (None, RiJTask::Geometry) => (RiJPrecision::F64, RiJPrecisionSource::GeometryTaskDefault),
-        (None, RiJTask::Energy) if device_may_take_j() => {
+        (None, RiJTask::Energy) if device_may_take_j(site) => {
             (RiJPrecision::F64, RiJPrecisionSource::DeviceDefault)
         }
         (None, RiJTask::Energy) => (RiJPrecision::DEFAULT, RiJPrecisionSource::Default),
@@ -925,7 +927,13 @@ fn pair_screen_for(
     v: &Array2<f64>,
     pair_thresh: f64,
 ) -> Option<std::sync::Arc<PairScreen>> {
-    pair_screen_with(op, obs, v, pair_thresh, device_may_take_j())
+    pair_screen_with(
+        op,
+        obs,
+        v,
+        pair_thresh,
+        device_may_take_j(DeviceSite::plain(obs.nbasis())),
+    )
 }
 
 /// [`pair_screen_for`] with the device decision given: `device` true keeps
@@ -964,28 +972,38 @@ pub fn ri_j_pair_screen_for_test(
     Ok(pair_screen_for(op, obs, &v, pair_thresh))
 }
 
-/// Could the device path build this J? Its upload reads the full packed
-/// triangle, so a pair-screened source would only make it decline.
-fn device_may_take_j() -> bool {
+/// Could the device path build this J on `site`? Its upload reads the full
+/// packed triangle, so a pair-screened source would only make it decline.
+/// `auto` answers by the size gate and the functional class
+/// ([`ferric_core::gpu::routes_to_device`]); the pair screen asks with the
+/// size alone ([`DeviceSite::plain`]), and only the f64 tier consults it.
+fn device_may_take_j(site: DeviceSite) -> bool {
     #[cfg(feature = "gpu")]
     {
-        ferric_core::gpu::settings().mode != ferric_core::gpu::GpuMode::Off
+        ferric_core::gpu::routes_to_device(
+            ferric_core::gpu::settings().mode,
+            ferric_core::gpu::AutoPath::RiJ,
+            site,
+        )
     }
     #[cfg(not(feature = "gpu"))]
     {
+        let _ = site;
         false
     }
 }
 
-/// Is a usable device configured for this process (`[gpu] mode` not off and
-/// the device probed Ready)? The device RI-J and XC-grid paths decline on a
-/// rayon worker, so the SCF's J ∥ XC overlap (both stages inside one
-/// `rayon::join`) would keep them on the CPU every iteration, silently. The
-/// SCF skips the overlap when this is true.
+/// Is a usable device forced for this process (`[gpu] mode` on and the device
+/// probed Ready)? The device RI-J and XC-grid paths decline on a rayon worker,
+/// so the SCF's J ∥ XC overlap (both stages inside one `rayon::join`) would
+/// keep them on the CPU every iteration, silently. The SCF skips the overlap
+/// when this is true. Under `auto` the overlap stays: a pure functional's J
+/// build is not taken to the device ([`ferric_core::gpu::routes_to_device`]),
+/// so there is nothing for the overlap to block.
 pub(crate) fn device_ready_for_scf() -> bool {
     #[cfg(feature = "gpu")]
     {
-        ferric_core::gpu::settings().mode != ferric_core::gpu::GpuMode::Off
+        ferric_core::gpu::settings().mode == ferric_core::gpu::GpuMode::On
             && matches!(
                 ferric_core::gpu::status(),
                 ferric_core::gpu::GpuStatus::Ready(_)

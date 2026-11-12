@@ -573,11 +573,14 @@ impl Default for RhfConfig {
 }
 
 impl RhfConfig {
-    /// The RI-J storage precision this config's SCF requests, and why
-    /// ([`resolve_ri_j_precision`](crate::df_j::resolve_ri_j_precision) of
+    /// The RI-J storage precision this config's SCF requests on `site`, and
+    /// why ([`resolve_ri_j_precision`](crate::df_j::resolve_ri_j_precision) of
     /// [`Self::ri_j_task`] and [`Self::ri_j_precision`]).
-    pub fn resolved_ri_j_precision(&self) -> crate::df_j::ResolvedRiJPrecision {
-        crate::df_j::resolve_ri_j_precision(self.ri_j_task, self.ri_j_precision)
+    pub fn resolved_ri_j_precision(
+        &self,
+        site: ferric_core::gpu::DeviceSite,
+    ) -> crate::df_j::ResolvedRiJPrecision {
+        crate::df_j::resolve_ri_j_precision(self.ri_j_task, self.ri_j_precision, site)
     }
 
     /// This config marked as a geometry/frequency task
@@ -2382,8 +2385,11 @@ fn solve_rhf_impl(
             df_k_aux_eff.as_deref(),
             ooc_budget,
             config.integral_thresh,
-            config.resolved_ri_j_precision(),
-            crate::df_k::RiKPrecision::resolve(config.ri_k_precision),
+            config.resolved_ri_j_precision(ferric_core::gpu::DeviceSite {
+                nbf: prep.nbasis(),
+                jxc_overlap: xc_contrib.is_some() && df_k_aux_eff.is_none(),
+            }),
+            crate::df_k::RiKPrecision::resolve(config.ri_k_precision, prep.nbasis()),
         )
     })?;
     phases.stop(df_fitters_t);

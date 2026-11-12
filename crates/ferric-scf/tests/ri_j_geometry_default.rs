@@ -78,31 +78,36 @@ fn first_optimize_energy(p: Option<RiJPrecision>) -> f64 {
     r.energy_trace[0]
 }
 
+const SITE: ferric_core::gpu::DeviceSite = ferric_core::gpu::DeviceSite {
+    nbf: 10,
+    jxc_overlap: false,
+};
+
 #[test]
 fn the_rule_explicit_wins_geometry_is_f64_energy_is_f32() {
     use RiJPrecision::{F32, F64};
     for task in [RiJTask::Energy, RiJTask::Geometry] {
         for p in [F32, F64] {
-            let r = resolve_ri_j_precision(task, Some(p));
+            let r = resolve_ri_j_precision(task, Some(p), SITE);
             assert_eq!((r.precision, r.source), (p, RiJPrecisionSource::Explicit));
         }
     }
-    let g = resolve_ri_j_precision(RiJTask::Geometry, None);
+    let g = resolve_ri_j_precision(RiJTask::Geometry, None, SITE);
     assert_eq!(
         (g.precision, g.source),
         (F64, RiJPrecisionSource::GeometryTaskDefault)
     );
     #[cfg(not(feature = "gpu"))]
     {
-        let e = resolve_ri_j_precision(RiJTask::Energy, None);
+        let e = resolve_ri_j_precision(RiJTask::Energy, None, SITE);
         assert_eq!((e.precision, e.source), (F32, RiJPrecisionSource::Default));
     }
     assert_eq!(RhfConfig::default().ri_j_task, RiJTask::Energy);
     let g = config(None).for_geometry_task();
     assert_eq!(g.ri_j_task, RiJTask::Geometry);
-    assert_eq!(g.resolved_ri_j_precision().precision, F64);
+    assert_eq!(g.resolved_ri_j_precision(SITE).precision, F64);
     let g = config(Some(F32)).for_geometry_task();
-    assert_eq!(g.resolved_ri_j_precision().precision, F32);
+    assert_eq!(g.resolved_ri_j_precision(SITE).precision, F32);
 }
 
 #[test]

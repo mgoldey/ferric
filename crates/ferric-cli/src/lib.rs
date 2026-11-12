@@ -913,6 +913,13 @@ pub fn run(args: Vec<String>) {
     // run, written before any expensive work so it survives even a job killed
     // in the first SCF iteration. No-op when no log is installed.
     let jk_route = ferric_scf::scf_jk::effective_jk(&rhf_config);
+    // The header's request-side estimate; the run's `ri_j_tensor` note records
+    // the precision the tensor was stored at. A Kohn-Sham run with no DF-K
+    // aux named is taken as RI-J only (the J || XC overlap case).
+    let ri_j_resolved = rhf_config.resolved_ri_j_precision(ferric_core::gpu::DeviceSite {
+        nbf: prep.nbasis(),
+        jxc_overlap: rhf_config.xc.is_some() && rhf_config.df_k_aux.is_none(),
+    });
     if let Some(rl) = ferric_scf::runlog::log() {
         ferric_scf::runlog::set_build_identity(
             ferric_build_info::VERSION,
@@ -935,8 +942,8 @@ pub fn run(args: Vec<String>) {
                 // ...); the run's `ri_j_tensor` note records the precision
                 // the tensor was stored at.
                 "ri_j_precision": rhf_config.ri_j_precision.map(|p| p.as_str()),
-                "ri_j_precision_resolved": rhf_config.resolved_ri_j_precision().precision.as_str(),
-                "ri_j_precision_source": rhf_config.resolved_ri_j_precision().source.as_str(),
+                "ri_j_precision_resolved": ri_j_resolved.precision.as_str(),
+                "ri_j_precision_source": ri_j_resolved.source.as_str(),
                 "ri_j_task": rhf_config.ri_j_task.as_str(),
                 // As requested (`null` = default).
                 "ri_k_precision": rhf_config.ri_k_precision.map(|p| p.as_str()),

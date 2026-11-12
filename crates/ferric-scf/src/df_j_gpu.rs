@@ -820,6 +820,17 @@ pub fn try_build(
         return Ok(false);
     }
     let n = src.nao();
+    // `auto` takes J only above the measured size gate (the functional-class
+    // half of the rule is in the tensor layout: a pure functional's J stays
+    // on the f32 CPU tensor, which never reaches this function).
+    if !ferric_core::gpu::routes_to_device(
+        settings.mode,
+        ferric_core::gpu::AutoPath::RiJ,
+        ferric_core::gpu::DeviceSite::plain(n),
+    ) {
+        decline(slot, "below the size where the device RI-J wins under auto");
+        return Ok(false);
+    }
     if src.naux() == 0 || n == 0 || d.dim() != (n, n) || j.dim() != (n, n) {
         return Ok(false); // empty or mismatched: the CPU path owns the semantics
     }
