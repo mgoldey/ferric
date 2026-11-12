@@ -86,6 +86,16 @@ pub fn chunk_rows(n_beta_str: usize) -> usize {
     (CHUNK_DETS / n_beta_str.max(1)).max(1)
 }
 
+/// Number of RDM blocks that can be built at once for the given string
+/// counts on `threads` rayon workers: the blocks of one batch run in
+/// parallel, so at most `min(threads, BATCH_CHUNKS, n_chunks)` per-worker
+/// `D` buffers are live. At least 1.
+pub fn rdm_concurrent_blocks(n_alpha_str: usize, n_beta_str: usize, threads: usize) -> usize {
+    let rows = chunk_rows(n_beta_str);
+    let n_chunks = n_alpha_str.div_ceil(rows);
+    threads.min(BATCH_CHUNKS).min(n_chunks).max(1)
+}
+
 /// Element counts `(per_worker, transient, resident)` of the RDM build for
 /// `n_active` orbitals and the given string counts, in `f64` units.
 ///
