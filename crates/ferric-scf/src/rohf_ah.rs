@@ -20,7 +20,8 @@ use ferric_core::FerricError;
 use ndarray::{Array1, Array2};
 
 thread_local! {
-    /// AH steps on this thread whose Davidson did not converge (test seam).
+    /// AH steps on this thread that took the PCG Newton step instead (test
+    /// seam; see `ah_kappa_or_fallback`).
     static AH_FALLBACKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
@@ -32,7 +33,8 @@ thread_local! {
 const AH_ENDGAME_RESIDUAL: f64 = 1e-7;
 
 /// Number of AH steps on the calling thread that fell back to the PCG Newton
-/// step because the augmented-Hessian Davidson did not converge (test seam).
+/// step: the augmented-Hessian Davidson did not converge, or its lowest
+/// eigenvector has a vanishing leading entry (test seam).
 #[doc(hidden)]
 pub fn ah_fallbacks_on_this_thread() -> usize {
     AH_FALLBACKS.with(std::cell::Cell::get)
@@ -59,7 +61,9 @@ pub struct RohfAhInputs<'a, 'b> {
 /// converge, the PCG Newton step ([`crate::rohf_newton::rohf_newton_step`],
 /// with `inp.newton_level_shift` / `inp.newton_max_step`) is taken instead:
 /// silently when the lowest-root residual is below 1e-7 (the tight-tolerance
-/// stall), with a warning otherwise.
+/// stall), with a warning otherwise. The same step, with a warning, is taken
+/// when the lowest eigenvector's leading entry vanishes (a Hessian mode below
+/// the gradient-coupled root and orthogonal to g), where κ is undefined.
 ///
 /// # Step-length control: clipping, and what it is not
 ///
@@ -210,54 +214,24 @@ pub fn rohf_ah_step(
             result.converged, result.iterations, result.residual, cfg.conv_thresh, result.eigenvalue
         );
     }
-    // An unconverged eigenvector is not used: take the PCG Newton step (same
-    // inputs, exact Hessian, Steihaug-guarded) from these orbitals instead.
-    //
-    // At a tight `density_conv` that is the normal endgame. MEASURED
-    // 2026-11-11, OH/6-31G ROHF at density_conv 1e-10: the last AH Davidson
-    // stalled at residual 6.9e-9 against a tolerance of 1e-10 (λ = −2.8e-13).
-    // The stall comes from `davidson_lowest`'s expansion step, not from a
-    // fixed floor: t = r/(diag − θ) is discarded when its Gram-Schmidt
-    // remainder has norm ≤ 1e-8, and on the augmented coordinate diag − θ =
-    // −λ ≈ 0 is clamped to 1e-8, so r₀ is amplified ~1e8 into the seed
-    // direction that Gram-Schmidt then removes. Near convergence AH and
-    // Newton steps agree to O(λ/h). So the fallback is silent only when the
-    // residual reached is that small (< AH_ENDGAME_RESIDUAL); a Davidson
-    // stalled anywhere above it is a real failure and warns on every step.
-    if !result.converged {
-        AH_FALLBACKS.with(|c| c.set(c.get() + 1));
-        let endgame = result.residual < AH_ENDGAME_RESIDUAL;
-        if !endgame {
-            eprintln!(
-                "[ferric] WARNING: ROHF AH Davidson did not converge (residual {:.2e} > {:.2e} after {} iterations); this iteration takes the PCG Newton step instead of AH",
-                result.residual, cfg.conv_thresh, result.iterations
-            );
-        } else if crate::rohf::rohf_trace() {
-            eprintln!(
-                "ROHF AH: endgame stall (residual {:.2e}, tol {:.2e}); PCG Newton step",
-                result.residual, cfg.conv_thresh
+    // 4. κ from the lowest eigenvector, or the PCG Newton step (same inputs,
+    // exact Hessian, Steihaug-guarded) from these orbitals when the
+    // eigenvector cannot be used (`ah_kappa_or_fallback`).
+    let kappa_flat = match ah_kappa_or_fallback(&result) {
+        AhKappa::Step(k) => k,
+        AhKappa::Fallback(reason) => {
+            AH_FALLBACKS.with(|c| c.set(c.get() + 1));
+            report_ah_fallback(&reason, &result, cfg.conv_thresh);
+            return crate::rohf_newton::rohf_newton_step(
+                ctx,
+                base,
+                inp.newton_level_shift,
+                inp.newton_max_step,
+                20,
+                davidson_conv,
             );
         }
-        return crate::rohf_newton::rohf_newton_step(
-            ctx,
-            base,
-            inp.newton_level_shift,
-            inp.newton_max_step,
-            20,
-            davidson_conv,
-        );
-    }
-
-    // 4. Extract κ from the lowest eigenvector. Rescale so the leading
-    // entry is 1 — this realizes the AH ansatz.
-    let evec = &result.eigenvector;
-    let first = evec[0];
-    if first.abs() < 1e-10 {
-        return Err(FerricError::General(
-            "AH eigenvector has near-zero leading entry — degeneracy or wrong sign".into(),
-        ));
-    }
-    let kappa_flat: Array1<f64> = evec[1..].iter().map(|x| x / first).collect();
+    };
 
     let mut k_vc = Array2::<f64>::zeros((nvirt, nc));
     let mut k_vo = Array2::<f64>::zeros((nvirt, no));
@@ -308,6 +282,91 @@ pub fn rohf_ah_step(
     Ok((c_new, kmax))
 }
 
+/// Why an AH step falls back to the PCG Newton step.
+#[derive(Debug, PartialEq)]
+enum AhFallback {
+    /// The Davidson did not converge. `endgame`: the residual reached is
+    /// below [`AH_ENDGAME_RESIDUAL`], the tight-tolerance stall, and the
+    /// fallback is silent.
+    Unconverged { endgame: bool },
+    /// The lowest eigenvector's leading entry is below
+    /// [`AH_MIN_LEADING_ENTRY`] in magnitude, so κ = v[1..]/v[0] is undefined.
+    ZeroLead,
+}
+
+/// κ from the AH eigenproblem, or the reason it cannot be formed.
+#[derive(Debug, PartialEq)]
+enum AhKappa {
+    Step(Array1<f64>),
+    Fallback(AhFallback),
+}
+
+/// Smallest |v₀| of the lowest augmented-Hessian eigenvector from which κ is
+/// formed.
+const AH_MIN_LEADING_ENTRY: f64 = 1e-10;
+
+/// Decide between the AH step and the PCG Newton fallback from the Davidson
+/// result `r` of the augmented eigenproblem.
+///
+/// An unconverged eigenvector is not used. At a tight `density_conv` that is
+/// the normal endgame. MEASURED 2026-11-11, OH/6-31G ROHF at density_conv
+/// 1e-10: the last AH Davidson stalled at residual 6.9e-9 against a tolerance
+/// of 1e-10 (λ = −2.8e-13). The stall comes from `davidson_lowest`'s expansion
+/// step, not from a fixed floor: t = r/(diag − θ) is discarded when its
+/// Gram-Schmidt remainder has norm ≤ 1e-8, and on the augmented coordinate
+/// diag − θ = −λ ≈ 0 is clamped to 1e-8, so r₀ is amplified ~1e8 into the
+/// seed direction that Gram-Schmidt then removes. Near convergence AH and
+/// Newton steps agree to O(λ/h). So the fallback is silent only when the
+/// residual reached is that small (< [`AH_ENDGAME_RESIDUAL`]); a Davidson
+/// stalled anywhere above it is a failure and warns on every step.
+///
+/// A converged eigenvector with a vanishing leading entry is [0, v] with v a
+/// Hessian eigenvector orthogonal to g, whose eigenvalue lies below the lowest
+/// root coupled to g: a negative mode that the gradient does not see. The AH
+/// ansatz (leading entry 1) has no solution there, and the PCG Newton step,
+/// whose Steihaug guard handles negative curvature along its own directions,
+/// is taken instead.
+fn ah_kappa_or_fallback(r: &crate::stability::LowestEigenpair) -> AhKappa {
+    if !r.converged {
+        return AhKappa::Fallback(AhFallback::Unconverged {
+            endgame: r.residual < AH_ENDGAME_RESIDUAL,
+        });
+    }
+    let first = r.eigenvector[0];
+    if first.abs() < AH_MIN_LEADING_ENTRY {
+        return AhKappa::Fallback(AhFallback::ZeroLead);
+    }
+    // Rescale so the leading entry is 1: this realizes the AH ansatz.
+    AhKappa::Step(r.eigenvector[1..].iter().map(|x| x / first).collect())
+}
+
+/// Warn about (or, for the endgame stall, trace) an AH step that falls back
+/// to the PCG Newton step.
+fn report_ah_fallback(
+    reason: &AhFallback,
+    r: &crate::stability::LowestEigenpair,
+    conv_thresh: f64,
+) {
+    match reason {
+        AhFallback::Unconverged { endgame: false } => eprintln!(
+            "[ferric] WARNING: ROHF AH Davidson did not converge (residual {:.2e} > {:.2e} after {} iterations); this iteration takes the PCG Newton step instead of AH",
+            r.residual, conv_thresh, r.iterations
+        ),
+        AhFallback::Unconverged { endgame: true } => {
+            if crate::rohf::rohf_trace() {
+                eprintln!(
+                    "ROHF AH: endgame stall (residual {:.2e}, tol {conv_thresh:.2e}); PCG Newton step",
+                    r.residual
+                );
+            }
+        }
+        AhFallback::ZeroLead => eprintln!(
+            "[ferric] WARNING: ROHF AH lowest eigenvector has leading entry {:.2e} (Hessian eigenvalue {:.3e} along a mode orthogonal to the gradient); this iteration takes the PCG Newton step instead of AH",
+            r.eigenvector[0], r.eigenvalue
+        ),
+    }
+}
+
 fn unpack_three(
     flat: ndarray::ArrayView1<f64>,
     vc: &mut Array2<f64>,
@@ -331,4 +390,49 @@ fn unpack_three(
 
 fn arr_max_abs(a: &Array2<f64>) -> f64 {
     a.iter().fold(0.0f64, |m, &v| m.max(v.abs()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::stability::LowestEigenpair;
+
+    fn pair(eigenvector: Vec<f64>, converged: bool, residual: f64) -> LowestEigenpair {
+        LowestEigenpair {
+            eigenvalue: -0.1,
+            eigenvector,
+            residual,
+            iterations: 5,
+            converged,
+        }
+    }
+
+    /// A converged eigenvector [0, v] (a Hessian mode orthogonal to g below
+    /// the gradient-coupled root) falls back to PCG Newton instead of
+    /// dividing by the vanishing leading entry; a usable one gives
+    /// κ = v[1..]/v[0]; an unconverged one falls back, silently only below
+    /// the endgame residual.
+    #[test]
+    fn ah_kappa_falls_back_on_a_vanishing_leading_entry() {
+        assert_eq!(
+            ah_kappa_or_fallback(&pair(vec![1e-12, 0.6, -0.8], true, 1e-9)),
+            AhKappa::Fallback(AhFallback::ZeroLead)
+        );
+        assert_eq!(
+            ah_kappa_or_fallback(&pair(vec![-0.0, 1.0, 0.0], true, 1e-9)),
+            AhKappa::Fallback(AhFallback::ZeroLead)
+        );
+        assert_eq!(
+            ah_kappa_or_fallback(&pair(vec![0.5, 0.1, -0.2], true, 1e-9)),
+            AhKappa::Step(Array1::from(vec![0.2, -0.4]))
+        );
+        assert_eq!(
+            ah_kappa_or_fallback(&pair(vec![0.5, 0.1, -0.2], false, 1e-9)),
+            AhKappa::Fallback(AhFallback::Unconverged { endgame: true })
+        );
+        assert_eq!(
+            ah_kappa_or_fallback(&pair(vec![0.5, 0.1, -0.2], false, 1e-5)),
+            AhKappa::Fallback(AhFallback::Unconverged { endgame: false })
+        );
+    }
 }
