@@ -1,0 +1,15 @@
+diff --git a/crates/ferric-scf/src/uhf.rs b/crates/ferric-scf/src/uhf.rs
+index 59fd7aaad..4168533b7 100644
+--- a/crates/ferric-scf/src/uhf.rs
++++ b/crates/ferric-scf/src/uhf.rs
+@@ -1346,8 +1346,8 @@ fn solve_uhf_impl(
+             // side re-checks each pair and falls back to the dense D_σ, which
+             // also covers fractional occupations.
+             x.add_xc_uks_occ(
+-                (&d_a, &d_b),
+-                (d_occ_a.as_ref(), d_occ_b.as_ref()),
++                (&d_a, &d_a),
++                (d_occ_a.as_ref(), d_occ_a.as_ref()),
+                 &mut f_a,
+                 &mut f_b,
+             )

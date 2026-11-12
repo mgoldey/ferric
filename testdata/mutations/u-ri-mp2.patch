@@ -1,0 +1,13 @@
+diff --git a/crates/ferric-mp2/src/u_rimp2.rs b/crates/ferric-mp2/src/u_rimp2.rs
+index 4791a088c..537145d04 100644
+--- a/crates/ferric-mp2/src/u_rimp2.rs
++++ b/crates/ferric-mp2/src/u_rimp2.rs
+@@ -298,7 +298,7 @@ pub fn u_ri_mp2(
+     // (`rimp2::mixed_energy_operator`); any other operator runs the device in f64.
+     let mixed_ok = config.kappa.is_none() && crate::rimp2::mixed_energy_operator(op);
+     let e_aa = same_spin_pair_energy(&inter_a, eps_a, mixed_ok);
+-    let e_bb = same_spin_pair_energy(&inter_b, eps_b, mixed_ok);
++    let e_bb = same_spin_pair_energy(&inter_b, eps_a, mixed_ok);
+     let e_ab = opposite_spin_pair_energy(&inter_a, &inter_b, eps_a, eps_b, mixed_ok);
+ 
+     let e_total = e_aa + e_bb + e_ab;
