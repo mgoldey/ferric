@@ -1498,8 +1498,28 @@ jobs:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-22.04
     timeout-minutes: 170
+    # Same job-scoped debuginfo drop as build-tests (see the comment on its
+    # env block). This job compiles the whole workspace's test binaries in
+    # one target/ and ran out of disk with the workflow-level debug setting
+    # (runs 42621103668, 43221159741).
+    env:
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_DEV_STRIP: debuginfo
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_PROFILE_TEST_STRIP: debuginfo
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      # Same step as build-tests; see its comment for the libboost-dev
+      # dependency on what this deletes.
+      - name: Free runner disk space
+        run: |
+          echo "--- before"; df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/share/swift /usr/local/share/boost \
+            "$AGENT_TOOLSDIRECTORY/CodeQL" 2>/dev/null || true
+          sudo docker image prune --all --force > /dev/null 2>&1 || true
+          echo "--- after"; df -h / | tail -1
 
       - name: Install system dependencies
         run: |
@@ -1549,10 +1569,15 @@ jobs:
               || { echo "::error::SLOW binary $b (scripts/ci-shard-plan.sh) has no --test line in slow-tests, so it runs nowhere"; exit 1; }
           done
           rc=0
+          df_mark() { echo "--- df after: $1"; df -h / | tail -1; }
+          echo "--- df before cargo groups"; df -h / | tail -1
           # The original six.
           cargo test --no-fail-fast -p ferric-scf --test dft_wb97xv --test mpi_dfjk_banding --test dft_pbe --locked || rc=1
+          df_mark group1
           cargo test --no-fail-fast -p ferric-cc --test pair_screen_criteria --test attenuation_plus_dlpno --locked || rc=1
+          df_mark group2
           cargo test --no-fail-fast -p ferric-mp2 --test lmp2_amplitude --locked || rc=1
+          df_mark group3
           # Deferred 2026-09-16 (run 35050103626 timed out at 89.3 min of test
           # time). These are the large-alkane screening exactness anchors --
           # they keep their molecule sizes BECAUSE screening is inert on small
@@ -1560,8 +1585,11 @@ jobs:
           cargo test --no-fail-fast -p ferric-scf \
             --test screening_exactness --test csam_screening \
             --test link_scf_anchor --test link_screen_reachability --locked || rc=1
+          df_mark group4
           cargo test --no-fail-fast -p ferric-dft --test grid_prune_live_scf --locked || rc=1
+          df_mark group5
           cargo test --no-fail-fast -p ferric-rpa --test hirshfeld_symmetry --locked || rc=1
+          df_mark group6
           # Added 2026-09-18 alongside the five new SLOW entries. This list is
           # EXPLICIT, so a binary deferred above without a line here would stop
           # running entirely -- deferral would become deletion, silently. The
@@ -1571,7 +1599,9 @@ jobs:
             --test cdft_coupling_hene --test cdft_state_selection \
             --test cosx_group_screen_anchors --test cosx_sparse_anchors \
             --test cosx_mixed_error_law --locked || rc=1
+          df_mark group7
           cargo test --no-fail-fast -p ferric-mp2 --test rimp2_qqr3_screening --locked || rc=1
+          df_mark group8
           if [ "$rc" -ne 0 ]; then
             echo "::error::one or more deferred test commands failed -- see the FAILED lines above"
             exit 1
@@ -1593,11 +1623,16 @@ jobs:
           # ci-tiered profile: 30 min per-test cap, no retries, 2 at a time
           # (see .config/nextest.toml for why the ci profile's 480 s cap
           # killed these).
+          echo "--- df before"; df -h / | tail -1
+          rc=0
           cargo nextest run --workspace --all-targets --locked \
             --profile ci-tiered \
+            --test-threads 2 \
             --no-tests=pass \
             --run-ignored only \
-            -E "($TIER) & ($SLOW)"
+            -E "($TIER) & ($SLOW)" || rc=$?
+          echo "--- df after"; df -h / | tail -1
+          exit "$rc"
 
   # ── VALIDATION TIER: ferric vs committed external references, weekly ─────
   #
