@@ -91,3 +91,23 @@ fn the_environment_would_change_the_volume_if_applied() {
         "environment changed the volume by only {rel:.3e}"
     );
 }
+
+/// Catches: a molecular starting density (`dm0`, the molecule's basis
+/// dimension) reaching the free-atom SCF, whose guess check then rejects it
+/// and the volume is lost. Water/6-31G is 13 functions, O alone 9, Ne 9.
+#[test]
+fn free_atom_volume_ignores_the_molecular_starting_density() {
+    let ctx = ParallelContext::default();
+    let bs = basis::bundled("6-31g").expect("6-31g");
+    let op = Operator::coulomb();
+    let with_dm0 = RhfConfig {
+        init_guess_density: Some(ndarray::Array2::eye(13)),
+        ..base()
+    };
+    for z in [8usize, 10] {
+        let vac = live_free_atom_volume(&ctx, z, &bs, op, &base()).expect("default guess");
+        let dm0 = live_free_atom_volume(&ctx, z, &bs, op, &with_dm0)
+            .unwrap_or_else(|e| panic!("Z={z}: free-atom SCF with a molecular dm0: {e}"));
+        assert_eq!(vac.to_bits(), dm0.to_bits(), "Z={z}: {vac} vs {dm0}");
+    }
+}

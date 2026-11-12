@@ -1089,6 +1089,10 @@ pub fn scf_proatom_provider<'a>(
         // A free atom is solved in the input frame, never point-group blocked.
         acfg.symmetry = false;
         acfg.irrep_nelec = None;
+        // A starting density (`dm0`) has the molecule's basis dimension; the
+        // free atom starts from its own default guess.
+        acfg.init_guess_density = None;
+        acfg.cdft_lambda_init = None;
         if mult != 1 {
             acfg.mom_after_iter = 5;
             // Pure HF free atoms do not need this (K is orbital-invariant in
@@ -2047,6 +2051,30 @@ mod tests {
     use ferric_core::basis;
     use ferric_core::parallel::ParallelContext;
     use ferric_integrals::operator::Operator;
+
+    /// A molecular starting density (`dm0`, the molecule's basis dimension)
+    /// does not reach the free-atom SCF: the proatom is bit-identical to the
+    /// default-guess one (water/STO-3G is 7 functions, O and Ne alone 5).
+    /// Ne takes the RHF path, O (triplet) the UHF path.
+    #[test]
+    fn proatom_provider_ignores_the_molecular_starting_density() {
+        let bs = basis::bundled("sto-3g").unwrap();
+        let ctx = ParallelContext::default();
+        let op = Operator::coulomb();
+        let plain = RhfConfig::default();
+        let with_dm0 = RhfConfig {
+            init_guess_density: Some(Array2::eye(7)),
+            ..RhfConfig::default()
+        };
+        let a = scf_proatom_provider(&ctx, &bs, op, &plain);
+        let b = scf_proatom_provider(&ctx, &bs, op, &with_dm0);
+        for z in [10, 8] {
+            let pa = a(z, 0).expect("default-guess proatom");
+            let pb = b(z, 0).unwrap_or_else(|| panic!("Z={z}: proatom lost with a molecular dm0"));
+            assert_eq!(pa.radii, pb.radii);
+            assert_eq!(pa.rho, pb.rho, "Z={z}");
+        }
+    }
 
     fn build_h2() -> (
         Molecule,
