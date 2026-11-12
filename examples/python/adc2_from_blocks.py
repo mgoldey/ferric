@@ -99,11 +99,7 @@ def adc2_singlets(
         m += 0.25 * np.einsum("ij,ab->iajb", io, xv + xv.T)
         m += 0.25 * np.einsum("ab,ij->iajb", iv, xo + xo.T)
         m -= 0.5 * (y + y.transpose(2, 3, 0, 1))
-        u = np.einsum("ik,abcj->ijabkc", io, g[v, v, v, o])
-        u -= u.transpose(1, 0, 2, 3, 4, 5)
-        w = np.einsum("ac,kbij->ijabkc", iv, g[o, v, o, o])
-        u -= w - w.transpose(0, 1, 3, 2, 4, 5)
-        u = u.reshape(-1, no * nv)
+        gvvvo, govoo = g[v, v, v, o], g[o, v, o, o]
     m = m.reshape(no * nv, no * nv)
     nocc, nvir = no // 2, nv // 2
     proj = np.zeros((no, nv, nocc, nvir))
@@ -113,16 +109,32 @@ def adc2_singlets(
         ) / np.sqrt(2.0)
     proj = proj.reshape(no * nv, nocc * nvir)
 
+    def coupling_slab(i, j):
+        """U[(ij), (ab), (kc)] of one occupied pair as an (nv*nv, no*nv)
+        matrix: d_ik <ab||cj> - d_jk <ab||ci> - d_ac <kb||ij> + d_bc <ka||ij>.
+        The d terms are written as slices, so no identity tensor is formed."""
+        s = np.zeros((nv, nv, no, nv))
+        s[:, :, i, :] += gvvvo[:, :, :, j]
+        s[:, :, j, :] -= gvvvo[:, :, :, i]
+        s[iv_idx, :, :, iv_idx] -= govoo[:, :, i, j].T
+        s[:, iv_idx, :, iv_idx] += govoo[:, :, i, j].T
+        return s.reshape(nv * nv, no * nv) @ proj
+
+    iv_idx = np.arange(nv)
+
     def singlet_eigs(omega):
-        mat = m
+        mat = proj.T @ m @ proj
         if order >= 2:
-            mat = m + 0.25 * (u.T / (omega - dbl.ravel())) @ u
-        return np.linalg.eigvalsh(proj.T @ mat @ proj)
+            for i in range(no):
+                for j in range(no):
+                    s = coupling_slab(i, j)
+                    mat = mat + 0.25 * (s.T / (omega - dbl[i, j].ravel())) @ s
+        return np.linalg.eigvalsh(mat)
 
     if order < 2:
         return singlet_eigs(0.0)[:nroots]
     roots = np.linalg.eigvalsh(proj.T @ m @ proj)[:nroots]
-    for k in range(nroots):
+    for k in range(len(roots)):
         for _ in range(max_iter):
             new = singlet_eigs(roots[k])[k]
             converged = abs(new - roots[k]) < tol

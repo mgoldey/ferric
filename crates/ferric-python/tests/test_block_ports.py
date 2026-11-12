@@ -160,6 +160,15 @@ def test_adc2_port_matches_pyscf_radc(name):
     np.testing.assert_allclose(got, want, rtol=0, atol=1e-8)
 
 
+@pytest.mark.parametrize("order", [1, 2])
+def test_adc_returns_the_available_roots_when_nroots_exceeds_the_space(order):
+    # H2/STO-3G has one occupied and one virtual orbital: one singlet root.
+    _, _, ints, mf = _scf("h2", "sto-3g")
+    roots = adc_mod.adc2_singlets(ints, mf, nroots=3, order=order)
+    assert roots.shape == (1,)
+    assert np.isfinite(roots).all()
+
+
 @pytest.mark.parametrize("order", [0, 3, -1, 1.5])
 def test_adc2_rejects_an_order_other_than_1_or_2(order):
     _, _, ints, mf = _scf("water", "6-31g")

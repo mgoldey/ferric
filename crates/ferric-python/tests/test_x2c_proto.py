@@ -43,6 +43,7 @@ def test_zero_hook_is_bitwise_the_plain_run(neon):
 
 
 def test_correction_falls_as_c_minus_two(neon):
+    pytest.importorskip("pyscf")
     assert x2c.anchor_cscan(neon)
 
 
