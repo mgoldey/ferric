@@ -229,10 +229,11 @@ fn check_active_config(config: &CasCiConfig) -> Result<(), FerricError> {
             "CAS-CI: n_active must be >= 1".to_string(),
         ));
     }
-    if n_active > 63 {
+    if n_active > strings::MAX_ACTIVE_ORBITALS {
         return Err(FerricError::General(format!(
-            "CAS-CI: n_active = {n_active} exceeds the 63-orbital u64-string limit \
-             (spike-scale only)"
+            "CAS-CI: n_active = {n_active} exceeds the {}-orbital u64-string limit \
+             (spike-scale only)",
+            strings::MAX_ACTIVE_ORBITALS
         )));
     }
     if n_alpha > n_active || n_beta > n_active {

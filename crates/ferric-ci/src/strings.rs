@@ -2,14 +2,19 @@
 //!
 //! A *string* is an occupation pattern of `n_elec` electrons in `n_orb`
 //! spatial orbitals, one per spin channel. We store each string as a `u64`
-//! bitmask: bit `p` set means active orbital `p` is occupied. For a spike-sized
-//! active space (`n_orb <= 64`, in practice <= ~14) this is more than enough
-//! headroom.
+//! bitmask: bit `p` set means active orbital `p` is occupied, so an active
+//! space holds at most
+//! [`MAX_ACTIVE_ORBITALS`](crate::strings::MAX_ACTIVE_ORBITALS) orbitals (in
+//! practice <= ~14).
 //!
 //! The full FCI determinant list factorizes as the outer product of the
 //! α-string list and the β-string list (standard Knowles–Handy / Olsen
 //! factorization): a determinant is `(alpha_string, beta_string)` and the CI
 //! coefficient array has shape `(n_alpha_strings, n_beta_strings)`.
+
+/// Largest active space the `u64` string representation supports. The CAS-CI
+/// and CASSCF entry points reject larger ones before any integral work.
+pub const MAX_ACTIVE_ORBITALS: usize = 63;
 
 /// All `u64` bitmasks with exactly `k` of the low `n` bits set, in ascending
 /// numeric order. Ascending numeric order is a stable, deterministic

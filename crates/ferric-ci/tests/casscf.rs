@@ -36,10 +36,9 @@
 //!   core-active). The remaining term is `O(h⁶)` and measured below 2.5e-10;
 //! * energy noise: `δE ≈ 4 ε |E| √N_det` (2e-12 for N2, 400 determinants)
 //!   amplified by `3.3/h` gives 6e-9 at worst;
-//! * CI error in the analytic gradient: first order in the Davidson
-//!   residual, below `10 × ci_conv_thresh = 1e-10` (Davidson accepts
-//!   `10 ×` its threshold when the correction vector vanishes; measured
-//!   2e-11 and 6e-11).
+//! * CI error in the analytic gradient: first order in the CI residual,
+//!   below `ci_conv_thresh = 1e-11` (CASSCF refuses a root above it;
+//!   measured 2.0e-12 to 9.8e-12).
 //!
 //! # Anchor 3: converged energies
 //!
@@ -463,6 +462,56 @@ fn casscf_refuses_bad_bookkeeping() {
             CasScfProblem::new(&mol, &prep, nmo, &cfg).is_err(),
             "accepted n_core={n_core} n_active={n_active} nel={nel:?}"
         );
+    }
+}
+
+/// An active space past the CI string limit is refused by the constructor,
+/// before the dense AO ERIs are built: the window (64 of a nominal 100 MOs)
+/// and the electron count (2·0 + 5 + 5 = 10) are otherwise valid.
+#[test]
+fn casscf_refuses_an_active_space_past_the_string_limit() {
+    let (mol, prep, _rhf) = setup("water.xyz", "sto-3g");
+    let cfg = CasScfConfig {
+        n_active: ferric_ci::strings::MAX_ACTIVE_ORBITALS + 1,
+        n_elec_active: (5, 5),
+        n_core: 0,
+        ..Default::default()
+    };
+    let msg = match CasScfProblem::new(&mol, &prep, 100, &cfg) {
+        Ok(_) => panic!("accepted n_active = 64"),
+        Err(e) => e.to_string(),
+    };
+    assert!(msg.contains("string limit"), "{msg}");
+}
+
+/// A zero, negative or NaN step cap is refused before the first CI solve,
+/// both by the constructor and by `optimize` itself.
+#[test]
+fn casscf_refuses_a_nonpositive_step_cap() {
+    let (mol, prep, rhf) = setup("water.xyz", "sto-3g");
+    let good = CasScfConfig {
+        n_active: 4,
+        n_elec_active: (2, 2),
+        n_core: 3,
+        max_iter: 3,
+        ..Default::default()
+    };
+    let nmo = rhf.mos_r().ncols();
+    let problem = CasScfProblem::new(&mol, &prep, nmo, &good).unwrap();
+    for max_step in [0.0, -0.1, f64::NAN] {
+        let cfg = CasScfConfig { max_step, ..good };
+        assert!(
+            CasScfProblem::new(&mol, &prep, nmo, &cfg).is_err(),
+            "constructor accepted max_step = {max_step}"
+        );
+        let msg = match optimize(&problem, rhf.mos_r().clone(), &cfg) {
+            Ok(r) => panic!(
+                "optimize accepted max_step = {max_step} (converged = {})",
+                r.converged
+            ),
+            Err(e) => e.to_string(),
+        };
+        assert!(msg.contains("max_step"), "{msg}");
     }
 }
 

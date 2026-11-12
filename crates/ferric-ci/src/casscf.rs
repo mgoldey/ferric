@@ -184,6 +184,13 @@ impl CasScfProblem {
                 "CASSCF: n_active must be >= 1".to_string(),
             ));
         }
+        if nact > crate::strings::MAX_ACTIVE_ORBITALS {
+            return Err(FerricError::General(format!(
+                "CASSCF: n_active = {nact} exceeds the {}-orbital CI string limit",
+                crate::strings::MAX_ACTIVE_ORBITALS
+            )));
+        }
+        check_max_step(config)?;
         if na > nact || nb > nact {
             return Err(FerricError::General(format!(
                 "CASSCF: active electrons per spin (α={na}, β={nb}) exceed n_active ({nact})"
@@ -356,10 +363,11 @@ impl CasScfProblem {
             ..self.ci_config
         };
         let ci = run_cas_ci_on_integrals(ints, &cfg)?;
-        // Davidson's flag is the residual criterion ‖Hc − Ec‖ < ci_conv_thresh
-        // (10x that when its correction vector vanishes). The gradient error
-        // is first order in that residual, so an unconverged root is an error.
-        if !ci.converged {
+        // Davidson's flag is the residual criterion ‖Hc − Ec‖ < ci_conv_thresh,
+        // relaxed to 10x that when its correction vector vanishes. The
+        // gradient error is first order in the residual, so the returned
+        // root must itself meet ci_conv_thresh.
+        if !ci_root_accepted(ci.converged, ci.residual_norm, self.ci_config.conv_thresh) {
             return Err(FerricError::General(format!(
                 "CASSCF: CAS-CI Davidson residual {:.2e} did not reach ci_conv_thresh {:e} \
                  in {} iterations (raise ci_max_iter or ci_max_subspace)",
@@ -670,6 +678,7 @@ pub fn optimize(
     c0: Array2<f64>,
     config: &CasScfConfig,
 ) -> Result<CasScfResult, FerricError> {
+    check_max_step(config)?;
     let npair = problem.pairs().len();
     let finish = |pt: CasScfPoint, c: Array2<f64>, it: usize, converged: bool| {
         let (c, pt, mo_energy) = if config.canonicalize {
@@ -747,6 +756,25 @@ pub fn optimize(
         g_old = g;
         s_old = step;
     }
+}
+
+/// A CI root is used only when Davidson converged and its recomputed
+/// residual `‖Hc − Ec‖` is below the requested threshold (Davidson's
+/// null-direction exit accepts up to 10x the threshold).
+fn ci_root_accepted(converged: bool, residual_norm: f64, conv_thresh: f64) -> bool {
+    converged && residual_norm < conv_thresh
+}
+
+/// A step cap that is not a positive finite number makes every step zero (or
+/// NaN), so the loop would repeat the same CI solve until `max_iter`.
+fn check_max_step(config: &CasScfConfig) -> Result<(), FerricError> {
+    if !(config.max_step.is_finite() && config.max_step > 0.0) {
+        return Err(FerricError::General(format!(
+            "CASSCF: max_step must be a positive finite number of radians, got {}",
+            config.max_step
+        )));
+    }
+    Ok(())
 }
 
 /// Inverse BFGS update `B⁺ = V B Vᵀ + ρ s sᵀ`, `V = I − ρ s yᵀ`,
@@ -870,6 +898,19 @@ mod tests {
             d < 1e-12,
             "in-place vs explicit inverse BFGS differ by {d:e}"
         );
+    }
+
+    /// A root Davidson flags as converged through its null-direction exit
+    /// (residual up to 10x the threshold) is refused; one below the threshold
+    /// is kept; an unconverged or NaN residual is refused.
+    #[test]
+    fn ci_root_must_meet_the_requested_residual() {
+        let t = 1e-10;
+        assert!(ci_root_accepted(true, 0.5 * t, t));
+        assert!(!ci_root_accepted(true, 5.0 * t, t));
+        assert!(!ci_root_accepted(true, t, t));
+        assert!(!ci_root_accepted(false, 0.5 * t, t));
+        assert!(!ci_root_accepted(true, f64::NAN, t));
     }
 
     /// `exp(K)` is orthogonal, `exp(K) exp(−K) = I`, and two half steps
