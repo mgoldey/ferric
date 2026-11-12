@@ -16,8 +16,9 @@ What this test does, end to end:
 2. Reads the bundle with `numpy.load` -- the foreign reader.
 3. STRUCTURE (exact): the key set is exactly EXPECTED_KEYS (nothing requested
    is absent: the "no None fields" requirement), every array is finite, has
-   the documented shape and dtype (float64; atomic_numbers int64), and is
-   C-contiguous as loaded.
+   the documented shape and dtype (float64; atomic_numbers int64; certificate
+   uint8, the UTF-8 bytes of the certificate JSON), and is C-contiguous as
+   loaded. The certificate decodes to the pdep-rpa certificate of this build.
 4. VALUES, against the Python bindings on an SCF run with the SAME settings
    (RI-JK def2-universal-jkfit, which is what the CLI's pdep-rpa HF reference
    uses by default, and the same convergence thresholds):
@@ -58,6 +59,7 @@ Run (weekly tier; excluded from the default `-m "not validation"`):
         crates/ferric-python/tests/test_validation_npz_export.py -q
 """
 
+import json
 import os
 import subprocess
 import sys
@@ -117,6 +119,7 @@ EXPECTED_KEYS = {
     "mulliken_charges",
     "chelpg_charges",
     "resp_charges",
+    "certificate",
 }
 
 TOML = """\
@@ -259,9 +262,12 @@ def test_shapes_dtypes_layout(bundle, python_side):
         "mulliken_charges": (nat,),
         "chelpg_charges": (nat,),
         "resp_charges": (nat,),
+        "certificate": (bundle["certificate"].size,),
     }
     for key, arr in bundle.items():
-        want_dtype = np.int64 if key == "atomic_numbers" else np.float64
+        want_dtype = {"atomic_numbers": np.int64, "certificate": np.uint8}.get(
+            key, np.float64
+        )
         assert arr.dtype == want_dtype, f"{key}: dtype {arr.dtype}, want {want_dtype}"
         assert arr.flags.c_contiguous, f"{key}: not C-contiguous as loaded"
         assert np.all(np.isfinite(arr)), f"{key}: non-finite entries"
@@ -273,6 +279,12 @@ def test_shapes_dtypes_layout(bundle, python_side):
     assert pdep.ndim == 2 and naux in pdep.shape, (
         f"pdep_eigenvectors shape {pdep.shape} has no aux axis of length {naux}"
     )
+
+
+def test_certificate_is_the_runs_json(bundle):
+    c = json.loads(bundle["certificate"].tobytes().decode("utf-8"))
+    assert c["capability"] == "pdep-rpa", c
+    assert c["build"]["commit"] == ferric.build_info()["commit"], c
 
 
 def test_geometry_is_exact(bundle, python_side):
