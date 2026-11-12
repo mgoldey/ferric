@@ -3574,6 +3574,7 @@ def run_rhf(
     guess_basis: str | None = None,
     guess_projection: str | None = None,
     ri_j_precision: str | None = None,
+    dm0: NDArray[np.float64] | None = None,
 ) -> RhfResult:
     """Closed-shell Restricted Hartree-Fock.
 
@@ -3595,7 +3596,18 @@ def run_rhf(
     so the result is variational when V = dE/dD. An exception raised by the
     hook propagates unchanged. soscf, stability_descent, symmetry, aurora and
     trah_trigger raise ValueError with a hook (their Hessians or blocked solve
-    do not see it).
+    do not see it). V must be symmetric to round-off: max |V - V^T| at most
+    4 n eps ||V||_F (n = nao); the driver then uses (V + V^T)/2. A larger
+    asymmetry raises ValueError. Round-off in E grows with ||V||: an
+    energy_conv below it does not converge (site/src/using/python.md,
+    "Fock hooks and starting densities").
+
+    dm0: starting density, the total closed-shell AO density (nao, nao) of
+    this molecule (for example a previous run's ``density()``). The first Fock
+    matrix is built from it. It must be finite, symmetric within the bound
+    above and hold the system's electrons: |tr(D S) - N| at most
+    n^2 eps sum|D_ij S_ij|; otherwise ValueError. Combining it with guess or
+    guess_basis raises ValueError.
 
     SCF controls (defaults): max_iter 200 (the iteration cap, the Rust RhfConfig default; reaching it returns
     converged=False and emits a RuntimeWarning naming the unmet criteria),
@@ -3706,6 +3718,7 @@ def run_rhf(
     guess_basis: str | None = None,
     guess_projection: str | None = None,
     ri_j_precision: str | None = None,
+    dm0: NDArray[np.float64] | None = None,
 ) -> SymmetricRhfResult: ...
 def run_uhf(
     mol: Molecule,
@@ -4553,10 +4566,13 @@ def run_dft(
     guess_projection: str | None = None,
     grid_weight_cut: float | None = None,
     ri_j_precision: str | None = None,
+    dm0: NDArray[np.float64] | None = None,
 ) -> DftResult:
     """Kohn-Sham DFT (closed-shell). fock_hook: as for run_rhf; with a
-    hook only the first convergence-ladder rung runs, and with_gradient,
-    dispersion and symmetry raise ValueError. Note: the final_* residuals, unmet_criteria and the
+    hook every convergence-ladder rung runs with the hook applied and SOSCF
+    off on the rungs that would switch it on (its orbital Hessian does not
+    include the hook); with_gradient, dispersion and symmetry raise
+    ValueError. dm0: as for run_rhf; ladder rung 0 starts from it. Note: the final_* residuals, unmet_criteria and the
     non-convergence RuntimeWarning are RHF-only today (this result has exit_reason and iterations).
 
 
@@ -4691,6 +4707,7 @@ def run_dft(
     guess_projection: str | None = None,
     grid_weight_cut: float | None = None,
     ri_j_precision: str | None = None,
+    dm0: NDArray[np.float64] | None = None,
 ) -> SymmetricRhfResult:
     """Point-group-blocked closed-shell RKS (see the ``symmetry=True``
     paragraph of the DftResult overload). Same density-fitting defaults:
@@ -4766,6 +4783,7 @@ def run_dft(
     guess_projection: str | None = None,
     grid_weight_cut: float | None = None,
     ri_j_precision: str | None = None,
+    dm0: NDArray[np.float64] | None = None,
 ) -> DftResult | SymmetricRhfResult: ...
 def dft_grid_point_count(
     mol: Molecule,
