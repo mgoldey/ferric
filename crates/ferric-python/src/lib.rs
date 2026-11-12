@@ -12,8 +12,9 @@
 //! ferric property with a spread. Geometry input there is **Ångström**,
 //! matching RDKit's `GetPositions()` and ferric's XYZ readers.
 //!
-//! Build with `uv run maturin develop --release` (see the README for the venv
-//! caveat).
+//! Build with `uv run maturin develop --release` from the repository root; the
+//! venv caveat is under "Python bindings from source" in
+//! `site/src/using/installation.md`.
 
 use ferric_cc::ccd::ccd as run_ccd_inner;
 use ferric_core::basis;
@@ -14114,8 +14115,9 @@ fn run_irc(
 /// ferric property with a spread. Geometry input there is **Ångström**,
 /// matching RDKit's `GetPositions()` and ferric's XYZ readers.
 ///
-/// Build with `uv run maturin develop --release` (see the README for the venv
-/// caveat).
+/// Build with `uv run maturin develop --release` from the repository root; the
+/// venv caveat is under "Python bindings from source" in
+/// `site/src/using/installation.md`.
 ///
 /// NOTE: this docstring is duplicated (not just referenced) from the file-level
 /// `//!` comment at the top of this file. pyo3 only picks up a `///` doc

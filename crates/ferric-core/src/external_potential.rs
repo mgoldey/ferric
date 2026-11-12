@@ -1,5 +1,5 @@
 //! Classical external potentials: fixed point charges and a uniform
-//! external electric field. See docs/superpowers/specs/2026-07-10-external-potentials-design.md.
+//! external electric field. See wiki/superpowers/specs/2026-07-10-external-potentials-design.md.
 
 use crate::mol::Molecule;
 use crate::special::erf;

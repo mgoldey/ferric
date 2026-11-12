@@ -4,7 +4,9 @@
 //!
 //! Provenance notes in this crate cite `reference/pbc/` prototypes
 //! (`pbc_*.py`, `FINDINGS.md`, `stage1-design.md`). Only `reference/pbc/bench/`
-//! is in the repository; the rest are not.
+//! and a few design notes are in the repository; the rest are archived,
+//! untracked, under `wiki/archive/ferric-pbc-residue-2026-10-25/reference/pbc/`
+//! in the main checkout.
 //!
 //! * [`lattice`] — [`Cell`]: a [`Molecule`](ferric_core::mol::Molecule)
 //!   plus three lattice vectors, with volume, reciprocal vectors, real-space
@@ -216,7 +218,7 @@
 //! Units: Bohr and Hartree throughout; G vectors in Bohr⁻¹.
 //!
 //! Bound by the Python bindings (`ferric-python`, `src/pbc.rs`) and the CLI
-//! (`ferric-cli`, the `[cell]` path); `reference/pbc/stage1-design.md` holds
+//! (`ferric-cli`, the `[cell]` path); `wiki/archive/ferric-pbc-residue-2026-10-25/reference/pbc/stage1-design.md` holds
 //! the staging plan.
 
 pub mod budget;

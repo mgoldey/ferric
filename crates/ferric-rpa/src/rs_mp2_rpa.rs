@@ -1,5 +1,5 @@
 //! SR-MP2 + LR-RPA range-separated correlation (Δ-form B and coupled-rings T).
-//! See docs/superpowers/specs/2026-06-09-sr-mp2-lr-rpa-design.md.
+//! See wiki/superpowers/specs/2026-06-09-sr-mp2-lr-rpa-design.md.
 
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;

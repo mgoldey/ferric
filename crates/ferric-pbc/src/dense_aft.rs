@@ -1,5 +1,5 @@
 //! TEST/ORACLE ONLY: dense pure-AFT Gamma-point ERI tensor and the J/K
-//! builders on it (Stage 1 step 5, `reference/pbc/stage1-design.md` §5-6).
+//! builders on it (Stage 1 step 5, `wiki/archive/ferric-pbc-residue-2026-10-25/reference/pbc/stage1-design.md` §5-6).
 //!
 //! ```text
 //! I[μν, λσ] = (1/Ω) Σ_{G≠0} (4π/G²) Re[ P*_μν(G) P_λσ(G) ]

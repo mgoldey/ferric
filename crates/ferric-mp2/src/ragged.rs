@@ -156,7 +156,7 @@ pub fn pair_block_from_g_cand(
 ///
 /// Seam for ferric-pbc's Gamma LMP2, where the raw integral carries a
 /// distance-independent uniform-field term and a future gate may threshold
-/// on the integral MINUS that term (reference/pbc/FINDINGS.md Iteration 5,
+/// on the integral MINUS that term (wiki/archive/ferric-pbc-residue-2026-10-25/reference/pbc/FINDINGS.md Iteration 5,
 /// recommendation 6). No such gate is implemented here.
 #[allow(clippy::too_many_arguments)]
 pub fn pair_block_from_g_cand_gated(

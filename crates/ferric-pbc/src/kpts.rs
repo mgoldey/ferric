@@ -1,7 +1,7 @@
 //! Stage 3: k-point meshes (Monkhorst-Pack, Gamma-centred or shifted) with
 //! EXACT Bloch phases and time-reversal pairing.
 //!
-//! Conventions (PySCF's, measured equal in `reference/pbc/FINDINGS.md`
+//! Conventions (PySCF's, measured equal in `wiki/archive/ferric-pbc-residue-2026-10-25/reference/pbc/FINDINGS.md`
 //! "Iteration 9"):
 //!
 //! ```text
