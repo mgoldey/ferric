@@ -184,13 +184,7 @@ pub fn rohf_newton_step(
         let matvec = |a: &Array2<f64>, b: &Array2<f64>, c: &Array2<f64>| {
             hessian_matvec(ctx, inp, a, b, c, &pool)
         };
-        let (its, resid) = pcg_refine(
-            matvec,
-            g,
-            diag,
-            k,
-            (cg_max_iter, cg_conv, max_step),
-        )?;
+        let (its, resid) = pcg_refine(matvec, g, diag, k, (cg_max_iter, cg_conv, max_step))?;
         if crate::rohf::rohf_trace() {
             let kmax = arr_max_abs(&k_vc)
                 .max(arr_max_abs(&k_vo))
@@ -324,14 +318,13 @@ where
         // the step is the current iterate, which the caller then clips: the
         // "keep the iterate" behaviour, a descent step on the first
         // pass (κ⁰ = −M⁻¹g). MEASURED 2026-11-11 (FERRIC_ROHF_TRACE prints t
-        // per truncation; with the guard at −1e-3·|p|², below): in the two
+        // per truncation; with the guard then at pᵀAp < −1e-3·|p|²): in the two
         // saddle tests' full SCFs, 10 of 16 truncations hit t = 0, all in
         // later SCF iterations. Restarting from κ = 0 along ±p (sign by
         // gᵀp ≤ 0) to the box instead was measured and not kept: the same
         // 20 / 22 iterations, 124 / 125 HVPs against 120 / 124.
         //
-        // Every pᵀAp < 1e-30 truncates (a positive pᵀAp below that would
-        // overflow α), including the shallow curvature of the π-hole
+        // Every pᵀAp ≤ 0 truncates, including the shallow curvature of the π-hole
         // orientation modes of off-axis ²Π OH/NO under PBE. MEASURED
         // 2026-11-11 (Rayleigh quotients pᵀAp/|p|², half-Hessian, Hartree):
         // those modes sit at −2e-7 .. −1.04e-4 (the XC grid's rotational
@@ -339,16 +332,21 @@ where
         // σ-hole saddle at −0.08 .. −0.15. Continuing CG through the former
         // (the guard at −1e-3·|p|²) took steps with α < 0, to the model's
         // maximum along p, in 9 PCG solves of the convergence suites.
-        // Alternatives on −1e-3·|p|² ≤ pᵀAp < 1e-30, iterations (HVPs) for
+        // Alternatives on −1e-3·|p|² ≤ pᵀAp ≤ 0, iterations (HVPs) for
         // NO off-axis Newton / soscf, against 12 (20) / 13 (19) for the
         // negative-α CG step: stop at the current iterate 92 (460) / 60
         // (335), a crawl between grid-degenerate orientations; a step
         // α = rᵀz/(1e-3·|p|²) along +p and stop 26 (138) / 49 (273), and
         // continue CG 23 (151) / 24 (152); this box step 23 (121) / 24
         // (124). Any negative curvature PCG meets, however shallow, is
-        // stepped along to the box.
+        // stepped along to the box. A positive pᵀAp, however small, takes the
+        // CG step: α = rᵀz/pᵀAp scales as |p|⁰, so it stays O(1/h) as p
+        // shrinks near convergence. A vanishing p ends PCG without a step.
         let pp = inner(&p_vc, &p_vc) + inner(&p_vo, &p_vo) + inner(&p_oc, &p_oc);
-        if p_ap < 1e-30 {
+        if pp == 0.0 {
+            break;
+        }
+        if p_ap <= 0.0 {
             STEIHAUG_TRUNCATIONS.with(|c| c.set(c.get() + 1));
             let t = [(&*k_vc, &p_vc), (&*k_vo, &p_vo), (&*k_oc, &p_oc)]
                 .into_iter()
@@ -735,21 +733,20 @@ mod tests {
     /// preconditioner diag(m), from κ⁰ = −g/m, box 1. Returns κ, m(κ⁰) and
     /// m(κ) for the quadratic model m(κ) = gᵀκ + ½κᵀHκ, and the Steihaug
     /// truncations it made.
-    fn run(h: [f64; 3], g: [f64; 3], m: [f64; 3]) -> ([f64; 3], f64, f64, usize) {
+    fn run(h: [f64; 3], g: [f64; 3], m: [f64; 3], cg_conv: f64) -> ([f64; 3], f64, f64, usize) {
         let model = |k: [f64; 3]| (0..3).map(|i| g[i] * k[i] + 0.5 * h[i] * k[i] * k[i]).sum();
         let k0 = [-g[0] / m[0], -g[1] / m[1], -g[2] / m[2]];
         let (gb, mb) = (blocks(g), blocks(m));
         let (mut kvc, mut kvo, mut koc) = blocks(k0);
-        let matvec = |a: &Array2<f64>, b: &Array2<f64>, c: &Array2<f64>| {
-            Ok((h[0] * a, h[1] * b, h[2] * c))
-        };
+        let matvec =
+            |a: &Array2<f64>, b: &Array2<f64>, c: &Array2<f64>| Ok((h[0] * a, h[1] * b, h[2] * c));
         let t0 = steihaug_truncations_on_this_thread();
         pcg_refine(
             matvec,
             (&gb.0, &gb.1, &gb.2),
             (&mb.0, &mb.1, &mb.2),
             (&mut kvc, &mut kvo, &mut koc),
-            (20, 1e-12, 1.0),
+            (20, cg_conv, 1.0),
         )
         .unwrap();
         let k = [kvc[(0, 0)], kvo[(0, 0)], koc[(0, 0)]];
@@ -780,13 +777,35 @@ mod tests {
             ("(b)", h, [0.1, 0.01, 0.05]),
             ("(c)", [1.0, -0.1, 0.5], [0.1, 0.001, 0.0]),
         ] {
-            let (k, m0, m, trunc) = run(h, g, [1.0; 3]);
+            let (k, m0, m, trunc) = run(h, g, [1.0; 3], 1e-12);
             assert_eq!(trunc, 1, "{label}: Steihaug truncations");
             assert!(
                 (k[1] + 1.0).abs() < 1e-12,
                 "{label}: κ not on the box: {k:?}"
             );
             assert!(m < m0, "{label}: model did not fall: {m:.6e} >= {m0:.6e}");
+        }
+    }
+
+    /// A positive pᵀAp, however small, takes the CG step and never the box
+    /// step. With H positive definite, |g| = 1e-9 and `cg_conv` = 0, CG
+    /// converges in three steps and then meets round-off-sized directions
+    /// (pᵀAp near 1e-55). The solve must end at the Newton step −H⁻¹g, whose
+    /// largest component is 1e-9/0.3, with no truncation; a guard on an
+    /// absolute pᵀAp threshold moves κ to the box (|κ| of order 0.1).
+    #[test]
+    fn pcg_takes_no_box_step_on_tiny_positive_curvature() {
+        let h = [1.0, 0.3, 0.5];
+        let g = [1e-9, 1e-9, 1e-9];
+        let (k, _, _, trunc) = run(h, g, [1.0; 3], 0.0);
+        assert_eq!(trunc, 0, "Steihaug truncations on a positive-definite H");
+        for i in 0..3 {
+            let exact = -g[i] / h[i];
+            assert!(
+                (k[i] - exact).abs() <= 1e-6 * exact.abs(),
+                "κ[{i}] = {:.6e}, Newton step {exact:.6e}",
+                k[i]
+            );
         }
     }
 }
