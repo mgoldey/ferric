@@ -179,12 +179,13 @@ impl RiKPrecision {
         }
     }
 
-    /// The precision an SCF requests for `requested`: an explicit value wins;
-    /// unset is [`Self::DEFAULT`], except that a `[gpu]` mode that may build K
-    /// on the device keeps the f64 tensor the device path needs.
-    pub fn resolve(requested: Option<Self>) -> Self {
+    /// The precision an SCF of `nbf` basis functions requests for
+    /// `requested`: an explicit value wins; unset is [`Self::DEFAULT`], except
+    /// that a `[gpu]` mode that sends K to the device at this size keeps the
+    /// f64 tensor the device path needs.
+    pub fn resolve(requested: Option<Self>, nbf: usize) -> Self {
         requested.unwrap_or_else(|| {
-            if device_may_take_k() {
+            if device_may_take_k(nbf) {
                 Self::F64
             } else {
                 Self::DEFAULT
@@ -199,15 +200,22 @@ impl std::fmt::Display for RiKPrecision {
     }
 }
 
-/// Could the device path build this K? Its upload reads the square in-core
-/// f64 tensor, so a packed tensor would only make it decline.
-fn device_may_take_k() -> bool {
+/// Could the device path build this K at `nbf` basis functions? Its upload
+/// reads the square in-core f64 tensor, so a packed tensor would only make it
+/// decline. `auto` answers by the size gate
+/// ([`ferric_core::gpu::routes_to_device`]).
+fn device_may_take_k(nbf: usize) -> bool {
     #[cfg(feature = "gpu")]
     {
-        ferric_core::gpu::settings().mode != ferric_core::gpu::GpuMode::Off
+        ferric_core::gpu::routes_to_device(
+            ferric_core::gpu::settings().mode,
+            ferric_core::gpu::AutoPath::DfK,
+            ferric_core::gpu::DeviceSite::plain(nbf),
+        )
     }
     #[cfg(not(feature = "gpu"))]
     {
+        let _ = nbf;
         false
     }
 }
@@ -757,10 +765,11 @@ impl<'a> DfK<'a> {
         precision: RiKPrecision,
     ) -> Result<Self, FerricError> {
         let naux = dfbs.nbasis();
+        let nao = raw.nao();
         let requested = effective_precision(precision);
         let t_st = ferric_core::timing::Stage::start("dfk:dress");
         let mut packed = None;
-        if !device_may_take_k() && !(requested == RiKPrecision::F64 && square_forced()) {
+        if !device_may_take_k(nao) && !(requested == RiKPrecision::F64 && square_forced()) {
             let layout = match requested {
                 RiKPrecision::F32 => DressedLayout::PackedF32,
                 RiKPrecision::F64 => DressedLayout::PackedF64,
@@ -812,7 +821,7 @@ impl<'a> DfK<'a> {
         let (dressed, stored) = match packed {
             Some(p) => p,
             None => {
-                if requested == RiKPrecision::F32 && !device_may_take_k() {
+                if requested == RiKPrecision::F32 && !device_may_take_k(nao) {
                     ferric_core::gpu::stats::note_mixed_fallback(
                         ferric_core::gpu::MixedKernel::DfkF32,
                         ferric_core::gpu::stats::MixedFallback::CpuF64,
@@ -854,7 +863,7 @@ impl<'a> DfK<'a> {
     /// square tensor (a `[gpu]` mode that may build K on the device).
     pub fn packed_band_bytes(band: usize, nao: usize, precision: RiKPrecision) -> usize {
         let precision = effective_precision(precision);
-        if device_may_take_k() || (precision == RiKPrecision::F64 && square_forced()) {
+        if device_may_take_k(nao) || (precision == RiKPrecision::F64 && square_forced()) {
             return 0;
         }
         let layout = match precision {
@@ -868,8 +877,8 @@ impl<'a> DfK<'a> {
     /// raw tensor into its packed band? Only the f64 packed tier does
     /// (`ThreeIndexSource::build_dressed_band_packed`); the f32 tier and the
     /// square tensor of a device mode need raw resident.
-    pub(crate) fn dresses_streamed_raw_packed(precision: RiKPrecision) -> bool {
-        !device_may_take_k()
+    pub(crate) fn dresses_streamed_raw_packed(precision: RiKPrecision, nbf: usize) -> bool {
+        !device_may_take_k(nbf)
             && effective_precision(precision) == RiKPrecision::F64
             && !square_forced()
     }

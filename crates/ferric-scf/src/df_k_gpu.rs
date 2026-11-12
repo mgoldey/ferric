@@ -933,6 +933,15 @@ pub fn try_build_from_occ(
     if src.band_naux() == 0 {
         return false; // an empty band contributes nothing; the CPU loop is a no-op too
     }
+    // `auto` takes K only above the measured size gate.
+    if !ferric_core::gpu::routes_to_device(
+        settings.mode,
+        ferric_core::gpu::AutoPath::DfK,
+        ferric_core::gpu::DeviceSite::plain(src.nao()),
+    ) {
+        decline(slot, "below the size where the device DF-K wins under auto");
+        return false;
+    }
     if let Some(why) = ineligible(src, ctx) {
         decline(slot, why);
         return false;

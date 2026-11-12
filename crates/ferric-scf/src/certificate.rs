@@ -166,7 +166,10 @@ fn approximations(
         let a = r.j_aux.as_deref().unwrap_or_default();
         // What ran, then what was requested and why (`explicit`, or the
         // default for the config's task: f64 for geometry/frequency tasks).
-        let req = config.resolved_ri_j_precision();
+        let req = config.resolved_ri_j_precision(ferric_core::gpu::DeviceSite {
+            nbf: result.mos_alpha.nrows(),
+            jxc_overlap: result.xc.is_some() && r.k_aux.is_none(),
+        });
         out.push((
             "ri-j",
             format!(

@@ -73,7 +73,7 @@ fn ready() -> bool {
     static INSTALL: std::sync::Once = std::sync::Once::new();
     INSTALL.call_once(|| {
         install(GpuSettingsExplicit {
-            mode: Some(GpuMode::Auto),
+            mode: Some(GpuMode::On),
             memory_gb: Some(3.5),
             ..Default::default()
         })
@@ -90,7 +90,7 @@ fn shipped_plus_dfj() -> MixedKernelSet {
 fn resolve(kernels: MixedKernelSet, shipped: MixedKernelSet) -> Result<GpuSettings, String> {
     GpuSettings::resolve_with_default(
         GpuSettingsExplicit {
-            mode: Some(GpuMode::Auto),
+            mode: Some(GpuMode::On),
             precision: Some(Precision::Mixed),
             mixed_kernels: Some(kernels),
             memory_gb: Some(3.5),

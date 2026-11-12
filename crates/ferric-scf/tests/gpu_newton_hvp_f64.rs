@@ -68,7 +68,7 @@ fn ready() -> bool {
         return false;
     }
     install(GpuSettingsExplicit {
-        mode: Some(GpuMode::Auto),
+        mode: Some(GpuMode::On),
         memory_gb: Some(4.0),
         ..Default::default()
     })
@@ -86,7 +86,7 @@ impl Mixed {
             .with(MixedKernel::DfjPack);
         let (s, _) = GpuSettings::resolve_with_default(
             GpuSettingsExplicit {
-                mode: Some(GpuMode::Auto),
+                mode: Some(GpuMode::On),
                 precision: Some(Precision::Mixed),
                 mixed_kernels: Some(shipped),
                 memory_gb: Some(4.0),

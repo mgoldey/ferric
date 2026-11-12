@@ -29,7 +29,7 @@ fn pure_functional_rks_builds_ri_j_on_the_device() {
         return;
     }
     install(GpuSettingsExplicit {
-        mode: Some(GpuMode::Auto),
+        mode: Some(GpuMode::On),
         ..Default::default()
     })
     .expect("install");

@@ -1080,8 +1080,11 @@ fn solve_uhf_impl(
             k_aux_eff,
             ooc_budget,
             config.integral_thresh,
-            config.resolved_ri_j_precision(),
-            crate::df_k::RiKPrecision::resolve(config.ri_k_precision),
+            config.resolved_ri_j_precision(ferric_core::gpu::DeviceSite {
+                nbf: prep.nbasis(),
+                jxc_overlap: xc_contrib.is_some() && k_aux_eff.is_none(),
+            }),
+            crate::df_k::RiKPrecision::resolve(config.ri_k_precision, prep.nbasis()),
         )
     })?;
     // Record the builders that produced the energy (same effective names as

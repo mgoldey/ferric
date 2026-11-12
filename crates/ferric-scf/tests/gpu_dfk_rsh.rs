@@ -87,7 +87,7 @@ fn ready() -> bool {
         let uks = 2 * one_fitter_bytes(n, band, nalpha);
         let cap = (2 * tight_target()).max(uks + uks / 4);
         install(GpuSettingsExplicit {
-            mode: Some(GpuMode::Auto),
+            mode: Some(GpuMode::On),
             memory_gb: Some(cap as f64 / 1e9),
             ..Default::default()
         })

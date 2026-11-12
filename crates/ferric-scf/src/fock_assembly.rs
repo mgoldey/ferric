@@ -339,7 +339,7 @@ fn dress_first(
     use ferric_integrals::three_index_source::ThreeIndexSource;
     let (nao, naux) = (prep.nbasis(), dfbs.nbasis());
     let taken = matches!(jk_storage(), JkStorage::Auto | JkStorage::Split)
-        && DfK::dresses_streamed_raw_packed(k_precision)
+        && DfK::dresses_streamed_raw_packed(k_precision, nao)
         && ThreeIndexSource::dress_first_wanted(nao, naux, budget, dressed)
         && crate::split_rij::SplitRiJ::supports(op, prep, dfbs);
     if taken {
