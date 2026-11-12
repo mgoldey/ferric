@@ -200,6 +200,36 @@ impl Molecule {
                 n_core_ecp: 0,
             });
         }
+        Self::from_atoms(atoms, charge, multiplicity)
+    }
+
+    /// Build a molecule from atoms whose coordinates are already in Bohr,
+    /// with the electron-count / multiplicity check of [`Molecule::parse_xyz`]
+    /// (which builds its molecule through this function).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ferric_core::mol::{Atom, Molecule};
+    ///
+    /// let h = |zpos| Atom {
+    ///     symbol: "H".into(),
+    ///     z: 1,
+    ///     x: 0.0,
+    ///     y: 0.0,
+    ///     zpos,
+    ///     ghost: false,
+    ///     n_core_ecp: 0,
+    /// };
+    /// let mol = Molecule::from_atoms(vec![h(0.0), h(1.4)], 0, 1).unwrap();
+    /// assert_eq!(mol.nelec(), 2);
+    /// assert!(Molecule::from_atoms(vec![h(0.0)], 0, 1).is_err());
+    /// ```
+    pub fn from_atoms(
+        atoms: Vec<Atom>,
+        charge: i32,
+        multiplicity: usize,
+    ) -> Result<Self, FerricError> {
         let mol = Molecule {
             atoms,
             charge,

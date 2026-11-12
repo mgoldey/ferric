@@ -16,6 +16,7 @@
 - [QM/MM](./using/qmmm.md)
 - [Export: cube files and NPZ](./using/export.md)
 - [Avogadro plugin](./using/avogadro.md)
+- [ASE calculator](./using/ase.md)
 - [End-to-end applications](./using/applications.md)
 - [For automated agents](./using/agents.md)
 

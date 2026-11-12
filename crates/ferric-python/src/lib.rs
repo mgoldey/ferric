@@ -88,6 +88,28 @@ impl PyMolecule {
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{e}")))?;
         Ok(PyMolecule { inner: mol })
     }
+    /// Build a molecule from arrays: `elements` holds one element symbol
+    /// (`"O"`) or atomic number (`8`) per atom, `coords` the matching
+    /// `(x, y, z)` rows in `units` (`"angstrom"`, the default, or `"bohr"`),
+    /// `ghost` optional per-atom basis-only flags. The result equals
+    /// `from_xyz_string` of the same atoms written with `repr()` coordinates.
+    /// Raises `ValueError` on an unknown element or unit, mismatched lengths,
+    /// a row that is not three finite numbers, a symbol carrying the XYZ `@`
+    /// ghost marker (use `ghost=`) or an impossible charge/multiplicity.
+    #[staticmethod]
+    #[pyo3(signature = (elements, coords, units="angstrom", charge=0, multiplicity=1, ghost=None))]
+    fn from_arrays(
+        elements: Vec<Bound<'_, PyAny>>,
+        coords: Vec<Vec<f64>>,
+        units: &str,
+        charge: i32,
+        multiplicity: usize,
+        ghost: Option<Vec<bool>>,
+    ) -> PyResult<Self> {
+        let inner = molecule_from_arrays(&elements, &coords, units, charge, multiplicity, ghost)
+            .map_err(pyo3::exceptions::PyValueError::new_err)?;
+        Ok(PyMolecule { inner })
+    }
     /// Classical nuclear repulsion energy in Hartree.
     fn nuclear_repulsion(&self) -> f64 {
         self.inner.nuclear_repulsion()
@@ -162,6 +184,92 @@ impl PyMolecule {
     fn to_xyz_string(&self) -> String {
         molecule_to_xyz_string(&self.inner)
     }
+}
+
+/// `Molecule.from_arrays`: the per-atom element (symbol or atomic number),
+/// coordinates in `units`, ghost flags, then [`Molecule::from_atoms`]. A
+/// symbol is stored as written (as the XYZ parser stores it); an atomic
+/// number gets its canonical symbol. Ångström rows are multiplied by
+/// `ANGSTROM_TO_BOHR`, the XYZ parser's conversion.
+fn molecule_from_arrays(
+    elements: &[Bound<'_, PyAny>],
+    coords: &[Vec<f64>],
+    units: &str,
+    charge: i32,
+    multiplicity: usize,
+    ghost: Option<Vec<bool>>,
+) -> Result<Molecule, String> {
+    let scale = match units.to_ascii_lowercase().as_str() {
+        "angstrom" => ANGSTROM_TO_BOHR,
+        "bohr" => 1.0,
+        _ => {
+            return Err(format!(
+                "Molecule.from_arrays: units must be \"angstrom\" or \"bohr\", got {units:?}"
+            ))
+        }
+    };
+    let n = elements.len();
+    if coords.len() != n {
+        return Err(format!(
+            "Molecule.from_arrays: {n} elements but {} coordinate rows",
+            coords.len()
+        ));
+    }
+    let ghost = ghost.unwrap_or_else(|| vec![false; n]);
+    if ghost.len() != n {
+        return Err(format!(
+            "Molecule.from_arrays: {n} elements but {} ghost flags",
+            ghost.len()
+        ));
+    }
+    let mut atoms = Vec::with_capacity(n);
+    for (i, ((el, row), &is_ghost)) in elements.iter().zip(coords).zip(&ghost).enumerate() {
+        let (symbol, z) = element_of(el, i)?;
+        let [x, y, zpos] = <[f64; 3]>::try_from(row.as_slice()).map_err(|_| {
+            format!(
+                "Molecule.from_arrays: coordinate row {i} has {} values, expected 3",
+                row.len()
+            )
+        })?;
+        if !(x.is_finite() && y.is_finite() && zpos.is_finite()) {
+            return Err(format!(
+                "Molecule.from_arrays: coordinate row {i} is not finite: ({x}, {y}, {zpos})"
+            ));
+        }
+        atoms.push(ferric_core::mol::Atom {
+            symbol,
+            z,
+            x: x * scale,
+            y: y * scale,
+            zpos: zpos * scale,
+            ghost: is_ghost,
+            n_core_ecp: 0,
+        });
+    }
+    Molecule::from_atoms(atoms, charge, multiplicity).map_err(|e| e.to_string())
+}
+
+/// One `from_arrays` element: a symbol (kept as written) or an atomic number
+/// (given its canonical symbol), with its atomic number.
+fn element_of(el: &Bound<'_, PyAny>, i: usize) -> Result<(String, i32), String> {
+    use ferric_core::elements::{symbol_to_z, z_to_symbol};
+    if let Ok(sym) = el.extract::<String>() {
+        if sym.starts_with('@') {
+            return Err(format!(
+                "Molecule.from_arrays: element {i} is {sym:?}; mark ghost atoms with ghost=, \
+                 not the XYZ '@' prefix"
+            ));
+        }
+        let z = symbol_to_z(&sym)
+            .ok_or_else(|| format!("Molecule.from_arrays: unknown element {sym:?} at atom {i}"))?;
+        return Ok((sym, z));
+    }
+    let z = el.extract::<i32>().map_err(|_| {
+        format!("Molecule.from_arrays: element {i} is neither a symbol nor an atomic number")
+    })?;
+    let sym = z_to_symbol(z)
+        .ok_or_else(|| format!("Molecule.from_arrays: unknown atomic number {z} at atom {i}"))?;
+    Ok((sym.to_string(), z))
 }
 
 /// Render a molecule as an XYZ-format string in Ångström.
@@ -1094,10 +1202,20 @@ struct PyRhfResult {
     /// solves its free-atom proatoms with the same settings, as ferric-cli does.
     scf_config: RhfConfig,
     certificate_data: ferric_core::certificate::Certificate,
+    /// `dE/dR` (natoms x 3, Hartree/Bohr) when solved with `with_gradient=True`.
+    gradient_data: Option<Array2<f64>>,
 }
 
 #[pymethods]
 impl PyRhfResult {
+    /// Analytic nuclear gradient `dE/dR` as an (natoms, 3) array in
+    /// Hartree/Bohr, rows in the Molecule's atom order; `None` unless the
+    /// result came from `run_rhf(..., with_gradient=True)`.
+    fn gradient<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyArray2<f64>>> {
+        self.gradient_data
+            .as_ref()
+            .map(|g| PyArray2::from_array(py, g))
+    }
     /// The converged AO-basis density matrix as a 2D numpy array (n_bf × n_bf).
     fn density<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
         PyArray2::from_array(py, &self.density_data)
@@ -1449,6 +1567,7 @@ fn parse_ri_k_precision(s: Option<&str>) -> PyResult<Option<ferric_scf::df_k::Ri
     aurora=None, trah_trigger=None, symmetry=false, irrep_nelec=None,
     fock_hook=None,
     guess_basis=None, guess_projection=None, ri_j_precision=None, dm0=None,
+    with_gradient=false,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_rhf(
@@ -1490,6 +1609,7 @@ fn run_rhf(
     guess_projection: Option<&str>,
     ri_j_precision: Option<&str>,
     dm0: Option<numpy::PyReadonlyArray2<'_, f64>>,
+    with_gradient: bool,
 ) -> PyResult<PyObject> {
     refuse_dm0_with_guess("run_rhf", dm0.is_some(), guess, guess_basis)?;
     let guess_basis = parse_guess_basis(guess_basis, guess_projection)?;
@@ -1549,6 +1669,9 @@ fn run_rhf(
         ..Default::default()
     };
     apply_accelerators(&mut config, aurora, trah_trigger)?;
+    if with_gradient {
+        config = scf_gradient_config("run_rhf", ScfGradientKind::Rhf, &config, fock_hook)?;
+    }
     let ctx = ParallelContext::default();
     // Release the GIL for the duration of the SCF. Every argument below is an
     // owned Rust value (`emol` is a clone; `prep`/`bounds`/`config` are built
@@ -1568,9 +1691,138 @@ fn run_rhf(
         &config,
     );
     let user_set = energy_conv.is_some();
+    if with_gradient {
+        return solve_rhf_with_gradient(py, &ctx, &emol, &prep, &basis_set.inner, &bounds, config);
+    }
     solve_rhf_outcome(
         py, &ctx, &emol, &prep, op, &bounds, config, fock_hook, user_set,
     )
+}
+
+/// Which SCF a `with_gradient=True` run differentiates.
+#[derive(Clone, Copy)]
+enum ScfGradientKind {
+    Rhf,
+    Uhf,
+    Rohf,
+}
+
+/// The SCF config of a `with_gradient=True` run of `who`, or the
+/// `ValueError` for a setup whose analytic gradient would not be the
+/// derivative of the reported energy. Refused before the SCF: a `fock_hook`
+/// (no gradient sees the hook's term); for RHF, `symmetry=True` /
+/// `irrep_nelec` (the result lives in the symmetry frame), `smearing_sigma`
+/// and `mom_after_iter` (the closed-shell energy-weighted density takes the
+/// lowest `nocc` orbitals fully occupied); a COSX setup the gradient cannot
+/// differentiate (`preflight_cosx_*`). A COSX final-grid pass is dropped
+/// (`gradient_task_config`), so the energy and gradient share the SCF grid.
+fn scf_gradient_config(
+    who: &str,
+    kind: ScfGradientKind,
+    config: &RhfConfig,
+    fock_hook: Option<&Bound<'_, PyAny>>,
+) -> PyResult<RhfConfig> {
+    let refuse = |what: &str| {
+        Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "{who}: with_gradient=True cannot be combined with {what}"
+        )))
+    };
+    if fock_hook.is_some() {
+        return refuse("fock_hook (the analytic gradient does not include the hook's term)");
+    }
+    if matches!(kind, ScfGradientKind::Rhf) {
+        if config.symmetry || config.irrep_nelec.is_some() {
+            return refuse("symmetry=True / irrep_nelec (the result lives in the symmetry frame)");
+        }
+        if config.smearing_sigma.is_some() {
+            return refuse(
+                "smearing_sigma (the closed-shell gradient assumes integer aufbau occupations)",
+            );
+        }
+        if config.mom_after_iter > 0 {
+            return refuse(
+                "mom_after_iter (the closed-shell gradient assumes the aufbau occupied set)",
+            );
+        }
+    }
+    let preflight = match kind {
+        ScfGradientKind::Rhf => ferric_scf::gradient::preflight_cosx_restricted(config),
+        ScfGradientKind::Uhf => ferric_scf::gradient::preflight_cosx_unrestricted(config),
+        ScfGradientKind::Rohf => ferric_scf::gradient::preflight_cosx_restricted_open(config),
+    };
+    preflight.map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{who}: {e}")))?;
+    // A gradient is a geometry task: an unset RI-J precision resolves to f64
+    // (the f32 RI-J energy surface is jagged between nearby geometries), an
+    // explicit one is kept.
+    Ok(ferric_scf::gradient::gradient_task_config(config)
+        .into_owned()
+        .for_geometry_task())
+}
+
+/// The analytic gradient (natoms x 3, Hartree/Bohr) of a converged SCF of
+/// `kind`, by the dispatcher that differentiates the J/K, exchange and
+/// solvation the SCF used (`restricted_scf_gradient` and its open-shell
+/// siblings). An unconverged SCF raises: its gradient is not the derivative
+/// of its energy.
+#[allow(clippy::too_many_arguments)]
+fn scf_gradient(
+    py: Python<'_>,
+    kind: ScfGradientKind,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    basis: &ferric_core::basis::BasisSet,
+    bounds: &SchwarzBounds,
+    config: &RhfConfig,
+    r: &ScfResult,
+) -> PyResult<Array2<f64>> {
+    use ferric_scf::gradient::{
+        restricted_open_scf_gradient, restricted_scf_gradient, unrestricted_scf_gradient,
+    };
+    if !r.converged {
+        return Err(make_err(ferric_core::FerricError::ScfConvergence {
+            iterations: r.iterations,
+            last_energy: r.energy,
+        }));
+    }
+    let op = Operator::coulomb();
+    py.allow_threads(|| match kind {
+        ScfGradientKind::Rhf => restricted_scf_gradient(mol, prep, basis, op, bounds, config, r),
+        ScfGradientKind::Uhf => unrestricted_scf_gradient(mol, prep, basis, op, bounds, config, r),
+        ScfGradientKind::Rohf => {
+            restricted_open_scf_gradient(mol, prep, basis, op, bounds, config, r)
+        }
+    })
+    .map_err(make_err)
+}
+
+/// `run_rhf(with_gradient=True)`: the plain closed-shell solve (the refusals
+/// of [`scf_gradient_config`] already ran) and its analytic gradient.
+fn solve_rhf_with_gradient(
+    py: Python<'_>,
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    basis: &ferric_core::basis::BasisSet,
+    bounds: &SchwarzBounds,
+    config: RhfConfig,
+) -> PyResult<PyObject> {
+    let op = Operator::coulomb();
+    let r = py
+        .allow_threads(|| solve_rhf(ctx, mol, prep, op, bounds, &config))
+        .map_err(make_err)?;
+    let g = scf_gradient(
+        py,
+        ScfGradientKind::Rhf,
+        mol,
+        prep,
+        basis,
+        bounds,
+        &config,
+        &r,
+    )?;
+    let mut result = PyRhfResult::from_scf(mol, basis, r, config, false);
+    result.gradient_data = Some(g);
+    Ok(Py::new(py, result)?.into_any())
 }
 
 /// A refusal the library classifies as a bad symmetry request
@@ -1694,6 +1946,7 @@ impl PyRhfResult {
             scf_data: r,
             scf_config: config,
             certificate_data,
+            gradient_data: None,
         }
     }
 }
@@ -3620,6 +3873,8 @@ struct PyUhfResult {
     certificate_data: ferric_core::certificate::Certificate,
     one_step_energy_drop_data: Option<f64>,
     stationarity_tol_data: Option<f64>,
+    /// `dE/dR` (natoms x 3, Hartree/Bohr) when solved with `with_gradient=True`.
+    gradient_data: Option<Array2<f64>>,
 }
 
 /// The open-shell result both `run_uhf` and `run_rohf` return. ROHF leaves
@@ -3649,6 +3904,7 @@ impl PyUhfResult {
             precision: r.precision,
             eps_alpha_data: r.eps_alpha,
             eps_beta_data: r.eps_beta.unwrap_or_default(),
+            gradient_data: None,
         }
     }
 }
@@ -3692,6 +3948,14 @@ impl PyUhfResult {
     #[getter]
     fn stationarity_tol(&self) -> Option<f64> {
         self.stationarity_tol_data
+    }
+    /// Analytic nuclear gradient `dE/dR` as an (natoms, 3) array in
+    /// Hartree/Bohr, rows in the Molecule's atom order; `None` unless the
+    /// result came from `run_uhf` / `run_rohf(..., with_gradient=True)`.
+    fn gradient<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyArray2<f64>>> {
+        self.gradient_data
+            .as_ref()
+            .map(|g| PyArray2::from_array(py, g))
     }
     fn density_alpha<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
         PyArray2::from_array(py, &self.density_alpha_data)
@@ -3759,7 +4023,7 @@ impl PyUhfResult {
     guess=None, stability_descent=None,
     cosx_grid=None, cosx_final_pass=None, cosx_final_grid=None, cosx_overlap_fit=None,
     trah_trigger=None, fock_hook=None, guess_basis=None, guess_projection=None, ri_j_precision=None,
-    dm0=None,
+    dm0=None, with_gradient=false,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_uhf(
@@ -3792,6 +4056,7 @@ fn run_uhf(
     guess_projection: Option<&str>,
     ri_j_precision: Option<&str>,
     dm0: Option<&Bound<'_, PyAny>>,
+    with_gradient: bool,
 ) -> PyResult<PyUhfResult> {
     refuse_dm0_with_guess("run_uhf", dm0.is_some(), guess, guess_basis)?;
     let trah_trigger = check_trah_trigger(trah_trigger)?;
@@ -3816,7 +4081,7 @@ fn run_uhf(
         None => None,
     };
     // Same defaults as run_rhf / the CLI [scf] section.
-    let config = UhfConfig {
+    let mut config = UhfConfig {
         max_iter: max_iter.unwrap_or_else(default_scf_max_iter),
         energy_conv: energy_conv.unwrap_or(1e-3),
         density_conv: density_conv.unwrap_or(1e-6),
@@ -3848,6 +4113,9 @@ fn run_uhf(
         scf_stability_descent: descent,
         ..Default::default()
     };
+    if with_gradient {
+        config = scf_gradient_config("run_uhf", ScfGradientKind::Uhf, &config, fock_hook)?;
+    }
     let ctx = ParallelContext::default();
     // Release the GIL for the duration of the SCF. Every argument below is an
     // owned Rust value (`emol` is a clone; `prep`/`bounds`/`config` are built
@@ -3884,13 +4152,15 @@ fn run_uhf(
         &config,
         term,
     );
-    Ok(PyUhfResult::from_scf(
-        r,
-        &emol,
-        &config,
-        &basis_set.inner,
-        fock_hooked,
-    ))
+    let gradient = with_gradient
+        .then(|| {
+            let k = ScfGradientKind::Uhf;
+            scf_gradient(py, k, &emol, &prep, &basis_set.inner, &bounds, &config, &r)
+        })
+        .transpose()?;
+    let mut result = PyUhfResult::from_scf(r, &emol, &config, &basis_set.inner, fock_hooked);
+    result.gradient_data = gradient;
+    Ok(result)
 }
 
 // ── ROHF (open-shell, spin-pure) ──
@@ -3916,6 +4186,7 @@ fn run_uhf(
     level_shift=None, mom_after_iter=None,
     point_charges=None, external_field=None, memory_budget_gb=None, fock_hook=None,
     guess_basis=None, guess_projection=None, ri_j_precision=None, dm0=None,
+    with_gradient=false,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_rohf(
@@ -3941,6 +4212,7 @@ fn run_rohf(
     guess_projection: Option<&str>,
     ri_j_precision: Option<&str>,
     dm0: Option<&Bound<'_, PyAny>>,
+    with_gradient: bool,
 ) -> PyResult<PyUhfResult> {
     refuse_dm0_with_guess("run_rohf", dm0.is_some(), None, guess_basis)?;
     let guess_basis = parse_guess_basis(guess_basis, guess_projection)?;
@@ -3957,7 +4229,7 @@ fn run_rohf(
         None => None,
     };
     // Same defaults as run_rhf / run_uhf / the CLI [scf] section.
-    let config: RohfConfig = RhfConfig {
+    let mut config: RohfConfig = RhfConfig {
         max_iter: max_iter.unwrap_or_else(default_scf_max_iter),
         energy_conv: energy_conv.unwrap_or(1e-3),
         density_conv: density_conv.unwrap_or(1e-6),
@@ -3978,6 +4250,9 @@ fn run_rohf(
         guess_basis,
         ..Default::default()
     };
+    if with_gradient {
+        config = scf_gradient_config("run_rohf", ScfGradientKind::Rohf, &config, fock_hook)?;
+    }
     let ctx = ParallelContext::default();
     // Release the GIL for the duration of the SCF. Every argument below is an
     // owned Rust value (`emol` is a clone; `prep`/`bounds`/`config` are built
@@ -4014,13 +4289,15 @@ fn run_rohf(
         &config,
         term,
     );
-    Ok(PyUhfResult::from_scf(
-        r,
-        &emol,
-        &config,
-        &basis_set.inner,
-        fock_hooked,
-    ))
+    let gradient = with_gradient
+        .then(|| {
+            let k = ScfGradientKind::Rohf;
+            scf_gradient(py, k, &emol, &prep, &basis_set.inner, &bounds, &config, &r)
+        })
+        .transpose()?;
+    let mut result = PyUhfResult::from_scf(r, &emol, &config, &basis_set.inner, fock_hooked);
+    result.gradient_data = gradient;
+    Ok(result)
 }
 
 // ── Constrained DFT (cDFT) ──
@@ -7024,10 +7301,20 @@ struct PyRiMp2Result {
     precision_rec: ferric_core::gpu::provenance::PrecisionRecord,
     scf_precision_rec: ferric_core::gpu::provenance::PrecisionRecord,
     certificate_data: ferric_core::certificate::Certificate,
+    /// `dE_total/dR` (natoms x 3, Hartree/Bohr) when solved with `with_gradient=True`.
+    gradient_data: Option<Array2<f64>>,
 }
 
 #[pymethods]
 impl PyRiMp2Result {
+    /// Analytic nuclear gradient of `total_energy` as an (natoms, 3) array in
+    /// Hartree/Bohr, rows in the Molecule's atom order; `None` unless the
+    /// result came from `run_rimp2(..., with_gradient=True)`.
+    fn gradient<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyArray2<f64>>> {
+        self.gradient_data
+            .as_ref()
+            .map(|g| PyArray2::from_array(py, g))
+    }
     /// Validation certificate of this result (see `RhfResult.certificate`):
     /// capability `"rimp2"` (`"att-rimp2"` for `run_terfc_rimp2`), the grade
     /// capped by the reference SCF's, the auxiliary basis, frozen core and
@@ -7233,6 +7520,7 @@ fn rimp2_energies(
     auxbasis: &basis::BasisSet,
     rhf_config: &RhfConfig,
     mp2_config: &RiMp2Config,
+    with_gradient: bool,
 ) -> Result<Rimp2Energies, ferric_core::FerricError> {
     let prep = PreparedBasis::new(mol, basis_set)?;
     let dfbs = PreparedBasis::new(mol, auxbasis)?;
@@ -7258,6 +7546,21 @@ fn rimp2_energies(
         let mp2 = ri_mp2(mol, &prep, &dfbs, op, &scf, mp2_config)?;
         (mp2.mp2_corr, mp2.total_energy, mp2.precision)
     };
+    // Closed shell only: `run_rimp2` refuses an open-shell gradient first.
+    let gradient = with_gradient
+        .then(|| {
+            ferric_mp2::gradient::rimp2_gradient_analytical(
+                mol,
+                &prep,
+                &dfbs,
+                op,
+                &bounds,
+                &scf,
+                mp2_config,
+                rhf_config.external_potential.as_ref(),
+            )
+        })
+        .transpose()?;
     let reference = reference_certificate(mol, &scf, rhf_config, basis_set);
     let certificate = ferric_mp2::certificate::with_rimp2_envelope(
         ferric_mp2::certificate::rimp2_certificate(
@@ -7274,6 +7577,7 @@ fn rimp2_energies(
     );
     Ok(Rimp2Energies {
         certificate,
+        gradient,
         scf_energy: scf.energy,
         mp2_corr,
         total_energy,
@@ -7290,6 +7594,8 @@ struct Rimp2Energies {
     precision: ferric_core::gpu::provenance::PrecisionRecord,
     scf_precision: ferric_core::gpu::provenance::PrecisionRecord,
     certificate: ferric_core::certificate::Certificate,
+    /// `dE_total/dR` (natoms x 3, Hartree/Bohr) when requested.
+    gradient: Option<Array2<f64>>,
 }
 
 /// The attenuated-correlation kwargs of `run_rimp2` as the CLI's `[mp2]`
@@ -7419,7 +7725,7 @@ fn local_correlation_operator(
 /// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
 /// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, kappa=None, local=None, eps=None, compute_reference=None, integral_direct=None, aux_radius=None, virt_radius=None, ao_tail=None, schwarz_skip=None, batch_merge=None, gate_cal=None, virt_schwarz_kappa=None, att_operator=None, omega=None, att_r0=None, att_omega=None, scf_jk=None, jk_auxbasis=None, scf_ri_j_precision=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, virtual_space=None, virtual_tau=None, virtual_tau_loose=None, virtual_solve_radius=None, virtual_boys_tau=None))]
+#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, kappa=None, local=None, eps=None, compute_reference=None, integral_direct=None, aux_radius=None, virt_radius=None, ao_tail=None, schwarz_skip=None, batch_merge=None, gate_cal=None, virt_schwarz_kappa=None, att_operator=None, omega=None, att_r0=None, att_omega=None, scf_jk=None, jk_auxbasis=None, scf_ri_j_precision=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, virtual_space=None, virtual_tau=None, virtual_tau_loose=None, virtual_solve_radius=None, virtual_boys_tau=None, with_gradient=false))]
 #[allow(clippy::too_many_arguments)]
 fn run_rimp2(
     py: Python<'_>,
@@ -7456,6 +7762,7 @@ fn run_rimp2(
     virtual_tau_loose: Option<f64>,
     virtual_solve_radius: Option<f64>,
     virtual_boys_tau: Option<f64>,
+    with_gradient: bool,
 ) -> PyResult<PyRiMp2Result> {
     let (att_keys, sets_att) = att_keys_from_kwargs(att_operator, omega, att_r0, att_omega);
     let (rhf_config, jk) = mp2_exact_default_config(
@@ -7489,6 +7796,15 @@ fn run_rimp2(
             virtual_boys_tau,
         },
     )?;
+    if with_gradient {
+        refuse_rimp2_gradient(
+            &mol.inner,
+            model.is_some() || sets_att,
+            kappa,
+            &rhf_config,
+            &jk,
+        )?;
+    }
     if let Some(model) = model {
         return run_rimp2_local(
             py,
@@ -7515,7 +7831,51 @@ fn run_rimp2(
         memory_budget_gb,
         kappa,
         (rhf_config, jk),
+        with_gradient,
     )
+}
+
+/// `run_rimp2(with_gradient=True)` covers what the analytic RI-MP2 gradient
+/// (`ferric_mp2::gradient::rimp2_gradient_analytical`) differentiates: the
+/// exact closed-shell RI-MP2 on an RHF reference with exact four-centre J/K.
+/// Everything else is a `ValueError` before any integral is computed.
+fn refuse_rimp2_gradient(
+    mol: &Molecule,
+    local_or_attenuated: bool,
+    kappa: Option<f64>,
+    rhf_config: &RhfConfig,
+    jk: &ferric_scf::scf_jk::ScfJk,
+) -> PyResult<()> {
+    let refuse = |what: String| {
+        Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "run_rimp2: with_gradient=True {what}"
+        )))
+    };
+    if mol.multiplicity > 1 {
+        return refuse(format!(
+            "is closed-shell only (there is no unrestricted RI-MP2 gradient), but the \
+             molecule has multiplicity {}",
+            mol.multiplicity
+        ));
+    }
+    if local_or_attenuated {
+        return refuse(
+            "differentiates the exact Coulomb RI-MP2 only: remove local= and the \
+             att_operator keys"
+                .into(),
+        );
+    }
+    if kappa.is_some() {
+        return refuse("does not differentiate kappa-regularized MP2: remove kappa".into());
+    }
+    if jk.is_fitted() || rhf_config.k_builder.as_deref() == Some("cosx") {
+        return refuse(format!(
+            "needs the exact four-centre J/K reference its gradient differentiates; got the \
+             SCF J/K \"{}\". Use scf_jk=\"exact\" and an exact k_builder",
+            jk.label()
+        ));
+    }
+    Ok(())
 }
 
 /// `run_rimp2`'s exact (canonical RI-MP2) path: RHF + RI-MP2 for a singlet,
@@ -7530,6 +7890,7 @@ fn run_rimp2_exact(
     memory_budget_gb: Option<f64>,
     kappa: Option<f64>,
     (rhf_config, jk): (RhfConfig, ferric_scf::scf_jk::ScfJk),
+    with_gradient: bool,
 ) -> PyResult<PyRiMp2Result> {
     let emol = mol.inner.clone();
     let ebasis = basis_set.inner.clone();
@@ -7554,7 +7915,16 @@ fn run_rimp2_exact(
     // owned clones/locals built above, so nothing Python-borrowed crosses
     // the closure boundary.
     let r = py
-        .allow_threads(|| rimp2_energies(&emol, &ebasis, &eaux, &rhf_config, &mp2_config))
+        .allow_threads(|| {
+            rimp2_energies(
+                &emol,
+                &ebasis,
+                &eaux,
+                &rhf_config,
+                &mp2_config,
+                with_gradient,
+            )
+        })
         .map_err(make_err)?;
     Ok(PyRiMp2Result {
         total_energy: r.total_energy,
@@ -7568,6 +7938,7 @@ fn run_rimp2_exact(
         precision_rec: r.precision,
         scf_precision_rec: r.scf_precision,
         certificate_data: r.certificate,
+        gradient_data: r.gradient,
     })
 }
 
@@ -7788,6 +8159,7 @@ fn run_rimp2_local(
         precision_rec: ferric_core::gpu::provenance::PrecisionRecord::f64(),
         scf_precision_rec: rhf.precision.clone(),
         certificate_data,
+        gradient_data: None,
     })
 }
 
@@ -8458,10 +8830,20 @@ struct PyOoRiMp2Result {
     #[pyo3(get)]
     jk_auxbasis: Option<String>,
     certificate_data: ferric_core::certificate::Certificate,
+    /// `dE_total/dR` (natoms x 3, Hartree/Bohr) when solved with `with_gradient=True`.
+    gradient_data: Option<Array2<f64>>,
 }
 
 #[pymethods]
 impl PyOoRiMp2Result {
+    /// Analytic nuclear gradient of `total_energy` as an (natoms, 3) array in
+    /// Hartree/Bohr, rows in the Molecule's atom order; `None` unless the
+    /// result came from `run_oo_rimp2(..., with_gradient=True)`.
+    fn gradient<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyArray2<f64>>> {
+        self.gradient_data
+            .as_ref()
+            .map(|g| PyArray2::from_array(py, g))
+    }
     /// Validation certificate of this result (see `RhfResult.certificate`):
     /// the method's grade from the validation page capped by the reference
     /// SCF's, its settings as `approximations`, the reference's as
@@ -8502,7 +8884,7 @@ impl PyOoRiMp2Result {
     max_iter=None, grad_conv=None, level_shift=None, diis_size=None,
     memory_budget_gb=None, scf_jk=None, jk_auxbasis=None, scf_ri_j_precision=None,
     scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None,
-    oo_max_iter=None,
+    oo_max_iter=None, with_gradient=false,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_oo_rimp2(
@@ -8524,6 +8906,7 @@ fn run_oo_rimp2(
     scf_energy_conv: Option<f64>,
     scf_density_conv: Option<f64>,
     oo_max_iter: Option<usize>,
+    with_gradient: bool,
 ) -> PyResult<PyOoRiMp2Result> {
     let max_iter = alias_kwarg(
         py,
@@ -8550,6 +8933,13 @@ fn run_oo_rimp2(
         ferric_scf::scf_jk::OO_REBUILDS_EXACT_JK,
     )
     .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("run_oo_rimp2: {e}")))?;
+    if with_gradient && frozen_core.unwrap_or(0) > 0 {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "run_oo_rimp2: with_gradient=True needs frozen_core=0: the core-active and \
+             core-virtual rotations are not optimised, so the zero-response OO-MP2 gradient is \
+             not the derivative of the frozen-core energy",
+        ));
+    }
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
     let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
     let op = Operator::coulomb();
@@ -8574,6 +8964,9 @@ fn run_oo_rimp2(
     // this binding is out of Lane F1's scope; this just keeps behavior
     // unchanged after `oo_ri_mp2`'s hcore-bug fix.
     let r = oo_ri_mp2(&mol.inner, &prep, &dfbs, op, &bounds, &rhf, &cfg, None).map_err(make_err)?;
+    let gradient_data = with_gradient
+        .then(|| oo_rimp2_gradient(py, &mol.inner, &prep, &dfbs, &bounds, &r))
+        .transpose()?;
     let certificate_data = ferric_mp2::certificate::oo_rimp2_certificate(
         &reference_certificate(&mol.inner, &rhf, &rhf_config, &basis_set.inner),
         &auxbasis.inner.name,
@@ -8594,7 +8987,35 @@ fn run_oo_rimp2(
         jk_label: jk.label(),
         jk_auxbasis: jk.aux,
         certificate_data,
+        gradient_data,
     })
+}
+
+/// The analytic OO-RI-MP2 gradient of a converged orbital optimisation
+/// (`ferric_mp2::oo_rimp2_gradient::oo_ri_mp2_gradient`, all electrons
+/// correlated). It assumes a stationary point of the OO-MP2 energy, so an
+/// unconverged loop raises; its accuracy follows `grad_conv`.
+fn oo_rimp2_gradient(
+    py: Python<'_>,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    bounds: &SchwarzBounds,
+    r: &ferric_mp2::oo_rimp2::OoRiMp2Result,
+) -> PyResult<Array2<f64>> {
+    if !r.converged {
+        return Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
+            "run_oo_rimp2: with_gradient=True: the orbital optimisation did not converge \
+             ({} iterations, orbital gradient norm {:.2e}); the zero-response gradient holds only \
+             at a stationary point. Raise oo_max_iter or loosen grad_conv",
+            r.iterations, r.grad_norm
+        )));
+    }
+    let op = Operator::coulomb();
+    py.allow_threads(|| {
+        ferric_mp2::oo_rimp2_gradient::oo_ri_mp2_gradient(mol, prep, dfbs, op, bounds, r, 0, None)
+    })
+    .map_err(make_err)
 }
 
 // ── MP3 (spin-orbital, via einsum!) ──
@@ -9173,6 +9594,7 @@ fn run_terfc_rimp2(
         precision_rec: mp2.precision,
         scf_precision_rec: rhf.precision.clone(),
         certificate_data,
+        gradient_data: None,
     })
 }
 

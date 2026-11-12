@@ -83,6 +83,10 @@ reference = [
 build = [
     "maturin[patchelf]>=1.13.3",
 ]
+# ferric.ase.FerricCalculator (ASE energies, forces, stress).
+ase = [
+    "ase>=3.23",
+]
 
 [tool.ruff]
 # Matches the floor established in `requires-python` above (see that
