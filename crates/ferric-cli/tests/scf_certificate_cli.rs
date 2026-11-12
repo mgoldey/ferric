@@ -96,6 +96,38 @@ fn rhf_prints_and_logs_a_proven_stamped_certificate() {
     assert_eq!(back.grade, ferric_core::certificate::Grade::Proven);
 }
 
+/// An `[external_potential]` changes the Hamiltonian the RHF anchor's
+/// vacuum evidence ran: the run is recorded as such an approximation and
+/// warned as outside the anchor, which keeps its value and the grade.
+#[test]
+fn rhf_with_an_external_potential_warns_outside_the_vacuum_anchor() {
+    let (_, records) = run(
+        "rhf_field",
+        "[molecule]\nxyz = \"testdata/molecules/water.xyz\"\n[basis]\nname = \"sto-3g\"\n\
+         [method]\nkind = \"rhf\"\n[external_potential]\nfield = [0.0, 0.0, 0.001]\n",
+    );
+    let c = &record(&records, "run_end")["extra"]["certificate"];
+    assert_eq!(c["grade"], "proven", "{c}");
+    assert_eq!(c["measured_error"]["value"], 1.8e-12, "{c}");
+    let ev = c["measured_error"]["evidence"].as_str().unwrap();
+    assert_eq!(
+        c["warnings"],
+        serde_json::json!([format!(
+            "external potential (evidence: vacuum Hamiltonian) is outside the RHF energy \
+             anchor ({ev})"
+        )]),
+        "{c}"
+    );
+    assert!(
+        c["approximations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a["name"] == "external-potential"),
+        "{c}"
+    );
+}
+
 #[test]
 fn uhf_logs_a_certificate_record_with_the_stability_caveat() {
     let (stdout, records) = run(
