@@ -45,8 +45,16 @@ fn demo_value() {
     let _ = std::env::var("DEMO").unwrap_or_else(|_| panic!("unset"));
     assert!(x == 1.0, "value moved: {x}");
 }
+
+#[test]
+fn demo_unwrap() {
+    assert_eq!(demo::maybe().unwrap(), 1.0);
+    assert_eq!(demo::maybe().expect("maybe is set"), 1.0);
+}
 """
 ASSERT_LINE = 6
+UNWRAP_LINE = 11
+EXPECT_LINE = 12
 PANIC_LINE = 5
 
 FAKE_CARGO = f"""\
@@ -56,15 +64,17 @@ with open(os.environ["FAKE_LOG"], "a") as log:
     log.write(json.dumps({{"argv": sys.argv[1:], "demo": os.environ.get("DEMO"),
                           "target": os.environ.get("CARGO_TARGET_DIR")}}) + "\\n")
 src = open("{LIB}").read()
-def run(ok, panic=None, thread="demo_value", tid=" (4242)"):
+name = sys.argv[sys.argv.index("--exact") + 1]
+def run(ok, panic=None, thread=None, tid=" (4242)"):
+    thread = thread or name
     print("running 1 test")
     if ok:
-        print("test demo_value ... ok\\n\\ntest result: ok. 1 passed; 0 failed")
+        print(f"test {{name}} ... ok\\n\\ntest result: ok. 1 passed; 0 failed")
         sys.exit(0)
     path, line, msg = panic
-    print("test demo_value ... FAILED\\n\\nfailures:\\n\\n---- demo_value stdout ----\\n")
+    print(f"test {{name}} ... FAILED\\n\\nfailures:\\n\\n---- {{name}} stdout ----\\n")
     print(f"thread '{{thread}}'{{tid}} panicked at {{path}}:{{line}}:5:\\n{{msg}}")
-    print("\\nfailures:\\n    demo_value\\n\\ntest result: FAILED. 0 passed; 1 failed")
+    print(f"\\nfailures:\\n    {{name}}\\n\\ntest result: FAILED. 0 passed; 1 failed")
     sys.exit(101)
 if "COMPILE_ERROR" in src:
     print("error[E0425]: cannot find value `COMPILE_ERROR` in this scope")
@@ -74,6 +84,12 @@ if "SLEEP" in src:
     time.sleep(30)
 if "UNWRAP" in src:
     run(False, ("{LIB}", 2, "called `Option::unwrap()` on a `None` value"), tid="")
+if name == "demo_unwrap" and "UNW_NONE" in src:
+    run(False, ("{EVIDENCE}", {UNWRAP_LINE}, "called `Option::unwrap()` on a `None` value"))
+if name == "demo_unwrap" and "EXPECT_NONE" in src:
+    run(False, ("{EVIDENCE}", {EXPECT_LINE}, "maybe is set"))
+if name == "demo_unwrap" and "REAL_EQ" in src:
+    run(False, ("{EVIDENCE}", {UNWRAP_LINE}, "assertion `left == right` failed\\\\n  left: 2.0\\\\n right: 1.0"))
 if "PROD_ASSERT" in src:
     run(False, ("{LIB}", 2, "PROD_ASSERT"))
 if "OTHER_THREAD" in src:
@@ -296,3 +312,18 @@ def test_a_panic_on_another_thread_is_rejected(repo):
     patch = _patch(repo, "thread", LIB, "1.0", "OTHER_THREAD")
     _, (rep,), _, _ = _run(repo, patch)
     assert rep["status"] == "panic outside an assertion", rep
+
+
+@pytest.mark.parametrize(
+    "marker", ["UNW_NONE", "EXPECT_NONE"], ids=["unwrap", "expect"]
+)
+def test_an_unwrap_or_expect_panic_on_an_assertion_line_is_rejected(repo, marker):
+    patch = _patch(repo, "unwrap_in_assert", LIB, "1.0", marker)
+    _, (rep,), _, _ = _run(repo, patch, test="demo_unwrap", env={"DEMO": "1"})
+    assert rep["status"] == "panic outside an assertion", rep
+
+
+def test_an_assertion_failure_on_a_line_with_unwrap_is_accepted(repo):
+    patch = _patch(repo, "real_eq", LIB, "1.0", "REAL_EQ")
+    _, (rep,), _, _ = _run(repo, patch, test="demo_unwrap")
+    assert rep["status"] == "assertion failure", rep

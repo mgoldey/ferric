@@ -114,9 +114,15 @@ active basis; PySCF uses natural orbitals for its comparison.
 
 ## Usage
 
-    cd ~/qc/ferric && PYTHONPATH=<shim with a ferric build> box-lease exec -- \
-      env OPENBLAS_NUM_THREADS=1 .venv/bin/python \
-      ~/qc/ferric-nevpt2/scripts/prototypes/nevpt2_proto.py [--only STEP]
+From the repository root, with a ferric build importable (a built
+`ferric-python` extension on PYTHONPATH, or `ferric` installed in the
+environment):
+
+    OPENBLAS_NUM_THREADS=1 python scripts/prototypes/nevpt2_proto.py [--only STEP]
+
+The PYTHONPATH directory holds `ferric/__init__.py` and the built
+`ferric.cpython-*.so` (from `cargo build --release -p ferric-python`). On a
+shared box, prefix the command with `box-lease exec --` to wait for other jobs.
 
 Steps in order: full, mp2, size, det, ref, mut (cost prints the term counts).
 An anchor failure stops the run. The ref step with FD takes about 9 minutes
