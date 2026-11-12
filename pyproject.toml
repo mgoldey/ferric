@@ -107,6 +107,7 @@ extend-exclude = ["terf-tables/generate_interpolation_tables.py"]
 [tool.maturin]
 manifest-path = "crates/ferric-python/Cargo.toml"
 features = ["pyo3/extension-module"]
+python-source = "crates/ferric-python/python"
 # maturin lists LICENSE-APACHE / LICENSE-MIT in the sdist's PKG-INFO but only
 # packs them when told to; without this line the sdist ships no license text.
 #
