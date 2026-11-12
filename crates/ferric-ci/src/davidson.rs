@@ -27,6 +27,13 @@ pub struct CiDavidsonResult {
     pub converged: bool,
 }
 
+/// A correction whose norm after orthogonalization is below this fraction of
+/// its norm before is treated as already spanned by the subspace. Two
+/// Gram–Schmidt passes leave a spanned vector at round-off relative size
+/// (~1e-16·√m), so 1e-10 separates it from a genuine new direction with a
+/// wide margin on both sides.
+const NULL_DIRECTION_REL: f64 = 1e-10;
+
 /// Find the lowest eigenpair of the CI Hamiltonian defined implicitly by the
 /// `matvec` closure (`sigma = H c`) and the diagonal `diag` (H_ii, used for
 /// preconditioning and the initial guess).
@@ -153,14 +160,20 @@ where
             t[i] = resid[i] / denom;
         }
 
-        // Orthogonalize t against the current subspace (modified Gram–Schmidt).
-        for v in &v_basis {
-            let overlap = t.dot(v);
-            t.scaled_add(-overlap, v);
+        // Orthogonalize t against the current subspace (modified Gram–Schmidt,
+        // two passes). The correction's size follows the residual, so "already
+        // spanned" is judged relative to its norm before orthogonalization: an
+        // absolute cut would stop the solve once the residual itself reached it.
+        let t0norm = t.dot(&t).sqrt();
+        for _ in 0..2 {
+            for v in &v_basis {
+                let overlap = t.dot(v);
+                t.scaled_add(-overlap, v);
+            }
         }
         let tnorm = t.dot(&t).sqrt();
-        if tnorm < 1e-10 {
-            // New direction is null (already spanned) — converged in practice.
+        if !(tnorm > NULL_DIRECTION_REL * t0norm) {
+            // New direction is null (already spanned): no further progress.
             converged = resid_norm < conv_thresh * 10.0;
             break;
         }
@@ -194,4 +207,50 @@ where
         iterations: iters,
         converged,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ndarray_linalg::Eigh;
+
+    /// Diagonal 0..n plus a small symmetric coupling: the correction
+    /// r/(H_ii − θ) is about as small as the residual, so a solve asked for a
+    /// residual below 1e-10 must keep going once the residual reaches it.
+    fn spread_matrix(n: usize) -> Array2<f64> {
+        let mut h = Array2::<f64>::zeros((n, n));
+        let mut st = 0x2545_f491_4f6c_dd1du64;
+        for i in 0..n {
+            h[(i, i)] = i as f64;
+            for j in 0..i {
+                st = st
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                let x = 1e-2 * (((st >> 11) as f64) / (1u64 << 53) as f64 - 0.5);
+                h[(i, j)] = x;
+                h[(j, i)] = x;
+            }
+        }
+        h
+    }
+
+    #[test]
+    fn reaches_a_residual_below_the_correction_size() {
+        let n = 16;
+        let h = spread_matrix(n);
+        let diag: Vec<f64> = (0..n).map(|i| h[(i, i)]).collect();
+        let mv = |c: &[f64]| h.dot(&Array1::from(c.to_vec())).to_vec();
+        let thresh = 1e-13;
+        let r = davidson_lowest(n, mv, &diag, thresh, n, 100).unwrap();
+        assert!(
+            r.converged,
+            "not converged after {} iterations",
+            r.iterations
+        );
+        let x = Array1::from(r.eigenvector.clone());
+        let res = &h.dot(&x) - &(r.eigenvalue * &x);
+        assert!(res.dot(&res).sqrt() < thresh);
+        let (evals, _) = h.eigh(UPLO::Upper).unwrap();
+        assert!((r.eigenvalue - evals[0]).abs() < 1e-12);
+    }
 }
