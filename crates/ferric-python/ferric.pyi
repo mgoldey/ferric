@@ -5576,3 +5576,77 @@ def shell_info(
 ) -> tuple[NDArray[np.float64], NDArray[np.int64], NDArray[np.int64]]:
     """Shell geometry: (centers (n_shells,3), offsets (n_shells,), dims (n_shells,))."""
     ...
+
+# ── CAS-CI (crates/ferric-python/src/ci.rs) ──
+
+class CasCiResult:
+    """Result of run_casci: the lowest root of the active-space CI Hamiltonian."""
+
+    e_total: float
+    """CAS-CI energy, ``e_core + e_active`` (Ha)."""
+    e_core: float
+    """Nuclear repulsion plus the inactive doubly occupied orbitals' energy."""
+    e_active: float
+    """``e_total - e_core`` (PySCF ``CASCI.e_cas``)."""
+    rhf_energy: float
+    n_determinants: int
+    converged: bool
+    iterations: int
+    active_start: int
+    @property
+    def ci_vector(self) -> NDArray[np.float64]:
+        """CI coefficients, shape ``(n_alpha_strings, n_beta_strings)``,
+        strings in ascending bitmask order (bit ``p`` set = active orbital
+        ``p`` occupied)."""
+        ...
+    @property
+    def dm1(self) -> NDArray[np.float64] | None:
+        """Spin-summed 1-RDM ``dm1[p,q] = <E_pq>`` over the active orbitals;
+        ``None`` when ``compute_rdms=False``."""
+        ...
+    @property
+    def dm2(self) -> NDArray[np.float64] | None:
+        """Spin-summed 2-RDM, ``dm2[p,q,r,s]`` = the sum over spins
+        ``σ, τ`` of ``<a+(pσ) a+(rτ) a(sτ) a(qσ)>`` (PySCF ``make_rdm12``
+        convention), so
+        ``e_active = sum(h_active*dm1) + 0.5*sum(eri_active*dm2)``."""
+        ...
+    @property
+    def h_active(self) -> NDArray[np.float64]:
+        """Active one-electron integrals with the inactive-core potential."""
+        ...
+    @property
+    def eri_active(self) -> NDArray[np.float64]:
+        """Active two-electron integrals ``(pq|rs)``, shape ``(n,)*4``."""
+        ...
+    @property
+    def mo_coeff_active(self) -> NDArray[np.float64]:
+        """Active RHF orbitals, shape ``(nbasis, n_active)``."""
+        ...
+    @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (schema of ``RhfResult.certificate``):
+        ``capability`` ``"casci"`` (a library capability, ``"not graded"``),
+        and ``warnings`` (an unconverged Davidson adds one)."""
+        ...
+
+def run_casci(
+    mol: Molecule,
+    basis_set: BasisSet,
+    n_active: int,
+    n_elec_active: tuple[int, int],
+    active_start: int | None = None,
+    compute_rdms: bool = True,
+    conv_thresh: float = 1e-9,
+    max_subspace: int = 50,
+    max_iter: int = 200,
+    memory_budget_gb: float | None = None,
+    scf_max_iter: int | None = None,
+    scf_energy_conv: float | None = None,
+    scf_density_conv: float | None = None,
+) -> CasCiResult:
+    """CAS-CI on the canonical RHF orbitals ``active_start ..
+    active_start + n_active`` (exact-J/K RHF; closed-shell reference),
+    lowest root of the ``(n_alpha, n_beta)`` sector. ``active_start``
+    defaults to ``(N - n_alpha - n_beta) / 2``."""
+    ...

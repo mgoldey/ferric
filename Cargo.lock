@@ -645,6 +645,7 @@ dependencies = [
  "ctrlc",
  "ferric-build-info",
  "ferric-cc",
+ "ferric-ci",
  "ferric-cli",
  "ferric-core",
  "ferric-d3",

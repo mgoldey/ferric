@@ -1,8 +1,8 @@
 # CAS-CI
 
 ferric runs complete-active-space configuration interaction (CAS-CI) from a
-closed-shell RHF reference. It is a Rust library routine only: the CLI and
-the Python bindings do not expose it.
+closed-shell RHF reference, from Rust (`ferric_ci::run_cas_ci`) or Python
+(`ferric.run_casci`). The CLI does not expose it.
 
 The Hamiltonian, the determinant phase convention and the Slater-Condon rules
 are derived in `crates/ferric-ci/theory.md`. The phase conventions are checked
@@ -16,8 +16,9 @@ by `scripts/casci_slater_condon_phases_sympy.py`.
 | Reference | restricted (closed-shell) RHF, a singlet with `n_alpha == n_beta` in the active space |
 | Roots | the single lowest root |
 | Solver | CI-native Davidson, diagonal preconditioner `1/(H_ii - λ)` |
-| Entry points | Rust only: `ferric_ci::run_cas_ci` (re-exported as `ferric::ci`) |
-| Not implemented | open-shell or non-singlet references, S² control, multiple roots, CLI `method.kind`, Python function |
+| Entry points | Rust `ferric_ci::run_cas_ci` (re-exported as `ferric::ci`); Python `ferric.run_casci` |
+| Density matrices | spin-summed 1- and 2-RDM of the root, opt-in (`compute_rdms`) |
+| Not implemented | open-shell or non-singlet references, S² control, multiple roots, CLI `method.kind`, spin-resolved RDMs, orbital optimization (CASSCF) |
 
 With no inactive orbitals the method is FCI in the basis. A call that fails
 the bookkeeping check, `2 * active_start + n_alpha + n_beta == nelec`, returns
@@ -34,6 +35,38 @@ where $E_\text{core}$ is the nuclear repulsion plus the energy of the
 `active_start` doubly occupied inactive orbitals, and $H_\text{act}$ carries
 the inactive-core Fock potential in its one-electron part. `e_active` is
 `e_total - e_core`, the quantity PySCF reports as `CASCI.e_cas`.
+
+## Reduced density matrices
+
+With `compute_rdms = true` the result carries the spin-summed RDMs of the
+converged CI vector $C$ over the active orbitals, in the convention of PySCF
+`fci.direct_spin1.make_rdm12`:
+
+$$
+\gamma_{pq} = \langle C|E_{pq}|C\rangle ,\qquad
+\Gamma_{pqrs} = \sum_{\sigma\tau}\langle C|a^\dagger_{p\sigma} a^\dagger_{r\tau}
+a_{s\tau} a_{q\sigma}|C\rangle ,
+$$
+
+`dm1[p,q]` $=\gamma_{pq}$, `dm2[p,q,r,s]` $=\Gamma_{pqrs}$, with
+$E_{pq} = \sum_\sigma a^\dagger_{p\sigma}a_{q\sigma}$ and index $p$ = active
+orbital `active_start + p`. Then
+
+$$
+E_\text{CASCI} = E_\text{core} + \sum_{pq} h_{pq}\gamma_{pq}
+ + \tfrac12 \sum_{pqrs} (pq|rs)\,\Gamma_{pqrs},
+$$
+
+with $h$ (inactive-core potential included) and $(pq|rs)$ the active-space
+integrals returned in the result (`integrals` in Rust, `h_active` and
+`eri_active` in Python). $\operatorname{tr}\gamma = N_\text{act}$ and
+$\sum_{pr}\Gamma_{pprr} = N_\text{act}(N_\text{act}-1)$.
+
+The RDMs are built from the same single-excitation string lists as the sigma
+vector, as vectors $E_{rs}C$ and one $n^2 \times n^2$ matrix product per block
+of determinants; no determinant pair is visited. Cost is
+$O(N_\text{det}\, n^4)$; the scratch is charged to the CAS-CI memory budget.
+Derivation: `crates/ferric-ci/theory.md`.
 
 ## Library use
 
@@ -53,7 +86,25 @@ println!("{res}");            // energy, determinant count, iterations
 ```
 
 `CasCiResult` holds `e_total`, `e_active`, `e_core`, `n_determinants`,
-`ci_vector` (index `ia * n_beta + ib`), `converged` and `iterations`.
+`ci_vector` (index `ia * n_beta + ib`), `converged`, `iterations`,
+`integrals` and, with `compute_rdms`, `rdms` (`dm1`, `dm2`).
+
+From Python:
+
+```python
+import numpy as np
+import ferric
+
+mol = ferric.Molecule.from_xyz("h2o.xyz")
+r = ferric.run_casci(mol, ferric.BasisSet.bundled("6-31g"), 4, (2, 2))
+e = r.e_core + np.einsum("pq,pq", r.h_active, r.dm1) \
+    + 0.5 * np.einsum("pqrs,pqrs", r.eri_active, r.dm2)   # == r.e_total
+print(np.linalg.eigvalsh(r.dm1), r.certificate["grade"])   # natural occupations
+```
+
+`run_casci` runs its own exact-J/K RHF; `active_start` defaults to
+$(N - N_\alpha - N_\beta)/2$. The certificate's capability is `casci`; it is
+not graded.
 Defaults: `conv_thresh = 1e-9`, `max_subspace = 50`, `max_iter = 200`.
 
 ## Limits
@@ -122,6 +173,22 @@ detect a diagonal $\pm1$ similarity of $H$:
    $-\tfrac12\sum_r (pr|rq)$ one-body correction, or the β sign in the
    α-β gather each fail it.
 4. The PySCF energies above fix the spectrum.
+
+The RDMs are checked in `crates/ferric-ci/tests/casci_rdms.rs` on the N2
+CAS(6,6) and H2O CAS(4,4) systems above:
+
+| Check | N2 CAS(6,6) | H2O CAS(4,4) |
+|---|---:|---:|
+| RDM energy vs Davidson eigenvalue | 1.4e-14 Ha | 2.8e-14 Ha |
+| `dm1` vs PySCF `make_rdm12` | 4.6e-13 | 4.9e-15 |
+| `dm2` vs PySCF `make_rdm12` | 9.3e-12 | 1.0e-14 |
+
+PySCF diagonalizes the dense Hamiltonian built from ferric's active-space
+integrals and evaluates `make_rdm12` on that eigenvector
+(`scripts/gen_casci_rdm_refs.py`); the reference is rotated into each run's
+orbitals through the AO overlap. The test also checks the traces
+$N$ and $N(N-1)$, the partial trace, the pair and transpose symmetries, and
+natural occupations in $[0, 2]$.
 
 The grade is on [Capabilities and validation](../reference/validation.md).
 Sources: `crates/ferric-ci/tests/validation_casci.rs` and

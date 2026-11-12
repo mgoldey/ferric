@@ -55,6 +55,7 @@ use numpy::{PyArray1, PyArray2, PyArray3};
 use pyo3::prelude::*;
 
 mod blocks;
+mod ci;
 mod pbc;
 
 // ── Molecule ──
@@ -13995,6 +13996,7 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_rhf_gamma, m)?)?;
     m.add_class::<PyGammaRhfResult>()?;
     pbc::register(m)?;
+    ci::register(m)?;
     pbc::register_omega_chooser(m)?;
     m.add_function(wrap_pyfunction!(run_uhf, m)?)?;
     m.add_function(wrap_pyfunction!(run_rohf, m)?)?;
