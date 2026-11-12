@@ -10288,6 +10288,9 @@ fn run_double_hybrid(
     let ladder = ferric_scf::ladder::ksdft_ladder(&cfg);
     let lr = ferric_scf::ladder::solve_rhf_ladder(&ctx, &mol.inner, &prep, op, &bounds, &ladder)
         .map_err(make_err)?;
+    if let Some(r) = ladder.get(lr.rung_reached) {
+        cfg = r.config.clone();
+    }
     let ks = lr.result;
     if !ks.converged {
         return Err(make_err(ferric_core::FerricError::ScfConvergence {
@@ -10427,8 +10430,12 @@ fn run_dft(
     //
     // `total_energy` below is `e_scf + e_dispersion`, but `gradient_data` is
     // Owned clone so the compute closure below never borrows the PyMolecule
-    // pyclass field across the allow_threads boundary.
-    let emol = mol.inner.clone();
+    // pyclass field across the allow_threads boundary. The basis set's ECP
+    // core counts are applied (no-op without an ECP basis), so `nelec()` is
+    // the valence count the SCF occupies and `dm0` is checked against it, as
+    // in `run_rhf`; every later step uses this molecule.
+    let mut emol = mol.inner.clone();
+    emol.apply_ecp(&basis_set.inner);
     let prep = PreparedBasis::new(&emol, &basis_set.inner).map_err(make_err)?;
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
@@ -10528,7 +10535,7 @@ fn run_dft(
     // `ladder` are built above), so nothing Python-borrowed crosses the
     // closure boundary.
     let fock_hooked = fock_hook.is_some();
-    let rhf = blocks::solve_ks_ladder(
+    let (rhf, rung_cfg) = blocks::solve_ks_ladder(
         py,
         &ctx,
         &emol,
@@ -10580,7 +10587,7 @@ fn run_dft(
     let gradient_data = if with_gradient {
         // Exactly `ks_gradient_closed` unless the SCF's exchange was COSX.
         let mut g = ferric_scf::gradient::restricted_scf_gradient(
-            &mol.inner,
+            &emol,
             &prep,
             &basis_set.inner,
             op,
@@ -10638,7 +10645,7 @@ fn run_dft(
         density_data: rhf.density_total.clone(),
         gradient_data,
         scf_data: rhf,
-        scf_config: cfg,
+        scf_config: rung_cfg,
         fock_hooked,
     };
     Ok(Py::new(py, result)?.into_any())
