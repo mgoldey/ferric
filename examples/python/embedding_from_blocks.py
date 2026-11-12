@@ -63,7 +63,10 @@ def spade_split(ints: ferric.AoIntegrals, c_occ: np.ndarray, atoms_a: list[int])
     s_half = (u * np.sqrt(w)) @ u.T
     rows = [mu for mu, atom in enumerate(ints.ao_atoms()) if atom in atoms_a]
     _, sv, vt = np.linalg.svd((s_half @ c_occ)[rows], full_matrices=True)
-    n_a = int(np.argmax(-np.diff(sv))) + 1 if len(sv) > 1 else len(sv)
+    if len(rows) == len(ints.ao_atoms()):
+        n_a = len(sv)  # A holds every atom: B is empty, no gap to cut
+    else:
+        n_a = int(np.argmax(-np.diff(sv))) + 1 if len(sv) > 1 else len(sv)
     c = c_occ @ vt.T
     return c[:, :n_a], c[:, n_a:], sv
 

@@ -240,3 +240,21 @@ def test_hf_in_dft_embedding_matches_pyscf(name):
     ferric_grid, ferric_full_ks = FERRIC_GRID_BUDGET[name]
     bar = abs(fine["hf_in_low"] - coarse["hf_in_low"]) + ferric_grid + ferric_full_ks
     assert abs(ours["e_emb"] - coarse["hf_in_low"]) < bar
+
+
+def test_hf_in_dft_embedding_with_every_atom_in_a_is_the_full_hf_energy():
+    """A holds every atom: all occupied orbitals stay in A, B is empty, and
+    the embedded energy is the plain HF energy of the molecule. Bar: 1e-8 Ha,
+    ten times the loosest SCF threshold of the two runs (density_conv 1e-9)."""
+    xyz = MOLECULES / "water.xyz"
+    ours = emb_mod.embed(xyz, "cc-pvdz", [0, 1, 2], high=None)
+    nocc = ferric.Molecule.from_xyz(str(xyz)).nelec() // 2
+    assert ours["n_a"] == nocc
+    mol = ferric.Molecule.from_xyz(str(xyz))
+    ref = ferric.run_rhf(
+        mol,
+        ferric.BasisSet.bundled("cc-pvdz"),
+        **emb_mod.EXACT_JK,
+        **emb_mod.TIGHT,
+    )
+    assert abs(ours["e_emb"] - ref.energy) < 1e-8
