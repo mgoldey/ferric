@@ -203,13 +203,12 @@ pub fn build_cavity(mol: &Molecule, cfg: &CavityConfig) -> Result<Vec<Tessera>, 
             "build_cavity: molecule has no atoms".into(),
         ));
     }
-    let (dirs, weights) = lebedev::lebedev(cfg.lebedev_order);
-    if dirs.is_empty() {
-        return Err(FerricError::General(format!(
-            "build_cavity: unsupported lebedev_order {}",
+    let (dirs, weights) = lebedev::try_lebedev(cfg.lebedev_order).map_err(|e| {
+        FerricError::General(format!(
+            "build_cavity: unsupported lebedev_order {} ({e})",
             cfg.lebedev_order
-        )));
-    }
+        ))
+    })?;
     let centers: Vec<[f64; 3]> = mol.atoms.iter().map(|a| [a.x, a.y, a.zpos]).collect();
     let geom = SphereGeometry::new(mol, cfg, dirs.len());
     let radii = &geom.radii;
@@ -395,5 +394,20 @@ mod tests {
         if let Ok(mol) = mol {
             assert!(build_cavity(&mol, &CavityConfig::default()).is_err());
         }
+    }
+
+    /// An order Lebedev does not tabulate is an error naming the key, not a
+    /// panic inside the quadrature table.
+    #[test]
+    fn unsupported_lebedev_order_is_an_error() {
+        let cfg = CavityConfig {
+            lebedev_order: 100,
+            ..CavityConfig::default()
+        };
+        let err = build_cavity(&water(), &cfg).unwrap_err().to_string();
+        assert!(
+            err.contains("build_cavity: unsupported lebedev_order 100"),
+            "{err}"
+        );
     }
 }
