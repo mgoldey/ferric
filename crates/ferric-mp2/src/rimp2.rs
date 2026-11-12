@@ -727,8 +727,12 @@ pub fn stream_dressed_mo_band_budgeted(
             }
             // Dress into only the requested output band, accumulating in place
             // (beta=1): b_flat[P-band_p0, pq] += V^{-1/2}[band, Qchunk] · mo_blk.
+            // 2·band·chunk·width FLOPs per chunk (~143 GFLOP over a C12/cc-pVTZ
+            // (P|ia) stream), on the main thread: `par_gemm` spreads it over
+            // the rayon pool in fixed column blocks at one BLAS thread each,
+            // so the result does not depend on the thread count.
             let msub = v_inv_sqrt.slice(ndarray::s![band_p0..band_p1, blk.p0 + q0..blk.p0 + q1]);
-            ndarray::linalg::general_mat_mul(1.0, &msub, &mo_blk, 1.0, &mut b_flat);
+            ferric_core::linalg::par_gemm(1.0, &msub, &mo_blk.view(), 1.0, &mut b_flat);
             q0 = q1;
         }
         Ok(())

@@ -86,6 +86,9 @@ pub mod blas_probe {
     pub static FOCK_DIAG: AtomicUsize = AtomicUsize::new(0);
     /// Thread count seen inside the last RHF/RKS DIIS commutator.
     pub static DIIS_COMMUTATOR: AtomicUsize = AtomicUsize::new(0);
+    /// Thread count seen inside the last sparse COSX per-block GEMM
+    /// (`cosx_k::CosxK::blocks_sparse`).
+    pub static COSX_BLOCK_GEMM: AtomicUsize = AtomicUsize::new(0);
 
     pub(crate) fn record(slot: &AtomicUsize) {
         slot.store(

@@ -44,9 +44,11 @@
 //! sub-batches of `COSX_SUB_BATCH_POINTS` points (md3c1e: one kernel scratch
 //! per worker). Every parallel write is to its own columns of `G`, the
 //! accumulation order within a column is the fixed shell-pair order, and the
-//! two GEMMs per block run in block order, so the result is bit-identical
-//! across thread counts (block and sub-batch partitions are pure functions of
-//! the point count).
+//! two GEMMs per block run in block order, so at `blas_threads = 1` the result
+//! is bit-identical across rayon thread counts (block and sub-batch partitions
+//! are pure functions of the point count). On the default sparse path those two
+//! GEMMs run between the parallel regions at the serial-section BLAS count
+//! (`opt_in_blas_threads`), which above 1 moves K at the last bit.
 //!
 //! # Sparse half transforms
 //!
@@ -99,6 +101,7 @@ use ferric_core::FerricError;
 use ferric_dft::grid::{build_atomic_grid_pruned, AtomicGridConfig};
 use ferric_integrals::ao_grid::eval_basis_on_points;
 use ferric_integrals::basis_bridge::PreparedBasis;
+use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
 use ferric_integrals::cosx_a::{a_matrix_at_point_with, CosxScreen, PairBounds};
 use ferric_integrals::engine::Engine;
 use ferric_integrals::ffi;
@@ -1576,7 +1579,14 @@ impl<'a> CosxK<'a> {
 
             let t0 = Instant::now();
             let d_la = gather_block(d, &lam.aos, &a.aos);
-            let f_la = d_la.dot(&x_a);
+            // This block's two GEMMs (F here, Ktilde below) run on the main
+            // thread between the parallel A-build regions, so they take the
+            // serial-section BLAS count; at blas_threads = 1 that is the
+            // single-threaded product.
+            let f_la = with_blas_threads(opt_in_blas_threads(), || {
+                crate::blas_probe::record(&crate::blas_probe::COSX_BLOCK_GEMM);
+                d_la.dot(&x_a)
+            });
             let mut f = Array2::<f64>::zeros((nbf, pts.len()));
             for (i, &lambda) in lam.aos.iter().enumerate() {
                 f.row_mut(lambda).assign(&f_la.row(i));
@@ -1597,7 +1607,7 @@ impl<'a> CosxK<'a> {
             t.out_ao_frac += b_aos.len() as f64 / nbf as f64;
             if !b_aos.is_empty() {
                 let g_b = gather_rows_same_layout(&g, &b_aos);
-                let prod = x_a.dot(&g_b.t());
+                let prod = with_blas_threads(opt_in_blas_threads(), || x_a.dot(&g_b.t()));
                 scatter_add(ktilde, &a.aos, &b_aos, &prod);
             }
             t.ktilde_s += t0.elapsed().as_secs_f64();
