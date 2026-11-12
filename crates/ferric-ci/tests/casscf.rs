@@ -515,6 +515,41 @@ fn casscf_refuses_a_nonpositive_step_cap() {
     }
 }
 
+/// A zero, negative, infinite or NaN Hessian floor is refused before the
+/// first CI solve, both by the constructor and by `optimize` itself. An
+/// infinite floor makes the inverse Hessian zero, so every step is zero.
+#[test]
+fn casscf_refuses_a_nonpositive_or_infinite_hessian_floor() {
+    let (mol, prep, rhf) = setup("water.xyz", "sto-3g");
+    let good = CasScfConfig {
+        n_active: 4,
+        n_elec_active: (2, 2),
+        n_core: 3,
+        max_iter: 3,
+        ..Default::default()
+    };
+    let nmo = rhf.mos_r().ncols();
+    let problem = CasScfProblem::new(&mol, &prep, nmo, &good).unwrap();
+    for hdiag_floor in [0.0, -0.1, f64::INFINITY, f64::NAN] {
+        let cfg = CasScfConfig {
+            hdiag_floor,
+            ..good
+        };
+        assert!(
+            CasScfProblem::new(&mol, &prep, nmo, &cfg).is_err(),
+            "constructor accepted hdiag_floor = {hdiag_floor}"
+        );
+        let msg = match optimize(&problem, rhf.mos_r().clone(), &cfg) {
+            Ok(r) => panic!(
+                "optimize accepted hdiag_floor = {hdiag_floor} (converged = {})",
+                r.converged
+            ),
+            Err(e) => e.to_string(),
+        };
+        assert!(msg.contains("hdiag_floor"), "{msg}");
+    }
+}
+
 /// A CI solve that misses its residual threshold is an error, never a
 /// silently used root: one Davidson iteration cannot reach 1e-10 on 36
 /// determinants.
