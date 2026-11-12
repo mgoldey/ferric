@@ -1,5 +1,6 @@
 //! Systems and the CAS-CI run shared by `tests/casci_rdms.rs` and
-//! `examples/casci_rdm_dump.rs` (the input of `scripts/gen_casci_rdm_refs.py`).
+//! `examples/casci_rdm_dump.rs` (the input of `scripts/gen_casci_rdm_refs.py`
+//! and `scripts/gen_casci_rdm3_refs.py`).
 //! Both must run the same RHF and window, or the reference orbitals and the
 //! tested orbitals would differ.
 
@@ -33,10 +34,18 @@ pub struct System {
 }
 
 /// The validation systems of `tests/validation_casci.rs`, same windows.
-pub const SYSTEMS: [System; 2] = [
+pub const SYSTEMS: [System; 3] = [
     System {
         name: "n2_r1.10",
         xyz: "n2_r1.10.xyz",
+        basis: "cc-pvdz",
+        active_start: 4,
+        n_active: 6,
+        n_elec: (3, 3),
+    },
+    System {
+        name: "n2_r2.20",
+        xyz: "n2_r2.20.xyz",
         basis: "cc-pvdz",
         active_start: 4,
         n_active: 6,

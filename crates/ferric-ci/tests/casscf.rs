@@ -639,8 +639,9 @@ fn optimize_refuses_a_config_the_problem_was_not_built_with() {
 }
 
 /// A CI solve that misses its residual threshold is an error, never a
-/// silently used root: one Davidson iteration cannot reach 1e-10 on 36
-/// determinants.
+/// silently used root. On 36 determinants the dense fallback rescues a
+/// starved Davidson, so the threshold is set below the dense residual too
+/// (1e-18, under `ε · ‖H‖` for an O(100) Ha Hamiltonian).
 #[test]
 fn unconverged_ci_is_an_error() {
     let (mol, prep, rhf) = setup("water.xyz", "6-31g");
@@ -649,6 +650,7 @@ fn unconverged_ci_is_an_error() {
         n_elec_active: (2, 2),
         n_core: 3,
         ci_max_iter: 1,
+        ci_conv_thresh: 1e-18,
         ..Default::default()
     };
     let msg = match run_casscf(&mol, &prep, &rhf, &cfg) {

@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! OPENBLAS_NUM_THREADS=1 cargo run --release -p ferric-ci --example casci_rdm_dump -- \
-//!     <n2_r1.10|h2o> <out.json>
+//!     <n2_r1.10|n2_r2.20|h2o> <out.json>
 //! ```
 //!
 //! Writes ferric's active orbitals (`c_act`, AO x active, row-major), the
@@ -12,7 +12,8 @@
 //! runs PySCF on these integrals; PySCF never supplies orbitals to ferric.
 //!
 //! The systems and settings are those of `tests/casci_rdms.rs`
-//! (`casci_rdm_common::SYSTEMS`).
+//! (`casci_rdm_common::SYSTEMS`). The same dump feeds
+//! `scripts/gen_casci_rdm3_refs.py` (`tests/casci_rdm3.rs`).
 
 #[path = "../tests/casci_rdm_common/mod.rs"]
 mod casci_rdm_common;
