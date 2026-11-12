@@ -168,8 +168,7 @@ pub struct CavityConfig {
     /// default (Q-Chem, PySCF's `pcm.py` default `vdw_scale`).
     pub vdw_scale: f64,
     /// Lebedev order used to tessellate each atomic sphere. Must be one of
-    /// the orders supported by `ferric_quadrature::lebedev` (6, 14, 26, 50, 110,
-    /// 302). 110 is a reasonable default resolution for a first correct
+    /// [`crate::config::SUPPORTED_LEBEDEV_ORDERS`]. 110 is a reasonable default resolution for a first correct
     /// implementation (302 for higher accuracy, at higher cost).
     pub lebedev_order: usize,
     /// Skip ghost atoms (no nuclear charge / basis-only centers) when

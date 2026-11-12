@@ -1405,8 +1405,9 @@ fn warn_rhf_not_converged(py: Python<'_>, r: &ferric_scf::result::ScfResult, con
 ///                   experimental binding free energy by 4.5x. An
 ///                   unrecognised name ERRORS rather than falling back to
 ///                   vacuum.
-///   pcm_lebedev_order  tesserae per atomic sphere (6/14/26/50/110/302,
-///                   default 110). Lower is faster and coarser.
+///   pcm_lebedev_order  tesserae per atomic sphere (a positive-weight
+///                   Lebedev order: any grid_angular order except 74, 230,
+///                   266; default 110). Lower is faster and coarser.
 /// State selection:
 ///   stability_descent False (default). When True, check the converged RHF
 ///                   solution's stability and, if the INTERNAL (singlet)

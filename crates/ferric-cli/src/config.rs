@@ -879,8 +879,8 @@ impl PointChargeCfg {
 ///
 /// Exactly one of `epsilon` (a dielectric constant, finite and > 1) or
 /// `solvent` (a name from `ferric_pcm::NAMED_SOLVENTS`, the same table the
-/// Python `solvent=` kwarg reads) is required; `lebedev_order` (6, 14, 26,
-/// 50, 110 or 302; default 110) sets the tesserae per atomic sphere. The
+/// Python `solvent=` kwarg reads) is required; `lebedev_order` (one of
+/// `ferric_pcm::SUPPORTED_LEBEDEV_ORDERS`; default 110) sets the tesserae per atomic sphere. The
 /// remaining `PcmConfig` knobs (Bondi scale 1.2, Gaussian-smeared S/D) stay
 /// at the library defaults, as they do in Python.
 ///
@@ -7225,6 +7225,17 @@ kind = "ccsd"
         assert!(err(&h2("rhf", "neighbour_switch = 1.0", "")).contains("neighbour_switch"));
     }
 
+    /// `[cell] n_angular` carries any Lebedev order to the periodic grid,
+    /// including the refinement orders above 590.
+    #[test]
+    fn cell_n_angular_takes_the_refinement_orders() {
+        assert_eq!(ok(&h2("ksdft", "", "")).n_angular, 302);
+        for n_ang in [974, 1202] {
+            let p = ok(&h2("ksdft", &format!("n_angular = {n_ang}"), ""));
+            assert_eq!((p.n_radial, p.n_angular), (75, n_ang));
+        }
+    }
+
     #[test]
     fn functional_promotes_to_kohn_sham_routes() {
         let f = "[dft]\nfunctional = \"PBE\"";
@@ -9333,7 +9344,7 @@ json = [1, 2]
         );
         // Untabulated angular order is a typed error, not a panic.
         assert!(
-            parse("k_builder = \"cosx\"\ncosx_grid = { radial = 50, angular = 146 }\n")
+            parse("k_builder = \"cosx\"\ncosx_grid = { radial = 50, angular = 147 }\n")
                 .scf
                 .cosx_config(false)
                 .is_err()
@@ -11719,9 +11730,19 @@ mod cli_wired_keys_tests {
 
     #[test]
     fn grid_keys_are_refused_where_they_cannot_apply() {
-        let bad_ang = cfg("ksdft", "energy", 1, "[dft]\ngrid_angular = 146\n");
+        let bad_ang = cfg("ksdft", "energy", 1, "[dft]\ngrid_angular = 147\n");
         let e = bad_ang.validate_dft_section().unwrap_err();
         assert!(e.contains("not a supported Lebedev order"), "{e}");
+        for n_ang in [974, 1202] {
+            let c = cfg(
+                "ksdft",
+                "energy",
+                1,
+                &format!("[dft]\ngrid_angular = {n_ang}\n"),
+            );
+            c.validate_dft_section().unwrap();
+            assert_eq!(c.dft.grid_config(None).unwrap().unwrap().n_angular, n_ang);
+        }
         let zero = cfg("ksdft", "energy", 1, "[dft]\ngrid_radial = 0\n");
         assert!(zero.validate_dft_section().unwrap_err().contains("> 0"));
         let hf = cfg("rhf", "energy", 1, "[dft]\ngrid_radial = 99\n");

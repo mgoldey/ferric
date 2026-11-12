@@ -30,11 +30,17 @@
 //! `[1, 3, idx-1, idx, idx-1]`. At ferric's default `n_ang = 110` that gives
 //! `[50, 86, 86, 110, 86]`; at `n_ang = 302` it gives `[50, 86, 266, 302, 266]`.
 //!
-//! [`crate::lebedev::lebedev`] only implements the subset
-//! `{6, 14, 26, 50, 110, 194, 302, 434, 590}` — it has no
-//! 74/86/146/170/230/266/350 rule. We
-//! therefore SNAP each NWChem-requested order onto a supported one. The snap
-//! direction was **chosen from measurements, not from taste**:
+//! The region table SNAPS each NWChem-requested order onto the snap set
+//! [`PRUNE_SNAP_ORDERS`](crate::prune::PRUNE_SNAP_ORDERS), which holds the
+//! nine orders `{6, 14, 26, 50, 110, 194, 302, 434, 590}` the tables below
+//! were measured on, plus every order above 590.
+//! The other rules below 590 (38, 74, 86, 146, 170, 230, 266, 350) are
+//! buildable (and requestable as the peak `n_angular`), but are not snap
+//! targets: making them targets would change every measured table, e.g. the
+//! KS default at `n_ang = 110` would become `[26, 86, 86, 110, 86]`, and
+//! that has not been measured. No region is assigned more than the peak
+//! order `n_ang`. The snap direction was **chosen from measurements, not
+//! from taste**:
 //!
 //! * **Innermost region** snaps down, all the way to order 26. NWChem asks for
 //!   50; ferric uses 26. Measured cost on the H2O/CH4 E_xc probes below the
@@ -61,6 +67,11 @@
 //! `[26, 110, 110, 110, 110]`, and at `n_ang = 302` it is
 //! `[26, 110, 302, 302, 302]` (434 -> `[26, 110, 434, 434, 434]`, 590 ->
 //! `[26, 110, 434, 590, 434]`; point reductions not measured for those two).
+//! Above 590 the outer regions are NWChem's own (974 ->
+//! `[26, 110, 770, 974, 770]`); peaks below 590 that are not snap targets
+//! cap at the peak (146 -> `[26, 110, 110, 146, 110]`, 170 ->
+//! `[26, 110, 170, 170, 170]`). Neither has been measured against a
+//! flat grid.
 //! Measured reductions at 75 radial shells:
 //! H2O 23.4%, CH4 23.2%, benzene 22.9%; at 99x302, H2O 33.5%.
 //!
@@ -118,15 +129,25 @@ use crate::becke::bragg_slater_bohr;
 /// alias of its own.
 type Result<T> = std::result::Result<T, FerricError>;
 
-/// Angular Lebedev orders this crate can actually generate, ascending.
-/// Mirrors the `match` arms in [`crate::lebedev::lebedev`].
-pub const SUPPORTED_LEBEDEV_ORDERS: [usize; 9] = [6, 14, 26, 50, 110, 194, 302, 434, 590];
+/// Angular Lebedev orders this crate can generate, ascending: the single
+/// list every grid consumer validates against
+/// ([`ferric_quadrature::lebedev::SUPPORTED_ORDERS`]).
+pub const SUPPORTED_LEBEDEV_ORDERS: [usize; 32] = ferric_quadrature::lebedev::SUPPORTED_ORDERS;
 
-/// The full Lebedev-Laikov ladder PySCF indexes into (`LEBEDEV_NGRID[4:18]`, through 590).
+/// The orders the NWChem region table snaps a requested region order onto
+/// (see the module docs): the nine orders its tables were measured on, then
+/// every supported order above 590.
+pub const PRUNE_SNAP_ORDERS: [usize; 24] = [
+    6, 14, 26, 50, 110, 194, 302, 434, 590, 770, 974, 1202, 1454, 1730, 2030, 2354, 2702, 3074,
+    3470, 3890, 4334, 4802, 5294, 5810,
+];
+
+/// The full Lebedev-Laikov ladder PySCF indexes into (`LEBEDEV_NGRID[4:]`).
 /// Only used to reproduce NWChem's *requested* per-region orders before
-/// snapping them onto [`SUPPORTED_LEBEDEV_ORDERS`].
-const NWCHEM_LADDER: [usize; 14] = [
-    38, 50, 74, 86, 110, 146, 170, 194, 230, 266, 302, 350, 434, 590,
+/// snapping them onto [`PRUNE_SNAP_ORDERS`].
+const NWCHEM_LADDER: [usize; 29] = [
+    38, 50, 74, 86, 110, 146, 170, 194, 230, 266, 302, 350, 434, 590, 770, 974, 1202, 1454, 1730,
+    2030, 2354, 2702, 3074, 3470, 3890, 4334, 4802, 5294, 5810,
 ];
 
 /// Lebedev order used in the innermost region (`r/R_bragg` below the first
@@ -140,8 +161,8 @@ const INNER_CORE_ORDER: usize = 26;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PruneScheme {
     /// NWChem-style 5-region radial pruning, as used by PySCF's default
-    /// `nwchem_prune`, with orders snapped onto ferric's supported Lebedev
-    /// set (see the module docs for the snapping rule).
+    /// `nwchem_prune`, with orders snapped onto [`PRUNE_SNAP_ORDERS`]
+    /// (see the module docs for the snapping rule).
     NwchemLike,
     /// The seminumerical-exchange (COSX/SGX) scheme of ORCA's `GridX` grids
     /// as transcribed by PySCF's `sgx_prune` (`pyscf/dft/gen_grid.py`,
@@ -290,15 +311,18 @@ pub fn validate_xc_scheme(scheme: PruneScheme, n_angular: usize) -> Result<()> {
 /// `[7,23,29,35,29]`, `[11,29,35,41,35]`); these are the matching point
 /// counts (degree 5/7/11/17/23/29/35/41 = 14/26/50/110/194/302/434/590).
 /// ORCA 6.1's manual gives the same per-region orders for AngularGrid 1-3
-/// (14/26/50/50/26, 14/26/50/110/50, 26/50/110/194/110). PySCF's last row
-/// (peak 770) is omitted: ferric has no 770-point rule.
-pub const SGX_REGION_ORDERS: [[usize; 5]; 6] = [
+/// (14/26/50/50/26, 14/26/50/110/50, 26/50/110/194/110). PySCF's seventh
+/// row (`[17,35,41,47,41]`, peak 770) is the last row here; its eighth, a
+/// flat 770 that PySCF uses for every peak above 770, is not a peak row and
+/// is omitted.
+pub const SGX_REGION_ORDERS: [[usize; 5]; 7] = [
     [14, 26, 50, 50, 26],
     [14, 26, 50, 110, 50],
     [26, 50, 110, 194, 110],
     [26, 110, 194, 302, 194],
     [26, 194, 302, 434, 302],
     [50, 302, 434, 590, 434],
+    [110, 434, 590, 770, 590],
 ];
 
 /// The [`PruneScheme::Sgx`] row whose peak (region 3) order is `n_ang`.
@@ -308,9 +332,11 @@ pub fn sgx_region_orders(n_ang: usize) -> Result<[usize; 5]> {
         .find(|row| row[3] == n_ang)
         .copied()
         .ok_or_else(|| {
+            let peaks: Vec<String> = SGX_REGION_ORDERS.iter().map(|r| r[3].to_string()).collect();
             FerricError::General(format!(
                 "grid pruning 'sgx': n_angular = {n_ang} is not the peak order of an SGX/ORCA \
-                 GridX row (allowed: 50, 110, 194, 302, 434, 590)"
+                 GridX row (allowed: {})",
+                peaks.join(", ")
             ))
         })
 }
@@ -335,31 +361,15 @@ impl PruneScheme {
     }
 }
 
-/// Snap `requested` onto the nearest supported Lebedev order, breaking ties
-/// and rounding in the direction given by `round_up`.
-///
-/// `round_up = true` returns the smallest supported order `>= requested`
-/// (falling back to the largest supported order if `requested` exceeds it);
-/// `round_up = false` returns the largest supported order `<= requested`
-/// (falling back to the smallest supported order).
-fn snap_order(requested: usize, round_up: bool) -> usize {
-    if SUPPORTED_LEBEDEV_ORDERS.contains(&requested) {
-        return requested;
-    }
-    if round_up {
-        SUPPORTED_LEBEDEV_ORDERS
-            .iter()
-            .copied()
-            .find(|&o| o >= requested)
-            .unwrap_or(SUPPORTED_LEBEDEV_ORDERS[SUPPORTED_LEBEDEV_ORDERS.len() - 1])
-    } else {
-        SUPPORTED_LEBEDEV_ORDERS
-            .iter()
-            .copied()
-            .rev()
-            .find(|&o| o <= requested)
-            .unwrap_or(SUPPORTED_LEBEDEV_ORDERS[0])
-    }
+/// Snap `requested` UP onto [`PRUNE_SNAP_ORDERS`], capped at the peak
+/// order `n_ang`: the smallest snap order `>= requested`, or `n_ang` if
+/// that is smaller (or if no snap order is large enough).
+fn snap_up(requested: usize, n_ang: usize) -> usize {
+    PRUNE_SNAP_ORDERS
+        .iter()
+        .copied()
+        .find(|&o| o >= requested)
+        .map_or(n_ang, |o| o.min(n_ang))
 }
 
 /// The five per-region Lebedev orders for a full angular order `n_ang`,
@@ -411,14 +421,14 @@ pub fn region_orders(n_ang: usize) -> Result<[usize; 5]> {
     ];
     // Innermost region: snap DOWN, and further to ferric's order-26 rule.
     // Regions 1..4 (everything from the core shoulder outwards, including the
-    // tail): snap UP. See the module docs for the measurements that forced
+    // tail): snap UP, never past the peak. See the module docs for the measurements that forced
     // the outermost region to round up rather than down.
     Ok([
         INNER_CORE_ORDER,
-        snap_order(requested[1], true),
-        snap_order(requested[2], true),
-        snap_order(requested[3], true),
-        snap_order(requested[4], true),
+        snap_up(requested[1], n_ang),
+        snap_up(requested[2], n_ang),
+        snap_up(requested[3], n_ang),
+        snap_up(requested[4], n_ang),
     ])
 }
 
@@ -491,6 +501,48 @@ mod tests {
         assert_eq!(region_orders(590).unwrap(), [26, 110, 434, 590, 434]);
     }
 
+    /// Every supported peak order the NWChem table prunes (all of them
+    /// from 74 up; 50 is refused and smaller orders stay flat).
+    fn pruned_peaks() -> Vec<usize> {
+        SUPPORTED_LEBEDEV_ORDERS
+            .iter()
+            .copied()
+            .filter(|&o| o > 50)
+            .collect()
+    }
+
+    /// Catches: a snap set that includes the unmeasured orders below 590
+    /// (which would rewrite the measured tables above), a region above the
+    /// peak, and a missing table for an order above 590.
+    #[test]
+    fn region_tables_for_the_orders_beyond_the_measured_set() {
+        // NWChem: [50, 86, 770, 974, 770].
+        assert_eq!(region_orders(974).unwrap(), [26, 110, 770, 974, 770]);
+        // NWChem: [50, 86, 974, 1202, 974].
+        assert_eq!(region_orders(1202).unwrap(), [26, 110, 974, 1202, 974]);
+        // NWChem: [50, 86, 110, 146, 110]; 110 is a snap target.
+        assert_eq!(region_orders(146).unwrap(), [26, 110, 110, 146, 110]);
+        // NWChem: [50, 86, 146, 170, 146]; 146 snaps up to 194, capped at 170.
+        assert_eq!(region_orders(170).unwrap(), [26, 110, 170, 170, 170]);
+        // NWChem: [50, 86, 50, 74, 50]; region 1 caps at the peak.
+        assert_eq!(region_orders(74).unwrap(), [26, 74, 50, 74, 50]);
+        for n_ang in pruned_peaks() {
+            let t = region_orders(n_ang).unwrap();
+            assert_eq!(t[3], n_ang, "peak of {n_ang}: {t:?}");
+            assert!(t.iter().all(|&o| o <= n_ang), "{n_ang}: {t:?}");
+            for o in &t {
+                assert!(
+                    PRUNE_SNAP_ORDERS.contains(o) || *o == n_ang,
+                    "{n_ang}: {t:?}"
+                );
+            }
+        }
+        // Every snap target is buildable.
+        for o in PRUNE_SNAP_ORDERS {
+            assert!(SUPPORTED_LEBEDEV_ORDERS.contains(&o), "{o}");
+        }
+    }
+
     #[test]
     fn region_table_at_194_uses_the_new_rule() {
         // NWChem wants [50, 86, 170, 194, 170]; 170 has no ferric rule and
@@ -505,6 +557,7 @@ mod tests {
         assert_eq!(sgx_region_orders(194).unwrap(), [26, 50, 110, 194, 110]);
         assert_eq!(sgx_region_orders(110).unwrap(), [14, 26, 50, 110, 50]);
         assert_eq!(sgx_region_orders(302).unwrap(), [26, 110, 194, 302, 194]);
+        assert_eq!(sgx_region_orders(770).unwrap(), [110, 434, 590, 770, 590]);
         assert!(sgx_region_orders(146).is_err());
         assert!(sgx_region_orders(26).is_err());
         for row in SGX_REGION_ORDERS {
@@ -529,8 +582,8 @@ mod tests {
     #[test]
     fn unsupported_orders_are_hard_errors_not_silent_defaults() {
         // Not a ferric-supported Lebedev order at all.
-        assert!(region_orders(86).is_err());
-        assert!(region_orders(146).is_err());
+        assert!(region_orders(87).is_err());
+        assert!(region_orders(6000).is_err());
         // Supported by lebedev() but has no useful pruned table.
         assert!(region_orders(50).is_err());
         // Small orders are left flat rather than errored (NWChem behaviour).
@@ -541,7 +594,7 @@ mod tests {
     fn every_pruned_order_is_generatable() {
         // The whole point of snapping: lebedev() must never be handed an
         // order it cannot build. Panics here would be a live bug.
-        for n_ang in [110, 302, 434, 590] {
+        for n_ang in pruned_peaks() {
             for z in [1, 6, 8, 16, 26] {
                 let (rs, _) = treutler_ahlrichs_m4(z, 75);
                 let orders =
@@ -578,7 +631,7 @@ mod tests {
     fn orders_are_monotone_within_the_core_and_never_exceed_full_order() {
         // No shell may ever be assigned a HIGHER order than the unpruned grid
         // would use -- pruning must only ever remove points.
-        for n_ang in [110, 302, 434, 590] {
+        for n_ang in pruned_peaks() {
             for z in [1, 8, 17] {
                 let (rs, _) = treutler_ahlrichs_m4(z, 75);
                 let orders =
@@ -764,7 +817,8 @@ mod tests {
         assert!(validate_xc_scheme(PruneScheme::NwchemLike, 110).is_ok());
         assert!(validate_xc_scheme(PruneScheme::NwchemRadial, 302).is_ok());
         assert!(validate_xc_scheme(PruneScheme::NwchemLike, 50).is_err());
-        assert!(validate_xc_scheme(PruneScheme::NwchemRadial, 86).is_err());
+        assert!(validate_xc_scheme(PruneScheme::NwchemRadial, 87).is_err());
+        assert!(validate_xc_scheme(PruneScheme::NwchemRadial, 86).is_ok());
         assert!(validate_xc_scheme(PruneScheme::Sgx, 194).is_err());
     }
 }

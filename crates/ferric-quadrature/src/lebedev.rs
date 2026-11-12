@@ -4,19 +4,28 @@
 //! `(x, y, z)` and `weights` integrate `1/(4π)` on the sphere (i.e., they
 //! sum to 1, not 4π — multiply by 4π·r² for spherical integration).
 //!
-//! Supported orders: 6, 14, 26, 50, 110, 194, 302, 434, 590. These are the
-//! standard tabulated Lebedev rules suitable for atomic integration (302 is
-//! the Becke/Furche-default for production DFT; 194, 434 and 590 integrate
-//! spherical harmonics exactly through degree 23, 35 and 41 respectively;
-//! 194 is the valence order of the pruned COSX exchange grids, as in ORCA's
-//! GridX3 and PySCF's SGX level 2).
+//! Supported orders ([`SUPPORTED_ORDERS`]): every Lebedev-Laikov rule PySCF
+//! builds, 6 through 5810 points (algebraic degree 3 through 131). 302 is
+//! the Becke/Furche-default for production DFT; 194 is the valence order of
+//! the pruned COSX exchange grids, as in ORCA's GridX3 and PySCF's SGX
+//! level 2. Three rules carry negative weights: 74 (degree 13), 230
+//! (degree 25) and 266 (degree 27); [`NEGATIVE_WEIGHT_ORDERS`] lists them.
 //!
 //! Reference: Lebedev & Laikov, Russian Acad. Sci. Dokl. Math. 59, 477 (1999).
-//! Tables transcribed from the canonical C source at
-//! `https://people.sc.fsu.edu/~jburkardt/datasets/sphere_lebedev_rule/`.
-//! Orders 194, 434 and 590 were recovered from PySCF's compiled
-//! Lebedev-Laikov generator (`pyscf.dft.gen_grid.MakeAngularGrid`); see the
-//! per-order comments in [`lebedev`] for the cross-check.
+//!
+//! Provenance and licence. ferric is MIT OR Apache-2.0. Orders 6-110 and 302
+//! carry the published Lebedev-Laikov parameters as written out in the match
+//! arms of [`try_lebedev`]; orders 194, 434 and 590 were recovered from
+//! PySCF's compiled Lebedev-Laikov generator (`pyscf.dft.gen_grid.MakeAngularGrid`)
+//! as described in their builders. Every other order comes from the const
+//! tables in `lebedev/tables.rs`, which `scripts/gen_lebedev_tables.py`
+//! writes from the same PySCF generator's OUTPUT (PySCF is Apache-2.0): its
+//! nodes are grouped into O_h orbits and one (weight, parameters) row is
+//! kept per orbit. No generator code is copied from PySCF or from any other
+//! Lebedev implementation; numbers are the published rule parameters, and
+//! the `class_*` expanders below are ferric's own. The same script writes
+//! `testdata/reference/lebedev_pyscf_orbits.json`, against which the tests
+//! compare every order to 1e-14.
 
 use ferric_core::FerricError;
 
@@ -276,8 +285,67 @@ fn rule_590() -> Vec<(Triplet, f64)> {
     v
 }
 
-/// The orders [`lebedev`] and [`try_lebedev`] tabulate.
-pub const SUPPORTED_ORDERS: [usize; 9] = [6, 14, 26, 50, 110, 194, 302, 434, 590];
+mod tables;
+
+/// One Lebedev-Laikov rule as orbit parameters: the optional single orbits
+/// of the octahedron vertices (`a1`), cube vertices (`a2`) and edge midpoints
+/// (`a3`) by weight, then `[weight, p]` rows for [`class_b`] and [`class_c`]
+/// and `[weight, p, q]` rows for [`class_d`].
+struct Rule {
+    order: usize,
+    /// Algebraic degree; read by the tests.
+    #[cfg_attr(not(test), allow(dead_code))]
+    degree: usize,
+    a1: Option<f64>,
+    a2: Option<f64>,
+    a3: Option<f64>,
+    b: &'static [[f64; 2]],
+    c: &'static [[f64; 2]],
+    d: &'static [[f64; 3]],
+}
+
+impl Rule {
+    fn expand(&self) -> Vec<(Triplet, f64)> {
+        let mut v = Vec::with_capacity(self.order);
+        if let Some(w) = self.a1 {
+            v.extend(class_a1(w));
+        }
+        if let Some(w) = self.a2 {
+            v.extend(class_a2(w));
+        }
+        if let Some(w) = self.a3 {
+            v.extend(class_a3(w));
+        }
+        for &[w, p] in self.b {
+            v.extend(class_b(w, p));
+        }
+        for &[w, p] in self.c {
+            v.extend(class_c(w, p));
+        }
+        for &[w, p, q] in self.d {
+            v.extend(class_d(w, p, q));
+        }
+        v
+    }
+}
+
+/// The orders [`lebedev`] and [`try_lebedev`] tabulate, ascending.
+pub const SUPPORTED_ORDERS: [usize; 32] = [
+    6, 14, 26, 38, 50, 74, 86, 110, 146, 170, 194, 230, 266, 302, 350, 434, 590, 770, 974, 1202,
+    1454, 1730, 2030, 2354, 2702, 3074, 3470, 3890, 4334, 4802, 5294, 5810,
+];
+
+/// The supported orders whose rule has negative weights (Lebedev-Laikov
+/// 74, 230 and 266). A consumer that reads a weight as an area, such as a
+/// solvation cavity's tesserae, must refuse these.
+pub const NEGATIVE_WEIGHT_ORDERS: [usize; 3] = [74, 230, 266];
+
+/// [`SUPPORTED_ORDERS`] without [`NEGATIVE_WEIGHT_ORDERS`], ascending: the
+/// rules whose weights are all positive.
+pub const POSITIVE_WEIGHT_ORDERS: [usize; 29] = [
+    6, 14, 26, 38, 50, 86, 110, 146, 170, 194, 302, 350, 434, 590, 770, 974, 1202, 1454, 1730,
+    2030, 2354, 2702, 3074, 3470, 3890, 4334, 4802, 5294, 5810,
+];
 
 /// Return Lebedev `(unit-vectors, weights)` summing to 1 for the given order.
 ///
@@ -369,13 +437,16 @@ pub fn try_lebedev(order: usize) -> Result<(Vec<[f64; 3]>, Vec<f64>), FerricErro
         194 => rule_194(),
         434 => rule_434(),
         590 => rule_590(),
-        _ => {
-            let listed: Vec<String> = SUPPORTED_ORDERS.iter().map(usize::to_string).collect();
-            return Err(FerricError::General(format!(
-                "lebedev: unsupported order {order} (try {})",
-                listed.join(", ")
-            )));
-        }
+        _ => match tables::RULES.iter().find(|r| r.order == order) {
+            Some(rule) => rule.expand(),
+            None => {
+                let listed: Vec<String> = SUPPORTED_ORDERS.iter().map(usize::to_string).collect();
+                return Err(FerricError::General(format!(
+                    "lebedev: unsupported order {order} (try {})",
+                    listed.join(", ")
+                )));
+            }
+        },
     };
     let mut pts = Vec::with_capacity(raw.len());
     let mut wts = Vec::with_capacity(raw.len());
@@ -600,6 +671,335 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// `(order, degree)` of every supported rule: the hand-written arms'
+    /// degrees, then each table rule's own.
+    fn all_degrees() -> Vec<(usize, usize)> {
+        let hand = [
+            (6, 3),
+            (14, 5),
+            (26, 7),
+            (50, 11),
+            (110, 17),
+            (194, 23),
+            (302, 29),
+            (434, 35),
+            (590, 41),
+        ];
+        let mut v: Vec<(usize, usize)> = hand.to_vec();
+        v.extend(tables::RULES.iter().map(|r| (r.order, r.degree)));
+        v.sort_unstable();
+        v
+    }
+
+    /// Exactness on the all-even monomials x^2i y^2j z^2l of every total
+    /// degree through `degree` (relative error, since the exact integrals are
+    /// small), then zonal harmonics `P_l(u·r)` about four fixed generic axes
+    /// `u` for every `l` through `degree` (absolute: `|P_l| <= 1`, exact
+    /// integral 0 for `l >= 1`) and, as the negative control, at
+    /// `l = degree + 1`. Odd-exponent monomials are covered by
+    /// `every_order_is_closed_under_sign_flips` (a sign-flip-closed rule with
+    /// equal partner weights sums each of them to zero pairwise).
+    /// Precomputed even powers keep the 5810-point, degree-131 check cheap;
+    /// the generic `check_monomial_exactness` stays for the hand-written
+    /// orders.
+    ///
+    /// The control is a zonal harmonic, not a monomial: at high degree a
+    /// harmonic's monomial expansion cancels heavily, so a rule that misses
+    /// `Y_{L+1}` by O(1e-4) still integrates every degree-(L+1) monomial to
+    /// ~1e-14 relative (measured: 3890-5810 at 1.4e-14 to 2.3e-14), and a
+    /// monomial control cannot fail.
+    ///
+    /// Bars (measured over the 23 table orders, 2026-11-12; each test prints
+    /// its own `MEASURED` line): worst in-degree monomial relative error
+    /// 5.1e-14 (4334) against the 1e-12 bar, worst in-degree zonal sum
+    /// 4.1e-16 against 1e-13; the smallest control is 5.7e-3 (2354) against
+    /// 1e-7.
+    fn check_even_monomial_exactness(order: usize, degree: usize) -> (f64, f64, f64) {
+        let (pts, wts) = lebedev(order);
+        let kmax = degree / 2;
+        let pow = |c: usize| -> Vec<Vec<f64>> {
+            pts.iter()
+                .map(|p| {
+                    let s = p[c] * p[c];
+                    let mut row = vec![1.0; kmax + 1];
+                    for k in 1..=kmax {
+                        row[k] = row[k - 1] * s;
+                    }
+                    row
+                })
+                .collect()
+        };
+        let (xs, ys, zs) = (pow(0), pow(1), pow(2));
+        let mut inside = 0.0_f64;
+        for k in 0..=kmax {
+            for i in 0..=k {
+                for j in 0..=(k - i) {
+                    let l = k - i - j;
+                    let q: f64 = (0..pts.len())
+                        .map(|g| wts[g] * xs[g][i] * ys[g][j] * zs[g][l])
+                        .sum();
+                    let exact = sphere_monomial_mean(2 * i as i32, 2 * j as i32, 2 * l as i32);
+                    let err = ((q - exact) / exact).abs();
+                    assert!(
+                        err < 1e-12,
+                        "Lebedev-{order} should integrate x^{}y^{}z^{} exactly, rel err {err:.3e}",
+                        2 * i,
+                        2 * j,
+                        2 * l
+                    );
+                    inside = inside.max(err);
+                }
+            }
+        }
+        // Zonal harmonics: S_l = sum_g w_g P_l(u . r_g), Legendre recurrence.
+        let axes: [[f64; 3]; 4] = [
+            [1.0, 0.3, 0.1],
+            [0.2, 0.7, -0.5],
+            [-0.6, 0.15, 0.8],
+            [0.35, -0.9, 0.25],
+        ];
+        let lmax = degree + 1;
+        let mut zonal_inside = 0.0_f64;
+        let mut control = 0.0_f64;
+        for u in axes {
+            let n = (u[0] * u[0] + u[1] * u[1] + u[2] * u[2]).sqrt();
+            let u = u.map(|c| c / n);
+            let mut sums = vec![0.0_f64; lmax + 1];
+            for (p, &w) in pts.iter().zip(&wts) {
+                let t = p[0] * u[0] + p[1] * u[1] + p[2] * u[2];
+                let (mut pm, mut pl) = (1.0_f64, t);
+                sums[0] += w;
+                sums[1] += w * t;
+                for l in 1..lmax {
+                    let next = ((2 * l + 1) as f64 * t * pl - l as f64 * pm) / (l + 1) as f64;
+                    pm = pl;
+                    pl = next;
+                    sums[l + 1] += w * pl;
+                }
+            }
+            for (l, &s_l) in sums.iter().enumerate().take(degree + 1).skip(1) {
+                assert!(
+                    s_l.abs() < 1e-13,
+                    "Lebedev-{order} should integrate P_{l}(u.r) to 0, got {s_l:.3e} (u {u:?})"
+                );
+                zonal_inside = zonal_inside.max(s_l.abs());
+            }
+            control = control.max(sums[lmax].abs());
+        }
+        assert!(
+            control > 1e-7,
+            "negative control: Lebedev-{order} is only degree {degree}, yet P_{lmax}(u.r) \
+             integrated to within {control:.3e} about every axis"
+        );
+        (inside, zonal_inside, control)
+    }
+
+    macro_rules! exactness_tests {
+        ($($name:ident: $order:expr, $degree:expr;)*) => {$(
+            #[test]
+            fn $name() {
+                let (pts, _) = lebedev($order);
+                assert_eq!(pts.len(), $order);
+                check_weight_sum($order, 1e-13);
+                check_unit_norm($order);
+                let (inside, zonal, control) = check_even_monomial_exactness($order, $degree);
+                println!(
+                    "MEASURED {}: monomial rel {inside:.2e}, zonal {zonal:.2e} through degree {}; \
+                     zonal {control:.2e} at {}",
+                    $order, $degree, $degree + 1
+                );
+            }
+        )*};
+    }
+
+    exactness_tests! {
+        lebedev_38_is_exact_through_degree_9: 38, 9;
+        lebedev_74_is_exact_through_degree_13: 74, 13;
+        lebedev_86_is_exact_through_degree_15: 86, 15;
+        lebedev_146_is_exact_through_degree_19: 146, 19;
+        lebedev_170_is_exact_through_degree_21: 170, 21;
+        lebedev_230_is_exact_through_degree_25: 230, 25;
+        lebedev_266_is_exact_through_degree_27: 266, 27;
+        lebedev_350_is_exact_through_degree_31: 350, 31;
+        lebedev_770_is_exact_through_degree_47: 770, 47;
+        lebedev_974_is_exact_through_degree_53: 974, 53;
+        lebedev_1202_is_exact_through_degree_59: 1202, 59;
+        lebedev_1454_is_exact_through_degree_65: 1454, 65;
+        lebedev_1730_is_exact_through_degree_71: 1730, 71;
+        lebedev_2030_is_exact_through_degree_77: 2030, 77;
+        lebedev_2354_is_exact_through_degree_83: 2354, 83;
+        lebedev_2702_is_exact_through_degree_89: 2702, 89;
+        lebedev_3074_is_exact_through_degree_95: 3074, 95;
+        lebedev_3470_is_exact_through_degree_101: 3470, 101;
+        lebedev_3890_is_exact_through_degree_107: 3890, 107;
+        lebedev_4334_is_exact_through_degree_113: 4334, 113;
+        lebedev_4802_is_exact_through_degree_119: 4802, 119;
+        lebedev_5294_is_exact_through_degree_125: 5294, 125;
+        lebedev_5810_is_exact_through_degree_131: 5810, 131;
+    }
+
+    /// The macro list above, the table rules and [`SUPPORTED_ORDERS`] name
+    /// the same orders and degrees; the even-monomial check also holds for
+    /// the hand-written orders.
+    #[test]
+    fn degrees_cover_every_supported_order() {
+        let degs = all_degrees();
+        let orders: Vec<usize> = degs.iter().map(|d| d.0).collect();
+        assert_eq!(orders, SUPPORTED_ORDERS.to_vec());
+        for (order, degree) in degs {
+            // Lebedev-Laikov degree ladder: 3, 5, 7, then odd steps.
+            assert_eq!(degree % 2, 1, "order {order}");
+        }
+        for (order, degree) in [(194, 23), (302, 29), (434, 35), (590, 41)] {
+            check_even_monomial_exactness(order, degree);
+        }
+    }
+
+    /// Every rule is closed under each coordinate sign flip with equal
+    /// partner weights, so each monomial with an odd exponent sums to zero.
+    #[test]
+    fn every_order_is_closed_under_sign_flips() {
+        for order in SUPPORTED_ORDERS {
+            let (pts, wts) = lebedev(order);
+            let key = |p: [f64; 3]| p.map(|x| (x * 1e12).round() as i64);
+            let index: std::collections::HashMap<[i64; 3], f64> =
+                pts.iter().zip(&wts).map(|(p, &w)| (key(*p), w)).collect();
+            assert_eq!(index.len(), order, "order {order}: repeated points");
+            for (p, &w) in pts.iter().zip(&wts) {
+                for axis in 0..3 {
+                    let mut f = *p;
+                    f[axis] = -f[axis];
+                    let partner = index.get(&key(f)).copied();
+                    assert_eq!(
+                        partner,
+                        Some(w),
+                        "order {order}: {p:?} flipped on axis {axis}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// One orbit of a rule in the reference layout: canonical `(a, b, c)`
+    /// with `a >= b >= c >= 0`, weight, point count.
+    type Orbit = ([f64; 3], f64, usize);
+
+    /// Reduce a rule to its orbits, the same reduction the generator applies
+    /// to PySCF's nodes.
+    fn canonical_orbits(order: usize) -> Vec<Orbit> {
+        let (pts, wts) = lebedev(order);
+        let mut canon: Vec<([f64; 3], f64)> = pts
+            .iter()
+            .zip(&wts)
+            .map(|(p, &w)| {
+                let mut a = p.map(f64::abs);
+                a.sort_by(|x, y| y.total_cmp(x));
+                (a, w)
+            })
+            .collect();
+        canon.sort_by(|x, y| x.0.partial_cmp(&y.0).unwrap());
+        let mut out: Vec<Orbit> = Vec::new();
+        for (a, w) in canon {
+            match out.last_mut() {
+                Some((rep, rw, n)) if (0..3).all(|k| (rep[k] - a[k]).abs() < 1e-12) => {
+                    assert_eq!(
+                        *rw, w,
+                        "order {order}: weights differ within the orbit of {rep:?}"
+                    );
+                    *n += 1;
+                }
+                _ => out.push((a, w, 1)),
+            }
+        }
+        out
+    }
+
+    /// Every order equals PySCF's rule (`MakeAngularGrid`) as orbit lists:
+    /// same orbits, same point counts, coordinates and weights within 1e-14.
+    /// Both rules consist of whole O_h orbits with one weight each (the
+    /// generator asserts it for PySCF; `every_order_is_closed_under_sign_flips`
+    /// and the per-orbit weight assert here for ferric), so this is the
+    /// comparison of the sorted point and weight sets.
+    ///
+    /// Measured 2026-11-12: max |Δ coordinate| 3.9e-16, max |Δ weight| / w
+    /// 3.3e-16 over all 32 orders.
+    #[test]
+    fn every_order_matches_pyscf() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../testdata/reference/lebedev_pyscf_orbits.json");
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path:?}: {e}"));
+        let json: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let orders = json["orders"].as_object().unwrap();
+        let mut listed: Vec<usize> = orders.keys().map(|k| k.parse().unwrap()).collect();
+        listed.sort_unstable();
+        assert_eq!(listed, SUPPORTED_ORDERS.to_vec());
+        let (mut dx, mut dw) = (0.0_f64, 0.0_f64);
+        for (order, degree) in all_degrees() {
+            let entry = &orders[&order.to_string()];
+            assert_eq!(
+                entry["degree"].as_u64(),
+                Some(degree as u64),
+                "order {order}"
+            );
+            let reference: Vec<Orbit> = entry["orbits"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|o| {
+                    let f = |k: usize| o[k].as_f64().unwrap();
+                    ([f(0), f(1), f(2)], f(3), o[4].as_u64().unwrap() as usize)
+                })
+                .collect();
+            let ours = canonical_orbits(order);
+            assert_eq!(ours.len(), reference.len(), "order {order}: orbit count");
+            for (o, r) in ours.iter().zip(&reference) {
+                assert_eq!(
+                    o.2, r.2,
+                    "order {order}: orbit {:?} has {} points, PySCF {}",
+                    r.0, o.2, r.2
+                );
+                for k in 0..3 {
+                    dx = dx.max((o.0[k] - r.0[k]).abs());
+                }
+                dw = dw.max(((o.1 - r.1) / r.1).abs());
+                assert!(
+                    (0..3).all(|k| (o.0[k] - r.0[k]).abs() < 1e-14)
+                        && ((o.1 - r.1) / r.1).abs() < 1e-14,
+                    "order {order}: orbit {:?} w {:e} vs PySCF {:?} w {:e}",
+                    o.0,
+                    o.1,
+                    r.0,
+                    r.1
+                );
+            }
+        }
+        println!("max |dx| {dx:.2e}, max rel |dw| {dw:.2e}");
+    }
+
+    /// Exactly [`NEGATIVE_WEIGHT_ORDERS`] have a negative weight, and
+    /// [`POSITIVE_WEIGHT_ORDERS`] is the rest.
+    #[test]
+    fn negative_weight_orders_are_exactly_listed() {
+        for order in SUPPORTED_ORDERS {
+            let negative = lebedev(order).1.iter().any(|&w| w < 0.0);
+            assert_eq!(
+                negative,
+                NEGATIVE_WEIGHT_ORDERS.contains(&order),
+                "order {order}"
+            );
+            assert_eq!(
+                !negative,
+                POSITIVE_WEIGHT_ORDERS.contains(&order),
+                "order {order}"
+            );
+        }
+        assert_eq!(
+            POSITIVE_WEIGHT_ORDERS.len() + NEGATIVE_WEIGHT_ORDERS.len(),
+            SUPPORTED_ORDERS.len()
+        );
+        assert!(POSITIVE_WEIGHT_ORDERS.windows(2).all(|p| p[0] < p[1]));
     }
 
     #[test]

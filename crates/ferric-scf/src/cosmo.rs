@@ -227,8 +227,9 @@ pub struct CosmoConfig {
     #[serde(default = "default_radius_scale")]
     pub radius_scale: f64,
     /// Lebedev angular grid order per atomic sphere. Default
-    /// [`DEFAULT_LEBEDEV_ORDER`]. Must be one of the orders supported by
-    /// [`ferric_dft::lebedev::lebedev`] (6, 14, 26, 50, 110, 302).
+    /// [`DEFAULT_LEBEDEV_ORDER`]. Must be one of
+    /// [`ferric_pcm::SUPPORTED_LEBEDEV_ORDERS`] (the positive-weight Lebedev
+    /// rules, which have a Gaussian-charge width).
     #[serde(default = "default_lebedev_order")]
     pub lebedev_order: usize,
     /// Segment-interaction (`S`-matrix) formulation. Default
@@ -281,9 +282,11 @@ impl CosmoConfig {
                 self.radius_scale
             )));
         }
-        if !matches!(self.lebedev_order, 6 | 14 | 26 | 50 | 110 | 302) {
+        if !ferric_pcm::SUPPORTED_LEBEDEV_ORDERS.contains(&self.lebedev_order) {
             return Err(FerricError::General(format!(
-                "cosmo: lebedev_order must be one of 6, 14, 26, 50, 110, 302, got {}",
+                "cosmo: lebedev_order must be one of {:?} (the positive-weight Lebedev rules \
+                 with a Gaussian-charge width), got {}",
+                ferric_pcm::SUPPORTED_LEBEDEV_ORDERS,
                 self.lebedev_order
             )));
         }
@@ -788,11 +791,21 @@ mod tests {
 
     #[test]
     fn config_rejects_invalid_lebedev_order() {
-        let cfg = CosmoConfig {
-            lebedev_order: 7,
-            ..Default::default()
-        };
-        assert!(cfg.validate().is_err());
+        // 7 is no Lebedev rule; 230 is one, with negative weights.
+        for order in [7, 230] {
+            let cfg = CosmoConfig {
+                lebedev_order: order,
+                ..Default::default()
+            };
+            assert!(cfg.validate().is_err(), "{order}");
+        }
+        for order in ferric_pcm::SUPPORTED_LEBEDEV_ORDERS {
+            let cfg = CosmoConfig {
+                lebedev_order: order,
+                ..Default::default()
+            };
+            assert!(cfg.validate().is_ok(), "{order}");
+        }
     }
 
     #[test]

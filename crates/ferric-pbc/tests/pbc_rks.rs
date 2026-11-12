@@ -571,20 +571,26 @@ fn larger_lebedev_orders_refine_the_periodic_energy() {
     assert!(ratio < REFINE_RATIO_BAR, "590/302 error ratio {ratio:.4}");
 }
 
-/// Orders outside ferric's Lebedev table (974 included, the order the #228
-/// bench README first asked for) are a typed `InvalidGrid`, and pruning is
+/// Orders outside ferric's Lebedev table are a typed `InvalidGrid`, the
+/// refinement orders above 590 (974 and 1202 here) build, and pruning is
 /// still refused, at every refinement order.
 #[test]
 fn unsupported_lebedev_orders_are_invalid_grid() {
     let cell = h2_cell(4.0);
-    for n_ang in [0, 7, 38, 146, 974, 5810] {
+    for n_ang in [0, 7, 39, 147, 975, 5811] {
         let e = PeriodicGrid::build(&cell, &PeriodicGridConfig::with_size(75, n_ang))
             .unwrap_err()
             .to_string();
         assert!(e.contains("invalid n_angular"), "{n_ang}: {e}");
         assert!(e.contains(&n_ang.to_string()), "{n_ang}: {e}");
     }
-    for n_ang in [302, 434, 590] {
+    for n_ang in [974, 1202] {
+        let grid = PeriodicGrid::build(&cell, &PeriodicGridConfig::with_size(10, n_ang))
+            .unwrap_or_else(|e| panic!("{n_ang}: {e}"));
+        // 2 atoms x 10 shells x n_ang directions, before the zero-weight cut.
+        assert_eq!(grid.n_generated(), 2 * 10 * n_ang, "{n_ang}");
+    }
+    for n_ang in [302, 434, 590, 974] {
         let pruned = PeriodicGridConfig {
             prune: Some(PruneScheme::NwchemLike),
             ..PeriodicGridConfig::with_size(75, n_ang)
