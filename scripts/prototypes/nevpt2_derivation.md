@@ -386,9 +386,9 @@ Rust implementation can be checked term group by term group against it.
   independently.
 * CI convergence is not in the bar: both codes use CI residuals at or below
   1e-10, and E_PT2 is first order in the CI error.
-* Open-shell references (n_alpha != n_beta) are not exercised; the
-  construction is spin-free and does not assume a singlet, but ferric's
-  run_casscf supports n_alpha == n_beta only.
+* Open-shell references are not exercised. The prototype starts from RHF,
+  which needs an even-electron molecule; the construction is spin-free and
+  does not assume a singlet.
 * Multi-state or quasi-degenerate NEVPT2 and the partially contracted
   variant are out of scope.
 
