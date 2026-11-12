@@ -298,3 +298,6 @@ pub use ladder::{default_ladder, ksdft_ladder, solve_rhf_ladder, LadderResult, R
 
 pub mod df_increments;
 pub use df_increments::{solve_rhf_with_df_increments, DfIncrementsResult};
+
+// Documented by the module's own `//!` docs.
+pub mod x2c;

@@ -493,6 +493,38 @@ against the Rust drivers: `rhf_from_blocks.py` (DIIS RHF from `hcore()` and
 `cis_from_blocks.py` (singlet CIS from `df_mo` or `ao2mo`, equal to
 `run_tddft(method="tda")` and PySCF `TDA`).
 
+### Spin-free X2C core Hamiltonian
+
+`ints.hcore_x2c(c=None)` is the spin-free X2C-1e core Hamiltonian, the
+matrix that replaces `T + V`. It is built in the uncontracted basis (one shell
+per unique exponent and angular momentum) and contracted back, with the
+settings of PySCF `scf.RHF(mol).sfx2c1e()` (`approx='1e'`,
+`xuncontract=True`); `c` defaults to PySCF's 137.03599967994. Only the core
+Hamiltonian is transformed: the two-electron interaction and property
+operators stay nonrelativistic. A basis with an ECP atom raises `ValueError`,
+since the ECP already carries the core's scalar relativity. There is no
+`relativistic=` driver keyword; a scalar-relativistic SCF runs through a
+constant Fock hook, which must return `Tr[D dH]` as its energy (not half of
+it):
+
+<!-- doctest -->
+```python
+neon = ferric.Molecule.from_xyz_string("1\n\nNe 0 0 0\n")
+dz = ferric.BasisSet.bundled("cc-pvdz")
+ints_ne = ferric.AoIntegrals(neon, dz)
+dh = ints_ne.hcore_x2c() - ints_ne.hcore()
+nr = ferric.run_rhf(neon, dz)
+rel = ferric.run_rhf(neon, dz, fock_hook=lambda d: (float(np.sum(d * dh)), dh))
+print(f"{rel.energy - nr.energy:.5f}")
+```
+
+```text
+-0.12694
+```
+
+PySCF gives −0.1269416 Ha for the same shift. Validation is in the
+[Python entry points](../reference/validation.md#python-entry-points) table.
+
 ### Fock hooks and starting densities
 
 `fock_hook=hook` on `run_rhf` and `run_dft` adds one density-dependent term:

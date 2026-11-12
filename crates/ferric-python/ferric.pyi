@@ -722,6 +722,12 @@ class AoIntegrals:
         ECP-effective charges as nuclear(): PySCF's int1e_pnucp, the
         small-component potential W / (4 c^2) of spin-free X2C and DKH."""
         ...
+    def hcore_x2c(self, c: float | None = None) -> NDArray[np.float64]:
+        """Spin-free X2C-1e core Hamiltonian (nao x nao), replacing T + V:
+        built in the uncontracted basis and contracted back, as PySCF sfx2c1e
+        (approx='1e', xuncontract=True). c in atomic units, default PySCF's
+        137.03599967994. ValueError for an ECP atom or a non-positive c."""
+        ...
 
 class XcFunctional:
     """An XC functional on one molecule's grid, from AoIntegrals.xc_functional.

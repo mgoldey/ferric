@@ -1210,6 +1210,29 @@ impl PyAoIntegrals {
             .map_err(make_err)?;
         Ok(PyArray2::from_owned_array(py, w))
     }
+    /// Spin-free X2C-1e core Hamiltonian (nao × nao), replacing `T + V`:
+    /// built in the uncontracted basis and contracted back, as PySCF
+    /// `sfx2c1e` (`approx='1e'`, `xuncontract=True`). `c` is the speed of
+    /// light in atomic units, default PySCF's 137.03599967994. Raises
+    /// `ValueError` for a basis with an ECP atom or a non-positive `c`.
+    #[pyo3(signature = (c=None))]
+    fn hcore_x2c<'py>(
+        &self,
+        py: Python<'py>,
+        c: Option<f64>,
+    ) -> PyResult<Bound<'py, PyArray2<f64>>> {
+        let c = c.unwrap_or(ferric_scf::x2c::LIGHT_SPEED);
+        let (mol, bs) = (&self.mol, &self.bs);
+        let h = py
+            .allow_threads(|| ferric_scf::x2c::x2c1e_hcore(mol, bs, c))
+            .map_err(|e| match e {
+                FerricError::Basis(_) | FerricError::General(_) => {
+                    PyValueError::new_err(e.to_string())
+                }
+                other => make_err(other),
+            })?;
+        Ok(PyArray2::from_owned_array(py, h))
+    }
     fn __repr__(&self) -> String {
         format!(
             "AoIntegrals(basis={:?}, natoms={}, nao={})",
