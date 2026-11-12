@@ -138,6 +138,28 @@ auxiliary basis should match the orbital basis. This is
 | The whole Python surface | [Python bindings](./python.md) |
 | Coming from PySCF | [For PySCF users](./pyscf-users.md) |
 | Know what to trust | [Capabilities and validation](../reference/validation.md#anchors) |
+| Run it in a browser, nothing installed locally | [Notebooks](#notebooks) |
+
+### Notebooks
+
+Five notebooks under
+[`examples/notebooks/`](https://github.com/mgoldey/ferric/tree/main/examples/notebooks)
+install `ferric` from PyPI in their first cell and run on a Google Colab CPU
+runtime, each in about two minutes or less. Each asserts the numbers it prints,
+so a cell that finishes has reproduced its reference value.
+
+| Notebook | What it shows |
+|---|---|
+| [01 quickstart](https://colab.research.google.com/github/mgoldey/ferric/blob/main/examples/notebooks/01_quickstart.ipynb) | HF and RI-MP2 energies and the validation certificate |
+| [02 orbitals and ESP](https://colab.research.google.com/github/mgoldey/ferric/blob/main/examples/notebooks/02_orbitals_and_esp.ipynb) | HOMO, LUMO and density cubes and the electrostatic potential, in py3Dmol |
+| [03 solvent and QM/MM](https://colab.research.google.com/github/mgoldey/ferric/blob/main/examples/notebooks/03_solvent_and_qmmm.ipynb) | IEF-PCM solvation and a QM/MM water dimer |
+| [04 periodic H2](https://colab.research.google.com/github/mgoldey/ferric/blob/main/examples/notebooks/04_periodic_h2.ipynb) | k-point HF with analytic forces and stress, checked by finite difference |
+| [05 ML features](https://colab.research.google.com/github/mgoldey/ferric/blob/main/examples/notebooks/05_ml_features.ipynb) | the NPZ feature bundle for three molecules |
+
+The 3-D views come from `ferric.viz`, which imports
+[py3Dmol](https://pypi.org/project/py3Dmol/) only when a view is drawn:
+`viz.show_molecule(mol)`, `viz.show_cube("homo.cube", mol=mol)` and
+`viz.show_surface_values(mol, points, values)`.
 
 ### Running the bundled examples
 
