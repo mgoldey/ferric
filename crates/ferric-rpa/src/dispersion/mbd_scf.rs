@@ -199,6 +199,10 @@ pub fn live_free_atom_volume_with(
     // A free atom is solved in the input frame, never point-group blocked.
     free_cfg.symmetry = false;
     free_cfg.irrep_nelec = None;
+    // A starting density (`dm0`) has the molecule's basis dimension; the free
+    // atom starts from its own default guess.
+    free_cfg.init_guess_density = None;
+    free_cfg.cdft_lambda_init = None;
     free_cfg.mom_after_iter = if mult > 1 { 5 } else { 0 };
     free_cfg.max_iter = free_cfg.max_iter.max(200);
     if mult > 1 && free_cfg.xc.is_some() {
