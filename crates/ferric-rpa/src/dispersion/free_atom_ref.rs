@@ -36,7 +36,7 @@
 //!
 //! Z=19–54 α_free/C6_free are from Gould & Bučko JCTC 12, 3603 (2016) Table 2
 //! (same Chu-Dalgarno lineage as TS-PRL Table I; cross-checks vs the Z≤18 rows
-//! agree <5% — see docs/superpowers/specs/refs/source-crosscheck.md), except
+//! agree <5% — see wiki/superpowers/specs/refs/source-crosscheck.md), except
 //! Pd. Gould–Bučko's Pd (α 61.7, C6 628) is not the closed-shell 4d¹⁰ ground
 //! state: relativistic CCSDTQP gives α = 26.14(10) a.u. (Jerabek, Schwerdtfeger,
 //! Nagle, PRA 98, 012508 (2018); the 2018/2025 Schwerdtfeger–Nagle tables

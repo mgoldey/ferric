@@ -750,7 +750,7 @@ pub fn stream_dressed_mo_band_budgeted(
 /// RI-MP2 with a ROBUST (Dunlap) fit under an ATTENUATED fitting metric.
 ///
 /// EXPERIMENTAL — attenuated-fitting-metric spike. See
-/// `docs/superpowers/specs/2026-07-25-attenuated-ri-fitting-metric-design.md`.
+/// `wiki/superpowers/specs/2026-07-25-attenuated-ri-fitting-metric-design.md`.
 ///
 /// # Why this exists (and why the naive version does not work)
 ///

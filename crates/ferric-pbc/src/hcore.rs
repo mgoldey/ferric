@@ -1,5 +1,5 @@
 //! Gamma-point periodic one-electron matrices and nuclear repulsion
-//! (Stage 1 step 4, `reference/pbc/stage1-design.md` §3).
+//! (Stage 1 step 4, `wiki/archive/ferric-pbc-residue-2026-10-25/reference/pbc/stage1-design.md` §3).
 //!
 //! ```text
 //! S[μ,ν] = Σ_L ⟨μ_0|ν_L⟩            T[μ,ν] = Σ_L ⟨μ_0|−½∇²|ν_L⟩
@@ -12,7 +12,7 @@
 //!
 //! with `ν_L(r) = ν(r − L)` and `P` the lattice-summed pair FT
 //! ([`crate::pair_ft()`]). This is exactly `build_integrals` of
-//! `reference/pbc/pbc_gamma.py`:
+//! `wiki/archive/ferric-pbc-residue-2026-10-25/reference/pbc/pbc_gamma.py`:
 //!
 //! * **G = 0 bookkeeping.** The real-space erfc sum implicitly contains the
 //!   average potential `−Z_tot π/(ω²Ω)` (∫ erfc(ωr)/r d³r = π/ω²); `V_G0`
@@ -20,7 +20,7 @@
 //!   (cancels against the same term of J for a neutral cell, and matches the
 //!   pure reciprocal-space [`pure_aft_nuclear`] exactly).
 //! * **Nuclei as Gaussians.** libint2 2.7.2's `erf_nuclear`/`erfc_nuclear`
-//!   are wrong (reference/pbc/FINDINGS.md, "Iteration 2"), so the SR
+//!   are wrong (wiki/archive/ferric-pbc-residue-2026-10-25/reference/pbc/FINDINGS.md, "Iteration 2"), so the SR
 //!   attraction uses the design's option (b): every nucleus is a unit-
 //!   normalised s Gaussian of exponent ζ ([`GAUSSIAN_NUCLEUS_EXPONENT`],
 //!   PySCF's `fakemol_for_charges` value) in a [`SiteBasis`], and
@@ -93,7 +93,7 @@
 //!
 //!   `c = 2.5` is within 1.4% of each cell's best grid point (0.5%, 0.3%,
 //!   1.4%); `c = 2.25` costs +3% on diamond_conv and `c = 2.75` +9% on dry
-//!   ice. MEASURED on diamond_prim at 0.96 (reference/pbc/FINDINGS.md,
+//!   ice. MEASURED on diamond_prim at 0.96 (wiki/archive/ferric-pbc-residue-2026-10-25/reference/pbc/FINDINGS.md,
 //!   "Benchmark series", 2026-09-28): hcore SR 56.1 → 26.5 s, LR 0.8 →
 //!   4.7 s, total run 106.5 → 80.6 s, energy moved 1.5e-11. The diamond_conv
 //!   and dry-ice rows are not measured.

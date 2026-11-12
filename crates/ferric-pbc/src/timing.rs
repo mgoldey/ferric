@@ -1,5 +1,5 @@
 //! Stage timers for the periodic builds and SCF (Performance plan item 0,
-//! `reference/pbc/FINDINGS.md` "Performance plan (research) — 2026-09-25").
+//! `wiki/archive/ferric-pbc-residue-2026-10-25/reference/pbc/FINDINGS.md` "Performance plan (research) — 2026-09-25").
 //!
 //! Every later optimisation in that plan is stated as a RATIO of stage times,
 //! so the stages must be measured, not estimated. The timers here are

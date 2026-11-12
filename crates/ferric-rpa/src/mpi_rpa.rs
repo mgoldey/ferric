@@ -51,13 +51,13 @@
 //! identically (replicated) on every rank. It operates on the aux-basis
 //! dielectric built from `b_ov`, which is itself still fully replicated per
 //! rank (the RI 3-index transform, `compute_rpa_intermediates`, does not
-//! take an MPI context) — exactly the state `docs/superpowers/mpi.md`
+//! take an MPI context) — exactly the state `wiki/superpowers/mpi.md`
 //! Section 4 described pre-T10. Distributing the eigensolve itself (or the
 //! upstream RI transform) is a separate, larger lever that would need
 //! Davidson/Lanczos restructured around a distributed matvec; this module
 //! only distributes the compute-bound frequency loop that CONSUMES the
 //! eigensolve's small `(naux × M)` output — that loop is what
-//! `docs/superpowers/mpi.md`'s Section 4 named as remaining ("RPA and GW
+//! `wiki/superpowers/mpi.md`'s Section 4 named as remaining ("RPA and GW
 //! (T10) are still undistributed").
 //!
 //! ## GW inherits the W-construction half of this for free

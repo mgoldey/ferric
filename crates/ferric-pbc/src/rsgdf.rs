@@ -1,7 +1,7 @@
 //! Gamma-point range-separated Gaussian density fitting (RS-GDF) and the
-//! J/K builders on it (Stage 1 step 9, `reference/pbc/stage1-design.md` §4;
-//! Rust port of the validated prototype `reference/pbc/pbc_gdf.py`,
-//! `reference/pbc/FINDINGS.md` "Iteration 2 (Python, RS-GDF)").
+//! J/K builders on it (Stage 1 step 9, `wiki/archive/ferric-pbc-residue-2026-10-25/reference/pbc/stage1-design.md` §4;
+//! Rust port of the validated prototype `wiki/archive/ferric-pbc-residue-2026-10-25/reference/pbc/pbc_gdf.py`,
+//! `wiki/archive/ferric-pbc-residue-2026-10-25/reference/pbc/FINDINGS.md` "Iteration 2 (Python, RS-GDF)").
 //!
 //! # Target
 //!
