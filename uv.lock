@@ -11,6 +11,25 @@ resolution-markers = [
 build-constraints = [{ name = "poetry-core", specifier = "<2" }]
 
 [[package]]
+name = "ase"
+version = "3.29.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "matplotlib", version = "3.10.9", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "matplotlib", version = "3.11.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "numpy", version = "2.4.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.11.*'" },
+    { name = "scipy", version = "1.18.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/aa/36/cfe17324ea701d2caa479f25b134c54aeb36998443fd88c13e4f1af06f52/ase-3.29.0.tar.gz", hash = "sha256:ef4e2caa38169e3fbbc4164764a060d1877a6692519a4bed82521328eeb0d9aa", size = 2466051, upload-time = "2026-06-21T16:03:06.499Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/66/a6/a3d29378618d3d9ba0962473f8bbf09a5ad15eb8b210c5153fb88d0b8aad/ase-3.29.0-py3-none-any.whl", hash = "sha256:7b9dd103f007810339c24acfee2f6b677c0c48443b21d3c98e52959246cf4ebf", size = 3014724, upload-time = "2026-06-21T16:03:03.794Z" },
+]
+
+[[package]]
 name = "asttokens"
 version = "3.0.1"
 source = { registry = "https://pypi.org/simple" }
@@ -476,6 +495,9 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+ase = [
+    { name = "ase" },
+]
 build = [
     { name = "maturin", extra = ["patchelf"] },
 ]
@@ -499,6 +521,7 @@ reference = [
 
 [package.metadata]
 requires-dist = [
+    { name = "ase", marker = "extra == 'ase'", specifier = ">=3.23" },
     { name = "h5py", marker = "extra == 'dev'", specifier = ">=3.9" },
     { name = "ipython", marker = "extra == 'dev'", specifier = ">=8.18" },
     { name = "matplotlib", marker = "extra == 'dev'", specifier = ">=3.8" },
@@ -511,7 +534,7 @@ requires-dist = [
     { name = "scipy", marker = "extra == 'dev'", specifier = ">=1.11" },
     { name = "sympy", marker = "extra == 'dev'", specifier = ">=1.14.0" },
 ]
-provides-extras = ["dev", "reference", "build"]
+provides-extras = ["dev", "reference", "build", "ase"]
 
 [[package]]
 name = "fonttools"

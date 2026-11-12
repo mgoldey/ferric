@@ -181,6 +181,26 @@ class Molecule:
         """Parse a molecule from an XYZ-format string."""
         ...
 
+    @staticmethod
+    def from_arrays(
+        elements: Sequence[str | int],
+        coords: Sequence[Sequence[float]] | NDArray[np.float64],
+        units: str = "angstrom",
+        charge: int = 0,
+        multiplicity: int = 1,
+        ghost: Sequence[bool] | None = None,
+    ) -> Molecule:
+        """Build a molecule from arrays: one element symbol ("O") or atomic
+        number (8) per atom, (natoms, 3) coordinates in ``units``
+        ("angstrom", the default, or "bohr"; case-insensitive) and optional
+        per-atom ghost (basis-only) flags. Equal, field for field, to
+        from_xyz_string of the same atoms written with repr() coordinates
+        (a symbol is kept as written; an atomic number gets its canonical
+        symbol). ValueError: unknown element or unit, length mismatch, a row
+        that is not three finite numbers, a symbol with the XYZ "@" ghost
+        prefix (use ghost=), or an impossible charge/multiplicity."""
+        ...
+
     def nuclear_repulsion(self) -> float:
         """Classical nuclear repulsion energy in Hartree."""
         ...
@@ -1012,6 +1032,13 @@ class RhfResult:
         """MO coefficient matrix C (n_bf x n_mo), column k = MO k."""
         ...
 
+    def gradient(self) -> NDArray[np.float64] | None:
+        """Analytic nuclear gradient dE/dR as an (natoms, 3) array in
+        Hartree/Bohr, rows in the Molecule's atom order, if the run had
+        with_gradient=True, else None. Same layout as DftResult.gradient()
+        and the periodic results' gradient()."""
+        ...
+
     @property
     def cosx_final_pass(self) -> dict[str, float | int | str] | None:
         """The COSX final-grid pass: ``{"e_scf_grid", "e_final",
@@ -1108,6 +1135,13 @@ class UhfResult:
 
     def orbital_energies_beta(self) -> NDArray[np.float64]:
         """Beta-spin orbital energies (Hartree), ascending."""
+        ...
+
+    def gradient(self) -> NDArray[np.float64] | None:
+        """Analytic nuclear gradient dE/dR as an (natoms, 3) array in
+        Hartree/Bohr, rows in the Molecule's atom order, if the run had
+        with_gradient=True, else None. Same layout as DftResult.gradient()
+        and the periodic results' gradient()."""
         ...
 
     @property
@@ -1574,6 +1608,12 @@ class ConformerEnsemble:
 class RiMp2Result:
     """Result of a run_rimp2 calculation."""
 
+    def gradient(self) -> NDArray[np.float64] | None:
+        """Analytic nuclear gradient of total_energy (natoms, 3; Hartree/Bohr;
+        the Molecule's atom order) if run_rimp2 had with_gradient=True, else
+        None."""
+        ...
+
     @property
     def certificate(self) -> dict[str, Any]:
         """Validation certificate (schema of ``RhfResult.certificate``):
@@ -1643,6 +1683,12 @@ class RiMp2Result:
 
 class OoRiMp2Result:
     """Result of an orbital-optimized RI-MP2 calculation."""
+
+    def gradient(self) -> NDArray[np.float64] | None:
+        """Analytic nuclear gradient of total_energy (natoms, 3; Hartree/Bohr;
+        the Molecule's atom order) if run_oo_rimp2 had with_gradient=True,
+        else None."""
+        ...
 
     @property
     def certificate(self) -> dict[str, Any]:
@@ -3586,8 +3632,22 @@ def run_rhf(
     guess_projection: str | None = None,
     ri_j_precision: str | None = None,
     dm0: NDArray[np.float64] | None = None,
+    with_gradient: bool = False,
 ) -> RhfResult:
     """Closed-shell Restricted Hartree-Fock.
+
+    with_gradient=True (default False) also returns the analytic nuclear
+    gradient of the reported energy in result.gradient() (natoms x 3,
+    Hartree/Bohr). It differentiates the SCF the run built: exact or
+    density-fitted J/K, COSX exchange (the final-grid pass is dropped, so
+    energy and gradient share the SCF grid), point charges / smeared charges
+    / external field and IEF-PCM solvent. A gradient run is a geometry task:
+    an unset ri_j_precision is "f64" (an explicit one is kept), so pass
+    ri_j_precision="f64" to energy-only runs that must lie on the same
+    surface (finite differences, line searches). An unconverged SCF raises
+    RuntimeError. ValueError before the SCF: symmetry=True / irrep_nelec,
+    fock_hook, smearing_sigma, mom_after_iter, and the COSX setups the
+    gradient cannot differentiate. Ghost atoms raise RuntimeError.
 
     symmetry=True (default False; False is byte-identical to before): detect
     the highest Abelian point group, symmetrize and reorient the geometry, and
@@ -3731,6 +3791,7 @@ def run_rhf(
     guess_projection: str | None = None,
     ri_j_precision: str | None = None,
     dm0: None = None,
+    with_gradient: Literal[False] = False,
 ) -> SymmetricRhfResult: ...
 def run_uhf(
     mol: Molecule,
@@ -3761,8 +3822,12 @@ def run_uhf(
     guess_projection: str | None = None,
     ri_j_precision: str | None = None,
     dm0: tuple[NDArray[np.float64], NDArray[np.float64]] | None = None,
+    with_gradient: bool = False,
 ) -> UhfResult:
-    """Unrestricted Hartree-Fock (open-shell). fock_hook=hook adds one
+    """Unrestricted Hartree-Fock (open-shell). with_gradient=True: the
+    analytic gradient in result.gradient() under run_rhf's rules (only
+    fock_hook is refused; MOM and stability_descent states are
+    differentiated). fock_hook=hook adds one
     density-dependent term: hook(D_a, D_b) gets the per-spin densities every
     iteration and returns (E, V_a, V_b); V_s is added to F_s and E to the
     energy, so the result is variational when V_s = dE/dD_s. The exception
@@ -3816,8 +3881,11 @@ def run_rohf(
     guess_projection: str | None = None,
     ri_j_precision: str | None = None,
     dm0: tuple[NDArray[np.float64], NDArray[np.float64]] | None = None,
+    with_gradient: bool = False,
 ) -> UhfResult:
-    """Restricted Open-Shell Hartree-Fock. fock_hook: as for run_uhf; V_a and
+    """Restricted Open-Shell Hartree-Fock. with_gradient=True: the analytic
+    gradient in result.gradient() under run_rhf's rules (only fock_hook is
+    refused). fock_hook: as for run_uhf; V_a and
     V_b enter before the Roothaan effective-Fock combination. Note: the exit report (final_* residuals, unmet_criteria, non-convergence RuntimeWarning) is RHF-only today. A user-set energy_conv below the estimated (rounding-level) noise floor of dE emits one RuntimeWarning before the SCF starts; with a fock_hook, one more after it as for run_uhf.
 
     dm0: a pair (D_alpha, D_beta) with run_uhf's checks. The start is one MO
@@ -4257,8 +4325,16 @@ def run_rimp2(
     virtual_tau_loose: float | None = None,
     virtual_solve_radius: float | None = None,
     virtual_boys_tau: float | None = None,
+    with_gradient: bool = False,
 ) -> RiMp2Result:
     """Resolution-of-identity (density-fitted) MP2. Exact by default.
+    with_gradient=True adds the analytic gradient of total_energy
+    (result.gradient(), natoms x 3, Hartree/Bohr; Z-vector relaxed density
+    plus the RI 3c/2c response), point charges included. Closed-shell exact
+    Coulomb RI-MP2 on an exact-J/K RHF only: an open-shell molecule, local=,
+    the att_* keys, kappa, a fitted scf_jk or k_builder="cosx" raise
+    ValueError. The Z-vector assumes a stationary RHF, so the gradient error
+    follows scf_density_conv (tighten it for finite-difference work).
 
     RHF reference for a singlet; UHF reference + unrestricted RI-MP2 (UMP2)
     for multiplicity > 1 (`result.reference` says which). `kappa` is
@@ -4322,8 +4398,14 @@ def run_oo_rimp2(
     scf_energy_conv: float | None = None,
     scf_density_conv: float | None = None,
     oo_max_iter: int | None = None,
+    with_gradient: bool = False,
 ) -> OoRiMp2Result:
-    """Orbital-optimized RI-MP2.
+    """Orbital-optimized RI-MP2. with_gradient=True adds the analytic
+    gradient of total_energy (result.gradient(), natoms x 3, Hartree/Bohr):
+    at a converged OO-MP2 point no orbital response is needed, so an
+    unconverged loop raises RuntimeError and the error follows grad_conv.
+    frozen_core > 0 raises ValueError (the core rotations are not
+    optimised).
 
     `oo_max_iter` caps the orbital-optimization iterations (bare `max_iter` is a
     deprecated alias that warns). `scf_max_iter`, `scf_energy_conv`,

@@ -618,16 +618,16 @@ capability is Python-only. How well each one is validated is on
 
 | Name | Purpose | CLI |
 |---|---|---|
-| `Molecule` | Geometry, charge and multiplicity. `from_xyz`, `from_xyz_string`, `coords`, `coords_bohr`, `symbols`, `atomic_numbers`, `is_ghost`, `natoms`, `nelec`, `nuclear_repulsion`, `to_xyz_string`. | `[molecule]` |
+| `Molecule` | Geometry, charge and multiplicity. `from_xyz`, `from_xyz_string`, `from_arrays` (symbols or atomic numbers, coordinates in `units="angstrom"` or `"bohr"`, optional `ghost=` flags), `coords`, `coords_bohr`, `symbols`, `atomic_numbers`, `is_ghost`, `natoms`, `nelec`, `nuclear_repulsion`, `to_xyz_string`. | `[molecule]` |
 | `BasisSet` | A Gaussian basis set, orbital or auxiliary. `BasisSet.bundled(name)`. | `[basis]` |
 
 ### SCF and DFT
 
 | Name | Purpose | CLI |
 |---|---|---|
-| `run_rhf` | Closed-shell RHF with the full SCF knob set, point charges, field and IEF-PCM solvent. | `rhf` |
-| `run_uhf` | Unrestricted HF; α/β counts come from the molecule's charge and multiplicity. | `uhf` |
-| `run_rohf` | Restricted open-shell HF (Guest–Saunders coupling); returns a `UhfResult`. | `rohf` |
+| `run_rhf` | Closed-shell RHF with the full SCF knob set, point charges, field and IEF-PCM solvent; `with_gradient=True` adds the analytic gradient (an unset `ri_j_precision` is then `"f64"`). | `rhf` |
+| `run_uhf` | Unrestricted HF; α/β counts come from the molecule's charge and multiplicity. `with_gradient=True` as for `run_rhf`. | `uhf` |
+| `run_rohf` | Restricted open-shell HF (Guest–Saunders coupling); returns a `UhfResult`. `with_gradient=True` as for `run_rhf`. | `rohf` |
 | `run_dft` | Closed-shell Kohn–Sham DFT (LDA/GGA/hybrid/RSH/meta-GGA by name), optional dispersion (`dispersion="d3bj"` or `"mbd"`, added to the energy and, with `with_gradient=True`, to the gradient) and analytic gradient. | `ksdft` |
 | `run_ksdft` | Alias of `run_dft`. | `ksdft` |
 | `d3bj_energy` | Grimme D3(BJ) dispersion energy for a molecule and functional, in Hartree; `s9=1.0` adds the ATM three-body term (default 0, off). | `[dft] dispersion` |
@@ -635,8 +635,8 @@ capability is Python-only. How well each one is validated is on
 | `tune_omega` | IP-based (Baer/Kronik) tuning of an RSH functional's ω (Bohr⁻¹); closed-shell neutral plus doublet cation. `continuation=True` seeds each evaluation from the nearest already-evaluated ω, which keeps the cation on one branch across an out-of-order golden-section search; `branch_tol` flags an evaluation whose cation spin-population asymmetry jumps. `check_cation_stability` (default `True`) runs the UKS internal-stability analysis on every cation: each eval dict carries `cation_lambda_min` and `cation_stability`, and a tuned ω whose cation is an internal saddle raises `RuntimeError` naming ω and λ_min. Functionals without an orbital-Hessian kernel (VV10 such as ωB97X-V, meta-GGA) are reported `not_analysed` with a `stability_warning`, never as stable. | — |
 | `dft_grid_point_count` | Number of points in the main KS grid `run_dft` would build for the molecule with the same `grid_*` kwargs, without running an SCF (shows what pruning saves). | — |
 | `SymmetricRhfResult` | Result of `run_rhf(symmetry=True)` (point-group-blocked RHF): `energy` (of the symmetrized geometry), `point_group`, `orbital_irreps`, `max_symmetrization_shift`, `irrep_occupations()`, `orbital_energies()`, `symmetrized_coords()`, `frame_transform()`. `density()`, `mo_coefficients()` and `gradient()` raise: the AO matrices live in the rotated frame. | |
-| `RhfResult` | Result of `run_rhf`: `energy`, `converged`, `iterations`, `density()`, `orbital_energies()`, `mo_coefficients()`, `one_step_energy_drop` and `stationarity_tol` (the converged exit is stationary when the drop is above `-stationarity_tol`; both `None` for a non-aufbau or unconverged exit). | |
-| `UhfResult` | Result of `run_uhf`/`run_rohf`: α and β densities and orbital energies, `one_step_energy_drop`, `stationarity_tol`. | |
+| `RhfResult` | Result of `run_rhf`: `energy`, `converged`, `iterations`, `density()`, `orbital_energies()`, `mo_coefficients()`, `gradient()` (`None` unless `with_gradient=True`), `one_step_energy_drop` and `stationarity_tol` (the converged exit is stationary when the drop is above `-stationarity_tol`; both `None` for a non-aufbau or unconverged exit). | |
+| `UhfResult` | Result of `run_uhf`/`run_rohf`: α and β densities and orbital energies, `gradient()`, `one_step_energy_drop`, `stationarity_tol`. | |
 | `DftResult` | Result of `run_dft`: `total_energy` (= `e_scf + e_dispersion`), `e_scf`, `e_dispersion` (`None` when not requested), `dispersion_model` (`"D3(BJ)"`, `"MBD@rsSCS"` or `None`), `volume_ratios` (MBD@rsSCS only), `converged`, `exit_reason()`, `one_step_energy_drop`, `stationarity_tol`, `density()`, `gradient()`. | |
 
 ### Constrained DFT
@@ -685,8 +685,8 @@ See [QM/MM](./qmmm.md) for a worked example.
 
 | Name | Purpose | CLI |
 |---|---|---|
-| `run_rimp2` | RI-MP2 on an RHF reference; UHF + unrestricted RI-MP2 when `multiplicity > 1` (`reference` says which). Exact by default; `local=`/`eps=` for the local approximation. | `rimp2` |
-| `run_oo_rimp2` | Orbital-optimized RI-MP2 (level-shifted Newton + DIIS + Cayley rotation). Closed shell only; open-shell OO-RI-MP2 is CLI-only. | `oo-rimp2` |
+| `run_rimp2` | RI-MP2 on an RHF reference; UHF + unrestricted RI-MP2 when `multiplicity > 1` (`reference` says which). Exact by default; `local=`/`eps=` for the local approximation. `with_gradient=True` adds the analytic gradient (closed-shell exact RI-MP2 on an exact-J/K RHF). | `rimp2` |
+| `run_oo_rimp2` | Orbital-optimized RI-MP2 (level-shifted Newton + DIIS + Cayley rotation). Closed shell only; open-shell OO-RI-MP2 is CLI-only. `with_gradient=True` adds the analytic gradient (`frozen_core=0`, converged loop). | `oo-rimp2` |
 | `run_mp3` | MP3 on an RHF reference, with RI integrals. | `mp3` |
 | `run_attenuated_rimp2` | RI-MP2 with the erfc-attenuated operator; ω in Å⁻¹, default 0.420. | `att-rimp2` |
 | `run_terfc_rimp2` | RI-MP2 with the exact tempered-erfc operator at one cutoff `r0` (Å); needs the terfc tables. | — |
@@ -696,8 +696,8 @@ See [QM/MM](./qmmm.md) for a worked example.
 | `run_double_hybrid` | B2PLYP or DSD-PBEP86 double hybrid; the result carries a `certificate` (Spike). | `b2plyp`, `dsd-pbep86` |
 | `run_laplace_mp2` | Laplace-transform RI-MP2 (default 7 quadrature points). | `laplace-mp2` |
 | `run_laplace_sos_mp2` | Laplace-transform SOS-MP2, `E = c_os · E_OS`; MO, AO or AO-sparse formulations. | `laplace-sos-mp2` |
-| `RiMp2Result` | Result of `run_rimp2` and `run_terfc_rimp2`: `total_energy`, `rhf_energy` (the reference SCF energy, RHF or UHF), `mp2_corr`, `reference`, and `local` (`None` for the exact method, else the local model dict). | |
-| `OoRiMp2Result` | Result of `run_oo_rimp2`, with `converged` and `grad_norm`. | |
+| `RiMp2Result` | Result of `run_rimp2` and `run_terfc_rimp2`: `total_energy`, `rhf_energy` (the reference SCF energy, RHF or UHF), `mp2_corr`, `reference`, `local` (`None` for the exact method, else the local model dict) and `gradient()`. | |
+| `OoRiMp2Result` | Result of `run_oo_rimp2`, with `converged`, `grad_norm` and `gradient()`. | |
 | `Mp3Result` | `e_hf`, `e_mp2`, `e_mp3`, `e_corr`, `e_total`. | |
 | `AttenuatedMp2Result` | Attenuated MP2 total, correlation and spin components. | |
 | `ScsMp2Result` | Result of `run_scs_mp2`/`run_scs_mp2_2terfc`, with `e_os`/`e_ss`. | |

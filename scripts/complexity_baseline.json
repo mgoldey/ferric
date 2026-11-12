@@ -51672,8 +51672,8 @@
     "mi": 108.92941493825909
   },
   "crates/ferric-python/src/lib.rs::rimp2_energies": {
-    "cc": 11.0,
-    "mi": 67.97195195537084
+    "cc": 13.0,
+    "mi": 59.513765988347245
   },
   "crates/ferric-python/src/lib.rs::run_attenuated_rimp2": {
     "cc": 6.0,
@@ -51932,8 +51932,8 @@
     "mi": 65.9306897770679
   },
   "crates/ferric-python/src/lib.rs::run_oo_rimp2": {
-    "cc": 10.0,
-    "mi": 54.73174372373069
+    "cc": 14.0,
+    "mi": 50.97316844888444
   },
   "crates/ferric-python/src/lib.rs::run_oo_rimp2::<anonymous>": {
     "cc": 1.0,
@@ -51984,8 +51984,8 @@
     "mi": 151.74964174717402
   },
   "crates/ferric-python/src/lib.rs::run_rhf": {
-    "cc": 14.0,
-    "mi": 48.50422637356938
+    "cc": 19.0,
+    "mi": 44.4467303237674
   },
   "crates/ferric-python/src/lib.rs::run_rhf::<anonymous>": {
     "cc": 1.0,
@@ -52025,7 +52025,7 @@
   },
   "crates/ferric-python/src/lib.rs::run_rimp2_exact::<anonymous>": {
     "cc": 1.0,
-    "mi": 149.49723095662594
+    "mi": 110.75561106350888
   },
   "crates/ferric-python/src/lib.rs::run_rimp2_local": {
     "cc": 22.0,
@@ -52040,8 +52040,8 @@
     "mi": 111.60466249192818
   },
   "crates/ferric-python/src/lib.rs::run_rohf": {
-    "cc": 13.0,
-    "mi": 50.920729522185454
+    "cc": 17.0,
+    "mi": 48.239342627538164
   },
   "crates/ferric-python/src/lib.rs::run_rohf::<anonymous>": {
     "cc": 1.0,
@@ -52160,8 +52160,8 @@
     "mi": 153.0837736153568
   },
   "crates/ferric-python/src/lib.rs::run_uhf": {
-    "cc": 16.0,
-    "mi": 45.55246266849181
+    "cc": 20.0,
+    "mi": 43.17760226539535
   },
   "crates/ferric-python/src/lib.rs::run_uhf::<anonymous>": {
     "cc": 1.0,
