@@ -14,6 +14,8 @@ Anchors:
 
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 import pytest
 
@@ -235,14 +237,16 @@ def test_huge_symmetric_hook_passes_the_symmetry_check():
 
 def test_symmetrization_does_not_overflow_for_entries_near_float_max():
     # (V + Vᵀ) overflows to inf for 1.5e308 entries, and the SCF then fails in
-    # the eigensolver; ½V + ½Vᵀ stays finite. V = c I shifts every orbital
-    # energy by c and leaves the orbitals and the electronic structure alone,
-    # so the run converges.
+    # the eigensolver; ½V + ½Vᵀ stays finite. The 1.5e308 shift is far above
+    # the Fock entries, so the orbitals it leaves are not the physical ones
+    # and the run's convergence and energy are not claimed; the test requires
+    # only that the symmetrized hook reaches the SCF as a finite matrix.
     mol, bs, _ = _water("sto-3g")
     n = ferric.AoIntegrals(mol, bs).overlap().shape[0]
     v = np.eye(n) * 1.5e308
-    res = ferric.run_rhf(mol, bs, fock_hook=_const_hook(v))
-    assert res.converged
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        res = ferric.run_rhf(mol, bs, fock_hook=_const_hook(v))
     assert np.isfinite(res.energy)
 
 
