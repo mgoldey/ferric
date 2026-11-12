@@ -36,13 +36,13 @@
 //! products `D^α D^βᵀ` are the α-β terms. No determinant pair is visited.
 //!
 //! The determinants are processed in fixed blocks of α rows (about
-//! [`CHUNK_DETS`] determinants each, independent of the thread count); each
+//! [`crate::rdm::CHUNK_DETS`] determinants each, independent of the thread count); each
 //! block's `D` is built, contracted and dropped. Block results are summed in
 //! block order, so the RDMs do not depend on the rayon thread count.
 //!
 //! Cost: `O(N_det · (n_exc_α + n_exc_β))` to build `D`, `O(N_det · n⁴)` for
-//! the GEMM. Memory: one `n² × block` `D` per worker, [`BATCH_CHUNKS`] block
-//! results of `n⁴ + n²` doubles, and the outputs; see [`rdm_memory_elems`].
+//! the GEMM. Memory: one `n² × block` `D` per worker, [`crate::rdm::BATCH_CHUNKS`] block
+//! results of `n⁴ + n²` doubles, and the outputs; see [`crate::rdm::rdm_memory_elems`].
 
 use crate::integrals::ActiveSpaceIntegrals;
 use crate::sigma::DirectSigma;
@@ -90,7 +90,7 @@ pub fn chunk_rows(n_beta_str: usize) -> usize {
 /// `n_active` orbitals and the given string counts, in `f64` units.
 ///
 /// * per worker: one block of `D`, `n² × rows · n_beta_str`;
-/// * transient: [`BATCH_CHUNKS`] block results, `n⁴ + n²` each;
+/// * transient: [`crate::rdm::BATCH_CHUNKS`] block results, `n⁴ + n²` each;
 /// * resident: the `n⁴` accumulator, `dm2` (`n⁴`) and `dm1` plus its
 ///   accumulator (`2 n²`).
 pub fn rdm_memory_elems(
@@ -105,7 +105,10 @@ pub fn rdm_memory_elems(
     let transient = BATCH_CHUNKS
         .min(n_chunks)
         .saturating_mul(n2.saturating_mul(n2).saturating_add(n2));
-    let resident = n2.saturating_mul(n2).saturating_mul(2).saturating_add(2 * n2);
+    let resident = n2
+        .saturating_mul(n2)
+        .saturating_mul(2)
+        .saturating_add(2 * n2);
     (per_worker, transient, resident)
 }
 

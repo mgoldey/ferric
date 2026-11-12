@@ -187,9 +187,15 @@ fn identities(name: &str) {
         "{name}: max |sum_r dm2[p,q,r,r] - (N-1) dm1| {d_partial:.2e}, |dm1 - dm1^T| {d_sym1:.2e}, \
          |dm2[pqrs]-dm2[rspq]| {d_swap:.2e}, |dm2[pqrs]-dm2[qpsr]| {d_herm:.2e}"
     );
-    assert!(d_partial <= tol, "{name}: partial trace off by {d_partial:.2e}");
+    assert!(
+        d_partial <= tol,
+        "{name}: partial trace off by {d_partial:.2e}"
+    );
     assert!(d_sym1 <= tol, "{name}: dm1 not symmetric ({d_sym1:.2e})");
-    assert!(d_swap <= tol, "{name}: dm2 pair-swap symmetry off ({d_swap:.2e})");
+    assert!(
+        d_swap <= tol,
+        "{name}: dm2 pair-swap symmetry off ({d_swap:.2e})"
+    );
     assert!(d_herm <= tol, "{name}: dm2 hermiticity off ({d_herm:.2e})");
 
     // Natural occupations lie in [0, 2].
@@ -264,7 +270,11 @@ fn vs_pyscf(name: &str) {
     let r = rdms(&run);
     let n = sys.n_active;
     let ne = n_elec(&sys);
-    assert_eq!(refj["n_active"].as_u64(), Some(n as u64), "{name}: n_active");
+    assert_eq!(
+        refj["n_active"].as_u64(),
+        Some(n as u64),
+        "{name}: n_active"
+    );
     assert_eq!(
         refj["active_start"].as_u64(),
         Some(sys.active_start as u64),
@@ -276,7 +286,10 @@ fn vs_pyscf(name: &str) {
     let c1 = num(&refj, "construction_max_diff_dm1");
     let c2 = num(&refj, "construction_max_diff_dm2");
     eprintln!("{name}: generator construction check dm1 {c1:.2e} dm2 {c2:.2e}");
-    assert!(c1 < 1e-12 && c2 < 1e-12, "{name}: construction check {c1:.2e}/{c2:.2e}");
+    assert!(
+        c1 < 1e-12 && c2 < 1e-12,
+        "{name}: construction check {c1:.2e}/{c2:.2e}"
+    );
 
     // Align the reference orbitals to this run's.
     let nbas = run.prep.nbasis();
@@ -304,8 +317,12 @@ fn vs_pyscf(name: &str) {
     let gap = num(&refj, "gap");
     let tol1 = 2.0 * ne * CONV_THRESH / gap + ne * ne * d_orth;
     let tol2 = 2.0 * ne * ne * CONV_THRESH / gap + ne * ne * d_orth;
-    let d1 = (&r.dm1 - &dm1_ref).iter().fold(0.0f64, |m, x| m.max(x.abs()));
-    let d2 = (&r.dm2 - &dm2_ref).iter().fold(0.0f64, |m, x| m.max(x.abs()));
+    let d1 = (&r.dm1 - &dm1_ref)
+        .iter()
+        .fold(0.0f64, |m, x| m.max(x.abs()));
+    let d2 = (&r.dm2 - &dm2_ref)
+        .iter()
+        .fold(0.0f64, |m, x| m.max(x.abs()));
     let e_ref = num(&refj, "e_total");
     eprintln!(
         "{name}: vs PySCF max|d dm1| {d1:.2e} (bar {tol1:.2e}) max|d dm2| {d2:.2e} (bar {tol2:.2e}) \

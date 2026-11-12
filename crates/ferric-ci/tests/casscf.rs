@@ -96,7 +96,10 @@ fn setup(xyz: &str, basis_name: &str) -> (Molecule, PreparedBasis, ScfResult) {
     let rhf = solve_rhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &cfg)
         .unwrap_or_else(|e| panic!("{xyz}/{basis_name}: RHF failed: {e:?}"));
     assert!(rhf.converged, "{xyz}/{basis_name}: RHF did not converge");
-    assert!(rhf.df_jk.is_none(), "{xyz}/{basis_name}: RHF must use exact J/K");
+    assert!(
+        rhf.df_jk.is_none(),
+        "{xyz}/{basis_name}: RHF must use exact J/K"
+    );
     (mol, prep, rhf)
 }
 
@@ -117,7 +120,10 @@ fn full_space_case(xyz: &str, basis_name: &str) {
         ..Default::default()
     };
     let problem = CasScfProblem::new(&mol, &prep, nmo, &cfg).unwrap();
-    assert!(problem.pairs().is_empty(), "full space has no nonredundant pair");
+    assert!(
+        problem.pairs().is_empty(),
+        "full space has no nonredundant pair"
+    );
     let pt = problem.evaluate(rhf.mos_r()).unwrap();
     assert!(pt.ci.converged, "CI did not converge");
     let r = pt.ci.residual_norm;
@@ -140,16 +146,20 @@ fn full_space_case(xyz: &str, basis_name: &str) {
     .unwrap();
     assert!(fci.converged);
     let de = pt.e_total - fci.e_total;
-    let e_bar = r
-        + fci.residual_norm
-        + 8.0 * EPS * pt.e_total.abs() * (fci.n_determinants as f64).sqrt();
+    let e_bar =
+        r + fci.residual_norm + 8.0 * EPS * pt.e_total.abs() * (fci.n_determinants as f64).sqrt();
     eprintln!(
         "{xyz}/{basis_name}: ndet {} E {:.12} dE(vs run_cas_ci) {de:.2e} (bar {e_bar:.1e}) \
          max|2(F-F^T)| {gmax:.2e} (bar {g_bar:.1e}) CI residual {r:.1e} / {:.1e}",
         fci.n_determinants, pt.e_total, fci.residual_norm
     );
     assert!(gmax <= g_bar, "max|2(F-F^T)| {gmax:e} > {g_bar:e}");
-    assert!(de.abs() <= e_bar, "E {} vs FCI {}: {de:e} > {e_bar:e}", pt.e_total, fci.e_total);
+    assert!(
+        de.abs() <= e_bar,
+        "E {} vs FCI {}: {de:e} > {e_bar:e}",
+        pt.e_total,
+        fci.e_total
+    );
 
     // The driver stops at the first evaluation and returns the same energy.
     let res = optimize(&problem, rhf.mos_r().clone(), &cfg).unwrap();
@@ -217,11 +227,19 @@ fn fd_case(xyz: &str, basis_name: &str, n_core: usize, n_active: usize, nel: (us
     let kappa: Vec<f64> = normals(npair, 7).iter().map(|x| 0.05 * x).collect();
     let c = problem.rotate(rhf.mos_r(), &kappa).unwrap();
     let pt = problem.evaluate(&c).unwrap();
-    assert!(pt.ci.converged, "CI did not converge (residual {:e})", pt.ci.residual_norm);
+    assert!(
+        pt.ci.converged,
+        "CI did not converge (residual {:e})",
+        pt.ci.residual_norm
+    );
     let h = 1e-3;
     let fd1 = fd_gradient(&problem, &c, h);
     let fd2 = fd_gradient(&problem, &c, h / 2.0);
-    let rich: Vec<f64> = fd1.iter().zip(&fd2).map(|(a, b)| (16.0 * b - a) / 15.0).collect();
+    let rich: Vec<f64> = fd1
+        .iter()
+        .zip(&fd2)
+        .map(|(a, b)| (16.0 * b - a) / 15.0)
+        .collect();
     let cls = problem.classes();
     let per_class = |v: &dyn Fn(usize) -> f64| -> [f64; 3] {
         CLASSES.map(|want| {
@@ -255,7 +273,11 @@ fn fd_case(xyz: &str, basis_name: &str, n_core: usize, n_active: usize, nel: (us
         // Every class is populated and nonzero at this point, so an
         // all-zero analytic class cannot pass.
         assert!(gmax[i] > 1e-2, "{cl:?}: max|g| = {:e}", gmax[i]);
-        assert!(err[i] <= FD_BAR, "{cl:?}: |analytic − FD| = {:e} > {FD_BAR:e}", err[i]);
+        assert!(
+            err[i] <= FD_BAR,
+            "{cl:?}: |analytic − FD| = {:e} > {FD_BAR:e}",
+            err[i]
+        );
     }
 }
 
@@ -279,9 +301,15 @@ fn hessian_min_eig(problem: &CasScfProblem, c: &Array2<f64>, h: f64) -> f64 {
     for k in 0..n {
         let mut kv = vec![0.0; n];
         kv[k] = h;
-        let gp = problem.evaluate(&problem.rotate(c, &kv).unwrap()).unwrap().gradient;
+        let gp = problem
+            .evaluate(&problem.rotate(c, &kv).unwrap())
+            .unwrap()
+            .gradient;
         kv[k] = -h;
-        let gm = problem.evaluate(&problem.rotate(c, &kv).unwrap()).unwrap().gradient;
+        let gm = problem
+            .evaluate(&problem.rotate(c, &kv).unwrap())
+            .unwrap()
+            .gradient;
         for r in 0..n {
             hes[(r, k)] = (gp[r] - gm[r]) / (2.0 * h);
         }
@@ -311,10 +339,18 @@ fn converged_case(r: &Reference) {
         ..Default::default()
     };
     let res = run_casscf(&mol, &prep, &rhf, &cfg).unwrap();
-    assert!(res.converged, "{}: not converged in {} iterations", r.xyz, res.iterations);
+    assert!(
+        res.converged,
+        "{}: not converged in {} iterations",
+        r.xyz, res.iterations
+    );
     let problem = CasScfProblem::new(&mol, &prep, res.mo_coeff.ncols(), &cfg).unwrap();
     let lam = hessian_min_eig(&problem, &res.mo_coeff, 1e-4);
-    assert!(lam > 0.0, "{}: lowest orbital Hessian eigenvalue {lam:e} <= 0", r.xyz);
+    assert!(
+        lam > 0.0,
+        "{}: lowest orbital Hessian eigenvalue {lam:e} <= 0",
+        r.xyz
+    );
     let round = 4.0 * EPS * res.e_total.abs() * (res.n_determinants as f64).sqrt();
     let bar = (res.grad_norm.powi(2) + r.g_proto.powi(2)) / (2.0 * lam) + 2.0 * round;
     let de = res.e_total - r.e_proto;
@@ -332,7 +368,12 @@ fn converged_case(r: &Reference) {
         r.iters_proto,
         res.ci_residual_norm
     );
-    assert!(de.abs() <= bar, "{}: |dE| {:e} > bar {bar:e}", r.xyz, de.abs());
+    assert!(
+        de.abs() <= bar,
+        "{}: |dE| {:e} > bar {bar:e}",
+        r.xyz,
+        de.abs()
+    );
 }
 
 #[test]
