@@ -109,10 +109,11 @@ impl Fixture {
     /// vectors (output, transpose, σ1 image, σ3 gather), all N_det doubles,
     /// plus the direct-sigma excitation lists: 15 strings per channel with
     /// k(n-k)+k = 12 replacements each, 16-byte entries (2 doubles), β stored
-    /// twice: 2 * (15*12 + 2*15*12) = 1080 doubles.
+    /// twice: 2 * (15*12 + 2*15*12) = 1080 doubles; and the α and β
+    /// determinant string lists, 15 + 15 u64 bitmasks.
     fn davidson_peak(&self) -> usize {
         let ms = self.config(None).max_subspace.max(2);
-        (225 * (2 * ms + 7 + 4) + 1080) * 8
+        (225 * (2 * ms + 7 + 4) + 1080) * 8 + (15 + 15) * 8
     }
     /// The transform chain's peak (ao_eri + first quarter-transform output).
     fn transform_peak(&self) -> usize {
