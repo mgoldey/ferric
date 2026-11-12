@@ -541,8 +541,7 @@ fn assert_escapes(s: &Saddle, r: &Escape) {
 /// From the σ-hole saddle displaced by ε = 0.05 along its negative-curvature
 /// mode, the exact Newton step −H⁻¹g points back to the saddle (uphill), so an
 /// unguarded PCG would return there. With the guard, PCG stops at the first
-/// pᵀAp < −1e-3·|p|² and steps along ±p (downhill on the model) to the
-/// trust box.
+/// pᵀAp ≤ 0 and steps along +p (downhill on the model) to the trust box.
 ///
 /// Hypotheses (before measuring): guard works ⇒ one step lowers E below the
 /// displaced point, and the full SCF ends ≥ 1e-3 Ha below the saddle;

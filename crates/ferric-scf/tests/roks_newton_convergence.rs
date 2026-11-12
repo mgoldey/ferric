@@ -251,10 +251,10 @@ const MAX_HVPS_PER_NEWTON_STEP: usize = 21;
 /// soscf / AH:
 ///   OH on-axis   20 / 9 (21) / 11 (20) / –   (the relabel guard's case;
 ///                Newton and soscf did not converge before the fix)
-///   OH off-axis  18 / 10 (24) / 10 (14) / 10 (46)
+///   OH off-axis  18 / 10 (27) / 12 (26) / 10 (46)
 ///   CH off-axis  22 / 8 (25) / 10 (22) / not converged (also before the
 ///                fix; not asserted)
-///   NO off-axis  26 / 12 (20) / 13 (19) / 26 (251)
+///   NO off-axis  26 / 23 (121) / 24 (124) / 26 (251)
 /// On-axis DIIS (the other orientation's step count): OH 20, CH 20
 /// (−38.402533691, 5.7e-7 from off-axis DIIS), NO 49.
 /// HVP ceilings: Newton/soscf OH 21 × 20 = 420, CH 21 × 22 = 462, NO
@@ -262,17 +262,18 @@ const MAX_HVPS_PER_NEWTON_STEP: usize = 21;
 /// AH's Davidson tolerance follows density_conv (1e-8 here, was a fixed
 /// 1e-7): that costs NO AH one iteration and 25 HVPs (25 (226) before) and
 /// OH one HVP.
-/// Off-axis AH converges on OH and NO to −75.620835678 and −129.704259565
-/// against off-axis DIIS's −75.620834299 and −129.704259009: the other π-hole
-/// orientation, which here equals the ON-axis DIIS energy to 1e-9. On CI the
-/// off-axis Newton/soscf runs landed there too (see [`Expect`]).
-/// The Steihaug threshold is pinned here too: on the keep-the-iterate
-/// truncation, with every pᵀAp ≤ 0 truncated (threshold 0, applied and
-/// reverted), NO off-axis Newton took 92 iterations (460 HVPs) and soscf 60
-/// (335), crawling between those orientations (Rayleigh quotients
-/// −2e-7..−1e-4; `rohf_newton::NEG_CURVATURE`). With the current step along
-/// p, threshold 0 costs NO Newton 23 (121) and soscf 24 (124), OH 10 (27)
-/// and 12 (26), CH unchanged: worse, but inside the ceilings.
+/// Off-axis AH, Newton and soscf converge on OH and NO to −75.620835678 and
+/// −129.704259565 against off-axis DIIS's −75.620834299 and −129.704259009:
+/// the other π-hole orientation, which here equals the ON-axis DIIS energy
+/// to 1e-9.
+/// The Steihaug guard is exercised here: PCG meets the shallow negative
+/// curvature of those orientation modes (Rayleigh quotients −2e-7..−1e-4)
+/// and truncates (OH Newton / soscf 1 / 1, NO 2 / 1). Other handling of
+/// −1e-3·|p|² ≤ pᵀAp ≤ 0, measured, Newton / soscf: a CG step with α < 0
+/// (to the model's maximum along p) OH 10 (24) / 10 (14), NO 12 (20) /
+/// 13 (19), the cheapest but uphill on the model; stopping at the current
+/// iterate OH 27 (95) / 19 (55), NO 92 (460) / 60 (335), a crawl between
+/// the orientations; CH is unchanged by all of them.
 /// Mutations (applied, run, reverted): the sub-tolerance step returning the
 /// diagonal guess κ⁰ = −g/Δ again instead of 0 leaves CH soscf not converged
 /// in 200 iterations (E settled to 1e-13 by iteration 9; |g| ~ 2e-8 / the

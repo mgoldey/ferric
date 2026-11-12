@@ -31,10 +31,6 @@ thread_local! {
     static STEIHAUG_TRUNCATIONS: Cell<usize> = const { Cell::new(0) };
 }
 
-/// Curvature threshold (Hartree, half-Hessian Rayleigh quotient) below which
-/// a PCG direction counts as negative curvature (see `pcg_refine`).
-const NEG_CURVATURE: f64 = 1e-3;
-
 /// Number of Newton PCG solves on the calling thread that stopped on a
 /// non-positive-curvature direction (Steihaug truncation; test seam).
 #[doc(hidden)]
@@ -185,10 +181,11 @@ pub fn rohf_newton_step(
         let k = (&mut k_vc, &mut k_vo, &mut k_oc);
         let g = (&g_vc, &g_vo, &g_oc);
         let diag = (&diag_vc, &diag_vo, &diag_oc);
+        let matvec = |a: &Array2<f64>, b: &Array2<f64>, c: &Array2<f64>| {
+            hessian_matvec(ctx, inp, a, b, c, &pool)
+        };
         let (its, resid) = pcg_refine(
-            ctx,
-            inp,
-            &pool,
+            matvec,
             g,
             diag,
             k,
@@ -267,18 +264,25 @@ pub fn rohf_newton_step(
 }
 
 /// Preconditioned conjugate-gradient refinement of `(κ_vc, κ_vo, κ_oc)` (on
-/// entry the diagonal guess κ⁰) towards H·κ = −g, with Steihaug truncation on
-/// negative curvature (the step then goes to the `max_step` box along it).
+/// entry the diagonal guess κ⁰) towards H·κ = −g, `matvec` the product H·p on
+/// the three blocks. No CG step is taken along a direction of non-positive
+/// curvature: there the step goes along p to the `max_step` box and PCG
+/// stops (Steihaug truncation).
 #[allow(clippy::type_complexity)]
-fn pcg_refine(
-    ctx: &ParallelContext,
-    inp: &RohfNewtonInputs,
-    pool: &EnginePool,
+fn pcg_refine<M>(
+    mut matvec: M,
     (g_vc, g_vo, g_oc): (&Array2<f64>, &Array2<f64>, &Array2<f64>),
     (diag_vc, diag_vo, diag_oc): (&Array2<f64>, &Array2<f64>, &Array2<f64>),
     (k_vc, k_vo, k_oc): (&mut Array2<f64>, &mut Array2<f64>, &mut Array2<f64>),
     (cg_max_iter, cg_conv, max_step): (usize, f64, f64),
-) -> Result<(usize, f64), FerricError> {
+) -> Result<(usize, f64), FerricError>
+where
+    M: FnMut(
+        &Array2<f64>,
+        &Array2<f64>,
+        &Array2<f64>,
+    ) -> Result<(Array2<f64>, Array2<f64>, Array2<f64>), FerricError>,
+{
     // Preconditioned conjugate-gradient solve for H·κ = −g.
     //
     // The orbital Hessian is symmetric (and positive-definite near a
@@ -290,7 +294,7 @@ fn pcg_refine(
     //
     // Standard PCG (Saad, "Iterative Methods", Alg. 9.1) on the packed
     // (vc, vo, oc) triple.
-    let (h0_vc, h0_vo, h0_oc) = hessian_matvec(ctx, inp, k_vc, k_vo, k_oc, pool)?;
+    let (h0_vc, h0_vo, h0_oc) = matvec(k_vc, k_vo, k_oc)?;
     let mut r_vc = sub(&neg(g_vc), &h0_vc);
     let mut r_vo = sub(&neg(g_vo), &h0_vo);
     let mut r_oc = sub(&neg(g_oc), &h0_oc);
@@ -315,7 +319,7 @@ fn pcg_refine(
         }
         its += 1;
         // Ap = H · p
-        let (ap_vc, ap_vo, ap_oc) = hessian_matvec(ctx, inp, &p_vc, &p_vo, &p_oc, pool)?;
+        let (ap_vc, ap_vo, ap_oc) = matvec(&p_vc, &p_vo, &p_oc)?;
         let p_ap: f64 = inner(&p_vc, &ap_vc) + inner(&p_vo, &ap_vo) + inner(&p_oc, &ap_oc);
         // Steihaug truncation. The exact Hessian is indefinite near a saddle
         // (e.g. a hole in the wrong shell); on negative curvature the CG step
@@ -335,24 +339,31 @@ fn pcg_refine(
         // the step is the current iterate, which the caller then clips: the
         // "keep the iterate" behaviour, a descent step on the first
         // pass (κ⁰ = −M⁻¹g). MEASURED 2026-11-11 (FERRIC_ROHF_TRACE prints t
-        // per truncation): in the two saddle tests' full SCFs, 10 of 16
-        // truncations hit t = 0, all in later SCF iterations; none occur in
-        // the convergence suites. Restarting from κ = 0 along ±p (sign by
+        // per truncation; with the guard at −1e-3·|p|², below): in the two
+        // saddle tests' full SCFs, 10 of 16 truncations hit t = 0, all in
+        // later SCF iterations. Restarting from κ = 0 along ±p (sign by
         // gᵀp ≤ 0) to the box instead was measured and not kept: the same
         // 20 / 22 iterations, 124 / 125 HVPs against 120 / 124.
         //
-        // Only curvature below −NEG_CURVATURE·|p|² counts. MEASURED 2026-11-11
-        // (Rayleigh quotients pᵀAp/|p|² at pᵀAp ≤ 0, half-Hessian, Hartree):
-        // the π-hole orientation modes of off-axis ²Π OH/NO under PBE sit at
-        // −2e-7 .. −1.04e-4 (the XC grid's rotational variance, up to 3.4e-6
-        // Ha between orientations), the OH/6-31G σ-hole saddle at −0.08 ..
-        // −0.15. Truncating on the former made Newton crawl between
-        // grid-degenerate orientations (NO off-axis 12 → 92 iterations);
-        // between −1e-3 and 0 the curvature is treated as flat and CG
-        // continues. A real saddle softer than 1e-3 Ha is therefore not
-        // escaped by this guard.
+        // Every pᵀAp < 1e-30 truncates (a positive pᵀAp below that would
+        // overflow α), including the shallow curvature of the π-hole
+        // orientation modes of off-axis ²Π OH/NO under PBE. MEASURED
+        // 2026-11-11 (Rayleigh quotients pᵀAp/|p|², half-Hessian, Hartree):
+        // those modes sit at −2e-7 .. −1.04e-4 (the XC grid's rotational
+        // variance, up to 3.4e-6 Ha between orientations), the OH/6-31G
+        // σ-hole saddle at −0.08 .. −0.15. Continuing CG through the former
+        // (the guard at −1e-3·|p|²) took steps with α < 0, to the model's
+        // maximum along p, in 9 PCG solves of the convergence suites.
+        // Alternatives on −1e-3·|p|² ≤ pᵀAp < 1e-30, iterations (HVPs) for
+        // NO off-axis Newton / soscf, against 12 (20) / 13 (19) for the
+        // negative-α CG step: stop at the current iterate 92 (460) / 60
+        // (335), a crawl between grid-degenerate orientations; a step
+        // α = rᵀz/(1e-3·|p|²) along +p and stop 26 (138) / 49 (273), and
+        // continue CG 23 (151) / 24 (152); this box step 23 (121) / 24
+        // (124). Any negative curvature PCG meets, however shallow, is
+        // stepped along to the box.
         let pp = inner(&p_vc, &p_vc) + inner(&p_vo, &p_vo) + inner(&p_oc, &p_oc);
-        if p_ap < -NEG_CURVATURE * pp {
+        if p_ap < 1e-30 {
             STEIHAUG_TRUNCATIONS.with(|c| c.set(c.get() + 1));
             let t = [(&*k_vc, &p_vc), (&*k_vo, &p_vo), (&*k_oc, &p_oc)]
                 .into_iter()
@@ -369,9 +380,6 @@ fn pcg_refine(
             k_vc.zip_mut_with(&p_vc, |k, &v| *k += t * v);
             k_vo.zip_mut_with(&p_vo, |k, &v| *k += t * v);
             k_oc.zip_mut_with(&p_oc, |k, &v| *k += t * v);
-            break;
-        }
-        if p_ap.abs() < 1e-30 {
             break;
         }
         let alpha = rz_old / p_ap;
@@ -721,4 +729,78 @@ fn arr_max_abs(a: &Array2<f64>) -> f64 {
 }
 fn inner(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
     a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    type Blocks = (Array2<f64>, Array2<f64>, Array2<f64>);
+
+    fn one(x: f64) -> Array2<f64> {
+        Array2::from_elem((1, 1), x)
+    }
+
+    fn blocks(v: [f64; 3]) -> Blocks {
+        (one(v[0]), one(v[1]), one(v[2]))
+    }
+
+    /// `pcg_refine` on a diagonal operator H = diag(h) over three 1×1 blocks,
+    /// preconditioner diag(m), from κ⁰ = −g/m, box 1. Returns κ, m(κ⁰) and
+    /// m(κ) for the quadratic model m(κ) = gᵀκ + ½κᵀHκ, and the Steihaug
+    /// truncations it made.
+    fn run(h: [f64; 3], g: [f64; 3], m: [f64; 3]) -> ([f64; 3], f64, f64, usize) {
+        let model = |k: [f64; 3]| (0..3).map(|i| g[i] * k[i] + 0.5 * h[i] * k[i] * k[i]).sum();
+        let k0 = [-g[0] / m[0], -g[1] / m[1], -g[2] / m[2]];
+        let (gb, mb) = (blocks(g), blocks(m));
+        let (mut kvc, mut kvo, mut koc) = blocks(k0);
+        let matvec = |a: &Array2<f64>, b: &Array2<f64>, c: &Array2<f64>| {
+            Ok((h[0] * a, h[1] * b, h[2] * c))
+        };
+        let t0 = steihaug_truncations_on_this_thread();
+        pcg_refine(
+            matvec,
+            (&gb.0, &gb.1, &gb.2),
+            (&mb.0, &mb.1, &mb.2),
+            (&mut kvc, &mut kvo, &mut koc),
+            (20, 1e-12, 1.0),
+        )
+        .unwrap();
+        let k = [kvc[(0, 0)], kvo[(0, 0)], koc[(0, 0)]];
+        (
+            k,
+            model(k0),
+            model(k),
+            steihaug_truncations_on_this_thread() - t0,
+        )
+    }
+
+    /// No CG step is taken along non-positive curvature, however shallow. A
+    /// CG step there has α = rᵀz/pᵀAp < 0 and moves to the model's maximum
+    /// along p, raising m by ½(rᵀz)²/|pᵀAp|; the Steihaug step goes along +p
+    /// to the box, downhill.
+    ///
+    /// (a) The first direction has curvature −1e-4.
+    /// (b) One positive-curvature CG step, then a direction H-conjugate to it
+    ///     in the span of a +0.5 and a −1e-4 mode, whose curvature lies in
+    ///     [−1e-4, 0).
+    /// (c) Curvature −0.1.
+    /// Each truncates once, ends on the box (κ₂ = −1), and lowers m.
+    #[test]
+    fn pcg_takes_no_step_along_non_positive_curvature() {
+        let h = [1.0, -1e-4, 0.5];
+        for (label, h, g) in [
+            ("(a)", h, [0.1, 0.01, 0.0]),
+            ("(b)", h, [0.1, 0.01, 0.05]),
+            ("(c)", [1.0, -0.1, 0.5], [0.1, 0.001, 0.0]),
+        ] {
+            let (k, m0, m, trunc) = run(h, g, [1.0; 3]);
+            assert_eq!(trunc, 1, "{label}: Steihaug truncations");
+            assert!(
+                (k[1] + 1.0).abs() < 1e-12,
+                "{label}: κ not on the box: {k:?}"
+            );
+            assert!(m < m0, "{label}: model did not fall: {m:.6e} >= {m0:.6e}");
+        }
+    }
 }
