@@ -27,6 +27,12 @@ from pathlib import Path
 
 import pytest
 
+# The fake `cargo` is an executable `#!` script found on PATH; Windows cannot
+# exec a shebang file, so the runner gets no cargo and writes no report.
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32", reason="the fake cargo is a shebang script on PATH"
+)
+
 REPO = Path(__file__).resolve().parents[3]
 SCRIPT = REPO / "scripts" / "check_anchor_mutations.py"
 EVIDENCE = "crates/demo/tests/validation_demo.rs"
