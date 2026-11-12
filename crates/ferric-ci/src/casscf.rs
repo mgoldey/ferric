@@ -161,6 +161,9 @@ pub struct CasScfProblem {
     n_core: usize,
     n_active: usize,
     ci_config: CasCiConfig,
+    /// The settings the problem was built from (`optimize` checks that its
+    /// own config agrees on the partition and the CI settings).
+    config: CasScfConfig,
     pairs: Vec<(usize, usize)>,
     classes: Vec<RotationClass>,
     _mem: Reservation,
@@ -276,6 +279,7 @@ impl CasScfProblem {
             n_core: nc,
             n_active: nact,
             ci_config,
+            config: *config,
             pairs,
             classes,
             _mem: mem,
@@ -673,12 +677,20 @@ pub fn run_casscf(
 }
 
 /// The two-step macro-iteration loop from starting orbitals `c0`.
+///
+/// `config` supplies the loop controls (`grad_tol`, `energy_tol`,
+/// `max_iter`, `max_step`, `hdiag_floor`, `canonicalize`). Its active
+/// partition (`n_active`, `n_elec_active`, `n_core`), CI settings
+/// (`ci_conv_thresh`, `ci_max_subspace`, `ci_max_iter`) and
+/// `memory_budget_bytes` are fixed when `problem` is built; a config that
+/// differs in any of them is an error before the first evaluation.
 pub fn optimize(
     problem: &CasScfProblem,
     c0: Array2<f64>,
     config: &CasScfConfig,
 ) -> Result<CasScfResult, FerricError> {
     check_step_controls(config)?;
+    check_problem_settings(&problem.config, config)?;
     let npair = problem.pairs().len();
     let finish = |pt: CasScfPoint, c: Array2<f64>, it: usize, converged: bool| {
         let (c, pt, mo_energy) = if config.canonicalize {
@@ -758,9 +770,57 @@ pub fn optimize(
     }
 }
 
+/// The settings `CasScfProblem::new` consumed must match `config`: the
+/// problem evaluates with its own partition and CI settings, so a differing
+/// config would report convergence for a calculation it did not describe.
+/// Floats compare by bit pattern, so a NaN is a mismatch only against a
+/// different value.
+fn check_problem_settings(built: &CasScfConfig, config: &CasScfConfig) -> Result<(), FerricError> {
+    let mut diffs: Vec<String> = Vec::new();
+    let mut usize_field = |name: &str, a: usize, b: usize| {
+        if a != b {
+            diffs.push(format!("{name}: problem {a}, config {b}"));
+        }
+    };
+    usize_field("n_active", built.n_active, config.n_active);
+    usize_field("n_core", built.n_core, config.n_core);
+    usize_field(
+        "ci_max_subspace",
+        built.ci_max_subspace,
+        config.ci_max_subspace,
+    );
+    usize_field("ci_max_iter", built.ci_max_iter, config.ci_max_iter);
+    if built.n_elec_active != config.n_elec_active {
+        diffs.push(format!(
+            "n_elec_active: problem {:?}, config {:?}",
+            built.n_elec_active, config.n_elec_active
+        ));
+    }
+    if built.ci_conv_thresh.to_bits() != config.ci_conv_thresh.to_bits() {
+        diffs.push(format!(
+            "ci_conv_thresh: problem {:e}, config {:e}",
+            built.ci_conv_thresh, config.ci_conv_thresh
+        ));
+    }
+    if built.memory_budget_bytes != config.memory_budget_bytes {
+        diffs.push(format!(
+            "memory_budget_bytes: problem {:?}, config {:?}",
+            built.memory_budget_bytes, config.memory_budget_bytes
+        ));
+    }
+    if diffs.is_empty() {
+        Ok(())
+    } else {
+        Err(FerricError::General(format!(
+            "CASSCF: optimize config differs from the one the problem was built with ({})",
+            diffs.join("; ")
+        )))
+    }
+}
+
 /// A CI root is used only when Davidson converged and its recomputed
-/// residual `‖Hc − Ec‖` is below the requested threshold (Davidson's
-/// null-direction exit accepts up to 10x the threshold).
+/// residual `‖Hc − Ec‖` is below the requested threshold (Davidson tests the
+/// Ritz residual, which differs from the recomputed one at round-off).
 fn ci_root_accepted(converged: bool, residual_norm: f64, conv_thresh: f64) -> bool {
     converged && residual_norm < conv_thresh
 }
@@ -908,9 +968,9 @@ mod tests {
         );
     }
 
-    /// A root Davidson flags as converged through its null-direction exit
-    /// (residual up to 10x the threshold) is refused; one below the threshold
-    /// is kept; an unconverged or NaN residual is refused.
+    /// A root flagged converged with a recomputed residual at or above the
+    /// threshold is refused; one below the threshold is kept; an unconverged
+    /// or NaN residual is refused.
     #[test]
     fn ci_root_must_meet_the_requested_residual() {
         let t = 1e-10;

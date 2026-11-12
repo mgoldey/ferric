@@ -550,6 +550,94 @@ fn casscf_refuses_a_nonpositive_or_infinite_hessian_floor() {
     }
 }
 
+/// `optimize` refuses a config whose partition, CI settings or memory budget
+/// differ from the ones the problem was built with (the problem would
+/// evaluate with its own), and accepts one that differs only in the loop
+/// controls.
+#[test]
+fn optimize_refuses_a_config_the_problem_was_not_built_with() {
+    let (mol, prep, rhf) = setup("water.xyz", "sto-3g");
+    let good = CasScfConfig {
+        n_active: 4,
+        n_elec_active: (2, 2),
+        n_core: 3,
+        max_iter: 3,
+        ..Default::default()
+    };
+    let nmo = rhf.mos_r().ncols();
+    let problem = CasScfProblem::new(&mol, &prep, nmo, &good).unwrap();
+    let variants: [(&str, CasScfConfig); 7] = [
+        (
+            "n_active",
+            CasScfConfig {
+                n_active: 5,
+                ..good
+            },
+        ),
+        (
+            "n_elec_active",
+            CasScfConfig {
+                n_elec_active: (3, 1),
+                ..good
+            },
+        ),
+        ("n_core", CasScfConfig { n_core: 2, ..good }),
+        (
+            "ci_conv_thresh",
+            CasScfConfig {
+                ci_conv_thresh: 1e-6,
+                ..good
+            },
+        ),
+        (
+            "ci_max_subspace",
+            CasScfConfig {
+                ci_max_subspace: 10,
+                ..good
+            },
+        ),
+        (
+            "ci_max_iter",
+            CasScfConfig {
+                ci_max_iter: 5,
+                ..good
+            },
+        ),
+        (
+            "memory_budget_bytes",
+            CasScfConfig {
+                memory_budget_bytes: Some(1 << 30),
+                ..good
+            },
+        ),
+    ];
+    for (field, cfg) in variants {
+        let msg = match optimize(&problem, rhf.mos_r().clone(), &cfg) {
+            Ok(r) => panic!(
+                "optimize accepted a different {field} (converged = {})",
+                r.converged
+            ),
+            Err(e) => e.to_string(),
+        };
+        assert!(
+            msg.contains(field) && msg.contains("built with"),
+            "{field}: {msg}"
+        );
+    }
+    let loop_only = CasScfConfig {
+        grad_tol: 1e-5,
+        energy_tol: 1e-8,
+        max_iter: 2,
+        max_step: 0.1,
+        hdiag_floor: 0.1,
+        canonicalize: true,
+        ..good
+    };
+    let r = optimize(&problem, rhf.mos_r().clone(), &loop_only)
+        .expect("loop controls are optimize's own");
+    assert!(r.iterations <= loop_only.max_iter);
+}
+
 /// A CI solve that misses its residual threshold is an error, never a
 /// silently used root: one Davidson iteration cannot reach 1e-10 on 36
 /// determinants.
