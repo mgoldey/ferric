@@ -242,6 +242,7 @@ struct PyCasScfResult {
     dm1: Array2<f64>,
     dm2: Array4<f64>,
     mo_coeff: Array2<f64>,
+    mo_energy: Option<Vec<f64>>,
     certificate_data: Certificate,
 }
 
@@ -266,9 +267,16 @@ impl PyCasScfResult {
         self.dm2.clone().into_pyarray(py)
     }
     /// Optimized orbitals, shape `(nbasis, nmo)`: core, active, virtual.
+    /// Canonical when `run_casscf(canonicalize=True)`.
     #[getter]
     fn mo_coeff<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
         self.mo_coeff.clone().into_pyarray(py)
+    }
+    /// Diagonal of `F^I + F^A` in `mo_coeff` (Ha) when canonicalized, else
+    /// `None`.
+    #[getter]
+    fn mo_energy<'py>(&self, py: Python<'py>) -> Option<Bound<'py, numpy::PyArray1<f64>>> {
+        self.mo_energy.clone().map(|v| v.into_pyarray(py))
     }
     /// Validation certificate (schema of `RhfResult.certificate`).
     #[getter]
@@ -284,9 +292,10 @@ impl PyCasScfResult {
 }
 
 /// Two-step CASSCF from the canonical RHF orbitals: `n_active` active
-/// orbitals above `n_core` doubly occupied ones, single root.
+/// orbitals above `n_core` doubly occupied ones, single root of the
+/// `(n_alpha, n_beta)` sector, optionally canonical orbitals on return.
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, n_active, n_elec_active, n_core=None, casscf_grad_tol=1e-7, casscf_energy_tol=1e-12, casscf_max_iter=300, casscf_max_step=0.2, ci_conv_thresh=1e-10, ci_max_subspace=50, ci_max_iter=200, memory_budget_gb=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None))]
+#[pyo3(signature = (mol, basis_set, n_active, n_elec_active, n_core=None, casscf_grad_tol=1e-7, casscf_energy_tol=1e-12, casscf_max_iter=300, casscf_max_step=0.2, ci_conv_thresh=1e-10, ci_max_subspace=50, ci_max_iter=200, memory_budget_gb=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, canonicalize=false))]
 #[allow(clippy::too_many_arguments)]
 fn run_casscf(
     py: Python<'_>,
@@ -306,6 +315,7 @@ fn run_casscf(
     scf_max_iter: Option<usize>,
     scf_energy_conv: Option<f64>,
     scf_density_conv: Option<f64>,
+    canonicalize: bool,
 ) -> PyResult<PyCasScfResult> {
     let nelec = mol.inner.nelec() as usize;
     let n_act_el = n_elec_active.0 + n_elec_active.1;
@@ -357,6 +367,7 @@ fn run_casscf(
         ci_max_subspace,
         ci_max_iter,
         memory_budget_bytes: budget,
+        canonicalize,
         ..Default::default()
     };
     let r = ferric_ci::run_casscf(&mol.inner, &prep, &rhf, &cfg).map_err(make_err)?;
@@ -391,6 +402,7 @@ fn run_casscf(
         dm1: r.rdms.dm1,
         dm2: r.rdms.dm2,
         mo_coeff: r.mo_coeff,
+        mo_energy: r.mo_energy,
         certificate_data: cert,
     })
 }

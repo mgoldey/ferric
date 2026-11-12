@@ -297,23 +297,46 @@ must reach the Davidson residual threshold ($10^{-10}$ by default); the
 gradient error is first order in that residual, so a solve that misses it
 is an error, not a warning.
 
-**Limits.** $n_\alpha = n_\beta$ only (an open-shell active space is
-refused: the formulas hold for spin-summed RDMs, but no anchor covers it);
-lowest root, no state averaging; orbitals not canonicalized on return; dense
-AO block, $n_\text{bas}^4$ doubles, charged to the memory budget. No exact
-orbital Hessian, orbital-CI coupling or augmented-Hessian step.
+**Open-shell active spaces.** $H$ is spin-free, so the energy and the
+gradient above depend on the spin-summed $\gamma$ and $\Gamma$ only, for any
+sector $(n_\alpha, n_\beta)$. The CI root is the lowest of that $M_s$ sector,
+and the orbitals stay one restricted set with a doubly occupied core. Swapping
+$n_\alpha$ and $n_\beta$ gives the same energy and RDMs ($M_s \to -M_s$).
+
+**Canonical orbitals** (`canonicalize`, `CasScfConfig::canonicalize`). With
+$F^T = F^I + F^A$ in the MO basis, $U$ is block diagonal: the eigenvectors of
+the core block of $F^T$ (ascending), of $\gamma$ (occupations descending) and
+of the virtual block of $F^T$ (ascending). $C' = CU$, each column signed by its
+first AO coefficient within a relative $10^{-6}$ of the largest magnitude
+(the first index breaks ties between symmetry-equivalent atoms). Every
+rotation in $U$ is redundant, so $E$ and $\lVert g\rVert$ are unchanged. The
+CAS-CI is solved again in $C'$, which carries the CI vector into the new
+orbitals: $D^c$ is unchanged by the core rotation and $D^a = C_a\gamma
+C_a^\mathsf{T}$ by the active rotation, so $F^I$ and $F^A$ in $C'$ are the
+rotated matrices up to the CI error of the second solve. `mo_energy` is the
+diagonal of $F^T$ in $C'$.
+
+**Limits.** Lowest root, no state averaging; dense AO block,
+$n_\text{bas}^4$ doubles, charged to the memory budget; the start is a
+restricted RHF (an even electron count). No exact orbital Hessian,
+orbital-CI coupling or augmented-Hessian step.
 
 **Measured (2026-11-11, `tests/casscf.rs`).** Geometries
 `testdata/molecules/water.xyz` and `n2.xyz`, 6-31G, ferric exact-J/K RHF
 start, Davidson threshold $10^{-10}$ ($10^{-11}$ for the FD anchor).
 
 Anchor 1, active space = full space (STO-3G), against `run_cas_ci` over the
-full window:
+full window in the same $(n_\alpha, n_\beta)$ sector; the RDMs of the sector
+also rebuild the energy (bar of `tests/casci_rdms.rs`). The H2O $M_s = 1$
+sector's lowest root is a triplet above the singlet ground state, so a CI run
+in another sector misses `run_cas_ci` by the gap:
 
-| System | $N_\text{det}$ | $\Delta E$ (Ha) | max $\lvert 2(F - F^\mathsf{T})\rvert$ | bar $8\lVert r\rVert$ + rounding |
-|---|---:|---:|---:|---:|
-| H2O | 441 | 9.9e-14 | 7.6e-11 | 1.9e-9 |
-| N2 | 14400 | 9.9e-14 | 6.2e-12 | 4.5e-10 |
+| System | Sector | $N_\text{det}$ | $\Delta E$ (Ha) | max $\lvert 2(F - F^\mathsf{T})\rvert$ | bar $8\lVert r\rVert$ + rounding |
+|---|---|---:|---:|---:|---:|
+| H2O | (5, 5) | 441 | 9.9e-14 | 7.6e-11 | 1.9e-9 |
+| H2O | (6, 4) | 245 | 2.8e-14 | 7.7e-11 | 1.2e-9 |
+| N2 | (7, 7) | 14400 | 9.9e-14 | 6.2e-12 | 4.5e-10 |
+| O2 | (9, 7) | 1200 | -2.8e-14 | 1.8e-11 | 3.6e-10 |
 
 Anchor 2, analytic gradient against a Richardson-extrapolated 5-point central
 difference ($h = 10^{-3}$, $h/2$) at RHF orbitals rotated by a random
@@ -327,6 +350,16 @@ $\kappa$ (scale 0.05), max over each class, bar $10^{-8}$:
 | N2 CAS(6,6) | max $\lvert g\rvert$ | 2.07 | 6.98 | 0.800 |
 | | FD($h$) − FD($h/2$) | 1.4e-9 | 2.0e-10 | 1.9e-10 |
 | | analytic − FD | 1.8e-10 | 2.0e-10 | 1.6e-10 |
+| H2O CAS(4,4), (3, 1) | max $\lvert g\rvert$ | 4.41 | 5.62 | 0.942 |
+| | FD($h$) − FD($h/2$) | 3.7e-8 | 2.5e-10 | 1.3e-10 |
+| | analytic − FD | 2.6e-10 | 1.8e-10 | 1.1e-10 |
+| O2 CAS(8,6), (5, 3) | max $\lvert g\rvert$ | 2.47 | 9.13 | 0.991 |
+| | FD($h$) − FD($h/2$) | 2.5e-9 | 4.1e-10 | 5.3e-10 |
+| | analytic − FD | 4.2e-10 | 4.6e-10 | 4.2e-10 |
+
+The finite-difference check uses the same CI sector as the analytic gradient,
+so it cannot see a CI run in the wrong sector; anchor 1 and the PySCF
+comparison below do.
 
 Anchor 3, converged energies against the prototype's committed values, bar
 $(\lVert g\rVert^2 + \lVert g_\text{proto}\rVert^2)/(2\lambda_\text{min}) + 8\varepsilon|E|\sqrt{N_\text{det}}$,
@@ -345,6 +378,28 @@ CI-relaxed orbital Hessian at the converged orbitals:
 
 The prototype's energies match `pyscf.mcscf.CASSCF` on ferric's AO integrals
 to 1.4e-12 Ha (H2O) and 1.8e-13 Ha (N2).
+
+Anchor 4 (`tests/casscf_vs_pyscf.rs`), converged energies against
+`pyscf.mcscf.CASSCF` run on ferric's AO integrals from PySCF's own RHF
+orbitals (`scripts/gen_casscf_refs.py`, PySCF 2.13.1, `conv_tol` 1e-12,
+`conv_tol_grad` 1e-6, FCI `conv_tol` 1e-14; references in
+`testdata/reference/casscf_*_pyscf.json`). Ferric runs from its own RHF with
+`canonicalize`. Bar $(\lVert g\rVert^2 + \lVert g_\text{ref}\rVert^2)/(2\lambda_\text{min})$
++ `conv_tol` + rounding, $\lVert g_\text{ref}\rVert$ = twice PySCF's packed
+norm. Natural occupations and the sorted eigenvalues of the core and virtual
+blocks of $F^I + F^A$ are compared and not gated; they move to first order in
+the orbital error, which PySCF's gradient sets.
+
+| System | $E$ (Ha) | $\Delta E$ vs PySCF (Ha) | bar (Ha) | $\lVert g\rVert$ / $2\lVert g_\text{PySCF}\rVert$ | $\lambda_\text{min}$ | iterations | natural occupations | max $\Delta$ occupation / core / virtual $\varepsilon$ |
+|---|---:|---:|---:|---:|---:|---:|---|---:|
+| H2O CAS(4,4) | -76.0369690965018 | -1.5e-11 | 1.0e-10 | 4.2e-8 / 2.0e-6 | 0.0195 | 60 | 1.978, 1.975, 0.024, 0.023 | 2.2e-7 / 1.6e-5 / 1.6e-6 |
+| N2 CAS(6,6), 1.0977 Å | -109.0155467897006 | -9.9e-14 | 5.2e-12 | 3.4e-8 / 1.5e-7 | 0.0402 | 21 | 1.981, 1.935 (2), 0.065 (2), 0.019 | 8.9e-8 / 8.7e-7 / 1.9e-7 |
+| N2 CAS(6,6), 1.6 Å | -108.8482292478625 | -5.8e-13 | 5.1e-12 | 7.8e-8 / 2.5e-7 | 0.1485 | 12 | 1.897, 1.723 (2), 0.277 (2), 0.102 | 7.0e-7 / 2.1e-7 / 6.1e-8 |
+| O2 CAS(8,6), (5, 3) | -149.6367298537082 | -2.6e-13 | 4.0e-12 | 5.9e-8 / 1.3e-7 | 0.0958 | 14 | 1.960 (2), 1.955, 1.039 (2), 0.046 | 5.5e-8 / 1.9e-7 / 9.3e-8 |
+
+All four reach the same minimum as PySCF. PySCF's O2 state has
+$\langle S^2\rangle = 2$. The H2O bar is set by PySCF's gradient
+(`conv_tol_grad` 1e-7 does not converge H2O in 300 macro iterations).
 
 **Mutations** (applied to `src/casscf.rs` one at a time, 2026-11-11; max
 $\lvert$analytic − FD$\rvert$ per class, core-active / core-virtual /

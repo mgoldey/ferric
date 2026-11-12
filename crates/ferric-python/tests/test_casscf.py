@@ -73,10 +73,37 @@ def test_non_convergence_warns():
     assert any("CASSCF did not converge" in m for m in r.certificate["warnings"])
 
 
-def test_open_shell_active_space_is_an_error():
+def test_canonicalize_option(res):
+    """Canonical orbitals: same energy to the Ritz bound of both CI solves
+    (each residual below 10 x ci_conv_thresh, Davidson's acceptance), natural
+    active orbitals (off-diagonal dm1 below 2 N (r0 + r1) / gap, 8.2e-10 for
+    this system in the Rust test), ordered Fock diagonals. The bars are derived in
+    crates/ferric-ci/tests/casscf_canonical.rs; this checks the binding passes
+    the option and returns mo_energy."""
+    assert res.mo_energy is None
     mol = ferric.Molecule.from_xyz_string(_H2O)
-    with pytest.raises(Exception, match="n_alpha == n_beta"):
-        ferric.run_casscf(mol, ferric.BasisSet.bundled("6-31g"), 4, (3, 1))
+    r = ferric.run_casscf(
+        mol, ferric.BasisSet.bundled("6-31g"), 4, (2, 2), canonicalize=True
+    )
+    assert r.converged
+    assert abs(r.e_total - res.e_total) < 2.0 * 10.0 * 1e-10
+    occ = np.diag(r.dm1)
+    assert np.abs(r.dm1 - np.diag(occ)).max() < 8.2e-10
+    assert np.all(np.diff(occ) <= 1e-12)
+    eps = r.mo_energy
+    assert eps.shape == (r.mo_coeff.shape[1],)
+    assert np.all(np.diff(eps[:3]) >= 0.0) and np.all(np.diff(eps[7:]) >= 0.0)
+
+
+def test_open_shell_active_space():
+    """(n_alpha, n_beta) = (3, 1): the lowest M_s = 1 state, a triplet above
+    the singlet CASSCF minimum of the same active space."""
+    mol = ferric.Molecule.from_xyz_string(_H2O)
+    r = ferric.run_casscf(mol, ferric.BasisSet.bundled("6-31g"), 4, (3, 1))
+    assert r.converged and r.n_core == 3
+    assert r.ci_vector.shape == (4, 4)
+    assert abs(np.trace(r.dm1) - 4.0) < 1e-11
+    assert r.e_total > E_PROTO
 
 
 def test_unconverged_ci_raises():
