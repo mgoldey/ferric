@@ -10,7 +10,15 @@
       "env": {
         "BASIS_COVERAGE_ONLY": "6-31g*/h2o"
       },
-      "result": null
+      "result": {
+        "patch_sha256": "478923099f5c825620fe2fc1841af32b8d8317a93fdc27050965dac38bc2bc92",
+        "base_commit": "ab19ac3fc3c020619c7604c5e470e7cef66a8676",
+        "failing_test": "orbital_sets_match_pyscf_rhf",
+        "assertion": "crates/ferric-mp2/tests/common/basis_coverage.rs:244",
+        "message": "1 of 1 rhf cases failed:",
+        "baseline_run": true,
+        "date": "2026-11-11"
+      }
     },
     {
       "anchor": "UHF",
@@ -18,7 +26,15 @@
       "mutation": "uhf.rs: the beta term of the electronic energy traces D_beta against H + F_alpha instead of H + F_beta.",
       "evidence": "crates/ferric-scf/tests/validation_open_shell_scf.rs",
       "test": "uhf_ho2_vs_pyscf",
-      "result": null
+      "result": {
+        "patch_sha256": "186131e3590aee7f37bd1663c590e6cdd8f38d375ed0c6817f35f45418c0bc09",
+        "base_commit": "ab19ac3fc3c020619c7604c5e470e7cef66a8676",
+        "failing_test": "uhf_ho2_vs_pyscf",
+        "assertion": "crates/ferric-scf/tests/validation_open_shell_scf.rs:241",
+        "message": "ho2/6-31g/UHF: energy -150.310124650835 vs reference -150.111420160174 (|d| 1.99e-1 >= 1e-10)",
+        "baseline_run": true,
+        "date": "2026-11-11"
+      }
     },
     {
       "anchor": "ROHF",
@@ -58,7 +74,15 @@
       "mutation": "xc_batch.rs: polarized sigma_ab = ax bx + ay by + ay bz (az bz replaced by ay bz) on both density paths.",
       "evidence": "crates/ferric-scf/tests/validation_ks_energies.rs",
       "test": "uks_nh2_pbe_vs_pyscf",
-      "result": null
+      "result": {
+        "patch_sha256": "c77e4cebe447e1f9a178e7ac0079128c6315e0cc3493f0e94a5324460d47f32d",
+        "base_commit": "ab19ac3fc3c020619c7604c5e470e7cef66a8676",
+        "failing_test": "uks_nh2_pbe_vs_pyscf",
+        "assertion": "crates/ferric-scf/tests/validation_ks_energies.rs:378",
+        "message": "nh2/6-31g/UKS-pbe: lambda_min 0.075341828361 vs reference 0.078654451105 (|d| 3.31e-3 >= 5e-5)",
+        "baseline_run": true,
+        "date": "2026-11-11"
+      }
     },
     {
       "anchor": "ROKS",
@@ -85,7 +109,15 @@
       "env": {
         "BASIS_COVERAGE_ONLY": "def2-svp+def2-svp-rifit/h2o"
       },
-      "result": null
+      "result": {
+        "patch_sha256": "27a7d38dd935e48c2d4279a9c45d4c7f4684fe7989d5d64959dcb01e91d4e5e6",
+        "base_commit": "ab19ac3fc3c020619c7604c5e470e7cef66a8676",
+        "failing_test": "auxiliary_sets_match_pyscf_rimp2",
+        "assertion": "crates/ferric-mp2/tests/common/basis_coverage.rs:244",
+        "message": "1 of 1 rimp2 cases failed:",
+        "baseline_run": true,
+        "date": "2026-11-11"
+      }
     },
     {
       "anchor": "U-RI-MP2",
