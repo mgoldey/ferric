@@ -47,7 +47,7 @@ use ferric_core::memory::pool::Reservation;
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
-use ferric_integrals::oneelectron::hcore;
+use ferric_integrals::oneelectron::hcore_ecp;
 use ferric_scf::ScfResult;
 use ndarray::{s, Array2, ArrayView2};
 use ndarray_linalg::{Eigh, UPLO};
@@ -223,7 +223,7 @@ impl CasScfProblem {
             Lifetime::Resident,
         );
         let mem = plan.commit()?;
-        let h_ao = hcore(prep);
+        let h_ao = hcore_ecp(prep, mol, prep.basis_set());
         let eri_ao = dense_ao_eri(prep)?;
 
         let mut pairs = Vec::with_capacity(npair);
@@ -253,7 +253,11 @@ impl CasScfProblem {
             conv_thresh: config.ci_conv_thresh,
             max_subspace: config.ci_max_subspace,
             max_iter: config.ci_max_iter,
-            memory_budget_bytes: config.memory_budget_bytes,
+            // The AO reservation stays held for the problem's lifetime; the CI
+            // gets what is left of the same ceiling, so the two stages cannot
+            // each claim the whole budget (with no pool installed `commit`
+            // debits nothing, and with a pool an explicit budget still binds).
+            memory_budget_bytes: Some(plan.budget_bytes().saturating_sub(plan.peak_bytes())),
             compute_rdms: true,
         };
         Ok(CasScfProblem {
@@ -638,6 +642,12 @@ pub fn sign_reference(v: impl Iterator<Item = f64> + Clone) -> f64 {
 }
 
 /// Two-step CASSCF from the canonical orbitals of a restricted RHF result.
+///
+/// The Hamiltonian is the molecule's: `h = T + V_nuc + V_ECP` (the ECP of
+/// `prep`'s basis, as the RHF builds it; apply it to `mol` with
+/// `Molecule::apply_ecp` first) and the exact AO ERIs. An external potential,
+/// solvation or embedding term of the reference is not part of it and is not
+/// recorded on [`ScfResult`], so the reference must be a vacuum RHF.
 pub fn run_casscf(
     mol: &Molecule,
     prep: &PreparedBasis,
@@ -717,7 +727,10 @@ pub fn optimize(
             .collect();
         let rose = e_old.is_some_and(|eo| e > eo + 1e-10);
         let b = match hinv.take() {
-            Some(b) if !rose => bfgs_inverse_update(b, &s_old, &g, &g_old),
+            Some(mut b) if !rose => {
+                bfgs_inverse_update(&mut b, &s_old, &g, &g_old);
+                b
+            }
             _ => Array2::from_diag(&ndarray::Array1::from_iter(hd.iter().map(|h| 1.0 / h))),
         };
         let mut step: Vec<f64> = (0..npair)
@@ -738,27 +751,32 @@ pub fn optimize(
 
 /// Inverse BFGS update `B⁺ = V B Vᵀ + ρ s sᵀ`, `V = I − ρ s yᵀ`,
 /// `ρ = 1/(sᵀy)`, with `y = g − g_old`; skipped when `sᵀy <= 1e-14`.
-fn bfgs_inverse_update(b: Array2<f64>, s: &[f64], g: &[f64], g_old: &[f64]) -> Array2<f64> {
+///
+/// Applied in place as the expanded rank-two form
+/// `B⁺ = B − ρ u sᵀ − ρ s wᵀ + (ρ² yᵀu + ρ) s sᵀ`, `u = B y`, `w = Bᵀ y`,
+/// so the only `npair × npair` buffer is `b` itself (the one the memory
+/// plan reserves).
+fn bfgs_inverse_update(b: &mut Array2<f64>, s: &[f64], g: &[f64], g_old: &[f64]) {
     let n = s.len();
     let y: Vec<f64> = g.iter().zip(g_old).map(|(a, b)| a - b).collect();
     let sy: f64 = s.iter().zip(&y).map(|(a, b)| a * b).sum();
     if sy <= 1e-14 {
-        return b;
+        return;
     }
     let rho = 1.0 / sy;
-    let mut v = Array2::<f64>::eye(n);
+    let u: Vec<f64> = (0..n)
+        .map(|r| (0..n).map(|k| b[(r, k)] * y[k]).sum())
+        .collect();
+    let w: Vec<f64> = (0..n)
+        .map(|r| (0..n).map(|k| b[(k, r)] * y[k]).sum())
+        .collect();
+    let yu: f64 = y.iter().zip(&u).map(|(a, b)| a * b).sum();
+    let css = rho * rho * yu + rho;
     for r in 0..n {
         for k in 0..n {
-            v[(r, k)] -= rho * s[r] * y[k];
+            b[(r, k)] += -rho * (u[r] * s[k] + s[r] * w[k]) + css * s[r] * s[k];
         }
     }
-    let mut out = v.dot(&b).dot(&v.t());
-    for r in 0..n {
-        for k in 0..n {
-            out[(r, k)] += rho * s[r] * s[k];
-        }
-    }
-    out
 }
 
 fn norm(v: &[f64]) -> f64 {
@@ -783,6 +801,69 @@ mod tests {
             }
         }
         k
+    }
+
+    /// The CI stage is charged against what the AO reservation leaves of the
+    /// same ceiling: with no pool installed the AO guard debits nothing, so
+    /// handing the CI the full budget would let the two stages sum past it.
+    #[test]
+    fn ci_budget_is_the_ceiling_minus_the_ao_reservation() {
+        let mol =
+            Molecule::parse_xyz("3\n\nO 0 0 0.117\nH 0 0.757 -0.467\nH 0 -0.757 -0.467\n", 0, 1)
+                .unwrap();
+        let bs = ferric_core::basis::bundled("sto-3g").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let budget = 64 << 20;
+        let cfg = CasScfConfig {
+            n_active: 4,
+            n_elec_active: (2, 2),
+            n_core: 3,
+            memory_budget_bytes: Some(budget),
+            ..Default::default()
+        };
+        let problem = CasScfProblem::new(&mol, &prep, prep.nbasis(), &cfg).unwrap();
+        let ci = problem.ci_config.memory_budget_bytes.unwrap();
+        let ao_bytes = prep.nbasis().pow(4) * std::mem::size_of::<f64>();
+        assert!(
+            ci + ao_bytes <= budget,
+            "CI budget {ci} + dense AO block {ao_bytes} exceeds the {budget}-byte ceiling"
+        );
+    }
+
+    /// The in-place update equals the explicit `V B Vᵀ + ρ s sᵀ` on a
+    /// non-symmetric `B` (so both the `B y` and `Bᵀ y` terms are exercised).
+    /// Bar: entries are O(1) sums of O(n) products, rounding ~ n ε ≈ 1e-14.
+    #[test]
+    fn bfgs_inverse_update_in_place_matches_explicit_form() {
+        let n = 7;
+        let b0 = antisym(n, 3) + Array2::<f64>::eye(n) * 2.0 + antisym(n, 11).mapv(f64::abs);
+        let v = |seed: u64| antisym(n + 1, seed).row(n).slice(s![..n]).to_vec();
+        let (s, g, g_old) = (v(5), v(9), v(13));
+        let y: Vec<f64> = g.iter().zip(&g_old).map(|(a, b)| a - b).collect();
+        let sy: f64 = s.iter().zip(&y).map(|(a, b)| a * b).sum();
+        let (s, sy) = if sy < 0.0 {
+            (s.iter().map(|x| -x).collect::<Vec<_>>(), -sy)
+        } else {
+            (s, sy)
+        };
+        assert!(sy > 1e-3, "test vectors must give a well-defined update");
+        let rho = 1.0 / sy;
+        let mut vm = Array2::<f64>::eye(n);
+        for r in 0..n {
+            for k in 0..n {
+                vm[(r, k)] -= rho * s[r] * y[k];
+            }
+        }
+        let mut want = vm.dot(&b0).dot(&vm.t());
+        for r in 0..n {
+            for k in 0..n {
+                want[(r, k)] += rho * s[r] * s[k];
+            }
+        }
+        let mut got = b0.clone();
+        bfgs_inverse_update(&mut got, &s, &g, &g_old);
+        let d = (&got - &want).iter().fold(0.0f64, |m, x| m.max(x.abs()));
+        assert!(d < 1e-12, "in-place vs explicit inverse BFGS differ by {d:e}");
     }
 
     /// `exp(K)` is orthogonal, `exp(K) exp(−K) = I`, and two half steps

@@ -170,6 +170,11 @@ impl std::fmt::Display for CasCiResult {
 
 /// Run a plain CAS-CI calculation from a converged restricted RHF reference.
 ///
+/// The Hamiltonian is `h = T + V_nuc + V_ECP` (the ECP of `prep`'s basis, as
+/// the RHF builds it) and the exact AO ERIs. An external potential, solvation
+/// or embedding term of the reference is not recorded on [`ScfResult`] and is
+/// not included, so the reference must be a vacuum RHF.
+///
 /// Validates the active-space configuration against the molecule/basis up front
 /// (electron count, orbital window) and returns a clean [`FerricError`] on any
 /// inconsistency — it never panics deep inside the transform or matvec.
