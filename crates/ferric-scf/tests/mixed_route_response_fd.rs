@@ -115,7 +115,7 @@ fn gap_correction(
 /// `c·h² + O(h⁴)` plus rounding `≤ e_g/h`, so with h halving,
 /// `‖Hκ − FD(h)‖ ≤ ‖FD(2h) − FD(h)‖/3 + 2·e_g/h`, dropping O(h⁴) (the ladder
 /// keeps truncation far below rounding). `analytic + corr` is the exact
-/// derivative (the matvec's diagonal gap replaced by the full commutator).
+/// derivative of the gradient; `corr` is each caller's documented term.
 /// Also returns the bound at the finest step.
 fn check_against_fd(
     label: &str,
@@ -726,9 +726,9 @@ fn uhf_matvec_matches_fd_on_mixed_routes() {
 /// Exactness anchor, ROHF/ROKS matvec (`rohf_newton::hessian_matvec`, the
 /// operator of the ROHF Newton and AH steps): on each mixed route it equals
 /// the central FD of the half gradient blocks (g_vc = [F_α+F_β]_vc,
-/// g_vo = [F_α]_vo, g_oc = [F_β]_oc, one MO set) once its diagonal gap is
-/// replaced by the full commutator (as in
-/// `open_shell_newton_fitted_response.rs`), at k_mix = 1, 0.2 and 0. NH2 ²B₁.
+/// g_vo = [F_α]_vo, g_oc = [F_β]_oc, one MO set) plus the Hessian-vs-Jacobian
+/// term (as in `open_shell_newton_fitted_response.rs`), at k_mix = 1, 0.2
+/// and 0. NH2 ²B₁.
 #[test]
 fn rohf_matvec_matches_fd_on_mixed_routes() {
     use ferric_scf::rohf_newton::{hessian_matvec, RohfNewtonInputs};
@@ -807,22 +807,25 @@ fn rohf_matvec_matches_fd_on_mixed_routes() {
                 hessian_matvec(&sys.ctx, &inp, &k_vc, &k_vo, &k_oc, &pool).unwrap()
             };
 
-            // corr = commutator blocks − the matvec's diagonal gaps.
-            let ca_ = fa_mo.dot(&kap) - kap.dot(&fa_mo);
-            let cb_ = fb_mo.dot(&kap) - kap.dot(&fb_mo);
-            let mut corr = blocks(&ca_, &cb_);
-            let fa_d = |p: usize| fa_mo[(p, p)];
-            let fb_d = |p: usize| fb_mo[(p, p)];
-            for ((r, q), v) in corr[0].indexed_iter_mut() {
-                let p = na + r;
-                *v -= (fa_d(p) + fb_d(p) - fa_d(q) - fb_d(q)) * k_vc[(r, q)];
-            }
-            for ((r, j), v) in corr[1].indexed_iter_mut() {
-                *v -= (fa_d(na + r) - fa_d(nc + j)) * k_vo[(r, j)];
-            }
-            for ((r, q), v) in corr[2].indexed_iter_mut() {
-                *v -= (fb_d(nc + r) - fb_d(q)) * k_oc[(r, q)];
-            }
+            // corr = Jacobian − Hessian: the matvec is the exact (symmetric)
+            // Hessian of E(C exp κ), the FD the Jacobian of the half gradient;
+            // they differ by ¼ read-off(Σ_σ [κ, G_σ]) with
+            // G_σ[i,j] = (n_i − n_j) f_σ[i,j], as in
+            // `open_shell_newton_fitted_response.rs`.
+            let occ_g = |f: &Array2<f64>, nocc: usize| {
+                Array2::from_shape_fn((n, n), |(i, j)| {
+                    let o = |k: usize| if k < nocc { 1.0 } else { 0.0 };
+                    (o(i) - o(j)) * f[(i, j)]
+                })
+            };
+            let (ga, gb) = (occ_g(&fa_mo, na), occ_g(&fb_mo, nc));
+            let mm = kap.dot(&ga) - ga.dot(&kap) + kap.dot(&gb) - gb.dot(&kap);
+            let readoff = -0.25 * (&mm.t() - &mm);
+            let corr = [
+                readoff.slice(s![na.., ..nc]).to_owned(),
+                readoff.slice(s![na.., nc..na]).to_owned(),
+                readoff.slice(s![nc..na, ..nc]).to_owned(),
+            ];
             // One gradient evaluation's rounding: the vc block reads both spins.
             let a = c.mapv(f64::abs);
             let g = gamma(b.m_fock);
