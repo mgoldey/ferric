@@ -160,6 +160,19 @@ def test_adc2_port_matches_pyscf_radc(name):
     np.testing.assert_allclose(got, want, rtol=0, atol=1e-8)
 
 
+@pytest.mark.parametrize("order", [0, 3, -1, 1.5])
+def test_adc2_rejects_an_order_other_than_1_or_2(order):
+    _, _, ints, mf = _scf("water", "6-31g")
+    with pytest.raises(ValueError, match="order must be 1 or 2"):
+        adc_mod.adc2_singlets(ints, mf, order=order)
+
+
+@pytest.mark.parametrize("x0", [0.0, -0.5, float("nan")])
+def test_drpa_rejects_a_nonpositive_frequency_scale(x0):
+    with pytest.raises(ValueError, match="x0 must be positive"):
+        drpa_mod.legendre_frequencies(10, x0)
+
+
 # ── Projection-based embedding ──
 
 GRID = {"grid_radial": 99, "grid_angular": 590, "grid_prune": "none"}
