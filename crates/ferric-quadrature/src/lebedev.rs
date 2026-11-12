@@ -18,6 +18,8 @@
 //! Lebedev-Laikov generator (`pyscf.dft.gen_grid.MakeAngularGrid`); see the
 //! per-order comments in [`lebedev`] for the cross-check.
 
+use ferric_core::FerricError;
+
 /// Generate Lebedev nodes by group symmetry.
 ///
 /// Lebedev rules expand a small set of "generator" points into the full
@@ -274,10 +276,23 @@ fn rule_590() -> Vec<(Triplet, f64)> {
     v
 }
 
+/// The orders [`lebedev`] and [`try_lebedev`] tabulate.
+pub const SUPPORTED_ORDERS: [usize; 9] = [6, 14, 26, 50, 110, 194, 302, 434, 590];
+
 /// Return Lebedev `(unit-vectors, weights)` summing to 1 for the given order.
 ///
-/// Supported: 6, 14, 26, 50, 110, 194, 302, 434, 590. Panics on any other order.
+/// Supported: [`SUPPORTED_ORDERS`]. Panics on any other order; use
+/// [`try_lebedev`] where the order comes from user input.
 pub fn lebedev(order: usize) -> (Vec<[f64; 3]>, Vec<f64>) {
+    try_lebedev(order).unwrap_or_else(|e| panic!("{e}"))
+}
+
+/// [`lebedev`] returning an error for an order outside [`SUPPORTED_ORDERS`].
+///
+/// # Errors
+///
+/// `FerricError::General` naming the order and the supported set.
+pub fn try_lebedev(order: usize) -> Result<(Vec<[f64; 3]>, Vec<f64>), FerricError> {
     let raw: Vec<(Triplet, f64)> = match order {
         6 => class_a1(1.0 / 6.0),
         14 => {
@@ -354,9 +369,13 @@ pub fn lebedev(order: usize) -> (Vec<[f64; 3]>, Vec<f64>) {
         194 => rule_194(),
         434 => rule_434(),
         590 => rule_590(),
-        _ => panic!(
-            "lebedev: unsupported order {order} (try 6, 14, 26, 50, 110, 194, 302, 434, 590)"
-        ),
+        _ => {
+            let listed: Vec<String> = SUPPORTED_ORDERS.iter().map(usize::to_string).collect();
+            return Err(FerricError::General(format!(
+                "lebedev: unsupported order {order} (try {})",
+                listed.join(", ")
+            )));
+        }
     };
     let mut pts = Vec::with_capacity(raw.len());
     let mut wts = Vec::with_capacity(raw.len());
@@ -364,7 +383,7 @@ pub fn lebedev(order: usize) -> (Vec<[f64; 3]>, Vec<f64>) {
         pts.push([x, y, z]);
         wts.push(w);
     }
-    (pts, wts)
+    Ok((pts, wts))
 }
 
 #[cfg(test)]
@@ -560,5 +579,32 @@ mod tests {
             int_y22.abs() < 1e-10,
             "Lebedev-110 should integrate Y_2,2 to 0, got {int_y22:.3e}"
         );
+    }
+
+    /// Every supported order builds, with as many points as its name; the
+    /// orders between them are refused by `try_lebedev` and panic in
+    /// `lebedev`.
+    #[test]
+    fn try_lebedev_accepts_exactly_the_supported_orders() {
+        for order in 0..=SUPPORTED_ORDERS[SUPPORTED_ORDERS.len() - 1] + 1 {
+            match try_lebedev(order) {
+                Ok((pts, wts)) => {
+                    assert!(SUPPORTED_ORDERS.contains(&order), "order {order} accepted");
+                    assert_eq!((pts.len(), wts.len()), (order, order));
+                }
+                Err(e) => {
+                    assert!(!SUPPORTED_ORDERS.contains(&order), "order {order}: {e}");
+                    assert!(e
+                        .to_string()
+                        .contains(&format!("unsupported order {order}")));
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "lebedev: unsupported order 7")]
+    fn lebedev_panics_on_an_unsupported_order() {
+        let _ = lebedev(7);
     }
 }
