@@ -60,6 +60,24 @@ pub fn enumerate_strings(n_orb: usize, k: usize) -> Vec<u64> {
     out
 }
 
+/// Number of strings [`enumerate_strings`] returns for `(n_orb, k)`, the
+/// binomial `C(n_orb, k)`, computed without enumerating; `None` when it does
+/// not fit in `usize`. Zero when `k > n_orb`.
+pub fn count_strings(n_orb: usize, k: usize) -> Option<usize> {
+    if k > n_orb {
+        return Some(0);
+    }
+    let k = k.min(n_orb - k);
+    // C(n, i+1) = C(n, i) (n - i) / (i + 1), exact at every step. The
+    // intermediate C(n, i) (n - i) <= C(n, i+1) k, so u128 holds it for any
+    // result that fits in u64.
+    let mut c: u128 = 1;
+    for i in 0..k {
+        c = c.checked_mul((n_orb - i) as u128)? / (i as u128 + 1);
+    }
+    usize::try_from(c).ok()
+}
+
 /// Population count: number of set bits (occupied orbitals) in a string.
 #[inline]
 pub fn popcount(s: u64) -> u32 {
@@ -104,6 +122,23 @@ mod tests {
         assert_eq!(enumerate_strings(4, 2).len(), 6);
         assert_eq!(enumerate_strings(6, 3).len(), 20);
         assert_eq!(enumerate_strings(7, 5).len(), 21);
+    }
+
+    #[test]
+    fn count_strings_matches_enumeration() {
+        for n in 0..=12 {
+            for k in 0..=n + 1 {
+                assert_eq!(
+                    count_strings(n, k),
+                    Some(enumerate_strings(n, k).len()),
+                    "C({n},{k})"
+                );
+            }
+        }
+        // C(30,15) and C(63,31) by the closed form; C(200,100) overflows.
+        assert_eq!(count_strings(30, 15), Some(155_117_520));
+        assert_eq!(count_strings(63, 31), Some(916_312_070_471_295_267));
+        assert_eq!(count_strings(200, 100), None);
     }
 
     #[test]

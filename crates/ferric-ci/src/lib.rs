@@ -271,19 +271,18 @@ pub fn run_cas_ci_on_integrals(
         )));
     }
 
-    // ---- Determinant space --------------------------------------------
-    let alpha_strings = strings::enumerate_strings(n_active, n_alpha);
-    let beta_strings = strings::enumerate_strings(n_active, n_beta);
-    if alpha_strings.is_empty() || beta_strings.is_empty() {
+    // ---- Determinant-space size --------------------------------------
+    // The string counts are binomials, computed without enumerating, so the
+    // pre-flight below refuses an oversized space before the string lists
+    // exist. A count that overflows `usize` saturates and fails the budget.
+    let na_str = strings::count_strings(n_active, n_alpha).unwrap_or(usize::MAX);
+    let nb_str = strings::count_strings(n_active, n_beta).unwrap_or(usize::MAX);
+    if na_str == 0 || nb_str == 0 {
         return Err(FerricError::General(
             "CAS-CI: empty determinant space (check n_active / electron counts)".to_string(),
         ));
     }
-    let space = hamiltonian::DeterminantSpace {
-        alpha_strings,
-        beta_strings,
-    };
-    let ndet = space.n_det();
+    let ndet = na_str.saturating_mul(nb_str);
 
     // ---- Memory pre-flight --------------------------------------------
     // Davidson holds TWO bases (v_basis + hv_basis), each up to max_subspace
@@ -307,6 +306,13 @@ pub fn run_cas_ci_on_integrals(
              N_det={ndet}, max_subspace={})",
             config.max_subspace
         ),
+    );
+    plan.reserve_sized(
+        "alpha and beta determinant string lists",
+        na_str.saturating_add(nb_str),
+        std::mem::size_of::<u64>(),
+        Lifetime::Resident,
+        1,
     );
     plan.reserve(
         "Davidson v_basis + hv_basis",
@@ -333,8 +339,6 @@ pub fn run_cas_ci_on_integrals(
     // Excitation lists: `n_str * (k(n-k) + k)` 16-byte entries per channel,
     // the β list stored twice (per string and grouped by pair).
     let n_exc = |k: usize| k * (n_active - k) + k;
-    let na_str = space.alpha_strings.len();
-    let nb_str = space.beta_strings.len();
     plan.reserve(
         "direct sigma excitation lists",
         2usize.saturating_mul(
@@ -351,7 +355,7 @@ pub fn run_cas_ci_on_integrals(
         plan.reserve_per_worker(
             "RDM block D = E_rs C",
             per_worker,
-            rayon::current_num_threads(),
+            rdm::rdm_concurrent_blocks(na_str, nb_str, rayon::current_num_threads()),
         );
         plan.reserve(
             "RDM block results (one batch)",
@@ -373,6 +377,13 @@ pub fn run_cas_ci_on_integrals(
     // solve, and outstanding bytes are not observable mid-run (the pool's
     // high-water mark survives the drop).
     let _mem = plan.commit()?;
+
+    // ---- Determinant space --------------------------------------------
+    let space = hamiltonian::DeterminantSpace {
+        alpha_strings: strings::enumerate_strings(n_active, n_alpha),
+        beta_strings: strings::enumerate_strings(n_active, n_beta),
+    };
+    debug_assert_eq!(space.n_det(), ndet);
 
     // ---- Diagonal + Davidson solve ------------------------------------
     let diag = hamiltonian::hamiltonian_diagonal(&ints, &space);
