@@ -9,6 +9,15 @@
 //! result) would grade the unconverged run Proven and report RI-J for a run
 //! that asked for none; one built from the result alone would miss the
 //! meta-GGA auto level shift. Each is a separate assertion below.
+//!
+//! Every solve goes through [`solve`], which holds [`SOLVE_LOCK`]. The
+//! precision record of a result is the difference of process-wide kernel
+//! counters (`ferric_core::gpu::provenance`), so an f32 RI-J solve in a
+//! concurrent test would be counted into an all-f64 solve's record.
+//! Thread-local counters would not fix this: a KS solve with RI-J builds J
+//! under `rayon::join` (the J/XC overlap in `rhf.rs`), so its `dfj-f32` call
+//! is counted on a rayon worker. Serializing the solves keeps every record
+//! exact.
 
 use ferric_core::basis::bundled;
 use ferric_core::certificate::{Grade, GRADE_SOURCE_PAGE};
@@ -25,7 +34,12 @@ use ferric_scf::uhf::solve_uhf;
 const WATER: &str = "3\nwater\nO 0.0 0.0 0.1173\nH 0.0 0.7572 -0.4692\nH 0.0 -0.7572 -0.4692\n";
 const OH: &str = "2\nOH\nO 0.0 0.0 0.0\nH 0.0 0.0 0.97\n";
 
+/// Serializes the solves of this file (see the module doc).
+static SOLVE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn solve(xyz: &str, mult: usize, cfg: &RhfConfig) -> (Molecule, ScfResult) {
+    // A test that panicked while holding the lock leaves the counters valid.
+    let _serial = SOLVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mol = Molecule::parse_xyz(xyz, 0, mult).unwrap();
     let prep = PreparedBasis::new(&mol, &bundled("sto-3g").unwrap()).unwrap();
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
