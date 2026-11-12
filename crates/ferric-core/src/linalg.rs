@@ -296,12 +296,16 @@ pub const PAR_GEMM_COL_BLOCK: usize = 128;
 /// column blocks computed in place, in parallel on the rayon pool, one
 /// single-threaded BLAS GEMM per block (no temporary beyond BLAS's own).
 ///
-/// For large one-off products (metric functions, gradient weights) that run
-/// outside any rayon region and would otherwise use one core under ferric's
-/// one-thread-BLAS convention. Every element comes from one block's GEMM over
-/// a full row of `a` and a column of `b`, so the result does not depend on
-/// the thread count. Do not call it under a raised BLAS thread count
-/// (`with_blas_threads(n > 1, ..)`): each block expects one-thread BLAS.
+/// For large products that run outside any rayon region (metric functions,
+/// gradient weights, the RI-MP2 V^-1/2 dressing) and would otherwise use one
+/// core under ferric's one-thread-BLAS convention. Every element comes from
+/// one block's GEMM over a full row of `a` and a column of `b`, so the result
+/// does not depend on the thread count.
+///
+/// The blocks run at one BLAS thread whatever the caller's count: the fan-out
+/// is wrapped in `with_blas_threads(1, ..)`, so a caller inside a raised
+/// serial-section scope (ferric-gw's `mo_b` raises around the RI-MP2 MO
+/// stream) does not multiply rayon workers by BLAS threads.
 pub fn par_gemm(
     alpha: f64,
     a: &ArrayView2<'_, f64>,
@@ -316,10 +320,43 @@ pub fn par_gemm(
         .axis_chunks_iter_mut(Axis(1), PAR_GEMM_COL_BLOCK)
         .collect();
     let b_blocks: Vec<_> = b.axis_chunks_iter(Axis(1), PAR_GEMM_COL_BLOCK).collect();
-    c_blocks
-        .into_par_iter()
-        .zip(b_blocks.into_par_iter())
-        .for_each(|(mut cb, bb)| ndarray::linalg::general_mat_mul(alpha, a, &bb, beta, &mut cb));
+    crate::blas_threads::with_blas_threads(1, || {
+        c_blocks
+            .into_par_iter()
+            .zip(b_blocks.into_par_iter())
+            .for_each(|(mut cb, bb)| {
+                par_gemm_probe::record();
+                ndarray::linalg::general_mat_mul(alpha, a, &bb, beta, &mut cb)
+            });
+    });
+}
+
+/// Test probe for [`par_gemm`]: how many column blocks ran, and the largest
+/// OpenBLAS thread count any block saw. Read by tests that check a call site
+/// goes through `par_gemm` and that its blocks ran at one BLAS thread.
+#[doc(hidden)]
+pub mod par_gemm_probe {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Column blocks computed since the last [`reset`].
+    pub static BLOCKS: AtomicUsize = AtomicUsize::new(0);
+    /// Largest `openblas_get_num_threads()` seen inside a block since the
+    /// last [`reset`].
+    pub static MAX_BLAS_THREADS: AtomicUsize = AtomicUsize::new(0);
+
+    pub(super) fn record() {
+        BLOCKS.fetch_add(1, Ordering::Relaxed);
+        MAX_BLAS_THREADS.fetch_max(
+            crate::blas_threads::current_blas_threads(),
+            Ordering::Relaxed,
+        );
+    }
+
+    /// Zero both counters.
+    pub fn reset() {
+        BLOCKS.store(0, Ordering::Relaxed);
+        MAX_BLAS_THREADS.store(0, Ordering::Relaxed);
+    }
 }
 
 /// `ln det(A)` for a real matrix with a **positive** determinant, via LU
