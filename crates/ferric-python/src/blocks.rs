@@ -2209,14 +2209,43 @@ impl PyUcphf {
 /// wrong formula (for example `μ S C Cᵀ`) differs at `O(‖M‖)` and stays
 /// rejected.
 pub(crate) fn roundoff_symmetry_tol(m: &Array2<f64>) -> f64 {
-    let norm_f = m.iter().map(|x| x * x).sum::<f64>().sqrt();
-    4.0 * m.nrows() as f64 * f64::EPSILON * norm_f
+    let (scale, scaled_norm) = scaled_frobenius(m);
+    4.0 * m.nrows() as f64 * f64::EPSILON * scale * scaled_norm
 }
 
-/// `½ (M + Mᵀ)`. Bit-identical to `M` when `M` is exactly symmetric:
-/// `x + x = 2x` and `2x · ½ = x` are exact in binary floating point.
+/// `(max |M_ij|, ‖M / max‖_F)`: the Frobenius norm as a scale and a factor in
+/// `[1, n]`, so that `Σ x²` does not overflow for finite entries near
+/// `1e200` or above. `(0, 0)` for a zero matrix.
+fn scaled_frobenius(m: &Array2<f64>) -> (f64, f64) {
+    let scale = m.iter().fold(0.0f64, |a, x| a.max(x.abs()));
+    if scale == 0.0 || !scale.is_finite() {
+        return (scale, 0.0);
+    }
+    let ss = m.iter().map(|x| (x / scale) * (x / scale)).sum::<f64>();
+    (scale, ss.sqrt())
+}
+
+/// Whether an asymmetry `asym = max |M - Mᵀ|` is within
+/// [`roundoff_symmetry_tol`]. Compared in units of `max |M_ij|`, so the
+/// bound cannot overflow to `inf` and accept everything; a non-finite
+/// `asym` (a difference of two finite entries that overflows) is rejected.
+fn within_roundoff_symmetry(m: &Array2<f64>, asym: f64) -> bool {
+    if !asym.is_finite() {
+        return false;
+    }
+    let (scale, scaled_norm) = scaled_frobenius(m);
+    if scale == 0.0 {
+        return asym == 0.0;
+    }
+    asym / scale <= 4.0 * m.nrows() as f64 * f64::EPSILON * scaled_norm
+}
+
+/// `½ (M + Mᵀ)`, formed as `½ M + ½ Mᵀ` so that finite entries near
+/// `f64::MAX` do not overflow in the sum. Bit-identical to `M` when `M` is
+/// exactly symmetric: `x/2 + x/2 = x` is exact in binary floating point
+/// (barring underflow of subnormals, where halving rounds).
 pub(crate) fn symmetrized(m: &Array2<f64>) -> Array2<f64> {
-    (m + &m.t()) * 0.5
+    &(m * 0.5) + &(&m.t() * 0.5)
 }
 
 /// Largest `|tr(D S) - N|` that round-off leaves in the electron count of a
@@ -2309,7 +2338,7 @@ pub(crate) fn checked_dm0_spin(
 }
 
 /// The checks shared by [`checked_dm0`] and [`checked_dm0_spin`] for one
-/// starting density: shape, finiteness and symmetry raise here (`what`
+/// starting density: shape, finiteness (of D, of `tr(D S)` and of its bound) and symmetry raise here (`what`
 /// names it); an electron count `tr(D S)` off `n_electrons` by more than
 /// [`electron_count_tol`] is returned as `Err((count, tol))` for the caller
 /// to word. `Ok(D)` is `½ (D + Dᵀ)`.
@@ -2323,7 +2352,7 @@ fn checked_start_density(
     let d = checked_square(d, s.nrows(), what)?;
     let asym = asymmetry(&d, what)?;
     let tol = roundoff_symmetry_tol(&d);
-    if asym > tol {
+    if !within_roundoff_symmetry(&d, asym) {
         return Err(PyValueError::new_err(format!(
             "{what} is not symmetric (max |D - D^T| = {asym:.3e}, above the round-off \
              bound 4 n eps ||D||_F = {tol:.3e})"
@@ -2332,6 +2361,12 @@ fn checked_start_density(
     let d = symmetrized(&d);
     let count = d.iter().zip(s.iter()).map(|(x, y)| x * y).sum::<f64>();
     let tol = electron_count_tol(&d, s);
+    if !count.is_finite() || !tol.is_finite() {
+        return Err(PyValueError::new_err(format!(
+            "{what}: tr(D S) = {count} or its round-off bound {tol} is not finite; \
+             the density entries overflow the electron-count check"
+        )));
+    }
     Ok(if (count - n_electrons).abs() > tol {
         Err((count, tol))
     } else {
@@ -2383,7 +2418,7 @@ impl PyFockHook {
         }
         let asym = asymmetry(&v, &format!("fock_hook's {name}"))?;
         let tol = roundoff_symmetry_tol(&v);
-        if asym > tol {
+        if !within_roundoff_symmetry(&v, asym) {
             return Err(PyValueError::new_err(format!(
                 "fock_hook returned a non-symmetric {name} (max |{name} - {name}^T| = {asym:.3e}, \
                  above the round-off bound 4 n eps ||{name}||_F = {tol:.3e})"
