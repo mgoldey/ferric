@@ -7,7 +7,7 @@
 //! * Below the gate, `auto` is the CPU run: no device build, and the host
 //!   tensors keep the CPU default layout (f32 RI-J and RI-K), which is what
 //!   `off` stores. A device-taking layout would be f64.
-//! * Above the gate, a hybrid reaches the device DF-K; a pure functional keeps
+//! * Above the gate, a hybrid reaches the device DF-K and RI-J; a pure functional keeps
 //!   J on the CPU and the J || XC overlap runs.
 use ferric_core::basis;
 use ferric_core::gpu::{install, probe, stats, GpuMode, GpuSettingsExplicit, GpuStatus};
