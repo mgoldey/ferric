@@ -3731,6 +3731,16 @@ const ENERGY_ONLY_KINDS: &[&str] = &["ccd", "ccsd(t)", "drpa"];
 /// list `run()` uses to turn `[rpa] xc` into the SCF functional).
 const RPA_XC_KINDS: &[&str] = &["pdep-rpa", "gw", "tdhf-static-polarizability"];
 
+/// `method.kind`s whose HF reference defaults to RI-JK on the default SCF JK
+/// aux when no functional selects a Kohn-Sham reference.
+const RESPONSE_JK_AUX_KINDS: &[&str] = &[
+    "pdep-rpa",
+    "rs-mp2-rpa",
+    "gw",
+    "bse-tda",
+    "tdhf-static-polarizability",
+];
+
 /// The SCF-only kinds. A `[dft] functional` promotes each to Kohn-Sham:
 /// `rhf` -> RKS, `uhf` -> UKS, `rohf` -> ROKS; `ksdft` is KS by definition
 /// (LDA when no functional is named). See [`Config::ks_functional`].
@@ -3804,10 +3814,7 @@ impl Config {
             (Some(functional), jk(), jk())
         } else if RPA_XC_KINDS.contains(&kind) && self.rpa.xc.is_some() {
             (self.rpa.xc.clone(), jk(), jk())
-        } else if matches!(
-            kind,
-            "pdep-rpa" | "rpa" | "rs-mp2-rpa" | "gw" | "bse-tda" | "tdhf-static-polarizability"
-        ) {
+        } else if RESPONSE_JK_AUX_KINDS.contains(&kind) {
             (None, jk(), jk())
         } else if matches!(kind, "tda" | "tddft") {
             (self.tddft.xc.clone(), jk(), jk())
@@ -12113,6 +12120,30 @@ mod cli_wired_keys_tests {
             &cfg("pdep-rpa", "energy", 2, "[gw]\nreference = \"rohf\"\n"),
             "\"gw\" only",
         );
+    }
+
+    /// Every kind defaulting to RI-JK for its HF reference is a kind `run()`
+    /// accepts; a name outside `SUPPORTED_METHOD_KINDS` would be a dead entry.
+    #[test]
+    fn response_jk_aux_kinds_are_all_supported_method_kinds() {
+        for kind in RESPONSE_JK_AUX_KINDS {
+            assert!(
+                crate::SUPPORTED_METHOD_KINDS.contains(kind),
+                "RESPONSE_JK_AUX_KINDS lists \"{kind}\", which is not a supported method.kind"
+            );
+        }
+    }
+
+    /// Every kind whose `[scf] jk` / `jk_aux` select the reference SCF is a
+    /// kind `run()` accepts.
+    #[test]
+    fn scf_jk_kinds_are_all_supported_method_kinds() {
+        for kind in SCF_JK_KINDS {
+            assert!(
+                crate::SUPPORTED_METHOD_KINDS.contains(kind),
+                "SCF_JK_KINDS lists \"{kind}\", which is not a supported method.kind"
+            );
+        }
     }
 
     /// Every kind whose reference `[rpa] xc` selects is a kind `run()`
