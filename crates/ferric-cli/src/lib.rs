@@ -1256,12 +1256,21 @@ pub fn run(args: Vec<String>) {
 
     // The SCF certificate. Printed and logged only for the SCF kinds; a
     // post-SCF method's result is not the SCF's.
-    let scf_cert = scf_certificate_stamped(
-        &mol,
-        &result,
-        rung_config.as_ref().unwrap_or(&rhf_config),
-        dispersion.as_ref(),
-    );
+    let scf_cert_config = rung_config.as_ref().unwrap_or(&rhf_config);
+    let scf_cert = scf_certificate_stamped(&mol, &result, scf_cert_config, dispersion.as_ref());
+    // The printed SCF-kind certificate also carries the envelope warnings;
+    // the reference handed to a post-SCF kind does not.
+    let scf_cert = if matches!(method, "rhf" | "ksdft") {
+        ferric_scf::certificate::with_scf_envelope(
+            scf_cert,
+            &mol,
+            &result,
+            scf_cert_config,
+            &bs.name,
+        )
+    } else {
+        scf_cert
+    };
 
     match method {
         "rhf" => run_rhf(&cfg, &bs, &prep, &result, &scf_cert),
@@ -2712,12 +2721,18 @@ fn run_rimp2(
     );
     println!("  MP2 corr   = {:.10} Hartree", mp2_result.mp2_corr);
     println!("  Total      = {:.10} Hartree", mp2_result.total_energy);
-    let cert = print_certificate(&ferric_mp2::certificate::rimp2_certificate(
+    let cert = print_certificate(&ferric_mp2::certificate::with_rimp2_envelope(
+        ferric_mp2::certificate::rimp2_certificate(
+            scf_cert,
+            aux_name,
+            &mp2_config,
+            &op,
+            &mp2_result.precision,
+        ),
         scf_cert,
+        mol,
+        &bs.name,
         aux_name,
-        &mp2_config,
-        &op,
-        &mp2_result.precision,
     ));
     if let Some(rl) = ferric_scf::runlog::log() {
         // The ANSWER, not the SCF reference `run_end` carries. `scf_converged`
@@ -2824,12 +2839,18 @@ fn run_u_rimp2(
     println!("  E(ab)      = {:.10} Hartree", r.components.e_ab);
     println!("  MP2 corr   = {:.10} Hartree", r.mp2_corr);
     println!("  Total      = {:.10} Hartree", r.total_energy);
-    let cert = print_certificate(&ferric_mp2::certificate::rimp2_certificate(
+    let cert = print_certificate(&ferric_mp2::certificate::with_rimp2_envelope(
+        ferric_mp2::certificate::rimp2_certificate(
+            scf_cert,
+            aux_name,
+            &mp2_config,
+            &op,
+            &r.precision,
+        ),
         scf_cert,
+        mol,
+        &bs.name,
         aux_name,
-        &mp2_config,
-        &op,
-        &r.precision,
     ));
     if let Some(rl) = ferric_scf::runlog::log() {
         rl.result(
@@ -5059,12 +5080,9 @@ fn run_pdep_rpa_arm(
     if let Some(e_diag) = rpa_result.e_rpa_dft_diag {
         println!("RI-dRPA check:         {:>20.10} Hartree", e_diag);
     }
-    print_and_note_certificate(&ferric_rpa::certificate::pdep_rpa_certificate(
-        &reference,
-        aux_name,
-        &rpa_cfg,
-        &rpa_result,
-    ));
+    let rpa_cert =
+        ferric_rpa::certificate::pdep_rpa_certificate(&reference, aux_name, &rpa_cfg, &rpa_result);
+    print_and_note_certificate(&rpa_cert);
     if let Some(prefix) = cfg.rpa.export_eigpot_prefix.as_deref() {
         use ferric_export::cube::GridSpec;
         use ferric_export::export_basis_function_cube;
@@ -5691,6 +5709,7 @@ fn run_pdep_rpa_arm(
                 .map(|m| ndarray::Array2::from_shape_fn((3, 3), |(p, q)| m[p][q]))
         });
 
+        let rpa_cert_json = rpa_cert.to_json().to_string();
         let npz_bundle = NpzBundle {
             mo_coeffs: if result.spin == ferric_scf::result::Spin::Restricted {
                 Some(result.mos_r())
@@ -5751,6 +5770,7 @@ fn run_pdep_rpa_arm(
                     _ => None,
                 },
             },
+            certificate: Some(&rpa_cert_json),
         };
         // A file the caller asked for and did not get is not a warning.
         let write_failed = if let Err(e) = export_npz(npz_path, &npz_bundle) {
@@ -6513,11 +6533,12 @@ fn run_uhf(
         rl.note("cosx_final_pass", cosx_final_json(&f));
     }
     println!("  <S^2>      = {:.6} (ideal {:.6})", s2, s_ideal);
-    print_and_note_certificate(&scf_certificate_stamped(
+    print_and_note_certificate(&ferric_scf::certificate::with_scf_envelope(
+        scf_certificate_stamped(mol, &result, rhf_config, dispersion.as_ref()),
         mol,
         &result,
         rhf_config,
-        dispersion.as_ref(),
+        &bs.name,
     ));
     // task == "optimize" is handled by the top-level dispatch above
     // (optimize_geometry_uhf), which returns before reaching here.
@@ -6581,11 +6602,12 @@ fn run_rohf(
     print_scf_energy(result.energy, dispersion.as_ref());
     log_scf_dispersion(result.energy, dispersion.as_ref());
     println!("  <S^2>      = {:.6} (exact by construction)", s_ideal);
-    print_and_note_certificate(&scf_certificate_stamped(
+    print_and_note_certificate(&ferric_scf::certificate::with_scf_envelope(
+        scf_certificate_stamped(mol, &result, rhf_config, dispersion.as_ref()),
         mol,
         &result,
         rhf_config,
-        dispersion.as_ref(),
+        &bs.name,
     ));
     // task == "optimize" is handled by the top-level dispatch above
     // (optimize_geometry_rohf), which returns before reaching here.

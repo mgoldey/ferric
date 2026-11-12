@@ -1,6 +1,7 @@
 //! The [`Certificate`](ferric_core::certificate::Certificate) of an SCF / KS-DFT result: capability and grade from
-//! `ferric_core::certificate::METHOD_KIND_GRADES`, the approximations the
-//! solve actually ran with, and warnings for conditions the solver already
+//! `ferric_core::certificate::METHOD_KIND_GRADES`, the measured error of the
+//! solver's energy anchor (`ferric_core::certificate::anchors`), the
+//! approximations the solve ran with, and warnings for conditions the solver already
 //! detected (non-convergence, plateau exits, stability verdicts).
 //!
 //! Built from the result, the config it was solved with and the molecule,
@@ -8,7 +9,7 @@
 //! `None`: only `ferric-cli` and `ferric-python` link `ferric-build-info`
 //! and stamp it (see the `ferric_core::certificate` module doc).
 
-use ferric_core::certificate::{Certificate, Grade};
+use ferric_core::certificate::{energy_anchor, Certificate, EnergyAnchor, Grade, RunEnvelope};
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
 use ferric_core::FerricError;
@@ -36,14 +37,36 @@ pub fn scf_capability(result: &ScfResult, config: &RhfConfig) -> &'static str {
     }
 }
 
+/// The solver label of `result`: `RHF`, `RKS`, `UHF`, `UKS`, `ROHF` or
+/// `ROKS` (the [`EnergyAnchor::method`] it is anchored under).
+pub fn scf_method(result: &ScfResult, config: &RhfConfig) -> &'static str {
+    match (result.spin, config.xc.is_some()) {
+        (Spin::Restricted, false) => "RHF",
+        (Spin::Restricted, true) => "RKS",
+        (Spin::Unrestricted, false) => "UHF",
+        (Spin::Unrestricted, true) => "UKS",
+        (Spin::RestrictedOpen, false) => "ROHF",
+        (Spin::RestrictedOpen, true) => "ROKS",
+    }
+}
+
+/// The headline energy anchor of `result`'s solver.
+pub fn scf_energy_anchor(result: &ScfResult, config: &RhfConfig) -> Option<&'static EnergyAnchor> {
+    energy_anchor(scf_method(result, config))
+}
+
 /// The certificate of `result`, solved for `mol` with `config` (for a
 /// laddered solve, the config of the rung that produced `result`).
 ///
-/// A result with `converged = false` is capped to [`Grade::Ungraded`]: the
-/// validation rows grade converged energies only.
+/// `measured_error` is the headline energy anchor of the solver
+/// ([`scf_energy_anchor`]). A result with `converged = false` is capped to
+/// [`Grade::Ungraded`]: the validation rows grade converged energies only.
 pub fn scf_certificate(mol: &Molecule, result: &ScfResult, config: &RhfConfig) -> Certificate {
     let mut c = Certificate::for_method_kind(scf_capability(result, config))
         .with_precision(&result.precision);
+    if let Some(a) = scf_energy_anchor(result, config) {
+        c = c.with_energy_anchor(a);
+    }
     for (name, detail) in approximations(mol, result, config) {
         c = c.with_approximation(name, detail);
     }
@@ -67,6 +90,31 @@ pub fn scf_certificate(mol: &Molecule, result: &ScfResult, config: &RhfConfig) -
         c = c.cap_grade(Grade::Ungraded, why);
     }
     c
+}
+
+/// `c` with a warning for each way the run lies outside the solver's energy
+/// anchor ([`Certificate::with_envelope`]): an element of `mol`, the orbital
+/// basis `basis`, or the functional. The grade is not changed.
+pub fn with_scf_envelope(
+    c: Certificate,
+    mol: &Molecule,
+    result: &ScfResult,
+    config: &RhfConfig,
+    basis: &str,
+) -> Certificate {
+    let Some(a) = scf_energy_anchor(result, config) else {
+        return c;
+    };
+    let zs: Vec<i32> = mol.atoms.iter().map(|at| at.z).collect();
+    c.with_envelope(
+        a,
+        &RunEnvelope {
+            atomic_numbers: &zs,
+            basis: Some(basis),
+            aux_basis: None,
+            functional: config.xc.as_deref(),
+        },
+    )
 }
 
 /// Whether exact (HF-type) exchange enters the energy, and whether it is

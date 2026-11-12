@@ -16,7 +16,7 @@ use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
-use ferric_scf::certificate::scf_certificate;
+use ferric_scf::certificate::{scf_certificate, with_scf_envelope};
 use ferric_scf::result::ScfResult;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
@@ -183,4 +183,53 @@ fn uhf_warns_when_stability_was_not_checked() {
         "{:?}",
         c.warnings
     );
+}
+
+/// `measured_error` is the solver's energy anchor, chosen from the result's
+/// spin and the presence of a functional; the envelope adds warnings and
+/// leaves every other field as it was.
+#[test]
+fn measured_error_is_the_solver_anchor_and_the_envelope_only_warns() {
+    let hf = RhfConfig::default();
+    let (water, r) = solve(WATER, 1, &hf);
+    let c = scf_certificate(&water, &r, &hf);
+    let e = c.measured_error.as_ref().expect("RHF anchor");
+    assert_eq!(
+        (e.quantity.as_str(), e.value, e.units.as_str()),
+        ("energy", 1.8e-12, "Ha")
+    );
+    // Water / STO-3G is inside the RHF anchor: the envelope adds nothing.
+    assert_eq!(with_scf_envelope(c.clone(), &water, &r, &hf, "STO-3G"), c);
+    // A basis the anchor never ran: one warning, nothing else moves.
+    let out = with_scf_envelope(c.clone(), &water, &r, &hf, "6-31g(2df,p)");
+    assert_eq!(out.warnings.len(), 1, "{:?}", out.warnings);
+    assert!(out.warnings[0].starts_with("basis 6-31g(2df,p) is outside the RHF"));
+    let mut back = out.clone();
+    back.warnings.clear();
+    assert_eq!(back, c, "the envelope changes warnings only");
+
+    let (oh, r) = solve(OH, 2, &hf);
+    let c = scf_certificate(&oh, &r, &hf);
+    assert_eq!(c.measured_error.as_ref().unwrap().value, 4.0e-12);
+
+    let pbe = RhfConfig {
+        xc: Some("PBE".into()),
+        ..Default::default()
+    };
+    let (water, r) = solve(WATER, 1, &pbe);
+    let c = scf_certificate(&water, &r, &pbe);
+    assert_eq!(c.measured_error.as_ref().unwrap().value, 4.2e-12);
+    let out = with_scf_envelope(c.clone(), &water, &r, &pbe, "def2-svp");
+    assert_eq!(out.grade, c.grade);
+    assert_eq!(
+        out.warnings.len(),
+        c.warnings.len() + 1,
+        "{:?}",
+        out.warnings
+    );
+    assert!(out
+        .warnings
+        .last()
+        .unwrap()
+        .starts_with("element O (covered: H, Si, S, Cl)"));
 }

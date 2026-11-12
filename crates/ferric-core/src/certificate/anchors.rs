@@ -1,0 +1,701 @@
+//! The headline energy anchor of each validated SCF and RI-MP2 method, and
+//! the validation envelope it defines.
+//!
+//! Each [`EnergyAnchor`] is one row of the Anchors table on
+//! [`GRADE_SOURCE_PAGE`](super::GRADE_SOURCE_PAGE): the stated agreement of
+//! the method's energy with an independent reference, the test that pins it,
+//! and the elements, basis sets and functionals that test runs. A certificate
+//! carries the anchor's value as its
+//! [`measured_error`](super::Certificate::measured_error)
+//! ([`Certificate::with_energy_anchor`]); [`Certificate::with_envelope`] adds
+//! one warning per dimension on which a run lies outside the anchor's set.
+//!
+//! The envelope is a lookup of each dimension on its own. A run whose
+//! elements and basis are both covered can still be a combination the test
+//! never ran (the RHF anchor runs each basis on one molecule), and other rows
+//! of the page may cover a run this anchor does not. Warnings never change a
+//! grade.
+//!
+//! The `anchors_match_the_page` test checks every entry against the page and
+//! derives the covered sets from the reference data the evidence test reads.
+
+use super::{Certificate, MeasuredError};
+use crate::elements::{symbol_to_z, z_to_symbol};
+
+/// The heading of the table on the grade page that holds the anchors.
+pub const ANCHOR_SOURCE_HEADING: &str = "## Anchors";
+
+/// Where an anchor's covered systems and basis sets are recorded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnchorData {
+    /// `testdata/reference/basis_coverage_pyscf.json`, the cases of one
+    /// `kind` (`"rhf"` or `"rimp2"`).
+    BasisCoverage {
+        /// The `kind` field of the cases the anchor covers.
+        kind: &'static str,
+    },
+    /// A directory of `<system>_<basis>.json` references; each system's
+    /// geometry is `testdata/molecules/validation/<system>.xyz`.
+    Directory {
+        /// The reference directory, relative to the workspace root.
+        dir: &'static str,
+        /// The systems of this anchor (a directory may hold several anchors).
+        systems: &'static [&'static str],
+    },
+}
+
+/// One method's headline energy anchor; see the module doc.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EnergyAnchor {
+    /// The solver the anchor covers: `"RHF"`, `"RKS"`, `"UHF"`, `"UKS"`,
+    /// `"ROHF"`, `"ROKS"`, `"RI-MP2"`, `"U-RI-MP2"`.
+    pub method: &'static str,
+    /// The CLI `method.kind` whose certificate carries it (its capability).
+    pub kind: &'static str,
+    /// What was compared, e.g. `"energy"`.
+    pub quantity: &'static str,
+    /// The stated agreement, spelled as on the page, e.g. `"1.8e-12"`.
+    pub value: &'static str,
+    /// Units of `value`.
+    pub units: &'static str,
+    /// The reference code, as named in the row's Reference cell.
+    pub reference: &'static str,
+    /// The test file the row's Proof cell links, relative to the workspace
+    /// root.
+    pub evidence: &'static str,
+    /// Where the covered systems and basis sets are recorded.
+    pub data: AnchorData,
+    /// Element symbols of the covered systems.
+    pub elements: &'static [&'static str],
+    /// Orbital basis sets the test runs, as the test names them.
+    pub basis_sets: &'static [&'static str],
+    /// Auxiliary basis sets the test runs (RI-MP2 only).
+    pub aux_basis_sets: &'static [&'static str],
+    /// Functionals the test runs (KS only), lower case.
+    pub functionals: &'static [&'static str],
+}
+
+const BASIS_COVERAGE: &str = "crates/ferric-mp2/tests/validation_basis_coverage.rs";
+const OPEN_SHELL_SCF: &str = "crates/ferric-scf/tests/validation_open_shell_scf.rs";
+const KS_ENERGIES: &str = "crates/ferric-scf/tests/validation_ks_energies.rs";
+const OPEN_SHELL_SYSTEMS: &[&str] = &["ho2", "no2", "ch2_triplet", "allyl"];
+const OPEN_SHELL_ELEMENTS: &[&str] = &["H", "C", "N", "O"];
+const OPEN_SHELL_BASES: &[&str] = &["6-31g", "def2-svp"];
+
+/// The headline energy anchor of every method that has one.
+pub const ENERGY_ANCHORS: &[EnergyAnchor] = &[
+    EnergyAnchor {
+        method: "RHF",
+        kind: "rhf",
+        quantity: "energy",
+        value: "1.8e-12",
+        units: "Ha",
+        reference: "PySCF 2.13.1",
+        evidence: BASIS_COVERAGE,
+        data: AnchorData::BasisCoverage { kind: "rhf" },
+        elements: &["H", "C", "O", "Ne", "Cl", "Br", "Ag", "I"],
+        basis_sets: &[
+            "sto-3g",
+            "6-31g",
+            "6-31g*",
+            "6-31g**",
+            "6-31+g*",
+            "6-31+g**",
+            "6-31++g**",
+            "6-311g**",
+            "6-311++g**",
+            "cc-pvdz",
+            "cc-pvtz",
+            "cc-pvqz",
+            "aug-cc-pvdz",
+            "aug-cc-pvtz",
+            "aug-cc-pvqz",
+            "cc-pvdz-pp",
+            "cc-pvtz-pp",
+            "cc-pvqz-pp",
+            "aug-cc-pvdz-pp",
+            "aug-cc-pvtz-pp",
+            "aug-cc-pvqz-pp",
+            "cc-pvdz-f12",
+            "def2-svp",
+            "def2-svpd",
+            "def2-tzvp",
+            "def2-tzvpd",
+            "def2-tzvpp",
+            "def2-tzvppd",
+            "def2-qzvp",
+            "def2-qzvpp",
+            "def2-qzvppd",
+            "pcseg-0",
+            "pcseg-1",
+            "pcseg-2",
+            "aug-pcseg-1",
+            "aug-pcseg-2",
+        ],
+        aux_basis_sets: &[],
+        functionals: &[],
+    },
+    EnergyAnchor {
+        method: "UHF",
+        kind: "uhf",
+        quantity: "energy",
+        value: "4.0e-12",
+        units: "Ha",
+        reference: "PySCF",
+        evidence: OPEN_SHELL_SCF,
+        data: AnchorData::Directory {
+            dir: "testdata/reference/validation/uhf_rohf",
+            systems: OPEN_SHELL_SYSTEMS,
+        },
+        elements: OPEN_SHELL_ELEMENTS,
+        basis_sets: OPEN_SHELL_BASES,
+        aux_basis_sets: &[],
+        functionals: &[],
+    },
+    EnergyAnchor {
+        method: "ROHF",
+        kind: "rohf",
+        quantity: "energy",
+        value: "4.0e-12",
+        units: "Ha",
+        reference: "PySCF",
+        evidence: OPEN_SHELL_SCF,
+        data: AnchorData::Directory {
+            dir: "testdata/reference/validation/uhf_rohf",
+            systems: OPEN_SHELL_SYSTEMS,
+        },
+        elements: OPEN_SHELL_ELEMENTS,
+        basis_sets: OPEN_SHELL_BASES,
+        aux_basis_sets: &[],
+        functionals: &[],
+    },
+    EnergyAnchor {
+        method: "RKS",
+        kind: "ksdft",
+        quantity: "energy",
+        value: "4.2e-12",
+        units: "Ha",
+        reference: "PySCF",
+        evidence: KS_ENERGIES,
+        data: AnchorData::Directory {
+            dir: "testdata/reference/validation/ks_energies",
+            systems: &["h2s", "hcl", "sih4"],
+        },
+        elements: &["H", "Si", "S", "Cl"],
+        basis_sets: &["def2-svp", "def2-tzvp"],
+        aux_basis_sets: &[],
+        functionals: &["pbe", "b3lyp", "hse06"],
+    },
+    EnergyAnchor {
+        method: "UKS",
+        kind: "uhf",
+        quantity: "energy",
+        value: "6e-6",
+        units: "Ha",
+        reference: "PySCF",
+        evidence: KS_ENERGIES,
+        data: AnchorData::Directory {
+            dir: "testdata/reference/validation/ks_energies",
+            systems: &["nh2", "ch3", "ho2", "o2"],
+        },
+        elements: &["H", "C", "N", "O"],
+        basis_sets: &["6-31g", "def2-svp"],
+        aux_basis_sets: &[],
+        functionals: &["pbe", "b3lyp", "wb97x-v"],
+    },
+    EnergyAnchor {
+        method: "ROKS",
+        kind: "rohf",
+        quantity: "energy",
+        value: "8.0e-7",
+        units: "Ha",
+        reference: "PySCF",
+        evidence: "crates/ferric-scf/tests/validation_roks_energies.rs",
+        data: AnchorData::Directory {
+            dir: "testdata/reference/validation/roks_energies",
+            systems: &["nh2", "ch3", "ho2", "oh"],
+        },
+        elements: &["H", "C", "N", "O"],
+        basis_sets: &["6-31g", "def2-svp"],
+        aux_basis_sets: &[],
+        functionals: &["pbe", "b3lyp"],
+    },
+    EnergyAnchor {
+        method: "RI-MP2",
+        kind: "rimp2",
+        quantity: "correlation energy",
+        value: "2.4e-10",
+        units: "Ha",
+        reference: "PySCF 2.13.1",
+        evidence: BASIS_COVERAGE,
+        data: AnchorData::BasisCoverage { kind: "rimp2" },
+        elements: &["H", "O", "Pd"],
+        basis_sets: &[
+            "cc-pvdz",
+            "cc-pvtz",
+            "cc-pvqz",
+            "aug-cc-pvdz",
+            "aug-cc-pvtz",
+            "aug-cc-pvqz",
+            "cc-pvdz-pp",
+            "cc-pvtz-pp",
+            "aug-cc-pvdz-pp",
+            "aug-cc-pvtz-pp",
+            "cc-pvdz-f12",
+            "def2-svp",
+            "def2-svpd",
+            "def2-tzvp",
+            "def2-tzvpd",
+            "def2-tzvpp",
+            "def2-tzvppd",
+            "def2-qzvp",
+            "def2-qzvpp",
+            "def2-qzvppd",
+        ],
+        aux_basis_sets: &[
+            "cc-pvdz-rifit",
+            "cc-pvtz-rifit",
+            "cc-pvqz-rifit",
+            "aug-cc-pvdz-rifit",
+            "aug-cc-pvtz-rifit",
+            "aug-cc-pvqz-rifit",
+            "cc-pvdz-pp-rifit",
+            "cc-pvtz-pp-rifit",
+            "cc-pvqz-pp-rifit",
+            "aug-cc-pvdz-pp-rifit",
+            "aug-cc-pvtz-pp-rifit",
+            "aug-cc-pvqz-pp-rifit",
+            "cc-pvtz-jkfit",
+            "cc-pvqz-jkfit",
+            "aug-cc-pvtz-jkfit",
+            "cc-pvdz-f12-optri",
+            "def2-svp-rifit",
+            "def2-svpd-rifit",
+            "def2-tzvp-rifit",
+            "def2-tzvpd-rifit",
+            "def2-tzvpp-rifit",
+            "def2-tzvppd-rifit",
+            "def2-qzvp-rifit",
+            "def2-qzvpp-rifit",
+            "def2-qzvppd-rifit",
+            "def2-universal-jkfit",
+        ],
+        functionals: &[],
+    },
+    EnergyAnchor {
+        method: "U-RI-MP2",
+        kind: "rimp2",
+        quantity: "correlation energy",
+        value: "9.2e-10",
+        units: "Ha",
+        reference: "PySCF DFUMP2",
+        evidence: "crates/ferric-mp2/tests/validation_u_rimp2.rs",
+        data: AnchorData::Directory {
+            dir: "testdata/reference/validation/u_rimp2",
+            systems: &["oh", "ch3", "nh2", "o2", "ho2"],
+        },
+        elements: &["H", "C", "N", "O"],
+        basis_sets: &["cc-pvdz"],
+        aux_basis_sets: &["cc-pvdz-ri"],
+        functionals: &[],
+    },
+];
+
+/// The anchor of `method` (see [`EnergyAnchor::method`]), if it has one.
+pub fn energy_anchor(method: &str) -> Option<&'static EnergyAnchor> {
+    ENERGY_ANCHORS.iter().find(|a| a.method == method)
+}
+
+/// Whether `name` is one of `list`: equal after trimming and lower-casing,
+/// or a bundled set whose shells and ECPs equal those of a listed set (so a
+/// registry alias such as `cc-pvdz-ri` matches `cc-pvdz-rifit`).
+fn basis_listed(list: &[&str], name: &str) -> bool {
+    let cn = crate::basis_util::canonical_name(name);
+    if list.iter().any(|b| *b == cn) {
+        return true;
+    }
+    let Ok(run) = crate::basis::bundled(&cn) else {
+        return false;
+    };
+    list.iter().any(|b| {
+        crate::basis::bundled(b).is_ok_and(|s| s.shells == run.shells && s.ecps == run.ecps)
+    })
+}
+
+impl EnergyAnchor {
+    /// The anchor as a [`MeasuredError`]. `value` is a finite, non-negative
+    /// number for every entry of [`ENERGY_ANCHORS`] (checked by a test).
+    pub fn measured_error(&self) -> MeasuredError {
+        let v: f64 = self
+            .value
+            .parse()
+            .unwrap_or_else(|e| panic!("{}: value {:?}: {e}", self.method, self.value));
+        MeasuredError::new(self.quantity, v, self.units, self.reference, self.evidence)
+            .unwrap_or_else(|e| panic!("{}: {e}", self.method))
+    }
+
+    /// The first atomic number of `zs` whose element is not in
+    /// [`Self::elements`], in input order.
+    pub fn first_uncovered_element(&self, zs: &[i32]) -> Option<i32> {
+        zs.iter()
+            .copied()
+            .find(|&z| !self.elements.iter().any(|s| symbol_to_z(s) == Some(z)))
+    }
+
+    /// Whether the test runs orbital basis `name` (aliases included).
+    pub fn covers_basis(&self, name: &str) -> bool {
+        basis_listed(self.basis_sets, name)
+    }
+
+    /// Whether the test runs auxiliary basis `name` (aliases included).
+    pub fn covers_aux_basis(&self, name: &str) -> bool {
+        basis_listed(self.aux_basis_sets, name)
+    }
+
+    /// Whether the test runs functional `name` (case-insensitive).
+    pub fn covers_functional(&self, name: &str) -> bool {
+        let n = name.trim().to_ascii_lowercase();
+        self.functionals.iter().any(|f| *f == n)
+    }
+}
+
+/// What a run used, for [`Certificate::with_envelope`]. A `None` dimension
+/// is not checked.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RunEnvelope<'a> {
+    /// Atomic number of every atom.
+    pub atomic_numbers: &'a [i32],
+    /// The orbital basis name.
+    pub basis: Option<&'a str>,
+    /// The auxiliary basis name of the correlation method.
+    pub aux_basis: Option<&'a str>,
+    /// The XC functional name.
+    pub functional: Option<&'a str>,
+}
+
+impl Certificate {
+    /// Attach `anchor`'s value as the measured error
+    /// ([`Self::with_measured_error`]). The grade is not changed.
+    pub fn with_energy_anchor(self, anchor: &EnergyAnchor) -> Self {
+        self.with_measured_error(anchor.measured_error())
+    }
+
+    /// Add one warning for each dimension of `run` outside `anchor`'s
+    /// covered set: the first uncovered element, the basis, the auxiliary
+    /// basis, the functional. The grade is not changed.
+    pub fn with_envelope(mut self, anchor: &EnergyAnchor, run: &RunEnvelope<'_>) -> Self {
+        let outside = |what: String| {
+            format!(
+                "{what} is outside the {} energy anchor ({})",
+                anchor.method, anchor.evidence
+            )
+        };
+        if let Some(z) = anchor.first_uncovered_element(run.atomic_numbers) {
+            let sym = z_to_symbol(z).map_or_else(|| format!("Z = {z}"), str::to_string);
+            self.push_warning(outside(format!(
+                "element {sym} (covered: {})",
+                anchor.elements.join(", ")
+            )));
+        }
+        if let Some(b) = run.basis.filter(|b| !anchor.covers_basis(b)) {
+            self.push_warning(outside(format!("basis {b}")));
+        }
+        if let Some(b) = run.aux_basis.filter(|b| !anchor.covers_aux_basis(b)) {
+            self.push_warning(outside(format!("auxiliary basis {b}")));
+        }
+        if let Some(f) = run.functional.filter(|f| !anchor.covers_functional(f)) {
+            self.push_warning(outside(format!(
+                "functional {f} (covered: {})",
+                anchor.functionals.join(", ")
+            )));
+        }
+        self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::{workspace_root, GRADE_SOURCE_PAGE};
+    use super::*;
+    use std::collections::BTreeSet;
+    use std::path::Path;
+
+    const PROOF_PREFIX: &str = "https://github.com/mgoldey/ferric/blob/main/";
+
+    /// Cells of one markdown table row (`\|` is a literal bar).
+    fn cells(row: &str) -> Vec<String> {
+        row.trim()
+            .trim_matches('|')
+            .replace("\\|", "\u{0}")
+            .split('|')
+            .map(|c| c.replace('\u{0}', "|").trim().to_string())
+            .collect()
+    }
+
+    /// Header and rows of the table under [`ANCHOR_SOURCE_HEADING`].
+    fn anchor_table(page: &str) -> (Vec<String>, Vec<Vec<String>>) {
+        let start = page.find(ANCHOR_SOURCE_HEADING).expect("Anchors heading");
+        let mut rows = page[start..]
+            .lines()
+            .skip_while(|l| !l.trim_start().starts_with('|'))
+            .take_while(|l| l.trim_start().starts_with('|'));
+        let header = cells(rows.next().expect("header row"));
+        (header, rows.skip(1).map(cells).collect())
+    }
+
+    fn column(header: &[String], name: &str) -> usize {
+        header
+            .iter()
+            .position(|h| h == name)
+            .unwrap_or_else(|| panic!("no {name:?} column in {header:?}"))
+    }
+
+    /// Every anchor-table disagreement of `a`, as messages.
+    fn page_disagreements(a: &EnergyAnchor, root: &Path, page: &str) -> Vec<String> {
+        let mut bad = Vec::new();
+        if !root.join(a.evidence).is_file() {
+            bad.push(format!(
+                "{}: evidence {} does not exist",
+                a.method, a.evidence
+            ));
+        }
+        let (header, rows) = anchor_table(page);
+        let (proof, stated, reference) = (
+            column(&header, "Proof"),
+            column(&header, "Stated agreement"),
+            column(&header, "Reference"),
+        );
+        let link = format!("]({PROOF_PREFIX}{})", a.evidence);
+        let hits: Vec<&Vec<String>> = rows.iter().filter(|r| r[proof].contains(&link)).collect();
+        let Some(row) = hits.first() else {
+            bad.push(format!(
+                "{}: no Anchors row links {} from its Proof cell",
+                a.method, a.evidence
+            ));
+            return bad;
+        };
+        let want = format!("{} {}", a.value, a.units);
+        if !row[stated].contains(&want) {
+            bad.push(format!(
+                "{}: the Stated agreement cell lacks {want:?}: {:?}",
+                a.method, row[stated]
+            ));
+        }
+        if !row[reference].replace('`', "").contains(a.reference) {
+            bad.push(format!(
+                "{}: the Reference cell lacks {:?}: {:?}",
+                a.method, a.reference, row[reference]
+            ));
+        }
+        bad
+    }
+
+    fn set(xs: &[&str]) -> BTreeSet<String> {
+        xs.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// `(elements, bases, aux bases)` of the `kind` cases of the basis
+    /// coverage reference file.
+    fn basis_coverage_sets(
+        root: &Path,
+        kind: &str,
+    ) -> (BTreeSet<String>, BTreeSet<String>, BTreeSet<String>) {
+        let path = root.join("testdata/reference/basis_coverage_pyscf.json");
+        let text = std::fs::read_to_string(&path).expect("basis coverage reference");
+        let refs: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let (mut el, mut bs, mut aux) = (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
+        for c in refs["cases"].as_array().unwrap() {
+            if c["kind"] != kind {
+                continue;
+            }
+            for atom in c["atoms_angstrom"].as_str().unwrap().split(';') {
+                el.insert(atom.split_whitespace().next().unwrap().to_string());
+            }
+            bs.insert(c["basis"].as_str().unwrap().to_string());
+            if let Some(x) = c["auxbasis"].as_str() {
+                aux.insert(x.to_string());
+            }
+        }
+        (el, bs, aux)
+    }
+
+    /// Element symbols of `testdata/molecules/validation/<system>.xyz`.
+    fn xyz_elements(root: &Path, system: &str) -> BTreeSet<String> {
+        let path = root.join(format!("testdata/molecules/validation/{system}.xyz"));
+        let text =
+            std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        text.lines()
+            .skip(2)
+            .filter_map(|l| l.split_whitespace().next())
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// Every disagreement between `a`'s covered sets and the data its
+    /// evidence test reads.
+    fn data_disagreements(a: &EnergyAnchor, root: &Path) -> Vec<String> {
+        let mut bad = Vec::new();
+        let mut same = |what: &str, ours: BTreeSet<String>, theirs: BTreeSet<String>| {
+            if ours != theirs {
+                bad.push(format!(
+                    "{}: {what} {ours:?} differ from the test data {theirs:?}",
+                    a.method
+                ));
+            }
+        };
+        match a.data {
+            AnchorData::BasisCoverage { kind } => {
+                let (el, bs, aux) = basis_coverage_sets(root, kind);
+                same("elements", set(a.elements), el);
+                same("basis sets", set(a.basis_sets), bs);
+                same("aux basis sets", set(a.aux_basis_sets), aux);
+            }
+            AnchorData::Directory { dir, systems } => {
+                let el = systems.iter().flat_map(|s| xyz_elements(root, s)).collect();
+                same("elements", set(a.elements), el);
+                for s in systems {
+                    for b in a.basis_sets {
+                        if !root.join(dir).join(format!("{s}_{b}.json")).is_file() {
+                            bad.push(format!("{}: no reference {dir}/{s}_{b}.json", a.method));
+                        }
+                    }
+                }
+                let test = std::fs::read_to_string(root.join(a.evidence)).unwrap_or_default();
+                let words = systems
+                    .iter()
+                    .chain(a.basis_sets)
+                    .chain(a.aux_basis_sets)
+                    .chain(a.functionals);
+                for w in words {
+                    if !test.contains(&format!("\"{w}\"")) {
+                        bad.push(format!("{}: {} never names \"{w}\"", a.method, a.evidence));
+                    }
+                }
+            }
+        }
+        bad
+    }
+
+    #[test]
+    fn anchors_match_the_page() {
+        let root = workspace_root();
+        let page = std::fs::read_to_string(root.join(GRADE_SOURCE_PAGE)).unwrap();
+        let bad: Vec<String> = ENERGY_ANCHORS
+            .iter()
+            .flat_map(|a| {
+                let mut b = page_disagreements(a, &root, &page);
+                b.extend(data_disagreements(a, &root));
+                b
+            })
+            .collect();
+        assert!(bad.is_empty(), "{}", bad.join("\n"));
+    }
+
+    /// Each reference directory is split exactly among its anchors: a system
+    /// or basis added to the data without a registry entry fails here.
+    #[test]
+    fn anchor_directories_are_covered_exactly() {
+        let root = workspace_root();
+        let mut dirs: std::collections::BTreeMap<&str, BTreeSet<String>> = Default::default();
+        for a in ENERGY_ANCHORS {
+            if let AnchorData::Directory { dir, systems } = a.data {
+                let e = dirs.entry(dir).or_default();
+                for s in systems {
+                    for b in a.basis_sets {
+                        e.insert(format!("{s}_{b}.json"));
+                    }
+                }
+            }
+        }
+        for (dir, ours) in dirs {
+            let on_disk: BTreeSet<String> = std::fs::read_dir(root.join(dir))
+                .unwrap_or_else(|e| panic!("{dir}: {e}"))
+                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .filter(|n| n.ends_with(".json"))
+                .collect();
+            assert_eq!(ours, on_disk, "{dir}");
+        }
+    }
+
+    #[test]
+    fn the_five_kinds_have_anchors_and_values_parse() {
+        for kind in ["rhf", "uhf", "rohf", "ksdft", "rimp2"] {
+            assert!(
+                ENERGY_ANCHORS.iter().any(|a| a.kind == kind),
+                "no anchor for {kind}"
+            );
+        }
+        let mut methods = BTreeSet::new();
+        for a in ENERGY_ANCHORS {
+            assert!(methods.insert(a.method), "{} twice", a.method);
+            let e = a.measured_error();
+            assert_eq!(e.value, a.value.parse::<f64>().unwrap());
+            assert_eq!(e.evidence, a.evidence);
+            for s in a.elements {
+                assert!(symbol_to_z(s).is_some(), "{}: {s}", a.method);
+            }
+            for b in a.basis_sets.iter().chain(a.aux_basis_sets) {
+                assert!(crate::basis::bundled(b).is_ok(), "{}: {b}", a.method);
+            }
+        }
+    }
+
+    #[test]
+    fn envelope_warns_per_dimension_and_never_changes_the_grade() {
+        let rks = energy_anchor("RKS").unwrap();
+        let base = Certificate::for_method_kind("ksdft").with_energy_anchor(rks);
+        assert_eq!(base.measured_error.as_ref().unwrap().value, 4.2e-12);
+        // Inside: H2S / def2-SVP / PBE, any spelling of the names.
+        let inside = base.clone().with_envelope(
+            rks,
+            &RunEnvelope {
+                atomic_numbers: &[16, 1, 1],
+                basis: Some("DEF2-SVP"),
+                aux_basis: None,
+                functional: Some("PBE"),
+            },
+        );
+        assert_eq!(inside, base, "a covered run gets no warning");
+        // Outside on every dimension: water / 6-31G / SCAN.
+        let out = base.clone().with_envelope(
+            rks,
+            &RunEnvelope {
+                atomic_numbers: &[1, 8, 7],
+                basis: Some("6-31g"),
+                aux_basis: Some("cc-pvdz-ri"),
+                functional: Some("SCAN"),
+            },
+        );
+        assert_eq!(out.grade, base.grade);
+        assert_eq!(out.measured_error, base.measured_error);
+        let ev = KS_ENERGIES;
+        assert_eq!(
+            out.warnings,
+            [
+                format!(
+                    "element O (covered: H, Si, S, Cl) is outside the RKS energy anchor ({ev})"
+                ),
+                format!("basis 6-31g is outside the RKS energy anchor ({ev})"),
+                format!("auxiliary basis cc-pvdz-ri is outside the RKS energy anchor ({ev})"),
+                format!(
+                    "functional SCAN (covered: pbe, b3lyp, hse06) is outside the RKS energy \
+                     anchor ({ev})"
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn registry_aliases_are_covered() {
+        let mp2 = energy_anchor("RI-MP2").unwrap();
+        assert!(mp2.covers_aux_basis("cc-pvdz-ri"));
+        assert!(mp2.covers_aux_basis("CC-PVDZ/C"));
+        assert!(energy_anchor("U-RI-MP2")
+            .unwrap()
+            .covers_aux_basis("cc-pvdz-rifit"));
+        assert!(energy_anchor("RHF").unwrap().covers_basis("6-31G(d)"));
+        // A different set is not an alias.
+        assert!(!mp2.covers_aux_basis("cc-pvtz-ri-not-a-set"));
+        assert!(!mp2.covers_basis("sto-3g"));
+    }
+}

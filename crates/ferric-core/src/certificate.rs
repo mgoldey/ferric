@@ -25,6 +25,16 @@
 //! LOWER a grade ([`Certificate::cap_grade`]), and doing so records why as a
 //! warning; there is no API that raises one.
 //!
+//! # Measured error and the validation envelope
+//!
+//! [`anchors::ENERGY_ANCHORS`] records the headline energy anchor of the
+//! SCF methods and RI-MP2: the stated agreement with an independent
+//! reference from the Anchors table of the same page, the test that pins it,
+//! and the elements, basis sets and functionals that test covers.
+//! [`Certificate::with_energy_anchor`] fills `measured_error` from it and
+//! [`Certificate::with_envelope`] warns when a run lies outside the covered
+//! set. A test keeps each entry equal to its page row.
+//!
 //! # Example
 //!
 //! ```
@@ -60,6 +70,9 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::gpu::provenance::PrecisionRecord;
+
+pub mod anchors;
+pub use anchors::{energy_anchor, EnergyAnchor, RunEnvelope, ENERGY_ANCHORS};
 
 /// Where [`METHOD_KIND_GRADES`] is copied from.
 pub const GRADE_SOURCE_PAGE: &str = "site/src/reference/validation.md";
@@ -532,11 +545,34 @@ impl fmt::Display for Certificate {
     }
 }
 
+/// Workspace root at RUN time (see ferric-cli's
+/// `grades_match_cli_warnings.rs` for why not `CARGO_MANIFEST_DIR` alone).
+#[cfg(test)]
+fn workspace_root() -> std::path::PathBuf {
+    use std::path::{Path, PathBuf};
+    let looks_like_root = |p: &Path| {
+        p.join("Cargo.toml").is_file() && p.join("site").is_dir() && p.join("crates").is_dir()
+    };
+    if let Ok(cwd) = std::env::current_dir() {
+        let mut here: Option<&Path> = Some(cwd.as_path());
+        while let Some(p) = here {
+            if looks_like_root(p) {
+                return p.to_path_buf();
+            }
+            here = p.parent();
+        }
+    }
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("crates/ferric-core sits two levels below the workspace root")
+        .to_path_buf()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
-    use std::path::{Path, PathBuf};
 
     fn full() -> Certificate {
         Certificate::for_method_kind("rimp2")
@@ -708,28 +744,6 @@ mod tests {
         ] {
             assert_eq!(Grade::parse_page_cell(g.as_str()), Ok(g));
         }
-    }
-
-    /// Workspace root at RUN time (see ferric-cli's
-    /// `grades_match_cli_warnings.rs` for why not `CARGO_MANIFEST_DIR` alone).
-    fn workspace_root() -> PathBuf {
-        let looks_like_root = |p: &Path| {
-            p.join("Cargo.toml").is_file() && p.join("site").is_dir() && p.join("crates").is_dir()
-        };
-        if let Ok(cwd) = std::env::current_dir() {
-            let mut here: Option<&Path> = Some(cwd.as_path());
-            while let Some(p) = here {
-                if looks_like_root(p) {
-                    return p.to_path_buf();
-                }
-                here = p.parent();
-            }
-        }
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .and_then(Path::parent)
-            .expect("crates/ferric-core sits two levels below the workspace root")
-            .to_path_buf()
     }
 
     /// kind -> grade cell of the table under [`GRADE_SOURCE_HEADING`]; the
