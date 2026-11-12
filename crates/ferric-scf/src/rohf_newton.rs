@@ -366,6 +366,11 @@ where
             break;
         }
         let alpha = rz_old / p_ap;
+        if !alpha.is_finite() {
+            return Err(FerricError::General(format!(
+                "ROHF Newton PCG: non-finite step length (rᵀz {rz_old:.3e} / pᵀAp {p_ap:.3e})"
+            )));
+        }
         // κ ← κ + α p
         k_vc.zip_mut_with(&p_vc, |k, &v| *k += alpha * v);
         k_vo.zip_mut_with(&p_vo, |k, &v| *k += alpha * v);
@@ -756,6 +761,28 @@ mod tests {
             model(k),
             steihaug_truncations_on_this_thread() - t0,
         )
+    }
+
+    /// A positive pᵀAp small enough that rᵀz/pᵀAp overflows is an error, not
+    /// a NaN step: curvature 1e-310, g = 1e-4, M = 1 gives pᵀAp ≈ 1e-318 and
+    /// α = ∞.
+    ///
+    /// MUTATION: drop the `alpha.is_finite()` check and this goes RED (the
+    /// call returns Ok with non-finite κ).
+    #[test]
+    fn pcg_rejects_a_non_finite_step_length() {
+        let (gb, mb) = (blocks([1e-4, 0.0, 0.0]), blocks([1.0, 1.0, 1.0]));
+        let (mut kvc, mut kvo, mut koc) = blocks([-1e-4, 0.0, 0.0]);
+        let matvec =
+            |a: &Array2<f64>, b: &Array2<f64>, c: &Array2<f64>| Ok((1e-310 * a, 1.0 * b, 1.0 * c));
+        let r = pcg_refine(
+            matvec,
+            (&gb.0, &gb.1, &gb.2),
+            (&mb.0, &mb.1, &mb.2),
+            (&mut kvc, &mut kvo, &mut koc),
+            (20, 0.0, 1.0),
+        );
+        assert!(r.is_err(), "Ok with κ {:?}", kvc[(0, 0)]);
     }
 
     /// No CG step is taken along non-positive curvature, however shallow. A

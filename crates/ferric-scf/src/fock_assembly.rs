@@ -644,6 +644,13 @@ pub(crate) fn k_builder_ignored_warning(
     if kb == "direct" && direct_k_runs {
         return None;
     }
+    if !need_k {
+        // No exchange builder runs, density-fitted or not; a named df_k_aux
+        // next to a pure functional builds no fitter.
+        return Some(format!(
+            "[ferric] warning: k_builder = \"{kb}\" is IGNORED because the functional uses no exact exchange"
+        ));
+    }
     Some(format!(
         "[ferric] warning: k_builder = \"{kb}\" is IGNORED because density-fitted J/K is active \
          (df_j_aux/df_k_aux set, or auto-defaulted for a functional); {}",
@@ -1009,7 +1016,8 @@ mod tests {
     /// `"link"`/`"cosx"` leaves a `"direct"` that never ran silent.
     ///
     /// MUTATION: restrict the warning to `matches!(kb, "link" | "cosx")`
-    /// and the `"direct"` arms go RED.
+    /// and the `"direct"` arms go RED; drop the `!need_k` lead and the two
+    /// pure-functional arms go RED.
     #[test]
     fn direct_overridden_by_density_fitting_is_warned_like_link() {
         // (kb, df_k_active, df_k_present, need_k, omega, expected route)
@@ -1026,10 +1034,15 @@ mod tests {
         for (kb, k_active, k_present, need_k, omega, route) in cases {
             let msg = k_builder_ignored_warning(kb, k_active, k_present, need_k, omega)
                 .unwrap_or_else(|| panic!("{kb} {k_active} {need_k} {omega}: no warning"));
+            // A pure functional builds no exchange fitter, so the lead names
+            // the missing exact exchange rather than active density fitting.
+            let lead = if need_k {
+                "density-fitted J/K is active"
+            } else {
+                "the functional uses no exact exchange"
+            };
             assert!(
-                msg.contains(&format!(
-                    "k_builder = \"{kb}\" is IGNORED because density-fitted J/K is active"
-                )),
+                msg.contains(&format!("k_builder = \"{kb}\" is IGNORED because {lead}")),
                 "{msg}"
             );
             assert!(msg.contains(route), "{msg}");

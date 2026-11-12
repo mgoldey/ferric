@@ -115,16 +115,21 @@ Run: `scripts/prototypes/casscf_proto.py` (all anchors, exit 0 = pass).
 ### Anchor 1: active space = full space
 
 With n_c = n_v = 0 every rotation is redundant, so the check is the whole
-matrix 2(F - F^T) and the energy against PySCF FCI built from PySCF's own RHF
-integrals. The total energies differ by the RHF-level integral offset between
-the two codes (dE(RHF)), so the correlation energy E - E_RHF is the compared
-quantity, bar 1e-8 Ha. 2(F - F^T) is first order in the CI error, so its bar is
-10 x the CI residual ||Hc - Ec|| (floor 1e-12).
+matrix 2(F - F^T) and the energy against PySCF FCI on ferric's own integrals
+(`pyscf_rhf_on_ferric_integrals`). The full-space FCI energy does not depend on
+the orbitals it is expanded in, so dE tests the solver alone. Bar:
+2e-14 + 1e-13 |E| Ha (each solve's energy tolerance plus a rounding allowance
+for the two MO transforms). 2(F - F^T) is first order in the CI error, so its
+bar is 10 x the CI residual ||Hc - Ec|| (floor 1e-12). MEASURED 2026-11-12.
 
-| System | ndet | CI | dE (Ha) | dE(RHF) (Ha) | dE_corr (Ha) | max \|2(F-F^T)\| | CI residual |
-|---|---|---|---|---|---|---|---|
-| H2O/STO-3G | 441 | dense | -2.5e-8 | -2.4e-8 | -9.1e-10 | 3.1e-15 | 2.9e-14 |
-| N2/STO-3G | 14400 | Davidson | -5.5e-8 | -5.1e-8 | -4.1e-9 | 8.4e-9 | 4.7e-8 |
+| System | ndet | CI | dE (Ha) | bar (Ha) | max \|2(F-F^T)\| | CI residual |
+|---|---|---|---|---|---|---|
+| H2O/STO-3G | 441 | dense | 1.3e-13 | 7.5e-12 | 3.1e-15 | 2.9e-14 |
+| N2/STO-3G | 14400 | Davidson | -2.8e-13 | 1.1e-11 | 8.4e-9 | 4.7e-8 |
+
+For N2/STO-3G, PySCF's RHF on ferric's integrals (core-Hamiltonian guess)
+converges to a different RHF solution, 0.73 Ha above ferric's. The FCI energy
+is unaffected.
 
 ### Anchor 2: analytic gradient vs finite difference, per class
 
@@ -182,10 +187,14 @@ Two PySCF references, both converged from PySCF's own RHF orbitals:
 - native: PySCF end to end with its own 6-31G integrals. This difference
   includes the integral offset and is reported, not gated.
 
-Bar: near a minimum E - E_min <= ||g||^2 / (2 lambda_min) for each code, with
-lambda_min the lowest eigenvalue of the CI-relaxed orbital Hessian
+Bar: near a minimum the quadratic model gives E - E_min ~ ||g||^2 / (2 lambda_min)
+for each code. This is an estimate, not a bound: the cubic term is neglected,
+so it can be exceeded at a larger ||g|| (E(x) = x^2/2 + x^3/3 at x = 0.1:
+error 5.33e-3, estimate 5.04e-3). Here ||g|| <= 1e-6, where the cubic term is
+O(||g||^3 / lambda_min^2), a factor ||g|| / lambda_min <= 5e-5 of the quadratic one. lambda_min is
+the lowest eigenvalue of the CI-relaxed orbital Hessian
 (central FD of the analytic gradient, h = 1e-4, at the converged
-orbitals), plus PySCF's energy tolerance `conv_tol` = 1e-12.
+orbitals), plus PySCF's energy tolerance `conv_tol` = 1e-12. PySCF's packed gradient omits the factor 2 of 2(F - F^T), so its norm enters as 2||g_PySCF||.
 Thresholds: prototype ||g||_2 < 1e-7 and |dE| < 1e-12; PySCF
 `conv_tol_grad` = 1e-6 (1e-7 did not converge for H2O in 200 macro
 iterations), `fcisolver.conv_tol` = 1e-14.
@@ -195,7 +204,7 @@ iterations), `fcisolver.conv_tol` = 1e-14.
 | E prototype (Ha) | -76.0369690965018 | -109.0155467897007 |
 | E PySCF, same integrals (Ha), run 1 / run 2 | -76.0369690965004 / -76.0369690964873 | -109.0155467897005 (both) |
 | difference (Ha), run 1 / run 2 | -1.4e-12 / -1.4e-11 | -1.8e-13 / -1.7e-13 |
-| bar (Ha) | 2.6e-11 | 1.1e-12 |
+| bar (Ha) | 1.0e-10 | 1.3e-12 |
 | \|\|g\|\| prototype / PySCF (run 1, run 2) | 9.5e-8 / 9.8e-7, 9.9e-7 | 3.4e-8 / 7.4e-8 |
 | lambda_min (Ha) | 0.0195 | 0.0402 |
 | RHF difference, same integrals (Ha) | 2.8e-14 | -2.8e-14 |
