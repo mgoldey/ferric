@@ -60,6 +60,7 @@
 
 /// Two-step CASSCF on top of the CAS-CI solver and its RDMs.
 pub mod casscf;
+pub mod casscf_ints;
 /// Certificates of the CASSCF and SC-NEVPT2 results.
 pub mod certificate;
 /// CI-native Davidson eigensolver for the lowest root.
@@ -89,6 +90,7 @@ pub use rdm3::{hole_rdms, nevpt_rdms, HoleRdms, NevptRdms};
 
 use ferric_core::memory::plan::{Lifetime, MemoryPlan};
 use ferric_core::mol::Molecule;
+use ferric_core::timing::PhaseAccumulator;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_scf::ScfResult;
@@ -276,6 +278,17 @@ pub fn run_cas_ci_on_integrals(
     ints: integrals::ActiveSpaceIntegrals,
     config: &CasCiConfig,
 ) -> Result<CasCiResult, FerricError> {
+    run_cas_ci_on_integrals_timed(ints, config, &mut PhaseAccumulator::new())
+}
+
+/// [`run_cas_ci_on_integrals`], with the eigensolve (`"CI solve"`) and the
+/// RDM build (`"RDMs"`) timed into `acc`.
+pub(crate) fn run_cas_ci_on_integrals_timed(
+    ints: integrals::ActiveSpaceIntegrals,
+    config: &CasCiConfig,
+    acc: &mut PhaseAccumulator,
+) -> Result<CasCiResult, FerricError> {
+    let tok = acc.begin("CI solve");
     check_active_config(config)?;
     let (n_alpha, n_beta) = config.n_elec_active;
     let n_active = config.n_active;
@@ -442,8 +455,9 @@ pub fn run_cas_ci_on_integrals(
         }
     }
 
+    acc.stop(tok);
     let rdms = if config.compute_rdms {
-        Some(rdm::spin_summed_rdms(&direct, &dav.eigenvector)?)
+        Some(acc.time("RDMs", || rdm::spin_summed_rdms(&direct, &dav.eigenvector))?)
     } else {
         None
     };

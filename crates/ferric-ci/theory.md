@@ -327,9 +327,21 @@ E_\text{core} = E_\text{nuc} + \tfrac12\operatorname{Tr}[D^c(h + F^I)],
 $$
 
 the CAS-CI runs on $h_\text{eff} = C_a^\mathsf{T}F^IC_a$, $(tu|vw)$ and
-$E_\text{core}$ (`run_cas_ci_on_integrals`). $J$ and $K$ are contracted
-from a dense AO block, $(pu|vw)$ for all $p$ by four quarter transforms of
-that block (`integrals::transform_eri_mixed`).
+$E_\text{core}$ (`run_cas_ci_on_integrals`). The integrals come from
+`CasScfConfig::integrals` (`casscf_ints.rs`). The default, `Auto`, takes
+the dense route when its $n_\text{bas}^4$ block and transients fit in half of
+the memory budget and the direct route otherwise. The direct route
+builds $J$ and $K$ with ferric-scf's direct builder (`build_jk_with_pool`,
+Schwarz and density screened) and $(pu|vw)$ for all $p$ by a direct half
+transform: per canonical bra shell pair, every ket shell pair with
+$Q_\text{bra}Q_\text{ket} \ge$ `thresh` is contracted with $C_a$ on both ket
+indices, $X_{mn,vw} = \sum_{ls}(mn|ls)C_{lv}C_{sw}$, then
+$(pu|vw) = \sum_{mn}C_{mp}C_{nu}X_{mn,vw}$ by GEMMs. Peak memory is
+$X$, $n_\text{bas}^2n_a^2$ doubles. The dense route holds the
+$n_\text{bas}^4$ AO block, contracts $J$, $K$ from it and transforms it by four
+quarter transforms (`integrals::transform_eri_mixed`); it is the test oracle
+(`tests/casscf_direct.rs`: at `thresh = 0` the routes agree to
+$10^{-12}$ in $F$, $(pu|vw)$, $E$ and $g$).
 
 **Gradient.** The rotation is $C' = C\exp(K)$, $K_{pq} = \kappa_{pq} = -K_{qp}$
 for $p > q$. With the generalized Fock matrix (MO basis, $F^I$ and $F^A$
@@ -390,8 +402,9 @@ C_a^\mathsf{T}$ by the active rotation, so $F^I$ and $F^A$ in $C'$ are the
 rotated matrices up to the CI error of the second solve. `mo_energy` is the
 diagonal of $F^T$ in $C'$.
 
-**Limits.** Lowest root, no state averaging; dense AO block,
-$n_\text{bas}^4$ doubles, charged to the memory budget; the start is a
+**Limits.** Lowest root, no state averaging; the direct route recomputes
+every shell quartet each macro iteration (three passes: $J/K[D^c]$,
+$(pu|vw)$, $J/K[D^a]$); the start is a
 restricted RHF (an even electron count). No exact orbital Hessian,
 orbital-CI coupling or augmented-Hessian step.
 
@@ -514,6 +527,99 @@ Mutations of canonicalization and of the open-shell path (applied to
 The spin-sector mutation is caught only where the requested sector's lowest
 state is not the lowest state of the neighbouring sector; the H2O (6, 4)
 full-space case is that check.
+
+**Integral routes (2026-11-13, `tests/casscf_direct.rs`).** H2O CAS(4,4),
+N2 CAS(6,6) and O2 CAS(8,6) $(5, 3)$ on 6-31G, at RHF orbitals rotated by a
+random $\kappa$ (scale 0.05), CI threshold $10^{-12}$. The direct route is
+compared with the dense oracle at `thresh = 0` and at the default $10^{-12}$.
+The bars on $F$ and $(pu|vw)$ are a priori: summation rounding of both
+routes plus the screened quartets, carried through the coefficients by their
+column 1-norms. The bars on $E$ and $g$ propagate the measured $\delta F$ and
+$\delta P$, including the CI response through the dense CI gap. $(pu|vw)$ is
+checked before any CI runs on it.
+
+| System | thresh | $\delta F$ (bar) | $\delta(pu\vert vw)$ (bar) | $\lvert\Delta E\rvert$ (bar) | $\lvert\Delta g\rvert$ (bar) |
+|---|---:|---:|---:|---:|---:|
+| H2O CAS(4,4) | 0 | 9.4e-14 (1.1e-8) | 1.5e-14 (7.7e-11) | 2.8e-14 (1.8e-11) | 2.5e-13 (1.5e-6) |
+| H2O CAS(4,4) | 1e-12 | 9.4e-14 (2.6e-8) | 1.5e-14 (7.8e-10) | 2.8e-14 (1.8e-11) | 2.5e-13 (1.5e-6) |
+| N2 CAS(6,6) | 0 | 2.3e-13 (1.4e-6) | 1.7e-13 (6.5e-9) | 2.6e-13 (2.7e-10) | 7.7e-13 (7.9e-4) |
+| N2 CAS(6,6) | 1e-12 | 2.3e-13 (1.6e-6) | 1.7e-13 (5.6e-8) | 2.6e-13 (2.7e-10) | 7.7e-13 (7.9e-4) |
+| O2 CAS(8,6) | 0 | 3.3e-13 (2.6e-7) | 7.3e-14 (8.4e-10) | 4.3e-13 (1.6e-10) | 1.0e-12 (1.3e-3) |
+
+The gradient bars are loose: they multiply worst-case element bounds over
+every rotation class. The measured differences are at rounding.
+
+Mutations (one at a time, 2026-11-13; each fails on an assertion):
+
+| Mutation | Caught by |
+|---|---|
+| $F^A = J - \tfrac14K$ (half the exchange in the active Fock) | `casscf.rs`: analytic vs FD, core-active 0.245 (H2O) against $10^{-8}$; prototype energy $\lvert\Delta E\rvert$ = 4.7e-2 Ha (H2O). `casscf_direct.rs` passes: both routes share the formula |
+| direct $K$ halved | `casscf_direct.rs`, 5 of 6 tests: $\delta F$ = 2.32 against $\le 1.6\times10^{-6}$ |
+| direct $(pu\vert vw)$ without the $s_3 \ne s_4$ ket mirror | `casscf_direct.rs`, 5 of 6 tests: $\delta(pu\vert vw)$ = 0.86 to 8.5 against $\le 5.6\times10^{-8}$ |
+| dense $K$ contracted with $D^\mathsf{T}$ (`column(l)`) | unit test `dense_jk_gemv_matches_the_scalar_loops` (nonsymmetric $D$): $\lvert\Delta K\rvert$ = 0.84 against 5.3e-11 |
+
+The sixth `casscf_direct.rs` test checks that a negative or NaN threshold is
+refused.
+
+**Benzene CAS(6,6)/cc-pVDZ (2026-11-13).** `testdata/molecules/benzene.xyz`,
+114 basis functions, 18 core orbitals, ferric RHF start, default settings
+(`integrals = "auto"` resolves to dense at `budget_gb = 10`). CLI wall times,
+paired and interleaved (A B B A A B), 12 rayon threads, box load average
+2.5 to 10.4 during the runs:
+
+| Build | Wall (s), 3 runs | mean ± sd (s) | macro iterations | wall per iteration (s) | peak RSS |
+|---|---|---:|---:|---:|---:|
+| before (dense scalar $J/K$, single-threaded transform) | 117.3, 110.5, 110.3 | 112.7 ± 4.0 | 90 | 1.25 ± 0.04 | 1.79 GB |
+| dense route | 37.4, 35.9, 35.6 | 36.3 ± 1.0 | 89 | 0.41 ± 0.01 | 1.78 GB |
+
+Both reach $E = -230.7814586093$ Ha. The wall times include the RHF
+(about 9 s). The iteration counts differ by one because the $J/K$ sums round
+differently. Phase totals of the dense route (`FERRIC_TIMING=1`, the median
+run) and of one direct-route run (`thresh` $10^{-12}$, 88 iterations, peak
+RSS 0.56 GB):
+
+| Phase | dense (s) | busy cores | direct (s) | busy cores |
+|---|---:|---:|---:|---:|
+| inactive Fock ($J/K$ of $D^c$) | 6.0 | 11.3 | 93.2 | 11.2 |
+| $(pu\vert vw)$ transform | 7.0 | 11.5 | 169.6 | 11.2 |
+| CI solve | 2.4 | 11.7 | 1.6 | 11 |
+| active Fock ($J/K$ of $D^a$) | 6.3 | 11.2 | 93.0 | 11.2 |
+| BFGS update + step | 3.7 | 1.0 | 3.8 | 1.0 |
+| other | 0.1 | | 0.1 | |
+| total, per iteration | 25.5, 0.29 | | 361.4, 4.1 | |
+
+**Benzene stationary point.** `pyscf.mcscf.CASSCF` (PySCF 2.13.1) on ferric's
+AO integrals reaches $E = -230.7873347336$ Ha, 5.876 mHa below ferric, from
+ferric's RHF orbitals (36 macro iterations) and from PySCF's own RHF. Each
+code's energy functional reproduces the other's at the other's orbitals:
+
+| Orbitals | ferric $E$ (Ha) | ferric $\lVert g\rVert$ | PySCF CASCI $E$ (Ha) | PySCF $\lVert g\rVert$ |
+|---|---:|---:|---:|---:|
+| ferric's converged | -230.7814586093 | 4.8e-8 | -230.7814586093 | 2.4e-8 |
+| PySCF's converged | -230.7873347336 | 1.0e-6 | -230.7873347336 | |
+
+Both points are stationary in both codes. Lowest eigenvalues of the
+CI-relaxed orbital Hessian (Lanczos on central-difference gradient products,
+$h = 10^{-4}$, on $D^{-1/2}HD^{-1/2}$ with $D$ the approximate diagonal
+floored at 0.05, which has the inertia of $H$):
+
+| Point | Lanczos steps | lowest three | Ritz residual of the lowest |
+|---|---:|---|---:|
+| ferric's | 80 | 0.3645, 0.5082, 0.5132 | 2.9e-11 |
+| PySCF's | 40 | 0.3999, 0.5125, 0.5143 | not recorded |
+
+Ferric's point is therefore a local minimum, not a saddle. Under $z \to -z$
+(the molecular plane) every orbital in all three sets (RHF, ferric, PySCF)
+stays purely $\sigma$ or purely $\pi$. Both active spaces hold two $\sigma$ and
+four $\pi$ orbitals, with the sixth $\pi$ ($a_{2u}$) in the core. In the RHF
+the $a_{2u}$ $\pi$ ($-0.498$ Ha) lies below the $e_{2g}$ $\sigma$ pair
+($-0.491$ Ha), and the 18-orbital core splits that pair. Natural occupations:
+ferric 1.981, 1.938, 1.936, 0.064, 0.063, 0.019; PySCF 1.982, 1.941, 1.936,
+0.065, 0.058, 0.018. The two codes sit at two minima of the same
+$2\sigma + 4\pi$ active-space class, and neither is the all-$\pi$ CAS(6,6). A
+$\pi$ CAS(6,6) needs an active window placed on the six $\pi$ orbitals, which neither
+`[cas]` nor `run_casscf` offers: the active orbitals are the `n_active`
+orbitals after the first `n_core` in the RHF order.
 
 ## SC-NEVPT2 (`src/nevpt2.rs`)
 

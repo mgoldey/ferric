@@ -36,15 +36,20 @@
 //! depend on the spin-summed RDMs only, and the CI root is the lowest of the
 //! `(n_alpha, n_beta)` sector. The orbitals stay one restricted set.
 //!
-//! The AO two-electron integrals are held densely (`nbas^4`), and `J`, `K` and
-//! the `(pu|vw)` transform are built from that block every iteration. The
-//! method is limited to bases small enough for that block.
+//! The two-electron integrals come from [`CasScfConfig::integrals`]: the
+//! dense `nbas^4` AO block when it fits in half of the memory budget,
+//! otherwise direct J/K builds and a direct `(pu|vw)` half transform every
+//! iteration with no `nbas^4` array (see [`crate::casscf_ints`]). With
+//! `FERRIC_TIMING=1`, [`crate::casscf::optimize`] prints a phase table.
 
-use crate::integrals::{dense_ao_eri, transform_eri_mixed, ActiveSpaceIntegrals};
-use crate::{run_cas_ci_on_integrals, CasCiConfig, CasCiRdms, CasCiResult};
+pub use crate::casscf_ints::CasScfIntegrals;
+use crate::casscf_ints::IntegralBackend;
+use crate::integrals::ActiveSpaceIntegrals;
+use crate::{run_cas_ci_on_integrals_timed, CasCiConfig, CasCiRdms, CasCiResult};
 use ferric_core::memory::plan::{Lifetime, MemoryPlan};
 use ferric_core::memory::pool::Reservation;
 use ferric_core::mol::Molecule;
+use ferric_core::timing::PhaseAccumulator;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::oneelectron::hcore_ecp;
@@ -83,11 +88,15 @@ pub struct CasScfConfig {
     /// error at any macro iteration.
     pub ci_max_iter: usize,
     /// Memory ceiling in bytes (see [`CasCiConfig::memory_budget_bytes`]).
-    /// The dense AO block, the transform chain and the CI are charged to it.
+    /// The integral route's arrays, the transform chain and the CI are
+    /// charged to it.
     pub memory_budget_bytes: Option<usize>,
     /// Return canonical orbitals ([`canonicalize()`]) and
     /// [`CasScfResult::mo_energy`].
     pub canonicalize: bool,
+    /// Where the two-electron integrals come from ([`CasScfIntegrals::Auto`]
+    /// by default).
+    pub integrals: CasScfIntegrals,
 }
 
 impl Default for CasScfConfig {
@@ -106,6 +115,7 @@ impl Default for CasScfConfig {
             ci_max_iter: 200,
             memory_budget_bytes: None,
             canonicalize: false,
+            integrals: CasScfIntegrals::default(),
         }
     }
 }
@@ -154,9 +164,11 @@ impl CasScfPoint {
 
 /// The CAS energy functional of one molecule and active-space partition:
 /// AO integrals, partition and the nonredundant rotation pairs.
-pub struct CasScfProblem {
+pub struct CasScfProblem<'a> {
+    prep: &'a PreparedBasis,
     h_ao: Array2<f64>,
-    eri_ao: Vec<f64>,
+    ints: IntegralBackend,
+    route: CasScfIntegrals,
     nbas: usize,
     nmo: usize,
     e_nuc: f64,
@@ -171,14 +183,15 @@ pub struct CasScfProblem {
     _mem: Reservation,
 }
 
-impl CasScfProblem {
+impl<'a> CasScfProblem<'a> {
     /// Set up the functional for `nmo` orbitals (the column count of the
     /// orbitals later passed in). Validates the partition and the electron
-    /// count, charges the dense AO block and the transform chain to the
-    /// memory budget, then builds `h` and the AO ERIs.
+    /// count, charges the integral route's arrays ([`CasScfIntegrals`]) to
+    /// the memory budget, then builds `h` and the integral source (the dense
+    /// AO block, or the Schwarz table and engines of the direct route).
     pub fn new(
         mol: &Molecule,
-        prep: &PreparedBasis,
+        prep: &'a PreparedBasis,
         nmo: usize,
         config: &CasScfConfig,
     ) -> Result<Self, FerricError> {
@@ -213,22 +226,32 @@ impl CasScfProblem {
                 2 * nc + na + nb
             )));
         }
+        config.integrals.validate()?;
         let nbas = prep.nbasis();
-        let n4 = nbas.saturating_pow(4);
         let npair = nact * nc + (nmo - nc - nact) * (nc + nact);
+        let budget =
+            MemoryPlan::from_global_pool(config.memory_budget_bytes, String::new()).budget_bytes();
+        let route = config.integrals.resolve(nbas, nmo, nact, budget);
+        let (resident, transient) = route.plan_elems(nbas, nmo, nact);
         let mut plan = MemoryPlan::from_global_pool(
             config.memory_budget_bytes,
-            format!("CASSCF dense AO ERIs + (pu|vw) transform (nbas={nbas}, n_active={nact})"),
+            format!(
+                "CASSCF {} integrals + (pu|vw) (nbas={nbas}, n_active={nact})",
+                route.as_str()
+            ),
         );
-        plan.reserve("dense AO ERIs", n4, Lifetime::Resident);
         plan.reserve(
-            "transform chain (first two quarter outputs)",
-            nact.saturating_mul(nbas.saturating_pow(3))
-                .saturating_add(nact.saturating_pow(2).saturating_mul(nbas * nbas)),
+            "integral source (dense AO ERIs or Schwarz table)",
+            resident,
+            Lifetime::Resident,
+        );
+        plan.reserve(
+            "(pu|vw) transform intermediates",
+            transient,
             Lifetime::Transient,
         );
         plan.reserve(
-            "(pu|vw), MO Fock matrices, inverse BFGS Hessian",
+            "(pu|vw), J/K and MO Fock matrices, inverse BFGS Hessian",
             nmo.saturating_mul(nact.saturating_pow(3))
                 .saturating_add(8 * nbas * nbas)
                 .saturating_add(npair.saturating_mul(npair)),
@@ -236,7 +259,7 @@ impl CasScfProblem {
         );
         let mem = plan.commit()?;
         let h_ao = hcore_ecp(prep, mol, prep.basis_set());
-        let eri_ao = dense_ao_eri(prep)?;
+        let ints = IntegralBackend::new(prep, route)?;
 
         let mut pairs = Vec::with_capacity(npair);
         let mut classes = Vec::with_capacity(npair);
@@ -273,8 +296,10 @@ impl CasScfProblem {
             compute_rdms: true,
         };
         Ok(CasScfProblem {
+            prep,
             h_ao,
-            eri_ao,
+            ints,
+            route,
             nbas,
             nmo,
             e_nuc: mol.nuclear_repulsion(),
@@ -311,24 +336,30 @@ impl CasScfProblem {
         Ok(())
     }
 
-    /// `J[D]` and `K[D]` from the dense AO block, `J_mn = Σ (mn|ls) D_ls`,
-    /// `K_mn = Σ (ml|ns) D_ls`.
-    fn jk(&self, d: &Array2<f64>) -> (Array2<f64>, Array2<f64>) {
-        dense_jk(&self.eri_ao, self.nbas, d)
+    /// `J[D]` and `K[D]` (AO basis) from the problem's integral route,
+    /// `J_mn = Σ (mn|ls) D_ls`, `K_mn = Σ (ml|ns) D_ls`.
+    fn jk(&self, d: &Array2<f64>) -> Result<(Array2<f64>, Array2<f64>), FerricError> {
+        self.ints.jk(self.prep, d)
+    }
+
+    /// The integral route the problem was built with (`Auto` resolved to
+    /// `Dense` or `Direct`).
+    pub fn integrals(&self) -> CasScfIntegrals {
+        self.route
     }
 
     /// `F^I` (AO basis) and `E_core` at orbitals `c`.
-    fn inactive(&self, c: &Array2<f64>) -> (Array2<f64>, f64) {
+    fn inactive(&self, c: &Array2<f64>) -> Result<(Array2<f64>, f64), FerricError> {
         let nc = self.n_core;
         if nc == 0 {
-            return (self.h_ao.clone(), self.e_nuc);
+            return Ok((self.h_ao.clone(), self.e_nuc));
         }
         let cc = c.slice(s![.., 0..nc]);
         let dc = 2.0 * cc.dot(&cc.t());
-        let (j, k) = self.jk(&dc);
+        let (j, k) = self.jk(&dc)?;
         let fi = &self.h_ao + &j - &(0.5 * &k);
         let e_core = self.e_nuc + 0.5 * (&dc * &(&self.h_ao + &fi)).sum();
-        (fi, e_core)
+        Ok((fi, e_core))
     }
 
     fn solve_ci(
@@ -338,6 +369,7 @@ impl CasScfProblem {
         eri_act: Vec<f64>,
         e_core: f64,
         compute_rdms: bool,
+        acc: &mut PhaseAccumulator,
     ) -> Result<CasCiResult, FerricError> {
         let ints = ActiveSpaceIntegrals {
             n_active: self.n_active,
@@ -349,7 +381,7 @@ impl CasScfProblem {
             compute_rdms,
             ..self.ci_config
         };
-        let ci = run_cas_ci_on_integrals(ints, &cfg)?;
+        let ci = run_cas_ci_on_integrals_timed(ints, &cfg, acc)?;
         // The CI flag is the residual criterion ‖Hc − Ec‖ < ci_conv_thresh
         // (Davidson relaxes it to 10x when its correction vector vanishes;
         // the dense fallback sets it from the residual alone). The
@@ -367,7 +399,7 @@ impl CasScfProblem {
 
     /// Active Fock matrix `F^A = J[D^a] − ½ K[D^a]`, `D^a = C_a γ C_aᵀ`, in
     /// the MO basis of `c`, for any symmetric active 1-RDM `gamma`. Linear in
-    /// `gamma`.
+    /// `gamma` (to the integral screening of the direct route).
     pub fn active_fock(
         &self,
         c: &Array2<f64>,
@@ -383,39 +415,65 @@ impl CasScfProblem {
         }
         let ca = c.slice(s![.., nc..nc + na]);
         let da = ca.dot(gamma).dot(&ca.t());
-        let (j, k) = self.jk(&da);
+        let (j, k) = self.jk(&da)?;
         let fa_ao = &j - &(0.5 * &k);
         Ok(c.t().dot(&fa_ao).dot(c))
+    }
+
+    /// `(pu|vw)` at orbitals `c`, `p` over all MOs and `u, v, w` active,
+    /// flat `[((p n_a + u) n_a + v) n_a + w]`, from the problem's integral
+    /// route.
+    pub fn paaa(&self, c: &Array2<f64>) -> Result<Vec<f64>, FerricError> {
+        self.check_orbitals(c)?;
+        let (nc, na) = (self.n_core, self.n_active);
+        self.ints
+            .paaa(self.prep, c.view(), c.slice(s![.., nc..nc + na]))
     }
 
     /// CI-relaxed CAS-CI energy at orbitals `c` (no RDMs, no gradient).
     pub fn energy(&self, c: &Array2<f64>) -> Result<f64, FerricError> {
         self.check_orbitals(c)?;
         let (nc, na) = (self.n_core, self.n_active);
-        let (fi_ao, e_core) = self.inactive(c);
+        let (fi_ao, e_core) = self.inactive(c)?;
         let ca = c.slice(s![.., nc..nc + na]);
-        let eri = transform_eri_mixed(&self.eri_ao, self.nbas, [ca, ca, ca, ca])?;
-        Ok(self.solve_ci(ca, &fi_ao, eri, e_core, false)?.e_total)
+        let eri = self.ints.paaa(self.prep, ca, ca)?;
+        let mut acc = PhaseAccumulator::new();
+        Ok(self
+            .solve_ci(ca, &fi_ao, eri, e_core, false, &mut acc)?
+            .e_total)
     }
 
     /// Energy, orbital gradient and intermediates at orbitals `c`.
     pub fn evaluate(&self, c: &Array2<f64>) -> Result<CasScfPoint, FerricError> {
+        self.evaluate_timed(c, &mut PhaseAccumulator::new())
+    }
+
+    /// [`Self::evaluate`], with each phase's time added to `acc` (inert
+    /// unless `FERRIC_TIMING` is set).
+    pub fn evaluate_timed(
+        &self,
+        c: &Array2<f64>,
+        acc: &mut PhaseAccumulator,
+    ) -> Result<CasScfPoint, FerricError> {
         self.check_orbitals(c)?;
         let (nc, na, nmo) = (self.n_core, self.n_active, self.nmo);
         let na3 = na * na * na;
-        let (fi_ao, e_core) = self.inactive(c);
+        let (fi_ao, e_core) = acc.time("inactive Fock (J/K of D^c)", || self.inactive(c))?;
         let ca = c.slice(s![.., nc..nc + na]);
         // (pu|vw), p over all MOs: the active rows are the CI integrals.
-        let paaa = transform_eri_mixed(&self.eri_ao, self.nbas, [c.view(), ca, ca, ca])?;
+        let paaa = acc.time("(pu|vw) transform", || {
+            self.ints.paaa(self.prep, c.view(), ca)
+        })?;
         let eri_act = paaa[nc * na3..(nc + na) * na3].to_vec();
-        let ci = self.solve_ci(ca, &fi_ao, eri_act, e_core, true)?;
+        let ci = self.solve_ci(ca, &fi_ao, eri_act, e_core, true, acc)?;
         let rdms = ci
             .rdms
             .as_ref()
             .ok_or_else(|| FerricError::General("CASSCF: CAS-CI returned no RDMs".to_string()))?;
         let gamma = &rdms.dm1;
+        let fa = acc.time("active Fock (J/K of D^a)", || self.active_fock(c, gamma))?;
+        let tok = acc.begin("generalized Fock + gradient");
         let fi = c.t().dot(&fi_ao).dot(c);
-        let fa = self.active_fock(c, gamma)?;
 
         let mut f = Array2::<f64>::zeros((nmo, nmo));
         for p in 0..nmo {
@@ -439,6 +497,7 @@ impl CasScfProblem {
 
         let gmat = 2.0 * (&f - &f.t());
         let gradient = self.pairs.iter().map(|&(p, q)| gmat[(p, q)]).collect();
+        acc.stop(tok);
         Ok(CasScfPoint {
             e_total: ci.e_total,
             gradient,
@@ -504,7 +563,45 @@ impl CasScfProblem {
 
 /// `J[D]` and `K[D]` from a dense row-major AO block `eri` of `n^4`
 /// elements, `J_mn = Σ (mn|ls) D_ls`, `K_mn = Σ (ml|ns) D_ls`.
+///
+/// Parallel over `m`: row `m` of `J` is the GEMV of the `(n, n²)` slab
+/// `(m ·|··)` with `vec(D)`, and row `m` of `K` is `Σ_l (m l|· ·) D[l, :]ᵀ`,
+/// `n` GEMVs of the contiguous `(n, n)` blocks `(m l|n s)`. Each row is
+/// written by one task, so the result does not depend on the thread count.
 pub(crate) fn dense_jk(eri: &[f64], n: usize, d: &Array2<f64>) -> (Array2<f64>, Array2<f64>) {
+    use rayon::prelude::*;
+    let n2 = n * n;
+    let d_std = d.as_standard_layout().into_owned();
+    let dvec = ndarray::ArrayView1::from_shape(n2, d_std.as_slice().expect("standard layout"))
+        .expect("D is n x n");
+    let rows: Vec<(Vec<f64>, Vec<f64>)> = (0..n)
+        .into_par_iter()
+        .map(|m| {
+            let slab = &eri[m * n2 * n..(m + 1) * n2 * n];
+            let jm = ArrayView2::from_shape((n, n2), slab)
+                .expect("(m n|l s) slab is n x n²")
+                .dot(&dvec);
+            let mut km = ndarray::Array1::<f64>::zeros(n);
+            for l in 0..n {
+                let blk = ArrayView2::from_shape((n, n), &slab[l * n2..(l + 1) * n2])
+                    .expect("(m l|n s) block is n x n");
+                km += &blk.dot(&d_std.row(l));
+            }
+            (jm.to_vec(), km.to_vec())
+        })
+        .collect();
+    let mut j = Array2::<f64>::zeros((n, n));
+    let mut k = Array2::<f64>::zeros((n, n));
+    for (m, (jm, km)) in rows.into_iter().enumerate() {
+        j.row_mut(m).assign(&ndarray::Array1::from(jm));
+        k.row_mut(m).assign(&ndarray::Array1::from(km));
+    }
+    (j, k)
+}
+
+/// The scalar-loop form of [`dense_jk`], kept as its test oracle.
+#[cfg(test)]
+fn dense_jk_scalar(eri: &[f64], n: usize, d: &Array2<f64>) -> (Array2<f64>, Array2<f64>) {
     let mut j = Array2::<f64>::zeros((n, n));
     let mut k = Array2::<f64>::zeros((n, n));
     for m in 0..n {
@@ -728,6 +825,7 @@ pub fn optimize(
         })
     };
 
+    let mut acc = PhaseAccumulator::new().report_on_drop("CASSCF");
     let mut c = c0;
     let mut e_old: Option<f64> = None;
     let mut g_old: Vec<f64> = Vec::new();
@@ -736,7 +834,7 @@ pub fn optimize(
     let mut it = 0usize;
     loop {
         it += 1;
-        let pt = problem.evaluate(&c)?;
+        let pt = problem.evaluate_timed(&c, &mut acc)?;
         let e = pt.e_total;
         let g = pt.gradient.clone();
         let gn = norm(&g);
@@ -748,6 +846,7 @@ pub fn optimize(
         if it >= config.max_iter {
             return finish(pt, c, it, false);
         }
+        let tok = acc.begin("BFGS update + step");
         let hd: Vec<f64> = problem
             .approx_hessian_diag(&pt)
             .into_iter()
@@ -769,7 +868,8 @@ pub fn optimize(
             let f = config.max_step / smax;
             step.iter_mut().for_each(|x| *x *= f);
         }
-        c = problem.rotate(&c, &step)?;
+        acc.stop(tok);
+        c = acc.time("orbital rotation", || problem.rotate(&c, &step))?;
         hinv = Some(b);
         e_old = Some(e);
         g_old = g;
@@ -925,6 +1025,7 @@ mod tests {
             n_elec_active: (2, 2),
             n_core: 3,
             memory_budget_bytes: Some(budget),
+            integrals: CasScfIntegrals::Dense,
             ..Default::default()
         };
         let problem = CasScfProblem::new(&mol, &prep, prep.nbasis(), &cfg).unwrap();
@@ -986,6 +1087,36 @@ mod tests {
         assert!(!ci_root_accepted(true, t, t));
         assert!(!ci_root_accepted(false, 0.5 * t, t));
         assert!(!ci_root_accepted(true, f64::NAN, t));
+    }
+
+    /// The GEMV form of `dense_jk` equals the scalar loops on a real AO block
+    /// and a nonsymmetric `D` (so a transposed `D` in either contraction
+    /// shows). Bar: each element is a sum of `n²` terms of magnitude
+    /// at most `max|eri| max|D|`, so the two orders differ by at most
+    /// `2 n² ε Σ|t| <= 2 n⁴ ε max|eri| max|D|`.
+    #[test]
+    fn dense_jk_gemv_matches_the_scalar_loops() {
+        let mol = Molecule::parse_xyz(
+            "3\n\nO 0 0 0.117\nH 0 0.757 -0.467\nH 0 -0.757 -0.467\n",
+            0,
+            1,
+        )
+        .unwrap();
+        let bs = ferric_core::basis::bundled("6-31g").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let n = prep.nbasis();
+        let eri = crate::integrals::dense_ao_eri(&prep).unwrap();
+        let d = antisym(n, 5) + antisym(n, 9).mapv(f64::abs);
+        let (j0, k0) = dense_jk_scalar(&eri, n, &d);
+        let (j1, k1) = dense_jk(&eri, n, &d);
+        let emax = eri.iter().fold(0.0f64, |m, x| m.max(x.abs()));
+        let dmax = d.iter().fold(0.0f64, |m, x| m.max(x.abs()));
+        let bar = 2.0 * (n as f64).powi(4) * f64::EPSILON * emax * dmax;
+        let dj = (&j1 - &j0).iter().fold(0.0f64, |m, x| m.max(x.abs()));
+        let dk = (&k1 - &k0).iter().fold(0.0f64, |m, x| m.max(x.abs()));
+        assert!(j0.iter().any(|x| x.abs() > 1e-2) && k0.iter().any(|x| x.abs() > 1e-2));
+        assert!(dj <= bar, "|ΔJ| = {dj:e} > {bar:e}");
+        assert!(dk <= bar, "|ΔK| = {dk:e} > {bar:e}");
     }
 
     /// `exp(K)` is orthogonal, `exp(K) exp(−K) = I`, and two half steps

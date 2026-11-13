@@ -129,6 +129,7 @@ $\partial E/\partial\kappa_{pq} = 2(F_{pq} - F_{qp})$. Equations:
 | `energy_tol` (`casscf_energy_tol`) | 1e-12 Ha | and the energy change is below this at the same iteration |
 | `max_iter` (`casscf_max_iter`) | 300 | macro iterations |
 | `max_step` (`casscf_max_step`) | 0.2 | cap on the largest step element (rad) |
+| `integrals` (`casscf_integrals`) | `"auto"` | `"auto"`: dense when the block fits in half of the memory budget, else direct; `"direct"`: J, K and $(pu\|vw)$ from shell quartets every iteration, screening threshold `integral_thresh` (`casscf_integral_thresh`, 1e-12); `"dense"`: the $n_\text{bas}^4$ AO block |
 | `ci_conv_thresh` | 1e-10 | Davidson residual $\lVert Hc - Ec\rVert$ of every CI solve; a solve that misses it returns an error |
 
 The step is inverse BFGS, started from an approximate diagonal orbital
@@ -174,7 +175,11 @@ Limits:
   molecules have no RHF start;
 - the optimizer uses no exact orbital Hessian and no orbital-CI coupling;
   convergence is tested on five systems from RHF starts;
-- the dense AO ERI block (`nbasis⁴` doubles) is held for the whole run.
+- the dense `nbasis⁴` AO block is held when it fits in half of the memory
+  budget; otherwise (or with `[cas] integrals = "direct"`) the integrals are
+  recomputed from shell quartets every macro iteration, with no `nbasis⁴`
+  array. On benzene CAS(6,6)/cc-pVDZ an iteration costs 4.1 s on the direct
+  route and 0.29 s on the dense route.
 
 Validation (`crates/ferric-ci/tests/casscf.rs`, `casscf_vs_pyscf.rs`,
 `casscf_canonical.rs`, measured 2026-11-11; equations and bars in

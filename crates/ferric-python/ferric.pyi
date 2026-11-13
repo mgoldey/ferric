@@ -6053,6 +6053,8 @@ def run_casscf(
     scf_energy_conv: float | None = None,
     scf_density_conv: float | None = None,
     canonicalize: bool = False,
+    casscf_integrals: str = "auto",
+    casscf_integral_thresh: float | None = None,
 ) -> CasScfResult:
     """Two-step CASSCF from the canonical exact-J/K RHF orbitals:
     ``n_active`` active orbitals above ``n_core`` doubly occupied ones,
@@ -6066,7 +6068,11 @@ def run_casscf(
     ``converged`` is False. ``n_core`` defaults to
     ``(N - n_alpha - n_beta) / 2``. ``canonicalize=True`` returns canonical
     orbitals (see ``CasScfResult.mo_coeff``) with the CI vector and RDMs in
-    them, and fills ``mo_energy``."""
+    them, and fills ``mo_energy``. ``casscf_integrals="direct"``
+    rebuilds J/K and ``(pu|vw)`` from shell quartets every iteration with
+    Schwarz threshold ``casscf_integral_thresh`` (default 1e-12), with no
+    ``nbas^4`` array; ``"dense"`` holds the ``nbas^4`` AO block; ``"auto"``
+    (default) is dense when that block fits in half the memory budget."""
     ...
 
 class Nevpt2Result:
@@ -6134,6 +6140,8 @@ def run_nevpt2(
     scf_max_iter: int | None = None,
     scf_energy_conv: float | None = None,
     scf_density_conv: float | None = None,
+    casscf_integrals: str = "auto",
+    casscf_integral_thresh: float | None = None,
 ) -> Nevpt2Result:
     """Strongly contracted NEVPT2 (Angeli et al., JCP 117, 9138 (2002)) on
     a CASSCF (``reference="casscf"``, the ``run_casscf`` settings) or CAS-CI

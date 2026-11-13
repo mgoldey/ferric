@@ -224,6 +224,8 @@ multiplicity` must be 1: the spin of the CAS state comes from
 | `energy_tol` | float | `1e-12` | Hartree, > 0 | See `grad_tol`. Python `casscf_energy_tol`. |
 | `max_iter` | integer | `300` | ≥ 1 | CASSCF macro iterations. An unconverged `casscf` warns and its certificate is capped to not graded; `nevpt2` refuses an unconverged reference. Python `casscf_max_iter`. |
 | `max_step` | float | `0.2` | rad, > 0 | Cap on the largest element of an orbital-rotation step. Python `casscf_max_step`. |
+| `integrals` | string | `"auto"` | `auto` `direct` `dense` | Two-electron integrals of the CASSCF iterations. `auto` is `dense` when the `nbasis⁴` block fits in half of the memory budget, else `direct`. `direct` rebuilds J, K and `(pu\|vw)` from shell quartets every macro iteration (memory `nbasis² n_active²` doubles); `dense` holds the `nbasis⁴` AO block. Not read with `reference = "casci"`. Python `casscf_integrals`. |
+| `integral_thresh` | float | `1e-12` | ≥ 0, `integrals = "direct"` only | Schwarz screening threshold of the direct route. Python `casscf_integral_thresh`. |
 | `ci` | table | defaults below | | The CAS-CI solver settings, written as the [`[cas.ci]`](#casci) section. |
 
 ### `[cas.ci]`
