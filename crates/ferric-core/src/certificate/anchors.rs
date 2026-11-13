@@ -949,14 +949,7 @@ mod tests {
 
     /// Anchors whose mutation has no recorded result yet. Each one is printed
     /// by `mutation_ledger_matches_the_registry`.
-    const PENDING_MUTATIONS: &[&str] = &[
-        "MP3",
-        "CCSD",
-        "Attenuated RI-MP2",
-        "SCS-MP2",
-        "Laplace RI-MP2",
-        "PDEP-RPA",
-    ];
+    const PENDING_MUTATIONS: &[&str] = &[];
 
     /// SHA-256 of `data` as lower-case hex (FIPS 180-4).
     fn sha256_hex(data: &[u8]) -> String {
