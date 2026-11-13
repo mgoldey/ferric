@@ -1,0 +1,136 @@
+{
+  "row": "KS-DFT",
+  "system": "ch4",
+  "basis": "def2-tzvp",
+  "charge": 0,
+  "multiplicity": 1,
+  "nao": 55,
+  "nuclear_repulsion": 13.439527889904605,
+  "rks_pbe": {
+    "energy": -40.46275439578705,
+    "converged": true,
+    "homo": -0.346849020998986,
+    "lumo": 0.033794878953312235,
+    "jk": "RI-J (density_fit, aux fed from ferric JSON); K unused",
+    "xc": "PBE,PBE"
+  },
+  "rks_b3lyp": {
+    "energy": -40.53741389070229,
+    "converged": true,
+    "homo": -0.39551881336670325,
+    "lumo": 0.04777528220163063,
+    "jk": "RI-J + RI-K (density_fit)",
+    "xc": "B3LYP"
+  },
+  "rks_hse06": {
+    "energy": -40.47740932723728,
+    "converged": true,
+    "homo": -0.38866804210607603,
+    "lumo": 0.048709175286965944,
+    "jk": "EXACT J (4-index; ferric df_j_aux = \"\") + density-fitted short-range K in the attenuated metric (== ferric's RKS RSH c_SR K_SR^DF[erfc] + c_LR K_LR^DF[erf], c_LR = 0 for HSE06)",
+    "xc": "HSE06"
+  },
+  "rhf_control": {
+    "energy": -40.21297620005368,
+    "note": "exact-integral RHF; ferric RKS must MISS this (functional applied)"
+  },
+  "provenance": {
+    "code": "PySCF",
+    "version": "2.13.1",
+    "keywords": {
+      "method": "dft.RKS (+ scf.RHF control)",
+      "xc": {
+        "pbe": "PBE,PBE",
+        "b3lyp": "B3LYP",
+        "hse06": "HSE06"
+      },
+      "jk": {
+        "pbe": "RI-J (density_fit, aux fed from ferric JSON); K unused",
+        "b3lyp": "RI-J + RI-K (density_fit)",
+        "hse06": "EXACT J (4-index; ferric df_j_aux = \"\") + density-fitted short-range K in the attenuated metric (== ferric's RKS RSH c_SR K_SR^DF[erfc] + c_LR K_LR^DF[erf], c_LR = 0 for HSE06)"
+      },
+      "init_guess": "minao (PySCF default)",
+      "numpy": "1.26.4"
+    },
+    "grid": {
+      "main": {
+        "atom_grid": [
+          75,
+          110
+        ],
+        "prune": null,
+        "partition": "Becke (original_becke)",
+        "radii_adjust": "becke_atomic_radii_adjust"
+      },
+      "nlc_vv10": {
+        "atom_grid": [
+          50,
+          50
+        ],
+        "prune": null
+      }
+    },
+    "aux_basis": {
+      "name": "def2-universal-jkfit",
+      "json": "crates/ferric-core/src/basis/bundled/def2-universal-jkfit.json",
+      "sha256": "a9fcb52ae8a74e80bd3a65c5e12e7a2d2f391fef62c3c81050ae816399b57671"
+    },
+    "frozen_core": "none",
+    "scf_convergence": {
+      "conv_tol": 1e-10,
+      "conv_tol_grad": 1e-07
+    },
+    "stability": null,
+    "basis": "def2-tzvp",
+    "basis_json": "crates/ferric-core/src/basis/bundled/def2-tzvp.json",
+    "basis_sha256": "d3e390449abd92016eb4c97577ec04dbe61affc5bc870791ac771dbb1aa82111",
+    "ecp_json": "none",
+    "ecp_sha256": "none",
+    "geometry_xyz": "testdata/molecules/validation/ch4.xyz",
+    "geometry_xyz_sha256": "bdc436de2d7b7694752df7c4a783b709bf83566726b186b08745985d13519537",
+    "geometry_bohr": [
+      [
+        "C",
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        "H",
+        1.1888607200341226,
+        1.1888607200341226,
+        1.1888607200341226
+      ],
+      [
+        "H",
+        -1.1888607200341226,
+        -1.1888607200341226,
+        1.1888607200341226
+      ],
+      [
+        "H",
+        -1.1888607200341226,
+        1.1888607200341226,
+        -1.1888607200341226
+      ],
+      [
+        "H",
+        1.1888607200341226,
+        -1.1888607200341226,
+        -1.1888607200341226
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_ks_energies.py",
+    "git_head": "00a7417e7dd1913a24170436a269fb4d5f075d09",
+    "generated_utc": "2026-11-13T17:26:48+00:00",
+    "basis_self_check": {
+      "nao": 55,
+      "replica_self_overlap_max_dev": 4.440892098500626e-16,
+      "pyscf_diag_max_dev": 4.440892098500626e-16,
+      "diag_checked": 55,
+      "diag_skipped_cartesian": 0,
+      "aux_nao": 147
+    }
+  }
+}

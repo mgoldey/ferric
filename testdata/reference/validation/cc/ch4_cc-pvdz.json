@@ -1,0 +1,160 @@
+{
+  "system": "ch4",
+  "basis": "cc-pvdz",
+  "aux_basis": "cc-pvdz-ri",
+  "charge": 0,
+  "multiplicity": 1,
+  "methods": [
+    "mp3",
+    "ccsd"
+  ],
+  "nao": 34,
+  "naux": 112,
+  "nocc": 5,
+  "nvir": 29,
+  "n_frozen_core_control": 1,
+  "nuclear_repulsion": 13.439527889904605,
+  "rhf": {
+    "energy": -40.19870854248169,
+    "homo": -0.542648860236248,
+    "lumo": 0.1930667910255286
+  },
+  "df": {
+    "metric_min_eigenvalue": 0.0010443642847461493,
+    "metric_max_eigenvalue": 257.7011222249274,
+    "mp2_numpy_from_B": -0.16406406914937954,
+    "mp2_pyscf_density_fit": -0.16406406914937985,
+    "mp2_numpy_vs_pyscf_df": 3.0531133177191805e-16
+  },
+  "all_electron": {
+    "frozen_core": 0,
+    "nocc_active": 5,
+    "nvir": 29,
+    "mp2_numpy": -0.16406406914937954,
+    "fock_offdiag_max": 2.6769603474506845e-11,
+    "fock_diag_vs_mo_energy_max": 1.5978329770405253e-10,
+    "mp3": {
+      "e_mp2": -0.16406406914937957,
+      "e_mp3": -0.020269204543161626,
+      "e_corr": -0.1843332736925412,
+      "e_mp3_components_spinorbital": {
+        "pp_ladder": 0.03732827156119202,
+        "hh_ladder": 0.030562148694469573,
+        "ring": -0.08815962479882322
+      },
+      "e_mp3_spatial_pyscf_residual": -0.020269204543161744,
+      "mp3_spinorbital_vs_spatial": 1.1796119636642288e-16,
+      "mp2_spinorbital_vs_spatial": 1.942890293094024e-16
+    },
+    "ccsd": {
+      "e_corr": -0.18752385184722534,
+      "t1_norm": 0.015335721078896433,
+      "t1_diagnostic": 0.00484958081703675
+    }
+  },
+  "frozen_core": {
+    "frozen_core": 1,
+    "nocc_active": 4,
+    "nvir": 29,
+    "mp2_numpy": -0.1611612630124027,
+    "fock_offdiag_max": 2.676124355251393e-11,
+    "fock_diag_vs_mo_energy_max": 6.796030405098463e-11,
+    "mp3": {
+      "e_mp2": -0.16116126301240266,
+      "e_mp3": -0.020392007681298258,
+      "e_corr": -0.18155327069370092,
+      "e_mp3_components_spinorbital": {
+        "pp_ladder": 0.037214592629860564,
+        "hh_ladder": 0.030329685708880852,
+        "ring": -0.08793628602003967
+      },
+      "e_mp3_spatial_pyscf_residual": -0.020392007681298438,
+      "mp3_spinorbital_vs_spatial": 1.8041124150158794e-16,
+      "mp2_spinorbital_vs_spatial": 1.6653345369377348e-16
+    },
+    "ccsd": {
+      "e_corr": -0.1848005813451426,
+      "t1_norm": 0.015121957660098781,
+      "t1_diagnostic": 0.005346419403135852
+    }
+  },
+  "conventional_exact_integrals": {
+    "ccsd_e_corr": -0.18742699660389917
+  },
+  "provenance": {
+    "code": "PySCF + numpy",
+    "version": "2.13.1",
+    "keywords": {
+      "reference": "scf.RHF, exact 4-index J/K (no density fitting)",
+      "scf_conv_tol": 1e-12,
+      "scf_conv_tol_grad": 1e-09,
+      "correlation_integrals": "DF: (pq|rs) = sum_P B^P_pq B^P_rs, B = L^-1 (P|mn), L = chol((P|Q)) (numpy on PySCF int3c2e/int2c2e)",
+      "fock": "diag(RHF mo_energy) (canonical, off-diagonal dropped)",
+      "ccd": "pyscf.cc.ccd.CCD on hand-built DF _ChemistsERIs",
+      "ccsd": "pyscf.cc.ccsd.CCSD on hand-built DF _ChemistsERIs",
+      "ccsd_t": "pyscf.cc.ccsd_t.kernel on the same eris",
+      "mp3": "numpy spin-orbital (Shavitt-Bartlett 10.12) == spatial via linear PySCF RCCSD residual",
+      "cc_conv_tol": 1e-12,
+      "cc_conv_tol_normt": 1e-10,
+      "numpy": "1.26.4",
+      "scipy": "1.17.1"
+    },
+    "grid": "none",
+    "aux_basis": "cc-pvdz-ri",
+    "frozen_core": "0 (all_electron block); n_frozen_core_control (frozen_core block)",
+    "scf_convergence": 1e-12,
+    "stability": null,
+    "basis": "cc-pvdz",
+    "basis_json": "crates/ferric-core/src/basis/bundled/cc-pvdz.json",
+    "basis_sha256": "4c2f450a81a8545e4df9e24a313111642cf70d5f7213fc8e879ef9dacab5da2f",
+    "ecp_json": "none",
+    "ecp_sha256": "none",
+    "geometry_xyz": "testdata/molecules/validation/ch4.xyz",
+    "geometry_xyz_sha256": "bdc436de2d7b7694752df7c4a783b709bf83566726b186b08745985d13519537",
+    "geometry_bohr": [
+      [
+        "C",
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        "H",
+        1.1888607200341226,
+        1.1888607200341226,
+        1.1888607200341226
+      ],
+      [
+        "H",
+        -1.1888607200341226,
+        -1.1888607200341226,
+        1.1888607200341226
+      ],
+      [
+        "H",
+        -1.1888607200341226,
+        1.1888607200341226,
+        -1.1888607200341226
+      ],
+      [
+        "H",
+        1.1888607200341226,
+        -1.1888607200341226,
+        -1.1888607200341226
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_cc.py",
+    "git_head": "00a7417e7dd1913a24170436a269fb4d5f075d09",
+    "generated_utc": "2026-11-13T17:27:34+00:00",
+    "aux_basis_json": "crates/ferric-core/src/basis/bundled/cc-pvdz-ri.json",
+    "aux_basis_sha256": "8221d2a31b5bbebd39218fc3f9244917e173a338ff9c56904038443a06e2a250",
+    "basis_check": {
+      "nao": 34,
+      "replica_self_overlap_max_dev": 4.440892098500626e-16,
+      "pyscf_diag_max_dev": 4.440892098500626e-16,
+      "diag_checked": 34,
+      "diag_skipped_cartesian": 0
+    }
+  }
+}

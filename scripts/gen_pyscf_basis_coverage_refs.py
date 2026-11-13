@@ -56,6 +56,17 @@ OUT = ROOT / "testdata/reference/basis_coverage_pyscf.json"
 MOLS = {
     "h2o": ("O 0 0 0.1173; H 0 0.7572 -0.4692; H 0 -0.7572 -0.4692", 0),
     "hcl": ("H 0 0 0; Cl 0 0 1.2746", 0),
+    "ch4": (
+        "C 0 0 0; H 0.629118 0.629118 0.629118; H -0.629118 -0.629118 0.629118; "
+        "H -0.629118 0.629118 -0.629118; H 0.629118 -0.629118 -0.629118",
+        0,
+    ),
+    "nh3": (
+        "N 0 0 0.116489; H 0 0.939731 -0.271808; H 0.813831 -0.469865 -0.271808; "
+        "H -0.813831 -0.469865 -0.271808",
+        0,
+    ),
+    "hf": ("F 0 0 0; H 0 0 0.917", 0),
     # C and Cl together: under BSE's own typing 6-311G** would be 5D on C and
     # 6D on Cl here; ferric makes the whole 6-311G family spherical.
     "ch3cl": (
@@ -151,6 +162,13 @@ RI_CASES: list[tuple[str, str, str]] = [
     ("def2-qzvppd", "def2-qzvppd-rifit", "h2o"),
     ("def2-svp", "def2-universal-jkfit", "h2o"),
     ("aug-cc-pvtz", "aug-cc-pvtz-jkfit", "h2o"),
+    # C, N and F with the two most used RI sets.
+    ("cc-pvdz", "cc-pvdz-rifit", "ch4"),
+    ("cc-pvdz", "cc-pvdz-rifit", "nh3"),
+    ("cc-pvdz", "cc-pvdz-rifit", "hf"),
+    ("def2-svp", "def2-svp-rifit", "ch4"),
+    ("def2-svp", "def2-svp-rifit", "nh3"),
+    ("def2-svp", "def2-svp-rifit", "hf"),
 ]
 
 

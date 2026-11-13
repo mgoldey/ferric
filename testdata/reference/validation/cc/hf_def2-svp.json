@@ -1,0 +1,142 @@
+{
+  "system": "hf",
+  "basis": "def2-svp",
+  "aux_basis": "def2-svp-rifit",
+  "charge": 0,
+  "multiplicity": 1,
+  "methods": [
+    "mp3",
+    "ccsd"
+  ],
+  "nao": 19,
+  "naux": 62,
+  "nocc": 5,
+  "nvir": 14,
+  "n_frozen_core_control": 1,
+  "nuclear_repulsion": 5.193669463773174,
+  "rhf": {
+    "energy": -99.9324935076404,
+    "homo": -0.6346724836730642,
+    "lumo": 0.1766488791614691
+  },
+  "df": {
+    "metric_min_eigenvalue": 0.0017086253573568566,
+    "metric_max_eigenvalue": 111.53716275245574,
+    "mp2_numpy_from_B": -0.20146336660569222,
+    "mp2_pyscf_density_fit": -0.20146336660569208,
+    "mp2_numpy_vs_pyscf_df": 1.3877787807814457e-16
+  },
+  "all_electron": {
+    "frozen_core": 0,
+    "nocc_active": 5,
+    "nvir": 14,
+    "mp2_numpy": -0.20146336660569222,
+    "fock_offdiag_max": 1.0795348974883405e-10,
+    "fock_diag_vs_mo_energy_max": 7.19449388952853e-10,
+    "mp3": {
+      "e_mp2": -0.20146336660569225,
+      "e_mp3": -0.002891963201792719,
+      "e_corr": -0.20435532980748497,
+      "e_mp3_components_spinorbital": {
+        "pp_ladder": 0.031454875485653705,
+        "hh_ladder": 0.03460805964066016,
+        "ring": -0.06895489832810658
+      },
+      "e_mp3_spatial_pyscf_residual": -0.002891963201792717,
+      "mp3_spinorbital_vs_spatial": 1.734723475976807e-18,
+      "mp2_spinorbital_vs_spatial": 1.1102230246251565e-16
+    },
+    "ccsd": {
+      "e_corr": -0.20670985136833506,
+      "t1_norm": 0.016252106198120474,
+      "t1_diagnostic": 0.005139367236100042
+    }
+  },
+  "frozen_core": {
+    "frozen_core": 1,
+    "nocc_active": 4,
+    "nvir": 14,
+    "mp2_numpy": -0.19942649821510702,
+    "fock_offdiag_max": 1.0795451670513183e-10,
+    "fock_diag_vs_mo_energy_max": 2.409509258782805e-10,
+    "mp3": {
+      "e_mp2": -0.1994264982151069,
+      "e_mp3": -0.0031194992654010323,
+      "e_corr": -0.20254599748050794,
+      "e_mp3_components_spinorbital": {
+        "pp_ladder": 0.03141354762122799,
+        "hh_ladder": 0.03444404309465916,
+        "ring": -0.06897708998128818
+      },
+      "e_mp3_spatial_pyscf_residual": -0.003119499265401027,
+      "mp3_spinorbital_vs_spatial": 5.204170427930421e-18,
+      "mp2_spinorbital_vs_spatial": 2.220446049250313e-16
+    },
+    "ccsd": {
+      "e_corr": -0.2049104566570807,
+      "t1_norm": 0.01622317520653259,
+      "t1_diagnostic": 0.005735758600458331
+    }
+  },
+  "conventional_exact_integrals": {
+    "ccsd_e_corr": -0.20661883210931095
+  },
+  "provenance": {
+    "code": "PySCF + numpy",
+    "version": "2.13.1",
+    "keywords": {
+      "reference": "scf.RHF, exact 4-index J/K (no density fitting)",
+      "scf_conv_tol": 1e-12,
+      "scf_conv_tol_grad": 1e-09,
+      "correlation_integrals": "DF: (pq|rs) = sum_P B^P_pq B^P_rs, B = L^-1 (P|mn), L = chol((P|Q)) (numpy on PySCF int3c2e/int2c2e)",
+      "fock": "diag(RHF mo_energy) (canonical, off-diagonal dropped)",
+      "ccd": "pyscf.cc.ccd.CCD on hand-built DF _ChemistsERIs",
+      "ccsd": "pyscf.cc.ccsd.CCSD on hand-built DF _ChemistsERIs",
+      "ccsd_t": "pyscf.cc.ccsd_t.kernel on the same eris",
+      "mp3": "numpy spin-orbital (Shavitt-Bartlett 10.12) == spatial via linear PySCF RCCSD residual",
+      "cc_conv_tol": 1e-12,
+      "cc_conv_tol_normt": 1e-10,
+      "numpy": "1.26.4",
+      "scipy": "1.17.1"
+    },
+    "grid": "none",
+    "aux_basis": "def2-svp-rifit",
+    "frozen_core": "0 (all_electron block); n_frozen_core_control (frozen_core block)",
+    "scf_convergence": 1e-12,
+    "stability": null,
+    "basis": "def2-svp",
+    "basis_json": "crates/ferric-core/src/basis/bundled/def2-svp.json",
+    "basis_sha256": "559cdaf30424e50e3956d0b9defd67f4447a263c04e09c9c9d3f43d5bdd0ecdd",
+    "ecp_json": "none",
+    "ecp_sha256": "none",
+    "geometry_xyz": "testdata/molecules/validation/hf.xyz",
+    "geometry_xyz_sha256": "c79d75abd56039470677fd0eca259b595009fd07a50d969194fdcd7257086363",
+    "geometry_bohr": [
+      [
+        "F",
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        "H",
+        0.0,
+        0.0,
+        1.7328788562261617
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_cc.py",
+    "git_head": "00a7417e7dd1913a24170436a269fb4d5f075d09",
+    "generated_utc": "2026-11-13T17:27:39+00:00",
+    "aux_basis_json": "crates/ferric-core/src/basis/bundled/def2-svp-rifit.json",
+    "aux_basis_sha256": "320fce340c3e53ae33e475139b21a1cd9b4730ff3946c9c7d9969344a0e3b296",
+    "basis_check": {
+      "nao": 19,
+      "replica_self_overlap_max_dev": 2.220446049250313e-16,
+      "pyscf_diag_max_dev": 4.440892098500626e-16,
+      "diag_checked": 19,
+      "diag_skipped_cartesian": 0
+    }
+  }
+}

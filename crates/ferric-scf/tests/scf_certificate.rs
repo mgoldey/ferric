@@ -34,6 +34,7 @@ use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::uhf::solve_uhf;
 
 const WATER: &str = "3\nwater\nO 0.0 0.0 0.1173\nH 0.0 0.7572 -0.4692\nH 0.0 -0.7572 -0.4692\n";
+const HBR: &str = "2\nHBr\nBr 0.0 0.0 0.0\nH 0.0 0.0 1.41\n";
 const OH: &str = "2\nOH\nO 0.0 0.0 0.0\nH 0.0 0.0 0.97\n";
 
 /// Serializes the solves of this file (see the module doc).
@@ -232,17 +233,17 @@ fn measured_error_is_the_solver_anchor_and_the_envelope_only_warns() {
     let c = scf_certificate(&oh, &r, &hf);
     assert_eq!(c.measured_error.as_ref().unwrap().value, 4.0e-12);
 
-    // O is outside the def2-SVP KS anchor's elements.
+    // Br is outside the def2-SVP KS anchor's elements.
     let pbe = RhfConfig {
         xc: Some("PBE".into()),
         ri_j_precision: Some(RiJPrecision::F64),
         dft_grid: Some(AtomicGridConfig::default()),
         ..Default::default()
     };
-    let (water, r) = solve(WATER, 1, &pbe);
-    let c = scf_certificate(&water, &r, &pbe);
+    let (hbr, r) = solve(HBR, 1, &pbe);
+    let c = scf_certificate(&hbr, &r, &pbe);
     assert_eq!(c.measured_error.as_ref().unwrap().value, 4.2e-12);
-    let out = with_scf_envelope(c.clone(), &water, &r, &pbe, &bundled("def2-svp").unwrap());
+    let out = with_scf_envelope(c.clone(), &hbr, &r, &pbe, &bundled("def2-svp").unwrap());
     assert_eq!(out.grade, c.grade);
     assert_eq!(
         out.warnings.len(),
@@ -254,5 +255,5 @@ fn measured_error_is_the_solver_anchor_and_the_envelope_only_warns() {
         .warnings
         .last()
         .unwrap()
-        .starts_with("element O (covered: H, Si, S, Cl)"));
+        .starts_with("element Br (covered: H, C, N, O, F, Si, S, Cl)"));
 }

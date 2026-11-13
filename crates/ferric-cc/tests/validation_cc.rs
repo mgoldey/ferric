@@ -353,6 +353,10 @@ fn mp3_matches_df_reference() {
         ("h2o", "def2-svp", false),
         ("nh3", "cc-pvdz", true),
         ("nh3", "def2-svp", false),
+        ("ch4", "cc-pvdz", false),
+        ("ch4", "def2-svp", false),
+        ("hf", "cc-pvdz", false),
+        ("hf", "def2-svp", false),
     ] {
         let c = load_case(system, basis_name, &mut ck);
         let ctx = c.ctx.as_str();
@@ -504,13 +508,17 @@ fn check_ccsd(ck: &mut Checks, c: &Case, label: &str, e: f64) {
     }
 }
 
-const CCSD_SYSTEMS: [(&str, &str); 6] = [
+const CCSD_SYSTEMS: [(&str, &str); 10] = [
     ("h2o", "cc-pvdz"),
     ("h2o", "def2-svp"),
     ("nh3", "cc-pvdz"),
     ("nh3", "def2-svp"),
     ("hcn", "cc-pvdz"),
     ("h2o", "aug-cc-pvdz"),
+    ("ch4", "cc-pvdz"),
+    ("ch4", "def2-svp"),
+    ("hf", "cc-pvdz"),
+    ("hf", "def2-svp"),
 ];
 
 #[test]

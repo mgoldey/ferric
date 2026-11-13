@@ -257,8 +257,8 @@ fn unsupported_combinations_are_refused_by_name() {
 }
 
 /// The point-group-blocked branch carries the envelope warnings as the
-/// unblocked SCF kinds do: water lies outside the RKS anchor's elements (O),
-/// inside the RHF anchor's (water / 6-31G is a covered run).
+/// unblocked SCF kinds do: water / 6-31G lies outside the RKS anchor's basis
+/// sets (def2-SVP, def2-TZVP), inside the RHF anchor's (a covered run).
 #[test]
 fn symmetric_branch_certificate_carries_the_envelope() {
     let rks = input(
@@ -278,7 +278,7 @@ fn symmetric_branch_certificate_carries_the_envelope() {
         .collect();
     assert!(
         w.iter()
-            .any(|s| s.starts_with("element O (covered: H, Si, S, Cl) is outside the RKS")),
+            .any(|s| s.starts_with("basis 6-31g is outside the RKS")),
         "{w:?}"
     );
     let rhf = input(

@@ -85,6 +85,7 @@ NUMPY_VS_PYSCF_MAX = 1e-10
 SYSTEMS = {
     "h2o_distorted": ("cc-pvdz", "cc-pvdz-ri", 1),
     "nh3_distorted": ("cc-pvdz", "cc-pvdz-ri", None),
+    "ch4_distorted": ("cc-pvdz", "cc-pvdz-ri", None),
 }
 
 STENCIL5 = ((-2, 1.0 / 12), (-1, -8.0 / 12), (1, 8.0 / 12), (2, -1.0 / 12))

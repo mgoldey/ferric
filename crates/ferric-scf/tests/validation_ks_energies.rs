@@ -21,8 +21,9 @@
 //!    solutions are near-degenerate, so a mismatch there is a state-selection
 //!    question (the F6 ROKS lane), not a KS-energy one. ROKS is not tested here
 //!    for the same reason.
-//! 2. **Closed-shell second row, triple zeta** (the CLI's `solve_rhf_ladder`
-//!    path, exactly as `dft_pbe.rs`/`dft_b3lyp.rs` drive it): H2S, HCl, SiH4 ×
+//! 2. **Closed-shell, triple zeta** (the CLI's `solve_rhf_ladder`
+//!    path, exactly as `dft_pbe.rs`/`dft_b3lyp.rs` drive it): H2S, HCl, SiH4
+//!    (second row) and CH4, NH3, H2O, HF (first row, C/N/O/F) ×
 //!    PBE, B3LYP, HSE06 × def2-SVP and def2-TZVP. HSE06 (screened,
 //!    short-range-only exact exchange) runs with exact J and K fitted in the
 //!    attenuated metric, and the reference reproduces that construction.
@@ -727,4 +728,76 @@ fn rks_hcl_hse06_vs_pyscf() {
 #[ignore = "validation: KS-DFT energies"]
 fn rks_sih4_hse06_vs_pyscf() {
     rks_row("sih4", "hse06");
+}
+
+#[test]
+#[ignore = "validation: KS-DFT energies"]
+fn rks_ch4_pbe_vs_pyscf() {
+    rks_row("ch4", "pbe");
+}
+
+#[test]
+#[ignore = "validation: KS-DFT energies"]
+fn rks_ch4_b3lyp_vs_pyscf() {
+    rks_row("ch4", "b3lyp");
+}
+
+#[test]
+#[ignore = "validation: KS-DFT energies"]
+fn rks_ch4_hse06_vs_pyscf() {
+    rks_row("ch4", "hse06");
+}
+
+#[test]
+#[ignore = "validation: KS-DFT energies"]
+fn rks_nh3_pbe_vs_pyscf() {
+    rks_row("nh3", "pbe");
+}
+
+#[test]
+#[ignore = "validation: KS-DFT energies"]
+fn rks_nh3_b3lyp_vs_pyscf() {
+    rks_row("nh3", "b3lyp");
+}
+
+#[test]
+#[ignore = "validation: KS-DFT energies"]
+fn rks_nh3_hse06_vs_pyscf() {
+    rks_row("nh3", "hse06");
+}
+
+#[test]
+#[ignore = "validation: KS-DFT energies"]
+fn rks_h2o_pbe_vs_pyscf() {
+    rks_row("h2o", "pbe");
+}
+
+#[test]
+#[ignore = "validation: KS-DFT energies"]
+fn rks_h2o_b3lyp_vs_pyscf() {
+    rks_row("h2o", "b3lyp");
+}
+
+#[test]
+#[ignore = "validation: KS-DFT energies"]
+fn rks_h2o_hse06_vs_pyscf() {
+    rks_row("h2o", "hse06");
+}
+
+#[test]
+#[ignore = "validation: KS-DFT energies"]
+fn rks_hf_pbe_vs_pyscf() {
+    rks_row("hf", "pbe");
+}
+
+#[test]
+#[ignore = "validation: KS-DFT energies"]
+fn rks_hf_b3lyp_vs_pyscf() {
+    rks_row("hf", "b3lyp");
+}
+
+#[test]
+#[ignore = "validation: KS-DFT energies"]
+fn rks_hf_hse06_vs_pyscf() {
+    rks_row("hf", "hse06");
 }

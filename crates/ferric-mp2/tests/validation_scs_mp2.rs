@@ -229,7 +229,7 @@ fn check_system(system: &str) {
 #[test]
 #[ignore = "validation: SCS-MP2"]
 fn scs_mp2_with_unit_coefficients_is_ri_mp2() {
-    for system in ["h2o", "nh3"] {
+    for system in ["h2o", "nh3", "ch4"] {
         let r = reference(system);
         let sys = load_system(system, &r);
         let ctx = format!("{system}/{BASIS}/anchor");
@@ -270,4 +270,10 @@ fn scs_mp2_h2o_vs_numpy() {
 #[ignore = "validation: SCS-MP2"]
 fn scs_mp2_nh3_vs_numpy() {
     check_system("nh3");
+}
+
+#[test]
+#[ignore = "validation: SCS-MP2"]
+fn scs_mp2_ch4_vs_numpy() {
+    check_system("ch4");
 }

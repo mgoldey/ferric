@@ -49,8 +49,8 @@ def _anchor_warnings(c):
 
 def test_scf_outside_its_anchor_warns_without_changing_the_grade():
     # The anchor sets are crates/ferric-core/src/certificate/anchors.rs
-    # ENERGY_ANCHORS. RKS covers H, Si, S, Cl / def2-SVP, def2-TZVP: water /
-    # STO-3G is outside on element and basis. RHF covers H, C, O, Ne, Cl, Br,
+    # ENERGY_ANCHORS. RKS covers H, C, N, O, F, Si, S, Cl / def2-SVP,
+    # def2-TZVP: water / STO-3G is outside on basis only. RHF covers H, C, O, Ne, Cl, Br,
     # Ag, I with STO-3G: NH3 is outside on element only. UHF covers 6-31G and
     # def2-SVP: OH / STO-3G is outside on basis only.
     sto = ferric.BasisSet.bundled("sto-3g")
@@ -59,7 +59,6 @@ def test_scf_outside_its_anchor_warns_without_changing_the_grade():
     assert d["grade"] == "proven"
     assert d["measured_error"]["value"] == 4.2e-12
     assert _anchor_warnings(d) == [
-        f"element O (covered: H, Si, S, Cl) is outside the RKS energy anchor ({ev})",
         f"basis sto-3g is outside the RKS energy anchor ({ev})",
     ]
 

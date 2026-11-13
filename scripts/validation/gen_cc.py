@@ -70,6 +70,8 @@ Systems (geometries in testdata/molecules/validation/):
     nh3   / cc-pvdz, def2-svp
     hcn   / cc-pvdz
     c2h6  / cc-pvdz
+    ch4   / cc-pvdz, def2-svp   (MP3, CCSD)
+    hf    / cc-pvdz, def2-svp   (MP3, CCSD)
 Aux basis per orbital basis: cc-pvdz -> cc-pvdz-ri, def2-svp -> def2-svp-rifit,
 aug-cc-pvdz -> aug-cc-pvdz-rifit (ferric's bundled names).
 
@@ -107,6 +109,10 @@ CASES = {
     ("hcn", "cc-pvdz"): ("ccsd", "ccsd_t"),
     ("h2o", "aug-cc-pvdz"): ("ccsd", "ccsd_t"),
     ("c2h6", "cc-pvdz"): ("ccsd", "ccsd_t"),
+    ("ch4", "cc-pvdz"): ("mp3", "ccsd"),
+    ("ch4", "def2-svp"): ("mp3", "ccsd"),
+    ("hf", "cc-pvdz"): ("mp3", "ccsd"),
+    ("hf", "def2-svp"): ("mp3", "ccsd"),
 }
 SCF_CONV_TOL = 1e-12
 SCF_CONV_TOL_GRAD = 1e-9

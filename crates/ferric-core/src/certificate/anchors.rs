@@ -220,9 +220,9 @@ pub const ENERGY_ANCHORS: &[EnergyAnchor] = &[
         evidence: KS_ENERGIES,
         data: AnchorData::Directory {
             dir: "testdata/reference/validation/ks_energies",
-            systems: &["h2s", "hcl", "sih4"],
+            systems: &["h2s", "hcl", "sih4", "ch4", "nh3", "h2o", "hf"],
         },
-        elements: &["H", "Si", "S", "Cl"],
+        elements: &["H", "C", "N", "O", "F", "Si", "S", "Cl"],
         basis_sets: &["def2-svp", "def2-tzvp"],
         aux_basis_sets: &[],
         functionals: &["pbe", "b3lyp", "hse06"],
@@ -270,7 +270,7 @@ pub const ENERGY_ANCHORS: &[EnergyAnchor] = &[
         reference: "PySCF 2.13.1",
         evidence: BASIS_COVERAGE,
         data: AnchorData::BasisCoverage { kind: "rimp2" },
-        elements: &["H", "O", "Pd"],
+        elements: &["H", "C", "N", "O", "F", "Pd"],
         basis_sets: &[
             "cc-pvdz",
             "cc-pvtz",
@@ -350,9 +350,18 @@ pub const ENERGY_ANCHORS: &[EnergyAnchor] = &[
         evidence: CC,
         data: AnchorData::Files {
             dir: CC_DIR,
-            files: &["h2o_cc-pvdz", "h2o_def2-svp", "nh3_cc-pvdz", "nh3_def2-svp"],
+            files: &[
+                "h2o_cc-pvdz",
+                "h2o_def2-svp",
+                "nh3_cc-pvdz",
+                "nh3_def2-svp",
+                "ch4_cc-pvdz",
+                "ch4_def2-svp",
+                "hf_cc-pvdz",
+                "hf_def2-svp",
+            ],
         },
-        elements: &["H", "N", "O"],
+        elements: &["H", "C", "N", "O", "F"],
         basis_sets: &["cc-pvdz", "def2-svp"],
         aux_basis_sets: &["cc-pvdz-ri", "def2-svp-rifit"],
         functionals: &[],
@@ -375,9 +384,13 @@ pub const ENERGY_ANCHORS: &[EnergyAnchor] = &[
                 "nh3_def2-svp",
                 "hcn_cc-pvdz",
                 "c2h6_cc-pvdz",
+                "ch4_cc-pvdz",
+                "ch4_def2-svp",
+                "hf_cc-pvdz",
+                "hf_def2-svp",
             ],
         },
-        elements: &["H", "C", "N", "O"],
+        elements: &["H", "C", "N", "O", "F"],
         basis_sets: &["cc-pvdz", "def2-svp", "aug-cc-pvdz"],
         aux_basis_sets: &["cc-pvdz-ri", "def2-svp-rifit", "aug-cc-pvdz-rifit"],
         functionals: &[],
@@ -392,9 +405,9 @@ pub const ENERGY_ANCHORS: &[EnergyAnchor] = &[
         evidence: "crates/ferric-mp2/tests/validation_attenuated_mp2.rs",
         data: AnchorData::Directory {
             dir: ATT_MP2_DIR,
-            systems: &["h2o", "nh3"],
+            systems: &["h2o", "nh3", "ch4"],
         },
-        elements: &["H", "N", "O"],
+        elements: &["H", "C", "N", "O"],
         basis_sets: &["aug-cc-pvdz"],
         aux_basis_sets: &["aug-cc-pvdz-rifit"],
         functionals: &[],
@@ -409,9 +422,9 @@ pub const ENERGY_ANCHORS: &[EnergyAnchor] = &[
         evidence: "crates/ferric-mp2/tests/validation_scs_mp2.rs",
         data: AnchorData::Directory {
             dir: ATT_MP2_DIR,
-            systems: &["h2o", "nh3"],
+            systems: &["h2o", "nh3", "ch4"],
         },
-        elements: &["H", "N", "O"],
+        elements: &["H", "C", "N", "O"],
         basis_sets: &["aug-cc-pvdz"],
         aux_basis_sets: &["aug-cc-pvdz-rifit"],
         functionals: &[],
@@ -466,15 +479,19 @@ pub const ENERGY_ANCHORS: &[EnergyAnchor] = &[
         method: "PDEP-RPA",
         kind: "pdep-rpa",
         quantity: "correlation energy",
-        value: "1.5e-13",
+        value: "9.2e-13",
         units: "Ha",
         reference: "gw.rpa.RPA",
         evidence: "crates/ferric-rpa/tests/validation_rpa_gradient.rs",
         data: AnchorData::Files {
             dir: "testdata/reference/validation/rpa_gradient",
-            files: &["h2o_distorted_cc-pvdz", "nh3_distorted_cc-pvdz"],
+            files: &[
+                "h2o_distorted_cc-pvdz",
+                "nh3_distorted_cc-pvdz",
+                "ch4_distorted_cc-pvdz",
+            ],
         },
-        elements: &["H", "N", "O"],
+        elements: &["H", "C", "N", "O"],
         basis_sets: &["cc-pvdz"],
         aux_basis_sets: &["cc-pvdz-ri"],
         functionals: &[],
@@ -1038,11 +1055,11 @@ mod tests {
             },
         );
         assert_eq!(inside, base, "a covered run gets no warning");
-        // Outside on every dimension: water / 6-31G / SCAN.
+        // Outside on every dimension: HBr / 6-31G / SCAN.
         let out = base.clone().with_envelope(
             rks,
             &RunEnvelope {
-                atomic_numbers: &[1, 8, 7],
+                atomic_numbers: &[1, 35],
                 basis: Some(&b631g),
                 aux_basis: Some(&ri),
                 functional: Some("SCAN"),
@@ -1055,7 +1072,7 @@ mod tests {
             out.warnings,
             [
                 format!(
-                    "element O (covered: H, Si, S, Cl) is outside the RKS energy anchor ({ev})"
+                    "element Br (covered: H, C, N, O, F, Si, S, Cl) is outside the RKS energy anchor ({ev})"
                 ),
                 format!("basis 6-31g is outside the RKS energy anchor ({ev})"),
                 format!("auxiliary basis cc-pvdz-ri is outside the RKS energy anchor ({ev})"),

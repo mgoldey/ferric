@@ -102,8 +102,8 @@ const TOL_ENUC: f64 = 1e-9;
 // Measured worst |d| (2026-09-25) beside each bar.
 // E_RHF: 1.7e-12.
 const TOL_E_RHF: f64 = 1e-11;
-// E_c (40- and 6-point): 1.5e-13.
-const TOL_E_C: f64 = 1e-12;
+// E_c (40- and 6-point): 9.2e-13 (distorted CH4; H2O and NH3 are below 1.5e-13).
+const TOL_E_C: f64 = 5e-12;
 // E_tot from total_rpa_gradient's own SCF: 2.3e-12.
 const TOL_E_TOT_LIB: f64 = 2e-11;
 // Same 3-point stencil and h on both surfaces: 1.9e-9 Ha/Bohr.
@@ -504,6 +504,12 @@ fn rpa_gradient_nh3_energy_vs_pyscf() {
 
 #[test]
 #[ignore = "validation: RPA gradient"]
+fn rpa_gradient_ch4_energy_vs_pyscf() {
+    energy_case("ch4_distorted");
+}
+
+#[test]
+#[ignore = "validation: RPA gradient"]
 fn rpa_gradient_h2o_gradient_vs_pyscf_fd() {
     gradient_vs_pyscf_case("h2o_distorted");
 }
@@ -512,6 +518,12 @@ fn rpa_gradient_h2o_gradient_vs_pyscf_fd() {
 #[ignore = "validation: RPA gradient"]
 fn rpa_gradient_nh3_gradient_vs_pyscf_fd() {
     gradient_vs_pyscf_case("nh3_distorted");
+}
+
+#[test]
+#[ignore = "validation: RPA gradient"]
+fn rpa_gradient_ch4_gradient_vs_pyscf_fd() {
+    gradient_vs_pyscf_case("ch4_distorted");
 }
 
 #[test]

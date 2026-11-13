@@ -135,8 +135,8 @@ fn uhf_logs_a_certificate_record_with_the_stability_caveat() {
 
 #[test]
 fn rks_outside_its_anchor_warns_without_changing_the_grade() {
-    // The RKS anchor covers H2S, HCl, SiH4 / def2-SVP, def2-TZVP with PBE,
-    // B3LYP, HSE06: water / STO-3G is outside on element and basis.
+    // The RKS anchor covers H2S, HCl, SiH4, CH4, NH3, H2O, HF / def2-SVP,
+    // def2-TZVP with PBE, B3LYP, HSE06: water / STO-3G is outside on basis only.
     let (stdout, records) = run(
         "rks_outside",
         "[molecule]\nxyz = \"testdata/molecules/water.xyz\"\n[basis]\nname = \"sto-3g\"\n\
@@ -154,13 +154,12 @@ fn rks_outside_its_anchor_warns_without_changing_the_grade() {
     let ev = "crates/ferric-scf/tests/validation_ks_energies.rs";
     assert_eq!(
         w,
-        [
-            format!("element O (covered: H, Si, S, Cl) is outside the RKS energy anchor ({ev})"),
-            format!("basis sto-3g is outside the RKS energy anchor ({ev})"),
-        ],
+        [format!(
+            "basis sto-3g is outside the RKS energy anchor ({ev})"
+        ),],
         "{c}"
     );
-    assert!(stdout.contains("  warning     = element O"), "{stdout}");
+    assert!(stdout.contains("  warning     = basis sto-3g"), "{stdout}");
 }
 
 #[test]

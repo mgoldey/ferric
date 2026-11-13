@@ -285,7 +285,7 @@ fn check_system(system: &str) {
 #[test]
 #[ignore = "validation: Attenuated RI-MP2"]
 fn attenuated_matches_coulomb_ri_mp2_in_the_trivial_limit() {
-    for system in ["h2o", "nh3"] {
+    for system in ["h2o", "nh3", "ch4"] {
         let r = reference(system);
         let sys = load_system(system, &r);
         let ctx = format!("{system}/{BASIS}/anchor");
@@ -327,4 +327,10 @@ fn attenuated_ri_mp2_h2o_vs_pyscf() {
 #[ignore = "validation: Attenuated RI-MP2"]
 fn attenuated_ri_mp2_nh3_vs_pyscf() {
     check_system("nh3");
+}
+
+#[test]
+#[ignore = "validation: Attenuated RI-MP2"]
+fn attenuated_ri_mp2_ch4_vs_pyscf() {
+    check_system("ch4");
 }
