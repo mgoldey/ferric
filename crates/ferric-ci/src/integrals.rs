@@ -158,32 +158,117 @@ pub(crate) fn transform_eri_mixed(
     nbas: usize,
     c: [ndarray::ArrayView2<'_, f64>; 4],
 ) -> Result<Vec<f64>, FerricError> {
+    check_mixed(ao_eri, nbas, &c)?;
+    let first = first_quarter(ao_eri, nbas, c[3])?;
+    finish_mixed(first, nbas, [c[0], c[1], c[2]])
+}
+
+/// `(pq|vw)` flat `[((p n + q) n_a + v) n_a + w]` and `(pu|qv)` flat
+/// `[((p n_a + u) n + q) n_a + v]` (`n = c.ncols()`, `n_a = ca.ncols()`)
+/// from one first quarter `T[w, mu, nu, la] = (mu nu|la w)`. `(pq|vw)` is
+/// [`transform_eri_mixed`]`([c, c, ca, ca])` bitwise. For `(pu|qv)` the
+/// stored block's symmetry `(mu nu|la sg) = (mu nu|sg la)` lets the second
+/// quarter contract `nu` with `ca` (`T` with its last two axes swapped)
+/// rather than `la` with `c`, so the chain costs `O(n_a nbas^4 + n_a² n
+/// nbas³)` instead of adding `O(n_a n nbas⁴)`; the result is
+/// `transform_eri_mixed([c, ca, c, ca])` to rounding, permuted from
+/// `[p, q, u, v]` order.
+pub(crate) fn transform_ppaa_papa<'c>(
+    ao_eri: &[f64],
+    nbas: usize,
+    c: ndarray::ArrayView2<'c, f64>,
+    ca: ndarray::ArrayView2<'c, f64>,
+) -> Result<(Vec<f64>, Vec<f64>), FerricError> {
+    use rayon::prelude::*;
+    check_mixed(ao_eri, nbas, &[c, ca])?;
+    let (n, na) = (c.ncols(), ca.ncols());
+    let first = first_quarter(ao_eri, nbas, ca)?;
+    let ppaa = finish_mixed(first.clone(), nbas, [c, c, ca])?;
+    // [w, mu, nu, la] -> [w, mu, la, nu].
+    let n2 = nbas * nbas;
+    let mut swapped = vec![0.0f64; first.len()];
+    swapped
+        .par_chunks_mut(n2)
+        .zip(first.par_chunks(n2))
+        .for_each(|(dst, src)| {
+            for nu in 0..nbas {
+                for la in 0..nbas {
+                    dst[la * nbas + nu] = src[nu * nbas + la];
+                }
+            }
+        });
+    drop(first);
+    // nu (ca) -> [u, w, mu, la]; la (c) -> [q, u, w, mu]; mu (c) -> [p, q, u, w].
+    let mut x = swapped;
+    for ck in [ca, c, c] {
+        let ct = ck.t().as_standard_layout().into_owned();
+        x = quarter_transform_rotate(x, nbas, &ct)?;
+    }
+    // [p, q, u, v] -> [p, u, q, v].
+    let mut papa = vec![0.0f64; x.len()];
+    papa.par_chunks_mut(na * n * na)
+        .zip(x.par_chunks(n * na * na))
+        .for_each(|(dst, src)| {
+            for q in 0..n {
+                for u in 0..na {
+                    let from = &src[(q * na + u) * na..(q * na + u + 1) * na];
+                    dst[(u * n + q) * na..(u * n + q + 1) * na].copy_from_slice(from);
+                }
+            }
+        });
+    Ok((ppaa, papa))
+}
+
+fn check_mixed(
+    ao_eri: &[f64],
+    nbas: usize,
+    c: &[ndarray::ArrayView2<'_, f64>],
+) -> Result<(), FerricError> {
     if ao_eri.len() != nbas.pow(4) || c.iter().any(|ck| ck.nrows() != nbas) {
         return Err(FerricError::General(format!(
             "CAS transform: ao_eri len {} or a C block row count inconsistent with nbas {nbas}",
             ao_eri.len()
         )));
     }
-    let ct = |k: usize| c[k].t().as_standard_layout().into_owned();
-    // First quarter from the borrowed block: out[s, (mu nu la)] = Σ_sg C4[sg,s] x[(mu nu la), sg].
+    Ok(())
+}
+
+/// First quarter from the borrowed block: `out[s, (mu nu la)] = Σ_sg
+/// C4[sg,s] x[(mu nu la), sg]`.
+fn first_quarter(
+    ao_eri: &[f64],
+    nbas: usize,
+    c4: ndarray::ArrayView2<'_, f64>,
+) -> Result<Vec<f64>, FerricError> {
+    let ct = c4.t().as_standard_layout().into_owned();
     let xm = ndarray::ArrayView2::from_shape((nbas.pow(3), nbas), ao_eri)
         .map_err(|e| FerricError::General(format!("CAS transform shape: {e}")))?;
-    let first = ct(3).dot(&xm.t());
+    let first = ct.dot(&xm.t());
     let first = if first.is_standard_layout() {
         first
     } else {
         first.as_standard_layout().into_owned()
     };
-    let (mut x, off) = first.into_raw_vec_and_offset();
+    let (x, off) = first.into_raw_vec_and_offset();
     if off.unwrap_or(0) != 0 {
         return Err(FerricError::General(
             "CAS transform: unexpected non-zero array offset".to_string(),
         ));
     }
-    // Index order is now [s, mu, nu, la]; the next three quarters contract
-    // la (C3), nu (C2) and mu (C1), each putting its new index first.
+    Ok(x)
+}
+
+/// The last three quarters: index order `[s, mu, nu, la]` contracts `la`
+/// (`c[2]`), `nu` (`c[1]`) and `mu` (`c[0]`), each putting its new index
+/// first.
+fn finish_mixed(
+    mut x: Vec<f64>,
+    nbas: usize,
+    c: [ndarray::ArrayView2<'_, f64>; 3],
+) -> Result<Vec<f64>, FerricError> {
     for k in [2usize, 1, 0] {
-        x = quarter_transform_rotate(x, nbas, &ct(k))?;
+        let ct = c[k].t().as_standard_layout().into_owned();
+        x = quarter_transform_rotate(x, nbas, &ct)?;
     }
     Ok(x)
 }
@@ -577,6 +662,35 @@ mod tests {
     /// H2O/cc-pVDZ carries pure d shells (the scatter must permute within
     /// non-trivial shell blocks); benzene/STO-3G has many equal-dimension
     /// shells, so a transposed scatter index cannot hide behind shape.
+    /// `transform_ppaa_papa` against two [`transform_eri_mixed`] chains:
+    /// `(pq|vw)` bitwise (same GEMMs), `(pu|qv)` to rounding. Each side is
+    /// four chained sums of `nbas` terms, so `|δ| <= 2 · 4 nbas ε e_max c1²
+    /// ca1²` with `e_max` the largest AO integral and `c1`, `ca1` the
+    /// largest column 1-norms of `c` and `ca`.
+    #[test]
+    fn ppaa_papa_transform_matches_the_mixed_transforms() {
+        let (_mol, prep, rhf) = water("6-31g");
+        let nbas = prep.nbasis();
+        let eri = dense_ao_eri(&prep).unwrap();
+        let c = rhf.mos_r().view();
+        let ca = c.slice(ndarray::s![.., 1..6]);
+        let (a, b) = transform_ppaa_papa(&eri, nbas, c, ca).unwrap();
+        assert_eq!(a, transform_eri_mixed(&eri, nbas, [c, c, ca, ca]).unwrap());
+        let b0 = transform_eri_mixed(&eri, nbas, [c, ca, c, ca]).unwrap();
+        let col1 = |m: ndarray::ArrayView2<'_, f64>| {
+            m.columns()
+                .into_iter()
+                .map(|v| v.iter().map(|x| x.abs()).sum::<f64>())
+                .fold(0.0, f64::max)
+        };
+        let e_max = eri.iter().fold(0.0f64, |m, x| m.max(x.abs()));
+        let bar = 2.0 * 4.0 * nbas as f64 * f64::EPSILON * e_max * (col1(c) * col1(ca)).powi(2);
+        let d = max_abs_diff(&b, &b0);
+        eprintln!("(pu|qv): max |δ| {d:.2e} (bar {bar:.1e})");
+        assert!(b0.iter().any(|x| x.abs() > 1e-2));
+        assert!(d <= bar, "(pu|qv) |δ| {d:e} > {bar:e}");
+    }
+
     #[test]
     fn symmetric_fill_matches_all_quartet_fill() {
         type Fixture = fn(&str) -> (Molecule, PreparedBasis, ScfResult);

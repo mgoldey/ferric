@@ -288,7 +288,7 @@ impl PyCasScfResult {
 /// orbitals above `n_core` doubly occupied ones, single root of the
 /// `(n_alpha, n_beta)` sector, optionally canonical orbitals on return.
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, n_active, n_elec_active, n_core=None, casscf_grad_tol=1e-7, casscf_energy_tol=1e-12, casscf_max_iter=300, casscf_max_step=0.2, ci_conv_thresh=1e-10, ci_max_subspace=50, ci_max_iter=200, memory_budget_gb=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, canonicalize=false, casscf_integrals="auto", casscf_integral_thresh=None, casscf_optimizer="bfgs"))]
+#[pyo3(signature = (mol, basis_set, n_active, n_elec_active, n_core=None, casscf_grad_tol=1e-7, casscf_energy_tol=1e-12, casscf_max_iter=300, casscf_max_step=0.2, ci_conv_thresh=1e-10, ci_max_subspace=50, ci_max_iter=200, memory_budget_gb=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, canonicalize=false, casscf_integrals="auto", casscf_integral_thresh=None, casscf_optimizer="ah"))]
 #[allow(clippy::too_many_arguments)]
 fn run_casscf(
     py: Python<'_>,
@@ -474,7 +474,7 @@ impl PyNevpt2Result {
 /// SC-NEVPT2 on a CASSCF (default) or CAS-CI reference from the canonical
 /// RHF orbitals. The reference must converge; an unconverged one raises.
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, n_active, n_elec_active, n_core=None, reference="casscf", casscf_grad_tol=1e-7, casscf_energy_tol=1e-12, casscf_max_iter=300, casscf_max_step=0.2, ci_conv_thresh=1e-10, ci_max_subspace=50, ci_max_iter=200, memory_budget_gb=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, casscf_integrals="auto", casscf_integral_thresh=None, casscf_optimizer="bfgs"))]
+#[pyo3(signature = (mol, basis_set, n_active, n_elec_active, n_core=None, reference="casscf", casscf_grad_tol=1e-7, casscf_energy_tol=1e-12, casscf_max_iter=300, casscf_max_step=0.2, ci_conv_thresh=1e-10, ci_max_subspace=50, ci_max_iter=200, memory_budget_gb=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, casscf_integrals="auto", casscf_integral_thresh=None, casscf_optimizer="ah"))]
 #[allow(clippy::too_many_arguments)]
 fn run_nevpt2(
     py: Python<'_>,

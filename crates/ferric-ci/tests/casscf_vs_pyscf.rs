@@ -28,6 +28,16 @@
 //! packing omits this crate's factor 2 on some entries, so `2 ‖g_PySCF‖`
 //! bounds the norm in this crate's convention.
 //!
+//! The converged point is a minimum, not a saddle on which both codes could
+//! stop alike (as the BFGS, AH and PySCF point of N2 CAS(10,10)/cc-pVDZ is,
+//! `theory.md`): `λ_min(h) > 2 |λ_min(2h) − λ_min(h)| / 3 + n δg / h`. The
+//! first term is twice the leading `O(h²)` truncation error of the central
+//! difference (the factor 2 for the higher orders); the second is the
+//! gradient error `δg = 8 r + 4 ε n_mo² max|F|` (`r` the CI threshold, the
+//! bar of `tests/casscf.rs` anchor 1) in each Hessian element
+//! `(g₊ − g₋)/(2h)`, `|δH_ij| <= δg/h`, over the `n` pairs through
+//! `‖δH‖₂ <= n max|δH_ij|`.
+//!
 //! Physics vs artifact: if both codes reach the same minimum, `ΔE` sits inside
 //! the bar and the natural occupations and canonical orbital energies agree to
 //! first order in the orbital error. A different stationary point shows as
@@ -107,10 +117,19 @@ fn case(name: &str) {
         res.iterations
     );
     let problem = CasScfProblem::new(&mol, &prep, res.mo_coeff.ncols(), &cfg).unwrap();
-    let lam = hessian_min_eig(&problem, &res.mo_coeff, 1e-4);
+    let h = 1e-4;
+    let lam = hessian_min_eig(&problem, &res.mo_coeff, h);
+    let lam_2h = hessian_min_eig(&problem, &res.mo_coeff, 2.0 * h);
+    let npair = problem.pairs().len() as f64;
+    let pt = problem.evaluate(&res.mo_coeff).unwrap();
+    let nmo = res.mo_coeff.ncols() as f64;
+    let dg = 8.0 * cfg.ci_conv_thresh + 4.0 * EPS * nmo * nmo * maxabs(&pt.f_general);
+    let lam_bar = 2.0 * (lam_2h - lam).abs() / 3.0 + npair * dg / h;
+    eprintln!("{name}: lambda_min {lam:.6} (2h: {lam_2h:.6}); minimum bar {lam_bar:.2e}");
     assert!(
-        lam > 0.0,
-        "{name}: lowest orbital Hessian eigenvalue {lam:e}"
+        lam > lam_bar,
+        "{name}: lowest CI-relaxed orbital Hessian eigenvalue {lam:e} <= bar {lam_bar:e}: \
+         not a minimum"
     );
 
     let e_ref = num(&r, "e_total");

@@ -19,7 +19,7 @@
 //! half of the memory budget and the direct route otherwise.
 
 use crate::casscf::{dense_jk, dense_jk_multi};
-use crate::integrals::{dense_ao_eri, transform_eri_mixed};
+use crate::integrals::{dense_ao_eri, transform_eri_mixed, transform_ppaa_papa};
 use ferric_core::parallel::ParallelContext;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
@@ -89,18 +89,21 @@ impl CasScfIntegrals {
     }
 
     /// Transient peak of one `(pq|vw)`, `(pu|qv)` build
-    /// ([`IntegralBackend::ppaa_papa`]) beside its two outputs.
-    pub(crate) fn hessian_transient_elems(&self, nbas: usize, nmo: usize, nact: usize) -> usize {
-        let out = nmo.saturating_mul(nmo).saturating_mul(nact * nact);
+    /// ([`IntegralBackend::ppaa_papa`]) with `ncol` columns in `v, w` (the
+    /// occupied orbitals for the AH step) beside its two outputs.
+    pub(crate) fn hessian_transient_elems(&self, nbas: usize, nmo: usize, ncol: usize) -> usize {
+        let out = nmo.saturating_mul(nmo).saturating_mul(ncol * ncol);
         match self {
             CasScfIntegrals::Dense | CasScfIntegrals::Auto => {
                 let n2 = nbas.saturating_mul(nbas);
-                // First two quarter outputs of the (pu|qv) transform.
-                nact.saturating_mul(n2.saturating_mul(nbas))
-                    .saturating_add(nact.saturating_mul(nmo).saturating_mul(n2))
+                // The shared first quarter and its copy (or its swapped
+                // copy), beside the second quarter output of a chain.
+                ncol.saturating_mul(n2.saturating_mul(nbas))
+                    .saturating_mul(2)
+                    .saturating_add(ncol.saturating_mul(nmo).saturating_mul(n2))
                     .saturating_add(out.saturating_mul(2))
             }
-            CasScfIntegrals::Direct { .. } => direct_ppaa_papa_peak_elems(nbas, nmo, nact),
+            CasScfIntegrals::Direct { .. } => direct_ppaa_papa_peak_elems(nbas, nmo, ncol),
         }
     }
 
@@ -297,10 +300,7 @@ impl IntegralBackend {
         match self {
             IntegralBackend::Dense { eri, nbas } => {
                 with_blas_threads(opt_in_blas_threads(), || {
-                    Ok((
-                        transform_eri_mixed(eri, *nbas, [c, c, ca, ca])?,
-                        transform_eri_mixed(eri, *nbas, [c, ca, c, ca])?,
-                    ))
+                    transform_ppaa_papa(eri, *nbas, c, ca)
                 })
             }
             IntegralBackend::Direct {

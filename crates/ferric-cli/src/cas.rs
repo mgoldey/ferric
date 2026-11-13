@@ -52,10 +52,10 @@ pub struct CasCfg {
     pub max_iter: Option<usize>,
     /// Cap on the largest orbital-rotation step element (rad). Default `0.2`.
     pub max_step: Option<f64>,
-    /// Orbital step: `"bfgs"` (default; inverse BFGS from an approximate
-    /// diagonal Hessian) or `"ah"` (augmented Hessian on the exact orbital
+    /// Orbital step: `"ah"` (default; augmented Hessian on the exact orbital
     /// Hessian at fixed RDMs, with a trust radius: fewer macro iterations,
-    /// each with Hessian-vector products costing one J/K pass).
+    /// each with Davidson Hessian-vector products) or `"bfgs"` (inverse BFGS
+    /// from an approximate diagonal Hessian).
     pub optimizer: Option<String>,
     /// Two-electron integrals of the CASSCF iterations: `"auto"` (default;
     /// dense when the block fits in half the memory budget), `"direct"`

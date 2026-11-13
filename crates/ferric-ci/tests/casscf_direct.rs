@@ -48,16 +48,19 @@
 //!
 //! Both routes build the fixed-RDM Hessian at the dense route's point (same
 //! RDMs and Fock matrices) and multiply the same unit `x`, so only the
-//! integrals differ: the two-density J/K and `(pq|vw)`, `(pu|qv)`. With
-//! `xs` the largest column 1-norm of `X` and `|γ| <= 2`, `|Γ| <= 4`,
-//! `Σ|dD^c| <= 4 n_c c1² xs` and `Σ|dD^a| <= 4 n_a² c1 ca1 xs`, each giving
-//! `δG` as above; `(pq|vw)`, `(pu|qv)` move by
-//! `δQ <= 2 · 4 nbas ε e_max c1² ca1² + thresh c1² ca1²`; `W` sums `n_a²`
-//! terms of each with weights up to 4 and 8, `δW <= 12 n_a² δQ`; the row
-//! term `Σ_uvw (pu|vw) Γ` moves by `4 n_a³ δQ`. Then
+//! integrals differ: `(pq|jk)`, `(pj|qk)` over the occupied orbitals, whose
+//! occupied kernel `L` gives the density responses and whose active blocks
+//! give `W` (`src/casscf_newton.rs`). With `co1` the largest column 1-norm of
+//! the occupied orbitals, each integral moves by
+//! `δQ <= 2 · 4 nbas ε e_max c1² co1² + thresh c1² co1²`; `L` combines three
+//! with weights 2, ½, ½ and multiplies `Y` with `Σ|Y^c| <= 2 n_c xs`,
+//! `Σ|Y^a| <= 2 n_a² xs` (`xs` the largest column 1-norm of `X`,
+//! `|γ| <= 2`), so `δG <= 3 δQ Σ|Y|`; `W` sums `n_a²` terms of each with
+//! weights up to 4 and 8, `δW <= 12 n_a² δQ`; the row term `Σ_uvw (pu|vw) Γ`
+//! moves by `4 n_a³ δQ`. Then
 //!
 //! ```text
-//!   |δ(Hx)| <= 4 (2 c1² (δG_c + δG_a) + 2 n_a c1² δG_c
+//!   |δ(Hx)| <= 4 (2 (δG_c + δG_a) + 2 n_a δG_c
 //!                 + 12 n_a² δQ ‖x‖₁ + 4 n_a³ δQ xs).
 //! ```
 
@@ -325,7 +328,7 @@ fn hessian_check(file: &str, n_core: usize, n_active: usize, nel: (usize, usize)
     let n = prep.nbasis() as f64;
     let (nc, na) = (n_core as f64, n_active as f64);
     let c1 = col1(c.view());
-    let ca1 = col1(c.slice(ndarray::s![.., n_core..n_core + n_active]));
+    let co1 = col1(c.slice(ndarray::s![.., ..n_core + n_active]));
     let mut xm = Array2::<f64>::zeros((nmo, nmo));
     for (&(p, q), &v) in dense.pairs().iter().zip(&x) {
         xm[(p, q)] = v;
@@ -333,13 +336,12 @@ fn hessian_check(file: &str, n_core: usize, n_active: usize, nel: (usize, usize)
     }
     let xs = col1(xm.view());
     let x1: f64 = x.iter().map(|v| v.abs()).sum();
-    let dg = |sum_d: f64| 2.0 * 1.5 * n * n * EPS * e_max * sum_d + 1.5 * n * n * thresh;
-    let dg_c = dg(4.0 * nc * c1 * c1 * xs);
-    let dg_a = dg(4.0 * na * na * c1 * ca1 * xs);
-    let dq = 2.0 * 4.0 * n * EPS * e_max * (c1 * ca1).powi(2) + thresh * (c1 * ca1).powi(2);
+    let dq = 2.0 * 4.0 * n * EPS * e_max * (c1 * co1).powi(2) + thresh * (c1 * co1).powi(2);
+    let dg_c = 3.0 * dq * 2.0 * nc * xs;
+    let dg_a = 3.0 * dq * 2.0 * na * na * xs;
     let bar = 4.0
-        * (2.0 * c1 * c1 * (dg_c + dg_a)
-            + 2.0 * na * c1 * c1 * dg_c
+        * (2.0 * (dg_c + dg_a)
+            + 2.0 * na * dg_c
             + 12.0 * na * na * dq * x1
             + 4.0 * na.powi(3) * dq * xs);
     let d = vdiff(&a, &b);

@@ -386,21 +386,22 @@ fn cli_keys_reach_the_config() {
     assert!(conv.result()["components"]["mo_energy"].is_null());
     assert!((canon.result()["total"].as_f64().unwrap() - e_conv).abs() < 1e-11);
 
-    // [cas] optimizer = "ah": the same minimum in fewer macro iterations
-    // (tests/casscf_newton.rs bounds the energy difference by 1e-12).
-    let ah = run_cli_ok(
+    // [cas] optimizer = "bfgs": the default (AH) minimum in more macro
+    // iterations (tests/casscf_newton.rs bounds the energy difference by
+    // 1e-12).
+    let bfgs = run_cli_ok(
         "keys_optimizer",
         &xyz,
-        &toml_for("casscf", "6-31g", &format!("{base}optimizer = \"ah\"\n")),
+        &toml_for("casscf", "6-31g", &format!("{base}optimizer = \"bfgs\"\n")),
     );
     let it = |r: &Run| usize_of(&r.result()["components"]["iterations"]);
     assert!(
-        it(&ah) < it(&conv),
+        it(&bfgs) > it(&conv),
         "[cas] optimizer ignored: {} vs {} iterations",
-        it(&ah),
+        it(&bfgs),
         it(&conv)
     );
-    assert!((ah.result()["total"].as_f64().unwrap() - e_conv).abs() < 1e-10);
+    assert!((bfgs.result()["total"].as_f64().unwrap() - e_conv).abs() < 1e-10);
 
     // [cas] n_core: one orbital lower, CAS(6,5) above 2 core, another energy.
     let window = run_cli_ok(

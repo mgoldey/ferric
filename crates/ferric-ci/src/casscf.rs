@@ -99,21 +99,47 @@ pub struct CasScfConfig {
     /// Where the two-electron integrals come from ([`CasScfIntegrals::Auto`]
     /// by default).
     pub integrals: CasScfIntegrals,
-    /// The orbital step ([`CasScfOptimizer::Bfgs`] by default).
+    /// The orbital step ([`CasScfOptimizer::AugmentedHessian`] by default).
     pub optimizer: CasScfOptimizer,
+    /// Stopping rule of the Davidson solve of each augmented-Hessian step
+    /// ([`AhForcing::Quadratic`] by default); unused by BFGS.
+    pub ah_forcing: AhForcing,
+}
+
+/// Residual at which the Davidson solve of an augmented-Hessian step stops:
+/// `‖(H − λ) s + g‖ <= η ‖g‖`.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum AhForcing {
+    /// `η = min(0.1, ‖g‖)`: the step is solved more tightly as the gradient
+    /// falls (the inexact-Newton forcing term of quadratic convergence).
+    #[default]
+    Quadratic,
+    /// A constant `η` in `(0, 1)`: fewer Hessian-vector products per step
+    /// for a less exact step.
+    Constant(f64),
+}
+
+impl AhForcing {
+    /// The relative residual `η` at the gradient norm `gn`.
+    pub fn eta(&self, gn: f64) -> f64 {
+        match *self {
+            AhForcing::Quadratic => gn.min(0.1),
+            AhForcing::Constant(eta) => eta,
+        }
+    }
 }
 
 /// The orbital step of the two-step macro iteration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CasScfOptimizer {
     /// Augmented-Hessian step on the exact fixed-RDM orbital Hessian, with a
-    /// trust radius ([`crate::casscf_newton`]): about a third of the macro
-    /// iterations of BFGS, but each Hessian-vector product costs one J/K
-    /// pass, so it wins when the CI solve dominates a macro iteration.
+    /// trust radius ([`crate::casscf_newton`]): 1/5 to 3/4 of the macro
+    /// iterations of BFGS on the tested systems. The Hessian-vector products come from a
+    /// kernel over occupied MO integrals built once per macro iteration.
+    #[default]
     AugmentedHessian,
     /// Inverse BFGS from the approximate diagonal Hessian (no Hessian
     /// products; more macro iterations).
-    #[default]
     Bfgs,
 }
 
@@ -156,6 +182,7 @@ impl Default for CasScfConfig {
             canonicalize: false,
             integrals: CasScfIntegrals::default(),
             optimizer: CasScfOptimizer::default(),
+            ah_forcing: AhForcing::default(),
         }
     }
 }
@@ -305,20 +332,25 @@ impl<'a> CasScfProblem<'a> {
                 );
             }
             CasScfOptimizer::AugmentedHessian => {
+                let nocc = nc + nact;
                 let w = nmo.saturating_mul(nmo).saturating_mul(nact * nact);
+                let kernel = nmo.saturating_mul(nocc).saturating_pow(2);
                 plan.reserve(
-                    "orbital Hessian W, Davidson subspace, two-density J/K",
-                    w.saturating_add(
-                        (2 * crate::casscf_newton::AH_MAX_DAVIDSON + 4).saturating_mul(npair),
-                    )
-                    .saturating_add(8 * nbas * nbas),
+                    "orbital Hessian W and occupied kernel L, Davidson subspace",
+                    w.saturating_add(kernel)
+                        .saturating_add(
+                            (2 * crate::casscf_newton::AH_MAX_DAVIDSON + 4).saturating_mul(npair),
+                        )
+                        .saturating_add(8 * nbas * nbas),
                     Lifetime::Resident,
                 );
+                // (pq|jk), (pj|qk) over the occupied orbitals, then beside
+                // them their active blocks and the Γ contractions of W.
                 plan.reserve(
-                    "(pq|vw), (pu|qv) and their Γ contractions",
+                    "(pq|jk), (pj|qk), their active blocks and Γ contractions",
                     route
-                        .hessian_transient_elems(nbas, nmo, nact)
-                        .max(w.saturating_mul(3)),
+                        .hessian_transient_elems(nbas, nmo, nocc)
+                        .max(kernel.saturating_mul(2).saturating_add(w.saturating_mul(3))),
                     Lifetime::Transient,
                 );
             }
@@ -1117,6 +1149,13 @@ fn check_step_controls(config: &CasScfConfig) -> Result<(), FerricError> {
             "CASSCF: hdiag_floor must be a positive finite number, got {}",
             config.hdiag_floor
         )));
+    }
+    if let AhForcing::Constant(eta) = config.ah_forcing {
+        if !(eta > 0.0 && eta < 1.0) {
+            return Err(FerricError::General(format!(
+                "CASSCF: ah_forcing constant must lie in (0, 1), got {eta}"
+            )));
+        }
     }
     Ok(())
 }

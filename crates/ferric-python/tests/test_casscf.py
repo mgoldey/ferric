@@ -133,17 +133,17 @@ def test_open_shell_active_space():
     assert r.e_total > E_PROTO
 
 
-def test_ah_optimizer(res):
-    """casscf_optimizer="ah" reaches the same minimum (E_BAR, derived as
-    above; crates/ferric-ci/tests/casscf_newton.rs bounds AH vs BFGS by
-    1.1e-12 Ha) in fewer macro iterations; an unknown name raises."""
+def test_bfgs_optimizer(res):
+    """casscf_optimizer="bfgs" reaches the default (AH) minimum (E_BAR,
+    derived as above; crates/ferric-ci/tests/casscf_newton.rs bounds AH vs
+    BFGS by 1.1e-12 Ha) in more macro iterations; an unknown name raises."""
     mol = ferric.Molecule.from_xyz_string(_H2O)
     r = ferric.run_casscf(
-        mol, ferric.BasisSet.bundled("6-31g"), 4, (2, 2), casscf_optimizer="ah"
+        mol, ferric.BasisSet.bundled("6-31g"), 4, (2, 2), casscf_optimizer="bfgs"
     )
     assert r.converged
     assert abs(r.e_total - E_PROTO) < E_BAR
-    assert r.iterations < res.iterations
+    assert r.iterations > res.iterations
     with pytest.raises(Exception, match="casscf_optimizer must be"):
         ferric.run_casscf(
             mol, ferric.BasisSet.bundled("6-31g"), 4, (2, 2), casscf_optimizer="x"

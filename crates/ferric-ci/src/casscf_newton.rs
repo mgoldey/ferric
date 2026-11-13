@@ -27,14 +27,29 @@
 //! term through `(pr|vw)`. With `exp(εX) exp(δA) = exp(εX + δA + ½εδ[X, A]
 //! + …)`, the symmetric Hessian of `E(C exp(K))` at `K = 0` is
 //! `H x = H_f x − ½ pack [G, X]`, `G = 2 (F − Fᵀ)` the full gradient matrix
-//! ([`CasScfProblem::hessian_vector`](crate::casscf::CasScfProblem::hessian_vector)). Each product costs one J/K pass over
-//! two densities. The Hessian omits the CI response (two-step), so the step
-//! is exact Newton for the orbitals at fixed CI.
+//! ([`CasScfProblem::hessian_vector`](crate::casscf::CasScfProblem::hessian_vector)). Both density responses have the form
+//! `dD = C (Y + Yᵀ) Cᵀ` with `Y` nonzero only in occupied columns
+//! (`Y_ri = 2 X_ri` for core `i`; `Y_{r,t} = (X_a γ)_{rt}` for active `t`),
+//! so in the MO basis
+//!
+//! ```text
+//!   Cᵀ (J − ½K)[dD] C_occ = L vec(Y),
+//!   L[(p,j),(r,k)] = 2 (pj|rk) − ½ (pr|jk) − ½ (pk|rj),   j, k occupied,
+//! ```
+//!
+//! built once per macro iteration from `(pq|jk)`, `(pj|qk)` over the
+//! occupied orbitals ([`HessianProducts::OccupiedKernel`](crate::casscf_newton::HessianProducts::OccupiedKernel), the default);
+//! the active blocks of the same integrals give `W`. A product is then two
+//! GEMVs of size `(nmo n_occ)²`. [`HessianProducts::AoJk`](crate::casscf_newton::HessianProducts::AoJk) takes one AO J/K
+//! pass over the two densities per product instead. The Hessian omits the CI
+//! response (two-step), so the step is exact Newton for the orbitals at
+//! fixed CI.
 //!
 //! The step: the lowest eigenpair of `[[0, gᵀ], [g, H]]` by Davidson
 //! (preconditioner `max(|H_diag|, hdiag_floor) − λ`, `H_diag` the approximate
 //! diagonal of [`CasScfProblem::approx_hessian_diag`](crate::casscf::CasScfProblem::approx_hessian_diag)), `s = v/v_0`, stopped
-//! at `‖(H − λ) s + g‖ <= min(0.1, ‖g‖) ‖g‖`. The step is scaled to the trust
+//! at `‖(H − λ) s + g‖ <= η ‖g‖`, `η` set by [`CasScfConfig::ah_forcing`]
+//! (`min(0.1, ‖g‖)` by default). The step is scaled to the trust
 //! radius (2-norm) and to `max_step` (∞-norm). A step that raises the energy
 //! by more than `1e-10` Ha is halved and evaluated again; the radius follows
 //! the ratio of the actual to the predicted change `g·s + ½ s·Hs / β`.
@@ -49,6 +64,7 @@
 use crate::casscf::{CasScfConfig, CasScfPoint, CasScfProblem};
 use ferric_core::timing::PhaseAccumulator;
 use ferric_core::FerricError;
+use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
 use ndarray::{s, Array1, Array2, ArrayView2};
 use ndarray_linalg::{Eigh, UPLO};
 
@@ -77,6 +93,24 @@ pub struct OrbitalHessian {
     two: Array2<f64>,
     /// `W[(p,t),(r,s)]`, `(nmo n_a) x (nmo n_a)`.
     w: Array2<f64>,
+    /// With [`HessianProducts::OccupiedKernel`], the kernel
+    /// `L[(p,j),(r,k)] = 2 (pj|rk) − ½ (pr|jk) − ½ (pk|rj)`, `j, k` over the
+    /// occupied (core and active) orbitals, `(nmo n_occ) x (nmo n_occ)`.
+    occ_kernel: Option<Array2<f64>>,
+}
+
+/// How a Hessian-vector product forms the response `Cᵀ (J − ½K)[dD] C` of
+/// the core and active densities.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HessianProducts {
+    /// From the kernel `L` over occupied MO integrals, built once per macro
+    /// iteration: `dD = C (Y + Yᵀ) Cᵀ` with `Y` nonzero in the occupied
+    /// columns only, so `Cᵀ (J − ½K)[dD] C_occ = L vec(Y)`, two GEMVs of
+    /// size `(nmo n_occ)²` per product.
+    OccupiedKernel,
+    /// One two-density AO J/K pass per product (the oracle of
+    /// [`HessianProducts::OccupiedKernel`]).
+    AoJk,
 }
 
 /// One AH step: the step `s`, `H s`, and the Davidson record.
@@ -95,21 +129,47 @@ pub struct AhStep {
 }
 
 impl CasScfProblem<'_> {
-    /// The fixed-RDM orbital Hessian at the point `pt` evaluated at `c`:
-    /// `(pq|vw)` and `(pu|qv)` from the problem's integral route, contracted
-    /// with `Γ` into `W` (module documentation).
+    /// The fixed-RDM orbital Hessian at the point `pt` evaluated at `c`,
+    /// with products from the occupied kernel
+    /// ([`HessianProducts::OccupiedKernel`]).
     pub fn orbital_hessian(
         &self,
         c: &Array2<f64>,
         pt: &CasScfPoint,
     ) -> Result<OrbitalHessian, FerricError> {
+        self.orbital_hessian_with(c, pt, HessianProducts::OccupiedKernel)
+    }
+
+    /// The fixed-RDM orbital Hessian at the point `pt` evaluated at `c`:
+    /// `(pq|vw)` and `(pu|qv)` from the problem's integral route, contracted
+    /// with `Γ` into `W` (module documentation), and the products formed as
+    /// `products` says.
+    pub fn orbital_hessian_with(
+        &self,
+        c: &Array2<f64>,
+        pt: &CasScfPoint,
+        products: HessianProducts,
+    ) -> Result<OrbitalHessian, FerricError> {
         self.check_orbitals(c)?;
         let (nc, na, nmo) = (self.n_core, self.n_active, self.nmo);
         let (na2, na3) = (na * na, na * na * na);
         let rdms = pt.rdms();
-        let (ppaa, papa) =
-            self.ints
-                .ppaa_papa(self.prep, c.view(), c.slice(s![.., nc..nc + na]))?;
+        let (ppaa, papa, occ_kernel) = match products {
+            HessianProducts::AoJk => {
+                let (ppaa, papa) =
+                    self.ints
+                        .ppaa_papa(self.prep, c.view(), c.slice(s![.., nc..nc + na]))?;
+                (ppaa, papa, None)
+            }
+            HessianProducts::OccupiedKernel => {
+                let (ppoo, popo) =
+                    self.ints
+                        .ppaa_papa(self.prep, c.view(), c.slice(s![.., ..nc + na]))?;
+                let kernel = occupied_kernel(&ppoo, &popo, nmo, nc + na);
+                let (ppaa, papa) = active_blocks(&ppoo, &popo, nmo, nc, na);
+                (ppaa, papa, Some(kernel))
+            }
+        };
         let dm2 = rdms.dm2.as_standard_layout().into_owned();
         let g = dm2
             .as_slice()
@@ -176,6 +236,7 @@ impl CasScfProblem<'_> {
             gamma: rdms.dm1.clone(),
             two,
             w,
+            occ_kernel,
         })
     }
 
@@ -209,19 +270,10 @@ impl CasScfProblem<'_> {
         let (nc, na, nmo) = (self.n_core, self.n_active, self.nmo);
         let nocc = nc + na;
         let xm = self.unpack(x)?;
-        let c = &h.c;
-        let cx = c.dot(&xm.slice(s![.., ..nocc]));
-        let cc = c.slice(s![.., ..nc]);
-        let ca = c.slice(s![.., nc..nocc]);
-        let half = 2.0 * cx.slice(s![.., ..nc]).dot(&cc.t());
-        let ddc = &half + &half.t();
-        let half = cx.slice(s![.., nc..nocc]).dot(&h.gamma).dot(&ca.t());
-        let dda = &half + &half.t();
-        let jk = self.ints.jk_multi(self.prep, &[ddc, dda])?;
-        let gi_ao = &jk[0].0 - &(0.5 * &jk[0].1);
-        let ga_ao = &jk[1].0 - &(0.5 * &jk[1].1);
-        let gi = c.t().dot(&gi_ao).dot(&c.slice(s![.., ..nocc]));
-        let ga = c.t().dot(&ga_ao).dot(&cc);
+        let (gi, ga) = match &h.occ_kernel {
+            Some(l) => occupied_response(l, &xm, &h.gamma, nc, na)?,
+            None => self.ao_response(h, &xm)?,
+        };
         let x_occ = xm.slice(s![.., ..nocc]);
         let dfi = h.fi.dot(&x_occ) - xm.dot(&h.fi.slice(s![.., ..nocc])) + gi;
         let dfa = h.fa.dot(&xm.slice(s![.., ..nc])) - xm.dot(&h.fa.slice(s![.., ..nc])) + ga;
@@ -238,6 +290,30 @@ impl CasScfProblem<'_> {
         let act = dfi.slice(s![.., nc..nocc]).dot(&h.gamma) + xm.t().dot(&h.two) + wx;
         df.slice_mut(s![.., nc..nocc]).assign(&act);
         Ok((2.0 * (&df - &df.t()), xm))
+    }
+
+    /// `Cᵀ (J − ½K)[dD^c] C_occ` and `Cᵀ (J − ½K)[dD^a] C_c` by one AO J/K
+    /// pass over the two densities ([`HessianProducts::AoJk`]).
+    fn ao_response(
+        &self,
+        h: &OrbitalHessian,
+        xm: &Array2<f64>,
+    ) -> Result<(Array2<f64>, Array2<f64>), FerricError> {
+        let (nc, nocc) = (self.n_core, self.n_core + self.n_active);
+        let c = &h.c;
+        let cx = c.dot(&xm.slice(s![.., ..nocc]));
+        let cc = c.slice(s![.., ..nc]);
+        let ca = c.slice(s![.., nc..nocc]);
+        let half = 2.0 * cx.slice(s![.., ..nc]).dot(&cc.t());
+        let ddc = &half + &half.t();
+        let half = cx.slice(s![.., nc..nocc]).dot(&h.gamma).dot(&ca.t());
+        let dda = &half + &half.t();
+        let jk = self.ints.jk_multi(self.prep, &[ddc, dda])?;
+        let gi_ao = &jk[0].0 - &(0.5 * &jk[0].1);
+        let ga_ao = &jk[1].0 - &(0.5 * &jk[1].1);
+        let gi = c.t().dot(&gi_ao).dot(&c.slice(s![.., ..nocc]));
+        let ga = c.t().dot(&ga_ao).dot(&cc);
+        Ok((gi, ga))
     }
 
     /// Frame derivative of [`Self::gradient_at_fixed_rdms`] along `x`:
@@ -258,6 +334,96 @@ impl CasScfProblem<'_> {
         let comm = h.gmat.dot(&xm) - xm.dot(&h.gmat);
         Ok(self.pack(&(dg - 0.5 * comm)))
     }
+}
+
+/// `L[(p,j),(r,k)] = 2 (pj|rk) − ½ (pr|jk) − ½ (pk|rj)` from `(pq|jk)` flat
+/// `[((p n + q) n_o + j) n_o + k]` and `(pj|qk)` flat
+/// `[((p n_o + j) n + q) n_o + k]` (module documentation).
+fn occupied_kernel(ppoo: &[f64], popo: &[f64], nmo: usize, nocc: usize) -> Array2<f64> {
+    let m = nmo * nocc;
+    let mut l = Array2::<f64>::zeros((m, m));
+    let popo_at =
+        |p: usize, j: usize, r: usize, k: usize| popo[((p * nocc + j) * nmo + r) * nocc + k];
+    let ppoo_at =
+        |p: usize, r: usize, j: usize, k: usize| ppoo[((p * nmo + r) * nocc + j) * nocc + k];
+    for p in 0..nmo {
+        for j in 0..nocc {
+            let mut row = l.row_mut(p * nocc + j);
+            for r in 0..nmo {
+                for k in 0..nocc {
+                    row[r * nocc + k] = 2.0 * popo_at(p, j, r, k)
+                        - 0.5 * ppoo_at(p, r, j, k)
+                        - 0.5 * popo_at(p, k, r, j);
+                }
+            }
+        }
+    }
+    l
+}
+
+/// The active blocks `(pq|vw)` and `(pu|qv)` of the occupied integrals of
+/// [`occupied_kernel`], in the layouts of
+/// `IntegralBackend::ppaa_papa`.
+fn active_blocks(
+    ppoo: &[f64],
+    popo: &[f64],
+    nmo: usize,
+    nc: usize,
+    na: usize,
+) -> (Vec<f64>, Vec<f64>) {
+    let nocc = nc + na;
+    let mut ppaa = Vec::with_capacity(nmo * nmo * na * na);
+    for pq in 0..nmo * nmo {
+        for v in 0..na {
+            let base = (pq * nocc + nc + v) * nocc + nc;
+            ppaa.extend_from_slice(&ppoo[base..base + na]);
+        }
+    }
+    let mut papa = Vec::with_capacity(nmo * nmo * na * na);
+    for p in 0..nmo {
+        for u in 0..na {
+            for q in 0..nmo {
+                let base = ((p * nocc + nc + u) * nmo + q) * nocc + nc;
+                papa.extend_from_slice(&popo[base..base + na]);
+            }
+        }
+    }
+    (ppaa, papa)
+}
+
+/// `Cᵀ (J − ½K)[dD^c] C_occ` (`nmo x n_occ`) and `Cᵀ (J − ½K)[dD^a] C_c`
+/// (`nmo x n_c`) as `L vec(Y)` (module documentation): one GEMM of `L` with
+/// the two columns `vec(Y^c)`, `vec(Y^a)`, at the serial-section BLAS
+/// thread count.
+fn occupied_response(
+    l: &Array2<f64>,
+    xm: &Array2<f64>,
+    gamma: &Array2<f64>,
+    nc: usize,
+    na: usize,
+) -> Result<(Array2<f64>, Array2<f64>), FerricError> {
+    let nmo = xm.nrows();
+    let nocc = nc + na;
+    let mut y = Array2::<f64>::zeros((nmo * nocc, 2));
+    let ya = xm.slice(s![.., nc..nocc]).dot(gamma);
+    for r in 0..nmo {
+        for k in 0..nc {
+            y[(r * nocc + k, 0)] = 2.0 * xm[(r, k)];
+        }
+        for t in 0..na {
+            y[(r * nocc + nc + t, 1)] = ya[(r, t)];
+        }
+    }
+    let ly = with_blas_threads(opt_in_blas_threads(), || l.dot(&y));
+    let shape = |col: usize| {
+        ly.column(col)
+            .to_owned()
+            .into_shape_with_order((nmo, nocc))
+            .map_err(|e| FerricError::General(format!("CASSCF L vec(Y) shape: {e}")))
+    };
+    let gi = shape(0)?;
+    let ga = shape(1)?.slice(s![.., ..nc]).to_owned();
+    Ok((gi, ga))
 }
 
 /// Stretch of the next AH step. The fixed-RDM Hessian lacks the CI
@@ -427,7 +593,7 @@ pub(crate) fn optimize_ah(
             },
             &pt.gradient,
             &pre,
-            gn.min(0.1) * gn,
+            config.ah_forcing.eta(gn) * gn,
             AH_MAX_DAVIDSON,
         )?;
         drop(hess);

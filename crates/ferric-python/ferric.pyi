@@ -6059,7 +6059,7 @@ def run_casscf(
     canonicalize: bool = False,
     casscf_integrals: str = "auto",
     casscf_integral_thresh: float | None = None,
-    casscf_optimizer: str = "bfgs",
+    casscf_optimizer: str = "ah",
 ) -> CasScfResult:
     """Two-step CASSCF from the canonical exact-J/K RHF orbitals:
     ``n_active`` active orbitals above ``n_core`` doubly occupied ones,
@@ -6067,10 +6067,10 @@ def run_casscf(
     set; ``n_alpha != n_beta`` gives the lowest state of that ``M_s``). The
     molecule must have an even electron count for the RHF start. Each macro
     iteration solves the CAS-CI with RDMs and takes an orbital step:
-    ``casscf_optimizer="bfgs"`` (default) is inverse BFGS from an
-    approximate diagonal Hessian, ``"ah"`` an augmented-Hessian step on the
-    exact orbital Hessian at fixed RDMs (fewer macro iterations, each with
-    Hessian-vector products that cost a J/K build apiece). Converged when
+    ``casscf_optimizer="ah"`` (default) is an augmented-Hessian step on the
+    exact orbital Hessian at fixed RDMs, ``"bfgs"`` inverse BFGS from an
+    approximate diagonal Hessian (1.4 to 5 times the macro iterations, no
+    Hessian products). Converged when
     ``grad_norm < casscf_grad_tol`` and the energy change is below
     ``casscf_energy_tol``; otherwise a ``RuntimeWarning`` is emitted and
     ``converged`` is False. ``n_core`` defaults to
@@ -6150,7 +6150,7 @@ def run_nevpt2(
     scf_density_conv: float | None = None,
     casscf_integrals: str = "auto",
     casscf_integral_thresh: float | None = None,
-    casscf_optimizer: str = "bfgs",
+    casscf_optimizer: str = "ah",
 ) -> Nevpt2Result:
     """Strongly contracted NEVPT2 (Angeli et al., JCP 117, 9138 (2002)) on
     a CASSCF (``reference="casscf"``, the ``run_casscf`` settings) or CAS-CI

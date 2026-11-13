@@ -412,15 +412,29 @@ the first sum being the active-active coupling through $(pr|vw)$. Since
 $e^{\varepsilon X}e^{\delta A} = \exp(\varepsilon X + \delta A +
 \tfrac12\varepsilon\delta[X, A] + \dots)$, the symmetric Hessian of
 $E(C\exp K)$ at $K = 0$ is $Hx = H_fx - \tfrac12\operatorname{pack}[G, X]$,
-$G = 2(F - F^\mathsf{T})$. One product is one $J/K$ pass over the two
-densities $dD^c$, $dD^a$ (dense: two GEMMs per AO row of the $n_\text{bas}^4$
-block; direct: `build_jk_with_pool` per density); $(pq|vw)$ and $(pu|qv)$ are
-built once per macro iteration (dense: `transform_eri_mixed`; direct: one
-half transform per bra shell pair, all ket pairs). The step is the lowest
+$G = 2(F - F^\mathsf{T})$. Both density responses have the form
+$dD = C(Y + Y^\mathsf{T})C^\mathsf{T}$ with $Y$ nonzero only in occupied
+columns ($Y_{ri} = 2X_{ri}$ for core $i$, $Y_{rt} = (X_a\gamma)_{rt}$ for
+active $t$), so in the MO basis
+$C^\mathsf{T}(J - \tfrac12K)[dD]C_\text{occ} = L\,\mathrm{vec}(Y)$ with the
+occupied kernel
+$L_{(pj),(rk)} = 2(pj|rk) - \tfrac12(pr|jk) - \tfrac12(pk|rj)$, $j, k$ over
+the core and active orbitals. $(pq|jk)$ and $(pj|qk)$ are built once per
+macro iteration (dense: one first quarter shared by both chains, the
+$(pj|qk)$ chain contracting $\nu$ with $C_\text{occ}$ second through the
+$(\mu\nu|\lambda\sigma) = (\mu\nu|\sigma\lambda)$ symmetry of the stored
+block, `transform_ppaa_papa`; direct: one half transform per bra shell
+pair, all ket pairs); their active blocks give $W$ and
+$\sum(pu|vw)\Gamma$. A product is then one GEMM of $L$
+($(n_\text{mo}n_\text{occ})^2$) with two columns. The AO form, one $J/K$
+pass over $dD^c$, $dD^a$ per product (`HessianProducts::AoJk`), is kept as
+its oracle. The step is the lowest
 eigenpair of $\begin{pmatrix}0 & g^\mathsf{T}\\ g & H\end{pmatrix}$ by
 Davidson (preconditioner $\max(|H_\text{diag}|, \texttt{hdiag\_floor}) -
 \lambda$, at most 40 products), $s = v/v_0$, stopped at
-$\lVert(H - \lambda)s + g\rVert \le \min(0.1, \lVert g\rVert)\lVert g\rVert$;
+$\lVert(H - \lambda)s + g\rVert \le \eta\lVert g\rVert$, $\eta =
+\min(0.1, \lVert g\rVert)$ by default (`CasScfConfig::ah_forcing`;
+`AhForcing::Constant` holds $\eta$ fixed);
 then scaled to a trust radius (2-norm; start 0.4, at most 1.0) and to
 `max_step` ($\infty$-norm). A step that raises $E$ by more than
 $10^{-10}$ Ha is halved and evaluated again (a CI solve each). The radius
@@ -542,7 +556,15 @@ the orbital error, which PySCF's gradient sets.
 | N2 CAS(6,6), 1.6 Å | -108.8482292478625 | -5.8e-13 | 5.1e-12 | 7.8e-8 / 2.5e-7 | 0.1485 | 12 | 1.897, 1.723 (2), 0.277 (2), 0.102 | 7.0e-7 / 2.1e-7 / 6.1e-8 |
 | O2 CAS(8,6), (5, 3) | -149.6367298537082 | -2.6e-13 | 4.0e-12 | 5.9e-8 / 1.3e-7 | 0.0958 | 14 | 1.960 (2), 1.955, 1.039 (2), 0.046 | 5.5e-8 / 1.9e-7 / 9.3e-8 |
 
-All four reach the same minimum as PySCF. PySCF's O2 state has
+All four reach the same minimum as PySCF. The test asserts that the
+point is a minimum: the lowest eigenvalue of the central-difference
+CI-relaxed orbital Hessian at $h = 10^{-4}$ must exceed
+$\tfrac23\lvert\lambda(2h) - \lambda(h)\rvert + n_\text{pair}\,\delta g/h$,
+with $\delta g = 8r + 4\varepsilon n_\text{mo}^2 \max\lvert F\rvert$
+($r$ the CI convergence threshold). Measured $\lambda(h)$ and $\lambda(2h)$
+agree to six digits: 0.019457 (bar 4.4e-4), 0.040210 (8.4e-4), 0.148488
+(8.4e-4) and 0.095834 (8.4e-4) for the four rows in order; no anchor is a
+saddle. PySCF's O2 state has
 $\langle S^2\rangle = 2$. The H2O bar is set by PySCF's gradient
 (`conv_tol_grad` 1e-7 does not converge H2O in 300 macro iterations).
 
@@ -706,9 +728,10 @@ $1 + 10^{-4}$ fails the water direct-vs-dense test ($3.4\times10^{-5}$
 against $2.8\times10^{-6}$; $1 + 10^{-6}$ is below the bar); the CLI
 `optimizer` key ignored fails `cli_keys_reach_the_config`.
 
-**AH timing (2026-11-13).** CLI wall times (RHF included), paired and
-interleaved: base build 1db597bf6, this build with `optimizer = "bfgs"`
-(the default) and with `"ah"`, order base, bfgs, ah, ah, bfgs, base, base,
+**AH timing (2026-11-13, AO J/K products, c74da329d).** CLI wall times
+(RHF included), paired and interleaved: base build 1db597bf6, build
+c74da329d with `optimizer = "bfgs"`
+(then the default) and with `"ah"`, order base, bfgs, ah, ah, bfgs, base, base,
 bfgs, ah; 12 rayon threads, default `[memory]`, dense route. The box was
 shared with other jobs; the load average during each set is given.
 
@@ -733,6 +756,117 @@ descended to $-109.1347620086$ Ha, 5.3 mHa lower, and stalled there at
 $\lVert g\rVert = 9.2\times10^{-5}$ after 1000 macro iterations. That lower
 energy was not examined further (whether it is a minimum of the same active
 space class, and whether BFGS's and PySCF's point is a saddle).
+
+**Davidson forcing and occupied-kernel products (2026-11-13, round-2
+task 14 follow-up).** Harness `examples/casscf_ah_bench.rs` (exact-J/K RHF
+of `driver::rhf_start`, `CasScfConfig` defaults, `FERRIC_TIMING=1` for the
+product count); base build 8833755a8 (same harness without the forcing
+argument) in a separate target directory; 12 rayon threads, dense route.
+Wall times are of `run_casscf` only. Iterations / Hessian products of the
+AH step from single runs (identical on repeats):
+
+| System | base AH (quadratic) | constant $\eta = 0.1$ | $\eta = 0.3$ | $\eta = 0.5$ |
+|---|---:|---:|---:|---:|
+| water CAS(4,4) | 22 / 193 | 24 / 133 | 28 / 112 | 31 / 101 |
+| N2 CAS(6,6) | 11 / 55 | 11 / 27 | 13 / 23 | 16 / 21 |
+| O2 CAS(8,6) $M_s = 1$ | 8 / 35 | 8 / 17 | 10 / 15 | 12 / 13 |
+| N2 CAS(10,10) | 25 / 176 | 25 / 80 | 29 / 65 | |
+| benzene CAS(6,6) | 18 / 335 | 24 / 235 | 30 / 230 | |
+
+Anchor: `AhForcing::Quadratic` in the build with the forcing option and
+the AO J/K products reproduces 8833755a8's AH run on all five systems in
+the final energy to the last printed digit (17 significant), $\lVert
+g\rVert$, the iteration count and the product count. Constant forcing
+alone left benzene slower than BFGS (CASSCF 33.5 s at $\eta = 0.1$,
+38.6 s at 0.3, BFGS 27.4 s, single runs at load 7-13).
+
+The occupied kernel removes the $J/K$ pass from the product. Anchors
+(`tests/casscf_newton.rs`, dense route, rotated RHF orbitals, unit $x$):
+kernel against AO $J/K$ product $3.6\times10^{-15}$, $1.6\times10^{-14}$,
+$3.6\times10^{-15}$ (water, N2, O2; a priori bars $2.9\times10^{-6}$,
+$6.7\times10^{-4}$, $1.1\times10^{-4}$); `transform_ppaa_papa` against two
+`transform_eri_mixed` chains: $(pq|vw)$ bitwise, $(pu|qv)$
+$8.1\times10^{-16}$ (bar $1.1\times10^{-10}$, water, 5 columns); direct
+against dense $Hx$ (both on the kernel) $8.5\times10^{-14}$,
+$2.6\times10^{-13}$, $2.5\times10^{-13}$ (bars $1.1\times10^{-6}$,
+$3.7\times10^{-5}$, $2.1\times10^{-3}$). Benzene phases (one run, load
+9-12): orbital Hessian integrals 0.71 s per macro iteration, products
+1.4 s in total for 349 (3.4 s before the product GEMM ran at the
+serial-section BLAS thread count). With products this cheap, constant
+forcing costs more in extra macro iterations (each with a Hessian
+integral build) than it saves: benzene CASSCF 31.6 ± 8.9 s at
+$\eta = 0.1$ against 27.3 ± 6.0 s quadratic, so quadratic stays the
+default. At $\eta = 0.1$ benzene stops at $-230.7814587989$ Ha, the nearby
+stationary point of the optimizer comparison above.
+
+Mutations, each failing on an assertion: $-\tfrac12(pr|jk) \to
++\tfrac12(pr|jk)$ in $L$ (kernel against AO $J/K$ 1.2-1.6 against bars
+$\le 6.7\times10^{-4}$, the FD anchors, the water same-minimum tests); the
+$(pu|qv)$ active block taken at $u$ instead of $n_c + u$ (kernel tests
+0.30-1.09, FD anchors, all four same-minimum tests); the axis swap of
+`transform_ppaa_papa` dropped (1.01 against $1.1\times10^{-10}$); the two
+outputs of the shared-first-quarter transform swapped (bitwise check); the
+direct $(pu|qv)$ scaled by $1 + 10^{-4}$ (direct against dense $Hx$,
+water $7.7\times10^{-5}$ and O2 $1.1\times10^{-4}$ against
+$1.1\times10^{-6}$, $3.7\times10^{-5}$).
+
+Wall times with the kernel (`run_casscf`, s), paired and interleaved. The
+small systems: 10 repetitions in alternating order (base BFGS, base AH,
+new AH; then reversed), load 13-17. N2 CAS(10,10) and benzene: three
+repetitions in the orders (bB bA nA nE), (nE nA bA bB), (bB nA nE bA)
+(b base, n this build, B BFGS, A AH quadratic, E AH $\eta = 0.1$), load
+given per system:
+
+| System | base BFGS | base AH | AH, kernel | iterations BFGS / AH | load |
+|---|---|---|---|---|---|
+| water | 0.478 ± 0.048 | 0.240 ± 0.057 | 0.202 ± 0.040 | 61 / 22 | 13-14 |
+| N2 CAS(6,6) | 0.859 ± 0.247 | 0.498 ± 0.158 | 0.474 ± 0.144 | 21 / 11 | 14-17 |
+| O2 CAS(8,6) | 0.343 ± 0.096 | 0.234 ± 0.087 | 0.264 ± 0.096 | 14 / 8 | 13-15 |
+| N2 CAS(10,10) | 27.23, 26.70, 26.90: 26.95 ± 0.27 | 18.62, 18.12, 18.57: 18.44 ± 0.28 | 18.63, 19.79, 18.56: 18.99 ± 0.69 | 36 / 25 | 15-24 |
+| benzene CAS(6,6) | 38.75, 47.11, 41.27: 42.4 ± 4.3 | 62.19, 39.46, 56.15: 52.6 ± 11.8 | 30.76, 20.33, 30.75: 27.3 ± 6.0 | 89 / 19 | 8-25 |
+
+The benzene load swung between 8 and 25 within the set; within each
+repetition the kernel AH run was faster than the base BFGS run
+(30.8/38.8, 20.3/47.1, 30.8/41.3 s). On N2 CAS(10,10) the CI solve
+dominates and the kernel changes nothing measurable. O2 base AH and
+kernel AH are inside the noise; both beat BFGS in fewer iterations. BFGS
+in this build reproduces the base BFGS run (energy, $\lVert g\rVert$,
+iterations) on all five systems. With AH the default these pass:
+ferric-ci `--lib`, `casscf`, `casscf_vs_pyscf`, `casscf_canonical`,
+`casscf_direct`, `casscf_newton`, `cas_ecp`, `nevpt2`; ferric-cli
+`cas_kinds`; and the Python `test_casscf.py`, `test_cas_cli.py`,
+`test_nevpt2.py`, `test_casci.py` (slow markers included) and the `.pyi`
+coverage tests.
+
+**N2 CAS(10,10)/cc-pVDZ stationary points (2026-11-13).** Harness
+`examples/casscf_stationary_points.rs`: BFGS from the RHF orbitals to
+$\lVert g\rVert < 10^{-9}$, canonicalized (natural active orbitals); the
+CI-relaxed orbital Hessian by central differences of the analytic gradient
+($h = 10^{-4}$, all 212 pairs, symmetrized) and its lowest eigenvalues; each
+active natural orbital classified by its dominant $|m|$ (Fourier power on
+circles about the bond axis, 64 points) and its inversion parity
+$\langle\phi(r), \phi(-r)\rangle/\langle\phi,\phi\rangle$ about the bond
+midpoint. While the lowest eigenvalue is below $-10^{-4}$, the orbitals are
+rotated by 0.3 along its eigenvector and BFGS converges again.
+
+| Point | $E$ (Ha) | $\lVert g\rVert$ | lowest Hessian eigenvalues | natural occupations | active orbitals beyond the 8 valence |
+|---|---:|---:|---|---|---|
+| start (= BFGS, AH, PySCF) | -109.1294674756 | 9.4e-10 | -0.00999, -0.00814, 0.00000, 0.00263 | 1.9938 1.9803 1.9790 1.9422 1.9407 0.0679 0.0641 0.0203 0.0076 0.0040 | $\sigma_g$, one component of a $\pi_u$ pair |
+| one step down | -109.1300807964 | 7.8e-10 | -0.00457, 0.00000, 0.00219 | 1.9933 1.9811 1.9782 1.9418 1.9404 0.0681 0.0643 0.0203 0.0085 0.0039 | $\sigma$ orbitals of mixed parity (0.03 to 2.7), one $\pi_u$ component |
+| two steps down | -109.1347620089 | 6.2e-10 | 0.01087, 0.01087, 0.01928, 0.02000 | 1.9905 1.9811 1.9795 1.9423 1.9423 0.0636 0.0636 0.0202 0.0100 0.0070 | $\sigma_g$, $\sigma_u$ (parities $\pm1.000$) |
+
+The point that BFGS, AH (both forcings) and PySCF reach is a second-order
+saddle: its active space holds a single component of a degenerate
+$\pi_u$ pair, which breaks the axial symmetry (the valence $\pi$
+occupations differ by $1.5\times10^{-3}$ and $3.8\times10^{-3}$). The zero
+eigenvalue is the rotation of that component about the axis. Two steps
+down the negative modes reach a local minimum 5.29 mHa lower whose extra
+active orbitals are one $\sigma_g$ and one $\sigma_u$, with exactly
+degenerate $\pi$ pairs; this is the $-109.1347620086$ Ha point the ratio
+stretch descended to (above), to $3\times10^{-10}$ Ha. Measurement only:
+the optimizers are first-order convergent to stationary points and nothing
+here checks the Hessian at convergence; why the RHF start leads to the
+saddle was not examined.
 
 **Benzene stationary point.** `pyscf.mcscf.CASSCF` (PySCF 2.13.1) on ferric's
 AO integrals reaches $E = -230.7873347336$ Ha, 5.876 mHa below ferric, from
