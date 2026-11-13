@@ -955,113 +955,110 @@ pub struct UMp2Density {
     pub p_vv_b: Array2<f64>,
 }
 
+/// Contraction-axis slab width, in elements, of one task of the `P_oo` Gram
+/// products in [`build_u_mp2_density`]. A constant, so the slab boundaries and
+/// the summation order do not depend on the thread count or the budget.
+const U_DENSITY_K_SLAB: usize = 1 << 15;
+
 /// Build the unrelaxed MP2 one-particle density matrices from UHF amplitudes.
+///
+/// Every block is a sum of Gram products of amplitude slices (`o`/`v` the
+/// active occupied/virtual counts of each spin):
+///
+/// ```text
+///   P^α_oo = −½ X_αα X_ααᵀ − X_αβ X_αβᵀ     X_αα = t_αα as (o_α, o_α·v_α²), X_αβ = t_αβ as (o_α, o_β·v_α·v_β)
+///   P^β_oo = −½ X_ββ X_ββᵀ − Σ_K Y_K Y_Kᵀ   Y_K = t_αβ[K] as (o_β, v_α·v_β)
+///   P^α_vv = ½ Σ_ij A_ij A_ijᵀ + Σ_iJ C_iJ C_iJᵀ   A_ij = t_αα[i,j], C_iJ = t_αβ[i,J]
+///   P^β_vv = ½ Σ_ij B_ij B_ijᵀ + Σ_I Z_Iᵀ Z_I      B_ij = t_ββ[i,j], Z_I = t_αβ[I] as (o_β·v_α, v_β)
+/// ```
+///
+/// The `P_oo` products run in contraction slabs of `U_DENSITY_K_SLAB`
+/// columns, one pool task per slab; the `P_vv` products one task per leading
+/// occupied index. Each task is single-threaded BLAS on its own accumulator,
+/// and the accumulators are added in task order, so the densities do not
+/// depend on the thread count. The amplitudes need no symmetry.
 pub fn build_u_mp2_density(amps: &UMp2Amplitudes) -> UMp2Density {
-    let t_aa = &amps.t_aa;
-    let t_bb = &amps.t_bb;
-    let t_ab = &amps.t_ab;
-    let (nocc_a, _, nvir_a, _) = t_aa.dim();
-    let (nocc_b, _, nvir_b, _) = t_bb.dim();
+    u_mp2_density_from_amplitudes(
+        amps.t_aa.view(),
+        amps.t_bb.view(),
+        amps.t_ab.view(),
+        U_DENSITY_K_SLAB,
+    )
+}
 
-    // P^α_{ij}
-    let mut p_oo_a = Array2::<f64>::zeros((nocc_a, nocc_a));
-    for i in 0..nocc_a {
-        for j in 0..nocc_a {
-            let mut s = 0.0;
-            // αα same-spin: -½ Σ_{k,a,b} t_{ik,ab} t_{jk,ab}
-            for k in 0..nocc_a {
-                for a in 0..nvir_a {
-                    for b in 0..nvir_a {
-                        s += -0.5 * t_aa[(i, k, a, b)] * t_aa[(j, k, a, b)];
-                    }
-                }
-            }
-            // αβ: -Σ_{K,a,B} t^αβ_{iK,aB} t^αβ_{jK,aB}
-            for kk in 0..nocc_b {
-                for a in 0..nvir_a {
-                    for bb in 0..nvir_b {
-                        s += -t_ab[(i, kk, a, bb)] * t_ab[(j, kk, a, bb)];
-                    }
-                }
-            }
-            p_oo_a[(i, j)] = s;
-        }
-    }
+/// [`build_u_mp2_density`] on bare amplitude tensors, with the `P_oo` slab
+/// width as an argument so a test can force several slabs on a small system.
+fn u_mp2_density_from_amplitudes(
+    t_aa: ndarray::ArrayView4<'_, f64>,
+    t_bb: ndarray::ArrayView4<'_, f64>,
+    t_ab: ndarray::ArrayView4<'_, f64>,
+    k_slab: usize,
+) -> UMp2Density {
+    use ndarray::s;
+    let (t_aa, t_bb, t_ab) = (
+        t_aa.as_standard_layout(),
+        t_bb.as_standard_layout(),
+        t_ab.as_standard_layout(),
+    );
+    let (oa, _, va, _) = t_aa.dim();
+    let (ob, _, vb, _) = t_bb.dim();
+    assert_eq!(
+        t_ab.dim(),
+        (oa, ob, va, vb),
+        "build_u_mp2_density: t_ab shape"
+    );
+    let y = |k: usize| {
+        t_ab.slice(s![k, .., .., ..])
+            .into_shape_with_order((ob, va * vb))
+            .expect("standard-layout t_ab")
+    };
 
-    // P^α_{ab}
-    let mut p_vv_a = Array2::<f64>::zeros((nvir_a, nvir_a));
-    for a in 0..nvir_a {
-        for b in 0..nvir_a {
-            let mut s = 0.0;
-            // αα: +½ Σ_{i,j,c} t_{ij,ac} t_{ij,bc}
-            for i in 0..nocc_a {
-                for j in 0..nocc_a {
-                    for c in 0..nvir_a {
-                        s += 0.5 * t_aa[(i, j, a, c)] * t_aa[(i, j, b, c)];
-                    }
-                }
-            }
-            // αβ: +Σ_{i,J,B} t^αβ_{iJ,aB} t^αβ_{iJ,bB}
-            for i in 0..nocc_a {
-                for jj in 0..nocc_b {
-                    for bb in 0..nvir_b {
-                        s += t_ab[(i, jj, a, bb)] * t_ab[(i, jj, b, bb)];
-                    }
-                }
-            }
-            p_vv_a[(a, b)] = s;
-        }
-    }
+    let x_aa = t_aa.view().into_shape_with_order((oa, oa * va * va));
+    let x_ab = t_ab.view().into_shape_with_order((oa, ob * va * vb));
+    let x_bb = t_bb.view().into_shape_with_order((ob, ob * vb * vb));
+    let (x_aa, x_ab, x_bb) = (
+        x_aa.expect("standard-layout t_aa"),
+        x_ab.expect("standard-layout t_ab"),
+        x_bb.expect("standard-layout t_bb"),
+    );
+    let oo_a_terms = [(x_aa, -0.5), (x_ab, -1.0)];
+    let p_oo_a = gram_sum_slabbed("U-MP2 density P_oo^α partials", &oo_a_terms, oa, k_slab);
 
-    // P^β_{ij}
-    let mut p_oo_b = Array2::<f64>::zeros((nocc_b, nocc_b));
-    for i in 0..nocc_b {
-        for j in 0..nocc_b {
-            let mut s = 0.0;
-            // ββ: -½ Σ_{k,a,b} t_{ik,ab} t_{jk,ab}
-            for k in 0..nocc_b {
-                for a in 0..nvir_b {
-                    for b in 0..nvir_b {
-                        s += -0.5 * t_bb[(i, k, a, b)] * t_bb[(j, k, a, b)];
-                    }
-                }
-            }
-            // αβ (β-occ axis is axis 1): -Σ_{K,A,b} t^αβ_{KI,Ab} t^αβ_{KJ,Ab}
-            for kk in 0..nocc_a {
-                for aa in 0..nvir_a {
-                    for b in 0..nvir_b {
-                        s += -t_ab[(kk, i, aa, b)] * t_ab[(kk, j, aa, b)];
-                    }
-                }
-            }
-            p_oo_b[(i, j)] = s;
-        }
-    }
+    let mut oo_b_terms = vec![(x_bb, -0.5)];
+    oo_b_terms.extend((0..oa).map(|k| (y(k), -1.0)));
+    let p_oo_b = gram_sum_slabbed("U-MP2 density P_oo^β partials", &oo_b_terms, ob, k_slab);
 
-    // P^β_{ab}
-    let mut p_vv_b = Array2::<f64>::zeros((nvir_b, nvir_b));
-    for a in 0..nvir_b {
-        for b in 0..nvir_b {
-            let mut s = 0.0;
-            // ββ: +½ Σ_{i,j,c} t_{ij,ac} t_{ij,bc}
-            for i in 0..nocc_b {
-                for j in 0..nocc_b {
-                    for c in 0..nvir_b {
-                        s += 0.5 * t_bb[(i, j, a, c)] * t_bb[(i, j, b, c)];
-                    }
-                }
-            }
-            // αβ (β-vir axis is axis 3): +Σ_{I,J,A} t^αβ_{IJ,Aa} t^αβ_{IJ,Ab}
-            for ii in 0..nocc_a {
-                for jj in 0..nocc_b {
-                    for aa in 0..nvir_a {
-                        s += t_ab[(ii, jj, aa, a)] * t_ab[(ii, jj, aa, b)];
-                    }
-                }
-            }
-            p_vv_b[(a, b)] = s;
+    use crate::orbital_gradient_gemm::ordered_task_sum;
+    use ndarray::linalg::general_mat_mul;
+    let p_vv_a = ordered_task_sum("U-MP2 density P_vv^α partials", oa, (va, va), |i, acc| {
+        for j in 0..oa {
+            let a = t_aa.slice(s![i, j, .., ..]);
+            general_mat_mul(0.5, &a, &a.t(), 1.0, acc);
         }
-    }
+        for jj in 0..ob {
+            let c = t_ab.slice(s![i, jj, .., ..]);
+            general_mat_mul(1.0, &c, &c.t(), 1.0, acc);
+        }
+    });
+    let p_vv_b = ordered_task_sum(
+        "U-MP2 density P_vv^β partials",
+        ob + oa,
+        (vb, vb),
+        |n, acc| {
+            if n < ob {
+                for j in 0..ob {
+                    let b = t_bb.slice(s![n, j, .., ..]);
+                    general_mat_mul(0.5, &b, &b.t(), 1.0, acc);
+                }
+            } else {
+                let z = t_ab
+                    .slice(s![n - ob, .., .., ..])
+                    .into_shape_with_order((ob * va, vb))
+                    .expect("standard-layout t_ab");
+                general_mat_mul(1.0, &z.t(), &z, 1.0, acc);
+            }
+        },
+    );
 
     UMp2Density {
         p_oo_a,
@@ -1069,6 +1066,35 @@ pub fn build_u_mp2_density(amps: &UMp2Amplitudes) -> UMp2Density {
         p_oo_b,
         p_vv_b,
     }
+}
+
+/// `Σ_terms alpha · X Xᵀ` (`rows × rows`), each `X` cut into contraction
+/// slabs of `k_slab` columns; one pool task per slab, partials added in task
+/// order.
+fn gram_sum_slabbed(
+    label: &str,
+    terms: &[(ArrayView2<'_, f64>, f64)],
+    rows: usize,
+    k_slab: usize,
+) -> Array2<f64> {
+    use ndarray::s;
+    let k_slab = k_slab.max(1);
+    let tasks: Vec<(usize, usize, usize)> = terms
+        .iter()
+        .enumerate()
+        .flat_map(|(t, (x, _))| {
+            let k = x.ncols();
+            (0..k)
+                .step_by(k_slab)
+                .map(move |k0| (t, k0, (k0 + k_slab).min(k)))
+        })
+        .collect();
+    crate::orbital_gradient_gemm::ordered_task_sum(label, tasks.len(), (rows, rows), |n, acc| {
+        let (t, k0, k1) = tasks[n];
+        let (x, alpha) = &terms[t];
+        let xs = x.slice(s![.., k0..k1]);
+        ndarray::linalg::general_mat_mul(*alpha, &xs, &xs.t(), 1.0, acc);
+    })
 }
 
 /// Per-block decomposition of the unrelaxed integral-response gradient.
@@ -1110,37 +1136,39 @@ pub struct UMp2GradientBlocks {
 /// (the `t` and `K` derivatives are equal) while the αβ block picks up
 /// a `2×` factor (both t and (ia|JB) depend on the same integral).
 ///
-/// `budget_bytes` is the caller-resolved memory ceiling for the VVOV panel
-/// width below (threaded from the caller's already-resolved
-/// `resolve_budget_bytes(config.memory_budget_bytes)` — see
-/// `u_oo_rimp2.rs::u_oo_ri_mp2`'s single per-call resolve — rather than
-/// re-resolving the live/unconfigured default here, which would size the
-/// panel against the FULL budget while `amps`'/`b_full_a`/`b_full_b` are
-/// already co-resident with it).
+/// # Construction
+///
+/// Per spin σ, with `A_kj = t^σσ[k, j, :, :]` and the RI factors
+/// `(ca|jb) = Σ_P B^P_{ca} B^P_{jb}`, `(ik|jb) = ooov[(i,k),(j,b)]`:
+///
+/// ```text
+///   same_σ[c,k] = Σ_{P,x} B^P_{cx} Γ_k[P,x] − ½ Σ_{i,j,y} N_ij[c,y] (ik|jy)
+///   Γ_k         = ½ Σ_j B_j (A_kj − A_kjᵀ + A_jkᵀ − A_jk)ᵀ,   N_ij = A_ij − A_ji + A_jiᵀ − A_ijᵀ
+/// ```
+///
+/// and the αβ blocks the same way with `t^αβ` slices (`Γ^α_k = Σ_J B^β_J
+/// t^αβ[k,J]ᵀ`, `Γ^β_k = Σ_i B^α_i t^αβ[i,k]`). No VVOV block is formed; the
+/// GEMM building blocks and their determinism contract are in
+/// `orbital_gradient_gemm`. The scalar definition this reproduces is the
+/// `u_mp2_orbital_gradient_scalar_reference` test oracle.
 pub fn compute_u_mp2_orbital_gradient(
     amps: &UMp2Amplitudes,
     b_full_a: &Array3<f64>,
     b_full_b: &Array3<f64>,
-    budget_bytes: usize,
 ) -> (Array2<f64>, Array2<f64>) {
-    let bl = compute_u_mp2_orbital_gradient_blocks(amps, b_full_a, b_full_b, budget_bytes);
-    let g_a = &bl.same_a + &bl.ab_a;
-    let g_b = &bl.same_b + &bl.ab_b;
-    (g_a, g_b)
+    compute_u_mp2_orbital_gradient_timed(amps, b_full_a, b_full_b, &mut PhaseAccumulator::new())
 }
 
-/// See [`compute_u_mp2_orbital_gradient`]'s doc for `budget_bytes`.
+/// The per-block parts of [`compute_u_mp2_orbital_gradient`].
 pub fn compute_u_mp2_orbital_gradient_blocks(
     amps: &UMp2Amplitudes,
     b_full_a: &Array3<f64>,
     b_full_b: &Array3<f64>,
-    budget_bytes: usize,
 ) -> UMp2GradientBlocks {
     compute_u_mp2_orbital_gradient_blocks_timed(
         amps,
         b_full_a,
         b_full_b,
-        budget_bytes,
         &mut PhaseAccumulator::new(),
     )
 }
@@ -1152,11 +1180,9 @@ pub(crate) fn compute_u_mp2_orbital_gradient_timed(
     amps: &UMp2Amplitudes,
     b_full_a: &Array3<f64>,
     b_full_b: &Array3<f64>,
-    budget_bytes: usize,
     acc: &mut PhaseAccumulator,
 ) -> (Array2<f64>, Array2<f64>) {
-    let bl =
-        compute_u_mp2_orbital_gradient_blocks_timed(amps, b_full_a, b_full_b, budget_bytes, acc);
+    let bl = compute_u_mp2_orbital_gradient_blocks_timed(amps, b_full_a, b_full_b, acc);
     (&bl.same_a + &bl.ab_a, &bl.same_b + &bl.ab_b)
 }
 
@@ -1164,334 +1190,155 @@ fn compute_u_mp2_orbital_gradient_blocks_timed(
     amps: &UMp2Amplitudes,
     b_full_a: &Array3<f64>,
     b_full_b: &Array3<f64>,
-    budget_bytes: usize,
     acc: &mut PhaseAccumulator,
 ) -> UMp2GradientBlocks {
+    use crate::orbital_gradient_gemm::{GradientB, VV_CONTRACT_AUX_SLAB};
     let (nocc_a, _, nvir_a, _) = amps.t_aa.dim();
     let (nocc_b, _, nvir_b, _) = amps.t_bb.dim();
-    let first_occ_a = amps.inter_a.first_occ;
-    let nocc_total_a = amps.inter_a.nocc_total;
-    let first_occ_b = amps.inter_b.first_occ;
-    let nocc_total_b = amps.inter_b.nocc_total;
-    let naux = b_full_a.shape()[0];
-    debug_assert_eq!(naux, b_full_b.shape()[0]);
-
-    let t_aa = &amps.t_aa;
-    let t_bb = &amps.t_bb;
-    let t_ab = &amps.t_ab;
-
-    // ---------------------------------------------------------------------
-    // GEMM restructure (ports oo_rimp2::compute_orbital_gradient to the U path).
-    //
-    // Each per-element `eri_σσ(p,q,r,s) = Σ_P B^P_{pq} B^P_{rs}` closure used to
-    // cost an O(naux) strided dot, called O(nvir³·nocc³) times per spin. Instead
-    // we slice the dressed occ/vir MO blocks out of the full-MO B tensors once,
-    //   Bov_σ[P, i·nvir_σ+a] = B^P_{i,a}   (occ, vir)
-    //   Bvv_σ[P, a·nvir_σ+b] = B^P_{a,b}   (vir, vir)
-    //   Boo_σ[P, i·nocc_σ+j] = B^P_{i,j}   (occ, occ)
-    // and form the dense MO-ERI blocks with a single wide GEMM each (contraction
-    // over P). All eight ERI patterns in the four same-spin response terms — plus
-    // the cross-spin αβ patterns — are then reindexings of these blocks via the
-    // (pq|rs) permutational symmetries, identical numerics to the scalar path.
-    //
-    // Extract Bov/Bvv/Boo for one spin from its full-MO tensor.
-    let extract_blocks = |b_full: &Array3<f64>,
-                          nocc: usize,
-                          nvir: usize,
-                          first_occ: usize,
-                          nocc_total: usize|
-     -> (Array2<f64>, Array2<f64>, Array2<f64>) {
-        let mut b_ov = Array2::<f64>::zeros((naux, nocc * nvir));
-        let mut b_vv = Array2::<f64>::zeros((naux, nvir * nvir));
-        let mut b_oo = Array2::<f64>::zeros((naux, nocc * nocc));
-        for p in 0..naux {
-            for i in 0..nocc {
-                let i_mo = first_occ + i;
-                for a in 0..nvir {
-                    b_ov[(p, i * nvir + a)] = b_full[(p, i_mo, nocc_total + a)];
-                }
-                for j in 0..nocc {
-                    b_oo[(p, i * nocc + j)] = b_full[(p, i_mo, first_occ + j)];
-                }
-            }
-            for a in 0..nvir {
-                let a_mo = nocc_total + a;
-                for b in 0..nvir {
-                    b_vv[(p, a * nvir + b)] = b_full[(p, a_mo, nocc_total + b)];
-                }
-            }
-        }
-        (b_ov, b_vv, b_oo)
-    };
-
+    debug_assert_eq!(b_full_a.shape()[0], b_full_b.shape()[0]);
     let tok = acc.begin("  U-MP2 grad: B block extraction");
-    let (bov_a, bvv_a, boo_a) = extract_blocks(b_full_a, nocc_a, nvir_a, first_occ_a, nocc_total_a);
-    let (bov_b, bvv_b, boo_b) = extract_blocks(b_full_b, nocc_b, nvir_b, first_occ_b, nocc_total_b);
+    let (ia, ib) = (&amps.inter_a, &amps.inter_b);
+    let ba = GradientB::extract(b_full_a, nocc_a, nvir_a, ia.first_occ, ia.nocc_total);
+    let bb = GradientB::extract(b_full_b, nocc_b, nvir_b, ib.first_occ, ib.nocc_total);
     acc.stop_nested(tok);
+    u_mp2_orbital_gradient_kernel(
+        amps.t_aa.view(),
+        amps.t_bb.view(),
+        amps.t_ab.view(),
+        &ba,
+        &bb,
+        VV_CONTRACT_AUX_SLAB,
+        acc,
+    )
+}
 
-    // OOOV blocks are small (nocc²·nov) — build once for each spin and the two
-    // cross-spin orderings.
-    //   ooov_a[i·nocc_a+k, j·nvir_a+b] = (ik|jb)_α
-    //   ooov_b[i·nocc_b+k, j·nvir_b+b] = (ik|jb)_β
-    let tok = acc.begin("  U-MP2 grad: ooov GEMMs");
-    let ooov_a = boo_a.t().dot(&bov_a); // (nocc_a², nocc_a·nvir_a)
-    let ooov_b = boo_b.t().dot(&bov_b); // (nocc_b², nocc_b·nvir_b)
-                                        // Cross-spin OOOV / OVOO:
-                                        //   ooov_ab[i·nocc_a+k, J·nvir_b+B] = (ik_α | JB_β)
-                                        //   ovoo_ab[i·nvir_a+a, J·nocc_b+K] = (ia_α | JK_β)
-    let ooov_ab = boo_a.t().dot(&bov_b); // (nocc_a², nocc_b·nvir_b)
-    let ovoo_ab = bov_a.t().dot(&boo_b); // (nocc_a·nvir_a, nocc_b²)
-    acc.stop_nested(tok);
+/// Element count of the dense intermediates [`compute_u_mp2_orbital_gradient`]
+/// holds at once: both spins' B blocks, the four OOOV-type integral blocks and
+/// the two `Γ` row stacks (`2·nocc_σ × naux·nvir_σ` each).
+pub(crate) fn u_gradient_intermediate_elems(
+    naux: usize,
+    nocc_a: usize,
+    nvir_a: usize,
+    nocc_b: usize,
+    nvir_b: usize,
+) -> usize {
+    use crate::orbital_gradient_gemm::GradientB;
+    let (ova, ovb) = (nocc_a * nvir_a, nocc_b * nvir_b);
+    let ooov = (nocc_a * nocc_a) * (ova + ovb) + nocc_b * nocc_b * (ovb + ova);
+    let gamma = 2 * naux * (ova + ovb);
+    GradientB::elems(naux, nocc_a, nvir_a)
+        .saturating_add(GradientB::elems(naux, nocc_b, nvir_b))
+        .saturating_add(ooov)
+        .saturating_add(gamma)
+}
 
-    let mut same_a = Array2::<f64>::zeros((nvir_a, nocc_a));
-    let mut ab_a = Array2::<f64>::zeros((nvir_a, nocc_a));
-    let mut same_b = Array2::<f64>::zeros((nvir_b, nocc_b));
-    let mut ab_b = Array2::<f64>::zeros((nvir_b, nocc_b));
-
-    // VVOV panel width from the caller-resolved resident-bytes budget: one
-    // c-value of a VVOV panel costs nvir·nov·8 bytes. We panel over the outer
-    // virtual index `c` so only a `panel_c`-wide slice of the (nvir², nov)
-    // VVOV square is resident at a time, mirroring the CS gradient. Sized
-    // against `budget_bytes` (the caller's already-resolved ceiling), NOT a
-    // fresh `resolve_budget_bytes(None)` — the live/unconfigured full budget
-    // would ignore that `amps`/`b_full_a`/`b_full_b` already occupy most of it.
-    // `nov_total` is the SUM of the `nov` widths of every panel held at once,
-    // not the max. The α loop below builds `vvov_a` (`nov_a` columns) and
-    // `vvov_ab` (`nov_b` columns) from the SAME `bvv_panel` and holds both live
-    // across the whole `c` body, so one c-value costs `nvir·(nov_a+nov_b)·8`
-    // bytes. This previously took `nov_a.max(nov_b)`, sizing the panel for ONE
-    // buffer while the loop allocated two — a real peak of up to ~2× the
-    // intended ceiling, and exactly 2× when the two spins have equal
-    // dimensions (the common near-closed-shell case).
-    //
-    // `laplace.rs`'s `mu_row_bytes = naux·nbas·8·2` with its "hold two panels
-    // (M, N)" comment is the correct in-tree precedent; this now follows it,
-    // generalized to unequal panel widths.
-    let panel_width = |nvir: usize, nov_total: usize| -> usize {
-        let row_bytes = nvir.saturating_mul(nov_total).saturating_mul(8).max(1);
-        (budget_bytes / row_bytes).max(1).min(nvir.max(1))
+/// The U-MP2 orbital-gradient blocks from bare amplitudes and B blocks (see
+/// [`compute_u_mp2_orbital_gradient`] for the construction). `aux_slab` is the
+/// `P` slab of the `(ca|jb)` contraction, an argument so a test can force
+/// several slabs.
+#[allow(clippy::too_many_arguments)]
+fn u_mp2_orbital_gradient_kernel(
+    t_aa: ndarray::ArrayView4<'_, f64>,
+    t_bb: ndarray::ArrayView4<'_, f64>,
+    t_ab: ndarray::ArrayView4<'_, f64>,
+    ba: &crate::orbital_gradient_gemm::GradientB,
+    bb: &crate::orbital_gradient_gemm::GradientB,
+    aux_slab: usize,
+    acc: &mut PhaseAccumulator,
+) -> UMp2GradientBlocks {
+    use crate::orbital_gradient_gemm::{
+        charge_pair_scratch, contract_vv_gamma, cross_gamma_rows, ordered_task_sum,
+        pair_gamma_rows, pair_ooov_term, par_gemm_tn,
     };
+    use ndarray::linalg::general_mat_mul;
+    use ndarray::s;
+    let (oa, va, ob, vb, naux) = (ba.nocc, ba.nvir, bb.nocc, bb.nvir, ba.naux);
+    assert_eq!(t_aa.dim(), (oa, oa, va, va), "U-MP2 gradient: t_aa shape");
+    assert_eq!(t_bb.dim(), (ob, ob, vb, vb), "U-MP2 gradient: t_bb shape");
+    assert_eq!(t_ab.dim(), (oa, ob, va, vb), "U-MP2 gradient: t_ab shape");
+    let blk_aa = |i: usize, j: usize| t_aa.slice_move(s![i, j, .., ..]);
+    let blk_bb = |i: usize, j: usize| t_bb.slice_move(s![i, j, .., ..]);
+    let ab = |i: usize, jj: usize| t_ab.slice_move(s![i, jj, .., ..]);
+    let _scratch = charge_pair_scratch("U-MP2 gradient pair scratch", va.max(vb));
 
-    let nov_a = nocc_a * nvir_a;
-    let nov_b = nocc_b * nvir_b;
+    // (ik|jb)_α, (ik|jb)_β, (ik_α|JB_β), (ia_α|JK_β).
+    let tok = acc.begin("  U-MP2 grad: ooov GEMMs");
+    let ooov_a = par_gemm_tn(&ba.boo, &ba.bov);
+    let ooov_b = par_gemm_tn(&bb.boo, &bb.bov);
+    let ooov_ab = par_gemm_tn(&ba.boo, &bb.bov);
+    let ovoo_ab = par_gemm_tn(&ba.bov, &bb.boo);
+    acc.stop_nested(tok);
 
-    // --- α gradient: g^α_{ck} = ∂E_MP2/∂κ^α_{ck} -------------------------
-    // The VVOV blocks read below (rows confined to the c-panel [c0,c1)):
-    //   vvov_a[(c·nvir_a+a), (j·nvir_a+b)] = (ca|jb)_α   (same-spin α GEMM)
-    //   vvov_ab[(c·nvir_a+a), (J·nvir_b+B)] = (ca_α | JB_β)  (cross-spin)
-    // Two panels live at once here (vvov_a and vvov_ab) — charge their SUM.
-    let panel_c_a = panel_width(nvir_a, nov_a.saturating_add(nov_b));
-    let mut c0 = 0;
-    while c0 < nvir_a {
-        let c1 = (c0 + panel_c_a).min(nvir_a);
-        let bvv_panel = bvv_a.slice(ndarray::s![.., c0 * nvir_a..c1 * nvir_a]);
-        let tok = acc.begin("  U-MP2 grad: vvov panel GEMMs");
-        // (ca|jb)_α, panel rows local (c-c0)·nvir_a+a
-        let vvov_a = bvv_panel.t().dot(&bov_a); // ((c1-c0)·nvir_a, nov_a)
-                                                // (ca_α | JB_β), panel rows local (c-c0)·nvir_a+a
-        let vvov_ab = bvv_panel.t().dot(&bov_b); // ((c1-c0)·nvir_a, nov_b)
-        acc.stop_nested(tok);
-        let tok = acc.begin("  U-MP2 grad: α contraction loops");
+    // Γ rows: same-spin `k` first, then the αβ `k`.
+    let tok = acc.begin("  U-MP2 grad: Γ pair GEMMs");
+    let mut gamma_a = Array2::<f64>::zeros((2 * oa, naux * va));
+    pair_gamma_rows(&blk_aa, 1.0, 1.0, 0.5, ba, gamma_a.slice_mut(s![..oa, ..]));
+    cross_gamma_rows(&ab, va, bb, gamma_a.slice_mut(s![oa.., ..]));
+    let mut gamma_b = Array2::<f64>::zeros((2 * ob, naux * vb));
+    pair_gamma_rows(&blk_bb, 1.0, 1.0, 0.5, bb, gamma_b.slice_mut(s![..ob, ..]));
+    let ab_t = |k: usize, i: usize| ab(i, k).reversed_axes();
+    cross_gamma_rows(&ab_t, vb, ba, gamma_b.slice_mut(s![ob.., ..]));
+    acc.stop_nested(tok);
 
-        for c in c0..c1 {
-            let cbase = (c - c0) * nvir_a; // local vvov row base for this c
-            for k in 0..nocc_a {
-                let mut s_same = 0.0;
-                let mut s_ab = 0.0;
+    let tok = acc.begin("  U-MP2 grad: (ca|jb) contraction");
+    let mut g_a = contract_vv_gamma(
+        "U-MP2 gradient α partials",
+        &ba.bvv,
+        &gamma_a,
+        naux,
+        va,
+        aux_slab,
+    );
+    let mut g_b = contract_vv_gamma(
+        "U-MP2 gradient β partials",
+        &bb.bvv,
+        &gamma_b,
+        naux,
+        vb,
+        aux_slab,
+    );
+    acc.stop_nested(tok);
 
-                // αα Term 1: i=k branch — 0.5·t_aa[k,j,a,b]·[(ca|jb) - (cb|ja)]
-                //   (ca|jb) = vvov_a[cbase+a, j·nvir_a+b]
-                //   (cb|ja) = vvov_a[cbase+b, j·nvir_a+a]
-                for j in 0..nocc_a {
-                    for a in 0..nvir_a {
-                        for b in 0..nvir_a {
-                            let t = t_aa[(k, j, a, b)];
-                            let e1 = vvov_a[(cbase + a, j * nvir_a + b)];
-                            let e2 = vvov_a[(cbase + b, j * nvir_a + a)];
-                            s_same += 0.5 * t * (e1 - e2);
-                        }
-                    }
-                }
-                // αα Term 2: j=k branch — 0.5·t_aa[i,k,a,b]·[(ia|cb) - (ib|ca)]
-                //   (ia|cb) = (cb|ia) = vvov_a[cbase+b, i·nvir_a+a]
-                //   (ib|ca) = (ca|ib) = vvov_a[cbase+a, i·nvir_a+b]
-                for i in 0..nocc_a {
-                    for a in 0..nvir_a {
-                        for b in 0..nvir_a {
-                            let t = t_aa[(i, k, a, b)];
-                            let e1 = vvov_a[(cbase + b, i * nvir_a + a)];
-                            let e2 = vvov_a[(cbase + a, i * nvir_a + b)];
-                            s_same += 0.5 * t * (e1 - e2);
-                        }
-                    }
-                }
-                // αα Term 3: a=c branch — -0.5·t_aa[i,j,c,b]·[(ik|jb) - (ib|jk)]
-                //   (ik|jb) = ooov_a[i·nocc_a+k, j·nvir_a+b]
-                //   (ib|jk) = (jk|ib) = ooov_a[j·nocc_a+k, i·nvir_a+b]
-                for i in 0..nocc_a {
-                    for j in 0..nocc_a {
-                        for b in 0..nvir_a {
-                            let t = t_aa[(i, j, c, b)];
-                            let e1 = ooov_a[(i * nocc_a + k, j * nvir_a + b)];
-                            let e2 = ooov_a[(j * nocc_a + k, i * nvir_a + b)];
-                            s_same -= 0.5 * t * (e1 - e2);
-                        }
-                    }
-                }
-                // αα Term 4: b=c branch — -0.5·t_aa[i,j,a,c]·[(ia|jk) - (ik|ja)]
-                //   (ia|jk) = (jk|ia) = ooov_a[j·nocc_a+k, i·nvir_a+a]
-                //   (ik|ja) = ooov_a[i·nocc_a+k, j·nvir_a+a]
-                for i in 0..nocc_a {
-                    for j in 0..nocc_a {
-                        for a in 0..nvir_a {
-                            let t = t_aa[(i, j, a, c)];
-                            let e1 = ooov_a[(j * nocc_a + k, i * nvir_a + a)];
-                            let e2 = ooov_a[(i * nocc_a + k, j * nvir_a + a)];
-                            s_same -= 0.5 * t * (e1 - e2);
-                        }
-                    }
-                }
-
-                // αβ contribution to g^α_{ck}
-                // Part 1: t_ab[k,J,a,B]·(ca_α | JB_β), (ca|JB) = vvov_ab[cbase+a, J·nvir_b+B]
-                for jj in 0..nocc_b {
-                    for a in 0..nvir_a {
-                        for bb in 0..nvir_b {
-                            let t = t_ab[(k, jj, a, bb)];
-                            let e = vvov_ab[(cbase + a, jj * nvir_b + bb)];
-                            s_ab += t * e;
-                        }
-                    }
-                }
-                // Part 2: -t_ab[i,J,c,B]·(ik_α | JB_β), (ik|JB) = ooov_ab[i·nocc_a+k, J·nvir_b+B]
-                for i in 0..nocc_a {
-                    for jj in 0..nocc_b {
-                        for bb in 0..nvir_b {
-                            let t = t_ab[(i, jj, c, bb)];
-                            let e = ooov_ab[(i * nocc_a + k, jj * nvir_b + bb)];
-                            s_ab -= t * e;
-                        }
-                    }
-                }
-
-                same_a[(c, k)] = s_same;
-                ab_a[(c, k)] = 2.0 * s_ab; // factor 2: both t and (ia|JB) depend on integrals
+    let tok = acc.begin("  U-MP2 grad: (ik|jb) terms");
+    g_a += &ordered_task_sum(
+        "U-MP2 gradient α oo partials",
+        oa,
+        (va, 2 * oa),
+        |i, acc| {
+            let (mut same, mut cross) = acc.multi_slice_mut((s![.., ..oa], s![.., oa..]));
+            pair_ooov_term(&blk_aa, 1.0, 1.0, -0.5, &ooov_a, i, oa, va, &mut same);
+            for jj in 0..ob {
+                let o = ooov_ab.slice(s![i * oa..(i + 1) * oa, jj * vb..(jj + 1) * vb]);
+                general_mat_mul(-1.0, &ab(i, jj), &o.t(), 1.0, &mut cross);
             }
-        }
-        acc.stop_nested(tok);
-        c0 = c1;
-    }
-
-    // --- β gradient ------------------------------------------------------
-    // The VVOV blocks read below (rows confined to the c-panel [c0,c1)):
-    //   vvov_b[(c·nvir_b+a), (j·nvir_b+b)] = (ca|jb)_β   (same-spin β GEMM)
-    //   ovvv_ab[(i·nvir_a+a), (c·nvir_b+B)] = (ia_α | CB_β)  (cross-spin, c on β side)
-    // ovvv_ab keeps the β-vir index in its columns, so we panel it over `c` by
-    // slicing bvv_b down to the panel columns; its α-ov rows stay full.
-    // Two panels live at once here too — `vvov_b` costs `nvir_b·nov_b` per
-    // c-value and `ovvv_ab` costs `nov_a·nvir_b` (its β-vir index is in the
-    // COLUMNS, so it scales with the panel width just as `vvov_b` does). Both
-    // are held across the whole `c` body below, so charge their sum. The old
-    // `panel_width(nvir_b, nov_b)` saw only the first of the two.
-    let panel_c_b = panel_width(nvir_b, nov_b.saturating_add(nov_a));
-    let mut c0 = 0;
-    while c0 < nvir_b {
-        let c1 = (c0 + panel_c_b).min(nvir_b);
-        let bvv_panel = bvv_b.slice(ndarray::s![.., c0 * nvir_b..c1 * nvir_b]);
-        let tok = acc.begin("  U-MP2 grad: vvov panel GEMMs");
-        // (ca|jb)_β, panel rows local (c-c0)·nvir_b+a
-        let vvov_b = bvv_panel.t().dot(&bov_b); // ((c1-c0)·nvir_b, nov_b)
-                                                // (ia_α | CB_β), C in the c-panel; cols local (c-c0)·nvir_b+B
-        let ovvv_ab = bov_a.t().dot(&bvv_panel); // (nov_a, (c1-c0)·nvir_b)
-        acc.stop_nested(tok);
-        let tok = acc.begin("  U-MP2 grad: β contraction loops");
-
-        for c in c0..c1 {
-            let cbase = (c - c0) * nvir_b; // local vvov_b / ovvv_ab base for this c
-            for k in 0..nocc_b {
-                let mut s_same = 0.0;
-                let mut s_ab = 0.0;
-
-                // ββ Term 1: i=k — 0.5·t_bb[k,j,a,b]·[(ca|jb) - (cb|ja)]
-                for j in 0..nocc_b {
-                    for a in 0..nvir_b {
-                        for b in 0..nvir_b {
-                            let t = t_bb[(k, j, a, b)];
-                            let e1 = vvov_b[(cbase + a, j * nvir_b + b)];
-                            let e2 = vvov_b[(cbase + b, j * nvir_b + a)];
-                            s_same += 0.5 * t * (e1 - e2);
-                        }
-                    }
+        },
+    );
+    g_b += &ordered_task_sum(
+        "U-MP2 gradient β oo partials",
+        ob + oa,
+        (vb, 2 * ob),
+        |n, acc| {
+            let (mut same, mut cross) = acc.multi_slice_mut((s![.., ..ob], s![.., ob..]));
+            if n < ob {
+                pair_ooov_term(&blk_bb, 1.0, 1.0, -0.5, &ooov_b, n, ob, vb, &mut same);
+            } else {
+                let i = n - ob;
+                for jj in 0..ob {
+                    let o = ovoo_ab.slice(s![i * va..(i + 1) * va, jj * ob..(jj + 1) * ob]);
+                    general_mat_mul(-1.0, &ab(i, jj).t(), &o, 1.0, &mut cross);
                 }
-                // ββ Term 2: j=k — 0.5·t_bb[i,k,a,b]·[(ia|cb) - (ib|ca)]
-                for i in 0..nocc_b {
-                    for a in 0..nvir_b {
-                        for b in 0..nvir_b {
-                            let t = t_bb[(i, k, a, b)];
-                            let e1 = vvov_b[(cbase + b, i * nvir_b + a)];
-                            let e2 = vvov_b[(cbase + a, i * nvir_b + b)];
-                            s_same += 0.5 * t * (e1 - e2);
-                        }
-                    }
-                }
-                // ββ Term 3: a=c — -0.5·t_bb[i,j,c,b]·[(ik|jb) - (ib|jk)]
-                for i in 0..nocc_b {
-                    for j in 0..nocc_b {
-                        for b in 0..nvir_b {
-                            let t = t_bb[(i, j, c, b)];
-                            let e1 = ooov_b[(i * nocc_b + k, j * nvir_b + b)];
-                            let e2 = ooov_b[(j * nocc_b + k, i * nvir_b + b)];
-                            s_same -= 0.5 * t * (e1 - e2);
-                        }
-                    }
-                }
-                // ββ Term 4: b=c — -0.5·t_bb[i,j,a,c]·[(ia|jk) - (ik|ja)]
-                for i in 0..nocc_b {
-                    for j in 0..nocc_b {
-                        for a in 0..nvir_b {
-                            let t = t_bb[(i, j, a, c)];
-                            let e1 = ooov_b[(j * nocc_b + k, i * nvir_b + a)];
-                            let e2 = ooov_b[(i * nocc_b + k, j * nvir_b + a)];
-                            s_same -= 0.5 * t * (e1 - e2);
-                        }
-                    }
-                }
-
-                // αβ contribution to g^β_{ck} (c,k on the β side)
-                // Part 1: t_ab[i,k,a,C·B]·(ia_α | CB_β), (ia|CB) = ovvv_ab[i·nvir_a+a, cbase+B]
-                for i in 0..nocc_a {
-                    for a in 0..nvir_a {
-                        for bb in 0..nvir_b {
-                            let t = t_ab[(i, k, a, bb)];
-                            let e = ovvv_ab[(i * nvir_a + a, cbase + bb)];
-                            s_ab += t * e;
-                        }
-                    }
-                }
-                // Part 2: -t_ab[i,J,a,c]·(ia_α | JK_β), (ia|JK) = ovoo_ab[i·nvir_a+a, J·nocc_b+k]
-                for i in 0..nocc_a {
-                    for jj in 0..nocc_b {
-                        for a in 0..nvir_a {
-                            let t = t_ab[(i, jj, a, c)];
-                            let e = ovoo_ab[(i * nvir_a + a, jj * nocc_b + k)];
-                            s_ab -= t * e;
-                        }
-                    }
-                }
-
-                same_b[(c, k)] = s_same;
-                ab_b[(c, k)] = 2.0 * s_ab; // factor 2: both t and (ia|JB) depend on integrals
             }
-        }
-        acc.stop_nested(tok);
-        c0 = c1;
-    }
+        },
+    );
+    acc.stop_nested(tok);
 
+    // The αβ blocks carry the factor 2 of the chain rule (both t and (ia|JB)
+    // depend on the integrals).
     UMp2GradientBlocks {
-        same_a,
-        same_b,
-        ab_a,
-        ab_b,
+        same_a: g_a.slice(s![.., ..oa]).to_owned(),
+        ab_a: 2.0 * &g_a.slice(s![.., oa..]),
+        same_b: g_b.slice(s![.., ..ob]).to_owned(),
+        ab_b: 2.0 * &g_b.slice(s![.., ob..]),
     }
 }
 
@@ -2098,12 +1945,7 @@ mod tests {
         // --- Analytic gradient blocks ---
         let b_full_a = crate::oo_rimp2::compute_b_full_mo(&obs, &dfbs, op, &c_a0).unwrap();
         let b_full_b = crate::oo_rimp2::compute_b_full_mo(&obs, &dfbs, op, &c_b0).unwrap();
-        let blocks = super::compute_u_mp2_orbital_gradient_blocks(
-            &amps,
-            &b_full_a,
-            &b_full_b,
-            ferric_core::memory::resolve_budget_bytes(None),
-        );
+        let blocks = super::compute_u_mp2_orbital_gradient_blocks(&amps, &b_full_a, &b_full_b);
 
         let report = |label: &str, g: &Array2<f64>, g_fd: &Array2<f64>| -> bool {
             let nfd = g_fd.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
@@ -2382,5 +2224,453 @@ mod tests {
             diff_amp_total < 1e-12,
             "amplitude-path total disagrees with old scalar loop: diff={diff_amp_total:e}"
         );
+    }
+
+    /// Deterministic values in `[-0.5, 0.5)` with no index symmetry.
+    fn lcg_values(n: usize, seed: u64) -> Vec<f64> {
+        let mut state = seed;
+        (0..n)
+            .map(|_| {
+                state = state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                ((state >> 11) as f64) / ((1u64 << 53) as f64) - 0.5
+            })
+            .collect()
+    }
+
+    fn lcg_array4(shape: (usize, usize, usize, usize), seed: u64) -> Array4<f64> {
+        let n = shape.0 * shape.1 * shape.2 * shape.3;
+        Array4::from_shape_vec(shape, lcg_values(n, seed)).unwrap()
+    }
+
+    /// Per-element value, absolute term sum `S` and term count `N` of a block.
+    struct Scalar {
+        val: Array2<f64>,
+        abs: Array2<f64>,
+        n: usize,
+    }
+
+    impl Scalar {
+        fn new(dim: (usize, usize), n: usize) -> Self {
+            Self {
+                val: Array2::zeros(dim),
+                abs: Array2::zeros(dim),
+                n,
+            }
+        }
+
+        /// Assert `got` is within `(N + 2)·ε·S` of the scalar value, per
+        /// element, and that the bar is tight (see the calling test's doc).
+        fn check(&self, label: &str, got: &Array2<f64>) {
+            assert_eq!(got.dim(), self.val.dim(), "{label}: shape");
+            let n = (self.n + 2) as f64;
+            for ((idx, g), (w, s)) in got.indexed_iter().zip(self.val.iter().zip(self.abs.iter())) {
+                let bar = n * f64::EPSILON * s;
+                assert!(bar < 1e-10, "{label}{idx:?}: bar {bar:e} is not tight");
+                assert!(
+                    (g - w).abs() <= bar,
+                    "{label}{idx:?}: {g:e} vs scalar {w:e}, |diff| {:e} > bar {bar:e}",
+                    (g - w).abs()
+                );
+            }
+        }
+    }
+
+    /// The U-MP2 density blocks element by element, as the Bozkaya formulas
+    /// in [`UMp2Density`]'s doc read, with each element's absolute term sum.
+    /// Independent of the Gram-product construction.
+    fn u_mp2_density_scalar_reference(
+        t_aa: &Array4<f64>,
+        t_bb: &Array4<f64>,
+        t_ab: &Array4<f64>,
+    ) -> [Scalar; 4] {
+        let (oa, _, va, _) = t_aa.dim();
+        let (ob, _, vb, _) = t_bb.dim();
+        let mut oo_a = Scalar::new((oa, oa), oa * va * va + ob * va * vb);
+        let mut vv_a = Scalar::new((va, va), oa * oa * va + oa * ob * vb);
+        let mut oo_b = Scalar::new((ob, ob), ob * vb * vb + oa * va * vb);
+        let mut vv_b = Scalar::new((vb, vb), ob * ob * vb + oa * ob * va);
+        let add = |blk: &mut Scalar, p: usize, q: usize, c: f64, x: f64, y: f64| {
+            blk.val[(p, q)] += c * x * y;
+            blk.abs[(p, q)] += (c * x * y).abs();
+        };
+        for i in 0..oa {
+            for j in 0..oa {
+                for k in 0..oa {
+                    for a in 0..va {
+                        for b in 0..va {
+                            add(
+                                &mut oo_a,
+                                i,
+                                j,
+                                -0.5,
+                                t_aa[(i, k, a, b)],
+                                t_aa[(j, k, a, b)],
+                            );
+                        }
+                    }
+                }
+                for kk in 0..ob {
+                    for a in 0..va {
+                        for bb in 0..vb {
+                            add(
+                                &mut oo_a,
+                                i,
+                                j,
+                                -1.0,
+                                t_ab[(i, kk, a, bb)],
+                                t_ab[(j, kk, a, bb)],
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        for a in 0..va {
+            for b in 0..va {
+                for i in 0..oa {
+                    for j in 0..oa {
+                        for c in 0..va {
+                            add(&mut vv_a, a, b, 0.5, t_aa[(i, j, a, c)], t_aa[(i, j, b, c)]);
+                        }
+                    }
+                    for jj in 0..ob {
+                        for bb in 0..vb {
+                            add(
+                                &mut vv_a,
+                                a,
+                                b,
+                                1.0,
+                                t_ab[(i, jj, a, bb)],
+                                t_ab[(i, jj, b, bb)],
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        for i in 0..ob {
+            for j in 0..ob {
+                for k in 0..ob {
+                    for a in 0..vb {
+                        for b in 0..vb {
+                            add(
+                                &mut oo_b,
+                                i,
+                                j,
+                                -0.5,
+                                t_bb[(i, k, a, b)],
+                                t_bb[(j, k, a, b)],
+                            );
+                        }
+                    }
+                }
+                for kk in 0..oa {
+                    for aa in 0..va {
+                        for b in 0..vb {
+                            add(
+                                &mut oo_b,
+                                i,
+                                j,
+                                -1.0,
+                                t_ab[(kk, i, aa, b)],
+                                t_ab[(kk, j, aa, b)],
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        for a in 0..vb {
+            for b in 0..vb {
+                for i in 0..ob {
+                    for j in 0..ob {
+                        for c in 0..vb {
+                            add(&mut vv_b, a, b, 0.5, t_bb[(i, j, a, c)], t_bb[(i, j, b, c)]);
+                        }
+                    }
+                }
+                for ii in 0..oa {
+                    for jj in 0..ob {
+                        for aa in 0..va {
+                            add(
+                                &mut vv_b,
+                                a,
+                                b,
+                                1.0,
+                                t_ab[(ii, jj, aa, a)],
+                                t_ab[(ii, jj, aa, b)],
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        [oo_a, vv_a, oo_b, vv_b]
+    }
+
+    /// `build_u_mp2_density` (Gram products of amplitude slices on the pool)
+    /// against the scalar definition, on amplitudes with no symmetry and
+    /// unequal spin dimensions, so a transposed block, a swapped spin axis
+    /// or a mislabelled `t_αβ` axis changes the result at order one.
+    ///
+    /// Bar, per element: both routes evaluate the same `N` products `c·x·y`
+    /// (`c` = ±½ or ±1, exact) and differ only in the order of the additions
+    /// and in fused multiply-adds. Each evaluation is within `(N + 1)·u·S` of
+    /// the exact sum (`u` the unit roundoff, `S = Σ|c·x·y|`), so the two
+    /// differ by at most `2(N + 1)·u·S ≤ 2(N + 2)·u·S = (N + 2)·ε·S`.
+    ///
+    /// Run at the production slab and at a 7-element slab, which cuts every
+    /// `P_oo` Gram product into several contraction slabs. Pools of 1, 2 and
+    /// 5 threads must give the same bits.
+    ///
+    /// FAILS if a block is transposed, a slab is dropped or overwritten, or
+    /// the per-task results are reduced in a thread-dependent order.
+    #[test]
+    fn u_mp2_density_gemm_matches_the_scalar_definition() {
+        let (oa, ob, va, vb) = (3usize, 2usize, 5usize, 6usize);
+        let t_aa = lcg_array4((oa, oa, va, va), 0x9E37_79B9_7F4A_7C15);
+        let t_bb = lcg_array4((ob, ob, vb, vb), 0xD1B5_4A32_D192_ED03);
+        let t_ab = lcg_array4((oa, ob, va, vb), 0x8CB9_2BA7_2F3D_8DD7);
+        let [oo_a, vv_a, oo_b, vv_b] = u_mp2_density_scalar_reference(&t_aa, &t_bb, &t_ab);
+        let scale = vv_a.val.iter().fold(0.0f64, |m, x| m.max(x.abs()));
+        assert!(scale > 0.1, "reference P_vv^α is degenerate: max {scale:e}");
+        let run =
+            |k_slab| u_mp2_density_from_amplitudes(t_aa.view(), t_bb.view(), t_ab.view(), k_slab);
+        for k_slab in [U_DENSITY_K_SLAB, 7] {
+            let d = run(k_slab);
+            oo_a.check("P_oo^α", &d.p_oo_a);
+            vv_a.check("P_vv^α", &d.p_vv_a);
+            oo_b.check("P_oo^β", &d.p_oo_b);
+            vv_b.check("P_vv^β", &d.p_vv_b);
+            for threads in [1usize, 2, 5] {
+                let pool = rayon::ThreadPoolBuilder::new()
+                    .num_threads(threads)
+                    .build()
+                    .unwrap();
+                let e = pool.install(|| run(k_slab));
+                assert_eq!(
+                    e.p_oo_a, d.p_oo_a,
+                    "P_oo^α bits differ on {threads} threads"
+                );
+                assert_eq!(
+                    e.p_vv_a, d.p_vv_a,
+                    "P_vv^α bits differ on {threads} threads"
+                );
+                assert_eq!(
+                    e.p_oo_b, d.p_oo_b,
+                    "P_oo^β bits differ on {threads} threads"
+                );
+                assert_eq!(
+                    e.p_vv_b, d.p_vv_b,
+                    "P_vv^β bits differ on {threads} threads"
+                );
+            }
+        }
+    }
+
+    /// Random `b_full` (no `p <-> q` symmetry), shape `(naux, nmo, nmo)`.
+    fn lcg_b_full(naux: usize, nmo: usize, seed: u64) -> Array3<f64> {
+        Array3::from_shape_vec((naux, nmo, nmo), lcg_values(naux * nmo * nmo, seed)).unwrap()
+    }
+
+    /// The U-MP2 orbital-gradient blocks by the scalar loops of the
+    /// per-element formula (the four same-spin delta terms and the two αβ
+    /// parts per spin, as listed in [`compute_u_mp2_orbital_gradient`]'s
+    /// doc), with every integral `(pq|rs) = Σ_P B^P_{pq} B^P_{rs}` read
+    /// straight from `b_full`. Each element also carries `S`, the sum of the
+    /// absolute values of its `t·B·B` monomials, and `N`, their count.
+    // One spin's dimensions per argument pair; all distinct.
+    #[allow(clippy::too_many_arguments)]
+    fn u_mp2_orbital_gradient_scalar_reference(
+        t_aa: &Array4<f64>,
+        t_bb: &Array4<f64>,
+        t_ab: &Array4<f64>,
+        b_a: &Array3<f64>,
+        b_b: &Array3<f64>,
+        first_occ: usize,
+        nocc_total_a: usize,
+        nocc_total_b: usize,
+    ) -> [Scalar; 4] {
+        let (oa, _, va, _) = t_aa.dim();
+        let (ob, _, vb, _) = t_bb.dim();
+        let naux = b_a.shape()[0];
+        let (fo, ta, tb) = (first_occ, nocc_total_a, nocc_total_b);
+        // (pq|rs) and Σ_P |B^P_pq|·|B^P_rs| across the two spin tensors.
+        let eri = |x: &Array3<f64>, p: usize, q: usize, y: &Array3<f64>, r: usize, s: usize| {
+            (0..naux).fold((0.0, 0.0), |(v, a), pp| {
+                let m = x[(pp, p, q)] * y[(pp, r, s)];
+                (v + m, a + m.abs())
+            })
+        };
+        let n_same = |o: usize, v: usize| 4 * naux * (o * v * v + o * o * v);
+        let mut same_a = Scalar::new((va, oa), n_same(oa, va));
+        let mut ab_a = Scalar::new((va, oa), naux * (ob * va * vb + oa * ob * vb));
+        let mut same_b = Scalar::new((vb, ob), n_same(ob, vb));
+        let mut ab_b = Scalar::new((vb, ob), naux * (oa * va * vb + oa * ob * va));
+        // coef·t·[(e1) − (e2)] into one element.
+        let term = |blk: &mut Scalar,
+                    c: usize,
+                    k: usize,
+                    coef: f64,
+                    t: f64,
+                    e1: (f64, f64),
+                    e2: (f64, f64)| {
+            blk.val[(c, k)] += coef * t * (e1.0 - e2.0);
+            blk.abs[(c, k)] += (coef * t).abs() * (e1.1 + e2.1);
+        };
+        let zero = (0.0, 0.0);
+        // Same-spin σ: `t`, its B tensor, active-occupied offset and virtual offset.
+        let same_spin =
+            |blk: &mut Scalar, t: &Array4<f64>, b: &Array3<f64>, o: usize, v: usize, tot: usize| {
+                let (occ, vir) = (|i: usize| fo + i, |a: usize| tot + a);
+                for c in 0..v {
+                    for k in 0..o {
+                        for j in 0..o {
+                            for a in 0..v {
+                                for bb in 0..v {
+                                    // i = k: ½ t_kjab [(ca|jb) − (cb|ja)]
+                                    let e1 = eri(b, vir(c), vir(a), b, occ(j), vir(bb));
+                                    let e2 = eri(b, vir(c), vir(bb), b, occ(j), vir(a));
+                                    term(blk, c, k, 0.5, t[(k, j, a, bb)], e1, e2);
+                                    // j = k: ½ t_jkab [(cb|ja) − (ca|jb)]
+                                    term(blk, c, k, 0.5, t[(j, k, a, bb)], e2, e1);
+                                }
+                            }
+                        }
+                        for i in 0..o {
+                            for j in 0..o {
+                                for x in 0..v {
+                                    // a = c: −½ t_ijcx [(ik|jx) − (jk|ix)]
+                                    let e1 = eri(b, occ(i), occ(k), b, occ(j), vir(x));
+                                    let e2 = eri(b, occ(j), occ(k), b, occ(i), vir(x));
+                                    term(blk, c, k, -0.5, t[(i, j, c, x)], e1, e2);
+                                    // b = c: −½ t_ijxc [(jk|ix) − (ik|jx)]
+                                    term(blk, c, k, -0.5, t[(i, j, x, c)], e2, e1);
+                                }
+                            }
+                        }
+                    }
+                }
+            };
+        same_spin(&mut same_a, t_aa, b_a, oa, va, ta);
+        same_spin(&mut same_b, t_bb, b_b, ob, vb, tb);
+        for c in 0..va {
+            for k in 0..oa {
+                for jj in 0..ob {
+                    for a in 0..va {
+                        for bb in 0..vb {
+                            // 2 t_kJaB (ca_α|JB_β)
+                            let e = eri(b_a, ta + c, ta + a, b_b, fo + jj, tb + bb);
+                            term(&mut ab_a, c, k, 2.0, t_ab[(k, jj, a, bb)], e, zero);
+                        }
+                    }
+                    for i in 0..oa {
+                        for bb in 0..vb {
+                            // −2 t_iJcB (ik_α|JB_β)
+                            let e = eri(b_a, fo + i, fo + k, b_b, fo + jj, tb + bb);
+                            term(&mut ab_a, c, k, -2.0, t_ab[(i, jj, c, bb)], e, zero);
+                        }
+                    }
+                }
+            }
+        }
+        for c in 0..vb {
+            for k in 0..ob {
+                for i in 0..oa {
+                    for a in 0..va {
+                        for bb in 0..vb {
+                            // 2 t_ikaB (ia_α|cB_β)
+                            let e = eri(b_a, fo + i, ta + a, b_b, tb + c, tb + bb);
+                            term(&mut ab_b, c, k, 2.0, t_ab[(i, k, a, bb)], e, zero);
+                        }
+                    }
+                    for jj in 0..ob {
+                        for a in 0..va {
+                            // −2 t_iJac (ia_α|Jk_β)
+                            let e = eri(b_a, fo + i, ta + a, b_b, fo + jj, fo + k);
+                            term(&mut ab_b, c, k, -2.0, t_ab[(i, jj, a, c)], e, zero);
+                        }
+                    }
+                }
+            }
+        }
+        [same_a, ab_a, same_b, ab_b]
+    }
+
+    /// The U-MP2 orbital gradient (RI `Γ` route on the pool, no VVOV block)
+    /// against the scalar definition, on amplitudes and B tensors with no
+    /// symmetry, unequal spin dimensions and a frozen core, so a transposed
+    /// block, a swapped spin or a misplaced orbital offset changes the result
+    /// at order one.
+    ///
+    /// Bar, per element: the element is `Σ c·t·B·B` over `N` monomials (`c` a
+    /// power of two). Each route forms every monomial with two rounded
+    /// multiplications and sums the monomials (with the amplitude or integral
+    /// combinations as internal nodes) in a tree of `N − 1` additions, so each
+    /// is within `(N + 1)·u·S` of the exact sum, `S = Σ|c·t·B·B|`, and the two
+    /// differ by at most `(N + 2)·ε·S`.
+    ///
+    /// Run at the production `P` slab and at a 2-function slab (four slabs of
+    /// the seven auxiliary functions). Pools of 1, 2 and 5 threads must give
+    /// the same bits.
+    ///
+    /// FAILS if a block is transposed, a slab is dropped, or a reduction runs
+    /// in a thread-dependent order.
+    #[test]
+    fn u_mp2_orbital_gradient_gemm_matches_the_scalar_definition() {
+        use crate::orbital_gradient_gemm::{GradientB, VV_CONTRACT_AUX_SLAB};
+        let (fo, oa, ob, va, vb, naux) = (1usize, 3usize, 2usize, 5usize, 6usize, 7usize);
+        let (ta, tb) = (fo + oa, fo + ob);
+        let nmo = ta + va;
+        assert_eq!(nmo, tb + vb, "one MO count for both spins");
+        let t_aa = lcg_array4((oa, oa, va, va), 0x9E37_79B9_7F4A_7C15);
+        let t_bb = lcg_array4((ob, ob, vb, vb), 0xD1B5_4A32_D192_ED03);
+        let t_ab = lcg_array4((oa, ob, va, vb), 0x8CB9_2BA7_2F3D_8DD7);
+        let b_a = lcg_b_full(naux, nmo, 0x2545_F491_4F6C_DD1D);
+        let b_b = lcg_b_full(naux, nmo, 0x5851_F42D_4C95_7F2D);
+        let reference =
+            u_mp2_orbital_gradient_scalar_reference(&t_aa, &t_bb, &t_ab, &b_a, &b_b, fo, ta, tb);
+        let scale = reference[0].val.iter().fold(0.0f64, |m, x| m.max(x.abs()));
+        assert!(scale > 0.1, "reference same_a is degenerate: max {scale:e}");
+        let ba = GradientB::extract(&b_a, oa, va, fo, ta);
+        let bb = GradientB::extract(&b_b, ob, vb, fo, tb);
+        let run = |aux_slab| {
+            u_mp2_orbital_gradient_kernel(
+                t_aa.view(),
+                t_bb.view(),
+                t_ab.view(),
+                &ba,
+                &bb,
+                aux_slab,
+                &mut PhaseAccumulator::new(),
+            )
+        };
+        for aux_slab in [VV_CONTRACT_AUX_SLAB, 2] {
+            let g = run(aux_slab);
+            let [same_a, ab_a, same_b, ab_b] = &reference;
+            same_a.check("same_a", &g.same_a);
+            ab_a.check("ab_a", &g.ab_a);
+            same_b.check("same_b", &g.same_b);
+            ab_b.check("ab_b", &g.ab_b);
+            for threads in [1usize, 2, 5] {
+                let pool = rayon::ThreadPoolBuilder::new()
+                    .num_threads(threads)
+                    .build()
+                    .unwrap();
+                let h = pool.install(|| run(aux_slab));
+                assert_eq!(
+                    h.same_a, g.same_a,
+                    "same_a bits differ on {threads} threads"
+                );
+                assert_eq!(h.ab_a, g.ab_a, "ab_a bits differ on {threads} threads");
+                assert_eq!(
+                    h.same_b, g.same_b,
+                    "same_b bits differ on {threads} threads"
+                );
+                assert_eq!(h.ab_b, g.ab_b, "ab_b bits differ on {threads} threads");
+            }
+        }
     }
 }

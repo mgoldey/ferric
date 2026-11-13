@@ -773,8 +773,8 @@ fn check_b_full_and_t2_alloc(
 /// Element count of the dense intermediates [`compute_orbital_gradient`]
 /// holds co-resident, shared by its pre-flight guard and its pool charge:
 ///
-/// * [`compute_orbital_gradient_panelled`], before its c-panel loop: `b_ov`
-///   (naux×nov), `b_vv` (naux×nvir²), `b_oo` (naux×nocc²), `ooov` (nocc²×nov).
+/// * the integral response: `b_ov` (naux×nov), `b_vv` (naux×nvir²), `b_oo`
+///   (naux×nocc²), `ooov` (nocc²×nov) and the `Γ` rows (nocc×naux·nvir).
 /// * [`fock_response_gradient`]: `P_oo`/`P_vv`, and eight nmo×nmo planes (`W`,
 ///   `C W Cᵀ`, `J`, `K`, `G`, `CᵀGC`, `F·W`, `W·F`).
 ///
@@ -788,19 +788,22 @@ fn gradient_intermediate_elems(nocc: usize, nvir: usize, naux: usize, nmo: usize
             .saturating_add(nocc.saturating_mul(nocc)),
     ); // b_ov + b_vv + b_oo
     let ooov = nocc.saturating_mul(nocc).saturating_mul(nov);
+    let gamma = naux.saturating_mul(nov);
     let fock_resp = nmo
         .saturating_mul(nmo)
         .saturating_mul(8)
         .saturating_add(nocc.saturating_mul(nocc))
         .saturating_add(nvir.saturating_mul(nvir));
-    aux_elems.saturating_add(ooov).saturating_add(fock_resp)
+    aux_elems
+        .saturating_add(ooov)
+        .saturating_add(gamma)
+        .saturating_add(fock_resp)
 }
 
 /// Fail-fast pre-flight guard for the dense MO-space intermediates
 /// [`compute_orbital_gradient`] allocates unconditionally (see
-/// [`gradient_intermediate_elems`]). Unlike the VVOV transient (which the
-/// panel loop budget-sizes), none of these is blocked, so the budget check has
-/// to happen up front. The co-resident t2 pair in the caller is guarded by
+/// [`gradient_intermediate_elems`]). None of these is blocked, so the budget
+/// check has to happen up front. The co-resident t2 pair in the caller is guarded by
 /// [`check_t2_pair_alloc`] / [`check_b_full_and_t2_alloc`].
 ///
 /// `budget_bytes` is the already-resolved [`ferric_core::memory::resolve_budget_bytes`]
@@ -1197,9 +1200,9 @@ fn compute_orbital_gradient(
     // and threads it here).
     let naux = b_full.shape()[0];
     let nmo = nocc_total + nvir;
-    // Fail-fast guard on the dense pre-panel-loop intermediates the panelled
-    // evaluation allocates unconditionally (mirrors check_t2_pair_alloc on
-    // the caller's co-resident t2 pair).
+    // Fail-fast guard on the dense intermediates the integral response and
+    // the Fock response allocate unconditionally (mirrors check_t2_pair_alloc
+    // on the caller's co-resident t2 pair).
     check_gradient_intermediates_alloc(
         "OO-RI-MP2 gradient intermediates",
         nocc,
@@ -1218,26 +1221,14 @@ fn compute_orbital_gradient(
     // sum in one ledger.
     //
     // HARD: the buffers are allocated unconditionally and the pre-flight
-    // immediately above already errors on the same bytes. The one plane on
-    // this path that IS blocked -- the VVOV c-panel -- is sized separately
-    // from `budget_bytes` just below and is not part of this charge.
+    // immediately above already errors on the same bytes.
     let _grad_charge = crate::rimp2::charge_mo_side(
-        "OO-RI-MP2 gradient intermediates (b_ov/b_vv/b_oo + ooov + Fock-response W/J/K)",
+        "OO-RI-MP2 gradient intermediates (b_ov/b_vv/b_oo + ooov + Γ + Fock-response W/J/K)",
         gradient_intermediate_elems(nocc, nvir, naux, nmo).saturating_mul(8),
     )?;
-    // VVOV panel width from the resident-bytes budget: one c-value costs
-    // nvir·nocc·nvir·8 bytes of VVOV rows. Unset budget = one full-width panel
-    // (bit-identical to the former unblocked path).
-    //
-    // `budget_bytes`, NOT the pool's `available_bytes()`: a width may depend on
-    // the budget and the problem, never on the ledger (see
-    // `rimp2::mo_stream_chunk_for`).
-    let nov = nocc * nvir;
-    let row_bytes = nvir.saturating_mul(nov).saturating_mul(8).max(1);
-    let panel_c = (budget_bytes / row_bytes).max(1).min(nvir.max(1));
     let tok = acc.begin("gradient: MP2 integral response");
-    let mut g = compute_orbital_gradient_panelled_timed(
-        f_mo, t2, b_full, nocc, nvir, first_occ, nocc_total, panel_c, acc,
+    let mut g = hf_and_integral_response_gradient_timed(
+        f_mo, t2, b_full, nocc, nvir, first_occ, nocc_total, acc,
     );
     acc.stop(tok);
     let tok = acc.begin("gradient: Fock response (density + J/K)");
@@ -1260,15 +1251,24 @@ fn compute_orbital_gradient(
 }
 
 /// HF + fixed-denominator integral-response part of [`compute_orbital_gradient`]
-/// (everything except the Fock response), with an explicit VVOV c-panel width.
-/// The panelled evaluation is exact for any `panel_c >= 1`: panels change the
-/// memory shape only, never the contraction. It is split out so tests can force
-/// multi-panel execution regardless of the environment budget, and so the
-/// thread-count bit-identity test can run it without a J/K build.
-// Orbital-space sizes plus the panel width are all irreducibly distinct.
+/// (everything except the Fock response):
+///
+/// ```text
+///   g[c,k] = 4 F_ck + 2·(G_V[c,k] + G_O[c,k])
+///   G_V[c,k] = Σ_{P,x} B^P_{cx} Γ_k[P,x],   Γ_k = Σ_j B_j M_kjᵀ,
+///              M_kj = 2A_kj − A_kjᵀ + 2A_jkᵀ − A_jk
+///   G_O[c,k] = −Σ_{i,j,y} N_ij[c,y] (ik|jy),  N_ij = 2A_ij − A_ji + 2A_jiᵀ − A_ijᵀ
+/// ```
+///
+/// with `A_ij[x,y] = t_ij^xy` the `(i, j)` block of `t2` and `B_j` the
+/// `(naux, nvir)` slice `B^P_{jy}`. These are the four delta terms of
+/// `d(ia|jb)/dkappa_ck` in [`compute_orbital_gradient`] contracted with
+/// `2t − t^swap`, regrouped over the RI factors so no `(nvir², nocc·nvir)` VVOV
+/// block is formed (see `orbital_gradient_gemm`). The scalar definition is the
+/// `orbital_gradient_scalar_reference` test oracle.
 #[cfg(test)]
 #[allow(clippy::too_many_arguments)]
-fn compute_orbital_gradient_panelled(
+fn hf_and_integral_response_gradient(
     f_mo: &Array2<f64>,
     t2: &[f64],
     b_full: &Array3<f64>,
@@ -1276,9 +1276,8 @@ fn compute_orbital_gradient_panelled(
     nvir: usize,
     first_occ: usize,
     nocc_total: usize,
-    panel_c: usize,
 ) -> Array2<f64> {
-    compute_orbital_gradient_panelled_timed(
+    hf_and_integral_response_gradient_timed(
         f_mo,
         t2,
         b_full,
@@ -1286,15 +1285,14 @@ fn compute_orbital_gradient_panelled(
         nvir,
         first_occ,
         nocc_total,
-        panel_c,
         &mut PhaseAccumulator::new(),
     )
 }
 
-/// [`compute_orbital_gradient_panelled`] with its sub-phases recorded in `acc`
+/// `hf_and_integral_response_gradient` with its sub-phases recorded in `acc`
 /// as nested rows (inert unless `FERRIC_TIMING` is set).
 #[allow(clippy::too_many_arguments)]
-fn compute_orbital_gradient_panelled_timed(
+fn hf_and_integral_response_gradient_timed(
     f_mo: &Array2<f64>,
     t2: &[f64],
     b_full: &Array3<f64>,
@@ -1302,195 +1300,91 @@ fn compute_orbital_gradient_panelled_timed(
     nvir: usize,
     first_occ: usize,
     nocc_total: usize,
-    panel_c: usize,
     acc: &mut PhaseAccumulator,
 ) -> Array2<f64> {
-    use rayon::prelude::*;
-
-    let naux = b_full.shape()[0];
-    let nov = nocc * nvir;
-
-    // Dressed B blocks (contiguous, aux-major) sliced out of the full-MO tensor.
-    //   Bov[P, i*nvir+a] = B^P_{i,a}   (occ, vir)
-    //   Bvv[P, a*nvir+b] = B^P_{a,b}   (vir, vir)
-    //   Boo[P, i*nocc+j] = B^P_{i,j}   (occ, occ)
-    // Building the dense MO-ERI blocks below is then a single wide GEMM each,
-    // replacing the former per-element O(naux) dot inside the ijab loops
-    // (which cost O(naux · nvir³ nocc³)).
-    let tok = acc.begin("  B block extraction + ooov");
-    let mut b_ov = Array2::<f64>::zeros((naux, nov));
-    let mut b_vv = Array2::<f64>::zeros((naux, nvir * nvir));
-    let mut b_oo = Array2::<f64>::zeros((naux, nocc * nocc));
-    for p in 0..naux {
+    use crate::orbital_gradient_gemm::{GradientB, VV_CONTRACT_AUX_SLAB};
+    let tok = acc.begin("  B block extraction");
+    let b = GradientB::extract(b_full, nocc, nvir, first_occ, nocc_total);
+    acc.stop_nested(tok);
+    let resp = integral_response_kernel(t2, &b, VV_CONTRACT_AUX_SLAB, acc);
+    // g_ck = 4 F_ck + 2·resp_ck. Sign follows the CANONICAL Cayley convention
+    // (shared `orbital_rotation::cayley_rotation`, U = (I−κ/2)⁻¹(I+κ/2) ≈
+    // exp(κ), g = +∂E/∂κ), where κ_{ai}>0 mixes virtual into occupied via
+    // C_new ≈ C(I+κ). The HF term is the closed-shell analogue of
+    // u_oo_rimp2's `+2·F_ai` (factor 4 vs 2 is the RHF density doubling).
+    let mut g = Array2::<f64>::zeros((nvir, nocc));
+    for a in 0..nvir {
         for i in 0..nocc {
-            let i_mo = first_occ + i;
-            for a in 0..nvir {
-                b_ov[(p, i * nvir + a)] = b_full[(p, i_mo, nocc_total + a)];
-            }
-            for j in 0..nocc {
-                b_oo[(p, i * nocc + j)] = b_full[(p, i_mo, first_occ + j)];
-            }
-        }
-        for a in 0..nvir {
-            let a_mo = nocc_total + a;
-            for b in 0..nvir {
-                b_vv[(p, a * nvir + b)] = b_full[(p, a_mo, nocc_total + b)];
-            }
+            g[(a, i)] = 4.0 * f_mo[(nocc_total + a, first_occ + i)];
         }
     }
+    g.scaled_add(2.0, &resp);
+    g
+}
 
-    // OOOV is small (nocc²·nov·8 ≈ 0.44 GB at the audit scale) — build once.
-    //   OOOV[(i*nocc+k), (j*nvir+b)] = (ik|jb)
-    let ooov = b_oo.t().dot(&b_ov); // (nocc², nocc·nvir)
+/// `G_V + G_O` of [`hf_and_integral_response_gradient`], shape `(nvir, nocc)`,
+/// from `t2` (flat `(nov, nov)`) and the B blocks. `aux_slab` is the `P` slab
+/// of the `(ca|jb)` contraction, an argument so a test can force several.
+fn integral_response_kernel(
+    t2: &[f64],
+    b: &crate::orbital_gradient_gemm::GradientB,
+    aux_slab: usize,
+    acc: &mut PhaseAccumulator,
+) -> Array2<f64> {
+    use crate::orbital_gradient_gemm::{
+        charge_pair_scratch, contract_vv_gamma, ordered_task_sum, pair_gamma_rows, pair_ooov_term,
+        par_gemm_tn,
+    };
+    use ndarray::{s, ArrayView2};
+    let (nocc, nvir, naux) = (b.nocc, b.nvir, b.naux);
+    let nov = nocc * nvir;
+    assert_eq!(t2.len(), nov * nov, "OO-MP2 gradient: t2 length");
+    let t = ArrayView2::from_shape((nov, nov), t2).expect("t2 is nov x nov");
+    let blk =
+        |i: usize, j: usize| t.slice_move(s![i * nvir..(i + 1) * nvir, j * nvir..(j + 1) * nvir]);
+    let _scratch = charge_pair_scratch("OO-RI-MP2 gradient pair scratch", nvir);
+
+    // (ik|jb) = ooov[(i,k),(j,b)]
+    let tok = acc.begin("  ooov GEMM");
+    let ooov = par_gemm_tn(&b.boo, &b.bov);
     acc.stop_nested(tok);
 
-    // VVOV[(c*nvir+a), (j*nvir+b)] = (ca|jb), shape (nvir², nocc·nvir), is the
-    // single largest transient in the crate (~203 GB at the audit scale). Every
-    // VVOV read inside the c_idx loop below is confined to the `nvir` rows
-    // [c_idx*nvir, c_idx*nvir+nvir), so we never need more than a panel of c
-    // rows resident. Block over c-panels: build vvov_panel for a panel of
-    // c-values (a wide GEMM: b_vv[:, panel].t() · b_ov), consume it, discard it.
-    // Peak VVOV footprint is one panel instead of the full (nvir², nov) square.
-    let panel_c = panel_c.max(1).min(nvir.max(1));
+    let tok = acc.begin("  Γ pair GEMMs");
+    let mut gamma = Array2::<f64>::zeros((nocc, naux * nvir));
+    pair_gamma_rows(&blk, 2.0, 1.0, 1.0, b, gamma.view_mut());
+    acc.stop_nested(tok);
 
-    // g_{ai} has shape (nvir, nocc) -- virtual index a, occupied index i
-    let mut g = Array2::zeros((nvir, nocc));
+    let tok = acc.begin("  (ca|jb) contraction");
+    let mut g = contract_vv_gamma(
+        "OO-RI-MP2 gradient partials",
+        &b.bvv,
+        &gamma,
+        naux,
+        nvir,
+        aux_slab,
+    );
+    acc.stop_nested(tok);
 
-    // HF/Brillouin contribution: +4 * F_{ai}. Sign follows the CANONICAL Cayley
-    // convention (shared `orbital_rotation::cayley_rotation`,
-    // U = (I−κ/2)⁻¹(I+κ/2) ≈ exp(κ), g = +∂E/∂κ), where κ_{ai}>0 mixes virtual
-    // into occupied via C_new ≈ C(I+κ). This is the closed-shell analogue of
-    // u_oo_rimp2's `+2·F_ai` HF term (factor 4 vs 2 is the RHF density doubling).
-    for a in 0..nvir {
-        let a_mo = nocc_total + a;
-        for i in 0..nocc {
-            let i_mo = first_occ + i;
-            g[(a, i)] += 4.0 * f_mo[(a_mo, i_mo)];
-        }
-    }
-
-    // MP2 integral response (fixed denominators):
-    // dE_MP2/d kappa_{ck} = 2 * sum_{ijab} t_{ij,ab} * [2*d(ia|jb)/dk_{ck} - d(ib|ja)/dk_{ck}]
-    //
-    // Written below in the PRE-UNIFICATION Cayley sense
-    // (dC_p/dk_{ck} = -delta_{pk} C_c + delta_{pc} C_k); the accumulated
-    // `grad_ck` is therefore the NEGATIVE of the canonical-convention value,
-    // and each row is stored as `2 * grad_ck`, whose sign matches the HF term
-    // above (see the `*row_k` assignment).
-    //
-    // d(ia|jb)/dk_{ck} = delta_{ik}*(ca|jb) + delta_{jk}*(ia|cb) - delta_{ac}*(ik|jb) - delta_{bc}*(ia|jk)
-    // d(ib|ja)/dk_{ck} = delta_{ik}*(cb|ja) + delta_{jk}*(ib|ca) - delta_{bc}*(ik|ja) - delta_{ac}*(ib|jk)
-    //
-    // Combined: 2*d(ia|jb)/dk - d(ib|ja)/dk =
-    //   delta_{ik} * [2*(ca|jb) - (cb|ja)]
-    // + delta_{jk} * [2*(ia|cb) - (ib|ca)]
-    // - delta_{ac} * [2*(ik|jb) - (ib|jk)]
-    // - delta_{bc} * [2*(ia|jk) - (ik|ja)]
-    //
-    // For each (c, k) pair, we sum over ijab with the appropriate delta contractions.
-    // ERIs are read from the (panelled) VVOV / (full) OOOV blocks:
-    //   (ca|jb) = vvov[c*nvir+a, j*nvir+b]  (vvov row = local c-panel offset)
-    //   (ik|jb) = ooov[i*nocc+k, j*nvir+b]     ((ib|jk)=(jk|ib)=ooov[j*nocc+k, i*nvir+b])
-
-    let mut c0 = 0;
-    while c0 < nvir {
-        let c1 = (c0 + panel_c).min(nvir);
-        // vvov_panel rows correspond to c in [c0, c1): local row (c-c0)*nvir + a.
-        let bvv_panel = b_vv.slice(ndarray::s![.., c0 * nvir..c1 * nvir]);
-        let tok = acc.begin("  vvov panel GEMMs");
-        let vvov_panel = bvv_panel.t().dot(&b_ov); // ((c1-c0)·nvir, nov)
-        acc.stop_nested(tok);
-        let tok = acc.begin("  contraction loops (rayon over c)");
-
-        // Parallelize over the panel's c-values. Each c_idx reads only shared,
-        // read-only inputs (vvov_panel/ooov/t2) and produces its own row of nocc
-        // gradient contributions — a disjoint-write pattern. We collect each
-        // c_idx's row independently and scatter into `g` serially afterward.
-        // The per-c_idx `grad_ck` accumulation order is byte-for-byte the same
-        // as the serial version regardless of thread count, so the result is
-        // bit-identical (no cross-c_idx summation whose order could vary).
-        let panel_rows: Vec<(usize, Vec<f64>)> = (c0..c1)
-            .into_par_iter()
-            .map(|c_idx| {
-                let cbase = (c_idx - c0) * nvir; // local vvov_panel row base for this c
-                let mut row = vec![0.0_f64; nocc];
-                for (k, row_k) in row.iter_mut().enumerate() {
-                    let mut grad_ck = 0.0;
-
-                    // Term 1: delta_{ik} -> i=k, sum over j,a,b
-                    // 2 * sum_{jab} t_{kj,ab} * [2*(ca|jb) - (cb|ja)]
-                    for j in 0..nocc {
-                        for a in 0..nvir {
-                            let ca = cbase + a;
-                            for b in 0..nvir {
-                                let t_kj_ab = t2[(k * nvir + a) * nov + j * nvir + b];
-                                let eri_cajb = vvov_panel[(ca, j * nvir + b)];
-                                let eri_cbja = vvov_panel[(cbase + b, j * nvir + a)];
-                                grad_ck += t_kj_ab * (2.0 * eri_cajb - eri_cbja);
-                            }
-                        }
-                    }
-
-                    // Term 2: delta_{jk} -> j=k, sum over i,a,b
-                    // 2 * sum_{iab} t_{ik,ab} * [2*(ia|cb) - (ib|ca)]
-                    // (ia|cb) = (cb|ia) = vvov[c*nvir+b, i*nvir+a];
-                    // (ib|ca) = (ca|ib) = vvov[c*nvir+a, i*nvir+b]
-                    for i in 0..nocc {
-                        for a in 0..nvir {
-                            for b in 0..nvir {
-                                let t_ik_ab = t2[(i * nvir + a) * nov + k * nvir + b];
-                                let eri_iacb = vvov_panel[(cbase + b, i * nvir + a)];
-                                let eri_ibca = vvov_panel[(cbase + a, i * nvir + b)];
-                                grad_ck += t_ik_ab * (2.0 * eri_iacb - eri_ibca);
-                            }
-                        }
-                    }
-
-                    // Term 3: delta_{ac} -> a=c, sum over i,j,b
-                    // -2 * sum_{ijb} t_{ij,cb} * [2*(ik|jb) - (ib|jk)]
-                    // (ik|jb) = ooov[i*nocc+k, j*nvir+b];
-                    // (ib|jk) = (jk|ib) = ooov[j*nocc+k, i*nvir+b]
-                    for i in 0..nocc {
-                        for j in 0..nocc {
-                            for b in 0..nvir {
-                                let t_ij_cb = t2[(i * nvir + c_idx) * nov + j * nvir + b];
-                                let eri_ikjb = ooov[(i * nocc + k, j * nvir + b)];
-                                let eri_ibjk = ooov[(j * nocc + k, i * nvir + b)];
-                                grad_ck -= t_ij_cb * (2.0 * eri_ikjb - eri_ibjk);
-                            }
-                        }
-                    }
-
-                    // Term 4: delta_{bc} -> b=c, sum over i,j,a
-                    // -2 * sum_{ija} t_{ij,ac} * [2*(ia|jk) - (ik|ja)]
-                    // (ia|jk) = (jk|ia) = ooov[j*nocc+k, i*nvir+a];
-                    // (ik|ja) = ooov[i*nocc+k, j*nvir+a]
-                    for i in 0..nocc {
-                        for j in 0..nocc {
-                            for a in 0..nvir {
-                                let t_ij_ac = t2[(i * nvir + a) * nov + j * nvir + c_idx];
-                                let eri_iajk = ooov[(j * nocc + k, i * nvir + a)];
-                                let eri_ikja = ooov[(i * nocc + k, j * nvir + a)];
-                                grad_ck -= t_ij_ac * (2.0 * eri_iajk - eri_ikja);
-                            }
-                        }
-                    }
-
-                    *row_k = 2.0 * grad_ck;
-                }
-                (c_idx, row)
-            })
-            .collect();
-
-        for (c_idx, row) in panel_rows {
-            for (k, &val) in row.iter().enumerate() {
-                g[(c_idx, k)] += val;
-            }
-        }
-        acc.stop_nested(tok);
-        c0 = c1;
-    }
-
+    let tok = acc.begin("  (ik|jb) terms");
+    g += &ordered_task_sum(
+        "OO-RI-MP2 gradient oo partials",
+        nocc,
+        (nvir, nocc),
+        |i, acc| {
+            pair_ooov_term(
+                &blk,
+                2.0,
+                1.0,
+                -1.0,
+                &ooov,
+                i,
+                nocc,
+                nvir,
+                &mut acc.view_mut(),
+            );
+        },
+    );
+    acc.stop_nested(tok);
     g
 }
 
@@ -3033,54 +2927,147 @@ mod tests {
         );
     }
 
-    /// The VVOV c-panelled gradient must be exact for any panel width:
-    /// panel_c = 1 (max blocking) vs panel_c = nvir (single panel, the former
-    /// unblocked path).
-    #[test]
-    fn test_vvov_panelled_gradient_exact() {
-        let (mol, obs, dfbs, op, bounds, rhf) = setup_h2();
-        let nbas = obs.nbasis();
-        let nocc_total = (mol.nelec() as usize) / 2;
-        let nocc = nocc_total;
-        let first_occ = 0;
-        let nvir = nbas - nocc_total;
-        let naux = dfbs.nbasis();
-        let orb = OrbitalSpace::new(nocc, nvir, nocc_total, first_occ);
-        let c = rhf.mos_r();
-        let h = oneelectron::hcore(&obs);
-        let ao = OoRiMp2AoTensors::build(&obs, &dfbs, op).unwrap();
-        let pool =
-            EnginePool::new(op, &obs, ferric_integrals::engine_pool::eri_precision()).unwrap();
-        let (_e_hf, f_ao, _) = compute_hf_energy(
-            &obs,
-            &bounds,
-            c,
-            nocc_total,
-            &h,
-            mol.nuclear_repulsion(),
-            &pool,
-            ferric_core::memory::resolve_budget_bytes(None),
-        )
-        .unwrap();
-        let eps = orbital_energies(c, &f_ao);
-        let (_e, b_ov) = compute_rimp2_with_orbitals(&ao, c, &eps, &orb).unwrap();
-        let (t2, _) =
-            compute_t2_and_integrals(&b_ov, &eps, nocc, nvir, nocc_total, first_occ, naux);
-        let b_full = compute_b_full_mo_with(&ao, c).unwrap();
-        let f_mo = c.t().dot(&f_ao).dot(c);
+    /// The fixed-denominator integral response `G` of
+    /// `hf_and_integral_response_gradient` (so `g = 4F + 2G`) by the scalar
+    /// loops of its four delta terms,
+    ///
+    /// ```text
+    ///   G_ck = Σ_jab t_kj^ab [2(ca|jb) − (cb|ja)] + Σ_iab t_ik^ab [2(ia|cb) − (ib|ca)]
+    ///        − Σ_ijb t_ij^cb [2(ik|jb) − (ib|jk)] − Σ_ija t_ij^ac [2(ia|jk) − (ik|ja)],
+    /// ```
+    ///
+    /// with every integral `(pq|rs) = Σ_P B^P_{pq} B^P_{rs}` read straight
+    /// from `b_full`. Returns `(G, S, N)`: `S` the per-element sum of the
+    /// absolute values of the `t·B·B` monomials, `N` their count.
+    fn orbital_gradient_scalar_reference(
+        t2: &[f64],
+        b_full: &Array3<f64>,
+        nocc: usize,
+        nvir: usize,
+        first_occ: usize,
+        nocc_total: usize,
+    ) -> (Array2<f64>, Array2<f64>, usize) {
+        let naux = b_full.shape()[0];
+        let nov = nocc * nvir;
+        let t = |i: usize, a: usize, j: usize, b: usize| t2[(i * nvir + a) * nov + j * nvir + b];
+        let (o, v) = (|i: usize| first_occ + i, |a: usize| nocc_total + a);
+        let eri = |p: usize, q: usize, r: usize, s: usize| {
+            (0..naux).fold((0.0, 0.0), |(x, y), pp| {
+                let m = b_full[(pp, p, q)] * b_full[(pp, r, s)];
+                (x + m, y + m.abs())
+            })
+        };
+        let mut g = Array2::<f64>::zeros((nvir, nocc));
+        let mut sabs = Array2::<f64>::zeros((nvir, nocc));
+        // sign·t·[2·e1 − e2]
+        let mut term = |c: usize, k: usize, sign: f64, t: f64, e1: (f64, f64), e2: (f64, f64)| {
+            g[(c, k)] += sign * t * (2.0 * e1.0 - e2.0);
+            sabs[(c, k)] += t.abs() * (2.0 * e1.1 + e2.1);
+        };
+        for c in 0..nvir {
+            for k in 0..nocc {
+                for j in 0..nocc {
+                    for a in 0..nvir {
+                        for b in 0..nvir {
+                            let cajb = eri(v(c), v(a), o(j), v(b));
+                            let cbja = eri(v(c), v(b), o(j), v(a));
+                            term(c, k, 1.0, t(k, a, j, b), cajb, cbja);
+                            // i = j: t_jk^ab [2(ja|cb) − (jb|ca)], (ja|cb) = (cb|ja)
+                            term(c, k, 1.0, t(j, a, k, b), cbja, cajb);
+                        }
+                    }
+                }
+                for i in 0..nocc {
+                    for j in 0..nocc {
+                        for x in 0..nvir {
+                            let ikjx = eri(o(i), o(k), o(j), v(x));
+                            let jkix = eri(o(j), o(k), o(i), v(x));
+                            // t_ij^cx [2(ik|jx) − (ix|jk)], (ix|jk) = (jk|ix)
+                            term(c, k, -1.0, t(i, c, j, x), ikjx, jkix);
+                            // t_ij^xc [2(ix|jk) − (ik|jx)]
+                            term(c, k, -1.0, t(i, x, j, c), jkix, ikjx);
+                        }
+                    }
+                }
+            }
+        }
+        let n = 4 * naux * (nocc * nvir * nvir + nocc * nocc * nvir);
+        (g, sabs, n)
+    }
 
-        let g_full = compute_orbital_gradient_panelled(
-            &f_mo, &t2, &b_full, nocc, nvir, first_occ, nocc_total, nvir,
+    /// The integral response (RI `Γ` route on the pool, no VVOV block)
+    /// against the scalar definition, on `t2` and `b_full` with no symmetry
+    /// and a frozen core, so a transposed block or a misplaced orbital offset
+    /// changes the result at order one.
+    ///
+    /// Bar, per element: `G_ck` is `Σ c·t·B·B` over `N` monomials (`c` = ±1
+    /// or ±2, exact). Each route forms every monomial with two rounded
+    /// multiplications and sums the monomials (the amplitude or integral
+    /// combinations being internal nodes) in a tree of `N − 1` additions, so
+    /// each is within `(N + 1)·u·S` of the exact sum, `S = Σ|c·t·B·B|`, and
+    /// the two differ by at most `(N + 2)·ε·S`.
+    ///
+    /// Run at the production `P` slab and at a 2-function slab (four slabs of
+    /// seven auxiliary functions). Pools of 1, 2 and 5 threads must give the
+    /// same bits. The public wrapper's `4F + 2G` is checked against the
+    /// kernel on the same inputs.
+    ///
+    /// FAILS if a block is transposed, a slab is dropped, or a reduction runs
+    /// in a thread-dependent order.
+    #[test]
+    fn orbital_gradient_gemm_matches_the_scalar_definition() {
+        use crate::orbital_gradient_gemm::{GradientB, VV_CONTRACT_AUX_SLAB};
+        let (first_occ, nocc, nvir, naux) = (1usize, 3usize, 5usize, 7usize);
+        let nocc_total = first_occ + nocc;
+        let nmo = nocc_total + nvir;
+        let nov = nocc * nvir;
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = || {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((state >> 11) as f64) / ((1u64 << 53) as f64) - 0.5
+        };
+        let t2: Vec<f64> = (0..nov * nov).map(|_| next()).collect();
+        let b_full = Array3::from_shape_fn((naux, nmo, nmo), |_| next());
+        let f_mo = Array2::from_shape_fn((nmo, nmo), |_| next());
+        let (g_ref, s_ref, n) =
+            orbital_gradient_scalar_reference(&t2, &b_full, nocc, nvir, first_occ, nocc_total);
+        let scale = g_ref.iter().fold(0.0f64, |m, x| m.max(x.abs()));
+        assert!(scale > 0.1, "reference G is degenerate: max {scale:e}");
+        let b = GradientB::extract(&b_full, nocc, nvir, first_occ, nocc_total);
+        let run =
+            |aux_slab| integral_response_kernel(&t2, &b, aux_slab, &mut PhaseAccumulator::new());
+        for aux_slab in [VV_CONTRACT_AUX_SLAB, 2] {
+            let g = run(aux_slab);
+            for ((idx, x), (w, s)) in g.indexed_iter().zip(g_ref.iter().zip(s_ref.iter())) {
+                let bar = (n + 2) as f64 * f64::EPSILON * s;
+                assert!(bar < 1e-10, "G{idx:?}: bar {bar:e} is not tight");
+                assert!(
+                    (x - w).abs() <= bar,
+                    "G{idx:?}: {x:e} vs scalar {w:e}, |diff| {:e} > bar {bar:e}",
+                    (x - w).abs()
+                );
+            }
+            for threads in [1usize, 2, 5] {
+                let pool = rayon::ThreadPoolBuilder::new()
+                    .num_threads(threads)
+                    .build()
+                    .unwrap();
+                assert_eq!(
+                    pool.install(|| run(aux_slab)),
+                    g,
+                    "G bits differ on {threads} threads"
+                );
+            }
+        }
+        let g = run(VV_CONTRACT_AUX_SLAB);
+        let full = hf_and_integral_response_gradient(
+            &f_mo, &t2, &b_full, nocc, nvir, first_occ, nocc_total,
         );
-        for panel in [1usize, 2, 3] {
-            let g_p = compute_orbital_gradient_panelled(
-                &f_mo, &t2, &b_full, nocc, nvir, first_occ, nocc_total, panel,
-            );
-            let maxdiff = (&g_full - &g_p).iter().map(|v| v.abs()).fold(0.0, f64::max);
-            assert!(
-                maxdiff < 1e-13,
-                "panelled gradient (panel_c={panel}) differs from full: {maxdiff:.2e}"
-            );
+        for ((a, i), x) in full.indexed_iter() {
+            let want = 4.0 * f_mo[(nocc_total + a, first_occ + i)] + 2.0 * g[(a, i)];
+            assert_eq!(x.to_bits(), want.to_bits(), "4F + 2G at ({a}, {i})");
         }
     }
 
@@ -3202,11 +3189,10 @@ mod tests {
         let _ = nao; // used only for the (naux, nao, nao) shape documented above
     }
 
-    /// The rayon-parallelized c_idx response-term loop (P6) must produce a
-    /// byte-for-byte identical gradient regardless of thread count. Each c_idx
-    /// writes only its own row via a disjoint-write collect, so there is no
-    /// summation whose order varies with scheduling — bit-identity, not merely
-    /// close-agreement, is the correct assertion. Mirrors
+    /// The integral-response gradient on real water amplitudes must be
+    /// byte-for-byte identical on any thread count: every pool task writes its
+    /// own rows or accumulator, and accumulators are added in task order, so
+    /// no summation order depends on scheduling. Mirrors
     /// `whole_pipeline_rhf_gradient_bit_identical_across_thread_counts` in
     /// ferric-scf/src/rhf.rs.
     #[test]
@@ -3263,17 +3249,14 @@ mod tests {
         let b_full = compute_b_full_mo_with(&ao, c).unwrap();
         let f_mo = c.t().dot(&f_ao).dot(c);
 
-        // Force a multi-panel width (panel_c=3) so the parallel region runs
-        // inside more than one GEMM panel, exercising the interaction of
-        // panelling and rayon scheduling together.
         let run_with_threads = |n: usize| -> Array2<f64> {
             let pool = rayon::ThreadPoolBuilder::new()
                 .num_threads(n)
                 .build()
                 .unwrap();
             pool.install(|| {
-                compute_orbital_gradient_panelled(
-                    &f_mo, &t2, &b_full, nocc, nvir, first_occ, nocc_total, 3,
+                hf_and_integral_response_gradient(
+                    &f_mo, &t2, &b_full, nocc, nvir, first_occ, nocc_total,
                 )
             })
         };

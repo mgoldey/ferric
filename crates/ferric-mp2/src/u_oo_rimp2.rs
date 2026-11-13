@@ -554,9 +554,22 @@ fn u_gradient_solver_frame(
         let b_full_a = compute_b_full_mo_with(ao, &p.c_a_sc)?;
         let b_full_b = compute_b_full_mo_with(ao, &p.c_b_sc)?;
         acc.stop(tok);
+        // The gradient's dense intermediates (both spins' B blocks, the
+        // OOOV-type blocks and the Γ row stacks) are held for the call; they
+        // have no blocked fallback, so the charge is hard.
+        let _grad_charge = crate::rimp2::charge_mo_side(
+            "U-OO-RI-MP2 gradient intermediates (B blocks + ooov + Γ)",
+            crate::u_rimp2::u_gradient_intermediate_elems(
+                ao.naux(),
+                nocc_a,
+                nmo - nocc_total_a,
+                nocc_b,
+                nvir_b,
+            )
+            .saturating_mul(8),
+        )?;
         let tok = acc.begin("gradient: U-MP2 integral response");
-        let g =
-            compute_u_mp2_orbital_gradient_timed(&p.amps, &b_full_a, &b_full_b, budget_bytes, acc);
+        let g = compute_u_mp2_orbital_gradient_timed(&p.amps, &b_full_a, &b_full_b, acc);
         acc.stop(tok);
         g
     };
