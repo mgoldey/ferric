@@ -14,6 +14,7 @@ import importlib.util
 import shutil
 import struct
 import subprocess
+import sys
 import zipfile
 from pathlib import Path
 
@@ -113,8 +114,10 @@ def test_missing_extension_is_an_error(tmp_path):
 
 
 @pytest.mark.skipif(
-    shutil.which("cc") is None or shutil.which("strip") is None,
-    reason="needs cc and strip",
+    sys.platform != "linux"
+    or shutil.which("cc") is None
+    or shutil.which("strip") is None,
+    reason="needs cc and strip producing ELF (Linux)",
 )
 def test_reader_agrees_with_system_strip(tmp_path):
     src = tmp_path / "x.c"
