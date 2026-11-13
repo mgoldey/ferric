@@ -2170,7 +2170,9 @@ pub struct RpaCfg {
     pub u0: Option<f64>,
     #[serde(default)]
     pub run_diagnostics: bool,
-    /// If set, write PDEP eigenpotentials to `<prefix>_eigpot_NNN.cube`.
+    /// If set, write PDEP eigenpotentials to `<prefix>_eigpot_NNN.cube`: each
+    /// cube holds the charge density Σ_P c_P χ_P(r) whose Coulomb potential is
+    /// the eigenpotential (unit Coulomb self-energy).
     pub export_eigpot_prefix: Option<String>,
     /// Number of leading eigenpotentials to export (default: 10).
     pub export_eigpot_count: Option<usize>,

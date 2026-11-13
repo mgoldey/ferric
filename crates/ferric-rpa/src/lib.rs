@@ -63,6 +63,8 @@ pub mod pno;
 pub mod properties;
 /// Minimax imaginary-frequency quadrature construction.
 pub mod quadrature;
+/// Dielectric response eigenmodes as real-space aux-basis densities.
+pub mod response_modes;
 /// Short-range MP2 + long-range RPA composite method.
 pub mod rs_mp2_rpa;
 /// Boys-screened B-tile construction for sparse chi0.
@@ -288,9 +290,10 @@ pub struct PdepRpaResult {
     pub n_eigenpotentials: usize,
     /// Static dielectric eigenvalues λ_α(0), length M.
     pub eigenvalues_static: Vec<f64>,
-    /// PDEP eigenpotentials V_α expanded in the RI auxiliary basis (physical
-    /// coefficients). Shape (naux, M). Column α gives the c_α^P such that
-    /// V_α(r) = Σ_P c_α^P χ_P(r).
+    /// PDEP eigenpotentials in the RI auxiliary basis (physical coefficients).
+    /// Shape (naux, M). Column α gives the c_α^P of the charge density
+    /// ρ_α(r) = Σ_P c_α^P χ_P(r); the eigenpotential is its Coulomb potential
+    /// V_α(r) = ∫ ρ_α(r') / |r − r'| dr' (see [`response_modes`]).
     ///
     /// With the dressed tensor B̃ = F·(Q|ia) (F = `v_inv_sqrt`: the Cholesky
     /// factor L⁻¹ for Coulomb/erfc, a symmetric eigh V^{-1/2} for erf/terf), a

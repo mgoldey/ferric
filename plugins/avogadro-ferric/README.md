@@ -14,6 +14,7 @@ ferric ships wheels for that platform only.
 | Extensions > ferric > Optimize Geometry | | Relaxed geometry, returned as cjson |
 | Extensions > ferric > Frequencies | | Harmonic modes, animated in the Vibrations panel |
 | Extensions > ferric > Molecular Orbitals | | Basis set and MOs, so Avogadro draws orbitals |
+| Extensions > ferric > Response Modes | | RPA dielectric eigenmodes as densities, drawn in the Orbitals panel |
 | Extensions > ferric > Configure… | | Defaults: method, basis, charge model, threads, memory |
 
 Single Point, Optimize Geometry, Frequencies and Molecular Orbitals each open
@@ -105,6 +106,34 @@ makes, such as `FrequencyResult.normal_modes`, and are not supported.
   tables; ferric's test suite checks the two agree shell by shell. The plugin
   keeps its own fit because it supports released ferric wheels
   (`ferric>=0.1.0rc11`), which do not have `ferric.molden`.
+
+## Response modes
+
+Extensions > ferric > Response Modes runs a closed-shell SCF with the
+Configure… method and basis, then computes the leading eigenmodes of the RPA
+dielectric (`ferric.response_modes`). Its dialog (static options file
+`src/avogadro_ferric/data/response_modes_options.toml`) asks for the number of
+modes, the auxiliary (RI) basis and an imaginary frequency in Hartree (0 =
+static). Each mode is a charge density in the auxiliary basis. The plugin
+writes that basis as the cjson `basisSet` and each mode as one orbital, so the
+Orbitals panel draws it:
+
+- each entry is one mode, scaled so that ∫ρ² = 1 (isovalues comparable to an
+  MO's); its sign is arbitrary;
+- the "energy" column holds the dielectric eigenvalue λ (a pure number, not
+  eV), largest first. Added to the molecule as electron density, a mode
+  induces −(λ − 1) times itself from independent electrons and is screened to
+  1/λ of itself by the full response; λ = 1 means no response;
+- every mode is unoccupied, so Avogadro labels the first one "LUMO". That
+  label means nothing here.
+
+The dialog offers cc-pVDZ-RI, aug-cc-pVDZ-RI and def2-SVP-RI. The export
+refuses g shells, as for orbitals: these sets have them from Ga (cc-pVDZ-RI)
+or Sc (the other two) on, and the triple-zeta RI sets from carbon on, so those
+are not offered. `ferric.write_response_mode_cube` writes
+the same modes as cube files, which Avogadro also opens. The test
+`tests/test_response_modes.py` checks that Avogadro's evaluation of the
+exported cjson equals ferric's own evaluation of each mode, and the cube.
 
 ## Limits
 

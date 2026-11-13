@@ -20,7 +20,7 @@ When the RPA/export pipeline is executed (driven by the `export_npz` configurati
 | `orbital_spreads` | $(N_{\text{MO}},)$ | `float64` | Bohr | Orbital spreads $\sqrt{\langle r^2\rangle_p - \lvert\langle\vec r\rangle_p\rvert^2}$. Restricted references only. |
 | `density_second_moment` | $(3, 3)$ | `float64` | Bohr$^2$ | Electronic density second moment $M_{xy} = \sum_{\mu\nu} D_{\mu\nu}\langle\mu\vert x\,y\vert\nu\rangle$ about the origin; trace is $\langle r^2\rangle$ of the density. Written with `density_matrix`. |
 | `dipole` | $(3,)$ | `float64` | $e\,a_0$ | Molecular dipole moment (electronic + nuclear). |
-| `pdep_eigenvectors` | $(N_{\text{aux}}, M)$ | `float64` | a.u. | PDEP eigenpotentials, where $M$ is the number of retained eigenvalues. |
+| `pdep_eigenvectors` | $(N_{\text{aux}}, M)$ | `float64` | a.u. | PDEP eigenpotentials, where $M$ is the number of retained eigenvalues: column $\alpha$ holds the aux coefficients of the charge density $\rho_\alpha(\mathbf r)=\sum_P c_{P\alpha}\chi_P(\mathbf r)$ (with $c^\top V c = I$), whose Coulomb potential is the eigenpotential. |
 | `esp_atoms` | $(N_{\text{atoms}},)$ | `float64` | Hartree / $e$ | Electrostatic potential $V(R_A)$ evaluated exactly at the coordinates of each atomic nucleus. |
 | `esp_surface` | $(N_{\text{pts}},)$ | `float64` | Hartree / $e$ | ESP on the van der Waals shell, in the order of `esp_points`. Written only together with `esp_points`. |
 | `esp_points` | $(N_{\text{pts}}, 3)$ | `float64` | Bohr | Shell points: per-atom Lebedev spheres at scaled vdW radii, buried points dropped. |

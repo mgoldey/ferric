@@ -25,6 +25,45 @@ contributes here. How much it saves depends on the threshold; runs that need
 the full-rank answer set `trunc_thresh = 0.0`, as the GW, BSE and \\( C_6 \\)
 examples do.
 
+### Response modes as real-space densities
+
+Each dielectric eigenvector is a set of auxiliary-basis coefficients
+\\( c_{P\alpha} \\), and the function
+\\( \rho_\alpha(\mathbf r) = \sum_P c_{P\alpha} \chi_P(\mathbf r) \\) is a
+**charge density**, not a potential. The coefficients solve
+\\( (V + \Pi)\,c_\alpha = \lambda_\alpha V c_\alpha \\) with
+\\( V_{PQ} = (P|Q) \\), \\( \Pi = (P|ia)\,\tfrac{4\Delta_{ia}}{\Delta_{ia}^2+\omega^2}\,(ia|Q) \\)
+and \\( c_\alpha^\top V c_\alpha = 1 \\) (unit Coulomb self-energy). Read
+\\( \rho_\alpha \\) as electron density added to the molecule. Its Hartree
+potential \\( \delta V_\alpha = \int \rho_\alpha(\mathbf r')/|\mathbf r-\mathbf r'|\,d\mathbf r' \\)
+is the perturbation, and the independent-electron density it induces,
+Coulomb-fitted in the same basis, is \\( -(\lambda_\alpha - 1)\rho_\alpha \\).
+With full RPA screening, \\( \rho_\alpha \\) is reduced to
+\\( \rho_\alpha/\lambda_\alpha \\). The perturbing potential is the Coulomb
+potential of \\( \rho_\alpha \\), so drawing \\( \sum_P c_{P\alpha}\chi_P \\)
+shows the density, not the potential. The PDEP eigenpotentials
+(`PdepRpaResult.eigenpotentials`, the `[rpa] export_eigpot_prefix` cubes and
+the NPZ `pdep_eigenvectors`) are the same coefficients at \\( \omega = 0 \\).
+
+`ferric.response_modes(mol, basis, auxbasis, result, n_modes=10, omega=0.0)`
+returns the leading modes of the closed-shell dielectric at imaginary
+frequency \\( i\omega \\) (Hartree; 0 is static), by a dense eigensolve on an
+RHF or RKS result. `ferric.write_response_mode_cube(path, mol, auxbasis,
+modes, index)` writes one as a Gaussian cube file, scaled to
+\\( \int\rho_\alpha^2\,d\mathbf r = 1 \\) by default so isovalues compare with
+an orbital's (`normalization="coulomb"` writes the stored coefficients). The
+Avogadro plugin draws the same modes in its Orbitals panel (Extensions >
+ferric > Response Modes).
+
+`ResponseModes.field_couplings` \\( s_{\alpha d} \\) is the Coulomb overlap of
+mode \\( \alpha \\) with the uncoupled density a unit field along \\( d \\)
+induces. Summed over every mode,
+\\( \alpha(i\omega) = \alpha_\text{bare} - \sum_\alpha s_\alpha s_\alpha^\top/\lambda_\alpha \\)
+is the RPA polarizability (`polarizability_from_modes()`; with fewer modes,
+its truncation). For water/cc-pVDZ with cc-pVDZ-RI, the mode sum equals
+`pdep_polarizability_static` to \\( 4\times10^{-15} \\) a.u., and the
+8 leading of 84 modes carry 95% of the screening trace.
+
 ## RPA correlation energy
 
 **What it is.** Direct RPA (dRPA) correlation from the dielectric eigenvalues
