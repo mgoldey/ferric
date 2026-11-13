@@ -764,9 +764,11 @@ mod tests {
     /// agree to that floor or better; a wrong term (a dropped gradient or τ
     /// piece, a lost ½) is an O(1) relative change.
     ///
-    /// Mutations (applied and reverted, 2026-11-13): dropping the `½ t ∂φ_o`
-    /// τ term fails r2SCAN only; dropping `γ ∇δρ` from w fails PBE, B3LYP and
-    /// r2SCAN; dropping the u term fails all four.
+    /// Mutations (applied and reverted, 2026-11-13; the loop stops at the
+    /// first failing functional): dropping the `½ t ∂φ_o` τ term passes LDA,
+    /// PBE and B3LYP and fails r2SCAN (2.9e-2 against a 1.3e-9 bar); dropping
+    /// `γ ∇δρ` from w fails PBE (2.6e-2); dropping the u term fails LDA
+    /// (7.9e-2).
     #[test]
     fn ov_operator_matches_the_dense_block() {
         use ferric_core::basis;

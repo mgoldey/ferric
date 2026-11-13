@@ -550,8 +550,9 @@ mod tests {
     ///
     /// Mutation (applied and reverted, 2026-11-13): returning `θ − D` instead
     /// of dividing the residual by it in `diagonal_correction` stalls the
-    /// solve (unconverged-root error); dropping the second Gram–Schmidt pass
-    /// is invisible here (both passes are kept for the near-dependent case).
+    /// subspace (the "cannot grow" error). A single Gram–Schmidt pass passes
+    /// here and fails `root_in_a_block_no_guess_touches_is_found` (Casida
+    /// does not converge in 200 iterations).
     #[test]
     fn tda_matches_dense_eigh() {
         let (d, e) = diag_and_coupling(0x9E3779B97F4A7C15, 0.02);
@@ -592,8 +593,9 @@ mod tests {
     /// `(X+Y)ᵀ(A+B)(X+Y)/Ω − 1 = (X+Y)·r+/Ω`, bounded by `√2 ‖X+Y‖ res/Ω`.
     ///
     /// Mutation (applied and reverted, 2026-11-13): dropping the `1/√Ω` in
-    /// `casida_ritz`'s `u` fails the normalization check; using `M+` in place
-    /// of `M−` for `L` fails the energies.
+    /// `casida_ritz`'s `u` fails the normalization check (−0.76 for root 0);
+    /// using `M+` in place of `M−` for `L` stalls the subspace here and makes
+    /// `non_positive_a_minus_b_is_an_rpa_instability` miss the instability.
     #[test]
     fn casida_matches_dense_solve() {
         let (d, e1) = diag_and_coupling(0x243F6A8885A308D3, 0.02);

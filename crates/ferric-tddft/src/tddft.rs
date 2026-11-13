@@ -1301,6 +1301,16 @@ mod tests {
     /// block on A+B, `2·FXC_BLOCK_ASYMMETRY_TOL·max|K|` (the floor the
     /// matrix-free f_xc block is pinned at against the dense one,
     /// `ferric_dft::lr_kernel` `ov_operator_matches_the_dense_block`).
+    ///
+    /// Mutations (applied and reverted, 2026-11-13): dropping f_xc from `A x`
+    /// fails PBE (A off by 9.2e-2 against a 1.8e-9 bar), and from `(A+B) x`
+    /// (1.8e-1); halving the Coulomb factor fails HF on A (2 → 1: 1.6e-1
+    /// against 9.8e-14) and on A+B (4 → 2: 3.2e-1). Each also fails the
+    /// PySCF-referenced `validation_tddft` case through the Davidson route
+    /// (`h2co_631g_pbe`, `h2co_631g_hf`: an oscillator strength off by
+    /// 3e-2 to 3e-1). The roots test below
+    /// does not catch these by design: its bar includes the measured operator
+    /// difference.
     #[test]
     fn matrix_free_products_equal_the_dense_matrices() {
         for xc in [None, Some("PBE"), Some("B3LYP")] {
