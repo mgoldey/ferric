@@ -2044,6 +2044,46 @@ fn skeleton_hess_2e<G>(
 where
     G: Fn(usize, usize, usize, usize) -> f64 + Sync,
 {
+    skeleton_hess_2e_windowed(
+        prep,
+        op,
+        bounds,
+        natoms,
+        max_d,
+        gam,
+        SKELETON_WINDOW_QUARTETS,
+    )
+}
+
+/// Most screened quartets whose contracted derivative blocks
+/// [`skeleton_hess_2e`] holds at once.
+const SKELETON_WINDOW_QUARTETS: usize = 1 << 16;
+
+/// [`skeleton_hess_2e`] with the window width as a parameter (the tests force
+/// narrow windows).
+///
+/// The sum is that of fixed quartet groups ([`quartet_groups`]): each group's
+/// quartets are added onto a zeroed partial in list order, and the partials
+/// onto the Hessian in group order, so no thread count changes a bit. The work
+/// is split finer than the groups: the integrals and their contraction with Γ
+/// run in parallel over the single quartets of a window of whole groups (one
+/// engine per rayon worker), and then each group of the window scatters its
+/// quartets' values in list order, the groups in parallel. A group's cost is
+/// not even (one group of 96 held half the phase's wall time on butane), and
+/// it no longer bounds the phase.
+fn skeleton_hess_2e_windowed<G>(
+    prep: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    natoms: usize,
+    max_d: f64,
+    gam: &G,
+    window_quartets: usize,
+) -> Result<Array2<f64>, FerricError>
+where
+    G: Fn(usize, usize, usize, usize) -> f64 + Sync,
+{
+    use rayon::prelude::*;
     let quads = screened_quartets_with(prep.nshells(), bounds, max_d * max_d, HESS_2E_SCREEN);
     let _quads_charge = ferric_core::memory::pool::reserve_global(
         "SCF Hessian 2e skeleton screened quartet list",
@@ -2056,34 +2096,61 @@ where
         prep.shell_offsets(),
         prep.shell_to_atom(),
     );
-    // Parallel over fixed quartet groups (one engine per rayon worker), the
-    // group sums added in group order: independent of the thread count.
     let pool = EnginePool::from_fn(|| Engine::new_2e_deriv2(op, prep, 1e-14))?;
     let n3 = 3 * natoms;
     let (group, n_groups) = quartet_groups(quads.len());
-    let mut h = Array2::<f64>::zeros((n3, n3));
-    crate::reduce::grouped_deterministic_sum(
-        &mut h,
-        n_groups,
-        n3,
-        crate::reduce::default_band_bytes(),
-        |grp| {
-            let mut hp = Array2::<f64>::zeros((n3, n3));
-            let mut g = Vec::new();
-            let hi = ((grp + 1) * group).min(quads.len());
-            for &(s1, s2, s3, s4) in &quads[grp * group..hi] {
+    // Whole groups per window; a quartet's values are at most the 12·13/2
+    // coordinate pairs of four distinct centres. Charged with the group
+    // partials.
+    let window_groups = (window_quartets / group).max(1);
+    let _window_charge = ferric_core::memory::pool::reserve_global(
+        "SCF Hessian 2e skeleton derivative window and group partials",
+        (window_groups * group)
+            .min(quads.len())
+            .saturating_mul(78)
+            .saturating_add(n_groups.saturating_mul(n3 * n3))
+            .saturating_mul(std::mem::size_of::<f64>()),
+    )?;
+    let mut parts = vec![Array2::<f64>::zeros((n3, n3)); n_groups];
+    for (w, window) in parts.chunks_mut(window_groups).enumerate() {
+        let g0 = w * window_groups;
+        let q0 = g0 * group;
+        let q1 = ((g0 + window.len()) * group).min(quads.len());
+        let vals: Vec<Option<Vec<f64>>> = quads[q0..q1]
+            .par_iter()
+            .map(|&(s1, s2, s3, s4)| {
                 let blk = QuartetBlock::new(dims, offs, sh2at, s1, s2, s3, s4);
+                let mut g = Vec::new();
                 perm_summed_gamma(&blk, gam, &mut g);
                 pool.with(|eng| {
-                    if let Some(dq) = eng.compute_eri_deriv2_quartet(prep, s1, s2, s3, s4) {
-                        let vals = contract_blocks(dq, &g);
-                        scatter_unique_pairs(&mut hp, &vals, &blk.atoms);
-                    }
-                });
+                    eng.compute_eri_deriv2_quartet(prep, s1, s2, s3, s4)
+                        .map(|dq| contract_blocks(dq, &g))
+                })
+            })
+            .collect();
+        window.par_iter_mut().enumerate().for_each(|(k, hp)| {
+            let lo = (g0 + k) * group;
+            let hi = (lo + group).min(quads.len());
+            for (q, v) in (lo..hi).zip(&vals[lo - q0..hi - q0]) {
+                if let Some(v) = v {
+                    scatter_unique_pairs(
+                        hp,
+                        v,
+                        &[
+                            sh2at[quads[q].0],
+                            sh2at[quads[q].1],
+                            sh2at[quads[q].2],
+                            sh2at[quads[q].3],
+                        ],
+                    );
+                }
             }
-            Ok(hp)
-        },
-    )?;
+        });
+    }
+    let mut h = Array2::<f64>::zeros((n3, n3));
+    for hp in &parts {
+        h += hp;
+    }
     Ok(h)
 }
 
@@ -3834,6 +3901,127 @@ mod tests {
             crate::rhf::solve_rhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &cfg)
                 .unwrap();
         (prep, bounds, rhf)
+    }
+
+    /// The 2e skeleton with one partial per quartet group, each group's
+    /// quartets computed and scattered in list order by one worker, the
+    /// partials added in group order: the sum [`skeleton_hess_2e`] must
+    /// reproduce bit for bit. The test oracle.
+    fn grouped_skeleton_reference<G>(
+        prep: &PreparedBasis,
+        bounds: &SchwarzBounds,
+        natoms: usize,
+        max_d: f64,
+        gam: &G,
+    ) -> Array2<f64>
+    where
+        G: Fn(usize, usize, usize, usize) -> f64 + Sync,
+    {
+        let quads = screened_quartets_with(prep.nshells(), bounds, max_d * max_d, HESS_2E_SCREEN);
+        let (dims, offs, sh2at) = (
+            prep.shell_dims(),
+            prep.shell_offsets(),
+            prep.shell_to_atom(),
+        );
+        let mut eng = Engine::new_2e_deriv2(Operator::coulomb(), prep, 1e-14).unwrap();
+        let n3 = 3 * natoms;
+        let (group, n_groups) = quartet_groups(quads.len());
+        let mut h = Array2::<f64>::zeros((n3, n3));
+        for grp in 0..n_groups {
+            let mut hp = Array2::<f64>::zeros((n3, n3));
+            let mut g = Vec::new();
+            let hi = ((grp + 1) * group).min(quads.len());
+            for &(s1, s2, s3, s4) in &quads[grp * group..hi] {
+                let blk = QuartetBlock::new(dims, offs, sh2at, s1, s2, s3, s4);
+                perm_summed_gamma(&blk, gam, &mut g);
+                if let Some(dq) = eng.compute_eri_deriv2_quartet(prep, s1, s2, s3, s4) {
+                    let vals = contract_blocks(dq, &g);
+                    scatter_unique_pairs(&mut hp, &vals, &blk.atoms);
+                }
+            }
+            h += &hp;
+        }
+        h
+    }
+
+    /// The windowed 2e skeleton has the bits of the grouped serial sum at any
+    /// thread count and window width (one group per window, windows that end
+    /// inside the list, and one window for all), on water/cc-pVDZ (3081
+    /// quartets in groups of 33). The fixture sees the order of the sum:
+    /// adding each group's quartets in reverse changes bits (asserted), so
+    /// the equality is not one that any order would pass.
+    #[test]
+    fn windowed_skeleton_has_the_bits_of_the_grouped_sum() {
+        let mol = water();
+        let prep =
+            PreparedBasis::new(&mol, &ferric_core::basis::bundled("cc-pvdz").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let rhf = crate::rhf::solve_rhf(
+            &ParallelContext::default(),
+            &mol,
+            &prep,
+            op,
+            &bounds,
+            &RhfConfig::default(),
+        )
+        .unwrap();
+        let d = rhf.density_r();
+        let gam = |mu, nu, la, sg| gamma(d, mu, nu, la, sg);
+        let natoms = mol.atoms.len();
+        let expected = grouped_skeleton_reference(&prep, &bounds, natoms, max_abs(d), &gam);
+        let bits = |a: &Array2<f64>| a.iter().map(|x| x.to_bits()).collect::<Vec<u64>>();
+        for threads in [1usize, 3, 8] {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap();
+            for window in [1usize, 100, 1 << 16] {
+                let h = pool.install(|| {
+                    skeleton_hess_2e_windowed(&prep, op, &bounds, natoms, max_abs(d), &gam, window)
+                        .unwrap()
+                });
+                assert_eq!(
+                    bits(&h),
+                    bits(&expected),
+                    "threads {threads} window {window}"
+                );
+            }
+        }
+        // Order sensitivity of the fixture: the same quartets, each group's
+        // scattered in reverse.
+        let quads =
+            screened_quartets_with(prep.nshells(), &bounds, max_abs(d).powi(2), HESS_2E_SCREEN);
+        let (group, _) = quartet_groups(quads.len());
+        assert_eq!((quads.len(), group), (3081, 33), "fixture size");
+        let mut eng = Engine::new_2e_deriv2(op, &prep, 1e-14).unwrap();
+        let mut reversed = Array2::<f64>::zeros(expected.dim());
+        for chunk in quads.chunks(group) {
+            let mut hp = Array2::<f64>::zeros(expected.dim());
+            for &(s1, s2, s3, s4) in chunk.iter().rev() {
+                let blk = QuartetBlock::new(
+                    prep.shell_dims(),
+                    prep.shell_offsets(),
+                    prep.shell_to_atom(),
+                    s1,
+                    s2,
+                    s3,
+                    s4,
+                );
+                let mut g = Vec::new();
+                perm_summed_gamma(&blk, &gam, &mut g);
+                if let Some(dq) = eng.compute_eri_deriv2_quartet(&prep, s1, s2, s3, s4) {
+                    scatter_unique_pairs(&mut hp, &contract_blocks(dq, &g), &blk.atoms);
+                }
+            }
+            reversed += &hp;
+        }
+        let differ = bits(&reversed)
+            .iter()
+            .zip(bits(&expected))
+            .filter(|(a, b)| **a != *b)
+            .count();
+        assert!(differ > 0, "reversing the quartet order changed no bit");
     }
 
     /// −μ^y_vo, a CPHF right-hand side with an O(0.1) scale, nvir × nocc.
