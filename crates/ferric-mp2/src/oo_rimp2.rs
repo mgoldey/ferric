@@ -38,6 +38,7 @@ use crate::rimp2::{active_occ, cholesky_inverse_sqrt};
 use ferric_core::external_potential::ExternalPotential;
 use ferric_core::mol::Molecule;
 use ferric_core::orbitals::OrbitalSpace;
+use ferric_core::timing::PhaseAccumulator;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::oneelectron;
@@ -553,6 +554,7 @@ fn orbital_gradient_solver_frame(
     orb: &OrbitalSpace,
     budget_bytes: usize,
     rss_probe: bool,
+    acc: &mut PhaseAccumulator,
 ) -> Result<Array2<f64>, FerricError> {
     let OrbitalSpace {
         nocc,
@@ -560,22 +562,26 @@ fn orbital_gradient_solver_frame(
         first_occ,
         nvir,
     } = *orb;
-    let b_full = compute_b_full_mo_with(ao, &point.c_sc)?;
+    let b_full = acc.time("gradient: b_full", || {
+        compute_b_full_mo_with(ao, &point.c_sc)
+    })?;
     // Stage-seam RSS safety net (observational only): `b_full` and the
     // amplitudes are the two largest allocations of an iteration.
     if rss_probe {
         ferric_core::memory::warn_if_rss_over("OO-RI-MP2 b_full built", budget_bytes, 1.1);
     }
     let naux = b_full.shape()[0];
-    let (t2, _eri_ov) = compute_t2_and_integrals(
-        &point.b_ov_sc,
-        &point.eps_sc,
-        nocc,
-        nvir,
-        nocc_total,
-        first_occ,
-        naux,
-    );
+    let (t2, _eri_ov) = acc.time("gradient: t2 and (ia|jb)", || {
+        compute_t2_and_integrals(
+            &point.b_ov_sc,
+            &point.eps_sc,
+            nocc,
+            nvir,
+            nocc_total,
+            first_occ,
+            naux,
+        )
+    });
     let f_mo_sc = point.c_sc.t().dot(&point.f_ao).dot(&point.c_sc);
     let g_sc = compute_orbital_gradient(
         &point.c_sc,
@@ -590,6 +596,7 @@ fn orbital_gradient_solver_frame(
         bounds,
         pool,
         budget_bytes,
+        acc,
     )?;
     let u_o = point.u_sc.slice(ndarray::s![
         first_occ..first_occ + nocc,
@@ -634,10 +641,13 @@ fn fock_response_gradient(
     bounds: &SchwarzBounds,
     pool: &EnginePool,
     ooc_budget: usize,
+    acc: &mut PhaseAccumulator,
 ) -> Result<Array2<f64>, FerricError> {
     let nmo = c.ncols();
     let n = c.nrows();
+    let tok = acc.begin("  MP2 density");
     let (p_oo, p_vv) = build_mp2_density(t2, nocc, nvir);
+    acc.stop_nested(tok);
     let mut w = Array2::<f64>::zeros((nmo, nmo));
     for i in 0..nocc {
         for j in 0..nocc {
@@ -1180,6 +1190,7 @@ fn compute_orbital_gradient(
     bounds: &SchwarzBounds,
     pool: &EnginePool,
     budget_bytes: usize,
+    acc: &mut PhaseAccumulator,
 ) -> Result<Array2<f64>, FerricError> {
     // `budget_bytes` is the caller's ALREADY-RESOLVED budget (oo_ri_mp2
     // resolves resolve_budget_bytes(config.memory_budget_bytes) once per call
@@ -1224,9 +1235,12 @@ fn compute_orbital_gradient(
     let nov = nocc * nvir;
     let row_bytes = nvir.saturating_mul(nov).saturating_mul(8).max(1);
     let panel_c = (budget_bytes / row_bytes).max(1).min(nvir.max(1));
-    let mut g = compute_orbital_gradient_panelled(
-        f_mo, t2, b_full, nocc, nvir, first_occ, nocc_total, panel_c,
+    let tok = acc.begin("gradient: MP2 integral response");
+    let mut g = compute_orbital_gradient_panelled_timed(
+        f_mo, t2, b_full, nocc, nvir, first_occ, nocc_total, panel_c, acc,
     );
+    acc.stop(tok);
+    let tok = acc.begin("gradient: Fock response (density + J/K)");
     g += &fock_response_gradient(
         c,
         f_mo,
@@ -1239,7 +1253,9 @@ fn compute_orbital_gradient(
         bounds,
         pool,
         budget_bytes,
+        acc,
     )?;
+    acc.stop(tok);
     Ok(g)
 }
 
@@ -1250,6 +1266,7 @@ fn compute_orbital_gradient(
 /// multi-panel execution regardless of the environment budget, and so the
 /// thread-count bit-identity test can run it without a J/K build.
 // Orbital-space sizes plus the panel width are all irreducibly distinct.
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 fn compute_orbital_gradient_panelled(
     f_mo: &Array2<f64>,
@@ -1260,6 +1277,33 @@ fn compute_orbital_gradient_panelled(
     first_occ: usize,
     nocc_total: usize,
     panel_c: usize,
+) -> Array2<f64> {
+    compute_orbital_gradient_panelled_timed(
+        f_mo,
+        t2,
+        b_full,
+        nocc,
+        nvir,
+        first_occ,
+        nocc_total,
+        panel_c,
+        &mut PhaseAccumulator::new(),
+    )
+}
+
+/// [`compute_orbital_gradient_panelled`] with its sub-phases recorded in `acc`
+/// as nested rows (inert unless `FERRIC_TIMING` is set).
+#[allow(clippy::too_many_arguments)]
+fn compute_orbital_gradient_panelled_timed(
+    f_mo: &Array2<f64>,
+    t2: &[f64],
+    b_full: &Array3<f64>,
+    nocc: usize,
+    nvir: usize,
+    first_occ: usize,
+    nocc_total: usize,
+    panel_c: usize,
+    acc: &mut PhaseAccumulator,
 ) -> Array2<f64> {
     use rayon::prelude::*;
 
@@ -1273,6 +1317,7 @@ fn compute_orbital_gradient_panelled(
     // Building the dense MO-ERI blocks below is then a single wide GEMM each,
     // replacing the former per-element O(naux) dot inside the ijab loops
     // (which cost O(naux · nvir³ nocc³)).
+    let tok = acc.begin("  B block extraction + ooov");
     let mut b_ov = Array2::<f64>::zeros((naux, nov));
     let mut b_vv = Array2::<f64>::zeros((naux, nvir * nvir));
     let mut b_oo = Array2::<f64>::zeros((naux, nocc * nocc));
@@ -1297,6 +1342,7 @@ fn compute_orbital_gradient_panelled(
     // OOOV is small (nocc²·nov·8 ≈ 0.44 GB at the audit scale) — build once.
     //   OOOV[(i*nocc+k), (j*nvir+b)] = (ik|jb)
     let ooov = b_oo.t().dot(&b_ov); // (nocc², nocc·nvir)
+    acc.stop_nested(tok);
 
     // VVOV[(c*nvir+a), (j*nvir+b)] = (ca|jb), shape (nvir², nocc·nvir), is the
     // single largest transient in the crate (~203 GB at the audit scale). Every
@@ -1351,7 +1397,10 @@ fn compute_orbital_gradient_panelled(
         let c1 = (c0 + panel_c).min(nvir);
         // vvov_panel rows correspond to c in [c0, c1): local row (c-c0)*nvir + a.
         let bvv_panel = b_vv.slice(ndarray::s![.., c0 * nvir..c1 * nvir]);
+        let tok = acc.begin("  vvov panel GEMMs");
         let vvov_panel = bvv_panel.t().dot(&b_ov); // ((c1-c0)·nvir, nov)
+        acc.stop_nested(tok);
+        let tok = acc.begin("  contraction loops (rayon over c)");
 
         // Parallelize over the panel's c-values. Each c_idx reads only shared,
         // read-only inputs (vvov_panel/ooov/t2) and produces its own row of nocc
@@ -1438,6 +1487,7 @@ fn compute_orbital_gradient_panelled(
                 g[(c_idx, k)] += val;
             }
         }
+        acc.stop_nested(tok);
         c0 = c1;
     }
 
@@ -1530,7 +1580,11 @@ pub fn oo_ri_mp2(
     // every energy and gradient is evaluated in the semicanonical frame of `c`
     // (see `evaluate_point` / `orbital_gradient_solver_frame`).
     let mut c = rhf.mos_r().clone();
-    let mut point = evaluate_point(obs, bounds, &c, &h, vnn, &pool, budget_bytes, &ao, &orb)?;
+    // Phase table (FERRIC_TIMING); inert otherwise.
+    let mut acc = PhaseAccumulator::new().report_on_drop("OO-RI-MP2");
+    let mut point = acc.time("evaluate point (HF energy + RI-MP2)", || {
+        evaluate_point(obs, bounds, &c, &h, vnn, &pool, budget_bytes, &ao, &orb)
+    })?;
     let mut grad_norm = f64::MAX;
     let nmo = nbas;
     let max_kappa = 0.3; // cap individual rotation angles (radians)
@@ -1621,6 +1675,7 @@ pub fn oo_ri_mp2(
             &orb,
             budget_bytes,
             iter == 1,
+            &mut acc,
         )?;
         drop(b_full_charge);
 
@@ -1701,7 +1756,9 @@ pub fn oo_ri_mp2(
         }
 
         // Evaluate energy at the new (possibly DIIS-extrapolated) orbitals
-        let trial = evaluate_point(obs, bounds, &c_new, &h, vnn, &pool, budget_bytes, &ao, &orb)?;
+        let trial = acc.time("evaluate point (HF energy + RI-MP2)", || {
+            evaluate_point(obs, bounds, &c_new, &h, vnn, &pool, budget_bytes, &ao, &orb)
+        })?;
         let total_new = trial.total();
         let de = (total_new - point.total()).abs();
 
@@ -1730,8 +1787,9 @@ pub fn oo_ri_mp2(
                 let u2 = cayley_rotation(&k)?;
                 bt_c = c.dot(&u2);
                 drop(bt_point.take());
-                let p =
-                    evaluate_point(obs, bounds, &bt_c, &h, vnn, &pool, budget_bytes, &ao, &orb)?;
+                let p = acc.time("evaluate point (HF energy + RI-MP2)", || {
+                    evaluate_point(obs, bounds, &bt_c, &h, vnn, &pool, budget_bytes, &ao, &orb)
+                })?;
                 let accepted = p.total() <= point.total() + 1e-12;
                 bt_point = Some(p);
                 if accepted {
@@ -1778,6 +1836,7 @@ pub fn oo_ri_mp2(
                 &orb,
                 budget_bytes,
                 false,
+                &mut acc,
             )?;
             grad_norm = g2.iter().map(|x| x * x).sum::<f64>().sqrt();
 
@@ -2410,6 +2469,7 @@ mod tests {
                 &self.orb,
                 usize::MAX,
                 false,
+                &mut PhaseAccumulator::new(),
             )
             .unwrap()
         }

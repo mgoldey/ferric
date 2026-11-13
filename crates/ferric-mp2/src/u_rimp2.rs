@@ -19,6 +19,7 @@
 
 use crate::rimp2::{compute_rpa_intermediates_spin, RiMp2Config, RpaIntermediates};
 use ferric_core::mol::Molecule;
+use ferric_core::timing::PhaseAccumulator;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
@@ -1135,6 +1136,37 @@ pub fn compute_u_mp2_orbital_gradient_blocks(
     b_full_b: &Array3<f64>,
     budget_bytes: usize,
 ) -> UMp2GradientBlocks {
+    compute_u_mp2_orbital_gradient_blocks_timed(
+        amps,
+        b_full_a,
+        b_full_b,
+        budget_bytes,
+        &mut PhaseAccumulator::new(),
+    )
+}
+
+/// [`compute_u_mp2_orbital_gradient`] with its sub-phases recorded in `acc` as
+/// nested rows (inert unless `FERRIC_TIMING` is set; the arithmetic is the same
+/// either way).
+pub(crate) fn compute_u_mp2_orbital_gradient_timed(
+    amps: &UMp2Amplitudes,
+    b_full_a: &Array3<f64>,
+    b_full_b: &Array3<f64>,
+    budget_bytes: usize,
+    acc: &mut PhaseAccumulator,
+) -> (Array2<f64>, Array2<f64>) {
+    let bl =
+        compute_u_mp2_orbital_gradient_blocks_timed(amps, b_full_a, b_full_b, budget_bytes, acc);
+    (&bl.same_a + &bl.ab_a, &bl.same_b + &bl.ab_b)
+}
+
+fn compute_u_mp2_orbital_gradient_blocks_timed(
+    amps: &UMp2Amplitudes,
+    b_full_a: &Array3<f64>,
+    b_full_b: &Array3<f64>,
+    budget_bytes: usize,
+    acc: &mut PhaseAccumulator,
+) -> UMp2GradientBlocks {
     let (nocc_a, _, nvir_a, _) = amps.t_aa.dim();
     let (nocc_b, _, nvir_b, _) = amps.t_bb.dim();
     let first_occ_a = amps.inter_a.first_occ;
@@ -1192,13 +1224,16 @@ pub fn compute_u_mp2_orbital_gradient_blocks(
         (b_ov, b_vv, b_oo)
     };
 
+    let tok = acc.begin("  U-MP2 grad: B block extraction");
     let (bov_a, bvv_a, boo_a) = extract_blocks(b_full_a, nocc_a, nvir_a, first_occ_a, nocc_total_a);
     let (bov_b, bvv_b, boo_b) = extract_blocks(b_full_b, nocc_b, nvir_b, first_occ_b, nocc_total_b);
+    acc.stop_nested(tok);
 
     // OOOV blocks are small (nocc²·nov) — build once for each spin and the two
     // cross-spin orderings.
     //   ooov_a[i·nocc_a+k, j·nvir_a+b] = (ik|jb)_α
     //   ooov_b[i·nocc_b+k, j·nvir_b+b] = (ik|jb)_β
+    let tok = acc.begin("  U-MP2 grad: ooov GEMMs");
     let ooov_a = boo_a.t().dot(&bov_a); // (nocc_a², nocc_a·nvir_a)
     let ooov_b = boo_b.t().dot(&bov_b); // (nocc_b², nocc_b·nvir_b)
                                         // Cross-spin OOOV / OVOO:
@@ -1206,6 +1241,7 @@ pub fn compute_u_mp2_orbital_gradient_blocks(
                                         //   ovoo_ab[i·nvir_a+a, J·nocc_b+K] = (ia_α | JK_β)
     let ooov_ab = boo_a.t().dot(&bov_b); // (nocc_a², nocc_b·nvir_b)
     let ovoo_ab = bov_a.t().dot(&boo_b); // (nocc_a·nvir_a, nocc_b²)
+    acc.stop_nested(tok);
 
     let mut same_a = Array2::<f64>::zeros((nvir_a, nocc_a));
     let mut ab_a = Array2::<f64>::zeros((nvir_a, nocc_a));
@@ -1249,10 +1285,13 @@ pub fn compute_u_mp2_orbital_gradient_blocks(
     while c0 < nvir_a {
         let c1 = (c0 + panel_c_a).min(nvir_a);
         let bvv_panel = bvv_a.slice(ndarray::s![.., c0 * nvir_a..c1 * nvir_a]);
+        let tok = acc.begin("  U-MP2 grad: vvov panel GEMMs");
         // (ca|jb)_α, panel rows local (c-c0)·nvir_a+a
         let vvov_a = bvv_panel.t().dot(&bov_a); // ((c1-c0)·nvir_a, nov_a)
                                                 // (ca_α | JB_β), panel rows local (c-c0)·nvir_a+a
         let vvov_ab = bvv_panel.t().dot(&bov_b); // ((c1-c0)·nvir_a, nov_b)
+        acc.stop_nested(tok);
+        let tok = acc.begin("  U-MP2 grad: α contraction loops");
 
         for c in c0..c1 {
             let cbase = (c - c0) * nvir_a; // local vvov row base for this c
@@ -1339,6 +1378,7 @@ pub fn compute_u_mp2_orbital_gradient_blocks(
                 ab_a[(c, k)] = 2.0 * s_ab; // factor 2: both t and (ia|JB) depend on integrals
             }
         }
+        acc.stop_nested(tok);
         c0 = c1;
     }
 
@@ -1358,10 +1398,13 @@ pub fn compute_u_mp2_orbital_gradient_blocks(
     while c0 < nvir_b {
         let c1 = (c0 + panel_c_b).min(nvir_b);
         let bvv_panel = bvv_b.slice(ndarray::s![.., c0 * nvir_b..c1 * nvir_b]);
+        let tok = acc.begin("  U-MP2 grad: vvov panel GEMMs");
         // (ca|jb)_β, panel rows local (c-c0)·nvir_b+a
         let vvov_b = bvv_panel.t().dot(&bov_b); // ((c1-c0)·nvir_b, nov_b)
                                                 // (ia_α | CB_β), C in the c-panel; cols local (c-c0)·nvir_b+B
         let ovvv_ab = bov_a.t().dot(&bvv_panel); // (nov_a, (c1-c0)·nvir_b)
+        acc.stop_nested(tok);
+        let tok = acc.begin("  U-MP2 grad: β contraction loops");
 
         for c in c0..c1 {
             let cbase = (c - c0) * nvir_b; // local vvov_b / ovvv_ab base for this c
@@ -1440,6 +1483,7 @@ pub fn compute_u_mp2_orbital_gradient_blocks(
                 ab_b[(c, k)] = 2.0 * s_ab; // factor 2: both t and (ia|JB) depend on integrals
             }
         }
+        acc.stop_nested(tok);
         c0 = c1;
     }
 

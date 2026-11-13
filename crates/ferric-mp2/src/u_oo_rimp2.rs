@@ -19,12 +19,13 @@ use crate::oo_rimp2::{
 use crate::orbital_rotation::cayley_rotation;
 use crate::rimp2::active_occ;
 use crate::u_rimp2::{
-    build_u_mp2_density, compute_u_mp2_amplitudes, compute_u_mp2_orbital_gradient, UMp2Amplitudes,
-    URiMp2Components,
+    build_u_mp2_density, compute_u_mp2_amplitudes, compute_u_mp2_orbital_gradient_timed,
+    UMp2Amplitudes, URiMp2Components,
 };
 use ferric_core::external_potential::ExternalPotential;
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
+use ferric_core::timing::PhaseAccumulator;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::oneelectron;
@@ -532,6 +533,7 @@ fn u_gradient_solver_frame(
     sp: &USpaces,
     budget_bytes: usize,
     label: &str,
+    acc: &mut PhaseAccumulator,
 ) -> Result<(Array2<f64>, Array2<f64>), FerricError> {
     let nmo = p.c_a_sc.ncols();
     let n = p.c_a_sc.nrows();
@@ -548,9 +550,15 @@ fn u_gradient_solver_frame(
     // resident simultaneously for the gradient contraction just below.
     check_u_bfull_alloc(label, ao.naux(), nmo, budget_bytes)?;
     let (g_mp2_a, g_mp2_b) = {
+        let tok = acc.begin("gradient: b_full_a/b_full_b");
         let b_full_a = compute_b_full_mo_with(ao, &p.c_a_sc)?;
         let b_full_b = compute_b_full_mo_with(ao, &p.c_b_sc)?;
-        compute_u_mp2_orbital_gradient(&p.amps, &b_full_a, &b_full_b, budget_bytes)
+        acc.stop(tok);
+        let tok = acc.begin("gradient: U-MP2 integral response");
+        let g =
+            compute_u_mp2_orbital_gradient_timed(&p.amps, &b_full_a, &b_full_b, budget_bytes, acc);
+        acc.stop(tok);
+        g
     };
     let f_mo_a = p.c_a_sc.t().dot(&p.f_a).dot(&p.c_a_sc);
     let f_mo_b = p.c_b_sc.t().dot(&p.f_b).dot(&p.c_b_sc);
@@ -564,7 +572,8 @@ fn u_gradient_solver_frame(
 
     // Fock response of the U-MP2 energy (both spins' Fock matrices depend on
     // both spins' densities through J; each on its own through K).
-    let dens = build_u_mp2_density(&p.amps);
+    let dens = acc.time("gradient: U-MP2 density", || build_u_mp2_density(&p.amps));
+    let tok = acc.begin("gradient: Fock response (J/K + rest)");
     let w_a = embed_u_density(&dens.p_oo_a, &dens.p_vv_a, first_occ, nocc_total_a, nmo);
     let w_b = embed_u_density(&dens.p_oo_b, &dens.p_vv_b, first_occ, nocc_total_b, nmo);
     let pa_ao = p.c_a_sc.dot(&w_a).dot(&p.c_a_sc.t());
@@ -624,6 +633,7 @@ fn u_gradient_solver_frame(
     } else {
         back(&g_b, &p.u_b, nocc_b, nocc_total_b)
     };
+    acc.stop(tok);
     Ok((g_a_act, g_b_act))
 }
 
@@ -741,7 +751,11 @@ pub fn u_oo_ri_mp2(
         )
     };
 
-    let mut point = eval(&c_a, &c_b, "U-OO-RI-MP2 initial amplitude trio")?;
+    // Phase table (FERRIC_TIMING); inert otherwise.
+    let mut acc = PhaseAccumulator::new().report_on_drop("U-OO-RI-MP2");
+    let mut point = acc.time("evaluate point (UHF energy + U-MP2 amplitudes)", || {
+        eval(&c_a, &c_b, "U-OO-RI-MP2 initial amplitude trio")
+    })?;
     let mut grad_norm = f64::MAX;
 
     let finish = |p: UPoint, converged: bool, iterations: usize, grad_norm: f64| {
@@ -788,6 +802,7 @@ pub fn u_oo_ri_mp2(
             &sp,
             budget_bytes,
             &format!("U-OO-RI-MP2 b_full_a/b_full_b (iter {iter})"),
+            &mut acc,
         )?;
 
         let gn2_a: f64 = g_a_act.iter().map(|x| x * x).sum();
@@ -895,11 +910,13 @@ pub fn u_oo_ri_mp2(
         }
 
         // Evaluate at new orbitals
-        let trial = eval(
-            &c_a_new,
-            &c_b_new,
-            format!("U-OO-RI-MP2 amplitude trio (iter {iter})").as_str(),
-        )?;
+        let trial = acc.time("evaluate point (UHF energy + U-MP2 amplitudes)", || {
+            eval(
+                &c_a_new,
+                &c_b_new,
+                format!("U-OO-RI-MP2 amplitude trio (iter {iter})").as_str(),
+            )
+        })?;
         let total_new = trial.total();
         let de = (total_new - point.total()).abs();
 
@@ -922,11 +939,15 @@ pub fn u_oo_ri_mp2(
                 let ub2 = cayley_rotation(&kb)?;
                 let bt_c_a = c_a.dot(&ua2);
                 let bt_c_b = c_b.dot(&ub2);
-                let bt_point = eval(
-                    &bt_c_a,
-                    &bt_c_b,
-                    format!("U-OO-RI-MP2 amplitude trio (iter {iter}, backtrack {bt_i})").as_str(),
-                )?;
+                let bt_point =
+                    acc.time("evaluate point (UHF energy + U-MP2 amplitudes)", || {
+                        eval(
+                            &bt_c_a,
+                            &bt_c_b,
+                            format!("U-OO-RI-MP2 amplitude trio (iter {iter}, backtrack {bt_i})")
+                                .as_str(),
+                        )
+                    })?;
                 // Keep a backtrack point only once it is accepted; a rejected
                 // one is dropped here, before the next evaluation allocates.
                 if bt_point.total() <= point.total() + 1e-12 {
@@ -1325,6 +1346,7 @@ mod tests {
                 &self.sp,
                 usize::MAX,
                 "test",
+                &mut PhaseAccumulator::new(),
             )
             .unwrap()
         }
