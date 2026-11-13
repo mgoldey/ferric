@@ -73,7 +73,7 @@ def test_a_NON_FINITE_dielectric_is_REFUSED(water, eps):
         ferric.run_rhf(mol, bs, solvent=eps)
 
 
-@pytest.mark.parametrize("order", [0, 7, 194])
+@pytest.mark.parametrize("order", [0, 7, 195])
 def test_an_unsupported_lebedev_order_is_a_ValueError(water, order):
     """Refused at the kwarg, not as a RuntimeError from RHF setup."""
     mol, bs = water
