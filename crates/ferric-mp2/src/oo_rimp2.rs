@@ -812,20 +812,22 @@ fn check_gradient_intermediates_alloc(
     )
 }
 
-/// Compute t2 amplitudes and (ia|jb) integrals from B tensor.
+/// The t2 amplitudes and the `(ia|jb)` integrals from the dressed `(P|ia)`
+/// tensor `b_flat`, shape `(naux, nocc·nvir)`.
 ///
-/// t2 is stored as flat vec of length (nocc*nvir)^2 with indexing t2[ia*nov + jb]
-/// where ia = i*nvir + a, jb = j*nvir + b.
+/// Returns `(t2, eri_ov)`, both flat C-order of length `(nocc·nvir)²`, indexed
+/// `[ia·nov + jb]` with `ia = i·nvir + a`, `jb = j·nvir + b`:
 ///
-/// Returns (t2, eri_ov) where eri_ov[ia*nov + jb] = (ia|jb).
+/// ```text
+///   eri_ov[ia,jb] = Σ_P b_flat[P,ia] · b_flat[P,jb]
+///   t2[ia,jb]     = eri_ov[ia,jb] / (ε_i + ε_j − ε_a − ε_b)
+/// ```
 ///
-/// `eri_iajb = Σ_p b_flat[p,ia]·b_flat[p,jb]` is exactly the (ia,jb) entry of
-/// `b_flat^T @ b_flat` — computed here as one wide `(nov × naux) @ (naux ×
-/// nov)` GEMM instead of the former per-element scalar strided dot product
-/// (the BLAS3-hostile anti-pattern: an O(nov²) loop of O(naux) scalar dots).
-/// This call site is not inside a rayon region (see `oo_ri_mp2`'s main loop
-/// and callers in rimp2.rs/oo_rimp2_gradient.rs), so the GEMM runs at the
-/// ambient BLAS thread count.
+/// `eri_ov` is one `b_flatᵀ · b_flat` product, `2·naux·nov²` FLOPs, run
+/// through [`ferric_core::linalg::par_gemm`]: fixed 128-column blocks on the
+/// rayon pool at one BLAS thread each, so the result does not depend on the
+/// thread count. The product is written into the returned buffer; no second
+/// `nov²` copy is made.
 pub fn compute_t2_and_integrals(
     b_flat: &Array2<f64>,
     eps: &[f64],
@@ -836,21 +838,12 @@ pub fn compute_t2_and_integrals(
     _naux: usize,
 ) -> (Vec<f64>, Vec<f64>) {
     let nov = nocc * nvir;
-    let eri_ov_mat = b_flat.t().dot(b_flat); // (nov, nov), GEMM: eri_ov_mat[ia,jb] = Σ_p b[p,ia]·b[p,jb]
+    let mut eri_ov_mat = Array2::<f64>::zeros((nov, nov));
+    ferric_core::linalg::par_gemm(1.0, &b_flat.t(), &b_flat.view(), 0.0, &mut eri_ov_mat);
+    // `zeros` is C-order, so the raw vector is `eri_ov[ia*nov + jb]`.
+    let eri_ov = eri_ov_mat.into_raw_vec_and_offset().0;
 
     let mut t2 = vec![0.0f64; nov * nov];
-    // `.dot()`'s output memory layout is not guaranteed C-order (it can go
-    // F-order in degenerate shapes — see ndarray-dot-forder-when-both-stride1
-    // memory pitfall), and the public contract here is a flat C-order Vec
-    // (`eri_ov[ia*nov+jb]`). `as_standard_layout` forces a C-contiguous copy
-    // if needed (a no-op if already C-order) before flattening, so the raw
-    // Vec extraction below is always correctly ordered regardless of what
-    // `.dot()` chose internally.
-    let eri_ov = eri_ov_mat
-        .as_standard_layout()
-        .into_owned()
-        .into_raw_vec_and_offset()
-        .0;
 
     let fill_row = |ia: usize, t2_row: &mut [f64]| {
         let i = ia / nvir;
