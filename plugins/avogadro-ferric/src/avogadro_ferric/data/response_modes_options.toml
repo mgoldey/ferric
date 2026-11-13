@@ -1,0 +1,29 @@
+# User options for Extensions > ferric > Response Modes. The method and orbital
+# basis are the defaults set in Extensions > ferric > Configure...
+# Avogadro 2.1.0 builds no widget for an option without a "type".
+
+[n_modes]
+type = "integer"
+label = "Number of modes"
+minimum = 1
+maximum = 200
+default = 10
+order = 1.0
+
+[auxbasis]
+type = "stringList"
+label = "Auxiliary (RI) basis"
+values = ["cc-pvdz-ri", "aug-cc-pvdz-ri", "def2-svp-ri"]
+default = 0
+order = 2.0
+toolTip = "Basis the modes are expanded in. Avogadro draws shells up to f, so the triple-zeta RI sets (g shells from carbon on) are not offered"
+
+[omega]
+type = "float"
+label = "Imaginary frequency"
+minimum = 0.0
+maximum = 100.0
+default = 0.0
+suffix = " Ha"
+order = 3.0
+toolTip = "0 = static dielectric"

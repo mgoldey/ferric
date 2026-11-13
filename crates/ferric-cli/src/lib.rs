@@ -5144,7 +5144,9 @@ fn run_pdep_rpa_arm(
                 .collect();
             let lam = rpa_result.eigenvalues_static[alpha];
             let path = format!("{prefix}_eigpot_{:03}.cube", alpha);
-            let comment = format!("PDEP eigenpotential α={alpha} λ(0)={lam:.6} (basis {aux_name})");
+            let comment = format!(
+                "PDEP eigenpotential α={alpha} λ(0)={lam:.6}: its charge density (basis {aux_name})"
+            );
             if let Err(e) =
                 export_basis_function_cube(&path, mol, &aux_bs, &grid, &coeffs, &comment)
             {

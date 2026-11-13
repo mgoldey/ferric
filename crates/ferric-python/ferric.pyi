@@ -2224,7 +2224,9 @@ class PdepRpaResult:
 
     @property
     def eigenpotentials(self) -> NDArray[np.float64]:
-        """PDEP eigenpotential coefficients (naux, M)."""
+        """PDEP eigenpotential coefficients (naux, M): column alpha is the charge
+        density sum_P c_P chi_P(r) whose Coulomb potential is the eigenpotential
+        (see response_modes)."""
         ...
 
     @property
@@ -5675,6 +5677,84 @@ def write_cube(
     (what="mo", needs mo_index). All lengths in Bohr. Grid is axis-aligned with
     isotropic `spacing`; omitted origin/shape come from the atoms' bounding box
     plus `padding`. Returns the (origin, shape) used."""
+    ...
+
+class ResponseModes:
+    """Leading eigenmodes of the closed-shell RPA dielectric at one imaginary
+    frequency (``response_modes``). Mode alpha is the charge density
+    rho_alpha(r) = sum_P c[P, alpha] chi_P(r) in the auxiliary basis, with unit
+    Coulomb self-energy. Added to the molecule as electron density, its Hartree
+    potential induces the Coulomb-fitted density -(lambda_alpha - 1) rho_alpha
+    (independent particles); with RPA screening it is reduced to
+    rho_alpha / lambda_alpha. The perturbing potential is the Coulomb potential
+    of rho_alpha, not sum_P c_P chi_P(r)."""
+
+    @property
+    def omega(self) -> float:
+        """Imaginary frequency (Hartree); 0 is static."""
+        ...
+    @property
+    def naux(self) -> int: ...
+    @property
+    def n_modes(self) -> int: ...
+    @property
+    def eigenvalues(self) -> NDArray[np.float64]:
+        """Dielectric eigenvalues lambda_alpha >= 1, descending, (M,)."""
+        ...
+    @property
+    def coefficients(self) -> NDArray[np.float64]:
+        """Aux coefficients (naux, M), c^T V c = I with V = (P|Q). Sign: the
+        largest-magnitude coefficient of each column is positive."""
+        ...
+    @property
+    def l2_norms(self) -> NDArray[np.float64]:
+        """sqrt(integral of rho_alpha^2), (M,)."""
+        ...
+    @property
+    def field_couplings(self) -> NDArray[np.float64]:
+        """(M, 3): Coulomb overlap of each mode with the uncoupled induced
+        density of a unit field along x, y, z."""
+        ...
+    @property
+    def alpha_bare(self) -> NDArray[np.float64]:
+        """Uncoupled polarizability (3, 3), a.u."""
+        ...
+    def polarizability_from_modes(self) -> NDArray[np.float64]:
+        """alpha_bare - sum_alpha s_alpha s_alpha^T / lambda_alpha (3, 3): the
+        RPA polarizability at i*omega when every mode was kept (n_modes >=
+        naux), its truncation to the leading modes otherwise."""
+        ...
+
+def response_modes(
+    mol: Molecule,
+    basis_set: BasisSet,
+    auxbasis: BasisSet,
+    result: RhfResult | DftResult,
+    n_modes: int = 10,
+    omega: float = 0.0,
+    memory_budget_gb: float | None = None,
+) -> ResponseModes:
+    """Leading n_modes eigenmodes of the closed-shell RPA dielectric built on
+    `result` (RHF or RKS, run in `basis_set`), by a dense eigensolve in the
+    `auxbasis` (e.g. "cc-pvdz-ri"). omega is an imaginary frequency in Hartree.
+    The static modes are the PDEP eigenpotentials of run_pdep_rpa."""
+    ...
+
+def write_response_mode_cube(
+    path: str,
+    mol: Molecule,
+    auxbasis: BasisSet,
+    modes: ResponseModes,
+    index: int,
+    normalization: Literal["l2", "coulomb"] = "l2",
+    spacing: float = 0.3,
+    padding: float = 4.0,
+    origin: tuple[float, float, float] | None = None,
+    shape: tuple[int, int, int] | None = None,
+) -> tuple[list[float], list[int]]:
+    """Write mode `index` as a Gaussian cube file (Bohr). normalization "l2"
+    scales to integral rho^2 = 1 (orbital-like isovalues); "coulomb" writes the
+    stored coefficients. Grid arguments as in write_cube; returns (origin, shape)."""
     ...
 
 def boltzmann_weights(

@@ -134,6 +134,15 @@ item = "Molecular Orbitals"
 menu-priorities = [150, 600]
 
 [[tool.avogadro.menu-commands]]
+identifier = "response_modes"
+input-format = "cjson"
+user-options = "src/avogadro_ferric/data/response_modes_options.toml"
+menu = "Extensions"
+submenu = "ferric"
+item = "Response Modes"
+menu-priorities = [150, 550]
+
+[[tool.avogadro.menu-commands]]
 identifier = "config"
 input-format = "cjson"
 user-options = "src/avogadro_ferric/data/config_options.toml"

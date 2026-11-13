@@ -39,6 +39,7 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--charges", action="store_true")
         p.add_argument("--potentials", action="store_true")
     sub.add_parser("ferric_input", parents=[common])
+    sub.add_parser("response_modes", parents=[common])
     for ident in MENU_COMMANDS:
         sub.add_parser(ident, parents=[common])
     return parser
@@ -76,6 +77,11 @@ def run(args, stdin=None) -> dict | None:
         from . import inputgen
 
         return inputgen.generate(avo_input)
+
+    if args.feature == "response_modes":
+        from . import response_modes
+
+        return response_modes.command(avo_input)
 
     from . import commands
 

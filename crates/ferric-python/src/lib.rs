@@ -58,6 +58,7 @@ use pyo3::prelude::*;
 mod blocks;
 mod ci;
 mod pbc;
+mod response_modes;
 
 // ── Molecule ──
 
@@ -7083,31 +7084,15 @@ fn eval_mo_on_points<'py>(
     Ok(PyArray2::from_array(py, &out))
 }
 
-/// Write a Gaussian cube file of the total electron density or one
-/// restricted MO on an axis-aligned regular grid.
-///
-/// `what` is `"density"` (e/Bohr^3) or `"mo"` (psi_i, Bohr^(-3/2); needs
-/// `mo_index`, 0-based, restricted results only). All lengths are **Bohr**,
-/// matching the cube format (positive voxel counts mean Bohr). The grid is
-/// `shape = (nx, ny, nz)` points starting at `origin` with isotropic
-/// `spacing`; when `origin`/`shape` are omitted they are derived from the
-/// atoms' bounding box plus `padding`. Returns `(origin, shape)` actually
-/// used. `result` is an `RhfResult` or `DftResult`.
-#[pyfunction]
-#[pyo3(signature = (path, mol, basis_set, result, what="density", mo_index=None, spacing=0.3, padding=4.0, origin=None, shape=None))]
-#[allow(clippy::too_many_arguments)]
-fn write_cube(
-    path: &str,
+/// Axis-aligned cube grid with isotropic `spacing` (Bohr). An omitted
+/// `origin`/`shape` comes from the atoms' bounding box plus `padding`.
+pub(crate) fn cube_grid_spec(
     mol: &PyMolecule,
-    basis_set: &PyBasisSet,
-    result: DensitySource,
-    what: &str,
-    mo_index: Option<usize>,
     spacing: f64,
     padding: f64,
     origin: Option<[f64; 3]>,
     shape: Option<[usize; 3]>,
-) -> PyResult<([f64; 3], [usize; 3])> {
+) -> PyResult<ferric_integrals::ao_grid::GridSpec> {
     if !(spacing.is_finite() && spacing > 0.0) {
         return Err(pyo3::exceptions::PyValueError::new_err(
             "spacing must be a positive number of Bohr",
@@ -7143,7 +7128,7 @@ fn write_cube(
             "shape entries must be >= 1",
         ));
     }
-    let grid = ferric_integrals::ao_grid::GridSpec {
+    Ok(ferric_integrals::ao_grid::GridSpec {
         origin,
         n_x: shape[0],
         n_y: shape[1],
@@ -7151,7 +7136,36 @@ fn write_cube(
         step_x: [spacing, 0.0, 0.0],
         step_y: [0.0, spacing, 0.0],
         step_z: [0.0, 0.0, spacing],
-    };
+    })
+}
+
+/// Write a Gaussian cube file of the total electron density or one
+/// restricted MO on an axis-aligned regular grid.
+///
+/// `what` is `"density"` (e/Bohr^3) or `"mo"` (psi_i, Bohr^(-3/2); needs
+/// `mo_index`, 0-based, restricted results only). All lengths are **Bohr**,
+/// matching the cube format (positive voxel counts mean Bohr). The grid is
+/// `shape = (nx, ny, nz)` points starting at `origin` with isotropic
+/// `spacing`; when `origin`/`shape` are omitted they are derived from the
+/// atoms' bounding box plus `padding`. Returns `(origin, shape)` actually
+/// used. `result` is an `RhfResult` or `DftResult`.
+#[pyfunction]
+#[pyo3(signature = (path, mol, basis_set, result, what="density", mo_index=None, spacing=0.3, padding=4.0, origin=None, shape=None))]
+#[allow(clippy::too_many_arguments)]
+fn write_cube(
+    path: &str,
+    mol: &PyMolecule,
+    basis_set: &PyBasisSet,
+    result: DensitySource,
+    what: &str,
+    mo_index: Option<usize>,
+    spacing: f64,
+    padding: f64,
+    origin: Option<[f64; 3]>,
+    shape: Option<[usize; 3]>,
+) -> PyResult<([f64; 3], [usize; 3])> {
+    let grid = cube_grid_spec(mol, spacing, padding, origin, shape)?;
+    let (origin, shape) = (grid.origin, [grid.n_x, grid.n_y, grid.n_z]);
     let (vals, comment): (Vec<f64>, String) = match what {
         "density" => {
             let chi = ferric_export::eval_basis_on_grid(&mol.inner, &basis_set.inner, &grid)
@@ -11886,7 +11900,8 @@ impl PyPdepRpaResult {
         PyArray1::from_slice(py, &self.eigenvalues_static)
     }
     /// PDEP eigenpotential coefficients in the RI auxiliary basis, shape (naux, M).
-    /// Column α gives c_α^P such that V_α(r) = Σ_P c_α^P χ_P(r). Orthonormal in
+    /// Column α gives the density ρ_α(r) = Σ_P c_α^P χ_P(r), whose Coulomb
+    /// potential is the eigenpotential (see `response_modes`). Orthonormal in
     /// the aux metric V = (P|Q) (cᵀVc = I), with cᵀ(V+Π)c = diag(λ_α(0)).
     #[getter]
     fn eigenpotentials<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
@@ -14684,6 +14699,7 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyGammaRhfResult>()?;
     pbc::register(m)?;
     ci::register(m)?;
+    response_modes::register(m)?;
     pbc::register_omega_chooser(m)?;
     m.add_function(wrap_pyfunction!(run_uhf, m)?)?;
     m.add_function(wrap_pyfunction!(run_rohf, m)?)?;
