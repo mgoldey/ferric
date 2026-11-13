@@ -7,9 +7,11 @@ is shown in a dialog, ``error`` in an error dialog.
 
 from __future__ import annotations
 
+import sys
+
 import numpy as np
 
-from . import avo, config, engine, orbitals, units
+from . import avo, cache, config, engine, orbitals, units
 
 
 def _energy_message(label: str, energy_ha: float, extra: str = "") -> str:
@@ -20,6 +22,26 @@ def _energy_message(label: str, energy_ha: float, extra: str = "") -> str:
         f"  = {energy_ha * units.HARTREE_TO_KJ_PER_MOL:.4f} kJ/mol\n"
         f"  = {energy_ha * units.HARTREE_TO_KCAL_PER_MOL:.4f} kcal/mol" + extra
     )
+
+
+def _energy(res) -> float:
+    return float(res.energy if hasattr(res, "energy") else res.total_energy)
+
+
+def cached_scf(job):
+    """Closed-shell SCF started from the cached density when there is one.
+
+    Returns ((Molecule, BasisSet, result), cache entry or None).
+    """
+    entry = cache.load(job)
+    if entry is not None:
+        print("ferric cache: starting from the stored density", file=sys.stderr)
+    scf = engine.closed_shell_scf(job, dm0=entry["density"] if entry else None)
+    if entry is not None:
+        n_iter = getattr(scf[2], "iterations", None)
+        n_iter = n_iter() if callable(n_iter) else n_iter
+        print(f"ferric cache: SCF took {n_iter} iterations", file=sys.stderr)
+    return scf, entry
 
 
 def single_point(avo_input: dict) -> dict:
@@ -34,12 +56,18 @@ def single_point(avo_input: dict) -> dict:
             "\n(open shell: ferric's charge evaluators take closed-shell results only)"
         )
     else:
-        scf = engine.closed_shell_scf(job)
-        res = scf[2]
-        energy = float(res.energy if hasattr(res, "energy") else res.total_energy)
+        scf, entry = cached_scf(job)
+        energy = _energy(scf[2])
         model = cfg["charge_model"]
-        avo.progress(f"ferric {job.label}: {model} charges")
-        q = engine.charges(job, model, scf)
+        # Every model Avogadro's electrostatic menu lists is computed here, in
+        # the untimed menu command, so its 10 s --charges call is a cache read.
+        known = dict(entry["charges"]) if entry else {}
+        for m in dict.fromkeys([model, *cache.ELECTROSTATIC_MODELS]):
+            if m not in known:
+                avo.progress(f"ferric {job.label}: {m} charges")
+                known[m] = engine.charges(job, m, scf)
+        cache.store(job, energy, scf[2].density(), known)
+        q = known[model]
         cjson.setdefault("atoms", {}).setdefault("partialCharges", {})[
             f"ferric-{model}"
         ] = q
@@ -115,7 +143,7 @@ def molecular_orbitals(avo_input: dict) -> dict:
             "DftResult.mo_coefficients() (ferric 0.1.0rc11 or newer)"
         )
     avo.progress(f"ferric {job.label}: SCF")
-    mol, bs, res = engine.closed_shell_scf(job)
+    (mol, bs, res), _ = cached_scf(job)
     nelec = sum(job.numbers) - job.charge
     data = orbitals.orbitals_cjson(f, mol, bs, res, job.numbers, nelec)
     cjson = avo.cjson_of(avo_input)
@@ -133,23 +161,46 @@ def molecular_orbitals(avo_input: dict) -> dict:
     return {"moleculeFormat": "cjson", "cjson": cjson, "message": msg}
 
 
-def configure(avo_input: dict, want_options: bool) -> dict:
-    if want_options:
-        return {"userOptions": config.user_options(config.load())}
+def configure(avo_input: dict) -> dict:
     cfg = config.update_from_options(avo_input.get("options", {}) or {})
     # No "cjson" in the reply: Avogadro then leaves the molecule untouched.
     return {"message": f"ferric defaults saved to {config.config_path()}:\n{cfg}"}
 
 
 def electrostatics(avo_input: dict, model: str, want_potentials: bool) -> dict:
+    """--charges / --potentials, both under Avogadro's fixed 10 s limit.
+
+    Charges come from the cache when Single Point (or an earlier call) stored
+    them for this exact molecule and settings; otherwise, and for potentials,
+    the SCF starts from the cached density when there is one. What is computed
+    here is stored for the next call.
+    """
     job = avo.job_from_input(avo_input)
-    scf = engine.closed_shell_scf(job)
+    if job.open_shell:
+        engine.closed_shell_scf(job)  # raises the closed-shell-only message
+    pts = None
     if want_potentials:
         pts = np.asarray(avo_input.get("points", []), dtype=float).reshape(-1, 3)
         if len(pts) == 0:
             return {"potentials": []}
+    else:
+        entry = cache.load(job)
+        if entry is not None and model in entry["charges"]:
+            print(f"ferric cache: {model} charges from the cache", file=sys.stderr)
+            return {"charges": entry["charges"][model]}
+    scf, entry = cached_scf(job)
+    if want_potentials:
         phi = engine.esp_at_points(job, pts, scf)
-        # Hartree/e (= e/Bohr) -> e/Angstrom, the unit of Avogadro's own
-        # sum_i q_i / r_i fallback (calc/chargemodel.cpp).
-        return {"potentials": [v * units.ANGSTROM_TO_BOHR for v in phi]}
-    return {"charges": engine.charges(job, model, scf)}
+        out = {
+            # Hartree/e (= e/Bohr) -> e/Angstrom, the unit of Avogadro's own
+            # sum_i q_i / r_i fallback (calc/chargemodel.cpp).
+            "potentials": [v * units.ANGSTROM_TO_BOHR for v in phi]
+        }
+        new_charges = {}
+    else:
+        q = engine.charges(job, model, scf)
+        out = {"charges": q}
+        new_charges = {model: q}
+    if entry is None or new_charges:
+        cache.store(job, _energy(scf[2]), scf[2].density(), new_charges)
+    return out

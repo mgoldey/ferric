@@ -80,6 +80,8 @@ def plugin_env(tmp_path):
             [str(SRC)] + ([env["PYTHONPATH"]] if env.get("PYTHONPATH") else [])
         )
         env["AVOGADRO_FERRIC_CONFIG"] = str(cfg)
+        # Never read or write the user's ~/.cache from a test.
+        env["AVOGADRO_FERRIC_CACHE"] = str(tmp_path / "cache")
         env.setdefault("OPENBLAS_NUM_THREADS", "1")
         return env
 

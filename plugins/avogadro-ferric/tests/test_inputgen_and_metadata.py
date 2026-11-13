@@ -156,7 +156,6 @@ def test_every_declared_identifier_is_dispatched():
             assert args.feature == feat["identifier"]
     # the flags Avogadro actually sends
     parser.parse_args(["ferric_lowdin", "--potentials", "--lang", "de_DE"])
-    parser.parse_args(["config", "--user-options"])
     parser.parse_args(["sp", "--debug", "--lang", "en_US"])
 
 
@@ -189,3 +188,48 @@ def test_option_and_highlight_files_load():
         }
         for pat in rule["patterns"]:
             re.compile(pat["regexp"])
+
+
+def test_menu_command_option_files_match_the_python_constants():
+    """Every menu command loads its options from a static TOML file (no
+    "dynamic": Avogadro would launch the plugin on every menu open), and the
+    lists and defaults in those files are the ones the Python code accepts."""
+    meta = _pyproject()
+    cmds = {c["identifier"]: c for c in meta["tool"]["avogadro"]["menu-commands"]}
+    from avogadro_ferric import MENU_COMMANDS, config
+
+    assert set(cmds) == set(MENU_COMMANDS)
+
+    def load(ident):
+        rel = cmds[ident]["user-options"]
+        assert rel != "dynamic", ident
+        opts = tomllib.loads((PLUGIN_DIR / rel).read_text(encoding="utf-8"))
+        for key, spec in opts.items():
+            assert "type" in spec, (ident, key)
+            if spec["type"] == "stringList":
+                assert 0 <= spec["default"] < len(spec["values"]), (ident, key)
+        return opts
+
+    for ident in ("sp", "opt", "freq", "orbitals"):
+        opts = load(ident)
+        assert set(opts) == {"method", "basis"}, ident
+        assert opts["method"]["values"] == config.JOB_METHODS
+        assert opts["basis"]["values"] == config.JOB_BASES
+        assert opts["method"]["values"][opts["method"]["default"]] == (
+            config.CONFIGURED_DEFAULT
+        )
+        assert opts["basis"]["values"][opts["basis"]["default"]] == (
+            config.CONFIGURED_DEFAULT
+        )
+
+    opts = load("config")
+    assert set(opts) == set(config.DEFAULTS)
+    for key, values in (
+        ("method", config.METHODS),
+        ("basis", config.BASES),
+        ("charge_model", config.CHARGE_MODELS),
+    ):
+        assert opts[key]["values"] == values, key
+        assert values[opts[key]["default"]] == config.DEFAULTS[key], key
+    assert opts["threads"]["default"] == config.DEFAULTS["threads"]
+    assert opts["memory_gb"]["default"] == config.DEFAULTS["memory_gb"]

@@ -1,0 +1,44 @@
+# User options for Single Point, Optimize Geometry, Frequencies and Molecular
+# Orbitals (Extensions > ferric). Avogadro reads this file once and remembers
+# each command's last choice itself. "(Configured default)" runs with the
+# method or basis saved by Extensions > ferric > Configure...; the other
+# entries apply to this run only. Charge and multiplicity are not asked:
+# Avogadro sends the molecule's own with every command.
+#
+# The lists must match config.JOB_METHODS / config.JOB_BASES
+# (tests/test_inputgen_and_metadata.py checks it).
+
+[method]
+type = "stringList"
+label = "Method (HF or functional)"
+values = [
+  "(Configured default)",
+  "HF",
+  "LDA",
+  "PBE",
+  "BLYP",
+  "BP86",
+  "PBE0",
+  "B3LYP",
+  "r2SCAN",
+]
+default = 0
+order = 1.0
+
+[basis]
+type = "stringList"
+label = "Basis set"
+values = [
+  "(Configured default)",
+  "sto-3g",
+  "6-31g",
+  "6-31g*",
+  "6-31g**",
+  "def2-svp",
+  "def2-tzvp",
+  "cc-pvdz",
+  "cc-pvtz",
+  "aug-cc-pvdz",
+]
+default = 0
+order = 2.0
