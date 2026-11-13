@@ -531,18 +531,21 @@ mod tests {
         let inside =
             with_rimp2_envelope(c.clone(), &rhf(), &water, &b("cc-pVDZ"), &b("cc-pvdz-ri"));
         assert_eq!(inside, c);
-        let nh3 = Molecule::parse_xyz("4\n\nN 0 0 0\nH 0 0 1\nH 0 1 0\nH 1 0 0\n", 0, 1).unwrap();
+        let h2s = Molecule::parse_xyz("3\n\nS 0 0 0\nH 0 0 1\nH 0 1 0\n", 0, 1).unwrap();
         let out = with_rimp2_envelope(
             c.clone(),
             &rhf(),
-            &nh3,
+            &h2s,
             &b("6-31g"),
             &b("aug-cc-pvdz-jkfit"),
         );
         assert_eq!(out.grade, c.grade);
         let w: Vec<&str> = out.warnings.iter().map(String::as_str).collect();
         assert_eq!(w.len(), 3, "{w:?}");
-        assert!(w[0].starts_with("element N (covered: H, O, Pd)"), "{w:?}");
+        assert!(
+            w[0].starts_with("element S (covered: H, C, N, O, F, Pd)"),
+            "{w:?}"
+        );
         assert!(
             w[1].starts_with("basis 6-31g is outside the RI-MP2"),
             "{w:?}"
