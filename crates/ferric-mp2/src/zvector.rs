@@ -462,19 +462,26 @@ pub(crate) fn build_x_ov(
         .into_par_iter()
         .enumerate()
         .for_each(|(i, mut x_i_slot)| {
-            let mut tt_i = Array2::<f64>::zeros((nvir, nov));
-            for a in 0..nvir {
-                for j in 0..nocc {
-                    for b in 0..nvir {
-                        let t_ij_ab = t2[(i * nvir + a) * nov + j * nvir + b];
-                        let t_ij_ba = t2[(i * nvir + b) * nov + j * nvir + a];
-                        tt_i[(a, j * nvir + b)] = 2.0 * t_ij_ab - t_ij_ba;
-                    }
-                }
-            }
-            x_i_slot.assign(&b_ov.dot(&tt_i.t()));
+            x_i_slot.assign(&b_ov.dot(&tt_block(t2, i, nocc, nvir).t()));
         });
     x_ov
+}
+
+/// `TT_i[a, jb] = 2 t_{ij,ab} − t_{ij,ba}` for one occupied `i`, shape
+/// `(nvir, nocc·nvir)`, from `t2[(i*nvir+a)*nov + j*nvir+b] = t_{ij,ab}`.
+fn tt_block(t2: &[f64], i: usize, nocc: usize, nvir: usize) -> Array2<f64> {
+    let nov = nocc * nvir;
+    let mut tt_i = Array2::<f64>::zeros((nvir, nov));
+    for a in 0..nvir {
+        for j in 0..nocc {
+            for b in 0..nvir {
+                let t_ij_ab = t2[(i * nvir + a) * nov + j * nvir + b];
+                let t_ij_ba = t2[(i * nvir + b) * nov + j * nvir + a];
+                tt_i[(a, j * nvir + b)] = 2.0 * t_ij_ab - t_ij_ba;
+            }
+        }
+    }
+    tt_i
 }
 
 /// Build the RI-MP2 Lagrangian energy-weighted matrix `Imat` in the MO basis.

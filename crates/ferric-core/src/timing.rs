@@ -315,32 +315,16 @@ impl PhaseAccumulator {
             } else {
                 0.0
             };
-            let _ = writeln!(
-                out,
-                "[timing]   {:<32} {:>10.3} {:>8} {:>6.1}% {:>6}",
-                p.label,
-                p.secs,
-                p.calls,
-                pct,
-                busy_cell(p)
-            );
+            let calls = p.calls.to_string();
+            write_row(&mut out, p.label, p.secs, &calls, &format!("{pct:.1}%"), p);
         }
-        let total_cpu: Option<f64> = self.phases.iter().map(|p| p.cpu).sum();
         let total_row = PhaseTotal {
             label: "TOTAL (timed phases)",
             secs: total,
-            cpu: total_cpu,
+            cpu: self.phases.iter().map(|p| p.cpu).sum(),
             calls: 0,
         };
-        let _ = writeln!(
-            out,
-            "[timing]   {:<32} {:>10.3} {:>8} {:>7} {:>6}",
-            total_row.label,
-            total,
-            "",
-            "",
-            busy_cell(&total_row)
-        );
+        write_row(&mut out, total_row.label, total, "", "", &total_row);
         side_table(
             &mut out,
             "nested (inside a phase above, not in TOTAL)",
@@ -397,13 +381,18 @@ impl Drop for ReportOnDrop {
     }
 }
 
-/// The `busy` cell for a row: CPU seconds over wall seconds, `-` when the
-/// CPU time is unknown or the phase took no measurable wall time.
-fn busy_cell(p: &PhaseTotal) -> String {
-    match p.cpu {
+/// Append one table line: label, wall seconds, calls, share of the total, and
+/// the `busy` cell of `p`.
+fn write_row(out: &mut String, label: &str, secs: f64, calls: &str, pct: &str, p: &PhaseTotal) {
+    use std::fmt::Write as _;
+    let busy = match p.cpu {
         Some(cpu) if p.secs > 0.0 => format!("{:.2}", cpu / p.secs),
         _ => "-".to_string(),
-    }
+    };
+    let _ = writeln!(
+        out,
+        "[timing]   {label:<32} {secs:>10.3} {calls:>8} {pct:>7} {busy:>6}"
+    );
 }
 
 /// Append a titled side table (phases outside TOTAL) to `out`; nothing when
@@ -415,15 +404,8 @@ fn side_table(out: &mut String, title: &str, mark: char, phases: &[PhaseTotal]) 
     }
     let _ = writeln!(out, "[timing]   {title}:");
     for p in phases {
-        let _ = writeln!(
-            out,
-            "[timing]   {mark}{:<31} {:>10.3} {:>8} {:>7} {:>6}",
-            p.label,
-            p.secs,
-            p.calls,
-            "",
-            busy_cell(p)
-        );
+        let label = format!("{mark}{}", p.label);
+        write_row(out, &label, p.secs, &p.calls.to_string(), "", p);
     }
 }
 
@@ -537,7 +519,9 @@ mod tests {
             let cpu = row.cpu.expect("CPU time recorded");
             assert!(cpu >= SPIN, "cpu {cpu} < spun {SPIN}");
             assert!(row.secs > 0.0);
-            assert_ne!(busy_cell(row), "-");
+            let mut line = String::new();
+            write_row(&mut line, row.label, row.secs, "1", "", row);
+            assert!(!line.trim_end().ends_with('-'), "busy cell empty: {line}");
         } else if !enabled() {
             assert!(acc.phases.is_empty());
         }
