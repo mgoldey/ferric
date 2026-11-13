@@ -945,12 +945,15 @@ impl DfK<'_> {
         }
     }
 
-    /// Device bytes this builder's resident tensor needs under `gpu = on`: the
-    /// dressed band plus the K accumulator when the dressed tensor is in core, 0
-    /// when it is spilled or recomputed (the device path declines it).
+    /// Device bytes this builder's resident tensor will take: the dressed band
+    /// plus the K accumulator when the dressed tensor is the in-core square
+    /// band and the `[gpu]` mode routes DF-K to the device at this size (the
+    /// gate the device build itself applies); 0 otherwise (packed, spilled or
+    /// recomputed, or a K that stays on the CPU), so the RI-J upload leaves
+    /// the pool only for a K that can take it.
     #[cfg(feature = "gpu")]
     pub fn device_footprint_bytes(&self) -> usize {
-        if !self.dressed.is_incore() {
+        if !self.dressed.is_incore() || !device_may_take_k(self.dressed.nao()) {
             return 0;
         }
         crate::df_k_gpu::resident_bytes(self.dressed.band_naux(), self.dressed.nao()).unwrap_or(0)

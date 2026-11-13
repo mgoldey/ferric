@@ -915,10 +915,12 @@ pub fn run(args: Vec<String>) {
     let jk_route = ferric_scf::scf_jk::effective_jk(&rhf_config);
     // The header's request-side estimate; the run's `ri_j_tensor` note records
     // the precision the tensor was stored at. The functional class comes
-    // from the functional's exact exchange, as in the SCF.
-    let ri_j_resolved = rhf_config.resolved_ri_j_precision(
-        ferric_scf::df_j::ri_j_site_for_functional(prep.nbasis(), rhf_config.xc.as_deref()),
-    );
+    // from the exact exchange of the functional the SCF converges.
+    let ri_j_resolved =
+        rhf_config.resolved_ri_j_precision(ferric_scf::df_j::ri_j_site_for_functional(
+            prep.nbasis(),
+            scf_functional(method, &rhf_config),
+        ));
     if let Some(rl) = ferric_scf::runlog::log() {
         ferric_scf::runlog::set_build_identity(
             ferric_build_info::VERSION,
@@ -1554,6 +1556,19 @@ fn molecular_formula(mol: &Molecule) -> String {
 
 /// `method.kind = "rhf"`. Extracted verbatim from the former `main()`
 /// `"rhf" => { ... }` match arm.
+/// The functional the SCF of `method` converges: a double hybrid converges
+/// its own reference functional whatever `[dft] functional` says (see
+/// `run_wb97x_l_v_arm` and `run_mp2_double_hybrid_arm`); every other kind uses
+/// `rhf_config.xc`.
+fn scf_functional<'a>(method: &str, rhf_config: &'a RhfConfig) -> Option<&'a str> {
+    match method {
+        "wb97x-l-v" => Some(ferric_cc::double_hybrid::WB97X_L_V_NAME),
+        "b2plyp" => Some(DoubleHybridKind::B2plyp.xc_name()),
+        "dsd-pbep86" => Some(DoubleHybridKind::DsdPbep86.xc_name()),
+        _ => rhf_config.xc.as_deref(),
+    }
+}
+
 /// The `energy_conv` noise-floor advisory for the SCF this run will perform, or
 /// `None`. Only a tolerance the user WROTE can be advised on (the 1e-3 default
 /// can also fall below a floor once `integral_thresh` is loosened, but it is not
@@ -7824,6 +7839,36 @@ mod local_printout_tests {
             back["build_dirty"],
             serde_json::json!(ferric_build_info::DIRTY)
         );
+    }
+}
+
+#[cfg(test)]
+mod scf_functional_tests {
+    use super::scf_functional;
+    use ferric_scf::df_j::ri_j_site_for_functional;
+    use ferric_scf::rhf::RhfConfig;
+
+    /// The run-start RI-J site of `method` with `[dft] functional = xc`.
+    fn overlap_site(method: &str, xc: Option<&str>) -> bool {
+        let cfg = RhfConfig {
+            xc: xc.map(str::to_string),
+            ..Default::default()
+        };
+        ri_j_site_for_functional(300, scf_functional(method, &cfg)).jxc_overlap
+    }
+
+    #[test]
+    fn a_double_hybrid_site_follows_its_own_reference_functional() {
+        // wB97X-L-V is range-separated: an overlap site, whatever the config says.
+        assert!(overlap_site("wb97x-l-v", None));
+        assert!(overlap_site("wb97x-l-v", Some("B3LYP")));
+        // B2PLYP and DSD-PBEP86 are global hybrids: never overlap sites.
+        for kind in ["b2plyp", "dsd-pbep86"] {
+            assert!(!overlap_site(kind, Some("PBE")), "{kind}");
+        }
+        // Every other kind follows the config.
+        assert!(overlap_site("ksdft", Some("PBE")));
+        assert!(!overlap_site("ksdft", Some("B3LYP")));
     }
 }
 
