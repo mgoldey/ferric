@@ -3842,9 +3842,13 @@ fn solve_rhf_impl(
             if let Some(c_p) = c_prev.as_ref() {
                 let shift_ramp = effective_level_shift * (err_max / 0.1).min(1.0);
                 if shift_ramp > 0.0 {
-                    let c_vir = c_p.slice(ndarray::s![.., nocc..]);
-                    let scv = s.dot(&c_vir); // (n × nvir)
-                    f_new = &f_new + &(shift_ramp * scv.dot(&scv.t()));
+                    let shift_term = with_blas_threads(opt_in_blas_threads(), || {
+                        crate::blas_probe::record(&crate::blas_probe::RHF_LEVEL_SHIFT);
+                        let c_vir = c_p.slice(ndarray::s![.., nocc..]);
+                        let scv = s.dot(&c_vir); // (n × nvir)
+                        shift_ramp * scv.dot(&scv.t())
+                    });
+                    f_new = &f_new + &shift_term;
                 }
             }
         }

@@ -2193,12 +2193,22 @@ fn solve_uhf_impl(
             let damp = err_max / (err_max + SHIFT_DAMP_ERR);
             let shift_eff = effective_level_shift * damp;
             if shift_eff > 1e-10 {
-                let c_av = c_a.slice(ndarray::s![.., nocc_a..]);
-                let c_bv = c_b.slice(ndarray::s![.., nocc_b..]);
-                let p_av: Array2<f64> = c_av.dot(&c_av.t());
-                let p_bv: Array2<f64> = c_bv.dot(&c_bv.t());
-                f_a_new += &(shift_eff * s.dot(&p_av).dot(&s));
-                f_b_new += &(shift_eff * s.dot(&p_bv).dot(&s));
+                let (shift_a, shift_b) = ferric_integrals::blas_threads::with_blas_threads(
+                    ferric_integrals::blas_threads::opt_in_blas_threads(),
+                    || {
+                        crate::blas_probe::record(&crate::blas_probe::UHF_LEVEL_SHIFT);
+                        let c_av = c_a.slice(ndarray::s![.., nocc_a..]);
+                        let c_bv = c_b.slice(ndarray::s![.., nocc_b..]);
+                        let p_av: Array2<f64> = c_av.dot(&c_av.t());
+                        let p_bv: Array2<f64> = c_bv.dot(&c_bv.t());
+                        (
+                            shift_eff * s.dot(&p_av).dot(&s),
+                            shift_eff * s.dot(&p_bv).dot(&s),
+                        )
+                    },
+                );
+                f_a_new += &shift_a;
+                f_b_new += &shift_b;
             }
         }
         let (mut eps_a_new, mut c_a_new) = diag_a.run(&f_a_new)?;

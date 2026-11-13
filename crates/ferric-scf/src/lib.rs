@@ -86,6 +86,18 @@ pub mod blas_probe {
     pub static FOCK_DIAG: AtomicUsize = AtomicUsize::new(0);
     /// Thread count seen inside the last RHF/RKS DIIS commutator.
     pub static DIIS_COMMUTATOR: AtomicUsize = AtomicUsize::new(0);
+    /// Thread count seen inside the last ROHF/ROKS Roothaan effective Fock.
+    pub static ROOTHAAN_FOCK: AtomicUsize = AtomicUsize::new(0);
+    /// Thread count seen inside the last ROHF/ROKS MO Focks and DIIS error.
+    pub static ROHF_DIIS_ERROR: AtomicUsize = AtomicUsize::new(0);
+    /// Thread count seen inside the last ROHF/ROKS overlap orthogonalizer.
+    pub static ROHF_ORTHOGONALIZER: AtomicUsize = AtomicUsize::new(0);
+    /// Thread count seen inside the last RHF/RKS virtual-block level shift.
+    pub static RHF_LEVEL_SHIFT: AtomicUsize = AtomicUsize::new(0);
+    /// Thread count seen inside the last UHF/UKS virtual-block level shift.
+    pub static UHF_LEVEL_SHIFT: AtomicUsize = AtomicUsize::new(0);
+    /// Thread count seen inside the last ROHF/ROKS virtual-block level shift.
+    pub static ROHF_LEVEL_SHIFT: AtomicUsize = AtomicUsize::new(0);
 
     pub(crate) fn record(slot: &AtomicUsize) {
         slot.store(

@@ -31,6 +31,7 @@ use crate::guess::hcore_guess;
 use crate::result::{ScfResult, Spin};
 use crate::rhf::{validate_injected, InjectedConfigError, PeriodicInjection, RhfConfig};
 use crate::screening::SchwarzBounds;
+use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
 
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
@@ -1491,12 +1492,18 @@ fn solve_rohf_impl(
         // DIIS still operates on (n × n) error matrices. This eliminates the
         // within-class-rotation ambiguity that causes the LDA/PBE doublet-OH
         // plateau in the FDS-SDF formulation.
-        let f_a_mo: Array2<f64> = c.t().dot(&f_a).dot(&c);
-        let f_b_mo: Array2<f64> = c.t().dot(&f_b).dot(&c);
-        let g_mo = rohf_gradient_mo(&f_a_mo, &f_b_mo, nocc_double, nocc_open);
-        // Antisymmetrize in MO basis, then transform back to AO.
-        let g_mo_anti: Array2<f64> = &g_mo - &g_mo.t();
-        let err: Array2<f64> = s.dot(&c).dot(&g_mo_anti).dot(&c.t()).dot(&s);
+        // Serial section (outside any rayon region): serial BLAS thread count.
+        let (f_a_mo, f_b_mo, g_mo, err): (Array2<f64>, Array2<f64>, Array2<f64>, Array2<f64>) =
+            with_blas_threads(opt_in_blas_threads(), || {
+                crate::blas_probe::record(&crate::blas_probe::ROHF_DIIS_ERROR);
+                let f_a_mo: Array2<f64> = c.t().dot(&f_a).dot(&c);
+                let f_b_mo: Array2<f64> = c.t().dot(&f_b).dot(&c);
+                let g_mo = rohf_gradient_mo(&f_a_mo, &f_b_mo, nocc_double, nocc_open);
+                // Antisymmetrize in MO basis, then transform back to AO.
+                let g_mo_anti: Array2<f64> = &g_mo - &g_mo.t();
+                let err = s.dot(&c).dot(&g_mo_anti).dot(&c.t()).dot(&s);
+                (f_a_mo, f_b_mo, g_mo, err)
+            });
 
         let sig = mon.signals(energy);
         let de = sig.de;
@@ -1900,9 +1907,12 @@ fn solve_rohf_impl(
                 let damp = err_max / (err_max + SHIFT_DAMP_ERR);
                 let shift_eff = effective_level_shift * damp;
                 if shift_eff > 1e-10 {
-                    let c_virt = c.slice(ndarray::s![.., nocc_a..]);
-                    let p_virt: Array2<f64> = c_virt.dot(&c_virt.t());
-                    let shift_term: Array2<f64> = shift_eff * s.dot(&p_virt).dot(&s);
+                    let shift_term: Array2<f64> = with_blas_threads(opt_in_blas_threads(), || {
+                        crate::blas_probe::record(&crate::blas_probe::ROHF_LEVEL_SHIFT);
+                        let c_virt = c.slice(ndarray::s![.., nocc_a..]);
+                        let p_virt: Array2<f64> = c_virt.dot(&c_virt.t());
+                        shift_eff * s.dot(&p_virt).dot(&s)
+                    });
                     f_new += &shift_term;
                 }
             }
@@ -2310,6 +2320,20 @@ pub(crate) fn roothaan_fock(
     d_b: &Array2<f64>,
     s: &Array2<f64>,
 ) -> Array2<f64> {
+    // Serial section (outside any rayon region): serial BLAS thread count.
+    with_blas_threads(opt_in_blas_threads(), || {
+        crate::blas_probe::record(&crate::blas_probe::ROOTHAAN_FOCK);
+        roothaan_fock_inner(f_a, f_b, d_a, d_b, s)
+    })
+}
+
+fn roothaan_fock_inner(
+    f_a: &Array2<f64>,
+    f_b: &Array2<f64>,
+    d_a: &Array2<f64>,
+    d_b: &Array2<f64>,
+    s: &Array2<f64>,
+) -> Array2<f64> {
     let n = s.shape()[0];
     let f_c = 0.5 * (f_a + f_b);
     // Projectors: P_c = D_β S, P_o = (D_α − D_β) S, P_v = I − D_α S
@@ -2342,22 +2366,26 @@ pub(crate) fn roothaan_fock(
 /// scaled by `1/sqrt(λ)`. [`diagonalize`] and [`core_guess_mos`] accept
 /// either shape.
 pub(crate) fn rohf_orthogonalizer(s: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
-    let n = s.nrows();
-    let (s_evals, s_evecs) = s
-        .eigh(ndarray_linalg::UPLO::Upper)
-        .map_err(|e| FerricError::Lapack(format!("S diag: {e}")))?;
-    let thresh = crate::rhf::lindep_thresh();
-    if s_evals.iter().any(|&l| !(l >= thresh)) {
-        return crate::rhf::canonical_orthogonalizer(s);
-    }
-    let mut u_scaled = s_evecs.clone();
-    for i in 0..n {
-        let scale = 1.0 / s_evals[i].sqrt();
-        for mu in 0..n {
-            u_scaled[(mu, i)] *= scale;
+    // Serial section (outside any rayon region): serial BLAS thread count.
+    with_blas_threads(opt_in_blas_threads(), || {
+        crate::blas_probe::record(&crate::blas_probe::ROHF_ORTHOGONALIZER);
+        let n = s.nrows();
+        let (s_evals, s_evecs) = s
+            .eigh(ndarray_linalg::UPLO::Upper)
+            .map_err(|e| FerricError::Lapack(format!("S diag: {e}")))?;
+        let thresh = crate::rhf::lindep_thresh();
+        if s_evals.iter().any(|&l| !(l >= thresh)) {
+            return crate::rhf::canonical_orthogonalizer(s);
         }
-    }
-    Ok(u_scaled.dot(&s_evecs.t()))
+        let mut u_scaled = s_evecs.clone();
+        for i in 0..n {
+            let scale = 1.0 / s_evals[i].sqrt();
+            for mu in 0..n {
+                u_scaled[(mu, i)] *= scale;
+            }
+        }
+        Ok(u_scaled.dot(&s_evecs.t()))
+    })
 }
 
 /// Eigenvectors of the core Hamiltonian `h` in the orthonormal basis of `x`
