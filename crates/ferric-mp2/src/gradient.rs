@@ -469,7 +469,7 @@ fn integral_response_gradient_3c2c_timed(
     // become `soft + downstream_hard <= available` instead.
     let _worker_charge = {
         let workers = rayon::current_num_threads().max(1);
-        let tt_i = nvir.saturating_mul(nov).saturating_mul(8);
+        let tt_i = crate::zvector::x_ov_worker_bytes(nocc, nvir);
         let max_np = dfbs.shell_dims().iter().copied().max().unwrap_or(0);
         let nbas = obs.nbasis();
         let g3c = max_np

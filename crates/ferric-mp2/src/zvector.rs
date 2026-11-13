@@ -117,10 +117,27 @@ pub(crate) fn solve_zvector_timed(
     let b_full = acc.time("zvec: b_full (P|pq) transform", || {
         crate::oo_rimp2::compute_b_full_mo(prep, dfbs, op, c)
     })?;
+    // Per-worker transients of the two pooled builds below. SOFT, for the
+    // reason `RI-MP2 gradient per-worker transients` is soft in
+    // `gradient.rs`: the size reads the pool width, and a refusal would make
+    // admission depend on `RAYON_NUM_THREADS`. Held across both builds (the
+    // larger worker transient is the peak) and dropped before the CPHF loop.
+    let worker_charge = {
+        let workers = rayon::current_num_threads().max(1);
+        let per_worker =
+            x_ov_worker_bytes(nocc, nvir).max(imat_worker_bytes(inter.naux, nocc, nvir));
+        crate::rimp2::charge_mo_side_soft(
+            "RI-MP2 Z-vector per-worker transients (tt_i / Imat block) + Imat x_ov transpose",
+            workers
+                .saturating_mul(per_worker)
+                .saturating_add(imat_shared_bytes(inter.naux, nocc, nvir)),
+        )
+    };
     let x_ov = acc.time("zvec: x_ov", || {
         build_x_ov(&inter.t2, &inter.b_ov, nocc, nvir, inter.naux)
     });
     let imat = acc.time("zvec: Imat", || build_imat_ri(&x_ov, &b_full, &orb));
+    drop(worker_charge);
 
     // Unrelaxed correlation density (MO): doo+doo^T on occ-occ, dvv+dvv^T on
     // vir-vir. inter.p_oo == PySCF doo, inter.p_vv == PySCF dvv (see
@@ -623,6 +640,28 @@ fn imat_fill_rows(
 
 /// Rows of `Imat` per pooled GEMM block in [`build_imat_ri`].
 const IMAT_ROW_BLOCK: usize = 8;
+
+/// Bytes one worker of [`build_x_ov`] holds: its `TT_i` block.
+pub(crate) fn x_ov_worker_bytes(nocc: usize, nvir: usize) -> usize {
+    nvir.saturating_mul(nocc.saturating_mul(nvir))
+        .saturating_mul(8)
+}
+
+/// Bytes one worker of [`build_imat_ri`] holds: its gathered `b_full` block.
+pub(crate) fn imat_worker_bytes(naux: usize, nocc: usize, nvir: usize) -> usize {
+    IMAT_ROW_BLOCK
+        .saturating_mul(naux)
+        .saturating_mul(nocc.max(nvir))
+        .saturating_mul(8)
+}
+
+/// Bytes [`build_imat_ri`] holds once, shared by its workers: the
+/// `(naux·nvir, nocc)` transpose of `x_ov`.
+pub(crate) fn imat_shared_bytes(naux: usize, nocc: usize, nvir: usize) -> usize {
+    naux.saturating_mul(nvir)
+        .saturating_mul(nocc)
+        .saturating_mul(8)
+}
 
 /// `D^z = Σ_ai (inv_scale·z_ai) (C_a C_iᵀ + C_i C_aᵀ)` in the AO basis, as
 /// `T + Tᵀ` with `T = C_vir · (inv_scale·z) · C_occᵀ`: two GEMMs instead of a
