@@ -57,7 +57,7 @@
 //! * ROMP2: ferric's U-MP2 must MISS `semicanonical/romp2_total`.
 //! * Legacy reproduction (`legacy_view_reproduces_*`): ferric fed the legacy view
 //!   explicitly (ROHF MOs + effective-Fock energies for both spins, labelled
-//!   Unrestricted) must MATCH the legacy control — the control is the old code
+//!   Unrestricted) must MATCH the legacy control — the control is the legacy code
 //!   path, and the harness sees it.
 //!
 //! # MUTATION (run 2026-09-25)

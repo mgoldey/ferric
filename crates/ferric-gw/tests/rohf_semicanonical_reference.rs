@@ -2,18 +2,18 @@
 //! semi-canonical orbitals.
 //!
 //! A ROHF result carries ONE spatial MO set and the eigenvalues of the Roothaan
-//! EFFECTIVE Fock operator, which belongs to neither spin. Before the fix, U-PDEP-RPA,
-//! U-GW and U-RI-MP2 on a ROHF reference used those orbitals and energies for BOTH
-//! spins (`mo_b.rs` / `rimp2.rs` / `u_rimp2.rs` / `ferric-rpa lib.rs` fell back to
+//! EFFECTIVE Fock operator, which belongs to neither spin. Without semi-canonicalization, U-PDEP-RPA,
+//! U-GW and U-RI-MP2 on a ROHF reference would use those orbitals and energies for BOTH
+//! spins (`mo_b.rs` / `rimp2.rs` / `u_rimp2.rs` / `ferric-rpa lib.rs` falling back to
 //! `mos_a()` and `eps_a()` for β). The standard ROHF → unrestricted bridge
 //! semi-canonicalizes: diagonalize `F_α` in the α-occupied and α-virtual blocks, and
 //! `F_β` in the β blocks, giving per-spin orbitals and energies.
 //!
 //! Three references per system (OH, CH3 doublets / cc-pVDZ, cc-pvdz-ri aux):
 //!
-//! * `legacy`: the pre-fix treatment, rebuilt explicitly (`legacy_effective_fock_view`:
+//! * `legacy`: the unsemicanonicalized treatment, built explicitly (`legacy_effective_fock_view`:
 //!   ROHF MOs + effective-Fock eigenvalues for both spins, labelled Unrestricted so the
-//!   methods take them as given). Reproduces the old code path on any tree.
+//!   methods take them as given). Reproduces the effective-Fock treatment on any tree.
 //! * `semi`: `ferric_scf::semicanonical::semicanonicalize` (spin Focks REBUILT from
 //!   J/K on the final ROHF density) → `to_unrestricted_result`.
 //! * `direct`: the raw ROHF result handed to the method, which now semi-canonicalizes

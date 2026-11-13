@@ -291,11 +291,10 @@ fn rpax_pbe_c6_h2o_vs_dosd() {
 /// `run_bse_c6_ks`'s `alpha_static` (= `alpha_iso[0]` at freq 0) — cross-check
 /// that the static-only fast path agrees with the dynamic path's ω=0 point.
 ///
-/// SCISSOR = 0.36 Ha, not 0.0. This test previously ran at `scissor = 0.0` and
-/// asserted only on the ISOTROPIC average (9.47, a plausible-looking number
-/// next to DOSD's 9.64) — while the underlying tensor diagonal was
-/// (−2.68, +14.60, +16.49), i.e. UNPHYSICAL along x. That is precisely the
-/// hazard `check_alpha_diagonal_positive` now refuses, so `scissor = 0.0` here
+/// SCISSOR = 0.36 Ha, not 0.0. At `scissor = 0.0` the ISOTROPIC average is a
+/// plausible-looking 9.47 (next to DOSD's 9.64) while the underlying tensor
+/// diagonal is (−2.68, +14.60, +16.49), i.e. UNPHYSICAL along x. That is
+/// precisely the hazard `check_alpha_diagonal_positive` refuses, so `scissor = 0.0` here
 /// returns `Err` by design (see `tests/rpax_alpha_diagonal_guard.rs`, which
 /// pins that refusal deliberately). 0.36 Ha is the documented GW-gap-matching
 /// remedy from `docs/rpax-negative-diagonal-investigation.md`. The
@@ -342,7 +341,7 @@ fn rpax_static_polarizability_h2o_matches_dynamic_omega0() {
     // A nonzero scissor widens the gap and therefore REDUCES alpha, so this is
     // deliberately a loose physicality band, not an accuracy claim against DOSD
     // (the DOSD-matching 9.24 number is the scissor = 0.0 value, which this
-    // method can no longer return; see docs/VALIDATION.md).
+    // method cannot return; see docs/VALIDATION.md).
     assert!(
         (0.5..15.0).contains(&res.iso),
         "static alpha {:.3} outside sane window for water",

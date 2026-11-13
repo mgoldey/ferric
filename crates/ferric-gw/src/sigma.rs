@@ -284,8 +284,8 @@ pub fn sigma_c_at_z(
     let n_act = eps_act.len();
 
     // The screened matrix element W_{mn}(iω_k) = Mᵀ_{mn} · W̃_d(iω_k) · M_{mn}
-    // (FULL inverse-dielectric matrix in the PDEP basis; the earlier diagonal-only
-    // form was wrong — the scalar eigenvalues λ_α(iω) live in a per-ω rotated
+    // (FULL inverse-dielectric matrix in the PDEP basis; a diagonal-only
+    // form is wrong — the scalar eigenvalues λ_α(iω) live in a per-ω rotated
     // eigenbasis, inconsistent with the static B̃ projection M).
     //
     // For a fixed m_idx, let V = M[:, m_idx, :] be the (m_modes × n_act) matrix of
@@ -294,8 +294,8 @@ pub fn sigma_c_at_z(
     //   WV_k = W̃_d(iω_k) · V            (m_modes × n_act)
     //   W_{n,k} = Σ_α V[α,n] · WV_k[α,n]  (column-wise dot)
     // replacing n_act·n_quad scalar O(m_modes²) forms with n_quad GEMMs. The
-    // summation order differs from the old scalar loop (BLAS vs nested-scalar), so
-    // results agree to machine precision, not bit-identically.
+    // summation order differs from a nested scalar loop (BLAS vs nested-scalar), so
+    // the two agree to machine precision, not bit-identically.
     // w_nk[(n, k)] = screened element W_{mn}(iω_k), real.
     let w_nk = screened_elements(m_idx, m_proj, inv_diel_freq);
     debug_assert_eq!(w_nk.dim(), (n_act, n_quad));
@@ -633,7 +633,7 @@ pub(crate) fn solve_qp_for_mo_with(
     // that integral — they are just where we sample Σc(iω') to fit the Padé.
     // PySCF samples on `ef + i·[0, scaled-Legendre freqs]` sub-sampled with a
     // decreasing step (_get_ac_idx: npts=18, step_ratio=2/3), NOT on a fixed
-    // log grid. The old bespoke log grid (0.05 → 3·ω_max, non-ef-aware) gave the
+    // log grid. A bespoke log grid (0.05 → 3·ω_max, non-ef-aware) gives the
     // right answer for @HF (ε_HOMO≈ε_F ⇒ short extrapolation) but swung @PBE by
     // eV per molecule (small gap ⇒ ε_HOMO far from ε_F ⇒ long extrapolation on
     // the wrong nodes). See the gw-ks-sigma-c-offset diagnosis.

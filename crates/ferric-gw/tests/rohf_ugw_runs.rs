@@ -1,8 +1,8 @@
 //! U-G0W0 on a ROHF/ROKS reference: it runs, and it reduces to known limits.
 //!
-//! # The defect (fixed in `ferric_scf::rohf`, `OccupationGuard::exit_labels`)
+//! # The failure mode (guarded by `ferric_scf::rohf`, `OccupationGuard::exit_labels`)
 //!
-//! Every Python `run_u_gw(reference="rohf", xc=...)` failed with "Full-rank
+//! A Python `run_u_gw(reference="rohf", xc=...)` fails with "Full-rank
 //! PDEP eigh failed: ... return_code = 69", at every basis. Python sets
 //! `mom_after_iter = 5`, which disables the ROHF occupation guard; the ROHF
 //! exit then re-labelled the converged orbitals by effective-Fock index
@@ -16,7 +16,7 @@
 //! * `u_g0w0_on_roks_with_mom_runs_and_equals_its_symmetry_image`: OH/STO-3G
 //!   ROKS/PBE with `mom_after_iter = 5` (the Python recipe, exact J/K) runs
 //!   and gives the same U-G0W0 window, both spins, as the guarded default run
-//!   (π_x ↔ π_y symmetry images of one state). Before the fix: the error above.
+//!   (π_x ↔ π_y symmetry images of one state). Without the guard: the error above.
 //! * `u_g0w0_on_closed_shell_rohf_equals_rhf_g0w0`: exactness anchor — a
 //!   closed-shell singlet (H2O/STO-3G) solved as ROHF and run through
 //!   `run_u_gw` reproduces the UHF route to 1e-9 Ha and `run_gw` on the RHF

@@ -137,9 +137,9 @@ pub struct TdaDftConfig {
     /// [`ferric_core::memory::resolve_budget_bytes`] (env / cgroup / RAM
     /// auto-detect).
     ///
-    /// Both guards on this path previously passed `None` unconditionally,
-    /// which discarded a caller's pinned budget outright. Same defect and same
-    /// fix as `ferric_rpa::properties::pdep_polarizability_static`.
+    /// Both guards on this path take this budget; passing `None`
+    /// would discard a caller's pinned budget outright (see
+    /// `ferric_rpa::properties::pdep_polarizability_static`).
     pub memory_budget_bytes: Option<usize>,
 }
 
@@ -160,12 +160,12 @@ impl Default for TdaDftConfig {
 ///
 /// # Why the count is 3n², not 2n²
 ///
-/// This guard used to charge `n² · 8 · 2` — `a_mat` plus the `eigh`
-/// eigenvector output. That misses `k_fxc`: [`singlet_fxc_ov_block`](ferric_dft::lr_kernel::singlet_fxc_ov_block) returns a full
+/// A charge of `n² · 8 · 2` — `a_mat` plus the `eigh`
+/// eigenvector output — misses `k_fxc`: [`singlet_fxc_ov_block`](ferric_dft::lr_kernel::singlet_fxc_ov_block) returns a full
 /// `(n, n)` matrix which is live at the same time as `a_mat` when they are
 /// added (`a_mat += &k_fxc`), so with `include_fxc = true` — the DEFAULT, see
 /// [`TdaDftConfig::default`] — the true peak is `a_mat` + `k_fxc` + the `eigh`
-/// output = `3n²`. The old count under-reported by 50% on the default path,
+/// output = `3n²`. A count of 2n² under-reports by 50% on the default path,
 /// which is precisely the direction that OOMs instead of erroring cleanly.
 /// (`singlet_fxc_ov_block` also allocates the pre-symmetrization `k` and the
 /// symmetrized `k_sym` together, but `k` is dropped when the function returns,
@@ -532,9 +532,9 @@ mod tests {
         // under-reported by 50% on the normal path — the direction that OOMs
         // rather than erroring cleanly.
         //
-        // A budget that fits exactly 2 matrices must now be REFUSED with fxc
+        // A budget that fits exactly 2 matrices must be REFUSED with fxc
         // on, and a budget that fits 3 must be accepted. That pair pins the
-        // count at exactly 3: neither 2 (the old bug) nor 4 (which would refuse
+        // count at exactly 3: neither 2 (under-counting) nor 4 (which would refuse
         // jobs that fit) satisfies both.
         assert!(
             check_tda_alloc(N, true, Some(2 * ONE_MAT)).is_err(),
@@ -549,7 +549,7 @@ mod tests {
     #[test]
     fn check_tda_alloc_charges_only_two_matrices_without_fxc() {
         // With include_fxc = false the kernel is never constructed and no
-        // k_fxc exists, so the old 2n² is correct there. Raising the charge
+        // k_fxc exists, so 2n² is correct there. Raising the charge
         // uniformly to 3n² would refuse jobs that would have fit — an
         // over-estimating guard is also a bug.
         assert!(
@@ -564,11 +564,10 @@ mod tests {
 
     #[test]
     fn check_tda_alloc_honours_the_caller_budget_rather_than_discarding_it() {
-        // The plumbing pin. This used to pass `resolve_budget_bytes(None)`
-        // unconditionally, so `TdaDftConfig::memory_budget_bytes` was accepted
-        // by the config and then dropped on the floor: a run pinned to a small
-        // ceiling was silently gated against the env / cgroup / RAM-auto value
-        // instead. Same defect `ferric_rpa` fixed three times.
+        // The plumbing pin. Passing `resolve_budget_bytes(None)`
+        // would accept `TdaDftConfig::memory_budget_bytes` in the config and
+        // then drop it on the floor: a run pinned to a small ceiling would be
+        // silently gated against the env / cgroup / RAM-auto value instead.
         //
         // A tiny explicit budget MUST refuse a shape that an auto-resolved
         // whole-box budget would happily pass.

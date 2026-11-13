@@ -29,16 +29,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// Gate the projected M tensor (m_modes, n_act, n_act) against the memory
 /// budget.
 ///
-/// # Why this now returns `Err` instead of only printing
+/// # Why this returns `Err` instead of only printing
 ///
-/// This was a warn-once `eprintln!`, with a doc comment that justified itself
-/// by saying `project_b_into_pdep` "is infallible ... so we surface the
-/// concrete GB number rather than change the signature to `Result`". That made
-/// it a *diagnostic*, not a gate: the allocation went ahead regardless, one
-/// line of stderr scrolled past in a long GW log, and the OOM killer arrived
-/// seconds later — the exact failure mode the budget machinery exists to
-/// retire. A guard that cannot refuse is not a guard. `project_b_into_pdep` is
-/// therefore fallible now and every caller propagates.
+/// A warn-once `eprintln!` is a *diagnostic*, not a gate: the allocation goes
+/// ahead regardless, one line of stderr scrolls past in a long GW log, and the
+/// OOM killer arrives seconds later — the exact failure mode the budget
+/// machinery exists to retire. A guard that cannot refuse is not a guard.
+/// `project_b_into_pdep` is therefore fallible and every caller propagates.
 ///
 /// The warn-once latch is kept for the *stderr* advice (the truncation hint is
 /// worth printing once per process, not once per evGW iteration), but the
@@ -46,12 +43,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 ///
 /// # Why `budget` is a parameter
 ///
-/// It used to read `resolve_budget_bytes(None)`, which discards
+/// `resolve_budget_bytes(None)` would discard
 /// [`GwConfig::memory_budget_bytes`](crate::GwConfig::memory_budget_bytes) and
-/// substitutes the env / cgroup / RAM-auto-detected ceiling instead — so a run
-/// pinned to 4 GB could be gated against ~0.8× of a 23 GB box. Same defect,
-/// same fix, as `ferric_rpa::properties::pdep_polarizability_static`; ferric-gw
-/// simply never got it.
+/// substitute the env / cgroup / RAM-auto-detected ceiling instead — so a run
+/// pinned to 4 GB could be gated against ~0.8× of a 23 GB box. The explicit
+/// budget is threaded down, as in
+/// `ferric_rpa::properties::pdep_polarizability_static`.
 static M_PROJ_WARNED: AtomicBool = AtomicBool::new(false);
 fn guard_m_proj(
     m_modes: usize,
@@ -144,7 +141,7 @@ pub fn sigma_x_diag(mo_b: &MoB) -> Array1<f64> {
 /// Gated by `guard_m_proj` against `memory_budget_bytes` (the caller's
 /// [`GwConfig::memory_budget_bytes`](crate::GwConfig::memory_budget_bytes), or
 /// `None` to fall back to the env/auto ceiling). This function is FALLIBLE for
-/// that reason — see `guard_m_proj`'s docs for why the old warn-only form was
+/// that reason — see `guard_m_proj`'s docs for why a warn-only form is
 /// not a gate.
 /// Pre-flight the BOTH-SPIN projection before either half is built.
 ///
@@ -648,9 +645,9 @@ mod tests {
     }
 
     /// The plumbing pin, distinct from the guard tests above: the ONLY
-    /// difference between these two calls is `memory_budget_bytes`. The site
-    /// used to pass `resolve_budget_bytes(None)`, discarding
-    /// `GwConfig::memory_budget_bytes` and substituting the env / cgroup /
+    /// difference between these two calls is `memory_budget_bytes`. A site
+    /// passing `resolve_budget_bytes(None)` would discard
+    /// `GwConfig::memory_budget_bytes` and substitute the env / cgroup /
     /// RAM-auto ceiling — under which both calls would have succeeded.
     #[test]
     fn project_b_into_pdep_honours_the_caller_budget_rather_than_discarding_it() {

@@ -328,8 +328,8 @@ pub fn run_u_gw(
     let scf: &ScfResult = &scf_view;
 
     // Fail fast on an out-of-range qp_mos BEFORE the expensive RPA/B̃-tensor
-    // work below — same reasoning as run_gw's identical check (found
-    // 2026-07-18: an out-of-range upper bound used to panic deep inside a
+    // work below — same reasoning as run_gw's identical check (an
+    // out-of-range upper bound would panic deep inside a
     // rayon closure in u_sigma.rs/u_cohsex.rs instead of surfacing a clean
     // error).
     let qp_range = gw_cfg
@@ -465,8 +465,8 @@ pub fn run_gw(
     // Fail fast on an out-of-range qp_mos BEFORE the expensive RPA/B̃-tensor
     // work below — qp_range is a plain user-suppliable Range<usize> with no
     // upper-bound validation anywhere else, and an out-of-range upper bound
-    // used to panic deep inside a rayon closure in sigma.rs/cohsex.rs
-    // instead of surfacing a clean error (found 2026-07-18).
+    // would panic deep inside a rayon closure in sigma.rs/cohsex.rs
+    // instead of surfacing a clean error.
     let qp_range = gw_cfg
         .qp_mos
         .clone()
@@ -532,8 +532,8 @@ pub fn run_gw(
     Ok(result)
 }
 
-/// Surface non-convergence (reliability audit: flags used to be silently
-/// dropped — a stalled evGW or a Newton solve stuck at a Σc pole printed the
+/// Surface non-convergence (reliability audit: unreported flags hide that
+/// a stalled evGW or a Newton solve stuck at a Σc pole printed the
 /// same table as a converged run).
 fn warn_gw_unconverged(result: &GwResult, gw_cfg: &GwConfig) {
     if !result.outer_converged {

@@ -80,7 +80,7 @@ fn v_dressed() -> Array2<f64> {
 /// CONTRACT 1: the second plane sees a DEBITED pool, not the ceiling again.
 ///
 /// This is the defect verbatim. A capacity that holds `b_full` and `m_proj`
-/// individually but not together used to admit both. It must now refuse the
+/// individually but not together must not admit both. It must refuse the
 /// second, and the refusal must NAME the incumbent so the breakdown says which
 /// plane is dominant.
 #[test]

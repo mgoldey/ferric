@@ -159,9 +159,9 @@
 //! * Starting point: ferric G0W0@PBE misses the @HF reference.
 //! * W quadrature: ferric @PBE with a 16-point W integral must MISS the
 //!   100-point `exact` reference (H2O/cc-pVDZ: 76 meV). This proves
-//!   `n_points` reaches W. (Before 2026-11-09 it had to MATCH PySCF's 16-point
-//!   value; ferric's closed shell now integrates the Σc kernel exactly, as
-//!   the open shell does, so it no longer computes PySCF's plain sum.)
+//!   `n_points` reaches W. (ferric's closed shell integrates the Σc kernel exactly, as
+//!   the open shell does, so it does not reproduce PySCF's 16-point plain
+//!   sum.)
 //! * Plain quadrature: ferric @PBE must MISS PySCF's nw = 100 QP energies
 //!   (H2O/cc-pVDZ: 102 meV on HOMO−2), and the plain Σc(iω) at 100 points
 //!   must miss the exact pole sum by 10× its bar, so the closed-shell
@@ -1884,7 +1884,7 @@ fn u_g0w0_uks_qp_case(system: &str) {
             MUST_MISS_FACTOR,
         );
         // Control: the W frequency integral matters — ferric misses PySCF's
-        // plain nw = 100 quadrature (the old reference of this row).
+        // plain nw = 100 quadrature (the reference of the earlier row).
         let pyscf_nw100 = vec_f64(&sys.r, &format!("{p}/eps_qp"), &c);
         let d_old = got
             .iter()

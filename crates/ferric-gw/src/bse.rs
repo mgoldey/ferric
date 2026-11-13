@@ -1247,7 +1247,7 @@ pub const ALPHA_DIAGONAL_ZERO_TOL: f64 = 1e-8;
 /// The error message names the known remedies because they are established, not
 /// speculative: a nonzero `scissor` (~0.3–0.4 Ha for small molecules) or a
 /// diagonal sourced from real `run_gw` G0W0 QP energies both restore
-/// positive-definiteness on every previously-failing system.
+/// positive-definiteness on every system that fails without one.
 ///
 /// `context` is prefixed to the message so callers of different entry points
 /// are distinguishable in a log.

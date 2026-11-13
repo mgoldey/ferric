@@ -13,8 +13,7 @@
 //! non-positive-definite" from "kernel is fine but the alpha contraction has
 //! a sign/indexing bug".
 //!
-//! HISTORICAL NOTE (guard landed after this file was written):
-//! `run_rpax_static_polarizability` now REFUSES a non-positive alpha diagonal
+//! NOTE: `run_rpax_static_polarizability` REFUSES a non-positive alpha diagonal
 //! (`ferric_gw::bse::check_alpha_diagonal_positive`), so the systems this sweep
 //! was written to expose now come back as `Err` and land in the
 //! "run_rpax_static_polarizability ERRORED: ..." arm below rather than printing

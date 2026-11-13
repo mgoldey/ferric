@@ -120,13 +120,11 @@ pub fn run(method: GwMethod) -> Vec<f64> {
 
 /// Frozen G0W0 QP energies (Ha), re-recorded 2026-09-18 on main-after-#83.
 ///
-/// # Why these moved, and why they are now only a SANITY BAND
+/// # Why these are only a SANITY BAND
 ///
-/// These were captured at `72883be0`, a pre-migration commit on the old base.
-/// Integrating the five pool branches REBASED the stack onto main after PR #83
-/// (`a268fc3c`, spherical MINAO atomic blocks), which changes the converged SCF
-/// reference density -- and GW is built on that density, so every QP energy
-/// moved by ~1e-10.
+/// These were captured at `72883be0`. PR #83 (`a268fc3c`, spherical MINAO
+/// atomic blocks) changes the converged SCF reference density -- and GW is
+/// built on that density, so every QP energy moves by ~1e-10 against them.
 ///
 /// Worse for a hardcoded bit pattern: the result is **not bit-reproducible
 /// across machines**. Measured for QP[0] on the SAME tree:

@@ -40,10 +40,10 @@
 //! Most of the n_quad error above was the plain sum's: the pinned @PBE cases
 //! are now ≤ 0.27 meV at the defaults (CH2O HOMO), and the WHOLE default
 //! window HOMO−2 … LUMO+2 of G0W0@PBE (CH2O, NH3) moves ≤ 0.06 meV between
-//! n_quad 40 and 100 (`CLOSED_NQUAD_BAR_MEV`); before, CH2O HOMO−1 moved
-//! 282 meV. The old n_quad = 20 control no longer misses 10 meV (NH3 HOMO
+//! n_quad 40 and 100 (`CLOSED_NQUAD_BAR_MEV`); the plain quadrature moves CH2O HOMO−1
+//! 282 meV. The n_quad = 20 control stays within 10 meV (NH3 HOMO
 //! 0.5 meV), so the frequency-grid control is the window test's 16 points
-//! (30–35 meV). LiH was dropped from the set in 2026-11-06 (its Li 1s at @HF
+//! (30–35 meV). LiH is not in the set (its Li 1s at @HF
 //! and its HOMO at @PBE never settled in n_quad; not re-measured).
 //! U-G0W0@UKS/PBE (OH, NH2) has its own n_quad bar
 //! (`UKS_NQUAD_BAR_MEV`, below): before 2026-11-08 its frontier states moved
@@ -439,7 +439,7 @@ fn g0w0_pbe_nh3_window_converges_in_n_quad() {
 /// integration (`sigma::sigma_c_at_z_product`), so the frontier QP energies
 /// converge in n_quad. MEASURED 2026-11-08 (wiki/notes/ugw-uks-2026-11-08):
 /// OH and NH2 frontier states agree between n_quad = 40 and 100 to
-/// ≤ 0.005 meV; with the old plain quadrature the OH β HOMO moved 66 meV
+/// ≤ 0.005 meV; with the plain quadrature the OH β HOMO moves 66 meV
 /// between 80 and 100 and was off by up to 1.7 eV at 40.
 const UKS_NQUAD_BAR_MEV: f64 = 1.0;
 /// The negative control's grid: product integration at 16 points still
