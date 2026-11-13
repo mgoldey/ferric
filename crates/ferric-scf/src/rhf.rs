@@ -4323,6 +4323,11 @@ pub(crate) fn build_multi_jk_with_pool_homogeneous(
     };
     use ndarray::{Array3, Axis};
     ctx.check_interrupted()?;
+    // Nothing to build (both matrices fitted): no pass, and no zero-width
+    // partial for the fold to split into rows.
+    if jd.is_empty() && kd.is_empty() {
+        return Ok((Vec::new(), Vec::new()));
+    }
     let nbf = prep.nbasis();
     // Each density scaled into max|D| ∈ (½, 1], stacked (nbf, nbf, m).
     let stack = |ds: &[&Array2<f64>]| -> (Array3<f64>, Vec<f64>) {
