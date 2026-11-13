@@ -29,17 +29,17 @@
 //! 4. Each surviving point's area is `4π·R_A² · w_i · swf` (the Lebedev
 //!    weight already sums to 1 over the *unpruned* sphere).
 //!
-//! **Measured effect (2026-07-19, see `docs/VALIDATION.md`'s PCM row for the
-//! full numbers)**: UNLIKE the earlier null result on the sibling COSMO
+//! **Measured effect (see `docs/VALIDATION.md`'s PCM row for the
+//! full numbers)**: UNLIKE the null result on the sibling COSMO
 //! crate (<0.5% shift there), this switching function is a real, substantial
 //! lever on PCM — but the outcome is a genuine trade, not a clean win.
-//! Methanol's error (previously ~3-4x too NEGATIVE) shrinks to under 2x and
-//! flips sign (now too WEAK), and NH3 tightens from ~8% to ~1.7%; but both
-//! water points (STO-3G and cc-pVDZ), previously ~0.3%/~0% agreement with
-//! PySCF, loosen to ~9-10% off. Total cavity area barely changes and moves
+//! Against a hard cut, methanol's error (~3-4x too NEGATIVE) shrinks to under
+//! 2x and flips sign (too WEAK), and NH3 tightens from ~8% to ~1.7%; but both
+//! water points (STO-3G and cc-pVDZ), at ~0.3%/~0% agreement with
+//! PySCF with a hard cut, loosen to ~9-10% off. Total cavity area barely changes and moves
 //! in opposite directions per molecule (water grows slightly, methanol
 //! shrinks slightly) — the mechanism is a redistribution of area among
-//! tesserae (many small-area tesserae now exist near former hard-cut
+//! tesserae (many small-area tesserae exist near the hard-cut
 //! boundaries, and the self-term `S_ii = ξ·√(4π/area)` diverges as
 //! area→0), not a coverage fix. Kept in the tree because it demonstrably
 //! changes the physics in a direction that helps the worst case (methanol)

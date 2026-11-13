@@ -43,7 +43,7 @@
 //! reference — see that crate's module doc. This is the default here (see
 //! `SdKind::default`); `PointCharge` is kept only for the regression test
 //! that measures the isolated S/D formulation effect and to reproduce
-//! pre-2026-07-19 numbers.
+//! point-charge numbers.
 //!
 //! In both cases `D_ij` uses the normal at the *source* point `j` — the
 //! convention that makes `D` (not `Dᵀ`) the correct operator for "potential
