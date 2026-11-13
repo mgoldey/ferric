@@ -97,6 +97,16 @@ pub struct Config {
     /// key; `None` whenever `[cell]` is absent.
     #[serde(skip)]
     pub periodic: Option<PeriodicPlan>,
+    /// Optional `[cas]` section: the active space and orbital optimization of
+    /// `method.kind = "casscf"` / `"nevpt2"` (see [`crate::cas::CasCfg`]);
+    /// required by those kinds, refused by every other.
+    #[serde(default)]
+    pub cas: Option<crate::cas::CasCfg>,
+    /// The validated CAS plan, resolved by [`load_config`] from `[cas]` plus
+    /// the raw TOML (which `[scf]` keys were written). Not a TOML key; `None`
+    /// for every kind other than `casscf` / `nevpt2`.
+    #[serde(skip)]
+    pub cas_plan: Option<crate::cas::CasPlan>,
 }
 
 impl Config {
@@ -5680,8 +5690,8 @@ fn scf_energy_conv_written(text: &str) -> bool {
         .is_some_and(|raw| raw_keys(&raw, "scf").contains(&"energy_conv"))
 }
 
-/// The post-parse checks of [`load_config`], and the `[cell]` plan (which
-/// needs the raw TOML to see which keys were actually written).
+/// The post-parse checks of [`load_config`], and the `[cell]` and `[cas]`
+/// plans (which need the raw TOML to see which keys were actually written).
 fn validate_loaded(cfg: &mut Config, text: &str) -> Result<(), String> {
     cfg.validate_loaded_values()?;
     cfg.scf.energy_conv_set = scf_energy_conv_written(text);
@@ -5689,6 +5699,7 @@ fn validate_loaded(cfg: &mut Config, text: &str) -> Result<(), String> {
         let raw: toml::Value = toml::from_str(text).map_err(|e| e.to_string())?;
         cfg.periodic = periodic_plan(cfg, &raw)?;
     }
+    cfg.cas_plan = crate::cas::resolve_plan(cfg, text)?;
     Ok(())
 }
 

@@ -48,16 +48,15 @@ fn disagreements(grades: &[(&str, Grade)], warned: &[&str], dispatched: &[&str])
 
 #[test]
 fn cli_warnings_match_the_grade_table() {
-    // Negative control: the table must hold every grade class the check
-    // distinguishes, or a vacuous table would pass.
+    // Negative control: the table must hold both sides of the warn / no-warn
+    // split, or a vacuous table would pass. Every CLI kind has a grade, so
+    // the table holds no not-graded row; the checker's handling of one is
+    // pinned by `the_checker_reports_each_kind_of_disagreement`.
     assert!(METHOD_KIND_GRADES.len() >= 20);
     assert!(METHOD_KIND_GRADES.iter().any(|(_, g)| must_warn(*g)));
     assert!(METHOD_KIND_GRADES
         .iter()
         .any(|(_, g)| *g >= Grade::ProvenNarrow));
-    assert!(METHOD_KIND_GRADES
-        .iter()
-        .any(|(_, g)| *g == Grade::Ungraded));
 
     let warned: Vec<&str> = ferric_cli::EPISTEMIC_WARNINGS
         .iter()

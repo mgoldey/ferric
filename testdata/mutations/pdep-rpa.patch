@@ -1,0 +1,13 @@
+diff --git a/crates/ferric-rpa/src/sternheimer.rs b/crates/ferric-rpa/src/sternheimer.rs
+index bfbb8be64..32e7cef93 100644
+--- a/crates/ferric-rpa/src/sternheimer.rs
++++ b/crates/ferric-rpa/src/sternheimer.rs
+@@ -202,7 +202,7 @@ fn syrk_aat_accumulate_into(a: ArrayView2<f64>, c: &mut Array2<f64>) {
+ /// [`build_scale_factors_with_prefactor`] and sum the two contributions.
+ #[inline]
+ pub fn build_scale_factors(eps_occ: &[f64], eps_vir: &[f64], omega: f64) -> Array1<f64> {
+-    build_scale_factors_with_prefactor(eps_occ, eps_vir, omega, 4.0)
++    build_scale_factors_with_prefactor(eps_occ, eps_vir, omega, 2.0)
+ }
+ 
+ /// Number of descents (adjacent order violations) in `v`.

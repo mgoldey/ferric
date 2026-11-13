@@ -36,12 +36,19 @@
 //! `run_dft(fock_hook=)`, and `hook(D_a, D_b) -> (E, V_a, V_b)` to
 //! `ferric_scf::fock::SpinFockHook`, for `run_uhf` / `run_rohf(fock_hook=)`.
 //!
+//! `AoIntegrals.provenance()` is the record of what one object computed and
+//! `certificate_from_blocks(name, records)` the (ungraded) certificate a
+//! script composes from such records (`provenance.rs`).
+//!
 //! Conventions match the drivers: Bohr, Hartree, AOs in ferric's shell order
 //! (`shell_offsets()`), and `jk()` takes the TOTAL density, so the closed-shell
 //! Fock matrix is `hcore() + J - 0.5 * K`.
 
+mod provenance;
+
 use super::{make_err, PyBasisSet, PyMolecule};
 use ferric_core::basis::BasisSet;
+use ferric_core::certificate::BlockUse;
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
 use ferric_core::FerricError;
@@ -58,6 +65,7 @@ use ferric_scf::fock::{JBuilder, KBuilder};
 use ferric_scf::screening::SchwarzBounds;
 use ndarray::{Array2, Array3, Array4, Axis};
 use numpy::{PyArray2, PyArray3, PyArray4, PyArrayDyn, PyReadonlyArray2, PyReadonlyArrayDyn};
+use provenance::certificate_from_blocks;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use rayon::prelude::*;
@@ -335,6 +343,8 @@ struct PyAoIntegrals {
     /// `veff`'s J / exchange-mix K maps, built on first use per
     /// (exchange mix, aux basis name).
     veff_maps: std::sync::Mutex<VeffMaps>,
+    /// What this object computed (`provenance()`).
+    log: provenance::Log,
 }
 
 /// `(c_sr, c_lr, omega)` as bits, and the aux basis name (`None` = exact).
@@ -347,6 +357,59 @@ fn lock_maps(m: &std::sync::Mutex<VeffMaps>) -> std::sync::MutexGuard<'_, VeffMa
 }
 
 impl PyAoIntegrals {
+    /// Count one call of `block` with no operator or aux.
+    fn note(&self, block: &str) {
+        self.log.note(BlockUse::new(block));
+    }
+    /// `value`, after counting one call of `block` (no operator or aux).
+    fn noted<T>(&self, block: &str, value: T) -> T {
+        self.note(block);
+        value
+    }
+    /// T + V (+ V_ECP).
+    fn hcore_ecp(&self) -> Array2<f64> {
+        oneelectron::hcore_ecp(&self.prep, &self.mol, &self.bs)
+    }
+    /// `m` as a numpy array, after counting one call of `block`.
+    fn array2<'py>(
+        &self,
+        py: Python<'py>,
+        block: &str,
+        m: Array2<f64>,
+    ) -> Bound<'py, PyArray2<f64>> {
+        self.note(block);
+        PyArray2::from_owned_array(py, m)
+    }
+    /// A use of `block` under `operator`/`omega`, with `aux` when fitted.
+    fn op_use(
+        &self,
+        block: &str,
+        operator: &str,
+        omega: Option<f64>,
+        aux: Option<&PyBasisSet>,
+    ) -> BlockUse {
+        let u = BlockUse::new(block).with_operator(provenance::op_text(operator, omega));
+        match aux {
+            Some(a) => u.with_aux(self.log.aux(&a.inner)),
+            None => u,
+        }
+    }
+    /// A use of `block` with the XC functional `xc` (if any) and `aux`.
+    fn xc_use(
+        &self,
+        block: &str,
+        xc: Option<&PyXcFunctional>,
+        aux: Option<&PyBasisSet>,
+    ) -> BlockUse {
+        let mut u = BlockUse::new(block);
+        if let Some(x) = xc {
+            u = u.with_xc(provenance::xc_text(&x.name, &x.grids));
+        }
+        if let Some(a) = aux {
+            u = u.with_aux(self.log.aux(&a.inner));
+        }
+        u
+    }
     fn aux_prep(&self, aux: &PyBasisSet) -> PyResult<PreparedBasis> {
         PreparedBasis::new(&self.mol, &aux.inner).map_err(make_err)
     }
@@ -435,11 +498,13 @@ impl PyAoIntegrals {
         let mut emol = mol.inner.clone();
         emol.apply_ecp(&basis_set.inner);
         let prep = PreparedBasis::new(&emol, &basis_set.inner).map_err(make_err)?;
+        let log = provenance::Log::new(&emol, &basis_set.inner);
         Ok(PyAoIntegrals {
             mol: emol,
             bs: basis_set.inner.clone(),
             prep,
             veff_maps: std::sync::Mutex::new(Vec::new()),
+            log,
         })
     }
     /// Number of AO basis functions.
@@ -454,7 +519,7 @@ impl PyAoIntegrals {
     }
     /// Nuclear repulsion energy (Hartree), with ECP-effective charges.
     fn nuclear_repulsion(&self) -> f64 {
-        self.mol.nuclear_repulsion()
+        self.noted("nuclear_repulsion", self.mol.nuclear_repulsion())
     }
     /// AO offset of each shell plus a trailing `nao` (length nshells + 1,
     /// like PySCF's `ao_loc`): shell `i` is AOs `offs[i]..offs[i + 1]`.
@@ -475,23 +540,23 @@ impl PyAoIntegrals {
     }
     /// Overlap S (nao × nao).
     fn overlap<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
-        PyArray2::from_owned_array(py, oneelectron::overlap(&self.prep))
+        self.array2(py, "overlap", oneelectron::overlap(&self.prep))
     }
     /// Kinetic energy T (nao × nao).
     fn kinetic<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
-        PyArray2::from_owned_array(py, oneelectron::kinetic(&self.prep))
+        self.array2(py, "kinetic", oneelectron::kinetic(&self.prep))
     }
     /// Nuclear attraction V (nao × nao), ECP-effective charges, no V_ECP.
     fn nuclear<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
-        PyArray2::from_owned_array(py, oneelectron::nuclear(&self.prep))
+        self.array2(py, "nuclear", oneelectron::nuclear(&self.prep))
     }
     /// The ECP projector V_ECP (nao × nao), or `None` without an ECP basis.
     fn ecp<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyArray2<f64>>> {
-        oneelectron::ecp_potential(&self.mol, &self.bs).map(|v| PyArray2::from_owned_array(py, v))
+        oneelectron::ecp_potential(&self.mol, &self.bs).map(|v| self.array2(py, "ecp", v))
     }
     /// Core Hamiltonian T + V (+ V_ECP), the matrix `run_rhf` starts from.
     fn hcore<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
-        PyArray2::from_owned_array(py, oneelectron::hcore_ecp(&self.prep, &self.mol, &self.bs))
+        self.array2(py, "hcore", self.hcore_ecp())
     }
     /// Dipole integrals ⟨μ|(r - origin)|ν⟩, shape (3, nao, nao); `origin` in
     /// Bohr. The electronic dipole is `-einsum('xij,ij->x', d, D)`.
@@ -508,6 +573,7 @@ impl PyAoIntegrals {
         for (axis, m) in [x, y, z].iter().enumerate() {
             out.index_axis_mut(ndarray::Axis(0), axis).assign(m);
         }
+        self.note("dipole");
         Ok(PyArray3::from_owned_array(py, out))
     }
     /// Dense 4-index ERIs (μν|λσ) in chemists' notation, shape (nao,)*4.
@@ -534,6 +600,7 @@ impl PyAoIntegrals {
         }
         let prep = &self.prep;
         let eri = py.allow_threads(|| dense_eri(op, prep))?;
+        self.log.note(self.op_use("eri", operator, omega, None));
         Ok(PyArray4::from_owned_array(py, eri))
     }
     /// 3-index ERIs (P|μν) against the auxiliary basis `aux`, shape
@@ -552,6 +619,8 @@ impl PyAoIntegrals {
         let t = py
             .allow_threads(|| eri3_tensor(op, obs, &dfbs))
             .map_err(make_err)?;
+        self.log
+            .note(self.op_use("eri3", operator, omega, Some(aux)));
         Ok(PyArray3::from_owned_array(py, t))
     }
     /// 2-index ERIs (P|Q) of the auxiliary basis `aux` (the fitting metric
@@ -569,6 +638,8 @@ impl PyAoIntegrals {
         let m = py
             .allow_threads(|| coulomb_metric_2c(op, &dfbs))
             .map_err(make_err)?;
+        self.log
+            .note(self.op_use("eri2", operator, omega, Some(aux)));
         Ok(PyArray2::from_owned_array(py, m))
     }
     /// Shell-pair Schwarz factors `Q[i, j] = sqrt(max |(μν|μν)|)` over
@@ -591,6 +662,7 @@ impl PyAoIntegrals {
         let q = py
             .allow_threads(|| ferric_integrals::schwarz::schwarz(op, prep))
             .map_err(make_err)?;
+        self.log.note(self.op_use("schwarz", operator, omega, None));
         Ok(PyArray2::from_owned_array(py, q))
     }
     /// CSAM table, shape (nshell, nshell), symmetric, exact `1.0` diagonal:
@@ -621,6 +693,7 @@ impl PyAoIntegrals {
         let x = py
             .allow_threads(|| ferric_integrals::csam::csam_x_table(op, prep))
             .map_err(make_err)?;
+        self.log.note(self.op_use("csam_x", operator, omega, None));
         Ok(PyArray2::from_owned_array(py, x))
     }
     /// Coulomb and exchange matrices `(J, K)` for a symmetric AO density,
@@ -659,6 +732,10 @@ impl PyAoIntegrals {
             .map_err(make_err)?;
             Ok((j, k))
         })?;
+        self.log.note(
+            self.op_use("jk", operator, omega, None)
+                .with_approximation("screening", format!("Schwarz threshold {thresh:e} (jk)")),
+        );
         Ok((
             PyArray2::from_owned_array(py, j),
             PyArray2::from_owned_array(py, k),
@@ -704,6 +781,7 @@ impl PyAoIntegrals {
         let out = py
             .allow_threads(|| ao2mo_direct(op, prep, [&c[0], &c[1], &c[2], &c[3]]))
             .map_err(make_err)?;
+        self.log.note(self.op_use("ao2mo", operator, omega, None));
         Ok(PyArray4::from_owned_array(py, out))
     }
     /// Fitted 3-index MO tensor B^P_pq = Σ_Q (V^-1/2)_PQ (Q|μν) C1_μp C2_νq,
@@ -734,6 +812,8 @@ impl PyAoIntegrals {
                 Ok(ferric_mp2::mo_transform::dress_3index(&mo, &v_is))
             })
             .map_err(make_err)?;
+        self.log
+            .note(self.op_use("df_mo", operator, omega, Some(aux)));
         Ok(PyArray3::from_owned_array(py, b))
     }
     /// Nuclear-repulsion gradient dV_nn/dR, shape (natoms, 3), Hartree/Bohr.
@@ -741,6 +821,7 @@ impl PyAoIntegrals {
         let g = py
             .allow_threads(|| self.nuclear_gradient())
             .map_err(make_err)?;
+        self.note("grad_nuclear_repulsion");
         Ok(PyArray2::from_owned_array(py, g))
     }
     /// Σ D_μν ∂h_μν/∂R at fixed D, shape (natoms, 3): kinetic, nuclear
@@ -762,6 +843,7 @@ impl PyAoIntegrals {
                 Ok(g)
             })
             .map_err(make_err)?;
+        self.note("grad_hcore");
         Ok(PyArray2::from_owned_array(py, g))
     }
     /// Σ W_μν ∂S_μν/∂R, shape (natoms, 3), for any (n, n) `W`, used as given
@@ -777,6 +859,7 @@ impl PyAoIntegrals {
         let g = py
             .allow_threads(|| ferric_scf::gradient::overlap_deriv_contract(prep, &w))
             .map_err(make_err)?;
+        self.note("grad_overlap");
         Ok(PyArray2::from_owned_array(py, g))
     }
     /// Two-electron integral-derivative terms at fixed D, each (natoms, 3):
@@ -829,6 +912,7 @@ impl PyAoIntegrals {
             }
         }
         .map_err(make_err)?;
+        self.log.note(self.op_use("grad_jk", operator, omega, aux));
         Ok((
             PyArray2::from_owned_array(py, gj),
             PyArray2::from_owned_array(py, gk),
@@ -838,6 +922,7 @@ impl PyAoIntegrals {
     /// index `3·atom + xyz` (as every `hess_*` / `*_deriv` block).
     fn hess_nuclear_repulsion<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
         let h = ferric_scf::hessian::hess_nuclear_repulsion(&self.mol);
+        self.note("hess_nuclear_repulsion");
         PyArray2::from_owned_array(py, h)
     }
     /// Σ D_μν ∂²h_μν/∂x∂y at fixed D, (3N, 3N): kinetic, nuclear attraction
@@ -852,6 +937,7 @@ impl PyAoIntegrals {
         let h = py
             .allow_threads(|| ferric_scf::hessian::blocks::hess_hcore(mol, prep, &d))
             .map_err(make_err)?;
+        self.note("hess_hcore");
         Ok(PyArray2::from_owned_array(py, h))
     }
     /// Σ W_μν ∂²S_μν/∂x∂y, (3N, 3N), for any (n, n) `W`, used as given (no
@@ -866,6 +952,7 @@ impl PyAoIntegrals {
         let h = py
             .allow_threads(|| ferric_scf::hessian::blocks::hess_overlap(prep, natoms, &w))
             .map_err(make_err)?;
+        self.note("hess_overlap");
         Ok(PyArray2::from_owned_array(py, h))
     }
     /// `(hJ, hK)`, each (3N, 3N): the second integral derivatives of
@@ -901,6 +988,7 @@ impl PyAoIntegrals {
                 (t.hj, t.hk)
             }
         };
+        self.log.note(self.op_use("hess_jk", operator, omega, aux));
         Ok((
             PyArray2::from_owned_array(py, hj),
             PyArray2::from_owned_array(py, hk),
@@ -915,6 +1003,7 @@ impl PyAoIntegrals {
         let m = py
             .allow_threads(|| ferric_scf::hessian::blocks::hcore_deriv(mol, prep))
             .map_err(make_err)?;
+        self.note("hcore_deriv");
         Ok(PyArray3::from_owned_array(py, stack(m, prep.nbasis())))
     }
     /// ∂S/∂x for every nuclear coordinate, shape (3N, n, n).
@@ -923,6 +1012,7 @@ impl PyAoIntegrals {
         let m = py
             .allow_threads(|| ferric_scf::hessian::blocks::overlap_deriv(prep, natoms))
             .map_err(make_err)?;
+        self.note("overlap_deriv");
         Ok(PyArray3::from_owned_array(py, stack(m, prep.nbasis())))
     }
     /// `(Jx, Kx)`, each (3N, n, n): `Jx[x] = Σ ∂(μν|λσ)/∂x D_λσ` and
@@ -956,6 +1046,7 @@ impl PyAoIntegrals {
                 (t.jx, t.kx)
             }
         };
+        self.log.note(self.op_use("jk_deriv", operator, omega, aux));
         let n = prep.nbasis();
         Ok((
             PyArray3::from_owned_array(py, stack(j, n)),
@@ -997,7 +1088,7 @@ impl PyAoIntegrals {
             })
             .map_err(|e| PyValueError::new_err(format!("functional '{functional}': {e}")))?;
         let k = closed.k_mix();
-        Ok(PyXcFunctional {
+        let x = PyXcFunctional {
             name: functional.to_string(),
             mol: self.mol.clone(),
             bs: self.bs.clone(),
@@ -1006,7 +1097,9 @@ impl PyAoIntegrals {
             closed,
             open: None,
             exchange_mix: (k.sr, k.lr, k.omega),
-        })
+        };
+        self.log.note(self.xc_use("xc_functional", Some(&x), None));
+        Ok(x)
     }
     /// The two-electron (+ XC) potential for a symmetric TOTAL density:
     /// `(E, V)` with `V = J - 0.5 * K` (Hartree-Fock, `xc=None`) or
@@ -1045,6 +1138,7 @@ impl PyAoIntegrals {
             e += e_xc;
             v += &v_xc;
         }
+        self.log.note(self.xc_use("veff", xc.as_deref(), aux));
         Ok((e, PyArray2::from_owned_array(py, v)))
     }
     /// Spin-polarized `veff`: `(E, V_a, V_b)` with
@@ -1078,6 +1172,8 @@ impl PyAoIntegrals {
             va += &xa;
             vb += &xb;
         }
+        self.log
+            .note(self.xc_use("veff_polarized", xc.as_deref(), aux));
         Ok((
             e,
             PyArray2::from_owned_array(py, va),
@@ -1105,12 +1201,14 @@ impl PyAoIntegrals {
         let spec = xc.as_ref().map(|x| x.spec());
         let half = frame.c_occ.dot(&frame.c_occ.t());
         let (mol, bs) = (&self.mol, &self.bs);
+        let used = self.xc_use("cphf", xc.as_deref(), aux);
         let aux = response_aux(aux, memory_budget_gb);
         let fock = py
             .allow_threads(|| {
                 FockResponse::new(mol, bs, spec.as_ref(), (&half, &half), aux_ref(&aux), true)
             })
             .map_err(make_err)?;
+        self.log.note(used);
         Ok(PyCphf {
             resp: Response {
                 fock,
@@ -1145,12 +1243,14 @@ impl PyAoIntegrals {
         let spec = xc.as_ref().map(|x| x.spec());
         let (da, db) = (fa.c_occ.dot(&fa.c_occ.t()), fb.c_occ.dot(&fb.c_occ.t()));
         let (mol, bs) = (&self.mol, &self.bs);
+        let used = self.xc_use("ucphf", xc.as_deref(), aux);
         let aux = response_aux(aux, memory_budget_gb);
         let fock = py
             .allow_threads(|| {
                 FockResponse::new(mol, bs, spec.as_ref(), (&da, &db), aux_ref(&aux), true)
             })
             .map_err(make_err)?;
+        self.log.note(used);
         Ok(PyUcphf {
             resp: Response {
                 fock,
@@ -1193,6 +1293,8 @@ impl PyAoIntegrals {
                 Ok((j, k))
             })
             .map_err(make_err)?;
+        self.log
+            .note(self.op_use("df_jk", operator, omega, Some(aux)));
         Ok(PyDfJk {
             j,
             k,
@@ -1208,6 +1310,7 @@ impl PyAoIntegrals {
         let w = py
             .allow_threads(|| ferric_integrals::pvp::pvp_nuclear(prep))
             .map_err(make_err)?;
+        self.note("pvp");
         Ok(PyArray2::from_owned_array(py, w))
     }
     /// Spin-free X2C-1e core Hamiltonian (nao × nao), replacing `T + V`:
@@ -1231,7 +1334,20 @@ impl PyAoIntegrals {
                 }
                 other => make_err(other),
             })?;
+        self.log.note(
+            BlockUse::new("hcore_x2c")
+                .with_approximation("x2c", format!("spin-free X2C-1e, c = {c} (hcore_x2c)")),
+        );
         Ok(PyArray2::from_owned_array(py, h))
+    }
+    /// The provenance record of this object as a dict: the build, the
+    /// orbital basis with each element's data source, object-level
+    /// approximations (`ecp`), and every distinct block configuration called
+    /// so far (`uses`: block, operator, aux basis, XC functional and grid,
+    /// block approximations, call count). Compose records into a
+    /// certificate with `ferric.certificate_from_blocks`.
+    fn provenance(&self, py: Python<'_>) -> PyResult<PyObject> {
+        provenance::json_to_py(py, &self.log.snapshot().to_json().to_string())
     }
     fn __repr__(&self) -> String {
         format!(
@@ -1812,10 +1928,17 @@ impl FockResponse {
         })
     }
 
+    /// J and K of a response density, homogeneous in `d`
+    /// (`build_jk_with_pool_homogeneous`): the `1e-12` quartet screen sees
+    /// `d` normalized to `max|d| ∈ (½, 1]`, so the map stays linear as the
+    /// CG trial vectors shrink with the residual. The plain `build_jk` screen
+    /// is absolute: on a `1e-13` density it drops a different quartet set
+    /// than on a unit one, and (A + B) p stops being a linear map of p.
     fn jk(&self, bounds: &SchwarzBounds, d: &Array2<f64>) -> Result<[Array2<f64>; 2], FerricError> {
         let n = self.prep.nbasis();
         let (mut j, mut k) = (Array2::zeros((n, n)), Array2::zeros((n, n)));
-        ferric_scf::rhf::build_jk(
+        let pool = eri_pool(bounds, &self.prep)?;
+        ferric_scf::rhf::build_jk_with_pool_homogeneous(
             &ParallelContext::default(),
             &self.prep,
             bounds,
@@ -1823,6 +1946,8 @@ impl FockResponse {
             d,
             &mut j,
             &mut k,
+            &pool,
+            ferric_scf::reduce::default_band_bytes(),
         )?;
         Ok([j, k])
     }
@@ -1961,8 +2086,10 @@ impl Response {
             .collect())
     }
     /// Preconditioned conjugate gradient on (A + B) U = rhs from U = 0,
-    /// stopping when max |residual| < tol. A non-positive curvature means
-    /// the reference is not a minimum (A + B not positive definite).
+    /// stopping when max |residual| < tol. A curvature p.(A+B)p below minus
+    /// its round-off bound means the reference is not a minimum (A + B not
+    /// positive definite); one within the bound of zero means p is below
+    /// what the matvec resolves, and the solve stops there.
     fn solve(
         &self,
         rhs: &[Array2<f64>],
@@ -1996,12 +2123,7 @@ impl Response {
         for it in 1..=max_iter {
             let ap = self.apply(&p)?;
             let pap = dot(&p, &ap);
-            if !(pap > 0.0) {
-                return Err(FerricError::Convergence(format!(
-                    "CPHF: non-positive curvature p.(A+B)p = {pap:.3e} at iteration {it}; the \
-                     reference is not a minimum of the orbital Hessian"
-                )));
-            }
+            check_curvature(&p, &ap, pap, it, resid, tol)?;
             let alpha = rz / pap;
             for k in 0..x.len() {
                 x[k].scaled_add(alpha, &p[k]);
@@ -2091,6 +2213,75 @@ struct PyCphf {
     resp: Response,
 }
 
+/// An engine pool for `bounds.op` at the process ERI precision, as `build_jk`
+/// builds internally.
+fn eri_pool(
+    bounds: &SchwarzBounds,
+    prep: &PreparedBasis,
+) -> Result<ferric_scf::engine_pool::EnginePool, FerricError> {
+    ferric_scf::engine_pool::EnginePool::new(
+        bounds.op,
+        prep,
+        ferric_integrals::engine_pool::eri_precision(),
+    )
+}
+
+/// Refuses a CG step whose curvature p.(A+B)p has no measured positive sign.
+///
+/// Bar: the forward error bound of the N-term dot product (Higham, Accuracy
+/// and Stability of Numerical Algorithms, eq. 3.5),
+/// |fl(p.Ap) - p.Ap| <= N u sum_k |p_k (Ap)_k|. The matvec's own error is
+/// relative to |Ap| (the J/K build is homogeneous, see `FockResponse::jk`)
+/// and smaller: A(sU)/s - A(U) is 1e-15 of |A U| on water/cc-pVDZ, against
+/// N u = 2e-14 there (N = 95). Below minus the bar the reference is not a
+/// minimum; within the bar of zero, p is below what the matvec resolves.
+fn check_curvature(
+    p: &[Array2<f64>],
+    ap: &[Array2<f64>],
+    pap: f64,
+    it: usize,
+    resid: f64,
+    tol: f64,
+) -> Result<(), FerricError> {
+    if !pap.is_finite() {
+        return Err(FerricError::Convergence(format!(
+            "CPHF: non-finite curvature p.(A+B)p = {pap} at iteration {it}"
+        )));
+    }
+    let n_terms = p.iter().map(|x| x.len()).sum::<usize>() as f64;
+    let pap_abs: f64 = p
+        .iter()
+        .zip(ap)
+        .map(|(x, y)| (x * y).mapv(f64::abs).sum())
+        .sum();
+    let bar = n_terms * f64::EPSILON * pap_abs;
+    if pap < -bar {
+        return Err(FerricError::Convergence(format!(
+            "CPHF: negative curvature p.(A+B)p = {pap:.3e} (round-off bound {bar:.1e}) \
+             at iteration {it}; the reference is not a minimum of the orbital Hessian"
+        )));
+    }
+    if pap <= bar {
+        return Err(FerricError::Convergence(format!(
+            "CPHF stalled at iteration {it}: p.(A+B)p = {pap:.3e} is within its \
+             round-off bound {bar:.1e} of zero at max |residual| {resid:.3e} > tol \
+             {tol:.1e}; tol is below the residual this matvec resolves"
+        )));
+    }
+    Ok(())
+}
+
+/// `Cphf.solve` takes a positive, finite `tol`: at `tol = 0` the residual
+/// underflows (2e-99 after 100 iterations on water) and the next step is 0/0.
+fn check_tol(tol: f64) -> PyResult<()> {
+    if tol.is_finite() && tol > 0.0 {
+        return Ok(());
+    }
+    Err(PyValueError::new_err(format!(
+        "solve: tol must be positive and finite, got {tol}"
+    )))
+}
+
 /// Open-shell (UHF/UKS) twin of `Cphf`, from `AoIntegrals.ucphf`: rotations
 /// are the pair `(U_a, U_b)`, `density` gives `D1_s = C_vs U_s C_osᵀ + h.c.`
 /// (unit occupation) and `F1_s = J(D1_a + D1_b) - exchange mix·K(D1_s) +
@@ -2122,6 +2313,7 @@ fn response_solve<'py>(
     tol: f64,
     max_iter: usize,
 ) -> PyResult<Vec<Bound<'py, PyArray2<f64>>>> {
+    check_tol(tol)?;
     let rhs = checked_rotations(&resp.frames, rhs)?;
     let (x, _, _) = py
         .allow_threads(|| resp.solve(&rhs, tol, max_iter))
@@ -2829,5 +3021,6 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyXcFunctional>()?;
     m.add_class::<PyCphf>()?;
     m.add_class::<PyUcphf>()?;
+    m.add_function(wrap_pyfunction!(certificate_from_blocks, m)?)?;
     m.add_function(wrap_pyfunction!(einsum, m)?)
 }

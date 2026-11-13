@@ -143,7 +143,9 @@ fn exchange_used(config: &RhfConfig) -> (bool, bool) {
     }
 }
 
-fn grid_text(g: &ferric_dft::grid::AtomicGridConfig) -> String {
+/// An integration grid as certificates write it:
+/// `(n_radial, n_angular), <prune>, <weight cut>`.
+pub fn grid_text(g: &ferric_dft::grid::AtomicGridConfig) -> String {
     let prune = g
         .prune
         .map_or("flat".to_string(), |p| format!("{p:?}").to_lowercase());

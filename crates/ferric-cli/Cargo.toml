@@ -50,6 +50,9 @@ ferric-rpa = { path = "../ferric-rpa" }
 ferric-gw = { path = "../ferric-gw" }
 ferric-export = { path = "../ferric-export" }
 ferric-cc = { path = "../ferric-cc" }
+# `method.kind = "casscf"` / `"nevpt2"` (src/cas.rs): the shared drivers of
+# `ferric_ci::driver`, which the Python run_casscf / run_nevpt2 also call.
+ferric-ci = { path = "../ferric-ci" }
 ferric-tddft = { path = "../ferric-tddft" }
 # `[pcm]`: the solvent table and PcmConfig validation live in ferric-pcm
 # (`PcmConfig::for_solvent` / `with_epsilon` / `with_lebedev_order`), shared

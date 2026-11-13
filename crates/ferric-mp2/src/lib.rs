@@ -67,6 +67,8 @@ pub mod oo_rimp2;
 pub mod oo_rimp2_gradient;
 /// Geometry optimization using MP2 gradients.
 pub mod optimize;
+/// GEMM building blocks of the OO-MP2 orbital gradients and the U-MP2 density.
+pub(crate) mod orbital_gradient_gemm;
 /// Cayley/exponential orbital rotation helpers for OO-MP2.
 pub mod orbital_rotation;
 /// Projected atomic orbital (PAO) domain construction for local correlation.

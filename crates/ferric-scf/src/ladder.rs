@@ -223,6 +223,9 @@ pub fn rung_tricks(c: &RhfConfig) -> String {
     if c.mom_after_iter > 0 {
         v.push(format!("MOM@{}", c.mom_after_iter));
     }
+    if c.mom_reference == crate::mom::MomReference::Initial {
+        v.push("MOM@start".into());
+    }
     if c.use_sad_guess {
         v.push("MINAO guess".into());
     } else {

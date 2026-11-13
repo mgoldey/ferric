@@ -4,7 +4,9 @@ ferric runs complete-active-space configuration interaction (CAS-CI) and
 two-step CASSCF from a closed-shell RHF reference, from Rust
 (`ferric_ci::run_cas_ci`, `ferric_ci::run_casscf`) or Python
 (`ferric.run_casci`, `ferric.run_casscf`), and SC-NEVPT2 on top of either
-(`ferric_ci::sc_nevpt2`, `ferric.run_nevpt2`). The CLI exposes none of them.
+(`ferric_ci::sc_nevpt2`, `ferric.run_nevpt2`). CASSCF and SC-NEVPT2 are also
+the CLI kinds `casscf` and `nevpt2` (see [From the CLI](#from-the-cli));
+CAS-CI has no CLI kind.
 
 The Hamiltonian, the determinant phase convention and the Slater-Condon rules
 are derived in `crates/ferric-ci/theory.md`. The phase conventions are checked
@@ -22,7 +24,7 @@ by `scripts/casci_slater_condon_phases_sympy.py`.
 | Density matrices | spin-summed 1- and 2-RDM of the root, opt-in (`compute_rdms`) |
 | Orbital optimization | two-step CASSCF, single root of any $(n_\alpha, n_\beta)$ sector, optional canonical orbitals (see [CASSCF](#casscf)) |
 | Perturbation theory | SC-NEVPT2 on the single root, $n_\alpha = n_\beta$ (see [SC-NEVPT2](#sc-nevpt2)) |
-| Not implemented | open-shell or non-singlet references, S² control, multiple roots, state averaging, CLI `method.kind`, spin-resolved RDMs |
+| Not implemented | open-shell or non-singlet references, S² control, multiple roots, state averaging, a CLI kind for plain CAS-CI, spin-resolved RDMs |
 
 With no inactive orbitals the method is FCI in the basis. A call that fails
 the bookkeeping check, `2 * active_start + n_alpha + n_beta == nelec`, returns
@@ -132,7 +134,8 @@ $\partial E/\partial\kappa_{pq} = 2(F_{pq} - F_{qp})$. Equations:
 The step is inverse BFGS, started from an approximate diagonal orbital
 Hessian and reset to it when the energy rises. A run that reaches the
 iteration cap returns `converged = false`; Python adds a `RuntimeWarning` and
-a certificate warning (capability `casscf`, ungraded).
+a certificate warning; the certificate (capability `casscf`, graded Proven)
+is then capped to not graded.
 
 ```python
 import ferric
@@ -218,8 +221,8 @@ It refuses an unconverged CASSCF or CAS-CI reference, $n_\alpha \ne n_\beta$,
 a CI vector that is not an eigenvector of the active Hamiltonian to 1e-8,
 and a memory budget that cannot hold the dense AO integrals, the MO blocks
 and the $n_\text{act}^6$ intermediates (checked before any integral is
-built). Single root; no CLI `method.kind`; the certificate (capability
-`nevpt2`) is ungraded.
+built). Single root. The certificate (capability `nevpt2`) is graded Proven
+on a CASSCF reference and capped to not graded on a CAS-CI reference.
 
 Validation (`crates/ferric-ci/tests/nevpt2.rs`, 6-31G, measured 2026-11-12):
 
@@ -318,6 +321,34 @@ integrals and evaluates `make_rdm12` on that eigenvector
 orbitals through the AO overlap. The test also checks the traces
 $N$ and $N(N-1)$, the partial trace, the pair and transpose symmetries, and
 natural occupations in $[0, 2]$.
+
+## From the CLI
+
+`method.kind = "casscf"` and `"nevpt2"` run the same Rust drivers
+(`ferric_ci::driver`) as `run_casscf` and `run_nevpt2`, so one input gives
+the same energy bit for bit on both surfaces. The active space is the
+`[cas]` section; `[cas.ci]` holds the CI solver settings and `[scf]` the
+convergence of the RHF start:
+
+```toml
+[molecule]
+xyz = "testdata/molecules/water.xyz"
+
+[basis]
+name = "6-31g"
+
+[method]
+kind = "nevpt2"
+
+[cas]
+n_active = 4
+n_elec_active = [2, 2]
+```
+
+The molecule must be a singlet (`multiplicity = 1`); an open-shell CASSCF
+takes its sector from `n_elec_active`, as `examples/o2-casscf-triplet.toml`
+does. Keys and refusals are in the [input reference](../reference/input.md#cas).
+`task = "energy"` only.
 
 The grade is on [Capabilities and validation](../reference/validation.md).
 Sources: `crates/ferric-ci/tests/validation_casci.rs` and

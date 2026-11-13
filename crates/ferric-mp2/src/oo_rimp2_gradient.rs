@@ -57,7 +57,7 @@ use crate::oo_rimp2::{
     build_mp2_density, compute_b_full_mo, compute_t2_and_integrals, OoRiMp2Result,
 };
 use crate::rimp2::{active_occ, cholesky_inverse_sqrt, Mp2Intermediates};
-use crate::zvector::{build_imat_ri, build_x_ov};
+use crate::zvector::{build_imat_ri, build_x_ov, x_ov_worker_bytes};
 use ferric_core::external_potential::ExternalPotential;
 use ferric_core::mol::Molecule;
 use ferric_core::orbitals::OrbitalSpace;
@@ -165,7 +165,19 @@ pub fn oo_ri_mp2_gradient(
     // --- Imat (RI-MP2 Lagrangian matrix), same object plain-MP2's Z-vector
     // pipeline builds, evaluated at the OO orbitals/t2 (no z contribution
     // enters build_imat_ri itself -- it is purely an x_ov/b_full contraction).
-    let x_ov = build_x_ov(&t2, &b_ov, nocc, nvir, naux);
+    // `build_x_ov` holds one `tt_i` block per worker. SOFT, for the reason the
+    // RI-MP2 response path's per-worker charge is soft (`gradient.rs`): the
+    // size reads the pool width, so a refusal would make admission depend on
+    // `RAYON_NUM_THREADS`. Dropped once `x_ov` is built.
+    let x_ov = {
+        let _worker_charge = crate::rimp2::charge_mo_side_soft(
+            "OO-RI-MP2 gradient x_ov per-worker transients (tt_i)",
+            rayon::current_num_threads()
+                .max(1)
+                .saturating_mul(x_ov_worker_bytes(nocc, nvir)),
+        );
+        build_x_ov(&t2, &b_ov, nocc, nvir, naux)
+    };
     let orb = OrbitalSpace {
         nocc,
         nvir,

@@ -9,7 +9,11 @@ Anchors:
   molecule gives `run_rhf(dm0=D)`'s energy within the same bound, for a
   converged `D` and for one taken from an unconverged run;
 * a zero hook leaves the noise-floor advisories unchanged (the floor value
-  itself is checked bitwise in `ferric_scf::noise_floor`'s unit tests).
+  itself is checked bitwise in `ferric_scf::noise_floor`'s unit tests);
+* `mom_reference="initial"` holds the occupation of a core-hole `dm0`
+  (beta 1s population below 0.1, against above 0.9 when aufbau or MOM armed
+  after iteration 1 refill it); its energy against an independent numpy MOM
+  is checked in test_block_ports_set2.py.
 
 The hook advisory fires for the mu = 1e7 projector on water/cc-pVDZ at
 `energy_conv = 1e-9`: the hook term `eps * sum|D*V|` is ~9e-9 Ha there and
@@ -142,6 +146,61 @@ def test_dm0_with_another_guess_is_rejected(kind, kwargs):
     pair = _pair(RUNS[kind](mol, bs))
     with pytest.raises(ValueError, match="dm0 and"):
         RUNS[kind](mol, bs, dm0=pair, **kwargs)
+
+
+# ── mom_reference="initial": the dm0 start as the MOM reference ──
+
+
+def _core_hole_start(basis: str = "cc-pvdz"):
+    """The water cation and its O 1s core-hole start: the neutral RHF
+    orbitals with the beta 1s emptied. Returns (mol, bs, dm0, c_1s)."""
+    neutral, bs = _water(basis)
+    c = ferric.run_rhf(neutral, bs, **TIGHT).mo_coefficients()
+    mol, _ = _water(basis, 1, 2)
+    d_a = c[:, :5] @ c[:, :5].T
+    d_b = c[:, 1:5] @ c[:, 1:5].T
+    return mol, bs, (d_a, d_b), c[:, 0]
+
+
+def _beta_1s_population(r, mol, bs, c_1s):
+    s = ferric.AoIntegrals(mol, bs).overlap()
+    return float(c_1s @ s @ r.density_beta() @ s @ c_1s)
+
+
+def test_initial_mom_holds_the_core_hole_of_the_start():
+    # MEASURED (2026-11-13): the core-hole cation at -56.1268 Ha in 15
+    # iterations, beta population of the neutral's 1s 1.5e-5; MOM armed after
+    # iteration 1 refills the hole: -75.6317 Ha, population 1 - 1.5e-6.
+    mol, bs, dm0, c_1s = _core_hole_start()
+    held = ferric.run_uhf(mol, bs, dm0=dm0, mom_reference="initial", **TIGHT)
+    late = ferric.run_uhf(mol, bs, dm0=dm0, mom_after_iter=1, **TIGHT)
+    assert held.converged and late.converged
+    assert held.energy - late.energy > 19.0
+    assert _beta_1s_population(held, mol, bs, c_1s) < 0.1
+    assert _beta_1s_population(late, mol, bs, c_1s) > 0.9
+
+
+def test_previous_reference_is_the_default():
+    mol, bs, dm0, _ = _core_hole_start("sto-3g")
+    default = ferric.run_uhf(mol, bs, dm0=dm0, **TIGHT)
+    named = ferric.run_uhf(mol, bs, dm0=dm0, mom_reference="previous", **TIGHT)
+    assert named.energy == default.energy
+    assert named.iterations == default.iterations
+
+
+@pytest.mark.parametrize(
+    "kwargs, match",
+    [
+        ({"mom_reference": "start"}, "previous.*initial"),
+        ({"mom_reference": "initial", "mom_after_iter": 3}, "mom_after_iter"),
+        ({"mom_reference": "initial", "stability_descent": True}, "stability_descent"),
+    ],
+    ids=["unknown", "with-mom-after-iter", "with-descent"],
+)
+def test_mom_reference_refusals(kwargs, match):
+    mol, bs = _water("sto-3g", 1, 2)
+    with pytest.raises(ValueError, match=match):
+        ferric.run_uhf(mol, bs, **kwargs)
 
 
 # ── hook-aware noise floor ──

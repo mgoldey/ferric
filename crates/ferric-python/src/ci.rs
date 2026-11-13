@@ -2,23 +2,29 @@
 //! 1- and 2-RDMs, and `ferric.run_casscf`: two-step CASSCF
 //! (`ferric_ci::run_casscf`), both on a closed-shell exact-J/K RHF reference,
 //! and `ferric.run_nevpt2`: SC-NEVPT2 (`ferric_ci::sc_nevpt2`) on either.
+//! `run_casscf` and `run_nevpt2` run `ferric_ci::driver`, as the CLI kinds
+//! `casscf` and `nevpt2` do, and carry those kinds' certificates.
 
-use crate::{
-    budget_bytes_from_gb, certificate_dict, make_err, rhf_config_conv, PyBasisSet, PyMolecule,
-    ScfConv,
-};
+use crate::{budget_bytes_from_gb, certificate_dict, make_err, PyBasisSet, PyMolecule};
+use ferric_ci::driver::{rhf_start, ScfStart};
 use ferric_core::certificate::{BuildStamp, Certificate};
 use ferric_core::parallel::ParallelContext;
 use ferric_integrals::basis_bridge::PreparedBasis;
-use ferric_integrals::operator::Operator;
-use ferric_scf::rhf::solve_rhf;
-use ferric_scf::screening::SchwarzBounds;
 use ndarray::{Array2, Array4};
 use numpy::{IntoPyArray, PyArray2, PyArray4};
 use pyo3::prelude::*;
 
 /// Library capability name on the certificate (no CLI `method.kind`).
 const CAPABILITY: &str = "casci";
+
+/// The build this extension was compiled from.
+fn build_stamp() -> BuildStamp {
+    BuildStamp::new(
+        ferric_build_info::VERSION,
+        ferric_build_info::COMMIT,
+        ferric_build_info::DIRTY,
+    )
+}
 
 #[pyclass]
 #[pyo3(name = "CasCiResult")]
@@ -141,31 +147,14 @@ fn run_casci(
     };
     let budget = budget_bytes_from_gb(memory_budget_gb);
     let prep = PreparedBasis::new(mol, &basis_set.inner).map_err(make_err)?;
-    let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
-    let rhf_config = rhf_config_conv(
-        None,
-        budget,
-        ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
-    );
+    let start = ScfStart {
+        max_iter: scf_max_iter,
+        energy_conv: scf_energy_conv,
+        density_conv: scf_density_conv,
+    };
     let rhf = py
-        .allow_threads(|| {
-            solve_rhf(
-                &ParallelContext::default(),
-                mol,
-                &prep,
-                op,
-                &bounds,
-                &rhf_config,
-            )
-        })
+        .allow_threads(|| rhf_start(&ParallelContext::default(), mol, &prep, start, budget))
         .map_err(make_err)?;
-    if !rhf.converged {
-        return Err(make_err(ferric_core::FerricError::ScfConvergence {
-            iterations: rhf.iterations,
-            last_energy: rhf.energy,
-        }));
-    }
     let cfg = ferric_ci::CasCiConfig {
         n_active,
         n_elec_active,
@@ -180,11 +169,7 @@ fn run_casci(
         .allow_threads(|| ferric_ci::run_cas_ci(mol, &prep, &rhf, cfg))
         .map_err(make_err)?;
 
-    let mut cert = Certificate::ungraded(CAPABILITY).with_build(BuildStamp::new(
-        ferric_build_info::VERSION,
-        ferric_build_info::COMMIT,
-        ferric_build_info::DIRTY,
-    ));
+    let mut cert = Certificate::ungraded(CAPABILITY).with_build(build_stamp());
     if !r.converged {
         cert.push_warning(format!(
             "CAS-CI Davidson did not reach conv_thresh {conv_thresh:e} in {} iterations",
@@ -222,9 +207,6 @@ fn run_casci(
         certificate_data: cert,
     })
 }
-
-/// Library capability name of `run_casscf` on the certificate.
-const CASSCF_CAPABILITY: &str = "casscf";
 
 #[pyclass]
 #[pyo3(name = "CasScfResult")]
@@ -332,47 +314,23 @@ fn run_casscf(
     let mut emol = mol.inner.clone();
     emol.apply_ecp(&basis_set.inner);
     let mol = &emol;
-    let nelec = mol.nelec() as usize;
-    let n_act_el = n_elec_active.0 + n_elec_active.1;
     let n_core = match n_core {
         Some(s) => s,
         None => {
-            if n_act_el > nelec || !(nelec - n_act_el).is_multiple_of(2) {
-                return Err(make_err(format!(
-                    "run_casscf: {n_act_el} active electrons do not leave an even core \
-                     count out of {nelec}"
-                )));
-            }
-            (nelec - n_act_el) / 2
+            ferric_ci::driver::default_n_core(mol.nelec() as usize, n_elec_active, "run_casscf")
+                .map_err(make_err)?
         }
     };
     let budget = budget_bytes_from_gb(memory_budget_gb);
     let prep = PreparedBasis::new(mol, &basis_set.inner).map_err(make_err)?;
-    let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
-    let rhf_config = rhf_config_conv(
-        None,
-        budget,
-        ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
-    );
+    let start = ScfStart {
+        max_iter: scf_max_iter,
+        energy_conv: scf_energy_conv,
+        density_conv: scf_density_conv,
+    };
     let rhf = py
-        .allow_threads(|| {
-            solve_rhf(
-                &ParallelContext::default(),
-                mol,
-                &prep,
-                op,
-                &bounds,
-                &rhf_config,
-            )
-        })
+        .allow_threads(|| rhf_start(&ParallelContext::default(), mol, &prep, start, budget))
         .map_err(make_err)?;
-    if !rhf.converged {
-        return Err(make_err(ferric_core::FerricError::ScfConvergence {
-            iterations: rhf.iterations,
-            last_energy: rhf.energy,
-        }));
-    }
     let cfg = ferric_ci::CasScfConfig {
         n_active,
         n_elec_active,
@@ -392,19 +350,12 @@ fn run_casscf(
         .allow_threads(|| ferric_ci::run_casscf(mol, &prep, &rhf, &cfg))
         .map_err(make_err)?;
 
-    let mut cert = Certificate::ungraded(CASSCF_CAPABILITY).with_build(BuildStamp::new(
-        ferric_build_info::VERSION,
-        ferric_build_info::COMMIT,
-        ferric_build_info::DIRTY,
-    ));
+    let cert = ferric_ci::certificate::casscf_certificate(&r, &cfg).with_build(build_stamp());
     if !r.converged {
-        let msg = format!(
-            "CASSCF did not converge in {} macro iterations (|g| = {:.2e}, \
-             casscf_grad_tol {casscf_grad_tol:e}, casscf_energy_tol {casscf_energy_tol:e})",
-            r.iterations, r.grad_norm
+        crate::emit_runtime_warning(
+            py,
+            ferric_ci::certificate::casscf_unconverged_warning(&r, &cfg),
         );
-        crate::emit_runtime_warning(py, msg.clone());
-        cert.push_warning(msg);
     }
     Ok(PyCasScfResult {
         e_total: r.e_total,
@@ -426,9 +377,6 @@ fn run_casscf(
         certificate_data: cert,
     })
 }
-
-/// Library capability name of `run_nevpt2` on the certificate.
-const NEVPT2_CAPABILITY: &str = "nevpt2";
 
 #[pyclass]
 #[pyo3(name = "Nevpt2Result")]
@@ -535,114 +483,56 @@ fn run_nevpt2(
     scf_energy_conv: Option<f64>,
     scf_density_conv: Option<f64>,
 ) -> PyResult<PyNevpt2Result> {
-    let use_casscf = match reference {
-        "casscf" => true,
-        "casci" => false,
-        other => {
-            return Err(make_err(format!(
-                "run_nevpt2: reference must be \"casscf\" or \"casci\", got {other:?}"
-            )))
-        }
-    };
+    let on = ferric_ci::driver::Nevpt2On::parse_config_str(reference)
+        .map_err(|e| make_err(format!("run_nevpt2: {e}")))?;
     let mut emol = mol.inner.clone();
     emol.apply_ecp(&basis_set.inner);
     let mol = &emol;
-    let nelec = mol.nelec() as usize;
-    let n_act_el = n_elec_active.0 + n_elec_active.1;
     let n_core = match n_core {
         Some(s) => s,
         None => {
-            if n_act_el > nelec || !(nelec - n_act_el).is_multiple_of(2) {
-                return Err(make_err(format!(
-                    "run_nevpt2: {n_act_el} active electrons do not leave an even core \
-                     count out of {nelec}"
-                )));
-            }
-            (nelec - n_act_el) / 2
+            ferric_ci::driver::default_n_core(mol.nelec() as usize, n_elec_active, "run_nevpt2")
+                .map_err(make_err)?
         }
     };
     let budget = budget_bytes_from_gb(memory_budget_gb);
     let prep = PreparedBasis::new(mol, &basis_set.inner).map_err(make_err)?;
-    let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
-    let rhf_config = rhf_config_conv(
-        None,
-        budget,
-        ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
-    );
+    let start = ScfStart {
+        max_iter: scf_max_iter,
+        energy_conv: scf_energy_conv,
+        density_conv: scf_density_conv,
+    };
     let rhf = py
-        .allow_threads(|| {
-            solve_rhf(
-                &ParallelContext::default(),
-                mol,
-                &prep,
-                op,
-                &bounds,
-                &rhf_config,
-            )
-        })
+        .allow_threads(|| rhf_start(&ParallelContext::default(), mol, &prep, start, budget))
         .map_err(make_err)?;
-    if !rhf.converged {
-        return Err(make_err(ferric_core::FerricError::ScfConvergence {
-            iterations: rhf.iterations,
-            last_energy: rhf.energy,
-        }));
-    }
-    let nev_cfg = ferric_ci::Nevpt2Config {
+    let cfg = ferric_ci::CasScfConfig {
+        n_active,
+        n_elec_active,
+        n_core,
+        grad_tol: casscf_grad_tol,
+        energy_tol: casscf_energy_tol,
+        max_iter: casscf_max_iter,
+        max_step: casscf_max_step,
+        ci_conv_thresh,
+        ci_max_subspace,
+        ci_max_iter,
         memory_budget_bytes: budget,
         ..Default::default()
     };
-    let (r, iterations, grad_norm) = if use_casscf {
-        let cfg = ferric_ci::CasScfConfig {
-            n_active,
-            n_elec_active,
-            n_core,
-            grad_tol: casscf_grad_tol,
-            energy_tol: casscf_energy_tol,
-            max_iter: casscf_max_iter,
-            max_step: casscf_max_step,
-            ci_conv_thresh,
-            ci_max_subspace,
-            ci_max_iter,
-            memory_budget_bytes: budget,
-            ..Default::default()
-        };
-        py.allow_threads(|| {
-            let cas = ferric_ci::run_casscf(mol, &prep, &rhf, &cfg)?;
-            let reference = ferric_ci::Nevpt2Reference::from_casscf(&cas, &cfg)?;
-            let r = ferric_ci::sc_nevpt2(mol, &prep, &reference, &nev_cfg)?;
-            Ok::<_, ferric_core::FerricError>((r, cas.iterations, Some(cas.grad_norm)))
-        })
-        .map_err(make_err)?
-    } else {
-        let cfg = ferric_ci::CasCiConfig {
-            n_active,
-            n_elec_active,
-            active_start: n_core,
-            conv_thresh: ci_conv_thresh,
-            max_subspace: ci_max_subspace,
-            max_iter: ci_max_iter,
-            memory_budget_bytes: budget,
-            compute_rdms: false,
-        };
-        py.allow_threads(|| {
-            let ci = ferric_ci::run_cas_ci(mol, &prep, &rhf, cfg)?;
-            let reference = ferric_ci::Nevpt2Reference::from_casci(&ci, rhf.mos_r(), &cfg)?;
-            let r = ferric_ci::sc_nevpt2(mol, &prep, &reference, &nev_cfg)?;
-            Ok::<_, ferric_core::FerricError>((r, ci.iterations, None))
-        })
-        .map_err(make_err)?
-    };
-    let cert = Certificate::ungraded(NEVPT2_CAPABILITY).with_build(BuildStamp::new(
-        ferric_build_info::VERSION,
-        ferric_build_info::COMMIT,
-        ferric_build_info::DIRTY,
-    ));
+    let run = py
+        .allow_threads(|| ferric_ci::driver::nevpt2_on_rhf(mol, &prep, &rhf, on, &cfg))
+        .map_err(make_err)?;
+    let cert = ferric_ci::certificate::nevpt2_certificate(on, &cfg).with_build(build_stamp());
+    let (r, iterations, grad_norm) = (
+        run.result,
+        run.reference_iterations,
+        run.reference_grad_norm,
+    );
     Ok(PyNevpt2Result {
         e_corr: r.e_corr,
         e_total: r.e_reference + r.e_corr,
         e_reference: r.e_reference,
-        reference: reference.to_string(),
+        reference: on.as_str().to_string(),
         rhf_energy: rhf.energy,
         reference_iterations: iterations,
         reference_grad_norm: grad_norm,

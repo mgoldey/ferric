@@ -80,6 +80,37 @@ def test_rhf_matvec_equals_the_dense_orbital_hessian():
     )
 
 
+def test_rhf_solve_converges_past_the_absolute_screen():
+    """(A + B) U is linear down to the CG's shrinking directions.
+
+    The exact J/K of the matvec screen quartets by bound * max|D| < 1e-12 on
+    the response density normalized to max|D| in (1/2, 1], so A(sU) = s A(U)
+    to round-off: |A U| is 42 here (max element) and the two differ by 4.5e-14
+    (MEASURED 2026-11-13), a few hundred ulps of |A U|; bar 1e-12. A screen on the bare
+    density drops the two-electron part as max|D| falls below 1e-12 / bound,
+    a change of order |A U| itself. The solve at tol 1e-13 then reaches its
+    tolerance instead of reading the sign of a round-off curvature; the true
+    residual |A x - b| is the recurrence residual plus the drift of CG's
+    updated residual, bar 1e-12.
+    """
+    mol, bs, ints = _ints(WATER, "cc-pvdz")
+    e, c = _rhf_mos(mol, bs, ints)
+    no = ints.nelec // 2
+    cphf = ints.cphf(c, list(e), no)
+    u = _RNG.standard_normal((c.shape[1] - no, no))
+    au = cphf.matvec(u)
+    for s in (1e-8, 1e-13):
+        np.testing.assert_allclose(cphf.matvec(s * u) / s, au, rtol=0, atol=1e-12)
+    for r in ints.dipole():
+        rhs = -c[:, no:].T @ r @ c[:, :no]
+        x = cphf.solve(rhs, tol=1e-13, max_iter=200)
+        assert np.abs(cphf.matvec(x) - rhs).max() < 1e-12
+    # tol = 0 cannot be met: the residual underflows instead (MEASURED:
+    # 1.9e-99 after 100 iterations, 0/0 in the CG coefficients at 167).
+    with pytest.raises(ValueError, match="tol must be positive"):
+        cphf.solve(rhs, tol=0.0)
+
+
 @pytest.mark.parametrize(
     "functional", ["PBE", "B3LYP", WB97X, "r2SCAN", "SCAN", "TPSS", "wB97X-V"]
 )

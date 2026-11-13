@@ -59,7 +59,8 @@ def test_arrays_are_consistent(res):
 def test_certificate(res):
     cert = res.certificate
     assert cert["capability"] == "casscf"
-    assert cert["grade"] == "ungraded"
+    assert cert["grade"] == "proven"
+    assert [a["name"] for a in cert["approximations"]] == ["active-space"]
     assert cert["build"]["commit"] == ferric.build_info()["commit"]
     assert cert["warnings"] == []
 
@@ -74,6 +75,7 @@ def test_non_convergence_warns():
     assert not r.converged and r.iterations == 3
     assert any("CASSCF did not converge" in str(x.message) for x in w)
     assert any("CASSCF did not converge" in m for m in r.certificate["warnings"])
+    assert r.certificate["grade"] == "ungraded"
 
 
 def test_canonicalize_option(res):

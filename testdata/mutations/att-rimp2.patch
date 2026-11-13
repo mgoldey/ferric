@@ -1,0 +1,12 @@
+diff --git a/crates/ferric-mp2/src/attenuated.rs b/crates/ferric-mp2/src/attenuated.rs
+index e1d118a38..5bec2e887 100644
+--- a/crates/ferric-mp2/src/attenuated.rs
++++ b/crates/ferric-mp2/src/attenuated.rs
+@@ -261,6 +261,7 @@ pub fn attenuated_ri_mp2(
+         let ri_config = RiMp2Config {
+             frozen_core: config.frozen_core,
+             memory_budget_bytes: config.memory_budget_bytes,
++            metric_op: Some(Operator::coulomb()),
+             ..Default::default()
+         };
+         ri_mp2_spin_components(mol, obs, dfbs, op, rhf, &ri_config)?.0

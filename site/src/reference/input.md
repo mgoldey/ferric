@@ -44,7 +44,7 @@ auxbasis = "cc-pvdz-ri"
 |---|---|---|---|---|
 | `xyz` | string | **required** | path | Standard XYZ in Å, relative to the working directory. Not read when `[qmmm]` is present (the PQR supplies the geometry). |
 | `charge` | integer | `0` | | With `[qmmm]`, applies to the QM region. |
-| `multiplicity` | integer | `1` | ≥ 1 | Read by `uhf`, `rohf` and `ksdft` (UKS) for every task, and for `task = "energy"` only by `rimp2`/`oo-rimp2` (UHF + unrestricted RI-MP2 / OO-RI-MP2) and the open-shell path of `pdep-rpa`/`gw`/`mp2-v`: UHF, or UKS when `[rpa] xc` is set (`pdep-rpa`, `gw`), or ROHF/ROKS for `gw` with `[gw] reference = "rohf"`; `mp2-v` stays UHF. Every other kind refuses `> 1`. See [open shells](./validation.md#open-shells-in-the-cli). |
+| `multiplicity` | integer | `1` | ≥ 1 | Read by `uhf`, `rohf` and `ksdft` (UKS) for every task, and for `task = "energy"` only by `rimp2`/`oo-rimp2` (UHF + unrestricted RI-MP2 / OO-RI-MP2) and the open-shell path of `pdep-rpa`/`gw`/`mp2-v`: UHF, or UKS when `[rpa] xc` is set (`pdep-rpa`, `gw`), or ROHF/ROKS for `gw` with `[gw] reference = "rohf"`; `mp2-v` stays UHF. Every other kind refuses `> 1`; `casscf` and `nevpt2` set the spin of the CAS state with [`[cas] n_elec_active`](#cas) instead. See [open shells](./validation.md#open-shells-in-the-cli). |
 
 ## `[basis]` (required)
 
@@ -64,7 +64,7 @@ same table: `cc-pvdz-ri`, `cc-pvtz-rifit`, `aug-cc-pv{d,t,q}z-rifit`,
 
 | Key | Type | Default | Allowed values | Notes |
 |---|---|---|---|---|
-| `kind` | string | **required** | `rhf` `uhf` `rohf` `ksdft` `rimp2` `mp3` `oo-rimp2` `att-rimp2` `mp2-v` `scs-mp2` `scs-mp2-2terfc` `laplace-mp2` `laplace-sos-mp2` `pdep-rpa` `rs-mp2-rpa` `gw` `bse-tda` `tdhf-static-polarizability` `ccsd` `ccd` `ccsd(t)` `linlccd` `drpa` `wb97x-l-v` `b2plyp` `dsd-pbep86` `tda` `tddft` | Any other value is an error. Smoke- and Spike-grade kinds print a `[warning]` grade line on stderr; Proven kinds and the ungraded `laplace-sos-mp2` print none. `rimp2`, `drpa` and `linlccd` name the method and are computed exactly unless [`[local]`](#local) sets a local approximation (see [Capabilities and validation](./validation.md#grades)). |
+| `kind` | string | **required** | `rhf` `uhf` `rohf` `ksdft` `rimp2` `mp3` `oo-rimp2` `att-rimp2` `mp2-v` `scs-mp2` `scs-mp2-2terfc` `laplace-mp2` `laplace-sos-mp2` `pdep-rpa` `rs-mp2-rpa` `gw` `bse-tda` `tdhf-static-polarizability` `ccsd` `ccd` `ccsd(t)` `linlccd` `drpa` `wb97x-l-v` `b2plyp` `dsd-pbep86` `tda` `tddft` `casscf` `nevpt2` | Any other value is an error. Smoke- and Spike-grade kinds print a `[warning]` grade line on stderr; Proven kinds print none. `casscf` and `nevpt2` need a [`[cas]`](#cas) section. `rimp2`, `drpa` and `linlccd` name the method and are computed exactly unless [`[local]`](#local) sets a local approximation (see [Capabilities and validation](./validation.md#grades)). |
 | `task` | string | `"energy"` | `energy` `optimize` `frequencies` | `optimize`: `rhf` `ksdft` `uhf` `rohf` `rimp2` `pdep-rpa` only. `frequencies`: `rhf` `ksdft` `uhf` `rohf` only. |
 
 ## `[scf]`
@@ -199,6 +199,43 @@ the section is an error. The aux basis and frozen core stay in `[mp2]`.
 | Key | Type | Default | Allowed values | Notes |
 |---|---|---|---|---|
 | `ladder` | string | `"auto"` | `auto` `dense` `ri` (lower case only) | How the particle–particle ladder is evaluated. `dense` holds the n<sub>v</sub>⁴ `(ab\|cd)` block; `ri` rebuilds it from the RI 3-index tensors every iteration, holding at most one n<sub>v</sub>⁴-sized panel at full width (dense holds four) and narrower panels when the budget requires (same energy to round-off, less memory, slower per iteration); `auto` takes `dense` whenever its memory plan fits the budget and `ri` otherwise, and says so on stderr when it falls back. The run prints the route taken (`ladder = dense (auto)`). Python `run_ccsd(ladder=)`, `run_ccsd_t(ladder=)`. See [Coupled cluster](../methods/cc.md#particle-particle-ladder-dense-or-ri). |
+
+## `[cas]`
+
+The active space and the CASSCF orbital optimization of `method.kind =
+"casscf"` and `"nevpt2"`; required by those two kinds and an error on any
+other. Both kinds start from the exact-J/K Coulomb RHF with the library
+defaults (the start of Python `run_casscf` / `run_nevpt2`, which run the same
+code), so they read only `[cas]`, `[cas.ci]`, `[scf]` `max_iter` /
+`energy_conv` / `density_conv`, `[memory]`, `[parallel]` and `[output]`; any
+other section or `[scf]` key is an error at load time. `[molecule]
+multiplicity` must be 1: the spin of the CAS state comes from
+`n_elec_active`. `task = "energy"` only. See
+[CAS-CI and CASSCF](../methods/ci.md).
+
+| Key | Type | Default | Allowed values | Notes |
+|---|---|---|---|---|
+| `n_active` | integer | **required** | 1 to 63 | Active spatial orbitals. Python `n_active`. |
+| `n_elec_active` | array of 2 integers | **required** | `[n_alpha, n_beta]`, each ≤ `n_active` | Active electrons. `n_alpha − n_beta` sets M_s of the lowest root: `[5, 3]` in CAS(8,6) is the O2 triplet. `nevpt2` needs `n_alpha = n_beta`. Python `n_elec_active`. |
+| `n_core` | integer | (N − n_alpha − n_beta) / 2 | 2 n_core + n_alpha + n_beta = N | Doubly occupied orbitals below the active window (N counts valence electrons with an ECP). Python `n_core`. |
+| `reference` | string | `"casscf"` | `casscf` `casci` (lower case only) | `nevpt2` only. `casci` is CAS-CI on the canonical RHF orbitals; its certificate is capped to not graded (the PySCF comparison runs on a CASSCF reference). Python `reference`. |
+| `canonicalize` | bool | `false` | | `casscf` only. Canonical core and virtual orbitals and natural active orbitals on return (the energy does not change); the result record then carries `mo_energy`. Python `canonicalize`. |
+| `grad_tol` | float | `1e-7` | > 0 | CASSCF stops when the orbital-gradient norm is below this and the energy change is below `energy_tol` at the same iteration. Not read with `reference = "casci"`. Python `casscf_grad_tol`. |
+| `energy_tol` | float | `1e-12` | Hartree, > 0 | See `grad_tol`. Python `casscf_energy_tol`. |
+| `max_iter` | integer | `300` | ≥ 1 | CASSCF macro iterations. An unconverged `casscf` warns and its certificate is capped to not graded; `nevpt2` refuses an unconverged reference. Python `casscf_max_iter`. |
+| `max_step` | float | `0.2` | rad, > 0 | Cap on the largest element of an orbital-rotation step. Python `casscf_max_step`. |
+| `ci` | table | defaults below | | The CAS-CI solver settings, written as the [`[cas.ci]`](#casci) section. |
+
+### `[cas.ci]`
+
+The CAS-CI Davidson of every CASSCF macro iteration, or of the CAS-CI
+reference of `nevpt2`.
+
+| Key | Type | Default | Allowed values | Notes |
+|---|---|---|---|---|
+| `conv_thresh` | float | `1e-10` | > 0 | A root is accepted when its residual ‖Hc − Ec‖ is below this. Python `ci_conv_thresh`. |
+| `max_subspace` | integer | `50` | ≥ 1 | Davidson subspace before a restart. Python `ci_max_subspace`. |
+| `max_iter` | integer | `200` | ≥ 1 | Davidson iterations. Python `ci_max_iter`. |
 
 ## `[local]`
 

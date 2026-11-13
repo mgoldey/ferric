@@ -1,0 +1,20 @@
+# Two-step CASSCF on water / 6-31G: CAS(4,4) above 3 core orbitals.
+#
+# PySCF mcscf.CASSCF on ferric's AO integrals gives E = -76.0369690965 Ha for
+# this geometry, basis and active space
+# (testdata/reference/casscf_h2o_cas44_631g_pyscf.json). Python
+# ferric.run_casscf(mol, ferric.BasisSet.bundled("6-31g"), 4, (2, 2),
+# canonicalize=True) gives the same number bit for bit.
+[molecule]
+xyz = "testdata/molecules/water.xyz"
+
+[basis]
+name = "6-31g"
+
+[method]
+kind = "casscf"
+
+[cas]
+n_active = 4
+n_elec_active = [2, 2]
+canonicalize = true

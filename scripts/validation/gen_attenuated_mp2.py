@@ -1,6 +1,7 @@
 """PySCF/numpy references for the VALIDATION.md "Attenuated RI-MP2" row.
 
-Consumer: crates/ferric-mp2/tests/validation_attenuated_mp2.rs.
+Consumers: crates/ferric-mp2/tests/validation_attenuated_mp2.rs and, for the
+Coulomb block, crates/ferric-mp2/tests/validation_scs_mp2.rs.
 Output:   testdata/reference/validation/attenuated_mp2/<system>_aug-cc-pvdz.json
 
 What ferric computes (crates/ferric-mp2/src/attenuated.rs, unscreened path =

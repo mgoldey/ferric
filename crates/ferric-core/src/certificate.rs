@@ -14,7 +14,10 @@
 //! * the build stamp is a [`BuildStamp`] the top-level artifact fills in
 //!   (`ferric-cli` and `ferric-python` link `ferric-build-info`; library
 //!   crates do not, by design, so a library-built certificate says
-//!   `unstamped` rather than guessing).
+//!   `unstamped` rather than guessing);
+//! * the provenance of a result a caller composed from the Python building
+//!   blocks is a list of [`BlockRecord`]s ([`Certificate::from_blocks`],
+//!   always ungraded; see [`blocks`]).
 //!
 //! # Grades are never fabricated
 //!
@@ -27,8 +30,8 @@
 //!
 //! # Measured error and the validation envelope
 //!
-//! [`anchors::ENERGY_ANCHORS`] records the headline energy anchor of the
-//! SCF methods and RI-MP2: the stated agreement with an independent
+//! [`anchors::ENERGY_ANCHORS`] records the headline energy anchor of every
+//! Proven `method.kind`: the stated agreement with an independent
 //! reference from the Anchors table of the same page, the test that pins it,
 //! and the elements, basis sets and functionals that test covers.
 //! [`Certificate::with_energy_anchor`] fills `measured_error` from it and
@@ -72,7 +75,9 @@ use serde::{Deserialize, Serialize};
 use crate::gpu::provenance::PrecisionRecord;
 
 pub mod anchors;
+pub mod blocks;
 pub use anchors::{energy_anchor, EnergyAnchor, RunEnvelope, ENERGY_ANCHORS};
+pub use blocks::{BasisRecord, BlockRecord, BlockUse, ElementSource, BLOCKS_CAPABILITY_PREFIX};
 
 /// Where [`METHOD_KIND_GRADES`] is copied from.
 pub const GRADE_SOURCE_PAGE: &str = "site/src/reference/validation.md";
@@ -165,7 +170,7 @@ pub const METHOD_KIND_GRADES: &[(&str, Grade)] = &[
     ("scs-mp2", Grade::Proven),
     ("scs-mp2-2terfc", Grade::ProvenNarrow),
     ("laplace-mp2", Grade::Proven),
-    ("laplace-sos-mp2", Grade::Ungraded),
+    ("laplace-sos-mp2", Grade::Proven),
     ("pdep-rpa", Grade::Proven),
     ("rs-mp2-rpa", Grade::Smoke),
     ("gw", Grade::ProvenNarrow),
@@ -181,6 +186,8 @@ pub const METHOD_KIND_GRADES: &[(&str, Grade)] = &[
     ("dsd-pbep86", Grade::Spike),
     ("tda", Grade::ProvenNarrow),
     ("tddft", Grade::ProvenNarrow),
+    ("casscf", Grade::Proven),
+    ("nevpt2", Grade::Proven),
 ];
 
 /// The recorded grade of a CLI `method.kind`; [`Grade::Ungraded`] when the
@@ -325,6 +332,11 @@ pub struct Certificate {
     pub precision: Option<serde_json::Value>,
     /// In the order raised; exact duplicates are dropped.
     pub warnings: Vec<String>,
+    /// The building-block records a caller's result was composed from
+    /// ([`Certificate::from_blocks`]); empty for every other certificate,
+    /// and then absent from the JSON.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blocks: Vec<BlockRecord>,
 }
 
 impl Certificate {
@@ -339,6 +351,7 @@ impl Certificate {
             approximations: Vec::new(),
             precision: None,
             warnings: Vec::new(),
+            blocks: Vec::new(),
         }
     }
 
@@ -538,6 +551,15 @@ impl fmt::Display for Certificate {
             Some(serde_json::Value::String(p)) => writeln!(f, "  precision   = {p}")?,
             _ => writeln!(f, "  precision   = not recorded")?,
         }
+        for b in &self.blocks {
+            writeln!(
+                f,
+                "  block       = {} {} ({} uses)",
+                b.object,
+                b.basis.name,
+                b.uses.len()
+            )?;
+        }
         for w in &self.warnings {
             writeln!(f, "  warning     = {w}")?;
         }
@@ -647,10 +669,6 @@ mod tests {
         assert_eq!(c.grade_source, None);
         assert_eq!(method_kind_grade("not-a-kind"), Grade::Ungraded);
         assert_eq!(Certificate::ungraded("rhf").grade, Grade::Ungraded);
-        // A table row of "not graded" is still Ungraded, but sourced.
-        let l = Certificate::for_method_kind("laplace-sos-mp2");
-        assert_eq!(l.grade, Grade::Ungraded);
-        assert_eq!(l.grade_source.as_deref(), Some(GRADE_SOURCE_PAGE));
     }
 
     #[test]

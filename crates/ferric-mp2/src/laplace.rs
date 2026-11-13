@@ -231,9 +231,9 @@ const DENSE_BYTES_PER_ELEM: usize = 8;
 /// value and only rewrites strides — verified against ndarray 0.16.1's
 /// source), so `eri3_ao -> eri3_flat` and `b_flat_ao -> b_ao` do NOT double
 /// the tensor count: `eri3_flat` IS `eri3_ao`'s allocation, and `b_ao` IS
-/// `b_flat_ao`'s. The dressing GEMM `v_inv_sqrt.dot(&eri3_flat)` allocates one
-/// genuinely new tensor (`b_flat_ao`); NLL drops `eri3_flat` right after that
-/// call (its only use), well before `b_sparse` is built. So the dressing peak
+/// `b_flat_ao`'s. The dressing GEMM (`dress_with_metric`) allocates one
+/// genuinely new tensor (`b_flat_ao`); `eri3_flat` is dropped explicitly right
+/// after that call (its only use), well before `b_sparse` is built. So the dressing peak
 /// really is 2 dense tensors + the metric, matching the pre-flight fired
 /// before any of them are allocated.
 ///
@@ -659,6 +659,66 @@ pub fn laplace_lmp2(
     })
 }
 
+/// `V^{-1/2} · X` for the metric dressing of a flattened `(P|..)` tensor,
+/// column-blocked over the rayon pool through
+/// [`ferric_core::linalg::par_gemm`] (one-thread BLAS per fixed 128-column
+/// block, so the bits do not depend on the pool size). Called outside any
+/// rayon region, where a plain `.dot` would run on one core.
+fn dress_with_metric(v_inv_sqrt: &Array2<f64>, x: &ndarray::ArrayView2<'_, f64>) -> Array2<f64> {
+    let mut out = Array2::<f64>::zeros((v_inv_sqrt.nrows(), x.ncols()));
+    ferric_core::linalg::par_gemm(1.0, &v_inv_sqrt.view(), x, 0.0, &mut out);
+    out
+}
+
+/// Column-block width of the SOS-MP2 `J` lower triangle. Fixed (not derived
+/// from the thread count) so the blocking, and hence every bit of the trace,
+/// is the same on any pool.
+const SOS_J_COL_BLOCK: usize = 128;
+
+/// `Σ_PQ J_PQ²` for the symmetric `J = b bᵀ`, from its lower triangle.
+///
+/// `J` is built in fixed `SOS_J_COL_BLOCK`-wide column blocks: block `[q0, q1)`
+/// is the GEMM `b[q0.., :] · b[q0..q1, :]ᵀ`, rows `P ≥ q0` only, so the work is
+/// about half of the full `naux² · nov` product. Each block's squares are summed
+/// serially (diagonal once, strictly-lower twice, the upper part of the diagonal
+/// tile skipped) and the block sums are folded in block order, so the result
+/// does not depend on the pool size. The blocks are a nested rayon fan-out: the
+/// caller's quadrature points are fewer than the pool's threads.
+fn sos_j_square_trace(b: &Array2<f64>) -> f64 {
+    let naux = b.nrows();
+    let starts: Vec<usize> = (0..naux).step_by(SOS_J_COL_BLOCK).collect();
+    let block_sums: Vec<f64> = starts
+        .par_iter()
+        .map(|&q0| {
+            let q1 = (q0 + SOS_J_COL_BLOCK).min(naux);
+            let rows = b.slice(ndarray::s![q0.., ..]);
+            let cols = b.slice(ndarray::s![q0..q1, ..]);
+            let mut tile = Array2::<f64>::zeros((naux - q0, q1 - q0));
+            ndarray::linalg::general_mat_mul(1.0, &rows, &cols.t(), 0.0, &mut tile);
+            let mut s = 0.0;
+            for (r, row) in tile.rows().into_iter().enumerate() {
+                for (c, &x) in row.iter().enumerate() {
+                    if r > c {
+                        s += 2.0 * (x * x);
+                    } else if r == c {
+                        s += x * x;
+                    }
+                }
+            }
+            s
+        })
+        .collect();
+    block_sums.iter().sum()
+}
+
+/// Test oracle for [`sos_j_square_trace`]: the full `J = b bᵀ` GEMM and the
+/// sum of all `naux²` squares in row-major order.
+#[cfg(test)]
+fn sos_j_square_trace_full_gemm(b: &Array2<f64>) -> f64 {
+    let j_mat = b.dot(&b.t());
+    j_mat.iter().map(|&x| x * x).sum()
+}
+
 /// Apply the τ-weighting `B^P_ia(t) = B^P_ia · exp(-t(ε_a - ε_i)/2)` to a copy
 /// of the hoisted MO amplitudes.
 ///
@@ -790,7 +850,9 @@ impl LaplaceMp2 {
             &c_vir,
             crate::rimp2::eri3_budget_bytes(self.memory_budget_bytes),
         )?;
-        let b_flat = v_inv_sqrt.dot(&eri3_mo.into_shape_with_order((naux, nocc * nvir)).unwrap());
+        let eri3_mo_flat = eri3_mo.into_shape_with_order((naux, nocc * nvir)).unwrap();
+        let b_flat = dress_with_metric(&v_inv_sqrt, &eri3_mo_flat.view());
+        drop(eri3_mo_flat);
 
         // Hoist per-orbital energies: only the diagonal τ-scaling depends on the
         // quadrature point, `b_flat` (geometry/basis) is constant.
@@ -930,7 +992,8 @@ impl LaplaceMp2 {
         let v_inv_sqrt = crate::rimp2::cholesky_inverse_sqrt(&v2c)?;
         let eri3_ao = ferric_integrals::threeindex::eri3_tensor(op, obs, dfbs)?;
         let eri3_flat = eri3_ao.into_shape_with_order((naux, nbas * nbas)).unwrap();
-        let b_flat_ao = v_inv_sqrt.dot(&eri3_flat);
+        let b_flat_ao = dress_with_metric(&v_inv_sqrt, &eri3_flat.view());
+        drop(eri3_flat);
         let b_ao = b_flat_ao.into_shape_with_order((naux, nbas, nbas)).unwrap();
 
         let c = rhf.mos_r();
@@ -1159,10 +1222,11 @@ impl LaplaceMp2 {
     /// what leaves a product of independent contractions.
     ///
     /// Cost, in tensor dimensions rather than time: the τ-weighting is
-    /// `naux·nocc·nvir` elements, `J = B(t)B(t)ᵀ` is one GEMM of shape
-    /// `(naux × nocc·nvir) × (nocc·nvir × naux)`, and the energy is a sum over
-    /// `naux²` entries. No `nocc²nvir²` object and no `naux²nocc²` Gram is ever
-    /// formed — those belong to the same-spin term this method omits.
+    /// `naux·nocc·nvir` elements, `J = B(t)B(t)ᵀ` is formed on its lower
+    /// triangle only (about half of the `naux² · nocc·nvir` product, see
+    /// `sos_j_square_trace`), and the energy is a sum over those entries. No
+    /// `nocc²nvir²` object and no `naux²nocc²` Gram is ever formed — those
+    /// belong to the same-spin term this method omits.
     pub fn compute_sos_mo(
         &mut self,
         mol: &Molecule,
@@ -1201,7 +1265,9 @@ impl LaplaceMp2 {
             &c_vir,
             crate::rimp2::eri3_budget_bytes(self.memory_budget_bytes),
         )?;
-        let b_flat = v_inv_sqrt.dot(&eri3_mo.into_shape_with_order((naux, nocc * nvir)).unwrap());
+        let eri3_mo_flat = eri3_mo.into_shape_with_order((naux, nocc * nvir)).unwrap();
+        let b_flat = dress_with_metric(&v_inv_sqrt, &eri3_mo_flat.view());
+        drop(eri3_mo_flat);
 
         let occ_scale: Vec<f64> = (0..nocc).map(|i| eps[frozen_core + i]).collect();
         let vir_scale: Vec<f64> = (0..nvir).map(|a| eps[nocc_total + a]).collect();
@@ -1215,8 +1281,7 @@ impl LaplaceMp2 {
             .zip(self.weights.par_iter())
             .map(|(&t, &w)| {
                 let b_t = weighted_b_mo(&b_flat, &occ_scale, &vir_scale, nocc, nvir, t);
-                let j_mat = b_t.dot(&b_t.t());
-                -w * j_mat.iter().map(|&x| x * x).sum::<f64>()
+                -w * sos_j_square_trace(&b_t)
             })
             .sum();
 
@@ -1309,7 +1374,8 @@ impl LaplaceMp2 {
         let v_inv_sqrt = crate::rimp2::cholesky_inverse_sqrt(&v2c)?;
         let eri3_ao = ferric_integrals::threeindex::eri3_tensor(op, obs, dfbs)?;
         let eri3_flat = eri3_ao.into_shape_with_order((naux, nbas * nbas)).unwrap();
-        let b_flat_ao = v_inv_sqrt.dot(&eri3_flat);
+        let b_flat_ao = dress_with_metric(&v_inv_sqrt, &eri3_flat.view());
+        drop(eri3_flat);
         let b_ao = b_flat_ao.into_shape_with_order((naux, nbas, nbas)).unwrap();
 
         let c = rhf.mos_r();
@@ -2832,5 +2898,178 @@ mod tests {
         let rel_ao = (e_ao - mo).abs() / mo.abs();
         eprintln!("octane/6-31G vir=inf occ=6 tau=1e-10: rel err {rel_ao:.3e}  {st}");
         assert!(rel_ao > 0.0 && rel_ao < 1e-3, "occ=6 alone: {rel_ao:.3e}");
+    }
+
+    // -----------------------------------------------------------------------
+    // SOS-MP2 J trace from the lower triangle (`sos_j_square_trace`) against
+    // the full-GEMM oracle (`sos_j_square_trace_full_gemm`).
+    //
+    // Not bitwise: the two arms form each J_PQ = Σ_k b_Pk b_Qk (k over the
+    // n = nocc·nvir columns) with different GEMM shapes (the oracle's Ĵ_PQ and
+    // Ĵ_QP need not even agree), and sum the m = naux² squares in a different
+    // order. The bar is the summation-order bound (Higham, Accuracy and
+    // Stability of Numerical Algorithms, 2nd ed., Lemma 3.1, eqs. (3.4)-(3.5)),
+    // with u = f64::EPSILON / 2 and γ_k = k·u / (1 − k·u):
+    //
+    //   1. Any-order dot product: |Ĵ_PQ − J_PQ| ≤ γ_n A_PQ, A = |b| |b|ᵀ, for
+    //      every element either arm computes.
+    //   2. Squares, per arm x, with |J| ≤ |Ĵ_old| + γ_n A:
+    //      |Ĵ_x² − J²| ≤ γ_n A (2|J| + γ_n A) ≤ γ_n A (2|Ĵ_old| + 3γ_n A).
+    //      Summed over the m entries: E1 = γ_n Σ_PQ A_PQ (2|Ĵ_old,PQ| + 3γ_n A_PQ).
+    //   3. Sum of m nonnegative terms, each one rounded product (the ×2 for
+    //      the strict lower triangle is exact), in any order or tree: relative
+    //      error ≤ γ_{m+1} of the exact sum of those terms, which is at most
+    //      S_old + 2·E1 (taken as γ_{m+2} to absorb the second-order slack).
+    //
+    //   Per quadrature point, charging both arms against the exact S:
+    //     |S_old − S_new| ≤ 2 [ E1 + γ_{m+2} (S_old + 2·E1) ].
+    //   Energy: E = −Σ_k w_k S_k over n_quad points; the outer fold adds
+    //   γ_{n_quad} Σ_k |w_k S_k| per arm, so
+    //     |E_old − E_new| ≤ Σ_k |w_k| bound_k + 2 γ_{n_quad} Σ_k |w_k S_k|.
+    //
+    // A and Ĵ_old are evaluated from the same b the arms see. The tests print
+    // the observed difference next to the bar.
+    // -----------------------------------------------------------------------
+
+    fn gamma(k: usize) -> f64 {
+        let ku = k as f64 * (f64::EPSILON / 2.0);
+        ku / (1.0 - ku)
+    }
+
+    /// The per-point summation-order bound on |S_old − S_new| (items 1-3).
+    fn sos_j_trace_bound(b: &Array2<f64>) -> f64 {
+        let (naux, n) = b.dim();
+        let abs_b = b.mapv(f64::abs);
+        let a = abs_b.dot(&abs_b.t());
+        let j = b.dot(&b.t());
+        let g_n = gamma(n);
+        let mut e1 = 0.0;
+        let mut s = 0.0;
+        for (&aij, &jij) in a.iter().zip(j.iter()) {
+            e1 += g_n * aij * (2.0 * jij.abs() + 3.0 * g_n * aij);
+            s += jij * jij;
+        }
+        2.0 * (e1 + gamma(naux * naux + 2) * (s + 2.0 * e1))
+    }
+
+    /// Deterministic (naux × n) amplitudes with no symmetry and both signs.
+    fn lcg_matrix(naux: usize, n: usize, seed: u64) -> Array2<f64> {
+        let mut x = seed;
+        Array2::from_shape_fn((naux, n), |_| {
+            x = x
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((x >> 11) as f64 / (1u64 << 53) as f64) - 0.5
+        })
+    }
+
+    /// Ragged multi-tile shape (300 = 128 + 128 + 44 rows): the lower-triangle
+    /// trace matches the full-GEMM oracle within the summation-order bound,
+    /// and is bit-identical on pools of 1, 2 and 6 threads.
+    ///
+    /// FAILS if a tile's strictly-lower part is not doubled, the diagonal is
+    /// counted twice, the upper part of a diagonal tile is counted, the ragged
+    /// last tile is dropped, or the block sums are folded in a pool-dependent
+    /// order.
+    #[test]
+    fn sos_j_lower_triangle_trace_matches_full_gemm_within_the_summation_bound() {
+        for (naux, n, seed) in [(300usize, 517usize, 7u64), (128, 64, 11), (5, 40, 3)] {
+            let b = lcg_matrix(naux, n, seed);
+            let oracle = sos_j_square_trace_full_gemm(&b);
+            let bound = sos_j_trace_bound(&b);
+            let run = |threads: usize| {
+                rayon::ThreadPoolBuilder::new()
+                    .num_threads(threads)
+                    .build()
+                    .unwrap()
+                    .install(|| sos_j_square_trace(&b))
+            };
+            let got = run(1);
+            eprintln!(
+                "naux={naux} n={n}: S={oracle:.17e} |diff|={:.3e} bound={bound:.3e}",
+                (got - oracle).abs()
+            );
+            assert!(
+                (got - oracle).abs() <= bound,
+                "naux={naux}: lower-triangle trace {got:.17e} vs full GEMM {oracle:.17e} \
+                 differs by {:.3e}, above the summation-order bound {bound:.3e}",
+                (got - oracle).abs()
+            );
+            for threads in [2, 6] {
+                assert_eq!(
+                    run(threads).to_bits(),
+                    got.to_bits(),
+                    "naux={naux}: {threads} threads changed the trace bits"
+                );
+            }
+        }
+    }
+
+    /// End to end on water/cc-pVDZ: `compute_sos_mo` (lower-triangle J) against
+    /// the full-GEMM oracle at every quadrature point and summed, within the
+    /// bound in the section header.
+    #[test]
+    fn sos_mo_energy_matches_the_full_gemm_oracle_within_the_summation_bound() {
+        let (mol, obs, dfbs, rhf) = setup_sos("cc-pvdz");
+        let op = Operator::coulomb();
+        let mut laplace = LaplaceMp2::new(7);
+        let e_new = laplace
+            .compute_sos_mo(&mol, &obs, &dfbs, op, &rhf, 0)
+            .unwrap();
+
+        // The same dressed amplitudes compute_sos_mo builds.
+        let nbas = obs.nbasis();
+        let nocc = mol.nelec() as usize / 2;
+        let nvir = nbas - nocc;
+        let naux = dfbs.nbasis();
+        let eps = rhf.eps_r();
+        let c = rhf.mos_r();
+        let c_occ = c.slice(ndarray::s![.., ..nocc]).to_owned();
+        let c_vir = c.slice(ndarray::s![.., nocc..]).to_owned();
+        let v2c = ferric_integrals::threeindex::coulomb_metric_2c(op, &dfbs).unwrap();
+        let v_inv_sqrt = crate::rimp2::cholesky_inverse_sqrt(&v2c).unwrap();
+        let eri3_mo = crate::rimp2::eri3_mo_ov_blocked(
+            op,
+            &obs,
+            &dfbs,
+            &c_occ,
+            &c_vir,
+            crate::rimp2::eri3_budget_bytes(None),
+        )
+        .unwrap();
+        let eri3_mo_flat = eri3_mo.into_shape_with_order((naux, nocc * nvir)).unwrap();
+        let b_flat = dress_with_metric(&v_inv_sqrt, &eri3_mo_flat.view());
+        let occ_scale: Vec<f64> = (0..nocc).map(|i| eps[i]).collect();
+        let vir_scale: Vec<f64> = (0..nvir).map(|a| eps[nocc + a]).collect();
+
+        let mut e_oracle = 0.0;
+        let mut bar = 0.0;
+        let mut abs_terms = 0.0;
+        for (&t, &w) in laplace.points.iter().zip(laplace.weights.iter()) {
+            let b_t = weighted_b_mo(&b_flat, &occ_scale, &vir_scale, nocc, nvir, t);
+            let s_old = sos_j_square_trace_full_gemm(&b_t);
+            let s_new = sos_j_square_trace(&b_t);
+            let bound = sos_j_trace_bound(&b_t);
+            assert!(
+                (s_old - s_new).abs() <= bound,
+                "t={t}: per-point trace differs by {:.3e}, bound {bound:.3e}",
+                (s_old - s_new).abs()
+            );
+            e_oracle += -w * s_old;
+            bar += w.abs() * bound;
+            abs_terms += (w * s_old).abs();
+        }
+        bar += 2.0 * gamma(laplace.points.len()) * abs_terms;
+        eprintln!(
+            "water/cc-pVDZ SOS E_OS: new {e_new:.17e} oracle {e_oracle:.17e} \
+             |diff|={:.3e} bar={bar:.3e}",
+            (e_new - e_oracle).abs()
+        );
+        assert!(
+            (e_new - e_oracle).abs() <= bar,
+            "compute_sos_mo {e_new:.17e} vs full-GEMM oracle {e_oracle:.17e}: \
+             |diff| {:.3e} above the summation-order bar {bar:.3e}",
+            (e_new - e_oracle).abs()
+        );
     }
 }

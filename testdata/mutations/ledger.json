@@ -134,6 +134,150 @@
         "baseline_run": true,
         "date": "2026-11-11"
       }
+    },
+    {
+      "anchor": "MP3",
+      "patch": "testdata/mutations/mp3.patch",
+      "mutation": "mp3.rs: the hole-hole ladder term of E(3) is weighted 1/4 instead of 1/8 (the ij and kl pair permutations double-counted).",
+      "evidence": "crates/ferric-cc/tests/validation_cc.rs",
+      "test": "mp3_matches_df_reference",
+      "result": {
+        "patch_sha256": "56272ec771a0ad39dacff8826d189614cf2f4ea1fe8f35036d9b52aea382621a",
+        "base_commit": "3c49625213f684d0d2ae9d997b5732bc7c253ae3",
+        "failing_test": "mp3_matches_df_reference",
+        "assertion": "crates/ferric-cc/tests/validation_cc.rs:301",
+        "message": "MP3: 12 failure(s):",
+        "baseline_run": true,
+        "date": "2026-11-13"
+      }
+    },
+    {
+      "anchor": "CCSD",
+      "patch": "testdata/mutations/ccsd.patch",
+      "mutation": "ccsd_closed_shell.rs: the hole-hole ladder of the T2 residual contracts Woooo with t2 instead of tau = t2 + t1 t1 (the T1 coupling of the ladder dropped).",
+      "evidence": "crates/ferric-cc/tests/validation_cc.rs",
+      "test": "ccsd_spin_adapted_matches_df_reference",
+      "result": {
+        "patch_sha256": "72b6ed3af1304eda3423e00ff9d9ef95f881b46edb1e5b5a2c67ef03a56b9b83",
+        "base_commit": "3c49625213f684d0d2ae9d997b5732bc7c253ae3",
+        "failing_test": "ccsd_spin_adapted_matches_df_reference",
+        "assertion": "crates/ferric-cc/tests/validation_cc.rs:301",
+        "message": "RI-CCSD spin-adapted: 17 failure(s):",
+        "baseline_run": true,
+        "date": "2026-11-13"
+      }
+    },
+    {
+      "anchor": "Attenuated RI-MP2",
+      "patch": "testdata/mutations/att-rimp2.patch",
+      "mutation": "attenuated.rs: the erfc 3-index integrals are fitted with the Coulomb metric instead of the erfc metric.",
+      "evidence": "crates/ferric-mp2/tests/validation_attenuated_mp2.rs",
+      "test": "attenuated_ri_mp2_h2o_vs_pyscf",
+      "result": {
+        "patch_sha256": "dc5fd489e08adac10b4ae94ed6cccc9a30d368cae5c7df2eac084d41f132eb66",
+        "base_commit": "3c49625213f684d0d2ae9d997b5732bc7c253ae3",
+        "failing_test": "attenuated_ri_mp2_h2o_vs_pyscf",
+        "assertion": "crates/ferric-mp2/tests/validation_attenuated_mp2.rs:139",
+        "message": "h2o/aug-cc-pvdz/omega=0.2: E_corr -0.212850863738 vs reference -0.216506983498 (|d| 3.66e-3 >= 1e-10)",
+        "baseline_run": true,
+        "date": "2026-11-13"
+      }
+    },
+    {
+      "anchor": "SCS-MP2",
+      "patch": "testdata/mutations/scs-mp2.patch",
+      "mutation": "rimp2.rs: half of the same-spin exchange (ib|ja) is moved into the opposite-spin pair energy (E_OS + E_SS, and so RI-MP2, unchanged).",
+      "evidence": "crates/ferric-mp2/tests/validation_scs_mp2.rs",
+      "test": "scs_mp2_h2o_vs_numpy",
+      "result": {
+        "patch_sha256": "1af546c3490db2ae677c70cee54e8e3e514646a7bd28f4b322e04132c0062334",
+        "base_commit": "3c49625213f684d0d2ae9d997b5732bc7c253ae3",
+        "failing_test": "scs_mp2_h2o_vs_numpy",
+        "assertion": "crates/ferric-mp2/tests/validation_scs_mp2.rs:125",
+        "message": "h2o/aug-cc-pvdz: E_OS -0.110952415878 vs reference -0.165151822534 (|d| 5.42e-2 >= 1.0e-10)",
+        "baseline_run": true,
+        "date": "2026-11-13"
+      }
+    },
+    {
+      "anchor": "Laplace RI-MP2",
+      "patch": "testdata/mutations/laplace-mp2.patch",
+      "mutation": "laplace.rs: each MO amplitude factor of the exchange term carries the full Laplace exponent exp(-t(e_a - e_i)) instead of its square root.",
+      "evidence": "crates/ferric-mp2/tests/validation_laplace_mp2.rs",
+      "test": "laplace_mp2_h2o_ccpvdz_vs_pyscf_dfmp2",
+      "result": {
+        "patch_sha256": "1a153dd9601c737fdc1bfc32409959f3a74ea7ce1a25ee32661a4b3cdfaaba3f",
+        "base_commit": "3c49625213f684d0d2ae9d997b5732bc7c253ae3",
+        "failing_test": "laplace_mp2_h2o_ccpvdz_vs_pyscf_dfmp2",
+        "assertion": "crates/ferric-mp2/tests/validation_laplace_mp2.rs:294",
+        "message": "h2o/cc-pvdz: MO vs AO (n_quad=3) -0.1014132584147 vs reference -0.2555822818752 (|d| 1.54e-1 >= 1e-10)",
+        "baseline_run": true,
+        "date": "2026-11-13"
+      }
+    },
+    {
+      "anchor": "PDEP-RPA",
+      "patch": "testdata/mutations/pdep-rpa.patch",
+      "mutation": "sternheimer.rs: the closed-shell chi0 scale factor uses the per-spin prefactor 2 instead of 4 (one spin channel dropped).",
+      "evidence": "crates/ferric-rpa/tests/validation_rpa_gradient.rs",
+      "test": "rpa_gradient_h2o_energy_vs_pyscf",
+      "result": {
+        "patch_sha256": "f7eeac19040c3d5aaf3385b8bba4a35f12da8b20f0f949b959d7ef1756f1881c",
+        "base_commit": "3c49625213f684d0d2ae9d997b5732bc7c253ae3",
+        "failing_test": "rpa_gradient_h2o_energy_vs_pyscf",
+        "assertion": "crates/ferric-rpa/tests/validation_rpa_gradient.rs:183",
+        "message": "h2o_distorted/cc-pvdz: E_c (40-pt GL): ferric -0.065171466969 vs reference -0.231489779443 (|d| 1.66e-1) exceeds 1.0e-12",
+        "baseline_run": true,
+        "date": "2026-11-13"
+      }
+    },
+    {
+      "anchor": "Laplace SOS-MP2",
+      "patch": "testdata/mutations/laplace-sos-mp2.patch",
+      "mutation": "laplace.rs: SosMp2Config::default() sets c_os to 1.0 instead of the Jung/Head-Gordon 1.3.",
+      "evidence": "crates/ferric-mp2/tests/validation_sos_mp2.rs",
+      "test": "sos_mp2_h2o_ccpvdz_vs_pyscf_dfmp2",
+      "result": {
+        "patch_sha256": "81b7d371c565f36b464c804c98370c05992da9e82f1ed237d415dee6b49cedce",
+        "base_commit": "c919fef009af42e4efdea9f88ca5d2a8fba28dcd",
+        "failing_test": "sos_mp2_h2o_ccpvdz_vs_pyscf_dfmp2",
+        "assertion": "crates/ferric-mp2/tests/validation_sos_mp2.rs:303",
+        "message": "assertion `left == right` failed: h2o/cc-pvdz: default c_os",
+        "baseline_run": true,
+        "date": "2026-11-13"
+      }
+    },
+    {
+      "anchor": "CASSCF",
+      "patch": "testdata/mutations/casscf.patch",
+      "mutation": "casscf.rs: the inactive Fock matrix F^I = h + J - K/2 halves its exchange term again (K/4).",
+      "evidence": "crates/ferric-ci/tests/casscf_vs_pyscf.rs",
+      "test": "h2o_cas44_631g_matches_pyscf",
+      "result": {
+        "patch_sha256": "980e9d39a762526c9ebfa04034864bf067fbaae5f3c001d326f89b987f7e694d",
+        "base_commit": "8c86e08508794e0e0182c70527b4553a566ca04d",
+        "failing_test": "h2o_cas44_631g_matches_pyscf",
+        "assertion": "crates/ferric-ci/tests/casscf_vs_pyscf.rs:160",
+        "message": "h2o_cas44_631g: |dE| 3.63671533235636e0 > bar 3.210388254915033e-10",
+        "baseline_run": true,
+        "date": "2026-11-13"
+      }
+    },
+    {
+      "anchor": "SC-NEVPT2",
+      "patch": "testdata/mutations/nevpt2.patch",
+      "mutation": "nevpt2.rs: the class-r (Sr) energy numerator drops the factor 2 on its v A17 h cross term.",
+      "evidence": "crates/ferric-ci/tests/nevpt2.rs",
+      "test": "matches_pyscf_h2o_cas44",
+      "result": {
+        "patch_sha256": "80c420f057eef0638e7a462bf2a1328680d5dbb24a386a8a9ce331b37ae362c6",
+        "base_commit": "8c86e08508794e0e0182c70527b4553a566ca04d",
+        "failing_test": "matches_pyscf_h2o_cas44",
+        "assertion": "crates/ferric-ci/tests/nevpt2.rs:371",
+        "message": "h2o Sr: -0.0003782463016180647 vs PySCF -0.004444030301156927 (bar 3.7e-7)",
+        "baseline_run": true,
+        "date": "2026-11-13"
+      }
     }
   ]
 }

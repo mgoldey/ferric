@@ -75,7 +75,7 @@ def test_arrays_and_certificate(res):
     assert res.ci_residual_norm < 1e-8
     cert = res.certificate
     assert cert["capability"] == "nevpt2"
-    assert cert["grade"] == "ungraded"
+    assert cert["grade"] == "proven"
     assert cert["build"]["commit"] == ferric.build_info()["commit"]
 
 
@@ -85,6 +85,7 @@ def test_casci_reference(mol, res):
         mol, ferric.BasisSet.bundled("6-31g"), 4, (2, 2), reference="casci"
     )
     assert r.reference == "casci"
+    assert r.certificate["grade"] == "ungraded"
     assert r.e_reference > res.e_reference
     assert r.e_corr < 0.0
 

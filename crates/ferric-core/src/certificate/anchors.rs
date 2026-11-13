@@ -1,5 +1,5 @@
-//! The headline energy anchor of each validated SCF and RI-MP2 method, and
-//! the validation envelope it defines.
+//! The headline energy anchor of each method behind a Proven CLI
+//! `method.kind`, and the validation envelope it defines.
 //!
 //! Each [`EnergyAnchor`] is one row of the Anchors table on
 //! [`GRADE_SOURCE_PAGE`](super::GRADE_SOURCE_PAGE): the stated agreement of
@@ -50,15 +50,38 @@ pub enum AnchorData {
         /// The systems of this anchor (a directory may hold several anchors).
         systems: &'static [&'static str],
     },
+    /// Named reference files `<dir>/<file>.json`. Each file records its
+    /// orbital basis (`basis`), its auxiliary basis (`aux_basis`, `auxbasis`
+    /// or `aux`) and its geometry (`geometry_stem`, else `system`, naming
+    /// `testdata/molecules/validation/<stem>.xyz`). For a directory whose
+    /// systems do not all run every basis.
+    Files {
+        /// The reference directory, relative to the workspace root.
+        dir: &'static str,
+        /// File stems in `dir` (without `.json`).
+        files: &'static [&'static str],
+    },
+    /// Reference files that carry their geometry inline, relative to the
+    /// workspace root. Each file is one record, or holds its records in a
+    /// `systems` array; a record names its `system` and `basis` and holds an
+    /// XYZ block (count line, comment line, atoms) in `xyz`. For methods
+    /// without an auxiliary basis.
+    InlineGeometry {
+        /// The reference files, relative to the workspace root.
+        files: &'static [&'static str],
+    },
 }
 
 /// One method's headline energy anchor; see the module doc.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EnergyAnchor {
-    /// The solver the anchor covers: `"RHF"`, `"RKS"`, `"UHF"`, `"UKS"`,
-    /// `"ROHF"`, `"ROKS"`, `"RI-MP2"`, `"U-RI-MP2"`.
+    /// The solver the anchor covers, e.g. `"RHF"`, `"UKS"`, `"RI-MP2"`,
+    /// `"CCSD"`. When several Anchors rows link the same test file, the row
+    /// is the first whose Capability cell contains this name.
     pub method: &'static str,
-    /// The CLI `method.kind` whose certificate carries it (its capability).
+    /// The CLI `method.kind` the anchor validates. The certificates of
+    /// `rhf`, `uhf`, `rohf`, `ksdft` and `rimp2` carry it as their measured
+    /// error.
     pub kind: &'static str,
     /// What was compared, e.g. `"energy"`.
     pub quantity: &'static str,
@@ -77,7 +100,7 @@ pub struct EnergyAnchor {
     pub elements: &'static [&'static str],
     /// Orbital basis sets the test runs, as the test names them.
     pub basis_sets: &'static [&'static str],
-    /// Auxiliary basis sets the test runs (RI-MP2 only).
+    /// Auxiliary basis sets the test runs (correlated methods only).
     pub aux_basis_sets: &'static [&'static str],
     /// Functionals the test runs (KS only), lower case.
     pub functionals: &'static [&'static str],
@@ -89,6 +112,16 @@ const KS_ENERGIES: &str = "crates/ferric-scf/tests/validation_ks_energies.rs";
 const OPEN_SHELL_SYSTEMS: &[&str] = &["ho2", "no2", "ch2_triplet", "allyl"];
 const OPEN_SHELL_ELEMENTS: &[&str] = &["H", "C", "N", "O"];
 const OPEN_SHELL_BASES: &[&str] = &["6-31g", "def2-svp"];
+const CC: &str = "crates/ferric-cc/tests/validation_cc.rs";
+const CC_DIR: &str = "testdata/reference/validation/cc";
+const ATT_MP2_DIR: &str = "testdata/reference/validation/attenuated_mp2";
+
+const CASSCF_REFS: &[&str] = &[
+    "testdata/reference/casscf_h2o_cas44_631g_pyscf.json",
+    "testdata/reference/casscf_n2_cas66_631g_pyscf.json",
+    "testdata/reference/casscf_n2_r1.6_cas66_631g_pyscf.json",
+    "testdata/reference/casscf_o2_triplet_cas86_631g_pyscf.json",
+];
 
 /// The headline energy anchor of every method that has one.
 pub const ENERGY_ANCHORS: &[EnergyAnchor] = &[
@@ -307,6 +340,175 @@ pub const ENERGY_ANCHORS: &[EnergyAnchor] = &[
         aux_basis_sets: &["cc-pvdz-ri"],
         functionals: &[],
     },
+    EnergyAnchor {
+        method: "MP3",
+        kind: "mp3",
+        quantity: "correlation energy",
+        value: "7.6e-12",
+        units: "Ha",
+        reference: "numpy",
+        evidence: CC,
+        data: AnchorData::Files {
+            dir: CC_DIR,
+            files: &["h2o_cc-pvdz", "h2o_def2-svp", "nh3_cc-pvdz", "nh3_def2-svp"],
+        },
+        elements: &["H", "N", "O"],
+        basis_sets: &["cc-pvdz", "def2-svp"],
+        aux_basis_sets: &["cc-pvdz-ri", "def2-svp-rifit"],
+        functionals: &[],
+    },
+    EnergyAnchor {
+        method: "CCSD",
+        kind: "ccsd",
+        quantity: "correlation energy",
+        value: "4.7e-11",
+        units: "Ha",
+        reference: "PySCF CCSD",
+        evidence: CC,
+        data: AnchorData::Files {
+            dir: CC_DIR,
+            files: &[
+                "h2o_cc-pvdz",
+                "h2o_def2-svp",
+                "h2o_aug-cc-pvdz",
+                "nh3_cc-pvdz",
+                "nh3_def2-svp",
+                "hcn_cc-pvdz",
+                "c2h6_cc-pvdz",
+            ],
+        },
+        elements: &["H", "C", "N", "O"],
+        basis_sets: &["cc-pvdz", "def2-svp", "aug-cc-pvdz"],
+        aux_basis_sets: &["cc-pvdz-ri", "def2-svp-rifit", "aug-cc-pvdz-rifit"],
+        functionals: &[],
+    },
+    EnergyAnchor {
+        method: "Attenuated RI-MP2",
+        kind: "att-rimp2",
+        quantity: "correlation energy",
+        value: "5.9e-12",
+        units: "Ha",
+        reference: "numpy",
+        evidence: "crates/ferric-mp2/tests/validation_attenuated_mp2.rs",
+        data: AnchorData::Directory {
+            dir: ATT_MP2_DIR,
+            systems: &["h2o", "nh3"],
+        },
+        elements: &["H", "N", "O"],
+        basis_sets: &["aug-cc-pvdz"],
+        aux_basis_sets: &["aug-cc-pvdz-rifit"],
+        functionals: &[],
+    },
+    EnergyAnchor {
+        method: "SCS-MP2",
+        kind: "scs-mp2",
+        quantity: "correlation energy",
+        value: "3.5e-12",
+        units: "Ha",
+        reference: "numpy",
+        evidence: "crates/ferric-mp2/tests/validation_scs_mp2.rs",
+        data: AnchorData::Directory {
+            dir: ATT_MP2_DIR,
+            systems: &["h2o", "nh3"],
+        },
+        elements: &["H", "N", "O"],
+        basis_sets: &["aug-cc-pvdz"],
+        aux_basis_sets: &["aug-cc-pvdz-rifit"],
+        functionals: &[],
+    },
+    EnergyAnchor {
+        method: "Laplace RI-MP2",
+        kind: "laplace-mp2",
+        quantity: "correlation energy at matched quadrature",
+        value: "3.1e-11",
+        units: "Ha",
+        reference: "numpy",
+        evidence: "crates/ferric-mp2/tests/validation_laplace_mp2.rs",
+        data: AnchorData::Files {
+            dir: "testdata/reference/validation/laplace_mp2",
+            files: &[
+                "h2o_cc-pvdz",
+                "h2o_aug_aug-cc-pvdz",
+                "ch4_cc-pvdz",
+                "butadiene_cc-pvdz",
+                "alkane_8_cc-pvdz",
+            ],
+        },
+        elements: &["H", "C", "O"],
+        basis_sets: &["cc-pvdz", "aug-cc-pvdz"],
+        aux_basis_sets: &["cc-pvdz-ri", "aug-cc-pvdz-rifit"],
+        functionals: &[],
+    },
+    EnergyAnchor {
+        method: "Laplace SOS-MP2",
+        kind: "laplace-sos-mp2",
+        quantity: "opposite-spin energy at matched quadrature",
+        value: "1.6e-11",
+        units: "Ha",
+        reference: "PySCF",
+        evidence: "crates/ferric-mp2/tests/validation_sos_mp2.rs",
+        data: AnchorData::Files {
+            dir: "testdata/reference/validation/sos_mp2",
+            files: &[
+                "h2o_cc-pvdz",
+                "h2o_aug_aug-cc-pvdz",
+                "ch4_cc-pvdz",
+                "butadiene_cc-pvdz",
+                "alkane_8_cc-pvdz",
+            ],
+        },
+        elements: &["H", "C", "O"],
+        basis_sets: &["cc-pvdz", "aug-cc-pvdz"],
+        aux_basis_sets: &["cc-pvdz-ri", "aug-cc-pvdz-rifit"],
+        functionals: &[],
+    },
+    EnergyAnchor {
+        method: "PDEP-RPA",
+        kind: "pdep-rpa",
+        quantity: "correlation energy",
+        value: "1.5e-13",
+        units: "Ha",
+        reference: "gw.rpa.RPA",
+        evidence: "crates/ferric-rpa/tests/validation_rpa_gradient.rs",
+        data: AnchorData::Files {
+            dir: "testdata/reference/validation/rpa_gradient",
+            files: &["h2o_distorted_cc-pvdz", "nh3_distorted_cc-pvdz"],
+        },
+        elements: &["H", "N", "O"],
+        basis_sets: &["cc-pvdz"],
+        aux_basis_sets: &["cc-pvdz-ri"],
+        functionals: &[],
+    },
+    EnergyAnchor {
+        method: "CASSCF",
+        kind: "casscf",
+        quantity: "energy",
+        value: "1.5e-11",
+        units: "Ha",
+        reference: "PySCF",
+        evidence: "crates/ferric-ci/tests/casscf_vs_pyscf.rs",
+        data: AnchorData::InlineGeometry { files: CASSCF_REFS },
+        elements: &["H", "N", "O"],
+        basis_sets: &["6-31g"],
+        aux_basis_sets: &[],
+        functionals: &[],
+    },
+    EnergyAnchor {
+        method: "SC-NEVPT2",
+        kind: "nevpt2",
+        quantity: "class energies",
+        value: "3.2e-8",
+        units: "Ha",
+        reference: "PySCF",
+        evidence: "crates/ferric-ci/tests/nevpt2.rs",
+        data: AnchorData::InlineGeometry {
+            files: &["testdata/reference/nevpt2_refs.json"],
+        },
+        elements: &["H", "N", "O"],
+        basis_sets: &["6-31g"],
+        aux_basis_sets: &[],
+        functionals: &[],
+    },
 ];
 
 /// The anchor of `method` (see [`EnergyAnchor::method`]), if it has one.
@@ -477,14 +679,18 @@ mod tests {
             ));
         }
         let (header, rows) = anchor_table(page);
-        let (proof, stated, reference) = (
+        let (capability, proof, stated, reference) = (
+            column(&header, "Capability"),
             column(&header, "Proof"),
             column(&header, "Stated agreement"),
             column(&header, "Reference"),
         );
         let link = format!("]({PROOF_PREFIX}{})", a.evidence);
         let hits: Vec<&Vec<String>> = rows.iter().filter(|r| r[proof].contains(&link)).collect();
-        let Some(row) = hits.first() else {
+        // Several rows can link one test file (MP3 and CCSD share
+        // validation_cc.rs): take the row that names the method.
+        let named = hits.iter().find(|r| r[capability].contains(a.method));
+        let Some(row) = named.or(hits.first()) else {
             bad.push(format!(
                 "{}: no Anchors row links {} from its Proof cell",
                 a.method, a.evidence
@@ -548,10 +754,107 @@ mod tests {
             .collect()
     }
 
+    /// `(elements, bases, aux bases, systems)` recorded by the reference
+    /// files `<dir>/<file>.json`; a missing file or field is pushed to `bad`.
+    fn files_sets(
+        root: &Path,
+        dir: &str,
+        files: &[&str],
+        bad: &mut Vec<String>,
+        method: &str,
+    ) -> (
+        BTreeSet<String>,
+        BTreeSet<String>,
+        BTreeSet<String>,
+        BTreeSet<String>,
+    ) {
+        let (mut el, mut bs, mut aux, mut systems) = (
+            BTreeSet::new(),
+            BTreeSet::new(),
+            BTreeSet::new(),
+            BTreeSet::new(),
+        );
+        for f in files {
+            let path = root.join(dir).join(format!("{f}.json"));
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                bad.push(format!("{method}: no reference {dir}/{f}.json"));
+                continue;
+            };
+            let r: serde_json::Value = serde_json::from_str(&text).unwrap();
+            let field =
+                |keys: &[&str]| keys.iter().find_map(|k| r[*k].as_str()).map(str::to_string);
+            let (Some(system), Some(basis), Some(aux_basis)) = (
+                field(&["system"]),
+                field(&["basis"]),
+                field(&["aux_basis", "auxbasis", "aux"]),
+            ) else {
+                bad.push(format!(
+                    "{method}: {dir}/{f}.json lacks system, basis or aux basis"
+                ));
+                continue;
+            };
+            if *f != format!("{system}_{basis}") {
+                bad.push(format!(
+                    "{method}: {dir}/{f}.json records {system} / {basis}"
+                ));
+            }
+            let stem = field(&["geometry_stem"]).unwrap_or_else(|| system.clone());
+            el.extend(xyz_elements(root, &stem));
+            bs.insert(basis);
+            aux.insert(aux_basis);
+            systems.insert(system);
+        }
+        (el, bs, aux, systems)
+    }
+
+    /// `(elements, bases, systems)` of the inline-geometry reference
+    /// `files`; a missing file or field is pushed to `bad`.
+    fn inline_sets(
+        root: &Path,
+        files: &[&str],
+        bad: &mut Vec<String>,
+        method: &str,
+    ) -> (BTreeSet<String>, BTreeSet<String>, BTreeSet<String>) {
+        let (mut el, mut bs, mut systems) = (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
+        for f in files {
+            let Ok(text) = std::fs::read_to_string(root.join(f)) else {
+                bad.push(format!("{method}: no reference {f}"));
+                continue;
+            };
+            let r: serde_json::Value = serde_json::from_str(&text).unwrap();
+            let records = match r["systems"].as_array() {
+                Some(a) => a.clone(),
+                None => vec![r],
+            };
+            for rec in &records {
+                let (Some(system), Some(basis), Some(xyz)) = (
+                    rec["system"].as_str(),
+                    rec["basis"].as_str(),
+                    rec["xyz"].as_str(),
+                ) else {
+                    bad.push(format!(
+                        "{method}: a record of {f} lacks system, basis or xyz"
+                    ));
+                    continue;
+                };
+                el.extend(
+                    xyz.lines()
+                        .skip(2)
+                        .filter_map(|l| l.split_whitespace().next())
+                        .map(str::to_string),
+                );
+                bs.insert(basis.to_string());
+                systems.insert(system.to_string());
+            }
+        }
+        (el, bs, systems)
+    }
+
     /// Every disagreement between `a`'s covered sets and the data its
     /// evidence test reads.
     fn data_disagreements(a: &EnergyAnchor, root: &Path) -> Vec<String> {
         let mut bad = Vec::new();
+        let mut files_bad = Vec::new();
         let mut same = |what: &str, ours: BTreeSet<String>, theirs: BTreeSet<String>| {
             if ours != theirs {
                 bad.push(format!(
@@ -566,6 +869,34 @@ mod tests {
                 same("elements", set(a.elements), el);
                 same("basis sets", set(a.basis_sets), bs);
                 same("aux basis sets", set(a.aux_basis_sets), aux);
+            }
+            AnchorData::Files { dir, files } => {
+                let (el, bs, aux, systems) = files_sets(root, dir, files, &mut files_bad, a.method);
+                same("elements", set(a.elements), el);
+                same("basis sets", set(a.basis_sets), bs);
+                same("aux basis sets", set(a.aux_basis_sets), aux);
+                let test = std::fs::read_to_string(root.join(a.evidence)).unwrap_or_default();
+                for w in systems
+                    .iter()
+                    .map(String::as_str)
+                    .chain(a.functionals.iter().copied())
+                {
+                    if !test.contains(&format!("\"{w}\"")) {
+                        files_bad.push(format!("{}: {} never names \"{w}\"", a.method, a.evidence));
+                    }
+                }
+            }
+            AnchorData::InlineGeometry { files } => {
+                let (el, bs, systems) = inline_sets(root, files, &mut files_bad, a.method);
+                same("elements", set(a.elements), el);
+                same("basis sets", set(a.basis_sets), bs);
+                same("aux basis sets", set(a.aux_basis_sets), BTreeSet::new());
+                let test = std::fs::read_to_string(root.join(a.evidence)).unwrap_or_default();
+                for w in &systems {
+                    if !test.contains(&format!("\"{w}\"")) {
+                        files_bad.push(format!("{}: {} never names \"{w}\"", a.method, a.evidence));
+                    }
+                }
             }
             AnchorData::Directory { dir, systems } => {
                 let el = systems.iter().flat_map(|s| xyz_elements(root, s)).collect();
@@ -590,6 +921,7 @@ mod tests {
                 }
             }
         }
+        bad.extend(files_bad);
         bad
     }
 
@@ -615,13 +947,20 @@ mod tests {
         let root = workspace_root();
         let mut dirs: std::collections::BTreeMap<&str, BTreeSet<String>> = Default::default();
         for a in ENERGY_ANCHORS {
-            if let AnchorData::Directory { dir, systems } = a.data {
-                let e = dirs.entry(dir).or_default();
-                for s in systems {
-                    for b in a.basis_sets {
-                        e.insert(format!("{s}_{b}.json"));
+            match a.data {
+                AnchorData::Directory { dir, systems } => {
+                    let e = dirs.entry(dir).or_default();
+                    for s in systems {
+                        for b in a.basis_sets {
+                            e.insert(format!("{s}_{b}.json"));
+                        }
                     }
                 }
+                AnchorData::Files { dir, files } => {
+                    let e = dirs.entry(dir).or_default();
+                    e.extend(files.iter().map(|f| format!("{f}.json")));
+                }
+                AnchorData::BasisCoverage { .. } | AnchorData::InlineGeometry { .. } => {}
             }
         }
         for (dir, ours) in dirs {
@@ -654,6 +993,30 @@ mod tests {
             for b in a.basis_sets.iter().chain(a.aux_basis_sets) {
                 assert!(crate::basis::bundled(b).is_ok(), "{}: {b}", a.method);
             }
+        }
+    }
+
+    /// The rule behind the mutation ledger: no Proven grade without an anchor.
+    #[test]
+    fn every_proven_kind_has_an_anchor() {
+        let missing: Vec<&str> = super::super::METHOD_KIND_GRADES
+            .iter()
+            .filter(|(_, g)| *g == super::super::Grade::Proven)
+            .map(|(k, _)| *k)
+            .filter(|k| !ENERGY_ANCHORS.iter().any(|a| a.kind == *k))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "Proven kinds without an anchor: {missing:?}"
+        );
+        for a in ENERGY_ANCHORS {
+            assert_eq!(
+                super::super::method_kind_grade(a.kind),
+                super::super::Grade::Proven,
+                "{}: kind {} is not graded Proven",
+                a.method,
+                a.kind
+            );
         }
     }
 

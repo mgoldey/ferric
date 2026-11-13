@@ -174,6 +174,30 @@ pub fn solve_uhf_injected<'a>(
     )?)
 }
 
+/// The virtual-block level-shift terms `shift · S P_v S` per spin, with
+/// `P_v = C_v C_vᵀ` from the previous orbitals. Serial section (outside any
+/// rayon region): runs at the serial BLAS thread count.
+fn virtual_level_shift_terms(
+    c_a: &Array2<f64>,
+    c_b: &Array2<f64>,
+    nocc_a: usize,
+    nocc_b: usize,
+    s: &Array2<f64>,
+    shift: f64,
+) -> (Array2<f64>, Array2<f64>) {
+    ferric_integrals::blas_threads::with_blas_threads(
+        ferric_integrals::blas_threads::opt_in_blas_threads(),
+        || {
+            crate::blas_probe::record(&crate::blas_probe::UHF_LEVEL_SHIFT);
+            let c_av = c_a.slice(ndarray::s![.., nocc_a..]);
+            let c_bv = c_b.slice(ndarray::s![.., nocc_b..]);
+            let p_av: Array2<f64> = c_av.dot(&c_av.t());
+            let p_bv: Array2<f64> = c_bv.dot(&c_bv.t());
+            (shift * s.dot(&p_av).dot(s), shift * s.dot(&p_bv).dot(s))
+        },
+    )
+}
+
 /// The error variant carries no text: say why a run whose density settled
 /// still failed (the orbital-gradient veto refused it), when it did.
 fn note_vetoed_nonconvergence(r: &ScfResult) {
@@ -752,6 +776,7 @@ fn solve_uhf_impl(
     mut hook: Option<crate::fock::SpinFockHook<'_>>,
 ) -> Result<ScfResult, FerricError> {
     use ferric_dft::xc_trait::KMix;
+    crate::mom::check_reference(config, "UHF", true)?;
 
     // Split the injection: (S, h, V_nn) go to the shared env builder, the J/K
     // builders are driven in the iteration loop (as in rhf::solve_rhf_impl).
@@ -1031,8 +1056,11 @@ fn solve_uhf_impl(
     // open-shell atoms (e.g. S/O ³P) whose near-degenerate p-shell otherwise
     // makes plain DIIS oscillate forever. Empty open block for UHF (each spin is
     // a pure closed set, see `mom_pin`). Mirrors the rohf.rs MOM wiring.
-    let mut mom_ref_a: Option<Array2<f64>> = None;
-    let mut mom_ref_b: Option<Array2<f64>> = None;
+    // Under `MomReference::Initial` the references are the starting occupied
+    // blocks, pinned against from iteration 1 and never replaced.
+    let mom_from_start = config.mom_reference == crate::mom::MomReference::Initial;
+    let mut mom_ref_a = start_reference(&c_a, nocc_a, mom_from_start);
+    let mut mom_ref_b = start_reference(&c_b, nocc_b, mom_from_start);
 
     // K built per spin:
     //   * RSH (ω > 0): K_σ = c_SR · K_SR[D_σ] + c_LR · K_LR[D_σ] via DfK
@@ -1669,7 +1697,7 @@ fn solve_uhf_impl(
                     }
                 }
             }
-            let mom = config.mom_after_iter > 0;
+            let mom = config.mom_enabled();
             let (eps_a, c_a_f) = exit_eigenpairs(
                 &diag_a,
                 ExitSpin {
@@ -2193,12 +2221,10 @@ fn solve_uhf_impl(
             let damp = err_max / (err_max + SHIFT_DAMP_ERR);
             let shift_eff = effective_level_shift * damp;
             if shift_eff > 1e-10 {
-                let c_av = c_a.slice(ndarray::s![.., nocc_a..]);
-                let c_bv = c_b.slice(ndarray::s![.., nocc_b..]);
-                let p_av: Array2<f64> = c_av.dot(&c_av.t());
-                let p_bv: Array2<f64> = c_bv.dot(&c_bv.t());
-                f_a_new += &(shift_eff * s.dot(&p_av).dot(&s));
-                f_b_new += &(shift_eff * s.dot(&p_bv).dot(&s));
+                let (shift_a, shift_b) =
+                    virtual_level_shift_terms(&c_a, &c_b, nocc_a, nocc_b, &s, shift_eff);
+                f_a_new += &shift_a;
+                f_b_new += &shift_b;
             }
         }
         let (mut eps_a_new, mut c_a_new) = diag_a.run(&f_a_new)?;
@@ -2211,8 +2237,10 @@ fn solve_uhf_impl(
             mom_ref_a = Some(c_a.slice(ndarray::s![.., ..nocc_a]).to_owned());
             mom_ref_b = Some(c_b.slice(ndarray::s![.., ..nocc_b]).to_owned());
         }
-        // MOM occupied-orbital selection (per spin) from iter mom_after_iter+1.
-        if (config.mom_after_iter > 0 && iter > config.mom_after_iter) || pin_now {
+        // MOM occupied-orbital selection (per spin) from iter mom_after_iter+1,
+        // or from iter 1 against the start (`MomReference::Initial`).
+        if (config.mom_after_iter > 0 && iter > config.mom_after_iter) || mom_from_start || pin_now
+        {
             (c_a_new, eps_a_new) = mom_pin(c_a_new, eps_a_new, &s, mom_ref_a.as_ref(), nocc_a);
             (c_b_new, eps_b_new) = mom_pin(c_b_new, eps_b_new, &s, mom_ref_b.as_ref(), nocc_b);
         }
@@ -3047,6 +3075,12 @@ fn density(c: &Array2<f64>, nocc: usize) -> Array2<f64> {
     }
     let c_occ = c.slice(ndarray::s![.., ..nocc]);
     c_occ.dot(&c_occ.t())
+}
+
+/// The initial-MOM reference for one spin: the occupied block of the start
+/// orbitals when `from_start` (`MomReference::Initial`), otherwise none.
+fn start_reference(c: &Array2<f64>, nocc: usize, from_start: bool) -> Option<Array2<f64>> {
+    from_start.then(|| c.slice(ndarray::s![.., ..nocc]).to_owned())
 }
 
 /// One spin's MOM step: reorder the new eigenpairs so the first `nocc` columns

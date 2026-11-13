@@ -124,7 +124,7 @@ def test_mp2_family_certificates_carry_table_grades():
         "3-point minimax quadrature"
     ]
     sos = ferric.run_laplace_sos_mp2(mol, bs, aux, c_os=1.1, n_quad=3).certificate
-    _row(sos, "laplace-sos-mp2", "ungraded", ["sos", "laplace"])
+    _row(sos, "laplace-sos-mp2", "proven", ["sos", "laplace"])
     assert [a["detail"] for a in sos["approximations"] if a["name"] == "sos"] == [
         "c_os = 1.1, c_ss = 0"
     ]

@@ -1,0 +1,13 @@
+diff --git a/crates/ferric-ci/src/nevpt2.rs b/crates/ferric-ci/src/nevpt2.rs
+index c1842b399..7b3db7b2b 100644
+--- a/crates/ferric-ci/src/nevpt2.rs
++++ b/crates/ferric-ci/src/nevpt2.rs
+@@ -592,7 +592,7 @@ fn sr(x: &Inputs<'_>, b: &Blocks) -> Result<(f64, f64), FerricError> {
+     let a17 = make_a17(x)?;
+     let a19 = make_a19(x)?;
+     let ener = einsum("ipqr,pqrabc,iabc->i", &[v, &a16, v])?
+-        + &(2.0 * &einsum("ipqr,pqra,ia->i", &[v, &a17, h])?)
++        + &(1.0 * &einsum("ipqr,pqra,ia->i", &[v, &a17, h])?)
+         + &einsum("ip,pa,ia->i", &[h, &a19, h])?;
+     let norm = einsum("ipqr,rpqbac,iabc->i", &[v, &x.dm3, v])?
+         + &(2.0 * &einsum("ipqr,rpqa,ia->i", &[v, &x.dm2, h])?)

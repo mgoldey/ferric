@@ -1,6 +1,6 @@
 # Examples
 
-This page indexes every input file in `examples/`. There are 84 TOML files.
+This page indexes every input file in `examples/`. There are 87 TOML files.
 Three Python scripts that build methods from `AoIntegrals` blocks are in
 `examples/python/` ([Python bindings](../using/python.md#building-blocks)).
 Run a TOML file from the repository root:
@@ -117,6 +117,16 @@ See [Coupled cluster](../methods/cc.md) and
 | `water-ccsd-t.toml` | H2O / STO-3G | `ccsd(t)` | — | Prints the CCSD correlation energy, the (T) correction and the total. |
 | `water-wb97xlv.toml` | H2O / 6-31G | `wb97x-l-v` | — | λ = 0.6, ω = 0.1 Bohr⁻¹ (published values). Proven (narrow) grade. |
 | `water-b2plyp.toml` | H2O / cc-pVDZ | `b2plyp` | — | Spike grade. Aux `cc-pvdz-rifit` (an alias of `cc-pvdz-ri`). |
+
+## Multireference
+
+See [CAS-CI and CASSCF](../methods/ci.md).
+
+| File | System / basis | `kind` | Reference in header | Notes |
+|---|---|---|---|---|
+| `water-casscf.toml` | H2O / 6-31G | `casscf` | "PySCF mcscf.CASSCF on ferric's AO integrals gives E = -76.0369690965 Ha" | CAS(4,4) above 3 core orbitals, canonical orbitals on return. |
+| `o2-casscf-triplet.toml` | O2 / 6-31G | `casscf` | "PySCF mcscf.CASSCF on ferric's AO integrals gives E = -149.6367298537 Ha" | The triplet as the lowest M_s = 1 root of CAS(8,6), `n_elec_active = [5, 3]`, from the closed-shell RHF. |
+| `n2-nevpt2.toml` | N2 / 6-31G | `nevpt2` | — | SC-NEVPT2 on a CAS(6,6) CASSCF reference; prints the eight class energies. |
 
 ## RPA, C6 and properties
 
