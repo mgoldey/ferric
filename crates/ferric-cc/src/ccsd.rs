@@ -62,21 +62,21 @@ pub struct CcsdShape {
 
 /// Build the CCSD [`MemoryPlan`] for a given shape and budget.
 ///
-/// # What dominates, and why the old guard was wrong twice
+/// # What dominates
 ///
-/// The previous guard charged a flat `3·(2nv)⁴ + eri3_ao`. The "3×" was meant
-/// for the VVVV *build* (the chemist-block `d`, exchange-block `e` and the
+/// A flat `3·(2nv)⁴ + eri3_ao` charge is wrong twice. The "3×" would stand for
+/// the VVVV *build* (the chemist-block `d`, exchange-block `e` and the
 /// `asym_phys` output), but `d` and `e` are built from `b_vv`, which is
 /// contracted with the SPATIAL `c_vir` — so they are `nv⁴` each, sixteen
 /// times smaller than `(2nv)⁴`. Only the `asym_phys` result is
-/// spin-orbital-sized, making the build-stage charge an over-count of about
+/// spin-orbital-sized, so the build-stage charge would over-count by about
 /// 2.67×.
 ///
-/// That over-count masked a genuine omission. `vvvv` is built once and stays
-/// resident for the whole amplitude loop, while `wabef` — a SEPARATE `(2nv)⁴`
-/// buffer — is rebuilt every iteration by cloning `vvvv` and is still live
-/// when the ladder term reads it. Both are resident together, so the
-/// sustained peak is `2·(2nv)⁴`, which the old formula never named.
+/// That over-count would mask a genuine omission. `vvvv` is built once and
+/// stays resident for the whole amplitude loop, while `wabef` — a SEPARATE
+/// `(2nv)⁴` buffer — is rebuilt every iteration by cloning `vvvv` and is still
+/// live when the ladder term reads it. Both are resident together, so the
+/// sustained peak is `2·(2nv)⁴`, which a flat `3·(2nv)⁴` never names.
 pub fn ccsd_memory_plan(shape: CcsdShape, budget_bytes: Option<usize>) -> MemoryPlan {
     let CcsdShape {
         no,
@@ -110,7 +110,7 @@ pub fn ccsd_memory_plan(shape: CcsdShape, budget_bytes: Option<usize>) -> Memory
     );
     // `wabef` is a SEPARATE (2nv)^4 buffer, rebuilt every iteration by cloning
     // `vvvv` and held alongside it until the ladder term reads it — the term
-    // the old guard missed entirely.
+    // a flat charge misses entirely.
     plan.reserve(
         "wabef <ab||ef> (rebuilt per iteration, co-resident with vvvv)",
         nv2.saturating_pow(4),

@@ -205,9 +205,9 @@ fn peak_triple_block_bytes(nv: usize) -> usize {
 /// plus the amplitudes cloned alongside them, all live for the whole loop.
 ///
 /// The spatial analogue of `ccsd_t::precomputed_block_bytes`, and it closes the
-/// same defect: the guard used to check only [`peak_triple_block_bytes`] — the
+/// same gap: a guard checking only [`peak_triple_block_bytes`] — the
 /// per-triple working set — while `ovvv` is `no·nv³`, i.e. `no/6` times larger,
-/// so the shortfall GREW with system size. A job could pass pre-flight and OOM
+/// so the shortfall GREW with system size. A job could then pass pre-flight and OOM
 /// on the next allocation. See `tests/mwe_t_guard_covers_precomputed.rs`.
 ///
 /// Counted: `ovvv` `no·nv³`, `ovoo` `no³·nv`, `ovov` `no²·nv²`, plus the cloned

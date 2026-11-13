@@ -114,10 +114,8 @@ pub struct CcConfig {
     /// materializes. `None` → resolved via
     /// [`ferric_core::memory::resolve_budget_bytes`].
     ///
-    /// This field used to be documented as "wiring-only", and for the
-    /// local-correlation family that was literally true: it was threaded through
-    /// the whole crate and read by nobody on the `dlpno_*` path. The consequence
-    /// was a production incident — the LNO-coupled path predicted a 0.055 GB
+    /// A field read by nobody on the `dlpno_*` path invites a production
+    /// incident: the LNO-coupled path predicted a 0.055 GB
     /// working set and peaked at 7.3 GB. The predicted number was not wrong
     /// about what it described; it described the *compressed, pair-shaped*
     /// iteration (`HhFlopCount`, `virtual_retention`), which is genuinely tiny,
@@ -125,7 +123,7 @@ pub struct CcConfig {
     /// run before the first PNO exists. Nothing reconciled the two, so the only
     /// feedback was the OOM killer.
     ///
-    /// It is now read on every path that materializes a size-dependent dense
+    /// It is read on every path that materializes a size-dependent dense
     /// tensor, via [`ferric_core::memory::plan::MemoryPlan`], which fails fast
     /// with a per-reservation breakdown naming the term that blew up:
     ///

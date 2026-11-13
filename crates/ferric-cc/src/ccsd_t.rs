@@ -79,15 +79,15 @@
 //! fully-ordered sum equals `36 × Σ_{i0<j0<k0,a0<b0<c0} f`. My loop computes
 //! `Σ_{i0<j0<k0} (6 × Σ_{a0<b0<c0} f) = 6 × Σ_{i0<j0<k0,a0<b0<c0} f` (occ ×1,
 //! vir ×6 from ranging the full axis) — so the correct final divisor is 6,
-//! NOT 36. This was caught by (and is now proven by) the direct
-//! dense-vs-streaming regression test — an earlier draft used /36 and was
-//! off by exactly 6× until this was fixed.
+//! NOT 36. The direct
+//! dense-vs-streaming regression test proves it: a divisor of 36 is off by
+//! exactly 6×.
 //!
 //! Peak per-triple footprint is a handful of `[2nv,2nv,2nv]` f64 buffers
 //! (`raw_w`, `raw_v`, `w_block`, `v_block`, `d_block`, one scratch) — see
-//! `peak_triple_block_bytes` and the updated size guard below, which now
+//! `peak_triple_block_bytes` and the size guard below, which
 //! bounds that per-triple footprint (plus the O(no·nv³)-class precomputed
-//! intermediates) instead of the old O((no2·nv2)³) dense ceiling.
+//! intermediates), not an O((no2·nv2)³) dense ceiling.
 
 use super::{CcConfig, CcResult};
 use ferric_core::mol::Molecule;
@@ -144,8 +144,8 @@ fn peak_triple_block_bytes(nv2: usize) -> usize {
 /// Bytes held by the PRECOMPUTED spin-orbital integral blocks that live for the
 /// whole triples loop, plus the largest transient live while they are built.
 ///
-/// These are what the old guard missed. It checked only
-/// [`peak_triple_block_bytes`] — the per-triple working set — while `bcei` is
+/// A guard checking only
+/// [`peak_triple_block_bytes`] — the per-triple working set — misses these, while `bcei` is
 /// allocated ~25 lines later at `(2nv)³·(2no)`, i.e.
 ///
 /// ```text
@@ -537,7 +537,7 @@ pub fn ccsd_t(
     let b_vo = transpose_b(&b_ov);
 
     // --- Spin-orbital integral blocks needed by (T) — same construction as
-    // the old dense path, still O(no·nv³)-class, not O((no·nv)³). ---
+    // a dense path, still O(no·nv³)-class, not O((no·nv)³). ---
     // <bc||ei> (VVVO) indexed [b,c,e,i]: dir (be|ci)=b_vv,b_vo ; exc (bi|ce)=b_vo,b_vv
     let bcei: ArrayD<f64> = {
         let d: ArrayD<f64> = einsum!("Pbe,Pci->beci", &b_vv, &b_vo);

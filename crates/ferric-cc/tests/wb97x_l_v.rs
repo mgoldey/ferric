@@ -268,7 +268,7 @@ fn lambda_enters_the_amplitudes_and_zero_recovers_the_hybrid() {
         lambda * lambda
     );
 
-    // With the ladder the dependence is no longer a pure power, but it must stay
+    // With the ladder the dependence is not a pure power, but it must stay
     // near-quadratic and far from linear.
     let hh_ratio = at(lambda, LadderVariant::Hh).e_c_scaled / at(1.0, LadderVariant::Hh).e_c_scaled;
     eprintln!("LinLCCD(hh): E({lambda})/E(1) = {hh_ratio:.6}");
@@ -507,8 +507,8 @@ fn open_shell_end_to_end_via_semicanonicalization() {
 /// energies come from the KS Fock the functional is defined against, not from an HF Fock
 /// build that would hand back HF-like eigenvalues.
 ///
-/// This test could not be written until the DIIS subspace bug was fixed -- ROKS simply
-/// never converged. MEASURED after the fix: 11 iterations, and the result is identical
+/// This test needs a correct DIIS subspace -- ROKS otherwise does not
+/// converge. MEASURED: 11 iterations, and the result is identical
 /// with and without MOM (`mom_after_iter` 0 vs 3), i.e. a single stable solution rather
 /// than the flip-flop that still afflicts ROKS/PBE (see
 /// `ferric-scf/tests/roks_occupation_flip.rs`).

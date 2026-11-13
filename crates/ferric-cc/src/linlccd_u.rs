@@ -95,19 +95,17 @@ pub fn u_linlccd(
 
     // Fail-fast size guard, expressed as a [`MemoryPlan`].
     //
-    // # Why this changed shape
+    // # What the plan charges beyond a bare `2·no2²·nv2²`
     //
-    // The old estimate was a bare `2·no2²·nv2²` and omitted two things.
-    //
-    // 1. `eri3_ao` (`naux·nbas²`) was never charged, although it is live across
-    //    every `transform_3center_ov` below — the explicit `drop(eri3_ao)`
-    //    further down exists because of exactly that. The sibling `ccsd.rs`
-    //    guard charges the same term, so this was a straight inconsistency.
+    // 1. `eri3_ao` (`naux·nbas²`), which is live across every
+    //    `transform_3center_ov` below — the explicit `drop(eri3_ao)` further
+    //    down exists because of exactly that. The sibling `ccsd.rs` guard
+    //    charges the same term.
     // 2. The unrestricted path builds THREE spin blocks (`g_aa`, `g_ab`,
     //    `g_bb`) co-resident before `u_asym_*` folds them into one interleaved
     //    tensor, which the restricted sibling does not. Those spatial blocks
     //    are individually ~1/16 of the interleaved output, but three of them
-    //    plus the output is a real transient peak the old figure never saw.
+    //    plus the output is a real transient peak a bare figure never sees.
     //
     // The variant conditioning matches the allocation sites exactly: OOOO is
     // built only for Hh/Full, VVVV only for Full. Charging a block that is

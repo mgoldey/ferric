@@ -156,12 +156,11 @@ pub fn linlccd(
     // expresses that by only reserving a block when `variant.needs_*()` says it
     // is formed.
     //
-    // Second, the old estimate omitted `eri3_ao` (`naux·nbas²`) entirely. That
+    // Second, a bare estimate omits `eri3_ao` (`naux·nbas²`). That
     // tensor is unambiguously live across every MO-block build here — the
     // explicit `drop(eri3_ao)` further below exists precisely because it stays
     // resident until then, and each conditional `build_b` reads it. The sibling
-    // `ccsd.rs` guard charges the same term, so this was a straight
-    // inconsistency. Also newly charged: the full `v_oovv.clone()` into
+    // `ccsd.rs` guard charges the same term. Also charged: the full `v_oovv.clone()` into
     // `oovv_t`, and the `d`/`t`/`r` amplitude working set.
     //
     // `eri3_ao` is TRANSIENT (dead after `drop(eri3_ao)`, before the amplitude

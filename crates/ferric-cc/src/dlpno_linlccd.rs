@@ -1212,9 +1212,8 @@ mod tests {
     ///    why writing a minus in `so_t2_from_pno` was a bug rather than a
     ///    convention difference.
     ///
-    /// An earlier version of this module asserted (3) was a sign FLIP. It is not,
-    /// and the measured consequence was every mirror block at twice its magnitude
-    /// with the wrong sign.
+    /// (3) is not a sign FLIP: asserting one puts every mirror block at twice its
+    /// magnitude with the wrong sign.
     #[test]
     fn stage1_mirror_convention_is_derived() {
         let s = water("sto-3g");

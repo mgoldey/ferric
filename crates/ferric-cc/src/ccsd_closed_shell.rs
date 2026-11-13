@@ -1176,10 +1176,10 @@ mod tests {
 
     /// The `ovvv` block AND its clone must be charged by the pre-flight plan.
     ///
-    /// The regression: the old guard charged `3·nv⁴ + naux·nbas²` and nothing
-    /// else, so `ovvv` (`no·nv³`) — built below the guard and immediately
-    /// cloned into `ovvv_t`, both live for the whole iteration loop — was
-    /// entirely absent from the estimate. At `no/nv = 1/8` each copy is
+    /// The regression: a guard charging `3·nv⁴ + naux·nbas²` and nothing
+    /// else would omit `ovvv` (`no·nv³`) — built below the guard and immediately
+    /// cloned into `ovvv_t`, both live for the whole iteration loop — entirely
+    /// from the estimate. At `no/nv = 1/8` each copy is
     /// `nv⁴/8`, the same order as the `nv⁴` term the guard was built around.
     ///
     /// The test does NOT re-derive the plan's arithmetic — that would
@@ -1187,8 +1187,8 @@ mod tests {
     /// Instead it probes the guard with a budget of exactly `2·no·nv³·8`, a
     /// size computed from the INPUT dimensions: since the driver allocates
     /// those two copies PLUS `vvvv`, the `b_*` blocks and the amplitudes, a
-    /// correct guard must refuse that budget. The old guard, which charged
-    /// neither copy, accepted it.
+    /// correct guard must refuse that budget. A guard charging
+    /// neither copy would accept it.
     #[test]
     fn cs_ccsd_guard_charges_ovvv_and_its_clone() {
         let (mol, obs, dfbs, op, rhf) = setup(

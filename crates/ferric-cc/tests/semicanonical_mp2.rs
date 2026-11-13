@@ -34,7 +34,7 @@ fn legacy_effective_fock_view(
 /// MEASURE what semi-canonicalization is worth to a real correlated method, and that
 /// `u_ri_mp2` applies it to a ROHF reference itself.
 ///
-/// Before the fix `u_ri_mp2` fed a ROHF reference the α orbitals and the EFFECTIVE
+/// Without semi-canonicalization `u_ri_mp2` feeds a ROHF reference the α orbitals and the EFFECTIVE
 /// Roothaan Fock's eigenvalues for BOTH spins (reconstructed here by
 /// `legacy_effective_fock_view`). Those belong to neither spin's Fock operator.
 ///

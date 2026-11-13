@@ -1,9 +1,9 @@
 //! MWE: the CCSD guard must charge BOTH co-resident `(2nv)^4` blocks.
 //!
-//! # The defect
+//! # What a flat charge gets wrong
 //!
-//! `ccsd.rs` gated on a flat `3*(2nv)^4 + eri3_ao`. Two things were wrong with
-//! it, in opposite directions, and they partly cancelled.
+//! A flat `3*(2nv)^4 + eri3_ao` gate is wrong in two opposite directions that
+//! partly cancel.
 //!
 //! **The `3x` was an over-count.** It was meant for the VVVV build:
 //!
@@ -22,19 +22,18 @@
 //! the entire amplitude loop; `wabef` is a SECOND `(2nv)^4` buffer, rebuilt
 //! every iteration by cloning `vvvv` and still live when the ladder term
 //! `einsum!("ijef,abef->ijab", &tau_t, &wabef_t)` reads it. The sustained peak
-//! is `2*(2nv)^4`, which the old formula never named.
+//! is `2*(2nv)^4`, which the flat formula never names.
 //!
 //! ```text
 //!   benzene/aug-cc-pVTZ-scale, nv = 393 spatial -> nv2 = 786
-//!     old charge         3*(2nv)^4          ~9160 GB
+//!     flat charge        3*(2nv)^4          ~9160 GB
 //!     honest build       2*nv^4 + (2nv)^4   ~3435 GB
 //!     sustained peak     2*(2nv)^4          ~6107 GB   <- what actually must fit
 //! ```
 //!
-//! The old number exceeded the true peak only by coincidence of the unrelated
-//! build-stage bug. Correcting the build over-count WITHOUT adding the
-//! iteration term would have turned a lucky over-estimate into a real
-//! under-charge.
+//! The flat number exceeds the true peak only by coincidence of the build-stage
+//! over-count. Correcting the build over-count WITHOUT adding the iteration
+//! term would turn a lucky over-estimate into a real under-charge.
 //!
 //! # Why this tests the plan and not a CCSD run
 //!
@@ -117,8 +116,8 @@ fn the_charge_covers_both_co_resident_vvvv_blocks() {
 ///
 /// "An over-estimating guard is also a bug." The build blocks `d`/`e` are
 /// spatial `nv^4`, so the honest total is close to `2*(2nv)^4` plus small
-/// terms — comfortably under the old `3*(2nv)^4`. A plan that still demanded
-/// the old figure would refuse jobs that fit in ~2/3 the memory.
+/// terms — comfortably under the flat `3*(2nv)^4`. A plan that demanded
+/// the flat figure would refuse jobs that fit in ~2/3 the memory.
 #[test]
 fn the_charge_does_not_keep_the_old_three_times_over_count() {
     let threshold = smallest_accepted_budget(6);
@@ -135,7 +134,7 @@ fn the_charge_does_not_keep_the_old_three_times_over_count() {
 ///
 /// Pins the direction CONTRACT 2 bounds. Two `nv^4` blocks are 1/8 of one
 /// `(2nv)^4` block, so the total must sit between two and three blocks — above
-/// the two resident ones, below the old over-count. A plan that charged `d`/`e`
+/// the two resident ones, below the flat over-count. A plan that charged `d`/`e`
 /// at spin-orbital size would land at or past 4x.
 #[test]
 fn the_total_sits_between_two_and_three_blocks() {

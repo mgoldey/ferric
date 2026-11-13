@@ -48,7 +48,7 @@
 //! * If a residual term is wrong or missing (a dropped ring or ladder, a wrong
 //!   permutation factor, a (T) multiplicity weight): the energy misses by
 //!   1e-5 to 1e-2 Ha, which is 3+ orders above the bar. A term that is exactly
-//!   zero for H2 (the old test system) is not zero here.
+//!   zero for H2 (a smaller test system) is not zero here.
 //! * If the HARNESS is broken instead: a geometry/unit slip fails the nuclear
 //!   repulsion check; a basis slip fails the AO count or the RHF energy check;
 //!   a wrong aux basis or an exact-vs-DF mix-up shows up as the DF error,
@@ -60,8 +60,8 @@
 //! # TOLERANCES
 //!
 //! Each bar is set from the measured maximum recorded on its const. The
-//! spin-orbital CCSD bar was unreachable before the ccsd.rs fix on this branch
-//! (it missed by 6.6e-6..8.9e-5; see the commit message).
+//! spin-orbital CCSD bar is reachable only with the ccsd.rs taus/F_ae/F_mi
+//! terms correct (a defect there misses it by 6.6e-6..8.9e-5).
 //!
 //! # NEGATIVE CONTROLS / MUTATIONS (asserted inside the tests)
 //!

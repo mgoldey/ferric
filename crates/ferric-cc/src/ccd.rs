@@ -82,7 +82,7 @@ pub fn ccd_spinorbital(
     // omission is not small: at `nbas=200`/`naux=800` it is 0.26 GB, and for a
     // small-virtual system it can dominate the VVVV term outright.
     //
-    // Also previously uncharged and now declared: the antisymmetrized spatial
+    // Also declared: the antisymmetrized spatial
     // blocks `v_oovv` (plus its full clone into `oovv_t`), `v_oooo` and
     // `v_ovvo`, and the `d` denominator — all resident for the whole
     // amplitude loop.
@@ -495,8 +495,8 @@ mod tests {
 
         // A budget of exactly `eri3_ao_bytes` cannot possibly hold `eri3_ao`
         // PLUS everything else this driver allocates, so a correct guard must
-        // refuse it. The old guard, which never charged `eri3_ao` at all,
-        // accepted it. One probe rather than a bisection: each probe is a full
+        // refuse it. A guard that never charges `eri3_ao`
+        // accepts it. One probe rather than a bisection: each probe is a full
         // CCD driver entry, so the cheap direct contradiction is preferred over
         // ~30 of them.
         assert!(

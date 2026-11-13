@@ -1,5 +1,5 @@
 //! Wall-clock check for the parallelized LinLCCD ladder matvec (the pp/hh
-//! per-pair GEMMs, formerly a serial loop re-run every CG iteration).
+//! per-pair GEMMs, parallel over pairs in every CG iteration).
 //! #[ignore]d — RELEASE, quiet box:
 //!   RAYON_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 cargo test -p ferric-cc \
 //!     --release --test linlccd_pp_parallel_bench -- --ignored --nocapture

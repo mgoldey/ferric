@@ -3,12 +3,11 @@
 //!
 //! # The defect class
 //!
-//! Every method in this crate used to carry a hand-written pre-flight byte sum:
-//! a SECOND implementation of its own allocation shapes, kept in sync with the
-//! allocator by hand. They drift silently until an OOM. `ferric-core`'s
-//! `MemoryPlan` exists to retire that class by making the estimate and the
-//! allocation one expression; these tests pin the shapes the old hand-written
-//! sums had already drifted past.
+//! A hand-written pre-flight byte sum is a SECOND implementation of a method's
+//! own allocation shapes, kept in sync with the allocator by hand. It drifts
+//! silently until an OOM. `ferric-core`'s `MemoryPlan` retires that class by
+//! making the estimate and the allocation one expression; these tests pin the
+//! shapes hand-written sums drift past.
 //!
 //! Two concrete drifts covered here:
 //!
@@ -27,13 +26,13 @@
 //! a budget computed from the INPUT dimensions (`naux·nbas²·8` is a property of
 //! the basis sets, not of the plan) and asserts the guard's verdict. Since the
 //! driver allocates `eri3_ao` PLUS the MO blocks PLUS the amplitudes, a budget
-//! of exactly `eri3_ao`'s own size must be refused by any correct guard — and
-//! was ACCEPTED by the old ones.
+//! of exactly `eri3_ao`'s own size must be refused by any correct guard — a
+//! hand-written sum that omits `eri3_ao` ACCEPTS it.
 //!
 //! # Over-counting is also a bug
 //!
-//! An over-estimating guard refuses jobs that would have fit. This pass ADDED
-//! terms to several estimates, so every guard tested here also gets an
+//! An over-estimating guard refuses jobs that would have fit. The plans carry
+//! many terms, so every guard tested here also gets an
 //! ample-budget case asserting both that the job runs and that the energy is
 //! bit-identical to the unbudgeted run: these are accounting changes only, and
 //! no numerical result may move.
@@ -105,8 +104,8 @@ fn refused(s: &Setup, variant: LadderVariant, budget: usize) -> bool {
 }
 
 /// A budget of exactly `eri3_ao`'s size leaves nothing for the MO blocks or the
-/// amplitudes, so every variant must refuse it. The old guard charged neither
-/// `eri3_ao` nor the `v_oovv` clone, and accepted it.
+/// amplitudes, so every variant must refuse it. A guard charging neither
+/// `eri3_ao` nor the `v_oovv` clone would accept it.
 #[test]
 fn linlccd_guard_charges_eri3_ao_for_every_variant() {
     // A large aux basis makes eri3_ao the dominant term.
