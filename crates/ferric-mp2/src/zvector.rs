@@ -513,6 +513,12 @@ fn tt_block(t2: &[f64], i: usize, nocc: usize, nvir: usize) -> Array2<f64> {
 /// core is absent from Γ2), frozen-core ROWS are not and feed
 /// [`frozen_core_block`] and the core rows of `Xvo`.
 ///
+/// Both contractions run as GEMMs over fixed blocks of `IMAT_ROW_BLOCK` rows of
+/// `Imat` on the rayon pool: each block gathers its slab of `b_full` and
+/// multiplies it by `x_ov` (reshaped for the virtual columns, transposed once
+/// for the occupied columns). The block size is fixed, so the result does not
+/// depend on the number of workers. Oracle: `imat_gemm_matches_the_scalar_definition`.
+///
 /// Verified element-by-element against a brute-force conventional-Imat build (RI
 /// integrals + explicit 4-index `Γ2_AO` contraction) in
 /// `test_ri_imat_vs_conventional`.
@@ -521,50 +527,101 @@ pub(crate) fn build_imat_ri(
     b_full: &Array3<f64>,
     orb: &OrbitalSpace,
 ) -> Array2<f64> {
+    let OrbitalSpace { nocc, nvir, .. } = *orb;
+    use ndarray::Axis;
+    use rayon::prelude::*;
+    let naux = b_full.shape()[0];
+    let nmo = b_full.shape()[1];
+    let mut imat = Array2::zeros((nmo, nmo));
+    let x_std = x_ov.as_standard_layout();
+    let Some(xs) = x_std.as_slice() else {
+        unreachable!("a standard-layout array is contiguous");
+    };
+
+    // Occupied columns contract over (P, a), virtual columns over (P, i).
+    // The virtual operand `x_ov[(P,i), a]` is `x_ov` itself reshaped; the
+    // occupied operand `x_ov[(P,a), i]` is its (i, a) transpose, built once.
+    let a_vir = ndarray::ArrayView2::from_shape((naux * nocc, nvir), xs)
+        .expect("x_ov is (naux, nocc*nvir) and contiguous");
+    let a_occ = imat_occ_operand(xs, naux, nocc, nvir);
+
+    // Row blocks of `Imat` are independent. The block size is fixed, so the
+    // result does not depend on the number of workers.
+    imat.axis_chunks_iter_mut(Axis(0), IMAT_ROW_BLOCK)
+        .into_par_iter()
+        .enumerate()
+        .for_each(|(blk, rows)| {
+            imat_fill_rows(rows, blk * IMAT_ROW_BLOCK, b_full, &a_occ, &a_vir, orb);
+        });
+
+    imat
+}
+
+/// `x_ov[(P,a), i] = x_ov[P, i*nvir + a]` as a `(naux·nvir, nocc)` matrix,
+/// from the contiguous `(naux, nocc·nvir)` data `xs`.
+fn imat_occ_operand(xs: &[f64], naux: usize, nocc: usize, nvir: usize) -> Array2<f64> {
+    let nov = nocc * nvir;
+    let mut a_occ = Array2::<f64>::zeros((naux * nvir, nocc));
+    for p in 0..naux {
+        for i in 0..nocc {
+            for a in 0..nvir {
+                a_occ[(p * nvir + a, i)] = xs[p * nov + i * nvir + a];
+            }
+        }
+    }
+    a_occ
+}
+
+/// `g[qq, P·len + k] = b_full[P, q0 + qq, lo + k]` for `qq < nq`: the slab of
+/// `b_full` one row block of `Imat` contracts against.
+fn imat_gather_rows(
+    b_full: &Array3<f64>,
+    q0: usize,
+    nq: usize,
+    lo: usize,
+    len: usize,
+) -> Array2<f64> {
+    use ndarray::s;
+    let naux = b_full.shape()[0];
+    let mut g = Array2::<f64>::zeros((nq, naux * len));
+    for qq in 0..nq {
+        for p in 0..naux {
+            g.slice_mut(s![qq, p * len..(p + 1) * len])
+                .assign(&b_full.slice(s![p, q0 + qq, lo..lo + len]));
+        }
+    }
+    g
+}
+
+/// Fill rows `q0..q0 + rows.nrows()` of `Imat`: one GEMM per column range.
+fn imat_fill_rows(
+    mut rows: ndarray::ArrayViewMut2<f64>,
+    q0: usize,
+    b_full: &Array3<f64>,
+    a_occ: &Array2<f64>,
+    a_vir: &ndarray::ArrayView2<f64>,
+    orb: &OrbitalSpace,
+) {
+    use ndarray::s;
     let OrbitalSpace {
         nocc,
         nvir,
         nocc_total,
         first_occ,
     } = *orb;
-    let naux = b_full.shape()[0];
-    let nmo = b_full.shape()[1];
-    let mut imat = Array2::zeros((nmo, nmo));
-
+    let nq = rows.nrows();
     // Imat[q, i] = -2 Σ_{P,a} x_ov[P,ia] b_full[P, q, a]
-    for i in 0..nocc {
-        let i_col = first_occ + i;
-        for q in 0..nmo {
-            let mut sum = 0.0;
-            for a in 0..nvir {
-                let a_mo = nocc_total + a;
-                let ia = i * nvir + a;
-                for p in 0..naux {
-                    sum += x_ov[(p, ia)] * b_full[(p, q, a_mo)];
-                }
-            }
-            imat[(q, i_col)] = -2.0 * sum;
-        }
-    }
-
+    let occ_cols = imat_gather_rows(b_full, q0, nq, nocc_total, nvir).dot(a_occ);
+    rows.slice_mut(s![.., first_occ..first_occ + nocc])
+        .assign(&(occ_cols * -2.0));
     // Imat[q, a] = -2 Σ_{P,i} x_ov[P,ia] b_full[P, q, i]
-    for a in 0..nvir {
-        let a_col = nocc_total + a;
-        for q in 0..nmo {
-            let mut sum = 0.0;
-            for i in 0..nocc {
-                let i_mo = first_occ + i;
-                let ia = i * nvir + a;
-                for p in 0..naux {
-                    sum += x_ov[(p, ia)] * b_full[(p, q, i_mo)];
-                }
-            }
-            imat[(q, a_col)] = -2.0 * sum;
-        }
-    }
-
-    imat
+    let vir_cols = imat_gather_rows(b_full, q0, nq, first_occ, nocc).dot(a_vir);
+    rows.slice_mut(s![.., nocc_total..nocc_total + nvir])
+        .assign(&(vir_cols * -2.0));
 }
+
+/// Rows of `Imat` per pooled GEMM block in [`build_imat_ri`].
+const IMAT_ROW_BLOCK: usize = 8;
 
 /// Compute the A*z product via J/K builds in the AO basis.
 ///
@@ -856,6 +913,120 @@ mod tests {
             );
         }
     }
+    /// Deterministic uniform values in `[-0.5, 0.5)`.
+    fn xorshift_stream(seed: u64) -> impl FnMut() -> f64 {
+        let mut state = seed;
+        move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state >> 11) as f64 / (1u64 << 53) as f64 - 0.5
+        }
+    }
+
+    /// The scalar definition of `Imat` (the pre-GEMM loops), with
+    /// `Σ|terms|` per element, for [`build_imat_ri`].
+    fn imat_scalar_definition(
+        x_ov: &Array2<f64>,
+        b_full: &Array3<f64>,
+        orb: &OrbitalSpace,
+    ) -> (Array2<f64>, Array2<f64>) {
+        let OrbitalSpace {
+            nocc,
+            nvir,
+            nocc_total,
+            first_occ,
+        } = *orb;
+        let (naux, nmo) = (b_full.shape()[0], b_full.shape()[1]);
+        let mut imat = Array2::zeros((nmo, nmo));
+        let mut abs_sum = Array2::zeros((nmo, nmo));
+        for i in 0..nocc {
+            for q in 0..nmo {
+                let (mut sum, mut abs) = (0.0, 0.0);
+                for a in 0..nvir {
+                    for p in 0..naux {
+                        let term = x_ov[(p, i * nvir + a)] * b_full[(p, q, nocc_total + a)];
+                        sum += term;
+                        abs += term.abs();
+                    }
+                }
+                imat[(q, first_occ + i)] = -2.0 * sum;
+                abs_sum[(q, first_occ + i)] = 2.0 * abs;
+            }
+        }
+        for a in 0..nvir {
+            for q in 0..nmo {
+                let (mut sum, mut abs) = (0.0, 0.0);
+                for i in 0..nocc {
+                    for p in 0..naux {
+                        let term = x_ov[(p, i * nvir + a)] * b_full[(p, q, first_occ + i)];
+                        sum += term;
+                        abs += term.abs();
+                    }
+                }
+                imat[(q, nocc_total + a)] = -2.0 * sum;
+                abs_sum[(q, nocc_total + a)] = 2.0 * abs;
+            }
+        }
+        (imat, abs_sum)
+    }
+
+    /// [`build_imat_ri`] (pooled row-block GEMMs) against the scalar
+    /// definition on unsymmetric random inputs, with a frozen core (the
+    /// frozen-core COLUMNS must stay exactly zero) and an `nmo` that is not a
+    /// multiple of the row block, plus bitwise equality across pool sizes.
+    ///
+    /// Bar, per element: both codes sum the same products in different orders
+    /// over `n = naux·nvir` (occupied columns) or `n = naux·nocc` (virtual
+    /// columns) terms, each within `γ_n·Σ|terms|` of exact (Higham eq. 3.5),
+    /// so they differ by at most `2γ_n·Σ|terms|`, below `(n + 2)·eps·Σ|terms|`
+    /// while `n·u < 1/2`. The `-2` scaling is exact. `abs_sum` carries the
+    /// factor 2 already.
+    #[test]
+    fn imat_gemm_matches_the_scalar_definition() {
+        let (naux, nocc, nvir, first_occ) = (9, 4, 7, 2);
+        let nocc_total = first_occ + nocc;
+        let nmo = nocc_total + nvir;
+        let orb = OrbitalSpace::new(nocc, nvir, nocc_total, first_occ);
+        let mut next = xorshift_stream(0x9e37_79b9_7f4a_7c15);
+        let x_ov = Array2::from_shape_fn((naux, nocc * nvir), |_| next());
+        let b_full = Array3::from_shape_fn((naux, nmo, nmo), |_| next());
+
+        let (want, abs_sum) = imat_scalar_definition(&x_ov, &b_full, &orb);
+        let got = build_imat_ri(&x_ov, &b_full, &orb);
+        let n_max = naux * nvir.max(nocc);
+        let bar_scale = (n_max as f64 + 2.0) * f64::EPSILON;
+        for ((g, w), s) in got.iter().zip(want.iter()).zip(abs_sum.iter()) {
+            assert!(
+                (g - w).abs() <= bar_scale * s,
+                "Imat {g} vs scalar {w}: |diff| {} > bar {}",
+                (g - w).abs(),
+                bar_scale * s
+            );
+        }
+        for q in 0..nmo {
+            for k in 0..first_occ {
+                assert_eq!(got[(q, k)], 0.0, "frozen-core column {k} must stay zero");
+            }
+        }
+        assert!(got.iter().any(|v| *v != 0.0));
+
+        for threads in [1, 2, 5] {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap();
+            let on_pool = pool.install(|| build_imat_ri(&x_ov, &b_full, &orb));
+            assert!(
+                on_pool
+                    .iter()
+                    .zip(got.iter())
+                    .all(|(a, b)| a.to_bits() == b.to_bits()),
+                "Imat differs bitwise on a {threads}-thread pool"
+            );
+        }
+    }
+
     use ferric_core::basis;
     use ferric_core::mol::Molecule;
     use ferric_integrals::basis_bridge::PreparedBasis;
