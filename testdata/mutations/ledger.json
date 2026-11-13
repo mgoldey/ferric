@@ -134,6 +134,54 @@
         "baseline_run": true,
         "date": "2026-11-11"
       }
+    },
+    {
+      "anchor": "MP3",
+      "patch": "testdata/mutations/mp3.patch",
+      "mutation": "mp3.rs: the hole-hole ladder term of E(3) is weighted 1/4 instead of 1/8 (the ij and kl pair permutations double-counted).",
+      "evidence": "crates/ferric-cc/tests/validation_cc.rs",
+      "test": "mp3_matches_df_reference",
+      "result": null
+    },
+    {
+      "anchor": "CCSD",
+      "patch": "testdata/mutations/ccsd.patch",
+      "mutation": "ccsd_closed_shell.rs: the hole-hole ladder of the T2 residual contracts Woooo with t2 instead of tau = t2 + t1 t1 (the T1 coupling of the ladder dropped).",
+      "evidence": "crates/ferric-cc/tests/validation_cc.rs",
+      "test": "ccsd_spin_adapted_matches_df_reference",
+      "result": null
+    },
+    {
+      "anchor": "Attenuated RI-MP2",
+      "patch": "testdata/mutations/att-rimp2.patch",
+      "mutation": "attenuated.rs: the erfc 3-index integrals are fitted with the Coulomb metric instead of the erfc metric.",
+      "evidence": "crates/ferric-mp2/tests/validation_attenuated_mp2.rs",
+      "test": "attenuated_ri_mp2_h2o_vs_pyscf",
+      "result": null
+    },
+    {
+      "anchor": "SCS-MP2",
+      "patch": "testdata/mutations/scs-mp2.patch",
+      "mutation": "rimp2.rs: half of the same-spin exchange (ib|ja) is moved into the opposite-spin pair energy (E_OS + E_SS, and so RI-MP2, unchanged).",
+      "evidence": "crates/ferric-mp2/tests/validation_scs_mp2.rs",
+      "test": "scs_mp2_h2o_vs_numpy",
+      "result": null
+    },
+    {
+      "anchor": "Laplace RI-MP2",
+      "patch": "testdata/mutations/laplace-mp2.patch",
+      "mutation": "laplace.rs: each MO amplitude factor of the exchange term carries the full Laplace exponent exp(-t(e_a - e_i)) instead of its square root.",
+      "evidence": "crates/ferric-mp2/tests/validation_laplace_mp2.rs",
+      "test": "laplace_mp2_h2o_ccpvdz_vs_pyscf_dfmp2",
+      "result": null
+    },
+    {
+      "anchor": "PDEP-RPA",
+      "patch": "testdata/mutations/pdep-rpa.patch",
+      "mutation": "sternheimer.rs: the closed-shell chi0 scale factor uses the per-spin prefactor 2 instead of 4 (one spin channel dropped).",
+      "evidence": "crates/ferric-rpa/tests/validation_rpa_gradient.rs",
+      "test": "rpa_gradient_h2o_energy_vs_pyscf",
+      "result": null
     }
   ]
 }

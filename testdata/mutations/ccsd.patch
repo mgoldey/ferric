@@ -1,0 +1,13 @@
+diff --git a/crates/ferric-cc/src/ccsd_closed_shell.rs b/crates/ferric-cc/src/ccsd_closed_shell.rs
+index 81a3d87ab..67d93d50e 100644
+--- a/crates/ferric-cc/src/ccsd_closed_shell.rs
++++ b/crates/ferric-cc/src/ccsd_closed_shell.rs
+@@ -930,7 +930,7 @@ pub fn ccsd_closed_shell(
+             let tau = &t2 + &tau1;
+             let tau_t = lbl4(tau.clone(), [O, O, V, V]);
+             // + einsum('klij,klab->ijab', Woooo, tau): legal.
+-            let a1: ArrayD<f64> = einsum!("klij,klab->ijab", &woooo_t, &tau_t);
++            let a1: ArrayD<f64> = einsum!("klij,klab->ijab", &woooo_t, &t2_t);
+             r2 = &r2 + &a1;
+             // + einsum('abcd,ijcd->ijab', Wvvvv, tau): the pp ladder.
+             let a2 = ladder_term(wvvvv_t.as_ref(), route, &b_vv, &b_ov, &t1, &tau, &tau_t)?;

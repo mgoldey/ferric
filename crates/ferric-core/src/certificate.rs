@@ -27,8 +27,8 @@
 //!
 //! # Measured error and the validation envelope
 //!
-//! [`anchors::ENERGY_ANCHORS`] records the headline energy anchor of the
-//! SCF methods and RI-MP2: the stated agreement with an independent
+//! [`anchors::ENERGY_ANCHORS`] records the headline energy anchor of every
+//! Proven `method.kind`: the stated agreement with an independent
 //! reference from the Anchors table of the same page, the test that pins it,
 //! and the elements, basis sets and functionals that test covers.
 //! [`Certificate::with_energy_anchor`] fills `measured_error` from it and

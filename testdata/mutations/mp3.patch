@@ -1,0 +1,13 @@
+diff --git a/crates/ferric-mp2/src/mp3.rs b/crates/ferric-mp2/src/mp3.rs
+index 6a313a72a..877d6bd16 100644
+--- a/crates/ferric-mp2/src/mp3.rs
++++ b/crates/ferric-mp2/src/mp3.rs
+@@ -297,7 +297,7 @@ pub fn mp3_energy(
+         let oooo_t = Tensor::new(v_oooo, [Axis::O, Axis::O, Axis::O, Axis::O]);
+         let y: ArrayD<f64> = einsum!("klij,ijab->klab", &oooo_t, &t_t);
+         let y_t = Tensor::new(y, [Axis::O, Axis::O, Axis::V, Axis::V]);
+-        0.125 * einsum!("klab,klab->", &y_t, &t_t)
++        0.25 * einsum!("klab,klab->", &y_t, &t_t)
+     };
+ 
+     // e_ph = sum_{ijabkc} t[i,j,a,b] ovvo[k,b,c,j] t[i,k,a,c]; v_ovvo moved in.
