@@ -87,6 +87,11 @@ build = [
 ase = [
     "ase>=3.23",
 ]
+# ferric.qcschema needs nothing; QCElemental is only for building and
+# validating QCSchema models around it.
+qcschema = [
+    "qcelemental>=0.27",
+]
 
 [tool.ruff]
 # Matches the floor established in `requires-python` above (see that
