@@ -51277,7 +51277,7 @@
   },
   "crates/ferric-python/src/lib.rs::impl:PyUhfResult::from_scf": {
     "cc": 3.0,
-    "mi": 86.47402216829072
+    "mi": 80.3
   },
   "crates/ferric-python/src/lib.rs::impl:PyUhfResult::from_scf::<anonymous>": {
     "cc": 1.0,

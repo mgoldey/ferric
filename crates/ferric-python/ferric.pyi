@@ -225,6 +225,14 @@ class Molecule:
         """Element symbols in atom order."""
         ...
 
+    def atomic_numbers(self) -> list[int]:
+        """Atomic numbers in atom order (true Z, not reduced by ECP cores)."""
+        ...
+
+    def is_ghost(self) -> list[bool]:
+        """Per-atom ghost (basis-only, zero-charge) flags, in atom order."""
+        ...
+
 class QmmmSystem:
     """A QM/MM partition: full structure split into a QM region and fixed MM point charges.
 
@@ -506,6 +514,11 @@ class BasisSet:
     def shells(self, z: int) -> list[tuple[int, bool, list[float], list[float]]]:
         """Shells on element `z` in AO order: (l, pure, exponents [Bohr^-2],
         coefficients of normalised primitives). ValueError if `z` is absent."""
+        ...
+
+    def ecp_core_electrons(self, z: int) -> int:
+        """Core electrons this basis's ECP replaces on element `z` (0 without
+        an ECP for `z`)."""
         ...
 
     @staticmethod
@@ -1058,7 +1071,17 @@ class RhfResult:
         ...
 
 class UhfResult:
-    """Result of an open-shell UHF or ROHF calculation."""
+    """Result of an open-shell UHF or ROHF calculation.
+
+    Orbital layout, per spin s in (alpha, beta): ``mo_coefficients_s()`` is
+    (n_bf, n_mo) with column k = MO k in ascending ``orbital_energies_s()``
+    order, ``occupations_s()`` holds each column's occupation (0 or 1 for an
+    aufbau or MOM state) and ``density_s() == C_s @ diag(occ_s) @ C_s.T``
+    to the SCF's density convergence (UHF returns the last iteration's
+    density next to the orbitals of that iteration's Fock matrix).
+    ROHF has one MO set: the beta coefficients and energies are the alpha
+    ones (energies of the Roothaan effective Fock), and only the occupations
+    differ. AOs are in ferric's shell order (see ``AoIntegrals``)."""
 
     @property
     def precision(self) -> dict[str, Any]:
@@ -1134,7 +1157,23 @@ class UhfResult:
         ...
 
     def orbital_energies_beta(self) -> NDArray[np.float64]:
-        """Beta-spin orbital energies (Hartree), ascending."""
+        """Beta-spin orbital energies (Hartree), ascending; ROHF: the alpha ones."""
+        ...
+
+    def mo_coefficients_alpha(self) -> NDArray[np.float64]:
+        """Alpha MO coefficients (n_bf x n_mo), column k = alpha MO k."""
+        ...
+
+    def mo_coefficients_beta(self) -> NDArray[np.float64]:
+        """Beta MO coefficients (n_bf x n_mo); ROHF: the alpha matrix."""
+        ...
+
+    def occupations_alpha(self) -> NDArray[np.float64]:
+        """Alpha occupation per alpha MO column, diag(C^T S D_alpha S C)."""
+        ...
+
+    def occupations_beta(self) -> NDArray[np.float64]:
+        """Beta occupation per beta MO column, diag(C^T S D_beta S C)."""
         ...
 
     def gradient(self) -> NDArray[np.float64] | None:
