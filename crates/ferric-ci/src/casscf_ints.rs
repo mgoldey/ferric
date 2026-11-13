@@ -18,7 +18,7 @@
 //! [`CasScfIntegrals::Auto`], takes the dense route when its block fits in
 //! half of the memory budget and the direct route otherwise.
 
-use crate::casscf::dense_jk;
+use crate::casscf::{dense_jk, dense_jk_multi};
 use crate::integrals::{dense_ao_eri, transform_eri_mixed};
 use ferric_core::parallel::ParallelContext;
 use ferric_core::FerricError;
@@ -85,6 +85,22 @@ impl CasScfIntegrals {
                 // then `(m u|vw)` beside it, then the output.
                 direct_paaa_peak_elems(nbas, nmo, nact).max(a3),
             ),
+        }
+    }
+
+    /// Transient peak of one `(pq|vw)`, `(pu|qv)` build
+    /// ([`IntegralBackend::ppaa_papa`]) beside its two outputs.
+    pub(crate) fn hessian_transient_elems(&self, nbas: usize, nmo: usize, nact: usize) -> usize {
+        let out = nmo.saturating_mul(nmo).saturating_mul(nact * nact);
+        match self {
+            CasScfIntegrals::Dense | CasScfIntegrals::Auto => {
+                let n2 = nbas.saturating_mul(nbas);
+                // First two quarter outputs of the (pu|qv) transform.
+                nact.saturating_mul(n2.saturating_mul(nbas))
+                    .saturating_add(nact.saturating_mul(nmo).saturating_mul(n2))
+                    .saturating_add(out.saturating_mul(2))
+            }
+            CasScfIntegrals::Direct { .. } => direct_ppaa_papa_peak_elems(nbas, nmo, nact),
         }
     }
 
@@ -254,6 +270,112 @@ impl IntegralBackend {
             } => direct_paaa(prep, pool, &bounds.q, *thresh, c1, ca),
         }
     }
+
+    /// `J[D_i]`, `K[D_i]` (AO basis) for several symmetric densities. The
+    /// dense route reads its block once for all of them
+    /// ([`crate::casscf::dense_jk_multi`]); the direct route builds each.
+    pub(crate) fn jk_multi(
+        &self,
+        prep: &PreparedBasis,
+        ds: &[Array2<f64>],
+    ) -> Result<Vec<(Array2<f64>, Array2<f64>)>, FerricError> {
+        match self {
+            IntegralBackend::Dense { eri, nbas } => Ok(dense_jk_multi(eri, *nbas, ds)),
+            IntegralBackend::Direct { .. } => ds.iter().map(|d| self.jk(prep, d)).collect(),
+        }
+    }
+
+    /// `(pq|vw)` flat `[((p n + q) n_a + v) n_a + w]` and `(pu|qv)` flat
+    /// `[((p n_a + u) n + q) n_a + v]`, `p, q` over the `n` columns of `c`
+    /// and `u, v, w` over those of `ca`.
+    pub(crate) fn ppaa_papa<'c>(
+        &self,
+        prep: &PreparedBasis,
+        c: ArrayView2<'c, f64>,
+        ca: ArrayView2<'c, f64>,
+    ) -> Result<(Vec<f64>, Vec<f64>), FerricError> {
+        match self {
+            IntegralBackend::Dense { eri, nbas } => {
+                with_blas_threads(opt_in_blas_threads(), || {
+                    Ok((
+                        transform_eri_mixed(eri, *nbas, [c, c, ca, ca])?,
+                        transform_eri_mixed(eri, *nbas, [c, ca, c, ca])?,
+                    ))
+                })
+            }
+            IntegralBackend::Direct {
+                bounds,
+                pool,
+                thresh,
+            } => direct_ppaa_papa(prep, pool, &bounds.q, *thresh, c, ca),
+        }
+    }
+}
+
+/// The ket half of a direct transform: for one bra shell pair `(s1, s2)`,
+/// `T[ab, l, w] = Σ_s (ab|ls) Ca[s,w]` over every ket shell pair
+/// `(s3 >= s4)` with `q[s1,s2] q[s3,s4] >= thresh` (both ket orders when
+/// `s3 != s4`), flat `[(ab nbas + l) na + w]`, `ab = a n2 + b`.
+struct KetHalf<'a> {
+    prep: &'a PreparedBasis,
+    pool: &'a EnginePool,
+    q: &'a Array2<f64>,
+    thresh: f64,
+    /// Canonical shell pairs `(s3 >= s4)`.
+    pairs: &'a [(usize, usize)],
+    /// `Ca` row-major, `nbas x na`.
+    ca_rows: &'a [f64],
+    nbas: usize,
+    na: usize,
+}
+
+impl KetHalf<'_> {
+    fn transform(&self, s1: usize, s2: usize) -> Vec<f64> {
+        let (nbas, na, ca_rows) = (self.nbas, self.na, self.ca_rows);
+        let dims = self.prep.shell_dims();
+        let offs = self.prep.shell_offsets();
+        let n12 = dims[s1] * dims[s2];
+        let mut t = vec![0.0f64; n12 * nbas * na];
+        let q12 = self.q[(s1, s2)];
+        self.pool.with(|eng| {
+            for &(s3, s4) in self.pairs {
+                if q12 * self.q[(s3, s4)] < self.thresh {
+                    continue;
+                }
+                let Some(blk) = eng.compute_quartet(self.prep, s1, s2, s3, s4) else {
+                    continue;
+                };
+                let (n3, n4) = (dims[s3], dims[s4]);
+                let (o3, o4) = (offs[s3], offs[s4]);
+                for ab in 0..n12 {
+                    let tab = &mut t[ab * nbas * na..(ab + 1) * nbas * na];
+                    for c in 0..n3 {
+                        let la = o3 + c;
+                        for d in 0..n4 {
+                            let sg = o4 + d;
+                            let v = blk[(ab * n3 + c) * n4 + d];
+                            if v == 0.0 {
+                                continue;
+                            }
+                            let cs = &ca_rows[sg * na..(sg + 1) * na];
+                            let tl = &mut tab[la * na..(la + 1) * na];
+                            for (x, &cw) in tl.iter_mut().zip(cs) {
+                                *x += v * cw;
+                            }
+                            if s3 != s4 {
+                                let cl = &ca_rows[la * na..(la + 1) * na];
+                                let ts = &mut tab[sg * na..(sg + 1) * na];
+                                for (x, &cw) in ts.iter_mut().zip(cl) {
+                                    *x += v * cw;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        t
+    }
 }
 
 /// Peak elements of [`direct_paaa`] with `nmo` output rows: the per-pair
@@ -325,50 +447,21 @@ pub(crate) fn direct_paaa(
         .collect();
 
     // Pass 1: one (n1 n2) x na² block of X per canonical bra pair.
+    let ket = KetHalf {
+        prep,
+        pool,
+        q,
+        thresh,
+        pairs: &pairs,
+        ca_rows,
+        nbas,
+        na,
+    };
     let blocks: Vec<Vec<f64>> = pairs
         .par_iter()
         .map(|&(s1, s2)| {
-            let (n1, n2) = (dims[s1], dims[s2]);
-            let n12 = n1 * n2;
-            let mut t = vec![0.0f64; n12 * nbas * na];
-            let q12 = q[(s1, s2)];
-            pool.with(|eng| {
-                for &(s3, s4) in &pairs {
-                    if q12 * q[(s3, s4)] < thresh {
-                        continue;
-                    }
-                    let Some(blk) = eng.compute_quartet(prep, s1, s2, s3, s4) else {
-                        continue;
-                    };
-                    let (n3, n4) = (dims[s3], dims[s4]);
-                    let (o3, o4) = (offs[s3], offs[s4]);
-                    for ab in 0..n12 {
-                        let tab = &mut t[ab * nbas * na..(ab + 1) * nbas * na];
-                        for c in 0..n3 {
-                            let la = o3 + c;
-                            for d in 0..n4 {
-                                let sg = o4 + d;
-                                let v = blk[(ab * n3 + c) * n4 + d];
-                                if v == 0.0 {
-                                    continue;
-                                }
-                                let cs = &ca_rows[sg * na..(sg + 1) * na];
-                                let tl = &mut tab[la * na..(la + 1) * na];
-                                for (x, &cw) in tl.iter_mut().zip(cs) {
-                                    *x += v * cw;
-                                }
-                                if s3 != s4 {
-                                    let cl = &ca_rows[la * na..(la + 1) * na];
-                                    let ts = &mut tab[sg * na..(sg + 1) * na];
-                                    for (x, &cw) in ts.iter_mut().zip(cl) {
-                                        *x += v * cw;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            });
+            let n12 = dims[s1] * dims[s2];
+            let t = ket.transform(s1, s2);
             // X[ab, v, w] = Σ_l Ca[l, v] T[ab, l, w]: Caᵀ (na x nbas) · T_ab (nbas x na).
             let mut out = vec![0.0f64; n12 * na2];
             for ab in 0..n12 {
@@ -425,4 +518,165 @@ pub(crate) fn direct_paaa(
         ));
     }
     Ok(v)
+}
+
+/// Peak elements of [`direct_ppaa_papa`] with `nmo` output orbitals: the
+/// Coulomb and exchange half transforms (`nbas^2 n_a^2` each), then one of
+/// them beside its first-index transform (`nmo nbas n_a^2`), then the two
+/// outputs (`nmo^2 n_a^2` each).
+pub(crate) fn direct_ppaa_papa_peak_elems(nbas: usize, nmo: usize, nact: usize) -> usize {
+    let a2 = nact.saturating_mul(nact);
+    let x = nbas.saturating_mul(nbas).saturating_mul(a2);
+    let half = nmo.saturating_mul(nbas).saturating_mul(a2);
+    let out = nmo.saturating_mul(nmo).saturating_mul(a2);
+    x.saturating_mul(2)
+        .saturating_add(half)
+        .max(x.saturating_add(half).saturating_add(out.saturating_mul(2)))
+}
+
+/// Direct `(pq|vw)` and `(pu|qv)`, `p, q` over the columns of `c` and
+/// `u, v, w` over those of `ca`: flat `[((p n + q) n_a + v) n_a + w]` and
+/// `[((p n_a + u) n + q) n_a + v]`, `n = c.ncols()`.
+///
+/// Parallel over the first bra shell `s1`, every second bra shell `s2`
+/// (no bra symmetry, so each task owns the rows `m` of `s1` and the result
+/// does not depend on the thread count); per bra pair the ket half
+/// `T[ml, n, w] = Σ_s (ml|ns) Ca[s,w]` ([`KetHalf`]) feeds both
+///
+/// ```text
+///   X[m, l, v, w] = Σ_n Ca[n,v] T[ml, n, w]     (Coulomb: (pq|vw) = Σ C_mp C_lq X)
+///   Z[m, u, n, w] = Σ_l Ca[l,u] T[ml, n, w]     (exchange: (pu|qv) = Σ C_mp C_nq Z)
+/// ```
+///
+/// The screening bound is that of [`direct_paaa`]. Twice its shell-quartet
+/// work, once per macro iteration of the augmented-Hessian optimizer.
+pub(crate) fn direct_ppaa_papa(
+    prep: &PreparedBasis,
+    pool: &EnginePool,
+    q: &Array2<f64>,
+    thresh: f64,
+    c: ArrayView2<'_, f64>,
+    ca: ArrayView2<'_, f64>,
+) -> Result<(Vec<f64>, Vec<f64>), FerricError> {
+    let nbas = prep.nbasis();
+    let na = ca.ncols();
+    let nmo = c.ncols();
+    if ca.nrows() != nbas || c.nrows() != nbas {
+        return Err(FerricError::General(format!(
+            "CASSCF direct (pq|vw): coefficient rows {} / {} != nbas {nbas}",
+            c.nrows(),
+            ca.nrows()
+        )));
+    }
+    if na == 0 || nmo == 0 {
+        return Ok((Vec::new(), Vec::new()));
+    }
+    let na2 = na * na;
+    let nsh = prep.nshells();
+    let dims = prep.shell_dims();
+    let offs = prep.shell_offsets();
+    let ca_std = ca.as_standard_layout().into_owned();
+    let ca_rows = ca_std
+        .as_slice()
+        .ok_or_else(|| FerricError::General("CASSCF direct (pq|vw): Ca layout".to_string()))?;
+    let pairs: Vec<(usize, usize)> = (0..nsh)
+        .flat_map(|s1| (0..=s1).map(move |s2| (s1, s2)))
+        .collect();
+    let ket = KetHalf {
+        prep,
+        pool,
+        q,
+        thresh,
+        pairs: &pairs,
+        ca_rows,
+        nbas,
+        na,
+    };
+    let row = nbas * na2;
+    // Per s1: X rows [a, l, vw] and Z rows [a, u, n w], a over the functions of s1.
+    let rows: Vec<(Vec<f64>, Vec<f64>)> = (0..nsh)
+        .into_par_iter()
+        .map(|s1| {
+            let n1 = dims[s1];
+            let mut x = vec![0.0f64; n1 * row];
+            let mut z = vec![0.0f64; n1 * row];
+            for s2 in 0..nsh {
+                let n2 = dims[s2];
+                let o2 = offs[s2];
+                let t = ket.transform(s1, s2);
+                let ca2 = ca_std.slice(ndarray::s![o2..o2 + n2, ..]);
+                for a in 0..n1 {
+                    for b in 0..n2 {
+                        let ab = a * n2 + b;
+                        let tab = ArrayView2::from_shape(
+                            (nbas, na),
+                            &t[ab * nbas * na..(ab + 1) * nbas * na],
+                        )
+                        .expect("T block shape is (nbas, na) by construction");
+                        let xab = ca_std.t().dot(&tab);
+                        let l = o2 + b;
+                        let dst = &mut x[a * row + l * na2..a * row + (l + 1) * na2];
+                        for (d, s) in dst.iter_mut().zip(xab.iter()) {
+                            *d = *s;
+                        }
+                    }
+                    // Z[a, u, (n w)] += Σ_b Ca[o2 + b, u] T[(a b), (n w)].
+                    let ta = ArrayView2::from_shape(
+                        (n2, nbas * na),
+                        &t[a * n2 * nbas * na..(a + 1) * n2 * nbas * na],
+                    )
+                    .expect("T rows of one bra function are (n2, nbas na) by construction");
+                    let za = ca2.t().dot(&ta);
+                    for (d, s) in z[a * row..(a + 1) * row].iter_mut().zip(za.iter()) {
+                        *d += *s;
+                    }
+                }
+            }
+            (x, z)
+        })
+        .collect();
+    let mut x = Vec::with_capacity(nbas * row);
+    let mut z = Vec::with_capacity(nbas * row);
+    for (xr, zr) in rows {
+        x.extend_from_slice(&xr);
+        z.extend_from_slice(&zr);
+    }
+    let ppaa = two_index_transform(&x, nbas, c, 1, na2)?;
+    drop(x);
+    let papa = two_index_transform(&z, nbas, c, na, na)?;
+    Ok((ppaa, papa))
+}
+
+/// `out[p, i, q, j] = Σ_{m,n} C[m,p] C[n,q] y[m, i, n, j]` for a flat
+/// `y[m, i, n, j]` with `i < ni`, `j < nj`, `m, n < nbas`: one GEMM over `m`,
+/// then one GEMM over `n` per `(p, i)` in parallel.
+fn two_index_transform(
+    y: &[f64],
+    nbas: usize,
+    c: ArrayView2<'_, f64>,
+    ni: usize,
+    nj: usize,
+) -> Result<Vec<f64>, FerricError> {
+    let nmo = c.ncols();
+    let ym = ArrayView2::from_shape((nbas, ni * nbas * nj), y)
+        .map_err(|e| FerricError::General(format!("CASSCF two-index transform shape: {e}")))?;
+    let ct = c.t().as_standard_layout().into_owned();
+    let first = with_blas_threads(opt_in_blas_threads(), || ct.dot(&ym));
+    let first = first.as_standard_layout().into_owned();
+    let first = first
+        .as_slice()
+        .ok_or_else(|| FerricError::General("CASSCF two-index transform layout".to_string()))?;
+    let blk = nbas * nj;
+    let mut out = vec![0.0f64; nmo * ni * nmo * nj];
+    out.par_chunks_mut(nmo * nj)
+        .zip(first.par_chunks(blk))
+        .for_each(|(o, f)| {
+            let fm = ArrayView2::from_shape((nbas, nj), f)
+                .expect("one (p, i) slab is (nbas, nj) by construction");
+            let r = ct.dot(&fm);
+            for (d, s) in o.iter_mut().zip(r.iter()) {
+                *d = *s;
+            }
+        });
+    Ok(out)
 }

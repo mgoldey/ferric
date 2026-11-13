@@ -111,6 +111,23 @@ def test_open_shell_active_space():
     assert r.e_total > E_PROTO
 
 
+def test_ah_optimizer(res):
+    """casscf_optimizer="ah" reaches the same minimum (E_BAR, derived as
+    above; crates/ferric-ci/tests/casscf_newton.rs bounds AH vs BFGS by
+    1.1e-12 Ha) in fewer macro iterations; an unknown name raises."""
+    mol = ferric.Molecule.from_xyz_string(_H2O)
+    r = ferric.run_casscf(
+        mol, ferric.BasisSet.bundled("6-31g"), 4, (2, 2), casscf_optimizer="ah"
+    )
+    assert r.converged
+    assert abs(r.e_total - E_PROTO) < E_BAR
+    assert r.iterations < res.iterations
+    with pytest.raises(Exception, match="casscf_optimizer must be"):
+        ferric.run_casscf(
+            mol, ferric.BasisSet.bundled("6-31g"), 4, (2, 2), casscf_optimizer="x"
+        )
+
+
 def test_unconverged_ci_raises():
     """CAS(8,8) has 4900 determinants, above the dense-diagonalization fallback
     (ferric_ci::DENSE_SOLVE_MAX_DETS = 1024) that rescues smaller spaces, so one

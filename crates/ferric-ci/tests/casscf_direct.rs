@@ -43,11 +43,28 @@
 //!   |Δg| <= 4 (4 δF + 2 n_a δF + 2 n_a³ δP
 //!              + n_a max|F^I| δγ + n_a³ max|(pu|vw)| δΓ).
 //! ```
+//!
+//! # Orbital Hessian products
+//!
+//! Both routes build the fixed-RDM Hessian at the dense route's point (same
+//! RDMs and Fock matrices) and multiply the same unit `x`, so only the
+//! integrals differ: the two-density J/K and `(pq|vw)`, `(pu|qv)`. With
+//! `xs` the largest column 1-norm of `X` and `|γ| <= 2`, `|Γ| <= 4`,
+//! `Σ|dD^c| <= 4 n_c c1² xs` and `Σ|dD^a| <= 4 n_a² c1 ca1 xs`, each giving
+//! `δG` as above; `(pq|vw)`, `(pu|qv)` move by
+//! `δQ <= 2 · 4 nbas ε e_max c1² ca1² + thresh c1² ca1²`; `W` sums `n_a²`
+//! terms of each with weights up to 4 and 8, `δW <= 12 n_a² δQ`; the row
+//! term `Σ_uvw (pu|vw) Γ` moves by `4 n_a³ δQ`. Then
+//!
+//! ```text
+//!   |δ(Hx)| <= 4 (2 c1² (δG_c + δG_a) + 2 n_a c1² δG_c
+//!                 + 12 n_a² δQ ‖x‖₁ + 4 n_a³ δQ xs).
+//! ```
 
 mod casscf_common;
 
 use casscf_common::{maxabs, molecule_text, setup_text, EPS};
-use ferric_ci::casscf::{CasScfConfig, CasScfIntegrals, CasScfProblem};
+use ferric_ci::casscf::{CasScfConfig, CasScfIntegrals, CasScfOptimizer, CasScfProblem};
 use ndarray::Array2;
 
 fn normals(n: usize, seed: u64) -> Vec<f64> {
@@ -269,6 +286,90 @@ fn direct_matches_dense_at_the_default_threshold_h2o_cas44() {
 #[test]
 fn direct_matches_dense_at_the_default_threshold_n2_cas66() {
     default_threshold("n2.xyz", 4, 6, (3, 3));
+}
+
+fn hessian_check(file: &str, n_core: usize, n_active: usize, nel: (usize, usize), thresh: f64) {
+    let (mol, prep, rhf) = setup_text(&molecule_text(file), "6-31g");
+    let nmo = rhf.mos_r().ncols();
+    let cfg = |integrals| CasScfConfig {
+        n_active,
+        n_elec_active: nel,
+        n_core,
+        ci_conv_thresh: 1e-12,
+        integrals,
+        optimizer: CasScfOptimizer::AugmentedHessian,
+        ..Default::default()
+    };
+    let dense = CasScfProblem::new(&mol, &prep, nmo, &cfg(CasScfIntegrals::Dense)).unwrap();
+    let direct =
+        CasScfProblem::new(&mol, &prep, nmo, &cfg(CasScfIntegrals::Direct { thresh })).unwrap();
+    let npair = dense.pairs().len();
+    let kappa: Vec<f64> = normals(npair, 11).iter().map(|x| 0.05 * x).collect();
+    let c = dense.rotate(rhf.mos_r(), &kappa).unwrap();
+    let pt = dense.evaluate(&c).unwrap();
+    let hd = dense.orbital_hessian(&c, &pt).unwrap();
+    let hr = direct.orbital_hessian(&c, &pt).unwrap();
+    let mut x = normals(npair, 17);
+    let xn = x.iter().map(|v| v * v).sum::<f64>().sqrt();
+    x.iter_mut().for_each(|v| *v /= xn);
+    let a = dense.hessian_vector(&hd, &x).unwrap();
+    let b = direct.hessian_vector(&hr, &x).unwrap();
+
+    let q = ferric_scf::screening::SchwarzBounds::compute(
+        ferric_integrals::operator::Operator::coulomb(),
+        &prep,
+    )
+    .unwrap()
+    .q;
+    let e_max = maxabs(q.iter()).powi(2);
+    let n = prep.nbasis() as f64;
+    let (nc, na) = (n_core as f64, n_active as f64);
+    let c1 = col1(c.view());
+    let ca1 = col1(c.slice(ndarray::s![.., n_core..n_core + n_active]));
+    let mut xm = Array2::<f64>::zeros((nmo, nmo));
+    for (&(p, q), &v) in dense.pairs().iter().zip(&x) {
+        xm[(p, q)] = v;
+        xm[(q, p)] = -v;
+    }
+    let xs = col1(xm.view());
+    let x1: f64 = x.iter().map(|v| v.abs()).sum();
+    let dg = |sum_d: f64| 2.0 * 1.5 * n * n * EPS * e_max * sum_d + 1.5 * n * n * thresh;
+    let dg_c = dg(4.0 * nc * c1 * c1 * xs);
+    let dg_a = dg(4.0 * na * na * c1 * ca1 * xs);
+    let dq = 2.0 * 4.0 * n * EPS * e_max * (c1 * ca1).powi(2) + thresh * (c1 * ca1).powi(2);
+    let bar = 4.0
+        * (2.0 * c1 * c1 * (dg_c + dg_a)
+            + 2.0 * na * c1 * c1 * dg_c
+            + 12.0 * na * na * dq * x1
+            + 4.0 * na.powi(3) * dq * xs);
+    let d = vdiff(&a, &b);
+    eprintln!(
+        "{file} thresh={thresh:e}: max|Hx| {:.3}, |δ(Hx)| {d:.2e} (bar {bar:.1e})",
+        maxabs(a.iter())
+    );
+    assert!(maxabs(a.iter()) > 1e-2, "the product is not exercised");
+    assert!(d <= bar, "|δ(Hx)| = {d:e} > {bar:e}");
+}
+
+#[test]
+fn direct_hessian_product_matches_dense_in_the_trivial_limit_h2o_cas44() {
+    hessian_check("water.xyz", 3, 4, (2, 2), 0.0);
+}
+
+#[test]
+fn direct_hessian_product_matches_dense_in_the_trivial_limit_o2_triplet_cas86() {
+    hessian_check("o2.xyz", 4, 6, (5, 3), 0.0);
+}
+
+#[test]
+fn direct_hessian_product_matches_dense_at_the_default_threshold_n2_cas66() {
+    hessian_check(
+        "n2.xyz",
+        4,
+        6,
+        (3, 3),
+        ferric_ci::casscf_ints::DEFAULT_INTEGRAL_THRESH,
+    );
 }
 
 #[test]

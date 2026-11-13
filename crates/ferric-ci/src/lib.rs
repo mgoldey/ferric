@@ -61,6 +61,8 @@
 /// Two-step CASSCF on top of the CAS-CI solver and its RDMs.
 pub mod casscf;
 pub mod casscf_ints;
+/// Exact fixed-RDM orbital Hessian and the augmented-Hessian CASSCF step.
+pub mod casscf_newton;
 /// Certificates of the CASSCF and SC-NEVPT2 results.
 pub mod certificate;
 /// CI-native Davidson eigensolver for the lowest root.
@@ -83,7 +85,7 @@ pub mod sigma;
 /// Determinant-string enumeration (bitmask α/β strings).
 pub mod strings;
 
-pub use casscf::{run_casscf, CasScfConfig, CasScfResult};
+pub use casscf::{run_casscf, CasScfConfig, CasScfOptimizer, CasScfResult};
 pub use nevpt2::{sc_nevpt2, Nevpt2Classes, Nevpt2Config, Nevpt2Reference, Nevpt2Result};
 pub use rdm::CasCiRdms;
 pub use rdm3::{hole_rdms, nevpt_rdms, HoleRdms, NevptRdms};

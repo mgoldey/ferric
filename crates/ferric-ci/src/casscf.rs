@@ -74,9 +74,11 @@ pub struct CasScfConfig {
     /// Macro-iteration cap. A run that reaches it returns with
     /// [`CasScfResult::converged`] false.
     pub max_iter: usize,
-    /// Cap on `max_k |s_k|` of each orbital step (radians).
+    /// Cap on `max_k |s_k|` of each orbital step (radians), for both
+    /// optimizers.
     pub max_step: f64,
-    /// Floor on `|H_diag|` in the initial inverse Hessian.
+    /// Floor on `|H_diag|` of the approximate diagonal Hessian: the initial
+    /// inverse Hessian of BFGS, the Davidson preconditioner of the AH step.
     pub hdiag_floor: f64,
     /// Residual threshold of every CAS-CI solve (Davidson, or the dense
     /// eigensolve on spaces of at most [`crate::DENSE_SOLVE_MAX_DETS`]
@@ -97,6 +99,43 @@ pub struct CasScfConfig {
     /// Where the two-electron integrals come from ([`CasScfIntegrals::Auto`]
     /// by default).
     pub integrals: CasScfIntegrals,
+    /// The orbital step ([`CasScfOptimizer::Bfgs`] by default).
+    pub optimizer: CasScfOptimizer,
+}
+
+/// The orbital step of the two-step macro iteration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CasScfOptimizer {
+    /// Augmented-Hessian step on the exact fixed-RDM orbital Hessian, with a
+    /// trust radius ([`crate::casscf_newton`]): about a third of the macro
+    /// iterations of BFGS, but each Hessian-vector product costs one J/K
+    /// pass, so it wins when the CI solve dominates a macro iteration.
+    AugmentedHessian,
+    /// Inverse BFGS from the approximate diagonal Hessian (no Hessian
+    /// products; more macro iterations).
+    #[default]
+    Bfgs,
+}
+
+impl CasScfOptimizer {
+    /// Strict parse of a config value: `"ah"` or `"bfgs"`.
+    pub fn parse_config_str(s: &str) -> Result<Self, String> {
+        match s {
+            "ah" => Ok(CasScfOptimizer::AugmentedHessian),
+            "bfgs" => Ok(CasScfOptimizer::Bfgs),
+            other => Err(format!(
+                "optimizer must be \"ah\" or \"bfgs\", got {other:?}"
+            )),
+        }
+    }
+
+    /// `"ah"` or `"bfgs"`.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            CasScfOptimizer::AugmentedHessian => "ah",
+            CasScfOptimizer::Bfgs => "bfgs",
+        }
+    }
 }
 
 impl Default for CasScfConfig {
@@ -116,6 +155,7 @@ impl Default for CasScfConfig {
             memory_budget_bytes: None,
             canonicalize: false,
             integrals: CasScfIntegrals::default(),
+            optimizer: CasScfOptimizer::default(),
         }
     }
 }
@@ -165,20 +205,20 @@ impl CasScfPoint {
 /// The CAS energy functional of one molecule and active-space partition:
 /// AO integrals, partition and the nonredundant rotation pairs.
 pub struct CasScfProblem<'a> {
-    prep: &'a PreparedBasis,
+    pub(crate) prep: &'a PreparedBasis,
     h_ao: Array2<f64>,
-    ints: IntegralBackend,
+    pub(crate) ints: IntegralBackend,
     route: CasScfIntegrals,
     nbas: usize,
-    nmo: usize,
+    pub(crate) nmo: usize,
     e_nuc: f64,
-    n_core: usize,
-    n_active: usize,
+    pub(crate) n_core: usize,
+    pub(crate) n_active: usize,
     ci_config: CasCiConfig,
     /// The settings the problem was built from (`optimize` checks that its
     /// own config agrees on the partition and the CI settings).
     config: CasScfConfig,
-    pairs: Vec<(usize, usize)>,
+    pub(crate) pairs: Vec<(usize, usize)>,
     classes: Vec<RotationClass>,
     _mem: Reservation,
 }
@@ -251,12 +291,38 @@ impl<'a> CasScfProblem<'a> {
             Lifetime::Transient,
         );
         plan.reserve(
-            "(pu|vw), J/K and MO Fock matrices, inverse BFGS Hessian",
+            "(pu|vw), J/K and MO Fock matrices",
             nmo.saturating_mul(nact.saturating_pow(3))
-                .saturating_add(8 * nbas * nbas)
-                .saturating_add(npair.saturating_mul(npair)),
+                .saturating_add(8 * nbas * nbas),
             Lifetime::Resident,
         );
+        match config.optimizer {
+            CasScfOptimizer::Bfgs => {
+                plan.reserve(
+                    "inverse BFGS Hessian",
+                    npair.saturating_mul(npair),
+                    Lifetime::Resident,
+                );
+            }
+            CasScfOptimizer::AugmentedHessian => {
+                let w = nmo.saturating_mul(nmo).saturating_mul(nact * nact);
+                plan.reserve(
+                    "orbital Hessian W, Davidson subspace, two-density J/K",
+                    w.saturating_add(
+                        (2 * crate::casscf_newton::AH_MAX_DAVIDSON + 4).saturating_mul(npair),
+                    )
+                    .saturating_add(8 * nbas * nbas),
+                    Lifetime::Resident,
+                );
+                plan.reserve(
+                    "(pq|vw), (pu|qv) and their Γ contractions",
+                    route
+                        .hessian_transient_elems(nbas, nmo, nact)
+                        .max(w.saturating_mul(3)),
+                    Lifetime::Transient,
+                );
+            }
+        }
         let mem = plan.commit()?;
         let h_ao = hcore_ecp(prep, mol, prep.basis_set());
         let ints = IntegralBackend::new(prep, route)?;
@@ -324,7 +390,7 @@ impl<'a> CasScfProblem<'a> {
         &self.classes
     }
 
-    fn check_orbitals(&self, c: &Array2<f64>) -> Result<(), FerricError> {
+    pub(crate) fn check_orbitals(&self, c: &Array2<f64>) -> Result<(), FerricError> {
         if c.dim() != (self.nbas, self.nmo) {
             return Err(FerricError::General(format!(
                 "CASSCF: orbitals have shape {:?}, expected ({}, {})",
@@ -456,7 +522,7 @@ impl<'a> CasScfProblem<'a> {
         acc: &mut PhaseAccumulator,
     ) -> Result<CasScfPoint, FerricError> {
         self.check_orbitals(c)?;
-        let (nc, na, nmo) = (self.n_core, self.n_active, self.nmo);
+        let (nc, na) = (self.n_core, self.n_active);
         let na3 = na * na * na;
         let (fi_ao, e_core) = acc.time("inactive Fock (J/K of D^c)", || self.inactive(c))?;
         let ca = c.slice(s![.., nc..nc + na]);
@@ -474,28 +540,7 @@ impl<'a> CasScfProblem<'a> {
         let fa = acc.time("active Fock (J/K of D^a)", || self.active_fock(c, gamma))?;
         let tok = acc.begin("generalized Fock + gradient");
         let fi = c.t().dot(&fi_ao).dot(c);
-
-        let mut f = Array2::<f64>::zeros((nmo, nmo));
-        for p in 0..nmo {
-            for i in 0..nc {
-                f[(p, i)] = 2.0 * (fi[(p, i)] + fa[(p, i)]);
-            }
-        }
-        // Active columns: F^I γ plus the (pu|vw) Γ_tuvw contraction, the
-        // latter one GEMM of (nmo x na³) by (na³ x na).
-        let one = fi.slice(s![.., nc..nc + na]).dot(gamma);
-        let p_mat = ArrayView2::from_shape((nmo, na3), &paaa)
-            .map_err(|e| FerricError::General(format!("CASSCF (pu|vw) shape: {e}")))?;
-        let g2 = rdms
-            .dm2
-            .as_standard_layout()
-            .into_owned()
-            .into_shape_with_order((na, na3))
-            .map_err(|e| FerricError::General(format!("CASSCF dm2 shape: {e}")))?;
-        let two = p_mat.dot(&g2.t());
-        f.slice_mut(s![.., nc..nc + na]).assign(&(&one + &two));
-
-        let gmat = 2.0 * (&f - &f.t());
+        let (f, gmat) = self.generalized_fock(&fi, &fa, &paaa, gamma, &rdms.dm2)?;
         let gradient = self.pairs.iter().map(|&(p, q)| gmat[(p, q)]).collect();
         acc.stop(tok);
         Ok(CasScfPoint {
@@ -507,6 +552,62 @@ impl<'a> CasScfProblem<'a> {
             f_general: f,
             ci,
         })
+    }
+
+    /// Generalized Fock matrix `F` and the full `2 (F − Fᵀ)` from `F^I`,
+    /// `F^A` (MO basis), `(pu|vw)` (flat, `p` over all MOs) and the RDMs.
+    pub(crate) fn generalized_fock(
+        &self,
+        fi: &Array2<f64>,
+        fa: &Array2<f64>,
+        paaa: &[f64],
+        gamma: &Array2<f64>,
+        dm2: &ndarray::Array4<f64>,
+    ) -> Result<(Array2<f64>, Array2<f64>), FerricError> {
+        let (nc, na, nmo) = (self.n_core, self.n_active, self.nmo);
+        let na3 = na * na * na;
+        let mut f = Array2::<f64>::zeros((nmo, nmo));
+        for p in 0..nmo {
+            for i in 0..nc {
+                f[(p, i)] = 2.0 * (fi[(p, i)] + fa[(p, i)]);
+            }
+        }
+        // Active columns: F^I γ plus the (pu|vw) Γ_tuvw contraction, the
+        // latter one GEMM of (nmo x na³) by (na³ x na).
+        let one = fi.slice(s![.., nc..nc + na]).dot(gamma);
+        let p_mat = ArrayView2::from_shape((nmo, na3), paaa)
+            .map_err(|e| FerricError::General(format!("CASSCF (pu|vw) shape: {e}")))?;
+        let g2 = dm2
+            .as_standard_layout()
+            .into_owned()
+            .into_shape_with_order((na, na3))
+            .map_err(|e| FerricError::General(format!("CASSCF dm2 shape: {e}")))?;
+        let two = p_mat.dot(&g2.t());
+        f.slice_mut(s![.., nc..nc + na]).assign(&(&one + &two));
+        let gmat = 2.0 * (&f - &f.t());
+        Ok((f, gmat))
+    }
+
+    /// Packed gradient over [`Self::pairs`] at orbitals `c` with the RDMs
+    /// held fixed (`gamma`, `dm2`; no CI solve). At the RDMs of the CI root
+    /// in `c` it is [`CasScfPoint::gradient`]; its frame derivative is
+    /// [`Self::hessian_vector_frame`].
+    pub fn gradient_at_fixed_rdms(
+        &self,
+        c: &Array2<f64>,
+        gamma: &Array2<f64>,
+        dm2: &ndarray::Array4<f64>,
+    ) -> Result<Vec<f64>, FerricError> {
+        self.check_orbitals(c)?;
+        let (nc, na) = (self.n_core, self.n_active);
+        let (fi_ao, _) = self.inactive(c)?;
+        let paaa = self
+            .ints
+            .paaa(self.prep, c.view(), c.slice(s![.., nc..nc + na]))?;
+        let fa = self.active_fock(c, gamma)?;
+        let fi = c.t().dot(&fi_ao).dot(c);
+        let (_, gmat) = self.generalized_fock(&fi, &fa, &paaa, gamma, dm2)?;
+        Ok(self.pairs.iter().map(|&(p, q)| gmat[(p, q)]).collect())
     }
 
     /// `C exp(K)` with `K_pq = κ_k = −K_qp` for `(p, q) = pairs[k]`.
@@ -597,6 +698,51 @@ pub(crate) fn dense_jk(eri: &[f64], n: usize, d: &Array2<f64>) -> (Array2<f64>, 
         k.row_mut(m).assign(&ndarray::Array1::from(km));
     }
     (j, k)
+}
+
+/// [`dense_jk`] for several densities in one pass over the block. With
+/// `(ml|ab) = (ml|ba)`, the slab `(m ·|··)` is both the `(n, n²)` matrix
+/// `[l, (a b)]` of `J` and the `(n², n)` matrix `[(l b), a]` of `K`, so row
+/// `m` of every `J_i` and of every `K_i` is one GEMM each with the `(n², k)`
+/// matrix of the vectorized densities. Any `D_i` (not only symmetric). Each
+/// row is written by one task, so the result does not depend on the thread
+/// count.
+pub(crate) fn dense_jk_multi(
+    eri: &[f64],
+    n: usize,
+    ds: &[Array2<f64>],
+) -> Vec<(Array2<f64>, Array2<f64>)> {
+    use rayon::prelude::*;
+    let (n2, nd) = (n * n, ds.len());
+    // dmat[(l n + b), i] = D_i[l, b].
+    let mut dmat = Array2::<f64>::zeros((n2, nd));
+    for (i, d) in ds.iter().enumerate() {
+        for ((l, b), &x) in d.indexed_iter() {
+            dmat[(l * n + b, i)] = x;
+        }
+    }
+    let rows: Vec<(Array2<f64>, Array2<f64>)> = (0..n)
+        .into_par_iter()
+        .map(|m| {
+            let slab = &eri[m * n2 * n..(m + 1) * n2 * n];
+            let jm = ArrayView2::from_shape((n, n2), slab)
+                .expect("(m n|l s) slab is n x n²")
+                .dot(&dmat);
+            let km = ArrayView2::from_shape((n2, n), slab)
+                .expect("(m l|b a) slab is n² x n")
+                .t()
+                .dot(&dmat);
+            (jm, km)
+        })
+        .collect();
+    let mut out = vec![(Array2::<f64>::zeros((n, n)), Array2::<f64>::zeros((n, n))); nd];
+    for (m, (jm, km)) in rows.into_iter().enumerate() {
+        for (i, (j, k)) in out.iter_mut().enumerate() {
+            j.row_mut(m).assign(&jm.column(i));
+            k.row_mut(m).assign(&km.column(i));
+        }
+    }
+    out
 }
 
 /// The scalar-loop form of [`dense_jk`], kept as its test oracle.
@@ -795,7 +941,6 @@ pub fn optimize(
 ) -> Result<CasScfResult, FerricError> {
     check_step_controls(config)?;
     check_problem_settings(&problem.config, config)?;
-    let npair = problem.pairs().len();
     let finish = |pt: CasScfPoint, c: Array2<f64>, it: usize, converged: bool| {
         let (c, pt, mo_energy) = if config.canonicalize {
             let (c, pt) = canonicalize(problem, &c, &pt)?;
@@ -826,6 +971,23 @@ pub fn optimize(
     };
 
     let mut acc = PhaseAccumulator::new().report_on_drop("CASSCF");
+    let (pt, c, it, converged) = match config.optimizer {
+        CasScfOptimizer::AugmentedHessian => {
+            crate::casscf_newton::optimize_ah(problem, c0, config, &mut acc)?
+        }
+        CasScfOptimizer::Bfgs => optimize_bfgs(problem, c0, config, &mut acc)?,
+    };
+    finish(pt, c, it, converged)
+}
+
+/// The inverse-BFGS macro-iteration loop ([`CasScfOptimizer::Bfgs`]).
+fn optimize_bfgs(
+    problem: &CasScfProblem,
+    c0: Array2<f64>,
+    config: &CasScfConfig,
+    acc: &mut PhaseAccumulator,
+) -> Result<(CasScfPoint, Array2<f64>, usize, bool), FerricError> {
+    let npair = problem.pairs().len();
     let mut c = c0;
     let mut e_old: Option<f64> = None;
     let mut g_old: Vec<f64> = Vec::new();
@@ -834,17 +996,17 @@ pub fn optimize(
     let mut it = 0usize;
     loop {
         it += 1;
-        let pt = problem.evaluate_timed(&c, &mut acc)?;
+        let pt = problem.evaluate_timed(&c, acc)?;
         let e = pt.e_total;
         let g = pt.gradient.clone();
         let gn = norm(&g);
         let done = npair == 0
             || e_old.is_some_and(|eo| (e - eo).abs() < config.energy_tol && gn < config.grad_tol);
         if done {
-            return finish(pt, c, it, true);
+            return Ok((pt, c, it, true));
         }
         if it >= config.max_iter {
-            return finish(pt, c, it, false);
+            return Ok((pt, c, it, false));
         }
         let tok = acc.begin("BFGS update + step");
         let hd: Vec<f64> = problem
@@ -907,6 +1069,13 @@ fn check_problem_settings(built: &CasScfConfig, config: &CasScfConfig) -> Result
         diffs.push(format!(
             "ci_conv_thresh: problem {:e}, config {:e}",
             built.ci_conv_thresh, config.ci_conv_thresh
+        ));
+    }
+    if built.optimizer != config.optimizer {
+        diffs.push(format!(
+            "optimizer: problem {}, config {}",
+            built.optimizer.as_str(),
+            config.optimizer.as_str()
         ));
     }
     if built.memory_budget_bytes != config.memory_budget_bytes {
@@ -1117,6 +1286,39 @@ mod tests {
         assert!(j0.iter().any(|x| x.abs() > 1e-2) && k0.iter().any(|x| x.abs() > 1e-2));
         assert!(dj <= bar, "|ΔJ| = {dj:e} > {bar:e}");
         assert!(dk <= bar, "|ΔK| = {dk:e} > {bar:e}");
+    }
+
+    /// `dense_jk_multi` equals the scalar loops for each of several
+    /// nonsymmetric densities (a transposed `D` or a mixed-up density
+    /// column shows). Bar as in `dense_jk_gemv_matches_the_scalar_loops`.
+    #[test]
+    fn dense_jk_multi_matches_the_scalar_loops() {
+        let mol = Molecule::parse_xyz(
+            "3\n\nO 0 0 0.117\nH 0 0.757 -0.467\nH 0 -0.757 -0.467\n",
+            0,
+            1,
+        )
+        .unwrap();
+        let bs = ferric_core::basis::bundled("6-31g").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let n = prep.nbasis();
+        let eri = crate::integrals::dense_ao_eri(&prep).unwrap();
+        let ds = [
+            antisym(n, 5) + antisym(n, 9).mapv(f64::abs),
+            antisym(n, 21) * 2.0 + Array2::<f64>::eye(n),
+        ];
+        let got = dense_jk_multi(&eri, n, &ds);
+        let emax = eri.iter().fold(0.0f64, |m, x| m.max(x.abs()));
+        for (d, (j1, k1)) in ds.iter().zip(&got) {
+            let (j0, k0) = dense_jk_scalar(&eri, n, d);
+            let dmax = d.iter().fold(0.0f64, |m, x| m.max(x.abs()));
+            let bar = 2.0 * (n as f64).powi(4) * f64::EPSILON * emax * dmax;
+            let dj = (j1 - &j0).iter().fold(0.0f64, |m, x| m.max(x.abs()));
+            let dk = (k1 - &k0).iter().fold(0.0f64, |m, x| m.max(x.abs()));
+            assert!(j0.iter().any(|x| x.abs() > 1e-2) && k0.iter().any(|x| x.abs() > 1e-2));
+            assert!(dj <= bar, "|ΔJ| = {dj:e} > {bar:e}");
+            assert!(dk <= bar, "|ΔK| = {dk:e} > {bar:e}");
+        }
     }
 
     /// `exp(K)` is orthogonal, `exp(K) exp(−K) = I`, and two half steps

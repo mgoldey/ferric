@@ -10,7 +10,7 @@
 //! key is read by one surface and ignored by the other.
 
 use crate::config::Config;
-use ferric_ci::casscf::CasScfIntegrals;
+use ferric_ci::casscf::{CasScfIntegrals, CasScfOptimizer};
 use ferric_ci::driver::{nevpt2_on_rhf, rhf_start, Nevpt2On, ScfStart};
 use ferric_ci::{CasScfConfig, Nevpt2Classes};
 use ferric_core::basis;
@@ -24,7 +24,8 @@ use serde::Deserialize;
 /// CASSCF orbital optimization. Python `run_casscf` / `run_nevpt2` take the
 /// same settings (`n_active`, `n_elec_active`, `n_core`, `reference`,
 /// `canonicalize`, `casscf_grad_tol`, `casscf_energy_tol`, `casscf_max_iter`,
-/// `casscf_max_step`, `casscf_integrals`, `casscf_integral_thresh`).
+/// `casscf_max_step`, `casscf_integrals`, `casscf_integral_thresh`,
+/// `casscf_optimizer`).
 #[derive(Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct CasCfg {
@@ -51,6 +52,11 @@ pub struct CasCfg {
     pub max_iter: Option<usize>,
     /// Cap on the largest orbital-rotation step element (rad). Default `0.2`.
     pub max_step: Option<f64>,
+    /// Orbital step: `"bfgs"` (default; inverse BFGS from an approximate
+    /// diagonal Hessian) or `"ah"` (augmented Hessian on the exact orbital
+    /// Hessian at fixed RDMs, with a trust radius: fewer macro iterations,
+    /// each with Hessian-vector products costing one J/K pass).
+    pub optimizer: Option<String>,
     /// Two-electron integrals of the CASSCF iterations: `"auto"` (default;
     /// dense when the block fits in half the memory budget), `"direct"`
     /// (direct J/K and `(pu|vw)` builds, no `nbas^4` array) or `"dense"`
@@ -171,6 +177,7 @@ fn check_cas_keys(cas: &CasCfg, kind: &str, on: Option<Nevpt2On>) -> Result<(), 
             ("energy_tol", cas.energy_tol.is_some()),
             ("max_iter", cas.max_iter.is_some()),
             ("max_step", cas.max_step.is_some()),
+            ("optimizer", cas.optimizer.is_some()),
             ("integrals", cas.integrals.is_some()),
             ("integral_thresh", cas.integral_thresh.is_some()),
         ];
@@ -248,6 +255,10 @@ pub fn resolve_plan(cfg: &Config, text: &str) -> Result<Option<CasPlan>, String>
         (route, t) => CasScfIntegrals::parse_config_str(route.unwrap_or("direct"), t)
             .map_err(|e| format!("[cas] {e}"))?,
     };
+    let optimizer = match cas.optimizer.as_deref() {
+        None => d.optimizer,
+        Some(o) => CasScfOptimizer::parse_config_str(o).map_err(|e| format!("[cas] {e}"))?,
+    };
     let scf_keys = written(raw.get("scf"));
     let scf_key = |k: &str| scf_keys.contains(&k);
     Ok(Some(CasPlan {
@@ -267,6 +278,7 @@ pub fn resolve_plan(cfg: &Config, text: &str) -> Result<Option<CasPlan>, String>
             memory_budget_bytes: cfg.memory.budget_bytes(),
             canonicalize: cas.canonicalize.unwrap_or(false),
             integrals,
+            optimizer,
             ..d
         },
         scf: ScfStart {

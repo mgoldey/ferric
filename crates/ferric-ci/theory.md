@@ -383,6 +383,63 @@ must reach the CI residual threshold ($10^{-10}$ by default); the
 gradient error is first order in that residual, so a solve that misses it
 is an error, not a warning.
 
+**Augmented-Hessian step** (`optimizer = "ah"`, `src/casscf_newton.rs`).
+The exact orbital Hessian at fixed RDMs, applied as a product. For
+$C(\varepsilon) = C\exp(\varepsilon X)$, every quantity above in the
+rotated orbitals has the frame derivative
+
+$$
+\begin{aligned}
+dF^I &= F^IX - XF^I + C^\mathsf{T}(J - \tfrac12K)[dD^c]C, &
+dD^c &= 2(CX)_cC_c^\mathsf{T} + \text{transpose},\\
+dF^A &= F^AX - XF^A + C^\mathsf{T}(J - \tfrac12K)[dD^a]C, &
+dD^a &= (CX)_a\gamma C_a^\mathsf{T} + \text{transpose},
+\end{aligned}
+$$
+
+$d(pu|vw) = \sum_r X_{rp}(ru|vw) + X_{ru}(pr|vw) + X_{rv}(pu|rw) +
+X_{rw}(pu|rv)$, and $H_fx = \operatorname{pack}2(dF - dF^\mathsf{T})$ is the
+derivative of the fixed-RDM gradient along $x$ in the rotated frame. The
+$(pr|vw)$ and $(pu|rw)$ terms are contracted with $\Gamma$ once per macro
+iteration into
+
+$$
+W_{(p,t),(r,s)} = \sum_{vw}(pr|vw)\Gamma_{tsvw}
+ + \sum_{uw}(pu|rw)(\Gamma_{tusw} + \Gamma_{tuws}),
+$$
+
+the first sum being the active-active coupling through $(pr|vw)$. Since
+$e^{\varepsilon X}e^{\delta A} = \exp(\varepsilon X + \delta A +
+\tfrac12\varepsilon\delta[X, A] + \dots)$, the symmetric Hessian of
+$E(C\exp K)$ at $K = 0$ is $Hx = H_fx - \tfrac12\operatorname{pack}[G, X]$,
+$G = 2(F - F^\mathsf{T})$. One product is one $J/K$ pass over the two
+densities $dD^c$, $dD^a$ (dense: two GEMMs per AO row of the $n_\text{bas}^4$
+block; direct: `build_jk_with_pool` per density); $(pq|vw)$ and $(pu|qv)$ are
+built once per macro iteration (dense: `transform_eri_mixed`; direct: one
+half transform per bra shell pair, all ket pairs). The step is the lowest
+eigenpair of $\begin{pmatrix}0 & g^\mathsf{T}\\ g & H\end{pmatrix}$ by
+Davidson (preconditioner $\max(|H_\text{diag}|, \texttt{hdiag\_floor}) -
+\lambda$, at most 40 products), $s = v/v_0$, stopped at
+$\lVert(H - \lambda)s + g\rVert \le \min(0.1, \lVert g\rVert)\lVert g\rVert$;
+then scaled to a trust radius (2-norm; start 0.4, at most 1.0) and to
+`max_step` ($\infty$-norm). A step that raises $E$ by more than
+$10^{-10}$ Ha is halved and evaluated again (a CI solve each). The radius
+halves below an actual/predicted ratio of 0.25 and doubles above 0.75 for a
+step at the boundary, the predicted change being
+$g\cdot s + \tfrac12 s\cdot Hs/\beta$. The Hessian lacks the CI response,
+which lowers the curvature: near convergence the plain AH step undershoots
+by a factor of about 1.6 (linear convergence), and on N2 CAS(10,10) it
+stalls by orders of magnitude along one direction. Each accepted step
+therefore measures the ratio of the model to the actual curvature along
+itself, $\beta = s\cdot Hs / (2(\Delta E - g\cdot s))$ (100 when the actual
+curvature is not positive), and the next AH step is multiplied by $\beta$
+clamped to $[1, 100]$ before the trust and `max_step` scaling
+(`curvature_stretch`). The prototype's `scale` variant used the energy ratio
+clamped to $[1, 2]$ instead; in Rust that rule stalled N2 CAS(10,10) (below).
+Multi-secant
+SR1 corrections of $H$ from earlier steps were tried and were unstable for a
+memory of three or more steps (water 62 iterations with 16 rejected steps).
+
 **Open-shell active spaces.** $H$ is spin-free, so the energy and the
 gradient above depend on the spin-summed $\gamma$ and $\Gamma$ only, for any
 sector $(n_\alpha, n_\beta)$. The CI root is the lowest of that $M_s$ sector,
@@ -405,8 +462,9 @@ diagonal of $F^T$ in $C'$.
 **Limits.** Lowest root, no state averaging; the direct route recomputes
 every shell quartet each macro iteration (three passes: $J/K[D^c]$,
 $(pu|vw)$, $J/K[D^a]$); the start is a
-restricted RHF (an even electron count). No exact orbital Hessian,
-orbital-CI coupling or augmented-Hessian step.
+restricted RHF (an even electron count). No orbital-CI coupling: both
+optimizers are two-step, and the augmented-Hessian step uses the orbital
+Hessian at fixed RDMs.
 
 **Measured (2026-11-11, `tests/casscf.rs`).** Geometries
 `testdata/molecules/water.xyz` and `n2.xyz`, 6-31G, ferric exact-J/K RHF
@@ -587,6 +645,94 @@ RSS 0.56 GB):
 | BFGS update + step | 3.7 | 1.0 | 3.8 | 1.0 |
 | other | 0.1 | | 0.1 | |
 | total, per iteration | 25.5, 0.29 | | 361.4, 4.1 | |
+
+**Optimizer choice (2026-11-13, round-2 task 14).** Macro iterations
+(one CAS-CI each) and Hessian-vector products, from
+`scripts/prototypes/casscf_newton_proto.py` on ferric's integrals and RHF
+start; PySCF 2.13.1 `mcscf.CASSCF` (`conv_tol` 1e-12, `conv_tol_grad` 1e-6,
+FCI `conv_tol` 1e-14, the settings of `scripts/gen_casscf_refs.py`) from
+ferric's RHF and from its own. Water, N2 and O2 as in `tests/casscf.rs`
+(6-31G); benzene CAS(6,6)/cc-pVDZ with 18 core orbitals; N2
+CAS(10,10)/cc-pVDZ with 2 core orbitals.
+
+| System | BFGS | AH | AH, ratio stretch | AH, η = 0.1 | AH, ratio stretch, η = 0.3 | Rust AH (shipped) | PySCF macro (from ferric / own RHF) | PySCF micro, inner |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| water CAS(4,4) | 61 | 21 / 197 | 22 / 190 | 27 / 134 | 27 / 111 | 22 | 19 / 19 | 67, 312 |
+| N2 CAS(6,6) | 21 | 10 / 57 | 11 / 55 | 12 / 32 | 13 / 24 | 11 | 8 / 8 | 25, 95 |
+| O2 CAS(8,6) $M_s = 1$ | 14 | 7 / 31 | 8 / 35 | 8 / 19 | 10 / 15 | 8 | 8 / 8 | 23, 82 |
+| benzene CAS(6,6) | 90 | 27 / 470 | 19 / 352 | 29 / 314 | 28 / 223 | 18 | 16 / 19 | 57, 285 |
+| N2 CAS(10,10) | 36 | 39 / 343 | 26 / 191 | | 29 / 79 | 25 | 15 / 15 | 51, 230 |
+
+Prototype entries are macro iterations / Hessian products; "AH" is the
+step without a stretch, "ratio stretch" multiplies an unclipped step by the
+previous energy ratio clamped to $[1, 2]$, with $\eta = \min(0.1, \lVert g\rVert)$ forcing; the η
+columns stop the Davidson at the constant relative residual η. "Rust AH"
+is the shipped step with the curvature stretch (macro iterations; BFGS in
+Rust takes 60, 21, 14, 89 and 36). PySCF's macro iteration contains several
+orbital micro-steps with approximate CI updates, so its macro count is not
+the CI-solve count; ferric's two-step AH needs 1.2 to 1.7 times PySCF's macro
+count. All AH variants on benzene stay at ferric's minimum
+$-230.7814586093$ Ha; none reaches PySCF's $-230.7873347336$. The
+$\eta = 0.1$ runs (with and without the stretch) stop at $-230.7814587989$,
+$1.9\times10^{-7}$ Ha lower with $\lVert g\rVert = 8\times10^{-8}$, a nearby
+stationary point that was not examined further.
+
+**AH anchors (`tests/casscf_newton.rs`, `tests/casscf_direct.rs`,
+2026-11-13).** 6-31G, RHF orbitals rotated by a random $\kappa$ (scale 0.05),
+random unit $x$. $H_fx$ against the central difference of the fixed-RDM
+gradient at $h/2 = 5\times10^{-4}$: worst error 0.50 of the bar on water,
+N2 and O2 (the bar is $2|\Delta|/3$ plus rounding and the error is
+$|\Delta|/3$, the leading truncation term, because $H_fx$ matches the
+Richardson extrapolate to $1.5\times10^{-11}$, $1.2\times10^{-10}$ and
+$2.3\times10^{-11}$). Symmetry of $H$: $|y^\mathsf{T}Hx - x^\mathsf{T}Hy|$
+$7\times10^{-16}$ to $4\times10^{-15}$ against bars of $3$-$6\times10^{-11}$,
+while the frame derivative alone is asymmetric by 0.06-0.79. AH and BFGS
+minima: water $|\Delta E| = 1.4\times10^{-13}$ (bar $1.1\times10^{-12}$), O2
+$1.4\times10^{-13}$ (bar $2.9\times10^{-12}$). Direct against dense $Hx$:
+$8.4\times10^{-14}$, $2.6\times10^{-13}$ (O2, N2 at `thresh` $10^{-12}$)
+against a priori bars of $2.8\times10^{-6}$ to $2.2\times10^{-3}$. With the
+default switched to AH every existing CASSCF test passes (`casscf.rs`,
+`casscf_vs_pyscf.rs`, `casscf_canonical.rs`, `casscf_direct.rs`,
+`cas_ecp.rs`): water, N2, O2 and stretched N2 against PySCF within
+$1.5\times10^{-11}$, $4\times10^{-14}$, $3\times10^{-13}$, $5\times10^{-13}$ Ha
+in 22, 11, 8 and 7 iterations.
+
+Mutations, each failing on an assertion: the active-active coupling term of
+$W$ with its sign flipped (`&b - &a`) fails all three FD anchors and both
+same-minimum tests (AH no longer converges); dropping the $-\tfrac12[G, X]$
+correction fails the three symmetry assertions; $K$ replaced by $J$ in
+`dense_jk_multi` fails its unit test; the direct $(pu|qv)$ scaled by
+$1 + 10^{-4}$ fails the water direct-vs-dense test ($3.4\times10^{-5}$
+against $2.8\times10^{-6}$; $1 + 10^{-6}$ is below the bar); the CLI
+`optimizer` key ignored fails `cli_keys_reach_the_config`.
+
+**AH timing (2026-11-13).** CLI wall times (RHF included), paired and
+interleaved: base build 1db597bf6, this build with `optimizer = "bfgs"`
+(the default) and with `"ah"`, order base, bfgs, ah, ah, bfgs, base, base,
+bfgs, ah; 12 rayon threads, default `[memory]`, dense route. The box was
+shared with other jobs; the load average during each set is given.
+
+| System, load | base (s) | BFGS (s) | AH (s) | iterations base / BFGS / AH |
+|---|---|---|---|---|
+| benzene CAS(6,6), load 15.5-20.5 | 63.47, 65.66, 64.23: 64.5 ± 1.1 | 63.27, 56.84, 65.13: 61.7 ± 4.4 | 87.04, 83.69, 85.09: 85.3 ± 1.7 | 89 / 89 / 18 |
+| N2 CAS(10,10), load 17-20 | 28.70, 28.50, 28.84: 28.7 ± 0.2 | 28.58, 30.43, 29.03: 29.4 ± 1.0 | 20.53, 19.60, 20.72: 20.3 ± 0.6 | 36 / 36 / 25 |
+| benzene CAS(6,6), load 5.6-15.5 | 37.70, 36.76, 36.26: 36.9 ± 0.7 | 37.04, 35.61, 35.54: 36.1 ± 0.9 | 48.72, 47.65, 47.91: 48.1 ± 0.6 (ratio stretch) | 89 / 89 / 18 |
+
+Every run reaches the energy of the base build to the printed 10 decimals
+(benzene $-230.7814586093$, N2 $-109.1294674756$ Ha). BFGS in this build
+takes the same iterations as the base build. AH costs about 1.3 times the
+BFGS wall time on benzene, where one Hessian product (a $J/K$ pass over the
+dense block) is about a third of a macro iteration and each AH step takes
+10-20 products, and saves about 30 % on N2 CAS(10,10), where the CI solve
+dominates. The third row was measured with the ratio stretch of the
+prototype instead of the shipped curvature stretch, at the same 18
+iterations. With the ratio stretch N2 CAS(10,10) did not converge: it
+passed the $-109.1294674756$ Ha point with $\lVert g\rVert \approx 5\times10^{-4}$
+and steps of $10^{-4}$, actual/predicted ratios of $10^5$-$10^6$, then
+descended to $-109.1347620086$ Ha, 5.3 mHa lower, and stalled there at
+$\lVert g\rVert = 9.2\times10^{-5}$ after 1000 macro iterations. That lower
+energy was not examined further (whether it is a minimum of the same active
+space class, and whether BFGS's and PySCF's point is a saddle).
 
 **Benzene stationary point.** `pyscf.mcscf.CASSCF` (PySCF 2.13.1) on ferric's
 AO integrals reaches $E = -230.7873347336$ Ha, 5.876 mHa below ferric, from

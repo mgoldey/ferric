@@ -129,11 +129,19 @@ $\partial E/\partial\kappa_{pq} = 2(F_{pq} - F_{qp})$. Equations:
 | `energy_tol` (`casscf_energy_tol`) | 1e-12 Ha | and the energy change is below this at the same iteration |
 | `max_iter` (`casscf_max_iter`) | 300 | macro iterations |
 | `max_step` (`casscf_max_step`) | 0.2 | cap on the largest step element (rad) |
+| `optimizer` (`casscf_optimizer`) | `"bfgs"` | `"bfgs"`: inverse BFGS from an approximate diagonal Hessian; `"ah"`: augmented-Hessian step on the exact orbital Hessian at fixed RDMs, with a trust radius |
 | `integrals` (`casscf_integrals`) | `"auto"` | `"auto"`: dense when the block fits in half of the memory budget, else direct; `"direct"`: J, K and $(pu\|vw)$ from shell quartets every iteration, screening threshold `integral_thresh` (`casscf_integral_thresh`, 1e-12); `"dense"`: the $n_\text{bas}^4$ AO block |
 | `ci_conv_thresh` | 1e-10 | Davidson residual $\lVert Hc - Ec\rVert$ of every CI solve; a solve that misses it returns an error |
 
-The step is inverse BFGS, started from an approximate diagonal orbital
-Hessian and reset to it when the energy rises. A run that reaches the
+The default step is inverse BFGS, started from an approximate diagonal
+orbital Hessian and reset to it when the energy rises. `optimizer = "ah"`
+solves for each step with Hessian-vector products of the exact orbital
+Hessian at fixed RDMs. It takes about a third of the macro iterations
+(CAS(6,6)/cc-pVDZ benzene: 18 instead of 89), but each product costs
+one J/K pass, so it is faster only when the CI solve dominates a macro
+iteration: N2 CAS(10,10)/cc-pVDZ about 30 % faster, benzene CAS(6,6) about
+1.3 times slower (timings in `crates/ferric-ci/theory.md`). Both reach the same minimum on the tested
+systems; neither moves benzene to the lower minimum PySCF finds. A run that reaches the
 iteration cap returns `converged = false`; Python adds a `RuntimeWarning` and
 a certificate warning; the certificate (capability `casscf`, graded Proven)
 is then capped to not graded.
@@ -173,7 +181,8 @@ Limits:
 - the start is the canonical RHF orbitals with the active window directly
   above the core; there is no orbital selection or reordering; odd-electron
   molecules have no RHF start;
-- the optimizer uses no exact orbital Hessian and no orbital-CI coupling;
+- both optimizers are two-step: no orbital-CI coupling (the `"ah"`
+  Hessian is the orbital block at fixed RDMs);
   convergence is tested on five systems from RHF starts;
 - the dense `nbasis⁴` AO block is held when it fits in half of the memory
   budget; otherwise (or with `[cas] integrals = "direct"`) the integrals are

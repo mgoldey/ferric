@@ -288,7 +288,7 @@ impl PyCasScfResult {
 /// orbitals above `n_core` doubly occupied ones, single root of the
 /// `(n_alpha, n_beta)` sector, optionally canonical orbitals on return.
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, n_active, n_elec_active, n_core=None, casscf_grad_tol=1e-7, casscf_energy_tol=1e-12, casscf_max_iter=300, casscf_max_step=0.2, ci_conv_thresh=1e-10, ci_max_subspace=50, ci_max_iter=200, memory_budget_gb=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, canonicalize=false, casscf_integrals="auto", casscf_integral_thresh=None))]
+#[pyo3(signature = (mol, basis_set, n_active, n_elec_active, n_core=None, casscf_grad_tol=1e-7, casscf_energy_tol=1e-12, casscf_max_iter=300, casscf_max_step=0.2, ci_conv_thresh=1e-10, ci_max_subspace=50, ci_max_iter=200, memory_budget_gb=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, canonicalize=false, casscf_integrals="auto", casscf_integral_thresh=None, casscf_optimizer="bfgs"))]
 #[allow(clippy::too_many_arguments)]
 fn run_casscf(
     py: Python<'_>,
@@ -311,12 +311,15 @@ fn run_casscf(
     canonicalize: bool,
     casscf_integrals: &str,
     casscf_integral_thresh: Option<f64>,
+    casscf_optimizer: &str,
 ) -> PyResult<PyCasScfResult> {
     let integrals = ferric_ci::casscf::CasScfIntegrals::parse_config_str(
         casscf_integrals,
         casscf_integral_thresh,
     )
     .map_err(|e| make_err(format!("run_casscf: casscf_{e}")))?;
+    let optimizer = ferric_ci::CasScfOptimizer::parse_config_str(casscf_optimizer)
+        .map_err(|e| make_err(format!("run_casscf: casscf_{e}")))?;
     // The valence count and V_ECP of an ECP basis, as the SCF bindings use.
     let mut emol = mol.inner.clone();
     emol.apply_ecp(&basis_set.inner);
@@ -352,6 +355,7 @@ fn run_casscf(
         memory_budget_bytes: budget,
         canonicalize,
         integrals,
+        optimizer,
         ..Default::default()
     };
     let r = py
@@ -469,7 +473,7 @@ impl PyNevpt2Result {
 /// SC-NEVPT2 on a CASSCF (default) or CAS-CI reference from the canonical
 /// RHF orbitals. The reference must converge; an unconverged one raises.
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, n_active, n_elec_active, n_core=None, reference="casscf", casscf_grad_tol=1e-7, casscf_energy_tol=1e-12, casscf_max_iter=300, casscf_max_step=0.2, ci_conv_thresh=1e-10, ci_max_subspace=50, ci_max_iter=200, memory_budget_gb=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, casscf_integrals="auto", casscf_integral_thresh=None))]
+#[pyo3(signature = (mol, basis_set, n_active, n_elec_active, n_core=None, reference="casscf", casscf_grad_tol=1e-7, casscf_energy_tol=1e-12, casscf_max_iter=300, casscf_max_step=0.2, ci_conv_thresh=1e-10, ci_max_subspace=50, ci_max_iter=200, memory_budget_gb=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, casscf_integrals="auto", casscf_integral_thresh=None, casscf_optimizer="bfgs"))]
 #[allow(clippy::too_many_arguments)]
 fn run_nevpt2(
     py: Python<'_>,
@@ -492,12 +496,15 @@ fn run_nevpt2(
     scf_density_conv: Option<f64>,
     casscf_integrals: &str,
     casscf_integral_thresh: Option<f64>,
+    casscf_optimizer: &str,
 ) -> PyResult<PyNevpt2Result> {
     let integrals = ferric_ci::casscf::CasScfIntegrals::parse_config_str(
         casscf_integrals,
         casscf_integral_thresh,
     )
     .map_err(|e| make_err(format!("run_nevpt2: casscf_{e}")))?;
+    let optimizer = ferric_ci::CasScfOptimizer::parse_config_str(casscf_optimizer)
+        .map_err(|e| make_err(format!("run_nevpt2: casscf_{e}")))?;
     let on = ferric_ci::driver::Nevpt2On::parse_config_str(reference)
         .map_err(|e| make_err(format!("run_nevpt2: {e}")))?;
     let mut emol = mol.inner.clone();
@@ -533,6 +540,7 @@ fn run_nevpt2(
         ci_max_iter,
         memory_budget_bytes: budget,
         integrals,
+        optimizer,
         ..Default::default()
     };
     let run = py
