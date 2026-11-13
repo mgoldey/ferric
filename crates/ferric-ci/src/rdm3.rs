@@ -432,28 +432,8 @@ pub fn hole_rdms(
     );
     let _mem = plan.commit()?;
 
+    let (g2, g3) = e_product_rdms(dm1, dm2, dm3);
     let dl = |i: usize, j: usize| if i == j { 1.0 } else { 0.0 };
-    let mut g2 = Array4::<f64>::zeros((n, n, n, n));
-    for ((p, q, r, s_), v) in g2.indexed_iter_mut() {
-        *v = dm2[[p, q, r, s_]] + dl(q, r) * dm1[[p, s_]];
-    }
-    let mut g3 = Array6::<f64>::zeros((n, n, n, n, n, n));
-    for ((p, q, r, s_, t, u), v) in g3.indexed_iter_mut() {
-        let mut val = dm3[[p, q, r, s_, t, u]];
-        if q == r {
-            val += dm2[[p, s_, t, u]];
-        }
-        if s_ == t {
-            val += dm2[[p, q, r, u]];
-        }
-        if q == t {
-            val += dm2[[p, u, r, s_]];
-        }
-        if q == r && s_ == t {
-            val += dm1[[u, p]];
-        }
-        *v = val;
-    }
 
     // make_hdm1: 2δ − dm1ᵀ.
     let mut hdm1 = Array2::<f64>::zeros((n, n));
@@ -483,4 +463,46 @@ pub fn hole_rdms(
             - dl(a, r) * g2[[b, q, c, p]];
     }
     Ok(HoleRdms { hdm1, hdm2, hdm3 })
+}
+
+/// E-product RDMs `G2[p,q,r,s] = ⟨E_pq E_rs⟩` and
+/// `G3[p,q,r,s,t,u] = ⟨E_pq E_rs E_tu⟩` (PySCF `fci.rdm.make_dm123` without
+/// `reorder_dm123`) from the normal-ordered `dm1`, `dm2`, `dm3`:
+///
+/// ```text
+///   G2 = dm2[p,q,r,s] + δ_qr dm1[p,s]
+///   G3 = dm3 + δ_qr dm2[p,s,t,u] + δ_st dm2[p,q,r,u] + δ_qt dm2[p,u,r,s] + δ_qr δ_st dm1[u,p]
+/// ```
+///
+/// (the inverse of the reordering in the module documentation). Shapes are
+/// not checked here; [`hole_rdms`] checks them.
+pub fn e_product_rdms(
+    dm1: &Array2<f64>,
+    dm2: &Array4<f64>,
+    dm3: &Array6<f64>,
+) -> (Array4<f64>, Array6<f64>) {
+    let n = dm1.nrows();
+    let dl = |i: usize, j: usize| if i == j { 1.0 } else { 0.0 };
+    let mut g2 = Array4::<f64>::zeros((n, n, n, n));
+    for ((p, q, r, s_), v) in g2.indexed_iter_mut() {
+        *v = dm2[[p, q, r, s_]] + dl(q, r) * dm1[[p, s_]];
+    }
+    let mut g3 = Array6::<f64>::zeros((n, n, n, n, n, n));
+    for ((p, q, r, s_, t, u), v) in g3.indexed_iter_mut() {
+        let mut val = dm3[[p, q, r, s_, t, u]];
+        if q == r {
+            val += dm2[[p, s_, t, u]];
+        }
+        if s_ == t {
+            val += dm2[[p, q, r, u]];
+        }
+        if q == t {
+            val += dm2[[p, u, r, s_]];
+        }
+        if q == r && s_ == t {
+            val += dm1[[u, p]];
+        }
+        *v = val;
+    }
+    (g2, g3)
 }

@@ -3,7 +3,8 @@
 ferric runs complete-active-space configuration interaction (CAS-CI) and
 two-step CASSCF from a closed-shell RHF reference, from Rust
 (`ferric_ci::run_cas_ci`, `ferric_ci::run_casscf`) or Python
-(`ferric.run_casci`, `ferric.run_casscf`). The CLI exposes neither.
+(`ferric.run_casci`, `ferric.run_casscf`), and SC-NEVPT2 on top of either
+(`ferric_ci::sc_nevpt2`, `ferric.run_nevpt2`). The CLI exposes none of them.
 
 The Hamiltonian, the determinant phase convention and the Slater-Condon rules
 are derived in `crates/ferric-ci/theory.md`. The phase conventions are checked
@@ -20,6 +21,7 @@ by `scripts/casci_slater_condon_phases_sympy.py`.
 | Entry points | Rust `ferric_ci::run_cas_ci` (re-exported as `ferric::ci`); Python `ferric.run_casci` |
 | Density matrices | spin-summed 1- and 2-RDM of the root, opt-in (`compute_rdms`) |
 | Orbital optimization | two-step CASSCF, single root of any $(n_\alpha, n_\beta)$ sector, optional canonical orbitals (see [CASSCF](#casscf)) |
+| Perturbation theory | SC-NEVPT2 on the single root, $n_\alpha = n_\beta$ (see [SC-NEVPT2](#sc-nevpt2)) |
 | Not implemented | open-shell or non-singlet references, S² control, multiple roots, state averaging, CLI `method.kind`, spin-resolved RDMs |
 
 With no inactive orbitals the method is FCI in the basis. A call that fails
@@ -191,6 +193,48 @@ in the $M_s = 0$ and $M_s = 1$ sectors, N2, O2 at $M_s = 1$) the energy equals
 the full-window `run_cas_ci` of the same sector to 1e-13 Ha and
 $2(F - F^\mathsf{T})$ is below 8e-11. Canonicalization moves the energy by at
 most 5.7e-14 Ha; the RDMs of the returned CI vector rebuild it to 2.8e-14 Ha.
+
+## SC-NEVPT2
+
+`run_nevpt2` (Rust `ferric_ci::sc_nevpt2`) adds strongly contracted NEVPT2
+(Angeli et al., JCP 117, 9138 (2002)) to a CASSCF (`reference="casscf"`,
+the default) or CAS-CI (`reference="casci"`, on the RHF orbitals) root. The
+zeroth-order Hamiltonian is Dyall's; the core and virtual orbitals are the
+eigenvectors of the core and virtual blocks of $F^I + F^A$, as in PySCF
+`mrpt.NEVPT`. The result carries the eight class energies and norms
+(`Sr`, `Si`, `Sijrs`, `Sijr`, `Srsi`, `Srs`, `Sij`, `Sir`), their sum
+`e_corr`, and `e_total = e_reference + e_corr`. Equations:
+`crates/ferric-ci/theory.md`.
+
+```python
+import ferric
+
+mol = ferric.Molecule.from_xyz("water.xyz")
+r = ferric.run_nevpt2(mol, ferric.BasisSet.bundled("6-31g"), 4, (2, 2))
+print(r.e_total, r.e_corr, r.energies["Sir"])
+```
+
+It refuses an unconverged CASSCF or CAS-CI reference, $n_\alpha \ne n_\beta$,
+a CI vector that is not an eigenvector of the active Hamiltonian to 1e-8,
+and a memory budget that cannot hold the dense AO integrals, the MO blocks
+and the $n_\text{act}^6$ intermediates (checked before any integral is
+built). Single root; no CLI `method.kind`; the certificate (capability
+`nevpt2`) is ungraded.
+
+Validation (`crates/ferric-ci/tests/nevpt2.rs`, 6-31G, measured 2026-11-12):
+
+| Check | Largest difference | Bar |
+|---|---:|---:|
+| Classes with an empty external space (H2, LiH) | exactly 0 | 0 |
+| One closed-shell active orbital vs MP2 pair sums (H2O) | 8.1e-15 Ha | 1e-10 Ha |
+| numpy prototype on the same orbitals and CI vector (H2O CAS(4,4), N2 CAS(6,6) at 1.0977 and 2.2 Å) | 6.2e-14 Ha | 2.3e-10 to 4.6e-9 Ha |
+| PySCF `mrpt.NEVPT` on its own CASSCF, per class: H2O / N2 / stretched N2 | 1.3e-8 / 3.2e-8 / 2.1e-8 Ha | per class, from both CASSCF gradients |
+
+The PySCF bar per class is $|dE_\text{class}/d\kappa|$ times the orbital
+distance between the two converged references,
+$(\lVert g\rVert + \lVert g_\text{PySCF}\rVert)/\lambda_\text{min}$, plus
+twice the class spread under rotations inside degenerate core or virtual
+orbitals, plus 1e-10 Ha. PySCF's gradients (2e-7 to 1e-6) set it.
 
 ## Limits
 

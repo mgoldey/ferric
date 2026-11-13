@@ -23,6 +23,9 @@
 //!    lists — see [`rdm`]. [`rdm3`] adds the 3-RDM, the two `(aa|aa)`-
 //!    contracted 4-RDM intermediates and the hole RDMs used by NEVPT2.
 //!
+//! [`nevpt2`] adds strongly contracted NEVPT2 on a converged CAS-CI or
+//! CASSCF reference (closed-shell active spaces, `n_alpha == n_beta`).
+//!
 //! [`casscf`] adds two-step CASSCF on top: [`run_cas_ci_on_integrals`] with
 //! RDMs in the current orbitals, the generalized-Fock orbital gradient and an
 //! inverse-BFGS step `C ← C exp(K)`, single root.
@@ -41,7 +44,6 @@
 //! * **Open-shell / non-singlet references, S² handling, multiple roots**: the
 //!   reference is a closed-shell RHF; `n_alpha == n_beta` is not checked, and
 //!   only the single lowest root is extracted.
-//! * **NEVPT2 energy.** [`rdm3`] provides its RDM inputs only.
 //! * **CLI wiring.** Python exposes `ferric.run_casci` and `ferric.run_casscf`
 //!   (`crates/ferric-python/src/ci.rs`); there is no CLI `method.kind`.
 //!
@@ -62,6 +64,8 @@ pub mod davidson;
 pub mod hamiltonian;
 /// Active-space MO integral transform.
 pub mod integrals;
+/// Strongly contracted NEVPT2 on a CAS-CI or CASSCF reference.
+pub mod nevpt2;
 /// Spin-summed 1- and 2-particle reduced density matrices.
 pub mod rdm;
 /// 3-RDM, contracted 4-RDM intermediates and hole RDMs (NEVPT2 inputs).
@@ -72,6 +76,7 @@ pub mod sigma;
 pub mod strings;
 
 pub use casscf::{run_casscf, CasScfConfig, CasScfResult};
+pub use nevpt2::{sc_nevpt2, Nevpt2Classes, Nevpt2Config, Nevpt2Reference, Nevpt2Result};
 pub use rdm::CasCiRdms;
 pub use rdm3::{hole_rdms, nevpt_rdms, HoleRdms, NevptRdms};
 
