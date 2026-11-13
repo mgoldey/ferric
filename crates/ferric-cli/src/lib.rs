@@ -7438,16 +7438,24 @@ fn run_optimize(
 }
 
 /// TDA/TDDFT on a functional with no complete f_xc kernel (VV10,
-/// range-separated) is refused by `run_tddft`; check it before the reference
-/// SCF is spent on a run that cannot finish.
+/// range-separated), or with an unknown `[tddft] solver`, is refused; check it
+/// before the reference SCF is spent on a run that cannot finish.
 fn refuse_tddft_xc_without_kernel(cfg: &Config, method: &str) {
-    let Some(xc_name) = cfg.tddft.xc.as_deref() else {
-        return;
-    };
     if !matches!(method, "tda" | "tddft") {
         return;
     }
-    if let Err(e) = ferric_dft::lr_kernel::resolve_singlet_response_xc(xc_name, "[tddft] xc") {
+    exit_on_tddft_error(cfg.tddft.solver());
+    if let Some(xc_name) = cfg.tddft.xc.as_deref() {
+        exit_on_tddft_error(ferric_dft::lr_kernel::resolve_singlet_response_xc(
+            xc_name,
+            "[tddft] xc",
+        ));
+    }
+}
+
+/// Print a `[tddft]` configuration error and exit 1.
+fn exit_on_tddft_error<T, E: std::fmt::Display>(r: Result<T, E>) {
+    if let Err(e) = r {
         eprintln!("error: {e}");
         std::process::exit(1);
     }
@@ -7513,6 +7521,11 @@ fn run_tddft_arm(
             .clone()
             .unwrap_or_else(ferric_dft::grid::AtomicGridConfig::production),
         c_hf_override: cfg.tddft.c_hf,
+        solver: cfg.tddft.solver().unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }),
+        davidson: ferric_tddft::davidson::DavidsonSettings::default(),
     };
     if let Some(xc) = config.xc.as_deref() {
         println!(
@@ -7529,7 +7542,7 @@ fn run_tddft_arm(
 
     let ha_to_ev = 27.211_386_245_988;
     println!(
-        "{:?} — {} roots (c_HF = {:.2}, f_xc kernel: {}):",
+        "{:?} — {} roots (c_HF = {:.2}, f_xc kernel: {}, solver: {}):",
         tddft_method,
         config.n_roots,
         c_hf,
@@ -7537,30 +7550,34 @@ fn run_tddft_arm(
             "included"
         } else {
             "none (HF reference)"
-        }
+        },
+        r.solver.name()
     );
     println!(
-        "  {:>5}  {:>12}  {:>10}  {:>10}",
-        "Root", "Energy (Ha)", "eV", "f"
+        "  {:>5}  {:>12}  {:>10}  {:>10}  {:>10}",
+        "Root", "Energy (Ha)", "eV", "f", "residual"
     );
-    for (i, (&e, &f)) in r
+    for (i, ((&e, &f), &res)) in r
         .excitation_energies
         .iter()
         .zip(&r.oscillator_strengths)
+        .zip(&r.residuals)
         .enumerate()
     {
         println!(
-            "  {:>5}  {:>12.6}  {:>10.4}  {:>10.6}",
+            "  {:>5}  {:>12.6}  {:>10.4}  {:>10.6}  {:>10.2e}",
             i + 1,
             e,
             e * ha_to_ev,
-            f
+            f,
+            res
         );
     }
     print_and_note_certificate(&ferric_tddft::certificate::tddft_certificate(
         scf_cert,
         auxbasis_name,
         &config,
+        &r,
         cfg.dft.sets_any_grid_key(),
     ));
 }

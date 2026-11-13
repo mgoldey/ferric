@@ -2473,7 +2473,25 @@ class TddftResult:
         ``approximations`` (the grid the reference SCF and the f_xc kernel
         shared, equal to ``grid``, with whether it was the meta-GGA response
         default 150 x 434 or an explicit ``grid_*`` choice); a meta-GGA run
-        also warns that its roots are grid-sensitive."""
+        also warns that its roots are grid-sensitive. Every run lists
+        ``eigensolver``: the solver, the root count and the largest root
+        residual (Davidson: also its conv_tol and iteration count)."""
+        ...
+
+    @property
+    def solver(self) -> str:
+        """The eigensolver that ran: "dense" or "davidson"."""
+        ...
+
+    @property
+    def iterations(self) -> int:
+        """Davidson iterations (0 for the dense solver)."""
+        ...
+
+    @property
+    def residuals(self) -> NDArray[np.float64]:
+        """Residual norm of each root (Hartree), same order as the energies:
+        ||A X - omega X|| for TDA, sqrt((||r+||^2 + ||r-||^2)/2) for Casida."""
         ...
 
     @property
@@ -5408,6 +5426,7 @@ def run_tddft(
     grid_prune: str | None = None,
     grid_weight_cut: float | None = None,
     scf_ri_j_precision: str | None = None,
+    solver: str = "auto",
 ) -> TddftResult:
     """Closed-shell singlet linear response. functional=None runs on an RHF
     reference (CIS for method="tda"/"cis", TDHF for "casida"/"rpa"/"tddft"/
@@ -5427,7 +5446,12 @@ def run_tddft(
     kernel); there is no kernel-less DFT result. Coulomb/exchange response
     integrals are RI over `auxbasis`. `scf_max_iter`, `scf_energy_conv`,
     `scf_density_conv` set the reference SCF as in `run_rhf` (defaults unchanged
-    when omitted)."""
+    when omitted).
+
+    solver: "dense" (full A, B and eigh), "davidson" (matrix-free block
+    Davidson; an unconverged root raises) or "auto" (dense up to
+    nocc*nvir = 200, Davidson above). Any other value is a ValueError.
+    TddftResult.solver and .residuals report what ran."""
     ...
 
 def run_double_hybrid(

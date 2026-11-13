@@ -23,13 +23,31 @@
 //! Scope: closed-shell (restricted) references, singlet excitations. An
 //! open-shell reference is refused — there is no spin-resolved A/B assembly
 //! here, for HF or KS.
+//!
+//! # Solvers
+//!
+//! [`TddftSolver::Dense`] assembles A (and B) as `dim × dim` matrices
+//! (`dim = nocc·nvir`) and diagonalizes them fully; the f_xc block costs
+//! `dim` AO kernel applications. [`TddftSolver::Davidson`] never forms them:
+//! [`crate::davidson`] iterates on products with a block of vectors
+//! (the private `matvec` module: RI Coulomb, `c_HF` RI exchange and one batched f_xc
+//! application per block, [`ferric_dft::lr_kernel::SingletOvFxc`]). Both
+//! report each root's residual. [`TddftSolver::Auto`] takes the dense path
+//! up to [`AUTO_DENSE_MAX_DIM`].
+//!
+//! Under `FERRIC_TIMING` a phase table is printed to stderr (RI tensors,
+//! kernel setup, assembly / products, eigensolve, oscillator strengths).
 
+use crate::davidson::{davidson_casida, davidson_tda, DavidsonOutcome, DavidsonSettings};
+use crate::matvec::ResponseOperator;
 use ferric_core::memory::plan::{Lifetime, MemoryPlan};
 use ferric_core::mol::Molecule;
+use ferric_core::timing::PhaseAccumulator;
 use ferric_core::FerricError;
 use ferric_dft::grid::AtomicGridConfig;
 use ferric_dft::lr_kernel::{
-    resolve_singlet_response_xc, singlet_fxc_ov_block, SingletKernel, FXC_BLOCK_ASYMMETRY_TOL,
+    resolve_singlet_response_xc, singlet_fxc_ov_block, SingletKernel, SingletOvFxc,
+    FXC_BLOCK_ASYMMETRY_TOL,
 };
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::oneelectron;
@@ -49,6 +67,56 @@ pub enum TddftMethod {
     /// Full linear response: solve the `(A, B)` problem through
     /// `(A−B)^½ (A+B) (A−B)^½ Z = Ω² Z` (dense, `dim = nocc·nvir`).
     Casida,
+}
+
+/// Largest `dim = nocc·nvir` that [`TddftSolver::Auto`] solves densely.
+pub const AUTO_DENSE_MAX_DIM: usize = 200;
+
+/// Eigensolver for the response problem.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TddftSolver {
+    /// Dense A (and B) and a full `eigh`; `dim` f_xc kernel applications.
+    Dense,
+    /// Matrix-free block Davidson ([`crate::davidson`]).
+    Davidson,
+    /// [`Self::Dense`] for `dim <= AUTO_DENSE_MAX_DIM` or when the Davidson
+    /// guess space would cover half of `dim`, else [`Self::Davidson`].
+    #[default]
+    Auto,
+}
+
+impl TddftSolver {
+    /// `"dense"`, `"davidson"` or `"auto"` (case-insensitive); anything else
+    /// is an error.
+    pub fn parse_config_str(s: &str) -> Result<Self, FerricError> {
+        match s.to_ascii_lowercase().as_str() {
+            "dense" => Ok(Self::Dense),
+            "davidson" => Ok(Self::Davidson),
+            "auto" => Ok(Self::Auto),
+            other => Err(FerricError::General(format!(
+                "TDDFT solver '{other}' is not one of \"dense\", \"davidson\", \"auto\""
+            ))),
+        }
+    }
+
+    /// The solver `Auto` resolves to for `dim` and `n_roots` (the others
+    /// resolve to themselves).
+    pub fn resolve(self, dim: usize, n_roots: usize) -> Self {
+        match self {
+            Self::Auto if dim <= AUTO_DENSE_MAX_DIM || 4 * n_roots.max(1) >= dim => Self::Dense,
+            Self::Auto => Self::Davidson,
+            other => other,
+        }
+    }
+
+    /// Lower-case name, as the config key spells it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Dense => "dense",
+            Self::Davidson => "davidson",
+            Self::Auto => "auto",
+        }
+    }
 }
 
 /// Configuration for a TDDFT calculation.
@@ -91,6 +159,10 @@ pub struct TddftConfig {
     /// reference with `c_HF != 1` is neither CIS/TDHF nor any TDDFT, and is
     /// refused.
     pub c_hf_override: Option<f64>,
+    /// Eigensolver; [`TddftSolver::Auto`] by default.
+    pub solver: TddftSolver,
+    /// Davidson iteration controls (ignored by the dense solver).
+    pub davidson: DavidsonSettings,
 }
 
 impl TddftConfig {
@@ -104,6 +176,8 @@ impl TddftConfig {
             xc: None,
             grid: AtomicGridConfig::production(),
             c_hf_override: None,
+            solver: TddftSolver::Auto,
+            davidson: DavidsonSettings::default(),
         }
     }
 }
@@ -134,6 +208,16 @@ pub struct TddftResult {
     /// every KS reference — there is no kernel-less DFT path — and false only
     /// for an HF reference, where the kernel is identically zero.
     pub fxc_included: bool,
+    /// The solver that ran ([`TddftSolver::Dense`] or
+    /// [`TddftSolver::Davidson`], never `Auto`).
+    pub solver: TddftSolver,
+    /// Residual norm of each returned root, same ordering as the energies:
+    /// `‖A X − ω X‖` (TDA, unit X) or `√((‖r+‖² + ‖r−‖²)/2)` (Casida, see
+    /// [`crate::davidson`]). For the dense solver it is evaluated with the
+    /// dense matrices.
+    pub residuals: Vec<f64>,
+    /// Davidson iterations (0 for the dense solver).
+    pub iterations: usize,
 }
 
 impl std::fmt::Display for TddftResult {
@@ -680,6 +764,231 @@ fn lowest_positive_roots(eigenvalues: &Array1<f64>, n_roots: usize) -> Vec<usize
     indices
 }
 
+/// Roots of one solve: eigenvalues (ascending), amplitude columns (TDA `X`,
+/// Casida `X+Y`), residuals and the Davidson iteration count.
+struct Roots {
+    omega: Array1<f64>,
+    amplitudes: Array2<f64>,
+    residuals: Vec<f64>,
+    iterations: usize,
+}
+
+/// The `(ia)` space of a closed-shell reference.
+struct OvSpace {
+    nocc: usize,
+    nvir: usize,
+    c_occ: Array2<f64>,
+    c_vir: Array2<f64>,
+}
+
+impl OvSpace {
+    fn new(scf: &ScfResult, nocc: usize) -> Result<Self, FerricError> {
+        // nmo, not nbasis: the SCF may have dropped near-linearly-dependent
+        // combinations, and the virtual space is what the MOs span.
+        let nmo = scf.eps_r().len();
+        let nvir = nmo.saturating_sub(nocc);
+        if nocc * nvir == 0 {
+            return Err(FerricError::General(
+                "TDDFT: no excitations possible (nocc*nvir = 0)".to_string(),
+            ));
+        }
+        let c = scf.mos_r();
+        Ok(Self {
+            nocc,
+            nvir,
+            c_occ: c.slice(ndarray::s![.., ..nocc]).to_owned(),
+            c_vir: c.slice(ndarray::s![.., nocc..nmo]).to_owned(),
+        })
+    }
+
+    fn dim(&self) -> usize {
+        self.nocc * self.nvir
+    }
+
+    /// `ε_a − ε_i` in `ia = i·nvir + a` order.
+    fn orbital_differences(&self, eps: &[f64]) -> Array1<f64> {
+        let (nocc, nvir) = (self.nocc, self.nvir);
+        Array1::from_shape_fn(nocc * nvir, |ia| eps[nocc + ia % nvir] - eps[ia / nvir])
+    }
+}
+
+/// The RI tensors of one run, in standard layout (the matrix-free products
+/// reshape their rows).
+struct RiTensors {
+    b_ov: Array2<f64>,
+    b_oo: Array2<f64>,
+    b_vv: Array2<f64>,
+}
+
+/// `‖A x_n − ω_n x_n‖` for each column.
+fn tda_residuals(a: &Array2<f64>, omega: &Array1<f64>, x: &Array2<f64>) -> Vec<f64> {
+    let ax = a.dot(x);
+    (0..x.ncols())
+        .map(|n| {
+            let r = &ax.column(n) - &(omega[n] * &x.column(n));
+            r.dot(&r).sqrt()
+        })
+        .collect()
+}
+
+/// Casida residual of each dense root, defined as in [`crate::davidson`]:
+/// with `X−Y = (A+B)(X+Y)/Ω`, `r+ = 0` and `r− = (A−B)(X−Y) − Ω (X+Y)`.
+fn casida_residuals(
+    a: &Array2<f64>,
+    b_mat: &Array2<f64>,
+    omega: &Array1<f64>,
+    xpy: &Array2<f64>,
+) -> Vec<f64> {
+    let xmy = (a + b_mat).dot(xpy);
+    let amb = a - b_mat;
+    (0..xpy.ncols())
+        .map(|n| {
+            let xm = &xmy.column(n) / omega[n];
+            let r = &amb.dot(&xm) - &(omega[n] * &xpy.column(n));
+            (0.5 * r.dot(&r)).sqrt()
+        })
+        .collect()
+}
+
+/// Keep the lowest `n_roots` positive roots of a dense solve.
+fn select_roots(
+    omega: &Array1<f64>,
+    amps: &Array2<f64>,
+    n_roots: usize,
+) -> (Array1<f64>, Array2<f64>) {
+    let idx = lowest_positive_roots(omega, n_roots);
+    (
+        idx.iter().map(|&i| omega[i]).collect(),
+        amps.select(ndarray::Axis(1), &idx),
+    )
+}
+
+/// The dense path: assemble A (and B), add the f_xc block, diagonalize.
+fn solve_dense(
+    config: &TddftConfig,
+    scf: &ScfResult,
+    space: &OvSpace,
+    ri: &RiTensors,
+    c_hf: f64,
+    kernel: Option<&SingletKernel>,
+    acc: &mut PhaseAccumulator,
+) -> Result<Roots, FerricError> {
+    let (nocc, nvir) = (space.nocc, space.nvir);
+    let n_roots = config.n_roots.min(space.dim());
+    let eps = scf.eps_r();
+    let (b_ov, b_oo, b_vv) = (&ri.b_ov, &ri.b_oo, &ri.b_vv);
+    let mut a = acc.time("dense: A assembly", || {
+        build_a_matrix(eps, nocc, nvir, b_ov, b_oo, b_vv, c_hf)
+    });
+    match config.method {
+        TddftMethod::Tda => {
+            acc.time("dense: f_xc block", || {
+                add_fxc_block(kernel, scf, nocc, nvir, &mut [&mut a])
+            })?;
+            let (w, x) = acc.time("dense: eigh", || solve_tda(&a))?;
+            let (omega, amplitudes) = select_roots(&w, &x, n_roots);
+            let residuals = tda_residuals(&a, &omega, &amplitudes);
+            Ok(Roots {
+                omega,
+                amplitudes,
+                residuals,
+                iterations: 0,
+            })
+        }
+        TddftMethod::Casida => {
+            let mut b_mat = acc.time("dense: B assembly", || {
+                build_b_matrix(nocc, nvir, b_ov, b_oo, b_vv, c_hf)
+            });
+            acc.time("dense: f_xc block", || {
+                add_fxc_block(kernel, scf, nocc, nvir, &mut [&mut a, &mut b_mat])
+            })?;
+            let (w, xpy) = acc.time("dense: eigh", || solve_casida(&a, &b_mat))?;
+            let (omega, amplitudes) = select_roots(&w, &xpy, n_roots);
+            let residuals = casida_residuals(&a, &b_mat, &omega, &amplitudes);
+            Ok(Roots {
+                omega,
+                amplitudes,
+                residuals,
+                iterations: 0,
+            })
+        }
+    }
+}
+
+/// Columns of the Davidson subspace and its products held at once: V and
+/// A·V (TDA) or V, (A+B)·V and (A−B)·V (Casida), plus one block of new
+/// vectors and their products.
+fn reserve_davidson(plan: &mut MemoryPlan, config: &TddftConfig, dim: usize) {
+    let stores = match config.method {
+        TddftMethod::Tda => 2,
+        TddftMethod::Casida => 3,
+    };
+    let space = config
+        .davidson
+        .max_space
+        .unwrap_or_else(|| (12 * config.n_roots + 8).max(50))
+        .min(dim);
+    plan.reserve(
+        "Davidson subspace and products",
+        (stores + 1usize).saturating_mul(dim).saturating_mul(space),
+        Lifetime::Resident,
+    );
+}
+
+/// The matrix-free path.
+fn solve_davidson(
+    config: &TddftConfig,
+    scf: &ScfResult,
+    space: &OvSpace,
+    ri: &RiTensors,
+    c_hf: f64,
+    kernel: Option<&SingletKernel>,
+    plan: &mut MemoryPlan,
+    acc: &mut PhaseAccumulator,
+) -> Result<Roots, FerricError> {
+    let (nocc, nvir) = (space.nocc, space.nvir);
+    if let Some(k) = kernel {
+        let doubles = SingletOvFxc::resident_doubles(
+            nocc,
+            nvir,
+            SingletOvFxc::kernel_npts(k),
+            SingletOvFxc::kernel_has_gradients(k),
+        );
+        plan.reserve("f_xc MO values on the grid", doubles, Lifetime::Resident);
+        plan.check()?;
+    }
+    let fxc = acc
+        .time("davidson: f_xc MO grid setup", || {
+            kernel
+                .map(|k| SingletOvFxc::new(k, &scf.density_alpha, scf.mos_r(), 0, nocc, nocc, nvir))
+                .transpose()
+        })
+        .map_err(|e| FerricError::General(format!("run_tddft: f_xc operator: {e}")))?;
+    let op = ResponseOperator {
+        diag: space.orbital_differences(scf.eps_r()),
+        b_ov: &ri.b_ov,
+        b_oo: &ri.b_oo,
+        b_vv: &ri.b_vv,
+        nocc,
+        nvir,
+        c_hf,
+        fxc,
+    };
+    let s = &config.davidson;
+    let out: DavidsonOutcome = match config.method {
+        TddftMethod::Tda => davidson_tda(|x| op.apply_a(x, acc), &op.diag, config.n_roots, s)?,
+        TddftMethod::Casida => {
+            davidson_casida(|x| op.apply_pm(x, acc), &op.diag, config.n_roots, s)?
+        }
+    };
+    Ok(Roots {
+        omega: out.eigenvalues,
+        amplitudes: out.vectors,
+        residuals: out.residuals,
+        iterations: out.iterations,
+    })
+}
+
 /// Run a TDDFT (TDA or Casida) singlet calculation on a closed-shell reference.
 ///
 /// `config.xc` names the functional the reference was converged with (`None`
@@ -691,22 +1000,26 @@ fn lowest_positive_roots(eigenvalues: &Array1<f64>, n_roots: usize) -> Vec<usize
 ///     functional, kernel from [`ferric_dft::lr_kernel`] on `config.grid`.
 ///
 /// Coulomb and exchange integrals are RI (Coulomb metric) over `dfbs`.
+/// `config.solver` picks the dense or the Davidson eigensolver (module docs).
 ///
 /// # Memory
 ///
-/// `dim = nocc*nvir` grows as N², so every dense matrix here is N⁴; a
+/// Dense: `dim = nocc*nvir` grows as N², so every dense matrix here is N⁴; a
 /// water/cc-pVTZ Casida run holds nine co-resident dim² matrices. The plan
 /// (`reserve_dense_response`, `reserve_fxc_block`, and the RI tensors in
 /// `build_b_tensors`) is counted from the actual live sets in BOTH directions:
 /// under-counting OOMs, over-counting refuses jobs that would have fit.
+/// Davidson: the RI tensors, the subspace (`dim × max_space` per stored
+/// product) and the MO values of the f_xc operator on the grid.
 ///
 /// # Errors
 ///
 /// Hard errors — never a warning plus a number — for: an unconverged or
 /// open-shell reference; a functional without a complete kernel (VV10,
 /// range-separated hybrid); a `c_hf` override on an HF reference; an
-/// empty `(ia)` space; an over-budget dense matrix; an f_xc block whose
-/// asymmetry exceeds the grid-noise tolerance; an RPA instability (Casida).
+/// empty `(ia)` space; an over-budget allocation; an f_xc block whose
+/// asymmetry exceeds the grid-noise tolerance; an RPA instability (Casida);
+/// a Davidson root that does not converge.
 pub fn run_tddft(
     mol: &Molecule,
     obs: &PreparedBasis,
@@ -714,71 +1027,78 @@ pub fn run_tddft(
     scf: &ScfResult,
     config: &TddftConfig,
 ) -> Result<TddftResult, FerricError> {
+    let mut acc = PhaseAccumulator::new().report_on_drop("TDDFT");
     let nocc = closed_shell_nocc(mol, scf)?;
     // Functional gate before any integral work.
     let (c_hf, xc_def) = resolve_response_xc(config.xc.as_deref(), config.c_hf_override)?;
-
-    let eps = scf.eps_r();
-    // nmo, not nbasis: the SCF may have dropped near-linearly-dependent
-    // combinations, and the virtual space is what the MOs span.
-    let nmo = eps.len();
-    let nvir = nmo.saturating_sub(nocc);
-    let dim = nocc * nvir;
-    if dim == 0 {
-        return Err(FerricError::General(
-            "TDDFT: no excitations possible (nocc*nvir = 0)".to_string(),
-        ));
-    }
-    let c = scf.mos_r();
-    let c_occ = c.slice(ndarray::s![.., ..nocc]).to_owned();
-    let c_vir = c.slice(ndarray::s![.., nocc..nmo]).to_owned();
+    let space = OvSpace::new(scf, nocc)?;
+    let dim = space.dim();
+    let solver = config.solver.resolve(dim, config.n_roots.min(dim));
 
     let label = match config.method {
         TddftMethod::Tda => "TDDFT/TDA",
         TddftMethod::Casida => "TDDFT/Casida",
     };
     let mut plan = MemoryPlan::resolve(config.memory_budget_bytes, label);
-    reserve_dense_response(&mut plan, config.method, dim);
-    if xc_def.is_some() {
-        reserve_fxc_block(&mut plan, config.method, dim);
+    if solver == TddftSolver::Dense {
+        reserve_dense_response(&mut plan, config.method, dim);
+        if xc_def.is_some() {
+            reserve_fxc_block(&mut plan, config.method, dim);
+        }
+    } else {
+        reserve_davidson(&mut plan, config, dim);
     }
     let budget = config.memory_budget_bytes;
-    let (b_ov, b_oo, b_vv) = build_b_tensors(obs, dfbs, &c_occ, &c_vir, &mut plan, budget)?;
-
-    let kernel = build_kernel(mol, obs, xc_def, &config.grid, scf)?;
-    let mut a = build_a_matrix(eps, nocc, nvir, &b_ov, &b_oo, &b_vv, c_hf);
-    // `amplitudes` column n: TDA → X_n; Casida → (X+Y)_n.
-    let (eigenvalues, amplitudes) = match config.method {
-        TddftMethod::Tda => {
-            add_fxc_block(kernel.as_ref(), scf, nocc, nvir, &mut [&mut a])?;
-            solve_tda(&a)?
-        }
-        TddftMethod::Casida => {
-            let mut b_mat = build_b_matrix(nocc, nvir, &b_ov, &b_oo, &b_vv, c_hf);
-            add_fxc_block(kernel.as_ref(), scf, nocc, nvir, &mut [&mut a, &mut b_mat])?;
-            solve_casida(&a, &b_mat)?
-        }
+    let (c_occ, c_vir) = (&space.c_occ, &space.c_vir);
+    let (b_ov, b_oo, b_vv) = acc.time("RI B tensors", || {
+        build_b_tensors(obs, dfbs, c_occ, c_vir, &mut plan, budget)
+    })?;
+    let ri = RiTensors {
+        b_ov: b_ov.as_standard_layout().into_owned(),
+        b_oo: b_oo.as_standard_layout().into_owned(),
+        b_vv: b_vv.as_standard_layout().into_owned(),
+    };
+    let kernel = acc.time("f_xc kernel setup", || {
+        build_kernel(mol, obs, xc_def, &config.grid, scf)
+    })?;
+    let roots = match solver {
+        TddftSolver::Davidson => solve_davidson(
+            config,
+            scf,
+            &space,
+            &ri,
+            c_hf,
+            kernel.as_ref(),
+            &mut plan,
+            &mut acc,
+        )?,
+        _ => solve_dense(config, scf, &space, &ri, c_hf, kernel.as_ref(), &mut acc)?,
     };
 
-    let indices = lowest_positive_roots(&eigenvalues, config.n_roots.min(dim));
-    let (oscillator_strengths, transition_dipoles) = oscillator_strengths(
-        obs,
-        &c_occ,
-        &c_vir,
-        nocc,
-        nvir,
-        &eigenvalues,
-        &amplitudes,
-        &indices,
-    )?;
+    let cols: Vec<usize> = (0..roots.omega.len()).collect();
+    let (oscillator_strengths, transition_dipoles) = acc.time("oscillator strengths", || {
+        oscillator_strengths(
+            obs,
+            c_occ,
+            c_vir,
+            space.nocc,
+            space.nvir,
+            &roots.omega,
+            &roots.amplitudes,
+            &cols,
+        )
+    })?;
 
     Ok(TddftResult {
-        excitation_energies: indices.iter().map(|&i| eigenvalues[i]).collect(),
+        excitation_energies: roots.omega.to_vec(),
         oscillator_strengths,
         transition_dipoles,
         method: config.method,
         c_hf,
         fxc_included: kernel.is_some(),
+        solver,
+        residuals: roots.residuals,
+        iterations: roots.iterations,
     })
 }
 
@@ -836,5 +1156,255 @@ mod tests {
             0.25
         );
         assert!(resolve_response_xc(Some("PBE"), Some(f64::NAN)).is_err());
+    }
+
+    // ── Davidson route against the dense route ─────────────────────────────
+
+    use ferric_core::parallel::ParallelContext;
+    use ferric_scf::rhf::{solve_rhf, RhfConfig};
+    use ferric_scf::screening::SchwarzBounds;
+
+    struct Case {
+        mol: Molecule,
+        obs: PreparedBasis,
+        dfbs: PreparedBasis,
+        scf: ScfResult,
+    }
+
+    fn water(basis: &str, xc: Option<&str>) -> Case {
+        let xyz = format!(
+            "{}/../../testdata/molecules/water.xyz",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let mol = Molecule::load_xyz(&xyz).unwrap();
+        let obs = PreparedBasis::new(&mol, &ferric_core::basis::bundled(basis).unwrap()).unwrap();
+        let dfbs =
+            PreparedBasis::new(&mol, &ferric_core::basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let cfg = RhfConfig {
+            xc: xc.map(str::to_string),
+            density_conv: 1e-9,
+            max_iter: 200,
+            ..Default::default()
+        };
+        let scf = solve_rhf(&ParallelContext::default(), &mol, &obs, op, &bounds, &cfg).unwrap();
+        assert!(scf.converged);
+        Case {
+            mol,
+            obs,
+            dfbs,
+            scf,
+        }
+    }
+
+    fn spectral_norm(m: &Array2<f64>) -> f64 {
+        let s = 0.5 * (m + &m.t());
+        let (w, _) = s.eigh(UPLO::Lower).unwrap();
+        w.iter().fold(0.0_f64, |x, &y| x.max(y.abs()))
+    }
+
+    fn frobenius(m: &Array2<f64>) -> f64 {
+        m.iter().map(|x| x * x).sum::<f64>().sqrt()
+    }
+
+    fn gap(w: &Array1<f64>, k: usize) -> f64 {
+        (0..w.len())
+            .filter(|&j| j != k)
+            .map(|j| (w[j] - w[k]).abs())
+            .fold(f64::INFINITY, f64::min)
+    }
+
+    /// Dense A, B (f_xc included), the matrix-free operator densified by
+    /// applying it to the identity, and the run's `(ia)` space.
+    struct Densified {
+        a: Array2<f64>,
+        b: Array2<f64>,
+        a_mf: Array2<f64>,
+        p_mf: Array2<f64>,
+        m_mf: Array2<f64>,
+        /// Elementwise rounding bound of the RI terms (see the test docs).
+        ri_bar: f64,
+        /// f_xc floor: `FXC_BLOCK_ASYMMETRY_TOL · max|K|` (0 for HF).
+        fxc_bar: f64,
+    }
+
+    fn densify(c: &Case, xc: Option<&str>) -> Densified {
+        let nocc = closed_shell_nocc(&c.mol, &c.scf).unwrap();
+        let (c_hf, def) = resolve_response_xc(xc, None).unwrap();
+        let space = OvSpace::new(&c.scf, nocc).unwrap();
+        let (nvir, dim) = (space.nvir, space.dim());
+        let mut plan = MemoryPlan::resolve(None, "test");
+        let (b_ov, b_oo, b_vv) =
+            build_b_tensors(&c.obs, &c.dfbs, &space.c_occ, &space.c_vir, &mut plan, None).unwrap();
+        let ri = RiTensors {
+            b_ov: b_ov.as_standard_layout().into_owned(),
+            b_oo: b_oo.as_standard_layout().into_owned(),
+            b_vv: b_vv.as_standard_layout().into_owned(),
+        };
+        let grid = AtomicGridConfig::production();
+        let kernel = build_kernel(&c.mol, &c.obs, def, &grid, &c.scf).unwrap();
+        let eps = c.scf.eps_r();
+        let mut a = build_a_matrix(eps, nocc, nvir, &ri.b_ov, &ri.b_oo, &ri.b_vv, c_hf);
+        let mut b = build_b_matrix(nocc, nvir, &ri.b_ov, &ri.b_oo, &ri.b_vv, c_hf);
+        let mut fxc_bar = 0.0;
+        if let Some(k) = kernel.as_ref() {
+            let (kd, _) = singlet_fxc_ov_block(k, c.scf.mos_r(), 0, nocc, nocc, nvir);
+            fxc_bar = FXC_BLOCK_ASYMMETRY_TOL * kd.iter().fold(0.0_f64, |m, &x| m.max(x.abs()));
+        }
+        add_fxc_block(kernel.as_ref(), &c.scf, nocc, nvir, &mut [&mut a, &mut b]).unwrap();
+        let fxc = kernel.as_ref().map(|k| {
+            SingletOvFxc::new(k, &c.scf.density_alpha, c.scf.mos_r(), 0, nocc, nocc, nvir).unwrap()
+        });
+        let op = ResponseOperator {
+            diag: space.orbital_differences(eps),
+            b_ov: &ri.b_ov,
+            b_oo: &ri.b_oo,
+            b_vv: &ri.b_vv,
+            nocc,
+            nvir,
+            c_hf,
+            fxc,
+        };
+        let mut acc = PhaseAccumulator::new();
+        let eye = Array2::<f64>::eye(dim);
+        let a_mf = op.apply_a(&eye, &mut acc).unwrap();
+        let (p_mf, m_mf) = op.apply_pm(&eye, &mut acc).unwrap();
+        // Each RI element is a naux-term dot product, evaluated in a
+        // different order by the two routes: each is within γ_n Σ|terms| of
+        // the exact sum, n = naux. Σ|terms| is bounded by the largest element
+        // of |B|ᵀ|B| for each term, weighted by the coefficient it enters with
+        // (|A+B| has 4 Coulomb + 2·c_HF exchange); the two routes together,
+        // 2γ_n times that.
+        let naux = ri.b_ov.nrows() as f64;
+        let gamma = naux * f64::EPSILON / (1.0 - naux * f64::EPSILON);
+        let maxabs = |m: &Array2<f64>| m.iter().fold(0.0_f64, |x, &y| x.max(y.abs()));
+        let s_j = maxabs(&ri.b_ov.mapv(f64::abs).t().dot(&ri.b_ov.mapv(f64::abs)));
+        let s_k = maxabs(&ri.b_oo.mapv(f64::abs).t().dot(&ri.b_vv.mapv(f64::abs))).max(s_j);
+        let ri_bar = 2.0 * gamma * (4.0 * s_j + 2.0 * c_hf.abs() * s_k);
+        Densified {
+            a,
+            b,
+            a_mf,
+            p_mf,
+            m_mf,
+            ri_bar,
+            fxc_bar,
+        }
+    }
+
+    /// The matrix-free products, applied to the identity, reproduce the dense
+    /// A, A+B and A−B elementwise, water/cc-pVDZ, HF, PBE and B3LYP.
+    ///
+    /// Bar: `ri_bar` (2γ_naux times the largest |B|ᵀ|B| magnitude sum, per
+    /// term coefficient; derivation in `densify`) plus, for twice the f_xc
+    /// block on A+B, `2·FXC_BLOCK_ASYMMETRY_TOL·max|K|` (the floor the
+    /// matrix-free f_xc block is pinned at against the dense one,
+    /// `ferric_dft::lr_kernel` `ov_operator_matches_the_dense_block`).
+    #[test]
+    fn matrix_free_products_equal_the_dense_matrices() {
+        for xc in [None, Some("PBE"), Some("B3LYP")] {
+            let c = water("cc-pvdz", xc);
+            let d = densify(&c, xc);
+            let maxdiff = |x: &Array2<f64>, y: &Array2<f64>| {
+                (x - y).iter().fold(0.0_f64, |m, &v| m.max(v.abs()))
+            };
+            let bar = d.ri_bar + 2.0 * d.fxc_bar;
+            let da = maxdiff(&d.a_mf, &d.a);
+            let dp = maxdiff(&d.p_mf, &(&d.a + &d.b));
+            let dm = maxdiff(&d.m_mf, &(&d.a - &d.b));
+            eprintln!("{xc:?}: A {da:.2e}, A+B {dp:.2e}, A-B {dm:.2e} (bar {bar:.2e})");
+            assert!(da <= bar, "{xc:?}: A differs by {da:e} > {bar:e}");
+            assert!(dp <= bar, "{xc:?}: A+B differs by {dp:e} > {bar:e}");
+            assert!(dm <= bar, "{xc:?}: A-B differs by {dm:e} > {bar:e}");
+        }
+    }
+
+    fn run_with(
+        c: &Case,
+        xc: Option<&str>,
+        method: TddftMethod,
+        solver: TddftSolver,
+    ) -> TddftResult {
+        let cfg = TddftConfig {
+            n_roots: 5,
+            method,
+            xc: xc.map(str::to_string),
+            grid: AtomicGridConfig::production(),
+            solver,
+            ..TddftConfig::default()
+        };
+        run_tddft(&c.mol, &c.obs, &c.dfbs, &c.scf, &cfg).unwrap()
+    }
+
+    /// `run_tddft` through the Davidson route equals the dense route,
+    /// water/cc-pVDZ (dim 95; the default subspace of 50 restarts), HF, PBE
+    /// and B3LYP, TDA and Casida.
+    ///
+    /// Bars (derived), per root k with Davidson residual r:
+    ///
+    /// * TDA: `‖r‖²/gap_k` (the Ritz value is within that of an eigenvalue of
+    ///   the matrix-free operator Ã) + `‖Ã − A‖₂ ≤ ‖Ã − A‖_F` (Bauer–Fike
+    ///   for the symmetric A) + `dim·ε·‖A‖₂` (the dense `eigh`).
+    /// * Casida: Ω² is an eigenvalue of `(A−B)(A+B) = S H S⁻¹`
+    ///   (`S = (A−B)^½`), so a perturbation `(E−, E+)` of `(A−B, A+B)` moves
+    ///   it by at most `cond(S)·(‖E−‖‖A+B‖ + ‖A−B‖‖E+‖ + ‖E−‖‖E+‖)`
+    ///   (Bauer–Fike with eigenvector matrix `S U`); the Davidson pair adds
+    ///   `‖r_H‖/‖z‖` for `z = S(X−Y)`, whose H residual is
+    ///   `r_H = S(Ω r+ + (A+B) r−)`: with `‖r±‖ ≤ √2 r`, `‖z‖ ≥ σ_min(S)‖X−Y‖`
+    ///   and `‖X−Y‖ ≥ 1/‖X+Y‖` (`(X+Y)·(X−Y) = 1`), that is at most
+    ///   `√2 r (Ω + ‖A+B‖) cond(S) ‖X+Y‖`, with `‖X+Y‖² ≈ Ω/λ_min(A+B)`; the
+    ///   dense solve adds `dim·ε·‖A−B‖‖A+B‖`. Divided by `Ω + Ω_dense`.
+    #[test]
+    fn davidson_roots_equal_the_dense_roots() {
+        for xc in [None, Some("PBE"), Some("B3LYP")] {
+            let c = water("cc-pvdz", xc);
+            let d = densify(&c, xc);
+            let dim = d.a.nrows() as f64;
+            let eps = f64::EPSILON;
+            // TDA.
+            let dense = run_with(&c, xc, TddftMethod::Tda, TddftSolver::Dense);
+            let dav = run_with(&c, xc, TddftMethod::Tda, TddftSolver::Davidson);
+            assert_eq!(dav.solver, TddftSolver::Davidson);
+            assert!(dav.iterations > 0);
+            let (w_all, _) = solve_tda(&d.a).unwrap();
+            let e_a = frobenius(&(&d.a_mf - &d.a));
+            let floor = dim * eps * spectral_norm(&d.a);
+            for k in 0..5 {
+                let r = dav.residuals[k];
+                assert!(r <= TddftConfig::default().davidson.conv_tol);
+                let bar = r * r / gap(&w_all, k) + e_a + floor;
+                let de = (dav.excitation_energies[k] - dense.excitation_energies[k]).abs();
+                eprintln!("{xc:?} TDA root {k}: |dw| {de:.2e} (bar {bar:.2e}, r {r:.1e})");
+                assert!(de <= bar, "{xc:?} TDA root {k}: |dw| {de:e} > bar {bar:e}");
+            }
+            // Casida.
+            let dense = run_with(&c, xc, TddftMethod::Casida, TddftSolver::Dense);
+            let dav = run_with(&c, xc, TddftMethod::Casida, TddftSolver::Davidson);
+            let apb = &d.a + &d.b;
+            let amb = &d.a - &d.b;
+            let (lam, _) = amb.eigh(UPLO::Lower).unwrap();
+            let (lmin, lmax) = (lam[0], lam[lam.len() - 1]);
+            let cond = (lmax / lmin).sqrt();
+            let e_p = frobenius(&(&d.p_mf - &apb));
+            let e_m = frobenius(&(&d.m_mf - &amb));
+            let (n_p, n_m) = (spectral_norm(&apb), lmax);
+            let (lam_p, _) = apb.eigh(UPLO::Lower).unwrap();
+            let pert = cond * (e_m * n_p + n_m * e_p + e_m * e_p);
+            let floor = dim * eps * n_m * n_p;
+            for k in 0..5 {
+                let r = dav.residuals[k];
+                let (om, om_d) = (dav.excitation_energies[k], dense.excitation_energies[k]);
+                let xpy_norm = (om / lam_p[0]).sqrt();
+                let solve = 2f64.sqrt() * r * (om + n_p) * cond * xpy_norm;
+                let bar = (pert + solve + floor) / (om + om_d);
+                let de = (om - om_d).abs();
+                eprintln!("{xc:?} Casida root {k}: |dW| {de:.2e} (bar {bar:.2e}, r {r:.1e})");
+                assert!(
+                    de <= bar,
+                    "{xc:?} Casida root {k}: |dW| {de:e} > bar {bar:e}"
+                );
+            }
+        }
     }
 }

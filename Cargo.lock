@@ -735,6 +735,7 @@ dependencies = [
  "ferric-scf",
  "ndarray",
  "ndarray-linalg",
+ "rayon",
  "serde",
  "serde_json",
 ]

@@ -237,6 +237,15 @@ optionally `xc` (`examples/water-tda.toml`, `examples/water-tddft-pbe.toml`); Py
 `ferric.run_tddft(mol, bs, aux, functional=..., method="tda")` or
 `method="casida"`.
 
+**Solver.** `[tddft] solver` (Python `solver=`) is `"dense"` (A and B as
+nocc·nvir square matrices, full diagonalization, one f_xc kernel application
+per (jb) column), `"davidson"` (matrix-free block Davidson: RI Coulomb, RI
+exchange and one batched f_xc application per block of trial vectors) or
+`"auto"` (dense up to nocc·nvir = 200, Davidson above; the default). Every
+root carries its residual in the printout, the result and the certificate;
+a Davidson root that does not converge is an error. Both solvers pass the
+same PySCF comparisons below.
+
 **Scope.** Closed-shell references, singlet excitations. With a DFT
 reference the \\( (ia|f_{xc}|jb) \\) XC-kernel term is included; with no
 functional the result is CIS/TDHF. τ-only meta-GGAs (SCAN, r2SCAN, TPSS)

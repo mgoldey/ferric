@@ -23,6 +23,13 @@ pub(crate) struct PyTddftResult {
     /// flat grid); `None` for an HF reference.
     #[pyo3(get)]
     pub(crate) grid: Option<(usize, usize, Option<String>, Option<f64>)>,
+    /// The eigensolver that ran: `"dense"` or `"davidson"`.
+    #[pyo3(get)]
+    pub(crate) solver: String,
+    /// Davidson iterations (0 for the dense solver).
+    #[pyo3(get)]
+    pub(crate) iterations: usize,
+    pub(crate) residuals: Vec<f64>,
     pub(crate) excitation_energies: Vec<f64>,
     pub(crate) oscillator_strengths: Vec<f64>,
     pub(crate) certificate_data: ferric_core::certificate::Certificate,
@@ -35,7 +42,8 @@ impl PyTddftResult {
     /// reference's. A KS run records `response-grid` (the grid the reference
     /// SCF and the f_xc kernel shared, equal to `grid`, and whether it was the
     /// meta-GGA response default) and a meta-GGA run warns that its roots are
-    /// grid-sensitive.
+    /// grid-sensitive. Every run records `eigensolver` (solver, root count,
+    /// largest residual).
     #[getter]
     fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
         certificate_dict(py, &self.certificate_data)
@@ -43,6 +51,11 @@ impl PyTddftResult {
     #[getter]
     fn excitation_energies<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
         PyArray1::from_slice(py, &self.excitation_energies)
+    }
+    /// Residual norm of each root, same order as the energies.
+    #[getter]
+    fn residuals<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        PyArray1::from_slice(py, &self.residuals)
     }
     #[getter]
     fn oscillator_strengths<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
@@ -91,6 +104,7 @@ impl PyTddftResult {
     mol, basis_set, auxbasis, functional=None, n_roots=3, method="tda",
     scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None,
     grid_radial=None, grid_angular=None, grid_prune=None, grid_weight_cut=None, scf_ri_j_precision=None,
+    solver="auto",
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_tddft(
@@ -109,8 +123,11 @@ pub(crate) fn run_tddft(
     grid_prune: Option<&str>,
     grid_weight_cut: Option<f64>,
     scf_ri_j_precision: Option<&str>,
+    solver: &str,
 ) -> PyResult<PyTddftResult> {
-    use ferric_tddft::{TddftConfig, TddftMethod};
+    use ferric_tddft::{TddftConfig, TddftMethod, TddftSolver};
+    let solver = TddftSolver::parse_config_str(solver)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("run_tddft: {e}")))?;
 
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
     let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
@@ -211,6 +228,7 @@ pub(crate) fn run_tddft(
         method: tddft_method,
         xc: functional.map(str::to_string),
         grid,
+        solver,
         ..Default::default()
     };
     // All closure arguments are owned Rust values (an owned Molecule clone
@@ -224,6 +242,7 @@ pub(crate) fn run_tddft(
         &reference_certificate(&mol.inner, &scf, &scf_cfg, &basis_set.inner),
         &auxbasis.inner.name,
         &config,
+        &r,
         grid_radial.is_some()
             || grid_angular.is_some()
             || grid_prune.is_some()
@@ -236,6 +255,9 @@ pub(crate) fn run_tddft(
         c_hf: r.c_hf,
         fxc_included: r.fxc_included,
         grid: grid_used,
+        solver: r.solver.name().to_string(),
+        iterations: r.iterations,
+        residuals: r.residuals,
         certificate_data,
         excitation_energies: r.excitation_energies,
         oscillator_strengths: r.oscillator_strengths,

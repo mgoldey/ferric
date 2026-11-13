@@ -49,6 +49,13 @@
 //!   c_HF resolution of THIS driver against the validated one, independent of
 //!   PySCF.
 //!
+//! # Both solvers
+//!
+//! Every PySCF case and the library anchor run through BOTH eigensolvers,
+//! `TddftSolver::Dense` and the matrix-free `TddftSolver::Davidson`, against
+//! the same bars: the Davidson route is an independent construction of the
+//! same roots (products instead of matrices, iterative instead of `eigh`).
+//!
 //! ```text
 //! OPENBLAS_NUM_THREADS=1 cargo test --release -p ferric-tddft --test validation_tddft \
 //!     -- --ignored --nocapture --test-threads=1
@@ -63,7 +70,7 @@ use ferric_integrals::operator::Operator;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::ScfResult;
-use ferric_tddft::{run_tddft, TddftConfig, TddftMethod, TddftResult};
+use ferric_tddft::{run_tddft, TddftConfig, TddftMethod, TddftResult, TddftSolver};
 use serde_json::Value;
 
 const HARTREE_TO_EV: f64 = 27.211_386_245_988;
@@ -85,6 +92,8 @@ const OSC_REL: f64 = 1e-2;
 /// kernel-full one for the negative control to mean anything.
 const NEG_CONTROL_FACTOR: f64 = 10.0;
 const SCF_JK_AUX: &str = "def2-universal-jkfit";
+/// The eigensolvers every PySCF case runs through.
+const SOLVERS: [TddftSolver; 2] = [TddftSolver::Dense, TddftSolver::Davidson];
 
 fn load_ref(mol: &str, basis: &str) -> Value {
     let path = format!(
@@ -182,8 +191,14 @@ fn kernel_grid(xc: Option<&str>) -> AtomicGridConfig {
     }
 }
 
-fn run(s: &Setup, xc: Option<&str>, method: TddftMethod, n_roots: usize) -> TddftResult {
-    run_on(s, xc, method, n_roots, kernel_grid(xc))
+fn run(
+    s: &Setup,
+    xc: Option<&str>,
+    method: TddftMethod,
+    n_roots: usize,
+    solver: TddftSolver,
+) -> TddftResult {
+    run_on(s, xc, method, n_roots, kernel_grid(xc), solver)
 }
 
 /// [`run`] with an explicit f_xc grid (the one the reference SCF used).
@@ -193,15 +208,22 @@ fn run_on(
     method: TddftMethod,
     n_roots: usize,
     grid: AtomicGridConfig,
+    solver: TddftSolver,
 ) -> TddftResult {
     let cfg = TddftConfig {
         n_roots,
         method,
         grid,
         xc: xc.map(str::to_string),
+        solver,
         ..Default::default()
     };
-    run_tddft(&s.mol, &s.obs, &s.dfbs, &s.scf, &cfg).unwrap()
+    let r = run_tddft(&s.mol, &s.obs, &s.dfbs, &s.scf, &cfg).unwrap();
+    assert_eq!(
+        r.solver, solver,
+        "the requested solver must be the one that ran"
+    );
+    r
 }
 
 /// Compare one method's lowest `N_CHECK` roots; returns max |dΩ| (eV).
@@ -279,11 +301,29 @@ fn check_case(mol: &str, basis: &str, key: &str, ferric_xc: Option<&str>) {
         "{mol}/{basis}: reference has no case {key}"
     );
     let s = setup(&refj, ferric_xc);
-    let label = format!("{mol}/{basis}/{key}");
+    for solver in SOLVERS {
+        check_solver(
+            &s,
+            case,
+            &format!("{mol}/{basis}/{key} [{}]", solver.name()),
+            ferric_xc,
+            solver,
+        );
+    }
+}
+
+/// [`check_case`]'s assertions for one eigensolver.
+fn check_solver(
+    s: &Setup,
+    case: &Value,
+    label: &str,
+    ferric_xc: Option<&str>,
+    solver: TddftSolver,
+) {
     println!("\n== {label} ==");
 
-    let tda = run(&s, ferric_xc, TddftMethod::Tda, N_CHECK);
-    let cas = run(&s, ferric_xc, TddftMethod::Casida, N_CHECK);
+    let tda = run(s, ferric_xc, TddftMethod::Tda, N_CHECK, solver);
+    let cas = run(s, ferric_xc, TddftMethod::Casida, N_CHECK, solver);
 
     // Bookkeeping that must match before any energy is meaningful.
     let c_hf_ref = case["c_hf"].as_f64().unwrap();
@@ -451,13 +491,20 @@ fn same_grid_b3lyp_tda_dev(mol: &str) -> f64 {
     };
     let xc = Some("B3LYP");
     let s = setup_on(&refj, xc, flat());
-    let tda = run_on(&s, xc, TddftMethod::Tda, N_CHECK, flat());
     let w_ref = f64s(&refj["cases"]["B3LYP"]["tda"]["omega_ev"]);
-    let max_dev = (0..N_CHECK)
-        .map(|k| (tda.excitation_energies[k] * HARTREE_TO_EV - w_ref[k]).abs())
-        .fold(0.0_f64, f64::max);
-    println!("{mol}/aug-cc-pvdz/B3LYP flat-grid TDA: max |dOmega| = {max_dev:.3e} eV");
-    max_dev
+    let mut worst = 0.0_f64;
+    for solver in SOLVERS {
+        let tda = run_on(&s, xc, TddftMethod::Tda, N_CHECK, flat(), solver);
+        let max_dev = (0..N_CHECK)
+            .map(|k| (tda.excitation_energies[k] * HARTREE_TO_EV - w_ref[k]).abs())
+            .fold(0.0_f64, f64::max);
+        println!(
+            "{mol}/aug-cc-pvdz/B3LYP flat-grid TDA [{}]: max |dOmega| = {max_dev:.3e} eV",
+            solver.name()
+        );
+        worst = worst.max(max_dev);
+    }
+    worst
 }
 
 /// Bar for [`same_grid_b3lyp_tda_dev`]. Measured on the reference grid
@@ -514,9 +561,12 @@ fn h2co_augdz_b3lyp_same_grid_tda_keeps_the_density_tail() {
 fn tda_matches_the_validated_library_tda_path() {
     use ferric_gw::tddft::{run_tda_dft, TdaDftConfig};
     let refj = load_ref("water", "6-31g");
-    for xc in [None, Some("PBE"), Some("B3LYP"), Some("r2SCAN")] {
+    for (xc, solver) in [None, Some("PBE"), Some("B3LYP"), Some("r2SCAN")]
+        .into_iter()
+        .flat_map(|xc| SOLVERS.map(|s| (xc, s)))
+    {
         let s = setup(&refj, xc);
-        let ours = run(&s, xc, TddftMethod::Tda, 10);
+        let ours = run(&s, xc, TddftMethod::Tda, 10, solver);
         let lib = run_tda_dft(
             &s.mol,
             &s.obs,

@@ -2608,6 +2608,21 @@ pub struct TddftCfg {
     /// accepted together with `xc` (an HF reference with `c_hf != 1` is
     /// refused); the f_xc kernel still comes from `xc`.
     pub c_hf: Option<f64>,
+    /// Eigensolver: `"dense"`, `"davidson"` or `"auto"` (default). Parsed
+    /// strictly by [`TddftCfg::solver`].
+    pub solver: Option<String>,
+}
+
+impl TddftCfg {
+    /// The `solver` key; absent is `auto`, an unknown value an error.
+    pub fn solver(&self) -> Result<ferric_tddft::TddftSolver, String> {
+        self.solver
+            .as_deref()
+            .map_or(Ok(ferric_tddft::TddftSolver::Auto), |s| {
+                ferric_tddft::TddftSolver::parse_config_str(s)
+                    .map_err(|e| format!("[tddft] solver: {e}"))
+            })
+    }
 }
 
 impl Default for TddftCfg {
@@ -2616,7 +2631,30 @@ impl Default for TddftCfg {
             n_roots: default_n_roots(),
             xc: None,
             c_hf: None,
+            solver: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tddft_solver_key_tests {
+    use super::TddftCfg;
+    use ferric_tddft::TddftSolver;
+
+    #[test]
+    fn solver_key_is_strict() {
+        let with = |s: Option<&str>| TddftCfg {
+            solver: s.map(str::to_string),
+            ..TddftCfg::default()
+        };
+        assert_eq!(with(None).solver().unwrap(), TddftSolver::Auto);
+        assert_eq!(
+            with(Some("Davidson")).solver().unwrap(),
+            TddftSolver::Davidson
+        );
+        assert_eq!(with(Some("dense")).solver().unwrap(), TddftSolver::Dense);
+        let e = with(Some("lanczos")).solver().unwrap_err();
+        assert!(e.contains("[tddft] solver"), "{e}");
     }
 }
 

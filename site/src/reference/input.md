@@ -337,6 +337,7 @@ Read by `tda` and `tddft`. Also set `[mp2] auxbasis` (see above).
 | `n_roots` | integer | `3` | | |
 | `xc` | string | none (HF reference: CIS or TDHF) | XC name | Selects the reference functional and the f_xc kernel. Meta-GGA, VV10 and range-separated functionals are refused. |
 | `c_hf` | float | the functional's short-range exact-exchange fraction; `1.0` with no `xc` | | |
+| `solver` | string | `"auto"` | `dense` `davidson` `auto` | `dense`: full A (and B) and a full diagonalization. `davidson`: matrix-free block Davidson (RI Coulomb, RI exchange, one batched f_xc application per block of trial vectors); an unconverged root is an error. `auto`: dense for nocc·nvir ≤ 200, Davidson above. Every root prints its residual and the certificate records the solver. Python `run_tddft(solver=)`. |
 
 ## `[optimize]`
 
