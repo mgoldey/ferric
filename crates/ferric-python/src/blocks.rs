@@ -1928,10 +1928,17 @@ impl FockResponse {
         })
     }
 
+    /// J and K of a response density, homogeneous in `d`
+    /// (`build_jk_with_pool_homogeneous`): the `1e-12` quartet screen sees
+    /// `d` normalized to `max|d| ∈ (½, 1]`, so the map stays linear as the
+    /// CG trial vectors shrink with the residual. The plain `build_jk` screen
+    /// is absolute: on a `1e-13` density it drops a different quartet set
+    /// than on a unit one, and (A + B) p stops being a linear map of p.
     fn jk(&self, bounds: &SchwarzBounds, d: &Array2<f64>) -> Result<[Array2<f64>; 2], FerricError> {
         let n = self.prep.nbasis();
         let (mut j, mut k) = (Array2::zeros((n, n)), Array2::zeros((n, n)));
-        ferric_scf::rhf::build_jk(
+        let pool = eri_pool(bounds, &self.prep)?;
+        ferric_scf::rhf::build_jk_with_pool_homogeneous(
             &ParallelContext::default(),
             &self.prep,
             bounds,
@@ -1939,6 +1946,8 @@ impl FockResponse {
             d,
             &mut j,
             &mut k,
+            &pool,
+            ferric_scf::reduce::default_band_bytes(),
         )?;
         Ok([j, k])
     }
@@ -2077,8 +2086,10 @@ impl Response {
             .collect())
     }
     /// Preconditioned conjugate gradient on (A + B) U = rhs from U = 0,
-    /// stopping when max |residual| < tol. A non-positive curvature means
-    /// the reference is not a minimum (A + B not positive definite).
+    /// stopping when max |residual| < tol. A curvature p.(A+B)p below minus
+    /// its round-off bound means the reference is not a minimum (A + B not
+    /// positive definite); one within the bound of zero means p is below
+    /// what the matvec resolves, and the solve stops there.
     fn solve(
         &self,
         rhs: &[Array2<f64>],
@@ -2112,12 +2123,7 @@ impl Response {
         for it in 1..=max_iter {
             let ap = self.apply(&p)?;
             let pap = dot(&p, &ap);
-            if !(pap > 0.0) {
-                return Err(FerricError::Convergence(format!(
-                    "CPHF: non-positive curvature p.(A+B)p = {pap:.3e} at iteration {it}; the \
-                     reference is not a minimum of the orbital Hessian"
-                )));
-            }
+            check_curvature(&p, &ap, pap, it, resid, tol)?;
             let alpha = rz / pap;
             for k in 0..x.len() {
                 x[k].scaled_add(alpha, &p[k]);
@@ -2207,6 +2213,75 @@ struct PyCphf {
     resp: Response,
 }
 
+/// An engine pool for `bounds.op` at the process ERI precision, as `build_jk`
+/// builds internally.
+fn eri_pool(
+    bounds: &SchwarzBounds,
+    prep: &PreparedBasis,
+) -> Result<ferric_scf::engine_pool::EnginePool, FerricError> {
+    ferric_scf::engine_pool::EnginePool::new(
+        bounds.op,
+        prep,
+        ferric_integrals::engine_pool::eri_precision(),
+    )
+}
+
+/// Refuses a CG step whose curvature p.(A+B)p has no measured positive sign.
+///
+/// Bar: the forward error bound of the N-term dot product (Higham, Accuracy
+/// and Stability of Numerical Algorithms, eq. 3.5),
+/// |fl(p.Ap) - p.Ap| <= N u sum_k |p_k (Ap)_k|. The matvec's own error is
+/// relative to |Ap| (the J/K build is homogeneous, see `FockResponse::jk`)
+/// and smaller: A(sU)/s - A(U) is 1e-15 of |A U| on water/cc-pVDZ, against
+/// N u = 2e-14 there (N = 95). Below minus the bar the reference is not a
+/// minimum; within the bar of zero, p is below what the matvec resolves.
+fn check_curvature(
+    p: &[Array2<f64>],
+    ap: &[Array2<f64>],
+    pap: f64,
+    it: usize,
+    resid: f64,
+    tol: f64,
+) -> Result<(), FerricError> {
+    if !pap.is_finite() {
+        return Err(FerricError::Convergence(format!(
+            "CPHF: non-finite curvature p.(A+B)p = {pap} at iteration {it}"
+        )));
+    }
+    let n_terms = p.iter().map(|x| x.len()).sum::<usize>() as f64;
+    let pap_abs: f64 = p
+        .iter()
+        .zip(ap)
+        .map(|(x, y)| (x * y).mapv(f64::abs).sum())
+        .sum();
+    let bar = n_terms * f64::EPSILON * pap_abs;
+    if pap < -bar {
+        return Err(FerricError::Convergence(format!(
+            "CPHF: negative curvature p.(A+B)p = {pap:.3e} (round-off bound {bar:.1e}) \
+             at iteration {it}; the reference is not a minimum of the orbital Hessian"
+        )));
+    }
+    if pap <= bar {
+        return Err(FerricError::Convergence(format!(
+            "CPHF stalled at iteration {it}: p.(A+B)p = {pap:.3e} is within its \
+             round-off bound {bar:.1e} of zero at max |residual| {resid:.3e} > tol \
+             {tol:.1e}; tol is below the residual this matvec resolves"
+        )));
+    }
+    Ok(())
+}
+
+/// `Cphf.solve` takes a positive, finite `tol`: at `tol = 0` the residual
+/// underflows (2e-99 after 100 iterations on water) and the next step is 0/0.
+fn check_tol(tol: f64) -> PyResult<()> {
+    if tol.is_finite() && tol > 0.0 {
+        return Ok(());
+    }
+    Err(PyValueError::new_err(format!(
+        "solve: tol must be positive and finite, got {tol}"
+    )))
+}
+
 /// Open-shell (UHF/UKS) twin of `Cphf`, from `AoIntegrals.ucphf`: rotations
 /// are the pair `(U_a, U_b)`, `density` gives `D1_s = C_vs U_s C_osᵀ + h.c.`
 /// (unit occupation) and `F1_s = J(D1_a + D1_b) - exchange mix·K(D1_s) +
@@ -2238,6 +2313,7 @@ fn response_solve<'py>(
     tol: f64,
     max_iter: usize,
 ) -> PyResult<Vec<Bound<'py, PyArray2<f64>>>> {
+    check_tol(tol)?;
     let rhs = checked_rotations(&resp.frames, rhs)?;
     let (x, _, _) = py
         .allow_threads(|| resp.solve(&rhs, tol, max_iter))
