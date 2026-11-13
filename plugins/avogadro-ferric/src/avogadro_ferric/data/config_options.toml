@@ -1,0 +1,55 @@
+# User options for Extensions > ferric > Configure... . The defaults are the
+# plugin's built-in defaults (config.DEFAULTS); after the first save Avogadro
+# shows the values entered last. The saved values live in the plugin's
+# config.json and are what "(Configured default)" in the job dialogs, the
+# energy model and the charge models use.
+#
+# The lists and defaults must match config.METHODS / BASES / CHARGE_MODELS /
+# DEFAULTS (tests/test_inputgen_and_metadata.py checks it).
+
+[method]
+type = "stringList"
+label = "Method (HF or functional)"
+values = ["HF", "LDA", "PBE", "BLYP", "BP86", "PBE0", "B3LYP", "r2SCAN"]
+default = 2
+order = 1.0
+
+[basis]
+type = "stringList"
+label = "Basis set"
+values = [
+  "sto-3g",
+  "6-31g",
+  "6-31g*",
+  "6-31g**",
+  "def2-svp",
+  "def2-tzvp",
+  "cc-pvdz",
+  "cc-pvtz",
+  "aug-cc-pvdz",
+]
+default = 4
+order = 2.0
+
+[charge_model]
+type = "stringList"
+label = "Charges shown by Single Point"
+values = ["lowdin", "hirshfeld", "chelpg", "mulliken", "resp"]
+default = 0
+order = 3.0
+
+[threads]
+type = "integer"
+label = "Threads (0 = all cores)"
+minimum = 0
+maximum = 1024
+default = 0
+order = 4.0
+
+[memory_gb]
+type = "float"
+label = "Memory budget, GB (0 = auto)"
+minimum = 0.0
+maximum = 4096.0
+default = 0.0
+order = 5.0

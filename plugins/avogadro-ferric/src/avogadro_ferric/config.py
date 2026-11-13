@@ -32,6 +32,12 @@ BASES = [
 
 CHARGE_MODELS = ["lowdin", "hirshfeld", "chelpg", "mulliken", "resp"]
 
+# First entry of the job dialogs' lists (data/job_options.toml): run with the
+# method or basis saved by Configure... .
+CONFIGURED_DEFAULT = "(Configured default)"
+JOB_METHODS = [CONFIGURED_DEFAULT, *METHODS]
+JOB_BASES = [CONFIGURED_DEFAULT, *BASES]
+
 DEFAULTS: dict = {
     "method": "PBE",
     "basis": "def2-svp",
@@ -82,66 +88,6 @@ def apply_runtime_env(cfg: dict) -> None:
         os.environ["FERRIC_MEM_BUDGET_GB"] = str(mem)
 
 
-def user_options(cfg: dict) -> dict:
-    """The Configure... dialog, pre-filled with the stored values."""
-
-    def index_or_zero(values: list, value) -> int:
-        lowered = [str(v).lower() for v in values]
-        try:
-            return lowered.index(str(value).lower())
-        except ValueError:
-            return 0
-
-    return {
-        "method": {
-            "type": "stringList",
-            "label": "Method (HF or functional)",
-            "values": METHODS,
-            "default": index_or_zero(METHODS, cfg["method"]),
-            "order": 1.0,
-        },
-        "basis": {
-            "type": "stringList",
-            "label": "Basis set",
-            "values": BASES,
-            "default": index_or_zero(BASES, cfg["basis"]),
-            "order": 2.0,
-        },
-        "charge_model": {
-            "type": "stringList",
-            "label": "Charges shown by Single Point",
-            "values": CHARGE_MODELS,
-            "default": index_or_zero(CHARGE_MODELS, cfg["charge_model"]),
-            "order": 3.0,
-        },
-        "threads": {
-            "type": "integer",
-            "label": "Threads (0 = all cores)",
-            "minimum": 0,
-            "maximum": 1024,
-            "default": int(cfg["threads"]),
-            "order": 4.0,
-        },
-        "memory_gb": {
-            "type": "float",
-            "label": "Memory budget, GB (0 = auto)",
-            "minimum": 0.0,
-            "maximum": 4096.0,
-            "default": float(cfg["memory_gb"]),
-            "order": 5.0,
-        },
-    }
-
-
-def job_options(cfg: dict) -> dict:
-    """The dialog shown before Single Point / Optimize / Frequencies / Orbitals:
-    method and basis, pre-filled from the Configure... defaults. A choice here
-    applies to this run only. Charge and multiplicity are not asked: Avogadro
-    sends the molecule's own with every command."""
-    full = user_options(cfg)
-    return {"method": full["method"], "basis": full["basis"]}
-
-
 def _pick(values: list, value):
     """A stringList reply may be the index or the string; return the string."""
     if isinstance(value, int) and not isinstance(value, bool):
@@ -152,12 +98,18 @@ def _pick(values: list, value):
 
 
 def job_settings(cfg: dict, options: dict) -> dict:
-    """Method/basis for one run: the dialog's choice, else the stored default."""
+    """Method/basis for one run: the dialog's choice, or the stored default when
+    the choice is CONFIGURED_DEFAULT or the option is absent."""
+
+    def chosen(key: str, values: list) -> str:
+        if key not in options:
+            return cfg[key]
+        value = _pick(values, options[key])
+        return cfg[key] if value == CONFIGURED_DEFAULT else value
+
     return {
-        "method": _pick(METHODS, options["method"])
-        if "method" in options
-        else cfg["method"],
-        "basis": _pick(BASES, options["basis"]) if "basis" in options else cfg["basis"],
+        "method": chosen("method", JOB_METHODS),
+        "basis": chosen("basis", JOB_BASES),
     }
 
 

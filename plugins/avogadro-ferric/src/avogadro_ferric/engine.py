@@ -19,6 +19,7 @@ Which ferric calls are used, and why:
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 
 import numpy as np
@@ -164,8 +165,13 @@ def optimize(job: Job, max_steps: int | None = None):
     return coords, float(res.energy), bool(res.converged), int(res.steps)
 
 
-def closed_shell_scf(job: Job):
-    """(Molecule, BasisSet, RhfResult | DftResult) for the property evaluators."""
+def closed_shell_scf(job: Job, dm0=None):
+    """(Molecule, BasisSet, RhfResult | DftResult) for the property evaluators.
+
+    dm0: a starting total AO density (a converged one from the cache). A start
+    ferric refuses (wrong shape or electron count: ValueError) or a ferric
+    without the keyword (TypeError) falls back to the default guess.
+    """
     if job.open_shell:
         raise ValueError(
             "ferric's charge, ESP and orbital evaluators take a closed-shell (RHF/RKS) "
@@ -174,10 +180,20 @@ def closed_shell_scf(job: Job):
     f = ferric()
     mol = job.molecule()
     bs = f.BasisSet.bundled(job.basis)
-    if job.is_hf:
-        res = f.run_rhf(mol, bs)
-    else:
-        res = _with_f64_rij(f.run_dft, mol, bs, functional=job.method)
+
+    def run(**start):
+        if job.is_hf:
+            return f.run_rhf(mol, bs, **start)
+        return _with_f64_rij(f.run_dft, mol, bs, functional=job.method, **start)
+
+    res = None
+    if dm0 is not None:
+        try:
+            res = run(dm0=np.asarray(dm0, dtype=float))
+        except (TypeError, ValueError) as exc:
+            print(f"ferric: cached density not used: {exc}", file=sys.stderr)
+    if res is None:
+        res = run()
     if not res.converged:
         raise RuntimeError(f"ferric SCF did not converge ({job.label})")
     return mol, bs, res

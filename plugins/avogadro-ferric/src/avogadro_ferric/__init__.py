@@ -40,8 +40,7 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--potentials", action="store_true")
     sub.add_parser("ferric_input", parents=[common])
     for ident in MENU_COMMANDS:
-        p = sub.add_parser(ident, parents=[common])
-        p.add_argument("--user-options", action="store_true")
+        sub.add_parser(ident, parents=[common])
     return parser
 
 
@@ -66,15 +65,6 @@ def run(args, stdin=None) -> dict | None:
         energy_model.serve(bootstrap, stdin)
         return None
 
-    if args.feature in MENU_COMMANDS and getattr(args, "user_options", False):
-        from . import commands
-
-        if args.feature == "config":
-            return commands.configure({}, want_options=True)
-        # Do not read stdin here: Avogadro may not send (or close) it for an
-        # options request.
-        return {"userOptions": config.job_options(config.load())}
-
     avo_input = _read_json(stdin)
     if args.feature in CHARGE_MODELS:
         from . import commands
@@ -98,7 +88,7 @@ def run(args, stdin=None) -> dict | None:
     if args.feature == "orbitals":
         return commands.molecular_orbitals(avo_input)
     if args.feature == "config":
-        return commands.configure(avo_input, want_options=False)
+        return commands.configure(avo_input)
     avo.reply({"error": f"unknown feature {args.feature!r}"})
     return None
 

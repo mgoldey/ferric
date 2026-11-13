@@ -100,7 +100,7 @@ highlight-styles = "src/avogadro_ferric/data/syntax.toml"
 [[tool.avogadro.menu-commands]]
 identifier = "sp"
 input-format = "cjson"
-user-options = "dynamic"
+user-options = "src/avogadro_ferric/data/job_options.toml"
 menu = "Extensions"
 submenu = "ferric"
 item = "Single Point"
@@ -109,7 +109,7 @@ menu-priorities = [150, 900]
 [[tool.avogadro.menu-commands]]
 identifier = "opt"
 input-format = "cjson"
-user-options = "dynamic"
+user-options = "src/avogadro_ferric/data/job_options.toml"
 menu = "Extensions"
 submenu = "ferric"
 item = "Optimize Geometry"
@@ -118,7 +118,7 @@ menu-priorities = [150, 800]
 [[tool.avogadro.menu-commands]]
 identifier = "freq"
 input-format = "cjson"
-user-options = "dynamic"
+user-options = "src/avogadro_ferric/data/job_options.toml"
 menu = "Extensions"
 submenu = "ferric"
 item = "Frequencies"
@@ -127,7 +127,7 @@ menu-priorities = [150, 700]
 [[tool.avogadro.menu-commands]]
 identifier = "orbitals"
 input-format = "cjson"
-user-options = "dynamic"
+user-options = "src/avogadro_ferric/data/job_options.toml"
 menu = "Extensions"
 submenu = "ferric"
 item = "Molecular Orbitals"
@@ -136,7 +136,7 @@ menu-priorities = [150, 600]
 [[tool.avogadro.menu-commands]]
 identifier = "config"
 input-format = "cjson"
-user-options = "dynamic"
+user-options = "src/avogadro_ferric/data/config_options.toml"
 menu = "Extensions"
 submenu = "ferric"
 item = "Configure…"

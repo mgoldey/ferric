@@ -208,10 +208,6 @@ def test_imaginary_frequency_is_reported(plugin_env):
 
 def test_configure_dialog_round_trip(plugin_env, tmp_path):
     env = plugin_env(method="HF", basis="sto-3g")
-    out, _ = run_plugin(env, ["config", "--user-options"], {})
-    opts = out["userOptions"]
-    assert all("type" in v for v in opts.values())  # Avogadro needs a type per option
-    assert opts["method"]["values"][opts["method"]["default"]] == "HF"
     # Avogadro sends the chosen stringList entry as the string.
     choice = {
         "method": "B3LYP",
@@ -227,8 +223,7 @@ def test_configure_dialog_round_trip(plugin_env, tmp_path):
     stored = json.loads(open(env["AVOGADRO_FERRIC_CONFIG"], encoding="utf-8").read())
     assert stored["method"] == "B3LYP" and stored["basis"] == "def2-svp"
     assert stored["threads"] == 2 and stored["memory_gb"] == 1.5
-    out, _ = run_plugin(env, ["config", "--user-options"], {})
-    assert out["userOptions"]["charge_model"]["default"] == 2
+    assert stored["charge_model"] == "chelpg"
 
 
 def test_unknown_method_is_refused(plugin_env):
@@ -240,28 +235,25 @@ def test_unknown_method_is_refused(plugin_env):
 # ---------------------------------------------------------------- per-run dialog
 
 
-def test_job_commands_ask_for_method_and_basis(plugin_env):
-    """Single Point / Optimize / Frequencies / Orbitals open a method + basis
-    dialog (user-options = "dynamic"), pre-filled from the Configure defaults."""
-    try:
-        import tomllib
-    except ModuleNotFoundError:  # Python 3.10
-        tomllib = pytest.importorskip("tomli")
+def test_configured_default_entry_runs_with_the_stored_settings(plugin_env):
+    """The job dialogs' "(Configured default)" entry, sent as the string or as
+    its index 0, runs with the method and basis saved by Configure..."""
+    from avogadro_ferric import config
 
-    from avoferric_testlib import PLUGIN_DIR
+    env = plugin_env(method="HF", basis="sto-3g")
+    for choice in (config.CONFIGURED_DEFAULT, 0):
+        payload = menu_input(WATER, options={"method": choice, "basis": choice})
+        out, _ = run_plugin(env, ["sp"], payload)
+        assert "RHF/sto-3g" in out["message"], (choice, out["message"])
 
-    meta = tomllib.loads((PLUGIN_DIR / "pyproject.toml").read_text(encoding="utf-8"))
-    cmds = {c["identifier"]: c for c in meta["tool"]["avogadro"]["menu-commands"]}
-    for ident in ("sp", "opt", "freq", "orbitals"):
-        assert cmds[ident].get("user-options") == "dynamic", ident
-    env = plugin_env(method="B3LYP", basis="cc-pvdz")
-    for ident in ("sp", "opt", "freq", "orbitals"):
-        out, _ = run_plugin(env, [ident, "--user-options"], {})
-        opts = out["userOptions"]
-        assert set(opts) == {"method", "basis"}, ident
-        assert all("type" in v for v in opts.values())
-        assert opts["method"]["values"][opts["method"]["default"]] == "B3LYP"
-        assert opts["basis"]["values"][opts["basis"]["default"]] == "cc-pvdz"
+
+def test_user_options_flag_is_gone():
+    """No menu command is dynamic any more, so the plugin refuses the flag
+    Avogadro sends only to a dynamic command."""
+    from avogadro_ferric import build_parser
+
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["sp", "--user-options"])
 
 
 def test_dialog_choice_overrides_the_default_for_one_run(plugin_env):

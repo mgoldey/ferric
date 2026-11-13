@@ -111,12 +111,13 @@ makes, such as `FrequencyResult.normal_modes`, and are not supported.
   basis or method for interactive optimisation; ferric's own Optimize
   Geometry command has no time limit.
 - **Charges and potentials have a 10-second limit.** Avogadro kills them after
-  10 s (`PythonScript::execute()`), including pixi and Python start-up.
-  Single Point has no limit and stores the charges in the molecule.
-- **No warm start in the energy model.** The ferric Python API has no way to
-  seed an SCF with orbitals from the previous step: `run_qmmm` and `run_dft`
-  take only a guess name. Every step starts from the MINAO guess. Optimize
-  Geometry (`run_optimize_qmmm`) does warm-start each step internally.
+  10 s (`PythonScript::execute()`), including pixi and Python start-up, and a
+  plugin cannot change that. Run Single Point first on a molecule that is too
+  large for 10 s: it has no limit and fills the result cache (below).
+- **No warm start in the energy model.** Its energy and gradient come from
+  `run_qmmm`, which has no starting-density argument, so every step starts from
+  the MINAO guess. Optimize Geometry (`run_optimize_qmmm`) does warm-start each
+  step internally.
 - **Closed shell only for charges, ESP and orbitals.** ferric's evaluators
   take RHF/RKS results only. Open-shell molecules get an error message for
   these, and an energy from Single Point.
@@ -134,6 +135,25 @@ Configure… writes `$XDG_CONFIG_HOME/avogadro-ferric/config.json`, or
 `~/.var/app/org.openchemistry.Avogadro2/config/avogadro-ferric/config.json`.
 The threads setting sets `RAYON_NUM_THREADS`, and the memory setting sets
 `FERRIC_MEM_BUDGET_GB`.
+
+## Result cache
+
+Single Point (closed shell) stores its converged density and the Löwdin,
+Hirshfeld and CHELPG charges, the three models in Avogadro's charge menu, in
+`$XDG_CACHE_HOME/avogadro-ferric/` (`~/.cache/...`; `$AVOGADRO_FERRIC_CACHE`
+overrides). A later charges call for the same molecule and settings returns
+the stored charges without an SCF. A potentials call starts its SCF from the
+stored density and needs at most 2 iterations. Avogadro picks the surface
+points, so the potentials themselves cannot be stored in advance. Molecular
+Orbitals also starts from the stored density.
+
+An entry matches only the exact coordinates Avogadro sent, the same
+charge, multiplicity, method and basis, and the same ferric build. Moving an
+atom or changing the configuration is a miss and recomputes. The charge models
+use the configured method and basis, so a Single Point run with a different
+method chosen in its dialog does not fill the entry they read. A cache hit
+never changes a result; it only skips work. The directory keeps the 32 most
+recent entries, and deleting it is always safe.
 
 ## Tests
 
