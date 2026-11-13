@@ -380,8 +380,8 @@ mod tests {
         basis::load_bse_json(file.to_str().unwrap()).unwrap()
     }
 
-    /// V_ECP is spherical-only; a Cartesian d shell on an ECP molecule used to
-    /// panic in `ecp_potential`'s `.expect`. It is now a setup error, and the
+    /// V_ECP is spherical-only; a Cartesian d shell on an ECP molecule is
+    /// a setup error (not a panic in `ecp_potential`'s `.expect`), and the
     /// same basis typed spherical is accepted (so the refusal is the d type).
     #[test]
     fn ecp_with_cartesian_d_shell_is_a_clean_setup_error() {

@@ -24,8 +24,7 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 
 /// `FERRIC_OOC_TRACE` descriptor: 3-index in-core/spill decision trace (env-only
-/// debug toggle). NOTE behavior change: previously `.is_ok()` (any value, incl.
-/// `=0`, enabled it); now `=0`/`false`/`off` disable it.
+/// debug toggle). `=0`/`false`/`off` disable it (any other value enables it).
 static OOC_TRACE: ferric_core::config::ConfigVar<bool> = ferric_core::config::ConfigVar {
     env_name: "FERRIC_OOC_TRACE",
     default: false,
@@ -172,7 +171,7 @@ const DRESS_ROW_BLOCK: usize = 64;
 /// An ACCURACY knob as much as a determinism one. Summing the k axis in
 /// fixed-size blocks and accumulating the partials is a coarse pairwise
 /// summation: partial sums stay smaller, so less magnitude is lost to rounding
-/// than in one full-k reduction. Note the in-core path previously did NO
+/// than in one full-k reduction. Note the in-core path does NO
 /// blocking at all — an in-core source reports `block_naux = band`, so
 /// `block_edges()` yields a single block — i.e. the least accurate option.
 ///
@@ -1181,9 +1180,9 @@ enum Backend {
     },
     /// Rebuild each aux block on demand instead of storing the tensor.
     ///
-    /// The middle ground this type used to lack. There were only two modes --
-    /// whole tensor resident, or whole tensor on disk -- so a budget either
-    /// admitted an allocation up to 100% of itself or fell off the cliff
+    /// The middle ground between the two other modes -- whole tensor
+    /// resident, or whole tensor on disk -- without which a budget either
+    /// admits an allocation up to 100% of itself or falls off the cliff
     /// [`spill_warning_text`] describes: `DfK::build` re-reads the ENTIRE
     /// spilled tensor on every SCF iteration.
     ///
@@ -1285,8 +1284,8 @@ pub struct ThreeIndexSource {
 /// and the pool ADMITS-or-REFUSES it here. The DRESSED tensor differs: raw is
 /// held co-resident by design, so a pool refusal there is the expected outcome
 /// of a band that fits the budget once but not twice, and `build_dressed_band`
-/// spills instead. That moves no result, since every run it reroutes used to
-/// end in this error.
+/// spills instead. That moves no result, since every run it reroutes would
+/// otherwise end in this error.
 fn charge_three_index(
     label: &str,
     bytes: usize,
@@ -1560,7 +1559,7 @@ impl ThreeIndexSource {
         // block to half the budget so that pair stays inside the ceiling
         // (budget-honest). The write thread does pure I/O — no rayon here.
         //
-        // Block content is byte-identical to the old serial loop: `eri3_block`
+        // Block content is byte-identical to a serial loop: `eri3_block`
         // is write-once per element (see threeindex.rs) and blocks are written
         // in the same p0-ascending order, so the on-disk file — and thus the
         // read-back path in `for_each_block` — is unchanged.
@@ -1784,7 +1783,7 @@ impl ThreeIndexSource {
         // is resident throughout (DF-J keeps it for the whole SCF), so a band
         // that fits the budget once can still not fit it twice. Asking only the
         // budget admitted those, built the whole tensor, and then died in the
-        // charge. Every run this reroutes used to die there, so no result moves;
+        // charge. Every run this reroutes would die there, so no result moves;
         // with no pool the reservation is inert and this is the budget test.
         let fast_path_fits = !raw.is_incore()
             || fast_path_plan(
@@ -2733,7 +2732,7 @@ mod tests {
         (Molecule::parse_xyz("3\nH2O\nO 0 0 0\nH 0 0 0.96\nH 0.93 0 -0.26\n", 0, 1).unwrap(),)
     }
 
-    /// The old full-square dressing (`contrib = msub·raw; acc += contrib` over
+    /// The full-square dressing (`contrib = msub·raw; acc += contrib` over
     /// the same row and Q blocks): the reference for the triangle dressing.
     fn full_square_reference(raw: &ThreeIndexSource, m: &Array2<f64>) -> Array3<f64> {
         let (naux, nao) = (raw.naux(), raw.nao());
@@ -3326,8 +3325,8 @@ mod tests {
     /// Defect A, the accounting half: the in-core dressing gate must refuse a
     /// band that does not fit AND name the term in the breakdown.
     ///
-    /// The old gate compared only `band·nao²·8` against the budget, so it was
-    /// impossible for it to fail here for the right reason. Both directions are
+    /// A gate comparing only `band·nao²·8` against the budget cannot
+    /// fail here for the right reason. Both directions are
     /// checked: a budget that genuinely cannot hold the band is refused, and an
     /// ample budget still runs (an over-estimating guard that refuses a job
     /// which would have fit is as much a defect as an under-estimate).
@@ -3354,7 +3353,7 @@ mod tests {
 
         // TIGHT-BUT-FAST-PATH: a budget that admits the band itself (so the
         // in-core fast path is entered) but cannot also hold the per-worker
-        // GEMM scratch the old gate ignored entirely.
+        // GEMM scratch that gate ignores entirely.
         let band_bytes = naux * nao * nao * 8;
         let mut raw2 = ThreeIndexSource::build(op, &obs, &dfbs, ample).unwrap();
         let dressed = ThreeIndexSource::build_dressed(&mut raw2, &m, band_bytes)
@@ -3462,12 +3461,12 @@ mod tests {
     // ------------------------------------------------------------------
     // Disk-spill preflight anchors.
     //
-    // The defect these pin: `build_band` used to choose in-core vs spill with a
+    // What these pin: `build_band` must not choose in-core vs spill with a
     // bare `if needed <= budget_bytes`, with NO disk-space check and NO warning.
     // A C48/def2-TZVP job writes ~185 GB and a C32/def2-QZVP job ~415 GB into
-    // `std::env::temp_dir()`; nothing looked at the free space, so the run
-    // filled the partition instead of refusing. `cosx_k::check_budget` refuses
-    // with a diagnosis in the same situation — the asymmetry WAS the bug.
+    // `std::env::temp_dir()`; without a free-space check the run
+    // fills the partition instead of refusing. `cosx_k::check_budget` refuses
+    // with a diagnosis in the same situation.
     // ------------------------------------------------------------------
 
     /// (a) REFUSAL FIRES. The spill preflight must return a typed error naming

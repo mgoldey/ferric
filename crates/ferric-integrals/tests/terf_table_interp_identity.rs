@@ -1,14 +1,15 @@
 //! The hoisted `terf_aux` must reproduce the per-m `interp_G` path EXACTLY.
 //!
-//! `terf_aux` used to call `interp_G` once per m, which re-selected the table,
-//! re-derived the node windows and recomputed all 11 `lagrange_1d` weight sets
+//! `terf_aux` calls the interpolation once for all m: calling `interp_G` once
+//! per m would re-select the table,
+//! re-derive the node windows and recomputed all 11 `lagrange_1d` weight sets
 //! for every m -- even though every m shares the same (S, s) and only the
-//! tabulated VALUES differ. Hoisting that work out and looping m innermost took
+//! tabulated VALUES differ. Hoisting that work out and looping m innermost takes
 //! the terf 3-index build on decane/cc-pVDZ+RI from 31.5 s to 12.4 s (2.5x).
 //!
 //! The optimization is only legitimate if it is arithmetically the SAME
 //! interpolation, so this file pins the terf kernel against known-good values
-//! captured from the pre-optimization build.
+//! captured from the per-m interpolation.
 //!
 //! MEASURED at the time of the change (decane, cc-pVDZ + cc-pVDZ-RI, the full
 //! (P|mu nu) block): the terf tensor is BIT-IDENTICAL before and after --

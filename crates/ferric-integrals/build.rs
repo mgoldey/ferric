@@ -112,7 +112,7 @@ fn main() {
 
     // libint2 + BLAS link
     println!("cargo:rustc-link-search=native={libint_root}/lib");
-    // A prefix with libint2.a (a from-source build, e.g. the old mpqc4
+    // A prefix with libint2.a (a from-source build, e.g. the mpqc4
     // tarball) links statically. scripts/install-libint.sh installs the
     // conda-forge 2.13.1 build, which ships libint2.so only; that script sets
     // its SONAME to the absolute path, so binaries find it at run time without

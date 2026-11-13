@@ -1,19 +1,19 @@
 //! The libint2-native terf engine must evaluate with the table set IT was
 //! built with, whatever table directory is loaded afterwards.
 //!
-//! libint2's terf hook carries no engine context. It used to read the
+//! libint2's terf hook carries no engine context. Reading the
 //! process-global table cache, which `get_terfc_tables` REASSIGNS when a
-//! different directory is loaded. That had two consequences: the hook copied a
+//! different directory is loaded, would have two consequences: the hook copied a
 //! `shared_ptr` that another thread could be replacing (the unlocked
 //! copy-vs-replace use-after-free of `core_eval_singleton_race.rs`), and an
 //! engine silently evaluated with the LAST-loaded tables instead of its own.
-//! Now each `scf_compute_*` entry point publishes its engine's table set to the
+//! Instead each `scf_compute_*` entry point publishes its engine's table set to the
 //! hook through a thread-local.
 //!
 //! Test: engine A on the shipped tables, engine B on a copy with every table
 //! value doubled. B must differ from A, which shows the copy is really used.
 //! A's block computed after B was created must be bit-identical to A's block
-//! before. Before the fix, A's second block was B's block.
+//! before. With a process-global cache, A's second block would be B's block.
 //!
 //! Only builds under the `libint2_terf` feature against a terf-patched libint2
 //! with FERRIC_LIBINT2_TERF set, like the other terf_libint2_* tests.

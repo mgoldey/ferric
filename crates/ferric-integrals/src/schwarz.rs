@@ -35,8 +35,8 @@ const PAR_SCHWARZ_SHELL_THRESHOLD: usize = 64;
 /// The remedy is what every production code does: build the table TIGHTER than
 /// the threshold it enforces. PySCF builds `q_cond` at `direct_scf_tol**2` with
 /// a `1e-100` floor; Molpro, NWChem, Q-Chem, ORCA and Psi4 (via its own
-/// `eps * thresh`) do the equivalent. ferric previously used one hardcoded
-/// `1e-14` for BOTH roles, which is the outlier.
+/// `eps * thresh`) do the equivalent. using one hardcoded
+/// `1e-14` for BOTH roles would make ferric the outlier.
 ///
 /// `0.0` disables libint2's internal prescreening outright, which is the
 /// tightest available table. MEASURED one-time cost, both arms run back to back
@@ -424,11 +424,11 @@ const PAR_AUX_SHELL_THRESHOLD: usize = 64;
 /// disabling prescreening removes that path too, though the floor is what
 /// guarantees the invariant for a genuinely vanishing diagonal.)
 ///
-/// In practice this arm was never the one biting — MEASURED on
-/// alkane_8 and alkane_16 with cc-pVDZ-RI, the pre-fix aux table stored ZERO
+/// In practice this arm is never the one biting — MEASURED on
+/// alkane_8 and alkane_16 with cc-pVDZ-RI, the aux table stores ZERO
 /// zeros and its smallest nonzero entry was 4.475e-1, because a 2-centre
 /// `(P|P)` diagonal over a normalized aux shell is O(1) and nowhere near the
-/// engine's precision cliff. It is changed for invariant consistency rather
+/// engine's precision cliff. It exists for invariant consistency rather
 /// than to repair an observed failure, and the measured cost is 0.004 s.
 ///
 /// Parallelized over `p` once `nsh` clears `PAR_AUX_SHELL_THRESHOLD`: each

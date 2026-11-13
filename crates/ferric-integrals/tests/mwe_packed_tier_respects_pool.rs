@@ -4,9 +4,9 @@
 //!
 //! An RSH-style J/K pair (or `df_j_aux != df_k_aux`, or the multi-rank RI-JK
 //! path) builds two raw tensors under ONE budget while the first is still
-//! resident. Both fit the budget on their own; only one fits the pool. Before
-//! the pool check the second was admitted as packed in-core and refused by the
-//! pool ("memory pool exhausted") where it used to spill and run.
+//! resident. Both fit the budget on their own; only one fits the pool. Without
+//! the pool check the second is admitted as packed in-core and refused by the
+//! pool ("memory pool exhausted") where it must spill and run.
 //!
 //! Own test binary: it installs the PROCESS-GLOBAL pool (see
 //! `mwe_three_index_pool_charges.rs` for why that must not share a process

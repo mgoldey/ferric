@@ -25,9 +25,9 @@
 //! defining integral. The exactness anchor is `U -> 0 => F_m(T)`.
 //!
 //! STOCK-REGION ANCHOR (`REF_STOCK`, `scripts/gen_yukawa_urr_refs.py`). The
-//! region the override leaves alone (T >= 0.5 mmax + 6) used to be compared
-//! only with an in-binary port of the stock recursion; the mpmath grid stopped
-//! at T = 20. `REF_STOCK` adds references (50-digit working precision) for mmax in {1,6,12,20,36},
+//! region the override leaves alone (T >= 0.5 mmax + 6) is compared
+//! with an in-binary port of the stock recursion and with mpmath references
+//! (the mpmath grid of the override region stops at T = 20); `REF_STOCK` adds references (50-digit working precision) for mmax in {1,6,12,20,36},
 //! U in {1e-14,1e-9,9e-8}, T from 0.7x the threshold (the fallback side) to
 //! 1000. Reference quality: Gauss-Legendre on 80 panels, checked against the
 //! independent perturbative series `G_m = e^U sum_n (-U)^n/n! F_{m-n}(T)`:

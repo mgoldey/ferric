@@ -165,7 +165,7 @@ fn two_co_resident_spilled_sources_do_not_refuse_each_other() {
     assert!(!raw.is_incore(), "budget must have forced a spill");
 
     // Dress it while `raw` is still alive -- exactly DfK::from_raw's shape.
-    // Before the fix this returned `memory pool exhausted`.
+    // This must not return `memory pool exhausted`.
     let m = ndarray::Array2::<f64>::eye(naux);
     let dressed = ThreeIndexSource::build_dressed(&mut raw, &m, budget)
         .expect("a co-resident dressed spill must NOT be refused by the pool");

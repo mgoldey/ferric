@@ -570,7 +570,7 @@ fn u_above_umax_is_rejected_only_below_tmax() {
         }
     }
     if BOYS_OVERRIDE == Some("2.7.2") {
-        // Slater below Umin with T <= Tmax: formerly a negative table index
+        // Slater below Umin with T <= Tmax: a negative table index
         assert!(tenno_gm(TennoKind::Slater, 1.0, 1.0, 3, 1e-4).is_err());
         // ... but T > Tmax keeps its working upward recursion
         let v = tenno_gm(TennoKind::Slater, 1.0, 2000.0, 3, 1e-4).expect("T > Tmax");

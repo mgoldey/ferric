@@ -119,14 +119,14 @@ pub fn check_ao_grid_budget(kind: AoGridKind, nbf: usize, npts: usize) -> Result
 ///
 /// # Why this DEBITS rather than re-reading a ceiling
 ///
-/// The old body resolved `resolve_budget_bytes(None)` — the WHOLE ceiling —
-/// on every call, so the grid cache's question was "do I fit in 4.72 GiB?"
-/// while the DF 3-index tensor asked the identical question against the
-/// identical number. Both passed; the process held the sum and was OOM-killed
-/// at 6.04 GiB. Against a pool the second asker sees only what the first
-/// left.
+/// Resolving `resolve_budget_bytes(None)` — the WHOLE ceiling —
+/// on every call would make the grid cache's question "do I fit in 4.72 GiB?"
+/// while the DF 3-index tensor asks the identical question against the
+/// identical number. Both pass; the process holds the sum and is OOM-killed
+/// (observed at 6.04 GiB). Against a pool the second asker sees only what the
+/// first left.
 ///
-/// With NO pool installed this is EXACTLY the old behaviour: the reservation
+/// With NO pool installed this is EXACTLY the unpooled behaviour: the reservation
 /// is inert and the comparison falls back to the resolved ceiling, so the
 /// unbudgeted path is bit-identical (pinned by
 /// `ferric-scf/tests/mwe_ksdft_pool_is_inert_without_a_pool.rs`).
@@ -140,7 +140,7 @@ pub fn check_ao_grid_budget_reserved(
         .saturating_mul(nbf)
         .saturating_mul(npts)
         .saturating_mul(8);
-    // Pool installed: DEBIT it, so this plane's bytes are no longer available
+    // Pool installed: DEBIT it, so this plane's bytes are not available
     // to the next plane that asks. Refusal carries the pool's own occupancy
     // breakdown, which names the dominant incumbent plane.
     if let Some(pool) = ferric_core::memory::pool::global() {
@@ -291,8 +291,7 @@ pub fn eval_shell(
             //
             // Do NOT relax that gate without fixing this arm: libint2 orders
             // PURE p as (y, z, x) — the m = -1, 0, +1 solid-harmonic order —
-            // not (x, y, z). An earlier version of this comment claimed
-            // libint2 used Cartesian order for pure p too; that was wrong.
+            // not (x, y, z). libint2 does NOT use Cartesian order for pure p.
             out[0] = rad * dx;
             out[1] = rad * dy;
             out[2] = rad * dz;
@@ -945,7 +944,7 @@ pub fn eval_basis_and_grad_on_points_unchecked(
     // chi[(i, g)] lives at offset i*npts + g. dchi is (3, nbf, npts), so
     // dchi[(a, i, g)] lives at offset a*nbf*npts + i*npts + g. We scatter each
     // grid column's values directly into these buffers (no per-point Vec collect
-    // + copy), halving the construction peak vs. the old materialize-then-copy.
+    // + copy), halving the construction peak vs. materialize-then-copy.
     let mut chi = Array2::<f64>::zeros((nbf, npts));
     let mut dchi = Array3::<f64>::zeros((3, nbf, npts));
 

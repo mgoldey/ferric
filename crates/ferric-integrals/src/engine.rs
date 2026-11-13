@@ -3265,9 +3265,8 @@ mod tests {
         // freshly-constructed engine reporting the cache disabled.
         //
         // Serialized against the default-state assertions via ENV_LOCK above.
-        // This comment previously argued the race window was "negligible"
-        // because the var is read immediately after being set in the same
-        // thread. That reasoning was wrong: `set_var` mutates PROCESS state,
+        // The race window is NOT negligible, though the var is read
+        // immediately after being set in the same thread: `set_var` mutates PROCESS state,
         // so while it is set, any test running CONCURRENTLY sees the cache
         // disabled. The pre-push gate runs this suite in parallel (unlike the
         // `--test-threads=1` runs it was developed under) and failed all three
