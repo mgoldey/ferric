@@ -10,6 +10,7 @@ use ferric_core::orbitals::OrbitalSpace;
 use ferric_core::timing::PhaseAccumulator;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
+use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
 use ferric_integrals::operator::Operator;
 use ferric_scf::diis::Diis;
 use ferric_scf::engine_pool::EnginePool;
@@ -623,6 +624,29 @@ fn imat_fill_rows(
 /// Rows of `Imat` per pooled GEMM block in [`build_imat_ri`].
 const IMAT_ROW_BLOCK: usize = 8;
 
+/// `D^z = Σ_ai (inv_scale·z_ai) (C_a C_iᵀ + C_i C_aᵀ)` in the AO basis, as
+/// `T + Tᵀ` with `T = C_vir · (inv_scale·z) · C_occᵀ`: two GEMMs instead of a
+/// scalar loop over `(a, i, μ, ν)`. `T + Tᵀ` is exactly symmetric.
+fn response_density_ao(
+    c: &Array2<f64>,
+    z: &Array2<f64>,
+    inv_scale: f64,
+    orb: &OrbitalSpace,
+) -> Array2<f64> {
+    use ndarray::s;
+    let OrbitalSpace {
+        nocc,
+        nvir,
+        nocc_total,
+        first_occ,
+    } = *orb;
+    let zs = z.mapv(|v| inv_scale * v);
+    let c_vir = c.slice(s![.., nocc_total..nocc_total + nvir]);
+    let c_occ = c.slice(s![.., first_occ..first_occ + nocc]);
+    let t = with_blas_threads(opt_in_blas_threads(), || c_vir.dot(&zs).dot(&c_occ.t()));
+    &t + &t.t()
+}
+
 /// Compute the A*z product via J/K builds in the AO basis.
 ///
 /// Returns `(4J − K − Kᵀ)[D^z]` in the vo block, with the symmetric
@@ -676,20 +700,7 @@ pub(crate) fn compute_az_product(
         return Ok(Array2::zeros((nvir, nocc)));
     };
 
-    let mut dz = Array2::zeros((n, n));
-    for a in 0..nvir {
-        let a_mo = nocc_total + a;
-        for i in 0..nocc {
-            let i_mo = first_occ + i;
-            let zai = inv_scale * z[(a, i)];
-            for mu in 0..n {
-                for nu in 0..n {
-                    let val = zai * (c[(mu, a_mo)] * c[(nu, i_mo)] + c[(mu, i_mo)] * c[(nu, a_mo)]);
-                    dz[(mu, nu)] += val;
-                }
-            }
-        }
-    }
+    let dz = response_density_ao(c, z, inv_scale, orb);
 
     // Build J(D^z) and K(D^z)
     let mut jz = Array2::zeros((n, n));
@@ -1024,6 +1035,52 @@ mod tests {
                     .all(|(a, b)| a.to_bits() == b.to_bits()),
                 "Imat differs bitwise on a {threads}-thread pool"
             );
+        }
+    }
+
+    /// [`response_density_ao`] against the scalar `Σ_ai z_ai (C_a C_iᵀ +
+    /// C_i C_aᵀ)` loop on a random unsymmetric `C` and `z`, plus exact
+    /// symmetry of the result.
+    ///
+    /// Bar, per element: the GEMM chain `T = (C_v z) C_oᵀ` accumulates
+    /// `γ_nvir + γ_nocc ≤ γ_{nvir+nocc}` of `Σ|terms|` (each of the two
+    /// products inside one term), the final `T + Tᵀ` adds one rounding, and
+    /// the scalar loop sums `2·nvir·nocc` products with sequential
+    /// accumulation, `γ_{2·nvir·nocc+2}`. Their difference is below
+    /// `(2·nvir·nocc + nvir + nocc + 6)·eps·Σ|terms|` (`Σ|terms|` over both
+    /// products of every `(a, i)`).
+    #[test]
+    fn response_density_matches_the_scalar_definition() {
+        let (n, nocc, nvir) = (11, 5, 6);
+        let orb = OrbitalSpace::new(nocc, nvir, nocc, 0);
+        let mut next = xorshift_stream(0x1234_5678_9abc_def1);
+        let c = Array2::from_shape_fn((n, nocc + nvir), |_| next());
+        let z = Array2::from_shape_fn((nvir, nocc), |_| next());
+        let inv_scale = 0.25;
+
+        let got = response_density_ao(&c, &z, inv_scale, &orb);
+        let bar_scale = (2 * nvir * nocc + nvir + nocc + 6) as f64 * f64::EPSILON;
+        for mu in 0..n {
+            for nu in 0..n {
+                let (mut want, mut abs) = (0.0, 0.0);
+                for a in 0..nvir {
+                    for i in 0..nocc {
+                        let zai = inv_scale * z[(a, i)];
+                        let t1 = zai * c[(mu, nocc + a)] * c[(nu, i)];
+                        let t2 = zai * c[(mu, i)] * c[(nu, nocc + a)];
+                        want += t1 + t2;
+                        abs += t1.abs() + t2.abs();
+                    }
+                }
+                assert!(
+                    (got[(mu, nu)] - want).abs() <= bar_scale * abs,
+                    "dz[{mu},{nu}] {} vs scalar {want}: |diff| {} > bar {}",
+                    got[(mu, nu)],
+                    (got[(mu, nu)] - want).abs(),
+                    bar_scale * abs
+                );
+                assert_eq!(got[(mu, nu)].to_bits(), got[(nu, mu)].to_bits());
+            }
         }
     }
 
