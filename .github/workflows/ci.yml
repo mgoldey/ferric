@@ -2832,7 +2832,7 @@ jobs:
       - name: Install libint2
         run: scripts/install-libint.sh "$LIBINT2_PREFIX"
 
-      # RUST_PIN: same install step as slow-tests -- the action SHA is
+      # Same install step as slow-tests -- the action SHA is
       # pinned, the Rust version floats on `stable` by design (see the
       # "Install Rust toolchain" comment in build-and-test).
       - name: Install Rust toolchain
