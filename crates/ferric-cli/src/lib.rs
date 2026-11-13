@@ -7,6 +7,7 @@
 //! `ferric-python`'s console-script entry point calls [`run`] with Python's
 //! `sys.argv`.
 
+mod cas;
 mod config;
 mod gpu_flag;
 mod periodic;
@@ -213,6 +214,8 @@ pub const SUPPORTED_METHOD_KINDS: &[&str] = &[
     "dsd-pbep86",
     "tda",
     "tddft",
+    "casscf",
+    "nevpt2",
 ];
 
 /// The error text for an unrecognised `method.kind`, listing every entry of
@@ -541,6 +544,13 @@ pub fn run(args: Vec<String>) {
     if !SUPPORTED_TASKS.contains(&task) {
         eprintln!("error: {}", unsupported_task_message(task));
         std::process::exit(1);
+    }
+    // CASSCF / SC-NEVPT2 run their own exact-J/K RHF start through
+    // `ferric_ci::driver` (the Python bindings' code path); `load_config`
+    // already resolved the `[cas]` plan and refused every key it would not read.
+    if matches!(method, "casscf" | "nevpt2") {
+        cas::run_cas(&cfg, cli_gpu.is_some());
+        return;
     }
     // [dft] dispersion on `optimize` / `frequencies`: the correction is
     // applied inside `run_ksdft`, which only the "energy" task reaches, so each

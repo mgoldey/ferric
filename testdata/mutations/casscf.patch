@@ -1,0 +1,13 @@
+diff --git a/crates/ferric-ci/src/casscf.rs b/crates/ferric-ci/src/casscf.rs
+index 9ae7d36cc..7a54c2cef 100644
+--- a/crates/ferric-ci/src/casscf.rs
++++ b/crates/ferric-ci/src/casscf.rs
+@@ -326,7 +326,7 @@ impl CasScfProblem {
+         let cc = c.slice(s![.., 0..nc]);
+         let dc = 2.0 * cc.dot(&cc.t());
+         let (j, k) = self.jk(&dc);
+-        let fi = &self.h_ao + &j - &(0.5 * &k);
++        let fi = &self.h_ao + &j - &(0.25 * &k);
+         let e_core = self.e_nuc + 0.5 * (&dc * &(&self.h_ao + &fi)).sum();
+         (fi, e_core)
+     }

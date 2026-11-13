@@ -6005,8 +6005,10 @@ class CasScfResult:
         ...
     @property
     def certificate(self) -> dict[str, Any]:
-        """Validation certificate: ``capability`` ``"casscf"`` (ungraded);
-        ``warnings`` lists a non-converged macro loop."""
+        """Validation certificate: ``capability`` ``"casscf"`` (graded
+        Proven; the CLI kind ``casscf``), the active space as an
+        approximation; a non-converged macro loop adds a warning and caps the
+        grade to ``"ungraded"``."""
         ...
 
 def run_casscf(
@@ -6085,7 +6087,9 @@ class Nevpt2Result:
         ...
     @property
     def certificate(self) -> dict[str, Any]:
-        """Validation certificate: ``capability`` ``"nevpt2"`` (ungraded)."""
+        """Validation certificate: ``capability`` ``"nevpt2"`` (graded Proven
+        on a CASSCF reference, ``"ungraded"`` on a CAS-CI one; the CLI kind
+        ``nevpt2``), with the active space and reference as approximations."""
         ...
 
 def run_nevpt2(

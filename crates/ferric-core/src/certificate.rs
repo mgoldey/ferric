@@ -186,6 +186,8 @@ pub const METHOD_KIND_GRADES: &[(&str, Grade)] = &[
     ("dsd-pbep86", Grade::Spike),
     ("tda", Grade::ProvenNarrow),
     ("tddft", Grade::ProvenNarrow),
+    ("casscf", Grade::Proven),
+    ("nevpt2", Grade::Proven),
 ];
 
 /// The recorded grade of a CLI `method.kind`; [`Grade::Ungraded`] when the

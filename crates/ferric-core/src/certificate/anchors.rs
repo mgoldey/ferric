@@ -61,6 +61,15 @@ pub enum AnchorData {
         /// File stems in `dir` (without `.json`).
         files: &'static [&'static str],
     },
+    /// Reference files that carry their geometry inline, relative to the
+    /// workspace root. Each file is one record, or holds its records in a
+    /// `systems` array; a record names its `system` and `basis` and holds an
+    /// XYZ block (count line, comment line, atoms) in `xyz`. For methods
+    /// without an auxiliary basis.
+    InlineGeometry {
+        /// The reference files, relative to the workspace root.
+        files: &'static [&'static str],
+    },
 }
 
 /// One method's headline energy anchor; see the module doc.
@@ -106,6 +115,13 @@ const OPEN_SHELL_BASES: &[&str] = &["6-31g", "def2-svp"];
 const CC: &str = "crates/ferric-cc/tests/validation_cc.rs";
 const CC_DIR: &str = "testdata/reference/validation/cc";
 const ATT_MP2_DIR: &str = "testdata/reference/validation/attenuated_mp2";
+
+const CASSCF_REFS: &[&str] = &[
+    "testdata/reference/casscf_h2o_cas44_631g_pyscf.json",
+    "testdata/reference/casscf_n2_cas66_631g_pyscf.json",
+    "testdata/reference/casscf_n2_r1.6_cas66_631g_pyscf.json",
+    "testdata/reference/casscf_o2_triplet_cas86_631g_pyscf.json",
+];
 
 /// The headline energy anchor of every method that has one.
 pub const ENERGY_ANCHORS: &[EnergyAnchor] = &[
@@ -463,6 +479,36 @@ pub const ENERGY_ANCHORS: &[EnergyAnchor] = &[
         aux_basis_sets: &["cc-pvdz-ri"],
         functionals: &[],
     },
+    EnergyAnchor {
+        method: "CASSCF",
+        kind: "casscf",
+        quantity: "energy",
+        value: "1.5e-11",
+        units: "Ha",
+        reference: "PySCF",
+        evidence: "crates/ferric-ci/tests/casscf_vs_pyscf.rs",
+        data: AnchorData::InlineGeometry { files: CASSCF_REFS },
+        elements: &["H", "N", "O"],
+        basis_sets: &["6-31g"],
+        aux_basis_sets: &[],
+        functionals: &[],
+    },
+    EnergyAnchor {
+        method: "SC-NEVPT2",
+        kind: "nevpt2",
+        quantity: "class energies",
+        value: "3.2e-8",
+        units: "Ha",
+        reference: "PySCF",
+        evidence: "crates/ferric-ci/tests/nevpt2.rs",
+        data: AnchorData::InlineGeometry {
+            files: &["testdata/reference/nevpt2_refs.json"],
+        },
+        elements: &["H", "N", "O"],
+        basis_sets: &["6-31g"],
+        aux_basis_sets: &[],
+        functionals: &[],
+    },
 ];
 
 /// The anchor of `method` (see [`EnergyAnchor::method`]), if it has one.
@@ -761,6 +807,49 @@ mod tests {
         (el, bs, aux, systems)
     }
 
+    /// `(elements, bases, systems)` of the inline-geometry reference
+    /// `files`; a missing file or field is pushed to `bad`.
+    fn inline_sets(
+        root: &Path,
+        files: &[&str],
+        bad: &mut Vec<String>,
+        method: &str,
+    ) -> (BTreeSet<String>, BTreeSet<String>, BTreeSet<String>) {
+        let (mut el, mut bs, mut systems) = (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
+        for f in files {
+            let Ok(text) = std::fs::read_to_string(root.join(f)) else {
+                bad.push(format!("{method}: no reference {f}"));
+                continue;
+            };
+            let r: serde_json::Value = serde_json::from_str(&text).unwrap();
+            let records = match r["systems"].as_array() {
+                Some(a) => a.clone(),
+                None => vec![r],
+            };
+            for rec in &records {
+                let (Some(system), Some(basis), Some(xyz)) = (
+                    rec["system"].as_str(),
+                    rec["basis"].as_str(),
+                    rec["xyz"].as_str(),
+                ) else {
+                    bad.push(format!(
+                        "{method}: a record of {f} lacks system, basis or xyz"
+                    ));
+                    continue;
+                };
+                el.extend(
+                    xyz.lines()
+                        .skip(2)
+                        .filter_map(|l| l.split_whitespace().next())
+                        .map(str::to_string),
+                );
+                bs.insert(basis.to_string());
+                systems.insert(system.to_string());
+            }
+        }
+        (el, bs, systems)
+    }
+
     /// Every disagreement between `a`'s covered sets and the data its
     /// evidence test reads.
     fn data_disagreements(a: &EnergyAnchor, root: &Path) -> Vec<String> {
@@ -792,6 +881,18 @@ mod tests {
                     .map(String::as_str)
                     .chain(a.functionals.iter().copied())
                 {
+                    if !test.contains(&format!("\"{w}\"")) {
+                        files_bad.push(format!("{}: {} never names \"{w}\"", a.method, a.evidence));
+                    }
+                }
+            }
+            AnchorData::InlineGeometry { files } => {
+                let (el, bs, systems) = inline_sets(root, files, &mut files_bad, a.method);
+                same("elements", set(a.elements), el);
+                same("basis sets", set(a.basis_sets), bs);
+                same("aux basis sets", set(a.aux_basis_sets), BTreeSet::new());
+                let test = std::fs::read_to_string(root.join(a.evidence)).unwrap_or_default();
+                for w in &systems {
                     if !test.contains(&format!("\"{w}\"")) {
                         files_bad.push(format!("{}: {} never names \"{w}\"", a.method, a.evidence));
                     }
@@ -859,7 +960,7 @@ mod tests {
                     let e = dirs.entry(dir).or_default();
                     e.extend(files.iter().map(|f| format!("{f}.json")));
                 }
-                AnchorData::BasisCoverage { .. } => {}
+                AnchorData::BasisCoverage { .. } | AnchorData::InlineGeometry { .. } => {}
             }
         }
         for (dir, ours) in dirs {
@@ -972,7 +1073,7 @@ mod tests {
 
     /// Anchors whose mutation has no recorded result yet. Each one is printed
     /// by `mutation_ledger_matches_the_registry`.
-    const PENDING_MUTATIONS: &[&str] = &[];
+    const PENDING_MUTATIONS: &[&str] = &["CASSCF", "SC-NEVPT2"];
 
     /// SHA-256 of `data` as lower-case hex (FIPS 180-4).
     fn sha256_hex(data: &[u8]) -> String {

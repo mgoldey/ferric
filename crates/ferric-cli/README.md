@@ -38,7 +38,7 @@ auxbasis = "cc-pvdz-ri"
 
 | Key | Allowed values |
 | :--- | :--- |
-| `kind` | `rhf` `uhf` `rohf` `ksdft` `rimp2` `mp3` `oo-rimp2` `att-rimp2` `mp2-v` `scs-mp2` `scs-mp2-2terfc` `laplace-mp2` `laplace-sos-mp2` `pdep-rpa` `rs-mp2-rpa` `gw` `bse-tda` `tdhf-static-polarizability` `ccsd` `ccd` `ccsd(t)` `linlccd` `drpa` `wb97x-l-v` `b2plyp` `dsd-pbep86` `tda` `tddft` |
+| `kind` | `rhf` `uhf` `rohf` `ksdft` `rimp2` `mp3` `oo-rimp2` `att-rimp2` `mp2-v` `scs-mp2` `scs-mp2-2terfc` `laplace-mp2` `laplace-sos-mp2` `pdep-rpa` `rs-mp2-rpa` `gw` `bse-tda` `tdhf-static-polarizability` `ccsd` `ccd` `ccsd(t)` `linlccd` `drpa` `wb97x-l-v` `b2plyp` `dsd-pbep86` `tda` `tddft` `casscf` `nevpt2` |
 | `task` | `energy` `optimize` `frequencies` |
 
 * Density-functional calculations use `kind = "ksdft"` (or `rhf`/`uhf`/`rohf`

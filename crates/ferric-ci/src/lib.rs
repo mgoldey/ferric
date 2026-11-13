@@ -44,8 +44,10 @@
 //! * **Open-shell / non-singlet references, S² handling, multiple roots**: the
 //!   reference is a closed-shell RHF; `n_alpha == n_beta` is not checked, and
 //!   only the single lowest root is extracted.
-//! * **CLI wiring.** Python exposes `ferric.run_casci` and `ferric.run_casscf`
-//!   (`crates/ferric-python/src/ci.rs`); there is no CLI `method.kind`.
+//! * **CLI kind for plain CAS-CI.** CASSCF and SC-NEVPT2 are the CLI kinds
+//!   `casscf` and `nevpt2` through [`driver`], which the Python
+//!   `ferric.run_casscf` / `ferric.run_nevpt2` call too; CAS-CI is Python
+//!   (`ferric.run_casci`) and Rust only.
 //!
 //! ## Scaling
 //!
@@ -58,8 +60,13 @@
 
 /// Two-step CASSCF on top of the CAS-CI solver and its RDMs.
 pub mod casscf;
+/// Certificates of the CASSCF and SC-NEVPT2 results.
+pub mod certificate;
 /// CI-native Davidson eigensolver for the lowest root.
 pub mod davidson;
+/// Molecule-to-energy CASSCF and SC-NEVPT2 drivers (RHF start included),
+/// shared by the CLI and the Python bindings.
+pub mod driver;
 /// Slater-Condon matrix elements and sigma-vector build.
 pub mod hamiltonian;
 /// Active-space MO integral transform.
