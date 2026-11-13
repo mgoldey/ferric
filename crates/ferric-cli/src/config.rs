@@ -2902,6 +2902,15 @@ pub struct ScfCfg {
     /// (0 = aufbau throughout). Fixes occupied-set flip-flop non-convergence.
     #[serde(default)]
     pub mom_after_iter: usize,
+    /// Which occupied set MOM compares against: `"previous"` (default; the
+    /// set accepted at the previous iteration, from iteration
+    /// `mom_after_iter + 1`) or `"initial"` (the starting occupied block,
+    /// held from the first iteration; UHF/UKS only, requires
+    /// `mom_after_iter = 0` and no `stability_descent`). Same as the Python
+    /// `run_uhf(mom_reference=)`. The library refuses the unsupported
+    /// combinations when the SCF starts.
+    #[serde(default)]
+    pub mom_reference: Option<String>,
     /// SCF convergence ladder: a sequence of `[[scf.ladder]]` rungs walked in
     /// order (density carried forward unless a rung sets `restart = true`),
     /// stopping at the first converged rung. Empty (default, no `[[scf.ladder]]`
@@ -3080,6 +3089,7 @@ impl Default for ScfCfg {
             jk_aux: None,
             level_shift: None,
             mom_after_iter: 0,
+            mom_reference: None,
             ladder: Vec::new(),
             verbose: false,
             df_guess: None,
@@ -3173,6 +3183,7 @@ impl Config {
             ),
             (s.smearing_sigma.is_some(), "[scf] smearing_sigma"),
             (s.mom_after_iter > 0, "[scf] mom_after_iter"),
+            (s.mom_reference.is_some(), "[scf] mom_reference"),
             (
                 s.k_builder.as_deref() == Some("cosx"),
                 "[scf] k_builder = \"cosx\"",
@@ -3454,6 +3465,15 @@ impl ScfCfg {
                 .map_err(|e| format!("[scf] diis: {e}")),
         }
     }
+    /// Resolve `[scf] mom_reference` (strict; unset is `"previous"`).
+    pub fn mom_reference_resolved(&self) -> Result<ferric_scf::mom::MomReference, String> {
+        self.mom_reference
+            .as_deref()
+            .map(ferric_scf::mom::MomReference::parse_config_str)
+            .transpose()
+            .map(Option::unwrap_or_default)
+            .map_err(|e| format!("[scf] {}", ferric_msg(e)))
+    }
     /// Resolve `[scf] guess` to `RhfConfig::use_sad_guess` (strict). `true`
     /// selects the MINAO guess (the default), `false` the hcore guess; `"sad"`
     /// is an alias of `"minao"` (see `ferric_scf::guess::InitialGuess`).
@@ -3521,6 +3541,7 @@ impl ScfCfg {
             return Err("[scf] diis_switch_thresh must not be NaN".into());
         }
         self.use_density_guess()?;
+        self.mom_reference_resolved()?;
         if let Some(p) = self.eri_precision {
             (ferric_integrals::engine_pool::ERI_PRECISION_VAR.validate)(&p)
                 .map_err(|e| format!("[scf] eri_precision {p:e}: {e}"))?;
@@ -8935,6 +8956,26 @@ json = [1, 2]
             .unwrap();
     }
 
+    /// `[scf] mom_reference` parses strictly (case-insensitive, unset is
+    /// "previous") and a bad value is a load-time error naming both spellings.
+    #[test]
+    fn scf_mom_reference_parses_strictly() {
+        use ferric_scf::mom::MomReference;
+        assert_eq!(
+            scf_cfg("").mom_reference_resolved(),
+            Ok(MomReference::Previous)
+        );
+        assert_eq!(
+            scf_cfg("mom_reference = \"Initial\"").mom_reference_resolved(),
+            Ok(MomReference::Initial)
+        );
+        let bad = scf_cfg("mom_reference = \"start\"");
+        let err = bad.mom_reference_resolved().unwrap_err();
+        assert!(err.starts_with("[scf] mom_reference"), "{err}");
+        assert!(err.contains("previous") && err.contains("initial"), "{err}");
+        assert!(bad.validate().is_err());
+    }
+
     /// A bad `[scf] diis` used to PANIC (a `panic!` in `diis_flavor`), aborting
     /// the process with a backtrace. It must be a clean `Err` naming the valid
     /// values -- checked under `catch_unwind` so a regression to a panic fails
@@ -11699,6 +11740,7 @@ mod cli_wired_keys_tests {
             ("aurora = true\n", "aurora"),
             ("stability_descent = true\n", "check_stability"),
             ("mom_after_iter = 2\n", "mom_after_iter"),
+            ("mom_reference = \"previous\"\n", "mom_reference"),
             ("k_builder = \"cosx\"\n", "cosx"),
             ("[[scf.ladder]]\nmax_iter = 3\n", "[[scf.ladder]]"),
         ] {

@@ -826,9 +826,12 @@ pub fn run(args: Vec<String>) {
         newton_trigger: if cfg.scf.soscf { 1e-3 } else { 0.0 },
         ah_trigger: 0.0,
         mom_after_iter: cfg.scf.mom_after_iter,
-        // The CLI has no starting-density input for an initial-MOM reference
-        // to hold; listed because this literal is exhaustive.
-        mom_reference: ferric_scf::mom::MomReference::Previous,
+        // `[scf] mom_reference`, validated at load; `"initial"` holds the
+        // configured guess's occupied block (the CLI has no dm0 input).
+        mom_reference: cfg.scf.mom_reference_resolved().unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }),
         // ROHF/ROKS F6 occupation guard (ferric_scf::rohf_occupation): ON, as
         // in the Default impl. Not a TOML key; listed because this literal is
         // exhaustive.
