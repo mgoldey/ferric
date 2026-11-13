@@ -14,7 +14,7 @@ use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
 use ferric_integrals::operator::Operator;
 use ferric_scf::diis::Diis;
 use ferric_scf::engine_pool::EnginePool;
-use ferric_scf::rhf::{build_jk, build_jk_with_pool};
+use ferric_scf::response_jk::ResponseJk;
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::ScfResult;
 use ndarray::{Array2, Array3};
@@ -80,12 +80,13 @@ pub fn solve_zvector(
     inter: &Mp2Intermediates,
     budget_bytes: usize,
 ) -> Result<ZvectorSolution, FerricError> {
+    let ctx = ferric_core::parallel::ParallelContext::default();
+    let jk = ResponseJk::for_scf(&ctx, mol, prep, bounds, rhf)?;
     solve_zvector_timed(
-        mol,
         prep,
         dfbs,
         op,
-        bounds,
+        &jk,
         rhf,
         inter,
         budget_bytes,
@@ -151,14 +152,14 @@ impl ZvectorSolution {
 }
 
 /// [`solve_zvector`] with its phases recorded in `acc` (inert unless
-/// `FERRIC_TIMING` is set; the arithmetic is the same either way).
+/// `FERRIC_TIMING` is set; the arithmetic is the same either way), every
+/// J/K built on `jk`, the reference SCF's route.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn solve_zvector_timed(
-    _mol: &Molecule,
     prep: &PreparedBasis,
     dfbs: &PreparedBasis,
     op: Operator,
-    bounds: &SchwarzBounds,
+    jk: &ResponseJk<'_>,
     rhf: &ScfResult,
     inter: &Mp2Intermediates,
     budget_bytes: usize,
@@ -212,10 +213,7 @@ pub(crate) fn solve_zvector_timed(
         let cp = c.dot(&dm1mo_corr);
         cp.dot(&c.t())
     };
-    let n = c.nrows();
-    let (mut jc, mut kc) = (Array2::zeros((n, n)), Array2::zeros((n, n)));
-    let ctx = ferric_core::parallel::ParallelContext::default();
-    build_jk(&ctx, prep, bounds, 1e-12, &dm1_corr_ao, &mut jc, &mut kc)?;
+    let (jc, kc) = jk.jk(&dm1_corr_ao, 1e-12)?;
     // PySCF `vhf = mp._scf.get_veff(dm1)*2 = 2·(J − ½K) = 2J − K` (grad/mp2.py
     // line 138); `Xvo = C_vir^T · vhf · C_occ` (line 139) with NO further factor.
     // So the veff coefficient in Xvo is exactly (2J − K), applied ONCE.
@@ -261,7 +259,7 @@ pub(crate) fn solve_zvector_timed(
     // below (up to max_iter calls), instead of build_jk constructing a fresh
     // pool per call. Reduction order is unchanged, so results stay
     // bit-identical across thread counts.
-    let pool = EnginePool::new(bounds.op, prep, 1e-14)?;
+    let pool = jk.engine_pool(1e-14)?;
 
     for _iter in 0..max_iter {
         // A·z Hessian coupling. `compute_az_product` returns 4J−2K (built from the
@@ -269,7 +267,7 @@ pub(crate) fn solve_zvector_timed(
         // fvind `2·get_veff(D^z+D^z†) = 2J−K` (verified numerically: the ratio is
         // 0.5). The MP2 Z-vector Hessian is `Δε·z + (2J−K)·z`, so the matvec must be
         // scaled by ½ here (the same ½ as `cpks_polar::solve_cphf_cg`).
-        let (az2, jz, kz) = az_product_with_jk(c, &z, prep, bounds, &zorb, &pool, budget_bytes)?;
+        let (az2, jz, kz) = az_product_with_jk(c, &z, jk, &zorb, pool.as_ref(), budget_bytes)?;
         let az = 0.5 * &az2;
 
         let mut residual = Array2::zeros((nvir, nocc_total));
@@ -831,19 +829,20 @@ pub(crate) fn compute_az_product(
     pool: &EnginePool,
     ooc_budget: usize,
 ) -> Result<Array2<f64>, FerricError> {
-    Ok(az_product_with_jk(c, z, prep, bounds, orb, pool, ooc_budget)?.0)
+    let ctx = ferric_core::parallel::ParallelContext::default();
+    let jk = ResponseJk::exact(&ctx, prep, bounds);
+    Ok(az_product_with_jk(c, z, &jk, orb, Some(pool), ooc_budget)?.0)
 }
 
-/// [`compute_az_product`] and the AO `(J, K)` of the unscaled `D^z` it
-/// built them from (zero when `z` is zero).
-#[allow(clippy::too_many_arguments)]
+/// [`compute_az_product`] on the J/K route `jk` (`pool` is the four-centre
+/// route's engine pool, `None` on a fitted one), and the AO `(J, K)` of the
+/// unscaled `D^z` it built them from (zero when `z` is zero).
 fn az_product_with_jk(
     c: &Array2<f64>,
     z: &Array2<f64>,
-    prep: &PreparedBasis,
-    bounds: &SchwarzBounds,
+    jk: &ResponseJk<'_>,
     orb: &OrbitalSpace,
-    pool: &EnginePool,
+    pool: Option<&EnginePool>,
     ooc_budget: usize,
 ) -> Result<(Array2<f64>, Array2<f64>, Array2<f64>), FerricError> {
     let OrbitalSpace {
@@ -868,13 +867,8 @@ fn az_product_with_jk(
     let dz = response_density_ao(c, z, inv_scale, orb);
 
     // Build J(D^z) and K(D^z)
-    let mut jz = Array2::zeros((n, n));
-    let mut kz = Array2::zeros((n, n));
-    let ctx = ferric_core::parallel::ParallelContext::default();
     let band_bytes = ferric_scf::reduce::resolve_band_bytes(ooc_budget);
-    build_jk_with_pool(
-        &ctx, prep, bounds, 1e-12, &dz, &mut jz, &mut kz, pool, band_bytes,
-    )?;
+    let (jz, kz) = jk.jk_with_pool(&dz, 1e-12, pool, band_bytes)?;
 
     // The A*z product in AO: A_AO = 4*J(D^z) - K(D^z) - K(D^z)^T
     let az_ao = 4.0 * &jz - &kz - &kz.t();
@@ -1543,7 +1537,7 @@ mod tests {
         let d_rel = c.dot(&dm1mo).dot(&c.t());
         let n = obs.nbasis();
         let (mut j, mut k) = (Array2::zeros((n, n)), Array2::zeros((n, n)));
-        build_jk(&ctx, &obs, &bounds, 1e-12, &d_rel, &mut j, &mut k).unwrap();
+        ferric_scf::rhf::build_jk(&ctx, &obs, &bounds, 1e-12, &d_rel, &mut j, &mut k).unwrap();
         let zmax = sol.z.iter().fold(0.0f64, |m, v| m.max(v.abs()));
         let bar = 2.0 * (n * n) as f64 * 1e-12 * (2.0 + (2.0 * zmax).max(1.0));
         let dj = (&j - &j_sum).iter().fold(0.0f64, |m, v| m.max(v.abs()));
@@ -1559,7 +1553,7 @@ mod tests {
         let dm1mo_u = correlation_density_mo(&inter, &sol.imat, rhf.eps_r(), None).unwrap();
         let d_u = c.dot(&dm1mo_u).dot(&c.t());
         let (mut ju, mut ku) = (Array2::zeros((n, n)), Array2::zeros((n, n)));
-        build_jk(&ctx, &obs, &bounds, 1e-12, &d_u, &mut ju, &mut ku).unwrap();
+        ferric_scf::rhf::build_jk(&ctx, &obs, &bounds, 1e-12, &d_u, &mut ju, &mut ku).unwrap();
         let dz = (&j - &ju).iter().fold(0.0f64, |m, v| m.max(v.abs()));
         assert!(
             dz > 1e3 * bar,

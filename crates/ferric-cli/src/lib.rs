@@ -7095,6 +7095,36 @@ fn task_reference_certificate_from(
     scf_certificate_stamped(mol, &scf, &used, dispersion.as_ref())
 }
 
+/// The reference route `[scf] jk` resolved to (`apply_scf_jk`) for the
+/// RI-MP2 optimize: four-centre or RI-JK, the SCF its analytic gradient
+/// differentiates; any other route is an error.
+fn rimp2_gradient_scf_jk(
+    rhf_config: &ferric_scf::rhf::RhfConfig,
+) -> Result<ferric_scf::scf_jk::ScfJk, String> {
+    let route = ferric_scf::scf_jk::effective_jk(rhf_config);
+    match route.mode {
+        "exact" => Ok(ferric_mp2::gradient::exact_scf_jk()),
+        "rijk" => Ok(ferric_scf::scf_jk::ScfJk {
+            mode: ferric_scf::scf_jk::ScfJkMode::RiJk,
+            aux: route.j_aux,
+            k_builder: None,
+        }),
+        other => Err(format!(
+            "method.kind = \"rimp2\", task = \"optimize\" differentiates a four-centre or an \
+             RI-JK reference ([scf] jk = \"exact\" | \"rijk\"); the [scf] fields give the J/K \
+             route \"{other}\""
+        )),
+    }
+}
+
+/// The certificate's gradient line for an RI-MP2 optimize on `scf_jk`.
+fn rimp2_gradient_label(scf_jk: &ferric_scf::scf_jk::ScfJk) -> String {
+    match scf_jk.aux.as_deref() {
+        Some(aux) => format!("analytic (Z-vector), RI-JK reference ({aux})"),
+        None => "analytic (Z-vector)".to_string(),
+    }
+}
+
 /// `task.method = "optimize"` dispatch. Extracted verbatim from the former
 /// `main()` `if task == "optimize" { ... }` block; each `method` sub-arm below
 /// is byte-for-byte the original match-arm body.
@@ -7293,7 +7323,11 @@ fn run_optimize(
                 memory_budget_bytes: budget_bytes,
                 ..Default::default()
             };
-            let opt_result = ferric_mp2::optimize::optimize_geometry_rimp2(
+            let scf_jk = rimp2_gradient_scf_jk(rhf_config).unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            });
+            let opt_result = ferric_mp2::optimize::optimize_geometry_rimp2_on(
                 mol,
                 bs,
                 &aux_bs,
@@ -7301,6 +7335,7 @@ fn run_optimize(
                 &mp2_config,
                 &opt_config,
                 rhf_config.external_potential.as_ref(),
+                &scf_jk,
             )
             .unwrap_or_else(|e| {
                 eprintln!("error during RI-MP2 optimization: {e}");
@@ -7331,7 +7366,7 @@ fn run_optimize(
                 &opt_result.mol,
                 None,
                 (opt_result.converged, opt_result.steps, opt_result.energy),
-                "analytic (Z-vector)",
+                &rimp2_gradient_label(&scf_jk),
             );
         }
         "uhf" => {

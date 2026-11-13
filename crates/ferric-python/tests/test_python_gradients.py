@@ -289,14 +289,28 @@ def test_ghost_atom_gradient_surfaces_the_rust_refusal(sto3g):
         (NH2, 2, {}, "closed-shell"),
         (WATER, 1, {"local": "amplitude-threshold", "eps": 1e-6}, "local"),
         (WATER, 1, {"kappa": 1.0}, "kappa"),
-        (WATER, 1, {"scf_jk": "rijk"}, "exact"),
+        (WATER, 1, {"scf_jk": "rijcosx"}, "COSX"),
     ],
-    ids=["open-shell", "local", "kappa", "rijk"],
+    ids=["open-shell", "local", "kappa", "rijcosx"],
 )
 def test_rimp2_gradient_refusals(atoms, mult, kw, match, sto3g):
     aux = ferric.BasisSet.bundled("cc-pvdz-ri")
     with pytest.raises(ValueError, match=match):
         ferric.run_rimp2(_mol(atoms, mult), sto3g, aux, with_gradient=True, **kw)
+
+
+def test_rimp2_gradient_on_an_rijk_reference(sto3g):
+    """scf_jk="rijk" is a supported gradient reference: the fitted gradient
+    (FD-checked in crates/ferric-mp2/tests/rimp2_gradient_rijk.rs) is
+    translation-invariant and differs from the four-centre one by the fit."""
+    aux = ferric.BasisSet.bundled("cc-pvdz-ri")
+    kw = dict(with_gradient=True, scf_density_conv=1e-9)
+    fit = np.asarray(
+        ferric.run_rimp2(_mol(WATER), sto3g, aux, scf_jk="rijk", **kw).gradient()
+    )
+    exact = np.asarray(ferric.run_rimp2(_mol(WATER), sto3g, aux, **kw).gradient())
+    assert np.abs(fit.sum(axis=0)).max() < 1e-8
+    assert 0.0 < np.abs(fit - exact).max() < 1e-3
 
 
 def test_oo_rimp2_gradient_refusals(sto3g):

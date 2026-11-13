@@ -4421,10 +4421,13 @@ def run_rimp2(
     with_gradient=True adds the analytic gradient of total_energy
     (result.gradient(), natoms x 3, Hartree/Bohr; Z-vector relaxed density
     plus the RI 3c/2c response), point charges included. Closed-shell exact
-    Coulomb RI-MP2 on an exact-J/K RHF only: an open-shell molecule, local=,
-    the att_* keys, kappa, a fitted scf_jk or k_builder="cosx" raise
-    ValueError. The Z-vector assumes a stationary RHF, so the gradient error
-    follows scf_density_conv (tighten it for finite-difference work).
+    Coulomb RI-MP2 on a four-centre RHF or on scf_jk="rijk" (the SCF,
+    Z-vector and two-electron derivative terms then all use the RI-JK fit, so
+    the gradient is that of the fitted energy): an open-shell molecule,
+    local=, the att_* keys, kappa, scf_jk="rijcosx" or k_builder="cosx" raise
+    ValueError. A Z-vector that misses its tolerance raises. The Z-vector
+    assumes a stationary RHF, so the gradient error follows scf_density_conv
+    (tighten it for finite-difference work).
 
     RHF reference for a singlet; UHF reference + unrestricted RI-MP2 (UMP2)
     for multiplicity > 1 (`result.reference` says which). `kappa` is

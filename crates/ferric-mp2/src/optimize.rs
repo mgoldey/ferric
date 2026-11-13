@@ -13,7 +13,7 @@
 //! and matches the precedent `ferric-rpa` already set for its own
 //! energy/gradient pair.
 
-use crate::gradient::total_rimp2_gradient_warm;
+use crate::gradient::{exact_scf_jk, total_rimp2_gradient_on};
 use crate::rimp2::RiMp2Config;
 use ferric_core::basis::BasisSet;
 use ferric_core::external_potential::ExternalPotential;
@@ -21,6 +21,7 @@ use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::operator::Operator;
 use ferric_scf::optimize::OptimizeConfig;
+use ferric_scf::scf_jk::ScfJk;
 use ferric_scf::warm_start::ScfWarmStart;
 use ndarray::{Array1, Array2};
 
@@ -55,6 +56,32 @@ pub fn optimize_geometry_rimp2(
     opt_config: &OptimizeConfig,
     ext: Option<&ExternalPotential>,
 ) -> Result<RiMp2OptimizeResult, FerricError> {
+    optimize_geometry_rimp2_on(
+        mol,
+        obs_basis,
+        aux_basis,
+        op,
+        mp2_config,
+        opt_config,
+        ext,
+        &exact_scf_jk(),
+    )
+}
+
+/// [`optimize_geometry_rimp2`] with the reference SCF on the J/K route
+/// `scf_jk` (`"exact"` or `"rijk"`; see
+/// [`crate::gradient::total_rimp2_gradient_on`]).
+#[allow(clippy::too_many_arguments)]
+pub fn optimize_geometry_rimp2_on(
+    mol: &Molecule,
+    obs_basis: &BasisSet,
+    aux_basis: &BasisSet,
+    op: Operator,
+    mp2_config: &RiMp2Config,
+    opt_config: &OptimizeConfig,
+    ext: Option<&ExternalPotential>,
+    scf_jk: &ScfJk,
+) -> Result<RiMp2OptimizeResult, FerricError> {
     let mut current_mol = mol.clone();
     let natoms = current_mol.atoms.len();
     let n_coord = natoms * 3;
@@ -63,7 +90,9 @@ pub fn optimize_geometry_rimp2(
     // (`opt_config.scf_warm_start`, see `ferric_scf::warm_start`).
     let mut warm = ScfWarmStart::new(opt_config.scf_warm_start);
     let mut eval = |m: &Molecule| {
-        total_rimp2_gradient_warm(m, obs_basis, aux_basis, op, mp2_config, ext, &mut warm)
+        total_rimp2_gradient_on(
+            m, obs_basis, aux_basis, op, mp2_config, ext, scf_jk, &mut warm,
+        )
     };
     let (mut energy, mut grad_arr) = eval(&current_mol)?;
     let mut grad = flatten(&grad_arr);

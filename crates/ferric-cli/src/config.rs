@@ -3200,6 +3200,37 @@ impl Config {
     }
 }
 
+/// Whether `[scf] jk` governs the reference SCF of `kind` / `task`: the
+/// [`SCF_JK_KINDS`] energies, and the RI-MP2 optimize, whose analytic
+/// gradient differentiates an exact or an RI-JK reference
+/// (`ferric_mp2::gradient::total_rimp2_gradient_on`).
+fn scf_jk_governs(kind: &str, task: &str) -> bool {
+    let rimp2_optimize = kind == "rimp2" && task == "optimize";
+    SCF_JK_KINDS.contains(&kind) && (task == "energy" || rimp2_optimize)
+}
+
+/// The resolved `jk` routes a method refuses: OO-RI-MP2 rebuilds exact J/K
+/// (any fit), and the RI-MP2 gradient has no COSX exchange response.
+fn refuse_scf_jk_for_kind(
+    kind: &str,
+    task: &str,
+    jk: &ferric_scf::scf_jk::ScfJk,
+) -> Result<(), String> {
+    use ferric_scf::scf_jk::{ScfJkKeys, ScfJkMode, OO_REBUILDS_EXACT_JK};
+    if kind == "oo-rimp2" {
+        jk.require_exact(ScfJkKeys::CLI, OO_REBUILDS_EXACT_JK)?;
+    }
+    if kind == "rimp2" && task == "optimize" && jk.mode == ScfJkMode::RiJCosx {
+        return Err(
+            "[scf] jk = \"rijcosx\" is refused for method.kind = \"rimp2\", task = \
+             \"optimize\": the RI-MP2 gradient has no COSX exchange response. Use [scf] \
+             jk = \"exact\" or \"rijk\""
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
 impl ScfCfg {
     /// `aurora` / `trah_trigger` scoping: AURORA is closed-shell RHF only, TRAH
     /// is wired for RHF and UHF; anything else would silently ignore the key.
@@ -3272,13 +3303,13 @@ impl ScfCfg {
         task: &str,
     ) -> Result<Option<ferric_scf::scf_jk::ScfJk>, String> {
         use ferric_scf::scf_jk::{ScfJk, ScfJkKeys, ScfJkMode, OO_REBUILDS_EXACT_JK};
-        let governed = SCF_JK_KINDS.contains(&kind) && task == "energy";
-        if !governed {
+        if !scf_jk_governs(kind, task) {
             if self.jk.is_some() || self.jk_aux.is_some() {
                 return Err(format!(
                     "[scf] jk / jk_aux are wired for task = \"energy\" with method.kind = {} \
-                     only; got kind = \"{kind}\", task = \"{task}\". Use [scf] df_j_aux / \
-                     df_k_aux / k_builder there",
+                     and for method.kind = \"rimp2\" with task = \"optimize\" only; got \
+                     kind = \"{kind}\", task = \"{task}\". Use [scf] df_j_aux / df_k_aux / \
+                     k_builder there",
                     SCF_JK_KINDS.join(", ")
                 ));
             }
@@ -3324,9 +3355,7 @@ impl ScfCfg {
             default,
             ScfJkKeys::CLI,
         )?;
-        if kind == "oo-rimp2" {
-            jk.require_exact(ScfJkKeys::CLI, OO_REBUILDS_EXACT_JK)?;
-        }
+        refuse_scf_jk_for_kind(kind, task, &jk)?;
         if jk.is_fitted() {
             let m = jk.mode.as_str();
             if self.df_increments {
@@ -5081,7 +5110,11 @@ mod compat_guard_tests {
         assert_eq!(rs_default.mode, ScfJkMode::RiJk);
         assert_eq!(rs_default.aux.as_deref(), Some("def2-universal-jkfit"));
         assert_eq!(choice("rhf", "energy", ""), Ok(None));
-        assert_eq!(choice("rimp2", "optimize", ""), Ok(None));
+        let opt_default = choice("rimp2", "optimize", "").unwrap().unwrap();
+        assert_eq!(
+            (opt_default.mode, opt_default.aux),
+            (ScfJkMode::Exact, None)
+        );
         // The explicit df_*_aux spelling leaves the run untouched.
         assert_eq!(
             choice("rimp2", "energy", "df_j_aux = \"def2-universal-jkfit\"\n"),
@@ -5213,12 +5246,23 @@ mod compat_guard_tests {
                 "wired for task",
             ),
             ("ccsd", "energy", "jk = \"rijk\"\n", "wired for task"),
-            ("rimp2", "optimize", "jk = \"rijk\"\n", "wired for task"),
+            ("rimp2", "frequencies", "jk = \"rijk\"\n", "wired for task"),
+            (
+                "rimp2",
+                "optimize",
+                "jk = \"rijcosx\"\n",
+                "no COSX exchange response",
+            ),
         ] {
             let e = choice(kind, task, extra).expect_err(extra);
             assert!(e.contains(needle), "{extra}: {e}");
         }
         assert!(choice("oo-rimp2", "energy", "jk = \"exact\"\n").is_ok());
+        let rijk_opt = choice("rimp2", "optimize", "jk = \"rijk\"\n")
+            .unwrap()
+            .unwrap();
+        assert_eq!(rijk_opt.mode, ScfJkMode::RiJk);
+        assert_eq!(rijk_opt.aux.as_deref(), Some("def2-universal-jkfit"));
         assert!(choice("rimp2", "energy", "jk = \"exact\"\ndf_increments = true\n").is_ok());
         assert!(choice("rimp2", "energy", "df_increments = true\n").is_ok());
         for refused in [

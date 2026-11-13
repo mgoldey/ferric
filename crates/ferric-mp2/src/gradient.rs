@@ -10,7 +10,9 @@ use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
 use ferric_integrals::operator::Operator;
+use ferric_scf::response_jk::ResponseJk;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
+use ferric_scf::scf_jk::{ScfJk, ScfJkMode};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::warm_start::{solve_rhf_warm, ScfWarmStart};
 use ferric_scf::ScfResult;
@@ -185,21 +187,13 @@ fn rimp2_gradient_analytical_timed(
         compute_mp2_intermediates_ov_only(mol, obs, dfbs, op, rhf, config)
     })?;
     let budget_bytes = ferric_core::memory::resolve_budget_bytes(config.memory_budget_bytes);
-    let zv = solve_zvector_timed(
-        mol,
-        obs,
-        dfbs,
-        op,
-        bounds,
-        rhf,
-        &inter,
-        budget_bytes,
-        controls,
-        acc,
-    )?
-    .require_converged()?;
-    let mut grad =
-        mp2_relaxed_lagrangian_gradient(mol, obs, op, bounds, rhf, &inter, &zv, ext, acc)?;
+    let ctx = ferric_core::parallel::ParallelContext::default();
+    let jk = acc.time("J/K route setup", || {
+        ResponseJk::for_scf(&ctx, mol, obs, bounds, rhf)
+    })?;
+    let zv = solve_zvector_timed(obs, dfbs, op, &jk, rhf, &inter, budget_bytes, controls, acc)?
+        .require_converged()?;
+    let mut grad = mp2_relaxed_lagrangian_gradient(mol, obs, op, &jk, rhf, &inter, &zv, ext, acc)?;
     grad += &integral_response_gradient_3c2c_timed(mol, obs, dfbs, op, &inter, rhf.mos_r(), acc)?;
     Ok(grad)
 }
@@ -217,7 +211,7 @@ fn mp2_relaxed_lagrangian_gradient(
     mol: &Molecule,
     obs: &PreparedBasis,
     op: Operator,
-    bounds: &SchwarzBounds,
+    jk: &ResponseJk<'_>,
     rhf: &ScfResult,
     inter: &crate::rimp2::Mp2Intermediates,
     zv: &crate::zvector::ZvectorSolution,
@@ -226,7 +220,6 @@ fn mp2_relaxed_lagrangian_gradient(
 ) -> Result<Array2<f64>, FerricError> {
     use ferric_scf::gradient::{
         build_energy_weighted_density, oneelectron_gradient, overlap_deriv_contract,
-        twoelectron_gradient_bilinear,
     };
     let (z, imat) = (&zv.z, &zv.imat);
     let c = rhf.mos_r();
@@ -346,8 +339,8 @@ fn mp2_relaxed_lagrangian_gradient(
     // dm1p = hf_dm1 + 2·dm1). ferric's twoelectron_gradient(X) = −∂veff(X)·X for
     // the HF case; the bilinear form generalizes it to −∂veff(hf_dm1)·dm1p.
     let dm1p = hf_dm1 + &two_dm_corr;
-    grad += &acc.time("lagr: 4c 2e derivs", || {
-        twoelectron_gradient_bilinear(obs, op, bounds, hf_dm1, &dm1p)
+    grad += &acc.time("lagr: 2e derivs", || {
+        jk.two_electron_gradient_bilinear(mol, op, hf_dm1, &dm1p)
     })?;
 
     Ok(grad)
@@ -721,6 +714,48 @@ fn integral_response_gradient_3c2c_timed(
     Ok(grad)
 }
 
+/// The unscaled RI-MP2 relaxed-Lagrangian gradient plus the RI 3c/2c
+/// response on a four-centre reference, for [`scs_mp2_gradient_analytical`]:
+/// its scaling subtracts an exact four-centre RHF gradient, so a
+/// density-fitted reference is an error.
+#[allow(clippy::too_many_arguments)]
+fn four_centre_relaxed_gradient(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    rhf: &ScfResult,
+    inter: &crate::rimp2::Mp2Intermediates,
+    budget_bytes: usize,
+    ext: Option<&ExternalPotential>,
+) -> Result<Array2<f64>, FerricError> {
+    if let Some(route) = rhf.df_jk.as_ref() {
+        return Err(FerricError::General(format!(
+            "SCS-MP2 gradient: the reference SCF is density-fitted ({route:?}); the \
+             SCS gradient is built on a four-centre RHF reference only"
+        )));
+    }
+    let acc = &mut PhaseAccumulator::new();
+    let ctx = ferric_core::parallel::ParallelContext::default();
+    let jk = ResponseJk::exact(&ctx, obs, bounds);
+    let zv = solve_zvector_timed(
+        obs,
+        dfbs,
+        op,
+        &jk,
+        rhf,
+        inter,
+        budget_bytes,
+        ZvectorControls::DEFAULT,
+        acc,
+    )?
+    .require_converged()?;
+    let mut grad = mp2_relaxed_lagrangian_gradient(mol, obs, op, &jk, rhf, inter, &zv, ext, acc)?;
+    grad += &integral_response_gradient_3c2c(mol, obs, dfbs, op, inter, rhf.mos_r())?;
+    Ok(grad)
+}
+
 /// Compute the analytical SCS-MP2 nuclear gradient.
 pub fn scs_mp2_gradient_analytical(
     mol: &Molecule,
@@ -739,24 +774,9 @@ pub fn scs_mp2_gradient_analytical(
     };
     let inter = compute_mp2_intermediates_ov_only(mol, obs, dfbs, op, rhf, &mp2_config)?;
     let budget_bytes = ferric_core::memory::resolve_budget_bytes(mp2_config.memory_budget_bytes);
-    let acc = &mut PhaseAccumulator::new();
-    let zv = solve_zvector_timed(
-        mol,
-        obs,
-        dfbs,
-        op,
-        bounds,
-        rhf,
-        &inter,
-        budget_bytes,
-        ZvectorControls::DEFAULT,
-        acc,
-    )?
-    .require_converged()?;
     // Full (unscaled) RI-MP2 relaxed-Lagrangian gradient + RI 3c/2c response.
     let mut grad =
-        mp2_relaxed_lagrangian_gradient(mol, obs, op, bounds, rhf, &inter, &zv, ext, acc)?;
-    grad += &integral_response_gradient_3c2c(mol, obs, dfbs, op, &inter, rhf.mos_r())?;
+        four_centre_relaxed_gradient(mol, obs, dfbs, op, bounds, rhf, &inter, budget_bytes, ext)?;
     // Approximate scaling: multiply MP2 part by average SCS scaling
     let scale = (config.c_os + config.c_ss) / 2.0;
     // EXACT-J/K RHF gradient on purpose: `grad` above carries an exact
@@ -813,17 +833,67 @@ pub fn total_rimp2_gradient_warm(
     ext: Option<&ExternalPotential>,
     warm: &mut ScfWarmStart,
 ) -> Result<(f64, Array2<f64>), FerricError> {
+    total_rimp2_gradient_on(
+        mol,
+        obs_basis,
+        aux_basis,
+        op,
+        mp2_config,
+        ext,
+        &exact_scf_jk(),
+        warm,
+    )
+}
+
+/// The four-centre reference: [`ScfJk`] `"exact"` with the direct exchange
+/// builder.
+pub fn exact_scf_jk() -> ScfJk {
+    ScfJk {
+        mode: ScfJkMode::Exact,
+        aux: None,
+        k_builder: None,
+    }
+}
+
+/// [`total_rimp2_gradient_warm`] on the reference J/K route `scf_jk`:
+/// `"exact"` (four-centre, the default of every other entry point) or
+/// `"rijk"` (RI-J + RI-K on `scf_jk.aux`, the SCF, Z-vector and two-electron
+/// derivative terms all fitted; `crates/ferric-mp2/theory.md` §9.1). The
+/// gradient is that of the energy the fitted SCF and RI-MP2 compute.
+/// `"rijcosx"` is an error: there is no COSX exchange response here.
+#[allow(clippy::too_many_arguments)]
+pub fn total_rimp2_gradient_on(
+    mol: &Molecule,
+    obs_basis: &BasisSet,
+    aux_basis: &BasisSet,
+    op: Operator,
+    mp2_config: &RiMp2Config,
+    ext: Option<&ExternalPotential>,
+    scf_jk: &ScfJk,
+    warm: &mut ScfWarmStart,
+) -> Result<(f64, Array2<f64>), FerricError> {
+    if scf_jk.mode == ScfJkMode::RiJCosx {
+        return Err(FerricError::General(
+            "RI-MP2 gradient: scf_jk = \"rijcosx\" is not supported (no COSX exchange \
+             response); use \"exact\" or \"rijk\""
+                .into(),
+        ));
+    }
     let ctx = ferric_core::parallel::ParallelContext::default();
     let obs = PreparedBasis::new(mol, obs_basis)?;
     let dfbs = PreparedBasis::new(mol, aux_basis)?;
     let bounds = SchwarzBounds::compute(op, &obs)?;
     // Tight SCF via density_conv (reachable under the ΔP gate); energy_conv left
     // at the loose default — a tight 1e-10 would hang at MaxIter. See total_energy above.
-    let rhf_cfg = RhfConfig {
+    // A geometry task: an unset RI-J precision resolves to f64 (no effect on
+    // the four-centre route).
+    let mut rhf_cfg = RhfConfig {
         density_conv: 1e-9,
         external_potential: ext.cloned(),
         ..Default::default()
-    };
+    }
+    .for_geometry_task();
+    scf_jk.apply(&mut rhf_cfg);
     let rhf = solve_rhf_warm(&ctx, mol, &obs, op, &bounds, &rhf_cfg, warm)?;
     if !rhf.converged {
         return Err(FerricError::ScfConvergence {

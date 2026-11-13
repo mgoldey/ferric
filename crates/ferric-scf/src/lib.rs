@@ -269,6 +269,7 @@ pub mod irc;
 /// Geometry optimization via L-BFGS with energy/gradient convergence.
 pub mod optimize;
 pub mod raw_handoff;
+pub mod response_jk;
 pub mod saddle;
 pub mod warm_start;
 pub use frequencies::{harmonic_frequencies, FrequencyConfig, FrequencyReference, FrequencyResult};

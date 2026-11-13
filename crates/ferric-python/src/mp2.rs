@@ -581,8 +581,10 @@ pub(crate) fn run_rimp2(
 
 /// `run_rimp2(with_gradient=True)` covers what the analytic RI-MP2 gradient
 /// (`ferric_mp2::gradient::rimp2_gradient_analytical`) differentiates: the
-/// exact closed-shell RI-MP2 on an RHF reference with exact four-centre J/K.
-/// Everything else is a `ValueError` before any integral is computed.
+/// exact closed-shell RI-MP2 on an RHF reference with four-centre J/K
+/// (`scf_jk="exact"`, any exact `k_builder`) or RI-J + RI-K on one basis
+/// (`scf_jk="rijk"`). Everything else is a `ValueError` before any integral
+/// is computed.
 pub(crate) fn refuse_rimp2_gradient(
     mol: &Molecule,
     local_or_attenuated: bool,
@@ -612,10 +614,12 @@ pub(crate) fn refuse_rimp2_gradient(
     if kappa.is_some() {
         return refuse("does not differentiate kappa-regularized MP2: remove kappa".into());
     }
-    if jk.is_fitted() || rhf_config.k_builder.as_deref() == Some("cosx") {
+    let rijk = jk.mode == ferric_scf::scf_jk::ScfJkMode::RiJk;
+    if (jk.is_fitted() && !rijk) || rhf_config.k_builder.as_deref() == Some("cosx") {
         return refuse(format!(
-            "needs the exact four-centre J/K reference its gradient differentiates; got the \
-             SCF J/K \"{}\". Use scf_jk=\"exact\" and an exact k_builder",
+            "differentiates a four-centre or an RI-JK reference only (it has no COSX \
+             exchange response); got the SCF J/K \"{}\". Use scf_jk=\"exact\" with an exact \
+             k_builder, or scf_jk=\"rijk\"",
             jk.label()
         ));
     }
@@ -654,6 +658,13 @@ pub(crate) fn run_rimp2_exact(
         memory_budget_bytes: mp2_budget,
         kappa,
         ..Default::default()
+    };
+    // A gradient is a geometry task: an unset RI-J precision resolves to f64
+    // (no effect on a four-centre reference).
+    let rhf_config = if with_gradient {
+        rhf_config.for_geometry_task()
+    } else {
+        rhf_config
     };
     // Release the GIL for the SCF + RI-MP2 compute. All captured values are
     // owned clones/locals built above, so nothing Python-borrowed crosses
