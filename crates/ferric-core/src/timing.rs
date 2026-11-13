@@ -85,11 +85,66 @@ impl Stage {
     }
 }
 
+/// CPU seconds consumed so far by every thread of this process
+/// (`CLOCK_PROCESS_CPUTIME_ID`), or `None` where that clock is unavailable.
+/// One syscall; read only at phase boundaries, never inside a parallel loop.
+#[cfg(unix)]
+fn process_cpu_secs() -> Option<f64> {
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: `ts` is a valid, writable timespec for the duration of the call.
+    let rc = unsafe { libc::clock_gettime(libc::CLOCK_PROCESS_CPUTIME_ID, &mut ts) };
+    (rc == 0).then(|| ts.tv_sec as f64 + ts.tv_nsec as f64 * 1e-9)
+}
+
+/// No process CPU clock is read on this platform; the `busy` column shows `-`.
+#[cfg(not(unix))]
+fn process_cpu_secs() -> Option<f64> {
+    None
+}
+
+/// An open region returned by [`PhaseAccumulator::begin`]: its label, wall
+/// start, and the process CPU clock at the start.
+#[derive(Debug, Clone, Copy)]
+pub struct PhaseToken {
+    label: &'static str,
+    t0: Instant,
+    cpu0: Option<f64>,
+}
+
+impl PhaseToken {
+    fn open(label: &'static str) -> Self {
+        PhaseToken {
+            label,
+            t0: Instant::now(),
+            cpu0: process_cpu_secs(),
+        }
+    }
+
+    /// Wall seconds and process CPU seconds since [`PhaseToken::open`].
+    fn close(self) -> (f64, Option<f64>) {
+        let secs = self.t0.elapsed().as_secs_f64();
+        let cpu = match (self.cpu0, process_cpu_secs()) {
+            (Some(a), Some(b)) => Some(b - a),
+            _ => None,
+        };
+        (secs, cpu)
+    }
+}
+
 /// A single phase's running total inside a [`PhaseAccumulator`].
+///
+/// `cpu` is the process CPU time spent while the phase ran, summed over all
+/// threads, so `cpu / secs` is the mean number of busy cores. It is `None`
+/// for rows whose CPU time is not attributable to them alone (overlapped
+/// phases, timed inside one arm of a concurrent region).
 #[derive(Debug, Clone)]
 struct PhaseTotal {
     label: &'static str,
     secs: f64,
+    cpu: Option<f64>,
     calls: u64,
 }
 
@@ -116,16 +171,19 @@ pub struct PhaseAccumulator {
     nested: Vec<PhaseTotal>,
 }
 
-/// Fold `secs` into `label`'s row of `rows`, creating it on first sight.
-fn fold_row(rows: &mut Vec<PhaseTotal>, label: &'static str, secs: f64) {
+/// Fold `secs` (and `cpu`) into `label`'s row of `rows`, creating it on first
+/// sight. A row's CPU total stays known only while every call reported one.
+fn fold_row(rows: &mut Vec<PhaseTotal>, label: &'static str, secs: f64, cpu: Option<f64>) {
     match rows.iter_mut().find(|p| p.label == label) {
         Some(p) => {
             p.secs += secs;
+            p.cpu = p.cpu.zip(cpu).map(|(a, b)| a + b);
             p.calls += 1;
         }
         None => rows.push(PhaseTotal {
             label,
             secs,
+            cpu,
             calls: 1,
         }),
     }
@@ -146,9 +204,10 @@ impl PhaseAccumulator {
     /// parent, excluded from [`PhaseAccumulator::total_secs`] (the parent
     /// already counts it). A `None` token is a no-op.
     #[inline]
-    pub fn stop_nested(&mut self, token: Option<(&'static str, Instant)>) {
-        let Some((label, t0)) = token else { return };
-        fold_row(&mut self.nested, label, t0.elapsed().as_secs_f64());
+    pub fn stop_nested(&mut self, token: Option<PhaseToken>) {
+        let Some(tok) = token else { return };
+        let (secs, cpu) = tok.close();
+        fold_row(&mut self.nested, tok.label, secs, cpu);
     }
 
     /// Accumulated seconds for one nested sub-phase (`None` if never timed).
@@ -166,18 +225,7 @@ impl PhaseAccumulator {
         if !enabled() {
             return;
         }
-        let secs = dt.as_secs_f64();
-        match self.overlapped.iter_mut().find(|p| p.label == label) {
-            Some(p) => {
-                p.secs += secs;
-                p.calls += 1;
-            }
-            None => self.overlapped.push(PhaseTotal {
-                label,
-                secs,
-                calls: 1,
-            }),
-        }
+        fold_row(&mut self.overlapped, label, dt.as_secs_f64(), None);
     }
 
     /// Run `f`, adding its elapsed time to `label`'s running total. Returns
@@ -188,26 +236,10 @@ impl PhaseAccumulator {
         if !enabled() {
             return f();
         }
-        let t0 = Instant::now();
+        let tok = PhaseToken::open(label);
         let out = f();
-        self.add(label, t0.elapsed().as_secs_f64());
+        self.stop(Some(tok));
         out
-    }
-
-    /// Fold `dt` seconds into `label`'s running total, creating the row on
-    /// first sight (first-seen order is the report order).
-    fn add(&mut self, label: &'static str, dt: f64) {
-        match self.phases.iter_mut().find(|p| p.label == label) {
-            Some(p) => {
-                p.secs += dt;
-                p.calls += 1;
-            }
-            None => self.phases.push(PhaseTotal {
-                label,
-                secs: dt,
-                calls: 1,
-            }),
-        }
     }
 
     /// Begin timing `label`; the returned token stops it on
@@ -217,20 +249,18 @@ impl PhaseAccumulator {
     /// Returns `None` when timing is off, so the disabled path allocates and
     /// reads no clock.
     #[inline]
-    pub fn begin(&self, label: &'static str) -> Option<(&'static str, Instant)> {
-        if enabled() {
-            Some((label, Instant::now()))
-        } else {
-            None
-        }
+    pub fn begin(&self, label: &'static str) -> Option<PhaseToken> {
+        enabled().then(|| PhaseToken::open(label))
     }
 
     /// End a region opened by [`PhaseAccumulator::begin`], folding its elapsed
-    /// time into that label's running total. A `None` token is a no-op.
+    /// time into that label's running total (first-seen order is the report
+    /// order). A `None` token is a no-op.
     #[inline]
-    pub fn stop(&mut self, token: Option<(&'static str, Instant)>) {
-        let Some((label, t0)) = token else { return };
-        self.add(label, t0.elapsed().as_secs_f64());
+    pub fn stop(&mut self, token: Option<PhaseToken>) {
+        let Some(tok) = token else { return };
+        let (secs, cpu) = tok.close();
+        fold_row(&mut self.phases, tok.label, secs, cpu);
     }
 
     /// Total accumulated seconds across every phase.
@@ -254,7 +284,9 @@ impl PhaseAccumulator {
     /// column is each phase's share of the ACCUMULATED (timed) total, not of
     /// whole-job wall time: anything the caller did not bracket is outside
     /// this table by construction. The caller's own wall-clock is the
-    /// denominator to use for a whole-job claim.
+    /// denominator to use for a whole-job claim. The `busy` column is the
+    /// process CPU time over the phase's wall time: the mean number of cores
+    /// the whole process kept busy while the phase ran.
     ///
     /// The whole table is formatted into one `String` and handed to a locked
     /// stderr in a single `write_all`, so tables from solves running in
@@ -274,8 +306,8 @@ impl PhaseAccumulator {
         let _ = writeln!(out, "[timing] {title} phase totals (accumulated):");
         let _ = writeln!(
             out,
-            "[timing]   {:<32} {:>10} {:>8} {:>7}",
-            "phase", "sec", "calls", "%"
+            "[timing]   {:<32} {:>10} {:>8} {:>7} {:>6}",
+            "phase", "sec", "calls", "%", "busy"
         );
         for p in &self.phases {
             let pct = if total > 0.0 {
@@ -285,14 +317,29 @@ impl PhaseAccumulator {
             };
             let _ = writeln!(
                 out,
-                "[timing]   {:<32} {:>10.3} {:>8} {:>6.1}%",
-                p.label, p.secs, p.calls, pct
+                "[timing]   {:<32} {:>10.3} {:>8} {:>6.1}% {:>6}",
+                p.label,
+                p.secs,
+                p.calls,
+                pct,
+                busy_cell(p)
             );
         }
+        let total_cpu: Option<f64> = self.phases.iter().map(|p| p.cpu).sum();
+        let total_row = PhaseTotal {
+            label: "TOTAL (timed phases)",
+            secs: total,
+            cpu: total_cpu,
+            calls: 0,
+        };
         let _ = writeln!(
             out,
-            "[timing]   {:<32} {:>10.3}",
-            "TOTAL (timed phases)", total
+            "[timing]   {:<32} {:>10.3} {:>8} {:>7} {:>6}",
+            total_row.label,
+            total,
+            "",
+            "",
+            busy_cell(&total_row)
         );
         side_table(
             &mut out,
@@ -350,6 +397,15 @@ impl Drop for ReportOnDrop {
     }
 }
 
+/// The `busy` cell for a row: CPU seconds over wall seconds, `-` when the
+/// CPU time is unknown or the phase took no measurable wall time.
+fn busy_cell(p: &PhaseTotal) -> String {
+    match p.cpu {
+        Some(cpu) if p.secs > 0.0 => format!("{:.2}", cpu / p.secs),
+        _ => "-".to_string(),
+    }
+}
+
 /// Append a titled side table (phases outside TOTAL) to `out`; nothing when
 /// `phases` is empty. `mark` prefixes each label (`>` nested, `~` overlapped).
 fn side_table(out: &mut String, title: &str, mark: char, phases: &[PhaseTotal]) {
@@ -361,8 +417,12 @@ fn side_table(out: &mut String, title: &str, mark: char, phases: &[PhaseTotal]) 
     for p in phases {
         let _ = writeln!(
             out,
-            "[timing]   {mark}{:<31} {:>10.3} {:>8}",
-            p.label, p.secs, p.calls
+            "[timing]   {mark}{:<31} {:>10.3} {:>8} {:>7} {:>6}",
+            p.label,
+            p.secs,
+            p.calls,
+            "",
+            busy_cell(p)
         );
     }
 }
@@ -454,6 +514,35 @@ mod tests {
         }
     }
 
+    /// A phase's CPU column counts the work done inside it: a region that
+    /// spins one thread until the process CPU clock has advanced by `SPIN`
+    /// must record at least `SPIN` of CPU time. Other test threads in this
+    /// process can only add to it, so the lower bound holds under a parallel
+    /// harness. The wall time is at least the CPU time of the spinning thread
+    /// for the same reason.
+    #[test]
+    fn busy_column_counts_cpu_spent_in_the_phase() {
+        const SPIN: f64 = 0.02;
+        let mut acc = PhaseAccumulator::new();
+        acc.time("spin", || {
+            let Some(start) = process_cpu_secs() else {
+                return;
+            };
+            while process_cpu_secs().is_some_and(|now| now - start < SPIN) {
+                std::hint::black_box(0_u64);
+            }
+        });
+        if enabled() && process_cpu_secs().is_some() {
+            let row = &acc.phases[0];
+            let cpu = row.cpu.expect("CPU time recorded");
+            assert!(cpu >= SPIN, "cpu {cpu} < spun {SPIN}");
+            assert!(row.secs > 0.0);
+            assert_ne!(busy_cell(row), "-");
+        } else if !enabled() {
+            assert!(acc.phases.is_empty());
+        }
+    }
+
     /// `enabled()` is fixed per process, so in an untimed run the ON-only
     /// assertions above (coalescing; single evaluation in `time`'s enabled
     /// branch) never execute. Re-run the timing tests in a child with
@@ -480,6 +569,7 @@ mod tests {
             "repeated_labels_accumulate_into_one_row ... ok",
             "time_runs_the_closure_exactly_once ... ok",
             "nested_sub_phases_stay_out_of_the_total ... ok",
+            "busy_column_counts_cpu_spent_in_the_phase ... ok",
         ] {
             assert!(
                 stdout.contains(name),

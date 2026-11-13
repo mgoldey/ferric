@@ -1,10 +1,11 @@
 //! RI-MP2 nuclear gradients: analytical and finite-difference reference.
 
 use crate::rimp2::{compute_mp2_intermediates_ov_only, ri_mp2, RiMp2Config};
-use crate::zvector::solve_zvector;
+use crate::zvector::solve_zvector_timed;
 use ferric_core::basis::BasisSet;
 use ferric_core::external_potential::ExternalPotential;
 use ferric_core::mol::Molecule;
+use ferric_core::timing::PhaseAccumulator;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
@@ -146,14 +147,35 @@ pub fn rimp2_gradient_analytical(
     config: &RiMp2Config,
     ext: Option<&ExternalPotential>,
 ) -> Result<Array2<f64>, FerricError> {
+    let mut acc = PhaseAccumulator::new().report_on_drop("RI-MP2 gradient");
+    rimp2_gradient_analytical_timed(mol, obs, dfbs, op, bounds, rhf, config, ext, &mut acc)
+}
+
+/// [`rimp2_gradient_analytical`] with its phases recorded in `acc` (inert
+/// unless `FERRIC_TIMING` is set; the arithmetic is the same either way).
+#[allow(clippy::too_many_arguments)]
+fn rimp2_gradient_analytical_timed(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    rhf: &ScfResult,
+    config: &RiMp2Config,
+    ext: Option<&ExternalPotential>,
+    acc: &mut PhaseAccumulator,
+) -> Result<Array2<f64>, FerricError> {
     // ov-only intermediates: the gradient/zvector pipeline never reads
     // b_oo/b_vv, so the (naux, nvir²) block is never materialized here.
-    let inter = compute_mp2_intermediates_ov_only(mol, obs, dfbs, op, rhf, config)?;
+    let inter = acc.time("intermediates (b_ov, t2, P)", || {
+        compute_mp2_intermediates_ov_only(mol, obs, dfbs, op, rhf, config)
+    })?;
     let budget_bytes = ferric_core::memory::resolve_budget_bytes(config.memory_budget_bytes);
-    let (z, imat) = solve_zvector(mol, obs, dfbs, op, bounds, rhf, &inter, budget_bytes)?;
+    let (z, imat) =
+        solve_zvector_timed(mol, obs, dfbs, op, bounds, rhf, &inter, budget_bytes, acc)?;
     let mut grad =
-        mp2_relaxed_lagrangian_gradient(mol, obs, op, bounds, rhf, &inter, &z, &imat, ext)?;
-    grad += &integral_response_gradient_3c2c(mol, obs, dfbs, op, &inter, rhf.mos_r())?;
+        mp2_relaxed_lagrangian_gradient(mol, obs, op, bounds, rhf, &inter, &z, &imat, ext, acc)?;
+    grad += &integral_response_gradient_3c2c_timed(mol, obs, dfbs, op, &inter, rhf.mos_r(), acc)?;
     Ok(grad)
 }
 
@@ -175,6 +197,7 @@ fn mp2_relaxed_lagrangian_gradient(
     z: &Array2<f64>,
     imat: &Array2<f64>,
     ext: Option<&ExternalPotential>,
+    acc: &mut PhaseAccumulator,
 ) -> Result<Array2<f64>, FerricError> {
     use ferric_scf::gradient::{
         build_energy_weighted_density, oneelectron_gradient, overlap_deriv_contract,
@@ -191,6 +214,7 @@ fn mp2_relaxed_lagrangian_gradient(
         ..
     } = *inter;
 
+    let dens_tok = acc.begin("lagr: densities (MO->AO)");
     // --- dm1mo: full relaxed correlation 1-PDM (MO), no HF 2·I part. ---
     // occ-occ: doo+doo^T; vir-vir: dvv+dvv^T; occ-vir/vir-occ: z (PySCF lines
     // 134-135 + _response_dm1). inter.p_oo==doo, inter.p_vv==dvv.
@@ -277,11 +301,14 @@ fn mp2_relaxed_lagrangian_gradient(
     // already the doubled 2·dm1_corr, so veff = J[2dm] − ½K[2dm]. build_jk returns
     // raw J[D]/K[D], so this is `jv − 0.5·kv` — NOT the SCF `2J − K` convention
     // (which expects the un-doubled electron-count density).
+    acc.stop(dens_tok);
     let n = c.nrows();
     let (mut jv, mut kv) = (Array2::zeros((n, n)), Array2::zeros((n, n)));
     let ctx = ferric_core::parallel::ParallelContext::default();
     let two_dm_corr = 2.0 * &dm1_corr_ao;
-    ferric_scf::rhf::build_jk(&ctx, obs, bounds, 1e-12, &two_dm_corr, &mut jv, &mut kv)?;
+    acc.time("lagr: J/K of 2*dm1_corr", || {
+        ferric_scf::rhf::build_jk(&ctx, obs, bounds, 1e-12, &two_dm_corr, &mut jv, &mut kv)
+    })?;
     let veff_full = &jv - &(0.5 * &kv); // J[2dm] − ½K[2dm] == PySCF get_veff(dm1+dm1^T)
                                         // P_occ = C_occ C_occ^T (HF-occupied AO projector).
     let c_occ_hf = c.slice(ndarray::s![.., ..nocc_hf]);
@@ -301,6 +328,7 @@ fn mp2_relaxed_lagrangian_gradient(
     // z-vector/imat/zeta pipeline above never needs `ext` itself: it is built
     // from `rhf`'s Fock/orbital energies, which already carry the potential
     // via `hcore_with_external` at the SCF stage).
+    let one_tok = acc.begin("lagr: 1e + ECP + overlap derivs");
     let zero_w = Array2::<f64>::zeros((c.nrows(), c.nrows()));
     let mut grad = oneelectron_gradient(mol, obs, &dm1_total_ao, &zero_w, ext)?;
     // ECP term Σ D_relaxed dV_ECP/dR (zero for an all-electron basis): V_ECP
@@ -317,12 +345,15 @@ fn mp2_relaxed_lagrangian_gradient(
     // the RHF EWD term). Combine into one weight matrix.
     let w_overlap = &im1 - &zeta_ao - &vhf_s1occ;
     grad += &overlap_deriv_contract(obs, &w_overlap)?;
+    acc.stop(one_tok);
 
     // 2e-integral-derivative: bilinear Γ(hf_dm1, hf_dm1 + 2·dm1_corr) (PySCF 184,
     // dm1p = hf_dm1 + 2·dm1). ferric's twoelectron_gradient(X) = −∂veff(X)·X for
     // the HF case; the bilinear form generalizes it to −∂veff(hf_dm1)·dm1p.
     let dm1p = hf_dm1 + &two_dm_corr;
-    grad += &twoelectron_gradient_bilinear(obs, op, bounds, hf_dm1, &dm1p)?;
+    grad += &acc.time("lagr: 4c 2e derivs", || {
+        twoelectron_gradient_bilinear(obs, op, bounds, hf_dm1, &dm1p)
+    })?;
 
     Ok(grad)
 }
@@ -342,6 +373,28 @@ pub(crate) fn integral_response_gradient_3c2c(
     op: Operator,
     inter: &crate::rimp2::Mp2Intermediates,
     c: &Array2<f64>,
+) -> Result<Array2<f64>, FerricError> {
+    integral_response_gradient_3c2c_timed(
+        mol,
+        obs,
+        dfbs,
+        op,
+        inter,
+        c,
+        &mut PhaseAccumulator::new(),
+    )
+}
+
+/// [`integral_response_gradient_3c2c`] with its phases recorded in `acc`
+/// (inert unless `FERRIC_TIMING` is set; the arithmetic is the same either way).
+fn integral_response_gradient_3c2c_timed(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    inter: &crate::rimp2::Mp2Intermediates,
+    c: &Array2<f64>,
+    acc: &mut PhaseAccumulator,
 ) -> Result<Array2<f64>, FerricError> {
     let mut grad = Array2::<f64>::zeros((mol.atoms.len(), 3));
 
@@ -439,6 +492,7 @@ pub(crate) fn integral_response_gradient_3c2c(
     // rayon via axis_chunks_iter_mut on the column-chunked view (order-preserving,
     // no shared accumulator — bit-identical to the serial loop regardless of
     // thread count). BLAS stays serial inside each closure (OPENBLAS_NUM_THREADS=1).
+    let xov_tok = acc.begin("resp: x_ov (per-i GEMMs)");
     let mut x_ov = Array2::zeros((naux, nocc * nvir));
     {
         use ndarray::Axis;
@@ -476,7 +530,10 @@ pub(crate) fn integral_response_gradient_3c2c(
     // so the 3-center contraction must use `y_ov = V^{-1/2}·x_ov`, NOT `x_ov`
     // (verified element-by-element in test_3c_density_numerical: diff(y)≈8e-13,
     // diff(x)≈1.4e-2). V^{-1/2} is symmetric so `v_inv_sqrt.t()` == `v_inv_sqrt`.
-    let y_ov = with_blas_threads(opt_in_blas_threads(), || inter.v_inv_sqrt.t().dot(&x_ov));
+    acc.stop(xov_tok);
+    let y_ov = acc.time("resp: y_ov = V^-1/2 x_ov", || {
+        with_blas_threads(opt_in_blas_threads(), || inter.v_inv_sqrt.t().dot(&x_ov))
+    });
 
     // Back-transform X to AO and contract with 3-center derivative integrals,
     // blocked over the aux SHELL index. For each aux shell sp we build only its
@@ -488,6 +545,7 @@ pub(crate) fn integral_response_gradient_3c2c(
         .slice(ndarray::s![.., inter.first_occ..inter.first_occ + nocc])
         .to_owned();
     let c_vir = c.slice(ndarray::s![.., inter.nocc_total..]).to_owned();
+    let d3c_tok = acc.begin("resp: 3c derivs");
     {
         use ferric_integrals::engine::Engine;
         use rayon::prelude::*;
@@ -631,10 +689,14 @@ pub(crate) fn integral_response_gradient_3c2c(
     // contracts symmetrically against the P and Q legs. Verified against PySCF's
     // `part_dm2·int2e_ip1` DF-metric response and the frozen-amplitude FD (H2 + H2O
     // analytic−FD ~1e-9; the pre-fix ×1 weight left H2O ~1e-2 off).
+    acc.stop(d3c_tok);
+    let g2c_tok = acc.begin("resp: Gamma_2c GEMMs");
     let c_fit = with_blas_threads(opt_in_blas_threads(), || {
         inter.v_inv_sqrt.t().dot(&inter.b_ov)
     });
     let gamma_2c = with_blas_threads(opt_in_blas_threads(), || -2.0 * c_fit.dot(&y_ov.t()));
+    acc.stop(g2c_tok);
+    let d2c_tok = acc.begin("resp: 2c derivs");
 
     {
         use ferric_integrals::engine::Engine;
@@ -703,6 +765,7 @@ pub(crate) fn integral_response_gradient_3c2c(
             grad += p;
         }
     }
+    acc.stop(d2c_tok);
 
     Ok(grad)
 }
@@ -725,10 +788,12 @@ pub fn scs_mp2_gradient_analytical(
     };
     let inter = compute_mp2_intermediates_ov_only(mol, obs, dfbs, op, rhf, &mp2_config)?;
     let budget_bytes = ferric_core::memory::resolve_budget_bytes(mp2_config.memory_budget_bytes);
-    let (z, imat) = solve_zvector(mol, obs, dfbs, op, bounds, rhf, &inter, budget_bytes)?;
+    let acc = &mut PhaseAccumulator::new();
+    let (z, imat) =
+        solve_zvector_timed(mol, obs, dfbs, op, bounds, rhf, &inter, budget_bytes, acc)?;
     // Full (unscaled) RI-MP2 relaxed-Lagrangian gradient + RI 3c/2c response.
     let mut grad =
-        mp2_relaxed_lagrangian_gradient(mol, obs, op, bounds, rhf, &inter, &z, &imat, ext)?;
+        mp2_relaxed_lagrangian_gradient(mol, obs, op, bounds, rhf, &inter, &z, &imat, ext, acc)?;
     grad += &integral_response_gradient_3c2c(mol, obs, dfbs, op, &inter, rhf.mos_r())?;
     // Approximate scaling: multiply MP2 part by average SCS scaling
     let scale = (config.c_os + config.c_ss) / 2.0;
@@ -804,8 +869,13 @@ pub fn total_rimp2_gradient_warm(
             last_energy: rhf.energy,
         });
     }
-    let mp2 = ri_mp2(mol, &obs, &dfbs, op, &rhf, mp2_config)?;
-    let grad = rimp2_gradient_analytical(mol, &obs, &dfbs, op, &bounds, &rhf, mp2_config, ext)?;
+    let mut acc = PhaseAccumulator::new().report_on_drop("RI-MP2 energy + gradient");
+    let mp2 = acc.time("ri_mp2 energy", || {
+        ri_mp2(mol, &obs, &dfbs, op, &rhf, mp2_config)
+    })?;
+    let grad = rimp2_gradient_analytical_timed(
+        mol, &obs, &dfbs, op, &bounds, &rhf, mp2_config, ext, &mut acc,
+    )?;
     Ok((mp2.total_energy, grad))
 }
 

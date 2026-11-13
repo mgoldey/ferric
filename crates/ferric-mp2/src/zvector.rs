@@ -7,6 +7,7 @@
 use crate::rimp2::Mp2Intermediates;
 use ferric_core::mol::Molecule;
 use ferric_core::orbitals::OrbitalSpace;
+use ferric_core::timing::PhaseAccumulator;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
@@ -62,7 +63,34 @@ pub(crate) fn zvec_trace() -> bool {
 /// `resolve_budget_bytes(config.memory_budget_bytes)`, resolved once at their
 /// own top; callers with no config in scope pass `resolve_budget_bytes(None)`,
 /// likewise resolved once, not re-resolved per DIIS iteration.
+#[allow(clippy::too_many_arguments)]
 pub fn solve_zvector(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    rhf: &ScfResult,
+    inter: &Mp2Intermediates,
+    budget_bytes: usize,
+) -> Result<(Array2<f64>, Array2<f64>), FerricError> {
+    solve_zvector_timed(
+        mol,
+        prep,
+        dfbs,
+        op,
+        bounds,
+        rhf,
+        inter,
+        budget_bytes,
+        &mut PhaseAccumulator::new(),
+    )
+}
+
+/// [`solve_zvector`] with its phases recorded in `acc` (inert unless
+/// `FERRIC_TIMING` is set; the arithmetic is the same either way).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn solve_zvector_timed(
     _mol: &Molecule,
     prep: &PreparedBasis,
     dfbs: &PreparedBasis,
@@ -71,6 +99,7 @@ pub fn solve_zvector(
     rhf: &ScfResult,
     inter: &Mp2Intermediates,
     budget_bytes: usize,
+    acc: &mut PhaseAccumulator,
 ) -> Result<(Array2<f64>, Array2<f64>), FerricError> {
     let orb = inter.orbital_space();
     let OrbitalSpace {
@@ -84,9 +113,13 @@ pub fn solve_zvector(
     let nmo = c.ncols();
 
     // RI-MP2 Lagrangian matrix Imat (all-MO), from the shared x_ov / b_full.
-    let b_full = crate::oo_rimp2::compute_b_full_mo(prep, dfbs, op, c)?;
-    let x_ov = build_x_ov(&inter.t2, &inter.b_ov, nocc, nvir, inter.naux);
-    let imat = build_imat_ri(&x_ov, &b_full, &orb);
+    let b_full = acc.time("zvec: b_full (P|pq) transform", || {
+        crate::oo_rimp2::compute_b_full_mo(prep, dfbs, op, c)
+    })?;
+    let x_ov = acc.time("zvec: x_ov", || {
+        build_x_ov(&inter.t2, &inter.b_ov, nocc, nvir, inter.naux)
+    });
+    let imat = acc.time("zvec: Imat", || build_imat_ri(&x_ov, &b_full, &orb));
 
     // Unrelaxed correlation density (MO): doo+doo^T on occ-occ, dvv+dvv^T on
     // vir-vir. inter.p_oo == PySCF doo, inter.p_vv == PySCF dvv (see
@@ -114,6 +147,7 @@ pub fn solve_zvector(
         }
     }
     // veff(dm1_corr_ao): 2J − K in AO (closed-shell), via build_jk.
+    let rhs_tok = acc.begin("zvec: rhs (J/K of dm1_corr)");
     let dm1_corr_ao = {
         let cp = c.dot(&dm1mo_corr);
         cp.dot(&c.t())
@@ -154,6 +188,9 @@ pub fn solve_zvector(
             }
         }
     }
+
+    acc.stop(rhs_tok);
+    let _cphf = CphfPhase::open(acc);
 
     let mut diis = Diis::new(8);
     let max_iter = 50;
@@ -215,6 +252,26 @@ pub fn solve_zvector(
     }
 
     Ok((z, imat))
+}
+
+/// Times the CPHF loop of [`solve_zvector_timed`] on every exit (converged
+/// return, unconverged fall-through, `?` error) by stopping its phase on drop.
+struct CphfPhase<'a> {
+    acc: &'a mut PhaseAccumulator,
+    tok: Option<ferric_core::timing::PhaseToken>,
+}
+
+impl<'a> CphfPhase<'a> {
+    fn open(acc: &'a mut PhaseAccumulator) -> Self {
+        let tok = acc.begin("zvec: CPHF iterations (J/K)");
+        CphfPhase { acc, tok }
+    }
+}
+
+impl Drop for CphfPhase<'_> {
+    fn drop(&mut self) {
+        self.acc.stop(self.tok.take());
+    }
 }
 
 /// Frozen-core–active block of the relaxed MP2 1-PDM, shape (first_occ, nocc):
