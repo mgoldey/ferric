@@ -64,6 +64,11 @@ pub(crate) fn zvec_trace() -> bool {
 /// `resolve_budget_bytes(config.memory_budget_bytes)`, resolved once at their
 /// own top; callers with no config in scope pass `resolve_budget_bytes(None)`,
 /// likewise resolved once, not re-resolved per DIIS iteration.
+///
+/// A solve that does not reach the residual tolerance within the iteration
+/// cap is returned with [`ZvectorSolution::converged`] false, not as an
+/// error: the caller decides. The analytic gradient refuses it
+/// ([`ZvectorSolution::require_converged`]).
 #[allow(clippy::too_many_arguments)]
 pub fn solve_zvector(
     mol: &Molecule,
@@ -74,7 +79,7 @@ pub fn solve_zvector(
     rhf: &ScfResult,
     inter: &Mp2Intermediates,
     budget_bytes: usize,
-) -> Result<(Array2<f64>, Array2<f64>), FerricError> {
+) -> Result<ZvectorSolution, FerricError> {
     solve_zvector_timed(
         mol,
         prep,
@@ -84,8 +89,65 @@ pub fn solve_zvector(
         rhf,
         inter,
         budget_bytes,
+        ZvectorControls::DEFAULT,
         &mut PhaseAccumulator::new(),
     )
+}
+
+/// Iteration cap and residual tolerance of the Z-vector solve.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct ZvectorControls {
+    /// Maximum number of CPHF matvecs.
+    pub(crate) max_iter: usize,
+    /// Converged when `max |r_ai|` falls below this.
+    pub(crate) tol: f64,
+}
+
+impl ZvectorControls {
+    /// The production setting: 50 iterations, `max |r| < 1e-8`.
+    pub(crate) const DEFAULT: Self = Self {
+        max_iter: 50,
+        tol: 1e-8,
+    };
+}
+
+/// The solved Z-vector and what the solve reached.
+#[derive(Debug, Clone)]
+pub struct ZvectorSolution {
+    /// `(nvir, nocc_total)` virtual-occupied block of the relaxed density,
+    /// over every occupied orbital, frozen core included.
+    pub z: Array2<f64>,
+    /// `(nmo, nmo)` RI-MP2 Lagrangian matrix (`build_imat_ri`).
+    pub imat: Array2<f64>,
+    /// Whether `max |r|` fell below the tolerance.
+    pub converged: bool,
+    /// CPHF matvecs performed.
+    pub iterations: usize,
+    /// `max |r_ai|` at the returned `z`.
+    pub max_resid: f64,
+    /// The tolerance on `max |r|` the solve was asked to reach.
+    pub tol: f64,
+    /// `(J, K)` of the relaxed correlation density `D^corr + D^z` (AO), the
+    /// sum of the right-hand side's build of `D^corr` and the last matvec's
+    /// build of `D^z` (J/K are linear). `None` when the solve did not
+    /// converge: the returned `z` then has no matvec behind it.
+    pub corr_jk: Option<(Array2<f64>, Array2<f64>)>,
+}
+
+impl ZvectorSolution {
+    /// The solution, or [`FerricError::Convergence`] when the solve missed
+    /// its tolerance: a gradient built on an unconverged `z` is not the
+    /// derivative of the energy.
+    pub fn require_converged(self) -> Result<Self, FerricError> {
+        if self.converged {
+            return Ok(self);
+        }
+        Err(FerricError::Convergence(format!(
+            "RI-MP2 Z-vector did not converge: max |r| = {:.3e} after {} iterations \
+             (tolerance {:.1e}); the analytic gradient needs a converged orbital response",
+            self.max_resid, self.iterations, self.tol
+        )))
+    }
 }
 
 /// [`solve_zvector`] with its phases recorded in `acc` (inert unless
@@ -100,18 +162,18 @@ pub(crate) fn solve_zvector_timed(
     rhf: &ScfResult,
     inter: &Mp2Intermediates,
     budget_bytes: usize,
+    controls: ZvectorControls,
     acc: &mut PhaseAccumulator,
-) -> Result<(Array2<f64>, Array2<f64>), FerricError> {
+) -> Result<ZvectorSolution, FerricError> {
     let orb = inter.orbital_space();
     let OrbitalSpace {
         nocc,
         nvir,
         nocc_total,
-        first_occ,
+        ..
     } = orb;
     let eps = rhf.eps_r();
     let c = rhf.mos_r();
-    let nmo = c.ncols();
 
     // RI-MP2 Lagrangian matrix Imat (all-MO), from the shared x_ov / b_full.
     let b_full = acc.time("zvec: b_full (P|pq) transform", || {
@@ -140,30 +202,10 @@ pub(crate) fn solve_zvector_timed(
     drop(worker_charge);
 
     // Unrelaxed correlation density (MO): doo+doo^T on occ-occ, dvv+dvv^T on
-    // vir-vir. inter.p_oo == PySCF doo, inter.p_vv == PySCF dvv (see
-    // build_mp2_density / rimp2 doc: doo returned negated, matching PySCF).
-    let dco = frozen_core_block(&imat, eps, &orb)?;
-    let mut dm1mo_corr = Array2::<f64>::zeros((nmo, nmo));
-    for k in 0..first_occ {
-        for i in 0..nocc {
-            dm1mo_corr[(k, first_occ + i)] = dco[(k, i)];
-            dm1mo_corr[(first_occ + i, k)] = dco[(k, i)];
-        }
-    }
-    for i in 0..nocc {
-        let i_mo = first_occ + i;
-        for j in 0..nocc {
-            let j_mo = first_occ + j;
-            dm1mo_corr[(i_mo, j_mo)] = inter.p_oo[(i, j)] + inter.p_oo[(j, i)];
-        }
-    }
-    for a in 0..nvir {
-        let a_mo = nocc_total + a;
-        for b in 0..nvir {
-            let b_mo = nocc_total + b;
-            dm1mo_corr[(a_mo, b_mo)] = inter.p_vv[(a, b)] + inter.p_vv[(b, a)];
-        }
-    }
+    // vir-vir, the frozen core–active block. inter.p_oo == PySCF doo,
+    // inter.p_vv == PySCF dvv (see build_mp2_density / rimp2 doc: doo returned
+    // negated, matching PySCF).
+    let dm1mo_corr = correlation_density_mo(inter, &imat, eps, None)?;
     // veff(dm1_corr_ao): 2J − K in AO (closed-shell), via build_jk.
     let rhs_tok = acc.begin("zvec: rhs (J/K of dm1_corr)");
     let dm1_corr_ao = {
@@ -211,7 +253,8 @@ pub(crate) fn solve_zvector_timed(
     let _cphf = CphfPhase::open(acc);
 
     let mut diis = Diis::new(8);
-    let max_iter = 50;
+    let ZvectorControls { max_iter, tol } = controls;
+    let mut max_resid = f64::INFINITY;
 
     // EnginePool is geometry/basis-only (density-independent) — build ONCE
     // here and reuse across every compute_az_product call in the DIIS loop
@@ -226,10 +269,11 @@ pub(crate) fn solve_zvector_timed(
         // fvind `2·get_veff(D^z+D^z†) = 2J−K` (verified numerically: the ratio is
         // 0.5). The MP2 Z-vector Hessian is `Δε·z + (2J−K)·z`, so the matvec must be
         // scaled by ½ here (the same ½ as `cpks_polar::solve_cphf_cg`).
-        let az = 0.5 * &compute_az_product(c, &z, prep, bounds, &zorb, &pool, budget_bytes)?;
+        let (az2, jz, kz) = az_product_with_jk(c, &z, prep, bounds, &zorb, &pool, budget_bytes)?;
+        let az = 0.5 * &az2;
 
         let mut residual = Array2::zeros((nvir, nocc_total));
-        let mut max_resid = 0.0f64;
+        max_resid = 0.0f64;
         for a in 0..nvir {
             for i in 0..nocc_total {
                 let denom = eps[nocc_total + a] - eps[i];
@@ -242,8 +286,16 @@ pub(crate) fn solve_zvector_timed(
             eprintln!("  [zvec] iter={_iter:3}  max_resid={max_resid:.3e}");
         }
 
-        if max_resid < 1e-8 {
-            return Ok((z, imat));
+        if max_resid < tol {
+            return Ok(ZvectorSolution {
+                z,
+                imat,
+                converged: true,
+                iterations: _iter + 1,
+                max_resid,
+                tol,
+                corr_jk: Some((&jc + &jz, &kc + &kz)),
+            });
         }
 
         let mut z_new = Array2::zeros((nvir, nocc_total));
@@ -259,17 +311,72 @@ pub(crate) fn solve_zvector_timed(
         z = diis.step(&z_new, &residual);
     }
 
-    // BUG (latent): reaching here means the Z-vector did NOT converge to 1e-8
-    // within max_iter — yet we silently return the unconverged z. The
-    // finite-field α driver then differences garbage dipoles. Trace it under
-    // FERRIC_ZVEC_TRACE so the finite-field noise-floor diagnosis can see it.
-    // (Not promoted to a hard error yet: the analytic-gradient callers tolerate
-    // a loosely-converged z; the FF-α path is what needs the tighter floor.)
+    // The last DIIS step's `z` has no matvec behind it; the residual reported
+    // is that of the iterate before it.
     if zvec_trace() {
         eprintln!("  [zvec] DID NOT CONVERGE in {max_iter} iters");
     }
 
-    Ok((z, imat))
+    Ok(ZvectorSolution {
+        z,
+        imat,
+        converged: false,
+        iterations: max_iter,
+        max_resid,
+        tol,
+        corr_jk: None,
+    })
+}
+
+/// The MO correlation 1-PDM of the RI-MP2 gradient, `(nmo, nmo)`:
+/// `P_oo + P_ooᵀ` on the active occupied block, `P_vv + P_vvᵀ` on the
+/// virtual block, the frozen core–active block [`frozen_core_block`], and,
+/// with `z`, the Z-vector on both occupied-virtual blocks (the relaxed
+/// density; without it the unrelaxed one the right-hand side needs).
+pub(crate) fn correlation_density_mo(
+    inter: &Mp2Intermediates,
+    imat: &Array2<f64>,
+    eps: &[f64],
+    z: Option<&Array2<f64>>,
+) -> Result<Array2<f64>, FerricError> {
+    let orb = inter.orbital_space();
+    let OrbitalSpace {
+        nocc,
+        nvir,
+        nocc_total,
+        first_occ,
+    } = orb;
+    let nmo = nocc_total + nvir;
+    let mut dm1mo = Array2::<f64>::zeros((nmo, nmo));
+    for i in 0..nocc {
+        let i_mo = first_occ + i;
+        for j in 0..nocc {
+            dm1mo[(i_mo, first_occ + j)] = inter.p_oo[(i, j)] + inter.p_oo[(j, i)];
+        }
+    }
+    for a in 0..nvir {
+        let a_mo = nocc_total + a;
+        for b in 0..nvir {
+            dm1mo[(a_mo, nocc_total + b)] = inter.p_vv[(a, b)] + inter.p_vv[(b, a)];
+        }
+    }
+    let dco = frozen_core_block(imat, eps, &orb)?;
+    for k in 0..first_occ {
+        for i in 0..nocc {
+            dm1mo[(k, first_occ + i)] = dco[(k, i)];
+            dm1mo[(first_occ + i, k)] = dco[(k, i)];
+        }
+    }
+    if let Some(z) = z {
+        for a in 0..nvir {
+            let a_mo = nocc_total + a;
+            for i_mo in 0..nocc_total {
+                dm1mo[(a_mo, i_mo)] = z[(a, i_mo)];
+                dm1mo[(i_mo, a_mo)] = z[(a, i_mo)];
+            }
+        }
+    }
+    Ok(dm1mo)
 }
 
 /// Times the CPHF loop of [`solve_zvector_timed`] on every exit (converged
@@ -724,6 +831,21 @@ pub(crate) fn compute_az_product(
     pool: &EnginePool,
     ooc_budget: usize,
 ) -> Result<Array2<f64>, FerricError> {
+    Ok(az_product_with_jk(c, z, prep, bounds, orb, pool, ooc_budget)?.0)
+}
+
+/// [`compute_az_product`] and the AO `(J, K)` of the unscaled `D^z` it
+/// built them from (zero when `z` is zero).
+#[allow(clippy::too_many_arguments)]
+fn az_product_with_jk(
+    c: &Array2<f64>,
+    z: &Array2<f64>,
+    prep: &PreparedBasis,
+    bounds: &SchwarzBounds,
+    orb: &OrbitalSpace,
+    pool: &EnginePool,
+    ooc_budget: usize,
+) -> Result<(Array2<f64>, Array2<f64>, Array2<f64>), FerricError> {
     let OrbitalSpace {
         nocc,
         nvir,
@@ -736,7 +858,11 @@ pub(crate) fn compute_az_product(
     // Power-of-two scale: multiplying by 2^±e is exact, so the scaled operand
     // carries the same mantissas and only the screening sees the new scale.
     let Some((scale, inv_scale)) = ferric_scf::rhf::pow2_normalizer(zmax) else {
-        return Ok(Array2::zeros((nvir, nocc)));
+        return Ok((
+            Array2::zeros((nvir, nocc)),
+            Array2::zeros((n, n)),
+            Array2::zeros((n, n)),
+        ));
     };
 
     let dz = response_density_ao(c, z, inv_scale, orb);
@@ -764,7 +890,9 @@ pub(crate) fn compute_az_product(
         }
     }
 
-    Ok(result)
+    // `scale` is a power of two, so these are J/K of the unscaled D^z with
+    // the same mantissas.
+    Ok((result, scale * &jz, scale * &kz))
 }
 
 /// Build the relaxed 1-PDM in AO basis.
@@ -1339,7 +1467,7 @@ mod tests {
         let inter = compute_mp2_intermediates(&mol, &obs, &dfbs, op, &rhf, &RiMp2Config::default())
             .unwrap();
 
-        let (z, _l) = solve_zvector(
+        let sol = solve_zvector(
             &mol,
             &obs,
             &dfbs,
@@ -1350,6 +1478,9 @@ mod tests {
             ferric_core::memory::resolve_budget_bytes(None),
         )
         .unwrap();
+        assert!(sol.converged, "max |r| = {:.3e}", sol.max_resid);
+        assert!(sol.max_resid < sol.tol);
+        let z = sol.z;
 
         // Z should be finite and small
         for a in 0..inter.nvir {
@@ -1357,6 +1488,83 @@ mod tests {
                 assert!(z[(a, i)].is_finite(), "z[{},{}] not finite", a, i);
             }
         }
+    }
+
+    /// The correlation J/K the Z-vector hands the gradient (the right-hand
+    /// side's build of the unrelaxed density plus the converged matvec's
+    /// build of `D^z`) equals one direct build of the relaxed density.
+    ///
+    /// Bar: the three builds screen independently. A quartet is dropped when
+    /// `b12·b34·max|D| < thresh` (`quartet_scatter`), so each integral in it
+    /// times any density element is below `thresh`, and one dropped quartet
+    /// moves a J or K element by at most `2·n_kl·thresh` (both orderings of
+    /// the pair). Summed over every shell pair, `Σ n_kl = nbf²`, so one build
+    /// is off by at most `2·nbf²·thresh` per element; the D^z build screens
+    /// its power-of-two-scaled copy, which multiplies its bound by the scale
+    /// (`≤ 2·max|z|`). Three builds: `2·nbf²·thresh·(2 + max(1, 2·max|z|))`.
+    /// Rounding is ~1e-16 relative and far below it.
+    #[test]
+    fn corr_jk_matches_a_direct_build_of_the_relaxed_density() {
+        let xyz = "3\nwater\nO 0.000000 0.000000 0.117790\nH 0.000000 0.755453 -0.471161\nH 0.000000 -0.755453 -0.471161\n";
+        let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let ctx = ferric_core::parallel::ParallelContext::default();
+        let rhf = solve_rhf(
+            &ctx,
+            &mol,
+            &obs,
+            op,
+            &bounds,
+            &RhfConfig {
+                density_conv: 1e-9,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let inter = compute_mp2_intermediates(&mol, &obs, &dfbs, op, &rhf, &RiMp2Config::default())
+            .unwrap();
+        let sol = solve_zvector(
+            &mol,
+            &obs,
+            &dfbs,
+            op,
+            &bounds,
+            &rhf,
+            &inter,
+            ferric_core::memory::resolve_budget_bytes(None),
+        )
+        .unwrap();
+        let (j_sum, k_sum) = sol.corr_jk.clone().expect("converged solve carries J/K");
+        let c = rhf.mos_r();
+        let dm1mo = correlation_density_mo(&inter, &sol.imat, rhf.eps_r(), Some(&sol.z)).unwrap();
+        let d_rel = c.dot(&dm1mo).dot(&c.t());
+        let n = obs.nbasis();
+        let (mut j, mut k) = (Array2::zeros((n, n)), Array2::zeros((n, n)));
+        build_jk(&ctx, &obs, &bounds, 1e-12, &d_rel, &mut j, &mut k).unwrap();
+        let zmax = sol.z.iter().fold(0.0f64, |m, v| m.max(v.abs()));
+        let bar = 2.0 * (n * n) as f64 * 1e-12 * (2.0 + (2.0 * zmax).max(1.0));
+        let dj = (&j - &j_sum).iter().fold(0.0f64, |m, v| m.max(v.abs()));
+        let dk = (&k - &k_sum).iter().fold(0.0f64, |m, v| m.max(v.abs()));
+        let jmax = j.iter().fold(0.0f64, |m, v| m.max(v.abs()));
+        eprintln!("max|ΔJ| = {dj:.3e}, max|ΔK| = {dk:.3e}, bar {bar:.3e}, max|J| = {jmax:.3e}");
+        assert!(
+            dj < bar && dk < bar,
+            "ΔJ {dj:.3e} ΔK {dk:.3e} bar {bar:.3e}"
+        );
+        // The z part is not negligible at this bar (else the test could not
+        // see a reuse of the unrelaxed density alone).
+        let dm1mo_u = correlation_density_mo(&inter, &sol.imat, rhf.eps_r(), None).unwrap();
+        let d_u = c.dot(&dm1mo_u).dot(&c.t());
+        let (mut ju, mut ku) = (Array2::zeros((n, n)), Array2::zeros((n, n)));
+        build_jk(&ctx, &obs, &bounds, 1e-12, &d_u, &mut ju, &mut ku).unwrap();
+        let dz = (&j - &ju).iter().fold(0.0f64, |m, v| m.max(v.abs()));
+        assert!(
+            dz > 1e3 * bar,
+            "J[D^z] {dz:.3e} is within 1e3 x bar {bar:.3e}"
+        );
     }
 
     #[test]
@@ -1383,7 +1591,7 @@ mod tests {
         let inter = compute_mp2_intermediates(&mol, &obs, &dfbs, op, &rhf, &RiMp2Config::default())
             .unwrap();
 
-        let (z, _l) = solve_zvector(
+        let sol = solve_zvector(
             &mol,
             &obs,
             &dfbs,
@@ -1394,6 +1602,9 @@ mod tests {
             ferric_core::memory::resolve_budget_bytes(None),
         )
         .unwrap();
+        assert!(sol.converged, "max |r| = {:.3e}", sol.max_resid);
+        assert!(sol.max_resid < sol.tol);
+        let z = sol.z;
         let p_ao = build_relaxed_density_ao(
             rhf.mos_r(),
             &inter.p_oo,
@@ -1441,7 +1652,7 @@ mod tests {
         let inter = compute_mp2_intermediates(&mol, &obs, &dfbs, op, &rhf, &RiMp2Config::default())
             .unwrap();
 
-        let (z, l) = solve_zvector(
+        let sol = solve_zvector(
             &mol,
             &obs,
             &dfbs,
@@ -1452,6 +1663,8 @@ mod tests {
             ferric_core::memory::resolve_budget_bytes(None),
         )
         .unwrap();
+        assert!(sol.converged);
+        let (z, l) = (sol.z, sol.imat);
 
         let nmo = rhf.mos_r().ncols();
         let f_mo = rhf.mos_r().t().dot(rhf.fock_r()).dot(rhf.mos_r());

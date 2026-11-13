@@ -252,7 +252,7 @@ fn diag_ferric_static_relaxed_dipole() {
         ..Default::default()
     };
     let inter = compute_mp2_intermediates(&mol, &obs, &dfbs, op, &rhf, &mp2_cfg).unwrap();
-    let (z, _l) = solve_zvector(
+    let z = solve_zvector(
         &mol,
         &obs,
         &dfbs,
@@ -262,7 +262,10 @@ fn diag_ferric_static_relaxed_dipole() {
         &inter,
         ferric_core::memory::resolve_budget_bytes(mp2_cfg.memory_budget_bytes),
     )
-    .unwrap();
+    .unwrap()
+    .require_converged()
+    .unwrap()
+    .z;
     let p_relax = build_relaxed_density_ao(
         rhf.mos_r(),
         &inter.p_oo,

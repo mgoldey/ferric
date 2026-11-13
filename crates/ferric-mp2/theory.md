@@ -290,7 +290,9 @@ and the CPHF equation is
 
 $$ (\varepsilon_a - \varepsilon_i)\,z_{ai} + \sum_{bj}\left[4(ai|bj) - (ab|ij) - (aj|bi)\right] z_{bj} = -X_{ai}, $$
 
-solved by Jacobi-preconditioned DIIS to $\max|r| < 10^{-8}$. The coupling is
+solved by Jacobi-preconditioned DIIS to $\max|r| < 10^{-8}$; a solve that
+reaches the 50-iteration cap first is an error on the gradient path
+(`ZvectorSolution::require_converged`). The coupling is
 $\tfrac12$ of `compute_az_product` (`zvector.rs:174`), which returns the vo
 block of $(4J - K - K^{\mathsf T})[D^z]$ with
 $D^z = \sum_{ai}z_{ai}(C_aC_i^{\mathsf T} + C_iC_a^{\mathsf T})$, twice the
@@ -309,6 +311,79 @@ $\Gamma(D^{\mathrm{HF}}, D^{\mathrm{HF}} + 2D^{\mathrm{corr}})$; and the RI
 3-centre/2-centre response with the closed-shell 2-PDM weight
 $\Gamma_2 = 2(2t - t^{\mathsf T})$ (`gradient.rs:93`–`:127` lists each block
 with its PySCF line).
+
+**J/K of the correlation density, built once.** The Lagrangian's potential
+term needs $(J,K)[2D^{\mathrm{corr}}_{\mathrm{rel}}]$ of the *relaxed*
+correlation density $D^{\mathrm{corr}}_{\mathrm{rel}} = D^{\mathrm{corr}} + D^z$,
+while the right-hand side needs $(J,K)[D^{\mathrm{corr}}]$ of the unrelaxed one
+and every CPHF matvec $(J,K)[D^z]$. By linearity
+
+$$ (J,K)[2D^{\mathrm{corr}}_{\mathrm{rel}}] = 2\,(J,K)[D^{\mathrm{corr}}] + 2\,(J,K)[D^z], $$
+
+with the second pair taken from the matvec of the converged $z$ (the iterate
+the solver returns). No further J/K build follows the Z-vector. The sum
+differs from a direct build of $2D^{\mathrm{corr}}_{\mathrm{rel}}$ only by
+which quartets the absolute screen ($\text{bound}\cdot\max|D| < 10^{-12}$)
+drops in each of the three builds.
+
+### 9.1 Fitted (RI-JK) reference
+
+With `[scf] jk = "rijk"` the reference SCF minimises the fitted energy
+
+$$ E_{\mathrm{HF}} = \operatorname{Tr}[hD] + Q(D) + V_{nn}, \qquad
+Q(D) = \tfrac12\operatorname{Tr}[D\,G(D)], \qquad
+G(D) = J^{\mathrm{fit}}[D] - \tfrac12 K^{\mathrm{fit}}[D], $$
+
+$$ J^{\mathrm{fit}}[D]_{\mu\nu} = \sum_{PQ}(\mu\nu|P)\,(V^{-1})_{PQ}\,(Q|\lambda\sigma)D_{\lambda\sigma}, \qquad
+K^{\mathrm{fit}}[D]_{\mu\nu} = \sum_{PQ}(\mu\lambda|P)\,M_{PQ}\,(Q|\nu\sigma)D_{\lambda\sigma}, $$
+
+on one JK-fitting basis, $V_{PQ} = (P|Q)$, and $M$ the eigenvalue-cut
+$V^{-1/2}V^{-1/2}$ of `ferric_scf::df_k` (`DfJ` / `DfK`). $G$ is linear and
+self-adjoint ($\operatorname{Tr}[D_1G(D_2)] = \operatorname{Tr}[D_2G(D_1)]$, both
+fits use the same factor on each side), so $\partial E_{\mathrm{HF}}/\partial D
+= h + G(D) = F$, the fitted Fock matrix whose eigenpairs are the reference
+orbitals.
+
+The MP2 Lagrangian above meets the reference only through $F$: the orbital
+energies, the stationarity condition $F_{ai} = 0$ the multipliers $z_{ai}$
+enforce, and orthonormality. Its derivation is therefore unchanged with
+$G$ in place of the four-centre $J - \tfrac12K$, and the fitted gradient
+replaces each four-centre object by the fitted one:
+
+| term | four-centre | fitted |
+|---|---|---|
+| right-hand side | $(2J-K)[D^{\mathrm{corr}}]$ | $2G(D^{\mathrm{corr}})$ |
+| CPHF coupling | $(4J-K-K^{\mathsf T})[D^z]$ | $4G(D^z)$ |
+| potential term | $(J - \tfrac12K)[2D^{\mathrm{corr}}_{\mathrm{rel}}]$ | $G(2D^{\mathrm{corr}}_{\mathrm{rel}})$ |
+| explicit 2e derivative | $\sum\Gamma(D_1,D_2)\,\partial(\mu\nu|\lambda\sigma)$ | $\partial_R B(D_1,D_2)$ at fixed $D_1,D_2$ |
+
+with $D_1 = D^{\mathrm{HF}}$, $D_2 = D^{\mathrm{HF}} + 2D^{\mathrm{corr}}_{\mathrm{rel}}$
+and $B(D_1,D_2) = \tfrac12\operatorname{Tr}[D_1G(D_2)]$ the polarization of $Q$
+($B(D,D) = Q(D)$). The MP2 integral response (its own RI basis, $\Gamma_2$
+above) and the one-electron and overlap terms are unchanged.
+
+**The fitted separable term.** $\partial_R B$ at fixed densities is
+assembled from derivatives of the quadratic form, which
+`ferric_scf::df_gradient` already provides:
+
+$$ B(D_1,D_2) = Q(u) - Q(v), \qquad u = \tfrac12(D_1 + D_2) = D^{\mathrm{HF}} + D^{\mathrm{corr}}_{\mathrm{rel}},
+\qquad v = \tfrac12(D_1 - D_2) = -D^{\mathrm{corr}}_{\mathrm{rel}}, $$
+
+an identity of any symmetric bilinear form. The Coulomb part of
+$\partial_R Q(D)$ is the RI-J gradient
+$c^{\mathsf T}\partial(P|\mu\nu)D - \tfrac12 c^{\mathsf T}\partial V c$, $c = V^{-1}d$,
+$d_P = (P|\mu\nu)D_{\mu\nu}$; the exchange part is the RI-K gradient of
+the channel $(D, -\tfrac14)$ (Weigend, Kattannek & Ahlrichs 2009, with the
+Daleckii–Krein derivative of $M$; `df_gradient.rs` module doc). The RI-K
+gradient factors each channel density as $XX^{\mathsf T}$, so an indefinite
+$D$ (always $v$; $u$ when a natural occupation of the relaxed density is
+negative) is split by eigenvalue sign, $D = P - N$ with $P, N \succeq 0$, and
+
+$$ Q_K(P - N) = 2Q_K(P) + 2Q_K(N) - Q_K(P + N), $$
+
+again exact for any quadratic form. Both $u$ and $v$ are full rank, so this
+term costs a few full-rank RI-K gradient channels rather than the
+occupied-rank one of the SCF gradient.
 
 ## 10. Static polarizability
 

@@ -1,7 +1,7 @@
 //! RI-MP2 nuclear gradients: analytical and finite-difference reference.
 
 use crate::rimp2::{compute_mp2_intermediates_ov_only, ri_mp2, RiMp2Config};
-use crate::zvector::solve_zvector_timed;
+use crate::zvector::{solve_zvector_timed, ZvectorControls};
 use ferric_core::basis::BasisSet;
 use ferric_core::external_potential::ExternalPotential;
 use ferric_core::mol::Molecule;
@@ -148,11 +148,24 @@ pub fn rimp2_gradient_analytical(
     ext: Option<&ExternalPotential>,
 ) -> Result<Array2<f64>, FerricError> {
     let mut acc = PhaseAccumulator::new().report_on_drop("RI-MP2 gradient");
-    rimp2_gradient_analytical_timed(mol, obs, dfbs, op, bounds, rhf, config, ext, &mut acc)
+    rimp2_gradient_analytical_timed(
+        mol,
+        obs,
+        dfbs,
+        op,
+        bounds,
+        rhf,
+        config,
+        ext,
+        ZvectorControls::DEFAULT,
+        &mut acc,
+    )
 }
 
 /// [`rimp2_gradient_analytical`] with its phases recorded in `acc` (inert
-/// unless `FERRIC_TIMING` is set; the arithmetic is the same either way).
+/// unless `FERRIC_TIMING` is set; the arithmetic is the same either way) and
+/// the Z-vector solved under `controls`. A Z-vector that misses its
+/// tolerance is an error.
 #[allow(clippy::too_many_arguments)]
 fn rimp2_gradient_analytical_timed(
     mol: &Molecule,
@@ -163,6 +176,7 @@ fn rimp2_gradient_analytical_timed(
     rhf: &ScfResult,
     config: &RiMp2Config,
     ext: Option<&ExternalPotential>,
+    controls: ZvectorControls,
     acc: &mut PhaseAccumulator,
 ) -> Result<Array2<f64>, FerricError> {
     // ov-only intermediates: the gradient/zvector pipeline never reads
@@ -171,18 +185,30 @@ fn rimp2_gradient_analytical_timed(
         compute_mp2_intermediates_ov_only(mol, obs, dfbs, op, rhf, config)
     })?;
     let budget_bytes = ferric_core::memory::resolve_budget_bytes(config.memory_budget_bytes);
-    let (z, imat) =
-        solve_zvector_timed(mol, obs, dfbs, op, bounds, rhf, &inter, budget_bytes, acc)?;
+    let zv = solve_zvector_timed(
+        mol,
+        obs,
+        dfbs,
+        op,
+        bounds,
+        rhf,
+        &inter,
+        budget_bytes,
+        controls,
+        acc,
+    )?
+    .require_converged()?;
     let mut grad =
-        mp2_relaxed_lagrangian_gradient(mol, obs, op, bounds, rhf, &inter, &z, &imat, ext, acc)?;
+        mp2_relaxed_lagrangian_gradient(mol, obs, op, bounds, rhf, &inter, &zv, ext, acc)?;
     grad += &integral_response_gradient_3c2c_timed(mol, obs, dfbs, op, &inter, rhf.mos_r(), acc)?;
     Ok(grad)
 }
 
 /// Assemble the non-RI part of the MP2 analytical gradient (the four
-/// overlap/hcore/2e-deriv Lagrangian blocks) from the solved z-vector and the RI
-/// Lagrangian matrix `imat`. Shared by the RI-MP2 and SCS-MP2 gradient paths. The
-/// caller adds the RI 3c/2c integral-response term separately.
+/// overlap/hcore/2e-deriv Lagrangian blocks) from the converged Z-vector
+/// solution `zv` (its `z`, the RI Lagrangian matrix `imat`, and the J/K of the
+/// relaxed correlation density). Shared by the RI-MP2 and SCS-MP2 gradient
+/// paths. The caller adds the RI 3c/2c integral-response term separately.
 ///
 /// See [`rimp2_gradient_analytical`] for the block-by-block derivation and PySCF
 /// line citations.
@@ -194,8 +220,7 @@ fn mp2_relaxed_lagrangian_gradient(
     bounds: &SchwarzBounds,
     rhf: &ScfResult,
     inter: &crate::rimp2::Mp2Intermediates,
-    z: &Array2<f64>,
-    imat: &Array2<f64>,
+    zv: &crate::zvector::ZvectorSolution,
     ext: Option<&ExternalPotential>,
     acc: &mut PhaseAccumulator,
 ) -> Result<Array2<f64>, FerricError> {
@@ -203,53 +228,20 @@ fn mp2_relaxed_lagrangian_gradient(
         build_energy_weighted_density, oneelectron_gradient, overlap_deriv_contract,
         twoelectron_gradient_bilinear,
     };
+    let (z, imat) = (&zv.z, &zv.imat);
     let c = rhf.mos_r();
     let eps = rhf.eps_r();
     let nmo = c.ncols();
     let crate::rimp2::Mp2Intermediates {
-        nocc,
-        nvir,
-        nocc_total,
-        first_occ,
-        ..
+        nvir, nocc_total, ..
     } = *inter;
 
     let dens_tok = acc.begin("lagr: densities (MO->AO)");
     // --- dm1mo: full relaxed correlation 1-PDM (MO), no HF 2·I part. ---
-    // occ-occ: doo+doo^T; vir-vir: dvv+dvv^T; occ-vir/vir-occ: z (PySCF lines
-    // 134-135 + _response_dm1). inter.p_oo==doo, inter.p_vv==dvv.
-    let mut dm1mo = Array2::<f64>::zeros((nmo, nmo));
-    for i in 0..nocc {
-        let i_mo = first_occ + i;
-        for j in 0..nocc {
-            let j_mo = first_occ + j;
-            dm1mo[(i_mo, j_mo)] = inter.p_oo[(i, j)] + inter.p_oo[(j, i)];
-        }
-    }
-    for a in 0..nvir {
-        let a_mo = nocc_total + a;
-        for b in 0..nvir {
-            let b_mo = nocc_total + b;
-            dm1mo[(a_mo, b_mo)] = inter.p_vv[(a, b)] + inter.p_vv[(b, a)];
-        }
-    }
-    // Frozen core–active block (PySCF lines 125-129; empty without a frozen core).
-    let dco = crate::zvector::frozen_core_block(imat, eps, &inter.orbital_space())?;
-    for k in 0..first_occ {
-        for i in 0..nocc {
-            dm1mo[(k, first_occ + i)] = dco[(k, i)];
-            dm1mo[(first_occ + i, k)] = dco[(k, i)];
-        }
-    }
-    // z spans every occupied orbital, frozen core included.
-    for a in 0..nvir {
-        let a_mo = nocc_total + a;
-        for i_mo in 0..nocc_total {
-            dm1mo[(a_mo, i_mo)] = z[(a, i_mo)];
-            dm1mo[(i_mo, a_mo)] = z[(a, i_mo)];
-        }
-    }
-
+    // occ-occ: doo+doo^T; vir-vir: dvv+dvv^T; the frozen core–active block
+    // (PySCF lines 125-129); occ-vir/vir-occ: z over every occupied orbital,
+    // frozen core included (PySCF lines 134-135 + _response_dm1).
+    let dm1mo = crate::zvector::correlation_density_mo(inter, imat, eps, Some(z))?;
     // Correlation density in AO, and the total (correlation + HF) density.
     let dm1_corr_ao = {
         let cp = c.dot(&dm1mo);
@@ -298,19 +290,22 @@ fn mp2_relaxed_lagrangian_gradient(
     // --- vhf_s1occ = P_occ · get_veff(dm1_corr + dm1_corr^T) · P_occ (PySCF 161-163) ---
     // dm1_corr symmetric ⇒ dm1_corr+dm1_corr^T = 2·dm1_corr. PySCF's `get_veff(D)`
     // is `J[D] − ½K[D]` (the density D carries its own occupancy factor); here D is
-    // already the doubled 2·dm1_corr, so veff = J[2dm] − ½K[2dm]. build_jk returns
-    // raw J[D]/K[D], so this is `jv − 0.5·kv` — NOT the SCF `2J − K` convention
-    // (which expects the un-doubled electron-count density).
+    // the doubled 2·dm1_corr, so veff = J[2dm] − ½K[2dm] = 2J[dm] − K[dm] — NOT
+    // the SCF `2J − K` convention on the doubled density. J[dm], K[dm] come from
+    // the Z-vector solve (its right-hand-side build of the unrelaxed part plus
+    // the converged matvec's build of the z part), so no J/K build runs here.
     acc.stop(dens_tok);
-    let n = c.nrows();
-    let (mut jv, mut kv) = (Array2::zeros((n, n)), Array2::zeros((n, n)));
-    let ctx = ferric_core::parallel::ParallelContext::default();
-    let two_dm_corr = 2.0 * &dm1_corr_ao;
-    acc.time("lagr: J/K of 2*dm1_corr", || {
-        ferric_scf::rhf::build_jk(&ctx, obs, bounds, 1e-12, &two_dm_corr, &mut jv, &mut kv)
+    let (j_corr, k_corr) = zv.corr_jk.as_ref().ok_or_else(|| {
+        FerricError::Convergence(
+            "RI-MP2 gradient: the Z-vector solution carries no correlation J/K (it did not \
+             converge)"
+                .into(),
+        )
     })?;
-    let veff_full = &jv - &(0.5 * &kv); // J[2dm] − ½K[2dm] == PySCF get_veff(dm1+dm1^T)
-                                        // P_occ = C_occ C_occ^T (HF-occupied AO projector).
+    let two_dm_corr = 2.0 * &dm1_corr_ao;
+    // J[2dm] − ½K[2dm] == PySCF get_veff(dm1+dm1^T).
+    let veff_full = 2.0 * j_corr - k_corr;
+    // P_occ = C_occ C_occ^T (HF-occupied AO projector).
     let c_occ_hf = c.slice(ndarray::s![.., ..nocc_hf]);
     let p_occ = c_occ_hf.dot(&c_occ_hf.t());
     let vhf_s1occ = p_occ.dot(&veff_full).dot(&p_occ);
@@ -745,11 +740,22 @@ pub fn scs_mp2_gradient_analytical(
     let inter = compute_mp2_intermediates_ov_only(mol, obs, dfbs, op, rhf, &mp2_config)?;
     let budget_bytes = ferric_core::memory::resolve_budget_bytes(mp2_config.memory_budget_bytes);
     let acc = &mut PhaseAccumulator::new();
-    let (z, imat) =
-        solve_zvector_timed(mol, obs, dfbs, op, bounds, rhf, &inter, budget_bytes, acc)?;
+    let zv = solve_zvector_timed(
+        mol,
+        obs,
+        dfbs,
+        op,
+        bounds,
+        rhf,
+        &inter,
+        budget_bytes,
+        ZvectorControls::DEFAULT,
+        acc,
+    )?
+    .require_converged()?;
     // Full (unscaled) RI-MP2 relaxed-Lagrangian gradient + RI 3c/2c response.
     let mut grad =
-        mp2_relaxed_lagrangian_gradient(mol, obs, op, bounds, rhf, &inter, &z, &imat, ext, acc)?;
+        mp2_relaxed_lagrangian_gradient(mol, obs, op, bounds, rhf, &inter, &zv, ext, acc)?;
     grad += &integral_response_gradient_3c2c(mol, obs, dfbs, op, &inter, rhf.mos_r())?;
     // Approximate scaling: multiply MP2 part by average SCS scaling
     let scale = (config.c_os + config.c_ss) / 2.0;
@@ -830,7 +836,16 @@ pub fn total_rimp2_gradient_warm(
         ri_mp2(mol, &obs, &dfbs, op, &rhf, mp2_config)
     })?;
     let grad = rimp2_gradient_analytical_timed(
-        mol, &obs, &dfbs, op, &bounds, &rhf, mp2_config, ext, &mut acc,
+        mol,
+        &obs,
+        &dfbs,
+        op,
+        &bounds,
+        &rhf,
+        mp2_config,
+        ext,
+        ZvectorControls::DEFAULT,
+        &mut acc,
     )?;
     Ok((mp2.total_energy, grad))
 }
@@ -1411,6 +1426,61 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A Z-vector that stops at its iteration cap is an error on the
+    /// gradient path, not a silently wrong gradient. One CPHF matvec cannot
+    /// reach `max |r| < 1e-8` on water (the first iterate is the uncoupled
+    /// `rhs / Δε`, whose residual is the whole coupling `A·z`); the default
+    /// cap of 50 does. Both arms run so the error cannot come from an
+    /// unrelated failure of the setup.
+    #[test]
+    fn unconverged_zvector_is_a_gradient_error() {
+        let xyz = "3\nwater\nO 0.000000 0.000000 0.117790\nH 0.000000 0.755453 -0.471161\nH 0.000000 -0.755453 -0.471161\n";
+        let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+        let obs_bs = basis::bundled("sto-3g").unwrap();
+        let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let rhf = solve_rhf(
+            &ferric_core::parallel::ParallelContext::default(),
+            &mol,
+            &obs,
+            op,
+            &bounds,
+            &RhfConfig {
+                density_conv: 1e-9,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let config = RiMp2Config::default();
+        let run = |controls| {
+            rimp2_gradient_analytical_timed(
+                &mol,
+                &obs,
+                &dfbs,
+                op,
+                &bounds,
+                &rhf,
+                &config,
+                None,
+                controls,
+                &mut PhaseAccumulator::new(),
+            )
+        };
+        let starved = run(ZvectorControls {
+            max_iter: 1,
+            tol: 1e-8,
+        });
+        match starved {
+            Err(FerricError::Convergence(msg)) => {
+                assert!(msg.contains("Z-vector did not converge"), "{msg}")
+            }
+            other => panic!("a 1-iteration Z-vector must be a Convergence error, got {other:?}"),
+        }
+        assert!(run(ZvectorControls::DEFAULT).is_ok());
     }
 
     #[test]
