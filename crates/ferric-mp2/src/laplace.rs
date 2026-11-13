@@ -879,9 +879,9 @@ impl LaplaceMp2 {
                 // Weighted amplitudes: B_ia(t) = B_ia * exp(-t * (eps_a - eps_i) / 2)
                 let b_t = weighted_b_mo(&b_flat, &occ_scale, &vir_scale, nocc, nvir, t);
 
-                // J_PQ = sum_{ia} B_ia^P B_ia^Q
-                let j_mat = b_t.dot(&b_t.t());
-                let e_coul = j_mat.iter().map(|&x| x * x).sum::<f64>();
+                // e_coul = sum_PQ J_PQ^2, J_PQ = sum_{ia} B_ia^P B_ia^Q, from the
+                // lower triangle of the symmetric J.
+                let e_coul = sos_j_square_trace(&b_t);
 
                 // Exchange: single blocked wide GEMM instead of the dense (naux·nocc)² Gram.
                 let e_exch = laplace_exchange_energy(&b_t, naux, nocc, nvir, k_budget);
@@ -3068,6 +3068,71 @@ mod tests {
         assert!(
             (e_new - e_oracle).abs() <= bar,
             "compute_sos_mo {e_new:.17e} vs full-GEMM oracle {e_oracle:.17e}: \
+             |diff| {:.3e} above the summation-order bar {bar:.3e}",
+            (e_new - e_oracle).abs()
+        );
+    }
+
+    /// End to end on water/cc-pVDZ: `compute_mo` (lower-triangle Coulomb term)
+    /// against the same energy with the full-GEMM Coulomb term, at every
+    /// quadrature point and summed, within the summation-order bound in the
+    /// section header (the exchange term is the identical call in both arms).
+    /// The Coulomb term enters as `-2 w S`, so the bar is doubled.
+    ///
+    /// FAILS if the Coulomb trace is not doubled below the diagonal, the
+    /// ragged tile is dropped, or the factor 2 on the Coulomb term is lost.
+    #[test]
+    fn mo_energy_matches_the_full_gemm_coulomb_oracle_within_the_summation_bound() {
+        let (mol, obs, dfbs, rhf) = setup_sos("cc-pvdz");
+        let op = Operator::coulomb();
+        let mut laplace = LaplaceMp2::new(7);
+        let e_new = laplace.compute_mo(&mol, &obs, &dfbs, op, &rhf, 0).unwrap();
+
+        let nbas = obs.nbasis();
+        let nocc = mol.nelec() as usize / 2;
+        let nvir = nbas - nocc;
+        let naux = dfbs.nbasis();
+        let eps = rhf.eps_r();
+        let c = rhf.mos_r();
+        let c_occ = c.slice(ndarray::s![.., ..nocc]).to_owned();
+        let c_vir = c.slice(ndarray::s![.., nocc..]).to_owned();
+        let v2c = ferric_integrals::threeindex::coulomb_metric_2c(op, &dfbs).unwrap();
+        let v_inv_sqrt = crate::rimp2::cholesky_inverse_sqrt(&v2c).unwrap();
+        let eri3_mo = crate::rimp2::eri3_mo_ov_blocked(
+            op,
+            &obs,
+            &dfbs,
+            &c_occ,
+            &c_vir,
+            crate::rimp2::eri3_budget_bytes(None),
+        )
+        .unwrap();
+        let eri3_mo_flat = eri3_mo.into_shape_with_order((naux, nocc * nvir)).unwrap();
+        let b_flat = dress_with_metric(&v_inv_sqrt, &eri3_mo_flat.view());
+        let occ_scale: Vec<f64> = (0..nocc).map(|i| eps[i]).collect();
+        let vir_scale: Vec<f64> = (0..nvir).map(|a| eps[nocc + a]).collect();
+        let k_budget = per_task_budget_bytes(None);
+
+        let mut e_oracle = 0.0;
+        let mut bar = 0.0;
+        let mut abs_terms = 0.0;
+        for (&t, &w) in laplace.points.iter().zip(laplace.weights.iter()) {
+            let b_t = weighted_b_mo(&b_flat, &occ_scale, &vir_scale, nocc, nvir, t);
+            let s_old = sos_j_square_trace_full_gemm(&b_t);
+            let e_exch = laplace_exchange_energy(&b_t, naux, nocc, nvir, k_budget);
+            e_oracle += -w * (2.0 * s_old - e_exch);
+            bar += 2.0 * w.abs() * sos_j_trace_bound(&b_t);
+            abs_terms += (w * (2.0 * s_old - e_exch)).abs();
+        }
+        bar += 2.0 * gamma(laplace.points.len()) * abs_terms;
+        eprintln!(
+            "water/cc-pVDZ Laplace-MP2 E: new {e_new:.17e} oracle {e_oracle:.17e} \
+             |diff|={:.3e} bar={bar:.3e}",
+            (e_new - e_oracle).abs()
+        );
+        assert!(
+            (e_new - e_oracle).abs() <= bar,
+            "compute_mo {e_new:.17e} vs full-GEMM Coulomb oracle {e_oracle:.17e}: \
              |diff| {:.3e} above the summation-order bar {bar:.3e}",
             (e_new - e_oracle).abs()
         );
