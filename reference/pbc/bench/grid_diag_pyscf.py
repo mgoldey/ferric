@@ -148,15 +148,16 @@ def main():
         g.atom_grid = (int(nr), int(na))
         g.prune = None
         if var == "stock":
-            g.build()
+            g.build(with_non0tab=True)
         elif var == "bragg":
             g.coords, g.weights = becke_grids(cell, g.atom_grid, adjust=True)
-            g.non0tab = None
         elif var == "stockcopy":
             g.coords, g.weights = becke_grids(cell, g.atom_grid, adjust=False)
-            g.non0tab = None
         else:
             sys.exit(f"unknown variant {var}")
+        # numint rebuilds a grid whose non0tab is None, which would replace
+        # the custom weights with the stock ones.
+        g.non0tab = g.make_mask(cell, g.coords)
         n, exc, _ = ni.nr_rks(cell, g, a.xc, dm, kpt=np.zeros(3))
         print(
             f"PYSCF {nr}x{na} {var} npts={g.weights.size} wsum={g.weights.sum():.12f} "
