@@ -96,7 +96,7 @@ fn process_cpu_secs() -> Option<f64> {
     };
     // SAFETY: `ts` is a valid, writable timespec for the duration of the call.
     let rc = unsafe { libc::clock_gettime(libc::CLOCK_PROCESS_CPUTIME_ID, &mut ts) };
-    (rc == 0).then(|| ts.tv_sec as f64 + ts.tv_nsec as f64 * 1e-9)
+    (rc == 0).then_some(ts.tv_sec as f64 + ts.tv_nsec as f64 * 1e-9)
 }
 
 /// No process CPU clock is read on this platform; the `busy` column shows `-`.
