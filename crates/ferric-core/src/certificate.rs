@@ -165,7 +165,7 @@ pub const METHOD_KIND_GRADES: &[(&str, Grade)] = &[
     ("scs-mp2", Grade::Proven),
     ("scs-mp2-2terfc", Grade::ProvenNarrow),
     ("laplace-mp2", Grade::Proven),
-    ("laplace-sos-mp2", Grade::Ungraded),
+    ("laplace-sos-mp2", Grade::Proven),
     ("pdep-rpa", Grade::Proven),
     ("rs-mp2-rpa", Grade::Smoke),
     ("gw", Grade::ProvenNarrow),
@@ -647,10 +647,6 @@ mod tests {
         assert_eq!(c.grade_source, None);
         assert_eq!(method_kind_grade("not-a-kind"), Grade::Ungraded);
         assert_eq!(Certificate::ungraded("rhf").grade, Grade::Ungraded);
-        // A table row of "not graded" is still Ungraded, but sourced.
-        let l = Certificate::for_method_kind("laplace-sos-mp2");
-        assert_eq!(l.grade, Grade::Ungraded);
-        assert_eq!(l.grade_source.as_deref(), Some(GRADE_SOURCE_PAGE));
     }
 
     #[test]

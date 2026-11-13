@@ -424,6 +424,29 @@ pub const ENERGY_ANCHORS: &[EnergyAnchor] = &[
         functionals: &[],
     },
     EnergyAnchor {
+        method: "Laplace SOS-MP2",
+        kind: "laplace-sos-mp2",
+        quantity: "opposite-spin energy at matched quadrature",
+        value: "1.6e-11",
+        units: "Ha",
+        reference: "PySCF",
+        evidence: "crates/ferric-mp2/tests/validation_sos_mp2.rs",
+        data: AnchorData::Files {
+            dir: "testdata/reference/validation/sos_mp2",
+            files: &[
+                "h2o_cc-pvdz",
+                "h2o_aug_aug-cc-pvdz",
+                "ch4_cc-pvdz",
+                "butadiene_cc-pvdz",
+                "alkane_8_cc-pvdz",
+            ],
+        },
+        elements: &["H", "C", "O"],
+        basis_sets: &["cc-pvdz", "aug-cc-pvdz"],
+        aux_basis_sets: &["cc-pvdz-ri", "aug-cc-pvdz-rifit"],
+        functionals: &[],
+    },
+    EnergyAnchor {
         method: "PDEP-RPA",
         kind: "pdep-rpa",
         quantity: "correlation energy",
@@ -949,7 +972,7 @@ mod tests {
 
     /// Anchors whose mutation has no recorded result yet. Each one is printed
     /// by `mutation_ledger_matches_the_registry`.
-    const PENDING_MUTATIONS: &[&str] = &[];
+    const PENDING_MUTATIONS: &[&str] = &["Laplace SOS-MP2"];
 
     /// SHA-256 of `data` as lower-case hex (FIPS 180-4).
     fn sha256_hex(data: &[u8]) -> String {

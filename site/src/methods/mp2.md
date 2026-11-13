@@ -187,10 +187,11 @@ c<sub>OS</sub> = 1.3 by default) with a minimax Laplace quadrature
 (`n_quad` must be 3, 5 or 7; anything else is an error). There is
 no c<sub>SS</sub>: dropping the same-spin term is what lets the denominator
 factorize. With c<sub>OS</sub> = 1.0 it reproduces the opposite-spin component
-of RI-MP2 to quadrature error, which is the test anchor. Four formulations
+of RI-MP2 to quadrature error, and it matches PySCF `DFMP2`'s opposite-spin
+energy at the same aux basis (see the validation page). Four formulations
 (`sos_formulation`):
 
-- `mo` (default) and `ao` are both exact and agree to round-off.
+- `mo` (default) and `ao` are both exact and agree to round-off; this is the graded method.
 - `ao-sparse` restricts each Boys-localized orbital's pseudo-density to an AO
   domain of radius `domain_cutoff_bohr` (required, no default). Approximate.
 - `local` keeps, for each Boys-localized orbital, the localized virtuals within

@@ -233,14 +233,21 @@ pub fn sos_mp2_certificate(
         );
     match formulation {
         SosFormulation::Mo | SosFormulation::Ao => c,
-        SosFormulation::AoSparse(r) => c.with_approximation(
-            "ao-domain",
-            format!("AO pseudo-densities restricted to {r} Bohr Boys domains"),
-        ),
-        SosFormulation::Local(r) => c.with_approximation(
-            "local-domain",
-            format!("Boys LMO x VV-HV LVO with {r} Bohr virtual domains"),
-        ),
+        SosFormulation::AoSparse(r) => c
+            .with_approximation(
+                "ao-domain",
+                format!("AO pseudo-densities restricted to {r} Bohr Boys domains"),
+            )
+            .cap_grade(
+                Grade::Ungraded,
+                "the ao-sparse formulation is not validated",
+            ),
+        SosFormulation::Local(r) => c
+            .with_approximation(
+                "local-domain",
+                format!("Boys LMO x VV-HV LVO with {r} Bohr virtual domains"),
+            )
+            .cap_grade(Grade::Ungraded, "the local formulation is not validated"),
     }
 }
 
@@ -575,7 +582,7 @@ mod tests {
             (
                 sos_mp2_certificate(&r, "a", &SosMp2Config::default(), SosFormulation::Mo, &op),
                 "laplace-sos-mp2",
-                Grade::Ungraded,
+                Grade::Proven,
             ),
             (
                 mp2_v_certificate(&r, "a", &crate::att_vv10::AttVv10Config::default()),
@@ -592,6 +599,19 @@ mod tests {
                 "{kind}"
             );
         }
+    }
+
+    #[test]
+    fn sos_domain_formulations_are_not_graded() {
+        let r = rhf();
+        let op = Operator::coulomb();
+        let cfg = SosMp2Config::default();
+        for f in [SosFormulation::AoSparse(4.0), SosFormulation::Local(6.0)] {
+            let c = sos_mp2_certificate(&r, "a", &cfg, f, &op);
+            assert_eq!(c.grade, Grade::Ungraded, "{f:?}");
+        }
+        let exact = sos_mp2_certificate(&r, "a", &cfg, SosFormulation::Ao, &op);
+        assert_eq!(exact.grade, Grade::Proven);
     }
 
     #[test]
