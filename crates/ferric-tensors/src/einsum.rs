@@ -548,9 +548,8 @@ const GEMM_ROW_BAND_MAX: usize = 256;
 ///                                   m=128 where the 1-row tail merges back)
 /// ```
 ///
-/// An earlier version of this code checked only powers of two — which all pass
-/// — and concluded "any width >= 2 is safe". That was wrong, and the
-/// exhaustive map is what caught it. Do not narrow this test back to a sample.
+/// Checking only powers of two — which all pass — would conclude
+/// "any width >= 2 is safe", which is wrong; the exhaustive map shows it. Do not narrow this test back to a sample.
 ///
 /// Because *every* even width is bit-identical, the width is a pure
 /// PERFORMANCE knob and may therefore depend on the worker count (see
@@ -744,8 +743,7 @@ fn try_device_gemm(
 /// `FERRIC_BLAS_THREADS` (its rayon-worker self-guard only fires when called
 /// FROM a worker) and raise the global count for the whole parallel region,
 /// which is the rayon×OpenBLAS oversubscription / worker-stack-overflow hazard
-/// documented in `ferric-core/src/blas_threads.rs`. This is the same bug that
-/// was just fixed in `ferric_cc::ccsd_t`.
+/// documented in `ferric-core/src/blas_threads.rs`. `ferric_cc::ccsd_t` avoids the same bug.
 ///
 /// **No per-worker allocation.** Workers write disjoint mutable views of the
 /// caller's existing `out`; nothing is allocated per band, so the memory story
@@ -1977,8 +1975,8 @@ mod tests {
     /// `permute_to_owned` must be bit-identical to ndarray's own serial
     /// `as_standard_layout().into_owned()`, at every thread count.
     ///
-    /// This is the invariant the CC/MP2 antisymmetrizers rely on. They used to
-    /// call ndarray's serial path directly; they now call this function, and
+    /// This is the invariant the CC/MP2 antisymmetrizers rely on. They call this
+    /// function rather than ndarray's serial path, and
     /// that substitution is only safe because the two produce *the same bytes*.
     /// A permutation is pure data movement — every output element is written
     /// exactly once, by one worker, with a value copied from one input element
