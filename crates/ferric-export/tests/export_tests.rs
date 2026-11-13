@@ -69,12 +69,10 @@ fn test_export_npz() {
 
 /// Real round-trip check (not just "the file exists"): write non-trivial
 /// mo_coeffs/orbital_energies, read the NPZ back with NpzReader, and assert
-/// the values match exactly. Catches silent-None-passthrough bugs like the
-/// one found 2026-07-18 (item #11 in the triage doc): the CLI's export_npz
-/// call site hardcoded `None` for mo_coeffs despite the library API
-/// supporting it, so mo_coeffs was never actually written by any real
-/// caller even though the synthetic library-level test above always
-/// "passed" (it only checked file existence, not content).
+/// the values match exactly. Catches silent-None-passthrough bugs, e.g. a CLI export_npz
+/// call site hardcoding `None` for mo_coeffs despite the library API
+/// supporting it, which a file-existence check (like the synthetic
+/// library-level test above) cannot see.
 #[test]
 fn test_export_npz_round_trip_values() {
     let mo_coeffs =
@@ -633,8 +631,7 @@ fn npz_export_writes_exactly_the_expected_key_set() {
 }
 
 /// EXACT value round-trip for EVERY field `export_npz` can write, including
-/// `pdep_eigenvectors` and `boys_coeffs` (which previously had no value check
-/// at all) and every nested charge/polarizability/dispersion field.
+/// `pdep_eigenvectors` and `boys_coeffs` (which have no other value check) and every nested charge/polarizability/dispersion field.
 ///
 /// Equality is EXACT (`assert_eq!` on f64 / `Array` values, not a tolerance):
 /// NPZ is a lossless binary container, so anything other than bit-identical
