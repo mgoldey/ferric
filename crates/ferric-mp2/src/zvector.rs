@@ -432,9 +432,16 @@ pub(crate) fn build_lagrangian(
 
 /// Build the t2-weighted RI amplitude object `x_ov[P, ia]`.
 ///
-/// `x_ov[P, ia] = Σ_{jb} (2 t_{ij,ab} − t_{ij,ba}) B^P_{jb}`, the same object the
-/// 3c/2c integral-response gradient builds. Exposed here so the Imat build and the
-/// gradient share one definition. `t2` layout is `t2[(i*nvir+a)*nov + j*nvir+b]`.
+/// `x_ov[P, ia] = Σ_{jb} (2 t_{ij,ab} − t_{ij,ba}) B^P_{jb}`, the object the
+/// Imat build and the 3c/2c integral-response gradient share. `t2` layout is
+/// `t2[(i*nvir+a)*nov + j*nvir+b]`.
+///
+/// One GEMM per occupied `i`: `X_i[P, a] = B_ov · TT_iᵀ` with
+/// `TT_i[a, jb] = 2 t_{ij,ab} − t_{ij,ba}`. Each `i` writes its own
+/// `(naux, nvir)` column band of `x_ov` and reads only its own slice of `t2`,
+/// so the bands run on the rayon pool with no shared accumulator. BLAS stays
+/// at the baseline count inside each band, so the result does not depend on
+/// the number of workers.
 pub(crate) fn build_x_ov(
     t2: &[f64],
     b_ov: &Array2<f64>,
@@ -442,23 +449,31 @@ pub(crate) fn build_x_ov(
     nvir: usize,
     naux: usize,
 ) -> Array2<f64> {
+    use ndarray::Axis;
+    use rayon::prelude::*;
     let nov = nocc * nvir;
     let mut x_ov = Array2::zeros((naux, nov));
-    for i in 0..nocc {
-        for a in 0..nvir {
-            let ia = i * nvir + a;
-            for jb in 0..nov {
-                let j = jb / nvir;
-                let b = jb % nvir;
-                let t_ij_ab = t2[(i * nvir + a) * nov + j * nvir + b];
-                let t_ij_ba = t2[(i * nvir + b) * nov + j * nvir + a];
-                let tt = 2.0 * t_ij_ab - t_ij_ba;
-                for p in 0..naux {
-                    x_ov[(p, ia)] += tt * b_ov[(p, jb)];
+    if nvir == 0 {
+        return x_ov;
+    }
+    // Chunk i of the column-chunked view is exactly columns
+    // [i*nvir, (i+1)*nvir); the indexed iterator's `enumerate` recovers i.
+    x_ov.axis_chunks_iter_mut(Axis(1), nvir)
+        .into_par_iter()
+        .enumerate()
+        .for_each(|(i, mut x_i_slot)| {
+            let mut tt_i = Array2::<f64>::zeros((nvir, nov));
+            for a in 0..nvir {
+                for j in 0..nocc {
+                    for b in 0..nvir {
+                        let t_ij_ab = t2[(i * nvir + a) * nov + j * nvir + b];
+                        let t_ij_ba = t2[(i * nvir + b) * nov + j * nvir + a];
+                        tt_i[(a, j * nvir + b)] = 2.0 * t_ij_ab - t_ij_ba;
+                    }
                 }
             }
-        }
-    }
+            x_i_slot.assign(&b_ov.dot(&tt_i.t()));
+        });
     x_ov
 }
 
@@ -753,6 +768,87 @@ pub fn build_relaxed_w_ao(
 mod tests {
     use super::*;
     use crate::rimp2::{compute_mp2_intermediates, RiMp2Config};
+
+    /// The definition of `x_ov` as a scalar sum over `jb`, accumulated in
+    /// ascending `jb` order: the oracle for [`build_x_ov`].
+    fn x_ov_scalar_definition(
+        t2: &[f64],
+        b_ov: &Array2<f64>,
+        nocc: usize,
+        nvir: usize,
+        naux: usize,
+    ) -> (Array2<f64>, Array2<f64>) {
+        let nov = nocc * nvir;
+        let mut x = Array2::zeros((naux, nov));
+        let mut abs_sum = Array2::zeros((naux, nov));
+        for i in 0..nocc {
+            for a in 0..nvir {
+                let ia = i * nvir + a;
+                for jb in 0..nov {
+                    let (j, b) = (jb / nvir, jb % nvir);
+                    let tt = 2.0 * t2[(i * nvir + a) * nov + j * nvir + b]
+                        - t2[(i * nvir + b) * nov + j * nvir + a];
+                    for p in 0..naux {
+                        x[(p, ia)] += tt * b_ov[(p, jb)];
+                        abs_sum[(p, ia)] += (tt * b_ov[(p, jb)]).abs();
+                    }
+                }
+            }
+        }
+        (x, abs_sum)
+    }
+
+    /// [`build_x_ov`] (pooled per-i GEMMs) against the scalar definition, on
+    /// amplitudes and fitted integrals with no symmetry, plus bitwise equality
+    /// across pool sizes.
+    ///
+    /// Bar, per element: both codes form the same `tt` values (the same
+    /// expression `2a − b`, rounded once) and sum the same `n = nov` products
+    /// in different orders. Each sum is within `γ_n·Σ|tt·B|` of the exact one
+    /// (Higham, Accuracy and Stability, eq. 3.5), `γ_n = n·u/(1 − n·u)`,
+    /// `u = eps/2`, so the two differ by at most `2γ_n·Σ|tt·B|`, below
+    /// `(n + 2)·eps·Σ|tt·B|` while `n·u < 1/2`.
+    #[test]
+    fn x_ov_gemm_matches_the_scalar_definition() {
+        let (nocc, nvir, naux) = (4, 7, 9);
+        let nov = nocc * nvir;
+        let mut state = 0x2545_f491_4f6c_dd1d_u64;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state >> 11) as f64 / (1u64 << 53) as f64 - 0.5
+        };
+        let t2: Vec<f64> = (0..nov * nov).map(|_| next()).collect();
+        let b_ov = Array2::from_shape_fn((naux, nov), |_| next());
+
+        let (want, abs_sum) = x_ov_scalar_definition(&t2, &b_ov, nocc, nvir, naux);
+        let got = build_x_ov(&t2, &b_ov, nocc, nvir, naux);
+        let bar_scale = (nov as f64 + 2.0) * f64::EPSILON;
+        for ((g, w), s) in got.iter().zip(want.iter()).zip(abs_sum.iter()) {
+            assert!(
+                (g - w).abs() <= bar_scale * s,
+                "x_ov {g} vs scalar {w}: |diff| {} > bar {}",
+                (g - w).abs(),
+                bar_scale * s
+            );
+        }
+
+        for threads in [1, 2, 5] {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap();
+            let on_pool = pool.install(|| build_x_ov(&t2, &b_ov, nocc, nvir, naux));
+            assert!(
+                on_pool
+                    .iter()
+                    .zip(got.iter())
+                    .all(|(a, b)| a.to_bits() == b.to_bits()),
+                "x_ov differs bitwise on a {threads}-thread pool"
+            );
+        }
+    }
     use ferric_core::basis;
     use ferric_core::mol::Molecule;
     use ferric_integrals::basis_bridge::PreparedBasis;

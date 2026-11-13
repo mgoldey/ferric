@@ -482,54 +482,10 @@ fn integral_response_gradient_3c2c_timed(
         )
     };
 
-    // Build X^P_{ia} = Σ_{jb} (2*t_{ij,ab} - t_{ij,ba}) * B^P_{jb} via a wide GEMM
-    // per i: X_i[P, a] = B_ov · TT_i^T where TT_i[a, jb] = 2 t_{ij,ab} - t_{ij,ba}.
-    // Replaces the per-element (P,i,a) scalar loop over (j,b): same FLOPs, BLAS3
-    // throughput. t2 layout is t2[(i*nvir+a)*nov + j*nvir+b] = t_{ij,ab}.
-    //
-    // Each i owns a disjoint (naux, nvir) column band of x_ov and reads only its
-    // own TT_i slice of t2, so the i-loop is embarrassingly parallel: fan it over
-    // rayon via axis_chunks_iter_mut on the column-chunked view (order-preserving,
-    // no shared accumulator — bit-identical to the serial loop regardless of
-    // thread count). BLAS stays serial inside each closure (OPENBLAS_NUM_THREADS=1).
+    // X^P_{ia} = Σ_{jb} (2 t_{ij,ab} − t_{ij,ba}) B^P_{jb}, one pooled GEMM per
+    // occupied i (the same object the Z-vector's Imat build uses).
     let xov_tok = acc.begin("resp: x_ov (per-i GEMMs)");
-    let mut x_ov = Array2::zeros((naux, nocc * nvir));
-    {
-        use ndarray::Axis;
-        use rayon::prelude::*;
-        // AxisChunksIterMut is an IndexedParallelIterator: chunk i is exactly
-        // columns [i*nvir, (i+1)*nvir), so `enumerate()` recovers i without any
-        // extra bookkeeping, and the disjoint-column writes make this
-        // order-independent/bit-identical to the serial loop.
-        x_ov.axis_chunks_iter_mut(Axis(1), nvir)
-            .into_par_iter()
-            .enumerate()
-            .for_each(|(i, mut x_i_slot)| {
-                // TT_i[a, jb] = 2 t_{ij,ab} - t_{ij,ba}
-                let mut tt_i = Array2::<f64>::zeros((nvir, nov));
-                for a in 0..nvir {
-                    for j in 0..nocc {
-                        for b in 0..nvir {
-                            let jb = j * nvir + b;
-                            let t_ij_ab = t2[(i * nvir + a) * nov + j * nvir + b];
-                            let t_ij_ba = t2[(i * nvir + b) * nov + j * nvir + a];
-                            tt_i[(a, jb)] = 2.0 * t_ij_ab - t_ij_ba;
-                        }
-                    }
-                }
-                // X_i[P, a] = Σ_{jb} B_ov[P, jb] · TT_i[a, jb] = B_ov · TT_i^T  (naux, nvir)
-                let x_i = inter.b_ov.dot(&tt_i.t());
-                x_i_slot.assign(&x_i);
-            });
-    }
-
-    // The 3-center DERIVATIVE integrals d(P|μν)/dR are RAW (undressed) 3-center
-    // integrals, but the fitted amplitudes `x_ov` are dressed with V^{-1/2} on the
-    // aux leg (b_ov = V^{-1/2}(P|ov)). The energy `E = ½ Σ Γ B^P_ia B^P_jb` with
-    // `B = V^{-1/2}(Q|ia)` gives `dE/d(Q|ia)_raw = Σ_P V^{-1/2}_QP X^P_ia = y_ov`,
-    // so the 3-center contraction must use `y_ov = V^{-1/2}·x_ov`, NOT `x_ov`
-    // (verified element-by-element in test_3c_density_numerical: diff(y)≈8e-13,
-    // diff(x)≈1.4e-2). V^{-1/2} is symmetric so `v_inv_sqrt.t()` == `v_inv_sqrt`.
+    let x_ov = crate::zvector::build_x_ov(t2, &inter.b_ov, nocc, nvir, naux);
     acc.stop(xov_tok);
     let y_ov = acc.time("resp: y_ov = V^-1/2 x_ov", || {
         with_blas_threads(opt_in_blas_threads(), || inter.v_inv_sqrt.t().dot(&x_ov))
