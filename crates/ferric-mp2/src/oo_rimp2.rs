@@ -542,8 +542,7 @@ fn evaluate_point(
 /// arbitrary).
 ///
 /// The `b_full`/`t2` allocation is guarded by the CALLER, with
-/// `check_b_full_and_t2_alloc` and the pool charge, exactly as before this
-/// helper existed.
+/// `check_b_full_and_t2_alloc` and the pool charge.
 #[allow(clippy::too_many_arguments)]
 fn orbital_gradient_solver_frame(
     point: &OoPoint,
@@ -689,65 +688,30 @@ fn fock_response_gradient(
 /// `PAR_DENSITY_PAIRS_THRESHOLD` (ferric-scf/src/pairs.rs).
 const PAR_T2_ELEMENT_THRESHOLD: usize = 4096;
 
-/// Fail-fast pre-flight guard for the `(nov, nov)` t2/eri_ov_mat pair built by
-/// [`compute_t2_and_integrals`] / [`compute_t2_only`] every OO-MP2
-/// macro-iteration.
-///
-/// `compute_t2_and_integrals` returns (and its caller retains) BOTH the
-/// `eri_ov_mat` GEMM output and the `t2` buffer — two co-resident `nov²` f64
-/// arrays, not one. `compute_t2_only` only *retains* one (`eri_ov_mat` is
-/// local scratch dropped at the end of that call — see its doc comment) but
-/// still touches both at its momentary in-call peak, so the same two-buffer
-/// estimate is the safe (never-under-count) bound for both callers. At
-/// nocc≈60/nvir≈900 (nov≈54,000) this is `nov²·8·2 ≈ 46.6 GB` — the exact gap
-/// this guard closes (previously zero pre-flight check on this allocation,
-/// unlike the AO-tensor stage's `build_with_budget`).
-///
-/// `label` should identify the call site (e.g. "OO-RI-MP2 t2/eri_ov (iter
-/// N)"); `budget_bytes` is the already-resolved [`ferric_core::memory::resolve_budget_bytes`]
-/// value (callers resolve once per `oo_ri_mp2` invocation, not per iteration).
-fn check_t2_pair_alloc(
-    label: &str,
-    nocc: usize,
-    nvir: usize,
-    budget_bytes: usize,
-) -> Result<(), FerricError> {
-    let nov = nocc * nvir;
-    let peak = nov.saturating_mul(nov).saturating_mul(2).saturating_mul(8);
-    ferric_core::memory::check_alloc(
-        &format!("{label} (nocc={nocc}, nvir={nvir}; co-resident t2+eri_ov_mat (nov={nov})²)"),
-        peak,
-        budget_bytes,
-    )
-}
-
 /// Fail-fast pre-flight guard for the **full-MO** `b_full` tensor
 /// [`compute_b_full_mo_with`] builds each OO-MP2 macro-iteration, plus the
 /// co-resident `(nov, nov)` t2/eri_ov pair that follows it.
 ///
-/// # The gap this closes
+/// # What it charges
 ///
 /// `compute_b_full_mo_with` allocates a dense `(naux, nmo, nmo)` f64 tensor and
-/// carries NO guard of its own. At `naux=2200`/`nmo=960` that is ~16 GB — on
-/// its own larger than a typical budget. Two separate accounting mistakes let
-/// it through:
+/// carries no guard of its own (~16 GB at `naux=2200`/`nmo=960`). The
+/// gradient-intermediates guard ([`check_gradient_intermediates_alloc`])
+/// charges the slices extracted from `b_full` (`b_ov`, `b_vv`, `b_oo`), not the
+/// parent tensor, which stays live alongside them for the whole gradient
+/// evaluation. This guard charges the parent.
 ///
-/// * The caller's `check_t2_pair_alloc` ran AFTER `compute_b_full_mo_with`
-///   returned, so even the check that did exist could not refuse the job; the
-///   allocation had already happened.
-/// * Neither guard charged `b_full` at all. `check_t2_pair_alloc` charges the
-///   `nov²` pair, and `check_gradient_intermediates_alloc` charges the SLICES
-///   the gradient extracts out of `b_full` (`b_ov`, `b_vv`, `b_oo`, `b_diag`) —
-///   never the parent tensor those slices are cut from, which stays live
-///   alongside them for the whole gradient evaluation.
-///
-/// This charges `b_full` and the t2 pair together, because they ARE co-resident:
-/// `b_full` is built first and then passed to `compute_orbital_gradient` after
-/// `t2` exists. Callers must invoke it BEFORE `compute_b_full_mo_with`.
+/// The t2 pair is two `nov²` buffers: [`compute_t2_and_integrals`] holds the
+/// `(ia|jb)` GEMM output (returned, and kept by the caller) and the `t2`
+/// buffer filled from it, and at peak nothing else of size `nov²` is live.
+/// `b_full` is built first and passed to `compute_orbital_gradient` after `t2`
+/// exists, so all three are co-resident. At nocc≈60/nvir≈900 (nov≈54,000) the
+/// pair is `nov²·8·2 ≈ 46.6 GB`. Callers invoke this BEFORE
+/// `compute_b_full_mo_with`.
 ///
 /// `budget_bytes` is the already-resolved
-/// [`ferric_core::memory::resolve_budget_bytes`] value, same convention as
-/// [`check_t2_pair_alloc`]. Pure arithmetic: never allocates.
+/// [`ferric_core::memory::resolve_budget_bytes`] value, resolved once per
+/// `oo_ri_mp2` invocation. Pure arithmetic: never allocates.
 fn check_b_full_and_t2_alloc(
     label: &str,
     nocc: usize,
@@ -777,10 +741,6 @@ fn check_b_full_and_t2_alloc(
 ///   (naux×nocc²), `ooov` (nocc²×nov) and the `Γ` rows (nocc×naux·nvir).
 /// * [`fock_response_gradient`]: `P_oo`/`P_vv`, and eight nmo×nmo planes (`W`,
 ///   `C W Cᵀ`, `J`, `K`, `G`, `CᵀGC`, `F·W`, `W·F`).
-///
-/// The former `ovov` and `s_mat` (nov×nov each, ~23 GB apiece at
-/// nocc≈60/nvir≈900) and `b_diag` (naux×nmo) belonged to the removed RI
-/// orbital-energy-response term (defect F2) and are gone.
 fn gradient_intermediate_elems(nocc: usize, nvir: usize, naux: usize, nmo: usize) -> usize {
     let nov = nocc.saturating_mul(nvir);
     let aux_elems = naux.saturating_mul(
@@ -804,11 +764,10 @@ fn gradient_intermediate_elems(nocc: usize, nvir: usize, naux: usize, nmo: usize
 /// [`compute_orbital_gradient`] allocates unconditionally (see
 /// [`gradient_intermediate_elems`]). None of these is blocked, so the budget
 /// check has to happen up front. The co-resident t2 pair in the caller is guarded by
-/// [`check_t2_pair_alloc`] / [`check_b_full_and_t2_alloc`].
+/// [`check_b_full_and_t2_alloc`].
 ///
 /// `budget_bytes` is the already-resolved [`ferric_core::memory::resolve_budget_bytes`]
-/// value, threaded down from `oo_ri_mp2`'s once-per-call resolution — same
-/// convention as [`check_t2_pair_alloc`]. Pure arithmetic: never allocates.
+/// value, threaded down from `oo_ri_mp2`'s once-per-call resolution. Pure arithmetic: never allocates.
 fn check_gradient_intermediates_alloc(
     label: &str,
     nocc: usize,
@@ -885,82 +844,6 @@ pub fn compute_t2_and_integrals(
     }
 
     (t2, eri_ov)
-}
-
-/// Compute only the t2 amplitudes from the B tensor, without materializing the
-/// (ia|jb) integral array.
-///
-/// Identical numerics to [`compute_t2_and_integrals`] for its first return
-/// value, via the same wide-GEMM restructure (`b_flat^T @ b_flat`). The GEMM
-/// output (`eri_ov_mat`, one `nov²` buffer) is local scratch: it is read
-/// row-by-row to fill `t2` and dropped at the end of this call, never
-/// returned or retained by the caller. Peak transient footprint *inside this
-/// function* is momentarily ~2×`nov²` (`eri_ov_mat` + `t2` both resident
-/// during the fold) — up from the former scalar loop's ~1×`nov²` (`t2`
-/// alone, no GEMM buffer) — but the important axis for callers is *retained*
-/// memory after the call returns: [`compute_t2_and_integrals`] hands back and
-/// the caller keeps two live `nov²` buffers for the rest of its scope, while
-/// this function's caller keeps exactly one (`t2`); `eri_ov_mat` never
-/// escapes. Callers that discard the integrals (e.g. OSV/PNO construction in
-/// ferric-rpa) should still prefer this function for that reason — it is the
-/// post-call retained footprint, not the momentary in-call peak, that halves.
-/// Indexing matches: t2[ia*nov + jb], ia = i*nvir + a.
-///
-/// `memory_budget_bytes` gates the momentary co-resident `t2`+`eri_ov_mat`
-/// pair (see `check_t2_pair_alloc`) — `None` resolves via
-/// [`ferric_core::memory::resolve_budget_bytes`], matching every other
-/// budget-aware entry point in this crate. This function currently has no
-/// callers outside its own test (see the doc comment above for the intended
-/// ferric-rpa OSV/PNO use), so its signature is free to carry the guard
-/// directly rather than pushing it to a call site.
-pub fn compute_t2_only(
-    b_flat: &Array2<f64>,
-    eps: &[f64],
-    nocc: usize,
-    nvir: usize,
-    nocc_total: usize,
-    first_occ: usize,
-    _naux: usize,
-    memory_budget_bytes: Option<usize>,
-) -> Result<Vec<f64>, FerricError> {
-    check_t2_pair_alloc(
-        "OO-RI-MP2 compute_t2_only",
-        nocc,
-        nvir,
-        ferric_core::memory::resolve_budget_bytes(memory_budget_bytes),
-    )?;
-    let nov = nocc * nvir;
-    let eri_ov_mat = b_flat.t().dot(b_flat); // (nov, nov) transient, dropped at end of scope
-
-    let mut t2 = vec![0.0f64; nov * nov];
-
-    let fill_row = |ia: usize, t2_row: &mut [f64]| {
-        let i = ia / nvir;
-        let a = ia % nvir;
-        let eri_row = eri_ov_mat.row(ia);
-        for j in 0..nocc {
-            for b in 0..nvir {
-                let jb = j * nvir + b;
-                let denom = eps[first_occ + i] + eps[first_occ + j]
-                    - eps[nocc_total + a]
-                    - eps[nocc_total + b];
-                t2_row[jb] = eri_row[jb] / denom;
-            }
-        }
-    };
-
-    if nov * nov < PAR_T2_ELEMENT_THRESHOLD {
-        for ia in 0..nov {
-            fill_row(ia, &mut t2[ia * nov..(ia + 1) * nov]);
-        }
-    } else {
-        use rayon::prelude::*;
-        t2.par_chunks_mut(nov)
-            .enumerate()
-            .for_each(|(ia, row)| fill_row(ia, row));
-    }
-
-    Ok(t2)
 }
 
 /// Build the full relaxed 1-PDM for OO-MP2 in MO basis.
@@ -1201,8 +1084,8 @@ fn compute_orbital_gradient(
     let naux = b_full.shape()[0];
     let nmo = nocc_total + nvir;
     // Fail-fast guard on the dense intermediates the integral response and
-    // the Fock response allocate unconditionally (mirrors check_t2_pair_alloc
-    // on the caller's co-resident t2 pair).
+    // the Fock response allocate unconditionally (the caller's
+    // `check_b_full_and_t2_alloc` covers b_full and the t2 pair).
     check_gradient_intermediates_alloc(
         "OO-RI-MP2 gradient intermediates",
         nocc,
@@ -1946,54 +1829,8 @@ mod tests {
         assert_eq!((e_oo.dim(), e_vv.dim()), ((0, 0), (4, 4)));
     }
 
-    /// M4 memory-guard regression: `check_t2_pair_alloc` must fire (Err) at
-    /// the production-scale shape from the task's own motivating incident
-    /// (nocc≈60, nvir≈900 → nov≈54,000 → co-resident t2+eri_ov_mat ≈46.6 GB)
-    /// against a small configured budget, and the error message must name
-    /// both the estimated requirement and the configured budget in GB so an
-    /// operator can act on it without re-deriving the math.
-    #[test]
-    fn check_t2_pair_alloc_rejects_realistic_large_scale() {
-        let nocc = 60;
-        let nvir = 900;
-        let budget_bytes = ferric_core::memory::gib_to_bytes(1.0); // 1 GiB — tiny vs ~46.6 GB
-        let err = check_t2_pair_alloc("test large OO-MP2", nocc, nvir, budget_bytes).unwrap_err();
-        let msg = err.to_string();
-        // nov = 54,000; nov² = 2.916e9; ×2 buffers ×8 bytes = 46,656,000,000 B = 46.656 GB.
-        assert!(
-            msg.contains("46.6"),
-            "expected the ~46.6 GB estimate in the error message, got: {msg}"
-        );
-        assert!(
-            msg.contains("1.07 GB") || msg.contains("budget is 1."),
-            "expected the ~1 GiB configured budget in the error message, got: {msg}"
-        );
-    }
-
-    /// Companion to the rejection test: a small/typical system (water-scale,
-    /// nocc/nvir well within existing OO-MP2 test fixtures) must NOT be
-    /// rejected under the auto-resolved (or a generous explicit) budget —
-    /// critical since OO-MP2 is iterative and a wrong guard formula would
-    /// silently break every currently-passing convergence test by erroring
-    /// out before the first iteration completes.
-    #[test]
-    fn check_t2_pair_alloc_accepts_small_system() {
-        // Water/cc-pVDZ scale: nocc=5, nvir=19 (see test_oo_gradient_bit_identical_across_thread_counts).
-        let nocc = 5;
-        let nvir = 19;
-        // Generous explicit budget (1 GiB) -- nov=95, nov²·2·8 = 144,400 bytes, nowhere close.
-        let budget_bytes = ferric_core::memory::gib_to_bytes(1.0);
-        assert!(check_t2_pair_alloc("test small OO-MP2", nocc, nvir, budget_bytes).is_ok());
-        // Also must not reject under the real auto-resolved budget (None -> resolve_budget_bytes).
-        let auto_budget = ferric_core::memory::resolve_budget_bytes(None);
-        assert!(
-            check_t2_pair_alloc("test small OO-MP2 (auto budget)", nocc, nvir, auto_budget).is_ok()
-        );
-    }
-
-    /// Memory-guard regression for the gradient-intermediates guard (Finding 2
-    /// sibling of `check_t2_pair_alloc_rejects_realistic_large_scale`): at the
-    /// same production-scale shape (nocc=60, nvir=900 → nov=54,000; b_vv
+    /// Memory-guard regression for the gradient-intermediates guard at the
+    /// production-scale shape (nocc=60, nvir=900 → nov=54,000; b_vv
     /// alone is naux·nvir²·8 ≈ 19 GB at naux=3000, plus b_ov/b_oo and ooov)
     /// the guard must fire against a small budget, naming the label and the
     /// budget so an operator can act on it.
@@ -2038,81 +1875,8 @@ mod tests {
         .is_ok());
     }
 
-    /// `compute_t2_only`'s internal guard must likewise fire at large scale
-    /// and pass through at small scale — same estimate as
-    /// `check_t2_pair_alloc` (this function has no external callers to break,
-    /// so its signature carries the guard directly rather than pushing it to
-    /// a call site; see its doc comment).
-    #[test]
-    fn compute_t2_only_memory_guard_fires_at_large_scale_and_passes_small_scale() {
-        let (_mol, obs, dfbs, op, _bounds, rhf) = setup_h2();
-        let nbas = obs.nbasis();
-        let nocc_total = 1usize;
-        let nocc = nocc_total;
-        let first_occ = 0;
-        let nvir = nbas - nocc_total;
-        let naux = dfbs.nbasis();
-        let c = rhf.mos_r();
-        let ao = OoRiMp2AoTensors::build(&obs, &dfbs, op).unwrap();
-        let orb = OrbitalSpace::new(nocc, nvir, nocc_total, first_occ);
-        let h = oneelectron::hcore(&obs);
-        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-        let pool =
-            EnginePool::new(op, &obs, ferric_integrals::engine_pool::eri_precision()).unwrap();
-        let (_e_hf, f_ao, _) = compute_hf_energy(
-            &obs,
-            &bounds,
-            c,
-            nocc_total,
-            &h,
-            _mol.nuclear_repulsion(),
-            &pool,
-            ferric_core::memory::resolve_budget_bytes(None),
-        )
-        .unwrap();
-        let eps = orbital_energies(c, &f_ao);
-        let (_e, b_flat) = compute_rimp2_with_orbitals(&ao, c, &eps, &orb).unwrap();
-
-        // Small H2/cc-pVDZ scale must pass under a generous explicit budget.
-        let ok = compute_t2_only(
-            &b_flat,
-            &eps,
-            nocc,
-            nvir,
-            nocc_total,
-            first_occ,
-            naux,
-            Some(ferric_core::memory::gib_to_bytes(1.0)),
-        );
-        assert!(
-            ok.is_ok(),
-            "small-system compute_t2_only unexpectedly rejected: {:?}",
-            ok.err()
-        );
-
-        // A tiny budget must reject even this small system (proves the guard
-        // is actually wired into compute_t2_only, not a no-op).
-        let tiny_budget = 100usize; // 100 bytes -- far below even this tiny nov²
-        let err = compute_t2_only(
-            &b_flat,
-            &eps,
-            nocc,
-            nvir,
-            nocc_total,
-            first_occ,
-            naux,
-            Some(tiny_budget),
-        )
-        .unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("budget is"),
-            "expected a budget-shaped error message, got: {msg}"
-        );
-    }
-
     /// GEMM restructure (P6-residual) regression: `compute_t2_and_integrals`
-    /// and `compute_t2_only` must reproduce the original per-element scalar
+    /// must reproduce the original per-element scalar
     /// formula `eri_iajb = Σ_p b_flat[p,ia]·b_flat[p,jb]` exactly (to
     /// numerical noise) — this is the check that would catch a transposition
     /// bug in the `b_flat^T @ b_flat` GEMM reindexing that a same-shape
@@ -2148,7 +1912,7 @@ mod tests {
 
         let nov = nocc * nvir;
         // Reference: the original O(nov^2 * naux) scalar double-dot formula,
-        // reimplemented independently of compute_t2_and_integrals/compute_t2_only.
+        // reimplemented independently of compute_t2_and_integrals.
         let mut t2_ref = vec![0.0f64; nov * nov];
         let mut eri_ov_ref = vec![0.0f64; nov * nov];
         for i in 0..nocc {
@@ -2172,8 +1936,6 @@ mod tests {
 
         let (t2_gemm, eri_ov_gemm) =
             compute_t2_and_integrals(&b_flat, &eps, nocc, nvir, nocc_total, first_occ, naux);
-        let t2_only_gemm =
-            compute_t2_only(&b_flat, &eps, nocc, nvir, nocc_total, first_occ, naux, None).unwrap();
 
         let max_t2_diff = t2_ref
             .iter()
@@ -2185,11 +1947,6 @@ mod tests {
             .zip(eri_ov_gemm.iter())
             .map(|(r, g)| (r - g).abs())
             .fold(0.0, f64::max);
-        let max_t2_only_diff = t2_ref
-            .iter()
-            .zip(t2_only_gemm.iter())
-            .map(|(r, g)| (r - g).abs())
-            .fold(0.0, f64::max);
 
         assert!(
             max_t2_diff < 1e-12,
@@ -2198,10 +1955,6 @@ mod tests {
         assert!(
             max_eri_diff < 1e-12,
             "compute_t2_and_integrals eri_ov vs scalar formula maxdiff={max_eri_diff:.3e}"
-        );
-        assert!(
-            max_t2_only_diff < 1e-12,
-            "compute_t2_only vs scalar formula maxdiff={max_t2_only_diff:.3e}"
         );
     }
 
