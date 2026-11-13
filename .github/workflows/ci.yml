@@ -2776,3 +2776,82 @@ jobs:
           name: python-ext-coverage-lcov
           path: python-ext-coverage.lcov
           retention-days: 14
+
+  # ---------------------------------------------------------------------
+  # Mutation ledger (nightly + manual). scripts/check_anchor_mutations.py
+  # applies each testdata/mutations/*.patch to a scratch worktree of HEAD and
+  # requires the row's evidence test to fail on an ASSERTION; exit 1 when any
+  # row is stale (a patch that no longer applies, or a mutation its test no
+  # longer catches). BLOCKING: a red run means a Proven grade lost its
+  # seen-to-fail evidence.
+  #
+  # Why nightly and not a per-push tier: measured 2026-11-13 on the dev box
+  # (warm target), 15 rows took 18.4 min in one run (unpatched baselines
+  # 0.3-184 s per row, patched runs 15-79 s per row), and a changed
+  # production file such as rhf.rs reaches most rows. The runner builds in
+  # its own scratch target directory, so a push tier would pay a cold
+  # compile of the evidence binaries per push. The sync test
+  # mutation_ledger_matches_the_registry stays in the regular tier and
+  # catches a changed patch byte or a missing row on every push; this job
+  # catches the cases that test cannot see (a patch that stopped applying,
+  # an anchor test that stopped failing).
+  # ---------------------------------------------------------------------
+  anchor-mutations:
+    name: anchor mutation ledger (nightly)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 170
+    env:
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_DEV_STRIP: debuginfo
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_PROFILE_TEST_STRIP: debuginfo
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Free runner disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/share/swift /usr/local/share/boost \
+            "$AGENT_TOOLSDIRECTORY/CodeQL" 2>/dev/null || true
+          sudo docker image prune --all --force > /dev/null 2>&1 || true
+
+      - name: Install system dependencies
+        run: |
+          sudo grep -rlE 'dl\.google\.com' /etc/apt/sources.list /etc/apt/sources.list.d/ 2>/dev/null \
+            | xargs -r sudo rm -fv
+          sudo sed -i -E 's|^([^#].*dl\.google\.com.*)$|# \1|' /etc/apt/sources.list 2>/dev/null || true
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake g++ gfortran \
+            libeigen3-dev libopenblas-dev liblapack-dev pkg-config \
+            libxc-dev libboost-dev patchelf zstd
+
+      - name: Install libint2
+        run: scripts/install-libint.sh "$LIBINT2_PREFIX"
+
+      # RUST_PIN: same install step as slow-tests -- the action SHA is
+      # pinned, the Rust version floats on `stable` by design (see the
+      # "Install Rust toolchain" comment in build-and-test).
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch @ 2026-09-16
+
+      - name: Restore cargo cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-v3-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-v3-${{ runner.os }}-
+
+      - name: Check every ledger row
+        # `shell: bash` runs with pipefail, so the script's exit 1 survives tee.
+        shell: bash
+        env:
+          OPENBLAS_NUM_THREADS: "1"
+        run: |
+          python3 scripts/check_anchor_mutations.py \
+            --scratch "$RUNNER_TEMP/anchor-mutations" | tee -a "$GITHUB_STEP_SUMMARY"

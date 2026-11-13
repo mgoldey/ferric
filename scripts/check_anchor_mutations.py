@@ -23,6 +23,10 @@ variables. For each selected row this script:
    A compile error, any other panic, a crash or a timeout is rejected;
 6. removes the scratch worktree.
 
+Each printed report carries `baseline_s` and `mutate_s`, the wall seconds of that
+row's unpatched run (which includes the first compile of the shared target
+directory) and of its patched run (an incremental rebuild plus the test).
+
 With --write the result of every accepted row is written back to the ledger:
 the patch's sha256, the base commit, the failing test, the assertion location
 and the first line of its message. A selected row that is no longer accepted
@@ -45,6 +49,7 @@ import re
 import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -212,23 +217,31 @@ def check_rows(rows, repo, wt, base, args):
     the unpatched build is compiled once; then each patch runs on a reset
     tree."""
     reports = {r["anchor"]: precheck(r, repo) for r in rows}
+    seconds = {}
     live = [r for r in rows if reports[r["anchor"]] is None]
     if not args.no_baseline:
         for row in live:
+            t0 = time.monotonic()
             status, details = run_test(
                 args.cargo, wt, row, args.target_dir, args.timeout
             )
+            seconds[row["anchor"]] = {"baseline_s": round(time.monotonic() - t0, 1)}
             if status != "passed":
                 reports[row["anchor"]] = {"status": f"baseline {status}", **details}
     for row in live:
         if reports[row["anchor"]] is None:
+            t0 = time.monotonic()
             reports[row["anchor"]] = mutate(row, repo, wt, base, args)
+            seconds.setdefault(row["anchor"], {})["mutate_s"] = round(
+                time.monotonic() - t0, 1
+            )
     out = []
     for row in rows:
         r = {
             "anchor": row["anchor"],
             "patch_sha256": row.pop("_sha256"),
             **reports[row["anchor"]],
+            **seconds.get(row["anchor"], {}),
         }
         print(json.dumps(r), flush=True)
         out.append((row, r))
