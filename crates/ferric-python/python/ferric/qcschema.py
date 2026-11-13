@@ -25,8 +25,14 @@ Hartree, gradients in Hartree/Bohr. The geometry is used as given (no
 re-orientation), so the gradient is in the input frame. ``geometry`` may be
 flat (3N) or (N, 3).
 
-Drivers: ``energy`` and ``gradient``. Any other driver (``hessian``,
-``properties``) fails with ``unsupported_error``.
+Drivers: ``energy``, ``gradient`` and ``hessian``. Any other driver
+(``properties``) fails with ``unsupported_error``. ``hessian`` is the analytic
+Hessian (``run_frequencies(hessian="analytic")`` /
+``"analytic-moving-grid"``, never a finite difference) for ``hf`` / ``scf``
+(RHF for a singlet, UHF otherwise) and for closed-shell DFT; ``return_result``
+is the (3N, 3N) Cartesian Hessian in Hartree/Bohr^2 in the input frame. Any
+method or setting without an analytic Hessian (mp2, ccsd, open-shell DFT, an
+ECP...) fails with ``unsupported_error``.
 
 Methods (``model.method``, case-insensitive; ``model.basis`` is a bundled
 ferric basis name):
@@ -38,6 +44,10 @@ ferric basis name):
   ``"<basis>-ri"`` (ferric's bundled RI-fitting alias of the orbital basis,
   e.g. ``cc-pvdz`` -> ``cc-pvdz-ri``); an orbital basis with no such alias
   fails with ``input_error`` asking for ``auxbasis``.
+* ``ccsd`` and ``ccsd(t)``: closed-shell spin-adapted CC on an RHF reference
+  (``run_ccsd`` / ``run_ccsd_t``), auxiliary basis as for mp2. Energy driver
+  only: a gradient or Hessian request, or multiplicity > 1, fails with
+  ``unsupported_error``.
 * anything else is an XC functional name for closed-shell Kohn-Sham
   (``run_dft``). An unknown functional fails with ``input_error``. An
   open-shell KS request (multiplicity > 1) fails with ``unsupported_error``:
@@ -50,6 +60,11 @@ naming it. Values are passed to the ferric driver unchanged.
   ``integral_thresh``, ``level_shift``, ``k_builder``, ``df_j_aux``,
   ``df_k_aux``, ``ri_j_precision``, ``ri_k_precision``, ``memory_budget_gb``.
 * mp2: ``auxbasis``, ``frozen_core``, ``memory_budget_gb``.
+* ccsd / ccsd(t): ``auxbasis``, ``frozen_core``, ``memory_budget_gb``,
+  ``k_builder``, ``ladder``, ``scf_max_iter``, ``scf_energy_conv``,
+  ``scf_density_conv``.
+* hessian driver (hf and dft): ``max_iter``, ``energy_conv``, ``density_conv``,
+  ``df_j_aux``, ``df_k_aux``.
 * dft: ``max_iter``, ``energy_conv``, ``density_conv``, ``level_shift``,
   ``k_builder``, ``df_j_aux``, ``df_k_aux``, ``ri_j_precision``,
   ``ri_k_precision``, ``memory_budget_gb``, ``grid_radial``, ``grid_angular``,
@@ -68,10 +83,14 @@ echoed, not used.
 Output properties: ``return_energy``, ``return_gradient`` (gradient driver),
 ``scf_total_energy``, ``scf_iterations`` (SCF and DFT), ``scf_xc_energy``
 (DFT), ``mp2_correlation_energy`` and ``mp2_total_energy`` (mp2),
+``ccsd_correlation_energy`` / ``ccsd_total_energy`` (ccsd and ccsd(t)),
+``ccsd_prt_pr_correlation_energy`` / ``ccsd_prt_pr_total_energy`` (ccsd(t)),
+``return_hessian`` (hessian driver),
 ``nuclear_repulsion_energy`` and ``calcinfo_natom`` / ``nalpha`` / ``nbeta``;
 ``calcinfo_nbasis`` and ``calcinfo_nmo`` for SCF and DFT (the MP2 result does
-not expose the basis size). ``extras["ferric"]`` carries ``build`` (commit and
-dirty flag baked into the extension) and the validation ``certificate``.
+not expose the basis size). ``provenance["build"]`` is ``ferric.build_info()``
+(commit and dirty flag baked into the extension) and
+``extras["ferric"]["certificate"]`` is the result's validation certificate.
 
 ``protocols.wavefunction`` other than ``"none"`` fails with
 ``unsupported_error``; ferric does not serialise a wavefunction here.
@@ -115,7 +134,23 @@ _KEYWORDS = {
     "hf": _SCF_KEYS | {"diis_size", "integral_thresh"},
     "mp2": frozenset({"auxbasis", "frozen_core", "memory_budget_gb"}),
     "dft": _SCF_KEYS | {"grid_radial", "grid_angular", "grid_prune", "dispersion"},
+    "cc": frozenset(
+        {
+            "auxbasis",
+            "frozen_core",
+            "memory_budget_gb",
+            "k_builder",
+            "ladder",
+            "scf_max_iter",
+            "scf_energy_conv",
+            "scf_density_conv",
+        }
+    ),
 }
+_HESSIAN_KEYS = frozenset(
+    {"max_iter", "energy_conv", "density_conv", "df_j_aux", "df_k_aux"}
+)
+_CC_METHODS = ("ccsd", "ccsd(t)")
 
 
 class _QcError(Exception):
@@ -174,14 +209,11 @@ def _run(inp: Any) -> dict[str, Any]:
             f"schema_version {inp.get('schema_version')!r}: only version 1 is supported",
         )
     driver = inp.get("driver")
-    if driver not in ("energy", "gradient"):
-        kind = (
-            "unsupported_error"
-            if driver in ("hessian", "properties")
-            else "input_error"
-        )
+    if driver not in ("energy", "gradient", "hessian"):
+        kind = "unsupported_error" if driver == "properties" else "input_error"
         raise _QcError(
-            kind, f"driver {driver!r}: ferric.qcschema supports 'energy' and 'gradient'"
+            kind,
+            f"driver {driver!r}: ferric.qcschema supports 'energy', 'gradient' and 'hessian'",
         )
     model = inp.get("model")
     if not isinstance(model, dict) or "method" not in model:
@@ -201,22 +233,26 @@ def _run(inp: Any) -> dict[str, Any]:
     keywords = dict(inp.get("keywords") or {})
 
     method = str(model["method"]).lower()
-    family = "hf" if method in ("hf", "scf") else "mp2" if method == "mp2" else "dft"
-    unknown = sorted(set(keywords) - _KEYWORDS[family])
+    family = _family(method)
+    allowed = _HESSIAN_KEYS if driver == "hessian" else _KEYWORDS[family]
+    unknown = sorted(set(keywords) - allowed)
     if unknown:
         raise _QcError(
             "input_error",
-            f"unknown keyword(s) {unknown} for method {model['method']!r}; allowed: "
-            f"{sorted(_KEYWORDS[family])}",
+            f"unknown keyword(s) {unknown} for method {model['method']!r}"
+            f" with driver {driver!r}; allowed: {sorted(allowed)}",
         )
 
     mol, mult = _molecule(inp.get("molecule"))
     basis = _bundled(basis_name, "basis")
     want_grad = driver == "gradient"
     t0 = time.perf_counter()
-    result, props, ret = _dispatch(
-        family, method, mol, mult, basis, basis_name, keywords, want_grad
-    )
+    if driver == "hessian":
+        result, props, ret = _hessian(family, method, mol, mult, basis_name, keywords)
+    else:
+        result, props, ret = _dispatch(
+            family, method, mol, mult, basis, basis_name, keywords, want_grad
+        )
     wall = time.perf_counter() - t0
 
     nelec = mol.nelec()
@@ -232,14 +268,14 @@ def _run(inp: Any) -> dict[str, Any]:
         gradient = np.asarray(gradient, dtype=float)
         props["return_gradient"] = gradient.tolist()
         return_result: Any = gradient.tolist()
+    elif driver == "hessian":
+        return_result = ret["hessian"]
+        props["return_hessian"] = return_result
     else:
         return_result = ret["energy"]
 
     extras = dict(inp.get("extras") or {})
-    extras["ferric"] = {
-        "build": dict(ferric.build_info()),
-        "certificate": _plain(result.certificate),
-    }
+    extras["ferric"] = {"certificate": _plain(result.certificate)}
     out = copy.deepcopy(inp)
     out.update(
         {
@@ -253,6 +289,7 @@ def _run(inp: Any) -> dict[str, Any]:
                 "version": ferric.__version__,
                 "routine": f"ferric.qcschema.run:{family}",
                 "wall_time": wall,
+                "build": dict(ferric.build_info()),
             },
             "extras": extras,
             "stdout": None,
@@ -277,14 +314,7 @@ def _dispatch(family, method, mol, mult, basis, basis_name, keywords, want_grad)
     if family == "mp2":
         aux_name = kw.pop("auxbasis", None)
         if aux_name is None:
-            aux_name = f"{basis_name}-ri"
-            try:
-                aux = ferric.BasisSet.bundled(aux_name)
-            except ValueError as err:
-                raise _QcError(
-                    "input_error",
-                    f"no bundled RI basis {aux_name!r} for {basis_name!r}; pass keywords['auxbasis']",
-                ) from err
+            aux = _ri_basis(basis_name)
         else:
             aux = _bundled(aux_name, "auxbasis")
         result = ferric.run_rimp2(mol, basis, aux, **kw)
@@ -292,6 +322,8 @@ def _dispatch(family, method, mol, mult, basis, basis_name, keywords, want_grad)
         props["mp2_correlation_energy"] = result.mp2_corr
         props["mp2_total_energy"] = result.total_energy
         return result, props, {"energy": result.total_energy}
+    if family == "cc":
+        return _cc(method, mol, mult, basis, basis_name, kw, want_grad)
     if mult != 1:
         raise _QcError(
             "unsupported_error",
@@ -304,6 +336,99 @@ def _dispatch(family, method, mol, mult, basis, basis_name, keywords, want_grad)
     props["scf_total_energy"] = result.total_energy
     props["scf_xc_energy"] = result.e_xc
     return result, props, {"energy": result.total_energy}
+
+
+def _family(method):
+    if method in ("hf", "scf"):
+        return "hf"
+    if method == "mp2":
+        return "mp2"
+    return "cc" if method in _CC_METHODS else "dft"
+
+
+def _cc(method, mol, mult, basis, basis_name, kw, want_grad):
+    """Closed-shell CCSD / CCSD(T): the correlation energy is the driver's; the
+    reference energy is a separate ``run_rhf`` call with the same SCF controls
+    (``CcResult`` does not expose its internal reference)."""
+    if want_grad:
+        raise _QcError(
+            "unsupported_error", f"method {method!r}: ferric has no CC gradient"
+        )
+    if mult != 1:
+        raise _QcError(
+            "unsupported_error",
+            f"method {method!r} with multiplicity {mult}: ferric CC is closed-shell (RHF reference)",
+        )
+    aux_name = kw.pop("auxbasis", None)
+    if aux_name is None:
+        aux = _ri_basis(basis_name)
+    else:
+        aux = _bundled(aux_name, "auxbasis")
+    ref_kw = {"max_iter": "scf_max_iter", "energy_conv": "scf_energy_conv"}
+    ref_kw = {k: kw[v] for k, v in ref_kw.items() if v in kw}
+    if "scf_density_conv" in kw:
+        ref_kw["density_conv"] = kw["scf_density_conv"]
+    if "k_builder" in kw:
+        ref_kw["k_builder"] = kw["k_builder"]
+    if "memory_budget_gb" in kw:
+        ref_kw["memory_budget_gb"] = kw["memory_budget_gb"]
+    driver = ferric.run_ccsd_t if method == "ccsd(t)" else ferric.run_ccsd
+    result = driver(mol, basis, aux, **kw)
+    reference = ferric.run_rhf(mol, basis, **ref_kw)
+    _require_converged(reference, "run_rhf")
+    props: dict[str, Any] = {"scf_total_energy": reference.energy}
+    _scf_props(props, reference, mult)
+    e_ccsd_corr = result.correlation_energy
+    props["ccsd_correlation_energy"] = e_ccsd_corr
+    props["ccsd_total_energy"] = reference.energy + e_ccsd_corr
+    energy = props["ccsd_total_energy"]
+    if method == "ccsd(t)":
+        e_corr = e_ccsd_corr + result.t_correction
+        props["ccsd_prt_pr_correlation_energy"] = e_corr
+        props["ccsd_prt_pr_total_energy"] = reference.energy + e_corr
+        energy = props["ccsd_prt_pr_total_energy"]
+    return result, props, {"energy": energy}
+
+
+def _hessian(family, method, mol, mult, basis_name, keywords):
+    """Analytic Hessian through ``run_frequencies``; ``hessian="analytic"`` /
+    ``"analytic-moving-grid"`` never falls back to finite differences."""
+    # run_frequencies spells the SCF controls scf_<name> (the bare names warn).
+    kw = {
+        (f"scf_{k}" if k in ("max_iter", "energy_conv", "density_conv") else k): v
+        for k, v in keywords.items()
+    }
+    if family == "hf":
+        kw.update(reference="rhf" if mult == 1 else "uhf", hessian="analytic")
+    elif family == "dft" and mult == 1:
+        kw.update(xc=method, reference="rhf", hessian="analytic-moving-grid")
+    else:
+        raise _QcError(
+            "unsupported_error",
+            f"method {method!r} with multiplicity {mult}: ferric has no analytic Hessian",
+        )
+    try:
+        result = ferric.run_frequencies(mol, basis_name, **kw)
+    except ValueError as err:
+        if "analytic" in str(err).lower():
+            raise _QcError(
+                "unsupported_error", f"no analytic Hessian here: {err}"
+            ) from err
+        raise
+    props: dict[str, Any] = {"scf_total_energy": result.energy}
+    hessian = np.asarray(result.cartesian_hessian, dtype=float)
+    return result, props, {"energy": result.energy, "hessian": hessian.tolist()}
+
+
+def _ri_basis(basis_name):
+    aux_name = f"{basis_name}-ri"
+    try:
+        return ferric.BasisSet.bundled(aux_name)
+    except ValueError as err:
+        raise _QcError(
+            "input_error",
+            f"no bundled RI basis {aux_name!r} for {basis_name!r}; pass keywords['auxbasis']",
+        ) from err
 
 
 def _require_converged(result, what):

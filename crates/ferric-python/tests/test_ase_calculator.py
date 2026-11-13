@@ -4,6 +4,9 @@ Anchors:
 
 * Units: energy and forces equal the ferric driver's Hartree / Hartree-per-Bohr
   numbers times ``ase.units`` factors exactly (one multiplication each).
+* Every gradient-returning method (rhf, uhf, rohf, dft, rimp2, oo-rimp2) gives
+  forces equal to -gradient times the ase.units factor bit for bit, and
+  ``calc.results["certificate"]`` equals the direct result's certificate.
 * Forces against ASE's own central finite differences of the calculator's
   energy (``ase.calculators.fd``, eps = 1e-3 Angstrom = 1.89e-3 Bohr).
   Bar: the derivation in test_python_gradients.py (h^2 |E'''| / 6 +
@@ -70,6 +73,49 @@ def test_energy_and_forces_are_the_driver_numbers_in_ase_units():
     assert np.array_equal(forces, -r.gradient() * (Hartree / Bohr))
     cert = atoms.calc.results["certificate"]
     assert cert["capability"] == "rhf" and cert == r.certificate
+
+
+def _direct(calc, mol, bs):
+    """The ferric driver call ``FerricCalculator`` makes for `calc`, by hand."""
+    method = calc["method"]
+    scf = {"ri_j_precision": "f64", "with_gradient": True, **TIGHT}
+    if method == "dft":
+        return ferric.run_dft(mol, bs, functional=calc["functional"], **scf)
+    if method in ("rimp2", "oo-rimp2"):
+        driver = ferric.run_rimp2 if method == "rimp2" else ferric.run_oo_rimp2
+        aux = ferric.BasisSet.bundled(calc["auxbasis"])
+        return driver(mol, bs, aux, with_gradient=True, **calc["options"])
+    return getattr(ferric, f"run_{method}")(mol, bs, **scf)
+
+
+@pytest.mark.parametrize(
+    "calc",
+    [
+        {"method": "rhf"},
+        {"method": "uhf", "charge": 1, "multiplicity": 2},
+        {"method": "rohf", "charge": 1, "multiplicity": 2},
+        {"method": "dft", "functional": "PBE"},
+        {"method": "rimp2", "auxbasis": "cc-pvdz-ri", "options": {}},
+        {"method": "oo-rimp2", "auxbasis": "cc-pvdz-ri", "options": {}},
+    ],
+    ids=["rhf", "uhf", "rohf", "pbe", "rimp2", "oo-rimp2"],
+)
+def test_every_gradient_driver_gives_forces_and_a_certificate_bitwise(calc):
+    calc = dict(calc)
+    calc.setdefault("options", TIGHT)
+    atoms = _water(basis="6-31g", **calc)
+    forces = atoms.get_forces()
+    mol = ferric.Molecule.from_arrays(
+        ["O", "H", "H"],
+        WATER_POS,
+        charge=calc.get("charge", 0),
+        multiplicity=calc.get("multiplicity", 1),
+    )
+    direct = _direct(calc, mol, ferric.BasisSet.bundled("6-31g"))
+    assert np.array_equal(forces, -direct.gradient() * (Hartree / Bohr))
+    assert "certificate" in atoms.calc.results
+    cert = atoms.calc.results["certificate"]
+    assert cert == direct.certificate and cert["capability"]
 
 
 @pytest.mark.parametrize(

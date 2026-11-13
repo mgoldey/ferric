@@ -14,12 +14,22 @@ Anchors:
   1e-10 Ha.
 * QCElemental round trip (skipped without it): an AtomicInput it builds is
   accepted and the output parses as an AtomicResult, gradient shape (natom, 3).
+* ccsd / ccsd(t) / hessian routes equal the direct driver calls bit for bit
+  (correlation energies, total = reference + correlation, the Cartesian
+  Hessian), and the hessian driver's rows are the central differences of
+  ``run`` gradients at +-h/2 Bohr, bar FD_BAR = 2e-6 (truncation
+  (h/2)^2 |E^(4)| / 6 + delta_g / (h/2)). Measured max deviation 2.11e-6 at
+  h = 1.89e-3 and 5.28e-7 at h/2: a factor 4.0, i.e. pure h^2 truncation, so
+  the analytic Hessian is the limit and the bar has ~4x margin.
+* Certificate under ``extras["ferric"]["certificate"]`` equals the direct
+  result's certificate; the build is ``provenance["build"]``.
 * Refusals return ``success=False`` with a stable ``error_type`` and never raise.
 """
 
 from __future__ import annotations
 
 import itertools
+import json
 
 import numpy as np
 import pytest
@@ -160,9 +170,13 @@ def test_properties_and_provenance():
     assert p["scf_iterations"] >= 1
     assert out["provenance"]["creator"] == "ferric"
     assert out["provenance"]["version"] == ferric.__version__
+    assert set(out["provenance"]["build"]) >= {"commit", "dirty"}
+    assert out["provenance"]["build"] == dict(ferric.build_info())
     fx = out["extras"]["ferric"]
-    assert set(fx["build"]) >= {"commit", "dirty"}
+    assert "certificate" in fx, "the certificate is dropped from extras"
     assert fx["certificate"]["capability"] == "rhf"
+    direct = ferric.run_rhf(_mol(), _bs("sto-3g"))
+    assert fx["certificate"] == json.loads(json.dumps(direct.certificate))
 
 
 def _failed(out, error_type, needle=""):
@@ -180,7 +194,41 @@ def test_refusals_have_stable_error_types():
         "input_error",
         "diis_size",
     )
-    _failed(qcs.run(_inp(driver="hessian")), "unsupported_error", "hessian")
+    _failed(qcs.run(_inp(driver="properties")), "unsupported_error", "properties")
+    # No analytic Hessian: mp2, CC, open-shell Kohn-Sham.
+    _failed(
+        qcs.run(_inp(method="mp2", basis="cc-pvdz", driver="hessian")),
+        "unsupported_error",
+        "analytic Hessian",
+    )
+    _failed(
+        qcs.run(_inp(method="ccsd", basis="cc-pvdz", driver="hessian")),
+        "unsupported_error",
+        "analytic Hessian",
+    )
+    _failed(
+        qcs.run(_inp(method="pbe", driver="hessian", molecular_charge=1)),
+        "unsupported_error",
+        "analytic Hessian",
+    )
+    # CC: no gradient, closed shell only.
+    _failed(
+        qcs.run(_inp(method="ccsd", basis="cc-pvdz", driver="gradient")),
+        "unsupported_error",
+        "gradient",
+    )
+    _failed(
+        qcs.run(_inp(method="ccsd(t)", basis="cc-pvdz", molecular_charge=1)),
+        "unsupported_error",
+        "closed-shell",
+    )
+    # A keyword valid for ccsd is not valid for hf, nor for the hessian driver.
+    _failed(qcs.run(_inp(keywords={"ladder": "ri"})), "input_error", "ladder")
+    _failed(
+        qcs.run(_inp(driver="hessian", keywords={"grid_radial": 50, "max_iter": 9})),
+        "input_error",
+        "grid_radial",
+    )
     _failed(qcs.run(_inp(driver="optimization")), "input_error")
     _failed(
         qcs.run(_inp(method="pbe", molecular_charge=1, molecular_multiplicity=2)),
@@ -232,9 +280,113 @@ def test_qcelemental_round_trip():
 
     failed = qcs.run(
         AtomicInput(
-            molecule=mol, driver="hessian", model={"method": "hf", "basis": "sto-3g"}
+            molecule=mol, driver="properties", model={"method": "hf", "basis": "sto-3g"}
         ).dict()
     )
     from qcelemental.models import FailedOperation
 
     assert FailedOperation(**failed).error.error_type == "unsupported_error"
+
+
+def test_cc_routes_equal_the_direct_calls_bitwise():
+    kw = {"auxbasis": "cc-pvdz-ri", "frozen_core": 1}
+    mol, bs, aux = _mol(), _bs("6-31g"), _bs("cc-pvdz-ri")
+    ref = ferric.run_rhf(mol, bs)
+    for method, driver in (("ccsd", ferric.run_ccsd), ("ccsd(t)", ferric.run_ccsd_t)):
+        out = qcs.run(_inp(method=method, basis="6-31g", keywords=kw))
+        assert out["success"] is True, out
+        direct = driver(mol, bs, aux, frozen_core=1)
+        p = out["properties"]
+        assert p["ccsd_correlation_energy"] == direct.correlation_energy
+        assert p["scf_total_energy"] == ref.energy
+        assert p["ccsd_total_energy"] == ref.energy + direct.correlation_energy
+        if method == "ccsd":
+            assert out["return_result"] == p["ccsd_total_energy"]
+            assert "ccsd_prt_pr_total_energy" not in p
+        else:
+            e_corr = direct.correlation_energy + direct.t_correction
+            assert p["ccsd_prt_pr_correlation_energy"] == e_corr
+            assert out["return_result"] == ref.energy + e_corr
+            assert direct.t_correction != 0.0
+        assert out["return_result"] == p["return_energy"]
+        cert = out["extras"]["ferric"]["certificate"]
+        assert cert == json.loads(json.dumps(direct.certificate))
+        assert cert["capability"] == method
+        assert out["provenance"]["routine"] == "ferric.qcschema.run:cc"
+
+
+def test_hessian_routes_equal_the_direct_calls_bitwise():
+    closed = qcs.run(_inp(driver="hessian"))
+    assert closed["success"] is True, closed
+    hess = np.asarray(closed["return_result"])
+    assert hess.shape == (9, 9)
+    direct = ferric.run_frequencies(
+        _mol(), "sto-3g", reference="rhf", hessian="analytic"
+    )
+    assert direct.hessian_source == "analytic"
+    assert hess.tolist() == np.asarray(direct.cartesian_hessian).tolist()
+    assert closed["properties"]["return_hessian"] == closed["return_result"]
+    assert closed["properties"]["return_energy"] == direct.energy
+    cert = closed["extras"]["ferric"]["certificate"]
+    assert cert == json.loads(json.dumps(direct.certificate))
+    assert cert["capability"].startswith("frequencies")
+
+    # Open shell: UHF at multiplicity 2.
+    open_ = qcs.run(_inp(driver="hessian", molecular_charge=1))
+    assert open_["success"] is True, open_
+    du = ferric.run_frequencies(
+        _mol(charge=1, multiplicity=2),
+        "sto-3g",
+        reference="uhf",
+        multiplicity=2,
+        hessian="analytic",
+    )
+    assert open_["return_result"] == np.asarray(du.cartesian_hessian).tolist()
+
+    # Closed-shell Kohn-Sham: the moving-grid analytic Hessian.
+    ks = qcs.run(_inp(method="pbe", basis="6-31g", driver="hessian"))
+    assert ks["success"] is True, ks
+    dk = ferric.run_frequencies(
+        _mol(), "6-31g", xc="pbe", reference="rhf", hessian="analytic-moving-grid"
+    )
+    assert dk.hessian_source == "analytic-moving-grid"
+    assert ks["return_result"] == np.asarray(dk.cartesian_hessian).tolist()
+
+
+def test_hessian_is_the_finite_difference_of_the_gradient_in_the_input_frame():
+    kw = {**TIGHT, "ri_j_precision": "f64"}
+    h = H / 2
+    hess = np.asarray(qcs.run(_inp(driver="hessian", keywords=TIGHT))["return_result"])
+    xyz = np.asarray(WATER_BOHR)
+    fd = np.zeros((9, 9))
+    for k in range(9):
+        g = []
+        for sign in (+1, -1):
+            geo = xyz.copy()
+            geo[k] += sign * h
+            out = qcs.run(_inp(driver="gradient", geometry=geo, keywords=kw))
+            g.append(np.asarray(out["return_result"]).ravel())
+        fd[k] = (g[0] - g[1]) / (2 * h)
+    # Row k is d(gradient)/d(coordinate k): a frame or ordering slip fails here.
+    assert np.abs(fd - hess).max() < FD_BAR
+    assert np.abs(hess - hess.T).max() < FD_BAR
+
+
+def test_qcelemental_validates_the_new_routes():
+    pytest.importorskip("qcelemental", reason="QCElemental is optional")
+    from qcelemental.models import AtomicResult
+
+    for out in (
+        qcs.run(
+            _inp(method="ccsd", basis="6-31g", keywords={"auxbasis": "cc-pvdz-ri"})
+        ),
+        qcs.run(_inp(driver="hessian")),
+        qcs.run(_inp(driver="gradient", molecular_charge=1)),
+    ):
+        assert out["success"] is True, out
+        res = AtomicResult(**out)
+        assert res.success is True
+        assert res.provenance.creator == "ferric"
+        assert res.extras["ferric"]["certificate"]["capability"]
+    hess = AtomicResult(**qcs.run(_inp(driver="hessian")))
+    assert np.asarray(hess.return_result).shape in ((9, 9), (81,))
