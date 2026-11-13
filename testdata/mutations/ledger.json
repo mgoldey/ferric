@@ -237,7 +237,15 @@
       "mutation": "laplace.rs: SosMp2Config::default() sets c_os to 1.0 instead of the Jung/Head-Gordon 1.3.",
       "evidence": "crates/ferric-mp2/tests/validation_sos_mp2.rs",
       "test": "sos_mp2_h2o_ccpvdz_vs_pyscf_dfmp2",
-      "result": null
+      "result": {
+        "patch_sha256": "81b7d371c565f36b464c804c98370c05992da9e82f1ed237d415dee6b49cedce",
+        "base_commit": "c919fef009af42e4efdea9f88ca5d2a8fba28dcd",
+        "failing_test": "sos_mp2_h2o_ccpvdz_vs_pyscf_dfmp2",
+        "assertion": "crates/ferric-mp2/tests/validation_sos_mp2.rs:303",
+        "message": "assertion `left == right` failed: h2o/cc-pvdz: default c_os",
+        "baseline_run": true,
+        "date": "2026-11-13"
+      }
     }
   ]
 }
