@@ -196,8 +196,10 @@ fn load_dm(path: &str) -> Res<Array2<f64>> {
     std::fs::File::open(path)?.read_to_end(&mut buf)?;
     let n = u64::from_le_bytes(buf[0..8].try_into()?) as usize;
     let vals: Vec<f64> = buf[8..]
-        .chunks_exact(8)
-        .map(|c| f64::from_le_bytes(c.try_into().unwrap()))
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .map(|c| f64::from_le_bytes(*c))
         .collect();
     Ok(Array2::from_shape_vec((n, n), vals)?)
 }
