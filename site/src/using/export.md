@@ -1,7 +1,7 @@
-# Export: cube files and NPZ bundles
+# Export: cube files, Molden files and NPZ bundles
 
-ferric writes volumetric data as Gaussian cube files and per-molecule
-property bundles as compressed NumPy `.npz` archives. The Python functions
+ferric writes volumetric data as Gaussian cube files, orbitals as Molden
+files and per-molecule property bundles as compressed NumPy `.npz` archives. The Python functions
 evaluate basis functions, the density and orbitals at arbitrary points; the
 CLI `[rpa]` section writes the NPZ bundle and PDEP eigenpotential cubes. The
 array schema is in `crates/ferric-export/theory.md`.
@@ -84,6 +84,84 @@ print(ferric.eval_mo_on_points(water, bs, rhf, [4], pts).shape)
 [10.2392  0.8103]
 (2, 7)
 (2, 1)
+```
+
+## Molden files
+
+`ferric.molden.write(path, mol, bs, result)` writes the geometry, basis and
+molecular orbitals of a `run_rhf`, `run_dft`/`run_ksdft`, `run_uhf` or
+`run_rohf` result as a Molden file, which Avogadro, Jmol, IBOView, Multiwfn,
+JANPA and PySCF (`pyscf.tools.molden.load`) read. `mol` and `bs` are the
+molecule and orbital basis the SCF ran on.
+
+<!-- doctest -->
+```python
+from ferric import molden
+
+molden.write("water.molden", water, bs, rhf)
+text = open("water.molden").read()
+print(text.count("Spin= Alpha"), text.count("Occup= 2.0\n"))
+
+oh = ferric.Molecule.from_xyz_string("2\nOH\nO 0 0 0\nH 0 0 0.97\n", 0, 2)
+uhf = ferric.run_uhf(oh, bs)
+molden.write("oh.molden", oh, bs, uhf)
+text = open("oh.molden").read()
+print(text.count("Spin= Alpha"), text.count("Spin= Beta"))
+```
+
+```text
+7 5
+6 6
+```
+
+What the file holds:
+
+- Coordinates in Bohr (`[Atoms] AU`). Every number is written so that it
+  reads back exactly (17 significant digits).
+- Every orbital with its energy (Hartree) and occupation. A closed-shell
+  result has one set with occupations 2 and 0. An open-shell result has the
+  α set, then the β set. ROHF writes its one MO set twice, with the α and the
+  β occupations. Occupations are read off the result's density,
+  `diag(Cᵀ S D S C)` (written as the integer when within 1e-8 of one), so a
+  MOM state is written as it was converged.
+- Shell types: `[5D7F]`, `[5D10F]` or `[7F]` for spherical d and/or f shells,
+  `[9G]` for spherical g, nothing for Cartesian. Molden has one setting per
+  angular momentum and stops at g, so a basis that mixes spherical and
+  Cartesian shells of one l, or has h shells, raises `ValueError`. The
+  6-31G family's Cartesian d shells are written as 6D.
+- **ECPs.** Molden has no standard ECP block. The file has the valence
+  basis and orbitals, the charge column of `[Atoms]` is `Z` minus the core
+  electrons, and a `[core]` section lists the core electrons per atom (the
+  Molden2AIM extension that PySCF and Multiwfn read). Other readers skip
+  `[core]` and see a valence-only molecule.
+- **Ghost atoms** are written as atoms of their element with charge 0, since
+  their basis functions carry orbital amplitude. Viewers draw them as atoms,
+  and PySCF, which ignores the charge column, loads them as real atoms; the
+  orbitals and density are unaffected.
+
+The writer converts ferric's AO conventions (libint2's component order, and
+Cartesian components sharing the normalisation of x^l) to Molden's (m = 0,
++1, -1, ... for spherical shells, a fixed component list for Cartesian ones,
+each component normalised). It is checked against PySCF's reader: for RHF,
+KS, UHF and ROHF results over s to g shells, spherical and Cartesian, with
+an ECP and with a ghost atom, the orbitals and density PySCF evaluates from
+the file match ferric's to 1e-10 of their largest value
+(`crates/ferric-python/tests/test_molden.py`).
+
+`ferric.molden.orbitals(mol, bs, result)` returns the orbital sets the file
+holds (coefficients in ferric's AO order, energies, occupations), and
+`UhfResult` exposes them per spin as `mo_coefficients_alpha()`,
+`mo_coefficients_beta()`, `orbital_energies_alpha()`/`_beta()` and
+`occupations_alpha()`/`_beta()`.
+
+Formatted checkpoints (`.fchk`) and AIM wavefunctions (`.wfx`) are not
+written by ferric. [IOData](https://github.com/theochem/iodata) converts a
+Molden file to either:
+
+```python
+from iodata import load_one, dump_one
+
+dump_one(load_one("water.molden"), "water.fchk")
 ```
 
 ## NPZ bundles from the CLI

@@ -354,6 +354,11 @@ impl PyBasisSet {
             .map(|s| (s.l, s.pure, s.exponents.clone(), s.coefficients.clone()))
             .collect())
     }
+    /// Core electrons this basis's ECP replaces on element `z`; 0 when the
+    /// basis carries no ECP for `z` (as the SCF applies it to non-ghost atoms).
+    fn ecp_core_electrons(&self, z: i32) -> i32 {
+        self.inner.ecp_for_element(z).map_or(0, |d| d.n_core)
+    }
     /// Load a basis set from a Basis Set Exchange JSON file (the format of
     /// ferric's bundled sets). Contractions are renormalised to unit
     /// self-overlap exactly as for the bundled sets. Raises `ValueError` on
@@ -3867,6 +3872,10 @@ struct PyUhfResult {
     density_beta_data: Array2<f64>,
     eps_alpha_data: Vec<f64>,
     eps_beta_data: Vec<f64>,
+    mos_alpha_data: Array2<f64>,
+    mos_beta_data: Array2<f64>,
+    occ_alpha_data: Vec<f64>,
+    occ_beta_data: Vec<f64>,
     cosx_final: Option<ferric_scf::cosx_k::CosxFinalPass>,
     guess_basis_report: Option<ferric_scf::basis2::GuessBasisReport>,
     precision: ferric_core::gpu::provenance::PrecisionRecord,
@@ -3877,19 +3886,49 @@ struct PyUhfResult {
     gradient_data: Option<Array2<f64>>,
 }
 
-/// The open-shell result both `run_uhf` and `run_rohf` return. ROHF leaves
-/// `density_beta`/`eps_beta` unset only when the solve has no β channel, so
-/// the fallbacks keep the accessors total.
+/// Occupation number of each MO column of `c` in the spin density `d`:
+/// `diag(Cᵀ S D S C)`. With `Cᵀ S C = 1` this recovers `n` from
+/// `D = C diag(n) Cᵀ` whatever produced the occupation (aufbau, MOM).
+fn mo_occupations(s: &Array2<f64>, c: &Array2<f64>, d: &Array2<f64>) -> Vec<f64> {
+    let sc = s.dot(c);
+    let dsc = d.dot(&sc);
+    (0..c.ncols())
+        .map(|k| sc.column(k).dot(&dsc.column(k)))
+        .collect()
+}
+
+/// The β MO coefficients, orbital energies and density of an open-shell
+/// solve. ROHF has one MO set, so its β orbitals and energies are the α ones;
+/// the density falls back to the total only when there is no β channel.
+fn beta_channel(r: &ScfResult) -> (Array2<f64>, Vec<f64>, Array2<f64>) {
+    (
+        r.mos_beta.clone().unwrap_or_else(|| r.mos_alpha.clone()),
+        r.eps_beta.clone().unwrap_or_else(|| r.eps_alpha.clone()),
+        r.density_beta
+            .clone()
+            .unwrap_or_else(|| r.density_total.clone()),
+    )
+}
+
+/// The open-shell result both `run_uhf` and `run_rohf` return, with the β
+/// channel from [`beta_channel`] and per-spin occupations from
+/// [`mo_occupations`].
 impl PyUhfResult {
     fn from_scf(
         r: ScfResult,
         mol: &Molecule,
         config: &RhfConfig,
-        basis: &ferric_core::basis::BasisSet,
+        prep: &PreparedBasis,
         fock_hooked: bool,
     ) -> Self {
-        let certificate_data = scf_kind_certificate(mol, &r, config, basis, fock_hooked);
+        let certificate_data = scf_kind_certificate(mol, &r, config, prep.basis_set(), fock_hooked);
+        let s = ferric_integrals::oneelectron::overlap(prep);
+        let (mos_beta_data, eps_beta_data, density_beta_data) = beta_channel(&r);
         PyUhfResult {
+            occ_alpha_data: mo_occupations(&s, &r.mos_alpha, &r.density_alpha),
+            occ_beta_data: mo_occupations(&s, &mos_beta_data, &density_beta_data),
+            mos_alpha_data: r.mos_alpha.clone(),
+            mos_beta_data,
             one_step_energy_drop_data: r.convergence.and_then(|c| c.one_step_energy_drop),
             stationarity_tol_data: scf_stationarity_tol(&r),
             certificate_data,
@@ -3897,13 +3936,13 @@ impl PyUhfResult {
             converged: r.converged,
             iterations: r.iterations,
             computed_quartets: r.computed_quartets,
-            density_beta_data: r.density_beta.unwrap_or_else(|| r.density_total.clone()),
+            density_beta_data,
             density_alpha_data: r.density_alpha,
             cosx_final: r.cosx_final,
             guess_basis_report: r.guess_basis,
             precision: r.precision,
             eps_alpha_data: r.eps_alpha,
-            eps_beta_data: r.eps_beta.unwrap_or_default(),
+            eps_beta_data,
             gradient_data: None,
         }
     }
@@ -3968,6 +4007,22 @@ impl PyUhfResult {
     }
     fn orbital_energies_beta<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
         PyArray1::from_vec(py, self.eps_beta_data.clone())
+    }
+    /// α MO coefficients (n_bf x n_mo), column k = α MO k, ascending energy.
+    fn mo_coefficients_alpha<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        PyArray2::from_array(py, &self.mos_alpha_data)
+    }
+    /// β MO coefficients (n_bf x n_mo); the α matrix for ROHF (one MO set).
+    fn mo_coefficients_beta<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        PyArray2::from_array(py, &self.mos_beta_data)
+    }
+    /// α occupation of each α MO column, `diag(Cᵀ S D_α S C)`.
+    fn occupations_alpha<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        PyArray1::from_vec(py, self.occ_alpha_data.clone())
+    }
+    /// β occupation of each β MO column, `diag(Cᵀ S D_β S C)`.
+    fn occupations_beta<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        PyArray1::from_vec(py, self.occ_beta_data.clone())
     }
     fn __repr__(&self) -> String {
         format!(
@@ -4158,7 +4213,7 @@ fn run_uhf(
             scf_gradient(py, k, &emol, &prep, &basis_set.inner, &bounds, &config, &r)
         })
         .transpose()?;
-    let mut result = PyUhfResult::from_scf(r, &emol, &config, &basis_set.inner, fock_hooked);
+    let mut result = PyUhfResult::from_scf(r, &emol, &config, &prep, fock_hooked);
     result.gradient_data = gradient;
     Ok(result)
 }
@@ -4295,7 +4350,7 @@ fn run_rohf(
             scf_gradient(py, k, &emol, &prep, &basis_set.inner, &bounds, &config, &r)
         })
         .transpose()?;
-    let mut result = PyUhfResult::from_scf(r, &emol, &config, &basis_set.inner, fock_hooked);
+    let mut result = PyUhfResult::from_scf(r, &emol, &config, &prep, fock_hooked);
     result.gradient_data = gradient;
     Ok(result)
 }

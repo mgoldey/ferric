@@ -100,7 +100,11 @@ makes, such as `FrequencyResult.normal_modes`, and are not supported.
   between ferric's functions (`eval_ao_on_points`) and a line-by-line port of
   Avogadro's evaluator, and it refuses to export if the fit is not exact.
   s, p, d and f shells are supported (cartesian or spherical), for
-  closed-shell RHF/RKS only.
+  closed-shell RHF/RKS only. Avogadro's d and f conventions are Molden's, and
+  ferric's Molden writer (`ferric.molden.ao_map`) builds the same map from
+  tables; ferric's test suite checks the two agree shell by shell. The plugin
+  keeps its own fit because it supports released ferric wheels
+  (`ferric>=0.1.0rc11`), which do not have `ferric.molden`.
 
 ## Limits
 

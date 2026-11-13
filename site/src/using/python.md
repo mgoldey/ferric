@@ -420,6 +420,10 @@ print(shape)
 [28, 38, 32]
 ```
 
+`ferric.molden.write(path, mol, bs, result)` writes the orbitals of an RHF,
+KS, UHF or ROHF result as a Molden file for Avogadro, Jmol, Multiwfn and
+other viewers; see [Export](export.md#molden-files).
+
 For NPZ export of ML-ready features (MO coefficients, PDEP eigenvectors, ESP,
 charges, polarizabilities, C6 coefficients) in one run, use the CLI's
 `[rpa] export_npz` section; see [Input file (TOML)](../reference/input.md).
