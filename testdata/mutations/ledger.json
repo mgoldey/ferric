@@ -253,15 +253,31 @@
       "mutation": "casscf.rs: the inactive Fock matrix F^I = h + J - K/2 halves its exchange term again (K/4).",
       "evidence": "crates/ferric-ci/tests/casscf_vs_pyscf.rs",
       "test": "h2o_cas44_631g_matches_pyscf",
-      "result": null
+      "result": {
+        "patch_sha256": "980e9d39a762526c9ebfa04034864bf067fbaae5f3c001d326f89b987f7e694d",
+        "base_commit": "8c86e08508794e0e0182c70527b4553a566ca04d",
+        "failing_test": "h2o_cas44_631g_matches_pyscf",
+        "assertion": "crates/ferric-ci/tests/casscf_vs_pyscf.rs:160",
+        "message": "h2o_cas44_631g: |dE| 3.63671533235636e0 > bar 3.210388254915033e-10",
+        "baseline_run": true,
+        "date": "2026-11-13"
+      }
     },
     {
       "anchor": "SC-NEVPT2",
       "patch": "testdata/mutations/nevpt2.patch",
-      "mutation": "nevpt2.rs: the class-r (Sr) energy numerator drops the factor 2 on its v·A17·h cross term.",
+      "mutation": "nevpt2.rs: the class-r (Sr) energy numerator drops the factor 2 on its v A17 h cross term.",
       "evidence": "crates/ferric-ci/tests/nevpt2.rs",
       "test": "matches_pyscf_h2o_cas44",
-      "result": null
+      "result": {
+        "patch_sha256": "80c420f057eef0638e7a462bf2a1328680d5dbb24a386a8a9ce331b37ae362c6",
+        "base_commit": "8c86e08508794e0e0182c70527b4553a566ca04d",
+        "failing_test": "matches_pyscf_h2o_cas44",
+        "assertion": "crates/ferric-ci/tests/nevpt2.rs:371",
+        "message": "h2o Sr: -0.0003782463016180647 vs PySCF -0.004444030301156927 (bar 3.7e-7)",
+        "baseline_run": true,
+        "date": "2026-11-13"
+      }
     }
   ]
 }
