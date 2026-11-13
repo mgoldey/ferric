@@ -126,7 +126,9 @@ def _stub_params(stub: str, name: str) -> list[str] | None:
 
 def _exported_classes(src: str) -> list[str]:
     py_name = {}
-    for m in re.finditer(r"((?:#\[[^\]]*\]\s*)+)(?:pub\s+)?struct\s+(\w+)", src):
+    for m in re.finditer(
+        r"((?:#\[[^\]]*\]\s*)+)(?:pub(?:\([^)]*\))?\s+)?struct\s+(\w+)", src
+    ):
         attrs, rust = m.groups()
         if "pyclass" in attrs:
             n = re.search(r'name\s*=\s*"(\w+)"', attrs)

@@ -707,7 +707,7 @@ fn unsupported_functionals_and_grid_knobs_are_refused_by_name() {
     };
     let e = PeriodicGrid::build(&cell, &pruned).unwrap_err().to_string();
     assert!(e.contains("prune is not supported"), "{e}");
-    let e = PeriodicGrid::build(&cell, &PeriodicGridConfig::with_size(75, 974))
+    let e = PeriodicGrid::build(&cell, &PeriodicGridConfig::with_size(75, 975))
         .unwrap_err()
         .to_string();
     assert!(e.contains("invalid n_angular"), "{e}");

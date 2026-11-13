@@ -11507,7 +11507,7 @@ mod cli_wired_keys_tests {
             ("[pcm]\nepsilon = 1.0\n", "must be > 1.0"),
             ("[pcm]\nepsilon = nan\n", "finite"),
             (
-                "[pcm]\nsolvent = \"water\"\nlebedev_order = 194\n",
+                "[pcm]\nsolvent = \"water\"\nlebedev_order = 195\n",
                 "lebedev_order",
             ),
         ] {
