@@ -768,6 +768,7 @@ pub fn rohf_hessian_parts_df_mutated(
                 rij_mutants,
                 rik_mutants,
                 uhf_mutants,
+                &mut ferric_core::timing::PhaseAccumulator::new(),
             )?)
         }
         None => None,

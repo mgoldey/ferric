@@ -349,6 +349,7 @@ pub fn uks_hessian_parts_with(
         &mutants.rij,
         &mutants.rik,
         &UhfDfMutants::default(),
+        &mut phases,
     )?;
     phases.stop(t);
     let geo = XcGeometry::new(mol, prep)?;

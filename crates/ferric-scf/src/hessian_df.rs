@@ -30,7 +30,7 @@
 //! = (P|μν) c_P` (`c = M d`) is exactly what `DfJ` builds, and `G(D1) =
 //! J_DF(D1) − ½ K(D1)` is linear in `D1`. So the nuclear term, the
 //! one-electron skeleton, the overlap/`W` term, `K`'s skeleton and `K^x`, the
-//! CPHF solver (`pcg`, `solve_cphf_one`, `assemble_response`) and the whole
+//! CPHF solver (`pcg_block`, `solve_cphf_block`, `assemble_response`) and the whole
 //! frequency layer are REUSED UNCHANGED. Three pieces are replaced:
 //!
 //! 1. the J part of the two-electron skeleton (`Σ Γ_J ∂²(μν|λσ)` →
