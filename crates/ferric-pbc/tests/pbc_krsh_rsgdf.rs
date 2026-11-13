@@ -428,7 +428,7 @@ fn rsgdf_hse06_matches_the_python_binding_pin() {
 }
 
 /// Regression: a q class whose K vectors lie inside the Gaussian cut but whose
-/// kernel weights are all under the absolute lindep used to abort the build
+/// kernel weights are all under the absolute lindep must not abort the build
 /// ("every metric eigenvalue ... <= lindep"). H2 cubic a = 5.3 Bohr, Gamma,
 /// HSE06 (w = 0.11 -> cut 1.2 Bohr^-1, smallest |G| = 1.185, weights ~1e-12).
 /// The class contributes below the build precision, so the fit must run, agree

@@ -1050,7 +1050,7 @@ fn charge_of(m: &str) -> usize {
 /// the allocator's documentation), and that count must cover the arrays
 /// enumerable from the gate's code: 15 named arrays live at once plus one
 /// product temporary plus the six of the spectral-norm stage = 22. A charge of
-/// the old eight (or none) fails both checks.
+/// eight arrays (or none) fails both checks.
 #[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn the_gate_scratch_charge_is_read_from_the_production_error() {

@@ -26,29 +26,20 @@
 //! supercell with rotation on both sides); the unrotated pipeline is an
 //! independent walk of the same function.
 //!
-//! HISTORY (fixed in #437, issue #433): while this fixture was built, the
-//! erfc 3-centre block of a CONTRACTED s pair at a far-field shift read
-//! uninitialised memory when the engine precision is <= 1e-20 (the hcore SR
-//! walk uses `f64::MIN_POSITIVE`): libint2's Boys Chebyshev table was read one
-//! row past its end at x == 117.0. A derivative engine created and destroyed
-//! earlier in the process moved k-RHF energies of HI with an I s contraction
-//! (1.2, 0.45, 0.16) by 1.2e-5 Ha, and any FD anchor computed after an
-//! analytic call by up to 2e-8 per energy; the UNROTATED `KRsGdf` fit for this
-//! basis hit the same read (perturb 1: LAPACK failure; 170: "k-RHF not
-//! converged (400 it)"). The fixtures were therefore pinned to I s exponents
-//! (3.0, 1.0, 0.35) / p (2.0, 0.7), which are kept (see `rot_basis`).
-//! Reproducer, now a normal 0.03 s test:
+//! FAR-FIELD BOUNDARY (issue #433, fix #437): the erfc 3-centre block of a
+//! CONTRACTED s pair at a far-field shift needs the libint2 Boys Chebyshev
+//! table at x == 117.0, its last row; the engine precision <= 1e-20 (the hcore SR
+//! walk uses `f64::MIN_POSITIVE`) reaches that argument. With the table read in
+//! bounds the block is deterministic and allocator-independent. The fixtures use
+//! I s exponents (3.0, 1.0, 0.35) / p (2.0, 0.7) (see `rot_basis`).
+//! Reproducer, a normal 0.03 s test:
 //! `far_field_contracted_s_blocks_do_not_read_uninitialised_memory` (section
 //! 5), which re-executes a finiteness check under `MALLOC_PERTURB_` 1, 170 and
 //! 2. (glibc fills fresh memory with `n ^ 0xff`, so 255 fills with 0x00 and is
 //! the default state: it tests nothing extra, and neither do 0, 85 or 254.)
-//! Verified on the fixed build (59114c8e + #437): the RS-GDF anchor
-//! (including its unrotated comparison run), the fixed-density hcore FD anchor
-//! and the 1x1x1-vs-Gamma anchor were each run under `MALLOC_PERTURB_` unset,
-//! 1, 170 and 255 with identical printed residuals (255 equals unset by
-//! construction). The other slow anchors in this file (1x1x3 supercell, SCF
-//! FD force/stress, refusal guard) were NOT rerun after #437. The 2.7.2
-//! override hunk of #437 was never compiled by the independent reviewer.
+//! The RS-GDF anchor (including its unrotated comparison run), the
+//! fixed-density hcore FD anchor and the 1x1x1-vs-Gamma anchor give identical
+//! printed residuals under `MALLOC_PERTURB_` unset, 1, 170 and 255.
 //!
 //! Triclinic ECP cell (section 4, lattice rows (6,0,0), (1,6,0), (1.2,-0.8,7)):
 //! 1x1x1 vs Gamma, Gamma-centred 1x1x2 vs the 2-cell supercell, and FD of the
@@ -817,11 +808,9 @@ const MUTANT_FLOOR: f64 = 1e-6;
 /// | fixed (#437)               | 7.02e-14 | 2.59e-12 |
 /// | pre-#437 (defect present)  | 3.28e-10 | 1.19e-7  |
 ///
-/// The pre-#437 row is NOT a screening floor: it is the footprint of the #433
-/// Boys table-edge read in the UNROTATED fit (the rotated one is clean), and
-/// it is why this bar used to be 5e-7, which sat above the defective run and
-/// could not have caught it. Measured on the fixed build the two walks agree
-/// to the screen (<= 2.6e-12). The bar 5e-11 separates the rows with margin on
+/// A table-edge read (#433) in the UNROTATED fit is not a screening floor, and
+/// a bar of 5e-7 would sit above the defective run and could not catch it. The
+/// two walks agree to the screen (<= 2.6e-12). The bar 5e-11 separates the rows with margin on
 /// both sides: 19x above the fixed stress (2.59e-12), 712x above the fixed
 /// force (7.02e-14); 6.5x below the defective force (3.28e-10), 2380x below the
 /// defective stress (1.19e-7). A rotation defect moves the total by >= 5e-2.
@@ -1255,12 +1244,9 @@ fn k_fit_energy(cell: &Cell, bs: &BasisSet, n: [usize; 3], rot: SrColumnRotation
 /// of BOTH walks equal the energy's, and the rotated analytic equals the
 /// unrotated RS-GDF analytic of the same energy to the screen.
 ///
-/// HISTORY (#433, fixed in #437): before the Boys table-edge fix the UNROTATED
-/// fit for this basis read uninitialised memory (under `MALLOC_PERTURB_=1`:
-/// LAPACK failure; 170: "k-RHF not converged (400 it)"), so the
-/// `ROT_VS_OFF_FIT_BAR` comparison was against a non-reproducible run. It is
-/// allocator-independent now (see the module doc). The FD and mutant parts use
-/// only the rotated fit.
+/// The UNROTATED fit is allocator-independent (see the module doc), so the
+/// `ROT_VS_OFF_FIT_BAR` comparison is against a reproducible run. The FD and
+/// mutant parts use only the rotated fit.
 #[test]
 #[ignore = "slow (~168 s release, quiet box): 1 + 8 rotated RS-GDF k pipelines, HI 1x1x3, + one unrotated pipeline"]
 fn rotated_ecp_rsgdf_force_and_stress_match_fd_of_the_rotated_fitted_energy() {
@@ -1519,17 +1505,17 @@ fn far_field_contracted_s_blocks_are_finite_in_the_default_allocator() {
     far_field_s_blocks_are_clean().expect("block check");
 }
 
-/// Regression test for #433 (fixed in #437: the libint2 Boys Chebyshev table
-/// was read one row past its end at x == 117.0). Before the fix, with
+/// Regression test for #433: the libint2 Boys Chebyshev table is read inside
+/// its bounds at x == 117.0. A read one row past the end, with
 /// `MALLOC_PERTURB_` set (glibc fills freshly allocated memory with a
-/// pattern) the erfc 3-centre block of a CONTRACTED s pair at a far-field
-/// shift returned ~1e288-1e301; in the default allocator the memory was
-/// usually zero and the block ~1e-17, so energies were right most of the time
-/// but an allocator-state change (a derivative engine created and destroyed
-/// earlier in the process) shifted k-RHF energies by 1.2e-5 Ha on the HI
-/// system with the s exponents (1.2, 0.45, 0.16). Measured boundary then: the
-/// engine precision mattered (garbage at 2.2e-308 [the hcore walk's
-/// `ERI3_ENGINE_PRECISION`], 1e-100, 1e-20; clean at 1e-14 and 1e-10).
+/// pattern), made the erfc 3-centre block of a CONTRACTED s pair at a far-field
+/// shift return ~1e288-1e301; in the default allocator the memory is
+/// usually zero and the block ~1e-17, so the damage is an allocator-state
+/// dependence (a derivative engine created and destroyed earlier in the
+/// process shifted k-RHF energies by 1.2e-5 Ha on the HI system with the s
+/// exponents (1.2, 0.45, 0.16)). The engine precision matters: the garbage
+/// appears at 2.2e-308 [the hcore walk's `ERI3_ENGINE_PRECISION`], 1e-100 and
+/// 1e-20, not at 1e-14 or 1e-10.
 /// The test re-executes this binary with `MALLOC_PERTURB_` 1, 170 and 2 (not
 /// 255: glibc fills with `n ^ 0xff`, so 255 gives the default zero fill).
 #[test]

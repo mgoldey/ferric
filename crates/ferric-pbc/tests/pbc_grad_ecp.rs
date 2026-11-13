@@ -83,10 +83,10 @@ const OMEGA: f64 = 0.8;
 const HCORE_PRECISION: f64 = 1e-14;
 /// Dense-AFT precision. The FD anchor alone needs only a CONSISTENT energy
 /// (the G sphere does not move with the atoms), but at 1e-6 the TOTAL RHF
-/// force was not translation invariant (first run, 2026-09-27: ΣF 2.62e-7,
-/// while the ECP part alone sums to ~1e-14) — the suspected source is the
-/// AFT pair screen; the per-part ΣF is printed to confirm. 1e-10 as the
-/// k-point gradient anchors needed; the ΣF bar is NOT loosened.
+/// force is not translation invariant (ΣF 2.62e-7, while the ECP part alone
+/// sums to ~1e-14; the suspected source is the AFT pair screen, and the
+/// per-part ΣF is printed). 1e-10 as the
+/// k-point gradient anchors need; the ΣF bar is NOT loosened.
 const AFT_PRECISION: f64 = 1e-10;
 const HI_A: [[f64; 3]; 3] = [[6.0, 0.0, 0.0], [0.0, 6.0, 0.0], [0.0, 0.0, 7.0]];
 /// `run_grad_ecp_anchor.py` MOVED (Bohr).

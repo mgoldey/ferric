@@ -1812,10 +1812,9 @@ pub fn open_shell_p_one_point(sys: OpenShell) {
 }
 
 /// Bar of the p-shell supercell anchor at the DEFAULT model-nucleus exponent
-/// (the unrotated ECP file's bar for the same floor). Before #434 was fixed
-/// the SR derivative's translation noise put the miss at 5.9e-8 at the default
-/// exponent (pinned at 1e7 as a workaround, 1.7e-10); with the nucleus-frame
-/// evaluation it is 4.6e-13 at the default (both exxdiv), the smallest mutant
+/// (the unrotated ECP file's bar for the same floor). Without the nucleus-frame
+/// evaluation (#434) the SR derivative's translation noise puts the miss at 5.9e-8
+/// at the default exponent (1.7e-10 pinned at 1e7); with it the miss is 4.6e-13 at the default (both exxdiv), the smallest mutant
 /// misses by > 1e-4 (`MUTANT_BAR`), and the bar is 11x the measurement.
 /// Also the blind / diagonal-only floor of the mutant sweep.
 pub const OS_SC_BAR: f64 = 5e-12;

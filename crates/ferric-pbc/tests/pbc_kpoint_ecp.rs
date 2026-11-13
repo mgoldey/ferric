@@ -1292,11 +1292,11 @@ fn hi_1x1x3_supercell_anchor_both_exxdiv() {
 }
 
 /// DIAGNOSTIC + ASSERTION: the k-vs-supercell SR miss is independent of the
-/// gradient nucleus exponent. History: this scan found a miss of 1.5e-8 that
-/// rose ~10-30x per decade above 1e8, present without any ECP (the Z = 7
-/// no-ECP control, identical AO shells and nuclear charges, showed the same);
-/// it was coordinate-dependent rounding in libint2's SR derivative (#434), not
-/// an ECP defect. With the nucleus-frame evaluation all parts of both HI and
+/// gradient nucleus exponent. A miss of 1.5e-8 rising ~10-30x per decade above 1e8 would signal
+/// coordinate-dependent rounding in libint2's SR derivative (#434), not an ECP
+/// defect (the Z = 7 no-ECP control, with identical AO shells and nuclear
+/// charges, shows the same). With the nucleus-frame
+/// evaluation all parts of both HI and
 /// the control are at roundoff at every exponent, so the assertion is the
 /// flat `SC_BAR_P`.
 #[test]

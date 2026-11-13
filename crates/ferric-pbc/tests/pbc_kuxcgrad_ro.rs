@@ -498,7 +498,7 @@ fn gate_error_is_first_order_in_g_between_two_states() {
 /// The gate's scratch charge is read from the typed error of the PRODUCTION
 /// ROHF force path (zero XC, so no chunk gate precedes it): the charge must be
 /// `RO_GATE_N2_ARRAYS` `n^2` complex arrays and at least the 22 the gate's code
-/// holds; the old eight fails both.
+/// holds; a charge of eight fails both.
 #[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn the_force_gate_scratch_charge_is_read_from_the_production_error() {

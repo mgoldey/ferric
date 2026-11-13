@@ -397,7 +397,7 @@ fn roks_pbe0_tri_none_stage_converges_from_perturbed_starts() {
     }
 }
 
-/// Negative control: the SAME starts with the pre-2026-09-25 defaults (no
+/// Negative control: the SAME starts without the hybrid shift (no
 /// shift, 200 iterations). At least one must fail to reach the pin, otherwise
 /// the positive test above does not show that the shift is what makes it
 /// pass (the replica fails 2 of 3 starts at t = 1e-6 without the shift; this

@@ -113,10 +113,10 @@
 //! list, including the strained frozen-index frame. Consequences:
 //!
 //! * `J3_SR` is EXACTLY symmetric, and every element is bitwise one of the
-//!   two ordered evaluations the old walk averaged (unsplit: the one with
+//!   two ordered evaluations an averaging walk would combine (unsplit: the one with
 //!   `μ ≤ ν`). `|new − old| ≤ ½|x − y| + ½ ulp` per element, where `x, y` are
-//!   the two ordered sums (round-off only; `RsGdfStats::asym_j3` of the old
-//!   build). The remaining `symmetrize_pairs` averages only the LR and G = 0
+//!   the two ordered sums (round-off only; the asymmetry an averaging build would show,
+//!   `RsGdfStats::asym_j3`). The remaining `symmetrize_pairs` averages only the LR and G = 0
 //!   parts' asymmetry.
 //! * Every output element is still owned by exactly one task (a copy, not an
 //!   addition), so the build stays bitwise identical across thread counts.

@@ -158,7 +158,7 @@
 //! ([`KUSpinMutation::RoWUhfForm`]) is an identity there, not a defect. The
 //! Roothaan effective Fock must never be used for `W`.
 //!
-//! ## The gate is basis-independent (and was not)
+//! ## The gate is basis-independent
 //!
 //! The blocks are measured from the DENSITIES: with the SCF's MOs `C` used only
 //! as an `S`-orthonormal basis of the SCF's space, `D_σ^o = C† S D_σ S C`,
@@ -2037,7 +2037,7 @@ mod gate_tests {
         eprintln!("worst true/old ratio {worst_old_ratio:.1}");
     }
 
-    /// Mutants: a dropped block, the wrong metric, and the OLD measurement
+    /// Mutants: a dropped block, the wrong metric, and the eigenvector-basis measurement
     /// (blocks read in the eigenvectors of F_eff of the final density) are
     /// each visible against the reference.
     #[test]
@@ -2087,7 +2087,7 @@ mod gate_tests {
             assert!(good > 1e-6);
             assert!(bad.is_err() || (bad.unwrap() - good).abs() > 0.05 * good);
         }
-        // The old measurement under-reports on the same state.
+        // The eigenvector-basis measurement under-reports on the same state.
         let old = old_gate(&t).unwrap();
         let truth = t.truth.iter().cloned().fold(0.0_f64, f64::max);
         eprintln!("old gate {old:.4e} vs true {truth:.4e}");

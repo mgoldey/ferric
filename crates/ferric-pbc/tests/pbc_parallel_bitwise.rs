@@ -11,7 +11,7 @@
 //! * `rsgdf_sr_sums_are_bitwise_across_threads_and_vs_serial` — J3 (and J2)
 //!   at 1/2/6 threads agree bit for bit, AND the parallel Gamma J3 equals the
 //!   SERIAL `L → i1 → i2 → P → T` walk (the k-point residue-binned walk at one
-//!   bin, which still runs the old serial nest over ORDERED pairs) bit for
+//!   bin, which runs the serial nest over ORDERED pairs) bit for
 //!   bit on its `μ ≤ ν` rows, mirrored (the Gamma walk is s2: `rsgdf` module
 //!   doc "Orbital-pair symmetry"; J2 is compared as is). A pair-outer nest
 //!   that reordered an element's addends (e.g. P-outer over L, or a per-thread

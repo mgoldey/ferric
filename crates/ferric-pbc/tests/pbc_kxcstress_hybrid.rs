@@ -5,8 +5,7 @@
 //! Anchors: a = 1 with a zero XC == the k-point HF stress PER PART (dense and
 //! RS-GDF, exxdiv none and ewald; checks the KS entry's F rebuild and exxdiv
 //! routing ONLY, it is blind to a-scaling); a = 0 PBE reproduces values
-//! recorded from the pure-GGA entry point before this change (origin/main
-//! a12a526f) and ignores the configured exxdiv; the wrong-a Fock guard; the
+//! recorded from the pure-GGA entry point (origin/main a12a526f) and ignores the configured exxdiv; the wrong-a Fock guard; the
 //! stress at a fixed density is affine in a; 1x1x1 and the non-TRIM
 //! 1x1x3 supercell identities against the Gamma hybrid stress per part; central
 //! FD of the PBE0 / B3LYP energy under symmetric strain at fixed fractional

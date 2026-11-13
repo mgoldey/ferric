@@ -352,7 +352,7 @@ fn splits() -> [Option<RangeSplit>; 2] {
 /// hcore 1e-9 / fit 1e-10, RS-GDF): force total 1.5e-10 (1x1x3) / 1.6e-10
 /// (split 1x1x2), stress total 6.5e-9 / 6.7e-9, dominated by the hcore part.
 /// This IS the screening floor of these fixtures (it scales with the screen),
-/// not an artifact of the libint2 Boys table-edge read (#433, fixed in #437):
+/// not an artifact of the libint2 Boys table-edge read (#433):
 /// the survey in `libint2_overrides/README.md` found the #421 ECP k-point test
 /// to be the only existing test that evaluates a Boys argument of exactly
 /// 117.0 (this file was not among them; not re-instrumented here). The bar is

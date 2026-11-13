@@ -21,7 +21,7 @@
 //! 5. `default_hcore_omega_*` — the default split rule
 //!    (`min(2.5 √π/Ω^{1/3}, ω_cap)`) on diamond_prim / diamond_conv / dry ice
 //!    and its wiring into every default config; diamond_prim STO-3G hcore
-//!    and (ignored, slow) SCF energy at the old vs new default within 1e-9.
+//!    and (ignored, slow) SCF energy at the √π/Ω^{1/3} split vs the default within 1e-9.
 //!
 //! Artifact hypotheses: a G = 0 bookkeeping error is `c·Z_tot·S/(ω²Ω)`-shaped
 //! and ω-DEPENDENT, so it fails 3 and 4 at ω ≠ 1 (tests avoid ω = 1, where
@@ -498,9 +498,9 @@ fn default_hcore_omega_cap_follows_the_rsgdf_omega() {
     assert!(default_hcore_omega_for_gdf(&conv, p, 0.5) < w_conv);
 }
 
-/// diamond_prim STO-3G: the hcore at the OLD default split (√π/Ω^{1/3} =
-/// 0.417) and at the new one (0.964) is the same matrix to truncation, and
-/// the new split really moved the work (fewer SR triplets, more G).
+/// diamond_prim STO-3G: the hcore at the √π/Ω^{1/3} split (0.417) and at the
+/// default one (0.964) is the same matrix to truncation, and
+/// the default split really moves the work (fewer SR triplets, more G).
 #[test]
 fn default_hcore_omega_changes_cost_not_the_diamond_sto3g_hcore() {
     use ferric_pbc::ewald::default_ewald_omega;
@@ -532,7 +532,7 @@ fn default_hcore_omega_changes_cost_not_the_diamond_sto3g_hcore() {
     assert!(new.n_sr_triplets < old.n_sr_triplets && new.n_g_half > old.n_g_half);
 }
 
-/// The SCF energy at the old and new default split on diamond_prim STO-3G
+/// The SCF energy at the √π/Ω^{1/3} and the default split on diamond_prim STO-3G
 /// (RS-GDF J/K built ONCE — they do not depend on the nuclear split — so
 /// the only difference is the hcore). Measured on cc-pVDZ at 0.96: 1.5e-11.
 #[test]

@@ -230,6 +230,6 @@ fn polarized_cam_type_uks_force_matches_fd_and_sees_the_ledger() {
     }
 }
 
-// The open-shell STRESS on a range-separated RS-GDF source (formerly
-// refused here) is differentiated since #492's open-shell RSH stress:
+// The open-shell STRESS on a range-separated RS-GDF source is differentiated by the
+// open-shell RSH stress (#492):
 // `pbc_kuks_rsh_stress.rs` / `validation_kuks_rsh_stress.rs`.

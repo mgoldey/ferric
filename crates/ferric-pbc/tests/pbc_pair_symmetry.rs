@@ -25,7 +25,7 @@
 //!    evaluations. Derivation (measure-free): `new ∈ {x, y}` and
 //!    `avg = fl(½ fl(x + y)) = ½(x + y)(1 + δ)`, `|δ| ≤ ε/2`, so
 //!    `|new − avg| ≤ ½|x − y| + ½ε|x + y| = ½|x − y| + ε|avg|(1 + O(ε))`.
-//!    The scale is the old walk's own round-off asymmetry (`asym_j3`,
+//!    The scale is the averaging walk's round-off asymmetry (`asym_j3`,
 //!    `sr_asymmetry`; printed below, ~1e-16 relative).
 //! 5. The RHF energy matches the frozen pre-s2 build to `E_BAR` = 1e-11 Ha
 //!    (the task bar; the expected first-order shift is ‖ΔJ3‖ ~ 1e-16
