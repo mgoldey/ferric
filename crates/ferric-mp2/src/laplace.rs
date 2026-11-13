@@ -231,9 +231,9 @@ const DENSE_BYTES_PER_ELEM: usize = 8;
 /// value and only rewrites strides — verified against ndarray 0.16.1's
 /// source), so `eri3_ao -> eri3_flat` and `b_flat_ao -> b_ao` do NOT double
 /// the tensor count: `eri3_flat` IS `eri3_ao`'s allocation, and `b_ao` IS
-/// `b_flat_ao`'s. The dressing GEMM `v_inv_sqrt.dot(&eri3_flat)` allocates one
-/// genuinely new tensor (`b_flat_ao`); NLL drops `eri3_flat` right after that
-/// call (its only use), well before `b_sparse` is built. So the dressing peak
+/// `b_flat_ao`'s. The dressing GEMM (`dress_with_metric`) allocates one
+/// genuinely new tensor (`b_flat_ao`); `eri3_flat` is dropped explicitly right
+/// after that call (its only use), well before `b_sparse` is built. So the dressing peak
 /// really is 2 dense tensors + the metric, matching the pre-flight fired
 /// before any of them are allocated.
 ///
@@ -659,6 +659,17 @@ pub fn laplace_lmp2(
     })
 }
 
+/// `V^{-1/2} · X` for the metric dressing of a flattened `(P|..)` tensor,
+/// column-blocked over the rayon pool through
+/// [`ferric_core::linalg::par_gemm`] (one-thread BLAS per fixed 128-column
+/// block, so the bits do not depend on the pool size). Called outside any
+/// rayon region, where a plain `.dot` would run on one core.
+fn dress_with_metric(v_inv_sqrt: &Array2<f64>, x: &ndarray::ArrayView2<'_, f64>) -> Array2<f64> {
+    let mut out = Array2::<f64>::zeros((v_inv_sqrt.nrows(), x.ncols()));
+    ferric_core::linalg::par_gemm(1.0, &v_inv_sqrt.view(), x, 0.0, &mut out);
+    out
+}
+
 /// Apply the τ-weighting `B^P_ia(t) = B^P_ia · exp(-t(ε_a - ε_i)/2)` to a copy
 /// of the hoisted MO amplitudes.
 ///
@@ -790,7 +801,9 @@ impl LaplaceMp2 {
             &c_vir,
             crate::rimp2::eri3_budget_bytes(self.memory_budget_bytes),
         )?;
-        let b_flat = v_inv_sqrt.dot(&eri3_mo.into_shape_with_order((naux, nocc * nvir)).unwrap());
+        let eri3_mo_flat = eri3_mo.into_shape_with_order((naux, nocc * nvir)).unwrap();
+        let b_flat = dress_with_metric(&v_inv_sqrt, &eri3_mo_flat.view());
+        drop(eri3_mo_flat);
 
         // Hoist per-orbital energies: only the diagonal τ-scaling depends on the
         // quadrature point, `b_flat` (geometry/basis) is constant.
@@ -930,7 +943,8 @@ impl LaplaceMp2 {
         let v_inv_sqrt = crate::rimp2::cholesky_inverse_sqrt(&v2c)?;
         let eri3_ao = ferric_integrals::threeindex::eri3_tensor(op, obs, dfbs)?;
         let eri3_flat = eri3_ao.into_shape_with_order((naux, nbas * nbas)).unwrap();
-        let b_flat_ao = v_inv_sqrt.dot(&eri3_flat);
+        let b_flat_ao = dress_with_metric(&v_inv_sqrt, &eri3_flat.view());
+        drop(eri3_flat);
         let b_ao = b_flat_ao.into_shape_with_order((naux, nbas, nbas)).unwrap();
 
         let c = rhf.mos_r();
@@ -1201,7 +1215,9 @@ impl LaplaceMp2 {
             &c_vir,
             crate::rimp2::eri3_budget_bytes(self.memory_budget_bytes),
         )?;
-        let b_flat = v_inv_sqrt.dot(&eri3_mo.into_shape_with_order((naux, nocc * nvir)).unwrap());
+        let eri3_mo_flat = eri3_mo.into_shape_with_order((naux, nocc * nvir)).unwrap();
+        let b_flat = dress_with_metric(&v_inv_sqrt, &eri3_mo_flat.view());
+        drop(eri3_mo_flat);
 
         let occ_scale: Vec<f64> = (0..nocc).map(|i| eps[frozen_core + i]).collect();
         let vir_scale: Vec<f64> = (0..nvir).map(|a| eps[nocc_total + a]).collect();
@@ -1309,7 +1325,8 @@ impl LaplaceMp2 {
         let v_inv_sqrt = crate::rimp2::cholesky_inverse_sqrt(&v2c)?;
         let eri3_ao = ferric_integrals::threeindex::eri3_tensor(op, obs, dfbs)?;
         let eri3_flat = eri3_ao.into_shape_with_order((naux, nbas * nbas)).unwrap();
-        let b_flat_ao = v_inv_sqrt.dot(&eri3_flat);
+        let b_flat_ao = dress_with_metric(&v_inv_sqrt, &eri3_flat.view());
+        drop(eri3_flat);
         let b_ao = b_flat_ao.into_shape_with_order((naux, nbas, nbas)).unwrap();
 
         let c = rhf.mos_r();
