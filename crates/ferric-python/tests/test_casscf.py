@@ -110,10 +110,13 @@ def test_open_shell_active_space():
 
 
 def test_unconverged_ci_raises():
+    """CAS(8,8) has 4900 determinants, above the dense-diagonalization fallback
+    (ferric_ci::DENSE_SOLVE_MAX_DETS = 1024) that rescues smaller spaces, so one
+    Davidson iteration leaves the CI unconverged."""
     mol = ferric.Molecule.from_xyz_string(_H2O)
     with pytest.raises(Exception, match="ci_conv_thresh"):
         ferric.run_casscf(
-            mol, ferric.BasisSet.bundled("6-31g"), 4, (2, 2), ci_max_iter=1
+            mol, ferric.BasisSet.bundled("6-31g"), 8, (4, 4), ci_max_iter=1
         )
 
 
