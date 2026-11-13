@@ -515,6 +515,78 @@ The spin-sector mutation is caught only where the requested sector's lowest
 state is not the lowest state of the neighbouring sector; the H2O (6, 4)
 full-space case is that check.
 
+## SC-NEVPT2 (`src/nevpt2.rs`)
+
+Strongly contracted NEVPT2 (Angeli, Cimiraglia and Malrieu, JCP 117, 9138
+(2002)) on one CAS root. Definitions, conventions and the prototype's
+measurements: `scripts/prototypes/nevpt2_derivation.md` (cited below as
+"derivation"), whose numpy construction `scripts/prototypes/nevpt2_proto.py`
+is the reference implementation.
+
+Zeroth order (derivation, "Definition"): Dyall's Hamiltonian
+$H_D = \sum_i \varepsilon_i E_{ii} + \sum_r \varepsilon_r E_{rr} + H_\text{act}$,
+$H_\text{act} = \sum_{tu} F^I_{tu}E_{tu} + \tfrac12\sum_{tuvw}(tu|vw)(E_{tu}E_{vw} - \delta_{uv}E_{tw})$.
+For a label $l$ (its external orbitals) of a class with $n_v$ virtual
+particles and $n_c$ core holes, $\Psi_l = P_l H\Psi_0$,
+$N_l = \langle\Psi_l|\Psi_l\rangle$,
+$K_l = \langle\Psi_l|H_\text{act} - E_0|\Psi_l\rangle$,
+$\Delta_l = \sum_{r\in l}\varepsilon_r - \sum_{i\in l}\varepsilon_i$ and
+
+$$
+E_\text{class} = -\sum_l \frac{N_l}{\Delta_l + K_l/N_l},
+$$
+
+over labels with $|N_l| > 10^{-14}$ (PySCF `NUMERICAL_ZERO`). The eight
+classes are those of the derivation's table: `Sr` (r), `Si` (i), `Sijrs`,
+`Sijr`, `Srsi`, `Srs`, `Sij`, `Sir`.
+
+Orbitals. $F^I = h + J[D^c] - \tfrac12 K[D^c]$, $D^c = 2C_cC_c^\mathsf{T}$;
+$F = F^I + F^A$ with $F^A$ from $D^a = C_a\gamma C_a^\mathsf{T}$. The core and
+virtual orbitals are the eigenvectors of the core and virtual blocks of $F$
+and $\varepsilon$ their eigenvalues: PySCF `mcscf.CASCI.canonicalize`, which
+`mrpt.NEVPT` calls (derivation, "Orbitals"). The active orbitals are used as
+given: every active index is summed, so $E$ does not depend on the active
+basis, and the RDMs are built in that basis from the reference CI vector.
+PySCF rotates to natural orbitals instead. With `canonicalize = false` the
+given core and virtual orbitals are used, $\varepsilon = \operatorname{diag}F$,
+and an off-diagonal element above $10^{-8}$ Ha is an error. Inside a group of
+degenerate core or virtual orbitals the eigenvectors are not unique and the
+pair classes are not invariant to rotations in it (derivation, "Comparison
+with pyscf.mrpt.NEVPT"); N2's $\pi$ pairs move `Srs` by up to 1.7e-7 Ha.
+
+Evaluation. $N_l$ and $K_l$ reduce (derivation, "Construction A", steps
+1-5; $K_l$ through $\langle V^\dagger P_l [H_\text{act}, V]\rangle$) to
+contractions of integrals with RDMs up to rank 4, the 4-RDM only contracted
+with $(aa|aa)$. The module evaluates them with the factorization of PySCF
+`mrpt.nevpt2` (`Sr` ... `Sir`, `make_a16`, `make_a17`, `make_a19`,
+`make_a22`, `make_a23`, `make_a25`, `make_a3`, `make_k27`, `make_a7`,
+`make_a9`, `make_a12`, `make_a13`), transcribed spec for spec into an
+`einsum` over owned arrays. The RDM inputs are PySCF's: the E-product
+$\langle E_{pq}E_{rs}\rangle$ and $\langle E_{pq}E_{rs}E_{tu}\rangle$ (from the
+normal-ordered ones by `rdm3::e_product_rdms`, the inverse of the reordering
+in "NEVPT RDMs"), the hole RDMs and $f^\text{ca}$, $f^\text{ac}$ of that
+section. In PySCF's layout `h1e` is the active block of $F^I$ and
+$\texttt{h2e}_{pqrs} = (pr|qs)$; the external integral blocks are
+$(va|aa)$, $(ac|aa)$, $(cv|cv)$, $(ca|cv)$, $(va|cv)$, $(va|va)$, $(ca|ca)$,
+$(vc|aa)$, $(va|ca)$ and the $F^I$ blocks $va$, $ac$, $vc$ (derivation,
+"What a Rust port needs"), each transformed from the dense AO block with its
+narrowest orbital set contracted first.
+
+Reference checks before any class: $\lVert Hc - Ec\rVert \le$
+`max_ci_residual` (default $10^{-8}$; the formulas assume
+$H_\text{act}\Psi_0 = E_0\Psi_0$), $\lVert c\rVert = 1$ to $10^{-10}$,
+$n_\alpha = n_\beta$ (open-shell active spaces are not anchored and are
+refused), and a converged CASSCF or CAS-CI run.
+
+Cost: $O(n^8)$ for the $a_{16}$/$a_{22}$ intermediates, $O(n_v n^6)$ (r),
+$O(n_c n^6)$ (i), $O(n_v^2 n^4)$ (rs), $O(n_c^2 n^4)$ (ij), $O(n_c n_v n^4)$ (ir),
+$O(n_c^2 n_v^2)$ (ijrs). The `einsum` is a direct loop over every label
+combination (one sequential sum per output element, parallel over output
+elements), so its cost is the product of all label extents of a spec.
+Memory: the dense AO block $n_\text{bas}^4$, the MO blocks (twice, transformed
+and permuted), twelve $n^6$ intermediates and the per-label tensors, reserved
+through one `MemoryPlan` before the AO block is built.
+
 ## Checks
 
 | Check | What it constrains |
@@ -527,4 +599,5 @@ full-space case is that check.
 | `tests/casscf.rs` | CASSCF: full-space limit (zero $2(F-F^\mathsf{T})$, FCI energy, RDM energy) in closed- and open-shell sectors, the analytic orbital gradient against finite differences per rotation class, converged energies against the prototype. Mutation record in the CASSCF section above. |
 | `tests/casscf_vs_pyscf.rs` | Converged CASSCF energies against `pyscf.mcscf.CASSCF` on ferric's AO integrals from PySCF's own RHF (`scripts/gen_casscf_refs.py`), four systems including an open-shell sector. |
 | `tests/casscf_canonical.rs` | Canonical orbitals: energy, RDM energy and CI eigenvector in the new orbitals, natural orbitals, diagonal core and virtual Fock blocks, idempotence. |
+| `tests/nevpt2.rs` | SC-NEVPT2. Exact zeros of every class whose external space is empty (H2 CAS(2,4) and CAS(2,2), LiH core 1 CAS(2,5)), with the non-empty classes nonzero; a one-orbital closed-shell active space on H2O/6-31G RHF orbitals equals the MP2 pair sums and the closed-form `Srs` to 8.1e-15 (bar 1e-10); the numpy prototype's Wick construction on the same ferric CASSCF orbitals and CI vector (H2O CAS(4,4), N2 CAS(6,6) at 1.0977 and 2.2 Å, 6-31G) to 6.2e-14 (bars 2.3e-10, 4.6e-9); `pyscf.mrpt.NEVPT` on PySCF's own CASSCF to 1.3e-8 (H2O), 3.2e-8 (N2), 2.1e-8 Ha (stretched N2), within the propagated CASSCF-convergence bar of each class (largest ratio 0.88, stretched N2 `Sr`, where PySCF's gradient is 9.8e-7). Mutations that fail it: a sign flip in `make_a12` (`Sir`), a $p\leftrightarrow q$ swap in one `make_a12` RDM index, the dropped `f3ca` term of `make_a16` (`Sr`), $F^I$ for the orbital energies (MP2 anchor, prototype, PySCF), `Sr` gated on the core space (zeros anchor). |
 | FCI energies vs PySCF (`src/lib.rs` tests, `tests/validation_casci.rs`) | Spectrum only: blind to sign conventions that are diagonal similarities, and to errors in elements that vanish by point-group symmetry in the test molecules. A $\pm1$ similarity inserted into `general_element` passes all of them; H2/STO-3G has no nontrivial sign at all. |

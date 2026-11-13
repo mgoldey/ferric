@@ -1,6 +1,7 @@
 //! `ferric.run_casci`: CAS-CI (`ferric_ci::run_cas_ci`) with spin-summed
 //! 1- and 2-RDMs, and `ferric.run_casscf`: two-step CASSCF
-//! (`ferric_ci::run_casscf`), both on a closed-shell exact-J/K RHF reference.
+//! (`ferric_ci::run_casscf`), both on a closed-shell exact-J/K RHF reference,
+//! and `ferric.run_nevpt2`: SC-NEVPT2 (`ferric_ci::sc_nevpt2`) on either.
 
 use crate::{
     budget_bytes_from_gb, certificate_dict, make_err, rhf_config_conv, PyBasisSet, PyMolecule,
@@ -426,10 +427,243 @@ fn run_casscf(
     })
 }
 
-/// Register `run_casci`, `run_casscf` and their result classes.
+/// Library capability name of `run_nevpt2` on the certificate.
+const NEVPT2_CAPABILITY: &str = "nevpt2";
+
+#[pyclass]
+#[pyo3(name = "Nevpt2Result")]
+struct PyNevpt2Result {
+    #[pyo3(get)]
+    e_corr: f64,
+    #[pyo3(get)]
+    e_total: f64,
+    #[pyo3(get)]
+    e_reference: f64,
+    #[pyo3(get)]
+    reference: String,
+    #[pyo3(get)]
+    rhf_energy: f64,
+    #[pyo3(get)]
+    reference_iterations: usize,
+    #[pyo3(get)]
+    reference_grad_norm: Option<f64>,
+    #[pyo3(get)]
+    ci_residual_norm: f64,
+    #[pyo3(get)]
+    n_core: usize,
+    #[pyo3(get)]
+    n_active: usize,
+    #[pyo3(get)]
+    n_virtual: usize,
+    energies: ferric_ci::Nevpt2Classes,
+    norms: ferric_ci::Nevpt2Classes,
+    mo_coeff: Array2<f64>,
+    mo_energy: Vec<f64>,
+    certificate_data: Certificate,
+}
+
+fn classes_dict<'py>(
+    py: Python<'py>,
+    c: &ferric_ci::Nevpt2Classes,
+) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
+    let d = pyo3::types::PyDict::new(py);
+    for (name, v) in ferric_ci::Nevpt2Classes::NAMES.iter().zip(c.to_array()) {
+        d.set_item(*name, v)?;
+    }
+    Ok(d)
+}
+
+#[pymethods]
+impl PyNevpt2Result {
+    /// Class energies (Ha), keyed by PySCF's names `Sr`, `Si`, `Sijrs`,
+    /// `Sijr`, `Srsi`, `Srs`, `Sij`, `Sir`.
+    #[getter]
+    fn energies<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
+        classes_dict(py, &self.energies)
+    }
+    /// Class norms (sum of the perturber norms over every label).
+    #[getter]
+    fn norms<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
+        classes_dict(py, &self.norms)
+    }
+    /// Orbitals used: canonical core and virtual columns, the reference's
+    /// active columns.
+    #[getter]
+    fn mo_coeff<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        self.mo_coeff.clone().into_pyarray(py)
+    }
+    /// Diagonal of `F^I + F^A` in `mo_coeff` (Ha).
+    #[getter]
+    fn mo_energy<'py>(&self, py: Python<'py>) -> Bound<'py, numpy::PyArray1<f64>> {
+        self.mo_energy.clone().into_pyarray(py)
+    }
+    /// Validation certificate (schema of `RhfResult.certificate`).
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        certificate_dict(py, &self.certificate_data)
+    }
+    fn __repr__(&self) -> String {
+        format!(
+            "Nevpt2Result(e_total={:.10}, e_corr={:.10}, reference={})",
+            self.e_total, self.e_corr, self.reference
+        )
+    }
+}
+
+/// SC-NEVPT2 on a CASSCF (default) or CAS-CI reference from the canonical
+/// RHF orbitals. The reference must converge; an unconverged one raises.
+#[pyfunction]
+#[pyo3(signature = (mol, basis_set, n_active, n_elec_active, n_core=None, reference="casscf", casscf_grad_tol=1e-7, casscf_energy_tol=1e-12, casscf_max_iter=300, casscf_max_step=0.2, ci_conv_thresh=1e-10, ci_max_subspace=50, ci_max_iter=200, memory_budget_gb=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None))]
+#[allow(clippy::too_many_arguments)]
+fn run_nevpt2(
+    py: Python<'_>,
+    mol: &PyMolecule,
+    basis_set: &PyBasisSet,
+    n_active: usize,
+    n_elec_active: (usize, usize),
+    n_core: Option<usize>,
+    reference: &str,
+    casscf_grad_tol: f64,
+    casscf_energy_tol: f64,
+    casscf_max_iter: usize,
+    casscf_max_step: f64,
+    ci_conv_thresh: f64,
+    ci_max_subspace: usize,
+    ci_max_iter: usize,
+    memory_budget_gb: Option<f64>,
+    scf_max_iter: Option<usize>,
+    scf_energy_conv: Option<f64>,
+    scf_density_conv: Option<f64>,
+) -> PyResult<PyNevpt2Result> {
+    let use_casscf = match reference {
+        "casscf" => true,
+        "casci" => false,
+        other => {
+            return Err(make_err(format!(
+                "run_nevpt2: reference must be \"casscf\" or \"casci\", got {other:?}"
+            )))
+        }
+    };
+    let mut emol = mol.inner.clone();
+    emol.apply_ecp(&basis_set.inner);
+    let mol = &emol;
+    let nelec = mol.nelec() as usize;
+    let n_act_el = n_elec_active.0 + n_elec_active.1;
+    let n_core = match n_core {
+        Some(s) => s,
+        None => {
+            if n_act_el > nelec || !(nelec - n_act_el).is_multiple_of(2) {
+                return Err(make_err(format!(
+                    "run_nevpt2: {n_act_el} active electrons do not leave an even core \
+                     count out of {nelec}"
+                )));
+            }
+            (nelec - n_act_el) / 2
+        }
+    };
+    let budget = budget_bytes_from_gb(memory_budget_gb);
+    let prep = PreparedBasis::new(mol, &basis_set.inner).map_err(make_err)?;
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
+    let rhf_config = rhf_config_conv(
+        None,
+        budget,
+        ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
+    );
+    let rhf = py
+        .allow_threads(|| {
+            solve_rhf(
+                &ParallelContext::default(),
+                mol,
+                &prep,
+                op,
+                &bounds,
+                &rhf_config,
+            )
+        })
+        .map_err(make_err)?;
+    if !rhf.converged {
+        return Err(make_err(ferric_core::FerricError::ScfConvergence {
+            iterations: rhf.iterations,
+            last_energy: rhf.energy,
+        }));
+    }
+    let nev_cfg = ferric_ci::Nevpt2Config {
+        memory_budget_bytes: budget,
+        ..Default::default()
+    };
+    let (r, iterations, grad_norm) = if use_casscf {
+        let cfg = ferric_ci::CasScfConfig {
+            n_active,
+            n_elec_active,
+            n_core,
+            grad_tol: casscf_grad_tol,
+            energy_tol: casscf_energy_tol,
+            max_iter: casscf_max_iter,
+            max_step: casscf_max_step,
+            ci_conv_thresh,
+            ci_max_subspace,
+            ci_max_iter,
+            memory_budget_bytes: budget,
+            ..Default::default()
+        };
+        py.allow_threads(|| {
+            let cas = ferric_ci::run_casscf(mol, &prep, &rhf, &cfg)?;
+            let reference = ferric_ci::Nevpt2Reference::from_casscf(&cas, &cfg)?;
+            let r = ferric_ci::sc_nevpt2(mol, &prep, &reference, &nev_cfg)?;
+            Ok::<_, ferric_core::FerricError>((r, cas.iterations, Some(cas.grad_norm)))
+        })
+        .map_err(make_err)?
+    } else {
+        let cfg = ferric_ci::CasCiConfig {
+            n_active,
+            n_elec_active,
+            active_start: n_core,
+            conv_thresh: ci_conv_thresh,
+            max_subspace: ci_max_subspace,
+            max_iter: ci_max_iter,
+            memory_budget_bytes: budget,
+            compute_rdms: false,
+        };
+        py.allow_threads(|| {
+            let ci = ferric_ci::run_cas_ci(mol, &prep, &rhf, cfg)?;
+            let reference = ferric_ci::Nevpt2Reference::from_casci(&ci, rhf.mos_r(), &cfg)?;
+            let r = ferric_ci::sc_nevpt2(mol, &prep, &reference, &nev_cfg)?;
+            Ok::<_, ferric_core::FerricError>((r, ci.iterations, None))
+        })
+        .map_err(make_err)?
+    };
+    let cert = Certificate::ungraded(NEVPT2_CAPABILITY).with_build(BuildStamp::new(
+        ferric_build_info::VERSION,
+        ferric_build_info::COMMIT,
+        ferric_build_info::DIRTY,
+    ));
+    Ok(PyNevpt2Result {
+        e_corr: r.e_corr,
+        e_total: r.e_reference + r.e_corr,
+        e_reference: r.e_reference,
+        reference: reference.to_string(),
+        rhf_energy: rhf.energy,
+        reference_iterations: iterations,
+        reference_grad_norm: grad_norm,
+        ci_residual_norm: r.ci_residual_norm,
+        n_core: r.n_core,
+        n_active: r.n_active,
+        n_virtual: r.n_virtual,
+        energies: r.energies,
+        norms: r.norms,
+        mo_coeff: r.mo_coeff,
+        mo_energy: r.mo_energy,
+        certificate_data: cert,
+    })
+}
+
+/// Register `run_casci`, `run_casscf`, `run_nevpt2` and their result classes.
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_casci, m)?)?;
     m.add_class::<PyCasCiResult>()?;
     m.add_function(wrap_pyfunction!(run_casscf, m)?)?;
-    m.add_class::<PyCasScfResult>()
+    m.add_class::<PyCasScfResult>()?;
+    m.add_function(wrap_pyfunction!(run_nevpt2, m)?)?;
+    m.add_class::<PyNevpt2Result>()
 }

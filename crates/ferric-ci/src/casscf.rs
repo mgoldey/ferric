@@ -314,26 +314,7 @@ impl CasScfProblem {
     /// `J[D]` and `K[D]` from the dense AO block, `J_mn = Σ (mn|ls) D_ls`,
     /// `K_mn = Σ (ml|ns) D_ls`.
     fn jk(&self, d: &Array2<f64>) -> (Array2<f64>, Array2<f64>) {
-        let n = self.nbas;
-        let eri = &self.eri_ao;
-        let mut j = Array2::<f64>::zeros((n, n));
-        let mut k = Array2::<f64>::zeros((n, n));
-        for m in 0..n {
-            for l in 0..n {
-                let base = (m * n + l) * n * n;
-                let mut jml = 0.0;
-                for a in 0..n {
-                    for b in 0..n {
-                        let v = eri[base + a * n + b];
-                        jml += v * d[(a, b)];
-                        // (m l|a b) D[l b] -> K[m, a]
-                        k[(m, a)] += v * d[(l, b)];
-                    }
-                }
-                j[(m, l)] = jml;
-            }
-        }
-        (j, k)
+        dense_jk(&self.eri_ao, self.nbas, d)
     }
 
     /// `F^I` (AO basis) and `E_core` at orbitals `c`.
@@ -519,6 +500,29 @@ impl CasScfProblem {
             })
             .collect()
     }
+}
+
+/// `J[D]` and `K[D]` from a dense row-major AO block `eri` of `n^4`
+/// elements, `J_mn = Σ (mn|ls) D_ls`, `K_mn = Σ (ml|ns) D_ls`.
+pub(crate) fn dense_jk(eri: &[f64], n: usize, d: &Array2<f64>) -> (Array2<f64>, Array2<f64>) {
+    let mut j = Array2::<f64>::zeros((n, n));
+    let mut k = Array2::<f64>::zeros((n, n));
+    for m in 0..n {
+        for l in 0..n {
+            let base = (m * n + l) * n * n;
+            let mut jml = 0.0;
+            for a in 0..n {
+                for b in 0..n {
+                    let v = eri[base + a * n + b];
+                    jml += v * d[(a, b)];
+                    // (m l|a b) D[l b] -> K[m, a]
+                    k[(m, a)] += v * d[(l, b)];
+                }
+            }
+            j[(m, l)] = jml;
+        }
+    }
+    (j, k)
 }
 
 /// `exp(K)` for a real antisymmetric `K`, by scaling and squaring a Taylor

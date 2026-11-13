@@ -5991,3 +5991,77 @@ def run_casscf(
     orbitals (see ``CasScfResult.mo_coeff``) with the CI vector and RDMs in
     them, and fills ``mo_energy``."""
     ...
+
+class Nevpt2Result:
+    """Result of run_nevpt2: strongly contracted NEVPT2 on a CAS reference."""
+
+    e_corr: float
+    """Second-order energy, the sum of the eight class energies (Ha)."""
+    e_total: float
+    """``e_reference + e_corr`` (Ha)."""
+    e_reference: float
+    """CASSCF or CAS-CI energy of the reference (Ha)."""
+    reference: str
+    """``"casscf"`` or ``"casci"``."""
+    rhf_energy: float
+    reference_iterations: int
+    """CASSCF macro iterations, or CAS-CI Davidson iterations."""
+    reference_grad_norm: float | None
+    """CASSCF orbital-gradient norm; None for a CAS-CI reference."""
+    ci_residual_norm: float
+    """``|Hc - Ec|`` of the reference CI vector."""
+    n_core: int
+    n_active: int
+    n_virtual: int
+    @property
+    def energies(self) -> dict[str, float]:
+        """Class energies (Ha) keyed by PySCF's names ``Sr``, ``Si``,
+        ``Sijrs``, ``Sijr``, ``Srsi``, ``Srs``, ``Sij``, ``Sir``."""
+        ...
+    @property
+    def norms(self) -> dict[str, float]:
+        """Class norms: the perturber norms summed over every label."""
+        ...
+    @property
+    def mo_coeff(self) -> NDArray[np.float64]:
+        """Orbitals used, shape ``(nbasis, nmo)``: canonical core and virtual
+        columns (eigenvectors of the blocks of ``F^I + F^A``), the
+        reference's active columns."""
+        ...
+    @property
+    def mo_energy(self) -> NDArray[np.float64]:
+        """Diagonal of ``F^I + F^A`` in ``mo_coeff`` (Ha)."""
+        ...
+    @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate: ``capability`` ``"nevpt2"`` (ungraded)."""
+        ...
+
+def run_nevpt2(
+    mol: Molecule,
+    basis_set: BasisSet,
+    n_active: int,
+    n_elec_active: tuple[int, int],
+    n_core: int | None = None,
+    reference: str = "casscf",
+    casscf_grad_tol: float = 1e-7,
+    casscf_energy_tol: float = 1e-12,
+    casscf_max_iter: int = 300,
+    casscf_max_step: float = 0.2,
+    ci_conv_thresh: float = 1e-10,
+    ci_max_subspace: int = 50,
+    ci_max_iter: int = 200,
+    memory_budget_gb: float | None = None,
+    scf_max_iter: int | None = None,
+    scf_energy_conv: float | None = None,
+    scf_density_conv: float | None = None,
+) -> Nevpt2Result:
+    """Strongly contracted NEVPT2 (Angeli et al., JCP 117, 9138 (2002)) on
+    a CASSCF (``reference="casscf"``, the ``run_casscf`` settings) or CAS-CI
+    (``reference="casci"``, on the canonical RHF orbitals) reference from
+    the exact-J/K RHF. Dyall zeroth-order Hamiltonian; core and virtual
+    orbitals canonical in ``F^I + F^A``, as PySCF ``mrpt.NEVPT``. Raises
+    when the reference does not converge, for ``n_alpha != n_beta``, and
+    when the memory budget cannot hold the dense AO integrals and the
+    ``n_active**6`` intermediates. Single root."""
+    ...
