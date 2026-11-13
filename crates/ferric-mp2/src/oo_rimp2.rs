@@ -986,48 +986,134 @@ pub fn build_oo_mp2_relaxed_density(
     p
 }
 
-/// Build the MP2 unrelaxed 1-particle density matrix in MO basis.
+/// Scratch cap, in f64 elements, for one task of [`build_mp2_density`]
+/// (16 MiB). A constant, so the slab widths and the summation order do not
+/// depend on the thread count or the memory budget.
+const MP2_DENSITY_SLAB_ELEMS: usize = 1 << 21;
+
+/// The unrelaxed MP2 one-particle density blocks `(P_oo, P_vv)` in the MO
+/// basis, from the flat amplitudes `t2[ia·nov + jb]` (`ia = i·nvir + a`):
+///
+/// ```text
+///   P_ij = − Σ_kab t_ik^ab (2 t_jk^ab − t_jk^ba)
+///   P_ab =   Σ_ijc t_ij^ac (2 t_ij^bc − t_ij^cb)
+/// ```
+///
+/// With `A_ij` the `nvir × nvir` block `t2[(i,·),(j,·)]`, these are
+///
+/// ```text
+///   P_vv      = Σ_i Σ_j A_ij · (2 A_ijᵀ − A_ij)
+///   P_oo[i,j] = − Σ_k ⟨A_ik, 2 A_jk − A_jkᵀ⟩
+/// ```
+///
+/// `P_vv` is one task per `i`: a GEMM of the contiguous `nvir × nov` row
+/// block of `t2` against the stacked `2 A_ijᵀ − A_ij`, in slabs of `j`
+/// (`2·nocc²·nvir³` FLOPs in total). `P_oo` is one task per `k`: a GEMM of
+/// the gathered `nocc × nvir²` slices, in slabs of `a` (`2·nocc³·nvir²`
+/// FLOPs). Tasks run on the rayon pool at one BLAS thread and their results
+/// are added in index order, so the densities do not depend on the thread
+/// count. Scratch is at most `max(MP2_DENSITY_SLAB_ELEMS, nvir²)` elements
+/// per `P_vv` task and `2·max(MP2_DENSITY_SLAB_ELEMS, nocc·nvir)` per `P_oo`
+/// task.
+///
+/// `t2` needs no symmetry: `t_ij^ab = t_ji^ba` is not assumed.
 pub fn build_mp2_density(t2: &[f64], nocc: usize, nvir: usize) -> (Array2<f64>, Array2<f64>) {
+    build_mp2_density_slabbed(t2, nocc, nvir, MP2_DENSITY_SLAB_ELEMS)
+}
+
+/// [`build_mp2_density`] with the per-task scratch cap as an argument, so a
+/// test can force several slabs on a small system.
+fn build_mp2_density_slabbed(
+    t2: &[f64],
+    nocc: usize,
+    nvir: usize,
+    slab_elems: usize,
+) -> (Array2<f64>, Array2<f64>) {
+    use ndarray::linalg::general_mat_mul;
+    use ndarray::{s, ArrayView2, Zip};
+    use rayon::prelude::*;
+
     let nov = nocc * nvir;
-
-    // P^MP2_ij = -sum_{kab} t_{ik,ab} (2 t_{jk,ab} - t_{jk,ba})
-    let mut p_oo = Array2::zeros((nocc, nocc));
-    for i in 0..nocc {
-        for j in 0..nocc {
-            let mut sum = 0.0;
-            for k in 0..nocc {
-                for a in 0..nvir {
-                    for b in 0..nvir {
-                        let ik_ab = (i * nvir + a) * nov + k * nvir + b;
-                        let jk_ab = (j * nvir + a) * nov + k * nvir + b;
-                        let jk_ba = (j * nvir + b) * nov + k * nvir + a;
-                        sum += t2[ik_ab] * (2.0 * t2[jk_ab] - t2[jk_ba]);
-                    }
-                }
-            }
-            p_oo[(i, j)] = -sum;
-        }
+    assert_eq!(t2.len(), nov * nov, "build_mp2_density: t2 length");
+    if nov == 0 {
+        return (Array2::zeros((nocc, nocc)), Array2::zeros((nvir, nvir)));
     }
+    let t = ArrayView2::from_shape((nov, nov), t2).expect("t2 is nov x nov");
+    let block =
+        |i: usize, j: usize| t.slice(s![i * nvir..(i + 1) * nvir, j * nvir..(j + 1) * nvir]);
 
-    // P^MP2_ab = sum_{ijc} t_{ij,ac} (2 t_{ij,bc} - t_{ij,cb})
-    let mut p_vv = Array2::zeros((nvir, nvir));
-    for a in 0..nvir {
-        for b in 0..nvir {
-            let mut sum = 0.0;
+    // P_vv: for each i, acc += A_i[:, j-slab] · M, with M[(j,c), b] =
+    // 2 A_ij[b,c] − A_ij[c,b].
+    let j_slab = (slab_elems / (nvir * nvir)).clamp(1, nocc);
+    let vv_task = |i: usize| {
+        let mut acc = Array2::<f64>::zeros((nvir, nvir));
+        let mut m = Array2::<f64>::zeros((j_slab * nvir, nvir));
+        for j0 in (0..nocc).step_by(j_slab) {
+            let j1 = (j0 + j_slab).min(nocc);
+            for j in j0..j1 {
+                let a_ij = block(i, j);
+                let rows = (j - j0) * nvir..(j - j0 + 1) * nvir;
+                Zip::from(m.slice_mut(s![rows, ..]))
+                    .and(&a_ij)
+                    .and(a_ij.t())
+                    .for_each(|out, &x, &xt| *out = 2.0 * xt - x);
+            }
+            let a_slab = t.slice(s![i * nvir..(i + 1) * nvir, j0 * nvir..j1 * nvir]);
+            let m_slab = m.slice(s![..(j1 - j0) * nvir, ..]);
+            general_mat_mul(1.0, &a_slab, &m_slab, 1.0, &mut acc);
+        }
+        acc
+    };
+
+    // P_oo: for each k, acc −= T · Mᵀ over slabs of a, with T[i,(a,b)] =
+    // A_ik[a,b] and M[j,(a,b)] = 2 A_jk[a,b] − A_jk[b,a].
+    let a_slab = (slab_elems / nov).clamp(1, nvir);
+    let oo_task = |k: usize| {
+        let mut acc = Array2::<f64>::zeros((nocc, nocc));
+        let mut tk = Array2::<f64>::zeros((nocc, a_slab * nvir));
+        let mut mk = Array2::<f64>::zeros((nocc, a_slab * nvir));
+        for a0 in (0..nvir).step_by(a_slab) {
+            let a1 = (a0 + a_slab).min(nvir);
+            let width = (a1 - a0) * nvir;
             for i in 0..nocc {
-                for j in 0..nocc {
-                    for c in 0..nvir {
-                        let ij_ac = (i * nvir + a) * nov + j * nvir + c;
-                        let ij_bc = (i * nvir + b) * nov + j * nvir + c;
-                        let ij_cb = (i * nvir + c) * nov + j * nvir + b;
-                        sum += t2[ij_ac] * (2.0 * t2[ij_bc] - t2[ij_cb]);
-                    }
-                }
+                let a_ik = block(i, k);
+                let direct = a_ik.slice(s![a0..a1, ..]);
+                let swapped = a_ik.slice(s![.., a0..a1]);
+                let shape = (a1 - a0, nvir);
+                let mut t_row = tk.slice_mut(s![i, ..width]);
+                let mut m_row = mk.slice_mut(s![i, ..width]);
+                let mut t_row = t_row.view_mut().into_shape_with_order(shape).unwrap();
+                let m_row = m_row.view_mut().into_shape_with_order(shape).unwrap();
+                t_row.assign(&direct);
+                Zip::from(m_row)
+                    .and(&direct)
+                    .and(swapped.t())
+                    .for_each(|out, &x, &xt| *out = 2.0 * x - xt);
             }
-            p_vv[(a, b)] = sum;
+            let t_slab = tk.slice(s![.., ..width]);
+            let m_slab = mk.slice(s![.., ..width]);
+            general_mat_mul(-1.0, &t_slab, &m_slab.t(), 1.0, &mut acc);
         }
-    }
+        acc
+    };
 
+    // One BLAS thread per task whatever the caller's serial-section count,
+    // and results added in index order.
+    let (per_i, per_k): (Vec<Array2<f64>>, Vec<Array2<f64>>) =
+        ferric_integrals::blas_threads::with_blas_threads(1, || {
+            (
+                (0..nocc).into_par_iter().map(vv_task).collect(),
+                (0..nocc).into_par_iter().map(oo_task).collect(),
+            )
+        });
+    let mut p_vv = Array2::<f64>::zeros((nvir, nvir));
+    for acc in &per_i {
+        p_vv += acc;
+    }
+    let mut p_oo = Array2::<f64>::zeros((nocc, nocc));
+    for acc in &per_k {
+        p_oo += acc;
+    }
     (p_oo, p_vv)
 }
 
@@ -1786,6 +1872,125 @@ mod tests {
         let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
         let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
         (mol, obs, dfbs, op, bounds, rhf)
+    }
+
+    /// The scalar definition of the MP2 density blocks, element by element,
+    /// with the absolute sum `S = Σ |t|·(2|t'| + |t''|)` of each element's
+    /// terms. Independent of the GEMM construction in `build_mp2_density`.
+    #[allow(clippy::type_complexity)]
+    fn mp2_density_scalar_reference(
+        t2: &[f64],
+        nocc: usize,
+        nvir: usize,
+    ) -> ((Array2<f64>, Array2<f64>), (Array2<f64>, Array2<f64>)) {
+        let nov = nocc * nvir;
+        let at = |i: usize, a: usize, j: usize, b: usize| t2[(i * nvir + a) * nov + j * nvir + b];
+        let mut p_oo = Array2::<f64>::zeros((nocc, nocc));
+        let mut s_oo = Array2::<f64>::zeros((nocc, nocc));
+        for i in 0..nocc {
+            for j in 0..nocc {
+                for k in 0..nocc {
+                    for a in 0..nvir {
+                        for b in 0..nvir {
+                            let (x, y, z) = (at(i, a, k, b), at(j, a, k, b), at(j, b, k, a));
+                            p_oo[(i, j)] -= x * (2.0 * y - z);
+                            s_oo[(i, j)] += x.abs() * (2.0 * y.abs() + z.abs());
+                        }
+                    }
+                }
+            }
+        }
+        let mut p_vv = Array2::<f64>::zeros((nvir, nvir));
+        let mut s_vv = Array2::<f64>::zeros((nvir, nvir));
+        for a in 0..nvir {
+            for b in 0..nvir {
+                for i in 0..nocc {
+                    for j in 0..nocc {
+                        for c in 0..nvir {
+                            let (x, y, z) = (at(i, a, j, c), at(i, b, j, c), at(i, c, j, b));
+                            p_vv[(a, b)] += x * (2.0 * y - z);
+                            s_vv[(a, b)] += x.abs() * (2.0 * y.abs() + z.abs());
+                        }
+                    }
+                }
+            }
+        }
+        ((p_oo, p_vv), (s_oo, s_vv))
+    }
+
+    /// `build_mp2_density` (GEMMs over amplitude blocks) against the scalar
+    /// definition, on amplitudes with no `(ia) <-> (jb)` symmetry so a
+    /// transposed or mislabelled block changes the result at order one.
+    ///
+    /// Bar, per element: both routes evaluate the same `N` products
+    /// `x·(2y − z)` and differ only in the order of the additions and in
+    /// fused multiply-adds. Each evaluation is within `(N + 2)·u·S` of the
+    /// exact sum (`u` the unit roundoff, `S` the absolute sum of the terms),
+    /// so the two differ by at most `2·(N + 2)·u·S`. The assert uses
+    /// `f64::EPSILON = 2u`, a factor two of slack. `N = nocc·nvir²` for
+    /// `P_oo` and `nocc²·nvir` for `P_vv`.
+    ///
+    /// Run at the production slab cap (one slab here) and at a 40-element
+    /// cap, which forces one `j` per `P_vv` slab and several `a` slabs per
+    /// `P_oo` task. Pools of 1, 2 and 5 threads must give the same bits.
+    ///
+    /// FAILS if a block is transposed, a slab is dropped or overwritten, or
+    /// the per-task results are reduced in a thread-dependent order.
+    #[test]
+    fn mp2_density_gemm_matches_the_scalar_definition() {
+        let (nocc, nvir) = (3usize, 7usize);
+        let nov = nocc * nvir;
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let t2: Vec<f64> = (0..nov * nov)
+            .map(|_| {
+                state = state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                ((state >> 11) as f64) / ((1u64 << 53) as f64) - 0.5
+            })
+            .collect();
+        let ((p_oo_ref, p_vv_ref), (s_oo, s_vv)) = mp2_density_scalar_reference(&t2, nocc, nvir);
+        // The bar must sit far below the values it guards: elements are of
+        // order `scale`, and every bar is asserted below 1e-10.
+        let scale = p_vv_ref.iter().fold(0.0f64, |m, x| m.max(x.abs()));
+        assert!(scale > 0.1, "reference P_vv is degenerate: max {scale:e}");
+
+        let n_oo = (nocc * nvir * nvir + 2) as f64;
+        let n_vv = (nocc * nocc * nvir + 2) as f64;
+        let check =
+            |label: &str, got: &Array2<f64>, want: &Array2<f64>, s: &Array2<f64>, n: f64| {
+                for ((idx, g), (w, s)) in got.indexed_iter().zip(want.iter().zip(s.iter())) {
+                    let bar = n * f64::EPSILON * s;
+                    assert!(bar < 1e-10, "{label}{idx:?}: bar {bar:e} is not tight");
+                    assert!(
+                        (g - w).abs() <= bar,
+                        "{label}{idx:?}: {g:e} vs scalar {w:e}, |diff| {:e} > bar {bar:e}",
+                        (g - w).abs()
+                    );
+                }
+            };
+        for slab_elems in [MP2_DENSITY_SLAB_ELEMS, 40] {
+            let (p_oo, p_vv) = build_mp2_density_slabbed(&t2, nocc, nvir, slab_elems);
+            check("P_oo", &p_oo, &p_oo_ref, &s_oo, n_oo);
+            check("P_vv", &p_vv, &p_vv_ref, &s_vv, n_vv);
+            for threads in [1usize, 2, 5] {
+                let pool = rayon::ThreadPoolBuilder::new()
+                    .num_threads(threads)
+                    .build()
+                    .unwrap();
+                let (q_oo, q_vv) =
+                    pool.install(|| build_mp2_density_slabbed(&t2, nocc, nvir, slab_elems));
+                assert_eq!(q_oo, p_oo, "P_oo bits differ on {threads} threads");
+                assert_eq!(q_vv, p_vv, "P_vv bits differ on {threads} threads");
+            }
+        }
+        // The public entry point is the production cap.
+        let (p_oo, p_vv) = build_mp2_density(&t2, nocc, nvir);
+        let (q_oo, q_vv) = build_mp2_density_slabbed(&t2, nocc, nvir, MP2_DENSITY_SLAB_ELEMS);
+        assert_eq!((p_oo, p_vv), (q_oo, q_vv));
+        // No orbitals on one side: empty blocks, no panic.
+        let (e_oo, e_vv) = build_mp2_density(&[], 0, 4);
+        assert_eq!((e_oo.dim(), e_vv.dim()), ((0, 0), (4, 4)));
     }
 
     /// M4 memory-guard regression: `check_t2_pair_alloc` must fire (Err) at
