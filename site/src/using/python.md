@@ -916,7 +916,7 @@ and atomic units):
 | Port | Anchor | Anchor residual | PySCF reference | Difference |
 |---|---|---|---|---|
 | ΔSCF, O / N 1s binding energy (19.9003 / 14.9760 Ha) | a numpy MOM-UHF on `veff_polarized` from the same start | <= 5.7e-14 | `scf.addons.mom_occ` UHF minus RHF | <= 5.7e-14 |
-| CPHF polarizability | finite field on `run_rhf(external_field=)`, Richardson in the step | 2.7e-7 (HF), 3.0e-7 (PBE0, water) | the CPHF equations on PySCF's response function, solved densely | <= 1e-8 |
+| CPHF polarizability | finite field on `run_rhf(external_field=)`, Richardson in the step | 2.7e-7 (HF), 3.0e-7 (PBE0, water) | the CPHF equations on PySCF's response function, solved densely | 1.9e-9 (water), 1.6e-9 (NH3) |
 | FNO-MP2, cc-pVDZ-RI | every virtual kept equals `run_rimp2` | <= 1.9e-16 | `DFMP2.make_fno`: occupations, and E_corr with 1/4, 1/2 and all virtuals | <= 3.4e-12 (occupations), <= 5.6e-12 (energies) |
 
 Mutations seen to fail (each applied to the port, the named test run, the port
@@ -924,10 +924,10 @@ restored):
 
 | Port | Mutation | Failing test, measured shift |
 |---|---|---|
-| ΔSCF | no shift on the beta spin | MUTATION-DSCF |
-| CPHF | `r[j]` for `r[i]` in alpha_ij | MUTATION-CPHF |
-| FNO | the exchange term dropped from D_ab | MUTATION-FNO-D |
-| FNO | (ia\|jb) for (ib\|ja) in the energy | MUTATION-FNO-E |
+| ΔSCF | no shift on the beta spin | both ΔSCF comparisons (water): the cation falls to the valence hole, the binding energy moves by 19.5 Ha |
+| CPHF | `r[j]` for `r[i]` in alpha_ij | PySCF comparison (water): off-diagonal elements become alpha_jj, up to 6.9 a.u. |
+| FNO | the exchange term dropped from D_ab | PySCF comparison (water): occupations move by 1.3e-2; the all-virtual anchor still passes, since E_corr does not depend on the virtual rotation |
+| FNO | (ia\|jb) for (ib\|ja) in the energy | all-virtual anchor (water): E_corr moves by 5.2e-2 Ha |
 
 Notes from these ports:
 

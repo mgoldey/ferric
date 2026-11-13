@@ -52,8 +52,15 @@ Tolerances. Every SCF here runs at energy_conv 1e-11 and density_conv 1e-9
   for the occupations (max occupation 2e-2 x 1e-9, so 1e-10).
 
 HOW THESE FAIL IF BROKEN (each mutation applied to the port and seen to fail):
-see the "Mutations" table in site/src/using/python.md, "Porting published
-methods".
+
+* Delta-SCF: no shift on the beta spin lets the core hole fill; both
+  Delta-SCF comparisons fail by 19.5 Ha (water).
+* CPHF: r[j] for r[i] in alpha_ij turns the off-diagonal elements into
+  alpha_jj (up to 6.9 a.u.); the PySCF comparison fails.
+* FNO: dropping the exchange term from D_ab moves the occupations by 1.3e-2
+  and fails the PySCF comparison; the all-virtual anchor still passes (E_corr
+  does not depend on the virtual rotation). (ia|jb) for (ib|ja) in the energy
+  moves E_corr by 5.2e-2 Ha and fails the anchor.
 """
 
 from __future__ import annotations
