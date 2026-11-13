@@ -28,13 +28,6 @@ use std::process::Command;
 /// The probe is found relative to `current_exe` rather than by shelling out
 /// to cargo (which would deadlock on the build lock this test already holds).
 fn probe_bin() -> PathBuf {
-    let exe = std::env::current_exe().expect("current_exe");
-    let profile_dir = exe
-        .ancestors()
-        .skip(1)
-        .take(6)
-        .find(|d| d.join("examples").is_dir())
-        .expect("target/<profile> (an ancestor of the test binary with an examples/ directory)");
     // CI: `FERRIC_RUNLOG_PROBE` names the probe packed INTO the nextest
     // archive (.config/nextest.toml `archive.include`) and extracted beside
     // these tests. Probe and tests leave the build job as one file, so they
@@ -53,6 +46,13 @@ fn probe_bin() -> PathBuf {
         );
         return p;
     }
+    let exe = std::env::current_exe().expect("current_exe");
+    let profile_dir = exe
+        .ancestors()
+        .skip(1)
+        .take(6)
+        .find(|d| d.join("examples").is_dir())
+        .expect("target/<profile> (an ancestor of the test binary with an examples/ directory)");
     let p = profile_dir.join("examples").join("runlog_probe");
     assert!(
         p.exists(),
