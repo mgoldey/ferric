@@ -4360,49 +4360,67 @@ pub(crate) fn build_multi_jk_with_pool_homogeneous(
     let (mj, mk) = (jd.len(), kd.len());
     let m = (mj + mk).max(1);
     // One (nbf², mj + mk) partial per group: the band budget is shared by the
-    // m matrices each partial holds.
-    let mut acc = Array2::<f64>::zeros((nbf * nbf, mj + mk));
-    crate::reduce::grouped_deterministic_sum(&mut acc, n_groups, nbf, band_bytes / m, |g| {
-        let lo = g * group_size;
-        let hi = (lo + group_size).min(n_pairs);
-        let mut mode = JkMode::new_multi(&jst, &kst);
-        for &(s1, s2) in &shell_pairs[lo..hi] {
-            if ferric_core::INTERRUPT.load(std::sync::atomic::Ordering::Relaxed) {
-                continue;
+    // m matrices each partial holds. The partials are folded onto `acc` with the
+    // accumulator split across threads ([`grouped_deterministic_fold_columns`]):
+    // every element still receives its group additions in ascending group order,
+    // so the bits are those of a serial fold and no thread count can change them.
+    let ncol = mj + mk;
+    let mut acc = Array2::<f64>::zeros((nbf * nbf, ncol));
+    let band = crate::reduce::band_width(nbf, band_bytes / m);
+    let mut scratch: Vec<Vec<f64>> = Vec::new();
+    crate::reduce::grouped_deterministic_fold_columns(
+        acc.as_slice_mut()
+            .expect("a fresh standard-layout accumulator"),
+        n_groups,
+        band,
+        &mut scratch,
+        |g, y| {
+            let lo = g * group_size;
+            let hi = (lo + group_size).min(n_pairs);
+            let mut mode = JkMode::new_multi(&jst, &kst);
+            for &(s1, s2) in &shell_pairs[lo..hi] {
+                if ferric_core::INTERRUPT.load(std::sync::atomic::Ordering::Relaxed) {
+                    continue;
+                }
+                pool.with(|engine| {
+                    scatter_bra_pair(
+                        engine,
+                        prep,
+                        dims,
+                        offs,
+                        &bounds.q,
+                        bounds.csb_m.as_ref(),
+                        bounds.csam_x.as_ref(),
+                        &screen,
+                        thresh,
+                        &dabs,
+                        s1,
+                        s2,
+                        &mut mode,
+                        true,
+                    );
+                });
             }
-            pool.with(|engine| {
-                scatter_bra_pair(
-                    engine,
-                    prep,
-                    dims,
-                    offs,
-                    &bounds.q,
-                    bounds.csb_m.as_ref(),
-                    bounds.csam_x.as_ref(),
-                    &screen,
-                    thresh,
-                    &dabs,
-                    s1,
-                    s2,
-                    &mut mode,
-                    true,
-                );
-            });
-        }
-        let JkMode::Multi(multi) = mode else {
-            unreachable!("JkMode::Multi in, JkMode::Multi out")
-        };
-        let mut part = Array2::<f64>::zeros((nbf * nbf, mj + mk));
-        let flat = |a: Array3<f64>, n: usize| {
-            a.into_shape_with_order((nbf * nbf, n))
-                .expect("a standard-layout (nbf, nbf, n) stack")
-        };
-        part.slice_mut(ndarray::s![.., ..mj])
-            .assign(&flat(multi.j, mj));
-        part.slice_mut(ndarray::s![.., mj..])
-            .assign(&flat(multi.k, mk));
-        Ok(part)
-    })?;
+            let JkMode::Multi(multi) = mode else {
+                unreachable!("JkMode::Multi in, JkMode::Multi out")
+            };
+            // y is the (nbf², mj + mk) partial: J columns first, then K.
+            let (js, ks) = (
+                multi
+                    .j
+                    .as_slice()
+                    .expect("a standard-layout (nbf, nbf, mj) stack"),
+                multi
+                    .k
+                    .as_slice()
+                    .expect("a standard-layout (nbf, nbf, mk) stack"),
+            );
+            for (r, row) in y.chunks_exact_mut(ncol).enumerate() {
+                row[..mj].copy_from_slice(&js[r * mj..(r + 1) * mj]);
+                row[mj..].copy_from_slice(&ks[r * mk..(r + 1) * mk]);
+            }
+        },
+    );
     crate::reduce::reduce_partial_across_ranks(ctx, &mut acc);
     let unstack = |lo: usize, scales: &[f64]| -> Vec<Array2<f64>> {
         scales
@@ -6159,5 +6177,190 @@ mod tests {
             df_k_builds(Some("B3LYP"), Some(crate::fock_assembly::DEFAULT_JK_AUX)),
             1
         );
+    }
+    /// The multi-density J/K build folds its group partials with the accumulator
+    /// split across threads. The serial fold it replaced (partials collected,
+    /// then `acc += partial` in ascending group order) is the oracle:
+    /// [`serial_fold_multi_jk`] is that build verbatim. The comparison is exact
+    /// bits, not a tolerance, because both fold each element's additions in the
+    /// same order; a fold that re-brackets the sum (a tree fold) or reorders the
+    /// groups changes bits and fails. The cluster has 60 shells, so 1830 shell
+    /// pairs, 915 groups of two: far above the fold's thread-split threshold
+    /// (a group count of one band, an accumulator of several 4096-element
+    /// slabs). Bands of 1, 7 and the whole list cover the single-partial and
+    /// whole-list extremes; 1, 3 and 8 threads cover the thread split.
+    #[test]
+    fn multi_jk_fold_is_the_serial_fold_bit_for_bit() {
+        let mut xyz = String::from("36\ncluster\n");
+        for i in 0..12 {
+            let (x, y) = (3.0 * (i % 4) as f64, 3.0 * (i / 4) as f64);
+            xyz.push_str(&format!(
+                "O {x} {y} 0.117790\nH {x} {} -0.471161\nH {x} {} -0.471161\n",
+                y + 0.755453,
+                y - 0.755453
+            ));
+        }
+        let mol = Molecule::parse_xyz(&xyz, 0, 1).unwrap();
+        let bs = basis::bundled("sto-3g").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
+        let n = prep.nbasis();
+        let density = |seed: usize| {
+            let mut d = Array2::<f64>::zeros((n, n));
+            for i in 0..n {
+                for j in 0..n {
+                    d[(i, j)] = 0.01 * (((i * 7 + j * 3 + seed * 5) % 11) as f64 - 4.0);
+                }
+            }
+            0.5 * (&d + &d.t())
+        };
+        let ds = [density(0), density(1), density(2)];
+        let refs: Vec<&Array2<f64>> = ds.iter().collect();
+        let pool = crate::engine_pool::EnginePool::new(
+            bounds.op,
+            &prep,
+            ferric_integrals::engine_pool::eri_precision(),
+        )
+        .unwrap();
+        let ctx = ParallelContext::default();
+        let partial_bytes = n * n * 6 * std::mem::size_of::<f64>();
+        let expected = serial_fold_multi_jk(&ctx, &prep, &bounds, &refs[..2], &refs[1..], &pool);
+        let bits = |v: &[Array2<f64>]| -> Vec<u64> {
+            v.iter()
+                .flat_map(|m| m.iter().map(|x| x.to_bits()))
+                .collect()
+        };
+        for threads in [1usize, 3, 8] {
+            let tp = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap();
+            for band_bytes in [partial_bytes, 7 * partial_bytes, usize::MAX / 8] {
+                let (j, k) = tp.install(|| {
+                    build_multi_jk_with_pool_homogeneous(
+                        &ctx,
+                        &prep,
+                        &bounds,
+                        1e-14,
+                        &refs[..2],
+                        &refs[1..],
+                        &pool,
+                        band_bytes,
+                    )
+                    .unwrap()
+                });
+                assert_eq!(
+                    bits(&j),
+                    bits(&expected.0),
+                    "J, threads {threads}, band_bytes {band_bytes}"
+                );
+                assert_eq!(
+                    bits(&k),
+                    bits(&expected.1),
+                    "K, threads {threads}, band_bytes {band_bytes}"
+                );
+            }
+        }
+    }
+
+    /// [`build_multi_jk_with_pool_homogeneous`] with the serial fold it used
+    /// before the fold was split across threads: one `Array2` partial per group,
+    /// added onto the accumulator in ascending group order. The test oracle.
+    fn serial_fold_multi_jk(
+        ctx: &ParallelContext,
+        prep: &PreparedBasis,
+        bounds: &SchwarzBounds,
+        jd: &[&Array2<f64>],
+        kd: &[&Array2<f64>],
+        pool: &crate::engine_pool::EnginePool,
+    ) -> (Vec<Array2<f64>>, Vec<Array2<f64>>) {
+        use crate::quartet_scatter::{
+            build_d_max_shell, canonical_bra_pairs, scatter_bra_pair, DensityScreen, JkMode,
+        };
+        use ndarray::{Array3, Axis};
+        let nbf = prep.nbasis();
+        let stack = |ds: &[&Array2<f64>]| -> (Array3<f64>, Vec<f64>) {
+            let mut out = Array3::<f64>::zeros((nbf, nbf, ds.len()));
+            let mut scales = Vec::new();
+            for (i, d) in ds.iter().enumerate() {
+                let dmax = d.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
+                let (scale, inv) = pow2_normalizer(dmax).unwrap();
+                out.index_axis_mut(Axis(2), i).assign(&(inv * *d));
+                scales.push(scale);
+            }
+            (out, scales)
+        };
+        let (jst, jscale) = stack(jd);
+        let (kst, kscale) = stack(kd);
+        let mut dabs = Array2::<f64>::zeros((nbf, nbf));
+        for st in [&jst, &kst] {
+            for ((mu, nu, _), v) in st.indexed_iter() {
+                let a = &mut dabs[(mu, nu)];
+                *a = a.max(v.abs());
+            }
+        }
+        let d_max_shell = build_d_max_shell(prep, &dabs);
+        let screen = DensityScreen::SixPair(&d_max_shell);
+        let shell_pairs = ctx.stripe(canonical_bra_pairs(prep.nshells()));
+        let n_pairs = shell_pairs.len();
+        let group_size = crate::reduce::deterministic_group_size(n_pairs);
+        let n_groups = n_pairs.div_ceil(group_size).max(1);
+        let (mj, mk) = (jd.len(), kd.len());
+        let partials: Vec<Array2<f64>> = (0..n_groups)
+            .map(|g| {
+                let lo = g * group_size;
+                let hi = (lo + group_size).min(n_pairs);
+                let mut mode = JkMode::new_multi(&jst, &kst);
+                for &(s1, s2) in &shell_pairs[lo..hi] {
+                    pool.with(|engine| {
+                        scatter_bra_pair(
+                            engine,
+                            prep,
+                            prep.shell_dims(),
+                            prep.shell_offsets(),
+                            &bounds.q,
+                            bounds.csb_m.as_ref(),
+                            bounds.csam_x.as_ref(),
+                            &screen,
+                            1e-14,
+                            &dabs,
+                            s1,
+                            s2,
+                            &mut mode,
+                            true,
+                        );
+                    });
+                }
+                let JkMode::Multi(multi) = mode else {
+                    unreachable!()
+                };
+                let mut part = Array2::<f64>::zeros((nbf * nbf, mj + mk));
+                let flat =
+                    |a: Array3<f64>, n: usize| a.into_shape_with_order((nbf * nbf, n)).unwrap();
+                part.slice_mut(ndarray::s![.., ..mj])
+                    .assign(&flat(multi.j, mj));
+                part.slice_mut(ndarray::s![.., mj..])
+                    .assign(&flat(multi.k, mk));
+                part
+            })
+            .collect();
+        let mut acc = Array2::<f64>::zeros((nbf * nbf, mj + mk));
+        for p in &partials {
+            acc += p;
+        }
+        let unstack = |lo: usize, scales: &[f64]| -> Vec<Array2<f64>> {
+            scales
+                .iter()
+                .enumerate()
+                .map(|(i, &sc)| {
+                    sc * acc
+                        .column(lo + i)
+                        .to_owned()
+                        .into_shape_with_order((nbf, nbf))
+                        .unwrap()
+                })
+                .collect()
+        };
+        (unstack(0, &jscale), unstack(mj, &kscale))
     }
 }
