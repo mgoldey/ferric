@@ -362,11 +362,12 @@ fn run_casscf(
         .allow_threads(|| ferric_ci::run_casscf(mol, &prep, &rhf, &cfg))
         .map_err(make_err)?;
 
-    let cert = ferric_ci::certificate::casscf_certificate(&r, &cfg).with_build(build_stamp());
+    let cert = ferric_ci::certificate::casscf_certificate_prefixed(&r, &cfg, "casscf_")
+        .with_build(build_stamp());
     if !r.converged {
         crate::emit_runtime_warning(
             py,
-            ferric_ci::certificate::casscf_unconverged_warning(&r, &cfg),
+            ferric_ci::certificate::casscf_unconverged_warning_prefixed(&r, &cfg, "casscf_"),
         );
     }
     Ok(PyCasScfResult {

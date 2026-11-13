@@ -24,11 +24,23 @@ fn active_space_detail(cas: &CasScfConfig) -> String {
     )
 }
 
-/// The warning of an unconverged CASSCF run.
+/// The warning of an unconverged CASSCF run, naming the TOML keys.
 pub fn casscf_unconverged_warning(r: &CasScfResult, cas: &CasScfConfig) -> String {
+    casscf_unconverged_warning_prefixed(r, cas, "")
+}
+
+/// The warning of an unconverged CASSCF run with every tolerance named by
+/// `prefix` + its config key: the Python entry points pass `"casscf_"` so the
+/// text names the keyword the caller wrote (`casscf_grad_tol`), not the
+/// library field.
+pub fn casscf_unconverged_warning_prefixed(
+    r: &CasScfResult,
+    cas: &CasScfConfig,
+    prefix: &str,
+) -> String {
     format!(
-        "CASSCF did not converge in {} macro iterations (|g| = {:.2e}, grad_tol {:e}, \
-         energy_tol {:e})",
+        "CASSCF did not converge in {} macro iterations (|g| = {:.2e}, {prefix}grad_tol {:e}, \
+         {prefix}energy_tol {:e})",
         r.iterations, r.grad_norm, cas.grad_tol, cas.energy_tol
     )
 }
@@ -36,12 +48,22 @@ pub fn casscf_unconverged_warning(r: &CasScfResult, cas: &CasScfConfig) -> Strin
 /// The certificate of `method.kind = "casscf"` for result `r` of config
 /// `cas`.
 pub fn casscf_certificate(r: &CasScfResult, cas: &CasScfConfig) -> Certificate {
+    casscf_certificate_prefixed(r, cas, "")
+}
+
+/// [`casscf_certificate`] whose warning names the tolerances with `prefix`
+/// (see [`casscf_unconverged_warning_prefixed`]).
+pub fn casscf_certificate_prefixed(
+    r: &CasScfResult,
+    cas: &CasScfConfig,
+    prefix: &str,
+) -> Certificate {
     let c = Certificate::for_method_kind("casscf")
         .with_approximation("active-space", active_space_detail(cas));
     if r.converged {
         c
     } else {
-        c.warn(casscf_unconverged_warning(r, cas))
+        c.warn(casscf_unconverged_warning_prefixed(r, cas, prefix))
             .cap_grade(Grade::Ungraded, "the CASSCF did not converge")
     }
 }

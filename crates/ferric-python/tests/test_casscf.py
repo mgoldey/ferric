@@ -76,6 +76,28 @@ def test_non_convergence_warns():
     assert any("CASSCF did not converge" in str(x.message) for x in w)
     assert any("CASSCF did not converge" in m for m in r.certificate["warnings"])
     assert r.certificate["grade"] == "ungraded"
+    # The text names the Python keywords (casscf_grad_tol), not the library
+    # fields (grad_tol), in the warning and in the certificate's copy.
+    tail = "casscf_grad_tol 1e-7, casscf_energy_tol 1e-12)"
+    msgs = [str(x.message) for x in w] + r.certificate["warnings"]
+    hits = [m for m in msgs if m.startswith("CASSCF did not converge")]
+    assert len(hits) == 2
+    for m in hits:
+        assert m.startswith("CASSCF did not converge in 3 macro iterations (|g| = ")
+        assert m.endswith(tail), m
+        assert ", grad_tol" not in m and ", energy_tol" not in m
+
+
+def test_optimizer_error_names_the_python_keyword():
+    mol = ferric.Molecule.from_xyz_string(_H2O)
+    with pytest.raises(Exception, match=r"run_casscf: casscf_optimizer"):
+        ferric.run_casscf(
+            mol,
+            ferric.BasisSet.bundled("6-31g"),
+            4,
+            (2, 2),
+            casscf_optimizer="nonsense",
+        )
 
 
 def test_canonicalize_option(res):
