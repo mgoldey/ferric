@@ -4,12 +4,36 @@
 //! settings of the run. The build stamp comes from the reference.
 
 use ferric_core::certificate::Certificate;
+use ferric_mp2::certificate::with_anchor_in_scope;
 
-use crate::config::PdepRpaConfig;
+use crate::config::{Chi0Backend, Chi0Sparsity, Eigensolver, PdepRpaConfig, QuadratureScheme};
 use crate::rs_mp2_rpa::Attenuator;
 use crate::{PdepRpaResult, RsMp2RpaConfig};
 
-/// PDEP-RPA (`pdep-rpa`) run with `cfg`.
+/// The quadrature sizes `validation_rpa_gradient.rs` compares with PySCF's
+/// `gw.rpa.RPA`: the 40-point grid and the matched 6-point control.
+const EVIDENCE_N_POINTS: [usize; 2] = [6, 40];
+
+/// Whether `cfg` on `reference` is what the PDEP-RPA anchor's evidence runs: an
+/// RHF reference, all electrons correlated, every dielectric mode kept
+/// (`trunc_thresh <= 0`, the dense `eigh` of the Lanczos arm), the dense
+/// χ₀, and Gauss-Legendre points at u₀ = 0.5 on the grids of
+/// `EVIDENCE_N_POINTS`.
+fn in_pdep_anchor_scope(reference: &Certificate, cfg: &PdepRpaConfig) -> bool {
+    let q = &cfg.quadrature;
+    reference.capability == "rhf"
+        && cfg.frozen_core == 0
+        && cfg.trunc_thresh <= 0.0
+        && cfg.eigensolver == Eigensolver::Lanczos
+        && cfg.chi0_backend == Chi0Backend::Dense
+        && cfg.chi0_sparsity == Chi0Sparsity::Dense
+        && q.scheme == QuadratureScheme::GaussLegendre
+        && q.u0 == 0.5
+        && EVIDENCE_N_POINTS.contains(&q.n_points)
+}
+
+/// PDEP-RPA (`pdep-rpa`) run with `cfg`. The PDEP-RPA energy anchor is
+/// attached inside the scope of its evidence (see `in_pdep_anchor_scope`).
 pub fn pdep_rpa_certificate(
     reference: &Certificate,
     aux: &str,
@@ -24,6 +48,7 @@ pub fn pdep_rpa_certificate(
             "frequency-quadrature",
             format!("{:?}, {} points", q.scheme, q.n_points).to_lowercase(),
         );
+    c = with_anchor_in_scope(c, "PDEP-RPA", in_pdep_anchor_scope(reference, cfg));
     if cfg.trunc_thresh > 0.0 {
         c = c.with_approximation(
             "pdep-truncation",
@@ -111,6 +136,65 @@ mod tests {
         assert_eq!(u.approximations.len(), 2, "full rank: no truncation entry");
         assert_eq!(u.warnings.len(), 1);
         assert!(u.warnings[0].starts_with("PDEP eigensolver did not fully converge"));
+    }
+
+    /// Each setting outside the evidence's drops the anchor on its own.
+    #[test]
+    fn pdep_rpa_anchor_is_attached_inside_the_evidence_scope_only() {
+        let rhf = Certificate::for_method_kind("rhf");
+        let base = || PdepRpaConfig {
+            trunc_thresh: 0.0,
+            quadrature: crate::config::QuadratureConfig {
+                n_points: 40,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let cert = |reference: &Certificate, cfg: &PdepRpaConfig| {
+            pdep_rpa_certificate(reference, "cc-pvdz-ri", cfg, &result(true))
+        };
+        let m = cert(&rhf, &base()).measured_error.expect("anchor attached");
+        assert_eq!(
+            m,
+            ferric_core::certificate::energy_anchor("PDEP-RPA")
+                .unwrap()
+                .measured_error()
+        );
+        assert_eq!(
+            m.evidence,
+            "crates/ferric-rpa/tests/validation_rpa_gradient.rs"
+        );
+        let mut coarse = base();
+        coarse.quadrature.n_points = 6;
+        assert!(cert(&rhf, &coarse).measured_error.is_some());
+        let with = |f: &dyn Fn(&mut PdepRpaConfig)| {
+            let mut c = base();
+            f(&mut c);
+            c
+        };
+        let outside = [
+            ("frozen core", with(&|c| c.frozen_core = 1)),
+            ("truncation", with(&|c| c.trunc_thresh = 1e-4)),
+            ("n_points", with(&|c| c.quadrature.n_points = 20)),
+            ("u0", with(&|c| c.quadrature.u0 = 0.7)),
+            (
+                "scheme",
+                with(&|c| c.quadrature.scheme = QuadratureScheme::MiniMax),
+            ),
+            ("davidson", with(&|c| c.eigensolver = Eigensolver::Davidson)),
+            (
+                "laplace chi0",
+                with(&|c| c.chi0_backend = Chi0Backend::Laplace { n_quad: 7 }),
+            ),
+        ];
+        for (what, cfg) in outside {
+            assert!(
+                cert(&rhf, &cfg).measured_error.is_none(),
+                "{what}: anchor attached"
+            );
+        }
+        let uhf = Certificate::for_method_kind("uhf");
+        assert!(cert(&uhf, &base()).measured_error.is_none());
     }
 
     #[test]

@@ -11,6 +11,7 @@
 use crate::driver::Nevpt2On;
 use crate::{CasScfConfig, CasScfResult};
 use ferric_core::certificate::{Certificate, Grade};
+use ferric_mp2::certificate::with_anchor_in_scope;
 
 /// `CAS(n_el, n_act)` with the sector and the core count.
 fn active_space_detail(cas: &CasScfConfig) -> String {
@@ -45,8 +46,26 @@ pub fn casscf_unconverged_warning_prefixed(
     )
 }
 
+/// Whether `cas` is what the energy anchors' evidence runs: canonical natural
+/// orbitals, and a gradient and energy tolerance no looser than the default
+/// the evidence runs (a looser one leaves a larger orbital error than the
+/// anchor records).
+fn in_casscf_anchor_scope(cas: &CasScfConfig) -> bool {
+    cas.canonicalize && in_casscf_tolerances(cas)
+}
+
+/// Whether `cas` converges the orbitals as tightly as the evidence runs. The
+/// SC-NEVPT2 anchor needs only this: the driver canonicalizes the core and
+/// virtual orbitals itself and the energy does not depend on the gauge of the
+/// active orbitals.
+fn in_casscf_tolerances(cas: &CasScfConfig) -> bool {
+    let d = CasScfConfig::default();
+    cas.grad_tol <= d.grad_tol && cas.energy_tol <= d.energy_tol
+}
+
 /// The certificate of `method.kind = "casscf"` for result `r` of config
-/// `cas`.
+/// `cas`. A converged run in the scope of `casscf_vs_pyscf.rs` (see
+/// `in_casscf_anchor_scope`) carries the CASSCF energy anchor.
 pub fn casscf_certificate(r: &CasScfResult, cas: &CasScfConfig) -> Certificate {
     casscf_certificate_prefixed(r, cas, "")
 }
@@ -60,6 +79,7 @@ pub fn casscf_certificate_prefixed(
 ) -> Certificate {
     let c = Certificate::for_method_kind("casscf")
         .with_approximation("active-space", active_space_detail(cas));
+    let c = with_anchor_in_scope(c, "CASSCF", r.converged && in_casscf_anchor_scope(cas));
     if r.converged {
         c
     } else {
@@ -69,11 +89,20 @@ pub fn casscf_certificate_prefixed(
 }
 
 /// The certificate of `method.kind = "nevpt2"` on reference `on` with
-/// config `cas`.
+/// config `cas`. SC-NEVPT2 on a CASSCF reference with a closed-shell active
+/// space converged to the CASSCF evidence's tolerances carries the SC-NEVPT2 anchor
+/// (`nevpt2.rs` compares class energies with PySCF on three singlets).
 pub fn nevpt2_certificate(on: Nevpt2On, cas: &CasScfConfig) -> Certificate {
     let c = Certificate::for_method_kind("nevpt2")
         .with_approximation("active-space", active_space_detail(cas))
         .with_approximation("reference", on.as_str());
+    let c = with_anchor_in_scope(
+        c,
+        "SC-NEVPT2",
+        on == Nevpt2On::Casscf
+            && cas.n_elec_active.0 == cas.n_elec_active.1
+            && in_casscf_tolerances(cas),
+    );
     match on {
         Nevpt2On::Casscf => c,
         Nevpt2On::Casci => c.cap_grade(
@@ -129,6 +158,96 @@ mod tests {
             c.approximations[0].detail,
             "CAS(8, 6): 5 alpha and 3 beta electrons in 6 orbitals above 4 core"
         );
+    }
+
+    #[test]
+    fn casscf_anchor_is_attached_inside_the_evidence_scope_only() {
+        let canonical = CasScfConfig {
+            canonicalize: true,
+            ..cas()
+        };
+        let c = casscf_certificate(&result(true), &canonical);
+        let m = c.measured_error.as_ref().expect("anchor attached");
+        assert_eq!(
+            *m,
+            ferric_core::certificate::energy_anchor("CASSCF")
+                .unwrap()
+                .measured_error()
+        );
+        assert_eq!(m.evidence, "crates/ferric-ci/tests/casscf_vs_pyscf.rs");
+        let d = CasScfConfig::default();
+        let outside = [
+            (
+                "not canonical",
+                CasScfConfig {
+                    canonicalize: false,
+                    ..canonical
+                },
+                true,
+            ),
+            (
+                "loose gradient",
+                CasScfConfig {
+                    grad_tol: d.grad_tol * 10.0,
+                    ..canonical
+                },
+                true,
+            ),
+            (
+                "loose energy",
+                CasScfConfig {
+                    energy_tol: d.energy_tol * 10.0,
+                    ..canonical
+                },
+                true,
+            ),
+            ("unconverged", canonical, false),
+        ];
+        for (what, cfg, converged) in outside {
+            let c = casscf_certificate(&result(converged), &cfg);
+            assert!(c.measured_error.is_none(), "{what}: anchor attached");
+        }
+    }
+
+    #[test]
+    fn nevpt2_anchor_is_attached_inside_the_evidence_scope_only() {
+        let singlet = CasScfConfig {
+            n_elec_active: (3, 3),
+            canonicalize: false,
+            ..cas()
+        };
+        let c = nevpt2_certificate(Nevpt2On::Casscf, &singlet);
+        let m = c.measured_error.as_ref().expect("anchor attached");
+        assert_eq!(
+            *m,
+            ferric_core::certificate::energy_anchor("SC-NEVPT2")
+                .unwrap()
+                .measured_error()
+        );
+        assert_eq!(m.evidence, "crates/ferric-ci/tests/nevpt2.rs");
+        let outside = [
+            ("casci reference", Nevpt2On::Casci, singlet),
+            (
+                "open-shell active space",
+                Nevpt2On::Casscf,
+                CasScfConfig {
+                    n_elec_active: (4, 2),
+                    ..singlet
+                },
+            ),
+            (
+                "loose gradient",
+                Nevpt2On::Casscf,
+                CasScfConfig {
+                    grad_tol: CasScfConfig::default().grad_tol * 10.0,
+                    ..singlet
+                },
+            ),
+        ];
+        for (what, on, cfg) in outside {
+            let c = nevpt2_certificate(on, &cfg);
+            assert!(c.measured_error.is_none(), "{what}: anchor attached");
+        }
     }
 
     #[test]

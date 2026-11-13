@@ -19,9 +19,22 @@ use crate::lmp2_certificate::{operator_label, Lmp2Certificate};
 use crate::rimp2::RiMp2Config;
 use crate::scs::{ScsMp2Config, ScsMp2TerfcConfig};
 
+/// The anchor of the RI correlation kinds whose evidence scope is the common
+/// one (RHF, all electrons, Coulomb) and nothing else: `mp3` and `laplace-mp2`
+/// (every `n_quad` the minimax table supports is run; others are an error).
+/// `""` for every other kind.
+fn scope_only_anchor(kind: &str) -> &'static str {
+    match kind {
+        "mp3" => "MP3",
+        "laplace-mp2" => "Laplace RI-MP2",
+        _ => "",
+    }
+}
+
 /// The certificate every RI correlation method shares: `kind` on
 /// `reference`, the auxiliary basis, frozen core, and the correlation
-/// operator when it is not Coulomb.
+/// operator when it is not Coulomb. `mp3` and `laplace-mp2` on an RHF
+/// reference with every electron correlated carry their energy anchor.
 pub fn ri_correlation_certificate(
     kind: &str,
     reference: &Certificate,
@@ -32,6 +45,8 @@ pub fn ri_correlation_certificate(
     let c = Certificate::for_post_scf(kind, reference)
         .with_ri(aux)
         .with_frozen_core(frozen_core);
+    let in_scope = rhf_all_electron_coulomb(reference, frozen_core, op);
+    let c = with_anchor_in_scope(c, scope_only_anchor(kind), in_scope);
     if op.kind == OperatorKind::Coulomb {
         c
     } else {
@@ -65,7 +80,25 @@ pub fn with_rimp2_envelope(
     let Some(a) = rimp2_energy_anchor(reference) else {
         return c;
     };
-    // A run outside the anchor's settings carries no anchor to be outside of.
+    with_anchor_envelope(c, a.method, mol, basis, Some(aux))
+}
+
+/// `c` with a warning for each way the run lies outside the anchor named
+/// `method` (a [`EnergyAnchor::method`], e.g. `"CCSD"`): an element of `mol`,
+/// the orbital basis `basis`, the auxiliary basis `aux` (`None` for methods
+/// without one). A `c` that does not carry that anchor (its settings are
+/// outside the anchor's scope) is returned as is: a run outside the anchor's
+/// settings has no anchor to be outside of. The grade is not changed.
+pub fn with_anchor_envelope(
+    c: Certificate,
+    method: &str,
+    mol: &Molecule,
+    basis: &ferric_core::basis::BasisSet,
+    aux: Option<&ferric_core::basis::BasisSet>,
+) -> Certificate {
+    let Some(a) = energy_anchor(method) else {
+        return c;
+    };
     if c.measured_error.as_ref() != Some(&a.measured_error()) {
         return c;
     }
@@ -75,10 +108,28 @@ pub fn with_rimp2_envelope(
         &RunEnvelope {
             atomic_numbers: &zs,
             basis: Some(basis),
-            aux_basis: Some(aux),
+            aux_basis: aux,
             functional: None,
         },
     )
+}
+
+/// `c` with the anchor named `method` attached when `in_scope`. The anchors of
+/// the correlated methods other than RI-MP2 are attached by this one rule:
+/// only inside the settings their evidence test runs.
+pub fn with_anchor_in_scope(c: Certificate, method: &str, in_scope: bool) -> Certificate {
+    match energy_anchor(method) {
+        Some(a) if in_scope => c.with_energy_anchor(a),
+        _ => c,
+    }
+}
+
+/// Whether a correlation run is on an RHF `reference` with every electron
+/// correlated and the Coulomb operator: the common part of the scope of the
+/// closed-shell anchors (MP3, CCSD, attenuated, SCS and Laplace MP2), whose
+/// evidence tests run an exact-J/K RHF and no frozen core.
+fn rhf_all_electron_coulomb(reference: &Certificate, frozen_core: usize, op: &Operator) -> bool {
+    reference.capability == "rhf" && frozen_core == 0 && op.kind == OperatorKind::Coulomb
 }
 
 /// Whether a run with `cfg` and `op` is what the anchor's evidence test runs:
@@ -163,6 +214,7 @@ pub fn att_rimp2_certificate(
 ) -> Certificate {
     let op = Operator::erfc(cfg.omega);
     let c = ri_correlation_certificate("att-rimp2", reference, aux, cfg.frozen_core, &op);
+    let c = with_anchor_in_scope(c, "Attenuated RI-MP2", att_in_anchor_scope(reference, cfg));
     if cfg.scaling == 1.0 {
         c
     } else {
@@ -170,16 +222,43 @@ pub fn att_rimp2_certificate(
     }
 }
 
+/// The attenuation parameters (Bohr⁻¹) that `validation_attenuated_mp2.rs`
+/// runs besides the default: 0.2, 0.42 and 1.0 (a test compares them with the
+/// reference files).
+const ATT_EVIDENCE_OMEGAS: [f64; 3] = [0.2, 0.42, 1.0];
+
+/// Whether an attenuated RI-MP2 run is what the anchor's evidence runs: RHF,
+/// all electrons correlated, unscaled, unscreened, at an evidence omega.
+fn att_in_anchor_scope(reference: &Certificate, cfg: &AttenuatedMp2Config) -> bool {
+    reference.capability == "rhf"
+        && cfg.frozen_core == 0
+        && cfg.scaling == 1.0
+        && cfg.screen_thresh.is_none_or(|t| t == 0.0)
+        && att_omega_in_evidence(cfg.omega)
+}
+
+/// Whether `omega` is one of the evidence's: the default or an entry of
+/// `ATT_EVIDENCE_OMEGAS`.
+fn att_omega_in_evidence(omega: f64) -> bool {
+    let near = |w: f64| (omega - w).abs() < 1e-12;
+    near(AttenuatedMp2Config::default().omega) || ATT_EVIDENCE_OMEGAS.into_iter().any(near)
+}
+
+/// Whether an SCS-MP2 run is the evidence's: RHF, all electrons, Coulomb and
+/// the default spin-component scales.
+fn scs_in_anchor_scope(reference: &Certificate, cfg: &ScsMp2Config, op: &Operator) -> bool {
+    let defaults = ScsMp2Config::default();
+    rhf_all_electron_coulomb(reference, cfg.frozen_core, op)
+        && cfg.c_os == defaults.c_os
+        && cfg.c_ss == defaults.c_ss
+}
+
 /// SCS-MP2 (`scs-mp2`) with the spin-component scales of `cfg`.
 pub fn scs_mp2_certificate(reference: &Certificate, aux: &str, cfg: &ScsMp2Config) -> Certificate {
-    ri_correlation_certificate(
-        "scs-mp2",
-        reference,
-        aux,
-        cfg.frozen_core,
-        &Operator::coulomb(),
-    )
-    .with_approximation("scs", format!("c_os = {}, c_ss = {}", cfg.c_os, cfg.c_ss))
+    let op = Operator::coulomb();
+    let c = ri_correlation_certificate("scs-mp2", reference, aux, cfg.frozen_core, &op);
+    with_anchor_in_scope(c, "SCS-MP2", scs_in_anchor_scope(reference, cfg, &op))
+        .with_approximation("scs", format!("c_os = {}, c_ss = {}", cfg.c_os, cfg.c_ss))
 }
 
 /// SCS-MP2 with two terfc operators (`scs-mp2-2terfc`).
@@ -217,20 +296,23 @@ pub fn laplace_mp2_certificate(
         .with_approximation("laplace", format!("{n_quad}-point minimax quadrature"))
 }
 
-/// Laplace SOS-MP2 (`laplace-sos-mp2`) with `cfg` and `formulation`.
-pub fn sos_mp2_certificate(
+/// Whether a Laplace SOS-MP2 run is the evidence's: RHF, all electrons,
+/// Coulomb, c_os = 1 (the opposite-spin energy) or the default 1.3, on the
+/// dense MO or AO formulation.
+fn sos_in_anchor_scope(
     reference: &Certificate,
-    aux: &str,
     cfg: &SosMp2Config,
     formulation: SosFormulation,
     op: &Operator,
-) -> Certificate {
-    let c = ri_correlation_certificate("laplace-sos-mp2", reference, aux, cfg.frozen_core, op)
-        .with_approximation("sos", format!("c_os = {}, c_ss = 0", cfg.c_os))
-        .with_approximation(
-            "laplace",
-            format!("{}-point minimax quadrature", cfg.n_quad),
-        );
+) -> bool {
+    rhf_all_electron_coulomb(reference, cfg.frozen_core, op)
+        && (cfg.c_os == 1.0 || cfg.c_os == SosMp2Config::default().c_os)
+        && matches!(formulation, SosFormulation::Mo | SosFormulation::Ao)
+}
+
+/// `c` with the domain formulation of `formulation` recorded and the grade
+/// capped when it is not the dense MO or AO one.
+fn with_sos_formulation(c: Certificate, formulation: SosFormulation) -> Certificate {
     match formulation {
         SosFormulation::Mo | SosFormulation::Ao => c,
         SosFormulation::AoSparse(r) => c
@@ -249,6 +331,28 @@ pub fn sos_mp2_certificate(
             )
             .cap_grade(Grade::Ungraded, "the local formulation is not validated"),
     }
+}
+
+/// Laplace SOS-MP2 (`laplace-sos-mp2`) with `cfg` and `formulation`.
+pub fn sos_mp2_certificate(
+    reference: &Certificate,
+    aux: &str,
+    cfg: &SosMp2Config,
+    formulation: SosFormulation,
+    op: &Operator,
+) -> Certificate {
+    let c = ri_correlation_certificate("laplace-sos-mp2", reference, aux, cfg.frozen_core, op);
+    let c = with_anchor_in_scope(
+        c,
+        "Laplace SOS-MP2",
+        sos_in_anchor_scope(reference, cfg, formulation, op),
+    )
+    .with_approximation("sos", format!("c_os = {}, c_ss = 0", cfg.c_os))
+    .with_approximation(
+        "laplace",
+        format!("{}-point minimax quadrature", cfg.n_quad),
+    );
+    with_sos_formulation(c, formulation)
 }
 
 /// Record an amplitude-threshold `[local]` scheme at `eps` with the kept
@@ -554,6 +658,217 @@ mod tests {
             w[2].starts_with("auxiliary basis aug-cc-pvdz-jkfit is outside the RI-MP2"),
             "{w:?}"
         );
+    }
+
+    /// Each of the six closed-shell anchors is attached inside the settings
+    /// its evidence test runs and dropped by each setting outside them.
+    #[test]
+    fn closed_shell_anchors_are_gated_on_the_evidence_settings() {
+        let uhf = Certificate::for_method_kind("uhf");
+        let ks = Certificate::for_method_kind("ksdft");
+        let coul = Operator::coulomb;
+        let has = |c: &Certificate, evidence: &str| {
+            c.measured_error.as_ref().map(|m| m.evidence.as_str()) == Some(evidence)
+        };
+        let none = |c: Certificate, what: &str| {
+            assert!(c.measured_error.is_none(), "{what}: anchor attached");
+        };
+        let sos = |r: &Certificate, cfg: &SosMp2Config, f: SosFormulation, op: &Operator| {
+            sos_mp2_certificate(r, "a", cfg, f, op)
+        };
+        let att = |r: &Certificate, cfg: &AttenuatedMp2Config| att_rimp2_certificate(r, "a", cfg);
+
+        // MP3
+        assert!(has(
+            &mp3_certificate(&rhf(), "a", 0, &coul()),
+            "crates/ferric-cc/tests/validation_cc.rs"
+        ));
+        none(mp3_certificate(&rhf(), "a", 1, &coul()), "mp3 frozen core");
+        none(
+            mp3_certificate(&rhf(), "a", 0, &Operator::erfc(0.3)),
+            "mp3 erfc",
+        );
+        none(mp3_certificate(&uhf, "a", 0, &coul()), "mp3 uhf");
+        none(mp3_certificate(&ks, "a", 0, &coul()), "mp3 ks");
+
+        // Attenuated RI-MP2: the evidence sweeps omega over four values.
+        let a_ev = "crates/ferric-mp2/tests/validation_attenuated_mp2.rs";
+        let dflt = AttenuatedMp2Config::default;
+        assert!(has(&att(&rhf(), &dflt()), a_ev));
+        for omega in [0.2, 0.42, 1.0] {
+            let cfg = AttenuatedMp2Config { omega, ..dflt() };
+            assert!(has(&att(&rhf(), &cfg), a_ev), "omega {omega}");
+        }
+        for (what, cfg) in [
+            (
+                "omega",
+                AttenuatedMp2Config {
+                    omega: 0.3,
+                    ..dflt()
+                },
+            ),
+            (
+                "frozen core",
+                AttenuatedMp2Config {
+                    frozen_core: 1,
+                    ..dflt()
+                },
+            ),
+            (
+                "scaling",
+                AttenuatedMp2Config {
+                    scaling: 1.2,
+                    ..dflt()
+                },
+            ),
+            (
+                "screen",
+                AttenuatedMp2Config {
+                    screen_thresh: Some(1e-8),
+                    ..dflt()
+                },
+            ),
+        ] {
+            none(att(&rhf(), &cfg), &format!("att {what}"));
+        }
+        none(att(&uhf, &dflt()), "att uhf");
+
+        // SCS-MP2: the default coefficients.
+        let s_ev = "crates/ferric-mp2/tests/validation_scs_mp2.rs";
+        let scs = |r: &Certificate, cfg: &ScsMp2Config| scs_mp2_certificate(r, "a", cfg);
+        assert!(has(&scs(&rhf(), &ScsMp2Config::default()), s_ev));
+        for (what, cfg) in [
+            (
+                "c_os",
+                ScsMp2Config {
+                    c_os: 1.0,
+                    ..Default::default()
+                },
+            ),
+            (
+                "c_ss",
+                ScsMp2Config {
+                    c_ss: 0.0,
+                    ..Default::default()
+                },
+            ),
+            (
+                "frozen core",
+                ScsMp2Config {
+                    frozen_core: 1,
+                    ..Default::default()
+                },
+            ),
+        ] {
+            none(scs(&rhf(), &cfg), &format!("scs {what}"));
+        }
+        none(scs(&uhf, &ScsMp2Config::default()), "scs uhf");
+
+        // Laplace-MP2: every supported n_quad.
+        let l_ev = "crates/ferric-mp2/tests/validation_laplace_mp2.rs";
+        for n in [3, 5, 7] {
+            assert!(has(
+                &laplace_mp2_certificate(&rhf(), "a", 0, &coul(), n),
+                l_ev
+            ));
+        }
+        none(
+            laplace_mp2_certificate(&rhf(), "a", 1, &coul(), 7),
+            "laplace frozen core",
+        );
+        none(
+            laplace_mp2_certificate(&rhf(), "a", 0, &Operator::erfc(0.3), 7),
+            "laplace erfc",
+        );
+        none(
+            laplace_mp2_certificate(&uhf, "a", 0, &coul(), 7),
+            "laplace uhf",
+        );
+
+        // Laplace SOS-MP2.
+        let o_ev = "crates/ferric-mp2/tests/validation_sos_mp2.rs";
+        let d = SosMp2Config::default;
+        let mo = SosFormulation::Mo;
+        assert!(has(&sos(&rhf(), &d(), mo, &coul()), o_ev));
+        assert!(has(
+            &sos(
+                &rhf(),
+                &SosMp2Config {
+                    c_os: 1.0,
+                    n_quad: 3,
+                    ..d()
+                },
+                SosFormulation::Ao,
+                &coul()
+            ),
+            o_ev
+        ));
+        for (what, cfg, f) in [
+            ("c_os", SosMp2Config { c_os: 1.7, ..d() }, mo),
+            (
+                "frozen core",
+                SosMp2Config {
+                    frozen_core: 1,
+                    ..d()
+                },
+                mo,
+            ),
+            ("ao-sparse", d(), SosFormulation::AoSparse(6.0)),
+            ("local", d(), SosFormulation::Local(6.0)),
+        ] {
+            none(sos(&rhf(), &cfg, f, &coul()), &format!("sos {what}"));
+        }
+        none(sos(&rhf(), &d(), mo, &Operator::erfc(0.3)), "sos erfc");
+        none(sos(&uhf, &d(), mo, &coul()), "sos uhf");
+    }
+
+    /// The attenuation values the certificate gates on are those of the
+    /// reference files the evidence test reads.
+    #[test]
+    fn attenuated_evidence_omegas_are_the_reference_blocks() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        for system in ["h2o", "nh3"] {
+            let path = root.join(format!(
+                "testdata/reference/validation/attenuated_mp2/{system}_aug-cc-pvdz.json"
+            ));
+            let v: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            let omegas: Vec<f64> = v["attenuated"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|b| b["omega_bohr_inv"].as_f64().unwrap())
+                .collect();
+            assert_eq!(omegas.len(), 4, "{system}");
+            for w in omegas {
+                assert!(att_omega_in_evidence(w), "{system}: omega {w}");
+            }
+        }
+    }
+
+    /// The envelope warns outside an attached anchor's covered elements and
+    /// basis sets, and says nothing for a run with no anchor.
+    #[test]
+    fn anchor_envelope_warns_only_on_an_anchored_run() {
+        let nh3 = Molecule::parse_xyz("4\n\nN 0 0 0\nH 0 0 1\nH 0 1 0\nH 1 0 0\n", 0, 1).unwrap();
+        let b = ferric_core::basis::bundled("6-31g").unwrap();
+        let aux = ferric_core::basis::bundled("cc-pvdz-ri").unwrap();
+        let op = Operator::coulomb();
+        let anchored = laplace_mp2_certificate(&rhf(), "cc-pvdz-ri", 0, &op, 7);
+        let w = with_anchor_envelope(anchored, "Laplace RI-MP2", &nh3, &b, Some(&aux));
+        let msgs: Vec<&str> = w.warnings.iter().map(String::as_str).collect();
+        assert_eq!(msgs.len(), 2, "{msgs:?}");
+        assert!(
+            msgs[0].starts_with("element N (covered: H, C, O)"),
+            "{msgs:?}"
+        );
+        assert!(
+            msgs[1].starts_with("basis 6-31g is outside the Laplace RI-MP2"),
+            "{msgs:?}"
+        );
+        let unanchored = laplace_mp2_certificate(&rhf(), "cc-pvdz-ri", 1, &op, 7);
+        let w = with_anchor_envelope(unanchored.clone(), "Laplace RI-MP2", &nh3, &b, Some(&aux));
+        assert_eq!(w, unanchored);
     }
 
     #[test]

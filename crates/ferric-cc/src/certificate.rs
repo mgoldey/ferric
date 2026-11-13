@@ -5,15 +5,25 @@
 //! The build stamp comes from the reference.
 
 use ferric_core::certificate::Certificate;
-use ferric_mp2::certificate::with_amplitude_threshold;
+use ferric_mp2::certificate::{with_amplitude_threshold, with_anchor_in_scope};
 
 use crate::ccsd_closed_shell::LadderRoute;
 use crate::double_hybrid::DoubleHybridConfig;
 use crate::linlccd::LadderVariant;
 use crate::{CcConfig, CcResult};
 
+/// Whether the run is what `validation_cc.rs` runs: `ccsd` on RHF with every
+/// electron correlated.
+fn in_ccsd_anchor_scope(kind: &str, reference: &Certificate, cfg: &CcConfig) -> bool {
+    kind == "ccsd" && reference.capability == "rhf" && cfg.frozen_core == 0
+}
+
 /// CCSD / CCD / CCSD(T) (`kind`) run with `cfg`. `r` names the VVVV ladder
 /// route the spin-adapted solver took (the spin-orbital solvers record none).
+/// `ccsd` on an RHF `reference` with every electron correlated carries the
+/// CCSD energy anchor: `validation_cc.rs` runs both drivers and both ladder
+/// routes there (its frozen-core run is one system, which a certificate
+/// cannot tell apart). `ccd` and `ccsd(t)` carry none.
 pub fn cc_certificate(
     kind: &str,
     reference: &Certificate,
@@ -24,6 +34,7 @@ pub fn cc_certificate(
     let c = Certificate::for_post_scf(kind, reference)
         .with_ri(aux)
         .with_frozen_core(cfg.frozen_core);
+    let c = with_anchor_in_scope(c, "CCSD", in_ccsd_anchor_scope(kind, reference, cfg));
     match r.ladder_route {
         Some(LadderRoute::Ri { block }) => c.with_approximation(
             "ri-ladder",
@@ -122,6 +133,44 @@ mod tests {
             ri.approximations[1].detail,
             "integral-direct VVVV ladder, block 8"
         );
+    }
+
+    /// Only `ccsd`, on RHF, all-electron, carries the anchor.
+    #[test]
+    fn ccsd_anchor_is_attached_inside_the_evidence_scope_only() {
+        let rhf = Certificate::for_method_kind("rhf");
+        let run = |kind: &str, reference: &Certificate, frozen_core: usize| {
+            let cfg = CcConfig {
+                frozen_core,
+                ..Default::default()
+            };
+            cc_certificate(kind, reference, "cc-pvdz-ri", &cfg, &cc(None))
+        };
+        let inside = run("ccsd", &rhf, 0);
+        let m = inside.measured_error.as_ref().expect("anchor attached");
+        assert_eq!(
+            *m,
+            ferric_core::certificate::energy_anchor("CCSD")
+                .unwrap()
+                .measured_error()
+        );
+        assert_eq!(m.evidence, "crates/ferric-cc/tests/validation_cc.rs");
+        let outside = [
+            ("frozen core", run("ccsd", &rhf, 1)),
+            ("ccd", run("ccd", &rhf, 0)),
+            ("ccsd(t)", run("ccsd(t)", &rhf, 0)),
+            (
+                "uhf reference",
+                run("ccsd", &Certificate::for_method_kind("uhf"), 0),
+            ),
+            (
+                "ks reference",
+                run("ccsd", &Certificate::for_method_kind("ksdft"), 0),
+            ),
+        ];
+        for (what, c) in outside {
+            assert!(c.measured_error.is_none(), "{what}: anchor attached");
+        }
     }
 
     #[test]
