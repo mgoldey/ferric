@@ -28,7 +28,7 @@
 //! `grad_jk(D, aux=None)` (exact, or density-fitted with `aux`); an SCF
 //! gradient is assembled from them in numpy.
 //!
-//! `einsum(spec, a, b)` exposes the contraction engine ferric's own
+//! `einsum(spec, *operands)` exposes the contraction engine ferric's own
 //! correlation codes use (`einsum!`), with the same spec rules.
 //!
 //! `PyFockHook` adapts a Python callable `hook(D) -> (E, V)` to
@@ -2982,28 +2982,34 @@ pub(crate) fn refuse_symmetric_dft(
     super::refuse_dft_symmetry_extras(symmetry, with_gradient, dispersion)
 }
 
-/// Binary tensor contraction with ferric's GEMM engine (the one behind the
+/// Tensor contraction with ferric's GEMM engine (the one behind the
 /// `einsum!` macro in ferric's MP2/CC code), returning `scale * result`.
 ///
+/// Two operands are one binary contraction. Three or more are a FIXED
+/// left-to-right chain of binary contractions, `((A.B).C).D`, in the order
+/// written (no contraction-order search); an index shared by the running
+/// result and the next operand is summed there unless a later operand or the
+/// output still carries it.
+///
 /// Spec rules (stricter than `numpy.einsum`, and an error, not a fallback,
-/// when broken): exactly two operands and an explicit `->`; an index shared
-/// by both operands is summed unless it is also in the output, in which case
-/// it is a batch (element-wise) index; no index may repeat within one term;
-/// the output lists batch indices, then the left operand's free indices,
-/// then the right's (any order within each group). A scalar spec
+/// when broken): an explicit `->`; each binary step sums an index shared by
+/// both sides unless it is also kept, in which case it is a batch
+/// (element-wise) index; no index may repeat within one term; an index in
+/// only one side of a step must be kept (no implicit single-operand sums);
+/// the output lists batch indices, then the running result's free indices,
+/// then the last operand's (any order within each group). A scalar spec
 /// (`"ij,ij->"`) returns a float.
 #[pyfunction]
-#[pyo3(signature = (spec, a, b, scale=1.0))]
+#[pyo3(signature = (spec, *operands, scale=1.0))]
 fn einsum(
     py: Python<'_>,
     spec: &str,
-    a: PyReadonlyArrayDyn<'_, f64>,
-    b: PyReadonlyArrayDyn<'_, f64>,
+    operands: Vec<PyReadonlyArrayDyn<'_, f64>>,
     scale: f64,
 ) -> PyResult<PyObject> {
-    let (av, bv) = (a.as_array(), b.as_array());
+    let views: Vec<_> = operands.iter().map(|a| a.as_array()).collect();
     let out = py
-        .allow_threads(|| ferric_tensors::einsum_dyn(spec, av, bv, scale))
+        .allow_threads(|| ferric_tensors::einsum_chain_dyn(spec, &views, scale))
         .map_err(|e| PyValueError::new_err(e.to_string()))?;
     if out.ndim() == 0 {
         let v = *out

@@ -5596,14 +5596,18 @@ def certificate_from_blocks(
 
 def einsum(
     spec: str,
-    a: NDArray[np.float64],
-    b: NDArray[np.float64],
+    *operands: NDArray[np.float64],
     scale: float = 1.0,
 ) -> NDArray[np.float64] | float:
-    """Binary contraction on ferric's GEMM engine (the einsum! macro's).
+    """Contraction on ferric's GEMM engine (the einsum! macro's).
 
-    Two operands, explicit '->', no repeated index within a term; output lists
-    batch, then left-free, then right-free indices. Scalar specs return float.
+    Two operands: one binary contraction. Three or more: a fixed left-to-right
+    chain of binary contractions ``((A.B).C)``, in the order written, no
+    contraction-order search; an index shared by the running result and the
+    next operand is summed there unless a later operand or the output still
+    carries it. Explicit '->', no repeated index within a term, no implicit
+    single-operand sums; the output lists batch, then left-free, then
+    right-free indices of the last step. Scalar specs return float.
     """
     ...
 

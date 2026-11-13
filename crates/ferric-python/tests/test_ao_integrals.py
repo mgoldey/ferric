@@ -387,3 +387,83 @@ def test_einsum_zero_extent_operands_give_zeros(spec, sa, sb):
     ref = 2.0 * np.einsum(spec, np.ones(sa), np.ones(sb))
     assert np.shape(got) == np.shape(ref)
     np.testing.assert_array_equal(got, ref)
+
+
+# ── einsum with three or more operands (left-to-right chain) ──
+#
+# Bar, derived: the chain and numpy.einsum evaluate the same sums of products
+# in different orders. Each output element is a sum of m terms of three
+# factors; both results are within gamma_(m+2) * S of the exact value, where
+# S = the same contraction on |a|,|b|,|c| and gamma_n = n*u/(1-n*u),
+# u = 2**-53. The chain sums over j (n1 terms) then k (n2 terms), so the
+# summation depth is n1 + n2 and the difference is at most
+# 2 * (n1 + n2 + 2) * u * S (the 2 covers both codes; 1/(1-n*u) < 2).
+_U = 2.0**-53
+
+
+def _chain_ops(shapes):
+    return [_RNG.standard_normal(s) for s in shapes]
+
+
+def _assert_within_chain_bar(spec, ops, depth, scale=1.0):
+    got = ferric.einsum(spec, *ops, scale=scale)
+    ref = scale * np.einsum(spec, *ops)
+    s_abs = abs(scale) * np.einsum(spec, *[np.abs(o) for o in ops])
+    bar = 2 * (depth + 2) * _U * s_abs
+    assert np.all(np.abs(got - ref) <= bar)
+    # The bar is not vacuous: it is far below the data scale.
+    assert np.max(bar) < 1e-10 * np.max(np.abs(ref))
+
+
+def test_einsum_three_operands_matches_numpy_to_the_derived_bar():
+    ops = _chain_ops([(6, 40), (40, 50), (50, 7)])
+    _assert_within_chain_bar("ij,jk,kl->il", ops, 40 + 50, scale=-0.5)
+
+
+def test_einsum_four_operands_matches_numpy_to_the_derived_bar():
+    ops = _chain_ops([(5, 30), (30, 20), (20, 25), (25, 8)])
+    _assert_within_chain_bar("ij,jk,kl,lm->im", ops, 30 + 20 + 25)
+
+
+def test_einsum_chain_is_left_to_right_not_reassociated():
+    # (A.B).C, evaluated here by two binary calls, must equal the chain
+    # bitwise: the intermediate carries (batch, left-free, right-free) = "il"
+    # for step one, so the final step is the same binary call.
+    a, b, c = _chain_ops([(6, 40), (40, 50), (50, 7)])
+    ab = ferric.einsum("ij,jk->ik", a, b)
+    assert np.array_equal(
+        ferric.einsum("ij,jk,kl->il", a, b, c), ferric.einsum("ik,kl->il", ab, c)
+    )
+
+
+def test_einsum_chain_keeps_an_index_a_later_operand_carries():
+    # j is shared by the first two operands and by the third: it is a batch
+    # index of step one, summed only in step two.
+    a, b, c = _chain_ops([(4, 9), (9, 5), (9, 3)])
+    got = ferric.einsum("ij,jk,jl->ikl", a, b, c)
+    ref = np.einsum("ij,jk,jl->ikl", a, b, c)
+    np.testing.assert_allclose(got, ref, rtol=1e-13, atol=1e-13)
+
+
+def test_einsum_scalar_chain_returns_a_float():
+    a, b, c = _chain_ops([(3, 4), (4, 5), (3, 5)])
+    got = ferric.einsum("ij,jk,ik->", a, b, c)
+    assert isinstance(got, float)
+    assert got == pytest.approx(np.einsum("ij,jk,ik->", a, b, c), rel=1e-13)
+
+
+@pytest.mark.parametrize(
+    "spec, shapes, match",
+    [
+        ("ij,jk,kl->li", [(2, 3), (3, 4), (4, 5)], "step 2"),  # group order
+        ("ij,jk,kl->il", [(2, 3), (3, 4), (5, 5)], "extent 4"),  # extent
+        ("ij,jk,kl->il", [(2, 3), (3, 4)], "3 input terms but 2 operands"),
+        ("ij,jk,kl->il", [(2, 3), (3, 4), (4,)], "operand 2 has 1 axes"),
+        ("ij,jk,kl->l", [(2, 3), (3, 4), (4, 5)], "step 1"),  # i dropped: a sum
+        ("ii,jk,kl->jl", [(2, 2), (3, 4), (4, 5)], "repeated"),
+    ],
+)
+def test_einsum_chain_refusals_name_the_reason(spec, shapes, match):
+    ops = [np.ones(s) for s in shapes]
+    with pytest.raises(ValueError, match=match):
+        ferric.einsum(spec, *ops)

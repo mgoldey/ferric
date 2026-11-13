@@ -84,7 +84,7 @@ AO matrices follow libint2's basis-function conventions, not PySCF's, so raw AO 
 | `mf.get_jk(mol, dm)` | `ints.jk(dm)` |
 | `scf.RHF(mol).density_fit(auxbasis=...).get_jk(mol, dm)` | `ints.df_jk(aux).jk(dm)` |
 | `ao2mo.general(mol, (c1, c2, c3, c4), compact=False)` | `ints.ao2mo(c1, c2, c3, c4)` (4-index, not pair-packed) |
-| `lib.einsum(spec, a, b)` | `ferric.einsum(spec, a, b)` (two operands) |
+| `lib.einsum(spec, a, b)` | `ferric.einsum(spec, a, b)`; three or more operands run as a left-to-right chain |
 
 ## How ferric differs
 

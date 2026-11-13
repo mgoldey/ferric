@@ -467,7 +467,7 @@ throughout; AOs are in ferric's shell order (`shell_offsets()`).
 | `df_mo(aux, C1, C2)` | fitted B^P_pq, (naux, k1, k2), with (pq\|rs) ≈ Σ_P B^P_pq B^P_rs (the RI-MP2 fit) |
 | `ao2mo(C1, C2, C3, C4)` | exact (pq\|rs), integral-direct, never holding the nao⁴ AO tensor |
 | `grad_*`, `hess_*`, `cphf`, `xc_functional` | nuclear-derivative, response and XC pieces |
-| `ferric.einsum(spec, a, b)` | the contraction engine of ferric's correlation codes ([grammar](../reference/einsum.md)) |
+| `ferric.einsum(spec, a, b, ...)` | the contraction engine of ferric's correlation codes ([grammar](../reference/einsum.md)) |
 
 Every two-electron method takes `operator="coulomb" | "erf" | "erfc"` with
 `omega` in Bohr⁻¹. Orbitals come from the result objects

@@ -12,7 +12,8 @@ Every example below is a test in `crates/ferric-tensors/tests/einsum_spec_exampl
 |---|---|---|---|
 | `einsum!(spec, &a, &b)` (Rust macro) | at compile time; the spec must be a string literal | optional fourth argument, default `1.0` | `f64` |
 | `einsum_dyn(spec, a, b, scale)` (Rust) | at run time, as `TensorError` | `scale: f64` | 0-dimensional `ArrayD<f64>` |
-| `ferric.einsum(spec, a, b, scale=1.0)` (Python) | at run time, as `ValueError` | `scale` keyword | Python `float` |
+| `ferric.einsum(spec, *operands, scale=1.0)` (Python) | at run time, as `ValueError` | `scale` keyword | Python `float` |
+| `einsum_chain_dyn(spec, &[operands], scale)` (Rust) | at run time, as `TensorError` | `scale: f64` | 0-dimensional `ArrayD<f64>` |
 
 The macro takes `Tensor` or `ArrayD<f64>` operands. For `Tensor` operands a debug build also checks that contracted and batch axes carry the same `Axis` label. A shape mismatch inside a macro call panics; `einsum_dyn` returns an error instead.
 
@@ -25,7 +26,7 @@ left, right, output = zero or more index characters
 
 - Spaces are removed before parsing.
 - An index is one `char`, and `i` and `I` are different indices. The parser splits on the first `->` and on `,`, so those characters cannot be indices.
-- The spec must contain `->` and exactly two comma-separated inputs.
+- The spec must contain `->` and exactly two comma-separated inputs. (Three or more inputs are a chain of binary contractions; see below.)
 - No index may repeat within one term, including the output. Traces and diagonals of one operand (`ii,...`) are rejected.
 - Each operand has as many axes as its term has indices; `einsum_dyn` checks this.
 
@@ -45,6 +46,12 @@ An index in the output that is in neither input is also an error.
 ## Output order
 
 The output lists indices in three groups: batch indices, then free indices of the left operand, then free indices of the right operand. Order within a group is free and sets the output axis order. A group that appears out of sequence is an error.
+
+## Three or more operands
+
+`ferric.einsum` and `einsum_chain_dyn` accept three or more operands. The spec is evaluated as a fixed left-to-right chain of binary contractions, `((A B) C) D`, in the order written. There is no contraction-order search, so the result is a deterministic function of the spec.
+
+Each step is a binary contraction under the rules above. An index shared by the running result and the next operand is summed at that step unless a later operand or the output still carries it; then it is a batch index of that step. An index held by only one side of a step must be carried by a later operand or the output, or the step is an implicit single-operand sum and the call is an error that names the step. The intermediate's axes are ordered batch, left-free, right-free, each in term order. The output must follow the group order for the last step, with the running result as the left side. `scale` multiplies the last step only.
 
 ## Examples
 
