@@ -967,6 +967,29 @@ fn refuse_dm0_with_guess(
     )))
 }
 
+/// `run_uhf`'s `mom_reference=`: `None` is `"previous"`. `"initial"` applies
+/// MOM from the first iteration, so it is refused next to `mom_after_iter > 0`
+/// (a later start) and `stability_descent` (which leaves the start's state).
+fn parse_mom_reference(
+    value: Option<&str>,
+    mom_after_iter: Option<usize>,
+    stability_descent: Option<bool>,
+) -> PyResult<ferric_scf::mom::MomReference> {
+    let reference = value
+        .map(ferric_scf::mom::MomReference::parse_config_str)
+        .transpose()
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?
+        .unwrap_or_default();
+    let conflicts = mom_after_iter.unwrap_or(0) > 0 || stability_descent.unwrap_or(false);
+    if reference == ferric_scf::mom::MomReference::Initial && conflicts {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "run_uhf: mom_reference=\"initial\" applies MOM from the first iteration and \
+             holds the starting occupation; pass neither mom_after_iter nor stability_descent",
+        ));
+    }
+    Ok(reference)
+}
+
 /// The secondary-basis guess report as a dict (`basis`, `projection`,
 /// `iterations`, `energy`, `nbasis_guess`, `nbasis_target`, `converged`,
 /// `unconverged_reason`, `used_as_guess`), or `None` when no
@@ -4045,6 +4068,14 @@ impl PyUhfResult {
 /// and `mom_after_iter` are especially useful for open-shell doublets / radicals
 /// where DIIS plateaus or the occupied set flip-flops.
 ///
+///   mom_reference     "previous" (default): MOM, when `mom_after_iter` > 0
+///                     arms it, compares against the previous iteration's
+///                     occupied set. "initial": compare against the STARTING
+///                     occupied orbitals (those of `dm0`, or of the guess),
+///                     fixed, from the first iteration: PySCF's
+///                     `scf.addons.mom_occ`. Holds a non-aufbau start such as
+///                     a core hole. Refused with `mom_after_iter` > 0 or
+///                     `stability_descent`.
 ///   guess             "minao" (default; "sad" is an alias) or "hcore". The
 ///                     bare hcore guess is an explicit opt-in: on some open
 ///                     shells (e.g. O2/STO-3G) it converges to a different
@@ -4079,7 +4110,7 @@ impl PyUhfResult {
     guess=None, stability_descent=None,
     cosx_grid=None, cosx_final_pass=None, cosx_final_grid=None, cosx_overlap_fit=None,
     trah_trigger=None, fock_hook=None, guess_basis=None, guess_projection=None, ri_j_precision=None,
-    dm0=None, with_gradient=false,
+    dm0=None, with_gradient=false, mom_reference=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_uhf(
@@ -4113,8 +4144,10 @@ fn run_uhf(
     ri_j_precision: Option<&str>,
     dm0: Option<&Bound<'_, PyAny>>,
     with_gradient: bool,
+    mom_reference: Option<&str>,
 ) -> PyResult<PyUhfResult> {
     refuse_dm0_with_guess("run_uhf", dm0.is_some(), guess, guess_basis)?;
+    let mom_reference = parse_mom_reference(mom_reference, mom_after_iter, stability_descent)?;
     let trah_trigger = check_trah_trigger(trah_trigger)?;
     let guess_basis = parse_guess_basis(guess_basis, guess_projection)?;
     // The shared strict parser (same as run_rhf and the CLI): a typo must not
@@ -4158,6 +4191,7 @@ fn run_uhf(
         ri_k_precision: parse_ri_k_precision(ri_k_precision)?,
         level_shift: level_shift.unwrap_or(0.0),
         mom_after_iter: mom_after_iter.unwrap_or(0),
+        mom_reference,
         external_potential: build_external_potential(point_charges, external_field),
         // 0 means "unset -> auto" (resolve_three_index_budget), so an
         // omitted kwarg preserves the previous auto-detect behaviour.

@@ -897,7 +897,7 @@ Notes for writing a port:
 ### Second set: `dm0`, open-shell hooks, `cphf` and `einsum`
 
 Three more ports cover the blocks the first set does not use: `run_uhf`'s
-`dm0` and spin `fock_hook`, `veff_polarized`, `dipole`, `cphf` and
+`dm0` and `mom_reference`, `veff_polarized`, `dipole`, `cphf` and
 `ferric.einsum`, on the `RhfResult`, `UhfResult` and `DftResult` accessors. The
 references are PySCF's own implementations, written by
 `scripts/gen_pyscf_block_ports_set2_refs.py` to
@@ -906,7 +906,7 @@ references are PySCF's own implementations, written by
 
 | Script | Method | Blocks used | Method lines |
 |---|---|---|---|
-| `delta_scf_from_blocks.py` | core-hole ΔSCF (Bagus, Phys. Rev. 139, A619 (1965)) held by a virtual-space level shift (STEP, Carter-Fenk, Herbert, JCTC 16, 5067 (2020)) | `run_uhf(dm0=, fock_hook=)`, `veff_polarized`, `hcore`, `overlap` | 45 |
+| `delta_scf_from_blocks.py` | core-hole ΔSCF (Bagus, Phys. Rev. 139, A619 (1965)) held by initial maximum overlap (Barca, Gilbert, Gill, JCTC 14, 1501 (2018)) | `run_uhf(dm0=, mom_reference="initial")`, `veff_polarized`, `hcore`, `overlap` | 29 |
 | `cphf_polarizability_from_blocks.py` | CPHF / CPKS static polarizability (Pople, Krishnan, Schlegel, Binkley, IJQC S13, 225 (1979)) | `dipole`, `cphf`, `xc_functional` | 14 |
 | `fno_mp2_from_blocks.py` | DF-MP2 frozen natural orbitals (Taube, Bartlett, Collect. Czech. Chem. Commun. 70, 837 (2005)) | `df_mo`, `ferric.einsum` | 21 |
 
@@ -915,7 +915,7 @@ and atomic units):
 
 | Port | Anchor | Anchor residual | PySCF reference | Difference |
 |---|---|---|---|---|
-| ΔSCF, O / N 1s binding energy (19.9003 / 14.9760 Ha) | a numpy MOM-UHF on `veff_polarized` from the same start | <= 5.7e-14 | `scf.addons.mom_occ` UHF minus RHF | <= 5.7e-14 |
+| ΔSCF, O / N 1s binding energy (19.9003 / 14.9760 Ha) | a numpy MOM-UHF on `veff_polarized` from the same start, previous-iteration reference | <= 5.7e-14 | `scf.addons.mom_occ` UHF minus RHF | <= 5.7e-14 |
 | CPHF polarizability | finite field on `run_rhf(external_field=)`, Richardson in the step | 2.7e-7 (HF), 3.0e-7 (PBE0, water) | the CPHF equations on PySCF's response function, solved densely | 1.9e-9 (water), 1.6e-9 (NH3) |
 | FNO-MP2, cc-pVDZ-RI | every virtual kept equals `run_rimp2` | <= 1.9e-16 | `DFMP2.make_fno`: occupations, and E_corr with 1/4, 1/2 and all virtuals | <= 3.4e-12 (occupations), <= 5.6e-12 (energies) |
 
@@ -924,30 +924,22 @@ restored):
 
 | Port | Mutation | Failing test, measured shift |
 |---|---|---|
-| ΔSCF | no shift on the beta spin | both ΔSCF comparisons (water): the cation falls to the valence hole, the binding energy moves by 19.5 Ha |
+| ΔSCF | `mom_reference="initial"` dropped from `run_uhf` | both ΔSCF comparisons (water): the cation falls to the valence hole, the binding energy moves by 19.5 Ha |
 | CPHF | `r[j]` for `r[i]` in alpha_ij | PySCF comparison (water): off-diagonal elements become alpha_jj, up to 6.9 a.u. |
 | FNO | the exchange term dropped from D_ab | PySCF comparison (water): occupations move by 1.3e-2; the all-virtual anchor still passes, since E_corr does not depend on the virtual rotation |
 | FNO | (ia\|jb) for (ib\|ja) in the energy | all-virtual anchor (water): E_corr moves by 5.2e-2 Ha |
 
 Notes from these ports:
 
-- `run_uhf(mom_after_iter=k)` cannot hold the occupation of a `dm0` start: MOM
-  engages after iteration k >= 1 (k = 0 is off), and the first iteration's
-  aufbau has already filled the core hole. From the water core-hole start,
-  `mom_after_iter=1` and `2` converge to the valence-hole cation (-75.632 Ha
-  instead of -56.126 Ha). PySCF's `mom_occ` takes the start occupation as its
-  reference. The ΔSCF port holds the hole with a Fock hook instead.
-- A level shift alone makes the core-hole cation hard for DIIS: the state is a
-  saddle point and a shifted Roothaan step multiplies the gradient along a
-  hole-occupied rotation by eta / (eta - gap) > 1. MEASURED at
-  energy_conv 1e-11 / density_conv 1e-9: at the default `diis_size=8`, 1 of
-  17 runs (water and NH3, eta from gap + 1 to 100 Ha) converged in 200
-  iterations; the others reach 1e-11 Ha of the final energy while the RMS
-  density change stalls at 1e-8 to 5e-7. At `diis_size=16`, eta = gap + 1
-  converges in 116 (water) and 126 (NH3) hook calls.
-- `Cphf.solve` raises "non-positive curvature ... the reference is not a
-  minimum" at `tol=1e-13` on water RHF: the curvature it reports is -2e-23,
-  round-off of a search direction that is already zero. Use `tol` >= 1e-11.
+- `run_uhf(mom_after_iter=k)` arms MOM after iteration k >= 1 (k = 0 is
+  off), so it cannot hold the occupation of a `dm0` start: the first
+  iterations' aufbau refills the core hole, and from the water core-hole start
+  `mom_after_iter=1` converges to the valence-hole cation (-75.632 Ha instead
+  of -56.126 Ha). `mom_reference="initial"` takes the start's occupied
+  orbitals as the reference, fixed, from the first iteration, as PySCF's
+  `mom_occ` does; it converges the core-hole cation in 15 iterations at the
+  default `diis_size=8` (water, cc-pVDZ, energy_conv 1e-11, density_conv
+  1e-9).
 - PySCF's `scf.cphf.solve` (the solver of `prop.polarizability.rhf`) stops up
   to 2.5e-7 a.u. short of the dense solution of its own equations, at tol 1e-11
   and 1e-13 alike, so the comparison is made against the dense solve.

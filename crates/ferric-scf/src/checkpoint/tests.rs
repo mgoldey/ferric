@@ -910,6 +910,9 @@ fn identity_table() -> Vec<(&'static str, FieldClass, Mutator)> {
             s.config.rohf_occupation_guard = false
         }),
         ("mom_after_iter", Method, |s| s.config.mom_after_iter = 5),
+        ("mom_reference", Method, |s| {
+            s.config.mom_reference = crate::mom::MomReference::Initial
+        }),
         ("constraints", Method, |s| {
             s.config.constraints = vec![ferric_dft::cdft::Constraint {
                 fragment: vec![0],

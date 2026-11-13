@@ -550,7 +550,7 @@ pub(crate) fn validate_config(config: &RhfConfig) -> Result<(), FerricError> {
             "RhfConfig.symmetry cannot be combined with {what}: {why}"
         )))
     };
-    if config.mom_after_iter > 0 {
+    if config.mom_enabled() {
         return no("MOM", "it pins orbitals by overlap, not by irrep");
     }
     if config.k_builder.as_deref() == Some("cosx") {

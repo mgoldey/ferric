@@ -766,6 +766,7 @@ fn solve_rohf_impl(
     mut hook: Option<crate::fock::SpinFockHook<'_>>,
 ) -> Result<ScfResult, FerricError> {
     use ferric_dft::xc_trait::KMix;
+    crate::mom::check_reference(config, "ROHF", false)?;
 
     // Split the injection: (S, h, V_nn) go to the shared env builder, the J/K
     // (and XC) builders are driven in the loop — as in uhf::solve_uhf_impl.
@@ -1251,7 +1252,7 @@ fn solve_rohf_impl(
     // holds non-aufbau (ΔSCF) states, and under `rohf_occupation_guard =
     // false`, which restores the pre-F6 loop exactly.
     let mut guard = crate::rohf_occupation::OccupationGuard::new(
-        config.mom_after_iter == 0 && config.rohf_occupation_guard,
+        !config.mom_enabled() && config.rohf_occupation_guard,
         nocc_double,
         nocc_open,
     )

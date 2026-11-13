@@ -4,8 +4,8 @@ The first set (test_block_ports.py) covers df_mo, ao2mo, veff, xc_functional
 and run_rhf / run_dft(fock_hook=). These three ports use the blocks it does not:
 
 * `delta_scf_from_blocks.core_ionization`: core-hole Delta-SCF (Bagus 1965)
-  held by a virtual-space level shift (STEP, Carter-Fenk and Herbert 2020):
-  run_uhf(fock_hook=, dm0=) and veff_polarized;
+  held by the initial maximum overlap method (Barca, Gilbert, Gill 2018):
+  run_uhf(dm0=, mom_reference="initial") and veff_polarized;
 * `cphf_polarizability_from_blocks.polarizability`: the CPHF / CPKS static
   polarizability: dipole and cphf;
 * `fno_mp2_from_blocks.fno_mp2`: DF-MP2 frozen natural orbitals (Taube and
@@ -19,8 +19,9 @@ scripts/gen_pyscf_block_ports_set2_refs.py; those tests skip without it).
 Tolerances. Every SCF here runs at energy_conv 1e-11 and density_conv 1e-9
 (RMS), exact J/K; PySCF at conv_tol 1e-12 and conv_tol_grad 1e-9.
 
-* Delta-SCF hook vs the numpy MOM-UHF (`mom_uhf`, the independent SCF):
-  both are the same stationary point of the UHF energy. Each energy is within energy_conv of its limit plus a term
+* Delta-SCF run_uhf initial MOM vs the numpy MOM-UHF (`mom_uhf`, the
+  independent SCF: previous-iteration reference, its own DIIS): both are the
+  same stationary point of the UHF energy. Each energy is within energy_conv of its limit plus a term
   quadratic in the density error, span * (n * density_conv)^2 <= 1e-13 Ha
   (span ~ 30 Ha with the core level, n = 24 and 29): bar 2 x 1e-11 + 1e-13,
   rounded to 3e-11 Ha.
@@ -53,8 +54,9 @@ Tolerances. Every SCF here runs at energy_conv 1e-11 and density_conv 1e-9
 
 HOW THESE FAIL IF BROKEN (each mutation applied to the port and seen to fail):
 
-* Delta-SCF: no shift on the beta spin lets the core hole fill; both
-  Delta-SCF comparisons fail by 19.5 Ha (water).
+* Delta-SCF: run_uhf without mom_reference="initial" (or with the UHF
+  driver's start-reference pin removed) lets aufbau refill the core hole;
+  both Delta-SCF comparisons fail by 19.5 Ha (water).
 * CPHF: r[j] for r[i] in alpha_ij turns the off-diagonal elements into
   alpha_jj (up to 6.9 a.u.); the PySCF comparison fails.
 * FNO: dropping the exchange term from D_ab moves the occupations by 1.3e-2
@@ -146,14 +148,14 @@ def _dscf(name: str, mom: bool = False) -> dict:
 
 
 @pytest.mark.parametrize("name", ["water", "nh3"])
-def test_level_shift_hook_reaches_the_numpy_mom_state(name):
-    hook, mom = _dscf(name), _dscf(name, mom=True)
-    assert abs(hook["e_neutral"] - mom["e_neutral"]) < 1e-12
-    assert abs(hook["ip"] - mom["ip"]) < 3e-11
+def test_initial_mom_reaches_the_numpy_mom_state(name):
+    ferric_mom, numpy_mom = _dscf(name), _dscf(name, mom=True)
+    assert abs(ferric_mom["e_neutral"] - numpy_mom["e_neutral"]) < 1e-12
+    assert abs(ferric_mom["ip"] - numpy_mom["ip"]) < 3e-11
 
 
 @pytest.mark.parametrize("name", ["water", "nh3"])
-def test_hooked_state_is_a_stationary_point_of_plain_uhf(name):
+def test_initial_mom_state_is_a_stationary_point_of_plain_uhf(name):
     r = _dscf(name)
     assert abs(r["e_check"] - r["e_cation"]) < 1e-11
     assert r["grad"] < 1e-6

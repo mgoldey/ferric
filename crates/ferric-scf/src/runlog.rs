@@ -628,7 +628,7 @@ pub fn rung_tricks(config: &crate::rhf::RhfConfig) -> Vec<&'static str> {
     if config.smearing_sigma.is_some() {
         v.push("smearing");
     }
-    if config.mom_after_iter > 0 {
+    if config.mom_enabled() {
         v.push("mom");
     }
     v

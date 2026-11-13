@@ -849,7 +849,14 @@ class Cphf:
 
     matvec(U) = (e_a - e_i) U + C_v^T F1(D1) C_o, D1 = density(U) =
     2 (C_v U C_o^T + h.c.), F1 = J - 0.5 mix K + f_xc. solve(rhs) gives U with
-    matvec(U) = rhs; for a perturbation h1, rhs = -C_v^T h1 C_o."""
+    matvec(U) = rhs; for a perturbation h1, rhs = -C_v^T h1 C_o.
+
+    solve runs preconditioned CG until max |residual| < tol (tol > 0, else
+    ValueError). The exact J/K screen is applied to the trial density scaled
+    to unit size, so matvec is linear down to the smallest CG directions. A
+    curvature p.matvec(p) below minus its dot-product round-off bound raises
+    RuntimeError (the reference is not a minimum); one within the bound of
+    zero raises RuntimeError as a stall."""
 
     def matvec(self, u: NDArray[np.float64]) -> NDArray[np.float64]: ...
     def solve(
@@ -3878,6 +3885,7 @@ def run_uhf(
     ri_j_precision: str | None = None,
     dm0: tuple[NDArray[np.float64], NDArray[np.float64]] | None = None,
     with_gradient: bool = False,
+    mom_reference: Literal["previous", "initial"] | None = None,
 ) -> UhfResult:
     """Unrestricted Hartree-Fock (open-shell). with_gradient=True: the
     analytic gradient in result.gradient() under run_rhf's rules (only
@@ -3899,6 +3907,15 @@ def run_uhf(
     is passed as (D / 2, D / 2). A closed shell (N_alpha = N_beta) has its
     beta HOMO and LUMO turned by 0.1 rad, as from any start. dm0 with guess=
     or guess_basis= raises ValueError.
+
+    mom_reference: "previous" (default): MOM, armed by mom_after_iter > 0,
+    compares each iteration's orbitals with the previous iteration's occupied
+    set. "initial": it compares them with the STARTING occupied orbitals (the
+    first N_s natural orbitals of dm0, or the guess's), held fixed and applied
+    from the first iteration, as PySCF's scf.addons.mom_occ does. This holds
+    a non-aufbau start, such as a core hole, that aufbau would refill on the
+    first iteration. With mom_after_iter > 0 or stability_descent=True it
+    raises ValueError.
 
 
     cosx_grid / cosx_final_pass / cosx_final_grid / cosx_overlap_fit: COSX

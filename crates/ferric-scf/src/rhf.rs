@@ -169,6 +169,12 @@ pub struct RhfConfig {
     /// flip-flop, it does not steer to the ground state. Arm only after DIIS
     /// has settled (open-shell plateaus: ~5; closed-shell wanderers: 50+).
     pub mom_after_iter: usize,
+    /// Which occupied set MOM compares against (see
+    /// [`crate::mom::MomReference`]). `Previous` (the default) is the
+    /// `mom_after_iter` rule above. `Initial` (UHF/UKS only) holds the
+    /// starting occupation from the first diagonalization, PySCF's
+    /// `scf.addons.mom_occ`; it requires `mom_after_iter = 0`.
+    pub mom_reference: crate::mom::MomReference,
     /// ROHF/ROKS only (ignored by every other solver): the F6 occupation guard
     /// in `solve_rohf` — hole-swap lock for degenerate open shells, orbital-
     /// gradient guard on convergence, and the single-swap energy witness that
@@ -543,6 +549,7 @@ impl Default for RhfConfig {
             trah_trigger: None,
             trah: crate::trah::TrahConfig::default(),
             mom_after_iter: 0,
+            mom_reference: crate::mom::MomReference::Previous,
             rohf_occupation_guard: true,
             constraints: Vec::new(),
             cdft_lambda_tol: 1e-5,
@@ -573,6 +580,13 @@ impl Default for RhfConfig {
 }
 
 impl RhfConfig {
+    /// Whether the occupation is picked by maximum overlap (MOM): armed by
+    /// `mom_after_iter > 0`, or from the start by
+    /// [`MomReference::Initial`](crate::mom::MomReference::Initial).
+    pub fn mom_enabled(&self) -> bool {
+        self.mom_after_iter > 0 || self.mom_reference == crate::mom::MomReference::Initial
+    }
+
     /// The RI-J storage precision this config's SCF requests on `site`, and
     /// why ([`resolve_ri_j_precision`](crate::df_j::resolve_ri_j_precision) of
     /// [`Self::ri_j_task`] and [`Self::ri_j_precision`]).
@@ -1038,7 +1052,7 @@ fn veto_stalled_energy_diis(
 /// matrix by construction: false under MOM, Fermi smearing, `fractional_occ`
 /// and `irrep_nelec`, where `ConvergenceReport::one_step_energy_drop` is `None`.
 pub(crate) fn aufbau_by_design(config: &RhfConfig) -> bool {
-    config.mom_after_iter == 0
+    !config.mom_enabled()
         && !config.smearing_sigma.is_some_and(|s| s > 0.0)
         && !config.fractional_occ
         && config.irrep_nelec.is_none()
@@ -2058,6 +2072,7 @@ fn solve_rhf_impl(
     // Refuse an open-shell molecule BEFORE any work. See `require_closed_shell`.
     // (Moved here from solve_rhf on rebase so the injected path keeps it too.)
     require_closed_shell(mol)?;
+    crate::mom::check_reference(config, "RHF", false)?;
     // Split the injection: (S, h, V_nn) go to the shared env builder, the J/K
     // builders are driven in the iteration loop. Both `None` on the molecular
     // path.
