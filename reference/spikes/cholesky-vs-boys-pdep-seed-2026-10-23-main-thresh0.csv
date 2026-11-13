@@ -1,0 +1,3 @@
+system,n_atoms,n_ao,n_aux,config,thresh,retained_pairs,total_pairs,retained_frac,e_rpa,t_rhf_s,t_intermediates_s,t_eigensolver_s,t_pdep_total_s,t_total_s,status
+n-hexane,20,154,532,Dense,0e0,0,0,1.00000,-1.1821589845,167.114,2.334,0.000,2.334,169.448,OK
+n-hexane,20,154,532,Boys-0,0e0,10108,10108,1.00000,-1.1821589845,167.114,159.118,0.000,159.118,326.232,OK

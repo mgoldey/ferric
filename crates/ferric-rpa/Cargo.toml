@@ -32,6 +32,16 @@ default = []
 # those crates' OWN mpi features must be enabled transitively, not just
 # ferric-core's.
 mpi = ["dep:mpi", "ferric-core/mpi", "ferric-scf/mpi", "ferric-mp2/mpi"]
+# RESEARCH SPIKE, off by default and in every shipped build: pivoted-Cholesky
+# localized occupied orbitals as the sparse-PDEP screening seed
+# (src/cholesky_localize.rs, Chi0Sparsity::CholeskyScreened). Record and
+# verdict: reference/spikes/cholesky-vs-boys-pdep-seed.md. Run its tests with
+#   cargo test -p ferric-rpa --features spike-cholesky-seed --test spike_cholesky_seed
+spike-cholesky-seed = []
+
+[[test]]
+name = "spike_cholesky_seed"
+required-features = ["spike-cholesky-seed"]
 
 [dev-dependencies]
 ferric-pcm = { path = "../ferric-pcm" }
