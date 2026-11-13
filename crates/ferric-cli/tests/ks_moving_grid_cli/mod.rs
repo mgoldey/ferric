@@ -26,18 +26,9 @@ pub const CLI_THREADS: usize = 2;
 pub const SCF: &str =
     "[scf]\nmax_iter = 200\nenergy_conv = 1e-13\ndensity_conv = 1e-11\ndf_guess = false\n";
 
-/// See `ccsd_dispatch.rs`: resolved at RUN time for `cargo nextest archive`.
-pub fn ferric_cli_bin() -> PathBuf {
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(profile_dir) = exe.parent().and_then(Path::parent) {
-            let p = profile_dir.join("ferric-cli");
-            if p.is_file() {
-                return p;
-            }
-        }
-    }
-    PathBuf::from(env!("CARGO_BIN_EXE_ferric-cli"))
-}
+#[path = "../support/cli_bin.rs"]
+mod cli_bin;
+pub use cli_bin::ferric_cli_bin;
 
 /// See `ccsd_dispatch.rs`: resolved at RUN time for `cargo nextest archive`.
 pub fn workspace_root() -> PathBuf {

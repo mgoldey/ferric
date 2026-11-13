@@ -23,36 +23,12 @@
 //! wrong configs are rejected — it says nothing about whether the accepted one
 //! computes the right energy.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 
-/// Path to the `ferric-cli` binary, resolved at RUN TIME.
-///
-/// Same trap as `workspace_root` below, different constant.
-/// `env!("CARGO_BIN_EXE_ferric-cli")` is baked in at COMPILE time; under
-/// `cargo nextest archive` the binary is EXTRACTED to a fresh temporary
-/// directory in the running job while that constant still names the build
-/// job's `target/debug/`. MEASURED: the archive DOES carry the executable
-/// (`target/debug/ferric-cli` is in the tarball), so the failure is the stale
-/// path, not a missing file -- which is why the error says NotFound and means
-/// something else.
-///
-/// Prefer a sibling of the currently-running test binary, which is where
-/// nextest puts it, then fall back to the compile-time path for plain
-/// `cargo test`. Copied from `ccsd_dispatch.rs`, which already had both
-/// helpers; writing this file with raw `env!` reintroduced a fixed bug.
-fn ferric_cli_bin() -> PathBuf {
-    if let Ok(exe) = std::env::current_exe() {
-        // .../target/<profile>/deps/<test-binary>  ->  .../target/<profile>/
-        if let Some(profile_dir) = exe.parent().and_then(Path::parent) {
-            let p = profile_dir.join("ferric-cli");
-            if p.is_file() {
-                return p;
-            }
-        }
-    }
-    PathBuf::from(env!("CARGO_BIN_EXE_ferric-cli"))
-}
+#[path = "support/cli_bin.rs"]
+mod cli_bin;
+use cli_bin::ferric_cli_bin;
 
 /// Resolve the workspace root at RUN time, not compile time.
 ///

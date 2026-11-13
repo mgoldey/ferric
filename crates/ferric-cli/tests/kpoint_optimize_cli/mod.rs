@@ -20,17 +20,9 @@ pub use std::process::{Command, Output};
 pub const A_BOHR: f64 = 5.0;
 pub const OMEGA: f64 = 0.8;
 
-pub fn ferric_cli_bin() -> PathBuf {
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(profile_dir) = exe.parent().and_then(Path::parent) {
-            let p = profile_dir.join("ferric-cli");
-            if p.is_file() {
-                return p;
-            }
-        }
-    }
-    PathBuf::from(env!("CARGO_BIN_EXE_ferric-cli"))
-}
+#[path = "../support/cli_bin.rs"]
+mod cli_bin;
+pub use cli_bin::ferric_cli_bin;
 
 pub fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))

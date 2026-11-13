@@ -10,7 +10,7 @@
 //! | 1 nuclear repulsion | `∂²V_nn/∂x∂y` | `hess_nuc` |
 //! | 2 skeleton 1e | `Σ D_μν ∂²(T+V)_μν/∂x∂y`, V differentiated w.r.t. both basis centres AND every nucleus | `_partial_hess_ejk` (`hcore_deriv` part of `e1`) |
 //! | 3 overlap | `−Σ W_μν ∂²S_μν/∂x∂y` | `_partial_hess_ejk` (`s1aa`/`s1ab` part of `e1`) |
-//! | 4 skeleton 2e | `Σ Γ_μνλσ ∂²(μν|λσ)/∂x∂y`, `Γ = ½D_μνD_λσ − ¼D_μλD_νσ` | `_partial_hess_ejk` (`ej − ek`) |
+//! | 4 skeleton 2e | `Σ Γ_μνλσ ∂²(μν\|λσ)/∂x∂y`, `Γ = ½D_μνD_λσ − ¼D_μλD_νσ` | `_partial_hess_ejk` (`ej − ek`) |
 //! | 5 response | `4 Σ_pi F^x_pi U^y_pi − 4 Σ_pi S^x_pi ε_i U^y_pi − 2 Σ_ij S^x_ij ε^y_ij` | `hess_elec` |
 //!
 //! Terms 1–4 are the "skeleton": the second derivative at FIXED AO density

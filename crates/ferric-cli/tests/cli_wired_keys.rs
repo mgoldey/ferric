@@ -28,19 +28,9 @@ use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::{SchwarzBounds, ScreeningKind};
 use ferric_scf::ScfResult;
 
-/// Path to the `ferric-cli` binary, resolved at RUN TIME (see `r0_sweep.rs`
-/// for why a raw `env!` breaks under `cargo nextest archive`).
-fn ferric_cli_bin() -> PathBuf {
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(profile_dir) = exe.parent().and_then(Path::parent) {
-            let p = profile_dir.join("ferric-cli");
-            if p.is_file() {
-                return p;
-            }
-        }
-    }
-    PathBuf::from(env!("CARGO_BIN_EXE_ferric-cli"))
-}
+#[path = "support/cli_bin.rs"]
+mod cli_bin;
+use cli_bin::ferric_cli_bin;
 
 /// Workspace root at RUN time (same helper as `r0_sweep.rs`).
 fn workspace_root() -> PathBuf {

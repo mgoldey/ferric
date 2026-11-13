@@ -103,15 +103,19 @@ fn all_fallback_and_mixed_are_different_code_paths() {
 /// missing build artefact is not a defect in the code under test.
 #[test]
 fn the_two_warnings_say_different_things() {
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
     use std::process::Command;
 
     // Resolved at RUN TIME: a sibling of this test binary, so it survives
     // `nextest archive` extracting to a different directory.
+    // The profile directory is an ancestor of the test binary: `deps/` is one
+    // level below it before Rust 1.100, `build/<pkg>/<hash>/out/` four since.
     let probe: Option<PathBuf> = std::env::current_exe().ok().and_then(|exe| {
-        let dir = exe.parent().and_then(Path::parent)?;
-        let p = dir.join("examples").join("hirshfeld_warning_probe");
-        p.is_file().then_some(p)
+        exe.ancestors()
+            .skip(1)
+            .take(6)
+            .map(|d| d.join("examples").join("hirshfeld_warning_probe"))
+            .find(|p| p.is_file())
     });
     let Some(probe) = probe else {
         eprintln!(
