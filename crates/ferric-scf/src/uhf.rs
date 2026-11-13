@@ -174,6 +174,30 @@ pub fn solve_uhf_injected<'a>(
     )?)
 }
 
+/// The virtual-block level-shift terms `shift · S P_v S` per spin, with
+/// `P_v = C_v C_vᵀ` from the previous orbitals. Serial section (outside any
+/// rayon region): runs at the serial BLAS thread count.
+fn virtual_level_shift_terms(
+    c_a: &Array2<f64>,
+    c_b: &Array2<f64>,
+    nocc_a: usize,
+    nocc_b: usize,
+    s: &Array2<f64>,
+    shift: f64,
+) -> (Array2<f64>, Array2<f64>) {
+    ferric_integrals::blas_threads::with_blas_threads(
+        ferric_integrals::blas_threads::opt_in_blas_threads(),
+        || {
+            crate::blas_probe::record(&crate::blas_probe::UHF_LEVEL_SHIFT);
+            let c_av = c_a.slice(ndarray::s![.., nocc_a..]);
+            let c_bv = c_b.slice(ndarray::s![.., nocc_b..]);
+            let p_av: Array2<f64> = c_av.dot(&c_av.t());
+            let p_bv: Array2<f64> = c_bv.dot(&c_bv.t());
+            (shift * s.dot(&p_av).dot(s), shift * s.dot(&p_bv).dot(s))
+        },
+    )
+}
+
 /// The error variant carries no text: say why a run whose density settled
 /// still failed (the orbital-gradient veto refused it), when it did.
 fn note_vetoed_nonconvergence(r: &ScfResult) {
@@ -2193,20 +2217,8 @@ fn solve_uhf_impl(
             let damp = err_max / (err_max + SHIFT_DAMP_ERR);
             let shift_eff = effective_level_shift * damp;
             if shift_eff > 1e-10 {
-                let (shift_a, shift_b) = ferric_integrals::blas_threads::with_blas_threads(
-                    ferric_integrals::blas_threads::opt_in_blas_threads(),
-                    || {
-                        crate::blas_probe::record(&crate::blas_probe::UHF_LEVEL_SHIFT);
-                        let c_av = c_a.slice(ndarray::s![.., nocc_a..]);
-                        let c_bv = c_b.slice(ndarray::s![.., nocc_b..]);
-                        let p_av: Array2<f64> = c_av.dot(&c_av.t());
-                        let p_bv: Array2<f64> = c_bv.dot(&c_bv.t());
-                        (
-                            shift_eff * s.dot(&p_av).dot(&s),
-                            shift_eff * s.dot(&p_bv).dot(&s),
-                        )
-                    },
-                );
+                let (shift_a, shift_b) =
+                    virtual_level_shift_terms(&c_a, &c_b, nocc_a, nocc_b, &s, shift_eff);
                 f_a_new += &shift_a;
                 f_b_new += &shift_b;
             }
