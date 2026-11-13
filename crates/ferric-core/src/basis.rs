@@ -658,6 +658,18 @@ fn registry_stem(canonical: &str) -> Option<&'static str> {
         .map(|(stem, _)| *stem)
 }
 
+/// File stem of the bundled set `name` resolves to (case-insensitive, aliases
+/// included), the key of its entry in `basis/provenance.json`; `None` when
+/// `name` is not bundled.
+///
+/// ```
+/// assert_eq!(ferric_core::basis::bundled_stem("6-31G(d)"), Some("6-31g_d"));
+/// assert_eq!(ferric_core::basis::bundled_stem("no-such-set"), None);
+/// ```
+pub fn bundled_stem(name: &str) -> Option<&'static str> {
+    registry_stem(&canonical_name(name))
+}
+
 /// Load a bundled basis set by name (case-insensitive).
 ///
 /// The loadable names are [`bundled_names`] plus the aliases in the registry

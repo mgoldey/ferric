@@ -14,7 +14,10 @@
 //! * the build stamp is a [`BuildStamp`] the top-level artifact fills in
 //!   (`ferric-cli` and `ferric-python` link `ferric-build-info`; library
 //!   crates do not, by design, so a library-built certificate says
-//!   `unstamped` rather than guessing).
+//!   `unstamped` rather than guessing);
+//! * the provenance of a result a caller composed from the Python building
+//!   blocks is a list of [`BlockRecord`]s ([`Certificate::from_blocks`],
+//!   always ungraded; see [`blocks`]).
 //!
 //! # Grades are never fabricated
 //!
@@ -72,7 +75,9 @@ use serde::{Deserialize, Serialize};
 use crate::gpu::provenance::PrecisionRecord;
 
 pub mod anchors;
+pub mod blocks;
 pub use anchors::{energy_anchor, EnergyAnchor, RunEnvelope, ENERGY_ANCHORS};
+pub use blocks::{BasisRecord, BlockRecord, BlockUse, ElementSource, BLOCKS_CAPABILITY_PREFIX};
 
 /// Where [`METHOD_KIND_GRADES`] is copied from.
 pub const GRADE_SOURCE_PAGE: &str = "site/src/reference/validation.md";
@@ -325,6 +330,11 @@ pub struct Certificate {
     pub precision: Option<serde_json::Value>,
     /// In the order raised; exact duplicates are dropped.
     pub warnings: Vec<String>,
+    /// The building-block records a caller's result was composed from
+    /// ([`Certificate::from_blocks`]); empty for every other certificate,
+    /// and then absent from the JSON.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blocks: Vec<BlockRecord>,
 }
 
 impl Certificate {
@@ -339,6 +349,7 @@ impl Certificate {
             approximations: Vec::new(),
             precision: None,
             warnings: Vec::new(),
+            blocks: Vec::new(),
         }
     }
 
@@ -537,6 +548,15 @@ impl fmt::Display for Certificate {
         match self.precision.as_ref().and_then(|p| p.get("precision")) {
             Some(serde_json::Value::String(p)) => writeln!(f, "  precision   = {p}")?,
             _ => writeln!(f, "  precision   = not recorded")?,
+        }
+        for b in &self.blocks {
+            writeln!(
+                f,
+                "  block       = {} {} ({} uses)",
+                b.object,
+                b.basis.name,
+                b.uses.len()
+            )?;
         }
         for w in &self.warnings {
             writeln!(f, "  warning     = {w}")?;

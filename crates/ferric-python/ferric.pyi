@@ -761,6 +761,20 @@ class AoIntegrals:
         (approx='1e', xuncontract=True). c in atomic units, default PySCF's
         137.03599967994. ValueError for an ECP atom or a non-positive c."""
         ...
+    def provenance(self) -> dict[str, Any]:
+        """What this object computed, as a dict (JSON-safe): ``object``,
+        ``build`` (version, commit, dirty), ``basis`` (``name`` and
+        ``elements``: ``[{z, source}]``, each element's data source:
+        ``"BSE <set> v<n>, BSE package <v>"``, a fill, a local extension,
+        ``"Psi4 <set> @<commit>"``, or ``"user-supplied"`` when the shells
+        differ from the bundled set of that name), ``approximations``
+        (``ecp``), and ``uses``: every distinct block configuration called so
+        far, in first-call order, each ``{block, operator, aux, xc,
+        approximations, calls}`` (``aux`` a basis record for fitted blocks,
+        ``xc`` ``"<functional> on <grid>"``, ``None`` where not applicable).
+        Recording never changes an array. Compose records with
+        ``certificate_from_blocks``."""
+        ...
 
 class XcFunctional:
     """An XC functional on one molecule's grid, from AoIntegrals.xc_functional.
@@ -5517,6 +5531,26 @@ def esp_at_atoms(
     result: RhfResult | DftResult,
 ) -> list[float]:
     """Electrostatic potential at each nucleus (Hartree atomic units)."""
+    ...
+
+def certificate_from_blocks(
+    capability: str,
+    records: Sequence[dict[str, Any]],
+    approximations: Sequence[tuple[str, str]] = (),
+    warnings: Sequence[str] = (),
+    reference: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """The certificate (schema of ``RhfResult.certificate``, plus ``blocks``)
+    of a result composed from building blocks: ``capability`` is
+    ``"blocks:<capability>"`` and ``grade`` ``"ungraded"``, whatever the
+    records or the reference hold (no validation row covers the caller's
+    code); ``blocks`` holds ``records`` (``AoIntegrals.provenance()``
+    dicts) unchanged; ``approximations`` are those the records imply (``ri``
+    naming each auxiliary basis, ``operator``, ``xc-grid``, ``screening``,
+    ``ecp``, ``x2c``), then the ``reference`` certificate's (prefixed
+    ``scf ``), then ``approximations``; ``warnings`` adds to those raised
+    (records from different builds raise one). ValueError on no records or
+    a malformed record or reference."""
     ...
 
 def einsum(
