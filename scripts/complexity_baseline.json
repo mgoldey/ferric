@@ -12053,7 +12053,7 @@
   },
   "crates/ferric-core/src/linalg.rs::par_gemm::<anonymous>": {
     "cc": 1.0,
-    "mi": 147.6614814694536
+    "mi": 107.85
   },
   "crates/ferric-core/src/memory.rs::ancestry_minimum_is_the_effective_limit": {
     "cc": 5.0,

@@ -44,10 +44,9 @@
 //! sub-batches of `COSX_SUB_BATCH_POINTS` points (md3c1e: one kernel scratch
 //! per worker). Every parallel write is to its own columns of `G`, the
 //! accumulation order within a column is the fixed shell-pair order, and the
-//! two GEMMs per block run in block order (on the sparse path each through
-//! `ferric_core::linalg::par_gemm`, fixed column blocks), so the result is
-//! bit-identical across thread counts (block and sub-batch partitions are pure
-//! functions of the point count).
+//! two GEMMs per block run in block order, so the result is bit-identical
+//! across thread counts (block and sub-batch partitions are pure functions of
+//! the point count).
 //!
 //! # Sparse half transforms
 //!
@@ -94,7 +93,6 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::Instant;
 
-use ferric_core::linalg::par_gemm;
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
 use ferric_core::FerricError;
@@ -1578,12 +1576,7 @@ impl<'a> CosxK<'a> {
 
             let t0 = Instant::now();
             let d_la = gather_block(d, &lam.aos, &a.aos);
-            // This block's two GEMMs (F here, Ktilde below) run on the main
-            // thread between the parallel A-build regions. `par_gemm` spreads
-            // each over the rayon pool in fixed column blocks at one BLAS
-            // thread, so K stays independent of the thread count.
-            let mut f_la = Array2::<f64>::zeros((lam.aos.len(), pts.len()));
-            par_gemm(1.0, &d_la.view(), &x_a.view(), 0.0, &mut f_la);
+            let f_la = d_la.dot(&x_a);
             let mut f = Array2::<f64>::zeros((nbf, pts.len()));
             for (i, &lambda) in lam.aos.iter().enumerate() {
                 f.row_mut(lambda).assign(&f_la.row(i));
@@ -1604,8 +1597,7 @@ impl<'a> CosxK<'a> {
             t.out_ao_frac += b_aos.len() as f64 / nbf as f64;
             if !b_aos.is_empty() {
                 let g_b = gather_rows_same_layout(&g, &b_aos);
-                let mut prod = Array2::<f64>::zeros((a.aos.len(), b_aos.len()));
-                par_gemm(1.0, &x_a.view(), &g_b.t(), 0.0, &mut prod);
+                let prod = x_a.dot(&g_b.t());
                 scatter_add(ktilde, &a.aos, &b_aos, &prod);
             }
             t.ktilde_s += t0.elapsed().as_secs_f64();
