@@ -362,8 +362,14 @@ fn run_casscf(
         .allow_threads(|| ferric_ci::run_casscf(mol, &prep, &rhf, &cfg))
         .map_err(make_err)?;
 
-    let cert = ferric_ci::certificate::casscf_certificate_prefixed(&r, &cfg, "casscf_")
-        .with_build(build_stamp());
+    let cert = ferric_mp2::certificate::with_anchor_envelope(
+        ferric_ci::certificate::casscf_certificate_prefixed(&r, &cfg, "casscf_")
+            .with_build(build_stamp()),
+        "CASSCF",
+        mol,
+        &basis_set.inner,
+        None,
+    );
     if !r.converged {
         crate::emit_runtime_warning(
             py,
@@ -547,7 +553,13 @@ fn run_nevpt2(
     let run = py
         .allow_threads(|| ferric_ci::driver::nevpt2_on_rhf(mol, &prep, &rhf, on, &cfg))
         .map_err(make_err)?;
-    let cert = ferric_ci::certificate::nevpt2_certificate(on, &cfg).with_build(build_stamp());
+    let cert = ferric_mp2::certificate::with_anchor_envelope(
+        ferric_ci::certificate::nevpt2_certificate(on, &cfg).with_build(build_stamp()),
+        "SC-NEVPT2",
+        mol,
+        &basis_set.inner,
+        None,
+    );
     let (r, iterations, grad_norm) = (
         run.result,
         run.reference_iterations,

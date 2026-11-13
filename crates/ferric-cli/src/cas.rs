@@ -397,8 +397,13 @@ pub fn run_cas(cfg: &Config, gpu_flag: bool) {
     let (energy, converged) = match plan.nevpt2 {
         None => {
             let r = ferric_ci::run_casscf(&mol, &prep, &rhf, &cas).unwrap_or_else(|e| die(e));
-            let cert =
-                ferric_ci::certificate::casscf_certificate(&r, &cas).with_build(build_stamp());
+            let cert = ferric_mp2::certificate::with_anchor_envelope(
+                ferric_ci::certificate::casscf_certificate(&r, &cas).with_build(build_stamp()),
+                "CASSCF",
+                &mol,
+                &bs,
+                None,
+            );
             header("CASSCF");
             println!("  determinants  = {}", r.n_determinants);
             println!(
@@ -435,8 +440,13 @@ pub fn run_cas(cfg: &Config, gpu_flag: bool) {
         }
         Some(on) => {
             let run = nevpt2_on_rhf(&mol, &prep, &rhf, on, &cas).unwrap_or_else(|e| die(e));
-            let cert =
-                ferric_ci::certificate::nevpt2_certificate(on, &cas).with_build(build_stamp());
+            let cert = ferric_mp2::certificate::with_anchor_envelope(
+                ferric_ci::certificate::nevpt2_certificate(on, &cas).with_build(build_stamp()),
+                "SC-NEVPT2",
+                &mol,
+                &bs,
+                None,
+            );
             let r = &run.result;
             let total = r.e_reference + r.e_corr;
             header("SC-NEVPT2");

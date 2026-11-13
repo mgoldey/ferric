@@ -2963,11 +2963,17 @@ fn run_mp3(
     println!("  MP3 corr   = {:.10} Hartree", mp3_result.e_mp3);
     println!("  Total corr = {:.10} Hartree", mp3_result.e_corr);
     println!("  Total      = {:.10} Hartree", mp3_result.e_total);
-    let cert = print_certificate(&ferric_mp2::certificate::mp3_certificate(
-        scf_cert,
-        aux_name,
-        cfg.mp2.frozen_core.resolve(mol),
-        &op,
+    let cert = print_certificate(&ferric_mp2::certificate::with_anchor_envelope(
+        ferric_mp2::certificate::mp3_certificate(
+            scf_cert,
+            aux_name,
+            cfg.mp2.frozen_core.resolve(mol),
+            &op,
+        ),
+        "MP3",
+        mol,
+        bs,
+        Some(&aux_bs),
     ));
     if let Some(rl) = ferric_scf::runlog::log() {
         // MP3 carries BOTH orders separately, not just their sum: the MP2->MP3
@@ -3293,10 +3299,12 @@ fn run_att_rimp2(
         att_result.spin_components.e_ss
     );
     println!("  Total      = {:.10} Hartree", att_result.total_energy);
-    let cert = print_certificate(&ferric_mp2::certificate::att_rimp2_certificate(
-        scf_cert,
-        aux_name,
-        &att_config,
+    let cert = print_certificate(&ferric_mp2::certificate::with_anchor_envelope(
+        ferric_mp2::certificate::att_rimp2_certificate(scf_cert, aux_name, &att_config),
+        "Attenuated RI-MP2",
+        mol,
+        bs,
+        Some(&aux_bs),
     ));
     if let Some(rl) = ferric_scf::runlog::log() {
         rl.result(
@@ -3700,10 +3708,12 @@ fn run_scs_mp2(
     println!("  E_OS       = {:.10} Hartree", scs_result.e_os);
     println!("  E_SS       = {:.10} Hartree", scs_result.e_ss);
     println!("  Total      = {:.10} Hartree", scs_result.total_energy);
-    let cert = print_certificate(&ferric_mp2::certificate::scs_mp2_certificate(
-        scf_cert,
-        aux_name,
-        &scs_config,
+    let cert = print_certificate(&ferric_mp2::certificate::with_anchor_envelope(
+        ferric_mp2::certificate::scs_mp2_certificate(scf_cert, aux_name, &scs_config),
+        "SCS-MP2",
+        mol,
+        bs,
+        Some(&aux_bs),
     ));
     if let Some(rl) = ferric_scf::runlog::log() {
         rl.result(
@@ -4094,8 +4104,12 @@ fn run_ccsd(
         "  Total      = {:.10} Hartree",
         result.energy + cc_result.correlation_energy
     );
-    let cert = print_certificate(&ferric_cc::certificate::cc_certificate(
-        "ccsd", scf_cert, aux_name, &cc_config, &cc_result,
+    let cert = print_certificate(&ferric_mp2::certificate::with_anchor_envelope(
+        ferric_cc::certificate::cc_certificate("ccsd", scf_cert, aux_name, &cc_config, &cc_result),
+        "CCSD",
+        mol,
+        bs,
+        Some(&aux_bs),
     ));
     if let Some(rl) = ferric_scf::runlog::log() {
         rl.result(
@@ -4873,12 +4887,18 @@ fn run_laplace_mp2(
     println!("  E_OS       = {:.10} Hartree", lap_result.e_os);
     println!("  E_SS       = {:.10} Hartree", lap_result.e_ss);
     println!("  Total      = {:.10} Hartree", lap_result.total_energy);
-    let cert = print_certificate(&ferric_mp2::certificate::laplace_mp2_certificate(
-        scf_cert,
-        aux_name,
-        cfg.mp2.frozen_core.resolve(mol),
-        &op,
-        n_quad,
+    let cert = print_certificate(&ferric_mp2::certificate::with_anchor_envelope(
+        ferric_mp2::certificate::laplace_mp2_certificate(
+            scf_cert,
+            aux_name,
+            cfg.mp2.frozen_core.resolve(mol),
+            &op,
+            n_quad,
+        ),
+        "Laplace RI-MP2",
+        mol,
+        bs,
+        Some(&aux_bs),
     ));
     if let Some(rl) = ferric_scf::runlog::log() {
         rl.result(
@@ -4983,12 +5003,18 @@ fn run_laplace_sos_mp2(
     println!("  c_os       = {:.4}", sos.c_os);
     println!("  SOS corr   = {:.10} Hartree", sos.sos_corr);
     println!("  Total      = {:.10} Hartree", sos.total_energy);
-    let cert = print_certificate(&ferric_mp2::certificate::sos_mp2_certificate(
-        scf_cert,
-        aux_name,
-        &sos_cfg,
-        formulation,
-        &op,
+    let cert = print_certificate(&ferric_mp2::certificate::with_anchor_envelope(
+        ferric_mp2::certificate::sos_mp2_certificate(
+            scf_cert,
+            aux_name,
+            &sos_cfg,
+            formulation,
+            &op,
+        ),
+        "Laplace SOS-MP2",
+        mol,
+        bs,
+        Some(&aux_bs),
     ));
     if let Some(rl) = ferric_scf::runlog::log() {
         rl.result(
@@ -5133,8 +5159,13 @@ fn run_pdep_rpa_arm(
     if let Some(e_diag) = rpa_result.e_rpa_dft_diag {
         println!("RI-dRPA check:         {:>20.10} Hartree", e_diag);
     }
-    let rpa_cert =
-        ferric_rpa::certificate::pdep_rpa_certificate(&reference, aux_name, &rpa_cfg, &rpa_result);
+    let rpa_cert = ferric_mp2::certificate::with_anchor_envelope(
+        ferric_rpa::certificate::pdep_rpa_certificate(&reference, aux_name, &rpa_cfg, &rpa_result),
+        "PDEP-RPA",
+        mol,
+        bs,
+        Some(&aux_bs),
+    );
     print_and_note_certificate(&rpa_cert);
     if let Some(prefix) = cfg.rpa.export_eigpot_prefix.as_deref() {
         use ferric_export::cube::GridSpec;

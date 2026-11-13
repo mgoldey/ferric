@@ -281,3 +281,62 @@ def test_tddft_certificate_reports_the_grid_it_ran_on():
     )
     assert grid["detail"].startswith("(75, 194)")
     assert grid["detail"].endswith("[explicit grid keys]")
+
+
+# The nine kinds with an energy anchor carry it inside the settings of the
+# anchor's evidence test and nothing outside them. Water is covered by every
+# anchor's elements; the orbital bases below are ones each anchor ran.
+def _anchored(c):
+    return c.get("measured_error") is not None
+
+
+def test_correlated_anchors_follow_their_evidence_settings():
+    mol = ferric.Molecule.from_xyz_string(_WATER)
+    dz = ferric.BasisSet.bundled("cc-pvdz")
+    dz_ri = ferric.BasisSet.bundled("cc-pvdz-ri")
+    adz = ferric.BasisSet.bundled("aug-cc-pvdz")
+    adz_ri = ferric.BasisSet.bundled("aug-cc-pvdz-rifit")
+
+    for run, kw in [
+        (ferric.run_mp3, {}),
+        (ferric.run_ccsd, {}),
+        (ferric.run_laplace_mp2, {"n_quad": 3}),
+        (ferric.run_laplace_sos_mp2, {"n_quad": 3}),
+    ]:
+        c = run(mol, dz, dz_ri, **kw).certificate
+        assert _anchored(c), run.__name__
+        assert c["warnings"] == [], run.__name__
+        c = run(mol, dz, dz_ri, frozen_core=1, **kw).certificate
+        assert not _anchored(c), run.__name__
+    for run in (ferric.run_attenuated_rimp2, ferric.run_scs_mp2):
+        c = run(mol, adz, adz_ri).certificate
+        assert _anchored(c), run.__name__
+        assert c["warnings"] == [], run.__name__
+        assert not _anchored(run(mol, adz, adz_ri, frozen_core=1).certificate)
+    # An orbital basis outside the anchor's keeps the anchor and warns.
+    c = ferric.run_mp3(mol, ferric.BasisSet.bundled("sto-3g"), dz_ri).certificate
+    assert _anchored(c)
+    assert any("basis sto-3g is outside" in w for w in c["warnings"])
+
+
+def test_pdep_rpa_anchor_follows_its_evidence_settings():
+    mol = ferric.Molecule.from_xyz_string(_WATER)
+    dz = ferric.BasisSet.bundled("cc-pvdz")
+    dz_ri = ferric.BasisSet.bundled("cc-pvdz-ri")
+    c = ferric.run_pdep_rpa(mol, dz, dz_ri, n_quad=6, trunc_thresh=0.0).certificate
+    assert _anchored(c)
+    assert not _anchored(ferric.run_pdep_rpa(mol, dz, dz_ri, n_quad=6).certificate)
+    c = ferric.run_pdep_rpa(mol, dz, dz_ri, n_quad=6, trunc_thresh=0.0, frozen_core=1)
+    assert not _anchored(c.certificate)
+
+
+def test_casscf_and_nevpt2_anchors_follow_their_evidence_settings():
+    mol = ferric.Molecule.from_xyz_string(_WATER)
+    bs = ferric.BasisSet.bundled("6-31g")
+    c = ferric.run_casscf(mol, bs, 4, (2, 2), canonicalize=True).certificate
+    assert _anchored(c)
+    assert not _anchored(ferric.run_casscf(mol, bs, 4, (2, 2)).certificate)
+    assert _anchored(ferric.run_nevpt2(mol, bs, 4, (2, 2)).certificate)
+    assert not _anchored(
+        ferric.run_nevpt2(mol, bs, 4, (2, 2), reference="casci").certificate
+    )

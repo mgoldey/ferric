@@ -1857,11 +1857,17 @@ pub(crate) fn run_mp3(
         e_mp3: mp3.e_mp3,
         e_corr: mp3.e_corr,
         e_total: mp3.e_total,
-        certificate_data: ferric_mp2::certificate::mp3_certificate(
-            &reference_certificate(&mol.inner, &rhf, &rhf_config, &basis_set.inner),
-            &auxbasis.inner.name,
-            frozen_core.unwrap_or(0),
-            &op,
+        certificate_data: ferric_mp2::certificate::with_anchor_envelope(
+            ferric_mp2::certificate::mp3_certificate(
+                &reference_certificate(&mol.inner, &rhf, &rhf_config, &basis_set.inner),
+                &auxbasis.inner.name,
+                frozen_core.unwrap_or(0),
+                &op,
+            ),
+            "MP3",
+            &mol.inner,
+            &basis_set.inner,
+            Some(&auxbasis.inner),
         ),
     })
 }
@@ -1961,12 +1967,18 @@ pub(crate) fn run_laplace_mp2(
         budget,
     )
     .map_err(make_err)?;
-    let certificate_data = ferric_mp2::certificate::laplace_mp2_certificate(
-        &reference_certificate(&mol.inner, &rhf, &rhf_config, &basis_set.inner),
-        &auxbasis.inner.name,
-        frozen_core.unwrap_or(0),
-        &op,
-        n_quad.unwrap_or(7),
+    let certificate_data = ferric_mp2::certificate::with_anchor_envelope(
+        ferric_mp2::certificate::laplace_mp2_certificate(
+            &reference_certificate(&mol.inner, &rhf, &rhf_config, &basis_set.inner),
+            &auxbasis.inner.name,
+            frozen_core.unwrap_or(0),
+            &op,
+            n_quad.unwrap_or(7),
+        ),
+        "Laplace RI-MP2",
+        &mol.inner,
+        &basis_set.inner,
+        Some(&auxbasis.inner),
     );
     Ok(PyLaplaceMp2Result {
         total_energy: r.total_energy,
@@ -2125,12 +2137,18 @@ pub(crate) fn run_laplace_sos_mp2(
         form,
     )
     .map_err(make_err)?;
-    let certificate_data = ferric_mp2::certificate::sos_mp2_certificate(
-        &reference_certificate(&mol.inner, &rhf, &rhf_config, &basis_set.inner),
-        &auxbasis.inner.name,
-        &cfg,
-        form,
-        &op,
+    let certificate_data = ferric_mp2::certificate::with_anchor_envelope(
+        ferric_mp2::certificate::sos_mp2_certificate(
+            &reference_certificate(&mol.inner, &rhf, &rhf_config, &basis_set.inner),
+            &auxbasis.inner.name,
+            &cfg,
+            form,
+            &op,
+        ),
+        "Laplace SOS-MP2",
+        &mol.inner,
+        &basis_set.inner,
+        Some(&auxbasis.inner),
     );
     Ok(PySosMp2Result {
         total_energy: r.total_energy,
@@ -2245,10 +2263,16 @@ pub(crate) fn run_attenuated_rimp2(
         memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
     };
     let r = attenuated_ri_mp2(&mol.inner, &prep, &dfbs, &rhf, &cfg).map_err(make_err)?;
-    let certificate_data = ferric_mp2::certificate::att_rimp2_certificate(
-        &reference_certificate(&mol.inner, &rhf, &rhf_config, &basis_set.inner),
-        &auxbasis.inner.name,
-        &cfg,
+    let certificate_data = ferric_mp2::certificate::with_anchor_envelope(
+        ferric_mp2::certificate::att_rimp2_certificate(
+            &reference_certificate(&mol.inner, &rhf, &rhf_config, &basis_set.inner),
+            &auxbasis.inner.name,
+            &cfg,
+        ),
+        "Attenuated RI-MP2",
+        &mol.inner,
+        &basis_set.inner,
+        Some(&auxbasis.inner),
     );
     Ok(PyAttenuatedMp2Result {
         total_energy: r.total_energy,
@@ -2434,10 +2458,16 @@ pub(crate) fn run_scs_mp2(
         memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
     };
     let r = scs_mp2(&mol.inner, &prep, &dfbs, &rhf, &cfg).map_err(make_err)?;
-    let certificate_data = ferric_mp2::certificate::scs_mp2_certificate(
-        &reference_certificate(&mol.inner, &rhf, &rhf_config, &basis_set.inner),
-        &auxbasis.inner.name,
-        &cfg,
+    let certificate_data = ferric_mp2::certificate::with_anchor_envelope(
+        ferric_mp2::certificate::scs_mp2_certificate(
+            &reference_certificate(&mol.inner, &rhf, &rhf_config, &basis_set.inner),
+            &auxbasis.inner.name,
+            &cfg,
+        ),
+        "SCS-MP2",
+        &mol.inner,
+        &basis_set.inner,
+        Some(&auxbasis.inner),
     );
     Ok(PyScsMp2Result {
         total_energy: r.total_energy,

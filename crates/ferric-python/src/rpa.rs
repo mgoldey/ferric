@@ -407,11 +407,17 @@ pub(crate) fn run_pdep_rpa(
              eigenvalues_static/eigenpotentials are not verified to residual tolerance)"
         );
     }
-    let certificate_data = ferric_rpa::certificate::pdep_rpa_certificate(
-        &reference_certificate(&mol.inner, &rhf, &scf_config, &basis_set.inner),
-        &auxbasis.inner.name,
-        &cfg,
-        &r,
+    let certificate_data = ferric_mp2::certificate::with_anchor_envelope(
+        ferric_rpa::certificate::pdep_rpa_certificate(
+            &reference_certificate(&mol.inner, &rhf, &scf_config, &basis_set.inner),
+            &auxbasis.inner.name,
+            &cfg,
+            &r,
+        ),
+        "PDEP-RPA",
+        &mol.inner,
+        &basis_set.inner,
+        Some(&auxbasis.inner),
     );
     Ok(PyPdepRpaResult {
         certificate_data,

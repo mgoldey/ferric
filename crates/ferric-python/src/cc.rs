@@ -195,8 +195,12 @@ pub(crate) fn run_ccsd(
         t_correction: None,
         ladder_route,
         ladder_block,
-        certificate_data: ferric_cc::certificate::cc_certificate(
-            "ccsd", &reference, &eaux.name, &cfg, &r,
+        certificate_data: ferric_mp2::certificate::with_anchor_envelope(
+            ferric_cc::certificate::cc_certificate("ccsd", &reference, &eaux.name, &cfg, &r),
+            "CCSD",
+            &emol,
+            &ebasis,
+            Some(&eaux),
         ),
     })
 }
