@@ -251,22 +251,9 @@ jobs:
       # action-SHA pin is about trusting the code that installs the
       # toolchain, the @stable channel choice is about deliberately letting
       # the Rust VERSION float.
-      #
-      # RUST_PIN (2026-11-12): the version is held at 1.99.1 for now, in every
-      # install step marked RUST_PIN here and in platform-tests.yml. Rust
-      # 1.100.0 (2026-11-09) broke two things on its first CI run:
-      #   1. rustdoc's invalid-markdown-table lint rejects `|` inside code
-      #      spans in doc tables (crates/ferric-scf/src/trah.rs:1497), and
-      #   2. cargo's new build-dir layout puts test binaries in
-      #      target/<profile>/build/<pkg>/<hash>/out/, not target/<profile>/deps/.
-      #      The #525 debug-info guard below finds them with `find .../deps`,
-      #      and the ferric-cli tests locate the CLI as a sibling of
-      #      current_exe()'s parent, which the new layout moves.
-      # Remove the pins once both are adapted to the new layout.
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch @ 2026-09-16
         with:
-          toolchain: 1.99.1  # RUST_PIN: see the note at the first install step
           components: clippy
 
       # Restore and save are separate steps: a red test step must not cost
@@ -601,7 +588,6 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch @ 2026-09-16
         with:
-          toolchain: 1.99.1  # RUST_PIN: see the note at the first install step
           components: clippy
 
       # Restore and save are separate steps: a red test step must not cost
@@ -639,7 +625,10 @@ jobs:
           # and never produces the executable), so it is built here, BEFORE
           # the archive: .config/nextest.toml's `archive.include` packs it
           # into the archive and errors if it is absent.
-          cargo build -p ferric-scf --example runlog_probe --locked
+          # (Its JSON stream joins the debug-info guard's binary list below:
+          # the probe is archived, so it must be checked too.)
+          cargo build -p ferric-scf --example runlog_probe --locked \
+            --message-format=json-render-diagnostics > /tmp/probe-artifacts.json
           # Build the test binaries FIRST, with the same target selection and
           # profile `nextest archive` uses (it runs `cargo test --no-run` with
           # these flags), so the debug-info guard below runs before minutes of
@@ -651,7 +640,11 @@ jobs:
           # scripts re-ran and everything above them recompiled. Fixed in
           # crates/ferric-integrals/build.rs (MtimeGuard) and
           # crates/ferric-build-info/src/probe.rs (--no-optional-locks).
-          cargo test --no-run --workspace --all-targets --locked
+          # The JSON stream is also where the debug-info guard below gets its
+          # binary list; `json-render-diagnostics` keeps warnings and errors
+          # printed on stderr as usual.
+          cargo test --no-run --workspace --all-targets --locked \
+            --message-format=json-render-diagnostics > /tmp/test-artifacts.json
           # DEBUG-INFO GUARD (#525). The job `env:` above must have taken
           # effect: an archived binary with a .debug_info section means the
           # archive is back to ~2x its size, e.g. because a Cargo.toml profile
@@ -661,8 +654,21 @@ jobs:
           # under the 728 test binaries the archive held (run 40058633825).
           command -v readelf >/dev/null \
             || { echo "::error::readelf missing -- cannot check the test binaries for debug info (#525)"; exit 1; }
-          mapfile -d '' BINS < <(find target/debug/deps target/debug/examples -maxdepth 1 \
-            -type f -executable ! -name '*.so' -print0)
+          # The binary list comes from cargo, not from `find`: since Rust 1.100
+          # the test binaries are no longer in target/debug/deps (they are
+          # under target/debug/build/<pkg>/<hash>/out/), and the
+          # `compiler-artifact` records' `executable` field is the one
+          # layout-independent answer (the MPI step below does the same).
+          # Build scripts are not archived and are left out. jq runs on its own
+          # line so a failure trips `set -e`.
+          command -v jq >/dev/null \
+            || { echo "::error::jq missing -- cannot read the test binaries from cargo's JSON (#525)"; exit 1; }
+          jq -r 'select(.reason == "compiler-artifact")
+                 | select(.executable != null)
+                 | select(.target.kind | index("custom-build") | not)
+                 | .executable' /tmp/probe-artifacts.json /tmp/test-artifacts.json \
+            | sort -u > /tmp/test-bins.txt
+          mapfile -t BINS < /tmp/test-bins.txt
           if [ "${#BINS[@]}" -lt 100 ]; then
             echo "::error::debug-info guard found only ${#BINS[@]} test binaries (expected >= 100) -- it would be checking nothing (#525)"
             exit 1
@@ -1097,7 +1103,6 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch @ 2026-09-16
         with:
-          toolchain: 1.99.1  # RUST_PIN: see the note at the first install step
           components: clippy
 
       # Restore and save are separate steps: a red test step must not cost
@@ -1400,8 +1405,6 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch @ 2026-09-16
-        with:
-          toolchain: 1.99.1  # RUST_PIN: see the note at the first install step
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@26e9283f268b880168bdbd2c545dfcd60ec2c6ab # v2.87.13
@@ -2438,7 +2441,6 @@ jobs:
       # toolchain manifest down.
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch @ 2026-09-16
         with:
-          toolchain: 1.99.1  # RUST_PIN: see the note at the first install step
           components: rustfmt
 
       - name: cargo fmt --check

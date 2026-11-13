@@ -162,8 +162,6 @@ jobs:
       - name: Install Rust toolchain
         if: steps.natives.outputs.ready == 'true'
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch @ 2026-09-16
-        with:
-          toolchain: 1.99.1  # RUST_PIN: see the note at the first install step
 
       - name: Restore cargo cache
         if: steps.natives.outputs.ready == 'true'
@@ -340,8 +338,6 @@ jobs:
       - name: Install Rust toolchain
         if: steps.natives.outputs.ready == 'true'
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch @ 2026-09-16
-        with:
-          toolchain: 1.99.1  # RUST_PIN: see the note at the first install step
 
       - name: Restore cargo cache
         if: steps.natives.outputs.ready == 'true'

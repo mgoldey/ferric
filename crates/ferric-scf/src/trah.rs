@@ -1494,7 +1494,7 @@ pub fn rhf_trah_step(
 /// | term     | `rhf_newton::hessian_matvec`      | `AuxCurvature::base_apply_ref`       |
 /// |----------|-----------------------------------|--------------------------------------|
 /// | Fock gap | `(F_aa - F_ii) k`                 | `2 (F_vv X - X F_oo)`                |
-/// | Coulomb  | `4 (ai|bj)`                       | `8 (ai|bj)`                          |
+/// | Coulomb  | `4 (ai\|bj)`                     | `8 (ai\|bj)`                        |
 /// | exchange | `-2 a_x (...)`                    | `-4 a_x (...)`                       |
 ///
 /// (The Coulomb 4 is `dD = 2*dD_single` times the two kappa corners of the

@@ -13,20 +13,9 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use std::path::PathBuf;
 use std::process::Command;
 
-/// The compile-time `CARGO_BIN_EXE_` path does not exist where a nextest archive
-/// is unpacked, so prefer the sibling of the running test binary; see
-/// `ccsd_dispatch.rs`.
-fn ferric_cli_bin() -> PathBuf {
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(profile_dir) = exe.parent().and_then(std::path::Path::parent) {
-            let p = profile_dir.join("ferric-cli");
-            if p.is_file() {
-                return p;
-            }
-        }
-    }
-    PathBuf::from(env!("CARGO_BIN_EXE_ferric-cli"))
-}
+#[path = "support/cli_bin.rs"]
+mod cli_bin;
+use cli_bin::ferric_cli_bin;
 
 /// `CARGO_MANIFEST_DIR` is stale in an unpacked nextest archive as well.
 fn root() -> PathBuf {

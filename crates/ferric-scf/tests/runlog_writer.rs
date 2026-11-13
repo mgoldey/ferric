@@ -21,17 +21,20 @@ use std::process::Command;
 
 /// Locate the compiled `runlog_probe` example next to this test binary.
 ///
-/// `cargo test` puts integration-test binaries in `target/<profile>/deps/` and
-/// examples in `target/<profile>/examples/`, so the example is found relative
-/// to `current_exe` rather than by shelling out to cargo (which would deadlock
-/// on the build lock this test already holds).
+/// Examples are built into `target/<profile>/examples/`. The test binary sits
+/// in `target/<profile>/deps/` before Rust 1.100 and in
+/// `target/<profile>/build/<pkg>/<hash>/out/` since, so the profile directory
+/// is the nearest ancestor of `current_exe` that has an `examples/` directory.
+/// The probe is found relative to `current_exe` rather than by shelling out
+/// to cargo (which would deadlock on the build lock this test already holds).
 fn probe_bin() -> PathBuf {
     let exe = std::env::current_exe().expect("current_exe");
-    // .../target/<profile>/deps/runlog_writer-<hash>
     let profile_dir = exe
-        .parent()
-        .and_then(Path::parent)
-        .expect("target/<profile>");
+        .ancestors()
+        .skip(1)
+        .take(6)
+        .find(|d| d.join("examples").is_dir())
+        .expect("target/<profile> (an ancestor of the test binary with an examples/ directory)");
     // CI: `FERRIC_RUNLOG_PROBE` names the probe packed INTO the nextest
     // archive (.config/nextest.toml `archive.include`) and extracted beside
     // these tests. Probe and tests leave the build job as one file, so they

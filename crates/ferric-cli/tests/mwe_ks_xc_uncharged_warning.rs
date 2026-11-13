@@ -11,23 +11,12 @@
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
 use ferric_integrals::basis_bridge::PreparedBasis;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 
-/// See `ccsd_dispatch.rs`: paths baked in at compile time do not survive a nextest
-/// archive.
-fn ferric_cli_bin() -> PathBuf {
-    if let Ok(exe) = std::env::current_exe() {
-        // .../target/<profile>/deps/<test-binary>  ->  .../target/<profile>/
-        if let Some(profile_dir) = exe.parent().and_then(Path::parent) {
-            let p = profile_dir.join("ferric-cli");
-            if p.is_file() {
-                return p;
-            }
-        }
-    }
-    PathBuf::from(env!("CARGO_BIN_EXE_ferric-cli"))
-}
+#[path = "support/cli_bin.rs"]
+mod cli_bin;
+use cli_bin::ferric_cli_bin;
 
 /// Workspace root, resolved at RUN TIME.
 ///

@@ -7,17 +7,9 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-fn ferric_cli_bin() -> PathBuf {
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(profile_dir) = exe.parent().and_then(Path::parent) {
-            let p = profile_dir.join("ferric-cli");
-            if p.is_file() {
-                return p;
-            }
-        }
-    }
-    PathBuf::from(env!("CARGO_BIN_EXE_ferric-cli"))
-}
+#[path = "support/cli_bin.rs"]
+mod cli_bin;
+use cli_bin::ferric_cli_bin;
 
 fn workspace_root() -> PathBuf {
     let looks_like_root = |p: &Path| {

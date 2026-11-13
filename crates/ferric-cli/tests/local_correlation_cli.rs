@@ -17,20 +17,9 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Path to the `ferric-cli` binary, resolved at RUN TIME -- see
-/// `dispersion_guards.rs` for why `env!("CARGO_BIN_EXE_ferric-cli")` alone is
-/// wrong under `cargo nextest archive`.
-fn ferric_cli_bin() -> PathBuf {
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(profile_dir) = exe.parent().and_then(Path::parent) {
-            let p = profile_dir.join("ferric-cli");
-            if p.is_file() {
-                return p;
-            }
-        }
-    }
-    PathBuf::from(env!("CARGO_BIN_EXE_ferric-cli"))
-}
+#[path = "support/cli_bin.rs"]
+mod cli_bin;
+use cli_bin::ferric_cli_bin;
 
 /// Workspace root, resolved at RUN TIME -- see `ccsd_dispatch.rs`.
 fn workspace_root() -> PathBuf {
