@@ -43,11 +43,10 @@ use ndarray::{Array1, Array2, Axis, Zip};
 ///
 /// Currently every caller passes canonical `rhf.eps_r()`-derived values, so
 /// this is a LATENT trap, not a live bug. It is guarded rather than merely
-/// documented because the identical pattern WAS a live bug in `screen.rs`
-/// (`diag(C_locᵀ F C_loc)` from Boys-localized orbitals; discarded coupling
-/// 1.3–2.9% of the diagonal spread; fixed 2026-07-28 in commit 17e994e) and
-/// produced an entirely bogus locality result in the AO-Laplace path
-/// (commit 3693d5d).
+/// documented because the identical pattern is a live bug when `screen.rs`
+/// feeds `diag(C_locᵀ F C_loc)` from Boys-localized orbitals (discarded
+/// coupling 1.3–2.9% of the diagonal spread), and it produces an entirely
+/// bogus locality result in the AO-Laplace path.
 ///
 /// Note this module's own docs (see the header) describe an AO pseudo-density
 /// route as future work — that is precisely the change that would feed rotated
@@ -103,9 +102,8 @@ pub fn build_laplace_for_gaps(
 /// Same in-place signature as [`crate::sternheimer::dielectric_matrix_from_projection_into`] but
 /// uses the Laplace-quadrature form of `4·e_ia/(ω²+e_ia²)`. Numerically matches
 /// the Dense path to the quadrature tolerance (~1e-3 relative elementwise for
-/// the tabulated `n_quad = 7`). Only `n_quad ∈ {3, 5, 7}` are tabulated — the
-/// previous `n_quad = 12/20` accuracy claims were never real; those sizes
-/// silently fell back to the 7-point table before the TD-QUAD fix.
+/// the tabulated `n_quad = 7`). Only `n_quad ∈ {3, 5, 7}` are tabulated — `n_quad = 12/20` is
+/// an error (no silent fallback to the 7-point table).
 ///
 /// # Arguments
 /// * `v_mat` — trial-vector block of shape `(naux, m)`.

@@ -403,9 +403,9 @@ pub fn eval_eigenvalues_at_frequencies_budgeted(
 
     // Panel-width sizing happens BEFORE the parallel region (needs only
     // n_workers, not any per-frequency state), so it can be computed here and
-    // captured by `per_frequency`'s `init` closure — the reason this function
-    // used to hand-roll its own with_blas_threads/par_iter/map_init scaffold
-    // (rather than sharing `per_frequency`) no longer holds.
+    // captured by `per_frequency`'s `init` closure — so this function shares
+    // `per_frequency` rather than hand-rolling its own
+    // with_blas_threads/par_iter/map_init scaffold.
     let n_workers = rayon::current_num_threads().max(1);
     let panel_width = quad_panel_width(m, nov, n_workers, memory_budget_bytes);
     let use_panelled = panel_width < nov;
@@ -745,8 +745,8 @@ mod tests {
         // that sum GROWS with n_workers. For m=nov=2 it is 32 + 64·n_workers,
         // so any budget >= 96 takes the fast path at n_workers=1 and returns
         // nov=2, never exercising the panelled branch this test exists to
-        // cover. The old 200 did exactly that: it passed on a many-core box
-        // (n_workers>=3) and failed at RAYON_NUM_THREADS=1..2 — an
+        // cover. A budget of 200 does exactly that: it passes on a many-core box
+        // (n_workers>=3) and fails at RAYON_NUM_THREADS=1..2 — an
         // ambient-thread-count dependency, not a physics bug. 64 < 96 forces
         // k=1 at every worker count. n_workers is NOT pinned here on purpose:
         // the production path computes it internally from
@@ -1011,8 +1011,8 @@ mod tests {
         // Must stay below the n_workers=1 fast-path floor (96 bytes for
         // m=nov=2) so panelling is forced at EVERY ambient thread count — see
         // the sibling test `eval_eigenvalues_at_frequencies_budgeted_forced_
-        // panel_matches_manual_reference` for the full derivation. The old 200
-        // silently took the full-width path at RAYON_NUM_THREADS=1..2.
+        // panel_matches_manual_reference` for the full derivation. A budget of 200
+        // silently takes the full-width path at RAYON_NUM_THREADS=1..2.
         let tiny_budget = 64usize;
 
         let n_workers = rayon::current_num_threads().max(1);

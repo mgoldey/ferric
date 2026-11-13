@@ -372,8 +372,8 @@ fn closed_shell_rpa_laplace_chebyshev_matches_dense_h2o() {
         n_points: 20,
         u0: 0.5,
     };
-    // n_quad=20 is not tabulated ({3,5,7} only); the old code silently fell
-    // back to the 7-point table, so request 7 explicitly (numerics unchanged).
+    // n_quad=20 is not tabulated ({3,5,7} only); an untabulated size is
+    // an error (no silent 7-point fallback), so request 7 explicitly.
     cfg.chi0_backend = Chi0Backend::Laplace { n_quad: 7 };
     let e_cheb_lap = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &cfg)
         .unwrap()
@@ -452,8 +452,8 @@ fn u_pdep_rpa_laplace_matches_dense_closed_shell_h2o() {
     )
     .unwrap();
     let mut cfg = cfg_full_basis();
-    // n_quad=20 is not tabulated ({3,5,7} only); the old code silently fell
-    // back to the 7-point table, so request 7 explicitly (numerics unchanged).
+    // n_quad=20 is not tabulated ({3,5,7} only); an untabulated size is
+    // an error (no silent 7-point fallback), so request 7 explicitly.
     cfg.chi0_backend = Chi0Backend::Laplace { n_quad: 7 };
     let e_u_lap = run_u_pdep_rpa(&mol, &obs, &dfbs, op, &uhf, &cfg)
         .unwrap()
@@ -517,8 +517,8 @@ fn u_laplace_dielectric_matches_u_dense_at_omega_zero_oh() {
     let chan_b = ferric_rpa::channel::RpaChannel::new(&ib.b_ov, &eo_b, &ev_b);
     let dense = dielectric_matrix_unrestricted(&v, &chan_a, &chan_b, 0.0);
 
-    // n_quad=20 is not tabulated ({3,5,7} only); the old code silently fell
-    // back to the 7-point table, so request 7 explicitly (numerics unchanged).
+    // n_quad=20 is not tabulated ({3,5,7} only); an untabulated size is
+    // an error (no silent 7-point fallback), so request 7 explicitly.
     let qa = build_laplace_for_gaps(&eo_a, &ev_a, 7).unwrap();
     let qb = build_laplace_for_gaps(&eo_b, &ev_b, 7).unwrap();
     let lap = dielectric_matrix_laplace_unrestricted(&v, &chan_a, &qa, &chan_b, &qb, 0.0);
@@ -970,7 +970,7 @@ fn u_refuses_options_it_cannot_run() {
     assert!(e.contains("need_inv_dielectric_freq"), "{e}");
 }
 
-/// The closed-shell path refuses Laplace + inverse-dielectric too (it used to
+/// The closed-shell path refuses Laplace + inverse-dielectric too (it does not
 /// return `inv_dielectric_freq = None` without saying so).
 #[test]
 fn closed_shell_refuses_laplace_with_inverse_dielectric() {

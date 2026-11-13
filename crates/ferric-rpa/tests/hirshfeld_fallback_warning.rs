@@ -10,12 +10,11 @@
 //!
 //! The single message said "The other atoms used the SCF density, so these
 //! charges mix two different proatom sources". In the all-fallback case there
-//! ARE no other atoms and nothing is mixed, so it sent a reader looking for an
-//! inconsistency that was not there while under-stating the real problem --
-//! every charge came from the crude model.
-//!
-//! OBSERVED 2026-09-20 running `compute_binding_energy` on danuglipron in the
-//! 7LCJ pocket: "71 of 71 atoms ... The other atoms used the SCF density".
+//! ARE no other atoms and nothing is mixed, so that message would send a reader
+//! looking for an inconsistency that is not there while under-stating the real
+//! problem -- every charge came from the crude model (seen running
+//! `compute_binding_energy` on danuglipron in the 7LCJ pocket: "71 of 71 atoms
+//! ... The other atoms used the SCF density").
 //!
 //! The warning goes to stderr, so this drives it through a SUBPROCESS and
 //! reads what was actually printed. Asserting on a string the test itself
@@ -139,8 +138,8 @@ fn the_two_warnings_say_different_things() {
     let all = stderr_of("all");
     let mixed = stderr_of("mixed");
 
-    // The all-fallback case must NOT claim a mixture. This is the exact
-    // sentence that was wrong: with every atom on the crude model there are
+    // The all-fallback case must NOT claim a mixture. The mixture sentence
+    // would be wrong here: with every atom on the crude model there are
     // no "other atoms" and nothing is mixed.
     assert!(
         all.contains("ALL 3 atoms"),

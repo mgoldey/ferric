@@ -83,7 +83,7 @@ pub use ferric_scf::properties::{
 /// than re-factorizing via general LU (`dgetrf`) three separate times: half
 /// the FLOPs of LU, and — since several call sites run inside rayon
 /// `par_iter` regions — this also removes `dgetrf` from this hot path
-/// entirely (see the `openblas-rayon-dgetrf-crash` history: `dgetrf` under
+/// entirely (`dgetrf` under
 /// OpenBLAS with >1 thread inside a rayon parallel region is a known
 /// segfault/corruption class; `OPENBLAS_NUM_THREADS=1` is still required as
 /// a structural convention, but this at least removes one more LU call from
@@ -1187,10 +1187,10 @@ fn dipole_band_width_with_threads(
         natoms.max(1) * 3 * nbf.max(1) * nbf.max(1) * std::mem::size_of::<f64>();
     // Spend a FRACTION of the budget on in-flight partials, not all of it.
     //
-    // This used to be `budget_bytes / per_partial_bytes`, i.e. "make the band
-    // as wide as the whole budget allows". Because `estimate_peak_bytes` then
-    // charges for the band this function just sized, the pre-flight estimate
-    // became a function of the budget itself: raising the budget widened the
+    // A width of `budget_bytes / per_partial_bytes` ("make the band
+    // as wide as the whole budget allows") would make the pre-flight estimate a
+    // function of the budget itself, because `estimate_peak_bytes` charges for
+    // the band this function sizes: raising the budget widened the
     // band, which raised the estimate, which failed the check again one rung
     // higher. Measured on a 9-atom aug-cc-pVDZ molecule (naux=648, nbf=207):
     // budget 4 GB -> "requires 4.45 GB"; 8 GB -> "requires 8.74 GB"; 12 GB ->
@@ -1211,7 +1211,7 @@ fn dipole_band_width_with_threads(
 /// `D^{A,d}_{μν} = Σ_g w^A(r_g) (r_g − R_A)_d χ_μ(r_g) χ_ν(r_g)` over all grid
 /// points `g`.
 ///
-/// This was previously a fully serial `for g in 0..npts` loop — the dominant
+/// A serial `for g in 0..npts` loop would be the dominant
 /// wall-clock cost of `pdep_polarizability_becke`/`_dynamic` for large systems
 /// (O(npts·nbf²): ~586k grid points × nbf² for a 71-atom/def2-svp system is
 /// ~4e11 scalar ops). Follows the exact two-level banded pattern documented in
@@ -1278,9 +1278,9 @@ fn accumulate_atom_centred_dipoles(
 
     // The RESOLVED budget, not a hardcoded constant: the pre-flight gate
     // estimated this path using the caller's budget, so the accumulation must
-    // band against the same number or the two disagree (below the old 512 MB
-    // const the accumulation would exceed what the gate approved; above it, it
-    // would band more tightly than necessary and cost wall time).
+    // band against the same number or the two disagree (a fixed 512 MB const
+    // would exceed what the gate approved below it, and band more tightly than
+    // necessary above it, costing wall time).
     let band_width = dipole_band_width(natoms, nbf, budget_bytes);
 
     let mut d_ai_ao: Vec<[Array2<f64>; 3]> = (0..natoms)
@@ -1298,9 +1298,9 @@ fn accumulate_atom_centred_dipoles(
             .map(|g0| -> Result<Vec<[Array2<f64>; 3]>, FerricError> {
                 let g1 = (g0 + chunk_size).min(npts);
                 // Evaluate chi for THIS CHUNK's points only. The full
-                // (nbf, npts) matrix was previously built up front as one
-                // contiguous allocation -- ~3.75 GB at nbf=800/npts=586k -- even
-                // though every consumer reads it one grid point at a time. A
+                // (nbf, npts) matrix is never built up front: one contiguous
+                // allocation would be ~3.75 GB at nbf=800/npts=586k, though
+                // every consumer reads it one grid point at a time. A
                 // chunk is `chunk_size` points wide (npts/1024, so ~573 at
                 // incident scale), reducing this to a few MB per worker.
                 //
@@ -1433,8 +1433,8 @@ pub fn pdep_polarizability_becke(
     cfg: &PdepRpaConfig,
 ) -> Result<Vec<[[f64; 3]; 3]>, FerricError> {
     // `eval_basis_on_points` is deliberately NOT imported here: the only call
-    // in this function was the monolithic full-grid chi evaluation removed
-    // above, and the chunked evaluation now lives entirely inside
+    // in this function is a monolithic full-grid chi evaluation, and
+    // the chunked evaluation lives entirely inside
     // `accumulate_atom_centred_dipoles`. The absent import is the guard — a
     // future re-introduction of a whole-grid chi here will not compile
     // silently.
@@ -1531,29 +1531,20 @@ pub fn pdep_polarizability_becke(
 
     // nbf from the prepared basis, NOT from a materialized chi.
     //
-    // WHY THIS LINE USED TO ALLOCATE ~3.75 GB: this path read `nbf` from
-    // `eval_basis_on_points(mol, obs_bs, &points).nrows()` — evaluating the AO
-    // basis over the FULL point list to build one contiguous (nbf, npts)
-    // block, and then using that block for nothing but its row count. Every
+    // `obs.nbasis()` allocates nothing, whereas reading `nbf` from
+    // `eval_basis_on_points(mol, obs_bs, &points).nrows()` would evaluate the AO
+    // basis over the FULL point list into one contiguous (nbf, npts) block
+    // (~3.75 GB at nbf=800/npts=586k) used for nothing but its row count. Every
     // real consumer of chi lives inside `accumulate_atom_centred_dipoles`,
-    // which was fused to evaluate chi per grid CHUNK (see its body). The
-    // monolithic evaluation here was simply left behind by that fusion: the
-    // `_dynamic` siblings were converted to `obs.nbasis()` at the same time,
-    // this one was not.
+    // which evaluates chi per grid CHUNK (see its body), and the `_dynamic`
+    // siblings use `obs.nbasis()` too.
     //
-    // That left the pre-flight gate above wrong in the dangerous direction.
-    // `estimate_grid_bytes` deliberately models chi as chunked
-    // (`nbf * (npts/1024) * 8 * n_workers`, ~44 MB at nbf=800/npts=586k)
-    // because that is what the fused accumulation actually holds — so the
-    // 3.75 GB block allocated one line later was charged as ~44 MB: an ~85x
-    // under-estimate on the single largest allocation in the method. The gate
-    // approved jobs that then OOMed a moment after being approved, which is
-    // the exact 2026-07-13 failure mode the gate was added to prevent.
-    //
-    // `obs.nbasis()` is the same integer by construction — the deleted
-    // `debug_assert_eq!(chi.nrows(), obs.nbasis())` asserted precisely that —
-    // so this is a pure deletion. No arithmetic, no fold order, and no result
-    // changes; the estimator simply becomes true about this path.
+    // The pre-flight gate above depends on this: `estimate_grid_bytes` models chi
+    // as chunked (`nbf * (npts/1024) * 8 * n_workers`, ~44 MB at
+    // nbf=800/npts=586k) because that is what the fused accumulation holds, so a
+    // monolithic 3.75 GB block would be an ~85x under-estimate on the largest
+    // allocation in the method, and the gate would approve jobs that then OOM.
+    // `obs.nbasis()` equals the row count of that block by construction.
     let nbf = obs.nbasis();
 
     // Build per-atom Becke-weighted AO dipole using the ATOM-CENTRED position
@@ -1785,9 +1776,9 @@ pub fn pdep_polarizability_becke_dynamic(
         // and (see `open_shell_dynamic_extra_bytes`'s doc) the per-worker
         // frequency scratch actually holds BOTH channels at once, not one, so
         // a second explicit check charges what the base estimate structurally
-        // cannot (it takes a single (naux, nocc, nvir) shape). This was
-        // previously a single-spin charge with a comment claiming the
-        // per-worker scratch was one-channel-at-a-time; that claim is false —
+        // cannot (it takes a single (naux, nocc, nvir) shape). A
+        // single-spin charge would assume the per-worker scratch is
+        // one-channel-at-a-time; that is false —
         // see the `map_init` seed a few lines below, which allocates a
         // `(b_scaled_a, b_scaled_b)` pair per worker.
         let nov_a = inter_a.nocc.saturating_mul(inter_a.nvir);
@@ -2107,7 +2098,7 @@ pub fn pdep_polarizability_becke_dynamic(
     let atom_pos: Vec<[f64; 3]> = mol.atoms.iter().map(|at| [at.x, at.y, at.zpos]).collect();
 
     // No pre-flight gate on this path yet (tracked), so resolve the budget here
-    // rather than band against the old hardcoded 512 MB const.
+    // rather than band against a hardcoded 512 MB const.
     let budget = ferric_core::memory::resolve_budget_bytes(cfg.memory_budget_bytes);
     let mut d_ai_ao: Vec<[Array2<f64>; 3]> = accumulate_atom_centred_dipoles(
         npts, natoms, nbf, &home_atom, &weights, &points, &atom_pos, mol, obs_bs, budget,
@@ -2799,8 +2790,8 @@ pub fn pdep_polarizability_hirshfeld_dynamic(
     // --- Frequency loop ---
     //
     // Each ω is independent — parallelize over frequencies. The (naux × nov)
-    // column-scaled B̃ scratch M9 hoisted out of the loop (the buffer this
-    // comment used to call out at ~766 MB for large aux bases) becomes
+    // column-scaled B̃ scratch M9 hoisted out of the loop (the buffer is ~766 MB
+    // for large aux bases) becomes
     // per-thread via map_init: one buffer allocated per rayon worker,
     // reused across the ω's that worker processes. BLAS pinned to 1 inside
     // the rayon region.
@@ -3564,8 +3555,8 @@ pub const HIRSHFELD_VOLUME_CHUNK_POINTS: usize = 8192;
 /// 1.1e-7 relative, ∫ρ within 2.0e-7 e of N_e, and CH3OH's two mirror-image
 /// methyl hydrogens equal to 2.9e-14 relative (not exactly zero: the Lebedev
 /// rules are O_h-invariant and that molecule's mirror plane is not a grid
-/// plane). On the uniform
-/// Cartesian lattice this function used to integrate on — whose nodes land
+/// plane). On a uniform
+/// Cartesian lattice — whose nodes land
 /// exactly on nuclei, where ρ has its cusp — the same three figures are
 /// 2.4e-4 relative, 0.70 e (CO/cc-pVDZ) and 2.6e-5. The grid is
 /// [`hirshfeld_volume_grid_config`], which is NOT the XC grid; read its doc
@@ -4609,8 +4600,8 @@ pub fn hirshfeld_charges(
     // radially dense at each nucleus and carries the point-group symmetry, which
     // is why `becke_charges` in ferric-scf has never shown this failure.
     // Atom-centred Becke-Lebedev quadrature instead of a uniform Cartesian
-    // lattice: 8.5x fewer points on a 9-atom QM9 molecule (74,250 vs 629,800 at
-    // the old 0.20 Bohr spacing / 6 Bohr margin), with the point density placed
+    // lattice: 8.5x fewer points on a 9-atom QM9 molecule (74,250 vs 629,800 on a
+    // 0.20 Bohr spacing / 6 Bohr margin lattice), with the point density placed
     // where the integrand is largest rather than spread over a bounding box.
     // `becke_charges` in ferric-scf already integrates this way.
     //
@@ -4690,9 +4681,9 @@ pub fn hirshfeld_charges(
         // inconsistent. The all-fallback case is not a mixture at all (it is
         // what you get with no proatom provider, e.g. `binding_energy`), and
         // saying "the other atoms used the SCF density" there is simply false:
-        // there are no other atoms. Reported as one message, it sent a reader
-        // looking for an inconsistency that was not present while
-        // under-stating the one that was -- every charge came from the crude
+        // there are no other atoms. A single mixed message would send a reader
+        // looking for an inconsistency that is not present while
+        // under-stating the one that is -- every charge came from the crude
         // model.
         if fallback_atoms.len() == natoms {
             eprintln!(
@@ -4878,10 +4869,9 @@ mod tests {
             let bw = dipole_band_width(natoms, nbf, budget);
             let per_partial_bytes = natoms * 3 * nbf * nbf * std::mem::size_of::<f64>();
             let live_bytes = bw * per_partial_bytes;
-            // Tightened: this used to allow 10x the budget because the
-            // worker-count floor could push the live set above it "by design".
-            // That floor is gone — the byte cap wins and parallelism degrades
-            // instead — so the live set must now fit the budget outright,
+            // The live set fits the budget outright: no worker-count floor can
+            // push it above, because the byte cap wins and parallelism degrades
+            // instead,
             // except for the floor-of-one case where a single partial is
             // larger than the whole budget.
             assert!(
@@ -4910,10 +4900,9 @@ mod tests {
             // not all of it, so a 2_400_000-byte budget yields
             // (2_400_000/4)/240_000 = 2 partials in flight.
             //
-            // This assertion previously hardcoded 10 -- the answer from before
-            // the band became a FRACTION of the budget. Stated against the
-            // constants themselves so it tracks the implementation instead of
-            // silently encoding one historical value of it.
+            // The band is a FRACTION of the budget, so this assertion is stated
+            // against the constants themselves and tracks the implementation
+            // instead of encoding one value of it.
             let per_partial = 3 * 100 * 100 * std::mem::size_of::<f64>();
             let budget = 2_400_000usize;
             let expected = (budget / BAND_BUDGET_DENOM * BAND_BUDGET_NUMER) / per_partial;
@@ -4921,11 +4910,10 @@ mod tests {
             assert_eq!(dipole_band_width(1, 100, budget), expected);
             // A budget below one partial floors at ONE, not at the worker count.
             //
-            // This assertion used to expect 2 (= the pool's worker count),
-            // encoding the old `.max(current_num_threads())` floor as intended
-            // behavior. That floor overrode the byte cap and let resident memory
-            // scale with core count instead of with the budget — the mechanism
-            // behind the 16-17 GB anon-RSS incidents. The byte cap now wins and
+            // A `.max(current_num_threads())` floor (an expected 2 = the pool's worker
+            // count) would override the byte cap and let resident memory scale
+            // with core count instead of with the budget — the mechanism behind
+            // the 16-17 GB anon-RSS incidents. The byte cap wins and
             // parallelism degrades instead, so a starvation budget yields a
             // single chunk in flight: slow, never stuck, and never over budget.
             assert_eq!(dipole_band_width(1, 100, 1), 1);
@@ -5357,7 +5345,7 @@ mod tests {
     /// ε̃ = I + BBᵀ (guaranteed SPD, mirroring the real dielectric's
     /// structure) with three distinct RHS vectors, the Cholesky-based
     /// `solve_dielectric_3` must agree with an independent general-LU solve
-    /// (`ndarray_linalg::Solve`, i.e. exactly the old implementation's
+    /// (`ndarray_linalg::Solve`, i.e. a general-LU
     /// algorithm, computed fresh here rather than reused) to numerical
     /// precision. This directly catches sign errors, upper/lower-triangular
     /// mixups, or a transposed RHS in the Cholesky rewrite.

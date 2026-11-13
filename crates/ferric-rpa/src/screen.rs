@@ -34,10 +34,9 @@
 //! by slicing both axes to `p_list` (so dropped aux rows are also dropped
 //! from the V^{-1/2} mixing). At `thresh = 0` no aux shells are dropped and the
 //! result is algebraically equivalent to the dense path — NOT bit-identical.
-//! (This used to claim bit-identity, which was false: the Boys rotation and the
-//! per-orbital accumulation order differ from dense, so the RPA energy agrees
-//! only to a finite-precision floor. Measured 2.6e-10 on H2O/cc-pVDZ after the
-//! 2026-07-28 semicanonicalization fix, improved from 8.2e-9 before it.)
+//! (The Boys rotation and the per-orbital accumulation order differ from
+//! dense, so the RPA energy agrees only to a finite-precision floor: 2.6e-10
+//! on H2O/cc-pVDZ with the semicanonicalization below; 8.2e-9 without it.)
 //!
 //! The (P|μν) integrals are computed only for retained P shells × density-
 //! significant OBS shell pairs, then contracted with `c_loc[:,i] ⊗ c_vir` to
@@ -204,11 +203,11 @@ pub fn build_screened_bov(
     let c = rhf.mos_r();
     let c_vir = c.slice(s![.., nocc_total..]).to_owned();
 
-    // SEMICANONICALIZE the localized occupied block (FIXED 2026-07-28).
+    // SEMICANONICALIZE the localized occupied block.
     //
     // Boys-localized orbitals are NOT Fock eigenvectors, so F_loc = C_loc^T F
-    // C_loc is not diagonal. This code used to take `diag(F_loc)` as per-orbital
-    // "orbital energies" and hand them to `sternheimer_sparse`, which consumes
+    // C_loc is not diagonal. Taking `diag(F_loc)` as per-orbital
+    // "orbital energies" and handing them to `sternheimer_sparse`, which consumes
     // them as `e_ia = eps_a - eps_loc[i]` — i.e. as if they WERE eigenvalues.
     // That silently discards the off-diagonal coupling; measured
     // max|offdiag F_loc| was 2.3e-1..3.1e-1 against a diagonal spread of ~1.0e1

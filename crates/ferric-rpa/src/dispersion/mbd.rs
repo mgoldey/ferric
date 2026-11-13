@@ -283,15 +283,14 @@ mod tests {
         );
     }
 
-    /// Z outside the table regression: the old code silently substituted the
+    /// Z outside the table regression: silently substituting the
     /// molecular α with HYDROGEN's characteristic frequency, fabricating a TS
     /// C6 for every element the table didn't cover. It must be a hard error
     /// through every public entry point, including the MBD-screened path
     /// (which has its own `ts_atom_params` call independent of
     /// `ts_dynamic_polarizability`). Z=55 (Cs) is genuinely outside the
-    /// Z=1..=54 table (Br/Z=35 used to be the out-of-table probe before the
-    /// Gould-Bučko Z=19-54 extension landed and legitimately parameterized
-    /// it — see `ts_atom_params_heavy_atom_errors` above for the same
+    /// Z=1..=54 table (Br/Z=35 is in the table via the Gould-Bučko Z=19-54
+    /// extension — see `ts_atom_params_heavy_atom_errors` above for the same
     /// contract at the `ts_atom_params` level).
     #[test]
     fn ts_unparameterized_element_errors_instead_of_hydrogen_omega() {

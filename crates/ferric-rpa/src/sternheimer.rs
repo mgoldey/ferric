@@ -219,22 +219,21 @@ fn descent_count(v: &[f64]) -> usize {
 ///
 /// # Why not "sorted ascending"
 ///
-/// Strict sortedness was the original test, and it was WRONG — it conflated two
+/// A strict sortedness test would be WRONG — it conflates two
 /// different properties:
 ///
 /// * "came from a diagonalization" (⇒ sorted), and
 /// * "the basis is Fock-diagonal" (⇒ the scalar `e_ia = eps_a − eps_i` is valid).
 ///
 /// Only the second is what this function's callers actually require, and
-/// sortedness is *not* necessary for it. evGW is the counterexample that broke
-/// the strict check: `ferric_gw::sigma::run_evgw` overlays self-consistent
+/// sortedness is *not* necessary for it. evGW is the counterexample to a strict check: `ferric_gw::sigma::run_evgw` overlays self-consistent
 /// quasiparticle energies onto the canonical set (`sigma.rs`, the single
 /// `shifted_rhf.eps_alpha[mo_abs] = eps_qp[idx]` assignment — the MO
 /// COEFFICIENTS are never touched, so the basis stays exactly canonical). A QP
 /// correction can legitimately push a level past its neighbour: for H2O/cc-pVDZ
 /// evGW@PBE the HOMO sinks from −0.3046 to −0.4293 Ha, crossing HOMO-1 at
 /// −0.4567. The basis is still perfectly diagonal and the scalar denominator is
-/// still exactly right — the set is simply no longer sorted.
+/// still exactly right — the set is simply not sorted.
 ///
 /// # What this checks instead
 ///
@@ -280,9 +279,9 @@ fn is_plausibly_diagonal(v: &[f64]) -> bool {
 ///
 /// This is not hypothetical. `screen.rs` fed exactly this function per-orbital
 /// energies taken as `diag(C_locᵀ F C_loc)` from Boys-localized orbitals; the
-/// discarded coupling was 1.3–2.9% of the diagonal spread (fixed 2026-07-28,
-/// commit 17e994e, by semicanonicalizing). The same defect class also produced
-/// a fully bogus locality result in the AO-Laplace path (commit 3693d5d).
+/// discarded coupling was 1.3–2.9% of the diagonal spread (`screen.rs`
+/// semicanonicalizes to avoid it). The same defect class produces
+/// a fully bogus locality result in the AO-Laplace path.
 ///
 /// Every current caller passes canonical `rhf.eps_r()`-derived values, so this
 /// is a LATENT trap rather than a live bug — hence a `debug_assert`-grade guard
@@ -912,8 +911,8 @@ mod canonical_guard_tests {
     ///
     /// A tripwire nobody has seen trip is an assumption, not a check. This is
     /// the lesson from the union-rank gate, whose GO condition turned out to be
-    /// unreachable, and from the AO-Laplace tripwire that only fired after the
-    /// bug was fixed.
+    /// unreachable, and from the AO-Laplace tripwire that fires only once the
+    /// bug is absent.
     /// The guard is a `debug_assert!` (free in release, see
     /// `build_scale_factors_with_prefactor`), so the `should_panic` tests below
     /// run only with debug assertions. This one checks the predicate itself,
@@ -932,7 +931,7 @@ mod canonical_guard_tests {
 
     /// A Boys/PNO-localized occupied set: `diag(C_locᵀ F C_loc)` is a scrambled
     /// permutation of the energy range, not a sorted eigenvalue list. This is
-    /// the shape of the REAL bug fixed in screen.rs (commit 17e994e).
+    /// the shape of the bug `screen.rs` avoids by semicanonicalizing.
     ///
     /// Built as an explicit shuffle of a canonical ladder so the values are all
     /// physically plausible orbital energies — only their ORDER is wrong.

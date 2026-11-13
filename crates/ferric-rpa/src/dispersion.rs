@@ -115,10 +115,10 @@ pub enum DispersionPartition {
 impl DispersionPartition {
     /// Parse a `[rpa] c6_partition` string. `None` yields `Ok(None)` so the
     /// caller can apply its source-dependent default (Hirshfeld for PDEP,
-    /// Becke for TS). Unknown strings are an error — they used to fall through
-    /// to that same default, silently producing a *different* per-atom
+    /// Becke for TS). Unknown strings are an error — falling through
+    /// to that same default would silently produce a *different* per-atom
     /// decomposition than requested (per-atom α/C6 are partition-dependent by
-    /// ~10×, so this changed numbers, not just performance).
+    /// ~10×, so that changes numbers, not just performance).
     pub fn parse_config_str(s: Option<&str>) -> Result<Option<Self>, String> {
         match s.map(|x| x.trim().to_ascii_lowercase()).as_deref() {
             None => Ok(None),
@@ -163,8 +163,8 @@ pub enum C6Source {
 }
 
 impl C6Source {
-    /// Parse a `[rpa] c6_source` string. Unknown values are an error; they
-    /// previously fell through to the TS branch silently.
+    /// Parse a `[rpa] c6_source` string. Unknown values are an error, never a silent
+    /// fall-through to the TS branch.
     pub fn parse_config_str(s: Option<&str>) -> Result<Self, String> {
         match s.map(|x| x.trim().to_ascii_lowercase()).as_deref() {
             None | Some("ts") => Ok(C6Source::Ts),

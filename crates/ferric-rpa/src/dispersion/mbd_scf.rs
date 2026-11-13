@@ -24,9 +24,8 @@
 //! lattices agree with each other to 8.7e-8 to 1.8e-4 on the free atoms
 //! (`tests/measure_free_atom_quadratures.rs`), so the centroid lattice is of
 //! the same accuracy class. Whatever that error is, it is now the SAME error
-//! in numerator and denominator and so largely cancels in the ratio — which
-//! it did not before this change, when `v_free` came from the bounding-box
-//! lattice while the numerators came from the centroid one.
+//! in numerator and denominator and so largely cancels in the ratio (a `v_free` from the bounding-box
+//! lattice with numerators from the centroid one would not cancel).
 //!
 //! The exact nuclear gradient, returned by [`mbd_rsscs_for_scf`], is
 //! ```text

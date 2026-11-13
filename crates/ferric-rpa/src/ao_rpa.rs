@@ -925,8 +925,8 @@ mod tests {
         let b_ov = build_b_ov(&eri3, &c_occ, &c_vir);
 
         // Pick a few τ-points to compare. n_quad=8 is not tabulated (only
-        // {3,5,7} are); round explicitly to preserve the original test's
-        // 7-point coverage instead of relying on the old silent fallback.
+        // {3,5,7} are); round explicitly to keep the
+        // 7-point coverage without relying on a silent fallback.
         let n_quad = ferric_quadrature::minimax::nearest_supported_n_quad(8);
         let laplace = build_tau_quadrature(&eps_occ, &eps_vir, n_quad).unwrap();
         for &tau in &[0.05_f64, 0.2, 0.5, 1.0] {

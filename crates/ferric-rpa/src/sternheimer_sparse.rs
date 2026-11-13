@@ -38,8 +38,7 @@
 //!
 //! # Parallelism — measured impact (sternheimer-sparse-parallelize)
 //!
-//! Both `dielectric_matrix_screened` and `dielectric_apply_screened` used to
-//! run the `i_loc` loop fully serially (zero rayon usage). They are now
+//! Both `dielectric_matrix_screened` and `dielectric_apply_screened` are
 //! parallelized over `i_loc` (see each function's doc comment for the
 //! reduction shape). Confirmed via a rayon thread-touch probe that the work
 //! IS distributed across multiple OS threads (10 distinct workers touched on

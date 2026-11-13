@@ -569,7 +569,7 @@ fn n_electrons_on_volume_grid(mol: &Molecule, bs: &BasisSet, d: &Array2<f64>) ->
     n
 }
 
-/// `Σ_g h³ ρ(r_g)` on the OLD bounding-box lattice — the negative control's
+/// `Σ_g h³ ρ(r_g)` on the bounding-box lattice — the negative control's
 /// half of [`n_electrons_on_volume_grid`]. Rebuilt here point for point, same
 /// as `scripts/validation/gen_hirshfeld.py` does, so the control measures the
 /// lattice rather than quoting a stored number.

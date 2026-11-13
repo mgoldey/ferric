@@ -1,7 +1,7 @@
 //! Tests for Becke-Lebedev per-atom static polarizability.
 //!
 //! `pdep_polarizability_becke` uses the ATOM-CENTRED (r − R_A) dipole
-//! operator (fixed 2026-07-13 — see the gauge-origin regression note below),
+//! operator (see the gauge-origin note below),
 //! so per-atom tensors omit inter-atomic charge-transfer coupling by
 //! construction and are NOT expected to sum to the molecular α. Origin
 //! independence is the correctness property that matters instead.
@@ -10,17 +10,15 @@
 //! the bad proatom), Becke is geometry-only and accurate at production
 //! grid sizes (75 radial × 110 angular).
 //!
-//! GAUGE-ORIGIN REGRESSION (2026-07-13): this function previously used raw
-//! lab-frame grid coordinates `r` in the AO dipole quadrature, then
-//! renormalized each atom's contribution to match the global lab-frame
-//! analytical dipole. That renormalization is gauge-breaking for off-origin
-//! geometries — the real danuglipron/7LCJ production run (71 atoms, sto-3g,
-//! ~250 Bohr from origin, 6458 external point charges) showed α_iso up to
-//! hundreds of a.u. A small water+point-charge test didn't catch it because
-//! `pdep_polarizability_hirshfeld` (a sibling function with the identical bug
-//! pattern) was fixed and tested first, but THIS function — the one actually
-//! wired to the CLI's `alpha_atomic` NPZ export (`main.rs` compute_alpha_atomic
-//! path) — still had the bug until this fix. Any future per-atom property
+//! GAUGE-ORIGIN: raw lab-frame grid coordinates `r` in the AO dipole
+//! quadrature, renormalized to match the global lab-frame analytical dipole,
+//! are gauge-breaking for off-origin geometries — a production run (71 atoms,
+//! sto-3g, ~250 Bohr from origin, 6458 external point charges) gives α_iso up
+//! to hundreds of a.u. A small water+point-charge test does not catch it. This
+//! function — wired to the CLI's `alpha_atomic` NPZ export (`main.rs`
+//! compute_alpha_atomic path) — and its sibling
+//! `pdep_polarizability_hirshfeld` therefore use the atom-centred dipole
+//! operator and no renormalization. Any per-atom property
 //! function copied from this file should use atom-centred (r − R_A), not
 //! lab-frame r, and should NOT renormalize to a lab-frame analytical total.
 

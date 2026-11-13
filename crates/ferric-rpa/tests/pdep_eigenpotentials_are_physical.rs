@@ -226,9 +226,9 @@ fn unrestricted_eigenpotentials_are_v_orthonormal_and_diagonalize_v_plus_pi() {
 //
 // Artifact hypothesis: a back-transform c = F·u (the closed-shell parts
 // entry before #573) fails cᵀVc = I by O(1) on the square rotated factor and
-// cannot even be formed on the rectangular one; the old shape guard
-// (`ncols == naux`) refused every rectangular F in the molecular-shaped
-// convention, so the rectangular cases fail on the old code as well.
+// cannot even be formed on the rectangular one; a shape guard
+// (`ncols == naux`) would refuse every rectangular F in the molecular-shaped
+// convention, so the rectangular cases fail under that guard as well.
 //
 // MUTATIONS (run by hand, each fails a test below):
 // * `run_pdep_rpa_from_parts` back-transform `.t().dot` → `.dot`:
@@ -237,7 +237,7 @@ fn unrestricted_eigenpotentials_are_v_orthonormal_and_diagonalize_v_plus_pi() {
 // * `u_pdep_rpa_core` back-transform `.t().dot` → `.dot`: the U case fails
 //   (and ferric-pbc's lindep-drop gamma_urpa test panics in the GEMM).
 // * `check_metric_factor` reverted to `ncols() != naux`: both tests fail
-//   (rectangular F refused; a raw W is no longer refused and panics).
+//   (rectangular F refused; a raw W is not refused and panics).
 
 /// Deterministic uniform(-1, 1) stream (no rand dev-dependency).
 struct Lcg(u64);
@@ -368,7 +368,7 @@ fn parts_entries_refuse_an_untransposed_map_and_mismatched_spin_factors() {
     let s = synth_metric(&mut rng, n, drop);
     let j = rng.mat(n, nocc * nvir);
     let (eo, ev, _) = synth_eps(&mut rng, nocc, nvir);
-    // The old periodic mistake: W = Fᵀ `(naux_src, naux)` stored as-is.
+    // The periodic mistake: W = Fᵀ `(naux_src, naux)` stored as-is.
     let mut bad = synth_inter(&s.f, &j, nocc, nvir);
     bad.v_inv_sqrt = s.f.t().to_owned();
     let msg = ferric_rpa::run_pdep_rpa_from_parts(&bad, &eo, &ev, &parts_cfg())

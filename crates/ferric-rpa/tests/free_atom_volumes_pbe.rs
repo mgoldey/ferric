@@ -1,16 +1,13 @@
 //! Free-atom UKS/RKS-PBE + Becke-volume pipeline check for Z=1..=18.
 //!
-//! Originally (G7, docs/perf-tasks/G7-verify-vol-free-table.md) this verified
-//! `free_atom_ref::ts_free_atom`'s hardcoded `vol_free` table against a live
-//! free-atom calc and found 12 of 18 entries were never sourced and disagreed
-//! 11%–98%. G8 (docs/perf-tasks/G8-fix-vol-free-table.md) removed the CLI's
-//! table fallback entirely and dropped the Z≤18 `vol_free` entries to `None`,
-//! so the live free-atom SCF is now the ONLY source of the TS vol_free
-//! denominator. This test therefore no longer compares against a table — its
-//! lasting job is a **robustness gate**: for every Z=1..=18 at its ground-state
+//! `free_atom_ref::ts_free_atom` carries no `vol_free` table for Z≤18 (the
+//! hardcoded entries disagreed 11%–98% with a live calc; see
+//! docs/perf-tasks/G7-verify-vol-free-table.md), so the live free-atom SCF is
+//! the ONLY source of the TS vol_free denominator. This test does not compare
+//! against a table; its job is a **robustness gate**: for every Z=1..=18 at its ground-state
 //! multiplicity, does the live free-atom SCF actually converge and yield a
 //! finite volume? An element that fails here would have TS C6 silently skipped
-//! for any molecule containing it (the honest new behavior), so a regression to
+//! for any molecule containing it (the honest behavior), so a regression to
 //! "flaky free-atom SCF" is worth catching.
 //!
 //! It reuses exactly the machinery `ferric-cli`'s TS-C6 branch uses (see
@@ -194,12 +191,11 @@ fn free_atom_scf_converges_z1_18_pbe() {
 /// Both now integrate on the same atom-centred Becke-Lebedev grid, so this
 /// comparison is an INTERNAL CONSISTENCY check only — the two numbers are the
 /// same quadrature of the same integrand and should agree to the
-/// floating-point floor. It can no longer measure grid truncation, which is
-/// what it was written for: the bounded 6-Bohr lattice it used to compare
-/// against is reachable as `atomic_effective_volumes_hirshfeld_on_grid` on
-/// `hirshfeld_volume_grid`, and the `Becke<->Hirsh%` column below would need
-/// to call that to recover its original meaning. Left as a cheap agreement
-/// probe rather than deleted; it carries no conclusion about the vol_free
+/// floating-point floor. It does not measure grid truncation: the bounded
+/// 6-Bohr lattice that would is reachable as
+/// `atomic_effective_volumes_hirshfeld_on_grid` on `hirshfeld_volume_grid`,
+/// and the `Becke<->Hirsh%` column below would need to call that to measure it.
+/// It is a cheap agreement probe; it carries no conclusion about the vol_free
 /// table (see docs/vol-free-verification.md for that).
 #[test]
 #[ignore] // slow: 6 free-atom UKS-PBE solves at aug-cc-pVTZ; diagnostic only.

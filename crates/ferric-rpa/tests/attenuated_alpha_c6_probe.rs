@@ -363,12 +363,12 @@ fn screening_omega_vs_gap() {
     println!("\n  Verdict: compare the ω/Δ column. Constant ⟹ screening; scattered ⟹ fit.");
 }
 
-// NOTE: a prior `screening_n2_stretch_gap_response` test was removed — using a
+// NOTE: there is no N2 bond-stretch gap-response test — using a
 // bond stretch to vary the gap is confounded by multireference breakdown past
-// the Coulson–Fischer point (~1.2 Å for N2), where the HOMO–LUMO gap is no
-// longer a meaningful valence gap and RHF/PBE+RPA is qualitatively wrong. The
+// the Coulson–Fischer point (~1.2 Å for N2), where the HOMO–LUMO gap is not
+// a meaningful valence gap and RHF/PBE+RPA is qualitatively wrong. The
 // gap must be varied by electronic structure at equilibrium instead — that is
-// what the expanded `screening_omega_vs_gap` valence set above now does.
+// what the `screening_omega_vs_gap` valence set above does.
 
 /// PHYSICS vs CANCELLATION: is the attenuation C6 correction STRUCTURED (real)
 /// or UNIFORM (a scale factor in disguise)?
@@ -676,10 +676,8 @@ fn erf_rpa_c6_and_structure() {
 /// S3 spike (open triage item #3): pin the SR-RPA CORRELATION-ENERGY recovery
 /// ratio claimed in the `attenuated-rpa-recovers-most-correlation` memory
 /// file: "SR-RPA with erfc(ω=0.222 Bohr⁻¹) on H2O/cc-pVDZ recovers 97.7% of
-/// full Coulomb-RPA correlation energy." That number previously existed only
-/// as a memory-file record from an ad-hoc investigation; no test computed and
-/// asserted this specific ratio (grepped — no `e_rpa` recovery-ratio
-/// computation at ω=0.222 existed anywhere in ferric-rpa's tests or src).
+/// full Coulomb-RPA correlation energy." This test computes and
+/// asserts that ratio.
 ///
 /// Distinct quantity from `attenuated_water_alpha_c6_probe` above: this test
 /// is about the RPA CORRELATION ENERGY (`run_pdep_rpa(...).e_rpa`, the

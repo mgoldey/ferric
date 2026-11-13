@@ -597,9 +597,9 @@ pub(crate) fn run_pdep_rpa_eigensolve(
         config.eigensolver_max_vecs
     };
 
-    // NOTE (2026-07-21 memory fix): these used to be `b_ov.clone()` /
-    // `eps_occ.clone()` / `eps_vir.clone()` so the Davidson/Lanczos matvec
-    // closures below could `move` owned copies into themselves. None of
+    // NOTE: these are references, not `b_ov.clone()` /
+    // `eps_occ.clone()` / `eps_vir.clone()` owned copies moved into the
+    // Davidson/Lanczos matvec closures below. None of
     // run_davidson_seeded/run_davidson_static/run_lanczos_full_rank_budgeted
     // require `'static` (they call `matvec` synchronously within their own
     // call frame, never spawning a thread or storing the closure past the
@@ -607,7 +607,7 @@ pub(crate) fn run_pdep_rpa_eigensolve(
     // source of `b_ov`) is borrowed for this whole function's body (it's
     // read again below at `inter.v_inv_sqrt.t().dot(...)`), so the closures can
     // safely capture plain references instead. At benzene aug-cc-pVQZ scale
-    // (naux≈2976, nov≈61740) `b_ov.clone()` alone was ~1.4 GB — a pure
+    // (naux≈2976, nov≈61740) `b_ov.clone()` alone would be ~1.4 GB — a pure
     // aliasing change, zero numerical effect (see `dense_legacy_path_clone_
     // elimination_is_bit_identical` regression test in this module).
     let b_ov_ref = b_ov;
@@ -1220,8 +1220,7 @@ pub fn run_pdep_rpa_from_parts(
     let eigenvalues_static: Vec<f64> = lz.eigenvalues[..n_keep].to_vec();
     let eigenvectors = lz.eigenvectors.slice(ndarray::s![.., ..n_keep]).to_owned();
     // c = Fᵀ·u, the ONE `RpaIntermediates::v_inv_sqrt` convention (#573) —
-    // the same back-transform as `run_pdep_rpa_eigensolve`. (This read `F·u`
-    // until #573, correct only for the old untransposed RS-GDF map.)
+    // the same back-transform as `run_pdep_rpa_eigensolve`. (`F·u` is correct only for an untransposed RS-GDF map.)
     let eigenpotentials_aux = inter.v_inv_sqrt.t().dot(&eigenvectors);
     let (quad_freqs, quad_weights) = quadrature::build_quadrature(&config.quadrature);
 
@@ -1452,7 +1451,7 @@ pub fn run_u_pdep_rpa(
         eps_b_full[inter_b.nocc_total..inter_b.nocc_total + inter_b.nvir].to_vec();
 
     // χ₀'s scale factors are sqrt(2 e_ia / (ω² + e_ia²)): a non-positive or
-    // non-finite e_ia makes them NaN, which used to surface only as an opaque
+    // non-finite e_ia makes them NaN, which would surface only as an opaque
     // LAPACK failure in the full-rank eigh. Refuse it here with the gap, as
     // `run_u_pdep_rpa_from_parts` already does. (A ROHF/ROKS reference whose
     // returned orbitals and stored spin Focks belonged to different

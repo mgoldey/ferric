@@ -5,13 +5,13 @@
 //! tests abort with `stack overflow` — the crash mode documented in
 //! `lanczos.rs::lanczos_blas_threads`.
 //!
-//! That crash no longer reproduces (verified 2026-07-26: full ferric-rpa suite,
-//! 8 concurrent CLI solves at 12 BLAS threads each, and a direct probe of
-//! `eigh` at n=1200 on a 2 MB stack and inside a rayon worker — all clean).
-//! The most likely reason is that the eigensolve moved onto
-//! `ferric_core::linalg::eigh_dc`/`eigvalsh_dc` (`c284e48`), which use the
+//! The crash does not reproduce (full ferric-rpa suite, 8 concurrent CLI
+//! solves at 12 BLAS threads each, and a direct probe of `eigh` at n=1200 on
+//! a 2 MB stack and inside a rayon worker — all clean). The likely reason is
+//! that the eigensolve runs on
+//! `ferric_core::linalg::eigh_dc`/`eigvalsh_dc`, which use the
 //! standard LAPACK workspace-query convention and HEAP-allocate the workspace,
-//! whereas the previous path put it on the caller's stack.
+//! where a stack-allocated workspace would overflow the caller's stack.
 //!
 //! This test pins that: it runs the exact configuration `78bc70b` reported as
 //! aborting. If a future change reintroduces a stack-allocated workspace, this

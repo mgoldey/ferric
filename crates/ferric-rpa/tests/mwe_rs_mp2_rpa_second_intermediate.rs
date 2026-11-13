@@ -124,11 +124,11 @@ fn ample_budget_still_passes_with_second_bov_charged() {
 }
 
 /// THE FAILURE MODE THE FINDING DESCRIBES: pick a budget that fits the
-/// OLD (under-charged, single-b_ov) estimate exactly but is too small once
-/// the second co-resident buffer is honestly counted. Before the fix this
-/// budget would have been silently approved; after the fix it is correctly
-/// refused. This is the test that fails on the pre-fix arithmetic and passes
-/// on the post-fix arithmetic (mutate by removing the `.saturating_add` at
+/// single-b_ov (under-charged) estimate exactly but is too small once
+/// the second co-resident buffer is honestly counted. A single-b_ov charge
+/// would silently approve this budget; the gate correctly refuses it. This
+/// test fails on single-b_ov arithmetic and passes on the two-buffer
+/// arithmetic (mutate by removing the `.saturating_add` at
 /// the rs_mp2_rpa.rs call site, or by calling this test's `base` in place of
 /// `with_second`, to see it fail).
 #[test]

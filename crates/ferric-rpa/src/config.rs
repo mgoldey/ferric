@@ -464,7 +464,7 @@ impl QuadratureScheme {
     ///   "chebyshev-tan" | "chebyshev" | "ct" → `ChebyshevTan`
     ///
     /// Errors on any other string rather than silently falling back to
-    /// Gauss-Legendre — a typo'd scheme used to run a *different* quadrature
+    /// Gauss-Legendre — a typo'd scheme would run a *different* quadrature
     /// than requested with no diagnostic.
     pub fn parse_config_str(s: Option<&str>) -> Result<Self, String> {
         match s.map(|x| x.trim().to_ascii_lowercase()).as_deref() {

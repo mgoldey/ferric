@@ -415,8 +415,8 @@ mod tests {
     /// `Err(FerricError::General("Davidson did not converge"))` on `max_iter`
     /// exhaustion instead of returning an unconverged `Ok`) — so `converged`
     /// must be `true` at both `Ok(DavidsonResult { .. })` sites. Regression
-    /// guard for the TD-CONV field-threading fix: previously `DavidsonResult`
-    /// had no `converged` field at all and the flag was dropped everywhere.
+    /// guard for the TD-CONV field threading: `DavidsonResult` carries a
+    /// `converged` field and no site drops the flag.
     #[test]
     fn davidson_result_reports_converged_true() {
         use ndarray::array;
@@ -442,8 +442,8 @@ mod tests {
     /// eigenvalues: lz.eigenvalues, eigenvectors: lz.eigenvectors, converged:
     /// lz.converged }` wiring used at the three Lanczos call sites in
     /// `lib.rs` (`run_pdep_rpa_from_intermediates`'s Boys-screened Lanczos arm
-    /// and both `run_lanczos_full_rank` sites). Before the fix, `converged`
-    /// was silently dropped when a `LanczosResult` was folded into a
+    /// and both `run_lanczos_full_rank` sites). `converged`
+    /// must not be silently dropped when a `LanczosResult` was folded into a
     /// `DavidsonResult`; this test drives `run_lanczos_seeded` into the same
     /// deliberately-unconverged regime as
     /// `lanczos::tests::seeded_lanczos_max_iter_one_reports_unconverged`

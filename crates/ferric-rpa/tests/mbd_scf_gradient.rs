@@ -186,10 +186,10 @@ fn compare(label: &str, analytic: &Array2<f64>, fd: &Array2<f64>, tol_rel: f64) 
 /// formula, floor, lattice construction) — `assert_eq` on f64, so one ulp
 /// fails it. Run with both the Slater fallback and a provider proatom.
 ///
-/// `atomic_effective_volumes_hirshfeld` no longer integrates on the lattice:
-/// it uses the atom-centred Becke grid, because lattice nodes land on nuclei
+/// `atomic_effective_volumes_hirshfeld` integrates on the atom-centred Becke
+/// grid, not the lattice, because lattice nodes land on nuclei
 /// where rho has its cusp. So the default and the explicit-lattice path are
-/// no longer the same number, and pinning them equal would pin the bug. This
+/// not the same number, and pinning them equal would pin the bug. This
 /// pins the lattice path against ITSELF (two calls must agree bitwise) and
 /// asserts the two paths DIFFER, in the direction and magnitude the grid
 /// change predicts — H2O/STO-3G, atom 0: 27.103098147412556 (Becke) vs

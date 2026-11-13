@@ -62,11 +62,10 @@ fn water_scf() -> WaterSetup {
 
 /// The static Hirshfeld path must refuse a starvation budget.
 ///
-/// Before the fix this path had zero `check_alloc`/`preflight_*` call sites,
-/// while holding strictly MORE memory than the Becke path that was judged to
-/// need a gate: its `npts` comes from a real-space bounding box (so it grows
+/// This path needs `check_alloc`/`preflight_*` call sites: it holds strictly MORE memory than the Becke path that was judged to
+/// need a gate (its `npts` comes from a real-space bounding box (so it grows
 /// with molecular VOLUME, not atom count), and its `chi` is monolithic and
-/// genuinely read, so it cannot be chunked away.
+/// genuinely read, so it cannot be chunked away).
 #[test]
 fn hirshfeld_static_refuses_a_starvation_budget() {
     let (mol, obs, obs_bs, dfbs, rhf) = water_scf();
@@ -308,8 +307,8 @@ fn dielectric_spectrum_static_runs_under_an_ample_budget() {
 ///
 /// This test pins the CONSEQUENCE: the gate's own accounting must not be
 /// contradicted by an allocation the method makes anyway. A budget sized to
-/// the estimator's chunked model must therefore actually suffice — under the
-/// old code the method would allocate ~85x that and die.
+/// the estimator's chunked model must therefore actually suffice — a
+/// method that allocated the monolithic block would need ~85x that and die.
 #[test]
 fn becke_path_does_not_allocate_the_monolithic_chi_it_never_charges() {
     use ferric_rpa::budget::{estimate_grid_bytes, GridEstimateShape};
@@ -323,10 +322,10 @@ fn becke_path_does_not_allocate_the_monolithic_chi_it_never_charges() {
         dipole_band_width: 0,
         n_workers,
     });
-    // The monolithic block that used to be allocated right after the gate.
+    // The monolithic block a non-chunked path would allocate right after the gate.
     let monolithic = nbf * npts * 8;
 
-    // The gap the defect hid. If a future change re-materializes a whole-grid
+    // The gap a monolithic chi would hide. If a future change re-materializes a whole-grid
     // chi on this path, the estimate becomes an under-count of this magnitude
     // again — this assertion documents why the deletion matters.
     assert!(
@@ -403,8 +402,8 @@ fn truncated_n_keep_still_charges_the_naux_wide_per_worker_scratch() {
     let est_trunc = estimate_peak_bytes(truncated);
 
     // The per-worker allocation does not shrink when n_keep shrinks, so the
-    // charge must not either. Before the fix, est_trunc collapsed to roughly
-    // the m=10 figure and under-charged the real allocation ~50x on this term.
+    // charge must not either. An m-based charge would collapse est_trunc to roughly
+    // the m=10 figure and under-charge the real allocation ~50x on this term.
     let naux_wide_per_worker = (500usize * (10 * 100) + 500 * 500) * 8 * 8; // (naux*nov + naux^2) * 8 bytes * 8 workers
     assert!(
         est_trunc >= naux_wide_per_worker,

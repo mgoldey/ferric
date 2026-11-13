@@ -231,9 +231,9 @@ pub fn rs_mp2_lr_rpa(
 ) -> Result<RsMp2RpaResult, FerricError> {
     // Resolved ONCE for the whole call: the preflight gate's budget check
     // just below, AND the stage-seam RSS observability checks further down
-    // (Item 3) both compare against this same configured ceiling — previously
-    // re-resolved via two separate `resolve_budget_bytes(cfg.drpa.memory_budget_bytes)`
-    // calls ten lines apart.
+    // (Item 3) both compare against this same configured ceiling, resolved once
+    // (not via two separate `resolve_budget_bytes(cfg.drpa.memory_budget_bytes)`
+    // calls).
     let resolved_budget_bytes =
         ferric_core::memory::resolve_budget_bytes(cfg.drpa.memory_budget_bytes);
 
@@ -348,9 +348,9 @@ pub fn rs_mp2_lr_rpa(
     // building it (the aux-blocked (P|op|ia) transform) is the expensive step.
     // Build the intermediates ONCE per operator and feed them to both the
     // spin-component energy (spin_components_from_b_ov) and the dRPA solve
-    // (run_pdep_rpa_from_intermediates). This removes the duplicate transforms
-    // that the old code ran (CoupledRings previously did 5 transforms — 3 MP2 +
-    // 2 RPA — for only 3 distinct operators; now 3). Results are bit-identical.
+    // (run_pdep_rpa_from_intermediates). This avoids duplicate transforms
+    // (CoupledRings needs 3 distinct operators, not 5 transforms — 3 MP2 +
+    // 2 RPA). Results are bit-identical.
     let eps = rhf.eps_r();
     let inter_of = |op: Operator| -> Result<ferric_mp2::rimp2::RpaIntermediates, FerricError> {
         let it = compute_rpa_intermediates(mol, obs, dfbs, op, rhf, &ri_cfg)?;

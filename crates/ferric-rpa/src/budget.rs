@@ -126,12 +126,11 @@ pub struct PeakEstimateShape {
     /// `0` contributes nothing, so a caller that has no meaningful `nao`
     /// estimates byte-identically to before this field existed.
     ///
-    /// # Why this is not the "negligible" scratch the old comment described
+    /// # Why the raw AO scratch is not "negligible"
     ///
-    /// The intermediates comment below used to say the raw AO scratch is
-    /// "chunk-sized, `MO_STREAM_CHUNK` aux rows wide, not naux-wide, so it's
-    /// negligible next to the full b_ov". That is true of what the stream
-    /// reads INTO and false of what it reads FROM.
+    /// The raw AO scratch is "chunk-sized, `MO_STREAM_CHUNK` aux rows wide, not
+    /// naux-wide, so it's negligible next to the full b_ov" for what the stream
+    /// reads INTO, and not for what it reads FROM.
     /// `compute_rpa_intermediates` (rimp2.rs) does:
     ///
     /// ```text
@@ -232,11 +231,11 @@ pub fn estimate_grid_bytes(g: GridEstimateShape) -> usize {
     // chi: evaluated PER GRID CHUNK inside the banded accumulation, one buffer
     // per rayon worker, each `chunk_size = npts/TARGET_CHUNKS` points wide.
     //
-    // This used to be a single contiguous Array2::zeros((nbf, npts)) — ~3.75 GB
-    // at nbf=800/npts=586k — built up front even though every consumer reads it
-    // one grid point at a time. Fusing it into the loop cut that to ~44 MB at 12
+    // A single contiguous Array2::zeros((nbf, npts)) would be ~3.75 GB
+    // at nbf=800/npts=586k, though every consumer reads it
+    // one grid point at a time. Fusing it into the loop gives ~44 MB at 12
     // workers (85x less; 3.7 MB serial). The estimate tracks the fused form: an
-    // estimator that still charged the monolithic figure would over-reject, and
+    // estimator that charged the monolithic figure would over-reject, and
     // an over-estimating gate is as broken as an under-estimating one (it
     // becomes a wall and trains users to inflate budgets).
     let chunk_size = npts.div_ceil(dipole_chunk_count(npts).max(1)).max(1);
@@ -257,8 +256,8 @@ pub fn estimate_grid_bytes(g: GridEstimateShape) -> usize {
         .saturating_mul(F64_BYTES);
 
     // One band of chunk-partials, each a full d_ai_ao-sized set. This is the
-    // term that used to scale with rayon worker count via the thread floor in
-    // `dipole_band_width`; the byte cap now wins, but the partials are still
+    // term that would scale with rayon worker count via the thread floor in
+    // `dipole_band_width`; the byte cap wins, but the partials are still
     // genuinely co-resident with the accumulator, so they are additive here.
     let band_partial_bytes = per_atom_dipole_bytes.saturating_mul(dipole_band_width.max(1));
 
@@ -322,7 +321,7 @@ pub fn estimate_grid_bytes(g: GridEstimateShape) -> usize {
 /// scales with `n_workers`, so at HIGH widths it fails on its own and the
 /// fallback engages correctly, while at LOW widths it squeezes in and starves
 /// the tensor. Measured (binary search for the smallest completing capacity,
-/// water/cc-pVDZ) before the fix:
+/// water/cc-pVDZ) with a greedy soft charge:
 ///
 /// ```text
 ///   workers   soft       hard+AO   hard+soft+AO   measured minimum
@@ -439,7 +438,7 @@ pub fn estimate_peak_bytes(shape: PeakEstimateShape) -> usize {
     //     raw AO block SCRATCH is chunk-sized, `MO_STREAM_CHUNK` aux rows
     //     wide, not naux-wide, so it's negligible next to the full b_ov).
     //
-    //     CAVEAT the above used to omit: that is the buffer the stream reads
+    //     CAVEAT: that is the buffer the stream reads
     //     INTO. The `ThreeIndexSource` it reads FROM is a separate full
     //     `(naux, nao, nao)` tensor, live across the whole streaming call and
     //     admitted in-core at up to 100% of this very budget. It is charged
@@ -479,7 +478,7 @@ pub fn estimate_peak_bytes(shape: PeakEstimateShape) -> usize {
     // and then form `eps_mat = b_scaled.dot(&b_scaled.t())`, a full
     // (naux, naux). Those shapes are naux-wide, not m-wide.
     //
-    // That distinction used to be invisible because every caller passes
+    // That distinction is invisible when every caller passes
     // `n_keep = naux` (pre-eigensolve the retained count is unknown, and the
     // production `trunc_thresh = 0.0` keeps every mode anyway), so `m == naux`
     // and the m-based figure happened to land on the right number. It was

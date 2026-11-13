@@ -503,7 +503,7 @@ const COSX_MBD_TOL: f64 = 1e-10;
 /// contraction differentiating the COSX energy) vs central FD of the full
 /// UKS(COSX) + MBD pipeline, NH2/STO-3G. NEGATIVE CONTROL: the same driver
 /// with the COSX switch removed from the config (exact-K contraction against
-/// the COSX SCF — the pairing the open-shell COSX refusal used to prevent)
+/// the COSX SCF — the pairing the open-shell COSX refusal prevents)
 /// must miss FD by more than the bar.
 #[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
