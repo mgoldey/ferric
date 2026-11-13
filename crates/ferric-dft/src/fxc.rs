@@ -231,8 +231,8 @@ impl LdaFxcKernel {
         // Pre-scale χ columns by (w · δV^σ) per grid point, then GEMM:
         // chi_scaled @ chiᵀ — same idiom as vxc.rs::semilocal_vxc_closed's
         // LDA piece. One reused (nbf, npts) scratch serves both spins
-        // sequentially (a's GEMM completes before b refills), replacing the two
-        // full `chi.clone()` copies this call used to make every Newton step.
+        // sequentially (a's GEMM completes before b refills), so no
+        // full `chi.clone()` copies are made every Newton step.
         let mut scratch = self.scratch.lock().unwrap_or_else(|e| e.into_inner());
         let buf = scratch.ensure((nbf, npts));
 
@@ -1216,7 +1216,7 @@ mod tests {
         }
     }
 
-    /// GEMM back-projection must agree with the old triple loop to
+    /// GEMM back-projection must agree with the triple loop to
     /// ~1e-12 (summation-order differences only), on small random inputs.
     #[test]
     fn gemm_backprojection_matches_loop_reference() {

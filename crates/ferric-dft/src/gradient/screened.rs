@@ -548,7 +548,7 @@ pub(super) enum BatchKernel {
 }
 
 /// The closed-shell GGA / meta-GGA tail after libxc: AO-derivative term,
-/// weight response, grid-coordinate response — in the old pass order.
+/// weight response, grid-coordinate response — in the separate-pass order.
 #[allow(clippy::too_many_arguments)]
 fn closed_tail<const ABS: bool>(
     grad: &mut Array2<f64>,
@@ -603,7 +603,7 @@ impl SpinChannel<'_> {
 /// old `uks_*_batch` code did). Where the two disagree for a spin — its own
 /// density below the floor while the total is above, or the reverse — its
 /// fused column is replaced by the column with the grid term's coefficients
-/// ([`fused_column`]), so the result is the old expression exactly, not a
+/// ([`fused_column`]), so the result is the separate-pass expression exactly, not a
 /// floor-shifted one.
 #[allow(clippy::too_many_arguments)]
 fn open_tail<const ABS: bool>(
@@ -979,7 +979,7 @@ pub(super) fn screened_xc_gradient(
 }
 
 /// [`screened_xc_gradient`] with the per-batch kernel chosen (tests compare
-/// [`BatchKernel::Fused`] against the old passes through this).
+/// [`BatchKernel::Fused`] against the separate passes through this).
 #[allow(clippy::too_many_arguments)]
 fn screened_xc_gradient_k(
     kernel: BatchKernel,
@@ -1122,7 +1122,7 @@ mod legacy {
         })
     }
 
-    /// The old closed-shell GGA / meta-GGA tail.
+    /// The separate-pass closed-shell GGA / meta-GGA tail.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn closed_tail(
         grad: &mut Array2<f64>,
@@ -1176,7 +1176,7 @@ mod legacy {
         }
     }
 
-    /// The old UKS tail (`add_spin` per spin, then the total-floored grid loop).
+    /// The separate-pass UKS tail (`add_spin` per spin, then the total-floored grid loop).
     #[allow(clippy::too_many_arguments)]
     pub(super) fn open_tail(
         grad: &mut Array2<f64>,

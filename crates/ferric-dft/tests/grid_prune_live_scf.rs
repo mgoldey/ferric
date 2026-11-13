@@ -500,8 +500,8 @@ fn vv10_nlc_grid_survives_a_pruned_main_grid() {
 /// The GRADIENT grid honours `prune` (#428): `build_atomic_grid_with_response`
 /// returns exactly the points and weights of the pruned energy grid
 /// (`build_atomic_grid_pruned`), in the same order, plus one weight-derivative
-/// row per point. It used to hard-error on a pruned config, which left no
-/// analytic gradient for a pruned SCF. The FD anchor on the gradient itself is
+/// row per point. Pruned configs are not refused, so a pruned SCF has an
+/// analytic gradient. The FD anchor on the gradient itself is
 /// `ferric-scf/tests/ks_gradient_scf_grid.rs`.
 #[test]
 fn gradient_grid_is_the_pruned_energy_grid() {

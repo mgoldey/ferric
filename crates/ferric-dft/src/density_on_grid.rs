@@ -59,8 +59,8 @@ pub fn eval_density_closed(
     // Restructured point-outer / μ-inner (vs. the original μ-outer / point-inner
     // row sweep) so grid points — independent, disjoint output slots — can be
     // split across rayon workers while each point's own Σ_μ accumulation runs
-    // in the same ascending-μ order as before. That makes the result bit-
-    // identical to the old serial code and to itself across thread counts:
+    // in ascending-μ order. That makes the result bit-
+    // identical to a serial loop and to itself across thread counts:
     // this only changes which loop nest visits (μ, g) pairs, not the order in
     // which terms are added into each output element.
     let mut rho = Array1::<f64>::zeros(npts);

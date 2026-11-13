@@ -506,8 +506,8 @@ pub fn compute_vv10_full(
     params: &Vv10Params,
 ) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
     // ε(g) is a byproduct of the same pair sum that yields the potentials, so
-    // a single traversal covers everything (this used to re-run the full
-    // O(npts²) pair sum a second time just to recover ε).
+    // a single traversal covers everything (no second O(npts²) pair sum is
+    // needed to recover ε).
     let out = vv10_internal(grid, dens, params);
     (out.vrho, out.vsig, out.exc)
 }

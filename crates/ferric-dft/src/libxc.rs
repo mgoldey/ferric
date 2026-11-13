@@ -1527,7 +1527,7 @@ pub fn xc_def_from_name_nspin_omega(
 ///
 /// SIGNS: do **not** re-derive these from the PDF with plain `pdftotext` — it drops
 /// the paper's minus glyph and reports every fitted coefficient as positive. Seven of
-/// the twelve were wrong here for exactly that reason until 2026-09-16. The signs are
+/// the twelve come out with the wrong sign that way. The signs are
 /// pinned against the paper by
 /// `tests/wb97x_l_v_published_params.rs::fitted_coefficients_match_the_published_table`,
 /// and the recovery method is recorded in `testdata/reference/wb97x_l_v_params.json`.

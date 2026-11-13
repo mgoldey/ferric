@@ -181,7 +181,7 @@ pub struct AtomicGridConfig {
     /// analytic one by such a jump (of order `cut · |f|`); nothing smooths it.
     ///
     /// Cost: with a cutoff set, [`atomic_grid_point_count`] must evaluate the
-    /// Becke weight of every point (it is no longer the cheap closed-form
+    /// Becke weight of every point (it is not the cheap closed-form
     /// count); see its doc.
     ///
     /// Settable from the CLI via `[dft] grid_weight_cut` and from Python via
@@ -702,8 +702,8 @@ fn count_points_surviving_cut(
 /// grid size and the atom count, which makes it the largest single allocation
 /// in this crate for anything past a few dozen atoms: at 50 atoms and 500k
 /// grid points it is ~600 MB of payload plus ~12 MB of per-point `Vec`
-/// headers. It was previously built with no guard at all, so an over-sized
-/// gradient job died in the allocator rather than at a budget check. The
+/// headers. An unguarded build would let an over-sized
+/// gradient job die in the allocator rather than at a budget check. The
 /// [`MemoryPlan`] below is that check; it runs before `pre` (the first big
 /// allocation) is filled, so nothing large is resident when it fires.
 ///

@@ -1122,8 +1122,8 @@ fn fill_amat_in(
 ///   parallel mode would leave the build fully serial on one BLAS thread. The
 ///   batch loops then run on the CALLING thread (outside any rayon worker,
 ///   which is the call-path proof `blas_threads.rs` requires for a raise) with
-///   `opt_in_blas_threads()` BLAS threads — the same opt-in the old dense path
-///   used for its digestion GEMMs.
+///   `opt_in_blas_threads()` BLAS threads — the same opt-in a dense path
+///   uses for its digestion GEMMs.
 ///
 /// # What is and is not bit-identical
 ///
@@ -1402,7 +1402,7 @@ impl ScreenedGrid {
             .load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// Test seam: recompute in the old two-pass order (each AO block evaluated
+    /// Test seam: recompute in the two-pass order (each AO block evaluated
     /// once per pass) even where the fused order applies.
     #[cfg(test)]
     pub(crate) fn set_two_pass_recompute(&mut self, on: bool) {

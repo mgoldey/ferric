@@ -1235,7 +1235,7 @@ fn switched_weight(
 #[cfg(test)]
 mod tests {
     /// Spot values of PySCF's `radii.BRAGG` in Å (`BRAGG[z] * BOHR`), mostly
-    /// past Ar, where ferric's table used to fall back to 1.0 Å. The iodine value is what moved the
+    /// past Ar, where a table without them falls back to 1.0 Å. The iodine value moves the
     /// CH3I/def2-SVP PBE energy by 1.76e-4 Ha against PySCF.
     #[test]
     fn bragg_radii_match_pyscf() {

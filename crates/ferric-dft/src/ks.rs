@@ -103,9 +103,8 @@ impl From<KsXcError> for ferric_core::error::FerricError {
 /// Bytes the dense VV10 NLC-grid cache and its per-iteration chain occupy:
 /// χ + ∇χ (4 planes) + the NLC `VxcScratch` buffer (1) + `Φ = D·χ` inside
 /// `eval_density_closed` (1), plus ~20 O(npts) companion doubles — the same
-/// closed-shell accounting the old full-cache gate used, now applied to the
-/// NLC grid it actually describes (the old gate doubled the MAIN-grid figure
-/// as a proxy for it).
+/// closed-shell accounting of a full-cache gate, applied to the
+/// NLC grid it describes (not the MAIN-grid figure doubled as a proxy for it).
 fn nlc_cache_bytes(nbf: usize, npts_nlc: usize) -> usize {
     nbf.saturating_mul(6)
         .saturating_add(20)
@@ -175,12 +174,12 @@ struct StorageDecision {
 /// # Why recompute never errors
 ///
 /// Recomputation needs no resident AO blocks, and its working set cannot be
-/// made smaller (the old per-point batching fallback could shrink to 1 point;
-/// this one is bounded below by the O(npts) density/kernel vectors). So an
+/// made smaller (per-point batching could shrink to 1 point;
+/// recompute is bounded below by the O(npts) density/kernel vectors). So an
 /// over-budget main grid takes the recompute branch; if even its working set
 /// cannot be covered, the job runs uncharged for that amount and reports it
-/// via `uncharged` (the caller warns) rather than refusing a job the old
-/// fallback would have run. Only the non-batchable VV10 NLC cache is a hard
+/// via `uncharged` (the caller warns) rather than refusing a job the per-point
+/// batching fallback would have run. Only the non-batchable VV10 NLC cache is a hard
 /// error.
 ///
 /// # Determinism
@@ -589,7 +588,7 @@ fn build_grids(
     let budget = grid_working_budget(memory_budget_bytes);
 
     // Partition + screen. This evaluates every shell on every point once (the
-    // same work the old dense cache construction did), keeping only per-batch
+    // same work as a dense cache construction), keeping only per-batch
     // shell lists — no AO values are retained yet. It also surfaces a genuine
     // per-shell error (UnsupportedL) here, at construction, so the per-Fock
     // `.expect` below can never see one.
@@ -805,16 +804,15 @@ pub struct KsXc {
 ///
 /// # Scope under the screened-batch design
 ///
-/// Batch boundaries are now a pure function of the grid and `max_batch_pts`,
+/// Batch boundaries are a pure function of the grid and `max_batch_pts`,
 /// and this budget only chooses resident vs recompute AO storage, which are
-/// bit-identical. So the energy can no longer depend on this figure at all;
-/// the history below is kept because the resolve-once / pool-ledger choice
-/// still makes the MEMORY behaviour reproducible, which is worth keeping.
+/// bit-identical. So the energy does not depend on this figure; the
+/// resolve-once / pool-ledger choice makes the MEMORY behaviour reproducible.
 ///
 /// # Why this is not `available_budget_now`
 ///
-/// It used to be, and that made the SCF ENERGY depend on transient resident
-/// memory. `available_budget_now` subtracts this process's LIVE RSS, and the
+/// Using it would make an SCF ENERGY depend on transient resident
+/// memory under a batch-boundary design. `available_budget_now` subtracts this process's LIVE RSS, and the
 /// figure feeds `resolve_batch_size`, which sets the grid batch boundaries.
 /// Batch boundaries fix the floating-point accumulation order of the
 /// V_xc/E_xc sums, so a drifting budget silently moves the energy.
@@ -863,8 +861,8 @@ impl KsXc {
     /// `Some(max points per batch)` when the screened AO blocks are
     /// recomputed per Fock build, `None` when they are resident.
     ///
-    /// Test hook. Batch boundaries no longer depend on the budget at all (they
-    /// are a pure function of the grid and `max_batch_pts`), so this now
+    /// Test hook. Batch boundaries do not depend on the budget (they
+    /// are a pure function of the grid and `max_batch_pts`), so this
     /// reports the storage MODE the budget selected; the two modes are
     /// bit-identical.
     #[doc(hidden)]
@@ -1936,7 +1934,7 @@ mod storage_tests {
         }
     }
 
-    /// Regression for the old mid-run panic: construct under a tiny budget
+    /// Regression for a mid-run panic: construct under a tiny budget
     /// (recompute), then shrink the budget env var BEFORE `add_xc`. The Fock
     /// build must not consult the budget again, so it must not panic.
     #[test]
