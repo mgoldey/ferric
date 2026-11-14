@@ -221,7 +221,16 @@ fn rpa_optimize_h2_ccpvdz() {
         ..Default::default()
     };
 
-    let res = optimize_geometry_rpa(&mol, &obs_bs, &aux_bs, op, &cfg, &opt_cfg, 5e-4).unwrap();
+    let res = optimize_geometry_rpa(
+        &mol,
+        &obs_bs,
+        &aux_bs,
+        op,
+        &cfg,
+        &opt_cfg,
+        ferric_rpa::gradient::RpaGradientMethod::FiniteDifference { h: 5e-4 },
+    )
+    .unwrap();
     let dz = (res.mol.atoms[0].zpos - res.mol.atoms[1].zpos).abs();
     eprintln!(
         "H2/cc-pVDZ RPA opt: steps={} converged={} bond={:.6} Bohr final E={:.10}",

@@ -1,8 +1,8 @@
 //! RPA-driven geometry optimization (BFGS in Cartesian coordinates).
 //!
 //! Mirrors `ferric_scf::optimize::optimize_geometry` but uses
-//! `total_rpa_gradient` (a finite difference of E_RHF + E_c^RPA) as the gradient
-//! driver.
+//! `total_rpa_gradient_by` (a finite difference of E_RHF + E_c^RPA, or the
+//! analytic gradient, per [`RpaGradientMethod`](crate::gradient::RpaGradientMethod)) as the gradient driver.
 //!
 //! The BFGS update and trust-radius scaling are copied from the RHF
 //! optimizer; only the energy + gradient evaluation differs.  Keeping the
@@ -10,7 +10,7 @@
 //! a circular dependency (ferric-scf does not currently depend on
 //! ferric-rpa).
 
-use crate::gradient::total_rpa_gradient_warm;
+use crate::gradient::{total_rpa_gradient_by, RpaGradientMethod};
 use crate::PdepRpaConfig;
 use ferric_core::basis::BasisSet;
 use ferric_core::mol::Molecule;
@@ -34,17 +34,14 @@ pub struct RpaOptimizeResult {
     /// `g_rms_thresh` were all met before `max_steps`.
     pub converged: bool,
     /// Per-SCF warm-start records in evaluation order: each step's reference
-    /// RHF followed by its `6N` displaced RHFs (see `ferric_scf::warm_start`;
+    /// RHF followed, on the finite-difference route, by its `6N` displaced RHFs (see `ferric_scf::warm_start`;
     /// all cold `Disabled` when `OptimizeConfig::scf_warm_start` is off).
     pub scf_warm_start: Vec<WarmStartRecord>,
 }
 
-/// Optimize a molecular geometry on the RPA PES using
-/// `total_rpa_gradient` (a central finite difference of the total RPA
-/// energy, with a fresh RHF + PDEP-RPA at every displaced point).
-///
-/// `h_fd` is the finite-difference step (Bohr);
-/// `5e-4` is a sensible default.
+/// Optimize a molecular geometry on the RPA PES, the gradient from
+/// `gradient` (a central finite difference of the total RPA energy with a
+/// fresh RHF + PDEP-RPA at every displaced point, or the analytic gradient).
 pub fn optimize_geometry_rpa(
     mol: &Molecule,
     obs_basis: &BasisSet,
@@ -52,7 +49,7 @@ pub fn optimize_geometry_rpa(
     op: Operator,
     rpa_config: &PdepRpaConfig,
     opt_config: &OptimizeConfig,
-    h_fd: f64,
+    gradient: RpaGradientMethod,
 ) -> Result<RpaOptimizeResult, FerricError> {
     let mut current_mol = mol.clone();
     let natoms = current_mol.atoms.len();
@@ -63,7 +60,7 @@ pub fn optimize_geometry_rpa(
     // (`opt_config.scf_warm_start`, see `ferric_scf::warm_start`).
     let mut warm = ScfWarmStart::new(opt_config.scf_warm_start);
     let mut eval = |m: &Molecule| {
-        total_rpa_gradient_warm(m, obs_basis, aux_basis, op, rpa_config, h_fd, &mut warm)
+        total_rpa_gradient_by(m, obs_basis, aux_basis, op, rpa_config, gradient, &mut warm)
     };
     let (mut energy, mut grad_arr) = eval(&current_mol)?;
     let mut grad = flatten(&grad_arr);

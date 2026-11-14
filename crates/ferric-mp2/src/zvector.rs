@@ -196,16 +196,7 @@ pub(crate) fn solve_zvector_timed(
                 .saturating_add(imat_shared_bytes(inter.naux, nocc, nvir)),
         )
     };
-    let x_ov = acc.time("zvec: x_ov", || {
-        build_x_ov_weighted(
-            &inter.t2,
-            &inter.b_ov,
-            nocc,
-            nvir,
-            inter.naux,
-            inter.spin_scaling,
-        )
-    });
+    let x_ov = acc.time("zvec: x_ov", || inter.x_ov());
     let imat = acc.time("zvec: Imat", || build_imat_ri(&x_ov, &b_full, &orb));
     drop(worker_charge);
 

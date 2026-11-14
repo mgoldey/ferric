@@ -2213,6 +2213,12 @@ pub struct RpaCfg {
     /// "chebyshev-tan"; "minimax" derives u₀ from `n_quad` and ignores it.
     pub quadrature: Option<String>,
     pub trunc_thresh: Option<f64>,
+    /// Nuclear gradient of `task = "optimize"`: `"fd"` (default; 3-point
+    /// central finite difference, h = 5e-4 Bohr, `6 N_atoms` RHF + RPA
+    /// energies) or `"analytic"` (Z-vector relaxed densities; needs
+    /// `trunc_thresh = 0` and dense `chi0_sparsity`). Unknown values are a
+    /// hard error.
+    pub gradient: Option<String>,
     /// Convergence threshold for the static dielectric eigensolver. IGNORED
     /// (with a warning) by the CLI's Lanczos eigensolver, whose full-rank
     /// solve is one dense eigh. The old name `davidson_conv_thresh` is
@@ -2410,6 +2416,17 @@ impl RpaCfg {
     ///   `"auto:<cutoff>"`                → Auto with that atom cutoff
     ///   `"auto:<cutoff>:<thresh>"`       → …and that Boys threshold
     ///   `"auto:<cutoff>:<thresh>@<rad>"` → …and that distance-cutoff radius (Bohr)
+    /// `[rpa] gradient` (unset = `"fd"`), via the strict shared parser.
+    pub fn parse_gradient(&self) -> Result<ferric_rpa::gradient::RpaGradientMethod, String> {
+        use ferric_rpa::gradient::RpaGradientMethod;
+        match self.gradient.as_deref() {
+            None => Ok(RpaGradientMethod::FiniteDifference {
+                h: RpaGradientMethod::DEFAULT_FD_STEP,
+            }),
+            Some(s) => RpaGradientMethod::parse_config_str(s).map_err(|e| e.to_string()),
+        }
+    }
+
     pub fn parse_chi0_sparsity(&self) -> Result<ferric_rpa::config::Chi0Sparsity, String> {
         // Canonical parser lives on the type (shared with the Python bindings).
         ferric_rpa::config::Chi0Sparsity::parse_config_str(self.chi0_sparsity.as_deref())

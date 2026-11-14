@@ -203,14 +203,79 @@ fn rimp2_gradient_analytical_timed(
         inter.apply_spin_scaling(scaling)
     })?;
     let budget_bytes = ferric_core::memory::resolve_budget_bytes(config.memory_budget_bytes);
+    relaxed_gradient_from_intermediates(
+        mol,
+        obs,
+        dfbs,
+        op,
+        bounds,
+        rhf,
+        &inter,
+        budget_bytes,
+        ext,
+        controls,
+        acc,
+    )
+}
+
+/// The analytic gradient of `E_ref + E_c` for any RI correlation energy
+/// whose first variation is carried by `inter` (`x`, `p_oo`, `p_vv`; see
+/// [`crate::rimp2::Mp2Intermediates::from_ri_densities`]): the Z-vector on
+/// the reference J/K route of `rhf`, the relaxed-density Lagrangian terms and
+/// the 3c/2c RI response of the RI-MP2 gradient (theory section 9),
+/// unchanged. The Z-vector runs to `max |r| < 1e-8` within 50 iterations or
+/// the call is an error. `budget_bytes` bounds the Z-vector's J/K scratch.
+#[allow(clippy::too_many_arguments)]
+pub fn relaxed_ri_gradient(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    rhf: &ScfResult,
+    inter: &crate::rimp2::Mp2Intermediates,
+    budget_bytes: usize,
+    acc: &mut PhaseAccumulator,
+) -> Result<Array2<f64>, FerricError> {
+    ferric_scf::x2c::refuse_relativistic(rhf.relativistic, "RI correlation analytic gradient")?;
+    relaxed_gradient_from_intermediates(
+        mol,
+        obs,
+        dfbs,
+        op,
+        bounds,
+        rhf,
+        inter,
+        budget_bytes,
+        None,
+        ZvectorControls::DEFAULT,
+        acc,
+    )
+}
+
+/// The shared tail of the RI-MP2 and [`relaxed_ri_gradient`] paths.
+#[allow(clippy::too_many_arguments)]
+fn relaxed_gradient_from_intermediates(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    rhf: &ScfResult,
+    inter: &crate::rimp2::Mp2Intermediates,
+    budget_bytes: usize,
+    ext: Option<&ExternalPotential>,
+    controls: ZvectorControls,
+    acc: &mut PhaseAccumulator,
+) -> Result<Array2<f64>, FerricError> {
     let ctx = ferric_core::parallel::ParallelContext::default();
     let jk = acc.time("J/K route setup", || {
         ResponseJk::for_scf(&ctx, mol, obs, bounds, rhf)
     })?;
-    let zv = solve_zvector_timed(obs, dfbs, op, &jk, rhf, &inter, budget_bytes, controls, acc)?
+    let zv = solve_zvector_timed(obs, dfbs, op, &jk, rhf, inter, budget_bytes, controls, acc)?
         .require_converged()?;
-    let mut grad = mp2_relaxed_lagrangian_gradient(mol, obs, op, &jk, rhf, &inter, &zv, ext, acc)?;
-    grad += &integral_response_gradient_3c2c_timed(mol, obs, dfbs, op, &inter, rhf.mos_r(), acc)?;
+    let mut grad = mp2_relaxed_lagrangian_gradient(mol, obs, op, &jk, rhf, inter, &zv, ext, acc)?;
+    grad += &integral_response_gradient_3c2c_timed(mol, obs, dfbs, op, inter, rhf.mos_r(), acc)?;
     Ok(grad)
 }
 
@@ -408,8 +473,6 @@ fn integral_response_gradient_3c2c_timed(
     let nvir = inter.nvir;
     let naux = inter.naux;
     let nov = nocc * nvir;
-    let t2 = &inter.t2;
-
     // --- memory plane: the (naux, nov) MO-side tensors this function builds.
     //
     // `inter`'s own tensors (t2, b_ov, v_inv_sqrt) are charged by their
@@ -490,11 +553,10 @@ fn integral_response_gradient_3c2c_timed(
     // spin-scaled pair weight otherwise), one pooled GEMM per occupied i (the
     // same object the Z-vector's Imat build uses).
     let xov_tok = acc.begin("resp: x_ov (per-i GEMMs)");
-    let x_ov =
-        crate::zvector::build_x_ov_weighted(t2, &inter.b_ov, nocc, nvir, naux, inter.spin_scaling);
+    let x_ov = inter.x_ov();
     acc.stop(xov_tok);
     let y_ov = acc.time("resp: y_ov = V^-1/2 x_ov", || {
-        with_blas_threads(opt_in_blas_threads(), || inter.v_inv_sqrt.t().dot(&x_ov))
+        with_blas_threads(opt_in_blas_threads(), || inter.v_inv_sqrt.t().dot(&*x_ov))
     });
 
     // Back-transform X to AO and contract with 3-center derivative integrals,

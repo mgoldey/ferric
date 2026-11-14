@@ -1524,6 +1524,11 @@ pub struct Mp2Intermediates {
     /// densities and `zvector::build_x_ov_weighted` reads the pair
     /// weights from it; `t2` stays the plain amplitudes.
     pub spin_scaling: SpinScaling,
+    /// The RI three-index density `x[P, ia]` (`(naux, nocc·nvir)`) when the
+    /// energy is not MP2-shaped: set by [`Mp2Intermediates::from_ri_densities`]
+    /// (the analytic RI-dRPA gradient), whose `t2` is empty. `None` for every
+    /// MP2 builder, where `x` is built from `t2` and [`Self::spin_scaling`].
+    pub x_ov_given: Option<Array2<f64>>,
     /// RAII charge against the shared [`MemoryPool`](ferric_core::memory::pool::MemoryPool)
     /// for `b_ov` + `b_oo` + `b_vv`, held for as long as those tensors are.
     ///
@@ -1591,9 +1596,80 @@ impl Mp2Intermediates {
             naux,
             e_mp2,
             spin_scaling: SpinScaling::MP2,
+            x_ov_given: None,
             _charge: ferric_core::memory::pool::Reservation::inert(
                 "MP2 intermediates (repackaged, charged by the builder)",
             ),
+        }
+    }
+
+    /// Intermediates of a correlation energy given by its RI densities rather
+    /// than MP2 amplitudes: `x[P, ia] = ¼ ∂E/∂B^P_ia` and the unrelaxed
+    /// densities with `P + Pᵀ = ∂E/∂F` on the active-occupied (`p_oo`) and
+    /// virtual (`p_vv`) blocks, the normalization of the MP2 ones (theory
+    /// section 9). The relaxed gradient ([`crate::gradient::relaxed_ri_gradient`])
+    /// then runs through the RI-MP2 Z-vector, Lagrangian and 3c/2c response
+    /// unchanged. `b_ov` and `v_inv_sqrt` (`B = F·(Q|ia)`, `F` square) are
+    /// taken from `rpa`; `t2` is empty. Takes no pool charge: the tensors are
+    /// the caller's.
+    pub fn from_ri_densities(
+        rpa: RpaIntermediates,
+        x_ov: Array2<f64>,
+        p_oo: Array2<f64>,
+        p_vv: Array2<f64>,
+        e_corr: f64,
+    ) -> Result<Self, FerricError> {
+        let nov = rpa.nocc * rpa.nvir;
+        let shapes_ok = x_ov.dim() == (rpa.naux, nov)
+            && rpa.b_ov.dim() == (rpa.naux, nov)
+            && rpa.v_inv_sqrt.dim() == (rpa.naux, rpa.naux)
+            && p_oo.dim() == (rpa.nocc, rpa.nocc)
+            && p_vv.dim() == (rpa.nvir, rpa.nvir);
+        if !shapes_ok {
+            return Err(FerricError::General(format!(
+                "RI densities: shape mismatch (x {:?}, b_ov {:?}, metric {:?}, p_oo {:?}, p_vv {:?}; \
+                 naux {}, nocc {}, nvir {})",
+                x_ov.dim(),
+                rpa.b_ov.dim(),
+                rpa.v_inv_sqrt.dim(),
+                p_oo.dim(),
+                p_vv.dim(),
+                rpa.naux,
+                rpa.nocc,
+                rpa.nvir
+            )));
+        }
+        let space = OrbitalSpace::new(rpa.nocc, rpa.nvir, rpa.nocc_total, rpa.first_occ);
+        let mut inter = Self::uncharged(
+            Vec::new(),
+            rpa.b_ov,
+            None,
+            None,
+            rpa.v_inv_sqrt,
+            p_oo,
+            p_vv,
+            space,
+            rpa.naux,
+            e_corr,
+        );
+        inter.x_ov_given = Some(x_ov);
+        Ok(inter)
+    }
+
+    /// The RI three-index density `x[P, ia]` the Z-vector and the 3c/2c
+    /// response contract: the given one, or `Σ_jb T̃_ij^ab B^P_jb` from the
+    /// MP2 amplitudes.
+    pub(crate) fn x_ov(&self) -> std::borrow::Cow<'_, Array2<f64>> {
+        match &self.x_ov_given {
+            Some(x) => std::borrow::Cow::Borrowed(x),
+            None => std::borrow::Cow::Owned(crate::zvector::build_x_ov_weighted(
+                &self.t2,
+                &self.b_ov,
+                self.nocc,
+                self.nvir,
+                self.naux,
+                self.spin_scaling,
+            )),
         }
     }
 
@@ -1627,6 +1703,12 @@ impl Mp2Intermediates {
         }
         if scaling == SpinScaling::MP2 {
             return Ok(());
+        }
+        if self.x_ov_given.is_some() {
+            return Err(FerricError::General(
+                "spin scaling applies to MP2 amplitudes; these intermediates carry RI densities"
+                    .into(),
+            ));
         }
         let SpinScaling { c_os, c_ss } = scaling;
         if c_os == c_ss {
@@ -2113,6 +2195,7 @@ fn compute_mp2_intermediates_impl(
         naux,
         e_mp2: e_os + e_ss,
         spin_scaling: SpinScaling::MP2,
+        x_ov_given: None,
         _charge: blocks_charge,
     })
 }

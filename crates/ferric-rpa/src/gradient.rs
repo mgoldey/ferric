@@ -10,8 +10,10 @@
 //! H2O/NH3 cc-pVDZ that is ≤ 5.6e-8 Ha/Bohr against a converged 5-point FD;
 //! see tests/validation_rpa_gradient.rs).
 //!
-//! An analytic path (3-centre ERI derivatives + Z-vector orbital response,
-//! the same structure as the RI-MP2 gradient) does not exist.
+//! The analytic gradient (3-centre ERI derivatives + Z-vector orbital
+//! response, the RI-MP2 gradient's structure) is
+//! [`crate::gradient_analytic`]; [`RpaGradientMethod`](crate::gradient::RpaGradientMethod) picks one of the two
+//! for the optimizer, and this route stays its oracle.
 
 use ferric_core::basis::BasisSet;
 use ferric_core::mol::Molecule;
@@ -226,6 +228,76 @@ pub fn total_rpa_gradient_warm(
 
     let grad = rpa_correlation_gradient_warm(mol, obs_basis, aux_basis, op, rpa_config, h, warm)?;
     Ok((e_tot, grad))
+}
+
+/// How the RPA nuclear gradient is evaluated (`[rpa] gradient`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum RpaGradientMethod {
+    /// 3-point central finite difference of `E_RHF + E_c^RPA` with step `h`
+    /// (Bohr), [`rpa_correlation_gradient_warm`]: `6 N_atoms` RHF + RPA
+    /// energies. `[rpa] gradient = "fd"`.
+    FiniteDifference {
+        /// Step in Bohr.
+        h: f64,
+    },
+    /// [`crate::gradient_analytic`]: one RHF, one frequency loop and one
+    /// Z-vector. Full rank (`trunc_thresh = 0`), dense χ₀, Coulomb only.
+    /// `[rpa] gradient = "analytic"`.
+    Analytic,
+}
+
+impl RpaGradientMethod {
+    /// The finite-difference step the CLI and optimizer use, Bohr.
+    pub const DEFAULT_FD_STEP: f64 = 5e-4;
+
+    /// Strict parse of `[rpa] gradient`: `"fd"` (step
+    /// [`Self::DEFAULT_FD_STEP`]) or `"analytic"`; anything else is an error.
+    pub fn parse_config_str(s: &str) -> Result<Self, FerricError> {
+        match s {
+            "fd" => Ok(Self::FiniteDifference {
+                h: Self::DEFAULT_FD_STEP,
+            }),
+            "analytic" => Ok(Self::Analytic),
+            other => Err(FerricError::General(format!(
+                "[rpa] gradient = {other:?}: expected \"fd\" or \"analytic\""
+            ))),
+        }
+    }
+
+    /// How the gradient was obtained, for the run certificate.
+    pub fn certificate_label(&self) -> String {
+        match self {
+            Self::Analytic => "analytic RHF + RI-dRPA (Z-vector relaxed densities)".into(),
+            Self::FiniteDifference { h } => {
+                format!("finite difference of RHF + RPA (h = {h:e} Bohr)")
+            }
+        }
+    }
+}
+
+/// `(E_RHF + E_c^RPA, dE/dR)` at `mol` by `method`, the reference RHF solved
+/// through `warm` (see [`total_rpa_gradient_warm`] and
+/// [`crate::gradient_analytic::rpa_analytic_gradient_warm`]).
+pub fn total_rpa_gradient_by(
+    mol: &Molecule,
+    obs_basis: &BasisSet,
+    aux_basis: &BasisSet,
+    op: Operator,
+    rpa_config: &PdepRpaConfig,
+    method: RpaGradientMethod,
+    warm: &mut ScfWarmStart,
+) -> Result<(f64, Array2<f64>), FerricError> {
+    match method {
+        RpaGradientMethod::FiniteDifference { h } => {
+            total_rpa_gradient_warm(mol, obs_basis, aux_basis, op, rpa_config, h, warm)
+        }
+        RpaGradientMethod::Analytic => {
+            let r = crate::gradient_analytic::rpa_analytic_gradient_warm(
+                mol, obs_basis, aux_basis, op, rpa_config, warm,
+            )?;
+            Ok((r.energy, r.gradient))
+        }
+    }
 }
 
 #[cfg(test)]

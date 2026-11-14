@@ -48,6 +48,8 @@ pub mod dlpno_rpa;
 pub mod energy;
 /// RPA nuclear gradient via finite-difference.
 pub mod gradient;
+/// Analytic closed-shell RI-dRPA nuclear gradient (Z-vector relaxed densities).
+pub mod gradient_analytic;
 /// Block Lanczos eigensolver for the static dielectric matrix.
 pub mod lanczos;
 /// Laplace-separable chi0 kernel for the PDEP dielectric matvec.

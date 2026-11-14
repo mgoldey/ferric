@@ -6649,6 +6649,14 @@ fn rimp2_gradient_scf_jk(
 /// `main()` `if task == "optimize" { ... }` block; each `method` sub-arm below
 /// is byte-for-byte the original match-arm body.
 #[allow(clippy::too_many_arguments)]
+/// `[rpa] gradient` for an RPA optimization; a bad value is a config error.
+fn rpa_gradient_method_or_exit(rpa: &config::RpaCfg) -> ferric_rpa::gradient::RpaGradientMethod {
+    rpa.parse_gradient().unwrap_or_else(|e| {
+        eprintln!("config error: {e}");
+        std::process::exit(1);
+    })
+}
+
 fn run_optimize(
     method: &str,
     cfg: &Config,
@@ -6786,7 +6794,7 @@ fn run_optimize(
                 need_eigenvalues_freq: false,
                 verbose: cfg.scf.verbose,
             };
-            let h_fd = 5e-4;
+            let gradient = rpa_gradient_method_or_exit(&cfg.rpa);
             let opt_result = ferric_rpa::optimize::optimize_geometry_rpa(
                 mol,
                 bs,
@@ -6794,7 +6802,7 @@ fn run_optimize(
                 op,
                 &rpa_cfg,
                 &opt_config,
-                h_fd,
+                gradient,
             )
             .unwrap_or_else(|e| {
                 eprintln!("error during RPA optimization: {e}");
@@ -6825,7 +6833,7 @@ fn run_optimize(
                 &opt_result.mol,
                 None,
                 (opt_result.converged, opt_result.steps, opt_result.energy),
-                "analytic SCF + finite-difference correlation (h = 5e-4 Bohr)",
+                &gradient.certificate_label(),
             );
         }
         "rimp2" => {
