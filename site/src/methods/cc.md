@@ -14,7 +14,12 @@ implementations:
   amplitudes over spatial orbitals, the algorithm PySCF's `cc.CCSD` uses. This
   is what both the CLI and Python run for an RHF reference. Its VVVV block is
   16× smaller than the spin-orbital one; measured about 8–10× faster than the
-  spin-orbital CCSD at cc-pVDZ, and the (T) step 9.6–42× faster.
+  spin-orbital CCSD at cc-pVDZ, and the (T) step 8.7–41× faster (H2O/aug-cc-pVDZ
+  and ethane/cc-pVDZ, 12 threads). The (T) loop runs over virtual triples
+  a ≤ b ≤ c with [n<sub>o</sub>,n<sub>o</sub>,n<sub>o</sub>] blocks, as PySCF's
+  `ccsd_t.c` does. Measured 2026-11-14, 12 threads, 3 interleaved runs each:
+  the (T) loop takes 6.2–6.8 s on butane/cc-pVDZ and 86–93 s on hexane/cc-pVDZ.
+  PySCF 2.13 takes 9.4 s and 110 s for the same (T) step on the same machine.
 - **Spin-orbital** (`ccsd`, `ccsd_t`): built from the same RHF spatial
   orbitals and kept as the cross-check of the spin-adapted solvers, so it is
   closed shell only as well. Its (T) streams one occupied triple at a time, so

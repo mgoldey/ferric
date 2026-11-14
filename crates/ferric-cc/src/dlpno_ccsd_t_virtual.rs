@@ -115,7 +115,7 @@
 //!   reported is COUNTS ([`crate::dlpno_ccsd_t_virtual::TripleTnoBasis::virtual_retention`],
 //!   [`crate::dlpno_ccsd_t_virtual::TripleTnoBasis::block_elements`]) and ENERGIES.
 //! * **The `(T)` kernel is not rewritten in the TNO basis.** Doing that means
-//!   re-deriving [`crate::ccsd_t_closed_shell`]'s two `raw_w_block` GEMMs, the
+//!   re-deriving [`crate::ccsd_t_closed_shell`]'s two raw-block GEMMs, the
 //!   six-permutation `W`, the `r3` pattern and the `V` singles terms in a basis
 //!   that differs per triple, with cross-triple overlap matrices wherever a
 //!   contraction couples two triples. That is a much larger change whose failure

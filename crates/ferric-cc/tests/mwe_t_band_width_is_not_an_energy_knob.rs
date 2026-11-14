@@ -3,11 +3,11 @@
 //! # Why this test exists before the pool migration, not after
 //!
 //! `ccsd_t.rs` and `ccsd_t_closed_shell.rs` size their parallel triple band
-//! (`triple_chunk_len`) from a BYTE BUDGET. The pool migration changes where
-//! that byte number comes from: it stops being "the whole resolved ceiling,
-//! re-read" and becomes "what the pool has LEFT after the precomputed blocks
-//! were charged". That is a strictly smaller, and job-dependent, number -- so
-//! the band width WILL change under the migration.
+//! (`triple_chunk_len`, `job_chunk_len`) from a BYTE BUDGET. The pool migration
+//! changes where that byte number comes from: it stops being "the whole
+//! resolved ceiling, re-read" and becomes "what the pool has LEFT after the
+//! precomputed blocks were charged". That is a strictly smaller, and
+//! job-dependent, number -- so the band width WILL change under the migration.
 //!
 //! The ksdft path already paid for getting this wrong once: the KS grid batch
 //! width was sized from a budget minus LIVE RSS, batch width set accumulation
@@ -88,15 +88,20 @@ use ferric_scf::result::ScfResult;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 
-/// H2O / STO-3G: no = 5, nv = 2 spatial, so no2 = 10, nv2 = 4.
-const NO: usize = 5;
-const NV: usize = 2;
-const NO2: usize = 2 * NO;
-const NV2: usize = 2 * NV;
+/// H2O / STO-3G (spin-orbital fixture): no = 5, nv = 2 spatial, so
+/// no2 = 10, nv2 = 4.
+const NO2: usize = 10;
+const NV2: usize = 4;
 /// Unique i<j<k over 10 occupied spin-orbitals.
 const N_TRIPLES_SO: usize = 120;
-/// i<=j<=k with repeats over 5 occupied spatial orbitals.
-const N_TRIPLES_CS: usize = 35;
+/// H2O / 6-31G (closed-shell fixture): no = 5, nv = 8 spatial. The
+/// closed-shell band unit is a virtual pair `a<=b`, and STO-3G's two virtuals
+/// give only 3 of them -- too few for four distinct widths -- so this path
+/// gets the larger basis.
+const NO: usize = 5;
+const NV: usize = 8;
+/// `a<=b` virtual pairs over 8 virtual spatial orbitals.
+const N_JOBS_CS: usize = 36;
 
 struct Fixture {
     mol: Molecule,
@@ -105,9 +110,9 @@ struct Fixture {
     rhf: ScfResult,
 }
 
-fn fixture() -> Fixture {
+fn fixture(obs_name: &str) -> Fixture {
     let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").expect("water.xyz");
-    let obs = PreparedBasis::new(&mol, &basis::bundled("sto-3g").expect("sto-3g")).expect("obs");
+    let obs = PreparedBasis::new(&mol, &basis::bundled(obs_name).expect("obs basis")).expect("obs");
     let dfbs =
         PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").expect("cc-pvdz-ri")).expect("dfbs");
     let op = Operator::coulomb();
@@ -152,9 +157,11 @@ fn converged(f: &Fixture, spin_orbital: bool) -> CcResult {
 /// chunk. So the sweep spans the whole decomposition range.
 const BUDGETS_SO: [usize; 6] = [69_824, 75_968, 94_400, 168_128, 432_320, 1_292_480];
 
-/// Same construction on the CLOSED-SHELL path: per_triple = 384 B and
-/// precomputed = 4000 B at (no, nv) = (5, 2), target widths 1, 2, 5, 17, 40.
-const BUDGETS_CS: [usize; 5] = [4_768, 5_536, 7_840, 17_056, 34_720];
+/// Same construction on the CLOSED-SHELL path, solved backwards from
+/// `ccsd_t_closed_shell::t_band_width`: per (a,b) job = 4240 B and
+/// precomputed = 62400 B at (no, nv) = (5, 8), target widths 1, 2, 5, 17, 40
+/// (40 exceeds the 36-job list, i.e. one chunk).
+const BUDGETS_CS: [usize; 5] = [70_880, 79_360, 104_800, 206_560, 401_600];
 
 /// The effective band width: the raw width capped at the number of triples,
 /// because that is what actually determines the chunk decomposition.
@@ -177,14 +184,14 @@ fn band_widths_are_actually_distinct() {
         .map(|&b| {
             effective(
                 ferric_cc::ccsd_t_closed_shell::t_band_width(NO, NV, b),
-                N_TRIPLES_CS,
+                N_JOBS_CS,
             )
         })
         .collect();
 
     for (name, widths, n) in [
         ("spin-orbital", &so, N_TRIPLES_SO),
-        ("closed-shell", &cs, N_TRIPLES_CS),
+        ("closed-shell", &cs, N_JOBS_CS),
     ] {
         let distinct: std::collections::BTreeSet<usize> = widths.iter().copied().collect();
         assert!(
@@ -208,7 +215,7 @@ fn band_widths_are_actually_distinct() {
 
 #[test]
 fn spin_orbital_t_energy_is_bit_identical_across_band_widths() {
-    let f = fixture();
+    let f = fixture("sto-3g");
     let cc = converged(&f, true);
 
     let mut seen: Option<(usize, f64)> = None;
@@ -240,14 +247,14 @@ fn spin_orbital_t_energy_is_bit_identical_across_band_widths() {
 
 #[test]
 fn closed_shell_t_energy_is_bit_identical_across_band_widths() {
-    let f = fixture();
+    let f = fixture("6-31g");
     let cc = converged(&f, false);
 
     let mut seen: Option<(usize, f64)> = None;
     for &b in &BUDGETS_CS {
         let w = effective(
             ferric_cc::ccsd_t_closed_shell::t_band_width(NO, NV, b),
-            N_TRIPLES_CS,
+            N_JOBS_CS,
         );
         let et = ccsd_t_closed_shell(
             &f.mol,
