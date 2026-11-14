@@ -78,6 +78,11 @@ pub struct SchwarzBounds {
     /// side by side rather than unified — a single "refinement table" field
     /// would invite exactly the confusion that makes CSAM look like a bound.
     pub csam_x: Option<Array2<f64>>,
+    /// The in-core ERI store of this geometry ([`crate::incore_jk`]),
+    /// attached by an SCF whose `[scf] eri` route chose it and served by every
+    /// direct J/K builder handed these bounds. Empty by default (and after an
+    /// SCF that took the direct route), which is the integral-direct path.
+    pub incore: crate::incore_jk::IncoreSlot,
 }
 
 impl SchwarzBounds {
@@ -103,6 +108,7 @@ impl SchwarzBounds {
             nshells: nsh,
             csb_m: None,
             csam_x: None,
+            incore: Default::default(),
         })
     }
 

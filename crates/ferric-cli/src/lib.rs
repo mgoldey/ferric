@@ -397,6 +397,18 @@ fn print_df_guess_outcome(
     );
 }
 
+/// `[scf] eri`, strictly parsed; an unknown value exits with an error.
+fn scf_eri_mode(eri: Option<&str>) -> ferric_scf::incore_jk::EriMode {
+    match eri.map(ferric_scf::incore_jk::EriMode::parse_config_str) {
+        None => ferric_scf::incore_jk::EriMode::Auto,
+        Some(Ok(m)) => m,
+        Some(Err(e)) => {
+            eprintln!("error: [scf] eri: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
 /// Run one CLI invocation. `args` has the shape of a process argv
 /// (`[program, user_args...]`; element 0 is never read): `<input.toml>` plus
 /// the optional flags
@@ -911,6 +923,8 @@ pub fn run(args: Vec<String>) {
         symmetry: cfg.scf.symmetry,
         // The geometry drivers install their own per-evaluation hand-off.
         raw_handoff: None,
+        eri: scf_eri_mode(cfg.scf.eri.as_deref()),
+        eri_route: Default::default(),
     };
     // A fitted reference (`[scf] jk`, or rs-mp2-rpa's RI-JK default) skips
     // the DF-guess pre-stage below: a density-fitted pre-stage in front of a

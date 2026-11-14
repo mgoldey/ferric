@@ -70,6 +70,7 @@ pub fn scf_certificate(mol: &Molecule, result: &ScfResult, config: &RhfConfig) -
     for (name, detail) in approximations(mol, result, config) {
         c = c.with_approximation(name, detail);
     }
+    c = with_eri_route(c, config);
     if result.exit == ScfExit::Plateau {
         c.push_warning(
             "SCF exit Plateau: accepted on a near-degeneracy plateau (orbital gradient \
@@ -90,6 +91,16 @@ pub fn scf_certificate(mol: &Molecule, result: &ScfResult, config: &RhfConfig) -
         c = c.cap_grade(Grade::Ungraded, why);
     }
     c
+}
+
+/// `c` with the in-core ERI store as a route when the SCF served J/K from
+/// it: exact (every quartet, no screening), so a route and not an
+/// approximation, named so the certificate records what built J and K.
+fn with_eri_route(c: Certificate, config: &RhfConfig) -> Certificate {
+    match config.eri_route.get() {
+        Some(r) => c.with_route("eri", r.describe()),
+        None => c,
+    }
 }
 
 /// `c` for a solve with a caller-supplied Fock hook

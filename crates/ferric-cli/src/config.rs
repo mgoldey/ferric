@@ -2839,6 +2839,13 @@ pub struct ScfCfg {
     /// `k_builder = "cosx"` consumes no Schwarz table at all, so `screening`
     /// has no effect there — a property of COSX, not a gap in this wiring.
     pub screening: Option<String>,
+    /// How the exact four-centre route builds J and K: `"auto"` (default:
+    /// hold the AO ERIs in memory when they fit a quarter of the memory
+    /// budget), `"direct"` (integral-direct every build) or `"incore"` (always
+    /// in memory; an error when the store does not fit the budget or the
+    /// route is not exact four-centre J and K). RI-J/RI-K, LinK, COSX and
+    /// range-separated routes are unaffected. Any other value is an error.
+    pub eri: Option<String>,
     /// COSX exchange grid (the SCF grid),
     /// `cosx_grid = { radial = 35, angular = 194, prune = "sgx" }`. Omitted =
     /// `ferric_scf::cosx_k::CosxConfig::default()` (see `site/src/methods/scf.md`,
@@ -3103,6 +3110,7 @@ impl Default for ScfCfg {
             ri_k_precision: None,
             k_builder: None,
             screening: None,
+            eri: None,
             cosx_grid: None,
             cosx_final_pass: None,
             cosx_final_grid: None,

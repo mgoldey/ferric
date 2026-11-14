@@ -956,6 +956,9 @@ fn identity_table() -> Vec<(&'static str, FieldClass, Mutator)> {
         ("screening", Route, |s| {
             s.config.screening = crate::screening::ScreeningKind::Csb;
         }),
+        ("eri", Route, |s| {
+            s.config.eri = crate::incore_jk::EriMode::Direct;
+        }),
     ]
 }
 

@@ -370,3 +370,29 @@ fn own_warnings(c: &serde_json::Value) -> Vec<&str> {
         .filter(|w| !w.starts_with("scf reference: "))
         .collect()
 }
+
+/// `[scf] eri = "incore"` on a correlated kind: the fitted DF-guess
+/// pre-stage runs on its own route, the exact reference takes the in-core
+/// store, the run log notes it and the correlated certificate carries it as
+/// the reference's route (`scf eri`), not as an approximation.
+#[test]
+fn incore_eri_reference_is_a_route_of_the_correlated_certificate() {
+    let (_, records) = run(
+        "oo_rimp2_incore",
+        &format!(
+            "{WATER}[method]\nkind = \"oo-rimp2\"\n[mp2]\nauxbasis = \"cc-pvdz-ri\"\n\
+             [scf]\neri = \"incore\"\n"
+        ),
+    );
+    assert!(
+        records.iter().any(|r| r["record"] == "eri_store"),
+        "no eri_store note in the run log"
+    );
+    let c = result_certificate(&records, "oo-rimp2");
+    let routes: Vec<&str> = c["routes"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|r| r["name"].as_str()).collect())
+        .unwrap_or_default();
+    assert_eq!(routes, ["scf eri"], "{c}");
+    assert!(!names(c).iter().any(|n| n.contains("eri")), "{c}");
+}

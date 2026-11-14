@@ -133,7 +133,7 @@ pub(crate) fn optimize_result_certificate(
     method="scf", reference=None, xc=None, dispersion=None,
     df_j_aux=None, df_k_aux=None, scf_ri_j_precision=None, scf_ri_k_precision=None,
     auxbasis=None, frozen_core=None, scf_jk=None, jk_auxbasis=None, memory_budget_gb=None,
-    oo_max_iter=None, oo_grad_conv=None, c_os=None, c_ss=None,
+    oo_max_iter=None, oo_grad_conv=None, c_os=None, c_ss=None, scf_eri=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_optimize(
@@ -167,6 +167,7 @@ pub(crate) fn run_optimize(
     oo_grad_conv: Option<f64>,
     c_os: Option<f64>,
     c_ss: Option<f64>,
+    scf_eri: Option<&str>,
 ) -> PyResult<PyOptimizeResult> {
     let k = OptimizeKwargs {
         xc,
@@ -188,6 +189,7 @@ pub(crate) fn run_optimize(
         scf_conv_set: scf_max_iter.is_some()
             || scf_energy_conv.is_some()
             || scf_density_conv.is_some(),
+        scf_eri: scf_eri.is_some(),
     };
     let method = parse_optimize_method(method)?;
     let spin = parse_optimize_reference(reference, &mol.inner)?;
@@ -203,6 +205,7 @@ pub(crate) fn run_optimize(
     cfg.df_k_aux = df_k_aux.map(ferric_scf::rhf::normalize_df_aux);
     geometry_task_scf(&mut cfg, scf_ri_j_precision)?;
     cfg.ri_k_precision = parse_ri_k_precision(scf_ri_k_precision)?;
+    cfg.eri = crate::scf::parse_eri(scf_eri)?;
     // Apply the ECP before optimizing: each SCF derives its occupations from
     // `Molecule::nelec()`, which counts ALL electrons until `apply_ecp` has
     // run. Without this an ECP basis (aug-cc-pvdz-pp, Z >= 37) would optimize
@@ -278,6 +281,7 @@ pub(crate) fn run_optimize_uhf(
         None,
         None,
         None,
+        None,
     )
 }
 
@@ -311,6 +315,8 @@ pub(crate) struct OptimizeKwargs<'a> {
     solvent: bool,
     /// Any of `scf_max_iter` / `scf_energy_conv` / `scf_density_conv` was given.
     scf_conv_set: bool,
+    /// `scf_eri=` was given.
+    scf_eri: bool,
 }
 
 fn value_error(msg: String) -> PyErr {
@@ -414,6 +420,7 @@ fn refuse_unread_optimize_kwargs(
                 k.scf_conv_set,
             ),
             ("scf_ri_j_precision", k.scf_ri_j_precision.is_some()),
+            ("scf_eri", k.scf_eri),
         ];
         return unread(&fixed_scf, who);
     }
@@ -934,7 +941,7 @@ impl PyFrequencyResult {
     max_iter=None, energy_conv=None, density_conv=None,
     df_j_aux=None, df_k_aux=None, scf_ri_k_precision=None,
     scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None,
-    scf_warm_start=None, scf_ri_j_precision=None,
+    scf_warm_start=None, scf_ri_j_precision=None, scf_eri=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_frequencies(
@@ -960,6 +967,7 @@ pub(crate) fn run_frequencies(
     scf_density_conv: Option<f64>,
     scf_warm_start: Option<bool>,
     scf_ri_j_precision: Option<&str>,
+    scf_eri: Option<&str>,
 ) -> PyResult<PyFrequencyResult> {
     use ferric_scf::frequencies::{FrequencyConfig, FrequencyReference, HessianMethod};
     let max_iter = alias_kwarg(
@@ -1030,6 +1038,7 @@ pub(crate) fn run_frequencies(
     scf_cfg.df_k_aux = df_k_aux.map(ferric_scf::rhf::normalize_df_aux);
     geometry_task_scf(&mut scf_cfg, scf_ri_j_precision)?;
     scf_cfg.ri_k_precision = parse_ri_k_precision(scf_ri_k_precision)?;
+    scf_cfg.eri = crate::scf::parse_eri(scf_eri)?;
     let mut fcfg = FrequencyConfig {
         reference: refr,
         hessian: HessianMethod::parse_config_str(hessian)

@@ -183,6 +183,8 @@ pub mod jk_ladder;
 pub mod link_k;
 pub mod split_rij;
 
+/// In-core four-centre J/K: the AO ERIs of one geometry held in memory.
+pub mod incore_jk;
 pub mod rhf;
 /// Newton-step RHF solver with exact orbital Hessian.
 pub mod rhf_newton;

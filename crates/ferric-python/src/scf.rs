@@ -528,6 +528,15 @@ pub(crate) fn parse_ri_k_precision(
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
 }
 
+/// Strict parse of an `eri` / `scf_eri` kwarg (`"auto"`, `"direct"`,
+/// `"incore"`); `None` is `"auto"`, the library default.
+pub(crate) fn parse_eri(s: Option<&str>) -> PyResult<ferric_scf::incore_jk::EriMode> {
+    s.map_or(Ok(ferric_scf::incore_jk::EriMode::Auto), |s| {
+        ferric_scf::incore_jk::EriMode::parse_config_str(s)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("eri: {e}")))
+    })
+}
+
 #[pyfunction]
 #[pyo3(signature = (
     mol, basis_set,
@@ -542,7 +551,7 @@ pub(crate) fn parse_ri_k_precision(
     aurora=None, trah_trigger=None, symmetry=false, irrep_nelec=None,
     fock_hook=None,
     guess_basis=None, guess_projection=None, ri_j_precision=None, dm0=None,
-    with_gradient=false,
+    with_gradient=false, eri=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_rhf(
@@ -585,6 +594,7 @@ pub(crate) fn run_rhf(
     ri_j_precision: Option<&str>,
     dm0: Option<numpy::PyReadonlyArray2<'_, f64>>,
     with_gradient: bool,
+    eri: Option<&str>,
 ) -> PyResult<PyObject> {
     refuse_dm0_with_guess("run_rhf", dm0.is_some(), guess, guess_basis)?;
     let guess_basis = parse_guess_basis(guess_basis, guess_projection)?;
@@ -641,6 +651,7 @@ pub(crate) fn run_rhf(
         scf_stability_descent: descent,
         symmetry,
         irrep_nelec: irrep_nelec.map(|m| m.into_iter().collect()),
+        eri: parse_eri(eri)?,
         ..Default::default()
     };
     apply_accelerators(&mut config, aurora, trah_trigger)?;
@@ -1290,7 +1301,7 @@ impl PyUhfResult {
     guess=None, stability_descent=None,
     cosx_grid=None, cosx_final_pass=None, cosx_final_grid=None, cosx_overlap_fit=None,
     trah_trigger=None, fock_hook=None, guess_basis=None, guess_projection=None, ri_j_precision=None,
-    dm0=None, with_gradient=false, mom_reference=None,
+    dm0=None, with_gradient=false, mom_reference=None, eri=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_uhf(
@@ -1325,6 +1336,7 @@ pub(crate) fn run_uhf(
     dm0: Option<&Bound<'_, PyAny>>,
     with_gradient: bool,
     mom_reference: Option<&str>,
+    eri: Option<&str>,
 ) -> PyResult<PyUhfResult> {
     refuse_dm0_with_guess("run_uhf", dm0.is_some(), guess, guess_basis)?;
     let mom_reference = parse_mom_reference(mom_reference, mom_after_iter, stability_descent)?;
@@ -1378,6 +1390,7 @@ pub(crate) fn run_uhf(
         three_index_budget_bytes: budget_bytes_from_gb(memory_budget_gb).unwrap_or(0),
         use_sad_guess,
         guess_basis,
+        eri: parse_eri(eri)?,
         trah_trigger,
         check_stability: descent,
         scf_stability_descent: descent,
@@ -1456,7 +1469,7 @@ pub(crate) fn run_uhf(
     level_shift=None, mom_after_iter=None,
     point_charges=None, external_field=None, memory_budget_gb=None, fock_hook=None,
     guess_basis=None, guess_projection=None, ri_j_precision=None, dm0=None,
-    with_gradient=false,
+    with_gradient=false, eri=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_rohf(
@@ -1483,6 +1496,7 @@ pub(crate) fn run_rohf(
     ri_j_precision: Option<&str>,
     dm0: Option<&Bound<'_, PyAny>>,
     with_gradient: bool,
+    eri: Option<&str>,
 ) -> PyResult<PyUhfResult> {
     refuse_dm0_with_guess("run_rohf", dm0.is_some(), None, guess_basis)?;
     let guess_basis = parse_guess_basis(guess_basis, guess_projection)?;
@@ -1518,6 +1532,7 @@ pub(crate) fn run_rohf(
         // omitted kwarg preserves the previous auto-detect behaviour.
         three_index_budget_bytes: budget_bytes_from_gb(memory_budget_gb).unwrap_or(0),
         guess_basis,
+        eri: parse_eri(eri)?,
         ..Default::default()
     };
     if with_gradient {

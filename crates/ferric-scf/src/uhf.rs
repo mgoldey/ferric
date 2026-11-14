@@ -777,6 +777,7 @@ fn solve_uhf_impl(
 ) -> Result<ScfResult, FerricError> {
     use ferric_dft::xc_trait::KMix;
     crate::mom::check_reference(config, "UHF", true)?;
+    crate::incore_jk::begin_scf(bounds);
 
     // Split the injection: (S, h, V_nn) go to the shared env builder, the J/K
     // builders are driven in the iteration loop (as in rhf::solve_rhf_impl).
@@ -1225,6 +1226,15 @@ fn solve_uhf_impl(
         && pluggable_k.is_none()
         && !injected
         && crate::direct_jk::combined_open_shell_jk_enabled();
+    // `[scf] eri`: the in-core ERI store serves the combined DirectJK.
+    let incore = crate::incore_jk::attach_for_scf(
+        ctx,
+        prep,
+        bounds,
+        config,
+        ooc_budget,
+        (combined_direct_jk, k_mix.omega),
+    )?;
     let mut direct_jk: Option<crate::direct_jk::DirectJK> = if combined_direct_jk {
         Some(crate::direct_jk::DirectJK::new(
             ctx,
@@ -1294,8 +1304,9 @@ fn solve_uhf_impl(
     // against a true density. The user gets the full-rebuild pluggable path
     // with no error and no silent wrong answer; the env knob keeps applying to
     // the default (non-pluggable) open-shell path exactly as before.
-    let incremental_direct =
-        direct_jk.is_some() && crate::direct_jk::open_shell_incremental_enabled();
+    let incremental_direct = direct_jk.is_some()
+        && incore.is_none()
+        && crate::direct_jk::open_shell_incremental_enabled();
     // The (α, β) densities that produced the CURRENT contents of
     // j_buf/k_a_buf/k_b_buf. `None` until the first full build.
     let mut d_last_fock: Option<(Array2<f64>, Array2<f64>)> = None;

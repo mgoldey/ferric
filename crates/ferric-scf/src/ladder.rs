@@ -488,6 +488,9 @@ pub(crate) fn run_df_guess_pre_stage(
     let mut df_cfg = base.clone();
     df_cfg.df_j_aux = Some(aux.to_string());
     df_cfg.df_k_aux = Some(aux.to_string());
+    // The fitted pre-stage has no in-core route; `[scf] eri` applies to the
+    // exact stage after it.
+    df_cfg.eri = crate::incore_jk::EriMode::Auto;
 
     // MEASURED: running the DF pre-stage to its STALL POINT (rather than to a
     // loosened threshold) is a win at both bases, benzene, 4 threads, idle box:

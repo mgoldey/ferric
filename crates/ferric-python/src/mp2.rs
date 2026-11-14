@@ -469,7 +469,7 @@ pub(crate) fn local_correlation_operator(
 /// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
 /// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, kappa=None, local=None, eps=None, compute_reference=None, integral_direct=None, aux_radius=None, virt_radius=None, ao_tail=None, schwarz_skip=None, batch_merge=None, gate_cal=None, virt_schwarz_kappa=None, att_operator=None, omega=None, att_r0=None, att_omega=None, scf_jk=None, jk_auxbasis=None, scf_ri_j_precision=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, virtual_space=None, virtual_tau=None, virtual_tau_loose=None, virtual_solve_radius=None, virtual_boys_tau=None, with_gradient=false))]
+#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, kappa=None, local=None, eps=None, compute_reference=None, integral_direct=None, aux_radius=None, virt_radius=None, ao_tail=None, schwarz_skip=None, batch_merge=None, gate_cal=None, virt_schwarz_kappa=None, att_operator=None, omega=None, att_r0=None, att_omega=None, scf_jk=None, jk_auxbasis=None, scf_ri_j_precision=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, virtual_space=None, virtual_tau=None, virtual_tau_loose=None, virtual_solve_radius=None, virtual_boys_tau=None, with_gradient=false, scf_eri=None))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_rimp2(
     py: Python<'_>,
@@ -507,9 +507,10 @@ pub(crate) fn run_rimp2(
     virtual_solve_radius: Option<f64>,
     virtual_boys_tau: Option<f64>,
     with_gradient: bool,
+    scf_eri: Option<&str>,
 ) -> PyResult<PyRiMp2Result> {
     let (att_keys, sets_att) = att_keys_from_kwargs(att_operator, omega, att_r0, att_omega);
-    let (rhf_config, jk) = mp2_exact_default_config(
+    let (mut rhf_config, jk) = mp2_exact_default_config(
         "run_rimp2",
         k_builder,
         memory_budget_gb,
@@ -518,6 +519,7 @@ pub(crate) fn run_rimp2(
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
         scf_ri_j_precision,
     )?;
+    rhf_config.eri = crate::scf::parse_eri(scf_eri)?;
     let model = local_model_from_kwargs(
         "run_rimp2",
         ferric_cli::LocalCfg {
@@ -1639,7 +1641,7 @@ impl PyOoRiMp2Result {
     max_iter=None, grad_conv=None, level_shift=None, diis_size=None,
     memory_budget_gb=None, scf_jk=None, jk_auxbasis=None, scf_ri_j_precision=None,
     scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None,
-    oo_max_iter=None, with_gradient=false,
+    oo_max_iter=None, with_gradient=false, scf_eri=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_oo_rimp2(
@@ -1662,6 +1664,7 @@ pub(crate) fn run_oo_rimp2(
     scf_density_conv: Option<f64>,
     oo_max_iter: Option<usize>,
     with_gradient: bool,
+    scf_eri: Option<&str>,
 ) -> PyResult<PyOoRiMp2Result> {
     let max_iter = alias_kwarg(
         py,
@@ -1671,7 +1674,7 @@ pub(crate) fn run_oo_rimp2(
         max_iter,
         oo_max_iter,
     )?;
-    let (rhf_config, jk) = mp2_exact_default_config(
+    let (mut rhf_config, jk) = mp2_exact_default_config(
         "run_oo_rimp2",
         k_builder,
         memory_budget_gb,
@@ -1680,6 +1683,7 @@ pub(crate) fn run_oo_rimp2(
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
         scf_ri_j_precision,
     )?;
+    rhf_config.eri = crate::scf::parse_eri(scf_eri)?;
     // OO-MP2 rebuilds J/K at every orbital step (and takes its HF energy
     // from those builds) on the reference's route: four-centre, or RI-JK on
     // the reference's own fits. RIJCOSX has no OO route, so it would change

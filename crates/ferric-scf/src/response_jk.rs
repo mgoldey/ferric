@@ -10,7 +10,9 @@
 //! is that of a different energy. [`ResponseJk::for_scf`] reads the route
 //! the SCF recorded in [`ScfResult::df_jk`] and serves:
 //!
-//! * no route (four-centre J and K): [`crate::rhf::build_jk`] /
+//! * no route (four-centre J and K), from the in-core ERI store when the
+//!   SCF attached one to `bounds` ([`crate::incore_jk`], `[scf] eri`);
+//! * no route, no store: [`crate::rhf::build_jk`] /
 //!   [`crate::rhf::build_jk_with_pool`] and
 //!   [`crate::gradient::twoelectron_gradient_bilinear`], called exactly as a
 //!   caller of those functions would, so the exact route is bit for bit the
@@ -52,6 +54,9 @@ pub struct ResponseJk<'a> {
     prep: &'a PreparedBasis,
     bounds: &'a SchwarzBounds,
     fitted: Option<FittedJk>,
+    /// The in-core arm of the four-centre route: the store the SCF attached
+    /// to `bounds` when it built one.
+    incore: Option<std::sync::Arc<crate::incore_jk::IncoreEri>>,
 }
 
 impl<'a> ResponseJk<'a> {
@@ -66,6 +71,7 @@ impl<'a> ResponseJk<'a> {
             prep,
             bounds,
             fitted: None,
+            incore: bounds.incore.get(),
         }
     }
 
@@ -137,12 +143,31 @@ impl<'a> ResponseJk<'a> {
                 k: RefCell::new(k),
                 route: route.clone(),
             }),
+            incore: None,
         })
     }
 
     /// The fitted route, `None` for four-centre J/K.
     pub fn route(&self) -> Option<&DfJkRoute> {
         self.fitted.as_ref().map(|f| &f.route)
+    }
+
+    /// Does the four-centre route serve J/K from the in-core ERI store?
+    pub fn is_incore(&self) -> bool {
+        self.incore.is_some()
+    }
+
+    /// The in-core store, checked against the basis it is about to serve.
+    fn store(&self) -> Result<Option<&crate::incore_jk::IncoreEri>, FerricError> {
+        match &self.incore {
+            Some(s) if !s.serves(self.prep, self.bounds.op) => Err(FerricError::General(
+                "ResponseJk: the in-core ERI store was built for another geometry, basis or \
+                 operator"
+                    .into(),
+            )),
+            Some(s) => Ok(Some(s)),
+            None => Ok(None),
+        }
     }
 
     /// `(J[d], K[d])` of a symmetric `d`. Four-centre: [`crate::rhf::build_jk`]
@@ -155,11 +180,12 @@ impl<'a> ResponseJk<'a> {
     ) -> Result<(Array2<f64>, Array2<f64>), FerricError> {
         let n = d.nrows();
         let (mut j, mut k) = (Array2::zeros((n, n)), Array2::zeros((n, n)));
-        match &self.fitted {
-            None => {
+        match (&self.fitted, self.store()?) {
+            (Some(f), _) => fitted_jk(f, d, &mut j, &mut k)?,
+            (None, Some(s)) => s.add_jk(d, &mut j, &mut k),
+            (None, None) => {
                 crate::rhf::build_jk(self.ctx, self.prep, self.bounds, thresh, d, &mut j, &mut k)?;
             }
-            Some(f) => fitted_jk(f, d, &mut j, &mut k)?,
         }
         Ok((j, k))
     }
@@ -176,6 +202,10 @@ impl<'a> ResponseJk<'a> {
     ) -> Result<(Array2<f64>, Array2<f64>), FerricError> {
         let n = d.nrows();
         let (mut j, mut k) = (Array2::zeros((n, n)), Array2::zeros((n, n)));
+        if let (None, Some(s)) = (&self.fitted, self.store()?) {
+            s.add_jk(d, &mut j, &mut k);
+            return Ok((j, k));
+        }
         match (&self.fitted, pool) {
             (None, Some(pool)) => {
                 crate::rhf::build_jk_with_pool(

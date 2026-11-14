@@ -180,6 +180,12 @@ impl<'a> std::fmt::Debug for DirectJK<'a> {
 }
 
 impl<'a> DirectJK<'a> {
+    /// Whether the incremental (`ΔD`) build saves work: not when the bounds
+    /// carry the in-core ERI store, whose J/K cost does not shrink with `ΔD`.
+    pub fn incremental_pays(&self) -> bool {
+        self.bounds.incore.get().is_none()
+    }
+
     /// Create a combined screened J+K builder.
     pub fn new(
         ctx: &'a ParallelContext,
@@ -316,6 +322,10 @@ impl<'a> DirectJK<'a> {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
         self.ctx.check_interrupted()?;
+        if let Some(store) = crate::incore_jk::store_for(self.bounds, self.prep)? {
+            store.add_uhf(d_total, d_a, d_b, j, k_a, k_b);
+            return Ok(store.quartets());
+        }
 
         let dims = self.prep.shell_dims();
         let offs = self.prep.shell_offsets();
@@ -466,6 +476,10 @@ impl<'a> DirectJK<'a> {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
         self.ctx.check_interrupted()?;
+        if let Some(store) = crate::incore_jk::store_for(self.bounds, self.prep)? {
+            store.add_jk(d, j, k);
+            return Ok(store.quartets());
+        }
 
         let dims = self.prep.shell_dims();
         let offs = self.prep.shell_offsets();

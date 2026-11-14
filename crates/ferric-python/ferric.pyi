@@ -3904,6 +3904,7 @@ def run_rhf(
     ri_j_precision: str | None = None,
     dm0: NDArray[np.float64] | None = None,
     with_gradient: bool = False,
+    eri: Literal["auto", "direct", "incore"] | None = None,
 ) -> RhfResult:
     """Closed-shell Restricted Hartree-Fock.
 
@@ -4063,6 +4064,7 @@ def run_rhf(
     ri_j_precision: str | None = None,
     dm0: None = None,
     with_gradient: Literal[False] = False,
+    eri: Literal["auto", "direct", "incore"] | None = None,
 ) -> SymmetricRhfResult: ...
 def run_uhf(
     mol: Molecule,
@@ -4095,6 +4097,7 @@ def run_uhf(
     dm0: tuple[NDArray[np.float64], NDArray[np.float64]] | None = None,
     with_gradient: bool = False,
     mom_reference: Literal["previous", "initial"] | None = None,
+    eri: Literal["auto", "direct", "incore"] | None = None,
 ) -> UhfResult:
     """Unrestricted Hartree-Fock (open-shell). with_gradient=True: the
     analytic gradient in result.gradient() under run_rhf's rules (only
@@ -4163,6 +4166,7 @@ def run_rohf(
     ri_j_precision: str | None = None,
     dm0: tuple[NDArray[np.float64], NDArray[np.float64]] | None = None,
     with_gradient: bool = False,
+    eri: Literal["auto", "direct", "incore"] | None = None,
 ) -> UhfResult:
     """Restricted Open-Shell Hartree-Fock. with_gradient=True: the analytic
     gradient in result.gradient() under run_rhf's rules (only fock_hook is
@@ -4336,6 +4340,7 @@ def run_optimize(
     oo_grad_conv: float | None = None,
     c_os: float | None = None,
     c_ss: float | None = None,
+    scf_eri: Literal["auto", "direct", "incore"] | None = None,
 ) -> OptimizeResult:
     """Geometry optimization on any surface with an analytic gradient.
 
@@ -4481,6 +4486,7 @@ def run_frequencies(
     scf_density_conv: float | None = None,
     scf_warm_start: bool | None = None,
     scf_ri_j_precision: str | None = None,
+    scf_eri: Literal["auto", "direct", "incore"] | None = None,
 ) -> FrequencyResult:
     """Harmonic vibrational frequencies.
 
@@ -4737,6 +4743,7 @@ def run_rimp2(
     virtual_solve_radius: float | None = None,
     virtual_boys_tau: float | None = None,
     with_gradient: bool = False,
+    scf_eri: Literal["auto", "direct", "incore"] | None = None,
 ) -> RiMp2Result:
     """Resolution-of-identity (density-fitted) MP2. Exact by default.
     with_gradient=True adds the analytic gradient of total_energy
@@ -4813,6 +4820,7 @@ def run_oo_rimp2(
     scf_density_conv: float | None = None,
     oo_max_iter: int | None = None,
     with_gradient: bool = False,
+    scf_eri: Literal["auto", "direct", "incore"] | None = None,
 ) -> OoRiMp2Result:
     """Orbital-optimized RI-MP2. with_gradient=True adds the analytic
     gradient of total_energy (result.gradient(), natoms x 3, Hartree/Bohr):

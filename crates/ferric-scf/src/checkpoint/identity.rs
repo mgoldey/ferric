@@ -322,6 +322,7 @@ fn config_fields(config: &RhfConfig, out: &mut Vec<IdentityField>) -> (f64, f64)
         ri_k_precision,
         integral_thresh,
         screening,
+        eri,
         // Which converged state the iteration lands in: see `StateSelecting`. Only
         // `use_sad_guess` and `trah_trigger` have a measured difference. The rest
         // are here because nothing shows them to be path-only.
@@ -350,6 +351,8 @@ fn config_fields(config: &RhfConfig, out: &mut Vec<IdentityField>) -> (f64, f64)
         check_stability: _,
         // A hand-off slot for the gradient that follows: moves no number.
         raw_handoff: _,
+        // A record the solver writes of the route it took: moves no number.
+        eri_route: _,
     } = config;
     // An empty potential is the same physics as none: every consumer treats it as
     // a no-op, and QM/MM with no MM atoms produces either.
@@ -400,6 +403,9 @@ fn config_fields(config: &RhfConfig, out: &mut Vec<IdentityField>) -> (f64, f64)
         ("ri_k_precision", format!("{ri_k_precision:?}")),
         ("integral_thresh", format!("{integral_thresh:?}")),
         ("screening", format!("{screening:?}")),
+        // In-core and direct J/K differ in the last bits (summation order and
+        // the screening the direct builder applies).
+        ("eri", format!("{eri:?}")),
     ];
     let state_selecting = [
         ("use_sad_guess", format!("{use_sad_guess:?}")),

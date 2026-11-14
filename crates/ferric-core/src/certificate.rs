@@ -17,7 +17,10 @@
 //!   `unstamped` rather than guessing);
 //! * the provenance of a result a caller composed from the Python building
 //!   blocks is a list of [`BlockRecord`]s ([`Certificate::from_blocks`],
-//!   always ungraded; see [`blocks`]).
+//!   always ungraded; see [`blocks`]);
+//! * an exact computational route worth naming (the in-core ERI store of an
+//!   SCF) is a `routes` entry ([`Certificate::with_route`]), not an
+//!   approximation: it changes cost, not the number beyond rounding.
 //!
 //! # Grades are never fabricated
 //!
@@ -338,6 +341,11 @@ pub struct Certificate {
     /// and then absent from the JSON.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub blocks: Vec<BlockRecord>,
+    /// Exact routes the result was computed by, named for the record but not
+    /// approximations (e.g. `("eri", "in-core four-centre ERIs ...")`); empty
+    /// for most certificates, and then absent from the JSON.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub routes: Vec<Approximation>,
 }
 
 impl Certificate {
@@ -353,6 +361,7 @@ impl Certificate {
             precision: None,
             warnings: Vec::new(),
             blocks: Vec::new(),
+            routes: Vec::new(),
         }
     }
 
@@ -400,8 +409,8 @@ impl Certificate {
     ///
     /// * The grade is capped at the reference's grade (an unconverged
     ///   reference is [`Grade::Ungraded`], so its post-SCF result is too).
-    /// * Each reference approximation is kept with its name prefixed
-    ///   `scf ` (`scf ri-j`, `scf xc-grid`, ...).
+    /// * Each reference approximation and route is kept with its name
+    ///   prefixed `scf ` (`scf ri-j`, `scf xc-grid`, `scf eri`, ...).
     /// * Each reference warning is kept, prefixed `scf reference: `.
     /// * The reference's build stamp is taken when this one has none.
     ///
@@ -411,12 +420,9 @@ impl Certificate {
         if self.build.is_none() {
             self.build = reference.build.clone();
         }
-        for a in &reference.approximations {
-            self.approximations.push(Approximation {
-                name: format!("scf {}", a.name),
-                detail: a.detail.clone(),
-            });
-        }
+        self.approximations
+            .extend(scf_prefixed(&reference.approximations));
+        self.routes.extend(scf_prefixed(&reference.routes));
         for w in &reference.warnings {
             self.push_warning(format!("scf reference: {w}"));
         }
@@ -475,6 +481,15 @@ impl Certificate {
         self
     }
 
+    /// Append one exact route `(name, detail)` (see the `routes` field).
+    pub fn with_route(mut self, name: impl Into<String>, detail: impl Into<String>) -> Self {
+        self.routes.push(Approximation {
+            name: name.into(),
+            detail: detail.into(),
+        });
+        self
+    }
+
     /// Add one warning (builder form of [`Self::push_warning`]).
     pub fn warn(mut self, w: impl Into<String>) -> Self {
         self.push_warning(w);
@@ -521,6 +536,23 @@ impl Certificate {
     }
 }
 
+/// `items` with each name prefixed `scf ` (a reference's entries as a
+/// post-SCF certificate carries them).
+fn scf_prefixed(items: &[Approximation]) -> impl Iterator<Item = Approximation> + '_ {
+    items.iter().map(|a| Approximation {
+        name: format!("scf {}", a.name),
+        detail: a.detail.clone(),
+    })
+}
+
+/// One `  <key>= name: detail` line per item.
+fn write_named(f: &mut fmt::Formatter<'_>, key: &str, items: &[Approximation]) -> fmt::Result {
+    for a in items {
+        writeln!(f, "  {key}= {}: {}", a.name, a.detail)?;
+    }
+    Ok(())
+}
+
 impl fmt::Display for Certificate {
     /// A fixed-width block for printouts, one `key = value` per line.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -545,9 +577,8 @@ impl fmt::Display for Certificate {
         if self.approximations.is_empty() {
             writeln!(f, "  approx      = none")?;
         }
-        for a in &self.approximations {
-            writeln!(f, "  approx      = {}: {}", a.name, a.detail)?;
-        }
+        write_named(f, "approx      ", &self.approximations)?;
+        write_named(f, "route       ", &self.routes)?;
         match self.precision.as_ref().and_then(|p| p.get("precision")) {
             Some(serde_json::Value::String(p)) => writeln!(f, "  precision   = {p}")?,
             _ => writeln!(f, "  precision   = not recorded")?,

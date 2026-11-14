@@ -842,6 +842,45 @@ Kohn–Sham functional (RKS, UKS, ROKS; the fitted energy's response needs the
 nuclear derivative of the XC Fock matrix) and fitted COSX for ROHF (no
 restricted-open-shell response).
 
+### In-core integrals (`[scf] eri`)
+
+Below about 200 basis functions the whole set of AO integrals fits in a few
+GB. With `[scf] eri = "incore"` (Python `eri=` / `scf_eri=`) the integrals of
+the geometry are computed once, every shell quartet with no screening, and
+stored with their pair symmetries (`(n(n+1)/2)²` doubles: 0.34 GB at 114
+functions, 1.1 GB at 154), charged to the `[memory]` budget. J is then one
+matrix product per density and K a gathered matrix product, for any number
+of densities, symmetric or not. The SCF, and the CPHF of the analytic
+Hessian, the RI-MP2 Z-vector and the OO-MP2 loop that follow it on the same
+geometry, all read the store. The store belongs to one geometry: each SCF
+builds its own, and every use checks it against the atoms and basis it
+serves.
+
+`"auto"` (the default) takes the store when it needs at most a quarter of the
+budget and J and K are both exact four-centre (no RI, COSX, LinK or range
+separation); otherwise, and under MPI, the build is direct. `"direct"` is the
+screened direct build and gives bit-for-bit the same output as before the key
+existed. `"incore"` on a fitted or seminumerical route is an error. In-core
+and direct J/K agree to a rounding bound derived from the summation length
+(the largest measured ratio to that bound is 9e-3), and the in-core result
+does not depend on the thread count.
+
+On benzene / cc-pVDZ (12 threads) one direct J/K build takes 2.3 s; building
+the store takes 1.1-2.2 s, and J + K from it 0.13 s. End to end, paired runs
+(direct, in-core, in-core, direct, direct, in-core), wall and CPU (user +
+system) seconds, mean ± sd of 3, 12 rayon threads, box load 5-13 from other
+jobs:
+
+| Run | direct wall | in-core wall | direct CPU | in-core CPU | wall ratio |
+|---|---:|---:|---:|---:|---:|
+| benzene / cc-pVDZ RHF energy | 9.43 ± 0.02 | 2.55 ± 0.01 | 103.5 ± 0.1 | 26.7 ± 0.2 | 3.7 |
+| butane / cc-pVDZ RHF analytic frequencies | 58.3 ± 0.3 | 17.8 ± 0.2 | 624 ± 1 | 187 ± 1 | 3.3 |
+| hexane / cc-pVDZ OO-RI-MP2 energy | 80.1 ± 0.5 | 25.2 ± 0.1 | 879 ± 2 | 258 ± 3 | 3.2 |
+
+In the same window PySCF 2.13.1 (in-core by default at these sizes) took
+0.52 ± 0.02 s wall (5.6 s CPU) for the benzene RHF and 39.9 ± 0.5 s wall
+(188 s CPU) for the butane RHF and Hessian.
+
 ## Convergence
 
 A few things worth knowing before debugging a stubborn SCF:

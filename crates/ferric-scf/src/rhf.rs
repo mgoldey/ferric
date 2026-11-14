@@ -506,6 +506,16 @@ pub struct RhfConfig {
     /// keeps nothing.
     #[doc(hidden)]
     pub raw_handoff: Option<crate::raw_handoff::RawHandoff>,
+    /// `[scf] eri`: how the exact four-centre route builds J and K
+    /// ([`crate::incore_jk::EriMode`]). The default `Auto` holds the AO ERIs
+    /// in memory when they fit a quarter of the budget; `Direct` is the
+    /// integral-direct path; RI, LinK, COSX and range-separated routes ignore
+    /// it.
+    pub eri: crate::incore_jk::EriMode,
+    /// Internal: what the last SCF on this config (or a clone) served J/K
+    /// from, for the certificate. Written by the solver.
+    #[doc(hidden)]
+    pub eri_route: crate::incore_jk::EriRouteRecord,
 }
 
 impl Default for RhfConfig {
@@ -575,6 +585,8 @@ impl Default for RhfConfig {
             irrep_nelec: None,
             screening: crate::screening::ScreeningKind::default(),
             raw_handoff: None,
+            eri: crate::incore_jk::EriMode::Auto,
+            eri_route: Default::default(),
         }
     }
 }
@@ -2073,6 +2085,7 @@ fn solve_rhf_impl(
     // (Moved here from solve_rhf on rebase so the injected path keeps it too.)
     require_closed_shell(mol)?;
     crate::mom::check_reference(config, "RHF", false)?;
+    crate::incore_jk::begin_scf(bounds);
     // Split the injection: (S, h, V_nn) go to the shared env builder, the J/K
     // builders are driven in the iteration loop. Both `None` on the molecular
     // path.
@@ -2671,17 +2684,19 @@ fn solve_rhf_impl(
         };
     // Not built on the injected path: J/K come from `inj_jk`, and with no
     // DirectJK the incremental-Fock machinery below stays off.
-    let mut direct_jk: Option<DirectJK> = if !df_any && k_builder.is_none() && inj_jk.is_none() {
-        Some(DirectJK::new(
-            ctx,
-            prep,
-            bounds,
-            config.integral_thresh,
-            ooc_budget,
-        ))
-    } else {
-        None
-    };
+    // `[scf] eri`: the in-core ERI store serves DirectJK (and every later
+    // response build on these bounds) when the route is exact four-centre J/K.
+    let mut direct_jk: Option<DirectJK> = crate::incore_jk::direct_builder_for_scf(
+        ctx,
+        prep,
+        bounds,
+        config,
+        ooc_budget,
+        (
+            !df_any && k_builder.is_none() && inj_jk.is_none(),
+            k_mix.omega,
+        ),
+    )?;
 
     // ── Incremental (differential) Fock build, DIRECT DirectJK path only ─────
     // J and K are LINEAR in the density, so instead of rebuilding J(D)/K(D) from
@@ -2701,7 +2716,7 @@ fn solve_rhf_impl(
     // noise the quartets dropped by the ΔD screen put into dE and ΔP (#415):
     // see `direct_jk::closed_shell_incremental_enabled` for the gate, the
     // measurements and the `FERRIC_SCF_INCREMENTAL=0`/`1` overrides.
-    let incremental_direct = direct_jk.is_some()
+    let incremental_direct = direct_jk.as_ref().is_some_and(DirectJK::incremental_pays)
         && crate::direct_jk::closed_shell_incremental_enabled(
             config.energy_conv,
             config.density_conv,
@@ -3967,6 +3982,10 @@ pub fn build_jk(
     j: &mut Array2<f64>,
     k: &mut Array2<f64>,
 ) -> Result<usize, FerricError> {
+    if let Some(store) = crate::incore_jk::store_for(bounds, prep)? {
+        store.add_jk(d, j, k);
+        return Ok(store.quartets());
+    }
     let pool = crate::engine_pool::EnginePool::new(
         bounds.op,
         prep,
@@ -4019,6 +4038,10 @@ pub fn build_jk_with_pool(
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     ctx.check_interrupted()?;
+    if let Some(store) = crate::incore_jk::store_for(bounds, prep)? {
+        store.add_jk(d, j, k);
+        return Ok(store.quartets());
+    }
 
     let nsh = prep.nshells();
     let nbf = prep.nbasis();
@@ -4214,6 +4237,9 @@ pub(crate) fn build_spin_jk_with_pool_homogeneous(
         build_d_max_shell_spin_sum, canonical_bra_pairs, scatter_bra_pair, DensityScreen, JkMode,
     };
     ctx.check_interrupted()?;
+    if let Some(store) = crate::incore_jk::store_for(bounds, prep)? {
+        return Ok(store.spin_jk(d, exchange));
+    }
     let nbf = prep.nbasis();
     let zero = || Array2::<f64>::zeros((nbf, nbf));
     let dmax = d
@@ -4327,6 +4353,9 @@ pub(crate) fn build_multi_jk_with_pool_homogeneous(
     // partial for the fold to split into rows.
     if jd.is_empty() && kd.is_empty() {
         return Ok((Vec::new(), Vec::new()));
+    }
+    if let Some(store) = crate::incore_jk::store_for(bounds, prep)? {
+        return Ok(store.jk_multi(jd, kd));
     }
     let nbf = prep.nbasis();
     // Each density scaled into max|D| ∈ (½, 1], stacked (nbf, nbf, m).
@@ -5940,7 +5969,12 @@ mod tests {
             (r.energy.to_bits(), r.computed_quartets, r.iterations)
         };
 
-        let loose = RhfConfig::default();
+        // The incremental gate belongs to the direct builder: pin it (the
+        // in-core store, `auto` at this size, has no incremental mode).
+        let loose = RhfConfig {
+            eri: crate::incore_jk::EriMode::Direct,
+            ..RhfConfig::default()
+        };
         let (dflt, on, off) = (
             solve(&loose, None),
             solve(&loose, Some("1")),
@@ -5951,6 +5985,7 @@ mod tests {
 
         let tight = RhfConfig {
             energy_conv: 1e-10,
+            eri: crate::incore_jk::EriMode::Direct,
             ..RhfConfig::default()
         };
         let (dflt, on, off) = (
