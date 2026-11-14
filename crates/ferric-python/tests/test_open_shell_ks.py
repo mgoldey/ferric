@@ -283,7 +283,12 @@ def test_dm0_restart_reproduces_the_energy_and_a_swapped_pair_is_refused(b631g, 
     mol = _molecule("oh")
     r = getattr(ferric, run)(mol, b631g, "PBE", **TIGHT)
     pair = (r.density_alpha(), r.density_beta())
-    again = getattr(ferric, run)(mol, b631g, "PBE", dm0=pair, **TIGHT)
+    refused = None
+    try:
+        again = getattr(ferric, run)(mol, b631g, "PBE", dm0=pair, **TIGHT)
+    except ValueError as err:
+        refused = str(err)
+    assert refused is None, f"the converged (D_alpha, D_beta) was refused: {refused}"
     assert abs(again.energy - r.energy) < 1e-9
     if run == "run_uks":
         assert again.iterations <= 2, again.iterations
