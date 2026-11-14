@@ -1786,7 +1786,7 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     response_modes::register(m)?;
     pbc::register_omega_chooser(m)?;
     m.add_function(wrap_pyfunction!(run_uhf, m)?)?;
-    m.add_function(wrap_pyfunction!(run_rohf, m)?)?;
+    register_open_shell_scf(m)?;
     m.add_function(wrap_pyfunction!(run_cdft, m)?)?;
     m.add_function(wrap_pyfunction!(cdft_coupling, m)?)?;
     m.add_function(wrap_pyfunction!(run_optimize, m)?)?;

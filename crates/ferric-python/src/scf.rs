@@ -1118,7 +1118,7 @@ pub(crate) fn beta_channel(r: &ScfResult) -> (Array2<f64>, Vec<f64>, Array2<f64>
 /// channel from [`beta_channel`] and per-spin occupations from
 /// [`mo_occupations`].
 impl PyUhfResult {
-    fn from_scf(
+    pub(crate) fn from_scf(
         r: ScfResult,
         mol: &Molecule,
         config: &RhfConfig,

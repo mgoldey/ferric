@@ -998,6 +998,291 @@ pub(crate) fn run_ksdft(
     )
 }
 
+// ---------------------------------------------------------------------------
+// Open-shell Kohn-Sham: UKS and ROKS
+// ---------------------------------------------------------------------------
+
+/// Which open-shell Kohn-Sham reference [`run_open_ks`] solves.
+#[derive(Clone, Copy)]
+enum OpenKs {
+    Uks,
+    Roks,
+}
+
+impl OpenKs {
+    fn who(self) -> &'static str {
+        match self {
+            OpenKs::Uks => "run_uks",
+            OpenKs::Roks => "run_roks",
+        }
+    }
+}
+
+/// Shared body of [`run_uks`] / [`run_roks`]: the KS-DFT SCF config of
+/// `run_dft` (RI-J/RI-K default `def2-universal-jkfit`, the production grid)
+/// handed to `solve_uhf` / `solve_rohf` with `RhfConfig::xc` set, which is
+/// the route the CLI takes for `kind = "ksdft"` on an open-shell molecule
+/// (UKS) and `kind = "rohf"` with `[dft] functional` (ROKS). Result, gradient
+/// and certificate are the `UhfResult` ones.
+#[allow(clippy::too_many_arguments)]
+fn run_open_ks(
+    py: Python<'_>,
+    kind: OpenKs,
+    mol: &PyMolecule,
+    basis_set: &PyBasisSet,
+    functional: &str,
+    k_builder: Option<&str>,
+    with_gradient: bool,
+    max_iter: Option<usize>,
+    energy_conv: Option<f64>,
+    density_conv: Option<f64>,
+    level_shift: Option<f64>,
+    mom_after_iter: Option<usize>,
+    point_charges: Option<Vec<(f64, f64, f64, f64)>>,
+    external_field: Option<(f64, f64, f64)>,
+    memory_budget_gb: Option<f64>,
+    df_j_aux: Option<&str>,
+    df_k_aux: Option<&str>,
+    ri_k_precision: Option<&str>,
+    ri_j_precision: Option<&str>,
+    grid_radial: Option<usize>,
+    grid_angular: Option<usize>,
+    grid_prune: Option<&str>,
+    grid_weight_cut: Option<f64>,
+    guess: Option<&str>,
+    dm0: Option<&Bound<'_, PyAny>>,
+) -> PyResult<PyUhfResult> {
+    let who = kind.who();
+    refuse_dm0_with_guess(who, dm0.is_some(), guess, None)?;
+    let use_sad_guess = parse_guess(guess)?;
+    let mut emol = mol.inner.clone();
+    emol.apply_ecp(&basis_set.inner);
+    // Refuse a molecule whose electron count cannot carry the multiplicity
+    // before any integral work (an odd count with multiplicity 1, ...).
+    let n_spin = spin_counts(&emol, who)?;
+    let prep = PreparedBasis::new(&emol, &basis_set.inner).map_err(make_err)?;
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
+    let dm0 = blocks::checked_dm0_spin(dm0, &prep, n_spin, who)?;
+    let mut config = rhf_config_budgeted(k_builder, budget_bytes_from_gb(memory_budget_gb));
+    config.max_iter = max_iter.unwrap_or(config.max_iter);
+    config.energy_conv = energy_conv.unwrap_or(config.energy_conv);
+    config.density_conv = density_conv.unwrap_or(config.density_conv);
+    config.level_shift = level_shift.unwrap_or(config.level_shift);
+    config.mom_after_iter = mom_after_iter.unwrap_or(config.mom_after_iter);
+    config.use_sad_guess = use_sad_guess;
+    config.external_potential = build_external_potential(point_charges, external_field);
+    config.xc = Some(functional.to_string());
+    // RI-J / RI-K on by default for a KS SCF, as in run_dft and the CLI.
+    config.df_j_aux = resolve_df_aux(df_j_aux, "def2-universal-jkfit");
+    config.df_k_aux = resolve_df_aux(df_k_aux, "def2-universal-jkfit");
+    config.ri_j_precision = parse_ri_j_precision(ri_j_precision)?;
+    config.ri_k_precision = parse_ri_k_precision(ri_k_precision)?;
+    config.dft_grid =
+        resolve_dft_grid_with_cut(grid_radial, grid_angular, grid_prune, grid_weight_cut)?;
+    let (solver, gradient_kind) = match kind {
+        OpenKs::Uks => (blocks::OpenShell::Uhf, ScfGradientKind::Uhf),
+        OpenKs::Roks => (blocks::OpenShell::Rohf, ScfGradientKind::Rohf),
+    };
+    if with_gradient {
+        config = scf_gradient_config(who, gradient_kind, &config, None)?;
+    }
+    let ctx = ParallelContext::default();
+    let (r, _) = blocks::solve_open_shell(
+        py,
+        solver,
+        &ctx,
+        &emol,
+        &prep,
+        op,
+        &bounds,
+        &config,
+        None,
+        dm0.as_ref(),
+    )?;
+    let gradient = with_gradient
+        .then(|| {
+            scf_gradient(
+                py,
+                gradient_kind,
+                &emol,
+                &prep,
+                &basis_set.inner,
+                &bounds,
+                &config,
+                &r,
+            )
+        })
+        .transpose()?;
+    let mut result = PyUhfResult::from_scf(r, &emol, &config, &prep, false);
+    result.gradient_data = gradient;
+    Ok(result)
+}
+
+/// Unrestricted Kohn-Sham (open-shell DFT): `solve_uhf` with the functional
+/// `functional` (required; no silent LDA default). α/β electron counts come
+/// from the molecule's `charge` and `multiplicity`; a singlet is allowed (the
+/// unrestricted solution of a closed shell). Returns the `UhfResult` of
+/// `run_uhf`: `energy`, per-spin densities, orbital energies, MO coefficients
+/// and occupations, `certificate`, and `gradient()` when
+/// `with_gradient=True` (the analytic UKS gradient, `ks_gradient_uks`, at the
+/// RI-J precision `f64` unless `ri_j_precision` says otherwise).
+///
+/// The SCF settings are `run_dft`'s: RI-J and RI-K through
+/// `def2-universal-jkfit` unless `df_j_aux` / `df_k_aux` say `""` (exact),
+/// the production Becke-Lebedev grid unless `grid_*` say otherwise, the
+/// default `RhfConfig` convergence gates. Range-separated hybrids and
+/// meta-GGAs run (energy and gradient); for a VV10 functional (`wB97X-V`) the
+/// gradient agrees with finite differences of the energy to 6e-6 Ha/Bohr
+/// (NH2/6-31G), against ~1e-7 for the others. `run_dft` stays the
+/// closed-shell entry point and refuses `multiplicity > 1`. Not offered here: dispersion,
+/// COSX, symmetry, `fock_hook`.
+#[pyfunction]
+#[pyo3(signature = (
+    mol, basis_set, functional, k_builder=None, with_gradient=false,
+    max_iter=None, energy_conv=None, density_conv=None,
+    level_shift=None, mom_after_iter=None,
+    point_charges=None, external_field=None, memory_budget_gb=None,
+    df_j_aux=None, df_k_aux=None, ri_k_precision=None, ri_j_precision=None,
+    grid_radial=None, grid_angular=None, grid_prune=None, grid_weight_cut=None,
+    guess=None, dm0=None,
+))]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_uks(
+    py: Python<'_>,
+    mol: &PyMolecule,
+    basis_set: &PyBasisSet,
+    functional: &str,
+    k_builder: Option<&str>,
+    with_gradient: bool,
+    max_iter: Option<usize>,
+    energy_conv: Option<f64>,
+    density_conv: Option<f64>,
+    level_shift: Option<f64>,
+    mom_after_iter: Option<usize>,
+    point_charges: Option<Vec<(f64, f64, f64, f64)>>,
+    external_field: Option<(f64, f64, f64)>,
+    memory_budget_gb: Option<f64>,
+    df_j_aux: Option<&str>,
+    df_k_aux: Option<&str>,
+    ri_k_precision: Option<&str>,
+    ri_j_precision: Option<&str>,
+    grid_radial: Option<usize>,
+    grid_angular: Option<usize>,
+    grid_prune: Option<&str>,
+    grid_weight_cut: Option<f64>,
+    guess: Option<&str>,
+    dm0: Option<&Bound<'_, PyAny>>,
+) -> PyResult<PyUhfResult> {
+    run_open_ks(
+        py,
+        OpenKs::Uks,
+        mol,
+        basis_set,
+        functional,
+        k_builder,
+        with_gradient,
+        max_iter,
+        energy_conv,
+        density_conv,
+        level_shift,
+        mom_after_iter,
+        point_charges,
+        external_field,
+        memory_budget_gb,
+        df_j_aux,
+        df_k_aux,
+        ri_k_precision,
+        ri_j_precision,
+        grid_radial,
+        grid_angular,
+        grid_prune,
+        grid_weight_cut,
+        guess,
+        dm0,
+    )
+}
+
+/// Restricted open-shell Kohn-Sham: `solve_rohf` with the functional
+/// `functional` (required). One set of spin-pure MOs: `nocc_open =
+/// multiplicity - 1` singly occupied orbitals, the rest doubly occupied
+/// (Guest-Saunders coupling as in `run_rohf`). Same result, gradient
+/// (`ks_gradient_roks`), settings and exclusions as `run_uks`, without the
+/// `guess=` knob (ROKS starts from the default MINAO guess).
+#[pyfunction]
+#[pyo3(signature = (
+    mol, basis_set, functional, k_builder=None, with_gradient=false,
+    max_iter=None, energy_conv=None, density_conv=None,
+    level_shift=None, mom_after_iter=None,
+    point_charges=None, external_field=None, memory_budget_gb=None,
+    df_j_aux=None, df_k_aux=None, ri_k_precision=None, ri_j_precision=None,
+    grid_radial=None, grid_angular=None, grid_prune=None, grid_weight_cut=None,
+    dm0=None,
+))]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_roks(
+    py: Python<'_>,
+    mol: &PyMolecule,
+    basis_set: &PyBasisSet,
+    functional: &str,
+    k_builder: Option<&str>,
+    with_gradient: bool,
+    max_iter: Option<usize>,
+    energy_conv: Option<f64>,
+    density_conv: Option<f64>,
+    level_shift: Option<f64>,
+    mom_after_iter: Option<usize>,
+    point_charges: Option<Vec<(f64, f64, f64, f64)>>,
+    external_field: Option<(f64, f64, f64)>,
+    memory_budget_gb: Option<f64>,
+    df_j_aux: Option<&str>,
+    df_k_aux: Option<&str>,
+    ri_k_precision: Option<&str>,
+    ri_j_precision: Option<&str>,
+    grid_radial: Option<usize>,
+    grid_angular: Option<usize>,
+    grid_prune: Option<&str>,
+    grid_weight_cut: Option<f64>,
+    dm0: Option<&Bound<'_, PyAny>>,
+) -> PyResult<PyUhfResult> {
+    run_open_ks(
+        py,
+        OpenKs::Roks,
+        mol,
+        basis_set,
+        functional,
+        k_builder,
+        with_gradient,
+        max_iter,
+        energy_conv,
+        density_conv,
+        level_shift,
+        mom_after_iter,
+        point_charges,
+        external_field,
+        memory_budget_gb,
+        df_j_aux,
+        df_k_aux,
+        ri_k_precision,
+        ri_j_precision,
+        grid_radial,
+        grid_angular,
+        grid_prune,
+        grid_weight_cut,
+        None,
+        dm0,
+    )
+}
+
+/// Register the restricted-open-shell and open-shell Kohn-Sham entry points
+/// (`run_rohf`, `run_uks`, `run_roks`).
+pub(crate) fn register_open_shell_scf(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(run_rohf, m)?)?;
+    m.add_function(wrap_pyfunction!(run_uks, m)?)?;
+    m.add_function(wrap_pyfunction!(run_roks, m)?)?;
+    Ok(())
+}
+
 /// Grimme D3(BJ) dispersion energy for a molecule, in Hartree.
 ///
 /// Standalone: this does no SCF, so it is the cheap way to add dispersion to an

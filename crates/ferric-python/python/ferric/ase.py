@@ -18,7 +18,9 @@ Bohr; the conversion uses ``ase.units.Hartree`` and ``ase.units.Bohr``.
 
 Molecular methods (``atoms.pbc`` all False): ``"hf"`` (RHF for a singlet,
 UHF otherwise), ``"rhf"``, ``"uhf"``, ``"rohf"``, ``"dft"`` / ``"rks"``
-(closed-shell Kohn-Sham, ``run_dft``), ``"rimp2"`` and ``"oo-rimp2"``
+(closed-shell Kohn-Sham, ``run_dft``), ``"uks"`` and ``"roks"`` (open-shell
+Kohn-Sham, ``run_uks`` / ``run_roks``; ``"dft"`` is UKS for a multiplicity
+above 1), ``"rimp2"`` and ``"oo-rimp2"``
 (``auxbasis`` required). Periodic methods (``atoms.pbc`` all True):
 ``"hf"``, ``"rhf"``, ``"uhf"``, ``"rohf"``, ``"dft"``, ``"rks"``, ``"uks"``,
 ``"roks"`` at the Gamma point (``kpts=None``) or on a ``kpts=(n1, n2, n3)``
@@ -59,7 +61,18 @@ import ferric
 
 __all__ = ["FerricCalculator"]
 
-_MOLECULAR = ("hf", "rhf", "uhf", "rohf", "dft", "rks", "rimp2", "oo-rimp2")
+_MOLECULAR = (
+    "hf",
+    "rhf",
+    "uhf",
+    "rohf",
+    "dft",
+    "rks",
+    "uks",
+    "roks",
+    "rimp2",
+    "oo-rimp2",
+)
 _PERIODIC = ("hf", "rhf", "uhf", "rohf", "dft", "rks", "uks", "roks")
 _KS = ("dft", "rks", "uks", "roks")
 
@@ -177,25 +190,24 @@ class FerricCalculator(Calculator):
             raise CalculatorSetupError("FerricCalculator: kpts needs a periodic cell")
         if want_forces:
             options["with_gradient"] = True
-        if method in ("rhf", "uhf", "rohf", "rks"):
+        if method in ("rhf", "uhf", "rohf", "rks", "uks", "roks"):
             # Energies and forces must come from one surface: an unset RI-J
             # precision is f64 here, as on every ferric geometry entry point.
             options.setdefault("ri_j_precision", "f64")
         if method in ("rhf", "uhf", "rohf"):
             result = getattr(ferric, f"run_{method}")(mol, basis, **options)
             return result, result.energy
-        if method == "uks":
-            raise CalculatorSetupError(
-                "FerricCalculator: molecular Kohn-Sham is closed-shell only (run_dft); use "
-                "method='uhf' or a singlet"
-            )
-        if method == "rks":
+        if method in _KS:
             if p.functional is None:
                 raise CalculatorSetupError(
-                    "FerricCalculator: method 'dft' needs functional="
+                    f"FerricCalculator: method {p.method!r} needs functional="
                 )
-            result = ferric.run_dft(mol, basis, functional=p.functional, **options)
-            return result, result.total_energy
+            if method == "rks":
+                result = ferric.run_dft(mol, basis, functional=p.functional, **options)
+                return result, result.total_energy
+            driver = getattr(ferric, f"run_{method}")
+            result = driver(mol, basis, p.functional, **options)
+            return result, result.energy
         if p.auxbasis is None:
             raise CalculatorSetupError(
                 f"FerricCalculator: method {p.method!r} needs auxbasis="

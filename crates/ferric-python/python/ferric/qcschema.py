@@ -29,10 +29,11 @@ Drivers: ``energy``, ``gradient`` and ``hessian``. Any other driver
 (``properties``) fails with ``unsupported_error``. ``hessian`` is the analytic
 Hessian (``run_frequencies(hessian="analytic")`` /
 ``"analytic-moving-grid"``, never a finite difference) for ``hf`` / ``scf``
-(RHF for a singlet, UHF otherwise) and for closed-shell DFT; ``return_result``
-is the (3N, 3N) Cartesian Hessian in Hartree/Bohr^2 in the input frame. Any
-method or setting without an analytic Hessian (mp2, ccsd, open-shell DFT, an
-ECP...) fails with ``unsupported_error``.
+(RHF for a singlet, UHF otherwise) and for DFT (RKS for a singlet, UKS
+otherwise); ``return_result`` is the (3N, 3N) Cartesian Hessian in
+Hartree/Bohr^2 in the input frame. Any method or setting without an analytic
+Hessian (mp2, ccsd, ROKS, an ECP, a range-separated or meta-GGA functional
+for UKS...) fails with ``unsupported_error``.
 
 Methods (``model.method``, case-insensitive; ``model.basis`` is a bundled
 ferric basis name):
@@ -48,10 +49,11 @@ ferric basis name):
   (``run_ccsd`` / ``run_ccsd_t``), auxiliary basis as for mp2. Energy driver
   only: a gradient or Hessian request, or multiplicity > 1, fails with
   ``unsupported_error``.
-* anything else is an XC functional name for closed-shell Kohn-Sham
-  (``run_dft``). An unknown functional fails with ``input_error``. An
-  open-shell KS request (multiplicity > 1) fails with ``unsupported_error``:
-  ferric has no open-shell molecular KS entry point with gradients in Python.
+* anything else is an XC functional name for Kohn-Sham: RKS for
+  ``molecular_multiplicity`` 1 (``run_dft``), UKS otherwise (``run_uks``;
+  energy and gradient). An unknown functional fails with ``input_error``.
+  ``dispersion`` is closed-shell only: with multiplicity > 1 it fails with
+  ``unsupported_error``.
 
 Keywords are a strict allowlist; any other key fails with ``input_error``
 naming it. Values are passed to the ferric driver unchanged.
@@ -325,17 +327,29 @@ def _dispatch(family, method, mol, mult, basis, basis_name, keywords, want_grad)
     if family == "cc":
         return _cc(method, mol, mult, basis, basis_name, kw, want_grad)
     if mult != 1:
-        raise _QcError(
-            "unsupported_error",
-            f"method {method!r} with multiplicity {mult}: open-shell molecular Kohn-Sham is not "
-            "available (run_dft is closed-shell)",
-        )
+        return _open_shell_dft(method, mol, mult, basis, kw)
     result = ferric.run_dft(mol, basis, functional=method, **kw)
     _require_converged(result, "run_dft")
     _scf_props(props, result, mult)
     props["scf_total_energy"] = result.total_energy
     props["scf_xc_energy"] = result.e_xc
     return result, props, {"energy": result.total_energy}
+
+
+def _open_shell_dft(method, mol, mult, basis, kw):
+    """UKS (``run_uks``): energy and, with ``with_gradient``, the analytic gradient."""
+    if "dispersion" in kw:
+        raise _QcError(
+            "unsupported_error",
+            f"method {method!r} with multiplicity {mult}: dispersion is closed-shell only "
+            "(run_uks has no dispersion)",
+        )
+    result = ferric.run_uks(mol, basis, method, **kw)
+    _require_converged(result, "run_uks")
+    props: dict[str, Any] = {}
+    _scf_props(props, result, mult)
+    props["scf_total_energy"] = result.energy
+    return result, props, {"energy": result.energy}
 
 
 def _family(method):
@@ -400,8 +414,12 @@ def _hessian(family, method, mol, mult, basis_name, keywords):
     }
     if family == "hf":
         kw.update(reference="rhf" if mult == 1 else "uhf", hessian="analytic")
-    elif family == "dft" and mult == 1:
-        kw.update(xc=method, reference="rhf", hessian="analytic-moving-grid")
+    elif family == "dft":
+        kw.update(
+            xc=method,
+            reference="rhf" if mult == 1 else "uhf",
+            hessian="analytic-moving-grid",
+        )
     else:
         raise _QcError(
             "unsupported_error",
@@ -409,8 +427,11 @@ def _hessian(family, method, mol, mult, basis_name, keywords):
         )
     try:
         result = ferric.run_frequencies(mol, basis_name, **kw)
-    except ValueError as err:
-        if "analytic" in str(err).lower():
+    except (ValueError, RuntimeError) as err:
+        # The driver's typed refusals (a setting the analytic Hessian does not
+        # cover) name "analytic" and "Hessian"; anything else is not one.
+        text = str(err).lower()
+        if "analytic" in text and "hessian" in text:
             raise _QcError(
                 "unsupported_error", f"no analytic Hessian here: {err}"
             ) from err

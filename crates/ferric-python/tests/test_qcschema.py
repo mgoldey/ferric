@@ -111,6 +111,40 @@ def test_uhf_dft_and_mp2_equal_the_direct_call_bitwise():
     assert d["properties"]["return_energy"] == dd.total_energy
     assert d["properties"]["scf_xc_energy"] == dd.e_xc
 
+    # Open-shell Kohn-Sham: UKS (run_uks) at multiplicity 2.
+    o = qcs.run(
+        _inp(
+            method="PBE",
+            basis="6-31g",
+            driver="gradient",
+            molecular_charge=1,
+            molecular_multiplicity=2,
+        )
+    )
+    do = ferric.run_uks(
+        _mol(charge=1, multiplicity=2), _bs("6-31g"), "pbe", with_gradient=True
+    )
+    assert o["success"] is True, o
+    assert o["return_result"] == do.gradient().tolist()
+    assert o["properties"]["return_energy"] == do.energy
+    assert o["properties"]["scf_total_energy"] == do.energy
+    assert o["properties"]["calcinfo_nbasis"] == 13
+    assert o["extras"]["ferric"]["certificate"] == json.loads(
+        json.dumps(do.certificate)
+    )
+    oe = qcs.run(
+        _inp(
+            method="PBE",
+            basis="6-31g",
+            molecular_charge=1,
+            molecular_multiplicity=2,
+        )
+    )
+    assert (
+        oe["return_result"]
+        == ferric.run_uks(_mol(charge=1, multiplicity=2), _bs("6-31g"), "pbe").energy
+    )
+
     m = qcs.run(_inp(method="mp2", basis="cc-pvdz", driver="gradient"))
     dm = ferric.run_rimp2(_mol(), _bs("cc-pvdz"), _bs("cc-pvdz-ri"), with_gradient=True)
     assert m["return_result"] == dm.gradient().tolist()
@@ -207,7 +241,9 @@ def test_refusals_have_stable_error_types():
         "analytic Hessian",
     )
     _failed(
-        qcs.run(_inp(method="pbe", driver="hessian", molecular_charge=1)),
+        qcs.run(
+            _inp(method="wb97x-v", basis="6-31g", driver="hessian", molecular_charge=1)
+        ),
         "unsupported_error",
         "analytic Hessian",
     )
@@ -231,9 +267,16 @@ def test_refusals_have_stable_error_types():
     )
     _failed(qcs.run(_inp(driver="optimization")), "input_error")
     _failed(
-        qcs.run(_inp(method="pbe", molecular_charge=1, molecular_multiplicity=2)),
+        qcs.run(
+            _inp(
+                method="pbe",
+                molecular_charge=1,
+                molecular_multiplicity=2,
+                keywords={"dispersion": "d3bj"},
+            )
+        ),
         "unsupported_error",
-        "open-shell",
+        "dispersion",
     )
     _failed(qcs.run(_inp(basis="no-such-basis")), "input_error", "no-such-basis")
     _failed(qcs.run(_inp(method="not-a-functional")), "input_error")
@@ -351,6 +394,22 @@ def test_hessian_routes_equal_the_direct_calls_bitwise():
     )
     assert dk.hessian_source == "analytic-moving-grid"
     assert ks["return_result"] == np.asarray(dk.cartesian_hessian).tolist()
+
+    # Open-shell Kohn-Sham: the analytic UKS Hessian on the moving grid.
+    uks = qcs.run(
+        _inp(method="pbe", basis="6-31g", driver="hessian", molecular_charge=1)
+    )
+    assert uks["success"] is True, uks
+    du = ferric.run_frequencies(
+        _mol(charge=1, multiplicity=2),
+        "6-31g",
+        xc="pbe",
+        reference="uhf",
+        multiplicity=2,
+        hessian="analytic-moving-grid",
+    )
+    assert du.hessian_source == "analytic-moving-grid"
+    assert uks["return_result"] == np.asarray(du.cartesian_hessian).tolist()
 
 
 def test_hessian_is_the_finite_difference_of_the_gradient_in_the_input_frame():

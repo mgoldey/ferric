@@ -3985,6 +3985,85 @@ def run_rohf(
     dm0 with guess_basis= raises ValueError."""
     ...
 
+def run_uks(
+    mol: Molecule,
+    basis_set: BasisSet,
+    functional: str,
+    k_builder: str | None = None,
+    with_gradient: bool = False,
+    max_iter: int | None = None,
+    energy_conv: float | None = None,
+    density_conv: float | None = None,
+    level_shift: float | None = None,
+    mom_after_iter: int | None = None,
+    point_charges: list[tuple[float, float, float, float]] | None = None,
+    external_field: tuple[float, float, float] | None = None,
+    memory_budget_gb: float | None = None,
+    df_j_aux: str | None = None,
+    df_k_aux: str | None = None,
+    ri_k_precision: str | None = None,
+    ri_j_precision: str | None = None,
+    grid_radial: int | None = None,
+    grid_angular: int | None = None,
+    grid_prune: str | None = None,
+    grid_weight_cut: float | None = None,
+    guess: str | None = None,
+    dm0: tuple[NDArray[np.float64], NDArray[np.float64]] | None = None,
+) -> UhfResult:
+    """Unrestricted Kohn-Sham (open-shell DFT): solve_uhf with RhfConfig.xc set,
+    the route the CLI takes for kind="ksdft" on an open-shell molecule.
+
+    `functional` is required (no silent LDA default). alpha/beta electron counts
+    come from the molecule's charge and multiplicity; a singlet is allowed and
+    equals RKS. Returns run_uhf's UhfResult (per-spin densities, orbital
+    energies, MO coefficients, occupations, certificate). with_gradient=True:
+    the analytic UKS gradient in result.gradient() (ks_gradient_uks), at the
+    RI-J precision f64 unless ri_j_precision says otherwise, as for run_dft.
+
+    The SCF settings are run_dft's: RI-J and RI-K through def2-universal-jkfit
+    unless df_j_aux / df_k_aux say "" or "none" (exact), the production
+    Becke-Lebedev grid unless grid_* say otherwise, run_rhf's convergence
+    defaults. Range-separated hybrids and meta-GGAs run (energy and gradient); for a
+    VV10 functional (wB97X-V) the gradient agrees with finite differences of the
+    energy to 6e-6 Ha/Bohr (NH2/6-31G), against ~1e-7 for the others.
+    dm0 is a pair (D_alpha, D_beta) with run_uhf's checks; guess is
+    "minao" (default) or "hcore". Not offered (use run_dft or run_uhf): dispersion,
+    COSX, symmetry, fock_hook. run_dft raises for multiplicity > 1."""
+    ...
+
+def run_roks(
+    mol: Molecule,
+    basis_set: BasisSet,
+    functional: str,
+    k_builder: str | None = None,
+    with_gradient: bool = False,
+    max_iter: int | None = None,
+    energy_conv: float | None = None,
+    density_conv: float | None = None,
+    level_shift: float | None = None,
+    mom_after_iter: int | None = None,
+    point_charges: list[tuple[float, float, float, float]] | None = None,
+    external_field: tuple[float, float, float] | None = None,
+    memory_budget_gb: float | None = None,
+    df_j_aux: str | None = None,
+    df_k_aux: str | None = None,
+    ri_k_precision: str | None = None,
+    ri_j_precision: str | None = None,
+    grid_radial: int | None = None,
+    grid_angular: int | None = None,
+    grid_prune: str | None = None,
+    grid_weight_cut: float | None = None,
+    dm0: tuple[NDArray[np.float64], NDArray[np.float64]] | None = None,
+) -> UhfResult:
+    """Restricted open-shell Kohn-Sham: solve_rohf with RhfConfig.xc set, the
+    route the CLI takes for kind="rohf" with [dft] functional.
+
+    One set of spin-pure MOs: multiplicity - 1 singly occupied orbitals, the
+    rest doubly occupied (run_rohf's occupations and Guest-Saunders coupling).
+    Settings, result, gradient (ks_gradient_roks) and exclusions as for
+    run_uks, without guess=. dm0 is run_rohf's pair."""
+    ...
+
 def run_cdft(
     mol: Molecule,
     basis_set: BasisSet,

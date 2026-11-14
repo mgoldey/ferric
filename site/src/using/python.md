@@ -222,8 +222,17 @@ two, at a cost described in
 `dispersion="d3bj"` adds Grimme D3(BJ);
 the result then carries `e_scf`, `e_dispersion` and their sum in
 `total_energy`. `with_gradient=True` also returns the analytic nuclear gradient
-from `dft.gradient()`. There is no open-shell `run_dft`. Unrestricted
-Kohn–Sham is reachable from Python only inside other drivers:
+from `dft.gradient()`. `run_dft` refuses a molecule with `multiplicity > 1`;
+the open-shell entry points are `run_uks(mol, bs, "pbe")` (unrestricted) and
+`run_roks(mol, bs, "pbe")` (restricted open-shell). Both take the functional
+as a required argument, return the `UhfResult` of `run_uhf` (α and β densities,
+orbital energies, MOs and occupations, `certificate`) and accept
+`with_gradient=True` for the analytic gradient. Their SCF settings are
+`run_dft`'s (RI-J/RI-K through `def2-universal-jkfit`, the production grid,
+`dm0=(D_a, D_b)`); dispersion, COSX, symmetry and `fock_hook` are not offered.
+Energy and certificate equal the CLI (`kind = "ksdft"` on an open-shell
+molecule, `kind = "rohf"` with `[dft] functional`) bit for bit.
+Unrestricted Kohn–Sham is also reachable inside other drivers:
 `run_frequencies(reference="uhf", xc=...)`, `run_u_gw(xc=...)`,
 `run_qmmm(method="uks")` and `run_cdft(functional=...)`.
 
@@ -634,13 +643,15 @@ capability is Python-only. How well each one is validated is on
 | `run_rohf` | Restricted open-shell HF (Guest–Saunders coupling); returns a `UhfResult`. `with_gradient=True` as for `run_rhf`. | `rohf` |
 | `run_dft` | Closed-shell Kohn–Sham DFT (LDA/GGA/hybrid/RSH/meta-GGA by name), optional dispersion (`dispersion="d3bj"` or `"mbd"`, added to the energy and, with `with_gradient=True`, to the gradient) and analytic gradient. | `ksdft` |
 | `run_ksdft` | Alias of `run_dft`. | `ksdft` |
+| `run_uks` | Unrestricted Kohn–Sham for an open-shell molecule (functional required); returns a `UhfResult`; `with_gradient=True` gives the analytic UKS gradient. | `ksdft` (multiplicity > 1) |
+| `run_roks` | Restricted open-shell Kohn–Sham (functional required); returns a `UhfResult`; `with_gradient=True` gives the analytic ROKS gradient. | `rohf` + `[dft] functional` |
 | `d3bj_energy` | Grimme D3(BJ) dispersion energy for a molecule and functional, in Hartree; `s9=1.0` adds the ATM three-body term (default 0, off). | `[dft] dispersion` |
 | `mbd_rsscs_energy` | MBD@rsSCS dispersion energy (Hartree) from per-atom Hirshfeld volume ratios and β (or a functional with a published β); returns `MbdRsscsResult` with the screened α₀, C6, R_vdW and ω. | — |
 | `tune_omega` | IP-based (Baer/Kronik) tuning of an RSH functional's ω (Bohr⁻¹); closed-shell neutral plus doublet cation. `continuation=True` seeds each evaluation from the nearest already-evaluated ω, which keeps the cation on one branch across an out-of-order golden-section search; `branch_tol` flags an evaluation whose cation spin-population asymmetry jumps. `check_cation_stability` (default `True`) runs the UKS internal-stability analysis on every cation: each eval dict carries `cation_lambda_min` and `cation_stability`, and a tuned ω whose cation is an internal saddle raises `RuntimeError` naming ω and λ_min. Functionals without an orbital-Hessian kernel (VV10 such as ωB97X-V, meta-GGA) are reported `not_analysed` with a `stability_warning`, never as stable. | — |
 | `dft_grid_point_count` | Number of points in the main KS grid `run_dft` would build for the molecule with the same `grid_*` kwargs, without running an SCF (shows what pruning saves). | — |
 | `SymmetricRhfResult` | Result of `run_rhf(symmetry=True)` (point-group-blocked RHF): `energy` (of the symmetrized geometry), `point_group`, `orbital_irreps`, `max_symmetrization_shift`, `irrep_occupations()`, `orbital_energies()`, `symmetrized_coords()`, `frame_transform()`. `density()`, `mo_coefficients()` and `gradient()` raise: the AO matrices live in the rotated frame. | |
 | `RhfResult` | Result of `run_rhf`: `energy`, `converged`, `iterations`, `density()`, `orbital_energies()`, `mo_coefficients()`, `gradient()` (`None` unless `with_gradient=True`), `one_step_energy_drop` and `stationarity_tol` (the converged exit is stationary when the drop is above `-stationarity_tol`; both `None` for a non-aufbau or unconverged exit). | |
-| `UhfResult` | Result of `run_uhf`/`run_rohf`: α and β densities and orbital energies, `gradient()`, `one_step_energy_drop`, `stationarity_tol`. | |
+| `UhfResult` | Result of `run_uhf`/`run_rohf`/`run_uks`/`run_roks`: α and β densities and orbital energies, `gradient()`, `one_step_energy_drop`, `stationarity_tol`. | |
 | `DftResult` | Result of `run_dft`: `total_energy` (= `e_scf + e_dispersion`), `e_scf`, `e_dispersion` (`None` when not requested), `dispersion_model` (`"D3(BJ)"`, `"MBD@rsSCS"` or `None`), `volume_ratios` (MBD@rsSCS only), `converged`, `exit_reason()`, `one_step_energy_drop`, `stationarity_tol`, `density()`, `gradient()`. | |
 
 ### Constrained DFT

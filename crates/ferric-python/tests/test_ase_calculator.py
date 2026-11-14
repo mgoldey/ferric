@@ -79,8 +79,12 @@ def _direct(calc, mol, bs):
     """The ferric driver call ``FerricCalculator`` makes for `calc`, by hand."""
     method = calc["method"]
     scf = {"ri_j_precision": "f64", "with_gradient": True, **TIGHT}
+    if method == "dft" and calc.get("multiplicity", 1) > 1:
+        return ferric.run_uks(mol, bs, calc["functional"], **scf)
     if method == "dft":
         return ferric.run_dft(mol, bs, functional=calc["functional"], **scf)
+    if method in ("uks", "roks"):
+        return getattr(ferric, f"run_{method}")(mol, bs, calc["functional"], **scf)
     if method in ("rimp2", "oo-rimp2"):
         driver = ferric.run_rimp2 if method == "rimp2" else ferric.run_oo_rimp2
         aux = ferric.BasisSet.bundled(calc["auxbasis"])
@@ -95,10 +99,23 @@ def _direct(calc, mol, bs):
         {"method": "uhf", "charge": 1, "multiplicity": 2},
         {"method": "rohf", "charge": 1, "multiplicity": 2},
         {"method": "dft", "functional": "PBE"},
+        {"method": "dft", "functional": "PBE", "charge": 1, "multiplicity": 2},
+        {"method": "uks", "functional": "B3LYP", "charge": 1, "multiplicity": 2},
+        {"method": "roks", "functional": "PBE", "charge": 1, "multiplicity": 2},
         {"method": "rimp2", "auxbasis": "cc-pvdz-ri", "options": {}},
         {"method": "oo-rimp2", "auxbasis": "cc-pvdz-ri", "options": {}},
     ],
-    ids=["rhf", "uhf", "rohf", "pbe", "rimp2", "oo-rimp2"],
+    ids=[
+        "rhf",
+        "uhf",
+        "rohf",
+        "pbe",
+        "pbe-cation-uks",
+        "uks-b3lyp",
+        "roks",
+        "rimp2",
+        "oo-rimp2",
+    ],
 )
 def test_every_gradient_driver_gives_forces_and_a_certificate_bitwise(calc):
     calc = dict(calc)
@@ -124,9 +141,16 @@ def test_every_gradient_driver_gives_forces_and_a_certificate_bitwise(calc):
         {"method": "rhf", "basis": "6-31g"},
         {"method": "hf", "basis": "6-31g", "charge": 1, "multiplicity": 2},
         {"method": "dft", "basis": "6-31g", "functional": "PBE"},
+        {
+            "method": "dft",
+            "basis": "6-31g",
+            "functional": "PBE",
+            "charge": 1,
+            "multiplicity": 2,
+        },
         {"method": "rimp2", "basis": "6-31g", "auxbasis": "cc-pvdz-ri"},
     ],
-    ids=["rhf", "uhf-cation", "pbe", "rimp2"],
+    ids=["rhf", "uhf-cation", "pbe", "uks-cation", "rimp2"],
 )
 def test_forces_match_ase_numerical_forces(calc):
     options = (
@@ -218,6 +242,8 @@ def test_setup_refusals():
         _water(method="ccsd").get_potential_energy()
     with pytest.raises(CalculatorSetupError, match="auxbasis"):
         _water(method="rimp2").get_potential_energy()
+    with pytest.raises(CalculatorSetupError, match="functional"):
+        _water(method="uks", multiplicity=3).get_potential_energy()
     with pytest.raises(PropertyNotImplementedError, match="periodic"):
         _water().get_stress()
     slab = Atoms(
