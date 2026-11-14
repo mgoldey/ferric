@@ -143,11 +143,22 @@ orbital Hessian and reset to it when the energy rises; it needs 1.4 to 5
 times the macro iterations (CAS(6,6)/cc-pVDZ benzene: 89 instead of 19).
 On the five tested systems AH takes less wall time: benzene CAS(6,6)
 27 s against 42 s, N2 CAS(10,10)/cc-pVDZ 19 s against 27 s (timings on a
-loaded machine, in `crates/ferric-ci/theory.md`). Both reach the same minimum on the tested
-systems; neither moves benzene to the lower minimum PySCF finds. A run that reaches the
+loaded machine, in `crates/ferric-ci/theory.md`). Both reach the same stationary point on the
+tested systems; neither moves benzene to the lower minimum PySCF finds. A run that reaches the
 iteration cap returns `converged = false`; Python adds a `RuntimeWarning` and
 a certificate warning; the certificate (capability `casscf`, graded Proven)
 is then capped to not graded.
+
+Convergence means a small gradient. Neither optimizer checks the orbital
+Hessian at the converged point, so the result can be a saddle. Measured on N2
+CAS(10,10)/cc-pVDZ started from the RHF orbitals: BFGS, AH and PySCF stop at
+the same second-order saddle, $E = -109.12947$ Ha, whose active space holds one
+component of a degenerate $\pi_u$ pair. The local minimum, 5.29 mHa lower, has
+a symmetric $\sigma_g$ and $\sigma_u$ active space. On the four systems compared with PySCF, the
+test asserts that the lowest CI-relaxed orbital-Hessian eigenvalue of ferric's
+converged point exceeds a derived bar, so each anchor point is a minimum. The stationary-point table is in
+`crates/ferric-ci/theory.md`; the minimum assertion is in
+`crates/ferric-ci/tests/casscf_vs_pyscf.rs`.
 
 ```python
 import ferric
