@@ -11,24 +11,34 @@ has no validated option for a task, the row says so.
 
 ## By task
 
+### General tasks
+
 | Task | Recommended | Where | Grade | Scaling | Example |
 |---|---|---|---|---|---|
-| Geometry optimization | KS-DFT (e.g. PBE, B3LYP) or RHF, `task = "optimize"` | CLI, Python (`run_optimize` is RHF) | Proven | N⁴ | `h2-lda-opt.toml`, `h2_opt.toml` |
-| Harmonic frequencies | KS-DFT or RHF/UHF/ROHF, `task = "frequencies"` (analytic Hessian for RHF/UHF/ROHF with exact J/K, and for RHF, UHF and ROHF with RI-J and/or RI-K; the analytic moving-grid Hessian for closed-shell KS LDA/GGA, pure or global hybrid; both under the default `hessian = "auto"`; otherwise finite differences of the analytic gradient, 6N gradients) | CLI, Python `run_frequencies` | energies Proven; check the printed Hessian asymmetry | 6N × N⁴ | `water-frequencies.toml` |
-| Transition state | `run_saddle` (P-RFO), then `run_irc` to confirm which minima it connects | Python only, closed shell | see [Capabilities and validation](../reference/validation.md#python-entry-points) | ~2(6N+1) gradients + steps | — |
-| Conformer or reaction energies, routine | KS-DFT + D3(BJ) | CLI `ksdft` + `[dft] dispersion = "d3bj"`, Python `run_dft(dispersion=...)` | DFT Proven; D3(BJ) (with or without ATM) matches simple-dftd3 to <1e-12 Ha | N⁴ (DFT) | `water-pbe-d3bj.toml` |
+| Geometry optimization | KS-DFT (e.g. PBE, B3LYP), RHF, UHF or ROHF, `task = "optimize"`; with `[dft] functional`, `uhf` and `rohf` run UKS and ROKS | CLI; Python `run_optimize` (RHF) and `run_optimize_uhf` (open shell); KS optimization from Python goes through the [ASE calculator](./ase.md) | Proven | N⁴ | `h2-lda-opt.toml`, `h2_opt.toml` |
+| Harmonic frequencies | KS-DFT or RHF/UHF/ROHF, `task = "frequencies"`. The analytic Hessian covers RHF/UHF/ROHF (exact J/K, or RI-J and/or RI-K) and RKS and UKS LDA/GGA, pure or global hybrid (moving-grid Hessian); both are the default under `hessian = "auto"`. Otherwise finite differences of the analytic gradient, 6N gradients | CLI, Python `run_frequencies` | energies Proven; check the printed Hessian asymmetry | 6N × N⁴ | `water-frequencies.toml` |
+| Transition state | `run_saddle` (P-RFO), then `run_irc` to confirm which minima it connects | Python only, closed shell (RHF or RKS) | see [Capabilities and validation](../reference/validation.md#python-entry-points) | ~2(6N+1) gradients + steps | none |
+| Routine energies, conformer or reaction energies | KS-DFT + D3(BJ) | CLI `ksdft` + `[dft] dispersion = "d3bj"`, Python `run_dft(dispersion=...)` | DFT Proven; D3(BJ) (with or without ATM) matches simple-dftd3 to <1e-12 Ha | N⁴ (DFT) | `water-pbe-d3bj.toml` |
+| Open-shell molecules | UKS or ROKS for DFT, UHF or ROHF for Hartree-Fock; UMP2 on a UHF reference | CLI `ksdft` with `multiplicity > 1` (UKS), `uhf`/`rohf` with `[dft] functional`; Python `run_uks`, `run_roks`, `run_uhf`, `run_rohf` | Proven; see [open shells in the CLI](../reference/validation.md#open-shells-in-the-cli) | N⁴ | `h_uhf.toml` |
 | Correlated energies, small to medium | RI-MP2 | CLI `rimp2`, Python `run_rimp2` | Proven | N⁵ | `water-rimp2.toml` |
 | Correlated energies, benchmark quality, small | CCSD(T) (closed shell) | Python `run_ccsd_t` only; CCSD also CLI `ccsd` | CCSD Proven; (T) matches PySCF ~1e-6 Ha on H2O/cc-pVDZ | N⁶ / N⁷ | `water-ccsd.toml` (H2) |
-| Non-covalent interaction energies | Attenuated MP2 in the basis its parameters were fitted for: SCS-MP2(2terfc) or MP2-V in aug-cc-pVTZ, erfc att-MP2 in aug-cc-pVDZ (the basis of the 2012 paper); or KS-DFT + D3(BJ) | CLI `scs-mp2-2terfc`, `mp2-v`, `att-rimp2`, `ksdft` | att-MP2, 2terfc and MP2-V Proven (narrow) as implementations; the MP2-V parameterization is unbenchmarked | N⁵ | `water-scs-mp2-2terfc.toml`, `water-mp2v.toml`, `water-attmp2.toml` |
+| Non-covalent interaction energies | KS-DFT + D3(BJ) is the routine choice. Attenuated MP2 is the higher-accuracy option, in the basis its parameters were fitted for: SCS-MP2(2terfc) or MP2-V in aug-cc-pVTZ, erfc att-MP2 in aug-cc-pVDZ (the basis of the 2012 paper) | CLI `ksdft`; `scs-mp2-2terfc`, `mp2-v`, `att-rimp2` | DFT Proven; att-MP2, 2terfc and MP2-V Proven (narrow) as implementations; the MP2-V parameterization is unbenchmarked | N⁴ (DFT); N⁵ (MP2) | `water-pbe-d3bj.toml`; `water-scs-mp2-2terfc.toml`, `water-mp2v.toml`, `water-attmp2.toml` |
+| Excitation energies | TDA or TDDFT on a closed-shell RHF (CIS/TDHF) or RKS reference; BSE-TDA on G0W0@HF | CLI `tda`, `tddft`, `bse-tda`; Python `run_tddft` (`solver` = `"dense"`, `"davidson"` or `"auto"`), `run_bse_tda` | TDA/TDDFT Proven (narrow, closed shell); BSE-TDA Smoke | — | `water-tda.toml`, `water-tddft-pbe.toml`, `water-bse-tda.toml` |
+| Implicit solvation | IEF-PCM (CLI `[pcm]`, Python `solvent=`; analytic gradient, so it optimizes) or COSMO (CLI `[cosmo]`, no gradient) | see [SCF and DFT](../methods/scf.md#implicit-solvation) | both cross-checked against PySCF on water | SCF cost | none |
+| Embedding in a protein or solvent | QM/MM | Python `run_qmmm`; CLI `[qmmm]` (point charges) | see [QM/MM](./qmmm.md) | SCF cost | `water-qmmm.toml` |
+| Multireference, static correlation | CASSCF; SC-NEVPT2 on top of it | CLI `casscf`, `nevpt2` with `[cas]`; Python `run_casscf`, `run_nevpt2` | Proven; the optimizers do not check the orbital Hessian, see [CAS-CI and CASSCF](../methods/ci.md#casscf) | — | `water-casscf.toml`, `n2-nevpt2.toml` |
+| Periodic systems | Gamma-point or k-point RHF/UHF/ROHF, RKS/UKS/ROKS, MP2, dRPA | CLI `[cell]`; Python `run_<method>_gamma`, `_kpts` | see [Periodic systems](../methods/pbc.md) | see the page | none |
+| Atomic charges, ESP | Löwdin, Hirshfeld, CHELPG, RESP; ESP at nuclei or on the surface | Python | see [Capabilities and validation](../reference/validation.md#python-entry-points) | SCF cost | none |
+
+### Specialist methods
+
+| Task | Recommended | Where | Grade | Scaling | Example |
+|---|---|---|---|---|---|
 | Long-range correlation from response | RS-MP2 + LR-RPA, or PDEP-RPA | CLI `rs-mp2-rpa`, `pdep-rpa` | RS-MP2+RPA Smoke; PDEP-RPA Proven | N⁵ (MP2 part); N⁴ (RI-RPA) | `water-rs-mp2-rpa.toml`, `water-pdep-rpa.toml` |
 | Ionization potentials / electron affinities | G0W0@PBE (or @HF); U-GW for open shells | CLI `gw`, Python `run_gw`, `run_u_gw` | Smoke, about ±0.3 eV | — | `water-g0w0-pbe.toml`, `oh-ugw.toml` |
-| Excitation energies | BSE-TDA on G0W0@HF; or TDA/TDDFT (CIS/TDHF on an HF reference) | CLI `bse-tda`, `tda`, `tddft`; Python `run_bse_tda`, `run_tddft` | BSE-TDA Smoke; TDA/TDDFT Proven (narrow, closed shell) | — | `water-bse-tda.toml`, `water-tda.toml` |
 | Static polarizability | PDEP-RPA properties, or RPAx@KS (static α only) | CLI `pdep-rpa` with `compute_polarizability`, `tdhf-static-polarizability` | PDEP-RPA Proven (energy); RPAx Smoke | N⁴ (RI) | `h2o-pdep-rpa-props.toml`, `water-tdhf-static-alpha.toml` |
 | \\( C_6 \\) dispersion coefficients | PDEP-RPA dynamic α (`c6_source = "pdep"`) or TS/MBD, in an augmented basis. Not RPAx: its \\( C_6 \\) is ~63% low | CLI `pdep-rpa` + `[rpa] compute_c6` | which source is better is not established | N⁴ (RI) | `water-c6-pdep.toml`, `argon-c6-rpa-pbe.toml` |
-| Implicit solvation | IEF-PCM (CLI `[pcm]`, Python `solvent=`) or COSMO (CLI `[cosmo]`) | see [SCF and DFT](../methods/scf.md#implicit-solvation) | both cross-checked against PySCF on water | SCF cost | — |
-| Embedding in a protein or solvent | QM/MM | Python `run_qmmm`; CLI `[qmmm]` (point charges) | see [QM/MM](./qmmm.md) | SCF cost | `water-qmmm.toml` |
-| Electron-transfer coupling | constrained DFT + Wu–Van Voorhis \\( H_{ab} \\) | Python `run_cdft`, `cdft_coupling` (no CLI) | no external reference | SCF cost × outer λ loop | — |
-| Atomic charges, ESP | Löwdin, Hirshfeld, CHELPG, RESP; ESP at nuclei or on the surface | Python | see [Capabilities and validation](../reference/validation.md#python-entry-points) | SCF cost | — |
+| Electron-transfer coupling | constrained DFT + Wu–Van Voorhis \\( H_{ab} \\) | Python `run_cdft`, `cdft_coupling` (no CLI) | no external reference | SCF cost × outer λ loop | none |
 
 Notes on the table:
 
@@ -71,15 +81,19 @@ through `[basis] path` as a Gaussian-94 file (orbital basis only).
 
 - **Analytic Hessians** cover RHF, UHF and ROHF (exact J/K, or RI-J / RI-K with no
   external potential; an ECP is fine; basis up to f functions; RHF and UHF with
-  exact J/K also allow an external potential, ROHF allows none on any route), and closed-shell KS LDA/GGA (pure or global
-  hybrid, moving-grid Hessian). Other KS-DFT (UKS, ROKS, meta-GGA, range-separated
-  hybrids) and correlated methods' frequencies are by finite differences of the
-  analytic gradient.
+  exact J/K also allow an external potential, ROHF allows none on any route), and
+  RKS and UKS LDA/GGA (pure or global hybrid, moving-grid Hessian). ROKS, meta-GGA,
+  range-separated hybrids and correlated methods' frequencies are by finite
+  differences of the analytic gradient.
 - **Open-shell coupled cluster and open-shell TS search** are not available
-  (the one open-shell CC-type method, LinLCCD(hh), is library-only). Open-shell
+  (the one open-shell CC-type method, LinLCCD(hh), is library-only). `run_saddle`
+  and `run_irc` refuse a multiplicity other than 1. Open-shell
   KS-DFT is available from the CLI: `ksdft` with `multiplicity > 1` runs UKS,
   and `uhf`/`rohf` with `[dft] functional` run UKS/ROKS. See
   [Capabilities and validation: open shells in the CLI](../reference/validation.md#open-shells-in-the-cli).
-- **TDDFT with the XC kernel** exists only as a library-only spike; the CLI
-  and Python TDDFT omit it. See
-  [RPA, GW and excited states](../methods/rpa-gw.md#tddft-and-tda).
+- **TDDFT** is closed-shell: `tda` and `tddft` refuse `multiplicity > 1`. With a
+  functional they include the XC kernel; VV10 and range-separated functionals are
+  refused. See [RPA, GW and excited states](../methods/rpa-gw.md#tddft-and-tda).
+- **Other front ends.** The [ASE calculator](./ase.md) and
+  [QCSchema](./qcschema.md) route energies and gradients (QCSchema also the
+  Hessian) to the drivers above.
