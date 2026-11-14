@@ -1,0 +1,113 @@
+{
+  "system": "c2h4",
+  "basis": "cc-pvdz",
+  "aux_basis": "cc-pvdz-ri",
+  "nao": 48,
+  "naux": 168,
+  "nocc": 8,
+  "nvir": 40,
+  "nuclear_repulsion": 33.284389278701624,
+  "rhf": {
+    "energy": -78.03974790509126
+  },
+  "ccsd": {
+    "e_corr": -0.31020117767982225
+  },
+  "fock_offdiag_max": 9.349323290274724e-11,
+  "eom_ccsd_singlets": {
+    "excitation_energies": [
+      0.32432399979005483,
+      0.3272111135756496,
+      0.3352470789278545,
+      0.3593680683423967,
+      0.37081206606962797
+    ],
+    "residual_norms": [
+      2.874080370999979e-10,
+      1.039615572071103e-10,
+      5.281762330807899e-10,
+      2.7868132768038093e-10,
+      1.0853271198437455e-10
+    ],
+    "n_guess": 10,
+    "dense_check": null
+  },
+  "provenance": {
+    "code": "PySCF + numpy",
+    "version": "2.13.1",
+    "keywords": {
+      "reference": "scf.RHF, exact 4-index J/K",
+      "correlation_integrals": "DF, B = L^-1 (P|mn) as gen_cc.py",
+      "fock": "diag(RHF mo_energy)",
+      "ccsd": "pyscf.cc.ccsd.CCSD on hand-built DF _ChemistsERIs",
+      "eom": "pyscf.cc.eom_rccsd.EOMEESinglet product + lib.davidson_nosym1, lowest real roots",
+      "eom_conv_tol": 1e-11,
+      "eom_lindep": 1e-22,
+      "eom_residual_tol": 1e-08,
+      "guess": "10 unit vectors on the lowest diagonal + 0.1 dense part",
+      "cc_conv_tol": 1e-12,
+      "cc_conv_tol_normt": 1e-10
+    },
+    "grid": "none",
+    "aux_basis": "cc-pvdz-ri",
+    "frozen_core": 0,
+    "scf_convergence": 1e-12,
+    "stability": null,
+    "basis": "cc-pvdz",
+    "basis_json": "crates/ferric-core/src/basis/bundled/cc-pvdz.json",
+    "basis_sha256": "4c2f450a81a8545e4df9e24a313111642cf70d5f7213fc8e879ef9dacab5da2f",
+    "ecp_json": "none",
+    "ecp_sha256": "none",
+    "geometry_xyz": "testdata/molecules/c2h4.xyz",
+    "geometry_xyz_sha256": "15a0488270608177990a36740a5aa467102ec75addc587271cb57057c5231c21",
+    "geometry_bohr": [
+      [
+        "C",
+        0.0,
+        0.0,
+        1.265171640396309
+      ],
+      [
+        "C",
+        0.0,
+        0.0,
+        -1.265171640396309
+      ],
+      [
+        "H",
+        0.0,
+        1.7438997389846251,
+        2.338904575743554
+      ],
+      [
+        "H",
+        0.0,
+        -1.7438997389846251,
+        2.338904575743554
+      ],
+      [
+        "H",
+        0.0,
+        1.7438997389846251,
+        -2.338904575743554
+      ],
+      [
+        "H",
+        0.0,
+        -1.7438997389846251,
+        -2.338904575743554
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_eom_ccsd.py",
+    "git_head": "04d9321e8f6576d4d7812b94652324755c6c59bc",
+    "generated_utc": "2026-11-14T15:48:01+00:00",
+    "basis_check": {
+      "nao": 48,
+      "replica_self_overlap_max_dev": 4.440892098500626e-16,
+      "pyscf_diag_max_dev": 4.440892098500626e-16,
+      "diag_checked": 48,
+      "diag_skipped_cartesian": 0
+    }
+  }
+}

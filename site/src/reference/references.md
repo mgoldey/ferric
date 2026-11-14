@@ -107,6 +107,8 @@ references the source code itself cites.
 - Hirata, Podeszwa, Tobita & Bartlett, *J. Chem. Phys.* **120**, 2581 (2004): spin-adapted closed-shell CCSD equations
 - Raghavachari, Trucks, Pople & Head-Gordon, *Chem. Phys. Lett.* **157**, 479 (1989): CCSD(T)
 - Rendell, Lee & Komornicki, *Chem. Phys. Lett.* **178**, 462 (1991): closed-shell (T) algorithm
+- Stanton & Bartlett, *J. Chem. Phys.* **98**, 7029 (1993): EOM-CCSD excitation energies
+- Olsen, Jørgensen & Simons, *Chem. Phys. Lett.* **169**, 463 (1990): Olsen correction in the Davidson solver
 - Carter-Fenk, *J. Phys. Chem. A* **129**, 7251 (2025): LinLCCD(hh)
 - Ransford & Carter-Fenk, *Phys. Chem. Chem. Phys.* **28**, 14428 (2026): ωB97X-L-V
 - Bartlett & Musiał, *Rev. Mod. Phys.* **79**, 291 (2007): coupled-cluster theory (review)

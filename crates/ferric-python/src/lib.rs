@@ -75,7 +75,6 @@ mod rpa;
 mod scf;
 mod tddft;
 
-use cc::*;
 use cdft::*;
 use conformers::*;
 use dft::*;
@@ -1782,7 +1781,6 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyLaplaceMp2Result>()?;
     m.add_class::<PySosMp2Result>()?;
     m.add_class::<PyDftResult>()?;
-    m.add_class::<PyCcResult>()?;
     m.add_class::<PyPdepRpaResult>()?;
     m.add_class::<PyRsMp2RpaResult>()?;
     m.add_class::<PyGwResult>()?;
@@ -1877,9 +1875,7 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(d3bj_energy, m)?)?;
     m.add_function(wrap_pyfunction!(mbd_rsscs_energy, m)?)?;
     m.add_class::<PyMbdRsscsResult>()?;
-    m.add_function(wrap_pyfunction!(run_ccd, m)?)?;
-    m.add_function(wrap_pyfunction!(run_ccsd, m)?)?;
-    m.add_function(wrap_pyfunction!(run_ccsd_t, m)?)?;
+    cc::register(m)?;
     m.add_function(wrap_pyfunction!(run_pdep_rpa, m)?)?;
     m.add_function(wrap_pyfunction!(run_rs_mp2_rpa, m)?)?;
     m.add_function(wrap_pyfunction!(run_gw, m)?)?;

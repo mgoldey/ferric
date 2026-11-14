@@ -1,0 +1,24 @@
+# EE-EOM-CCSD singlet excitation energies of water / cc-pVDZ on the
+# closed-shell RI-CCSD ground state (all electrons, aux cc-pvdz-ri).
+#
+# Every correlation integral comes from the density-fitted three-index tensor
+# with the [mp2] auxbasis below; the RHF reference uses exact integrals.
+# PySCF EOMEESinglet run on the same density-fitted integrals gives the
+# lowest root omega = 0.2999479405 Ha (scripts/validation/gen_eom_ccsd.py);
+# this file prints 0.2999479969 Ha at the default [eom] conv_tol = 1e-6
+# (residual 9.1e-7; the eigenvalue error is first order in it). Set
+# conv_tol = 1e-8 to agree to 1e-10.
+[molecule]
+xyz = "testdata/molecules/validation/h2o.xyz"
+
+[basis]
+name = "cc-pvdz"
+
+[method]
+kind = "eom-ccsd"
+
+[mp2]
+auxbasis = "cc-pvdz-ri"
+
+[eom]
+n_roots = 5

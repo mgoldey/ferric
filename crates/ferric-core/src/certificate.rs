@@ -182,6 +182,7 @@ pub const METHOD_KIND_GRADES: &[(&str, Grade)] = &[
     ("ccsd", Grade::Proven),
     ("ccd", Grade::ProvenNarrow),
     ("ccsd(t)", Grade::ProvenNarrow),
+    ("eom-ccsd", Grade::ProvenNarrow),
     ("linlccd", Grade::ProvenNarrow),
     ("drpa", Grade::ProvenNarrow),
     ("wb97x-l-v", Grade::ProvenNarrow),

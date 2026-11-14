@@ -67,6 +67,10 @@ pub mod dlpno_ccsd_virtual;
 pub mod dlpno_linlccd;
 /// Double-hybrid DFT: wB97X-L-V and similar post-KS correlation.
 pub mod double_hybrid;
+/// EE-EOM-CCSD singlet excitation energies (closed shell, right vectors).
+pub mod eom_ccsd;
+/// Non-symmetric block Davidson for the EOM-CCSD eigenproblem.
+pub mod eom_davidson;
 /// Shared CC helpers: MO integrals, amplitude utilities.
 pub mod helpers;
 /// Linearized LCCD (LinLCCD) from RI intermediates.

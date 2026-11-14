@@ -64,7 +64,7 @@ same table: `cc-pvdz-ri`, `cc-pvtz-rifit`, `aug-cc-pv{d,t,q}z-rifit`,
 
 | Key | Type | Default | Allowed values | Notes |
 |---|---|---|---|---|
-| `kind` | string | **required** | `rhf` `uhf` `rohf` `ksdft` `rimp2` `mp3` `oo-rimp2` `att-rimp2` `mp2-v` `scs-mp2` `scs-mp2-2terfc` `laplace-mp2` `laplace-sos-mp2` `pdep-rpa` `rs-mp2-rpa` `gw` `bse-tda` `tdhf-static-polarizability` `ccsd` `ccd` `ccsd(t)` `linlccd` `drpa` `wb97x-l-v` `b2plyp` `dsd-pbep86` `tda` `tddft` `casscf` `nevpt2` | Any other value is an error. Smoke- and Spike-grade kinds print a `[warning]` grade line on stderr; Proven kinds print none. `casscf` and `nevpt2` need a [`[cas]`](#cas) section. `rimp2`, `drpa` and `linlccd` name the method and are computed exactly unless [`[local]`](#local) sets a local approximation (see [Capabilities and validation](./validation.md#grades)). |
+| `kind` | string | **required** | `rhf` `uhf` `rohf` `ksdft` `rimp2` `mp3` `oo-rimp2` `att-rimp2` `mp2-v` `scs-mp2` `scs-mp2-2terfc` `laplace-mp2` `laplace-sos-mp2` `pdep-rpa` `rs-mp2-rpa` `gw` `bse-tda` `tdhf-static-polarizability` `ccsd` `ccd` `ccsd(t)` `eom-ccsd` `linlccd` `drpa` `wb97x-l-v` `b2plyp` `dsd-pbep86` `tda` `tddft` `casscf` `nevpt2` | Any other value is an error. Smoke- and Spike-grade kinds print a `[warning]` grade line on stderr; Proven kinds print none. `casscf` and `nevpt2` need a [`[cas]`](#cas) section. `rimp2`, `drpa` and `linlccd` name the method and are computed exactly unless [`[local]`](#local) sets a local approximation (see [Capabilities and validation](./validation.md#grades)). |
 | `task` | string | `"energy"` | `energy` `optimize` `frequencies` | `optimize`: `rhf` `ksdft` `uhf` `rohf` `rimp2` `scs-mp2` `oo-rimp2` `pdep-rpa` only (`rimp2`, `scs-mp2`: closed shell, `[scf] jk` `exact` or `rijk`; `oo-rimp2`: closed shell, `[scf] jk = "exact"` or `"rijk"`, `frozen_core = 0`). `frequencies`: `rhf` `ksdft` `uhf` `rohf` only. |
 
 ## `[scf]`
@@ -196,12 +196,28 @@ read nothing else from it (plus `linlccd_variant` for `linlccd`); any other
 
 ## `[cc]`
 
-Closed-shell CCSD knobs, read by `ccsd` and `ccsd(t)` only; on any other kind
-the section is an error. The aux basis and frozen core stay in `[mp2]`.
+Closed-shell CCSD knobs, read by `ccsd`, `ccsd(t)` and `eom-ccsd` only (for
+`eom-ccsd`, the ground-state CCSD); on any other kind the section is an error.
+The aux basis and frozen core stay in `[mp2]`.
 
 | Key | Type | Default | Allowed values | Notes |
 |---|---|---|---|---|
 | `ladder` | string | `"auto"` | `auto` `dense` `ri` (lower case only) | How the particle–particle ladder is evaluated. `dense` holds the n<sub>v</sub>⁴ `(ab\|cd)` block; `ri` rebuilds it from the RI 3-index tensors every iteration, holding at most one n<sub>v</sub>⁴-sized panel at full width (dense holds four) and narrower panels when the budget requires (same energy to round-off, less memory, slower per iteration); `auto` takes `dense` whenever its memory plan fits the budget and `ri` otherwise, and says so on stderr when it falls back. The run prints the route taken (`ladder = dense (auto)`). Python `run_ccsd(ladder=)`, `run_ccsd_t(ladder=)`. See [Coupled cluster](../methods/cc.md#particle-particle-ladder-dense-or-ri). |
+
+## `[eom]`
+
+EE-EOM-CCSD singlet knobs, read by `eom-ccsd` only; on any other kind the
+section is an error. The ground-state CCSD is converged to |ΔE| < 1e-10 Ha
+before the EOM step. The EOM product holds the n<sub>v</sub>⁴ `(ae|bf)` block
+when the memory budget allows and otherwise rebuilds it from the RI 3-index
+tensors in panels, whatever `[cc] ladder` says.
+
+| Key | Type | Default | Allowed values | Notes |
+|---|---|---|---|---|
+| `n_roots` | integer | `5` | ≥ 1 | Lowest singlet excitation energies, all irreps (no point-group symmetry is used). |
+| `conv_tol` | float | `1e-6` | > 0 | Davidson residual norm ‖H̄r − ωr‖ per root. The solver is non-symmetric, so ω is accurate to first order in this number. |
+| `max_iter` | integer | `100` | ≥ 1 | Davidson iterations; a root still above `conv_tol` after them is an error. |
+| `max_space` | integer | max(g + 10·`n_roots`, 50) | ≥ 1 | Subspace columns before a collapse onto the current Ritz vectors. The solver starts from g = max(2·`n_roots`, `n_roots` + 8) guesses and raises a smaller value to g + 2·`n_roots`; the space dimension caps it. |
 
 ## `[cas]`
 

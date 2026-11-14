@@ -852,6 +852,8 @@ reference.
 | `run_ccsd` | Spin-adapted closed-shell CCSD. | `ccsd` |
 | `run_ccsd_t` | CCSD plus the spin-adapted (T) correction. | `ccsd(t)` |
 | `CcResult` | `correlation_energy` and `t_correction` (`None` without triples). No reference energy. | |
+| `run_eom_ccsd` | EE-EOM-CCSD singlet excitation energies on the spin-adapted CCSD. | `eom-ccsd` |
+| `EomCcsdResult` | `excitation_energies`, `residuals`, `singles_weight`, `r1(k)` / `r2(k)` (right eigenvectors), `rhf_energy`, `ccsd_correlation_energy`, `certificate`. | |
 
 ### Multireference
 

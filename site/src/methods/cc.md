@@ -116,6 +116,52 @@ also narrows the parallelism. The RI route still holds the n<sub>o</sub>·n<sub>
 `(ia|bc)` block in core, so it lowers the n<sub>v</sub>⁴ ceiling but does
 not remove every large tensor.
 
+## EOM-CCSD excitation energies
+
+**What it is.** Equation-of-motion CCSD for excited states (EE-EOM-CCSD):
+the lowest eigenvalues of the similarity-transformed Hamiltonian
+H̄ = e<sup>−T</sup> H e<sup>T</sup> − E<sub>CC</sub> in the space of singly
+and doubly excited singlets, on top of the closed-shell RI-CCSD ground state.
+H̄ is not symmetric, so the roots come from a non-symmetric Davidson solver
+(`ferric_cc::eom_davidson`) that keeps every Ritz pair real, applies an Olsen
+correction, and starts from unit vectors with a small dense part, so roots in
+any point-group irrep are reachable. Only right eigenvectors are computed.
+
+**Run it.** `method.kind = "eom-ccsd"` with an optional [`[eom]`](../reference/input.md#eom)
+section (`examples/water-eom-ccsd.toml`); Python
+`ferric.run_eom_ccsd(mol, bs, aux, n_roots=5)`, which returns the excitation
+energies, each root's residual and singles weight, and `r1(k)` / `r2(k)`.
+Closed shell only; refuses `multiplicity > 1`.
+
+**Accuracy.** `eom-ccsd` is Proven (narrow): singlets, closed shell, all
+electrons.
+
+| Quantity | System / basis | Reference | Agreement | Pinned by |
+|---|---|---|---|---|
+| Lowest five singlet ω | H2O, C2H4 / cc-pVDZ (cc-pVDZ-RI) | PySCF `EOMEESinglet` on the same DF integrals | ≤ 2.9e-10 Ha | `ferric-cc/tests/validation_eom_ccsd.rs` |
+| Singles block at t = 0 | H2O / 6-31G | CIS (`ferric_gw::bse::run_cis_tda`) | 3.6e-14 Ha | `ferric-cc/tests/eom_ccsd_anchors.rs` |
+| Davidson roots | H2 / 6-31G; H2O / 6-31G through subspace collapses | dense H̄ diagonalized by LAPACK | ≤ 1.0e-12 Ha | `ferric-cc/tests/eom_ccsd_anchors.rs` |
+| EOM product | H2, H2O / 6-31G, exact integrals | exact CC Jacobian ∂Ω/∂t of PySCF's RCCSD residual (5-point stencil, exact for the quartic residual) | 8.5e-14 relative to ‖σ‖ ≈ 150 | `scripts/prototypes/eom_ccsd_proto.py` |
+
+At water / cc-pVDZ (`examples/water-eom-ccsd.toml`) the lowest singlet is
+0.29995 Ha (8.162 eV). The density-fitting error of the ground state carries
+into ω: choose the aux basis for the accuracy you need.
+
+**Limits.** Singlets only (no triplets, no spin-flip, no open-shell
+reference); no left eigenvectors, so no oscillator strengths or transition
+properties; no point-group symmetry, so roots of every irrep are mixed in
+the requested count. A target root still complex (a near-degenerate pair)
+when `max_iter` runs out is an error, as is an unconverged one.
+
+**Memory and cost.** The EOM product needs the same integral blocks as one
+CCSD iteration, plus the Davidson subspace (2 × `max_space` vectors of
+length n<sub>o</sub>n<sub>v</sub> + n<sub>o</sub>n<sub>v</sub>(n<sub>o</sub>n<sub>v</sub>+1)/2).
+The n<sub>v</sub>⁴ `(ae|bf)` block is held when the memory plan fits the
+budget; otherwise it is rebuilt from the RI tensors in panels on every product,
+the same choice as the CCSD [ladder](#particle-particle-ladder-dense-or-ri).
+A job whose plan cannot fit is refused before the EOM step. Each product
+costs about one CCSD iteration.
+
 ## LinLCCD and ωB97X-L-V
 
 **LinLCCD(hh)** is linearized coupled-cluster doubles with the hole–hole ladder
@@ -190,7 +236,7 @@ breakdown naming the dominant term instead of being OOM-killed partway through.
 
 CCSD: Scuseria, Janssen & Schaefer 1988; spin-adapted closed-shell CCSD
 equations: Hirata et al. 2004. (T): Raghavachari et al. 1989; closed-shell
-(T) algorithm: Rendell, Lee & Komornicki 1991. LinLCCD(hh): Carter-Fenk 2025.
+(T) algorithm: Rendell, Lee & Komornicki 1991. EOM-CCSD: Stanton & Bartlett 1993; Davidson correction: Olsen, Jørgensen & Simons 1990. LinLCCD(hh): Carter-Fenk 2025.
 ωB97X-L-V: Ransford & Carter-Fenk 2026. B2PLYP: Grimme 2006. DSD-PBEP86:
 Kozuch & Martin 2011. Review: Bartlett & Musiał 2007. Full entries in
 [References](../reference/references.md).

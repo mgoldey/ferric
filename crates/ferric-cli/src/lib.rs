@@ -207,6 +207,7 @@ pub const SUPPORTED_METHOD_KINDS: &[&str] = &[
     "ccsd",
     "ccd",
     "ccsd(t)",
+    "eom-ccsd",
     "linlccd",
     "drpa",
     "wb97x-l-v",
@@ -1335,6 +1336,7 @@ pub fn run(args: Vec<String>) {
         "linlccd" => run_linlccd(&cfg, &mol, &bs, &prep, op, &result, budget_bytes, &scf_cert),
         "ccd" => run_ccd(&cfg, &mol, &bs, &prep, op, &result, budget_bytes, &scf_cert),
         "ccsd(t)" => run_ccsd_t(&cfg, &mol, &bs, &prep, op, &result, budget_bytes, &scf_cert),
+        "eom-ccsd" => run_eom_ccsd(&cfg, &mol, &bs, &prep, op, &result, budget_bytes, &scf_cert),
         "drpa" => run_drpa(&cfg, &mol, &bs, &prep, op, &result, budget_bytes, &scf_cert),
         "laplace-mp2" => {
             run_laplace_mp2(&cfg, &mol, &bs, &prep, op, &result, budget_bytes, &scf_cert)
@@ -1407,6 +1409,7 @@ pub fn run(args: Vec<String>) {
         "ccsd",
         "ccd",
         "ccsd(t)",
+        "eom-ccsd",
         "linlccd",
         "drpa",
         "mp2-v",
@@ -4444,6 +4447,91 @@ fn run_ccsd_t(
                 "e_corr": e_ccsd + e_t,
                 "e_ccsd_corr": e_ccsd,
                 "e_t": e_t,
+                "e_scf_reference": result.energy,
+                "scf_converged": result.converged,
+                "certificate": cert,
+            }),
+        );
+    }
+}
+
+/// `method.kind = "eom-ccsd"`. Spin-adapted closed-shell CCSD, then
+/// EE-EOM-CCSD singlets (`ferric_cc::eom_ccsd`) from its amplitudes: the
+/// same pair of calls as Python `run_eom_ccsd`. `[cc]`/`[mp2]` configure the
+/// CCSD stage, `[eom]` the Davidson solve. Prints each root's ω (Hartree and
+/// eV), its residual and its singles weight.
+fn run_eom_ccsd(
+    cfg: &Config,
+    mol: &Molecule,
+    bs: &BasisSet,
+    prep: &PreparedBasis,
+    op: Operator,
+    result: &ferric_scf::result::ScfResult,
+    budget_bytes: Option<usize>,
+    scf_cert: &Certificate,
+) {
+    require_restricted(result, "eom-ccsd");
+    let (aux_name, dfbs) = correlation_aux(cfg, mol);
+    let cc_config = CcConfig {
+        energy_conv: ferric_cc::eom_ccsd::EOM_CCSD_ENERGY_CONV,
+        ..closed_shell_cc_config(cfg, mol, budget_bytes)
+    };
+    let eom_config = or_exit(cfg.eom_config(budget_bytes));
+    let cc_result =
+        ccsd_closed_shell(mol, prep, &dfbs, op, result, &cc_config).unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        });
+    let eom = ferric_cc::eom_ccsd::eom_ccsd_singlets(
+        mol,
+        prep,
+        &dfbs,
+        op,
+        result,
+        &cc_result,
+        cc_config.frozen_core,
+        &eom_config,
+    )
+    .unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    let e_ccsd = cc_result.correlation_energy;
+    println!(
+        "EOM-CCSD singlets/{} (aux: {}, spin-adapted) on {}",
+        bs.name, aux_name, cfg.molecule.xyz
+    );
+    println!("  nbasis     = {}", prep.nbasis());
+    println!("  RHF energy = {:.10} Hartree", result.energy);
+    println!("  CCSD corr  = {e_ccsd:.10} Hartree");
+    println!(
+        "  Davidson   = {} iterations, {} products",
+        eom.iterations, eom.products
+    );
+    for (k, w) in eom.excitation_energies.iter().enumerate() {
+        println!(
+            "  root {:>2}: omega = {w:.10} Ha = {:.6} eV  (residual {:.1e}, singles {:.3})",
+            k + 1,
+            w * 27.211_386_245_988,
+            eom.residuals[k],
+            eom.singles_weight[k]
+        );
+    }
+    let cert = print_certificate(&ferric_cc::eom_ccsd::eom_ccsd_certificate(
+        scf_cert,
+        &aux_name,
+        cc_config.frozen_core,
+        &eom,
+    ));
+    if let Some(rl) = ferric_scf::runlog::log() {
+        rl.result(
+            "eom-ccsd",
+            result.energy + e_ccsd,
+            serde_json::json!({
+                "e_ccsd_corr": e_ccsd,
+                "excitation_energies": eom.excitation_energies,
+                "residuals": eom.residuals,
+                "singles_weight": eom.singles_weight,
                 "e_scf_reference": result.energy,
                 "scf_converged": result.converged,
                 "certificate": cert,

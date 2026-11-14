@@ -2240,6 +2240,44 @@ class CcResult:
         """RI ladder block width (None unless ladder_route == "ri")."""
         ...
 
+class EomCcsdResult:
+    """Result of an EE-EOM-CCSD singlet calculation (right eigenvectors)."""
+
+    @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (schema of ``RhfResult.certificate``),
+        ``capability`` ``"eom-ccsd"``."""
+        ...
+
+    @property
+    def rhf_energy(self) -> float: ...
+    @property
+    def ccsd_correlation_energy(self) -> float: ...
+    @property
+    def iterations(self) -> int: ...
+    @property
+    def products(self) -> int: ...
+    @property
+    def ladder_route(self) -> str:
+        """Particle-particle ladder route of the EOM products: "dense" or "ri"."""
+        ...
+    @property
+    def excitation_energies(self) -> NDArray[np.float64]:
+        """Singlet excitation energies (Hartree), ascending."""
+        ...
+    @property
+    def residuals(self) -> NDArray[np.float64]: ...
+    @property
+    def singles_weight(self) -> NDArray[np.float64]:
+        """``2|r1|^2 / |R|^2`` per root in the spin-orbital norm."""
+        ...
+    def r1(self, k: int) -> NDArray[np.float64]:
+        """Singles part ``r1[i, a]`` of root ``k`` (active occupied x virtual)."""
+        ...
+    def r2(self, k: int) -> NDArray[np.float64]:
+        """Doubles part ``r2[i, j, a, b]`` (alpha-beta amplitude) of root ``k``."""
+        ...
+
 class PdepRpaResult:
     """Result of a PDEP-RPA calculation."""
 
@@ -5614,6 +5652,35 @@ def run_ccsd(
     narrower panels when the budget requires; same energy to round-off,
     1.3-1.5x slower per iteration). The route taken is on
     ``CcResult.ladder_route``. Any other value raises ValueError.
+    """
+    ...
+
+def run_eom_ccsd(
+    mol: Molecule,
+    basis_set: BasisSet,
+    auxbasis: BasisSet,
+    n_roots: int = 5,
+    conv_tol: float = 1e-6,
+    max_iter: int = 100,
+    max_space: int | None = None,
+    frozen_core: int | None = None,
+    k_builder: str | None = None,
+    memory_budget_gb: float | None = None,
+    ladder: str = "auto",
+    scf_max_iter: int | None = None,
+    scf_energy_conv: float | None = None,
+    scf_density_conv: float | None = None,
+) -> EomCcsdResult:
+    """EE-EOM-CCSD singlet excitation energies on an RHF reference.
+
+    Spin-adapted CCSD (amplitudes converged to |dE| < 1e-10), then the lowest
+    ``n_roots`` right eigenpairs of the similarity-transformed Hamiltonian on
+    the singlet singles+doubles space by a non-symmetric Davidson stopping at
+    residual ``conv_tol`` (the energy error is first order in it). An
+    unconverged root raises. ``ladder`` is the CCSD ladder route as in
+    ``run_ccsd``; the EOM products take the dense nv^4 ladder when its memory
+    plan fits and an RI-panel one otherwise. No left vectors, so no
+    oscillator strengths.
     """
     ...
 

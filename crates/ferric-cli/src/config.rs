@@ -30,6 +30,10 @@ pub struct Config {
     /// closed-shell CCSD, it is refused.
     #[serde(default)]
     pub cc: Option<CcCfg>,
+    /// Optional `[eom]` section: the EOM-CCSD eigensolver (see [`EomCfg`]),
+    /// read by `method.kind = "eom-ccsd"` only.
+    #[serde(default)]
+    pub eom: Option<EomCfg>,
     #[serde(default)]
     pub optimize: OptimizeCfg,
     #[serde(default)]
@@ -1563,6 +1567,56 @@ impl CcCfg {
                 ferric_cc::CcsdLadder::parse_config_str(s).map_err(|e| format!("[cc] ladder: {e}"))
             }
         }
+    }
+}
+
+/// `[eom]` — the EE-EOM-CCSD singlet eigensolver, read by
+/// `method.kind = "eom-ccsd"` only (any other kind refuses the section). The
+/// CCSD stage before it reads `[cc]` and `[mp2]` as `ccsd` does.
+#[derive(Deserialize, Debug, Clone, Default)]
+#[serde(deny_unknown_fields)]
+pub struct EomCfg {
+    /// Number of lowest singlet roots. Default 5.
+    pub n_roots: Option<usize>,
+    /// Davidson residual-norm threshold (Hartree). Default 1e-6.
+    pub conv_tol: Option<f64>,
+    /// Davidson iteration cap; an unconverged root is an error. Default 100.
+    pub max_iter: Option<usize>,
+    /// Davidson subspace size before a collapse. Default
+    /// `max(n_guess + 10·n_roots, 50)`.
+    pub max_space: Option<usize>,
+}
+
+impl EomCfg {
+    /// The library config; a zero count or a non-positive tolerance is an
+    /// error, never a clamp.
+    pub fn to_config(
+        &self,
+        memory_budget_bytes: Option<usize>,
+    ) -> Result<ferric_cc::eom_ccsd::EomCcsdConfig, String> {
+        let d = ferric_cc::eom_ccsd::EomCcsdConfig::default();
+        let n_roots = self.n_roots.unwrap_or(d.n_roots);
+        if n_roots == 0 {
+            return Err("[eom] n_roots must be at least 1".into());
+        }
+        let conv_tol = self.conv_tol.unwrap_or(d.conv_tol);
+        if !(conv_tol.is_finite() && conv_tol > 0.0) {
+            return Err(format!("[eom] conv_tol must be positive, got {conv_tol}"));
+        }
+        let max_iter = self.max_iter.unwrap_or(d.max_iter);
+        if max_iter == 0 {
+            return Err("[eom] max_iter must be at least 1".into());
+        }
+        if self.max_space == Some(0) {
+            return Err("[eom] max_space must be at least 1".into());
+        }
+        Ok(ferric_cc::eom_ccsd::EomCcsdConfig {
+            n_roots,
+            conv_tol,
+            max_iter,
+            max_space: self.max_space,
+            memory_budget_bytes,
+        })
     }
 }
 
@@ -3915,7 +3969,7 @@ fn open_shell_kinds(task: &str) -> &'static [&'static str] {
 /// stops before the basis is even loaded. (`run_optimize`/`run_frequencies`
 /// also refuse every kind they do not handle, but only after the geometry,
 /// basis and memory pool are set up.)
-const ENERGY_ONLY_KINDS: &[&str] = &["ccd", "ccsd(t)", "drpa"];
+const ENERGY_ONLY_KINDS: &[&str] = &["ccd", "ccsd(t)", "eom-ccsd", "drpa"];
 
 /// `method.kind`s whose Kohn-Sham reference is chosen by `[rpa] xc` (the same
 /// list `run()` uses to turn `[rpa] xc` into the SCF functional).
@@ -4206,7 +4260,7 @@ impl Config {
             ),
             "linlccd" => "open-shell LinLCCD(hh) is library-only (ferric_cc::linlccd_u::u_linlccd)"
                 .to_string(),
-            "ccd" | "ccsd" | "ccsd(t)" => format!(
+            "ccd" | "ccsd" | "ccsd(t)" | "eom-ccsd" => format!(
                 "no open-shell {} exists in ferric: every coupled-cluster solver, including \
                  the spin-orbital ones, is built from restricted (RHF) orbitals; the only \
                  open-shell coupled-cluster-type method is LinLCCD(hh), which is library-only \
@@ -4214,6 +4268,7 @@ impl Config {
                 match kind {
                     "ccd" => "CCD",
                     "ccsd" => "CCSD",
+                    "eom-ccsd" => "EOM-CCSD",
                     _ => "CCSD(T)",
                 }
             ),
@@ -4439,15 +4494,40 @@ impl Config {
             .map_or(Ok(ferric_cc::CcsdLadder::Auto), CcCfg::ladder)
     }
 
+    /// `[eom]` is read by `eom-ccsd` only, and its values are checked here.
+    fn validate_eom_section(&self, kind: &str) -> Result<(), String> {
+        let Some(eom) = &self.eom else {
+            return Ok(());
+        };
+        if kind != "eom-ccsd" {
+            return Err(format!(
+                "[eom] is read by method.kind = \"eom-ccsd\" only; kind = \"{kind}\" would \
+                 silently ignore it"
+            ));
+        }
+        eom.to_config(None).map(|_| ())
+    }
+
+    /// The `[eom]` solver config (defaults when the section is absent).
+    pub fn eom_config(
+        &self,
+        memory_budget_bytes: Option<usize>,
+    ) -> Result<ferric_cc::eom_ccsd::EomCcsdConfig, String> {
+        self.eom
+            .clone()
+            .unwrap_or_default()
+            .to_config(memory_budget_bytes)
+    }
+
     /// `[cc]` is read by the closed-shell CCSD kinds only.
     fn validate_cc_section(&self, kind: &str, mult: usize) -> Result<(), String> {
         if self.cc.is_none() {
             return Ok(());
         }
-        if !matches!(kind, "ccsd" | "ccsd(t)") {
+        if !matches!(kind, "ccsd" | "ccsd(t)" | "eom-ccsd") {
             return Err(format!(
-                "[cc] is read by method.kind = \"ccsd\" and \"ccsd(t)\" only; kind = \"{kind}\" \
-                 would silently ignore it"
+                "[cc] is read by method.kind = \"ccsd\", \"ccsd(t)\" and \"eom-ccsd\" only; \
+                 kind = \"{kind}\" would silently ignore it"
             ));
         }
         if mult > 1 {
@@ -4657,6 +4737,7 @@ impl Config {
 
         self.validate_local()?;
         self.validate_cc_section(kind, mult)?;
+        self.validate_eom_section(kind)?;
 
         if self.gw.reference.is_some() {
             self.gw.parse_reference()?;
@@ -5099,7 +5180,7 @@ mod compat_guard_tests {
                 .and_then(|_| cfg.validate_cli_wired_keys())
                 .map(|_| cfg.cc_ladder().unwrap())
         };
-        for kind in ["ccsd", "ccsd(t)"] {
+        for kind in ["ccsd", "ccsd(t)", "eom-ccsd"] {
             for (v, want) in [
                 ("auto", ferric_cc::CcsdLadder::Auto),
                 ("dense", ferric_cc::CcsdLadder::Dense),
@@ -5129,6 +5210,53 @@ mod compat_guard_tests {
         assert!(e.contains("[cc]") && e.contains("multiplicity = 3"), "{e}");
     }
 
+    /// `[eom]` is read by `eom-ccsd` only, its values are strict, and its
+    /// keys reach the library config.
+    #[test]
+    fn eom_section_is_kind_scoped_and_strict() {
+        let with = |kind: &str, body: &str| {
+            let text = format!(
+                "[molecule]\nxyz = \"w.xyz\"\n[basis]\nname = \"sto-3g\"\n\
+                 [method]\nkind = \"{kind}\"\n{body}"
+            );
+            let cfg: Config = toml::from_str(&text).unwrap();
+            cfg.validate_loaded_values()
+                .and_then(|_| cfg.validate_cli_wired_keys())
+                .and_then(|_| cfg.eom_config(None))
+        };
+        let c = with(
+            "eom-ccsd",
+            "[eom]\nn_roots = 3\nconv_tol = 1e-7\nmax_iter = 40\nmax_space = 30\n",
+        )
+        .unwrap();
+        assert_eq!(
+            (c.n_roots, c.conv_tol, c.max_iter, c.max_space),
+            (3, 1e-7, 40, Some(30))
+        );
+        assert_eq!(
+            with("eom-ccsd", "").unwrap(),
+            ferric_cc::eom_ccsd::EomCcsdConfig::default()
+        );
+        for bad in [
+            "n_roots = 0",
+            "conv_tol = 0.0",
+            "max_iter = 0",
+            "max_space = 0",
+        ] {
+            let e = with("eom-ccsd", &format!("[eom]\n{bad}\n")).unwrap_err();
+            assert!(e.contains("[eom]"), "{bad}: {e}");
+        }
+        for kind in ["ccsd", "tda", "rhf"] {
+            let e = with(kind, "[eom]\nn_roots = 2\n").unwrap_err();
+            assert!(e.contains("[eom]") && e.contains(kind), "{kind}: {e}");
+        }
+        let typo: Result<Config, _> = toml::from_str(
+            "[molecule]\nxyz = \"w.xyz\"\n[basis]\nname = \"sto-3g\"\n\
+             [method]\nkind = \"eom-ccsd\"\n[eom]\nnroots = 2\n",
+        );
+        assert!(typo.is_err(), "deny_unknown_fields must bite inside [eom]");
+    }
+
     /// Before the guard, `rimp2` on triplet water returned the singlet, and
     /// the closed-shell-only kinds below still have no open-shell route. If
     /// `validate_multiplicity` is reverted to `Ok(())`, every `is_err()`
@@ -5142,6 +5270,7 @@ mod compat_guard_tests {
             "ccsd",
             "ccd",
             "ccsd(t)",
+            "eom-ccsd",
             "drpa",
             "linlccd",
             "laplace-sos-mp2",

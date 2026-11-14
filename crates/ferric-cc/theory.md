@@ -87,6 +87,52 @@ unrestricted sum $\sum_{ijk} f$, which is $3E_{(T)}$. Repeated spatial indices
 antisymmetrized amplitude vanishes: the spin-orbital banding ($i<j<k$, weight 6)
 drops them. Checked in `wiki/sympy_derivations.md` §23.
 
+## EE-EOM-CCSD singlets, closed shell
+
+`eom_ccsd.rs` (Stanton & Bartlett 1993; closed-shell intermediates and
+product of PySCF `eom_rccsd._IMDS.make_ee` / `eeccsd_matvec_singlet`). The
+excitation energies are the eigenvalues of $\bar H - E_{CC}$,
+$\bar H = e^{-T} H e^{T}$, on singlet singles and doubles
+$r_i^a$, $r_{ij}^{ab} = r_{ji}^{ba}$. At converged amplitudes that matrix is
+the CC Jacobian:
+
+$$(\bar H - E_{CC})\, r = \frac{\partial \Omega(t)}{\partial t}\, r,$$
+
+where $\Omega$ is the closed-shell CCSD residual. The prototype
+(`scripts/prototypes/eom_ccsd_proto.py`) checks the product against this
+Jacobian by a 5-point central difference, which is exact for the quartic
+$\Omega$.
+
+The product (`sigma`, :517) uses the dressed intermediates of `intermediates`
+(:430): $F_{oo}, F_{vv}, F_{ov}$, $W_{mnij}$, $W_{mbij}$, $W_{ejab}$ and the
+two $W_{mbej}$ couplings. $\tau$ with a right vector is
+`make_tau` (:305), $\theta = 2r_{ij}^{ab} - r_{ij}^{ba}$ is `theta_of` (:317),
+and the doubles part is symmetrized at the end, $\sigma_{ijab} \leftarrow
+\sigma_{ijab} + \sigma_{jiba}$. The particle–particle ladder takes the dense
+$(ae|bf)$ block or RI panels, the same choice as the CCSD ladder.
+
+At $t = 0$ the singles–singles block is the CIS matrix
+$\delta_{ij}\delta_{ab}(\varepsilon_a - \varepsilon_i) + 2(ia|jb) - (ij|ab)$.
+
+The packed vector (`pack`, :578) is $r_1$ then the lower triangle of
+$M_{ia,jb} = r_{ij}^{ab}$. The reported singles weight uses the spin-summed
+norm (`spin_norm`, :829):
+
+$$\|R\|^2 = 2\|r_1\|^2 + \|r_2\|^2 + \tfrac12 \|r_2 - r_2^{(ab)}\|^2,$$
+
+with $r_2^{(ab)}$ the vector with $a,b$ swapped.
+
+The solver (`eom_davidson.rs`, `davidson_nonsymmetric` :241) diagonalizes
+the projected matrix with `dgeev`, keeps the lowest $n$ roots by real part
+above $10^{-10}$, and adds the Olsen correction (`olsen_correction`, :159)
+
+$$\delta = -(D - \theta)^{-1} r + \epsilon (D - \theta)^{-1} x,\qquad
+\epsilon = \frac{x^\top (D-\theta)^{-1} r}{x^\top (D-\theta)^{-1} x},$$
+
+where $D$ is the diagonal $F_{vv,aa} - F_{oo,ii}$ (doubles: the sum over both
+pairs). For a non-symmetric matrix the eigenvalue error is first order in the
+residual $\|r\|$, not second.
+
 ## LinLCCD and LinLCCD(hh)
 
 Carter-Fenk, JPCA 129, 7251 (2025). Linearized ladder CCD keeps the driver,

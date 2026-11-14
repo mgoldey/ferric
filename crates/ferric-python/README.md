@@ -88,6 +88,8 @@ exchange is built* for when each pays.
   Runs Spin-Component Scaled MP2.
 * **`run_ccsd_t(mol: Molecule, basis_set: BasisSet, auxbasis: BasisSet, frozen_core: int = None, k_builder: str = None) -> CcResult`**:
   Runs Coupled Cluster CCSD(T) correlation calculations.
+* **`run_eom_ccsd(mol: Molecule, basis_set: BasisSet, auxbasis: BasisSet, n_roots: int = 5, conv_tol: float = 1e-6, max_iter: int = 100, max_space: int = None, frozen_core: int = None, k_builder: str = None, memory_budget_gb: float = None, ladder: str = "auto") -> EomCcsdResult`**:
+  Runs EE-EOM-CCSD singlet excitation energies (right eigenvectors) on the spin-adapted closed-shell CCSD.
 * **`run_pdep_rpa(mol: Molecule, basis_set: BasisSet, auxbasis: BasisSet, frozen_core: int = None, n_quad: int = None, quadrature: str = None, u0: float = None, trunc_thresh: float = None, eigensolver_conv_thresh: float = None, run_diagnostics: bool = False, k_builder: str = None) -> PdepRpaResult`**:
   Runs PDEP-RPA calculations.
 
