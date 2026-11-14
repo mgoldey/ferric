@@ -42,6 +42,9 @@ pub struct RiMp2OptimizeResult {
     /// `ferric_scf::warm_start`; every record is cold `Disabled` when
     /// `OptimizeConfig::scf_warm_start` is off).
     pub scf_warm_start: Vec<ferric_scf::warm_start::WarmStartRecord>,
+    /// Energy at every geometry the optimizer evaluated, in order (the
+    /// starting geometry first).
+    pub energy_trace: Vec<f64>,
 }
 
 /// Optimize a molecular geometry on the RI-MP2 PES using
@@ -96,6 +99,7 @@ pub fn optimize_geometry_rimp2_on(
     };
     let (mut energy, mut grad_arr) = eval(&current_mol)?;
     let mut grad = flatten(&grad_arr);
+    let mut energy_trace = vec![energy];
 
     let mut h_inv = Array2::<f64>::eye(n_coord);
     let mut prev_energy = energy;
@@ -143,6 +147,7 @@ pub fn optimize_geometry_rimp2_on(
         prev_energy = energy;
 
         let (e_new, g_new) = eval(&current_mol)?;
+        energy_trace.push(e_new);
         energy = e_new;
         grad_arr = g_new;
         grad = flatten(&grad_arr);
@@ -177,7 +182,141 @@ pub fn optimize_geometry_rimp2_on(
         steps: step_idx,
         converged,
         scf_warm_start: warm.records().to_vec(),
+        energy_trace,
     })
+}
+
+/// The certificate's `gradient` line of an RI-MP2 optimization whose
+/// reference SCF is on `scf_jk` (four-centre, or RI-JK on its aux).
+pub fn rimp2_gradient_label(scf_jk: &ScfJk) -> String {
+    match scf_jk.aux.as_deref() {
+        Some(aux) => format!("analytic (Z-vector), RI-JK reference ({aux})"),
+        None => "analytic (Z-vector)".to_string(),
+    }
+}
+
+/// The certificate's `gradient` line of an OO-RI-MP2 optimization.
+pub const OO_RIMP2_GRADIENT_LABEL: &str =
+    "analytic (zero-response: orbital-optimized, no Z-vector)";
+
+/// Why there is no SCS-MP2 geometry optimization.
+///
+/// [`crate::gradient::scs_mp2_gradient_analytical`] scales the whole MP2
+/// part of the gradient by `(c_os + c_ss) / 2`, while the SCS-MP2 energy is
+/// `E_HF + c_os E_os + c_ss E_ss`. The two agree only when `c_os = c_ss`; for
+/// H2 (`E_ss = 0`) at Grimme's 6/5, 1/3 the energy's correlation part carries
+/// 6/5 and the gradient's 23/30.
+pub const SCS_MP2_NO_GRADIENT: &str =
+    "SCS-MP2 has no geometry optimization: ferric's SCS-MP2 gradient scales the whole MP2 \
+     gradient by (c_os + c_ss) / 2, which is not the derivative of the SCS-MP2 energy \
+     (c_os E_os + c_ss E_ss) unless c_os = c_ss. Optimizable correlated methods: \"rimp2\" \
+     and \"oo-rimp2\"";
+
+/// Optimize a closed-shell geometry on the OO-RI-MP2 surface.
+///
+/// At every geometry: the RHF reference on `rhf_config` (warm-started per
+/// `opt_config.scf_warm_start`), the orbital optimisation
+/// ([`crate::oo_rimp2::oo_ri_mp2`] with `oo_config`) from it, and the
+/// zero-response analytic gradient
+/// ([`crate::oo_rimp2_gradient::oo_ri_mp2_gradient`]) at the converged
+/// orbitals; the external potential of `rhf_config` enters the energy and the
+/// gradient. The BFGS driver is
+/// [`ferric_scf::optimize::optimize_geometry_with_energy_gradient`], the one
+/// the SCF optimizers use.
+///
+/// Refused before any integral: `oo_config.frozen_core > 0` (the frozen
+/// core-active and core-virtual rotations are not optimised, so the
+/// zero-response gradient is not the derivative of that energy), a
+/// density-fitted reference (OO-MP2 rebuilds exact four-centre J/K), and a
+/// PCM or COSMO reaction field (OO-MP2 does not include one). An orbital
+/// optimisation that does not converge at some geometry is an error: the
+/// zero-response gradient holds only at a stationary point.
+#[allow(clippy::too_many_arguments)]
+pub fn optimize_geometry_oo_rimp2(
+    mol: &Molecule,
+    obs_basis: &BasisSet,
+    aux_basis: &BasisSet,
+    op: Operator,
+    rhf_config: &ferric_scf::rhf::RhfConfig,
+    oo_config: &crate::oo_rimp2::OoRiMp2Config,
+    opt_config: &OptimizeConfig,
+) -> Result<ferric_scf::optimize::OptimizeResult, FerricError> {
+    refuse_oo_rimp2_optimize(rhf_config, oo_config)?;
+    let rhf_config = rhf_config.for_geometry_task();
+    let ext = rhf_config.external_potential.as_ref();
+    let ctx = ferric_core::parallel::ParallelContext::default();
+    let mut warm = ScfWarmStart::new(opt_config.scf_warm_start);
+    let out = ferric_scf::optimize::optimize_geometry_with_energy_gradient(mol, opt_config, |m| {
+        let obs = ferric_integrals::basis_bridge::PreparedBasis::new(m, obs_basis)?;
+        let dfbs = ferric_integrals::basis_bridge::PreparedBasis::new(m, aux_basis)?;
+        let bounds = ferric_scf::screening::SchwarzBounds::compute_for_screening(
+            op,
+            &obs,
+            rhf_config.screening,
+        )?;
+        let rhf = ferric_scf::warm_start::solve_rhf_warm(
+            &ctx,
+            m,
+            &obs,
+            op,
+            &bounds,
+            &rhf_config,
+            &mut warm,
+        )?;
+        if !rhf.converged {
+            return Err(FerricError::ScfConvergence {
+                iterations: rhf.iterations,
+                last_energy: rhf.energy,
+            });
+        }
+        let oo = crate::oo_rimp2::oo_ri_mp2(m, &obs, &dfbs, op, &bounds, &rhf, oo_config, ext)?;
+        if !oo.converged {
+            return Err(FerricError::General(format!(
+                "OO-RI-MP2 optimize: the orbital optimisation did not converge at this \
+                 geometry ({} iterations, orbital gradient norm {:.2e}); the zero-response \
+                 gradient holds only at a stationary point",
+                oo.iterations, oo.grad_norm
+            )));
+        }
+        let g =
+            crate::oo_rimp2_gradient::oo_ri_mp2_gradient(m, &obs, &dfbs, op, &bounds, &oo, 0, ext)?;
+        Ok((oo.total_energy, g))
+    });
+    if let Some(line) = warm.summary() {
+        println!("{line}");
+    }
+    out
+}
+
+/// What [`optimize_geometry_oo_rimp2`] refuses before any integral.
+fn refuse_oo_rimp2_optimize(
+    rhf_config: &ferric_scf::rhf::RhfConfig,
+    oo_config: &crate::oo_rimp2::OoRiMp2Config,
+) -> Result<(), FerricError> {
+    let refuse = |why: String| Err(FerricError::General(format!("OO-RI-MP2 optimize: {why}")));
+    if oo_config.frozen_core > 0 {
+        return refuse(format!(
+            "frozen_core = {} is not supported: the core-active and core-virtual rotations \
+             are not optimised, so the zero-response gradient is not the derivative of the \
+             frozen-core energy; use frozen_core = 0",
+            oo_config.frozen_core
+        ));
+    }
+    let route = ferric_scf::scf_jk::effective_jk(rhf_config);
+    if route.mode != "exact" {
+        return refuse(format!(
+            "the reference SCF J/K route is \"{}\"; {}",
+            route.mode,
+            ferric_scf::scf_jk::OO_REBUILDS_EXACT_JK
+        ));
+    }
+    if rhf_config.pcm.is_some() || rhf_config.cosmo.is_some() {
+        return refuse(
+            "a PCM/COSMO reaction field is not supported: OO-RI-MP2 has no solvation term"
+                .to_string(),
+        );
+    }
+    Ok(())
 }
 
 fn flatten(g: &Array2<f64>) -> Array1<f64> {
@@ -206,6 +345,40 @@ fn apply_step(mol: &mut Molecule, step: &Array1<f64>) {
 mod tests {
     use super::*;
     use ferric_core::basis;
+
+    /// `optimize_geometry_oo_rimp2` refuses, before any integral, the setups
+    /// its zero-response gradient does not differentiate; the default setup
+    /// passes the same check.
+    #[test]
+    fn oo_rimp2_optimize_refuses_what_it_does_not_differentiate() {
+        use crate::oo_rimp2::OoRiMp2Config;
+        use ferric_scf::rhf::RhfConfig;
+        let refused = |rhf: &RhfConfig, oo: &OoRiMp2Config, needle: &str| {
+            let r = refuse_oo_rimp2_optimize(rhf, oo);
+            assert!(
+                matches!(&r, Err(e) if e.to_string().contains(needle)),
+                "{needle}: {r:?}"
+            );
+        };
+        let (rhf, oo) = (RhfConfig::default(), OoRiMp2Config::default());
+        assert!(refuse_oo_rimp2_optimize(&rhf, &oo).is_ok());
+        let frozen = OoRiMp2Config {
+            frozen_core: 1,
+            ..OoRiMp2Config::default()
+        };
+        refused(&rhf, &frozen, "frozen_core = 1");
+        let rijk = RhfConfig {
+            df_j_aux: Some("def2-universal-jkfit".into()),
+            df_k_aux: Some("def2-universal-jkfit".into()),
+            ..RhfConfig::default()
+        };
+        refused(&rijk, &oo, "\"rijk\"");
+        let cosmo = RhfConfig {
+            cosmo: Some(ferric_scf::cosmo::CosmoConfig::default()),
+            ..RhfConfig::default()
+        };
+        refused(&cosmo, &oo, "PCM/COSMO");
+    }
 
     #[test]
     fn test_optimize_h2_sto3g_rimp2() {

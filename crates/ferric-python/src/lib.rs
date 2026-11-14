@@ -37,7 +37,7 @@ use ferric_mp2::rimp2::{ri_mp2, RiMp2Config};
 use ferric_mp2::scs::{scs_mp2, scs_mp2_2terfc, ScsMp2Config, ScsMp2TerfcConfig};
 use ferric_scf::ks_gradient::{ks_gradient_closed_with_exchange_on_grids, KsGradGrids};
 use ferric_scf::noise_floor::SolverFamily;
-use ferric_scf::optimize::{optimize_geometry, optimize_geometry_uhf, OptimizeConfig};
+use ferric_scf::optimize::OptimizeConfig;
 use ferric_scf::result::ScfResult;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::rohf::RohfConfig;

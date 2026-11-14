@@ -467,9 +467,13 @@ and, for DFT, against PySCF. RI-MP2 also has an analytic gradient, closed
 shell only (there is no unrestricted MP2 nuclear gradient).
 
 **Optimization.** `method.task = "optimize"` for `rhf`, `uhf`, `rohf`,
-`ksdft`, `rimp2` and `pdep-rpa` (`examples/h2_opt.toml`,
+`ksdft`, `rimp2`, `oo-rimp2` and `pdep-rpa` (`examples/h2_opt.toml`,
 `examples/h2-lda-opt.toml`); on an open-shell molecule only `uhf`, `rohf` and
-`ksdft`. Python `ferric.run_optimize` is RHF.
+`ksdft`. Python `ferric.run_optimize` covers the same SCF and MP2 routes
+(`reference=`, `xc=`, `dispersion=`, `solvent=`, `method="rimp2"` or
+`"oo-rimp2"`) through the same library drivers. `scs-mp2` has no
+optimization: its gradient scales the whole MP2 part by (c_os + c_ss)/2,
+which is not the derivative of the SCS-MP2 energy.
 
 **Harmonic frequencies.** `method.task = "frequencies"` for `rhf`, `uhf`,
 `rohf` and `ksdft` (`examples/water-frequencies.toml`,

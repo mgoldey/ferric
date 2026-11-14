@@ -4156,13 +4156,53 @@ def run_optimize(
     solvent: float | str | None = None,
     pcm_lebedev_order: int | None = None,
     scf_warm_start: bool | None = None,
+    method: str = "scf",
+    reference: str | None = None,
+    xc: str | None = None,
+    dispersion: str | None = None,
+    df_j_aux: str | None = None,
+    df_k_aux: str | None = None,
+    scf_ri_j_precision: str | None = None,
+    scf_ri_k_precision: str | None = None,
+    auxbasis: str | None = None,
+    frozen_core: int | None = None,
+    scf_jk: str | None = None,
+    jk_auxbasis: str | None = None,
+    memory_budget_gb: float | None = None,
+    oo_max_iter: int | None = None,
+    oo_grad_conv: float | None = None,
 ) -> OptimizeResult:
-    """Geometry optimization (RHF).
+    """Geometry optimization on any surface with an analytic gradient.
 
-    `solvent`, `pcm_lebedev_order`: IEF-PCM implicit solvation, as in `run_rhf`. The
-    optimizer follows the analytic IEF-PCM gradient (cavity and reaction-field terms),
-    and the certificate lists an `scf pcm` approximation. COSMO has no analytic gradient and
-    is refused by the gradient dispatchers.
+    `method` picks the surface:
+
+    - "scf" (default): HF, or Kohn-Sham with `xc`. `reference` is "rhf", "uhf" or
+      "rohf" (with `xc`: RKS, UKS, ROKS); unset, "rhf" for a singlet and "uhf" for an
+      open-shell molecule. `dispersion` (needs `xc`; "d3bj", "d3(bj)", "d3bj(<name>)",
+      "mbd", "mbd(<name>)" as in `run_dft`) optimizes KS + dispersion, energy and
+      gradient from one set of parameters. `df_j_aux` / `df_k_aux` density-fit J / K as
+      in `run_frequencies` (unset: exact four-centre J/K, also with `xc`);
+      `scf_ri_j_precision` (unset: "f64" on geometry tasks) / `scf_ri_k_precision`.
+    - "rimp2": closed-shell RI-MP2 (analytic Z-vector gradient). Needs `auxbasis` (the
+      RI basis name, e.g. "cc-pvdz-ri"); `scf_jk` "exact" (default) or "rijk" on
+      `jk_auxbasis`; `frozen_core`, `memory_budget_gb` as in `run_rimp2`. The gradient
+      driver solves its reference RHF at density_conv 1e-9, so the `scf_*` convergence
+      kwargs raise.
+    - "oo-rimp2": closed-shell OO-RI-MP2 (zero-response gradient at converged orbitals).
+      Needs `auxbasis`; exact J/K only; `frozen_core` must be 0; `oo_max_iter` /
+      `oo_grad_conv` control the orbital loop, the `scf_*` kwargs its starting RHF. An
+      orbital optimization that does not converge at some geometry raises.
+
+    "scs-mp2" raises ValueError: ferric's SCS-MP2 gradient scales the whole MP2 gradient by
+    (c_os + c_ss) / 2, which is not the derivative of the SCS-MP2 energy. The correlated
+    methods are closed-shell only and take no `xc`, `dispersion` or `solvent`; any kwarg a
+    method does not read raises ValueError.
+
+    `solvent`, `pcm_lebedev_order` ("scf" only): IEF-PCM implicit solvation, as in
+    `run_rhf`. The optimizer follows the analytic IEF-PCM gradient (cavity and
+    reaction-field terms), and the certificate lists an `scf pcm` approximation. COSMO has
+    no analytic gradient and is refused by the gradient dispatchers. `point_charges` /
+    `external_field` work with every method.
 
     `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the SCF run at
     every geometry (names and defaults of `run_rhf`'s `max_iter`, `energy_conv`,
@@ -4174,8 +4214,9 @@ def run_optimize(
     (large step) and after a failed warm-started SCF. Energies agree with a cold start to
     SCF convergence tolerance, not bitwise; False restores the from-scratch guess.
 
-    J/K are exact here (no `xc`), so the RI-J storage default of geometry tasks
-    (f64, see `run_rhf`'s `ri_j_precision`) does not come into play.
+    Each route calls the library driver the CLI's `task = "optimize"` calls for the same
+    `method.kind`. The certificate's capability is "optimize:<kind>" (rhf, ksdft, uhf,
+    rohf, rimp2, oo-rimp2).
     """
     ...
 
@@ -4193,12 +4234,11 @@ def run_optimize_uhf(
     pcm_lebedev_order: int | None = None,
     scf_warm_start: bool | None = None,
 ) -> OptimizeResult:
-    """Geometry optimization (UHF) -- for open-shell systems.
+    """Geometry optimization (UHF): `run_optimize(..., reference="uhf")`.
 
     `solvent`, `pcm_lebedev_order`: IEF-PCM implicit solvation, as in `run_optimize`.
 
     The spin state comes from the `Molecule`'s multiplicity, as in `run_uhf`.
-    `run_optimize` uses an RHF reference and cannot relax a radical.
     `scf_max_iter`, `scf_energy_conv`, `scf_density_conv` control the SCF at every
     geometry, and `scf_warm_start` the guess, as in `run_optimize`.
     """

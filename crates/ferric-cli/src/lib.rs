@@ -7117,14 +7117,6 @@ fn rimp2_gradient_scf_jk(
     }
 }
 
-/// The certificate's gradient line for an RI-MP2 optimize on `scf_jk`.
-fn rimp2_gradient_label(scf_jk: &ferric_scf::scf_jk::ScfJk) -> String {
-    match scf_jk.aux.as_deref() {
-        Some(aux) => format!("analytic (Z-vector), RI-JK reference ({aux})"),
-        None => "analytic (Z-vector)".to_string(),
-    }
-}
-
 /// `task.method = "optimize"` dispatch. Extracted verbatim from the former
 /// `main()` `if task == "optimize" { ... }` block; each `method` sub-arm below
 /// is byte-for-byte the original match-arm body.
@@ -7366,7 +7358,7 @@ fn run_optimize(
                 &opt_result.mol,
                 None,
                 (opt_result.converged, opt_result.steps, opt_result.energy),
-                &rimp2_gradient_label(&scf_jk),
+                &ferric_mp2::optimize::rimp2_gradient_label(&scf_jk),
             );
         }
         "uhf" => {
@@ -7499,11 +7491,91 @@ fn run_optimize(
                 "analytic",
             );
         }
+        "oo-rimp2" => {
+            run_optimize_oo_rimp2(cfg, ctx, mol, bs, op, rhf_config, &opt_config, budget_bytes)
+        }
+        "scs-mp2" => {
+            eprintln!("error: {}", ferric_mp2::optimize::SCS_MP2_NO_GRADIENT);
+            std::process::exit(1);
+        }
         _ => {
-            eprintln!("error: geometry optimization is currently only supported for method.kind = \"rhf\", \"ksdft\", \"uhf\", \"rohf\", \"pdep-rpa\", or \"rimp2\"");
+            eprintln!("error: geometry optimization is currently only supported for method.kind = \"rhf\", \"ksdft\", \"uhf\", \"rohf\", \"pdep-rpa\", \"rimp2\", or \"oo-rimp2\"");
             std::process::exit(1);
         }
     }
+}
+
+/// `method.kind = "oo-rimp2"`, `task = "optimize"`: closed-shell OO-RI-MP2
+/// through [`ferric_mp2::optimize::optimize_geometry_oo_rimp2`] (the driver
+/// the Python `run_optimize(method="oo-rimp2")` calls), with the `[mp2] oo_*`
+/// loop keys of the energy run.
+#[allow(clippy::too_many_arguments)]
+fn run_optimize_oo_rimp2(
+    cfg: &Config,
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    bs: &BasisSet,
+    op: Operator,
+    rhf_config: &RhfConfig,
+    opt_config: &OptimizeConfig,
+    budget_bytes: Option<usize>,
+) {
+    // An open-shell molecule is refused at load time
+    // (`Config::validate_multiplicity`: no unrestricted MP2 nuclear gradient).
+    let aux_name = cfg
+        .mp2
+        .auxbasis
+        .as_deref()
+        .unwrap_or(config::DEFAULT_CORRELATION_AUX);
+    let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    let d = OoRiMp2Config::default();
+    let oo_config = OoRiMp2Config {
+        max_iter: cfg.mp2.oo_max_iter.unwrap_or(d.max_iter),
+        grad_conv: cfg.mp2.oo_grad_conv.unwrap_or(d.grad_conv),
+        level_shift: cfg.mp2.oo_level_shift.unwrap_or(d.level_shift),
+        diis_size: cfg.mp2.oo_diis_size.unwrap_or(d.diis_size),
+        frozen_core: cfg.mp2.frozen_core.resolve(mol),
+        memory_budget_bytes: budget_bytes,
+        verbose: cfg.scf.verbose,
+        ..d
+    };
+    let opt_result = ferric_mp2::optimize::optimize_geometry_oo_rimp2(
+        mol, bs, &aux_bs, op, rhf_config, &oo_config, opt_config,
+    )
+    .unwrap_or_else(|e| {
+        eprintln!("error during OO-RI-MP2 optimization: {e}");
+        std::process::exit(1);
+    });
+    println!("\nFinal Optimized Geometry (Bohr):");
+    for (i, atom) in opt_result.mol.atoms.iter().enumerate() {
+        println!(
+            "  {:2} {:2} {:12.8} {:12.8} {:12.8}",
+            i, atom.symbol, atom.x, atom.y, atom.zpos
+        );
+    }
+    println!("\nOO-RI-MP2 Optimization Result:");
+    println!("  converged  = {}", opt_result.converged);
+    println!("  steps      = {}", opt_result.steps);
+    println!(
+        "  final E    = {:.10} Hartree (OO-RI-MP2)",
+        opt_result.energy
+    );
+    certify_optimization(
+        "oo-rimp2",
+        cfg,
+        ctx,
+        bs,
+        op,
+        rhf_config,
+        opt_config,
+        &opt_result.mol,
+        None,
+        (opt_result.converged, opt_result.steps, opt_result.energy),
+        ferric_mp2::optimize::OO_RIMP2_GRADIENT_LABEL,
+    );
 }
 
 /// TDA/TDDFT on a functional with no complete f_xc kernel (VV10,

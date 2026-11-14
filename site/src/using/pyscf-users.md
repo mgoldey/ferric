@@ -52,7 +52,7 @@ Assume `import ferric` and, on the PySCF side, the matching `from pyscf import .
 
 | PySCF | ferric |
 |---|---|
-| `geomopt.geometric_solver.optimize(mf)` | `ferric.run_optimize(mol, "cc-pvdz")` (RHF; basis by name) |
+| `geomopt.geometric_solver.optimize(mf)` | `ferric.run_optimize(mol, "cc-pvdz", xc="PBE")` (basis by name; `reference=`, `method="rimp2"` / `"oo-rimp2"` with `auxbasis=`) |
 | `mf.Hessian().kernel()` then `thermo.harmonic_analysis(mol, h)` | `ferric.run_frequencies(mol, "cc-pvdz")` |
 
 ### Correlation, response and properties

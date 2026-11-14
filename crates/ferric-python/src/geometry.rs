@@ -84,8 +84,52 @@ pub(crate) fn optimize_result_certificate(
     }
 }
 
+/// Geometry optimization on any surface ferric has an analytic gradient for.
+///
+/// `method` picks the surface:
+///
+/// - `"scf"` (default): Hartree-Fock, or Kohn-Sham with `xc=`. `reference`
+///   is `"rhf"`, `"uhf"` or `"rohf"` (with `xc`: RKS, UKS or ROKS); unset, it
+///   is `"rhf"` for a singlet and `"uhf"` for an open-shell molecule.
+///   `dispersion=` (needs `xc`; the spellings of `run_dft`) optimizes the
+///   KS + D3(BJ) or KS + MBD@rsSCS surface, energy and gradient from the same
+///   parameters. `solvent=` adds IEF-PCM, `point_charges=` /
+///   `external_field=` an external potential. `df_j_aux` / `df_k_aux`
+///   density-fit J / K as in `run_frequencies` (unset: exact four-centre J/K,
+///   also with `xc`); `scf_ri_j_precision` / `scf_ri_k_precision` as there.
+/// - `"rimp2"`: closed-shell RI-MP2 (analytic Z-vector gradient). Needs
+///   `auxbasis` (the RI basis, e.g. `"cc-pvdz-ri"`). `scf_jk` is `"exact"`
+///   (default) or `"rijk"` on `jk_auxbasis`, as in `run_rimp2`. The
+///   reference RHF is solved by the gradient driver at a fixed tight density
+///   threshold (1e-9), so the `scf_max_iter` / `scf_energy_conv` /
+///   `scf_density_conv` kwargs raise here. `frozen_core` and
+///   `memory_budget_gb` as in `run_rimp2`.
+/// - `"oo-rimp2"`: closed-shell orbital-optimized RI-MP2 (zero-response
+///   gradient at the converged orbitals). Needs `auxbasis`; exact J/K only;
+///   `frozen_core` must be 0; `oo_max_iter` / `oo_grad_conv` control the
+///   orbital loop (defaults of `run_oo_rimp2`), the `scf_*` kwargs its
+///   starting RHF. An orbital optimization that does not converge at some
+///   geometry raises.
+///
+/// `"scs-mp2"` raises: ferric's SCS-MP2 gradient scales the whole MP2
+/// gradient by `(c_os + c_ss) / 2`, which is not the derivative of the
+/// SCS-MP2 energy. The correlated methods are closed-shell only, take no
+/// `xc`, `dispersion` or `solvent`, and every kwarg a method does not read
+/// raises `ValueError` rather than being ignored.
+///
+/// The SCF of every step starts from the previous step's orbitals
+/// (`scf_warm_start`, default True). Each route calls the library driver the
+/// CLI's `task = "optimize"` calls for the same `method.kind`.
 #[pyfunction]
-#[pyo3(signature = (mol, basis_name, max_steps=None, e_conv=None, point_charges=None, external_field=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, solvent=None, pcm_lebedev_order=None, scf_warm_start=None))]
+#[pyo3(signature = (
+    mol, basis_name, max_steps=None, e_conv=None, point_charges=None, external_field=None,
+    scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, solvent=None,
+    pcm_lebedev_order=None, scf_warm_start=None,
+    method="scf", reference=None, xc=None, dispersion=None,
+    df_j_aux=None, df_k_aux=None, scf_ri_j_precision=None, scf_ri_k_precision=None,
+    auxbasis=None, frozen_core=None, scf_jk=None, jk_auxbasis=None, memory_budget_gb=None,
+    oo_max_iter=None, oo_grad_conv=None,
+))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_optimize(
     py: Python<'_>,
@@ -101,17 +145,55 @@ pub(crate) fn run_optimize(
     solvent: Option<&Bound<'_, PyAny>>,
     pcm_lebedev_order: Option<usize>,
     scf_warm_start: Option<bool>,
+    method: &str,
+    reference: Option<&str>,
+    xc: Option<&str>,
+    dispersion: Option<&str>,
+    df_j_aux: Option<&str>,
+    df_k_aux: Option<&str>,
+    scf_ri_j_precision: Option<&str>,
+    scf_ri_k_precision: Option<&str>,
+    auxbasis: Option<&str>,
+    frozen_core: Option<usize>,
+    scf_jk: Option<&str>,
+    jk_auxbasis: Option<&str>,
+    memory_budget_gb: Option<f64>,
+    oo_max_iter: Option<usize>,
+    oo_grad_conv: Option<f64>,
 ) -> PyResult<PyOptimizeResult> {
-    let ctx = ParallelContext::default();
-    let mut rhf_config = RhfConfig {
+    let k = OptimizeKwargs {
+        xc,
+        dispersion,
+        df_j_aux,
+        df_k_aux,
+        scf_ri_j_precision,
+        scf_ri_k_precision,
+        auxbasis,
+        frozen_core,
+        scf_jk,
+        jk_auxbasis,
+        memory_budget_gb,
+        oo_max_iter,
+        oo_grad_conv,
+        solvent: solvent.is_some(),
+        scf_conv_set: scf_max_iter.is_some()
+            || scf_energy_conv.is_some()
+            || scf_density_conv.is_some(),
+    };
+    let method = parse_optimize_method(method)?;
+    let spin = parse_optimize_reference(reference, &mol.inner)?;
+    refuse_unread_optimize_kwargs(method, spin, &k)?;
+    let mut cfg = RhfConfig {
         external_potential: build_external_potential(point_charges, external_field),
         pcm: build_pcm_config(solvent, pcm_lebedev_order)?,
         ..Default::default()
     };
-    ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv).apply(&mut rhf_config);
-    // Exact J/K here (no `xc`, no aux kwargs), so RI-J never runs; marked
-    // anyway so the certificate's reference SCF matches the driver's.
-    geometry_task_scf(&mut rhf_config, None)?;
+    ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv).apply(&mut cfg);
+    cfg.xc = xc.map(str::to_string);
+    cfg.df_j_aux = df_j_aux.map(ferric_scf::rhf::normalize_df_aux);
+    cfg.df_k_aux = df_k_aux.map(ferric_scf::rhf::normalize_df_aux);
+    geometry_task_scf(&mut cfg, scf_ri_j_precision)?;
+    cfg.ri_k_precision = parse_ri_k_precision(scf_ri_k_precision)?;
     // Apply the ECP before optimizing: each SCF derives its occupations from
     // `Molecule::nelec()`, which counts ALL electrons until `apply_ecp` has
     // run. Without this an ECP basis (aug-cc-pvdz-pp, Z >= 37) would optimize
@@ -119,50 +201,22 @@ pub(crate) fn run_optimize(
     let bs = basis::bundled(basis_name).map_err(make_err)?;
     let mut emol = mol.inner.clone();
     emol.apply_ecp(&bs);
-    let opt_config = OptimizeConfig {
-        max_steps: max_steps.unwrap_or(100),
-        e_conv: e_conv.unwrap_or(1e-6),
-        scf_warm_start: scf_warm_start.unwrap_or(true),
-        ..Default::default()
-    };
-    let r = py
-        .allow_threads(|| {
-            optimize_geometry(
-                &ctx,
-                &emol,
-                basis_name,
-                Operator::coulomb(),
-                &rhf_config,
-                &opt_config,
-            )
-        })
-        .map_err(make_err)?;
-    let certificate_data = optimize_result_certificate(
-        &r,
-        &opt_config,
-        basis_name,
-        &rhf_config,
-        ferric_scf::Spin::Restricted,
-    );
-    Ok(PyOptimizeResult {
-        energy: r.energy,
-        converged: r.converged,
-        steps: r.steps,
-        energy_trace: r.energy_trace,
-        mol_data: r.mol,
-        certificate_data,
-    })
+    let opt_config = optimize_config(max_steps, e_conv, scf_warm_start);
+    match method {
+        OptimizeMethod::Scf => run_optimize_scf(py, &emol, basis_name, &cfg, &opt_config, spin, &k),
+        OptimizeMethod::RiMp2 => run_optimize_rimp2(py, &emol, basis_name, &cfg, &opt_config, &k),
+        OptimizeMethod::OoRiMp2 => {
+            run_optimize_oo_rimp2(py, &emol, basis_name, &cfg, &opt_config, &k)
+        }
+    }
 }
 
-/// Optimize an OPEN-SHELL geometry with a UHF reference.
+/// Optimize an OPEN-SHELL geometry with a UHF reference:
+/// `run_optimize(..., reference="uhf")` with the same kwargs.
 ///
 /// The spin state comes from the `Molecule` (its multiplicity), exactly as in
 /// `run_uhf` -- there is no `multiplicity` kwarg here, and passing a
 /// closed-shell molecule simply runs UHF on a singlet.
-///
-/// `run_optimize` uses an RHF reference and cannot relax a radical: the
-/// doublet would be forced into a closed-shell density. Use this for any
-/// molecule with unpaired electrons.
 #[pyfunction]
 #[pyo3(signature = (mol, basis_name, max_steps=None, e_conv=None, point_charges=None, external_field=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, solvent=None, pcm_lebedev_order=None, scf_warm_start=None))]
 #[allow(clippy::too_many_arguments)]
@@ -181,47 +235,438 @@ pub(crate) fn run_optimize_uhf(
     pcm_lebedev_order: Option<usize>,
     scf_warm_start: Option<bool>,
 ) -> PyResult<PyOptimizeResult> {
-    let ctx = ParallelContext::default();
-    let mut uhf_config = RhfConfig {
-        external_potential: build_external_potential(point_charges, external_field),
-        pcm: build_pcm_config(solvent, pcm_lebedev_order)?,
-        ..Default::default()
+    run_optimize(
+        py,
+        mol,
+        basis_name,
+        max_steps,
+        e_conv,
+        point_charges,
+        external_field,
+        scf_max_iter,
+        scf_energy_conv,
+        scf_density_conv,
+        solvent,
+        pcm_lebedev_order,
+        scf_warm_start,
+        "scf",
+        Some("uhf"),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+}
+
+/// The surface `run_optimize` differentiates.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum OptimizeMethod {
+    Scf,
+    RiMp2,
+    OoRiMp2,
+}
+
+/// `run_optimize`'s method- and reference-specific kwargs.
+pub(crate) struct OptimizeKwargs<'a> {
+    xc: Option<&'a str>,
+    dispersion: Option<&'a str>,
+    df_j_aux: Option<&'a str>,
+    df_k_aux: Option<&'a str>,
+    scf_ri_j_precision: Option<&'a str>,
+    scf_ri_k_precision: Option<&'a str>,
+    auxbasis: Option<&'a str>,
+    frozen_core: Option<usize>,
+    scf_jk: Option<&'a str>,
+    jk_auxbasis: Option<&'a str>,
+    memory_budget_gb: Option<f64>,
+    oo_max_iter: Option<usize>,
+    oo_grad_conv: Option<f64>,
+    /// `solvent=` was given.
+    solvent: bool,
+    /// Any of `scf_max_iter` / `scf_energy_conv` / `scf_density_conv` was given.
+    scf_conv_set: bool,
+}
+
+fn value_error(msg: String) -> PyErr {
+    pyo3::exceptions::PyValueError::new_err(msg)
+}
+
+/// Strict `method=`: `"scs-mp2"` is refused with the reason.
+pub(crate) fn parse_optimize_method(method: &str) -> PyResult<OptimizeMethod> {
+    match method {
+        "scf" => Ok(OptimizeMethod::Scf),
+        "rimp2" => Ok(OptimizeMethod::RiMp2),
+        "oo-rimp2" => Ok(OptimizeMethod::OoRiMp2),
+        "scs-mp2" => Err(value_error(format!(
+            "run_optimize: {}",
+            ferric_mp2::optimize::SCS_MP2_NO_GRADIENT
+        ))),
+        other => Err(value_error(format!(
+            "run_optimize: unknown method {other:?}; expected \"scf\", \"rimp2\" or \"oo-rimp2\""
+        ))),
+    }
+}
+
+/// Strict `reference=`; unset is RHF for a singlet and UHF otherwise.
+pub(crate) fn parse_optimize_reference(
+    reference: Option<&str>,
+    mol: &Molecule,
+) -> PyResult<ferric_scf::Spin> {
+    match reference {
+        None if mol.multiplicity > 1 => Ok(ferric_scf::Spin::Unrestricted),
+        None | Some("rhf") => Ok(ferric_scf::Spin::Restricted),
+        Some("uhf") => Ok(ferric_scf::Spin::Unrestricted),
+        Some("rohf") => Ok(ferric_scf::Spin::RestrictedOpen),
+        Some(other) => Err(value_error(format!(
+            "run_optimize: unknown reference {other:?}; expected \"rhf\", \"uhf\" or \"rohf\""
+        ))),
+    }
+}
+
+/// Refuse every kwarg `method` does not read, and a reference it cannot use.
+fn refuse_unread_optimize_kwargs(
+    method: OptimizeMethod,
+    spin: ferric_scf::Spin,
+    k: &OptimizeKwargs,
+) -> PyResult<()> {
+    let unread = |names: &[(&str, bool)], who: &str| -> PyResult<()> {
+        match names.iter().find(|(_, set)| *set) {
+            Some((name, _)) => Err(value_error(format!(
+                "run_optimize: {name} is not read by method=\"{who}\""
+            ))),
+            None => Ok(()),
+        }
     };
-    ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv).apply(&mut uhf_config);
-    // Exact J/K here (no `xc`, no aux kwargs), so RI-J never runs; marked
-    // anyway so the certificate's reference SCF matches the driver's.
-    geometry_task_scf(&mut uhf_config, None)?;
-    // Apply the ECP before optimizing: each SCF derives its occupations from
-    // `Molecule::nelec()`, which counts ALL electrons until `apply_ecp` has
-    // run. Without this an ECP basis (aug-cc-pvdz-pp, Z >= 37) would optimize
-    // with the all-electron count against ECP integrals.
-    let bs = basis::bundled(basis_name).map_err(make_err)?;
-    let mut emol = mol.inner.clone();
-    emol.apply_ecp(&bs);
-    let opt_config = OptimizeConfig {
+    let correlated_only = [
+        ("auxbasis", k.auxbasis.is_some()),
+        ("frozen_core", k.frozen_core.is_some()),
+        ("scf_jk", k.scf_jk.is_some()),
+        ("jk_auxbasis", k.jk_auxbasis.is_some()),
+        ("memory_budget_gb", k.memory_budget_gb.is_some()),
+    ];
+    let oo_only = [
+        ("oo_max_iter", k.oo_max_iter.is_some()),
+        ("oo_grad_conv", k.oo_grad_conv.is_some()),
+    ];
+    let scf_only = [
+        ("xc", k.xc.is_some()),
+        ("dispersion", k.dispersion.is_some()),
+        ("solvent", k.solvent),
+        ("df_j_aux", k.df_j_aux.is_some()),
+        ("df_k_aux", k.df_k_aux.is_some()),
+        ("scf_ri_k_precision", k.scf_ri_k_precision.is_some()),
+    ];
+    let who = match method {
+        OptimizeMethod::Scf => {
+            unread(&correlated_only, "scf")?;
+            return unread(&oo_only, "scf");
+        }
+        OptimizeMethod::RiMp2 => "rimp2",
+        OptimizeMethod::OoRiMp2 => "oo-rimp2",
+    };
+    if spin != ferric_scf::Spin::Restricted {
+        return Err(value_error(format!(
+            "run_optimize: method=\"{who}\" is closed-shell only (there is no unrestricted MP2 \
+             nuclear gradient); use reference=\"rhf\" on a singlet"
+        )));
+    }
+    unread(&scf_only, who)?;
+    if k.auxbasis.is_none() {
+        return Err(value_error(format!(
+            "run_optimize: method=\"{who}\" needs auxbasis= (the RI basis, e.g. \"cc-pvdz-ri\")"
+        )));
+    }
+    if method == OptimizeMethod::RiMp2 {
+        unread(&oo_only, who)?;
+        let fixed_scf = [
+            (
+                "scf_max_iter / scf_energy_conv / scf_density_conv",
+                k.scf_conv_set,
+            ),
+            ("scf_ri_j_precision", k.scf_ri_j_precision.is_some()),
+        ];
+        return unread(&fixed_scf, who);
+    }
+    unread(
+        &[("scf_ri_j_precision", k.scf_ri_j_precision.is_some())],
+        who,
+    )
+}
+
+/// The optimizer settings `run_optimize` exposes; the rest stay at the
+/// library defaults.
+fn optimize_config(
+    max_steps: Option<usize>,
+    e_conv: Option<f64>,
+    scf_warm_start: Option<bool>,
+) -> OptimizeConfig {
+    OptimizeConfig {
         max_steps: max_steps.unwrap_or(100),
         e_conv: e_conv.unwrap_or(1e-6),
         scf_warm_start: scf_warm_start.unwrap_or(true),
         ..Default::default()
+    }
+}
+
+/// `method="scf"`: `optimize_geometry{,_uhf,_rohf}_with_scf_correction`, the
+/// drivers of the CLI's rhf/ksdft, uhf and rohf `optimize`, with the
+/// dispersion correction (if any) as the additive term.
+fn run_optimize_scf(
+    py: Python<'_>,
+    emol: &Molecule,
+    basis_name: &str,
+    cfg: &RhfConfig,
+    opt_config: &OptimizeConfig,
+    spin: ferric_scf::Spin,
+    k: &OptimizeKwargs,
+) -> PyResult<PyOptimizeResult> {
+    use ferric_scf::frequencies::FrequencyReference;
+    let fref = match spin {
+        ferric_scf::Spin::Restricted => FrequencyReference::Rhf,
+        ferric_scf::Spin::Unrestricted => FrequencyReference::Uhf,
+        ferric_scf::Spin::RestrictedOpen => FrequencyReference::Rohf,
     };
+    let spec = resolve_frequency_dispersion(k.dispersion, k.xc, fref, cfg)?;
+    let r = py
+        .allow_threads(|| scf_optimize(emol, basis_name, cfg, opt_config, spin, spec.as_ref()))
+        .map_err(make_err)?;
+    let mut certificate_data = optimize_result_certificate(&r, opt_config, basis_name, cfg, spin);
+    if let Some(d) = k.dispersion {
+        certificate_data = certificate_data.with_approximation(
+            "dispersion",
+            format!("{d} in the energy and the gradient (KS + dispersion surface)"),
+        );
+    }
+    Ok(PyOptimizeResult {
+        energy: r.energy,
+        converged: r.converged,
+        steps: r.steps,
+        energy_trace: r.energy_trace,
+        mol_data: r.mol,
+        certificate_data,
+    })
+}
+
+/// The SCF optimizer of `spin`, plus `spec`'s energy and analytic gradient at
+/// every geometry (none: the correction is `(0.0, None)`, which adds no
+/// floating-point operation).
+fn scf_optimize(
+    mol: &Molecule,
+    basis_name: &str,
+    cfg: &RhfConfig,
+    opt_config: &OptimizeConfig,
+    spin: ferric_scf::Spin,
+    spec: Option<&DispersionSpec>,
+) -> Result<ferric_scf::optimize::OptimizeResult, ferric_core::FerricError> {
+    use ferric_scf::optimize::{
+        optimize_geometry_rohf_with_scf_correction, optimize_geometry_uhf_with_scf_correction,
+        optimize_geometry_with_scf_correction,
+    };
+    let ctx = ParallelContext::default();
+    let op = Operator::coulomb();
+    let bs = basis::bundled(basis_name)?;
+    // MBD@rsSCS free-atom references are per element: built once.
+    let cache = match spec {
+        Some(DispersionSpec::Mbd(_)) => Some(
+            ferric_rpa::dispersion::mbd_scf::MbdFreeAtomCache::build(&ctx, mol, &bs, op, cfg)?,
+        ),
+        _ => None,
+    };
+    let correction = |m: &Molecule, scf: &ScfResult| match spec {
+        None => Ok((0.0, None)),
+        Some(spec) => {
+            let d = evaluate_dispersion(spec, &ctx, m, &bs, op, cfg, scf, true, cache.as_ref())?;
+            Ok((d.energy, d.gradient))
+        }
+    };
+    match spin {
+        ferric_scf::Spin::Restricted => optimize_geometry_with_scf_correction(
+            &ctx, mol, basis_name, op, cfg, opt_config, correction,
+        ),
+        ferric_scf::Spin::Unrestricted => optimize_geometry_uhf_with_scf_correction(
+            &ctx, mol, basis_name, op, cfg, opt_config, correction,
+        ),
+        ferric_scf::Spin::RestrictedOpen => optimize_geometry_rohf_with_scf_correction(
+            &ctx, mol, basis_name, op, cfg, opt_config, correction,
+        ),
+    }
+}
+
+/// The certificate of a correlated (`kind` = "rimp2" / "oo-rimp2")
+/// optimization: the RHF on `ref_cfg` at the returned geometry is the
+/// reference.
+#[allow(clippy::too_many_arguments)]
+fn correlated_optimize_certificate(
+    kind: &str,
+    final_mol: &Molecule,
+    basis_name: &str,
+    ref_cfg: &RhfConfig,
+    (converged, steps, energy): (bool, usize, f64),
+    opt_config: &OptimizeConfig,
+    gradient: &str,
+) -> ferric_core::certificate::Certificate {
+    let (_, reference) =
+        task_reference_certificate(final_mol, basis_name, ref_cfg, ferric_scf::Spin::Restricted);
+    match reference {
+        Ok(reference) => ferric_scf::certificate::optimize_certificate(
+            kind, &reference, converged, steps, energy, opt_config, gradient,
+        ),
+        Err(why) => {
+            ferric_core::certificate::Certificate::ungraded(format!("optimize:{kind}")).warn(why)
+        }
+    }
+}
+
+/// `method="rimp2"`: `ferric_mp2::optimize::optimize_geometry_rimp2_on`, the
+/// driver of the CLI's rimp2 `optimize`, on a four-centre or RI-JK reference.
+fn run_optimize_rimp2(
+    py: Python<'_>,
+    emol: &Molecule,
+    basis_name: &str,
+    cfg: &RhfConfig,
+    opt_config: &OptimizeConfig,
+    k: &OptimizeKwargs,
+) -> PyResult<PyOptimizeResult> {
+    use ferric_scf::scf_jk::{ScfJk, ScfJkKeys, ScfJkMode};
+    let jk = ScfJk::resolve(
+        k.scf_jk,
+        k.jk_auxbasis,
+        None,
+        ScfJkMode::Exact,
+        ScfJkKeys::PYTHON,
+    )
+    .map_err(|e| value_error(format!("run_optimize: {e}")))?;
+    let scf_jk = match jk.mode {
+        ScfJkMode::Exact => ferric_mp2::gradient::exact_scf_jk(),
+        ScfJkMode::RiJk => ScfJk {
+            mode: ScfJkMode::RiJk,
+            aux: jk.aux.clone(),
+            k_builder: None,
+        },
+        _ => {
+            return Err(value_error(format!(
+                "run_optimize: method=\"rimp2\" differentiates a four-centre or an RI-JK \
+                 reference (scf_jk=\"exact\" | \"rijk\"); got scf_jk={:?}",
+                jk.mode.as_str()
+            )))
+        }
+    };
+    let mp2_config = RiMp2Config {
+        frozen_core: k.frozen_core.unwrap_or(0),
+        memory_budget_bytes: budget_bytes_from_gb(k.memory_budget_gb),
+        ..Default::default()
+    };
+    let obs = basis::bundled(basis_name).map_err(make_err)?;
+    let aux = basis::bundled(k.auxbasis.unwrap_or_default()).map_err(make_err)?;
+    let ext = cfg.external_potential.clone();
     let r = py
         .allow_threads(|| {
-            optimize_geometry_uhf(
-                &ctx,
-                &emol,
-                basis_name,
+            ferric_mp2::optimize::optimize_geometry_rimp2_on(
+                emol,
+                &obs,
+                &aux,
                 Operator::coulomb(),
-                &uhf_config,
-                &opt_config,
+                &mp2_config,
+                opt_config,
+                ext.as_ref(),
+                &scf_jk,
             )
         })
         .map_err(make_err)?;
-    let certificate_data = optimize_result_certificate(
-        &r,
-        &opt_config,
+    // The reference the gradient driver solves (`total_rimp2_gradient_on`).
+    let mut ref_cfg = RhfConfig {
+        density_conv: 1e-9,
+        external_potential: ext,
+        ..Default::default()
+    }
+    .for_geometry_task();
+    scf_jk.apply(&mut ref_cfg);
+    let certificate_data = correlated_optimize_certificate(
+        "rimp2",
+        &r.mol,
         basis_name,
-        &uhf_config,
-        ferric_scf::Spin::Unrestricted,
+        &ref_cfg,
+        (r.converged, r.steps, r.energy),
+        opt_config,
+        &ferric_mp2::optimize::rimp2_gradient_label(&scf_jk),
+    );
+    Ok(PyOptimizeResult {
+        energy: r.energy,
+        converged: r.converged,
+        steps: r.steps,
+        energy_trace: r.energy_trace,
+        mol_data: r.mol,
+        certificate_data,
+    })
+}
+
+/// `method="oo-rimp2"`: `ferric_mp2::optimize::optimize_geometry_oo_rimp2`,
+/// the driver of the CLI's oo-rimp2 `optimize`.
+fn run_optimize_oo_rimp2(
+    py: Python<'_>,
+    emol: &Molecule,
+    basis_name: &str,
+    cfg: &RhfConfig,
+    opt_config: &OptimizeConfig,
+    k: &OptimizeKwargs,
+) -> PyResult<PyOptimizeResult> {
+    use ferric_scf::scf_jk::{ScfJk, ScfJkKeys, ScfJkMode, OO_REBUILDS_EXACT_JK};
+    if let Some(n) = k.frozen_core.filter(|&n| n > 0) {
+        return Err(value_error(format!(
+            "run_optimize: method=\"oo-rimp2\" needs frozen_core=0 (got {n}): the core-active \
+             and core-virtual rotations are not optimised, so the zero-response gradient is not \
+             the derivative of the frozen-core energy"
+        )));
+    }
+    ScfJk::resolve(
+        k.scf_jk,
+        k.jk_auxbasis,
+        None,
+        ScfJkMode::Exact,
+        ScfJkKeys::PYTHON,
+    )
+    .and_then(|jk| jk.require_exact(ScfJkKeys::PYTHON, OO_REBUILDS_EXACT_JK))
+    .map_err(|e| value_error(format!("run_optimize: {e}")))?;
+    let d = OoRiMp2Config::default();
+    let oo_config = OoRiMp2Config {
+        max_iter: k.oo_max_iter.unwrap_or(d.max_iter),
+        grad_conv: k.oo_grad_conv.unwrap_or(d.grad_conv),
+        frozen_core: 0,
+        memory_budget_bytes: budget_bytes_from_gb(k.memory_budget_gb),
+        ..d
+    };
+    let obs = basis::bundled(basis_name).map_err(make_err)?;
+    let aux = basis::bundled(k.auxbasis.unwrap_or_default()).map_err(make_err)?;
+    let r = py
+        .allow_threads(|| {
+            ferric_mp2::optimize::optimize_geometry_oo_rimp2(
+                emol,
+                &obs,
+                &aux,
+                Operator::coulomb(),
+                cfg,
+                &oo_config,
+                opt_config,
+            )
+        })
+        .map_err(make_err)?;
+    let certificate_data = correlated_optimize_certificate(
+        "oo-rimp2",
+        &r.mol,
+        basis_name,
+        cfg,
+        (r.converged, r.steps, r.energy),
+        opt_config,
+        ferric_mp2::optimize::OO_RIMP2_GRADIENT_LABEL,
     );
     Ok(PyOptimizeResult {
         energy: r.energy,

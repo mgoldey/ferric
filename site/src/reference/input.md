@@ -65,7 +65,7 @@ same table: `cc-pvdz-ri`, `cc-pvtz-rifit`, `aug-cc-pv{d,t,q}z-rifit`,
 | Key | Type | Default | Allowed values | Notes |
 |---|---|---|---|---|
 | `kind` | string | **required** | `rhf` `uhf` `rohf` `ksdft` `rimp2` `mp3` `oo-rimp2` `att-rimp2` `mp2-v` `scs-mp2` `scs-mp2-2terfc` `laplace-mp2` `laplace-sos-mp2` `pdep-rpa` `rs-mp2-rpa` `gw` `bse-tda` `tdhf-static-polarizability` `ccsd` `ccd` `ccsd(t)` `linlccd` `drpa` `wb97x-l-v` `b2plyp` `dsd-pbep86` `tda` `tddft` `casscf` `nevpt2` | Any other value is an error. Smoke- and Spike-grade kinds print a `[warning]` grade line on stderr; Proven kinds print none. `casscf` and `nevpt2` need a [`[cas]`](#cas) section. `rimp2`, `drpa` and `linlccd` name the method and are computed exactly unless [`[local]`](#local) sets a local approximation (see [Capabilities and validation](./validation.md#grades)). |
-| `task` | string | `"energy"` | `energy` `optimize` `frequencies` | `optimize`: `rhf` `ksdft` `uhf` `rohf` `rimp2` `pdep-rpa` only. `frequencies`: `rhf` `ksdft` `uhf` `rohf` only. |
+| `task` | string | `"energy"` | `energy` `optimize` `frequencies` | `optimize`: `rhf` `ksdft` `uhf` `rohf` `rimp2` `oo-rimp2` `pdep-rpa` only (`oo-rimp2`: closed shell, exact J/K, `frozen_core = 0`). `frequencies`: `rhf` `ksdft` `uhf` `rohf` only. |
 
 ## `[scf]`
 
