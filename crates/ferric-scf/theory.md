@@ -105,3 +105,92 @@ analytic gradient).
 | $V^{(1)}[D_1]$ | `XcResponse::apply` | `xc_kernel_response_matches_difference_of_vxc_in_the_density`, `gga_kernel_response_…` |
 | polarized $F^\sigma,\mathbf G^\sigma,\delta F^\sigma,\delta\mathbf G^\sigma$, skeleton, $\partial V^\sigma/\partial x$, $V^{(1)\sigma}$ | `ks_fixed_grid/polarized.rs` (`PolarizedKs`, `pol_response`, `PolarizedXcResponse`) | `uks_xc_pieces.rs` (closed-shell limit, frozen-density and frozen-grid FD, kernel FD with $D_1^\alpha\neq D_1^\beta$, mutants); full Hessian `uks_moving_grid_hessian.rs` |
 | $T G_h T^{\mathsf T}$, moving $\partial V/\partial x$ | `skeleton_hessian_moving`, `translation_fill`, `first_order_fock_moving`, `weight_fock` | `ks_moving_grid_hessian.rs::moving_xc_pieces_match_frozen_density_differences`, `moving_grid_mutants_each_fail_a_frozen_density_anchor` |
+
+## Fock hooks and their nuclear gradient
+
+A Fock hook (`rhf::solve_rhf_with_hook`, `uhf::solve_uhf_with_hook`,
+`rohf::solve_rohf_with_hook`; Python `fock_hook=`) adds one caller-supplied
+term to the energy functional,
+
+$$E(\mathbf{R}) = E_0[\mathbf{D}; \mathbf{R}] + E_h[\mathbf{D}; \mathbf{R}],
+\qquad \mathbf{V} = \partial E_h / \partial \mathbf{D},$$
+
+with $\mathbf{V}$ added to the Fock matrix every iteration ($\mathbf{V}_\sigma =
+\partial E_h / \partial \mathbf{D}_\sigma$ per spin for UHF/ROHF). $E_0$ is the
+built-in HF or KS energy. The SCF makes $E$ stationary under orbital rotations,
+subject to orthonormality $\mathbf{C}^\top \mathbf{S} \mathbf{C} = \mathbf{1}$.
+Its Lagrangian is
+
+$$\mathcal{L} = E[\mathbf{D}(\mathbf{C}); \mathbf{R}]
+ - \sum_{ij} \epsilon_{ij} \left(\mathbf{C}^\top \mathbf{S}(\mathbf{R}) \mathbf{C}
+ - \mathbf{1}\right)_{ij}.$$
+
+At convergence $\partial \mathcal{L} / \partial \mathbf{C} = 0$ gives
+$\mathbf{F} \mathbf{C}_\text{occ} = \mathbf{S} \mathbf{C}_\text{occ}
+\boldsymbol{\epsilon}$ with the HOOKED Fock matrix $\mathbf{F} = \mathbf{F}_0 +
+\mathbf{V}$. The total derivative is the partial derivative of $\mathcal{L}$
+at fixed $\mathbf{C}$:
+
+$$\frac{dE}{d\mathbf{R}} =
+ \left.\frac{\partial E_0}{\partial \mathbf{R}}\right|_{\mathbf{D}}
+ + \left.\frac{\partial E_h}{\partial \mathbf{R}}\right|_{\mathbf{D}}
+ - \operatorname{Tr}\!\left[\mathbf{W}\, \frac{\partial \mathbf{S}}{\partial \mathbf{R}}\right],
+\qquad
+\mathbf{W} = \sum_\sigma \mathbf{C}_{\sigma,\text{occ}} \boldsymbol{\epsilon}_\sigma \mathbf{C}_{\sigma,\text{occ}}^\top .$$
+
+(The closed-shell $\mathbf{W}$ carries the factor 2 of the double occupation:
+$\mathbf{W} = 2\mathbf{C}_\text{occ}\boldsymbol{\epsilon}\mathbf{C}_\text{occ}^\top
+= \tfrac12 \mathbf{D}\mathbf{F}\mathbf{D}$.) Three pieces, three owners:
+
+1. $\partial E_0 / \partial \mathbf{R}|_{\mathbf{D}}$: the built-in gradient's
+   integral-derivative terms (nuclear repulsion, $\operatorname{Tr}[\mathbf{D}\,
+   \partial \mathbf{h}/\partial \mathbf{R}]$, the two-electron and XC
+   derivatives) at the hooked density. Unchanged code.
+2. The Pulay term $-\operatorname{Tr}[\mathbf{W}\,\partial\mathbf{S}/\partial
+   \mathbf{R}]$: $\mathbf{W}$ is built from the converged orbitals and
+   eigenvalues, which diagonalize the hooked $\mathbf{F}$, so the $\mathbf{V}$
+   part of the Lagrange multipliers is included without the hook doing
+   anything. Its $\mathbf{V}$ part is $\tfrac12\mathbf{D}\mathbf{V}\mathbf{D}$
+   (closed shell). For ROHF, $\mathbf{W} =
+   \operatorname{sym}(\mathbf{D}_\alpha\mathbf{F}_\alpha\mathbf{D}_\alpha +
+   \mathbf{D}_\alpha\mathbf{F}_\beta\mathbf{D}_\beta)$ uses the converged spin
+   Fock matrices, which hold $\mathbf{V}_\alpha$, $\mathbf{V}_\beta$.
+3. The EXPLICIT term $\partial E_h / \partial \mathbf{R}|_{\mathbf{D}}$, the
+   derivative of the hook's energy with the AO density matrix held fixed. Only
+   the hook knows it, so the caller supplies it (`fock_hook_grad=` in Python,
+   [`gradient::with_fock_hook_gradient`] in Rust).
+
+What the explicit term must and must not include:
+
+- It MUST include every dependence of $E_h$ on the nuclear positions at fixed
+  AO density matrix: integrals over AO functions centred on the atoms (the
+  derivative of $\langle\mu|\hat{v}|\nu\rangle$ with respect to the centres of
+  $\mu$ and $\nu$), operator centres that sit on atoms, and purely classical
+  terms such as a charge-nuclear repulsion. Example: a point charge $q$ at
+  fixed $\mathbf{r}_c$ has $E_h = \operatorname{Tr}[\mathbf{D}\mathbf{V}_q] +
+  \sum_A q Z_A / |\mathbf{R}_A - \mathbf{r}_c|$; its explicit term is
+  $\operatorname{Tr}[\mathbf{D}\,\partial\mathbf{V}_q/\partial\mathbf{R}_A]$
+  (basis-centre derivatives only; the charge does not move) plus the
+  derivative of the classical sum.
+- It must NOT include any change of $\mathbf{D}$ with geometry (the response
+  of the orbitals is handled by the Lagrangian above) nor the Pulay term of
+  $\mathbf{V}$ (it is already in $\mathbf{W}$). A hook that depends only on
+  $\mathbf{D}$, for example $E_h = \lambda \sum_{\mu\nu} D_{\mu\nu}^2$, has an
+  explicit term of ZERO.
+- A hook built from the overlap or another geometry-dependent AO matrix
+  depends on $\mathbf{R}$ through that matrix. $E_h = \lambda
+  \operatorname{Tr}[\mathbf{D}\mathbf{S}]$ has explicit term $\lambda
+  \operatorname{Tr}[\mathbf{D}\,\partial\mathbf{S}/\partial\mathbf{R}]$. Its
+  Pulay part, $-\operatorname{Tr}[\tfrac12\lambda\mathbf{D}\mathbf{S}\mathbf{D}
+  \,\partial\mathbf{S}/\partial\mathbf{R}] = -\lambda\operatorname{Tr}[\mathbf{D}
+  \,\partial\mathbf{S}/\partial\mathbf{R}]$ ($\mathbf{D}\mathbf{S}\mathbf{D} =
+  2\mathbf{D}$), cancels it exactly, as it must: $\lambda\operatorname{Tr}
+  [\mathbf{D}\mathbf{S}] = \lambda N$ is a constant. This is the exactness
+  anchor of the tests: both halves nonzero, their sum known in closed form.
+
+The formula holds for the converged hooked solution only (stationarity was
+used). It assumes integer aufbau occupations of the hooked $\mathbf{F}$, as
+the un-hooked gradients do, and that $\mathbf{V}$ is exactly $\partial E_h /
+\partial \mathbf{D}$: a hook whose $\mathbf{V}$ is not the derivative of its
+$E_h$ converges to a non-stationary point of $E$, and no gradient of the
+reported energy follows from this formula.

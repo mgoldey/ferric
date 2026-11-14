@@ -14,6 +14,14 @@ SpinFockHook = Callable[
     [NDArray[np.float64], NDArray[np.float64]],
     tuple[float, NDArray[np.float64], NDArray[np.float64]],
 ]
+# fock_hook_grad: grad(D_total, mol) -> dE_hook/dR at fixed D, (natoms, 3),
+# Hartree/Bohr (run_rhf / run_dft); grad(D_a, D_b, mol) for run_uhf / run_rohf.
+FockHookGrad = Callable[[NDArray[np.float64], Molecule], NDArray[np.float64]]
+SpinFockHookGrad = Callable[
+    [NDArray[np.float64], NDArray[np.float64], Molecule], NDArray[np.float64]
+]
+# run_optimize: the same hooks with the step's Molecule as the last argument,
+# hook(D, mol) / hook(D_a, D_b, mol) and grad(D, mol) / grad(D_a, D_b, mol).
 
 # ── Module-level constants ──
 
@@ -3966,6 +3974,7 @@ def run_rhf(
     with_gradient: bool = False,
     eri: Literal["auto", "direct", "incore"] | None = None,
     relativistic: Literal["x2c1e"] | None = None,
+    fock_hook_grad: FockHookGrad | None = None,
 ) -> RhfResult:
     """Closed-shell Restricted Hartree-Fock.
 
@@ -3987,8 +3996,23 @@ def run_rhf(
     ri_j_precision="f64" to energy-only runs that must lie on the same
     surface (finite differences, line searches). An unconverged SCF raises
     RuntimeError. ValueError before the SCF: symmetry=True / irrep_nelec,
-    fock_hook, smearing_sigma, mom_after_iter, and the COSX setups the
-    gradient cannot differentiate. Ghost atoms raise RuntimeError.
+    a fock_hook without fock_hook_grad, smearing_sigma, mom_after_iter, and
+    the COSX setups the gradient cannot differentiate. Ghost atoms raise
+    RuntimeError.
+
+    fock_hook_grad=grad (with fock_hook and with_gradient=True; otherwise
+    ValueError): grad(D, mol) returns the hook's EXPLICIT nuclear derivative
+    dE_hook/dR at fixed AO density D (the converged total density), shape
+    (natoms, 3), Hartree/Bohr; mol is the Molecule being differentiated. The
+    gradient is the analytic gradient of the hooked SCF plus this term. The
+    hook's Pulay term is already in it (the energy-weighted density comes
+    from the hooked orbitals), so grad must NOT include it, nor any change of
+    D with geometry. It MUST include every dependence of E_hook on the atom
+    positions at fixed D: integrals over AOs centred on the atoms (for
+    V = lam * hcore, lam * AoIntegrals.grad_hcore(D)), operator centres on
+    atoms, classical terms. A hook that depends on D only has grad = zeros.
+    Derivation: crates/ferric-scf/theory.md, "Fock hooks and their nuclear
+    gradient".
 
     symmetry=True (default False; False is byte-identical to before): detect
     the highest Abelian point group, symmetrize and reorient the geometry, and
@@ -4135,6 +4159,7 @@ def run_rhf(
     with_gradient: Literal[False] = False,
     eri: Literal["auto", "direct", "incore"] | None = None,
     relativistic: Literal["x2c1e"] | None = None,
+    fock_hook_grad: None = None,
 ) -> SymmetricRhfResult: ...
 def run_uhf(
     mol: Molecule,
@@ -4169,11 +4194,14 @@ def run_uhf(
     mom_reference: Literal["previous", "initial"] | None = None,
     eri: Literal["auto", "direct", "incore"] | None = None,
     relativistic: Literal["x2c1e"] | None = None,
+    fock_hook_grad: SpinFockHookGrad | None = None,
 ) -> UhfResult:
     """Unrestricted Hartree-Fock (open-shell). with_gradient=True: the
-    analytic gradient in result.gradient() under run_rhf's rules (only
-    fock_hook is refused; MOM and stability_descent states are
-    differentiated). fock_hook=hook adds one
+    analytic gradient in result.gradient() under run_rhf's rules (a
+    fock_hook needs fock_hook_grad; MOM and stability_descent states are
+    differentiated). fock_hook_grad=grad: as for run_rhf, called as
+    grad(D_a, D_b, mol) with the converged per-spin densities.
+    fock_hook=hook adds one
     density-dependent term: hook(D_a, D_b) gets the per-spin densities every
     iteration and returns (E, V_a, V_b); V_s is added to F_s and E to the
     energy, so the result is variational when V_s = dE/dD_s. The exception
@@ -4239,10 +4267,12 @@ def run_rohf(
     with_gradient: bool = False,
     eri: Literal["auto", "direct", "incore"] | None = None,
     relativistic: Literal["x2c1e"] | None = None,
+    fock_hook_grad: SpinFockHookGrad | None = None,
 ) -> UhfResult:
     """Restricted Open-Shell Hartree-Fock. with_gradient=True: the analytic
-    gradient in result.gradient() under run_rhf's rules (only fock_hook is
-    refused). fock_hook: as for run_uhf; V_a and
+    gradient in result.gradient() under run_rhf's rules (a fock_hook needs
+    fock_hook_grad, called as for run_uhf; the ROHF energy-weighted density
+    is built from the hooked spin Fock matrices). fock_hook: as for run_uhf; V_a and
     V_b enter before the Roothaan effective-Fock combination. Note: the exit report (final_* residuals, unmet_criteria, non-convergence RuntimeWarning) is RHF-only today. A user-set energy_conv below the estimated (rounding-level) noise floor of dE emits one RuntimeWarning before the SCF starts; with a fock_hook, one more after it as for run_uhf.
 
     dm0: a pair (D_alpha, D_beta) with run_uhf's checks. The start is one MO
@@ -4416,6 +4446,8 @@ def run_optimize(
     c_ss: float | None = None,
     scf_eri: Literal["auto", "direct", "incore"] | None = None,
     scf_relativistic: Literal["x2c1e"] | None = None,
+    fock_hook: Callable[..., tuple[Any, ...]] | None = None,
+    fock_hook_grad: Callable[..., NDArray[np.float64]] | None = None,
 ) -> OptimizeResult:
     """Geometry optimization on any surface with an analytic gradient.
 
@@ -4460,6 +4492,15 @@ def run_optimize(
     MINAO guess. Falls back to the cold guess on the first step, on a poor orbital overlap
     (large step) and after a failed warm-started SCF. Energies agree with a cold start to
     SCF convergence tolerance, not bitwise; False restores the from-scratch guess.
+
+    `fock_hook` / `fock_hook_grad` ("scf" only, both or neither): optimize the
+    hooked surface (run_rhf's fock_hook and fock_hook_grad). The geometry moves,
+    so both are called with the step's Molecule as their LAST argument:
+    closed-shell hook(D, mol) -> (E, V) and grad(D, mol); open-shell
+    hook(D_a, D_b, mol) -> (E, V_a, V_b) and grad(D_a, D_b, mol). Each step's SCF
+    starts from the default guess (scf_warm_start=True raises); dispersion raises.
+    The certificate's reference is the hooked SCF at the returned geometry and
+    lists an `scf fock-hook` approximation.
 
     Each route calls the library driver the CLI's `task = "optimize"` calls for the same
     `method.kind`. The certificate's capability is "optimize:<kind>" (rhf, ksdft, uhf,
@@ -5180,12 +5221,14 @@ def run_dft(
     ri_j_precision: str | None = None,
     dm0: NDArray[np.float64] | None = None,
     relativistic: Literal["x2c1e"] | None = None,
+    fock_hook_grad: FockHookGrad | None = None,
 ) -> DftResult:
     """Kohn-Sham DFT (closed-shell). fock_hook: as for run_rhf; with a
     hook every convergence-ladder rung runs with the hook applied and SOSCF
     off on the rungs that would switch it on (its orbital Hessian does not
-    include the hook); with_gradient, dispersion and symmetry raise
-    ValueError. dm0: as for run_rhf; ladder rung 0 starts from it. Note: the final_* residuals, unmet_criteria and the
+    include the hook); dispersion and symmetry raise ValueError, and so does
+    with_gradient=True without fock_hook_grad (as for run_rhf; the KS
+    gradient of the hooked SCF plus grad(D, mol)). dm0: as for run_rhf; ladder rung 0 starts from it. Note: the final_* residuals, unmet_criteria and the
     non-convergence RuntimeWarning are RHF-only today (this result has exit_reason and iterations).
 
 
@@ -5325,6 +5368,7 @@ def run_dft(
     ri_j_precision: str | None = None,
     dm0: None = None,
     relativistic: Literal["x2c1e"] | None = None,
+    fock_hook_grad: None = None,
 ) -> SymmetricRhfResult:
     """Point-group-blocked closed-shell RKS (see the ``symmetry=True``
     paragraph of the DftResult overload). Same density-fitting defaults:
@@ -5402,6 +5446,7 @@ def run_dft(
     ri_j_precision: str | None = None,
     dm0: NDArray[np.float64] | None = None,
     relativistic: Literal["x2c1e"] | None = None,
+    fock_hook_grad: FockHookGrad | None = None,
 ) -> DftResult | SymmetricRhfResult: ...
 def dft_grid_point_count(
     mol: Molecule,

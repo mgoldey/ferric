@@ -2600,6 +2600,9 @@ pub(crate) struct PyFockHook {
     /// `sum |D o V|` of the last call (both spins open-shell), the input
     /// of [`ferric_scf::noise_floor::hook_floor_term`].
     last_sum_abs_dv: f64,
+    /// The geometry passed as a trailing argument (`hook(D, mol)`), set by
+    /// `run_optimize` for each step; `None` is the plain `hook(D)` call.
+    geometry: Option<Py<PyAny>>,
 }
 
 impl PyFockHook {
@@ -2615,7 +2618,20 @@ impl PyFockHook {
             nao,
             err: None,
             last_sum_abs_dv: 0.0,
+            geometry: None,
         })
+    }
+
+    /// Call the hook as `hook(..., mol)` from now on, with `mol` the
+    /// geometry being solved (`run_optimize`, one call per step).
+    pub(crate) fn set_geometry(&mut self, py: Python<'_>, mol: &Molecule) -> PyResult<()> {
+        self.geometry = Some(geometry_object(py, mol)?);
+        Ok(())
+    }
+
+    /// Call the callable with `args` plus the trailing geometry, if set.
+    fn call_with<'py>(&self, py: Python<'py>, args: Vec<Bound<'py, PyAny>>) -> PyResult<PyObject> {
+        call_with_geometry(py, &self.callable, args, self.geometry.as_ref())
     }
 
     /// Copy one returned potential, check it is `(nao, nao)` and symmetric
@@ -2653,7 +2669,7 @@ impl PyFockHook {
     }
 
     fn eval(&self, py: Python<'_>, d: &Array2<f64>) -> PyResult<(f64, Array2<f64>)> {
-        let out = self.callable.call1(py, (PyArray2::from_array(py, d),))?;
+        let out = self.call_with(py, vec![PyArray2::from_array(py, d).into_any()])?;
         let (e, v): (f64, PyReadonlyArray2<'_, f64>) = out.extract(py).map_err(|_| {
             pyo3::exceptions::PyTypeError::new_err(
                 "fock_hook must return (E: float, V: 2-D float array)",
@@ -2668,8 +2684,11 @@ impl PyFockHook {
         d_a: &Array2<f64>,
         d_b: &Array2<f64>,
     ) -> PyResult<(f64, Array2<f64>, Array2<f64>)> {
-        let args = (PyArray2::from_array(py, d_a), PyArray2::from_array(py, d_b));
-        let out = self.callable.call1(py, args)?;
+        let args = vec![
+            PyArray2::from_array(py, d_a).into_any(),
+            PyArray2::from_array(py, d_b).into_any(),
+        ];
+        let out = self.call_with(py, args)?;
         type Ret<'a> = (f64, PyReadonlyArray2<'a, f64>, PyReadonlyArray2<'a, f64>);
         let (e, v_a, v_b): Ret<'_> = out.extract(py).map_err(|_| {
             pyo3::exceptions::PyTypeError::new_err(
@@ -2724,6 +2743,115 @@ impl PyFockHook {
             (Some(e), _) => Err(e),
             (None, r) => r.map_err(make_err),
         }
+    }
+}
+
+/// `mol` as a Python `Molecule` (the argument a geometry-aware hook gets).
+fn geometry_object(py: Python<'_>, mol: &Molecule) -> PyResult<Py<PyAny>> {
+    Ok(Py::new(py, PyMolecule { inner: mol.clone() })?.into_any())
+}
+
+/// `callable(*args)`, or `callable(*args, geometry)` when `geometry` is set.
+fn call_with_geometry<'py>(
+    py: Python<'py>,
+    callable: &Py<PyAny>,
+    mut args: Vec<Bound<'py, PyAny>>,
+    geometry: Option<&Py<PyAny>>,
+) -> PyResult<PyObject> {
+    if let Some(g) = geometry {
+        args.push(g.bind(py).clone());
+    }
+    callable.call1(py, pyo3::types::PyTuple::new(py, args)?)
+}
+
+/// A Python `fock_hook_grad`: the explicit nuclear derivative of a Fock
+/// hook's energy at FIXED AO density, `grad(D, mol)` closed-shell or
+/// `grad(D_a, D_b, mol)` open-shell, returning `(natoms, 3)` in Hartree/Bohr.
+/// `mol` is the geometry being differentiated. The built-in gradient of the
+/// hooked SCF holds every other term, including the hook's Pulay term
+/// (`ferric_scf::gradient::with_fock_hook_gradient`).
+pub(crate) struct PyFockHookGrad {
+    callable: Py<PyAny>,
+}
+
+/// The converged densities a [`PyFockHookGrad`] is called with.
+pub(crate) enum HookDensities<'a> {
+    /// The total closed-shell density.
+    Closed(&'a Array2<f64>),
+    /// The per-spin densities `(D_a, D_b)`.
+    Spin(&'a Array2<f64>, &'a Array2<f64>),
+}
+
+impl PyFockHookGrad {
+    pub(crate) fn new(callable: &Bound<'_, PyAny>) -> PyResult<Self> {
+        if !callable.is_callable() {
+            return Err(pyo3::exceptions::PyTypeError::new_err(
+                "fock_hook_grad must be callable (grad(D, mol) closed-shell, \
+                 grad(D_a, D_b, mol) open-shell, returning dE_hook/dR at fixed D, (natoms, 3))",
+            ));
+        }
+        Ok(PyFockHookGrad {
+            callable: callable.clone().unbind(),
+        })
+    }
+
+    /// The hook's explicit term at `densities` and geometry `mol`, checked to
+    /// be a finite `(natoms, 3)` array.
+    pub(crate) fn explicit(
+        &self,
+        py: Python<'_>,
+        densities: HookDensities<'_>,
+        mol: &Molecule,
+    ) -> PyResult<Array2<f64>> {
+        let args = match densities {
+            HookDensities::Closed(d) => vec![PyArray2::from_array(py, d).into_any()],
+            HookDensities::Spin(a, b) => vec![
+                PyArray2::from_array(py, a).into_any(),
+                PyArray2::from_array(py, b).into_any(),
+            ],
+        };
+        let geometry = geometry_object(py, mol)?;
+        let out = call_with_geometry(py, &self.callable, args, Some(&geometry))?;
+        let g: PyReadonlyArray2<'_, f64> = out.extract(py).map_err(|_| {
+            pyo3::exceptions::PyTypeError::new_err(
+                "fock_hook_grad must return a 2-D float array of shape (natoms, 3)",
+            )
+        })?;
+        let g = g.as_array().to_owned();
+        let natoms = mol.atoms.len();
+        if g.dim() != (natoms, 3) {
+            return Err(PyValueError::new_err(format!(
+                "fock_hook_grad returned shape {:?}, expected ({natoms}, 3)",
+                g.dim()
+            )));
+        }
+        if g.iter().any(|v| !v.is_finite()) {
+            return Err(PyValueError::new_err(
+                "fock_hook_grad returned a non-finite value",
+            ));
+        }
+        Ok(g)
+    }
+
+    /// `grad` (the built-in gradient of the hooked result `r`) plus this
+    /// hook's explicit term at `r`'s converged densities.
+    pub(crate) fn add_to(
+        &self,
+        py: Python<'_>,
+        grad: Array2<f64>,
+        r: &ferric_scf::result::ScfResult,
+        open_shell: bool,
+        mol: &Molecule,
+    ) -> PyResult<Array2<f64>> {
+        let densities = match (open_shell, r.density_beta.as_ref()) {
+            (true, Some(d_b)) => HookDensities::Spin(&r.density_alpha, d_b),
+            (true, None) => {
+                return Err(make_err("open-shell result without a beta density"));
+            }
+            (false, _) => HookDensities::Closed(r.density_total()),
+        };
+        let explicit = self.explicit(py, densities, mol)?;
+        ferric_scf::gradient::with_fock_hook_gradient(grad, &explicit).map_err(make_err)
     }
 }
 
@@ -2837,10 +2965,11 @@ pub(crate) fn solve_rhf_hooked(
 /// `run_dft`'s SCF: the convergence ladder, plain or with a `fock_hook`
 /// ([`solve_hooked_ladder`]), returning the result with the config of the
 /// rung that produced it (its level shift, smearing, ...), which the
-/// certificate records. `hooked` carries the hook with `run_dft`'s
-/// `with_gradient` and `dispersion is not None` flags: neither the analytic
-/// gradient nor the dispersion terms would include the hook, so both are
-/// refused before the SCF.
+/// certificate records. `hooked` carries the hook with two flags of
+/// `run_dft`: `with_gradient=True` without a `fock_hook_grad` (the gradient
+/// would lack the hook's explicit term) and `dispersion is not None` (the
+/// dispersion terms would not include the hook); both are refused before the
+/// SCF.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn solve_ks_ladder(
     py: Python<'_>,
@@ -2870,13 +2999,18 @@ pub(crate) fn solve_ks_ladder(
                 .ok_or_else(|| make_err("SCF ladder reported a rung it does not have"))?;
             Ok((lr.result, cfg))
         }
-        Some((_, true, _)) => refuse("with_gradient=True"),
+        Some((_, true, _)) => refuse(KS_HOOK_GRADIENT_REFUSAL),
         Some((_, _, true)) => refuse("dispersion"),
         Some((hook, false, false)) => {
             solve_hooked_ladder(py, ctx, mol, prep, op, bounds, ladder, hook)
         }
     }
 }
+
+/// `run_dft`'s refusal of `with_gradient=True` with a hook but no
+/// `fock_hook_grad`.
+const KS_HOOK_GRADIENT_REFUSAL: &str = "with_gradient=True unless fock_hook_grad= supplies the \
+     hook's explicit nuclear derivative dE_hook/dR at fixed density";
 
 /// A ladder rung as the hooked solve runs it: SOSCF (`newton_trigger`) off,
 /// every other accelerator of the rung (ADIIS, level shift, smearing) kept.

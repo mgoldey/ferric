@@ -644,6 +644,51 @@ most two. A closed-shell density D is passed as `(D / 2, D / 2)` and gives
 `run_rhf(dm0=D)`'s energy. A closed shell has its β HOMO and LUMO turned by
 0.1 rad, as from any UHF start.
 
+#### Gradients of a hooked SCF
+
+`with_gradient=True` with a `fock_hook` needs `fock_hook_grad=grad`, the
+hook's explicit nuclear derivative: `grad(D, mol)` (`run_rhf`, `run_dft`) or
+`grad(D_a, D_b, mol)` (`run_uhf`, `run_rohf`) returns `∂E_hook/∂R` at fixed AO
+density, shape `(natoms, 3)` in Hartree/Bohr, for the converged densities and
+the `Molecule` being differentiated. `result.gradient()` is the analytic
+gradient of the hooked SCF plus this term. Without `fock_hook_grad` the
+gradient raises `ValueError`.
+
+What `grad` must and must not contain:
+
+| Term | In `grad`? | Why |
+|---|---|---|
+| Integrals over AOs centred on atoms, operator centres on atoms, classical terms of `E_hook` | Yes | Only the hook knows how `E_hook` depends on the atom positions at fixed D. |
+| The Pulay term of `V`, `−Tr[W_V ∂S/∂R]` | No | The energy-weighted density comes from the hooked orbitals and eigenvalues (for ROHF, the hooked spin Fock matrices), so it is already included. |
+| The change of D with geometry | No | The SCF is stationary in the orbitals; the Lagrangian handles it. |
+
+A hook that depends on D only (for example `E = λ Σ D_ij²`) has `grad = 0`.
+A hook built from a geometry-dependent AO matrix has a nonzero one: for
+`V = λ h`, `E = λ Tr[D h]`, `grad` is `λ Tr[D ∂h/∂R]`:
+
+```python
+ints = ferric.AoIntegrals(water, bs)
+lam, h = 0.1, ints.hcore()
+r = ferric.run_rhf(
+    water, bs, with_gradient=True,
+    fock_hook=lambda d: (lam * float(np.sum(d * h)), lam * h),
+    fock_hook_grad=lambda d, mol: lam * ints.grad_hcore(d),
+)
+```
+
+`E = λ Tr[D S]` is the check that both halves are right: its explicit term
+`λ Tr[D ∂S/∂R]` and its Pulay term `−λ Tr[D ∂S/∂R]` cancel, as they must for
+the constant `λN`, so the hooked gradient equals the plain one.
+`run_optimize(method="scf", fock_hook=, fock_hook_grad=)` optimizes the
+hooked surface; because the geometry moves, both callables there receive the
+step's `Molecule` as their last argument (`hook(D, mol)`, `grad(D, mol)`),
+and each step's SCF starts from the default guess. The derivation is in
+`crates/ferric-scf/theory.md` ("Fock hooks and their nuclear gradient"); the
+checks (finite differences of the hooked energy for RHF, UHF, ROHF and LDA,
+and a point charge entered as a hook against `point_charges`) are in
+`crates/ferric-python/tests/test_fock_hook_gradient.py` and
+`crates/ferric-scf/tests/fock_hook_gradient.rs`.
+
 Not exposed: the Rust-side structs (`PreparedBasis`, `Engine`, screening
 bounds), method intermediates (CC amplitudes, GW self-energies, PDEP
 eigenpairs) and periodic (PBC) integrals. Those stay behind the drivers.

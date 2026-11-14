@@ -561,7 +561,7 @@ pub(crate) fn parse_relativistic(
     aurora=None, trah_trigger=None, symmetry=false, irrep_nelec=None,
     fock_hook=None,
     guess_basis=None, guess_projection=None, ri_j_precision=None, dm0=None,
-    with_gradient=false, eri=None, relativistic=None,
+    with_gradient=false, eri=None, relativistic=None, fock_hook_grad=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_rhf(
@@ -606,8 +606,10 @@ pub(crate) fn run_rhf(
     with_gradient: bool,
     eri: Option<&str>,
     relativistic: Option<&str>,
+    fock_hook_grad: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyObject> {
     refuse_dm0_with_guess("run_rhf", dm0.is_some(), guess, guess_basis)?;
+    let hook_grad = parse_fock_hook_grad("run_rhf", fock_hook, fock_hook_grad, with_gradient)?;
     let guess_basis = parse_guess_basis(guess_basis, guess_projection)?;
     // The descent needs a stability verdict to act on, so the kwarg turns on
     // both halves (as run_uhf does).
@@ -669,6 +671,9 @@ pub(crate) fn run_rhf(
     apply_accelerators(&mut config, aurora, trah_trigger)?;
     if with_gradient {
         config = scf_gradient_config("run_rhf", ScfGradientKind::Rhf, &config, fock_hook)?;
+        if fock_hook.is_some() && hook_grad.is_none() {
+            return refuse_hook_without_grad("run_rhf");
+        }
     }
     let ctx = ParallelContext::default();
     // Release the GIL for the duration of the SCF. Every argument below is an
@@ -690,7 +695,17 @@ pub(crate) fn run_rhf(
     );
     let user_set = energy_conv.is_some();
     if with_gradient {
-        return solve_rhf_with_gradient(py, &ctx, &emol, &prep, &basis_set.inner, &bounds, config);
+        let hooked = fock_hook.zip(hook_grad.as_ref());
+        return solve_rhf_with_gradient(
+            py,
+            &ctx,
+            &emol,
+            &prep,
+            &basis_set.inner,
+            &bounds,
+            config,
+            hooked.map(|h| (h, user_set)),
+        );
     }
     solve_rhf_outcome(
         py, &ctx, &emol, &prep, op, &bounds, config, fock_hook, user_set,
@@ -708,7 +723,8 @@ pub(crate) enum ScfGradientKind {
 /// The SCF config of a `with_gradient=True` run of `who`, or the
 /// `ValueError` for a setup whose analytic gradient would not be the
 /// derivative of the reported energy. Refused before the SCF: a `fock_hook`
-/// (no gradient sees the hook's term); for RHF, `symmetry=True` /
+/// whose settings the hooked solve refuses
+/// ([`ferric_scf::rhf::validate_fock_hook`]); for RHF, `symmetry=True` /
 /// `irrep_nelec` (the result lives in the symmetry frame), `smearing_sigma`
 /// and `mom_after_iter` (the closed-shell energy-weighted density takes the
 /// lowest `nocc` orbitals fully occupied); a COSX setup the gradient cannot
@@ -726,7 +742,8 @@ pub(crate) fn scf_gradient_config(
         )))
     };
     if fock_hook.is_some() {
-        return refuse("fock_hook (the analytic gradient does not include the hook's term)");
+        ferric_scf::rhf::validate_fock_hook(config)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{who}: {e}")))?;
     }
     if matches!(kind, ScfGradientKind::Rhf) {
         if config.symmetry || config.irrep_nelec.is_some() {
@@ -793,8 +810,12 @@ pub(crate) fn scf_gradient(
     .map_err(make_err)
 }
 
-/// `run_rhf(with_gradient=True)`: the plain closed-shell solve (the refusals
-/// of [`scf_gradient_config`] already ran) and its analytic gradient.
+/// `run_rhf(with_gradient=True)`: the closed-shell solve (the refusals of
+/// [`scf_gradient_config`] already ran) and its analytic gradient. `hooked`:
+/// the `fock_hook` and its `fock_hook_grad`, with whether `energy_conv` was
+/// passed (for [`warn_hook_noise_floor`]); the solve is then the hooked one
+/// and the gradient gains the hook's explicit term.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn solve_rhf_with_gradient(
     py: Python<'_>,
     ctx: &ParallelContext,
@@ -803,12 +824,22 @@ pub(crate) fn solve_rhf_with_gradient(
     basis: &ferric_core::basis::BasisSet,
     bounds: &SchwarzBounds,
     config: RhfConfig,
+    hooked: Option<((&Bound<'_, PyAny>, &blocks::PyFockHookGrad), bool)>,
 ) -> PyResult<PyObject> {
     let op = Operator::coulomb();
-    let r = py
-        .allow_threads(|| solve_rhf(ctx, mol, prep, op, bounds, &config))
-        .map_err(make_err)?;
-    let g = scf_gradient(
+    let r = match hooked {
+        None => py
+            .allow_threads(|| solve_rhf(ctx, mol, prep, op, bounds, &config))
+            .map_err(make_err)?,
+        Some(((hook, _), user_set)) => {
+            let (r, term) =
+                blocks::solve_rhf_hooked(py, ctx, mol, prep, op, bounds, &config, hook)?;
+            let family = SolverFamily::ClosedShell;
+            warn_hook_noise_floor(py, "run_rhf", family, user_set, mol, prep, &config, term);
+            r
+        }
+    };
+    let mut g = scf_gradient(
         py,
         ScfGradientKind::Rhf,
         mol,
@@ -818,9 +849,48 @@ pub(crate) fn solve_rhf_with_gradient(
         &config,
         &r,
     )?;
-    let mut result = PyRhfResult::from_scf(mol, basis, r, config, false);
+    if let Some(((_, grad), _)) = hooked {
+        g = grad.add_to(py, g, &r, false, mol)?;
+    }
+    let mut result = PyRhfResult::from_scf(mol, basis, r, config, hooked.is_some());
     result.gradient_data = Some(g);
     Ok(Py::new(py, result)?.into_any())
+}
+
+/// The `fock_hook_grad` kwarg of `who`, checked: it needs a `fock_hook` and
+/// `with_gradient=True` (otherwise it is never read, which raises).
+pub(crate) fn parse_fock_hook_grad(
+    who: &str,
+    fock_hook: Option<&Bound<'_, PyAny>>,
+    fock_hook_grad: Option<&Bound<'_, PyAny>>,
+    with_gradient: bool,
+) -> PyResult<Option<blocks::PyFockHookGrad>> {
+    let Some(g) = fock_hook_grad else {
+        return Ok(None);
+    };
+    let refuse = |why: &str| {
+        Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "{who}: fock_hook_grad {why}"
+        )))
+    };
+    if fock_hook.is_none() {
+        return refuse("needs a fock_hook (it is the explicit derivative of the hook's energy)");
+    }
+    if !with_gradient {
+        return refuse("is read only with with_gradient=True");
+    }
+    blocks::PyFockHookGrad::new(g).map(Some)
+}
+
+/// The `ValueError` for `with_gradient=True` with a `fock_hook` but no
+/// `fock_hook_grad`.
+pub(crate) fn refuse_hook_without_grad<T>(who: &str) -> PyResult<T> {
+    Err(pyo3::exceptions::PyValueError::new_err(format!(
+        "{who}: with_gradient=True with a fock_hook needs fock_hook_grad=, the hook's explicit \
+         nuclear derivative dE_hook/dR at fixed density, shape (natoms, 3) in Hartree/Bohr \
+         (zeros when the hook depends on the density only); the analytic gradient supplies \
+         every other term"
+    )))
 }
 
 /// A refusal the library classifies as a bad symmetry request
@@ -1314,6 +1384,7 @@ impl PyUhfResult {
     cosx_grid=None, cosx_final_pass=None, cosx_final_grid=None, cosx_overlap_fit=None,
     trah_trigger=None, fock_hook=None, guess_basis=None, guess_projection=None, ri_j_precision=None,
     dm0=None, with_gradient=false, mom_reference=None, eri=None, relativistic=None,
+    fock_hook_grad=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_uhf(
@@ -1350,8 +1421,10 @@ pub(crate) fn run_uhf(
     mom_reference: Option<&str>,
     eri: Option<&str>,
     relativistic: Option<&str>,
+    fock_hook_grad: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyUhfResult> {
     refuse_dm0_with_guess("run_uhf", dm0.is_some(), guess, guess_basis)?;
+    let hook_grad = parse_fock_hook_grad("run_uhf", fock_hook, fock_hook_grad, with_gradient)?;
     let mom_reference = parse_mom_reference(mom_reference, mom_after_iter, stability_descent)?;
     let trah_trigger = check_trah_trigger(trah_trigger)?;
     let guess_basis = parse_guess_basis(guess_basis, guess_projection)?;
@@ -1412,6 +1485,9 @@ pub(crate) fn run_uhf(
     };
     if with_gradient {
         config = scf_gradient_config("run_uhf", ScfGradientKind::Uhf, &config, fock_hook)?;
+        if fock_hook.is_some() && hook_grad.is_none() {
+            return refuse_hook_without_grad("run_uhf");
+        }
     }
     let ctx = ParallelContext::default();
     // Release the GIL for the duration of the SCF. Every argument below is an
@@ -1452,7 +1528,11 @@ pub(crate) fn run_uhf(
     let gradient = with_gradient
         .then(|| {
             let k = ScfGradientKind::Uhf;
-            scf_gradient(py, k, &emol, &prep, &basis_set.inner, &bounds, &config, &r)
+            let g = scf_gradient(py, k, &emol, &prep, &basis_set.inner, &bounds, &config, &r)?;
+            match &hook_grad {
+                Some(h) => h.add_to(py, g, &r, true, &emol),
+                None => Ok(g),
+            }
         })
         .transpose()?;
     let mut result = PyUhfResult::from_scf(r, &emol, &config, &prep, fock_hooked);
@@ -1483,7 +1563,7 @@ pub(crate) fn run_uhf(
     level_shift=None, mom_after_iter=None,
     point_charges=None, external_field=None, memory_budget_gb=None, fock_hook=None,
     guess_basis=None, guess_projection=None, ri_j_precision=None, dm0=None,
-    with_gradient=false, eri=None, relativistic=None,
+    with_gradient=false, eri=None, relativistic=None, fock_hook_grad=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_rohf(
@@ -1512,8 +1592,10 @@ pub(crate) fn run_rohf(
     with_gradient: bool,
     eri: Option<&str>,
     relativistic: Option<&str>,
+    fock_hook_grad: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyUhfResult> {
     refuse_dm0_with_guess("run_rohf", dm0.is_some(), None, guess_basis)?;
+    let hook_grad = parse_fock_hook_grad("run_rohf", fock_hook, fock_hook_grad, with_gradient)?;
     let guess_basis = parse_guess_basis(guess_basis, guess_projection)?;
     let mut emol = mol.inner.clone();
     emol.apply_ecp(&basis_set.inner);
@@ -1553,6 +1635,9 @@ pub(crate) fn run_rohf(
     };
     if with_gradient {
         config = scf_gradient_config("run_rohf", ScfGradientKind::Rohf, &config, fock_hook)?;
+        if fock_hook.is_some() && hook_grad.is_none() {
+            return refuse_hook_without_grad("run_rohf");
+        }
     }
     let ctx = ParallelContext::default();
     // Release the GIL for the duration of the SCF. Every argument below is an
@@ -1593,7 +1678,11 @@ pub(crate) fn run_rohf(
     let gradient = with_gradient
         .then(|| {
             let k = ScfGradientKind::Rohf;
-            scf_gradient(py, k, &emol, &prep, &basis_set.inner, &bounds, &config, &r)
+            let g = scf_gradient(py, k, &emol, &prep, &basis_set.inner, &bounds, &config, &r)?;
+            match &hook_grad {
+                Some(h) => h.add_to(py, g, &r, true, &emol),
+                None => Ok(g),
+            }
         })
         .transpose()?;
     let mut result = PyUhfResult::from_scf(r, &emol, &config, &prep, fock_hooked);

@@ -284,6 +284,38 @@ where
     Ok(grad)
 }
 
+/// The nuclear gradient of a Fock-hooked SCF
+/// ([`crate::rhf::solve_rhf_with_hook`], [`crate::uhf::solve_uhf_with_hook`],
+/// [`crate::rohf::solve_rohf_with_hook`]): `grad`, the built-in gradient of
+/// the HOOKED result (from [`restricted_scf_gradient`] or its open-shell
+/// siblings), plus `explicit = ∂E_hook/∂R` at fixed AO density, `(natoms, 3)`
+/// in Hartree/Bohr.
+///
+/// The built-in gradient already holds the hook's Pulay term: its
+/// energy-weighted density comes from the converged orbitals and eigenvalues
+/// of the hooked Fock matrix (or, for ROHF, from the hooked spin Fock
+/// matrices). Only the explicit term is the caller's; what it must and must
+/// not contain is derived in this crate's `theory.md` ("Fock hooks and their
+/// nuclear gradient"). A mis-shaped or non-finite `explicit` is an error.
+pub fn with_fock_hook_gradient(
+    grad: Array2<f64>,
+    explicit: &Array2<f64>,
+) -> Result<Array2<f64>, FerricError> {
+    if explicit.dim() != grad.dim() {
+        return Err(FerricError::General(format!(
+            "Fock-hook gradient: the explicit term has shape {:?}, expected {:?} (natoms, 3)",
+            explicit.dim(),
+            grad.dim()
+        )));
+    }
+    if explicit.iter().any(|v| !v.is_finite()) {
+        return Err(FerricError::General(
+            "Fock-hook gradient: the explicit term is not finite".into(),
+        ));
+    }
+    Ok(grad + explicit)
+}
+
 /// Build the HF energy-weighted density: W_μν = 2 Σ_i^occ ε_i C_μi C_νi.
 /// Contract an arbitrary weight matrix with the overlap first derivative:
 /// returns `(natoms, 3)` with `grad[A,c] = Σ_μν W_μν · ∂S_μν/∂R_{A,c}`.

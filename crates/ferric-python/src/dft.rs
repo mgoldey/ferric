@@ -440,7 +440,7 @@ pub(crate) fn run_double_hybrid(
     cosx_grid=None, cosx_final_pass=None, cosx_final_grid=None, cosx_overlap_fit=None,
     symmetry=false, irrep_nelec=None, fock_hook=None,
     guess_basis=None, guess_projection=None, grid_weight_cut=None, ri_j_precision=None,
-    dm0=None, relativistic=None,
+    dm0=None, relativistic=None, fock_hook_grad=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_dft(
@@ -478,8 +478,11 @@ pub(crate) fn run_dft(
     ri_j_precision: Option<&str>,
     dm0: Option<numpy::PyReadonlyArray2<'_, f64>>,
     relativistic: Option<&str>,
+    fock_hook_grad: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyObject> {
     refuse_dm0_with_guess("run_dft", dm0.is_some(), None, guess_basis)?;
+    let hook_grad =
+        crate::scf::parse_fock_hook_grad("run_dft", fock_hook, fock_hook_grad, with_gradient)?;
     let guess_basis = parse_guess_basis(guess_basis, guess_projection)?;
     // Refuse an (E, grad-E) pair that does not belong to the same surface.
     //
@@ -599,7 +602,13 @@ pub(crate) fn run_dft(
         op,
         &bounds,
         &ladder,
-        fock_hook.map(|h| (h, with_gradient, dispersion.is_some())),
+        fock_hook.map(|h| {
+            (
+                h,
+                with_gradient && hook_grad.is_none(),
+                dispersion.is_some(),
+            )
+        }),
     )?;
     if !rhf.converged {
         return Err(make_err(ferric_core::FerricError::ScfConvergence {
@@ -652,6 +661,10 @@ pub(crate) fn run_dft(
             &rhf,
         )
         .map_err(make_err)?;
+        // The hook's explicit term (its Pulay term is already in `g`).
+        if let Some(h) = &hook_grad {
+            g = h.add_to(py, g, &rhf, false, &emol)?;
+        }
         // Dispersion is additive in the ENERGY, so it is additive in the
         // gradient. Adding it here rather than returning the bare KS gradient
         // is what makes `total_energy` and `gradient()` describe the SAME
@@ -999,6 +1012,7 @@ pub(crate) fn run_ksdft(
         ri_j_precision,
         dm0,
         relativistic,
+        None,
     )
 }
 

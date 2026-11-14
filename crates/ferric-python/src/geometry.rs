@@ -134,7 +134,7 @@ pub(crate) fn optimize_result_certificate(
     df_j_aux=None, df_k_aux=None, scf_ri_j_precision=None, scf_ri_k_precision=None,
     auxbasis=None, frozen_core=None, scf_jk=None, jk_auxbasis=None, memory_budget_gb=None,
     oo_max_iter=None, oo_grad_conv=None, c_os=None, c_ss=None, scf_eri=None,
-    scf_relativistic=None,
+    scf_relativistic=None, fock_hook=None, fock_hook_grad=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_optimize(
@@ -170,6 +170,8 @@ pub(crate) fn run_optimize(
     c_ss: Option<f64>,
     scf_eri: Option<&str>,
     scf_relativistic: Option<&str>,
+    fock_hook: Option<&Bound<'_, PyAny>>,
+    fock_hook_grad: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyOptimizeResult> {
     // Before any setup: no method here has an X2C-1e gradient.
     refuse_relativistic_kwarg(scf_relativistic, "analytic nuclear gradient (run_optimize)")?;
@@ -218,6 +220,14 @@ pub(crate) fn run_optimize(
     let mut emol = mol.inner.clone();
     emol.apply_ecp(&bs);
     let opt_config = optimize_config(max_steps, e_conv, scf_warm_start);
+    if fock_hook.is_some() || fock_hook_grad.is_some() {
+        let hooks = check_optimize_hooks(fock_hook, fock_hook_grad, method, &k, scf_warm_start)?;
+        let opt_config = OptimizeConfig {
+            scf_warm_start: false,
+            ..opt_config
+        };
+        return run_optimize_hooked(py, &emol, basis_name, &cfg, &opt_config, spin, hooks);
+    }
     match method {
         OptimizeMethod::Scf => run_optimize_scf(py, &emol, basis_name, &cfg, &opt_config, spin, &k),
         OptimizeMethod::RiMp2 => run_optimize_rimp2(py, &emol, basis_name, &cfg, &opt_config, &k),
@@ -270,6 +280,8 @@ pub(crate) fn run_optimize_uhf(
         scf_warm_start,
         "scf",
         Some("uhf"),
+        None,
+        None,
         None,
         None,
         None,
@@ -494,6 +506,253 @@ fn run_optimize_scf(
         mol_data: r.mol,
         certificate_data,
     })
+}
+
+/// `run_optimize`'s `fock_hook` / `fock_hook_grad` pair, checked: both or
+/// neither, `method="scf"` only, no `dispersion` (its terms would not see the
+/// hook), and no `scf_warm_start=True` (each hooked step starts from the
+/// default guess).
+fn check_optimize_hooks<'a, 'py>(
+    fock_hook: Option<&'a Bound<'py, PyAny>>,
+    fock_hook_grad: Option<&'a Bound<'py, PyAny>>,
+    method: OptimizeMethod,
+    k: &OptimizeKwargs,
+    scf_warm_start: Option<bool>,
+) -> PyResult<(&'a Bound<'py, PyAny>, blocks::PyFockHookGrad)> {
+    let refuse = |why: &str| Err(value_error(format!("run_optimize: {why}")));
+    let (Some(hook), Some(grad)) = (fock_hook, fock_hook_grad) else {
+        return refuse(
+            "fock_hook and fock_hook_grad go together: the optimizer needs the hook's explicit \
+             nuclear derivative dE_hook/dR at fixed density (zeros when the hook depends on \
+             the density only)",
+        );
+    };
+    if method != OptimizeMethod::Scf {
+        return refuse("fock_hook is read only with method=\"scf\"");
+    }
+    if k.dispersion.is_some() {
+        return refuse("fock_hook cannot be combined with dispersion");
+    }
+    if scf_warm_start == Some(true) {
+        return refuse(
+            "scf_warm_start=True is not applied with a fock_hook (each step starts \
+             from the default guess)",
+        );
+    }
+    Ok((hook, blocks::PyFockHookGrad::new(grad)?))
+}
+
+/// `run_optimize(method="scf", fock_hook=, fock_hook_grad=)`: the BFGS
+/// driver of every SCF optimization
+/// (`ferric_scf::optimize::optimize_geometry_with_energy_gradient`) on the
+/// hooked surface. At each geometry: the hooked SCF of `spin` from the default
+/// guess (both hooks are called with the step's `Molecule` as their last
+/// argument), its analytic gradient, plus the hook's explicit term. The
+/// certificate's reference is the hooked SCF at the returned geometry.
+fn run_optimize_hooked(
+    py: Python<'_>,
+    emol: &Molecule,
+    basis_name: &str,
+    cfg: &RhfConfig,
+    opt_config: &OptimizeConfig,
+    spin: ferric_scf::Spin,
+    (hook, grad): (&Bound<'_, PyAny>, blocks::PyFockHookGrad),
+) -> PyResult<PyOptimizeResult> {
+    let cfg = ferric_scf::gradient::gradient_task_config(&cfg.for_geometry_task()).into_owned();
+    ferric_scf::rhf::validate_fock_hook(&cfg).map_err(|e| value_error(e.to_string()))?;
+    let preflight = match spin {
+        ferric_scf::Spin::Restricted => ferric_scf::gradient::preflight_cosx_restricted(&cfg),
+        ferric_scf::Spin::Unrestricted => ferric_scf::gradient::preflight_cosx_unrestricted(&cfg),
+        ferric_scf::Spin::RestrictedOpen => {
+            ferric_scf::gradient::preflight_cosx_restricted_open(&cfg)
+        }
+    };
+    preflight.map_err(|e| value_error(format!("run_optimize: {e}")))?;
+    let bs = basis::bundled(basis_name).map_err(make_err)?;
+    let nao = PreparedBasis::new(emol, &bs).map_err(make_err)?.nbasis();
+    let mut h = blocks::PyFockHook::new(hook, nao)?;
+    let mut step = HookedStep {
+        bs: &bs,
+        cfg: &cfg,
+        spin,
+        grad: &grad,
+        py_err: None,
+        lowest: None,
+        last: None,
+    };
+    let r = py.allow_threads(|| {
+        ferric_scf::optimize::optimize_geometry_with_energy_gradient(emol, opt_config, |m| {
+            step.evaluate(m, &mut h)
+        })
+    });
+    if let Some(e) = step.py_err.take() {
+        return Err(e);
+    }
+    let r = h.finish(r)?;
+    let candidates = [step.last, step.lowest];
+    let certificate_data = hooked_optimize_certificate(&r, candidates, opt_config, &cfg, spin);
+    Ok(PyOptimizeResult {
+        energy: r.energy,
+        converged: r.converged,
+        steps: r.steps,
+        energy_trace: r.energy_trace,
+        mol_data: r.mol,
+        certificate_data,
+    })
+}
+
+/// One geometry of [`run_optimize_hooked`], with the state the steps share:
+/// a Python error raised by `fock_hook_grad` (or by building the geometry
+/// argument), re-raised once the optimizer has unwound, and the last and the
+/// lowest-energy evaluations, one of which is at the returned geometry (the
+/// certificate's reference).
+struct HookedStep<'a> {
+    bs: &'a ferric_core::basis::BasisSet,
+    cfg: &'a RhfConfig,
+    spin: ferric_scf::Spin,
+    grad: &'a blocks::PyFockHookGrad,
+    py_err: Option<PyErr>,
+    lowest: Option<(Molecule, ScfResult)>,
+    last: Option<(Molecule, ScfResult)>,
+}
+
+impl HookedStep<'_> {
+    /// Keep `e` for the caller, stashing a Python error.
+    fn stash<T>(&mut self, r: PyResult<T>) -> Result<T, ferric_core::FerricError> {
+        r.map_err(|e| {
+            self.py_err = Some(e);
+            ferric_core::FerricError::General("fock_hook_grad failed".into())
+        })
+    }
+
+    /// The hooked SCF energy and full gradient at `m`.
+    fn evaluate(
+        &mut self,
+        m: &Molecule,
+        h: &mut blocks::PyFockHook,
+    ) -> Result<(f64, Array2<f64>), ferric_core::FerricError> {
+        use ferric_scf::Spin;
+        let prep = PreparedBasis::new(m, self.bs)?;
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute_for_screening(op, &prep, self.cfg.screening)?;
+        let cfg = ferric_scf::raw_handoff::with_fresh_handoff(self.cfg);
+        let geometry = Python::with_gil(|py| h.set_geometry(py, m));
+        self.stash(geometry)?;
+        let r = hooked_solve(m, &prep, &bounds, &cfg, self.spin, h)?;
+        if !r.converged {
+            return Err(ferric_core::FerricError::ScfConvergence {
+                iterations: r.iterations,
+                last_energy: r.energy,
+            });
+        }
+        let bs = self.bs;
+        let g = match self.spin {
+            Spin::Restricted => ferric_scf::gradient::restricted_scf_gradient,
+            Spin::Unrestricted => ferric_scf::gradient::unrestricted_scf_gradient,
+            Spin::RestrictedOpen => ferric_scf::gradient::restricted_open_scf_gradient,
+        }(m, &prep, bs, op, &bounds, &cfg, &r)?;
+        let open = self.spin != Spin::Restricted;
+        let g = Python::with_gil(|py| self.grad.add_to(py, g, &r, open, m));
+        let g = self.stash(g)?;
+        let e = r.energy;
+        self.record(m, r);
+        Ok((e, g))
+    }
+
+    /// Make `(m, r)` the last evaluation; `lowest` keeps the lowest-energy
+    /// earlier one when it is below every later one (`None` when the last
+    /// evaluation is the lowest).
+    fn record(&mut self, m: &Molecule, r: ScfResult) {
+        let below = |a: &Option<(Molecule, ScfResult)>, e: f64| {
+            a.as_ref().is_some_and(|(_, b)| b.energy < e)
+        };
+        if let Some(prev) = self.last.take() {
+            if !below(&self.lowest, prev.1.energy) {
+                self.lowest = Some(prev);
+            }
+        }
+        if !below(&self.lowest, r.energy) {
+            self.lowest = None;
+        }
+        self.last = Some((m.clone(), r));
+    }
+}
+
+/// The hooked SCF of `spin` at one geometry.
+fn hooked_solve(
+    m: &Molecule,
+    prep: &PreparedBasis,
+    bounds: &SchwarzBounds,
+    cfg: &RhfConfig,
+    spin: ferric_scf::Spin,
+    h: &mut blocks::PyFockHook,
+) -> Result<ScfResult, ferric_core::FerricError> {
+    use ferric_scf::{rhf, rohf, uhf, Spin};
+    let ctx = ParallelContext::default();
+    match spin {
+        Spin::Restricted => {
+            let mut f = |d: &Array2<f64>| h.call(d);
+            rhf::solve_rhf_with_hook(&ctx, m, prep, Operator::coulomb(), bounds, cfg, &mut f)
+        }
+        Spin::Unrestricted => {
+            let mut f = |a: &Array2<f64>, b: &Array2<f64>| h.call_spin(a, b);
+            uhf::solve_uhf_with_hook(&ctx, m, prep, bounds, cfg, &mut f)
+        }
+        Spin::RestrictedOpen => {
+            let mut f = |a: &Array2<f64>, b: &Array2<f64>| h.call_spin(a, b);
+            rohf::solve_rohf_with_hook(&ctx, m, prep, bounds, cfg, &mut f)
+        }
+    }
+}
+
+/// Certificate of a hooked optimization: the hooked SCF of the candidate
+/// evaluation (last, lowest) at the returned geometry is the reference,
+/// recorded with the `fock-hook` approximation. If neither is at the returned
+/// geometry the certificate is `not graded` and says so.
+fn hooked_optimize_certificate(
+    r: &ferric_scf::optimize::OptimizeResult,
+    candidates: [Option<(Molecule, ScfResult)>; 2],
+    opt_config: &OptimizeConfig,
+    cfg: &RhfConfig,
+    spin: ferric_scf::Spin,
+) -> ferric_core::certificate::Certificate {
+    let kind = match (spin, cfg.xc.is_some()) {
+        (ferric_scf::Spin::Restricted, false) => "rhf",
+        (ferric_scf::Spin::Restricted, true) => "ksdft",
+        (ferric_scf::Spin::Unrestricted, _) => "uhf",
+        (ferric_scf::Spin::RestrictedOpen, _) => "rohf",
+    };
+    let same_geometry = |m: &Molecule| {
+        m.atoms.len() == r.mol.atoms.len()
+            && m.atoms.iter().zip(&r.mol.atoms).all(|(a, b)| {
+                a.x.to_bits() == b.x.to_bits()
+                    && a.y.to_bits() == b.y.to_bits()
+                    && a.zpos.to_bits() == b.zpos.to_bits()
+            })
+    };
+    match candidates
+        .into_iter()
+        .flatten()
+        .find(|(m, _)| same_geometry(m))
+    {
+        Some((m, scf)) => {
+            let reference =
+                ferric_scf::certificate::with_fock_hook(stamped_scf_certificate(&m, &scf, cfg));
+            ferric_scf::certificate::optimize_certificate(
+                kind,
+                &reference,
+                r.converged,
+                r.steps,
+                r.energy,
+                opt_config,
+                "analytic",
+            )
+        }
+        _ => ferric_core::certificate::Certificate::ungraded(format!("optimize:{kind}")).warn(
+            "no hooked SCF was kept at the returned geometry, so there is no final-point \
+             reference",
+        ),
+    }
 }
 
 /// The SCF optimizer of `spin`, plus `spec`'s energy and analytic gradient at
