@@ -8,13 +8,21 @@ number. To go from a task to a method, start with
 
 | Family | Methods | Page |
 |---|---|---|
-| SCF and DFT | RHF, UHF, ROHF; KS-DFT (LDA, GGA, hybrid, range-separated, VV10, SCAN/r2SCAN/TPSS); D3(BJ) and MBD@rsSCS dispersion; IEF-PCM and COSMO solvation; gradients, optimization, frequencies (analytic Hessian for RHF/UHF/ROHF and closed-shell KS LDA/GGA; finite differences otherwise), TS search and IRC | [SCF and DFT](./scf.md) |
-| MP2 | RI-MP2, attenuated (erfc, terfc), SCS, SCS-MP2(2terfc), MP2-V, RS-MP2 + LR-RPA, OO-RI-MP2, MP3, Laplace MP2 and SOS-MP2; local approximation of RI-MP2 | [The MP2 family](./mp2.md) |
+| SCF and DFT | RHF, UHF, ROHF; KS-DFT, closed and open shell (LDA, GGA, hybrid, range-separated, VV10, SCAN/r2SCAN/TPSS); D3(BJ) and MBD@rsSCS dispersion; IEF-PCM and COSMO solvation; gradients, optimization, frequencies (analytic Hessian for RHF/UHF/ROHF and RKS/UKS LDA/GGA, pure or global hybrid; finite differences otherwise), TS search and IRC | [SCF and DFT](./scf.md) |
+| MP2 | SCS, OO-RI-MP2, MP3, Laplace MP2 and SOS-MP2; local approximation of RI-MP2. Maintainer focus ([note](#maintainers-focus-marker)): RI-MP2, attenuated (erfc, terfc) MP2, SCS-MP2(2terfc), MP2-V, RS-MP2 + LR-RPA | [The MP2 family](./mp2.md) |
 | Coupled cluster | CCD, CCSD, CCSD(T), LinLCCD (hh, drivers-only, full; exact or local); double hybrids B2PLYP, DSD-PBEP86, ωB97X-L-V | [Coupled cluster](./cc.md) |
-| CAS-CI, CASSCF | full CI in an active space on a closed-shell RHF reference, lowest root; two-step CASSCF orbital optimization; Rust library and Python (`run_casci`, `run_casscf`), no CLI | [CAS-CI](./ci.md) |
-| Response | PDEP-RPA, dRPA by the Riccati solve (exact or local), G0W0, COHSEX, evGW0, evGW, BSE-TDA, TDA/TDDFT, polarizabilities and \\( C_6 \\) | [RPA, GW and excited states](./rpa-gw.md) |
-| Electron transfer | cDFT, \\( H_{ab} \\) couplings (Python and Rust, no CLI) | [Constrained DFT](./cdft.md) |
+| Multireference | CAS-CI (library and Python), CASSCF and SC-NEVPT2 (CLI kinds `casscf` and `nevpt2`, and Python `run_casscf`, `run_nevpt2`) on a closed-shell RHF start, lowest root | [CAS-CI and CASSCF](./ci.md) |
+| Excited states | TDA and TDDFT on a closed-shell RHF or RKS reference; BSE-TDA on G0W0 | [RPA, GW and excited states](./rpa-gw.md#tddft-and-tda) |
 | Periodic systems | Gamma-point and k-point RHF/UHF/ROHF, RKS/UKS/ROKS, MP2, dRPA; analytic forces and stress; dense AFT or RS-GDF J/K | [Periodic systems](./pbc.md) |
+| RPA and GW | dRPA by the Riccati solve (exact or local), G0W0, COHSEX, evGW0, evGW; polarizabilities and \\( C_6 \\). Maintainer focus ([note](#maintainers-focus-marker)): PDEP-RPA | [RPA, GW and excited states](./rpa-gw.md) |
+| Electron transfer | Maintainer focus ([note](#maintainers-focus-marker)): cDFT, \\( H_{ab} \\) couplings (Python and Rust, no CLI) | [Constrained DFT](./cdft.md) |
+
+#### Maintainer's focus marker
+
+RI-MP2, attenuated MP2, MP2-V, constrained DFT and PDEP-RPA are the
+maintainer's research areas and get the deepest validation. The
+[landing page](../index.md#maintainers-focus) says what that means for the
+other families.
 
 QM/MM embedding is on its own page: [QM/MM](../using/qmmm.md).
 
