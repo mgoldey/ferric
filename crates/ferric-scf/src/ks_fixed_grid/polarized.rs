@@ -35,6 +35,7 @@
 //! gates `V^s`; the energy density `f` is not gated (nor is the production
 //! energy).
 
+use super::response_block::AoTable;
 use super::*;
 use ferric_dft::libxc::xc_def_from_name_nspin;
 use std::sync::Arc;
@@ -700,12 +701,50 @@ impl<'a> PolarizedKs<'a> {
         factor: f64,
         m: &XcMutants,
     ) -> Result<PolarizedXcResponse, FerricError> {
-        let grid = self.grid;
         let nbf = d[0].nrows();
+        self.grid.check_response_table(nbf)?;
+        let mut table = AoTable::zeros(nbf, self.grid.npts(), self.grid.gga);
+        let kernel = self.response_kernel(geo, d, (factor, m), |g0, ao| {
+            table.store(g0, &ao.chi, ao.dchi.as_ref())
+        })?;
+        Ok(PolarizedXcResponse { table, kernel })
+    }
+
+    /// [`Self::response`] in the MO form the CPKS iterates in: each spin's
+    /// MOs `c[s]` (the first `nocc[s]` occupied) on the grid replace the AO
+    /// table ([`PolarizedXcMoResponse`]). Two spin tables of `nmo × npts` per
+    /// plane: [`check_response_table`] is charged for `2 nbf` rows.
+    pub fn response_mo(
+        &self,
+        geo: &XcGeometry<'_>,
+        d: [&Array2<f64>; 2],
+        (c, nocc): ([&Array2<f64>; 2], [usize; 2]),
+        factor: f64,
+        m: &XcMutants,
+    ) -> Result<PolarizedXcMoResponse, FerricError> {
+        let npts = self.grid.npts();
+        self.grid.check_response_table(2 * d[0].nrows())?;
+        let mut tables =
+            [0, 1].map(|s| mo_response::MoTable::zeros(c[s].ncols(), nocc[s], npts, self.grid.gga));
+        let kernel = self.response_kernel(geo, d, (factor, m), |g0, ao| {
+            for s in 0..2 {
+                tables[s].store(c[s], g0, &ao.chi, ao.dchi.as_ref());
+            }
+        })?;
+        Ok(PolarizedXcMoResponse { tables, kernel })
+    }
+
+    /// The spin-coupled kernel at `d` over the whole grid, each batch's AOs
+    /// handed to `store(g0, ao)` (the table of the route being built).
+    fn response_kernel(
+        &self,
+        geo: &XcGeometry<'_>,
+        d: [&Array2<f64>; 2],
+        (factor, m): (f64, &XcMutants),
+        mut store: impl FnMut(usize, &Ao),
+    ) -> Result<PolarizedKernel, FerricError> {
+        let grid = self.grid;
         let npts = grid.npts();
-        grid.check_response_table(nbf)?;
-        let mut chi = Array2::<f64>::zeros((nbf, npts));
-        let mut dchi = grid.gga.then(|| Array3::<f64>::zeros((3, nbf, npts)));
         let mut g = grid
             .gga
             .then(|| [0, 1].map(|_| Array2::<f64>::zeros((3, npts))));
@@ -718,10 +757,8 @@ impl<'a> PolarizedKs<'a> {
         };
         for (g0, g1) in grid.ranges() {
             let b = self.batch(geo, d, (g0, g1), Level::Value, true, m)?;
-            let ao = &b.spins[0].ao;
-            chi.slice_mut(s![.., g0..g1]).assign(&ao.chi);
-            if let (Some(dst), Some(gd)) = (dchi.as_mut(), g.as_mut()) {
-                dst.slice_mut(s![.., .., g0..g1]).assign(ao.dchi());
+            store(g0, &b.spins[0].ao);
+            if let Some(gd) = g.as_mut() {
                 for s in 0..2 {
                     let gp = b.spins[s].grad.as_ref().expect("gradient part");
                     gd[s].slice_mut(s![.., g0..g1]).assign(&gp.g);
@@ -733,9 +770,7 @@ impl<'a> PolarizedKs<'a> {
                 k.mask[s].slice_mut(s![g0..g1]).assign(&b.k.mask[s]);
             }
         }
-        Ok(PolarizedXcResponse {
-            chi,
-            dchi,
+        Ok(PolarizedKernel {
             w: Array1::from(grid.w.clone()),
             g,
             k,
@@ -814,11 +849,9 @@ fn pol_response(
     })
 }
 
-/// `(D1^α, D1^β) ↦ (V1^α, V1^β)` for symmetric response densities: the
-/// spin-coupled XC kernel of the UKS response (CPKS).
-pub struct PolarizedXcResponse {
-    chi: Array2<f64>,
-    dchi: Option<Array3<f64>>,
+/// The spin-coupled kernel at the converged spin densities, shared by the AO
+/// ([`PolarizedXcResponse`]) and MO ([`PolarizedXcMoResponse`]) routes.
+struct PolarizedKernel {
     w: Array1<f64>,
     g: Option<[Array2<f64>; 2]>,
     k: PolKernel,
@@ -826,50 +859,101 @@ pub struct PolarizedXcResponse {
     spin: SpinMutants,
 }
 
-impl PolarizedXcResponse {
-    /// The XC potential responses of both spins to `(d1[0], d1[1])`: point
-    /// chunks in parallel, added in chunk order.
-    pub fn apply(&self, d1: [&Array2<f64>; 2]) -> [Array2<f64>; 2] {
-        let nbf = self.chi.nrows();
-        let mut v = [0, 1].map(|_| Array2::<f64>::zeros((nbf, nbf)));
-        let chunks = response_chunks(self.chi.ncols());
-        fold_batches(
-            &chunks,
-            2 * nbf * nbf,
-            |&(c0, c1)| Ok(self.apply_chunk(d1, c0, c1)),
-            |[pa, pb]| {
-                v[0] += &pa;
-                v[1] += &pb;
-            },
-        )
-        .expect("the response kernel chunks are infallible");
-        v
-    }
-
-    /// The contribution of the points `c0..c1`.
-    fn apply_chunk(&self, d1: [&Array2<f64>; 2], c0: usize, c1: usize) -> [Array2<f64>; 2] {
-        let chi = self.chi.slice(s![.., c0..c1]);
-        let dchi = self.dchi.as_ref().map(|d| d.slice(s![.., .., c0..c1]));
-        let pd = d1.map(|x| x.dot(&chi));
-        let rho1 = [0, 1].map(|s| (&chi * &pd[s]).sum_axis(Axis(0)));
-        let g1 = dchi.map(|dchi| [0, 1].map(|s| gradient_response(dchi, &pd[s])));
+impl PolarizedKernel {
+    /// The potential weights of every spin density of a chunk `c0..c1`
+    /// (pairs `(α, β)` in order): the kernel is sliced once and applied per
+    /// coordinate pair.
+    fn chunk_weights(
+        &self,
+        c0: usize,
+        c1: usize,
+        pd: &super::response_block::PointDensities,
+    ) -> Vec<super::response_block::PotentialWeights> {
         let k = self.k.slice(c0, c1);
         let w = self.w.slice(s![c0..c1]).to_owned();
         let g = self
             .g
             .as_ref()
             .map(|g| [0, 1].map(|s| g[s].slice(s![.., c0..c1]).to_owned()));
-        let r = pol_response(
-            &k,
-            &w,
-            g.as_ref().map(|g| [&g[0], &g[1]]),
-            [&rho1[0], &rho1[1]],
-            g1.as_ref().map(|g| [&g[0], &g[1]]),
-            &self.spin,
-        );
-        r.map(|(df, dg)| {
-            let gw = dg.map(|dg| self.factor * dg);
-            vmat_views(chi, dchi, &(self.factor * &df), gw.as_ref())
-        })
+        let mut out = Vec::with_capacity(pd.rho1.nrows());
+        for pair in 0..pd.rho1.nrows() / 2 {
+            let rho1 = [0, 1].map(|s| pd.rho1(2 * pair + s));
+            let g1 = g
+                .as_ref()
+                .map(|_| [0, 1].map(|s| pd.g1(2 * pair + s).expect("GGA table")));
+            let r = pol_response(
+                &k,
+                &w,
+                g.as_ref().map(|g| [&g[0], &g[1]]),
+                [&rho1[0], &rho1[1]],
+                g1.as_ref().map(|g| [&g[0], &g[1]]),
+                &self.spin,
+            );
+            out.extend(r.map(|(df, dg)| (self.factor * &df, dg.map(|dg| self.factor * dg))));
+        }
+        out
+    }
+}
+
+/// Pair up a flat `[α_1, β_1, α_2, β_2, …]` list.
+fn pairs<T>(flat: Vec<T>) -> Vec<[T; 2]> {
+    let mut it = flat.into_iter();
+    let mut out = Vec::new();
+    while let (Some(a), Some(b)) = (it.next(), it.next()) {
+        out.push([a, b]);
+    }
+    out
+}
+
+/// `(D1^α, D1^β) ↦ (V1^α, V1^β)` for symmetric response densities: the
+/// spin-coupled XC kernel of the UKS response (CPKS), AO route.
+pub struct PolarizedXcResponse {
+    table: AoTable,
+    kernel: PolarizedKernel,
+}
+
+impl PolarizedXcResponse {
+    /// The XC potential responses of both spins to `(d1[0], d1[1])`
+    /// ([`Self::apply_many`] of one pair).
+    pub fn apply(&self, d1: [&Array2<f64>; 2]) -> [Array2<f64>; 2] {
+        self.apply_many(&[d1]).remove(0)
+    }
+
+    /// The responses of both spins to every spin-density pair of `d1s`, in
+    /// lockstep (the `response_block` module): per point chunk, all `2n`
+    /// spin densities on the points by one product with the resident table,
+    /// the spin-coupled kernel pointwise per pair, one stacked product back.
+    pub fn apply_many(&self, d1s: &[[&Array2<f64>; 2]]) -> Vec<[Array2<f64>; 2]> {
+        let flat: Vec<&Array2<f64>> = d1s.iter().flat_map(|[a, b]| [*a, *b]).collect();
+        let table = self.table.resident();
+        pairs(table.apply(&flat, 2, |c0, c1, pd| self.kernel.chunk_weights(c0, c1, pd)))
+    }
+}
+
+/// The UKS response in MO form (the `mo_response` module): for per-spin
+/// rotations `(U_α, U_β)` (rows over each spin's MOs `input`) of the spin
+/// densities `D1_s = C_r^s U_s C_o^sᵀ + C_o^s U_sᵀ C_r^sᵀ`, the projections
+/// `C_p^sᵀ V1^s C_o^s` on each spin's MO rows `output`.
+pub struct PolarizedXcMoResponse {
+    tables: [super::mo_response::MoTable; 2],
+    kernel: PolarizedKernel,
+}
+
+impl PolarizedXcMoResponse {
+    /// `[C_out^αᵀ V1^α C_o^α, C_out^βᵀ V1^β C_o^β]` for every rotation pair.
+    pub fn apply_many(
+        &self,
+        us: &[[&Array2<f64>; 2]],
+        input: MoRows,
+        output: MoRows,
+    ) -> Vec<[Array2<f64>; 2]> {
+        let flat: Vec<&Array2<f64>> = us.iter().flat_map(|[a, b]| [*a, *b]).collect();
+        let product = super::mo_response::MoProduct {
+            tables: &[&self.tables[0], &self.tables[1]],
+            input,
+            output,
+            scale: 2.0,
+        };
+        pairs(product.apply(&flat, |c0, c1, pd| self.kernel.chunk_weights(c0, c1, pd)))
     }
 }

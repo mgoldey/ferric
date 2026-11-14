@@ -93,6 +93,8 @@
 //! veto, DIIS reset and f64 rebuilds to re-converge) would cost one integral
 //! recompute per extra iteration and is not implemented.
 
+mod many;
+
 use crate::fock::JBuilder;
 use ferric_core::gpu::mixed_host::{gamma, U32, U64};
 use ferric_core::gpu::stats::{note_kernel_mixed, note_mixed_fallback, MixedFallback};

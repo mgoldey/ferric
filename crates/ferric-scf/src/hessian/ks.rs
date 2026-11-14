@@ -1081,13 +1081,18 @@ fn rks_fixed_grid_hessian_core(
         *f += &v;
     }
     let t = phases.begin("XC response kernel build");
-    let kernel = grid.response(&geo, d, mutants.response_fxc, mutants.response_gradient)?;
+    let kernel = grid.response_mo(
+        &geo,
+        d,
+        (rks.mos_r(), nocc),
+        mutants.response_fxc,
+        mutants.response_gradient,
+    )?;
     phases.stop(t);
-    let kernel_fn = |d1: &Array2<f64>| kernel.apply(d1);
     let (df_j, df_k) = cphf_fitters(prep, op, j_for_k(mutants.cphf_dfk_from_j_aux), mutants)?;
     let g = TwoElectronBuilder::new(ctx, prep, bounds)?
         .fitted(df_j, df_k, false)
-        .with_xc_response(Some(&kernel_fn), exx * mutants.response_exx);
+        .with_xc_mo_response(&kernel, exx * mutants.response_exx);
     let t = phases.begin("CPKS");
     let resp = cpks_response_with(&g, rks, nocc, &first)?;
     phases.stop(t);

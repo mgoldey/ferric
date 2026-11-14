@@ -69,7 +69,9 @@
 
 use crate::rhf::XcBuilder;
 
+mod mo_response;
 mod polarized;
+mod response_block;
 use ferric_core::basis::BasisSet;
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
@@ -83,8 +85,9 @@ use ferric_integrals::ao_grid::{
 };
 use ferric_integrals::ao_grid_third::{eval_basis_third_on_points, THIRD_ORDER};
 use ferric_integrals::basis_bridge::PreparedBasis;
+pub use mo_response::MoRows;
 use ndarray::{s, Array1, Array2, Array3, Array4, ArrayView2, Axis};
-pub use polarized::{PolarizedKs, PolarizedXcResponse, SpinMutants};
+pub use polarized::{PolarizedKs, PolarizedXcMoResponse, PolarizedXcResponse, SpinMutants};
 use rayon::prelude::*;
 
 /// Grid points per batch (AO planes are `nbf × BATCH`; the Hessian-level
@@ -1247,12 +1250,45 @@ impl FixedGridKs {
         factor: f64,
         gradient_terms: f64,
     ) -> Result<XcResponse, FerricError> {
-        let nbf = d.nrows();
+        let mut table = response_block::AoTable::zeros(d.nrows(), self.npts(), self.gga);
+        let kernel = self.response_kernel(geo, d, (factor, gradient_terms), |g0, ao| {
+            table.store(g0, &ao.chi, ao.dchi.as_ref())
+        })?;
+        Ok(XcResponse { table, kernel })
+    }
+
+    /// [`Self::response`] in the MO form the CPKS iterates in: the MOs `c`
+    /// (the first `nocc` occupied) on the grid replace the AO table
+    /// ([`XcMoResponse`]). The table is `nmo × npts` per plane, at most the
+    /// AO table [`check_response_table`] charges.
+    pub fn response_mo(
+        &self,
+        geo: &XcGeometry<'_>,
+        d: &Array2<f64>,
+        (c, nocc): (&Array2<f64>, usize),
+        factor: f64,
+        gradient_terms: f64,
+    ) -> Result<XcMoResponse, FerricError> {
+        let mut table = mo_response::MoTable::zeros(c.ncols(), nocc, self.npts(), self.gga);
+        let kernel = self.response_kernel(geo, d, (factor, gradient_terms), |g0, ao| {
+            table.store(c, g0, &ao.chi, ao.dchi.as_ref());
+        })?;
+        Ok(XcMoResponse { table, kernel })
+    }
+
+    /// The response kernel at `d` over the whole grid, each batch's AOs
+    /// handed to `store(g0, ao)` (the table of the route being built). Runs
+    /// [`Self::check_response_table`] first.
+    fn response_kernel(
+        &self,
+        geo: &XcGeometry<'_>,
+        d: &Array2<f64>,
+        (factor, gradient_terms): (f64, f64),
+        mut store: impl FnMut(usize, &Ao),
+    ) -> Result<ResponseKernel, FerricError> {
         let npts = self.npts();
-        self.check_response_table(nbf)?;
-        let mut resp = XcResponse {
-            chi: Array2::<f64>::zeros((nbf, npts)),
-            dchi: self.gga.then(|| Array3::<f64>::zeros((3, nbf, npts))),
+        self.check_response_table(d.nrows())?;
+        let mut kernel = ResponseKernel {
             w: Array1::from(self.w.clone()),
             g: self.gga.then(|| Array2::<f64>::zeros((3, npts))),
             k: Kernel::zeros(npts),
@@ -1260,18 +1296,16 @@ impl FixedGridKs {
         };
         for (g0, g1) in self.ranges() {
             let b = self.batch(geo, d, (g0, g1), Level::Value, true, gradient_terms)?;
-            resp.chi.slice_mut(s![.., g0..g1]).assign(&b.ao.chi);
-            if let (Some(gp), Some(dst), Some(gd)) = (&b.grad, resp.dchi.as_mut(), resp.g.as_mut())
-            {
-                dst.slice_mut(s![.., .., g0..g1]).assign(b.ao.dchi());
+            store(g0, &b.ao);
+            if let (Some(gp), Some(gd)) = (&b.grad, kernel.g.as_mut()) {
                 gd.slice_mut(s![.., g0..g1]).assign(&gp.g);
             }
-            resp.k.fs.slice_mut(s![g0..g1]).assign(&b.k.fs);
-            resp.k.frr.slice_mut(s![g0..g1]).assign(&b.k.frr);
-            resp.k.frs.slice_mut(s![g0..g1]).assign(&b.k.frs);
-            resp.k.fss.slice_mut(s![g0..g1]).assign(&b.k.fss);
+            kernel.k.fs.slice_mut(s![g0..g1]).assign(&b.k.fs);
+            kernel.k.frr.slice_mut(s![g0..g1]).assign(&b.k.frr);
+            kernel.k.frs.slice_mut(s![g0..g1]).assign(&b.k.frs);
+            kernel.k.fss.slice_mut(s![g0..g1]).assign(&b.k.fss);
         }
-        Ok(resp)
+        Ok(kernel)
     }
 }
 
@@ -1405,46 +1439,91 @@ fn translation_fill(g: ArrayView2<'_, f64>, home: usize, fill: f64) -> Array2<f6
     t.dot(&g).dot(&t.t())
 }
 
-/// `V1[D1] = V[dF[ρ1, g1], dG[ρ1, g1]]` for a symmetric response density `D1`.
-pub struct XcResponse {
-    chi: Array2<f64>,
-    dchi: Option<Array3<f64>>,
+/// The closed-shell kernel at the converged density: the quadrature weights,
+/// `∇ρ` and the functional's derivatives on every point, shared by the AO
+/// ([`XcResponse`]) and MO ([`XcMoResponse`]) routes.
+struct ResponseKernel {
     w: Array1<f64>,
     g: Option<Array2<f64>>,
     k: Kernel,
     factor: f64,
 }
 
-impl XcResponse {
-    /// The XC potential response to the density change `d1`: point chunks in
-    /// parallel (fixed chunks of `RESPONSE_CHUNK` points), added in chunk order.
-    pub fn apply(&self, d1: &Array2<f64>) -> Array2<f64> {
-        let nbf = self.chi.nrows();
-        let mut v = Array2::<f64>::zeros((nbf, nbf));
-        let chunks = response_chunks(self.chi.ncols());
-        fold_batches(
-            &chunks,
-            nbf * nbf,
-            |&(c0, c1)| Ok(self.apply_chunk(d1, c0, c1)),
-            |p| v += &p,
-        )
-        .expect("the response kernel chunks are infallible");
-        v
-    }
-
-    /// The contribution of the points `c0..c1`.
-    fn apply_chunk(&self, d1: &Array2<f64>, c0: usize, c1: usize) -> Array2<f64> {
-        let chi = self.chi.slice(s![.., c0..c1]);
-        let dchi = self.dchi.as_ref().map(|d| d.slice(s![.., .., c0..c1]));
-        let pd = d1.dot(&chi);
-        let rho1 = (&chi * &pd).sum_axis(Axis(0));
-        let g1 = dchi.map(|dchi| gradient_response(dchi, &pd));
+impl ResponseKernel {
+    /// The potential weights of every density of a chunk `c0..c1` from its
+    /// point densities: the kernel is sliced once and applied per density.
+    fn chunk_weights(
+        &self,
+        c0: usize,
+        c1: usize,
+        pd: &response_block::PointDensities,
+    ) -> Vec<response_block::PotentialWeights> {
         let k = self.k.slice(c0, c1);
         let w = self.w.slice(s![c0..c1]).to_owned();
         let g = self.g.as_ref().map(|g| g.slice(s![.., c0..c1]).to_owned());
-        let (df, dg) = weights_response(&k, &w, g.as_ref(), &rho1, g1.as_ref());
-        let gw = dg.map(|dg| self.factor * dg);
-        vmat_views(chi, dchi, &(self.factor * &df), gw.as_ref())
+        (0..pd.rho1.nrows())
+            .map(|i| {
+                let (df, dg) = weights_response(&k, &w, g.as_ref(), &pd.rho1(i), pd.g1(i).as_ref());
+                (self.factor * &df, dg.map(|dg| self.factor * dg))
+            })
+            .collect()
+    }
+}
+
+/// `V1[D1] = V[dF[ρ1, g1], dG[ρ1, g1]]` for a symmetric response density `D1`
+/// (the AO route, over the resident AO table).
+pub struct XcResponse {
+    table: response_block::AoTable,
+    kernel: ResponseKernel,
+}
+
+impl XcResponse {
+    /// The XC potential response to the density change `d1` ([`Self::apply_many`]
+    /// of one density).
+    pub fn apply(&self, d1: &Array2<f64>) -> Array2<f64> {
+        self.apply_many(&[d1]).remove(0)
+    }
+
+    /// The XC potential responses to every density change of `d1s`, in
+    /// lockstep: per point chunk, all densities on the points by one product
+    /// with the resident table, the kernel pointwise per density, one stacked
+    /// product back (the `response_block` module).
+    pub fn apply_many(&self, d1s: &[&Array2<f64>]) -> Vec<Array2<f64>> {
+        self.table
+            .resident()
+            .apply(d1s, 1, |c0, c1, pd| self.kernel.chunk_weights(c0, c1, pd))
+    }
+}
+
+/// The closed-shell response in MO form (the `mo_response` module): for rotations `U`
+/// (rows over the MOs `input`, occupied columns) of the density
+/// `D1 = 2 (C_r U C_oᵀ + C_o Uᵀ C_rᵀ)`, the projections `C_pᵀ V1[D1] C_o` on
+/// the MO rows `output`.
+pub struct XcMoResponse {
+    table: mo_response::MoTable,
+    kernel: ResponseKernel,
+}
+
+impl XcMoResponse {
+    /// Occupied MOs of the table.
+    pub fn nocc(&self) -> usize {
+        self.table.nocc()
+    }
+
+    /// `C_outᵀ V1[D1(U)] C_o` for every rotation of `us`, in lockstep blocks.
+    pub fn apply_many(
+        &self,
+        us: &[&Array2<f64>],
+        input: MoRows,
+        output: MoRows,
+    ) -> Vec<Array2<f64>> {
+        let product = mo_response::MoProduct {
+            tables: &[&self.table],
+            input,
+            output,
+            scale: 4.0,
+        };
+        product.apply(us, |c0, c1, pd| self.kernel.chunk_weights(c0, c1, pd))
     }
 }
 
@@ -1458,16 +1537,6 @@ fn response_chunks(npts: usize) -> Vec<(usize, usize)> {
         .step_by(RESPONSE_CHUNK)
         .map(|c0| (c0, (c0 + RESPONSE_CHUNK).min(npts)))
         .collect()
-}
-
-/// `g1_γ = 2 Σ_μ ∂γχ_μ (D1 χ)_μ` from `pd = D1 χ`, `(3, npts)`.
-fn gradient_response(dchi: ndarray::ArrayView3<'_, f64>, pd: &Array2<f64>) -> Array2<f64> {
-    let mut g1 = Array2::<f64>::zeros((3, pd.ncols()));
-    for gam in 0..3 {
-        g1.row_mut(gam)
-            .assign(&(2.0 * (&dchi.index_axis(Axis(0), gam) * pd).sum_axis(Axis(0))));
-    }
-    g1
 }
 
 /// [`FixedGridKs`] at one geometry as the SCF's [`XcBuilder`] (global-hybrid

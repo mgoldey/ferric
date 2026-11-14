@@ -161,7 +161,8 @@ pub fn uks_moving_grid_hessian_check(
             .clone()
             .unwrap_or_else(ferric_dft::grid::AtomicGridConfig::production),
     )?;
-    grid.check_response_table(prep.nbasis())?;
+    // The UKS response holds one MO table per spin (`PolarizedKs::response_mo`).
+    grid.check_response_table(2 * prep.nbasis())?;
     // `solve_uhf` fits J (K) only over a NAMED auxiliary basis: unset means
     // exact (unlike the closed-shell KS SCF, which defaults to RI-J).
     let resolve = |requested: &Option<String>| match requested.as_deref() {
@@ -388,12 +389,17 @@ pub fn uks_hessian_parts_with(
         ..XcMutants::default()
     };
     let t = phases.begin("XC response kernel build");
-    let kernel = pol.response(&geo, [da, db], mutants.response_fxc, &kernel_mutants)?;
+    let kernel = pol.response_mo(
+        &geo,
+        [da, db],
+        ([uks.mos_a(), uks.mos_b()], nocc),
+        mutants.response_fxc,
+        &kernel_mutants,
+    )?;
     phases.stop(t);
-    let kernel_fn = |d1: [&Array2<f64>; 2]| kernel.apply(d1);
     let g = TwoElectronBuilder::new(ctx, prep, bounds)?
         .fitted(fitted.df_j.take(), fitted.df_k.take(), false)
-        .with_uks_xc_response(&kernel_fn, exx * mutants.response_exx);
+        .with_uks_xc_mo_response(&kernel, exx * mutants.response_exx);
     let t = phases.begin("coupled UKS CPHF");
     let resp = ucphf_response_with(&g, uks, nocc, &fitted.first)?;
     phases.stop(t);
@@ -445,7 +451,7 @@ pub fn uks_response_operator(
     let geo = XcGeometry::new(mol, prep)?;
     let pol = grid.polarized()?;
     let kernel = pol.response(&geo, [da, db], 1.0, mutants)?;
-    let kernel_fn = |d: [&Array2<f64>; 2]| kernel.apply(d);
+    let kernel_fn = |d1s: &[[&Array2<f64>; 2]]| kernel.apply_many(d1s);
     let route = crate::gradient::active_df_route(uks);
     let df_j = route
         .filter(|r| r.j_aux.is_some())

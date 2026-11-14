@@ -182,6 +182,7 @@ use crate::hessian_field::{
     field_first_derivative_matrices, field_skeleton_hessian, nonzero_field,
 };
 use crate::hessian_smeared::{smeared_first_derivative_matrices, smeared_skeleton_hessian};
+use crate::ks_fixed_grid::MoRows;
 use crate::result::{ScfResult, Spin};
 use crate::rhf::RhfConfig;
 use crate::screening::SchwarzBounds;
@@ -221,6 +222,8 @@ pub use uks::{
 };
 #[doc(hidden)]
 pub use uks::{uks_fock_residual, uks_hessian_parts_with, uks_response_operator};
+#[cfg(test)]
+mod cpks_block_tests;
 mod uhf_df;
 use uhf_df::{
     open_shell_two_electron, rohf_occupied_factors, uhf_hessian_parts_with, OpenShellDensities,
@@ -2634,6 +2637,10 @@ struct TwoElectronBuilder<'a> {
     /// `J(D1_α + D1_β) − a K(D1_σ) + V1^σ_xc[D1_α, D1_β]`; `None` for every
     /// Hartree-Fock path.
     uks_xc: Option<(&'a UksXcResponseFn<'a>, f64)>,
+    /// Spin-polarized Kohn-Sham in the MO form the CPKS iterates in: the
+    /// kernel and the global-hybrid fraction `a`. Its responses are added by
+    /// the solver on the MO blocks ([`Self::xc_mo_uhf`]), not to `v_σ`.
+    uks_xc_mo: Option<(&'a crate::ks_fixed_grid::PolarizedXcMoResponse, f64)>,
     /// `FERRIC_TIMING` phase totals of the `G` builds (exact J/K, fitted J,
     /// fitted K, XC kernel); inert when timing is off.
     phases: std::cell::RefCell<ferric_core::timing::PhaseAccumulator>,
@@ -2647,17 +2654,30 @@ struct RhfG<'a> {
     /// Kohn-Sham: the exchange-correlation kernel response `V1_xc[D1]` added to
     /// the RHF `G(D1)`; `None` for every Hartree-Fock path.
     xc: Option<&'a XcResponseFn<'a>>,
+    /// Kohn-Sham in the MO form the CPKS iterates in: the kernel whose
+    /// projected responses the solver adds ([`TwoElectronBuilder::xc_mo_rhf`]);
+    /// `G` itself then carries no XC term.
+    xc_mo: Option<&'a crate::ks_fixed_grid::XcMoResponse>,
     /// Kohn-Sham global-hybrid fraction `a` of exact exchange: the Kohn-Sham
-    /// `G(D) = J(D) − (a/2)K(D) + V1_xc[D]`. Read only when `xc` is set.
+    /// `G(D) = J(D) − (a/2)K(D) + V1_xc[D]`. Read only for Kohn-Sham (`xc` or
+    /// `xc_mo` set).
     exx: f64,
 }
 
-/// The XC potential response to a symmetric AO density change.
-type XcResponseFn<'a> = dyn Fn(&Array2<f64>) -> Array2<f64> + 'a;
+impl RhfG<'_> {
+    fn kohn_sham(&self) -> bool {
+        self.xc.is_some() || self.xc_mo.is_some()
+    }
+}
 
-/// The spin-coupled XC potential responses `(V1^α, V1^β)` to symmetric spin
-/// density changes `(D1_α, D1_β)`.
-type UksXcResponseFn<'a> = dyn Fn([&Array2<f64>; 2]) -> [Array2<f64>; 2] + 'a;
+/// The XC potential responses to a block of symmetric AO density changes, one
+/// per density, in order (applied in lockstep, see
+/// [`crate::ks_fixed_grid::XcResponse::apply_many`]).
+type XcResponseFn<'a> = dyn Fn(&[&Array2<f64>]) -> Vec<Array2<f64>> + 'a;
+
+/// The spin-coupled XC potential responses `(V1^α, V1^β)` to a block of
+/// symmetric spin density changes `(D1_α, D1_β)`, one pair per coordinate.
+type UksXcResponseFn<'a> = dyn Fn(&[[&Array2<f64>; 2]]) -> Vec<[Array2<f64>; 2]> + 'a;
 
 impl<'a> TwoElectronBuilder<'a> {
     fn new(
@@ -2680,6 +2700,7 @@ impl<'a> TwoElectronBuilder<'a> {
             rhf_g: RhfG::default(),
             uhf_mutants: UhfDfMutants::default(),
             uks_xc: None,
+            uks_xc_mo: None,
             phases: Default::default(),
         })
     }
@@ -2691,8 +2712,61 @@ impl<'a> TwoElectronBuilder<'a> {
         self
     }
 
+    /// Kohn-Sham with the XC kernel in MO form: `G` is Coulomb and
+    /// `−(exx/2)·K`; the solver adds the kernel's projected responses.
+    fn with_xc_mo_response(mut self, xc: &'a crate::ks_fixed_grid::XcMoResponse, exx: f64) -> Self {
+        self.rhf_g.xc_mo = Some(xc);
+        self.rhf_g.exx = exx;
+        self
+    }
+
+    /// Spin-polarized Kohn-Sham with the XC kernel in MO form (see
+    /// [`Self::with_xc_mo_response`]).
+    fn with_uks_xc_mo_response(
+        mut self,
+        xc: &'a crate::ks_fixed_grid::PolarizedXcMoResponse,
+        exx: f64,
+    ) -> Self {
+        self.uks_xc_mo = Some((xc, exx));
+        self
+    }
+
+    /// The MO-form XC responses `C_outᵀ V1_xc[D1(U)] C_o` of the rotations
+    /// `us` (rows `input`), or `None` without an MO kernel.
+    fn xc_mo_rhf(
+        &self,
+        us: &[&Array2<f64>],
+        input: MoRows,
+        output: MoRows,
+    ) -> Option<Vec<Array2<f64>>> {
+        let xc = self.rhf_g.xc_mo?;
+        Some(self.timed("XC kernel apply", || xc.apply_many(us, input, output)))
+    }
+
+    /// [`Self::xc_mo_rhf`] for spin-rotation pairs (UKS).
+    fn xc_mo_uhf(
+        &self,
+        us: &[[&Array2<f64>; 2]],
+        input: MoRows,
+        output: MoRows,
+    ) -> Option<Vec<[Array2<f64>; 2]>> {
+        let (xc, _) = self.uks_xc_mo?;
+        Some(self.timed("XC kernel apply", || xc.apply_many(us, input, output)))
+    }
+
+    /// The UKS exchange fraction (1 for Hartree-Fock) and whether the
+    /// reference is Hartree-Fock.
+    fn uhf_exx(&self) -> (f64, bool) {
+        match (self.uks_xc, self.uks_xc_mo) {
+            (Some((_, exx)), _) | (None, Some((_, exx))) => (exx, false),
+            (None, None) => (1.0, true),
+        }
+    }
+
     /// Add the Kohn-Sham XC kernel response to the RHF `G`, which is then
-    /// Coulomb, `−(exx/2)·K` (`exx` = 0 for a pure functional) and that response.
+    /// Coulomb, `−(exx/2)·K` (`exx` = 0 for a pure functional) and that
+    /// response: the AO route, the oracle of the MO kernel (tests only).
+    #[cfg(test)]
     fn with_xc_response(mut self, xc: Option<&'a XcResponseFn<'a>>, exx: f64) -> Self {
         self.rhf_g.xc = xc;
         self.rhf_g.exx = exx;
@@ -2787,12 +2861,16 @@ impl<'a> TwoElectronBuilder<'a> {
     /// densities (Hartree-Fock: `a` = 1, no XC term). Where the SCF fitted a
     /// matrix its own builder replaces the exact one (RI-J the Coulomb matrix,
     /// RI-K the exchange matrix); the exact J (and K, unless fitted or `a` = 0)
-    /// of all densities come from one quartet pass.
+    /// of all densities come from one quartet pass, the fitted J of all from
+    /// one pass over the RI tensor, the XC responses of all from one lockstep
+    /// kernel application.
     fn g_rhf_many(&self, ds: &[Array2<f64>]) -> Result<Vec<Array2<f64>>, FerricError> {
         // Hartree-Fock: the whole exchange (`exx` = 1) and no XC response.
-        let (xc, exx) = match self.rhf_g.xc {
-            Some(xc) => (Some(xc), self.rhf_g.exx),
-            None => (None, 1.0),
+        let xc = self.rhf_g.xc;
+        let exx = if self.rhf_g.kohn_sham() {
+            self.rhf_g.exx
+        } else {
+            1.0
         };
         let exact_j = self.df_j.is_none();
         let exact_k = exx != 0.0 && self.df_k.is_none();
@@ -2802,41 +2880,42 @@ impl<'a> TwoElectronBuilder<'a> {
             if exact_j { &refs } else { &none },
             if exact_k { &refs } else { &none },
         )?;
+        let coulomb = self.rhf_coulombs(&refs, js)?;
+        let mut v_xc = match xc {
+            Some(xc) => self.timed("XC kernel apply", || xc(&refs)),
+            None => Vec::new(),
+        }
+        .into_iter();
         let mut out = Vec::with_capacity(ds.len());
-        for (i, d) in ds.iter().enumerate() {
-            let mut j = self.rhf_coulomb(d, js.get(i))?;
+        for ((i, d), mut j) in ds.iter().enumerate().zip(coulomb) {
             if exx != 0.0 {
                 let mut k = self.rhf_exchange(d, ks.get(i))?;
-                if xc.is_none() && self.rhf_g.swap_jk {
+                if !self.rhf_g.kohn_sham() && self.rhf_g.swap_jk {
                     std::mem::swap(&mut j, &mut k);
                 }
                 j.scaled_add(-0.5 * exx, &k);
             }
-            if let Some(xc) = xc {
-                j += &self.timed("XC kernel apply", || xc(d));
+            if let Some(v) = v_xc.next() {
+                j += &v;
             }
             out.push(j);
         }
         Ok(out)
     }
 
-    /// The Coulomb matrix of `d`: the SCF's RI-J where it fitted J, else the
-    /// `exact` matrix of the shared quartet pass.
-    fn rhf_coulomb(
+    /// The Coulomb matrices of `ds`: the SCF's RI-J where it fitted J (all
+    /// densities from one pass, [`crate::df_j::DfJ::build_many`]), else the
+    /// `exact` matrices of the shared quartet pass.
+    fn rhf_coulombs(
         &self,
-        d: &Array2<f64>,
-        exact: Option<&Array2<f64>>,
-    ) -> Result<Array2<f64>, FerricError> {
-        use crate::fock::JBuilder;
-        match (&self.df_j, exact) {
-            (Some(df), _) => {
-                let mut j = Array2::<f64>::zeros(d.dim());
-                self.timed("fitted J build", || df.borrow_mut().build(d, &mut j))?;
-                Ok(j)
-            }
-            (None, Some(j)) => Ok(j.clone()),
-            (None, None) => Err(FerricError::General(
-                "CPHF G: no exact Coulomb matrix was built for this density".into(),
+        ds: &[&Array2<f64>],
+        exact: Vec<Array2<f64>>,
+    ) -> Result<Vec<Array2<f64>>, FerricError> {
+        match &self.df_j {
+            Some(df) => self.timed("fitted J build", || df.borrow_mut().build_many(ds)),
+            None if exact.len() == ds.len() => Ok(exact),
+            None => Err(FerricError::General(
+                "CPHF G: no exact Coulomb matrix was built for these densities".into(),
             )),
         }
     }
@@ -2864,52 +2943,68 @@ impl<'a> TwoElectronBuilder<'a> {
 
     /// [`Self::g_uhf`] of many spin-density pairs: the exact J of every total
     /// density (and the K of every spin density, for Hartree-Fock or a hybrid,
-    /// where the SCF did not fit them) in one quartet pass.
+    /// where the SCF did not fit them) in one quartet pass, the fitted J of
+    /// every total density in one RI pass, and the XC responses of every pair
+    /// in one lockstep kernel application.
     fn g_uhf_many(&self, ds: &[[Array2<f64>; 2]]) -> Result<Vec<[Array2<f64>; 2]>, FerricError> {
         // Hartree-Fock: the whole exchange (`exx` = 1) and no XC response.
-        let (xc, exx) = match self.uks_xc {
-            Some((xc, exx)) => (Some(xc), exx),
-            None => (None, 1.0),
+        let xc = self.uks_xc.map(|(xc, _)| xc);
+        let (exx, hartree_fock) = self.uhf_exx();
+        let (js, ks) = self.uhf_exact_jk_many(ds, exx)?;
+        let coulomb = match &self.df_j {
+            Some(df) => self.fitted_coulombs(df, ds)?,
+            None => js,
         };
-        let exact_j = self.df_j.is_none();
-        let exact_k = exx != 0.0 && self.df_k.is_none();
-        let totals: Vec<Array2<f64>> = if exact_j {
-            ds.iter().map(|d| &d[0] + &d[1]).collect()
-        } else {
-            Vec::new()
-        };
-        let jd: Vec<&Array2<f64>> = totals.iter().collect();
-        let kd: Vec<&Array2<f64>> = if exact_k {
-            ds.iter().flat_map(|d| [&d[0], &d[1]]).collect()
-        } else {
-            Vec::new()
-        };
-        let (js, ks) = self.multi_jk(&jd, &kd)?;
+        let mut v_xc = self.uks_xc_many(xc, ds).into_iter();
         let mut out = Vec::with_capacity(ds.len());
-        for (i, d) in ds.iter().enumerate() {
-            let j = match &self.df_j {
-                Some(df) => self.fitted_coulomb(df, d)?,
-                None => js[i].clone(),
-            };
-            let k = if exx == 0.0 {
-                None
-            } else {
-                Some(self.uhf_exchange(d, ks.get(2 * i..2 * i + 2), xc.is_none())?)
-            };
-            let (mut ga, mut gb) = match xc {
-                Some(xc) => {
-                    let [va, vb] = self.timed("XC kernel apply", || xc([&d[0], &d[1]]));
-                    (&j + &va, j + &vb)
-                }
+        for ((i, d), j) in ds.iter().enumerate().zip(coulomb) {
+            let (mut ga, mut gb) = match v_xc.next() {
+                Some([va, vb]) => (&j + &va, j + &vb),
                 None => (j.clone(), j),
             };
-            if let Some([ka, kb]) = k {
+            if exx != 0.0 {
+                let [ka, kb] = self.uhf_exchange(d, ks.get(2 * i..2 * i + 2), hartree_fock)?;
                 ga.scaled_add(-exx, &ka);
                 gb.scaled_add(-exx, &kb);
             }
             out.push([ga, gb]);
         }
         Ok(out)
+    }
+
+    /// The exact `J(D_α + D_β)` of every pair (unless fitted) and `K(D_σ)` of
+    /// every spin density (unless fitted or `exx` = 0), from one quartet pass.
+    fn uhf_exact_jk_many(
+        &self,
+        ds: &[[Array2<f64>; 2]],
+        exx: f64,
+    ) -> Result<(Vec<Array2<f64>>, Vec<Array2<f64>>), FerricError> {
+        let totals: Vec<Array2<f64>> = if self.df_j.is_none() {
+            ds.iter().map(|d| &d[0] + &d[1]).collect()
+        } else {
+            Vec::new()
+        };
+        let jd: Vec<&Array2<f64>> = totals.iter().collect();
+        let kd: Vec<&Array2<f64>> = if exx != 0.0 && self.df_k.is_none() {
+            ds.iter().flat_map(|d| [&d[0], &d[1]]).collect()
+        } else {
+            Vec::new()
+        };
+        self.multi_jk(&jd, &kd)
+    }
+
+    /// The UKS XC responses of every pair of `ds` in one lockstep application;
+    /// empty for Hartree-Fock (`xc` = `None`).
+    fn uks_xc_many(
+        &self,
+        xc: Option<&UksXcResponseFn<'_>>,
+        ds: &[[Array2<f64>; 2]],
+    ) -> Vec<[Array2<f64>; 2]> {
+        let Some(xc) = xc else {
+            return Vec::new();
+        };
+        let pairs: Vec<[&Array2<f64>; 2]> = ds.iter().map(|d| [&d[0], &d[1]]).collect();
+        self.timed("XC kernel apply", || xc(&pairs))
     }
 
     /// The per-spin exchange matrices `[K(D_α), K(D_β)]`: the SCF's RI-K
@@ -2985,8 +3080,9 @@ impl<'a> TwoElectronBuilder<'a> {
                 k = self.fitted_exchange(df, d)?;
             }
         }
-        let v = self.timed("XC kernel apply", || xc([&d[0], &d[1]]));
-        let [va, vb] = v;
+        let [va, vb] = self
+            .timed("XC kernel apply", || xc(&[[&d[0], &d[1]]]))
+            .remove(0);
         let [ka, kb] = k;
         let mut ga = &j + &va;
         ga.scaled_add(-exx, &ka);
@@ -3028,20 +3124,35 @@ impl<'a> TwoElectronBuilder<'a> {
         Ok((ja + &jb, [ka, kb]))
     }
 
+    /// The fitted Coulomb matrix of the total density of one spin pair.
     fn fitted_coulomb(
         &self,
         df: &std::cell::RefCell<crate::df_j::DfJ<'static>>,
         d: &[Array2<f64>; 2],
     ) -> Result<Array2<f64>, FerricError> {
-        use crate::fock::JBuilder;
-        let total = if self.uhf_mutants.cphf_j_from_alpha {
-            d[0].clone()
-        } else {
-            &d[0] + &d[1]
-        };
-        let mut j = Array2::<f64>::zeros(total.dim());
-        self.timed("fitted J build", || df.borrow_mut().build(&total, &mut j))?;
-        Ok(j)
+        Ok(self.fitted_coulombs(df, std::slice::from_ref(d))?.remove(0))
+    }
+
+    /// The fitted Coulomb matrices of the total densities `D_α + D_β` of every
+    /// spin pair of `ds`, all from one pass over the RI tensor
+    /// ([`crate::df_j::DfJ::build_many`]).
+    fn fitted_coulombs(
+        &self,
+        df: &std::cell::RefCell<crate::df_j::DfJ<'static>>,
+        ds: &[[Array2<f64>; 2]],
+    ) -> Result<Vec<Array2<f64>>, FerricError> {
+        let totals: Vec<Array2<f64>> = ds
+            .iter()
+            .map(|d| {
+                if self.uhf_mutants.cphf_j_from_alpha {
+                    d[0].clone()
+                } else {
+                    &d[0] + &d[1]
+                }
+            })
+            .collect();
+        let refs: Vec<&Array2<f64>> = totals.iter().collect();
+        self.timed("fitted J build", || df.borrow_mut().build_many(&refs))
     }
 
     fn fitted_exchange(
@@ -3214,7 +3325,11 @@ fn solve_cphf_block(
     solve_cphf_blocks_of(g, frame, h1, s1, cphf_block_len(frame.c.nrows(), 2))
 }
 
-/// [`solve_cphf_block`] with `block` coordinates per lockstep block.
+/// [`solve_cphf_block`] with `block` coordinates per lockstep block. With an
+/// MO-form XC kernel ([`TwoElectronBuilder::xc_mo_rhf`]) its projected
+/// responses are added on the MO blocks: the virtual rows of the occupied
+/// response to the right-hand side, the virtual rows of the rotation response
+/// to every matrix-vector product, and the occupied rows of both to `ε^x`.
 fn solve_cphf_blocks_of(
     g: &TwoElectronBuilder<'_>,
     frame: &MoFrame<'_>,
@@ -3232,10 +3347,18 @@ fn solve_cphf_blocks_of(
             .collect();
         let occ: Vec<Array2<f64>> = s1_oo.iter().map(|s| frame.occupied_density(s)).collect();
         let g_oo = g.g_rhf_many(&occ)?;
+        let xc_oo = occupied_xc_mo(g, &s1_oo);
         let rhs: Vec<Array2<f64>> = xs
             .clone()
             .zip(&g_oo)
-            .map(|(x, goo)| cphf_rhs(frame, &h1[x], &s1[x], goo))
+            .enumerate()
+            .map(|(k, (x, goo))| {
+                let rhs = cphf_rhs(frame, &h1[x], &s1[x], goo);
+                match &xc_oo {
+                    Some(v) => rhs - v[k].slice(s![nocc.., ..]),
+                    None => rhs,
+                }
+            })
             .collect();
         let precond = vec![frame.denom.clone(); rhs.len()];
         let response = |us: &[&Array2<f64>]| -> Result<Vec<Array2<f64>>, FerricError> {
@@ -3243,28 +3366,64 @@ fn solve_cphf_blocks_of(
             g.g_rhf_many(&dens)
         };
         let matvec = |us: &[&Array2<f64>]| -> Result<Vec<Array2<f64>>, FerricError> {
-            Ok(response(us)?
+            let mut av: Vec<Array2<f64>> = response(us)?
                 .iter()
                 .zip(us)
                 .map(|(gu, u)| &frame.denom * *u + frame.vo(gu))
-                .collect())
+                .collect();
+            if let Some(v) = g.xc_mo_rhf(us, MoRows::Virtual, MoRows::Virtual) {
+                av.iter_mut().zip(v).for_each(|(a, v)| *a += &v);
+            }
+            Ok(av)
         };
         let solved =
             pcg_block(matvec, &rhs, &precond).map_err(|(i, e)| at_coordinate(x0 + i, e))?;
         let xs_vo: Vec<&Array2<f64>> = solved.iter().map(|s| &s.0).collect();
         let g1 = response(&xs_vo)?;
-        for (((x, (u_vo, it, res)), goo), g1) in xs.zip(solved).zip(g_oo).zip(g1) {
-            out.push(finish_cphf(
+        let xc_e1 = rotation_xc_oo(g, &xs_vo, xc_oo.as_deref(), nocc);
+        for (k, (((x, (u_vo, it, res)), goo), g1)) in xs.zip(solved).zip(g_oo).zip(g1).enumerate() {
+            let mut sol = finish_cphf(
                 frame,
                 &h1[x],
                 &s1[x].slice(s![..nocc, ..]).to_owned(),
                 u_vo,
                 &(goo + &g1),
                 (it, res),
-            ));
+            );
+            if let Some(e) = &xc_e1 {
+                sol.e1 += &e[k];
+            }
+            out.push(sol);
         }
     }
     Ok(out)
+}
+
+/// The MO-form XC response of each coordinate's occupied density
+/// `D_oo = −occ C_o S_oo C_oᵀ` (the rotation `U_oo = −½ S_oo`) on all MO rows,
+/// `(nmo, nocc)`; `None` without an MO kernel.
+fn occupied_xc_mo(g: &TwoElectronBuilder<'_>, s1_oo: &[Array2<f64>]) -> Option<Vec<Array2<f64>>> {
+    let u_oo: Vec<Array2<f64>> = s1_oo.iter().map(|s| -0.5 * s).collect();
+    let refs: Vec<&Array2<f64>> = u_oo.iter().collect();
+    g.xc_mo_rhf(&refs, MoRows::Occupied, MoRows::All)
+}
+
+/// The occupied-occupied XC terms of `ε^x`: the occupied rows of the occupied
+/// response `xc_oo` plus those of the converged rotations' response.
+fn rotation_xc_oo(
+    g: &TwoElectronBuilder<'_>,
+    u_vo: &[&Array2<f64>],
+    xc_oo: Option<&[Array2<f64>]>,
+    nocc: usize,
+) -> Option<Vec<Array2<f64>>> {
+    let xc_oo = xc_oo?;
+    let v1 = g.xc_mo_rhf(u_vo, MoRows::Virtual, MoRows::Occupied)?;
+    Some(
+        v1.into_iter()
+            .zip(xc_oo)
+            .map(|(v, o)| v + o.slice(s![..nocc, ..]))
+            .collect(),
+    )
 }
 
 /// PySCF `ucphf.solve_withs1` for every coordinate: per coordinate the α and β
@@ -3286,7 +3445,10 @@ fn solve_ucphf_block(
     solve_ucphf_blocks_of(g, frames, h1, s1, cphf_block_len(frames[0].c.nrows(), 3))
 }
 
-/// [`solve_ucphf_block`] with `block` coordinates per lockstep block.
+/// [`solve_ucphf_block`] with `block` coordinates per lockstep block. With an
+/// MO-form XC kernel ([`TwoElectronBuilder::xc_mo_uhf`]) its projected
+/// responses are added on each spin's MO blocks, as in
+/// [`solve_cphf_blocks_of`].
 fn solve_ucphf_blocks_of(
     g: &TwoElectronBuilder<'_>,
     frames: &[MoFrame<'_>; 2],
@@ -3296,68 +3458,115 @@ fn solve_ucphf_blocks_of(
 ) -> Result<[Vec<CphfSolution>; 2], FerricError> {
     let ncoord = h1[0].len();
     let mut out: [Vec<CphfSolution>; 2] = [Vec::new(), Vec::new()];
-    let s1_oo = |sp: usize, x: usize| s1[sp][x].slice(s![..frames[sp].nocc(), ..]).to_owned();
+    let nocc = [0, 1].map(|sp| frames[sp].nocc());
+    let s1_oo = |sp: usize, x: usize| s1[sp][x].slice(s![..nocc[sp], ..]).to_owned();
     for x0 in (0..ncoord).step_by(block) {
         let xs = x0..(x0 + block).min(ncoord);
-        let occ: Vec<[Array2<f64>; 2]> = xs
-            .clone()
-            .map(|x| [0, 1].map(|sp| frames[sp].occupied_density(&s1_oo(sp, x))))
+        let s1_pairs: Vec<[Array2<f64>; 2]> =
+            xs.clone().map(|x| [0, 1].map(|sp| s1_oo(sp, x))).collect();
+        let occ: Vec<[Array2<f64>; 2]> = s1_pairs
+            .iter()
+            .map(|p| [0, 1].map(|sp| frames[sp].occupied_density(&p[sp])))
             .collect();
         let g_oo = g.g_uhf_many(&occ)?;
+        let xc_oo = occupied_xc_mo_uhf(g, &s1_pairs);
         let rhs: Vec<Array2<f64>> = xs
             .clone()
             .zip(&g_oo)
-            .map(|(x, goo)| {
-                pack(&[0, 1].map(|sp| cphf_rhs(&frames[sp], &h1[sp][x], &s1[sp][x], &goo[sp])))
+            .enumerate()
+            .map(|(k, (x, goo))| {
+                pack(&[0, 1].map(|sp| {
+                    let rhs = cphf_rhs(&frames[sp], &h1[sp][x], &s1[sp][x], &goo[sp]);
+                    match &xc_oo {
+                        Some(v) => rhs - v[k][sp].slice(s![nocc[sp].., ..]),
+                        None => rhs,
+                    }
+                }))
             })
             .collect();
         let precond = vec![pack(&[frames[0].denom.clone(), frames[1].denom.clone()]); rhs.len()];
-        let response = |vs: &[&Array2<f64>]| -> Result<Vec<[Array2<f64>; 2]>, FerricError> {
-            let dens: Vec<[Array2<f64>; 2]> = vs
+        let response = |us: &[[Array2<f64>; 2]]| -> Result<Vec<[Array2<f64>; 2]>, FerricError> {
+            let dens: Vec<[Array2<f64>; 2]> = us
                 .iter()
-                .map(|v| {
-                    let u = unpack(v, frames);
-                    [0, 1].map(|sp| frames[sp].response_density(&u[sp]))
-                })
+                .map(|u| [0, 1].map(|sp| frames[sp].response_density(&u[sp])))
                 .collect();
             g.g_uhf_many(&dens)
         };
         let matvec = |vs: &[&Array2<f64>]| -> Result<Vec<Array2<f64>>, FerricError> {
-            Ok(response(vs)?
+            let us: Vec<[Array2<f64>; 2]> = vs.iter().map(|v| unpack(v, frames)).collect();
+            let xc = g.xc_mo_uhf(&pair_refs(&us), MoRows::Virtual, MoRows::Virtual);
+            Ok(response(&us)?
                 .iter()
-                .zip(vs)
-                .map(|(r, v)| {
-                    let u = unpack(v, frames);
-                    pack(&[0, 1].map(|sp| &frames[sp].denom * &u[sp] + frames[sp].vo(&r[sp])))
+                .zip(&us)
+                .enumerate()
+                .map(|(k, (r, u))| {
+                    pack(&[0, 1].map(|sp| {
+                        let av = &frames[sp].denom * &u[sp] + frames[sp].vo(&r[sp]);
+                        match &xc {
+                            Some(v) => av + &v[k][sp],
+                            None => av,
+                        }
+                    }))
                 })
                 .collect())
         };
         let solved =
             pcg_block(matvec, &rhs, &precond).map_err(|(i, e)| at_coordinate(x0 + i, e))?;
-        let xs_vec: Vec<&Array2<f64>> = solved.iter().map(|s| &s.0).collect();
-        let v1 = response(&xs_vec)?;
-        for (((x, (xv, it, res)), [goa, gob]), [va, vb]) in xs.zip(solved).zip(g_oo).zip(v1) {
-            let [ua, ub] = unpack(&xv, frames);
-            let stats = (it, res);
-            out[0].push(finish_cphf(
-                &frames[0],
-                &h1[0][x],
-                &s1_oo(0, x),
-                ua,
-                &(goa + &va),
-                stats,
-            ));
-            out[1].push(finish_cphf(
-                &frames[1],
-                &h1[1][x],
-                &s1_oo(1, x),
-                ub,
-                &(gob + &vb),
-                stats,
-            ));
+        let us: Vec<[Array2<f64>; 2]> = solved.iter().map(|s| unpack(&s.0, frames)).collect();
+        let v1 = response(&us)?;
+        let xc_e1 = rotation_xc_oo_uhf(g, &us, xc_oo.as_deref(), nocc);
+        let stats = solved.iter().map(|(_, it, res)| (*it, *res));
+        for (k, ((((x, [ua, ub]), stats), [goa, gob]), [va, vb])) in
+            xs.zip(us).zip(stats).zip(g_oo).zip(v1).enumerate()
+        {
+            let mut sa = finish_cphf(&frames[0], &h1[0][x], &s1_oo(0, x), ua, &(goa + &va), stats);
+            let mut sb = finish_cphf(&frames[1], &h1[1][x], &s1_oo(1, x), ub, &(gob + &vb), stats);
+            if let Some(e) = &xc_e1 {
+                sa.e1 += &e[k][0];
+                sb.e1 += &e[k][1];
+            }
+            out[0].push(sa);
+            out[1].push(sb);
         }
     }
     Ok(out)
+}
+
+/// `[&a, &b]` views of owned spin pairs.
+fn pair_refs(ps: &[[Array2<f64>; 2]]) -> Vec<[&Array2<f64>; 2]> {
+    ps.iter().map(|[a, b]| [a, b]).collect()
+}
+
+/// [`occupied_xc_mo`] for spin pairs (each spin's `U_oo = −½ S_oo`, occupancy
+/// 1).
+fn occupied_xc_mo_uhf(
+    g: &TwoElectronBuilder<'_>,
+    s1_oo: &[[Array2<f64>; 2]],
+) -> Option<Vec<[Array2<f64>; 2]>> {
+    let u_oo: Vec<[Array2<f64>; 2]> = s1_oo.iter().map(|p| p.clone().map(|s| -0.5 * s)).collect();
+    g.xc_mo_uhf(&pair_refs(&u_oo), MoRows::Occupied, MoRows::All)
+}
+
+/// [`rotation_xc_oo`] for spin pairs.
+fn rotation_xc_oo_uhf(
+    g: &TwoElectronBuilder<'_>,
+    us: &[[Array2<f64>; 2]],
+    xc_oo: Option<&[[Array2<f64>; 2]]>,
+    nocc: [usize; 2],
+) -> Option<Vec<[Array2<f64>; 2]>> {
+    let xc_oo = xc_oo?;
+    let v1 = g.xc_mo_uhf(&pair_refs(us), MoRows::Virtual, MoRows::Occupied)?;
+    Some(
+        v1.into_iter()
+            .zip(xc_oo)
+            .map(|([va, vb], o)| {
+                [
+                    va + o[0].slice(s![..nocc[0], ..]),
+                    vb + o[1].slice(s![..nocc[1], ..]),
+                ]
+            })
+            .collect(),
+    )
 }
 
 /// [`pcg`] for several independent systems in lockstep: each runs exactly
