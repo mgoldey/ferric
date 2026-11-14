@@ -6,11 +6,13 @@
 //!   (`"<method> (exact)"`, `"local": null`);
 //! * `[local] scheme = "amplitude-threshold"` states its threshold and kept
 //!   fraction in the printout and logs a `local` object;
-//! * exact `drpa` IS the ε = 0 Riccati solve, to <= 1e-12 Ha;
+//! * exact `drpa` (the frequency route) and the ε = 0 Riccati solve agree
+//!   to <= 1e-9 Ha (their quadrature and residual bars are far below it; the
+//!   derived bars live in `ferric-rpa/tests/validation_drpa_frequency.rs`);
 //! * the opt-in exact reference (`[local] reference`) is honest when off: no
 //!   NaN in the printout, `null` in the log;
 //! * the removed kinds/keys fail, and an exact `drpa` that cannot fit the
-//!   memory budget is refused BEFORE the SCF with a pointer to `pdep-rpa`.
+//!   memory budget is refused BEFORE the SCF with the knobs that shrink it.
 //!
 //! Water/6-31G with cc-pVDZ-RI: seconds per run.
 
@@ -134,8 +136,8 @@ fn local(body: &str) -> String {
     format!("{MP2}\n[local]\nscheme = \"amplitude-threshold\"\n{body}\n")
 }
 
-/// The exact `drpa` is the ε = 0 Riccati solve: the two runs agree to
-/// <= 1e-12 Ha; the exact printout says "(exact)" and logs `local: null`,
+/// The exact `drpa` (frequency route) and the ε = 0 Riccati solve agree to
+/// <= 1e-9 Ha, the bar of the CLI-vs-library tests; the exact printout says "(exact)" and logs `local: null`,
 /// the ε = 0 local one states its threshold and logs the object.
 #[test]
 fn exact_drpa_equals_local_eps_zero_and_says_exact() {
@@ -159,7 +161,7 @@ fn exact_drpa_equals_local_eps_zero_and_says_exact() {
         ex.results[0]["total"].as_f64().unwrap(),
         lo.results[0]["total"].as_f64().unwrap(),
     );
-    assert!((a - b).abs() <= 1e-12, "exact {a:.14} vs eps=0 {b:.14}");
+    assert!((a - b).abs() <= 1e-9, "exact {a:.14} vs eps=0 {b:.14}");
 }
 
 /// A finite ε prints the threshold and the kept fraction, and moves the
@@ -412,7 +414,7 @@ fn rimp2_local_logs_the_virtual_space_build() {
 
 /// Refused configurations fail through the binary, before any SCF output:
 /// the removed kinds and keys, `[local]` without `eps`, and an exact `drpa`
-/// whose Riccati solve cannot fit the budget (pointing at `pdep-rpa`).
+/// that cannot fit the budget (naming the knobs that shrink it).
 #[test]
 fn refusals_fail_before_the_scf() {
     let cases: &[(&str, &str, &str, &str)] = &[
@@ -464,7 +466,7 @@ fn refusals_fail_before_the_scf() {
             "exact_drpa_oom",
             "drpa",
             "[memory]\nbudget_gb = 1e-4\n",
-            "pdep-rpa",
+            "[memory] budget_gb",
         ),
     ];
     for (tag, kind, extra, needle) in cases {

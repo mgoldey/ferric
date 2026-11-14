@@ -332,7 +332,7 @@ pub fn quad_panel_width_for_test(
     quad_panel_width(m, nov, n_workers, memory_budget_bytes)
 }
 
-fn quad_panel_width(
+pub(crate) fn quad_panel_width(
     m: usize,
     nov: usize,
     n_workers: usize,
@@ -518,14 +518,48 @@ pub fn eval_trace_log_summands_budgeted(
     quad_freqs: &[f64],
     memory_budget_bytes: Option<usize>,
 ) -> Result<Vec<f64>, FerricError> {
+    let y = eigenvectors.t().dot(b_ov);
+    trace_log_summands_of_projection(&y, eps_occ, eps_vir, quad_freqs, memory_budget_bytes)
+}
+
+/// The same per-frequency summands `S(iω_k) = ln det(ε̃) + tr(I − ε̃)`, with
+/// `ε̃(iω) = I + Π(iω)` assembled in the (dressed) auxiliary basis itself:
+/// `y = b_ov`, no static eigenvectors and no projection GEMM.
+///
+/// Equal to [`eval_trace_log_summands_budgeted`] fed the full-rank static
+/// eigenvectors `U` (orthogonal, `naux` columns), because both terms are
+/// invariant under `ε̃ → Uᵀ ε̃ U`. That is what makes the static eigensolve
+/// unnecessary for an energy that keeps every mode; the two differ only by
+/// rounding (the bar is derived in `tests/rpa_energy_route.rs`).
+pub fn eval_trace_log_summands_aux_budgeted(
+    b_ov: &Array2<f64>,
+    eps_occ: &[f64],
+    eps_vir: &[f64],
+    quad_freqs: &[f64],
+    memory_budget_bytes: Option<usize>,
+) -> Result<Vec<f64>, FerricError> {
+    trace_log_summands_of_projection(b_ov, eps_occ, eps_vir, quad_freqs, memory_budget_bytes)
+}
+
+/// The frequency loop both log-det entries share: per worker, scale the
+/// `(m, nov)` projection `y` by `sqrt(4 e_ia / (ω² + e_ia²))`, form
+/// `ε̃ = I + y S² yᵀ` (full width or nov-panelled, per [`quad_panel_width`]),
+/// and take [`dielectric_trace_log_summand`].
+fn trace_log_summands_of_projection(
+    y: &Array2<f64>,
+    eps_occ: &[f64],
+    eps_vir: &[f64],
+    quad_freqs: &[f64],
+    memory_budget_bytes: Option<usize>,
+) -> Result<Vec<f64>, FerricError> {
     use crate::sternheimer::{
         build_scale_factors, dielectric_matrix_from_projection_into,
         dielectric_matrix_from_projection_into_panelled,
     };
 
-    let m = eigenvectors.ncols();
+    let m = y.nrows();
     let nov = eps_occ.len() * eps_vir.len();
-    let y = eigenvectors.t().dot(b_ov);
+    assert_eq!(y.ncols(), nov, "projection width must be nocc * nvir");
 
     let n_workers = rayon::current_num_threads().max(1);
     let panel_width = quad_panel_width(m, nov, n_workers, memory_budget_bytes);
@@ -542,9 +576,9 @@ pub fn eval_trace_log_summands_budgeted(
         |(rhs_scaled, out), omega| {
             let scale = build_scale_factors(eps_occ, eps_vir, omega);
             if use_panelled {
-                dielectric_matrix_from_projection_into_panelled(&y, &scale, rhs_scaled, out);
+                dielectric_matrix_from_projection_into_panelled(y, &scale, rhs_scaled, out);
             } else {
-                dielectric_matrix_from_projection_into(&y, &scale, rhs_scaled, out);
+                dielectric_matrix_from_projection_into(y, &scale, rhs_scaled, out);
             }
             dielectric_trace_log_summand(out, "dielectric log-det failed")
         },

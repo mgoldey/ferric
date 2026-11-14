@@ -46,6 +46,8 @@ pub mod dispersion;
 pub mod dlpno_rpa;
 /// Imaginary-frequency quadrature evaluation and RPA correlation energy.
 pub mod energy;
+
+pub mod energy_route;
 /// RPA nuclear gradient via finite-difference.
 pub mod gradient;
 /// Analytic closed-shell RI-dRPA nuclear gradient (Z-vector relaxed densities).
@@ -85,6 +87,10 @@ pub mod timing;
 pub use lanczos::{run_lanczos_full_rank, run_lanczos_seeded, LanczosResult};
 pub use rs_mp2_rpa::{rs_mp2_lr_rpa, RsMp2RpaConfig, RsMp2RpaFormulation, RsMp2RpaResult};
 
+pub use energy_route::{
+    aux_route_charge_bytes, exact_drpa_config, run_pdep_rpa_energy,
+    run_pdep_rpa_energy_from_intermediates, RpaEnergyRoute, EXACT_DRPA_QUAD_POINTS,
+};
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
@@ -339,6 +345,11 @@ pub struct PdepRpaResult {
     /// this `false`. Callers that need a hard guarantee should check this
     /// explicitly; the CLI and Python bindings only warn.
     pub eigensolver_converged: bool,
+    /// Which construction produced `e_rpa` (see [`energy_route`]). On
+    /// [`RpaEnergyRoute::AuxBasisLogDet`] no static eigensolve ran, so
+    /// `eigenvalues_static`, `eigenpotentials` and `dressed_eigenvectors` are
+    /// empty and `n_eigenpotentials` is `naux` (every mode kept).
+    pub route: RpaEnergyRoute,
 }
 
 impl std::fmt::Display for PdepRpaResult {
@@ -376,18 +387,18 @@ pub(crate) struct RpaPoolCharge {
     _soft: Option<ferric_core::memory::pool::Reservation>,
 }
 
-/// Pre-flight peak-memory gate shared by [`run_pdep_rpa`] and the eigensolve
-/// entry points. Cheap shape values only (nelec/nbasis accessors, no
-/// ERI/GEMM work) so this runs before ANY large allocation. See `budget.rs`
-/// for what the estimate covers; this is the closed-shell (`compute_rpa_
-/// intermediates`) formula for nocc/nvir.
-fn preflight_check_closed_shell(
+/// The closed-shell preflight charge of `planes` for this molecule, with the
+/// shape it was computed from. Cheap shape values only (nelec/nbasis
+/// accessors, no ERI/GEMM work). See `budget.rs` for what the estimate covers;
+/// this is the closed-shell (`compute_rpa_intermediates`) formula for
+/// nocc/nvir.
+pub(crate) fn closed_shell_charge(
     mol: &Molecule,
     obs: &PreparedBasis,
     dfbs: &PreparedBasis,
     config: &PdepRpaConfig,
-    label_prefix: &str,
-) -> Result<RpaPoolCharge, FerricError> {
+    planes: budget::EnergyRoutePlanes,
+) -> Result<(budget::PeakEstimateShape, budget::RunCharge), FerricError> {
     use ferric_mp2::rimp2::active_occ;
     let naux = dfbs.nbasis();
     let nbas = obs.nbasis();
@@ -413,7 +424,40 @@ fn preflight_check_closed_shell(
         // instead of only wall time. ferric_gw sets this for every GW method.
         need_inv_dielectric: config.need_inv_dielectric_freq,
     };
-    let est = budget::estimate_peak_bytes(shape);
+    // Charge the per-worker scratch at the width the frequency loop will
+    // allocate: `quad_panel_width` narrows it under an explicit budget (an
+    // unbudgeted run keeps the full width, which the loop then allocates).
+    let panel_width = energy::quad_panel_width(
+        n_keep,
+        nocc.saturating_mul(nvir),
+        n_workers,
+        config.memory_budget_bytes,
+    );
+    Ok((
+        shape,
+        budget::closed_shell_run_charge(shape, planes, panel_width),
+    ))
+}
+
+/// Pre-flight peak-memory gate shared by [`run_pdep_rpa`] and
+/// [`run_pdep_rpa_energy`]: the [`closed_shell_charge`] ceiling check, then
+/// the pool reservation, both before ANY large allocation.
+pub(crate) fn preflight_check_closed_shell(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    config: &PdepRpaConfig,
+    label_prefix: &str,
+    planes: budget::EnergyRoutePlanes,
+) -> Result<RpaPoolCharge, FerricError> {
+    let (shape, charge) = closed_shell_charge(mol, obs, dfbs, config, planes)?;
+    let budget::PeakEstimateShape {
+        naux,
+        nocc,
+        nvir,
+        n_workers,
+        ..
+    } = shape;
     let budget_bytes = ferric_core::memory::resolve_budget_bytes(config.memory_budget_bytes);
     let label = format!(
         "{label_prefix} preflight (naux={naux}, nocc={nocc}, nvir={nvir}, n_workers={n_workers})"
@@ -421,14 +465,14 @@ fn preflight_check_closed_shell(
     // The historical ceiling check, unchanged: it is what decides whether the
     // job is admissible AT ALL, and removing it would relax the gate on the
     // unbudgeted path (where the pool is inert).
-    ferric_core::memory::check_alloc(&label, est, budget_bytes)?;
+    ferric_core::memory::check_alloc(&label, charge.total, budget_bytes)?;
 
     // Now debit the SHARED ledger, split hard/soft. Charging `est` as one
     // hard lump would refuse a job the pre-migration tree completes: the
     // soft half is the per-worker quadrature scratch, which
     // `quad_panel_width` already narrows rather than failing on. See
     // `budget::estimate_peak_split`.
-    let (hard, soft) = budget::estimate_peak_split(shape);
+    let (hard, soft) = (charge.hard, charge.soft);
     let _hard = ferric_core::memory::pool::reserve_global(&format!("{label} [in-core]"), hard)?;
     // The soft charge must LEAVE ROOM for the downstream hard planes.
     //
@@ -519,7 +563,14 @@ pub fn run_pdep_rpa(
     // Bound at FUNCTION scope: the planes stay resident through
     // `compute_rpa_intermediates` and the whole
     // `run_pdep_rpa_from_intermediates` solve below.
-    let _pool_charge = preflight_check_closed_shell(mol, obs, dfbs, config, "PDEP-RPA")?;
+    let _pool_charge = preflight_check_closed_shell(
+        mol,
+        obs,
+        dfbs,
+        config,
+        "PDEP-RPA",
+        budget::EnergyRoutePlanes::StaticEigenbasis,
+    )?;
     // Step 1: Build RI-MO B^P_ia tensor and V^{-1/2}. RPA only needs the
     // occ-vir block; skip the full-MP2 amplitudes/density that the gradient
     // path requires.
@@ -1053,6 +1104,7 @@ pub fn run_pdep_rpa_from_intermediates(
         inv_dielectric_freq,
         e_rpa_dft_diag,
         eigensolver_converged: stage.eigensolver_converged,
+        route: RpaEnergyRoute::StaticEigenbasis,
     })
 }
 
@@ -1290,6 +1342,7 @@ pub fn run_pdep_rpa_from_parts(
         inv_dielectric_freq,
         e_rpa_dft_diag,
         eigensolver_converged: lz.converged,
+        route: RpaEnergyRoute::StaticEigenbasis,
     })
 }
 
@@ -1875,5 +1928,6 @@ fn u_pdep_rpa_core(
         inv_dielectric_freq,
         e_rpa_dft_diag,
         eigensolver_converged: davidson_result.converged,
+        route: RpaEnergyRoute::StaticEigenbasis,
     })
 }

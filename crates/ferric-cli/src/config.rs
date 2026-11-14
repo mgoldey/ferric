@@ -4294,9 +4294,9 @@ impl Config {
                     _ => "CCSD(T)",
                 }
             ),
-            "drpa" => "dRPA (exact or local) runs the drCCD Riccati solve on a single \
-                       restricted occupied space; no open-shell variant exists in the CLI \
-                       (open-shell RPA is kind = \"pdep-rpa\")"
+            "drpa" => "dRPA (exact or local) runs on a single restricted occupied space; \
+                       no open-shell variant exists in the CLI (open-shell RPA is \
+                       kind = \"pdep-rpa\")"
                 .to_string(),
             "wb97x-l-v" => "open-shell HSE06-L-V is library-only \
                             (ferric_cc::double_hybrid::u_solve_wb97x_l_v)"

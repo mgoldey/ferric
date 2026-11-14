@@ -281,3 +281,119 @@ fn tight_df_pre_stage_runs_longer_and_shortens_the_exact_stage() {
          the pre-stage is a density generator only and must not move the fixed point"
     );
 }
+
+/// Water / cc-pVDZ with J and K fitted on `aux` (`None` = exact K).
+fn water_ccpvdz_fitted(
+    j_aux: Option<&str>,
+    k_aux: Option<&str>,
+) -> (Molecule, PreparedBasis, SchwarzBounds, RhfConfig) {
+    let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
+    let prep = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+    let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
+    let base = RhfConfig {
+        df_j_aux: j_aux.map(str::to_string),
+        df_k_aux: k_aux.map(str::to_string),
+        energy_conv: 1e-10,
+        density_conv: 1e-9,
+        ..Default::default()
+    };
+    (mol, prep, bounds, base)
+}
+
+/// A fitted SCF on the pre-stage's own aux basis skips the pre-stage: the
+/// result IS `solve_rhf(base)` (bitwise, the trivial anchor), and it agrees
+/// with the two-stage result it replaces (pre-stage = `base` capped at
+/// `DF_GUESS_TIGHT_MAX_ITER`, then `base` from its density) within the SCF
+/// convergence bar.
+///
+/// The bar: both runs stop once the RMS density change drops below
+/// `density_conv` (1e-9), so each sits within a few `density_conv` of the
+/// same fixed point; 10 x `density_conv` on the RMS density difference. The
+/// energy is stationary there, so its difference is second order in that,
+/// far below 1e-12 Ha; the bar is the 1e-11 floor of summing an nbf^2
+/// energy expression in f64. MEASURED (2026-11-14): see the printed line.
+///
+/// MUTATIONS (run, restored): `df_guess_repeats_the_scf` returning `true`
+/// for every config fails `df_guess_pre_stage_actually_runs_fitted_scf`;
+/// dropping its `df_k_aux` condition fails the J-only case below; dropping
+/// the aux-name comparison fails the other-aux case below.
+#[test]
+fn df_guess_skips_its_pre_stage_when_the_scf_is_fitted_on_its_aux() {
+    use ferric_scf::ladder::{DF_GUESS_DEFAULT_AUX, DF_GUESS_TIGHT_MAX_ITER};
+    let aux = Some(DF_GUESS_DEFAULT_AUX);
+    let (mol, prep, bounds, base) = water_ccpvdz_fitted(aux, aux);
+    let ctx = ParallelContext::default();
+    let op = Operator::coulomb();
+
+    let dfg = solve_rhf_with_df_guess(&ctx, &mol, &prep, op, &bounds, &base, None).unwrap();
+    assert!(
+        dfg.skipped,
+        "fitted on the pre-stage aux: pre-stage skipped"
+    );
+    assert_eq!(dfg.df_iterations, 0);
+    let single = solve_rhf(&ctx, &mol, &prep, op, &bounds, &base).unwrap();
+    assert_eq!(dfg.result.energy.to_bits(), single.energy.to_bits());
+    assert_eq!(dfg.result.density_total, single.density_total);
+
+    // The two-stage path this replaces, spelled out.
+    let pre_cfg = RhfConfig {
+        max_iter: base.max_iter.min(DF_GUESS_TIGHT_MAX_ITER),
+        ..base.clone()
+    };
+    let pre = solve_rhf(&ctx, &mol, &prep, op, &bounds, &pre_cfg).unwrap();
+    let second_cfg = RhfConfig {
+        init_guess_density: Some(pre.density_total.clone()),
+        use_sad_guess: false,
+        ..base.clone()
+    };
+    let two_stage = solve_rhf(&ctx, &mol, &prep, op, &bounds, &second_cfg).unwrap();
+    assert!(dfg.result.converged && two_stage.converged);
+    let de = (dfg.result.energy - two_stage.energy).abs();
+    let diff = &dfg.result.density_total - &two_stage.density_total;
+    let rms = (diff.iter().map(|x| x * x).sum::<f64>() / diff.len() as f64).sqrt();
+    println!(
+        "skip vs two-stage: |dE| {de:.2e} Ha, rms(dD) {rms:.2e} (iterations {} vs {} + {})",
+        dfg.result.iterations, pre.iterations, two_stage.iterations
+    );
+    assert!(rms <= 10.0 * base.density_conv, "rms(dD) {rms:.2e}");
+    assert!(de <= 1e-11, "|dE| {de:.2e}");
+}
+
+/// The skip needs BOTH J and K fitted on the pre-stage's aux: a fit on
+/// another aux, or an exact K, keeps the pre-stage.
+#[test]
+fn df_guess_keeps_its_pre_stage_unless_both_fits_use_its_aux() {
+    use ferric_scf::ladder::{df_guess_repeats_the_scf, DF_GUESS_DEFAULT_AUX};
+    let jk = Some(DF_GUESS_DEFAULT_AUX);
+    let cases = [
+        (jk, jk, None, true),
+        (jk, jk, Some("DEF2-UNIVERSAL-JKFIT"), true),
+        (jk, None, None, false),
+        (None, jk, None, false),
+        (Some("cc-pvtz-jkfit"), Some("cc-pvtz-jkfit"), None, false),
+        (jk, jk, Some("cc-pvtz-jkfit"), false),
+        (Some("exact"), Some("exact"), None, false),
+    ];
+    for (j, k, pre, want) in cases {
+        let (_, _, _, base) = water_ccpvdz_fitted(j, k);
+        assert_eq!(
+            df_guess_repeats_the_scf(&base, pre),
+            want,
+            "j {j:?} k {k:?} pre {pre:?}"
+        );
+    }
+    // And end to end for the other-aux case: the pre-stage runs.
+    let other = Some("cc-pvtz-jkfit");
+    let (mol, prep, bounds, base) = water_ccpvdz_fitted(other, other);
+    let dfg = solve_rhf_with_df_guess(
+        &ParallelContext::default(),
+        &mol,
+        &prep,
+        Operator::coulomb(),
+        &bounds,
+        &base,
+        None,
+    )
+    .unwrap();
+    assert!(!dfg.skipped && dfg.df_iterations > 0);
+}

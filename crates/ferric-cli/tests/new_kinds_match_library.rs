@@ -285,14 +285,28 @@ fn drpa_matches_the_library() {
     assert_close(num(&res[0]["total"], "total"), r.e_total, "dRPA total");
 }
 
-/// `kind = "drpa"` with NO `[local]` is the exact method == `amplitude_drpa`
-/// at eps = 0 == the canonical plasmon formula.
+/// `kind = "drpa"` with NO `[local]` is the exact method: the library's
+/// frequency route (`ferric_rpa::exact_drpa_config` through
+/// `run_pdep_rpa_energy`), which also equals `amplitude_drpa` at eps = 0 and
+/// the canonical plasmon formula within the CLI-vs-library bar (the
+/// quadrature error at `EXACT_DRPA_QUAD_POINTS` is far below it, see
+/// `ferric-rpa/tests/validation_drpa_frequency.rs`).
 #[test]
-fn exact_drpa_matches_the_library_at_eps_zero() {
+fn exact_drpa_matches_the_library_frequency_route() {
     let (stdout, res) = run_cli("drpa_exact", "6-31g", "drpa", "frozen_core = 1");
     assert!(stdout.contains("dRPA (exact)"), "{stdout}");
+    assert!(stdout.contains("aux-basis log-det"), "{stdout}");
     let lib = library_setup("6-31g");
-    let r = ferric_mp2::drpa_amplitude::amplitude_drpa(
+    let freq = ferric_rpa::run_pdep_rpa_energy(
+        &lib.mol,
+        &lib.obs,
+        &lib.dfbs,
+        Operator::coulomb(),
+        &lib.rhf,
+        &ferric_rpa::exact_drpa_config(1, None),
+    )
+    .expect("library frequency route");
+    let ric = ferric_mp2::drpa_amplitude::amplitude_drpa(
         &lib.mol,
         &lib.obs,
         &lib.obs_bs,
@@ -305,10 +319,12 @@ fn exact_drpa_matches_the_library_at_eps_zero() {
     let c = &res[0]["components"];
     assert!(c["local"].is_null(), "{c}");
     assert!(c["e_corr_plasmon_canonical"].is_null(), "{c}");
-    assert_close(num(&c["e_corr"], "e_corr"), r.e_corr, "exact dRPA corr");
+    let e_cli = num(&c["e_corr"], "e_corr");
+    assert_close(e_cli, freq.e_rpa, "exact dRPA vs library frequency route");
+    assert_close(e_cli, ric.e_corr, "exact dRPA vs Riccati at eps = 0");
     assert_close(
-        num(&c["e_corr"], "e_corr"),
-        r.e_corr_plasmon_canonical,
+        e_cli,
+        ric.e_corr_plasmon_canonical,
         "exact dRPA vs canonical plasmon",
     );
 }

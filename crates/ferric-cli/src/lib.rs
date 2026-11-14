@@ -381,23 +381,26 @@ fn print_df_guess_outcome(
     aux: Option<&str>,
     jk_mode: impl std::fmt::Display,
 ) {
+    let aux = aux.unwrap_or(ferric_scf::ladder::DF_GUESS_DEFAULT_AUX);
+    let converged = if dfg.df_converged {
+        "converged"
+    } else {
+        "did not fully converge"
+    };
     if dfg.fallback.is_some() {
         eprintln!(
             "[ferric] SCF: DF-guess pre-stage abandoned (out of memory), {jk_mode} J/K stage from \
              its own guess"
         );
-        return;
+    } else if dfg.skipped {
+        eprintln!("[ferric] SCF: DF-guess pre-stage skipped: the SCF itself fits J and K on {aux}");
+    } else {
+        eprintln!(
+            "[ferric] SCF: DF-guess pre-stage via {aux} ({} iters, {converged}), {jk_mode} J/K \
+             stage from that density",
+            dfg.df_iterations
+        );
     }
-    eprintln!(
-        "[ferric] SCF: DF-guess pre-stage via {} ({} iters, {}), {jk_mode} J/K stage from that density",
-        aux.unwrap_or(ferric_scf::ladder::DF_GUESS_DEFAULT_AUX),
-        dfg.df_iterations,
-        if dfg.df_converged {
-            "converged"
-        } else {
-            "did not fully converge"
-        },
-    );
 }
 
 /// `[scf] eri`, strictly parsed; an unknown value exits with an error.
@@ -4561,27 +4564,22 @@ fn run_eom_ccsd(
     }
 }
 
-/// `method.kind = "drpa"`: direct RPA correlation (dRPA@HF) by the drCCD
-/// Riccati solve on localized orbitals (`ferric_mp2::drpa_amplitude`;
-/// closed-shell).
+/// `method.kind = "drpa"`: direct RPA correlation (dRPA@HF), closed shell.
 ///
-/// EXACT by default: the Riccati solve with nothing truncated (ε = 0), which
-/// the library anchors to the canonical plasmon formula (<= 1e-12). Riccati,
-/// plasmon and full-rank PDEP (`pdep-rpa`) are algorithms for the same exact
-/// dRPA energy. The exact path's memory grows as `no^3·nv^2` (the ring-product
-/// plan), so [`preflight_exact_drpa`] refuses a run that cannot fit before
-/// the SCF.
+/// EXACT by default ([`run_exact_drpa`]): the frequency-integrated
+/// `ln det(1 + Pi) - tr Pi` in the aux basis with nothing truncated
+/// (`ferric_rpa::exact_drpa_config`), which equals the canonical plasmon
+/// formula and the drCCD Riccati solve to the quadrature and Riccati residual
+/// bars (`ferric-rpa/tests/validation_drpa_frequency.rs`).
 ///
-/// With `[local] scheme = "amplitude-threshold"`: the amplitude-threshold
-/// dRPA at `eps` (one-sided, ~linear-in-ε error; not variational), `reference`
-/// (opt-in canonical plasmon reference) and `eps_sweep` (several ε on ONE SCF
-/// and ONE ε-independent localized assembly via `amplitude_drpa_scan_timed`,
-/// the `r0_sweep` pattern).
-///
-/// The fixed-point accelerators match the Python binding's defaults (DIIS
-/// subspace 8, ε-linked stopping tolerance factor 0.1), so a CLI run and
-/// `run_drpa(...)` with default kwargs solve the same equations the same way.
-/// The ε-link is a no-op at ε = 0.
+/// With `[local] scheme = "amplitude-threshold"`: the drCCD Riccati solve on
+/// localized orbitals (`ferric_mp2::drpa_amplitude`) at `eps` (one-sided,
+/// ~linear-in-ε error; not variational), `reference` (opt-in canonical
+/// plasmon reference) and `eps_sweep` (several ε on ONE SCF and ONE
+/// ε-independent localized assembly via `amplitude_drpa_scan_timed`, the
+/// `r0_sweep` pattern). The fixed-point accelerators match the Python
+/// binding's defaults (DIIS subspace 8, ε-linked stopping tolerance factor
+/// 0.1).
 fn run_drpa(
     cfg: &Config,
     mol: &Molecule,
@@ -4596,33 +4594,29 @@ fn run_drpa(
         amplitude_drpa, amplitude_drpa_scan_timed, AmplitudeDrpaConfig,
     };
     require_restricted(result, "drpa");
-    let model = or_exit(cfg.local_model());
-    let (points, is_sweep, want_ref) = match &model {
-        None => (vec![0.0], false, false),
-        Some(m) => (m.eps.clone(), m.is_sweep, m.reference),
+    let Some(model) = or_exit(cfg.local_model()) else {
+        run_exact_drpa(cfg, mol, bs, prep, op, result, budget_bytes, scf_cert);
+        return;
     };
+    let points = model.eps.clone();
     let (aux_name, dfbs) = correlation_aux(cfg, mol);
     let base = AmplitudeDrpaConfig {
         eps: points[0],
         frozen_core: cfg.mp2.frozen_core.resolve(mol),
         eri3_budget_bytes: budget_bytes,
-        compute_reference: want_ref,
+        compute_reference: model.reference,
         diis: Some(DRPA_DIIS_SUBSPACE),
         eps_rtol_factor: Some(0.1),
         ..Default::default()
     };
-    fn fail(e: ferric_core::FerricError, exact: bool) -> ! {
+    let fail = |e: ferric_core::FerricError| -> ! {
         eprintln!("error: {e}");
-        if exact {
-            eprintln!("{EXACT_DRPA_MEMORY_HINT}");
-        }
         std::process::exit(1);
-    }
-    let exact = model.is_none();
-    let results = if is_sweep {
+    };
+    let results = if model.is_sweep {
         let (rs, prefix_wall_s, _) =
             amplitude_drpa_scan_timed(mol, prep, bs, &dfbs, op, result, &base, &points)
-                .unwrap_or_else(|e| fail(e, exact));
+                .unwrap_or_else(|e| fail(e));
         eprintln!(
             "[ferric] [local] eps_sweep: {} points on one SCF + one localized assembly \
              ({prefix_wall_s:.2} s shared)",
@@ -4630,8 +4624,7 @@ fn run_drpa(
         );
         rs
     } else {
-        vec![amplitude_drpa(mol, prep, bs, &dfbs, op, result, &base)
-            .unwrap_or_else(|e| fail(e, exact))]
+        vec![amplitude_drpa(mol, prep, bs, &dfbs, op, result, &base).unwrap_or_else(|e| fail(e))]
     };
     let n_points = points.len();
     for (k, (r, eps)) in results.iter().zip(&points).enumerate() {
@@ -4642,26 +4635,24 @@ fn run_drpa(
                 n_points
             );
         }
-        let local = model.as_ref().map(|m| LocalPrint {
+        let local = LocalPrint {
             eps: *eps,
             keep_fraction: r.keep_fraction,
-            integral_direct: m.direct.is_some(),
-        });
-        println!("{}", model_label("dRPA", local.as_ref()));
+            integral_direct: model.direct.is_some(),
+        };
+        println!("{}", model_label("dRPA", Some(&local)));
         println!("  basis / aux           = {} / {aux_name}", bs.name);
         println!("  RHF energy            = {:.10} Ha", result.energy);
         println!("  E_corr(dRPA)          = {:.10} Ha", r.e_corr);
-        let e_ref = want_ref.then_some(r.e_corr_plasmon_canonical);
-        if model.is_some() {
-            for line in local_reference_lines(
-                r.e_corr,
-                e_ref,
-                "E_corr(canonical)",
-                "threshold error",
-                "~linear in eps; not variational",
-            ) {
-                println!("{line}");
-            }
+        let e_ref = model.reference.then_some(r.e_corr_plasmon_canonical);
+        for line in local_reference_lines(
+            r.e_corr,
+            e_ref,
+            "E_corr(canonical)",
+            "threshold error",
+            "~linear in eps; not variational",
+        ) {
+            println!("{line}");
         }
         println!("  total energy          = {:.10} Ha", r.e_total);
         println!(
@@ -4680,7 +4671,7 @@ fn run_drpa(
             &aux_name,
             base.frozen_core,
             &op,
-            local.as_ref().map(|l| (l.eps, l.keep_fraction)),
+            Some((local.eps, local.keep_fraction)),
             r.converged,
             r.iterations,
             r.relres,
@@ -4697,7 +4688,7 @@ fn run_drpa(
                     "converged": r.converged,
                     "e_scf_reference": result.energy,
                     "scf_converged": result.converged,
-                    "local": local_json(local.as_ref()),
+                    "local": local_json(Some(&local)),
                     "certificate": cert,
                 }),
             );
@@ -4705,40 +4696,95 @@ fn run_drpa(
     }
 }
 
-/// DIIS subspace of the CLI's dRPA Riccati solve (the Python binding's
-/// default). Shared by [`run_drpa`] and [`preflight_exact_drpa`], whose
-/// memory estimate depends on it.
+/// Exact `drpa` (no `[local]`): `ferric_rpa::exact_drpa_config` through
+/// `ferric_rpa::run_pdep_rpa_energy`, which takes the aux-basis log-det route
+/// (no static eigensolve, nothing truncated). The log, the printout and the
+/// certificate name the route.
+#[allow(clippy::too_many_arguments)]
+fn run_exact_drpa(
+    cfg: &Config,
+    mol: &Molecule,
+    bs: &BasisSet,
+    prep: &PreparedBasis,
+    op: Operator,
+    result: &ferric_scf::result::ScfResult,
+    budget_bytes: Option<usize>,
+    scf_cert: &Certificate,
+) {
+    let (aux_name, dfbs) = correlation_aux(cfg, mol);
+    let rpa_cfg = ferric_rpa::exact_drpa_config(cfg.mp2.frozen_core.resolve(mol), budget_bytes);
+    let r = ferric_rpa::run_pdep_rpa_energy(mol, prep, &dfbs, op, result, &rpa_cfg).unwrap_or_else(
+        |e| {
+            eprintln!("error: {e}");
+            eprintln!("{EXACT_DRPA_MEMORY_HINT}");
+            std::process::exit(1);
+        },
+    );
+    let route = r.route.describe();
+    eprintln!("[ferric] RPA energy route: {route}");
+    let e_total = result.energy + r.e_rpa;
+    println!("{}", model_label("dRPA", None));
+    println!("  basis / aux           = {} / {aux_name}", bs.name);
+    println!("  RHF energy            = {:.10} Ha", result.energy);
+    println!("  E_corr(dRPA)          = {:.10} Ha", r.e_rpa);
+    println!("  total energy          = {e_total:.10} Ha");
+    println!(
+        "  route: {route}; Gauss-Legendre {} points",
+        rpa_cfg.quadrature.n_points
+    );
+    let cert = print_certificate(&ferric_rpa::certificate::exact_drpa_certificate(
+        scf_cert, &aux_name, &op, &rpa_cfg, &r,
+    ));
+    if let Some(rl) = ferric_scf::runlog::log() {
+        rl.result(
+            "drpa",
+            e_total,
+            serde_json::json!({
+                "eps": 0.0,
+                "e_corr": r.e_rpa,
+                "e_corr_plasmon_canonical": serde_json::Value::Null,
+                "converged": true,
+                "e_scf_reference": result.energy,
+                "scf_converged": result.converged,
+                "local": serde_json::Value::Null,
+                "route": route,
+                "quadrature_points": rpa_cfg.quadrature.n_points,
+                "certificate": cert,
+            }),
+        );
+    }
+}
+
+/// DIIS subspace of the CLI's `[local]` dRPA Riccati solve (the Python
+/// binding's default).
 const DRPA_DIIS_SUBSPACE: usize = 8;
 
 /// Where an exact dRPA that does not fit should go instead.
 const EXACT_DRPA_MEMORY_HINT: &str =
-    "hint: exact dRPA through the Riccati solve holds the full no^3*nv^2 ring-product plan. \
-     method.kind = \"pdep-rpa\" with [rpa] trunc_thresh = 0 (full rank) computes the same \
-     exact dRPA energy (to its frequency-quadrature error) at far lower memory; \
-     [local] scheme = \"amplitude-threshold\" with a stated eps is the local approximation.";
+    "hint: exact dRPA holds the dressed (P|ia) tensor, the aux metric and one naux x naux \
+     dielectric per worker. A smaller [mp2] auxbasis, more frozen core ([mp2] frozen_core), \
+     a larger [memory] budget_gb, or [local] scheme = \"amplitude-threshold\" with a stated eps \
+     (the local approximation) reduce it.";
 
-/// Refuse an EXACT `drpa` run whose Riccati solve cannot fit the memory
-/// budget, BEFORE the SCF: the ε = 0 path's peak
-/// (`ferric_mp2::drpa_amplitude::exact_drpa_peak_bytes`) is `no` times the
-/// size of B in the ring-product plan alone, which made C12 thrash and then
-/// be OOM-killed. The solve itself also hard-charges the memory pool (the
-/// backstop); this check only moves the refusal ahead of the SCF and points
-/// at the alternatives.
+/// Refuse an EXACT `drpa` run whose frequency route cannot fit the memory
+/// budget, BEFORE the SCF: the same charge `run_pdep_rpa_energy`'s preflight
+/// makes after it (`ferric_rpa::aux_route_charge_bytes`).
 fn preflight_exact_drpa(cfg: &Config, mol: &Molecule, prep: &PreparedBasis, budget: Option<usize>) {
     if cfg.method.kind != "drpa" || !matches!(cfg.local_model(), Ok(None)) {
         return;
     }
-    let nocc = (mol.nelec() as usize) / 2;
-    let no = nocc.saturating_sub(cfg.mp2.frozen_core.resolve(mol));
-    let nv = prep.nbasis().saturating_sub(nocc);
-    let need = ferric_mp2::drpa_amplitude::exact_drpa_peak_bytes(no, nv, Some(DRPA_DIIS_SUBSPACE));
+    let (_, dfbs) = correlation_aux(cfg, mol);
+    let rpa_cfg = ferric_rpa::exact_drpa_config(cfg.mp2.frozen_core.resolve(mol), budget);
+    let need = ferric_rpa::aux_route_charge_bytes(mol, prep, &dfbs, &rpa_cfg).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
     let have = ferric_core::memory::resolve_budget(budget);
     if need > have.bytes {
         let gib = |b: usize| b as f64 / (1024.0 * 1024.0 * 1024.0);
         eprintln!(
-            "error: exact dRPA (kind = \"drpa\", no [local]) needs ~{:.2} GiB for the Riccati \
-             solve at no = {no}, nv = {nv}, over the {:.2} GiB memory budget [source: {}]; \
-             refused before the SCF.",
+            "error: exact dRPA (kind = \"drpa\", no [local]) needs ~{:.2} GiB, over the {:.2} GiB \
+             memory budget [source: {}]; refused before the SCF.",
             gib(need),
             gib(have.bytes),
             have.source.label()
@@ -5249,7 +5295,16 @@ fn run_pdep_rpa_arm(
         );
         (rr, "UHF", uhf_result, reference)
     } else {
-        let rr = run_pdep_rpa(mol, prep, &dfbs, op, &result, &rpa_cfg).unwrap_or_else(|e| {
+        // The cube and NPZ exports read the static eigenpotentials; an
+        // energy-only run lets the library skip the eigensolve when
+        // `trunc_thresh = 0` (`ferric_rpa::energy_route`).
+        let exports = cfg.rpa.export_eigpot_prefix.is_some() || cfg.rpa.export_npz.is_some();
+        let rr = if exports {
+            run_pdep_rpa(mol, prep, &dfbs, op, &result, &rpa_cfg)
+        } else {
+            ferric_rpa::run_pdep_rpa_energy(mol, prep, &dfbs, op, &result, &rpa_cfg)
+        }
+        .unwrap_or_else(|e| {
             eprintln!("error: {e}");
             std::process::exit(1);
         });
@@ -5275,11 +5330,7 @@ fn run_pdep_rpa_arm(
         "Total ({ref_label}+RPA):       {:>20.10} Hartree",
         result.energy + rpa_result.e_rpa
     );
-    println!(
-        "Eigenpotentials kept:  {} / {}",
-        rpa_result.n_eigenpotentials,
-        rpa_result.eigenvalues_static.len()
-    );
+    print_pdep_route_and_modes(&rpa_result);
     if let Some(e_diag) = rpa_result.e_rpa_dft_diag {
         println!("RI-dRPA check:         {:>20.10} Hartree", e_diag);
     }
@@ -5323,6 +5374,22 @@ fn run_pdep_rpa_arm(
             proatom,
         };
         export_pdep_npz_bundle(cfg, &inputs, &rpa_result, &rpa_cert, npz_path);
+    }
+}
+
+/// The RPA energy route (stderr) and the kept-modes line of a PDEP-RPA run.
+fn print_pdep_route_and_modes(r: &ferric_rpa::PdepRpaResult) {
+    eprintln!("[ferric] RPA energy route: {}", r.route.describe());
+    match r.route {
+        ferric_rpa::RpaEnergyRoute::StaticEigenbasis => println!(
+            "Eigenpotentials kept:  {} / {}",
+            r.n_eigenpotentials,
+            r.eigenvalues_static.len()
+        ),
+        ferric_rpa::RpaEnergyRoute::AuxBasisLogDet => println!(
+            "Eigenpotentials kept:  {n} / {n} (every mode; no static eigensolve)",
+            n = r.n_eigenpotentials
+        ),
     }
 }
 

@@ -348,6 +348,7 @@ mod inner {
             inv_dielectric_freq,
             e_rpa_dft_diag,
             eigensolver_converged: stage.eigensolver_converged,
+            route: crate::RpaEnergyRoute::StaticEigenbasis,
         })
     }
 }

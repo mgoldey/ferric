@@ -882,7 +882,7 @@ paths are closed shell.
 
 | Name | Purpose | CLI |
 |---|---|---|
-| `run_drpa` | dRPA@HF by the drCCD Riccati solve. Exact by default (equals the plasmon formula); `MemoryError` before the SCF when the exact solve cannot fit (use `run_pdep_rpa(..., trunc_thresh=0)`). `diis=` (default 8); `eps_rtol_factor=` (local only). | `drpa` |
+| `run_drpa` | dRPA@HF by the drCCD Riccati solve. Exact by default (equals the plasmon formula); `MemoryError` before the SCF when the exact solve cannot fit (use `run_pdep_rpa(..., trunc_thresh=0)`). `diis=` (default 8); `eps_rtol_factor=` (local only). The CLI's exact `drpa` takes the frequency route instead (no static eigensolve, 48 Gauss–Legendre points); the two agree to the quadrature and rounding error (4.3e-11 Ha on n-hexane / cc-pVDZ). | `drpa` (`[local]` for the local scheme) |
 | `run_drpa_scan` | The local dRPA over a list of `eps` values, sharing one SCF and localization; each dict carries `"local"`. | `drpa` + `[local] eps_sweep` |
 | `run_linlccd` | Linearized ladder CCD, `variant` = `"hh"` (default), `"drivers-only"`, `"full"`. Exact by default. | `linlccd` |
 

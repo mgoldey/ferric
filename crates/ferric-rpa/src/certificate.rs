@@ -8,7 +8,7 @@ use ferric_mp2::certificate::with_anchor_in_scope;
 
 use crate::config::{Chi0Backend, Chi0Sparsity, Eigensolver, PdepRpaConfig, QuadratureScheme};
 use crate::rs_mp2_rpa::Attenuator;
-use crate::{PdepRpaResult, RsMp2RpaConfig};
+use crate::{PdepRpaResult, RpaEnergyRoute, RsMp2RpaConfig};
 
 /// The quadrature sizes `validation_rpa_gradient.rs` compares with PySCF's
 /// `gw.rpa.RPA`: the 40-point grid and the matched 6-point control.
@@ -48,8 +48,12 @@ pub fn pdep_rpa_certificate(
             "frequency-quadrature",
             format!("{:?}, {} points", q.scheme, q.n_points).to_lowercase(),
         );
-    c = with_anchor_in_scope(c, "PDEP-RPA", in_pdep_anchor_scope(reference, cfg));
-    if cfg.trunc_thresh > 0.0 {
+    c = with_anchor_in_scope(c, "PDEP-RPA", in_pdep_anchor_scope(reference, cfg))
+        .with_route("rpa-energy", r.route.describe());
+    // The aux-basis route runs only when every mode is kept, so nothing is
+    // truncated there whatever the threshold says.
+    let truncates = cfg.trunc_thresh > 0.0 && r.route == RpaEnergyRoute::StaticEigenbasis;
+    if truncates {
         c = c.with_approximation(
             "pdep-truncation",
             format!(
@@ -67,6 +71,25 @@ pub fn pdep_rpa_certificate(
         );
     }
     c
+}
+
+/// Exact dRPA (`method.kind = "drpa"` without `[local]`) on the frequency
+/// route: [`crate::exact_drpa_config`] run through
+/// [`crate::run_pdep_rpa_energy`], which names its route in `r`.
+pub fn exact_drpa_certificate(
+    reference: &Certificate,
+    aux: &str,
+    op: &ferric_integrals::operator::Operator,
+    cfg: &PdepRpaConfig,
+    r: &PdepRpaResult,
+) -> Certificate {
+    let q = &cfg.quadrature;
+    ferric_mp2::certificate::ri_correlation_certificate("drpa", reference, aux, cfg.frozen_core, op)
+        .with_approximation(
+            "frequency-quadrature",
+            format!("{:?}, {} points, u0 = {}", q.scheme, q.n_points, q.u0).to_lowercase(),
+        )
+        .with_route("rpa-energy", r.route.describe())
 }
 
 /// Range-separated MP2 + long-range RPA (`rs-mp2-rpa`) run with `cfg`.
@@ -111,6 +134,7 @@ mod tests {
             inv_dielectric_freq: None,
             e_rpa_dft_diag: None,
             eigensolver_converged: converged,
+            route: crate::RpaEnergyRoute::StaticEigenbasis,
         }
     }
 
@@ -136,6 +160,34 @@ mod tests {
         assert_eq!(u.approximations.len(), 2, "full rank: no truncation entry");
         assert_eq!(u.warnings.len(), 1);
         assert!(u.warnings[0].starts_with("PDEP eigensolver did not fully converge"));
+    }
+
+    /// The certificate names the route, and the aux-basis route (which runs
+    /// only when every mode is kept) carries no truncation entry whatever the
+    /// threshold says.
+    #[test]
+    fn pdep_rpa_certificate_names_the_energy_route() {
+        let rhf = Certificate::for_method_kind("rhf");
+        let cfg = PdepRpaConfig {
+            trunc_thresh: 0.0,
+            ..Default::default()
+        };
+        let route = |c: &Certificate| {
+            let r: Vec<_> = c.routes.iter().filter(|r| r.name == "rpa-energy").collect();
+            assert_eq!(r.len(), 1, "exactly one rpa-energy route line");
+            r[0].detail.clone()
+        };
+        let eig = pdep_rpa_certificate(&rhf, "a", &cfg, &result(true));
+        assert!(route(&eig).starts_with("static eigenbasis"));
+        let aux = PdepRpaResult {
+            route: RpaEnergyRoute::AuxBasisLogDet,
+            ..result(true)
+        };
+        let c = pdep_rpa_certificate(&rhf, "a", &cfg, &aux);
+        assert!(route(&c).starts_with("aux-basis log-det"));
+        assert!(route(&c).contains("every mode kept"));
+        let names: Vec<&str> = c.approximations.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(names, ["ri", "frequency-quadrature"]);
     }
 
     /// Each setting outside the evidence's drops the anchor on its own.

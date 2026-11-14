@@ -269,6 +269,25 @@ pub struct DfGuessResult {
     /// started from its own guess instead. It may have failed mid-iteration, so
     /// `df_iterations` = 0 means "no pre-stage density was used", not "no DF work".
     pub fallback: Option<String>,
+    /// `true` when the pre-stage did not run because the SCF itself fits J
+    /// and K on the pre-stage's auxiliary basis ([`df_guess_repeats_the_scf`]):
+    /// `result` is then the single fitted SCF, and `df_iterations` is 0.
+    pub skipped: bool,
+}
+
+impl DfGuessResult {
+    /// The result of a run whose pre-stage was skipped
+    /// ([`df_guess_repeats_the_scf`]): `result` is the SCF itself.
+    fn pre_stage_skipped(result: ScfResult) -> Self {
+        Self {
+            result,
+            df_iterations: 0,
+            df_converged: false,
+            df_energy: f64::NAN,
+            fallback: None,
+            skipped: true,
+        }
+    }
 }
 
 /// `max_iter` cap for the DF pre-stage (see `solve_rhf_with_df_guess` doc,
@@ -373,6 +392,12 @@ const DF_GUESS_ENERGY_CONV_FLOOR: f64 = 1e-2;
 /// `max_iter` without converging, its (still much-improved-over-cold-guess)
 /// density is used anyway — see `DfGuessResult::df_converged`.
 ///
+/// # A fitted SCF skips the pre-stage
+///
+/// When `base` itself fits J and K on the pre-stage's aux basis, the
+/// pre-stage would repeat the SCF; it is skipped and the result is
+/// `solve_rhf(base)`, flagged `skipped` (see [`df_guess_repeats_the_scf`]).
+///
 /// # Out of memory
 ///
 /// The pre-stage only ever chooses a starting density, so a run must not die for
@@ -390,6 +415,9 @@ pub fn solve_rhf_with_df_guess(
     base: &RhfConfig,
     df_aux: Option<&str>,
 ) -> Result<DfGuessResult, FerricError> {
+    if df_guess_repeats_the_scf(base, df_aux) {
+        return solve_rhf(ctx, mol, prep, op, bounds, base).map(DfGuessResult::pre_stage_skipped);
+    }
     match run_df_guess_pre_stage(ctx, mol, prep, op, bounds, base, df_aux) {
         Ok(df) => solve_rhf_from_df_density(ctx, mol, prep, op, bounds, base, df),
         Err(FerricError::MemoryExhausted(reason)) if ctx.size <= 1 => {
@@ -397,6 +425,34 @@ pub fn solve_rhf_with_df_guess(
         }
         Err(e) => Err(e),
     }
+}
+
+/// Whether `base` already fits both J and K on the pre-stage's auxiliary
+/// basis (`df_aux`, default [`DF_GUESS_DEFAULT_AUX`]).
+///
+/// The pre-stage is `base` with that aux and an iteration cap, so for such a
+/// `base` it would solve the same fitted SCF, and the stage after it would
+/// rebuild the same fitters to confirm the same fixed point. Skipping it
+/// returns `solve_rhf(base)` itself: the same fixed point, reached from
+/// `base`'s own guess, so the result agrees with the two-stage one within the
+/// SCF convergence thresholds rather than bitwise. The other choice, handing
+/// the pre-stage's fitters to the second stage, would keep the bits but still
+/// pay for the confirming iterations, and would carry built fitters across
+/// `solve_rhf` calls, where nothing ties them to the geometry they were built
+/// for.
+///
+/// Aux names compare case-insensitively after [`crate::rhf::normalize_df_aux`];
+/// an alias spelling of the same set is not recognized, and the pre-stage then
+/// runs as before.
+pub fn df_guess_repeats_the_scf(base: &RhfConfig, df_aux: Option<&str>) -> bool {
+    let pre_stage_aux = crate::rhf::normalize_df_aux(df_aux.unwrap_or(DF_GUESS_DEFAULT_AUX));
+    let fitted_on_pre_stage_aux = |aux: &Option<String>| {
+        aux.as_deref().is_some_and(|a| {
+            let a = crate::rhf::normalize_df_aux(a);
+            !a.is_empty() && a.eq_ignore_ascii_case(&pre_stage_aux)
+        })
+    };
+    fitted_on_pre_stage_aux(&base.df_j_aux) && fitted_on_pre_stage_aux(&base.df_k_aux)
 }
 
 /// The exact stage, started from the DF pre-stage's density.
@@ -424,6 +480,7 @@ fn solve_rhf_from_df_density(
         df_converged: df_result.converged,
         df_energy: df_result.energy,
         fallback: None,
+        skipped: false,
     })
 }
 
@@ -464,6 +521,7 @@ fn solve_rhf_without_df_guess(
         df_converged: false,
         df_energy: f64::NAN,
         fallback: Some(reason),
+        skipped: false,
     })
 }
 

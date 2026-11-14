@@ -25,6 +25,13 @@ contributes here. How much it saves depends on the threshold; runs that need
 the full-rank answer set `trunc_thresh = 0.0`, as the GW, BSE and \\( C_6 \\)
 examples do.
 
+A `pdep-rpa` energy run with `trunc_thresh = 0` and no export (no
+`export_npz`, no `export_eigpot_prefix`) skips the static eigensolve: with
+every mode kept the eigenbasis is a full rotation of the RI space, the
+log-det and the trace are invariant under it, and the CLI evaluates them in
+the RI space directly (the "aux-basis log-det" route, named in the log and
+the certificate). A positive `trunc_thresh` keeps the eigensolve.
+
 ### Response modes as real-space densities
 
 Each dielectric eigenvector is a set of auxiliary-basis coefficients
@@ -96,22 +103,25 @@ problems. Geometry optimization with `pdep-rpa` is supported
 
 ## Exact and local dRPA
 
-**What it is.** `method.kind = "drpa"` (Python `ferric.run_drpa`) is dRPA@HF
-computed by the drCCD Riccati equations in the Boys-localized basis,
-closed shell, energy only. It is **exact by default**: no amplitude is
-truncated (`examples/water-drpa.toml`), and the energy equals the canonical
-plasmon formula to ≤ 1e-12 Ha. Riccati, plasmon and full-rank PDEP-RPA are
-algorithms for the same exact dRPA; measured agreement is ≤ 2.6e-14 Ha
-(H2/STO-3G, water/6-31G with and without frozen core, PDEP with
-`trunc_thresh = 0` at 64 Gauss–Legendre points). Proven (narrow).
+**What it is.** `method.kind = "drpa"` is dRPA@HF, closed shell, energy
+only. It is **exact by default**: nothing is truncated
+(`examples/water-drpa.toml`). Without `[local]` the CLI integrates
+ln det(1 + Π(iω)) − tr Π(iω) over imaginary frequency in the dressed
+auxiliary basis, Gauss–Legendre with 48 points at `u0 = 0.5`, with no static
+eigensolve (the "aux-basis log-det" route; the log and the certificate name
+it). Python `ferric.run_drpa` without `local` runs the drCCD Riccati
+equations in the Boys-localized basis instead. The frequency route, the
+Riccati solve and the canonical plasmon formula are algorithms for the same
+exact dRPA; see [What is validated](../reference/validation.md) for the
+measured agreement. Proven (narrow).
 
 **Which exact algorithm.** The Riccati solve holds a ring-product plan of
 no³·nv² numbers, `no` times the size of the amplitudes, so it is the
-small-system path: C12 thrashed and was then killed for memory. A run that
-cannot fit the memory budget is refused before the SCF and pointed at
-`pdep-rpa` with `[rpa] trunc_thresh = 0`, which gives the same energy (to its
-frequency-quadrature error) at far lower memory and is faster at every size
-measured (n-alkanes C4–C16).
+small-system path: C12 thrashed and was then killed for memory. The
+frequency route holds the dressed (P|ia) tensor, the aux metric and one
+naux × naux dielectric per worker, so the CLI's exact `drpa` reaches the
+sizes `pdep-rpa` does. A run that cannot fit the memory budget is refused
+before the SCF.
 
 **The local approximation** (`[local] scheme = "amplitude-threshold"` with
 `eps`, `examples/water-drpa-local.toml`; Python

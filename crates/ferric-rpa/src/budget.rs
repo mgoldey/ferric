@@ -396,6 +396,94 @@ pub fn quad_scratch_bytes(shape: PeakEstimateShape) -> usize {
         .saturating_mul(shape.n_workers.max(1))
 }
 
+/// [`quad_scratch_bytes`] at the nov-panel `width` the frequency loop
+/// actually allocates (`energy::quad_panel_width`); `width >= nov` is the
+/// full-width term itself.
+pub fn quad_scratch_bytes_at_width(shape: PeakEstimateShape, width: usize) -> usize {
+    let m = shape.n_keep.min(shape.naux).max(1);
+    let nov = shape.nocc.saturating_mul(shape.nvir);
+    let rows = m.max(shape.naux);
+    let cols = width.min(nov);
+    rows.saturating_mul(cols)
+        .saturating_add(rows.saturating_mul(rows))
+        .saturating_mul(F64_BYTES)
+        .saturating_mul(shape.n_workers.max(1))
+}
+
+/// The planes only the static-eigenbasis route allocates: the assembled
+/// `naux x naux` ε̃(0) and its eigenvectors (`2 naux²`), the projection
+/// `y = Vᵀ·B_ov` (`m·nov`), and the eigenvector outputs (eigenvectors and
+/// eigenpotentials, `2 naux·m`).
+pub fn static_eigensolve_bytes(shape: PeakEstimateShape) -> usize {
+    let naux = shape.naux;
+    let m = shape.n_keep.min(naux).max(1);
+    let nov = shape.nocc.saturating_mul(shape.nvir);
+    let eigensolve = naux.saturating_mul(naux).saturating_mul(2);
+    let y_projection = m.saturating_mul(nov);
+    let outputs = naux.saturating_mul(m).saturating_mul(2);
+    eigensolve
+        .saturating_add(y_projection)
+        .saturating_add(outputs)
+        .saturating_mul(F64_BYTES)
+}
+
+/// Which planes a closed-shell energy run allocates (see `crate::energy_route`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnergyRoutePlanes {
+    /// The PDEP eigensolve and the frequency loop in its eigenbasis.
+    StaticEigenbasis,
+    /// The frequency loop in the aux basis: no eigensolve planes, plus one
+    /// `naux x naux` ε̃(0) for the keep-all Cholesky check.
+    AuxBasisLogDet,
+}
+
+/// What the closed-shell preflight charges: the ceiling-check `total` and its
+/// pool split (`hard` refuses, `soft` is the per-worker scratch, and the AO
+/// tensor is `total - hard - soft`, charged by `ferric-integrals`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RunCharge {
+    /// Bytes the ceiling check compares to the budget.
+    pub total: usize,
+    /// Planes with no streaming fallback.
+    pub hard: usize,
+    /// The per-worker frequency scratch at the width the loop allocates.
+    pub soft: usize,
+}
+
+/// The preflight charge of a closed-shell energy run on `planes`, with the
+/// per-worker scratch at `panel_width` (the width the frequency loop will
+/// allocate under the run's budget) rather than the full `nov`.
+///
+/// At `panel_width >= nov` on [`EnergyRoutePlanes::StaticEigenbasis`] this is
+/// exactly [`estimate_peak_bytes`] / [`estimate_peak_split`]; a budgeted run
+/// whose loop panels is charged the panel it allocates.
+pub fn closed_shell_run_charge(
+    shape: PeakEstimateShape,
+    planes: EnergyRoutePlanes,
+    panel_width: usize,
+) -> RunCharge {
+    let (static_hard, _) = estimate_peak_split(shape);
+    let hard = match planes {
+        EnergyRoutePlanes::StaticEigenbasis => static_hard,
+        EnergyRoutePlanes::AuxBasisLogDet => static_hard
+            .saturating_sub(static_eigensolve_bytes(shape))
+            .saturating_add(
+                shape
+                    .naux
+                    .saturating_mul(shape.naux)
+                    .saturating_mul(F64_BYTES),
+            ),
+    };
+    let soft = quad_scratch_bytes_at_width(shape, panel_width);
+    RunCharge {
+        total: hard
+            .saturating_add(soft)
+            .saturating_add(ao_tensor_bytes(shape)),
+        hard,
+        soft,
+    }
+}
+
 /// Upper-bound estimate, in bytes, of the peak resident memory of a PDEP-RPA
 /// run with the given shape.
 ///
@@ -458,13 +546,10 @@ pub fn estimate_peak_bytes(shape: PeakEstimateShape) -> usize {
         .saturating_add(eri3_and_bov_bytes)
         .saturating_add(ao_tensor_bytes);
 
-    // (2) Lanczos full-rank eigensolve: assembled A (naux×naux, always fully
-    // resident regardless of matvec panel width) + its eigh output
-    // (eigenvectors naux×naux + eigenvalues naux, folded into the naux² term).
-    let lanczos_peak = naux
-        .saturating_mul(naux)
-        .saturating_mul(2)
-        .saturating_mul(F64_BYTES);
+    // (2) The static eigensolve and what it leaves resident for the loop
+    // ([`static_eigensolve_bytes`]): the assembled ε̃(0) and its eigenvectors,
+    // the projection y = Vᵀ·B_ov, and the eigenvector outputs.
+    let lanczos_peak = static_eigensolve_bytes(shape);
 
     // (3) Frequency-quadrature loop: per-worker (m, nov) + (m, m) scratch via
     // map_init, times n_workers (this is the term that scales with rayon
@@ -496,7 +581,6 @@ pub fn estimate_peak_bytes(shape: PeakEstimateShape) -> usize {
         .saturating_add(per_worker_width.saturating_mul(per_worker_width))
         .saturating_mul(F64_BYTES);
     let quad_scratch_peak = per_worker_scratch.saturating_mul(n_workers);
-    let y_projection_bytes = m.saturating_mul(nov).saturating_mul(F64_BYTES);
 
     // The b_ov held by the intermediate the eigensolve/quadrature stages
     // borrow from is already counted in eri3_and_bov_bytes above (it's the
@@ -505,10 +589,6 @@ pub fn estimate_peak_bytes(shape: PeakEstimateShape) -> usize {
     // distinct, simultaneously-live allocations at the point the frequency
     // loop runs (b_ov + eigensolve output + per-worker scratch), but we must
     // not double the eri3/b_ov term again here.
-    let output_arrays = naux
-        .saturating_mul(m)
-        .saturating_mul(2)
-        .saturating_mul(F64_BYTES); // eigenvectors + eigenpotentials_aux
 
     // (3b) The per-frequency inverse-dielectric stack, when the caller keeps it.
     //
@@ -586,8 +666,6 @@ pub fn estimate_peak_bytes(shape: PeakEstimateShape) -> usize {
     intermediates_peak
         .saturating_add(lanczos_peak)
         .saturating_add(quad_scratch_peak)
-        .saturating_add(y_projection_bytes)
-        .saturating_add(output_arrays)
         .saturating_add(grid_peak)
         .saturating_add(inv_dielectric_bytes)
 }
@@ -595,6 +673,54 @@ pub fn estimate_peak_bytes(shape: PeakEstimateShape) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn run_charge_shape() -> PeakEstimateShape {
+        PeakEstimateShape {
+            naux: 700,
+            nocc: 25,
+            nvir: 169,
+            n_quad: 20,
+            n_workers: 6,
+            n_keep: 700,
+            grid: None,
+            need_inv_dielectric: false,
+            nao: 202,
+        }
+    }
+
+    /// At full panel width the static route's charge IS the estimate the
+    /// ceiling check used before the panel width was threaded through, and a
+    /// narrower panel lowers only the per-worker scratch. Mutation-tested:
+    /// charging `quad_scratch_bytes(shape)` (full width) in
+    /// `closed_shell_run_charge` fails the second assertion.
+    #[test]
+    fn the_run_charge_follows_the_panel_width_the_loop_allocates() {
+        let shape = run_charge_shape();
+        let nov = shape.nocc * shape.nvir;
+        let full = closed_shell_run_charge(shape, EnergyRoutePlanes::StaticEigenbasis, nov);
+        assert_eq!(full.total, estimate_peak_bytes(shape));
+        let narrow = closed_shell_run_charge(shape, EnergyRoutePlanes::StaticEigenbasis, 64);
+        assert_eq!(narrow.hard, full.hard);
+        assert_eq!(narrow.soft, quad_scratch_bytes_at_width(shape, 64));
+        assert!(narrow.total < full.total);
+        assert_eq!(full.total - narrow.total, full.soft - narrow.soft);
+    }
+
+    /// The aux route drops the static eigensolve planes and keeps one
+    /// `naux x naux` matrix; everything else is the static route's charge.
+    #[test]
+    fn the_aux_route_charges_no_static_eigensolve() {
+        let shape = run_charge_shape();
+        let nov = shape.nocc * shape.nvir;
+        let stat = closed_shell_run_charge(shape, EnergyRoutePlanes::StaticEigenbasis, nov);
+        let aux = closed_shell_run_charge(shape, EnergyRoutePlanes::AuxBasisLogDet, nov);
+        let square = shape.naux * shape.naux * F64_BYTES;
+        assert_eq!(
+            stat.hard - aux.hard,
+            static_eigensolve_bytes(shape) - square
+        );
+        assert_eq!(aux.soft, stat.soft);
+    }
 
     /// The hard/soft split must reconstruct the total EXACTLY. If it drifts,
     /// the pool gate admits a different number of bytes than the ceiling

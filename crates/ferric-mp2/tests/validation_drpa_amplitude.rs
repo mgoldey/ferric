@@ -27,8 +27,10 @@
 //! At ε = 0, on H2/STO-3G (STO-3G aux), water and n-butane at 6-31G and
 //! cc-pVDZ (cc-pVDZ-RI aux), every frozen-core setting the reference carries
 //! (0/1 for water, 0/1/4 for butane), three ferric routes must land on the
-//! reference: the exact method as the CLI and `run_drpa` run it
-//! (`amplitude_drpa`, ε = 0, DIIS 8, ε-linked rtol 0.1), the integral-direct
+//! reference: the exact method as `run_drpa` runs it and as the CLI's
+//! `[local]` route runs at ε = 0 (`amplitude_drpa`, ε = 0, DIIS 8, ε-linked
+//! rtol 0.1; the CLI's exact `drpa` takes the frequency route, validated in
+//! `ferric-rpa/tests/validation_drpa_frequency.rs`), the integral-direct
 //! assembly with trivial locality maps (`amplitude_drpa_direct`), and the
 //! in-crate `canonical_plasmon_drpa` that the unit tests anchor against
 //! (until now compared to no external code).
@@ -135,7 +137,7 @@ const TOL_E_CORR: f64 = 3e-10;
 /// (1.35e-3 Eh). 1e-6 sits 15x below the first and >3000x above the
 /// agreement bar.
 const MUST_MISS: f64 = 1e-6;
-/// The DIIS subspace the CLI and `run_drpa` use for the exact method.
+/// The DIIS subspace `run_drpa` and the CLI's `[local]` route use.
 const DIIS: usize = 8;
 
 fn workspace_root() -> PathBuf {
@@ -273,8 +275,8 @@ fn setup(system: &str, basis_name: &str, aux_name: &str) -> Setup {
     }
 }
 
-/// The exact method as the CLI (`method.kind = "drpa"`) and `run_drpa` run
-/// it: ε = 0, DIIS 8, ε-linked stopping tolerance 0.1 (a no-op at ε = 0).
+/// The exact method as `run_drpa` runs it (and the CLI's `[local]` route at
+/// ε = 0): DIIS 8, ε-linked stopping tolerance 0.1 (a no-op at ε = 0).
 fn exact_cfg(frozen_core: usize) -> AmplitudeDrpaConfig {
     AmplitudeDrpaConfig {
         eps: 0.0,
@@ -336,7 +338,7 @@ fn check_eps_zero(system: &str, basis_name: &str, aux_name: &str) -> Setup {
         );
         check_close(
             &ctx,
-            "exact Riccati (CLI config)",
+            "exact Riccati (run_drpa config)",
             exact.e_corr,
             e_ref,
             TOL_E_CORR,

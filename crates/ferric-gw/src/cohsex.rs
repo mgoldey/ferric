@@ -534,6 +534,7 @@ mod tests {
             inv_dielectric_freq: None,
             e_rpa_dft_diag: None,
             eigensolver_converged: true,
+            route: ferric_rpa::RpaEnergyRoute::StaticEigenbasis,
         };
         // run_cohsex needs an rhf/gw_cfg but only for logging (`let _ = (mol,
         // gw_cfg, rhf)`), so any RHF result over the fixture molecule works —
