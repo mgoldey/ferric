@@ -46,10 +46,12 @@ def test_every_ladder_spelling_gives_the_same_ccsd_energy(water):
 
 def test_ri_runs_under_a_budget_the_dense_ladder_is_refused(water):
     mol, obs, aux = water
-    # water/cc-pVDZ (nv=19): the dense plan needs ~6.9 MB (vvvv plus the
-    # three nv^4 build temporaries), the RI plan 3.4 MB at block 1 and
-    # 4.4 MB at full width. 5 MB separates them.
-    gb = 5e-3
+    # water/cc-pVDZ (nv=19): the smallest budget each plan accepts, found
+    # by bisecting the pre-flight refusal, is 4.48 MB for the dense ladder
+    # (the resident (ac|bd) block plus the transient vvvv before its permute)
+    # and 3.10 MB for the RI ladder at block 1. 3.8 MB sits ~0.7 MB from
+    # each, so it refuses dense and admits RI.
+    gb = 3.8e-3
     with pytest.raises(RuntimeError, match="budget is"):
         ferric.run_ccsd(mol, obs, aux, memory_budget_gb=gb, ladder="dense")
     e_ri = ferric.run_ccsd(

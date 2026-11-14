@@ -166,6 +166,7 @@ See [RPA and GW](../methods/rpa-gw.md).
 | `water-tda.toml` | H2O / cc-pVDZ | `tda` (CIS, 5 roots) | — | Default aux `cc-pvdz-rifit` (an alias of `cc-pvdz-ri`). |
 | `water-tddft-pbe.toml` | H2O / cc-pVDZ | `tddft` @PBE (5 roots) | — | Includes the f_xc kernel. |
 | `water-tddft-cam-b3lyp-triplet.toml` | H2O / 6-31G | `tddft` @CAM-B3LYP, `spin = "triplet"` (5 roots) | — | Range-separated exchange (erf-metric RI) and the triplet kernel. |
+| `nh2-tddft-uks.toml` | NH2 / 6-31G | `tddft` @B3LYP on a UKS reference (6 roots) | — | Spin-conserving unrestricted response; prints the reference and per-root ⟨S²⟩. |
 
 See also [Capabilities and validation](./validation.md) for the grade of
 each `kind` and its evidence, and [Input reference](./input.md) for every key.

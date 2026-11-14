@@ -616,16 +616,16 @@ pub struct EriRoute {
 }
 
 impl EriRoute {
-    /// The run-log / certificate text.
+    /// The certificate text. It carries no timing, so two runs of the same
+    /// input give the same certificate; the build time is in the run log.
     pub fn describe(&self) -> String {
         format!(
             "in-core four-centre ERIs ([scf] eri = \"{}\"): {} functions, {:.3} GB, {} \
-             unique shell quartets, no Schwarz or density screening; built in {:.2} s",
+             unique shell quartets, no Schwarz or density screening",
             self.mode.as_str(),
             self.nbasis,
             self.bytes as f64 / 1e9,
             self.quartets,
-            self.build_seconds
         )
     }
 }
@@ -737,7 +737,11 @@ pub fn attach_for_scf(
     bounds.incore.set(Some(store.clone()));
     let route = record(&store, true);
     if config.verbose {
-        eprintln!("[ferric] SCF J/K: {}", route.describe());
+        eprintln!(
+            "[ferric] SCF J/K: {}; built in {:.2} s",
+            route.describe(),
+            route.build_seconds
+        );
     }
     if let Some(log) = crate::runlog::log() {
         log.note(
