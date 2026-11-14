@@ -35,7 +35,8 @@
 //! (see `guess_vectors`).
 //!
 //! An unconverged root after `max_iter` iterations is an error, never a
-//! returned number.
+//! returned number, and so is a negative Casida `Ω²` (an instability of the
+//! reference in the run's spin channel).
 
 use ferric_core::FerricError;
 use ndarray::{s, Array1, Array2, Axis};
@@ -343,6 +344,11 @@ fn casida_ritz(
     };
     let h = l_half.dot(mp).dot(&l_half);
     let (om2, z) = symmetric_eigh(&h, "Casida subspace")?;
+    // A negative subspace Ω² means Vᵀ(A+B)V, hence A+B, is indefinite: an
+    // instability of the reference, refused as the dense path does.
+    if let Some(&w2) = om2.iter().find(|&&w| w < -crate::tddft::NEGATIVE_OMEGA_SQ) {
+        return Err(crate::tddft::negative_omega_sq_error(w2));
+    }
     let tg = targets(&om2, n_roots);
     let m = mp.nrows();
     let mut u = Array2::<f64>::zeros((m, tg.len()));

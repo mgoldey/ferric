@@ -924,6 +924,44 @@ pub(crate) fn restricted_coefficients(
     (ra, s, ta, wt * (2.0 * vs[0] + vs[1]))
 }
 
+/// [`restricted_coefficients`] for the singlet (`triplet == false`, the same
+/// function) or the `M_S = 0` triplet perturbation (`triplet == true`):
+/// δρ_β = −δρ_α, ∇δρ_β = −∇δρ_α, δτ_β = −δτ_α at a restricted point, so
+/// δx = (a, −a, 2b, 0, −2b, c, −c) and row i of δv = H δx is
+/// `(H_i,ρα − H_i,ρβ)·a + 2(H_i,σαα − H_i,σββ)·b + (H_i,τα − H_i,τβ)·c`.
+/// The α outputs keep the singlet form,
+///
+///   u^α = δv_ρα,  t^α = δv_τα,
+///   w^α = (2 δv_σαα + δv_σαβ)·g + (2 v_σαα − v_σαβ)·∇δρ_α,
+///
+/// the last term's sign following ∇δρ_β = −∇δρ_α. Returned in the same
+/// layout as [`restricted_coefficients`]. Pinned against [`linearize_point`]
+/// for both spins by `restricted_coefficients_match_linearize_point`.
+pub(crate) fn spin_coefficients(
+    h: &PointHessian,
+    vs: &[f64; 3],
+    wt: f64,
+    triplet: bool,
+) -> ([f64; 3], [f64; 3], [f64; 3], f64) {
+    if !triplet {
+        return restricted_coefficients(h, vs, wt);
+    }
+    let row = |i: usize| {
+        [
+            wt * (h[i][RA] - h[i][RB]),
+            wt * (2.0 * (h[i][SAA] - h[i][SBB])),
+            wt * (h[i][TA] - h[i][TB]),
+        ]
+    };
+    let (ra, saa, sab, ta) = (row(RA), row(SAA), row(SAB), row(TA));
+    let s = [
+        2.0 * saa[0] + sab[0],
+        2.0 * saa[1] + sab[1],
+        2.0 * saa[2] + sab[2],
+    ];
+    (ra, s, ta, wt * (2.0 * vs[0] - vs[1]))
+}
+
 /// Per-spin grid coefficients of the linearised potential, `(u, w, t)` with
 /// `u`, `t` of length npts and `w` of shape (3, npts).
 struct SpinCoefficients {
@@ -2182,6 +2220,19 @@ mod tests {
     /// the first point with |Δu| ≈ 0.5 against a bound of ~1e-14.
     #[test]
     fn restricted_coefficients_match_linearize_point() {
+        for triplet in [false, true] {
+            spin_coefficients_match_linearize_point(triplet);
+        }
+    }
+
+    /// The body of [`restricted_coefficients_match_linearize_point`] for one
+    /// spin: the triplet perturbation flips the sign of every β component.
+    ///
+    /// Mutation (applied and reverted, 2026-11-14): the triplet γ coefficient
+    /// built with the singlet sign (`2 v_σαα + v_σαβ`) fails the triplet arm
+    /// at the first point (w[0][0] −0.375 against −0.581).
+    fn spin_coefficients_match_linearize_point(triplet: bool) {
+        let sgn = if triplet { -1.0 } else { 1.0 };
         let mut rng = Xorshift64(0x5DEECE66D);
         let u = f64::EPSILON / 2.0;
         let gamma20 = 20.0 * u / (1.0 - 20.0 * u);
@@ -2199,11 +2250,12 @@ mod tests {
             let d = [rng.next_f64(), rng.next_f64(), rng.next_f64()];
             let (a, c) = (rng.next_f64(), rng.next_f64());
             let wt = 0.5 + 0.5 * rng.next_f64().abs();
+            let neg = |x: [f64; 3]| [sgn * x[0], sgn * x[1], sgn * x[2]];
             let p = PointPerturbation {
                 grad: [g, g],
-                drho: [a, a],
-                dgrad: [d, d],
-                dtau: [c, c],
+                drho: [a, sgn * a],
+                dgrad: [d, neg(d)],
+                dtau: [c, sgn * c],
             };
             let (uu, ww, tt) = linearize_point(&h, &vs, &p);
             let abs3 = |x: [f64; 3]| [x[0].abs(), x[1].abs(), x[2].abs()];
@@ -2220,7 +2272,7 @@ mod tests {
                 dtau: [c.abs(), c.abs()],
             };
             let (um, wm, tm) = linearize_point(&ha, &abs3(vs), &pa);
-            let (cu, cs, ct, cg) = restricted_coefficients(&h, &vs, wt);
+            let (cu, cs, ct, cg) = spin_coefficients(&h, &vs, wt, triplet);
             let b = dot3(&g, &d);
             let lin = |k: [f64; 3]| k[0] * a + k[1] * b + k[2] * c;
             let ur = lin(cu);

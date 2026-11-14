@@ -1,7 +1,8 @@
 //! Linear-response TDDFT for closed-shell references.
 //!
 //! Implements the Tamm–Dancoff approximation (TDA, equivalent to CIS for HF)
-//! and the full Casida equations for singlet excitations:
+//! and the full Casida equations for singlet or (`M_S = 0`) triplet
+//! excitations ([`TddftConfig::spin`]); the singlet matrices are:
 //!
 //! TDA:    A X = ω X
 //! Casida: (A−B)^{1/2} (A+B) (A−B)^{1/2} Z = Ω² Z
@@ -12,17 +13,21 @@
 //! and `K_{ia,jb} = (ia| f_αα + f_αβ |jb)` is the singlet XC-kernel block
 //! (PySCF `get_ab`'s `iajb`). With real orbitals `(ia|f_xc|jb) = (ia|f_xc|bj)`,
 //! so the same block enters A and B. It is built by
-//! [`ferric_dft::lr_kernel::singlet_fxc_ov_block`] — the SAME code the
+//! [`ferric_dft::lr_kernel::fxc_ov_block`] — the SAME code the
 //! PySCF-validated `ferric_gw::tddft::run_tda_dft` uses — and the functional
-//! gate [`ferric_dft::lr_kernel::resolve_singlet_response_xc`] hard-refuses
-//! every functional without a complete kernel (VV10, range-separated hybrids);
-//! τ-only meta-GGAs (SCAN / r2SCAN / TPSS) take the τ kernel. There is no
-//! kernel-less DFT path: a KS reference either gets its
-//! f_xc term or an error.
+//! gate [`ferric_dft::lr_kernel::resolve_response_xc`] hard-refuses every
+//! functional without a complete kernel (VV10); τ-only meta-GGAs (SCAN /
+//! r2SCAN / TPSS) take the τ kernel. There is no kernel-less DFT path: a KS
+//! reference either gets its f_xc term or an error.
 //!
-//! Scope: closed-shell (restricted) references, singlet excitations. An
-//! open-shell reference is refused — there is no spin-resolved A/B assembly
-//! here, for HF or KS.
+//! Range-separated hybrids replace `c_HF (pq|rs)` by
+//! `c_sr (pq|rs) + (c_lr − c_sr) (pq|rs)_ω`, the second term over a second set
+//! of RI tensors of the erf(ωr)/r operator in its own metric. Triplets drop
+//! the Coulomb term and take the `f_αα − f_αβ` kernel. Derivations:
+//! `crates/ferric-tddft/theory.md` §8 (range separation) and §9 (triplets).
+//!
+//! Scope: closed-shell (restricted) references. An open-shell reference is
+//! refused — there is no spin-resolved A/B assembly here, for HF or KS.
 //!
 //! # Solvers
 //!
@@ -39,14 +44,16 @@
 //! kernel setup, assembly / products, eigensolve, oscillator strengths).
 
 use crate::davidson::{davidson_casida, davidson_tda, DavidsonOutcome, DavidsonSettings};
+use crate::matvec::ExchangeTensors;
 use crate::matvec::ResponseOperator;
 use ferric_core::memory::plan::{Lifetime, MemoryPlan};
 use ferric_core::mol::Molecule;
 use ferric_core::timing::PhaseAccumulator;
 use ferric_core::FerricError;
 use ferric_dft::grid::AtomicGridConfig;
+pub use ferric_dft::lr_kernel::ResponseSpin;
 use ferric_dft::lr_kernel::{
-    resolve_singlet_response_xc, singlet_fxc_ov_block, SingletKernel, SingletOvFxc,
+    fxc_ov_block, resolve_response_xc as resolve_kernel_xc, SingletKernel, SingletOvFxc,
     FXC_BLOCK_ASYMMETRY_TOL,
 };
 use ferric_integrals::basis_bridge::PreparedBasis;
@@ -145,8 +152,9 @@ pub struct TddftConfig {
     ///
     /// It selects BOTH the exact-exchange fraction and the f_xc kernel, so it
     /// must name the reference's functional: `run_tddft` cannot check that
-    /// (an `ScfResult` does not record its functional). A functional without a
-    /// complete kernel (VV10, range-separated) is refused.
+    /// (an `ScfResult` does not record its functional). A range-separated
+    /// hybrid takes its c_sr, c_lr and ω from libxc; a functional without a
+    /// complete kernel (VV10) is refused.
     pub xc: Option<String>,
     /// Integration grid for the f_xc kernel. Must match the grid the reference
     /// SCF used (`RhfConfig::dft_grid`; `AtomicGridConfig::production()` when that
@@ -163,6 +171,8 @@ pub struct TddftConfig {
     pub solver: TddftSolver,
     /// Davidson iteration controls (ignored by the dense solver).
     pub davidson: DavidsonSettings,
+    /// Singlet (default) or `M_S = 0` triplet excitations.
+    pub spin: ResponseSpin,
 }
 
 impl TddftConfig {
@@ -172,19 +182,30 @@ impl TddftConfig {
         Self {
             n_roots,
             method,
+            ..Self::default()
+        }
+    }
+
+    /// Three TDA singlets on an HF reference: production grid, automatic
+    /// solver, no budget pin and no `c_HF` override.
+    fn hf_singlets() -> Self {
+        Self {
+            n_roots: 3,
+            method: TddftMethod::Tda,
             memory_budget_bytes: None,
             xc: None,
             grid: AtomicGridConfig::production(),
             c_hf_override: None,
             solver: TddftSolver::Auto,
             davidson: DavidsonSettings::default(),
+            spin: ResponseSpin::Singlet,
         }
     }
 }
 
 impl Default for TddftConfig {
     fn default() -> Self {
-        Self::new(3, TddftMethod::Tda)
+        Self::hf_singlets()
     }
 }
 
@@ -192,18 +213,28 @@ impl Default for TddftConfig {
 #[derive(Debug, Clone)]
 #[must_use]
 pub struct TddftResult {
-    /// Lowest `n_roots` positive singlet excitation energies (Hartree), ascending.
+    /// Lowest `n_roots` positive excitation energies (Hartree) of the run's
+    /// spin, ascending.
     pub excitation_energies: Vec<f64>,
     /// Length-gauge oscillator strengths, PySCF convention
     /// (`f = (2/3) Ω |<0|r|n>|²`, `<0|r|n> = √2 Σ_ia (X+Y)_ia <i|r|a>` with
-    /// `|X|² − |Y|² = 1`; `Y = 0` for TDA).
+    /// `|X|² − |Y|² = 1`; `Y = 0` for TDA). Exactly zero for triplets
+    /// (spin-forbidden).
     pub oscillator_strengths: Vec<f64>,
     /// `<0|r|n>` (a.u., origin at 0), same ordering as the energies.
     pub transition_dipoles: Vec<[f64; 3]>,
     /// Solution method the roots were obtained with (copied from the config).
     pub method: TddftMethod,
-    /// Exact-exchange fraction actually used on the `−c_HF` terms.
+    /// Exact-exchange fraction actually used on the full-Coulomb `−c_HF`
+    /// terms (`c_sr` of a range-separated hybrid).
     pub c_hf: f64,
+    /// Long-range (erf) exact-exchange fraction; equals `c_hf` unless
+    /// `omega != 0`.
+    pub c_lr: f64,
+    /// Range-separation parameter ω (Bohr⁻¹) of the exchange; 0 for none.
+    pub omega: f64,
+    /// The spin of the roots (copied from the config).
+    pub spin: ResponseSpin,
     /// Whether the `(ia|f_xc|jb)` kernel block was added to A (and B). True for
     /// every KS reference — there is no kernel-less DFT path — and false only
     /// for an HF reference, where the kernel is identically zero.
@@ -307,6 +338,43 @@ fn build_b_tensors(
     Ok((b_ov, b_oo, b_vv))
 }
 
+/// The erf(ωr)/r tensors of a range-separated hybrid (theory.md §8):
+/// `B^ω = M_ω (Q|erf|pq)` with `M_ωᵀ M_ω` the pseudo-inverse of the erf
+/// metric `(P|erf|Q)` (eigendecomposition, near-null modes dropped:
+/// [`metric_inverse_sqrt`] for the erf operator), over the same auxiliary
+/// basis and in the same `ov`, `oo`, `vv` layout as [`build_b_tensors`].
+fn build_lr_tensors(
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    c_occ: &Array2<f64>,
+    c_vir: &Array2<f64>,
+    omega: f64,
+    plan: &mut MemoryPlan,
+    memory_budget_bytes: Option<usize>,
+) -> Result<RiTensors, FerricError> {
+    let op = Operator::erf(omega);
+    let naux = dfbs.nbasis();
+    let (nocc, nvir) = (c_occ.ncols(), c_vir.ncols());
+    for (label, width) in [
+        ("B_erf(P|ia)", nocc * nvir),
+        ("B_erf(P|ij)", nocc * nocc),
+        ("B_erf(P|ab)", nvir * nvir),
+    ] {
+        plan.reserve(label, naux.saturating_mul(width), Lifetime::Resident);
+    }
+    plan.check()?;
+    let v2c = threeindex::coulomb_metric_2c(op, dfbs)?;
+    let m = metric_inverse_sqrt(&v2c, op)?;
+    let mut src = ThreeIndexSource::build(op, obs, dfbs, eri3_budget_bytes(memory_budget_bytes))?;
+    let std = |b: Array2<f64>| b.as_standard_layout().into_owned();
+    Ok(RiTensors {
+        b_ov: std(stream_dressed_mo_band(&mut src, &m, c_occ, c_vir, None)?),
+        b_oo: std(stream_dressed_mo_band(&mut src, &m, c_occ, c_occ, None)?),
+        b_vv: std(stream_dressed_mo_band(&mut src, &m, c_vir, c_vir, None)?),
+        lr: None,
+    })
+}
+
 /// Declare every dense `(dim, dim)` matrix the requested method holds, with the
 /// lifetimes read off the source rather than guessed.
 ///
@@ -317,14 +385,16 @@ fn build_b_tensors(
 ///
 /// # The scratch inside `build_a_matrix` / `build_b_matrix`
 ///
-/// Two `dim²` buffers are live at once, regardless of `c_hf`:
+/// At most two `dim²` buffers are live at once, for every spin and exchange
+/// mix:
 ///
-/// * `coulomb = b_ovᵀ·b_ov` — `(dim, dim)`, in scope for the whole function.
-/// * plus EITHER the `2.0 * &coulomb` temporary in `a += &(2.0 * &coulomb)`
-///   (a full `dim²` materialization, live for that one statement), OR
-///   `k_ij_ab = b_ooᵀ·b_vv` when `c_hf != 0` — which is `(nocc², nvir²)`, i.e.
-///   exactly `dim²` elements. The scaled temporary is dropped at the end of its
-///   statement, before `k_ij_ab` is built, so they never make three.
+/// * A: `coulomb = b_ovᵀ·b_ov` plus its `c_J * &coulomb` temporary (live for
+///   one statement, and both dropped at the end of the Coulomb block); then
+///   one `k_ij_ab = b_ooᵀ·b_vv` (`(nocc², nvir²)`, i.e. `dim²` elements) at a
+///   time, for the Coulomb-operator exchange and then the erf one.
+/// * B: `coulomb` plus its scaled temporary, the same product reused for the
+///   exchange; then, for a range-separated hybrid, the erf `k_ov` alone after
+///   `coulomb` is dropped.
 ///
 /// So `2·dim²` of scratch, charged as ONE `Transient`. It is not charged
 /// per-worker: neither builder uses rayon.
@@ -406,19 +476,71 @@ fn reserve_fxc_block(plan: &mut MemoryPlan, method: TddftMethod, dim: usize) {
     }
 }
 
+/// Subtract `coef · (ij|ab)`, over the RI tensors `t` of one operator, from
+/// the `(ia, jb)` element of `a`.
+fn subtract_exchange_a(
+    a: &mut Array2<f64>,
+    t: ExchangeTensors<'_>,
+    nocc: usize,
+    nvir: usize,
+    coef: f64,
+) {
+    // (ij|ab) = Σ_P B_oo[P, i*nocc+j] * B_vv[P, a*nvir+b]
+    let k_ij_ab = t.b_oo.t().dot(t.b_vv); // (nocc*nocc, nvir*nvir)
+    for i in 0..nocc {
+        for a_idx in 0..nvir {
+            let ia = i * nvir + a_idx;
+            for j in 0..nocc {
+                for b_idx in 0..nvir {
+                    let jb = j * nvir + b_idx;
+                    let ij = i * nocc + j;
+                    let ab = a_idx * nvir + b_idx;
+                    a[(ia, jb)] -= coef * k_ij_ab[(ij, ab)];
+                }
+            }
+        }
+    }
+}
+
+/// Subtract `coef · (ib|aj)` from the `(ia, jb)` element of `b`, given
+/// `k_ov = B_ovᵀ B_ov` of one operator: `(ib|aj) = (ib|ja)` is its `(ib, ja)`
+/// element.
+fn subtract_exchange_b(
+    b: &mut Array2<f64>,
+    k_ov: &Array2<f64>,
+    nocc: usize,
+    nvir: usize,
+    coef: f64,
+) {
+    for i in 0..nocc {
+        for a_idx in 0..nvir {
+            let ia = i * nvir + a_idx;
+            for j in 0..nocc {
+                for b_idx in 0..nvir {
+                    let jb = j * nvir + b_idx;
+                    let ib = i * nvir + b_idx;
+                    let ja = j * nvir + a_idx;
+                    b[(ia, jb)] -= coef * k_ov[(ib, ja)];
+                }
+            }
+        }
+    }
+}
+
 /// Build the TDA A matrix in the (ia, jb) compound-index space.
 ///
-/// A_{ia,jb} = δ_{ij}δ_{ab}(ε_a − ε_i) + 2(ia|jb) − c_HF(ij|ab)
+/// A_{ia,jb} = δ_{ij}δ_{ab}(ε_a − ε_i) + c_J (ia|jb) − c_sr (ij|ab) − Δc (ij|ab)_ω
 ///
-/// (the `+ K_{ia,jb}` f_xc block is added by the caller).
+/// with `c_J` = 2 (singlet) or 0 (triplet) and the long-range term only for a
+/// range-separated hybrid (theory.md §8, §9). The `+ K_{ia,jb}` f_xc block is
+/// added by the caller.
 fn build_a_matrix(
     eps: &[f64],
     nocc: usize,
     nvir: usize,
-    b_ov: &Array2<f64>,
-    b_oo: &Array2<f64>,
-    b_vv: &Array2<f64>,
-    c_hf: f64,
+    ri: &RiTensors,
+    mix: ExchangeMix,
+    c_j: f64,
 ) -> Array2<f64> {
     let dim = nocc * nvir;
     let mut a = Array2::<f64>::zeros((dim, dim));
@@ -431,101 +553,53 @@ fn build_a_matrix(
         }
     }
 
-    // Coulomb: 2*(ia|jb) = 2 * Σ_P B_ov[P,ia] * B_ov[P,jb]
-    // This is 2 * B_ov^T . B_ov
-    let b_ov_t = b_ov.t();
-    let coulomb = b_ov_t.dot(b_ov);
-    a += &(2.0 * &coulomb);
-
-    // Exchange: -c_HF * (ij|ab)
-    // (ij|ab) = Σ_P B_oo[P,ij] * B_vv[P,ab]
-    // Mapping: compound index ia → (i,a), compound jb → (j,b)
-    //   (ij|ab) uses B_oo[P, i*nocc+j] * B_vv[P, a*nvir+b]
-    if c_hf != 0.0 {
-        let b_oo_t = b_oo.t(); // (nocc*nocc, naux)
-        let k_ij_ab = b_oo_t.dot(b_vv); // (nocc*nocc, nvir*nvir)
-        for i in 0..nocc {
-            for a_idx in 0..nvir {
-                let ia = i * nvir + a_idx;
-                for j in 0..nocc {
-                    for b_idx in 0..nvir {
-                        let jb = j * nvir + b_idx;
-                        let ij = i * nocc + j;
-                        let ab = a_idx * nvir + b_idx;
-                        a[(ia, jb)] -= c_hf * k_ij_ab[(ij, ab)];
-                    }
-                }
-            }
-        }
+    // Coulomb: c_J (ia|jb) = c_J B_ovᵀ B_ov.
+    if c_j != 0.0 {
+        let coulomb = ri.b_ov.t().dot(&ri.b_ov);
+        a += &(c_j * &coulomb);
+    }
+    if mix.c_sr != 0.0 {
+        subtract_exchange_a(&mut a, ri.tensors(), nocc, nvir, mix.c_sr);
+    }
+    if let (Some(lr), Some(dc)) = (ri.lr.as_deref(), mix.long_range()) {
+        subtract_exchange_a(&mut a, lr.tensors(), nocc, nvir, dc);
     }
 
     // The (ia|f_xc|jb) block is added by `run_tddft` after this returns (it
     // needs the kernel and the reference density, and the SAME block also
     // goes into B). For an HF reference it is identically zero: CIS.
-
     a
 }
 
 /// Build the TDDFT B matrix in the (ia, jb) compound-index space.
 ///
-/// B_{ia,jb} = 2(ia|bj) − c_HF(ib|aj)
+/// B_{ia,jb} = c_J (ia|bj) − c_sr (ib|aj) − Δc (ib|aj)_ω
 ///
-/// (the `+ K_{ia,jb}` f_xc block is added by the caller).
-///
-/// Note: (ia|bj) = (ia|jb) by 4-fold symmetry of real ERIs, so the Coulomb
-/// part is identical to A's Coulomb part. The exchange part differs: (ib|aj).
+/// (the `+ K_{ia,jb}` f_xc block is added by the caller). `(ia|bj) = (ia|jb)`
+/// for real orbitals, so the Coulomb part is A's; the exchange `(ib|aj)` is
+/// the `(ib, ja)` element of the same `B_ovᵀ B_ov` product.
 fn build_b_matrix(
     nocc: usize,
     nvir: usize,
-    b_ov: &Array2<f64>,
-    _b_oo: &Array2<f64>,
-    _b_vv: &Array2<f64>,
-    c_hf: f64,
+    ri: &RiTensors,
+    mix: ExchangeMix,
+    c_j: f64,
 ) -> Array2<f64> {
     let dim = nocc * nvir;
     let mut b = Array2::<f64>::zeros((dim, dim));
-
-    // Coulomb: 2*(ia|bj) = 2*(ia|jb) = 2 * B_ov^T . B_ov
-    let b_ov_t = b_ov.t();
-    let coulomb = b_ov_t.dot(b_ov);
-    b += &(2.0 * &coulomb);
-
-    // Exchange: -c_HF * (ib|aj)
-    // (ib|aj) = Σ_P B_ov[P, i*nvir+b] * B_ov[P, a_idx ... wait]
-    // Actually: (ib|aj) with chemist notation = <ia|bj> in physicist
-    // In chemist notation: (ib|aj) = Σ_P B_{ib}^P * B_{aj}^P
-    // where B_{ib} uses occ i, vir b and B_{aj} uses vir a, occ j
-    // So (ib|aj) = Σ_P B_ov[P, i*nvir+b_idx] * B_ov[P, j ... ]
-    // Wait — B_ov has layout [P, i*nvir+a], so B_{aj} would need vir-occ ordering.
-    // Let's use B_oo and B_vv instead:
-    // (ib|aj) = Σ_P B_{ib}^P * B_{aj}^P
-    // where ib is (occ, vir) = B_ov, and aj is also (vir, occ) — but B_ov is (occ, vir).
-    // Actually: (ib|aj) uses first index pair (i,b) and second pair (a,j).
-    // In our RI: first pair = B_ov[P, i*nvir + b_idx]
-    //            second pair = we need B_{vo}[P, a_idx*nocc + j]
-    // We don't have B_vo but B_ov[P, j*nvir + a_idx] = B_{ja}. So:
-    // (ib|aj) = Σ_P B_ov[P, i*nvir+b_idx] * B_ov[P, j*nvir+a_idx]
-    // That IS just the (ib, ja) element of B_ov^T . B_ov!
-    if c_hf != 0.0 {
-        // k_ov = B_ov^T . B_ov has indices (ia, jb) giving (ia|jb).
-        // We need (ib|aj) = k_ov[(i*nvir+b_idx), (j*nvir+a_idx)]
-        // = coulomb[(i*nvir+b_idx), (j*nvir+a_idx)]
-        // We already computed `coulomb` above.
-        for i in 0..nocc {
-            for a_idx in 0..nvir {
-                let ia = i * nvir + a_idx;
-                for j in 0..nocc {
-                    for b_idx in 0..nvir {
-                        let jb = j * nvir + b_idx;
-                        let ib = i * nvir + b_idx;
-                        let ja = j * nvir + a_idx;
-                        b[(ia, jb)] -= c_hf * coulomb[(ib, ja)];
-                    }
-                }
-            }
+    if c_j != 0.0 || mix.c_sr != 0.0 {
+        let coulomb = ri.b_ov.t().dot(&ri.b_ov);
+        if c_j != 0.0 {
+            b += &(c_j * &coulomb);
+        }
+        if mix.c_sr != 0.0 {
+            subtract_exchange_b(&mut b, &coulomb, nocc, nvir, mix.c_sr);
         }
     }
-
+    if let (Some(lr), Some(dc)) = (ri.lr.as_deref(), mix.long_range()) {
+        let k_ov = lr.b_ov.t().dot(&lr.b_ov);
+        subtract_exchange_b(&mut b, &k_ov, nocc, nvir, dc);
+    }
     b
 }
 
@@ -580,7 +654,33 @@ fn oscillator_strengths(
     Ok((osc, tdips))
 }
 
-/// Resolve the exact-exchange fraction and (for a KS reference) the XC
+/// Exact-exchange coefficients of a response run (theory.md §8):
+/// `c_sr (pq|rs) + (c_lr − c_sr) (pq|rs)_ω`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ExchangeMix {
+    c_sr: f64,
+    c_lr: f64,
+    omega: f64,
+}
+
+impl ExchangeMix {
+    /// A global hybrid (or HF, `c = 1`; a pure functional, `c = 0`).
+    fn global(c: f64) -> Self {
+        Self {
+            c_sr: c,
+            c_lr: c,
+            omega: 0.0,
+        }
+    }
+
+    /// `Δc = c_lr − c_sr` when the long-range erf term is present (ω ≠ 0;
+    /// at ω = 0 the erf operator is identically zero).
+    fn long_range(self) -> Option<f64> {
+        (self.omega != 0.0).then_some(self.c_lr - self.c_sr)
+    }
+}
+
+/// Resolve the exact-exchange coefficients and (for a KS reference) the XC
 /// definition the f_xc kernel will be built from.
 ///
 /// Split out of [`run_tddft`] so the refusals are testable without an SCF, and
@@ -589,28 +689,53 @@ fn oscillator_strengths(
 fn resolve_response_xc(
     xc: Option<&str>,
     c_hf_override: Option<f64>,
-) -> Result<(f64, Option<ferric_dft::libxc::XcDef>), FerricError> {
-    if let Some(c) = c_hf_override {
-        if !c.is_finite() {
-            return Err(FerricError::General(format!(
-                "run_tddft: c_hf override must be finite, got {c}"
-            )));
-        }
+) -> Result<(ExchangeMix, Option<ferric_dft::libxc::XcDef>), FerricError> {
+    if let Some(c) = c_hf_override.filter(|c| !c.is_finite()) {
+        return Err(FerricError::General(format!(
+            "run_tddft: c_hf override must be finite, got {c}"
+        )));
     }
     match xc {
-        None => match c_hf_override {
-            Some(c) if c != 1.0 => Err(FerricError::General(format!(
-                "run_tddft: c_hf = {c} on a Hartree-Fock reference (no functional) is \
-                 neither CIS/TDHF (c_hf = 1) nor any TDDFT — there is no f_xc kernel to \
-                 pair it with. Name the reference functional (config xc / [tddft] xc) or \
-                 drop the override."
-            ))),
-            _ => Ok((1.0, None)),
-        },
-        Some(name) => {
-            let spec = resolve_singlet_response_xc(name, "run_tddft")?;
-            Ok((c_hf_override.unwrap_or(spec.c_hf), Some(spec.xc_kernel)))
-        }
+        None => hf_exchange_mix(c_hf_override).map(|mix| (mix, None)),
+        Some(name) => functional_exchange_mix(name, c_hf_override),
+    }
+}
+
+/// [`resolve_response_xc`] for an HF reference: c_HF = 1 (CIS / TDHF), and
+/// any other override refused.
+fn hf_exchange_mix(c_hf_override: Option<f64>) -> Result<ExchangeMix, FerricError> {
+    match c_hf_override {
+        Some(c) if c != 1.0 => Err(FerricError::General(format!(
+            "run_tddft: c_hf = {c} on a Hartree-Fock reference (no functional) is \
+             neither CIS/TDHF (c_hf = 1) nor any TDDFT — there is no f_xc kernel to \
+             pair it with. Name the reference functional (config xc / [tddft] xc) or \
+             drop the override."
+        ))),
+        _ => Ok(ExchangeMix::global(1.0)),
+    }
+}
+
+/// [`resolve_response_xc`] for a named functional: libxc's coefficients, or a
+/// global override (refused on a range-separated functional).
+fn functional_exchange_mix(
+    name: &str,
+    c_hf_override: Option<f64>,
+) -> Result<(ExchangeMix, Option<ferric_dft::libxc::XcDef>), FerricError> {
+    let spec = resolve_kernel_xc(name, "run_tddft")?;
+    let mix = ExchangeMix {
+        c_sr: spec.c_sr,
+        c_lr: spec.c_lr,
+        omega: spec.omega,
+    };
+    match c_hf_override {
+        None => Ok((mix, Some(spec.xc_kernel))),
+        Some(c) if mix.omega != 0.0 => Err(FerricError::General(format!(
+            "run_tddft: c_hf = {c} on the range-separated functional '{name}' \
+             (c_sr = {}, c_lr = {}, omega = {}) does not say which range it \
+             replaces. Refused; drop the override.",
+            mix.c_sr, mix.c_lr, mix.omega
+        ))),
+        Some(c) => Ok((ExchangeMix::global(c), Some(spec.xc_kernel))),
     }
 }
 
@@ -664,7 +789,7 @@ fn build_kernel(
         .transpose()
 }
 
-/// Add the singlet `K_{ia,jb} = (ia|f_αα + f_αβ|jb)` block to every matrix in
+/// Add the `K_{ia,jb} = (ia|f_αα ± f_αβ|jb)` block of `spin` to every matrix in
 /// `targets` (A for TDA; A and B for Casida — with real orbitals
 /// `(ia|f_xc|jb) = (ia|f_xc|bj)`, PySCF `get_ab`'s `a += iajb; b += iajb`).
 /// A no-op without a kernel (HF reference).
@@ -673,6 +798,7 @@ fn build_kernel(
 /// [`reserve_fxc_block`] assumes.
 fn add_fxc_block(
     kernel: Option<&SingletKernel>,
+    spin: ResponseSpin,
     scf: &ScfResult,
     nocc: usize,
     nvir: usize,
@@ -681,7 +807,7 @@ fn add_fxc_block(
     let Some(kern) = kernel else {
         return Ok(());
     };
-    let (k_fxc, asym_rel) = singlet_fxc_ov_block(kern, scf.mos_r(), 0, nocc, nocc, nvir);
+    let (k_fxc, asym_rel) = fxc_ov_block(kern, spin, scf.mos_r(), 0, nocc, nocc, nvir);
     // Symmetric by construction up to grid noise; a large asymmetry is an
     // adapter bug, and symmetrizing would hide it.
     if asym_rel > FXC_BLOCK_ASYMMETRY_TOL {
@@ -740,6 +866,9 @@ fn solve_casida(
     let (omega_sq, z) = m
         .eigh(UPLO::Lower)
         .map_err(|e| FerricError::General(format!("TDDFT Casida diagonalization failed: {e}")))?;
+    if let Some(&w2) = omega_sq.iter().find(|&&v| v < -NEGATIVE_OMEGA_SQ) {
+        return Err(negative_omega_sq_error(w2));
+    }
     let omega = omega_sq.mapv(|v| if v > 0.0 { v.sqrt() } else { 0.0 });
 
     let mut xpy = amb_sqrt.dot(&z);
@@ -752,6 +881,21 @@ fn solve_casida(
         col.mapv_inplace(|v| v * scale);
     }
     Ok((omega, xpy))
+}
+
+/// An `Ω²` below `−NEGATIVE_OMEGA_SQ` (Ha²) is an instability of the
+/// reference in the run's spin channel, refused rather than dropped from the
+/// root list. The dense path's positive-root cut, mirrored.
+pub(crate) const NEGATIVE_OMEGA_SQ: f64 = crate::davidson::POSITIVE_ROOT;
+
+/// The error for a Casida `Ω² < 0` (theory.md §9).
+pub(crate) fn negative_omega_sq_error(w2: f64) -> FerricError {
+    FerricError::General(format!(
+        "TDDFT: Casida has an imaginary root (Omega^2 = {w2:.6e} Ha^2): A+B is not \
+         positive definite, so the reference is unstable in this spin channel (for \
+         spin = triplet, a triplet instability). Refused rather than dropped from the \
+         roots; TDA has no such failure."
+    ))
 }
 
 /// Indices of the lowest `n_roots` positive eigenvalues, ascending.
@@ -812,12 +956,32 @@ impl OvSpace {
     }
 }
 
-/// The RI tensors of one run, in standard layout (the matrix-free products
-/// reshape their rows).
+/// The RI tensors of one operator, in standard layout (the matrix-free
+/// products reshape their rows).
 struct RiTensors {
     b_ov: Array2<f64>,
     b_oo: Array2<f64>,
     b_vv: Array2<f64>,
+    /// The erf-operator set of a range-separated hybrid (None otherwise).
+    lr: Option<Box<RiTensors>>,
+}
+
+impl RiTensors {
+    fn tensors(&self) -> ExchangeTensors<'_> {
+        ExchangeTensors {
+            b_ov: &self.b_ov,
+            b_oo: &self.b_oo,
+            b_vv: &self.b_vv,
+        }
+    }
+}
+
+/// The Coulomb coefficient `c_J` of `spin` (theory.md §9).
+fn coulomb_factor(spin: ResponseSpin) -> f64 {
+    match spin {
+        ResponseSpin::Singlet => 2.0,
+        ResponseSpin::Triplet => 0.0,
+    }
 }
 
 /// `‖A x_n − ω_n x_n‖` for each column.
@@ -869,21 +1033,21 @@ fn solve_dense(
     scf: &ScfResult,
     space: &OvSpace,
     ri: &RiTensors,
-    c_hf: f64,
+    mix: ExchangeMix,
     kernel: Option<&SingletKernel>,
     acc: &mut PhaseAccumulator,
 ) -> Result<Roots, FerricError> {
     let (nocc, nvir) = (space.nocc, space.nvir);
     let n_roots = config.n_roots.min(space.dim());
     let eps = scf.eps_r();
-    let (b_ov, b_oo, b_vv) = (&ri.b_ov, &ri.b_oo, &ri.b_vv);
+    let (spin, c_j) = (config.spin, coulomb_factor(config.spin));
     let mut a = acc.time("dense: A assembly", || {
-        build_a_matrix(eps, nocc, nvir, b_ov, b_oo, b_vv, c_hf)
+        build_a_matrix(eps, nocc, nvir, ri, mix, c_j)
     });
     match config.method {
         TddftMethod::Tda => {
             acc.time("dense: f_xc block", || {
-                add_fxc_block(kernel, scf, nocc, nvir, &mut [&mut a])
+                add_fxc_block(kernel, spin, scf, nocc, nvir, &mut [&mut a])
             })?;
             let (w, x) = acc.time("dense: eigh", || solve_tda(&a))?;
             let (omega, amplitudes) = select_roots(&w, &x, n_roots);
@@ -897,10 +1061,10 @@ fn solve_dense(
         }
         TddftMethod::Casida => {
             let mut b_mat = acc.time("dense: B assembly", || {
-                build_b_matrix(nocc, nvir, b_ov, b_oo, b_vv, c_hf)
+                build_b_matrix(nocc, nvir, ri, mix, c_j)
             });
             acc.time("dense: f_xc block", || {
-                add_fxc_block(kernel, scf, nocc, nvir, &mut [&mut a, &mut b_mat])
+                add_fxc_block(kernel, spin, scf, nocc, nvir, &mut [&mut a, &mut b_mat])
             })?;
             let (w, xpy) = acc.time("dense: eigh", || solve_casida(&a, &b_mat))?;
             let (omega, amplitudes) = select_roots(&w, &xpy, n_roots);
@@ -935,13 +1099,38 @@ fn reserve_davidson(plan: &mut MemoryPlan, config: &TddftConfig, dim: usize) {
     );
 }
 
+/// The matrix-free operator of one run.
+fn response_operator<'a>(
+    space: &OvSpace,
+    eps: &[f64],
+    ri: &'a RiTensors,
+    mix: ExchangeMix,
+    spin: ResponseSpin,
+    fxc: Option<SingletOvFxc>,
+) -> ResponseOperator<'a> {
+    ResponseOperator {
+        diag: space.orbital_differences(eps),
+        coul: ri.tensors(),
+        nocc: space.nocc,
+        nvir: space.nvir,
+        c_j: coulomb_factor(spin),
+        c_hf: mix.c_sr,
+        long_range: ri
+            .lr
+            .as_deref()
+            .zip(mix.long_range())
+            .map(|(lr, dc)| (lr.tensors(), dc)),
+        fxc,
+    }
+}
+
 /// The matrix-free path.
 fn solve_davidson(
     config: &TddftConfig,
     scf: &ScfResult,
     space: &OvSpace,
     ri: &RiTensors,
-    c_hf: f64,
+    mix: ExchangeMix,
     kernel: Option<&SingletKernel>,
     plan: &mut MemoryPlan,
     acc: &mut PhaseAccumulator,
@@ -960,20 +1149,22 @@ fn solve_davidson(
     let fxc = acc
         .time("davidson: f_xc MO grid setup", || {
             kernel
-                .map(|k| SingletOvFxc::new(k, &scf.density_alpha, scf.mos_r(), 0, nocc, nocc, nvir))
+                .map(|k| {
+                    SingletOvFxc::new_with_spin(
+                        k,
+                        config.spin,
+                        &scf.density_alpha,
+                        scf.mos_r(),
+                        0,
+                        nocc,
+                        nocc,
+                        nvir,
+                    )
+                })
                 .transpose()
         })
         .map_err(|e| FerricError::General(format!("run_tddft: f_xc operator: {e}")))?;
-    let op = ResponseOperator {
-        diag: space.orbital_differences(scf.eps_r()),
-        b_ov: &ri.b_ov,
-        b_oo: &ri.b_oo,
-        b_vv: &ri.b_vv,
-        nocc,
-        nvir,
-        c_hf,
-        fxc,
-    };
+    let op = response_operator(space, scf.eps_r(), ri, mix, config.spin, fxc);
     let s = &config.davidson;
     let out: DavidsonOutcome = match config.method {
         TddftMethod::Tda => davidson_tda(|x| op.apply_a(x, acc), &op.diag, config.n_roots, s)?,
@@ -987,6 +1178,105 @@ fn solve_davidson(
         residuals: out.residuals,
         iterations: out.iterations,
     })
+}
+
+/// [`build_kernel`] under the "f_xc kernel setup" timer.
+fn timed_kernel(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    xc_def: Option<ferric_dft::libxc::XcDef>,
+    grid: &AtomicGridConfig,
+    scf: &ScfResult,
+    acc: &mut PhaseAccumulator,
+) -> Result<Option<SingletKernel>, FerricError> {
+    acc.time("f_xc kernel setup", || {
+        build_kernel(mol, obs, xc_def, grid, scf)
+    })
+}
+
+/// The memory plan of one `run_tddft` call: the dense matrices (and the
+/// f_xc block for a KS reference) or the Davidson working set.
+fn plan_response_memory(
+    config: &TddftConfig,
+    solver: TddftSolver,
+    dim: usize,
+    has_kernel: bool,
+) -> MemoryPlan {
+    let label = match config.method {
+        TddftMethod::Tda => "TDDFT/TDA",
+        TddftMethod::Casida => "TDDFT/Casida",
+    };
+    let mut plan = MemoryPlan::resolve(config.memory_budget_bytes, label);
+    if solver == TddftSolver::Dense {
+        reserve_dense_response(&mut plan, config.method, dim);
+        if has_kernel {
+            reserve_fxc_block(&mut plan, config.method, dim);
+        }
+    } else {
+        reserve_davidson(&mut plan, config, dim);
+    }
+    plan
+}
+
+/// The Coulomb-metric RI tensors, plus the erf-metric set for a
+/// range-separated hybrid (theory.md §8).
+fn build_response_tensors(
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    space: &OvSpace,
+    mix: ExchangeMix,
+    config: &TddftConfig,
+    plan: &mut MemoryPlan,
+    acc: &mut PhaseAccumulator,
+) -> Result<RiTensors, FerricError> {
+    let budget = config.memory_budget_bytes;
+    let (c_occ, c_vir) = (&space.c_occ, &space.c_vir);
+    let (b_ov, b_oo, b_vv) = acc.time("RI B tensors", || {
+        build_b_tensors(obs, dfbs, c_occ, c_vir, plan, budget)
+    })?;
+    let lr = match mix.long_range() {
+        Some(_) => Some(Box::new(acc.time("RI erf tensors", || {
+            build_lr_tensors(obs, dfbs, c_occ, c_vir, mix.omega, plan, budget)
+        })?)),
+        None => None,
+    };
+    Ok(RiTensors {
+        b_ov: b_ov.as_standard_layout().into_owned(),
+        b_oo: b_oo.as_standard_layout().into_owned(),
+        b_vv: b_vv.as_standard_layout().into_owned(),
+        lr,
+    })
+}
+
+/// Oscillator strengths and transition dipoles of the roots. Triplets are
+/// spin-forbidden: the spin-free dipole couples the closed-shell reference
+/// to no triplet, so both are exactly zero (theory.md §9).
+fn transition_properties(
+    obs: &PreparedBasis,
+    space: &OvSpace,
+    roots: &Roots,
+    spin: ResponseSpin,
+    acc: &mut PhaseAccumulator,
+) -> Result<(Vec<f64>, Vec<[f64; 3]>), FerricError> {
+    let nroots = roots.omega.len();
+    match spin {
+        ResponseSpin::Triplet => Ok((vec![0.0; nroots], vec![[0.0; 3]; nroots])),
+        ResponseSpin::Singlet => {
+            let cols: Vec<usize> = (0..nroots).collect();
+            acc.time("oscillator strengths", || {
+                oscillator_strengths(
+                    obs,
+                    &space.c_occ,
+                    &space.c_vir,
+                    space.nocc,
+                    space.nvir,
+                    &roots.omega,
+                    &roots.amplitudes,
+                    &cols,
+                )
+            })
+        }
+    }
 }
 
 /// Run a TDDFT (TDA or Casida) singlet calculation on a closed-shell reference.
@@ -1015,10 +1305,11 @@ fn solve_davidson(
 /// # Errors
 ///
 /// Hard errors — never a warning plus a number — for: an unconverged or
-/// open-shell reference; a functional without a complete kernel (VV10,
-/// range-separated hybrid); a `c_hf` override on an HF reference; an
+/// open-shell reference; a functional without a complete kernel (VV10);
+/// a `c_hf` override on an HF reference or a range-separated hybrid; an
 /// empty `(ia)` space; an over-budget allocation; an f_xc block whose
-/// asymmetry exceeds the grid-noise tolerance; an RPA instability (Casida);
+/// asymmetry exceeds the grid-noise tolerance; an RPA instability (Casida,
+/// either spin, both solvers);
 /// a Davidson root that does not converge.
 pub fn run_tddft(
     mol: &Molecule,
@@ -1030,71 +1321,40 @@ pub fn run_tddft(
     let mut acc = PhaseAccumulator::new().report_on_drop("TDDFT");
     let nocc = closed_shell_nocc(mol, scf)?;
     // Functional gate before any integral work.
-    let (c_hf, xc_def) = resolve_response_xc(config.xc.as_deref(), config.c_hf_override)?;
+    let (mix, xc_def) = resolve_response_xc(config.xc.as_deref(), config.c_hf_override)?;
     let space = OvSpace::new(scf, nocc)?;
     let dim = space.dim();
     let solver = config.solver.resolve(dim, config.n_roots.min(dim));
 
-    let label = match config.method {
-        TddftMethod::Tda => "TDDFT/TDA",
-        TddftMethod::Casida => "TDDFT/Casida",
-    };
-    let mut plan = MemoryPlan::resolve(config.memory_budget_bytes, label);
-    if solver == TddftSolver::Dense {
-        reserve_dense_response(&mut plan, config.method, dim);
-        if xc_def.is_some() {
-            reserve_fxc_block(&mut plan, config.method, dim);
-        }
-    } else {
-        reserve_davidson(&mut plan, config, dim);
-    }
-    let budget = config.memory_budget_bytes;
-    let (c_occ, c_vir) = (&space.c_occ, &space.c_vir);
-    let (b_ov, b_oo, b_vv) = acc.time("RI B tensors", || {
-        build_b_tensors(obs, dfbs, c_occ, c_vir, &mut plan, budget)
-    })?;
-    let ri = RiTensors {
-        b_ov: b_ov.as_standard_layout().into_owned(),
-        b_oo: b_oo.as_standard_layout().into_owned(),
-        b_vv: b_vv.as_standard_layout().into_owned(),
-    };
-    let kernel = acc.time("f_xc kernel setup", || {
-        build_kernel(mol, obs, xc_def, &config.grid, scf)
-    })?;
+    let mut plan = plan_response_memory(config, solver, dim, xc_def.is_some());
+    let ri = build_response_tensors(obs, dfbs, &space, mix, config, &mut plan, &mut acc)?;
+    let kernel = timed_kernel(mol, obs, xc_def, &config.grid, scf, &mut acc)?;
     let roots = match solver {
         TddftSolver::Davidson => solve_davidson(
             config,
             scf,
             &space,
             &ri,
-            c_hf,
+            mix,
             kernel.as_ref(),
             &mut plan,
             &mut acc,
         )?,
-        _ => solve_dense(config, scf, &space, &ri, c_hf, kernel.as_ref(), &mut acc)?,
+        _ => solve_dense(config, scf, &space, &ri, mix, kernel.as_ref(), &mut acc)?,
     };
 
-    let cols: Vec<usize> = (0..roots.omega.len()).collect();
-    let (oscillator_strengths, transition_dipoles) = acc.time("oscillator strengths", || {
-        oscillator_strengths(
-            obs,
-            c_occ,
-            c_vir,
-            space.nocc,
-            space.nvir,
-            &roots.omega,
-            &roots.amplitudes,
-            &cols,
-        )
-    })?;
+    let (oscillator_strengths, transition_dipoles) =
+        transition_properties(obs, &space, &roots, config.spin, &mut acc)?;
 
     Ok(TddftResult {
         excitation_energies: roots.omega.to_vec(),
         oscillator_strengths,
         transition_dipoles,
         method: config.method,
-        c_hf,
+        c_hf: mix.c_sr,
+        c_lr: mix.c_lr,
+        omega: mix.omega,
+        spin: config.spin,
         fxc_included: kernel.is_some(),
         solver,
         residuals: roots.residuals,
@@ -1108,8 +1368,8 @@ mod tests {
 
     #[test]
     fn hf_reference_is_cis_tdhf_with_no_kernel() {
-        let (c_hf, def) = resolve_response_xc(None, None).unwrap();
-        assert_eq!(c_hf, 1.0);
+        let (mix, def) = resolve_response_xc(None, None).unwrap();
+        assert_eq!(mix, ExchangeMix::global(1.0));
         assert!(def.is_none(), "an HF reference has no f_xc kernel");
     }
 
@@ -1119,8 +1379,10 @@ mod tests {
         // (a warning and a kernel-less number). Every accepted functional must
         // now come back with a kernel definition.
         for (name, want_c_hf) in [("LDA", 0.0), ("PBE", 0.0), ("B3LYP", 0.2)] {
-            let (c_hf, def) = resolve_response_xc(Some(name), None)
+            let (mix, def) = resolve_response_xc(Some(name), None)
                 .unwrap_or_else(|e| panic!("{name} must be accepted: {e}"));
+            let c_hf = mix.c_sr;
+            assert!(mix.long_range().is_none(), "{name}: not range-separated");
             assert!(def.is_some(), "{name}: accepted without an f_xc kernel");
             assert!(
                 (c_hf - want_c_hf).abs() < 1e-12,
@@ -1132,28 +1394,39 @@ mod tests {
     #[test]
     fn tau_only_meta_gga_is_accepted_with_its_kernel() {
         for name in ["SCAN", "r2SCAN"] {
-            let (c_hf, def) = resolve_response_xc(Some(name), None)
+            let (mix, def) = resolve_response_xc(Some(name), None)
                 .unwrap_or_else(|e| panic!("{name} has a tau f_xc kernel: {e}"));
             assert!(def.is_some(), "{name}: accepted without an f_xc kernel");
-            assert_eq!(c_hf, 0.0, "{name}: c_HF must be 0");
+            assert_eq!(mix, ExchangeMix::global(0.0), "{name}: c_HF must be 0");
         }
     }
 
     #[test]
-    fn range_separated_and_vv10_functionals_are_refused() {
+    fn vv10_is_refused_and_range_separation_resolved() {
         assert!(resolve_response_xc(Some("wB97X-V"), None).is_err());
-        assert!(resolve_response_xc(Some("HYB_GGA_XC_CAM_B3LYP"), None).is_err());
+        let (mix, def) = resolve_response_xc(Some("HYB_GGA_XC_CAM_B3LYP"), None).unwrap();
+        assert!(def.is_some());
+        let dc = mix.long_range().expect("CAM-B3LYP is range-separated");
+        assert!(
+            (dc - 0.46).abs() < 1e-12 && (mix.omega - 0.33).abs() < 1e-12,
+            "{mix:?}"
+        );
+        // A c_hf override does not say which range it replaces.
+        assert!(resolve_response_xc(Some("HYB_GGA_XC_CAM_B3LYP"), Some(0.2)).is_err());
     }
 
     #[test]
     fn c_hf_override_on_an_hf_reference_is_refused() {
         assert!(resolve_response_xc(None, Some(0.2)).is_err());
         // c_hf = 1 on an HF reference is just CIS/TDHF spelled out.
-        assert_eq!(resolve_response_xc(None, Some(1.0)).unwrap().0, 1.0);
+        assert_eq!(
+            resolve_response_xc(None, Some(1.0)).unwrap().0,
+            ExchangeMix::global(1.0)
+        );
         // With a functional, an override is an explicit model change.
         assert_eq!(
             resolve_response_xc(Some("PBE"), Some(0.25)).unwrap().0,
-            0.25
+            ExchangeMix::global(0.25)
         );
         assert!(resolve_response_xc(Some("PBE"), Some(f64::NAN)).is_err());
     }
@@ -1229,43 +1502,76 @@ mod tests {
         fxc_bar: f64,
     }
 
-    fn densify(c: &Case, xc: Option<&str>) -> Densified {
+    /// Dense A, B for `spin`, with the exchange coefficients of `xc` or, when
+    /// given, `mix` (the f_xc kernel still comes from `xc`).
+    fn densify_with(
+        c: &Case,
+        xc: Option<&str>,
+        spin: ResponseSpin,
+        mix: Option<ExchangeMix>,
+    ) -> Densified {
         let nocc = closed_shell_nocc(&c.mol, &c.scf).unwrap();
-        let (c_hf, def) = resolve_response_xc(xc, None).unwrap();
+        let (mix0, def) = resolve_response_xc(xc, None).unwrap();
+        let mix = mix.unwrap_or(mix0);
         let space = OvSpace::new(&c.scf, nocc).unwrap();
         let (nvir, dim) = (space.nvir, space.dim());
         let mut plan = MemoryPlan::resolve(None, "test");
         let (b_ov, b_oo, b_vv) =
             build_b_tensors(&c.obs, &c.dfbs, &space.c_occ, &space.c_vir, &mut plan, None).unwrap();
+        let lr = mix.long_range().map(|_| {
+            Box::new(
+                build_lr_tensors(
+                    &c.obs,
+                    &c.dfbs,
+                    &space.c_occ,
+                    &space.c_vir,
+                    mix.omega,
+                    &mut plan,
+                    None,
+                )
+                .unwrap(),
+            )
+        });
         let ri = RiTensors {
             b_ov: b_ov.as_standard_layout().into_owned(),
             b_oo: b_oo.as_standard_layout().into_owned(),
             b_vv: b_vv.as_standard_layout().into_owned(),
+            lr,
         };
         let grid = AtomicGridConfig::production();
         let kernel = build_kernel(&c.mol, &c.obs, def, &grid, &c.scf).unwrap();
         let eps = c.scf.eps_r();
-        let mut a = build_a_matrix(eps, nocc, nvir, &ri.b_ov, &ri.b_oo, &ri.b_vv, c_hf);
-        let mut b = build_b_matrix(nocc, nvir, &ri.b_ov, &ri.b_oo, &ri.b_vv, c_hf);
+        let c_j = coulomb_factor(spin);
+        let mut a = build_a_matrix(eps, nocc, nvir, &ri, mix, c_j);
+        let mut b = build_b_matrix(nocc, nvir, &ri, mix, c_j);
         let mut fxc_bar = 0.0;
         if let Some(k) = kernel.as_ref() {
-            let (kd, _) = singlet_fxc_ov_block(k, c.scf.mos_r(), 0, nocc, nocc, nvir);
+            let (kd, _) = fxc_ov_block(k, spin, c.scf.mos_r(), 0, nocc, nocc, nvir);
             fxc_bar = FXC_BLOCK_ASYMMETRY_TOL * kd.iter().fold(0.0_f64, |m, &x| m.max(x.abs()));
         }
-        add_fxc_block(kernel.as_ref(), &c.scf, nocc, nvir, &mut [&mut a, &mut b]).unwrap();
-        let fxc = kernel.as_ref().map(|k| {
-            SingletOvFxc::new(k, &c.scf.density_alpha, c.scf.mos_r(), 0, nocc, nocc, nvir).unwrap()
-        });
-        let op = ResponseOperator {
-            diag: space.orbital_differences(eps),
-            b_ov: &ri.b_ov,
-            b_oo: &ri.b_oo,
-            b_vv: &ri.b_vv,
+        add_fxc_block(
+            kernel.as_ref(),
+            spin,
+            &c.scf,
             nocc,
             nvir,
-            c_hf,
-            fxc,
-        };
+            &mut [&mut a, &mut b],
+        )
+        .unwrap();
+        let fxc = kernel.as_ref().map(|k| {
+            SingletOvFxc::new_with_spin(
+                k,
+                spin,
+                &c.scf.density_alpha,
+                c.scf.mos_r(),
+                0,
+                nocc,
+                nocc,
+                nvir,
+            )
+            .unwrap()
+        });
+        let op = response_operator(&space, eps, &ri, mix, spin, fxc);
         let mut acc = PhaseAccumulator::new();
         let eye = Array2::<f64>::eye(dim);
         let a_mf = op.apply_a(&eye, &mut acc).unwrap();
@@ -1274,14 +1580,21 @@ mod tests {
         // different order by the two routes: each is within γ_n Σ|terms| of
         // the exact sum, n = naux. Σ|terms| is bounded by the largest element
         // of |B|ᵀ|B| for each term, weighted by the coefficient it enters with
-        // (|A+B| has 4 Coulomb + 2·c_HF exchange); the two routes together,
-        // 2γ_n times that.
+        // (|A+B| has 2·c_J Coulomb + 2·c_sr exchange, + 2·|Δc| erf exchange);
+        // the two routes together, 2γ_n times that.
         let naux = ri.b_ov.nrows() as f64;
         let gamma = naux * f64::EPSILON / (1.0 - naux * f64::EPSILON);
         let maxabs = |m: &Array2<f64>| m.iter().fold(0.0_f64, |x, &y| x.max(y.abs()));
-        let s_j = maxabs(&ri.b_ov.mapv(f64::abs).t().dot(&ri.b_ov.mapv(f64::abs)));
-        let s_k = maxabs(&ri.b_oo.mapv(f64::abs).t().dot(&ri.b_vv.mapv(f64::abs))).max(s_j);
-        let ri_bar = 2.0 * gamma * (4.0 * s_j + 2.0 * c_hf.abs() * s_k);
+        let sums = |t: &RiTensors| {
+            let s_j = maxabs(&t.b_ov.mapv(f64::abs).t().dot(&t.b_ov.mapv(f64::abs)));
+            let s_k = maxabs(&t.b_oo.mapv(f64::abs).t().dot(&t.b_vv.mapv(f64::abs))).max(s_j);
+            (s_j, s_k)
+        };
+        let (s_j, s_k) = sums(&ri);
+        let mut ri_bar = 2.0 * gamma * (2.0 * c_j * s_j + 2.0 * mix.c_sr.abs() * s_k);
+        if let (Some(lr), Some(dc)) = (ri.lr.as_deref(), mix.long_range()) {
+            ri_bar += 2.0 * gamma * 2.0 * dc.abs() * sums(lr).1;
+        }
         Densified {
             a,
             b,
@@ -1313,9 +1626,9 @@ mod tests {
     /// difference.
     #[test]
     fn matrix_free_products_equal_the_dense_matrices() {
-        for xc in [None, Some("PBE"), Some("B3LYP")] {
+        for (xc, spin) in SPIN_CASES {
             let c = water("cc-pvdz", xc);
-            let d = densify(&c, xc);
+            let d = densify_with(&c, xc, spin, None);
             let maxdiff = |x: &Array2<f64>, y: &Array2<f64>| {
                 (x - y).iter().fold(0.0_f64, |m, &v| m.max(v.abs()))
             };
@@ -1323,16 +1636,85 @@ mod tests {
             let da = maxdiff(&d.a_mf, &d.a);
             let dp = maxdiff(&d.p_mf, &(&d.a + &d.b));
             let dm = maxdiff(&d.m_mf, &(&d.a - &d.b));
-            eprintln!("{xc:?}: A {da:.2e}, A+B {dp:.2e}, A-B {dm:.2e} (bar {bar:.2e})");
-            assert!(da <= bar, "{xc:?}: A differs by {da:e} > {bar:e}");
-            assert!(dp <= bar, "{xc:?}: A+B differs by {dp:e} > {bar:e}");
-            assert!(dm <= bar, "{xc:?}: A-B differs by {dm:e} > {bar:e}");
+            eprintln!("{xc:?} {spin:?}: A {da:.2e}, A+B {dp:.2e}, A-B {dm:.2e} (bar {bar:.2e})");
+            assert!(da <= bar, "{xc:?} {spin:?}: A differs by {da:e} > {bar:e}");
+            assert!(
+                dp <= bar,
+                "{xc:?} {spin:?}: A+B differs by {dp:e} > {bar:e}"
+            );
+            assert!(
+                dm <= bar,
+                "{xc:?} {spin:?}: A-B differs by {dm:e} > {bar:e}"
+            );
+        }
+    }
+
+    /// The (functional, spin) cases of the dense / matrix-free comparisons:
+    /// HF, a GGA, a global and a range-separated hybrid, singlets and triplets.
+    const SPIN_CASES: [(Option<&str>, ResponseSpin); 8] = [
+        (None, ResponseSpin::Singlet),
+        (Some("PBE"), ResponseSpin::Singlet),
+        (Some("B3LYP"), ResponseSpin::Singlet),
+        (Some("HYB_GGA_XC_CAM_B3LYP"), ResponseSpin::Singlet),
+        (None, ResponseSpin::Triplet),
+        (Some("PBE"), ResponseSpin::Triplet),
+        (Some("B3LYP"), ResponseSpin::Triplet),
+        (Some("HYB_GGA_XC_CAM_B3LYP"), ResponseSpin::Triplet),
+    ];
+
+    /// Exactness anchors of the range-separated exchange (theory.md §8),
+    /// water/cc-pVDZ on a B3LYP reference and kernel, singlet and triplet:
+    ///
+    /// * ω = 0 with `c_lr ≠ c_sr` (0.20, 0.65) assembles A, B and the
+    ///   matrix-free A, A±B BITWISE equal to the global hybrid `c = c_sr`:
+    ///   erf(0) = 0, and no erf tensors are built.
+    /// * `c_sr = c_lr` = 0.20 at ω = 0.33: the erf tensors ARE built and
+    ///   contracted, weighted by `Δc = 0`, so again bitwise. A long-range
+    ///   term weighted by `c_lr` instead of `Δc` fails this.
+    /// * Reachability: `c_lr` = 0.65 at ω = 0.33 moves A by far more than
+    ///   rounding, so the comparison can see a long-range term.
+    ///
+    /// Mutation (2026-11-14): weighting the long-range term by `c_lr` in
+    /// `ExchangeMix::long_range` fails the second anchor (A differs by
+    /// 6.9e-2); dropping the long-range term fails the reachability check.
+    #[test]
+    fn range_separated_exchange_reduces_to_the_global_hybrid() {
+        let xc = Some("B3LYP");
+        let c = water("cc-pvdz", xc);
+        let same = |x: &Densified, y: &Densified| {
+            x.a == y.a && x.b == y.b && x.a_mf == y.a_mf && x.p_mf == y.p_mf && x.m_mf == y.m_mf
+        };
+        let maxdiff =
+            |x: &Array2<f64>, y: &Array2<f64>| (x - y).iter().fold(0.0_f64, |m, &v| m.max(v.abs()));
+        for spin in [ResponseSpin::Singlet, ResponseSpin::Triplet] {
+            let mix = |c_sr, c_lr, omega| ExchangeMix { c_sr, c_lr, omega };
+            let global = densify_with(&c, xc, spin, Some(ExchangeMix::global(0.2)));
+            let w0 = densify_with(&c, xc, spin, Some(mix(0.2, 0.65, 0.0)));
+            assert!(
+                same(&w0, &global),
+                "{spin:?}: omega = 0 is not the global hybrid"
+            );
+            let flat = densify_with(&c, xc, spin, Some(mix(0.2, 0.2, 0.33)));
+            assert!(
+                same(&flat, &global),
+                "{spin:?}: c_sr = c_lr is not the global hybrid (A {:e}, A_mf {:e})",
+                maxdiff(&flat.a, &global.a),
+                maxdiff(&flat.a_mf, &global.a_mf)
+            );
+            let rsh = densify_with(&c, xc, spin, Some(mix(0.2, 0.65, 0.33)));
+            let moved = maxdiff(&rsh.a, &global.a);
+            eprintln!("{spin:?}: the long-range term moves A by {moved:.3e}");
+            assert!(
+                moved > 1e6 * rsh.ri_bar,
+                "{spin:?}: long-range term invisible"
+            );
         }
     }
 
     fn run_with(
         c: &Case,
         xc: Option<&str>,
+        spin: ResponseSpin,
         method: TddftMethod,
         solver: TddftSolver,
     ) -> TddftResult {
@@ -1342,6 +1724,7 @@ mod tests {
             xc: xc.map(str::to_string),
             grid: AtomicGridConfig::production(),
             solver,
+            spin,
             ..TddftConfig::default()
         };
         run_tddft(&c.mol, &c.obs, &c.dfbs, &c.scf, &cfg).unwrap()
@@ -1367,14 +1750,14 @@ mod tests {
     ///   dense solve adds `dim·ε·‖A−B‖‖A+B‖`. Divided by `Ω + Ω_dense`.
     #[test]
     fn davidson_roots_equal_the_dense_roots() {
-        for xc in [None, Some("PBE"), Some("B3LYP")] {
+        for (xc, spin) in SPIN_CASES {
             let c = water("cc-pvdz", xc);
-            let d = densify(&c, xc);
+            let d = densify_with(&c, xc, spin, None);
             let dim = d.a.nrows() as f64;
             let eps = f64::EPSILON;
             // TDA.
-            let dense = run_with(&c, xc, TddftMethod::Tda, TddftSolver::Dense);
-            let dav = run_with(&c, xc, TddftMethod::Tda, TddftSolver::Davidson);
+            let dense = run_with(&c, xc, spin, TddftMethod::Tda, TddftSolver::Dense);
+            let dav = run_with(&c, xc, spin, TddftMethod::Tda, TddftSolver::Davidson);
             assert_eq!(dav.solver, TddftSolver::Davidson);
             assert!(dav.iterations > 0);
             let (w_all, _) = solve_tda(&d.a).unwrap();
@@ -1385,12 +1768,12 @@ mod tests {
                 assert!(r <= TddftConfig::default().davidson.conv_tol);
                 let bar = r * r / gap(&w_all, k) + e_a + floor;
                 let de = (dav.excitation_energies[k] - dense.excitation_energies[k]).abs();
-                eprintln!("{xc:?} TDA root {k}: |dw| {de:.2e} (bar {bar:.2e}, r {r:.1e})");
+                eprintln!("{xc:?} {spin:?} TDA root {k}: |dw| {de:.2e} (bar {bar:.2e}, r {r:.1e})");
                 assert!(de <= bar, "{xc:?} TDA root {k}: |dw| {de:e} > bar {bar:e}");
             }
             // Casida.
-            let dense = run_with(&c, xc, TddftMethod::Casida, TddftSolver::Dense);
-            let dav = run_with(&c, xc, TddftMethod::Casida, TddftSolver::Davidson);
+            let dense = run_with(&c, xc, spin, TddftMethod::Casida, TddftSolver::Dense);
+            let dav = run_with(&c, xc, spin, TddftMethod::Casida, TddftSolver::Davidson);
             let apb = &d.a + &d.b;
             let amb = &d.a - &d.b;
             let (lam, _) = amb.eigh(UPLO::Lower).unwrap();
@@ -1409,7 +1792,9 @@ mod tests {
                 let solve = 2f64.sqrt() * r * (om + n_p) * cond * xpy_norm;
                 let bar = (pert + solve + floor) / (om + om_d);
                 let de = (om - om_d).abs();
-                eprintln!("{xc:?} Casida root {k}: |dW| {de:.2e} (bar {bar:.2e}, r {r:.1e})");
+                eprintln!(
+                    "{xc:?} {spin:?} Casida root {k}: |dW| {de:.2e} (bar {bar:.2e}, r {r:.1e})"
+                );
                 assert!(
                     de <= bar,
                     "{xc:?} Casida root {k}: |dW| {de:e} > bar {bar:e}"

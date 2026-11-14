@@ -2599,10 +2599,10 @@ fn default_n_roots() -> usize {
 pub struct TddftCfg {
     #[serde(default = "default_n_roots")]
     pub n_roots: usize,
-    /// Reference functional (the SCF runs with it). Selects both the
-    /// exact-exchange fraction and the f_xc kernel; meta-GGA, VV10 and
-    /// range-separated functionals are refused. Absent = HF reference
-    /// (CIS / TDHF).
+    /// Reference functional (the SCF runs with it). Selects the exact
+    /// exchange (a global fraction, or c_sr / c_lr / ω for a range-separated
+    /// hybrid) and the f_xc kernel; VV10 functionals and meta-GGAs without a
+    /// kernel are refused. Absent = HF reference (CIS / TDHF).
     pub xc: Option<String>,
     /// Override of the exact-exchange fraction on the `−c_HF` terms. Only
     /// accepted together with `xc` (an HF reference with `c_hf != 1` is
@@ -2611,6 +2611,9 @@ pub struct TddftCfg {
     /// Eigensolver: `"dense"`, `"davidson"` or `"auto"` (default). Parsed
     /// strictly by [`TddftCfg::solver`].
     pub solver: Option<String>,
+    /// Spin of the excited states: `"singlet"` (default) or `"triplet"`.
+    /// Parsed strictly by [`TddftCfg::spin`].
+    pub spin: Option<String>,
 }
 
 impl TddftCfg {
@@ -2623,6 +2626,16 @@ impl TddftCfg {
                     .map_err(|e| format!("[tddft] solver: {e}"))
             })
     }
+
+    /// The `spin` key; absent is singlet, an unknown value an error.
+    pub fn spin(&self) -> Result<ferric_tddft::ResponseSpin, String> {
+        self.spin
+            .as_deref()
+            .map_or(Ok(ferric_tddft::ResponseSpin::Singlet), |s| {
+                ferric_tddft::ResponseSpin::parse_config_str(s)
+                    .map_err(|e| format!("[tddft] spin: {e}"))
+            })
+    }
 }
 
 impl Default for TddftCfg {
@@ -2632,6 +2645,7 @@ impl Default for TddftCfg {
             xc: None,
             c_hf: None,
             solver: None,
+            spin: None,
         }
     }
 }
@@ -2655,6 +2669,20 @@ mod tddft_solver_key_tests {
         assert_eq!(with(Some("dense")).solver().unwrap(), TddftSolver::Dense);
         let e = with(Some("lanczos")).solver().unwrap_err();
         assert!(e.contains("[tddft] solver"), "{e}");
+    }
+
+    #[test]
+    fn spin_key_is_strict() {
+        use ferric_tddft::ResponseSpin;
+        let with = |s: Option<&str>| TddftCfg {
+            spin: s.map(str::to_string),
+            ..TddftCfg::default()
+        };
+        assert_eq!(with(None).spin().unwrap(), ResponseSpin::Singlet);
+        assert_eq!(with(Some("Triplet")).spin().unwrap(), ResponseSpin::Triplet);
+        assert_eq!(with(Some("singlet")).spin().unwrap(), ResponseSpin::Singlet);
+        let e = with(Some("quintet")).spin().unwrap_err();
+        assert!(e.contains("[tddft] spin"), "{e}");
     }
 }
 

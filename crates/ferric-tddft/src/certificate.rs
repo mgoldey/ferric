@@ -3,11 +3,63 @@
 //! the SCF reference ([`Certificate::for_post_scf`]), plus the settings of the
 //! run and the eigensolver that produced the roots, with their residuals. The
 //! build stamp comes from the reference.
+//!
+//! The Proven (narrow) grade holds where a PySCF reference exists: singlets
+//! of any accepted functional that is not range-separated, range-separated
+//! singlets of the functionals in [`VALIDATED_RSH`], and triplets of the
+//! references in [`VALIDATED_TRIPLET`]. Any other combination is capped at
+//! Smoke with the reason. A functional enters an envelope by name, with its
+//! reference data.
 
-use ferric_core::certificate::Certificate;
+use ferric_core::certificate::{Certificate, Grade};
 use ferric_dft::grid::AtomicGridConfig;
 
-use crate::{TddftConfig, TddftMethod, TddftResult, TddftSolver};
+use crate::{ResponseSpin, TddftConfig, TddftMethod, TddftResult, TddftSolver};
+
+/// Range-separated hybrids whose singlet TDA and Casida roots have a PySCF
+/// reference (`tests/validation_tddft_rsh.rs`), compared by [`functional_key`].
+pub const VALIDATED_RSH: &[&str] = &["HYB_GGA_XC_CAM_B3LYP", "HYB_GGA_XC_WB97X"];
+
+/// References (`"HF"` for none) whose triplet TDA and Casida roots have a
+/// PySCF reference (`tests/validation_tddft_rsh.rs`), compared by
+/// [`functional_key`].
+pub const VALIDATED_TRIPLET: &[&str] = &[
+    "HF",
+    "LDA",
+    "PBE",
+    "B3LYP",
+    "r2SCAN",
+    "HYB_GGA_XC_CAM_B3LYP",
+    "HYB_GGA_XC_WB97X",
+];
+
+/// A functional name as the envelope compares it: upper case, without `-`
+/// and `_` (the friendly-name normalization of `ferric_dft::libxc`).
+pub fn functional_key(name: &str) -> String {
+    name.to_uppercase()
+        .chars()
+        .filter(|c| *c != '-' && *c != '_')
+        .collect()
+}
+
+/// Why `(xc, spin)` (with long-range ω of the resolved exchange) is outside
+/// the validated envelope, or `None` inside it.
+fn outside_envelope(xc: Option<&str>, spin: ResponseSpin, omega: f64) -> Option<String> {
+    let name = xc.unwrap_or("HF");
+    let key = functional_key(name);
+    let listed = |list: &[&str]| list.iter().any(|f| functional_key(f) == key);
+    match spin {
+        ResponseSpin::Triplet if !listed(VALIDATED_TRIPLET) => Some(format!(
+            "triplet response on {name} has no PySCF reference (validated: {})",
+            VALIDATED_TRIPLET.join(", ")
+        )),
+        ResponseSpin::Singlet if omega != 0.0 && !listed(VALIDATED_RSH) => Some(format!(
+            "range-separated response on {name} has no PySCF reference (validated: {})",
+            VALIDATED_RSH.join(", ")
+        )),
+        _ => None,
+    }
+}
 
 /// The grid of a KS TDDFT run as text, with why it was chosen: the reference
 /// SCF and the f_xc kernel share it. `explicit` is true when the caller set a
@@ -52,7 +104,9 @@ pub fn eigensolver_label(result: &TddftResult, cfg: &TddftConfig) -> String {
 /// kernel's shared grid) and the exact-exchange fraction; a meta-GGA run also
 /// warns that its roots are grid-sensitive. An HF reference (CIS / TDHF) has
 /// no grid and no kernel. Every run records the `eigensolver` and its root
-/// residuals ([`eigensolver_label`]).
+/// residuals ([`eigensolver_label`]); a triplet run records `spin`, a
+/// range-separated one its `long-range-exchange`. A combination outside the
+/// validated envelope (module docs) is capped at Smoke.
 pub fn tddft_certificate(
     reference: &Certificate,
     aux: &str,
@@ -80,8 +134,40 @@ pub fn tddft_certificate(
             ));
         }
     }
+    c = with_exchange_and_spin(c, aux, cfg, result);
+    if let Some(why) = outside_envelope(cfg.xc.as_deref(), result.spin, result.omega) {
+        c = c.cap_grade(Grade::Smoke, why);
+    }
+    c
+}
+
+/// The model choices of [`tddft_certificate`] beyond the reference: a
+/// `c-hf-override`, the `long-range-exchange` of a range-separated hybrid and
+/// the `spin` of a triplet run.
+fn with_exchange_and_spin(
+    mut c: Certificate,
+    aux: &str,
+    cfg: &TddftConfig,
+    result: &TddftResult,
+) -> Certificate {
     if let Some(c_hf) = cfg.c_hf_override {
         c = c.with_approximation("c-hf-override", format!("exact-exchange fraction {c_hf}"));
+    }
+    if result.omega != 0.0 {
+        c = c.with_approximation(
+            "long-range-exchange",
+            format!(
+                "c_sr {} K[1/r] + (c_lr {} - c_sr) K[erf({} r)/r]; erf integrals fitted in \
+                 the erf metric over {aux}",
+                result.c_hf, result.c_lr, result.omega
+            ),
+        );
+    }
+    if result.spin == ResponseSpin::Triplet {
+        c = c.with_approximation(
+            "spin",
+            "M_S = 0 triplet, f_aa - f_ab kernel, no Coulomb term",
+        );
     }
     c
 }
@@ -89,7 +175,6 @@ pub fn tddft_certificate(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ferric_core::certificate::Grade;
 
     fn ks() -> Certificate {
         Certificate::for_method_kind("ksdft")
@@ -102,6 +187,9 @@ mod tests {
             transition_dipoles: vec![[0.0; 3]; 2],
             method: TddftMethod::Tda,
             c_hf: 0.0,
+            c_lr: 0.0,
+            omega: 0.0,
+            spin: ResponseSpin::Singlet,
             fxc_included: false,
             solver,
             residuals: vec![2e-7, 5e-7],
@@ -188,5 +276,36 @@ mod tests {
         );
         assert_eq!(m.warnings.len(), 1);
         assert!(m.warnings[0].contains("depend on the integration grid"));
+    }
+
+    /// Validated combinations keep Proven (narrow); a triplet or a
+    /// range-separated singlet without a reference is capped at Smoke, by
+    /// name.
+    #[test]
+    fn envelope_caps_unvalidated_combinations_by_name() {
+        let rhf = Certificate::for_method_kind("rhf");
+        let grade = |xc: Option<&str>, spin, omega| {
+            let mut cfg = TddftConfig::new(3, TddftMethod::Tda);
+            cfg.xc = xc.map(str::to_string);
+            let mut r = result(TddftSolver::Dense);
+            r.spin = spin;
+            r.omega = omega;
+            let base = if xc.is_some() { ks() } else { rhf.clone() };
+            tddft_certificate(&base, "a", &cfg, &r, false).grade
+        };
+        use ResponseSpin::{Singlet, Triplet};
+        assert_eq!(grade(Some("PBE"), Singlet, 0.0), Grade::ProvenNarrow);
+        assert_eq!(grade(Some("cam-b3lyp"), Singlet, 0.33), Grade::Smoke);
+        assert_eq!(
+            grade(Some("HYB_GGA_XC_CAM_B3LYP"), Singlet, 0.33),
+            Grade::ProvenNarrow
+        );
+        assert_eq!(grade(Some("HYB_GGA_XC_HSE06"), Singlet, 0.11), Grade::Smoke);
+        assert_eq!(grade(None, Triplet, 0.0), Grade::ProvenNarrow);
+        assert_eq!(
+            grade(Some("hyb-gga-xc-wb97x"), Triplet, 0.3),
+            Grade::ProvenNarrow
+        );
+        assert_eq!(grade(Some("BLYP"), Triplet, 0.0), Grade::Smoke);
     }
 }

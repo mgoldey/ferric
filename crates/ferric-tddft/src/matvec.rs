@@ -1,18 +1,22 @@
-//! Matrix-free products of the singlet response matrices on a block of
-//! vectors, for the Davidson solvers.
+//! Matrix-free products of the singlet or triplet response matrices on a
+//! block of vectors, for the Davidson solvers.
 //!
 //! With `J(x)_ia = Σ_jb (ia|jb) x_jb`, `K_A(x)_ia = Σ_jb (ij|ab) x_jb`,
-//! `K_B(x)_ia = Σ_jb (ib|aj) x_jb` (all RI, Coulomb metric) and the f_xc
-//! block `F` ([`ferric_dft::lr_kernel::SingletOvFxc`]):
+//! `K_B(x)_ia = Σ_jb (ib|aj) x_jb` (RI, Coulomb metric), their erf(ωr)/r
+//! counterparts `K^ω_A`, `K^ω_B` (RI, erf metric; range-separated hybrids
+//! only), and the f_xc block `F` of the run's spin
+//! ([`ferric_dft::lr_kernel::SingletOvFxc`]):
 //!
 //! ```text
-//!   A x     = Δ x + 2 J(x) − c_HF K_A(x) + F x
-//!   (A+B) x = Δ x + 4 J(x) − c_HF (K_A + K_B)(x) + 2 F x
-//!   (A−B) x = Δ x − c_HF (K_A − K_B)(x)
+//!   A x     = Δ x + c_J J(x) − c_sr K_A(x) − Δc K^ω_A(x) + F x
+//!   (A+B) x = Δ x + 2 c_J J(x) − c_sr (K_A + K_B)(x) − Δc (K^ω_A + K^ω_B)(x) + 2 F x
+//!   (A−B) x = Δ x − c_sr (K_A − K_B)(x) − Δc (K^ω_A − K^ω_B)(x)
 //! ```
 //!
-//! with `Δ_ia = ε_a − ε_i` — term for term the dense `A` and `B` of
-//! [`crate::tddft`]. `A − B` needs neither J nor F.
+//! with `Δ_ia = ε_a − ε_i`, `c_J = 2` (singlet) or `0` (triplet) and
+//! `Δc = c_lr − c_sr` (`crates/ferric-tddft/theory.md` §8, §9) — term for
+//! term the dense `A` and `B` of [`crate::tddft`]. `A − B` needs neither J
+//! nor F.
 //!
 //! # The exchange contractions
 //!
@@ -37,16 +41,29 @@ use rayon::prelude::*;
 /// Most partial sums the exchange reduction keeps (see the module docs).
 const EXCHANGE_GROUPS: usize = 32;
 
+/// The `ov`, `oo` and `vv` RI blocks of one operator, `(naux, n·m)` each.
+#[derive(Clone, Copy)]
+pub(crate) struct ExchangeTensors<'a> {
+    pub(crate) b_ov: &'a Array2<f64>,
+    pub(crate) b_oo: &'a Array2<f64>,
+    pub(crate) b_vv: &'a Array2<f64>,
+}
+
 /// The response operator of one closed-shell reference.
 pub(crate) struct ResponseOperator<'a> {
     /// `ε_a − ε_i`, `ia = i·nvir + a`.
     pub(crate) diag: Array1<f64>,
-    pub(crate) b_ov: &'a Array2<f64>,
-    pub(crate) b_oo: &'a Array2<f64>,
-    pub(crate) b_vv: &'a Array2<f64>,
+    /// Coulomb-metric tensors (J and the full-range exchange).
+    pub(crate) coul: ExchangeTensors<'a>,
     pub(crate) nocc: usize,
     pub(crate) nvir: usize,
+    /// Coefficient of `J`: 2 for singlets, 0 for triplets.
+    pub(crate) c_j: f64,
+    /// Full-range exact-exchange fraction (`c_sr`, or `c_HF` of a global
+    /// hybrid).
     pub(crate) c_hf: f64,
+    /// Erf-metric tensors and `Δc = c_lr − c_sr` of a range-separated hybrid.
+    pub(crate) long_range: Option<(ExchangeTensors<'a>, f64)>,
     /// `None` for an HF reference.
     pub(crate) fxc: Option<SingletOvFxc>,
 }
@@ -68,15 +85,21 @@ impl ResponseOperator<'_> {
     }
 
     fn coulomb(&self, x: &Array2<f64>) -> Array2<f64> {
-        let w = self.b_ov.dot(x);
-        self.b_ov.t().dot(&w)
+        let w = self.coul.b_ov.dot(x);
+        self.coul.b_ov.t().dot(&w)
     }
 
-    /// `(K_A x, K_B x)`; a contraction not wanted comes back as zeros.
-    fn exchange(&self, x: &Array2<f64>, want: Want) -> (Array2<f64>, Array2<f64>) {
+    /// `(K_A x, K_B x)` over the operator of `t`; a contraction not wanted
+    /// comes back as zeros.
+    fn exchange(
+        &self,
+        t: ExchangeTensors<'_>,
+        x: &Array2<f64>,
+        want: Want,
+    ) -> (Array2<f64>, Array2<f64>) {
         let (nocc, nvir) = (self.nocc, self.nvir);
         let nvec = x.ncols();
-        let naux = self.b_ov.nrows();
+        let naux = t.b_ov.nrows();
         let width = nvec * nvir;
         let xj = Array2::from_shape_fn((nocc, width), |(j, nb)| {
             x[(j * nvir + nb % nvir, nb / nvir)]
@@ -89,10 +112,10 @@ impl ResponseOperator<'_> {
                 let mut ob = Array2::<f64>::zeros((nocc, if want.b { width } else { 0 }));
                 for p in g * naux / ngroups..(g + 1) * naux / ngroups {
                     if want.a {
-                        self.exchange_a_aux(p, &xj, nvec, &mut oa);
+                        self.exchange_a_aux(t, p, &xj, nvec, &mut oa);
                     }
                     if want.b {
-                        self.exchange_b_aux(p, &xj, nvec, &mut ob);
+                        self.exchange_b_aux(t, p, &xj, nvec, &mut ob);
                     }
                 }
                 (oa, ob)
@@ -119,18 +142,25 @@ impl ResponseOperator<'_> {
         })
     }
 
-    fn exchange_a_aux(&self, p: usize, xj: &Array2<f64>, nvec: usize, out: &mut Array2<f64>) {
+    fn exchange_a_aux(
+        &self,
+        t: ExchangeTensors<'_>,
+        p: usize,
+        xj: &Array2<f64>,
+        nvec: usize,
+        out: &mut Array2<f64>,
+    ) {
         let (nocc, nvir) = (self.nocc, self.nvir);
         let xr = xj
             .view()
             .into_shape_with_order((nocc * nvec, nvir))
             .expect("standard layout");
-        let bvv = self
+        let bvv = t
             .b_vv
             .row(p)
             .into_shape_with_order((nvir, nvir))
             .expect("contiguous row");
-        let boo = self
+        let boo = t
             .b_oo
             .row(p)
             .into_shape_with_order((nocc, nocc))
@@ -142,9 +172,16 @@ impl ResponseOperator<'_> {
         general_mat_mul(1.0, &boo, &t, 1.0, out);
     }
 
-    fn exchange_b_aux(&self, p: usize, xj: &Array2<f64>, nvec: usize, out: &mut Array2<f64>) {
+    fn exchange_b_aux(
+        &self,
+        t: ExchangeTensors<'_>,
+        p: usize,
+        xj: &Array2<f64>,
+        nvec: usize,
+        out: &mut Array2<f64>,
+    ) {
         let (nocc, nvir) = (self.nocc, self.nvir);
-        let bp = self
+        let bp = t
             .b_ov
             .row(p)
             .into_shape_with_order((nocc, nvir))
@@ -168,11 +205,20 @@ impl ResponseOperator<'_> {
         acc: &mut PhaseAccumulator,
     ) -> Result<Array2<f64>, FerricError> {
         let mut y = self.delta(x);
-        y.scaled_add(2.0, &acc.time("product: RI Coulomb", || self.coulomb(x)));
+        if self.c_j != 0.0 {
+            y.scaled_add(
+                self.c_j,
+                &acc.time("product: RI Coulomb", || self.coulomb(x)),
+            );
+        }
+        let want = Want { a: true, b: false };
         if self.c_hf != 0.0 {
-            let want = Want { a: true, b: false };
-            let (ka, _) = acc.time("product: RI exchange", || self.exchange(x, want));
+            let (ka, _) = acc.time("product: RI exchange", || self.exchange(self.coul, x, want));
             y.scaled_add(-self.c_hf, &ka);
+        }
+        if let Some((t, dc)) = self.long_range {
+            let (ka, _) = acc.time("product: RI erf exchange", || self.exchange(t, x, want));
+            y.scaled_add(-dc, &ka);
         }
         if let Some(f) = acc.time("product: f_xc", || self.fxc(x)) {
             y += &f;
@@ -189,12 +235,22 @@ impl ResponseOperator<'_> {
         let d = self.delta(x);
         let mut p = d.clone();
         let mut m = d;
-        p.scaled_add(4.0, &acc.time("product: RI Coulomb", || self.coulomb(x)));
+        if self.c_j != 0.0 {
+            p.scaled_add(
+                2.0 * self.c_j,
+                &acc.time("product: RI Coulomb", || self.coulomb(x)),
+            );
+        }
+        let want = Want { a: true, b: true };
         if self.c_hf != 0.0 {
-            let want = Want { a: true, b: true };
-            let (ka, kb) = acc.time("product: RI exchange", || self.exchange(x, want));
+            let (ka, kb) = acc.time("product: RI exchange", || self.exchange(self.coul, x, want));
             p.scaled_add(-self.c_hf, &(&ka + &kb));
             m.scaled_add(-self.c_hf, &(&ka - &kb));
+        }
+        if let Some((t, dc)) = self.long_range {
+            let (ka, kb) = acc.time("product: RI erf exchange", || self.exchange(t, x, want));
+            p.scaled_add(-dc, &(&ka + &kb));
+            m.scaled_add(-dc, &(&ka - &kb));
         }
         if let Some(f) = acc.time("product: f_xc", || self.fxc(x)) {
             p.scaled_add(2.0, &f);

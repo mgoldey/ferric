@@ -248,15 +248,40 @@ root carries its residual in the printout, the result and the certificate;
 a Davidson root that does not converge is an error. Both solvers pass the
 same PySCF comparisons below.
 
-**Scope.** Closed-shell references, singlet excitations. With a DFT
-reference the \\( (ia|f_{xc}|jb) \\) XC-kernel term is included; with no
-functional the result is CIS/TDHF. τ-only meta-GGAs (SCAN, r2SCAN, TPSS)
-take the τ kernel; VV10 and range-separated functionals are refused. Grade:
-Proven (narrow, closed shell): water, formaldehyde and NH3 at 6-31G and
+**Scope.** Closed-shell references, singlet or triplet excitations
+(`[tddft] spin = "singlet" | "triplet"`, Python `spin=`; default singlet).
+With a DFT reference the \\( (ia|f_{xc}|jb) \\) XC-kernel term is included;
+with no functional the result is CIS/TDHF. τ-only meta-GGAs (SCAN, r2SCAN,
+TPSS) take the τ kernel; VV10 functionals are refused.
+
+**Range-separated hybrids.** A functional such as `HYB_GGA_XC_CAM_B3LYP` or
+`HYB_GGA_XC_WB97X` takes its short-range and long-range exact-exchange
+fractions \\(c_{sr}\\) and \\(c_{lr}\\) and the range-separation parameter
+\\(\omega\\) from libxc. The response exchange is
+\\(c_{sr}(pq|rs) + (c_{lr}-c_{sr})(pq|rs)_\omega\\), where the second term uses a second
+set of RI tensors for \\(\mathrm{erf}(\omega r)/r\\). Those tensors are fitted in the erf
+metric, so the fit error is second order in the erf-norm residual of the
+quantity being fitted (`crates/ferric-tddft/theory.md` §8). The printout and
+`TddftResult` report `c_sr` (as `c_hf`), `c_lr` and `omega`. A `[tddft] c_hf`
+override on a range-separated functional is refused.
+
+**Triplets.** `spin = "triplet"` drops the Coulomb term and uses the
+\\(f_{\alpha\alpha} - f_{\alpha\beta}\\) kernel. Oscillator strengths are exactly 0. A
+triplet Casida problem with \\(\Omega^2 < 0\\) (a triplet instability of the
+reference, e.g. RHF ethylene) is an error; TDA has no such failure.
+
+Grade: Proven (narrow, closed shell): water, formaldehyde and NH3 at 6-31G and
 aug-cc-pVDZ with HF, LDA, PBE and B3LYP match PySCF `TDA`/`TDDFT` to at most
 8.1e-4 eV on the default pruned grid (2.8e-6 eV for B3LYP/aug-cc-pVDZ on the
 reference's flat grid), test bar 1e-3 eV, and water/6-31G r2SCAN matches on the flat
-75 × 110 grid (`ferric-tddft/tests/validation_tddft.rs`).
+75 × 110 grid (`ferric-tddft/tests/validation_tddft.rs`). Range-separated
+hybrids (CAM-B3LYP, ωB97X) and triplets (HF, LDA, PBE, B3LYP, r2SCAN,
+CAM-B3LYP, ωB97X) match PySCF `get_ab` on water, C2H4 and benzene at 6-31G
+on the flat 75 × 110 grid to at most 4.4e-7 eV, bar 2e-5 eV
+(`ferric-tddft/tests/validation_tddft_rsh.rs`). The reference matches the
+response RI (both operators), the range-separated SCF fit and the grid, so
+the residual is SCF convergence. Any other range-separated functional, and
+a triplet on any other functional, is certified Smoke.
 
 **Meta-GGA response needs a finer grid.** A TDA/TDDFT run on a meta-GGA
 (SCAN, r2SCAN, TPSS) with no `[dft]` grid key (Python: no `grid_*` kwarg)

@@ -339,9 +339,10 @@ Read by `tda` and `tddft`. Also set `[mp2] auxbasis` (see above).
 | Key | Type | Default | Allowed values | Notes |
 |---|---|---|---|---|
 | `n_roots` | integer | `3` | | |
-| `xc` | string | none (HF reference: CIS or TDHF) | XC name | Selects the reference functional and the f_xc kernel. Meta-GGA, VV10 and range-separated functionals are refused. |
-| `c_hf` | float | the functional's short-range exact-exchange fraction; `1.0` with no `xc` | | |
+| `xc` | string | none (HF reference: CIS or TDHF) | XC name | Selects the reference functional, its exact exchange and the f_xc kernel. A range-separated hybrid (e.g. `HYB_GGA_XC_CAM_B3LYP`, `HYB_GGA_XC_WB97X`) takes c_sr, c_lr and ω from libxc. VV10 functionals, and meta-GGAs other than SCAN, r2SCAN and TPSS, are refused. |
+| `c_hf` | float | the functional's exact-exchange fraction; `1.0` with no `xc` | | Requires `xc`. Refused on a range-separated functional. |
 | `solver` | string | `"auto"` | `dense` `davidson` `auto` | `dense`: full A (and B) and a full diagonalization. `davidson`: matrix-free block Davidson (RI Coulomb, RI exchange, one batched f_xc application per block of trial vectors); an unconverged root is an error. `auto`: dense for nocc·nvir ≤ 200, Davidson above. Every root prints its residual and the certificate records the solver. Python `run_tddft(solver=)`. |
+| `spin` | string | `"singlet"` | `singlet` `triplet` | `triplet`: no Coulomb term, the f_αα − f_αβ kernel, oscillator strengths 0; a triplet Casida instability (Ω² < 0) is an error. Python `run_tddft(spin=)`. |
 
 ## `[optimize]`
 

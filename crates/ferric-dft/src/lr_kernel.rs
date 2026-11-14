@@ -1,6 +1,7 @@
-//! Closed-shell SINGLET linear-response XC kernel in the particle–hole `(ia)`
-//! space — the `(ia|f_xc|jb)` block that TDA-DFT and Casida TDDFT add to their
-//! A (and, for Casida, B) matrices.
+//! Closed-shell linear-response XC kernel in the particle–hole `(ia)` space —
+//! the `(ia|f_xc|jb)` block that TDA-DFT and Casida TDDFT add to their A (and,
+//! for Casida, B) matrices — for singlet (`f_αα + f_αβ`) and `M_S = 0` triplet
+//! (`f_αα − f_αβ`) excitations ([`ResponseSpin`](crate::lr_kernel::ResponseSpin)).
 //!
 //! This is the ONE implementation of that block. It lives here, in the crate
 //! that owns the kernels, so that every response driver shares it:
@@ -19,8 +20,9 @@
 //! ferric can apply, and what exact-exchange fraction goes on the `−c_HF` K-like
 //! terms. It hard-refuses (never silently degrades) every functional whose
 //! response would be incomplete: VV10-carrying functionals (the nonlocal
-//! response is not in the kernel) and range-separated hybrids (the long-range
-//! exchange term needs attenuated integrals the drivers do not build).
+//! response is not in the kernel) and range-separated hybrids (for drivers
+//! that do not build the long-range exchange term; [`resolve_response_xc`](crate::lr_kernel::resolve_response_xc)
+//! accepts them and returns the CAM coefficients for a driver that does).
 //! LDA, GGA, global hybrids and τ-only meta-GGAs (SCAN / r2SCAN / TPSS) pass.
 //!
 //! [`singlet_fxc_ov_block`](crate::lr_kernel::singlet_fxc_ov_block) builds `K_{ia,jb} = (ia| f_αα + f_αβ |jb)` from a
@@ -44,14 +46,16 @@
 //! spin-resolved perturbation (δD_α, δD_β) at a reference density it returns
 //! (δV_α, δV_β). Feeding δD_α = δD_β = the (symmetrized) AO transition density
 //! of pair `jb` makes δV_α = ∫(f_αα + f_αβ) δρ, the singlet combination, and
-//! `K[:, jb] = C_occᵀ δV_α C_vir`. The factor is not asserted from theory — it
+//! `K[:, jb] = C_occᵀ δV_α C_vir`. The triplet block feeds δD_β = −δD_α and
+//! keeps δV_α = ∫(f_αα − f_αβ) δρ, with the same normalization
+//! (`crates/ferric-tddft/theory.md` §9). The factor is not asserted from theory — it
 //! is pinned against PySCF `tddft.TDA` by `ferric-gw/tests/tda_dft_vs_pyscf.rs`
 //! (LDA/PBE/B3LYP water, 1.0e-3 eV) and against PySCF `TDA`/`TDDFT` by
 //! `ferric-tddft/tests/validation_tddft.rs`.
 
 use crate::density_on_grid::{eval_density_uks, eval_tau_closed, UksDensityGrid};
 use crate::fxc::{
-    point_hessians, restricted_coefficients, GgaFxcKernel, MggaFxcKernel, MggaFxcReference,
+    point_hessians, spin_coefficients, GgaFxcKernel, MggaFxcKernel, MggaFxcReference,
 };
 use crate::grid::{AtomicGridConfig, GridPoint};
 use crate::libxc::{xc_def_from_name_nspin, FunctionalFamily, XcDef};
@@ -69,6 +73,56 @@ use rayon::prelude::*;
 /// must be too up to grid round-off. The GGA transition-density bug this guard
 /// caught showed up at 3.1e-2 relative, five orders above it.
 pub const FXC_BLOCK_ASYMMETRY_TOL: f64 = 1e-8;
+
+/// The spin of a closed-shell response: which combination of the
+/// spin-resolved kernel a block carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ResponseSpin {
+    /// `f_αα + f_αβ` (δD_β = δD_α).
+    #[default]
+    Singlet,
+    /// The `M_S = 0` triplet, `f_αα − f_αβ` (δD_β = −δD_α).
+    Triplet,
+}
+
+impl ResponseSpin {
+    /// `"singlet"` or `"triplet"` (case-insensitive); anything else is an
+    /// error.
+    pub fn parse_config_str(s: &str) -> Result<Self, FerricError> {
+        match s.to_ascii_lowercase().as_str() {
+            "singlet" => Ok(Self::Singlet),
+            "triplet" => Ok(Self::Triplet),
+            other => Err(FerricError::General(format!(
+                "response spin '{other}' is not one of \"singlet\", \"triplet\""
+            ))),
+        }
+    }
+
+    /// Lower-case name, as the config key spells it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Singlet => "singlet",
+            Self::Triplet => "triplet",
+        }
+    }
+}
+
+/// A functional that passed [`resolve_response_xc`]: its exact-exchange
+/// coefficients and the (nspin = 2) XC definition for [`SingletKernel::new`].
+#[derive(Debug)]
+pub struct ResponseXc {
+    /// Exact-exchange fraction of the full Coulomb operator: the global-hybrid
+    /// mix, or the CAM short-range coefficient `c_sr` (0 for a pure
+    /// functional).
+    pub c_sr: f64,
+    /// Long-range (erf) exact-exchange fraction `c_lr`; equal to `c_sr`
+    /// unless the functional is range-separated with `omega != 0`.
+    pub c_lr: f64,
+    /// Range-separation parameter ω (Bohr⁻¹); 0 when not range-separated.
+    pub omega: f64,
+    /// Spin-resolved XC definition, ready for [`SingletKernel::new`].
+    pub xc_kernel: XcDef,
+}
 
 /// A functional that passed [`resolve_singlet_response_xc`]: its exact-exchange
 /// fraction and the (nspin = 2) XC definition for [`SingletKernel::new`].
@@ -153,11 +207,13 @@ impl SingletKernel {
     }
 }
 
-/// Decide whether `name` has a complete singlet response kernel in ferric, and
-/// resolve its exact-exchange fraction.
+/// Decide whether `name` has a complete response kernel in ferric, and
+/// resolve its exact-exchange coefficients, range separation included.
 ///
 /// `caller` prefixes every error message so the user sees which driver
-/// refused.
+/// refused. The caller must assemble the long-range exchange term
+/// `(c_lr − c_sr) K[erf(ω r)/r]` when `omega != 0`; a driver that does not
+/// uses [`resolve_singlet_response_xc`], which refuses those functionals.
 ///
 /// # Errors
 ///
@@ -165,15 +221,10 @@ impl SingletKernel {
 ///   * an unknown functional name;
 ///   * a functional carrying VV10 nonlocal correlation (its response is not in
 ///     the kernel — the excitation energies would silently omit it);
-///   * a range-separated hybrid (`omega != 0`) — the long-range exact-exchange
-///     response needs erf-attenuated integrals no driver builds;
 ///   * a meta-GGA component libxc has no second derivative for.
-pub fn resolve_singlet_response_xc(
-    name: &str,
-    caller: &str,
-) -> Result<SingletResponseXc, FerricError> {
+pub fn resolve_response_xc(name: &str, caller: &str) -> Result<ResponseXc, FerricError> {
     // nspin = 2: the kernel is spin-resolved (that IS its API), and the
-    // singlet combination f_αα + f_αβ is extracted by feeding δD_α = δD_β.
+    // singlet / triplet combinations are extracted by feeding δD_β = ±δD_α.
     let probe = xc_def_from_name_nspin(name, 2)
         .map_err(|e| FerricError::General(format!("{caller}: xc '{name}': {e:?}")))?;
 
@@ -183,17 +234,6 @@ pub fn resolve_singlet_response_xc(
              linear response is NOT in ferric's f_xc kernel — the excitation energies \
              would silently omit it. Refused; use a functional without VV10."
         )));
-    }
-    if let Some(cam) = probe.cam {
-        if cam.omega != 0.0 {
-            return Err(FerricError::General(format!(
-                "{caller}: functional '{name}' is range-separated (omega = {}); the \
-                 long-range exact-exchange response term is not assembled, so the \
-                 excitation energies would be wrong. Refused; use a pure functional or \
-                 a global hybrid.",
-                cam.omega
-            )));
-        }
     }
     if probe
         .funcs
@@ -207,15 +247,51 @@ pub fn resolve_singlet_response_xc(
         )));
     }
 
-    let c_hf = if let Some(cam) = probe.cam {
-        cam.c_sr // omega == 0 checked above, so c_sr == c_lr == the mix
-    } else {
-        probe.b3lyp_mix.unwrap_or(0.0)
+    let (c_sr, c_lr, omega) = match probe.cam {
+        Some(cam) if cam.omega != 0.0 => (cam.c_sr, cam.c_lr, cam.omega),
+        // ω = 0: erf(0) = 0, so only the short-range (= full) term remains.
+        Some(cam) => (cam.c_sr, cam.c_sr, 0.0),
+        None => {
+            let mix = probe.b3lyp_mix.unwrap_or(0.0);
+            (mix, mix, 0.0)
+        }
     };
-
-    Ok(SingletResponseXc {
-        c_hf,
+    Ok(ResponseXc {
+        c_sr,
+        c_lr,
+        omega,
         xc_kernel: probe,
+    })
+}
+
+/// [`resolve_response_xc`] for a driver that builds only the full-Coulomb
+/// exchange term: range-separated hybrids (`omega != 0`) are refused.
+///
+/// `caller` prefixes every error message so the user sees which driver
+/// refused.
+///
+/// # Errors
+///
+/// Those of [`resolve_response_xc`], plus a range-separated hybrid — the
+/// long-range exact-exchange response needs erf-attenuated integrals this
+/// caller does not build.
+pub fn resolve_singlet_response_xc(
+    name: &str,
+    caller: &str,
+) -> Result<SingletResponseXc, FerricError> {
+    let r = resolve_response_xc(name, caller)?;
+    if r.omega != 0.0 {
+        return Err(FerricError::General(format!(
+            "{caller}: functional '{name}' is range-separated (omega = {}); this driver \
+             does not assemble the long-range exact-exchange response term, so the \
+             excitation energies would be wrong. Refused; use a pure functional or \
+             a global hybrid (the user-facing TDA/TDDFT handles range separation).",
+            r.omega
+        )));
+    }
+    Ok(SingletResponseXc {
+        c_hf: r.c_sr,
+        xc_kernel: r.xc_kernel,
     })
 }
 
@@ -236,6 +312,29 @@ pub fn resolve_singlet_response_xc(
 /// contraction. Peak memory is two `(n, n)` matrices (raw + symmetrized).
 pub fn singlet_fxc_ov_block(
     kernel: &SingletKernel,
+    mo_coeff: &Array2<f64>,
+    first_act: usize,
+    nocc_total: usize,
+    nocc: usize,
+    nvir: usize,
+) -> (Array2<f64>, f64) {
+    fxc_ov_block(
+        kernel,
+        ResponseSpin::Singlet,
+        mo_coeff,
+        first_act,
+        nocc_total,
+        nocc,
+        nvir,
+    )
+}
+
+/// [`singlet_fxc_ov_block`] for either spin: `K_{ia,jb} = (ia| f_αα ± f_αβ |jb)`,
+/// `+` for [`ResponseSpin::Singlet`] (the same block), `−` for
+/// [`ResponseSpin::Triplet`] (the β perturbation is `−δD`).
+pub fn fxc_ov_block(
+    kernel: &SingletKernel,
+    spin: ResponseSpin,
     mo_coeff: &Array2<f64>,
     first_act: usize,
     nocc_total: usize,
@@ -279,7 +378,10 @@ pub fn singlet_fxc_ov_block(
                 }
                 m
             };
-            let (dv_a, _dv_b) = kernel.apply(&dd, &dd);
+            let (dv_a, _dv_b) = match spin {
+                ResponseSpin::Singlet => kernel.apply(&dd, &dd),
+                ResponseSpin::Triplet => kernel.apply(&dd, &(-&dd)),
+            };
             // K[:, jb] = C_occ^T δV_α C_vir, flattened as ia = i*nvir + a.
             let block = orbo.t().dot(&dv_a).dot(&orbv); // (nocc, nvir)
             let jb = j * nvir + b;
@@ -339,8 +441,9 @@ struct OvBlock {
     grad: Vec<[f64; 3]>,
 }
 
-/// Matrix-free singlet f_xc product in the `(ia)` space: `y = K x` with `K`
-/// the block [`singlet_fxc_ov_block`] builds, for a block of vectors at once.
+/// Matrix-free f_xc product in the `(ia)` space: `y = K x` with `K` the block
+/// [`fxc_ov_block`] builds for the operator's [`ResponseSpin`] (singlet unless
+/// built by [`SingletOvFxc::new_with_spin`]), for a block of vectors at once.
 ///
 /// # Same kernel, contracted in the MO basis
 ///
@@ -483,6 +586,36 @@ impl SingletOvFxc {
         nocc: usize,
         nvir: usize,
     ) -> Result<Self, String> {
+        Self::new_with_spin(
+            kernel,
+            ResponseSpin::Singlet,
+            d_alpha,
+            mo_coeff,
+            first_act,
+            nocc_total,
+            nocc,
+            nvir,
+        )
+    }
+
+    /// [`Self::new`] for either spin: the product of [`fxc_ov_block`]'s
+    /// `spin` block. The triplet regrouping of the point kernel is
+    /// `crate::fxc::spin_coefficients` (`crates/ferric-tddft/theory.md` §9).
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::new`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_spin(
+        kernel: &SingletKernel,
+        spin: ResponseSpin,
+        d_alpha: &Array2<f64>,
+        mo_coeff: &Array2<f64>,
+        first_act: usize,
+        nocc_total: usize,
+        nocc: usize,
+        nvir: usize,
+    ) -> Result<Self, String> {
         let (xc, grid, chi, dchi) = kernel.grid_data();
         let tau = xc
             .funcs
@@ -511,6 +644,7 @@ impl SingletOvFxc {
                     orbv: &orbv,
                     floor,
                     gradients,
+                    triplet: spin == ResponseSpin::Triplet,
                 };
                 ctx.block(lo, hi)
             })
@@ -657,6 +791,8 @@ struct BlockInputs<'a> {
     orbv: &'a Array2<f64>,
     floor: DensityFloor,
     gradients: bool,
+    /// Triplet coefficients (`crate::fxc::spin_coefficients`).
+    triplet: bool,
 }
 
 impl BlockInputs<'_> {
@@ -699,7 +835,7 @@ impl BlockInputs<'_> {
                 continue;
             }
             let (cu, cs, ct, gam) =
-                restricted_coefficients(&hess[k], &vsigma[k], self.grid[g].weight);
+                spin_coefficients(&hess[k], &vsigma[k], self.grid[g].weight, self.triplet);
             blk.cu[k] = cu;
             blk.cs[k] = cs;
             blk.ct[k] = ct;
@@ -753,9 +889,45 @@ mod tests {
         assert!(resolve_singlet_response_xc("HYB_GGA_XC_CAM_B3LYP", WHO).is_err());
     }
 
+    /// [`resolve_response_xc`] accepts range-separated hybrids with libxc's
+    /// CAM coefficients (`c_sr = α + β`, `c_lr = α`), keeps refusing VV10,
+    /// and gives a global hybrid `c_sr = c_lr`, ω = 0.
+    #[test]
+    fn range_separated_hybrids_resolve_with_their_cam_coefficients() {
+        let close = |x: f64, y: f64| (x - y).abs() < 1e-12;
+        let cam = resolve_response_xc("HYB_GGA_XC_CAM_B3LYP", WHO).unwrap();
+        assert!(close(cam.c_sr, 0.19) && close(cam.c_lr, 0.65), "{cam:?}");
+        assert!(close(cam.omega, 0.33), "{cam:?}");
+        let wb = resolve_response_xc("HYB_GGA_XC_WB97X", WHO).unwrap();
+        assert!(
+            close(wb.c_lr, 1.0) && wb.c_sr > 0.15 && wb.c_sr < 0.16,
+            "{wb:?}"
+        );
+        assert!(close(wb.omega, 0.3), "{wb:?}");
+        let b3 = resolve_response_xc("B3LYP", WHO).unwrap();
+        assert!(close(b3.c_sr, 0.2) && b3.c_sr == b3.c_lr && b3.omega == 0.0);
+        assert!(resolve_response_xc("wB97X-V", WHO).is_err(), "VV10");
+    }
+
+    #[test]
+    fn response_spin_parses_strictly() {
+        assert_eq!(
+            ResponseSpin::parse_config_str("Triplet").unwrap(),
+            ResponseSpin::Triplet
+        );
+        assert_eq!(
+            ResponseSpin::parse_config_str("singlet").unwrap(),
+            ResponseSpin::Singlet
+        );
+        assert!(ResponseSpin::parse_config_str("quintet").is_err());
+    }
+
     /// [`SingletOvFxc`] (MO-space, batched) applied to the identity equals the
-    /// dense AO-route block [`singlet_fxc_ov_block`], water/6-31G at an HF
-    /// density, for an LDA, a GGA, a global hybrid and a τ-only meta-GGA.
+    /// dense AO-route block [`fxc_ov_block`], water/6-31G at an HF density,
+    /// for an LDA, a GGA, a global hybrid and a τ-only meta-GGA, singlet and
+    /// triplet. The two triplet routes share only the point Hessians: the
+    /// dense one feeds δD_β = −δD_α to the spin-resolved AO kernel, the
+    /// matrix-free one uses the regrouped `spin_coefficients`.
     ///
     /// Bar: `FXC_BLOCK_ASYMMETRY_TOL · max|K|`, the noise floor the dense
     /// route is accepted at (its raw block, analytically symmetric, is
@@ -768,7 +940,8 @@ mod tests {
     /// first failing functional): dropping the `½ t ∂φ_o` τ term passes LDA,
     /// PBE and B3LYP and fails r2SCAN (2.9e-2 against a 1.3e-9 bar); dropping
     /// `γ ∇δρ` from w fails PBE (2.6e-2); dropping the u term fails LDA
-    /// (7.9e-2).
+    /// (7.9e-2). The triplet γ coefficient with the singlet sign
+    /// (2026-11-14) fails PBE triplet (2.1e-2 against a 7.6e-10 bar).
     #[test]
     fn ov_operator_matches_the_dense_block() {
         use ferric_core::basis;
@@ -799,27 +972,130 @@ mod tests {
         let nocc = (mol.nelec() / 2) as usize;
         let nvir = scf.eps_r().len() - nocc;
         let dim = nocc * nvir;
-        for name in ["LDA", "PBE", "B3LYP", "r2SCAN"] {
+        for (name, spin) in ["LDA", "PBE", "B3LYP", "r2SCAN"]
+            .into_iter()
+            .flat_map(|n| [ResponseSpin::Singlet, ResponseSpin::Triplet].map(|s| (n, s)))
+        {
             let spec = resolve_singlet_response_xc(name, WHO).unwrap();
             let grid = AtomicGridConfig::default();
             let kern =
                 SingletKernel::new(&mol, &bs, spec.xc_kernel, &grid, &scf.density_alpha).unwrap();
-            let (dense, asym) = singlet_fxc_ov_block(&kern, scf.mos_r(), 0, nocc, nocc, nvir);
+            let (dense, asym) = fxc_ov_block(&kern, spin, scf.mos_r(), 0, nocc, nocc, nvir);
             assert!(
                 asym < FXC_BLOCK_ASYMMETRY_TOL,
                 "{name}: dense asymmetry {asym:e}"
             );
-            let ov = SingletOvFxc::new(&kern, &scf.density_alpha, scf.mos_r(), 0, nocc, nocc, nvir)
-                .unwrap();
+            let ov = SingletOvFxc::new_with_spin(
+                &kern,
+                spin,
+                &scf.density_alpha,
+                scf.mos_r(),
+                0,
+                nocc,
+                nocc,
+                nvir,
+            )
+            .unwrap();
             let mf = ov.apply(&Array2::eye(dim));
             let scale = dense.iter().fold(0.0_f64, |m, &x| m.max(x.abs()));
             let diff = (&mf - &dense).iter().fold(0.0_f64, |m, &x| m.max(x.abs()));
-            eprintln!("{name}: max|K_mf - K_dense| = {diff:.3e} (max|K| = {scale:.3e})");
+            eprintln!("{name} {spin:?}: max|K_mf - K_dense| = {diff:.3e} (max|K| = {scale:.3e})");
             assert!(
                 diff <= FXC_BLOCK_ASYMMETRY_TOL * scale,
-                "{name}: matrix-free f_xc block differs from the dense one by {diff:e} \
-                 (bar {:e})",
+                "{name} {spin:?}: matrix-free f_xc block differs from the dense one by \
+                 {diff:e} (bar {:e})",
                 FXC_BLOCK_ASYMMETRY_TOL * scale
+            );
+        }
+    }
+
+    /// The two spin blocks are the sum and difference of the same-spin and
+    /// cross-spin kernels, so `K_S + K_T = 2 (ia|f_αα|jb)`, where the right
+    /// side comes from the AO kernel fed `(δD, 0)` — a third route that never
+    /// takes a spin sign. Water/6-31G at an HF density, LDA, PBE and r2SCAN.
+    ///
+    /// Bar: `2·FXC_BLOCK_ASYMMETRY_TOL·max|K_αα|`. The three blocks are the
+    /// same grid sum of the same AO kernel at the same reference, combined
+    /// linearly; the symmetrization of each raw block moves it by at most
+    /// that tolerance relative (the guard every block passes).
+    ///
+    /// Mutation (2026-11-14): the triplet block built with the singlet sign
+    /// (`kernel.apply(&dd, &dd)`) fails LDA by 1.9e-2 against a 1.4e-9 bar.
+    #[test]
+    fn singlet_plus_triplet_is_twice_the_same_spin_block() {
+        use ferric_core::basis;
+        use ferric_core::parallel::ParallelContext;
+        use ferric_integrals::basis_bridge::PreparedBasis;
+        use ferric_integrals::operator::Operator;
+        let _env_guard = crate::TEST_BUDGET_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let xyz = format!(
+            "{}/../../testdata/molecules/water.xyz",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let mol = Molecule::load_xyz(&xyz).unwrap();
+        let bs = basis::bundled("6-31g").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = ferric_scf::screening::SchwarzBounds::compute(op, &prep).unwrap();
+        let scf = ferric_scf::rhf::solve_rhf(
+            &ParallelContext::default(),
+            &mol,
+            &prep,
+            op,
+            &bounds,
+            &ferric_scf::rhf::RhfConfig::default(),
+        )
+        .unwrap();
+        let nocc = (mol.nelec() / 2) as usize;
+        let nvir = scf.eps_r().len() - nocc;
+        let c = scf.mos_r();
+        for name in ["LDA", "PBE", "r2SCAN"] {
+            let spec = resolve_singlet_response_xc(name, WHO).unwrap();
+            let grid = AtomicGridConfig::default();
+            let kern =
+                SingletKernel::new(&mol, &bs, spec.xc_kernel, &grid, &scf.density_alpha).unwrap();
+            let (ks, _) = fxc_ov_block(&kern, ResponseSpin::Singlet, c, 0, nocc, nocc, nvir);
+            let (kt, _) = fxc_ov_block(&kern, ResponseSpin::Triplet, c, 0, nocc, nocc, nvir);
+            // Same-spin block: δD_β = 0, the AO adapter of `fxc_ov_block`.
+            let orbo = c.slice(s![.., 0..nocc]).to_owned();
+            let orbv = c.slice(s![.., nocc..nocc + nvir]).to_owned();
+            let n = nocc * nvir;
+            let zero = Array2::<f64>::zeros((c.nrows(), c.nrows()));
+            let mut kaa = Array2::<f64>::zeros((n, n));
+            for j in 0..nocc {
+                for b in 0..nvir {
+                    let (cj, cb) = (orbo.column(j), orbv.column(b));
+                    let dd = Array2::from_shape_fn((cj.len(), cj.len()), |(m, v)| {
+                        0.5 * (cj[m] * cb[v] + cb[m] * cj[v])
+                    });
+                    let (dv_a, _) = kern.apply(&dd, &zero);
+                    let blk = orbo.t().dot(&dv_a).dot(&orbv);
+                    for i in 0..nocc {
+                        for a in 0..nvir {
+                            kaa[(i * nvir + a, j * nvir + b)] = blk[(i, a)];
+                        }
+                    }
+                }
+            }
+            let kaa = 0.5 * (&kaa + &kaa.t());
+            let scale = kaa.iter().fold(0.0_f64, |m, &x| m.max(x.abs()));
+            let diff = (&(&ks + &kt) - &(2.0 * &kaa))
+                .iter()
+                .fold(0.0_f64, |m, &x| m.max(x.abs()));
+            let gap = (&ks - &kt).iter().fold(0.0_f64, |m, &x| m.max(x.abs()));
+            let bar = 2.0 * FXC_BLOCK_ASYMMETRY_TOL * scale;
+            eprintln!(
+                "{name}: |K_S + K_T - 2 K_aa| = {diff:.3e} (bar {bar:.3e}, |K_S - K_T| {gap:.3e})"
+            );
+            assert!(
+                gap > 1e3 * bar,
+                "{name}: singlet and triplet blocks coincide"
+            );
+            assert!(
+                diff <= bar,
+                "{name}: K_S + K_T != 2 K_aa by {diff:e} (bar {bar:e})"
             );
         }
     }

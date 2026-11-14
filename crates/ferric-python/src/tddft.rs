@@ -11,9 +11,20 @@ pub(crate) struct PyTddftResult {
     pub(crate) n_roots: usize,
     #[pyo3(get)]
     pub(crate) method: String,
-    /// Exact-exchange fraction used on the `-c_HF` terms.
+    /// Exact-exchange fraction used on the `-c_HF` terms; for a
+    /// range-separated hybrid the short-range fraction c_sr.
     #[pyo3(get)]
     pub(crate) c_hf: f64,
+    /// Long-range exact-exchange fraction (equal to `c_hf` unless the
+    /// functional is range-separated).
+    #[pyo3(get)]
+    pub(crate) c_lr: f64,
+    /// Range-separation parameter in bohr^-1 (0 for a global hybrid).
+    #[pyo3(get)]
+    pub(crate) omega: f64,
+    /// Spin of the excited states: `"singlet"` or `"triplet"`.
+    #[pyo3(get)]
+    pub(crate) spin: String,
     /// Whether the (ia|f_xc|jb) kernel block was included (true for every KS
     /// reference, false only for an HF reference).
     #[pyo3(get)]
@@ -70,15 +81,19 @@ impl PyTddftResult {
     }
     fn __repr__(&self) -> String {
         format!(
-            "TddftResult(method={}, n_roots={}, lowest={:.4} eV)",
+            "TddftResult(method={}, spin={}, n_roots={}, lowest={:.4} eV)",
             self.method,
+            self.spin,
             self.n_roots,
             self.lowest_ev(),
         )
     }
     fn __str__(&self) -> String {
         let ha_to_ev = 27.211_386_245_988;
-        let mut s = format!("TDDFT {} — {} roots:\n", self.method, self.n_roots);
+        let mut s = format!(
+            "TDDFT {} — {} {} roots:\n",
+            self.method, self.n_roots, self.spin
+        );
         for (i, (&e, &f)) in self
             .excitation_energies
             .iter()
@@ -104,7 +119,7 @@ impl PyTddftResult {
     mol, basis_set, auxbasis, functional=None, n_roots=3, method="tda",
     scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None,
     grid_radial=None, grid_angular=None, grid_prune=None, grid_weight_cut=None, scf_ri_j_precision=None,
-    solver="auto",
+    solver="auto", spin="singlet",
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_tddft(
@@ -124,9 +139,12 @@ pub(crate) fn run_tddft(
     grid_weight_cut: Option<f64>,
     scf_ri_j_precision: Option<&str>,
     solver: &str,
+    spin: &str,
 ) -> PyResult<PyTddftResult> {
-    use ferric_tddft::{TddftConfig, TddftMethod, TddftSolver};
+    use ferric_tddft::{ResponseSpin, TddftConfig, TddftMethod, TddftSolver};
     let solver = TddftSolver::parse_config_str(solver)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("run_tddft: {e}")))?;
+    let spin = ResponseSpin::parse_config_str(spin)
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("run_tddft: {e}")))?;
 
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
@@ -148,10 +166,10 @@ pub(crate) fn run_tddft(
     // The f_xc kernel is built inside `run_tddft` from `functional` on the
     // SAME grid the KS reference is converged on (the ladder keeps
     // `dft_grid`), and the exact-exchange fraction comes from the same
-    // functional. A functional without a complete kernel (VV10,
-    // range-separated) is refused before the SCF is spent on it.
+    // functional. A functional without a complete kernel (VV10, a meta-GGA
+    // without one) is refused before the SCF is spent on it.
     if let Some(xc_name) = functional {
-        ferric_dft::lr_kernel::resolve_singlet_response_xc(xc_name, "run_tddft")
+        ferric_dft::lr_kernel::resolve_response_xc(xc_name, "run_tddft")
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{e}")))?;
     }
     if functional.is_none()
@@ -229,6 +247,7 @@ pub(crate) fn run_tddft(
         xc: functional.map(str::to_string),
         grid,
         solver,
+        spin,
         ..Default::default()
     };
     // All closure arguments are owned Rust values (an owned Molecule clone
@@ -253,6 +272,9 @@ pub(crate) fn run_tddft(
         n_roots: r.excitation_energies.len(),
         method: format!("{:?}", r.method),
         c_hf: r.c_hf,
+        c_lr: r.c_lr,
+        omega: r.omega,
+        spin: r.spin.name().to_string(),
         fxc_included: r.fxc_included,
         grid: grid_used,
         solver: r.solver.name().to_string(),

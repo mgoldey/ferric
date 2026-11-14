@@ -2623,7 +2623,24 @@ class TddftResult:
 
     @property
     def c_hf(self) -> float:
-        """Exact-exchange fraction used on the -c_HF terms (1.0 for HF)."""
+        """Exact-exchange fraction used on the -c_HF terms (1.0 for HF); for a
+        range-separated hybrid, the short-range fraction c_sr."""
+        ...
+
+    @property
+    def c_lr(self) -> float:
+        """Long-range exact-exchange fraction; equal to c_hf unless the
+        functional is range-separated."""
+        ...
+
+    @property
+    def omega(self) -> float:
+        """Range-separation parameter in bohr^-1 (0.0 for a global hybrid)."""
+        ...
+
+    @property
+    def spin(self) -> str:
+        """Spin of the excited states: "singlet" or "triplet"."""
         ...
 
     @property
@@ -5782,8 +5799,9 @@ def run_tddft(
     grid_weight_cut: float | None = None,
     scf_ri_j_precision: str | None = None,
     solver: str = "auto",
+    spin: str = "singlet",
 ) -> TddftResult:
-    """Closed-shell singlet linear response. functional=None runs on an RHF
+    """Closed-shell linear response. functional=None runs on an RHF
     reference (CIS for method="tda"/"cis", TDHF for "casida"/"rpa"/"tddft"/
     "tdhf"); a functional converges that KS reference (RI-JK,
     def2-universal-jkfit) and adds the (ia|f_xc|jb) kernel block to A (and B
@@ -5798,8 +5816,16 @@ def run_tddft(
     replaces that default. With functional=None a grid_* kwarg is a
     ValueError. TddftResult.grid reports the grid used.
 
-    VV10 and range-separated functionals raise ValueError (no complete
-    kernel); there is no kernel-less DFT result. Coulomb/exchange response
+    Range-separated hybrids (e.g. "HYB_GGA_XC_CAM_B3LYP", "HYB_GGA_XC_WB97X")
+    take c_sr, c_lr and omega from libxc; the long-range exchange in the
+    response uses a second RI tensor set fitted in the erf(omega r)/r metric.
+    VV10 functionals raise ValueError (no complete kernel); there is no
+    kernel-less DFT result.
+
+    spin: "singlet" (default) or "triplet" (no Coulomb term, the
+    f_aa - f_ab kernel, oscillator strengths exactly 0). A triplet Casida
+    problem with Omega^2 < 0 (a triplet instability of the reference) raises.
+    Any other value is a ValueError. Coulomb/exchange response
     integrals are RI over `auxbasis`. `scf_max_iter`, `scf_energy_conv`,
     `scf_density_conv` set the reference SCF as in `run_rhf` (defaults unchanged
     when omitted).

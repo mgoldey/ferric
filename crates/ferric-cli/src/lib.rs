@@ -7052,19 +7052,33 @@ fn run_optimize_oo_rimp2(
     );
 }
 
-/// TDA/TDDFT on a functional with no complete f_xc kernel (VV10,
-/// range-separated), or with an unknown `[tddft] solver`, is refused; check it
-/// before the reference SCF is spent on a run that cannot finish.
+/// TDA/TDDFT on a functional with no complete f_xc kernel (VV10, a meta-GGA
+/// without one), or with an unknown `[tddft] solver` or `spin`, is refused;
+/// check it before the reference SCF is spent on a run that cannot finish.
 fn refuse_tddft_xc_without_kernel(cfg: &Config, method: &str) {
     if !matches!(method, "tda" | "tddft") {
         return;
     }
     exit_on_tddft_error(cfg.tddft.solver());
+    exit_on_tddft_error(cfg.tddft.spin());
     if let Some(xc_name) = cfg.tddft.xc.as_deref() {
-        exit_on_tddft_error(ferric_dft::lr_kernel::resolve_singlet_response_xc(
+        exit_on_tddft_error(ferric_dft::lr_kernel::resolve_response_xc(
             xc_name,
             "[tddft] xc",
         ));
+    }
+}
+
+/// The exact exchange a TDDFT run used: `c_HF = 0.20` for a global hybrid,
+/// `c_sr = 0.19, c_lr = 0.65, omega = 0.33` for a range-separated one.
+fn tddft_exchange_label(r: &ferric_tddft::TddftResult) -> String {
+    if r.omega == 0.0 {
+        format!("c_HF = {:.2}", r.c_hf)
+    } else {
+        format!(
+            "c_sr = {:.4}, c_lr = {:.4}, omega = {:.4} bohr^-1",
+            r.c_hf, r.c_lr, r.omega
+        )
     }
 }
 
@@ -7141,6 +7155,10 @@ fn run_tddft_arm(
             std::process::exit(1);
         }),
         davidson: ferric_tddft::davidson::DavidsonSettings::default(),
+        spin: cfg.tddft.spin().unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }),
     };
     if let Some(xc) = config.xc.as_deref() {
         println!(
@@ -7153,14 +7171,13 @@ fn run_tddft_arm(
         eprintln!("error: TDDFT failed: {e}");
         std::process::exit(1);
     });
-    let c_hf = r.c_hf;
-
     let ha_to_ev = 27.211_386_245_988;
     println!(
-        "{:?} — {} roots (c_HF = {:.2}, f_xc kernel: {}, solver: {}):",
+        "{:?} — {} {} roots ({}, f_xc kernel: {}, solver: {}):",
         tddft_method,
         config.n_roots,
-        c_hf,
+        r.spin.name(),
+        tddft_exchange_label(&r),
         if r.fxc_included {
             "included"
         } else {

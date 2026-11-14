@@ -67,23 +67,36 @@ fn meta_gga_reference_passes_the_functional_gate() {
     }
 }
 
+/// VV10 has no f_xc kernel and is refused by the functional gate, before the
+/// memory gate; a range-separated hybrid is accepted and reaches the memory
+/// gate.
 #[test]
-fn range_separated_and_vv10_references_are_refused() {
+fn vv10_references_are_refused_and_range_separated_ones_accepted() {
     let (mol, obs, dfbs, rhf) = water_hf();
-    for xc in ["wB97X-V", "HYB_GGA_XC_CAM_B3LYP"] {
-        let cfg = TddftConfig {
-            xc: Some(xc.to_string()),
-            memory_budget_bytes: Some(STARVED),
-            ..Default::default()
-        };
-        let err = run_tddft(&mol, &obs, &dfbs, &rhf, &cfg)
-            .expect_err("no complete kernel; must be refused")
-            .to_string();
-        assert!(
-            !err.contains("memory plan"),
-            "{xc}: refused by the memory gate, i.e. the functional gate never fired: {err}"
-        );
-    }
+    let cfg = TddftConfig {
+        xc: Some("HYB_GGA_XC_CAM_B3LYP".to_string()),
+        memory_budget_bytes: Some(STARVED),
+        ..Default::default()
+    };
+    let err = run_tddft(&mol, &obs, &dfbs, &rhf, &cfg)
+        .expect_err("a starved budget")
+        .to_string();
+    assert!(
+        err.contains("memory plan"),
+        "CAM-B3LYP must pass the functional gate and stop at the memory gate: {err}"
+    );
+    let cfg = TddftConfig {
+        xc: Some("wB97X-V".to_string()),
+        memory_budget_bytes: Some(STARVED),
+        ..Default::default()
+    };
+    let err = run_tddft(&mol, &obs, &dfbs, &rhf, &cfg)
+        .expect_err("no complete kernel; must be refused")
+        .to_string();
+    assert!(
+        !err.contains("memory plan"),
+        "wB97X-V: refused by the memory gate, i.e. the functional gate never fired: {err}"
+    );
 }
 
 #[test]
