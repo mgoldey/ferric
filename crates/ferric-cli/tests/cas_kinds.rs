@@ -403,6 +403,35 @@ fn cli_keys_reach_the_config() {
     );
     assert!((bfgs.result()["total"].as_f64().unwrap() - e_conv).abs() < 1e-10);
 
+    // [cas] integrals = "ri" with auxbasis: the density-fitted Hamiltonian
+    // (a different energy, RI-error sized), recorded on the certificate,
+    // which carries no exact-integral anchor and is capped to Proven (narrow).
+    let ri = run_cli_ok(
+        "keys_ri",
+        &xyz,
+        &toml_for(
+            "casscf",
+            "6-31g",
+            &format!("{base}integrals = \"ri\"\nauxbasis = \"def2-universal-jkfit\"\n"),
+        ),
+    );
+    let e_ri = ri.result()["total"].as_f64().unwrap();
+    let rc = &ri.result()["components"]["certificate"];
+    assert!(
+        (e_ri - e_conv).abs() > 1e-7 && (e_ri - e_conv).abs() < 1e-3,
+        "RI energy {e_ri} vs exact {e_conv}"
+    );
+    assert_eq!(rc["grade"], "proven_narrow", "{rc}");
+    assert!(rc["measured_error"].is_null(), "{rc}");
+    assert!(
+        rc["approximations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a["name"] == "ri" && a["detail"] == "aux def2-universal-jkfit"),
+        "{rc}"
+    );
+
     // [cas] n_core: one orbital lower, CAS(6,5) above 2 core, another energy.
     let window = run_cli_ok(
         "keys_core",
@@ -488,6 +517,31 @@ fn cli_refusals_are_named() {
             "canonicalize_on_nevpt2",
             toml_for("nevpt2", "6-31g", &format!("{base}canonicalize = true\n")),
             "[cas] canonicalize is read by method.kind = \"casscf\" only",
+        ),
+        (
+            "ri_without_aux",
+            toml_for("casscf", "6-31g", &format!("{base}integrals = \"ri\"\n")),
+            "integrals = \"ri\" needs auxbasis",
+        ),
+        (
+            "aux_without_ri",
+            toml_for(
+                "casscf",
+                "6-31g",
+                &format!("{base}auxbasis = \"def2-universal-jkfit\"\n"),
+            ),
+            "auxbasis is read by integrals = \"ri\" only",
+        ),
+        (
+            "casci_ri",
+            toml_for(
+                "nevpt2",
+                "6-31g",
+                &format!(
+                    "{base}reference = \"casci\"\nintegrals = \"ri\"\nauxbasis = \"def2-universal-jkfit\"\n"
+                ),
+            ),
+            "[cas] integrals sets the CASSCF orbital optimization",
         ),
         (
             "bad_reference",

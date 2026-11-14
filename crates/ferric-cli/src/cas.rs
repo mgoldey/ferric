@@ -25,7 +25,7 @@ use serde::Deserialize;
 /// same settings (`n_active`, `n_elec_active`, `n_core`, `reference`,
 /// `canonicalize`, `casscf_grad_tol`, `casscf_energy_tol`, `casscf_max_iter`,
 /// `casscf_max_step`, `casscf_integrals`, `casscf_integral_thresh`,
-/// `casscf_optimizer`).
+/// `casscf_auxbasis`, `casscf_optimizer`).
 #[derive(Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct CasCfg {
@@ -59,12 +59,17 @@ pub struct CasCfg {
     pub optimizer: Option<String>,
     /// Two-electron integrals of the CASSCF iterations: `"auto"` (default;
     /// dense when the block fits in half the memory budget), `"direct"`
-    /// (direct J/K and `(pu|vw)` builds, no `nbas^4` array) or `"dense"`
-    /// (the `nbas^4` AO block held in memory).
+    /// (direct J/K and `(pu|vw)` builds, no `nbas^4` array), `"dense"`
+    /// (the `nbas^4` AO block held in memory) or `"ri"` (density-fitted
+    /// integrals in `auxbasis`, `naux nbas^2` held; an approximation of the
+    /// Hamiltonian, also used by `nevpt2`).
     pub integrals: Option<String>,
     /// `integrals = "direct"` only: Schwarz screening threshold. Default
     /// `1e-12`.
     pub integral_thresh: Option<f64>,
+    /// `integrals = "ri"` only, and required there: the bundled auxiliary
+    /// basis (e.g. `"def2-universal-jkfit"`). No default.
+    pub auxbasis: Option<String>,
     /// `[cas.ci]`: the CAS-CI eigensolver.
     pub ci: Option<CasCiCfg>,
 }
@@ -180,6 +185,7 @@ fn check_cas_keys(cas: &CasCfg, kind: &str, on: Option<Nevpt2On>) -> Result<(), 
             ("optimizer", cas.optimizer.is_some()),
             ("integrals", cas.integrals.is_some()),
             ("integral_thresh", cas.integral_thresh.is_some()),
+            ("auxbasis", cas.auxbasis.is_some()),
         ];
         if let Some((k, _)) = orbital_keys.iter().find(|(_, set)| *set) {
             return Err(format!(
@@ -250,10 +256,17 @@ pub fn resolve_plan(cfg: &Config, text: &str) -> Result<Option<CasPlan>, String>
     at_least_one("ci.max_iter", ci.max_iter)?;
     at_least_one("ci.max_subspace", ci.max_subspace)?;
     let d = CasScfConfig::default();
-    let integrals = match (cas.integrals.as_deref(), cas.integral_thresh) {
-        (None, None) => d.integrals,
-        (route, t) => CasScfIntegrals::parse_config_str(route.unwrap_or("direct"), t)
-            .map_err(|e| format!("[cas] {e}"))?,
+    let integrals = match (
+        cas.integrals.as_deref(),
+        cas.integral_thresh,
+        cas.auxbasis.as_deref(),
+    ) {
+        (None, None, None) => d.integrals,
+        (route, t, aux) => {
+            let default_route = if t.is_some() { "direct" } else { "auto" };
+            CasScfIntegrals::parse_config_str(route.unwrap_or(default_route), t, aux)
+                .map_err(|e| format!("[cas] {e}"))?
+        }
     };
     let optimizer = match cas.optimizer.as_deref() {
         None => d.optimizer,

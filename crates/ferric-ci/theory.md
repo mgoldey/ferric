@@ -343,6 +343,25 @@ quarter transforms (`integrals::transform_eri_mixed`); it is the test oracle
 (`tests/casscf_direct.rs`: at `thresh = 0` the routes agree to
 $10^{-12}$ in $F$, $(pu|vw)$, $E$ and $g$).
 
+The RI route (`integrals = "ri"`, a bundled `auxbasis`, `src/ri.rs`) is a
+different Hamiltonian, the density-fitted one, $(mn|ls) \approx
+\sum_P B_{P,mn}B_{P,ls}$ with $B = L^{-1}(Q|mn)$ and $L$ the Cholesky factor
+of the Coulomb metric $(P|Q)$. It holds $B$, $n_\text{aux}n_\text{bas}^2$
+doubles, and nothing of size $n_\text{bas}^4$. For a density given in factored
+form $D = XMX^\mathsf{T}$ (the core density $2C_cC_c^\mathsf{T}$ and the active
+density $C_a\gamma C_a^\mathsf{T}$) $J = B^\mathsf{T}(B\,\mathrm{vec}D)$ and
+$K = \sum_P (B_PX)M(B_PX)^\mathsf{T}$ as one GEMM over $(P, j)$; a general
+$D$ (the AH Hessian's trial densities) is summed over aux blocks,
+$K = \sum_P B_PDB_P$. The MO blocks are half transforms
+$(P|ab) = C_l^\mathsf{T}B_PC_r$ followed by one GEMM over $P$:
+$(pu|vw) = (P|pu)^\mathsf{T}(P|vw)$, and the AH occupied kernel's
+$(pq|vw)$ and $(pu|qv)$ the same way, so the AH optimizer runs unchanged.
+SC-NEVPT2 on an RI CASSCF reference takes its MO blocks and $J/K$ from the
+same $B$. The RI route is never chosen by `auto`. It is anchored against the
+dense route fed the reconstructed block $B^\mathsf{T}B$
+(`tests/casscf_ri.rs`), which must agree to rounding: only the order of the
+sums differs.
+
 **Gradient.** The rotation is $C' = C\exp(K)$, $K_{pq} = \kappa_{pq} = -K_{qp}$
 for $p > q$. With the generalized Fock matrix (MO basis, $F^I$ and $F^A$
 transformed with $C$)
@@ -640,6 +659,87 @@ Mutations (one at a time, 2026-11-13; each fails on an assertion):
 
 The sixth `casscf_direct.rs` test checks that a negative or NaN threshold is
 refused.
+
+**RI route (2026-11-14, `tests/casscf_ri.rs`).** Water CAS(4,4), N2
+CAS(6,6) and O2 CAS(8,6) $(5, 3)$ on 6-31G with def2-universal-jkfit
+($n_\text{aux}$ 113, 154, 154). Anchor: the RI route against the dense route
+fed $B^\mathsf{T}B$, at RHF orbitals rotated by a random $\kappa$ (scale
+0.05); bars a priori as in `casscf_direct.rs` with the RI chain lengths
+($n_\text{bas}^2 + n_\text{aux}$ terms in $J/K$, $4n_\text{bas} + n_\text{aux}$ in
+the MO blocks), $e_\text{abs} = \max \sum_P |B_{P,mn}||B_{P,ls}|$:
+
+| System | $\delta F$ (bar) | $\delta(pu\vert vw)$ (bar) | $\lvert\Delta E\rvert$ (bar) | $\lvert\Delta g\rvert$ (bar) | $\lvert\delta(Hx)\rvert$ kernel / AO $J/K$ (bar) |
+|---|---:|---:|---:|---:|---:|
+| H2O CAS(4,4) | 2.5e-14 (1.8e-8) | 4.0e-15 (2.5e-10) | 2.8e-14 (1.3e-11) | 2.7e-13 (3.9e-7) | 3.6e-15 / 4.0e-15 (3.4e-6) |
+| N2 CAS(6,6) | 8.5e-14 (2.0e-6) | 6.2e-14 (2.0e-8) | 4.3e-14 (1.2e-10) | 1.9e-13 (2.9e-4) | 2.8e-14 / 2.7e-14 (7.9e-4) |
+| O2 CAS(8,6) | 3.2e-14 (3.9e-7) | 4.7e-15 (2.6e-9) | 1.1e-13 (5.1e-11) | 1.4e-13 (8.4e-5) | 6.7e-15 / 7.3e-15 (1.2e-4) |
+
+SC-NEVPT2 on the converged RI CASSCF (canonical orbitals used as given on
+both routes): every class within $2.5\times10^{-16}$ of the dense route
+(water, N2). Re-diagonalizing the core and virtual blocks instead
+(`canonicalize = true`) moves N2's $S_{rs}$ by $1.6\times10^{-8}$ between the
+two routes and by $1.2\times10^{-7}$ from the as-given value: N2's virtual
+$\pi$ pairs are degenerate, the eigensolver's rotation within them follows
+$10^{-14}$ differences in $F$, and the strongly contracted energy is not
+invariant to that rotation. The comparisons below therefore fix the orbitals.
+
+Against PySCF `density_fit()` (`scripts/gen_casscf_ri_refs.py`, PySCF built
+on ferric's basis data; PySCF CASSCF from its own DF RHF, ferric from its own):
+
+| System | $E_\text{RI}$ (Ha) | − PySCF DF (bar) | $E_\text{RI} - E_\text{exact}$ | RI-JK RHF error |
+|---|---:|---:|---:|---:|
+| H2O CAS(4,4) | -76.036953811359 | -1.1e-12 (2.7e-9) | 1.53e-5 | 1.05e-5 |
+| N2 CAS(6,6) | -109.015504086513 | -5.7e-14 (6.8e-9) | 4.27e-5 | 4.38e-5 |
+| O2 CAS(8,6) | -149.636648921281 | -2.6e-13 (1.4e-8) | 8.09e-5 | 6.01e-5 |
+
+The RI CASSCF error is of the size of the RI-JK RHF error with the same
+auxiliary basis (both codes give the same RHF error to the digits shown).
+At ferric's RI orbitals the fixed-orbital CAS-CI agrees with PySCF DF
+CAS-CI to $4\times10^{-13}$, and the SC-NEVPT2 classes (water, N2) to
+$1.1\times10^{-13}$ except N2's $S_{rs}$: $3.8\times10^{-8}$ Ha, inside the
+$8.7\times10^{-8}$ Ha spread of PySCF's own $S_{rs}$ over seven repeats on
+identical orbitals (identical CAS-CI energies; every other class repeats to
+$\le 3.4\times10^{-15}$). The generator records that spread and the test
+bar adds it.
+
+Mutations (one at a time, 2026-11-14; each fails on an assertion, source
+restored and checked by checksum):
+
+| Mutation | Caught by |
+|---|---|
+| half the exchange in the RI active Fock ($F^A = J - \tfrac14K$ on the RI route only) | `casscf_ri.rs`, 8 of 12 tests: $\delta F$ = 0.41 / 0.31 / 0.36 (H2O / N2 / O2) against bars $\le 2.0\times10^{-6}$; the PySCF and NEVPT2 tests fail their convergence assertions. `casscf.rs`, `casscf_direct.rs`, `casscf_newton.rs` pass (they do not run the RI route) |
+| RI Hessian products return $(pu\vert qv)$ in place of $(pq\vert uv)$ | `casscf_ri.rs`, 8 of 12 tests: $\lvert\delta(Hx)\rvert$ = 0.89 / 2.8 / 3.6 against bars $\le 7.9\times10^{-4}$; the AH optimizer then fails to converge in the PySCF and NEVPT2 tests |
+
+**RI route timing (2026-11-14).** Benzene CAS(6,6), 18 core orbitals,
+CLI defaults (AH optimizer, exact-J/K RHF start), `budget_gb = 10`,
+def2-universal-jkfit, `OPENBLAS_NUM_THREADS=1`, 12 rayon threads. cc-pVDZ
+(114 basis functions), dense against RI, paired and interleaved
+(A B B A A B); CPU = user + system; box load average 5.2 to 18.4 during the
+runs:
+
+| Route | Wall (s), 3 runs | mean ± sd (s) | CPU (s), 3 runs | mean ± sd (s) | macro iterations | peak RSS |
+|---|---|---:|---|---:|---:|---:|
+| dense | 30.1, 29.5, 32.7 | 30.8 ± 1.7 | 301.6, 298.7, 304.5 | 301.6 ± 2.9 | 19 | 2.35 GB |
+| RI | 20.0, 20.5, 27.4 | 22.6 ± 4.1 | 196.6, 201.7, 211.0 | 203.1 ± 7.3 | 15 | 0.70 to 0.75 GB |
+
+Four of the six runs started above load 12. The CPU difference (98 s) is
+more than ten times either route's spread; the wall difference is not, so
+only the CPU and memory figures are claims. Both include the RHF (about
+10 s, identical on both routes). The two routes reach different stationary
+points from the same RHF start: dense $-230.7814586093$ Ha (the point of the
+table below), RI $-230.7872547148$ Ha, which lies $8.0\times10^{-5}$ Ha above
+PySCF's exact-integral $-230.7873347336$ (an RI-error-sized offset) and so
+is the RI image of PySCF's lower minimum. Per macro iteration (CASSCF phase
+totals, `FERRIC_TIMING=1`, first run of each): dense 18.7 s / 19 = 0.98 s,
+RI 8.4 s / 15 = 0.56 s; the occupied-kernel integrals of the AH Hessian
+are 0.68 s (dense) and 0.39 s (RI) per build.
+
+cc-pVTZ (264 basis functions): the dense route is refused before it runs
+(50.5 GB plan against the 10.7 GB budget). The RI route under
+`scripts/ferric-limited` (12 GB cgroup) converges in 18 macro iterations to
+$-230.8442716629$ Ha, $\lVert g\rVert = 2.3\times10^{-8}$: wall 147 s, CPU
+1397 s, peak RSS 2.80 GB, load average 16.8 to 17.2; the exact-J/K RHF is
+77 s of it and the CASSCF 67 s.
 
 **Benzene CAS(6,6)/cc-pVDZ (2026-11-13).** `testdata/molecules/benzene.xyz`,
 114 basis functions, 18 core orbitals, ferric RHF start, default settings

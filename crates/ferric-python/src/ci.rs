@@ -229,6 +229,12 @@ struct PyCasScfResult {
     ci_residual_norm: f64,
     #[pyo3(get)]
     n_core: usize,
+    /// Integral route the run used: "dense", "direct" or "ri".
+    #[pyo3(get)]
+    integrals: String,
+    /// Auxiliary basis of the RI route, `None` on the exact routes.
+    #[pyo3(get)]
+    auxbasis: Option<String>,
     n_alpha_str: usize,
     n_beta_str: usize,
     ci: Vec<f64>,
@@ -288,7 +294,7 @@ impl PyCasScfResult {
 /// orbitals above `n_core` doubly occupied ones, single root of the
 /// `(n_alpha, n_beta)` sector, optionally canonical orbitals on return.
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, n_active, n_elec_active, n_core=None, casscf_grad_tol=1e-7, casscf_energy_tol=1e-12, casscf_max_iter=300, casscf_max_step=0.2, ci_conv_thresh=1e-10, ci_max_subspace=50, ci_max_iter=200, memory_budget_gb=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, canonicalize=false, casscf_integrals="auto", casscf_integral_thresh=None, casscf_optimizer="ah"))]
+#[pyo3(signature = (mol, basis_set, n_active, n_elec_active, n_core=None, casscf_grad_tol=1e-7, casscf_energy_tol=1e-12, casscf_max_iter=300, casscf_max_step=0.2, ci_conv_thresh=1e-10, ci_max_subspace=50, ci_max_iter=200, memory_budget_gb=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, canonicalize=false, casscf_integrals="auto", casscf_integral_thresh=None, casscf_optimizer="ah", casscf_auxbasis=None))]
 #[allow(clippy::too_many_arguments)]
 fn run_casscf(
     py: Python<'_>,
@@ -312,10 +318,12 @@ fn run_casscf(
     casscf_integrals: &str,
     casscf_integral_thresh: Option<f64>,
     casscf_optimizer: &str,
+    casscf_auxbasis: Option<&str>,
 ) -> PyResult<PyCasScfResult> {
     let integrals = ferric_ci::casscf::CasScfIntegrals::parse_config_str(
         casscf_integrals,
         casscf_integral_thresh,
+        casscf_auxbasis,
     )
     .map_err(|e| make_err(format!("run_casscf: casscf_{e}")))?;
     let optimizer = ferric_ci::CasScfOptimizer::parse_config_str(casscf_optimizer)
@@ -386,6 +394,8 @@ fn run_casscf(
         converged: r.converged,
         ci_residual_norm: r.ci_residual_norm,
         n_core,
+        integrals: r.integrals.as_str().to_string(),
+        auxbasis: r.integrals.aux().map(str::to_string),
         n_alpha_str: ferric_ci::strings::enumerate_strings(n_active, n_elec_active.0).len(),
         n_beta_str: ferric_ci::strings::enumerate_strings(n_active, n_elec_active.1).len(),
         ci: r.ci_vector,
@@ -480,7 +490,7 @@ impl PyNevpt2Result {
 /// SC-NEVPT2 on a CASSCF (default) or CAS-CI reference from the canonical
 /// RHF orbitals. The reference must converge; an unconverged one raises.
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, n_active, n_elec_active, n_core=None, reference="casscf", casscf_grad_tol=1e-7, casscf_energy_tol=1e-12, casscf_max_iter=300, casscf_max_step=0.2, ci_conv_thresh=1e-10, ci_max_subspace=50, ci_max_iter=200, memory_budget_gb=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, casscf_integrals="auto", casscf_integral_thresh=None, casscf_optimizer="ah"))]
+#[pyo3(signature = (mol, basis_set, n_active, n_elec_active, n_core=None, reference="casscf", casscf_grad_tol=1e-7, casscf_energy_tol=1e-12, casscf_max_iter=300, casscf_max_step=0.2, ci_conv_thresh=1e-10, ci_max_subspace=50, ci_max_iter=200, memory_budget_gb=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, casscf_integrals="auto", casscf_integral_thresh=None, casscf_optimizer="ah", casscf_auxbasis=None))]
 #[allow(clippy::too_many_arguments)]
 fn run_nevpt2(
     py: Python<'_>,
@@ -504,10 +514,12 @@ fn run_nevpt2(
     casscf_integrals: &str,
     casscf_integral_thresh: Option<f64>,
     casscf_optimizer: &str,
+    casscf_auxbasis: Option<&str>,
 ) -> PyResult<PyNevpt2Result> {
     let integrals = ferric_ci::casscf::CasScfIntegrals::parse_config_str(
         casscf_integrals,
         casscf_integral_thresh,
+        casscf_auxbasis,
     )
     .map_err(|e| make_err(format!("run_nevpt2: casscf_{e}")))?;
     let optimizer = ferric_ci::CasScfOptimizer::parse_config_str(casscf_optimizer)

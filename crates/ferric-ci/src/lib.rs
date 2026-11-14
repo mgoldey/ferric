@@ -80,13 +80,18 @@ pub mod nevpt2;
 pub mod rdm;
 /// 3-RDM, contracted 4-RDM intermediates and hole RDMs (NEVPT2 inputs).
 pub mod rdm3;
+pub mod ri;
 /// String-driven direct sigma build (σ1/σ2/σ3).
 pub mod sigma;
 /// Determinant-string enumeration (bitmask α/β strings).
 pub mod strings;
 
-pub use casscf::{run_casscf, AhForcing, CasScfConfig, CasScfOptimizer, CasScfResult};
-pub use nevpt2::{sc_nevpt2, Nevpt2Classes, Nevpt2Config, Nevpt2Reference, Nevpt2Result};
+pub use casscf::{
+    run_casscf, AhForcing, CasScfConfig, CasScfIntegrals, CasScfOptimizer, CasScfResult,
+};
+pub use nevpt2::{
+    sc_nevpt2, Nevpt2Classes, Nevpt2Config, Nevpt2Integrals, Nevpt2Reference, Nevpt2Result,
+};
 pub use rdm::CasCiRdms;
 pub use rdm3::{hole_rdms, nevpt_rdms, HoleRdms, NevptRdms};
 

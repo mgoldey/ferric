@@ -130,7 +130,7 @@ $\partial E/\partial\kappa_{pq} = 2(F_{pq} - F_{qp})$. Equations:
 | `max_iter` (`casscf_max_iter`) | 300 | macro iterations |
 | `max_step` (`casscf_max_step`) | 0.2 | cap on the largest step element (rad) |
 | `optimizer` (`casscf_optimizer`) | `"ah"` | `"ah"`: augmented-Hessian step on the exact orbital Hessian at fixed RDMs, with a trust radius; `"bfgs"`: inverse BFGS from an approximate diagonal Hessian |
-| `integrals` (`casscf_integrals`) | `"auto"` | `"auto"`: dense when the block fits in half of the memory budget, else direct; `"direct"`: J, K and $(pu\|vw)$ from shell quartets every iteration, screening threshold `integral_thresh` (`casscf_integral_thresh`, 1e-12); `"dense"`: the $n_\text{bas}^4$ AO block |
+| `integrals` (`casscf_integrals`) | `"auto"` | `"auto"`: dense when the block fits in half of the memory budget, else direct; `"direct"`: J, K and $(pu\|vw)$ from shell quartets every iteration, screening threshold `integral_thresh` (`casscf_integral_thresh`, 1e-12); `"dense"`: the $n_\text{bas}^4$ AO block; `"ri"`: density-fitted integrals in `auxbasis` (`casscf_auxbasis`, required, a bundled set such as `def2-universal-jkfit`), $n_\text{aux}n_\text{bas}^2$ held, a different Hamiltonian; never chosen by `"auto"` |
 | `ci_conv_thresh` | 1e-10 | Davidson residual $\lVert Hc - Ec\rVert$ of every CI solve; a solve that misses it returns an error |
 
 The default step (`optimizer = "ah"`) is the lowest eigenvector of the
@@ -203,6 +203,17 @@ Limits:
   recomputed from shell quartets every macro iteration, with no `nbasis⁴`
   array. On benzene CAS(6,6)/cc-pVDZ an iteration costs 4.1 s on the direct
   route and 0.29 s on the dense route.
+- `[cas] integrals = "ri"` with `auxbasis` runs CASSCF (and SC-NEVPT2 on
+  that reference) on the density-fitted Hamiltonian, holding the
+  $n_\text{aux}n_\text{bas}^2$ tensor only. Its energy differs from the exact
+  CASSCF by the density-fitting error; the certificate records the `ri`
+  approximation and caps the grade at Proven (narrow), outside the
+  exact-integral anchors. `reference = "casci"` refuses it. `ferric.fcidump`
+  always writes the exact integrals, so an FCIDUMP of RI orbitals holds the
+  exact Hamiltonian at those orbitals.
+  On benzene CAS(6,6)/cc-pVDZ it uses 203 CPU s and 0.75 GB against the
+  dense route's 302 CPU s and 2.35 GB; at cc-pVTZ (264 basis functions,
+  where the dense block needs 50 GB) it converges in 2.8 GB.
 
 Validation (`crates/ferric-ci/tests/casscf.rs`, `casscf_vs_pyscf.rs`,
 `casscf_canonical.rs`, measured 2026-11-11; equations and bars in

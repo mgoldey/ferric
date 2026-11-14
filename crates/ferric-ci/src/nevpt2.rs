@@ -43,7 +43,10 @@
 //! # Cost and memory
 //!
 //! The AO two-electron integrals are held densely (`nbas^4`), as in
-//! [`crate::casscf`], and ten MO blocks are transformed from them. The
+//! [`crate::casscf`], and ten MO blocks are transformed from them; with
+//! [`Nevpt2Integrals::Ri`] the fitted tensor `B[P, mn]` (`naux nbas^2`,
+//! [`crate::ri`]) is held instead and each block `(ab|cd)` is
+//! `Σ_P (P|ab) (P|cd)`, so no `nbas^4` array exists on that route. The
 //! largest active intermediates are `n^6` (`n` active orbitals), and the
 //! most expensive single contraction is `O(n^8)` (the `a16`/`a22` terms).
 //! The external contractions cost `O(n_v n^6)` (class r), `O(n_c n^6)`
@@ -56,6 +59,7 @@ use crate::casscf::{dense_jk, CasScfConfig, CasScfResult};
 use crate::hamiltonian::DeterminantSpace;
 use crate::integrals::{dense_ao_eri, transform_eri_mixed, ActiveSpaceIntegrals};
 use crate::rdm3::{e_product_rdms, hole_rdms, nevpt_rdms};
+use crate::ri::RiTensor;
 use crate::sigma::DirectSigma;
 use crate::{strings, CasCiConfig, CasCiResult};
 use ferric_core::memory::plan::{Lifetime, MemoryPlan};
@@ -75,6 +79,33 @@ pub const NORM_ZERO: f64 = 1e-14;
 /// accepted when [`Nevpt2Config::canonicalize`] is off (Ha).
 pub const CANONICAL_TOL: f64 = 1e-8;
 
+/// Two-electron integrals of [`sc_nevpt2`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Nevpt2Integrals {
+    /// The exact AO block, `nbas^4` doubles.
+    #[default]
+    Dense,
+    /// Density-fitted in the bundled auxiliary basis `aux`, Coulomb metric
+    /// (the Hamiltonian of a CASSCF run with
+    /// [`crate::casscf::CasScfIntegrals::Ri`]).
+    Ri {
+        /// Auxiliary basis (registry primary name).
+        aux: &'static str,
+    },
+}
+
+impl Nevpt2Integrals {
+    /// The SC-NEVPT2 integrals on the Hamiltonian of a CASSCF integral
+    /// route: RI on [`crate::casscf::CasScfIntegrals::Ri`], dense on the
+    /// exact routes.
+    pub fn of_casscf(route: crate::casscf::CasScfIntegrals) -> Self {
+        match route.aux() {
+            Some(aux) => Nevpt2Integrals::Ri { aux },
+            None => Nevpt2Integrals::Dense,
+        }
+    }
+}
+
 /// Settings of [`sc_nevpt2`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Nevpt2Config {
@@ -87,6 +118,8 @@ pub struct Nevpt2Config {
     pub max_ci_residual: f64,
     /// Memory ceiling in bytes (see [`CasCiConfig::memory_budget_bytes`]).
     pub memory_budget_bytes: Option<usize>,
+    /// Two-electron integrals (exact by default).
+    pub integrals: Nevpt2Integrals,
 }
 
 impl Default for Nevpt2Config {
@@ -95,6 +128,7 @@ impl Default for Nevpt2Config {
             canonicalize: true,
             max_ci_residual: 1e-8,
             memory_budget_bytes: None,
+            integrals: Nevpt2Integrals::Dense,
         }
     }
 }
@@ -799,6 +833,56 @@ fn eri_ordering(widths: [usize; 4], nbas: usize) -> ([usize; 4], usize) {
     best
 }
 
+/// The two-electron integral source of one SC-NEVPT2 run.
+enum Source {
+    Dense { eri: Vec<f64>, nbas: usize },
+    Ri(Box<RiTensor>),
+}
+
+impl Source {
+    /// `J[D]`, `K[D]` (AO) for `d = x m xᵀ`, `m` symmetric.
+    fn jk(
+        &self,
+        d: &Array2<f64>,
+        x: ArrayView2<'_, f64>,
+        m: ArrayView2<'_, f64>,
+    ) -> (Array2<f64>, Array2<f64>) {
+        match self {
+            Source::Dense { eri, nbas } => dense_jk(eri, *nbas, d),
+            Source::Ri(ri) => ri.jk_factored(x, m),
+        }
+    }
+
+    /// `(C1 C2|C3 C4)` as an `[n1, n2, n3, n4]` array.
+    fn block(&self, c: [ArrayView2<'_, f64>; 4]) -> Result<T, FerricError> {
+        match self {
+            Source::Dense { eri, nbas } => mo_block(eri, *nbas, c),
+            Source::Ri(ri) => {
+                let widths = [c[0].ncols(), c[1].ncols(), c[2].ncols(), c[3].ncols()];
+                if widths.contains(&0) {
+                    return Ok(ArrayD::zeros(IxDyn(&widths)));
+                }
+                let x = ri.half(c[0], c[1]);
+                let y = ri.half(c[2], c[3]);
+                ArrayD::from_shape_vec(IxDyn(&widths), RiTensor::contract(&x, &y))
+                    .map_err(|e| FerricError::General(format!("NEVPT2 RI block shape: {e}")))
+            }
+        }
+    }
+
+    /// `(C1 C2|C3 C4)` flat, `[((a n2 + b) n3 + c) n4 + d]`.
+    fn block_flat(&self, c: [ArrayView2<'_, f64>; 4]) -> Result<Vec<f64>, FerricError> {
+        match self {
+            Source::Dense { eri, nbas } => transform_eri_mixed(eri, *nbas, c),
+            Source::Ri(ri) => {
+                let x = ri.half(c[0], c[1]);
+                let y = ri.half(c[2], c[3]);
+                Ok(RiTensor::contract(&x, &y))
+            }
+        }
+    }
+}
+
 /// `(C1 C2|C3 C4)` as an `[n1, n2, n3, n4]` array.
 fn mo_block(eri_ao: &[f64], nbas: usize, c: [ArrayView2<'_, f64>; 4]) -> Result<T, FerricError> {
     let widths = [c[0].ncols(), c[1].ncols(), c[2].ncols(), c[3].ncols()];
@@ -879,12 +963,20 @@ fn validate(
 }
 
 /// Elements of the resident and transient stages of [`sc_nevpt2`], charged
-/// to `plan`.
-fn reserve(plan: &mut MemoryPlan, nbas: usize, nc: usize, na: usize, nv: usize, ndet: usize) {
+/// to `plan`; `naux` is `Some` on the RI route.
+fn reserve(plan: &mut MemoryPlan, nbas: usize, naux: Option<usize>, widths: [usize; 4]) {
+    let [nc, na, nv, ndet] = widths;
     let n2 = na * na;
     let n4 = n2 * n2;
     let n6 = n4 * n2;
-    plan.reserve("dense AO ERIs", nbas.saturating_pow(4), Lifetime::Resident);
+    match naux {
+        None => plan.reserve("dense AO ERIs", nbas.saturating_pow(4), Lifetime::Resident),
+        Some(naux) => plan.reserve(
+            "RI tensor B(P|mn)",
+            naux.saturating_mul(nbas * nbas),
+            Lifetime::Resident,
+        ),
+    };
     plan.reserve(
         "hcore, J, K, F^I, F^A, F (AO and MO), orbitals",
         nbas.saturating_mul(nbas).saturating_mul(12),
@@ -905,11 +997,20 @@ fn reserve(plan: &mut MemoryPlan, nbas: usize, nc: usize, na: usize, nv: usize, 
     let mut peak = 0usize;
     let mut resident = 0usize;
     for w in blocks {
-        peak = peak.max(eri_ordering(w, nbas).1);
+        let p = match naux {
+            None => eri_ordering(w, nbas).1,
+            // B C_2 (or B C_4) beside the two half transforms.
+            Some(naux) => naux.saturating_mul(
+                nbas.saturating_mul(w[1].max(w[3]))
+                    .saturating_add(w[0] * w[1])
+                    .saturating_add(w[2] * w[3]),
+            ),
+        };
+        peak = peak.max(p);
         resident = resident.saturating_add(w.iter().product::<usize>());
     }
     plan.reserve(
-        "MO transform chain (first two quarter outputs)",
+        "MO transform chain (quarter outputs or RI half transforms)",
         peak,
         Lifetime::Transient,
     );
@@ -948,7 +1049,8 @@ fn reserve(plan: &mut MemoryPlan, nbas: usize, nc: usize, na: usize, nv: usize, 
 ///
 /// The Hamiltonian is the molecule's: `h = T + V_nuc + V_ECP` (the ECP of
 /// `prep`'s basis; apply it to `mol` with `Molecule::apply_ecp` first, as
-/// the CASSCF run did) and the exact AO ERIs. The reference CI vector must
+/// the CASSCF run did) and the exact AO ERIs, or their density fit with
+/// [`Nevpt2Integrals::Ri`]. The reference CI vector must
 /// be an eigenvector of the active Hamiltonian within
 /// [`Nevpt2Config::max_ci_residual`]; open-shell active spaces
 /// (`n_alpha != n_beta`) are refused.
@@ -957,6 +1059,40 @@ pub fn sc_nevpt2(
     prep: &PreparedBasis,
     reference: &Nevpt2Reference<'_>,
     config: &Nevpt2Config,
+) -> Result<Nevpt2Result, FerricError> {
+    sc_nevpt2_on(mol, prep, reference, config, None)
+}
+
+/// [`sc_nevpt2`] on the dense route with the AO block `eri` (row-major
+/// `nbas^4`) in place of the exact integrals: the oracle the RI route equals
+/// when fed its reconstructed block
+/// ([`crate::ri::RiTensor::reconstruct_ao_eri`]). `config.integrals` must
+/// be [`Nevpt2Integrals::Dense`].
+#[doc(hidden)]
+pub fn sc_nevpt2_with_ao_eri(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    reference: &Nevpt2Reference<'_>,
+    config: &Nevpt2Config,
+    eri: Vec<f64>,
+) -> Result<Nevpt2Result, FerricError> {
+    let n = prep.nbasis();
+    if config.integrals != Nevpt2Integrals::Dense || eri.len() != n.pow(4) {
+        return Err(FerricError::General(format!(
+            "NEVPT2: an AO block needs dense integrals and nbas^4 = {} elements, got {}",
+            n.pow(4),
+            eri.len()
+        )));
+    }
+    sc_nevpt2_on(mol, prep, reference, config, Some(eri))
+}
+
+fn sc_nevpt2_on(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    reference: &Nevpt2Reference<'_>,
+    config: &Nevpt2Config,
+    eri: Option<Vec<f64>>,
 ) -> Result<Nevpt2Result, FerricError> {
     let nbas = prep.nbasis();
     validate(mol, nbas, reference, config)?;
@@ -971,13 +1107,27 @@ pub fn sc_nevpt2(
         config.memory_budget_bytes,
         format!("SC-NEVPT2 (nbas={nbas}, n_core={nc}, n_active={na}, n_virtual={nv})"),
     );
-    reserve(&mut plan, nbas, nc, na, nv, ci.len());
+    let naux = match (config.integrals, &eri) {
+        (Nevpt2Integrals::Ri { aux }, None) => Some(crate::ri::aux_prepared(mol, aux)?.nbasis()),
+        _ => None,
+    };
+    reserve(&mut plan, nbas, naux, [nc, na, nv, ci.len()]);
     let _mem = plan.commit()?;
     // The RDM builders get what this plan leaves of the same ceiling.
-    let rest = Some(plan.budget_bytes().saturating_sub(plan.peak_bytes()));
+    let rest_bytes = plan.budget_bytes().saturating_sub(plan.peak_bytes());
+    let rest = Some(rest_bytes);
 
     let h_ao = hcore_ecp(prep, mol, prep.basis_set());
-    let eri_ao = dense_ao_eri(prep)?;
+    let src = match (config.integrals, eri) {
+        (_, Some(eri)) => Source::Dense { eri, nbas },
+        (Nevpt2Integrals::Dense, None) => Source::Dense {
+            eri: dense_ao_eri(prep)?,
+            nbas,
+        },
+        (Nevpt2Integrals::Ri { aux }, None) => {
+            Source::Ri(Box::new(RiTensor::build(mol, prep, aux, rest_bytes)?))
+        }
+    };
 
     // F^I and E_core.
     let (fi_ao, e_core) = if nc == 0 {
@@ -985,7 +1135,8 @@ pub fn sc_nevpt2(
     } else {
         let cc = c.slice(s![.., 0..nc]);
         let dc = 2.0 * cc.dot(&cc.t());
-        let (j, k) = dense_jk(&eri_ao, nbas, &dc);
+        let two = 2.0 * Array2::<f64>::eye(nc);
+        let (j, k) = src.jk(&dc, cc, two.view());
         let fi = &h_ao + &j - &(0.5 * &k);
         let e = mol.nuclear_repulsion() + 0.5 * (&dc * &(&h_ao + &fi)).sum();
         (fi, e)
@@ -994,7 +1145,7 @@ pub fn sc_nevpt2(
     let ints = ActiveSpaceIntegrals {
         n_active: na,
         h: ca.t().dot(&fi_ao).dot(&ca),
-        eri: transform_eri_mixed(&eri_ao, nbas, [ca, ca, ca, ca])?,
+        eri: src.block_flat([ca, ca, ca, ca])?,
         e_core,
     };
 
@@ -1026,7 +1177,7 @@ pub fn sc_nevpt2(
 
     // Generalized Fock and the canonical core and virtual orbitals.
     let da = ca.dot(&rd.dm1).dot(&ca.t());
-    let (j, k) = dense_jk(&eri_ao, nbas, &da);
+    let (j, k) = src.jk(&da, ca, rd.dm1.view());
     let f_ao = &fi_ao + &j - &(0.5 * &k);
     let f_mo = c.t().dot(&f_ao).dot(c);
     let mut u = Array2::<f64>::eye(nmo);
@@ -1064,7 +1215,7 @@ pub fn sc_nevpt2(
 
     let (cc, cv) = (cn.slice(s![.., 0..nc]), cn.slice(s![.., nc + na..]));
     let ca = cn.slice(s![.., nc..nc + na]);
-    let blk = |b: [ArrayView2<'_, f64>; 4]| mo_block(&eri_ao, nbas, b);
+    let blk = |b: [ArrayView2<'_, f64>; 4]| src.block(b);
     let mat = |r: std::ops::Range<usize>, q: std::ops::Range<usize>| {
         fi.slice(s![r, q]).to_owned().into_dyn()
     };
@@ -1088,7 +1239,7 @@ pub fn sc_nevpt2(
         v2_sir: perm(&blk([cv, ca, cc, ca])?, &[0, 3, 1, 2]),
         h_sir: mat(rv, rc),
     };
-    drop(eri_ao);
+    drop(src);
 
     let (g2, g3) = e_product_rdms(&rd.dm1, &rd.dm2, &rd.dm3);
     let hole = hole_rdms(&rd.dm1, &rd.dm2, &rd.dm3, rest)?;

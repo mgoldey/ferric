@@ -17,9 +17,18 @@
 //! it by parallel GEMVs (`dense_jk`) and quarter-transform GEMMs. It is the test oracle for the direct route. The default,
 //! [`CasScfIntegrals::Auto`], takes the dense route when its block fits in
 //! half of the memory budget and the direct route otherwise.
+//!
+//! [`CasScfIntegrals::Ri`] replaces the integrals by their density fit in an
+//! auxiliary basis ([`crate::ri`]): the fitted AO tensor `B[P, mn]`
+//! (`naux nbas^2` doubles) is built once, and every class above is a GEMM on
+//! it. It is an approximation of the Hamiltonian, not of its evaluation: the
+//! RI route equals the dense route fed the reconstructed block `BᵀB` to
+//! rounding, and its energies differ from the exact ones by the fitting error.
 
 use crate::casscf::{dense_jk, dense_jk_multi};
 use crate::integrals::{dense_ao_eri, transform_eri_mixed, transform_ppaa_papa};
+use crate::ri::RiTensor;
+use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
@@ -56,6 +65,13 @@ pub enum CasScfIntegrals {
     /// 0.29 s dense, `crates/ferric-ci/theory.md`), so the direct route is
     /// for the bases whose block does not fit.
     Auto,
+    /// Density-fitted integrals in the bundled auxiliary basis `aux` (the
+    /// registry's primary name, [`crate::ri::resolve_aux_name`]), Coulomb
+    /// metric. Never chosen by `Auto`.
+    Ri {
+        /// Auxiliary basis.
+        aux: &'static str,
+    },
 }
 
 impl Default for CasScfIntegrals {
@@ -66,12 +82,35 @@ impl Default for CasScfIntegrals {
 
 impl CasScfIntegrals {
     /// Elements resident for the life of the problem, and the transient peak
-    /// of one `(pu|vw)` build with `nmo` output rows, for the memory plan.
-    pub(crate) fn plan_elems(&self, nbas: usize, nmo: usize, nact: usize) -> (usize, usize) {
+    /// of one `(pu|vw)` build with `nmo` output rows (and, on the RI route,
+    /// of one core or active J/K build, `nocc` the larger of the two widths),
+    /// for the memory plan. `naux` is read by the RI route only.
+    pub(crate) fn plan_elems(
+        &self,
+        nbas: usize,
+        nmo: usize,
+        nact: usize,
+        nocc: usize,
+        naux: usize,
+    ) -> (usize, usize) {
         let n2 = nbas.saturating_mul(nbas);
         let a2 = nact.saturating_mul(nact);
         let a3 = a2.saturating_mul(nact);
         match self {
+            CasScfIntegrals::Ri { .. } => {
+                let paaa = naux
+                    .saturating_mul(nact)
+                    .saturating_mul(nbas.saturating_add(nmo).saturating_add(nact))
+                    .saturating_add(nmo.saturating_mul(a3));
+                // H = B X, G = H M, both permuted copies, two alive at once
+                // beside H.
+                let jk = naux
+                    .saturating_mul(nbas)
+                    .saturating_mul(nocc)
+                    .saturating_mul(3)
+                    .saturating_add(n2.saturating_mul(3));
+                (naux.saturating_mul(n2), paaa.max(jk))
+            }
             CasScfIntegrals::Dense | CasScfIntegrals::Auto => (
                 n2.saturating_mul(n2),
                 // First two quarter outputs of `transform_eri_mixed`.
@@ -91,9 +130,25 @@ impl CasScfIntegrals {
     /// Transient peak of one `(pq|vw)`, `(pu|qv)` build
     /// ([`IntegralBackend::ppaa_papa`]) with `ncol` columns in `v, w` (the
     /// occupied orbitals for the AH step) beside its two outputs.
-    pub(crate) fn hessian_transient_elems(&self, nbas: usize, nmo: usize, ncol: usize) -> usize {
+    pub(crate) fn hessian_transient_elems(
+        &self,
+        nbas: usize,
+        nmo: usize,
+        ncol: usize,
+        naux: usize,
+    ) -> usize {
         let out = nmo.saturating_mul(nmo).saturating_mul(ncol * ncol);
         match self {
+            // (P|vw), (P|pu), then (P|pq) beside its right half B C, and the
+            // two outputs (`RiTensor::ppaa_papa`).
+            CasScfIntegrals::Ri { .. } => naux
+                .saturating_mul(
+                    ncol.saturating_mul(ncol)
+                        .saturating_add(nmo.saturating_mul(ncol))
+                        .saturating_add(nmo.saturating_mul(nmo))
+                        .saturating_add(nbas.saturating_mul(nmo.max(ncol))),
+                )
+                .saturating_add(out.saturating_mul(2)),
             CasScfIntegrals::Dense | CasScfIntegrals::Auto => {
                 let n2 = nbas.saturating_mul(nbas);
                 // The shared first quarter and its copy (or its swapped
@@ -108,23 +163,46 @@ impl CasScfIntegrals {
     }
 
     /// Strict parse of a config route: `"auto"`, `"direct"` (with `thresh`,
-    /// default [`DEFAULT_INTEGRAL_THRESH`]) or `"dense"`. Any other spelling,
-    /// or a threshold given without `"direct"`, is an error.
-    pub fn parse_config_str(route: &str, thresh: Option<f64>) -> Result<Self, String> {
+    /// default [`DEFAULT_INTEGRAL_THRESH`]), `"dense"` or `"ri"` (with the
+    /// bundled auxiliary basis `aux`, required). Any other spelling, a
+    /// threshold given without `"direct"`, an `aux` given without `"ri"` or
+    /// an `aux` that is not a bundled set is an error.
+    pub fn parse_config_str(
+        route: &str,
+        thresh: Option<f64>,
+        aux: Option<&str>,
+    ) -> Result<Self, String> {
+        if route != "ri" && aux.is_some() {
+            return Err(format!(
+                "auxbasis is read by integrals = \"ri\" only, not by {route:?}"
+            ));
+        }
         let r = match (route, thresh) {
             ("direct", t) => CasScfIntegrals::Direct {
                 thresh: t.unwrap_or(DEFAULT_INTEGRAL_THRESH),
             },
             ("dense", None) => CasScfIntegrals::Dense,
             ("auto", None) => CasScfIntegrals::Auto,
-            ("dense" | "auto", Some(_)) => {
+            ("ri", None) => match aux {
+                Some(a) => CasScfIntegrals::Ri {
+                    aux: crate::ri::resolve_aux_name(a)?,
+                },
+                None => {
+                    return Err(
+                        "integrals = \"ri\" needs auxbasis (a bundled auxiliary basis, \
+                         e.g. \"def2-universal-jkfit\"); there is no default"
+                            .to_string(),
+                    )
+                }
+            },
+            ("dense" | "auto" | "ri", Some(_)) => {
                 return Err(format!(
                     "integral_thresh is read by integrals = \"direct\" only, not by {route:?}"
                 ))
             }
             (other, _) => {
                 return Err(format!(
-                    "integrals must be \"auto\", \"direct\" or \"dense\", got {other:?}"
+                    "integrals must be \"auto\", \"direct\", \"dense\" or \"ri\", got {other:?}"
                 ))
             }
         };
@@ -132,12 +210,21 @@ impl CasScfIntegrals {
         Ok(r)
     }
 
-    /// `"auto"`, `"direct"` or `"dense"`.
+    /// `"auto"`, `"direct"`, `"dense"` or `"ri"`.
     pub fn as_str(&self) -> &'static str {
         match self {
             CasScfIntegrals::Direct { .. } => "direct",
             CasScfIntegrals::Dense => "dense",
             CasScfIntegrals::Auto => "auto",
+            CasScfIntegrals::Ri { .. } => "ri",
+        }
+    }
+
+    /// The auxiliary basis of the RI route, `None` on the others.
+    pub fn aux(&self) -> Option<&'static str> {
+        match self {
+            CasScfIntegrals::Ri { aux } => Some(aux),
+            _ => None,
         }
     }
 
@@ -147,7 +234,7 @@ impl CasScfIntegrals {
     pub(crate) fn resolve(self, nbas: usize, nmo: usize, nact: usize, budget_bytes: usize) -> Self {
         match self {
             CasScfIntegrals::Auto => {
-                let (r, t) = CasScfIntegrals::Dense.plan_elems(nbas, nmo, nact);
+                let (r, t) = CasScfIntegrals::Dense.plan_elems(nbas, nmo, nact, 0, 0);
                 let bytes = r
                     .saturating_add(t)
                     .saturating_mul(std::mem::size_of::<f64>());
@@ -192,12 +279,24 @@ pub(crate) enum IntegralBackend {
         pool: Box<EnginePool>,
         thresh: f64,
     },
+    Ri(Box<RiTensor>),
 }
 
 impl IntegralBackend {
-    pub(crate) fn new(prep: &PreparedBasis, route: CasScfIntegrals) -> Result<Self, FerricError> {
+    pub(crate) fn new(
+        mol: &Molecule,
+        prep: &PreparedBasis,
+        route: CasScfIntegrals,
+        budget_bytes: usize,
+    ) -> Result<Self, FerricError> {
         route.validate()?;
         match route {
+            CasScfIntegrals::Ri { aux } => Ok(IntegralBackend::Ri(Box::new(RiTensor::build(
+                mol,
+                prep,
+                aux,
+                budget_bytes,
+            )?))),
             CasScfIntegrals::Dense | CasScfIntegrals::Auto => Ok(IntegralBackend::Dense {
                 eri: dense_ao_eri(prep)?,
                 nbas: prep.nbasis(),
@@ -226,6 +325,7 @@ impl IntegralBackend {
     ) -> Result<(Array2<f64>, Array2<f64>), FerricError> {
         match self {
             IntegralBackend::Dense { eri, nbas } => Ok(dense_jk(eri, *nbas, d)),
+            IntegralBackend::Ri(ri) => Ok(ri.jk(d)),
             IntegralBackend::Direct {
                 bounds,
                 pool,
@@ -250,6 +350,21 @@ impl IntegralBackend {
         }
     }
 
+    /// [`Self::jk`] of `d = x m xᵀ` (`m` symmetric). The RI route contracts
+    /// the factors ([`RiTensor::jk_factored`]); the others read `d`.
+    pub(crate) fn jk_factored(
+        &self,
+        prep: &PreparedBasis,
+        d: &Array2<f64>,
+        x: ArrayView2<'_, f64>,
+        m: ArrayView2<'_, f64>,
+    ) -> Result<(Array2<f64>, Array2<f64>), FerricError> {
+        match self {
+            IntegralBackend::Ri(ri) => Ok(ri.jk_factored(x, m)),
+            _ => self.jk(prep, d),
+        }
+    }
+
     /// `(pu|vw) = Σ C1[m,p] Ca[n,u] Ca[l,v] Ca[s,w] (mn|ls)`, flat
     /// `[((p n_a + u) n_a + v) n_a + w]`, `p` over the columns of `c1`.
     pub(crate) fn paaa<'c>(
@@ -271,6 +386,7 @@ impl IntegralBackend {
                 pool,
                 thresh,
             } => direct_paaa(prep, pool, &bounds.q, *thresh, c1, ca),
+            IntegralBackend::Ri(ri) => Ok(ri.paaa(c1, ca)),
         }
     }
 
@@ -284,7 +400,9 @@ impl IntegralBackend {
     ) -> Result<Vec<(Array2<f64>, Array2<f64>)>, FerricError> {
         match self {
             IntegralBackend::Dense { eri, nbas } => Ok(dense_jk_multi(eri, *nbas, ds)),
-            IntegralBackend::Direct { .. } => ds.iter().map(|d| self.jk(prep, d)).collect(),
+            IntegralBackend::Direct { .. } | IntegralBackend::Ri(_) => {
+                ds.iter().map(|d| self.jk(prep, d)).collect()
+            }
         }
     }
 
@@ -308,6 +426,7 @@ impl IntegralBackend {
                 pool,
                 thresh,
             } => direct_ppaa_papa(prep, pool, &bounds.q, *thresh, c, ca),
+            IntegralBackend::Ri(ri) => Ok(ri.ppaa_papa(c, ca)),
         }
     }
 }

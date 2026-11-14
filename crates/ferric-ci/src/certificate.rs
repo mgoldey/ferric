@@ -7,7 +7,16 @@
 //! CAS-CI reference is capped to not graded (its PySCF comparison runs on a
 //! CASSCF reference only). The active space is recorded as an
 //! approximation. The caller stamps the build.
+//!
+//! The RI route ([`CasScfIntegrals::Ri`]) is a different Hamiltonian: it
+//! records the `ri` approximation with its auxiliary basis, is outside the
+//! scope of both exact-integral anchors (`casscf_vs_pyscf.rs`, `nevpt2.rs`
+//! run the exact integrals), and is capped to Proven (narrow): its evidence is
+//! `crates/ferric-ci/tests/casscf_ri.rs`, the RI route against the dense route
+//! fed its reconstructed block and against PySCF `density_fit()` CASSCF and
+//! NEVPT2 on three systems at 6-31G with def2-universal-jkfit.
 
+use crate::casscf::CasScfIntegrals;
 use crate::driver::Nevpt2On;
 use crate::{CasScfConfig, CasScfResult};
 use ferric_core::certificate::{Certificate, Grade};
@@ -54,7 +63,23 @@ pub fn casscf_unconverged_warning_prefixed(
 /// (`crates/ferric-ci/tests/casscf_canonical.rs` asserts it on three of the
 /// four anchor systems).
 fn in_casscf_anchor_scope(cas: &CasScfConfig) -> bool {
-    in_casscf_tolerances(cas)
+    in_casscf_tolerances(cas) && cas.integrals.aux().is_none()
+}
+
+/// The reason an RI run is capped to Proven (narrow).
+pub const RI_GRADE_REASON: &str = "the RI route is compared against PySCF density_fit() on three \
+     systems at 6-31G/def2-universal-jkfit (crates/ferric-ci/tests/casscf_ri.rs), not the \
+     exact-integral anchor";
+
+/// `c` with the RI record of `integrals`: the `ri` approximation and the
+/// Proven (narrow) cap ([`RI_GRADE_REASON`]); unchanged on the exact routes.
+fn with_ri_record(c: Certificate, integrals: CasScfIntegrals) -> Certificate {
+    match integrals.aux() {
+        Some(aux) => c
+            .with_ri(aux)
+            .cap_grade(Grade::ProvenNarrow, RI_GRADE_REASON),
+        None => c,
+    }
 }
 
 /// Whether `cas` converges the orbitals as tightly as the evidence runs. The
@@ -82,7 +107,12 @@ pub fn casscf_certificate_prefixed(
 ) -> Certificate {
     let c = Certificate::for_method_kind("casscf")
         .with_approximation("active-space", active_space_detail(cas));
-    let c = with_anchor_in_scope(c, "CASSCF", r.converged && in_casscf_anchor_scope(cas));
+    let c = with_ri_record(c, r.integrals);
+    let c = with_anchor_in_scope(
+        c,
+        "CASSCF",
+        r.converged && in_casscf_anchor_scope(cas) && r.integrals.aux().is_none(),
+    );
     if r.converged {
         c
     } else {
@@ -99,12 +129,14 @@ pub fn nevpt2_certificate(on: Nevpt2On, cas: &CasScfConfig) -> Certificate {
     let c = Certificate::for_method_kind("nevpt2")
         .with_approximation("active-space", active_space_detail(cas))
         .with_approximation("reference", on.as_str());
+    let c = with_ri_record(c, cas.integrals);
     let c = with_anchor_in_scope(
         c,
         "SC-NEVPT2",
         on == Nevpt2On::Casscf
             && cas.n_elec_active.0 == cas.n_elec_active.1
-            && in_casscf_tolerances(cas),
+            && in_casscf_tolerances(cas)
+            && cas.integrals.aux().is_none(),
     );
     match on {
         Nevpt2On::Casscf => c,
@@ -146,6 +178,7 @@ mod tests {
             grad_norm: 3.0e-5,
             converged,
             ci_residual_norm: 0.0,
+            integrals: CasScfIntegrals::Dense,
         }
     }
 
@@ -249,6 +282,39 @@ mod tests {
             let c = nevpt2_certificate(on, &cfg);
             assert!(c.measured_error.is_none(), "{what}: anchor attached");
         }
+    }
+
+    #[test]
+    fn the_ri_route_records_its_aux_basis_and_stays_outside_both_anchors() {
+        let ri = CasScfIntegrals::Ri {
+            aux: "def2-universal-jkfit",
+        };
+        let cfg = CasScfConfig {
+            integrals: ri,
+            ..cas()
+        };
+        let r = CasScfResult {
+            integrals: ri,
+            ..result(true)
+        };
+        let c = casscf_certificate(&r, &cfg);
+        assert!(c.measured_error.is_none(), "exact-integral anchor on RI");
+        assert_eq!(c.grade, Grade::ProvenNarrow);
+        let ri_rec = c
+            .approximations
+            .iter()
+            .find(|a| a.name == "ri")
+            .expect("ri approximation");
+        assert_eq!(ri_rec.detail, "aux def2-universal-jkfit");
+        assert!(c.warnings.iter().any(|w| w.contains(RI_GRADE_REASON)));
+        let singlet = CasScfConfig {
+            n_elec_active: (3, 3),
+            ..cfg
+        };
+        let n = nevpt2_certificate(Nevpt2On::Casscf, &singlet);
+        assert!(n.measured_error.is_none(), "exact-integral anchor on RI");
+        assert_eq!(n.grade, Grade::ProvenNarrow);
+        assert!(n.approximations.iter().any(|a| a.name == "ri"));
     }
 
     #[test]

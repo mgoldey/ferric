@@ -25,6 +25,12 @@ Conventions (Hartree, spatial orbitals, real orbitals):
   reads back exactly.
 * The energy of the file's Hamiltonian in the ``(n_alpha, n_beta)`` sector
   is ``E_total`` of CAS-CI / CASSCF for the same orbitals.
+* The integrals are always the exact ones. For a CASSCF result with
+  ``integrals == "ri"`` the file holds the exact Hamiltonian at the
+  RI-optimized orbitals: its energy is the exact-integral CAS-CI energy of
+  those orbitals, which differs from that result's ``e_total`` by the
+  density-fitting error and lies above the exact CASSCF energy by a term
+  second order in the orbital difference.
 """
 
 from __future__ import annotations
@@ -113,7 +119,8 @@ def write(
     `nelec` is the number of ACTIVE electrons and `ms2` is
     ``n_alpha - n_beta`` of the target sector (0 for a singlet). Pass
     `CasScfResult.mo_coeff` and its `n_core` for the CASSCF orbitals, or the
-    canonical RHF orbitals for the CAS-CI ones.
+    canonical RHF orbitals for the CAS-CI ones. The integrals are exact also
+    for an ``integrals == "ri"`` result (see the module docstring).
     """
     h, eri, ecore = integrals(mol, basis_set, mo_coeff, n_core, n_active)
     Path(path).write_text(to_string(h, eri, ecore, nelec, ms2))

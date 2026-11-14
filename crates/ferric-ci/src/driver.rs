@@ -9,8 +9,8 @@
 //! input gives the same number on both surfaces.
 
 use crate::{
-    run_cas_ci, run_casscf, sc_nevpt2, CasCiConfig, CasScfConfig, Nevpt2Config, Nevpt2Reference,
-    Nevpt2Result,
+    run_cas_ci, run_casscf, sc_nevpt2, CasCiConfig, CasScfConfig, Nevpt2Config, Nevpt2Integrals,
+    Nevpt2Reference, Nevpt2Result,
 };
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
@@ -142,7 +142,10 @@ pub fn casci_config_of(cas: &CasScfConfig) -> CasCiConfig {
 /// [`run_casscf`] with `cas`, or [`run_cas_ci`] with [`casci_config_of`]
 /// (`cas`'s orbital-optimization settings are then not read). The
 /// SC-NEVPT2 settings are the [`Nevpt2Config`] defaults with `cas`'s memory
-/// budget. An unconverged reference is an error.
+/// budget and the Hamiltonian of `cas.integrals`
+/// ([`Nevpt2Integrals::of_casscf`]: density-fitted on the RI route). An
+/// unconverged reference is an error, and so is the RI route on a CAS-CI
+/// reference (the CAS-CI runs on the exact integrals).
 pub fn nevpt2_on_rhf(
     mol: &Molecule,
     prep: &PreparedBasis,
@@ -152,8 +155,16 @@ pub fn nevpt2_on_rhf(
 ) -> Result<Nevpt2Run, FerricError> {
     let nev = Nevpt2Config {
         memory_budget_bytes: cas.memory_budget_bytes,
+        integrals: Nevpt2Integrals::of_casscf(cas.integrals),
         ..Default::default()
     };
+    if on == Nevpt2On::Casci && nev.integrals != Nevpt2Integrals::Dense {
+        return Err(FerricError::General(
+            "SC-NEVPT2: integrals = \"ri\" sets the CASSCF Hamiltonian; a CAS-CI reference \
+             runs on the exact integrals, so it is refused there"
+                .to_string(),
+        ));
+    }
     match on {
         Nevpt2On::Casscf => {
             let r = run_casscf(mol, prep, rhf, cas)?;

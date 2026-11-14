@@ -262,6 +262,42 @@ impl<'a> CasScfProblem<'a> {
         nmo: usize,
         config: &CasScfConfig,
     ) -> Result<Self, FerricError> {
+        Self::build(mol, prep, nmo, config, None)
+    }
+
+    /// [`Self::new`] on the dense route with the AO block `eri` (row-major
+    /// `nbas^4`, `(mn|ls)`) in place of the exact integrals: the oracle that
+    /// the RI route equals when fed its own reconstructed block
+    /// ([`crate::ri::RiTensor::reconstruct_ao_eri`]). `config.integrals`
+    /// must be [`CasScfIntegrals::Dense`].
+    #[doc(hidden)]
+    pub fn new_with_ao_eri(
+        mol: &Molecule,
+        prep: &'a PreparedBasis,
+        nmo: usize,
+        config: &CasScfConfig,
+        eri: Vec<f64>,
+    ) -> Result<Self, FerricError> {
+        let n = prep.nbasis();
+        if config.integrals != CasScfIntegrals::Dense || eri.len() != n.pow(4) {
+            return Err(FerricError::General(format!(
+                "CASSCF: an AO block needs integrals = dense and nbas^4 = {} elements, got {} \
+                 and {}",
+                n.pow(4),
+                config.integrals.as_str(),
+                eri.len()
+            )));
+        }
+        Self::build(mol, prep, nmo, config, Some(eri))
+    }
+
+    fn build(
+        mol: &Molecule,
+        prep: &'a PreparedBasis,
+        nmo: usize,
+        config: &CasScfConfig,
+        eri: Option<Vec<f64>>,
+    ) -> Result<Self, FerricError> {
         let (na, nb) = config.n_elec_active;
         let (nc, nact) = (config.n_core, config.n_active);
         if nact == 0 {
@@ -299,7 +335,11 @@ impl<'a> CasScfProblem<'a> {
         let budget =
             MemoryPlan::from_global_pool(config.memory_budget_bytes, String::new()).budget_bytes();
         let route = config.integrals.resolve(nbas, nmo, nact, budget);
-        let (resident, transient) = route.plan_elems(nbas, nmo, nact);
+        let naux = match route.aux() {
+            Some(aux) => crate::ri::aux_prepared(mol, aux)?.nbasis(),
+            None => 0,
+        };
+        let (resident, transient) = route.plan_elems(nbas, nmo, nact, nc.max(nact), naux);
         let mut plan = MemoryPlan::from_global_pool(
             config.memory_budget_bytes,
             format!(
@@ -308,7 +348,7 @@ impl<'a> CasScfProblem<'a> {
             ),
         );
         plan.reserve(
-            "integral source (dense AO ERIs or Schwarz table)",
+            "integral source (dense AO ERIs, Schwarz table or RI tensor B)",
             resident,
             Lifetime::Resident,
         );
@@ -349,7 +389,7 @@ impl<'a> CasScfProblem<'a> {
                 plan.reserve(
                     "(pq|jk), (pj|qk), their active blocks and Γ contractions",
                     route
-                        .hessian_transient_elems(nbas, nmo, nocc)
+                        .hessian_transient_elems(nbas, nmo, nocc, naux)
                         .max(kernel.saturating_mul(2).saturating_add(w.saturating_mul(3))),
                     Lifetime::Transient,
                 );
@@ -357,7 +397,15 @@ impl<'a> CasScfProblem<'a> {
         }
         let mem = plan.commit()?;
         let h_ao = hcore_ecp(prep, mol, prep.basis_set());
-        let ints = IntegralBackend::new(prep, route)?;
+        let ints = match eri {
+            Some(eri) => IntegralBackend::Dense { eri, nbas },
+            None => IntegralBackend::new(
+                mol,
+                prep,
+                route,
+                plan.budget_bytes().saturating_sub(plan.peak_bytes()),
+            )?,
+        };
 
         let mut pairs = Vec::with_capacity(npair);
         let mut classes = Vec::with_capacity(npair);
@@ -434,12 +482,6 @@ impl<'a> CasScfProblem<'a> {
         Ok(())
     }
 
-    /// `J[D]` and `K[D]` (AO basis) from the problem's integral route,
-    /// `J_mn = Σ (mn|ls) D_ls`, `K_mn = Σ (ml|ns) D_ls`.
-    fn jk(&self, d: &Array2<f64>) -> Result<(Array2<f64>, Array2<f64>), FerricError> {
-        self.ints.jk(self.prep, d)
-    }
-
     /// The integral route the problem was built with (`Auto` resolved to
     /// `Dense` or `Direct`).
     pub fn integrals(&self) -> CasScfIntegrals {
@@ -454,7 +496,8 @@ impl<'a> CasScfProblem<'a> {
         }
         let cc = c.slice(s![.., 0..nc]);
         let dc = 2.0 * cc.dot(&cc.t());
-        let (j, k) = self.jk(&dc)?;
+        let two = 2.0 * Array2::<f64>::eye(nc);
+        let (j, k) = self.ints.jk_factored(self.prep, &dc, cc, two.view())?;
         let fi = &self.h_ao + &j - &(0.5 * &k);
         let e_core = self.e_nuc + 0.5 * (&dc * &(&self.h_ao + &fi)).sum();
         Ok((fi, e_core))
@@ -513,7 +556,7 @@ impl<'a> CasScfProblem<'a> {
         }
         let ca = c.slice(s![.., nc..nc + na]);
         let da = ca.dot(gamma).dot(&ca.t());
-        let (j, k) = self.jk(&da)?;
+        let (j, k) = self.ints.jk_factored(self.prep, &da, ca, gamma.view())?;
         let fa_ao = &j - &(0.5 * &k);
         Ok(c.t().dot(&fa_ao).dot(c))
     }
@@ -862,6 +905,10 @@ pub struct CasScfResult {
     pub converged: bool,
     /// `‖Hc − Ec‖` of the final CI vector.
     pub ci_residual_norm: f64,
+    /// The integral route the run used (`Auto` resolved to `Dense` or
+    /// `Direct`). On [`CasScfIntegrals::Ri`] the energy, orbitals and RDMs
+    /// are those of the density-fitted Hamiltonian.
+    pub integrals: CasScfIntegrals,
 }
 
 /// Canonical orbitals at the point `pt` evaluated at orbitals `c`.
@@ -999,6 +1046,7 @@ pub fn optimize(
             grad_norm,
             converged,
             ci_residual_norm: ci.residual_norm,
+            integrals: problem.integrals(),
         })
     };
 
@@ -1101,6 +1149,13 @@ fn check_problem_settings(built: &CasScfConfig, config: &CasScfConfig) -> Result
         diffs.push(format!(
             "ci_conv_thresh: problem {:e}, config {:e}",
             built.ci_conv_thresh, config.ci_conv_thresh
+        ));
+    }
+    if built.integrals != config.integrals {
+        diffs.push(format!(
+            "integrals: problem {}, config {}",
+            built.integrals.as_str(),
+            config.integrals.as_str()
         ));
     }
     if built.optimizer != config.optimizer {

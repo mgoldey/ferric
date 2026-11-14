@@ -6428,6 +6428,12 @@ class CasScfResult:
     """Residual of the final CI vector; a CI solve that misses
     ``ci_conv_thresh`` at any macro iteration raises instead."""
     n_core: int
+    integrals: str
+    """Integral route the run used: ``"dense"``, ``"direct"`` or ``"ri"``
+    (``"auto"`` resolved). On ``"ri"`` the energy, orbitals and RDMs are
+    those of the density-fitted Hamiltonian."""
+    auxbasis: str | None
+    """Auxiliary basis of the ``"ri"`` route, else None."""
     @property
     def ci_vector(self) -> NDArray[np.float64]:
         """CI coefficients, shape ``(n_alpha_strings, n_beta_strings)``, in
@@ -6483,6 +6489,7 @@ def run_casscf(
     casscf_integrals: str = "auto",
     casscf_integral_thresh: float | None = None,
     casscf_optimizer: str = "ah",
+    casscf_auxbasis: str | None = None,
 ) -> CasScfResult:
     """Two-step CASSCF from the canonical exact-J/K RHF orbitals:
     ``n_active`` active orbitals above ``n_core`` doubly occupied ones,
@@ -6503,7 +6510,13 @@ def run_casscf(
     rebuilds J/K and ``(pu|vw)`` from shell quartets every iteration with
     Schwarz threshold ``casscf_integral_thresh`` (default 1e-12), with no
     ``nbas^4`` array; ``"dense"`` holds the ``nbas^4`` AO block; ``"auto"``
-    (default) is dense when that block fits in half the memory budget."""
+    (default) is dense when that block fits in half the memory budget;
+    ``"ri"`` density-fits the integrals in the bundled auxiliary basis
+    ``casscf_auxbasis`` (required there and refused elsewhere, e.g.
+    ``"def2-universal-jkfit"``), holding ``naux * nbas^2`` doubles. RI is an
+    approximation of the Hamiltonian: the energy differs from the exact one
+    by the fitting error, and the certificate records it (``ri``) and is
+    capped to Proven (narrow)."""
     ...
 
 class Nevpt2Result:
@@ -6574,11 +6587,14 @@ def run_nevpt2(
     casscf_integrals: str = "auto",
     casscf_integral_thresh: float | None = None,
     casscf_optimizer: str = "ah",
+    casscf_auxbasis: str | None = None,
 ) -> Nevpt2Result:
     """Strongly contracted NEVPT2 (Angeli et al., JCP 117, 9138 (2002)) on
     a CASSCF (``reference="casscf"``, the ``run_casscf`` settings) or CAS-CI
     (``reference="casci"``, on the canonical RHF orbitals) reference from
-    the exact-J/K RHF; ``casscf_optimizer`` as in ``run_casscf``. Dyall
+    the exact-J/K RHF; ``casscf_optimizer``, ``casscf_integrals`` and
+    ``casscf_auxbasis`` as in ``run_casscf`` (``"ri"`` also density-fits the
+    SC-NEVPT2 integrals, and is refused with ``reference="casci"``). Dyall
     zeroth-order Hamiltonian; core and virtual
     orbitals canonical in ``F^I + F^A``, as PySCF ``mrpt.NEVPT``. Raises
     when the reference does not converge, for ``n_alpha != n_beta``, and
