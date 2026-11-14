@@ -47,7 +47,8 @@ use ferric_integrals::three_index_source::ThreeIndexSource;
 use ferric_integrals::threeindex;
 use ferric_scf::diis::Diis;
 use ferric_scf::engine_pool::EnginePool;
-use ferric_scf::rhf::build_jk_with_pool;
+use ferric_scf::response_jk::ResponseJk;
+use ferric_scf::result::DfJkRoute;
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::ScfResult;
 use ndarray::{Array2, Array3};
@@ -84,6 +85,18 @@ pub struct OoRiMp2Config {
     /// the CLI's `--verbose`/`-v` flag ORs into this the same way it does for
     /// `RhfConfig.verbose`.
     pub verbose: bool,
+    /// Build each point's four-centre J/K from the previous point's by
+    /// difference, the increment under the homogeneous screen
+    /// ([`ferric_scf::rhf::build_jk_with_pool_homogeneous`]). `false` (the
+    /// default) is the plain build at
+    /// every point. Ignored on the fitted route.
+    ///
+    /// Off by default because it did not pay where measured: hexane/cc-pVDZ
+    /// (nbas 154), one pair of runs on a loaded box, 817 CPU s with it
+    /// against 802 s without, same 9 iterations, |ΔE| 4e-12 Ha. The
+    /// homogeneous screen keeps every quartet the increment's own magnitude
+    /// pattern needs, and that pattern is as dense as the full density's.
+    pub difference_jk: bool,
 }
 
 impl Default for OoRiMp2Config {
@@ -98,6 +111,7 @@ impl Default for OoRiMp2Config {
             use_diis: true,
             memory_budget_bytes: None,
             verbose: false,
+            difference_jk: false,
         }
     }
 }
@@ -124,6 +138,16 @@ pub struct OoRiMp2Result {
     pub mos: Array2<f64>,
     /// Diagonal of `CᵀFC` for `mos`: the MP2 denominators actually used.
     pub orbital_energies: Vec<f64>,
+    /// The fitted J/K route the functional was evaluated on (the reference
+    /// SCF's RI-J + RI-K on one auxiliary basis), `None` for four-centre J/K.
+    pub jk_route: Option<DfJkRoute>,
+    /// J/K of the final HF density `2 C_occ C_occᵀ`.
+    pub hf_jk: DensityJk,
+    /// J/K of the final point's MP2 response density `C W Cᵀ` (see
+    /// `fock_response_gradient`), when the solver evaluated its gradient
+    /// there. `oo_rimp2_gradient::oo_ri_mp2_gradient` reuses this and
+    /// `hf_jk` when their densities match the ones it forms.
+    pub response_jk: Option<DensityJk>,
 }
 
 impl std::fmt::Display for OoRiMp2Result {
@@ -302,12 +326,155 @@ fn compute_rimp2_with_orbitals(
     Ok((sc.e_total, b_flat))
 }
 
+/// Screening threshold of every four-centre J/K build in OO-RI-MP2.
+pub(crate) const JK_THRESH: f64 = 1e-12;
+
+/// A symmetric AO density with its Coulomb and exchange matrices.
+#[derive(Debug, Clone)]
+pub struct DensityJk {
+    /// The density.
+    pub d: Array2<f64>,
+    /// `J[d]`.
+    pub j: Array2<f64>,
+    /// `K[d]`.
+    pub k: Array2<f64>,
+}
+
+impl DensityJk {
+    /// Whether `d` equals this density to `tol · max(1, max|d|)` elementwise.
+    pub(crate) fn is_for(&self, d: &Array2<f64>, tol: f64) -> bool {
+        if self.d.dim() != d.dim() {
+            return false;
+        }
+        let scale = d.iter().fold(1.0_f64, |m, v| m.max(v.abs()));
+        self.d
+            .iter()
+            .zip(d.iter())
+            .all(|(a, b)| (a - b).abs() <= tol * scale)
+    }
+}
+
+/// The J/K builds of one OO-RI-MP2 run.
+///
+/// * Route: the reference SCF's. Four-centre J/K unless the SCF fitted both J
+///   and K on one auxiliary basis (`scf_jk = "rijk"`), in which case every J/K
+///   here (HF energy, Fock matrix, Fock response) is that fit, through
+///   [`ResponseJk`], and the optimised functional is the fitted one. Any other
+///   fitted route (RI-J with four-centre or COSX exchange, range-separated
+///   exchange) keeps the four-centre J/K.
+/// * Difference builds (four-centre route only, `difference = true`): a
+///   density `d` with a `previous` density `d₀` whose J/K are known takes
+///   `J[d] = J[d₀] + J[d − d₀]` (same for K), the increment built under the
+///   homogeneous screen ([`ferric_scf::rhf::build_jk_with_pool_homogeneous`]),
+///   whose dropped quartets bound an error relative to `max|d − d₀|`, not an
+///   absolute one. With `difference = false`, or without a `previous`, the
+///   build is the plain four-centre one, bit for bit.
+pub(crate) struct OoJk<'a> {
+    ctx: &'a ferric_core::parallel::ParallelContext,
+    obs: &'a PreparedBasis,
+    bounds: &'a SchwarzBounds,
+    route: ResponseJk<'a>,
+    pool: Option<&'a EnginePool>,
+    band_bytes: usize,
+    difference: bool,
+}
+
+impl<'a> OoJk<'a> {
+    /// Four-centre J/K with a caller-held engine pool.
+    pub(crate) fn exact(
+        ctx: &'a ferric_core::parallel::ParallelContext,
+        obs: &'a PreparedBasis,
+        bounds: &'a SchwarzBounds,
+        pool: &'a EnginePool,
+        band_bytes: usize,
+        difference: bool,
+    ) -> Self {
+        OoJk {
+            ctx,
+            obs,
+            bounds,
+            route: ResponseJk::exact(ctx, obs, bounds),
+            pool: Some(pool),
+            band_bytes,
+            difference,
+        }
+    }
+
+    /// The route of `scf` as described on [`OoJk`]: fitted for an RI-JK
+    /// reference, four-centre (with `pool`) otherwise.
+    pub(crate) fn for_reference(
+        ctx: &'a ferric_core::parallel::ParallelContext,
+        mol: &Molecule,
+        obs: &'a PreparedBasis,
+        bounds: &'a SchwarzBounds,
+        scf: &ScfResult,
+        pool: &'a EnginePool,
+        band_bytes: usize,
+        difference: bool,
+    ) -> Result<Self, FerricError> {
+        match rijk_route(scf) {
+            Some(route) => Ok(OoJk {
+                ctx,
+                obs,
+                bounds,
+                route: ResponseJk::for_route(ctx, mol, obs, bounds, Some(route))?,
+                pool: None,
+                band_bytes,
+                difference: false,
+            }),
+            None => Ok(Self::exact(ctx, obs, bounds, pool, band_bytes, difference)),
+        }
+    }
+
+    /// The fitted route, `None` for four-centre J/K.
+    pub(crate) fn fitted_route(&self) -> Option<&DfJkRoute> {
+        self.route.route()
+    }
+
+    /// J and K of `d`, from `previous` by difference when that is enabled.
+    pub(crate) fn build(
+        &self,
+        d: Array2<f64>,
+        previous: Option<&DensityJk>,
+    ) -> Result<DensityJk, FerricError> {
+        if let (true, Some(prev), Some(pool)) = (self.difference, previous, self.pool) {
+            let delta = &d - &prev.d;
+            let (mut j, mut k) = (prev.j.clone(), prev.k.clone());
+            ferric_scf::rhf::build_jk_with_pool_homogeneous(
+                self.ctx,
+                self.obs,
+                self.bounds,
+                JK_THRESH,
+                &delta,
+                &mut j,
+                &mut k,
+                pool,
+                self.band_bytes,
+            )?;
+            return Ok(DensityJk { d, j, k });
+        }
+        let (j, k) = self
+            .route
+            .jk_with_pool(&d, JK_THRESH, self.pool, self.band_bytes)?;
+        Ok(DensityJk { d, j, k })
+    }
+}
+
+/// The route of an SCF that fitted J and K on one auxiliary basis with no
+/// range separation and no COSX: the only fitted route [`OoJk`] follows.
+pub(crate) fn rijk_route(scf: &ScfResult) -> Option<&DfJkRoute> {
+    if scf.cosx_final.is_some() || scf.cosx_schedule.is_some() {
+        return None;
+    }
+    scf.df_jk
+        .as_ref()
+        .filter(|r| r.rsh_k.is_none() && r.j_aux.is_some() && r.j_aux == r.k_aux)
+}
+
 /// Build the HF energy from MO coefficients + 1e integrals + J/K.
 ///
-/// `ooc_budget` is the caller's solver-resolved memory budget (see
-/// `rhf::resolve_three_index_budget`) — used ONLY to size the
-/// `build_jk_with_pool` reduction band (`reduce::resolve_band_bytes`), never
-/// affecting the result.
+/// J and K come from `jk` (see [`OoJk`]), by difference from `previous` when
+/// that route is on. Returns `(E_HF, F_AO, (D, J, K))`.
 ///
 /// `vnn` is the FULL classical nuclear-repulsion-like constant: plain
 /// `mol.nuclear_repulsion()` in vacuum, or (when an external potential is
@@ -327,18 +494,15 @@ fn compute_rimp2_with_orbitals(
 /// the orbitals `c`) and threaded into every `compute_hf_energy` call for a
 /// given `oo_ri_mp2`/`energy_at_kappa` run — never recomputed per call from
 /// `mol` alone once `ext` is `Some`.
-#[allow(clippy::too_many_arguments)]
 fn compute_hf_energy(
-    prep: &PreparedBasis,
-    bounds: &SchwarzBounds,
+    jk: &OoJk<'_>,
+    previous: Option<&DensityJk>,
     c: &Array2<f64>,
     nocc_total: usize,
     h: &Array2<f64>,
     vnn: f64,
-    pool: &EnginePool,
-    ooc_budget: usize,
-) -> Result<(f64, Array2<f64>, Array2<f64>), FerricError> {
-    let n = prep.nbasis();
+) -> Result<(f64, Array2<f64>, DensityJk), FerricError> {
+    let n = c.nrows();
 
     // Build density: D = 2 * C_occ C_occ^T
     let mut d = Array2::zeros((n, n));
@@ -352,27 +516,21 @@ fn compute_hf_energy(
         }
     }
 
-    // Build J, K
-    let mut j_mat = Array2::zeros((n, n));
-    let mut k_mat = Array2::zeros((n, n));
-    let ctx = ferric_core::parallel::ParallelContext::default();
-    let band_bytes = ferric_scf::reduce::resolve_band_bytes(ooc_budget);
-    build_jk_with_pool(
-        &ctx, prep, bounds, 1e-12, &d, &mut j_mat, &mut k_mat, pool, band_bytes,
-    )?;
+    let djk = jk.build(d, previous)?;
 
     // F = H + J - 0.5*K
-    let f = h + &j_mat - &(0.5 * &k_mat);
+    let f = h + &djk.j - &(0.5 * &djk.k);
 
     // E_elec = 0.5 * tr(D * (H + F))
     let hpf = h + &f;
+    let d = &djk.d;
     let e_elec: f64 = (0..n)
         .flat_map(|i| (0..n).map(move |j| (i, j)))
         .map(|(i, j)| 0.5 * d[(i, j)] * hpf[(i, j)])
         .sum();
     let e_hf = e_elec + vnn;
 
-    Ok((e_hf, f, d))
+    Ok((e_hf, f, djk))
 }
 
 /// Diagonal of `CᵀFC`, used ONLY as the diagonal-Hessian preconditioner of the
@@ -483,6 +641,8 @@ pub(crate) fn lowdin_orthonormalize(
 struct OoPoint {
     e_hf: f64,
     f_ao: Array2<f64>,
+    /// The HF density `2 C_occ C_occᵀ` with its J and K.
+    hf_jk: DensityJk,
     /// Block-diagonal rotation to the semicanonical frame: `c_sc = c · u_sc`.
     u_sc: Array2<f64>,
     c_sc: Array2<f64>,
@@ -500,21 +660,19 @@ impl OoPoint {
 }
 
 /// Evaluate the textbook OMP2 functional at `c`: HF energy and Fock matrix,
-/// semicanonical frame, and RI-MP2 in that frame.
+/// semicanonical frame, and RI-MP2 in that frame. `previous` is the point
+/// whose J/K a difference build starts from (see [`OoJk`]).
 #[allow(clippy::too_many_arguments)]
 fn evaluate_point(
-    obs: &PreparedBasis,
-    bounds: &SchwarzBounds,
+    jk: &OoJk<'_>,
+    previous: Option<&DensityJk>,
     c: &Array2<f64>,
     h: &Array2<f64>,
     vnn: f64,
-    pool: &EnginePool,
-    ooc_budget: usize,
     ao: &OoRiMp2AoTensors,
     orb: &OrbitalSpace,
 ) -> Result<OoPoint, FerricError> {
-    let (e_hf, f_ao, _d) =
-        compute_hf_energy(obs, bounds, c, orb.nocc_total, h, vnn, pool, ooc_budget)?;
+    let (e_hf, f_ao, hf_jk) = compute_hf_energy(jk, previous, c, orb.nocc_total, h, vnn)?;
     let f_mo = c.t().dot(&f_ao).dot(c);
     let (u_sc, eps_sc) = semicanonical_rotation(&f_mo, orb.first_occ, orb.nocc_total)?;
     let c_sc = c.dot(&u_sc);
@@ -522,6 +680,7 @@ fn evaluate_point(
     Ok(OoPoint {
         e_hf,
         f_ao,
+        hf_jk,
         u_sc,
         c_sc,
         eps_sc,
@@ -543,18 +702,20 @@ fn evaluate_point(
 ///
 /// The `b_full`/`t2` allocation is guarded by the CALLER, with
 /// `check_b_full_and_t2_alloc` and the pool charge.
+///
+/// Also returns the Fock response's density `C W Cᵀ` with its J/K, built by
+/// difference from `previous_response` when [`OoJk`] does that.
 #[allow(clippy::too_many_arguments)]
 fn orbital_gradient_solver_frame(
     point: &OoPoint,
     ao: &OoRiMp2AoTensors,
-    obs: &PreparedBasis,
-    bounds: &SchwarzBounds,
-    pool: &EnginePool,
+    jk: &OoJk<'_>,
+    previous_response: Option<&DensityJk>,
     orb: &OrbitalSpace,
     budget_bytes: usize,
     rss_probe: bool,
     acc: &mut PhaseAccumulator,
-) -> Result<Array2<f64>, FerricError> {
+) -> Result<(Array2<f64>, DensityJk), FerricError> {
     let OrbitalSpace {
         nocc,
         nocc_total,
@@ -582,18 +743,14 @@ fn orbital_gradient_solver_frame(
         )
     });
     let f_mo_sc = point.c_sc.t().dot(&point.f_ao).dot(&point.c_sc);
-    let g_sc = compute_orbital_gradient(
+    let (g_sc, response_jk) = compute_orbital_gradient(
         &point.c_sc,
         &f_mo_sc,
         &t2,
         &b_full,
-        nocc,
-        nvir,
-        first_occ,
-        nocc_total,
-        obs,
-        bounds,
-        pool,
+        orb,
+        jk,
+        previous_response,
         budget_bytes,
         acc,
     )?;
@@ -602,7 +759,66 @@ fn orbital_gradient_solver_frame(
         first_occ..first_occ + nocc
     ]);
     let u_v = point.u_sc.slice(ndarray::s![nocc_total.., nocc_total..]);
-    Ok(u_v.dot(&g_sc).dot(&u_o.t()))
+    Ok((u_v.dot(&g_sc).dot(&u_o.t()), response_jk))
+}
+
+/// The antisymmetric `(nmo, nmo)` matrix with `x` (shape `(nvir, nocc)`) in
+/// its active virtual-occupied block and `−xᵀ` in the occupied-virtual one.
+fn embed_ov_antisymmetric(x: &Array2<f64>, orb: &OrbitalSpace, nmo: usize) -> Array2<f64> {
+    let mut m = Array2::zeros((nmo, nmo));
+    for a in 0..orb.nvir {
+        let a_mo = orb.nocc_total + a;
+        for i in 0..orb.nocc {
+            let i_mo = orb.first_occ + i;
+            m[(a_mo, i_mo)] = x[(a, i)];
+            m[(i_mo, a_mo)] = -x[(a, i)];
+        }
+    }
+    m
+}
+
+/// The solver's orbital gradients across iterations.
+#[derive(Default)]
+struct GradientState {
+    /// The response density's J/K at the last point whose gradient was
+    /// built: where the next one starts from by difference, and what the
+    /// result hands the nuclear gradient.
+    last_response: Option<DensityJk>,
+    /// A gradient already built at the current point (the energy-converged
+    /// recheck), used by the next iteration instead of building it again.
+    at_point: Option<Array2<f64>>,
+}
+
+impl GradientState {
+    /// The orbital gradient at `point` (see [`orbital_gradient_solver_frame`]):
+    /// the one already built there, else a new build.
+    #[allow(clippy::too_many_arguments)]
+    fn at(
+        &mut self,
+        point: &OoPoint,
+        ao: &OoRiMp2AoTensors,
+        jk: &OoJk<'_>,
+        orb: &OrbitalSpace,
+        budget_bytes: usize,
+        rss_probe: bool,
+        acc: &mut PhaseAccumulator,
+    ) -> Result<Array2<f64>, FerricError> {
+        if let Some(g) = self.at_point.take() {
+            return Ok(g);
+        }
+        let (g, response) = orbital_gradient_solver_frame(
+            point,
+            ao,
+            jk,
+            self.last_response.as_ref(),
+            orb,
+            budget_bytes,
+            rss_probe,
+            acc,
+        )?;
+        self.last_response = Some(response);
+        Ok(g)
+    }
 }
 
 /// Orbital-energy (Fock) response of the MP2 energy to an occ-vir rotation,
@@ -619,31 +835,31 @@ fn orbital_gradient_solver_frame(
 ///     + 4·[Cᵀ G[C W Cᵀ] C]_ck,  G[X] = J[X] − ½K[X]   (density part)
 /// ```
 ///
-/// The density part is ONE exact 4-centre J/K build on the pseudo-density
-/// `C W Cᵀ`. It must be exact, not RI, because the Fock matrix whose response
-/// this is (the one in `compute_hf_energy`) is exact. The shipped code built it
+/// The density part is ONE J/K build on the pseudo-density `C W Cᵀ`, on the
+/// same route ([`OoJk`]) as the Fock matrix whose response this is (the one
+/// in `compute_hf_energy`): four-centre for a four-centre functional. The shipped code built it
 /// per `(c,k)` from RI integrals (`-4(pp|ck)_RI + 2(pc|pk)_RI` on the diagonal
 /// only). That RI mismatch alone left a κ-independent error of 1.2e-6 to
 /// 3.8e-5 Ha/rad at the canonical RHF point. The rotation part was dropped
 /// entirely: it vanishes only where `F_ov = 0`, i.e. at the RHF start, and
 /// never at an OO iterate.
-#[allow(clippy::too_many_arguments)]
+/// Returns the gradient and `C W Cᵀ` with its J/K.
 fn fock_response_gradient(
     c: &Array2<f64>,
     f_mo: &Array2<f64>,
     t2: &[f64],
-    nocc: usize,
-    nvir: usize,
-    first_occ: usize,
-    nocc_total: usize,
-    obs: &PreparedBasis,
-    bounds: &SchwarzBounds,
-    pool: &EnginePool,
-    ooc_budget: usize,
+    orb: &OrbitalSpace,
+    jk: &OoJk<'_>,
+    previous: Option<&DensityJk>,
     acc: &mut PhaseAccumulator,
-) -> Result<Array2<f64>, FerricError> {
+) -> Result<(Array2<f64>, DensityJk), FerricError> {
+    let OrbitalSpace {
+        nocc,
+        nvir,
+        nocc_total,
+        first_occ,
+    } = *orb;
     let nmo = c.ncols();
-    let n = c.nrows();
     let tok = acc.begin("  MP2 density");
     let (p_oo, p_vv) = build_mp2_density(t2, nocc, nvir);
     acc.stop_nested(tok);
@@ -659,14 +875,10 @@ fn fock_response_gradient(
         }
     }
     let w_ao = c.dot(&w).dot(&c.t());
-    let mut j_mat = Array2::<f64>::zeros((n, n));
-    let mut k_mat = Array2::<f64>::zeros((n, n));
-    let ctx = ferric_core::parallel::ParallelContext::default();
-    let band_bytes = ferric_scf::reduce::resolve_band_bytes(ooc_budget);
-    build_jk_with_pool(
-        &ctx, obs, bounds, 1e-12, &w_ao, &mut j_mat, &mut k_mat, pool, band_bytes,
-    )?;
-    let g_ao = &j_mat - &(0.5 * &k_mat);
+    let tok = acc.begin("  J/K");
+    let w_jk = jk.build(w_ao, previous)?;
+    acc.stop_nested(tok);
+    let g_ao = &w_jk.j - &(0.5 * &w_jk.k);
     let g_mo = c.t().dot(&g_ao).dot(c);
     let fw = f_mo.dot(&w);
     let wf = w.dot(f_mo);
@@ -678,7 +890,7 @@ fn fock_response_gradient(
             g[(a, i)] = 4.0 * g_mo[(a_mo, i_mo)] + 2.0 * (fw[(a_mo, i_mo)] - wf[(a_mo, i_mo)]);
         }
     }
-    Ok(g)
+    Ok((g, w_jk))
 }
 
 /// Below this many (ia,jb) pairs the elementwise denominator-divide pass
@@ -1068,16 +1280,18 @@ fn compute_orbital_gradient(
     f_mo: &Array2<f64>,
     t2: &[f64],
     b_full: &Array3<f64>,
-    nocc: usize,
-    nvir: usize,
-    first_occ: usize,
-    nocc_total: usize,
-    obs: &PreparedBasis,
-    bounds: &SchwarzBounds,
-    pool: &EnginePool,
+    orb: &OrbitalSpace,
+    jk: &OoJk<'_>,
+    previous_response: Option<&DensityJk>,
     budget_bytes: usize,
     acc: &mut PhaseAccumulator,
-) -> Result<Array2<f64>, FerricError> {
+) -> Result<(Array2<f64>, DensityJk), FerricError> {
+    let OrbitalSpace {
+        nocc,
+        nvir,
+        nocc_total,
+        first_occ,
+    } = *orb;
     // `budget_bytes` is the caller's ALREADY-RESOLVED budget (oo_ri_mp2
     // resolves resolve_budget_bytes(config.memory_budget_bytes) once per call
     // and threads it here).
@@ -1115,22 +1329,11 @@ fn compute_orbital_gradient(
     );
     acc.stop(tok);
     let tok = acc.begin("gradient: Fock response (density + J/K)");
-    g += &fock_response_gradient(
-        c,
-        f_mo,
-        t2,
-        nocc,
-        nvir,
-        first_occ,
-        nocc_total,
-        obs,
-        bounds,
-        pool,
-        budget_bytes,
-        acc,
-    )?;
+    let (g_fock, response_jk) =
+        fock_response_gradient(c, f_mo, t2, orb, jk, previous_response, acc)?;
+    g += &g_fock;
     acc.stop(tok);
-    Ok(g)
+    Ok((g, response_jk))
 }
 
 /// HF + fixed-denominator integral-response part of [`compute_orbital_gradient`]
@@ -1351,6 +1554,17 @@ pub fn oo_ri_mp2(
         obs,
         ferric_integrals::engine_pool::eri_precision(),
     )?;
+    let ctx = ferric_core::parallel::ParallelContext::default();
+    let jk = OoJk::for_reference(
+        &ctx,
+        mol,
+        obs,
+        bounds,
+        rhf,
+        &pool,
+        ferric_scf::reduce::resolve_band_bytes(budget_bytes),
+        config.difference_jk,
+    )?;
 
     // Start from converged RHF orbitals. `c` is the solver's own frame; it is
     // kept continuous across iterations (DIIS mixes successive `c`s), while
@@ -1360,23 +1574,31 @@ pub fn oo_ri_mp2(
     // Phase table (FERRIC_TIMING); inert otherwise.
     let mut acc = PhaseAccumulator::new().report_on_drop("OO-RI-MP2");
     let mut point = acc.time("evaluate point (HF energy + RI-MP2)", || {
-        evaluate_point(obs, bounds, &c, &h, vnn, &pool, budget_bytes, &ao, &orb)
+        evaluate_point(&jk, None, &c, &h, vnn, &ao, &orb)
     })?;
+    let mut grads = GradientState::default();
     let mut grad_norm = f64::MAX;
     let nmo = nbas;
     let max_kappa = 0.3; // cap individual rotation angles (radians)
 
-    let finish =
-        |point: OoPoint, converged: bool, iterations: usize, grad_norm: f64| OoRiMp2Result {
-            total_energy: point.total(),
-            hf_energy: point.e_hf,
-            mp2_corr: point.e_mp2,
-            converged,
-            iterations,
-            grad_norm,
-            mos: point.c_sc,
-            orbital_energies: point.eps_sc,
-        };
+    let jk_route = jk.fitted_route().cloned();
+    let finish = |point: OoPoint,
+                  response_jk: Option<DensityJk>,
+                  converged: bool,
+                  iterations: usize,
+                  grad_norm: f64| OoRiMp2Result {
+        total_energy: point.total(),
+        hf_energy: point.e_hf,
+        mp2_corr: point.e_mp2,
+        converged,
+        iterations,
+        grad_norm,
+        mos: point.c_sc,
+        orbital_energies: point.eps_sc,
+        jk_route: jk_route.clone(),
+        hf_jk: point.hf_jk,
+        response_jk,
+    };
 
     // DIIS for orbital rotation extrapolation.
     //
@@ -1443,17 +1665,7 @@ pub fn oo_ri_mp2(
 
         // Orbital gradient in the solver's frame (b_full, t2 and the full 2e +
         // Fock response are built and dropped inside).
-        let g = orbital_gradient_solver_frame(
-            &point,
-            &ao,
-            obs,
-            bounds,
-            &pool,
-            &orb,
-            budget_bytes,
-            iter == 1,
-            &mut acc,
-        )?;
+        let g = grads.at(&point, &ao, &jk, &orb, budget_bytes, iter == 1, &mut acc)?;
         drop(b_full_charge);
 
         // Check gradient norm
@@ -1473,7 +1685,7 @@ pub fn oo_ri_mp2(
         }
 
         if grad_norm < config.grad_conv {
-            return Ok(finish(point, true, iter, grad_norm));
+            return Ok(finish(point, grads.last_response, true, iter, grad_norm));
         }
 
         // Level-shifted approximate Newton step:
@@ -1498,15 +1710,7 @@ pub fn oo_ri_mp2(
         }
 
         // Build full antisymmetric kappa matrix (nmo x nmo) from ov block
-        let mut kappa = Array2::zeros((nmo, nmo));
-        for a in 0..nvir {
-            let a_mo = nocc_total + a;
-            for i in 0..nocc {
-                let i_mo = first_occ + i;
-                kappa[(a_mo, i_mo)] = kappa_ov[(a, i)];
-                kappa[(i_mo, a_mo)] = -kappa_ov[(a, i)];
-            }
-        }
+        let kappa = embed_ov_antisymmetric(&kappa_ov, &orb, nmo);
 
         // Cayley rotation
         let u = cayley_rotation(&kappa)?;
@@ -1517,15 +1721,7 @@ pub fn oo_ri_mp2(
         // antisymmetric matrix in MO space, then project to AO:
         //   err_AO = C * g_antisym * C^T
         if let Some(ref mut diis_obj) = diis {
-            let mut g_antisym = Array2::zeros((nmo, nmo));
-            for a in 0..nvir {
-                let a_mo = nocc_total + a;
-                for i in 0..nocc {
-                    let i_mo = first_occ + i;
-                    g_antisym[(a_mo, i_mo)] = g[(a, i)];
-                    g_antisym[(i_mo, a_mo)] = -g[(a, i)];
-                }
-            }
+            let g_antisym = embed_ov_antisymmetric(&g, &orb, nmo);
             let err_ao = c_new.dot(&g_antisym).dot(&c_new.t());
             c_new = diis_obj.step(&c_new, &err_ao);
             // A linear combination of orbital sets is not orthonormal.
@@ -1534,7 +1730,7 @@ pub fn oo_ri_mp2(
 
         // Evaluate energy at the new (possibly DIIS-extrapolated) orbitals
         let trial = acc.time("evaluate point (HF energy + RI-MP2)", || {
-            evaluate_point(obs, bounds, &c_new, &h, vnn, &pool, budget_bytes, &ao, &orb)
+            evaluate_point(&jk, Some(&point.hf_jk), &c_new, &h, vnn, &ao, &orb)
         })?;
         let total_new = trial.total();
         let de = (total_new - point.total()).abs();
@@ -1552,20 +1748,12 @@ pub fn oo_ri_mp2(
 
             for _bt in 0..10 {
                 bt_kappa_ov *= 0.5;
-                let mut k = Array2::zeros((nmo, nmo));
-                for a in 0..nvir {
-                    let a_mo = nocc_total + a;
-                    for i in 0..nocc {
-                        let i_mo = first_occ + i;
-                        k[(a_mo, i_mo)] = bt_kappa_ov[(a, i)];
-                        k[(i_mo, a_mo)] = -bt_kappa_ov[(a, i)];
-                    }
-                }
+                let k = embed_ov_antisymmetric(&bt_kappa_ov, &orb, nmo);
                 let u2 = cayley_rotation(&k)?;
                 bt_c = c.dot(&u2);
                 drop(bt_point.take());
                 let p = acc.time("evaluate point (HF energy + RI-MP2)", || {
-                    evaluate_point(obs, bounds, &bt_c, &h, vnn, &pool, budget_bytes, &ao, &orb)
+                    evaluate_point(&jk, Some(&point.hf_jk), &bt_c, &h, vnn, &ao, &orb)
                 })?;
                 let accepted = p.total() <= point.total() + 1e-12;
                 bt_point = Some(p);
@@ -1604,26 +1792,19 @@ pub fn oo_ri_mp2(
                 nmo,
                 budget_bytes,
             )?;
-            let g2 = orbital_gradient_solver_frame(
-                &point,
-                &ao,
-                obs,
-                bounds,
-                &pool,
-                &orb,
-                budget_bytes,
-                false,
-                &mut acc,
-            )?;
+            let g2 = grads.at(&point, &ao, &jk, &orb, budget_bytes, false, &mut acc)?;
             grad_norm = g2.iter().map(|x| x * x).sum::<f64>().sqrt();
 
             if grad_norm < config.grad_conv * 10.0 {
-                return Ok(finish(point, true, iter, grad_norm));
+                return Ok(finish(point, grads.last_response, true, iter, grad_norm));
             }
+            grads.at_point = Some(g2);
         }
     }
 
-    Ok(finish(point, false, config.max_iter, grad_norm))
+    // `grads.last_response` belongs to the point before the last step; the
+    // nuclear gradient would not match it, so it is not handed on.
+    Ok(finish(point, None, false, config.max_iter, grad_norm))
 }
 
 /// Compute RI-MP2 energy for orbitals rotated by kappa (for finite-difference testing).
@@ -1656,17 +1837,11 @@ pub fn energy_at_kappa(
         obs,
         ferric_integrals::engine_pool::eri_precision(),
     )?;
-    let point = evaluate_point(
-        obs,
-        bounds,
-        &c_rot,
-        &h,
-        vnn,
-        &pool,
-        ferric_core::memory::resolve_budget_bytes(None),
-        &ao,
-        orb,
-    )?;
+    let ctx = ferric_core::parallel::ParallelContext::default();
+    let band =
+        ferric_scf::reduce::resolve_band_bytes(ferric_core::memory::resolve_budget_bytes(None));
+    let jk = OoJk::exact(&ctx, obs, bounds, &pool, band, false);
+    let point = evaluate_point(&jk, None, &c_rot, &h, vnn, &ao, orb)?;
     Ok(point.total())
 }
 
@@ -1896,17 +2071,17 @@ mod tests {
         let ao = OoRiMp2AoTensors::build(&obs, &dfbs, op).unwrap();
         let pool =
             EnginePool::new(op, &obs, ferric_integrals::engine_pool::eri_precision()).unwrap();
-        let (_e_hf, f_ao, _) = compute_hf_energy(
+        let ctx = ferric_core::parallel::ParallelContext::default();
+        let jk = OoJk::exact(
+            &ctx,
             &obs,
             &bounds,
-            c,
-            nocc_total,
-            &h,
-            mol.nuclear_repulsion(),
             &pool,
-            ferric_core::memory::resolve_budget_bytes(None),
-        )
-        .unwrap();
+            ferric_scf::reduce::default_band_bytes(),
+            false,
+        );
+        let (_e_hf, f_ao, _) =
+            compute_hf_energy(&jk, None, c, nocc_total, &h, mol.nuclear_repulsion()).unwrap();
         let eps = orbital_energies(c, &f_ao);
         let (_e, b_flat) = compute_rimp2_with_orbitals(&ao, c, &eps, &orb).unwrap();
 
@@ -2044,10 +2219,17 @@ mod tests {
         pool: EnginePool,
         h: Array2<f64>,
         orb: OrbitalSpace,
+        ctx: ferric_core::parallel::ParallelContext,
     }
 
     impl OrbFd {
         fn new(xyz: &str, basis_name: &str) -> Self {
+            Self::with_reference(xyz, basis_name, None)
+        }
+
+        /// `jk_aux`: fit the reference RHF's J and K on that basis (RI-JK),
+        /// which puts the functional on the fitted route.
+        fn with_reference(xyz: &str, basis_name: &str, jk_aux: Option<&str>) -> Self {
             let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
             let bs = basis::bundled(basis_name).unwrap();
             let obs = PreparedBasis::new(&mol, &bs).unwrap();
@@ -2062,11 +2244,15 @@ mod tests {
                 &RhfConfig {
                     energy_conv: 1e-11,
                     density_conv: 1e-10,
+                    df_j_aux: jk_aux.map(str::to_string),
+                    df_k_aux: jk_aux.map(str::to_string),
                     ..Default::default()
-                },
+                }
+                .for_geometry_task(),
             )
             .unwrap();
             assert!(rhf.converged);
+            assert_eq!(rijk_route(&rhf).is_some(), jk_aux.is_some());
             let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
             let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
             let ao = OoRiMp2AoTensors::build_with_budget(&obs, &dfbs, op, usize::MAX).unwrap();
@@ -2087,18 +2273,33 @@ mod tests {
                 pool,
                 h,
                 orb,
+                ctx: ferric_core::parallel::ParallelContext::default(),
             }
         }
 
-        fn point(&self, c: &Array2<f64>) -> OoPoint {
-            evaluate_point(
+        /// The J/K route `oo_ri_mp2` takes for this reference (no
+        /// difference builds: every point is evaluated from scratch).
+        fn jk(&self) -> OoJk<'_> {
+            OoJk::for_reference(
+                &self.ctx,
+                &self.mol,
                 &self.obs,
                 &self.bounds,
+                &self.rhf,
+                &self.pool,
+                ferric_scf::reduce::default_band_bytes(),
+                false,
+            )
+            .unwrap()
+        }
+
+        fn point(&self, jk: &OoJk<'_>, c: &Array2<f64>) -> OoPoint {
+            evaluate_point(
+                jk,
+                None,
                 c,
                 &self.h,
                 self.mol.nuclear_repulsion(),
-                &self.pool,
-                usize::MAX,
                 &self.ao,
                 &self.orb,
             )
@@ -2107,18 +2308,19 @@ mod tests {
 
         /// The production gradient path, exactly as `oo_ri_mp2` calls it.
         fn analytic(&self, c: &Array2<f64>) -> Array2<f64> {
+            let jk = self.jk();
             orbital_gradient_solver_frame(
-                &self.point(c),
+                &self.point(&jk, c),
                 &self.ao,
-                &self.obs,
-                &self.bounds,
-                &self.pool,
+                &jk,
+                None,
                 &self.orb,
                 usize::MAX,
                 false,
                 &mut PhaseAccumulator::new(),
             )
             .unwrap()
+            .0
         }
 
         /// 4-point central FD of E(c·U(kappa)) in every occ-vir direction.
@@ -2130,6 +2332,7 @@ mod tests {
                 first_occ,
             } = self.orb;
             let n = c.ncols();
+            let jk = self.jk();
             let mut g = Array2::zeros((nvir, nocc));
             for a in 0..nvir {
                 for i in 0..nocc {
@@ -2137,7 +2340,8 @@ mod tests {
                         let mut k = Array2::zeros((n, n));
                         k[(nocc_total + a, first_occ + i)] = s * FD_STEP;
                         k[(first_occ + i, nocc_total + a)] = -s * FD_STEP;
-                        self.point(&c.dot(&cayley_rotation(&k).unwrap())).total()
+                        self.point(&jk, &c.dot(&cayley_rotation(&k).unwrap()))
+                            .total()
                     };
                     g[(a, i)] = (-e_at(2.0) + 8.0 * e_at(1.0) - 8.0 * e_at(-1.0) + e_at(-2.0))
                         / (12.0 * FD_STEP);
@@ -2253,6 +2457,114 @@ mod tests {
         check_orbital_gradient_at(NH3_XYZ, "6-31g", 0.2, "NH3/6-31G");
     }
 
+    const JKFIT: &str = "def2-universal-jkfit";
+
+    /// RI-JK reference: the analytic orbital gradient of the FITTED
+    /// functional (HF energy, Fock matrix and Fock response all on the SCF's
+    /// RI-J/RI-K) against FD of that functional, H2O/cc-pVDZ at ‖κ‖ = 0.05
+    /// (F_ov ≠ 0). Bar `ORB_GRAD_BAR`, derived above for the four-centre
+    /// functional; the fitted J/K are unscreened, so its floor is no higher.
+    ///
+    /// TEETH: the four-centre analytic gradient at the same orbitals differs
+    /// from the fitted one by more than 10× the bar, so a route that left any
+    /// J/K four-centre (exact K under a fitted reference) would be caught by
+    /// the anchor below or by this FD comparison, whichever it breaks.
+    #[test]
+    fn oo_rimp2_orbital_gradient_on_an_rijk_reference_matches_fd_h2o_ccpvdz() {
+        let fit = OrbFd::with_reference(H2O_XYZ, "cc-pvdz", Some(JKFIT));
+        let exact = OrbFd::new(H2O_XYZ, "cc-pvdz");
+        let k = pseudo_random_kappa(fit.rhf.mos_r().ncols(), 0.05, 7);
+        let c = fit.rhf.mos_r().dot(&cayley_rotation(&k).unwrap());
+        let an = fit.analytic(&c);
+        let fd = fit.fd(&c);
+        let err = max_abs_diff(&an, &fd);
+        let fit_effect = max_abs_diff(&an, &exact.analytic(&c));
+        let gmax = an.iter().map(|v| v.abs()).fold(0.0, f64::max);
+        eprintln!(
+            "H2O/cc-pVDZ RI-JK: max|g| = {gmax:.3e}, max|analytic − FD| = {err:.3e}, \
+             max|fitted − four-centre| = {fit_effect:.3e}"
+        );
+        assert!(gmax > 1e-3, "reference point is stationary");
+        assert!(
+            fit_effect > 10.0 * ORB_GRAD_BAR,
+            "fit effect {fit_effect:.3e}"
+        );
+        assert!(err < ORB_GRAD_BAR, "max|analytic − FD| = {err:.3e}");
+    }
+
+    /// Trivial limit of the fitted route: at the RI-JK SCF's own orbitals the
+    /// OO HF energy IS that SCF's energy. Bar 1e-9 Ha: the SCF is converged
+    /// to energy_conv 1e-11 / density_conv 1e-10, and E_HF recomputed from
+    /// its orbitals differs from its reported energy by the second-order
+    /// density error and the J/K rebuild's rounding, both far below.
+    ///
+    /// TEETH: the four-centre HF energy at the same orbitals is printed and
+    /// must differ by more than 1e-6 Ha (the RI-JK fit error), so exact J or
+    /// K anywhere in the HF energy fails here.
+    #[test]
+    fn oo_hf_energy_on_an_rijk_reference_is_the_scf_energy() {
+        let fit = OrbFd::with_reference(H2O_XYZ, "cc-pvdz", Some(JKFIT));
+        let exact = OrbFd::new(H2O_XYZ, "cc-pvdz");
+        let c = fit.rhf.mos_r();
+        let e_fit = fit.point(&fit.jk(), c).e_hf;
+        let e_four = exact.point(&exact.jk(), c).e_hf;
+        eprintln!(
+            "E_HF fitted {e_fit:.12}, SCF {:.12}, four-centre {e_four:.12}",
+            fit.rhf.energy
+        );
+        assert!((e_fit - fit.rhf.energy).abs() < 1e-9);
+        assert!((e_four - fit.rhf.energy).abs() > 1e-6);
+    }
+
+    /// Difference J/K builds (`difference_jk`) against the plain build at every
+    /// point: same iteration count and converged energy to 1e-9 Ha.
+    ///
+    /// BAR: each increment J/K[ΔD] is screened homogeneously at 1e-12 of
+    /// max|ΔD| (≤ ~0.3 rad steps keep max|ΔD| ≲ 1), so each step adds at most
+    /// the plain build's own screening error (quartets with bound·|D| <
+    /// 1e-12, ~1e-11 Ha in the energy for these sizes); over ≲ 20 accepted
+    /// steps that is ≲ 2e-10. 1e-9 leaves 5× over that and is 1e4 below the
+    /// solver's energy_conv-driven noise at grad_conv 1e-4.
+    ///
+    /// MUTATION NOTE: carrying a stale difference density (each new point
+    /// recorded with its predecessor's `D`) is caught here.
+    #[test]
+    fn oo_rimp2_difference_jk_matches_plain_builds() {
+        for (xyz, basis_name, label) in [
+            (H2O_XYZ, "cc-pvdz", "H2O/cc-pVDZ"),
+            (NH3_XYZ, "cc-pvdz", "NH3/cc-pVDZ"),
+        ] {
+            let ctx = OrbFd::new(xyz, basis_name);
+            let run = |difference_jk: bool| {
+                let cfg = OoRiMp2Config {
+                    difference_jk,
+                    grad_conv: 1e-6,
+                    ..Default::default()
+                };
+                oo_ri_mp2(
+                    &ctx.mol,
+                    &ctx.obs,
+                    &ctx.dfbs,
+                    ctx.op,
+                    &ctx.bounds,
+                    &ctx.rhf,
+                    &cfg,
+                    None,
+                )
+                .unwrap()
+            };
+            let (on, off) = (run(true), run(false));
+            let de = (on.total_energy - off.total_energy).abs();
+            eprintln!(
+                "{label}: difference E={:.13} ({} it), plain E={:.13} ({} it), |ΔE|={de:.2e}",
+                on.total_energy, on.iterations, off.total_energy, off.iterations
+            );
+            assert!(on.converged && off.converged);
+            assert_eq!(on.iterations, off.iterations, "{label}: iteration counts");
+            assert!(de < 1e-9, "{label}: |ΔE| = {de:.3e}");
+        }
+    }
+
     /// The solver's converged point must be a stationary point of the energy
     /// it reports, checked by FD that is independent of the solver's own
     /// gradient. The returned orbitals must also be orthonormal and
@@ -2299,7 +2611,7 @@ mod tests {
         let s = oneelectron::overlap(&ctx.obs);
         let ortho = max_abs_diff(&c.t().dot(&s).dot(c), &Array2::eye(n));
         // Semicanonical, with orbital_energies == diag(CᵀFC).
-        let point = ctx.point(c);
+        let point = ctx.point(&ctx.jk(), c);
         assert!((point.total() - oo.total_energy).abs() < 1e-10);
         let f_mo = c.t().dot(&point.f_ao).dot(c);
         let mut off_oo_vv = 0.0f64;
@@ -2397,8 +2709,11 @@ mod tests {
                 }
             }
         }
-        let e_a = ctx.point(&c).total();
-        let e_b = ctx.point(&c.dot(&cayley_rotation(&k_blk).unwrap())).total();
+        let jk = ctx.jk();
+        let e_a = ctx.point(&jk, &c).total();
+        let e_b = ctx
+            .point(&jk, &c.dot(&cayley_rotation(&k_blk).unwrap()))
+            .total();
         eprintln!(
             "E(C) = {e_a:.12}, E(C·U_oo/vv) = {e_b:.12}, diff {:.2e}",
             e_a - e_b
@@ -2651,17 +2966,17 @@ mod tests {
         // MP2 energy + b_ov identical.
         let pool =
             EnginePool::new(op, &obs, ferric_integrals::engine_pool::eri_precision()).unwrap();
-        let (_e_hf, f_ao, _) = compute_hf_energy(
+        let ctx = ferric_core::parallel::ParallelContext::default();
+        let jk = OoJk::exact(
+            &ctx,
             &obs,
             &bounds,
-            c,
-            nocc_total,
-            &h,
-            mol.nuclear_repulsion(),
             &pool,
-            ferric_core::memory::resolve_budget_bytes(None),
-        )
-        .unwrap();
+            ferric_scf::reduce::default_band_bytes(),
+            false,
+        );
+        let (_e_hf, f_ao, _) =
+            compute_hf_energy(&jk, None, c, nocc_total, &h, mol.nuclear_repulsion()).unwrap();
         let eps = orbital_energies(c, &f_ao);
         let (e_ref, bov_ref) = compute_rimp2_with_orbitals(&ao_ref, c, &eps, &orb).unwrap();
         let (e_spill, bov_spill) = compute_rimp2_with_orbitals(&ao_spill, c, &eps, &orb).unwrap();
@@ -2984,17 +3299,17 @@ mod tests {
         let ao = OoRiMp2AoTensors::build(&obs, &dfbs, op).unwrap();
         let pool =
             EnginePool::new(op, &obs, ferric_integrals::engine_pool::eri_precision()).unwrap();
-        let (_e_hf, f_ao, _) = compute_hf_energy(
+        let ctx = ferric_core::parallel::ParallelContext::default();
+        let jk = OoJk::exact(
+            &ctx,
             &obs,
             &bounds,
-            c,
-            nocc_total,
-            &h,
-            mol.nuclear_repulsion(),
             &pool,
-            ferric_core::memory::resolve_budget_bytes(None),
-        )
-        .unwrap();
+            ferric_scf::reduce::default_band_bytes(),
+            false,
+        );
+        let (_e_hf, f_ao, _) =
+            compute_hf_energy(&jk, None, c, nocc_total, &h, mol.nuclear_repulsion()).unwrap();
         let eps = orbital_energies(c, &f_ao);
         let (_e, b_ov) = compute_rimp2_with_orbitals(&ao, c, &eps, &orb).unwrap();
         let (t2, _) =

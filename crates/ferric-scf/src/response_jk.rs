@@ -86,7 +86,20 @@ impl<'a> ResponseJk<'a> {
                     .into(),
             ));
         }
-        let Some(route) = scf.df_jk.as_ref() else {
+        Self::for_route(ctx, mol, prep, bounds, scf.df_jk.as_ref())
+    }
+
+    /// [`Self::for_scf`] from a recorded route alone (`None`: four-centre),
+    /// for a caller that kept the route but not the SCF result. The caller
+    /// vouches that the route's exchange was not COSX.
+    pub fn for_route(
+        ctx: &'a ParallelContext,
+        mol: &Molecule,
+        prep: &'a PreparedBasis,
+        bounds: &'a SchwarzBounds,
+        route: Option<&DfJkRoute>,
+    ) -> Result<Self, FerricError> {
+        let Some(route) = route else {
             return Ok(Self::exact(ctx, prep, bounds));
         };
         let aux = match (&route.j_aux, &route.k_aux, &route.rsh_k) {

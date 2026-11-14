@@ -205,6 +205,18 @@ independent $\kappa^\alpha, \kappa^\beta$ and the per-spin cap
 The OO-RI-MP2 nuclear gradient (`oo_rimp2_gradient.rs`) needs no Z-vector,
 because the converged orbitals are stationary.
 
+**J/K route** (closed shell, `OoJk` in `oo_rimp2.rs`). $F = h + G[D]$ and
+the Fock response $\sum_{pq}W_{pq}\,\partial F_{pq}/\partial\kappa$ use one
+symmetric linear $G[X] = J[X] - \tfrac12K[X]$: four-centre, or the reference
+SCF's RI-J + RI-K when it fitted both on one auxiliary basis. The gradient
+formula above only uses that $G$ is linear and symmetric
+($\sum X\,G[Y] = \sum Y\,G[X]$), which the Coulomb-metric fit satisfies, so it
+is unchanged on the fitted route; the optimised functional is then the fitted
+one, and at $\kappa = 0$ its HF part is the fitted SCF energy. The nuclear
+gradient follows the same route through `ResponseJk` (fitted bilinear
+two-electron derivative, §9.1). Unrestricted OO-RI-MP2 has only the
+four-centre route.
+
 ## 8. Laplace-transform MP2
 
 With $x = \Delta_{ij}^{ab} > 0$,
