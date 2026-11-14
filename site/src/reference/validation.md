@@ -51,10 +51,9 @@ with the elements, basis sets and functionals each row's test runs, and a test
 keeps it equal to this page. It also holds an anchor for each other Proven
 kind (`mp3`, `att-rimp2`, `scs-mp2`, `laplace-mp2`, `laplace-sos-mp2`,
 `pdep-rpa`, `ccsd`, `casscf`, `nevpt2`), and a test fails if a Proven kind
-has none; the certificates of those kinds do not carry `measured_error`. The CLI and the Python results add one warning
-for each element, basis, auxiliary basis or functional of the run outside that
-set. The check is per dimension, so a run inside every set can still be a
-combination no test ran. The warning does not change the grade.
+has none. [Certificates](#certificates) lists when each kind carries its
+anchor and when it warns that a run lies outside it. The grade is never
+changed by either.
 
 Each `ENERGY_ANCHORS` entry also names a production-code mutation that its
 test fails on: a patch under `testdata/mutations/` and a row in
@@ -231,6 +230,50 @@ Polarizable (Thole) embedding is Python and Rust only. IEF-PCM, UHF
 stability descent and terfc-attenuated MP2 are reachable from both: see
 `[pcm]`, `[scf] stability_descent` and `[mp2] att_operator` in the
 [Input reference](./input.md).
+
+## Certificates
+
+A certificate carries `measured_error` and envelope warnings only where the run
+matches what the anchor's evidence test ran. Read it where the run reports it:
+the `certificate` block the CLI prints, `run_end.extra.certificate` or the
+`certificate` record in the JSON run log ([run logs](../using/run-logs.md)),
+the `.certificate` attribute or `"certificate"` key of a Python result
+([Python](../using/python.md#what-comes-back)), `calc.results["certificate"]`
+from the [ASE calculator](../using/ase.md), and `extras["ferric"]["certificate"]`
+from [QCSchema](../using/qcschema.md#output).
+
+Two checks use the anchor of `ENERGY_ANCHORS`:
+
+- **Scope.** The certificate carries the anchor's `measured_error` only when the
+  run's settings are those the evidence test ran. A run outside the scope has no
+  `measured_error`, and no envelope warning, because it has no anchor to lie
+  outside of.
+- **Envelope.** For a run that carries the anchor, one warning is added for
+  each element, orbital basis, auxiliary basis or functional outside the sets
+  the evidence test ran. The check is per dimension, so a run inside every set
+  can still be a combination no test ran.
+
+The SCF kinds (`rhf`, `uhf`, `rohf`, `ksdft`) always carry the anchor of their
+solver (RHF, UHF, ROHF, RKS, UKS, ROKS); they have the envelope check on
+elements, basis and functional and no scope condition. The other kinds carry
+the anchor under these conditions, all on a certificate of the stated reference:
+
+| Kind (anchor) | Reference | Scope condition |
+|---|---|---|
+| `rimp2` (RI-MP2, U-RI-MP2) | RHF or UHF certificate | Coulomb operator, no `kappa`, no separate fitting metric, no 3-index screening (a threshold of 0 is allowed); frozen core 0, or for UHF also frozen core 2 |
+| `mp3` (MP3), `laplace-mp2` (Laplace RI-MP2) | RHF | Coulomb operator, frozen core 0 |
+| `scs-mp2` (SCS-MP2) | RHF | Coulomb operator, frozen core 0, default `c_os` and `c_ss` |
+| `att-rimp2` (Attenuated RI-MP2) | RHF | frozen core 0, scaling 1, no screening (a threshold of 0 is allowed), omega at the default, 0.2, 0.42 or 1.0 |
+| `laplace-sos-mp2` (Laplace SOS-MP2) | RHF | Coulomb operator, frozen core 0, `c_os` 1.0 or the default 1.3, `formulation` `mo` or `ao` |
+| `pdep-rpa` (PDEP-RPA) | RHF | frozen core 0, `trunc_thresh` 0 or below, Lanczos eigensolver, dense chi0 backend and sparsity, Gauss-Legendre quadrature with `u0 = 0.5` and 6 or 40 points |
+| `ccsd` (CCSD) | RHF | frozen core 0; `ccd` and `ccsd(t)` carry no anchor |
+| `casscf` (CASSCF) | converged CASSCF | `grad_tol` no larger than 1e-7 and `energy_tol` no larger than 1e-12 |
+| `nevpt2` (SC-NEVPT2) | CASSCF reference (a CAS-CI reference carries no anchor) | `n_alpha = n_beta` in the active space; the CASSCF tolerances above |
+
+The predicates are in `crates/ferric-mp2/src/certificate.rs`,
+`crates/ferric-cc/src/certificate.rs`, `crates/ferric-ci/src/certificate.rs`
+and `crates/ferric-rpa/src/certificate.rs`. The elements, basis sets and
+functionals each anchor covers are listed in `ENERGY_ANCHORS`.
 
 ## Anchors
 

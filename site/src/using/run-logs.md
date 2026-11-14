@@ -127,6 +127,10 @@ For a post-SCF method the `energy` is the SCF reference, not the method's
 total. `extra.energy_is` says which. Per-iteration records for MP2/RPA/CC/GW
 are not implemented yet.
 
+`run_end.extra.certificate` holds the validation certificate. Its measured
+error and envelope warnings depend on the run's settings; see
+[Certificates](../reference/validation.md#certificates).
+
 Only `task = "energy"` and periodic `task = "optimize"` write `run_end`.
 A molecular `task = "optimize"` and `task = "frequencies"` currently write
 `run_start` and the SCF iteration records, but no `run_end`, `ladder_rung` or
