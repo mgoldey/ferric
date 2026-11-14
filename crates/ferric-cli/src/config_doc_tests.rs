@@ -14,6 +14,8 @@
 //! this test demands of the page, with no list to update.
 
 use super::*;
+use crate::cas::{CasCfg, CasCiCfg};
+use crate::cdft::{CdftCfg, CdftConstraintCfg};
 use serde::de::{DeserializeOwned, Visitor};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -96,13 +98,10 @@ fn accepted_keys_by_section() -> BTreeMap<&'static str, BTreeSet<&'static str>> 
         ("mp2", fields_of::<Mp2Cfg>()),
         ("cc", fields_of::<CcCfg>()),
         ("eom", fields_of::<EomCfg>()),
-        ("cas", fields_of::<crate::cas::CasCfg>()),
-        ("cas.ci", fields_of::<crate::cas::CasCiCfg>()),
-        ("cdft", fields_of::<crate::cdft::CdftCfg>()),
-        (
-            "cdft.constraint",
-            fields_of::<crate::cdft::CdftConstraintCfg>(),
-        ),
+        ("cas", fields_of::<CasCfg>()),
+        ("cas.ci", fields_of::<CasCiCfg>()),
+        ("cdft", fields_of::<CdftCfg>()),
+        ("cdft.constraint", fields_of::<CdftConstraintCfg>()),
         ("local", fields_of::<LocalCfg>()),
         ("rpa", fields_of::<RpaCfg>()),
         ("gw", fields_of::<GwCfg>()),

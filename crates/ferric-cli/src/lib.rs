@@ -403,6 +403,45 @@ fn print_df_guess_outcome(
     }
 }
 
+/// `[dft] dispersion` needs a Kohn-Sham SCF (see the comment at the call
+/// site in `run`); exits with an error otherwise.
+fn refuse_dispersion_without_ks(cfg: &Config, method: &str) {
+    if cfg.dft.dispersion.is_some() && cfg.ks_functional().is_none() {
+        eprintln!(
+            "error: [dft] dispersion is only supported on a Kohn-Sham SCF (method.kind = \
+             \"ksdft\", or rhf/uhf/rohf with [dft] functional); got kind = \"{method}\" \
+             without one. Dispersion is evaluated on the KS-DFT path only, so this run would \
+             silently report an UNCORRECTED energy. Its parameters (D3(BJ) damping, MBD@rsSCS \
+             beta) are fitted per functional, so there is no default fit to apply here -- \
+             remove the dispersion key, or use kind = \"ksdft\"."
+        );
+        std::process::exit(1);
+    }
+}
+
+/// `[dft] grid_prune`, strictly parsed; `"sgx"` (the COSX grid's scheme)
+/// and unknown values exit with an error.
+fn resolve_grid_prune(cfg: &Config) -> Option<ferric_dft::prune::PruneScheme> {
+    let grid_prune = match cfg.dft.grid_prune.as_deref() {
+        None => None,
+        Some(s) => match ferric_dft::prune::PruneScheme::parse_config_str(s) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("error: [dft] grid_prune: {e}");
+                std::process::exit(1);
+            }
+        },
+    };
+    if grid_prune == Some(ferric_dft::prune::PruneScheme::Sgx) {
+        eprintln!(
+            "error: [dft] grid_prune = \"sgx\" is the COSX exchange grid's scheme \
+             ([scf] cosx_grid); the XC grid takes \"none\", \"nwchem\", \"nwchem-radial\" or \"defgrid1/2/3\"."
+        );
+        std::process::exit(1);
+    }
+    grid_prune
+}
+
 /// `[scf] eri`, strictly parsed; an unknown value exits with an error.
 fn scf_eri_mode(eri: Option<&str>) -> ferric_scf::incore_jk::EriMode {
     match eri.map(ferric_scf::incore_jk::EriMode::parse_config_str) {
@@ -593,38 +632,12 @@ pub fn run(args: Vec<String>) {
     // damping parameters and MBD@rsSCS's beta are fitted PER FUNCTIONAL, so
     // there is no such thing as "D3(BJ) for Hartree-Fock" without naming a
     // fit. Any KS SCF qualifies: `ksdft`, or `rhf`/`uhf`/`rohf` with `[dft] functional`.
-    if cfg.dft.dispersion.is_some() && cfg.ks_functional().is_none() {
-        eprintln!(
-            "error: [dft] dispersion is only supported on a Kohn-Sham SCF (method.kind = \
-             \"ksdft\", or rhf/uhf/rohf with [dft] functional); got kind = \"{method}\" \
-             without one. Dispersion is evaluated on the KS-DFT path only, so this run would \
-             silently report an UNCORRECTED energy. Its parameters (D3(BJ) damping, MBD@rsSCS \
-             beta) are fitted per functional, so there is no default fit to apply here -- \
-             remove the dispersion key, or use kind = \"ksdft\"."
-        );
-        std::process::exit(1);
-    }
+    refuse_dispersion_without_ks(&cfg, method);
     // [dft] grid_prune — main-DFT-grid angular pruning. Strict parse (unknown
     // values are a hard error, never a silent default). The XC gradient
     // differentiates the same pruned grid the SCF converged on (it is built
     // from `rhf_config.dft_grid`), so no task guard is needed.
-    let grid_prune: Option<ferric_dft::prune::PruneScheme> = match cfg.dft.grid_prune.as_deref() {
-        None => None,
-        Some(s) => match ferric_dft::prune::PruneScheme::parse_config_str(s) {
-            Ok(p) => p,
-            Err(e) => {
-                eprintln!("error: [dft] grid_prune: {e}");
-                std::process::exit(1);
-            }
-        },
-    };
-    if grid_prune == Some(ferric_dft::prune::PruneScheme::Sgx) {
-        eprintln!(
-            "error: [dft] grid_prune = \"sgx\" is the COSX exchange grid's scheme \
-             ([scf] cosx_grid); the XC grid takes \"none\", \"nwchem\", \"nwchem-radial\" or \"defgrid1/2/3\"."
-        );
-        std::process::exit(1);
-    }
+    let grid_prune = resolve_grid_prune(&cfg);
     // Any other `[dft]` key the selected kind never reads (a functional on
     // uhf/rhf/rimp2..., lambda/omega off wb97x-l-v, a grid_prune with no KS
     // grid) is refused rather than silently dropped. See

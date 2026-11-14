@@ -4633,21 +4633,9 @@ impl Config {
         Ok(())
     }
 
-    pub fn validate_cli_wired_keys(&self) -> Result<(), String> {
-        let kind = self.method.kind.as_str();
-        let task = self.method.task.as_str();
-        let mult = self.molecule.multiplicity;
-        refuse_open_shell_fitted_oo(kind, mult, self.scf.scf_jk_choice(kind, task)?)?;
-
-        if self.cosmo.is_some() && task != "energy" {
-            return Err(format!(
-                "[cosmo] is not supported with method.task = \"{task}\": COSMO has no \
-                 analytic gradient, so this run would follow the vacuum-form gradient of a \
-                 solvated energy. Use [pcm] (IEF-PCM, which has one; task = \"optimize\"), \
-                 or task = \"energy\" with [cosmo]."
-            ));
-        }
-
+    /// `[pcm]`: its own keys, no `[cosmo]` beside it, and the kinds and tasks
+    /// whose solvent treatment is wired.
+    fn validate_pcm(&self, kind: &str, task: &str) -> Result<(), String> {
         if let Some(pcm) = &self.pcm {
             pcm.to_pcm_config()?;
             if self.cosmo.is_some() {
@@ -4685,13 +4673,11 @@ impl Config {
                 );
             }
         }
+        Ok(())
+    }
 
-        self.validate_relativistic()?;
-        self.validate_polarizable_embedding()?;
-        crate::cdft::validate(self)?;
-        self.scf.validate_accelerators(kind, mult)?;
-        self.validate_symmetry_keys()?;
-
+    /// `[scf] stability_descent`: task = "energy" on a descent-capable SCF only.
+    fn validate_stability_descent(&self, kind: &str, task: &str) -> Result<(), String> {
         if self.scf.stability_descent {
             if task != "energy" {
                 return Err(format!(
@@ -4714,6 +4700,33 @@ impl Config {
                 ));
             }
         }
+        Ok(())
+    }
+
+    pub fn validate_cli_wired_keys(&self) -> Result<(), String> {
+        let kind = self.method.kind.as_str();
+        let task = self.method.task.as_str();
+        let mult = self.molecule.multiplicity;
+        refuse_open_shell_fitted_oo(kind, mult, self.scf.scf_jk_choice(kind, task)?)?;
+
+        if self.cosmo.is_some() && task != "energy" {
+            return Err(format!(
+                "[cosmo] is not supported with method.task = \"{task}\": COSMO has no \
+                 analytic gradient, so this run would follow the vacuum-form gradient of a \
+                 solvated energy. Use [pcm] (IEF-PCM, which has one; task = \"optimize\"), \
+                 or task = \"energy\" with [cosmo]."
+            ));
+        }
+
+        self.validate_pcm(kind, task)?;
+
+        self.validate_relativistic()?;
+        self.validate_polarizable_embedding()?;
+        crate::cdft::validate(self)?;
+        self.scf.validate_accelerators(kind, mult)?;
+        self.validate_symmetry_keys()?;
+
+        self.validate_stability_descent(kind, task)?;
 
         if self.mp2.sets_oo_keys() {
             if kind != "oo-rimp2" {
