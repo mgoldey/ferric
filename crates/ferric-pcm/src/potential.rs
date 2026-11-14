@@ -14,14 +14,61 @@ use ferric_core::external_potential::{PointCharge, SmearedCharge};
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
+use ferric_integrals::cosx_a::CosxScreen;
 use ferric_integrals::engine::Engine;
 use ferric_integrals::ffi::{self, CAtom};
+use ferric_integrals::md3c1e::Md3c1e;
 use ferric_integrals::oneelectron::smeared_attraction;
 use ferric_integrals::operator::Operator;
 use ferric_integrals::site_basis::SiteBasis;
 use ndarray::Array2;
 
 use crate::cavity::Tessera;
+
+/// Tesserae per batch of the McMurchie-Davidson route. Fixed (never derived
+/// from the thread count), so the order of every floating-point sum is the
+/// same for every pool size: potentials are independent per tessera, and the
+/// operator sums its tessera axis in chunks of this size in order.
+const TESS_CHUNK: usize = 256;
+
+/// Runs `f` under a `FERRIC_TIMING` stage named `label` (inert otherwise).
+fn timed<T>(label: &'static str, f: impl FnOnce() -> T) -> T {
+    let stage = ferric_core::timing::Stage::start(label);
+    let out = f();
+    stage.end();
+    out
+}
+
+fn check_density_shape(what: &str, density: &Array2<f64>, nbas: usize) -> Result<(), FerricError> {
+    if density.shape() != [nbas, nbas] {
+        return Err(FerricError::General(format!(
+            "{what}: density shape {:?} != ({nbas},{nbas})",
+            density.shape()
+        )));
+    }
+    Ok(())
+}
+
+/// `Σ_B Z_B / |r_k − R_B|` at tessera `t`.
+fn nuclear_potential_at(what: &str, mol: &Molecule, t: &Tessera) -> Result<f64, FerricError> {
+    let mut v_nuc = 0.0_f64;
+    for atom in &mol.atoms {
+        if atom.ghost {
+            continue;
+        }
+        let dx = t.position[0] - atom.x;
+        let dy = t.position[1] - atom.y;
+        let dz = t.position[2] - atom.zpos;
+        let r = (dx * dx + dy * dy + dz * dz).sqrt();
+        if r < 1e-8 {
+            return Err(FerricError::General(format!(
+                "{what}: tessera coincides with a nucleus (degenerate cavity)"
+            )));
+        }
+        v_nuc += atom.effective_z() as f64 / r;
+    }
+    Ok(v_nuc)
+}
 
 /// Evaluate the total (nuclear + electronic) solute electrostatic potential
 /// at each cavity tessera, in Hartree.
@@ -34,104 +81,137 @@ use crate::cavity::Tessera;
 /// case): every tessera sits strictly outside every real nucleus by
 /// cavity construction, so the nuclear sum has no `A == k` singularity to
 /// skip.
+///
+/// The electronic term runs through the batched McMurchie-Davidson kernel
+/// ([`ferric_integrals::md3c1e`]) over fixed-size batches of tesserae,
+/// parallel over batches; the result is bit-identical for every pool size.
+/// A basis the kernel refuses (pure p, `l` above `MAX_L`) takes
+/// [`solute_potential_at_tesserae_libint`].
 pub fn solute_potential_at_tesserae(
     mol: &Molecule,
     prep: &PreparedBasis,
     density: &Array2<f64>,
     tess: &[Tessera],
 ) -> Result<Vec<f64>, FerricError> {
-    let nbas = prep.nbasis();
-    if density.shape() != [nbas, nbas] {
-        return Err(FerricError::General(format!(
-            "solute_potential_at_tesserae: density shape {:?} != ({nbas},{nbas})",
-            density.shape()
-        )));
-    }
+    timed("pcm:potential_at_tesserae", || match Md3c1e::new(prep) {
+        Ok(kernel) => solute_potential_md3c1e(&kernel, mol, prep, density, tess),
+        Err(_) => solute_potential_at_tesserae_libint(mol, prep, density, tess),
+    })
+}
 
+/// [`solute_potential_at_tesserae`] through the batched kernel. The kernel
+/// returns the repulsive `+1/|r − r_k|`, so the electronic term is
+/// subtracted (libint's attraction sign is the opposite).
+pub fn solute_potential_md3c1e(
+    kernel: &Md3c1e,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    density: &Array2<f64>,
+    tess: &[Tessera],
+) -> Result<Vec<f64>, FerricError> {
+    use rayon::prelude::*;
+    const WHAT: &str = "solute_potential_at_tesserae";
+    check_density_shape(WHAT, density, prep.nbasis())?;
+    let points: Vec<[f64; 3]> = tess.iter().map(|t| t.position).collect();
+    let dims = prep.shell_dims();
+    let offs = prep.shell_offsets();
+    let none = CosxScreen::none();
+
+    let chunks: Vec<Vec<f64>> = points
+        .par_chunks(TESS_CHUNK)
+        .map_init(
+            || kernel.scratch(),
+            |scr, pts| -> Result<Vec<f64>, FerricError> {
+                let g = pts.len();
+                let mut acc = vec![0.0_f64; g];
+                kernel.for_each_pair(pts, None, none, scr, |s1, s2, blk| {
+                    let (n1, n2) = (dims[s1], dims[s2]);
+                    let (o1, o2) = (offs[s1], offs[s2]);
+                    let fac = if s1 == s2 { 1.0 } else { 2.0 };
+                    for i in 0..n1 {
+                        for j in 0..n2 {
+                            let w = fac * density[(o1 + i, o2 + j)];
+                            let row = &blk[(i * n2 + j) * g..(i * n2 + j + 1) * g];
+                            for (a, &x) in acc.iter_mut().zip(row) {
+                                *a += w * x;
+                            }
+                        }
+                    }
+                })?;
+                Ok(acc)
+            },
+        )
+        .collect::<Result<_, _>>()?;
+
+    let mut out = Vec::with_capacity(tess.len());
+    for (t, v_rep) in tess.iter().zip(chunks.iter().flatten()) {
+        out.push(nuclear_potential_at(WHAT, mol, t)? - v_rep);
+    }
+    Ok(out)
+}
+
+/// [`solute_potential_at_tesserae`] through libint2's nuclear-attraction
+/// engine, one tessera at a time (parallel over tesserae, one engine per
+/// worker). The route for a basis the batched kernel refuses, and the
+/// independent oracle the kernel is tested against.
+pub fn solute_potential_at_tesserae_libint(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    density: &Array2<f64>,
+    tess: &[Tessera],
+) -> Result<Vec<f64>, FerricError> {
+    use rayon::prelude::*;
+    const WHAT: &str = "solute_potential_at_tesserae";
+    check_density_shape(WHAT, density, prep.nbasis())?;
     let dims = prep.shell_dims();
     let offs = prep.shell_offsets();
     let nsh = prep.nshells();
 
-    // Serial (not rayon) — cavity tessera counts for small/medium molecules
-    // (few hundred to a couple thousand) are far below the shell-pair
-    // parallel-worthwhile threshold used elsewhere (oneelectron.rs's
-    // PAR_SHELL_PAIR_THRESHOLD), and this routine is called once per SCF
-    // iteration, so keeping it simple/serial avoids re-litigating the
-    // engine-pool-per-worker plumbing for a first correct implementation.
-    let mut eng = Engine::new_1e(ffi::OP_NUCLEAR, prep, 1e-14).map_err(|e| {
-        FerricError::General(format!(
-            "solute_potential_at_tesserae: engine init failed: {e}"
-        ))
-    })?;
-
-    let mut out = Vec::with_capacity(tess.len());
-    for t in tess {
-        let probe = [CAtom {
-            atomic_number: 1.0,
-            x: t.position[0],
-            y: t.position[1],
-            z: t.position[2],
-        }];
-        // SAFETY: probe is a stack-local [CAtom; 1] that outlives the FFI call;
-        // eng is a valid Engine handle; len=1 matches the array.
-        let rc = unsafe {
-            ffi::scf_engine_set_point_charges(
-                eng.handle_mut(),
-                probe.as_ptr(),
-                probe.len() as c_int,
-            )
-        };
-        if rc < 0 {
-            return Err(FerricError::General(format!(
-                "solute_potential_at_tesserae: set_point_charges failed (rc={rc})"
-            )));
-        }
-
-        let mut v_elec = 0.0_f64;
-        for s1 in 0..nsh {
-            for s2 in 0..=s1 {
-                let block = eng.compute_1e_block(prep, s1, s2);
-                let n1 = dims[s1];
-                let n2 = dims[s2];
-                let o1 = offs[s1];
-                let o2 = offs[s2];
-                if s1 == s2 {
-                    for i in 0..n1 {
-                        for j in 0..n2 {
-                            v_elec += density[(o1 + i, o2 + j)] * block[i * n2 + j];
-                        }
-                    }
-                } else {
-                    for i in 0..n1 {
-                        for j in 0..n2 {
-                            v_elec += 2.0 * density[(o1 + i, o2 + j)] * block[i * n2 + j];
+    tess.par_iter()
+        .map_init(
+            || Engine::new_1e(ffi::OP_NUCLEAR, prep, 1e-14),
+            |eng, t| -> Result<f64, FerricError> {
+                let eng = eng.as_mut().map_err(|e| {
+                    FerricError::General(format!("{WHAT}: engine init failed: {e}"))
+                })?;
+                let probe = [CAtom {
+                    atomic_number: 1.0,
+                    x: t.position[0],
+                    y: t.position[1],
+                    z: t.position[2],
+                }];
+                // SAFETY: probe is a stack-local [CAtom; 1] that outlives the FFI call;
+                // eng is a valid Engine handle; len=1 matches the array.
+                let rc = unsafe {
+                    ffi::scf_engine_set_point_charges(
+                        eng.handle_mut(),
+                        probe.as_ptr(),
+                        probe.len() as c_int,
+                    )
+                };
+                if rc < 0 {
+                    return Err(FerricError::General(format!(
+                        "{WHAT}: set_point_charges failed (rc={rc})"
+                    )));
+                }
+                let mut v_elec = 0.0_f64;
+                for s1 in 0..nsh {
+                    for s2 in 0..=s1 {
+                        let block = eng.compute_1e_block(prep, s1, s2);
+                        let (n1, n2) = (dims[s1], dims[s2]);
+                        let (o1, o2) = (offs[s1], offs[s2]);
+                        let fac = if s1 == s2 { 1.0 } else { 2.0 };
+                        for i in 0..n1 {
+                            for j in 0..n2 {
+                                v_elec += fac * density[(o1 + i, o2 + j)] * block[i * n2 + j];
+                            }
                         }
                     }
                 }
-            }
-        }
-
-        let mut v_nuc = 0.0_f64;
-        for atom in &mol.atoms {
-            if atom.ghost {
-                continue;
-            }
-            let dx = t.position[0] - atom.x;
-            let dy = t.position[1] - atom.y;
-            let dz = t.position[2] - atom.zpos;
-            let r = (dx * dx + dy * dy + dz * dz).sqrt();
-            if r < 1e-8 {
-                return Err(FerricError::General(
-                    "solute_potential_at_tesserae: tessera coincides with a nucleus (degenerate cavity)".into(),
-                ));
-            }
-            v_nuc += atom.effective_z() as f64 / r;
-        }
-
-        out.push(v_nuc + v_elec);
-    }
-
-    Ok(out)
+                Ok(nuclear_potential_at(WHAT, mol, t)? + v_elec)
+            },
+        )
+        .collect()
 }
 
 /// Build the one-electron reaction-field AO operator `V_pcm` from the
@@ -147,18 +227,112 @@ pub fn solute_potential_at_tesserae(
 /// integral) — see the module doc for the derivation of why this is the
 /// correct one-electron potential energy operator for an electron
 /// interacting with the reaction field.
+///
+/// Runs through the batched kernel ([`ferric_integrals::md3c1e`]), parallel
+/// over shell pairs (each output block is independent, so the result is
+/// bit-identical for every pool size); a basis the kernel refuses takes
+/// [`build_reaction_field_operator_libint`].
 pub fn build_reaction_field_operator(
     prep: &PreparedBasis,
     tess: &[Tessera],
     q: &[f64],
 ) -> Result<Array2<f64>, FerricError> {
+    timed("pcm:reaction_field_operator", || match Md3c1e::new(prep) {
+        Ok(kernel) => build_reaction_field_operator_md3c1e(&kernel, prep, tess, q),
+        Err(_) => build_reaction_field_operator_libint(prep, tess, q),
+    })
+}
+
+fn check_charges(what: &str, tess: &[Tessera], q: &[f64]) -> Result<(), FerricError> {
     if tess.len() != q.len() {
         return Err(FerricError::General(format!(
-            "build_reaction_field_operator: {} tesserae but {} charges",
+            "{what}: {} tesserae but {} charges",
             tess.len(),
             q.len()
         )));
     }
+    Ok(())
+}
+
+/// Shell pairs `s1 >= s2`.
+fn shell_pairs(nsh: usize) -> Vec<(usize, usize)> {
+    (0..nsh)
+        .flat_map(|s1| (0..=s1).map(move |s2| (s1, s2)))
+        .collect()
+}
+
+/// Scatter per-pair blocks (`[n1][n2]` row-major) into a symmetric matrix.
+fn scatter_symmetric(prep: &PreparedBasis, blocks: &[((usize, usize), Vec<f64>)]) -> Array2<f64> {
+    let n = prep.nbasis();
+    let dims = prep.shell_dims();
+    let offs = prep.shell_offsets();
+    let mut out = Array2::<f64>::zeros((n, n));
+    for &((s1, s2), ref blk) in blocks {
+        let (n1, n2) = (dims[s1], dims[s2]);
+        for i in 0..n1 {
+            for j in 0..n2 {
+                let v = blk[i * n2 + j];
+                out[(offs[s1] + i, offs[s2] + j)] = v;
+                out[(offs[s2] + j, offs[s1] + i)] = v;
+            }
+        }
+    }
+    out
+}
+
+/// [`build_reaction_field_operator`] through the batched kernel:
+/// `V_{μν} = −Σ_k q_k A^k_{μν}` (the kernel's `A` is the repulsive
+/// `+1/|r − r_k|`).
+pub fn build_reaction_field_operator_md3c1e(
+    kernel: &Md3c1e,
+    prep: &PreparedBasis,
+    tess: &[Tessera],
+    q: &[f64],
+) -> Result<Array2<f64>, FerricError> {
+    use rayon::prelude::*;
+    check_charges("build_reaction_field_operator", tess, q)?;
+    let points: Vec<[f64; 3]> = tess.iter().map(|t| t.position).collect();
+    let dims = prep.shell_dims();
+    let pairs = shell_pairs(prep.nshells());
+    let blocks: Vec<((usize, usize), Vec<f64>)> = pairs
+        .par_iter()
+        .map_init(
+            || (kernel.scratch(), Vec::<f64>::new()),
+            |(scr, buf), &(s1, s2)| -> Result<_, FerricError> {
+                let nn = dims[s1] * dims[s2];
+                let mut acc = vec![0.0_f64; nn];
+                for (pts, qc) in points.chunks(TESS_CHUNK).zip(q.chunks(TESS_CHUNK)) {
+                    let g = pts.len();
+                    buf.resize(nn * g, 0.0);
+                    kernel.pair_block(s1, s2, pts, scr, buf)?;
+                    for (ij, a) in acc.iter_mut().enumerate() {
+                        let row = &buf[ij * g..(ij + 1) * g];
+                        let mut sum = 0.0_f64;
+                        for (&x, &qk) in row.iter().zip(qc) {
+                            sum += qk * x;
+                        }
+                        *a -= sum;
+                    }
+                }
+                Ok(((s1, s2), acc))
+            },
+        )
+        .collect::<Result<_, _>>()?;
+    Ok(scatter_symmetric(prep, &blocks))
+}
+
+/// [`build_reaction_field_operator`] through libint2's nuclear-attraction
+/// engine with the tessera charges as point charges (parallel over shell
+/// pairs, one engine per worker). The route for a basis the batched kernel
+/// refuses, and the independent oracle the kernel is tested against.
+pub fn build_reaction_field_operator_libint(
+    prep: &PreparedBasis,
+    tess: &[Tessera],
+    q: &[f64],
+) -> Result<Array2<f64>, FerricError> {
+    use rayon::prelude::*;
+    const WHAT: &str = "build_reaction_field_operator";
+    check_charges(WHAT, tess, q)?;
     let point_charges: Vec<PointCharge> = tess
         .iter()
         .zip(q.iter())
@@ -169,24 +343,10 @@ pub fn build_reaction_field_operator(
             z: t.position[2],
         })
         .collect();
-
-    let mut eng = Engine::new_1e(ffi::OP_NUCLEAR, prep, 1e-14).map_err(|e| {
-        FerricError::General(format!(
-            "build_reaction_field_operator: engine init failed: {e}"
-        ))
-    })?;
-    eng.set_point_charges_extra(prep, &point_charges)?;
-
-    // Reuse the same "real atoms zeroed out, only extra charges active"
-    // trick as nuclear_with_external: we want ONLY the tessera-charge
-    // contribution, not the real nuclear attraction (that's already in
-    // hcore separately). set_point_charges_extra appends `extra` AFTER
-    // prep.atoms() — but prep.atoms() carries the REAL nuclear charges, so
-    // calling it directly would double-count V_nuc. Instead, build a probe
-    // atom list with all-real-atom charges zeroed (position kept, charge 0)
-    // plus the tessera charges appended; a zero-charge point contributes
-    // nothing to the nuclear-attraction integral.
-    let zeroed_atoms: Vec<CAtom> = prep
+    // Real atoms zeroed (position kept, charge 0), tessera charges appended:
+    // only the reaction-field charges contribute (the real nuclear attraction
+    // is in hcore separately, so `set_point_charges_extra` would double-count it).
+    let mut all_atoms: Vec<CAtom> = prep
         .atoms()
         .iter()
         .map(|a| CAtom {
@@ -196,48 +356,43 @@ pub fn build_reaction_field_operator(
             z: a.z,
         })
         .collect();
-    let mut all_atoms = zeroed_atoms;
     all_atoms.extend(point_charges.iter().map(|pc| CAtom {
         atomic_number: pc.q,
         x: pc.x,
         y: pc.y,
         z: pc.z,
     }));
-    // SAFETY: all_atoms is a Vec<CAtom> that outlives the FFI call;
-    // eng is a valid Engine handle; len matches the vec length.
-    let rc = unsafe {
-        ffi::scf_engine_set_point_charges(
-            eng.handle_mut(),
-            all_atoms.as_ptr(),
-            all_atoms.len() as c_int,
-        )
-    };
-    if rc < 0 {
-        return Err(FerricError::General(format!(
-            "build_reaction_field_operator: set_point_charges failed (rc={rc})"
-        )));
-    }
-
-    let n = prep.nbasis();
-    let nsh = prep.nshells();
-    let dims = prep.shell_dims();
-    let offs = prep.shell_offsets();
-    let mut out = Array2::<f64>::zeros((n, n));
-    for s1 in 0..nsh {
-        for s2 in 0..=s1 {
-            let block = eng.compute_1e_block(prep, s1, s2);
-            let n1 = dims[s1];
-            let n2 = dims[s2];
-            for i in 0..n1 {
-                for j in 0..n2 {
-                    let v = block[i * n2 + j];
-                    out[(offs[s1] + i, offs[s2] + j)] = v;
-                    out[(offs[s2] + j, offs[s1] + i)] = v;
-                }
-            }
+    let make_engine = || -> Result<Engine, FerricError> {
+        let mut eng = Engine::new_1e(ffi::OP_NUCLEAR, prep, 1e-14)
+            .map_err(|e| FerricError::General(format!("{WHAT}: engine init failed: {e}")))?;
+        eng.set_point_charges_extra(prep, &point_charges)?;
+        // SAFETY: all_atoms is a Vec<CAtom> that outlives the FFI call;
+        // eng is a valid Engine handle; len matches the vec length.
+        let rc = unsafe {
+            ffi::scf_engine_set_point_charges(
+                eng.handle_mut(),
+                all_atoms.as_ptr(),
+                all_atoms.len() as c_int,
+            )
+        };
+        if rc < 0 {
+            return Err(FerricError::General(format!(
+                "{WHAT}: set_point_charges failed (rc={rc})"
+            )));
         }
-    }
-    Ok(out)
+        Ok(eng)
+    };
+    let pairs = shell_pairs(prep.nshells());
+    let blocks: Vec<((usize, usize), Vec<f64>)> = pairs
+        .par_iter()
+        .map_init(make_engine, |eng, &(s1, s2)| -> Result<_, FerricError> {
+            let eng = eng
+                .as_mut()
+                .map_err(|e| FerricError::General(e.to_string()))?;
+            Ok(((s1, s2), eng.compute_1e_block(prep, s1, s2).to_vec()))
+        })
+        .collect::<Result<_, _>>()?;
+    Ok(scatter_symmetric(prep, &blocks))
 }
 
 /// [`solute_potential_at_tesserae`] with each tessera a normalized Gaussian

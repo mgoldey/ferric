@@ -12,6 +12,7 @@ ferric-core = { path = "../ferric-core" }
 ferric-integrals = { path = "../ferric-integrals" }
 ferric-quadrature = { path = "../ferric-quadrature" }
 ndarray = { workspace = true }
+rayon = { workspace = true }
 ndarray-linalg = { workspace = true }
 openblas-src = { workspace = true }
 thiserror = { workspace = true }
