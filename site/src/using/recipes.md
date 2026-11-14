@@ -179,6 +179,22 @@ max_steps = 30
 [Capabilities and validation](../reference/validation.md) lists which methods have analytic
 gradients. Harmonic frequencies use `task = "frequencies"` (the analytic Hessian
 where it applies, otherwise finite differences of the analytic gradient; see `examples/water-frequencies.toml`).
+A Kohn-Sham frequency run at the optimized geometry is the same input with the
+task changed:
+
+```toml
+[method]
+kind = "ksdft"
+task = "frequencies"
+
+[dft]
+functional = "B3LYP"
+```
+
+Frequencies are meaningful only at a stationary point, so run them on the
+optimized geometry. Python callers can also run optimizations through the
+[ASE calculator](./ase.md), and QCSchema tools through
+[QCSchema](./qcschema.md).
 
 Runtime depends on the system, so measure before you plan. A whole
 optimization at drug-like size has not been timed on this page. For scale,

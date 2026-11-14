@@ -134,7 +134,9 @@ auxiliary basis should match the orbital basis. This is
 |---|---|
 | Pick a method for a chemistry question | [Choosing a method](./choosing-a-method.md) |
 | See what every method supports (open shell? gradients? CLI?) | [Capabilities and validation](../reference/validation.md#cli-methodkind-matrix) |
-| Charged or open-shell molecules, geometry optimization | [Recipes](./recipes.md) |
+| Charged or open-shell molecules, geometry optimization, frequencies | [Recipes](./recipes.md) |
+| Drive ferric from ASE (optimizers, MD, NEB) | [ASE calculator](./ase.md) |
+| Send jobs from a QCSchema tool (QCFractal, geomeTRIC) | [QCSchema input and output](./qcschema.md) |
 | The whole Python surface | [Python bindings](./python.md) |
 | Coming from PySCF | [For PySCF users](./pyscf-users.md) |
 | Know what to trust | [Capabilities and validation](../reference/validation.md#anchors) |
