@@ -42,8 +42,9 @@ An unknown parameter raises `CalculatorSetupError`; driver keywords go in
 |---|---|---|
 | `hf` | `run_rhf` for a singlet, else `run_uhf` | `run_rhf_*` / `run_uhf_*` |
 | `rhf`, `uhf`, `rohf` | `run_rhf`, `run_uhf`, `run_rohf` | `run_<method>_gamma` / `_kpts` |
-| `dft`, `rks` | `run_dft` (closed shell) | `run_rks_*` (singlet) or `run_uks_*` |
-| `uks`, `roks` | not available | `run_uks_*`, `run_roks_*` |
+| `dft` | `run_dft` for a singlet, `run_uks` for multiplicity > 1 | `run_rks_*` for a singlet, `run_uks_*` for multiplicity > 1 |
+| `rks` | `run_dft` (closed shell) | `run_rks_*` |
+| `uks`, `roks` | `run_uks`, `run_roks` | `run_uks_*`, `run_roks_*` |
 | `rimp2`, `oo-rimp2` | `run_rimp2`, `run_oo_rimp2` | not available |
 
 A cell periodic in one or two directions raises `CalculatorSetupError`:
@@ -72,8 +73,9 @@ RI-J default of energy-only `run_rhf` / `run_dft` calls gives an energy surface
 that is jagged between nearby geometries.
 
 `calc.results["certificate"]` holds the certificate of the run
-(`result.certificate`), and `calc.ferric_result` the ferric result object
-itself.
+(`result.certificate`; see
+[Certificates](../reference/validation.md#certificates)), and
+`calc.ferric_result` the ferric result object itself.
 
 ## Caching
 
