@@ -354,7 +354,10 @@ example `xc="pbe"`); by default it corrects HOMO−2 through LUMO+2. Check
 `gw.outer_converged` and `gw.qp_converged` before using the numbers.
 `run_u_gw` is the open-shell version.
 
-`run_tddft` is closed-shell only. With `functional=...` it includes the
+`run_tddft` is closed-shell only. `solver="dense"` builds the full A and B
+matrices, `"davidson"` is matrix-free (an unconverged root raises), and
+`"auto"` (default) is dense up to `nocc * nvir = 200` and Davidson above;
+`result.solver` and `result.residuals` report what ran. With `functional=...` it includes the
 `(ia|f_xc|jb)` exchange-correlation kernel; VV10 and range-separated
 functionals are refused because their kernel is not built. A τ-only meta-GGA
 (SCAN, r2SCAN, TPSS) defaults to a 150 × 434 grid; `result.grid` reports the
@@ -453,6 +456,11 @@ Matrices and tensors come back as `numpy.ndarray`. Per-atom lists (charges,
 ESP values) come back as Python lists; wrap them in `np.asarray` if you need
 arrays. `run_drpa`, `run_linlccd` and `tune_omega` return plain `dict`s, and
 `run_drpa_scan` returns a list of them.
+
+Most results carry a `.certificate`: the grade of the method, the build, the
+approximations in effect and warnings. It holds a measured error only for a run
+inside the settings the validation test ran; see
+[Certificates](../reference/validation.md#certificates).
 
 AO-basis matrices follow libint2's basis-function conventions, which are not
 PySCF's. Measured on CO/cc-pVDZ: total and orbital energies agree with
@@ -777,6 +785,19 @@ reference.
 | `run_ccsd_t` | CCSD plus the spin-adapted (T) correction. | `ccsd(t)` |
 | `CcResult` | `correlation_energy` and `t_correction` (`None` without triples). No reference energy. | |
 
+### Multireference
+
+All start from the canonical exact-J/K RHF orbitals of a closed-shell molecule.
+`casscf_optimizer` is `"ah"` (default, augmented-Hessian step) or `"bfgs"`;
+`casscf_integrals` is `"auto"` (default), `"dense"` or `"direct"`. See
+[CAS-CI and CASSCF](../methods/ci.md).
+
+| Name | Purpose | CLI |
+|---|---|---|
+| `run_casci` | CAS-CI, lowest root of the `(n_alpha, n_beta)` sector; `compute_rdms=True` returns the RDMs. | library only |
+| `run_casscf` | Two-step CASSCF; `casscf_grad_tol`, `casscf_energy_tol`, `casscf_max_iter`, `casscf_max_step`, `casscf_optimizer`, `casscf_integrals`, `casscf_integral_thresh`, `canonicalize`. Returns a `CasScfResult` with a `certificate`. | `casscf` |
+| `run_nevpt2` | Strongly contracted NEVPT2 on a CASSCF (`reference="casscf"`) or CAS-CI (`"casci"`) reference, closed-shell active space (`n_alpha = n_beta`). Returns a `Nevpt2Result` with the eight class `energies`. | `nevpt2` |
+
 ### RPA, GW and excited states
 
 | Name | Purpose | CLI |
@@ -831,7 +852,7 @@ These take `omega`/`r0` in raw Bohr units, unlike the `run_*` drivers.
 | `DfJk` | From `AoIntegrals.df_jk(aux)`: RI-J/RI-K `j(D)`, `k(D)`, `jk(D)` over a fit built once. | — |
 | `XcFunctional` | From `AoIntegrals.xc_functional(name)`: E_xc, V_xc, f_xc response and XC gradient/Hessian on `run_dft`'s grid. | — |
 | `Cphf`, `Ucphf` | From `AoIntegrals.cphf(...)` / `ucphf(...)`: orbital-Hessian `matvec`, CPHF/CPKS `solve`, response `density`. | — |
-| `einsum` | Two-operand contraction under ferric's einsum spec grammar. | — |
+| `einsum` | Contraction of two or more operands under ferric's einsum spec grammar; three or more run as a fixed left-to-right chain of binary contractions with no order search. | — |
 | `compute_eri3` | Raw 3-centre Coulomb integrals (P\|μν), shape (naux, n_bf, n_bf). | — |
 | `compute_eri3_mo` | MO-basis 3-centre integrals (P\|pq) for any two coefficient matrices, built blockwise under a memory budget. | — |
 | `compute_metric_2c` | 2-centre metric (P\|w\|Q) over the auxiliary basis, Coulomb by default. | — |
@@ -954,5 +975,6 @@ Notes from these ports:
 - PySCF's `scf.cphf.solve` (the solver of `prop.polarizability.rhf`) stops up
   to 2.5e-7 a.u. short of the dense solution of its own equations, at tol 1e-11
   and 1e-13 alike, so the comparison is made against the dense solve.
-- `ferric.einsum` takes two operands; the semicanonical orbital energies of the
-  FNO port (a three-operand diagonal) use `numpy.einsum`.
+- `ferric.einsum` takes explicit `->` specs with no repeated index within a term;
+  the semicanonical orbital energies of the FNO port (a three-operand diagonal)
+  use `numpy.einsum`.
