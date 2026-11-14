@@ -160,8 +160,8 @@ pub struct LadderChoice {
 ///   The ladder's t1 terms are `no·nv³`-class transients.
 /// * RI: no `nv⁴` chemist block. The ladder call's scratch is ONE transient,
 ///   because its parts coexist: `Bx` and `L = B_vv + Bx` (`2·naux·nv²`), the
-///   `blk·nv³` panel (one `nv⁴`-sized buffer at full width), the `nv³`
-///   transpose slab and the `no²·nv²` output `Z`.
+///   `blk·nv³` panel (one `nv⁴`-sized buffer at full width) and the
+///   `no²·nv²` output `Z`.
 ///   The ladder reads the dressed `b_vv`/`b_ov` in place, so they are not
 ///   charged twice.
 pub fn cs_ccsd_memory_plan(
@@ -266,11 +266,10 @@ fn labelled_plan(
         }
         LadderRoute::Ri { block } => {
             plan.reserve(
-                "RI ladder scratch (Bx + L, blk*nv^3 panel, nv^3 slab, Z)",
+                "RI ladder scratch (Bx + L, blk*nv^3 panel, Z)",
                 naux.saturating_mul(nv2)
                     .saturating_mul(2)
                     .saturating_add(block.saturating_mul(nv3))
-                    .saturating_add(nv3)
                     .saturating_add(no2.saturating_mul(nv2)),
                 Lifetime::Transient,
             );

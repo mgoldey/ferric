@@ -64,40 +64,39 @@
 //!    GEMM of shape `(blk·nv) × naux × (nv·nv)`, where `L = B_vv + Bx` — this is
 //!    the `(B_vv+Bx)·B_vv` half. Then a second wide GEMM with `L = B_vv`,
 //!    `R = Bx` for the other half, accumulated into the same buffer.
-//! 2. Contract `Z[i,j,a∈A,b] += Σ_cd G[(a,c),(b,d)] · tau[i,j,c,d]`, again as a
-//!    GEMM by viewing `tau` as `(no·no) × (nv·nv)` and `G` reshaped to put
-//!    `(c,d)` contiguous.
+//! 2. Contract `Z[i,j,a∈A,b] = Σ_cd G[(a,c),(b,d)] · tau[i,j,c,d]` as `nv`
+//!    GEMMs per `a`, one per `c`, accumulated in ascending `c`:
+//!    `Z[(i,j), a, b] += tau[(i,j), c, :] · G[(a,c)][b, :]ᵀ`. With `tau` viewed
+//!    as `(no·no) × (nv·nv)` and `Z` stored `[(i,j), a, b]`, every operand is a
+//!    unit-stride 2-D view, so nothing is transposed or scattered.
 //!
-//! Step 2 needs `G` indexed `[(a,c),(b,d)]` but contracted over `(c,d)` against
-//! a `(b)`-free index — so per `a` we transpose the `nv × nv × nv` slab
-//! `G[a][c][b][d] → G'[a][b][(c,d)]` and do `Z[:, :, a, :] = tau_mat · G'ᵀ`.
-//! That transpose is `O(nv³)` per `a`, `O(nv⁴)` in *time* overall — the ladder
-//! is `O(no²nv⁴)` in time regardless, so the permute is a lower-order cost, but
-//! it does give up some BLAS3 shape versus the dense path's single huge GEMM.
-//! **RI is slower than dense per iteration** (measured numbers in
-//! `site/src/methods/cc.md`); the win is the ceiling, not speed, which is why
-//! `CcsdLadder::Auto` only takes it when the dense plan does not fit.
+//! Both steps run per `a` as independent rayon jobs: job `a` owns its `nv`
+//! rows of the panel and its `Z[:, a, :]` slice, both disjoint from every
+//! other job's, so there is no reduction, and each job is the same sequence of
+//! single-thread GEMMs at any thread count (bit-identical across
+//! `RAYON_NUM_THREADS`). The parallel width is the block width, so a budget
+//! that forces narrow blocks also narrows the parallelism. **RI is slower than
+//! dense per iteration** (measured numbers in `site/src/methods/cc.md`); the
+//! win is the ceiling, not speed, which is why `CcsdLadder::Auto` only takes it
+//! when the dense plan does not fit.
 //!
 //! # Memory accounting
 //!
 //! Per block, resident virtual-side scratch is:
 //!
 //! ```text
-//!   g_blk : blk · nv³ f64        (the (a,c),(b,d) panel)
-//!   gp    : nv³ f64              (the per-a transposed slab)
-//!   bx    : naux · nv² f64       (loop-invariant, built once per iteration)
+//!   panel : blk · nv³ f64        (the (a,c),(b,d) panel, allocated once)
+//!   bx, L : naux · nv² f64 each  (loop-invariant, built once per iteration)
 //! ```
 //!
-//! The second GEMM accumulates into `g_blk` in place via
-//! `ndarray::linalg::general_mat_mul` (BLAS `beta = 1`). Writing it as
-//! `g_blk += &(...).dot(...)` instead would allocate a SECOND full `blk · nv³`
+//! Both panel GEMMs and the `Z` GEMMs write through
+//! `ndarray::linalg::general_mat_mul` into preallocated row-major storage
+//! (BLAS `beta = 0` then `beta = 1`). Writing the second half as
+//! `panel += &(...).dot(...)` instead would allocate a SECOND full `blk · nv³`
 //! temporary and double the peak of the largest buffer here — that was measured
-//! as a real ~1.1 GB of avoidable peak on alkane_5/cc-pVDZ before it was fixed,
-//! so this is a load-bearing detail, not a micro-optimization.
-//!
-//! `.dot` on two row-stride-1 operands can return a column-major array, so
-//! `g_blk` is only ever read by 2-index `[[i, j]]` access, never by flat
-//! offset; the transposed slab `gp` is built that way for the same reason.
+//! as a real ~1.1 GB of avoidable peak on alkane_5/cc-pVDZ, so this is a
+//! load-bearing detail, not a micro-optimization. The preallocated row-major
+//! panel is also what makes `panel.row(c)` a contiguous `[b, d]` block.
 //!
 //! `ccsd_closed_shell::plan_ladder` picks `blk` as the widest width whose
 //! whole-run `MemoryPlan` still fits — the panel is one more reservation on
@@ -132,7 +131,10 @@
 //! removes the dominant wall, not the last one.
 
 use ferric_core::FerricError;
-use ndarray::{Array2, ArrayD, ArrayView2, IxDyn};
+use ferric_integrals::blas_threads::with_blas_threads;
+use ndarray::linalg::general_mat_mul;
+use ndarray::{s, Array2, Array3, ArrayD, ArrayView2, ArrayViewMut2, Axis, IxDyn};
+use rayon::prelude::*;
 
 /// One RI particle-particle ladder contraction, integral-direct.
 ///
@@ -212,13 +214,15 @@ pub fn ri_ladder_contract(
         .into_shape_with_order((no * no, nv * nv))
         .map_err(|e| FerricError::General(format!("RI-CCSD ladder: tau reshape: {e}")))?;
 
-    let mut z = ArrayD::<f64>::zeros(IxDyn(&[no, no, nv, nv]));
+    // Z[(i,j), a, b]: for fixed `a` the `(no*no, nv)` slice has unit inner
+    // stride, so each `a`'s contraction writes into it directly.
+    let mut z = Array3::<f64>::zeros((no * no, nv, nv));
 
     let nvv = nv * nv;
-    // Scratch reused across every block and every `a` — allocated once so the
-    // per-iteration peak is the documented `blk·nv³ + nv³`, not a churn of
-    // transient allocations the allocator may not return to the OS.
-    let mut gp = Array2::<f64>::zeros((nv, nvv)); // G'[b, (c,d)] for one `a`
+    // The `blk·nv³` panel, allocated once and reused by every block so the
+    // per-iteration peak is the documented panel, not a churn of transient
+    // allocations the allocator may not return to the OS.
+    let mut g_panel = Array2::<f64>::zeros((blk.min(nv) * nv, nvv));
 
     let mut a0 = 0usize;
     while a0 < nv {
@@ -226,45 +230,51 @@ pub fn ri_ladder_contract(
         // does not divide `nv`. Everything below is driven by `alen`, never by
         // `blk`, so a partial block is handled identically to a full one.
         let alen = blk.min(nv - a0);
-
-        // g_blk[(a_local, c), (b, d)] = Σ_P L[P,(a,c)] B_vv[P,(b,d)]
-        //                             + Σ_P B_vv[P,(a,c)] Bx[P,(b,d)]
         let rows = a0 * nv..(a0 + alen) * nv;
-        let l_slab = l_flat.slice(ndarray::s![.., rows.clone()]); // (naux, alen*nv)
-        let bvv_slab = b_vv_flat.slice(ndarray::s![.., rows.clone()]); // (naux, alen*nv)
+        let l_slab = l_flat.slice(s![.., rows.clone()]); // (naux, alen*nv)
+        let bvv_slab = b_vv_flat.slice(s![.., rows]); // (naux, alen*nv)
 
-        // In-place accumulation and layout: see "Memory accounting" above.
-        let mut g_blk: Array2<f64> = l_slab.t().dot(&b_vv_flat);
-        ndarray::linalg::general_mat_mul(1.0, &bvv_slab.t(), &bx_flat, 1.0, &mut g_blk);
-
-        for a_loc in 0..alen {
-            // g_blk rows for this `a` are [a_loc*nv + c], columns are [b*nv + d].
-            // We need G'[b, (c,d)] = g_blk[(a_loc,c), (b,d)].
-            for c in 0..nv {
-                let src_row = a_loc * nv + c;
-                for b in 0..nv {
-                    let dst = c * nv; // (c,d) flat base
-                    for d in 0..nv {
-                        gp[[b, dst + d]] = g_blk[[src_row, b * nv + d]];
+        // One job per `a` in the block: its `nv` panel rows and its Z slice
+        // are disjoint from every other job's, so the jobs run in parallel
+        // with no reduction, and each job's arithmetic is the same sequence of
+        // single-thread GEMMs at any thread count.
+        let mut g_view = g_panel.slice_mut(s![..alen * nv, ..]);
+        let g_rows: Vec<ArrayViewMut2<f64>> = g_view.axis_chunks_iter_mut(Axis(0), nv).collect();
+        let mut z_view = z.slice_mut(s![.., a0..a0 + alen, ..]);
+        let z_slices: Vec<ArrayViewMut2<f64>> = z_view.axis_iter_mut(Axis(1)).collect();
+        with_blas_threads(1, || {
+            g_rows.into_par_iter().zip(z_slices).enumerate().for_each(
+                |(a_loc, (mut g_a, mut z_a))| {
+                    let cols = a_loc * nv..(a_loc + 1) * nv;
+                    // g_a[c, (b,d)] = Σ_P L[P,(a,c)] B_vv[P,(b,d)]
+                    //               + Σ_P B_vv[P,(a,c)] Bx[P,(b,d)]
+                    let l_a = l_slab.slice(s![.., cols.clone()]);
+                    let bvv_a = bvv_slab.slice(s![.., cols]);
+                    general_mat_mul(1.0, &l_a.t(), &b_vv_flat, 0.0, &mut g_a);
+                    general_mat_mul(1.0, &bvv_a.t(), &bx_flat, 1.0, &mut g_a);
+                    // Z[(i,j), a, b] = Σ_c Σ_d tau[(i,j), (c,d)] · g_a[c, (b,d)]:
+                    // one (no·no, nv)·(nv, nv) GEMM per c, accumulated with
+                    // beta = 1 in ascending c. `g_a.row(c)` viewed as [b, d]
+                    // makes the d-contraction a plain transpose, so neither
+                    // tau nor the panel is ever re-laid out.
+                    for c in 0..nv {
+                        let tau_c = tau_mat.slice(s![.., c * nv..(c + 1) * nv]); // [(i,j), d]
+                        let g_c = g_a
+                            .row(c)
+                            .into_shape_with_order((nv, nv))
+                            .expect("a panel row is contiguous"); // [b, d]
+                        let beta = if c == 0 { 0.0 } else { 1.0 };
+                        general_mat_mul(1.0, &tau_c, &g_c.t(), beta, &mut z_a);
                     }
-                }
-            }
-            // Z[(i,j), b] for this `a`: (no*no, nv*nv) · (nv*nv, nv)
-            let zblk = tau_mat.dot(&gp.t()); // (no*no, nv)
-            let zblk = zblk.as_standard_layout();
-            let a = a0 + a_loc;
-            for i in 0..no {
-                for j in 0..no {
-                    let r = i * no + j;
-                    for b in 0..nv {
-                        z[[i, j, a, b]] = zblk[[r, b]];
-                    }
-                }
-            }
-        }
+                },
+            );
+        });
         a0 += alen;
     }
 
+    let z = z
+        .into_shape_with_order(IxDyn(&[no, no, nv, nv]))
+        .map_err(|e| FerricError::General(format!("RI-CCSD ladder: Z reshape: {e}")))?;
     Ok(z)
 }
 
@@ -476,6 +486,43 @@ mod tests {
     /// level (`<1e-14` relative), i.e. block width is a performance knob and
     /// never a physics knob. If a future change makes this drift materially,
     /// that is a real regression in the blocking, and this test catches it.
+    /// The per-`a` jobs own disjoint panel rows and `Z` slices, and each runs
+    /// single-thread GEMMs in a fixed order, so the contraction must be
+    /// bit-identical at any pool size, full-width and ragged. A reduction
+    /// across jobs, or any split that reads the thread count, shows up here as
+    /// a last-bit difference that a tolerance would hide.
+    #[test]
+    fn ri_ladder_is_bit_identical_across_thread_counts() {
+        let (naux, no, nv) = (13, 3, 9);
+        let (b_vv, b_ov, t1, tau) = random_inputs(naux, no, nv);
+        let run = |n: usize, blk: usize| {
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(n)
+                .build()
+                .unwrap()
+                .install(|| ri_ladder_contract(&b_vv, &b_ov, &t1, &tau, blk).unwrap())
+        };
+        for blk in [nv, 4] {
+            let one = run(1, blk);
+            assert!(
+                one.iter().any(|v| v.abs() > 1e-3),
+                "blk={blk}: result is ~zero, the comparison is vacuous"
+            );
+            for n in [2, 4, 7] {
+                let many = run(n, blk);
+                let differing = one
+                    .iter()
+                    .zip(many.iter())
+                    .filter(|(x, y)| x.to_bits() != y.to_bits())
+                    .count();
+                assert_eq!(
+                    differing, 0,
+                    "blk={blk}: {differing} elements differ between 1 and {n} threads"
+                );
+            }
+        }
+    }
+
     #[test]
     fn ri_ladder_block_width_differs_only_at_rounding_level() {
         let (naux, no, nv) = (9, 2, 7);

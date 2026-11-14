@@ -105,7 +105,14 @@ ratios are of the medians. Peak RSS is one converged run per route.
 
 RI is 1.3–1.5× slower per iteration from n<sub>v</sub> ≈ 70 up and uses
 2.1–2.3× less memory, which is why `auto` takes it only when `dense` does
-not fit. The RI route still holds the n<sub>o</sub>·n<sub>v</sub>³
+not fit. The RI ladder now runs one rayon job per virtual index a, and its
+result is bit-identical at any thread count. It ran single-threaded when the
+table above was measured. On hexane/cc-pVDZ (n<sub>v</sub> = 129, 12 threads,
+3 interleaved runs per build, 2026-11-14), the RI pp-ladder step fell from
+258–277 s to 57–58 s over 11 iterations, and CCSD from 381–401 s to 175–179 s.
+The dense route takes about 140–146 s on the same input. The parallel width
+equals the block width a<sub>blk</sub>, so a budget that forces narrow blocks
+also narrows the parallelism. The RI route still holds the n<sub>o</sub>·n<sub>v</sub>³
 `(ia|bc)` block in core, so it lowers the n<sub>v</sub>⁴ ceiling but does
 not remove every large tensor.
 

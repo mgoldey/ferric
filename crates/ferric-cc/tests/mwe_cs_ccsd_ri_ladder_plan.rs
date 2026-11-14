@@ -113,8 +113,7 @@ fn ri_panel_is_charged_per_unit_of_block_width() {
 }
 
 /// CONTRACT 3b: the block-independent RI scratch is charged in full —
-/// `Bx` and `L` (`2·naux·nv²`), the `nv³` transpose slab and the `no²·nv²`
-/// output `Z`. Both routes share every other reservation, so the RI
+/// `Bx` and `L` (`2·naux·nv²`) and the `no²·nv²` output `Z`. Both routes share every other reservation, so the RI
 /// threshold minus the dense threshold's shared part (dense threshold less
 /// its two `nv⁴` blocks, which dominate `eri3_ao` here) is exactly the RI
 /// scratch. Halving or dropping any fixed term moves this difference.
@@ -123,7 +122,7 @@ fn ri_fixed_scratch_terms_are_charged_exactly() {
     let shared = smallest_accepted(LadderRoute::Dense, 6) - 2 * nv4_bytes();
     for blk in [1usize, 7] {
         let ri = smallest_accepted(LadderRoute::Ri { block: blk }, 6);
-        let want = (2 * NAUX * NV * NV + blk * NV.pow(3) + NV.pow(3) + NO * NO * NV * NV) * F64;
+        let want = (2 * NAUX * NV * NV + blk * NV.pow(3) + NO * NO * NV * NV) * F64;
         assert_eq!(ri - shared, want, "blk={blk}: RI scratch charge");
     }
 }
