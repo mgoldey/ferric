@@ -663,5 +663,7 @@ mod tests {
         let ok = run("atoms = [0]\ntarget = -0.5\nkind = \"spin\"").unwrap();
         assert_eq!(ok[0].spin, SpinChannel::SpinDiff);
         assert_eq!(ok[0].fragment, vec![0]);
+        // The target reaches the solver with its sign.
+        assert_eq!(ok[0].target, -0.5);
     }
 }
