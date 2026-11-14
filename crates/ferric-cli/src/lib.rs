@@ -3688,12 +3688,7 @@ fn run_scs_mp2(
         eprintln!("error: {e}");
         std::process::exit(1);
     });
-    let scs_config = ScsMp2Config {
-        c_os: cfg.mp2.c_os.unwrap_or(6.0 / 5.0),
-        c_ss: cfg.mp2.c_ss.unwrap_or(1.0 / 3.0),
-        frozen_core: cfg.mp2.frozen_core.resolve(mol),
-        memory_budget_bytes: budget_bytes,
-    };
+    let scs_config = scs_mp2_config(cfg, mol, budget_bytes);
     let scs_result = scs_mp2(mol, prep, &dfbs, result, &scs_config).unwrap_or_else(|e| {
         eprintln!("error: {e}");
         std::process::exit(1);
@@ -6479,9 +6474,10 @@ fn task_reference_certificate_from(
 }
 
 /// The reference route `[scf] jk` resolved to (`apply_scf_jk`) for the
-/// RI-MP2 optimize: four-centre or RI-JK, the SCF its analytic gradient
-/// differentiates; any other route is an error.
+/// RI-MP2 / SCS-MP2 optimize of `kind`: four-centre or RI-JK, the SCF its
+/// analytic gradient differentiates; any other route is an error.
 fn rimp2_gradient_scf_jk(
+    kind: &str,
     rhf_config: &ferric_scf::rhf::RhfConfig,
 ) -> Result<ferric_scf::scf_jk::ScfJk, String> {
     let route = ferric_scf::scf_jk::effective_jk(rhf_config);
@@ -6493,7 +6489,7 @@ fn rimp2_gradient_scf_jk(
             k_builder: None,
         }),
         other => Err(format!(
-            "method.kind = \"rimp2\", task = \"optimize\" differentiates a four-centre or an \
+            "method.kind = \"{kind}\", task = \"optimize\" differentiates a four-centre or an \
              RI-JK reference ([scf] jk = \"exact\" | \"rijk\"); the [scf] fields give the J/K \
              route \"{other}\""
         )),
@@ -6698,7 +6694,7 @@ fn run_optimize(
                 memory_budget_bytes: budget_bytes,
                 ..Default::default()
             };
-            let scf_jk = rimp2_gradient_scf_jk(rhf_config).unwrap_or_else(|e| {
+            let scf_jk = rimp2_gradient_scf_jk("rimp2", rhf_config).unwrap_or_else(|e| {
                 eprintln!("error: {e}");
                 std::process::exit(1);
             });
@@ -6877,14 +6873,108 @@ fn run_optimize(
         "oo-rimp2" => {
             run_optimize_oo_rimp2(cfg, ctx, mol, bs, op, rhf_config, &opt_config, budget_bytes)
         }
-        "scs-mp2" => {
-            eprintln!("error: {}", ferric_mp2::optimize::SCS_MP2_NO_GRADIENT);
-            std::process::exit(1);
-        }
+        "scs-mp2" => run_optimize_scs_mp2(
+            method,
+            cfg,
+            ctx,
+            mol,
+            bs,
+            op,
+            rhf_config,
+            &opt_config,
+            budget_bytes,
+        ),
         _ => {
-            eprintln!("error: geometry optimization is currently only supported for method.kind = \"rhf\", \"ksdft\", \"uhf\", \"rohf\", \"pdep-rpa\", \"rimp2\", or \"oo-rimp2\"");
+            eprintln!("error: geometry optimization is currently only supported for method.kind = \"rhf\", \"ksdft\", \"uhf\", \"rohf\", \"pdep-rpa\", \"rimp2\", \"scs-mp2\", or \"oo-rimp2\"");
             std::process::exit(1);
         }
+    }
+}
+
+/// `method.kind = "scs-mp2"`, `task = "optimize"`: closed-shell SCS-MP2
+/// through [`ferric_mp2::optimize::optimize_geometry_scs_mp2_on`] (the
+/// driver the Python `run_optimize(method="scs-mp2")` calls), with the
+/// `[mp2] auxbasis` / `c_os` / `c_ss` / `frozen_core` of the energy run and the
+/// reference on `[scf] jk` (`"exact"` or `"rijk"`).
+#[allow(clippy::too_many_arguments)]
+fn run_optimize_scs_mp2(
+    method: &str,
+    cfg: &Config,
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    bs: &BasisSet,
+    op: Operator,
+    rhf_config: &RhfConfig,
+    opt_config: &OptimizeConfig,
+    budget_bytes: Option<usize>,
+) {
+    let aux_name = cfg
+        .mp2
+        .auxbasis
+        .as_deref()
+        .unwrap_or(config::DEFAULT_CORRELATION_AUX);
+    let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    let scs_config = scs_mp2_config(cfg, mol, budget_bytes);
+    let scf_jk = rimp2_gradient_scf_jk("scs-mp2", rhf_config).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    let opt_result = ferric_mp2::optimize::optimize_geometry_scs_mp2_on(
+        mol,
+        bs,
+        &aux_bs,
+        &scs_config,
+        opt_config,
+        rhf_config.external_potential.as_ref(),
+        &scf_jk,
+    )
+    .unwrap_or_else(|e| {
+        eprintln!("error during SCS-MP2 optimization: {e}");
+        std::process::exit(1);
+    });
+    println!("\nFinal Optimized Geometry (Bohr):");
+    for (i, atom) in opt_result.mol.atoms.iter().enumerate() {
+        println!(
+            "  {:2} {:2} {:12.8} {:12.8} {:12.8}",
+            i, atom.symbol, atom.x, atom.y, atom.zpos
+        );
+    }
+    println!(
+        "\nSCS-MP2 Optimization Result (c_OS={:.3}, c_SS={:.3}):",
+        scs_config.c_os, scs_config.c_ss
+    );
+    println!("  converged  = {}", opt_result.converged);
+    println!("  steps      = {}", opt_result.steps);
+    println!(
+        "  final E    = {:.10} Hartree (RHF + SCS-MP2)",
+        opt_result.energy
+    );
+    certify_optimization(
+        method,
+        cfg,
+        ctx,
+        bs,
+        op,
+        rhf_config,
+        opt_config,
+        &opt_result.mol,
+        None,
+        (opt_result.converged, opt_result.steps, opt_result.energy),
+        &ferric_mp2::optimize::rimp2_gradient_label(&scf_jk),
+    );
+}
+
+/// The `[mp2]` SCS-MP2 configuration of the energy and optimize runs.
+fn scs_mp2_config(cfg: &Config, mol: &Molecule, budget_bytes: Option<usize>) -> ScsMp2Config {
+    let d = ScsMp2Config::default();
+    ScsMp2Config {
+        c_os: cfg.mp2.c_os.unwrap_or(d.c_os),
+        c_ss: cfg.mp2.c_ss.unwrap_or(d.c_ss),
+        frozen_core: cfg.mp2.frozen_core.resolve(mol),
+        memory_budget_bytes: budget_bytes,
     }
 }
 

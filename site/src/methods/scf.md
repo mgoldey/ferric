@@ -463,17 +463,19 @@ vacuum.
 
 **Gradients.** Analytic nuclear gradients for RHF, UHF, ROHF and KS-DFT
 (including meta-GGA, with grid response), checked against finite differences
-and, for DFT, against PySCF. RI-MP2 also has an analytic gradient, closed
-shell only (there is no unrestricted MP2 nuclear gradient).
+and, for DFT, against PySCF. RI-MP2 and SCS-MP2 also have analytic
+gradients, closed shell only (there is no unrestricted MP2 nuclear gradient).
 
 **Optimization.** `method.task = "optimize"` for `rhf`, `uhf`, `rohf`,
-`ksdft`, `rimp2`, `oo-rimp2` and `pdep-rpa` (`examples/h2_opt.toml`,
-`examples/h2-lda-opt.toml`); on an open-shell molecule only `uhf`, `rohf` and
-`ksdft`. Python `ferric.run_optimize` covers the same SCF and MP2 routes
-(`reference=`, `xc=`, `dispersion=`, `solvent=`, `method="rimp2"` or
-`"oo-rimp2"`) through the same library drivers. `scs-mp2` has no
-optimization: its gradient scales the whole MP2 part by (c_os + c_ss)/2,
-which is not the derivative of the SCS-MP2 energy.
+`ksdft`, `rimp2`, `scs-mp2`, `oo-rimp2` and `pdep-rpa`
+(`examples/h2_opt.toml`, `examples/h2-lda-opt.toml`); on an open-shell
+molecule only `uhf`, `rohf` and `ksdft`. Python `ferric.run_optimize` covers
+the same SCF and MP2 routes (`reference=`, `xc=`, `dispersion=`, `solvent=`,
+`method="rimp2"`, `"scs-mp2"` (with `c_os=` / `c_ss=`) or `"oo-rimp2"`)
+through the same library drivers. The SCS-MP2 gradient is the relaxed RI-MP2
+gradient with the pair weight `(c_os + c_ss) t − c_ss t̄` in place of
+`2t − t̄` (derivation in `crates/ferric-mp2/theory.md` §9.2), checked against
+finite differences of the SCS-MP2 energy.
 
 **Harmonic frequencies.** `method.task = "frequencies"` for `rhf`, `uhf`,
 `rohf` and `ksdft` (`examples/water-frequencies.toml`,

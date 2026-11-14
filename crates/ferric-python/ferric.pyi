@@ -4317,6 +4317,8 @@ def run_optimize(
     memory_budget_gb: float | None = None,
     oo_max_iter: int | None = None,
     oo_grad_conv: float | None = None,
+    c_os: float | None = None,
+    c_ss: float | None = None,
 ) -> OptimizeResult:
     """Geometry optimization on any surface with an analytic gradient.
 
@@ -4339,11 +4341,12 @@ def run_optimize(
       fitted J/K the orbital steps and the gradient reuse (RI-J stored in f64);
       `frozen_core` must be 0; `oo_max_iter` / `oo_grad_conv` control the orbital loop, the `scf_*` kwargs its starting RHF. An
       orbital optimization that does not converge at some geometry raises.
+    - "scs-mp2": closed-shell SCS-MP2, E_HF + c_os E_os + c_ss E_ss (analytic Z-vector
+      gradient of that energy). `c_os` / `c_ss` default to 6/5 and 1/3 as in
+      `run_scs_mp2`; the other kwargs as for "rimp2".
 
-    "scs-mp2" raises ValueError: ferric's SCS-MP2 gradient scales the whole MP2 gradient by
-    (c_os + c_ss) / 2, which is not the derivative of the SCS-MP2 energy. The correlated
-    methods are closed-shell only and take no `xc`, `dispersion` or `solvent`; any kwarg a
-    method does not read raises ValueError.
+    The correlated methods are closed-shell only and take no `xc`, `dispersion` or
+    `solvent`; any kwarg a method does not read raises ValueError.
 
     `solvent`, `pcm_lebedev_order` ("scf" only): IEF-PCM implicit solvation, as in
     `run_rhf`. The optimizer follows the analytic IEF-PCM gradient (cavity and
@@ -4363,7 +4366,7 @@ def run_optimize(
 
     Each route calls the library driver the CLI's `task = "optimize"` calls for the same
     `method.kind`. The certificate's capability is "optimize:<kind>" (rhf, ksdft, uhf,
-    rohf, rimp2, oo-rimp2).
+    rohf, rimp2, scs-mp2, oo-rimp2).
     """
     ...
 

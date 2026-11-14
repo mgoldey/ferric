@@ -113,9 +113,12 @@ pub(crate) fn optimize_result_certificate(
 ///   starting RHF. An orbital optimization that does not converge at some
 ///   geometry raises.
 ///
-/// `"scs-mp2"` raises: ferric's SCS-MP2 gradient scales the whole MP2
-/// gradient by `(c_os + c_ss) / 2`, which is not the derivative of the
-/// SCS-MP2 energy. The correlated methods are closed-shell only, take no
+/// - `"scs-mp2"`: closed-shell SCS-MP2, `E_HF + c_os E_os + c_ss E_ss`
+///   (analytic Z-vector gradient of that energy). `c_os` / `c_ss` default to
+///   Grimme's 6/5 and 1/3 as in `run_scs_mp2`; every other kwarg as for
+///   `"rimp2"`.
+///
+/// The correlated methods are closed-shell only, take no
 /// `xc`, `dispersion` or `solvent`, and every kwarg a method does not read
 /// raises `ValueError` rather than being ignored.
 ///
@@ -130,7 +133,7 @@ pub(crate) fn optimize_result_certificate(
     method="scf", reference=None, xc=None, dispersion=None,
     df_j_aux=None, df_k_aux=None, scf_ri_j_precision=None, scf_ri_k_precision=None,
     auxbasis=None, frozen_core=None, scf_jk=None, jk_auxbasis=None, memory_budget_gb=None,
-    oo_max_iter=None, oo_grad_conv=None,
+    oo_max_iter=None, oo_grad_conv=None, c_os=None, c_ss=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_optimize(
@@ -162,6 +165,8 @@ pub(crate) fn run_optimize(
     memory_budget_gb: Option<f64>,
     oo_max_iter: Option<usize>,
     oo_grad_conv: Option<f64>,
+    c_os: Option<f64>,
+    c_ss: Option<f64>,
 ) -> PyResult<PyOptimizeResult> {
     let k = OptimizeKwargs {
         xc,
@@ -177,6 +182,8 @@ pub(crate) fn run_optimize(
         memory_budget_gb,
         oo_max_iter,
         oo_grad_conv,
+        c_os,
+        c_ss,
         solvent: solvent.is_some(),
         scf_conv_set: scf_max_iter.is_some()
             || scf_energy_conv.is_some()
@@ -209,6 +216,9 @@ pub(crate) fn run_optimize(
         OptimizeMethod::RiMp2 => run_optimize_rimp2(py, &emol, basis_name, &cfg, &opt_config, &k),
         OptimizeMethod::OoRiMp2 => {
             run_optimize_oo_rimp2(py, &emol, basis_name, &cfg, &opt_config, &k)
+        }
+        OptimizeMethod::ScsMp2 => {
+            run_optimize_scs_mp2(py, &emol, basis_name, &cfg, &opt_config, &k)
         }
     }
 }
@@ -266,6 +276,8 @@ pub(crate) fn run_optimize_uhf(
         None,
         None,
         None,
+        None,
+        None,
     )
 }
 
@@ -275,6 +287,7 @@ pub(crate) enum OptimizeMethod {
     Scf,
     RiMp2,
     OoRiMp2,
+    ScsMp2,
 }
 
 /// `run_optimize`'s method- and reference-specific kwargs.
@@ -292,6 +305,8 @@ pub(crate) struct OptimizeKwargs<'a> {
     memory_budget_gb: Option<f64>,
     oo_max_iter: Option<usize>,
     oo_grad_conv: Option<f64>,
+    c_os: Option<f64>,
+    c_ss: Option<f64>,
     /// `solvent=` was given.
     solvent: bool,
     /// Any of `scf_max_iter` / `scf_energy_conv` / `scf_density_conv` was given.
@@ -302,18 +317,16 @@ fn value_error(msg: String) -> PyErr {
     pyo3::exceptions::PyValueError::new_err(msg)
 }
 
-/// Strict `method=`: `"scs-mp2"` is refused with the reason.
+/// Strict `method=`.
 pub(crate) fn parse_optimize_method(method: &str) -> PyResult<OptimizeMethod> {
     match method {
         "scf" => Ok(OptimizeMethod::Scf),
         "rimp2" => Ok(OptimizeMethod::RiMp2),
         "oo-rimp2" => Ok(OptimizeMethod::OoRiMp2),
-        "scs-mp2" => Err(value_error(format!(
-            "run_optimize: {}",
-            ferric_mp2::optimize::SCS_MP2_NO_GRADIENT
-        ))),
+        "scs-mp2" => Ok(OptimizeMethod::ScsMp2),
         other => Err(value_error(format!(
-            "run_optimize: unknown method {other:?}; expected \"scf\", \"rimp2\" or \"oo-rimp2\""
+            "run_optimize: unknown method {other:?}; expected \"scf\", \"rimp2\", \
+             \"oo-rimp2\" or \"scs-mp2\""
         ))),
     }
 }
@@ -359,6 +372,7 @@ fn refuse_unread_optimize_kwargs(
         ("oo_max_iter", k.oo_max_iter.is_some()),
         ("oo_grad_conv", k.oo_grad_conv.is_some()),
     ];
+    let scs_only = [("c_os", k.c_os.is_some()), ("c_ss", k.c_ss.is_some())];
     let scf_only = [
         ("xc", k.xc.is_some()),
         ("dispersion", k.dispersion.is_some()),
@@ -370,11 +384,16 @@ fn refuse_unread_optimize_kwargs(
     let who = match method {
         OptimizeMethod::Scf => {
             unread(&correlated_only, "scf")?;
+            unread(&scs_only, "scf")?;
             return unread(&oo_only, "scf");
         }
         OptimizeMethod::RiMp2 => "rimp2",
         OptimizeMethod::OoRiMp2 => "oo-rimp2",
+        OptimizeMethod::ScsMp2 => "scs-mp2",
     };
+    if method != OptimizeMethod::ScsMp2 {
+        unread(&scs_only, who)?;
+    }
     if spin != ferric_scf::Spin::Restricted {
         return Err(value_error(format!(
             "run_optimize: method=\"{who}\" is closed-shell only (there is no unrestricted MP2 \
@@ -387,7 +406,7 @@ fn refuse_unread_optimize_kwargs(
             "run_optimize: method=\"{who}\" needs auxbasis= (the RI basis, e.g. \"cc-pvdz-ri\")"
         )));
     }
-    if method == OptimizeMethod::RiMp2 {
+    if matches!(method, OptimizeMethod::RiMp2 | OptimizeMethod::ScsMp2) {
         unread(&oo_only, who)?;
         let fixed_scf = [
             (
@@ -503,7 +522,7 @@ fn scf_optimize(
     }
 }
 
-/// The certificate of a correlated (`kind` = "rimp2" / "oo-rimp2")
+/// The certificate of a correlated (`kind` = "rimp2" / "scs-mp2" / "oo-rimp2")
 /// optimization: the RHF on `ref_cfg` at the returned geometry is the
 /// reference.
 #[allow(clippy::too_many_arguments)]
@@ -538,30 +557,7 @@ fn run_optimize_rimp2(
     opt_config: &OptimizeConfig,
     k: &OptimizeKwargs,
 ) -> PyResult<PyOptimizeResult> {
-    use ferric_scf::scf_jk::{ScfJk, ScfJkKeys, ScfJkMode};
-    let jk = ScfJk::resolve(
-        k.scf_jk,
-        k.jk_auxbasis,
-        None,
-        ScfJkMode::Exact,
-        ScfJkKeys::PYTHON,
-    )
-    .map_err(|e| value_error(format!("run_optimize: {e}")))?;
-    let scf_jk = match jk.mode {
-        ScfJkMode::Exact => ferric_mp2::gradient::exact_scf_jk(),
-        ScfJkMode::RiJk => ScfJk {
-            mode: ScfJkMode::RiJk,
-            aux: jk.aux.clone(),
-            k_builder: None,
-        },
-        _ => {
-            return Err(value_error(format!(
-                "run_optimize: method=\"rimp2\" differentiates a four-centre or an RI-JK \
-                 reference (scf_jk=\"exact\" | \"rijk\"); got scf_jk={:?}",
-                jk.mode.as_str()
-            )))
-        }
-    };
+    let scf_jk = mp2_gradient_scf_jk(k, "rimp2")?;
     let mp2_config = RiMp2Config {
         frozen_core: k.frozen_core.unwrap_or(0),
         memory_budget_bytes: budget_bytes_from_gb(k.memory_budget_gb),
@@ -584,7 +580,90 @@ fn run_optimize_rimp2(
             )
         })
         .map_err(make_err)?;
-    // The reference the gradient driver solves (`total_rimp2_gradient_on`).
+    Ok(mp2_gradient_optimize_result(
+        "rimp2", r, basis_name, ext, &scf_jk, opt_config,
+    ))
+}
+
+/// `method="scs-mp2"`: `ferric_mp2::optimize::optimize_geometry_scs_mp2_on`,
+/// the driver of the CLI's scs-mp2 `optimize`, on a four-centre or RI-JK
+/// reference, `c_os` / `c_ss` defaulting as in `run_scs_mp2`.
+fn run_optimize_scs_mp2(
+    py: Python<'_>,
+    emol: &Molecule,
+    basis_name: &str,
+    cfg: &RhfConfig,
+    opt_config: &OptimizeConfig,
+    k: &OptimizeKwargs,
+) -> PyResult<PyOptimizeResult> {
+    let scf_jk = mp2_gradient_scf_jk(k, "scs-mp2")?;
+    let d = ferric_mp2::scs::ScsMp2Config::default();
+    let scs_config = ferric_mp2::scs::ScsMp2Config {
+        c_os: k.c_os.unwrap_or(d.c_os),
+        c_ss: k.c_ss.unwrap_or(d.c_ss),
+        frozen_core: k.frozen_core.unwrap_or(0),
+        memory_budget_bytes: budget_bytes_from_gb(k.memory_budget_gb),
+    };
+    let obs = basis::bundled(basis_name).map_err(make_err)?;
+    let aux = basis::bundled(k.auxbasis.unwrap_or_default()).map_err(make_err)?;
+    let ext = cfg.external_potential.clone();
+    let r = py
+        .allow_threads(|| {
+            ferric_mp2::optimize::optimize_geometry_scs_mp2_on(
+                emol,
+                &obs,
+                &aux,
+                &scs_config,
+                opt_config,
+                ext.as_ref(),
+                &scf_jk,
+            )
+        })
+        .map_err(make_err)?;
+    Ok(mp2_gradient_optimize_result(
+        "scs-mp2", r, basis_name, ext, &scf_jk, opt_config,
+    ))
+}
+
+/// `scf_jk` / `jk_auxbasis` of a relaxed-MP2-gradient optimize (`who` =
+/// "rimp2" / "scs-mp2"): four-centre (default) or RI-JK; anything else
+/// raises.
+fn mp2_gradient_scf_jk(k: &OptimizeKwargs, who: &str) -> PyResult<ferric_scf::scf_jk::ScfJk> {
+    use ferric_scf::scf_jk::{ScfJk, ScfJkKeys, ScfJkMode};
+    let jk = ScfJk::resolve(
+        k.scf_jk,
+        k.jk_auxbasis,
+        None,
+        ScfJkMode::Exact,
+        ScfJkKeys::PYTHON,
+    )
+    .map_err(|e| value_error(format!("run_optimize: {e}")))?;
+    match jk.mode {
+        ScfJkMode::Exact => Ok(ferric_mp2::gradient::exact_scf_jk()),
+        ScfJkMode::RiJk => Ok(ScfJk {
+            mode: ScfJkMode::RiJk,
+            aux: jk.aux.clone(),
+            k_builder: None,
+        }),
+        _ => Err(value_error(format!(
+            "run_optimize: method=\"{who}\" differentiates a four-centre or an RI-JK \
+             reference (scf_jk=\"exact\" | \"rijk\"); got scf_jk={:?}",
+            jk.mode.as_str()
+        ))),
+    }
+}
+
+/// The result of a relaxed-MP2-gradient optimize of `kind`, certified on the
+/// reference the gradient driver solves (`total_rimp2_gradient_on` /
+/// `total_scs_mp2_gradient_on`).
+fn mp2_gradient_optimize_result(
+    kind: &str,
+    r: ferric_mp2::optimize::RiMp2OptimizeResult,
+    basis_name: &str,
+    ext: Option<ferric_core::external_potential::ExternalPotential>,
+    scf_jk: &ferric_scf::scf_jk::ScfJk,
+    opt_config: &OptimizeConfig,
+) -> PyOptimizeResult {
     let mut ref_cfg = RhfConfig {
         density_conv: 1e-9,
         external_potential: ext,
@@ -593,22 +672,22 @@ fn run_optimize_rimp2(
     .for_geometry_task();
     scf_jk.apply(&mut ref_cfg);
     let certificate_data = correlated_optimize_certificate(
-        "rimp2",
+        kind,
         &r.mol,
         basis_name,
         &ref_cfg,
         (r.converged, r.steps, r.energy),
         opt_config,
-        &ferric_mp2::optimize::rimp2_gradient_label(&scf_jk),
+        &ferric_mp2::optimize::rimp2_gradient_label(scf_jk),
     );
-    Ok(PyOptimizeResult {
+    PyOptimizeResult {
         energy: r.energy,
         converged: r.converged,
         steps: r.steps,
         energy_trace: r.energy_trace,
         mol_data: r.mol,
         certificate_data,
-    })
+    }
 }
 
 /// `method="oo-rimp2"`: `ferric_mp2::optimize::optimize_geometry_oo_rimp2`,

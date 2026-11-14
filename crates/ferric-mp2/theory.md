@@ -397,6 +397,49 @@ again exact for any quadratic form. Both $u$ and $v$ are full rank, so this
 term costs a few full-rank RI-K gradient channels rather than the
 occupied-rank one of the SCF gradient.
 
+### 9.2 Spin-component-scaled (SCS-MP2) gradient
+
+The closed-shell spin components of section 4 are
+$E_{\mathrm{OS}} = \sum K t$ and $E_{\mathrm{SS}} = \sum K(t - \bar t)$, with
+$K_{ij}^{ab} = (ia|jb)$, $t = K/\Delta$, $\bar t_{ij}^{ab} = t_{ij}^{ba}$ and
+$\Delta_{ij}^{ab} = \varepsilon_i + \varepsilon_j - \varepsilon_a - \varepsilon_b$. So
+
+$$ E_{\mathrm{SCS}} = c_{\mathrm{OS}}E_{\mathrm{OS}} + c_{\mathrm{SS}}E_{\mathrm{SS}}
+= \sum_{ijab} K_{ij}^{ab}\,\tilde T_{ij}^{ab}, \qquad
+\tilde T = (c_{\mathrm{OS}} + c_{\mathrm{SS}})\,t - c_{\mathrm{SS}}\,\bar t, $$
+
+which is MP2's $2t - \bar t$ at $(1, 1)$. The gradient of section 9 uses the
+amplitudes in two places, and both carry over with $\tilde T$ in place of
+$2t - \bar t$:
+
+* **Integral derivative.** $E_{\mathrm{SCS}} = \sum K\,W K/\Delta$ with
+  $W = (c_{\mathrm{OS}} + c_{\mathrm{SS}}) - c_{\mathrm{SS}}(a \leftrightarrow b)$,
+  symmetric because $\Delta$ is invariant under $a \leftrightarrow b$, so
+  $\partial E/\partial K_{ij}^{ab} = 2\tilde T_{ij}^{ab}$. This 2-PDM reaches
+  the Lagrangian matrix $I$ and the 3-centre/2-centre RI response only
+  through $x^P_{ia} = \sum_{jb}\tilde T_{ij}^{ab}B^P_{jb}$
+  (`zvector.rs` `build_x_ov_weighted`).
+* **Denominator derivative.** $\partial E/\partial \Delta_{ij}^{ab} =
+  -t_{ij}^{ab}\tilde T_{ij}^{ab}$, so the unrelaxed densities are those above
+  with $\tilde T$ in the second slot:
+
+  $$ P_{ij} = -\sum_{kab} t_{ik}^{ab}\tilde T_{jk}^{ab}, \qquad
+  P_{ab} = \sum_{ijc} t_{ij}^{ac}\tilde T_{ij}^{bc}. $$
+
+  Bilinear in $(t, \tilde T)$, they are
+  $c_{\mathrm{SS}}P^{\mathrm{MP2}} + (c_{\mathrm{OS}} - c_{\mathrm{SS}})P^{\mathrm{OS}}$
+  with $P^{\mathrm{OS}} = P(t, t)$ (`rimp2.rs` `opposite_spin_density`).
+
+Everything else — the frozen core–active block, the Z-vector right-hand
+side, the relaxed and energy-weighted densities, the fitted (RI-JK)
+reference terms of 9.1 — is built from $I$ and $P$ and needs no change.
+`Mp2Intermediates::apply_spin_scaling` applies both substitutions;
+$(c_{\mathrm{OS}}, c_{\mathrm{SS}}) = (1, 1)$ leaves the intermediates
+untouched, so the RI-MP2 gradient runs through the same code bit for bit.
+Checked against central finite differences of `scs_mp2` (H2O STO-3G and
+cc-pVDZ, NH3 6-31G; $(6/5, 1/3)$ and $(1, 0)$; frozen core; RI-JK) in
+`tests/scs_mp2_gradient.rs`.
+
 ## 10. Static polarizability
 
 **Finite field** (`ff_polar.rs:390` `mp2_polarizability_static`). The core

@@ -3,6 +3,7 @@
 Every route calls the library driver the CLI's `task = "optimize"` calls for
 the same `method.kind` (`optimize_geometry{,_uhf,_rohf}_with_scf_correction`,
 `ferric_mp2::optimize::optimize_geometry_rimp2_on`,
+`ferric_mp2::optimize::optimize_geometry_scs_mp2_on`,
 `ferric_mp2::optimize::optimize_geometry_oo_rimp2`), so on the same molecule
 and settings the two surfaces run the same arithmetic. The CLI prints the
 final energy to 10 decimals and the geometry to 8 (Bohr); the bar here is
@@ -28,6 +29,8 @@ Mutations measured to fail (each on an assertion, then restored):
 - `oo_ri_mp2_gradient` building its J/K four-centre on an RI-JK reference
   fails `test_oo_rimp2_rijk_endpoint_is_stationary_on_the_fitted_surface`
   (analytic vs fitted FD 1.09e-5, bar 1e-6);
+- `run_optimize_scs_mp2` ignoring `c_os` / `c_ss` (always 6/5, 1/3) fails
+  `test_matches_the_cli[scs-mp2-sos-water]` (final E -75.01214 vs -75.00345);
 - `parse_optimize_reference` mapping unset to ROHF on an open shell fails
   `test_open_shell_defaults_to_uhf`;
 - `refuse_unread_optimize_kwargs` returning early fails the nine cases it
@@ -178,6 +181,22 @@ ROUTES = [
         f'[mp2]\nauxbasis = "cc-pvdz-ri"\noo_grad_conv = 1e-7\n\n{SCF_TOML}jk = "rijk"\n',
         id="oo-rimp2-rijk-water",
     ),
+    pytest.param(
+        WATER,
+        1,
+        dict(method="scs-mp2", auxbasis="cc-pvdz-ri", c_os=1.0, c_ss=0.0),
+        '[method]\nkind = "scs-mp2"\ntask = "optimize"\n\n'
+        '[mp2]\nauxbasis = "cc-pvdz-ri"\nc_os = 1.0\nc_ss = 0.0\n',
+        id="scs-mp2-sos-water",
+    ),
+    pytest.param(
+        WATER,
+        1,
+        dict(method="scs-mp2", auxbasis="cc-pvdz-ri", scf_jk="rijk"),
+        '[method]\nkind = "scs-mp2"\ntask = "optimize"\n\n'
+        '[mp2]\nauxbasis = "cc-pvdz-ri"\n\n[scf]\njk = "rijk"\n',
+        id="scs-mp2-rijk-water",
+    ),
 ]
 
 
@@ -200,6 +219,7 @@ def test_certificates_name_the_route():
         (water, dict(xc="PBE"), "optimize:ksdft"),
         (nh2, dict(reference="rohf"), "optimize:rohf"),
         (water, dict(method="oo-rimp2", auxbasis="cc-pvdz-ri"), "optimize:oo-rimp2"),
+        (water, dict(method="scs-mp2", auxbasis="cc-pvdz-ri"), "optimize:scs-mp2"),
     ]
     for mol, kwargs, capability in cases:
         r = ferric.run_optimize(mol, "sto-3g", **kwargs)
@@ -225,7 +245,15 @@ AUX = {"auxbasis": "cc-pvdz-ri"}
 @pytest.mark.parametrize(
     "mol,kwargs,needle",
     [
-        (WATER_MOL, dict(method="scs-mp2", **AUX), "(c_os + c_ss) / 2"),
+        (WATER_MOL, dict(method="rimp2", c_os=1.0, **AUX), "c_os is not read"),
+        (WATER_MOL, dict(c_ss=0.0), "c_ss is not read"),
+        (NH2_MOL, dict(method="scs-mp2", **AUX), "closed-shell only"),
+        (WATER_MOL, dict(method="scs-mp2", scf_jk="rijcosx", **AUX), "rijcosx"),
+        (
+            WATER_MOL,
+            dict(method="scs-mp2", scf_density_conv=1e-8, **AUX),
+            "scf_density_conv",
+        ),
         (WATER_MOL, dict(method="mp3"), "unknown method"),
         (WATER_MOL, dict(reference="rks"), "unknown reference"),
         (WATER_MOL, dict(auxbasis="cc-pvdz-ri"), "auxbasis is not read"),

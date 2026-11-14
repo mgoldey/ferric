@@ -1,6 +1,8 @@
 //! RI-MP2 nuclear gradients: analytical and finite-difference reference.
 
-use crate::rimp2::{compute_mp2_intermediates_ov_only, ri_mp2, RiMp2Config};
+use crate::rimp2::{
+    compute_mp2_intermediates_ov_only, ri_mp2, ri_mp2_spin_components, RiMp2Config, SpinScaling,
+};
 use crate::zvector::{solve_zvector_timed, ZvectorControls};
 use ferric_core::basis::BasisSet;
 use ferric_core::external_potential::ExternalPotential;
@@ -158,16 +160,25 @@ pub fn rimp2_gradient_analytical(
         bounds,
         rhf,
         config,
+        SpinScaling::MP2,
         ext,
         ZvectorControls::DEFAULT,
         &mut acc,
     )
 }
 
-/// [`rimp2_gradient_analytical`] with its phases recorded in `acc` (inert
-/// unless `FERRIC_TIMING` is set; the arithmetic is the same either way) and
-/// the Z-vector solved under `controls`. A Z-vector that misses its
-/// tolerance is an error.
+/// [`rimp2_gradient_analytical`] of the spin-component-scaled energy
+/// `scaling` ([`SpinScaling`]; `SpinScaling::MP2` is the RI-MP2 gradient
+/// bit for bit) with its phases recorded in `acc` (inert unless
+/// `FERRIC_TIMING` is set; the arithmetic is the same either way) and the
+/// Z-vector solved under `controls`. A Z-vector that misses its tolerance
+/// is an error.
+///
+/// The scaling enters only through the intermediates
+/// ([`crate::rimp2::Mp2Intermediates::apply_spin_scaling`]): the scaled
+/// unrelaxed densities and the pair weight `T̃` of every `x_ov` build. The
+/// Z-vector, the Lagrangian blocks and the 3c/2c response are those of
+/// RI-MP2, on the reference J/K route of `rhf` (four-centre or RI-JK).
 #[allow(clippy::too_many_arguments)]
 fn rimp2_gradient_analytical_timed(
     mol: &Molecule,
@@ -177,14 +188,18 @@ fn rimp2_gradient_analytical_timed(
     bounds: &SchwarzBounds,
     rhf: &ScfResult,
     config: &RiMp2Config,
+    scaling: SpinScaling,
     ext: Option<&ExternalPotential>,
     controls: ZvectorControls,
     acc: &mut PhaseAccumulator,
 ) -> Result<Array2<f64>, FerricError> {
     // ov-only intermediates: the gradient/zvector pipeline never reads
     // b_oo/b_vv, so the (naux, nvir²) block is never materialized here.
-    let inter = acc.time("intermediates (b_ov, t2, P)", || {
+    let mut inter = acc.time("intermediates (b_ov, t2, P)", || {
         compute_mp2_intermediates_ov_only(mol, obs, dfbs, op, rhf, config)
+    })?;
+    acc.time("intermediates: spin scaling", || {
+        inter.apply_spin_scaling(scaling)
     })?;
     let budget_bytes = ferric_core::memory::resolve_budget_bytes(config.memory_budget_bytes);
     let ctx = ferric_core::parallel::ParallelContext::default();
@@ -470,10 +485,12 @@ fn integral_response_gradient_3c2c_timed(
         )
     };
 
-    // X^P_{ia} = Σ_{jb} (2 t_{ij,ab} − t_{ij,ba}) B^P_{jb}, one pooled GEMM per
-    // occupied i (the same object the Z-vector's Imat build uses).
+    // X^P_{ia} = Σ_{jb} T̃_{ij,ab} B^P_{jb} (T̃ = 2t − t̄ for MP2, the
+    // spin-scaled pair weight otherwise), one pooled GEMM per occupied i (the
+    // same object the Z-vector's Imat build uses).
     let xov_tok = acc.begin("resp: x_ov (per-i GEMMs)");
-    let x_ov = crate::zvector::build_x_ov(t2, &inter.b_ov, nocc, nvir, naux);
+    let x_ov =
+        crate::zvector::build_x_ov_weighted(t2, &inter.b_ov, nocc, nvir, naux, inter.spin_scaling);
     acc.stop(xov_tok);
     let y_ov = acc.time("resp: y_ov = V^-1/2 x_ov", || {
         with_blas_threads(opt_in_blas_threads(), || inter.v_inv_sqrt.t().dot(&x_ov))
@@ -714,49 +731,18 @@ fn integral_response_gradient_3c2c_timed(
     Ok(grad)
 }
 
-/// The unscaled RI-MP2 relaxed-Lagrangian gradient plus the RI 3c/2c
-/// response on a four-centre reference, for [`scs_mp2_gradient_analytical`]:
-/// its scaling subtracts an exact four-centre RHF gradient, so a
-/// density-fitted reference is an error.
+/// The analytical SCS-MP2 nuclear gradient, `d(E_HF + c_os E_os +
+/// c_ss E_ss)/dR`: the relaxed RI-MP2 gradient with the pair weight
+/// `T̃ = (c_os + c_ss) t − c_ss t̄` in place of `2t − t̄` and the
+/// correspondingly scaled unrelaxed densities ([`SpinScaling`] has the
+/// derivation). `config.c_os = config.c_ss = 1` is
+/// [`rimp2_gradient_analytical`] bit for bit.
+///
+/// Frozen core (`config.frozen_core`) and a density-fitted (RI-JK)
+/// reference are supported exactly as in [`rimp2_gradient_analytical`]:
+/// both act on the Z-vector/Lagrangian side, which the scaling reaches only
+/// through `Imat` and the densities.
 #[allow(clippy::too_many_arguments)]
-fn four_centre_relaxed_gradient(
-    mol: &Molecule,
-    obs: &PreparedBasis,
-    dfbs: &PreparedBasis,
-    op: Operator,
-    bounds: &SchwarzBounds,
-    rhf: &ScfResult,
-    inter: &crate::rimp2::Mp2Intermediates,
-    budget_bytes: usize,
-    ext: Option<&ExternalPotential>,
-) -> Result<Array2<f64>, FerricError> {
-    if let Some(route) = rhf.df_jk.as_ref() {
-        return Err(FerricError::General(format!(
-            "SCS-MP2 gradient: the reference SCF is density-fitted ({route:?}); the \
-             SCS gradient is built on a four-centre RHF reference only"
-        )));
-    }
-    let acc = &mut PhaseAccumulator::new();
-    let ctx = ferric_core::parallel::ParallelContext::default();
-    let jk = ResponseJk::exact(&ctx, obs, bounds);
-    let zv = solve_zvector_timed(
-        obs,
-        dfbs,
-        op,
-        &jk,
-        rhf,
-        inter,
-        budget_bytes,
-        ZvectorControls::DEFAULT,
-        acc,
-    )?
-    .require_converged()?;
-    let mut grad = mp2_relaxed_lagrangian_gradient(mol, obs, op, &jk, rhf, inter, &zv, ext, acc)?;
-    grad += &integral_response_gradient_3c2c(mol, obs, dfbs, op, inter, rhf.mos_r())?;
-    Ok(grad)
-}
-
-/// Compute the analytical SCS-MP2 nuclear gradient.
 pub fn scs_mp2_gradient_analytical(
     mol: &Molecule,
     obs: &PreparedBasis,
@@ -767,29 +753,37 @@ pub fn scs_mp2_gradient_analytical(
     config: &crate::scs::ScsMp2Config,
     ext: Option<&ExternalPotential>,
 ) -> Result<Array2<f64>, FerricError> {
-    let mp2_config = RiMp2Config {
+    let mut acc = PhaseAccumulator::new().report_on_drop("SCS-MP2 gradient");
+    rimp2_gradient_analytical_timed(
+        mol,
+        obs,
+        dfbs,
+        op,
+        bounds,
+        rhf,
+        &scs_rimp2_config(config),
+        scs_scaling(config),
+        ext,
+        ZvectorControls::DEFAULT,
+        &mut acc,
+    )
+}
+
+/// The RI-MP2 configuration [`crate::scs::scs_mp2`] computes its energy
+/// with.
+fn scs_rimp2_config(config: &crate::scs::ScsMp2Config) -> RiMp2Config {
+    RiMp2Config {
         frozen_core: config.frozen_core,
         memory_budget_bytes: config.memory_budget_bytes,
         ..Default::default()
-    };
-    let inter = compute_mp2_intermediates_ov_only(mol, obs, dfbs, op, rhf, &mp2_config)?;
-    let budget_bytes = ferric_core::memory::resolve_budget_bytes(mp2_config.memory_budget_bytes);
-    // Full (unscaled) RI-MP2 relaxed-Lagrangian gradient + RI 3c/2c response.
-    let mut grad =
-        four_centre_relaxed_gradient(mol, obs, dfbs, op, bounds, rhf, &inter, budget_bytes, ext)?;
-    // Approximate scaling: multiply MP2 part by average SCS scaling
-    let scale = (config.c_os + config.c_ss) / 2.0;
-    // EXACT-J/K RHF gradient on purpose: `grad` above carries an exact
-    // four-centre HF part, and only a like-for-like subtraction isolates the
-    // MP2 part being scaled (see `rhf_gradient_exact_jk`).
-    let rhf_grad = ferric_scf::gradient::rhf_gradient_exact_jk(mol, obs, op, bounds, rhf, ext)?;
-    for i in 0..mol.atoms.len() {
-        for c in 0..3 {
-            let mp2_part = grad[(i, c)] - rhf_grad[(i, c)];
-            grad[(i, c)] = rhf_grad[(i, c)] + scale * mp2_part;
-        }
     }
-    Ok(grad)
+}
+
+fn scs_scaling(config: &crate::scs::ScsMp2Config) -> SpinScaling {
+    SpinScaling {
+        c_os: config.c_os,
+        c_ss: config.c_ss,
+    }
 }
 
 /// Compute the total RI-MP2 energy and its analytical nuclear gradient at a
@@ -872,6 +866,62 @@ pub fn total_rimp2_gradient_on(
     scf_jk: &ScfJk,
     warm: &mut ScfWarmStart,
 ) -> Result<(f64, Array2<f64>), FerricError> {
+    total_mp2_gradient_scaled_on(
+        mol,
+        obs_basis,
+        aux_basis,
+        op,
+        mp2_config,
+        SpinScaling::MP2,
+        ext,
+        scf_jk,
+        warm,
+    )
+}
+
+/// The total SCS-MP2 energy `E_HF + c_os E_os + c_ss E_ss` (the energy
+/// [`crate::scs::scs_mp2`] reports, Coulomb operator) and its analytical
+/// nuclear gradient ([`scs_mp2_gradient_analytical`]) at one geometry, the
+/// reference SCF on `scf_jk` (`"exact"` or `"rijk"`, as in
+/// [`total_rimp2_gradient_on`]) and warm-started through `warm`.
+pub fn total_scs_mp2_gradient_on(
+    mol: &Molecule,
+    obs_basis: &BasisSet,
+    aux_basis: &BasisSet,
+    config: &crate::scs::ScsMp2Config,
+    ext: Option<&ExternalPotential>,
+    scf_jk: &ScfJk,
+    warm: &mut ScfWarmStart,
+) -> Result<(f64, Array2<f64>), FerricError> {
+    total_mp2_gradient_scaled_on(
+        mol,
+        obs_basis,
+        aux_basis,
+        Operator::coulomb(),
+        &scs_rimp2_config(config),
+        scs_scaling(config),
+        ext,
+        scf_jk,
+        warm,
+    )
+}
+
+/// [`total_rimp2_gradient_on`] for the spin-component-scaled energy
+/// `scaling`. `SpinScaling::MP2` takes the energy from [`ri_mp2`]; any
+/// other scaling from [`ri_mp2_spin_components`] as
+/// `E_HF + c_os E_os + c_ss E_ss`, the arithmetic of [`crate::scs::scs_mp2`].
+#[allow(clippy::too_many_arguments)]
+fn total_mp2_gradient_scaled_on(
+    mol: &Molecule,
+    obs_basis: &BasisSet,
+    aux_basis: &BasisSet,
+    op: Operator,
+    mp2_config: &RiMp2Config,
+    scaling: SpinScaling,
+    ext: Option<&ExternalPotential>,
+    scf_jk: &ScfJk,
+    warm: &mut ScfWarmStart,
+) -> Result<(f64, Array2<f64>), FerricError> {
     if scf_jk.mode == ScfJkMode::RiJCosx {
         return Err(FerricError::General(
             "RI-MP2 gradient: scf_jk = \"rijcosx\" is not supported (no COSX exchange \
@@ -902,8 +952,13 @@ pub fn total_rimp2_gradient_on(
         });
     }
     let mut acc = PhaseAccumulator::new().report_on_drop("RI-MP2 energy + gradient");
-    let mp2 = acc.time("ri_mp2 energy", || {
-        ri_mp2(mol, &obs, &dfbs, op, &rhf, mp2_config)
+    let energy = acc.time("ri_mp2 energy", || {
+        if scaling == SpinScaling::MP2 {
+            ri_mp2(mol, &obs, &dfbs, op, &rhf, mp2_config).map(|r| r.total_energy)
+        } else {
+            let (sc, _) = ri_mp2_spin_components(mol, &obs, &dfbs, op, &rhf, mp2_config)?;
+            Ok(rhf.energy + (scaling.c_os * sc.e_os + scaling.c_ss * sc.e_ss))
+        }
     })?;
     let grad = rimp2_gradient_analytical_timed(
         mol,
@@ -913,11 +968,12 @@ pub fn total_rimp2_gradient_on(
         &bounds,
         &rhf,
         mp2_config,
+        scaling,
         ext,
         ZvectorControls::DEFAULT,
         &mut acc,
     )?;
-    Ok((mp2.total_energy, grad))
+    Ok((energy, grad))
 }
 
 #[cfg(test)]
@@ -1535,6 +1591,7 @@ mod tests {
                 &bounds,
                 &rhf,
                 &config,
+                SpinScaling::MP2,
                 None,
                 controls,
                 &mut PhaseAccumulator::new(),

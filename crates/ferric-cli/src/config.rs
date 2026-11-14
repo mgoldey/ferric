@@ -3201,13 +3201,19 @@ impl Config {
     }
 }
 
+/// The kinds whose `task = "optimize"` runs the analytic relaxed RI-MP2
+/// gradient (`ferric_mp2::gradient::total_rimp2_gradient_on` /
+/// `total_scs_mp2_gradient_on`) on an exact or an RI-JK reference.
+pub const MP2_GRADIENT_OPTIMIZE_KINDS: &[&str] = &["rimp2", "scs-mp2"];
+
 /// Whether `[scf] jk` governs the reference SCF of `kind` / `task`: the
-/// [`SCF_JK_KINDS`] energies, and the RI-MP2 and OO-RI-MP2 optimizes, whose
-/// analytic gradients differentiate an exact or an RI-JK reference
-/// (`ferric_mp2::gradient::total_rimp2_gradient_on`,
-/// `ferric_mp2::oo_rimp2_gradient::oo_ri_mp2_gradient`).
+/// [`SCF_JK_KINDS`] energies, the [`MP2_GRADIENT_OPTIMIZE_KINDS`]
+/// optimizations and the OO-RI-MP2 optimize, whose analytic gradients
+/// differentiate an exact or an RI-JK reference
+/// (`ferric_mp2::oo_rimp2_gradient::oo_ri_mp2_gradient` for OO-RI-MP2).
 fn scf_jk_governs(kind: &str, task: &str) -> bool {
-    let mp2_optimize = matches!(kind, "rimp2" | "oo-rimp2") && task == "optimize";
+    let mp2_optimize = (MP2_GRADIENT_OPTIMIZE_KINDS.contains(&kind) || kind == "oo-rimp2")
+        && task == "optimize";
     SCF_JK_KINDS.contains(&kind) && (task == "energy" || mp2_optimize)
 }
 
@@ -3223,13 +3229,15 @@ fn refuse_scf_jk_for_kind(
     if kind == "oo-rimp2" {
         jk.require_exact_or_rijk(ScfJkKeys::CLI, OO_BUILDS_EXACT_OR_RIJK)?;
     }
-    if kind == "rimp2" && task == "optimize" && jk.mode == ScfJkMode::RiJCosx {
-        return Err(
-            "[scf] jk = \"rijcosx\" is refused for method.kind = \"rimp2\", task = \
+    if MP2_GRADIENT_OPTIMIZE_KINDS.contains(&kind)
+        && task == "optimize"
+        && jk.mode == ScfJkMode::RiJCosx
+    {
+        return Err(format!(
+            "[scf] jk = \"rijcosx\" is refused for method.kind = \"{kind}\", task = \
              \"optimize\": the RI-MP2 gradient has no COSX exchange response. Use [scf] \
              jk = \"exact\" or \"rijk\""
-                .to_string(),
-        );
+        ));
     }
     Ok(())
 }
@@ -3331,8 +3339,8 @@ impl ScfCfg {
             if self.jk.is_some() || self.jk_aux.is_some() {
                 return Err(format!(
                     "[scf] jk / jk_aux are wired for task = \"energy\" with method.kind = {} \
-                     and for method.kind = \"rimp2\" / \"oo-rimp2\" with task = \"optimize\" \
-                     only; got \
+                     and for method.kind = \"rimp2\" / \"scs-mp2\" / \"oo-rimp2\" with \
+                     task = \"optimize\" only; got \
                      kind = \"{kind}\", task = \"{task}\". Use [scf] df_j_aux / df_k_aux / \
                      k_builder there",
                     SCF_JK_KINDS.join(", ")
@@ -4408,7 +4416,7 @@ impl Config {
             );
         }
         let kind = self.method.kind.as_str();
-        if self.method.task == "optimize" && matches!(kind, "rimp2" | "pdep-rpa") {
+        if self.method.task == "optimize" && matches!(kind, "rimp2" | "scs-mp2" | "pdep-rpa") {
             return Err(format!(
                 "[scf] guess_basis is not supported with method.kind = \"{kind}\", task = \
                  \"optimize\": that geometry optimizer builds its own RHF reference at each \
@@ -5275,6 +5283,13 @@ mod compat_guard_tests {
             ),
             ("ccsd", "energy", "jk = \"rijk\"\n", "wired for task"),
             ("rimp2", "frequencies", "jk = \"rijk\"\n", "wired for task"),
+            ("att-rimp2", "optimize", "jk = \"rijk\"\n", "wired for task"),
+            (
+                "scs-mp2",
+                "optimize",
+                "jk = \"rijcosx\"\n",
+                "no COSX exchange response",
+            ),
             (
                 "rimp2",
                 "optimize",
@@ -5297,6 +5312,10 @@ mod compat_guard_tests {
             .unwrap();
         assert_eq!(rijk_opt.mode, ScfJkMode::RiJk);
         assert_eq!(rijk_opt.aux.as_deref(), Some("def2-universal-jkfit"));
+        let scs_opt = choice("scs-mp2", "optimize", "jk = \"rijk\"\n")
+            .unwrap()
+            .unwrap();
+        assert_eq!(scs_opt.mode, ScfJkMode::RiJk);
         assert!(choice("rimp2", "energy", "jk = \"exact\"\ndf_increments = true\n").is_ok());
         assert!(choice("rimp2", "energy", "df_increments = true\n").is_ok());
         let e = cfg(

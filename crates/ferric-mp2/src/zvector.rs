@@ -4,7 +4,7 @@
 //! iteratively with DIIS, where A is the orbital Hessian and L is the
 //! MP2 Lagrangian. The A*z product is computed in the AO basis via J/K builds.
 
-use crate::rimp2::Mp2Intermediates;
+use crate::rimp2::{Mp2Intermediates, SpinScaling};
 use ferric_core::mol::Molecule;
 use ferric_core::orbitals::OrbitalSpace;
 use ferric_core::timing::PhaseAccumulator;
@@ -197,7 +197,14 @@ pub(crate) fn solve_zvector_timed(
         )
     };
     let x_ov = acc.time("zvec: x_ov", || {
-        build_x_ov(&inter.t2, &inter.b_ov, nocc, nvir, inter.naux)
+        build_x_ov_weighted(
+            &inter.t2,
+            &inter.b_ov,
+            nocc,
+            nvir,
+            inter.naux,
+            inter.spin_scaling,
+        )
     });
     let imat = acc.time("zvec: Imat", || build_imat_ri(&x_ov, &b_full, &orb));
     drop(worker_charge);
@@ -572,6 +579,21 @@ pub(crate) fn build_x_ov(
     nvir: usize,
     naux: usize,
 ) -> Array2<f64> {
+    build_x_ov_weighted(t2, b_ov, nocc, nvir, naux, SpinScaling::MP2)
+}
+
+/// [`build_x_ov`] with the pair weight of a spin-component-scaled energy:
+/// `x_ov[P, ia] = Σ_{jb} T̃_{ij,ab} B^P_{jb}`,
+/// `T̃ = (c_os + c_ss) t − c_ss t̄` ([`SpinScaling`]). `SpinScaling::MP2`
+/// is [`build_x_ov`] bit for bit.
+pub(crate) fn build_x_ov_weighted(
+    t2: &[f64],
+    b_ov: &Array2<f64>,
+    nocc: usize,
+    nvir: usize,
+    naux: usize,
+    scaling: SpinScaling,
+) -> Array2<f64> {
     use ndarray::Axis;
     use rayon::prelude::*;
     let nov = nocc * nvir;
@@ -585,14 +607,17 @@ pub(crate) fn build_x_ov(
         .into_par_iter()
         .enumerate()
         .for_each(|(i, mut x_i_slot)| {
-            x_i_slot.assign(&b_ov.dot(&tt_block(t2, i, nocc, nvir).t()));
+            x_i_slot.assign(&b_ov.dot(&tt_block(t2, i, nocc, nvir, scaling).t()));
         });
     x_ov
 }
 
-/// `TT_i[a, jb] = 2 t_{ij,ab} − t_{ij,ba}` for one occupied `i`, shape
-/// `(nvir, nocc·nvir)`, from `t2[(i*nvir+a)*nov + j*nvir+b] = t_{ij,ab}`.
-fn tt_block(t2: &[f64], i: usize, nocc: usize, nvir: usize) -> Array2<f64> {
+/// `TT_i[a, jb] = T̃_{ij,ab} = d·t_{ij,ab} − e·t_{ij,ba}` for one occupied
+/// `i`, shape `(nvir, nocc·nvir)`, from
+/// `t2[(i*nvir+a)*nov + j*nvir+b] = t_{ij,ab}`; `(d, e)` =
+/// `(scaling.direct(), scaling.exchange())`, `(2, 1)` for MP2.
+fn tt_block(t2: &[f64], i: usize, nocc: usize, nvir: usize, scaling: SpinScaling) -> Array2<f64> {
+    let (d, e) = (scaling.direct(), scaling.exchange());
     let nov = nocc * nvir;
     let mut tt_i = Array2::<f64>::zeros((nvir, nov));
     for a in 0..nvir {
@@ -600,7 +625,7 @@ fn tt_block(t2: &[f64], i: usize, nocc: usize, nvir: usize) -> Array2<f64> {
             for b in 0..nvir {
                 let t_ij_ab = t2[(i * nvir + a) * nov + j * nvir + b];
                 let t_ij_ba = t2[(i * nvir + b) * nov + j * nvir + a];
-                tt_i[(a, j * nvir + b)] = 2.0 * t_ij_ab - t_ij_ba;
+                tt_i[(a, j * nvir + b)] = d * t_ij_ab - e * t_ij_ba;
             }
         }
     }

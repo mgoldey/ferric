@@ -13,7 +13,7 @@
 //! and matches the precedent `ferric-rpa` already set for its own
 //! energy/gradient pair.
 
-use crate::gradient::{exact_scf_jk, total_rimp2_gradient_on};
+use crate::gradient::{exact_scf_jk, total_rimp2_gradient_on, total_scs_mp2_gradient_on};
 use crate::rimp2::RiMp2Config;
 use ferric_core::basis::BasisSet;
 use ferric_core::external_potential::ExternalPotential;
@@ -85,18 +85,44 @@ pub fn optimize_geometry_rimp2_on(
     ext: Option<&ExternalPotential>,
     scf_jk: &ScfJk,
 ) -> Result<RiMp2OptimizeResult, FerricError> {
+    bfgs_optimize(mol, opt_config, |m, warm| {
+        total_rimp2_gradient_on(m, obs_basis, aux_basis, op, mp2_config, ext, scf_jk, warm)
+    })
+}
+
+/// Optimize a closed-shell geometry on the SCS-MP2 surface
+/// `E_HF + c_os E_os + c_ss E_ss` (`scs_config`), with the analytic
+/// gradient [`crate::gradient::total_scs_mp2_gradient_on`] and the reference
+/// SCF on `scf_jk` (`"exact"` or `"rijk"`). The BFGS driver is the one of
+/// [`optimize_geometry_rimp2_on`].
+pub fn optimize_geometry_scs_mp2_on(
+    mol: &Molecule,
+    obs_basis: &BasisSet,
+    aux_basis: &BasisSet,
+    scs_config: &crate::scs::ScsMp2Config,
+    opt_config: &OptimizeConfig,
+    ext: Option<&ExternalPotential>,
+    scf_jk: &ScfJk,
+) -> Result<RiMp2OptimizeResult, FerricError> {
+    bfgs_optimize(mol, opt_config, |m, warm| {
+        total_scs_mp2_gradient_on(m, obs_basis, aux_basis, scs_config, ext, scf_jk, warm)
+    })
+}
+
+/// Cartesian BFGS on the energy and gradient `eval` returns, each geometry's
+/// RHF warm-started from the previous one's through the carrier `eval`
+/// receives (`opt_config.scf_warm_start`, see `ferric_scf::warm_start`).
+fn bfgs_optimize(
+    mol: &Molecule,
+    opt_config: &OptimizeConfig,
+    mut eval_on: impl FnMut(&Molecule, &mut ScfWarmStart) -> Result<(f64, Array2<f64>), FerricError>,
+) -> Result<RiMp2OptimizeResult, FerricError> {
     let mut current_mol = mol.clone();
     let natoms = current_mol.atoms.len();
     let n_coord = natoms * 3;
 
-    // Each step's RHF starts from the previous step's converged orbitals
-    // (`opt_config.scf_warm_start`, see `ferric_scf::warm_start`).
     let mut warm = ScfWarmStart::new(opt_config.scf_warm_start);
-    let mut eval = |m: &Molecule| {
-        total_rimp2_gradient_on(
-            m, obs_basis, aux_basis, op, mp2_config, ext, scf_jk, &mut warm,
-        )
-    };
+    let mut eval = |m: &Molecule| eval_on(m, &mut warm);
     let (mut energy, mut grad_arr) = eval(&current_mol)?;
     let mut grad = flatten(&grad_arr);
     let mut energy_trace = vec![energy];
@@ -206,19 +232,6 @@ pub fn oo_rimp2_gradient_label(rhf_config: &ferric_scf::rhf::RhfConfig) -> Strin
         _ => base.to_string(),
     }
 }
-
-/// Why there is no SCS-MP2 geometry optimization.
-///
-/// [`crate::gradient::scs_mp2_gradient_analytical`] scales the whole MP2
-/// part of the gradient by `(c_os + c_ss) / 2`, while the SCS-MP2 energy is
-/// `E_HF + c_os E_os + c_ss E_ss`. The two agree only when `c_os = c_ss`; for
-/// H2 (`E_ss = 0`) at Grimme's 6/5, 1/3 the energy's correlation part carries
-/// 6/5 and the gradient's 23/30.
-pub const SCS_MP2_NO_GRADIENT: &str =
-    "SCS-MP2 has no geometry optimization: ferric's SCS-MP2 gradient scales the whole MP2 \
-     gradient by (c_os + c_ss) / 2, which is not the derivative of the SCS-MP2 energy \
-     (c_os E_os + c_ss E_ss) unless c_os = c_ss. Optimizable correlated methods: \"rimp2\" \
-     and \"oo-rimp2\"";
 
 /// Optimize a closed-shell geometry on the OO-RI-MP2 surface.
 ///

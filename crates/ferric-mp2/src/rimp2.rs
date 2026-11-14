@@ -1515,8 +1515,15 @@ pub struct Mp2Intermediates {
     pub first_occ: usize,
     /// Number of auxiliary basis functions (`dfbs.nbasis()` for the molecular builders).
     pub naux: usize,
-    /// Unscaled MP2 correlation energy `e_os + e_ss` (Hartree).
+    /// Unscaled MP2 correlation energy `e_os + e_ss` (Hartree), whatever
+    /// [`Self::spin_scaling`] is.
     pub e_mp2: f64,
+    /// The spin-component scaling the gradient-side quantities carry:
+    /// [`SpinScaling::MP2`] as built, set by
+    /// [`Mp2Intermediates::apply_spin_scaling`]. `p_oo`/`p_vv` are the scaled
+    /// densities and `zvector::build_x_ov_weighted` reads the pair
+    /// weights from it; `t2` stays the plain amplitudes.
+    pub spin_scaling: SpinScaling,
     /// RAII charge against the shared [`MemoryPool`](ferric_core::memory::pool::MemoryPool)
     /// for `b_ov` + `b_oo` + `b_vv`, held for as long as those tensors are.
     ///
@@ -1583,6 +1590,7 @@ impl Mp2Intermediates {
             first_occ: space.first_occ,
             naux,
             e_mp2,
+            spin_scaling: SpinScaling::MP2,
             _charge: ferric_core::memory::pool::Reservation::inert(
                 "MP2 intermediates (repackaged, charged by the builder)",
             ),
@@ -1594,30 +1602,144 @@ impl Mp2Intermediates {
         OrbitalSpace::new(self.nocc, self.nvir, self.nocc_total, self.first_occ)
     }
 
-    /// Compute spin-component scaled P_oo density correction.
-    pub fn p_oo_scs(&self, c_os: f64, c_ss: f64) -> Array2<f64> {
-        // P_ij = -sum_{kab} t_{ik,ab} (2 t_{jk,ab} - t_{jk,ba})
-        // For SCS, we scale the OS term by c_os and the SS term by c_ss.
-        // Effective Γ_iajb = c_os * iajb + c_ss * (iajb - ibja)
-        // Since t_ik,ab = (ia|kb) / D, we can effectively scale the whole P.
-        // Actually, SCS-MP2 is equivalent to scaling the t2 amplitudes.
-        // A simple way to get the SCS density: P_scs = c_os * P_os + c_ss * P_ss.
-        // But our P_oo is already the sum.
-        // Standard MP2: P_total = P_OS + P_SS.
-        // SCS-MP2: P_total = c_os * P_OS + c_ss * P_SS.
-        // This requires computing OS and SS density parts separately.
+    /// Turn the MP2 intermediates into those of the spin-component-scaled
+    /// energy `c_os E_os + c_ss E_ss` (see [`SpinScaling`] for the
+    /// derivation): `p_oo`/`p_vv` become `P(t, T̃)` and
+    /// [`Self::spin_scaling`] records the pair weights the `x_ov` builds read.
+    ///
+    /// `SpinScaling::MP2` changes nothing (the RI-MP2 gradient runs through
+    /// here unchanged, bit for bit). `c_os == c_ss` only rescales the
+    /// densities; otherwise the opposite-spin density `P(t, t)`
+    /// ([`opposite_spin_density`]) is built once, `P = c_ss P_mp2 +
+    /// (c_os − c_ss) P_os`. Applying a second scaling is an error.
+    pub fn apply_spin_scaling(&mut self, scaling: SpinScaling) -> Result<(), FerricError> {
+        if self.spin_scaling != SpinScaling::MP2 {
+            return Err(FerricError::General(format!(
+                "MP2 intermediates already carry the spin scaling {:?}",
+                self.spin_scaling
+            )));
+        }
+        if !(scaling.c_os.is_finite() && scaling.c_ss.is_finite()) {
+            return Err(FerricError::General(format!(
+                "spin scaling must be finite, got c_os = {}, c_ss = {}",
+                scaling.c_os, scaling.c_ss
+            )));
+        }
+        if scaling == SpinScaling::MP2 {
+            return Ok(());
+        }
+        let SpinScaling { c_os, c_ss } = scaling;
+        if c_os == c_ss {
+            self.p_oo *= c_ss;
+            self.p_vv *= c_ss;
+        } else {
+            let (os_oo, os_vv) = opposite_spin_density(&self.t2, self.nocc, self.nvir);
+            self.p_oo = c_ss * &self.p_oo + (c_os - c_ss) * &os_oo;
+            self.p_vv = c_ss * &self.p_vv + (c_os - c_ss) * &os_vv;
+        }
+        self.spin_scaling = scaling;
+        Ok(())
+    }
+}
 
-        // For now, let's approximate by average scaling if c_os == c_ss.
-        // Proper implementation requires splitting build_mp2_density into OS/SS.
-        let scale = (c_os + c_ss) / 2.0;
-        &self.p_oo * scale
+/// Spin-component scaling `(c_os, c_ss)` of the closed-shell MP2
+/// correlation energy, `E = c_os E_os + c_ss E_ss` (SCS-MP2; `(1, 1)` is
+/// MP2, `(c_os, 0)` the SOS limit).
+///
+/// # The pair weight the gradient reads
+///
+/// With `K_ij^ab = (ia|jb)`, `Δ_ij^ab = ε_i + ε_j − ε_a − ε_b` and
+/// `t_ij^ab = K_ij^ab / Δ_ij^ab` (`t̄_ij^ab = t_ij^ba`), the closed-shell
+/// components are `E_os = Σ K t` and `E_ss = Σ K (t − t̄)`, so
+///
+/// ```text
+///   E = Σ_ijab K_ij^ab T̃_ij^ab,   T̃ = (c_os + c_ss) t − c_ss t̄
+/// ```
+///
+/// which is MP2's `2t − t̄` at `(1, 1)`. Everything the relaxed RI-MP2
+/// gradient contracts with the amplitudes follows from `T̃`:
+///
+/// * the integral derivative. `E` is a quadratic form in `K` with weight
+///   `(c_os + c_ss) δ − c_ss (a↔b)`, symmetric under `ijab ↔ ijba` because
+///   `Δ` is, so `∂E/∂K_ij^ab = 2 T̃_ij^ab`. The 2-PDM `2T̃` reaches the
+///   `Imat` Lagrangian and the 3c/2c RI response through
+///   `x_ov[P, ia] = Σ_jb T̃_ij^ab B^P_jb`
+///   (`zvector::build_x_ov_weighted`);
+/// * the denominator derivative. `∂E/∂Δ_ij^ab = −t_ij^ab T̃_ij^ab`, so the
+///   unrelaxed occupied/virtual densities are those of MP2 with `2t − t̄`
+///   replaced by `T̃`: `P_ij = −Σ_kab t_ik^ab T̃_jk^ab`,
+///   `P_ab = Σ_ijc t_ij^ac T̃_ij^bc`. Bilinear in `(t, T̃)`, they split as
+///   `P = c_os P(t, t) + c_ss P(t, t − t̄) = c_ss P_mp2 + (c_os − c_ss) P_os`.
+///
+/// The Z-vector right-hand side, the frozen core–active block, the relaxed
+/// density and the energy-weighted density are built from `Imat` and `P`,
+/// so they need no change of their own. `crates/ferric-mp2/theory.md` has
+/// the same derivation.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SpinScaling {
+    /// Opposite-spin coefficient.
+    pub c_os: f64,
+    /// Same-spin coefficient.
+    pub c_ss: f64,
+}
+
+impl SpinScaling {
+    /// Unscaled MP2.
+    pub const MP2: Self = Self {
+        c_os: 1.0,
+        c_ss: 1.0,
+    };
+
+    /// Coefficient of `t` in `T̃` (2 for MP2).
+    pub fn direct(self) -> f64 {
+        self.c_os + self.c_ss
     }
 
-    /// Compute spin-component scaled P_vv density correction.
-    pub fn p_vv_scs(&self, c_os: f64, c_ss: f64) -> Array2<f64> {
-        let scale = (c_os + c_ss) / 2.0;
-        &self.p_vv * scale
+    /// Coefficient of `−t̄` in `T̃` (1 for MP2).
+    pub fn exchange(self) -> f64 {
+        self.c_ss
     }
+}
+
+/// The opposite-spin unrelaxed density blocks `(P_oo, P_vv)` = `P(t, t)`:
+///
+/// ```text
+///   P_ij = − Σ_kab t_ik^ab t_jk^ab,    P_ab = Σ_ijc t_ij^ac t_ij^bc
+/// ```
+///
+/// the `T̃ = t` member of [`crate::oo_rimp2::build_mp2_density`]'s family
+/// (`T̃ = 2t − t̄`). `t2` is the flat `(nocc·nvir)²` array of
+/// [`Mp2Intermediates::t2`]. Viewed as an `nocc × (nvir·nocc·nvir)` matrix
+/// `R`, `P_oo = −R Rᵀ`; with `A_i` its rows `i·nvir..(i+1)·nvir` as an
+/// `nvir × nocc·nvir` matrix, `P_vv = Σ_i A_i A_iᵀ`. One BLAS thread per
+/// GEMM and the `i` terms added in order, so the result does not depend on
+/// the thread count.
+pub fn opposite_spin_density(t2: &[f64], nocc: usize, nvir: usize) -> (Array2<f64>, Array2<f64>) {
+    use ndarray::{s, ArrayView2};
+    use rayon::prelude::*;
+    let nov = nocc * nvir;
+    assert_eq!(t2.len(), nov * nov, "opposite_spin_density: t2 length");
+    if nov == 0 {
+        return (Array2::zeros((nocc, nocc)), Array2::zeros((nvir, nvir)));
+    }
+    let r = ArrayView2::from_shape((nocc, nvir * nov), t2).expect("t2 is nocc x nvir*nov");
+    let t = ArrayView2::from_shape((nov, nov), t2).expect("t2 is nov x nov");
+    let (p_oo, per_i): (Array2<f64>, Vec<Array2<f64>>) = with_blas_threads(1, || {
+        let p_oo = -r.dot(&r.t());
+        let per_i = (0..nocc)
+            .into_par_iter()
+            .map(|i| {
+                let a_i = t.slice(s![i * nvir..(i + 1) * nvir, ..]);
+                a_i.dot(&a_i.t())
+            })
+            .collect();
+        (p_oo, per_i)
+    });
+    let mut p_vv = Array2::<f64>::zeros((nvir, nvir));
+    for acc in &per_i {
+        p_vv += acc;
+    }
+    (p_oo, p_vv)
 }
 
 /// Compact RI-MO intermediates needed for RPA-family methods.
@@ -1990,6 +2112,7 @@ fn compute_mp2_intermediates_impl(
         first_occ,
         naux,
         e_mp2: e_os + e_ss,
+        spin_scaling: SpinScaling::MP2,
         _charge: blocks_charge,
     })
 }
