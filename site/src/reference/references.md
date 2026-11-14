@@ -131,7 +131,7 @@ references the source code itself cites.
 
 ### Background on MP2's dispersion error
 
-Not implemented in ferric; cited on [Electronic response](../idea/response.md):
+Not implemented in ferric; cited on [Research focus: electronic response](../idea/response.md):
 
 - Cybulski & Lytle, *J. Chem. Phys.* **127**, 141102 (2007)
 - Heßelmann, *J. Chem. Phys.* **128**, 144112 (2008)

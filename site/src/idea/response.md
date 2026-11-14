@@ -1,4 +1,7 @@
-# Electronic response
+# Research focus: electronic response
+
+This page is the maintainer's research perspective. It is not a statement of
+what ferric is for; the [landing page](../index.md) lists what ferric computes.
 
 `ferric` is organized around **electronic response**: how the electron density
 reacts to a perturbation. Standard quantum-chemistry codes are usually organized

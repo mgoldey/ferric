@@ -1,9 +1,24 @@
 # ferric
 
 A quantum chemistry engine written in Rust, with Python bindings and a
-TOML-driven command line. It computes Hartree–Fock and DFT energies and
-gradients, the MP2 family, coupled cluster, RPA and GW, and constrained DFT,
-with libint2 for the integrals.
+TOML-driven command line, using libint2 for the integrals. It computes:
+
+- energies and analytic gradients with Hartree–Fock and Kohn–Sham DFT, for
+  closed and open shells (RHF, UHF, ROHF, RKS, UKS, ROKS);
+- geometry optimization, harmonic frequencies, transition-state search
+  (P-RFO) and reaction paths (IRC);
+- implicit solvation (IEF-PCM, COSMO) and QM/MM embedding;
+- correlated energies: RI-MP2 and its variants, CCSD, CCSD(T);
+- excited states: TDA and TDDFT, BSE-TDA on G0W0;
+- multireference energies: CASSCF and NEVPT2;
+- periodic systems at the Gamma point and on k-point meshes;
+- RPA and GW, and constrained DFT.
+
+It plugs into other tools through the
+[ASE calculator](./using/ase.md), [QCSchema](./using/qcschema.md) input and
+output, and the [Avogadro plugin](./using/avogadro.md). How far each
+capability is checked is graded in
+[Capabilities and validation](./reference/validation.md).
 
 ```bash
 pip install ferric      # Linux x86_64, Python 3.10–3.13
@@ -40,7 +55,8 @@ and what to cite.
 | A chemist who wants numbers | [Your first calculation](./using/quickstart.md), then [Choosing a method](./using/choosing-a-method.md) |
 | Coming from PySCF | [For PySCF users](./using/pyscf-users.md) |
 | Working on drug-discovery workflows | [End-to-end applications](./using/applications.md) and [QM/MM](./using/qmmm.md) |
-| A method developer | [Electronic response](./idea/response.md), [Architecture](./reference/architecture.md), [Rust API](./reference/api.md) |
+| Driving ferric from ASE, QCFractal or geomeTRIC | [ASE calculator](./using/ase.md), [QCSchema](./using/qcschema.md) |
+| A method developer | [Architecture](./reference/architecture.md), [Rust API](./reference/api.md), [Research focus: electronic response](./idea/response.md) |
 | An automated agent | [For automated agents](./using/agents.md) |
 
 ## Implemented ≠ validated
@@ -51,28 +67,16 @@ reference differs a lot between methods. Each one is graded individually in
 **[Capabilities and validation](./reference/validation.md)**. Read it before relying on a
 result.
 
-## The idea
+## Maintainer's focus
 
-`ferric` is organized around **electronic response**: how the density reacts to
-a perturbation. That object appears as the polarizability \\( \alpha \\), the
-dielectric function \\( \varepsilon \\) and the susceptibility \\( \chi \\), and
-three of the method families here are different ways of getting it right where
-standard methods get it wrong:
-
-- **[Attenuated MP2](./methods/mp2.md)**: MP2 builds dispersion from an
-  uncoupled polarizability, which overbinds some systems (π-stacking is the
-  classic case). Attenuating the correlation operator removes the long-range
-  part where that error lives.
-- **[PDEP-RPA / GW](./methods/rpa-gw.md)**: the dielectric matrix is the
-  density–density response. PDEP keeps only its dominant eigenmodes, a low-rank
-  representation of the screening used by RPA correlation and the GW
-  interaction.
-- **[Constrained DFT](./methods/cdft.md)**: a constraint couples to the density
-  and reads its response, building charge-localized diabatic states and their
-  electron-transfer couplings.
-
-[Electronic response](./idea/response.md) develops the argument and says which
-parts of it are demonstrated and which remain a design premise.
+ferric is maintained by Matthew Goldey. His research interests are RI-MP2,
+attenuated MP2, MP2-V, constrained DFT and PDEP-RPA. Those areas get the
+deepest validation and the most active development. The other areas are
+validated per the grades in
+[Capabilities and validation](./reference/validation.md), mostly against
+PySCF, and are less exercised in research use. The
+[electronic-response essay](./idea/response.md) states the research
+perspective behind the focus areas.
 
 ## Source, license, citation
 

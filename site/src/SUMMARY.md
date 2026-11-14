@@ -35,9 +35,12 @@
 
 # Background
 
-- [Electronic response](./idea/response.md)
 - [Where the methods come from](./idea/methods.md)
 - [Architecture](./reference/architecture.md)
+
+# Maintainer's research focus
+
+- [Research focus: electronic response](./idea/response.md)
 
 # Reference
 
