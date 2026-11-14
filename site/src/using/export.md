@@ -1,7 +1,7 @@
-# Export: cube files, Molden files and NPZ bundles
+# Export: cube files, Molden files, FCIDUMP and NPZ bundles
 
 ferric writes volumetric data as Gaussian cube files, orbitals as Molden
-files and per-molecule property bundles as compressed NumPy `.npz` archives. The Python functions
+files, active-space Hamiltonians as FCIDUMP files and per-molecule property bundles as compressed NumPy `.npz` archives. The Python functions
 evaluate basis functions, the density and orbitals at arbitrary points; the
 CLI `[rpa]` section writes the NPZ bundle and PDEP eigenpotential cubes. The
 array schema is in `crates/ferric-export/theory.md`.
@@ -163,6 +163,72 @@ from iodata import load_one, dump_one
 
 dump_one(load_one("water.molden"), "water.fchk")
 ```
+
+### CASSCF natural orbitals
+
+`molden.write` also takes a `run_casscf` result. The file holds one orbital
+set: the doubly occupied orbitals (occupation 2), the active orbitals
+rotated to natural orbitals (eigenvectors of the active 1-RDM `dm1`, written
+in descending occupation, each with its natural occupation), then the
+virtuals (occupation 0). The occupations sum to the electron count, so the
+active ones sum to the active electron count. `ferric.molden.casscf_natural_orbitals(result)`
+returns the rotated coefficients and occupations. The `Ene=` column is
+`CasScfResult.mo_energy` when the run used `canonicalize=True` and 0
+otherwise.
+
+```python
+cas = ferric.run_casscf(water, bs, 4, (2, 2), canonicalize=True)
+molden.write("water-cas.molden", water, bs, cas)
+```
+
+The density PySCF evaluates from the file equals
+`2 C_core C_coreᵀ + C_act dm1 C_actᵀ` evaluated with ferric's AOs, to 1e-10 of
+its peak (`crates/ferric-python/tests/test_fcidump_molden_cas.py`).
+
+## FCIDUMP files
+
+`ferric.fcidump.write(path, mol, bs, mo_coeff, n_core, n_active, nelec, ms2)`
+writes the Hamiltonian of an active space in the standard FCIDUMP format
+that block2 (DMRG), Dice (SHCI), PySCF (`pyscf.tools.fcidump.read`) and most
+CI codes read. Orbitals `n_core .. n_core + n_active` of `mo_coeff` are
+active, the first `n_core` are doubly occupied and the rest are dropped.
+`nelec` is the number of ACTIVE electrons and `ms2` is
+`n_alpha - n_beta`.
+
+```python
+import ferric
+from ferric import fcidump
+
+water = ferric.Molecule.from_xyz_string(
+    "3\n\nO 0 0 0.11779\nH 0 0.755453 -0.471161\nH 0 -0.755453 -0.471161\n"
+)
+bs = ferric.BasisSet.bundled("6-31g")
+cas = ferric.run_casscf(water, bs, 4, (2, 2), canonicalize=True)
+fcidump.write("water.fcidump", water, bs, cas.mo_coeff, cas.n_core, 4, 4, 0)
+d = fcidump.read("water.fcidump")  # norb, nelec, ms2, h, eri, ecore
+```
+
+The file is built only from ferric's AO blocks (`AoIntegrals.hcore`, `veff`,
+`ao2mo`):
+
+- `h_pq = C_pᵀ (h + J[D_c] - K[D_c]/2) C_q`, with `D_c = 2 C_core C_coreᵀ`: the
+  potential of the inactive electrons is in the one-electron integrals.
+- `ECORE = E_nn + Tr[D_c h] + 1/2 Tr[D_c (J[D_c] - K[D_c]/2)]`: nuclear
+  repulsion plus the inactive electrons' energy. It equals
+  `CasCiResult.e_core` and `CasScfResult.e_core` for the same orbitals.
+- `(pq|rs)` in chemist notation, one line per 8-fold-unique element
+  (`p>=q`, `r>=s`, `pq>=rs`, 1-based), `h_pq` as `val p q 0 0` and `ECORE` as
+  `val 0 0 0 0`. Numbers are written in Python's shortest round-trip form.
+- `ORBSYM` is all 1 and `ISYM=1`: ferric writes no point-group labels.
+
+`fcidump.read(path)` returns the integrals expanded by the 8-fold symmetry.
+`read(write(x))` returns the written elements bitwise. Solving the file with
+`pyscf.fci.direct_spin1` reproduces the `e_total` of `run_casci` and
+`run_casscf` on water and N2 (`test_fcidump_molden_cas.py` states the bars).
+`fcidump.integrals(mol, bs, mo_coeff, n_core, n_active)` returns
+`(h, eri, ecore)` without writing a file. The two-electron tensor is held
+densely (`n_active^4` doubles), so very large active spaces are limited by
+memory.
 
 ## NPZ bundles from the CLI
 

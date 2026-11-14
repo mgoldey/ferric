@@ -54,7 +54,7 @@ from pathlib import Path
 
 import numpy as np
 
-__all__ = ["ao_map", "orbitals", "to_string", "write"]
+__all__ = ["ao_map", "casscf_natural_orbitals", "orbitals", "to_string", "write"]
 
 # Molden's Cartesian component order per l, as (lx, ly, lz).
 _MOLDEN_CART = {
@@ -174,6 +174,40 @@ def _occupations(c: np.ndarray, d: np.ndarray, s: np.ndarray) -> np.ndarray:
     return np.einsum("mk,mn,nk->k", sc, d, sc)
 
 
+def casscf_natural_orbitals(result) -> tuple[np.ndarray, np.ndarray]:
+    """``(C, occupations)`` of a `CasScfResult`: core, natural active, virtual.
+
+    The active columns of ``result.mo_coeff`` are rotated to the eigenvectors
+    of the active 1-RDM (occupations descending; the rotation is the identity
+    up to sign for ``canonicalize=True``). Core orbitals have occupation 2,
+    virtuals 0, so ``sum(occupations)`` is the electron count.
+    """
+    c = np.array(result.mo_coeff, dtype=float)
+    dm1 = np.asarray(result.dm1, dtype=float)
+    n_core = int(result.n_core)
+    n_act = dm1.shape[0]
+    w, u = np.linalg.eigh(0.5 * (dm1 + dm1.T))
+    order = np.argsort(-w, kind="stable")
+    w, u = w[order], u[:, order]
+    c[:, n_core : n_core + n_act] = c[:, n_core : n_core + n_act] @ u
+    occ = np.zeros(c.shape[1])
+    occ[:n_core] = 2.0
+    occ[n_core : n_core + n_act] = w
+    return c, occ
+
+
+def _casscf_channel(result) -> dict:
+    c, occ = casscf_natural_orbitals(result)
+    e = result.mo_energy
+    energies = np.zeros(c.shape[1]) if e is None else np.asarray(e, dtype=float)
+    return {
+        "spin": "Alpha",
+        "coefficients": c,
+        "energies": energies,
+        "occupations": _snap(occ),
+    }
+
+
 def orbitals(mol, basis_set, result, overlap=None) -> list[dict]:
     """The orbital sets of `result` in ferric's AO basis.
 
@@ -183,7 +217,9 @@ def orbitals(mol, basis_set, result, overlap=None) -> list[dict]:
     Closed-shell occupations are ``diag(C^T S D S C)`` of the result's
     density; open-shell ones are the result's ``occupations_alpha/beta``.
     An occupation within ``OCC_SNAP`` of an integer is written as that
-    integer.
+    integer. A `CasScfResult` gives one channel of natural orbitals with
+    their occupations (`casscf_natural_orbitals`); its orbital energies are
+    ``mo_energy`` (``canonicalize=True``) or zeros.
     """
     from . import AoIntegrals
 
@@ -202,6 +238,12 @@ def orbitals(mol, basis_set, result, overlap=None) -> list[dict]:
                 "occupations": _snap(result.occupations_beta()),
             },
         ]
+    if (
+        hasattr(result, "dm1")
+        and hasattr(result, "n_core")
+        and hasattr(result, "mo_coeff")
+    ):
+        return [_casscf_channel(result)]
     if not (hasattr(result, "mo_coefficients") and hasattr(result, "density")):
         raise TypeError(
             f"{type(result).__name__} carries no molecular orbitals; Molden export "
@@ -317,7 +359,8 @@ def write(path, mol, basis_set, result, title: str | None = None) -> None:
     """Write `result`'s orbitals to a Molden file at `path`.
 
     `mol` and `basis_set` are the molecule and orbital basis the SCF ran on.
-    `result` is a `RhfResult`, `DftResult` or `UhfResult` (UHF or ROHF);
+    `result` is a `RhfResult`, `DftResult`, `UhfResult` (UHF or ROHF) or a
+    `CasScfResult` (natural orbitals with their occupations);
     A `run_rhf(symmetry=True)` result carries no MO coefficients in the input
     frame and raises NotImplementedError; a result without orbitals raises
     TypeError. `title` defaults to "ferric <version>".
