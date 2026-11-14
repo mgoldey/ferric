@@ -1,11 +1,14 @@
 # ferric-tddft Mathematical Foundations
 
-Closed-shell linear response, singlet or triplet: TDA (CIS for an HF
+Linear response on closed-shell references (singlet or triplet) and
+spin-conserving response on UHF/UKS references: TDA (CIS for an HF
 reference) and full Casida TDDFT (TDHF for an HF reference), on RI integrals,
 for LDA, GGA, global-hybrid, τ-only meta-GGA and range-separated-hybrid
-references. The driver is `run_tddft` (`src/tddft.rs`); the XC kernel block
-comes from `ferric_dft::lr_kernel` (equations in `crates/ferric-dft/theory.md`).
-§8 derives the range-separated exchange and §9 the triplet spin combination.
+references. The driver is `run_tddft` (`src/tddft.rs`, `src/unrestricted.rs`);
+the XC kernel block comes from `ferric_dft::lr_kernel` (equations in
+`crates/ferric-dft/theory.md`). §8 derives the range-separated exchange, §9
+the triplet spin combination, §10 the unrestricted problem and §11 the
+⟨S²⟩ of its roots.
 
 ---
 
@@ -114,17 +117,18 @@ SCF. For meta-GGAs the default is 150 × 434 with NWChem radial pruning
 (`ferric_dft::grid::response_default_grid`), because the τ kernel is more
 grid-sensitive than LDA/GGA.
 
-Open-shell references are refused: there is no spin-resolved $A$/$B$
-assembly for an unrestricted reference. Singlet and triplet ($M_S = 0$)
-excitations of a closed-shell reference are both available (§9).
+Singlet and triplet ($M_S = 0$) excitations of a closed-shell reference are
+both available (§9). UHF/UKS references take the spin-conserving problem of
+§10 with the same functional gate; ROHF/ROKS references are refused (§10).
 
 ---
 
 ## 6. Cost
 
 $A$, $B$, $A\pm B$, $T$ and $M$ are dense $d\times d$ with $d = n_{\rm occ}n_{\rm vir}$,
-so memory grows as $N^4$ and each `eigh` as $N^6$; Casida performs two. There
-is no iterative (Davidson) solver. The memory plan counts the co-resident
+so memory grows as $N^4$ and each `eigh` as $N^6$; Casida performs two. The
+matrix-free Davidson solver (`src/davidson.rs`) holds only the subspace.
+The memory plan counts the co-resident
 $d^2$ matrices and the RI tensors before allocating, and a run over budget is
 an error.
 
@@ -315,3 +319,123 @@ one-electron operator, so its matrix element with $X^T$ is
 $\sum_{ia}(X_\alpha-X_\beta)/\sqrt2\cdot\langle i|\mathbf r|a\rangle$ summed over
 equal and opposite spin amplitudes: zero. Triplet transition dipoles and
 oscillator strengths are reported as exactly zero.
+
+---
+
+## 10. Unrestricted (UHF / UKS) references
+
+For an unrestricted reference the α and β spin orbitals differ, and the
+response is solved in the spin-conserving space of both spins at once:
+compound indices $ia\alpha$ ($d_\alpha = n^\alpha_{\rm occ}n^\alpha_{\rm vir}$)
+followed by $ia\beta$ ($d_\beta$), dimension $d_\alpha + d_\beta$. With all
+orbitals of their own spin,
+
+$$A_{ia\sigma,jb\tau} = \delta_{\sigma\tau}\delta_{ij}\delta_{ab}(\epsilon^\sigma_a-\epsilon^\sigma_i)
++ (i_\sigma a_\sigma|j_\tau b_\tau) + (i_\sigma a_\sigma|f_{\sigma\tau}|j_\tau b_\tau)
+- \delta_{\sigma\tau}\,c\,(i_\sigma j_\sigma|a_\sigma b_\sigma),$$
+
+$$B_{ia\sigma,jb\tau} = (i_\sigma a_\sigma|b_\tau j_\tau) + (i_\sigma a_\sigma|f_{\sigma\tau}|j_\tau b_\tau)
+- \delta_{\sigma\tau}\,c\,(i_\sigma b_\sigma|a_\sigma j_\sigma),$$
+
+$c(pq|rs)$ again standing for the exchange combination of §8 (global, HF or
+range-separated). These are PySCF `tdscf.uhf.get_ab`'s blocks
+($A_{\alpha\alpha}$, $A_{\alpha\beta}$, $A_{\beta\beta}$, with
+$A_{\beta\alpha} = A_{\alpha\beta}^{\mathsf T}$). TDA and the Casida
+reduction of §2-3 apply unchanged to the $(d_\alpha+d_\beta)$-dimensional
+matrices.
+
+**Assembly.** Each same-spin block is the restricted builder of §1 over that
+spin's orbitals and RI tensors with the Coulomb coefficient 1 instead of 2
+(one $(ia|jb)$ per spin pair, no spin adaptation) and that spin's exchange.
+The cross-spin Coulomb block is $B_{ov}^{\alpha\,\mathsf T}B_{ov}^\beta$ in
+$A$ and in $B$ (real orbitals). There is no cross-spin exchange. The matrix-free
+products use the same pieces: per spin the $\Delta$ and exchange products of
+`matvec.rs` (Coulomb coefficient 0, no kernel), plus the spin-summed Coulomb
+product $J(x)_\sigma = B_{ov}^{\sigma\,\mathsf T}(B_{ov}^\alpha x_\alpha + B_{ov}^\beta x_\beta)$
+and the kernel; $(A+B)x$ takes $2J$ and $2F$, $(A-B)x$ neither.
+
+**The kernel.** `ferric_dft::lr_kernel::UksKernel` is the spin-resolved AO
+kernel at the UKS reference $(D_\alpha, D_\beta)$, screened per spin on its
+own $\rho_\sigma$ as the UKS $V_{xc}$ is. `UksOvFxc` applies it per vector:
+$\delta D_\sigma = \tfrac12(M_\sigma + M_\sigma^{\mathsf T})$ with
+$M_\sigma = C^\sigma_{\rm occ}X_\sigma C^{\sigma\,\mathsf T}_{\rm vir}$, then
+$(Kx)_\sigma = C^{\sigma\,\mathsf T}_{\rm occ}\,\delta V_\sigma[\delta D_\alpha,\delta D_\beta]\,C^\sigma_{\rm vir}$.
+A unit vector of spin $\tau$ gives column $jb\tau$ of both spin blocks,
+$(ia\sigma|f_{\sigma\tau}|jb\tau)$, with the normalization of the restricted
+block (§1): at a restricted point $K_{\alpha\alpha}\pm K_{\alpha\beta}$ is the
+singlet / triplet block. The dense path applies the operator to the
+identity, checks the asymmetry against `FXC_BLOCK_ASYMMETRY_TOL` and
+symmetrizes. Every functional the restricted path accepts is accepted here,
+τ-only meta-GGAs and hybrid meta-GGAs included (`MggaFxcKernel` is polarized);
+VV10 stays refused.
+
+**Occupations.** $n_\alpha, n_\beta$ come from the molecule's charge and
+multiplicity, and the occupied orbitals are the lowest $n_\sigma$ of each
+spin. A reference whose density is not built from those orbitals (a
+non-aufbau MOM solution) is refused.
+
+**Exact limit.** For a closed-shell molecule with $C_\alpha = C_\beta$ the
+problem block-diagonalizes on $X_\alpha \pm X_\beta$ (§9): the unrestricted
+roots are the union of the restricted singlets and triplets, with
+$\langle S^2\rangle = 0$ and 2. The only differences are rounding (the
+Coulomb term summed as $B^{\mathsf T}B + B^{\mathsf T}B$ instead of
+$2B^{\mathsf T}B$) and the kernel's density screen (per spin instead of on
+$\rho_\alpha+\rho_\beta$), which acts only at points at the density floor.
+
+**ROHF / ROKS.** Refused. ROHF orbitals diagonalize one Roothaan-coupled
+Fock operator, not separate α and β Fock operators, so the $A$ above (with
+orbital-energy differences on its diagonal) is not the response of that
+reference; the ROKS response needs the ROHF orbital-rotation Hessian.
+
+**Oscillator strengths.** Each spin is its own block, so there is no
+$\sqrt2$: $\langle 0|\mathbf r|n\rangle = \sum_\sigma\sum_{ia}(X+Y)_{ia\sigma,n}\langle i_\sigma|\mathbf r|a_\sigma\rangle$,
+$f_n = \tfrac23\Omega_n|\langle 0|\mathbf r|n\rangle|^2$ (PySCF `tdscf.uhf`).
+For a closed shell this is §4's formula with $X_\alpha = X_\beta = X/\sqrt2$.
+
+---
+
+## 11. ⟨S²⟩ of each root
+
+The roots of an unrestricted reference are not spin eigenfunctions. Each
+root is assigned the wavefunction
+$|\Psi\rangle = \sum_{ia\sigma}X_{ia\sigma}\,a^\dagger_{a\sigma}a_{i\sigma}|\Phi\rangle$
+with unit-normalized $X$: the TDA eigenvector, or for Casida the $X$ part
+$\tfrac12((X+Y)+(X-Y))$, $X-Y = (A+B)(X+Y)/\Omega$, renormalized (Casida
+response defines no excited-state wavefunction; this is the particle-hole
+part of the root). Then $\langle S^2\rangle = M^2 + M + \langle S_-S_+\rangle$,
+$M = (n_\alpha-n_\beta)/2$.
+
+With $O = C_\alpha^{\mathsf T}SC_\beta$ over all MOs ($S$ the AO overlap),
+$S_+ = \sum_{p\in\alpha,q\in\beta}O_{pq}a^\dagger_{p\alpha}a_{q\beta}$, and
+moving the β creator past the two α operators,
+
+$$S_-S_+ = \sum_{sq\in\beta}P_{sq}E^\beta_{sq} - \sum_{pr\in\alpha}\sum_{sq\in\beta}O_{rs}O_{pq}\,E^\alpha_{pr}E^\beta_{sq},
+\qquad P = O^{\mathsf T}O .$$
+
+Matrix elements between single excitations follow from
+$\langle\Phi_i^a|E_{pr}|\Phi_j^b\rangle = \delta_{ab}\delta_{ij}\gamma^0_{pr} + \delta_{ij}\delta_{pa}\delta_{rb} - \delta_{ab}\delta_{pj}\delta_{ri}$
+within a spin, and from the factorization of an α-even times β-even operator
+across spins: $\langle\Phi_{i\alpha}^{a}|E^\alpha_{pr}E^\beta_{sq}|\Phi_{J\beta}^{B}\rangle = \delta_{pa}\delta_{ri}\,\delta_{sJ}\delta_{qB}$.
+Writing $X_\alpha$ ($n_\alpha\times n^\alpha_{\rm vir}$) and $X_\beta$,
+$w_\sigma = |X_\sigma|^2$ ($w_\alpha + w_\beta = 1$),
+$Q = O_{:,{\rm occ}\beta}O_{:,{\rm occ}\beta}^{\mathsf T}$ (α×α),
+$R = O_{{\rm occ}\alpha,:}^{\mathsf T}O_{{\rm occ}\alpha,:}$ (β×β), and for a
+matrix $N$ over one spin $\pi(X, N) = {\rm tr}(X N_{vv} X^{\mathsf T}) - {\rm tr}(X^{\mathsf T}N_{oo}X)$:
+
+$$\langle S_-S_+\rangle = \sum_{S\in{\rm occ}\beta}P_{SS} + \pi(X_\beta,P)
+- \left[w_\alpha{\rm tr}\,Q_{oo} + \pi(X_\alpha,Q)\right]
+- \left[w_\beta{\rm tr}\,R_{oo} + \pi(X_\beta,R)\right]
+- 2\,{\rm tr}\!\left(X_\alpha^{\mathsf T}O_{oo}X_\beta O_{vv}^{\mathsf T}\right),$$
+
+where $O_{oo}$ is the α-occupied × β-occupied and $O_{vv}$ the α-virtual ×
+β-virtual block. With no excitation it reduces to the reference value
+$M^2+M+\sum_{S}P_{SS} - \sum_{i\in\alpha,J\in\beta}O_{iJ}^2$ (PySCF
+`UHF.spin_square`). For a closed shell ($O = 1$): singlets
+($X_\alpha = X_\beta$) give 0 and triplets ($X_\alpha = -X_\beta$) give 2.
+
+**Check.** The generator `scripts/validation/gen_tddft_open_shell_refs.py`
+evaluates the formula in numpy and, for OH and NH2, also expands the same
+$X$ into a full determinant vector over the UHF orbitals and takes
+$\langle S^2\rangle$ with `pyscf.fci.spin_op.spin_square` (from the 2-RDMs,
+an independent construction); it asserts agreement to $10^{-10}$ on every
+root. The Rust test compares ferric's values to the recorded ones.

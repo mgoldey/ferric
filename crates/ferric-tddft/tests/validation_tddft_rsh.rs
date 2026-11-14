@@ -257,7 +257,7 @@ fn check_case(mol: &str, key: &str, xc: Option<&str>, solvers: &[TddftSolver]) {
         println!("\n== {label} ==");
         let rec = &case[spin.name()];
         let tda = run(&s, xc, TddftMethod::Tda, spin, solver).unwrap();
-        assert_eq!(tda.spin, spin);
+        assert_eq!(tda.spin, Some(spin));
         for (name, ours) in [("c_sr", tda.c_hf), ("c_lr", tda.c_lr), ("omega", tda.omega)] {
             let theirs = case[name].as_f64().unwrap();
             assert!(

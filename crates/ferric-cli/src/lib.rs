@@ -1177,7 +1177,7 @@ pub fn run(args: Vec<String>) {
     } else if mol.multiplicity > 1 {
         // An open-shell molecule reaching here passed
         // `Config::validate_multiplicity`, so its kind has an open-shell
-        // route (rimp2/oo-rimp2/pdep-rpa/gw/mp2-v on task = "energy"); each
+        // route (rimp2/oo-rimp2/pdep-rpa/gw/mp2-v/tda/tddft on task = "energy"); each
         // consumes a UHF reference. `solve_rhf` would refuse the molecule.
         // GW picks its own reference (`[gw] reference = "uhf" | "rohf"`); it
         // is solved once here and `run_gw` reuses it, so a UHF failure can
@@ -7190,7 +7190,8 @@ fn run_tddft_arm(
         "{:?} — {} {} roots ({}, f_xc kernel: {}, solver: {}):",
         tddft_method,
         config.n_roots,
-        r.spin.name(),
+        r.spin
+            .map_or("unrestricted (spin-conserving)", |s| s.name()),
         tddft_exchange_label(&r),
         if r.fxc_included {
             "included"
@@ -7199,23 +7200,28 @@ fn run_tddft_arm(
         },
         r.solver.name()
     );
+    if r.reference == ferric_scf::Spin::Unrestricted {
+        println!("  reference <S^2> = {:.6}", r.s2_reference);
+    }
     println!(
-        "  {:>5}  {:>12}  {:>10}  {:>10}  {:>10}",
-        "Root", "Energy (Ha)", "eV", "f", "residual"
+        "  {:>5}  {:>12}  {:>10}  {:>10}  {:>8}  {:>10}",
+        "Root", "Energy (Ha)", "eV", "f", "<S^2>", "residual"
     );
-    for (i, ((&e, &f), &res)) in r
+    for (i, (((&e, &f), &s2), &res)) in r
         .excitation_energies
         .iter()
         .zip(&r.oscillator_strengths)
+        .zip(&r.s2)
         .zip(&r.residuals)
         .enumerate()
     {
         println!(
-            "  {:>5}  {:>12.6}  {:>10.4}  {:>10.6}  {:>10.2e}",
+            "  {:>5}  {:>12.6}  {:>10.4}  {:>10.6}  {:>8.4}  {:>10.2e}",
             i + 1,
             e,
             e * ha_to_ev,
             f,
+            s2,
             res
         );
     }

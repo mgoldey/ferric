@@ -1,0 +1,17 @@
+# Spin-conserving TDDFT on the UKS (B3LYP) reference of the NH2 radical.
+# An open-shell molecule runs the unrestricted response; the printout gives
+# the reference <S^2> and <S^2> for every root. ROHF/ROKS references are
+# refused.
+[molecule]
+xyz = "testdata/molecules/nh2.xyz"
+multiplicity = 2
+
+[basis]
+name = "6-31g"
+
+[method]
+kind = "tddft"
+
+[tddft]
+n_roots = 6
+xc = "B3LYP"

@@ -231,8 +231,8 @@ ill-conditioned, which moves the lowest five excitations by at most
 ## TDDFT and TDA
 
 **What it is.** Linear-response excitations in the Tamm–Dancoff approximation
-(TDA, which is CIS for an HF reference) and the full Casida equations, closed
-shell.
+(TDA, which is CIS for an HF reference) and the full Casida equations, on a
+restricted (RHF/RKS) or unrestricted (UHF/UKS) reference.
 
 **Run it.** `method.kind = "tda"` or `"tddft"` with `[tddft] n_roots` and
 optionally `xc` (`examples/water-tda.toml`, `examples/water-tddft-pbe.toml`); Python
@@ -248,8 +248,10 @@ root carries its residual in the printout, the result and the certificate;
 a Davidson root that does not converge is an error. Both solvers pass the
 same PySCF comparisons below.
 
-**Scope.** Closed-shell references, singlet or triplet excitations
+**Scope.** On a closed-shell reference, singlet or triplet excitations
 (`[tddft] spin = "singlet" | "triplet"`, Python `spin=`; default singlet).
+An open-shell molecule runs on a UHF/UKS reference (see **Open shells**
+below).
 With a DFT reference the \\( (ia|f_{xc}|jb) \\) XC-kernel term is included;
 with no functional the result is CIS/TDHF. τ-only meta-GGAs (SCAN, r2SCAN,
 TPSS) take the τ kernel; VV10 functionals are refused.
@@ -270,7 +272,25 @@ override on a range-separated functional is refused.
 triplet Casida problem with \\(\Omega^2 < 0\\) (a triplet instability of the
 reference, e.g. RHF ethylene) is an error; TDA has no such failure.
 
-Grade: Proven (narrow, closed shell): water, formaldehyde and NH3 at 6-31G and
+**Open shells.** A molecule with `multiplicity > 1` runs on a UHF (no
+functional) or UKS reference (`examples/nh2-tddft-uks.toml`; Python
+`run_tddft` picks it with `reference="auto"`). The response space is the
+α and β occupied→virtual pairs; A and B couple them through the Coulomb
+term and the α-β block of the spin-resolved f<sub>xc</sub> kernel, and
+exact exchange acts within each spin (`crates/ferric-tddft/theory.md` §10).
+Every functional class the closed-shell route takes works here, including
+range-separated hybrids, τ-only meta-GGAs and hybrid meta-GGAs (TPSSh,
+M06-2X). The roots are spin-conserving and not spin-adapted, so there is no
+singlet/triplet label: the printout and `TddftResult.s2` give
+\\(\langle S^2\rangle\\) of each root and of the reference (§11; for Casida, of
+the renormalized X part). `[tddft] spin = "triplet"` on an open shell is
+refused, and so is an ROHF/ROKS reference: its Roothaan-coupled Fock
+operator is not the stationarity condition this response linearizes. A
+closed-shell molecule forced through the unrestricted route (Python
+`reference="unrestricted"`) gives the restricted singlets and triplets
+together.
+
+Grade: Proven (narrow): water, formaldehyde and NH3 at 6-31G and
 aug-cc-pVDZ with HF, LDA, PBE and B3LYP match PySCF `TDA`/`TDDFT` to at most
 8.1e-4 eV on the default pruned grid (2.8e-6 eV for B3LYP/aug-cc-pVDZ on the
 reference's flat grid), test bar 1e-3 eV, and water/6-31G r2SCAN matches on the flat
@@ -281,7 +301,12 @@ on the flat 75 × 110 grid to at most 4.4e-7 eV, bar 2e-5 eV
 (`ferric-tddft/tests/validation_tddft_rsh.rs`). The reference matches the
 response RI (both operators), the range-separated SCF fit and the grid, so
 the residual is SCF convergence. Any other range-separated functional, and
-a triplet on any other functional, is certified Smoke.
+a triplet on any other functional, is certified Smoke. On UHF/UKS references
+(HF, LDA, PBE, B3LYP, r2SCAN, TPSSh, CAM-B3LYP) NH2 and O2 at 6-31G, and OH
+on UHF (TDA), match PySCF `tdscf.uhf.get_ab` to at most 5.0e-7 eV, with
+\\(\langle S^2\rangle\\) per root within 2.5e-7
+(`ferric-tddft/tests/validation_tddft_open_shell.rs`); any other functional on
+an unrestricted reference is certified Smoke.
 
 **Meta-GGA response needs a finer grid.** A TDA/TDDFT run on a meta-GGA
 (SCAN, r2SCAN, TPSS) with no `[dft]` grid key (Python: no `grid_*` kwarg)

@@ -2609,7 +2609,8 @@ class TdhfStaticPolarizabilityResult:
         ...
 
 class TddftResult:
-    """Result of a closed-shell linear-response TDA/TDDFT (or CIS/TDHF) calculation."""
+    """Result of a linear-response TDA/TDDFT (or CIS/TDHF) calculation on a
+    restricted (RHF/RKS) or unrestricted (UHF/UKS) reference."""
 
     @property
     def n_roots(self) -> int:
@@ -2639,8 +2640,29 @@ class TddftResult:
         ...
 
     @property
-    def spin(self) -> str:
-        """Spin of the excited states: "singlet" or "triplet"."""
+    def spin(self) -> str | None:
+        """Spin of the excited states of a restricted reference: "singlet" or
+        "triplet". None on an unrestricted reference, whose spin-conserving
+        roots are not spin-adapted (read ``s2``)."""
+        ...
+
+    @property
+    def reference(self) -> str:
+        """The reference the roots were computed on: "restricted" or
+        "unrestricted"."""
+        ...
+
+    @property
+    def s2(self) -> NDArray[np.float64]:
+        """<S^2> of each root, same order as the energies: exactly 0 (singlet)
+        or 2 (triplet) on a restricted reference; on an unrestricted one, the
+        expectation value of the excited determinant expansion (TDA: the CIS
+        vector; Casida: the X amplitudes, renormalized)."""
+        ...
+
+    @property
+    def s2_reference(self) -> float:
+        """<S^2> of the reference determinant (0.0 for a restricted one)."""
         ...
 
     @property
@@ -5808,8 +5830,9 @@ def run_tddft(
     scf_ri_j_precision: str | None = None,
     solver: str = "auto",
     spin: str = "singlet",
+    reference: str = "auto",
 ) -> TddftResult:
-    """Closed-shell linear response. functional=None runs on an RHF
+    """Linear response on an RHF/RKS or UHF/UKS reference. functional=None runs on an RHF
     reference (CIS for method="tda"/"cis", TDHF for "casida"/"rpa"/"tddft"/
     "tdhf"); a functional converges that KS reference (RI-JK,
     def2-universal-jkfit) and adds the (ia|f_xc|jb) kernel block to A (and B
@@ -5841,7 +5864,17 @@ def run_tddft(
     solver: "dense" (full A, B and eigh), "davidson" (matrix-free block
     Davidson; an unconverged root raises) or "auto" (dense up to
     nocc*nvir = 200, Davidson above). Any other value is a ValueError.
-    TddftResult.solver and .residuals report what ran."""
+    TddftResult.solver and .residuals report what ran.
+
+    reference: "auto" (default: restricted for a singlet molecule, UHF/UKS
+    for multiplicity > 1), "restricted" (alias "rhf"/"rks"; a ValueError on an
+    open-shell molecule) or "unrestricted" (alias "uhf"/"uks"; also accepted
+    for a closed-shell molecule, where the roots are the restricted singlets
+    and triplets together). An unrestricted run solves the spin-conserving
+    alpha/beta problem for every functional class above, including
+    meta-GGAs and hybrid meta-GGAs, reports <S^2> per root in
+    TddftResult.s2, and refuses spin="triplet" with a ValueError. ROHF/ROKS
+    references are not offered."""
     ...
 
 def run_double_hybrid(

@@ -66,6 +66,9 @@ use ferric_core::FerricError;
 use ndarray::{s, Array2, Array3};
 use rayon::prelude::*;
 
+mod unrestricted;
+pub use unrestricted::{SpinOrbitals, UksKernel, UksOvFxc};
+
 /// Relative `(ia)`-block asymmetry above which [`singlet_fxc_ov_block`]'s
 /// result must be REJECTED rather than symmetrized.
 ///

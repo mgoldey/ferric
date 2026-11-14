@@ -6,8 +6,10 @@
 //!
 //! The Proven (narrow) grade holds where a PySCF reference exists: singlets
 //! of any accepted functional that is not range-separated, range-separated
-//! singlets of the functionals in [`VALIDATED_RSH`], and triplets of the
-//! references in [`VALIDATED_TRIPLET`]. Any other combination is capped at
+//! singlets of the functionals in [`VALIDATED_RSH`], triplets of the
+//! references in [`VALIDATED_TRIPLET`], and spin-conserving roots on an
+//! unrestricted (UHF / UKS) reference of the references in
+//! [`VALIDATED_UNRESTRICTED`]. Any other combination is capped at
 //! Smoke with the reason. A functional enters an envelope by name, with its
 //! reference data.
 
@@ -33,6 +35,19 @@ pub const VALIDATED_TRIPLET: &[&str] = &[
     "HYB_GGA_XC_WB97X",
 ];
 
+/// References (`"HF"` for none) whose spin-conserving TDA and Casida roots
+/// on an unrestricted (UHF / UKS) reference have a PySCF reference
+/// (`tests/validation_tddft_open_shell.rs`), compared by [`functional_key`].
+pub const VALIDATED_UNRESTRICTED: &[&str] = &[
+    "HF",
+    "LDA",
+    "PBE",
+    "B3LYP",
+    "r2SCAN",
+    "TPSSh",
+    "HYB_GGA_XC_CAM_B3LYP",
+];
+
 /// A functional name as the envelope compares it: upper case, without `-`
 /// and `_` (the friendly-name normalization of `ferric_dft::libxc`).
 pub fn functional_key(name: &str) -> String {
@@ -44,16 +59,21 @@ pub fn functional_key(name: &str) -> String {
 
 /// Why `(xc, spin)` (with long-range ω of the resolved exchange) is outside
 /// the validated envelope, or `None` inside it.
-fn outside_envelope(xc: Option<&str>, spin: ResponseSpin, omega: f64) -> Option<String> {
+fn outside_envelope(xc: Option<&str>, spin: Option<ResponseSpin>, omega: f64) -> Option<String> {
     let name = xc.unwrap_or("HF");
     let key = functional_key(name);
     let listed = |list: &[&str]| list.iter().any(|f| functional_key(f) == key);
     match spin {
-        ResponseSpin::Triplet if !listed(VALIDATED_TRIPLET) => Some(format!(
+        None if !listed(VALIDATED_UNRESTRICTED) => Some(format!(
+            "unrestricted response on {name} has no PySCF reference (validated: {})",
+            VALIDATED_UNRESTRICTED.join(", ")
+        )),
+        None => None,
+        Some(ResponseSpin::Triplet) if !listed(VALIDATED_TRIPLET) => Some(format!(
             "triplet response on {name} has no PySCF reference (validated: {})",
             VALIDATED_TRIPLET.join(", ")
         )),
-        ResponseSpin::Singlet if omega != 0.0 && !listed(VALIDATED_RSH) => Some(format!(
+        Some(ResponseSpin::Singlet) if omega != 0.0 && !listed(VALIDATED_RSH) => Some(format!(
             "range-separated response on {name} has no PySCF reference (validated: {})",
             VALIDATED_RSH.join(", ")
         )),
@@ -163,11 +183,30 @@ fn with_exchange_and_spin(
             ),
         );
     }
-    if result.spin == ResponseSpin::Triplet {
-        c = c.with_approximation(
-            "spin",
-            "M_S = 0 triplet, f_aa - f_ab kernel, no Coulomb term",
-        );
+    match result.spin {
+        Some(ResponseSpin::Triplet) => {
+            c = c.with_approximation(
+                "spin",
+                "M_S = 0 triplet, f_aa - f_ab kernel, no Coulomb term",
+            );
+        }
+        None => {
+            let s2 = result.s2.iter().fold(f64::NAN, |m: f64, &x| m.max(x));
+            c = c.with_approximation(
+                "spin",
+                format!(
+                    "unrestricted reference (<S^2> = {:.4}), spin-conserving excitations; \
+                     roots are not spin-adapted (largest root <S^2> {s2:.4}{})",
+                    result.s2_reference,
+                    if cfg.method == TddftMethod::Casida {
+                        ", from the renormalized X part"
+                    } else {
+                        ""
+                    }
+                ),
+            );
+        }
+        Some(ResponseSpin::Singlet) => {}
     }
     c
 }
@@ -189,7 +228,10 @@ mod tests {
             c_hf: 0.0,
             c_lr: 0.0,
             omega: 0.0,
-            spin: ResponseSpin::Singlet,
+            spin: Some(ResponseSpin::Singlet),
+            reference: ferric_scf::Spin::Restricted,
+            s2: vec![0.0; 2],
+            s2_reference: 0.0,
             fxc_included: false,
             solver,
             residuals: vec![2e-7, 5e-7],
@@ -288,7 +330,7 @@ mod tests {
             let mut cfg = TddftConfig::new(3, TddftMethod::Tda);
             cfg.xc = xc.map(str::to_string);
             let mut r = result(TddftSolver::Dense);
-            r.spin = spin;
+            r.spin = Some(spin);
             r.omega = omega;
             let base = if xc.is_some() { ks() } else { rhf.clone() };
             tddft_certificate(&base, "a", &cfg, &r, false).grade
@@ -307,5 +349,52 @@ mod tests {
             Grade::ProvenNarrow
         );
         assert_eq!(grade(Some("BLYP"), Triplet, 0.0), Grade::Smoke);
+    }
+
+    /// An unrestricted run is graded against [`VALIDATED_UNRESTRICTED`], not
+    /// the restricted lists: a functional validated for restricted singlets
+    /// only (BLYP) is capped at Smoke, a listed one keeps Proven (narrow), and
+    /// the certificate records the reference and root `<S^2>`.
+    ///
+    /// Mutation (applied and reverted, 2026-11-14): the unrestricted
+    /// envelope check disabled (`None if false && ...`) leaves BLYP at Proven
+    /// (narrow) and fails the Smoke assertion.
+    #[test]
+    fn unrestricted_runs_use_their_own_envelope_and_record_s2() {
+        let run = |xc: Option<&str>, omega| {
+            let mut cfg = TddftConfig::new(3, TddftMethod::Tda);
+            cfg.xc = xc.map(str::to_string);
+            let mut r = result(TddftSolver::Dense);
+            r.spin = None;
+            r.reference = ferric_scf::Spin::Unrestricted;
+            r.s2 = vec![0.76, 1.83];
+            r.s2_reference = 0.7553;
+            r.omega = omega;
+            let base = if xc.is_some() {
+                ks()
+            } else {
+                Certificate::for_method_kind("uhf")
+            };
+            tddft_certificate(&base, "a", &cfg, &r, false)
+        };
+        assert_eq!(run(None, 0.0).grade, Grade::ProvenNarrow);
+        assert_eq!(run(Some("tpssh"), 0.0).grade, Grade::ProvenNarrow);
+        assert_eq!(
+            run(Some("HYB_GGA_XC_CAM_B3LYP"), 0.33).grade,
+            Grade::ProvenNarrow
+        );
+        assert_eq!(run(Some("BLYP"), 0.0).grade, Grade::Smoke);
+        assert_eq!(run(Some("HYB_GGA_XC_WB97X"), 0.3).grade, Grade::Smoke);
+        let c = run(Some("PBE"), 0.0);
+        let spin = c
+            .approximations
+            .iter()
+            .find(|a| a.name == "spin")
+            .expect("spin approximation");
+        assert!(
+            spin.detail.contains("<S^2> = 0.7553") && spin.detail.contains("1.8300"),
+            "{}",
+            spin.detail
+        );
     }
 }

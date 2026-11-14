@@ -23,7 +23,7 @@ has no validated option for a task, the row says so.
 | Correlated energies, small to medium | RI-MP2 | CLI `rimp2`, Python `run_rimp2` | Proven | N⁵ | `water-rimp2.toml` |
 | Correlated energies, benchmark quality, small | CCSD(T) (closed shell) | Python `run_ccsd_t` only; CCSD also CLI `ccsd` | CCSD Proven; (T) matches PySCF ~1e-6 Ha on H2O/cc-pVDZ | N⁶ / N⁷ | `water-ccsd.toml` (H2) |
 | Non-covalent interaction energies | KS-DFT + D3(BJ) is the routine choice. Attenuated MP2 is the higher-accuracy option, in the basis its parameters were fitted for: SCS-MP2(2terfc) or MP2-V in aug-cc-pVTZ, erfc att-MP2 in aug-cc-pVDZ (the basis of the 2012 paper) | CLI `ksdft`; `scs-mp2-2terfc`, `mp2-v`, `att-rimp2` | DFT Proven; att-MP2, 2terfc and MP2-V Proven (narrow) as implementations; the MP2-V parameterization is unbenchmarked | N⁴ (DFT); N⁵ (MP2) | `water-pbe-d3bj.toml`; `water-scs-mp2-2terfc.toml`, `water-mp2v.toml`, `water-attmp2.toml` |
-| Excitation energies | Singlet or triplet TDA or TDDFT on a closed-shell RHF (CIS/TDHF) or RKS reference (global or range-separated hybrids); BSE-TDA on G0W0@HF | CLI `tda`, `tddft`, `bse-tda`; Python `run_tddft` (`solver` = `"dense"`, `"davidson"` or `"auto"`), `run_bse_tda` | TDA/TDDFT Proven (narrow, closed shell); BSE-TDA Smoke | — | `water-tda.toml`, `water-tddft-pbe.toml`, `water-tddft-cam-b3lyp-triplet.toml`, `water-bse-tda.toml` |
+| Excitation energies | Singlet or triplet TDA or TDDFT on a closed-shell RHF (CIS/TDHF) or RKS reference (global or range-separated hybrids); spin-conserving TDA or TDDFT on an open-shell UHF or UKS reference, with `<S^2>` per root; BSE-TDA on G0W0@HF | CLI `tda`, `tddft`, `bse-tda`; Python `run_tddft` (`solver` = `"dense"`, `"davidson"` or `"auto"`), `run_bse_tda` | TDA/TDDFT Proven (narrow, closed shell); BSE-TDA Smoke | — | `water-tda.toml`, `water-tddft-pbe.toml`, `water-tddft-cam-b3lyp-triplet.toml`, `nh2-tddft-uks.toml`, `water-bse-tda.toml` |
 | Implicit solvation | IEF-PCM (CLI `[pcm]`, Python `solvent=`; analytic gradient, so it optimizes) or COSMO (CLI `[cosmo]`, no gradient) | see [SCF and DFT](../methods/scf.md#implicit-solvation) | both cross-checked against PySCF on water | SCF cost | none |
 | Embedding in a protein or solvent | QM/MM | Python `run_qmmm`; CLI `[qmmm]` (point charges) | see [QM/MM](./qmmm.md) | SCF cost | `water-qmmm.toml` |
 | Multireference, static correlation | CASSCF; SC-NEVPT2 on top of it | CLI `casscf`, `nevpt2` with `[cas]`; Python `run_casscf`, `run_nevpt2` | Proven; the optimizers do not check the orbital Hessian, see [CAS-CI and CASSCF](../methods/ci.md#casscf) | — | `water-casscf.toml`, `n2-nevpt2.toml` |
@@ -91,9 +91,11 @@ through `[basis] path` as a Gaussian-94 file (orbital basis only).
   KS-DFT is available from the CLI: `ksdft` with `multiplicity > 1` runs UKS,
   and `uhf`/`rohf` with `[dft] functional` run UKS/ROKS. See
   [Capabilities and validation: open shells in the CLI](../reference/validation.md#open-shells-in-the-cli).
-- **TDDFT** is closed-shell: `tda` and `tddft` refuse `multiplicity > 1`. With a
-  functional they include the XC kernel; VV10 and range-separated functionals are
-  refused. See [RPA, GW and excited states](../methods/rpa-gw.md#tddft-and-tda).
+- **TDDFT** on an open-shell molecule (`multiplicity > 1`) runs on a UHF/UKS
+  reference: spin-conserving excitations with `<S^2>` reported per root.
+  ROHF/ROKS references and `spin = "triplet"` on an open shell are refused.
+  With a functional the XC kernel is included; VV10 functionals are refused.
+  See [RPA, GW and excited states](../methods/rpa-gw.md#tddft-and-tda).
 - **Other front ends.** The [ASE calculator](./ase.md) and
   [QCSchema](./qcschema.md) route energies and gradients (QCSchema also the
   Hessian) to the drivers above.

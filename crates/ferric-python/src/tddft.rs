@@ -22,9 +22,18 @@ pub(crate) struct PyTddftResult {
     /// Range-separation parameter in bohr^-1 (0 for a global hybrid).
     #[pyo3(get)]
     pub(crate) omega: f64,
-    /// Spin of the excited states: `"singlet"` or `"triplet"`.
+    /// Spin of the excited states of a restricted reference: `"singlet"` or
+    /// `"triplet"`; `None` on an unrestricted reference (read `s2`).
     #[pyo3(get)]
-    pub(crate) spin: String,
+    pub(crate) spin: Option<String>,
+    /// The reference the roots were computed on: `"restricted"` or
+    /// `"unrestricted"`.
+    #[pyo3(get)]
+    pub(crate) reference: String,
+    /// `<S^2>` of the reference determinant (0 for a restricted reference).
+    #[pyo3(get)]
+    pub(crate) s2_reference: f64,
+    pub(crate) s2: Vec<f64>,
     /// Whether the (ia|f_xc|jb) kernel block was included (true for every KS
     /// reference, false only for an HF reference).
     #[pyo3(get)]
@@ -63,6 +72,11 @@ impl PyTddftResult {
     fn excitation_energies<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
         PyArray1::from_slice(py, &self.excitation_energies)
     }
+    /// `<S^2>` of each root, same order as the energies.
+    #[getter]
+    fn s2<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        PyArray1::from_slice(py, &self.s2)
+    }
     /// Residual norm of each root, same order as the energies.
     #[getter]
     fn residuals<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
@@ -83,7 +97,7 @@ impl PyTddftResult {
         format!(
             "TddftResult(method={}, spin={}, n_roots={}, lowest={:.4} eV)",
             self.method,
-            self.spin,
+            self.spin_label(),
             self.n_roots,
             self.lowest_ev(),
         )
@@ -92,23 +106,33 @@ impl PyTddftResult {
         let ha_to_ev = 27.211_386_245_988;
         let mut s = format!(
             "TDDFT {} — {} {} roots:\n",
-            self.method, self.n_roots, self.spin
+            self.method,
+            self.n_roots,
+            self.spin_label()
         );
-        for (i, (&e, &f)) in self
+        for (i, ((&e, &f), &s2)) in self
             .excitation_energies
             .iter()
             .zip(&self.oscillator_strengths)
+            .zip(&self.s2)
             .enumerate()
         {
             s += &format!(
-                "  {}: {:.6} Ha ({:.4} eV)  f = {:.6}\n",
+                "  {}: {:.6} Ha ({:.4} eV)  f = {:.6}  <S^2> = {:.4}\n",
                 i + 1,
                 e,
                 e * ha_to_ev,
-                f
+                f,
+                s2
             );
         }
         s
+    }
+}
+
+impl PyTddftResult {
+    fn spin_label(&self) -> &str {
+        self.spin.as_deref().unwrap_or("unrestricted")
     }
 }
 
@@ -119,7 +143,7 @@ impl PyTddftResult {
     mol, basis_set, auxbasis, functional=None, n_roots=3, method="tda",
     scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None,
     grid_radial=None, grid_angular=None, grid_prune=None, grid_weight_cut=None, scf_ri_j_precision=None,
-    solver="auto", spin="singlet",
+    solver="auto", spin="singlet", reference="auto",
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_tddft(
@@ -140,6 +164,7 @@ pub(crate) fn run_tddft(
     scf_ri_j_precision: Option<&str>,
     solver: &str,
     spin: &str,
+    reference: &str,
 ) -> PyResult<PyTddftResult> {
     use ferric_tddft::{ResponseSpin, TddftConfig, TddftMethod, TddftSolver};
     let solver = TddftSolver::parse_config_str(solver)
@@ -147,6 +172,31 @@ pub(crate) fn run_tddft(
     let spin = ResponseSpin::parse_config_str(spin)
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("run_tddft: {e}")))?;
 
+    let unrestricted = match reference.to_ascii_lowercase().as_str() {
+        "auto" => mol.inner.multiplicity > 1,
+        "unrestricted" | "uhf" | "uks" => true,
+        "restricted" | "rhf" | "rks" if mol.inner.multiplicity == 1 => false,
+        "restricted" | "rhf" | "rks" => {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "run_tddft: reference=\"{reference}\" needs a closed-shell molecule; this one has \
+                 multiplicity {}",
+                mol.inner.multiplicity
+            )))
+        }
+        other => {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "run_tddft: reference '{other}' is not one of \"auto\", \"restricted\", \
+                 \"unrestricted\""
+            )))
+        }
+    };
+
+    if unrestricted && spin == ResponseSpin::Triplet {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "run_tddft: spin=\"triplet\" on an unrestricted reference; its spin-conserving \
+             roots are not spin-adapted. Run the default and read TddftResult.s2.",
+        ));
+    }
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
     let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
     let op = Operator::coulomb();
@@ -200,14 +250,24 @@ pub(crate) fn run_tddft(
             .dft_grid
             .clone()
             .unwrap_or_else(ferric_dft::grid::AtomicGridConfig::production);
-        let ladder = ferric_scf::ladder::ksdft_ladder(cfg);
-        let lr =
-            ferric_scf::ladder::solve_rhf_ladder(&ctx, &mol.inner, &prep, op, &bounds, &ladder)
-                .map_err(make_err)?;
-        (lr.result, grid)
+        if unrestricted {
+            let scf = solve_uhf(&ctx, &mol.inner, &prep, &bounds, cfg).map_err(make_err)?;
+            (scf, grid)
+        } else {
+            let ladder = ferric_scf::ladder::ksdft_ladder(cfg);
+            let lr =
+                ferric_scf::ladder::solve_rhf_ladder(&ctx, &mol.inner, &prep, op, &bounds, &ladder)
+                    .map_err(make_err)?;
+            (lr.result, grid)
+        }
     } else {
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv).apply(&mut scf_cfg);
-        let scf = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &scf_cfg).map_err(make_err)?;
+        let scf = if unrestricted {
+            solve_uhf(&ctx, &mol.inner, &prep, &bounds, &scf_cfg)
+        } else {
+            solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &scf_cfg)
+        }
+        .map_err(make_err)?;
         (scf, ferric_dft::grid::AtomicGridConfig::default())
     };
     if !scf.converged {
@@ -274,7 +334,14 @@ pub(crate) fn run_tddft(
         c_hf: r.c_hf,
         c_lr: r.c_lr,
         omega: r.omega,
-        spin: r.spin.name().to_string(),
+        spin: r.spin.map(|s| s.name().to_string()),
+        reference: match r.reference {
+            ferric_scf::Spin::Unrestricted => "unrestricted",
+            _ => "restricted",
+        }
+        .to_string(),
+        s2_reference: r.s2_reference,
+        s2: r.s2,
         fxc_included: r.fxc_included,
         grid: grid_used,
         solver: r.solver.name().to_string(),

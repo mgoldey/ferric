@@ -4,8 +4,9 @@
 //! # TDA
 //!
 //! `A X = ω X`, A symmetric. Rayleigh–Ritz on an orthonormal subspace `V`
-//! (`H = Vᵀ A V`), residual `r = A x − θ x` for each target Ritz pair, and the
-//! diagonal correction `t = r / (θ − D)` with `D_ia = ε_a − ε_i`.
+//! (`H = Vᵀ A V`), residual `r = A x − θ x` for each target Ritz pair, and
+//! Olsen's diagonal correction `t = P r − ε P x`, `P = (θ − D)⁻¹` with
+//! `D_ia = ε_a − ε_i` and `ε` making `t ⊥ x` (see `diagonal_correction`).
 //!
 //! # Casida
 //!
@@ -18,7 +19,8 @@
 //! `u = Ω^{-½} L z` carries `(X+Y)·(X−Y) = 1`, the dense normalization.
 //! Residuals `r+ = (A+B)(X+Y) − Ω (X−Y)` and `r− = (A−B)(X−Y) − Ω (X+Y)`;
 //! the corrections solve the diagonal model `[[D, −Ω], [−Ω, D]] δ = −r`
-//! per element, and both `δ+` and `δ−` join the subspace.
+//! per element with Olsen's projection (see `casida_correction`), and both
+//! `δ+` and `δ−` join the subspace.
 //!
 //! The reported Casida residual is `√((‖r+‖² + ‖r−‖²)/2)`: the residual of
 //! the full `[[A, B], [B, A]] [X; Y] = Ω [X; −Y]` problem in the
@@ -224,18 +226,45 @@ fn unconverged_error(kind: &str, iters: usize, residuals: &[f64], tol: f64) -> F
     ))
 }
 
-fn diagonal_correction(r: &Array1<f64>, theta: f64, diag: &Array1<f64>) -> Array1<f64> {
-    let mut t = r.clone();
-    for (ti, &d) in t.iter_mut().zip(diag) {
+/// `1 / (θ − D)` per element, `|θ − D|` floored at [`PRECOND_FLOOR`].
+fn inverse_shifted_diag(theta: f64, diag: &Array1<f64>) -> Array1<f64> {
+    diag.mapv(|d| {
         let den = theta - d;
-        let den = if den.abs() < PRECOND_FLOOR {
+        1.0 / if den.abs() < PRECOND_FLOOR {
             PRECOND_FLOOR.copysign(den)
         } else {
             den
-        };
-        *ti /= den;
+        }
+    })
+}
+
+/// Olsen's correction `t = P r − ε P x`, `P = (θ − D)⁻¹`, with
+/// `ε = xᵀ P r / xᵀ P x` so that `xᵀ t = 0`.
+///
+/// The plain `P r` stalls when the root's eigenvector lives on a block of
+/// equal orbital differences whose value is the eigenvalue itself
+/// (`A u = D u = λ u`, e.g. a coupling-free combination of a degenerate
+/// π → π* set): there `P r ≈ −x` plus the leakage amplified by
+/// `1/(θ − λ)` on that same block, so almost every new direction is
+/// already spanned. Removing the `x` part first keeps the step in the
+/// complement. `ε` is skipped when `xᵀ P x` is not finite or vanishes.
+fn diagonal_correction(
+    r: &Array1<f64>,
+    x: &ndarray::ArrayView1<f64>,
+    theta: f64,
+    diag: &Array1<f64>,
+) -> Array1<f64> {
+    let p = inverse_shifted_diag(theta, diag);
+    let pr = &p * r;
+    let px = &p * x;
+    let den = x.dot(&px);
+    if den.is_finite() && den != 0.0 {
+        let eps = x.dot(&pr) / den;
+        if eps.is_finite() {
+            return pr - eps * px;
+        }
     }
-    t
+    pr
 }
 
 /// The lowest `n_roots` positive TDA roots of the symmetric operator whose
@@ -276,7 +305,7 @@ where
             let rn = r.dot(&r).sqrt();
             residuals.push(rn);
             if rn > settings.conv_tol {
-                let t = diagonal_correction(&r, theta[j], diag);
+                let t = diagonal_correction(&r, &x.column(k), theta[j], diag);
                 corr = append_columns(&corr, &t.insert_axis(Axis(1)));
             }
         }
@@ -401,7 +430,8 @@ where
             let rn = (0.5 * (rp.dot(&rp) + rm.dot(&rm))).sqrt();
             residuals.push(rn);
             if rn > settings.conv_tol {
-                let (dp, dm) = casida_correction(&rp, &rm, om, diag);
+                let (dp, dm) =
+                    casida_correction((&rp, &rm), (&xpy.column(k), &xmy.column(k)), om, diag);
                 corr = append_columns(&corr, &dp.insert_axis(Axis(1)));
                 corr = append_columns(&corr, &dm.insert_axis(Axis(1)));
             }
@@ -455,16 +485,17 @@ fn collapse_basis(u: &Array2<f64>, w: &Array2<f64>) -> Array2<f64> {
     orthonormalize_against(&empty, append_columns(u, w))
 }
 
-/// Per-element solution of `[[D, −Ω], [−Ω, D]] [δ+; δ−] = −[r+; r−]`.
-fn casida_correction(
-    rp: &Array1<f64>,
-    rm: &Array1<f64>,
+/// `K⁻¹ [a; b]` for the per-element model `K = [[D, −Ω], [−Ω, D]]`
+/// (`|det|` floored at [`PRECOND_FLOOR`]).
+fn casida_model_solve(
+    a: &Array1<f64>,
+    b: &ndarray::ArrayView1<f64>,
     om: f64,
     diag: &Array1<f64>,
 ) -> (Array1<f64>, Array1<f64>) {
     let n = diag.len();
-    let mut dp = Array1::<f64>::zeros(n);
-    let mut dm = Array1::<f64>::zeros(n);
+    let mut p = Array1::<f64>::zeros(n);
+    let mut m = Array1::<f64>::zeros(n);
     for k in 0..n {
         let d = diag[k];
         let det = d * d - om * om;
@@ -473,10 +504,35 @@ fn casida_correction(
         } else {
             det
         };
-        dp[k] = -(d * rp[k] + om * rm[k]) / det;
-        dm[k] = -(om * rp[k] + d * rm[k]) / det;
+        p[k] = (d * a[k] + om * b[k]) / det;
+        m[k] = (om * a[k] + d * b[k]) / det;
     }
-    (dp, dm)
+    (p, m)
+}
+
+/// Olsen's correction for the Casida model: `δ = −K⁻¹ r + ε K⁻¹ q`, with
+/// `r = [r+; r−]`, `q = [X−Y; X+Y]` (the metric partner of the current
+/// `[X+Y; X−Y]`, so `H z = Ω q` at convergence) and
+/// `ε = qᵀ K⁻¹ r / qᵀ K⁻¹ q`, which makes `qᵀ δ = 0`. As for TDA (see
+/// [`diagonal_correction`]), the plain `−K⁻¹ r` stalls on a root whose
+/// eigenvector sits on a block of equal orbital differences equal to `Ω`.
+/// `ε` is skipped when `qᵀ K⁻¹ q` is not finite or vanishes.
+fn casida_correction(
+    (rp, rm): (&Array1<f64>, &Array1<f64>),
+    (xpy, xmy): (&ndarray::ArrayView1<f64>, &ndarray::ArrayView1<f64>),
+    om: f64,
+    diag: &Array1<f64>,
+) -> (Array1<f64>, Array1<f64>) {
+    let (kp, km) = casida_model_solve(rp, &rm.view(), om, diag);
+    let (qp, qm) = casida_model_solve(&xmy.to_owned(), xpy, om, diag);
+    let den = xmy.dot(&qp) + xpy.dot(&qm);
+    let num = xmy.dot(&kp) + xpy.dot(&km);
+    let eps = num / den;
+    if den.is_finite() && den != 0.0 && eps.is_finite() {
+        (-kp + eps * qp, -km + eps * qm)
+    } else {
+        (-kp, -km)
+    }
 }
 
 #[cfg(test)]

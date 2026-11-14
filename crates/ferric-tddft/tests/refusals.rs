@@ -113,11 +113,11 @@ fn c_hf_override_without_a_functional_is_refused() {
     assert!(err.contains("c_hf"), "unhelpful refusal: {err}");
 }
 
+/// OH doublet, STO-3G: the UHF/UKS reference is accepted (it reaches the
+/// memory gate under the starved budget); a triplet request on it and an
+/// ROHF/ROKS reference are refused before any integral work.
 #[test]
-fn open_shell_reference_is_refused_not_panicking() {
-    // OH doublet. Before this fix `run_tddft` called `eps_r()`/`mos_r()`,
-    // which ASSERT a restricted reference — an open-shell input panicked the
-    // process instead of returning an error.
+fn open_shell_references_unrestricted_accepted_restricted_open_refused() {
     let mol = Molecule::parse_xyz("2\n\nO 0.0 0.0 0.0\nH 0.0 0.0 0.97\n", 0, 2).unwrap();
     let obs = PreparedBasis::new(&mol, &basis::bundled("sto-3g").unwrap()).unwrap();
     let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
@@ -129,17 +129,40 @@ fn open_shell_reference_is_refused_not_panicking() {
     };
     let uhf = solve_uhf(&ctx, &mol, &obs, &bounds, &scf_cfg).unwrap();
     assert!(uhf.converged, "OH/STO-3G UHF did not converge");
+    let rohf =
+        ferric_scf::rohf::solve_rohf(&ctx, &mol, &obs, Operator::coulomb(), &bounds, &scf_cfg)
+            .unwrap();
+    assert!(rohf.converged, "OH/STO-3G ROHF did not converge");
 
     for xc in [None, Some("PBE".to_string())] {
         let cfg = TddftConfig {
             xc: xc.clone(),
+            memory_budget_bytes: Some(STARVED),
             ..Default::default()
         };
         let err = run_tddft(&mol, &obs, &dfbs, &uhf, &cfg)
-            .expect_err("open-shell reference must be refused")
+            .expect_err("a 1 kB budget")
             .to_string();
         assert!(
-            err.contains("closed-shell"),
+            err.contains("memory plan"),
+            "{xc:?}: UHF must reach the memory gate: {err}"
+        );
+        let triplet = TddftConfig {
+            spin: ferric_tddft::ResponseSpin::Triplet,
+            ..cfg.clone()
+        };
+        let err = run_tddft(&mol, &obs, &dfbs, &uhf, &triplet)
+            .expect_err("triplet on UHF")
+            .to_string();
+        assert!(
+            err.contains("spin-conserving"),
+            "{xc:?}: refusal must say why: {err}"
+        );
+        let err = run_tddft(&mol, &obs, &dfbs, &rohf, &cfg)
+            .expect_err("ROHF/ROKS must be refused")
+            .to_string();
+        assert!(
+            err.contains("ROHF/ROKS"),
             "{xc:?}: refusal must say why: {err}"
         );
     }

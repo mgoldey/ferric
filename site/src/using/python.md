@@ -354,12 +354,17 @@ example `xc="pbe"`); by default it corrects HOMO−2 through LUMO+2. Check
 `gw.outer_converged` and `gw.qp_converged` before using the numbers.
 `run_u_gw` is the open-shell version.
 
-`run_tddft` is closed-shell only. `solver="dense"` builds the full A and B
+`run_tddft` runs on an RHF/RKS reference for a closed-shell molecule and on a
+UHF/UKS reference for an open-shell one (`reference="auto"`, the default;
+`"restricted"` or `"unrestricted"` force it). An unrestricted run returns
+spin-conserving roots with `result.spin = None`, `result.s2` (`<S^2>` per
+root) and `result.s2_reference`; `spin="triplet"` there is a ValueError.
+`solver="dense"` builds the full A and B
 matrices, `"davidson"` is matrix-free (an unconverged root raises), and
 `"auto"` (default) is dense up to `nocc * nvir = 200` and Davidson above;
 `result.solver` and `result.residuals` report what ran. With `functional=...` it includes the
-`(ia|f_xc|jb)` exchange-correlation kernel; VV10 and range-separated
-functionals are refused because their kernel is not built. A τ-only meta-GGA
+`(ia|f_xc|jb)` exchange-correlation kernel; VV10 functionals are refused
+because their kernel is not built. A τ-only meta-GGA
 (SCAN, r2SCAN, TPSS, and hybrids such as TPSSh and M06-2X) defaults to a 150 × 434 grid; `result.grid` reports the
 grid the reference SCF and the kernel shared, and `result.certificate` lists it
 as `response-grid`. With no
@@ -863,7 +868,7 @@ All start from the canonical exact-J/K RHF orbitals of a closed-shell molecule.
 | `run_u_gw` | Open-shell GW variants on a UHF/UKS or ROHF reference. | `gw` with multiplicity > 1 |
 | `run_bse_tda` | BSE-TDA singlet excitation energies on a closed-shell RHF reference. | `bse-tda` |
 | `run_tdhf_static_polarizability` | RPAx@KS static (ω = 0) polarizability on a closed-shell KS reference. | `tdhf-static-polarizability` |
-| `run_tddft` | TDA or Casida excitations on a closed-shell HF (CIS/TDHF) or KS reference, with the f_xc kernel. | `tda`, `tddft` |
+| `run_tddft` | TDA or Casida excitations on an HF (CIS/TDHF) or KS reference, restricted or unrestricted, with the f_xc kernel and `<S^2>` per root. | `tda`, `tddft` |
 | `PdepRpaResult` | `total_energy`, `e_rpa`, `eigensolver_converged`, eigenvalues and quadrature grid. | |
 | `RsMp2RpaResult` | SR-MP2, LR-MP2 and dRPA pieces; which fields are set depends on `formulation`. | |
 | `GwResult` | `eps_qp`, `eps_mf`, `sigma_x`, `sigma_c`, `z_factor`, `outer_converged`, `qp_converged`. | |

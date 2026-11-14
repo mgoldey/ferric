@@ -12,7 +12,7 @@ number. To go from a task to a method, start with
 | MP2 | SCS, OO-RI-MP2, MP3, Laplace MP2 and SOS-MP2; local approximation of RI-MP2. Maintainer focus ([note](#maintainers-focus-marker)): RI-MP2, attenuated (erfc, terfc) MP2, SCS-MP2(2terfc), MP2-V, RS-MP2 + LR-RPA | [The MP2 family](./mp2.md) |
 | Coupled cluster | CCD, CCSD, CCSD(T), LinLCCD (hh, drivers-only, full; exact or local); double hybrids B2PLYP, DSD-PBEP86, ωB97X-L-V | [Coupled cluster](./cc.md) |
 | Multireference | CAS-CI (library and Python), CASSCF and SC-NEVPT2 (CLI kinds `casscf` and `nevpt2`, and Python `run_casscf`, `run_nevpt2`) on a closed-shell RHF start, lowest root | [CAS-CI and CASSCF](./ci.md) |
-| Excited states | TDA and TDDFT on a closed-shell RHF or RKS reference; BSE-TDA on G0W0 | [RPA, GW and excited states](./rpa-gw.md#tddft-and-tda) |
+| Excited states | TDA and TDDFT on an RHF or RKS reference (singlets, triplets) or a UHF or UKS reference (spin-conserving, `<S^2>` per root); BSE-TDA on G0W0 | [RPA, GW and excited states](./rpa-gw.md#tddft-and-tda) |
 | Periodic systems | Gamma-point and k-point RHF/UHF/ROHF, RKS/UKS/ROKS, MP2, dRPA; analytic forces and stress; dense AFT or RS-GDF J/K | [Periodic systems](./pbc.md) |
 | RPA and GW | dRPA by the Riccati solve (exact or local), G0W0, COHSEX, evGW0, evGW; polarizabilities and \\( C_6 \\). Maintainer focus ([note](#maintainers-focus-marker)): PDEP-RPA | [RPA, GW and excited states](./rpa-gw.md) |
 | Electron transfer | Maintainer focus ([note](#maintainers-focus-marker)): cDFT, \\( H_{ab} \\) couplings (Python and Rust, no CLI) | [Constrained DFT](./cdft.md) |

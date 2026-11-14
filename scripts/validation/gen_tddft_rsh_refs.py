@@ -99,6 +99,8 @@ def auxmol_of(mol, aux_name):
         atom=mol.atom,
         basis=ferric_basis(aux_name, [mol.atom_symbol(i) for i in range(mol.natm)]),
         unit=mol.unit,
+        charge=mol.charge,
+        spin=mol.spin,
         cart=False,
         verbose=0,
     )

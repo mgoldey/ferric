@@ -3878,14 +3878,16 @@ impl ScfCfg {
 /// `method.kind`s that accept an open-shell molecule, per task. For
 /// `task = "energy"`, `pdep-rpa`/`gw`/`mp2-v` switch to a UHF(+MOM) reference
 /// themselves, and `rimp2`/`oo-rimp2` run their unrestricted variants
-/// (`u_ri_mp2`/`u_oo_ri_mp2`) on a UHF reference. `ksdft` on an open-shell
+/// (`u_ri_mp2`/`u_oo_ri_mp2`) on a UHF reference. `tda`/`tddft` run the
+/// spin-conserving unrestricted response on a UHF/UKS reference (ROHF/ROKS is
+/// refused by `ferric_tddft::run_tddft`). `ksdft` on an open-shell
 /// molecule runs UKS (see [`Config::dispatch_kind`]). Every gradient path
 /// (`optimize`, `frequencies`) other than `uhf`/`rohf`/`ksdft` builds an RHF
 /// reference internally, and there is no unrestricted MP2 nuclear gradient.
 fn open_shell_kinds(task: &str) -> &'static [&'static str] {
     if task == "energy" {
         &[
-            "uhf", "rohf", "ksdft", "rimp2", "oo-rimp2", "pdep-rpa", "gw", "mp2-v",
+            "uhf", "rohf", "ksdft", "rimp2", "oo-rimp2", "pdep-rpa", "gw", "mp2-v", "tda", "tddft",
         ]
     } else {
         &["uhf", "rohf", "ksdft"]
@@ -5087,7 +5089,6 @@ mod compat_guard_tests {
             "linlccd",
             "laplace-sos-mp2",
             "bse-tda",
-            "tddft",
             "wb97x-l-v",
             "b2plyp",
         ] {
@@ -5122,7 +5123,7 @@ mod compat_guard_tests {
             );
         }
         for kind in [
-            "uhf", "rohf", "ksdft", "rimp2", "oo-rimp2", "pdep-rpa", "gw", "mp2-v",
+            "uhf", "rohf", "ksdft", "rimp2", "oo-rimp2", "pdep-rpa", "gw", "mp2-v", "tda", "tddft",
         ] {
             assert!(
                 cfg(kind, "energy", "").validate_multiplicity(2).is_ok(),
