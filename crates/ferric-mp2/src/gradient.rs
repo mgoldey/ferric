@@ -151,6 +151,7 @@ pub fn rimp2_gradient_analytical(
     config: &RiMp2Config,
     ext: Option<&ExternalPotential>,
 ) -> Result<Array2<f64>, FerricError> {
+    ferric_scf::x2c::refuse_relativistic(rhf.relativistic, "RI-MP2 analytic gradient")?;
     let mut acc = PhaseAccumulator::new().report_on_drop("RI-MP2 gradient");
     rimp2_gradient_analytical_timed(
         mol,
@@ -753,6 +754,7 @@ pub fn scs_mp2_gradient_analytical(
     config: &crate::scs::ScsMp2Config,
     ext: Option<&ExternalPotential>,
 ) -> Result<Array2<f64>, FerricError> {
+    ferric_scf::x2c::refuse_relativistic(rhf.relativistic, "SCS-MP2 analytic gradient")?;
     let mut acc = PhaseAccumulator::new().report_on_drop("SCS-MP2 gradient");
     rimp2_gradient_analytical_timed(
         mol,

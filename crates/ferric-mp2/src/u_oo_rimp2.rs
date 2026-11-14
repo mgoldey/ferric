@@ -270,7 +270,24 @@ fn make_scf_view(
         cosx_schedule: None,
         convergence: None,
         precision: Default::default(),
+        relativistic: None,
     }
+}
+
+/// Refuses a reference `u_oo_ri_mp2` cannot take: a restricted one, or a
+/// relativistic one (the orbital optimization rebuilds the nonrelativistic
+/// core Hamiltonian).
+fn check_u_oo_reference(uhf: &ScfResult) -> Result<(), FerricError> {
+    ferric_scf::x2c::refuse_relativistic(
+        uhf.relativistic,
+        "orbital-optimized MP2 (it rebuilds the nonrelativistic core Hamiltonian)",
+    )?;
+    if matches!(uhf.spin, Spin::Restricted) {
+        return Err(FerricError::General(
+            "u_oo_ri_mp2: requires UHF or ROHF reference".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// MO-basis orbital energies from diagonal of F_mo = C^T F C.
@@ -664,11 +681,7 @@ pub fn u_oo_ri_mp2(
     config: &UOoRiMp2Config,
     ext: Option<&ExternalPotential>,
 ) -> Result<UOoRiMp2Result, FerricError> {
-    if matches!(uhf.spin, Spin::Restricted) {
-        return Err(FerricError::General(
-            "u_oo_ri_mp2: requires UHF or ROHF reference".into(),
-        ));
-    }
+    check_u_oo_reference(uhf)?;
     let ctx = ParallelContext::default();
     let nbas = obs.nbasis();
     let nelec_total = mol.nelec();

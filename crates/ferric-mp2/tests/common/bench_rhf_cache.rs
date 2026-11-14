@@ -349,6 +349,7 @@ pub fn decode(bytes: &[u8], key: &str, nbasis: usize) -> Result<ScfResult, Strin
         convergence: None,
         guess_basis: None,
         precision: Default::default(),
+        relativistic: None,
     })
 }
 

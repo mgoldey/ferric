@@ -134,6 +134,7 @@ pub(crate) fn optimize_result_certificate(
     df_j_aux=None, df_k_aux=None, scf_ri_j_precision=None, scf_ri_k_precision=None,
     auxbasis=None, frozen_core=None, scf_jk=None, jk_auxbasis=None, memory_budget_gb=None,
     oo_max_iter=None, oo_grad_conv=None, c_os=None, c_ss=None, scf_eri=None,
+    scf_relativistic=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_optimize(
@@ -168,7 +169,10 @@ pub(crate) fn run_optimize(
     c_os: Option<f64>,
     c_ss: Option<f64>,
     scf_eri: Option<&str>,
+    scf_relativistic: Option<&str>,
 ) -> PyResult<PyOptimizeResult> {
+    // Before any setup: no method here has an X2C-1e gradient.
+    refuse_relativistic_kwarg(scf_relativistic, "analytic nuclear gradient (run_optimize)")?;
     let k = OptimizeKwargs {
         xc,
         dispersion,
@@ -282,7 +286,15 @@ pub(crate) fn run_optimize_uhf(
         None,
         None,
         None,
+        None,
     )
+}
+
+/// ValueError for a `scf_relativistic=` value on a task that differentiates
+/// the SCF: the X2C-1e core Hamiltonian has no nuclear derivative.
+fn refuse_relativistic_kwarg(kwarg: Option<&str>, what: &str) -> PyResult<()> {
+    ferric_scf::x2c::refuse_relativistic(crate::scf::parse_relativistic(kwarg)?, what)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
 }
 
 /// The surface `run_optimize` differentiates.
@@ -941,7 +953,7 @@ impl PyFrequencyResult {
     max_iter=None, energy_conv=None, density_conv=None,
     df_j_aux=None, df_k_aux=None, scf_ri_k_precision=None,
     scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None,
-    scf_warm_start=None, scf_ri_j_precision=None, scf_eri=None,
+    scf_warm_start=None, scf_ri_j_precision=None, scf_eri=None, scf_relativistic=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_frequencies(
@@ -968,6 +980,7 @@ pub(crate) fn run_frequencies(
     scf_warm_start: Option<bool>,
     scf_ri_j_precision: Option<&str>,
     scf_eri: Option<&str>,
+    scf_relativistic: Option<&str>,
 ) -> PyResult<PyFrequencyResult> {
     use ferric_scf::frequencies::{FrequencyConfig, FrequencyReference, HessianMethod};
     let max_iter = alias_kwarg(
@@ -1039,6 +1052,8 @@ pub(crate) fn run_frequencies(
     geometry_task_scf(&mut scf_cfg, scf_ri_j_precision)?;
     scf_cfg.ri_k_precision = parse_ri_k_precision(scf_ri_k_precision)?;
     scf_cfg.eri = crate::scf::parse_eri(scf_eri)?;
+    // Before any SCF (`harmonic_frequencies` refuses it too).
+    refuse_relativistic_kwarg(scf_relativistic, "Hessian or gradient (run_frequencies)")?;
     let mut fcfg = FrequencyConfig {
         reference: refr,
         hessian: HessianMethod::parse_config_str(hessian)

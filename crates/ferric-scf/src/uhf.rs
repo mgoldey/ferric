@@ -752,6 +752,7 @@ fn solve_uhf_impl_recorded(
     )?;
     r.precision = probe.finish(ferric_core::gpu::provenance::SCF_KERNELS);
     r.xc = xc;
+    r.relativistic = config.relativistic;
     Ok(r)
 }
 
@@ -1843,6 +1844,7 @@ fn solve_uhf_impl(
                 cosx_schedule: crate::cosx_schedule::record(&cosx_sched),
                 convergence: last_report,
                 precision: Default::default(),
+                relativistic: None,
             });
         }
         mon.note_energy(energy);
@@ -2323,6 +2325,7 @@ fn solve_uhf_impl(
         cosx_schedule: crate::cosx_schedule::record(&cosx_sched),
         convergence: last_report,
         precision: Default::default(),
+        relativistic: None,
     })
 }
 

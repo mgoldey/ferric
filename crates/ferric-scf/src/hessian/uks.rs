@@ -275,6 +275,7 @@ pub fn uks_moving_grid_hessian_parts(
     uks: &ScfResult,
     config: &RhfConfig,
 ) -> Result<UhfHessianParts, FerricError> {
+    crate::x2c::refuse_relativistic(uks.relativistic, "analytic Hessian")?;
     uks_refusal(mol, prep, uks, config)?;
     let name = config.xc.as_deref().unwrap_or_default();
     let cfg = config
@@ -315,6 +316,7 @@ pub fn uks_hessian_parts_with(
     mutants: &KsFixedGridMutants,
     mode: GridMode,
 ) -> Result<UhfHessianParts, FerricError> {
+    crate::x2c::refuse_relativistic(uks.relativistic, "analytic Hessian")?;
     uks_refusal(mol, prep, uks, config)?;
     // Opt-in stage timing (`FERRIC_TIMING=1`), whole calls only.
     let mut phases = ferric_core::timing::PhaseAccumulator::new().report_on_drop("UKS Hessian");

@@ -203,6 +203,12 @@ pub struct ScfResult {
     /// default run) and for hand-built results. Purely a report: nothing reads
     /// it back, so energies are bit-identical with or without it.
     pub precision: ferric_core::gpu::provenance::PrecisionRecord,
+    /// The relativistic core Hamiltonian this SCF converged with
+    /// (`RhfConfig::relativistic`); `None` for the nonrelativistic one and for
+    /// hand-built results. Read by the analytic gradients, Hessians, Z-vector
+    /// response and the post-SCF paths that rebuild `h`, which refuse a
+    /// relativistic reference ([`crate::x2c::refuse_relativistic`]).
+    pub relativistic: Option<crate::x2c::Relativistic>,
 }
 
 /// The convergence signals the gate judged at the final iteration, plus the thresholds in force

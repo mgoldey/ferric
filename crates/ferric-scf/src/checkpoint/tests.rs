@@ -471,6 +471,7 @@ fn scf_result(spin: Spin) -> crate::result::ScfResult {
         convergence: s.convergence,
         guess_basis: None,
         precision: PrecisionRecord::f64(),
+        relativistic: None,
     }
 }
 
@@ -958,6 +959,9 @@ fn identity_table() -> Vec<(&'static str, FieldClass, Mutator)> {
         }),
         ("eri", Route, |s| {
             s.config.eri = crate::incore_jk::EriMode::Direct;
+        }),
+        ("relativistic", Method, |s| {
+            s.config.relativistic = Some(crate::x2c::Relativistic::X2c1e);
         }),
     ]
 }

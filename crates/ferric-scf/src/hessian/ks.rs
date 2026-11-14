@@ -619,6 +619,7 @@ pub fn rks_fixed_grid_hessian_parts(
     rks: &ScfResult,
     config: &RhfConfig,
 ) -> Result<RhfHessianParts, FerricError> {
+    crate::x2c::refuse_relativistic(rks.relativistic, "analytic Hessian")?;
     ks_refusal(mol, prep, rks, config)?;
     let name = config.xc.as_deref().unwrap_or_default();
     let cfg = config
@@ -654,6 +655,7 @@ pub fn rks_fixed_grid_hessian_parts_with(
     grid: &FixedGridKs,
     mutants: &KsFixedGridMutants,
 ) -> Result<RhfHessianParts, FerricError> {
+    crate::x2c::refuse_relativistic(rks.relativistic, "analytic Hessian")?;
     ks_hessian_parts_in_mode(
         ctx,
         mol,
@@ -700,6 +702,7 @@ pub fn rks_moving_grid_hessian_parts(
     rks: &ScfResult,
     config: &RhfConfig,
 ) -> Result<RhfHessianParts, FerricError> {
+    crate::x2c::refuse_relativistic(rks.relativistic, "analytic Hessian")?;
     ks_refusal(mol, prep, rks, config)?;
     let name = config.xc.as_deref().unwrap_or_default();
     let cfg = config
@@ -736,6 +739,7 @@ pub fn rks_moving_grid_hessian_parts_with(
     grid: &FixedGridKs,
     mutants: &KsFixedGridMutants,
 ) -> Result<RhfHessianParts, FerricError> {
+    crate::x2c::refuse_relativistic(rks.relativistic, "analytic Hessian")?;
     ks_hessian_parts_in_mode(
         ctx,
         mol,
@@ -828,6 +832,7 @@ pub fn rks_fixed_grid_hessian_parts_with_aux(
     fits: KsFits<'_>,
     mutants: &KsFixedGridMutants,
 ) -> Result<RhfHessianParts, FerricError> {
+    crate::x2c::refuse_relativistic(rks.relativistic, "analytic Hessian")?;
     ks_refusal(mol, prep, rks, config)?;
     let hf_config = RhfConfig {
         xc: None,

@@ -810,6 +810,7 @@ pub fn relaxation_gradient_closed(
     result: &ScfResult,
     v_ao: &Array2<f64>,
 ) -> Result<RelaxationGradient, FerricError> {
+    crate::x2c::refuse_relativistic(result.relativistic, "Z-vector relaxation gradient")?;
     if let Some(r) = unsupported_reason(config) {
         return Err(FerricError::General(format!("Z-vector relaxation: {r}")));
     }
@@ -1166,6 +1167,7 @@ pub fn relaxation_gradient_unrestricted(
     result: &ScfResult,
     v_ao: &Array2<f64>,
 ) -> Result<UnrestrictedRelaxationGradient, FerricError> {
+    crate::x2c::refuse_relativistic(result.relativistic, "Z-vector relaxation gradient")?;
     if let Some(r) = unsupported_reason_unrestricted(config) {
         return Err(FerricError::General(format!("Z-vector relaxation: {r}")));
     }
@@ -1495,6 +1497,7 @@ pub fn relaxation_gradient_roks(
     result: &ScfResult,
     v_ao: &Array2<f64>,
 ) -> Result<RestrictedOpenRelaxationGradient, FerricError> {
+    crate::x2c::refuse_relativistic(result.relativistic, "Z-vector relaxation gradient")?;
     if let Some(r) = unsupported_reason_roks(config) {
         return Err(FerricError::General(format!("Z-vector relaxation: {r}")));
     }

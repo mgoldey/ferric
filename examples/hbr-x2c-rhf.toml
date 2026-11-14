@@ -1,0 +1,18 @@
+# Spin-free X2C-1e RHF of HBr (all-electron cc-pVDZ): the core Hamiltonian
+# T + V is replaced by the X2C-1e one, decoupled in the uncontracted basis
+# (PySCF scf.RHF(mol).sfx2c1e()). Energies only: task = "optimize" or
+# "frequencies" is refused, as is an ECP basis. The kinds that accept it are
+# rhf, uhf, rohf, ksdft, rimp2, scs-mp2, ccsd and ccsd(t).
+[molecule]
+xyz = "testdata/molecules/hbr.xyz"
+
+[basis]
+name = "cc-pvdz"
+
+[method]
+kind = "rhf"
+
+[scf]
+relativistic = "x2c1e"
+energy_conv = 1e-10
+density_conv = 1e-8

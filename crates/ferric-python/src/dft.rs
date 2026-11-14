@@ -440,7 +440,7 @@ pub(crate) fn run_double_hybrid(
     cosx_grid=None, cosx_final_pass=None, cosx_final_grid=None, cosx_overlap_fit=None,
     symmetry=false, irrep_nelec=None, fock_hook=None,
     guess_basis=None, guess_projection=None, grid_weight_cut=None, ri_j_precision=None,
-    dm0=None,
+    dm0=None, relativistic=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_dft(
@@ -477,6 +477,7 @@ pub(crate) fn run_dft(
     grid_weight_cut: Option<f64>,
     ri_j_precision: Option<&str>,
     dm0: Option<numpy::PyReadonlyArray2<'_, f64>>,
+    relativistic: Option<&str>,
 ) -> PyResult<PyObject> {
     refuse_dm0_with_guess("run_dft", dm0.is_some(), None, guess_basis)?;
     let guess_basis = parse_guess_basis(guess_basis, guess_projection)?;
@@ -504,6 +505,7 @@ pub(crate) fn run_dft(
     let xc_name = functional.unwrap_or("LDA").to_string();
     cfg.xc = Some(xc_name.clone());
     cfg.guess_basis = guess_basis;
+    cfg.relativistic = crate::scf::parse_relativistic(relativistic)?;
     // Rung 0 starts from dm0; later rungs carry the previous rung's density.
     cfg.init_guess_density = blocks::checked_dm0(dm0, &prep, emol.nelec() as f64, "run_dft")?;
     // Resolve `dispersion=` BEFORE the SCF: an unknown spelling or a
@@ -928,7 +930,7 @@ pub(crate) fn evaluate_dispersion(
     dispersion=None, df_j_aux=None, df_k_aux=None, ri_k_precision=None,
     grid_radial=None, grid_angular=None, grid_prune=None,
     symmetry=false, irrep_nelec=None, guess_basis=None, guess_projection=None,
-    grid_weight_cut=None, ri_j_precision=None, dm0=None,
+    grid_weight_cut=None, ri_j_precision=None, dm0=None, relativistic=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_ksdft(
@@ -960,6 +962,7 @@ pub(crate) fn run_ksdft(
     grid_weight_cut: Option<f64>,
     ri_j_precision: Option<&str>,
     dm0: Option<numpy::PyReadonlyArray2<'_, f64>>,
+    relativistic: Option<&str>,
 ) -> PyResult<PyObject> {
     run_dft(
         py,
@@ -995,6 +998,7 @@ pub(crate) fn run_ksdft(
         grid_weight_cut,
         ri_j_precision,
         dm0,
+        relativistic,
     )
 }
 
@@ -1051,6 +1055,7 @@ fn run_open_ks(
     grid_weight_cut: Option<f64>,
     guess: Option<&str>,
     dm0: Option<&Bound<'_, PyAny>>,
+    relativistic: Option<&str>,
 ) -> PyResult<PyUhfResult> {
     let who = kind.who();
     refuse_dm0_with_guess(who, dm0.is_some(), guess, None)?;
@@ -1073,6 +1078,7 @@ fn run_open_ks(
     config.use_sad_guess = use_sad_guess;
     config.external_potential = build_external_potential(point_charges, external_field);
     config.xc = Some(functional.to_string());
+    config.relativistic = crate::scf::parse_relativistic(relativistic)?;
     // RI-J / RI-K on by default for a KS SCF, as in run_dft and the CLI.
     config.df_j_aux = resolve_df_aux(df_j_aux, "def2-universal-jkfit");
     config.df_k_aux = resolve_df_aux(df_k_aux, "def2-universal-jkfit");
@@ -1145,7 +1151,7 @@ fn run_open_ks(
     point_charges=None, external_field=None, memory_budget_gb=None,
     df_j_aux=None, df_k_aux=None, ri_k_precision=None, ri_j_precision=None,
     grid_radial=None, grid_angular=None, grid_prune=None, grid_weight_cut=None,
-    guess=None, dm0=None,
+    guess=None, dm0=None, relativistic=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_uks(
@@ -1173,6 +1179,7 @@ pub(crate) fn run_uks(
     grid_weight_cut: Option<f64>,
     guess: Option<&str>,
     dm0: Option<&Bound<'_, PyAny>>,
+    relativistic: Option<&str>,
 ) -> PyResult<PyUhfResult> {
     run_open_ks(
         py,
@@ -1200,6 +1207,7 @@ pub(crate) fn run_uks(
         grid_weight_cut,
         guess,
         dm0,
+        relativistic,
     )
 }
 
@@ -1217,7 +1225,7 @@ pub(crate) fn run_uks(
     point_charges=None, external_field=None, memory_budget_gb=None,
     df_j_aux=None, df_k_aux=None, ri_k_precision=None, ri_j_precision=None,
     grid_radial=None, grid_angular=None, grid_prune=None, grid_weight_cut=None,
-    dm0=None,
+    dm0=None, relativistic=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_roks(
@@ -1244,6 +1252,7 @@ pub(crate) fn run_roks(
     grid_prune: Option<&str>,
     grid_weight_cut: Option<f64>,
     dm0: Option<&Bound<'_, PyAny>>,
+    relativistic: Option<&str>,
 ) -> PyResult<PyUhfResult> {
     run_open_ks(
         py,
@@ -1271,6 +1280,7 @@ pub(crate) fn run_roks(
         grid_weight_cut,
         None,
         dm0,
+        relativistic,
     )
 }
 

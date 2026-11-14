@@ -681,6 +681,7 @@ pub fn rohf_hessian_parts(
     rohf: &ScfResult,
     config: &RhfConfig,
 ) -> Result<RhfHessianParts, FerricError> {
+    crate::x2c::refuse_relativistic(rohf.relativistic, "analytic Hessian")?;
     rohf_hessian_parts_mutated(ctx, mol, prep, op, bounds, rohf, config, RohfMutation::None)
 }
 
@@ -697,6 +698,7 @@ pub fn rohf_hessian_parts_mutated(
     config: &RhfConfig,
     mutation: RohfMutation,
 ) -> Result<RhfHessianParts, FerricError> {
+    crate::x2c::refuse_relativistic(rohf.relativistic, "analytic Hessian")?;
     rohf_hessian_parts_df_mutated(
         ctx,
         mol,
@@ -728,6 +730,7 @@ pub fn rohf_hessian_parts_df_mutated(
     mutation: RohfMutation,
     df_mutants: (&RijMutants, &RikMutants, &UhfDfMutants),
 ) -> Result<RhfHessianParts, FerricError> {
+    crate::x2c::refuse_relativistic(rohf.relativistic, "analytic Hessian")?;
     let (rij_mutants, rik_mutants, uhf_mutants) = df_mutants;
     let mapped;
     let rohf = if is_semicanonicalized(rohf) {

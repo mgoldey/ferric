@@ -389,6 +389,7 @@ pub fn rhf_gradient(
     result: &ScfResult,
     ext: Option<&ferric_core::external_potential::ExternalPotential>,
 ) -> Result<Array2<f64>, FerricError> {
+    crate::x2c::refuse_relativistic(result.relativistic, "analytic nuclear gradient")?;
     if mol.atoms.iter().any(|a| a.ghost) {
         return Err(FerricError::Libint(
             "rhf_gradient is not implemented for molecules containing ghost atoms \
@@ -436,6 +437,7 @@ pub fn rhf_gradient_cosx(
     ext: Option<&ferric_core::external_potential::ExternalPotential>,
     cosx: &crate::cosx_k::CosxConfig,
 ) -> Result<Array2<f64>, FerricError> {
+    crate::x2c::refuse_relativistic(result.relativistic, "analytic nuclear gradient")?;
     rhf_gradient_cosx_with_q(
         mol,
         prep,
@@ -463,6 +465,7 @@ pub fn rhf_gradient_cosx_with_q(
     cosx: &crate::cosx_k::CosxConfig,
     q: crate::cosx_gradient::FitQ,
 ) -> Result<Array2<f64>, FerricError> {
+    crate::x2c::refuse_relativistic(result.relativistic, "analytic nuclear gradient")?;
     crate::cosx_gradient::check_gradient_supported(cosx)?;
     if mol.atoms.iter().any(|a| a.ghost) {
         return Err(FerricError::Libint(
@@ -526,6 +529,7 @@ pub fn uhf_gradient_cosx(
     ext: Option<&ferric_core::external_potential::ExternalPotential>,
     cosx: &crate::cosx_k::CosxConfig,
 ) -> Result<Array2<f64>, FerricError> {
+    crate::x2c::refuse_relativistic(result.relativistic, "analytic nuclear gradient")?;
     crate::cosx_gradient::check_gradient_supported(cosx)?;
     if mol.atoms.iter().any(|a| a.ghost) {
         return Err(FerricError::Libint(
@@ -722,6 +726,18 @@ pub fn refuse_cosmo_gradient(config: &crate::rhf::RhfConfig) -> Result<(), Ferri
     Ok(())
 }
 
+/// Refuse a relativistic SCF (`config.relativistic`, X2C-1e) for gradient
+/// work: the X2C core Hamiltonian has no nuclear derivative here, so every
+/// dispatcher would return the nonrelativistic `T + V` derivative of an X2C
+/// energy. Called next to [`refuse_cosmo_gradient`] by the dispatchers and
+/// the `preflight_cosx_*` functions, so the geometry drivers (optimize,
+/// saddle, IRC, finite-difference-of-gradient frequencies) fail before the
+/// SCF; the gradients that take only a result refuse
+/// [`ScfResult::relativistic`] themselves.
+pub fn refuse_relativistic_gradient(config: &crate::rhf::RhfConfig) -> Result<(), FerricError> {
+    crate::x2c::refuse_relativistic(config.relativistic, "analytic nuclear gradient")
+}
+
 /// Closed-shell (RHF / RKS) SCF gradient that differentiates the exchange the
 /// SCF ACTUALLY built.
 ///
@@ -741,6 +757,7 @@ pub fn restricted_scf_gradient(
     result: &ScfResult,
 ) -> Result<Array2<f64>, FerricError> {
     refuse_cosmo_gradient(config)?;
+    refuse_relativistic_gradient(config)?;
     refuse_final_pass_result(result)?;
     let ext = config.external_potential.as_ref();
     let cosx = crate::cosx_gradient::scf_exchange_is_cosx(config, false)?.then_some(&config.cosx);
@@ -815,6 +832,7 @@ pub fn unrestricted_scf_gradient(
     result: &ScfResult,
 ) -> Result<Array2<f64>, FerricError> {
     refuse_cosmo_gradient(config)?;
+    refuse_relativistic_gradient(config)?;
     refuse_final_pass_result(result)?;
     let ext = config.external_potential.as_ref();
     let cosx = crate::cosx_gradient::scf_exchange_is_cosx(config, true)?;
@@ -890,6 +908,7 @@ pub fn gradient_task_config(
 /// fast instead of after a full SCF. `Ok(())` when exchange is not COSX.
 pub fn preflight_cosx_restricted(config: &crate::rhf::RhfConfig) -> Result<(), FerricError> {
     refuse_cosmo_gradient(config)?;
+    refuse_relativistic_gradient(config)?;
     if crate::cosx_gradient::scf_exchange_is_cosx(config, false)? {
         crate::cosx_gradient::check_gradient_supported(&config.cosx)?;
         crate::cosx_gradient::check_fitted_ks_supported(&config.cosx, config.xc.as_deref())?;
@@ -902,6 +921,7 @@ pub fn preflight_cosx_restricted(config: &crate::rhf::RhfConfig) -> Result<(), F
 /// the gradient cannot differentiate; the overlap fit with a functional).
 pub fn preflight_cosx_unrestricted(config: &crate::rhf::RhfConfig) -> Result<(), FerricError> {
     refuse_cosmo_gradient(config)?;
+    refuse_relativistic_gradient(config)?;
     if crate::cosx_gradient::scf_exchange_is_cosx(config, true)? {
         crate::cosx_gradient::check_gradient_supported(&config.cosx)?;
         crate::cosx_gradient::check_fitted_ks_supported(&config.cosx, config.xc.as_deref())?;
@@ -918,6 +938,7 @@ pub fn preflight_cosx_unrestricted(config: &crate::rhf::RhfConfig) -> Result<(),
 /// (Kohn-Sham), neither of which exists. `Ok(())` when exchange is not COSX.
 pub fn preflight_cosx_restricted_open(config: &crate::rhf::RhfConfig) -> Result<(), FerricError> {
     refuse_cosmo_gradient(config)?;
+    refuse_relativistic_gradient(config)?;
     if crate::cosx_gradient::scf_exchange_is_cosx(config, true)? {
         crate::cosx_gradient::check_gradient_supported(&config.cosx)?;
         check_cosx_restricted_open_fit(&config.cosx)?;
@@ -956,6 +977,7 @@ pub fn rohf_gradient_cosx(
     ext: Option<&ferric_core::external_potential::ExternalPotential>,
     cosx: &crate::cosx_k::CosxConfig,
 ) -> Result<Array2<f64>, FerricError> {
+    crate::x2c::refuse_relativistic(result.relativistic, "analytic nuclear gradient")?;
     crate::cosx_gradient::check_gradient_supported(cosx)?;
     check_cosx_restricted_open_fit(cosx)?;
     if mol.atoms.iter().any(|a| a.ghost) {
@@ -1004,6 +1026,7 @@ pub fn restricted_open_scf_gradient(
     result: &ScfResult,
 ) -> Result<Array2<f64>, FerricError> {
     refuse_cosmo_gradient(config)?;
+    refuse_relativistic_gradient(config)?;
     refuse_final_pass_result(result)?;
     let ext = config.external_potential.as_ref();
     let cosx = crate::cosx_gradient::scf_exchange_is_cosx(config, true)?;
@@ -1107,6 +1130,7 @@ pub fn rhf_gradient_exact_jk(
     result: &ScfResult,
     ext: Option<&ferric_core::external_potential::ExternalPotential>,
 ) -> Result<Array2<f64>, FerricError> {
+    crate::x2c::refuse_relativistic(result.relativistic, "analytic nuclear gradient")?;
     let mut exact = result.clone();
     exact.df_jk = None;
     rhf_gradient(mol, prep, op, bounds, &exact, ext)
@@ -1132,6 +1156,7 @@ pub fn rhf_gradient_with_polarizable(
     sites: Option<&crate::polarizable::PolarizableSites>,
     dipoles: Option<&Array2<f64>>,
 ) -> Result<Array2<f64>, FerricError> {
+    crate::x2c::refuse_relativistic(result.relativistic, "analytic nuclear gradient")?;
     let mut grad = rhf_gradient(mol, prep, op, bounds, result, ext)?;
     if let (Some(sites), Some(dipoles)) = (sites, dipoles) {
         grad += &crate::polarizable::polarizable_gradient_term(
@@ -1169,6 +1194,7 @@ pub fn uhf_gradient_with_polarizable(
     sites: Option<&crate::polarizable::PolarizableSites>,
     dipoles: Option<&Array2<f64>>,
 ) -> Result<Array2<f64>, FerricError> {
+    crate::x2c::refuse_relativistic(result.relativistic, "analytic nuclear gradient")?;
     let mut grad = uhf_gradient(mol, prep, op, bounds, result, ext)?;
     if let (Some(sites), Some(dipoles)) = (sites, dipoles) {
         grad += &crate::polarizable::polarizable_gradient_term(
@@ -2154,6 +2180,7 @@ pub fn uhf_gradient(
     result: &ScfResult,
     ext: Option<&ferric_core::external_potential::ExternalPotential>,
 ) -> Result<Array2<f64>, FerricError> {
+    crate::x2c::refuse_relativistic(result.relativistic, "analytic nuclear gradient")?;
     let (d_total, d_beta, w) = uhf_gradient_densities(mol, prep, result)?;
     let dens = crate::df_gradient::TwoElectronDensity::Open {
         alpha: &result.density_alpha,
@@ -2238,6 +2265,7 @@ pub fn rohf_gradient(
     result: &ScfResult,
     ext: Option<&ferric_core::external_potential::ExternalPotential>,
 ) -> Result<Array2<f64>, FerricError> {
+    crate::x2c::refuse_relativistic(result.relativistic, "analytic nuclear gradient")?;
     if mol.atoms.iter().any(|a| a.ghost) {
         return Err(FerricError::Libint(
             "rohf_gradient is not implemented for molecules containing ghost atoms".into(),

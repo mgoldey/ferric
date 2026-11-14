@@ -78,6 +78,7 @@ pub fn scf_certificate(mol: &Molecule, result: &ScfResult, config: &RhfConfig) -
         );
     }
     stability_warnings(&mut c, result);
+    c = relativistic_cap(c, result);
     if !result.converged {
         let why = match result.exit {
             ScfExit::NotCertified => "SCF converged but the ROHF occupation witness found a \
@@ -277,6 +278,9 @@ fn approximations(
             format!("{} Thole site(s)", p.sites.len()),
         ));
     }
+    if let Some(r) = result.relativistic {
+        out.push((r.as_str(), relativistic_detail(r)));
+    }
     if let Some(cm) = config.cosmo.as_ref() {
         out.push(("cosmo", format!("epsilon {}", cm.epsilon)));
     }
@@ -284,6 +288,32 @@ fn approximations(
         out.push(("pcm", format!("IEF-PCM, epsilon {}", p.epsilon)));
     }
     out
+}
+
+/// Caps a relativistic SCF at `Ungraded`: no validation row grades one.
+fn relativistic_cap(c: Certificate, result: &ScfResult) -> Certificate {
+    match result.relativistic {
+        Some(r) => c.cap_grade(
+            Grade::Ungraded,
+            format!(
+                "relativistic = \"{}\": no validation row grades a relativistic SCF",
+                r.as_str()
+            ),
+        ),
+        None => c,
+    }
+}
+
+/// The certificate detail of a relativistic Hamiltonian.
+fn relativistic_detail(r: crate::x2c::Relativistic) -> String {
+    match r {
+        crate::x2c::Relativistic::X2c1e => format!(
+            "spin-free X2C-1e core Hamiltonian (decoupled in the uncontracted basis, \
+             c = {} a.u.); two-electron and property operators nonrelativistic (no picture \
+             change)",
+            crate::x2c::LIGHT_SPEED
+        ),
+    }
 }
 
 /// Warnings from the stability verdicts on the result. Open-shell

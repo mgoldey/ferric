@@ -516,6 +516,13 @@ pub struct RhfConfig {
     /// from, for the certificate. Written by the solver.
     #[doc(hidden)]
     pub eri_route: crate::incore_jk::EriRouteRecord,
+    /// `[scf] relativistic`: the relativistic core Hamiltonian
+    /// ([`crate::x2c::Relativistic`]), built once before the loop in place of
+    /// `T + V` (see [`crate::x2c::reference_hcore`]). `None` (default) is the
+    /// nonrelativistic Hamiltonian, byte-identical to a build without the
+    /// option. Analytic gradients, Hessians and Z-vector response refuse it,
+    /// as do ECP atoms and periodic (injected) solves.
+    pub relativistic: Option<crate::x2c::Relativistic>,
 }
 
 impl Default for RhfConfig {
@@ -587,6 +594,7 @@ impl Default for RhfConfig {
             raw_handoff: None,
             eri: crate::incore_jk::EriMode::Auto,
             eri_route: Default::default(),
+            relativistic: None,
         }
     }
 }
@@ -1493,6 +1501,13 @@ pub fn validate_injected(config: &RhfConfig) -> Result<(), InjectedConfigError> 
     let reject = |field: &'static str, reason: &'static str| -> Result<(), InjectedConfigError> {
         Err(InjectedConfigError { field, reason })
     };
+    if config.relativistic.is_some() {
+        return reject(
+            "relativistic",
+            "X2C-1e is built for a molecule's nuclear potential; the injected core Hamiltonian is \
+             the caller's (a periodic cell's)",
+        );
+    }
     if config.symmetry || config.irrep_nelec.is_some() {
         return reject(
             "symmetry",
@@ -2064,6 +2079,7 @@ fn solve_rhf_impl_recorded(
     let mut r = solve_rhf_impl(ctx, mol, prep, op, bounds, config, inj, sym, hook)?;
     r.precision = probe.finish(ferric_core::gpu::provenance::SCF_KERNELS);
     r.xc = xc;
+    r.relativistic = config.relativistic;
     Ok(r)
 }
 
@@ -2644,6 +2660,7 @@ fn solve_rhf_impl(
             cosx_schedule,
             convergence,
             precision: Default::default(),
+            relativistic: None,
         }
     };
 
@@ -3395,6 +3412,7 @@ fn solve_rhf_impl(
                     cosx_schedule: crate::cosx_schedule::record(&cosx_sched),
                     convergence: last_report,
                     precision: Default::default(),
+                    relativistic: None,
                 });
             }
         }

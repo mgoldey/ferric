@@ -2846,6 +2846,12 @@ pub struct ScfCfg {
     /// route is not exact four-centre J and K). RI-J/RI-K, LinK, COSX and
     /// range-separated routes are unaffected. Any other value is an error.
     pub eri: Option<String>,
+    /// Relativistic core Hamiltonian: `"x2c1e"` (spin-free X2C-1e, as PySCF
+    /// `sfx2c1e()`), or unset for the nonrelativistic one. Energies only
+    /// (`task = "energy"`), for the kinds in `X2C_KINDS`; all-electron bases
+    /// only (an ECP atom is an error); not with `[cell]`. Same as the Python
+    /// `relativistic=` kwarg. Any other value is an error.
+    pub relativistic: Option<String>,
     /// COSX exchange grid (the SCF grid),
     /// `cosx_grid = { radial = 35, angular = 194, prune = "sgx" }`. Omitted =
     /// `ferric_scf::cosx_k::CosxConfig::default()` (see `site/src/methods/scf.md`,
@@ -3111,6 +3117,7 @@ impl Default for ScfCfg {
             k_builder: None,
             screening: None,
             eri: None,
+            relativistic: None,
             cosx_grid: None,
             cosx_final_pass: None,
             cosx_final_grid: None,
@@ -3566,6 +3573,14 @@ impl ScfCfg {
                 .map_err(|e| format!("[scf] diis: {e}")),
         }
     }
+    /// Resolve `[scf] relativistic` (strict; unset is nonrelativistic).
+    pub fn relativistic_resolved(&self) -> Result<Option<ferric_scf::x2c::Relativistic>, String> {
+        self.relativistic
+            .as_deref()
+            .map(ferric_scf::x2c::Relativistic::parse_config_str)
+            .transpose()
+            .map_err(|e| format!("[scf] {}", ferric_msg(e)))
+    }
     /// Resolve `[scf] mom_reference` (strict; unset is `"previous"`).
     pub fn mom_reference_resolved(&self) -> Result<ferric_scf::mom::MomReference, String> {
         self.mom_reference
@@ -3643,6 +3658,7 @@ impl ScfCfg {
         }
         self.use_density_guess()?;
         self.mom_reference_resolved()?;
+        self.relativistic_resolved()?;
         if let Some(p) = self.eri_precision {
             (ferric_integrals::engine_pool::ERI_PRECISION_VAR.validate)(&p)
                 .map_err(|e| format!("[scf] eri_precision {p:e}: {e}"))?;
@@ -4296,6 +4312,14 @@ const COSX_GRADIENT_KINDS: &[&str] = &["rhf", "ksdft", "uhf", "rohf"];
 /// response term).
 const PCM_KINDS: &[&str] = &["rhf", "uhf", "rohf", "ksdft", "pdep-rpa"];
 
+/// The kinds `[scf] relativistic` (X2C-1e) runs with: the SCF energies and
+/// the post-SCF energies that read the reference's orbitals and orbital
+/// energies and never rebuild the core Hamiltonian. Kinds that rebuild it
+/// (OO-RI-MP2, CASSCF, NEVPT2) or are not checked against it are refused.
+pub const X2C_KINDS: &[&str] = &[
+    "rhf", "uhf", "rohf", "ksdft", "rimp2", "scs-mp2", "ccsd", "ccsd(t)",
+];
+
 /// `method.kind`s whose `task = "optimize"` honours `[pcm]`: the SCF kinds,
 /// whose gradients (`restricted_scf_gradient` / `unrestricted_scf_gradient` /
 /// `restricted_open_scf_gradient`) add the analytic IEF-PCM term
@@ -4475,6 +4499,38 @@ impl Config {
     /// wrongly or not at all. Pure function of the config: the multiplicity
     /// is `[molecule] multiplicity`, which is what the solved molecule
     /// carries (with `[qmmm]` too — the QM region takes it).
+    /// `[scf] relativistic`: energies only, for [`X2C_KINDS`], molecules only.
+    fn validate_relativistic(&self) -> Result<(), String> {
+        let Some(rel) = self.scf.relativistic_resolved()? else {
+            return Ok(());
+        };
+        let (kind, task) = (self.method.kind.as_str(), self.method.task.as_str());
+        let name = rel.as_str();
+        if task != "energy" {
+            return Err(format!(
+                "[scf] relativistic = \"{name}\" is not supported with method.task = \"{task}\": \
+                 the X2C-1e core Hamiltonian has no analytic nuclear derivative, so a gradient \
+                 or Hessian would belong to the nonrelativistic surface. Use task = \"energy\"."
+            ));
+        }
+        if self.cell.is_some() {
+            return Err(format!(
+                "[scf] relativistic = \"{name}\" is not available with [cell]: X2C-1e is built \
+                 for a molecule's nuclear potential only"
+            ));
+        }
+        if !X2C_KINDS.contains(&kind) {
+            return Err(format!(
+                "[scf] relativistic = \"{name}\" is wired for method.kind = {} only; kind = \
+                 \"{kind}\" either rebuilds the nonrelativistic core Hamiltonian from the \
+                 reference or has not been checked against an X2C reference. Remove \
+                 relativistic, or use one of those kinds.",
+                X2C_KINDS.join(", ")
+            ));
+        }
+        Ok(())
+    }
+
     pub fn validate_cli_wired_keys(&self) -> Result<(), String> {
         let kind = self.method.kind.as_str();
         let task = self.method.task.as_str();
@@ -4528,6 +4584,7 @@ impl Config {
             }
         }
 
+        self.validate_relativistic()?;
         self.scf.validate_accelerators(kind, mult)?;
         self.validate_symmetry_keys()?;
 
@@ -5384,6 +5441,48 @@ mod compat_guard_tests {
             e.contains("conflicts"),
             "load-time validation must refuse it: {e}"
         );
+    }
+
+    /// `[scf] relativistic` parses strictly, and runs energies only, for
+    /// `X2C_KINDS`, without `[cell]`. Unset is accepted everywhere.
+    #[test]
+    fn scf_relativistic_is_strict_and_energy_only() {
+        let rel = "[scf]\nrelativistic = \"x2c1e\"\n";
+        for kind in X2C_KINDS {
+            cfg(kind, "energy", rel).validate_cli_wired_keys().unwrap();
+        }
+        assert_eq!(
+            cfg("rhf", "energy", rel).scf.relativistic_resolved(),
+            Ok(Some(ferric_scf::x2c::Relativistic::X2c1e))
+        );
+        assert_eq!(
+            cfg("rhf", "energy", "").scf.relativistic_resolved(),
+            Ok(None)
+        );
+        let bad = cfg("rhf", "energy", "[scf]\nrelativistic = \"X2C\"\n");
+        let e = bad.scf.validate().unwrap_err();
+        assert!(
+            e.starts_with("[scf] relativistic") && e.contains("x2c1e"),
+            "{e}"
+        );
+        for task in ["optimize", "frequencies"] {
+            let e = cfg("rhf", task, rel).validate_cli_wired_keys().unwrap_err();
+            assert!(e.contains("no analytic nuclear derivative"), "{task}: {e}");
+            cfg("rhf", task, "").validate_cli_wired_keys().unwrap();
+        }
+        for kind in ["oo-rimp2", "casscf", "nevpt2", "gw"] {
+            let e = cfg(kind, "energy", rel)
+                .validate_cli_wired_keys()
+                .unwrap_err();
+            assert!(e.contains("is wired for method.kind"), "{kind}: {e}");
+        }
+        let cell = format!(
+            "{rel}[cell]\nlattice = [[10.0, 0.0, 0.0], [0.0, 10.0, 0.0], [0.0, 0.0, 10.0]]\n"
+        );
+        let e = cfg("rhf", "energy", &cell)
+            .validate_cli_wired_keys()
+            .unwrap_err();
+        assert!(e.contains("[cell]"), "{e}");
     }
 
     /// `[scf] df_j_aux = "exact"` used to reach `basis::bundled("exact")`

@@ -583,10 +583,17 @@ settings of PySCF `scf.RHF(mol).sfx2c1e()` (`approx='1e'`,
 `xuncontract=True`); `c` defaults to PySCF's 137.03599967994. Only the core
 Hamiltonian is transformed: the two-electron interaction and property
 operators stay nonrelativistic. A basis with an ECP atom raises `ValueError`,
-since the ECP already carries the core's scalar relativity. There is no
-`relativistic=` driver keyword; a scalar-relativistic SCF runs through a
-constant Fock hook, which must return `Tr[D dH]` as its energy (not half of
-it):
+since the ECP already carries the core's scalar relativity.
+
+A scalar-relativistic SCF is `relativistic="x2c1e"` on `run_rhf`, `run_uhf`,
+`run_rohf`, `run_dft`/`run_ksdft`, `run_uks` and `run_roks`: the driver uses
+this matrix as its core Hamiltonian, records `x2c1e` among the certificate's
+approximations and grades the run Ungraded. It is for energies only:
+`with_gradient=True`, and `scf_relativistic=` on `run_optimize` and
+`run_frequencies`, raise `ValueError`, and post-SCF methods that rebuild the
+nonrelativistic core Hamiltonian (orbital-optimized MP2) refuse an X2C
+reference. The same SCF runs from the block through a constant Fock hook,
+which must return `Tr[D dH]` as its energy (not half of it):
 
 <!-- doctest -->
 ```python
@@ -596,11 +603,12 @@ ints_ne = ferric.AoIntegrals(neon, dz)
 dh = ints_ne.hcore_x2c() - ints_ne.hcore()
 nr = ferric.run_rhf(neon, dz)
 rel = ferric.run_rhf(neon, dz, fock_hook=lambda d: (float(np.sum(d * dh)), dh))
-print(f"{rel.energy - nr.energy:.5f}")
+drv = ferric.run_rhf(neon, dz, relativistic="x2c1e")
+print(f"{rel.energy - nr.energy:.5f} {drv.energy - nr.energy:.5f}")
 ```
 
 ```text
--0.12694
+-0.12694 -0.12694
 ```
 
 PySCF gives −0.1269416 Ha for the same shift. Validation is in the

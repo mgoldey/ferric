@@ -312,6 +312,7 @@ fn config_fields(config: &RhfConfig, out: &mut Vec<IdentityField>) -> (f64, f64)
         cdft_lambda_tol,
         cdft_lambda_init,
         cdft_stability_descent,
+        relativistic,
         // How J, K and the integrals are built.
         k_builder,
         cosx,
@@ -389,6 +390,8 @@ fn config_fields(config: &RhfConfig, out: &mut Vec<IdentityField>) -> (f64, f64)
             "cdft_stability_descent",
             format!("{cdft_stability_descent:?}"),
         ),
+        // The core Hamiltonian (X2C-1e or T + V).
+        ("relativistic", format!("{relativistic:?}")),
     ];
     let route = [
         ("k_builder", format!("{k_builder:?}")),

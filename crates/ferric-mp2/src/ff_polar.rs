@@ -214,6 +214,7 @@ pub(crate) fn solve_rhf_with_external(
                 cosx_schedule: None,
                 convergence: None,
                 precision: Default::default(),
+                relativistic: None,
             });
         }
         prev_e = energy;
@@ -402,6 +403,10 @@ pub fn mp2_polarizability_static(
     field_strength: f64,
     density_mode: DensityMode,
 ) -> Result<Mp2Polarizability, FerricError> {
+    ferric_scf::x2c::refuse_relativistic(
+        scf_config.relativistic,
+        "finite-field polarizability (its field SCFs rebuild the nonrelativistic core Hamiltonian)",
+    )?;
     let n = obs.nbasis();
     // AO dipole integrals ⟨μ|r_d|ν⟩ about the origin.
     let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;

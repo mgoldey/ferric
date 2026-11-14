@@ -450,6 +450,39 @@ uncorrected PBE minimum (1594.35, 3500.27 and 3669.29 cm⁻¹), D3(BJ) shifts
 the three modes by +0.006, −0.077 and −0.095 cm⁻¹, and MBD@rsSCS by +0.107,
 −0.406 and −0.516 cm⁻¹.
 
+## Scalar relativity: X2C-1e
+
+`[scf] relativistic = "x2c1e"` (Python `relativistic="x2c1e"` on `run_rhf`,
+`run_uhf`, `run_rohf`, `run_dft`/`run_ksdft`, `run_uks`, `run_roks`) replaces
+`T + V` by the spin-free X2C-1e core Hamiltonian before the SCF: the
+one-electron Dirac equation of the nuclear potential is decoupled in the
+uncontracted basis (one shell per unique exponent and angular momentum) and
+contracted back, with c = 137.03599967994 a.u. These are the settings of
+PySCF `scf.RHF(mol).sfx2c1e()`. The two-electron interaction and property
+operators stay nonrelativistic (no picture change), and the guesses (SAD,
+MINAO, `basis2`) are nonrelativistic starting points only. The certificate
+lists `x2c1e` among its approximations and grades the run Ungraded; post-SCF
+certificates inherit it.
+
+| Check | System | Result |
+|---|---|---|
+| Driver vs block (constant Fock hook `h_X2C − h_NR`, `E = Tr[D dH]`) | HBr / cc-pVDZ RHF; HBr⁺ UHF, ROHF, UKS/PBE | 4.6e-13 to 9.1e-13 Ha (bar 2e-10) |
+| RHF vs PySCF `sfx2c1e()` | HBr, H2Se at cc-pVDZ and uncontracted cc-pVDZ | 6.7e-11 to 1.6e-10 Ha (bars 2.2e-10 to 2.3e-10); X2C shifts −21.9 to −32.0 Ha |
+| RI-MP2 on the X2C reference vs PySCF DF-MP2 | HBr / cc-pVDZ, `cc-pvdz-ri` | E_corr within 1.3e-11 Ha; X2C moves E_corr by 1.3e-3 Ha |
+| `None` | RHF, UKS, ROHF | energy bit-identical to the build without the option |
+
+What runs on an X2C reference: the SCF energies above, and post-SCF energies
+that read only the orbitals and orbital energies (CLI kinds `rimp2`,
+`scs-mp2`, `ccsd`, `ccsd(t)`). What is refused, with a message naming
+`relativistic = "x2c1e"`: analytic and finite-difference gradients, Hessians
+and frequencies, CLI `task = "optimize"`/`"frequencies"`, Python
+`with_gradient=True`, `run_optimize`/`run_frequencies(scf_relativistic=)`,
+saddle and IRC searches, Z-vector relaxed gradients, orbital-optimized MP2
+(it rebuilds the nonrelativistic core Hamiltonian), periodic cells, and CLI
+kinds outside the list above (`casscf` and `nevpt2` rebuild `h`). An atom
+carrying an ECP is an error: the ECP already holds the core's scalar
+relativity.
+
 ## Implicit solvation
 
 Two independent implementations. Both are threaded uniformly through RHF, UHF,

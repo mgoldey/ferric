@@ -128,6 +128,7 @@ pub fn ks_gradient_closed(
     result: &ScfResult,
     ext: Option<&ferric_core::external_potential::ExternalPotential>,
 ) -> Result<Array2<f64>, FerricError> {
+    crate::x2c::refuse_relativistic(result.relativistic, "analytic nuclear gradient")?;
     ks_gradient_closed_with_exchange(mol, prep, bs, op, bounds, xc_name, result, ext, None)
 }
 
@@ -186,6 +187,7 @@ pub fn ks_gradient_closed_with_exchange_on_grids(
     cosx: Option<&crate::cosx_k::CosxConfig>,
     grids: &KsGradGrids,
 ) -> Result<Array2<f64>, FerricError> {
+    crate::x2c::refuse_relativistic(result.relativistic, "analytic nuclear gradient")?;
     let nocc = (mol.nelec() / 2) as usize;
     let w = build_energy_weighted_density(result, nocc);
     let d = result.density_r().clone();
@@ -221,6 +223,7 @@ pub fn ks_gradient_closed_for_density(
     w: &Array2<f64>,
     grids: &KsGradGrids,
 ) -> Result<Array2<f64>, FerricError> {
+    crate::x2c::refuse_relativistic(result.relativistic, "analytic nuclear gradient")?;
     if let Some(cfg) = cosx {
         crate::cosx_gradient::check_gradient_supported(cfg)?;
         // Fitted COSX + KS needs the XC Fock derivative in its Z-vector term,
@@ -385,6 +388,7 @@ pub fn ks_gradient_closed_with_polarizable_on_grids(
     dipoles: Option<&Array2<f64>>,
     grids: &KsGradGrids,
 ) -> Result<Array2<f64>, FerricError> {
+    crate::x2c::refuse_relativistic(result.relativistic, "analytic nuclear gradient")?;
     let mut grad = ks_gradient_closed_with_exchange_on_grids(
         mol, prep, bs, op, bounds, xc_name, result, ext, None, grids,
     )?;
@@ -457,6 +461,7 @@ pub fn ks_gradient_uks(
     result: &ScfResult,
     ext: Option<&ferric_core::external_potential::ExternalPotential>,
 ) -> Result<Array2<f64>, FerricError> {
+    crate::x2c::refuse_relativistic(result.relativistic, "analytic nuclear gradient")?;
     ks_gradient_uks_with_exchange(mol, prep, bs, op, bounds, xc_name, result, ext, None)
 }
 
@@ -515,6 +520,7 @@ pub fn ks_gradient_uks_with_exchange_on_grids(
     cosx: Option<&crate::cosx_k::CosxConfig>,
     grids: &KsGradGrids,
 ) -> Result<Array2<f64>, FerricError> {
+    crate::x2c::refuse_relativistic(result.relativistic, "analytic nuclear gradient")?;
     assert!(
         matches!(result.spin, Spin::Unrestricted),
         "ks_gradient_uks: ScfResult.spin must be Unrestricted"
@@ -566,6 +572,7 @@ pub fn ks_gradient_uks_for_density(
     w: &Array2<f64>,
     grids: &KsGradGrids,
 ) -> Result<Array2<f64>, FerricError> {
+    crate::x2c::refuse_relativistic(result.relativistic, "analytic nuclear gradient")?;
     assert!(
         matches!(result.spin, Spin::Unrestricted),
         "ks_gradient_uks: ScfResult.spin must be Unrestricted"
@@ -685,6 +692,7 @@ pub fn ks_gradient_uks_with_polarizable_on_grids(
     dipoles: Option<&Array2<f64>>,
     grids: &KsGradGrids,
 ) -> Result<Array2<f64>, FerricError> {
+    crate::x2c::refuse_relativistic(result.relativistic, "analytic nuclear gradient")?;
     let mut grad = ks_gradient_uks_with_exchange_on_grids(
         mol, prep, bs, op, bounds, xc_name, result, ext, None, grids,
     )?;
@@ -741,6 +749,7 @@ pub fn ks_gradient_roks(
     result: &ScfResult,
     ext: Option<&ferric_core::external_potential::ExternalPotential>,
 ) -> Result<Array2<f64>, FerricError> {
+    crate::x2c::refuse_relativistic(result.relativistic, "analytic nuclear gradient")?;
     ks_gradient_roks_with_exchange(mol, prep, bs, op, bounds, xc_name, result, ext, None)
 }
 
@@ -796,6 +805,7 @@ pub fn ks_gradient_roks_with_exchange_on_grids(
     cosx: Option<&crate::cosx_k::CosxConfig>,
     grids: &KsGradGrids,
 ) -> Result<Array2<f64>, FerricError> {
+    crate::x2c::refuse_relativistic(result.relativistic, "analytic nuclear gradient")?;
     assert!(
         matches!(result.spin, Spin::RestrictedOpen),
         "ks_gradient_roks: ScfResult.spin must be RestrictedOpen"
@@ -839,6 +849,7 @@ pub fn ks_gradient_roks_for_density(
     w: &Array2<f64>,
     grids: &KsGradGrids,
 ) -> Result<Array2<f64>, FerricError> {
+    crate::x2c::refuse_relativistic(result.relativistic, "analytic nuclear gradient")?;
     assert!(
         matches!(result.spin, Spin::RestrictedOpen),
         "ks_gradient_roks: ScfResult.spin must be RestrictedOpen"

@@ -34,8 +34,17 @@
 //! Molecules with an ECP atom are refused: the ECP already carries the scalar
 //! relativistic effects of its core, and X2C on top counts them twice.
 //!
+//! As an SCF reference: `RhfConfig::relativistic = Some(`[`Relativistic::X2c1e`]`)`
+//! (`[scf] relativistic = "x2c1e"`, Python `relativistic=`) builds the core
+//! Hamiltonian with [`reference_hcore`] once before the loop, for every
+//! molecular RHF/UHF/ROHF/RKS/UKS/ROKS solve. Energies only: the gradients,
+//! Hessians, Z-vector response and the post-SCF paths that rebuild `h` refuse
+//! a relativistic reference ([`refuse_relativistic`]), as do periodic
+//! (injected) solves.
+//!
 //! Equations and the numpy reference: `scripts/prototypes/x2c_derivation.md`
-//! and `scripts/prototypes/x2c_proto.py`; tests: `crates/ferric-scf/tests/x2c.rs`.
+//! and `scripts/prototypes/x2c_proto.py`; tests: `crates/ferric-scf/tests/x2c.rs`
+//! (the Hamiltonian) and `crates/ferric-scf/tests/x2c_scf.rs` (the SCF option).
 
 use ferric_core::basis::{BasisSet, Shell};
 use ferric_core::mol::Molecule;
@@ -302,4 +311,89 @@ pub fn x2c1e_hcore(mol: &Molecule, bs: &BasisSet, c: f64) -> Result<Array2<f64>,
     let h_u = x2c1e_transform(&s_u, &t_u, &v_u, &w_u, c)?;
     let h = cmat.t().dot(&h_u).dot(&cmat);
     Ok(0.5 * (&h + &h.t()))
+}
+
+/// The relativistic Hamiltonian an SCF runs with (`RhfConfig::relativistic`,
+/// `[scf] relativistic`, the Python `relativistic=` kwarg). `None` on the
+/// config is the nonrelativistic Hamiltonian.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Relativistic {
+    /// Spin-free X2C-1e: the core Hamiltonian is [`x2c1e_hcore`] at
+    /// [`LIGHT_SPEED`]; the two-electron interaction and every property
+    /// operator stay nonrelativistic (no picture change).
+    X2c1e,
+}
+
+/// Accepted spellings of [`Relativistic`], in the order error messages list them.
+pub const RELATIVISTIC_KINDS: &[&str] = &["x2c1e"];
+
+impl Relativistic {
+    /// Strict parse: exactly `"x2c1e"`.
+    pub fn parse_config_str(s: &str) -> Result<Self, FerricError> {
+        match s {
+            "x2c1e" => Ok(Self::X2c1e),
+            other => Err(FerricError::General(format!(
+                "relativistic: unknown value \"{other}\"; expected one of {RELATIVISTIC_KINDS:?}"
+            ))),
+        }
+    }
+
+    /// The canonical spelling.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::X2c1e => "x2c1e",
+        }
+    }
+}
+
+/// Refuse a derivative or a post-SCF quantity that is not implemented for a
+/// relativistic reference: `what` names it ("analytic nuclear gradient",
+/// "analytic Hessian", ...). `Ok(())` for the nonrelativistic Hamiltonian.
+///
+/// The X2C-1e core Hamiltonian's nuclear derivative (the response of the
+/// decoupling and renormalization matrices) is not implemented, and a
+/// nonrelativistic `T + V` derivative paired with an X2C energy is the
+/// gradient of another surface.
+pub fn refuse_relativistic(rel: Option<Relativistic>, what: &str) -> Result<(), FerricError> {
+    match rel {
+        None => Ok(()),
+        Some(r) => Err(FerricError::General(format!(
+            "relativistic = \"{}\" has no {what}: the X2C-1e core Hamiltonian is used for \
+             energies only (its nuclear derivative is not implemented, and the \
+             nonrelativistic one belongs to another energy surface). Run the energy only, \
+             or drop relativistic for this task",
+            r.as_str()
+        ))),
+    }
+}
+
+/// The core Hamiltonian an SCF on `mol` in `prep` (basis `bs`) runs with:
+/// `T + V + V_ECP + V_ext` for `rel = None`, exactly
+/// [`oneelectron::hcore_ecp_with_external`]; for [`Relativistic::X2c1e`],
+/// [`x2c1e_hcore`] plus the external-potential terms of `ext` in the
+/// nonrelativistic picture (ECP atoms are refused by [`x2c1e_hcore`]).
+pub fn reference_hcore(
+    prep: &PreparedBasis,
+    mol: &Molecule,
+    bs: &BasisSet,
+    ext: Option<&ferric_core::external_potential::ExternalPotential>,
+    rel: Option<Relativistic>,
+) -> Result<Array2<f64>, FerricError> {
+    match rel {
+        None => oneelectron::hcore_ecp_with_external(prep, mol, bs, ext),
+        Some(Relativistic::X2c1e) => {
+            let mut h = x2c1e_hcore(mol, bs, LIGHT_SPEED)?;
+            if h.dim() != (prep.nbasis(), prep.nbasis()) {
+                return Err(FerricError::Basis(format!(
+                    "X2C: core Hamiltonian is {:?}, the orbital basis has {} functions",
+                    h.dim(),
+                    prep.nbasis()
+                )));
+            }
+            if let Some(e) = ext.filter(|e| !e.is_empty()) {
+                h += &(oneelectron::hcore_with_external(prep, Some(e))? - oneelectron::hcore(prep));
+            }
+            Ok(h)
+        }
+    }
 }

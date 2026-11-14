@@ -439,6 +439,10 @@ pub fn harmonic_frequencies(
     scf_config: &RhfConfig,
     freq_config: &FrequencyConfig,
 ) -> Result<FrequencyResult, FerricError> {
+    crate::x2c::refuse_relativistic(
+        scf_config.relativistic,
+        "harmonic frequencies (analytic Hessian or finite differences of the gradient)",
+    )?;
     // Frequency task: an unset `ri_j_precision` resolves to f64
     // (`RhfConfig::ri_j_task`), an explicit one is kept.
     let scf_config = &scf_config.for_geometry_task();
@@ -573,6 +577,10 @@ pub fn harmonic_frequencies_with_scf_correction(
     freq_config: &FrequencyConfig,
     mut correction: impl FnMut(&Molecule, &ScfResult) -> Result<(f64, Option<Array2<f64>>), FerricError>,
 ) -> Result<FrequencyResult, FerricError> {
+    crate::x2c::refuse_relativistic(
+        scf_config.relativistic,
+        "harmonic frequencies (analytic Hessian or finite differences of the gradient)",
+    )?;
     // Frequency task: an unset `ri_j_precision` resolves to f64
     // (`RhfConfig::ri_j_task`), an explicit one is kept.
     let scf_config = &scf_config.for_geometry_task();

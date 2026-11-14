@@ -338,6 +338,7 @@ pub fn rhf_hessian_parts(
     rhf: &ScfResult,
     config: &RhfConfig,
 ) -> Result<RhfHessianParts, FerricError> {
+    crate::x2c::refuse_relativistic(rhf.relativistic, "analytic Hessian")?;
     crate::symmetric::require_symmetry_off(config, "rhf_hessian")?;
     rhf_hessian_parts_with(
         ctx,
@@ -547,6 +548,7 @@ pub fn uhf_hessian_parts(
     uhf: &ScfResult,
     config: &RhfConfig,
 ) -> Result<UhfHessianParts, FerricError> {
+    crate::x2c::refuse_relativistic(uhf.relativistic, "analytic Hessian")?;
     uhf_hessian_parts_with(
         ctx,
         mol,
@@ -1594,6 +1596,11 @@ fn config_refusal(config: &RhfConfig) -> Result<Option<&'static str>, FerricErro
         // check refuses. Refusing it here, before the SCF, lets `Auto` fall
         // back to finite differences instead of erroring after the SCF.
         (config.mom_enabled(), "maximum-overlap (MOM) occupations"),
+        (
+            config.relativistic.is_some(),
+            "relativistic = \"x2c1e\" (the X2C-1e core Hamiltonian has no nuclear \
+             derivatives here)",
+        ),
     ];
     Ok(checks.iter().find(|(bad, _)| *bad).map(|(_, what)| *what))
 }

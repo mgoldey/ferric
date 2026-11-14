@@ -306,6 +306,9 @@ impl Checkpoint {
             // Not stored: the functional is part of `identity` (its `xc` key),
             // which a restore must match before it uses anything here.
             xc: _,
+            // Not stored, as `xc`: the core Hamiltonian is part of `identity`
+            // (its `relativistic` key).
+            relativistic: _,
             // Not stored; a skip must refuse a state that had these.
             induced_dipoles,
             cosx_final,

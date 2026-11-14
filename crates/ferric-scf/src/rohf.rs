@@ -746,6 +746,7 @@ fn solve_rohf_impl_recorded(
     let mut r = solve_rohf_impl(ctx, mol, prep, bounds, config, initial_mos, inj, sym, hook)?;
     r.precision = probe.finish(ferric_core::gpu::provenance::SCF_KERNELS);
     r.xc = xc;
+    r.relativistic = config.relativistic;
     Ok(r)
 }
 
@@ -1680,6 +1681,7 @@ fn solve_rohf_impl(
                 cosx_schedule: None,
                 convergence: None,
                 precision: Default::default(),
+                relativistic: None,
             };
             // Swap witness (F6): returned now, or held while its best
             // single-swap neighbours are evaluated on the next passes.
@@ -2006,6 +2008,7 @@ fn solve_rohf_impl(
         cosx_schedule: None,
         convergence: None,
         precision: Default::default(),
+        relativistic: None,
     })
 }
 

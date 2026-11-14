@@ -925,6 +925,12 @@ pub fn run(args: Vec<String>) {
         raw_handoff: None,
         eri: scf_eri_mode(cfg.scf.eri.as_deref()),
         eri_route: Default::default(),
+        // `[scf] relativistic`: parsed at load time and its kind/task scope
+        // checked by `Config::validate_cli_wired_keys`.
+        relativistic: cfg.scf.relativistic_resolved().unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }),
     };
     // A fitted reference (`[scf] jk`, or rs-mp2-rpa's RI-JK default) skips
     // the DF-guess pre-stage below: a density-fitted pre-stage in front of a

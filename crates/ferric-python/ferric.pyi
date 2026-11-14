@@ -3927,8 +3927,17 @@ def run_rhf(
     dm0: NDArray[np.float64] | None = None,
     with_gradient: bool = False,
     eri: Literal["auto", "direct", "incore"] | None = None,
+    relativistic: Literal["x2c1e"] | None = None,
 ) -> RhfResult:
     """Closed-shell Restricted Hartree-Fock.
+
+    relativistic="x2c1e" (default None, nonrelativistic) replaces T + V by the
+    spin-free X2C-1e core Hamiltonian (PySCF sfx2c1e(); decoupled in the
+    uncontracted basis, c = 137.036). Same kwarg on run_uhf, run_rohf,
+    run_dft/run_ksdft, run_uks and run_roks. Energies only: with_gradient=True,
+    run_optimize(scf_relativistic=) and run_frequencies(scf_relativistic=)
+    raise, as does an ECP atom. Two-electron and property operators stay
+    nonrelativistic; the certificate records "x2c1e" and is Ungraded.
 
     with_gradient=True (default False) also returns the analytic nuclear
     gradient of the reported energy in result.gradient() (natoms x 3,
@@ -4087,6 +4096,7 @@ def run_rhf(
     dm0: None = None,
     with_gradient: Literal[False] = False,
     eri: Literal["auto", "direct", "incore"] | None = None,
+    relativistic: Literal["x2c1e"] | None = None,
 ) -> SymmetricRhfResult: ...
 def run_uhf(
     mol: Molecule,
@@ -4120,6 +4130,7 @@ def run_uhf(
     with_gradient: bool = False,
     mom_reference: Literal["previous", "initial"] | None = None,
     eri: Literal["auto", "direct", "incore"] | None = None,
+    relativistic: Literal["x2c1e"] | None = None,
 ) -> UhfResult:
     """Unrestricted Hartree-Fock (open-shell). with_gradient=True: the
     analytic gradient in result.gradient() under run_rhf's rules (only
@@ -4189,6 +4200,7 @@ def run_rohf(
     dm0: tuple[NDArray[np.float64], NDArray[np.float64]] | None = None,
     with_gradient: bool = False,
     eri: Literal["auto", "direct", "incore"] | None = None,
+    relativistic: Literal["x2c1e"] | None = None,
 ) -> UhfResult:
     """Restricted Open-Shell Hartree-Fock. with_gradient=True: the analytic
     gradient in result.gradient() under run_rhf's rules (only fock_hook is
@@ -4226,6 +4238,7 @@ def run_uks(
     grid_weight_cut: float | None = None,
     guess: str | None = None,
     dm0: tuple[NDArray[np.float64], NDArray[np.float64]] | None = None,
+    relativistic: Literal["x2c1e"] | None = None,
 ) -> UhfResult:
     """Unrestricted Kohn-Sham (open-shell DFT): solve_uhf with RhfConfig.xc set,
     the route the CLI takes for kind="ksdft" on an open-shell molecule.
@@ -4271,6 +4284,7 @@ def run_roks(
     grid_prune: str | None = None,
     grid_weight_cut: float | None = None,
     dm0: tuple[NDArray[np.float64], NDArray[np.float64]] | None = None,
+    relativistic: Literal["x2c1e"] | None = None,
 ) -> UhfResult:
     """Restricted open-shell Kohn-Sham: solve_rohf with RhfConfig.xc set, the
     route the CLI takes for kind="rohf" with [dft] functional.
@@ -4363,6 +4377,7 @@ def run_optimize(
     c_os: float | None = None,
     c_ss: float | None = None,
     scf_eri: Literal["auto", "direct", "incore"] | None = None,
+    scf_relativistic: Literal["x2c1e"] | None = None,
 ) -> OptimizeResult:
     """Geometry optimization on any surface with an analytic gradient.
 
@@ -4509,6 +4524,7 @@ def run_frequencies(
     scf_warm_start: bool | None = None,
     scf_ri_j_precision: str | None = None,
     scf_eri: Literal["auto", "direct", "incore"] | None = None,
+    scf_relativistic: Literal["x2c1e"] | None = None,
 ) -> FrequencyResult:
     """Harmonic vibrational frequencies.
 
@@ -5125,6 +5141,7 @@ def run_dft(
     grid_weight_cut: float | None = None,
     ri_j_precision: str | None = None,
     dm0: NDArray[np.float64] | None = None,
+    relativistic: Literal["x2c1e"] | None = None,
 ) -> DftResult:
     """Kohn-Sham DFT (closed-shell). fock_hook: as for run_rhf; with a
     hook every convergence-ladder rung runs with the hook applied and SOSCF
@@ -5269,6 +5286,7 @@ def run_dft(
     grid_weight_cut: float | None = None,
     ri_j_precision: str | None = None,
     dm0: None = None,
+    relativistic: Literal["x2c1e"] | None = None,
 ) -> SymmetricRhfResult:
     """Point-group-blocked closed-shell RKS (see the ``symmetry=True``
     paragraph of the DftResult overload). Same density-fitting defaults:
@@ -5345,6 +5363,7 @@ def run_dft(
     grid_weight_cut: float | None = None,
     ri_j_precision: str | None = None,
     dm0: NDArray[np.float64] | None = None,
+    relativistic: Literal["x2c1e"] | None = None,
 ) -> DftResult | SymmetricRhfResult: ...
 def dft_grid_point_count(
     mol: Molecule,
@@ -5397,6 +5416,7 @@ def run_ksdft(
     grid_weight_cut: float | None = None,
     ri_j_precision: str | None = None,
     dm0: NDArray[np.float64] | None = None,
+    relativistic: Literal["x2c1e"] | None = None,
 ) -> DftResult:
     """Kohn-Sham DFT (closed-shell). Alias of run_dft (same grid_* kwargs,
     grid_weight_cut included).
@@ -5447,6 +5467,7 @@ def run_ksdft(
     grid_weight_cut: float | None = None,
     ri_j_precision: str | None = None,
     dm0: None = None,
+    relativistic: Literal["x2c1e"] | None = None,
 ) -> SymmetricRhfResult: ...
 @overload
 def run_ksdft(
@@ -5477,6 +5498,7 @@ def run_ksdft(
     grid_weight_cut: float | None = None,
     ri_j_precision: str | None = None,
     dm0: NDArray[np.float64] | None = None,
+    relativistic: Literal["x2c1e"] | None = None,
 ) -> DftResult | SymmetricRhfResult: ...
 def d3bj_energy(mol: Molecule, functional: str, s9: float = 0.0) -> float:
     """Grimme D3(BJ) dispersion energy in Hartree.

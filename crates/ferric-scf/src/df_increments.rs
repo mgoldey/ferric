@@ -279,11 +279,12 @@ pub fn solve_rhf_with_df_increments(
     // XC/COSMO/PCM/polarizable/RSH machinery `prepare` also assembles — see
     // "What this does NOT support" above.
     let s = ferric_integrals::oneelectron::overlap(prep);
-    let h = ferric_integrals::oneelectron::hcore_ecp_with_external(
+    let h = crate::x2c::reference_hcore(
         prep,
         mol,
         prep.basis_set(),
         base.external_potential.as_ref(),
+        base.relativistic,
     )?;
     let vnn = mol.nuclear_repulsion()
         + base.external_potential.as_ref().map_or(0.0, |ext| {
@@ -496,6 +497,7 @@ pub fn solve_rhf_with_df_increments(
                 cosx_schedule: None,
                 convergence: None,
                 precision: probe.finish(ferric_core::gpu::provenance::SCF_KERNELS),
+                relativistic: base.relativistic,
             };
             return Ok(DfIncrementsResult {
                 result,
@@ -540,6 +542,7 @@ pub fn solve_rhf_with_df_increments(
                 cosx_schedule: None,
                 convergence: None,
                 precision: probe.finish(ferric_core::gpu::provenance::SCF_KERNELS),
+                relativistic: base.relativistic,
             };
             return Ok(DfIncrementsResult {
                 result,

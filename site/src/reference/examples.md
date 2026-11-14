@@ -68,6 +68,7 @@ See [SCF and DFT](../methods/scf.md).
 | `water-qmmm.toml` | H2O + Na⁺ (PQR) / STO-3G | `rhf` + `[qmmm]` | "vacuum −74.9629466809, embedded −74.9653197421, i.e. −1.489 kcal/mol from the ion at 4 A. Verified against `ferric.run_rhf(point_charges=...)` to all 10 digits." | The vacuum number is at the PQR geometry, not the xyz. The embedded number is asserted by a test. |
 | `water-pcm.toml` | H2O / STO-3G | `rhf` + `[pcm]` | — | IEF-PCM water (`solvent = "water"`, ε = 78.4). |
 | `water-rhf-smeared-charge.toml` | H2O / STO-3G | `rhf` + `[external_potential]` | — | One Gaussian-smeared charge (`width`, Bohr) and one point charge. |
+| `hbr-x2c-rhf.toml` | HBr / cc-pVDZ | `rhf` + `[scf] relativistic = "x2c1e"` | — | Spin-free X2C-1e core Hamiltonian; energy only, Ungraded. PySCF `sfx2c1e()` gives −2597.626993 Ha (testdata/reference/x2c_scf_sfx2c1e.json; the agreement is asserted in crates/ferric-scf/tests/x2c_scf.rs). |
 | `o2-uhf-stability-descent.toml` | O2 triplet / STO-3G | `uhf` | "the descent follows the downhill eigenvector to the UHF minimum (-147.63530 Ha)" | `[scf] stability_descent = true`. |
 | `water-cation-uhf-initial-mom.toml` | H2O+ doublet / STO-3G | `uhf` | — | `[scf] mom_reference = "initial"`: initial MOM holds the starting guess's occupied block. |
 | `h2-cell-rhf.toml` | H2 / STO-3G, 4 Bohr cubic cell | `rhf` + `[cell]`, Gamma point | — | Periodic, dense J/K, `exxdiv = "ewald"`. |

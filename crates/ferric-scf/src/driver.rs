@@ -297,8 +297,9 @@ fn note_xc_commit(done: &ferric_dft::xc_trait::XcCommit) {
 
 /// Build the shared [`ScfEnv`]. `k_mix` comes from the solver's XC contribution
 /// (closed- and open-shell XC are different trait objects, so XC itself stays
-/// with the solver). The hcore always folds the ECP projector in via
-/// `hcore_ecp_with_external`: for an all-electron basis `ecp_potential` returns
+/// with the solver). The hcore is [`crate::x2c::reference_hcore`]: X2C-1e
+/// when `config.relativistic` is set, otherwise `hcore_ecp_with_external`,
+/// which always folds the ECP projector in: for an all-electron basis `ecp_potential` returns
 /// `None` at zero cost, so the result is byte-identical to the plain hcore —
 /// all-electron RHF/UHF/ROHF results are unchanged. (Historically UHF/ROHF
 /// used `hcore_with_external`, silently omitting V_ECP for ECP-carrying
@@ -316,14 +317,22 @@ pub(crate) fn prepare<'a>(
     // (`rhf::solve_rhf_injected`). `None` runs exactly the molecular build
     // below, so every molecular caller is byte-identical.
     let (s, h, vnn) = match pre {
+        Some(_) if config.relativistic.is_some() => {
+            return Err(FerricError::General(format!(
+                "relativistic = \"{}\" is not available for a caller-supplied (periodic) \
+                 core Hamiltonian: X2C-1e is built for a molecule's nuclear potential only",
+                config.relativistic.map_or("", |r| r.as_str())
+            )));
+        }
         Some(injected) => injected,
         None => {
             let s = oneelectron::overlap(prep);
-            let h = oneelectron::hcore_ecp_with_external(
+            let h = crate::x2c::reference_hcore(
                 prep,
                 mol,
                 prep.basis_set(),
                 config.external_potential.as_ref(),
+                config.relativistic,
             )?;
             let vnn = mol.nuclear_repulsion()
                 + config.external_potential.as_ref().map_or(0.0, |ext| {

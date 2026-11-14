@@ -1494,6 +1494,10 @@ pub fn oo_ri_mp2(
     config: &OoRiMp2Config,
     ext: Option<&ExternalPotential>,
 ) -> Result<OoRiMp2Result, FerricError> {
+    ferric_scf::x2c::refuse_relativistic(
+        rhf.relativistic,
+        "orbital-optimized MP2 (it rebuilds the nonrelativistic core Hamiltonian)",
+    )?;
     let nbas = obs.nbasis();
     let nelec = mol.nelec() as usize;
     let nocc_total = nelec / 2;
