@@ -28,7 +28,7 @@
 //!   for bit, and each class lies within the PySCF bar of `nevpt2.rs`.
 //! * `cli_keys_reach_the_config`: settings that move the answer reach it
 //!   (`[cas] max_iter = 2` leaves CASSCF unconverged, warned and not
-//!   graded; `[cas] reference = "casci"` gives the CAS-CI reference energy
+//!   graded; `[cas] stability` is logged and `"off"` drops it; `[cas] reference = "casci"` gives the CAS-CI reference energy
 //!   and a capped grade; `[cas] n_core` moves the window).
 //! * `cli_refusals_are_named`: every refused key or section names itself
 //!   and fails before any SCF iteration.
@@ -432,6 +432,30 @@ fn cli_keys_reach_the_config() {
         "{rc}"
     );
 
+    // [cas] stability: the default ("off") logs no check; "check" is logged
+    // and recorded on the certificate and leaves the energy unchanged.
+    assert!(conv.result()["components"]["stability"].is_null());
+    let chk = run_cli_ok(
+        "keys_stability_check",
+        &xyz,
+        &toml_for("casscf", "6-31g", &format!("{base}stability = \"check\"\n")),
+    );
+    let st = &chk.result()["components"]["stability"];
+    assert_eq!(st["verdict"], "STABLE", "{st}");
+    assert!(st["lowest_eigenvalue"].as_f64().unwrap() > 0.0);
+    let routes = chk.result()["components"]["certificate"]["routes"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        routes.iter().any(|r| r["name"] == "stability"),
+        "{routes:?}"
+    );
+    assert_eq!(
+        chk.result()["total"].as_f64().unwrap().to_bits(),
+        e_conv.to_bits()
+    );
+
     // [cas] n_core: one orbital lower, CAS(6,5) above 2 core, another energy.
     let window = run_cli_ok(
         "keys_core",
@@ -512,6 +536,20 @@ fn cli_refusals_are_named() {
             "reference_on_casscf",
             toml_for("casscf", "6-31g", &format!("{base}reference = \"casci\"\n")),
             "[cas] reference is read by method.kind = \"nevpt2\" only",
+        ),
+        (
+            "stability_value",
+            toml_for("casscf", "6-31g", &format!("{base}stability = \"on\"\n")),
+            "[cas] stability must be \"check\", \"follow\" or \"off\"",
+        ),
+        (
+            "stability_on_casci",
+            toml_for(
+                "nevpt2",
+                "6-31g",
+                &format!("{base}reference = \"casci\"\nstability = \"check\"\n"),
+            ),
+            "[cas] stability sets the CASSCF orbital optimization",
         ),
         (
             "canonicalize_on_nevpt2",

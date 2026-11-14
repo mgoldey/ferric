@@ -127,16 +127,7 @@ impl<'a> DirectSigma<'a> {
                 });
             }
         }
-        let mut g = vec![0.0f64; n * n];
-        for p in 0..n {
-            for q in 0..n {
-                let mut v = ints.h[(p, q)];
-                for r in 0..n {
-                    v -= 0.5 * ints.g(p, r, r, q);
-                }
-                g[p * n + q] = v;
-            }
-        }
+        let g = one_body_g(ints);
         DirectSigma {
             ints,
             n_alpha_str: space.alpha_strings.len(),
@@ -164,22 +155,37 @@ impl<'a> DirectSigma<'a> {
     /// `σ = H c` including `E_core` on the diagonal; `c` indexed
     /// `d = ia * n_beta + ib`.
     pub fn apply(&self, c: &[f64]) -> Vec<f64> {
+        self.apply_parts(&self.ints.eri, &self.g, self.ints.e_core, c)
+    }
+
+    /// `σ = H' c` for the Hamiltonian `H'` of other integrals `ints` over the
+    /// same orbitals and determinant space (the string lists do not depend
+    /// on the integrals). `ints.h` must be symmetric and `ints.eri` carry the
+    /// real 8-fold symmetry.
+    pub fn apply_integrals(&self, ints: &ActiveSpaceIntegrals, c: &[f64]) -> Vec<f64> {
+        assert_eq!(
+            ints.n_active, self.ints.n_active,
+            "sigma: integrals over another active space"
+        );
+        self.apply_parts(&ints.eri, &one_body_g(ints), ints.e_core, c)
+    }
+
+    fn apply_parts(&self, eri: &[f64], g: &[f64], e_core: f64, c: &[f64]) -> Vec<f64> {
         let na = self.n_alpha_str;
         let nb = self.n_beta_str;
         assert_eq!(c.len(), na * nb, "sigma: c has the wrong length");
         if c.is_empty() {
             return Vec::new();
         }
-        let e_core = self.ints.e_core;
         let mut sig: Vec<f64> = c.iter().map(|&x| e_core * x).collect();
 
         // σ2 (α-α): rows of C are β-vectors indexed by Iα.
-        self.same_spin(&self.alpha, c, &mut sig, nb);
+        self.same_spin(eri, g, &self.alpha, c, &mut sig, nb);
 
         // σ1 (β-β): the same contraction on Cᵀ.
         let ct = transpose(c, na, nb);
         let mut st = vec![0.0f64; na * nb];
-        self.same_spin(&self.beta, &ct, &mut st, na);
+        self.same_spin(eri, g, &self.beta, &ct, &mut st, na);
         drop(ct);
         sig.par_chunks_mut(nb).enumerate().for_each(|(ia, row)| {
             for (ib, s) in row.iter_mut().enumerate() {
@@ -189,7 +195,7 @@ impl<'a> DirectSigma<'a> {
         drop(st);
 
         // σ3 (α-β).
-        self.alpha_beta(c, &mut sig);
+        self.alpha_beta(eri, c, &mut sig);
         sig
     }
 
@@ -197,11 +203,17 @@ impl<'a> DirectSigma<'a> {
     /// strings index the rows (`ncol` columns). `⟨J|H_σ|I⟩` is assembled per
     /// row `I` by applying `E_kl` then `E_ij` to `I`; real symmetric integrals
     /// make it equal to `⟨I|H_σ|J⟩`.
-    fn same_spin(&self, lists: &[Vec<Excitation>], x: &[f64], out: &mut [f64], ncol: usize) {
+    fn same_spin(
+        &self,
+        eri: &[f64],
+        g: &[f64],
+        lists: &[Vec<Excitation>],
+        x: &[f64],
+        out: &mut [f64],
+        ncol: usize,
+    ) {
         let nrow = lists.len();
         let n2 = self.ints.n_active * self.ints.n_active;
-        let eri = &self.ints.eri;
-        let g = &self.g;
         out.par_chunks_mut(ncol).enumerate().for_each_init(
             || (vec![0.0f64; nrow], Vec::<u32>::new()),
             |(f, touched), (i, row)| {
@@ -242,11 +254,10 @@ impl<'a> DirectSigma<'a> {
     /// σ3: for each β pair `rs`, gather `C'(Jα, m) = ε_m C(Jα, Jβ_m)` over the
     /// β strings it connects, then contract the α replacements of every row
     /// `Iα` with `(pq|rs)` and scatter into `σ(Iα, Iβ_m)`.
-    fn alpha_beta(&self, c: &[f64], sig: &mut [f64]) {
+    fn alpha_beta(&self, eri: &[f64], c: &[f64], sig: &mut [f64]) {
         let na = self.n_alpha_str;
         let nb = self.n_beta_str;
         let n2 = self.ints.n_active * self.ints.n_active;
-        let eri = &self.ints.eri;
         let mut cp: Vec<f64> = Vec::new();
         for (rs, entries) in self.beta_by_pair.iter().enumerate() {
             let len = entries.len();
@@ -289,6 +300,22 @@ impl<'a> DirectSigma<'a> {
                 });
         }
     }
+}
+
+/// `g_pq = h_pq − ½ Σ_r (pr|rq)`, flat `p * n + q`.
+fn one_body_g(ints: &ActiveSpaceIntegrals) -> Vec<f64> {
+    let n = ints.n_active;
+    let mut g = vec![0.0f64; n * n];
+    for p in 0..n {
+        for q in 0..n {
+            let mut v = ints.h[(p, q)];
+            for r in 0..n {
+                v -= 0.5 * ints.g(p, r, r, q);
+            }
+            g[p * n + q] = v;
+        }
+    }
+    g
 }
 
 fn transpose(c: &[f64], nrow: usize, ncol: usize) -> Vec<f64> {

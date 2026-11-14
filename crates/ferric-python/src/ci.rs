@@ -235,6 +235,17 @@ struct PyCasScfResult {
     /// Auxiliary basis of the RI route, `None` on the exact routes.
     #[pyo3(get)]
     auxbasis: Option<String>,
+    /// Lowest eigenvalue of the CI-relaxed orbital Hessian at `mo_coeff`
+    /// (Ha); `None` with `casscf_stability="off"` or an unconverged run.
+    #[pyo3(get)]
+    stability_lowest_eigenvalue: Option<f64>,
+    /// Verdict of that check: "STABLE", "UNSTABLE" (a saddle), "MARGINAL"
+    /// or "INDETERMINATE ..."; `None` without a check.
+    #[pyo3(get)]
+    stability_verdict: Option<String>,
+    /// Steps taken along negative modes (`casscf_stability="follow"`).
+    #[pyo3(get)]
+    stability_follow_steps: usize,
     n_alpha_str: usize,
     n_beta_str: usize,
     ci: Vec<f64>,
@@ -294,7 +305,7 @@ impl PyCasScfResult {
 /// orbitals above `n_core` doubly occupied ones, single root of the
 /// `(n_alpha, n_beta)` sector, optionally canonical orbitals on return.
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, n_active, n_elec_active, n_core=None, casscf_grad_tol=1e-7, casscf_energy_tol=1e-12, casscf_max_iter=300, casscf_max_step=0.2, ci_conv_thresh=1e-10, ci_max_subspace=50, ci_max_iter=200, memory_budget_gb=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, canonicalize=false, casscf_integrals="auto", casscf_integral_thresh=None, casscf_optimizer="ah", casscf_auxbasis=None))]
+#[pyo3(signature = (mol, basis_set, n_active, n_elec_active, n_core=None, casscf_grad_tol=1e-7, casscf_energy_tol=1e-12, casscf_max_iter=300, casscf_max_step=0.2, ci_conv_thresh=1e-10, ci_max_subspace=50, ci_max_iter=200, memory_budget_gb=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, canonicalize=false, casscf_integrals="auto", casscf_integral_thresh=None, casscf_optimizer="ah", casscf_auxbasis=None, casscf_stability="off"))]
 #[allow(clippy::too_many_arguments)]
 fn run_casscf(
     py: Python<'_>,
@@ -319,6 +330,7 @@ fn run_casscf(
     casscf_integral_thresh: Option<f64>,
     casscf_optimizer: &str,
     casscf_auxbasis: Option<&str>,
+    casscf_stability: &str,
 ) -> PyResult<PyCasScfResult> {
     let integrals = ferric_ci::casscf::CasScfIntegrals::parse_config_str(
         casscf_integrals,
@@ -327,6 +339,8 @@ fn run_casscf(
     )
     .map_err(|e| make_err(format!("run_casscf: casscf_{e}")))?;
     let optimizer = ferric_ci::CasScfOptimizer::parse_config_str(casscf_optimizer)
+        .map_err(|e| make_err(format!("run_casscf: casscf_{e}")))?;
+    let stability = ferric_ci::CasScfStabilityMode::parse_config_str(casscf_stability)
         .map_err(|e| make_err(format!("run_casscf: casscf_{e}")))?;
     // The valence count and V_ECP of an ECP basis, as the SCF bindings use.
     let mut emol = mol.inner.clone();
@@ -364,6 +378,7 @@ fn run_casscf(
         canonicalize,
         integrals,
         optimizer,
+        stability,
         ..Default::default()
     };
     let r = py
@@ -384,6 +399,17 @@ fn run_casscf(
             ferric_ci::certificate::casscf_unconverged_warning_prefixed(&r, &cfg, "casscf_"),
         );
     }
+    if let Some(st) = r.stability.as_ref() {
+        if st.verdict() == ferric_scf::stability::StabilityVerdict::Unstable {
+            crate::emit_runtime_warning(
+                py,
+                format!(
+                    "CASSCF point is a saddle: {} (casscf_stability=\"follow\" steps down it)",
+                    st.summary()
+                ),
+            );
+        }
+    }
     Ok(PyCasScfResult {
         e_total: r.e_total,
         e_core: r.e_core,
@@ -396,6 +422,12 @@ fn run_casscf(
         n_core,
         integrals: r.integrals.as_str().to_string(),
         auxbasis: r.integrals.aux().map(str::to_string),
+        stability_lowest_eigenvalue: r.stability.as_ref().map(|s| s.lowest_eigenvalue),
+        stability_verdict: r
+            .stability
+            .as_ref()
+            .map(|s| s.verdict().label().to_string()),
+        stability_follow_steps: r.stability.as_ref().map_or(0, |s| s.follow_steps),
         n_alpha_str: ferric_ci::strings::enumerate_strings(n_active, n_elec_active.0).len(),
         n_beta_str: ferric_ci::strings::enumerate_strings(n_active, n_elec_active.1).len(),
         ci: r.ci_vector,
@@ -424,6 +456,10 @@ struct PyNevpt2Result {
     reference_iterations: usize,
     #[pyo3(get)]
     reference_grad_norm: Option<f64>,
+    /// Lowest CI-relaxed orbital Hessian eigenvalue of the CASSCF reference
+    /// (Ha); `None` on a CAS-CI reference or with `casscf_stability="off"`.
+    #[pyo3(get)]
+    reference_stability_lowest_eigenvalue: Option<f64>,
     #[pyo3(get)]
     ci_residual_norm: f64,
     #[pyo3(get)]
@@ -490,7 +526,7 @@ impl PyNevpt2Result {
 /// SC-NEVPT2 on a CASSCF (default) or CAS-CI reference from the canonical
 /// RHF orbitals. The reference must converge; an unconverged one raises.
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, n_active, n_elec_active, n_core=None, reference="casscf", casscf_grad_tol=1e-7, casscf_energy_tol=1e-12, casscf_max_iter=300, casscf_max_step=0.2, ci_conv_thresh=1e-10, ci_max_subspace=50, ci_max_iter=200, memory_budget_gb=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, casscf_integrals="auto", casscf_integral_thresh=None, casscf_optimizer="ah", casscf_auxbasis=None))]
+#[pyo3(signature = (mol, basis_set, n_active, n_elec_active, n_core=None, reference="casscf", casscf_grad_tol=1e-7, casscf_energy_tol=1e-12, casscf_max_iter=300, casscf_max_step=0.2, ci_conv_thresh=1e-10, ci_max_subspace=50, ci_max_iter=200, memory_budget_gb=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, casscf_integrals="auto", casscf_integral_thresh=None, casscf_optimizer="ah", casscf_auxbasis=None, casscf_stability="off"))]
 #[allow(clippy::too_many_arguments)]
 fn run_nevpt2(
     py: Python<'_>,
@@ -515,6 +551,7 @@ fn run_nevpt2(
     casscf_integral_thresh: Option<f64>,
     casscf_optimizer: &str,
     casscf_auxbasis: Option<&str>,
+    casscf_stability: &str,
 ) -> PyResult<PyNevpt2Result> {
     let integrals = ferric_ci::casscf::CasScfIntegrals::parse_config_str(
         casscf_integrals,
@@ -523,6 +560,8 @@ fn run_nevpt2(
     )
     .map_err(|e| make_err(format!("run_nevpt2: casscf_{e}")))?;
     let optimizer = ferric_ci::CasScfOptimizer::parse_config_str(casscf_optimizer)
+        .map_err(|e| make_err(format!("run_nevpt2: casscf_{e}")))?;
+    let stability = ferric_ci::CasScfStabilityMode::parse_config_str(casscf_stability)
         .map_err(|e| make_err(format!("run_nevpt2: casscf_{e}")))?;
     let on = ferric_ci::driver::Nevpt2On::parse_config_str(reference)
         .map_err(|e| make_err(format!("run_nevpt2: {e}")))?;
@@ -560,18 +599,24 @@ fn run_nevpt2(
         memory_budget_bytes: budget,
         integrals,
         optimizer,
+        stability,
         ..Default::default()
     };
     let run = py
         .allow_threads(|| ferric_ci::driver::nevpt2_on_rhf(mol, &prep, &rhf, on, &cfg))
         .map_err(make_err)?;
     let cert = ferric_mp2::certificate::with_anchor_envelope(
-        ferric_ci::certificate::nevpt2_certificate(on, &cfg).with_build(build_stamp()),
+        ferric_ci::certificate::nevpt2_certificate(on, &cfg, run.reference_stability.as_ref())
+            .with_build(build_stamp()),
         "SC-NEVPT2",
         mol,
         &basis_set.inner,
         None,
     );
+    let stability_lambda = run
+        .reference_stability
+        .as_ref()
+        .map(|s| s.lowest_eigenvalue);
     let (r, iterations, grad_norm) = (
         run.result,
         run.reference_iterations,
@@ -585,6 +630,7 @@ fn run_nevpt2(
         rhf_energy: rhf.energy,
         reference_iterations: iterations,
         reference_grad_norm: grad_norm,
+        reference_stability_lowest_eigenvalue: stability_lambda,
         ci_residual_norm: r.ci_residual_norm,
         n_core: r.n_core,
         n_active: r.n_active,

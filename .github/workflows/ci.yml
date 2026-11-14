@@ -1605,6 +1605,8 @@ jobs:
           df_mark group7
           cargo test --no-fail-fast -p ferric-mp2 --test rimp2_qqr3_screening --locked || rc=1
           df_mark group8
+          cargo test --no-fail-fast -p ferric-ci --test casscf_stability_saddle --locked || rc=1
+          df_mark group9
           if [ "$rc" -ne 0 ]; then
             echo "::error::one or more deferred test commands failed -- see the FAILED lines above"
             exit 1

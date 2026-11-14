@@ -126,17 +126,56 @@ pub fn rdm_memory_elems(
 /// the layout of [`crate::CasCiResult::ci_vector`]) over the strings of
 /// `direct`. `c` is used as given: pass a normalized vector.
 pub fn spin_summed_rdms(direct: &DirectSigma<'_>, c: &[f64]) -> Result<CasCiRdms, FerricError> {
+    check_len(direct, c)?;
+    Ok(accumulate(direct, |a0, a1| {
+        block_contribution(direct, c, a0, a1)
+    }))
+}
+
+/// Symmetrized spin-summed transition RDMs of the CI vectors `c` and `z`
+/// over the strings of `direct`:
+///
+/// ```text
+///   dm1[p,q]     = ⟨z|E_pq|c⟩ + ⟨c|E_pq|z⟩
+///   dm2[p,q,r,s] = ⟨z|E_pq E_rs|c⟩ + ⟨c|E_pq E_rs|z⟩ − δ_qr dm1[p,s]
+/// ```
+///
+/// the derivative of [`spin_summed_rdms`] at `c` along `z`
+/// (`rdm(c + εz) = rdm(c) + ε · this + O(ε²)`). Built as
+/// `D_z D_cᵀ + D_c D_zᵀ` from the same blocks.
+pub fn spin_summed_transition_rdms(
+    direct: &DirectSigma<'_>,
+    c: &[f64],
+    z: &[f64],
+) -> Result<CasCiRdms, FerricError> {
+    check_len(direct, c)?;
+    check_len(direct, z)?;
+    Ok(accumulate(direct, |a0, a1| {
+        transition_block_contribution(direct, c, z, a0, a1)
+    }))
+}
+
+fn check_len(direct: &DirectSigma<'_>, c: &[f64]) -> Result<(), FerricError> {
+    let ndet = direct.n_alpha_str * direct.n_beta_str;
+    if c.len() != ndet {
+        return Err(FerricError::General(format!(
+            "CAS-CI RDM: CI vector has length {} but the space has {ndet} determinants",
+            c.len()
+        )));
+    }
+    Ok(())
+}
+
+/// Sum the per-block `(G, d1)` of `block` in block order and assemble
+/// `dm1`, `dm2` from them.
+fn accumulate<F>(direct: &DirectSigma<'_>, block: F) -> CasCiRdms
+where
+    F: Fn(usize, usize) -> (Array2<f64>, Array1<f64>) + Sync,
+{
     let n = direct.n_active();
     let n2 = n * n;
     let na = direct.n_alpha_str;
     let nb = direct.n_beta_str;
-    if c.len() != na * nb {
-        return Err(FerricError::General(format!(
-            "CAS-CI RDM: CI vector has length {} but the space has {} determinants",
-            c.len(),
-            na * nb
-        )));
-    }
     let rows = chunk_rows(nb);
     let n_chunks = na.div_ceil(rows);
     let mut g = Array2::<f64>::zeros((n2, n2));
@@ -145,7 +184,7 @@ pub fn spin_summed_rdms(direct: &DirectSigma<'_>, c: &[f64]) -> Result<CasCiRdms
     for batch in chunk_ids.chunks(BATCH_CHUNKS) {
         let parts: Vec<(Array2<f64>, Array1<f64>)> = batch
             .par_iter()
-            .map(|&k| block_contribution(direct, c, k * rows, ((k + 1) * rows).min(na)))
+            .map(|&k| block(k * rows, ((k + 1) * rows).min(na)))
             .collect();
         for (gk, dk) in parts {
             g += &gk;
@@ -173,7 +212,7 @@ pub fn spin_summed_rdms(direct: &DirectSigma<'_>, c: &[f64]) -> Result<CasCiRdms
             }
         }
     }
-    Ok(CasCiRdms { dm1, dm2 })
+    CasCiRdms { dm1, dm2 }
 }
 
 /// `(D Dᵀ, D c)` over the α rows `a0..a1`, with `D[rs, I] = (E_rs C)(I)`.
@@ -183,6 +222,35 @@ fn block_contribution(
     a0: usize,
     a1: usize,
 ) -> (Array2<f64>, Array1<f64>) {
+    let nb = direct.n_beta_str;
+    let d = replacement_block(direct, c, a0, a1);
+    let cb = ArrayView1::from(&c[a0 * nb..a1 * nb]);
+    let gk = d.dot(&d.t());
+    let dk = d.dot(&cb);
+    (gk, dk)
+}
+
+/// `(D_z D_cᵀ + D_c D_zᵀ, D_c z + D_z c)` over the α rows `a0..a1`.
+fn transition_block_contribution(
+    direct: &DirectSigma<'_>,
+    c: &[f64],
+    z: &[f64],
+    a0: usize,
+    a1: usize,
+) -> (Array2<f64>, Array1<f64>) {
+    let nb = direct.n_beta_str;
+    let dc = replacement_block(direct, c, a0, a1);
+    let dz = replacement_block(direct, z, a0, a1);
+    let cb = ArrayView1::from(&c[a0 * nb..a1 * nb]);
+    let zb = ArrayView1::from(&z[a0 * nb..a1 * nb]);
+    let x = dz.dot(&dc.t());
+    let gk = &x + &x.t();
+    let dk = dc.dot(&zb) + dz.dot(&cb);
+    (gk, dk)
+}
+
+/// `D[rs, I] = (E_rs C)(I)` over the α rows `a0..a1` (`n² × (a1 − a0) n_β`).
+fn replacement_block(direct: &DirectSigma<'_>, c: &[f64], a0: usize, a1: usize) -> Array2<f64> {
     let n = direct.n_active();
     let n2 = n * n;
     let nb = direct.n_beta_str;
@@ -215,10 +283,7 @@ fn block_contribution(
             }
         }
     }
-    let cb = ArrayView1::from(&c[a0 * nb..a1 * nb]);
-    let gk = d.dot(&d.t());
-    let dk = d.dot(&cb);
-    (gk, dk)
+    d
 }
 
 /// `E_core + Σ h dm1 + ½ Σ (pq|rs) dm2` over the active integrals `ints`.

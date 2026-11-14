@@ -149,16 +149,45 @@ iteration cap returns `converged = false`; Python adds a `RuntimeWarning` and
 a certificate warning; the certificate (capability `casscf`, graded Proven)
 is then capped to not graded.
 
-Convergence means a small gradient. Neither optimizer checks the orbital
-Hessian at the converged point, so the result can be a saddle. Measured on N2
-CAS(10,10)/cc-pVDZ started from the RHF orbitals: BFGS, AH and PySCF stop at
-the same second-order saddle, $E = -109.12947$ Ha, whose active space holds one
-component of a degenerate $\pi_u$ pair. The local minimum, 5.29 mHa lower, has
-a symmetric $\sigma_g$ and $\sigma_u$ active space. On the four systems compared with PySCF, the
-test asserts that the lowest CI-relaxed orbital-Hessian eigenvalue of ferric's
-converged point exceeds a derived bar, so each anchor point is a minimum. The stationary-point table is in
-`crates/ferric-ci/theory.md`; the minimum assertion is in
-`crates/ferric-ci/tests/casscf_vs_pyscf.rs`.
+Convergence means a small gradient, so the converged point can be a saddle.
+After convergence `[cas] stability` (Python `casscf_stability`) checks the
+second-order condition. It finds the lowest eigenvalue of the CI-relaxed
+orbital Hessian $H_{oo} - H_{oc}H_{cc}^{-1}H_{co}$ by Davidson. Each product
+solves one CI response equation, so the eigenvalue includes the CI response
+and not only the fixed-RDM orbital block:
+
+| `stability` | Effect |
+|---|---|
+| `"off"` (default) | no check |
+| `"check"` | compute $\lambda_\text{min}$ and record it on the result and in the certificate |
+| `"follow"` | as `"check"`; on a negative $\lambda_\text{min}$, step along its eigenvector (the lower of $\pm 0.3v$) and optimize again, up to 5 times |
+
+The check is off by default because it costs about as much as the CASSCF or
+more. Measured from the CLI phase timings (cc-pVDZ, 3 runs each, shared
+machine): benzene CAS(6,6), 400 determinants, 8.6 s for the check against
+19.0 s for the CASSCF (0.45 times); N2 CAS(10,10), 63,504 determinants,
+35.2 s against 11.1 s (3.2 times). Each of the 100 to 180 Hessian products
+solves one CI linear system, so the cost grows with the determinant count.
+
+The verdict is `STABLE`, `UNSTABLE` ($\lambda_\text{min} < -10^{-6}$),
+`MARGINAL` ($|\lambda_\text{min}| \le 10^{-6}$) or `INDETERMINATE` (Davidson
+or a CI response did not converge). An `UNSTABLE` point is a saddle: its
+certificate is capped to not graded and leaves the PySCF anchor scope.
+Python exposes `stability_lowest_eigenvalue`, `stability_verdict` and
+`stability_follow_steps` (`None` with `"off"`); the CLI prints the verdict
+and writes it to the run log.
+
+Measured on N2 CAS(10,10)/cc-pVDZ started from the RHF orbitals: BFGS, AH and
+PySCF stop at the same second-order saddle, $E = -109.12947$ Ha, whose
+active space holds one component of a degenerate $\pi_u$ pair. The check
+reports it as `UNSTABLE`; `"follow"` reaches the local minimum 5.29 mHa
+lower, which has a symmetric $\sigma_g$ and $\sigma_u$ active space. The
+benzene CAS(6,6)/cc-pVDZ dense endpoint, 5.9 mHa above PySCF's, is a local
+minimum (positive $\lambda_\text{min}$), so `"follow"` leaves it in place.
+Numbers, cost and the comparison with finite differences are in
+`crates/ferric-ci/theory.md` ("Second-order check"); the tests are
+`crates/ferric-ci/tests/casscf_stability.rs` and
+`casscf_stability_saddle.rs`.
 
 ```python
 import ferric
@@ -195,8 +224,9 @@ Limits:
 - the start is the canonical RHF orbitals with the active window directly
   above the core; there is no orbital selection or reordering; odd-electron
   molecules have no RHF start;
-- both optimizers are two-step: no orbital-CI coupling (the `"ah"`
-  Hessian is the orbital block at fixed RDMs);
+- both optimizers are two-step: no orbital-CI coupling in the step (the
+  `"ah"` Hessian is the orbital block at fixed RDMs; the CI response enters
+  only the stability check);
   convergence is tested on five systems from RHF starts;
 - the dense `nbasis⁴` AO block is held when it fits in half of the memory
   budget; otherwise (or with `[cas] integrals = "direct"`) the integrals are

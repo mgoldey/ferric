@@ -84,19 +84,22 @@ pub const AH_REJECT_RISE: f64 = 1e-10;
 /// products need, built once per macro iteration
 /// ([`CasScfProblem::orbital_hessian`](crate::casscf::CasScfProblem::orbital_hessian)).
 pub struct OrbitalHessian {
-    c: Array2<f64>,
-    fi: Array2<f64>,
+    pub(crate) c: Array2<f64>,
+    pub(crate) fi: Array2<f64>,
     fa: Array2<f64>,
-    gmat: Array2<f64>,
-    gamma: Array2<f64>,
+    pub(crate) gmat: Array2<f64>,
+    pub(crate) gamma: Array2<f64>,
     /// `Σ_uvw (pu|vw) Γ_tuvw`, `nmo x n_a`.
     two: Array2<f64>,
+    /// `(pu|vw)`, `p` over all MOs, flat `[((p n_a + u) n_a + v) n_a + w]`
+    /// (the CI-response products of [`crate::casscf_stability`]).
+    pub(crate) paaa: Vec<f64>,
     /// `W[(p,t),(r,s)]`, `(nmo n_a) x (nmo n_a)`.
     w: Array2<f64>,
     /// With [`HessianProducts::OccupiedKernel`], the kernel
     /// `L[(p,j),(r,k)] = 2 (pj|rk) − ½ (pr|jk) − ½ (pk|rj)`, `j, k` over the
     /// occupied (core and active) orbitals, `(nmo n_occ) x (nmo n_occ)`.
-    occ_kernel: Option<Array2<f64>>,
+    pub(crate) occ_kernel: Option<Array2<f64>>,
 }
 
 /// How a Hessian-vector product forms the response `Cᵀ (J − ½K)[dD] C` of
@@ -177,8 +180,10 @@ impl CasScfProblem<'_> {
         let gam = |t: usize, u: usize, v: usize, x: usize| g[((t * na + u) * na + v) * na + x];
         // two[p, t] = Σ_uvw (pu|vw) Γ_tuvw from the active rows u of (pq|vw).
         let mut two = Array2::<f64>::zeros((nmo, na));
+        let mut paaa = Vec::with_capacity(nmo * na3);
         for p in 0..nmo {
             let row = &ppaa[(p * nmo + nc) * na2..(p * nmo + nc + na) * na2];
+            paaa.extend_from_slice(row);
             for t in 0..na {
                 two[(p, t)] = row
                     .iter()
@@ -235,13 +240,14 @@ impl CasScfProblem<'_> {
             gmat: pt.gradient_matrix.clone(),
             gamma: rdms.dm1.clone(),
             two,
+            paaa,
             w,
             occ_kernel,
         })
     }
 
     /// Antisymmetric `X` from a vector over [`Self::pairs`].
-    fn unpack(&self, x: &[f64]) -> Result<Array2<f64>, FerricError> {
+    pub(crate) fn unpack(&self, x: &[f64]) -> Result<Array2<f64>, FerricError> {
         if x.len() != self.pairs.len() {
             return Err(FerricError::General(format!(
                 "CASSCF: rotation vector has {} entries, expected {}",
@@ -257,7 +263,7 @@ impl CasScfProblem<'_> {
         Ok(k)
     }
 
-    fn pack(&self, m: &Array2<f64>) -> Vec<f64> {
+    pub(crate) fn pack(&self, m: &Array2<f64>) -> Vec<f64> {
         self.pairs.iter().map(|&(p, q)| m[(p, q)]).collect()
     }
 
@@ -267,6 +273,17 @@ impl CasScfProblem<'_> {
         h: &OrbitalHessian,
         x: &[f64],
     ) -> Result<(Array2<f64>, Array2<f64>), FerricError> {
+        let (dg, xm, _) = self.frame_derivative_parts(h, x)?;
+        Ok((dg, xm))
+    }
+
+    /// [`Self::frame_derivative`] with `dF^I` over the occupied columns
+    /// (`nmo x n_occ`).
+    pub(crate) fn frame_derivative_parts(
+        &self,
+        h: &OrbitalHessian,
+        x: &[f64],
+    ) -> Result<(Array2<f64>, Array2<f64>, Array2<f64>), FerricError> {
         let (nc, na, nmo) = (self.n_core, self.n_active, self.nmo);
         let nocc = nc + na;
         let xm = self.unpack(x)?;
@@ -289,7 +306,7 @@ impl CasScfProblem<'_> {
                 .map_err(|e| FerricError::General(format!("CASSCF W X shape: {e}")))?;
         let act = dfi.slice(s![.., nc..nocc]).dot(&h.gamma) + xm.t().dot(&h.two) + wx;
         df.slice_mut(s![.., nc..nocc]).assign(&act);
-        Ok((2.0 * (&df - &df.t()), xm))
+        Ok((2.0 * (&df - &df.t()), xm, dfi))
     }
 
     /// `Cᵀ (J − ½K)[dD^c] C_occ` and `Cᵀ (J − ½K)[dD^a] C_c` by one AO J/K
@@ -395,7 +412,7 @@ fn active_blocks(
 /// (`nmo x n_c`) as `L vec(Y)` (module documentation): one GEMM of `L` with
 /// the two columns `vec(Y^c)`, `vec(Y^a)`, at the serial-section BLAS
 /// thread count.
-fn occupied_response(
+pub(crate) fn occupied_response(
     l: &Array2<f64>,
     xm: &Array2<f64>,
     gamma: &Array2<f64>,

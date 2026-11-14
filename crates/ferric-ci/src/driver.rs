@@ -120,6 +120,9 @@ pub struct Nevpt2Run {
     pub reference_iterations: usize,
     /// The CASSCF orbital-gradient norm; `None` on a CAS-CI reference.
     pub reference_grad_norm: Option<f64>,
+    /// The CASSCF reference's second-order check; `None` on a CAS-CI
+    /// reference or with `stability = "off"`.
+    pub reference_stability: Option<crate::CasScfStability>,
 }
 
 /// The CAS-CI settings of the [`Nevpt2On::Casci`] reference: `cas`'s
@@ -174,6 +177,7 @@ pub fn nevpt2_on_rhf(
                 result,
                 reference_iterations: r.iterations,
                 reference_grad_norm: Some(r.grad_norm),
+                reference_stability: r.stability,
             })
         }
         Nevpt2On::Casci => {
@@ -185,6 +189,7 @@ pub fn nevpt2_on_rhf(
                 result,
                 reference_iterations: ci.iterations,
                 reference_grad_norm: None,
+                reference_stability: None,
             })
         }
     }

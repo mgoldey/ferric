@@ -63,6 +63,8 @@ pub mod casscf;
 pub mod casscf_ints;
 /// Exact fixed-RDM orbital Hessian and the augmented-Hessian CASSCF step.
 pub mod casscf_newton;
+/// Second-order check of a converged CASSCF point (CI-relaxed orbital Hessian).
+pub mod casscf_stability;
 /// Certificates of the CASSCF and SC-NEVPT2 results.
 pub mod certificate;
 /// CI-native Davidson eigensolver for the lowest root.
@@ -88,6 +90,7 @@ pub mod strings;
 
 pub use casscf::{
     run_casscf, AhForcing, CasScfConfig, CasScfIntegrals, CasScfOptimizer, CasScfResult,
+    CasScfStability, CasScfStabilityMode,
 };
 pub use nevpt2::{
     sc_nevpt2, Nevpt2Classes, Nevpt2Config, Nevpt2Integrals, Nevpt2Reference, Nevpt2Result,

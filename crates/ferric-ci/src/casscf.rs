@@ -44,6 +44,7 @@
 
 pub use crate::casscf_ints::CasScfIntegrals;
 use crate::casscf_ints::IntegralBackend;
+pub use crate::casscf_stability::{CasScfStability, CasScfStabilityMode};
 use crate::integrals::ActiveSpaceIntegrals;
 use crate::{run_cas_ci_on_integrals_timed, CasCiConfig, CasCiRdms, CasCiResult};
 use ferric_core::memory::plan::{Lifetime, MemoryPlan};
@@ -104,6 +105,10 @@ pub struct CasScfConfig {
     /// Stopping rule of the Davidson solve of each augmented-Hessian step
     /// ([`AhForcing::Quadratic`] by default); unused by BFGS.
     pub ah_forcing: AhForcing,
+    /// Second-order check of the converged point
+    /// ([`CasScfStabilityMode::Off`] by default; see
+    /// [`crate::casscf_stability`]).
+    pub stability: CasScfStabilityMode,
 }
 
 /// Residual at which the Davidson solve of an augmented-Hessian step stops:
@@ -183,6 +188,7 @@ impl Default for CasScfConfig {
             integrals: CasScfIntegrals::default(),
             optimizer: CasScfOptimizer::default(),
             ah_forcing: AhForcing::default(),
+            stability: CasScfStabilityMode::default(),
         }
     }
 }
@@ -241,7 +247,7 @@ pub struct CasScfProblem<'a> {
     e_nuc: f64,
     pub(crate) n_core: usize,
     pub(crate) n_active: usize,
-    ci_config: CasCiConfig,
+    pub(crate) ci_config: CasCiConfig,
     /// The settings the problem was built from (`optimize` checks that its
     /// own config agrees on the partition and the CI settings).
     config: CasScfConfig,
@@ -909,6 +915,11 @@ pub struct CasScfResult {
     /// `Direct`). On [`CasScfIntegrals::Ri`] the energy, orbitals and RDMs
     /// are those of the density-fitted Hamiltonian.
     pub integrals: CasScfIntegrals,
+    /// The lowest eigenpair of the CI-relaxed orbital Hessian at
+    /// [`Self::mo_coeff`] ([`CasScfConfig::stability`]); `None` with
+    /// [`CasScfStabilityMode::Off`], for an unconverged run, or without
+    /// nonredundant rotations.
+    pub stability: Option<CasScfStability>,
 }
 
 /// Canonical orbitals at the point `pt` evaluated at orbitals `c`.
@@ -1020,44 +1031,90 @@ pub fn optimize(
 ) -> Result<CasScfResult, FerricError> {
     check_step_controls(config)?;
     check_problem_settings(&problem.config, config)?;
-    let finish = |pt: CasScfPoint, c: Array2<f64>, it: usize, converged: bool| {
-        let (c, pt, mo_energy) = if config.canonicalize {
-            let (c, pt) = canonicalize(problem, &c, &pt)?;
-            let ft = &pt.f_inactive + &pt.f_active;
-            let eps = ft.diag().to_vec();
-            (c, pt, Some(eps))
+    let canon = |c: Array2<f64>, pt: CasScfPoint| {
+        if config.canonicalize {
+            canonicalize(problem, &c, &pt)
         } else {
-            (c, pt, None)
-        };
-        let grad_norm = norm(&pt.gradient);
-        let ci = pt.ci;
-        let rdms = ci
-            .rdms
-            .ok_or_else(|| FerricError::General("CASSCF: CAS-CI returned no RDMs".to_string()))?;
-        Ok(CasScfResult {
-            e_total: ci.e_total,
-            e_core: ci.e_core,
-            mo_coeff: c,
-            mo_energy,
-            ci_vector: ci.ci_vector,
-            rdms,
-            n_determinants: ci.n_determinants,
-            iterations: it,
-            grad_norm,
-            converged,
-            ci_residual_norm: ci.residual_norm,
-            integrals: problem.integrals(),
-        })
-    };
-
-    let mut acc = PhaseAccumulator::new().report_on_drop("CASSCF");
-    let (pt, c, it, converged) = match config.optimizer {
-        CasScfOptimizer::AugmentedHessian => {
-            crate::casscf_newton::optimize_ah(problem, c0, config, &mut acc)?
+            Ok((c, pt))
         }
-        CasScfOptimizer::Bfgs => optimize_bfgs(problem, c0, config, &mut acc)?,
     };
-    finish(pt, c, it, converged)
+    let mut acc = PhaseAccumulator::new().report_on_drop("CASSCF");
+    let (pt, c, mut it, mut converged) = run_optimizer(problem, c0, config, &mut acc)?;
+    let (mut c, mut pt) = canon(c, pt)?;
+    let mut stability = None;
+    if converged && config.stability != CasScfStabilityMode::Off && !problem.pairs.is_empty() {
+        let e_first = pt.e_total;
+        let mut follow_steps = 0usize;
+        loop {
+            let mut st = acc.time("stability (CI-relaxed Hessian)", || {
+                problem.stability(&c, &pt)
+            })?;
+            st.follow_steps = follow_steps;
+            st.energy_before_follow = (follow_steps > 0).then_some(e_first);
+            let unstable = st.verdict() == ferric_scf::stability::StabilityVerdict::Unstable;
+            if config.stability == CasScfStabilityMode::Follow
+                && unstable
+                && follow_steps < crate::casscf_stability::MAX_FOLLOW
+            {
+                let down = acc.time("stability (step along the mode)", || {
+                    problem.follow_step(&c, pt.e_total, &st.eigenvector)
+                })?;
+                if let Some(c_down) = down {
+                    let (p2, c2, i2, conv2) = run_optimizer(problem, c_down, config, &mut acc)?;
+                    it += i2;
+                    follow_steps += 1;
+                    converged = conv2;
+                    (c, pt) = canon(c2, p2)?;
+                    if !converged {
+                        break;
+                    }
+                    continue;
+                }
+            }
+            stability = Some(st);
+            break;
+        }
+    }
+    drop(acc);
+    let mo_energy = config
+        .canonicalize
+        .then(|| (&pt.f_inactive + &pt.f_active).diag().to_vec());
+    let grad_norm = norm(&pt.gradient);
+    let ci = pt.ci;
+    let rdms = ci
+        .rdms
+        .ok_or_else(|| FerricError::General("CASSCF: CAS-CI returned no RDMs".to_string()))?;
+    Ok(CasScfResult {
+        e_total: ci.e_total,
+        e_core: ci.e_core,
+        mo_coeff: c,
+        mo_energy,
+        ci_vector: ci.ci_vector,
+        rdms,
+        n_determinants: ci.n_determinants,
+        iterations: it,
+        grad_norm,
+        converged,
+        ci_residual_norm: ci.residual_norm,
+        integrals: problem.integrals(),
+        stability,
+    })
+}
+
+/// One run of the configured optimizer from `c0`: the final point, its
+/// orbitals, the macro iterations and whether it converged.
+fn run_optimizer(
+    problem: &CasScfProblem,
+    c0: Array2<f64>,
+    config: &CasScfConfig,
+    acc: &mut PhaseAccumulator,
+) -> Result<(CasScfPoint, Array2<f64>, usize, bool), FerricError> {
+    match config.optimizer {
+        CasScfOptimizer::AugmentedHessian => {
+            crate::casscf_newton::optimize_ah(problem, c0, config, acc)
+        }
+        CasScfOptimizer::Bfgs => optimize_bfgs(problem, c0, config, acc),
+    }
 }
 
 /// The inverse-BFGS macro-iteration loop ([`CasScfOptimizer::Bfgs`]).

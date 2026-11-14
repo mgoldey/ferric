@@ -49,6 +49,7 @@ SLOW_BINARIES=(
   grid_prune_live_scf hirshfeld_symmetry
   cdft_coupling_hene cdft_state_selection rimp2_qqr3_screening
   cosx_group_screen_anchors cosx_sparse_anchors cosx_mixed_error_law
+  casscf_stability_saddle
 )
 
 

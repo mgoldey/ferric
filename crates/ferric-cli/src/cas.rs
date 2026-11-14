@@ -10,7 +10,7 @@
 //! key is read by one surface and ignored by the other.
 
 use crate::config::Config;
-use ferric_ci::casscf::{CasScfIntegrals, CasScfOptimizer};
+use ferric_ci::casscf::{CasScfIntegrals, CasScfOptimizer, CasScfStabilityMode};
 use ferric_ci::driver::{nevpt2_on_rhf, rhf_start, Nevpt2On, ScfStart};
 use ferric_ci::{CasScfConfig, Nevpt2Classes};
 use ferric_core::basis;
@@ -25,7 +25,7 @@ use serde::Deserialize;
 /// same settings (`n_active`, `n_elec_active`, `n_core`, `reference`,
 /// `canonicalize`, `casscf_grad_tol`, `casscf_energy_tol`, `casscf_max_iter`,
 /// `casscf_max_step`, `casscf_integrals`, `casscf_integral_thresh`,
-/// `casscf_auxbasis`, `casscf_optimizer`).
+/// `casscf_auxbasis`, `casscf_optimizer`, `casscf_stability`).
 #[derive(Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct CasCfg {
@@ -70,6 +70,12 @@ pub struct CasCfg {
     /// `integrals = "ri"` only, and required there: the bundled auxiliary
     /// basis (e.g. `"def2-universal-jkfit"`). No default.
     pub auxbasis: Option<String>,
+    /// Second-order check of the converged CASSCF point: `"off"` (default),
+    /// `"check"` (the lowest eigenvalue of the CI-relaxed orbital Hessian is
+    /// printed and recorded on the certificate, and a saddle is capped to not
+    /// graded) or `"follow"` (as `"check"`, and at a saddle the orbitals step
+    /// along the negative mode and CASSCF converges again).
+    pub stability: Option<String>,
     /// `[cas.ci]`: the CAS-CI eigensolver.
     pub ci: Option<CasCiCfg>,
 }
@@ -186,6 +192,7 @@ fn check_cas_keys(cas: &CasCfg, kind: &str, on: Option<Nevpt2On>) -> Result<(), 
             ("integrals", cas.integrals.is_some()),
             ("integral_thresh", cas.integral_thresh.is_some()),
             ("auxbasis", cas.auxbasis.is_some()),
+            ("stability", cas.stability.is_some()),
         ];
         if let Some((k, _)) = orbital_keys.iter().find(|(_, set)| *set) {
             return Err(format!(
@@ -272,6 +279,10 @@ pub fn resolve_plan(cfg: &Config, text: &str) -> Result<Option<CasPlan>, String>
         None => d.optimizer,
         Some(o) => CasScfOptimizer::parse_config_str(o).map_err(|e| format!("[cas] {e}"))?,
     };
+    let stability = match cas.stability.as_deref() {
+        None => d.stability,
+        Some(m) => CasScfStabilityMode::parse_config_str(m).map_err(|e| format!("[cas] {e}"))?,
+    };
     let scf_keys = written(raw.get("scf"));
     let scf_key = |k: &str| scf_keys.contains(&k);
     Ok(Some(CasPlan {
@@ -292,6 +303,7 @@ pub fn resolve_plan(cfg: &Config, text: &str) -> Result<Option<CasPlan>, String>
             canonicalize: cas.canonicalize.unwrap_or(false),
             integrals,
             optimizer,
+            stability,
             ..d
         },
         scf: ScfStart {
@@ -322,6 +334,22 @@ fn classes_json(c: &Nevpt2Classes) -> serde_json::Value {
         .map(|(n, v)| (n.to_string(), serde_json::json!(v)))
         .collect();
     serde_json::Value::Object(m)
+}
+
+/// The run-log record of a CASSCF second-order check (`null` without one).
+fn stability_json(st: Option<&ferric_ci::CasScfStability>) -> serde_json::Value {
+    match st {
+        None => serde_json::Value::Null,
+        Some(s) => serde_json::json!({
+            "lowest_eigenvalue": s.lowest_eigenvalue,
+            "verdict": s.verdict().label(),
+            "noise_floor": s.noise_floor,
+            "residual": s.residual,
+            "products": s.products,
+            "follow_steps": s.follow_steps,
+            "energy_before_follow": s.energy_before_follow,
+        }),
+    }
 }
 
 /// Run `cfg`'s CAS plan; `gpu_flag` is whether `--gpu` was given (refused:
@@ -424,6 +452,9 @@ pub fn run_cas(cfg: &Config, gpu_flag: bool) {
                 r.iterations, r.grad_norm, r.converged
             );
             println!("  CASSCF energy = {:.10} Hartree", r.e_total);
+            if let Some(st) = &r.stability {
+                println!("  stability     = {}", st.summary());
+            }
             if !r.converged {
                 eprintln!(
                     "warning: {}",
@@ -445,6 +476,7 @@ pub fn run_cas(cfg: &Config, gpu_flag: bool) {
                         "ci_residual_norm": r.ci_residual_norm,
                         "active_occupations": r.rdms.dm1.diag().to_vec(),
                         "mo_energy": r.mo_energy,
+                        "stability": stability_json(r.stability.as_ref()),
                         "certificate": cert_json,
                     }),
                 );
@@ -454,7 +486,12 @@ pub fn run_cas(cfg: &Config, gpu_flag: bool) {
         Some(on) => {
             let run = nevpt2_on_rhf(&mol, &prep, &rhf, on, &cas).unwrap_or_else(|e| die(e));
             let cert = ferric_mp2::certificate::with_anchor_envelope(
-                ferric_ci::certificate::nevpt2_certificate(on, &cas).with_build(build_stamp()),
+                ferric_ci::certificate::nevpt2_certificate(
+                    on,
+                    &cas,
+                    run.reference_stability.as_ref(),
+                )
+                .with_build(build_stamp()),
                 "SC-NEVPT2",
                 &mol,
                 &bs,
@@ -465,6 +502,9 @@ pub fn run_cas(cfg: &Config, gpu_flag: bool) {
             header("SC-NEVPT2");
             println!("  reference     = {}", on.as_str());
             println!("  E(reference)  = {:.10} Hartree", r.e_reference);
+            if let Some(st) = &run.reference_stability {
+                println!("  stability     = {}", st.summary());
+            }
             for (name, v) in Nevpt2Classes::NAMES.iter().zip(r.energies.to_array()) {
                 println!("  {name:<13} = {v:.10} Hartree");
             }
@@ -484,6 +524,7 @@ pub fn run_cas(cfg: &Config, gpu_flag: bool) {
                         "norms": classes_json(&r.norms),
                         "reference_iterations": run.reference_iterations,
                         "reference_grad_norm": run.reference_grad_norm,
+                        "reference_stability": stability_json(run.reference_stability.as_ref()),
                         "ci_residual_norm": r.ci_residual_norm,
                         "n_core": r.n_core,
                         "n_active": r.n_active,

@@ -150,6 +150,31 @@ def test_bfgs_optimizer(res):
         )
 
 
+def test_stability_check(res):
+    """casscf_stability="check": the lowest CI-relaxed orbital-Hessian
+    eigenvalue at this minimum. crates/ferric-ci/tests/casscf_vs_pyscf.rs
+    puts it within 2.1e-10 of the finite-difference 0.01945655 (bar 4.4e-4);
+    the bar here is that bar. The default ("off") runs no check, and the
+    check leaves the energy bit-identical; an unknown value raises with the
+    Python keyword."""
+    assert res.stability_lowest_eigenvalue is None
+    assert res.stability_verdict is None
+    mol = ferric.Molecule.from_xyz_string(_H2O)
+    chk = ferric.run_casscf(
+        mol, ferric.BasisSet.bundled("6-31g"), 4, (2, 2), casscf_stability="check"
+    )
+    assert chk.stability_verdict == "STABLE"
+    assert abs(chk.stability_lowest_eigenvalue - 0.01945655) < 4.4e-4
+    assert chk.stability_follow_steps == 0
+    assert any(r["name"] == "stability" for r in chk.certificate["routes"])
+    assert chk.certificate["grade"] == "proven"
+    assert chk.e_total == res.e_total
+    with pytest.raises(Exception, match=r"run_casscf: casscf_stability must be"):
+        ferric.run_casscf(
+            mol, ferric.BasisSet.bundled("6-31g"), 4, (2, 2), casscf_stability="on"
+        )
+
+
 def test_unconverged_ci_raises():
     """CAS(8,8) has 4900 determinants, above the dense-diagonalization fallback
     (ferric_ci::DENSE_SOLVE_MAX_DETS = 1024) that rescues smaller spaces, so one

@@ -485,6 +485,7 @@ fn unsupported_references_are_refused() {
         converged: false,
         ci_residual_norm: 0.0,
         integrals: ferric_ci::CasScfIntegrals::Dense,
+        stability: None,
     };
     let cas_cfg = CasScfConfig {
         n_active: s.n_active,

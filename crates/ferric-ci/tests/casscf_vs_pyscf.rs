@@ -28,6 +28,11 @@
 //! packing omits this crate's factor 2 on some entries, so `2 ‖g_PySCF‖`
 //! bounds the norm in this crate's convention.
 //!
+//! The run's own stability check (`CasScfConfig::stability`, analytic
+//! CI-relaxed Hessian by Davidson) must give the same lowest eigenvalue,
+//! within the finite-difference bar below plus its Davidson residual, and
+//! the verdict STABLE.
+//!
 //! The converged point is a minimum, not a saddle on which both codes could
 //! stop alike (as the BFGS, AH and PySCF point of N2 CAS(10,10)/cc-pVDZ is,
 //! `theory.md`): `λ_min(h) > 2 |λ_min(2h) − λ_min(h)| / 3 + n δg / h`. The
@@ -108,6 +113,7 @@ fn case(name: &str) {
             nel[1].as_u64().unwrap() as usize,
         ),
         canonicalize: true,
+        stability: ferric_ci::CasScfStabilityMode::Check,
         ..Default::default()
     };
     let res = run_casscf(&mol, &prep, &rhf, &cfg).unwrap();
@@ -130,6 +136,31 @@ fn case(name: &str) {
         lam > lam_bar,
         "{name}: lowest CI-relaxed orbital Hessian eigenvalue {lam:e} <= bar {lam_bar:e}: \
          not a minimum"
+    );
+    // The analytic CI-relaxed eigenvalue of the run's stability check equals
+    // the finite-difference one within the finite-difference bar plus the
+    // Davidson residual (a Ritz value's error is at most its residual).
+    let st = res
+        .stability
+        .as_ref()
+        .unwrap_or_else(|| panic!("{name}: the run carries no stability check"));
+    let d_lam = (st.lowest_eigenvalue - lam).abs();
+    let an_bar = lam_bar + st.residual;
+    eprintln!(
+        "{name}: analytic lambda_min {:.8} vs FD {lam:.8}: diff {d_lam:.1e} (bar {an_bar:.1e}); \
+         {} products, {} Davidson iterations, CI response residual {:.1e}",
+        st.lowest_eigenvalue, st.products, st.iterations, st.ci_response_residual
+    );
+    assert_eq!(
+        st.verdict(),
+        ferric_scf::stability::StabilityVerdict::Stable,
+        "{name}: {}",
+        st.summary()
+    );
+    assert!(
+        d_lam <= an_bar,
+        "{name}: analytic lambda_min {} vs FD {lam}: {d_lam:e} > bar {an_bar:e}",
+        st.lowest_eigenvalue
     );
 
     let e_ref = num(&r, "e_total");

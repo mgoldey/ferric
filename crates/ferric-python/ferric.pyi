@@ -6568,6 +6568,16 @@ class CasScfResult:
     those of the density-fitted Hamiltonian."""
     auxbasis: str | None
     """Auxiliary basis of the ``"ri"`` route, else None."""
+    stability_lowest_eigenvalue: float | None
+    """Lowest eigenvalue of the CI-relaxed orbital Hessian at ``mo_coeff``
+    (Ha): negative at a saddle of the CASSCF energy. None with
+    ``casscf_stability="off"`` or an unconverged run."""
+    stability_verdict: str | None
+    """``"STABLE"``, ``"UNSTABLE"`` (a saddle), ``"MARGINAL"`` (``|lambda|``
+    at the 1e-6 Ha noise floor) or ``"INDETERMINATE (eigensolver not
+    converged)"``; None without a check."""
+    stability_follow_steps: int
+    """Steps taken along negative modes with ``casscf_stability="follow"``."""
     @property
     def ci_vector(self) -> NDArray[np.float64]:
         """CI coefficients, shape ``(n_alpha_strings, n_beta_strings)``, in
@@ -6598,8 +6608,9 @@ class CasScfResult:
     def certificate(self) -> dict[str, Any]:
         """Validation certificate: ``capability`` ``"casscf"`` (graded
         Proven; the CLI kind ``casscf``), the active space as an
-        approximation; a non-converged macro loop adds a warning and caps the
-        grade to ``"ungraded"``."""
+        approximation, the second-order check as the ``stability`` route; a
+        non-converged macro loop, or a converged point the check proves a
+        saddle, adds a warning and caps the grade to ``"ungraded"``."""
         ...
 
 def run_casscf(
@@ -6624,6 +6635,7 @@ def run_casscf(
     casscf_integral_thresh: float | None = None,
     casscf_optimizer: str = "ah",
     casscf_auxbasis: str | None = None,
+    casscf_stability: str = "off",
 ) -> CasScfResult:
     """Two-step CASSCF from the canonical exact-J/K RHF orbitals:
     ``n_active`` active orbitals above ``n_core`` doubly occupied ones,
@@ -6650,7 +6662,13 @@ def run_casscf(
     ``"def2-universal-jkfit"``), holding ``naux * nbas^2`` doubles. RI is an
     approximation of the Hamiltonian: the energy differs from the exact one
     by the fitting error, and the certificate records it (``ri``) and is
-    capped to Proven (narrow)."""
+    capped to Proven (narrow). ``casscf_stability="check"`` computes the
+    lowest eigenvalue of the CI-relaxed orbital Hessian at the converged
+    point (Davidson, one CI linear solve per product; it costs 0.5 to 3
+    times the CASSCF itself, so the default is ``"off"``); a negative one
+    makes the point a saddle, emits a ``RuntimeWarning`` and caps the
+    certificate to ``"ungraded"``. ``"follow"`` then steps along the
+    negative mode and converges again (at most 5 times)."""
     ...
 
 class Nevpt2Result:
@@ -6669,6 +6687,10 @@ class Nevpt2Result:
     """CASSCF macro iterations, or CAS-CI Davidson iterations."""
     reference_grad_norm: float | None
     """CASSCF orbital-gradient norm; None for a CAS-CI reference."""
+    reference_stability_lowest_eigenvalue: float | None
+    """Lowest CI-relaxed orbital Hessian eigenvalue of the CASSCF reference
+    (Ha, see ``run_casscf``); None for a CAS-CI reference or with
+    ``casscf_stability="off"``."""
     ci_residual_norm: float
     """``|Hc - Ec|`` of the reference CI vector."""
     n_core: int
@@ -6722,12 +6744,13 @@ def run_nevpt2(
     casscf_integral_thresh: float | None = None,
     casscf_optimizer: str = "ah",
     casscf_auxbasis: str | None = None,
+    casscf_stability: str = "off",
 ) -> Nevpt2Result:
     """Strongly contracted NEVPT2 (Angeli et al., JCP 117, 9138 (2002)) on
     a CASSCF (``reference="casscf"``, the ``run_casscf`` settings) or CAS-CI
     (``reference="casci"``, on the canonical RHF orbitals) reference from
-    the exact-J/K RHF; ``casscf_optimizer``, ``casscf_integrals`` and
-    ``casscf_auxbasis`` as in ``run_casscf`` (``"ri"`` also density-fits the
+    the exact-J/K RHF; ``casscf_optimizer``, ``casscf_integrals``,
+    ``casscf_auxbasis`` and ``casscf_stability`` as in ``run_casscf`` (``"ri"`` also density-fits the
     SC-NEVPT2 integrals, and is refused with ``reference="casci"``). Dyall
     zeroth-order Hamiltonian; core and virtual
     orbitals canonical in ``F^I + F^A``, as PySCF ``mrpt.NEVPT``. Raises

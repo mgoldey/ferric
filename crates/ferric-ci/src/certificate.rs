@@ -8,6 +8,17 @@
 //! CASSCF reference only). The active space is recorded as an
 //! approximation. The caller stamps the build.
 //!
+//! The second-order check ([`CasScfConfig::stability`]) is evidence about
+//! the result, not a setting: its lowest CI-relaxed orbital Hessian
+//! eigenvalue is recorded as the `stability` route, and a converged point
+//! whose verdict is UNSTABLE (a saddle: `λ_min` below minus the noise floor)
+//! is capped to not graded with a warning and leaves the anchor scope, as an
+//! unconverged run does. The anchors are minima (`casscf_vs_pyscf.rs`
+//! asserts `λ_min > 0` on each), so a saddle is outside what they measure.
+//! A MARGINAL or INDETERMINATE verdict warns and keeps the grade: it proves
+//! neither a minimum nor a saddle. With `stability = "off"` nothing is
+//! recorded. SC-NEVPT2 on a saddle CASSCF reference is capped the same way.
+//!
 //! The RI route ([`CasScfIntegrals::Ri`]) is a different Hamiltonian: it
 //! records the `ri` approximation with its auxiliary basis, is outside the
 //! scope of both exact-integral anchors (`casscf_vs_pyscf.rs`, `nevpt2.rs`
@@ -16,11 +27,12 @@
 //! fed its reconstructed block and against PySCF `density_fit()` CASSCF and
 //! NEVPT2 on three systems at 6-31G with def2-universal-jkfit.
 
-use crate::casscf::CasScfIntegrals;
+use crate::casscf::{CasScfIntegrals, CasScfStability};
 use crate::driver::Nevpt2On;
 use crate::{CasScfConfig, CasScfResult};
 use ferric_core::certificate::{Certificate, Grade};
 use ferric_mp2::certificate::with_anchor_in_scope;
+use ferric_scf::stability::StabilityVerdict;
 
 /// `CAS(n_el, n_act)` with the sector and the core count.
 fn active_space_detail(cas: &CasScfConfig) -> String {
@@ -82,6 +94,31 @@ fn with_ri_record(c: Certificate, integrals: CasScfIntegrals) -> Certificate {
     }
 }
 
+/// The reason a saddle is capped.
+pub const SADDLE_GRADE_REASON: &str = "the converged CASSCF point is a saddle (negative \
+     CI-relaxed orbital Hessian eigenvalue); the anchors are minima";
+
+/// Whether the check proved the point a saddle.
+fn is_saddle(st: Option<&CasScfStability>) -> bool {
+    st.is_some_and(|s| s.verdict() == StabilityVerdict::Unstable)
+}
+
+/// `c` with the `stability` record of `st` (module documentation); `what`
+/// names the point ("CASSCF" or "SC-NEVPT2 reference").
+fn with_stability_record(c: Certificate, st: Option<&CasScfStability>, what: &str) -> Certificate {
+    let Some(s) = st else { return c };
+    let c = c.with_route("stability", s.summary());
+    match s.verdict() {
+        StabilityVerdict::Stable => c,
+        StabilityVerdict::Unstable => c
+            .warn(format!("{what} point is a saddle: {}", s.summary()))
+            .cap_grade(Grade::Ungraded, SADDLE_GRADE_REASON),
+        StabilityVerdict::Marginal | StabilityVerdict::Indeterminate => {
+            c.warn(format!("{what} second-order check: {}", s.summary()))
+        }
+    }
+}
+
 /// Whether `cas` converges the orbitals as tightly as the evidence runs. The
 /// SC-NEVPT2 anchor needs only this: the driver canonicalizes the core and
 /// virtual orbitals itself and the energy does not depend on the gauge of the
@@ -108,11 +145,13 @@ pub fn casscf_certificate_prefixed(
     let c = Certificate::for_method_kind("casscf")
         .with_approximation("active-space", active_space_detail(cas));
     let c = with_ri_record(c, r.integrals);
+    let st = r.stability.as_ref();
     let c = with_anchor_in_scope(
         c,
         "CASSCF",
-        r.converged && in_casscf_anchor_scope(cas) && r.integrals.aux().is_none(),
+        r.converged && !is_saddle(st) && in_casscf_anchor_scope(cas) && r.integrals.aux().is_none(),
     );
+    let c = with_stability_record(c, st, "CASSCF");
     if r.converged {
         c
     } else {
@@ -122,10 +161,16 @@ pub fn casscf_certificate_prefixed(
 }
 
 /// The certificate of `method.kind = "nevpt2"` on reference `on` with
-/// config `cas`. SC-NEVPT2 on a CASSCF reference with a closed-shell active
-/// space converged to the CASSCF evidence's tolerances carries the SC-NEVPT2 anchor
-/// (`nevpt2.rs` compares class energies with PySCF on three singlets).
-pub fn nevpt2_certificate(on: Nevpt2On, cas: &CasScfConfig) -> Certificate {
+/// config `cas` and the CASSCF reference's second-order check `stability`
+/// (`None` on a CAS-CI reference or with `stability = "off"`). SC-NEVPT2 on
+/// a CASSCF reference with a closed-shell active space converged to the
+/// CASSCF evidence's tolerances, not proven a saddle, carries the SC-NEVPT2
+/// anchor (`nevpt2.rs` compares class energies with PySCF on three singlets).
+pub fn nevpt2_certificate(
+    on: Nevpt2On,
+    cas: &CasScfConfig,
+    stability: Option<&CasScfStability>,
+) -> Certificate {
     let c = Certificate::for_method_kind("nevpt2")
         .with_approximation("active-space", active_space_detail(cas))
         .with_approximation("reference", on.as_str());
@@ -136,8 +181,10 @@ pub fn nevpt2_certificate(on: Nevpt2On, cas: &CasScfConfig) -> Certificate {
         on == Nevpt2On::Casscf
             && cas.n_elec_active.0 == cas.n_elec_active.1
             && in_casscf_tolerances(cas)
-            && cas.integrals.aux().is_none(),
+            && cas.integrals.aux().is_none()
+            && !is_saddle(stability),
     );
+    let c = with_stability_record(c, stability, "SC-NEVPT2 reference");
     match on {
         Nevpt2On::Casscf => c,
         Nevpt2On::Casci => c.cap_grade(
@@ -179,7 +226,65 @@ mod tests {
             converged,
             ci_residual_norm: 0.0,
             integrals: CasScfIntegrals::Dense,
+            stability: None,
         }
+    }
+
+    fn checked(lambda: f64) -> CasScfStability {
+        CasScfStability {
+            lowest_eigenvalue: lambda,
+            eigenvector: vec![1.0],
+            residual: 1e-7,
+            iterations: 5,
+            products: 30,
+            converged: true,
+            ci_response_residual: 1e-11,
+            noise_floor: crate::casscf_stability::STABILITY_NOISE_FLOOR,
+            follow_steps: 0,
+            energy_before_follow: None,
+        }
+    }
+
+    #[test]
+    fn a_saddle_is_capped_and_leaves_the_anchor_scope() {
+        let stable = CasScfResult {
+            stability: Some(checked(0.04)),
+            ..result(true)
+        };
+        let c = casscf_certificate(&stable, &cas());
+        assert_eq!(c.grade, Grade::Proven);
+        assert!(c.warnings.is_empty(), "{:?}", c.warnings);
+        assert!(c.measured_error.is_some());
+        let rec = c.routes.iter().find(|a| a.name == "stability").unwrap();
+        assert!(rec.detail.contains("STABLE"), "{}", rec.detail);
+        let saddle = CasScfResult {
+            stability: Some(checked(-0.01)),
+            ..result(true)
+        };
+        let c = casscf_certificate(&saddle, &cas());
+        assert_eq!(c.grade, Grade::Ungraded);
+        assert!(c.measured_error.is_none(), "anchor on a saddle");
+        assert!(c.warnings[0].starts_with("CASSCF point is a saddle"));
+        assert!(c.warnings.iter().any(|w| w.contains(SADDLE_GRADE_REASON)));
+        let marginal = CasScfResult {
+            stability: Some(checked(1e-8)),
+            ..result(true)
+        };
+        let c = casscf_certificate(&marginal, &cas());
+        assert_eq!(c.grade, Grade::Proven);
+        assert!(c.measured_error.is_some());
+        assert_eq!(c.warnings.len(), 1);
+        assert!(c.warnings[0].contains("MARGINAL"), "{:?}", c.warnings);
+        let singlet = CasScfConfig {
+            n_elec_active: (3, 3),
+            ..cas()
+        };
+        let n = nevpt2_certificate(Nevpt2On::Casscf, &singlet, Some(&checked(-0.01)));
+        assert_eq!(n.grade, Grade::Ungraded);
+        assert!(n.measured_error.is_none());
+        let n = nevpt2_certificate(Nevpt2On::Casscf, &singlet, Some(&checked(0.04)));
+        assert_eq!(n.grade, Grade::Proven);
+        assert!(n.measured_error.is_some());
     }
 
     #[test]
@@ -250,7 +355,7 @@ mod tests {
             canonicalize: false,
             ..cas()
         };
-        let c = nevpt2_certificate(Nevpt2On::Casscf, &singlet);
+        let c = nevpt2_certificate(Nevpt2On::Casscf, &singlet, None);
         let m = c.measured_error.as_ref().expect("anchor attached");
         assert_eq!(
             *m,
@@ -279,7 +384,7 @@ mod tests {
             ),
         ];
         for (what, on, cfg) in outside {
-            let c = nevpt2_certificate(on, &cfg);
+            let c = nevpt2_certificate(on, &cfg, None);
             assert!(c.measured_error.is_none(), "{what}: anchor attached");
         }
     }
@@ -311,7 +416,7 @@ mod tests {
             n_elec_active: (3, 3),
             ..cfg
         };
-        let n = nevpt2_certificate(Nevpt2On::Casscf, &singlet);
+        let n = nevpt2_certificate(Nevpt2On::Casscf, &singlet, None);
         assert!(n.measured_error.is_none(), "exact-integral anchor on RI");
         assert_eq!(n.grade, Grade::ProvenNarrow);
         assert!(n.approximations.iter().any(|a| a.name == "ri"));
@@ -333,7 +438,7 @@ mod tests {
 
     #[test]
     fn nevpt2_is_graded_on_casscf_and_capped_on_casci() {
-        let on_casscf = nevpt2_certificate(Nevpt2On::Casscf, &cas());
+        let on_casscf = nevpt2_certificate(Nevpt2On::Casscf, &cas(), None);
         assert_eq!(on_casscf.capability, "nevpt2");
         assert_eq!(on_casscf.grade, Grade::Proven);
         let names: Vec<&str> = on_casscf
@@ -343,7 +448,7 @@ mod tests {
             .collect();
         assert_eq!(names, ["active-space", "reference"]);
         assert_eq!(on_casscf.approximations[1].detail, "casscf");
-        let on_casci = nevpt2_certificate(Nevpt2On::Casci, &cas());
+        let on_casci = nevpt2_certificate(Nevpt2On::Casci, &cas(), None);
         assert_eq!(on_casci.grade, Grade::Ungraded);
         assert_eq!(on_casci.approximations[1].detail, "casci");
     }
