@@ -236,26 +236,28 @@ pub enum HessianMethod {
     Auto,
     /// The analytic Hessian; an unsupported configuration is an error. It is
     /// the Hartree-Fock (RHF/UHF/ROHF) Hessian only: a Kohn-Sham `xc` is
-    /// refused before the SCF, pointing a closed-shell request at
-    /// [`HessianMethod::AnalyticMovingGrid`] and stating for UKS/ROKS that no
-    /// analytic spin-polarized Kohn-Sham Hessian exists (their frequencies are
-    /// central differences of the analytic gradient under `Auto` or
-    /// `FiniteDifference`).
+    /// refused before the SCF, pointing a closed-shell or UKS request at
+    /// [`HessianMethod::AnalyticMovingGrid`]. ROKS has no analytic Hessian;
+    /// its frequencies are central differences of the analytic gradient under
+    /// `Auto` or `FiniteDifference`.
     Analytic,
     /// Central differences of the analytic gradient (`6N` gradients).
     FiniteDifference,
-    /// OPT-IN: the analytic Hessian of closed-shell Kohn-Sham on the
-    /// production (moving) grid, Becke weight response included
-    /// ([`crate::hessian::rks_moving_grid_hessian`]): the surface the KS
-    /// gradient differentiates, so it agrees with `FiniteDifference` to the
-    /// finite-difference error. RKS only (`FrequencyReference::Rhf` with
-    /// `RhfConfig::xc` set), LDA/GGA pure or global hybrid, exact or RI-J /
-    /// RI-K. Everything else is refused with a typed error before the SCF
-    /// ([`crate::hessian::rks_moving_grid_hessian_available`]): Hartree-Fock,
-    /// open-shell references, meta-GGA, VV10, range-separated hybrids, ECPs,
-    /// and external potentials. `Auto` selects it for
-    /// every closed-shell KS system that predicate accepts; `Analytic` never
-    /// does (it stays the Hartree-Fock analytic Hessian).
+    /// OPT-IN: the analytic Hessian of Kohn-Sham on the production (moving)
+    /// grid, Becke weight response included: the surface the KS gradient
+    /// differentiates, so it agrees with `FiniteDifference` to the
+    /// finite-difference error. `FrequencyReference::Rhf` with
+    /// `RhfConfig::xc` set runs [`crate::hessian::rks_moving_grid_hessian`];
+    /// `FrequencyReference::Uhf` with `xc` set runs
+    /// [`crate::hessian::uks_moving_grid_hessian`]. Both cover LDA/GGA, pure
+    /// or global hybrid, with exact or RI-J / RI-K. Everything else is
+    /// refused with a typed error before the SCF
+    /// ([`crate::hessian::rks_moving_grid_hessian_available`],
+    /// [`crate::hessian::uks_moving_grid_hessian_available`]): Hartree-Fock,
+    /// ROKS, meta-GGA, VV10, range-separated hybrids, ECPs, and external
+    /// potentials. `Auto` selects it for every RKS and UKS system the
+    /// matching predicate accepts; `Analytic` never does (it stays the
+    /// Hartree-Fock analytic Hessian).
     AnalyticMovingGrid,
 }
 
@@ -284,7 +286,7 @@ pub enum HessianSource {
     Analytic,
     /// Central differences of the analytic gradient.
     FiniteDifference,
-    /// The analytic closed-shell Kohn-Sham Hessian on the moving grid
+    /// The analytic RKS or UKS Hessian on the moving grid
     /// ([`HessianMethod::AnalyticMovingGrid`]).
     AnalyticMovingGrid,
 }
@@ -410,10 +412,11 @@ impl FrequencyResult {
 /// ([`crate::hessian::analytic_hessian_available`],
 /// [`crate::hessian::analytic_uhf_hessian_available`]): one SCF plus CPHF. Every
 /// other case central-differences the analytic nuclear gradient, performing
-/// `6N` SCF-plus-gradient evaluations, except a closed-shell Kohn-Sham system
-/// the analytic moving-grid KS Hessian supports, which `Auto` sends to
-/// [`harmonic_frequencies_ks_moving_grid`] (one SCF plus CPKS; its errors are
-/// returned). `FrequencyResult::hessian_source`
+/// `6N` SCF-plus-gradient evaluations, except an RKS or UKS system the
+/// analytic moving-grid KS Hessian supports, which `Auto` sends to
+/// [`harmonic_frequencies_ks_moving_grid`] or
+/// [`harmonic_frequencies_uks_moving_grid`] (one SCF plus CPKS; their errors
+/// are returned). `FrequencyResult::hessian_source`
 /// says which ran. [`HessianMethod::AnalyticMovingGrid`] runs
 /// [`harmonic_frequencies_ks_moving_grid`] and returns its errors.
 /// The input geometry should be a
@@ -1004,7 +1007,8 @@ pub fn harmonic_frequencies_analytic_rohf(
 /// surface the production KS gradient differentiates.
 ///
 /// Refused with a typed error BEFORE the SCF: a reference other than
-/// [`FrequencyReference::Rhf`] (UKS/ROKS), and everything
+/// [`FrequencyReference::Rhf`] or [`FrequencyReference::Uhf`] (ROKS; a UKS
+/// reference is handed to [`harmonic_frequencies_uks_moving_grid`]), and everything
 /// [`crate::hessian::rks_moving_grid_hessian_available`] refuses (no `xc`,
 /// meta-GGA, VV10, range-separated or double hybrids, ECPs, external
 /// potentials, and the closed-shell RHF Hessian's

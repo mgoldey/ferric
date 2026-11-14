@@ -4275,9 +4275,9 @@ def run_frequencies(
     (any multiplicity) with exact J/K, with or without an ECP, or ROHF with
     exact J/K and no ECP or external potential (`point_charges` /
     `external_field` are analytic for RHF and UHF only), and a basis up to f
-    functions; for closed-shell Kohn-Sham (`xc` with `reference="rhf"`) the
+    functions; for Kohn-Sham (`xc` with `reference="rhf"` or `"uhf"`) the
     `"analytic-moving-grid"` Hessian below wherever it applies; and a finite
-    difference of analytic gradients otherwise (UKS, ROKS, meta-GGA, VV10,
+    difference of analytic gradients otherwise (ROKS, meta-GGA, VV10,
     range-separated hybrids, ECPs or external potentials with `xc`,
     `dispersion`, and large systems whose response AO table -- basis
     functions x grid points x 4 for a GGA, 8 bytes each -- exceeds 2 GiB: on
@@ -4290,13 +4290,13 @@ def run_frequencies(
     differences gradients. `.hessian_source` says which ran.
 
     `hessian="analytic-moving-grid"` is
-    the analytic closed-shell Kohn-Sham Hessian on the production (moving)
-    grid, Becke weight response included: the Hessian of the surface the KS
-    gradient differentiates, so it agrees with `"fd"` to the finite-difference
-    error. It needs `xc` (LDA/GGA, pure or global hybrid) and
-    `reference="rhf"`, and raises before the SCF for Hartree-Fock,
-    `"uhf"`/`"rohf"`, meta-GGA, VV10, range-separated hybrids, ECPs,
-    `point_charges` / `external_field` and `dispersion`.
+    the analytic RKS or UKS Hessian on the production (moving) grid, Becke
+    weight response included: the Hessian of the surface the KS gradient
+    differentiates, so it agrees with `"fd"` to the finite-difference error.
+    It needs `xc` (LDA/GGA, pure or global hybrid) and `reference="rhf"` or
+    `"uhf"`, and raises before the SCF for Hartree-Fock, `"rohf"` (ROKS),
+    meta-GGA, VV10, range-separated hybrids, ECPs, `point_charges` /
+    `external_field` and `dispersion`.
 
     `max_iter`, `energy_conv`, `density_conv` are the SCF controls of every
     SCF the run does (defaults 200, 1e-3, 1e-6, as in `run_rhf`); a

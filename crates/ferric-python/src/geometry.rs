@@ -339,10 +339,10 @@ impl PyFrequencyResult {
 /// and a basis up to f functions and fixed external point charges or a uniform field (QM/MM, RHF and UHF only,
 /// QM-QM block; this binding takes `point_charges=` / `external_field=` only,
 /// the Gaussian-smeared charges the Hessian also covers are reachable from the
-/// CLI and Rust API) (one SCF plus CPHF); for closed-shell Kohn-Sham (`xc=`
-/// with `reference="rhf"`) the "analytic-moving-grid" Hessian below wherever
-/// it applies; and a finite difference of the ANALYTIC gradient (6N gradient
-/// evaluations) otherwise (UKS, ROKS, meta-GGA, VV10, range-separated
+/// CLI and Rust API) (one SCF plus CPHF); for Kohn-Sham (`xc=` with
+/// `reference="rhf"` or `"uhf"`) the "analytic-moving-grid" Hessian below
+/// wherever it applies; and a finite difference of the ANALYTIC gradient (6N
+/// gradient evaluations) otherwise (ROKS, meta-GGA, VV10, range-separated
 /// hybrids, ECPs or external potentials with `xc=`, `dispersion=`, and large
 /// systems whose response AO table -- basis functions x grid points x 4 for
 /// a GGA, 8 bytes each -- exceeds 2 GiB: on the default grid a GGA above
@@ -353,14 +353,13 @@ impl PyFrequencyResult {
 /// with finite differences. "analytic" raises if the Hartree-Fock analytic Hessian does not
 /// apply (it never covers KS); "fd" always differences gradients.
 /// `.hessian_source` says which ran.
-/// "analytic-moving-grid" is the analytic
-/// closed-shell Kohn-Sham Hessian on the production (moving) grid, Becke
-/// weight response included: the Hessian of the surface the KS gradient
-/// differentiates, so it agrees with "fd" to the finite-difference error.
-/// It needs `xc=` (LDA/GGA, pure or global hybrid) and `reference="rhf"`, and
-/// raises before the SCF for Hartree-Fock, "uhf"/"rohf", meta-GGA, VV10,
-/// range-separated hybrids, ECPs, `point_charges=`/`external_field=` and
-/// `dispersion=`.
+/// "analytic-moving-grid" is the analytic RKS or UKS Hessian on the
+/// production (moving) grid, Becke weight response included: the Hessian of
+/// the surface the KS gradient differentiates, so it agrees with "fd" to the
+/// finite-difference error. It needs `xc=` (LDA/GGA, pure or global hybrid)
+/// and `reference="rhf"` or `"uhf"`, and raises before the SCF for
+/// Hartree-Fock, "rohf" (ROKS), meta-GGA, VV10, range-separated hybrids,
+/// ECPs, `point_charges=`/`external_field=` and `dispersion=`.
 ///
 /// `reference` selects the SCF: "rhf" (default), "uhf", or "rohf". Setting
 /// `xc` promotes it to the matching KS variant (RKS/UKS/ROKS).
