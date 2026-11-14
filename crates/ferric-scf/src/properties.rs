@@ -2346,14 +2346,16 @@ pub fn esp_on_surface_counted(
     n_angular: usize,
 ) -> Result<(Vec<[f64; 3]>, Vec<f64>, usize), FerricError> {
     use ferric_pcm::radii::bondi_radius_bohr;
-    use ferric_quadrature::lebedev::lebedev;
+    use ferric_quadrature::lebedev::try_lebedev;
 
     if !(vdw_scale.is_finite() && vdw_scale > 0.0) {
         return Err(FerricError::General(format!(
             "esp_on_surface: vdw_scale must be finite > 0, got {vdw_scale}"
         )));
     }
-    let (unit, _w) = lebedev(n_angular);
+    // An unsupported order is a user config error, not a panic.
+    let (unit, _w) =
+        try_lebedev(n_angular).map_err(|e| FerricError::General(format!("esp_on_surface: {e}")))?;
     let pos: Vec<[f64; 3]> = mol.atoms.iter().map(|a| [a.x, a.y, a.zpos]).collect();
     let radii: Vec<f64> = mol
         .atoms

@@ -1,6 +1,9 @@
 //! RPA bindings: moved verbatim from `lib.rs`.
 
 use super::*;
+use crate::pdep_properties::{
+    cube_spec, flat3, nd, run_property_bundle, BundleJob, PropertyKwargs,
+};
 
 // ── RS-MP2-RPA (SR-MP2 + LR-dRPA, Δ-form B or coupled-rings T) ──
 
@@ -210,6 +213,28 @@ pub(crate) struct PyPdepRpaResult {
     pub(crate) quad_weights: Vec<f64>,
     pub(crate) eigenvalues_freq: Array2<f64>,
     pub(crate) certificate_data: ferric_core::certificate::Certificate,
+    /// The property bundle (`properties=True` / `export_npz=`), else `None`.
+    pub(crate) props: Option<ferric_rpa::property_bundle::PdepProperties>,
+    /// Warnings of the property computation (also printed to stderr).
+    pub(crate) property_warnings: Vec<String>,
+    /// Paths of the files `export_npz` / `export_eigpot_prefix` wrote.
+    pub(crate) written_files: Vec<String>,
+    /// Reference AO density / MO coefficients / orbital energies, kept with the
+    /// property bundle (the NPZ's `density_matrix`, `mo_coeffs`,
+    /// `orbital_energies`).
+    pub(crate) density_matrix: Option<Array2<f64>>,
+    pub(crate) mo_coeffs: Option<Array2<f64>>,
+    pub(crate) orbital_energies: Option<Vec<f64>>,
+}
+
+/// Getter body: `Some(array)` from an optional property, else `None`.
+macro_rules! prop_array {
+    ($self:ident, $py:ident, $field:ident, |$v:ident| $flat:expr, $shape:expr) => {
+        match $self.props.as_ref().and_then(|p| p.$field.as_ref()) {
+            Some($v) => Ok(Some(nd($py, $flat, &$shape)?)),
+            None => Ok(None),
+        }
+    };
 }
 
 #[pymethods]
@@ -250,6 +275,246 @@ impl PyPdepRpaResult {
     #[getter]
     fn eigenvalues_freq<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
         PyArray2::from_owned_array(py, self.eigenvalues_freq.clone())
+    }
+
+    // ── property bundle (run_pdep_rpa(properties=True) / export_npz=) ──
+    // Names are the NPZ keys. `None` = not requested, or failed (see
+    // `property_gaps`).
+
+    /// Reference AO density matrix, shape (nao, nao) (property bundle only,
+    /// unless `compute_density_matrix=False`).
+    #[getter]
+    fn density_matrix<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyArray2<f64>>> {
+        self.density_matrix
+            .as_ref()
+            .map(|d| PyArray2::from_owned_array(py, d.clone()))
+    }
+    /// Reference MO coefficients, shape (nao, nmo) (property bundle only).
+    #[getter]
+    fn mo_coeffs<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyArray2<f64>>> {
+        self.mo_coeffs
+            .as_ref()
+            .map(|d| PyArray2::from_owned_array(py, d.clone()))
+    }
+    /// Reference orbital energies, shape (nmo,), Hartree (property bundle only).
+    #[getter]
+    fn orbital_energies<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyArray1<f64>>> {
+        self.orbital_energies
+            .as_ref()
+            .map(|e| PyArray1::from_slice(py, e))
+    }
+    /// Requested properties that failed to compute (empty if none or if the
+    /// bundle was not requested).
+    #[getter]
+    fn property_gaps(&self) -> Vec<String> {
+        self.props
+            .as_ref()
+            .map(|p| p.gaps.clone())
+            .unwrap_or_default()
+    }
+    /// Warnings raised while computing the property bundle (TS C6 skipped,
+    /// a property failed, ...), as printed to stderr.
+    #[getter]
+    fn property_warnings(&self) -> Vec<String> {
+        self.property_warnings.clone()
+    }
+    /// Files written by `export_npz=` and `export_eigpot_prefix=`.
+    #[getter]
+    fn written_files(&self) -> Vec<String> {
+        self.written_files.clone()
+    }
+    /// ESP at the nuclei, shape (N,), a.u. (own nucleus excluded).
+    #[getter]
+    fn esp_atoms<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyAny>>> {
+        prop_array!(self, py, esp_atoms, |v| v.clone(), [v.len()])
+    }
+    /// ESP on the vdW surface shell (`compute_esp_surface=True`), shape (npts,).
+    #[getter]
+    fn esp_surface<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyAny>>> {
+        prop_array!(self, py, esp_surface, |v| v.clone(), [v.len()])
+    }
+    /// Points of `esp_surface`, shape (npts, 3), Bohr.
+    #[getter]
+    fn esp_points<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyAny>>> {
+        prop_array!(
+            self,
+            py,
+            esp_points,
+            |v| v.iter().copied().collect(),
+            [v.nrows(), 3]
+        )
+    }
+    /// Electric field at the nuclei, shape (N, 3), a.u.
+    #[getter]
+    fn electric_field<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyAny>>> {
+        prop_array!(
+            self,
+            py,
+            electric_field,
+            |v| v.iter().flatten().copied().collect(),
+            [v.len(), 3]
+        )
+    }
+    /// Molecular static PDEP-RPA polarizability, shape (3, 3), a.u.
+    #[getter]
+    fn alpha_tensor<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyAny>>> {
+        prop_array!(self, py, alpha_tensor, |v| flat3(v), [3, 3])
+    }
+    /// Per-atom intrinsic Becke polarizability, shape (N, 3, 3), a.u. Charge
+    /// transfer excluded; `alpha_ct` is the remainder.
+    #[getter]
+    fn alpha_atomic<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyAny>>> {
+        prop_array!(
+            self,
+            py,
+            alpha_atomic,
+            |v| v.iter().flat_map(flat3).collect(),
+            [v.len(), 3, 3]
+        )
+    }
+    /// Charge-transfer remainder `alpha_tensor - alpha_atomic.sum(0)`, (3, 3).
+    #[getter]
+    fn alpha_ct<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyAny>>> {
+        prop_array!(self, py, alpha_ct, |v| flat3(v), [3, 3])
+    }
+    /// Molecular dipole, shape (3,), a.u.
+    #[getter]
+    fn dipole<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyAny>>> {
+        prop_array!(self, py, dipole, |v| v.to_vec(), [3])
+    }
+    /// Löwdin charges, shape (N,).
+    #[getter]
+    fn lowdin_charges<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyAny>>> {
+        prop_array!(self, py, lowdin, |v| v.clone(), [v.len()])
+    }
+    /// Hirshfeld charges (same-basis free-atom SCF proatoms), shape (N,).
+    #[getter]
+    fn hirshfeld_charges<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyAny>>> {
+        prop_array!(self, py, hirshfeld, |v| v.clone(), [v.len()])
+    }
+    /// Mulliken charges, shape (N,).
+    #[getter]
+    fn mulliken_charges<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyAny>>> {
+        prop_array!(self, py, mulliken, |v| v.clone(), [v.len()])
+    }
+    /// CHELPG charges, shape (N,).
+    #[getter]
+    fn chelpg_charges<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyAny>>> {
+        prop_array!(self, py, chelpg, |v| v.clone(), [v.len()])
+    }
+    /// RESP charges, shape (N,).
+    #[getter]
+    fn resp_charges<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyAny>>> {
+        prop_array!(self, py, resp, |v| v.clone(), [v.len()])
+    }
+    /// Orbital centroids, shape (nmo, 3), Bohr.
+    #[getter]
+    fn orbital_centers<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyAny>>> {
+        prop_array!(
+            self,
+            py,
+            orbital_centers,
+            |v| v.iter().copied().collect(),
+            [v.nrows(), 3]
+        )
+    }
+    /// Orbital spreads, shape (nmo,), Bohr.
+    #[getter]
+    fn orbital_spreads<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyAny>>> {
+        prop_array!(self, py, orbital_spreads, |v| v.clone(), [v.len()])
+    }
+    /// Electronic-density second moment about the origin, shape (3, 3).
+    #[getter]
+    fn density_second_moment<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyAny>>> {
+        prop_array!(
+            self,
+            py,
+            density_second_moment,
+            |v| v.iter().copied().collect(),
+            [3, 3]
+        )
+    }
+    /// Imaginary-frequency nodes of the C6 quadrature, shape (nfreq,).
+    #[getter]
+    fn c6_freqs<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyAny>>> {
+        prop_array!(self, py, c6, |c| c.freqs.clone(), [c.freqs.len()])
+    }
+    /// Quadrature weights matching `c6_freqs`.
+    #[getter]
+    fn c6_weights<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyAny>>> {
+        prop_array!(self, py, c6, |c| c.weights.clone(), [c.weights.len()])
+    }
+    /// Per-atom-PAIR isotropic C6, shape (N, N). A partition convention (see
+    /// `c6_partition`); `c6_iso.sum()` is NOT the molecular C6.
+    #[getter]
+    fn c6_iso<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyAny>>> {
+        prop_array!(
+            self,
+            py,
+            c6,
+            |c| c.c6_iso.iter().copied().collect(),
+            [c.c6_iso.nrows(), c.c6_iso.ncols()]
+        )
+    }
+    /// Per-atom-pair anisotropic C6, shape (N, N, 3, 3).
+    #[getter]
+    fn c6_aniso<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyAny>>> {
+        prop_array!(
+            self,
+            py,
+            c6,
+            |c| c.c6_aniso.iter().flatten().flat_map(flat3).collect(),
+            [c.c6_aniso.len(), c.c6_aniso.len(), 3, 3]
+        )
+    }
+    /// Per-atom dynamic polarizability α^A(iω), shape (N, nfreq, 3, 3).
+    #[getter]
+    fn alpha_atomic_dynamic<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyAny>>> {
+        prop_array!(
+            self,
+            py,
+            c6,
+            |c| c
+                .alpha_atomic_dynamic
+                .iter()
+                .flatten()
+                .flat_map(flat3)
+                .collect(),
+            [c.alpha_atomic_dynamic.len(), c.freqs.len(), 3, 3]
+        )
+    }
+    /// Dynamic charge-transfer remainder, shape (nfreq, 3, 3) (`c6_source="pdep"` only).
+    #[getter]
+    fn alpha_ct_dynamic<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyAny>>> {
+        match self
+            .props
+            .as_ref()
+            .and_then(|p| p.c6.as_ref())
+            .and_then(|c| c.alpha_ct_dynamic.as_ref())
+        {
+            Some(v) => Ok(Some(nd(
+                py,
+                v.iter().flat_map(flat3).collect(),
+                &[v.len(), 3, 3],
+            )?)),
+            None => Ok(None),
+        }
+    }
+    /// Molecular isotropic C6 (a.u.): the DOSD-comparable observable,
+    /// partition-independent.
+    #[getter]
+    fn c6_molecular_iso(&self) -> Option<f64> {
+        self.props.as_ref()?.c6.as_ref().map(|c| c.c6_molecular_iso)
+    }
+    /// Atomic partition behind the per-atom C6 arrays ("becke" / "hirshfeld").
+    #[getter]
+    fn c6_partition(&self) -> Option<&'static str> {
+        self.props.as_ref()?.c6.as_ref().map(|c| c.partition)
+    }
+    /// α(iω) source behind the per-atom C6 arrays ("ts" / "pdep" / "mbd").
+    #[getter]
+    fn c6_source(&self) -> Option<&'static str> {
+        self.props.as_ref()?.c6.as_ref().map(|c| c.source)
     }
 
     /// Write a scree plot of the static dielectric eigenvalues to `path` (PNG).
@@ -316,9 +581,21 @@ impl PyPdepRpaResult {
     memory_budget_gb=None, point_charges=None, external_field=None,
     solvent=None, pcm_lebedev_order=None,
     scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None,
+    properties=false, export_npz=None, allow_partial_npz=false,
+    compute_esp=None, compute_esp_surface=None, esp_surface_vdw_scale=None,
+    esp_surface_n_angular=None, compute_polarizability=None,
+    compute_electric_field=None, compute_alpha_atomic=None,
+    compute_density_matrix=None, compute_dipole=None,
+    compute_lowdin_charges=None, compute_hirshfeld_charges=None,
+    compute_mulliken_charges=None, compute_chelpg_charges=None,
+    compute_resp_charges=None, compute_c6=None, c6_source=None,
+    c6_partition=None, df_j_aux=None, df_k_aux=None,
+    export_eigpot_prefix=None, export_eigpot_count=None,
+    cube_spacing=None, cube_margin=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_pdep_rpa(
+    py: Python<'_>,
     mol: &PyMolecule,
     basis_set: &PyBasisSet,
     auxbasis: &PyBasisSet,
@@ -339,8 +616,65 @@ pub(crate) fn run_pdep_rpa(
     scf_max_iter: Option<usize>,
     scf_energy_conv: Option<f64>,
     scf_density_conv: Option<f64>,
+    properties: bool,
+    export_npz: Option<&str>,
+    allow_partial_npz: bool,
+    compute_esp: Option<bool>,
+    compute_esp_surface: Option<bool>,
+    esp_surface_vdw_scale: Option<f64>,
+    esp_surface_n_angular: Option<usize>,
+    compute_polarizability: Option<bool>,
+    compute_electric_field: Option<bool>,
+    compute_alpha_atomic: Option<bool>,
+    compute_density_matrix: Option<bool>,
+    compute_dipole: Option<bool>,
+    compute_lowdin_charges: Option<bool>,
+    compute_hirshfeld_charges: Option<bool>,
+    compute_mulliken_charges: Option<bool>,
+    compute_chelpg_charges: Option<bool>,
+    compute_resp_charges: Option<bool>,
+    compute_c6: Option<bool>,
+    c6_source: Option<&str>,
+    c6_partition: Option<&str>,
+    df_j_aux: Option<&str>,
+    df_k_aux: Option<&str>,
+    export_eigpot_prefix: Option<&str>,
+    export_eigpot_count: Option<usize>,
+    cube_spacing: Option<f64>,
+    cube_margin: Option<f64>,
 ) -> PyResult<PyPdepRpaResult> {
     use ferric_rpa::config::{QuadratureConfig, QuadratureScheme, SternheimerConfig};
+    let prop_kwargs = PropertyKwargs {
+        properties,
+        export_npz: export_npz.is_some(),
+        compute_esp,
+        compute_esp_surface,
+        esp_surface_vdw_scale,
+        esp_surface_n_angular,
+        compute_polarizability,
+        compute_electric_field,
+        compute_alpha_atomic,
+        compute_density_matrix,
+        compute_dipole,
+        compute_lowdin_charges,
+        compute_hirshfeld_charges,
+        compute_mulliken_charges,
+        compute_chelpg_charges,
+        compute_resp_charges,
+        compute_c6,
+        c6_source: c6_source.map(str::to_string),
+        c6_partition: c6_partition.map(str::to_string),
+    };
+    // Validated before the SCF: a bad c6_source / c6_partition or a property
+    // switch without the bundle requested raises ValueError up front.
+    let prop_request = prop_kwargs.request()?;
+    let cubes = cube_spec(
+        export_eigpot_prefix,
+        export_eigpot_count,
+        cube_spacing,
+        cube_margin,
+    )?;
+
     use ferric_rpa::{run_pdep_rpa as run_pdep_rpa_inner, PdepRpaConfig};
 
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
@@ -357,6 +691,10 @@ pub(crate) fn run_pdep_rpa(
         budget_bytes_from_gb(memory_budget_gb),
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
     );
+    // Same opt-out spellings as run_rhf; unset keeps the exact four-centre J/K
+    // (the CLI's pdep-rpa reference defaults to RI-JK on def2-universal-jkfit).
+    scf_config.df_j_aux = df_j_aux.map(ferric_scf::rhf::normalize_df_aux);
+    scf_config.df_k_aux = df_k_aux.map(ferric_scf::rhf::normalize_df_aux);
     scf_config.external_potential = build_external_potential(point_charges, external_field);
     scf_config.pcm = build_pcm_config(solvent, pcm_lebedev_order)?;
     let rhf = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &scf_config).map_err(make_err)?;
@@ -419,8 +757,36 @@ pub(crate) fn run_pdep_rpa(
         &basis_set.inner,
         Some(&auxbasis.inner),
     );
+    let cert_json = certificate_data.to_json().to_string();
+    let out = run_property_bundle(
+        py,
+        &BundleJob {
+            ctx: &ctx,
+            mol: &mol.inner,
+            bs: &basis_set.inner,
+            aux_bs: &auxbasis.inner,
+            prep: &prep,
+            dfbs: &dfbs,
+            rhf: &rhf,
+            op,
+            rpa_cfg: &cfg,
+            scf_config: &scf_config,
+            request: prop_request,
+            export_npz,
+            allow_partial_npz,
+            cubes,
+        },
+        &r,
+        &cert_json,
+    )?;
     Ok(PyPdepRpaResult {
         certificate_data,
+        props: out.props,
+        property_warnings: out.warnings,
+        written_files: out.written,
+        density_matrix: out.density_matrix,
+        mo_coeffs: out.mo_coeffs,
+        orbital_energies: out.orbital_energies,
         rhf_energy: rhf.energy,
         e_rpa: r.e_rpa,
         total_energy: rhf.energy + r.e_rpa,

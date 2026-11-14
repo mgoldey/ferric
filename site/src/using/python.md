@@ -402,6 +402,61 @@ restrained fit, not the multi-stage, multi-conformer RESP procedure. `esp_at_ato
 potential at each nucleus. `hirshfeld_polarizability` returns per-atom 3×3
 polarizability tensors (Bohr³) and needs an RI basis.
 
+### PDEP-RPA properties and the NPZ bundle
+
+`run_pdep_rpa(..., properties=True)` also computes the property bundle that
+the CLI writes under `[rpa]`, with the TOML key names and defaults: every
+`compute_*` switch is on except `compute_esp_surface`, `c6_source` is `"ts"`
+and an unset `c6_partition` is the source's default (Hirshfeld for `"pdep"`,
+Becke for `"ts"` and `"mbd"`). `export_npz="bundle.npz"` writes the CLI's NPZ
+and implies `properties=True`; `export_eigpot_prefix="p"` writes the leading
+`export_eigpot_count` eigenpotential densities as `p_eigpot_NNN.cube`
+(`cube_spacing`, `cube_margin`, in Bohr).
+
+```python
+r = ferric.run_pdep_rpa(
+    water, bs, aux,                       # closed shell only
+    properties=True,
+    c6_source="pdep",                     # "ts" (default), "pdep" or "mbd"
+    c6_partition="becke",                 # unset: the source's default
+    df_j_aux="def2-universal-jkfit",      # the CLI's reference SCF is RI-JK
+    df_k_aux="def2-universal-jkfit",
+)
+r.alpha_tensor          # (3, 3) molecular static polarizability
+r.alpha_atomic          # (N, 3, 3) per-atom intrinsic Becke polarizability
+r.alpha_ct              # (3, 3) charge-transfer remainder
+r.alpha_atomic_dynamic  # (N, nfreq, 3, 3), with c6_freqs and c6_weights
+r.c6_molecular_iso      # molecular C6, a.u.
+```
+
+The arrays carry their NPZ names: `esp_atoms`, `electric_field`, `dipole`,
+`lowdin_charges`, `hirshfeld_charges`, `mulliken_charges`, `chelpg_charges`,
+`resp_charges`, `alpha_tensor`, `alpha_atomic`, `alpha_ct`,
+`alpha_atomic_dynamic`, `alpha_ct_dynamic` (`c6_source="pdep"` only),
+`c6_iso`, `c6_aniso`, `c6_freqs`, `c6_weights`, `c6_molecular_iso`,
+`c6_partition`, `c6_source`, `esp_surface` and `esp_points`, plus
+`density_matrix`, `mo_coeffs`, `orbital_energies`, `orbital_centers`,
+`orbital_spreads` and `density_second_moment`. An array that was not requested
+is `None`. `alpha_atomic` is the charge-transfer-free intrinsic polarizability,
+so `alpha_atomic.sum(0)` differs from `alpha_tensor` by `alpha_ct`; `c6_iso`
+and `c6_aniso` are per-atom-pair tensors that depend on the partition, and the
+partition-independent molecular value is `c6_molecular_iso`.
+
+For the same settings the arrays are bitwise the CLI's NPZ arrays, because
+both call one library function. "Same settings" includes the reference SCF:
+the CLI's `pdep-rpa` reference uses RI-JK on `def2-universal-jkfit` and a
+DF-guess pre-stage, while `run_pdep_rpa` uses exact J/K and no pre-stage unless
+`df_j_aux=` / `df_k_aux=` are passed, so a default Python run and a default CLI
+run differ at the SCF convergence level (about 5e-14 with tight thresholds).
+
+A property that fails is `None`, listed in `r.property_gaps`, and raised as a
+`RuntimeWarning` (the same text the CLI prints, e.g. a skipped TS C6). With
+`export_npz=` the file is written first, then the call raises `RuntimeError`
+unless `allow_partial_npz=True`, the Python form of the CLI's nonzero exit. An
+unknown `c6_source` or `c6_partition` raises `ValueError` before the SCF, and
+so does a `compute_*` or `c6_*` key passed without `properties=True` or
+`export_npz=`.
+
 ### Orbitals, density and cube files
 
 `eval_ao_on_points`, `eval_density_on_points` and `eval_mo_on_points` evaluate
@@ -802,7 +857,7 @@ All start from the canonical exact-J/K RHF orbitals of a closed-shell molecule.
 
 | Name | Purpose | CLI |
 |---|---|---|
-| `run_pdep_rpa` | Direct RPA correlation energy by PDEP (projective dielectric eigenpotentials); accepts point charges, field and solvent. Closed shell only; open-shell U-PDEP-RPA is CLI-only. | `pdep-rpa` |
+| `run_pdep_rpa` | Direct RPA correlation energy by PDEP (projective dielectric eigenpotentials); accepts point charges, field and solvent. `properties=True` / `export_npz=` add the CLI's `[rpa]` property bundle (polarizabilities, per-atom and charge-transfer α, C6, charges, ESP, field, NPZ); `export_eigpot_prefix=` writes eigenpotential cubes. Closed shell only; open-shell U-PDEP-RPA is CLI-only. | `pdep-rpa` |
 | `run_rs_mp2_rpa` | Range-separated SR-MP2 + LR-RPA (`formulation` = `"delta-lr"` or `"coupled-rings"`; ω in Å⁻¹). | `rs-mp2-rpa` |
 | `run_gw` | Closed-shell G0W0 / COHSEX / evGW0 / evGW on an RHF or RKS reference. | `gw` |
 | `run_u_gw` | Open-shell GW variants on a UHF/UKS or ROHF reference. | `gw` with multiplicity > 1 |

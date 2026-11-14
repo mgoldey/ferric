@@ -2293,6 +2293,152 @@ class PdepRpaResult:
         """Eigenvalue tensor at imaginary frequencies (N_quad, M)."""
         ...
 
+    # -- property bundle: run_pdep_rpa(properties=True) or export_npz=. Names are
+    # the NPZ keys. None = not requested, or failed (see property_gaps).
+    @property
+    def property_gaps(self) -> list[str]:
+        """Requested properties that failed to compute ([] if none, or if the
+        bundle was not requested)."""
+        ...
+
+    @property
+    def property_warnings(self) -> list[str]:
+        """Warnings of the property computation (TS C6 skipped, a property failed,
+        ...); each is also raised as a RuntimeWarning."""
+        ...
+
+    @property
+    def written_files(self) -> list[str]:
+        """Files written by ``export_npz=`` and ``export_eigpot_prefix=``."""
+        ...
+
+    @property
+    def density_matrix(self) -> NDArray[np.float64] | None:
+        """Reference AO density (nao, nao) (bundle only; None with compute_density_matrix=False)."""
+        ...
+
+    @property
+    def mo_coeffs(self) -> NDArray[np.float64] | None:
+        """Reference MO coefficients (nao, nmo) (bundle only)."""
+        ...
+
+    @property
+    def orbital_energies(self) -> NDArray[np.float64] | None:
+        """Reference orbital energies (nmo,), Hartree (bundle only)."""
+        ...
+
+    @property
+    def esp_atoms(self) -> NDArray[np.float64] | None:
+        """ESP at the nuclei (N,), a.u., the nucleus's own term excluded."""
+        ...
+
+    @property
+    def esp_surface(self) -> NDArray[np.float64] | None:
+        """ESP on the vdW surface shell (npts,) (compute_esp_surface=True)."""
+        ...
+
+    @property
+    def esp_points(self) -> NDArray[np.float64] | None:
+        """Points of esp_surface (npts, 3), Bohr."""
+        ...
+
+    @property
+    def electric_field(self) -> NDArray[np.float64] | None:
+        """Electric field at the nuclei (N, 3), a.u."""
+        ...
+
+    @property
+    def alpha_tensor(self) -> NDArray[np.float64] | None:
+        """Molecular static PDEP-RPA polarizability (3, 3), a.u."""
+        ...
+
+    @property
+    def alpha_atomic(self) -> NDArray[np.float64] | None:
+        """Per-atom intrinsic Becke polarizability (N, 3, 3), a.u.; charge transfer
+        excluded, so alpha_atomic.sum(0) != alpha_tensor (the remainder is alpha_ct)."""
+        ...
+
+    @property
+    def alpha_ct(self) -> NDArray[np.float64] | None:
+        """Charge-transfer remainder alpha_tensor - alpha_atomic.sum(0), (3, 3)."""
+        ...
+
+    @property
+    def dipole(self) -> NDArray[np.float64] | None:
+        """Molecular dipole (3,), a.u."""
+        ...
+
+    @property
+    def lowdin_charges(self) -> NDArray[np.float64] | None: ...
+    @property
+    def hirshfeld_charges(self) -> NDArray[np.float64] | None:
+        """Hirshfeld charges from same-basis free-atom SCF proatoms."""
+        ...
+
+    @property
+    def mulliken_charges(self) -> NDArray[np.float64] | None: ...
+    @property
+    def chelpg_charges(self) -> NDArray[np.float64] | None: ...
+    @property
+    def resp_charges(self) -> NDArray[np.float64] | None: ...
+    @property
+    def orbital_centers(self) -> NDArray[np.float64] | None:
+        """Orbital centroids (nmo, 3), Bohr."""
+        ...
+
+    @property
+    def orbital_spreads(self) -> NDArray[np.float64] | None:
+        """Orbital spreads (nmo,), Bohr."""
+        ...
+
+    @property
+    def density_second_moment(self) -> NDArray[np.float64] | None:
+        """Electronic-density second moment about the origin (3, 3)."""
+        ...
+
+    @property
+    def c6_freqs(self) -> NDArray[np.float64] | None:
+        """Imaginary-frequency nodes of the C6 quadrature (nfreq,)."""
+        ...
+
+    @property
+    def c6_weights(self) -> NDArray[np.float64] | None: ...
+    @property
+    def c6_iso(self) -> NDArray[np.float64] | None:
+        """Per-atom-PAIR isotropic C6 (N, N): a partition convention (see
+        c6_partition); c6_iso.sum() is NOT the molecular C6 (use c6_molecular_iso)."""
+        ...
+
+    @property
+    def c6_aniso(self) -> NDArray[np.float64] | None:
+        """Per-atom-pair anisotropic C6 (N, N, 3, 3)."""
+        ...
+
+    @property
+    def alpha_atomic_dynamic(self) -> NDArray[np.float64] | None:
+        """Per-atom dynamic polarizability alpha^A(i omega) (N, nfreq, 3, 3)."""
+        ...
+
+    @property
+    def alpha_ct_dynamic(self) -> NDArray[np.float64] | None:
+        """Dynamic charge-transfer remainder (nfreq, 3, 3); c6_source="pdep" only."""
+        ...
+
+    @property
+    def c6_molecular_iso(self) -> float | None:
+        """Molecular isotropic C6, a.u.: the DOSD-comparable, partition-independent value."""
+        ...
+
+    @property
+    def c6_partition(self) -> str | None:
+        """Partition behind the per-atom C6 arrays: "becke" or "hirshfeld"."""
+        ...
+
+    @property
+    def c6_source(self) -> str | None:
+        """alpha(i omega) source behind the per-atom C6 arrays: "ts", "pdep" or "mbd"."""
+        ...
+
     def save_scree_plot(self, path: str, title: str | None = None) -> None:
         """Write a scree plot of static dielectric eigenvalues to path (PNG)."""
         ...
@@ -5442,6 +5588,32 @@ def run_pdep_rpa(
     scf_max_iter: int | None = None,
     scf_energy_conv: float | None = None,
     scf_density_conv: float | None = None,
+    properties: bool = False,
+    export_npz: str | None = None,
+    allow_partial_npz: bool = False,
+    compute_esp: bool | None = None,
+    compute_esp_surface: bool | None = None,
+    esp_surface_vdw_scale: float | None = None,
+    esp_surface_n_angular: int | None = None,
+    compute_polarizability: bool | None = None,
+    compute_electric_field: bool | None = None,
+    compute_alpha_atomic: bool | None = None,
+    compute_density_matrix: bool | None = None,
+    compute_dipole: bool | None = None,
+    compute_lowdin_charges: bool | None = None,
+    compute_hirshfeld_charges: bool | None = None,
+    compute_mulliken_charges: bool | None = None,
+    compute_chelpg_charges: bool | None = None,
+    compute_resp_charges: bool | None = None,
+    compute_c6: bool | None = None,
+    c6_source: str | None = None,
+    c6_partition: str | None = None,
+    df_j_aux: str | None = None,
+    df_k_aux: str | None = None,
+    export_eigpot_prefix: str | None = None,
+    export_eigpot_count: int | None = None,
+    cube_spacing: float | None = None,
+    cube_margin: float | None = None,
 ) -> PdepRpaResult:
     """PDEP-RPA (dielectric eigendecomposition RPA).
 
@@ -5451,6 +5623,27 @@ def run_pdep_rpa(
     (Molecule.coords() is Angstrom -- convert first); external_field is
     (Ex, Ey, Ez) in atomic units (Hartree / (e * Bohr)). solvent and
     pcm_lebedev_order are as in run_rhf.
+
+    df_j_aux / df_k_aux select density-fitted J / K for the reference SCF, with
+    run_rhf's spellings. Unset keeps exact four-centre J/K; the CLI's pdep-rpa
+    reference defaults to RI-JK on "def2-universal-jkfit".
+
+    PROPERTIES. properties=True (or export_npz=) also computes the property
+    bundle the CLI writes under ``[rpa]``, with the TOML key names and defaults
+    (every compute_* is on except compute_esp_surface; c6_source "ts" by
+    default, c6_partition unset = the source's default). The arrays appear on
+    the result under their NPZ names (esp_atoms, alpha_tensor, alpha_atomic,
+    alpha_ct, c6_iso, ...); one that was not requested or failed is None and a
+    failure is listed in ``result.property_gaps``. Setting a compute_* /
+    c6_* / esp_surface_* key without properties=True or export_npz= raises
+    ValueError, as do unknown c6_source / c6_partition strings (before the SCF).
+
+    export_npz=path writes the CLI's NPZ bundle. A requested property that
+    failed raises RuntimeError AFTER the file is written, unless
+    allow_partial_npz=True. export_eigpot_prefix=P writes the leading
+    export_eigpot_count (default 10) eigenpotential densities as
+    ``P_eigpot_NNN.cube`` on a grid of cube_spacing (0.2) / cube_margin (4.0)
+    Bohr. Closed-shell only (the property bundle shares the CLI's code).
     """
     ...
 

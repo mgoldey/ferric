@@ -14,6 +14,7 @@ ferric-scf = { path = "../ferric-scf" }
 ferric-mp2 = { path = "../ferric-mp2" }
 ferric-quadrature = { path = "../ferric-quadrature" }
 ferric-dft = { path = "../ferric-dft" }
+ferric-export = { path = "../ferric-export" }
 serde = { workspace = true }
 ndarray = { workspace = true }
 ndarray-linalg = { workspace = true }

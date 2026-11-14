@@ -67,6 +67,7 @@ mod gw;
 mod integrals;
 mod mp2;
 mod pbc;
+mod pdep_properties;
 mod properties;
 mod qmmm;
 mod response_modes;

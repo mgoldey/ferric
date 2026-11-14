@@ -61,6 +61,8 @@ pub mod optimize;
 pub mod pno;
 /// Post-RPA properties: polarizability, Hirshfeld/Lowdin charges, ESP, electric field.
 pub mod properties;
+/// The PDEP-RPA property bundle (NPZ / Python) and its exports.
+pub mod property_bundle;
 /// Minimax imaginary-frequency quadrature construction.
 pub mod quadrature;
 /// Dielectric response eigenmodes as real-space aux-basis densities.

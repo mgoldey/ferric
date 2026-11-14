@@ -5168,756 +5168,139 @@ fn run_pdep_rpa_arm(
     );
     print_and_note_certificate(&rpa_cert);
     if let Some(prefix) = cfg.rpa.export_eigpot_prefix.as_deref() {
-        use ferric_export::cube::GridSpec;
-        use ferric_export::export_basis_function_cube;
-        let spacing = cfg.rpa.cube_spacing.unwrap_or(0.2);
-        let margin = cfg.rpa.cube_margin.unwrap_or(4.0);
-        let n_export = cfg
-            .rpa
-            .export_eigpot_count
-            .unwrap_or(10)
-            .min(rpa_result.n_eigenpotentials);
-        let grid = GridSpec::bounding_box(mol, margin, spacing);
-        println!(
-            "Exporting {} eigenpotential cubes (grid {}×{}×{}, spacing {} Bohr)…",
-            n_export, grid.n_x, grid.n_y, grid.n_z, spacing
+        let d = ferric_rpa::property_bundle::EigpotCubeSpec::default();
+        let spec = ferric_rpa::property_bundle::EigpotCubeSpec {
+            spacing: cfg.rpa.cube_spacing.unwrap_or(d.spacing),
+            margin: cfg.rpa.cube_margin.unwrap_or(d.margin),
+            count: cfg.rpa.export_eigpot_count.unwrap_or(d.count),
+        };
+        ferric_rpa::property_bundle::export_eigenpotential_cubes(
+            prefix,
+            &spec,
+            mol,
+            aux_name,
+            &aux_bs,
+            &rpa_result,
+            &mut ferric_rpa::property_bundle::StdReporter,
         );
-        for alpha in 0..n_export {
-            let coeffs: Vec<f64> = rpa_result
-                .eigenpotentials
-                .column(alpha)
-                .iter()
-                .copied()
-                .collect();
-            let lam = rpa_result.eigenvalues_static[alpha];
-            let path = format!("{prefix}_eigpot_{:03}.cube", alpha);
-            let comment = format!(
-                "PDEP eigenpotential α={alpha} λ(0)={lam:.6}: its charge density (basis {aux_name})"
-            );
-            if let Err(e) =
-                export_basis_function_cube(&path, mol, &aux_bs, &grid, &coeffs, &comment)
-            {
-                eprintln!("  warning: failed to write {}: {}", path, e);
-            } else {
-                println!("  wrote {} (λ(0)={:.6})", path, lam);
-            }
-        }
     }
     // NPZ feature bundle for diffusion-model export.
     if let Some(npz_path) = cfg.rpa.export_npz.as_deref() {
-        use ferric_export::export_npz;
-        use ferric_export::ml::{
-            C6Export, C6Provenance, ChargeSchemes, DispersionBundle, NpzBundle,
-            PolarizabilityBundle,
+        let inputs = ferric_rpa::property_bundle::PropertyInputs {
+            ctx,
+            mol,
+            prep,
+            bs,
+            dfbs: &dfbs,
+            result: &result,
+            op,
+            rpa_cfg: &rpa_cfg,
+            rhf_config,
+            proatom,
         };
-        use ferric_rpa::properties::{
-            chelpg_and_resp_charges, chelpg_charges, electric_field_at_atoms, esp_at_atoms,
-            hirshfeld_charges, lowdin_charges, mulliken_charges, pdep_polarizability_becke,
-            pdep_polarizability_static, resp_charges,
-        };
-        use ndarray::Array2;
+        export_pdep_npz_bundle(cfg, &inputs, &rpa_result, &rpa_cert, npz_path);
+    }
+}
 
-        let compute_esp = cfg.rpa.compute_esp.unwrap_or(true);
-        let compute_pol = cfg.rpa.compute_polarizability.unwrap_or(true);
-        let compute_ef = cfg.rpa.compute_electric_field.unwrap_or(true);
-        let compute_alpha_atomic = cfg.rpa.compute_alpha_atomic.unwrap_or(true);
+/// The `[rpa]` property switches as a [`ferric_rpa::property_bundle::PdepPropertyRequest`]
+/// (every `compute_*` defaults on except the ESP surface shell).
+fn pdep_property_request(cfg: &Config) -> ferric_rpa::property_bundle::PdepPropertyRequest {
+    let r = &cfg.rpa;
+    let d = ferric_rpa::property_bundle::PdepPropertyRequest::default();
+    ferric_rpa::property_bundle::PdepPropertyRequest {
+        esp: r.compute_esp.unwrap_or(d.esp),
+        esp_surface: r.compute_esp_surface.unwrap_or(d.esp_surface),
+        esp_surface_vdw_scale: r.esp_surface_vdw_scale.unwrap_or(d.esp_surface_vdw_scale),
+        esp_surface_n_angular: r.esp_surface_n_angular.unwrap_or(d.esp_surface_n_angular),
+        polarizability: r.compute_polarizability.unwrap_or(d.polarizability),
+        electric_field: r.compute_electric_field.unwrap_or(d.electric_field),
+        alpha_atomic: r.compute_alpha_atomic.unwrap_or(d.alpha_atomic),
+        density_matrix: r.compute_density_matrix.unwrap_or(d.density_matrix),
+        dipole: r.compute_dipole.unwrap_or(d.dipole),
+        lowdin: r.compute_lowdin_charges.unwrap_or(d.lowdin),
+        hirshfeld: r.compute_hirshfeld_charges.unwrap_or(d.hirshfeld),
+        mulliken: r.compute_mulliken_charges.unwrap_or(d.mulliken),
+        chelpg: r.compute_chelpg_charges.unwrap_or(d.chelpg),
+        resp: r.compute_resp_charges.unwrap_or(d.resp),
+        c6: r.compute_c6.unwrap_or(d.c6),
+        c6_source: r.c6_source.clone(),
+        c6_partition: r.c6_partition.clone(),
+    }
+}
 
-        // Properties that were REQUESTED and did not make it into the
-        // bundle. Every arm below is `Err(e) => { warn; None }`, and the
-        // bundle is written regardless with the gaps as absent arrays --
-        // which used to leave the process exiting 0 on an incomplete file.
-        // See `RpaCfg::allow_partial_npz` for the incident.
-        //
-        // Recording the REQUESTED-and-failed set, rather than counting
-        // absent fields in the finished bundle, is the distinction that
-        // keeps a deliberately disabled property (`compute_c6 = false`)
-        // from reading as a failure.
-        let mut npz_gaps: Vec<String> = Vec::new();
-
-        let coords_arr = {
-            let mut a = Array2::<f64>::zeros((mol.atoms.len(), 3));
-            for (i, atom) in mol.atoms.iter().enumerate() {
-                a[(i, 0)] = atom.x;
-                a[(i, 1)] = atom.y;
-                a[(i, 2)] = atom.zpos;
-            }
-            a
-        };
-        let znums: Vec<usize> = mol.atoms.iter().map(|a| a.z as usize).collect();
-
-        let esp_vec = if compute_esp {
-            match esp_at_atoms(mol, prep, result.density_total()) {
-                Ok(v) => Some(v),
-                Err(e) => {
-                    eprintln!("warning: esp_at_atoms failed: {e}");
-                    npz_gaps.push(format!("esp_atoms: {e}"));
-                    None
-                }
-            }
-        } else {
-            None
-        };
-
-        // `esp_points` is exported as an (npts, 3) Array2, so materialize
-        // the coordinate list into one here rather than at the call site.
-        let mut esp_surface_pts: Option<ndarray::Array2<f64>> = None;
-        let esp_surface = if cfg.rpa.compute_esp_surface.unwrap_or(false) {
-            let scale = cfg.rpa.esp_surface_vdw_scale.unwrap_or(1.4);
-            let nang = cfg.rpa.esp_surface_n_angular.unwrap_or(110);
-            match ferric_scf::properties::esp_on_surface(
-                mol,
-                prep,
-                result.density_total(),
-                scale,
-                nang,
-            ) {
-                Ok((pts, v)) => {
-                    let mut arr = ndarray::Array2::<f64>::zeros((pts.len(), 3));
-                    for (i, p) in pts.iter().enumerate() {
-                        arr[(i, 0)] = p[0];
-                        arr[(i, 1)] = p[1];
-                        arr[(i, 2)] = p[2];
-                    }
-                    esp_surface_pts = Some(arr);
-                    Some((pts, v))
-                }
-                Err(e) => {
-                    eprintln!("warning: esp_on_surface failed: {e}");
-                    npz_gaps.push(format!("esp_surface: {e}"));
-                    None
-                }
-            }
-        } else {
-            None
-        };
-
-        let ef_vec = if compute_ef {
-            match electric_field_at_atoms(mol, prep, result.density_total()) {
-                Ok(v) => Some(v),
-                Err(e) => {
-                    eprintln!("warning: electric_field_at_atoms failed: {e}");
-                    npz_gaps.push(format!("electric_field: {e}"));
-                    None
-                }
-            }
-        } else {
-            None
-        };
-
-        let alpha_arr = if compute_pol {
-            match pdep_polarizability_static(mol, prep, &dfbs, &result, op, &rpa_cfg) {
-                Ok(p) => {
-                    println!(
-                        "Polarizability α (a.u.):  iso={:.4}, principal=[{:.4}, {:.4}, {:.4}]",
-                        p.iso, p.principal[0], p.principal[1], p.principal[2]
-                    );
-                    Some(p.tensor)
-                }
-                Err(e) => {
-                    eprintln!("warning: polarizability failed: {e}");
-                    npz_gaps.push(format!("alpha_tensor (polarizability): {e}"));
-                    None
-                }
-            }
-        } else {
-            None
-        };
-
-        let alpha_atomic_vec = if compute_alpha_atomic {
-            match pdep_polarizability_becke(mol, prep, bs, &dfbs, &result, op, &rpa_cfg) {
-                Ok(v) => {
-                    println!(
-                        "Per-atom intrinsic Becke α (iso, a.u.): {:?}",
-                        v.iter()
-                            .map(|t| (t[0][0] + t[1][1] + t[2][2]) / 3.0)
-                            .collect::<Vec<_>>()
-                    );
-                    Some(v)
-                }
-                Err(e) => {
-                    eprintln!("warning: per-atom α (Becke) failed: {e}");
-                    npz_gaps.push(format!("alpha_atomic (per-atom α): {e}"));
-                    None
-                }
-            }
-        } else {
-            None
-        };
-
-        // Charge-transfer remainder α_CT = α_mol − Σ_A α^A: emitted exactly
-        // when both inputs were computed. Both come from the same response
-        // (pdep_polarizability_static / pdep_polarizability_becke: same RI
-        // kernel, same orbitals, frozen_core = 0), so the remainder is the
-        // Krishtal charge-delocalization polarizability, not a definition gap.
-        let alpha_ct_arr: Option<[[f64; 3]; 3]> =
-            match (alpha_arr.as_ref(), alpha_atomic_vec.as_deref()) {
-                (Some(mol_a), Some(per_atom)) => {
-                    let ct = ferric_rpa::properties::charge_transfer_remainder(mol_a, per_atom);
-                    println!(
-                        "Charge-transfer α_CT (iso, a.u.): {:.4}",
-                        (ct[0][0] + ct[1][1] + ct[2][2]) / 3.0
-                    );
-                    Some(ct)
-                }
-                _ => None,
-            };
-
-        let compute_dm = cfg.rpa.compute_density_matrix.unwrap_or(true);
-        let dm_ref = if compute_dm {
-            Some(result.density_total())
-        } else {
-            None
-        };
-
-        // Molecular dipole μ = −Tr(P·D) + Σ_A Z_A R_A of the total density
-        // (QC ground truth vs partition-derived Löwdin/Hirshfeld dipoles).
-        // Origin [0,0,0]; neutral molecules → origin-independent. Mirrors
-        // ferric-mp2 ff_polar::mp2_dipole; P·D summed elementwise = Tr(P·D)
-        // since both AO matrices are symmetric.
-        let compute_dip = cfg.rpa.compute_dipole.unwrap_or(true);
-        let dip_arr: Option<[f64; 3]> = if compute_dip {
-            match ferric_scf::properties::dipole_moment(mol, prep, result.density_total()) {
-                Ok(mu) => {
-                    let mag = ferric_scf::properties::dipole_magnitude(&mu);
-                    println!(
-                        "dipole (e·a0): [{:.4}, {:.4}, {:.4}] |μ| = {:.4} ({:.4} D)",
-                        mu[0],
-                        mu[1],
-                        mu[2],
-                        mag,
-                        mag * ferric_scf::properties::DEBYE_PER_AU
-                    );
-                    Some(mu)
-                }
-                Err(e) => {
-                    eprintln!("warning: dipole failed: {e}");
-                    None
-                }
-            }
-        } else {
-            None
-        };
-
-        let compute_lq = cfg.rpa.compute_lowdin_charges.unwrap_or(true);
-        let lq_vec = if compute_lq {
-            match lowdin_charges(mol, prep, result.density_total()) {
-                Ok(q) => {
-                    println!(
-                        "Löwdin charges (e): {:?}",
-                        q.iter()
-                            .map(|v| (v * 1e4).round() / 1e4)
-                            .collect::<Vec<_>>()
-                    );
-                    Some(q)
-                }
-                Err(e) => {
-                    eprintln!("warning: Löwdin charges failed: {e}");
-                    None
-                }
-            }
-        } else {
-            None
-        };
-
-        let compute_hq = cfg.rpa.compute_hirshfeld_charges.unwrap_or(true);
-        let hq_vec = if compute_hq {
-            match hirshfeld_charges(mol, bs, result.density_total(), Some(proatom)) {
-                Ok(q) => {
-                    println!(
-                        "Hirshfeld charges (e): {:?}",
-                        q.iter()
-                            .map(|v| (v * 1e4).round() / 1e4)
-                            .collect::<Vec<_>>()
-                    );
-                    Some(q)
-                }
-                Err(e) => {
-                    eprintln!("warning: Hirshfeld charges failed: {e}");
-                    None
-                }
-            }
-        } else {
-            None
-        };
-
-        let compute_mq = cfg.rpa.compute_mulliken_charges.unwrap_or(true);
-        let mq_vec = if compute_mq {
-            match mulliken_charges(mol, prep, result.density_total()) {
-                Ok(q) => {
-                    println!(
-                        "Mulliken charges (e): {:?}",
-                        q.iter()
-                            .map(|v| (v * 1e4).round() / 1e4)
-                            .collect::<Vec<_>>()
-                    );
-                    Some(q)
-                }
-                Err(e) => {
-                    eprintln!("warning: Mulliken charges failed: {e}");
-                    None
-                }
-            }
-        } else {
-            None
-        };
-
-        // CHELPG and RESP differ ONLY in the least-squares solve; both
-        // evaluate the same molecular ESP over the same grid. When both are
-        // requested (the default) share one grid — evaluating it twice cost
-        // ~2.2 s per duplicate at benzene/def2-SVP on 12 threads.
-        let compute_cq = cfg.rpa.compute_chelpg_charges.unwrap_or(true);
-        let compute_rq = cfg.rpa.compute_resp_charges.unwrap_or(true);
-        fn fmt_q(q: &[f64]) -> Vec<f64> {
-            q.iter().map(|v| (v * 1e4).round() / 1e4).collect()
-        }
-        let (cq_vec, rq_vec) = match (compute_cq, compute_rq) {
-            (true, true) => match chelpg_and_resp_charges(mol, prep, result.density_total()) {
-                Ok((cq, rq)) => {
-                    println!("CHELPG charges (e): {:?}", fmt_q(&cq));
-                    println!("RESP charges (e): {:?}", fmt_q(&rq));
-                    (Some(cq), Some(rq))
-                }
-                Err(e) => {
-                    eprintln!("warning: CHELPG/RESP charges failed: {e}");
-                    (None, None)
-                }
-            },
-            (true, false) => match chelpg_charges(mol, prep, result.density_total()) {
-                Ok(q) => {
-                    println!("CHELPG charges (e): {:?}", fmt_q(&q));
-                    (Some(q), None)
-                }
-                Err(e) => {
-                    eprintln!("warning: CHELPG charges failed: {e}");
-                    (None, None)
-                }
-            },
-            (false, true) => match resp_charges(mol, prep, result.density_total()) {
-                Ok(q) => {
-                    println!("RESP charges (e): {:?}", fmt_q(&q));
-                    (None, Some(q))
-                }
-                Err(e) => {
-                    eprintln!("warning: RESP charges failed: {e}");
-                    (None, None)
-                }
-            },
-            (false, false) => (None, None),
-        };
-
-        // --- C6 dispersion (Phase 1: Tkatchenko-Scheffler model) ---
-        let compute_c6 = cfg.rpa.compute_c6.unwrap_or(true);
-        let mut c6_freqs_v: Vec<f64> = Vec::new();
-        let mut c6_weights_v: Vec<f64> = Vec::new();
-        let mut alpha_dyn_v: Vec<Vec<[[f64; 3]; 3]>> = Vec::new();
-        // Dynamic charge-transfer remainder; PDEP source only (TS/MBD model
-        // α(iω) has no charge-transfer term to remove).
-        let mut alpha_ct_dyn_v: Option<Vec<[[f64; 3]; 3]>> = None;
-        let mut c6_iso_opt: Option<ndarray::Array2<f64>> = None;
-        let mut c6_aniso_v: Vec<Vec<[[f64; 3]; 3]>> = Vec::new();
-        // Provenance for the per-atom C6 arrays, carried to the NPZ so an
-        // untagged per-atom number never leaves ferric (a per-atom C6 is a
-        // partition CONVENTION, not an observable — Becke vs Hirshfeld differ
-        // by up to ~10x). Populated from the SAME `partition`/`c6_source`
-        // values the computation actually ran with, below — never defaulted.
-        let mut c6_partition_s: Option<&'static str> = None;
-        let mut c6_source_s: Option<&'static str> = None;
-        let mut c6_molecular_iso_v: f64 = 0.0;
-        if compute_c6 {
-            use ferric_rpa::dispersion::{
-                casimir_polder_c6, pdep_dynamic_polarizability, ts_dynamic_polarizability,
-                C6Source, DispersionPartition,
-            };
-            use ferric_rpa::properties::{
-                atomic_effective_volumes_hirshfeld, pdep_polarizability_hirshfeld,
-            };
-            use ferric_rpa::quadrature::build_quadrature;
-
-            // Strict parse: an unknown c6_source/c6_partition used to fall
-            // through to TS/Becke silently, producing different numbers than
-            // the user asked for.
-            let c6_source = C6Source::parse_config_str(cfg.rpa.c6_source.as_deref())
-                .unwrap_or_else(|e| {
-                    eprintln!("config error: [rpa] {e}");
-                    std::process::exit(1);
-                });
-            let partition = DispersionPartition::parse_config_str(cfg.rpa.c6_partition.as_deref())
-                .unwrap_or_else(|e| {
-                    eprintln!("config error: [rpa] {e}");
-                    std::process::exit(1);
-                })
-                .unwrap_or_else(|| c6_source.default_partition());
-            let use_pdep = c6_source == C6Source::Pdep;
-
-            let res_opt = if use_pdep {
-                // Phase 2: PDEP-RPA dynamic α(iω). Origin-independent for
-                // the molecular total AND the per-atom intrinsic α^A
-                // (atom-centred (r−R_A); bond-axis anisotropy is a
-                // coupled/molecular property, not per-atom). Uses the
-                // shared ad-hoc same-basis Hirshfeld proatom (built once
-                // above) so the per-atom partition is basis-consistent.
-                match pdep_dynamic_polarizability(
-                    mol,
-                    prep,
-                    bs,
-                    &dfbs,
-                    &result,
-                    op,
-                    &rpa_cfg,
-                    partition,
-                    Some(proatom),
-                ) {
-                    Ok(dp) => {
-                        let res = casimir_polder_c6(&dp);
-                        println!(
-                            "Computed PDEP-RPA C6: {} atoms, {} freqs; molecular C6 = {:.3} a.u.",
-                            mol.atoms.len(),
-                            dp.freqs.len(),
-                            res.c6_molecular_iso
-                        );
-                        Some(res)
-                    }
-                    Err(e) => {
-                        eprintln!("warning: PDEP-RPA C6 failed: {e}");
-                        None
-                    }
-                }
-            } else {
-                // Phase 1: Tkatchenko-Scheffler single-pole model.
-                // Any failure below warns and SKIPS C6 (None) — the old
-                // fallbacks (zero α, unit volumes, unit ratios) exported
-                // wrong numbers that looked like results.
-                (|| -> Option<ferric_rpa::dispersion::C6Result> {
-                    let alpha_res = if partition == DispersionPartition::Hirshfeld {
-                        pdep_polarizability_hirshfeld(
-                            mol,
-                            prep,
-                            bs,
-                            &dfbs,
-                            &result,
-                            op,
-                            &rpa_cfg,
-                            Some(proatom),
-                        )
-                    } else {
-                        match alpha_atomic_vec.as_ref() {
-                            Some(v) => Ok(v.clone()),
-                            None => pdep_polarizability_becke(
-                                mol, prep, bs, &dfbs, &result, op, &rpa_cfg,
-                            ),
-                        }
-                    };
-                    let alpha_static: Vec<[[f64; 3]; 3]> = match alpha_res {
-                        Ok(v) => v,
-                        Err(e) => {
-                            eprintln!("warning: TS C6 skipped — per-atom static α failed: {e}");
-                            return None;
-                        }
-                    };
-                    // TS volumes must always use Hirshfeld partition — TS was
-                    // parameterized with Hirshfeld volumes (TS PRL 2009). Becke
-                    // volumes blow up for π-system H atoms (vol_ratio >> 1)
-                    // because Becke is atom-size-blind; Hirshfeld proatom weights
-                    // correctly compress H relative to C. The c6_partition setting
-                    // only governs the alpha_static shape tensor, not these volumes.
-                    let vols = match atomic_effective_volumes_hirshfeld(
-                        mol,
-                        bs,
-                        result.density_total(),
-                        Some(proatom),
-                    ) {
-                        Ok(v) => v,
-                        Err(e) => {
-                            eprintln!(
-                                "warning: TS C6 skipped — Hirshfeld effective volumes failed: {e}"
-                            );
-                            return None;
-                        }
-                    };
-                    let z: Vec<usize> = mol.atoms.iter().map(|a| a.z as usize).collect();
-
-                    // Free-atom vol_free from a live free-atom SCF in the same
-                    // basis and SCF settings, then Hirshfeld on the isolated
-                    // atom (weight 1 wherever the Slater ρ⁰ is above the 1e-12
-                    // floor) on the SAME atom-centred Becke–Lebedev quadrature
-                    // `atomic_effective_volumes_hirshfeld` just integrated the
-                    // molecular volumes on, so the ratio is scale-consistent. Shared with MBD@rsSCS dispersion
-                    // (`ferric_rpa::dispersion::live_free_atom_volume`, which
-                    // documents the solve and its HF/UHF retry). A failure
-                    // leaves no entry for that Z, and the loop below skips TS
-                    // C6 with a warning.
-                    let mut vol_free_computed: std::collections::HashMap<usize, f64> =
-                        std::collections::HashMap::new();
-                    for &zi in z.iter().collect::<std::collections::HashSet<_>>() {
-                        if let Ok(vf) = ferric_rpa::dispersion::live_free_atom_volume(
-                            ctx, zi, bs, op, rhf_config,
-                        ) {
-                            vol_free_computed.insert(zi, vf);
-                        }
-                    }
-
-                    // vol_free comes ONLY from the live free-atom SCF above,
-                    // computed on the SAME integration scale (same xc, same
-                    // Hirshfeld quadrature) as the molecular vols[i] — the only
-                    // number for which the ratio vols[i]/vf is physically
-                    // meaningful. There is deliberately NO table fallback: the
-                    // hardcoded ts_free_atom vol_free values were on a mismatched
-                    // integration scale and (for Z outside {H,He,C,N,O,F,Ne})
-                    // were never sourced — feeding one to this ratio silently
-                    // degraded the C6 to a wrong number that looked like a result
-                    // (verified 2026-07-17, docs/vol-free-verification.md; Si's
-                    // table 60.0 was 42% low vs the live-SCF value, inflating
-                    // every Si-containing molecule's TS C6). Per this repo's
-                    // established TS/MBD honesty convention (2026-07-09:
-                    // ts_atom_params / ts_dynamic_polarizability / mbd_screen all
-                    // hard-error rather than fabricate a Z>18 value), a genuine
-                    // live-SCF failure now SKIPS TS C6 with a clear warning —
-                    // matching the Z>18 "no honest value to return" behavior —
-                    // instead of substituting a scale-mismatched fallback.
-                    let mut ratio = Vec::with_capacity(z.len());
-                    for (i, &zi) in z.iter().enumerate() {
-                        let sym = ferric_core::elements::z_to_symbol(zi as i32).unwrap_or("?");
-                        let vf = match vol_free_computed.get(&zi).copied() {
-                            Some(v) => v,
-                            None => {
-                                eprintln!(
-                                    "warning: TS C6 skipped — live free-atom SCF failed for \
-                                     {sym} (Z={zi}) and no scale-consistent free-atom volume \
-                                     is available. The TS free-atom vol_free denominator MUST \
-                                     come from a live SCF on the same integration scale as the \
-                                     molecular volume; the old hardcoded-table fallback was \
-                                     removed because it is on a mismatched scale and was never \
-                                     sourced for most elements (project wiki: vol-free-verification.md). \
-                                     Refusing to fabricate a C6 from a mismatched denominator \
-                                     (same convention as the Z>18 hard-error path — see \
-                                     ts_atom_params). Use \
-                                     c6_source=\"pdep\" for a table-free dispersion source."
-                                );
-                                return None;
-                            }
-                        };
-                        if vf <= 1e-10 {
-                            eprintln!(
-                                "warning: TS C6 skipped — degenerate free-atom volume \
-                                 {vf:.3e} for {sym} (Z={zi})"
-                            );
-                            return None;
-                        }
-                        ratio.push(vols[i] / vf);
-                    }
-                    let (freqs, weights) = build_quadrature(&rpa_cfg.quadrature);
-                    let is_mbd = c6_source == C6Source::Mbd;
-                    let dp_res = if is_mbd {
-                        let positions: Vec<[f64; 3]> =
-                            mol.atoms.iter().map(|a| [a.x, a.y, a.zpos]).collect();
-                        ferric_rpa::dispersion::mbd_dynamic_polarizability(
-                            &positions,
-                            &z,
-                            &ratio,
-                            &alpha_static,
-                            &freqs,
-                            &weights,
-                        )
-                    } else {
-                        ts_dynamic_polarizability(&z, &ratio, &alpha_static, &freqs, &weights)
-                    };
-                    let dp = match dp_res {
-                        Ok(dp) => dp,
-                        Err(e) => {
-                            eprintln!(
-                                "warning: {} C6 skipped: {e}",
-                                if is_mbd { "MBD" } else { "TS" }
-                            );
-                            return None;
-                        }
-                    };
-                    let ts_res = casimir_polder_c6(&dp);
-                    println!(
-                        "Computed {} C6: {} atoms; molecular C6 = {:.3} a.u.",
-                        if is_mbd { "MBD" } else { "TS" },
-                        z.len(),
-                        ts_res.c6_molecular_iso
-                    );
-                    Some(ts_res)
-                })()
-            };
-
-            if let Some(res) = res_opt {
-                if use_pdep {
-                    // molecular_dynamic_polarizability and the per-atom
-                    // intrinsic α^A(iω) share the RI kernel, orbitals and
-                    // frozen_core = 0, at the same frequencies.
-                    match ferric_rpa::properties::charge_transfer_remainder_dynamic(
-                        &res.per_atom_dynamic.molecular,
-                        &res.per_atom_dynamic.per_atom,
-                    ) {
-                        Ok(ct) => alpha_ct_dyn_v = Some(ct),
-                        Err(e) => {
-                            eprintln!("warning: dynamic charge-transfer α_CT(iω) failed: {e}");
-                            npz_gaps.push(format!("alpha_ct_dynamic: {e}"));
-                        }
-                    }
-                }
-                c6_freqs_v = res.per_atom_dynamic.freqs.clone();
-                c6_weights_v = res.per_atom_dynamic.weights.clone();
-                alpha_dyn_v = res.per_atom_dynamic.per_atom.clone();
-                c6_iso_opt = Some(res.c6_iso_pair.clone());
-                c6_aniso_v = res.c6_aniso_pair.clone();
-                // Tag with the partition/source this run ACTUALLY used (the
-                // strictly-parsed locals above, after the source-dependent
-                // default was applied), not a literal.
-                c6_partition_s = Some(partition.as_config_str());
-                c6_source_s = Some(c6_source.as_config_str());
-                c6_molecular_iso_v = res.c6_molecular_iso;
-            } else {
-                // Recorded HERE rather than in the arms above because the
-                // TS branch computes inside a closure (which cannot also
-                // borrow `npz_gaps` mutably). Reaching this point with
-                // `compute_c6` true means C6 was requested and every path
-                // to it warned and bailed; the specific reason is already
-                // on stderr from those arms.
-                npz_gaps.push(
-                    "c6_iso/c6_aniso/alpha_atomic_dynamic (see the C6 warning above)".to_string(),
-                );
-            }
-        }
-
-        // second moments of orbitals + density: one-electron cost,
-        // computed whenever the pieces are already in hand
-        let orbital_moments_opt = if result.spin == ferric_scf::result::Spin::Restricted {
-            ferric_integrals::oneelectron::orbital_moments(prep, result.mos_r()).ok()
-        } else {
-            None
-        };
-        let density_m2_opt = dm_ref.and_then(|d| {
-            ferric_integrals::oneelectron::density_second_moment(prep, d, [0.0; 3])
-                .ok()
-                .map(|m| ndarray::Array2::from_shape_fn((3, 3), |(p, q)| m[p][q]))
+/// Compute the PDEP property bundle, write the NPZ and refuse (exit 1) to
+/// report success on a bundle missing something the caller asked for.
+fn export_pdep_npz_bundle(
+    cfg: &Config,
+    inputs: &ferric_rpa::property_bundle::PropertyInputs,
+    rpa_result: &ferric_rpa::PdepRpaResult,
+    rpa_cert: &Certificate,
+    npz_path: &str,
+) {
+    use ferric_rpa::property_bundle::{compute_pdep_properties, write_pdep_npz, StdReporter};
+    // Properties that were REQUESTED and did not make it into the bundle are
+    // `props.gaps`; the bundle is written regardless with the gaps as absent
+    // arrays, which used to leave the process exiting 0 on an incomplete file.
+    // See `RpaCfg::allow_partial_npz` for the incident. Recording the
+    // REQUESTED-and-failed set, rather than counting absent fields in the
+    // finished bundle, keeps a deliberately disabled property
+    // (`compute_c6 = false`) from reading as a failure.
+    let props = compute_pdep_properties(inputs, &pdep_property_request(cfg), &mut StdReporter)
+        .unwrap_or_else(|e| {
+            eprintln!("config error: [rpa] {e}");
+            std::process::exit(1);
         });
-
-        let rpa_cert_json = rpa_cert.to_json().to_string();
-        let npz_bundle = NpzBundle {
-            mo_coeffs: if result.spin == ferric_scf::result::Spin::Restricted {
-                Some(result.mos_r())
-            } else {
-                None
-            },
-            orbital_energies: if result.spin == ferric_scf::result::Spin::Restricted {
-                Some(result.eps_r())
-            } else {
-                None
-            },
-            pdep_eigenvectors: Some(&rpa_result.eigenpotentials),
-            boys_coeffs: None,
-            orbital_centers: orbital_moments_opt.as_ref().map(|(c, _)| c),
-            orbital_spreads: orbital_moments_opt.as_ref().map(|(_, s)| s.as_slice()),
-            density_second_moment: density_m2_opt.as_ref(),
-            coords: Some(&coords_arr),
-            atomic_numbers: Some(&znums),
-            density_matrix: dm_ref,
-            dipole: dip_arr.as_ref(),
-            charges: ChargeSchemes {
-                hirshfeld: hq_vec.as_deref(),
-                lowdin: lq_vec.as_deref(),
-                mulliken: mq_vec.as_deref(),
-                chelpg: cq_vec.as_deref(),
-                resp: rq_vec.as_deref(),
-            },
-            polarizability: PolarizabilityBundle {
-                esp_atoms: esp_vec.as_deref(),
-                // Surface ESP: enabled by `[rpa] compute_esp_surface`.
-                // The shell is generated internally (Lebedev spheres at
-                // vdW radii, buried points dropped), so the caller supplies
-                // a scale and an order rather than a point set.
-                esp_surface: esp_surface.as_ref().map(|(_, v)| v.as_slice()),
-                esp_points: esp_surface_pts.as_ref(),
-                alpha_tensor: alpha_arr.as_ref(),
-                electric_field: ef_vec.as_deref(),
-                alpha_atomic: alpha_atomic_vec.as_deref(),
-                alpha_ct: alpha_ct_arr.as_ref(),
-            },
-            dispersion: DispersionBundle {
-                // All-or-nothing, and the provenance is non-Option inside
-                // `C6Export` — so this arm either supplies the per-atom
-                // arrays WITH their partition/source, or writes no C6 at all.
-                // `zip` here is the enforcement: provenance is only ever
-                // `Some` on the same path that populated the arrays.
-                c6: match (c6_iso_opt.as_ref(), c6_partition_s.zip(c6_source_s)) {
-                    (Some(iso), Some((partition, source))) => Some(C6Export {
-                        provenance: C6Provenance { partition, source },
-                        c6_freqs: c6_freqs_v.as_slice(),
-                        c6_weights: c6_weights_v.as_slice(),
-                        alpha_atomic_dynamic: alpha_dyn_v.as_slice(),
-                        alpha_ct_dynamic: alpha_ct_dyn_v.as_deref(),
-                        c6_iso: iso,
-                        c6_aniso: c6_aniso_v.as_slice(),
-                        c6_molecular_iso: c6_molecular_iso_v,
-                    }),
-                    _ => None,
-                },
-            },
-            certificate: Some(&rpa_cert_json),
-        };
-        // A file the caller asked for and did not get is not a warning.
-        let write_failed = if let Err(e) = export_npz(npz_path, &npz_bundle) {
+    let rpa_cert_json = rpa_cert.to_json().to_string();
+    // A file the caller asked for and did not get is not a warning.
+    let write_failed =
+        if let Err(e) = write_pdep_npz(npz_path, inputs, &props, rpa_result, &rpa_cert_json) {
             eprintln!("error: failed to write {}: {}", npz_path, e);
             true
         } else {
             false
         };
-        if !write_failed {
-            println!("Wrote NPZ feature bundle: {}", npz_path);
-            if c6_iso_opt.is_some() {
-                println!(
-                    "note: NPZ c6_iso/c6_aniso are per-atom PAIR tensors, not the \
+    if !write_failed {
+        println!("Wrote NPZ feature bundle: {}", npz_path);
+        if props.c6.is_some() {
+            println!(
+                "note: NPZ c6_iso/c6_aniso are per-atom PAIR tensors, not the \
                          molecular C6 total — do not sum them to approximate it (can be \
                          20-58% off). Read the NPZ key \"c6_molecular_iso\" for the \
                          correct DOSD-comparable value (project wiki: dosd-c6-rpa-vs-ts.md). \
                          The per-atom arrays are a PARTITION CONVENTION, not an \
                          observable; the NPZ keys \"c6_partition\"/\"c6_source\" record \
                          which one produced them (decode with .tobytes().decode())."
-                );
-            }
-        }
-
-        // Refuse to report success on a bundle that is missing something
-        // the caller asked for.
-        //
-        // Each arm above warns and continues, which is often the right
-        // trade -- the SCF is expensive and the properties that DID work
-        // are worth keeping. What was wrong is that the PROCESS then exited
-        // 0, making an incomplete NPZ indistinguishable from a complete one
-        // to any caller that does not re-read stderr. A 500-molecule QM9
-        // feature regeneration lost `alpha_atomic` on 476 of 500 molecules
-        // that way, with 500 apparent successes.
-        //
-        // The file is still written before this check: a partial bundle is
-        // salvageable, and deleting it would throw away work. Only the exit
-        // status changes.
-        let allow_partial = cfg.rpa.allow_partial_npz.unwrap_or(false);
-        if (!npz_gaps.is_empty() || write_failed) && !allow_partial {
-            eprintln!(
-                "error: the NPZ bundle is incomplete — {} requested propert{} failed:",
-                npz_gaps.len() + usize::from(write_failed),
-                if npz_gaps.len() + usize::from(write_failed) == 1 {
-                    "y"
-                } else {
-                    "ies"
-                },
             );
-            for g in &npz_gaps {
-                eprintln!("  - {g}");
-            }
-            if write_failed {
-                eprintln!("  - the bundle could not be written at all");
-            }
-            eprintln!(
-                "Exiting nonzero so a caller does not mistake this for a complete \
+        }
+    }
+    // Each property arm warns and continues, which is often the right trade --
+    // the SCF is expensive and the properties that DID work are worth keeping.
+    // What was wrong is that the PROCESS then exited 0, making an incomplete
+    // NPZ indistinguishable from a complete one to any caller that does not
+    // re-read stderr (a 500-molecule QM9 feature regeneration lost
+    // `alpha_atomic` on 476 of 500 molecules that way). The file is still
+    // written before this check: a partial bundle is salvageable. Only the
+    // exit status changes.
+    let allow_partial = cfg.rpa.allow_partial_npz.unwrap_or(false);
+    let n_failed = props.gaps.len() + usize::from(write_failed);
+    if n_failed > 0 && !allow_partial {
+        eprintln!(
+            "error: the NPZ bundle is incomplete — {} requested propert{} failed:",
+            n_failed,
+            if n_failed == 1 { "y" } else { "ies" },
+        );
+        for g in &props.gaps {
+            eprintln!("  - {g}");
+        }
+        if write_failed {
+            eprintln!("  - the bundle could not be written at all");
+        }
+        eprintln!(
+            "Exiting nonzero so a caller does not mistake this for a complete \
                      bundle. Raise [memory] budget_gb if a gate refused, or set \
                      [rpa] allow_partial_npz = true to accept the gaps."
-            );
-            std::process::exit(1);
-        }
+        );
+        std::process::exit(1);
     }
 }
 

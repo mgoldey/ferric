@@ -70,7 +70,9 @@ its truncation). For water/cc-pVDZ with cc-pVDZ-RI, the mode sum equals
 on an imaginary-frequency quadrature.
 
 - **PDEP-RPA**, closed shell: `method.kind = "pdep-rpa"`
-  (`examples/water-pdep-rpa.toml`); Python `ferric.run_pdep_rpa`. Proven.
+  (`examples/water-pdep-rpa.toml`); Python `ferric.run_pdep_rpa`, which also
+  returns the CLI's `[rpa]` property bundle (see
+  [PDEP-RPA properties](../using/python.md#pdep-rpa-properties-and-the-npz-bundle)). Proven.
 - **U-PDEP-RPA**, open shell over a spin-summed dielectric. From the CLI, set
   `method.kind = "pdep-rpa"` with `multiplicity > 1` and `task = "energy"`: the
   CLI solves UHF (UKS with `[rpa] xc`) with MOM after 5 iterations and runs
