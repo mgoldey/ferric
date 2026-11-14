@@ -6295,7 +6295,9 @@ fn run_frequencies(
         std::process::exit(1);
     });
 
-    let cert = match task_reference_certificate(method, cfg, ctx, bs, op, rhf_config, mol) {
+    let reference =
+        frequency_reference_certificate(method, cfg, ctx, bs, op, rhf_config, mol, &res);
+    let cert = match reference {
         Ok(reference) => {
             ferric_scf::certificate::frequencies_certificate(method, &reference, &res, &fcfg)
         }
@@ -6325,6 +6327,37 @@ fn run_frequencies(
             .collect::<Vec<_>>()
     );
     print!("{cert}");
+}
+
+/// The stamped SCF certificate at the reference geometry of a frequency run.
+/// Built from the SCF the Hessian was computed on
+/// ([`FrequencyResult::reference_scf`](ferric_scf::frequencies::FrequencyResult)),
+/// so the run solves its reference SCF once; a result without one (no route
+/// of `harmonic_frequencies*` produces that) re-solves it.
+#[allow(clippy::too_many_arguments)]
+fn frequency_reference_certificate(
+    method: &str,
+    cfg: &Config,
+    ctx: &ParallelContext,
+    bs: &BasisSet,
+    op: Operator,
+    rhf_config: &RhfConfig,
+    mol: &Molecule,
+    res: &ferric_scf::frequencies::FrequencyResult,
+) -> Result<Certificate, String> {
+    match res.reference_scf.as_deref() {
+        Some(r) => Ok(task_reference_certificate_from(
+            method,
+            cfg,
+            ctx,
+            bs,
+            op,
+            mol,
+            &r.scf,
+            r.config.clone(),
+        )),
+        None => task_reference_certificate(method, cfg, ctx, bs, op, rhf_config, mol),
+    }
 }
 
 /// The `frequencies` record of the JSON run log: the full-precision numbers
@@ -6564,7 +6597,7 @@ fn certify_optimization(
             bs,
             op,
             final_mol,
-            scf,
+            &scf,
             ferric_scf::gradient::gradient_task_config(rhf_config).into_owned(),
         )),
         None => task_reference_certificate(method, cfg, ctx, bs, op, rhf_config, final_mol),
@@ -6599,7 +6632,7 @@ fn task_reference_certificate(
         ferric_scf::certificate::final_point_scf(ctx, mol, &bs.name, op, rhf_config, spin)
             .map_err(|e| format!("the final-point SCF for this certificate failed: {e}"))?;
     Ok(task_reference_certificate_from(
-        method, cfg, ctx, bs, op, mol, scf, used,
+        method, cfg, ctx, bs, op, mol, &scf, used,
     ))
 }
 
@@ -6613,13 +6646,13 @@ fn task_reference_certificate_from(
     bs: &BasisSet,
     op: Operator,
     mol: &Molecule,
-    scf: ferric_scf::result::ScfResult,
+    scf: &ferric_scf::result::ScfResult,
     used: RhfConfig,
 ) -> Certificate {
     let dispersion = matches!(method, "rhf" | "ksdft" | "uhf" | "rohf")
         .then(|| dispersion_correction(cfg, ctx, mol, bs, op, &used, scf.density_total()))
         .flatten();
-    scf_certificate_stamped(mol, &scf, &used, dispersion.as_ref())
+    scf_certificate_stamped(mol, scf, &used, dispersion.as_ref())
 }
 
 /// The reference route `[scf] jk` resolved to (`apply_scf_jk`) for the

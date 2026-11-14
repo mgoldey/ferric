@@ -1006,17 +1006,19 @@ pub fn routed_two_electron_gradient(
             )?;
         }
         _ => {
+            // The J-only pass of a pure functional (or of a separate K aux)
+            // reads the SCF's RI-J tensor when its driver kept one.
             if let Some(ja) = j_df {
                 let dfbs = aux_basis(mol, ja)?;
-                grad += &df_jk_gradient_at_precision(
-                    natoms,
-                    prep,
-                    &dfbs,
+                grad += &df_jk_gradient_with_raw(
+                    mol,
+                    (prep, &dfbs, ja),
                     route.op,
                     Some(&d_total),
                     &[],
                     budget,
                     route.ri_j_precision,
+                    crate::raw_handoff::take_active(mol, prep, &dfbs, ja, route.op),
                 )?;
             }
             if let Some(ka) = k0_df {

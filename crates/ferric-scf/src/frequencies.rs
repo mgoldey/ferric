@@ -386,9 +386,39 @@ pub struct FrequencyResult {
     /// produced the Hessian through [`harmonic_frequencies`] (`None`
     /// otherwise). Recorded in the frequency certificate.
     pub rik_metric: Option<crate::hessian_df_k::RikConditioning>,
+    /// The SCF at the undisplaced geometry the Hessian was built on, with
+    /// the config it was solved with. Every route of [`harmonic_frequencies`]
+    /// solves it anyway; a caller that certifies the reference point reads it
+    /// here instead of solving it again. `None` for a result that did not
+    /// come from an SCF ([`harmonic_frequencies_from_gradient`],
+    /// [`frequencies_from_cartesian_hessian`]).
+    pub reference_scf: Option<std::sync::Arc<ReferenceScf>>,
+}
+
+/// The reference-geometry SCF of a frequency run and the config that solved
+/// it ([`FrequencyResult::reference_scf`]).
+#[derive(Debug, Clone)]
+pub struct ReferenceScf {
+    /// The converged SCF at the undisplaced geometry.
+    pub scf: ScfResult,
+    /// The config it was solved with: the frequency task's
+    /// ([`RhfConfig::for_geometry_task`]), after
+    /// [`crate::gradient::gradient_task_config`] on the finite-difference
+    /// routes, without any raw-tensor hand-off.
+    pub config: RhfConfig,
 }
 
 impl FrequencyResult {
+    /// `self` carrying `scf`, solved at the undisplaced geometry with `config`,
+    /// as its [`reference_scf`](Self::reference_scf).
+    fn with_reference_scf(mut self, scf: ScfResult, config: &RhfConfig) -> Self {
+        self.reference_scf = Some(std::sync::Arc::new(ReferenceScf {
+            scf,
+            config: config.clone(),
+        }));
+        self
+    }
+
     /// Zero-point vibrational energy in Hartree, `0.5 * sum(h nu)`.
     ///
     /// Imaginary modes (negative entries) are skipped — a ZPE is only
@@ -470,16 +500,24 @@ pub fn harmonic_frequencies(
     // The reference SCF is the anchor every displaced SCF warm-starts from.
     let mut warm = ScfWarmStart::anchored(freq_config.scf_warm_start);
     let reference = freq_config.reference;
-    let (energy, _, _) =
+    let (energy, _, reference_scf) =
         energy_gradient_and_result(ctx, mol, basis_name, op, scf_config, reference, &mut warm)?;
 
     let mut res = fd_hessian_frequencies(mol, &masses, freq_config.delta, energy, |m| {
         energy_gradient_and_result(ctx, m, basis_name, op, scf_config, reference, &mut warm)
             .map(|(_, g, _)| g)
-    })?;
+    })?
+    .with_reference_scf(
+        reference_scf,
+        &crate::gradient::gradient_task_config(scf_config),
+    );
     attach_warm_start(&mut res, warm);
     Ok(res)
 }
+
+/// A corrected surface point: the corrected energy, the correction, the
+/// corrected gradient and the SCF they were built on.
+type CorrectedPoint = (f64, f64, Array2<f64>, ScfResult);
 
 /// Print the warm-start summary of a finite-difference Hessian (nothing when
 /// it is off) and keep its records on the result.
@@ -594,7 +632,7 @@ pub fn harmonic_frequencies_with_scf_correction(
     let masses = atom_masses(mol)?;
 
     let mut warm = ScfWarmStart::anchored(freq_config.scf_warm_start);
-    let mut corrected = |m: &Molecule| -> Result<(f64, f64, Array2<f64>), FerricError> {
+    let mut corrected = |m: &Molecule| -> Result<CorrectedPoint, FerricError> {
         let (e, mut g, scf) = energy_gradient_and_result(
             ctx,
             m,
@@ -624,13 +662,17 @@ pub fn harmonic_frequencies_with_scf_correction(
             }
             g = g + dg;
         }
-        Ok((e + de, de, g))
+        Ok((e + de, de, g, scf))
     };
 
-    let (energy, correction_energy, _) = corrected(mol)?;
+    let (energy, correction_energy, _, reference_scf) = corrected(mol)?;
     let mut res = fd_hessian_frequencies(mol, &masses, freq_config.delta, energy, |m| {
-        corrected(m).map(|(_, _, g)| g)
-    })?;
+        corrected(m).map(|(_, _, g, _)| g)
+    })?
+    .with_reference_scf(
+        reference_scf,
+        &crate::gradient::gradient_task_config(scf_config),
+    );
     res.correction_energy = correction_energy;
     attach_warm_start(&mut res, warm);
     Ok(res)
@@ -760,8 +802,9 @@ fn analytic_route(
     }
 }
 
-/// A closed-shell Kohn-Sham reference: the only one `Auto` can send to the
-/// moving-grid KS Hessian (UKS/ROKS and Hartree-Fock keep their dispatch).
+/// A closed-shell Kohn-Sham reference: the one `Auto` sends to the
+/// closed-shell moving-grid KS Hessian. A UKS reference has its own route
+/// ([`is_uks`]); ROKS and Hartree-Fock keep theirs.
 fn is_closed_shell_ks(scf_config: &RhfConfig, reference: FrequencyReference) -> bool {
     reference == FrequencyReference::Rhf && scf_config.xc.is_some()
 }
@@ -838,6 +881,28 @@ fn with_rik_metric(
         res.rik_metric = rik_metric;
     }
     res
+}
+
+/// A frequency run needs at least two atoms.
+fn require_two_atoms(mol: &Molecule) -> Result<(), FerricError> {
+    let natoms = mol.atoms.len();
+    if natoms < 2 {
+        return Err(FerricError::General(format!(
+            "harmonic frequencies require at least 2 atoms, got {natoms}"
+        )));
+    }
+    Ok(())
+}
+
+/// `freq` with the reference SCF it was built on and the exchange metric's
+/// conditioning ([`with_rik_metric`]) recorded.
+fn with_reference_and_metric(
+    freq: FrequencyResult,
+    scf: ScfResult,
+    config: &RhfConfig,
+    rik_metric: Option<crate::hessian_df_k::RikConditioning>,
+) -> FrequencyResult {
+    with_rik_metric(freq.with_reference_scf(scf, config), rik_metric)
 }
 
 /// `Auto` for a closed-shell KS reference: the analytic moving-grid KS
@@ -970,6 +1035,7 @@ pub fn harmonic_frequencies_analytic(
     let bounds = SchwarzBounds::compute(op, &prep)?;
     let res = solve_rhf(ctx, mol, &prep, op, &bounds, scf_config)?;
     crate::hessian::analytic_frequencies(ctx, mol, &prep, op, &bounds, &res, scf_config)
+        .map(|f| f.with_reference_scf(res, scf_config))
 }
 
 /// Harmonic frequencies from the ANALYTIC UHF Hessian
@@ -1005,6 +1071,7 @@ pub fn harmonic_frequencies_analytic_uhf(
     let bounds = SchwarzBounds::compute(op, &prep)?;
     let res = solve_uhf(ctx, mol, &prep, &bounds, scf_config)?;
     crate::hessian::analytic_frequencies_uhf(ctx, mol, &prep, op, &bounds, &res, scf_config)
+        .map(|f| f.with_reference_scf(res, scf_config))
 }
 
 /// Harmonic frequencies from the ANALYTIC ROHF Hessian
@@ -1036,6 +1103,7 @@ pub fn harmonic_frequencies_analytic_rohf(
     let bounds = SchwarzBounds::compute(op, &prep)?;
     let res = solve_rohf(ctx, mol, &prep, op, &bounds, scf_config)?;
     crate::hessian::analytic_frequencies_rohf(ctx, mol, &prep, op, &bounds, &res, scf_config)
+        .map(|f| f.with_reference_scf(res, scf_config))
 }
 
 /// Harmonic frequencies from the OPT-IN analytic moving-grid Kohn-Sham Hessian
@@ -1066,12 +1134,7 @@ pub fn harmonic_frequencies_ks_moving_grid(
     // Frequency task: an unset `ri_j_precision` resolves to f64
     // (`RhfConfig::ri_j_task`), an explicit one is kept.
     let scf_config = &scf_config.for_geometry_task();
-    let natoms = mol.atoms.len();
-    if natoms < 2 {
-        return Err(FerricError::General(format!(
-            "harmonic frequencies require at least 2 atoms, got {natoms}"
-        )));
-    }
+    require_two_atoms(mol)?;
     if reference == FrequencyReference::Uhf {
         return harmonic_frequencies_uks_moving_grid(ctx, mol, basis_name, op, scf_config);
     }
@@ -1095,10 +1158,10 @@ pub fn harmonic_frequencies_ks_moving_grid(
     atom_masses(mol)?;
     let bounds = SchwarzBounds::compute(op, &prep)?;
     let res = solve_rhf(ctx, mol, &prep, op, &bounds, scf_config)?;
-    crate::hessian::analytic_frequencies_ks_moving_grid(
+    let freq = crate::hessian::analytic_frequencies_ks_moving_grid(
         ctx, mol, &prep, op, &bounds, &res, scf_config,
-    )
-    .map(|r| with_rik_metric(r, rik_metric))
+    )?;
+    Ok(with_reference_and_metric(freq, res, scf_config, rik_metric))
 }
 
 /// Harmonic frequencies from the analytic moving-grid UKS Hessian
@@ -1120,12 +1183,7 @@ pub fn harmonic_frequencies_uks_moving_grid(
     // Frequency task: an unset `ri_j_precision` resolves to f64
     // (`RhfConfig::ri_j_task`), an explicit one is kept.
     let scf_config = &scf_config.for_geometry_task();
-    let natoms = mol.atoms.len();
-    if natoms < 2 {
-        return Err(FerricError::General(format!(
-            "harmonic frequencies require at least 2 atoms, got {natoms}"
-        )));
-    }
+    require_two_atoms(mol)?;
     let bs = ferric_core::basis::bundled(basis_name)?;
     let prep = PreparedBasis::new(mol, &bs)?;
     let rik_metric = crate::hessian::uks_moving_grid_hessian_check(
@@ -1138,10 +1196,10 @@ pub fn harmonic_frequencies_uks_moving_grid(
     atom_masses(mol)?;
     let bounds = SchwarzBounds::compute(op, &prep)?;
     let res = solve_uhf(ctx, mol, &prep, &bounds, scf_config)?;
-    crate::hessian::analytic_frequencies_uks_moving_grid(
+    let freq = crate::hessian::analytic_frequencies_uks_moving_grid(
         ctx, mol, &prep, op, &bounds, &res, scf_config,
-    )
-    .map(|r| with_rik_metric(r, rik_metric))
+    )?;
+    Ok(with_reference_and_metric(freq, res, scf_config, rik_metric))
 }
 
 /// Mass-weight, project out translations/rotations, diagonalize, and convert to
@@ -1304,6 +1362,7 @@ pub fn frequencies_from_cartesian_hessian(
         correction_energy: 0.0,
         scf_warm_start: Vec::new(),
         rik_metric: None,
+        reference_scf: None,
     })
 }
 

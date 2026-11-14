@@ -1,10 +1,18 @@
 //! Hand the SCF's raw RI-JK tensor `(P|μν)` to the analytic gradient that
 //! follows it, so the gradient's `dfg:3c-pass` does not regenerate it.
 //!
-//! When RI-J and RI-K share one auxiliary basis (the default), the SCF builds
-//! the raw tensor once: DF-K dresses from it and RI-J keeps it, unscreened
-//! (a source shared with DF-K is never pair-screened, see
-//! `fock_assembly::build_df_jk`) and in f64 on a geometry task. The gradient
+//! When RI-J and RI-K share one auxiliary basis (the default for a hybrid),
+//! the SCF builds the raw tensor once: DF-K dresses from it and RI-J keeps it,
+//! unscreened (a source shared with DF-K is never pair-screened, see
+//! `fock_assembly::build_df_jk`) and in f64 on a geometry task. A pure
+//! functional fits no K, and its RI-J tensor is kept the same way when it is
+//! held whole and unscreened in f64. A J-only build pair-screens its tensor
+//! once the screen drops pairs (sulfamethoxazole/def2-TZVP keeps 78% of the
+//! function pairs at the default `integral_thresh`); such a tensor is not the
+//! gradient's rows and the gradient recomputes it. Building it unscreened
+//! instead made the SCF slower by what the gradient saved (MEASURED, 3 paired
+//! reps: wall time unchanged within noise, peak RSS 3.4 -> 6.0 GB), so the
+//! screen is left alone. The gradient
 //! contracts exactly these integrals with the converged density, and
 //! regenerating them cost ~1.7 s of a ~10.5 s gradient (n-dodecane/def2-TZVP
 //! B3LYP, 2026-11-10).
@@ -18,7 +26,7 @@
 //! and drop it when the gradient returns. A driver that never asks for a
 //! gradient never installs one, so nothing is held past the SCF.
 //!
-//! Kept only when: J and K share the aux basis, one rank, the tensor is held
+//! Kept only when: RI-J is fitted, one rank, the tensor is held
 //! whole in memory in f64 (unpacked or packed tier), and the tensor plus the
 //! gradient's metric and exchange intermediates fit the three-index budget.
 //! Otherwise the gradient recomputes exactly as before; under `FERRIC_TIMING`
@@ -464,9 +472,18 @@ fn kept_raw(
     occ: &[usize],
 ) -> Result<KeptRaw, &'static str> {
     let route = route.ok_or("nothing density-fitted")?;
-    let aux = match (route.j_aux.as_deref(), route.k_aux.as_deref()) {
-        (Some(j), Some(k)) if j == k => j.to_owned(),
-        _ => return Err("RI-J and RI-K do not share one aux basis"),
+    let aux = route
+        .j_aux
+        .as_deref()
+        .ok_or("RI-J is not fitted")?
+        .to_owned();
+    // Only a shared aux basis puts exchange channels in the gradient's pass
+    // over this tensor; a pure functional (no fitted K) or a separate K aux
+    // leaves a J-only pass.
+    let exchange_ranks = if route.k_aux.as_deref() == Some(aux.as_str()) {
+        occ
+    } else {
+        &[]
     };
     if ctx.size > 1 {
         return Err("several ranks");
@@ -474,7 +491,7 @@ fn kept_raw(
     let raw_bytes = match df_j.as_ref() {
         Some(RiJ::Stored(j)) if j.precision() == crate::df_j::RiJPrecision::F64 => j
             .resident_f64_bytes()
-            .ok_or("the tensor is not held whole in memory in f64")?,
+            .ok_or("the tensor is pair-screened, spilled or recomputed, not held whole in f64")?,
         Some(RiJ::Stored(_)) => return Err("the RI-J tensor is stored in f32"),
         Some(RiJ::Split(_)) => return Err("Split-RI-J holds no tensor"),
         None => return Err("no RI-J builder"),
@@ -490,7 +507,7 @@ fn kept_raw(
         0
     };
     let held = raw_bytes
-        .saturating_add(gradient_intermediate_bytes(naux, occ))
+        .saturating_add(gradient_intermediate_bytes(naux, exchange_ranks))
         .saturating_add(block);
     if held > route.budget_bytes {
         return Err("tensor and gradient intermediates exceed the three-index budget");
