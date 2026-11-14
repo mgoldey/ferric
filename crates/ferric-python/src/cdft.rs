@@ -184,10 +184,23 @@ pub(crate) struct PyCdftResult {
     // refuses two states whose keys differ: the Wu-Van Voorhis formula assumes
     // one shared H, and the overlap/occupation checks cannot see these inputs.
     pub(crate) hamiltonian_key: String,
+    pub(crate) certificate_data: ferric_core::certificate::Certificate,
 }
 
 #[pymethods]
 impl PyCdftResult {
+    /// Validation certificate of this result (dict form of
+    /// `ferric_core::certificate::Certificate`; see `RhfResult.certificate`).
+    /// `capability` is `"cdft:uhf"` or `"cdft:uks"` and the grade is
+    /// `"ungraded"`: the validation page does not grade `run_cdft`. The
+    /// UHF/UKS certificate at the constrained density is folded in as the
+    /// reference; each constraint (fragment, kind, target, multiplier,
+    /// population), the Becke weight grid and the outer-loop settings are
+    /// approximations; an unconverged inner SCF or constraint is a warning.
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        certificate_dict(py, &self.certificate_data)
+    }
     fn density_alpha<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
         PyArray2::from_array(py, &self.density_alpha_data)
     }
@@ -586,6 +599,17 @@ pub(crate) fn run_cdft(
     let nocc_alpha = (nel + nopen) / 2;
     let nocc_beta = (nel - nopen.min(nel)) / 2;
     let scf = r.scf;
+    let certificate_data = ferric_scf::certificate::cdft_certificate(
+        &reference_certificate(&emol, &scf, &config, &bs),
+        &config,
+        &ferric_scf::certificate::CdftRun {
+            lambdas: &r.lambdas,
+            populations: &r.populations,
+            outer_iterations: r.outer_iters,
+            scf_converged: scf.converged,
+            max_constraint_error,
+        },
+    );
     let mos_beta = scf
         .mos_beta
         .ok_or_else(|| make_err("run_cdft: the UHF solve returned no beta MOs"))?;
@@ -616,6 +640,7 @@ pub(crate) fn run_cdft(
         weight_matrices: r.weight_matrices,
         overlap,
         hamiltonian_key,
+        certificate_data,
     })
 }
 
@@ -636,10 +661,21 @@ pub(crate) struct PyCdftCouplingResult {
     pub(crate) e_a: f64,
     #[pyo3(get)]
     pub(crate) e_b: f64,
+    pub(crate) certificate_data: ferric_core::certificate::Certificate,
 }
 
 #[pymethods]
 impl PyCdftCouplingResult {
+    /// Validation certificate of this coupling (dict form of
+    /// `ferric_core::certificate::Certificate`; see `RhfResult.certificate`).
+    /// `capability` is `"cdft-coupling"` and the grade is `"ungraded"`. State
+    /// A's certificate is the reference; state B's approximations and warnings
+    /// carry the prefix `state B`; the Wu-Van Voorhis formula is recorded as
+    /// an approximation.
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        certificate_dict(py, &self.certificate_data)
+    }
     fn __repr__(&self) -> String {
         format!(
             "CdftCouplingResult(h_ab={:.10}, s_ab={:.6e}, e_a={:.10}, e_b={:.10})",
@@ -767,5 +803,11 @@ pub(crate) fn cdft_coupling(
         s_ab: r.s_ab,
         e_a: r.e_a,
         e_b: r.e_b,
+        certificate_data: ferric_scf::certificate::cdft_coupling_certificate(
+            &state_a.certificate_data,
+            &state_b.certificate_data,
+            r.h_ab,
+            r.s_ab,
+        ),
     })
 }

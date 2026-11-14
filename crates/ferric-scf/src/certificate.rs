@@ -396,3 +396,468 @@ pub fn frequencies_certificate(
     }
     c
 }
+
+/// What the QM/MM wrapper adds on top of the SCF of the QM region: the
+/// partition, the embedding (point, smeared and polarizable MM sites, the
+/// boundary scheme and link atoms) and, when one was passed, the MM force
+/// field. Recorded on a certificate of capability `capability`, which is
+/// [`Grade::Ungraded`]: `site/src/reference/validation.md` lists the QM/MM
+/// entry points under "Python entry points", which are not graded
+/// individually, so [`METHOD_KIND_GRADES`] has no row for them. The
+/// reference's approximations (including its `external-potential`),
+/// warnings and build stamp are folded in by [`Certificate::with_reference`].
+fn qmmm_base(
+    capability: String,
+    reference: &Certificate,
+    sys: &crate::qmmm::QmmmSystem,
+    mm_topology: Option<usize>,
+) -> Certificate {
+    let (n_point, n_smeared) = sys
+        .to_external_potential()
+        .map_or((0, 0), |e| (e.point_charges.len(), e.smeared_charges.len()));
+    let n_pol = sys.to_polarizable_sites().len();
+    let mut c = Certificate::ungraded(capability)
+        .with_reference(reference)
+        .with_approximation(
+            "qmmm-partition",
+            format!(
+                "{} QM atom(s), {} MM atom(s), QM charge {}, multiplicity {}",
+                sys.qm_indices.len(),
+                sys.mm_indices.len(),
+                sys.qm_charge,
+                sys.qm_multiplicity
+            ),
+        )
+        .with_approximation(
+            "qmmm-embedding",
+            format!(
+                "electrostatic embedding: {n_point} point and {n_smeared} Gaussian-smeared MM \
+                 charge(s), {n_pol} Thole polarizable site(s), boundary scheme {:?} \
+                 ({} off-atom boundary charge(s)), {} link atom(s)",
+                sys.boundary_scheme,
+                sys.boundary_charges.len(),
+                sys.link_atoms.len()
+            ),
+        );
+    if let Some(n) = mm_topology {
+        c = c.with_approximation(
+            "mm-force-field",
+            format!("AMBER-form bonded and Lennard-Jones terms over {n} atom(s)"),
+        );
+    }
+    c
+}
+
+/// Certificate of a `run_qmmm` result: `reference` is the certificate of the
+/// SCF it solved (`method` is `"rhf"`, `"uhf"`, `"rks"` or `"uks"`);
+/// `mm_topology` is the atom count of the MM force field, when one was
+/// passed. Capability `qmmm:<method>`, [`Grade::Ungraded`]; an unconverged
+/// SCF is a warning.
+pub fn qmmm_certificate(
+    method: &str,
+    reference: &Certificate,
+    sys: &crate::qmmm::QmmmSystem,
+    mm_topology: Option<usize>,
+    converged: bool,
+) -> Certificate {
+    let mut c = qmmm_base(format!("qmmm:{method}"), reference, sys, mm_topology);
+    if !converged {
+        c.push_warning("the embedded SCF did not converge");
+    }
+    c
+}
+
+/// Certificate of a `run_optimize_qmmm` result: `reference` is the
+/// certificate of the SCF at the returned partition `sys`. Capability
+/// `qmmm-optimize:<method>`, [`Grade::Ungraded`]; records which MM atoms
+/// moved and the optimizer settings; a run that did not converge is a
+/// warning.
+pub fn qmmm_optimize_certificate(
+    method: &str,
+    reference: &Certificate,
+    sys: &crate::qmmm::QmmmSystem,
+    cfg: &crate::qmmm::QmmmOptimizeConfig,
+    converged: bool,
+    steps: usize,
+    energy: f64,
+) -> Certificate {
+    let n_top = cfg.mm_topology.as_ref().map(|t| t.n_atoms());
+    let mut c = qmmm_base(format!("qmmm-optimize:{method}"), reference, sys, n_top)
+        .with_approximation("qmmm-move-mm", format!("{:?}", cfg.move_mm))
+        .with_approximation(
+            "optimizer",
+            format!(
+                "BFGS, at most {} steps; thresholds g_max {:e}, g_rms {:e} Ha/Bohr, \
+                 e_conv {:e} Ha",
+                cfg.opt.max_steps, cfg.opt.g_max_thresh, cfg.opt.g_rms_thresh, cfg.opt.e_conv
+            ),
+        );
+    if !converged {
+        c.push_warning(format!(
+            "the optimizer did not converge ({steps} steps, final energy {energy:.10} Ha)"
+        ));
+    }
+    c
+}
+
+/// What a `run_cdft` solve reports, for [`cdft_certificate`].
+pub struct CdftRun<'a> {
+    /// The constraint multipliers the outer loop ended on, in constraint order.
+    pub lambdas: &'a [f64],
+    /// Fragment populations at the returned density.
+    pub populations: &'a [f64],
+    /// Outer (lambda) iterations used.
+    pub outer_iterations: usize,
+    /// The inner SCF at the final lambda converged.
+    pub scf_converged: bool,
+    /// Largest `|N_C - target_C|`.
+    pub max_constraint_error: f64,
+}
+
+/// Certificate of a constrained-DFT state (`run_cdft`): `reference` is the
+/// certificate of the UHF/UKS solve at the constrained density. Capability
+/// `cdft:uhf` or `cdft:uks`, [`Grade::Ungraded`]
+/// (`site/src/reference/validation.md` says "Not graded" for it). Records
+/// each constraint with its multiplier and population, the weight-operator
+/// grid and the outer-loop settings.
+pub fn cdft_certificate(
+    reference: &Certificate,
+    config: &RhfConfig,
+    run: &CdftRun<'_>,
+) -> Certificate {
+    let ks = config.xc.is_some();
+    let family = if ks { "uks" } else { "uhf" };
+    // The constrained stability descent runs on an HF reference only. When it
+    // ran it is this solve's stability check, so the SCF's "not checked"
+    // caveat does not apply to the returned state.
+    let descent = config.cdft_stability_descent && !ks;
+    let mut reference = reference.clone();
+    if descent {
+        reference
+            .warnings
+            .retain(|w| !w.starts_with("internal stability not checked"));
+    }
+    let mut c = Certificate::ungraded(format!("cdft:{family}")).with_reference(&reference);
+    for (i, k) in config.constraints.iter().enumerate() {
+        let get = |v: &[f64]| v.get(i).map_or("n/a".to_string(), |x| format!("{x:.6e}"));
+        c = c.with_approximation(
+            "cdft-constraint",
+            format!(
+                "{:?} population of atoms {:?}, target {}, lambda {}, population {}",
+                k.spin,
+                k.fragment,
+                k.target,
+                get(run.lambdas),
+                get(run.populations)
+            ),
+        );
+    }
+    let w_grid = config
+        .dft_grid
+        .clone()
+        .unwrap_or(ferric_dft::grid::AtomicGridConfig {
+            n_radial: 99,
+            n_angular: 302,
+            ..Default::default()
+        });
+    c = c
+        .with_approximation(
+            "cdft-weight-grid",
+            format!("Becke weight operator on {}", grid_text(&w_grid)),
+        )
+        .with_approximation(
+            "cdft-outer-loop",
+            format!(
+                "lambda Newton, tolerance {:e} e, at most {} iterations ({} used), \
+                 stability descent {}; max constraint error {:.3e} e",
+                config.cdft_lambda_tol,
+                config.cdft_max_outer,
+                run.outer_iterations,
+                if descent {
+                    "on"
+                } else if ks {
+                    "skipped on a KS reference"
+                } else {
+                    "off"
+                },
+                run.max_constraint_error
+            ),
+        );
+    if ks && config.cdft_stability_descent {
+        c.push_warning(
+            "the constrained stability descent is skipped on a KS reference: the returned \
+             state is a constrained stationary point, not necessarily the lowest state",
+        );
+    }
+    if !run.scf_converged {
+        c.push_warning("the inner SCF at the final lambda did not converge");
+    }
+    if run.max_constraint_error >= config.cdft_lambda_tol {
+        c.push_warning(format!(
+            "constraint error {:.3e} e is not below lambda_tol {:e}",
+            run.max_constraint_error, config.cdft_lambda_tol
+        ));
+    }
+    c
+}
+
+/// Certificate of a cDFT coupling (`cdft_coupling`) between the diabatic
+/// states certified by `a` and `b`. Capability `cdft-coupling`,
+/// [`Grade::Ungraded`]. State A's certificate is folded in as the reference;
+/// state B's approximations and warnings are kept with the prefix `state B`.
+pub fn cdft_coupling_certificate(
+    a: &Certificate,
+    b: &Certificate,
+    h_ab: f64,
+    s_ab: f64,
+) -> Certificate {
+    let mut c = Certificate::ungraded("cdft-coupling")
+        .with_reference(a)
+        .with_approximation(
+            "coupling-formula",
+            format!(
+                "Wu-Van Voorhis orthogonalized coupling between two charge-constrained \
+                 diabats sharing one Hamiltonian; h_ab {h_ab:.6e} Ha, s_ab {s_ab:.6e}"
+            ),
+        );
+    for ap in &b.approximations {
+        c = c.with_approximation(format!("state B {}", ap.name), ap.detail.clone());
+    }
+    for w in &b.warnings {
+        c.push_warning(format!("state B: {w}"));
+    }
+    c
+}
+
+/// What a `run_saddle` search reports, for [`saddle_certificate`].
+pub struct SaddleRun<'a> {
+    /// P-RFO steps taken.
+    pub steps: usize,
+    /// The gradient converged.
+    pub converged: bool,
+    /// Negative eigenvalues of the projected Hessian at the final geometry.
+    pub n_imaginary: usize,
+    /// Which construction produced the final Hessian.
+    pub hessian_source: &'a str,
+    /// The finite-difference displacement (Bohr), when the Hessian is finite-difference.
+    pub delta: Option<f64>,
+}
+
+/// Certificate of a P-RFO transition-state search: `reference` is the
+/// certificate of the SCF at the returned geometry. Capability
+/// `saddle:<kind>`, [`Grade::Ungraded`] (the page lists `run_saddle` under
+/// "Python entry points", not graded individually). Records the search
+/// settings and the Hessian construction; a result that is not a first-order
+/// saddle, or whose gradient did not converge, is a warning.
+pub fn saddle_certificate(
+    kind: &str,
+    reference: &Certificate,
+    cfg: &crate::saddle::SaddleConfig,
+    run: &SaddleRun<'_>,
+) -> Certificate {
+    let hessian = match run.delta {
+        Some(d) if run.hessian_source == "finite-difference" => {
+            format!("finite-difference, delta {d} Bohr")
+        }
+        _ => run.hessian_source.to_string(),
+    };
+    let mut c = Certificate::ungraded(format!("saddle:{kind}"))
+        .with_reference(reference)
+        .with_approximation(
+            "saddle-search",
+            format!(
+                "P-RFO following mode {}, trust radius {} Bohr, at most {} steps ({} used); \
+                 thresholds g_max {:e}, g_rms {:e} Ha/Bohr; Hessian recomputed every {} step(s) \
+                 (0 = once, then Bofill updates)",
+                cfg.follow_mode,
+                cfg.trust_radius,
+                cfg.max_steps,
+                run.steps,
+                cfg.g_max_thresh,
+                cfg.g_rms_thresh,
+                cfg.hessian_recalc_every
+            ),
+        )
+        .with_approximation("hessian", hessian);
+    if !run.converged {
+        c.push_warning(
+            "the gradient did not converge: the search stopped before a stationary point",
+        );
+    }
+    if run.n_imaginary != 1 {
+        c.push_warning(format!(
+            "{} imaginary mode(s) at the final geometry: not a first-order saddle point",
+            run.n_imaginary
+        ));
+    }
+    c
+}
+
+/// Solve the SCF of the QM region of `sys` for the certificate of a QM/MM
+/// optimization, whose driver does not return its final [`ScfResult`]. One
+/// SCF, no gradient, set up as the optimizer sets up each step: the
+/// geometry-task config, the embedding potential of `sys`, and for the
+/// Kohn-Sham methods the functional with the `def2-universal-jkfit` RI-J/RI-K
+/// auxiliary basis. Returns the QM molecule, the basis, the result and the
+/// config it was solved with.
+pub fn qmmm_final_point_scf(
+    ctx: &ParallelContext,
+    sys: &crate::qmmm::QmmmSystem,
+    basis_name: &str,
+    cfg: &crate::qmmm::QmmmOptimizeConfig,
+) -> Result<(Molecule, ferric_core::basis::BasisSet, ScfResult, RhfConfig), FerricError> {
+    use crate::qmmm::QmmmMethod;
+    let bs = ferric_core::basis::bundled(basis_name)?;
+    let mol = sys.to_qm_molecule();
+    let prep = PreparedBasis::new(&mol, &bs)?;
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &prep)?;
+    let mut scf = crate::gradient::gradient_task_config(&cfg.scf).into_owned();
+    scf.external_potential = sys.to_external_potential();
+    if let QmmmMethod::Rks(xc) | QmmmMethod::Uks(xc) = &cfg.method {
+        scf.xc = Some(xc.clone());
+        scf.df_j_aux = Some("def2-universal-jkfit".to_string());
+        scf.df_k_aux = Some("def2-universal-jkfit".to_string());
+    }
+    let r = match cfg.method {
+        QmmmMethod::Rhf | QmmmMethod::Rks(_) => solve_rhf(ctx, &mol, &prep, op, &bounds, &scf)?,
+        QmmmMethod::Uhf | QmmmMethod::Uks(_) => solve_uhf(ctx, &mol, &prep, &bounds, &scf)?,
+    };
+    Ok((mol, bs, r, scf))
+}
+
+#[cfg(test)]
+mod result_class_tests {
+    //! The wrapper certificates record what the wrapper adds, and stay
+    //! `Ungraded` because `site/src/reference/validation.md` has no
+    //! `method.kind` row for them.
+    use super::*;
+    use crate::qmmm::{QmSelection, QmmmAtom, QmmmSystem};
+    use ferric_core::certificate::Grade;
+
+    fn names(c: &Certificate) -> Vec<&str> {
+        c.approximations.iter().map(|a| a.name.as_str()).collect()
+    }
+
+    fn reference() -> Certificate {
+        Certificate::for_method_kind("rhf").with_approximation("ri-j", "aux x")
+    }
+
+    #[test]
+    fn qmmm_certificate_records_partition_and_embedding() {
+        let atoms = vec![
+            QmmmAtom::new("O", 8, 0.0, 0.0, 0.0, 0.0),
+            QmmmAtom::new("H", 1, 0.0, 0.0, 1.8, 0.0),
+            QmmmAtom::new("O", 8, 0.0, 0.0, 9.0, -0.8),
+        ];
+        let sys = QmmmSystem::new(&atoms, QmSelection::Indices(vec![0, 1]), 0, 1).unwrap();
+        let c = qmmm_certificate("rhf", &reference(), &sys, None, true);
+        assert_eq!(c.capability, "qmmm:rhf");
+        assert_eq!(c.grade, Grade::Ungraded);
+        assert!(c.grade_source.is_none());
+        let emb = c.approximations.iter().find(|a| a.name == "qmmm-embedding");
+        assert!(emb.is_some(), "no embedding record: {:?}", names(&c));
+        let emb = emb.unwrap();
+        assert!(
+            emb.detail.contains("1 point and 0 Gaussian-smeared"),
+            "{}",
+            emb.detail
+        );
+        assert!(
+            emb.detail.contains("boundary scheme Keep"),
+            "{}",
+            emb.detail
+        );
+        assert!(names(&c).contains(&"scf ri-j"));
+        assert!(!names(&c).contains(&"mm-force-field"));
+        let c = qmmm_certificate("rhf", &reference(), &sys, Some(3), false);
+        assert!(names(&c).contains(&"mm-force-field"));
+        assert_eq!(c.warnings, vec!["the embedded SCF did not converge"]);
+    }
+
+    #[test]
+    fn cdft_certificate_records_each_constraint() {
+        use ferric_dft::cdft::{Constraint, SpinChannel};
+        let cfg = RhfConfig {
+            constraints: vec![Constraint {
+                fragment: vec![0],
+                spin: SpinChannel::Total,
+                target: 2.2,
+            }],
+            ..Default::default()
+        };
+        let run = CdftRun {
+            lambdas: &[0.5],
+            populations: &[2.2],
+            outer_iterations: 4,
+            scf_converged: true,
+            max_constraint_error: 1e-7,
+        };
+        let c = cdft_certificate(&reference(), &cfg, &run);
+        assert_eq!(c.capability, "cdft:uhf");
+        assert_eq!(c.grade, Grade::Ungraded);
+        let k = c
+            .approximations
+            .iter()
+            .find(|a| a.name == "cdft-constraint");
+        assert!(k.is_some(), "no constraint record: {:?}", names(&c));
+        let k = k.unwrap();
+        assert!(k
+            .detail
+            .starts_with("Total population of atoms [0], target 2.2"));
+        assert!(c.warnings.is_empty(), "{:?}", c.warnings);
+        let bad = CdftRun {
+            scf_converged: false,
+            max_constraint_error: 1.0,
+            ..run
+        };
+        assert_eq!(cdft_certificate(&reference(), &cfg, &bad).warnings.len(), 2);
+    }
+
+    #[test]
+    fn coupling_certificate_prefixes_state_b() {
+        let a = Certificate::ungraded("cdft:uhf").with_approximation("cdft-constraint", "a");
+        let b = Certificate::ungraded("cdft:uhf")
+            .with_approximation("cdft-constraint", "b")
+            .warn("w");
+        let c = cdft_coupling_certificate(&a, &b, 1e-3, 0.1);
+        assert_eq!(c.capability, "cdft-coupling");
+        assert!(names(&c).contains(&"scf cdft-constraint"));
+        assert!(names(&c).contains(&"state B cdft-constraint"));
+        assert!(names(&c).contains(&"coupling-formula"));
+        assert_eq!(c.warnings, vec!["state B: w".to_string()]);
+    }
+
+    #[test]
+    fn saddle_certificate_warns_unless_a_first_order_saddle() {
+        let cfg = crate::saddle::SaddleConfig::default();
+        let run = SaddleRun {
+            steps: 7,
+            converged: true,
+            n_imaginary: 1,
+            hessian_source: "finite-difference",
+            delta: Some(0.01),
+        };
+        let c = saddle_certificate("rhf", &reference(), &cfg, &run);
+        assert_eq!(c.capability, "saddle:rhf");
+        assert_eq!(c.grade, Grade::Ungraded);
+        assert!(c.warnings.is_empty());
+        let h = c
+            .approximations
+            .iter()
+            .find(|a| a.name == "hessian")
+            .unwrap();
+        assert_eq!(h.detail, "finite-difference, delta 0.01 Bohr");
+        let c = saddle_certificate(
+            "rhf",
+            &reference(),
+            &cfg,
+            &SaddleRun {
+                converged: false,
+                n_imaginary: 0,
+                ..run
+            },
+        );
+        assert_eq!(c.warnings.len(), 2);
+    }
+}

@@ -418,12 +418,24 @@ pub(crate) struct PyQmmmResult {
     pub(crate) qm_gradient_data: Array2<f64>,
     pub(crate) mm_forces_data: Vec<[f64; 3]>,
     pub(crate) full_gradient_data: Array2<f64>,
+    pub(crate) certificate_data: ferric_core::certificate::Certificate,
     pub(crate) mm_energy_data: ferric_mm::MmEnergy,
     pub(crate) induced_dipoles_data: Option<Array2<f64>>,
 }
 
 #[pymethods]
 impl PyQmmmResult {
+    /// Validation certificate of this result (dict form of
+    /// `ferric_core::certificate::Certificate`; see `RhfResult.certificate`).
+    /// `capability` is `"qmmm:<method>"` and the grade is `"ungraded"`: the validation
+    /// page does not grade the QM/MM entry points. The QM-region SCF
+    /// certificate is folded in as the reference; the partition, the embedding
+    /// (MM charges, boundary scheme, link atoms, polarizable sites) and the MM force field are
+    /// approximations; a run that did not converge is a warning.
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        certificate_dict(py, &self.certificate_data)
+    }
     /// `dE/dR` on the QM molecule as solved: real QM atoms then link
     /// hydrogens, `(n_qm + n_link, 3)`.
     fn qm_gradient<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
@@ -817,6 +829,14 @@ pub(crate) fn run_qmmm(
         }
     }
 
+    let certificate_data = ferric_scf::certificate::qmmm_certificate(
+        method,
+        &reference_certificate(&mol, &r, &config, &bs),
+        sys,
+        mm_topology.map(|t| t.inner.n_atoms()),
+        r.converged,
+    );
+
     Ok(PyQmmmResult {
         energy: r.energy,
         converged: r.converged,
@@ -827,6 +847,7 @@ pub(crate) fn run_qmmm(
         full_gradient_data: full,
         mm_energy_data: mm_energy,
         induced_dipoles_data,
+        certificate_data,
     })
 }
 
@@ -843,10 +864,22 @@ pub(crate) struct PyQmmmOptimizeResult {
     pub(crate) steps: usize,
     pub(crate) system_data: ferric_scf::qmmm::QmmmSystem,
     pub(crate) energies_data: Vec<f64>,
+    pub(crate) certificate_data: ferric_core::certificate::Certificate,
 }
 
 #[pymethods]
 impl PyQmmmOptimizeResult {
+    /// Validation certificate of this result (dict form of
+    /// `ferric_core::certificate::Certificate`; see `RhfResult.certificate`).
+    /// `capability` is `"qmmm-optimize:<method>"` and the grade is `"ungraded"`: the validation
+    /// page does not grade the QM/MM entry points. The QM-region SCF
+    /// certificate is folded in as the reference; the partition, the embedding
+    /// (MM charges, boundary scheme, link atoms, polarizable sites), the MM atoms that moved and the optimizer settings are
+    /// approximations; a run that did not converge is a warning.
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        certificate_dict(py, &self.certificate_data)
+    }
     /// The partition at the final (optimized) geometry.
     fn system(&self) -> PyQmmmSystem {
         PyQmmmSystem {
@@ -952,12 +985,33 @@ pub(crate) fn run_optimize_qmmm(
 
     let ctx = ParallelContext::default();
     let r = optimize_qmmm(&ctx, &system.inner, basis_name, &cfg).map_err(make_err)?;
+    // The optimizer does not return its final SCF: re-solve it at the returned
+    // partition for the certificate. A failure there is a warning, not an error.
+    let certificate_data =
+        match ferric_scf::certificate::qmmm_final_point_scf(&ctx, &r.system, basis_name, &cfg) {
+            Ok((mol, bs, scf, used)) => ferric_scf::certificate::qmmm_optimize_certificate(
+                method_name,
+                &reference_certificate(&mol, &scf, &used, &bs),
+                &r.system,
+                &cfg,
+                r.converged,
+                r.steps,
+                r.energy,
+            ),
+            Err(e) => ferric_core::certificate::Certificate::ungraded(format!(
+                "qmmm-optimize:{method_name}"
+            ))
+            .warn(format!(
+                "the final-point SCF for this certificate failed: {e}"
+            )),
+        };
     Ok(PyQmmmOptimizeResult {
         energy: r.energy,
         converged: r.converged,
         steps: r.steps,
         system_data: r.system,
         energies_data: r.energies,
+        certificate_data,
     })
 }
 

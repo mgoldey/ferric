@@ -345,6 +345,13 @@ class QmmmResult:
     """Result of run_qmmm. Gradients are dE/dR (Hartree/Bohr); mm_forces() is the FORCE on each charge."""
 
     @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (same keys as ``RhfResult.certificate``).
+        ``capability`` is ``"qmmm:<method>"`` and the grade is ``"ungraded"``: the
+        validation page does not grade this entry point. The QM-region SCF certificate is the reference (its approximations and warnings carry the ``scf`` prefix); the partition, the embedding (MM charges, boundary scheme, link atoms, polarizable sites) and the MM force field are approximations; an unconverged SCF is a warning."""
+        ...
+
+    @property
     def energy(self) -> float: ...
     @property
     def converged(self) -> bool: ...
@@ -434,6 +441,13 @@ def run_qmmm(
 
 class QmmmOptimizeResult:
     """Result of run_optimize_qmmm."""
+
+    @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (same keys as ``RhfResult.certificate``).
+        ``capability`` is ``"qmmm-optimize:<method>"`` and the grade is ``"ungraded"``: the
+        validation page does not grade this entry point. The SCF at the returned partition (re-solved: the driver does not return its own) is the reference; the partition, the embedding, the MM force field, the MM atoms that moved and the optimizer settings are approximations; ``converged = False`` is a warning."""
+        ...
 
     @property
     def energy(self) -> float: ...
@@ -1253,6 +1267,13 @@ class CdftResult:
     """
 
     @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (same keys as ``RhfResult.certificate``).
+        ``capability`` is ``"cdft:uhf"`` or ``"cdft:uks"`` and the grade is ``"ungraded"``: the
+        validation page does not grade this entry point. The UHF/UKS certificate at the constrained density is the reference; each constraint (fragment, kind, target, multiplier, population), the Becke weight grid and the outer-loop settings are approximations; an unconverged inner SCF or constraint is a warning."""
+        ...
+
+    @property
     def energy(self) -> float:
         """Energy (Ha) at the constrained density, without the constraint term."""
         ...
@@ -1348,6 +1369,13 @@ class CdftResult:
 
 class CdftCouplingResult:
     """Wu-Van Voorhis coupling between two cDFT diabats (``cdft_coupling``)."""
+
+    @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (same keys as ``RhfResult.certificate``).
+        ``capability`` is ``"cdft-coupling"`` and the grade is ``"ungraded"``: the
+        validation page does not grade this entry point. State A's certificate is the reference; state B's approximations and warnings carry the prefix ``state B``; the Wu-Van Voorhis formula is recorded as an approximation."""
+        ...
 
     @property
     def h_ab(self) -> float:
@@ -4315,6 +4343,13 @@ def run_frequencies(
 
 class SaddleResult:
     """A first-order saddle point found by P-RFO."""
+
+    @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (same keys as ``RhfResult.certificate``).
+        ``capability`` is ``"saddle:<kind>"`` and the grade is ``"ungraded"``: the
+        validation page does not grade this entry point. The SCF at the returned geometry (re-solved) is the reference; the P-RFO settings and the Hessian construction are approximations; an unconverged gradient or a result that is not a first-order saddle is a warning."""
+        ...
 
     @property
     def energy(self) -> float: ...

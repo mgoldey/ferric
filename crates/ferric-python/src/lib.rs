@@ -1192,10 +1192,23 @@ struct PySaddleResult {
     /// `hessian="auto"` with `xc=`) "analytic-moving-grid".
     #[pyo3(get)]
     hessian_source: String,
+    certificate_data: ferric_core::certificate::Certificate,
 }
 
 #[pymethods]
 impl PySaddleResult {
+    /// Validation certificate of this result (dict form of
+    /// `ferric_core::certificate::Certificate`; see `RhfResult.certificate`).
+    /// `capability` is `"saddle:<kind>"` and the grade is `"ungraded"`: the
+    /// validation page does not grade `run_saddle`. The SCF at the returned
+    /// geometry (re-solved) is folded in as the reference; the P-RFO settings
+    /// and the Hessian construction are approximations; a gradient that did not
+    /// converge, or a result that is not a first-order saddle, is a warning.
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        certificate_dict(py, &self.certificate_data)
+    }
+
     /// A first-order transition state: gradient converged AND exactly one
     /// imaginary frequency. Both halves are required.
     fn is_transition_state(&self) -> bool {
@@ -1466,6 +1479,28 @@ fn run_saddle(
     let r = find_saddle(&m, &cfg, energy_gradient, hessian_cb).map_err(make_err)?;
     let hessian_source = source_cell.borrow().clone();
 
+    let certificate_data = {
+        let (kind, reference) =
+            task_reference_certificate(&r.mol, basis_name, &scf_cfg, ferric_scf::Spin::Restricted);
+        match reference {
+            Ok(reference) => ferric_scf::certificate::saddle_certificate(
+                kind,
+                &reference,
+                &cfg,
+                &ferric_scf::certificate::SaddleRun {
+                    steps: r.steps,
+                    converged: r.converged,
+                    n_imaginary: r.n_imaginary,
+                    hessian_source: &hessian_source,
+                    delta: Some(delta.unwrap_or(FrequencyConfig::default().delta)),
+                },
+            ),
+            Err(why) => {
+                ferric_core::certificate::Certificate::ungraded(format!("saddle:{kind}")).warn(why)
+            }
+        }
+    };
+
     const BOHR_TO_ANGSTROM: f64 = ferric_core::units::BOHR_TO_ANGSTROM;
     Ok(PySaddleResult {
         symbols: r.mol.atoms.iter().map(|a| a.symbol.clone()).collect(),
@@ -1488,6 +1523,7 @@ fn run_saddle(
         imaginary_mode: r.imaginary_mode.map(|v| v.to_vec()),
         lowest_eigenvalue: r.lowest_eigenvalue,
         hessian_source,
+        certificate_data,
     })
 }
 
