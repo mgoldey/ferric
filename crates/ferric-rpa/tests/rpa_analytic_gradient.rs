@@ -343,6 +343,8 @@ fn h2o_matches_fd5_of_ferrics_own_energy() {
 /// "fd"` (h = 5e-4, 120 RHF + RPA energies), both at n = 20, full rank. The
 /// gradients must agree within the FD route's truncation (bar 1e-6 Ha/Bohr,
 /// 20x its 5.6e-8 on H2O/NH3 to allow for the larger molecule).
+/// Measured once (release, OPENBLAS_NUM_THREADS=1, box load ~4-5): analytic
+/// 38.4 s, FD 1556.6 s, |g_a - g_fd|_max 2.25e-8.
 #[test]
 #[ignore = "timing: ~120 RHF + RPA energies on hexane / cc-pVDZ"]
 fn hexane_analytic_vs_fd_timing() {
