@@ -60,14 +60,14 @@ fn cfg(ladder: CcsdLadder) -> CcConfig {
     }
 }
 
-/// CONTRACT 1: the dense route charges the resident `vvvv` AND the three
-/// `nv⁴` temporaries of the `wvvvv` build — four blocks at the peak.
+/// CONTRACT 1: the dense route charges the resident `(ac|bd)` block AND the
+/// chemist `vvvv` it is permuted from during setup — two blocks at the peak.
 #[test]
-fn dense_route_charges_four_nv4_blocks() {
+fn dense_route_charges_two_nv4_blocks() {
     let t = smallest_accepted(LadderRoute::Dense, 6);
     assert!(
-        t >= 4 * nv4_bytes(),
-        "dense plan accepts {t} bytes but vvvv plus the a1/a2/a3 build is 4 x {}",
+        t >= 2 * nv4_bytes(),
+        "dense plan accepts {t} bytes but (ac|bd) plus the setup-time vvvv is 2 x {}",
         nv4_bytes()
     );
 }
@@ -116,11 +116,11 @@ fn ri_panel_is_charged_per_unit_of_block_width() {
 /// `Bx` and `L` (`2·naux·nv²`), the `nv³` transpose slab and the `no²·nv²`
 /// output `Z`. Both routes share every other reservation, so the RI
 /// threshold minus the dense threshold's shared part (dense threshold less
-/// its four `nv⁴` blocks, which dominate `eri3_ao` here) is exactly the RI
+/// its two `nv⁴` blocks, which dominate `eri3_ao` here) is exactly the RI
 /// scratch. Halving or dropping any fixed term moves this difference.
 #[test]
 fn ri_fixed_scratch_terms_are_charged_exactly() {
-    let shared = smallest_accepted(LadderRoute::Dense, 6) - 4 * nv4_bytes();
+    let shared = smallest_accepted(LadderRoute::Dense, 6) - 2 * nv4_bytes();
     for blk in [1usize, 7] {
         let ri = smallest_accepted(LadderRoute::Ri { block: blk }, 6);
         let want = (2 * NAUX * NV * NV + blk * NV.pow(3) + NV.pow(3) + NO * NO * NV * NV) * F64;

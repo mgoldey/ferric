@@ -58,12 +58,13 @@ The particle–particle ladder Σ<sub>cd</sub> W<sub>abcd</sub> τ<sub>ij</sub><
 of closed-shell CCSD can be evaluated two ways, chosen by `[cc] ladder`
 (Python `run_ccsd(ladder=)` / `run_ccsd_t(ladder=)`):
 
-- **`dense`** holds the chemist (ab|cd) block in core and builds W<sub>abcd</sub>
-  every iteration: n<sub>v</sub>⁴ memory, a few times over.
+- **`dense`** holds the (ac|bd) block in core (one n<sub>v</sub>⁴ buffer, two
+  during setup) and contracts the t1 terms of W<sub>abcd</sub> with τ
+  separately, so W<sub>abcd</sub> is never formed.
 - **`ri`** holds neither the (ab|cd) block nor W<sub>abcd</sub>. It rebuilds
   the (ac|bd) entries from the RI 3-index tensors every iteration in
   a<sub>blk</sub>·n<sub>v</sub>³ panels: at most one n<sub>v</sub>⁴-sized
-  panel at full width (dense holds four n<sub>v</sub>⁴ buffers at its peak),
+  panel at full width (dense holds two n<sub>v</sub>⁴ buffers at its peak),
   and narrower panels when the budget requires. It is the same algebra over
   the same tensors, so it is exact: on water/cc-pVDZ |ΔE| and
   max|Δt| are ≲ 3e-17 (round-off), and the alkane energies below agree to

@@ -484,10 +484,16 @@ pub fn ccsd_t_closed_shell(
 
     // Dressed RI 3-index MO blocks — identical construction to the CCSD
     // drivers, so the RI error cancels between CCSD and (T).
+    // FERRIC_TIMING phase table (inert otherwise); reports on every exit.
+    let mut phases =
+        ferric_core::timing::PhaseAccumulator::new().report_on_drop("closed-shell (T)");
+    let tok = phases.begin("setup: metric + AO 3-index");
     let v2c = ferric_integrals::threeindex::coulomb_metric_2c(op, dfbs)?;
     let v_inv_sqrt = cholesky_inverse_sqrt(&v2c)?;
     let eri3_ao = ferric_integrals::threeindex::eri3_tensor(op, obs, dfbs)?;
+    phases.stop(tok);
     use Axis::{O, V};
+    let tok = phases.begin("setup: RI B blocks");
     let b_ov = build_b(
         &transform_3center_ov(&eri3_ao, &c_occ, &c_vir),
         &v_inv_sqrt,
@@ -497,8 +503,10 @@ pub fn ccsd_t_closed_shell(
     let b_oo = build_b(&transform_3center_oo(&eri3_ao, &c_occ), &v_inv_sqrt, O, O);
     let b_vv = build_b(&transform_3center_vv(&eri3_ao, &c_vir), &v_inv_sqrt, V, V);
     drop(eri3_ao);
+    phases.stop(tok);
 
     // Chemist blocks (pq|rs) = Σ_P B^P_pq B^P_rs.
+    let tok = phases.begin("setup: chemist blocks");
     let ovvv: Array4<f64> = einsum!("Pia,Pbd->iabd", &b_ov, &b_vv)
         .into_dimensionality()
         .expect("ovvv 4D");
@@ -509,6 +517,7 @@ pub fn ccsd_t_closed_shell(
         .into_dimensionality()
         .expect("ovov 4D");
     let ints = TripleIntegrals { ovvv, ovoo, ovov };
+    phases.stop(tok);
 
     let eo: Vec<f64> = (0..no).map(|i| eps[first_occ + i]).collect();
     let ev: Vec<f64> = (0..nv).map(|a| eps[nocc_total + a]).collect();
@@ -583,6 +592,7 @@ pub fn ccsd_t_closed_shell(
         );
     }
     let mut et = 0.0f64;
+    let tok = phases.begin("triples loop");
     for chunk in triples.chunks(chunk_len) {
         // BLAS pinned to 1 EXPLICITLY: `w_block`'s GEMMs run inside this rayon
         // region, and `opt_in_blas_threads`'s self-guard only fires when called
@@ -626,6 +636,7 @@ pub fn ccsd_t_closed_shell(
             et += p;
         }
     }
+    phases.stop(tok);
 
     // Divisor 3 (NOT 6, NOT 36) — derived and measured, see the module doc's
     // "Combinatorial factor" section. The weighted i<=j<=k band above equals

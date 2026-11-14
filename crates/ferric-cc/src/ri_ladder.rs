@@ -2,13 +2,10 @@
 //!
 //! # What this replaces
 //!
-//! The dense spin-adapted CCSD in [`crate::ccsd_closed_shell`] materializes the
-//! chemist `vvvv` block `(ab|cd)` in core and builds the t1-dressed `W_abcd`
-//! from a permuted `(ac|bd)` copy every iteration — **four `nv⁴` buffers at
-//! the peak**, which is what its memory plan charges. Measured
-//! peak RSS on alkane/cc-pVDZ scales cleanly as `nv⁴` and hits 7.90 GB at
-//! `nv=109` (alkane_5, 130 basis functions) — a *basis-size* ceiling, not an
-//! atom-count one (STO-3G reaches alkane_8 in well under a GB).
+//! The dense spin-adapted CCSD in [`crate::ccsd_closed_shell`] holds the
+//! `(ac|bd)` block in core: one `nv⁴` buffer through the iterations and two
+//! during setup, which is what its memory plan charges. Its peak RSS therefore
+//! scales as `nv⁴`, a *basis-size* ceiling, not an atom-count one.
 //!
 //! This module computes the same contraction
 //!
