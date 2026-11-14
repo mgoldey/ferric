@@ -148,3 +148,23 @@ fn a_wrong_length_polarizability_list_is_refused() {
         "6 atoms",
     );
 }
+
+#[test]
+fn polarizable_embedding_refuses_x2c() {
+    assert_refused(
+        "polx2c",
+        &format!(
+            "{WATER_THOLE}[method]\nkind = \"rhf\"\n[scf]\nrelativistic = \"x2c1e\"\n[qmmm]\n{PQR}{ALPHAS}"
+        ),
+        "with [scf] relativistic is not supported",
+    );
+}
+
+#[test]
+fn cdft_refuses_x2c() {
+    assert_refused(
+        "cdftx2c",
+        &format!("{LIH}[method]\nkind = \"uhf\"\n[scf]\nrelativistic = \"x2c1e\"\n{CON}"),
+        "relativistic",
+    );
+}
