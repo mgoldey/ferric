@@ -1,0 +1,33 @@
+{
+  "label": "h2o",
+  "basis": "cc-pvdz",
+  "xc": "tpssh",
+  "pyscf_xc": "HYB_MGGA_XC_TPSSH",
+  "charge": 0,
+  "multiplicity": 1,
+  "main_grid": [
+    75,
+    110
+  ],
+  "nlc_grid": null,
+  "jk": "exact",
+  "hybrid_coeff": 0.1,
+  "rsh_coeff": [
+    0.0,
+    0.1,
+    0.0
+  ],
+  "libxc_version": "7.0.0",
+  "e_total": -76.41650069598504,
+  "e_nuc": 9.187838234078582,
+  "converged": true,
+  "hessian_lowest": [
+    0.2965017973665683,
+    0.360271316318458,
+    0.38448795065677116,
+    0.45762692566607743,
+    0.5373572296272695,
+    0.6509741636802301
+  ],
+  "hessian_convention": "dense gen_g_hop_rhf / 2"
+}

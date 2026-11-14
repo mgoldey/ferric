@@ -33,8 +33,14 @@ energy change draws a warning (see [sharp bits](../using/sharp-bits.md)).
 
 **What it is.** Kohn–Sham DFT through **libxc**: LDA, GGA, hybrid and
 range-separated hybrid functionals (for example PBE, B3LYP, ωB97X-V), **VV10**
-nonlocal correlation, and the **SCAN / r2SCAN / TPSS** meta-GGAs (τ-dependent;
-no density Laplacian). The solvers cover RKS, UKS and ROKS.
+nonlocal correlation, the **SCAN / r2SCAN / TPSS** meta-GGAs (τ-dependent;
+no density Laplacian), and the hybrid meta-GGAs **TPSSh, M06-2X, SCAN0,
+r2SCAN0** (libxc 6 or later) and **ωB97M-V** (range-separated, with VV10).
+Any libxc meta-GGA identifier (`MGGA_*`, `HYB_MGGA_*`) is accepted unless libxc
+flags it as needing the density Laplacian (`XC_FLAGS_NEEDS_LAPLACIAN`, e.g.
+SCAN-L, BR89), which is refused with a message naming that component. A hybrid meta-GGA
+takes its exact-exchange fraction, and range separation if any, from libxc,
+the same way the hybrid GGAs do. The solvers cover RKS, UKS and ROKS.
 
 **Run it.** `method.kind = "ksdft"` with `[dft] functional = "PBE"`
 (`examples/water-wb97xv.toml`, `examples/benzene-dfb3lyp.toml`); Python
@@ -86,8 +92,21 @@ multiplicity > 1), and in Python through
 **Accuracy.** `ksdft` is Proven. SCAN/r2SCAN/TPSS energies are pinned against PySCF
 (`ferric-scf/tests/dft_scan.rs`); the SCAN/r2SCAN closed-shell gradients against
 PySCF with grid response (`dft_gradient_mgga.rs`). TPSS gradients have no
-PySCF pin. Other meta-GGA variants
-(deorbitalized, +VV10, hybrid meta-GGA) are refused, not approximated. The
+PySCF pin. Hybrid meta-GGA energies match PySCF to 1e-13..2e-13 Ha with
+exact J/K on the flat 75 × 110 grid (TPSSh, M06-2X, SCAN0; H2O RKS, NH2 UKS,
+TPSSh NH2 ROKS, cc-pVDZ) and wB97M-V to 6e-8 Ha with RI-J/K
+(`dft_hybrid_mgga.rs`); their RKS and UKS gradients match PySCF with grid
+response to 4e-8 Ha/Bohr and finite differences of ferric's energy to 1.4e-7
+(TPSSh, M06-2X, 6-31G; `dft_gradient_hybrid_mgga.rs`). The response consumers
+take the τ kernel plus the libxc fraction of exact exchange: the TPSSh internal
+stability eigenvalue matches PySCF's dense orbital Hessian to 6e-9 (RKS H2O)
+and 7e-10 Ha (UKS NH2), Newton lands on the DIIS energy, the MBD@rsSCS gradient's Z-vector
+(TPSSh, RKS H2O/STO-3G) matches finite differences of the full SCF pipeline to
+3.5e-9 Ha/Bohr, and TDA/Casida
+excitations of water/6-31G match PySCF to 3e-7 eV (TPSSh) and 1e-6 eV
+(M06-2X). Laplacian-dependent
+meta-GGAs are refused, not approximated. Periodic (PBC) routes refuse hybrid
+meta-GGAs. The
 \\( V_{xc} \\), \\( f_{xc} \\), VV10, Becke-weight and gradient formulas are
 derived in [DFT derivations](./dft-derivations.md).
 

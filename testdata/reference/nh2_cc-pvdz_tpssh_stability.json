@@ -1,0 +1,33 @@
+{
+  "label": "nh2",
+  "basis": "cc-pvdz",
+  "xc": "tpssh",
+  "pyscf_xc": "HYB_MGGA_XC_TPSSH",
+  "charge": 0,
+  "multiplicity": 2,
+  "main_grid": [
+    75,
+    110
+  ],
+  "nlc_grid": null,
+  "jk": "exact",
+  "hybrid_coeff": 0.1,
+  "rsh_coeff": [
+    0.0,
+    0.1,
+    0.0
+  ],
+  "libxc_version": "7.0.0",
+  "e_total": -55.87978164984192,
+  "e_nuc": 7.538142851371839,
+  "converged": true,
+  "hessian_lowest": [
+    0.08349066817572837,
+    0.2416859705632506,
+    0.2688489999909103,
+    0.30020601158930454,
+    0.30509197551014766,
+    0.33175554136786634
+  ],
+  "hessian_convention": "dense gen_g_hop_uhf"
+}

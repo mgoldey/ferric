@@ -518,6 +518,21 @@ fn mbd_exact_gradient_matches_fd_of_full_scf_pipeline_r2scan() {
     full_pipeline_fd_check("r2SCAN", &cfg, &MbdRsscsConfig::with_beta(0.83));
 }
 
+/// The same check on a hybrid meta-GGA (TPSSh, 10% exact exchange from
+/// libxc): the Z-vector Hessian carries the τ f_xc kernel plus 0.1·K
+/// response, and the contraction differentiates the hybrid meta-GGA gradient.
+/// β is PBE's (the check is of the derivative). Measured 3.5e-9 against the
+/// file's `FD_FULL_TOL`; without the K response in the Z-vector Hessian it is
+/// 6.2e-7 (mutation).
+#[test]
+fn mbd_exact_gradient_matches_fd_of_full_scf_pipeline_tpssh() {
+    let cfg = RhfConfig {
+        xc: Some("TPSSh".to_string()),
+        ..rks_pbe()
+    };
+    full_pipeline_fd_check("TPSSh", &cfg, &MbdRsscsConfig::with_beta(0.83));
+}
+
 fn full_pipeline_fd_check(label: &str, cfg: &RhfConfig, mbd_cfg: &MbdRsscsConfig) {
     let mol = Molecule::parse_xyz(H2O_XYZ, 0, 1).expect("h2o");
     let bs = basis::bundled("sto-3g").expect("sto-3g");

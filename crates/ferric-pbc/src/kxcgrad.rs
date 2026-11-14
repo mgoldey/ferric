@@ -178,10 +178,10 @@
 //! SCAN, r2SCAN and TPSS are validated end to end for the closed shell
 //! (TPSS: FD of the TPSS SCF energy and the 1x1x1 = Gamma-route anchor, plus
 //! the fixed-`D` finite difference on its raw components `MGGA_X_TPSS` /
-//! `MGGA_C_TPSS`); open-shell TPSS is refused by the UKS gates. No hybrid
-//! meta-GGA resolves ([`ferric_dft::libxc::xc_def_from_name`] rejects
-//! `HYB_MGGA_*`), so there is nothing for the exchange fraction to compose
-//! with.
+//! `MGGA_C_TPSS`); open-shell TPSS is refused by the UKS gates. Hybrid
+//! meta-GGAs (TPSSh, M06-2X, ...) resolve for molecules but every periodic
+//! route refuses them ([`crate::dft::resolve_periodic_functional_mgga`]), so
+//! there is nothing here for an exchange fraction to compose with.
 //!
 //! Limits of the checks. The H2 fixtures have `α ≈ 0` (single-orbital
 //! regions) and never reach SCAN's `α ≈ 1` switching region. The null-tau hook

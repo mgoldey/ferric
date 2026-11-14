@@ -360,7 +360,7 @@ matrices, `"davidson"` is matrix-free (an unconverged root raises), and
 `result.solver` and `result.residuals` report what ran. With `functional=...` it includes the
 `(ia|f_xc|jb)` exchange-correlation kernel; VV10 and range-separated
 functionals are refused because their kernel is not built. A τ-only meta-GGA
-(SCAN, r2SCAN, TPSS) defaults to a 150 × 434 grid; `result.grid` reports the
+(SCAN, r2SCAN, TPSS, and hybrids such as TPSSh and M06-2X) defaults to a 150 × 434 grid; `result.grid` reports the
 grid the reference SCF and the kernel shared, and `result.certificate` lists it
 as `response-grid`. With no
 `functional`, it is CIS (`method="tda"`) or TDHF (`method="casida"`). Both
@@ -704,7 +704,7 @@ capability is Python-only. How well each one is validated is on
 | `run_rhf` | Closed-shell RHF with the full SCF knob set, point charges, field and IEF-PCM solvent; `with_gradient=True` adds the analytic gradient (an unset `ri_j_precision` is then `"f64"`). | `rhf` |
 | `run_uhf` | Unrestricted HF; α/β counts come from the molecule's charge and multiplicity. `with_gradient=True` as for `run_rhf`. | `uhf` |
 | `run_rohf` | Restricted open-shell HF (Guest–Saunders coupling); returns a `UhfResult`. `with_gradient=True` as for `run_rhf`. | `rohf` |
-| `run_dft` | Closed-shell Kohn–Sham DFT (LDA/GGA/hybrid/RSH/meta-GGA by name), optional dispersion (`dispersion="d3bj"` or `"mbd"`, added to the energy and, with `with_gradient=True`, to the gradient) and analytic gradient. | `ksdft` |
+| `run_dft` | Closed-shell Kohn–Sham DFT (LDA/GGA/hybrid/RSH/meta-GGA, pure or hybrid, by name), optional dispersion (`dispersion="d3bj"` or `"mbd"`, added to the energy and, with `with_gradient=True`, to the gradient) and analytic gradient. | `ksdft` |
 | `run_ksdft` | Alias of `run_dft`. | `ksdft` |
 | `run_uks` | Unrestricted Kohn–Sham for an open-shell molecule (functional required); returns a `UhfResult`; `with_gradient=True` gives the analytic UKS gradient. | `ksdft` (multiplicity > 1) |
 | `run_roks` | Restricted open-shell Kohn–Sham (functional required); returns a `UhfResult`; `with_gradient=True` gives the analytic ROKS gradient. | `rohf` + `[dft] functional` |

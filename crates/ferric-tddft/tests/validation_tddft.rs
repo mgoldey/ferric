@@ -175,14 +175,15 @@ fn setup_on(refj: &Value, xc: Option<&str>, grid: AtomicGridConfig) -> Setup {
 }
 
 /// The SCF and f_xc grid. The production (pruned) grid for every case but
-/// the meta-GGA, which runs on the reference's own flat (75, 110) grid. The
+/// the meta-GGAs (pure and hybrid), which run on the reference's own flat
+/// (75, 110) grid. The
 /// production scheme's radial thinning (H 50, O 66 shells) moves r2SCAN roots
 /// by up to 1.8e-3 eV (PBE: 1.6e-7). That is grid error, not a ferric defect:
 /// PySCF on ferric's own pruned coordinates and weights agrees to 6e-8 eV
 /// (site/src/methods/rpa-gw.md, "Meta-GGA response needs a finer grid").
 fn kernel_grid(xc: Option<&str>) -> AtomicGridConfig {
     match xc {
-        Some("r2SCAN") => AtomicGridConfig {
+        Some("r2SCAN" | "TPSSh" | "M06-2X") => AtomicGridConfig {
             n_radial: 75,
             n_angular: 110,
             ..Default::default()
@@ -419,6 +420,10 @@ validation_case!(
     "r2SCAN",
     Some("r2SCAN")
 );
+// Hybrid meta-GGAs: the τ kernel plus c_HF·K from libxc's fraction (TPSSh
+// 0.10, M06-2X 0.54), on the same flat (75, 110) grid as r2SCAN.
+validation_case!(water_631g_tpssh, "water", "6-31g", "TPSSh", Some("TPSSh"));
+validation_case!(water_631g_m062x, "water", "6-31g", "M06-2X", Some("M06-2X"));
 validation_case!(water_augdz_hf, "water", "aug-cc-pvdz", "HF", None);
 validation_case!(water_augdz_lda, "water", "aug-cc-pvdz", "LDA", Some("LDA"));
 validation_case!(water_augdz_pbe, "water", "aug-cc-pvdz", "PBE", Some("PBE"));

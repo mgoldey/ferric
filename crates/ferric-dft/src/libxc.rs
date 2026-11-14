@@ -262,7 +262,7 @@ pub enum LibxcError {
     #[error("xc_func_alloc returned null")]
     AllocFailed,
     /// A functional or evaluation libxc offers but ferric does not support
-    /// (e.g. meta-GGAs other than SCAN / r2SCAN / TPSS, or a missing fxc).
+    /// (e.g. a Laplacian-dependent meta-GGA, or a missing fxc).
     #[error("unsupported functional: {0}")]
     Unsupported(String),
     /// External parameters were set on a functional that has none.
@@ -313,8 +313,11 @@ pub enum FunctionalFamily {
     HybridGga,
     /// Range-separated hybrid (libxc CAM coefficients with ω ≠ 0).
     RangeSepGga,
-    /// Semilocal meta-GGA (needs the kinetic-energy density τ). ferric supports
-    /// SCAN / r2SCAN / TPSS — none of which need the density Laplacian.
+    /// Meta-GGA (needs the kinetic-energy density τ), pure or hybrid: the
+    /// family only selects the τ-dependent semilocal evaluation; exact
+    /// exchange comes from the owning [`XcDef`]'s `b3lyp_mix` / `cam`, as for
+    /// hybrid GGAs. Functionals libxc flags as needing the density Laplacian
+    /// are refused when resolved.
     MetaGga,
 }
 
@@ -1164,10 +1167,36 @@ impl XcFunctional {
     /// is called on a functional without it, so every fxc caller checks this.
     pub fn has_fxc(&self) -> bool {
         const XC_FLAGS_HAVE_FXC: c_int = 1 << 2;
+        self.info_flags() & XC_FLAGS_HAVE_FXC != 0
+    }
+
+    /// Whether libxc implements the energy density (`XC_FLAGS_HAVE_EXC`).
+    /// Potential-only functionals (model potentials) lack it.
+    pub fn has_exc(&self) -> bool {
+        const XC_FLAGS_HAVE_EXC: c_int = 1 << 0;
+        self.info_flags() & XC_FLAGS_HAVE_EXC != 0
+    }
+
+    /// Whether libxc flags this functional as depending on the density
+    /// Laplacian ∇²ρ (`XC_FLAGS_NEEDS_LAPLACIAN`). ferric's meta-GGA path is
+    /// τ-only: it feeds libxc a zero Laplacian, so such a functional would be
+    /// evaluated wrongly and is refused at resolution.
+    pub fn needs_laplacian(&self) -> bool {
+        const XC_FLAGS_NEEDS_LAPLACIAN: c_int = 1 << 15;
+        self.info_flags() & XC_FLAGS_NEEDS_LAPLACIAN != 0
+    }
+
+    /// The `XC_FLAGS_*` bit set of this functional's info record (0 if libxc
+    /// returns no record).
+    fn info_flags(&self) -> c_int {
         // SAFETY: live initialized handle; the info record is static.
         unsafe {
             let info = ffi::xc_func_get_info(self.ptr);
-            !info.is_null() && (ffi::xc_func_info_get_flags(info) & XC_FLAGS_HAVE_FXC) != 0
+            if info.is_null() {
+                0
+            } else {
+                ffi::xc_func_info_get_flags(info)
+            }
         }
     }
 
@@ -1422,39 +1451,55 @@ fn friendly_to_libxc(name: &str) -> Option<&'static [&'static str]> {
         .chars()
         .filter(|c| *c != '-' && *c != '_')
         .collect();
-    let pair: &'static [&'static str] = match key.as_str() {
-        // --- LDA ---
-        "LDA" | "SVWN" => &["LDA_X", "LDA_C_VWN"],
-        // --- pure GGA (exchange + correlation pair) ---
-        "PBE" => &["GGA_X_PBE", "GGA_C_PBE"],
-        "PBESOL" => &["GGA_X_PBE_SOL", "GGA_C_PBE_SOL"],
-        "BLYP" => &["GGA_X_B88", "GGA_C_LYP"],
-        "BP86" => &["GGA_X_B88", "GGA_C_P86"],
-        // --- pure meta-GGA (exchange + correlation pair; need τ) ---
-        "SCAN" => &["MGGA_X_SCAN", "MGGA_C_SCAN"],
-        "R2SCAN" => &["MGGA_X_R2SCAN", "MGGA_C_R2SCAN"],
-        "TPSS" => &["MGGA_X_TPSS", "MGGA_C_TPSS"],
-        // --- hybrid / RSH (single combined identifier) ---
-        // PBE0 is libxc's HYB_GGA_XC_PBEH ("PBE hybrid") — HYB_GGA_XC_PBE0
-        // does not exist in libxc.
-        "PBE0" | "PBEH" => &["HYB_GGA_XC_PBEH"],
-        "B3LYP" => &["HYB_GGA_XC_B3LYP"],
-        // HSE06: screened (short-range-only) PBE hybrid, ω = 0.11 Bohr⁻¹.
-        "HSE06" => &["HYB_GGA_XC_HSE06"],
-        "WB97XV" => &["HYB_GGA_XC_WB97X_V"],
-        _ => return None,
-    };
-    Some(pair)
+    FRIENDLY_NAMES
+        .iter()
+        .find(|(keys, _)| keys.contains(&key.as_str()))
+        .map(|&(_, ids)| ids)
 }
+
+/// Friendly-name keys (normalized: uppercase, no `-` / `_`) and the libxc
+/// components each resolves to, for [`friendly_to_libxc`].
+type FriendlyEntry = (&'static [&'static str], &'static [&'static str]);
+const FRIENDLY_NAMES: &[FriendlyEntry] = &[
+    // --- LDA ---
+    (&["LDA", "SVWN"], &["LDA_X", "LDA_C_VWN"]),
+    // --- pure GGA (exchange + correlation pair) ---
+    (&["PBE"], &["GGA_X_PBE", "GGA_C_PBE"]),
+    (&["PBESOL"], &["GGA_X_PBE_SOL", "GGA_C_PBE_SOL"]),
+    (&["BLYP"], &["GGA_X_B88", "GGA_C_LYP"]),
+    (&["BP86"], &["GGA_X_B88", "GGA_C_P86"]),
+    // --- pure meta-GGA (exchange + correlation pair; need τ) ---
+    (&["SCAN"], &["MGGA_X_SCAN", "MGGA_C_SCAN"]),
+    (&["R2SCAN"], &["MGGA_X_R2SCAN", "MGGA_C_R2SCAN"]),
+    (&["TPSS"], &["MGGA_X_TPSS", "MGGA_C_TPSS"]),
+    // --- hybrid meta-GGA (τ-only; exact-exchange fraction / CAM from libxc) ---
+    (&["TPSSH"], &["HYB_MGGA_XC_TPSSH"]),
+    (&["M062X"], &["HYB_MGGA_X_M06_2X", "MGGA_C_M06_2X"]),
+    (&["SCAN0"], &["HYB_MGGA_X_SCAN0", "MGGA_C_SCAN"]),
+    // libxc >= 6 only (an older libxc reports an unknown name).
+    (&["R2SCAN0"], &["HYB_MGGA_XC_R2SCAN0"]),
+    (&["WB97MV"], &["HYB_MGGA_XC_WB97M_V"]),
+    // --- hybrid / RSH (single combined identifier) ---
+    // PBE0 is libxc's HYB_GGA_XC_PBEH ("PBE hybrid") — HYB_GGA_XC_PBE0
+    // does not exist in libxc.
+    (&["PBE0", "PBEH"], &["HYB_GGA_XC_PBEH"]),
+    (&["B3LYP"], &["HYB_GGA_XC_B3LYP"]),
+    // HSE06: screened (short-range-only) PBE hybrid, ω = 0.11 Bohr⁻¹.
+    (&["HSE06"], &["HYB_GGA_XC_HSE06"]),
+    (&["WB97XV"], &["HYB_GGA_XC_WB97X_V"]),
+];
 
 /// Resolve a human-friendly functional name to an `XcDef`. nspin=1 for
 /// closed-shell, nspin=2 for spin-polarized (UKS / ROKS).
 ///
 /// Recognized friendly names: `LDA`/`SVWN`, `PBE`, `PBEsol`, `BLYP`, `BP86`,
-/// `PBE0`, `B3LYP`, `HSE06`, `wB97X-V`, and the pure meta-GGAs `SCAN`, `r2SCAN`,
-/// `TPSS` (case/separator-insensitive). Any other name is passed to libxc
-/// verbatim, so canonical identifiers (e.g. `HYB_GGA_XC_PBEH`) also work; raw
-/// meta-GGA identifiers are limited to the SCAN / r2SCAN / TPSS components.
+/// `PBE0`, `B3LYP`, `HSE06`, `wB97X-V`, the pure meta-GGAs `SCAN`, `r2SCAN`,
+/// `TPSS`, and the hybrid meta-GGAs `TPSSh`, `M06-2X`, `SCAN0`, `r2SCAN0`
+/// (libxc >= 6) and `wB97M-V` (case/separator-insensitive). Any other name is
+/// passed to libxc verbatim, so canonical identifiers (e.g. `HYB_GGA_XC_PBEH`,
+/// `HYB_MGGA_XC_TPSSH`) also work. Meta-GGAs (raw or friendly) take their
+/// exact-exchange fraction and range separation from libxc and are refused
+/// when libxc flags them as needing the density Laplacian.
 pub fn xc_def_from_name(name: &str) -> Result<XcDef, LibxcError> {
     xc_def_from_name_nspin(name, 1)
 }
@@ -1697,6 +1742,11 @@ pub fn xc_def_from_name_nspin(name: &str, nspin: u32) -> Result<XcDef, LibxcErro
     // Friendly-name alias layer: map common chemistry names to canonical libxc
     // component identifiers. Composite (LDA/GGA/mGGA) → X+C pair; hybrid/RSH → one.
     if let Some(components) = friendly_to_libxc(name) {
+        // Any meta-GGA component (pure or hybrid) goes through the τ-aware
+        // builder, which reads exact exchange and CAM from every component.
+        if components.iter().any(|id| id.contains("MGGA")) {
+            return metagga_def(name, components, nspin);
+        }
         // Single combined identifier ⇒ hybrid or range-separated functional.
         if components.len() == 1 {
             let mut f = XcFunctional::new(components[0], nspin)?;
@@ -1740,37 +1790,11 @@ pub fn xc_def_from_name_nspin(name: &str, nspin: u32) -> Result<XcDef, LibxcErro
         });
     }
 
-    // Raw (non-friendly) meta-GGA identifiers: only the semilocal SCAN / r2SCAN
-    // / TPSS families ferric can evaluate (τ-only, no Laplacian) are allowed
-    // through as a single-component functional. Any other raw `MGGA_*` name is
-    // rejected up front rather than mis-evaluated — including hybrid/deorbitalized
-    // variants (HYB_MGGA_*, *SCANL, *_VV10, *_RVV10) which ferric has no path for.
+    // Raw meta-GGA identifiers (pure `MGGA_*` or hybrid `HYB_MGGA_*`): one
+    // component through the τ-aware builder, which refuses Laplacian-dependent
+    // and potential-only functionals by their libxc flags.
     if upper.contains("MGGA") {
-        let is_supported_raw_mgga = matches!(
-            upper.as_str(),
-            "MGGA_X_SCAN"
-                | "MGGA_C_SCAN"
-                | "MGGA_X_R2SCAN"
-                | "MGGA_C_R2SCAN"
-                | "MGGA_X_TPSS"
-                | "MGGA_C_TPSS"
-        );
-        if !is_supported_raw_mgga {
-            return Err(LibxcError::Unsupported(format!(
-                "{name}: only SCAN / r2SCAN / TPSS meta-GGAs are supported \
-                 (τ-only kernels; no Laplacian, hybrid-mGGA, or deorbitalized \
-                 variants)"
-            )));
-        }
-        let mut f = XcFunctional::new(name, nspin)?;
-        f.set_family(FunctionalFamily::MetaGga);
-        return Ok(XcDef {
-            funcs: vec![f],
-            cam: None,
-            vv10: None,
-            b3lyp_mix: None,
-            weights: None,
-        });
+        return metagga_def(name, &[name], nspin);
     }
 
     // Unrecognized friendly name: treat as a raw libxc identifier.
@@ -1828,13 +1852,95 @@ pub fn xc_def_from_name_nspin(name: &str, nspin: u32) -> Result<XcDef, LibxcErro
     }
 }
 
+/// Build a meta-GGA definition from libxc component identifiers (one
+/// combined `*_XC_*` id, or an exchange + correlation pair).
+///
+/// Every component is checked against libxc's flags: a functional that needs
+/// the density Laplacian (`XC_FLAGS_NEEDS_LAPLACIAN`) or has no energy density
+/// (`XC_FLAGS_HAVE_EXC` unset) is refused, since ferric's meta-GGA path is
+/// τ-only and energy-based. Exact exchange is read from libxc per component:
+/// a CAM (ω ≠ 0) component sets `cam`, any other component's
+/// `xc_hyb_exx_coef` adds to the global fraction `b3lyp_mix` (for M06-2X the
+/// exchange component carries 0.54 and the correlation component 0). VV10
+/// coefficients come from whichever component carries them. Components whose
+/// identifier is not a meta-GGA keep their own family.
+fn metagga_def(name: &str, ids: &[&str], nspin: u32) -> Result<XcDef, LibxcError> {
+    let handles = ids
+        .iter()
+        .map(|id| XcFunctional::new(id, nspin))
+        .collect::<Result<Vec<_>, _>>()?;
+    metagga_def_from_handles(name, ids, handles)
+}
+
+/// [`metagga_def`] on already-initialised handles (one per `ids` entry), so a
+/// caller that changed a handle's external parameters gets the exact-exchange
+/// fraction libxc reports after the change.
+fn metagga_def_from_handles(
+    name: &str,
+    ids: &[&str],
+    handles: Vec<XcFunctional>,
+) -> Result<XcDef, LibxcError> {
+    let mut funcs = Vec::with_capacity(ids.len());
+    let mut cam: Option<CamCoeffs> = None;
+    let mut exx = 0.0_f64;
+    let mut vv10: Option<Vv10Params> = None;
+    for (id, mut f) in ids.iter().zip(handles) {
+        if f.needs_laplacian() {
+            return Err(LibxcError::Unsupported(format!(
+                "{name}: component {id} depends on the density Laplacian \
+                 (libxc XC_FLAGS_NEEDS_LAPLACIAN); ferric's meta-GGA path is τ-only"
+            )));
+        }
+        if !f.has_exc() {
+            return Err(LibxcError::Unsupported(format!(
+                "{name}: component {id} has no energy density in libxc \
+                 (a potential-only model), so it has no SCF energy"
+            )));
+        }
+        match f.cam_coefficients() {
+            Some(c) => {
+                if cam.is_some() {
+                    return Err(LibxcError::Unsupported(format!(
+                        "{name}: more than one range-separated component"
+                    )));
+                }
+                cam = Some(c);
+            }
+            None => exx += f.exact_exchange_mix(),
+        }
+        if let Some(v) = f.vv10_coeffs() {
+            if vv10.is_some() {
+                return Err(LibxcError::Unsupported(format!(
+                    "{name}: more than one VV10 component"
+                )));
+            }
+            vv10 = Some(v);
+        }
+        f.set_family(family_from_component_id(&id.to_uppercase()));
+        funcs.push(f);
+    }
+    if cam.is_some() && exx != 0.0 {
+        return Err(LibxcError::Unsupported(format!(
+            "{name}: a range-separated component combined with a separate global \
+             exact-exchange fraction"
+        )));
+    }
+    Ok(XcDef {
+        funcs,
+        cam,
+        vv10,
+        b3lyp_mix: (exx != 0.0).then_some(exx),
+        weights: None,
+    })
+}
+
 /// Family of a canonical libxc component identifier, from its prefix.
-/// `LDA_*` → Lda, `MGGA_*` → MetaGga, everything else → Gga (the pure-pair
-/// path never sees hybrid/RSH single identifiers).
+/// `LDA_*` → Lda, `MGGA_*` and `HYB_MGGA_*` → MetaGga, everything else → Gga
+/// (the pure-pair path never sees hybrid/RSH GGA single identifiers).
 fn family_from_component_id(id: &str) -> FunctionalFamily {
     if id.starts_with("LDA") {
         FunctionalFamily::Lda
-    } else if id.starts_with("MGGA") {
+    } else if id.starts_with("MGGA") || id.starts_with("HYB_MGGA") {
         FunctionalFamily::MetaGga
     } else {
         FunctionalFamily::Gga
@@ -1926,19 +2032,174 @@ mod tests {
         }
     }
 
-    /// Supported raw meta-GGA identifiers resolve; UNsupported meta-GGA variants
-    /// (hybrid, deorbitalized, +VV10) must fail with a clear `Unsupported` error
-    /// rather than be silently mis-evaluated (ferric has no path for them).
+    /// Raw τ-only meta-GGA identifiers resolve; a Laplacian-dependent one is
+    /// refused by libxc's `XC_FLAGS_NEEDS_LAPLACIAN`, with a message naming it.
     #[test]
-    fn unsupported_metagga_variants_rejected_clearly() {
-        // Supported τ-only kernels resolve.
+    fn laplacian_metagga_rejected_by_flag() {
         assert!(xc_def_from_name("MGGA_X_SCAN").is_ok());
         assert!(xc_def_from_name("MGGA_X_TPSS").is_ok());
-        // Unsupported variants: deorbitalized (SCANL, needs Laplacian), +VV10,
-        // and hybrid-mGGA all reject.
-        for bad in ["MGGA_X_SCANL", "MGGA_C_SCAN_VV10", "HYB_MGGA_XC_R2SCAN"] {
-            let ok = matches!(xc_def_from_name(bad), Err(LibxcError::Unsupported(_)));
-            assert!(ok, "{bad} should give LibxcError::Unsupported");
+        assert!(xc_def_from_name("HYB_MGGA_XC_TPSSH").is_ok());
+        // SCAN-L (deorbitalized) and BR89 depend on ∇²ρ.
+        for bad in ["MGGA_X_SCANL", "MGGA_X_BR89"] {
+            let probe = XcFunctional::new(bad, 1).expect("libxc knows it");
+            assert!(probe.needs_laplacian(), "{bad} must carry the flag");
+            match xc_def_from_name(bad) {
+                Err(LibxcError::Unsupported(msg)) => {
+                    assert!(msg.contains("Laplacian"), "{bad}: message {msg:?}")
+                }
+                other => panic!("{bad} should be refused as Laplacian-dependent: {other:?}"),
+            }
         }
+        // The τ-only kernels ferric evaluates do not carry the flag.
+        for ok in [
+            "MGGA_X_SCAN",
+            "MGGA_C_SCAN",
+            "HYB_MGGA_X_M06_2X",
+            "MGGA_C_M06_2X",
+        ] {
+            assert!(!XcFunctional::new(ok, 1).unwrap().needs_laplacian(), "{ok}");
+        }
+    }
+
+    /// Hybrid meta-GGAs read their exact-exchange fraction from libxc: TPSSh
+    /// 0.10 (one combined component), M06-2X 0.54 (on the exchange component of
+    /// an X + C pair), SCAN0 0.25. Every component is tagged MetaGga (τ path)
+    /// and none is range-separated.
+    #[test]
+    fn hybrid_metagga_reads_exact_exchange_from_libxc() {
+        for (name, ncomp, a) in [
+            ("TPSSh", 1, 0.10),
+            ("M06-2X", 2, 0.54),
+            ("m062x", 2, 0.54),
+            ("SCAN0", 2, 0.25),
+            ("HYB_MGGA_XC_TPSSH", 1, 0.10),
+        ] {
+            for nspin in [1, 2] {
+                let def = xc_def_from_name_nspin(name, nspin)
+                    .unwrap_or_else(|e| panic!("{name} should resolve: {e:?}"));
+                assert_eq!(def.funcs.len(), ncomp, "{name}");
+                assert!(def
+                    .funcs
+                    .iter()
+                    .all(|f| f.family() == FunctionalFamily::MetaGga));
+                assert!(def.cam.is_none() && def.vv10.is_none(), "{name}");
+                let k = k_mix_from_xc_def(&def);
+                assert!((k.sr - a).abs() < 1e-12 && k.lr == k.sr, "{name}: {k:?}");
+                assert_eq!(k.omega, 0.0, "{name}");
+            }
+        }
+    }
+
+    /// Exactness anchor (trivial limit): SCAN0 with its exact-exchange
+    /// fraction `_exx` forced to 0 through libxc's external parameter IS pure
+    /// SCAN. The resolver then reads no exact exchange (k_mix exactly zero),
+    /// and its components' energy density and every potential term sum to the
+    /// SCAN pair's BITWISE, polarized and unpolarized (libxc forms
+    /// `(1 − 0)·SCAN_X` as `0 + 1.0·e`, which is exact).
+    #[test]
+    fn scan0_with_zero_exact_exchange_is_scan_bitwise() {
+        let ids = ["HYB_MGGA_X_SCAN0", "MGGA_C_SCAN"];
+        for nspin in [1u32, 2] {
+            let mut hx = XcFunctional::new(ids[0], nspin).unwrap();
+            assert_eq!(hx.ext_param_names(), vec!["_exx".to_string()]);
+            hx.set_ext_params(&[0.0]).unwrap();
+            let hc = XcFunctional::new(ids[1], nspin).unwrap();
+            let zero = metagga_def_from_handles("SCAN0(exx=0)", &ids, vec![hx, hc]).unwrap();
+            let scan = xc_def_from_name_nspin("SCAN", nspin).unwrap();
+            let full = xc_def_from_name_nspin("SCAN0", nspin).unwrap();
+            assert!(zero.b3lyp_mix.is_none() && zero.cam.is_none());
+            let k = k_mix_from_xc_def(&zero);
+            assert!(k.sr == 0.0 && k.lr == 0.0 && k.omega == 0.0, "{k:?}");
+            assert_eq!(full.b3lyp_mix, Some(0.25));
+            let (a, b) = (sum_mgga(&zero, nspin), sum_mgga(&scan, nspin));
+            for (x, y) in a.iter().zip(&b) {
+                assert_eq!(x.to_bits(), y.to_bits(), "nspin={nspin}: {x} vs {y}");
+            }
+            // Negative control: the default SCAN0 (25%) differs from SCAN.
+            let c = sum_mgga(&full, nspin);
+            assert!(c.iter().zip(&b).any(|(x, y)| (x - y).abs() > 1e-6));
+        }
+    }
+
+    /// Sum over a definition's components of (exc, vrho, vsigma, vtau) on a
+    /// fixed set of physically valid points, flattened.
+    fn sum_mgga(def: &XcDef, nspin: u32) -> Vec<f64> {
+        let n = 5;
+        let (ns, nsig) = if nspin == 1 { (1, 1) } else { (2, 3) };
+        let mut rho = Vec::new();
+        let mut sigma = Vec::new();
+        let mut tau = Vec::new();
+        for i in 0..n {
+            let t = 0.1 + 0.37 * i as f64;
+            for s in 0..ns {
+                let r = t * (1.0 + 0.3 * s as f64);
+                rho.push(r);
+                tau.push(0.6 * r.powf(5.0 / 3.0) + 0.05 * r);
+            }
+            // σ_αβ below sqrt(σ_αα σ_ββ), as for a real density.
+            for scale in [1.0, 0.9, 1.2].iter().take(nsig) {
+                sigma.push(0.2 * t * t * scale);
+            }
+        }
+        let mut out = vec![0.0; n * (1 + ns + nsig + ns)];
+        for f in &def.funcs {
+            let mut exc = vec![0.0; n];
+            let mut vrho = vec![0.0; n * ns];
+            let mut vsigma = vec![0.0; n * nsig];
+            let mut vtau = vec![0.0; n * ns];
+            if nspin == 1 {
+                f.eval_mgga_unpolarized(
+                    &rho,
+                    &sigma,
+                    &tau,
+                    &mut exc,
+                    &mut vrho,
+                    &mut vsigma,
+                    &mut vtau,
+                );
+            } else {
+                f.eval_mgga_polarized(
+                    &rho,
+                    &sigma,
+                    &tau,
+                    &mut exc,
+                    &mut vrho,
+                    &mut vsigma,
+                    &mut vtau,
+                );
+            }
+            let all: Vec<f64> = exc
+                .iter()
+                .chain(&vrho)
+                .chain(&vsigma)
+                .chain(&vtau)
+                .copied()
+                .collect();
+            for (o, v) in out.iter_mut().zip(all) {
+                *o += v;
+            }
+        }
+        out
+    }
+
+    /// ωB97M-V is a range-separated hybrid meta-GGA carrying VV10: libxc's
+    /// CAM (ω 0.3, c_sr 0.15, c_lr 1.0) and VV10 (b 6.0, C 0.01).
+    #[test]
+    fn wb97m_v_is_a_range_separated_metagga_with_vv10() {
+        let def = xc_def_from_name("wB97M-V").expect("wB97M-V resolves");
+        assert!(def
+            .funcs
+            .iter()
+            .all(|f| f.family() == FunctionalFamily::MetaGga));
+        assert!(def.b3lyp_mix.is_none());
+        let cam = def.cam.expect("range-separated");
+        assert!((cam.omega - 0.3).abs() < 1e-12, "{cam:?}");
+        assert!((cam.c_sr - 0.15).abs() < 1e-12, "{cam:?}");
+        assert!((cam.c_lr - 1.0).abs() < 1e-12, "{cam:?}");
+        let v = def.vv10.expect("VV10");
+        assert!(
+            (v.b - 6.0).abs() < 1e-12 && (v.c - 0.01).abs() < 1e-12,
+            "{v:?}"
+        );
     }
 }

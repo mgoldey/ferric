@@ -1957,15 +1957,24 @@ pub fn resolve_periodic_functional_mgga(
         }
         .into());
     }
-    if !allow_mgga
-        && def
-            .funcs
-            .iter()
-            .any(|f| matches!(f.family(), FunctionalFamily::MetaGga))
-    {
+    let mgga = def
+        .funcs
+        .iter()
+        .any(|f| matches!(f.family(), FunctionalFamily::MetaGga));
+    if !allow_mgga && mgga {
         return Err(PeriodicDftError::Unsupported {
             feature: "meta-GGA",
             reason: format!("{name}: the tau path was not prototyped periodically"),
+        }
+        .into());
+    }
+    if mgga && def.b3lyp_mix.is_some() {
+        return Err(PeriodicDftError::Unsupported {
+            feature: "hybrid meta-GGA",
+            reason: format!(
+                "{name}: exact exchange with a meta-GGA is validated only for molecules; \
+                 use a pure meta-GGA (SCAN, r2SCAN, TPSS) or a global hybrid GGA here"
+            ),
         }
         .into());
     }

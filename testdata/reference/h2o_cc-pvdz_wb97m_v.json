@@ -1,0 +1,27 @@
+{
+  "label": "h2o",
+  "basis": "cc-pvdz",
+  "xc": "wb97m_v",
+  "pyscf_xc": "HYB_MGGA_XC_WB97M_V",
+  "charge": 0,
+  "multiplicity": 1,
+  "main_grid": [
+    75,
+    110
+  ],
+  "nlc_grid": [
+    50,
+    50
+  ],
+  "jk": "df:def2-universal-jkfit",
+  "hybrid_coeff": 1.0,
+  "rsh_coeff": [
+    0.3,
+    1.0,
+    -0.85
+  ],
+  "libxc_version": "7.0.0",
+  "e_total": -76.38922529690639,
+  "e_nuc": 9.187838234078582,
+  "converged": true
+}

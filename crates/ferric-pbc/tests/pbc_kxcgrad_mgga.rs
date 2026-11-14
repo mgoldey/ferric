@@ -32,7 +32,7 @@
 //! (`rsgdf_scan_force_component_matches_fd`). The Gamma-point meta-GGA force
 //! is this code on the 1x1x1 mesh (`pbc_gamma_mgga_derivs.rs`).
 //!
-//! NOT covered: hybrid meta-GGAs (none resolve), range-separated and VV10
+//! NOT covered: hybrid meta-GGAs (refused for periodic systems), range-separated and VV10
 //! meta-GGAs (refused), TPSS on RS-GDF (refused by the bindings), RS-GDF beyond that one component and the
 //! range-split fit, heavy atoms/ECPs, shifted meshes, metals, open shell
 //! (TPSS refused there), SCAN's alpha ~ 1 region (the H2 fixtures reach

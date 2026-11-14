@@ -40,7 +40,7 @@
 //!   with the tau mutants); the H4 triclinic cell and the TPSS k-mesh ==
 //!   supercell identity are weekly (`validation_pbc_mgga_derivs.rs`).
 //!
-//! NOT covered: hybrid meta-GGAs (none resolve), range-separated / VV10 /
+//! NOT covered: hybrid meta-GGAs (refused for periodic systems), range-separated / VV10 /
 //! double hybrid meta-GGAs (refused), open-shell meta-GGA stress (UKS/ROKS
 //! keep their typed refusal; open-shell TPSS is refused), TPSS on RS-GDF (refused by the bindings), the
 //! range-split RS-GDF build, d shells, ECPs, heavy atoms, metals. The

@@ -816,7 +816,7 @@ class XcFunctional:
         self, density: NDArray[np.float64], d1: NDArray[np.float64]
     ) -> NDArray[np.float64]:
         """d/dt V_xc(D + t D1) at t = 0 (LDA/GGA/hybrid/RSH-GGA and the tau-only
-        meta-GGAs SCAN/r2SCAN/TPSS; VV10 functionals add the derivative of the
+        meta-GGAs, pure or hybrid: SCAN/r2SCAN/TPSS/TPSSh/M06-2X; VV10 functionals add the derivative of the
         V_nl the SCF assembles, on its NLC grid)."""
         ...
     def response_polarized(
@@ -5790,7 +5790,8 @@ def run_tddft(
     for Casida) on the same grid.
 
     Grid: the grid_* kwargs mean what they mean in run_dft. With none set, a
-    meta-GGA (SCAN, r2SCAN, TPSS) runs on 150x434 nwchem-radial (default
+    meta-GGA (SCAN, r2SCAN, TPSS, or a hybrid such as TPSSh, M06-2X) runs
+    on 150x434 nwchem-radial (default
     weight cut), every other functional on the production 75x110
     nwchem-radial grid. On 75x110, r2SCAN water roots sit up to 2.1e-3 eV
     from a flat 150x590 grid; on 150x434, within 1e-4 eV. Any grid_* kwarg

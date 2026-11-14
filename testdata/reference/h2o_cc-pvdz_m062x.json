@@ -1,0 +1,24 @@
+{
+  "label": "h2o",
+  "basis": "cc-pvdz",
+  "xc": "m062x",
+  "pyscf_xc": "HYB_MGGA_X_M06_2X,MGGA_C_M06_2X",
+  "charge": 0,
+  "multiplicity": 1,
+  "main_grid": [
+    75,
+    110
+  ],
+  "nlc_grid": null,
+  "jk": "exact",
+  "hybrid_coeff": 0.54,
+  "rsh_coeff": [
+    0.0,
+    0.54,
+    0.0
+  ],
+  "libxc_version": "7.0.0",
+  "e_total": -76.38857399157583,
+  "e_nuc": 9.187838234078582,
+  "converged": true
+}
