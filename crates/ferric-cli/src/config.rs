@@ -3240,8 +3240,8 @@ pub const MP2_GRADIENT_OPTIMIZE_KINDS: &[&str] = &["rimp2", "scs-mp2"];
 /// differentiate an exact or an RI-JK reference
 /// (`ferric_mp2::oo_rimp2_gradient::oo_ri_mp2_gradient` for OO-RI-MP2).
 fn scf_jk_governs(kind: &str, task: &str) -> bool {
-    let mp2_optimize = (MP2_GRADIENT_OPTIMIZE_KINDS.contains(&kind) || kind == "oo-rimp2")
-        && task == "optimize";
+    let mp2_optimize =
+        (MP2_GRADIENT_OPTIMIZE_KINDS.contains(&kind) || kind == "oo-rimp2") && task == "optimize";
     SCF_JK_KINDS.contains(&kind) && (task == "energy" || mp2_optimize)
 }
 
