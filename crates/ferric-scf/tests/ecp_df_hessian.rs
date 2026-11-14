@@ -175,43 +175,45 @@ fn probe_accepts_ri_with_ecp_for_every_reference_where_the_metric_is_conditioned
     }
 }
 
-/// RI-K with the ordinary jkfit on iodine has cond 1e9 > RIK_COND_WARN: the
-/// probe refuses (for the conditioning, not the ECP) and `Auto` runs FD.
+/// RI-K with the ordinary jkfit on iodine has cond 4.9e8 .. 1.4e9 but a
+/// smallest metric eigenvalue far above the gate (`hessian_df_k`,
+/// "Conditioning": the roundoff follows `1/λ_min²`, not cond), so the probe
+/// admits it, `Auto` runs the analytic Hessian, and the result records the
+/// conditioning it was admitted under. Its accuracy at this cond is the
+/// `validation_ecp_df_hessian.rs` jkfit evidence.
 #[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
-fn ill_conditioned_ri_k_with_ecp_is_refused_by_the_probe_and_auto_runs_fd() {
+fn high_cond_ri_k_with_ecp_is_admitted_on_its_smallest_eigenvalue() {
     if !has_deriv2() {
         return;
     }
     let (mol, prep) = iodine(HOI, 1);
     let cfg = config(Fit::Jk(AUX_HIGH_COND));
-    let err =
-        ferric_scf::hessian::analytic_hessian_available(&mol, &prep, Operator::coulomb(), &cfg)
-            .expect_err("cond 1e9 RI-K must be refused by the probe");
-    let msg = err.to_string();
-    assert!(msg.contains("cond"), "{msg}");
-    assert!(!msg.contains("effective core potential"), "{msg}");
+    ferric_scf::hessian::analytic_hessian_available(&mol, &prep, Operator::coulomb(), &cfg)
+        .expect("jkfit on HOI: cond above 1e8, lambda_min above the gate");
 
     let bs = basis::bundled("def2-svp").unwrap();
     let mut hi = Molecule::parse_xyz("2\nHI\nH 0 0 0\nI 0 0 1.75\n", 0, 1).unwrap();
     hi.apply_ecp(&bs);
-    let run = |hessian| {
-        harmonic_frequencies(
-            &ParallelContext::default(),
-            &hi,
-            "def2-svp",
-            Operator::coulomb(),
-            &config(Fit::Jk(AUX_HIGH_COND)),
-            &FrequencyConfig {
-                reference: FrequencyReference::Rhf,
-                hessian,
-                ..Default::default()
-            },
-        )
-    };
-    let auto = run(HessianMethod::Auto).expect("Auto falls back, never fails");
-    assert_eq!(auto.hessian_source, HessianSource::FiniteDifference);
-    assert_eq!(auto.n_gradient_evaluations, 12);
+    let auto = harmonic_frequencies(
+        &ParallelContext::default(),
+        &hi,
+        "def2-svp",
+        Operator::coulomb(),
+        &config(Fit::Jk(AUX_HIGH_COND)),
+        &FrequencyConfig {
+            reference: FrequencyReference::Rhf,
+            hessian: HessianMethod::Auto,
+            ..Default::default()
+        },
+    )
+    .expect("Auto runs");
+    assert_eq!(auto.hessian_source, HessianSource::Analytic);
+    let m = auto
+        .rik_metric
+        .expect("the admitted conditioning is recorded");
+    eprintln!("HI jkfit: {}", m.describe());
+    assert!(m.cond > 1e8 && m.admits_analytic(), "{}", m.describe());
 }
 
 #[test]

@@ -25,11 +25,11 @@ use ferric_scf::ScfResult;
 use ndarray::Array2;
 
 /// Well-conditioned fitting basis on iodine systems (RI-K metric cond < 1e8;
-/// measured through the probe: HI, HOI, CH3I all pass).
+/// HI, HOI, CH3I all pass the probe).
 pub const AUX_OK: &str = "def2-svp-rifit";
 /// Ordinary J/K fit. On iodine systems its exchange metric has cond 4.9e8
-/// (HI) to 1.4e9 (CH3I), above `RIK_COND_WARN` = 1e8, where the code states
-/// accuracy is no longer established; the probe refuses it for `Auto`.
+/// (HI) to 1.4e9 (CH3I); the gate reads the smallest eigenvalue, not cond
+/// (`hessian_df_k`, "Conditioning"), and admits it for `Auto`.
 pub const AUX_HIGH_COND: &str = "def2-universal-jkfit";
 
 /// Analytic vs FD of the analytic gradient, Ha/Bohr².

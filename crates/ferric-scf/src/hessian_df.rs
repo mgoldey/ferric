@@ -349,16 +349,13 @@ pub(crate) fn check_metric_spectrum(lam: &Array1<f64>, what: MetricUse) -> Resul
             ),
         }));
     }
-    let cond = lam[lam.len() - 1] / lam[0];
-    if what == MetricUse::ExchangeFit && cond > crate::hessian_df_k::RIK_COND_WARN {
+    let cond = crate::hessian_df_k::RikConditioning::from_spectrum(lam[0], lam[lam.len() - 1]);
+    if what == MetricUse::ExchangeFit && !cond.admits_analytic() {
         eprintln!(
-            "[ferric] warning: analytic RI-K Hessian: the exchange metric has cond {cond:.1e} \
-             (smallest eigenvalue {:.2e}), above the {:.0e} up to which accuracy was measured \
-             (one measured point above: agreement with the differenced DF-K gradient 6.7e-9 at \
-             2e8 against 1e-10 at 2e5 .. 2e7, while the agreement with PySCF's analytic \
-             Hessian does not change)",
+            "[ferric] warning: analytic RI-K Hessian: {} (smallest eigenvalue {:.2e}); \
+             `auto` would have run finite differences",
+            cond.describe(),
             lam[0],
-            crate::hessian_df_k::RIK_COND_WARN
         );
     }
     if what == MetricUse::CoulombFit && lam[0] < RIJ_METRIC_WARN {
@@ -380,25 +377,33 @@ pub fn probe_metric(dfbs: &PreparedBasis, op: Operator) -> Result<(), FerricErro
     check_metric_conditioning(&coulomb_metric_2c(op, dfbs)?)
 }
 
-/// [`probe_metric`] for the exchange fit (refusal wording names the dropped
-/// modes of `DfK`'s truncated inverse).
-///
-/// Stricter than the Hessian's own check (which is also what `Analytic`
-/// runs, with a warning): this probe is what `Auto` consults, so it also
-/// refuses a metric the RI-K Hessian can differentiate but not reliably,
-/// namely cond(V) above [`crate::hessian_df_k::RIK_COND_WARN`] (measured error
-/// grows there) and any kept mode in `[cut, DFK_GRADIENT_NOISE_FLOOR)`, cut by
-/// `crate::df_k::metric_lindep_cut` (the analytic DF-K gradient treats such a mode as
-/// dropped, so the Hessian would differentiate a different function than the
-/// gradient). `Auto` then runs finite differences of the gradient.
+/// The exchange-metric checks every analytic RI-K route applies before the
+/// SCF (the explicit routes too): a mode `DfK` drops is refused (the
+/// truncated energy's second derivative is not implemented), and so is a kept
+/// mode in `[cut, DFK_GRADIENT_NOISE_FLOOR)`, cut by
+/// `crate::df_k::metric_lindep_cut` (the analytic DF-K gradient treats such a
+/// mode as dropped, so the Hessian would differentiate a different function
+/// than the gradient). Returns the conditioning and its error bound.
 #[doc(hidden)]
-pub fn probe_exchange_metric(dfbs: &PreparedBasis, op: Operator) -> Result<(), FerricError> {
+pub fn exchange_metric_conditioning(
+    dfbs: &PreparedBasis,
+    op: Operator,
+) -> Result<crate::hessian_df_k::RikConditioning, FerricError> {
     let v = coulomb_metric_2c(op, dfbs)?;
     let lam = metric_spectrum(&v)
         .map_err(|e| FerricError::Lapack(format!("analytic RI-K Hessian: V eigh: {e}")))?;
+    exchange_spectrum_conditioning(&lam)
+}
+
+/// [`exchange_metric_conditioning`] on an already computed ascending
+/// spectrum of the exchange metric.
+#[doc(hidden)]
+pub fn exchange_spectrum_conditioning(
+    lam: &Array1<f64>,
+) -> Result<crate::hessian_df_k::RikConditioning, FerricError> {
     let cut = metric_lindep_cut(&lam.to_vec());
     if cut.n_dropped > 0 {
-        return check_metric_spectrum(&lam, MetricUse::ExchangeFit);
+        check_metric_spectrum(lam, MetricUse::ExchangeFit)?;
     }
     let floor = crate::df_gradient::DFK_GRADIENT_NOISE_FLOOR;
     let band = lam.iter().filter(|&&l| l < floor).count();
@@ -411,16 +416,40 @@ pub fn probe_exchange_metric(dfbs: &PreparedBasis, op: Operator) -> Result<(), F
             cut.describe()
         )));
     }
-    let cond = lam[lam.len() - 1] / lam[0];
-    if cond > crate::hessian_df_k::RIK_COND_WARN {
+    Ok(crate::hessian_df_k::RikConditioning::from_spectrum(
+        lam[0],
+        lam[lam.len() - 1],
+    ))
+}
+
+/// The gate `Auto` applies on top of the hard checks: a refusal when the
+/// roundoff bound exceeds the finite-difference route's own error.
+#[doc(hidden)]
+pub fn auto_conditioning_gate(
+    cond: crate::hessian_df_k::RikConditioning,
+) -> Result<crate::hessian_df_k::RikConditioning, FerricError> {
+    if !cond.admits_analytic() {
         return Err(FerricError::General(format!(
-            "analytic RI-K Hessian: the exchange metric has cond {cond:.1e}, above {:.0e} where \
-             accuracy is no longer established (use finite differences, or request the analytic \
+            "analytic RI-K Hessian: {} (use finite differences, or request the analytic \
              Hessian explicitly to accept the warning)",
-            crate::hessian_df_k::RIK_COND_WARN
+            cond.describe()
         )));
     }
-    Ok(())
+    Ok(cond)
+}
+
+/// [`probe_metric`] for the exchange fit, as `Auto` consults it:
+/// [`exchange_metric_conditioning`] and, in addition, a refusal when the
+/// roundoff bound ([`crate::hessian_df_k::RikConditioning`]) exceeds the
+/// finite-difference route's own error, so that `Auto`
+/// runs finite differences of the gradient there. The explicit analytic routes
+/// run the Hessian above the gate with a warning instead.
+#[doc(hidden)]
+pub fn probe_exchange_metric(
+    dfbs: &PreparedBasis,
+    op: Operator,
+) -> Result<crate::hessian_df_k::RikConditioning, FerricError> {
+    auto_conditioning_gate(exchange_metric_conditioning(dfbs, op)?)
 }
 
 /// Chunk width for the per-aux-shell partial reductions.

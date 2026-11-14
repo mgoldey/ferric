@@ -907,10 +907,12 @@ fn an_inconsistent_density_is_refused_for_the_exchange_factor() {
 #[test]
 fn the_probe_that_auto_consults_is_stricter_than_the_hessian_itself() {
     // Twin-augmented cc-pVDZ-RI (a near-duplicate s function on each H):
-    // eps 1e-2 -> cond 7e7 (accepted), 3e-3 -> lambda_min 1.7e-7, cond 7.9e8
-    // (cond above 1e8: probe refuses, the Hessian still runs with a warning),
-    // 1e-3 -> lambda_min ~2e-8 (a kept mode in [1e-10, 1e-7): probe refuses),
-    // 1e-5 -> modes below 1e-10 (both refuse, naming the count).
+    // eps 1e-2 -> cond 7e7 and 3e-3 -> lambda_min 1.7e-7, cond 7.9e8 (both
+    // below RIK_COND_GATE: accepted, the bound recorded), 1e-3 -> lambda_min
+    // ~2e-8 (a kept mode in [1e-10, 1e-7): probe refuses, the Hessian itself
+    // runs), 1e-5 -> modes below 1e-10 (both refuse, naming the count). The
+    // cond gate itself is tested on synthetic spectra in
+    // df_hessian_rik_conditioning.rs.
     use ferric_scf::hessian::rij_support::{probe_exchange_metric, rik_terms_with_aux};
     if !has_deriv1() {
         return;
@@ -933,10 +935,10 @@ fn the_probe_that_auto_consults_is_stricter_than_the_hessian_itself() {
     let probe = |eps: f64| probe_exchange_metric(&twin_aux(&mol, "cc-pvdz-ri", eps), op);
     probe(1e-2).expect("cond 7e7 is accepted");
     run(1e-2).expect("and the Hessian runs");
-    let e = probe(3e-3).unwrap_err().to_string();
-    eprintln!("probe cond: {e}");
-    assert!(e.contains("cond"), "{e}");
-    run(3e-3).expect("Analytic is strict: the Hessian itself runs (with a warning)");
+    let c = probe(3e-3).expect("cond 7.9e8 is below the derived gate");
+    eprintln!("probe cond: {}", c.describe());
+    assert!(c.cond > 1e8 && c.admits_analytic(), "{}", c.describe());
+    run(3e-3).expect("and the Hessian runs");
     let e = probe(1e-3).unwrap_err().to_string();
     eprintln!("probe band: {e}");
     assert!(e.contains("lie in"), "{e}");

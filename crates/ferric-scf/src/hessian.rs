@@ -210,14 +210,14 @@ pub use ks::{
 };
 pub use ks::{
     rks_fixed_grid_hessian, rks_fixed_grid_hessian_parts, rks_moving_grid_hessian,
-    rks_moving_grid_hessian_available, rks_moving_grid_hessian_parts,
-    rks_moving_grid_hessian_preflight,
+    rks_moving_grid_hessian_available, rks_moving_grid_hessian_check,
+    rks_moving_grid_hessian_parts, rks_moving_grid_hessian_preflight,
 };
 mod uks;
 pub use uks::{
     analytic_frequencies_uks_moving_grid, uks_moving_grid_hessian,
-    uks_moving_grid_hessian_available, uks_moving_grid_hessian_parts,
-    uks_moving_grid_hessian_preflight,
+    uks_moving_grid_hessian_available, uks_moving_grid_hessian_check,
+    uks_moving_grid_hessian_parts, uks_moving_grid_hessian_preflight,
 };
 #[doc(hidden)]
 pub use uks::{uks_fock_residual, uks_hessian_parts_with, uks_response_operator};
@@ -723,6 +723,7 @@ pub mod rohf_support {
 pub mod rij_support {
     use super::*;
     pub use crate::hessian_df::{
+        auto_conditioning_gate, exchange_metric_conditioning, exchange_spectrum_conditioning,
         probe_exchange_metric, probe_metric, rij_first, rij_terms, rij_terms_with_aux, RijFirst,
         RijMutants, RijTerms,
     };
@@ -1284,6 +1285,51 @@ fn uhf_state_refusal(mol: &Molecule, uhf: &ScfResult) -> Option<&'static str> {
     None
 }
 
+/// How the pre-SCF checks treat an exchange metric whose roundoff bound
+/// exceeds the finite-difference route's own error
+/// ([`crate::hessian_df_k::RikConditioning::admits_analytic`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MetricGate {
+    /// Refuse (what `HessianMethod::Auto` consults: it then runs finite
+    /// differences).
+    Auto,
+    /// Accept; the Hessian itself warns (an explicitly requested analytic
+    /// route).
+    Explicit,
+}
+
+/// The pre-SCF support check of the analytic Hartree-Fock Hessian for
+/// `reference` (the checks of [`analytic_hessian_available`] and its UHF/ROHF
+/// siblings) with the conditioning gate applied as `gate` says. Returns the
+/// RI-K metric's conditioning when K is fitted, for the certificate.
+pub fn analytic_hessian_check(
+    reference: crate::frequencies::FrequencyReference,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    op: Operator,
+    config: &RhfConfig,
+    gate: MetricGate,
+) -> Result<Option<crate::hessian_df_k::RikConditioning>, FerricError> {
+    use crate::frequencies::FrequencyReference as F;
+    let r = match reference {
+        F::Rhf => Reference::Rhf,
+        F::Uhf => Reference::Uhf,
+        F::Rohf => Reference::Rohf,
+    };
+    available(r, mol, prep, op, config, true, gate)
+}
+
+/// [`available`] as `Auto` consults it, for a Hartree-Fock reference.
+fn auto_available(
+    reference: Reference,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    op: Operator,
+    config: &RhfConfig,
+) -> Result<(), FerricError> {
+    available(reference, mol, prep, op, config, true, MetricGate::Auto).map(drop)
+}
+
 /// Whether [`rhf_hessian`] can run for this molecule, basis, operator and SCF
 /// configuration, decided BEFORE any SCF: the configuration checks of
 /// [`rhf_hessian_preflight`], a closed-shell (multiplicity 1) molecule, the
@@ -1300,7 +1346,7 @@ pub fn analytic_hessian_available(
     op: Operator,
     config: &RhfConfig,
 ) -> Result<(), FerricError> {
-    available(Reference::Rhf, mol, prep, op, config, true)
+    auto_available(Reference::Rhf, mol, prep, op, config)
 }
 
 /// [`analytic_hessian_available`] for [`rohf_hessian`]: the same checks, any
@@ -1312,7 +1358,7 @@ pub fn analytic_rohf_hessian_available(
     op: Operator,
     config: &RhfConfig,
 ) -> Result<(), FerricError> {
-    available(Reference::Rohf, mol, prep, op, config, true)
+    auto_available(Reference::Rohf, mol, prep, op, config)
 }
 
 /// [`analytic_hessian_available`] for [`uhf_hessian`]: the same checks, except
@@ -1323,7 +1369,7 @@ pub fn analytic_uhf_hessian_available(
     op: Operator,
     config: &RhfConfig,
 ) -> Result<(), FerricError> {
-    available(Reference::Uhf, mol, prep, op, config, true)
+    auto_available(Reference::Uhf, mol, prep, op, config)
 }
 
 /// Whether the analytic Hessian evaluates any four-centre integral
@@ -1386,7 +1432,8 @@ fn available(
     op: Operator,
     config: &RhfConfig,
     exchange: bool,
-) -> Result<(), FerricError> {
+    gate: MetricGate,
+) -> Result<Option<crate::hessian_df_k::RikConditioning>, FerricError> {
     preflight(reference, op, config)?;
     if reference == Reference::Rhf && mol.multiplicity != 1 {
         return Err(refusal(
@@ -1397,9 +1444,9 @@ fn available(
     if let Some(what) = system_refusal(reference, mol, prep) {
         return Err(refusal(reference, what));
     }
-    ri_engine_check(reference, mol, prep, op, config)?;
+    let cond = ri_engine_check(reference, mol, prep, op, config, gate)?;
     let engines = second_derivative_engines(prep, op, needs_four_centre(config, exchange));
-    engines.map(|_| ()).map_err(|e| {
+    engines.map(|_| cond).map_err(|e| {
         FerricError::General(format!(
             "analytic {} Hessian: libint2 cannot build second-derivative engines for \
              this basis (a library without second derivatives, or shells above its \
@@ -1424,11 +1471,13 @@ fn ri_engine_check(
     prep: &PreparedBasis,
     op: Operator,
     config: &RhfConfig,
-) -> Result<(), FerricError> {
+    gate: MetricGate,
+) -> Result<Option<crate::hessian_df_k::RikConditioning>, FerricError> {
     let named = |n: &Option<String>| n.clone().filter(|v| !v.is_empty());
     let (j_name, k_name) = (named(&config.df_j_aux), named(&config.df_k_aux));
+    let mut conditioning = None;
     if j_name.is_none() && k_name.is_none() {
-        return Ok(());
+        return Ok(conditioning);
     }
     for (name, label, exchange) in [(j_name, "RI-J", false), (k_name, "RI-K", true)] {
         let Some(name) = name else { continue };
@@ -1443,13 +1492,16 @@ fn ri_engine_check(
         Engine::new_3center_deriv(op, prep, &dfbs, 1e-14).map_err(fail)?;
         Engine::new_2center_deriv(op, &dfbs, 1e-14).map_err(fail)?;
         if exchange {
-            crate::hessian_df::probe_exchange_metric(&dfbs, op)?;
+            conditioning = Some(match gate {
+                MetricGate::Auto => crate::hessian_df::probe_exchange_metric(&dfbs, op)?,
+                MetricGate::Explicit => crate::hessian_df::exchange_metric_conditioning(&dfbs, op)?,
+            });
             rik_memory_probe(reference, mol, prep, dfbs.nbasis())?;
         } else {
             crate::hessian_df::probe_metric(&dfbs, op)?;
         }
     }
-    Ok(())
+    Ok(conditioning)
 }
 
 /// The RI-K Hessian keeps `~3N` copies of an `(naux, nocc²)` tensor and a dense

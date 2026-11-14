@@ -23,9 +23,12 @@
 //! is refused with a typed error naming the count (the energy is then a
 //! spectral function of `V` and its second derivative needs the
 //! Daleckii–Krein formula to second order, which is not implemented). Modes in
-//! `[1e-10, 1e-7)` are kept (the Hessian warns above cond 1e8; the pre-SCF
-//! probe that `Auto` consults refuses them and cond above 1e8, see
-//! `probe_exchange_metric`).
+//! `[1e-10, 1e-7)` are kept by the Hessian; every pre-SCF route check refuses
+//! them (`exchange_metric_conditioning`), and the probe that `Auto` consults
+//! also refuses a metric whose roundoff bound exceeds the finite-difference
+//! route's error (`probe_exchange_metric`,
+//! [`RikConditioning`](crate::hessian_df_k::RikConditioning); see
+//! "Conditioning").
 //!
 //! # Derivation (fixed `D`, i.e. fixed `X`; derivatives of integrals only)
 //!
@@ -203,28 +206,62 @@
 //!
 //! ## Conditioning
 //!
-//! The Cholesky-free `M` amplifies integral noise by `cond(V)`. Measured (water
-//! 6-31G, Hessian vs the Richardson finite difference of ferric's own DF-K
-//! gradient, fitting bases with no metric mode in the gradient's noise band):
-//! cond 2.5e5 (cc-pVDZ-RI) 1.4e-10, 2.4e6 (aug-cc-pVDZ-RIFIT) 1.6e-10, 9.1e6
-//! (aug-cc-pVTZ-RIFIT) 2.5e-10, 2.5e7 (def2-universal-jkfit) 1.3e-10, 2.4e7
-//! (def2-QZVPP-RIFIT) 4.4e-10, **2.0e8 (aug-cc-pVQZ-RIFIT) 6.7e-9**: the error
-//! begins to differ near cond 1e8, hence the warning above `RIK_COND_WARN`.
-//! The RI-J analogue on the same fit (same metric, 3c integrals) stays at
-//! 1.7e-10 there, and the two finite-difference references (h = 2e-3 and 4e-3,
-//! Richardson) differ by only 3e-10, but PySCF's analytic DF Hessian agrees
-//! with ferric as well at cond 2e8 (2.7e-8) as at cond 2.5e5 (2.2e-8), at its own
-//! raw-asymmetry floor of 1.8e-8: the larger miss against the differenced
-//! K gradient is attributed to that gradient's Daleckii–Krein roundoff
-//! (unproven; no K-specific loss is established for the Hessian). Fixed-density
-//! twin-augmented bases up to cond 7.9e8 show K and J skeletons with the same
-//! 8e-8 (h = 1e-4) finite-difference truncation floor, so they cannot see 1e-9
-//! effects. One real point above the threshold, hence the conservative
-//! refusal in the probe. A
-//! metric with a mode below the DF-K cut is refused (see Scope). The
-//! reference gradient itself treats kept modes in `[1e-10, 1e-7)` as dropped
-//! (its noise floor), so a basis with such a mode has no valid finite-difference
-//! reference and yields no accuracy datum.
+//! `M = V⁻¹` is built from the eigenpairs of `V`, so roundoff in `V` and its
+//! products enters as `δM = −M δV M`, of size `‖δV‖ / λ_min²`. The analytic
+//! Hessian's roundoff therefore follows `1/λ_min²`, not `cond(V)`. Measured
+//! scale: the same Hessian with `M` built by LU instead (an independent
+//! construction, `RikMutants::explicit_inverse`) differs by `g` with
+//! `g · λ_min²` between 1.1e-20 and 4.1e-20 over λ_min 5.8e-8 .. 1.1e-5 (four
+//! decades of `g`, 2.0e-10 .. 6.2e-6): water, propane, butane, pentane and
+//! benzene at def2-SVP / def2-universal-jkfit, water and propane at def2-TZVP,
+//! propane and octane at STO-3G, and benzene at STO-3G with def2-QZVPP-RIFIT,
+//! aug-cc-pVTZ-RIFIT and aug-cc-pVQZ-RIFIT (cond 2.5e7 .. 3.1e10). The
+//! exchange skeleton alone at a fixed density (a twin auxiliary basis, same
+//! comparison) reaches 6.6e-20 (octane). `g / cond` instead spreads from
+//! 4.9e-18 to 2.0e-16, so cond is not the variable.
+//! [`RIK_ROUNDOFF_COEFF`](crate::hessian_df_k::RIK_ROUNDOFF_COEFF) = 1e-19 is
+//! the envelope over both.
+//!
+//! Against references (RHF, RI-J + RI-K, every SCF converged to 1e-14 /
+//! 1e-12): the Hessian agrees with the Richardson difference (h = 1e-3 /
+//! 2e-3) of ferric's own DF gradient, over def2-universal-jkfit, to 2.5e-10
+//! (water, cond 2.5e7), 1.4e-9 (propane, 1.7e8), 1.7e-9 (butane, 2.1e8) and
+//! 3.6e-9 (benzene, 7.1e8) at def2-SVP and 2.8e-10 / 1.4e-9 (water / propane)
+//! at def2-TZVP, each at that reference's own asymmetry, and with PySCF's
+//! analytic DF Hessian to 1.5e-8 .. 2.8e-8 (flat in cond; 4.4e-9 for propane
+//! at def2-TZVP). Near the gate the roundoff is visible and tracks the
+//! eigen-vs-LU gap: distorted water / 6-31G with aug-cc-pVQZ-RIFIT (λ_min
+//! 2.9e-6, cond 2.0e8) misses by 4.6e-9 (gap 4.5e-9, bound 1.2e-8), benzene /
+//! STO-3G with aug-cc-pVTZ-RIFIT (λ_min 1.6e-7, cond 9.3e9) by 7.7e-7 (gap
+//! 6.8e-7, PySCF 8.3e-7, bound 3.8e-6), with the reference's own spread at
+//! 9e-9. Every miss is below the bound. The finite-difference route `Auto`
+//! falls back to (central, `delta` 5e-3) misses the Richardson Hessian by
+//! 6.8e-6 (butane) to 1.9e-5 (benzene / aug-cc-pVTZ-RIFIT) on the same systems
+//! from truncation alone (0.05 .. 0.37 cm⁻¹ on modes above 50 cm⁻¹, against
+//! 1e-6 .. 2.8e-3 cm⁻¹ for the analytic Hessian), and by more at the default
+//! SCF thresholds: [`FD_ROUTE_ERROR`](crate::hessian_df_k::FD_ROUTE_ERROR) =
+//! 6.8e-6 is that route at its best.
+//!
+//! The gate: `Auto` takes the analytic route when `RIK_ROUNDOFF_COEFF / λ_min²
+//! <= FD_ROUTE_ERROR`, i.e. `λ_min >= 1.21e-7`, just above the gradient's noise
+//! floor `DFK_GRADIENT_NOISE_FLOOR` (1e-7), under which the pre-SCF checks
+//! already refuse (a kept mode there makes the Hessian differentiate a
+//! different function than the gradient). Every jkfit metric measured is
+//! inside it: λ_min >= 8.4e-7 on the organic molecules (cond up to 7.1e8 for
+//! benzene and 2.2e9 for a 24-atom drug at STO-3G), 3.3e-7 on HI (cond
+//! 4.9e8); a diffuse fitting basis comes nearer (benzene with
+//! aug-cc-pVTZ-RIFIT 1.6e-7, admitted; aug-cc-pVQZ-RIFIT 5.8e-8, refused by the
+//! pre-SCF checks). The bound and λ_min are recorded in the frequency
+//! certificate. The explicit analytic routes (Hartree-Fock and the KS moving
+//! grid, which share this metric construction) run whatever the bound, with a
+//! warning above it. A metric with a mode below the DF-K cut is refused (see
+//! Scope). The reference gradient itself treats kept
+//! modes in `[1e-10, 1e-7)` as dropped (its noise floor), so a basis with such
+//! a mode has no valid finite-difference reference and yields no accuracy
+//! datum.
+//!
+//! Measurement harness: `tests/df_hessian_rik_conditioning.rs`
+//! (`measure_one_system`, `measure_inverse_construction_gap_versus_cond`).
 
 use crate::df_gradient::aux_basis;
 use crate::hessian_df::{check_metric_spectrum, chunk_len, MetricUse};
@@ -244,16 +281,66 @@ use ndarray::{s, Array1, Array2, Array3, Axis};
 use ndarray_linalg::Inverse;
 use rayon::prelude::*;
 
-/// Condition number of the exchange metric above which the Hessian warns and
-/// the pre-SCF probe (`Auto`) falls back to finite differences. Measured (water
-/// 6-31G, Hessian vs the differenced DF-K gradient): 1.3e-10 .. 4.4e-10 for
-/// cond 2.5e5 .. 2.5e7 and 6.7e-9 at cond 2e8 (the RI-J analogue on the same
-/// metric: 1.7e-10; the two differenced references differ by 3e-10). Against
-/// PySCF's analytic DF Hessian the agreement is 2.2e-8 at cond 2.5e5 and
-/// 2.7e-8 at 2e8 (PySCF's own raw asymmetry is 1.8e-8), so the larger
-/// disagreement with the differenced gradient is not established as an error
-/// of the Hessian; above 1e8 accuracy is simply not established.
-pub const RIK_COND_WARN: f64 = 1e8;
+/// Roundoff of the analytic RI-K Hessian against the smallest eigenvalue of
+/// the exchange metric: `|δH| <= RIK_ROUNDOFF_COEFF / λ_min²` (Hartree/Bohr²,
+/// `λ_min` in the metric's units), the upper envelope over the measured
+/// systems (module doc, "Conditioning"). The error follows `1/λ_min²`, not
+/// `cond(V)`: the first-order perturbation `δM = −M δV M` of `M = V⁻¹`.
+pub const RIK_ROUNDOFF_COEFF: f64 = 1e-19;
+
+/// Error of the route `Auto` falls back to, Hartree/Bohr²: central differences
+/// of the analytic gradient at [`crate::frequencies::DEFAULT_DELTA`], measured
+/// as the smallest `max |H_FD − H_Richardson|` over the systems of the module
+/// doc with the displaced SCFs converged far below the default thresholds (the
+/// truncation error alone: the finite-difference route at its best).
+pub const FD_ROUTE_ERROR: f64 = 6.8e-6;
+
+/// The exchange metric's spectrum and the roundoff bound it implies for the
+/// analytic RI-K Hessian (recorded in the frequency certificate).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RikConditioning {
+    /// Smallest eigenvalue of the exchange metric `V`.
+    pub lambda_min: f64,
+    /// `λ_max / λ_min`.
+    pub cond: f64,
+    /// `RIK_ROUNDOFF_COEFF / λ_min²`, Hartree/Bohr².
+    pub bound: f64,
+}
+
+impl RikConditioning {
+    /// The bound for a metric with extreme eigenvalues `lambda_min`, `lambda_max`.
+    pub fn from_spectrum(lambda_min: f64, lambda_max: f64) -> Self {
+        Self {
+            lambda_min,
+            cond: lambda_max / lambda_min,
+            bound: RIK_ROUNDOFF_COEFF / (lambda_min * lambda_min),
+        }
+    }
+
+    /// Whether the analytic Hessian's roundoff bound is at or below the
+    /// finite-difference route's own error [`FD_ROUTE_ERROR`], i.e.
+    /// `λ_min >= sqrt(RIK_ROUNDOFF_COEFF / FD_ROUTE_ERROR)`.
+    pub fn admits_analytic(&self) -> bool {
+        self.bound <= FD_ROUTE_ERROR
+    }
+
+    /// One line for the certificate and the warnings.
+    pub fn describe(&self) -> String {
+        format!(
+            "exchange metric lambda_min {:.2e} (cond {:.2e}): analytic RI-K roundoff bound \
+             {:.1e} Ha/Bohr^2, {} the finite-difference route's {:.1e}",
+            self.lambda_min,
+            self.cond,
+            self.bound,
+            if self.admits_analytic() {
+                "within"
+            } else {
+                "ABOVE"
+            },
+            FD_ROUTE_ERROR
+        )
+    }
+}
 
 /// Closed-shell exchange weight `α` of `E_K = α Σ_ij L_ij · M L_ij`.
 pub const RIK_ALPHA: f64 = -0.25;

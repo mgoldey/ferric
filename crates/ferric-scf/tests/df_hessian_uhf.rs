@@ -1450,27 +1450,31 @@ fn rohf_ri_is_accepted_and_other_unsupported_configurations_are_refused() {
 }
 
 #[test]
-fn the_pre_scf_probe_refuses_an_ill_conditioned_exchange_metric_for_uhf() {
+fn the_pre_scf_probe_reads_the_smallest_metric_eigenvalue_for_uhf() {
     // The metric depends on the geometry and the fitting basis only, so the UHF
     // probe (what `Auto` consults before any SCF) applies the same RI-K metric
-    // checks as the RHF one: aug-cc-pVQZ-RIFIT on a water-size molecule has
-    // cond(V) ~ 2e8 (above RIK_COND_WARN = 1e8): refused by the probe, hence
-    // `Auto` runs finite differences; RI-J alone accepts it (the full inverse
-    // measured no degradation there). Needs only the first-derivative engines
-    // for the engine checks before the metric one, and the second-derivative
-    // ones for the final probe.
+    // checks as the RHF one. aug-cc-pVQZ-RIFIT on NH2 has cond(V) above 1e8
+    // but no mode below the noise floor and a roundoff bound below the
+    // finite-difference route's (hessian_df_k, "Conditioning"), so it is
+    // admitted for RI-K as for RI-J; the refusals are
+    // `dropped_metric_modes_are_refused_for_every_spin_channel_set`. Needs the
+    // second-derivative engines for the final probe.
     if !has_deriv2() {
         return;
     }
     let mol = nh2();
     let prep = prep_at(&mol, "sto-3g");
     let op = Operator::coulomb();
+    let c = ferric_scf::hessian::rij_support::exchange_metric_conditioning(
+        &aux_at(&mol, "aug-cc-pvqz-rifit"),
+        op,
+    )
+    .expect("no mode below the noise floor");
+    eprintln!("UHF RI-K aug-cc-pVQZ-RIFIT: {}", c.describe());
+    assert!(c.cond > 1e8 && c.admits_analytic(), "{}", c.describe());
     let k_cfg = scf_config("", "aug-cc-pvqz-rifit");
-    let e = ferric_scf::hessian::analytic_uhf_hessian_available(&mol, &prep, op, &k_cfg)
-        .expect_err("cond above 1e8 must be refused for Auto")
-        .to_string();
-    eprintln!("UHF RI-K ill-conditioned probe: {e}");
-    assert!(e.contains("cond") || e.contains("lie in"), "{e}");
+    ferric_scf::hessian::analytic_uhf_hessian_available(&mol, &prep, op, &k_cfg)
+        .expect("RI-K admitted on its smallest eigenvalue");
     let j_cfg = scf_config("aug-cc-pvqz-rifit", "");
     ferric_scf::hessian::analytic_uhf_hessian_available(&mol, &prep, op, &j_cfg)
         .expect("RI-J on the same fit is accepted");

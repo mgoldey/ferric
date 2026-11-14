@@ -381,6 +381,11 @@ pub struct FrequencyResult {
     /// geometry first, then the displacements in stencil order (empty for an
     /// analytic Hessian and for [`harmonic_frequencies_from_gradient`]).
     pub scf_warm_start: Vec<WarmStartRecord>,
+    /// The RI-K exchange metric's conditioning and the analytic Hessian's
+    /// conditioning error bound, when an analytic route with fitted exchange
+    /// produced the Hessian through [`harmonic_frequencies`] (`None`
+    /// otherwise). Recorded in the frequency certificate.
+    pub rik_metric: Option<crate::hessian_df_k::RikConditioning>,
 }
 
 impl FrequencyResult {
@@ -778,15 +783,9 @@ fn auto_uks_moving_grid(
     op: Operator,
     scf_config: &RhfConfig,
 ) -> Result<Option<FrequencyResult>, FerricError> {
-    let supported = ferric_core::basis::bundled(basis_name)
-        .and_then(|bs| PreparedBasis::new(mol, &bs))
-        .and_then(|prep| {
-            crate::hessian::uks_moving_grid_hessian_available(mol, &prep, op, scf_config)
-        });
-    if let Err(e) = supported {
-        warn_if_libint_lacks_class(&e);
+    let Some(rik_metric) = auto_moving_grid_support(mol, basis_name, op, scf_config, true) else {
         return Ok(None);
-    }
+    };
     match harmonic_frequencies_uks_moving_grid(ctx, mol, basis_name, op, scf_config) {
         Err(e) if crate::hessian::is_response_failure(&e) => {
             eprintln!(
@@ -795,8 +794,42 @@ fn auto_uks_moving_grid(
             );
             Ok(None)
         }
-        r => r.map(Some),
+        r => r.map(|res| Some(with_rik_metric(res, rik_metric))),
     }
+}
+
+/// The pre-SCF moving-grid check `Auto` consults (UKS when `open_shell`, else
+/// RKS): `Some` with the exchange metric's conditioning when the system is
+/// supported, `None` (finite differences) otherwise.
+fn auto_moving_grid_support(
+    mol: &Molecule,
+    basis_name: &str,
+    op: Operator,
+    scf_config: &RhfConfig,
+    open_shell: bool,
+) -> Option<Option<crate::hessian_df_k::RikConditioning>> {
+    let check = if open_shell {
+        crate::hessian::uks_moving_grid_hessian_check
+    } else {
+        crate::hessian::rks_moving_grid_hessian_check
+    };
+    ferric_core::basis::bundled(basis_name)
+        .and_then(|bs| PreparedBasis::new(mol, &bs))
+        .and_then(|prep| check(mol, &prep, op, scf_config, crate::hessian::MetricGate::Auto))
+        .map_err(|e| warn_if_libint_lacks_class(&e))
+        .ok()
+}
+
+/// `res` with the exchange metric's conditioning recorded (it is decided by
+/// the pre-SCF check, before the Hessian runs).
+fn with_rik_metric(
+    mut res: FrequencyResult,
+    rik_metric: Option<crate::hessian_df_k::RikConditioning>,
+) -> FrequencyResult {
+    if res.rik_metric.is_none() {
+        res.rik_metric = rik_metric;
+    }
+    res
 }
 
 /// `Auto` for a closed-shell KS reference: the analytic moving-grid KS
@@ -815,17 +848,12 @@ fn auto_moving_grid(
     op: Operator,
     scf_config: &RhfConfig,
 ) -> Result<Option<FrequencyResult>, FerricError> {
-    let supported = ferric_core::basis::bundled(basis_name)
-        .and_then(|bs| PreparedBasis::new(mol, &bs))
-        .and_then(|prep| {
-            crate::hessian::rks_moving_grid_hessian_available(mol, &prep, op, scf_config)
-        });
-    if let Err(e) = supported {
-        warn_if_libint_lacks_class(&e);
+    let Some(rik_metric) = auto_moving_grid_support(mol, basis_name, op, scf_config, false) else {
         return Ok(None);
-    }
+    };
     let reference = FrequencyReference::Rhf;
-    harmonic_frequencies_ks_moving_grid(ctx, mol, basis_name, op, scf_config, reference).map(Some)
+    harmonic_frequencies_ks_moving_grid(ctx, mol, basis_name, op, scf_config, reference)
+        .map(|res| Some(with_rik_metric(res, rik_metric)))
 }
 
 /// The analytic branch of [`harmonic_frequencies`]: `Some` when
@@ -843,17 +871,24 @@ fn analytic_if_selected(
     if freq_config.hessian == HessianMethod::FiniteDifference {
         return Ok(None);
     }
-    let available = analytic_available(mol, basis_name, op, scf_config, freq_config.reference);
+    let gate = if freq_config.hessian == HessianMethod::Analytic {
+        crate::hessian::MetricGate::Explicit
+    } else {
+        crate::hessian::MetricGate::Auto
+    };
+    let available =
+        analytic_available(mol, basis_name, op, scf_config, freq_config.reference, gate);
     match (available, freq_config.hessian) {
-        (Ok(()), _) => match freq_config.reference {
+        (Ok(rik_metric), _) => match freq_config.reference {
             FrequencyReference::Uhf => {
-                harmonic_frequencies_analytic_uhf(ctx, mol, basis_name, op, scf_config).map(Some)
+                harmonic_frequencies_analytic_uhf(ctx, mol, basis_name, op, scf_config)
             }
             FrequencyReference::Rohf => {
-                harmonic_frequencies_analytic_rohf(ctx, mol, basis_name, op, scf_config).map(Some)
+                harmonic_frequencies_analytic_rohf(ctx, mol, basis_name, op, scf_config)
             }
-            _ => harmonic_frequencies_analytic(ctx, mol, basis_name, op, scf_config).map(Some),
-        },
+            _ => harmonic_frequencies_analytic(ctx, mol, basis_name, op, scf_config),
+        }
+        .map(|res| Some(with_rik_metric(res, rik_metric))),
         (Err(e), HessianMethod::Analytic) => Err(e),
         (Err(e), _) => {
             warn_if_libint_lacks_class(&e);
@@ -883,16 +918,11 @@ fn analytic_available(
     op: Operator,
     scf_config: &RhfConfig,
     reference: FrequencyReference,
-) -> Result<(), FerricError> {
+    gate: crate::hessian::MetricGate,
+) -> Result<Option<crate::hessian_df_k::RikConditioning>, FerricError> {
     let bs = ferric_core::basis::bundled(basis_name)?;
     let prep = PreparedBasis::new(mol, &bs)?;
-    if reference == FrequencyReference::Rohf {
-        return crate::hessian::analytic_rohf_hessian_available(mol, &prep, op, scf_config);
-    }
-    if reference == FrequencyReference::Uhf {
-        return crate::hessian::analytic_uhf_hessian_available(mol, &prep, op, scf_config);
-    }
-    crate::hessian::analytic_hessian_available(mol, &prep, op, scf_config)
+    crate::hessian::analytic_hessian_check(reference, mol, &prep, op, scf_config, gate)
 }
 
 /// Harmonic frequencies from the ANALYTIC RHF Hessian ([`crate::hessian`]).
@@ -1047,13 +1077,20 @@ pub fn harmonic_frequencies_ks_moving_grid(
     }
     let bs = ferric_core::basis::bundled(basis_name)?;
     let prep = PreparedBasis::new(mol, &bs)?;
-    crate::hessian::rks_moving_grid_hessian_available(mol, &prep, op, scf_config)?;
+    let rik_metric = crate::hessian::rks_moving_grid_hessian_check(
+        mol,
+        &prep,
+        op,
+        scf_config,
+        crate::hessian::MetricGate::Explicit,
+    )?;
     atom_masses(mol)?;
     let bounds = SchwarzBounds::compute(op, &prep)?;
     let res = solve_rhf(ctx, mol, &prep, op, &bounds, scf_config)?;
     crate::hessian::analytic_frequencies_ks_moving_grid(
         ctx, mol, &prep, op, &bounds, &res, scf_config,
     )
+    .map(|r| with_rik_metric(r, rik_metric))
 }
 
 /// Harmonic frequencies from the analytic moving-grid UKS Hessian
@@ -1083,13 +1120,20 @@ pub fn harmonic_frequencies_uks_moving_grid(
     }
     let bs = ferric_core::basis::bundled(basis_name)?;
     let prep = PreparedBasis::new(mol, &bs)?;
-    crate::hessian::uks_moving_grid_hessian_available(mol, &prep, op, scf_config)?;
+    let rik_metric = crate::hessian::uks_moving_grid_hessian_check(
+        mol,
+        &prep,
+        op,
+        scf_config,
+        crate::hessian::MetricGate::Explicit,
+    )?;
     atom_masses(mol)?;
     let bounds = SchwarzBounds::compute(op, &prep)?;
     let res = solve_uhf(ctx, mol, &prep, &bounds, scf_config)?;
     crate::hessian::analytic_frequencies_uks_moving_grid(
         ctx, mol, &prep, op, &bounds, &res, scf_config,
     )
+    .map(|r| with_rik_metric(r, rik_metric))
 }
 
 /// Mass-weight, project out translations/rotations, diagonalize, and convert to
@@ -1251,6 +1295,7 @@ pub fn frequencies_from_cartesian_hessian(
         energy: 0.0,
         correction_energy: 0.0,
         scf_warm_start: Vec::new(),
+        rik_metric: None,
     })
 }
 

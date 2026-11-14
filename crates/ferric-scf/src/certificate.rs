@@ -387,6 +387,9 @@ pub fn frequencies_certificate(
             "hessian-asymmetry",
             format!("{:.3e} Ha/Bohr^2 before symmetrization", result.asymmetry),
         );
+    if let Some(m) = &result.rik_metric {
+        c = c.with_approximation("ri-k-metric", m.describe());
+    }
     let n_imag = result.frequencies.iter().filter(|w| **w < 0.0).count();
     if n_imag > 0 {
         c.push_warning(format!(

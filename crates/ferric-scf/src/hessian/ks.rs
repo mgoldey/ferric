@@ -291,6 +291,21 @@ pub fn rks_moving_grid_hessian_available(
     op: Operator,
     config: &RhfConfig,
 ) -> Result<(), FerricError> {
+    rks_moving_grid_hessian_check(mol, prep, op, config, super::MetricGate::Auto).map(|_| ())
+}
+
+/// [`rks_moving_grid_hessian_available`] with the RI-K conditioning gate
+/// applied as `gate` says (`Auto` refuses a metric whose roundoff bound
+/// exceeds the finite-difference route's error, `Explicit` accepts and the Hessian
+/// warns, as the explicit Hartree-Fock route does). Returns the exchange
+/// metric's conditioning when K is fitted, for the certificate.
+pub fn rks_moving_grid_hessian_check(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    op: Operator,
+    config: &RhfConfig,
+    gate: super::MetricGate,
+) -> Result<Option<crate::hessian_df_k::RikConditioning>, FerricError> {
     rks_moving_grid_hessian_preflight(mol, prep.basis_set(), op, config)?;
     let name = config.xc.as_deref().unwrap_or_default();
     let grid = FixedGridKs::new(
@@ -329,6 +344,7 @@ pub fn rks_moving_grid_hessian_available(
         op,
         &hf,
         grid.exact_exchange() > 0.0,
+        gate,
     )
     .map_err(|e| {
         FerricError::General(format!(

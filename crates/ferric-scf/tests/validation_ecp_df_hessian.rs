@@ -17,11 +17,11 @@
 //! one is `exact_vs_ri_jk_hessian_max_abs`).
 //!
 //! CONDITIONING. `def2-universal-jkfit` on iodine has an RI-K metric of cond
-//! 4.9e8 (HI) to 1.4e9 (CH3I) and 6e8 to 1.1e9 (HIH, HOI), above the code's
-//! `RIK_COND_WARN` = 1e8 where accuracy is "no longer established". The `jkfit`
-//! tests below are therefore evidence AT that limit (the agreement is
-//! nevertheless at the floor), not within the validated range; the `rifit`
-//! tests (`def2-svp-rifit`, probe-accepted) are the within-range evidence.
+//! 4.9e8 (HI) to 1.4e9 (CH3I) and 6e8 to 1.1e9 (HIH, HOI). The analytic
+//! Hessian's roundoff follows the smallest metric eigenvalue, not cond
+//! (`hessian_df_k`, "Conditioning"), and these metrics are admitted for
+//! `Auto`; the `jkfit` tests below are the high-cond evidence and the `rifit`
+//! tests (`def2-svp-rifit`, cond below 1e8) the low-cond evidence.
 //!
 //! Bars: see `ecp_df_common` (FD) and `TOL_PYSCF`; the PySCF-analytic bar is
 //! raised to twice the generator's measured PySCF analytic-vs-FD gap where

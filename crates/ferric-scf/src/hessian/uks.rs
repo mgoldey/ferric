@@ -136,6 +136,21 @@ pub fn uks_moving_grid_hessian_available(
     op: Operator,
     config: &RhfConfig,
 ) -> Result<(), FerricError> {
+    uks_moving_grid_hessian_check(mol, prep, op, config, super::MetricGate::Auto).map(|_| ())
+}
+
+/// [`uks_moving_grid_hessian_available`] with the RI-K conditioning gate
+/// applied as `gate` says (`Auto` refuses a metric whose roundoff bound
+/// exceeds the finite-difference route's error, `Explicit` accepts and the Hessian
+/// warns, as the explicit Hartree-Fock route does). Returns the exchange
+/// metric's conditioning when K is fitted, for the certificate.
+pub fn uks_moving_grid_hessian_check(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    op: Operator,
+    config: &RhfConfig,
+    gate: super::MetricGate,
+) -> Result<Option<crate::hessian_df_k::RikConditioning>, FerricError> {
     uks_moving_grid_hessian_preflight(mol, prep.basis_set(), op, config)?;
     let name = config.xc.as_deref().unwrap_or_default();
     let grid = FixedGridKs::new(
@@ -164,7 +179,7 @@ pub fn uks_moving_grid_hessian_available(
         },
         ..config.clone()
     };
-    super::available(Reference::Uhf, mol, prep, op, &hf, exx > 0.0).map_err(|e| {
+    super::available(Reference::Uhf, mol, prep, op, &hf, exx > 0.0, gate).map_err(|e| {
         FerricError::General(format!(
             "the analytic UKS Hessian does not support this system (the UHF analytic Hessian's \
              check: {e}); use the finite-difference Hessian"
