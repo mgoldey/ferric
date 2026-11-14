@@ -3002,8 +3002,11 @@ pub struct ScfCfg {
     /// rimp2 / oo-rimp2 with task = "optimize": how the reference SCF builds
     /// J/K, `"exact"`, `"rijk"` (RI-J + RI-K) or
     /// `"rijcosx"` (RI-J + COSX K). The same rule as the Python `scf_jk`
-    /// kwarg (`ferric_scf::scf_jk`). Omitted = the kind's historical mode
-    /// (four-centre, except rs-mp2-rpa, which has always used RI-JK).
+    /// kwarg (`ferric_scf::scf_jk`). Omitted = [`Config::omitted_scf_jk`]:
+    /// RI-JK on the JK-fit set matched to the orbital basis for a
+    /// closed-shell energy, four-centre for an open shell, a geometry task
+    /// or when a key only the four-centre route reads is set, RI-JK on
+    /// def2-universal-jkfit for rs-mp2-rpa. The Python `scf_jk` kwarg still defaults to "exact".
     /// Exclusive with `df_j_aux` / `df_k_aux`; see [`ScfCfg::scf_jk_choice`].
     pub jk: Option<String>,
     /// JK-fitting basis for `jk = "rijk" | "rijcosx"` (bundled name, default
@@ -3380,6 +3383,48 @@ fn refuse_open_shell_fitted_oo(
     )
 }
 
+/// What an MP2-family reference SCF takes when `[scf] jk` is omitted, and
+/// why: the run log prints `why` next to the route.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OmittedJk {
+    /// The J/K mode.
+    pub mode: ferric_scf::scf_jk::ScfJkMode,
+    /// The JK-fitting basis of a fitted mode; `None` keeps the shared
+    /// default (`ferric_scf::scf_jk::DEFAULT_SCF_JK_AUX`) or the exact route.
+    pub aux: Option<&'static str>,
+    /// One phrase naming the rule that chose `mode`.
+    pub why: String,
+}
+
+impl OmittedJk {
+    fn exact(why: String) -> Self {
+        OmittedJk {
+            mode: ferric_scf::scf_jk::ScfJkMode::Exact,
+            aux: None,
+            why,
+        }
+    }
+}
+
+impl ScfCfg {
+    /// The first `[scf]` key set that only the four-centre route reads
+    /// (`k_builder`, `eri`, `screening`, `df_increments`, `df_guess = true`,
+    /// `df_guess_aux`): with one of them an omitted `jk` stays exact, so an
+    /// input that worked on the four-centre default keeps working unchanged.
+    fn exact_route_key(&self) -> Option<&'static str> {
+        [
+            ("k_builder", self.k_builder.is_some()),
+            ("eri", self.eri.is_some()),
+            ("screening", self.screening.is_some()),
+            ("df_increments", self.df_increments),
+            ("df_guess", self.df_guess == Some(true)),
+            ("df_guess_aux", self.df_guess_aux.is_some()),
+        ]
+        .into_iter()
+        .find_map(|(key, set)| set.then_some(key))
+    }
+}
+
 impl ScfCfg {
     /// `aurora` / `trah_trigger` scoping: AURORA is closed-shell RHF only, TRAH
     /// is wired for RHF and UHF; anything else would silently ignore the key.
@@ -3428,11 +3473,11 @@ impl ScfCfg {
     }
 
     /// `[scf] jk` / `jk_aux` resolved by the shared `ferric_scf::scf_jk`
-    /// rule with the kind's OWN default (the Python entry points' rule:
-    /// RI-JK for rs-mp2-rpa, four-centre for the rest), or `None` when the
-    /// rule does not govern this run: a kind outside [`SCF_JK_KINDS`], a task
-    /// other than "energy", or the explicit `df_j_aux` / `df_k_aux` spelling
-    /// (the run is then unchanged).
+    /// rule, with `omitted` ([`Config::omitted_scf_jk`]) standing in for an
+    /// omitted `jk`, or `None` when the rule does not govern this run: a kind
+    /// outside [`SCF_JK_KINDS`], a task other than "energy" (or the MP2
+    /// optimizations), or the explicit `df_j_aux` / `df_k_aux` spelling (the
+    /// run is then unchanged).
     ///
     /// Hard errors: `jk_aux` without `jk`; `jk` on a kind outside
     /// [`SCF_JK_KINDS`] or a task other than "energy"; `jk` together with
@@ -3452,8 +3497,9 @@ impl ScfCfg {
         &self,
         kind: &str,
         task: &str,
+        omitted: &OmittedJk,
     ) -> Result<Option<ferric_scf::scf_jk::ScfJk>, String> {
-        use ferric_scf::scf_jk::{ScfJk, ScfJkKeys, ScfJkMode};
+        use ferric_scf::scf_jk::{ScfJk, ScfJkKeys};
         if !scf_jk_governs(kind, task) {
             if self.jk.is_some() || self.jk_aux.is_some() {
                 return Err(format!(
@@ -3498,18 +3544,18 @@ impl ScfCfg {
             }
             return Ok(None);
         }
-        let default = if kind == "rs-mp2-rpa" {
-            ScfJkMode::RiJk
-        } else {
-            ScfJkMode::Exact
-        };
-        let jk = ScfJk::resolve(
+        let mut jk = ScfJk::resolve(
             self.jk.as_deref(),
             self.jk_aux.as_deref(),
             self.k_builder.as_deref(),
-            default,
+            omitted.mode,
             ScfJkKeys::CLI,
         )?;
+        if self.jk.is_none() {
+            if let Some(aux) = omitted.aux {
+                jk.aux = Some(aux.to_string());
+            }
+        }
         refuse_scf_jk_for_kind(kind, task, &jk)?;
         if jk.is_fitted() {
             let m = jk.mode.as_str();
@@ -4032,6 +4078,53 @@ pub const SCF_JK_KINDS: &[&str] = &[
 const DOUBLE_HYBRID_KINDS: &[&str] = &["wb97x-l-v", "b2plyp", "dsd-pbep86"];
 
 impl Config {
+    /// What the reference SCF takes when `[scf] jk` is omitted
+    /// ([`ScfCfg::scf_jk_choice`]): RI-JK for `rs-mp2-rpa` (on the shared
+    /// default JK-fit set); four-centre for an open shell (no fitted
+    /// reference has been measured there, and the unrestricted OO-RI-MP2
+    /// refuses one), for a task other than "energy" (the fitted MP2
+    /// gradient's peak memory is about twice the four-centre route's and
+    /// exceeded a 10 GB budget at octane / cc-pVTZ) and for an input that
+    /// sets a key only the four-centre route reads; otherwise RI-JK on the JK-fit set matched to the orbital
+    /// basis (`ferric_scf::scf_jk::matched_jk_aux`). The evidence for the
+    /// fitted default is `crates/ferric-mp2/theory.md` §9.1.
+    pub fn omitted_scf_jk(&self, task: &str) -> OmittedJk {
+        use ferric_scf::scf_jk::{matched_jk_aux, ScfJkMode};
+        let kind = self.method.kind.as_str();
+        if kind == "rs-mp2-rpa" {
+            return OmittedJk {
+                mode: ScfJkMode::RiJk,
+                aux: None,
+                why: "the rs-mp2-rpa default".into(),
+            };
+        }
+        if self.molecule.multiplicity > 1 {
+            return OmittedJk::exact("open-shell reference".into());
+        }
+        if task != "energy" {
+            return OmittedJk::exact(format!(
+                "task = \"{task}\": the fitted gradient's peak memory is about twice the \
+                 four-centre route's"
+            ));
+        }
+        if let Some(key) = self.scf.exact_route_key() {
+            return OmittedJk::exact(format!("[scf] {key} reads the four-centre route"));
+        }
+        let basis = self.basis.name.as_deref().unwrap_or_default();
+        OmittedJk {
+            mode: ScfJkMode::RiJk,
+            aux: Some(matched_jk_aux(basis)),
+            why: "the closed-shell MP2-family default".into(),
+        }
+    }
+
+    /// [`ScfCfg::scf_jk_choice`] for this run's kind and `task`, with
+    /// [`Config::omitted_scf_jk`] for an omitted `jk`.
+    pub fn scf_jk_choice(&self, task: &str) -> Result<Option<ferric_scf::scf_jk::ScfJk>, String> {
+        self.scf
+            .scf_jk_choice(&self.method.kind, task, &self.omitted_scf_jk(task))
+    }
+
     /// The Kohn-Sham functional the SCF of this run uses when it is one of
     /// the SCF-only kinds: `ksdft` always (default LDA), and `rhf`/`uhf`/
     /// `rohf` exactly when `[dft] functional` is set -- the functional
@@ -4707,7 +4800,7 @@ impl Config {
         let kind = self.method.kind.as_str();
         let task = self.method.task.as_str();
         let mult = self.molecule.multiplicity;
-        refuse_open_shell_fitted_oo(kind, mult, self.scf.scf_jk_choice(kind, task)?)?;
+        refuse_open_shell_fitted_oo(kind, mult, self.scf_jk_choice(task)?)?;
 
         if self.cosmo.is_some() && task != "energy" {
             return Err(format!(
@@ -5449,31 +5542,55 @@ mod compat_guard_tests {
         );
     }
 
-    /// `[scf] jk` / `jk_aux` go through the shared `ferric_scf::scf_jk` rule
-    /// (the Python `scf_jk` one): unset is `None` (the run is unchanged),
+    /// An omitted `[scf] jk` resolves through [`Config::omitted_scf_jk`]:
+    /// RI-JK on the basis-matched set for a closed-shell MP2-family run,
+    /// four-centre when a key only that route reads is set, `None` off the
+    /// governed kinds.
+    #[test]
+    fn omitted_jk_takes_rijk_unless_a_four_centre_key_is_set() {
+        use ferric_scf::scf_jk::ScfJkMode;
+        let choice = |kind: &str, task: &str, extra: &str| {
+            cfg(kind, task, &format!("[scf]\n{extra}")).scf_jk_choice(task)
+        };
+        // Unset: RI-JK on the basis-matched JK-fit set (sto-3g here, so the
+        // shared default), rs-mp2-rpa's RI-JK, off the governed kinds None.
+        let unset = choice("rimp2", "energy", "").unwrap().unwrap();
+        assert_eq!(unset.mode, ScfJkMode::RiJk);
+        assert_eq!(unset.aux.as_deref(), Some("def2-universal-jkfit"));
+        let rs_default = choice("rs-mp2-rpa", "energy", "").unwrap().unwrap();
+        assert_eq!(rs_default.mode, ScfJkMode::RiJk);
+        assert_eq!(rs_default.aux.as_deref(), Some("def2-universal-jkfit"));
+        assert_eq!(choice("rhf", "energy", ""), Ok(None));
+        // A geometry task keeps the four-centre reference.
+        let opt_default = choice("rimp2", "optimize", "").unwrap().unwrap();
+        assert_eq!(opt_default.mode, ScfJkMode::Exact);
+        // A key only the four-centre route reads keeps an omitted jk exact.
+        for key in [
+            "k_builder = \"link\"",
+            "eri = \"incore\"",
+            "df_increments = true",
+            "df_guess = true",
+        ] {
+            let kept = choice("rimp2", "energy", &format!("{key}\n"))
+                .unwrap()
+                .unwrap();
+            assert_eq!((kept.mode, kept.aux), (ScfJkMode::Exact, None), "{key}");
+        }
+    }
+
+    /// The `[scf] jk` keys go through `ferric_scf::scf_jk::ScfJk::resolve`:
     /// each mode lands on the expected `RhfConfig` fields, and every
     /// conflict is refused with the CLI's own key names.
     #[test]
     fn scf_jk_keys_resolve_through_the_shared_rule() {
         use ferric_scf::scf_jk::ScfJkMode;
         let choice = |kind: &str, task: &str, extra: &str| {
-            cfg(kind, task, &format!("[scf]\n{extra}"))
-                .scf
-                .scf_jk_choice(kind, task)
+            cfg(kind, task, &format!("[scf]\n{extra}")).scf_jk_choice(task)
         };
-        // Unset: the kind's own default, as in Python (exact, except
-        // rs-mp2-rpa's historical RI-JK); off the governed kinds, None.
-        let unset = choice("rimp2", "energy", "").unwrap().unwrap();
-        assert_eq!((unset.mode, unset.aux), (ScfJkMode::Exact, None));
-        let rs_default = choice("rs-mp2-rpa", "energy", "").unwrap().unwrap();
-        assert_eq!(rs_default.mode, ScfJkMode::RiJk);
-        assert_eq!(rs_default.aux.as_deref(), Some("def2-universal-jkfit"));
-        assert_eq!(choice("rhf", "energy", ""), Ok(None));
-        let opt_default = choice("rimp2", "optimize", "").unwrap().unwrap();
-        assert_eq!(
-            (opt_default.mode, opt_default.aux),
-            (ScfJkMode::Exact, None)
-        );
+        let exact = choice("rimp2", "energy", "jk = \"exact\"\n")
+            .unwrap()
+            .unwrap();
+        assert_eq!((exact.mode, exact.aux), (ScfJkMode::Exact, None));
         // The explicit df_*_aux spelling leaves the run untouched.
         assert_eq!(
             choice("rimp2", "energy", "df_j_aux = \"def2-universal-jkfit\"\n"),

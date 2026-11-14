@@ -38,15 +38,59 @@ only.
 
 **The reference SCF: exact, RI-JK or RIJCOSX.** The `auxbasis` above fits the
 correlation step only. The reference SCF is a separate choice, `scf_jk` on
-every MP2-family Python driver (`[scf] jk` in the CLI, task `energy`):
-`"exact"` (four-centre J and K, the default), `"rijk"` (RI-J + RI-K) or
-`"rijcosx"` (RI-J + COSX K). The fitted modes use `jk_auxbasis` (`[scf]
-jk_aux`), a JK-fit basis with default `def2-universal-jkfit`. It is never the
-MP2 `auxbasis`, because an MP2-fit set used for K costs mHa. `rs-mp2-rpa` is the
-exception: its default is `"rijk"`. Every result
-echoes `scf_jk` and `jk_auxbasis`. An unknown mode, `jk_auxbasis` with
-`"exact"`, or a `k_builder` the mode would override is an error (so is any
-`k_builder` on `rs-mp2-rpa`'s RI-JK default, in the CLI as in Python). A
+every MP2-family Python driver (`[scf] jk` in the CLI, task `energy`, and
+`optimize` for `rimp2`, `scs-mp2` and `oo-rimp2`):
+`"exact"` (four-centre J and K), `"rijk"` (RI-J + RI-K) or `"rijcosx"`
+(RI-J + COSX K). The fitted modes use `jk_auxbasis` (`[scf] jk_aux`), a JK-fit
+basis. It is never the MP2 `auxbasis`, because an MP2-fit set used for K costs
+mHa.
+
+In the CLI an omitted `[scf] jk` gives a closed-shell energy of these kinds
+`"rijk"` on the JK-fit set matched to the orbital basis: `cc-pvtz-jkfit` for
+cc-pVDZ and cc-pVTZ, `cc-pvqz-jkfit` for cc-pVQZ, `aug-cc-pvXz-jkfit` for
+aug-cc-pVXZ, `def2-universal-jkfit` for every other basis. The reference stays
+four-centre for an open-shell molecule, for `task = "optimize"` (the fitted
+gradient's peak memory is about twice the four-centre route's) and for an
+input that sets a key only the four-centre route reads (`k_builder`, `eri`,
+`screening`, `df_increments`, `df_guess = true`, `df_guess_aux`). `rs-mp2-rpa` takes
+`"rijk"` on `def2-universal-jkfit`. The run prints `Reference SCF J/K:` with
+the route, its aux set and why it was chosen, and the certificate lists the fit
+as `scf ri-j` and `scf ri-k` with the aux set. `jk = "exact"` gives the
+four-centre reference. The Python `scf_jk` keyword defaults to `"exact"`
+(`jk_auxbasis` default `def2-universal-jkfit`). Every result echoes `scf_jk`
+and `jk_auxbasis`.
+
+On the matched set the fitted reference moves the RI-MP2 total energy by
+less than the RI-MP2 fit error itself. Closed-shell n-alkanes against the
+four-centre reference:
+
+| System | Basis (functions) | JK aux | ΔE(HF) | ΔE(corr) | ΔE(total) | max \|Δg\| | RI-MP2 fit error |
+|---|---|---|---|---|---|---|---|
+| propane | cc-pVTZ (202), fc | def2-universal-jkfit | +29.8 | +70.0 | +99.8 | 37.5 | +90.8 |
+| | | cc-pvtz-jkfit | +15.4 | +48.8 | +64.2 | 10.1 | |
+| hexane | cc-pVDZ (154) | def2-universal-jkfit | +19.1 | +93.3 | +112 | 11.3 | |
+| | | cc-pvtz-jkfit | +26.9 | +29.4 | +56.3 | 7.4 | |
+| octane | cc-pVDZ (202) | def2-universal-jkfit | +31.7 | +123 | +155 | 11.1 | +280 (23.2) |
+| | | cc-pvtz-jkfit | +39.1 | +39.1 | +78.2 | 7.6 | |
+| dodecane | cc-pVDZ (298) | def2-universal-jkfit | +56.4 | +184 | +240 | 11.1 | |
+| | | cc-pvtz-jkfit | +63.6 | +58.5 | +122 | 7.6 | |
+| octane | cc-pVTZ (492), fc | def2-universal-jkfit | +104 | +171 | +275 | — | |
+| | | cc-pvtz-jkfit | +62.6 | +127 | +189 | — | |
+
+ΔE in µHa and max |Δg| in µHa/Bohr, f64 RI-J, fitted minus four-centre. The
+RI-MP2 fit error is PySCF DF-MP2 minus conventional MP2 at the same orbitals
+(energy, and in parentheses the largest gradient component); ferric's
+four-centre RI-MP2 matches PySCF DF-MP2 to 6e-8 Ha on both systems. The
+matched set halves the total shift relative to def2-universal-jkfit and stays
+below the fit error; both shifts are positive, so they add: on propane/cc-pVTZ
+the deviation from conventional MP2 grows from 91 to 155 µHa. The CLI's
+default f32 RI-J storage moves the fitted octane energy by 2.7 µHa (cc-pVDZ)
+and 3.9 µHa (cc-pVTZ), toward the four-centre value. On butane/cc-pVDZ the
+default moves `rimp2`, `scs-mp2`, `att-rimp2`, `laplace-sos-mp2` and
+`oo-rimp2` alike, by +30 to +32 µHa.
+
+An unknown mode, `jk_auxbasis` with `"exact"`, or a `k_builder` the mode would
+override is an error (so is any `k_builder` on `rs-mp2-rpa`'s RI-JK default, in the CLI as in Python). A
 `jk_auxbasis` whose name lacks "jkfit" draws a warning. `oo-rimp2` accepts
 `"exact"` and `"rijk"`: orbital optimisation rebuilds J/K at every orbital step
 on the reference's own route, so under `"rijk"` its HF energy, orbital steps
@@ -64,10 +108,10 @@ PySCF DF-MP2 (frozen core, `aug-cc-pvXz-ri` for MP2) on the S66 water dimer:
 | Basis | JK aux | ΔE_total(dimer) | ΔIE (CP) |
 |---|---|---|---|
 | aug-cc-pVDZ | def2-universal-jkfit | +98 µHa | +0.0059 kcal/mol |
-| aug-cc-pVDZ | aug-cc-pvdz-jkfit (not bundled) | +58 µHa | +0.0001 kcal/mol |
+| aug-cc-pVDZ | aug-cc-pvdz-jkfit | +58 µHa | +0.0001 kcal/mol |
 | aug-cc-pVTZ | def2-universal-jkfit | +69 µHa | +0.0043 kcal/mol |
 | aug-cc-pVTZ | cc-pvtz-jkfit | +78 µHa | +0.0026 kcal/mol |
-| aug-cc-pVTZ | aug-cc-pvtz-jkfit (not bundled) | +63 µHa | <0.00001 kcal/mol |
+| aug-cc-pVTZ | aug-cc-pvtz-jkfit | +63 µHa | <0.00001 kcal/mol |
 
 **Run it.** `method.kind = "rimp2"` (`examples/water-rimp2.toml`,
 `examples/water-rimp2-frozen-core.toml`); Python `ferric.run_rimp2(mol, bs, aux)`.

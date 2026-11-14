@@ -318,21 +318,29 @@ fn install_integral_settings(scf: &config::ScfCfg) -> Result<(), String> {
 /// rule (`false` when the rule does not govern the run, which then is
 /// untouched). Already validated at load, so an error here exits.
 fn apply_scf_jk(cfg: &Config, task: &str, rhf_config: &mut RhfConfig) -> bool {
-    let choice = cfg
-        .scf
-        .scf_jk_choice(&cfg.method.kind, task)
-        .unwrap_or_else(|e| {
-            eprintln!("error: {e}");
-            std::process::exit(1);
-        });
+    let choice = cfg.scf_jk_choice(task).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
     let Some(jk) = choice else {
         return false;
     };
     if let Some(w) = jk.aux_warning(ferric_scf::scf_jk::ScfJkKeys::CLI) {
         eprintln!("warning: {w}");
     }
+    println!("{}", scf_jk_route_line(cfg, task, &jk));
     jk.apply(rhf_config);
     jk.is_fitted()
+}
+
+/// The run-log line naming the reference SCF's J/K route: what `[scf] jk`
+/// resolved to and, when the key was omitted, the rule that chose it.
+fn scf_jk_route_line(cfg: &Config, task: &str, jk: &ferric_scf::scf_jk::ScfJk) -> String {
+    let source = match &cfg.scf.jk {
+        Some(_) => "[scf] jk".to_string(),
+        None => format!("[scf] jk omitted: {}", cfg.omitted_scf_jk(task).why),
+    };
+    format!("Reference SCF J/K: {} ({source})", jk.label())
 }
 
 /// The actual CLI, taking argv explicitly instead of reading

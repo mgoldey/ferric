@@ -26,6 +26,22 @@ use crate::rhf::RhfConfig;
 /// same default the SCF layer auto-applies for a functional.
 pub const DEFAULT_SCF_JK_AUX: &str = crate::fock_assembly::DEFAULT_JK_AUX;
 
+/// The JK-fitting basis Weigend fitted for the orbital basis `orbital`
+/// (case-insensitive bundled name): `cc-pvtz-jkfit` for cc-pVDZ and cc-pVTZ
+/// (no cc-pVDZ-JKFIT set exists; the TZ set is the DZ partner),
+/// `cc-pvqz-jkfit` for cc-pVQZ, `aug-cc-pv{d,t,q}z-jkfit` for the augmented
+/// sets, and [`DEFAULT_SCF_JK_AUX`] for every other orbital basis.
+pub fn matched_jk_aux(orbital: &str) -> &'static str {
+    match orbital.trim().to_ascii_lowercase().as_str() {
+        "cc-pvdz" | "cc-pvtz" => "cc-pvtz-jkfit",
+        "cc-pvqz" => "cc-pvqz-jkfit",
+        "aug-cc-pvdz" => "aug-cc-pvdz-jkfit",
+        "aug-cc-pvtz" => "aug-cc-pvtz-jkfit",
+        "aug-cc-pvqz" => "aug-cc-pvqz-jkfit",
+        _ => DEFAULT_SCF_JK_AUX,
+    }
+}
+
 /// The accepted `scf_jk` spellings, in the order error messages list them.
 pub const SCF_JK_MODES: &[&str] = &["exact", "rijk", "rijcosx"];
 

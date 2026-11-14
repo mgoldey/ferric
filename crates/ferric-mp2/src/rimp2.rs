@@ -10,6 +10,7 @@
 use crate::mo_transform::transform_3center_ov;
 use ferric_core::mol::Molecule;
 use ferric_core::orbitals::OrbitalSpace;
+use ferric_core::timing::PhaseAccumulator;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
@@ -1025,6 +1026,9 @@ pub fn ri_mp2_spin_components(
         .to_owned();
     let c_vir = c.slice(ndarray::s![.., nocc_total..]).to_owned();
 
+    // `FERRIC_TIMING` phase table of this route, printed when it returns.
+    let mut acc = PhaseAccumulator::new().report_on_drop("RI-MP2 energy");
+
     // (P|Q) metric and V^{-1/2}.
     //
     // `metric_op` decouples the FITTING metric from the PHYSICAL operator (see
@@ -1036,8 +1040,10 @@ pub fn ri_mp2_spin_components(
     // regularized eigh, so an erfc/Yukawa failure propagates as an error rather
     // than being silently regularized into a quietly-wrong number.
     let met_op = config.metric_op.unwrap_or(op);
+    let tok = acc.begin("metric V^-1/2");
     let v2c = threeindex::coulomb_metric_2c(met_op, dfbs)?;
     let v2c_inv_sqrt = metric_inverse_sqrt(&v2c, met_op)?;
+    acc.stop(tok);
 
     // Stream raw (P|mu nu) aux-blocks from a budgeted ThreeIndexSource and
     // dress each block with V^{-1/2} on the fly via the canonical streamer
@@ -1065,8 +1071,10 @@ pub fn ri_mp2_spin_components(
         .as_ref()
         .map(|b| (b, config.eri3_screen_thresh.unwrap_or(0.0)));
     let naux_all = dfbs.nbasis();
+    let tok = acc.begin("3c AO (P|mn)");
     let mut src =
         ThreeIndexSource::build_band_screened(op, obs, dfbs, budget_bytes, 0, naux_all, screen)?;
+    acc.stop(tok);
     // DEBIT the shared pool for b_flat, AFTER `src` has taken its own charge
     // and WHILE it is still outstanding. That ordering is the whole point:
     // `check_mo_side_alloc` above compared b_flat against the full ceiling as
@@ -1135,6 +1143,7 @@ pub fn ri_mp2_spin_components(
     // the defect `19ade072` removed from the KS grid batch width. A width may
     // depend on the BUDGET and the problem; never on the ledger, RSS, or the
     // thread count.
+    let tok = acc.begin("MO transform B[P,ia]");
     let b_flat = stream_dressed_mo_band_budgeted(
         &mut src,
         &v2c_inv_sqrt,
@@ -1143,6 +1152,7 @@ pub fn ri_mp2_spin_components(
         None,
         Some(budget_bytes),
     )?; // (naux, nocc*nvir)
+    acc.stop(tok);
 
     // Free the raw AO 3-index source the moment its last reader is done.
     //
@@ -1180,7 +1190,9 @@ pub fn ri_mp2_spin_components(
     // keeps the device in f64.
     let mixed_ok = config.kappa.is_none() && mixed_energy_operator(op);
     let dims = (nocc, nvir, first_occ, nocc_total);
-    let sc = dispatch_spin_components(&b_flat, eps, dims, config.kappa, mixed_ok);
+    let sc = acc.time("pair energies", || {
+        dispatch_spin_components(&b_flat, eps, dims, config.kappa, mixed_ok)
+    });
     Ok((sc, b_flat))
 }
 

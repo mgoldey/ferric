@@ -7,16 +7,25 @@
 //! (same engine, same precision, every quartet at threshold 0), so in-core and
 //! direct J/K differ only by summation order. For one element, a sum of `L`
 //! products has a floating-point error at most `γ_L · Σ|terms|`,
-//! `γ_L = L u / (1 − L u)`, `u = 2^-53`. The in-core J element sums
-//! `npair + 1 ≤ n²` products (plus the pair-weight addition), the in-core K
-//! element `n²`; the direct builder accumulates at most `n²` products into a
-//! group partial and then sums `G` group partials (`G ≤ nshells²`) onto the
-//! output. Both bounds are below `γ_{n² + nsh² + 1} · A`, so
+//! `γ_L = L u / (1 − L u)`, `u = 2^-53`, and `γ_a + γ_b ≤ γ_{a+b}`. The
+//! direct builder accumulates at most `n²` products into a group partial and
+//! then sums `G ≤ nsh²` group partials onto the output: error
+//! `≤ γ_{n² + nsh²} · A`, with `A = Σ |(μν|λσ)| |D_λσ|` (J) or
+//! `Σ |(μλ|νσ)| |D_λσ|` (K).
 //!
-//! `|X_incore − X_direct| ≤ 2 γ_{n² + nsh² + 1} · A`,
+//! * In-core J sums `npair + 1 ≤ n²` products (plus the pair-weight
+//!   addition), each term once: `|J_incore − J_direct| ≤ 2 γ_{n² + nsh² + 1} · A`.
+//! * In-core K is a row part and a column part, each a sum of at most `n²`
+//!   products, added, less at most `n + 1` correction products. The terms
+//!   with `pair(a, b) = pair(m, l)` enter three times (row part, column part,
+//!   correction), so the summed magnitudes are at most `3A`, and the in-core
+//!   error is at most `γ_{2n² + n + 2} · 3A ≤ γ_{6n² + 3n + 6} · A`. Adding
+//!   the direct error, `|K_incore − K_direct| ≤ 2 γ_{L_K} · A` with
+//!   `L_K = 7n² + nsh² + 3n + 6` (a factor 2 to spare).
 //!
-//! with `A = Σ |(μν|λσ)| |D_λσ|` (J) or `Σ |(μλ|νσ)| |D_λσ|` (K), computed
-//! element by element from the store's absolute-value copy and `|D|`. Each
+//! `A` is computed element by element from the store's absolute-value copy
+//! and `|D|` (on that copy the correction removes exactly the doubled terms,
+//! so it returns the true `A`). Each
 //! test asserts the bar per element and reports the largest `|diff| / bar`
 //! (rounding errors add like a random walk, so the ratio sits far below 1).
 //!
@@ -108,7 +117,9 @@ fn check_bar(what: &str, a: &Array2<f64>, b: &Array2<f64>, abs: &Array2<f64>, l:
 /// Compare the store's J and K of each density with the direct builder's.
 fn anchor(label: &str, prep: &PreparedBasis, eri: &IncoreEri, ds: &[Array2<f64>]) {
     let n = prep.nbasis();
-    let l = n * n + prep.nshells() * prep.nshells() + 1;
+    let nsh2 = prep.nshells() * prep.nshells();
+    let l = n * n + nsh2 + 1;
+    let l_k = 7 * n * n + nsh2 + 3 * n + 6;
     let refs: Vec<&Array2<f64>> = ds.iter().collect();
     let (js, ks) = eri.jk_multi(&refs, &refs);
     let abs = eri.abs_copy();
@@ -130,7 +141,7 @@ fn anchor(label: &str, prep: &PreparedBasis, eri: &IncoreEri, ds: &[Array2<f64>]
             &ks[i],
             &kd,
             &ka[i],
-            l,
+            l_k,
         ));
         // The comparison must not be vacuous: the matrices are O(1).
         let scale = kd.iter().fold(0.0f64, |m, v| m.max(v.abs()));
@@ -185,7 +196,7 @@ fn incore_matches_direct_on_a_40_density_block() {
     let refs: Vec<&Array2<f64>> = ds.iter().collect();
     let (jb, kb) = eri.jk_multi(&refs, &refs);
     let abs = eri.abs_copy();
-    let l = n * n + prep.nshells() * prep.nshells() + 1;
+    let l_k = 7 * n * n + prep.nshells() * prep.nshells() + 3 * n + 6;
     for (i, d) in ds.iter().enumerate() {
         let (j1, k1) = eri.jk_multi(&[d], &[d]);
         assert_eq!(bits(&j1[0]), bits(&jb[i]), "J[{i}] block vs single");
@@ -196,7 +207,7 @@ fn incore_matches_direct_on_a_40_density_block() {
             &k1[0],
             &kb[i],
             &ka[0],
-            l,
+            l_k,
         );
     }
 }

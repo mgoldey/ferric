@@ -397,6 +397,43 @@ again exact for any quadratic form. Both $u$ and $v$ are full rank, so this
 term costs a few full-rank RI-K gradient channels rather than the
 occupied-rank one of the SCF gradient.
 
+**The CLI default.** With `[scf] jk` omitted, a closed-shell run of the
+MP2-family kinds takes this fitted reference on the JK-fit set matched to
+the orbital basis (`ferric_scf::scf_jk::matched_jk_aux`; Weigend's
+cc-pVTZ-JKFIT for cc-pVDZ, since no cc-pVDZ-JKFIT exists). The fit moves
+$E_{\mathrm{HF}}$ by $\delta E_{\mathrm{HF}} = O(\|\delta G\|)$, and, through the
+fitted orbitals and orbital energies, $E^{(2)}$ by a shift of the same
+order; neither is variational in the fit, so their sum is the quantity to
+compare with the RI-MP2 fit error of $E^{(2)}$ itself. Measured against the
+four-centre reference on n-alkanes (closed shell, `cc-pvXz-ri` for MP2;
+frozen core at cc-pVTZ):
+
+| System | Basis (functions) | JK aux | ΔE(HF) | ΔE(corr) | ΔE(total) | max \|Δg\| | RI-MP2 fit error |
+|---|---|---|---|---|---|---|---|
+| propane | cc-pVTZ (202), fc | def2-universal-jkfit | +29.8 | +70.0 | +99.8 | 37.5 | +90.8 |
+| | | cc-pvtz-jkfit | +15.4 | +48.8 | +64.2 | 10.1 | |
+| hexane | cc-pVDZ (154) | def2-universal-jkfit | +19.1 | +93.3 | +112 | 11.3 | |
+| | | cc-pvtz-jkfit | +26.9 | +29.4 | +56.3 | 7.4 | |
+| octane | cc-pVDZ (202) | def2-universal-jkfit | +31.7 | +123 | +155 | 11.1 | +280 (23.2) |
+| | | cc-pvtz-jkfit | +39.1 | +39.1 | +78.2 | 7.6 | |
+| dodecane | cc-pVDZ (298) | def2-universal-jkfit | +56.4 | +184 | +240 | 11.1 | |
+| | | cc-pvtz-jkfit | +63.6 | +58.5 | +122 | 7.6 | |
+| octane | cc-pVTZ (492), fc | def2-universal-jkfit | +104 | +171 | +275 | — | |
+| | | cc-pvtz-jkfit | +62.6 | +127 | +189 | — | |
+
+ΔE in µHa, max $|\Delta g|$ in µHa/Bohr (f64 RI-J); the RI-MP2 fit error is PySCF DF-MP2 minus
+conventional MP2 at the same orbitals (gradient in parentheses).
+
+The matched set halves the total shift relative to def2-universal-jkfit,
+and its shift is below the RI-MP2 fit error where that was measured (0.28 of
+it at octane/cc-pVDZ, 0.71 at propane/cc-pVTZ, where def2-universal-jkfit
+exceeds it); the two have the same sign and add. An open shell keeps the
+four-centre reference (no unrestricted fitted reference was measured; the
+unrestricted OO-RI-MP2 refuses one), as does a geometry task (the fitted
+gradient's peak RSS is 2.1 times the four-centre route's at dodecane/cc-pVDZ,
+8.3 against 4.0 GB, and 11.4 GB against a 10 GB budget at octane/cc-pVTZ) and
+an input that sets a key only the four-centre route reads.
+
 ### 9.2 Spin-component-scaled (SCS-MP2) gradient
 
 The closed-shell spin components of section 4 are

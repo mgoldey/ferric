@@ -1,6 +1,8 @@
 //! `[scf] jk` through the real `ferric-cli` binary.
 //!
 //! HOW THESE FAIL IF BROKEN:
+//! * an omitted `jk` that ran four-centre (or a certificate that did not
+//!   name the fitted reference) fails `omitted_jk_runs_and_names_...`;
 //! * dropping the `apply_scf_jk` call in `run()` makes the shipped
 //!   `examples/water-rimp2-rijk.toml` run the four-centre SCF: its reference
 //!   energy then EQUALS the exact run (the `> 1e-6` assert fails) and misses
@@ -97,7 +99,7 @@ fn shipped_rijk_example_runs_the_fitted_reference() {
         "the example's [scf] lines moved; update this test:\n{example}"
     );
     let rijk = run_ok("example", &example);
-    let exact = run_ok("exact", &example.replace(jk_lines, ""));
+    let exact = run_ok("exact", &example.replace(jk_lines, "jk = \"exact\"\n"));
     let explicit = run_ok(
         "explicit",
         &example.replace(
@@ -123,6 +125,106 @@ fn shipped_rijk_example_runs_the_fitted_reference() {
     assert_eq!(c["k_builder"], serde_json::Value::Null, "{c}");
     assert_eq!(cfg(&exact)["scf_jk"], "exact");
     assert_eq!(cfg(&explicit)["scf_jk"], "rijk");
+}
+
+/// The approximation details of the correlated result's certificate.
+fn certificate_details(records: &[serde_json::Value], name: &str) -> Vec<String> {
+    let r = records
+        .iter()
+        .find(|r| r["record"] == "result")
+        .unwrap_or_else(|| panic!("no result record in {records:?}"));
+    r["components"]["certificate"]["approximations"]
+        .as_array()
+        .expect("approximations")
+        .iter()
+        .filter(|a| a["name"] == name)
+        .map(|a| a["detail"].as_str().unwrap_or_default().to_string())
+        .collect()
+}
+
+/// A closed-shell rimp2 with `jk` omitted runs RI-JK on the JK-fit set
+/// matched to cc-pVDZ (cc-pvtz-jkfit): the energy equals the explicit
+/// spelling to 1e-12 and differs from `jk = "exact"` by the fitting error;
+/// the printout names the route and why, the run log records it, and the
+/// certificate carries the reference's RI-J and RI-K with that aux. A
+/// default that ran four-centre while logging RI-JK fails the energy
+/// asserts; one that ran RI-JK while the certificate said exact fails the
+/// certificate asserts.
+#[test]
+fn omitted_jk_runs_and_names_the_matched_rijk_reference() {
+    let body = "[molecule]\nxyz = \"testdata/molecules/water.xyz\"\n\n\
+                [basis]\nname = \"cc-pvdz\"\n\n[method]\nkind = \"rimp2\"\n\n\
+                [mp2]\nauxbasis = \"cc-pvdz-ri\"\n";
+    let (out, omitted) = run("omitted", body);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains(
+            "Reference SCF J/K: rijk(cc-pvtz-jkfit) ([scf] jk omitted: the closed-shell \
+             MP2-family default)"
+        ),
+        "{stdout}"
+    );
+    let with = |scf: &str| body.replace("[mp2]", &format!("[scf]\n{scf}\n[mp2]"));
+    let explicit = run_ok(
+        "omitted_explicit",
+        &with("jk = \"rijk\"\njk_aux = \"cc-pvtz-jkfit\""),
+    );
+    let exact = run_ok("omitted_exact", &with("jk = \"exact\""));
+    let (e_omit, e_expl, e_exact) = (
+        scf_energy(&omitted),
+        scf_energy(&explicit),
+        scf_energy(&exact),
+    );
+    assert!(
+        (e_omit - e_expl).abs() <= 1e-12,
+        "omitted jk is not rijk(cc-pvtz-jkfit): {e_omit:.14} vs {e_expl:.14}"
+    );
+    assert!(
+        (e_omit - e_exact).abs() > 1e-7,
+        "omitted jk ran the four-centre SCF: {e_omit:.14} vs exact {e_exact:.14}"
+    );
+    let c = &record(&omitted, "run_start")["config"];
+    assert_eq!(
+        (&c["scf_jk"], &c["jk_aux"]),
+        (&"rijk".into(), &"cc-pvtz-jkfit".into())
+    );
+    for name in ["scf ri-j", "scf ri-k"] {
+        let d = certificate_details(&omitted, name);
+        assert!(
+            d.len() == 1 && d[0].starts_with("aux cc-pvtz-jkfit"),
+            "{name}: {d:?}"
+        );
+        assert!(certificate_details(&exact, name).is_empty(), "exact {name}");
+    }
+}
+
+/// An omitted `jk` with a key only the four-centre route reads keeps the
+/// four-centre reference and says why.
+#[test]
+fn omitted_jk_with_a_four_centre_key_stays_exact() {
+    let body = "[molecule]\nxyz = \"testdata/molecules/water.xyz\"\n\n\
+                [basis]\nname = \"sto-3g\"\n\n[method]\nkind = \"rimp2\"\n\n\
+                [scf]\nk_builder = \"link\"\n[mp2]\nauxbasis = \"cc-pvdz-ri\"\n";
+    let (out, records) = run("omitted_link", body);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains(
+            "Reference SCF J/K: exact, k_builder=link ([scf] jk omitted: [scf] k_builder \
+             reads the four-centre route)"
+        ),
+        "{stdout}"
+    );
+    assert_eq!(record(&records, "run_start")["config"]["scf_jk"], "exact");
 }
 
 /// rs-mp2-rpa with no `jk` runs RI-JK (its historical default), and the

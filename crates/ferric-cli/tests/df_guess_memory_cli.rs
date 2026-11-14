@@ -4,7 +4,9 @@
 //!
 //! The budget is derived from the tensor's bytes, so the test stays in the band
 //! however the basis data changes. Butane, because on anything much smaller the
-//! fast path's per-worker plan refuses the band before the pool is ever asked. HOW THIS FAILS IF BROKEN: the budget-only
+//! fast path's per-worker plan refuses the band before the pool is ever asked.
+//! `[scf] jk = "exact"`: the DF-guess pre-stage runs in front of the
+//! four-centre reference only (a fitted reference skips it). HOW THIS FAILS IF BROKEN: the budget-only
 //! in-core decision exits 1 at the dressed tensor's charge.
 
 use ferric_core::basis;
@@ -53,6 +55,7 @@ fn run(tag: &str, budget_gb: f64) -> (std::process::Output, f64) {
              [basis]\nname = \"6-31g\"\n\
              [method]\nkind = \"rimp2\"\n\
              [mp2]\nauxbasis = \"cc-pvdz-ri\"\n\
+             [scf]\njk = \"exact\"\n\
              [memory]\nbudget_gb = {budget_gb:.9}\n"
         ),
     )

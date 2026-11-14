@@ -83,8 +83,10 @@ fn rimp2_result_carries_its_certificate() {
     assert_eq!(c["capability"], "rimp2");
     assert_eq!(c["grade"], "proven");
     assert_eq!(c["build"]["commit"], ferric_build_info::COMMIT);
-    assert_eq!(names(c), ["ri", "frozen-core"]);
-    assert_eq!(c["approximations"][0]["detail"], "aux cc-pvdz-ri");
+    // The omitted `[scf] jk` is the RI-JK reference (def2-universal-jkfit
+    // next to STO-3G), carried over from the SCF certificate.
+    assert_eq!(names(c), ["scf ri-j", "scf ri-k", "ri", "frozen-core"]);
+    assert_eq!(c["approximations"][2]["detail"], "aux cc-pvdz-ri");
     let back: ferric_core::certificate::Certificate =
         serde_json::from_value(c.clone()).expect("certificate JSON parses");
     assert_eq!(back.grade, ferric_core::certificate::Grade::Proven);

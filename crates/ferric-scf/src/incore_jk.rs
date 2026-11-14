@@ -14,33 +14,35 @@
 //!
 //! # Layout
 //!
-//! One `npair × npair` row-major matrix, `npair = n(n+1)/2`, element
-//! `[pq, rs] = (pq|rs)` with `pq = p(p+1)/2 + q` for `p ≥ q`. It keeps the
-//! two pair symmetries (4-fold, `n^4/4` doubles) and stores both triangles of
-//! the pair matrix, so:
+//! The lower triangle of the `npair × npair` pair matrix, `npair =
+//! n(n+1)/2`, packed by rows: row `r` holds `(r|s)` for `s = 0..=r`, with
+//! `pq = p(p+1)/2 + q` for `p ≥ q`. It keeps all eight permutational
+//! symmetries (`n^4/8` doubles, as PySCF's in-core `_eri`), and every read
+//! below is a contiguous run of one row:
 //!
-//! * **J** is one GEMM: `J_pq = Σ_rs (pq|rs) w_rs` with the pair-packed density
+//! * **J** `J_pq = Σ_rs (pq|rs) w_rs` with the pair-packed density
 //!   `w_rs = D_rs + D_sr` (`r > s`) and `w_rr = D_rr`. The off-diagonal pair
-//!   weight is what folds the `(rs)`/`(sr)` halves of the sum into one column;
-//!   `J[D]` reads only the symmetric part of `D`, as the direct builder does.
-//! * **K** is sliced GEMMs: for each row `m`, the slab `(m l|a b)` over
-//!   `(l, a, b)` is gathered from rows `pair(m, l)` and unpacked to full
-//!   `(a, b)`, and `K_mb = Σ_{l a} (m l|a b) D_la` is one GEMM of the slab's
-//!   transpose with the `(n², ndens)` matrix of vectorised densities. The
-//!   slab is gathered and contracted in fixed blocks of [`K_L_BLOCK`](crate::incore_jk::K_L_BLOCK) values of
-//!   `l`, so a worker holds `K_L_BLOCK · n²` doubles, not `n³`. Any `D` is
-//!   accepted, symmetric or not: `K[D]_mb = Σ (m l|a b) D_la` exactly as the
-//!   direct builder's 8-fold scatter forms it.
+//!   weight folds the `(rs)`/`(sr)` halves of the sum into one column; `J[D]`
+//!   reads only the symmetric part of `D`, as the direct builder does. The
+//!   task owning pair rows `lo..hi` sums their stored rows (`s ≤ r`) and the
+//!   column segments `lo..hi` of every later row (`s > r`), so each element
+//!   of `J` comes from one task in a fixed order.
+//! * **K** `K_mb = Σ_{l a} (m l|a b) D_la` splits by which triangle holds the
+//!   integral. Task `t` gathers, for each `l`, the stored prefix of row
+//!   `pair(t, l)` unpacked to `X_l[a, b]` (zero where `pair(a, b) >
+//!   pair(t, l)`), in fixed blocks of [`K_L_BLOCK`](crate::incore_jk::K_L_BLOCK) values of `l`, and one GEMM of
+//!   the slab's transpose with `[vec D | vec Dᵀ]` gives row `t` of `K`
+//!   (the terms with `pair(a, b) ≤ pair(m, l)`) and column `t` (the terms
+//!   with `pair(a, b) > pair(m, l)`, read from row `pair(a, b)`), less the
+//!   `pair(a, b) = pair(m, l)` terms the row part already has. A worker
+//!   holds `K_L_BLOCK · n²` doubles. Any `D` is accepted, symmetric or not:
+//!   `K[D]_mb = Σ (m l|a b) D_la` exactly as the direct builder's 8-fold
+//!   scatter forms it.
 //!
-//! A second, exchange-ordered copy `[(m b), (l a)] = (m l|b a)` would make K a
-//! plain GEMM without the gather, at three times the memory (`n^4/4` for J plus
-//! `n^4/2` for K). The gather costs `n^4` copies per K build, the same order as
-//! the GEMM's own reads: on benzene / cc-pVDZ it is 0.065-0.078 s of a
-//! 0.11 s single-density K, so the second copy would save under 0.08 s per
-//! build against a 2.3 s direct build, and the memory saved is what lets the
-//! store reach about 200 basis functions inside a quarter of a 12 GB budget.
-//! Forty densities in one call take 0.24 s: the gather is shared by the
-//! columns.
+//! On octane / cc-pVDZ (202 functions, 12 threads, single runs) the store
+//! is 1.68 GB, half the full pair matrix; the SCF's ten J/K calls (store
+//! build included) took 11.5 s against 14.6 s on the pair matrix, and the
+//! RI-MP2 Z-vector's CPHF 11.8 s against 14.5 s.
 //!
 //! Each J row block and each K row is computed by one task over a fixed
 //! partition (row blocks of [`J_ROW_BLOCK`](crate::incore_jk::J_ROW_BLOCK), one task per `m`, `l` blocks of
@@ -148,11 +150,18 @@ pub fn pair_index(p: usize, q: usize) -> usize {
     p * (p + 1) / 2 + q
 }
 
-/// Elements of the store for `n` basis functions (`npair²`), `None` on
-/// overflow.
+/// Elements of the store for `n` basis functions (`npair (npair + 1) / 2`,
+/// the lower triangle of the pair matrix), `None` on overflow.
 pub fn store_elems(n: usize) -> Option<usize> {
     let npair = n.checked_mul(n + 1)? / 2;
-    npair.checked_mul(npair)
+    npair.checked_mul(npair + 1).map(|x| x / 2)
+}
+
+/// Offset of row `r` of the packed lower triangle of the pair matrix: row
+/// `r` holds `(r|s)` for `s = 0..=r` at `row_start(r) + s`.
+#[inline(always)]
+fn row_start(r: usize) -> usize {
+    r * (r + 1) / 2
 }
 
 /// The identity of the geometry and basis a store serves: atom positions and
@@ -199,23 +208,60 @@ impl std::fmt::Debug for IncoreEri {
     }
 }
 
-/// `(m l|a b)` for `l` in `l0..l0+nl`, unpacked to `out[((l-l0) n + a) n + b]`.
-fn gather_slab(store: &IncoreEri, m: usize, l0: usize, nl: usize, out: &mut [f64]) {
-    let (n, np) = (store.n, store.npair);
+/// The stored prefix of the pair rows `R_l = pair(m, l)` for `l` in
+/// `l0..l0+nl`, unpacked to `out[((l-l0) n + a) n + b] = X_l[a, b]`:
+/// `X_l[a, b] = (m l|a b)` when `pair(a, b) ≤ R_l` (the part row `R_l` of
+/// the triangle holds) and 0 otherwise. Every read is contiguous.
+fn gather_prefix_slab(store: &IncoreEri, m: usize, l0: usize, nl: usize, out: &mut [f64]) {
+    let n = store.n;
     for dl in 0..nl {
         let l = l0 + dl;
         let r = pair_index(m.max(l), m.min(l));
-        let row = &store.eri[r * np..(r + 1) * np];
+        let row = &store.eri[row_start(r)..=row_start(r) + r];
         let blk = &mut out[dl * n * n..(dl + 1) * n * n];
+        blk.fill(0.0);
         for a in 0..n {
             let base = a * (a + 1) / 2;
-            for b in 0..=a {
+            if base > r {
+                break;
+            }
+            for b in 0..=a.min(r - base) {
                 let v = row[base + b];
                 blk[a * n + b] = v;
                 blk[b * n + a] = v;
             }
         }
     }
+}
+
+/// `dmat[(l n + a), i] = D_i[l, a]` (`transposed = false`) or `D_i[a, l]`
+/// (`transposed = true`): the vectorised densities the K GEMM contracts.
+fn vectorised_densities(ds: &[&Array2<f64>], n: usize, transposed: bool) -> Array2<f64> {
+    let mut dmat = Array2::<f64>::zeros((n * n, ds.len()));
+    for (i, d) in ds.iter().enumerate() {
+        for ((l, a), &x) in d.indexed_iter() {
+            let row = if transposed { a * n + l } else { l * n + a };
+            dmat[(row, i)] = x;
+        }
+    }
+    dmat
+}
+
+/// The pair-packed densities J contracts, row-major `npair × m`:
+/// `w[pair(p, q), i] = D_i[p, q] + D_i[q, p]` (`p > q`) and `D_i[p, p]`. The
+/// off-diagonal weight folds the `(pq)` / `(qp)` halves of the sum into one
+/// pair, so `J[D]` reads only the symmetric part of `D`.
+fn pair_weighted_densities(ds: &[&Array2<f64>], n: usize, np: usize) -> Array2<f64> {
+    let mut w = Array2::<f64>::zeros((np, ds.len()));
+    for (i, d) in ds.iter().enumerate() {
+        for p in 0..n {
+            for q in 0..p {
+                w[(pair_index(p, q), i)] = d[(p, q)] + d[(q, p)];
+            }
+            w[(pair_index(p, p), i)] = d[(p, p)];
+        }
+    }
+    w
 }
 
 impl IncoreEri {
@@ -250,7 +296,7 @@ impl IncoreEri {
         let t0 = std::time::Instant::now();
         let n = prep.nbasis();
         let npair = n * (n + 1) / 2;
-        let mut eri = plan.alloc_vec("in-core ERI (pq|rs)", npair * npair)?;
+        let mut eri = plan.alloc_vec("in-core ERI (pq|rs)", row_start(npair))?;
         let pool = crate::engine_pool::EnginePool::new(
             op,
             prep,
@@ -262,7 +308,7 @@ impl IncoreEri {
         let quartets = AtomicUsize::new(0);
 
         struct StorePtr(*mut f64);
-        // SAFETY: every element (pq, rs) and its mirror (rs, pq) belongs to
+        // SAFETY: every stored element (max(pq, rs) | min(pq, rs)) belongs to
         // exactly one unique shell quartet, and each unique quartet is
         // computed by exactly one task (the one owning its larger bra pair),
         // so no two tasks write the same element.
@@ -305,11 +351,12 @@ impl IncoreEri {
                                         }
                                         let rs = pair_index(la, sg);
                                         let v = q[((a * n2 + b) * n3 + c) * n4 + d];
-                                        // SAFETY: pq, rs < npair; disjoint
-                                        // ownership as argued at `StorePtr`.
+                                        let at = row_start(pq.max(rs)) + pq.min(rs);
+                                        // SAFETY: at < row_start(npair);
+                                        // disjoint ownership as argued at
+                                        // `StorePtr`.
                                         unsafe {
-                                            *base.add(pq * npair + rs) = v;
-                                            *base.add(rs * npair + pq) = v;
+                                            *base.add(at) = v;
                                         }
                                     }
                                 }
@@ -385,36 +432,29 @@ impl IncoreEri {
         if m == 0 {
             return Vec::new();
         }
-        let mut w = Array2::<f64>::zeros((np, m));
-        for (i, d) in ds.iter().enumerate() {
-            for p in 0..n {
-                for q in 0..p {
-                    w[(pair_index(p, q), i)] = d[(p, q)] + d[(q, p)];
-                }
-                w[(pair_index(p, p), i)] = d[(p, p)];
-            }
-        }
+        let w = pair_weighted_densities(ds, n, np);
+        let w = w.as_slice().expect("standard layout");
         let nblk = np.div_ceil(J_ROW_BLOCK);
-        let blocks: Vec<Array2<f64>> = (0..nblk)
+        let blocks: Vec<Vec<f64>> = (0..nblk)
             .into_par_iter()
             .map(|b| {
                 let lo = b * J_ROW_BLOCK;
-                let rows = J_ROW_BLOCK.min(np - lo);
-                let pblk = ArrayView2::from_shape((rows, np), &self.eri[lo * np..(lo + rows) * np])
-                    .expect("row block of the npair x npair store");
-                pblk.dot(&w)
+                let hi = (lo + J_ROW_BLOCK).min(np);
+                let mut jp = self.coulomb_lower_rows(w, m, lo, hi);
+                let upper = self.coulomb_upper_columns(w, m, lo, hi);
+                for (x, u) in jp.iter_mut().zip(&upper) {
+                    *x += u;
+                }
+                jp
             })
             .collect();
-        let mut jp = Array2::<f64>::zeros((np, m));
-        for (b, blk) in blocks.iter().enumerate() {
-            let lo = b * J_ROW_BLOCK;
-            jp.slice_mut(s![lo..lo + blk.nrows(), ..]).assign(blk);
-        }
         let mut out = vec![Array2::<f64>::zeros((n, n)); m];
-        for (i, j) in out.iter_mut().enumerate() {
-            for p in 0..n {
-                for q in 0..=p {
-                    let v = jp[(pair_index(p, q), i)];
+        for p in 0..n {
+            for q in 0..=p {
+                let pq = pair_index(p, q);
+                let blk = &blocks[pq / J_ROW_BLOCK];
+                let row = &blk[(pq % J_ROW_BLOCK) * m..][..m];
+                for (j, &v) in out.iter_mut().zip(row) {
                     j[(p, q)] = v;
                     j[(q, p)] = v;
                 }
@@ -423,49 +463,116 @@ impl IncoreEri {
         out
     }
 
+    /// `Σ_{s ≤ r} (r|s) w[s, i]` for the pair rows `r` in `lo..hi`, row-major
+    /// `(hi - lo) × m`: the half of `J` the stored rows hold.
+    fn coulomb_lower_rows(&self, w: &[f64], m: usize, lo: usize, hi: usize) -> Vec<f64> {
+        let mut out = vec![0.0f64; (hi - lo) * m];
+        for r in lo..hi {
+            let row = &self.eri[row_start(r)..=row_start(r) + r];
+            let acc = &mut out[(r - lo) * m..][..m];
+            for (s, &v) in row.iter().enumerate() {
+                for (a, &x) in acc.iter_mut().zip(&w[s * m..][..m]) {
+                    *a += v * x;
+                }
+            }
+        }
+        out
+    }
+
+    /// `Σ_{r > c} (r|c) w[r, i]` for the pair columns `c` in `lo..hi`,
+    /// row-major `(hi - lo) × m`: the half of `J` above the diagonal, read
+    /// as the column segment `lo..min(hi, r)` of every later row `r`.
+    fn coulomb_upper_columns(&self, w: &[f64], m: usize, lo: usize, hi: usize) -> Vec<f64> {
+        let mut out = vec![0.0f64; (hi - lo) * m];
+        for r in lo + 1..self.npair {
+            let seg = &self.eri[row_start(r) + lo..row_start(r) + hi.min(r)];
+            let wr = &w[r * m..][..m];
+            for (dc, &v) in seg.iter().enumerate() {
+                for (a, &x) in out[dc * m..][..m].iter_mut().zip(wr) {
+                    *a += v * x;
+                }
+            }
+        }
+        out
+    }
+
     /// `K[D_i]_mb = Σ_la (m l|a b) D_i[l, a]` for every density (any `D`).
+    ///
+    /// The sum splits by which triangle holds `(m l|a b)`: the terms with
+    /// `pair(a, b) ≤ pair(m, l)` are in row `pair(m, l)` and give row `m` of
+    /// `K` (`A`); the terms with `pair(a, b) > pair(m, l)` are in row
+    /// `pair(a, b)` and give column `b` (`B`). Task `t` gathers the stored
+    /// prefixes `X_l` of the rows `pair(t, l)` once and gets both from one
+    /// GEMM: `A[t, b] = Σ_la X_l[a, b] D[l, a]` and
+    /// `B[m', t] = Σ_la X_l[a, m'] D[a, l]`, less the `pair(a, b) =
+    /// pair(m, l)` terms `B` must not count (`remove_diagonal_pair_terms`).
     pub fn exchange(&self, ds: &[&Array2<f64>]) -> Vec<Array2<f64>> {
         let (n, m) = (self.n, ds.len());
         if m == 0 {
             return Vec::new();
         }
         let n2 = n * n;
-        // dmat[(l n + a), i] = D_i[l, a]
-        let mut dmat = Array2::<f64>::zeros((n2, m));
-        for (i, d) in ds.iter().enumerate() {
-            for ((l, a), &x) in d.indexed_iter() {
-                dmat[(l * n + a, i)] = x;
-            }
-        }
-        let rows: Vec<Array2<f64>> = (0..n)
+        // Columns 0..m contract D (row parts A), m..2m contract Dᵀ (column parts B).
+        let mut dmat = Array2::<f64>::zeros((n2, 2 * m));
+        dmat.slice_mut(s![.., ..m])
+            .assign(&vectorised_densities(ds, n, false));
+        dmat.slice_mut(s![.., m..])
+            .assign(&vectorised_densities(ds, n, true));
+        let parts: Vec<Array2<f64>> = (0..n)
             .into_par_iter()
             .map_init(
                 || vec![0.0f64; K_L_BLOCK * n2],
-                |slab, row| {
-                    let mut kr = Array2::<f64>::zeros((n, m));
+                |slab, t| {
+                    let mut kr = Array2::<f64>::zeros((n, 2 * m));
                     let mut l0 = 0;
                     while l0 < n {
                         let nl = K_L_BLOCK.min(n - l0);
-                        gather_slab(self, row, l0, nl, slab);
+                        gather_prefix_slab(self, t, l0, nl, slab);
                         let v = ArrayView2::from_shape((nl * n, n), &slab[..nl * n2])
                             .expect("slab block is (nl n) x n");
                         let dblk = dmat.slice(s![l0 * n..(l0 + nl) * n, ..]);
                         ndarray::linalg::general_mat_mul(1.0, &v.t(), &dblk, 1.0, &mut kr);
                         l0 += nl;
                     }
+                    self.remove_diagonal_pair_terms(t, ds, &mut kr);
                     kr
                 },
             )
             .collect();
         let mut out = vec![Array2::<f64>::zeros((n, n)); m];
-        for (row, kr) in rows.iter().enumerate() {
+        for (t, kr) in parts.iter().enumerate() {
             for (i, k) in out.iter_mut().enumerate() {
                 for b in 0..n {
-                    k[(row, b)] = kr[(b, i)];
+                    k[(t, b)] = kr[(b, i)];
+                }
+            }
+        }
+        for (t, kr) in parts.iter().enumerate() {
+            for (i, k) in out.iter_mut().enumerate() {
+                for mm in 0..n {
+                    k[(mm, t)] += kr[(mm, m + i)];
                 }
             }
         }
         out
+    }
+
+    /// Take out of task `t`'s column part `kr[.., m..]` the terms with
+    /// `pair(a, b) = pair(t, l)`, which the row part already counts: `X_l`
+    /// holds `(t l|t l)` at `(t, l)` and `(l, t)`, so column `l` lost
+    /// `g_l D[t, l]` and column `t` `g_l D[l, l]` (once when `l = t`).
+    fn remove_diagonal_pair_terms(&self, t: usize, ds: &[&Array2<f64>], kr: &mut Array2<f64>) {
+        let m = ds.len();
+        for l in 0..self.n {
+            let r = pair_index(t.max(l), t.min(l));
+            let g = self.eri[row_start(r) + r];
+            for (i, d) in ds.iter().enumerate() {
+                if l != t {
+                    kr[(l, m + i)] -= g * d[(t, l)];
+                }
+                kr[(t, m + i)] -= g * d[(l, l)];
+            }
+        }
     }
 
     /// `J[jd_i]` and `K[kd_i]` in one call.
