@@ -201,8 +201,9 @@ pub fn method_kind_grade(kind: &str) -> Grade {
 
 /// The `(task, method.kind)` pairs of the `method.kind` matrix on
 /// [`GRADE_SOURCE_PAGE`] whose `task = "optimize"` / `task = "frequencies"`
-/// cell is not `—`. A pair outside this table has no validation row, so its
-/// certificate is [`Grade::Ungraded`]. The
+/// cell is neither `—` nor marked `not graded`. A pair outside this table is
+/// not graded by the page (the task is refused, or it runs and is marked `not
+/// graded`), so its certificate is [`Grade::Ungraded`]. The
 /// `task_kind_rows_match_the_page` test fails if the table and the page
 /// disagree.
 pub const TASK_KIND_ROWS: &[(&str, &str)] = &[
@@ -388,7 +389,7 @@ impl Certificate {
             c.grade_source = base.grade_source;
         } else {
             c.push_warning(format!(
-                "{GRADE_SOURCE_PAGE} has no row for task = \"{task}\" with method.kind = \
+                "{GRADE_SOURCE_PAGE} grades no task = \"{task}\" run with method.kind = \
                  \"{kind}\""
             ));
         }
@@ -821,7 +822,7 @@ mod tests {
                 .unwrap_or_else(|| panic!("{head} column"));
             for row in &table[2..] {
                 let c = cells(row);
-                if c[col] != "\u{2014}" {
+                if c[col] != "\u{2014}" && !c[col].contains("not graded") {
                     out.insert((task.to_string(), c[0].trim_matches('`').to_string()));
                 }
             }
@@ -858,7 +859,10 @@ mod tests {
         let n = Certificate::for_task("frequencies", "rimp2", &proven);
         assert_eq!(n.grade, Grade::Ungraded);
         assert!(n.grade_source.is_none());
-        assert!(n.warnings.iter().any(|w| w.contains("has no row")), "{n}");
+        assert!(
+            n.warnings.iter().any(|w| w.contains("grades no task")),
+            "{n}"
+        );
     }
 
     #[test]
