@@ -335,7 +335,10 @@ def test_casscf_and_nevpt2_anchors_follow_their_evidence_settings():
     bs = ferric.BasisSet.bundled("6-31g")
     c = ferric.run_casscf(mol, bs, 4, (2, 2), canonicalize=True).certificate
     assert _anchored(c)
-    assert not _anchored(ferric.run_casscf(mol, bs, 4, (2, 2)).certificate)
+    # canonicalization leaves the energy unchanged, so a default run is in scope
+    assert _anchored(ferric.run_casscf(mol, bs, 4, (2, 2)).certificate)
+    loose = ferric.run_casscf(mol, bs, 4, (2, 2), casscf_grad_tol=1e-5)
+    assert not _anchored(loose.certificate)
     assert _anchored(ferric.run_nevpt2(mol, bs, 4, (2, 2)).certificate)
     assert not _anchored(
         ferric.run_nevpt2(mol, bs, 4, (2, 2), reference="casci").certificate

@@ -46,12 +46,15 @@ pub fn casscf_unconverged_warning_prefixed(
     )
 }
 
-/// Whether `cas` is what the energy anchors' evidence runs: canonical natural
-/// orbitals, and a gradient and energy tolerance no looser than the default
-/// the evidence runs (a looser one leaves a larger orbital error than the
-/// anchor records).
+/// Whether `cas` is what the energy anchors' evidence runs: a gradient and
+/// energy tolerance no looser than the default the evidence runs (a looser one
+/// leaves a larger orbital error than the anchor records). The evidence
+/// canonicalizes, and `canonicalize` is not part of the scope because
+/// canonicalization leaves the energy unchanged
+/// (`crates/ferric-ci/tests/casscf_canonical.rs` asserts it on three of the
+/// four anchor systems).
 fn in_casscf_anchor_scope(cas: &CasScfConfig) -> bool {
-    cas.canonicalize && in_casscf_tolerances(cas)
+    in_casscf_tolerances(cas)
 }
 
 /// Whether `cas` converges the orbitals as tightly as the evidence runs. The
@@ -175,16 +178,14 @@ mod tests {
                 .measured_error()
         );
         assert_eq!(m.evidence, "crates/ferric-ci/tests/casscf_vs_pyscf.rs");
+        let plain = CasScfConfig {
+            canonicalize: false,
+            ..canonical
+        };
+        let c = casscf_certificate(&result(true), &plain);
+        assert!(c.measured_error.is_some(), "not canonical: anchor missing");
         let d = CasScfConfig::default();
         let outside = [
-            (
-                "not canonical",
-                CasScfConfig {
-                    canonicalize: false,
-                    ..canonical
-                },
-                true,
-            ),
             (
                 "loose gradient",
                 CasScfConfig {
