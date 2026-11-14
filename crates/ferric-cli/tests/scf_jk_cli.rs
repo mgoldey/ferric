@@ -7,7 +7,7 @@
 //!   the explicit `df_j_aux`/`df_k_aux` run by the RI-JK fitting error;
 //! * logging the raw `[scf] jk` key instead of the effective route makes
 //!   rs-mp2-rpa with no `jk` log `null` instead of "rijk";
-//! * removing a load-time refusal (oo-rimp2 fitted, df_increments + jk,
+//! * removing a load-time refusal (oo-rimp2 + rijcosx, df_increments + jk,
 //!   rs-mp2-rpa + k_builder) lets the run start instead of failing.
 //!
 //! Energies come from the JSON run log (`run_end.energy` is the reference SCF
@@ -156,10 +156,10 @@ fn assert_refused(tag: &str, kind: &str, scf: &str, needle: &str) {
 #[test]
 fn fitted_references_that_would_not_run_are_refused_at_load() {
     assert_refused(
-        "oo_rijk",
+        "oo_rijcosx",
         "oo-rimp2",
-        "jk = \"rijk\"\n",
-        "orbital-optimised MP2 rebuilds exact four-centre J/K",
+        "jk = \"rijcosx\"\n",
+        "COSX exchange has no OO route",
     );
     assert_refused(
         "dfi_rijk",

@@ -47,10 +47,12 @@ exception: its default is `"rijk"`. Every result
 echoes `scf_jk` and `jk_auxbasis`. An unknown mode, `jk_auxbasis` with
 `"exact"`, or a `k_builder` the mode would override is an error (so is any
 `k_builder` on `rs-mp2-rpa`'s RI-JK default, in the CLI as in Python). A
-`jk_auxbasis` whose name lacks "jkfit" draws a warning. `oo-rimp2` accepts only
-`"exact"`: orbital optimisation rebuilds exact four-centre J/K at every orbital
-step, so a fitted reference would change only the starting orbitals; threading
-RI-JK through the OO Fock builds is not implemented. In the CLI a fitted
+`jk_auxbasis` whose name lacks "jkfit" draws a warning. `oo-rimp2` accepts
+`"exact"` and `"rijk"`: orbital optimisation rebuilds J/K at every orbital step
+on the reference's own route, so under `"rijk"` its HF energy, orbital steps
+and analytic gradient all use the RI-JK fit; `"rijcosx"` is refused (COSX
+exchange has no OO route), and so is `"rijk"` on an open-shell molecule (the
+unrestricted OO-RI-MP2 rebuilds four-centre J/K). In the CLI a fitted
 reference cannot be combined with `[scf] df_increments` (an exact-J/K scheme)
 or an explicit `df_guess = true`, and it skips the default DF-guess
 pre-stage. At aug-cc-pVTZ
@@ -168,7 +170,13 @@ orbital DIIS, Cayley rotations and backtracking. Proven (narrow): the energy
 matches an independent numpy OO-RI-MP2 to 7.5e-13 Ha (H2O, NH3, UHF CH3 at
 cc-pVDZ), and the closed-shell analytic gradient matches a finite difference of
 its own energy to 8e-9 Ha/Bohr. ORCA 6.1.1's OO-RI-MP2 stops 3.7e-8 to
-7.0e-8 Ha above the same minimum, so it is only a loose cross-check.
+7.0e-8 Ha above the same minimum, so it is only a loose cross-check. On an
+RI-JK reference (`scf_jk = "rijk"`) the orbital steps, the HF energy and the
+gradient all use the reference's fit: the gradient matches a finite
+difference of the fitted energy to 1.2e-8 Ha/Bohr (H2O / STO-3G), and at the
+end of a water optimization the analytic gradient matches the fitted
+energy's finite difference to the stencil's h² error (3.1e-7 at h = 1e-3,
+7.7e-8 at h = 5e-4) while missing the four-centre energy's by 2.0e-5.
 
 **MP3** (`mp3`, `examples/water-mp3.toml`, `run_mp3`): spin-orbital
 third-order Møller–Plesset through the `einsum!` framework. Proven.

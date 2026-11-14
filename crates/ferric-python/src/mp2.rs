@@ -1680,12 +1680,13 @@ pub(crate) fn run_oo_rimp2(
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
         scf_ri_j_precision,
     )?;
-    // OO-MP2 rebuilds exact four-centre J/K at every orbital step (and takes
-    // its HF energy from those builds), so a fitted reference would only
-    // change the starting orbitals: refused, never echoed as if honoured.
-    jk.require_exact(
+    // OO-MP2 rebuilds J/K at every orbital step (and takes its HF energy
+    // from those builds) on the reference's route: four-centre, or RI-JK on
+    // the reference's own fits. RIJCOSX has no OO route, so it would change
+    // only the starting orbitals: refused, never echoed as if honoured.
+    jk.require_exact_or_rijk(
         ferric_scf::scf_jk::ScfJkKeys::PYTHON,
-        ferric_scf::scf_jk::OO_REBUILDS_EXACT_JK,
+        ferric_scf::scf_jk::OO_BUILDS_EXACT_OR_RIJK,
     )
     .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("run_oo_rimp2: {e}")))?;
     if with_gradient && frozen_core.unwrap_or(0) > 0 {
@@ -1695,6 +1696,13 @@ pub(crate) fn run_oo_rimp2(
              not the derivative of the frozen-core energy",
         ));
     }
+    // A gradient is a geometry task: an unset RI-J precision resolves to f64
+    // (no effect on a four-centre reference).
+    let rhf_config = if with_gradient {
+        rhf_config.for_geometry_task()
+    } else {
+        rhf_config
+    };
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
     let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
     let op = Operator::coulomb();

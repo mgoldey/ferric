@@ -2881,8 +2881,9 @@ pub struct ScfCfg {
     pub df_j_aux: Option<String>,
     /// As `df_j_aux`, for exchange (RI-K).
     pub df_k_aux: Option<String>,
-    /// MP2-family kinds ([`SCF_JK_KINDS`]), task = "energy": how the
-    /// reference SCF builds J/K, `"exact"`, `"rijk"` (RI-J + RI-K) or
+    /// MP2-family kinds ([`SCF_JK_KINDS`]) with task = "energy", and
+    /// rimp2 / oo-rimp2 with task = "optimize": how the reference SCF builds
+    /// J/K, `"exact"`, `"rijk"` (RI-J + RI-K) or
     /// `"rijcosx"` (RI-J + COSX K). The same rule as the Python `scf_jk`
     /// kwarg (`ferric_scf::scf_jk`). Omitted = the kind's historical mode
     /// (four-centre, except rs-mp2-rpa, which has always used RI-JK).
@@ -3201,24 +3202,26 @@ impl Config {
 }
 
 /// Whether `[scf] jk` governs the reference SCF of `kind` / `task`: the
-/// [`SCF_JK_KINDS`] energies, and the RI-MP2 optimize, whose analytic
-/// gradient differentiates an exact or an RI-JK reference
-/// (`ferric_mp2::gradient::total_rimp2_gradient_on`).
+/// [`SCF_JK_KINDS`] energies, and the RI-MP2 and OO-RI-MP2 optimizes, whose
+/// analytic gradients differentiate an exact or an RI-JK reference
+/// (`ferric_mp2::gradient::total_rimp2_gradient_on`,
+/// `ferric_mp2::oo_rimp2_gradient::oo_ri_mp2_gradient`).
 fn scf_jk_governs(kind: &str, task: &str) -> bool {
-    let rimp2_optimize = kind == "rimp2" && task == "optimize";
-    SCF_JK_KINDS.contains(&kind) && (task == "energy" || rimp2_optimize)
+    let mp2_optimize = matches!(kind, "rimp2" | "oo-rimp2") && task == "optimize";
+    SCF_JK_KINDS.contains(&kind) && (task == "energy" || mp2_optimize)
 }
 
-/// The resolved `jk` routes a method refuses: OO-RI-MP2 rebuilds exact J/K
-/// (any fit), and the RI-MP2 gradient has no COSX exchange response.
+/// The resolved `jk` routes a method refuses: OO-RI-MP2 has no COSX route
+/// (it rebuilds J/K on the reference's four-centre or RI-JK route), and the
+/// RI-MP2 gradient has no COSX exchange response.
 fn refuse_scf_jk_for_kind(
     kind: &str,
     task: &str,
     jk: &ferric_scf::scf_jk::ScfJk,
 ) -> Result<(), String> {
-    use ferric_scf::scf_jk::{ScfJkKeys, ScfJkMode, OO_REBUILDS_EXACT_JK};
+    use ferric_scf::scf_jk::{ScfJkKeys, ScfJkMode, OO_BUILDS_EXACT_OR_RIJK};
     if kind == "oo-rimp2" {
-        jk.require_exact(ScfJkKeys::CLI, OO_REBUILDS_EXACT_JK)?;
+        jk.require_exact_or_rijk(ScfJkKeys::CLI, OO_BUILDS_EXACT_OR_RIJK)?;
     }
     if kind == "rimp2" && task == "optimize" && jk.mode == ScfJkMode::RiJCosx {
         return Err(
@@ -3229,6 +3232,25 @@ fn refuse_scf_jk_for_kind(
         );
     }
     Ok(())
+}
+
+/// An open-shell `oo-rimp2` runs the unrestricted OO-RI-MP2, which rebuilds
+/// four-centre J/K at every orbital step: a fitted reference would change
+/// only its starting orbitals, so it is refused.
+fn refuse_open_shell_fitted_oo(
+    kind: &str,
+    mult: usize,
+    jk: Option<ferric_scf::scf_jk::ScfJk>,
+) -> Result<(), String> {
+    if kind != "oo-rimp2" || mult <= 1 || !jk.is_some_and(|j| j.is_fitted()) {
+        return Ok(());
+    }
+    Err(
+        "[scf] jk = \"rijk\" is refused for an open-shell method.kind = \"oo-rimp2\": the \
+         unrestricted OO-RI-MP2 rebuilds four-centre J/K at every orbital step, so an RI-JK \
+         reference would change only its starting orbitals. Use [scf] jk = \"exact\""
+            .to_string(),
+    )
 }
 
 impl ScfCfg {
@@ -3292,8 +3314,10 @@ impl ScfCfg {
     /// "exact", a `k_builder` the mode would override, which also catches
     /// `k_builder` on rs-mp2-rpa's RI-JK default, as in Python); and the
     /// paths that would quietly NOT run the fitted reference:
-    /// * oo-rimp2 with any fitted reference (it rebuilds exact J/K at every
-    ///   orbital step, [`ferric_scf::scf_jk::OO_REBUILDS_EXACT_JK`]);
+    /// * oo-rimp2 with `jk = "rijcosx"` (it rebuilds J/K at every orbital
+    ///   step on a four-centre or RI-JK route only,
+    ///   [`ferric_scf::scf_jk::OO_BUILDS_EXACT_OR_RIJK`]) or with a fitted
+    ///   `df_j_aux` / `df_k_aux` (spell the fit `jk = "rijk"`);
     /// * a fitted mode with `df_increments` (that SCF uses exact J/K and
     ///   its own aux) or an explicit `df_guess = true` (a DF pre-stage in
     ///   front of a DF SCF only repeats it; a fitted reference skips it).
@@ -3302,12 +3326,13 @@ impl ScfCfg {
         kind: &str,
         task: &str,
     ) -> Result<Option<ferric_scf::scf_jk::ScfJk>, String> {
-        use ferric_scf::scf_jk::{ScfJk, ScfJkKeys, ScfJkMode, OO_REBUILDS_EXACT_JK};
+        use ferric_scf::scf_jk::{ScfJk, ScfJkKeys, ScfJkMode};
         if !scf_jk_governs(kind, task) {
             if self.jk.is_some() || self.jk_aux.is_some() {
                 return Err(format!(
                     "[scf] jk / jk_aux are wired for task = \"energy\" with method.kind = {} \
-                     and for method.kind = \"rimp2\" with task = \"optimize\" only; got \
+                     and for method.kind = \"rimp2\" / \"oo-rimp2\" with task = \"optimize\" \
+                     only; got \
                      kind = \"{kind}\", task = \"{task}\". Use [scf] df_j_aux / df_k_aux / \
                      k_builder there",
                     SCF_JK_KINDS.join(", ")
@@ -3336,10 +3361,13 @@ impl ScfCfg {
                 .iter()
                 .any(|a| a.as_deref().is_some_and(|s| !s.is_empty()));
             if kind == "oo-rimp2" && fitted {
-                return Err(format!(
+                return Err(
                     "[scf] df_j_aux / df_k_aux are refused for method.kind = \"oo-rimp2\": \
-                     {OO_REBUILDS_EXACT_JK}"
-                ));
+                     its orbital steps rebuild J/K on a four-centre or RI-JK route only, and \
+                     these keys can spell other fits. Use [scf] jk = \"rijk\" (with jk_aux) \
+                     for an RI-JK reference"
+                        .to_string(),
+                );
             }
             return Ok(None);
         }
@@ -4405,7 +4433,7 @@ impl Config {
         let kind = self.method.kind.as_str();
         let task = self.method.task.as_str();
         let mult = self.molecule.multiplicity;
-        self.scf.scf_jk_choice(kind, task)?;
+        refuse_open_shell_fitted_oo(kind, mult, self.scf.scf_jk_choice(kind, task)?)?;
 
         if self.cosmo.is_some() && task != "energy" {
             return Err(format!(
@@ -5199,14 +5227,14 @@ mod compat_guard_tests {
             (
                 "oo-rimp2",
                 "energy",
-                "jk = \"rijk\"\n",
-                "[scf] jk = \"rijk\" is refused here: orbital-optimised MP2 rebuilds",
+                "jk = \"rijcosx\"\n",
+                "[scf] jk = \"rijcosx\" is refused here: orbital-optimised MP2 rebuilds",
             ),
             (
                 "oo-rimp2",
-                "energy",
+                "optimize",
                 "jk = \"rijcosx\"\n",
-                "rebuilds exact four-centre J/K",
+                "COSX exchange has no OO route",
             ),
             (
                 "oo-rimp2",
@@ -5258,6 +5286,12 @@ mod compat_guard_tests {
             assert!(e.contains(needle), "{extra}: {e}");
         }
         assert!(choice("oo-rimp2", "energy", "jk = \"exact\"\n").is_ok());
+        for task in ["energy", "optimize"] {
+            let oo = choice("oo-rimp2", task, "jk = \"rijk\"\n")
+                .unwrap()
+                .unwrap();
+            assert_eq!(oo.mode, ScfJkMode::RiJk, "{task}");
+        }
         let rijk_opt = choice("rimp2", "optimize", "jk = \"rijk\"\n")
             .unwrap()
             .unwrap();
@@ -5265,23 +5299,24 @@ mod compat_guard_tests {
         assert_eq!(rijk_opt.aux.as_deref(), Some("def2-universal-jkfit"));
         assert!(choice("rimp2", "energy", "jk = \"exact\"\ndf_increments = true\n").is_ok());
         assert!(choice("rimp2", "energy", "df_increments = true\n").is_ok());
-        for refused in [
+        let e = cfg(
+            "rimp2",
+            "energy",
             "[scf]\njk = \"rijk\"\ndf_increments = true\n",
-            "[scf]\njk = \"rijk\"\n",
-        ] {
-            let kind = if refused.contains("df_increments") {
-                "rimp2"
-            } else {
-                "oo-rimp2"
-            };
-            let e = cfg(kind, "energy", refused)
-                .validate_cli_wired_keys()
-                .expect_err(refused);
-            assert!(
-                e.contains("cannot be combined") || e.contains("refused here"),
-                "{e}"
-            );
-        }
+        )
+        .validate_cli_wired_keys()
+        .unwrap_err();
+        assert!(e.contains("cannot be combined"), "{e}");
+        // Open-shell OO-RI-MP2 (the unrestricted solver) has no RI-JK route.
+        let mut open = cfg("oo-rimp2", "energy", "[scf]\njk = \"rijk\"\n");
+        open.molecule.multiplicity = 2;
+        let r = open.validate_cli_wired_keys();
+        assert!(
+            matches!(&r, Err(e) if e.contains("unrestricted OO-RI-MP2")),
+            "{r:?}"
+        );
+        open.molecule.multiplicity = 1;
+        assert!(open.validate_cli_wired_keys().is_ok());
         let e = cfg(
             "rimp2",
             "energy",

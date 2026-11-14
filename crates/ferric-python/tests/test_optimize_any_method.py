@@ -22,6 +22,12 @@ Mutations measured to fail (each on an assertion, then restored):
 - `run_optimize_oo_rimp2` ignoring `oo_grad_conv` fails
   `test_matches_the_cli[oo-rimp2-water]`, but only in the 10th printed
   decimal (-75.0062761163 vs ...154): a thin margin;
+- `run_optimize_oo_rimp2` dropping the RI-JK route (never applying
+  `scf_jk`) fails `test_matches_the_cli[oo-rimp2-rijk-water]` (final E
+  -75.0062761154 vs -75.0063668362);
+- `oo_ri_mp2_gradient` building its J/K four-centre on an RI-JK reference
+  fails `test_oo_rimp2_rijk_endpoint_is_stationary_on_the_fitted_surface`
+  (analytic vs fitted FD 1.09e-5, bar 1e-6);
 - `parse_optimize_reference` mapping unset to ROHF on an open shell fails
   `test_open_shell_defaults_to_uhf`;
 - `refuse_unread_optimize_kwargs` returning early fails the nine cases it
@@ -158,6 +164,20 @@ ROUTES = [
         f'[mp2]\nauxbasis = "cc-pvdz-ri"\noo_grad_conv = 1e-7\n\n{SCF_TOML}',
         id="oo-rimp2-water",
     ),
+    pytest.param(
+        WATER,
+        1,
+        dict(
+            method="oo-rimp2",
+            auxbasis="cc-pvdz-ri",
+            scf_jk="rijk",
+            oo_grad_conv=1e-7,
+            **SCF_CONV,
+        ),
+        '[method]\nkind = "oo-rimp2"\ntask = "optimize"\n\n'
+        f'[mp2]\nauxbasis = "cc-pvdz-ri"\noo_grad_conv = 1e-7\n\n{SCF_TOML}jk = "rijk"\n',
+        id="oo-rimp2-rijk-water",
+    ),
 ]
 
 
@@ -222,7 +242,11 @@ AUX = {"auxbasis": "cc-pvdz-ri"}
         (WATER_MOL, dict(method="rimp2", oo_grad_conv=1e-6, **AUX), "oo_grad_conv"),
         (NH2_MOL, dict(method="rimp2", **AUX), "closed-shell only"),
         (WATER_MOL, dict(method="oo-rimp2", frozen_core=1, **AUX), "frozen_core=0"),
-        (WATER_MOL, dict(method="oo-rimp2", scf_jk="rijk", **AUX), "exact"),
+        (
+            WATER_MOL,
+            dict(method="oo-rimp2", scf_jk="rijcosx", **AUX),
+            "COSX exchange has no OO route",
+        ),
         (
             WATER_MOL,
             dict(method="oo-rimp2", scf_ri_j_precision="f32", **AUX),
@@ -234,3 +258,98 @@ AUX = {"auxbasis": "cc-pvdz-ri"}
 def test_unread_kwarg_is_refused(mol, kwargs, needle):
     with pytest.raises(ValueError, match=re.escape(needle)):
         ferric.run_optimize(mol, "sto-3g", **kwargs)
+
+
+def _oo_rijk_endpoint():
+    """The RI-JK OO-RI-MP2 minimum of distorted water (the CLI-matched route)."""
+    mol = ferric.Molecule.from_xyz_string(WATER)
+    r = ferric.run_optimize(
+        mol,
+        "sto-3g",
+        method="oo-rimp2",
+        auxbasis="cc-pvdz-ri",
+        scf_jk="rijk",
+        oo_grad_conv=1e-7,
+        **SCF_CONV,
+    )
+    assert r.converged
+    return r.mol()
+
+
+def _oo_energy(symbols, coords_bohr, scf_jk):
+    """OO-RI-MP2 total energy at `coords_bohr` on the `scf_jk` surface. The
+    RI-J tensor is f64, as on the optimizer's surface."""
+    mol = ferric.Molecule.from_arrays(symbols, coords_bohr, units="bohr")
+    kw = {"scf_ri_j_precision": "f64"} if scf_jk == "rijk" else {}
+    r = ferric.run_oo_rimp2(
+        mol,
+        ferric.BasisSet.bundled("sto-3g"),
+        ferric.BasisSet.bundled("cc-pvdz-ri"),
+        scf_jk=scf_jk,
+        grad_conv=1e-9,
+        scf_energy_conv=1e-11,
+        scf_density_conv=1e-10,
+        **kw,
+    )
+    assert r.converged
+    return r.total_energy
+
+
+def _fd_gradient(symbols, coords, scf_jk, h=1e-3):
+    import numpy as np
+
+    x0 = np.asarray(coords, dtype=float)
+    g = np.zeros_like(x0)
+    for a in range(x0.shape[0]):
+        for c in range(3):
+            xp, xm = x0.copy(), x0.copy()
+            xp[a, c] += h
+            xm[a, c] -= h
+            g[a, c] = (
+                _oo_energy(symbols, xp, scf_jk) - _oo_energy(symbols, xm, scf_jk)
+            ) / (2 * h)
+    return g
+
+
+def test_oo_rimp2_rijk_endpoint_is_stationary_on_the_fitted_surface():
+    """The RI-JK optimizer stops at a stationary point of the RI-JK OO-RI-MP2
+    energy, and the analytic gradient there is the derivative of that energy,
+    not of the four-centre one.
+
+    Physics vs artifact: on the fitted surface, a central finite difference of
+    the FITTED energy at the endpoint is below the optimizer's max-gradient
+    threshold (4.5e-4 Ha/Bohr) and equals the analytic gradient to the FD
+    error; if any piece (reference, orbital steps or gradient) silently used
+    four-centre J/K, the analytic gradient would instead track the FD of the
+    EXACT energy, which differs from the fitted one by the fit's gradient
+    error. The last assert shows that difference is resolvable at this bar.
+
+    Measured (water / STO-3G, cc-pvdz-ri, def2-universal-jkfit): max |FD|
+    1.40e-4; analytic vs FD 3.1e-7 at h = 1e-3 and 7.7e-8 at h = 5e-4 (the
+    h^2 truncation, ratio 4.0); analytic vs the exact-surface FD 2.0e-5.
+    FD_BAR = 1e-6 Ha/Bohr, 3x the h = 1e-3 truncation; the exact-surface
+    control must miss by more than 10 bars.
+    """
+    import numpy as np
+
+    end = _oo_rijk_endpoint()
+    symbols, coords = end.symbols(), end.coords_bohr()
+    g_fd = _fd_gradient(symbols, coords, "rijk")
+    analytic = np.asarray(
+        ferric.run_oo_rimp2(
+            ferric.Molecule.from_arrays(symbols, coords, units="bohr"),
+            ferric.BasisSet.bundled("sto-3g"),
+            ferric.BasisSet.bundled("cc-pvdz-ri"),
+            scf_jk="rijk",
+            grad_conv=1e-9,
+            scf_energy_conv=1e-11,
+            scf_density_conv=1e-10,
+            with_gradient=True,
+        ).gradient()
+    )
+    fd_bar = 1e-6
+    assert np.abs(g_fd).max() < 4.5e-4, g_fd
+    assert np.abs(analytic - g_fd).max() < fd_bar
+    g_exact = _fd_gradient(symbols, coords, "exact")
+    miss = np.abs(analytic - g_exact).max()
+    assert miss > 10 * fd_bar, miss

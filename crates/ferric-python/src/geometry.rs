@@ -105,8 +105,10 @@ pub(crate) fn optimize_result_certificate(
 ///   `scf_density_conv` kwargs raise here. `frozen_core` and
 ///   `memory_budget_gb` as in `run_rimp2`.
 /// - `"oo-rimp2"`: closed-shell orbital-optimized RI-MP2 (zero-response
-///   gradient at the converged orbitals). Needs `auxbasis`; exact J/K only;
-///   `frozen_core` must be 0; `oo_max_iter` / `oo_grad_conv` control the
+///   gradient at the converged orbitals). Needs `auxbasis`; `scf_jk` is
+///   `"exact"` (default) or `"rijk"` on `jk_auxbasis`, whose fitted J/K the
+///   orbital steps and the gradient reuse (RI-J stored in f64); `frozen_core`
+///   must be 0; `oo_max_iter` / `oo_grad_conv` control the
 ///   orbital loop (defaults of `run_oo_rimp2`), the `scf_*` kwargs its
 ///   starting RHF. An orbital optimization that does not converge at some
 ///   geometry raises.
@@ -619,7 +621,7 @@ fn run_optimize_oo_rimp2(
     opt_config: &OptimizeConfig,
     k: &OptimizeKwargs,
 ) -> PyResult<PyOptimizeResult> {
-    use ferric_scf::scf_jk::{ScfJk, ScfJkKeys, ScfJkMode, OO_REBUILDS_EXACT_JK};
+    use ferric_scf::scf_jk::{ScfJk, ScfJkKeys, ScfJkMode, OO_BUILDS_EXACT_OR_RIJK};
     if let Some(n) = k.frozen_core.filter(|&n| n > 0) {
         return Err(value_error(format!(
             "run_optimize: method=\"oo-rimp2\" needs frozen_core=0 (got {n}): the core-active \
@@ -627,15 +629,24 @@ fn run_optimize_oo_rimp2(
              the derivative of the frozen-core energy"
         )));
     }
-    ScfJk::resolve(
+    let jk = ScfJk::resolve(
         k.scf_jk,
         k.jk_auxbasis,
         None,
         ScfJkMode::Exact,
         ScfJkKeys::PYTHON,
     )
-    .and_then(|jk| jk.require_exact(ScfJkKeys::PYTHON, OO_REBUILDS_EXACT_JK))
+    .and_then(|jk| {
+        jk.require_exact_or_rijk(ScfJkKeys::PYTHON, OO_BUILDS_EXACT_OR_RIJK)?;
+        Ok(jk)
+    })
     .map_err(|e| value_error(format!("run_optimize: {e}")))?;
+    // The reference route is the surface's route: the driver's orbital steps
+    // and gradient reuse an RI-JK reference's fits (`df_j_aux`/`df_k_aux`
+    // are refused for this method, so `cfg` carries no other fit).
+    let mut cfg = cfg.clone();
+    jk.apply(&mut cfg);
+    let cfg = &cfg;
     let d = OoRiMp2Config::default();
     let oo_config = OoRiMp2Config {
         max_iter: k.oo_max_iter.unwrap_or(d.max_iter),
@@ -663,10 +674,10 @@ fn run_optimize_oo_rimp2(
         "oo-rimp2",
         &r.mol,
         basis_name,
-        cfg,
+        &cfg.for_geometry_task(),
         (r.converged, r.steps, r.energy),
         opt_config,
-        ferric_mp2::optimize::OO_RIMP2_GRADIENT_LABEL,
+        &ferric_mp2::optimize::oo_rimp2_gradient_label(cfg),
     );
     Ok(PyOptimizeResult {
         energy: r.energy,

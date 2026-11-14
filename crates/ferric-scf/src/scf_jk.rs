@@ -91,12 +91,13 @@ impl ScfJkKeys {
     };
 }
 
-/// Why orbital-optimised MP2 accepts only an exact reference. Shared by the
-/// Python `run_oo_rimp2` and the CLI `oo-rimp2` kind.
-pub const OO_REBUILDS_EXACT_JK: &str = "orbital-optimised MP2 rebuilds exact four-centre J/K \
-     at every orbital step, and its HF energy comes from those builds, so a fitted reference \
-     would change only the starting orbitals while the result claimed a fitted SCF. Threading \
-     RI-JK through the OO Fock builds is not implemented";
+/// Why orbital-optimised MP2 refuses an RIJCOSX reference. Shared by the
+/// Python `run_oo_rimp2` / `run_optimize(method="oo-rimp2")` and the CLI
+/// `oo-rimp2` kind.
+pub const OO_BUILDS_EXACT_OR_RIJK: &str = "orbital-optimised MP2 rebuilds J/K at every \
+     orbital step on the reference's own route, which must be four-centre or RI-JK (RI-J and \
+     RI-K on one JK-fitting basis); COSX exchange has no OO route, so an RIJCOSX reference \
+     would change only the starting orbitals while the result claimed it";
 
 /// A resolved `scf_jk` choice: the mode plus the JK-fitting basis it uses
 /// (`None` exactly when the mode is [`ScfJkMode::Exact`]).
@@ -166,14 +167,15 @@ impl ScfJk {
         self.mode != ScfJkMode::Exact
     }
 
-    /// Refuse a fitted mode on a path that cannot honour it; `why` says
-    /// what the path does instead. `"exact"` always passes.
-    pub fn require_exact(&self, keys: ScfJkKeys, why: &str) -> Result<(), String> {
-        if !self.is_fitted() {
+    /// Refuse RIJCOSX on a path that honours only four-centre or RI-JK
+    /// J/K; `why` says what the path does instead. `"exact"` and `"rijk"`
+    /// pass.
+    pub fn require_exact_or_rijk(&self, keys: ScfJkKeys, why: &str) -> Result<(), String> {
+        if self.mode != ScfJkMode::RiJCosx {
             return Ok(());
         }
         Err(format!(
-            "{m} = \"{}\" is refused here: {why}. Use {m} = \"exact\"",
+            "{m} = \"{}\" is refused here: {why}. Use {m} = \"exact\" or \"rijk\"",
             self.mode.as_str(),
             m = keys.mode
         ))
@@ -421,17 +423,18 @@ mod tests {
     }
 
     #[test]
-    fn fitted_modes_are_refused_where_only_exact_is_honoured() {
+    fn rijcosx_is_refused_where_only_exact_or_rijk_is_honoured() {
         assert!(resolved(Some("exact"), None, Some("link"))
-            .require_exact(ScfJkKeys::PYTHON, OO_REBUILDS_EXACT_JK)
+            .require_exact_or_rijk(ScfJkKeys::PYTHON, OO_BUILDS_EXACT_OR_RIJK)
             .is_ok());
-        for m in ["rijk", "rijcosx"] {
-            let e = resolved(Some(m), None, None)
-                .require_exact(ScfJkKeys::CLI, OO_REBUILDS_EXACT_JK)
-                .unwrap_err();
-            assert!(e.contains(&format!("[scf] jk = \"{m}\" is refused")), "{e}");
-            assert!(e.contains("rebuilds exact four-centre J/K"), "{e}");
-        }
+        assert!(resolved(Some("rijk"), None, None)
+            .require_exact_or_rijk(ScfJkKeys::PYTHON, OO_BUILDS_EXACT_OR_RIJK)
+            .is_ok());
+        let e = resolved(Some("rijcosx"), None, None)
+            .require_exact_or_rijk(ScfJkKeys::CLI, OO_BUILDS_EXACT_OR_RIJK)
+            .unwrap_err();
+        assert!(e.contains("[scf] jk = \"rijcosx\" is refused"), "{e}");
+        assert!(e.contains("COSX exchange has no OO route"), "{e}");
     }
 
     #[test]

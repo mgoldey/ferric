@@ -733,7 +733,7 @@ See [Constrained DFT](../methods/cdft.md) for a worked example.
 
 | Name | Purpose | CLI |
 |---|---|---|
-| `run_optimize` | Geometry optimization (basis by name). `method="scf"` (default): RHF/UHF/ROHF, RKS/UKS/ROKS with `xc=` (`reference=`, unset: by multiplicity), `dispersion=` as in `run_dft`, `df_j_aux` / `df_k_aux` as in `run_frequencies`; `method="rimp2"` (`auxbasis=`, `scf_jk="exact"`/`"rijk"`) and `method="oo-rimp2"` (`auxbasis=`, `oo_max_iter`, `oo_grad_conv`), closed shell; `"scs-mp2"` raises. A kwarg the method does not read raises. `run_optimize_uhf` is `reference="uhf"`. `solvent` / `pcm_lebedev_order` optimize on the IEF-PCM surface (`method="scf"`); `scf_warm_start=False` re-guesses every geometry's SCF instead of starting from the previous geometry's orbitals (`[optimize] scf_warm_start`). | `task = "optimize"` |
+| `run_optimize` | Geometry optimization (basis by name). `method="scf"` (default): RHF/UHF/ROHF, RKS/UKS/ROKS with `xc=` (`reference=`, unset: by multiplicity), `dispersion=` as in `run_dft`, `df_j_aux` / `df_k_aux` as in `run_frequencies`; `method="rimp2"` (`auxbasis=`, `scf_jk="exact"`/`"rijk"`) and `method="oo-rimp2"` (`auxbasis=`, `scf_jk="exact"`/`"rijk"`, `oo_max_iter`, `oo_grad_conv`), closed shell; `"scs-mp2"` raises. A kwarg the method does not read raises. `run_optimize_uhf` is `reference="uhf"`. `solvent` / `pcm_lebedev_order` optimize on the IEF-PCM surface (`method="scf"`); `scf_warm_start=False` re-guesses every geometry's SCF instead of starting from the previous geometry's orbitals (`[optimize] scf_warm_start`). | `task = "optimize"` |
 | `run_frequencies` | Harmonic frequencies from the analytic Hessian (RHF, UHF, ROHF with exact J/K, or RI-J / RI-K) or finite differences of the analytic gradient; RHF/UHF/ROHF or their KS variants. Closed-shell KS and UKS (`reference="uhf"`) (LDA/GGA, pure or global hybrid) use the analytic moving-grid Hessian under the default `hessian="auto"` (explicitly: `hessian="analytic-moving-grid"`); other KS references use finite differences. `scf_warm_start=True` (opt-in) starts every displaced SCF of a finite-difference Hessian from the reference geometry's orbitals (`[frequencies] scf_warm_start`); pair it with a tighter `scf_density_conv`. | `task = "frequencies"` |
 | `run_xtb_energy_gradient` | GFN1/GFN2/GFN-FF energy and gradient (Hartree, Hartree/Bohr). Present in every build; raises `RuntimeError` unless the extension was built with the `xtb` cargo feature (libxtb on the loader path). | no CLI kind |
 | `run_xtb_optimize` | Geometry optimization on a GFN-xTB surface with the `run_optimize` BFGS driver; `max_steps` bounds geometry steps, `scc_max_iter` the SCC at each geometry, and an unconverged SCC raises. Certificate is `not graded`. | no CLI kind |
@@ -789,9 +789,9 @@ See [QM/MM](./qmmm.md) for a worked example.
 `run_laplace_sos_mp2` and `run_rs_mp2_rpa` take `scf_jk="exact"|"rijk"|"rijcosx"`
 and `jk_auxbasis=` to choose how the reference SCF builds J and K, and their
 results echo `scf_jk` and `jk_auxbasis`. The default is `"exact"`, except for
-`run_rs_mp2_rpa`, whose default is `"rijk"`. `run_oo_rimp2` accepts only
-`"exact"` and raises on the fitted modes, because it rebuilds exact J/K at
-every orbital step. See
+`run_rs_mp2_rpa`, whose default is `"rijk"`. `run_oo_rimp2` and
+`run_optimize(method="oo-rimp2")` accept `"exact"` and `"rijk"` (the orbital
+steps rebuild J/K on the reference's route) and raise on `"rijcosx"`. See
 [The MP2 family](../methods/mp2.md).
 
 ### Exact and local correlation

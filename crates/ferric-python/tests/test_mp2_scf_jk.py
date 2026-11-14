@@ -171,7 +171,8 @@ def _hf_energy(r) -> float:
 
 
 # Every entry point that honours scf_jk, with the kwargs that make it run on
-# water/cc-pVDZ. run_oo_rimp2 refuses the fitted modes (tested below).
+# water/cc-pVDZ. run_oo_rimp2 (whose HF energy is that of the optimised
+# orbitals, not the reference SCF's) is tested separately below.
 HONOURING = [
     pytest.param("run_rimp2", {}, id="rimp2"),
     pytest.param(
@@ -218,12 +219,24 @@ def test_every_entry_point_runs_the_rijk_reference_it_echoes(
     assert abs(rijk.total_energy - exact.total_energy) > 1e-7
 
 
-@pytest.mark.parametrize("mode", ["rijk", "rijcosx"])
-def test_oo_rimp2_refuses_a_fitted_reference(water, mode):
-    with pytest.raises(ValueError, match="rebuilds exact four-centre J/K") as err:
-        ferric.run_oo_rimp2(*water, scf_jk=mode)
+def test_oo_rimp2_runs_the_rijk_route_it_echoes(water):
+    """HOW THIS FAILS IF BROKEN: run_oo_rimp2 dropping scf_jk solves the
+    four-centre surface while echoing "rijk", so the two totals are equal
+    (the >1e-7 shift fails). The orbital steps' own use of the fit is pinned
+    in ferric-mp2 (oo_hf_energy_on_an_rijk_reference_is_the_scf_energy)."""
+    rijk = ferric.run_oo_rimp2(*water, scf_jk="rijk")
+    exact = ferric.run_oo_rimp2(*water, scf_jk="exact")
+    assert (rijk.scf_jk, rijk.jk_auxbasis) == ("rijk", JK)
+    assert rijk.converged and exact.converged
+    shift = abs(rijk.total_energy - exact.total_energy)
+    assert 1e-7 < shift < 1e-3, (rijk.total_energy, exact.total_energy)
+
+
+def test_oo_rimp2_refuses_rijcosx(water):
+    with pytest.raises(ValueError, match="COSX exchange has no OO route") as err:
+        ferric.run_oo_rimp2(*water, scf_jk="rijcosx")
     assert "run_oo_rimp2" in str(err.value)
-    assert f'scf_jk = "{mode}" is refused' in str(err.value)
+    assert 'scf_jk = "rijcosx" is refused' in str(err.value)
 
 
 def test_exact_echo_names_a_non_default_k_builder(water):

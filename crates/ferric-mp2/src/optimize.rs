@@ -195,9 +195,17 @@ pub fn rimp2_gradient_label(scf_jk: &ScfJk) -> String {
     }
 }
 
-/// The certificate's `gradient` line of an OO-RI-MP2 optimization.
-pub const OO_RIMP2_GRADIENT_LABEL: &str =
-    "analytic (zero-response: orbital-optimized, no Z-vector)";
+/// The certificate's `gradient` line of an OO-RI-MP2 optimization on the
+/// reference J/K route of `rhf_config`: four-centre, or RI-JK on one
+/// JK-fitting basis.
+pub fn oo_rimp2_gradient_label(rhf_config: &ferric_scf::rhf::RhfConfig) -> String {
+    let base = "analytic (zero-response: orbital-optimized, no Z-vector)";
+    let route = ferric_scf::scf_jk::effective_jk(rhf_config);
+    match (route.mode, route.j_aux) {
+        ("rijk", Some(aux)) => format!("{base}, RI-JK reference ({aux})"),
+        _ => base.to_string(),
+    }
+}
 
 /// Why there is no SCS-MP2 geometry optimization.
 ///
@@ -224,11 +232,18 @@ pub const SCS_MP2_NO_GRADIENT: &str =
 /// [`ferric_scf::optimize::optimize_geometry_with_energy_gradient`], the one
 /// the SCF optimizers use.
 ///
+/// The reference J/K route of `rhf_config` is the route of the whole surface:
+/// four-centre, or RI-JK (`df_j_aux == df_k_aux`, the `scf_jk = "rijk"`
+/// spelling), whose fitted J/K the orbital steps and the gradient reuse. The
+/// RI-J tensor is stored in f64 on both (a geometry task,
+/// [`ferric_scf::rhf::RhfConfig::for_geometry_task`]).
+///
 /// Refused before any integral: `oo_config.frozen_core > 0` (the frozen
 /// core-active and core-virtual rotations are not optimised, so the
-/// zero-response gradient is not the derivative of that energy), a
-/// density-fitted reference (OO-MP2 rebuilds exact four-centre J/K), and a
-/// PCM or COSMO reaction field (OO-MP2 does not include one). An orbital
+/// zero-response gradient is not the derivative of that energy), any other
+/// fitted reference (RI-J with four-centre or COSX exchange, or RI-J and
+/// RI-K on different bases: OO-MP2 has no route for them), and a PCM or
+/// COSMO reaction field (OO-MP2 does not include one). An orbital
 /// optimisation that does not converge at some geometry is an error: the
 /// zero-response gradient holds only at a stationary point.
 #[allow(clippy::too_many_arguments)]
@@ -303,11 +318,11 @@ fn refuse_oo_rimp2_optimize(
         ));
     }
     let route = ferric_scf::scf_jk::effective_jk(rhf_config);
-    if route.mode != "exact" {
+    if !matches!(route.mode, "exact" | "rijk") {
         return refuse(format!(
             "the reference SCF J/K route is \"{}\"; {}",
             route.mode,
-            ferric_scf::scf_jk::OO_REBUILDS_EXACT_JK
+            ferric_scf::scf_jk::OO_BUILDS_EXACT_OR_RIJK
         ));
     }
     if rhf_config.pcm.is_some() || rhf_config.cosmo.is_some() {
@@ -347,8 +362,8 @@ mod tests {
     use ferric_core::basis;
 
     /// `optimize_geometry_oo_rimp2` refuses, before any integral, the setups
-    /// its zero-response gradient does not differentiate; the default setup
-    /// passes the same check.
+    /// its zero-response gradient does not differentiate; the default
+    /// (four-centre) and the RI-JK reference pass the same check.
     #[test]
     fn oo_rimp2_optimize_refuses_what_it_does_not_differentiate() {
         use crate::oo_rimp2::OoRiMp2Config;
@@ -372,7 +387,20 @@ mod tests {
             df_k_aux: Some("def2-universal-jkfit".into()),
             ..RhfConfig::default()
         };
-        refused(&rijk, &oo, "\"rijk\"");
+        assert!(refuse_oo_rimp2_optimize(&rijk, &oo).is_ok());
+        assert!(oo_rimp2_gradient_label(&rijk).ends_with("RI-JK reference (def2-universal-jkfit)"));
+        let rijcosx = RhfConfig {
+            df_j_aux: Some("def2-universal-jkfit".into()),
+            k_builder: Some("cosx".into()),
+            ..RhfConfig::default()
+        };
+        refused(&rijcosx, &oo, "\"rijcosx\"");
+        let split = RhfConfig {
+            df_j_aux: Some("def2-universal-jkfit".into()),
+            df_k_aux: Some("cc-pvtz-jkfit".into()),
+            ..RhfConfig::default()
+        };
+        refused(&split, &oo, "\"mixed\"");
         let cosmo = RhfConfig {
             cosmo: Some(ferric_scf::cosmo::CosmoConfig::default()),
             ..RhfConfig::default()

@@ -6891,7 +6891,8 @@ fn run_optimize(
 /// `method.kind = "oo-rimp2"`, `task = "optimize"`: closed-shell OO-RI-MP2
 /// through [`ferric_mp2::optimize::optimize_geometry_oo_rimp2`] (the driver
 /// the Python `run_optimize(method="oo-rimp2")` calls), with the `[mp2] oo_*`
-/// loop keys of the energy run.
+/// loop keys of the energy run, on the four-centre or `[scf] jk = "rijk"`
+/// reference that `rhf_config` carries.
 #[allow(clippy::too_many_arguments)]
 fn run_optimize_oo_rimp2(
     cfg: &Config,
@@ -6957,7 +6958,7 @@ fn run_optimize_oo_rimp2(
         &opt_result.mol,
         None,
         (opt_result.converged, opt_result.steps, opt_result.energy),
-        ferric_mp2::optimize::OO_RIMP2_GRADIENT_LABEL,
+        &ferric_mp2::optimize::oo_rimp2_gradient_label(rhf_config),
     );
 }
 

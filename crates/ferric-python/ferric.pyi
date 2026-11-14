@@ -4335,8 +4335,9 @@ def run_optimize(
       driver solves its reference RHF at density_conv 1e-9, so the `scf_*` convergence
       kwargs raise.
     - "oo-rimp2": closed-shell OO-RI-MP2 (zero-response gradient at converged orbitals).
-      Needs `auxbasis`; exact J/K only; `frozen_core` must be 0; `oo_max_iter` /
-      `oo_grad_conv` control the orbital loop, the `scf_*` kwargs its starting RHF. An
+      Needs `auxbasis`; `scf_jk` "exact" (default) or "rijk" on `jk_auxbasis`, whose
+      fitted J/K the orbital steps and the gradient reuse (RI-J stored in f64);
+      `frozen_core` must be 0; `oo_max_iter` / `oo_grad_conv` control the orbital loop, the `scf_*` kwargs its starting RHF. An
       orbital optimization that does not converge at some geometry raises.
 
     "scs-mp2" raises ValueError: ferric's SCS-MP2 gradient scales the whole MP2 gradient by
@@ -4804,10 +4805,11 @@ def run_oo_rimp2(
     deprecated alias that warns). `scf_max_iter`, `scf_energy_conv`,
     `scf_density_conv` control the internal reference RHF, as in `run_rhf`.
 
-    `scf_jk` accepts only "exact" here: orbital optimisation rebuilds exact
-    four-centre J/K at every orbital step, so "rijk"/"rijcosx" raise
-    ValueError (threading RI-JK through the OO Fock builds is not
-    implemented)."""
+    `scf_jk` is "exact" (default) or "rijk": orbital optimisation rebuilds
+    J/K at every orbital step on the reference's route, four-centre or RI-JK
+    on `jk_auxbasis`, so the HF part of total_energy is the fitted one under
+    "rijk". "rijcosx" raises ValueError (COSX exchange has no OO route).
+    with_gradient=True solves the reference with RI-J stored in f64."""
     ...
 
 def run_mp3(
