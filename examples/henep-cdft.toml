@@ -1,0 +1,39 @@
+# Constrained DFT, the HeNe+ electron-transfer state: hold the He atom at 2.0
+# electrons (the hole on Ne).
+#
+# The constrained solution pinned by
+# crates/ferric-scf/tests/cdft_outer_loop.rs: E = -130.4021906 Ha,
+# lambda = -2.754 Ha per electron. The configuration is the one that test
+# asserts at: an h-core start, a 0.5 virtual-block level shift, the
+# constrained stability descent off, and the 99 x 302 grid. The same
+# constraint from a MINAO start, or with the descent on, can land on the
+# lower state that the loop's stability check finds; see Methods > Constrained
+# DFT.
+
+[molecule]
+xyz = "testdata/molecules/henep.xyz"
+charge = 1
+multiplicity = 2
+
+[basis]
+name = "def2-svp"
+
+[method]
+kind = "uhf"
+task = "energy"
+
+[scf]
+guess = "hcore"
+level_shift = 0.5
+max_iter = 400
+
+[cdft]
+lambda_tol = 1e-5
+max_outer = 40
+stability_descent = false
+grid_radial = 99
+grid_angular = 302
+
+[[cdft.constraint]]
+atoms = [0]
+target = 2.0

@@ -111,6 +111,11 @@ pub struct Config {
     /// for every kind other than `casscf` / `nevpt2`.
     #[serde(skip)]
     pub cas_plan: Option<crate::cas::CasPlan>,
+    /// Optional `[cdft]` section: constrained DFT (see [`crate::cdft::CdftCfg`]).
+    /// Present, `method.kind = "uhf"` runs the constrained UHF (UKS with
+    /// `[dft] functional`) of Python `run_cdft`.
+    #[serde(default)]
+    pub cdft: Option<crate::cdft::CdftCfg>,
 }
 
 impl Config {
@@ -4665,6 +4670,8 @@ impl Config {
         }
 
         self.validate_relativistic()?;
+        self.validate_polarizable_embedding()?;
+        crate::cdft::validate(self)?;
         self.scf.validate_accelerators(kind, mult)?;
         self.validate_symmetry_keys()?;
 
@@ -4770,6 +4777,69 @@ impl Config {
             None => Ok(None),
             Some(l) => l.model(),
         }
+    }
+
+    /// The kind/task rules of `[qmmm] polarizabilities_angstrom3` / `thole_a`.
+    ///
+    /// The induced dipoles enter the SCF energy and the SCF Fock matrix only.
+    /// Nothing else differentiates or consumes them: the CLI's geometry and
+    /// frequency tasks use the plain gradient, and a correlated method treats
+    /// the polarized SCF as an ordinary reference. Each of those would report
+    /// a number that silently omits the polarization, so they are refused.
+    /// ROHF/ROKS runs the shared SCF code but has no polarizable test.
+    pub fn validate_polarizable_embedding(&self) -> Result<(), String> {
+        let Some(q) = self.qmmm.as_ref() else {
+            return Ok(());
+        };
+        if q.polarizabilities_angstrom3.is_empty() {
+            return match q.thole_a {
+                Some(_) => Err("[qmmm] thole_a needs polarizabilities_angstrom3: with no \
+                                polarizable site it would be silently ignored"
+                    .to_string()),
+                None => Ok(()),
+            };
+        }
+        let kind = self.method.kind.as_str();
+        let task = self.method.task.as_str();
+        if task != "energy" {
+            return Err(format!(
+                "[qmmm] polarizabilities_angstrom3 is supported for method.task = \"energy\" \
+                 only (got \"{task}\"): the CLI's optimizers and frequency runs use the \
+                 non-polarizable gradient, so they would follow a different surface than the \
+                 polarized energy. Python run_qmmm carries the polarizable gradient."
+            ));
+        }
+        if !matches!(kind, "rhf" | "uhf" | "ksdft") {
+            return Err(format!(
+                "[qmmm] polarizabilities_angstrom3 is wired for method.kind = \"rhf\", \
+                 \"uhf\" and \"ksdft\" (with [dft] functional for KS) only; kind = \"{kind}\" \
+                 would not carry the induced-dipole terms through its method."
+            ));
+        }
+        if self.cosmo.is_some() || self.pcm.is_some() {
+            return Err(
+                "[qmmm] polarizabilities_angstrom3 with [cosmo] or [pcm] is not supported: the \
+                 combination of a polarizable embedding and an implicit solvent has not been \
+                 validated"
+                    .to_string(),
+            );
+        }
+        if self.scf.relativistic.is_some() {
+            return Err(
+                "[qmmm] polarizabilities_angstrom3 with [scf] relativistic is not supported: \
+                 the polarizable embedding has been validated on the nonrelativistic core \
+                 Hamiltonian only"
+                    .to_string(),
+            );
+        }
+        if let Some(a) = q.thole_a {
+            if !(a.is_finite() && a >= 0.0) {
+                return Err(format!(
+                    "[qmmm] thole_a must be finite and >= 0 (0.0 disables damping), got {a}"
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// The kind/task rules of `[local]` and of the `[mp2]` keys a correlated
@@ -6121,8 +6191,14 @@ fn validate_loaded(cfg: &mut Config, text: &str) -> Result<(), String> {
         let raw: toml::Value = toml::from_str(text).map_err(|e| e.to_string())?;
         cfg.periodic = periodic_plan(cfg, &raw)?;
     }
+    resolve_kind_plans(cfg, text)
+}
+
+/// The plans of the kind-specific sections that need the raw TOML text: the
+/// `[cas]` run, and the sections and `[scf]` keys a `[cdft]` run reads.
+fn resolve_kind_plans(cfg: &mut Config, text: &str) -> Result<(), String> {
     cfg.cas_plan = crate::cas::resolve_plan(cfg, text)?;
-    Ok(())
+    crate::cdft::check_sections(cfg, text)
 }
 
 // ---------------------------------------------------------------------------
@@ -9029,6 +9105,115 @@ json = [1, 2]
         assert!(e.contains("qm_radius"), "{e}");
     }
 
+    // --- [qmmm] polarizable embedding -----------------------------------
+
+    /// `water_na.pqr` has 4 atoms: three QM water atoms and an MM Na+ (index 3).
+    const NA_ALPHA: &str =
+        "qm_indices = [0, 1, 2]\npolarizabilities_angstrom3 = [0.0, 0.0, 0.0, 0.5]";
+
+    #[test]
+    fn qmmm_polarizabilities_become_bohr3_sites_on_the_mm_atom() {
+        let q = qmmm_cfg(NA_ALPHA);
+        let sys = q.to_system(0, 1).unwrap();
+        let sites = sys.to_polarizable_sites();
+        assert_eq!(sites.len(), 1);
+        // 0.5 A^3 in Bohr^3, at the ion's position (0, 0, 4 A).
+        let b = ferric_core::units::ANGSTROM_TO_BOHR;
+        assert_eq!(sites[0].alpha, 0.5 * b * b * b);
+        assert_eq!(sites[0].z, 4.0 * b);
+        let pol = q.polarizable_embedding(&sys).unwrap().unwrap();
+        assert_eq!(pol.sites.len(), 1);
+        // The defaults of Python run_qmmm.
+        assert_eq!(pol.thole_a, Some(ferric_scf::polarizable::DEFAULT_THOLE_A));
+        assert_eq!(pol.dipole_zeta, 1e4);
+        assert_eq!(pol.max_sites_dense, 4000);
+        assert!(pol.exclusions.is_empty());
+    }
+
+    #[test]
+    fn qmmm_thole_a_selects_the_damping_and_zero_disables_it() {
+        let with = |t: &str| {
+            let q = qmmm_cfg(&format!("{NA_ALPHA}\nthole_a = {t}"));
+            let sys = q.to_system(0, 1).unwrap();
+            q.polarizable_embedding(&sys).unwrap().unwrap().thole_a
+        };
+        assert_eq!(with("1.7"), Some(1.7));
+        assert_eq!(with("0.0"), None);
+    }
+
+    #[test]
+    fn qmmm_without_polarizabilities_is_the_plain_embedding() {
+        let q = qmmm_cfg("qm_indices = [0, 1, 2]");
+        let sys = q.to_system(0, 1).unwrap();
+        assert!(sys.to_polarizable_sites().is_empty());
+        assert!(q.polarizable_embedding(&sys).unwrap().is_none());
+    }
+
+    #[test]
+    fn qmmm_polarizability_lists_are_validated() {
+        let err = |extra: &str| {
+            qmmm_cfg(extra)
+                .to_system(0, 1)
+                .map(|_| ())
+                .unwrap_err()
+                .to_string()
+        };
+        let e = err("qm_indices = [0, 1, 2]\npolarizabilities_angstrom3 = [0.0, 0.5]");
+        assert!(e.contains("2 entries") && e.contains("4 atoms"), "{e}");
+        let e = err("qm_indices = [0, 1, 2]\npolarizabilities_angstrom3 = [0.0, 0.0, 0.0, -0.1]");
+        assert!(e.contains("polarizabilities_angstrom3[3]"), "{e}");
+        let e = err("qm_indices = [0, 1, 2]\nthole_a = 2.0");
+        assert!(
+            e.contains("thole_a needs polarizabilities_angstrom3"),
+            "{e}"
+        );
+        let e = err(&format!("{NA_ALPHA}\nthole_a = -1.0"));
+        assert!(e.contains("thole_a must be finite and >= 0"), "{e}");
+        // Nothing polarizable on an MM atom: an error, not a silent no-op.
+        let q =
+            qmmm_cfg("qm_indices = [0, 1, 2]\npolarizabilities_angstrom3 = [0.5, 0.0, 0.0, 0.0]");
+        let sys = q.to_system(0, 1).unwrap();
+        let e = q.polarizable_embedding(&sys).unwrap_err();
+        assert!(e.contains("nothing would polarize"), "{e}");
+    }
+
+    #[test]
+    fn qmmm_polarizable_embedding_is_scoped_to_energy_scf_kinds() {
+        let cfg = |kind: &str, task: &str, extra: &str| {
+            let src = format!(
+                "{}\n{extra}",
+                qmmm_fixture(NA_ALPHA).replace(
+                    "kind = \"rhf\"",
+                    &format!("kind = \"{kind}\"\ntask = \"{task}\"")
+                )
+            );
+            toml::from_str::<Config>(&src).unwrap_or_else(|e| panic!("{e}\n{src}"))
+        };
+        for kind in ["rhf", "uhf", "ksdft"] {
+            assert!(
+                cfg(kind, "energy", "")
+                    .validate_polarizable_embedding()
+                    .is_ok(),
+                "{kind}"
+            );
+        }
+        for (kind, task, needle) in [
+            ("rhf", "optimize", "task = \"energy\" only"),
+            ("uhf", "frequencies", "task = \"energy\" only"),
+            ("rohf", "energy", "\"rhf\", \"uhf\" and \"ksdft\""),
+            ("rimp2", "energy", "\"rhf\", \"uhf\" and \"ksdft\""),
+        ] {
+            let e = cfg(kind, task, "")
+                .validate_polarizable_embedding()
+                .expect_err(kind);
+            assert!(e.contains(needle), "{kind}/{task}: {e}");
+        }
+        let e = cfg("rhf", "energy", "[cosmo]\nepsilon = 78.4\n")
+            .validate_polarizable_embedding()
+            .unwrap_err();
+        assert!(e.contains("[cosmo] or [pcm]"), "{e}");
+    }
+
     #[test]
     fn qmmm_pqr_element_symbols_come_from_atom_names() {
         // PDB naming: leading digits stripped, element is the leading alpha
@@ -9081,6 +9266,8 @@ json = [1, 2]
                 qm_radius_angstrom: None,
                 link_bonds: vec![],
                 boundary_scheme: default_boundary_scheme(),
+                polarizabilities_angstrom3: vec![],
+                thole_a: None,
             };
             match cfg.to_system(0, 1) {
                 Ok(_) => panic!("{label}: an unknown element must be refused"),
@@ -9121,6 +9308,8 @@ json = [1, 2]
             qm_radius_angstrom: None,
             link_bonds: vec![],
             boundary_scheme: default_boundary_scheme(),
+            polarizabilities_angstrom3: vec![],
+            thole_a: None,
         };
         assert!(cfg.to_system(0, 1).is_ok(), "a valid PQR must still build");
     }
@@ -11666,6 +11855,22 @@ pub struct QmmmCfg {
     /// is the right choice when the cut is not covalent.
     #[serde(default = "default_boundary_scheme")]
     pub boundary_scheme: String,
+    /// Thole-damped polarizable embedding: the isotropic polarizability of
+    /// each PQR atom in Angstrom^3, ONE ENTRY PER PQR ATOM in file order
+    /// (0.0 = not a polarizable site), the CLI form of Python
+    /// `QmmmSystem(polarizabilities_angstrom3=...)`. Atoms in the QM region
+    /// are ignored, exactly as their `charge` is. Empty (the default) is the
+    /// plain non-polarizable embedding, bit for bit. A nonempty list with no
+    /// positive entry on an MM atom is an error (nothing would polarize).
+    /// Energy runs on `rhf`, `uhf` and `ksdft` only; see
+    /// [`Config::validate_cli_wired_keys`].
+    #[serde(default)]
+    pub polarizabilities_angstrom3: Vec<f64>,
+    /// Thole damping parameter `a` of the polarizable sites (dimensionless).
+    /// Absent = `ferric_scf::polarizable::DEFAULT_THOLE_A` (2.1304); `0.0`
+    /// disables damping (the bare dipole-dipole tensor), the convention of
+    /// Python `run_qmmm(thole_a=0.0)`. Needs `polarizabilities_angstrom3`.
+    pub thole_a: Option<f64>,
 }
 
 fn default_boundary_scheme() -> String {
@@ -11768,6 +11973,87 @@ pub fn parse_pqr(path: &str) -> Result<Vec<PqrAtom>, ferric_core::FerricError> {
 }
 
 impl QmmmCfg {
+    /// `polarizabilities_angstrom3` as one Bohr^3 entry per PQR atom (all
+    /// 0.0 when the key is absent). A wrong length, or a negative or
+    /// non-finite entry, is an error.
+    fn polarizabilities_bohr3(&self, n_atoms: usize) -> Result<Vec<f64>, ferric_core::FerricError> {
+        use ferric_core::units::ANGSTROM_TO_BOHR;
+        if self.polarizabilities_angstrom3.is_empty() {
+            if self.thole_a.is_some() {
+                return Err(ferric_core::FerricError::General(
+                    "[qmmm] thole_a needs polarizabilities_angstrom3: with no polarizable \
+                     site it would be silently ignored"
+                        .to_string(),
+                ));
+            }
+            return Ok(vec![0.0; n_atoms]);
+        }
+        if let Some(a) = self.thole_a {
+            if !(a.is_finite() && a >= 0.0) {
+                return Err(ferric_core::FerricError::General(format!(
+                    "[qmmm] thole_a must be finite and >= 0 (0.0 disables damping), got {a}"
+                )));
+            }
+        }
+        if self.polarizabilities_angstrom3.len() != n_atoms {
+            return Err(ferric_core::FerricError::General(format!(
+                "[qmmm] polarizabilities_angstrom3 has {} entries but {} has {n_atoms} atoms; \
+                 give one per PQR atom (0.0 = not polarizable)",
+                self.polarizabilities_angstrom3.len(),
+                self.pqr
+            )));
+        }
+        if let Some((i, a)) = self
+            .polarizabilities_angstrom3
+            .iter()
+            .enumerate()
+            .find(|(_, a)| !(a.is_finite() && **a >= 0.0))
+        {
+            return Err(ferric_core::FerricError::General(format!(
+                "[qmmm] polarizabilities_angstrom3[{i}] = {a} must be finite and >= 0"
+            )));
+        }
+        Ok(self
+            .polarizabilities_angstrom3
+            .iter()
+            .map(|a| a * ANGSTROM_TO_BOHR.powi(3))
+            .collect())
+    }
+
+    /// The Thole polarizable sites of `sys` (built by [`QmmmCfg::to_system`]
+    /// from this section), or `None` for the plain embedding. The same
+    /// construction as Python `run_qmmm`: `thole_a` absent is the default
+    /// damping, `0.0` is no damping, the dipole p-shell exponent and the
+    /// dense-solve ceiling are the library defaults.
+    pub fn polarizable_embedding(
+        &self,
+        sys: &ferric_scf::qmmm::QmmmSystem,
+    ) -> Result<Option<ferric_scf::polarizable::PolarizableSites>, String> {
+        use ferric_scf::polarizable::{PolarizableSites, DEFAULT_THOLE_A};
+        if self.polarizabilities_angstrom3.is_empty() {
+            return Ok(None);
+        }
+        let sites = sys.to_polarizable_sites();
+        if sites.is_empty() {
+            return Err(
+                "[qmmm] polarizabilities_angstrom3 has no positive entry on an MM atom (entries \
+                 on QM-region atoms are ignored), so nothing would polarize. Remove the key or \
+                 give an MM atom a polarizability."
+                    .to_string(),
+            );
+        }
+        let thole_a = match self.thole_a {
+            None => Some(DEFAULT_THOLE_A),
+            Some(a) if a > 0.0 => Some(a),
+            Some(_) => None,
+        };
+        Ok(Some(PolarizableSites {
+            sites,
+            thole_a,
+            ..Default::default()
+        }))
+    }
+
     /// Build the `QmmmSystem` this section describes.
     ///
     /// `qm_charge`/`qm_multiplicity` come from `[molecule]` and apply to the QM
@@ -11802,6 +12088,7 @@ impl QmmmCfg {
 
         let atoms_pqr = parse_pqr(&self.pqr)?;
         let n = atoms_pqr.len();
+        let alpha_bohr3 = self.polarizabilities_bohr3(n)?;
         // An atom name whose element cannot be resolved is a HARD ERROR, not
         // a Z = 0 atom. `unwrap_or(0)` used to be silent, and what it did
         // depended on where the atom landed: in the QM region the basis
@@ -11833,7 +12120,8 @@ impl QmmmCfg {
                     a.y * ANGSTROM_TO_BOHR,
                     a.z * ANGSTROM_TO_BOHR,
                     a.q,
-                ))
+                )
+                .with_alpha(alpha_bohr3[i]))
             })
             .collect::<Result<Vec<_>, FerricError>>()?;
 

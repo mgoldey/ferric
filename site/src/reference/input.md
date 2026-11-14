@@ -473,10 +473,51 @@ cannot be combined with `[external_potential]`; doing so is an error.
 | `qm_radius_angstrom` | float | none | Å, > 0 | Requires `qm_seeds`. |
 | `link_bonds` | array of `[qm, mm]` | `[]` | | Required when the cut crosses a covalent bond. |
 | `boundary_scheme` | string | `"delete-host"` | `keep` `delete-host` `rc` `rcd` | Setting a non-default value without `link_bonds` is an error. |
+| `polarizabilities_angstrom3` | float array | `[]` | Å³, ≥ 0, one entry per PQR atom | Thole-damped induced-dipole polarizable embedding: the isotropic polarizability of each atom in file order (0.0 = not polarizable; entries on QM-region atoms are ignored). The PQR has no polarizability column. Empty is the plain embedding, bit for bit. A list with no positive entry on an MM atom is an error. `task = "energy"` with `kind` `rhf`, `uhf` or `ksdft` only, and not with `[cosmo]` or `[pcm]`: the CLI's optimizers and frequency runs use the non-polarizable gradient and the correlated kinds do not carry the induced-dipole terms. The energy includes the polarization energy; `E_pol` and the induced dipoles are printed and written to the run log's `polarization` record. Python `QmmmSystem(polarizabilities_angstrom3=)` with `run_qmmm`. |
+| `thole_a` | float | `2.1304` | ≥ 0 | Thole damping parameter of the polarizable sites; `0.0` disables the damping (the bare dipole-dipole tensor). Needs `polarizabilities_angstrom3`. Python `run_qmmm(thole_a=)`. |
 
-See [QM/MM](../using/qmmm.md). Smeared PQR charges, polarizable sites and MM
-force fields are Python only. (Smeared charges outside QM/MM are available
-through `[external_potential]` with `width`.)
+See [QM/MM](../using/qmmm.md). Smeared PQR charges and MM force fields are
+Python only. (Smeared charges outside QM/MM are available through
+`[external_potential]` with `width`.)
+
+## `[cdft]`
+
+Constrained DFT (Wu–Van Voorhis): the CLI form of Python `run_cdft`. Present,
+`method.kind = "uhf"` runs the constrained solve, UHF or, with `[dft]
+functional`, UKS (a constrained state uses unrestricted orbitals even for a
+singlet). `task = "energy"` only: there is no constrained gradient. Each
+constraint holds the Becke fuzzy-cell population of a fragment at a target; a
+nested lambda-Newton loop finds the multipliers, and the reported energy is the
+ordinary UHF/UKS energy at the constrained density. See
+[Constrained DFT](../methods/cdft.md).
+
+The section reads `[scf]` `max_iter` / `energy_conv` / `density_conv` /
+`diis_size` / `integral_thresh` / `k_builder` / `df_j_aux` / `df_k_aux` /
+`ri_j_precision` / `ri_k_precision` / `level_shift` / `mom_after_iter` /
+`guess` / `guess_basis` / `guess_projection` / `verbose` / `eri_precision` /
+`jk_storage`, `[dft] functional`, `[external_potential]`, `[memory]`,
+`[parallel]` and `[output]`. Any other section or `[scf]` key, `[dft]` grid and
+dispersion keys included, is an error at load time: the grid of the weight
+operator is `[cdft] grid_radial` / `grid_angular`. `[scf] max_iter` is the cap
+of each inner SCF; the lambda loop's cap is `[cdft] max_outer`. The Wu–Van
+Voorhis coupling of two diabats (`cdft_coupling`) is Python only.
+
+| Key | Type | Default | Allowed values | Notes |
+|---|---|---|---|---|
+| `constraint` | array of tables | **required** | at least one | One [`[[cdft.constraint]]`](#cdftconstraint) per constraint. |
+| `lambda_tol` | float | `1e-5` | electrons, > 0 | The solve stops when `max \|N_C − target_C\|` is below this. A flat stretch of `N(λ)` costs outer iterations, not accuracy; a looser value accepts a λ further from the root. Python `lambda_tol`. |
+| `max_outer` | integer | `30` | ≥ 1 | Cap on the outer λ-Newton iterations; exhausting it is an error and nothing unconverged is reported. A start far from the root needs at least \|λ_root\| iterations (the step is clamped to 1). Python `max_outer`. |
+| `stability_descent` | bool | `true` | | After the λ loop converges, check the λ-augmented orbital Hessian and descend if the constrained state is a saddle (UHF only; skipped with a functional). Not the same key as `[scf] stability_descent`, which is refused here. Python `stability_descent`. |
+| `grid_radial` | integer | unset | > 0 | Radial points of the Becke/Lebedev grid of the weight operator, and of the XC functional when one is set. Both grid keys unset: the weight operator uses 99 × 302 and the XC grid its own default. Either set: both use the given grid, the unset one at 99 / 302. Python `grid_radial`. |
+| `grid_angular` | integer | unset | a supported Lebedev order | See `grid_radial`. Python `grid_angular`. |
+
+### `[[cdft.constraint]]`
+
+| Key | Type | Default | Allowed values | Notes |
+|---|---|---|---|---|
+| `atoms` | integer array | **required** | zero-based, non-empty, no repeats, in range | The fragment. |
+| `target` | float | **required** | electrons; charge in `[0, N_elec]`, spin ≤ `N_elec` in magnitude | The fragment POPULATION, not a net charge: `N_α + N_β` for `charge` (2.0 on a He atom is neutral He, 1.0 is He⁺), `N_α − N_β` for `spin`. |
+| `kind` | string | `"charge"` | `charge` `spin` (case-insensitive) | The population channel. Two constraints on the same atoms and kind are an error (singular Jacobian). Python `CdftConstraint(kind=)`. |
 
 ## `[pcm]`
 

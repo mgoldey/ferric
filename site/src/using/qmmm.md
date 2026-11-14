@@ -205,9 +205,38 @@ unknown scheme name is an error.
 `[qmmm]` and `[external_potential]` together are refused. The MM region
 is an external potential, so combining them would count a contribution twice.
 
+### Polarizable embedding from the CLI
+
+`polarizabilities_angstrom3` and `thole_a` add Thole-damped induced dipoles to
+the embedding, the CLI form of `QmmmSystem(polarizabilities_angstrom3=...)` with
+`run_qmmm(thole_a=...)`. A PQR has no polarizability column, so the list holds
+one entry per PQR atom in file order (Å³, 0.0 = not polarizable; entries on
+QM-region atoms are ignored):
+
+```toml
+[qmmm]
+pqr = "testdata/molecules/water_thole_sites.pqr"
+qm_indices = [0, 1, 2]
+polarizabilities_angstrom3 = [0.0, 0.0, 0.0, 0.0740923557432, 0.0740923557432, 0.163003182635]
+thole_a = 2.1304   # default; 0.0 turns the damping off
+```
+
+`examples/water-qmmm-thole.toml` is this input (STO-3G water, three MM sites).
+The printed energy includes the polarization energy, which is also printed as
+`E_pol` and written, with the induced dipoles, to the run log's `polarization`
+record. The energies and dipoles are the Python run's bit for bit
+(`crates/ferric-python/tests/test_cli_cdft_thole.py`), and the Python run is
+checked against the PySCF prototype in `test_qmmm.py`.
+
+The CLI carries the polarizable terms for `task = "energy"` on `rhf`, `uhf` and
+`ksdft` only. A geometry or frequency task, a correlated kind, `rohf` and
+`[cosmo]` or `[pcm]` are refused, because each would follow a surface that
+omits the induced dipoles. `run_qmmm` and `run_optimize_qmmm` carry the
+polarizable gradient.
+
 Scope of the CLI section: it reads only a PQR, because it needs charges
-and geometry together, and does electrostatic embedding only.
-Polarizable sites, smeared charges, the MM force field and MM relaxation are
+and geometry together, and does electrostatic embedding, with optional
+polarizable sites. Smeared charges, the MM force field and MM relaxation are
 Python-only.
 
 ## Known limits

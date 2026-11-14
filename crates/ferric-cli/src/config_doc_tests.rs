@@ -98,6 +98,11 @@ fn accepted_keys_by_section() -> BTreeMap<&'static str, BTreeSet<&'static str>> 
         ("eom", fields_of::<EomCfg>()),
         ("cas", fields_of::<crate::cas::CasCfg>()),
         ("cas.ci", fields_of::<crate::cas::CasCiCfg>()),
+        ("cdft", fields_of::<crate::cdft::CdftCfg>()),
+        (
+            "cdft.constraint",
+            fields_of::<crate::cdft::CdftConstraintCfg>(),
+        ),
         ("local", fields_of::<LocalCfg>()),
         ("rpa", fields_of::<RpaCfg>()),
         ("gw", fields_of::<GwCfg>()),

@@ -5,7 +5,8 @@ follow from it.
 
 ## Run it
 
-Python and the Rust library; there is no CLI section.
+Python, the CLI (`[cdft]`, below) and the Rust library. The coupling is Python
+and Rust only.
 
 - `run_cdft(mol, basis_set, constraints, functional=None, ...)` returns a
   `CdftResult`: a constrained UHF solve, or UKS when `functional` names a
@@ -21,6 +22,35 @@ Python and the Rust library; there is no CLI section.
   diabat energies `e_a`, `e_b`. The raw element uses each state's free energy
   F = E + λN, which makes the coupling independent of a constant shift of the
   constraint operator.
+
+From the CLI, a `[cdft]` section turns `kind = "uhf"` into the same constrained
+solve (UKS with `[dft] functional`), `task = "energy"` only:
+
+```toml
+[method]
+kind = "uhf"
+task = "energy"
+
+[cdft]
+lambda_tol = 1e-5   # electrons
+max_outer = 40      # the lambda loop's own cap; [scf] max_iter caps each inner SCF
+
+[[cdft.constraint]]
+atoms = [0]         # zero-based
+target = 2.2        # a POPULATION in electrons, not a net charge
+kind = "charge"     # or "spin"
+```
+
+`examples/lih-cdft-charge.toml`, `lih-plus-cdft-spin.toml` and `henep-cdft.toml`
+are runnable inputs; `henep-cdft.toml` is the pinned HeNe⁺ state below. The
+keys, with their Python names, are in the [input reference](../reference/input.md#cdft).
+The CLI energy, multipliers, populations and certificate equal `run_cdft`'s bit
+for bit on these cases (`crates/ferric-python/tests/test_cli_cdft_thole.py`).
+The run log's `result` record (`kind = "cdft"`) carries the multipliers,
+populations, residuals and the certificate, ungraded like `CdftResult.certificate`.
+Every section and `[scf]` key the constrained solve does not read is an error at
+load time, and the grid is `[cdft] grid_radial` / `grid_angular`, not `[dft]`.
+The coupling needs two solves that share one Hamiltonian and has no CLI form.
 
 In Rust the entry points are `ferric_scf::cdft_driver::solve_cdft_uhf` and
 `ferric_scf::cdft_coupling::coupling_hab`; see the

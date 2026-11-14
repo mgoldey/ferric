@@ -172,8 +172,8 @@ The CLI runs the `method.kind`s in the
 | Capability | Python | What the CLI has instead |
 |---|---|---|
 | Transition-state search, IRC | `run_saddle`, `run_irc` | no `task` for either |
-| QM/MM MM forces, full-system gradient and optimization, smeared charges, Thole polarization, an MM force field | `run_qmmm`, `run_optimize_qmmm`, `QmmmSystem`, `MmTopology` | `[qmmm]` embeds the QM region in fixed point charges from a PQR file, with link atoms and boundary schemes |
-| Constrained DFT and electron-transfer couplings | `run_cdft`, `CdftConstraint`, `cdft_coupling` | nothing |
+| QM/MM MM forces, full-system gradient and optimization, smeared charges, Thole polarization gradients, an MM force field | `run_qmmm`, `run_optimize_qmmm`, `QmmmSystem`, `MmTopology` | `[qmmm]` embeds the QM region in fixed point charges from a PQR file, with link atoms and boundary schemes; `polarizabilities_angstrom3` adds Thole polarizable sites to `task = "energy"` on `rhf`, `uhf` and `ksdft` |
+| Electron-transfer couplings | `cdft_coupling` | nothing (`run_cdft` itself is `[cdft]`, `task = "energy"`) |
 
 ## Examples need the repository
 

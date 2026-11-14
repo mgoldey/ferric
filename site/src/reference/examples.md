@@ -1,6 +1,6 @@
 # Examples
 
-This page indexes every input file in `examples/`. There are 87 TOML files.
+This page indexes every input file in `examples/`. There are 94 TOML files.
 Three Python scripts that build methods from `AoIntegrals` blocks are in
 `examples/python/` ([Python bindings](../using/python.md#building-blocks)).
 Run a TOML file from the repository root:
@@ -66,6 +66,10 @@ See [SCF and DFT](../methods/scf.md).
 | `water-pbe-pruned-grid.toml` | H2O / cc-pVDZ | `ksdft` PBE / energy | "removes ~23% of the grid points" (at 75×110) | Validated in `crates/ferric-dft/tests/grid_prune_live_scf.rs`. |
 | `h2-lda-opt.toml` | H2 / STO-3G | `ksdft` LDA / optimize | — | |
 | `water-qmmm.toml` | H2O + Na⁺ (PQR) / STO-3G | `rhf` + `[qmmm]` | "vacuum −74.9629466809, embedded −74.9653197421, i.e. −1.489 kcal/mol from the ion at 4 A. Verified against `ferric.run_rhf(point_charges=...)` to all 10 digits." | The vacuum number is at the PQR geometry, not the xyz. The embedded number is asserted by a test. |
+| `water-qmmm-thole.toml` | H2O + 3 polarizable MM sites (PQR) / STO-3G | `rhf` + `[qmmm]` with `polarizabilities_angstrom3` | "E = -75.02570291 Ha, E_pol = -0.06596986 Ha" (the PySCF-based prototype, `testdata/reference/water_sto-3g_pe_three_sites.json`) | Thole-damped induced dipoles, `thole_a = 2.1304`. The CLI energy equals `run_qmmm` bit for bit (`test_cli_cdft_thole.py`). |
+| `lih-cdft-charge.toml` | LiH / def2-SVP | `uhf` + `[cdft]` | — | Li population held at 2.2 electrons (`kind = "charge"`). The `cdft_uhf.rs` configuration. |
+| `lih-plus-cdft-spin.toml` | LiH⁺ doublet / def2-SVP | `uhf` + `[cdft]` | — | N<sub>α</sub> − N<sub>β</sub> on Li held at 0.45 (`kind = "spin"`). |
+| `henep-cdft.toml` | HeNe⁺ doublet / def2-SVP | `uhf` + `[cdft]` | "E = -130.4021906 Ha, lambda = -2.754 Ha per electron" | The state pinned by `cdft_outer_loop.rs`: h-core start, level shift 0.5, descent off, 99 × 302 grid. |
 | `water-pcm.toml` | H2O / STO-3G | `rhf` + `[pcm]` | — | IEF-PCM water (`solvent = "water"`, ε = 78.4). |
 | `water-rhf-smeared-charge.toml` | H2O / STO-3G | `rhf` + `[external_potential]` | — | One Gaussian-smeared charge (`width`, Bohr) and one point charge. |
 | `hbr-x2c-rhf.toml` | HBr / cc-pVDZ | `rhf` + `[scf] relativistic = "x2c1e"` | — | Spin-free X2C-1e core Hamiltonian; energy only, Ungraded. PySCF `sfx2c1e()` gives −2597.626993 Ha (testdata/reference/x2c_scf_sfx2c1e.json; the agreement is asserted in crates/ferric-scf/tests/x2c_scf.rs). |

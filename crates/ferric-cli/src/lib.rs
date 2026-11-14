@@ -8,9 +8,11 @@
 //! `sys.argv`.
 
 mod cas;
+mod cdft;
 mod config;
 mod gpu_flag;
 mod periodic;
+mod polarization;
 
 use config::{load_config, Config};
 /// The `[local]` model types, re-exported for the Python bindings, which
@@ -849,10 +851,10 @@ pub fn run(args: Vec<String>) {
         // in the Default impl. Not a TOML key; listed because this literal is
         // exhaustive.
         rohf_occupation_guard: true,
+        // `[cdft]` fills the constraint fields in `cdft::run` (it starts from
+        // this config); every other run is unconstrained.
         constraints: Vec::new(),
         cdft_lambda_tol: 1e-5,
-        // cDFT is not CLI-wired (constraints above are always empty), so this
-        // is inert here; it is listed only because the literal is exhaustive.
         cdft_max_outer: 30,
         cdft_lambda_init: None,
         // SCF accelerators, both opt-in and OFF unless `[scf]` asks.
@@ -873,11 +875,11 @@ pub fn run(args: Vec<String>) {
         },
         trah: Default::default(),
         trah_trigger: cfg.scf.trah_trigger,
-        // Inert on this path (`constraints` is empty, so `solve_cdft_uhf` is
-        // never reached), but spelled out rather than left to a `..default()`
-        // that this literal does not use — a struct literal that lists every
-        // field is how a new knob gets noticed here instead of silently
-        // acquiring whatever the Default impl says.
+        // Set by `cdft::run` for a `[cdft]` run; inert otherwise. Spelled out
+        // rather than left to a `..default()` that this literal does not use —
+        // a struct literal that lists every field is how a new knob gets
+        // noticed here instead of silently acquiring whatever the Default
+        // impl says.
         cdft_stability_descent: true,
         // `[scf] stability_descent` (rhf, uhf and ksdft; other kinds were
         // refused by `Config::validate_cli_wired_keys`). It needs the
@@ -907,10 +909,9 @@ pub fn run(args: Vec<String>) {
         // `[pcm]`: IEF-PCM. Values were validated at load time and the
         // kind/task scope by `Config::validate_cli_wired_keys`.
         pcm: resolve_pcm(&cfg),
-        // Polarizable (Thole) embedding has no TOML surface either -- it is
-        // reachable from Rust (RhfConfig.polarizable) and Python
-        // (QmmmSystem(polarizabilities_angstrom3=) + run_qmmm) only.
-        polarizable: None,
+        // Thole polarizable embedding: `[qmmm] polarizabilities_angstrom3` /
+        // `thole_a`; `None` (the plain embedding, bit for bit) without them.
+        polarizable: resolve_polarizable(&cfg, qmmm_system.as_ref()),
         verbose: cfg.scf.verbose,
         check_stability: cfg.scf.runs_stability_check(),
         // Same resolved kind that already selected `bounds`'s CSB table
@@ -1047,7 +1048,8 @@ pub fn run(args: Vec<String>) {
     }
 
     if method == "uhf" {
-        run_uhf(&cfg, &ctx, &mol, &bs, op, &prep, &bounds, &rhf_config);
+        // `[cdft]` makes this the constrained solve of `cdft::run`.
+        run_uhf_or_cdft(&cfg, &ctx, &mol, &bs, op, &prep, &bounds, &rhf_config);
         note_run_precision(&run_probe);
         return;
     }
@@ -1308,6 +1310,10 @@ pub fn run(args: Vec<String>) {
     let scf_cert =
         ferric_scf::certificate::with_scf_envelope(scf_cert, &mol, &result, scf_cert_config, &bs);
 
+    // Evaluated before the dispatch (one arm takes `result` by value),
+    // printed after the method's own output.
+    let pol_report = polarization::evaluate(&mol, &prep, scf_cert_config, &result);
+
     match method {
         "rhf" => run_rhf(&cfg, &bs, &prep, &result, &scf_cert),
         "ksdft" => run_ksdft(&cfg, &bs, &prep, &result, dispersion.as_ref(), &scf_cert),
@@ -1383,6 +1389,7 @@ pub fn run(args: Vec<String>) {
         ),
         _ => unreachable!(),
     }
+    polarization::report(pol_report);
 
     // Terminal record: the SCF result plus wall/cpu time and peak RSS.
     //
@@ -1563,6 +1570,20 @@ fn resolve_geometry(cfg: &Config) -> (Option<ferric_scf::qmmm::QmmmSystem>, Mole
         q.pqr
     );
     (Some(sys), mol)
+}
+
+/// `RhfConfig::polarizable` from `[qmmm] polarizabilities_angstrom3` /
+/// `thole_a` (`None`, the plain embedding, without them). Split out of `run`
+/// for the complexity ceiling, like [`resolve_geometry`].
+fn resolve_polarizable(
+    cfg: &Config,
+    sys: Option<&ferric_scf::qmmm::QmmmSystem>,
+) -> Option<ferric_scf::polarizable::PolarizableSites> {
+    let (q, sys) = cfg.qmmm.as_ref().zip(sys)?;
+    q.polarizable_embedding(sys).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    })
 }
 
 /// Hill-notation molecular formula (C first, then H, then the rest
@@ -6046,6 +6067,25 @@ fn open_shell_scf_label(hf: &str, ks: &str, rhf_config: &RhfConfig) -> String {
     }
 }
 
+/// The UHF/UKS energy route, or the constrained solve of `[cdft]`.
+#[allow(clippy::too_many_arguments)]
+fn run_uhf_or_cdft(
+    cfg: &Config,
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    bs: &BasisSet,
+    op: Operator,
+    prep: &PreparedBasis,
+    bounds: &SchwarzBounds,
+    rhf_config: &RhfConfig,
+) {
+    if cfg.cdft.is_some() {
+        cdft::run(cfg, ctx, mol, bs, prep, bounds, rhf_config);
+    } else {
+        run_uhf(cfg, ctx, mol, bs, op, prep, bounds, rhf_config);
+    }
+}
+
 /// `method.task = "energy"` for the UHF/UKS route: `kind = "uhf"` (UKS when
 /// `[dft] functional` is set) and `kind = "ksdft"` on an open-shell molecule
 /// (see `Config::dispatch_kind`).
@@ -6105,6 +6145,7 @@ fn run_uhf(
         rl.note("cosx_final_pass", cosx_final_json(&f));
     }
     println!("  <S^2>      = {:.6} (ideal {:.6})", s2, s_ideal);
+    polarization::report(polarization::evaluate(mol, prep, rhf_config, &result));
     print_and_note_certificate(&ferric_scf::certificate::with_scf_envelope(
         scf_certificate_stamped(mol, &result, rhf_config, dispersion.as_ref()),
         mol,

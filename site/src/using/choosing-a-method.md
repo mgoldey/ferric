@@ -38,7 +38,7 @@ has no validated option for a task, the row says so.
 | Ionization potentials / electron affinities | G0W0@PBE (or @HF); U-GW for open shells | CLI `gw`, Python `run_gw`, `run_u_gw` | Smoke, about ±0.3 eV | — | `water-g0w0-pbe.toml`, `oh-ugw.toml` |
 | Static polarizability | PDEP-RPA properties, or RPAx@KS (static α only) | CLI `pdep-rpa` with `compute_polarizability`, `tdhf-static-polarizability` | PDEP-RPA Proven (energy); RPAx Smoke | N⁴ (RI) | `h2o-pdep-rpa-props.toml`, `water-tdhf-static-alpha.toml` |
 | \\( C_6 \\) dispersion coefficients | PDEP-RPA dynamic α (`c6_source = "pdep"`) or TS/MBD, in an augmented basis. Not RPAx: its \\( C_6 \\) is ~63% low | CLI `pdep-rpa` + `[rpa] compute_c6` | which source is better is not established | N⁴ (RI) | `water-c6-pdep.toml`, `argon-c6-rpa-pbe.toml` |
-| Electron-transfer coupling | constrained DFT + Wu–Van Voorhis \\( H_{ab} \\) | Python `run_cdft`, `cdft_coupling` (no CLI) | no external reference | SCF cost × outer λ loop | none |
+| Electron-transfer coupling | constrained DFT + Wu–Van Voorhis \\( H_{ab} \\) | Python `run_cdft`, `cdft_coupling`; CLI `[cdft]` for a single constrained state (the coupling is Python only) | no external reference | SCF cost × outer λ loop | none |
 
 Notes on the table:
 

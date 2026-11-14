@@ -1,0 +1,37 @@
+# Constrained DFT from the CLI: hold the Li atom of LiH at 2.2 electrons.
+#
+# `[cdft]` turns kind = "uhf" into the constrained solve of Python
+# `ferric.run_cdft` (UHF here; add `[dft] functional = "PBE"` for UKS). The
+# target is a Becke fragment POPULATION in electrons (N_alpha + N_beta for
+# kind = "charge"), not a net charge: neutral Li carries about 2.0 + the share
+# of the bond, so 2.2 pushes charge onto Li.
+#
+# This is the configuration of crates/ferric-scf/tests/cdft_uhf.rs
+# (charge_constraint_is_satisfied) and of crates/ferric-python/tests/
+# test_cdft.py::_lih_charge_22. The Li population reaches 2.2 to 1e-5, the
+# multiplier lambda is printed in Ha per electron, and the energy is the
+# ordinary UHF energy at the constrained density (the constraint term is not
+# in it). The energy is above the unconstrained UHF energy.
+
+[molecule]
+xyz = "testdata/molecules/lih.xyz"
+charge = 0
+multiplicity = 1
+
+[basis]
+name = "def2-svp"
+
+[method]
+kind = "uhf"
+task = "energy"
+
+[cdft]
+# Lambda loop: tolerance in electrons, and its own iteration cap (`[scf]
+# max_iter` is the cap of each inner SCF).
+lambda_tol = 1e-5
+max_outer = 40
+
+[[cdft.constraint]]
+atoms = [0]
+target = 2.2
+kind = "charge"

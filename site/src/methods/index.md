@@ -15,7 +15,7 @@ number. To go from a task to a method, start with
 | Excited states | TDA and TDDFT on an RHF or RKS reference (singlets, triplets) or a UHF or UKS reference (spin-conserving, `<S^2>` per root); BSE-TDA on G0W0 | [RPA, GW and excited states](./rpa-gw.md#tddft-and-tda) |
 | Periodic systems | Gamma-point and k-point RHF/UHF/ROHF, RKS/UKS/ROKS, MP2, dRPA; analytic forces and stress; dense AFT or RS-GDF J/K | [Periodic systems](./pbc.md) |
 | RPA and GW | dRPA by the Riccati solve (exact or local), G0W0, COHSEX, evGW0, evGW; polarizabilities and \\( C_6 \\). Maintainer focus ([note](#maintainers-focus-marker)): PDEP-RPA | [RPA, GW and excited states](./rpa-gw.md) |
-| Electron transfer | Maintainer focus ([note](#maintainers-focus-marker)): cDFT, \\( H_{ab} \\) couplings (Python and Rust, no CLI) | [Constrained DFT](./cdft.md) |
+| Electron transfer | Maintainer focus ([note](#maintainers-focus-marker)): cDFT (CLI, Python and Rust), \\( H_{ab} \\) couplings (Python and Rust) | [Constrained DFT](./cdft.md) |
 
 #### Maintainer's focus marker
 
