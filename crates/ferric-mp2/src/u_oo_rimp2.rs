@@ -11,8 +11,16 @@
 //! is the full-Fock one, evaluated in each spin's semicanonical frame, the
 //! same construction as closed-shell `oo_rimp2` (defect F2, 2026-09-24).
 //!
+//! J/K route: the reference SCF's, as in the closed-shell driver. When the
+//! UHF/ROHF reference fitted J and K on one auxiliary basis (`scf_jk =
+//! "rijk"`), every J/K here (UHF energy, both Fock matrices, the Fock
+//! response) is that fit, through [`ferric_scf::response_jk::ResponseJk`], and
+//! the optimised functional is the fitted one; any other reference keeps
+//! four-centre `DirectJ`/`DirectK` (see `UOoJk`).
+//!
 //! Reference: Bozkaya, JCP 139, 154105 (2013).
 
+use crate::oo_rimp2::rijk_route;
 use crate::oo_rimp2::{
     compute_b_full_mo_with, lowdin_orthonormalize, semicanonical_rotation, OoRiMp2AoTensors,
 };
@@ -34,6 +42,8 @@ use ferric_scf::diis::Diis;
 use ferric_scf::direct_j::DirectJ;
 use ferric_scf::direct_k::DirectK;
 use ferric_scf::fock::{JBuilder, KBuilder};
+use ferric_scf::response_jk::ResponseJk;
+use ferric_scf::result::DfJkRoute;
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::{ScfResult, Spin};
 use ndarray::Array2;
@@ -121,6 +131,108 @@ pub struct UOoRiMp2Result {
     pub eps_alpha: Vec<f64>,
     /// β semicanonical orbital energies (Hartree), the MP2 denominators used.
     pub eps_beta: Vec<f64>,
+    /// The fitted J/K route every J/K of the run was built on (the
+    /// reference's RI-JK route), `None` for four-centre J/K.
+    pub jk_route: Option<DfJkRoute>,
+}
+
+/// The J/K builds of one U-OO-RI-MP2 run, on the reference SCF's route.
+///
+/// * Four-centre (`Exact`): `DirectJ` on `D^α + D^β` and `DirectK` per spin,
+///   1e-12 screening, under the run's memory budget.
+/// * RI-JK (`Fitted`): the reference fitted J and K on one auxiliary basis
+///   with no range separation and no COSX ([`rijk_route`]); J and K of each
+///   spin density come from the SCF's own `DfJ`/`DfK` (indefinite densities
+///   included), and `J[D^α + D^β] = J[D^α] + J[D^β]` by linearity of the fit.
+///
+/// Any other fitted reference (RI-J only, COSX, range-separated exchange)
+/// keeps four-centre J/K, as the closed-shell driver does.
+enum UOoJk<'a> {
+    Exact {
+        ctx: &'a ParallelContext,
+        prep: &'a PreparedBasis,
+        bounds: &'a SchwarzBounds,
+        budget_bytes: usize,
+    },
+    Fitted(Box<ResponseJk<'a>>),
+}
+
+impl<'a> UOoJk<'a> {
+    /// The route of `scf` as described on [`UOoJk`].
+    fn for_reference(
+        ctx: &'a ParallelContext,
+        mol: &Molecule,
+        prep: &'a PreparedBasis,
+        bounds: &'a SchwarzBounds,
+        scf: &ScfResult,
+        budget_bytes: usize,
+    ) -> Result<Self, FerricError> {
+        Ok(match rijk_route(scf) {
+            Some(route) => UOoJk::Fitted(Box::new(ResponseJk::for_route(
+                ctx,
+                mol,
+                prep,
+                bounds,
+                Some(route),
+            )?)),
+            None => UOoJk::Exact {
+                ctx,
+                prep,
+                bounds,
+                budget_bytes,
+            },
+        })
+    }
+
+    /// The fitted route, `None` for four-centre J/K.
+    fn fitted_route(&self) -> Option<&DfJkRoute> {
+        match self {
+            UOoJk::Exact { .. } => None,
+            UOoJk::Fitted(r) => r.route(),
+        }
+    }
+
+    /// `(J[d_a + d_b], K[d_a], K[d_b])` for symmetric spin densities (or
+    /// spin response densities). `with_b = false` skips `K[d_b]` (returned as
+    /// zeros), for a run with no β occupied orbitals.
+    fn spin_jk(
+        &self,
+        d_a: &Array2<f64>,
+        d_b: &Array2<f64>,
+        with_b: bool,
+    ) -> Result<(Array2<f64>, Array2<f64>, Array2<f64>), FerricError> {
+        let n = d_a.nrows();
+        match self {
+            UOoJk::Exact {
+                ctx,
+                prep,
+                bounds,
+                budget_bytes,
+            } => {
+                let mut j_tot = Array2::zeros((n, n));
+                let mut k_a = Array2::zeros((n, n));
+                let mut k_b = Array2::zeros((n, n));
+                DirectJ::new(ctx, prep, bounds, 1e-12, *budget_bytes)
+                    .build(&(d_a + d_b), &mut j_tot)?;
+                let mut dk = DirectK::new(ctx, prep, bounds, 1e-12, *budget_bytes);
+                <DirectK as KBuilder>::build(&mut dk, d_a, &mut k_a)?;
+                if with_b {
+                    let mut dk = DirectK::new(ctx, prep, bounds, 1e-12, *budget_bytes);
+                    <DirectK as KBuilder>::build(&mut dk, d_b, &mut k_b)?;
+                }
+                Ok((j_tot, k_a, k_b))
+            }
+            UOoJk::Fitted(r) => {
+                let (j_a, k_a) = r.jk(d_a, 1e-12)?;
+                if d_b.iter().all(|&v| v == 0.0) {
+                    return Ok((j_a, k_a, Array2::zeros((n, n))));
+                }
+                let (j_b, k_b) = r.jk(d_b, 1e-12)?;
+                let k_b = if with_b { k_b } else { Array2::zeros((n, n)) };
+                Ok((j_a + j_b, k_a, k_b))
+            }
+        }
+    }
 }
 
 impl std::fmt::Display for UOoRiMp2Result {
@@ -133,14 +245,8 @@ impl std::fmt::Display for UOoRiMp2Result {
     }
 }
 
-/// Compute UHF energy and α/β Fock matrices from MO coefficients.
-///
-/// `budget_bytes` is the caller-resolved memory ceiling for the DirectJ/DirectK
-/// builds below — threaded from [`u_oo_ri_mp2`]'s single per-call
-/// `resolve_budget_bytes(config.memory_budget_bytes)` rather than re-resolved
-/// here (this function is called up to 3× per orbital-optimization iteration,
-/// including backtracks — see the M-budget-plumbing-sweep note on
-/// [`u_oo_ri_mp2`]).
+/// Compute UHF energy and α/β Fock matrices from MO coefficients, with the
+/// J/K of `jk` (the run's route, see [`UOoJk`]).
 // Spin-resolved UHF energy: alpha/beta coefficients and occupations are
 // irreducibly distinct quantities with no natural sub-bundle to group.
 // `vnn` is the FULL classical nuclear-repulsion-like constant: plain
@@ -158,18 +264,15 @@ impl std::fmt::Display for UOoRiMp2Result {
 /// counterpart of this same bug).
 #[allow(clippy::too_many_arguments)]
 fn compute_uhf_energy(
-    ctx: &ParallelContext,
-    prep: &PreparedBasis,
-    bounds: &SchwarzBounds,
+    jk: &UOoJk<'_>,
     c_a: &Array2<f64>,
     c_b: &Array2<f64>,
     nocc_a: usize,
     nocc_b: usize,
     h: &Array2<f64>,
     vnn: f64,
-    budget_bytes: usize,
 ) -> Result<(f64, Array2<f64>, Array2<f64>), FerricError> {
-    let n = prep.nbasis();
+    let n = c_a.nrows();
     // Densities D_σ = C_occ_σ · C_occ_σ^T (unit occupancy, not 2× for spin).
     let mut d_a = Array2::zeros((n, n));
     let mut d_b = Array2::zeros((n, n));
@@ -187,24 +290,8 @@ fn compute_uhf_energy(
             d_b[(mu, nu)] = sb;
         }
     }
-    let d_tot = &d_a + &d_b;
-
     // J from D_tot; K per spin from D_σ. Mirror the UHF pattern.
-    let mut j_tot = Array2::zeros((n, n));
-    let mut k_a = Array2::zeros((n, n));
-    let mut k_b = Array2::zeros((n, n));
-    {
-        let mut dj = DirectJ::new(ctx, prep, bounds, 1e-12, budget_bytes);
-        dj.build(&d_tot, &mut j_tot)?;
-    }
-    {
-        let mut dk = DirectK::new(ctx, prep, bounds, 1e-12, budget_bytes);
-        <DirectK as KBuilder>::build(&mut dk, &d_a, &mut k_a)?;
-    }
-    if nocc_b > 0 {
-        let mut dk = DirectK::new(ctx, prep, bounds, 1e-12, budget_bytes);
-        <DirectK as KBuilder>::build(&mut dk, &d_b, &mut k_b)?;
-    }
+    let (j_tot, k_a, k_b) = jk.spin_jk(&d_a, &d_b, nocc_b > 0)?;
 
     let f_a = h + &j_tot - &k_a;
     let f_b = h + &j_tot - &k_b;
@@ -418,12 +505,11 @@ impl UPoint {
 /// Evaluate UHF + U-RI-MP2 (semicanonical frame) at `(c_a, c_b)`.
 #[allow(clippy::too_many_arguments)]
 fn u_evaluate_point(
-    ctx: &ParallelContext,
+    jk: &UOoJk<'_>,
     mol: &Molecule,
     obs: &PreparedBasis,
     dfbs: &PreparedBasis,
     op: Operator,
-    bounds: &SchwarzBounds,
     c_a: &Array2<f64>,
     c_b: &Array2<f64>,
     sp: &USpaces,
@@ -433,18 +519,8 @@ fn u_evaluate_point(
     mp2_cfg: &crate::rimp2::RiMp2Config,
     label: &str,
 ) -> Result<UPoint, FerricError> {
-    let (e_hf, f_a, f_b) = compute_uhf_energy(
-        ctx,
-        obs,
-        bounds,
-        c_a,
-        c_b,
-        sp.nocc_total_a,
-        sp.nocc_total_b,
-        h,
-        vnn,
-        budget_bytes,
-    )?;
+    let (e_hf, f_a, f_b) =
+        compute_uhf_energy(jk, c_a, c_b, sp.nocc_total_a, sp.nocc_total_b, h, vnn)?;
     let (u_a, eps_a_sc) =
         semicanonical_rotation(&c_a.t().dot(&f_a).dot(c_a), sp.first_occ, sp.nocc_total_a)?;
     let (u_b, eps_b_sc) =
@@ -542,9 +618,7 @@ fn embed_u_density(
 /// ‖κ‖ = 0, 0.05 and 0.2.
 #[allow(clippy::too_many_arguments)]
 fn u_gradient_solver_frame(
-    ctx: &ParallelContext,
-    obs: &PreparedBasis,
-    bounds: &SchwarzBounds,
+    jk: &UOoJk<'_>,
     ao: &OoRiMp2AoTensors,
     p: &UPoint,
     sp: &USpaces,
@@ -553,7 +627,6 @@ fn u_gradient_solver_frame(
     acc: &mut PhaseAccumulator,
 ) -> Result<(Array2<f64>, Array2<f64>), FerricError> {
     let nmo = p.c_a_sc.ncols();
-    let n = p.c_a_sc.nrows();
     let USpaces {
         nocc_total_a,
         nocc_total_b,
@@ -608,21 +681,7 @@ fn u_gradient_solver_frame(
     let w_b = embed_u_density(&dens.p_oo_b, &dens.p_vv_b, first_occ, nocc_total_b, nmo);
     let pa_ao = p.c_a_sc.dot(&w_a).dot(&p.c_a_sc.t());
     let pb_ao = p.c_b_sc.dot(&w_b).dot(&p.c_b_sc.t());
-    let mut j_tot = Array2::<f64>::zeros((n, n));
-    let mut k_a = Array2::<f64>::zeros((n, n));
-    let mut k_b = Array2::<f64>::zeros((n, n));
-    {
-        let mut dj = DirectJ::new(ctx, obs, bounds, 1e-12, budget_bytes);
-        dj.build(&(&pa_ao + &pb_ao), &mut j_tot)?;
-    }
-    {
-        let mut dk = DirectK::new(ctx, obs, bounds, 1e-12, budget_bytes);
-        <DirectK as KBuilder>::build(&mut dk, &pa_ao, &mut k_a)?;
-    }
-    if nocc_b > 0 {
-        let mut dk = DirectK::new(ctx, obs, bounds, 1e-12, budget_bytes);
-        <DirectK as KBuilder>::build(&mut dk, &pb_ao, &mut k_b)?;
-    }
+    let (j_tot, k_a, k_b) = jk.spin_jk(&pa_ao, &pb_ao, nocc_b > 0)?;
     let add_response = |g: &mut Array2<f64>,
                         c: &Array2<f64>,
                         k: &Array2<f64>,
@@ -667,7 +726,54 @@ fn u_gradient_solver_frame(
     Ok((g_a_act, g_b_act))
 }
 
+/// One spin's level-shifted diagonal Newton step
+/// `κ_ai = −g_ai / (ε_a − ε_i + μ)` (`g` over the active columns, `ε` the
+/// diagonal Fock of the solver's frame), uniformly rescaled so
+/// `max|κ_ai| ≤ max_kappa`.
+fn newton_step(
+    g_act: &Array2<f64>,
+    eps: &[f64],
+    nocc_total: usize,
+    first_occ: usize,
+    mu: f64,
+    max_kappa: f64,
+) -> Array2<f64> {
+    let (nvir, nocc) = g_act.dim();
+    let mut kappa = Array2::<f64>::zeros((nvir, nocc));
+    for a in 0..nvir {
+        for i in 0..nocc {
+            let gap = eps[nocc_total + a] - eps[first_occ + i];
+            kappa[(a, i)] = -g_act[(a, i)] / (gap + mu);
+        }
+    }
+    let k_max = kappa.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
+    if k_max > max_kappa {
+        kappa *= max_kappa / k_max;
+    }
+    kappa
+}
+
+/// The `(nmo, nmo)` antisymmetric matrix whose active virtual-occupied block
+/// (rows `nocc_total..`, columns `first_occ..`) is `v`.
+fn antisymmetric_ov(
+    v: &Array2<f64>,
+    nmo: usize,
+    nocc_total: usize,
+    first_occ: usize,
+) -> Array2<f64> {
+    let mut m = Array2::<f64>::zeros((nmo, nmo));
+    for ((a, i), &x) in v.indexed_iter() {
+        m[(nocc_total + a, first_occ + i)] = x;
+        m[(first_occ + i, nocc_total + a)] = -x;
+    }
+    m
+}
+
 /// Drive U-OO-RI-MP2 from a converged UHF or ROHF reference.
+///
+/// J/K follow the reference's route: RI-JK when `uhf` fitted J
+/// and K on one auxiliary basis, four-centre otherwise; the result records it
+/// in `jk_route`.
 ///
 /// The returned `mos_alpha`/`mos_beta` are in the per-spin SEMICANONICAL frame
 /// and `eps_alpha`/`eps_beta` are the MP2 denominators actually used.
@@ -757,15 +863,16 @@ pub fn u_oo_ri_mp2(
     // Both are guarded by `check_u_amplitude_alloc`/`check_u_bfull_alloc`
     // rather than left as an unchecked O(N⁴) allocation.
     let ao = OoRiMp2AoTensors::build_with_budget(obs, dfbs, op, budget_bytes)?;
+    let jk = UOoJk::for_reference(&ctx, mol, obs, bounds, uhf, budget_bytes)?;
+    let jk_route = jk.fitted_route().cloned();
 
     let eval = |ca: &Array2<f64>, cb: &Array2<f64>, label: &str| {
         u_evaluate_point(
-            &ctx,
+            &jk,
             mol,
             obs,
             dfbs,
             op,
-            bounds,
             ca,
             cb,
             &sp,
@@ -799,6 +906,7 @@ pub fn u_oo_ri_mp2(
             mos_beta: p.c_b_sc,
             eps_alpha: p.eps_a_sc,
             eps_beta: p.eps_b_sc,
+            jk_route: jk_route.clone(),
         }
     };
 
@@ -820,9 +928,7 @@ pub fn u_oo_ri_mp2(
 
     for iter in 1..=config.max_iter {
         let (g_a_act, g_b_act) = u_gradient_solver_frame(
-            &ctx,
-            obs,
-            bounds,
+            &jk,
             &ao,
             &point,
             &sp,
@@ -854,50 +960,27 @@ pub fn u_oo_ri_mp2(
         // `g` lives in) as the preconditioner.
         let eps_a = orbital_energies_mo(&c_a, &point.f_a);
         let eps_b = orbital_energies_mo(&c_b, &point.f_b);
-        let mut kappa_a = Array2::<f64>::zeros((nvir_a, nocc_a));
-        for a in 0..nvir_a {
-            for i in 0..nocc_a {
-                let gap = eps_a[nocc_total_a + a] - eps_a[first_occ + i];
-                kappa_a[(a, i)] = -g_a_act[(a, i)] / (gap + mu);
-            }
-        }
-        let mut kappa_b = Array2::<f64>::zeros((nvir_b, nocc_b));
-        for a in 0..nvir_b {
-            for i in 0..nocc_b {
-                let gap = eps_b[nocc_total_b + a] - eps_b[first_occ + i];
-                kappa_b[(a, i)] = -g_b_act[(a, i)] / (gap + mu);
-            }
-        }
-        // Cap rotations
-        let ka_max = kappa_a.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
-        if ka_max > config.max_kappa {
-            kappa_a *= config.max_kappa / ka_max;
-        }
-        let kb_max = kappa_b.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
-        if kb_max > config.max_kappa {
-            kappa_b *= config.max_kappa / kb_max;
-        }
+        let kappa_a = newton_step(
+            &g_a_act,
+            &eps_a,
+            nocc_total_a,
+            first_occ,
+            mu,
+            config.max_kappa,
+        );
+        let kappa_b = newton_step(
+            &g_b_act,
+            &eps_b,
+            nocc_total_b,
+            first_occ,
+            mu,
+            config.max_kappa,
+        );
 
-        // Build full (nmo × nmo) antisymmetric κ matrices
+        // Full (nmo × nmo) antisymmetric κ matrices
         let nmo = nbas;
-        let mut k_a_full = Array2::<f64>::zeros((nmo, nmo));
-        for a in 0..nvir_a {
-            for i in 0..nocc_a {
-                let a_mo = nocc_total_a + a;
-                let i_mo = first_occ + i;
-                k_a_full[(a_mo, i_mo)] = kappa_a[(a, i)];
-                k_a_full[(i_mo, a_mo)] = -kappa_a[(a, i)];
-            }
-        }
-        let mut k_b_full = Array2::<f64>::zeros((nmo, nmo));
-        for a in 0..nvir_b {
-            for i in 0..nocc_b {
-                let a_mo = nocc_total_b + a;
-                let i_mo = first_occ + i;
-                k_b_full[(a_mo, i_mo)] = kappa_b[(a, i)];
-                k_b_full[(i_mo, a_mo)] = -kappa_b[(a, i)];
-            }
-        }
+        let k_a_full = antisymmetric_ov(&kappa_a, nmo, nocc_total_a, first_occ);
+        let k_b_full = antisymmetric_ov(&kappa_b, nmo, nocc_total_b, first_occ);
         let u_a = cayley_rotation(&k_a_full)?;
         let u_b = cayley_rotation(&k_b_full)?;
         let mut c_a_new = c_a.dot(&u_a);
@@ -907,32 +990,14 @@ pub fn u_oo_ri_mp2(
         // C. The extrapolated C is a linear combination of orbital sets and is
         // Löwdin re-orthonormalised (see `oo_rimp2::lowdin_orthonormalize`).
         if let Some(ref mut d) = diis_a {
-            let mut g_anti = Array2::<f64>::zeros((nmo, nmo));
-            for a in 0..nvir_a {
-                for i in 0..nocc_a {
-                    let a_mo = nocc_total_a + a;
-                    let i_mo = first_occ + i;
-                    g_anti[(a_mo, i_mo)] = g_a_act[(a, i)];
-                    g_anti[(i_mo, a_mo)] = -g_a_act[(a, i)];
-                }
-            }
+            let g_anti = antisymmetric_ov(&g_a_act, nmo, nocc_total_a, first_occ);
             let err = c_a_new.dot(&g_anti).dot(&c_a_new.t());
             c_a_new = lowdin_orthonormalize(&d.step(&c_a_new, &err), &s_ao)?;
         }
-        if let Some(ref mut d) = diis_b {
-            if nocc_b > 0 {
-                let mut g_anti = Array2::<f64>::zeros((nmo, nmo));
-                for a in 0..nvir_b {
-                    for i in 0..nocc_b {
-                        let a_mo = nocc_total_b + a;
-                        let i_mo = first_occ + i;
-                        g_anti[(a_mo, i_mo)] = g_b_act[(a, i)];
-                        g_anti[(i_mo, a_mo)] = -g_b_act[(a, i)];
-                    }
-                }
-                let err = c_b_new.dot(&g_anti).dot(&c_b_new.t());
-                c_b_new = lowdin_orthonormalize(&d.step(&c_b_new, &err), &s_ao)?;
-            }
+        if let (Some(d), true) = (diis_b.as_mut(), nocc_b > 0) {
+            let g_anti = antisymmetric_ov(&g_b_act, nmo, nocc_total_b, first_occ);
+            let err = c_b_new.dot(&g_anti).dot(&c_b_new.t());
+            c_b_new = lowdin_orthonormalize(&d.step(&c_b_new, &err), &s_ao)?;
         }
 
         // Evaluate at new orbitals
@@ -1273,6 +1338,9 @@ mod tests {
     // gradient missed by 1.7e-3..5.6e-3 already at the UHF point.
     // ------------------------------------------------------------------
 
+    /// Per-spin orbital gradients `(g_α, g_β)`.
+    type UGrad = (Array2<f64>, Array2<f64>);
+
     const U_FD_STEP: f64 = 1e-3;
     const U_ORB_GRAD_BAR: f64 = 1e-7;
 
@@ -1292,6 +1360,12 @@ mod tests {
 
     impl UOrbFd {
         fn new(xyz: &str, basis_name: &str, mult: usize) -> Self {
+            Self::with_reference(xyz, basis_name, mult, None)
+        }
+
+        /// `jk_aux`: fit the reference UHF's J and K on that basis (RI-JK),
+        /// which puts the functional on the fitted route.
+        fn with_reference(xyz: &str, basis_name: &str, mult: usize, jk_aux: Option<&str>) -> Self {
             let ctx = ParallelContext::default();
             let mol = Molecule::parse_xyz(xyz, 0, mult).unwrap();
             let obs = PreparedBasis::new(&mol, &basis::bundled(basis_name).unwrap()).unwrap();
@@ -1307,11 +1381,15 @@ mod tests {
                     max_iter: 200,
                     energy_conv: 1e-11,
                     density_conv: 1e-9,
+                    df_j_aux: jk_aux.map(str::to_string),
+                    df_k_aux: jk_aux.map(str::to_string),
                     ..Default::default()
-                },
+                }
+                .for_geometry_task(),
             )
             .unwrap();
             assert!(uhf.converged);
+            assert_eq!(rijk_route(&uhf).is_some(), jk_aux.is_some());
             let ao = OoRiMp2AoTensors::build_with_budget(&obs, &dfbs, op, usize::MAX).unwrap();
             let nbas = obs.nbasis();
             let two_s = mol.multiplicity as i32 - 1;
@@ -1342,14 +1420,26 @@ mod tests {
             }
         }
 
-        fn point(&self, ca: &Array2<f64>, cb: &Array2<f64>) -> UPoint {
-            u_evaluate_point(
+        /// The J/K route `u_oo_ri_mp2` takes for this reference.
+        fn jk(&self) -> UOoJk<'_> {
+            UOoJk::for_reference(
                 &self.ctx,
+                &self.mol,
+                &self.obs,
+                &self.bounds,
+                &self.uhf,
+                usize::MAX,
+            )
+            .unwrap()
+        }
+
+        fn point(&self, jk: &UOoJk<'_>, ca: &Array2<f64>, cb: &Array2<f64>) -> UPoint {
+            u_evaluate_point(
+                jk,
                 &self.mol,
                 &self.obs,
                 &self.dfbs,
                 self.op,
-                &self.bounds,
                 ca,
                 cb,
                 &self.sp,
@@ -1362,13 +1452,11 @@ mod tests {
             .unwrap()
         }
 
-        fn analytic(&self, ca: &Array2<f64>, cb: &Array2<f64>) -> (Array2<f64>, Array2<f64>) {
+        fn analytic(&self, jk: &UOoJk<'_>, ca: &Array2<f64>, cb: &Array2<f64>) -> UGrad {
             u_gradient_solver_frame(
-                &self.ctx,
-                &self.obs,
-                &self.bounds,
+                jk,
                 &self.ao,
-                &self.point(ca, cb),
+                &self.point(jk, ca, cb),
                 &self.sp,
                 usize::MAX,
                 "test",
@@ -1377,7 +1465,7 @@ mod tests {
             .unwrap()
         }
 
-        fn fd(&self, ca: &Array2<f64>, cb: &Array2<f64>) -> (Array2<f64>, Array2<f64>) {
+        fn fd(&self, jk: &UOoJk<'_>, ca: &Array2<f64>, cb: &Array2<f64>) -> UGrad {
             let n = ca.ncols();
             let one_spin = |alpha: bool, nocc: usize| {
                 let mut g = Array2::zeros((n - nocc, nocc));
@@ -1389,9 +1477,9 @@ mod tests {
                             k[(i, a)] = -s * U_FD_STEP;
                             let u = cayley_rotation(&k).unwrap();
                             if alpha {
-                                self.point(&ca.dot(&u), cb).total()
+                                self.point(jk, &ca.dot(&u), cb).total()
                             } else {
-                                self.point(ca, &cb.dot(&u)).total()
+                                self.point(jk, ca, &cb.dot(&u)).total()
                             }
                         };
                         g[(a - nocc, i)] = (-e_at(2.0) + 8.0 * e_at(1.0) - 8.0 * e_at(-1.0)
@@ -1443,7 +1531,20 @@ mod tests {
     /// missed FD by 5.6e-3 at κ=0, 5.8e-3 at ‖κ‖=0.05 and 7.9e-3 at 0.2.
     #[test]
     fn u_oo_gradient_matches_fd_on_and_off_reference_oh_631g() {
-        let t = UOrbFd::new(OH_XYZ, "6-31g", 2);
+        u_oo_gradient_matches_fd(&UOrbFd::new(OH_XYZ, "6-31g", 2), "four-centre");
+    }
+
+    /// The same check on the RI-JK route: the analytic gradient is that of
+    /// the fitted functional (FD of the fitted energy), both spins.
+    #[test]
+    fn u_oo_gradient_matches_fd_on_the_rijk_route_oh_631g() {
+        let t = UOrbFd::with_reference(OH_XYZ, "6-31g", 2, Some("def2-universal-jkfit"));
+        assert!(t.jk().fitted_route().is_some());
+        u_oo_gradient_matches_fd(&t, "RI-JK");
+    }
+
+    fn u_oo_gradient_matches_fd(t: &UOrbFd, route: &str) {
+        let jk = t.jk();
         let ca0 = t.uhf.mos_a().clone();
         let cb0 = t.uhf.mos_b().clone();
         let n = ca0.ncols();
@@ -1456,10 +1557,10 @@ mod tests {
                     cb0.dot(&cayley_rotation(&u_pseudo_random_kappa(n, norm, 5)).unwrap()),
                 )
             };
-            let an = t.analytic(&ca, &cb);
-            let fd = t.fd(&ca, &cb);
+            let an = t.analytic(&jk, &ca, &cb);
+            let fd = t.fd(&jk, &ca, &cb);
             let err = u_max_err(&an, &fd);
-            eprintln!("OH/6-31G U-OO ‖κ‖={norm}: max|analytic − FD| = {err:.3e}");
+            eprintln!("OH/6-31G U-OO ({route}) ‖κ‖={norm}: max|analytic − FD| = {err:.3e}");
             assert!(
                 err < U_ORB_GRAD_BAR,
                 "‖κ‖={norm}: {err:.3e} ≥ {U_ORB_GRAD_BAR:e}"
@@ -1497,13 +1598,14 @@ mod tests {
                 .fold(0.0, f64::max)
         };
         let (oa, ob) = (ortho(&oo.mos_alpha), ortho(&oo.mos_beta));
-        let fd = t.fd(&oo.mos_alpha, &oo.mos_beta);
+        let jk = t.jk();
+        let fd = t.fd(&jk, &oo.mos_alpha, &oo.mos_beta);
         let fd_max =
             fd.0.iter()
                 .chain(fd.1.iter())
                 .map(|v| v.abs())
                 .fold(0.0, f64::max);
-        let p = t.point(&oo.mos_alpha, &oo.mos_beta);
+        let p = t.point(&jk, &oo.mos_alpha, &oo.mos_beta);
         eprintln!(
             "OH/6-31G U-OO: iters={} E={:.12} |CᵀSC−1| α {oa:.2e} β {ob:.2e} max|g_FD|={fd_max:.2e}",
             oo.iterations, oo.total_energy
@@ -1516,6 +1618,297 @@ mod tests {
         assert!(
             fd_max < 1e-6,
             "U-OO FD gradient at convergence {fd_max:.3e} ≥ 1e-6"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // RI-JK route anchors. Shared bar ingredient: near a minimum of a
+    // functional with orbital Hessian eigenvalues >= λ_min, a point with
+    // orbital gradient G sits at most ‖G‖²/(2λ_min) above it. λ_min comes
+    // from a central difference (h = 1e-4) of the analytic gradient at the
+    // converged point (`u_hessian_lambda_min`).
+    // ------------------------------------------------------------------
+
+    const JK_AUX: &str = "def2-universal-jkfit";
+    const WATER_XYZ: &str =
+        "3\nwater\nO 0.0 0.0 0.1173\nH 0.0 0.7572 -0.4692\nH 0.0 -0.7572 -0.4692\n";
+
+    fn fro(m: &Array2<f64>) -> f64 {
+        m.iter().map(|v| v * v).sum::<f64>().sqrt()
+    }
+
+    /// Tight U-OO settings for the anchors.
+    fn tight_u() -> UOoRiMp2Config {
+        UOoRiMp2Config {
+            grad_conv: 1e-7,
+            energy_conv: 1e-12,
+            max_iter: 200,
+            ..Default::default()
+        }
+    }
+
+    /// Lowest eigenvalue of the orbital Hessian at `(ca, cb)`, by a central
+    /// difference of the analytic gradient. `symmetric`: the α = β subspace
+    /// (one κ applied to both spins, gradient `g_α + g_β`), the subspace a
+    /// closed-shell run stays in; otherwise both spins independently.
+    fn u_hessian_lambda_min(
+        t: &UOrbFd,
+        jk: &UOoJk<'_>,
+        ca: &Array2<f64>,
+        cb: &Array2<f64>,
+        symmetric: bool,
+    ) -> f64 {
+        use ndarray_linalg::{EigValsh, UPLO};
+        const H: f64 = 1e-4;
+        let n = ca.ncols();
+        let (na, nb) = (t.sp.nocc_total_a, t.sp.nocc_total_b);
+        let pairs = |nocc: usize| -> Vec<(usize, usize)> {
+            (nocc..n)
+                .flat_map(|a| (0..nocc).map(move |i| (a, i)))
+                .collect()
+        };
+        let (pa, pb) = (pairs(na), pairs(nb));
+        // Parameter j: (spin-α pair, spin-β pair) rotated together or alone.
+        let params: Vec<(Option<(usize, usize)>, Option<(usize, usize)>)> = if symmetric {
+            assert_eq!(na, nb);
+            pa.iter().map(|&p| (Some(p), Some(p))).collect()
+        } else {
+            pa.iter()
+                .map(|&p| (Some(p), None))
+                .chain(pb.iter().map(|&p| (None, Some(p))))
+                .collect()
+        };
+        let flat = |g: (Array2<f64>, Array2<f64>)| -> Vec<f64> {
+            if symmetric {
+                (&g.0 + &g.1).iter().copied().collect()
+            } else {
+                g.0.iter().chain(g.1.iter()).copied().collect()
+            }
+        };
+        let rot = |p: Option<(usize, usize)>, s: f64| {
+            let mut k = Array2::<f64>::zeros((n, n));
+            if let Some((a, i)) = p {
+                k[(a, i)] = s;
+                k[(i, a)] = -s;
+            }
+            cayley_rotation(&k).unwrap()
+        };
+        let m = params.len();
+        let mut hess = Array2::<f64>::zeros((m, m));
+        for (j, &(qa, qb)) in params.iter().enumerate() {
+            let g = |s: f64| flat(t.analytic(jk, &ca.dot(&rot(qa, s)), &cb.dot(&rot(qb, s))));
+            let (gp, gm) = (g(H), g(-H));
+            for r in 0..m {
+                hess[(r, j)] = (gp[r] - gm[r]) / (2.0 * H);
+            }
+        }
+        let sym = 0.5 * (&hess + &hess.t());
+        let ev = sym.eigvalsh(UPLO::Upper).unwrap();
+        ev.iter().copied().fold(f64::INFINITY, f64::min)
+    }
+
+    /// Closed-shell water / cc-pVDZ on an RI-JK reference: the unrestricted
+    /// solver (UHF reference, α = β) and the restricted one reach the same
+    /// fitted OO-RI-MP2 energy.
+    ///
+    /// BAR: both runs stay in the α = β subspace, so each endpoint is within
+    /// ‖G‖²/(2λ_min) of the common minimum, G = g_α + g_β of the unrestricted
+    /// functional evaluated (here, independently of either solver's own
+    /// convergence test) at that endpoint, λ_min the α = β Hessian's lowest
+    /// eigenvalue. Plus a roundoff floor n_bas²·ε·|E|: the two drivers build
+    /// the same fitted J/K from 2D (restricted) and D, D (unrestricted).
+    ///
+    /// A β K built from the α density is invisible here (D^α = D^β); the
+    /// open-shell anchor below is the one that sees it.
+    #[test]
+    fn u_oo_rijk_matches_restricted_rijk_on_closed_shell_water() {
+        let t = UOrbFd::with_reference(WATER_XYZ, "cc-pvdz", 1, Some(JK_AUX));
+        let jk = t.jk();
+        assert!(jk.fitted_route().is_some());
+        let rhf = solve_rhf(
+            &t.ctx,
+            &t.mol,
+            &t.obs,
+            t.op,
+            &t.bounds,
+            &RhfConfig {
+                energy_conv: 1e-11,
+                density_conv: 1e-9,
+                df_j_aux: Some(JK_AUX.into()),
+                df_k_aux: Some(JK_AUX.into()),
+                ..Default::default()
+            }
+            .for_geometry_task(),
+        )
+        .unwrap();
+        assert!(crate::oo_rimp2::rijk_route(&rhf).is_some());
+        let r_cfg = crate::oo_rimp2::OoRiMp2Config {
+            grad_conv: 1e-7,
+            energy_conv: 1e-12,
+            max_iter: 200,
+            ..Default::default()
+        };
+        let r = crate::oo_rimp2::oo_ri_mp2(
+            &t.mol, &t.obs, &t.dfbs, t.op, &t.bounds, &rhf, &r_cfg, None,
+        )
+        .unwrap();
+        let u = u_oo_ri_mp2(
+            &t.mol,
+            &t.obs,
+            &t.dfbs,
+            t.op,
+            &t.bounds,
+            &t.uhf,
+            &tight_u(),
+            None,
+        )
+        .unwrap();
+        assert!(r.converged && u.converged);
+        assert!(r.jk_route.is_some() && u.jk_route.is_some());
+        let g_sum = |ca: &Array2<f64>, cb: &Array2<f64>| {
+            let g = t.analytic(&jk, ca, cb);
+            fro(&(&g.0 + &g.1))
+        };
+        let g_r = g_sum(&r.mos, &r.mos);
+        let g_u = g_sum(&u.mos_alpha, &u.mos_beta);
+        let lam = u_hessian_lambda_min(&t, &jk, &u.mos_alpha, &u.mos_beta, true);
+        assert!(lam > 0.0, "α = β Hessian not positive: {lam}");
+        let n = t.obs.nbasis() as f64;
+        let bar =
+            (g_r * g_r + g_u * g_u) / (2.0 * lam) + n * n * f64::EPSILON * r.total_energy.abs();
+        let de = (u.total_energy - r.total_energy).abs();
+        eprintln!(
+            "water/cc-pVDZ RI-JK: R {:.12} ({} it) U {:.12} ({} it) |ΔE| {de:.3e}; \
+             ‖G_R‖ {g_r:.2e} ‖G_U‖ {g_u:.2e} λ_min {lam:.4} bar {bar:.3e}",
+            r.total_energy, r.iterations, u.total_energy, u.iterations
+        );
+        assert!(
+            de <= bar,
+            "U vs R on the RI-JK route: {de:.3e} > bar {bar:.3e}"
+        );
+    }
+
+    /// Open-shell NH2 / cc-pVDZ on both routes: the fitted-route U-OO-RI-MP2
+    /// minimum is the four-centre one moved by the RI-JK error of the
+    /// functional evaluated there, and that shift is about the RI-JK error of
+    /// the reference UHF alone.
+    ///
+    /// BAR (first assert). Write the fitted functional as E_fit = E_ex + δ.
+    /// Expanding about the four-centre minimum C* (Hessian H, eigenvalues
+    /// >= λ_min): min E_fit = E_ex(C*) + δ(C*) − ½∇δᵀH⁻¹∇δ + O(‖∇δ‖³), so
+    /// |Δ_OO − δ(C*)| ≤ ‖∇δ(C*)‖²/(2λ_min), plus each run's own
+    /// ‖g‖²/(2λ_min). ∇δ(C*) is the fitted gradient at C* (the four-centre
+    /// gradient there is the converged residual, added to the norm). The
+    /// bar takes twice that sum, for the O(‖∇δ‖³) tail and λ_min measured
+    /// on one functional only.
+    ///
+    /// SECOND ASSERT ("about the SCF's RI-JK error"): the same expansion about
+    /// the UHF minimum gives Δ_SCF = δ_HF(C_UHF) to the same order, so
+    /// Δ_OO − Δ_SCF is the change of the fit error between the two orbital
+    /// sets plus the fit error of the MP2 part. Its bound is
+    /// |δ(C*) − δ(C_UHF)| (measured) + the two second-order terms; the
+    /// assert also requires the fitted route to move the OO energy by more
+    /// than 10× its own convergence bar, so a route that optimized the
+    /// four-centre functional (Δ_OO ≈ 0) fails it.
+    #[test]
+    fn u_oo_rijk_shift_is_the_reference_rijk_error_nh2_ccpvdz() {
+        // testdata/molecules/nh2.xyz, the CLI anchor's molecule. Bent, so
+        // its orbital Hessian has no symmetry zero mode (linear OH has one:
+        // the axial rotation, a β π → π* rotation of zero curvature).
+        const NH2_XYZ: &str = "3\nNH2\nN 0.0 0.0 0.0\nH 0.0 0.803611 -0.634654\n\
+                               H 0.0 -0.803611 -0.634654\n";
+        let ex = UOrbFd::new(NH2_XYZ, "cc-pvdz", 2);
+        let fit = UOrbFd::with_reference(NH2_XYZ, "cc-pvdz", 2, Some(JK_AUX));
+        let (jk_ex, jk_fit) = (ex.jk(), fit.jk());
+        assert!(jk_ex.fitted_route().is_none() && jk_fit.fitted_route().is_some());
+        // κ = 0: on each route the functional's HF part at the reference
+        // orbitals is that reference SCF's own energy, built by the SCF
+        // driver (an independent J/K assembly). BAR: the SCF reports the
+        // energy of a Fock built from the previous density, off by at most
+        // ‖ΔD‖·‖G‖; density_conv 1e-9 (rms) over n_bas² elements and
+        // ‖G‖ = O(10) Ha give ~1e-8·n_bas ≈ 2.4e-7, rounded to 1e-6.
+        for (t, jk, route) in [(&ex, &jk_ex, "four-centre"), (&fit, &jk_fit, "RI-JK")] {
+            let e0 = t.point(jk, t.uhf.mos_a(), t.uhf.mos_b()).e_hf;
+            let d0 = (e0 - t.uhf.energy).abs();
+            eprintln!("NH2/cc-pVDZ {route}: |E_HF(κ = 0) − E_UHF| {d0:.3e}");
+            assert!(
+                d0 <= 1e-6,
+                "{route}: E_HF(κ = 0) {e0:.12} vs UHF {:.12}",
+                t.uhf.energy
+            );
+        }
+        let o_ex = u_oo_ri_mp2(
+            &ex.mol,
+            &ex.obs,
+            &ex.dfbs,
+            ex.op,
+            &ex.bounds,
+            &ex.uhf,
+            &tight_u(),
+            None,
+        )
+        .unwrap();
+        let o_fit = u_oo_ri_mp2(
+            &fit.mol,
+            &fit.obs,
+            &fit.dfbs,
+            fit.op,
+            &fit.bounds,
+            &fit.uhf,
+            &tight_u(),
+            None,
+        )
+        .unwrap();
+        assert!(o_ex.jk_route.is_none() && o_fit.jk_route.is_some());
+        let (ca, cb) = (&o_ex.mos_alpha, &o_ex.mos_beta);
+        let (ca0, cb0) = (ex.uhf.mos_a(), ex.uhf.mos_b());
+        // δ = E_fit − E_ex as a functional of the orbitals, at C* and C_UHF.
+        let delta = |a: &Array2<f64>, b: &Array2<f64>| {
+            ex.point(&jk_fit, a, b).total() - ex.point(&jk_ex, a, b).total()
+        };
+        let (d_star, d_uhf) = (delta(ca, cb), delta(ca0, cb0));
+        let d_hf_uhf = ex.point(&jk_fit, ca0, cb0).e_hf - ex.point(&jk_ex, ca0, cb0).e_hf;
+        let gnorm = |g: (Array2<f64>, Array2<f64>)| (fro(&g.0).powi(2) + fro(&g.1).powi(2)).sqrt();
+        let g_fit_star = gnorm(ex.analytic(&jk_fit, ca, cb));
+        let g_ex_star = gnorm(ex.analytic(&jk_ex, ca, cb));
+        let g_fit_end = gnorm(fit.analytic(&jk_fit, &o_fit.mos_alpha, &o_fit.mos_beta));
+        let lam = u_hessian_lambda_min(&ex, &jk_ex, ca, cb, false);
+        assert!(lam > 0.0, "four-centre U-OO Hessian not positive: {lam}");
+        let grad_delta = g_fit_star + g_ex_star;
+        let conv = (g_ex_star.powi(2) + g_fit_end.powi(2)) / (2.0 * lam);
+        let bar_oo = 2.0 * (grad_delta.powi(2) / (2.0 * lam) + conv);
+        let d_oo = o_fit.total_energy - o_ex.total_energy;
+        let d_scf = fit.uhf.energy - ex.uhf.energy;
+        eprintln!(
+            "NH2/cc-pVDZ U-OO: exact {:.12} ({} it), RI-JK {:.12} ({} it)\n  \
+             Δ_OO {d_oo:.6e}  Δ_SCF {d_scf:.6e}  δ(C*) {d_star:.6e}  δ(C_UHF) {d_uhf:.6e}  \
+             δ_HF(C_UHF) {d_hf_uhf:.6e}\n  ‖∇δ(C*)‖ ≤ {grad_delta:.2e}  λ_min {lam:.4}  \
+             conv {conv:.2e}  |Δ_OO − δ(C*)| {:.3e} (bar {bar_oo:.3e})",
+            o_ex.total_energy,
+            o_ex.iterations,
+            o_fit.total_energy,
+            o_fit.iterations,
+            (d_oo - d_star).abs()
+        );
+        assert!(o_ex.converged && o_fit.converged);
+        assert!(
+            (d_oo - d_star).abs() <= bar_oo,
+            "fitted U-OO minimum is not the four-centre one moved by δ(C*): \
+             {:.3e} > {bar_oo:.3e}",
+            (d_oo - d_star).abs()
+        );
+        let bar_scf = (d_star - d_uhf).abs() + (d_uhf - d_hf_uhf).abs() + 2.0 * bar_oo;
+        eprintln!(
+            "  |Δ_OO − Δ_SCF| {:.3e} (bar {bar_scf:.3e})",
+            (d_oo - d_scf).abs()
+        );
+        assert!(
+            (d_oo - d_scf).abs() <= bar_scf,
+            "Δ_OO {d_oo:.6e} is not about Δ_SCF {d_scf:.6e} (bar {bar_scf:.3e})"
+        );
+        assert!(
+            d_oo.abs() > 10.0 * bar_oo,
+            "the RI-JK route did not move the OO energy: Δ_OO {d_oo:.3e}"
         );
     }
 }

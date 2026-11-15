@@ -3356,25 +3356,6 @@ fn refuse_scf_jk_for_kind(
     Ok(())
 }
 
-/// An open-shell `oo-rimp2` runs the unrestricted OO-RI-MP2, which rebuilds
-/// four-centre J/K at every orbital step: a fitted reference would change
-/// only its starting orbitals, so it is refused.
-fn refuse_open_shell_fitted_oo(
-    kind: &str,
-    mult: usize,
-    jk: Option<ferric_scf::scf_jk::ScfJk>,
-) -> Result<(), String> {
-    if kind != "oo-rimp2" || mult <= 1 || !jk.is_some_and(|j| j.is_fitted()) {
-        return Ok(());
-    }
-    Err(
-        "[scf] jk = \"rijk\" is refused for an open-shell method.kind = \"oo-rimp2\": the \
-         unrestricted OO-RI-MP2 rebuilds four-centre J/K at every orbital step, so an RI-JK \
-         reference would change only its starting orbitals. Use [scf] jk = \"exact\""
-            .to_string(),
-    )
-}
-
 /// What an MP2-family reference SCF takes when `[scf] jk` is omitted, and
 /// why: the run log prints `why` next to the route.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -4073,8 +4054,7 @@ impl Config {
     /// What the reference SCF takes when `[scf] jk` is omitted
     /// ([`ScfCfg::scf_jk_choice`]): RI-JK for `rs-mp2-rpa` (on the shared
     /// default JK-fit set); four-centre for an open shell (no fitted
-    /// reference has been measured there, and the unrestricted OO-RI-MP2
-    /// refuses one), for a task other than "energy" (the fitted MP2
+    /// default has been measured there), for a task other than "energy" (the fitted MP2
     /// gradient's peak memory is about twice the four-centre route's and
     /// exceeded a 10 GB budget at octane / cc-pVTZ) and for an input that
     /// sets a key only the four-centre route reads; otherwise RI-JK on the JK-fit set matched to the orbital
@@ -4792,7 +4772,7 @@ impl Config {
         let kind = self.method.kind.as_str();
         let task = self.method.task.as_str();
         let mult = self.molecule.multiplicity;
-        refuse_open_shell_fitted_oo(kind, mult, self.scf_jk_choice(task)?)?;
+        self.scf_jk_choice(task)?;
 
         if self.cosmo.is_some() && task != "energy" {
             return Err(format!(
@@ -5758,16 +5738,14 @@ mod compat_guard_tests {
         .validate_cli_wired_keys()
         .unwrap_err();
         assert!(e.contains("cannot be combined"), "{e}");
-        // Open-shell OO-RI-MP2 (the unrestricted solver) has no RI-JK route.
+        // Both OO-RI-MP2 solvers (closed shell, and the unrestricted one on an
+        // open shell) follow an RI-JK reference.
         let mut open = cfg("oo-rimp2", "energy", "[scf]\njk = \"rijk\"\n");
-        open.molecule.multiplicity = 2;
-        let r = open.validate_cli_wired_keys();
-        assert!(
-            matches!(&r, Err(e) if e.contains("unrestricted OO-RI-MP2")),
-            "{r:?}"
-        );
-        open.molecule.multiplicity = 1;
-        assert!(open.validate_cli_wired_keys().is_ok());
+        for mult in [1, 2] {
+            open.molecule.multiplicity = mult;
+            let r = open.validate_cli_wired_keys();
+            assert!(r.is_ok(), "multiplicity {mult}: {r:?}");
+        }
         let e = cfg(
             "rimp2",
             "energy",

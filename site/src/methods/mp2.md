@@ -95,8 +95,8 @@ override is an error (so is any `k_builder` on `rs-mp2-rpa`'s RI-JK default, in 
 `"exact"` and `"rijk"`: orbital optimisation rebuilds J/K at every orbital step
 on the reference's own route, so under `"rijk"` its HF energy, orbital steps
 and analytic gradient all use the RI-JK fit; `"rijcosx"` is refused (COSX
-exchange has no OO route), and so is `"rijk"` on an open-shell molecule (the
-unrestricted OO-RI-MP2 rebuilds four-centre J/K). In the CLI a fitted
+exchange has no OO route). The unrestricted OO-RI-MP2 of an open-shell
+molecule follows an RI-JK reference the same way, per spin. In the CLI a fitted
 reference cannot be combined with `[scf] df_increments` (an exact-J/K scheme)
 or an explicit `df_guess = true`, and it skips the default DF-guess
 pre-stage. At aug-cc-pVTZ

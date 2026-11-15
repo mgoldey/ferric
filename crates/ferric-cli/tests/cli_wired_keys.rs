@@ -641,6 +641,85 @@ fn oo_keys_match_the_library_closed_shell() {
     assert_close("oo-rimp2 Total", value(&out, "Total"), o.total_energy, 1e-8);
 }
 
+/// Open shell on an RI-JK reference: `jk = "rijk"` runs the unrestricted
+/// OO-RI-MP2 on the reference's fit, the library `u_oo_ri_mp2` on a UHF that
+/// fitted J and K on the same basis (RI-J in f64 on both sides). Negative
+/// control: the four-centre run's total differs by the fit error (2.8e-5 Ha
+/// in the library anchor `u_oo_rijk_shift_is_the_reference_rijk_error_nh2_ccpvdz`);
+/// an OO that kept four-centre J/K on the fitted reference would land within
+/// about 2e-7 of it (second order in the fit error's orbital gradient), so the
+/// control asks for 1e-6.
+#[test]
+fn open_shell_oo_rimp2_on_rijk_matches_the_library() {
+    const AUX: &str = "def2-universal-jkfit";
+    let l = lib("nh2.xyz", 2, "cc-pvdz");
+    let uhf = ferric_scf::uhf::solve_uhf(
+        &l.ctx,
+        &l.mol,
+        &l.prep,
+        &l.bounds,
+        &RhfConfig {
+            df_j_aux: Some(AUX.into()),
+            df_k_aux: Some(AUX.into()),
+            ..tight()
+        }
+        .for_geometry_task(),
+    )
+    .unwrap();
+    assert!(uhf.converged);
+    let aux = basis::bundled("cc-pvdz-ri").unwrap();
+    let dfbs = PreparedBasis::new(&l.mol, &aux).unwrap();
+    let o = ferric_mp2::u_oo_rimp2::u_oo_ri_mp2(
+        &l.mol,
+        &l.prep,
+        &dfbs,
+        Operator::coulomb(),
+        &l.bounds,
+        &uhf,
+        &ferric_mp2::u_oo_rimp2::UOoRiMp2Config {
+            grad_conv: 1e-7,
+            ..Default::default()
+        },
+        None,
+    )
+    .unwrap();
+    assert!(o.converged && o.jk_route.is_some());
+    let run = |tag: &str, jk: &str| {
+        run_ok(
+            tag,
+            &body(
+                "nh2.xyz",
+                2,
+                "cc-pvdz",
+                "oo-rimp2",
+                &format!("{TIGHT}{jk}[mp2]\nauxbasis = \"cc-pvdz-ri\"\noo_grad_conv = 1e-7\n"),
+            ),
+        )
+    };
+    let fit = run(
+        "uoo_rijk",
+        &format!("jk = \"rijk\"\njk_aux = \"{AUX}\"\nri_j_precision = \"f64\"\n"),
+    );
+    assert!(
+        fit.contains(&format!("Reference SCF J/K: rijk({AUX})")) && fit.contains("U-OO-RI-MP2/"),
+        "{fit}"
+    );
+    assert_close(
+        "U-OO-RI-MP2 on RI-JK Total",
+        value(&fit, "Total"),
+        o.total_energy,
+        1e-8,
+    );
+    let exact = run("uoo_exact", "jk = \"exact\"\n");
+    let d = (value(&fit, "Total") - value(&exact, "Total")).abs();
+    eprintln!(
+        "NH2/cc-pVDZ U-OO-RI-MP2: CLI RI-JK {:.10}, library {:.10}, |RI-JK − exact| {d:.3e}",
+        value(&fit, "Total"),
+        o.total_energy
+    );
+    assert!(d > 1e-6, "rijk did not move the U-OO total: |d| = {d:.2e}");
+}
+
 /// Both the closed-shell and the open-shell (UHF-reference, `u_oo_ri_mp2`)
 /// paths must read `oo_max_iter`: capped at 2, each prints `iterations = 2`
 /// and does not converge, where the default converges.

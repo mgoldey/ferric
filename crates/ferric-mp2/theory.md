@@ -326,8 +326,11 @@ formula above only uses that $G$ is linear and symmetric
 is unchanged on the fitted route; the optimised functional is then the fitted
 one, and at $\kappa = 0$ its HF part is the fitted SCF energy. The nuclear
 gradient follows the same route through `ResponseJk` (fitted bilinear
-two-electron derivative, §9.1). Unrestricted OO-RI-MP2 has only the
-four-centre route.
+two-electron derivative, §9.1). Unrestricted OO-RI-MP2 (`UOoJk` in
+`u_oo_rimp2.rs`) takes the same route per spin: $F^\sigma = h + J[D^\alpha +
+D^\beta] - K[D^\sigma]$ and its Fock response, with $J$ and $K$ of each spin
+density (or spin response density) from the reference's fit and
+$J[D^\alpha + D^\beta] = J[D^\alpha] + J[D^\beta]$ by linearity.
 
 ## 8. Laplace-transform MP2
 
@@ -579,8 +582,8 @@ The matched set halves the total shift relative to def2-universal-jkfit,
 and its shift is below the RI-MP2 fit error where that was measured (0.28 of
 it at octane/cc-pVDZ, 0.71 at propane/cc-pVTZ, where def2-universal-jkfit
 exceeds it); the two have the same sign and add. An open shell keeps the
-four-centre reference (no unrestricted fitted reference was measured; the
-unrestricted OO-RI-MP2 refuses one), as does a geometry task (the fitted
+four-centre reference when `jk` is omitted (no fitted default was measured
+for an open shell), as does a geometry task (the fitted
 gradient's peak RSS is 2.1 times the four-centre route's at dodecane/cc-pVDZ,
 8.3 against 4.0 GB, and 11.4 GB against a 10 GB budget at octane/cc-pVTZ) and
 an input that sets a key only the four-centre route reads.
