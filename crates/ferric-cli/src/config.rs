@@ -2586,8 +2586,9 @@ pub struct GwCfg {
     pub max_ev_iter: Option<usize>,
     /// evGW/evGW0 convergence threshold on |Δε^QP|_max (Ha).
     pub ev_conv_thresh: Option<f64>,
-    /// Number of Padé continued-fraction coefficients. 0/unset → use
-    /// `[rpa] n_quad`.
+    /// Number of Padé continued-fraction nodes, picked from a fixed
+    /// 100-point imaginary-axis grid that does not depend on `[rpa] n_quad`.
+    /// 0/unset → 18 nodes (the PySCF `gw_ac` default).
     pub pade_npts: Option<usize>,
     /// Newton-step damping for the QP solver.
     pub qp_newton_damp: Option<f64>,

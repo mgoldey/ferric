@@ -371,7 +371,7 @@ supplies the screened interaction.
 | `qp_mos` | `[lo, hi]` | HOMO−2 … LUMO+2 | absolute MO indices, half-open | |
 | `max_ev_iter` | integer | `20` | | evGW/evGW0 outer loop. |
 | `ev_conv_thresh` | float | `1e-4` | Hartree | |
-| `pade_npts` | integer | `0` (= `[rpa] n_quad`) | | |
+| `pade_npts` | integer | `0` (= 18 nodes) | | |
 | `qp_newton_damp` | float | `1.0` | | |
 | `frozen_core` | int, string or bool | falls back to `[rpa] frozen_core` | as `[mp2]` | Also overrides the PDEP frozen core, so W and Σ agree. |
 | `scissor` | float | `0.0` | Hartree | `tdhf-static-polarizability` only. At `0.0` some molecules hit a negative α diagonal and the run errors. The remedy is about 0.3–0.4 Ha. |
