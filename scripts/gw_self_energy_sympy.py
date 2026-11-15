@@ -96,7 +96,7 @@ w, z = sp.symbols("omega z")
 e, b, Om, s, a = sp.symbols("e b Omega s a", positive=True)
 
 # ---------------------------------------------------------------------------
-section("1  one-pair RPA dielectric is a single-pole W")
+section("1  one-pair RPA dielectric is a single-pole W (claim 1)")
 # ferric_rpa::sternheimer::build_scale_factors: Pi = prefactor * B^2 e/(w^2+e^2),
 # prefactor 4 closed shell; energy.rs eval_inv_dielectric_matrices: W~_d = eps~^-1 - I.
 Pi = 4 * b**2 * e / (w**2 + e**2)
@@ -129,7 +129,7 @@ check(
 )
 
 # ---------------------------------------------------------------------------
-section("2  frequency integral of sigma_c_at_z vs closed-form residues")
+section("2  frequency integral of sigma_c_at_z vs closed-form residues (claim 2)")
 # sigma_c_at_z: Sigma = -(1/pi) sum_n integral_0^inf dw' W_mn(iw') (z-eps_n)/((z-eps_n)^2 + w'^2)
 W_pole = -2 * Om * s / (w**2 + Om**2)
 
@@ -178,7 +178,9 @@ for Omv, sv, epsn, zc in [
     )
 
 # ---------------------------------------------------------------------------
-section("2b product integration (sigma_c_at_z_product, the drivers' default)")
+section(
+    "2b product integration (sigma_c_at_z_product, the drivers' default) (claim 2b)"
+)
 # Change of variables w' = u0 (1+x)/(1-x): the kernel a/(a^2+w'^2) dw' is
 # (i/2)[1/(x-x1) - 1/(x-x2)] dx with x1 = (a - i u0)/(a + i u0), x2 = 1/x1.
 xs, u0s, a_s = sp.symbols("x u0 a_s")
@@ -230,7 +232,7 @@ check(
 )
 
 # ---------------------------------------------------------------------------
-section("3  static W limit = COHSEX (dSigma_SEX + Sigma_COH)")
+section("3  static W limit = COHSEX (dSigma_SEX + Sigma_COH) (claim 3)")
 W0 = sp.symbols("W0", negative=True)
 check(
     is_zero(sigma_integral(W0, a) - (-W0 / 2)),
@@ -266,7 +268,7 @@ check(
 )
 
 # ---------------------------------------------------------------------------
-section("4  QP equation: Newton, linearized start, Z")
+section("4  QP equation: Newton, linearized start, Z (claim 4)")
 eps, Dl = sp.symbols("epsilon Delta", real=True)
 Sig = sp.Function("Sigma")
 f = lambda x: x - eps - Dl - Sig(x)  # solve_qp_for_mo residual (sigma.rs)
@@ -313,7 +315,7 @@ check(
 )
 
 # ---------------------------------------------------------------------------
-section("5  PadeCF::deriv_real stencil")
+section("5  PadeCF::deriv_real stencil (claim 5)")
 h, x0 = sp.symbols("h x0")
 for deg in range(6):
     poly = x**deg
@@ -333,7 +335,7 @@ for deg in range(6):
         )
 
 # ---------------------------------------------------------------------------
-section("6  Thiele continued fraction (pade.rs fit/eval, exact arithmetic)")
+section("6  Thiele continued fraction (pade.rs fit/eval, exact arithmetic) (claim 6)")
 
 
 def thiele_fit(zs, fs):
@@ -407,7 +409,7 @@ check(
 )
 
 # ---------------------------------------------------------------------------
-section("7  RPAx polarizability")
+section("7  RPAx polarizability (claim 7)")
 # bse.rs solves t = sysm^-1 (A-B) mu with sysm = (A-B)(A+B) + w^2, alpha = 4 mu^T t.
 A11, A12, A22, B11, B12, B22, wq = sp.symbols("A11 A12 A22 B11 B12 B22 w")
 Am = sp.Matrix([[A11, A12], [A12, A22]])
@@ -457,7 +459,7 @@ check(
 )
 
 # ---------------------------------------------------------------------------
-section("8  complete orthonormal PDEP basis")
+section("8  complete orthonormal PDEP basis (claim 8)")
 # Exact rational orthogonal V via the Cayley transform of a skew matrix.
 S = sp.Matrix([[0, 1, -2], [-1, 0, sp.Rational(1, 3)], [2, -sp.Rational(1, 3), 0]])
 V = (sp.eye(3) - S) * (sp.eye(3) + S).inv()

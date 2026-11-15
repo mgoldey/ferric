@@ -11,6 +11,13 @@ convention the code uses and points at the function that implements it
 Identities marked **[sympy n]** are proven or checked to ≥30 digits by claim
 *n* of [`scripts/gw_self_energy_sympy.py`](../../scripts/gw_self_energy_sympy.py),
 which exits nonzero on any mismatch and carries a negative control per claim.
+Identities marked **[bse X]** are claim *X* of
+[`scripts/gw_bse_rpax_sympy.py`](../../scripts/gw_bse_rpax_sympy.py) (BSE-TDA
+and RPAx, against spin-orbital, Fock-space and finite-field routes) and
+**[ugw X]** claim *X* of
+[`scripts/gw_ucohsex_sympy.py`](../../scripts/gw_ucohsex_sympy.py)
+(per-spin static self-energy and Fermi level); each has a negative control and
+recorded mutations in `crates/ferric-python/tests/test_derivation_scripts.py`.
 
 Units are Hartree atomic units. Indices: $i,j$ occupied, $a,b$ virtual,
 $p,q,r,s$ any active MO, $P,Q$ RI auxiliary functions, $\xi,\eta$ PDEP
@@ -25,12 +32,12 @@ $V^{-1/2}$ for attenuated operators), the dressed three-index tensor is
 $$ B^P_{pq} = \sum_Q M_{PQ}\,(Q|pq), \qquad (pq|rs) \approx \sum_P B^P_{pq} B^P_{rs}, $$
 
 held over the full active square, shape `(naux, n_act, n_act)`
-(`mo_b.rs:206` `build_full_b`; per spin `mo_b.rs:243`, `:406`). The
+(`mo_b.rs` `build_full_b`; per spin `build_full_b_spin`, `build_full_b_both_spins`). The
 exchange self-energy diagonal is the closed-shell HF exchange in this basis,
 
 $$ \Sigma^x_p = -\sum_i \sum_P \left(B^P_{pi}\right)^2 $$
 
-(`cohsex.rs:111` `sigma_x_diag`; per spin the same formula on that spin's
+(`cohsex.rs` `sigma_x_diag`; per spin the same formula on that spin's
 $B_\sigma$). It is computed from the full $B$, never from the
 PDEP projection, so PDEP rank truncation affects only correlation. Checked
 against PySCF's density-fitted exchange to ≤4.9e-9 Ha
@@ -44,7 +51,7 @@ independent-particle response and dielectric matrix are
 $$ \Pi_{PQ}(iu) = 4 \sum_{ia} B^P_{ia}B^Q_{ia}\,\frac{\Delta_i^a}{u^2 + (\Delta_i^a)^2}, \qquad \tilde\varepsilon(iu) = \mathbf 1 + \Pi(iu), \qquad \Delta_i^a = \epsilon_a - \epsilon_i, $$
 
 prefactor 4 = 2 (spin) × 2 (resonant + antiresonant)
-(`ferric-rpa/src/sternheimer.rs:204` `build_scale_factors`, `:400`
+(`ferric-rpa/src/sternheimer.rs` `build_scale_factors`, `:400`
 `dielectric_matrix_from_projection`). The full screened interaction is
 $\tilde W = \tilde\varepsilon^{-1}$; its static bare part gives $\Sigma^x$ and
 the code carries only the dynamic part
@@ -55,17 +62,17 @@ $$ \tilde W_d(iu) = \tilde\varepsilon^{-1}(iu) - \mathbf 1 . $$
 $\tilde\varepsilon(0)\,U_\xi = \lambda_\xi(0)\,U_\xi$, and the GW code
 works in the fixed eigenbasis $\{U_\xi\}$. $\tilde W_d$ is built as the
 **full** $N_\text{pdep}\times N_\text{pdep}$ matrix $[U^{\mathsf T}\tilde\varepsilon(iu_k)U]^{-1} - \mathbf 1$
-at every quadrature node (`ferric-rpa/src/energy.rs:566`
+at every quadrature node (`ferric-rpa/src/energy.rs`
 `eval_inv_dielectric_matrices`; `PdepRpaResult.inv_dielectric_freq`). The
 per-frequency scalar eigenvalues $\lambda_\xi(iu)$ live in an
 $u$-dependent rotated eigenbasis and are valid only for basis-invariant
 traces such as the RPA energy; the diagonal form $\sum_\xi(1/\lambda_\xi(iu)-1)$
 is not used for $\Sigma_c$. At $u = 0$ the matrix is diagonal,
-$w_\xi \equiv 1/\lambda_\xi(0) - 1$ (`w_pdep.rs:157` `static_weights`).
+$w_\xi \equiv 1/\lambda_\xi(0) - 1$ (`w_pdep.rs` `static_weights`).
 
 **Redressing.** `PdepRpaResult.eigenpotentials` are physical aux
 coefficients $c = M_{\rm pdep}^{\mathsf T} U$. The dressed vectors matching
-this crate's $M$ solve $M^{\mathsf T} \hat U = c$ (`w_pdep.rs:39`
+this crate's $M$ solve $M^{\mathsf T} \hat U = c$ (`w_pdep.rs`
 `redress_eigenpotentials`; triangular solve for Cholesky, pseudo-inverse for
 symmetric $M$, anything else an error). Tests:
 `tests/redress_recovers_dressed_eigenvectors.rs`.
@@ -74,7 +81,7 @@ symmetric $M$, anything else an error). Tests:
 
 $$ B^\xi_{pq} = \sum_P \hat U^P_\xi\, B^P_{pq} $$
 
-(`cohsex.rs:228` `project_b_into_pdep`, one GEMM at `cohsex.rs:291`). For a
+(`cohsex.rs` `project_b_into_pdep`, one GEMM). For a
 complete orthonormal $\hat U$, $\sum_\xi B^\xi_{pq}B^\xi_{rs} = (pq|rs)$
 **[sympy 8]**; a truncated $\hat U$ does not satisfy it.
 
@@ -82,7 +89,7 @@ The screened matrix element at node $k$ is the quadratic form
 
 $$ W_{pq}(iu_k) = \sum_{\xi\eta} B^\xi_{pq}\,[\tilde W_d(iu_k)]_{\xi\eta}\,B^\eta_{pq} $$
 
-(`sigma.rs:310`–`315`, one GEMM per node).
+(`sigma.rs` `screened_elements`, one GEMM per node).
 
 ## 3. Single-pole structure
 
@@ -102,7 +109,7 @@ The code evaluates, for any complex $z$ off the real axis,
 
 $$ \Sigma^c_p(z) = -\frac{1}{\pi}\sum_q \int_0^\infty du'\; W_{pq}(iu')\,\frac{z - \epsilon_q}{(z - \epsilon_q)^2 + u'^2} $$
 
-(`sigma.rs:274` `sigma_c_at_z`; the $-1/\pi$ at `sigma.rs:329`). The
+(`sigma.rs` `sigma_c_at_z`; the prefactor $-1/\pi$ is applied after the sum over $q$). The
 integrand of the full $\int_{-\infty}^{\infty}$ form is even in $u'$, so
 $\frac{1}{2\pi}\cdot 2 = \frac1\pi$. The sum over $q$ runs over every active
 MO with no occupied/virtual sign: the time ordering is carried by the sign of
@@ -110,7 +117,7 @@ $\mathrm{Re}(z - \epsilon_q)$. $z$ is an absolute energy; `eps_act` (the
 propagator energies) is a separate argument so evGW can replace it. The
 integral uses the PDEP quadrature (`pdep.quad_freqs`, `pdep.quad_weights`),
 scaled Gauss–Legendre $u = u_0(1+x)/(1-x)$
-(`ferric-rpa/src/quadrature.rs:84` `gauss_legendre_nodes`).
+(`ferric-rpa/src/quadrature.rs` `gauss_legendre_nodes`).
 
 **Closed form for a single-pole W [sympy 2].** With
 $W_{pq}(iu) = -2\Omega s_{pq}/(u^2+\Omega^2)$,
@@ -170,13 +177,13 @@ $W(0) = -2s/\Omega$ **[sympy 3]**. With $W_{pq}(0) = \sum_\xi w_\xi (B^\xi_{pq})
 
 $$ \Delta\Sigma^{\rm SEX}_p = -\sum_i\sum_\xi w_\xi (B^\xi_{pi})^2, \qquad \Sigma^{\rm COH}_p = \tfrac12\sum_q\sum_\xi w_\xi (B^\xi_{pq})^2, \qquad w_\xi = \frac1{\lambda_\xi(0)} - 1 $$
 
-(`cohsex.rs:311` `cohsex_pieces`). The full screened exchange is
+(`cohsex.rs` `cohsex_pieces`). The full screened exchange is
 $\Sigma^x + \Delta\Sigma^{\rm SEX} = -\sum_i\sum_\xi \lambda_\xi(0)^{-1} (B^\xi_{pi})^2$
 for a complete PDEP basis **[sympy 8]**. COHSEX has no root search:
 
 $$ \epsilon^{\rm QP}_p = \epsilon_p + \Delta\Sigma^{\rm SEX}_p + \Sigma^{\rm COH}_p \;[+\;\Sigma^x_p - v^{xc}_p \text{ at a KS reference}], \qquad Z = 1 $$
 
-(`cohsex.rs:363` `run_cohsex`, assembly at `cohsex.rs:421`–`427`). The Rust
+(`cohsex.rs` `run_cohsex`). The Rust
 test `sigma::tests::sigma_c_static_w_in_gap_equals_cohsex_pieces` puts a
 constant W through `sigma_c_at_z` at $z = \epsilon_F$ and asserts
 `cohsex_pieces` to 1e-9 Ha. External checks: `tests/validation_gw.rs`
@@ -187,14 +194,14 @@ constant W through `sigma_c_at_z` at $z = \epsilon_F$ and asserts
 
 $\Sigma^c_p$ is sampled on the Fermi-shifted imaginary axis
 $z_k = \epsilon_F + iu_k$, $\epsilon_F = \tfrac12(\epsilon_{\rm HOMO} + \epsilon_{\rm LUMO})$
-of the active mean-field spectrum (`sigma.rs:246` `fermi_level`). The nodes
+of the active mean-field spectrum (`sigma.rs` `fermi_level`). The nodes
 are 18 indices (or `GwConfig.pade_npts`) chosen from $\{0\}\cup$ GL(100,
 $u_0 = 0.5$) with a decreasing step, step ratio 2/3, first index 1
-(`sigma.rs:368`–`381`; `sigma.rs:181` `pade_node_indices`, a port of PySCF
+(`sigma.rs` `pade_support_omegas`; `sigma.rs` `pade_node_indices`, a port of PySCF
 `_get_ac_idx`, pinned by `sigma::tests::pade_node_indices_matches_pyscf_get_ac_idx`).
 They are independent of the W quadrature.
 
-**Thiele continued fraction** (`pade.rs:39` `PadeCF::fit`, `pade.rs:76` `eval`):
+**Thiele continued fraction** (`pade.rs` `PadeCF::fit`, `PadeCF::eval`):
 
 $$ C_N(z) = \cfrac{a_1}{1 + \cfrac{a_2(z - z_1)}{1 + \cfrac{a_3(z-z_2)}{1 + \cdots}}}, \qquad g_1(z_k) = f(z_k), \quad g_\ell(z_k) = \frac{g_{\ell-1}(z_{\ell-1}) - g_{\ell-1}(z_k)}{(z_k - z_{\ell-1})\,g_{\ell-1}(z_k)}, \quad a_\ell = g_\ell(z_\ell), $$
 
@@ -212,7 +219,7 @@ sensitivities (16 vs 18 nodes 0.97 meV on the H₂O@PBE HOMO) are recorded in
 `shifted_nodes_far_eval_matches_exact`, `pole_reproduction`.
 
 The real-axis derivative is a 4-point central difference with $h = 0.05$ Ha
-(`pade.rs:90` `deriv_real`; `sigma.rs:402`), exact through degree 4 with
+(`pade.rs` `deriv_real`, called from `sigma.rs` `solve_qp_for_mo_with`), exact through degree 4 with
 error $-h^4 f^{(5)}/30$ **[sympy 5]**.
 
 ## 7. Quasiparticle equation, Newton solve, renormalization
@@ -221,26 +228,26 @@ For state $p$ the code solves
 
 $$ f(E) = E - \epsilon_p - \delta_p - \mathrm{Re}\,C_N(E) = 0, \qquad \delta_p = \begin{cases} 0 & \text{HF reference} \\ \Sigma^x_p - v^{xc}_p & \text{KS reference} \end{cases} $$
 
-(residual at `sigma.rs:421`; `sigma.rs:340` `solve_qp_for_mo`). The static
+(`sigma.rs` `solve_qp_for_mo_with`, the QP residual inside its Newton loop). The static
 shift is inside the equation, so $\Sigma^c$ is evaluated at the shifted root;
 adding it after an unshifted solve lands 0.38–0.96 eV away on the open-shell
 @PBE cases, which `tests/validation_gw.rs` requires ferric to miss. $v^{xc}_p$
-comes from `vxc_mo.rs:36` `vxc_diagonal_mo` (the same `add_xc` path as the
+comes from `vxc_mo.rs` `vxc_diagonal_mo` (the same `add_xc` path as the
 SCF's KS Fock).
 
 - **Renormalization factor**
   $Z_p = \left[1 - \partial_E \mathrm{Re}\,\Sigma^c_p(E)\right]^{-1}_{E=\epsilon_p}$,
-  clamped to $[0, 1.5]$ (`sigma.rs:405`). `GwResult.z_factor` is this value
+  clamped to $[0, 1.5]$ (`solve_qp_for_mo_with`). `GwResult.z_factor` is this value
   at the **mean-field** energy, the linearization point, not at the converged
   root.
 - **Start**: $E_0 = \epsilon_p + Z_p(\Sigma^c_p(\epsilon_p) + \delta_p)$
-  (`sigma.rs:410`), which is exactly one undamped Newton step from
+  (`solve_qp_for_mo_with`), which is exactly one undamped Newton step from
   $\epsilon_p$ **[sympy 4]**.
 - **Newton**: $E_{k+1} = E_k - d\,f(E_k)/f'(E_k)$,
   $f' = 1 - \partial_E\mathrm{Re}\,\Sigma^c$, damping
-  $d = $ `qp_newton_damp` clamped to $[0.1, 1]$ (`sigma.rs:412`); at most 30
-  steps; converged when $|\text{step}| < 10^{-7}$ Ha (`sigma.rs:429`); stops
-  unconverged if $|f'| < 10^{-3}$ (`sigma.rs:424`, a root near a pole of
+  $d = $ `qp_newton_damp` clamped to $[0.1, 1]$; at most 30
+  steps; converged when $|\text{step}| < 10^{-7}$ Ha; stops
+  unconverged if $|f'| < 10^{-3}$ (a root near a pole of
   $C_N$).
 - **Fallback** (`sigma::qp_root_by_weight`, only when Newton fails): every
   root of $f$ within $\epsilon_p + \delta_p \pm 1$ Ha (4001 samples, sign
@@ -249,7 +256,7 @@ SCF's KS Fock).
   fails at every $n_{\rm quad}$ (roots −11.80 eV, Z 0.62, and −10.09 eV, Z 0.24,
   on the exact real axis); the fallback gives −11.802 eV at every
   $n_{\rm quad} \ge 30$. No root with $Z \in (0,1]$ leaves the state unsolved:
-  reported in `GwResult.qp_converged` and warned (`lib.rs:491` `warn_gw_unconverged`).
+  reported in `GwResult.qp_converged` and warned (`lib.rs` `warn_gw_unconverged`).
 
 At a root $E^*$, $Z(E^*) = 1/(1-\Sigma'(E^*))$ is the residue of
 the QP pole of $G(E) = [E - \epsilon - \delta - \Sigma(E)]^{-1}$;
@@ -261,7 +268,7 @@ $\epsilon$ **[sympy 4]**. Tests: `sigma::tests::qp_newton_converges_for_a_mild_s
 `g0w0_pbe_{h2o,n2}_vs_pyscf_gw_ac`, `g0w0_hf_frozen_core_h2o_vs_pyscf_gw_ac`,
 `g0w0_hf_ecp_{i2,xe,ag2}_vs_pyscf_gw_ac`; `tests/g0w0_pbe_h2o.rs`.
 
-Default QP window: HOMO−2 … LUMO+2 (`lib.rs:514`; open shell `lib.rs:379`,
+Default QP window: HOMO−2 … LUMO+2 (`lib.rs` `default_qp_range`; open shell `default_u_qp_range`,
 around $\max(n_\alpha, n_\beta)$).
 
 ## 8. Eigenvalue self-consistency
@@ -272,14 +279,13 @@ their mean-field values. Convergence: $\max_p|\Delta\epsilon^{\rm QP}_p| <$
 `ev_conv_thresh` (default 1e-4 Ha) within `max_ev_iter` (default 20); the
 flag is `GwResult.outer_converged`.
 
-- **evGW₀** (`sigma.rs:602` `run_evgw0`): the propagator energies in §4 are
-  replaced by the previous sweep's QP energies (`sigma.rs:669`); W is frozen
+- **evGW₀** (`sigma.rs` `run_evgw0`): the propagator energies in §4 are
+  replaced by the previous sweep's QP energies (`run_evgw0`, `eps_prop`); W is frozen
   at the mean-field PDEP result.
-- **evGW** (`sigma.rs:776` `run_evgw`): additionally rebuilds W every
+- **evGW** (`sigma.rs` `run_evgw`): additionally rebuilds W every
   iteration after the first by rerunning PDEP-RPA on a copy of the reference
-  whose $\epsilon$ in the QP window are the QP energies (`sigma.rs:833`,
-  `:837`); orbitals and $\tilde B$ are unchanged. Convergence needs at least
-  one rebuilt W (`sigma.rs:914`, `it > 0`).
+  whose $\epsilon$ in the QP window are the QP energies (`run_evgw`); orbitals and $\tilde B$ are unchanged. Convergence needs at least
+  one rebuilt W (`run_evgw`, `it > 0`).
 
 Tests: `tests/validation_gw.rs` `evgw0_evgw_hf_h2o_vs_iterated_pyscf` (PySCF
 `get_sigma` iterated with this update rule, 5.7e-7 Ha);
@@ -288,22 +294,51 @@ shift only; no external evGW@KS reference exists).
 
 ## 9. Open shell
 
-`lib.rs:262` `run_u_gw` accepts UHF/UKS directly and ROHF/ROKS after per-spin
-semi-canonicalization (`lib.rs:280`, `ferric_scf::semicanonical::unrestricted_reference`:
+`lib.rs` `run_u_gw` accepts UHF/UKS directly and ROHF/ROKS after per-spin
+semi-canonicalization (`lib.rs` `run_u_gw`, `ferric_scf::semicanonical::unrestricted_reference`:
 each spin's Fock diagonalized in its occupied and virtual blocks). W is
 spin-independent, from the spin-summed dielectric
 
 $$ \tilde\varepsilon_U(iu) = \mathbf 1 + \Pi_\alpha(iu) + \Pi_\beta(iu), \qquad \Pi_\sigma = 2\sum_{i_\sigma a_\sigma} B_\sigma B_\sigma^{\mathsf T}\frac{\Delta_{i\sigma}^{a}}{u^2+(\Delta_{i\sigma}^{a})^2} $$
 
-(`ferric-rpa/src/energy.rs:599`; prefactor 2 per spin), which equals the
+(`ferric-rpa/src/energy.rs`; prefactor 2 per spin), which equals the
 closed-shell $\mathbf 1 + \Pi$ when the spins coincide **[sympy 1]**. Each
 spin has its own projection $B^\xi_\sigma = \hat U^{\mathsf T}B_\sigma$, its own
 $\Sigma^x_\sigma$, $\Sigma^c_\sigma$ (sum over that spin's MOs), its own
-mid-gap $\epsilon_{F,\sigma}$ (`u_sigma.rs:168`) and its own shift
-$\delta_{\sigma p} = \Sigma^x_{\sigma p} - v^{xc}_{\sigma p}$ (`u_sigma.rs:42`
-`static_shifts`). Drivers: `u_sigma.rs:61` `run_u_g0w0`, `:249`
-`run_u_evgw0`, `:454` `run_u_evgw`; `u_cohsex.rs:23` `run_u_cohsex`.
+mid-gap $\epsilon_{F,\sigma}$ (`u_sigma.rs` `qp_per_spin_g0w0`) and its own shift
+$\delta_{\sigma p} = \Sigma^x_{\sigma p} - v^{xc}_{\sigma p}$ (`u_sigma.rs`
+`static_shifts`). Drivers: `u_sigma.rs` `run_u_g0w0`, `:249`
+`run_u_evgw0`, `:454` `run_u_evgw`; `u_cohsex.rs` `run_u_cohsex`.
 sc-COHSEX is not implemented (returns `Err`).
+
+**Per-spin static self-energy.** In a spin-orbital basis $G$ is diagonal in
+spin and $W$ does not depend on spin, so a state of spin $\sigma$ sums the
+exchange and screened-exchange terms over that spin's occupied orbitals only,
+
+$$ \Sigma^x_{\sigma p} = -\sum_{i\in\sigma}\sum_P (B^P_{\sigma,pi})^2, \qquad \Delta\Sigma^{\rm SEX}_{\sigma p} = -\sum_{i\in\sigma}\sum_\xi w_\xi (B^\xi_{\sigma,pi})^2, \qquad \Sigma^{\rm COH}_{\sigma p} = \tfrac12\sum_{q\in\sigma}\sum_\xi w_\xi (B^\xi_{\sigma,pq})^2, $$
+
+with the weights $w_\xi = 1/\lambda_\xi(0) - 1$ of the spin-summed
+$\tilde\varepsilon_U(0)$ (`u_cohsex.rs` `run_u_cohsex` calls the closed-shell
+`cohsex_pieces` once per spin). The Coulomb-hole sum runs over the whole
+complete set of that spin, whose closure $\sum_q\phi_q(\mathbf r)\phi_q(\mathbf r') = \delta$
+turns it into the local $\tfrac12 W_d(\mathbf r,\mathbf r)$.
+**[ugw U1]** checks all three against a real-space spin-orbital construction
+with no auxiliary or PDEP basis (a 6-site lattice with different $\alpha$ and
+$\beta$ orbitals and 2 $\alpha$ and 1 $\beta$ electrons: $\chi_0 = \chi_{0\alpha} + \chi_{0\beta}$,
+$W = (1 - v\chi_0)^{-1}v$, $\Delta\Sigma^{\rm SEX}_{\sigma p} = -\sum_{i\in\sigma}\langle pi|W_d|ip\rangle$);
+summing over the other spin's occupied orbitals, or building $W$ from one spin's
+$\Pi$ alone, are the negative controls. **[ugw U1b]**: with identical channels the
+two spins' self-energies coincide with the closed-shell ones.
+
+**Per-spin Fermi level.** The continuation line $z = \epsilon_{F,\sigma} + iu$
+assigns each state to the occupied or the virtual side by the sign of
+$\mathrm{Re}(z - \epsilon_q)$ (§4), so it must pass through that spin's own
+gap. Any $\epsilon_{F,\sigma}$ inside the gap gives the same continued function
+of $E$; the mid-gap is a numerical choice that keeps the nodes far from both
+edges. A line through the other spin's mid-gap can lie outside this spin's gap,
+mis-assign a state, and continue to a different function. **[ugw U2]** shows both
+statements on the single-pole $\Sigma^c$ of §4 with Thiele continuation (80-digit
+arithmetic).
 
 Tests: `tests/validation_gw.rs` `u_g0w0_{oh,ch3,nh2}_vs_pyscf_ugw_ac`,
 `u_g0w0_triplets_o2_ch2_vs_pyscf_ugw_ac`, `u_g0w0_uks_pbe_*`;
@@ -320,52 +355,112 @@ $\tilde W_d$; $\Sigma^x$ is unaffected (§1). Every external comparison in §11
 uses `trunc_thresh = 0`, where the PDEP basis is the full RI dielectric
 eigenbasis and ferric's W is the ordinary RI W; **truncated GW is not
 validated**. `run_gw`/`run_u_gw` force `need_inv_dielectric_freq = true`
-(`lib.rs:69`). Memory: $B$ and $B^\xi$ are hard pool charges
-(`mo_b.rs`, `cohsex.rs:56` `guard_m_proj`), both $\propto N_{\rm aux} n_{\rm act}^2$.
+(`lib.rs` `with_inv_dielectric`). Memory: $B$ and $B^\xi$ are hard pool charges
+(`mo_b.rs`, `cohsex.rs` `guard_m_proj`), both $\propto N_{\rm aux} n_{\rm act}^2$.
 
 ## 11. BSE-TDA
 
-On G0W0@HF QP energies for **all** active MOs (`bse.rs:283` `run_bse_tda`),
-the closed-shell singlet TDA matrix
+**Definition.** The Bethe–Salpeter equation for a particle–hole pair has a
+Hartree-type term, in which the pair annihilates into the bare interaction
+$v$, and a direct term, in which the particle and the hole exchange a screened
+interaction $W$. With a static $W(0)$, quasiparticle energies on the diagonal
+and the Tamm–Dancoff approximation (no de-excitation block), the spin-orbital
+matrix over single excitations $i_\sigma\to a_\sigma$ is
+
+$$ A_{i_\sigma a_\sigma,\,j_\tau b_\tau} = (\epsilon^{\rm QP}_a - \epsilon^{\rm QP}_i)\,\delta_{ij}\delta_{ab}\delta_{\sigma\tau} + (ia|jb) - \delta_{\sigma\tau}\,(ab|W(0)|ij), $$
+
+where the Hartree term connects every spin pair (the density $\phi_i\phi_a$ has
+no spin dependence beyond $\sigma$) and the screened term only equal spins. The
+rotation $U = \tfrac1{\sqrt2}\begin{pmatrix}1&1\\1&-1\end{pmatrix}$ on the spin index
+block-diagonalizes it into a singlet block, $A_{\alpha\alpha}+A_{\alpha\beta}$, and
+a triplet block, $A_{\alpha\alpha}-A_{\alpha\beta}$. The singlet block is the code's matrix,
+with $(ia|jb)$ counted twice:
 
 $$ \mathbf A_{ia,jb} = (\epsilon^{\rm QP}_a - \epsilon^{\rm QP}_i)\,\delta_{ij}\delta_{ab} + 2(ia|jb) - (ab|W(0)|ij), $$
 
-$$ (pq|W(0)|rs) = (pq|rs) + \sum_\xi w_\xi B^\xi_{pq}B^\xi_{rs} $$
+$$ (pq|W(0)|rs) = (pq|rs) + \sum_\xi w_\xi B^\xi_{pq}B^\xi_{rs}, \qquad w_\xi = \frac1{\lambda_\xi(0)} - 1 $$
 
-(`bse.rs:395` `screened`; assembly `bse.rs:431`–`434`; dense `eigh` at
-`bse.rs:463`). The bare part comes from $B$, so the kernel equals
-$\sum_\xi \lambda_\xi(0)^{-1} B^\xi B^\xi$ for a complete basis **[sympy 8]** and
-stays correct under truncation. The Hartree term uses bare $v$; the direct
-term uses the static full W. With $W \to v$ and HF energies it is CIS
-(`bse.rs:564` `run_cis_tda`). Oscillator strengths
-$f_n = \tfrac23\Omega_n|\langle 0|\mathbf r|n\rangle|^2$,
-$\langle 0|\mathbf r|n\rangle = \sqrt2\sum_{ia}X_{n,ia}\langle i|\mathbf r|a\rangle$
-(`bse.rs:158`). Tests: `tests/validation_bse.rs`
-(`bse_tda_{h2o,nh3,ch2o}_vs_numpy`, `cis_tda_anchor_vs_numpy_and_pyscf_tda`),
-`tests/bse_oscillator_strength.rs`, `tests/h2o_bse_tda.rs`.
+(`bse.rs` `run_bse_tda` on G0W0@HF QP energies for **all** active MOs;
+`bse.rs` `screened`; assembly `fill_row`; dense `eigh`). The bare part comes
+from $B$, so the kernel equals $\sum_\xi \lambda_\xi(0)^{-1} B^\xi B^\xi$ for a
+complete basis **[sympy 8]** and stays correct under truncation. The Hartree
+term uses bare $v$; the direct term uses the static full $W$. With
+$W \to v$ and HF energies it is CIS (`bse.rs` `run_cis_tda`).
+This is the static-screening BSE-TDA as defined here; ferric does not add a
+dynamical correction to $W$.
+
+**Checks [bse B1–B4].** On a random model with a complete auxiliary basis:
+(B1) the code's singlet matrix equals the singlet block of the spin-orbital
+matrix built with $W = B^{\mathsf T}\tilde\varepsilon^{-1}B$ (a matrix inverse,
+not the PDEP eigenbasis), the triplet block is $\Delta - W(ab|ij)$, the
+singlet-triplet blocks vanish and the spin-orbital spectrum is the union of
+the two; (B2) at $W\to v$ with a diagonal Fock matrix the same matrix equals
+$\langle\Phi_i^a|H - E_0|\Phi_j^b\rangle$ over Jordan–Wigner determinants of a
+8-spin-orbital Fock space, and the Brillouin condition holds.
+
+**Oscillator strengths.** A singlet root with amplitudes $X$ is
+$|\Psi_n\rangle = \sum_{ia}X_{ia}\,\tfrac1{\sqrt2}\,(a^\dagger_{a\alpha}a_{i\alpha} + a^\dagger_{a\beta}a_{i\beta})|\Phi_0\rangle$,
+so $\langle 0|\mathbf r|n\rangle = \sqrt2\sum_{ia}X_{ia}\langle i|\mathbf r|a\rangle$ and
+
+$$ f_n = \tfrac23\,\Omega_n\,|\langle 0|\mathbf r|n\rangle|^2 $$
+
+(`bse.rs` `tda_oscillator_strengths`). **[bse B3]** evaluates
+$\langle\Phi_0|\mathbf r|\Psi_n\rangle$ over the Jordan–Wigner determinants; **[bse B4]**
+checks the sum rule $\sum_n f_n = \tfrac43\sum_x \mathbf r_x^{\mathsf T}\mathbf A\,\mathbf r_x$ over
+all roots, which fixes both the $\sqrt2$ and the factor $\Omega$. Tests:
+`tests/validation_bse.rs` (`bse_tda_{h2o,nh3,ch2o}_vs_numpy`,
+`cis_tda_anchor_vs_numpy_and_pyscf_tda`), `tests/bse_oscillator_strength.rs`,
+`tests/h2o_bse_tda.rs`.
 
 ## 12. TDHF/RPAx polarizability
 
-The statically screened RPAx kernel on a reference with energies $\epsilon$
-(`bse.rs:1369` `run_rpax_static_polarizability`; dynamic, library-only:
-`bse.rs:715` `run_bse_c6`, `bse.rs:966` `run_bse_c6_ks`):
+**Spin-orbital kernels.** The same construction as §11, now with the
+de-excitation block. In spin orbitals the Hartree term $(ia|jb)$ couples every
+spin pair, and the screened terms couple equal spins only:
+
+$$ A_{i_\sigma a_\sigma,j_\tau b_\tau} = \Delta_i^a\delta + (ia|jb) - \delta_{\sigma\tau}(ab|W|ij), \qquad B_{i_\sigma a_\sigma,j_\tau b_\tau} = (ia|jb) - \delta_{\sigma\tau}(ib|W|ja). $$
+
+The spin rotation of §11 gives, for the singlet block (`bse.rs`
+`rpax_static_polarizability_with_screening`; dynamic, library-only:
+`bse.rs` `run_bse_c6`, `bse.rs` `run_bse_c6_ks`):
 
 $$ (\mathbf A+\mathbf B)_{ia,jb} = \Delta_i^a\delta + 4(ia|jb) - (ab|W|ij) - (ib|W|ja), \qquad (\mathbf A-\mathbf B)_{ia,jb} = \Delta_i^a\delta + (ib|W|ja) - (ab|W|ij), $$
 
-$$ \alpha_{xy}(iu) = 4\,\mu_x^{\mathsf T}\big[(\mathbf A-\mathbf B)(\mathbf A+\mathbf B) + u^2\big]^{-1}(\mathbf A-\mathbf B)\,\mu_y = 4\,\mu_x^{\mathsf T}\big[(\mathbf A+\mathbf B) + u^2(\mathbf A-\mathbf B)^{-1}\big]^{-1}\mu_y, $$
+and block-diagonal triplets ($4\to0$ in the Hartree term of $\mathbf A+\mathbf B$).
+**[bse S1]** is the symbolic spin algebra and **[bse R1]** the numerical check
+against the spin-orbital matrices built from $W = B^{\mathsf T}\tilde\varepsilon^{-1}B$.
+
+**Response.** For a perturbation $-\mathbf F\cdot\hat{\boldsymbol\mu}$ at imaginary
+frequency $\omega = iu$ the first-order amplitudes solve
+$\begin{pmatrix}\mathbf A-\omega&\mathbf B\\\mathbf B&\mathbf A+\omega\end{pmatrix}\binom{X}{Y} = \binom{\boldsymbol\mu}{\boldsymbol\mu}F$
+and the induced dipole is $\boldsymbol\mu\cdot(X+Y)$. Adding and subtracting
+the two block rows, $(\mathbf A-\mathbf B)(X-Y) = \omega(X+Y)$ and
+$[(\mathbf A+\mathbf B) - \omega^2(\mathbf A-\mathbf B)^{-1}](X+Y) = 2\boldsymbol\mu F$. At $\omega = iu$ and in the singlet space,
+where $\boldsymbol\mu_{\rm so} = \sqrt2\,\boldsymbol\mu$ in the rotated basis,
+
+$$ \alpha_{xy}(iu) = 4\,\mu_x^{\mathsf T}\big[(\mathbf A-\mathbf B)(\mathbf A+\mathbf B)+u^2\big]^{-1}(\mathbf A-\mathbf B)\,\mu_y = 4\,\mu_x^{\mathsf T}\big[(\mathbf A+\mathbf B) + u^2(\mathbf A-\mathbf B)^{-1}\big]^{-1}\mu_y, $$
 
 computed as one solve of $[(\mathbf A-\mathbf B)(\mathbf A+\mathbf B)+u^2]\,t = (\mathbf A-\mathbf B)\mu$
-(`bse.rs:1588`–`1601`, `bse.rs:899`–`910`). The operator
+(`bse.rs` `rpax_static_polarizability_with_screening` and `run_bse_c6`). **[bse S3]** is the scalar
+algebra of the reduction and **[bse R2]** solves the full $2N\times2N$
+spin-orbital system at $u = 0$ and $u = 0.7$ and compares: the code's number
+is the same. The operator
 $[(\mathbf A-\mathbf B)(\mathbf A+\mathbf B)+u^2]^{-1}(\mathbf A-\mathbf B)$ is symmetric and equals the sum over states
 $2\sum_n|\langle0|\mathbf r|n\rangle|^2\,\Omega_n/(\Omega_n^2+u^2)$ with
 $\Omega_n^2$ the eigenvalues of $(\mathbf A-\mathbf B)(\mathbf A+\mathbf B)$; at $u = 0$,
 $\alpha = 4\mu^{\mathsf T}(\mathbf A+\mathbf B)^{-1}\mu$ **[sympy 7]**. The reversed product
 $\mu^{\mathsf T}(\mathbf A-\mathbf B)[\cdots]^{-1}\mu$ is a different number. `scissor` adds a
-constant to every virtual energy. With $W \to v$ at an HF reference the kernel
-is TDHF and $\alpha(0)$ is the CPHF polarizability
-(`RpaxScreening::Bare`). A negative $\alpha$ diagonal is refused
-(`bse.rs:1251` `check_alpha_diagonal_positive`). Tests:
-`tests/validation_rpax_alpha.rs`, `tests/rpax_*.rs`.
+constant to every virtual energy.
+
+**The TDHF limit.** With $W \to v$ at an HF reference the kernel is TDHF and
+$\alpha(0)$ is the coupled-perturbed HF polarizability
+(`RpaxScreening::Bare`). **[bse R3]** shows it against an independent route: a
+self-consistent RHF in the same orthonormal MO basis
+($h = h_0 - F\,r$, $F[D] = h + J - \tfrac12K$), differentiated by a central
+finite field, agrees to the finite-difference error (relative $10^{-6}$ bar in the script).
+
+A negative $\alpha$ diagonal is refused (`bse.rs` `check_alpha_diagonal_positive`).
+Tests: `tests/validation_rpax_alpha.rs`, `tests/rpax_*.rs`.
 
 ## 13. Validation status
 

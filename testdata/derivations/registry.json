@@ -702,7 +702,8 @@
         "crates/ferric-rpa/theory.md#dispersion-casimir-polder-c6"
       ],
       "scripts": [
-        "scripts/rpa_c6_polarizability_sympy.py"
+        "scripts/rpa_c6_polarizability_sympy.py",
+        "scripts/rpa_response_modes_sympy.py"
       ]
     },
     "rs-mp2-rpa": {
@@ -790,15 +791,33 @@
         "scripts/scf_diis_sympy.py",
         "scripts/scf_orbital_hessian_sympy.py"
       ]
+    },
+    "bse-tda": {
+      "theory": [
+        "crates/ferric-gw/theory.md#11-bse-tda"
+      ],
+      "scripts": [
+        "scripts/gw_bse_rpax_sympy.py"
+      ]
+    },
+    "tdhf-static-polarizability": {
+      "theory": [
+        "crates/ferric-gw/theory.md#12-tdhfrpax-polarizability"
+      ],
+      "scripts": [
+        "scripts/gw_bse_rpax_sympy.py"
+      ]
+    },
+    "u-gw": {
+      "theory": [
+        "crates/ferric-gw/theory.md#9-open-shell"
+      ],
+      "scripts": [
+        "scripts/gw_ucohsex_sympy.py"
+      ]
     }
   },
   "gaps": {
-    "bse-tda": {
-      "reason": "no theory.md derivation and no sympy proof",
-      "theory": [
-        "crates/ferric-gw/theory.md#11-bse-tda"
-      ]
-    },
     "casscf": {
       "reason": "no theory.md derivation and no sympy proof",
       "theory": [
@@ -873,18 +892,6 @@
     },
     "qmmm": {
       "reason": "no theory.md derivation and no sympy proof"
-    },
-    "tdhf-static-polarizability": {
-      "reason": "no theory.md derivation and no sympy proof",
-      "theory": [
-        "crates/ferric-gw/theory.md#12-tdhfrpax-polarizability"
-      ]
-    },
-    "u-gw": {
-      "reason": "scripts/gw_self_energy_sympy.py checks only the spin-summed dielectric (2 per spin); the per-spin mid-gap and U-COHSEX are unproven",
-      "theory": [
-        "crates/ferric-gw/theory.md#9-open-shell"
-      ]
     },
     "u-oo-rimp2": {
       "reason": "crates/ferric-mp2/theory.md section 14 derives the orbital gradient and scripts/mp2_gradient_sympy.py [U] checks it by FD, but its integral-response term is derived, not transcribed from compute_u_mp2_orbital_gradient's loop",

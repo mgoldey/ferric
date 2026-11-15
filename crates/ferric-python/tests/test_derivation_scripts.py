@@ -539,6 +539,74 @@ CASES = [
         ],
     ),
     (
+        "gw_bse_rpax_sympy.py",
+        30,
+        [
+            (
+                "apb[ia, jb] = 4.0 * coul - w_abij - w_ibaj",
+                "apb[ia, jb] = 2.0 * coul - w_abij - w_ibaj",
+                "FAIL [R1]",
+            ),
+            (
+                "amb[ia, jb] = w_ibaj - w_abij",
+                "amb[ia, jb] = w_abij - w_ibaj",
+                "FAIL [R1]",
+            ),
+            (
+                "a_bse[ia, jb] = 2.0 * coul - scr",
+                "a_bse[ia, jb] = 1.0 * coul - scr",
+                "FAIL [B1]",
+            ),
+            (
+                "mu_x = SQRT2 * float(xv @ r_ia)",
+                "mu_x = float(xv @ r_ia)",
+                "FAIL [B3]",
+            ),
+        ],
+    ),
+    (
+        "gw_ucohsex_sympy.py",
+        30,
+        [
+            (
+                "pi_a = pi_spin(b_a, eps_a, nocc_a, 2.0)",
+                "pi_a = pi_spin(b_a, eps_a, nocc_a, 4.0)",
+                "FAIL [U1]",
+            ),
+            (
+                "occ = range(nocc_of[spin])",
+                "occ = range(nocc_of[1 - spin])",
+                "FAIL [U1]",
+            ),
+            (
+                "on_occupied_side = (z - eps_q).real > 0",
+                "on_occupied_side = True",
+                "FAIL [U2]",
+            ),
+        ],
+    ),
+    (
+        "rpa_response_modes_sympy.py",
+        15,
+        [
+            (
+                "return bare - 16.0 * w @ np.linalg.solve(eps, w.T), eps, w, bare",
+                "return bare - 4.0 * w @ np.linalg.solve(eps, w.T), eps, w, bare",
+                "FAIL [M1]",
+            ),
+            (
+                "out -= np.outer(s, s) / lam[k]",
+                "out += np.outer(s, s) / lam[k]",
+                "FAIL [M2]",
+            ),
+            (
+                "return bare - 4.0 * w_t @ np.linalg.solve(eps, w_t.T), w_t, eps",
+                "return bare - 16.0 * w_t @ np.linalg.solve(eps, w_t.T), w_t, eps",
+                "FAIL [M4]",
+            ),
+        ],
+    ),
+    (
         "pcm_ief_sympy.py",
         150,
         [
