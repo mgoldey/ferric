@@ -111,6 +111,15 @@ pub struct Config {
     /// for every kind other than `casscf` / `nevpt2`.
     #[serde(skip)]
     pub cas_plan: Option<crate::cas::CasPlan>,
+    /// Optional `[opmp3]` section: the reference and model settings of
+    /// `method.kind = "opmp3"` (see [`crate::opmp3::Opmp3Cfg`]); refused by
+    /// every other kind.
+    #[serde(default)]
+    pub opmp3: Option<crate::opmp3::Opmp3Cfg>,
+    /// The validated OP-MP3 plan, resolved by [`load_config`]. Not a TOML
+    /// key; `None` for every kind other than `opmp3`.
+    #[serde(skip)]
+    pub opmp3_plan: Option<crate::opmp3::Opmp3Plan>,
     /// Optional `[cdft]` section: constrained DFT (see [`crate::cdft::CdftCfg`]).
     /// Present, `method.kind = "uhf"` runs the constrained UHF (UKS with
     /// `[dft] functional`) of Python `run_cdft`.
@@ -6564,9 +6573,10 @@ fn validate_loaded(cfg: &mut Config, text: &str) -> Result<(), String> {
 }
 
 /// The plans of the kind-specific sections that need the raw TOML text: the
-/// `[cas]` run, and the sections and `[scf]` keys a `[cdft]` run reads.
+/// `[cas]` and `[opmp3]` runs, and the sections and `[scf]` keys a `[cdft]` run reads.
 fn resolve_kind_plans(cfg: &mut Config, text: &str) -> Result<(), String> {
     cfg.cas_plan = crate::cas::resolve_plan(cfg, text)?;
+    cfg.opmp3_plan = crate::opmp3::resolve_plan(cfg, text)?;
     crate::cdft::check_sections(cfg, text)
 }
 

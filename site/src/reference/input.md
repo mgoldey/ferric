@@ -44,7 +44,7 @@ auxbasis = "cc-pvdz-ri"
 |---|---|---|---|---|
 | `xyz` | string | **required** | path | Standard XYZ in Å, relative to the working directory. Not read when `[qmmm]` is present (the PQR supplies the geometry). |
 | `charge` | integer | `0` | | With `[qmmm]`, applies to the QM region. |
-| `multiplicity` | integer | `1` | ≥ 1 | Read by `uhf`, `rohf` and `ksdft` (UKS) for every task, for `task = "energy"` by `rimp2`/`oo-rimp2` (UHF + unrestricted RI-MP2 / OO-RI-MP2), for `task = "optimize"` by `rimp2` (UHF + unrestricted RI-MP2, analytic gradient) and the open-shell path of `pdep-rpa`/`gw`/`mp2-v`: UHF, or UKS when `[rpa] xc` is set (`pdep-rpa`, `gw`), or ROHF/ROKS for `gw` with `[gw] reference = "rohf"`; `mp2-v` stays UHF. Every other kind refuses `> 1`; `casscf` and `nevpt2` set the spin of the CAS state with [`[cas] n_elec_active`](#cas) instead. See [open shells](./validation.md#open-shells-in-the-cli). |
+| `multiplicity` | integer | `1` | ≥ 1 | Read by `uhf`, `rohf` and `ksdft` (UKS) for every task, for `task = "energy"` by `rimp2`/`oo-rimp2` (UHF + unrestricted RI-MP2 / OO-RI-MP2), for `task = "optimize"` by `rimp2` (UHF + unrestricted RI-MP2, analytic gradient) and the open-shell path of `pdep-rpa`/`gw`/`mp2-v`: UHF, or UKS when `[rpa] xc` is set (`pdep-rpa`, `gw`), or ROHF/ROKS for `gw` with `[gw] reference = "rohf"`; `mp2-v` stays UHF. `opmp3` reads it for every multiplicity (ROHF, or ROKS with [`[opmp3] reference`](#opmp3)). Every other kind refuses `> 1`; `casscf` and `nevpt2` set the spin of the CAS state with [`[cas] n_elec_active`](#cas) instead. See [open shells](./validation.md#open-shells-in-the-cli). |
 
 ## `[basis]` (required)
 
@@ -64,7 +64,7 @@ same table: `cc-pvdz-ri`, `cc-pvtz-rifit`, `aug-cc-pv{d,t,q}z-rifit`,
 
 | Key | Type | Default | Allowed values | Notes |
 |---|---|---|---|---|
-| `kind` | string | **required** | `rhf` `uhf` `rohf` `ksdft` `rimp2` `mp3` `oo-rimp2` `att-rimp2` `mp2-v` `scs-mp2` `scs-mp2-2terfc` `laplace-mp2` `laplace-sos-mp2` `pdep-rpa` `rs-mp2-rpa` `gw` `bse-tda` `tdhf-static-polarizability` `ccsd` `ccd` `ccsd(t)` `eom-ccsd` `linlccd` `drpa` `wb97x-l-v` `b2plyp` `dsd-pbep86` `tda` `tddft` `casscf` `nevpt2` | Any other value is an error. Smoke- and Spike-grade kinds print a `[warning]` grade line on stderr; Proven kinds print none. `casscf` and `nevpt2` need a [`[cas]`](#cas) section. `rimp2`, `drpa` and `linlccd` name the method and are computed exactly unless [`[local]`](#local) sets a local approximation (see [Capabilities and validation](./validation.md#grades)). |
+| `kind` | string | **required** | `rhf` `uhf` `rohf` `ksdft` `rimp2` `mp3` `oo-rimp2` `att-rimp2` `mp2-v` `scs-mp2` `scs-mp2-2terfc` `laplace-mp2` `laplace-sos-mp2` `pdep-rpa` `rs-mp2-rpa` `gw` `bse-tda` `tdhf-static-polarizability` `ccsd` `ccd` `ccsd(t)` `eom-ccsd` `linlccd` `drpa` `wb97x-l-v` `b2plyp` `dsd-pbep86` `tda` `tddft` `casscf` `nevpt2` `opmp3` | Any other value is an error. Smoke- and Spike-grade kinds print a `[warning]` grade line on stderr; Proven kinds print none. `casscf` and `nevpt2` need a [`[cas]`](#cas) section; `opmp3` reads [`[opmp3]`](#opmp3). `rimp2`, `drpa` and `linlccd` name the method and are computed exactly unless [`[local]`](#local) sets a local approximation (see [Capabilities and validation](./validation.md#grades)). |
 | `task` | string | `"energy"` | `energy` `optimize` `frequencies` | `optimize`: `rhf` `ksdft` `uhf` `rohf` `rimp2` `scs-mp2` `oo-rimp2` `pdep-rpa` only (`rimp2`: closed shell, or an open shell on a UHF reference, `[scf] jk` `exact` or `rijk`; `scs-mp2`: closed shell, `[scf] jk` `exact` or `rijk`; `oo-rimp2`: closed shell, `[scf] jk = "exact"` or `"rijk"`, `frozen_core = 0`). `frequencies`: `rhf` `ksdft` `uhf` `rohf` only. |
 
 ## `[scf]`
@@ -262,6 +262,28 @@ reference of `nevpt2`.
 | `conv_thresh` | float | `1e-10` | > 0 | A root is accepted when its residual ‖Hc − Ec‖ is below this. Python `ci_conv_thresh`. |
 | `max_subspace` | integer | `50` | ≥ 1 | Davidson subspace before a restart. Python `ci_max_subspace`. |
 | `max_iter` | integer | `200` | ≥ 1 | Davidson iterations. Python `ci_max_iter`. |
+
+## `[opmp3]`
+
+The reference and model settings of `method.kind = "opmp3"`, orbital-
+partitioned Padé MP3 (Bystrom, Berkelbach and Hait, arXiv:2609.25330); an
+error on any other kind, and optional for `opmp3`. The run is its own
+restricted reference SCF with exact J/K (RHF or ROHF, or RKS or ROKS with a
+functional), then the HF Fock of that density, semicanonical orbitals and
+the non-Brillouin singles energy, the code Python `run_opmp3` runs. It reads
+only `[opmp3]`, `[scf]` `max_iter` / `energy_conv` / `density_conv` (defaults
+`1e-10` / `1e-8` when not written), `[memory]`, `[parallel]` and `[output]`;
+any other section or `[scf]` key is an error at load time. `task = "energy"`
+only. Every model is printed as `E_HF[ρ] + E_NBS + E_c`, and the run-log
+`result` energy is SSD-OPMP3. See [MP2](../methods/mp2.md#op-mp3).
+
+| Key | Type | Default | Allowed values | Notes |
+|---|---|---|---|---|
+| `reference` | string | `"hf"` | `hf` or a functional name | `hf` is RHF for a singlet and ROHF otherwise; a functional is RKS or ROKS. Python `reference`. |
+| `x_ss` | float | the paper's value for `reference` | finite | SSD-OPMP3 same-spin damping. Printed values: `hf` 0, `pbe0` 0.5, `pbe` 0.7, `spw92` 0.75, `r2scan` 0.6, `wb97x-v` 0.5, `wb97m-v` 0.5. Any other reference needs it written. Python `x_ss`. |
+| `integrals` | string | `"exact"` | `exact` `ri` | Integrals of the amplitude stage; the reference Fock is always exact. Python: `auxbasis=None` is `exact`. |
+| `auxbasis` | string | none | a bundled auxiliary basis, e.g. `cc-pvdz-ri` | Required by `integrals = "ri"` and an error with `exact`. Python `auxbasis`. |
+| `frozen_core` | integer | `0` | ≥ 0 | Lowest occupied orbitals of each spin left out of the correlation and of the singles energy. Python `frozen_core`. |
 
 ## `[local]`
 

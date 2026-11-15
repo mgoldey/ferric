@@ -295,6 +295,25 @@ energy's finite difference to the stencil's h² error (3.1e-7 at h = 1e-3,
 **MP3** (`mp3`, `examples/water-mp3.toml`, `run_mp3`): spin-orbital
 third-order Møller–Plesset through the `einsum!` framework. Proven.
 
+## OP-MP3
+
+**OP-MP3, SOP-MP3 and SSD-OPMP3** (`opmp3`, `examples/oh-opmp3-pbe0.toml`,
+`run_opmp3`): the orbital-partitioned Padé resummation of MP3 of Bystrom,
+Berkelbach and Hait (arXiv:2609.25330). The second- and third-order pair
+energies are collected into occupied-orbital matrices W⁽²⁾ and W⁽³⁾, split into
+same-spin and opposite-spin channels, and resummed as
+Tr W⁽²⁾(W⁽²⁾ − xW⁽³⁾)⁻¹W⁽²⁾. SSD-OPMP3 damps the same-spin third order by the
+`x_ss` the paper prints for each reference (HF 0, PBE0 0.5, PBE 0.7, r²SCAN
+0.6, …). The reference is RHF/ROHF or RKS/ROKS; the perturbation theory is
+built on the HF Fock operator of its density, with semicanonical orbitals and
+the non-Brillouin singles energy, and every total is E_HF[ρ] + E_NBS + E_c.
+Exact integrals by default (`[opmp3] integrals = "ri"` with `auxbasis`
+otherwise); energy only. Smoke: the resummation reproduces the paper's
+per-reaction W4-17 errors from its own W matrices, and the reference path is
+compared with the paper's Q-Chem values (see the
+[validation page](../reference/validation.md)). Derivation:
+`crates/ferric-mp2/theory.md` §6.2.
+
 ## Laplace formulations
 
 **RI-Laplace MP2** (`laplace-mp2`, `examples/water-laplace-rimp2.toml`,

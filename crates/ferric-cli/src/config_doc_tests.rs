@@ -100,6 +100,7 @@ fn accepted_keys_by_section() -> BTreeMap<&'static str, BTreeSet<&'static str>> 
         ("eom", fields_of::<EomCfg>()),
         ("cas", fields_of::<CasCfg>()),
         ("cas.ci", fields_of::<CasCiCfg>()),
+        ("opmp3", fields_of::<crate::opmp3::Opmp3Cfg>()),
         ("cdft", fields_of::<CdftCfg>()),
         ("cdft.constraint", fields_of::<CdftConstraintCfg>()),
         ("local", fields_of::<LocalCfg>()),

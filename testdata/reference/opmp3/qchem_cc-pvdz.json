@@ -1,0 +1,255 @@
+{
+ "provenance": {
+  "source": "Zenodo 10.5281/zenodo.23482348, SI_pade_paper/wmatrix_code/tests/data (Q-Chem 6.4; HF and PBE0 with the SG-1 grid; scf_convergence 9; cc-pVDZ, all electrons, exact integrals; tag restricted = RO reference, base = unrestricted)",
+  "generator": "scripts/gen_opmp3_paper_fixtures.py",
+  "sha256": {
+   "wmatrix_code/tests/data/ch2.xyz": "8111bcb76663454411b5b5bb3b0e42a96b4897820a52fb18adf3053dd78c4cf1",
+   "wmatrix_code/tests/data/references/ch2_hf_cc-pvdz_restricted.json": "190490342624a2205c2e71a674a4dbc0edbff6ea9da74b4e5b874a86f6b1e385",
+   "wmatrix_code/tests/data/references/ch2_pbe0_cc-pvdz_restricted.json": "fc615d0dc3fe94f3b659886d155e3c4ac00ac3e4c10d8052a3afd88e6844555f",
+   "wmatrix_code/tests/data/ch3.xyz": "40f0f7255532bf02b9abf19a027856476567293ff3656ce5378ad4552141bbd8",
+   "wmatrix_code/tests/data/references/ch3_hf_cc-pvdz_restricted.json": "bfa9db6c61afc58be73c13b10d02402ceb8798a38116c82c533100dfa9fc04f9",
+   "wmatrix_code/tests/data/references/ch3_pbe0_cc-pvdz_restricted.json": "3763bad0588a0bee275d006ada20ff11f7422faf5969e417d2f3962d61a43f3a",
+   "wmatrix_code/tests/data/cn.xyz": "0715f1db1eb678919fdb166777483f0d2dba129979387feac3b4529d06334064",
+   "wmatrix_code/tests/data/references/cn_hf_cc-pvdz_restricted.json": "ac3491ec35cc337198bf302760001ce6067ffacf31e972b798f5c5c7e7627b0a",
+   "wmatrix_code/tests/data/references/cn_pbe0_cc-pvdz_restricted.json": "5eb31e8dc10dc4175d40dfa568285495fa9e244fee2c6ab4ab87e8085adadfd9",
+   "wmatrix_code/tests/data/hco.xyz": "af10401edae9791c105e86e2dd04f5eb3d5f50c7bb6eb57b239d79c0aee88580",
+   "wmatrix_code/tests/data/references/hco_hf_cc-pvdz_restricted.json": "4be6a797d0e70c2afa9ad450ee9afe9585381e4b471f85e76334296564810313",
+   "wmatrix_code/tests/data/references/hco_pbe0_cc-pvdz_restricted.json": "eade34daa1f02c642b3b0517c318479840e0db7b9fbbe397fe966d39b27a6bc9",
+   "wmatrix_code/tests/data/h2o.xyz": "84879535cb4a51608a652a800a529f643b76ed39ee6e62731dcd14c8ed01e2a7",
+   "wmatrix_code/tests/data/references/h2o_hf_cc-pvdz_base.json": "c4f45fc1f2d68af0c334f20ba0225d769f6b86e4196513ff0d16f9921ce005b3",
+   "wmatrix_code/tests/data/references/h2o_pbe0_cc-pvdz_base.json": "1fe1e4aa9e99649d2f9367da788d2bbb8c1563b6cfbb73b60c1e479e8044b9f4",
+   "wmatrix_code/tests/data/he.xyz": "8c32c6e1437070ec37e7e87961be21ddc822827ceb82d63dd7579cfef55570de",
+   "wmatrix_code/tests/data/references/he_hf_cc-pvdz_base.json": "0b508703c2888476ce0c0d47dedd0e4de6d9b787f87f76fdb56613a7bc010f20",
+   "wmatrix_code/tests/data/references/he_pbe0_cc-pvdz_base.json": "5abc11a940b8a6efc3b4a3fcf436c5c3fd220b831c6d202910edefbb04fc5555",
+   "wmatrix_code/tests/data/h.xyz": "11fb61f43428eb09afe6c5883431027be56e3b0e54fb93f1e66175b8a13003b6",
+   "wmatrix_code/tests/data/references/h_hf_cc-pvdz_base.json": "bae01aceeecd0360b442dade52c32e5709f868c7ad4605c489f1fade23898615",
+   "wmatrix_code/tests/data/references/h_pbe0_cc-pvdz_base.json": "9634a6f02f701d5bf595351e4dadd925afa5b545aab2ead9a1270184de8876d2"
+  }
+ },
+ "molecules": {
+  "ch2": {
+   "xyz": "3\n0 3\nC 0.0000000000 0.0000000000 0.0000000000\nH 0.0000000000 0.0000000000 1.0772603900\nH 0.7796192198 0.0000000000 -0.7434270778\n",
+   "tag": "restricted",
+   "hf": {
+    "e_hf": -38.9214564,
+    "e_nbs": -0.0028604235,
+    "tr_w2_ss": -0.0215529743,
+    "tr_w2_os": -0.0752042114,
+    "tr_w3": -0.01676304,
+    "decimals": {
+     "e_hf": 7,
+     "e_nbs": 10,
+     "tr_w2_ss": 10,
+     "tr_w2_os": 10,
+     "tr_w3": 8
+    }
+   },
+   "pbe0": {
+    "e_hf": -38.91932819,
+    "e_nbs": -0.0046449674,
+    "tr_w2_ss": -0.021909445599999997,
+    "tr_w2_os": -0.0763027725,
+    "tr_w3": -0.0169113,
+    "decimals": {
+     "e_hf": 8,
+     "e_nbs": 10,
+     "tr_w2_ss": 18,
+     "tr_w2_os": 10,
+     "tr_w3": 7
+    }
+   }
+  },
+  "ch3": {
+   "xyz": "4\n0 2\nC 0.0000000000 0.0000000000 0.0000000000\nH 0.0000000000 0.0000000000 1.0777000000\nH 0.9333155777 0.0000000000 -0.5388500000\nH -0.9333155777 -0.0000000000 -0.5388500000\n",
+   "tag": "restricted",
+   "hf": {
+    "e_hf": -39.55962938,
+    "e_nbs": -0.0024309228,
+    "tr_w2_ss": -0.02525172,
+    "tr_w2_os": -0.1055732686,
+    "tr_w3": -0.01932532,
+    "decimals": {
+     "e_hf": 8,
+     "e_nbs": 10,
+     "tr_w2_ss": 8,
+     "tr_w2_os": 10,
+     "tr_w3": 8
+    }
+   },
+   "pbe0": {
+    "e_hf": -39.55742116,
+    "e_nbs": -0.0044738644,
+    "tr_w2_ss": -0.0257510633,
+    "tr_w2_os": -0.1065565576,
+    "tr_w3": -0.01928863,
+    "decimals": {
+     "e_hf": 8,
+     "e_nbs": 10,
+     "tr_w2_ss": 10,
+     "tr_w2_os": 10,
+     "tr_w3": 8
+    }
+   }
+  },
+  "cn": {
+   "xyz": "2\n0 2\nC 0.0000000000 0.0000000000 0.0000000000\nN 0.0000000000 0.0000000000 1.1718200000\n",
+   "tag": "restricted",
+   "hf": {
+    "e_hf": -92.19607469,
+    "e_nbs": -0.0025642741,
+    "tr_w2_ss": -0.0729620496,
+    "tr_w2_os": -0.1979803134,
+    "tr_w3": 0.00428097,
+    "decimals": {
+     "e_hf": 8,
+     "e_nbs": 10,
+     "tr_w2_ss": 10,
+     "tr_w2_os": 10,
+     "tr_w3": 8
+    }
+   },
+   "pbe0": {
+    "e_hf": -92.18114768,
+    "e_nbs": -0.0118798551,
+    "tr_w2_ss": -0.0827835527,
+    "tr_w2_os": -0.2199205946,
+    "tr_w3": 0.01937642,
+    "decimals": {
+     "e_hf": 8,
+     "e_nbs": 10,
+     "tr_w2_ss": 10,
+     "tr_w2_os": 10,
+     "tr_w3": 8
+    }
+   }
+  },
+  "hco": {
+   "xyz": "3\n0 2\nO 0.0000000000 0.0000000000 0.0000000000\nC 0.0000000000 0.0000000000 1.1784868400\nH 0.9232793002 0.0000000000 1.8118709767\n",
+   "tag": "restricted",
+   "hf": {
+    "e_hf": -113.25350589,
+    "e_nbs": -0.0030864969,
+    "tr_w2_ss": -0.08062569359999999,
+    "tr_w2_os": -0.2225824777,
+    "tr_w3": -0.00092831,
+    "decimals": {
+     "e_hf": 8,
+     "e_nbs": 10,
+     "tr_w2_ss": 17,
+     "tr_w2_os": 10,
+     "tr_w3": 8
+    }
+   },
+   "pbe0": {
+    "e_hf": -113.24441206,
+    "e_nbs": -0.0111687212,
+    "tr_w2_ss": -0.0853012695,
+    "tr_w2_os": -0.2327485112,
+    "tr_w3": 0.00352434,
+    "decimals": {
+     "e_hf": 8,
+     "e_nbs": 10,
+     "tr_w2_ss": 10,
+     "tr_w2_os": 10,
+     "tr_w3": 8
+    }
+   }
+  },
+  "h2o": {
+   "xyz": "3\n0 1\nO 0.0000000000 0.0000000000 0.0000000000\nH 0.0000000000 0.0000000000 0.9579000000\nH 0.9289588892 0.0000000000 -0.2336831018\n",
+   "tag": "base",
+   "hf": {
+    "e_hf": -76.026768,
+    "e_nbs": -0.0,
+    "tr_w2_ss": -0.0515391078,
+    "tr_w2_os": -0.1525093038,
+    "tr_w3": -0.00678378,
+    "decimals": {
+     "e_hf": 6,
+     "e_nbs": 1,
+     "tr_w2_ss": 10,
+     "tr_w2_os": 10,
+     "tr_w3": 8
+    }
+   },
+   "pbe0": {
+    "e_hf": -76.02449719,
+    "e_nbs": -0.001987324,
+    "tr_w2_ss": -0.05213557,
+    "tr_w2_os": -0.1543910194,
+    "tr_w3": -0.00633424,
+    "decimals": {
+     "e_hf": 8,
+     "e_nbs": 9,
+     "tr_w2_ss": 8,
+     "tr_w2_os": 10,
+     "tr_w3": 8
+    }
+   }
+  },
+  "he": {
+   "xyz": "1\n0 1\nHe 0 0 0\n",
+   "tag": "base",
+   "hf": {
+    "e_hf": -2.85516048,
+    "e_nbs": -0.0,
+    "tr_w2_ss": 0.0,
+    "tr_w2_os": -0.0258283396,
+    "tr_w3": -0.00537237,
+    "decimals": {
+     "e_hf": 8,
+     "e_nbs": 1,
+     "tr_w2_ss": 1,
+     "tr_w2_os": 10,
+     "tr_w3": 8
+    }
+   },
+   "pbe0": {
+    "e_hf": -2.855156,
+    "e_nbs": -4.1391e-06,
+    "tr_w2_ss": 0.0,
+    "tr_w2_os": -0.0258327367,
+    "tr_w3": -0.00537374,
+    "decimals": {
+     "e_hf": 6,
+     "e_nbs": 4,
+     "tr_w2_ss": 1,
+     "tr_w2_os": 10,
+     "tr_w3": 8
+    }
+   }
+  },
+  "h": {
+   "xyz": "1\n0 2\nH 0 0 0\n",
+   "tag": "base",
+   "hf": {
+    "e_hf": -0.4992784,
+    "e_nbs": -0.0,
+    "tr_w2_ss": 0.0,
+    "tr_w2_os": 0.0,
+    "tr_w3": 0.0,
+    "decimals": {
+     "e_hf": 7,
+     "e_nbs": 1,
+     "tr_w2_ss": 1,
+     "tr_w2_os": 1,
+     "tr_w3": 1
+    }
+   },
+   "pbe0": {
+    "e_hf": -0.49926487,
+    "e_nbs": -8.6034e-06,
+    "tr_w2_ss": 0.0,
+    "tr_w2_os": 0.0,
+    "tr_w3": 0.0,
+    "decimals": {
+     "e_hf": 8,
+     "e_nbs": 4,
+     "tr_w2_ss": 1,
+     "tr_w2_os": 1,
+     "tr_w3": 1
+    }
+   }
+  }
+ }
+}

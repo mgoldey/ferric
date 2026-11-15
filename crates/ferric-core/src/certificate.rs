@@ -192,6 +192,7 @@ pub const METHOD_KIND_GRADES: &[(&str, Grade)] = &[
     ("tddft", Grade::ProvenNarrow),
     ("casscf", Grade::Proven),
     ("nevpt2", Grade::Proven),
+    ("opmp3", Grade::Smoke),
 ];
 
 /// The recorded grade of a CLI `method.kind`; [`Grade::Ungraded`] when the

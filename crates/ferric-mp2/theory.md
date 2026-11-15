@@ -288,6 +288,95 @@ peak `u_mp3_peak_bytes` (`u_mp3.rs:373`) is pre-flighted and charged; it
 matches the measured heap high-water to < 0.5 KiB
 (`tests/u_mp3_peak_matches_the_heap.rs`).
 
+### 6.2 Orbital-partitioned Padé MP3 (OP-MP3)
+
+`ferric_mp2::opmp3` resums the MP3 series orbital by orbital (Bystrom,
+Berkelbach, Hait, arXiv:2609.25330). The pair energies of §6.1 are
+collected into a symmetric matrix over occupied spin orbitals,
+
+$$ W^{(n)}_{ij} = \tfrac18\sum_{kab}\big(t^{(n-1)}_{ikab}\langle jk\|ab\rangle + t^{(n-1)}_{jkab}\langle ik\|ab\rangle\big), \qquad \operatorname{Tr}W^{(n)} = E^{(n)} $$
+
+(Eq. 11a; $t^{(1)} = c^{(1)}$, $t^{(2)} = c^{(2)}$). Spin conserves the
+pair, so $W$ is block diagonal in the spin of $i,j$. Splitting each block by
+the spin of the summed $k$ gives the same-spin and opposite-spin channels
+(`w_channels`, `opmp3.rs:122`):
+
+$$ W^{SS,\sigma}_{ij} = \tfrac18\sum_{kab}c^{\sigma\sigma}_{ikab}K^{\sigma\sigma}_{jkab} + (i\leftrightarrow j), $$
+$$ W^{OS,\alpha}_{ij} = \tfrac14\sum_{KaB}c^{\alpha\beta}_{iKaB}K^{\alpha\beta}_{jKaB} + (i\leftrightarrow j), \qquad
+W^{OS,\beta}_{IJ} = \tfrac14\sum_{kaB}c^{\alpha\beta}_{kIaB}K^{\alpha\beta}_{kJaB} + (I\leftrightarrow J). $$
+
+The opposite-spin prefactor is ¼, not ⅛: with $k$ of the other spin, the
+orderings $(a\bar B)$ and $(\bar B a)$ of the virtual pair both map onto the
+stored αβ block with the same sign, which doubles the sum (Eq. 18). Then
+$\operatorname{Tr}W^{SS} = E_{\alpha\alpha}+E_{\beta\beta}$ and
+$\operatorname{Tr}W^{OS} = E_{\alpha\beta}$ at both orders; the traces of
+$W^{OS,\alpha}$ and $W^{OS,\beta}$ are each half of $E_{\alpha\beta}$.
+The β OS block is built from the αβ tensors with their first two axes
+swapped (`beta_first`, `opmp3.rs:110`). A spin with fewer than two occupied
+orbitals has no same-spin pair, and its $W^{SS}$ is set to exact zeros.
+
+The matrix Padé of symmetric $A=W^{(2)}$ and $B=xW^{(3)}$ (Eq. 13;
+`pade`, `opmp3.rs:169`) is
+
+$$ P(A,B) = A\,(A-B)^{-1}A, \qquad \operatorname{Tr}P(A,tB) = \operatorname{Tr}A + t\operatorname{Tr}B + t^2\operatorname{Tr}\big[B A^{-1} B\big] + O(t^3). $$
+
+Its first two Taylor coefficients in $t$ are $E^{(2)}$ and $E^{(3)}$, so the
+series limit is MP3. For commuting $A$ and $B$, each eigenvalue gets the
+scalar Padé $a^2/(a-b)$. The code diagonalizes $A-B = V\Lambda V^{\mathsf T}$ and
+forms $P = (AV)\Lambda^{-1}(AV)^{\mathsf T}$. An eigenvalue below
+$10^{-12}\max|\lambda|$ is a singular denominator and an error. Rows where $A$
+is identically zero (a channel with no pairs) are left out, so $P(0,0)=0$.
+$P$ of a block-diagonal pair is the block-diagonal $P$ of the blocks, so
+$\operatorname{Tr}P$ of two non-interacting fragments is the sum of the
+fragments' traces, and every model below is size-consistent. The scalar Padé
+$E_2^2/(E_2-E_3)$ (P-MP3, `scalar_pade`, `opmp3.rs:241`) is not, since
+$(a_1+a_2)^2/(a_1+a_2-b_1-b_2) \ne a_1^2/(a_1-b_1)+a_2^2/(a_2-b_2)$ in general.
+It is kept as the negative control.
+
+The models (`Opmp3Models::evaluate`, `opmp3.rs:271`) are
+
+$$ E_c^{\text{OP-MP3}(x)} = \sum_\sigma \operatorname{Tr}P\big(W^{(2)}_\sigma, xW^{(3)}_\sigma\big), $$
+$$ E_c^{\text{SOP-MP3}(x_{ss},x_{os})} = \sum_\sigma \Big[\operatorname{Tr}P\big(W^{(2),SS}_\sigma, x_{ss}W^{(3),SS}_\sigma\big) + \operatorname{Tr}P\big(W^{(2),OS}_\sigma, x_{os}W^{(3),OS}_\sigma\big)\Big], $$
+$$ E_c^{\text{SSD-OPMP3}(x_{ss})} = E_c^{\text{SOP-MP3}(x_{ss},1)}, $$
+
+with $W_\sigma = W^{SS}_\sigma + W^{OS}_\sigma$ (Eqs. 14, 19–22). OP-MP3 and
+SOP-MP3 are reported at $x = 1$. SSD-OPMP3 uses the same-spin damping the
+paper prints for each reference (`PAPER_X_SS`, `opmp3.rs:34`): HF 0, PBE0
+0.5, PBE 0.7, SPW92 0.75, r²SCAN 0.6, ωB97X-V and ωB97M-V 0.5, κOOMP2 0.45.
+
+**Reference.** For a DFT reference, the perturbation theory is built on the
+HF Fock operator of the KS density (`opmp3_reference`,
+`opmp3_reference.rs:187`). From the converged spin densities $D_\sigma$,
+
+$$ F_\sigma = h + J[D_\alpha + D_\beta] - K[D_\sigma], \qquad
+E_{\text{HF}}[\rho] = E_{nn} + \tfrac12\sum_\sigma \operatorname{Tr}\big[D_\sigma(h + F_\sigma)\big], $$
+
+with $h$ the SCF's own one-electron operator (including ECP and X2C when
+used). The occupied and virtual blocks of each $F_\sigma$ are diagonalized
+separately in the SCF orbitals (semicanonicalization; `semicanonical_spin`,
+`opmp3_reference.rs:111`). This leaves the density, and so $E_{\text{HF}}[\rho]$,
+unchanged, and gives the orbital energies $\varepsilon_{p\sigma}$ for the
+denominators of §6.1. The remaining $F^\sigma_{ia}$, zero only for a UHF
+reference, enter through the non-Brillouin singles energy
+
+$$ E_{\text{NBS}} = \sum_\sigma\sum_{i\,\text{active},\,a}\frac{(F^\sigma_{ia})^2}{\varepsilon_{i\sigma}-\varepsilon_{a\sigma}} $$
+
+(`SemicanonicalSpin::singles_energy`, `opmp3_reference.rs:53`; frozen-core
+orbitals are excluded). The total is
+$E = E_{\text{HF}}[\rho] + E_{\text{NBS}} + E_c$ (`Opmp3Result::total`,
+`opmp3_driver.rs:161`). The paper uses spin-restricted references: RHF or RKS
+for singlets, ROHF or ROKS otherwise (`opmp3_scf`, `opmp3_driver.rs:168`). A
+UHF result is also accepted, with $E_{\text{NBS}}=0$.
+
+[`scripts/opmp3_identities_sympy.py`](../../scripts/opmp3_identities_sympy.py)
+proves four identities: (a) the Eq. 18 SS/OS split of the spin-orbital
+Eq. 11a, with the ¼ OS prefactor; (b) the Padé Taylor coefficients and its
+commuting-block scalar limit; (c) block additivity of $\operatorname{Tr}P$, and
+the scalar Padé's failure of it; (d) $\operatorname{Tr}W^{(n)} = E^{(n)}$, checked
+against brute-force Rayleigh–Schrödinger theory. Each identity has a recorded
+mutation that turns it red (runner
+`crates/ferric-python/tests/test_opmp3_identities_sympy.py`).
+
 ## 7. Orbital-optimized RI-MP2
 
 **Functional.** `oo_ri_mp2` minimizes $E(C) = E_{\mathrm{HF}}(C) + E^{(2)}_{\mathrm{RI}}(C)$

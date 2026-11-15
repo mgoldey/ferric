@@ -67,6 +67,12 @@ pub mod mpi_rimp2;
 pub mod oo_rimp2;
 /// OO-RI-MP2 analytical nuclear gradient.
 pub mod oo_rimp2_gradient;
+/// Orbital Padé MP3 (OP-MP3, SOP-MP3, SSD-OPMP3): W matrices, matrix Padé, models.
+pub mod opmp3;
+/// OP-MP3 runs shared by the CLI and Python: reference SCF through the models.
+pub mod opmp3_driver;
+/// The OP-MP3 reference: HF Fock of the reference density, semicanonical orbitals, E_NBS.
+pub mod opmp3_reference;
 /// Geometry optimization using MP2 gradients.
 pub mod optimize;
 /// GEMM building blocks of the OO-MP2 orbital gradients and the U-MP2 density.

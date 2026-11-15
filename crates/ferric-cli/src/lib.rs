@@ -11,6 +11,7 @@ mod cas;
 mod cdft;
 mod config;
 mod gpu_flag;
+mod opmp3;
 mod periodic;
 mod polarization;
 
@@ -156,6 +157,14 @@ pub const EPISTEMIC_WARNINGS: &[(&str, &str)] = &[
          returning it, so if the job aborts on an unphysical alpha diagonal, set [gw] scissor \
          to ~0.3-0.4 Ha rather than treating it as a crash.",
     ),
+    (
+        "opmp3",
+        "method.kind = \"opmp3\" is Smoke-grade (see site/src/reference/validation.md): the \
+         resummation reproduces the paper's per-reaction W4-17 errors from its W matrices, \
+         ferric's own HF-reference W, E_HF and E_NBS match the paper's on six small structures, \
+         and HF/PBE0 references match Q-Chem at cc-pVDZ; DFT references beyond PBE0 and larger \
+         systems are not compared with an independent code.",
+    ),
 ];
 
 /// Every `method.kind` the CLI dispatches, in the order the unknown-kind
@@ -199,6 +208,7 @@ pub const SUPPORTED_METHOD_KINDS: &[&str] = &[
     "tddft",
     "casscf",
     "nevpt2",
+    "opmp3",
 ];
 
 /// The error text for an unrecognised `method.kind`, listing every entry of
@@ -595,6 +605,13 @@ pub fn run(args: Vec<String>) {
     // already resolved the `[cas]` plan and refused every key it would not read.
     if matches!(method, "casscf" | "nevpt2") {
         cas::run_cas(&cfg, cli_gpu.is_some());
+        return;
+    }
+    // OP-MP3 runs its own restricted reference SCF through
+    // `ferric_mp2::opmp3_driver` (the Python binding's code path); `load_config`
+    // already resolved the `[opmp3]` plan and refused every key it would not read.
+    if method == "opmp3" {
+        opmp3::run_opmp3(&cfg, cli_gpu.is_some());
         return;
     }
     // [dft] dispersion on `optimize` / `frequencies`: the correction is

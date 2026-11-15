@@ -487,6 +487,17 @@ fn amplitudes(
     Ok((ints, c1, c2))
 }
 
+/// One spin of a reference determinant handed to [`u_mp3_from_orbitals`].
+#[derive(Debug, Clone, Copy)]
+pub struct UMp3SpinReference<'a> {
+    /// MO coefficients `(nbas, nmo)`, occupied first.
+    pub mos: &'a ndarray::Array2<f64>,
+    /// Orbital energies used in the denominators, at least `nmo` of them.
+    pub eps: &'a [f64],
+    /// Occupied orbitals of this spin (frozen core included).
+    pub nocc: usize,
+}
+
 /// Spin-blocked MP2 + MP3 from an RHF, UHF or ROHF/ROKS reference, keeping
 /// `c^(1)` and `c^(2)` per spin channel.
 ///
@@ -502,6 +513,39 @@ pub fn u_mp3(
     config: &UMp3Config,
 ) -> Result<UMp3Result, FerricError> {
     let orbs = reference_orbitals(mol, scf, config.frozen_core)?;
+    run_on_orbitals(obs, op, orbs, scf.energy, eri, config)
+}
+
+/// [`u_mp3`] on explicitly given per-spin orbitals `[α, β]` and reference
+/// energy `e_ref`, for a caller that built its own (semi)canonical orbitals.
+///
+/// The orbitals are used as given: the denominators take `eps`, and nothing
+/// is semicanonicalized. `config.frozen_core` drops the first occupied
+/// orbitals of each spin.
+pub fn u_mp3_from_orbitals(
+    obs: &PreparedBasis,
+    op: Operator,
+    spins: [UMp3SpinReference<'_>; 2],
+    e_ref: f64,
+    eri: UMp3Eri<'_>,
+    config: &UMp3Config,
+) -> Result<UMp3Result, FerricError> {
+    let [a, b] = spins;
+    let orbs = [
+        spin_orbitals(a.mos, a.eps, a.nocc, config.frozen_core)?,
+        spin_orbitals(b.mos, b.eps, b.nocc, config.frozen_core)?,
+    ];
+    run_on_orbitals(obs, op, orbs, e_ref, eri, config)
+}
+
+fn run_on_orbitals(
+    obs: &PreparedBasis,
+    op: Operator,
+    orbs: [SpinOrbitals; 2],
+    e_ref: f64,
+    eri: UMp3Eri<'_>,
+    config: &UMp3Config,
+) -> Result<UMp3Result, FerricError> {
     let (exact, naux, kind) = match eri {
         UMp3Eri::Exact => (true, 0, UMp3EriKind::Exact),
         UMp3Eri::Ri { aux } => (false, aux.nbasis(), UMp3EriKind::Ri),
@@ -538,10 +582,10 @@ pub fn u_mp3(
         crate::rimp2::charge_mo_side(&format!("{label} amplitudes"), held_result_bytes(&dims))?;
     let [a, b] = orbs;
     Ok(UMp3Result {
-        e_ref: scf.energy,
+        e_ref,
         e2,
         e3,
-        e_total: scf.energy + e2.total() + e3.total(),
+        e_total: e_ref + e2.total() + e3.total(),
         ints,
         c1,
         c2,

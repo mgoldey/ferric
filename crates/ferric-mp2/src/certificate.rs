@@ -496,6 +496,24 @@ fn in_double_hybrid_anchor_scope(
         && cfg.frozen_core <= 1
 }
 
+/// OP-MP3 (`method.kind = "opmp3"`) on `reference`: RI with `aux` when given
+/// (exact four-centre otherwise), `frozen_core`, and the SSD-OPMP3 same-spin
+/// damping `x_ss`.
+pub fn opmp3_certificate(
+    reference: &Certificate,
+    aux: Option<&str>,
+    frozen_core: usize,
+    x_ss: f64,
+) -> Certificate {
+    let c = Certificate::for_post_scf("opmp3", reference);
+    let c = match aux {
+        Some(a) => c.with_ri(a),
+        None => c,
+    };
+    c.with_frozen_core(frozen_core)
+        .with_approximation("ssd-opmp3", format!("x_ss = {x_ss}"))
+}
+
 /// MP2-based double hybrid (`kind` is `b2plyp` or `dsd-pbep86`) run with
 /// `cfg`: scaled RI-MP2 on the functional's own Kohn-Sham `reference`.
 /// Each kind carries its anchor inside the scope of its evidence (see

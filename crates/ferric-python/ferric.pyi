@@ -1816,6 +1816,50 @@ class OoRiMp2Result:
         """The SCF's JK-fitting basis (None for "exact")."""
         ...
 
+class Opmp3Result:
+    """Result of an OP-MP3 calculation (``run_opmp3``)."""
+
+    @property
+    def e_scf(self) -> float:
+        """The reference SCF energy as converged (the KS energy for DFT)."""
+        ...
+    @property
+    def e_hf(self) -> float:
+        """HF energy of the reference density."""
+        ...
+    @property
+    def e_nbs(self) -> float:
+        """Non-Brillouin singles energy."""
+        ...
+    @property
+    def x_ss(self) -> float:
+        """SSD-OPMP3 same-spin damping used."""
+        ...
+    @property
+    def correlation(self) -> dict[str, float]:
+        """Correlation energy of every model, keyed ``mp2``, ``mp3``,
+        ``p-mp3``, ``op-mp3``, ``sop-mp3``, ``ssd-opmp3`` (Hartree, without
+        ``e_hf`` or ``e_nbs``)."""
+        ...
+    def total(self, model: str) -> float:
+        """``e_hf + e_nbs + correlation[model]``."""
+        ...
+    def w(self, order: int) -> dict[str, NDArray[np.float64]]:
+        """W matrices of ``order`` 2 or 3, keyed ``alpha_ss``, ``alpha_os``,
+        ``beta_ss``, ``beta_os`` (active occupied of that spin)."""
+        ...
+    @property
+    def max_ov(self) -> tuple[float, float]:
+        """``max |F_ia|`` per spin in the semicanonical basis."""
+        ...
+    @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (schema of ``RhfResult.certificate``):
+        ``capability`` (``"opmp3"``), its grade capped by the reference
+        SCF's, the method's settings in ``approximations`` and the
+        reference's as ``"scf <name>"``, and ``warnings``."""
+        ...
+
 class Mp3Result:
     """Result of an MP3 calculation."""
 
@@ -5022,6 +5066,25 @@ def run_mp3(
     scf_density_conv: float | None = None,
 ) -> Mp3Result:
     """Spin-orbital MP3 via einsum."""
+    ...
+
+def run_opmp3(
+    mol: Molecule,
+    basis_set: BasisSet,
+    reference: str = "hf",
+    x_ss: float | None = None,
+    auxbasis: BasisSet | None = None,
+    frozen_core: int | None = None,
+    memory_budget_gb: float | None = None,
+    scf_max_iter: int | None = None,
+    scf_energy_conv: float | None = None,
+    scf_density_conv: float | None = None,
+) -> Opmp3Result:
+    """OP-MP3, SOP-MP3, SSD-OPMP3 (and MP2, MP3, scalar Pade) on an RHF/ROHF
+    (``reference="hf"``) or RKS/ROKS (``reference=<functional>``) reference,
+    built on the HF Fock of the reference density with non-Brillouin
+    singles. ``x_ss=None`` uses the paper's printed damping for the
+    reference; ``auxbasis=None`` runs exact four-centre integrals."""
     ...
 
 def run_laplace_mp2(

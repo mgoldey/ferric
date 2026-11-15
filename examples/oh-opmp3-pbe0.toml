@@ -1,0 +1,17 @@
+# SSD-OPMP3 on a restricted open-shell PBE0 reference (Bystrom, Berkelbach,
+# Hait, arXiv:2609.25330): ROKS/PBE0, the HF Fock of its density,
+# semicanonical orbitals and non-Brillouin singles, then the matrix Pade of
+# W^(2) and W^(3) with the paper's x_ss = 0.5 for PBE0. Exact integrals, all
+# electrons. Smoke grade.
+[molecule]
+xyz = "testdata/molecules/oh.xyz"
+multiplicity = 2
+
+[basis]
+name = "cc-pvdz"
+
+[method]
+kind = "opmp3"
+
+[opmp3]
+reference = "pbe0"
