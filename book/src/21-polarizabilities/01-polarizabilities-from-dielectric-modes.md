@@ -210,9 +210,7 @@ region.
 
 **Known limits (2026-11-15).** Direct RPA: the kernel has no exchange, so the
 static tensor is not the CPHF polarizability. `response_modes` is closed shell
-only, and refuses a negative or non-finite $u$ and `n_modes = 0`. The
-`theory.md` section on dispersion carries the per-atom kernel; the molecular
-forms (21.1) to (21.4) are derived here and in the proof script.
+only, and refuses a negative or non-finite $u$ and `n_modes = 0`.
 
 ## 21.1.6 Numerical anchors
 
@@ -228,6 +226,7 @@ $\alpha(iu)$ rows of the properties table):
 
 | Source | What it gives |
 |---|---|
+| `crates/ferric-rpa/theory.md`, "Dispersion: Casimir-Polder C6" | (21.1) to (21.4), the per-atom kernel |
 | `crates/ferric-rpa/src/response_modes.rs`, module documentation | the mode form (21.3) and the meaning of a mode |
 | `scripts/rpa_response_modes_sympy.py`, claims M1 to M4 | (21.2) to (21.4) |
 | `scripts/rpa_c6_polarizability_sympy.py`, check `kernel-vs-casida` | the sum-over-excitations route |

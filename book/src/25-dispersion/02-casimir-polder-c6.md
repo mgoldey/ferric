@@ -189,6 +189,5 @@ Casimir–Polder C6" and "TS C6 and MBD@TS").
 | `scripts/rpa_c6_polarizability_sympy.py` | verified boxes |
 | book section 27.3 | the exported arrays and their conventions |
 
-Changes from the sources: theory.md writes the imaginary frequency as
-$\omega$ and the orbital-energy gap as $e_{ia}$; this section writes $u$ and
-$\Delta_i^a$.
+Changes from the sources: none to notation; theory.md and this section both
+write the imaginary frequency $u$ and the orbital-energy gap $\Delta_i^a$.

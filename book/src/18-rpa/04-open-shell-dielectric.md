@@ -104,6 +104,4 @@ From `site/src/reference/validation.md` (open-shell PDEP-RPA row):
 | `scripts/rpa_drpa_pdep_sympy.py`, check group 8 | the proof |
 
 **Known limits (2026-11-15).** Energy only; no gradient. CLI only. The
-`theory.md` section says the frequency projection and trace-log integration
-are "those of the closed-shell path"; they are, except that the open-shell
-driver never takes the log-det branch.
+open-shell driver never takes a log-det branch (`theory.md` states this).

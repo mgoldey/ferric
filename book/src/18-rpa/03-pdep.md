@@ -12,10 +12,10 @@ diagonalized there. With every mode kept the result is the auxiliary-basis
 energy exactly. With truncation it is the energy of the projected dielectric
 matrix.
 
-This section describes the loop the code runs. It differs in two places from
-the description in `crates/ferric-rpa/theory.md`: the default static solve is
-one dense diagonalization, not an iterative one, and the frequency loop
-diagonalizes the projected matrix (both are listed under "Known limits").
+This section describes the loop the code runs, as does
+`crates/ferric-rpa/theory.md`, "The PDEP Eigenpotential Approach": the
+default static solve is one dense diagonalization, not an iterative one, and
+the frequency loop diagonalizes the projected matrix.
 
 | Index | Range | Code name |
 |---|---|---|
@@ -222,9 +222,6 @@ the test's own assertion.
 
 **Known limits (2026-11-15).**
 
-- `crates/ferric-rpa/theory.md` says the static matrix is "diagonalized
-  iteratively (block Lanczos by default)". The default is one dense
-  diagonalization (step 2).
 - In `crates/ferric-rpa/src/energy.rs` an orphaned doc block written for
   `eval_eigenvalues_at_frequencies` sits on top of
   `eval_eigenvalues_at_frequencies_laplace` and says it "uses the diagonal of
