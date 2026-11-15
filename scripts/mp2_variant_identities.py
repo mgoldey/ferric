@@ -42,11 +42,14 @@ it. Exits nonzero on the first failure.
   6  Cayley rotation (orbital_rotation.rs cayley_rotation :53):
      U = (I - k/2)^-1 (I + k/2) is orthogonal and U - expm(k) = O(|k|^3).
      Control: (I + k/2)^-1 (I - k/2) matches expm(-k), not expm(k).
-  7  CABS (f12.rs build_cabs :99): coefficients [-S_OO^-1 S_Oa v; v]/sqrt(w)
+  7  CABS (f12.rs build_cabs): coefficients [-S_OO^-1 S_Oa v; v]/sqrt(w)
      from the Schur complement S_aa - S_aO S_OO^-1 S_Oa = V w V^T are
      orthonormal in S_RR and orthogonal to OBS. Control: the eigenvectors
      of the full-RIBS complement S_RR - S_RO S_OO^-1 S_OR scaled by
-     w^-1/2, without the OBS projection, are neither.
+     w^-1/2, without the OBS projection, are neither. The same holds on the
+     interleaved atom-major union build_cabs uses (per atom, OBS functions
+     then aux), partitioned by the provenance mask and scattered back.
+     Control: the [O | a] rows read as union rows are not orthogonal to OBS.
 
 Mutations (each turns the script red with the named failing check):
   * claim 1, same-spin numerator (ia|jb) - (ib|ja) -> (ia|jb) + (ib|ja)
@@ -56,6 +59,8 @@ Mutations (each turns the script red with the named failing check):
     ("FAIL sum_PQ J_PQ(t)^2").
   * claim 4, cross-term coefficient 4 s l -> 2 s l ("FAIL E[s+l]").
   * claim 5, (4J - K - K^T) -> (4J - K) in the matvec ("FAIL (4J-K-K^T)").
+  * claim 7, the OBS rows scattered without the minus sign
+    ("FAIL interleaved S_O,R C == 0").
 
 Run: python3 scripts/mp2_variant_identities.py  (needs numpy, scipy)
 """
@@ -424,6 +429,38 @@ def claim7():
     check_differs(
         "unprojected eigenvectors orthonormal in S_RR",
         np.max(np.abs(naive.T @ s @ naive - np.eye(naive.shape[1]))) + 1.0,
+        1.0,
+    )
+
+    # The union as build_cabs builds it: atom-major, each atom's OBS functions
+    # then its aux functions (union_obs_mask), so the two sets interleave.
+    # Partition by the mask, build c in [O | a] order, scatter back.
+    mask = np.array([True] * 3 + [False] * 2 + [True] * 2 + [False] * 4)
+    chi_u = RNG.standard_normal((ngrid, mask.size))
+    s_u = chi_u.T @ chi_u
+    obs_idx, aux_idx = np.flatnonzero(mask), np.flatnonzero(~mask)
+    ls12_u = np.linalg.solve(
+        s_u[np.ix_(obs_idx, obs_idx)], s_u[np.ix_(obs_idx, aux_idx)]
+    )
+    q_u = s_u[np.ix_(aux_idx, aux_idx)] - s_u[np.ix_(obs_idx, aux_idx)].T @ ls12_u
+    w_u, v_u = np.linalg.eigh(q_u)
+    c2_u = v_u[:, w_u > 1e-8] / np.sqrt(w_u[w_u > 1e-8])
+    coeffs_u = np.zeros((mask.size, c2_u.shape[1]))
+    coeffs_u[obs_idx] = -ls12_u @ c2_u
+    coeffs_u[aux_idx] = c2_u
+    n_u = c2_u.shape[1]
+    check_arrays(
+        "interleaved C^T S_RR C == I", coeffs_u.T @ s_u @ coeffs_u, np.eye(n_u)
+    )
+    check_arrays(
+        "interleaved S_O,R C == 0",
+        s_u[obs_idx, :] @ coeffs_u,
+        np.zeros((obs_idx.size, n_u)),
+    )
+    blocked = np.vstack([-ls12_u @ c2_u, c2_u])  # [O | a] rows read as union rows
+    check_differs(
+        "blocked rows used as interleaved rows orthogonal to OBS",
+        np.max(np.abs(s_u[obs_idx, :] @ blocked)) + 1.0,
         1.0,
     )
 

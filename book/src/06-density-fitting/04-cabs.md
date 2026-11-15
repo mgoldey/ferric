@@ -41,9 +41,9 @@ CABS; it has no F12 energy.
 | 3 | $Q$, its eigenvectors, keep $w_k > 10^{-8}$ | `CABS_NULL_THRESH`; drops the orbital-spanned directions and union dependencies |
 | 4 | scatter $[-S_{OO}^{-1}S_{Oa}c_2;\ c_2]$ back to the interleaved order | coefficients over the union functions |
 
-`crates/ferric-mp2/theory.md` writes the union as "ordered $[O\,|\,a]$"; the
-functions are in fact interleaved by atom and reordered for the algebra in
-step 2. The result is the same.
+The functions are interleaved by atom and reordered for the algebra in
+step 2, as `crates/ferric-mp2/theory.md` states; the result does not depend
+on the order.
 
 ## 6.4.2 Numerical anchors
 

@@ -849,14 +849,25 @@ script.
 
 ## 11. CABS for F12
 
-`build_cabs` (`f12.rs:99`) forms the RI basis as the union OBS ∪ aux, ordered
-$[\mathrm{O}\,|\,a]$, and projects OBS out of the auxiliary block:
+`build_cabs` (`f12.rs`) forms the RI basis as the union OBS ∪ aux
+(`union_basis_sets`: per element, the OBS shells then the aux shells). The
+union functions are therefore atom-major and interleaved: on each atom the
+OBS functions come first and that atom's aux functions follow, so neither set
+is contiguous in the union. A provenance mask (`union_obs_mask`) splits the
+union indices into the OBS set $O$ and the aux set $a$, and the overlap
+blocks are taken in that partition. With $S_{OO}$ inverted by
+eigendecomposition (an error if it is not positive definite),
 
 $$ Q = S_{aa} - S_{aO}S_{OO}^{-1}S_{Oa} = V\,w\,V^{\mathsf T}, \qquad
-c_k = \frac{1}{\sqrt{w_k}}\begin{pmatrix} -S_{OO}^{-1}S_{Oa}v_k \\ v_k \end{pmatrix}, \quad w_k > 10^{-8} , $$
+c_k = \frac{1}{\sqrt{w_k}}\begin{pmatrix} -S_{OO}^{-1}S_{Oa}v_k \\ v_k \end{pmatrix}, \quad w_k > 10^{-8} \ (\texttt{CABS\_NULL\_THRESH}) , $$
 
-so $c^{\mathsf T}S_{RR}\,c = I$ and $S_{O,R}\,c = 0$ **[check 7]**. The crate
-builds CABS only; there is no F12 energy.
+written in the partitioned order $[O\,|\,a]$. The rows of each $c_k$ are then
+scattered back to the interleaved union order, so `Cabs::coeffs` is
+$n_{\rm RI}\times n_{\rm CABS}$ over the union functions as
+`PreparedBasis` orders them, `Cabs::s_rr` is the union overlap in that order,
+and `Cabs::s_or` is its OBS rows. A permutation of the union functions leaves
+both properties unchanged, $c^{\mathsf T}S_{RR}\,c = I$ and $S_{O,R}\,c = 0$
+**[check 7]**. The crate builds CABS only; there is no F12 energy.
 
 ## 12. Local MP2
 

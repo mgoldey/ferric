@@ -476,6 +476,11 @@ CASES = [
                 "az = cv.T @ (4.0 * jz - kz) @ co",
                 "FAIL (4J-K-K^T)",
             ),
+            (
+                "coeffs_u[obs_idx] = -ls12_u @ c2_u",
+                "coeffs_u[obs_idx] = ls12_u @ c2_u",
+                "FAIL interleaved S_O,R C == 0",
+            ),
         ],
     ),
     (
