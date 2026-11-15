@@ -108,6 +108,7 @@ See [The MP2 family](../methods/mp2.md).
 | `water-laplace-sos-mp2.toml` | H2O / cc-pVDZ | `laplace-sos-mp2` | — | |
 | `water-mp2v.toml` | H2O / aug-cc-pVDZ | `mp2-v` | — | The header warns that aDZ is outside the fitted basis. Needs the terf tables. |
 | `water-rs-mp2-rpa.toml` | H2O / aug-cc-pVDZ | `rs-mp2-rpa` | — | Proven grade; prints a notice that the ω choice is unbenchmarked. |
+| `water-rs-mp2-rpa-scan.toml` | H2O / aug-cc-pVDZ | `rs-mp2-rpa` | — | Three ω and both formulations in one job (`omega_scan`, `formulations`). |
 
 ## Coupled cluster and double hybrids
 

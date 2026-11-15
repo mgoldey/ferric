@@ -178,6 +178,8 @@ read nothing else from it (plus `linlccd_variant` for `linlccd`); any other
 | `att_r0` | float | `1.05` | Å, > 0 | `att-rimp2` with `att_operator = "terfc"` only; an error with `erfc`. |
 | `att_omega` | float | linked, ω = 1/(r0√2) | Å⁻¹, > 0 | `att-rimp2` with `att_operator = "terfc"` only; an error with `erfc` (use `omega`) and on any other kind. Sets the terfc seam sharpness independently of `att_r0`, via `Operator::terfc_with_omega`; r0·ω = `att_r0` × `att_omega`. Needs `FERRIC_TERF_TABLE_DIR`. With `[local]` integral-direct it takes the same `schwarz_skip` cut as the other operators. |
 | `r0_sweep` | array of floats | none | Å, > 0 | `rs-mp2-rpa` with `terf` only. Reuses one SCF for several r0 values. `r0` is then ignored with a warning. |
+| `omega_scan` | array of floats | none | Å⁻¹, > 0 | `rs-mp2-rpa`. Several ω in one job: one SCF and one ω-independent Coulomb stage, then the erf/erfc stage per ω. One result block per (ω, formulation), ω-major in the order given. Exclusive with `omega`, `r0_sweep` and `terf_omega`. With `attenuator = "terf"` the values are the seam sharpness at the fixed `r0`. |
+| `formulations` | array of strings | none | `delta-lr` `coupled-rings` | `rs-mp2-rpa`. Several formulations in one job (no empty list, no repeats). Exclusive with `formulation`. |
 | `r0_bonded` | float | `0.75` | Å | `scs-mp2-2terfc`. |
 | `r0_nonbonded` | float | `1.05` | Å, > `r0_bonded` | `scs-mp2-2terfc`. |
 | `linlccd_variant` | string | `"hh"` | `hh` `drivers-only` `full` | `linlccd` only (an error on any other kind), exact and local alike: it selects the method. `drivers-only` equals RI-MP2; `full` adds the pp ladder (CCD-like VVVV memory). Any other value is an error. |

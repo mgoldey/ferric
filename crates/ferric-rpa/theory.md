@@ -450,6 +450,39 @@ $P_{vv}$ from $B$, the orbital energies and the grid. The MP2 pipeline
 reads the pair amplitudes only through $x$, so the RPA intermediates carry
 $x$ directly and no $t_2$.
 
+## Range-separated MP2 + RPA: which terms depend on $\omega$
+
+`rs_mp2_lr_rpa` (formulations B and T) splits the Coulomb kernel as
+$v = v^{\mathrm{lr}}_\omega + v^{\mathrm{sr}}_\omega$ with $v^{\mathrm{lr}}_\omega = \mathrm{erf}(\omega r)/r$
+(or the tempered $\mathrm{terf}$ pair). With the closed-shell spin components
+$E_{\mathrm{OS}}[v]$ and the direct-ring series $E_{\mathrm{dRPA}}[v]$ of a kernel $v$,
+
+$$E_c^{B} = E_{\mathrm{MP2}}[v] + \big(E_{\mathrm{dRPA}}[v^{\mathrm{lr}}_\omega] - 2E_{\mathrm{OS}}[v^{\mathrm{lr}}_\omega]\big),$$
+
+$$E_c^{T} = E_{\mathrm{MP2}}[v] + \big(E_{\mathrm{dRPA}}[v] - 2E_{\mathrm{OS}}[v]\big) - \big(E_{\mathrm{dRPA}}[v^{\mathrm{sr}}_\omega] - 2E_{\mathrm{OS}}[v^{\mathrm{sr}}_\omega]\big).$$
+
+Every term is a functional of ONE kernel: the dressed intermediate
+$B^{v}_{P,ia} = \sum_Q [V^{v}]^{-1/2}_{PQ}(Q|v|ia)$ built from that kernel's
+3-centre integrals and 2-centre metric, and the fixed reference orbitals and
+energies. No term mixes kernels, so a term depends on $\omega$ exactly when
+its kernel does:
+
+- independent of $\omega$: the reference SCF (full-Coulomb RHF), $B^{v}$,
+  $E_{\mathrm{MP2}}[v]$, $E_{\mathrm{OS}}[v]$, and for T the full-Coulomb
+  $E_{\mathrm{dRPA}}[v]$ (the most expensive single piece);
+- dependent on $\omega$: $B^{\mathrm{lr}}_\omega$ and $B^{\mathrm{sr}}_\omega$
+  with their spin components, B's $E_{\mathrm{dRPA}}[v^{\mathrm{lr}}_\omega]$ and
+  T's $E_{\mathrm{dRPA}}[v^{\mathrm{sr}}_\omega]$.
+
+B and T at the same $\omega$ use the same $B^{\mathrm{lr}}_\omega$ and
+$B^{\mathrm{sr}}_\omega$, so a scan over $\omega$ and formulations builds each
+once. The combination formulas above are unchanged; only the order of
+evaluation is. Each kernel's intermediate is dropped before the next is built,
+so the co-resident set is one call's worth for any number of $\omega$ points.
+No new equation is introduced, so there is no new sympy proof: the evidence is
+that every scan entry equals the single-$\omega$ call bit for bit
+(`crates/ferric-rpa/tests/rs_mp2_rpa_scan.rs`).
+
 ## Literature Citations
 
 1. **PDEP Eigenpotentials:** F. Gygi and G. Galli, *Phys. Rev. B* **65**, 220102(R) (2002).

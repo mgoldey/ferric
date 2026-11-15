@@ -920,7 +920,7 @@ All start from the canonical exact-J/K RHF orbitals of a closed-shell molecule.
 | Name | Purpose | CLI |
 |---|---|---|
 | `run_pdep_rpa` | Direct RPA correlation energy by PDEP (projective dielectric eigenpotentials); accepts point charges, field and solvent. `properties=True` / `export_npz=` add the CLI's `[rpa]` property bundle (polarizabilities, per-atom and charge-transfer α, C6, charges, ESP, field, NPZ); `export_eigpot_prefix=` writes eigenpotential cubes. Closed shell only; open-shell U-PDEP-RPA is CLI-only. | `pdep-rpa` |
-| `run_rs_mp2_rpa` | Range-separated SR-MP2 + LR-RPA (`formulation` = `"delta-lr"` or `"coupled-rings"`; ω in Å⁻¹). | `rs-mp2-rpa` |
+| `run_rs_mp2_rpa` | Range-separated SR-MP2 + LR-RPA (`formulation` = `"delta-lr"` or `"coupled-rings"`; ω in Å⁻¹; a list for `omega` or `formulation` returns a list of results from one SCF). | `rs-mp2-rpa` |
 | `run_gw` | Closed-shell G0W0 / COHSEX / evGW0 / evGW on an RHF or RKS reference. | `gw` |
 | `run_u_gw` | Open-shell GW variants on a UHF/UKS or ROHF reference. | `gw` with multiplicity > 1 |
 | `run_bse_tda` | BSE-TDA singlet excitation energies on a closed-shell RHF reference. | `bse-tda` |

@@ -91,16 +91,17 @@ impl PyRsMp2RpaResult {
 #[pyo3(signature = (mol, basis_set, auxbasis, omega=None, frozen_core=None, k_builder=None, formulation=None, attenuator=None, r0=None, terf_omega=None, memory_budget_gb=None, scf_jk=None, jk_auxbasis=None, scf_ri_j_precision=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_rs_mp2_rpa(
+    py: Python<'_>,
     mol: &PyMolecule,
     basis_set: &PyBasisSet,
     auxbasis: &PyBasisSet,
-    omega: Option<f64>,
+    omega: Option<&Bound<'_, PyAny>>,
     frozen_core: Option<usize>,
     k_builder: Option<&str>,
-    formulation: Option<&str>,
+    formulation: Option<&Bound<'_, PyAny>>,
     attenuator: Option<&str>,
     r0: Option<f64>,
-    terf_omega: Option<f64>,
+    terf_omega: Option<&Bound<'_, PyAny>>,
     memory_budget_gb: Option<f64>,
     scf_jk: Option<&str>,
     jk_auxbasis: Option<&str>,
@@ -108,7 +109,7 @@ pub(crate) fn run_rs_mp2_rpa(
     scf_max_iter: Option<usize>,
     scf_energy_conv: Option<f64>,
     scf_density_conv: Option<f64>,
-) -> PyResult<PyRsMp2RpaResult> {
+) -> PyResult<PyObject> {
     // The default differs from the other MP2 entry points: this one has
     // always used RI-JK on def2-universal-jkfit (same convention as pdep-rpa).
     let (cfg_rhf, jk) = mp2_reference_config(
@@ -124,16 +125,18 @@ pub(crate) fn run_rs_mp2_rpa(
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
     let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
     let rhf = converged_rhf(&mol.inner, &prep, &cfg_rhf)?;
-    // Map formulation string to enum.
-    let form = match formulation.unwrap_or("delta-lr") {
-        "delta-lr" => ferric_rpa::RsMp2RpaFormulation::DeltaLr,
-        "coupled-rings" => ferric_rpa::RsMp2RpaFormulation::CoupledRings,
-        other => {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+    let (forms, forms_seq) = rs_scan_axis::<String>(formulation, "formulation")?;
+    let forms = forms
+        .unwrap_or_else(|| vec!["delta-lr".to_string()])
+        .iter()
+        .map(|f| match f.as_str() {
+            "delta-lr" => Ok(ferric_rpa::RsMp2RpaFormulation::DeltaLr),
+            "coupled-rings" => Ok(ferric_rpa::RsMp2RpaFormulation::CoupledRings),
+            other => Err(pyo3::exceptions::PyValueError::new_err(format!(
                 "unknown formulation \"{other}\"; expected \"delta-lr\" or \"coupled-rings\""
-            )))
-        }
-    };
+            ))),
+        })
+        .collect::<PyResult<Vec<_>>>()?;
     // attenuator: "erf" (default, ω in Å⁻¹) or "terf" (r0 in Å, ω derived).
     let atten = match attenuator.unwrap_or("erf") {
         "erf" => ferric_rpa::rs_mp2_rpa::Attenuator::Erf,
@@ -144,46 +147,148 @@ pub(crate) fn run_rs_mp2_rpa(
             )))
         }
     };
+    let terf = matches!(atten, ferric_rpa::rs_mp2_rpa::Attenuator::Terf);
+    // The scan axis is `omega` for erf and `terf_omega` for terf; a list on
+    // the other one has no meaning and is refused.
+    let (omegas, omega_seq) = rs_scan_axis::<f64>(omega, "omega")?;
+    let (terf_omegas, terf_seq) = rs_scan_axis::<f64>(terf_omega, "terf_omega")?;
+    if omega_seq && terf {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "omega is ignored with attenuator=\"terf\"; scan the seam sharpness with a list-valued terf_omega",
+        ));
+    }
+    if terf_seq && !terf {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "terf_omega needs attenuator=\"terf\"; scan an erf split with a list-valued omega",
+        ));
+    }
+    let is_scan = forms_seq || omega_seq || terf_seq;
+    for (name, v) in [("omega", &omegas), ("terf_omega", &terf_omegas)] {
+        if let Some(w) = v
+            .as_ref()
+            .and_then(|v| v.iter().find(|w| !(w.is_finite() && **w > 0.0)))
+        {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "{name} must be finite and > 0 (got {w})"
+            )));
+        }
+    }
+    if forms
+        .iter()
+        .enumerate()
+        .any(|(i, f)| forms[..i].contains(f))
+    {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "formulation lists the same formulation twice",
+        ));
+    }
     // omega is supplied in Å⁻¹; convert to Bohr⁻¹ for the operator. r0 is
-    // supplied in Å (2026-07-21: fixed from Bohr, matching r0_bonded/
-    // r0_nonbonded's existing Å convention elsewhere in this file); convert
-    // to Bohr for RsMp2RpaConfig, which stays Bohr-native.
+    // supplied in Å and converted to Bohr for RsMp2RpaConfig (Bohr-native).
     const ANG2BOHR_R0: f64 = ANGSTROM_TO_BOHR;
+    let to_bohr = ferric_mp2::attenuated::BOHR_INV_PER_ANG_INV;
     let mut cfg = ferric_rpa::RsMp2RpaConfig {
-        omega: omega.unwrap_or(0.420) * ferric_mp2::attenuated::BOHR_INV_PER_ANG_INV,
+        omega: omegas.as_ref().map_or(0.420, |v| v[0]) * to_bohr,
         attenuator: atten,
         r0: r0.unwrap_or(3.18 / ANG2BOHR_R0) * ANG2BOHR_R0,
         // terf_omega in Å⁻¹ (same convention as omega); None keeps the
         // Dutoi curvature link ω = 1/(r0·√2). Terf-only.
-        terf_omega: terf_omega.map(|w| w * ferric_mp2::attenuated::BOHR_INV_PER_ANG_INV),
+        terf_omega: terf_omegas.as_ref().map(|v| v[0] * to_bohr),
         frozen_core: frozen_core.unwrap_or(0),
-        formulation: form,
+        formulation: forms[0],
         ..Default::default()
     };
     cfg.drpa.memory_budget_bytes = budget_bytes_from_gb(memory_budget_gb);
-    let r = ferric_rpa::rs_mp2_lr_rpa(&mol.inner, &prep, &dfbs, &rhf, &cfg).map_err(make_err)?;
-    let certificate_data = ferric_rpa::certificate::rs_mp2_rpa_certificate(
-        &reference_certificate(&mol.inner, &rhf, &cfg_rhf, &basis_set.inner),
-        &auxbasis.inner.name,
-        &cfg,
-    );
-    Ok(PyRsMp2RpaResult {
-        total_energy: r.total_energy,
-        rhf_energy: rhf.energy,
-        e_corr: r.e_corr,
-        e_corr_naive: r.e_corr_naive,
-        e_mp2_full: r.e_mp2_full,
-        e_sr_mp2: r.e_sr_mp2,
-        e_lr_mp2: r.e_lr_mp2,
-        e_dmp2_lr: r.e_dmp2_lr,
-        e_drpa_lr: r.e_drpa_lr,
-        e_delta_drpa_full: r.e_delta_drpa_full,
-        e_delta_drpa_sr: r.e_delta_drpa_sr,
-        scf_jk: jk.mode.as_str().to_string(),
-        jk_label: jk.label(),
-        jk_auxbasis: jk.aux,
-        certificate_data,
-    })
+    // One (config, result) per (point, formulation), point-major.
+    let mut points: Vec<(ferric_rpa::RsMp2RpaConfig, ferric_rpa::RsMp2RpaResult)> = Vec::new();
+    if is_scan {
+        let axis: Vec<f64> = if terf {
+            terf_omegas.clone().ok_or_else(|| {
+                pyo3::exceptions::PyValueError::new_err(
+                    "scanning formulations with attenuator=\"terf\" needs terf_omega",
+                )
+            })?
+        } else {
+            omegas.clone().unwrap_or_else(|| vec![0.420])
+        };
+        let bohr: Vec<f64> = axis.iter().map(|w| w * to_bohr).collect();
+        let rs =
+            ferric_rpa::rs_mp2_lr_rpa_scan(&mol.inner, &prep, &dfbs, &rhf, &cfg, &bohr, &forms)
+                .map_err(make_err)?;
+        for (k, r) in rs.into_iter().enumerate() {
+            let mut c = cfg.clone();
+            c.formulation = forms[k % forms.len()];
+            if terf {
+                c.terf_omega = Some(bohr[k / forms.len()]);
+            } else {
+                c.omega = bohr[k / forms.len()];
+            }
+            points.push((c, r));
+        }
+    } else {
+        let r =
+            ferric_rpa::rs_mp2_lr_rpa(&mol.inner, &prep, &dfbs, &rhf, &cfg).map_err(make_err)?;
+        points.push((cfg.clone(), r));
+    }
+    let base_cert = reference_certificate(&mol.inner, &rhf, &cfg_rhf, &basis_set.inner);
+    let mut out = Vec::with_capacity(points.len());
+    for (c, r) in points {
+        let certificate_data =
+            ferric_rpa::certificate::rs_mp2_rpa_certificate(&base_cert, &auxbasis.inner.name, &c);
+        out.push(PyRsMp2RpaResult {
+            total_energy: r.total_energy,
+            rhf_energy: rhf.energy,
+            e_corr: r.e_corr,
+            e_corr_naive: r.e_corr_naive,
+            e_mp2_full: r.e_mp2_full,
+            e_sr_mp2: r.e_sr_mp2,
+            e_lr_mp2: r.e_lr_mp2,
+            e_dmp2_lr: r.e_dmp2_lr,
+            e_drpa_lr: r.e_drpa_lr,
+            e_delta_drpa_full: r.e_delta_drpa_full,
+            e_delta_drpa_sr: r.e_delta_drpa_sr,
+            scf_jk: jk.mode.as_str().to_string(),
+            jk_label: jk.label(),
+            jk_auxbasis: jk.aux.clone(),
+            certificate_data,
+        });
+    }
+    if is_scan {
+        Ok(out
+            .into_iter()
+            .map(|r| Py::new(py, r))
+            .collect::<PyResult<Vec<_>>>()?
+            .into_pyobject(py)?
+            .into_any()
+            .unbind())
+    } else {
+        let r = out.pop().expect("one result");
+        Ok(Py::new(py, r)?.into_any())
+    }
+}
+
+/// A scalar-or-sequence keyword: `(values, was_sequence)`; `None` is absent.
+/// A sequence must be non-empty.
+fn rs_scan_axis<'py, T: FromPyObject<'py>>(
+    obj: Option<&Bound<'py, PyAny>>,
+    name: &str,
+) -> PyResult<(Option<Vec<T>>, bool)> {
+    let Some(o) = obj.filter(|o| !o.is_none()) else {
+        return Ok((None, false));
+    };
+    if let Ok(x) = o.extract::<T>() {
+        return Ok((Some(vec![x]), false));
+    }
+    let v: Vec<T> = o.extract().map_err(|_| {
+        pyo3::exceptions::PyValueError::new_err(format!(
+            "{name} must be a scalar or a sequence of the same type"
+        ))
+    })?;
+    if v.is_empty() {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "{name} must not be an empty list"
+        )));
+    }
+    Ok((Some(v), true))
 }
 
 // ── PDEP-RPA ──

@@ -85,7 +85,9 @@ pub mod sternheimer_sparse;
 pub mod timing;
 
 pub use lanczos::{run_lanczos_full_rank, run_lanczos_seeded, LanczosResult};
-pub use rs_mp2_rpa::{rs_mp2_lr_rpa, RsMp2RpaConfig, RsMp2RpaFormulation, RsMp2RpaResult};
+pub use rs_mp2_rpa::{
+    rs_mp2_lr_rpa, rs_mp2_lr_rpa_scan, RsMp2RpaConfig, RsMp2RpaFormulation, RsMp2RpaResult,
+};
 
 pub use energy_route::{
     aux_route_charge_bytes, exact_drpa_config, run_pdep_rpa_energy,

@@ -196,22 +196,18 @@ impl std::fmt::Display for RsMp2RpaResult {
     }
 }
 
-/// Bytes for ONE extra `naux*nocc*nvir` `RpaIntermediates::b_ov` buffer.
+/// Preflight estimate (bytes) for [`rs_mp2_lr_rpa_scan`].
 ///
-/// `estimate_peak_bytes`'s `eri3_and_bov_bytes` term already charges one such
-/// buffer per call (see `budget.rs`); this driver's `match cfg.formulation`
-/// arms hold a SECOND one co-resident (see the call-site comment in
-/// `rs_mp2_lr_rpa` for the exact bindings and why — both `DeltaLr` and
-/// `CoupledRings` bind an `RpaIntermediates` whose destructor does not run
-/// until the end of the match arm, i.e. after a second one has been built and
-/// is being used inside `run_pdep_rpa_from_intermediates`). Extracted as a
-/// pure function so the magnitude is testable without constructing a real
-/// `RpaIntermediates`.
-pub fn second_intermediate_bov_bytes(naux: usize, nocc: usize, nvir: usize) -> usize {
-    const F64_BYTES: usize = 8;
-    naux.saturating_mul(nocc)
-        .saturating_mul(nvir)
-        .saturating_mul(F64_BYTES)
+/// The driver builds one `RpaIntermediates` at a time and drops it before the
+/// next is built: the Coulomb set (MP2 spin components, plus the Coulomb dRPA
+/// for formulation T) first, then per ω the erf set and the erfc set in turn.
+/// The co-resident set is therefore exactly what one
+/// `compute_rpa_intermediates` + `run_pdep_rpa_from_intermediates` call holds,
+/// which is `estimate_peak_bytes`, for any number of ω points. `n_omega` is
+/// taken so that independence is stated (and tested) rather than implied.
+pub fn scan_peak_bytes(shape: crate::budget::PeakEstimateShape, n_omega: usize) -> usize {
+    let _ = n_omega;
+    crate::budget::estimate_peak_bytes(shape)
 }
 
 /// SR-MP2 + LR-RPA, Δ-form (B) or coupled-rings (T).
@@ -222,6 +218,8 @@ pub fn second_intermediate_bov_bytes(naux: usize, nocc: usize, nvir: usize) -> u
 /// **CoupledRings (T)**: screens all rings (ΔdRPA\[Coulomb\]) then un-screens the
 /// pure-SR rings (−ΔdRPA\[erfc\]). Same exact limits; additionally includes all
 /// mixed SR×LR ring diagrams. Cost: 2 dRPA calls instead of 1.
+///
+/// This is the one-point case of [`rs_mp2_lr_rpa_scan`].
 pub fn rs_mp2_lr_rpa(
     mol: &Molecule,
     obs: &PreparedBasis,
@@ -229,27 +227,122 @@ pub fn rs_mp2_lr_rpa(
     rhf: &ScfResult,
     cfg: &RsMp2RpaConfig,
 ) -> Result<RsMp2RpaResult, FerricError> {
-    // Resolved ONCE for the whole call: the preflight gate's budget check
-    // just below, AND the stage-seam RSS observability checks further down
-    // (Item 3) both compare against this same configured ceiling, resolved once
-    // (not via two separate `resolve_budget_bytes(cfg.drpa.memory_budget_bytes)`
-    // calls).
+    let ops = [operators_from_cfg(cfg)];
+    let mut out = scan_impl(mol, obs, dfbs, rhf, cfg, &ops, &[cfg.formulation])?;
+    out.pop()
+        .ok_or_else(|| FerricError::General("rs-mp2-rpa produced no result".into()))
+}
+
+/// The (long-range, short-range) operator pair selected by `cfg`.
+///
+/// `Erf` uses erf(ω)/erfc(ω); `Terf` uses the tempered terf(r0)/terfc(r0)
+/// (ω derived from r0 unless `terf_omega` overrides it). terf + terfc =
+/// Coulomb exactly, so the telescoping and exact limits are unchanged.
+fn operators_from_cfg(cfg: &RsMp2RpaConfig) -> (Operator, Operator) {
+    match cfg.attenuator {
+        Attenuator::Erf => (Operator::erf(cfg.omega), Operator::erfc(cfg.omega)),
+        Attenuator::Terf => match cfg.terf_omega {
+            Some(w) => (
+                Operator::terf_with_omega(cfg.r0, w),
+                Operator::terfc_with_omega(cfg.r0, w),
+            ),
+            None => (Operator::terf(cfg.r0), Operator::terfc(cfg.r0)),
+        },
+    }
+}
+
+/// SR-MP2 + LR-RPA at several ω values and formulations in one run.
+///
+/// Returns one [`RsMp2RpaResult`] per (ω, formulation), ω-major in the order
+/// given (`out[i * formulations.len() + j]` is `omegas[i]` with
+/// `formulations[j]`). Each entry is bit-identical to a separate
+/// [`rs_mp2_lr_rpa`] call with that ω and formulation.
+///
+/// `omegas` are Bohr⁻¹. With `cfg.attenuator == Erf` each is the erf/erfc
+/// range-separation parameter and `cfg.omega` is ignored. With `Terf`, `cfg.r0`
+/// is fixed and each value is the independent sharpness override
+/// (`terf_omega`); `cfg.terf_omega` and `cfg.omega` are ignored. `cfg.formulation`
+/// is ignored in favour of `formulations`.
+///
+/// What is built once: the Coulomb RI intermediates and MP2 spin components,
+/// and (when T is requested) the Coulomb dRPA, none of which depend on ω. Per
+/// ω: the erf and erfc intermediates, shared by B and T; B's erf dRPA and T's
+/// erfc dRPA. Each intermediate is dropped before the next is built, so peak
+/// memory does not grow with `omegas.len()` (see [`scan_peak_bytes`]). The
+/// reference SCF is the caller's, so it is also done once.
+///
+/// # Errors
+/// Empty `omegas` or `formulations`, a non-finite or non-positive ω, or a
+/// repeated formulation are [`FerricError::General`].
+pub fn rs_mp2_lr_rpa_scan(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    rhf: &ScfResult,
+    cfg: &RsMp2RpaConfig,
+    omegas: &[f64],
+    formulations: &[RsMp2RpaFormulation],
+) -> Result<Vec<RsMp2RpaResult>, FerricError> {
+    if omegas.is_empty() {
+        return Err(FerricError::General(
+            "rs-mp2-rpa scan needs at least one omega".into(),
+        ));
+    }
+    if let Some(w) = omegas.iter().find(|w| !w.is_finite() || **w <= 0.0) {
+        return Err(FerricError::General(format!(
+            "rs-mp2-rpa scan omega must be finite and > 0 (got {w})"
+        )));
+    }
+    let ops: Vec<(Operator, Operator)> = omegas
+        .iter()
+        .map(|&w| match cfg.attenuator {
+            Attenuator::Erf => (Operator::erf(w), Operator::erfc(w)),
+            Attenuator::Terf => (
+                Operator::terf_with_omega(cfg.r0, w),
+                Operator::terfc_with_omega(cfg.r0, w),
+            ),
+        })
+        .collect();
+    scan_impl(mol, obs, dfbs, rhf, cfg, &ops, formulations)
+}
+
+/// Shared driver: one result per (operator pair, formulation), pair-major.
+fn scan_impl(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    rhf: &ScfResult,
+    cfg: &RsMp2RpaConfig,
+    ops: &[(Operator, Operator)],
+    formulations: &[RsMp2RpaFormulation],
+) -> Result<Vec<RsMp2RpaResult>, FerricError> {
+    if formulations.is_empty() {
+        return Err(FerricError::General(
+            "rs-mp2-rpa needs at least one formulation".into(),
+        ));
+    }
+    for (i, f) in formulations.iter().enumerate() {
+        if formulations[..i].contains(f) {
+            return Err(FerricError::General(format!(
+                "rs-mp2-rpa formulation {f:?} listed twice"
+            )));
+        }
+    }
+    let want_b = formulations.contains(&RsMp2RpaFormulation::DeltaLr);
+    let want_t = formulations.contains(&RsMp2RpaFormulation::CoupledRings);
+
+    // Resolved ONCE: the preflight budget check and the stage-seam RSS
+    // checks compare against the same configured ceiling.
     let resolved_budget_bytes =
         ferric_core::memory::resolve_budget_bytes(cfg.drpa.memory_budget_bytes);
 
-    // Pre-flight peak-memory gate (M2-style fail-fast, see budget.rs). Cheap
-    // shape values only (nelec/nbasis accessors, no ERI/GEMM work) so this
-    // runs before ANY large allocation. naux is known exactly; nocc/nvir use
-    // the same closed-shell formula `compute_rpa_intermediates` itself uses
-    // (rimp2.rs) so the estimate matches what's about to be allocated.
+    // Pre-flight peak-memory gate (see budget.rs). Cheap shape values only, so
+    // this runs before ANY large allocation. nocc/nvir use the same
+    // closed-shell formula `compute_rpa_intermediates` uses (rimp2.rs).
     //
-    // POOL LIFETIME: `_pool_charge` is bound at FUNCTION scope, not inside the
-    // `{ .. }` block below, because the planes it covers (an `RpaIntermediates`
-    // b_ov, the metric buffers, the eigensolve output) stay resident through
-    // every `inter_of` / `run_pdep_rpa_from_intermediates` call to the end of
-    // this function -- including the arms that hold TWO b_ov buffers
-    // co-resident, which is exactly what `second_intermediate_bov_bytes`
-    // charges for.
+    // POOL LIFETIME: `_pool_charge` lives to the end of the function; the
+    // planes it covers stay resident through every `inter_of` /
+    // `run_pdep_rpa_from_intermediates` call below.
     //
     // The `(naux, nao, nao)` AO tensor is NOT among them: ferric-integrals'
     // `ThreeIndexSource` charges it against the same pool under its own guard,
@@ -263,14 +356,14 @@ pub fn rs_mp2_lr_rpa(
         let nocc = active_occ(nocc_total, cfg.frozen_core)?;
         let nvir = nbas.saturating_sub(nocc_total);
         let n_workers = rayon::current_num_threads().max(1);
-        let n_keep = naux; // trunc_thresh unknown pre-eigensolve; cfg.drpa default is 0.0 (keep-all)
         let shape = crate::budget::PeakEstimateShape {
             naux,
             nocc,
             nvir,
             n_quad: cfg.drpa.quadrature.n_points,
             n_workers,
-            n_keep,
+            // trunc_thresh is unknown pre-eigensolve; the default is 0.0 (keep-all).
+            n_keep: naux,
             grid: None,
             nao: nbas,
             // rs-mp2-rpa consumes the RPA correlation energy only; it never
@@ -278,59 +371,20 @@ pub fn rs_mp2_lr_rpa(
             // built, consumed and dropped rather than retained.
             need_inv_dielectric: false,
         };
-        // The extra co-resident b_ov this driver holds beyond what
-        // `estimate_peak_bytes` models (see the long note above). It is an
-        // in-core buffer with no streamed variant, so it belongs on the HARD
-        // side of the split.
-        let second_bov = second_intermediate_bov_bytes(naux, nocc, nvir);
-        let est = crate::budget::estimate_peak_bytes(shape)
-            // `estimate_peak_bytes`'s `eri3_and_bov_bytes` term charges exactly
-            // ONE `naux*nocc*nvir` `b_ov` buffer — correct for what a SINGLE
-            // `compute_rpa_intermediates` call holds resident internally, but
-            // this driver is not a single call. Below, both formulations bind an
-            // `RpaIntermediates` to a `let` (`it_lr`/`it_full`/`it_sr`) whose last
-            // use is inside `run_pdep_rpa_from_intermediates(&it, ..)` — the
-            // owning binding is not moved or dropped early, so its destructor
-            // does not run until the end of the `match` arm, i.e. AFTER that
-            // call returns. Concretely:
-            //   * `DeltaLr`: `it_lr` is bound (line ~305) before the statements
-            //     `sc_of(&inter_of(Operator::coulomb())?)` and
-            //     `sc_of(&inter_of(op_sr)?)` each build and drop a second, fresh
-            //     `RpaIntermediates` — so two `b_ov` buffers are briefly
-            //     co-resident with `it_lr` twice in that arm.
-            //   * `CoupledRings`: `it_full` (bound line ~323) is still live
-            //     (not yet dropped — its destructor runs at the end of the arm)
-            //     while `it_sr` is built and then borrowed for the SECOND,
-            //     equally expensive `run_pdep_rpa_from_intermediates(&it_sr, ..)`
-            //     call — so both `b_ov` buffers are resident through that entire
-            //     eigensolve + frequency-quadrature stage, not just briefly.
-            // Both arms therefore hold a second `naux*nocc*nvir` `b_ov` buffer
-            // that `estimate_peak_bytes` never sees (it is only ever handed one
-            // `RpaIntermediates`' worth of shape at a time). Measured magnitude
-            // at realistic shapes: benzene/aug-cc-pVTZ (naux=1512, nocc=21,
-            // nvir=393) 0.10 GB; danuglipron/def2-SVP (naux=2800, nocc=90,
-            // nvir=610) 1.23 GB — a real, whole extra buffer (3-5% of the total
-            // estimate at these shapes, smaller than the AO-tensor/quadrature
-            // terms but not a rounding artifact), so it is added here rather than
-            // folded into `PeakEstimateShape` (which every other crate's call
-            // sites also construct — a field addition is out of scope for this
-            // fix).
-            .saturating_add(second_bov);
+        let est = scan_peak_bytes(shape, ops.len());
         let label = format!(
             "RS-MP2-RPA preflight (naux={naux}, nocc={nocc}, nvir={nvir}, \
-             n_workers={n_workers}, formulation={:?})",
-            cfg.formulation
+             n_workers={n_workers}, points={}, formulations={formulations:?})",
+            ops.len()
         );
-        // Historical ceiling check, unchanged -- it decides admissibility on
-        // the unbudgeted path, where the pool is inert.
+        // Historical ceiling check: decides admissibility on the unbudgeted
+        // path, where the pool is inert.
         ferric_core::memory::check_alloc(&label, est, resolved_budget_bytes)?;
 
-        // Debit the shared ledger, split hard/soft for the same reason
-        // `preflight_check_closed_shell` does: the per-worker frequency
+        // Debit the shared ledger, split hard/soft: the per-worker frequency
         // scratch has a real panelled fallback (`energy::quad_panel_width`),
         // so hard-charging it would refuse jobs this tree completes.
-        let (hard_base, soft) = crate::budget::estimate_peak_split(shape);
-        let hard = hard_base.saturating_add(second_bov);
+        let (hard, soft) = crate::budget::estimate_peak_split(shape);
         let _hard = ferric_core::memory::pool::reserve_global(&format!("{label} [in-core]"), hard)?;
         let _soft =
             ferric_core::memory::pool::try_reserve_global(&format!("{label} [freq scratch]"), soft);
@@ -344,23 +398,14 @@ pub fn rs_mp2_lr_rpa(
     };
 
     // SHARED-INTERMEDIATE FUSION. The MP2 spin components and the dRPA solves
-    // both need the dressed b_ov = V^{-1/2}(P|op|ia) for the SAME operator, and
-    // building it (the aux-blocked (P|op|ia) transform) is the expensive step.
-    // Build the intermediates ONCE per operator and feed them to both the
-    // spin-component energy (spin_components_from_b_ov) and the dRPA solve
-    // (run_pdep_rpa_from_intermediates). This avoids duplicate transforms
-    // (CoupledRings needs 3 distinct operators, not 5 transforms — 3 MP2 +
-    // 2 RPA). Results are bit-identical.
+    // both need the dressed b_ov = V^{-1/2}(P|op|ia) for the SAME operator;
+    // building it is the expensive step. Each operator's intermediates are
+    // built once and feed both `spin_components_from_b_ov` and
+    // `run_pdep_rpa_from_intermediates`.
     let eps = rhf.eps_r();
     let inter_of = |op: Operator| -> Result<ferric_mp2::rimp2::RpaIntermediates, FerricError> {
         let it = compute_rpa_intermediates(mol, obs, dfbs, op, rhf, &ri_cfg)?;
-        // Stage-seam RSS safety net (Item 3): observability only, never a
-        // hard error — the preflight gate above already vetted the ESTIMATE;
-        // this checks whether the ACTUAL resident memory after this
-        // operator's RpaIntermediates build (the co-resident raw-AO-block +
-        // MO-tensor + dressed b_ov peak `budget.rs` estimates) stayed in the
-        // ballpark. A single stderr line, never more than 10% noisy above
-        // budget, never a panic/kill.
+        // Stage-seam RSS observability: a stderr line, never an error.
         ferric_core::memory::warn_if_rss_over(
             &format!("RS-MP2-RPA RpaIntermediates build (op={op:?})"),
             resolved_budget_bytes,
@@ -375,109 +420,109 @@ pub fn rs_mp2_lr_rpa(
     let mut drpa_cfg = cfg.drpa.clone();
     drpa_cfg.frozen_core = cfg.frozen_core;
 
-    // Range-separation operators. `Erf` uses erf(ω)/erfc(ω); `Terf` uses the
-    // tempered terf(r0)/terfc(r0), with terf + terfc = Coulomb exactly (same
-    // split identity ⇒ same exact limits ⇒ same telescoping). r0 is the single
-    // Terf knob; ω is not consulted for Terf. The Coulomb pieces are unchanged.
-    let (op_lr, op_sr) = match cfg.attenuator {
-        Attenuator::Erf => (Operator::erf(cfg.omega), Operator::erfc(cfg.omega)),
-        Attenuator::Terf => match cfg.terf_omega {
-            Some(w) => (
-                Operator::terf_with_omega(cfg.r0, w),
-                Operator::terfc_with_omega(cfg.r0, w),
-            ),
-            None => (Operator::terf(cfg.r0), Operator::terfc(cfg.r0)),
-        },
+    // ω-independent stage: Coulomb spin components, and for T the Coulomb dRPA.
+    // `it_full` is dropped at the end of this block.
+    let (sc_full, drpa_coul_e) = {
+        let it_full = inter_of(Operator::coulomb())?;
+        let sc_full = sc_of(&it_full);
+        let drpa_coul_e = if want_t {
+            Some(
+                run_pdep_rpa_from_intermediates(
+                    &it_full,
+                    mol,
+                    obs,
+                    dfbs,
+                    Operator::coulomb(),
+                    rhf,
+                    &drpa_cfg,
+                )?
+                .e_rpa,
+            )
+        } else {
+            None
+        };
+        (sc_full, drpa_coul_e)
     };
 
-    // LR/SR intermediates: needed for sc_lr (always, for e_dmp2_lr) and for the
-    // DeltaLr dRPA. Coulomb/SR built inside their arms to avoid unused work.
-    let (
-        e_corr,
-        e_drpa_lr,
-        e_corr_naive,
-        e_delta_drpa_full,
-        e_delta_drpa_sr,
-        sc_full,
-        sc_sr,
-        sc_lr,
-    ) = match cfg.formulation {
-        RsMp2RpaFormulation::DeltaLr => {
+    let mut out = Vec::with_capacity(ops.len() * formulations.len());
+    for &(op_lr, op_sr) in ops {
+        // LR: spin components always (e_dmp2_lr); the LR dRPA only for B.
+        // op_lr is erf(ω) for Erf, terf(r0) for Terf, and the LR dRPA must use
+        // that same operator.
+        let (sc_lr, drpa_lr_e) = {
             let it_lr = inter_of(op_lr)?;
             let sc_lr = sc_of(&it_lr);
-            let sc_full = sc_of(&inter_of(Operator::coulomb())?);
-            let sc_sr = sc_of(&inter_of(op_sr)?);
-            let e_dmp2_lr = 2.0 * sc_lr.e_os;
-            // op_lr is erf(ω) for Erf, terf(r0) for Terf — the LR dRPA must
-            // use the SAME long-range operator the attenuator selected, not a
-            // hardcoded erf. drpa_cfg carries main's memory budget knobs.
-            let drpa_lr =
-                run_pdep_rpa_from_intermediates(&it_lr, mol, obs, dfbs, op_lr, rhf, &drpa_cfg)?;
-            let e_corr = sc_full.e_total + drpa_lr.e_rpa - e_dmp2_lr;
-            (
-                e_corr,
-                Some(drpa_lr.e_rpa),
-                Some(sc_sr.e_total + drpa_lr.e_rpa),
-                None,
-                None,
-                sc_full,
-                sc_sr,
-                sc_lr,
-            )
-        }
-        RsMp2RpaFormulation::CoupledRings => {
-            // LR only enters via e_dmp2_lr = 2·E_OS[lr]; no LR dRPA needed.
-            let sc_lr = sc_of(&inter_of(op_lr)?);
-            let it_full = inter_of(Operator::coulomb())?;
+            let e = if want_b {
+                Some(
+                    run_pdep_rpa_from_intermediates(&it_lr, mol, obs, dfbs, op_lr, rhf, &drpa_cfg)?
+                        .e_rpa,
+                )
+            } else {
+                None
+            };
+            (sc_lr, e)
+        };
+        // SR: spin components always; the SR dRPA only for T.
+        let (sc_sr, drpa_sr_e) = {
             let it_sr = inter_of(op_sr)?;
-            let sc_full = sc_of(&it_full);
             let sc_sr = sc_of(&it_sr);
-            let drpa_coul = run_pdep_rpa_from_intermediates(
-                &it_full,
-                mol,
-                obs,
-                dfbs,
-                Operator::coulomb(),
-                rhf,
-                &drpa_cfg,
-            )?;
-            // op_sr is erfc(ω) for Erf, terfc(r0) for Terf — the SR dRPA must
-            // use the attenuator-selected short-range operator, not hardcoded erfc.
-            let drpa_erfc =
-                run_pdep_rpa_from_intermediates(&it_sr, mol, obs, dfbs, op_sr, rhf, &drpa_cfg)?;
-            let delta_full = drpa_coul.e_rpa - 2.0 * sc_full.e_os;
-            let delta_sr = drpa_erfc.e_rpa - 2.0 * sc_sr.e_os;
-            // T: E_MP2[Coulomb] + ΔdRPA[Coulomb] − ΔdRPA[erfc]
-            let e_corr = sc_full.e_total + delta_full - delta_sr;
-            (
+            let e = if want_t {
+                Some(
+                    run_pdep_rpa_from_intermediates(&it_sr, mol, obs, dfbs, op_sr, rhf, &drpa_cfg)?
+                        .e_rpa,
+                )
+            } else {
+                None
+            };
+            (sc_sr, e)
+        };
+        // Closed shell: E_MP2 = Σ (ia|jb)[2(ia|jb)−(ib|ja)]/Δ; the direct (ring)
+        // part 2Σ(ia|jb)²/Δ — the 2nd-order truncation of dRPA — equals 2·E_OS.
+        let e_dmp2_lr = 2.0 * sc_lr.e_os;
+
+        for &formulation in formulations {
+            let (e_corr, e_drpa_lr, e_corr_naive, e_delta_drpa_full, e_delta_drpa_sr) =
+                match formulation {
+                    RsMp2RpaFormulation::DeltaLr => {
+                        let e_drpa = drpa_lr_e.expect("B requested => LR dRPA computed");
+                        (
+                            sc_full.e_total + e_drpa - e_dmp2_lr,
+                            Some(e_drpa),
+                            Some(sc_sr.e_total + e_drpa),
+                            None,
+                            None,
+                        )
+                    }
+                    RsMp2RpaFormulation::CoupledRings => {
+                        let e_coul = drpa_coul_e.expect("T requested => Coulomb dRPA computed");
+                        let e_erfc = drpa_sr_e.expect("T requested => SR dRPA computed");
+                        let delta_full = e_coul - 2.0 * sc_full.e_os;
+                        let delta_sr = e_erfc - 2.0 * sc_sr.e_os;
+                        // T: E_MP2[Coulomb] + ΔdRPA[Coulomb] − ΔdRPA[erfc]
+                        (
+                            sc_full.e_total + delta_full - delta_sr,
+                            None,
+                            None,
+                            Some(delta_full),
+                            Some(delta_sr),
+                        )
+                    }
+                };
+            out.push(RsMp2RpaResult {
+                e_mp2_full: sc_full.e_total,
+                e_sr_mp2: sc_sr.e_total,
+                e_lr_mp2: sc_lr.e_total,
+                e_dmp2_lr,
+                e_drpa_lr,
+                e_corr_naive,
+                e_delta_drpa_full,
+                e_delta_drpa_sr,
                 e_corr,
-                None,
-                None,
-                Some(delta_full),
-                Some(delta_sr),
-                sc_full,
-                sc_sr,
-                sc_lr,
-            )
+                total_energy: rhf.energy + e_corr,
+            });
         }
-    };
-
-    // Closed shell: E_MP2 = Σ (ia|jb)[2(ia|jb)−(ib|ja)]/Δ; the direct (ring)
-    // part 2Σ(ia|jb)²/Δ — the 2nd-order truncation of dRPA — equals 2·E_OS.
-    let e_dmp2_lr = 2.0 * sc_lr.e_os;
-
-    Ok(RsMp2RpaResult {
-        e_mp2_full: sc_full.e_total,
-        e_sr_mp2: sc_sr.e_total,
-        e_lr_mp2: sc_lr.e_total,
-        e_dmp2_lr,
-        e_drpa_lr,
-        e_corr_naive,
-        e_delta_drpa_full,
-        e_delta_drpa_sr,
-        e_corr,
-        total_energy: rhf.energy + e_corr,
-    })
+    }
+    Ok(out)
 }
 
 #[cfg(test)]

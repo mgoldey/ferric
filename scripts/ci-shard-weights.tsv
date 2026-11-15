@@ -346,7 +346,6 @@ ferric-rpa::mwe_panel_width_budget	0.085
 ferric-rpa::mwe_per_worker_scratch	0.024
 ferric-rpa::mwe_rpa_planes_compose_in_one_pool	5.162
 ferric-rpa::mwe_rpa_pool_is_inert_without_a_pool	1.841
-ferric-rpa::mwe_rs_mp2_rpa_second_intermediate	0.059
 ferric-rpa::occupied_localization_pseudo_density_invariance	24.299
 ferric-rpa::p5_parallel_determinism	1.407
 ferric-rpa::pdep_eigenpotentials_are_physical	0.936
@@ -360,6 +359,7 @@ ferric-rpa::properties_lowdin	1.224
 ferric-rpa::properties_mulliken	3.436
 ferric-rpa::pv_sparsity_diagnostic	27.383
 ferric-rpa::rpa_gradient	1.759
+ferric-rpa::rs_mp2_rpa_scan	25.000
 ferric-rpa::screened_rpa	3.348
 ferric-rpa::u_pdep_rpa	16.305
 ferric-scf	419.258

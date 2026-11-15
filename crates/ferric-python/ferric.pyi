@@ -5173,13 +5173,13 @@ def run_rs_mp2_rpa(
     mol: Molecule,
     basis_set: BasisSet,
     auxbasis: BasisSet,
-    omega: float | None = None,
+    omega: float | Sequence[float] | None = None,
     frozen_core: int | None = None,
     k_builder: str | None = None,
-    formulation: str | None = None,
+    formulation: str | Sequence[str] | None = None,
     attenuator: str | None = None,
     r0: float | None = None,
-    terf_omega: float | None = None,
+    terf_omega: float | Sequence[float] | None = None,
     memory_budget_gb: float | None = None,
     scf_jk: str | None = None,
     jk_auxbasis: str | None = None,
@@ -5187,13 +5187,21 @@ def run_rs_mp2_rpa(
     scf_max_iter: int | None = None,
     scf_energy_conv: float | None = None,
     scf_density_conv: float | None = None,
-) -> RsMp2RpaResult:
+) -> RsMp2RpaResult | list[RsMp2RpaResult]:
     """SR-MP2 + LR-dRPA. omega/terf_omega in Angstrom^-1, r0 in Angstrom.
 
     `scf_jk` / `jk_auxbasis` as in `run_rimp2`, but the default differs: this
     entry point has always used RI-JK, so `scf_jk` defaults to "rijk" (on
     "def2-universal-jkfit") here, not "exact". A `k_builder` under "rijk" is
     a ValueError. The mode used is echoed as `result.scf_jk`.
+
+    `omega` (erf split) or `terf_omega` (terf split, at the fixed `r0`) and
+    `formulation` each accept a list. A list for either returns a list of
+    results, omega-major in the order given, from ONE reference SCF and one
+    omega-independent Coulomb stage (each entry is bit-identical to the
+    separate single-omega call). `omega` as a list with attenuator="terf", or
+    `terf_omega` as a list with "erf", is a ValueError; empty lists and
+    repeated formulations are ValueErrors. Scalars return one result.
     """
     ...
 

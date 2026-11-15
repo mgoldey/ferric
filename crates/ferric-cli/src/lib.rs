@@ -3489,6 +3489,20 @@ fn run_rs_mp2_rpa(
         eprintln!("error: {e}");
         std::process::exit(1);
     });
+    if cfg.mp2.omega_scan.is_some() || cfg.mp2.formulations.is_some() {
+        let ctx = RsScanCtx {
+            cfg,
+            mol,
+            bs,
+            prep,
+            dfbs: &dfbs,
+            aux_name,
+            result,
+            budget_bytes,
+            scf_cert,
+        };
+        return run_rs_mp2_rpa_scan(&ctx);
+    }
     let omega_ang_inv = cfg.mp2.omega.unwrap_or(0.420);
     let formulation = match cfg.mp2.formulation.as_deref().unwrap_or("delta-lr") {
         "delta-lr" => ferric_rpa::RsMp2RpaFormulation::DeltaLr,
@@ -3640,6 +3654,37 @@ fn emit_rs_mp2_rpa_point(
             std::process::exit(1);
         },
     );
+    print_rs_mp2_rpa_block(
+        cfg,
+        bs,
+        prep,
+        aux_name,
+        result,
+        rs_cfg,
+        omega_ang_inv,
+        r0_ang,
+        scf_cert,
+        &r,
+        false,
+    );
+}
+
+/// Print and log ONE `rs-mp2-rpa` result block (`scan` adds the ω and
+/// formulation to the JSON run-log entry; the single-point entry is unchanged).
+#[allow(clippy::too_many_arguments)]
+fn print_rs_mp2_rpa_block(
+    cfg: &Config,
+    bs: &BasisSet,
+    prep: &PreparedBasis,
+    aux_name: &str,
+    result: &ferric_scf::result::ScfResult,
+    rs_cfg: &ferric_rpa::rs_mp2_rpa::RsMp2RpaConfig,
+    omega_ang_inv: f64,
+    r0_ang: f64,
+    scf_cert: &Certificate,
+    r: &ferric_rpa::RsMp2RpaResult,
+    scan: bool,
+) {
     println!(
         "RS-MP2-RPA/{} (aux: {}, ω={:.3} Å⁻¹) on {}",
         bs.name, aux_name, omega_ang_inv, cfg.molecule.xyz
@@ -3721,17 +3766,128 @@ fn emit_rs_mp2_rpa_point(
         scf_cert, aux_name, rs_cfg,
     ));
     if let Some(rl) = ferric_scf::runlog::log() {
-        rl.result(
-            "rs-mp2-rpa",
-            r.total_energy,
-            serde_json::json!({
-                "e_mp2_full": r.e_mp2_full,
-                "e_sr_mp2": r.e_sr_mp2,
-                "e_lr_mp2": r.e_lr_mp2,
-                "e_scf_reference": result.energy,
-                "scf_converged": result.converged,
-                "certificate": cert,
-            }),
+        let mut detail = serde_json::json!({
+            "e_mp2_full": r.e_mp2_full,
+            "e_sr_mp2": r.e_sr_mp2,
+            "e_lr_mp2": r.e_lr_mp2,
+            "e_scf_reference": result.energy,
+            "scf_converged": result.converged,
+            "certificate": cert,
+        });
+        if scan {
+            detail["omega_ang_inv"] = serde_json::json!(omega_ang_inv);
+            detail["formulation"] = serde_json::json!(match rs_cfg.formulation {
+                ferric_rpa::RsMp2RpaFormulation::DeltaLr => "delta-lr",
+                ferric_rpa::RsMp2RpaFormulation::CoupledRings => "coupled-rings",
+            });
+            detail["e_corr"] = serde_json::json!(r.e_corr);
+        }
+        rl.result("rs-mp2-rpa", r.total_energy, detail);
+    }
+}
+
+/// Everything a multi-point `rs-mp2-rpa` run reads, bundled to keep the
+/// helper signatures short.
+struct RsScanCtx<'a> {
+    cfg: &'a Config,
+    mol: &'a Molecule,
+    bs: &'a BasisSet,
+    prep: &'a PreparedBasis,
+    dfbs: &'a PreparedBasis,
+    aux_name: &'a str,
+    result: &'a ferric_scf::result::ScfResult,
+    budget_bytes: Option<usize>,
+    scf_cert: &'a Certificate,
+}
+
+/// `[mp2] omega_scan` / `formulations`: one `rs_mp2_lr_rpa_scan` call (one
+/// reference SCF, one Coulomb stage), then one printed block per (ω,
+/// formulation), ω-major. Keys were validated by
+/// `Mp2Cfg::validate_rs_scan_keys`; the names are re-parsed strictly here.
+fn run_rs_mp2_rpa_scan(ctx: &RsScanCtx<'_>) {
+    use ferric_rpa::rs_mp2_rpa::Attenuator;
+    use ferric_rpa::RsMp2RpaFormulation as Form;
+    let RsScanCtx { cfg, mol, .. } = *ctx;
+    let die = |msg: String| -> ! {
+        eprintln!("error: {msg}");
+        std::process::exit(1);
+    };
+    let forms: Vec<Form> = match &cfg.mp2.formulations {
+        Some(v) => v
+            .iter()
+            .map(|f| match f.as_str() {
+                "delta-lr" => Form::DeltaLr,
+                "coupled-rings" => Form::CoupledRings,
+                other => die(format!("unknown [mp2] formulations entry \"{other}\"")),
+            })
+            .collect(),
+        None => vec![match cfg.mp2.formulation.as_deref().unwrap_or("delta-lr") {
+            "delta-lr" => Form::DeltaLr,
+            "coupled-rings" => Form::CoupledRings,
+            other => die(format!("unknown [mp2] formulation = \"{other}\"")),
+        }],
+    };
+    let attenuator = match cfg.mp2.attenuator.as_deref().unwrap_or("erf") {
+        "erf" => Attenuator::Erf,
+        "terf" => Attenuator::Terf,
+        other => die(format!("unknown [mp2] attenuator = \"{other}\"")),
+    };
+    let omegas_ang: Vec<f64> = cfg
+        .mp2
+        .omega_scan
+        .clone()
+        .unwrap_or_else(|| vec![cfg.mp2.omega.unwrap_or(0.420)]);
+    let to_bohr = ferric_mp2::attenuated::BOHR_INV_PER_ANG_INV;
+    let omegas: Vec<f64> = omegas_ang.iter().map(|w| w * to_bohr).collect();
+    let r0_ang = cfg
+        .mp2
+        .r0
+        .unwrap_or(3.18 / ferric_core::units::ANGSTROM_TO_BOHR);
+    let mut rs_cfg = ferric_rpa::rs_mp2_rpa::RsMp2RpaConfig {
+        attenuator,
+        r0: r0_ang * ferric_core::units::ANGSTROM_TO_BOHR,
+        frozen_core: cfg.mp2.frozen_core.resolve(mol),
+        ..Default::default()
+    };
+    if let Some(t) = cfg.rpa.trunc_thresh {
+        rs_cfg.drpa.trunc_thresh = t;
+    }
+    rs_cfg.drpa.memory_budget_bytes = ctx.budget_bytes;
+    for line in rs_mp2_rpa_notices(matches!(attenuator, Attenuator::Terf)) {
+        eprintln!("[warning] {line}");
+    }
+    let results = ferric_rpa::rs_mp2_rpa::rs_mp2_lr_rpa_scan(
+        mol, ctx.prep, ctx.dfbs, ctx.result, &rs_cfg, &omegas, &forms,
+    )
+    .unwrap_or_else(|e| die(e.to_string()));
+    let n = results.len();
+    for (k, r) in results.iter().enumerate() {
+        let (i, j) = (k / forms.len(), k % forms.len());
+        let mut point = rs_cfg.clone();
+        point.formulation = forms[j];
+        match attenuator {
+            Attenuator::Erf => point.omega = omegas[i],
+            Attenuator::Terf => point.terf_omega = Some(omegas[i]),
+        }
+        println!(
+            "\n===== scan point {}/{}: ω = {:.4} Å⁻¹, {:?} =====",
+            k + 1,
+            n,
+            omegas_ang[i],
+            forms[j]
+        );
+        print_rs_mp2_rpa_block(
+            cfg,
+            ctx.bs,
+            ctx.prep,
+            ctx.aux_name,
+            ctx.result,
+            &point,
+            omegas_ang[i],
+            r0_ang,
+            ctx.scf_cert,
+            r,
+            true,
         );
     }
 }

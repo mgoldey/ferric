@@ -203,6 +203,16 @@ by a fitted dispersion term. Two formulations:
 **Run it.** `method.kind = "rs-mp2-rpa"` (`examples/water-rs-mp2-rpa.toml`,
 `[mp2] formulation`); Python `run_rs_mp2_rpa(..., omega=0.420, formulation="delta-lr")`.
 
+**Scanning ω.** `omega_scan` and `formulations` run several points in one job
+(`examples/water-rs-mp2-rpa-scan.toml`): the SCF and the ω-independent
+Coulomb stage (MP2 spin components, and for `coupled-rings` the Coulomb dRPA)
+run once, and each ω adds only its erf and erfc intermediates, shared between
+the two formulations. Each (ω, formulation) result equals a separate
+single-ω run bit for bit, and peak memory does not grow with the number of
+points. Python takes lists: `run_rs_mp2_rpa(..., omega=[0.2, 0.42, 0.673],
+formulation=["delta-lr", "coupled-rings"])` returns a list of results,
+ω-major.
+
 **Accuracy.** Smoke. The ω→0 and ω→∞ limits reduce exactly to MP2 and to
 MP2 + dRPA; numbers at production ω are not established on new systems.
 

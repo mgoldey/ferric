@@ -1753,6 +1753,17 @@ pub struct Mp2Cfg {
     /// output data that no committed code could regenerate. That is why this is
     /// a real config field with a regression test rather than a local patch.
     pub r0_sweep: Option<Vec<f64>>,
+    /// Evaluate several ω (**Å⁻¹**) in ONE `rs-mp2-rpa` job: the Coulomb pieces
+    /// (MP2 and, for T, the Coulomb dRPA) are built once and each ω adds only
+    /// its erf/erfc stage. Exclusive with `omega`, `r0_sweep` and `terf_omega`.
+    /// With `attenuator = "terf"` each value is the decoupled seam sharpness
+    /// (`terf_omega`) at the fixed `r0`. A result block is printed per
+    /// (ω, formulation), ω-major in the order given.
+    pub omega_scan: Option<Vec<f64>>,
+    /// Several `rs-mp2-rpa` formulations (`"delta-lr"`, `"coupled-rings"`) in
+    /// one job; exclusive with `formulation`. Pairs with `omega_scan` or runs
+    /// alone at the single `omega`.
+    pub formulations: Option<Vec<String>>,
     /// Bonded (shorter-range) terfc cutoff **r0(1)** in **Å**, used ONLY by
     /// `method.kind = "scs-mp2-2terfc"`. Default 0.75 Å (the published
     /// SCS-MP2(2terfc, aTZ) value, J. Phys. Chem. B 118, 6519 (2014)).
@@ -1899,6 +1910,61 @@ pub enum AttRimp2Op {
 pub const ATT_RIMP2_TERFC_DEFAULT_R0_ANG: f64 = 1.05;
 
 impl Mp2Cfg {
+    /// `[mp2] omega_scan` / `formulations` (rs-mp2-rpa multi-point run): read by
+    /// `method.kind = "rs-mp2-rpa"` only, and exclusive with the single-point
+    /// keys they replace. Unknown names, duplicates, empty lists and
+    /// non-positive ω are errors, never silently dropped.
+    pub fn validate_rs_scan_keys(&self, kind: &str) -> Result<(), String> {
+        if self.omega_scan.is_none() && self.formulations.is_none() {
+            return Ok(());
+        }
+        if kind != "rs-mp2-rpa" {
+            return Err(format!(
+                "[mp2] omega_scan / formulations are read by method.kind = \"rs-mp2-rpa\" \
+                 only; kind = \"{kind}\" would silently ignore them"
+            ));
+        }
+        if let Some(ws) = &self.omega_scan {
+            if ws.is_empty() || ws.iter().any(|w| !(w.is_finite() && *w > 0.0)) {
+                return Err(format!(
+                    "[mp2] omega_scan must be a non-empty list of finite ω > 0 (Å⁻¹), got {ws:?}"
+                ));
+            }
+            for (key, set) in [
+                ("omega", self.omega.is_some()),
+                ("r0_sweep", self.r0_sweep.is_some()),
+                ("terf_omega", self.terf_omega.is_some()),
+            ] {
+                if set {
+                    return Err(format!(
+                        "[mp2] omega_scan and {key} are mutually exclusive (omega_scan \
+                         replaces the single ω; with attenuator = \"terf\" its values \
+                         are the seam sharpness at the fixed r0)"
+                    ));
+                }
+            }
+        }
+        if let Some(fs) = &self.formulations {
+            if self.formulation.is_some() {
+                return Err("[mp2] formulations and formulation are mutually exclusive".to_string());
+            }
+            if fs.is_empty() {
+                return Err("[mp2] formulations must not be empty".to_string());
+            }
+            for (i, f) in fs.iter().enumerate() {
+                if !matches!(f.as_str(), "delta-lr" | "coupled-rings") {
+                    return Err(format!(
+                        "[mp2] formulations: unknown \"{f}\"; expected \"delta-lr\" or \"coupled-rings\""
+                    ));
+                }
+                if fs[..i].contains(f) {
+                    return Err(format!("[mp2] formulations lists \"{f}\" twice"));
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// The `att-rimp2` short-range operator (`att_operator`), strictly parsed
     /// and checked against the keys only one operator reads: `att_r0` with
     /// erfc and `omega` with terfc are errors (each would be silently
@@ -4803,6 +4869,8 @@ impl Config {
             }
             self.mp2.validate_oo_keys()?;
         }
+
+        self.mp2.validate_rs_scan_keys(kind)?;
 
         if let Some(w) = self.mp2.terf_omega {
             if kind != "rs-mp2-rpa" || self.mp2.attenuator.as_deref() != Some("terf") {
@@ -12798,6 +12866,49 @@ mod cli_wired_keys_tests {
     }
 
     // ---- [mp2] terf_omega / att-rimp2 attenuator ----
+
+    #[test]
+    fn rs_scan_keys_are_strict() {
+        cfg(
+            "rs-mp2-rpa",
+            "energy",
+            1,
+            "[mp2]\nomega_scan = [0.2, 0.42]\nformulations = [\"delta-lr\", \"coupled-rings\"]\n",
+        )
+        .validate_cli_wired_keys()
+        .unwrap();
+        for (body, needle) in [
+            ("[mp2]\nomega_scan = []\n", "non-empty"),
+            (
+                "[mp2]\nomega_scan = [0.2, -1.0]\n",
+                "non-empty list of finite",
+            ),
+            (
+                "[mp2]\nomega_scan = [0.2]\nomega = 0.4\n",
+                "mutually exclusive",
+            ),
+            (
+                "[mp2]\nomega_scan = [0.2]\nr0_sweep = [1.0]\n",
+                "mutually exclusive",
+            ),
+            ("[mp2]\nformulations = []\n", "must not be empty"),
+            ("[mp2]\nformulations = [\"t\"]\n", "unknown"),
+            (
+                "[mp2]\nformulations = [\"delta-lr\", \"delta-lr\"]\n",
+                "twice",
+            ),
+            (
+                "[mp2]\nformulations = [\"delta-lr\"]\nformulation = \"delta-lr\"\n",
+                "mutually exclusive",
+            ),
+        ] {
+            refused(&cfg("rs-mp2-rpa", "energy", 1, body), needle);
+        }
+        refused(
+            &cfg("rimp2", "energy", 1, "[mp2]\nomega_scan = [0.2]\n"),
+            "rs-mp2-rpa",
+        );
+    }
 
     #[test]
     fn terf_omega_needs_rs_mp2_rpa_with_terf() {
