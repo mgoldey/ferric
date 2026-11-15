@@ -1334,3 +1334,122 @@ dipole bookkeeping of Z1, RC and RCD for 1 to 5 neighbours; Q3
 the full structure, for all four schemes, with the swapped link split and an
 unsplit midpoint as negative controls; Q4 translational invariance).
 
+## Thole polarizable embedding
+
+`polarizable.rs` adds induced point dipoles $\boldsymbol\mu_i$ on MM sites of
+isotropic polarizability $\alpha_i$ (Applequist with Thole damping),
+re-solved from the current density every SCF iteration
+(`driver::solvent_terms`).
+
+**Induction.** The field at site $i$ is $\mathbf{E}_i = \mathbf{E}^{\rm QM}_i(\mathbf{P}) + \mathbf{E}^{\rm perm}_i$:
+the field of the QM nuclei and total density (`qmmm::electric_field_at_points`,
+point-charge nuclear-attraction derivative blocks) plus that of the
+environment's permanent charges. The dipoles solve the dense $3N\times3N$ system
+(`solve_induction`)
+
+$$\big(\boldsymbol\alpha^{-1} - \mathbf{T}\big)\boldsymbol\mu = \mathbf{E},
+\qquad
+\mathbf{T}_{ij} = \frac{3\lambda_5\,\hat{\mathbf{r}}\hat{\mathbf{r}}^{\mathsf T} - \lambda_3\mathbf{1}}{r^3}
+\quad(i\ne j,\ \mathbf{r} = \mathbf{R}_i - \mathbf{R}_j),$$
+
+with $\mathbf{T}_{ii} = 0$ and $\mathbf{T}_{ij} = 0$ for excluded pairs, and the
+exponential Thole screening (`thole_screening`, $a = 2.1304$ by default)
+
+$$u = \frac{r}{(\alpha_i\alpha_j)^{1/6}},\quad v = au,\qquad
+\lambda_3 = 1 - \Big(1 + v + \frac{v^2}{2}\Big)e^{-v},\qquad
+\lambda_5 = \lambda_3 - \frac{v^3}{6}e^{-v}.$$
+
+$\lambda_5 = \lambda_3 - \tfrac u3\,d\lambda_3/du$, which makes
+$T_{ab} = \partial_a\partial_b\phi(r)$ for $\phi'(r) = -\lambda_3/r^2$: the damped
+tensor is the Hessian of a radial function, hence symmetric in $a, b$ and
+even in $\mathbf{r}$, $\mathbf{T}_{ij} = \mathbf{T}_{ji}$, and
+$\boldsymbol\alpha^{-1} - \mathbf{T}$ is symmetric. $a\to\infty$ (or
+`thole_a: None`) gives $\lambda_3 = \lambda_5 = 1$, the bare dipole tensor.
+$\mathbf{E}^{\rm perm}_i$ skips permanent charges colocated (within $10^{-8}$
+Bohr) with site $i$ or with a site excluded from $i$. For a Gaussian-smeared
+permanent charge it uses the point-charge field $q\,\mathbf{r}/r^3$, not the
+field of the Gaussian (`permanent_field_at_sites`); the gradients below use the
+same point form, so the gradient is that of the energy computed.
+
+**Energy and the stationary functional.** The polarization energy is
+$E_{\rm pol} = -\tfrac12\boldsymbol\mu\cdot\mathbf{E}$, added outside the
+$\tfrac12\mathrm{Tr}[\mathbf{P}(\mathbf{h}+\mathbf{F})]$ trace. It is the value at
+$\boldsymbol\mu^*$ of
+
+$$W[\boldsymbol\mu] = -\boldsymbol\mu\cdot\mathbf{E}
+ + \tfrac12\boldsymbol\mu\cdot\boldsymbol\alpha^{-1}\boldsymbol\mu
+ - \tfrac12\boldsymbol\mu\cdot\mathbf{T}\boldsymbol\mu,$$
+
+which is stationary there: $\partial W/\partial\boldsymbol\mu = 0$ is the
+induction equation (the symmetry of $\mathbf{T}$ is used), and
+$W[\boldsymbol\mu^*] = -\boldsymbol\mu^*\cdot\mathbf{E} + \tfrac12\boldsymbol\mu^*\cdot\mathbf{E}
+= -\tfrac12\boldsymbol\mu^*\cdot\mathbf{E}$. Every derivative of $E_{\rm pol}$
+is therefore a derivative of $W$ at fixed $\boldsymbol\mu = \boldsymbol\mu^*$.
+Differentiating $-\tfrac12\boldsymbol\mu\cdot\mathbf{E}$ at fixed
+$\boldsymbol\mu$ instead is wrong: that expression is not stationary in
+$\boldsymbol\mu$, and it misses both a factor 2 on the field term and the
+whole $\mathbf{T}$ term.
+
+**Fock term.** $\mathbf{E}^{\rm QM}_i$ is linear in $\mathbf{P}$,
+$\mathbf{E}^{\rm QM}_i = \mathbf{E}^{\rm nuc}_i + \sum_{\mu\nu}P_{\mu\nu}\mathbf{f}_{i,\mu\nu}$, so
+
+$$V^{\rm ind}_{\mu\nu} = \frac{\partial W}{\partial P_{\mu\nu}}\Big|_{\boldsymbol\mu^*}
+ = -\sum_i \boldsymbol\mu_i\cdot\mathbf{f}_{i,\mu\nu},$$
+
+with no factor $\tfrac12$, added to every spin Fock matrix
+(`build_v_induced`). The field integral $\mathbf{f}_{i,\mu\nu}$ is built from
+three-centre integrals against a pure $p$ shell of exponent $\zeta$ = `dipole_zeta`
+(default $10^4$ Bohr$^{-2}$) at the site,
+$f_{i,c} = \mathcal{N}_p(\zeta)\,(\mu\nu|p_{(c+2)\bmod 3})$ with
+$\mathcal{N}_p(\zeta) = 2^{1/4}\zeta^{5/4}/(2\pi^{3/4})$ (`norm_int_p_shell`) and
+the overall sign carried by `build_v_induced`. $\mathcal{N}_p$ is the reciprocal
+of the dipole moment $\int x\,p_x$ of the unit-normalized
+$p_x = \mathcal{N}x\,e^{-\zeta r^2}$, so $(\mu\nu|p_x)\,\mathcal{N}_p$ is the
+potential integral of a unit point dipole as $\zeta\to\infty$; and
+$(c+2)\bmod 3$ maps field axis $(x, y, z)$ to the real solid harmonics of a pure
+$l = 1$ shell, ordered $m = -1, 0, +1 = (y, z, x)$. At finite $\zeta$ the
+Fock and gradient integrals are those of a Gaussian dipole of width
+$\zeta^{-1/2} \approx 0.01$ Bohr, while $\mathbf{E}^{\rm QM}$ in the induction
+uses the point field, so $V^{\rm ind}$ equals $\partial W/\partial\mathbf{P}$ up
+to that finite-width error.
+
+**Gradients** (all at fixed $\boldsymbol\mu^*$, from $W$):
+
+$$\frac{dE}{d\mathbf{R}_A} \mathrel{+}= -\sum_i\boldsymbol\mu_i\cdot\frac{\partial\mathbf{E}^{\rm QM}_i}{\partial\mathbf{R}_A},
+\qquad
+\frac{dE}{d\mathbf{R}_i} = -\boldsymbol\mu_i\cdot\frac{\partial\mathbf{E}_i}{\partial\mathbf{R}_i}
+ - \sum_{j\ne i}\boldsymbol\mu_i\cdot\frac{\partial\mathbf{T}_{ij}}{\partial\mathbf{R}_i}\boldsymbol\mu_j,
+\qquad
+\frac{dE}{d\mathbf{r}_c} = -\sum_i\boldsymbol\mu_i\cdot\frac{\partial\mathbf{E}^{\rm perm}_i}{\partial\mathbf{r}_c}.$$
+
+- QM atoms (`qm_gradient_contribution`): the basis-centre derivative of
+  $V^{\rm ind}$ contracted with $\mathbf{P}$ (three-centre derivative blocks 1
+  and 2), plus the nuclear part $-\boldsymbol\mu_i\cdot\partial\mathbf{E}^{\rm nuc}_i/\partial\mathbf{R}_A$
+  in closed form.
+- Sites (`site_gradient`): the electronic part by translational invariance,
+  $-(\text{block 1} + \text{block 2})$; the nuclear and permanent-charge parts
+  in closed form; and the $\mathbf{T}$ term. $W$ holds
+  $-\tfrac12\boldsymbol\mu_i\cdot\mathbf{T}_{ij}\boldsymbol\mu_j$ and
+  $-\tfrac12\boldsymbol\mu_j\cdot\mathbf{T}_{ji}\boldsymbol\mu_i$, equal by the
+  symmetry above, so the loop over $j$ for fixed $i$ carries coefficient 1.
+  $\partial\mathbf{T}_{ij}/\partial\mathbf{R}_i$ is a central difference of
+  `thole_tensor`, step $h = 10^{-6}$ Bohr; its rounding error is about
+  $\epsilon|\mathbf{T}|/h$ ($\sim10^{-10}$ relative), its truncation error
+  $O(h^2)$ is far below that. The analytic form is
+  $\partial_k T_{ab} = \partial_a\partial_b\partial_k\phi$ with the $\phi$ above.
+- Permanent charges (`charge_gradient_contribution`): the second formula's
+  charge half; `qmmm::full_gradient_with_polarizable` adds the site and charge
+  rows to `full_gradient`.
+
+With $\alpha_i\to0$ the dipoles vanish and every term above is zero; an empty
+site list returns before any solve and is bit-identical to no embedding.
+
+Proof: `scripts/thole_polarizable_sympy.py` (T1 the $\lambda_5$ identity, $\mathbf{T}$
+as a Hessian, its symmetry and the undamped limit; T2 stationarity of $W$;
+T3 site and charge gradients against finite differences of $E_{\rm pol}$ with
+$\boldsymbol\mu$ re-solved, with the coefficient-$\tfrac12$ $\mathbf{T}$ term and
+the naive fixed-$\boldsymbol\mu$ derivative as negative controls, and the
+$h = 10^{-6}$ difference of $\mathbf{T}$ against its analytic derivative; T4
+the Fock term; T5 the $\alpha\to0$ limit; T6 $\mathcal{N}_p$ and the $p$-shell
+order).
+

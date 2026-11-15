@@ -348,7 +348,7 @@ Code references are `crate/src/file.rs::item` under `crates/`.
 |---|---|---|---|---|
 | 23.1 | Point charges, smeared charges and uniform fields | T scf "External point charges and fields"; S `external_potential_sympy.py` | `ferric-core/src/external_potential.rs::ExternalPotential`, `ferric-integrals/src/oneelectron.rs::hcore_with_external` | edit |
 | 23.2 | QM/MM boundaries, link atoms and the full gradient | T scf "QM/MM boundary and the full gradient"; S `qmmm_boundary_sympy.py`; M `site/src/using/qmmm.md`; R qmmm | `ferric-scf/src/qmmm.rs::{mm_forces,full_gradient,optimize_qmmm}` | edit |
-| 23.3 | Polarizable embedding | none | `ferric-scf/src/polarizable.rs::{induce,site_gradient}` | gap |
+| 23.3 | Polarizable embedding | T scf "Thole polarizable embedding"; S `thole_polarizable_sympy.py`; R qmmm | `ferric-scf/src/polarizable.rs::{induce,site_gradient}` | edit |
 | 23.4 | The molecular-mechanics force field | T mm §1–8; S `mm_dihedral_gradient_sympy.py`, `mm_cutoff_sympy.py`; R mm | `ferric-mm/src/energy.rs::{energy,gradient}`, `ferric-mm/src/cutoff.rs::{energy_with,gradient_with}` | ready |
 
 ### Part XII. Periodic systems
@@ -452,13 +452,13 @@ registry row and are the largest block of `gap` sections.
 | VIII. Multireference | 5 | 0 | 1 | 0 | 6 |
 | IX. RPA, PDEP and GW | 12 | 1 | 1 | 1 | 15 |
 | X. Response and excited states | 7 | 1 | 1 | 0 | 9 |
-| XI. Environment | 5 | 3 | 1 | 0 | 9 |
+| XI. Environment | 5 | 4 | 0 | 0 | 9 |
 | XII. Periodic systems | 7 | 2 | 0 | 0 | 9 |
 | XIII. Dispersion | 2 | 1 | 0 | 0 | 3 |
 | XIV. Capstone | 1 | 2 | 4 | 0 | 7 |
 | XV. Interfaces | 1 | 5 | 1 | 0 | 7 |
 | Appendices | 3 | 0 | 1 | 0 | 4 |
-| **Total** | **87** | **47** | **18** | **7** | **159** |
+| **Total** | **87** | **48** | **17** | **7** | **159** |
 
 159 sections: 55% `ready`, 30% `edit`, 11% `gap` and 4% `verify`.
 <!-- status-table:end -->

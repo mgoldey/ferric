@@ -924,11 +924,13 @@
     "qmmm": {
       "theory": [
         "crates/ferric-scf/theory.md#external-point-charges-and-fields",
-        "crates/ferric-scf/theory.md#qmmm-boundary-and-the-full-gradient"
+        "crates/ferric-scf/theory.md#qmmm-boundary-and-the-full-gradient",
+        "crates/ferric-scf/theory.md#thole-polarizable-embedding"
       ],
       "scripts": [
         "scripts/external_potential_sympy.py",
-        "scripts/qmmm_boundary_sympy.py"
+        "scripts/qmmm_boundary_sympy.py",
+        "scripts/thole_polarizable_sympy.py"
       ]
     }
   },

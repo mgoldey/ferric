@@ -850,6 +850,27 @@ CASES = [
         ],
     ),
     (
+        "thole_polarizable_sympy.py",
+        60,
+        [
+            (
+                "g[k] += -1.0 * d_dot_dr",
+                "g[k] += -0.5 * d_dot_dr",
+                "FAIL T3 site and charge",
+            ),
+            (
+                'return -np.einsum("ic,icmn->mn", mu, f_ints)',
+                'return -0.5 * np.einsum("ic,icmn->mn", mu, f_ints)',
+                "FAIL T4 dE/dD",
+            ),
+            (
+                "return lam3, lam3 - v * v * v / 6 * e",
+                "return lam3, lam3 - v * v * v / 2 * e",
+                "FAIL T1 lam5",
+            ),
+        ],
+    ),
+    (
         "pcm_ief_sympy.py",
         150,
         [

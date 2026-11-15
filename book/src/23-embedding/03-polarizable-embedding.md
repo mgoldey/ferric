@@ -1,6 +1,7 @@
 # 23.3 Polarizable embedding
 
-<!-- section: 23.3; status: gap; registry: none; theory: none -->
+<!-- section: 23.3; status: edit; registry: qmmm;
+     theory: crates/ferric-scf/theory.md#"Thole polarizable embedding" -->
 
 Fixed charges cannot respond to the QM region. A real environment does: the
 electron density of a ligand polarizes the protein around it, and the induced
@@ -10,10 +11,11 @@ at each site respond to the total field, including the field of the other
 dipoles. The dipoles are re-solved from the current QM density in every SCF
 iteration, the same pattern as the reaction field of section 22.3.
 
-This section has no `theory.md` text and no proof script. The equations are
-read from the code loops. The gradient of the site positions has a subtlety
-that the code documents as a measured bug, and the derivation below is the
-reason the code looks the way it does.
+The derivation is in `crates/ferric-scf/theory.md` and the proofs in
+`scripts/thole_polarizable_sympy.py`. The gradient of the site positions has a
+subtlety: it is the derivative of a functional that is stationary in the
+dipoles, not of the polarization energy at fixed dipoles, and that is why the
+code looks the way it does.
 
 | Symbol | Meaning | Code name |
 |---|---|---|
@@ -78,7 +80,7 @@ t[a][b] = (3.0 * lam5 * rhat[a] * rhat[b] - lam3 * eye) * inv_r3;
 
 Collecting the unknown dipoles on the left gives one dense linear system:
 
-**Equation 23.4, the induction system, the energy and the Fock term.** (Transcribed from the code loop; see Known limits.)
+**Equation 23.4, the induction system, the energy and the Fock term.**
 
 $$ \big[\operatorname{diag}(\alpha^{-1}) - \mathsf T\big]\,\boldsymbol\mu = \mathbf E^{\mathrm{ext}}, \qquad E_{\mathrm{pol}} = -\tfrac12\sum_i\boldsymbol\mu_i\cdot\mathbf E_i^{\mathrm{ext}}, \qquad V^{\mathrm{ind}}_{\mu\nu} = -\sum_i\boldsymbol\mu_i\cdot\mathbf F_i^{\mu\nu}, $$
 
@@ -95,6 +97,28 @@ $E_{\mathrm{pol}}$ with respect to the density is the explicit one at fixed
 $\boldsymbol\mu$: $-\boldsymbol\mu\cdot\partial\mathbf E^{\mathrm{ext}}/\partial D$,
 with a factor of 1, not $\tfrac12$. That is the same variational structure as
 the COSMO functional of section 22.5.
+
+<!-- include: crates/ferric-scf/theory.md#"Thole polarizable embedding" -->
+
+> **Verified equation 23.4** · stationarity and the Fock term
+>
+> $oldsymbollpha^{-1} - \mathsf T$ is symmetric because $\mathsf T_{ab} = \partial_a\partial_b\phi$
+> with $\phi' = -\lambda_3/r^2$, which holds because $\lambda_5 = \lambda_3 - (u/3)\,d\lambda_3/du$
+> (claim T1). $W$ is stationary at the induction solution with
+> $W[oldsymbol\mu^*] = E_{\mathrm{pol}}$ (claim T2). With $\mathbf E^{\mathrm{QM}}$
+> linear in $D$, the derivative of $E_{\mathrm{pol}}$ with $oldsymbol\mu$ re-solved
+> equals $-\sum_ioldsymbol\mu_i\cdot\mathbf F_i$, with no $	frac12$ (claim T4), and
+> $lpha	o0$ gives no induction (claim T5).
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/thole_polarizable_sympy.py`, claims T1, T2, T4 and T5 |
+> | Negative control | the runner puts $	frac12$ on the Fock term (claim T4 fails) and $v^3/2$ in $\lambda_5$ (claim T1 fails) |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-scf/src/polarizable.rs::build_v_induced` |
+> | Code test | `matches_pyscf_prototype_three_sites` in `crates/ferric-scf/tests/qmmm_polarizable.rs` |
+>
+> <!-- verified: id=thole.fock.term; script=scripts/thole_polarizable_sympy.py; claim=T4; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/polarizable.rs::build_v_induced; rust_test=ferric-scf/tests/qmmm_polarizable.rs::matches_pyscf_prototype_three_sites; registry=qmmm -->
 
 The system is assembled in `solve_induction`, with the diagonal blocks
 $1/\alpha_i$ and the off-diagonal blocks $-\mathsf T_{ij}$:
@@ -140,15 +164,18 @@ three-index machinery as the smeared charges of section 23.1
 default, a width of 0.01 Bohr, so the shell is numerically a point dipole and
 not an exact one.
 
-Two facts about this construction were measured, not derived, and are pinned by
+Two facts fix the map from the shell to the field axes, and both follow from
+the shell's definition (claim T6). The site shell is a pure $l = 1$ shell
+(`SiteBasis` is built with `pure: true`), whose real solid harmonics are ordered
+$m = -1, 0, +1$, that is $(y, z, x)$: the function that carries field axis $c$
+is $(c+2) \bmod 3$ (`p_axis_for_field_axis`). And
+`norm_int_p_shell` $= 2^{1/4}\zeta_p^{5/4}/(2\pi^{3/4})$ is the reciprocal of the
+dipole moment $\int x\,p_x$ of the unit-normalized $p_x$, so the raw
+three-index integral is multiplied by it to give the potential integral of a
+unit point dipole as $\zeta_p\to\infty$. Both are pinned against
+nuclear-attraction derivative blocks by
 `p_shell_dipole_potential_matches_charge_derivative_block` in
-`crates/ferric-scf/tests/qmmm_polarizable.rs`. libint2's Cartesian p-shell
-order here is not $(p_x,p_y,p_z)$ matched to the field axes: the function that
-carries field axis $c$ is $(c+2) \bmod 3$ (`p_axis_for_field_axis`). And the raw
-three-index integral must be multiplied, not divided, by
-`norm_int_p_shell` $= 2^{1/4}\zeta_p^{5/4}/(2\pi^{3/4})$, with a minus sign. A symbolic
-derivation from first principles predicted the identity ordering, a positive sign
-and a division, and was falsified by the measurement.
+`crates/ferric-scf/tests/qmmm_polarizable.rs`.
 
 A second sign convention bit a first implementation. The raw derivative
 convention and the physical field convention of `electric_field_at_points`
@@ -187,7 +214,7 @@ is wrong: it misses the dependence of $\mathsf T$ on the site, and it has the
 wrong coefficient on the field term. The correct derivative is that of $W$, which is
 stationary in $\boldsymbol\mu$, at fixed $\boldsymbol\mu$:
 
-**Equation 23.5, the site gradient of the polarization energy.** (Transcribed from the code loop; see Known limits.)
+**Equation 23.5, the site gradient of the polarization energy.**
 
 $$ \frac{\partial E_{\mathrm{pol}}}{\partial\mathbf R_i} = -\boldsymbol\mu_i\cdot\frac{\partial\mathbf E_i^{\mathrm{ext}}}{\partial\mathbf R_i} - \sum_{j\neq i}\boldsymbol\mu_i\cdot\frac{\partial\mathsf T_{ij}}{\partial\mathbf R_i}\cdot\boldsymbol\mu_j , $$
 
@@ -200,6 +227,27 @@ $-\tfrac12\boldsymbol\mu_j\cdot\mathsf T_{ji}\boldsymbol\mu_i$, and
 $\mathsf T_{ji}(\mathbf R_j,\mathbf R_i) = \mathsf T_{ij}(\mathbf R_i,\mathbf R_j)^{\mathsf T}$ makes the two
 equal, so differentiating both with respect to $\mathbf R_i$ gives $-\boldsymbol\mu_i\cdot\partial\mathsf T_{ij}/\partial\mathbf R_i\cdot\boldsymbol\mu_j$. The loop in
 `site_gradient` visits each $j$ once per $i$, so its coefficient is 1.
+
+> **Verified equation 23.5** · the site and charge gradients
+>
+> On a classical three-site model with fixed point charges standing in for the
+> QM field, the transcribed site and charge gradients, with $\boldsymbol\mu$ held
+> at the solution, equal central differences of $E_{\mathrm{pol}}$ with
+> $\boldsymbol\mu$ re-solved at every displacement. Coefficient $\tfrac12$ on the
+> $\mathsf T$ term and the naive fixed-$\boldsymbol\mu$ derivative of
+> $-\tfrac12\boldsymbol\mu\cdot\mathbf E$ both fail. The $h = 10^{-6}$ central
+> difference of `thole_tensor` agrees with the analytic third derivative of
+> $\phi$ within its rounding bound (claim T3).
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/thole_polarizable_sympy.py`, claim T3 |
+> | Negative control | the runner puts $-0.5$ on the $\mathsf T$ term in the site loop (claim T3 fails) |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-scf/src/polarizable.rs::site_gradient` |
+> | Code test | `site_force_with_polarizable_sites_matches_finite_difference` in `crates/ferric-scf/tests/qmmm_polarizable.rs` |
+>
+> <!-- verified: id=thole.site.gradient; script=scripts/thole_polarizable_sympy.py; claim=T3; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/polarizable.rs::site_gradient; rust_test=ferric-scf/tests/qmmm_polarizable.rs::site_force_with_polarizable_sites_matches_finite_difference; registry=qmmm -->
 
 On a classical two-site Thole system with no QM region, the formula of equation
 23.5 reproduced central-difference gradients on every component, magnitude and
@@ -290,18 +338,23 @@ model, not an analytic reference.
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-scf/src/polarizable.rs` | the model, the integrals, the gradients (no `theory.md` text) |
+| `crates/ferric-scf/theory.md`, "Thole polarizable embedding" | the derivation |
+| `scripts/thole_polarizable_sympy.py` | the proofs, claims T1 to T6 |
+| `crates/ferric-scf/src/polarizable.rs` | the model, the integrals, the gradients |
 | `crates/ferric-scf/tests/validation_thole.rs`, `crates/ferric-scf/tests/qmmm_polarizable.rs` | the PySCF-prototype comparison and the FD checks |
 | `crates/ferric-scf/tests/qmmm_polarizable_forces.rs`, `crates/ferric-scf/tests/qmmm_polarizable_multivariant.rs` | the force rows and the SCF variants |
 
 **Known limits (2026-11-15).**
 
-- The displayed equations 23.4 and 23.5 are transcribed from the code loop and await a
-  `theory.md` derivation and a sympy proof; they are not machine-checked.
-- The permanent-field of a Gaussian-smeared charge at a site uses the
-  point-charge field, and so does its field derivative. The code documents
-  this as accurate at typical separations and not as exact inside a smeared
-  cloud.
+- The permanent field of a Gaussian-smeared charge at a site uses the
+  point-charge field $q\,\mathbf r/r^3$, and so do its derivatives in
+  `site_gradient` and `charge_gradient_contribution`. The gradient is
+  therefore that of the energy computed, but the energy is not that of a
+  smeared charge inside its cloud.
+- The induction uses the point field of the QM density, while $V^{\mathrm{ind}}$
+  and the gradients use the $p$ shell of width $\zeta_p^{-1/2}$, so the Fock term
+  equals the density derivative of $E_{\mathrm{pol}}$ only up to that finite-width
+  error.
 - The dense solve limits a run to `max_sites_dense` sites; an iterative solve
   is a documented follow-up.
 - `optimize_qmmm` refuses a polarizable embedding. The CLI carries the
@@ -310,11 +363,7 @@ model, not an analytic reference.
   and `[pcm]` with sites. `run_qmmm` carries the gradient for all four methods.
 - A boundary scheme (RC or RCD) combined with a polarizable site has no
   finite-difference cross-check.
-- $\partial\mathsf T/\partial\mathbf R$ is a central difference of the closed-form tensor.
-
-**Theory text still needed in `crates/ferric-scf/theory.md`, which another pass is editing.**
-The induction system, $E_{\mathrm{pol}}$ and the Fock term of equation 23.4 with
-the stationarity argument; the Thole screening pair and its consistency relation;
-the $W$-based site and charge gradients of equation 23.5, including the
-coefficient on the $\mathsf T$ term; and the p-shell field-integral map (axis
-permutation and scale), stated as a measured relation with its pin test.
+- $\partial\mathsf T/\partial\mathbf R$ is a central difference of the closed-form tensor
+  with $h = 10^{-6}$ Bohr, whose rounding error is about $\epsilon\lvert\mathsf T\rvert/h$;
+  the analytic form $\partial_a\partial_b\partial_k\phi$ is in `theory.md` and not
+  in the code.
