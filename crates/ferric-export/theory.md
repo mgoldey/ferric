@@ -22,7 +22,7 @@ When the RPA/export pipeline is executed (driven by the `export_npz` configurati
 | `dipole` | $(3,)$ | `float64` | $e\,a_0$ | Molecular dipole moment (electronic + nuclear). |
 | `pdep_eigenvectors` | $(N_{\text{aux}}, N_{\text{pdep}})$ | `float64` | a.u. | PDEP eigenpotentials, where $N_{\text{pdep}}$ is the number of retained eigenvalues: column $\xi$ holds the aux coefficients of the charge density $\rho_\xi(\mathbf r)=\sum_P c_{P\xi}\chi_P(\mathbf r)$ (with $c^\top V c = I$), whose Coulomb potential is the eigenpotential. |
 | `esp_atoms` | $(N_{\text{atoms}},)$ | `float64` | Hartree / $e$ | Electrostatic potential $V(R_A)$ evaluated exactly at the coordinates of each atomic nucleus. |
-| `esp_surface` | $(N_{\text{pts}},)$ | `float64` | Hartree / $e$ | ESP on the van der Waals shell, in the order of `esp_points`. Written only together with `esp_points`. |
+| `esp_surface` | $(N_{\text{pts}},)$ | `float64` | Hartree / $e$ | ESP on the van der Waals shell, in the order of `esp_points`. Includes the $Z_A/r$ term of every nucleus, unlike `esp_atoms`, which leaves out the nucleus it is evaluated at. Written only together with `esp_points`. |
 | `esp_points` | $(N_{\text{pts}}, 3)$ | `float64` | Bohr | Shell points: per-atom Lebedev spheres at scaled vdW radii, buried points dropped. |
 | `electric_field` | $(N_{\text{atoms}}, 3)$ | `float64` | a.u. | Vector components of the electric field $\vec{E}(R_A)$ evaluated at each nucleus. |
 | `alpha_tensor` | $(3, 3)$ | `float64` | Bohr$^3$ | Static molecular polarizability tensor $\alpha_{\alpha_c\beta_c}$ at $u=0$. |
@@ -73,11 +73,15 @@ The CLI (`kind = "pdep-rpa"`, `[rpa] export_npz = "<path>"`) turns the `compute_
 The Gaussian Cube format exports real-space representation fields (like molecular orbitals or PDEP eigenpotentials) evaluated on a regular 3D grid.
 
 ### Grid Specification (`GridSpec`)
-The grid is defined via:
-* **`origin`**: 3D coordinate $[x_0, y_0, z_0]$ (Bohr) representing the grid's bottom-left-front corner.
-* **`n_x, n_y, n_z`**: Number of voxels along the $x, y, z$ dimensions.
-* **`spacing`**: Distance between grid points $h$ (Bohr), default is `0.2`.
-* **`margin`**: Pad distance surrounding the molecular bounding box to prevent boundary truncation, default is `4.0` Bohr.
+The grid is an axis-aligned uniform lattice stored as:
+* **`origin`**: 3D coordinate $[x_0, y_0, z_0]$ (Bohr) of grid point $(0,0,0)$.
+* **`n_x, n_y, n_z`**: Number of points along the $x, y, z$ axes.
+* **`step_x, step_y, step_z`**: Step vectors (Bohr). The evaluators read only their diagonal entries, so the steps must be axis-aligned.
+
+`GridSpec::bounding_box(mol, margin, spacing)` builds one from the atoms: the origin is the lower corner of the atoms' bounding box moved out by `margin`, each axis length is the bounding-box extent plus twice `margin`, and each count is the length divided by `spacing`, rounded up. The callers choose the numbers; there is no single default. `write_cube` takes a spacing of `0.3` Bohr and a padding of `4.0` Bohr, and the PDEP eigenpotential export takes `0.2` and `4.0`.
+
+### File layout
+`export_cube` writes two comment lines, then the atom count and the origin, then one line per axis with its point count and step vector, then one line per atom (atomic number, the same number as a float, and the position in Bohr), then the values with the $x$ index outermost and the $z$ index innermost, six per line, starting a new line after each $(x, y)$ row.
 
 ### Voxel Evaluation
 For a real-space function expanded in the basis set (such as a PDEP eigenpotential $V_\xi(r) = \sum_P c_\xi^P \chi_P(r)$), the value at a voxel coordinate $r = [x_0 + i h, y_0 + j h, z_0 + k h]$ is computed as:

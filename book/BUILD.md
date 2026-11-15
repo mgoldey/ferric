@@ -238,6 +238,8 @@ Needs Python 3 and, for HTML, `mdbook` 0.4.40 on `PATH`. No Rust build.
 | Check the book against the code | `python3 scripts/book_build.py --check` |
 | The strict release check (ceiling, registry coverage, no `pending-merge`) | `python3 scripts/book_build.py --check --release` |
 | Regenerate `book/src/SUMMARY.md` after adding or moving a section | `python3 scripts/book_build.py --write-summary` |
+| Regenerate appendices A, B and C (committed; `--check` fails when stale) | `python3 scripts/book_build.py --write-appendices` |
+| Sync the section statuses and counts in `book/PLAN.md` with the section headers | `python3 scripts/book_build.py --write-plan` |
 | Build the HTML to `book/out/html` | `python3 scripts/book_build.py --build` |
 | One Markdown file for pandoc | `python3 scripts/book_build.py --concat /tmp/book.md` |
 | Run the proofs and the checker's own tests | `python3 -m pytest --noconftest crates/ferric-python/tests/test_derivation_scripts.py crates/ferric-python/tests/test_book_build.py` |
@@ -255,4 +257,10 @@ Conventions the checker enforces:
 - `book/book.toml` reads the preprocessed tree `book/out/src`, so run `--build`, not bare `mdbook build`.
 
 CI is `.github/workflows/book.yml`. Not yet implemented: the box links to source lines in the HTML,
-the quoted-number check (rule 5), the PLAN.md status-table recount and the `check_doc_style.py` report.
+the quoted-number check (rule 5) and the `check_doc_style.py` report.
+
+Appendices live beside `SUMMARY.md` as `book/src/appendix-X-name.md`. A (verified equations and
+proof scripts), B (functions cited) and C (validation grades) are generated and committed; D is
+written by hand. Each carries a `<!-- section: X; status: ... -->` header, checked like a section's.
+The status of every section in `book/PLAN.md` section 3 must equal its header's status, and the
+table in section 4 is the recount between its `status-table` markers.

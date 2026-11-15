@@ -141,6 +141,8 @@
   - [20.6 Unrestricted references and $\langle S^2\rangle$](20-tddft/06-unrestricted.md)
 - [21. Polarizabilities, charges and export](21-polarizabilities/index.md)
   - [21.1 Static and dynamic polarizabilities from the dielectric modes](21-polarizabilities/01-polarizabilities-from-dielectric-modes.md)
+  - [21.2 Atomic partitions: Becke, Hirshfeld, Löwdin, ESP fits](21-polarizabilities/02-atomic-partitions.md)
+  - [21.3 Export schemas](21-polarizabilities/03-export-schemas.md)
 - [22. Implicit solvation](22-implicit-solvation/index.md)
   - [22.1 The cavity and the boundary-element matrices](22-implicit-solvation/01-cavity-and-bem.md)
   - [22.2 The IEF-PCM operators, the symmetrized solve and the sphere limits](22-implicit-solvation/02-ief-operators.md)
@@ -182,3 +184,8 @@
   - [27.5 Reproducibility and validation grades](27-ml/05-reproducibility-and-grades.md)
   - [27.6 Energies, gradients, Hessians and response as labels](27-ml/06-training-labels.md)
   - [27.7 A worked consumer: esp-conditioning](27-ml/07-esp-conditioning.md)
+
+[Appendix A: Verified equations and proof scripts](appendix-a-equations.md)
+[Appendix B: Functions cited](appendix-b-functions.md)
+[Appendix C: Validation grades](appendix-c-grades.md)
+[Appendix D: The semiempirical interface (xTB)](appendix-d-xtb.md)

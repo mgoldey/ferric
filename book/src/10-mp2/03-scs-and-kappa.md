@@ -66,7 +66,7 @@ opposite- and same-spin parts, so `E_OS` and `E_SS` are reported regularized.
 > `denom` $= -\Delta$ in `ferric-mp2/src/rimp2.rs::pair_energy`; the limits
 > are tested numerically in `ferric-mp2/tests/kappa_mp2.rs::kappa_limits_recover_mp2_and_zero`.
 >
-> <!-- unverified: id=mp2.kappa.factor; todo=add a claim to scripts/mp2_variant_identities.py: kappa factor limits (kappa->inf gives MP2, kappa->0 gives 0, bounded as Delta->0) against rimp2.rs::pair_energy -->
+> <!-- unverified: id=mp2.kappa.factor; todo=add a claim to scripts/mp2_variant_identities.py: kappa factor limits (kappa->inf gives MP2, kappa->0 gives 0, bounded as Delta->0) against ferric-mp2/src/rimp2.rs::pair_energy -->
 
 ## 10.3.3 What is anchored
 

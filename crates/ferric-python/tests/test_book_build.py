@@ -43,7 +43,28 @@ let e = a * b;
 Inline math $E_{ij} = |a|^2$ and a link [theory](../../crates/ferric-toy/theory.md).
 """
 
+VALIDATION = """# Capabilities and validation
+
+## Grades
+
+| Grade | Meaning |
+|---|---|
+| **Proven** | Agrees with an independent reference. |
+| Smoke | Runs end to end. |
+
+## CLI `method.kind` matrix
+
+| `method.kind` | Family | Reference (CLI) | Python | Grade | Caveat |
+|---|---|---|---|---|---|
+| `toyscf` | [SCF](../methods/scf.md) | RHF | `run_toy` | [Proven](#anchors) | - |
+| `toymp2` | MP2 | RHF | `run_toy2` | Smoke | a \\| b |
+
+## Anchors
+"""
+
 FILES = {
+    "scripts/book_build.py": "# the generator\n",
+    "site/src/reference/validation.md": VALIDATION,
     "testdata/derivations/registry.json": json.dumps(
         {"methods": {"toy": {}, "toy2": {}}, "gaps": {"holey": {"reason": "no proof"}}}
     ),
@@ -73,13 +94,23 @@ def tree(tmp_path):
     bb._src_cache.clear()
     write(tmp_path, FILES)
     (tmp_path / "crates/ferric-toy/src/sub.rs").write_text("")
+    bb.write_appendices(tmp_path)
     (tmp_path / "book/src/SUMMARY.md").write_text(bb.build_summary(tmp_path))
     return tmp_path
 
 
-def check(root, **kw):
+def check(root, regen=True, **kw):
+    """Run the checker. The generated appendices are rewritten first so a mutation
+    is judged by the check it targets and not by the appendices going stale; the
+    appendix tests pass regen=False."""
     bb._src_cache.clear()
+    if regen:
+        bb.write_appendices(root)
     return bb.run_check(root, **kw)[0]
+
+
+def resummarize(root):
+    (root / "book/src/SUMMARY.md").write_text(bb.build_summary(root))
 
 
 def sub(root, name, old, new):
@@ -353,6 +384,7 @@ def test_build_tree_copies_figures_and_keeps_them_out_of_the_chapter_glob(tree):
         },
     )
     sub(tree, SEC, "Inline math", "![toy](../figures/10-mp2/toy.svg)\n\nInline math")
+    bb.write_appendices(tree)
     rep, ctx = bb.run_check(tree)
     assert rep.errors == []
     assert all(
@@ -380,3 +412,233 @@ def test_item_body_skips_semicolons_inside_brackets():
     body = bb.item_body(src, 0)
     assert body.rstrip().endswith("}") and "let x = 1;" in body
     assert bb.item_body("fn g();\nfn h() {}", 0) == "fn g();"
+
+
+# ---------------------------------------------------------------- appendices
+APP = {n: f"book/src/{f}" for n, f in bb.GENERATED.items()}
+
+APPENDIX_D = """# Appendix D: Toy interface
+
+<!-- section: D; status: gap; registry: none; theory: none -->
+
+Entry `ferric-toy/src/lib.rs::other_fn`.
+"""
+
+
+def test_appendices_current_in_a_valid_tree(tree):
+    assert check(tree, regen=False).errors == []
+
+
+def test_generated_output_is_deterministic(tree):
+    first = {k: (tree / v).read_text() for k, v in APP.items()}
+    bb.write_appendices(tree)
+    assert {k: (tree / v).read_text() for k, v in APP.items()} == first
+
+
+@pytest.mark.parametrize("letter", sorted(bb.GENERATED))
+def test_stale_appendix_is_an_error(tree, letter):
+    p = tree / APP[letter]
+    p.write_text(p.read_text() + "\nhand edit\n")
+    errs = check(tree, regen=False).errors
+    assert any(APP[letter] in e and "stale" in e for e in errs)
+
+
+@pytest.mark.parametrize("letter", sorted(bb.GENERATED))
+def test_missing_appendix_is_an_error(tree, letter):
+    (tree / APP[letter]).unlink()
+    errs = check(tree, regen=False).errors
+    assert any(APP[letter] in e and "missing" in e for e in errs)
+
+
+def test_book_change_makes_the_appendices_stale(tree):
+    """Renaming a box id, or a cited function, must show up in A and B."""
+    sub(tree, SEC, "id=toy.a;", "id=toy.renamed;")
+    assert any("appendix-a" in e for e in check(tree, regen=False).errors)
+    sub(tree, SEC, "id=toy.renamed;", "id=toy.a;")
+    assert check(tree, regen=False).errors == []
+    sub(
+        tree,
+        SEC,
+        "also\n`ferric-toy/src/lib.rs::{pair_energy, other_fn}`",
+        "also\n`ferric-toy/src/lib.rs::{pair_energy}`",
+    )
+    assert any("appendix-b" in e for e in check(tree, regen=False).errors)
+
+
+def test_appendix_a_lists_boxes_scripts_registry_and_todos(tree):
+    text = (tree / APP["A"]).read_text()
+    assert "| `toy.a` | 10.1 | `scripts/toy_sympy.py` | 1 | - |" in text
+    assert "| `scripts/toy_sympy.py` | 1 | 10.1 |" in text
+    assert "| toy | 10.1 |" in text and "| toy2 | - |" in text
+    assert "| holey | no proof |" in text
+    a4 = text.split("## A.4")[1]
+    assert "| `toy.b` | 10.1 | add a claim |" in a4 and "toy.a" not in a4
+    assert "1 verified equations and 1 unverified" in text
+
+
+def test_appendix_b_lists_each_function_once_with_its_sections(tree):
+    write(
+        tree,
+        {
+            "book/src/11-x/01-y.md": (
+                "# 11.1 Y\n\n<!-- section: 11.1; status: edit; registry: toy2 -->\n\n"
+                "Uses `ferric-toy/src/lib.rs::pair_energy` and "
+                "`ferric-toy/src/sub/deep.rs::in_submodule`.\n"
+            )
+        },
+    )
+    resummarize(tree)
+    assert check(tree).errors == []
+    text = (tree / APP["B"]).read_text()
+    assert "## B.ferric-toy" in text
+    assert "| `ferric-toy/src/lib.rs::pair_energy` | 10.1, 11.1 |" in text
+    assert text.count("`ferric-toy/src/lib.rs::pair_energy`") == 1
+    assert "| `ferric-toy/src/lib.rs::other_fn` | 10.1 |" in text
+    assert "ferric-toy/src/lib.rs::toy_test` | 10.1 |" in text  # a rust_test field
+    # the generated appendices do not index themselves
+    assert "App. " not in text
+
+
+def test_appendix_b_sorts_sections_numerically(tree):
+    assert bb.label_key("9.2") < bb.label_key("10.1") < bb.label_key("App. D")
+    assert bb.label_key("Notation") < bb.label_key("1.1")
+    assert bb.label_key("ch. 10") < bb.label_key("10.1")
+
+
+def test_appendix_c_is_generated_from_the_validation_page(tree):
+    assert check(tree).errors == []
+    text = (tree / APP["C"]).read_text()
+    assert "| Proven | Agrees with an independent reference. |" in text
+    assert "| `toyscf` | SCF | `run_toy` | Proven |" in text
+    assert "| `toymp2` | MP2 | `run_toy2` | Smoke |" in text
+    assert "2 kinds: 1 Proven, 1 Smoke." in text
+    sub(tree, "site/src/reference/validation.md", "| Smoke |", "| Spike |")
+    assert check(tree).errors == []
+    assert "2 kinds: 1 Proven, 1 Spike." in (tree / APP["C"]).read_text()
+
+
+def test_appendix_c_goes_stale_when_a_grade_changes(tree):
+    assert check(tree, regen=False).errors == []
+    sub(
+        tree,
+        "site/src/reference/validation.md",
+        "`run_toy` | [Proven]",
+        "`run_toy` | Smoke",
+    )
+    assert any("appendix-c" in e for e in check(tree, regen=False).errors)
+
+
+def test_handwritten_appendix_is_checked_indexed_and_listed_last(tree):
+    write(tree, {"book/src/appendix-d-toy.md": APPENDIX_D})
+    resummarize(tree)
+    assert check(tree).errors == []
+    assert (
+        "| `ferric-toy/src/lib.rs::other_fn` | 10.1, App. D |"
+        in (tree / APP["B"]).read_text()
+    )
+    lines = (tree / "book/src/SUMMARY.md").read_text().splitlines()
+    assert lines[-1].endswith("(appendix-d-toy.md)")
+    assert (
+        lines.index("[Notation](00-notation.md)")
+        < lines.index(
+            next(ln for ln in lines if ln.startswith("- [") and "MP2" in ln.upper())
+        )
+        < lines.index(
+            "[Appendix A: Verified equations and proof scripts](appendix-a-equations.md)"
+        )
+    )
+    sub(tree, "book/src/appendix-d-toy.md", "section: D", "section: E")
+    assert any("does not match" in e for e in check(tree).errors)
+    sub(tree, "book/src/appendix-d-toy.md", "section: E", "section: D")
+    sub(tree, "book/src/appendix-d-toy.md", "other_fn", "no_such_fn")
+    assert any("not declared" in e for e in check(tree).errors)
+
+
+# ---------------------------------------------------------------- PLAN.md
+PLAN = """# Plan
+
+## 3. Table of contents
+
+### Part X. Toy part
+
+| § | Section | Sources | Code | Status |
+|---|---|---|---|---|
+| 10.1 | Toy section | none | none | ready |
+| 10.2 | Not written yet | none | none | gap |
+
+### Appendices
+
+| § | Section | Sources | Code | Status |
+|---|---|---|---|---|
+| A | Equations | none | none | ready |
+| B | Functions | none | none | gap |
+| C | Grades | none | none | ready |
+
+## 4. Coverage
+
+<!-- status-table:begin -->
+<!-- status-table:end -->
+"""
+
+
+def test_plan_in_step_with_headers_passes(tree):
+    write(tree, {"book/PLAN.md": PLAN})
+    (tree / "book/PLAN.md").write_text(bb.plan_updated(tree))
+    assert check(tree, regen=False).errors == []
+
+
+def test_plan_status_drift_is_reported_with_the_section(tree):
+    write(tree, {"book/PLAN.md": PLAN})
+    (tree / "book/PLAN.md").write_text(bb.plan_updated(tree))
+    sub(
+        tree,
+        "book/PLAN.md",
+        "| Toy section | none | none | ready |",
+        "| Toy section | none | none | edit |",
+    )
+    errs = check(tree, regen=False).errors
+    assert any(
+        "10.1 (PLAN edit, section ready)" in e and "--write-plan" in e for e in errs
+    )
+
+
+def test_plan_update_fixes_statuses_and_recounts(tree):
+    write(tree, {"book/PLAN.md": PLAN.replace("| ready |\n| 10.2", "| edit |\n| 10.2")})
+    new = bb.plan_updated(tree)
+    assert "| 10.1 | Toy section | none | none | ready |" in new
+    assert "| 10.2 | Not written yet | none | none | gap |" in new  # unwritten: kept
+    assert "| X. Toy part | 1 | 0 | 1 | 0 | 2 |" in new
+    assert "| B | Functions | none | none | ready |" in new  # follows the header
+    assert "| Appendices | 3 | 0 | 0 | 0 | 3 |" in new
+    assert "| **Total** | **4** | **0** | **1** | **0** | **5** |" in new
+    assert "5 sections: 80% `ready`" in new
+    (tree / "book/PLAN.md").write_text(new)
+    assert bb.plan_updated(tree) == new  # idempotent
+    assert check(tree, regen=False).errors == []
+
+
+def test_section_without_a_plan_row_is_an_error(tree):
+    write(tree, {"book/PLAN.md": PLAN})
+    (tree / "book/PLAN.md").write_text(bb.plan_updated(tree))
+    write(
+        tree,
+        {
+            "book/src/12-z/01-w.md": "# 12.1 W\n\n<!-- section: 12.1; status: edit; registry: - -->\n"
+        },
+    )
+    errs = check(tree).errors
+    assert any("section 12.1 has a file but no row" in e for e in errs)
+
+
+def test_no_plan_file_means_no_plan_check(tree):
+    assert not (tree / "book/PLAN.md").exists()
+    assert check(tree).errors == []
+
+
+def test_the_real_books_appendices_and_plan_are_current():
+    root = Path(__file__).resolve().parents[3]
+    bb._src_cache.clear()
+    rep = bb.Report()
+    bb.check_appendices(root, rep)
+    bb.check_plan(root, rep)
+    assert rep.errors == []
