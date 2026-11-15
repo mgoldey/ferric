@@ -505,13 +505,18 @@ Proof: `scripts/screening_bounds_sympy.py` [qqr-s], [qqr-erfc].
 LinK walks shell pairs from two lists (`ferric-scf/src/pairs.rs`).
 
 **Geometry pairs.** A quartet $(ij|kl)$ is computed only if
-$Q_{ij}Q_{kl}|D| \ge \tau$, and $|D| \le 1$ and $Q_{kl} \le Q_{\max}$, so a pair
-can contribute only if
+$Q_{ij}Q_{kl}|D| \ge \tau$ for the density element it multiplies. With
+$Q_{kl} \le Q_{\max}$ and $|D| \le D_{\max}$, a pair can contribute only if
+$Q_{ij}Q_{\max}D_{\max} \ge \tau$. `SignificantPairs::build` keeps the pairs with
 
-$$ Q_{ij}\, Q_{\max} > \tau, \qquad Q_{\max} = \max_{kl} Q_{kl} . $$
+$$ Q_{ij}\, Q_{\max} > \tau, \qquad Q_{\max} = \max_{kl} Q_{kl} , $$
 
-`SignificantPairs::build` keeps exactly those pairs. The test is necessary,
-not sufficient, so the list drops nothing the per-quartet screen would keep.
+the density-free test of PySCF's `q_cond`. It is the necessary condition when
+$D_{\max} \le 1$. Where density elements exceed 1 in magnitude, which a
+non-orthogonal basis allows, the list is stricter than necessary by the factor
+$D_{\max}$: a pair with $\tau/D_{\max} < Q_{ij}Q_{\max} \le \tau$ is dropped
+although a quartet through it can pass the per-quartet screen. How often that
+happens has not been measured.
 
 **Density pairs.** A density block $D_{j\sigma}$ enters exchange only through
 quartets $(ij|\sigma l)$, each bounded by $Q_{ij}Q_{\sigma l}|D_{j\sigma}|$.
@@ -520,7 +525,12 @@ With $q_{\max}(x) = \max_y Q_{xy}$,
 $$ \max|D_{j\sigma}|\; q_{\max}(j)\; q_{\max}(\sigma) > \tau $$
 
 is the tightest necessary condition at pair granularity
-(`DensityPairs::build`). Both lists are sorted, and LinK intersects them with
+(`DensityPairs::build`). It prunes little: $q_{\max}(x)$ is nearly always
+realized by a tight core pair, so the product $q_{\max}(j)q_{\max}(\sigma)$ is
+close to a molecule-wide constant. The locality is recovered per quartet,
+where `LinkK::build` screens on the density blocks of the four shells in hand
+(`DensityScreen::FourPairK`). The list bounds the ket loop; the quartet screen
+bounds the work. Both lists are sorted, and LinK intersects them with
 `intersect_sorted`.
 
 ## Density fitting: the fit and its error
@@ -587,6 +597,7 @@ backend is chosen at build time against the memory budget:
 | in core | $N_{\mathrm{aux}}N^2$ doubles | none |
 | in core, packed | $N_{\mathrm{aux}}N(N+1)/2$ doubles (the $\mu\nu$ triangle) | unpack a block |
 | in core, pair screened (RI-J only) | the Schwarz-kept $\mu\nu$ pairs | none |
+| in core, single precision (RI-J only, `ri_j_precision = "f32"`) | the packed triangle or the kept pairs, as f32 | none; f64 accumulation |
 | disk spill | one block, the tensor on disk | read the file |
 | recompute | one block | recompute the integrals |
 
