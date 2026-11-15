@@ -375,6 +375,30 @@
         "scripts/rpa_drpa_pdep_sympy.py"
       ]
     },
+    "harmonic-frequencies": {
+      "theory": [
+        "crates/ferric-scf/theory.md#harmonic-frequencies"
+      ],
+      "scripts": [
+        "scripts/hf_frequencies_sympy.py"
+      ]
+    },
+    "hf-gradient": {
+      "theory": [
+        "crates/ferric-scf/theory.md#hartree-fock-nuclear-gradient"
+      ],
+      "scripts": [
+        "scripts/hf_gradient_sympy.py"
+      ]
+    },
+    "hf-hessian": {
+      "theory": [
+        "crates/ferric-scf/theory.md#hartree-fock-nuclear-hessian"
+      ],
+      "scripts": [
+        "scripts/hf_hessian_sympy.py"
+      ]
+    },
     "mp3": {
       "theory": [
         "crates/ferric-mp2/theory.md#6-mp3"
@@ -398,6 +422,22 @@
       ],
       "scripts": [
         "scripts/rpa_drpa_pdep_sympy.py"
+      ]
+    },
+    "rhf": {
+      "theory": [
+        "crates/ferric-scf/theory.md#hartree-fock-energy-functionals-rhf-uhf-rohf"
+      ],
+      "scripts": [
+        "scripts/hf_energy_sympy.py"
+      ]
+    },
+    "rohf": {
+      "theory": [
+        "crates/ferric-scf/theory.md#hartree-fock-energy-functionals-rhf-uhf-rohf"
+      ],
+      "scripts": [
+        "scripts/hf_energy_sympy.py"
       ]
     },
     "rpa-gradient": {
@@ -432,6 +472,14 @@
       ],
       "scripts": [
         "scripts/rpa_drpa_pdep_sympy.py"
+      ]
+    },
+    "uhf": {
+      "theory": [
+        "crates/ferric-scf/theory.md#hartree-fock-energy-functionals-rhf-uhf-rohf"
+      ],
+      "scripts": [
+        "scripts/hf_energy_sympy.py"
       ]
     }
   },
@@ -520,15 +568,6 @@
       "scripts": [
         "scripts/gw_self_energy_sympy.py"
       ]
-    },
-    "harmonic-frequencies": {
-      "reason": "no theory.md derivation and no sympy proof"
-    },
-    "hf-gradient": {
-      "reason": "no theory.md derivation and no sympy proof"
-    },
-    "hf-hessian": {
-      "reason": "no theory.md derivation and no sympy proof"
     },
     "ks-gradient": {
       "reason": "script has no pytest runner and records no mutation",
@@ -700,12 +739,6 @@
     "qmmm": {
       "reason": "no theory.md derivation and no sympy proof"
     },
-    "rhf": {
-      "reason": "no theory.md derivation and no sympy proof",
-      "theory": [
-        "crates/ferric-scf/theory.md#hartree-fock-equations"
-      ]
-    },
     "ri-mp2": {
       "reason": "script has no pytest runner and records no mutation",
       "theory": [
@@ -720,9 +753,6 @@
       "theory": [
         "crates/ferric-mp2/theory.md#9-analytic-ri-mp2-gradient-and-z-vector"
       ]
-    },
-    "rohf": {
-      "reason": "no theory.md derivation and no sympy proof"
     },
     "scs-mp2": {
       "reason": "script has no pytest runner and records no mutation",
@@ -780,9 +810,6 @@
       "scripts": [
         "scripts/mp2_variant_identities.py"
       ]
-    },
-    "uhf": {
-      "reason": "no theory.md derivation and no sympy proof"
     },
     "xtb": {
       "reason": "no theory.md derivation of what ferric adds over the tblite reference"

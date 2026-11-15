@@ -123,6 +123,90 @@ CASES = [
             ),
         ],
     ),
+    (
+        "hf_energy_sympy.py",
+        20,
+        [
+            ("f = h + jm - 0.5 * km", "f = h + jm - km", "FAIL N2 E_RHF"),
+            (
+                "f = f + pot @ fb @ pc",
+                "f = f + pot @ fa @ pc",
+                "FAIL N3 Roothaan effective Fock block table",
+            ),
+            (
+                "g[p, q] = fa_mo[p, q] + fb_mo[p, q]",
+                "g[p, q] = fa_mo[p, q]",
+                "FAIL N4 dE/dkappa",
+            ),
+            ("return h + jm - km_s", "return h + jm - 0.5 * km_s", "FAIL N6 E_ROHF"),
+        ],
+    ),
+    (
+        "hf_gradient_sympy.py",
+        20,
+        [
+            (
+                "return 2.0 * (co * eps[:nocc]) @ co.T",
+                "return (co * eps[:nocc]) @ co.T",
+                "FAIL G1 RHF gradient",
+            ),
+            (
+                "w = da @ fa @ da + da @ fb @ db",
+                "w = da @ fa @ da + da @ fa @ db",
+                "FAIL G3 ROHF gradient",
+            ),
+            ("d, d) - 0.5 * (", "d, d) - 0.25 * (", "FAIL G2 UHF gradient"),
+            ("            - pulay", "            + pulay", "FAIL G1 RHF gradient"),
+        ],
+    ),
+    (
+        "hf_hessian_sympy.py",
+        20,
+        [
+            (
+                "uf = np.vstack([-0.5 * s[:no], u])",
+                "uf = np.vstack([-s[:no], u])",
+                "FAIL H1 RHF Hessian",
+            ),
+            ("hs = 2.0 * occ * (f1_mo", "hs = occ * (f1_mo", "FAIL H1 RHF Hessian"),
+            (
+                "+ dy[0] @ fb @ db + da @ fy[1] @ db + da @ fb @ dy[1]",
+                "+ dy[0] @ fb @ db + da @ fb @ dy[1]",
+                "FAIL H4 ROHF Hessian",
+            ),
+            (
+                "c.T @ vs @ c + f @ k - k @ f for",
+                "c.T @ vs @ c + (np.diag(f)[:, None] - np.diag(f)[None, :]) * k for",
+                "FAIL H4 ROHF Hessian",
+            ),
+        ],
+    ),
+    (
+        "hf_frequencies_sympy.py",
+        15,
+        [
+            (
+                "AU_FREQ_TO_CM = 219_474.631_363_2",
+                "AU_FREQ_TO_CM = 219_474.631_363_2 / (2.0 * np.pi)",
+                "FAIL D1 diatomic wavenumber",
+            ),
+            (
+                "np.array([1.0 / np.sqrt(mass_au[c // 3]) for c in range(n)])",
+                "np.array([1.0 / mass_au[c // 3] for c in range(n)])",
+                "FAIL D1 diatomic wavenumber",
+            ),
+            (
+                "0: [0.0, -r[2], r[1]],",
+                "0: [0.0, r[2], r[1]],",
+                "FAIL P1 rotation vectors preserve",
+            ),
+            (
+                "np.outer(ht, t) - np.outer(t, t) * tht",
+                "np.outer(ht, t) + np.outer(t, t) * tht",
+                "FAIL P4 off-minimum",
+            ),
+        ],
+    ),
 ]
 
 

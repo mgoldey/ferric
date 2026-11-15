@@ -11,6 +11,269 @@ The Fock matrix in the AO basis is:
 $$F_{\mu\nu} = H_{\mu\nu} + \sum_{\lambda\sigma} D_{\lambda\sigma} [2(\mu\nu|\lambda\sigma) - (\mu\lambda|\nu\sigma)]$$
 where $D_{\lambda\sigma} = \sum_i C_{\lambda i} C_{\sigma i}$ is the density matrix.
 
+## Hartree-Fock energy functionals (RHF, UHF, ROHF)
+
+These are the energy expressions, Fock matrices and stationarity conditions
+that `solve_rhf` (`src/rhf.rs`), `solve_uhf` (`src/uhf.rs`) and `solve_rohf`
+(`src/rohf.rs`) evaluate. Proof: `scripts/hf_energy_sympy.py`.
+
+Conventions. Real AO basis $\{\chi_\mu\}$ with overlap $S$, core Hamiltonian
+$h = T + V_{ne}$ (plus $V_{\rm ECP}$ and external terms when present), and
+real two-electron integrals $(\mu\nu|\lambda\sigma)$ with 8-fold symmetry.
+Orbitals $C$ are $S$-orthonormal, $C^{\mathsf T} S C = 1$. Indices $i,j$ run
+over occupied orbitals, $a,b$ over virtual ones, $p,q$ over all. The Coulomb
+and exchange builders (`fock.rs`, `JBuilder`/`KBuilder`) compute
+$$J(D)_{\mu\nu} = \sum_{\lambda\sigma} (\mu\nu|\lambda\sigma) D_{\lambda\sigma},
+\qquad K(D)_{\mu\nu} = \sum_{\lambda\sigma} (\mu\lambda|\nu\sigma) D_{\lambda\sigma}.$$
+Both are linear and, by the 8-fold symmetry, satisfy
+$\mathrm{tr}[A\,J(B)] = \mathrm{tr}[B\,J(A)]$ and the same for $K$.
+
+**RHF.** The code's closed-shell density carries the occupation 2,
+$D = 2\,C_o C_o^{\mathsf T}$ (so it is twice the $D$ of the section above).
+The energy is
+$$E[D] = \mathrm{tr}(D h) + \tfrac12 \mathrm{tr}[D\,J(D)] - \tfrac14 \mathrm{tr}[D\,K(D)] + E_{nn}.$$
+Differentiating with the trace symmetry gives the Fock matrix
+$$F = \frac{\partial E}{\partial D} = h + J(D) - \tfrac12 K(D),$$
+and the energy in the form the loop evaluates (`e_elec_no_xc`):
+$$E = \tfrac12 \mathrm{tr}[D (h + F)] + E_{nn}.$$
+Making $E$ stationary under $C \to C + \delta C$ with the constraint
+$C^{\mathsf T} S C = 1$ gives the Roothaan equations $F C = S C \varepsilon$,
+equivalently $F D S - S D F = 0$ (the DIIS error vector below). In the MO
+basis the energy is $2\sum_i h_{ii} + \sum_{ij}[2(ii|jj) - (ij|ij)] + E_{nn}$,
+the expression of the section above.
+
+**UHF.** Per-spin densities $D_\sigma = C_{\sigma o} C_{\sigma o}^{\mathsf T}$,
+$D = D_\alpha + D_\beta$:
+$$E = \mathrm{tr}(D h) + \tfrac12 \mathrm{tr}[D\,J(D)] - \tfrac12 \sum_\sigma \mathrm{tr}[D_\sigma K(D_\sigma)] + E_{nn},$$
+$$F_\sigma = \frac{\partial E}{\partial D_\sigma} = h + J(D) - K(D_\sigma),\qquad
+E = \tfrac12 \sum_\sigma \mathrm{tr}[D_\sigma (h + F_\sigma)] + E_{nn}.$$
+Stationarity gives the Pople-Nesbet equations
+$F_\sigma C_\sigma = S C_\sigma \varepsilon_\sigma$. At $D_\alpha = D_\beta = D/2$
+the UHF energy is the RHF energy of $D$ and $F_\alpha = F_\beta = F$.
+
+**ROHF.** One orbital set $C$ with columns closed ($c$), open ($o$, alpha
+only) and virtual ($v$); occupation vectors $n_\alpha = (1_c, 1_o, 0_v)$,
+$n_\beta = (1_c, 0_o, 0_v)$, and
+$$D_\beta = C_c C_c^{\mathsf T},\qquad D_\alpha = D_\beta + C_o C_o^{\mathsf T},\qquad D_\sigma = C\,\mathrm{diag}(n_\sigma)\,C^{\mathsf T}.$$
+The energy is the UHF functional at these densities, with the same
+$F_\sigma = h + J(D_\alpha + D_\beta) - K(D_\sigma)$; `solve_rohf` evaluates
+exactly the UHF trace formula. In MO integrals this is the high-spin energy
+$$E = 2\sum_c h_{cc} + \sum_t h_{tt} + \sum_{cc'}[2J_{cc'} - K_{cc'}]
++ \sum_{ct}[2J_{ct} - K_{ct}] + \tfrac12 \sum_{tu}[J_{tu} - K_{tu}] + E_{nn},$$
+with $t,u$ open, $J_{pq} = (pp|qq)$ and $K_{pq} = (pq|pq)$.
+
+Orbital gradient. Write $C \to C e^{\kappa}$ with $\kappa$ real antisymmetric
+and $f_\sigma = C^{\mathsf T} F_\sigma C$. In the MO basis
+$\delta D_\sigma = \kappa\,n_\sigma - n_\sigma \kappa$, i.e.
+$(\delta D_\sigma)_{pq} = (n_{\sigma q} - n_{\sigma p})\kappa_{pq}$, and
+$\delta E = \sum_\sigma \mathrm{tr}(f_\sigma \delta D_\sigma)$. A rotation
+inside $c$, $o$ or $v$ changes neither density. For the three remaining
+blocks (row index the orbital rotated into)
+$$\frac{\partial E}{\partial \kappa_{pq}} = 2 g_{pq},\qquad
+g_{vc} = (f_\alpha + f_\beta)_{vc},\quad g_{vo} = (f_\alpha)_{vo},\quad g_{oc} = (f_\beta)_{oc}.$$
+`rohf_gradient_mo` builds exactly these blocks, and the DIIS error is
+$S C (g - g^{\mathsf T}) C^{\mathsf T} S$. ROHF convergence means $g = 0$.
+
+Effective Fock. `roothaan_fock_inner` is PySCF's `get_roothaan_fock` with the
+Guest-Saunders choice. With $F_c = (F_\alpha + F_\beta)/2$ and the projectors
+$P_c = D_\beta S$, $P_o = (D_\alpha - D_\beta) S$, $P_v = 1 - D_\alpha S$,
+$$R = M + M^{\mathsf T},\quad
+M = \tfrac12 P_c^{\mathsf T} F_c P_c + \tfrac12 P_o^{\mathsf T} F_c P_o + \tfrac12 P_v^{\mathsf T} F_c P_v
++ P_o^{\mathsf T} F_\beta P_c + P_o^{\mathsf T} F_\alpha P_v + P_v^{\mathsf T} F_c P_c .$$
+Since $C^{\mathsf T} S P_c^{\mathsf T} X P_c S C$ is the $cc$ block of $C^{\mathsf T} X C$
+(and likewise for $o$, $v$), $C^{\mathsf T} R C$ has the block table
+
+| | $c$ | $o$ | $v$ |
+|---|---|---|---|
+| $c$ | $F_c$ | $F_\beta$ | $F_c$ |
+| $o$ | $F_\beta$ | $F_c$ | $F_\alpha$ |
+| $v$ | $F_c$ | $F_\alpha$ | $F_c$ |
+
+The off-diagonal blocks are $g/2$ ($vc$), $g$ ($vo$, $oc$), so
+$R C = S C \varepsilon$ at self-consistency is the same condition as $g = 0$.
+The diagonal blocks are a canonicalization choice: they fix the orbital
+energies (eigenvalues of $R$) and the orbitals inside each block, but not the
+energy or the densities. There is no user knob for the coupling.
+
+| equation | code |
+|---|---|
+| $J$, $K$ conventions | `fock.rs` (`JBuilder`, `KBuilder`) |
+| RHF $F$, $E$ | `rhf.rs` `solve_rhf` (`f.assign(&h)`, `e_elec_no_xc`) |
+| UHF $F_\sigma$, $E$ | `uhf.rs` `solve_uhf` |
+| ROHF $E$, $R$, $g$ | `rohf.rs` `solve_rohf`, `roothaan_fock_inner`, `rohf_gradient_mo` |
+
+The script proves $F = \partial E/\partial D$ (RHF, both UHF spins)
+symbolically and by central differences, the closed-shell limit, the
+$\Gamma$ forms used by the gradient, the block table, $\partial E/\partial\kappa = 2g$
+by differences of $E(C e^\kappa)$ at a random orbital set, the stationarity of
+the converged ROHF orbitals under $c$-$o$, $c$-$v$ and $o$-$v$ rotations, the
+high-spin MO energy, and $E_{\rm UHF} \le E_{\rm ROHF}$.
+
+## Hartree-Fock nuclear gradient
+
+`rhf_gradient`, `uhf_gradient` and `rohf_gradient` (`src/gradient.rs`) return
+$\partial E/\partial x$ for every nuclear coordinate $x$ from a converged SCF.
+Proof: `scripts/hf_gradient_sympy.py`. This section covers the exact-integral
+route; with density-fitted J/K the two-electron term differentiates the
+fitted energy instead (`src/df_gradient.rs`).
+
+**Derivation.** The energy depends on $x$ through the integrals $h(x)$,
+$(\mu\nu|\lambda\sigma)(x)$, $S(x)$, $E_{nn}(x)$ and through $C(x)$. Form the
+Lagrangian $L = E[C] - \mathrm{tr}[\varepsilon\,(C_o^{\mathsf T} S C_o - 1)]$
+with a symmetric multiplier $\varepsilon$ (one per occupied pair and spin).
+At the SCF solution $L$ is stationary in $C$, so
+$\mathrm d E/\mathrm d x = \partial L/\partial x$ at fixed $C$:
+$$E^x = E_{nn}^x + \sum_{\mu\nu} D_{\mu\nu} h^x_{\mu\nu}
++ \sum_{\mu\nu\lambda\sigma} \Gamma_{\mu\nu\lambda\sigma} (\mu\nu|\lambda\sigma)^x
+- \sum_{\mu\nu} W_{\mu\nu} S^x_{\mu\nu},$$
+where $W$ is the multiplier in the AO basis and $\Gamma$ is the two-particle
+density with $\sum \Gamma (\mu\nu|\lambda\sigma) = E_{2e}$:
+
+| reference | $\Gamma_{\mu\nu\lambda\sigma}$ (`gamma`, `gamma_uhf`) | $W$ |
+|---|---|---|
+| RHF | $\tfrac12 D_{\mu\nu}D_{\lambda\sigma} - \tfrac14 D_{\mu\lambda}D_{\nu\sigma}$ | $2\,C_o\,\mathrm{diag}(\varepsilon_o)\,C_o^{\mathsf T}$ (`build_energy_weighted_density`) |
+| UHF | $\tfrac12 D_{\mu\nu}D_{\lambda\sigma} - \tfrac12\sum_\sigma D^\sigma_{\mu\lambda}D^\sigma_{\nu\sigma}$ | $\sum_\sigma C_{\sigma}\,\mathrm{diag}(f_\sigma \varepsilon_\sigma)\,C_\sigma^{\mathsf T}$ (`build_energy_weighted_density_uhf`) |
+| ROHF | UHF form at the ROHF $D_\alpha, D_\beta$ | $\mathrm{sym}(D_\alpha F_\alpha D_\alpha + D_\alpha F_\beta D_\beta)$ (`rohf_energy_weighted_density`) |
+
+For RHF and UHF the canonical orbitals diagonalize the multiplier, so $W$ is
+the occupation-weighted eigenvalue sum; $f_\sigma$ are the occupations
+recovered from the stored density (1 for aufbau, fractions under
+`fractional_occ`).
+
+For ROHF one orbital set carries two Focks. Stationarity of $L$ gives
+$\partial E/\partial C = \sum_\sigma 2 F_\sigma C\,\mathrm{diag}(n_\sigma) = 2 S C \varepsilon$,
+so over occupied orbitals $\varepsilon_{ij} = \sum_\sigma n_{\sigma j} (f_\sigma)_{ij}$.
+In the AO basis $W = C_{\rm occ}\,\varepsilon\,C_{\rm occ}^{\mathsf T} = \sum_\sigma D_\alpha F_\sigma D_\sigma$,
+because every occupied orbital holds an alpha electron
+($C_{\rm occ} C_{\rm occ}^{\mathsf T} = D_\alpha$). Its antisymmetric part is
+$(\varepsilon_{tc} - \varepsilon_{ct}) = (f_\beta)_{oc}$, which is zero at
+convergence; `sym()` only removes convergence noise. The eigenvalue form
+$C\,\mathrm{diag}(2\varepsilon_c, \varepsilon_o)\,C^{\mathsf T}$ of $R$ is not
+this multiplier: it drops the closed-open coupling and is wrong whenever the
+open shell couples to the closed shells (the script's negative control misses
+by $5\times10^{-2}$).
+
+`oneelectron_gradient` evaluates $E_{nn}^x + \sum D h^x - \sum W S^x$ (with
+$D = D_\alpha + D_\beta$ for open shells) and `twoelectron_gradient` /
+`twoelectron_gradient_uhf` the $\Gamma$ term; `ecp_gradient` adds
+$\sum D\,V_{\rm ECP}^x$.
+
+**Check.** A toy system whose integrals are smooth (quadratic) functions of
+two parameters, with a non-orthogonal $S$: the SCF is re-solved at displaced
+parameters and the energy differenced with a fourth-order stencil. The
+analytic formula with the code's $W$ and $\Gamma$ matches to $3\times10^{-11}$
+(RHF), $2\times10^{-11}$ (UHF) and $2\times10^{-11}$ (ROHF).
+
+## Hartree-Fock nuclear Hessian
+
+`rhf_hessian`, `uhf_hessian` (`src/hessian.rs`) and `rohf_hessian`
+(`src/hessian/rohf.rs`) differentiate the gradient above once more. Proof:
+`scripts/hf_hessian_sympy.py`.
+
+**Skeleton (terms 1-4).** At fixed $D$ and $W$:
+$$H^{\rm skel}_{xy} = E_{nn}^{xy} + \sum D h^{xy} + \sum \Gamma\,(\mu\nu|\lambda\sigma)^{xy} - \sum W S^{xy},$$
+with the $D$, $\Gamma$, $W$ of the gradient table (ROHF uses its own $W$).
+
+**Orbital response (term 5), RHF and UHF.** Write $C^y = C U^y$. The
+differentiated orthonormality is $U + U^{\mathsf T} + S^y_{\rm MO} = 0$ with
+$S^y_{\rm MO} = C^{\mathsf T} S^y C$. The occupied-occupied antisymmetric part
+does not change $D$, so the code fixes $U^y_{ij} = -\tfrac12 S^y_{ij}$. With
+$\mathrm{occ} = 2$ (RHF, one spin) or $1$ (each UHF spin):
+$$D_1(U) = \mathrm{occ}\,(C_v U C_o^{\mathsf T} + C_o U^{\mathsf T} C_v^{\mathsf T}),\qquad
+D^y_{oo} = -\mathrm{occ}\;C_o S^y_{oo} C_o^{\mathsf T},$$
+and the first-order Fock at fixed density
+$F^y = C^{\mathsf T}(h^y + G^y(D))\,C_o$, $G^y$ built from the integral
+derivatives. Differentiating the $vo$ block of the SCF condition
+($F_{ai} = 0$) gives the CPHF equations solved by `solve_cphf_block`
+(right-hand side `cphf_rhs`):
+$$(\varepsilon_a - \varepsilon_i)\,U^y_{ai} + G(D_1(U^y))_{ai}
+= -\big(F^y_{ai} - \varepsilon_i S^y_{ai} + G(D^y_{oo})_{ai}\big),$$
+with $G = J - \tfrac12 K$ (RHF) or the spin-coupled
+$G_\sigma(D_\alpha, D_\beta) = J(D_\alpha + D_\beta) - K(D_\sigma)$ (UHF, one linear
+system in $(U_\alpha, U_\beta)$). The occupied first-order multiplier is
+(`finish_cphf`)
+$$\varepsilon^y_{ij} = F^y_{ij} + [C_o^{\mathsf T} G(D^y_{oo} + D_1(U^y)) C_o]_{ij} - \tfrac12 S^y_{ij}(\varepsilon_i + \varepsilon_j).$$
+The response term (`assemble_response`, PySCF `hess_elec`) is
+$$R_{xy} = \sum_\sigma \Big[ 2\,\mathrm{occ} \sum_{p,i} (F^x - S^x\varepsilon)_{pi}\,U^y_{pi}
+- \mathrm{occ} \sum_{ij} S^x_{ij}\,\varepsilon^y_{ij} \Big],$$
+$p$ over all orbitals (the $oo$ rows carry $U_{oo} = -\tfrac12 S_{oo}$). It
+is $\mathrm d/\mathrm dy$ of $\sum D F^x - \sum W S^x$ with $D^y$ and $W^y$
+written through $U^y$ and $\varepsilon^y$. For RHF this is
+$4\sum (F^x - S^x\varepsilon) U^y - 2\sum S^x_{oo}\varepsilon^y$. A
+closed-shell UHF reproduces the RHF Hessian term by term.
+
+**ROHF.** `hessian/rohf.rs` keeps the rotation $\kappa$ (blocks $vc$, $vo$,
+$oc$) separate from the overlap part: $U = \kappa - \tfrac12 S^y_{\rm MO}$ and
+$$(D^y_\sigma)_{\rm MO} = U n_\sigma + n_\sigma U^{\mathsf T},\quad
+(D^S_\sigma)_{pq} = -\tfrac12 S^y_{pq}(n_{\sigma p} + n_{\sigma q}),\quad
+(D^\kappa_\sigma)_{pq} = (n_{\sigma q} - n_{\sigma p})\kappa_{pq}.$$
+Differentiating $g = 0$ along $y$ with
+$\mathrm d f_\sigma/\mathrm dy = -\tfrac12(S f_\sigma + f_\sigma S) + [f_\sigma, \kappa] + C^{\mathsf T}(F^y_\sigma + G_\sigma(D^y))C$
+gives (`Response::apply`, `Response::rhs`)
+$$\Phi_\sigma = C^{\mathsf T}F^y_\sigma C + C^{\mathsf T}G_\sigma(D^S)C - \tfrac12(S f_\sigma + f_\sigma S)
++ C^{\mathsf T}G_\sigma(D^\kappa)C + [f_\sigma, \kappa],$$
+$$(\Phi_\alpha + \Phi_\beta)_{vc} = 0,\qquad (\Phi_\alpha)_{vo} = 0,\qquad (\Phi_\beta)_{oc} = 0,$$
+a linear system $A\kappa = -B$ whose operator keeps the full commutator
+$[f_\sigma, \kappa]$ (the $f$ are not diagonal). The response column is
+(`Response::column`, `w_response`)
+$$R_{xy} = \sum_\sigma \mathrm{tr}[D^y_\sigma F^x_\sigma] - \mathrm{tr}[W^y S^x],$$
+$$W^y = D^y_\alpha F_\alpha D_\alpha + D_\alpha F^y_\alpha D_\alpha + D_\alpha F_\alpha D^y_\alpha
++ D^y_\alpha F_\beta D_\beta + D_\alpha F^y_\beta D_\beta + D_\alpha F_\beta D^y_\beta,$$
+with $F^y_\sigma$ the total derivative $h^y + G^y_\sigma(D) + G_\sigma(D^y)$.
+
+**Check.** On the gradient toy system (two parameters), the analytic Hessian
+matches a fourth-order difference of the analytic gradient with the SCF
+re-solved: $3\times10^{-11}$ (RHF), $1\times10^{-9}$ (UHF), $1\times10^{-9}$
+(ROHF); the closed-shell UHF Hessian equals the RHF one to $4\times10^{-16}$.
+
+## Harmonic frequencies
+
+`harmonic_frequencies` and the analytic routes (`src/frequencies.rs`,
+`hessian.rs` `analytic_frequencies*`; Python `run_frequencies`) turn a
+Cartesian Hessian into wavenumbers in `frequencies_from_cartesian_hessian`.
+Proof: `scripts/hf_frequencies_sympy.py`.
+
+The Hessian $H$ (Hartree/Bohr$^2$) is the analytic one above or the central
+difference of the analytic gradient (default step $\delta = 5\times10^{-3}$
+Bohr), symmetrized as $(H + H^{\mathsf T})/2$. Near a minimum
+$V \approx \tfrac12 \Delta x^{\mathsf T} H \Delta x$ and $T = \tfrac12 \dot x^{\mathsf T} M \dot x$.
+In mass-weighted coordinates $q = M^{1/2}\Delta x$ the equations of motion
+decouple into the eigenproblem of
+$$\tilde H = M^{-1/2} H M^{-1/2},\qquad \tilde H u_k = \omega_k^2 u_k .$$
+Masses are converted from u to electron masses
+(`AMU_TO_ELECTRON_MASS` $= 1/5.48579909065\times10^{-4}$, CODATA 2018), so
+$\omega_k$ comes out in $E_h/\hbar$. The wavenumber is
+$\tilde\nu = \omega E_h/(2\pi\hbar c) = \omega\,E_h/(hc)$, i.e.
+`AU_FREQ_TO_CM` $= 219474.6313632$ cm$^{-1}$. A negative eigenvalue is
+reported as a negative (imaginary) wavenumber. For a diatomic spring of force
+constant $k$ the nonzero eigenvalue is $k(1/m_1 + 1/m_2) = k/\mu$, so
+$\omega = \sqrt{k/\mu}$.
+
+Projection. `translation_rotation_basis` builds the mass-weighted
+translations $t_k[3A + i] = \sqrt{m_A}\,\delta_{ik}$ and rotations
+$r_k[3A + \cdot] = \sqrt{m_A}\,(e_k \times (R_A - R_{\rm com}))$, and
+orthonormalizes them by modified Gram-Schmidt, dropping vectors that vanish
+(the axial rotation of a linear molecule), so the rank is 6, or 5 if linear
+(cross-checked against `detect_linear`). The span does not depend on the
+reference point: replacing $R_{\rm com}$ by any point adds a translation to
+each rotation. The projected Hessian is $P\tilde H P$ with
+$P = 1 - \sum_k t_k t_k^{\mathsf T}$, applied as rank-1 sweeps
+$\tilde H \leftarrow \tilde H - t(t^{\mathsf T}\tilde H) - (\tilde H t)t^{\mathsf T} + t\,t^{\mathsf T}(t^{\mathsf T}\tilde H t)$,
+which equal $P\tilde H P$ because the $t_k$ are orthonormal. Away from a
+stationary point the rotations carry curvature (the gradient term); the
+projection sets those eigenvalues to zero and leaves the vibrations alone at
+a minimum. Eigenvectors are classified as translation/rotation by their
+overlap with the subspace ($> 0.5$), not by eigenvalue size, so a small
+imaginary mode at a saddle is kept. Normal modes are returned as Cartesian
+displacements $x = M^{-1/2} u$ (not renormalized).
+
+The script checks both constants against CODATA 2018, the diatomic
+wavenumber against the SI route $(2\pi c)^{-1}\sqrt{k/\mu}$ (relative
+$<10^{-9}$), the projector (rank, orthonormality, idempotence, annihilation of
+the rigid modes, distance-preserving rotations, rank 5 for a linear
+triatomic), and that the projection leaves the vibrations of a pair-spring
+model unchanged at its minimum and zeroes six modes away from it.
+
 ## Convergence Acceleration (DIIS)
 Direct Inversion in the Iterative Subspace (DIIS) minimizes the error vector:
 $$\mathbf{e}_k = \mathbf{F}_k \mathbf{D}_k \mathbf{S} - \mathbf{S} \mathbf{D}_k \mathbf{F}_k$$
