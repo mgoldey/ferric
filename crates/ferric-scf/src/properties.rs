@@ -92,6 +92,17 @@ pub fn hirshfeld_margin() -> f64 {
     positive_f64("FERRIC_HIRSHFELD_MARGIN", 6.0)
 }
 
+mod hirshfeld_grid;
+pub use hirshfeld_grid::{
+    atomic_effective_volumes_hirshfeld, atomic_effective_volumes_hirshfeld_on_grid,
+    estimate_hirshfeld_grid_scan_bytes, estimate_hirshfeld_volume_gradient_bytes,
+    hirshfeld_charges, hirshfeld_i_charges, hirshfeld_volume_density_derivative,
+    hirshfeld_volume_gradient, hirshfeld_volume_grid, hirshfeld_volume_grid_config,
+    mbd_volume_grid, nbf_for_basis, preflight_hirshfeld_grid_scan,
+    preflight_hirshfeld_grid_scan_reserved, HIRSHFELD_GRAD_CHUNK_POINTS,
+    HIRSHFELD_VOLUME_CHUNK_POINTS,
+};
+
 /// Evaluate the electrostatic potential V(R_A) at each nuclear position,
 /// excluding the divergent self-interaction Z_A/|R_A − R_A|.
 ///
