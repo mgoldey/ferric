@@ -95,6 +95,7 @@ use std::time::Instant;
 
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
+use ferric_core::timing::{PhaseAccumulator, PhaseToken};
 use ferric_core::FerricError;
 use ferric_dft::grid::{build_atomic_grid_pruned, AtomicGridConfig};
 use ferric_integrals::ao_grid::eval_basis_on_points;
@@ -869,6 +870,29 @@ pub struct CosxK<'a> {
     /// Functions per shell.
     shell_dim: Vec<usize>,
     last: CosxTimings,
+    /// `FERRIC_TIMING` phase table over every build of this builder, printed
+    /// on drop (inert when timing is off). A `Mutex` only because the kernel
+    /// closures borrow `self` across threads; it is locked at phase
+    /// boundaries, never inside a parallel region.
+    phases: Mutex<PhaseAccumulator>,
+    /// `FERRIC_TIMING` sub-batch balance over every build (see [`SubBatchStats`]).
+    sub_stats: Mutex<SubBatchStats>,
+}
+
+/// Kernel load balance, summed over every block of every build: the busy
+/// time of each md3c1e sub-batch task and, per block, the slowest one. A
+/// block ends at a join, so `sum / max_sum` is the most cores the kernel
+/// phase can keep busy whatever the pool size.
+#[derive(Debug, Default, Clone, Copy)]
+struct SubBatchStats {
+    /// Sub-batch tasks run.
+    n: usize,
+    /// Blocks run.
+    blocks: usize,
+    /// Sum over tasks of their wall time, seconds.
+    sum_s: f64,
+    /// Sum over blocks of the slowest task's wall time, seconds.
+    max_sum_s: f64,
 }
 
 impl<'a> std::fmt::Debug for CosxK<'a> {
@@ -900,6 +924,8 @@ impl<'a> CosxK<'a> {
             )));
         }
         validate_grid(&cfg.grid)?;
+        let mut phases = PhaseAccumulator::new();
+        let tok = phases.begin("cosx:grid+bounds (new)");
         let grid = build_atomic_grid_pruned(mol, &cfg.grid, cfg.grid.prune)?;
         if grid.is_empty() {
             return Err(FerricError::General("CosxK: empty exchange grid".into()));
@@ -943,6 +969,7 @@ impl<'a> CosxK<'a> {
         let s_ao = cfg
             .overlap_fit
             .then(|| ferric_integrals::oneelectron::overlap(prep));
+        phases.stop(tok);
 
         Ok(Self {
             ctx,
@@ -960,7 +987,24 @@ impl<'a> CosxK<'a> {
             shell_off: prep.shell_offsets()[..prep.nshells()].to_vec(),
             shell_dim: prep.shell_dims().to_vec(),
             last: CosxTimings::default(),
+            phases: Mutex::new(phases),
+            sub_stats: Mutex::new(SubBatchStats::default()),
         })
+    }
+
+    /// Open a `FERRIC_TIMING` phase (`None`, no clock read, when timing is off).
+    fn tbegin(&self, label: &'static str) -> Option<PhaseToken> {
+        if !ferric_core::timing::enabled() {
+            return None;
+        }
+        self.phases.lock().expect("phase table lock").begin(label)
+    }
+
+    /// Close a phase opened by [`CosxK::tbegin`].
+    fn tstop(&self, tok: Option<PhaseToken>) {
+        if tok.is_some() {
+            self.phases.lock().expect("phase table lock").stop(tok);
+        }
     }
 
     /// Number of grid points in the exchange grid.
@@ -1026,7 +1070,10 @@ impl<'a> CosxK<'a> {
     ) -> Result<(Array2<f64>, Option<Vec<bool>>), FerricError> {
         match workers {
             Workers::CosxA(engines) => {
-                Ok((self.contract_block_cosx_a(engines, pts, f, acc)?, None))
+                let tok = self.tbegin("cosx:kernel (parallel)");
+                let g = self.contract_block_cosx_a(engines, pts, f, acc)?;
+                self.tstop(tok);
+                Ok((g, None))
             }
             Workers::Md3c1e(scratch) => {
                 let kern = self
@@ -1093,59 +1140,71 @@ impl<'a> CosxK<'a> {
     ) -> Result<(Array2<f64>, Option<Vec<bool>>), FerricError> {
         let nbf = self.prep.nbasis();
         let nsh = kern.nshells();
+        let tok = self.tbegin("cosx:kernel (parallel)");
         let f_std = f.as_standard_layout();
-        let ys: Vec<(Vec<f64>, Vec<bool>)> = pts
+        let ys: Vec<(Vec<f64>, Vec<bool>, u64)> = pts
             .par_chunks(COSX_SUB_BATCH_POINTS)
             .enumerate()
-            .map(|(c, sub)| -> Result<(Vec<f64>, Vec<bool>), FerricError> {
-                let c0 = c * COSX_SUB_BATCH_POINTS;
-                let n = sub.len();
-                let fsub = copy_columns(&f_std.view(), c0, n);
-                let mut y = vec![0.0_f64; nbf * n];
-                let mut touched = vec![false; nsh];
-                let mut c_ns = 0u64;
-                let t0 = Instant::now();
-                let mut screen = self.batch_screen(kern, sub, &fsub, n);
-                let mut tally = RouteTally::default();
-                let sum = self.cfg.f32_route.unwrap_or(PrimPairSum::F64);
-                let counts = scratch.with(|scr| {
-                    kern.for_each_pair_routed(
-                        sub,
-                        |s1, s2| self.route_unit(&mut screen, &mut tally, s1, s2, n),
-                        sum,
-                        scr,
-                        |s1, s2, blk| {
-                            let t = Instant::now();
-                            accumulate_pair(kern, s1, s2, n, blk, &fsub, &mut y);
-                            touched[s1] = true;
-                            touched[s2] = true;
-                            c_ns += t.elapsed().as_nanos() as u64;
-                        },
-                    )
-                })?;
-                let (kept, total) = (counts.kept, counts.total);
-                tally.f32_blocks = counts.f32_blocks;
-                tally.f32_fallbacks = counts.f32_fallbacks;
-                tally.flush(acc);
-                let geom = screen.as_ref().map_or(total, |sc| sc.geom_kept);
-                let (bev, deg) = screen
-                    .as_ref()
-                    .map_or((0, 0), |sc| (sc.bound_evals, sc.degenerate));
-                let all_ns = t0.elapsed().as_nanos() as u64;
-                acc.a_ns
-                    .fetch_add(all_ns.saturating_sub(c_ns), Ordering::Relaxed);
-                acc.c_ns.fetch_add(c_ns, Ordering::Relaxed);
-                acc.kept.fetch_add(kept * n, Ordering::Relaxed);
-                acc.kept_geom.fetch_add(geom * n, Ordering::Relaxed);
-                acc.total.fetch_add(total * n, Ordering::Relaxed);
-                acc.bound_evals.fetch_add(bev, Ordering::Relaxed);
-                acc.degenerate.fetch_add(deg, Ordering::Relaxed);
-                Ok((y, touched))
-            })
+            .map(
+                |(c, sub)| -> Result<(Vec<f64>, Vec<bool>, u64), FerricError> {
+                    let c0 = c * COSX_SUB_BATCH_POINTS;
+                    let n = sub.len();
+                    let fsub = copy_columns(&f_std.view(), c0, n);
+                    let mut y = vec![0.0_f64; nbf * n];
+                    let mut touched = vec![false; nsh];
+                    let mut c_ns = 0u64;
+                    let t0 = Instant::now();
+                    let mut screen = self.batch_screen(kern, sub, &fsub, n);
+                    let mut tally = RouteTally::default();
+                    let sum = self.cfg.f32_route.unwrap_or(PrimPairSum::F64);
+                    let counts = scratch.with(|scr| {
+                        kern.for_each_pair_routed(
+                            sub,
+                            |s1, s2| self.route_unit(&mut screen, &mut tally, s1, s2, n),
+                            sum,
+                            scr,
+                            |s1, s2, blk| {
+                                let t = Instant::now();
+                                accumulate_pair(kern, s1, s2, n, blk, &fsub, &mut y);
+                                touched[s1] = true;
+                                touched[s2] = true;
+                                c_ns += t.elapsed().as_nanos() as u64;
+                            },
+                        )
+                    })?;
+                    let (kept, total) = (counts.kept, counts.total);
+                    tally.f32_blocks = counts.f32_blocks;
+                    tally.f32_fallbacks = counts.f32_fallbacks;
+                    tally.flush(acc);
+                    let geom = screen.as_ref().map_or(total, |sc| sc.geom_kept);
+                    let (bev, deg) = screen
+                        .as_ref()
+                        .map_or((0, 0), |sc| (sc.bound_evals, sc.degenerate));
+                    let all_ns = t0.elapsed().as_nanos() as u64;
+                    acc.a_ns
+                        .fetch_add(all_ns.saturating_sub(c_ns), Ordering::Relaxed);
+                    acc.c_ns.fetch_add(c_ns, Ordering::Relaxed);
+                    acc.kept.fetch_add(kept * n, Ordering::Relaxed);
+                    acc.kept_geom.fetch_add(geom * n, Ordering::Relaxed);
+                    acc.total.fetch_add(total * n, Ordering::Relaxed);
+                    acc.bound_evals.fetch_add(bev, Ordering::Relaxed);
+                    acc.degenerate.fetch_add(deg, Ordering::Relaxed);
+                    Ok((y, touched, all_ns))
+                },
+            )
             .collect::<Result<_, _>>()?;
+        self.tstop(tok);
+        if ferric_core::timing::enabled() {
+            let mut st = self.sub_stats.lock().expect("sub-batch stats lock");
+            st.n += ys.len();
+            st.blocks += 1;
+            st.sum_s += ys.iter().map(|y| y.2).sum::<u64>() as f64 * 1e-9;
+            st.max_sum_s += ys.iter().map(|y| y.2).max().unwrap_or(0) as f64 * 1e-9;
+        }
+        let tok = self.tbegin("cosx:g_merge");
         let mut g = Array2::<f64>::zeros((nbf, pts.len()));
         let mut touched = vec![false; nsh];
-        for (c, (y, tch)) in ys.iter().enumerate() {
+        for (c, (y, tch, _)) in ys.iter().enumerate() {
             let c0 = c * COSX_SUB_BATCH_POINTS;
             let n = y.len() / nbf;
             for (mu, row) in y.chunks_exact(n).enumerate() {
@@ -1158,6 +1217,7 @@ impl<'a> CosxK<'a> {
                 *t |= v;
             }
         }
+        self.tstop(tok);
         Ok((g, Some(touched)))
     }
 
@@ -1396,7 +1456,9 @@ impl<'a> CosxK<'a> {
                 let d = match src {
                     HalfSource::Density(d) => d,
                     HalfSource::Occ(c) => {
+                        let tok = self.tbegin("cosx:occ->D (C.C^T)");
                         d_occ = c.dot(&c.t());
+                        self.tstop(tok);
                         &d_occ
                     }
                 };
@@ -1415,6 +1477,7 @@ impl<'a> CosxK<'a> {
         t.blas_s = t.half_s + t.ktilde_s + t.snum_s;
 
         let t0 = Instant::now();
+        let tok = self.tbegin("cosx:fit");
         if self.cfg.overlap_fit {
             if let Some(s) = snum {
                 self.snum = Some(factorize_snum(&s)?);
@@ -1428,6 +1491,7 @@ impl<'a> CosxK<'a> {
         } else {
             finalize_plain(&ktilde, k);
         }
+        self.tstop(tok);
         t.fit_s = t0.elapsed().as_secs_f64();
 
         t.a_build_s = acc.a_ns.load(Ordering::Relaxed) as f64 * 1e-9;
@@ -1481,22 +1545,30 @@ impl<'a> CosxK<'a> {
         {
             self.ctx.check_interrupted()?;
             let t0 = Instant::now();
+            let tok = self.tbegin("cosx:ao_eval");
             let x = self.eval_x_block(pts, sw)?;
+            self.tstop(tok);
             t.ao_eval_s += t0.elapsed().as_secs_f64();
 
             let t0 = Instant::now();
             if let Some(s) = snum.as_deref_mut() {
+                let tok = self.tbegin("cosx:snum X.X^T");
                 *s += &x.dot(&x.t());
+                self.tstop(tok);
             }
             t.snum_s += t0.elapsed().as_secs_f64();
             let t0 = Instant::now();
+            let tok = self.tbegin("cosx:half F=D.X");
             let f = half(&x);
+            self.tstop(tok);
             t.half_s += t0.elapsed().as_secs_f64();
 
             let (g, _touched) = self.contract_block(workers, pts, &f, acc)?;
 
             let t0 = Instant::now();
+            let tok = self.tbegin("cosx:ktilde X.G^T");
             *ktilde += &x.dot(&g.t());
+            self.tstop(tok);
             t.ktilde_s += t0.elapsed().as_secs_f64();
             t.n_blocks += 1;
         }
@@ -1531,7 +1603,9 @@ impl<'a> CosxK<'a> {
     ) -> Result<(), FerricError> {
         let nbf = self.prep.nbasis();
         let t0 = Instant::now();
+        let tok = self.tbegin("cosx:masks+gathers");
         let dmax = shell_block_max(d, &self.shell_off, &self.shell_dim);
+        self.tstop(tok);
         t.gather_s += t0.elapsed().as_secs_f64();
         t.active_ao_frac_min = f64::INFINITY;
         t.active_ao_frac_max = 0.0;
@@ -1542,13 +1616,17 @@ impl<'a> CosxK<'a> {
         {
             self.ctx.check_interrupted()?;
             let t0 = Instant::now();
+            let tok = self.tbegin("cosx:ao_eval");
             let x = self.eval_x_block(pts, sw)?;
+            self.tstop(tok);
             t.ao_eval_s += t0.elapsed().as_secs_f64();
 
             let t0 = Instant::now();
+            let tok = self.tbegin("cosx:masks+gathers");
             let a = active_shells(&x, eps_ao, &self.shell_off, &self.shell_dim);
             let lam = lambda_shells(&dmax, &a.shells, eps_d, &self.shell_off, &self.shell_dim);
             let x_a = gather_rows(&x, &a.aos);
+            self.tstop(tok);
             t.gather_s += t0.elapsed().as_secs_f64();
             let fa = a.aos.len() as f64 / nbf as f64;
             t.n_blocks += 1;
@@ -1564,8 +1642,10 @@ impl<'a> CosxK<'a> {
 
             if let Some(s) = snum.as_deref_mut() {
                 let t0 = Instant::now();
+                let tok = self.tbegin("cosx:snum X.X^T");
                 let s_aa = x_a.dot(&x_a.t());
                 scatter_add(s, &a.aos, &a.aos, &s_aa);
+                self.tstop(tok);
                 t.snum_s += t0.elapsed().as_secs_f64();
             }
             if lam.aos.is_empty() {
@@ -1575,17 +1655,20 @@ impl<'a> CosxK<'a> {
             }
 
             let t0 = Instant::now();
+            let tok = self.tbegin("cosx:half F=D.X");
             let d_la = gather_block(d, &lam.aos, &a.aos);
             let f_la = d_la.dot(&x_a);
             let mut f = Array2::<f64>::zeros((nbf, pts.len()));
             for (i, &lambda) in lam.aos.iter().enumerate() {
                 f.row_mut(lambda).assign(&f_la.row(i));
             }
+            self.tstop(tok);
             t.half_s += t0.elapsed().as_secs_f64();
 
             let (g, touched) = self.contract_block(workers, pts, &f, acc)?;
 
             let t0 = Instant::now();
+            let tok = self.tbegin("cosx:ktilde X.G^T");
             let b_aos: Vec<usize> = match touched {
                 None => (0..nbf).collect(),
                 Some(tch) => aos_of_shells(
@@ -1600,6 +1683,7 @@ impl<'a> CosxK<'a> {
                 let prod = x_a.dot(&g_b.t());
                 scatter_add(ktilde, &a.aos, &b_aos, &prod);
             }
+            self.tstop(tok);
             t.ktilde_s += t0.elapsed().as_secs_f64();
         }
         let nb = t.n_blocks.max(1) as f64;
@@ -2212,6 +2296,38 @@ fn finalize_fitted(
     *k += &qk.t();
     *k *= 0.5;
     Ok(())
+}
+
+impl<'a> Drop for CosxK<'a> {
+    /// `FERRIC_TIMING` only: the phase table over every build of this
+    /// builder, then the kernel's sub-batch balance.
+    fn drop(&mut self) {
+        if !ferric_core::timing::enabled() {
+            return;
+        }
+        let title = format!(
+            "COSX ({} pts, {} threads)",
+            self.points.len(),
+            rayon::current_num_threads()
+        );
+        if let Ok(p) = self.phases.lock() {
+            p.report(&title);
+        }
+        if let Ok(st) = self.sub_stats.lock() {
+            if st.blocks > 0 && st.max_sum_s > 0.0 {
+                eprintln!(
+                    "[timing]   cosx kernel balance: {} blocks, {} sub-batches ({:.2}/block), task sum {:.3} s, \
+                     sum of per-block max {:.3} s, sum/max = {:.2} cores at most",
+                    st.blocks,
+                    st.n,
+                    st.n as f64 / st.blocks as f64,
+                    st.sum_s,
+                    st.max_sum_s,
+                    st.sum_s / st.max_sum_s
+                );
+            }
+        }
+    }
 }
 
 impl<'a> KBuilder for CosxK<'a> {
