@@ -1453,3 +1453,86 @@ $h = 10^{-6}$ difference of $\mathbf{T}$ against its analytic derivative; T4
 the Fock term; T5 the $\alpha\to0$ limit; T6 $\mathcal{N}_p$ and the $p$-shell
 order).
 
+## Atomic charges
+
+`properties.rs` and `properties/hirshfeld_grid.rs` compute six charge models.
+All use $Z^{\rm eff}_A$ = `Atom::effective_z` (the valence charge on an ECP atom)
+and the total spin-summed density $\mathbf{P}$; nothing in them is closed-shell
+specific. $N$ = `Molecule::nelec` $= \sum_A Z^{\rm eff}_A - Q$.
+
+**Population partitions.**
+
+$$q^{\rm Mulliken}_A = Z^{\rm eff}_A - \sum_{\mu\in A}(\mathbf{P}\mathbf{S})_{\mu\mu},
+\qquad
+q^{\rm L\ddot owdin}_A = Z^{\rm eff}_A - \sum_{\mu\in A}(\mathbf{S}^{1/2}\mathbf{P}\mathbf{S}^{1/2})_{\mu\mu}.$$
+
+$\mathbf{S}^{1/2}$ comes from the eigendecomposition of $\mathbf{S}$; a
+non-positive eigenvalue is an error. Both sum to $\sum_AZ^{\rm eff}_A -
+\mathrm{Tr}[\mathbf{P}\mathbf{S}]$, since
+$\mathrm{Tr}[\mathbf{S}^{1/2}\mathbf{P}\mathbf{S}^{1/2}] = \mathrm{Tr}[\mathbf{P}\mathbf{S}]$,
+which is $Q$ for an SCF density. There is no rescaling. The Löwdin populations
+are diagonal elements of a positive semidefinite matrix and so nonnegative.
+
+**Grid partitions.** On the Becke–Lebedev grid (`build_atomic_grid`, default
+config) with weights $w_g$ that already contain the Becke partition of the
+point's home atom, and $\rho_g = \sum_{\mu\nu}P_{\mu\nu}\chi_\mu(g)\chi_\nu(g)$,
+
+$$n^{\rm Becke}_A = \sum_{g:\,{\rm home}(g)=A} w_g\rho_g,
+\qquad
+n^{\rm Hirsh}_A = \sum_g w_g\rho_g\,\frac{\rho^0_A(g)}{\sum_B\rho^0_B(g) + 10^{-12}},$$
+
+$$q_A = Z^{\rm eff}_A - s\,n_A,\qquad s = \frac{N}{\sum_B n_B}.$$
+
+The rescale $s$ absorbs the quadrature error of $\int\rho$ (and the
+$10^{-12}$ floor, which makes the Hirshfeld weights sum to slightly less than one
+where every proatom density is tiny), so $\sum_Aq_A = Q$ exactly. The
+Hirshfeld proatom $\rho^0_A$ is the provider's spherically averaged free-atom
+SCF density, or the single Slater function $Z_A\xi^3/\pi\,e^{-2\xi r}$
+(`slater_xi_for_z`) for an atom without one; both are built for the full
+nuclear charge $Z_A$.
+
+**CHELPG** (`solve_chelpg_normal_equations`). On the grid points $\mathbf{r}_g$
+kept by `chelpg_in_shell` (outside every Bondi sphere scaled by
+`vdw_scale`, and within `outer_cutoff` of at least one scaled sphere's
+surface) with the molecular potential
+$V_g = \sum_BZ^{\rm eff}_B/|\mathbf{r}_g-\mathbf{R}_B| - \sum_{\mu\nu}P_{\mu\nu}\langle\mu|1/|\mathbf{r}-\mathbf{r}_g||\nu\rangle$,
+the charges minimize $\tfrac12\sum_g(V_g - \sum_Aq_A/r_{gA})^2$ subject to
+$\sum_Aq_A = Q$. Stationarity of
+$\tfrac12\chi^2 + \lambda(\sum_Aq_A - Q)$ is the bordered system
+
+$$\begin{pmatrix}\mathbf{A} & \mathbf{1}\\ \mathbf{1}^{\mathsf T} & 0\end{pmatrix}
+\begin{pmatrix}\mathbf{q}\\ \lambda\end{pmatrix}
+= \begin{pmatrix}\mathbf{b}\\ Q\end{pmatrix},
+\qquad A_{AB} = \sum_g\frac{1}{r_{gA}r_{gB}},\quad b_A = \sum_g\frac{V_g}{r_{gA}},$$
+
+solved once by LU. The points carry no weights.
+
+**RESP** (`solve_resp_restrained`). The same grid and system, with the
+hyperbolic restraint on every atom with $Z \ne 1$. The code iterates
+
+$$\Big(\mathbf{A} + \mathrm{diag}_{A\,\in\,\rm heavy}\frac{a}{\sqrt{(q^{(k)}_A)^2 + b^2}}\Big)\mathbf{q}^{(k+1)}
+ + \lambda\mathbf{1} = \mathbf{b},\qquad \sum_Aq^{(k+1)}_A = Q,$$
+
+from $\mathbf{q}^{(0)} = 0$ (so the first solve already carries the slope $a/b$)
+until $\max_A|q^{(k+1)}_A - q^{(k)}_A| < 10^{-8}$ or 50 iterations, with
+$a = 0.0005$ and $b = 0.1$ by default. This is a fixed-point (iteratively
+reweighted least squares) iteration, not Newton's method: the restraint's
+gradient $aq/\sqrt{q^2+b^2}$ is written as $[a/\sqrt{q^2+b^2}]\,q$ with the
+bracket frozen at the previous iterate. At its fixed point,
+$(\mathbf{A}\mathbf{q} - \mathbf{b}) + a\,q_A/\sqrt{q_A^2+b^2} + \lambda = 0$, which
+is the stationarity condition of
+
+$$\tfrac12\sum_g\Big(V_g - \sum_A\frac{q_A}{r_{gA}}\Big)^2
+ + a\sum_{A\,\in\,\rm heavy}\Big(\sqrt{q_A^2+b^2} - b\Big)
+ \quad\text{subject to}\quad \sum_Aq_A = Q .$$
+
+The $\tfrac12$ on the least-squares term matters for the meaning of $a$: the
+objective without it has a different minimizer, equal to the code's with $a/2$.
+$a \to 0$ recovers CHELPG. The iteration returns its last iterate without an
+error if it reaches 50 iterations.
+
+Proof: `scripts/atomic_charges_sympy.py` (A1 Mulliken and Löwdin sum rules and
+Löwdin nonnegativity; A2 the grid rescale; A3 CHELPG's bordered system against
+a null-space constrained least-squares solve; A4 the RESP fixed point as the
+constrained minimizer of the objective above, the objective without the
+$\tfrac12$ as a negative control, and the $a\to0$ limit).

@@ -1,7 +1,7 @@
 # 21.2 Atomic partitions: Becke, Hirshfeld, Löwdin, ESP fits
 
-<!-- section: 21.2; status: gap; registry: none;
-     theory: crates/ferric-dft/theory.md#"Becke partition and its nuclear derivative" -->
+<!-- section: 21.2; status: edit; registry: atomic-charges;
+     theory: crates/ferric-dft/theory.md#"Becke partition and its nuclear derivative"; crates/ferric-scf/theory.md#"Atomic charges" -->
 
 A molecule has one density and no atoms. Every "atomic" number ferric
 exports, a charge or a per-atom polarizability, rests on a rule that splits
@@ -174,6 +174,25 @@ $N_e$. Both are partitions of the basis, not of space, so they change with the
 basis set and, for Löwdin, with the function ordering convention of the
 basis.
 
+<!-- include: crates/ferric-scf/theory.md#"Atomic charges" -->
+
+> **Verified equation 21.8** · the population sums and the grid rescale
+>
+> For an idempotent density with $\operatorname{Tr}(DS) = N_e$ on a random overlap,
+> the transcribed Mulliken and Löwdin charges sum to $Q$ exactly and the Löwdin
+> populations are nonnegative (claim A1). The Becke and Hirshfeld charges of
+> (21.5) and (21.7) sum to $Q$ exactly after the rescale $s$, whatever the
+> quadrature error and the $\varepsilon$ floor (claim A2).
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/atomic_charges_sympy.py`, claims A1 and A2 |
+> | Negative control | the runner builds Löwdin with $S$ in place of $S^{1/2}$ (claim A1 fails) |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-scf/src/properties.rs::lowdin_charges` |
+>
+> <!-- verified: id=charges.population.sums; script=scripts/atomic_charges_sympy.py; claim=A1; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/properties.rs::lowdin_charges; registry=atomic-charges -->
+
 ## 21.2.5 ESP-fitted charges
 
 CHELPG and RESP do not partition the density. They choose point charges
@@ -188,6 +207,21 @@ $$ \begin{pmatrix} A & \mathbf 1\\ \mathbf 1^{\mathsf T} & 0\end{pmatrix}\begin{
 
 where the factor 2 of $\partial\chi^2/\partial q_A$ is absorbed into $\lambda$.
 This is the system `solve_chelpg_normal_equations` assembles and solves.
+
+> **Verified equation 21.9** · the CHELPG bordered system
+>
+> The transcribed bordered normal equations give the same charges as an
+> independent null-space solve of the constrained least-squares problem, and
+> the charges sum to $Q$ (claim A3).
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/atomic_charges_sympy.py`, claim A3 |
+> | Negative control | the runner puts 0 in place of $Q$ on the border (claim A3 fails) |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-scf/src/properties.rs::solve_chelpg_normal_equations` |
+>
+> <!-- verified: id=charges.chelpg.bordered; script=scripts/atomic_charges_sympy.py; claim=A3; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/properties.rs::solve_chelpg_normal_equations; registry=atomic-charges -->
 
 <!-- excerpt: ferric-scf/src/properties.rs::solve_chelpg_normal_equations -->
 ```rust
@@ -226,8 +260,37 @@ depends on $q_A$. Freezing the coefficient at the previous iterate gives a
 linear system of the form (21.9) with
 $A_{AA}\to A_{AA}+a/\sqrt{q_A^2+b^2}$ for non-hydrogen atoms
 (`solve_resp_restrained`), solved repeatedly until the largest charge change is
-below $10^{-8}$ or 50 iterations pass. The fixed point is the stationary
-point of the restrained functional. It is a single-stage fit: there is no
+below $10^{-8}$ or 50 iterations pass. The iteration starts from $\mathbf q = 0$,
+so its first solve already carries the slope $a/b$, and it returns its last
+iterate without an error if it reaches 50 iterations. It is a fixed-point
+(iteratively reweighted least-squares) iteration, not Newton's method. Its
+fixed point is the minimizer of
+
+$$ \tfrac12\chi^2(\mathbf q) + a\sum_{A\notin\mathrm H}\Big(\sqrt{q_A^2+b^2}-b\Big), \qquad \sum_Aq_A=Q, \tag{21.10} $$
+
+with the $\tfrac12$ on $\chi^2$: the normal equations (21.9) are those of
+$\tfrac12\chi^2$, so the restraint enters with weight $a$ relative to that.
+The functional without the $\tfrac12$ has a different minimizer, that of the
+code with $a/2$.
+
+> **Verified equation 21.10** · the RESP fixed point
+>
+> The transcribed `solve_resp_restrained` iteration converges to the
+> minimizer of (21.10), found independently by a constrained quasi-Newton
+> minimization; its projected gradient vanishes within the stopping bound,
+> while that of the functional without the $\tfrac12$ does not; and $a\to0$
+> gives the CHELPG charges (claim A4).
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/atomic_charges_sympy.py`, claim A4 |
+> | Negative control | the runner puts $a/(2\sqrt{q^2+b^2})$ on the diagonal (claim A4 fails) |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-scf/src/properties.rs::solve_resp_restrained` |
+>
+> <!-- verified: id=charges.resp.fixed.point; script=scripts/atomic_charges_sympy.py; claim=A4; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/properties.rs::solve_resp_restrained; registry=atomic-charges -->
+
+ It is a single-stage fit: there is no
 second stage that equivalences methyl hydrogens, and no multi-conformer
 averaging.
 
@@ -263,18 +326,18 @@ sum rule (21.6) the proof above.
 
 **Known limits (2026-11-15).**
 
-- **No proof for the charges themselves.** Equations (21.5), (21.7), (21.8)
-  and (21.9) are read from the code loops and derived above, but no sympy
-  script checks them, so they are displayed without a verified box. The
-  `ferric-scf` `theory.md` has no section on them.
+- **What the proofs cover.** The verified boxes check the algebra of the
+  charge rules on transcriptions of the code: the sum rules, the bordered
+  system and the RESP fixed point. They do not check the ESP on the points or
+  the Hirshfeld proatoms; those are the comparisons of section 27.2.5.
 - **Effective nuclear charges.** The charge rules use $Z^{\mathrm{eff}}_A$
   (2.1): the valence charge on an ECP atom and zero on a ghost (checked
   against PySCF on HI and CH3I, section 27.2.6). Hirshfeld on an ECP atom
   still divides by a proatom built for the full $Z$; that pairing is
   unchecked.
-- **Closed shell.** Mulliken, Löwdin, CHELPG and RESP are documented as
-  closed-shell only. `becke_charges` and `hirshfeld_charges` take any total
-  density.
+- **Spin.** Every rule takes the total spin-summed density. The Mulliken and
+  Löwdin doc comments say closed-shell only, but the formulas have no
+  closed-shell assumption.
 - **Orientation.** CHELPG and RESP depend on the molecule's orientation
   through the lab-frame lattice.
 - **Löwdin ordering.** The Löwdin split depends on the basis-function
@@ -287,11 +350,9 @@ sum rule (21.6) the proof above.
 |---|---|
 | `crates/ferric-dft/theory.md`, "Becke partition and its nuclear derivative" | the Becke weight and its proof |
 | `crates/ferric-rpa/theory.md`, "Dispersion: Casimir-Polder C6" | the per-atom bra and equation (21.6) |
-| `crates/ferric-scf/src/properties.rs` | (21.5), (21.8), (21.9), the lattice and restraint parameters |
+| `crates/ferric-scf/theory.md`, "Atomic charges" | the derivation of the charge rules and the ESP fits |
+| `scripts/atomic_charges_sympy.py` | the proofs, claims A1 to A4 |
+| `crates/ferric-scf/src/properties.rs` | (21.5), (21.8), (21.9), (21.10), the lattice and restraint parameters |
 | `crates/ferric-scf/src/properties/hirshfeld_grid.rs` | (21.7), the proatom and the grid |
 | `crates/ferric-rpa/src/properties/per_atom.rs` | the Becke and Hirshfeld bras |
 | `site/src/reference/validation.md`, "Anchors" | the agreement figures, through section 27.2.5 |
-
-Changes needed in `theory.md`: `ferric-scf/theory.md` needs a section for the
-five charge rules and the ESP fit, with a proof script. That file is edited
-elsewhere, so this section stands alone.

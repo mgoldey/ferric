@@ -327,7 +327,7 @@ Code references are `crate/src/file.rs::item` under `crates/`.
 | § | Section | Sources | Code | Status |
 |---|---|---|---|---|
 | 21.1 | Static and dynamic polarizabilities from the dielectric modes | T rpa "Dispersion" (first part); S `rpa_c6_polarizability_sympy.py`†; R rpa-polarizability-c6 | `ferric-rpa/src/properties.rs::{pdep_polarizability_static,molecular_dynamic_polarizability}`, `ferric-rpa/src/response_modes.rs::polarizability_from_modes` | ready |
-| 21.2 | Atomic partitions: Becke, Hirshfeld, Löwdin, ESP fits | none | `ferric-scf/src/properties.rs::{lowdin_charges,becke_charges,chelpg_charges,resp_charges,esp_at_atoms}` | gap |
+| 21.2 | Atomic partitions: Becke, Hirshfeld, Löwdin, ESP fits | T scf "Atomic charges"; S `atomic_charges_sympy.py`; R atomic-charges | `ferric-scf/src/properties.rs::{lowdin_charges,becke_charges,chelpg_charges,resp_charges,esp_at_atoms}` | edit |
 | 21.3 | Export schemas | T export §1–2 | `ferric-export/src/ml.rs::export_npz`, `ferric-export/src/cube.rs::export_cube` | edit |
 
 ### Part XI. Environment
@@ -451,16 +451,16 @@ registry row and are the largest block of `gap` sections.
 | VII. Coupled cluster | 5 | 1 | 1 | 0 | 7 |
 | VIII. Multireference | 5 | 0 | 1 | 0 | 6 |
 | IX. RPA, PDEP and GW | 12 | 1 | 1 | 1 | 15 |
-| X. Response and excited states | 7 | 1 | 1 | 0 | 9 |
+| X. Response and excited states | 7 | 2 | 0 | 0 | 9 |
 | XI. Environment | 5 | 4 | 0 | 0 | 9 |
 | XII. Periodic systems | 7 | 2 | 0 | 0 | 9 |
 | XIII. Dispersion | 2 | 1 | 0 | 0 | 3 |
 | XIV. Capstone | 1 | 2 | 4 | 0 | 7 |
 | XV. Interfaces | 1 | 5 | 1 | 0 | 7 |
 | Appendices | 3 | 0 | 1 | 0 | 4 |
-| **Total** | **87** | **48** | **17** | **7** | **159** |
+| **Total** | **87** | **49** | **16** | **7** | **159** |
 
-159 sections: 55% `ready`, 30% `edit`, 11% `gap` and 4% `verify`.
+159 sections: 55% `ready`, 31% `edit`, 10% `gap` and 4% `verify`.
 <!-- status-table:end -->
 
 ## 5. Gaps, ranked by how much rests on them

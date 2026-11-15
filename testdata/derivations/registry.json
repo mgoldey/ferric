@@ -932,6 +932,14 @@
         "scripts/qmmm_boundary_sympy.py",
         "scripts/thole_polarizable_sympy.py"
       ]
+    },
+    "atomic-charges": {
+      "theory": [
+        "crates/ferric-scf/theory.md#atomic-charges"
+      ],
+      "scripts": [
+        "scripts/atomic_charges_sympy.py"
+      ]
     }
   },
   "gaps": {

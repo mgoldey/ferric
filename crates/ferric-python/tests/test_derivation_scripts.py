@@ -871,6 +871,27 @@ CASES = [
         ],
     ),
     (
+        "atomic_charges_sympy.py",
+        60,
+        [
+            (
+                "    m = s_half @ d @ s_half\n",
+                "    m = s @ d @ s\n",
+                "FAIL A1 Mulliken and Lowdin",
+            ),
+            (
+                "rhs = np.append(r.T @ v, q_total)\n    return np.linalg.solve(mat, rhs)[:n]",
+                "rhs = np.append(r.T @ v, 0.0)\n    return np.linalg.solve(mat, rhs)[:n]",
+                "FAIL A3 CHELPG",
+            ),
+            (
+                "mat[k, k] += a / np.sqrt(q[k] * q[k] + b * b)",
+                "mat[k, k] += a / (2 * np.sqrt(q[k] * q[k] + b * b))",
+                "FAIL A4 RESP",
+            ),
+        ],
+    ),
+    (
         "pcm_ief_sympy.py",
         150,
         [
