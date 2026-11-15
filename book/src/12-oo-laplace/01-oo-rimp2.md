@@ -109,7 +109,7 @@ $$ P_{ij} = -\sum_{kab} t_{ik}^{ab}\big(2t_{jk}^{ab} - t_{jk}^{ba}\big), \qquad 
 The code stores $t$ dense as an $(n_on_v)\times(n_on_v)$ matrix and builds
 $P$ in `ferric-mp2/src/oo_rimp2.rs::build_mp2_density`.
 
-> **Unverified equation 12.3** (proof exists) · closed-shell OO-MP2 orbital gradient
+> **Verified equation 12.3** · closed-shell OO-MP2 orbital gradient
 >
 > On a random closed-shell model in the semicanonical frame with
 > $F_{ov} \ne 0$, the gradient (12.3), with $W$ from (12.4), equals
@@ -121,17 +121,13 @@ $P$ in `ferric-mp2/src/oo_rimp2.rs::build_mp2_density`.
 >
 > | | |
 > |---|---|
-> | Proof | `scripts/oomp2_mp3_identities_sympy.py`, parts B2 and B3 |
+> | Proof | `scripts/oomp2_mp3_identities_sympy.py`, the check labelled "claim B3" (the code's loop against $\partial E/\partial\kappa$); the check labelled "claim B2" is the finite-difference anchor for the generalized Fock gradient |
 > | Negative control | mutations `kappa_sign` (generator $C(1-\kappa)$) and `drop_two_particle` (no correlation two-particle density) turn B2 and B3 red (`OOMP2_MP3_MUTATION`) |
 > | Runner | `crates/ferric-python/tests/test_oomp2_mp3_identities_sympy.py` |
 > | Code | `ferric-mp2/src/oo_rimp2.rs::fock_response_gradient`, `ferric-mp2/src/oo_rimp2.rs::hf_and_integral_response_gradient_timed` |
 > | Code test | `test_oo_rimp2_gradient_fd_off_reference_h2o_sto3g` and `test_oo_rimp2_gradient_fd_off_reference_nh3_631g` in `crates/ferric-mp2/src/oo_rimp2.rs`: the production gradient against a finite difference of (12.1), away from the HF point |
 >
-> The proof and runner exist; the box is filed as unverified only because
-> `scripts/book_build.py` does not resolve a check label written as
-> `"B3 ..."`.
->
-> <!-- unverified: id=oo.cs.gradient; todo=proof exists (scripts/oomp2_mp3_identities_sympy.py checks B2, B3; runner test_oomp2_mp3_identities_sympy.py; rust_test ferric-mp2/src/oo_rimp2.rs::test_oo_rimp2_gradient_fd_off_reference_h2o_sto3g); make book_build.py claim_defined match a check-label prefix, then restore the verified box with claim=B3 and code=ferric-mp2/src/oo_rimp2.rs::fock_response_gradient -->
+> <!-- verified: id=oo.cs.gradient; script=scripts/oomp2_mp3_identities_sympy.py; claim=B3; runner=crates/ferric-python/tests/test_oomp2_mp3_identities_sympy.py; code=ferric-mp2/src/oo_rimp2.rs::fock_response_gradient; rust_test=ferric-mp2/src/oo_rimp2.rs::test_oo_rimp2_gradient_fd_off_reference_h2o_sto3g -->
 
 **The sign.** `crates/ferric-mp2/src/orbital_rotation.rs` records that the
 closed-shell driver once used the reversed Cayley form, with a gradient of

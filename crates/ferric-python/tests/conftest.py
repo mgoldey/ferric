@@ -51,6 +51,7 @@ EXTENSION_FREE = frozenset(
         "test_book_build.py",
         "test_derivation_scripts.py",
         "test_oomp2_mp3_identities_sympy.py",
+        "test_ump3_spin_blocks_sympy.py",
     }
 )
 

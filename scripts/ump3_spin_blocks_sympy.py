@@ -49,6 +49,9 @@ Measured 2026-11-14: the unmutated run exits 0 (S2 compares 186 pp, 186 hh
 and 1086 ph monomials exactly; N agrees to the last printed digit, E3 =
 -0.0106326 Ha); each mutation exits 1 with exactly its S2 class and N E3 red.
 
+The checks the book cites carry explicit labels in their printed names:
+"(claim S1)", "(claim S2)", "(claim N2)", "(claim N3)".
+
 Exit code 0 iff every check passes; "all identities hold" is printed then.
 """
 
@@ -307,7 +310,11 @@ def symbolic_checks():
     e2_so, pp, hh, ph = so_energies(m)
     e2, e3 = blocked_energies(m)
     d2 = sp.expand(e2_so - sum(e2.values()))
-    check("S1 E2: aa + bb + ab == 1/4 sum <ij||ab> t", d2 == 0, f"residual {d2}")
+    check(
+        "S1 E2: aa + bb + ab == 1/4 sum <ij||ab> t (claim S1)",
+        d2 == 0,
+        f"residual {d2}",
+    )
     for label, so, bl in (
         ("pp ladders == 1/8 sum t <ab||cd> t", pp, e3[0]),
         ("hh ladders == 1/8 sum <kl||ij> t t", hh, e3[1]),
@@ -316,7 +323,7 @@ def symbolic_checks():
         d = sp.expand(so - bl)
         n_terms = len(sp.Add.make_args(sp.expand(so)))
         check(
-            f"S2 E3 {label}",
+            f"S2 E3 {label} (claim S2)",
             d == 0,
             f"{n_terms} monomials; residual terms {len(sp.Add.make_args(d)) if d != 0 else 0}",
         )
@@ -404,12 +411,12 @@ def numeric_checks():
     # agreement to 1e-12 is the rounding floor with two decades of room.
     tol = 1e-12
     check(
-        f"N E2 spin-blocked == brute-force RS-PT ({ndet} dets)",
+        f"N E2 spin-blocked == brute-force RS-PT ({ndet} dets) (claim N2)",
         abs(e2_bl - e2_bf) < tol,
         f"{e2_bl:.15f} vs {e2_bf:.15f}",
     )
     check(
-        f"N E3 spin-blocked == brute-force RS-PT ({ndet} dets)",
+        f"N E3 spin-blocked == brute-force RS-PT ({ndet} dets) (claim N3)",
         abs(e3_bl - e3_bf) < tol,
         f"{e3_bl:.15f} vs {e3_bf:.15f}",
     )

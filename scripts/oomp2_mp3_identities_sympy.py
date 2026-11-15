@@ -58,7 +58,7 @@ Checks, in spin-orbital notation (<pq||rs> = g[p,q,r,s], t_ij^ab = t[a,b,i,j]):
            the spatial kappa applied to both spins.
 
 The checks the book cites carry an explicit label "(claim A2)", "(claim A3)",
-"(claim B0)" or "(claim B1)" in their printed name; book/ boxes cite these
+"(claim B0)", "(claim B1)", "(claim B2)" or "(claim B3)" in their printed name; book/ boxes cite these
 labels (claim=B0), not the whole quoted string.
 
 Residuals are printed. Exits nonzero on the first failed identity (all are run).
@@ -669,7 +669,7 @@ def part_b():
     d3 = np.max(np.abs(g_formula - g_fd_cay))
     scale = np.max(np.abs(g_fd))
     check(
-        "B2 generalized Fock g_ai = X_ai - X_ia == 5-point FD of E(kappa) at fixed t",
+        "B2 generalized Fock g_ai = X_ai - X_ia == 5-point FD of E(kappa) at fixed t (claim B2)",
         d1 < 1e-9,
         f"max|d| {d1:.1e} (|g| up to {scale:.2f})",
     )
@@ -795,7 +795,7 @@ def part_b():
         g_sp_fd[c, k] = (s_[0] - 8 * s_[1] + 8 * s_[2] - s_[3]) / 12.0
     d5 = np.max(np.abs(g_code - g_sp_fd))
     check(
-        "B3 oo_rimp2.rs loop (4F + 2(G_V+G_O) + 4G[W] + 2(FW-WF)) == dE/dkappa_ck of the spin-orbital energy",
+        "B3 oo_rimp2.rs loop (4F + 2(G_V+G_O) + 4G[W] + 2(FW-WF)) == dE/dkappa_ck of the spin-orbital energy (claim B3)",
         d5 < 1e-9,
         f"max|d| {d5:.1e} (|g| up to {np.max(np.abs(g_sp_fd)):.2f})",
     )
