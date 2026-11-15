@@ -1,5 +1,5 @@
 //! Linear-response TDDFT for closed-shell references (the restricted driver;
-//! UHF/UKS references are dispatched to [`crate::unrestricted`]).
+//! UHF/UKS references are dispatched to `crate::unrestricted`).
 //!
 //! Implements the Tamm–Dancoff approximation (TDA, equivalent to CIS for HF)
 //! and the full Casida equations for singlet or (`M_S = 0`) triplet
@@ -29,7 +29,7 @@
 //!
 //! Scope: this module assembles the closed-shell (restricted) problem.
 //! [`run_tddft`] sends an unrestricted (UHF / UKS) reference to
-//! [`crate::unrestricted`], which builds the two-spin A/B space; only ROHF /
+//! `crate::unrestricted`, which builds the two-spin A/B space; only ROHF /
 //! ROKS references are refused (theory.md §10).
 //!
 //! # Solvers
@@ -779,7 +779,7 @@ fn roks_refusal() -> FerricError {
 /// There is no spin-resolved A/B assembly in this module: `eps_r`/`mos_r` and
 /// `nocc = nelec/2` are closed-shell by construction (and `eps_r`/`mos_r`
 /// ASSERT a restricted reference). [`run_tddft`] routes UHF/UKS to
-/// [`crate::unrestricted`] before reaching this check, so it only fires for a
+/// `crate::unrestricted` before reaching this check, so it only fires for a
 /// direct caller of the restricted path.
 fn closed_shell_nocc(mol: &Molecule, scf: &ScfResult) -> Result<usize, FerricError> {
     if !scf.converged {
