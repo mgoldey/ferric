@@ -327,6 +327,29 @@ principles:
 - **Too clean is a stop condition.** An exact coincidence at every system size
   is a fingerprint of arithmetic, not chemistry.
 
+### Every method has a derivation and a sympy proof
+
+A method is a CLI `method.kind`, a Python `run_*` entry point, or a derivative of
+one, such as a gradient, Hessian or response property. Each method ships with
+two committed pieces:
+
+1. **A LaTeX derivation** in its crate's `theory.md`, in `$...$` / `$$...$$`
+   math. It runs from the definition of the energy, or of the property, to the
+   working equations the code contracts. It states the conventions: index
+   ranges, spin blocks, signs and prefactors. It names the function that
+   implements each equation.
+2. **A sympy proof** in `scripts/<topic>_sympy.py`. It derives or checks the
+   load-bearing identities symbolically: prefactors, spin adaptation, signs,
+   derivative terms and limits. It also evaluates them on a small numerical case
+   against an independent route, such as a finite difference, brute force in a
+   tiny space, or a reference code. It exits nonzero when any identity fails, and
+   a test under `crates/ferric-python/tests/` runs it. Its header lists at least
+   one mutation that turns it red.
+
+A new method lands with both pieces in the same PR. A change to a method's
+working equations updates both. The `wiki/` notes are working notes, not the
+record: a derivation lives in the repo.
+
 The crate layout and cross-cutting conventions (threading, determinism,
 memory, errors) are described in the book's
 [Architecture](https://matthew.thegoldeys.com/ferric/reference/architecture.html)
