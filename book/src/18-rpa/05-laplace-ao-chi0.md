@@ -1,7 +1,7 @@
 # 18.5 Imaginary-time and AO forms of $\chi_0$
 
-<!-- section: 18.5; status: gap; registry: none;
-     theory: crates/ferric-quadrature/theory.md#"1. Minimax Laplace Quadrature", "2. Imaginary-Frequency Grids for RPA" -->
+<!-- section: 18.5; status: ready; registry: pdep-rpa;
+     theory: crates/ferric-rpa/theory.md#"Laplace-transformed chi0"; crates/ferric-quadrature/theory.md#"1. Minimax Laplace Quadrature" -->
 
 The response kernel $\Delta/(u^2 + \Delta^2)$ in (18.7) couples every
 occupied-virtual pair to the frequency. Writing it as an integral over
@@ -9,7 +9,8 @@ imaginary time separates the occupied and virtual indices, which is the
 first step towards an atomic-orbital, reduced-scaling $\chi_0$. ferric has
 the molecular-orbital half of that construction, as library code. The AO
 half, where the scaling would change, is not built. This section states what
-exists and what does not; it has no derivation in a `theory.md` file yet.
+exists and what does not; the derivation is `crates/ferric-rpa/theory.md`,
+"Laplace-transformed chi0".
 
 | Symbol | Meaning | Code name |
 |---|---|---|
@@ -34,12 +35,15 @@ so the projected dielectric matrix of (18.10) becomes
 $$ \tilde{\boldsymbol\varepsilon}_U(iu) - \mathbf 1 \approx \sum_l 4w_l\cos(ut_l)\;\mathbf X^{(l)}\mathbf X^{(l)\mathsf T}, \qquad X^{(l)}_{\xi,ia} = Y_{\xi,ia}\,e^{-t_l\Delta_i^a/2} . \tag{18.15} $$
 
 The nodes are the minimax-Laplace nodes for $1/x$ on
-$[\Delta_{\min}, \Delta_{\max}]$, the same tables as Laplace MP2, with
-$n \in \{3, 5, 7\}$. They are optimal for $1/x$ at $u = 0$ and not for the
-oscillating integrand at $u > 0$, so the code uses the dense kernel at any
-frequency node with $u\,t_{\max} > \pi/2$. The coefficient
-$4w_l\cos(ut_l)$ can be negative, so each term is a general matrix product,
-not a symmetric rank update.
+$[\Delta_{\min}, \Delta_{\max}]$, the same tables as Laplace MP2 scaled by
+$1/\Delta_{\min}$, with $n \in \{3, 5, 7\}$. The coded sum is
+$\operatorname{Re}r(\Delta + iu)$ with $r(x) = \sum_lw_le^{-t_lx} \approx 1/x$:
+the $1/x$ approximant at a complex argument, not a quadrature of the cosine
+integral. It is the minimax approximant at $u = 0$ and is not controlled at
+large $u\,t_l$, so the code uses the dense kernel at any frequency node with
+$u\,t_{\max} > \pi/2$, which keeps every $\cos(ut_l) \ge 0$ on the Laplace
+side. Each term is accumulated as a general matrix product, not a symmetric
+rank update; the coefficient $4w_l\cos(ut_l)$ is never negative there.
 
 In this molecular-orbital form the cost equals the dense path's. The point
 of the form is that $e^{-t\Delta_i^a} = e^{t\varepsilon_i}e^{-t\varepsilon_a}$
@@ -51,17 +55,25 @@ an imaginary-time $\chi_0$ from them (after Kaltak, Klimeš and Kresse 2014),
 but evaluates the contraction densely; the sparse AO contraction is not
 implemented.
 
-> **Unverified equation 18.15** · the Laplace dielectric
+> **Verified equation 18.15** · the Laplace dielectric
 >
-> (18.14) and (18.15), and the claim that the fallback rule
-> $u\,t_{\max} > \pi/2$ keeps the energy within the quadrature error.
+> (18.14) symbolically; the coded dielectric equals
+> $\mathbf 1 + 4Y\operatorname{diag}(\operatorname{Re}r(\Delta + iu))Y^{\mathsf T}$
+> to rounding, and at $u = 0$ it differs from the dense dielectric by exactly
+> $4Y\operatorname{diag}(r(\Delta) - 1/\Delta)Y^{\mathsf T}$; the kernel error is
+> bounded by the minimax table's on $[1, R]$; above $u\,t_{\max} = \pi/2$ the
+> result is the dense dielectric, closed and open shell. The proof does not
+> bound the energy error of the fallback rule; that is the Rust test below.
 >
 > | | |
 > |---|---|
-> | Proof | none committed. The Rust tests compare against the dense kernel: `h2o_ccpvdz_laplace_matches_dense_at_static` in `crates/ferric-rpa/tests/laplace_chi0.rs` (elementwise, relative $5\times10^{-3}$), and `closed_shell_rpa_laplace_chebyshev_matches_dense_h2o` in `crates/ferric-rpa/tests/u_pdep_rpa.rs` ($5\times10^{-4}$ Ha). |
-> | Status | gap: no `theory.md` derivation, no script, library only |
+> | Proof | `scripts/rpa_laplace_chi0_sympy.py`, claims L1 (identity), L2 (gap scaling), L3 (dielectric), L4 (kernel error), L5 (fallback), L6 (open-shell prefactor) |
+> | Negative control | the runner halves the coefficient $4w_l$, drops the $\tfrac12$ of the exponent split, scales the nodes by $\Delta_{\min}$ instead of $1/\Delta_{\min}$, moves the threshold to $\pi$, and doubles the open-shell prefactor |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-rpa/src/laplace_chi0.rs::{dielectric_matrix_laplace_into,dielectric_matrix_laplace_unrestricted_into,build_laplace_for_gaps}` |
+> | Code test | `h2o_ccpvdz_laplace_matches_dense_at_static` in `crates/ferric-rpa/tests/laplace_chi0.rs` (elementwise, relative $5\times10^{-3}$); `closed_shell_rpa_laplace_chebyshev_matches_dense_h2o` in `crates/ferric-rpa/tests/u_pdep_rpa.rs` ($5\times10^{-4}$ Ha) |
 >
-> <!-- unverified: id=rpa.chi0.laplace; todo=derive (18.14)-(18.15) in crates/ferric-rpa/theory.md and add a sympy check of the cosine-Laplace identity and the fallback rule -->
+> <!-- verified: id=rpa.chi0.laplace; script=scripts/rpa_laplace_chi0_sympy.py; claim=L3; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-rpa/src/laplace_chi0.rs::{dielectric_matrix_laplace_into,dielectric_matrix_laplace_unrestricted_into,build_laplace_for_gaps}; rust_test=ferric-rpa/tests/laplace_chi0.rs::h2o_ccpvdz_laplace_matches_dense_at_static; registry=pdep-rpa -->
 
 ## 18.5.2 Requirements the code enforces
 
@@ -85,6 +97,8 @@ validation row.
 
 | Source | What it gives |
 |---|---|
+| `crates/ferric-rpa/theory.md`, "Laplace-transformed chi0" | (18.14), (18.15), the scaling, fallback and open-shell rules |
+| `scripts/rpa_laplace_chi0_sympy.py`, claims L0 to L6 | the proof |
 | `crates/ferric-quadrature/theory.md`, "1. Minimax Laplace Quadrature" | the node tables |
 | `crates/ferric-quadrature/theory.md`, "2. Imaginary-Frequency Grids for RPA" | the fallback counts for Gauss–Legendre and Chebyshev–Tan |
 | module documentation of `crates/ferric-rpa/src/laplace_chi0.rs` and `crates/ferric-rpa/src/ao_rpa.rs` | the two forms and their scope |

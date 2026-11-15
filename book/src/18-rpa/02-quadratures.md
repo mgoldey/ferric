@@ -1,7 +1,7 @@
 # 18.2 Imaginary-frequency quadratures
 
-<!-- section: 18.2; status: edit; registry: none;
-     theory: crates/ferric-quadrature/theory.md#"2. Imaginary-Frequency Grids for RPA" -->
+<!-- section: 18.2; status: ready; registry: pdep-rpa;
+     theory: crates/ferric-rpa/theory.md#"Imaginary-frequency quadratures"; crates/ferric-quadrature/theory.md#"2. Imaginary-Frequency Grids for RPA" -->
 
 Every frequency-route RPA energy in ferric (sections 18.1, 18.3, 18.4), the
 GW self-energy and the dynamic polarizabilities integrate a function of the
@@ -68,17 +68,23 @@ let weights: Vec<f64> = x
 | $u_k$ | `freqs` |
 | $w_k$ | `weights` |
 
-> **Unverified equation 18.6** · the mapped weights
+> **Verified equation 18.6** · the mapped weights
 >
-> The Jacobians of the Gauss–Legendre and Chebyshev–Tan maps in the table
-> above.
+> The Gauss–Legendre and Chebyshev–Tan weights are the rule's weights times
+> the Jacobian $du/dx$ of the map; Chebyshev–Tan is the trapezoid rule in
+> $\theta$. The mapped Gauss–Legendre rule integrates exactly every $f$ whose
+> pull-back $f(u(x))\,du/dx$ is a polynomial of degree $\le 2n - 1$, and
+> MiniMax is the Gauss–Legendre map at the tabulated $u_0$.
 >
 > | | |
 > |---|---|
-> | Proof | none in a script. The Rust unit tests in `crates/ferric-rpa/src/quadrature.rs` check the Chebyshev–Tan rule against the closed form for a Lorentzian whose scale equals $u_0$ (to $10^{-13}$), its $n^{-2}$ error, and its largest node; check `gl48-vs-definition` of `scripts/rpa_drpa_pdep_sympy.py` checks the 48-point Gauss–Legendre grid only through a dRPA energy. |
-> | Status | tested in Rust, no derivation script |
+> | Proof | `scripts/rpa_quadrature_sympy.py`, claims Q1 (Jacobians), Q2 (trapezoid form), Q3 (exactness anchor), Q4 (Lorentzian closed form, $n^{-2}$), Q5 (closed-form RPA integrands), Q6 (MiniMax) |
+> | Negative control | the pull-back of degree $2n$ must miss; the runner drops the factor 2 of the Gauss–Legendre Jacobian, squares $\sin\theta$ in the Chebyshev–Tan weight, doubles its $u_0\pi/4$, and changes the MiniMax table |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-rpa/src/quadrature.rs::{gauss_legendre_nodes,chebyshev_tan_nodes,build_quadrature}` |
+> | Code test | `chebyshev_tan_lorentzian_at_a_equals_u0_matches_closed_form` in `crates/ferric-rpa/src/quadrature.rs` |
 >
-> <!-- unverified: id=rpa.quad.mapped-weights; todo=add a check to scripts/rpa_drpa_pdep_sympy.py that integrates closed-form test functions with both maps -->
+> <!-- verified: id=rpa.quad.mapped-weights; script=scripts/rpa_quadrature_sympy.py; claim=Q3; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-rpa/src/quadrature.rs::{gauss_legendre_nodes,chebyshev_tan_nodes,build_quadrature}; rust_test=ferric-rpa/src/quadrature.rs::chebyshev_tan_lorentzian_at_a_equals_u0_matches_closed_form; registry=pdep-rpa -->
 
 ## 18.2.2 Defaults
 
@@ -120,6 +126,8 @@ backend only.
 
 | Source | What it gives |
 |---|---|
+| `crates/ferric-rpa/theory.md`, "Imaginary-frequency quadratures" | the maps, their Jacobians, the exactness statements |
+| `scripts/rpa_quadrature_sympy.py`, claims Q1 to Q6 | the proof |
 | `crates/ferric-quadrature/theory.md`, "2. Imaginary-Frequency Grids for RPA" | the three maps, the largest-node formula, the Laplace fallback counts |
 | `crates/ferric-rpa/src/config.rs` | the defaults table |
 

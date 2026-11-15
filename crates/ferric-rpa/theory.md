@@ -1,6 +1,6 @@
 # Random Phase Approximation (RPA) Theory
 
-This crate computes the direct Random Phase Approximation (dRPA) correlation energy, closed and open shell, its analytic gradient, range-separated MP2 + RPA, and RPA polarizabilities and C6 coefficients. The proofs of the identities below are `scripts/rpa_drpa_pdep_sympy.py`, `scripts/rpa_rs_mp2_rpa_sympy.py`, `scripts/rpa_gradient_sympy.py`, `scripts/rpa_c6_polarizability_sympy.py` and `scripts/rpa_response_modes_sympy.py`.
+This crate computes the direct Random Phase Approximation (dRPA) correlation energy, closed and open shell, its analytic gradient, range-separated MP2 + RPA, and RPA polarizabilities and C6 coefficients. The proofs of the identities below are `scripts/rpa_drpa_pdep_sympy.py`, `scripts/rpa_rs_mp2_rpa_sympy.py`, `scripts/rpa_gradient_sympy.py`, `scripts/rpa_c6_polarizability_sympy.py`, `scripts/rpa_response_modes_sympy.py`, `scripts/rpa_quadrature_sympy.py` and `scripts/rpa_laplace_chi0_sympy.py`.
 
 Notation (book/notation.md): $u$ is the imaginary frequency, $\chi_0(iu)$, so
 $\omega$ stays the range-separation parameter; $\xi, \eta$ label PDEP
@@ -113,6 +113,71 @@ $\varepsilon$, because the dropped fraction itself grows quickly
 (`site/src/methods/rpa-gw.md` gives the n-octane / 6-31G table); there is no
 error bound.
 
+## Imaginary-frequency quadratures
+
+Every frequency-route quantity of this crate (the dRPA energy, the PDEP
+energy, the dynamic polarizabilities and $C_6$, and the GW self-energy that
+reuses the grid) integrates a function of the imaginary frequency $u$ over
+$[0, \infty)$ with one rule,
+
+$$ \int_0^\infty f(u)\,du \approx \sum_{k=1}^{n} w_k f(u_k), \qquad E_c \approx \frac{1}{2\pi}\sum_k w_k\,S(u_k), $$
+
+built by `quadrature::build_quadrature` from `QuadratureConfig`
+$(\text{scheme}, n, u_0)$. Each scheme maps a rule on $x \in (-1, 1)$ to
+$u \in (0, \infty)$, and the returned $w_k$ already carry the Jacobian
+$du/dx$. Nodes and weights depend on $(\text{scheme}, n, u_0)$ only, never on
+the molecule.
+
+**Gauss-Legendre** (`gauss_legendre_nodes`, the default scheme). With
+$x_k, w_k^{\rm GL}$ the $n$-point Gauss-Legendre rule on $(-1, 1)$
+(`gl_nodes_weights`: Newton on the three-term recurrence of $P_n$ from
+$x^{(0)} = \cos(\pi(4i + 3)/(4n + 2))$, weight $2/((1 - x^2)P_n'(x)^2)$),
+
+$$ u = u_0\,\frac{1 + x}{1 - x}, \qquad \frac{du}{dx} = \frac{2u_0}{(1 - x)^2}, \qquad u_k = u_0\frac{1 + x_k}{1 - x_k}, \qquad w_k = w_k^{\rm GL}\,\frac{2u_0}{(1 - x_k)^2} . $$
+
+The rule is exact for every $f$ whose pull-back $f(u(x))\,du/dx$ is a
+polynomial in $x$ of degree $\le 2n - 1$, e.g.
+$f(u) = x(u)^m\,2u_0/(u + u_0)^2$ with $x(u) = (u - u_0)/(u + u_0)$.
+
+**MiniMax** (`build_quadrature`, `optimized_u0`). The Gauss-Legendre map at
+$u_0 = 0.3$ for $n \le 8$, $0.4$ for $9 \le n \le 16$ and $0.5$ for $n > 16$
+(the values documented as Furche, JCP 122, 164106 (2005)). The configured
+$u_0$ is not read (`QuadratureScheme::honours_u0` is false), and despite the
+name the nodes are not a minimax grid.
+
+**Chebyshev-Tan** (`chebyshev_tan_nodes`; Eshuis, Yarkony and Furche, JCP
+132, 234114 (2010)). With $\theta_k = \pi k/(n + 1)$, $x_k = \cos\theta_k$,
+$k = 1, \dots, n$,
+
+$$ u = u_0\tan\frac{\pi(1 + x)}{4}, \qquad \frac{du}{dx} = \frac{u_0\pi}{4}\sec^2\frac{\pi(1 + x)}{4}, \qquad w_k = \frac{\pi}{n + 1}\,\sin\theta_k\,\frac{u_0\pi}{4}\sec^2\frac{\pi(1 + x_k)}{4} . $$
+
+The weight is the Chebyshev-2 weight $\frac{\pi}{n+1}\sin^2\theta_k$ times
+$1/\sqrt{1 - x_k^2} = 1/\sin\theta_k$ times the Jacobian. Substituting
+$x = \cos\theta$, $\int_0^\infty f\,du = \int_0^\pi f(u(\cos\theta))\,
+u'(\cos\theta)\sin\theta\,d\theta$, and $w_k$ is the trapezoid step
+$\pi/(n + 1)$ times that integrand's Jacobian at the interior points (the
+endpoints carry zero weight). On a smooth integrand the error therefore falls
+as $n^{-2}$. For the Lorentzian $f = u_0/(u_0^2 + u^2)$ the Jacobian cancels
+$f$ exactly, $f\,du/dx = \pi/4$, so the rule equals
+$\frac{\pi}{4}\frac{\pi}{n+1}\cot\frac{\pi}{2(n+1)}$ at every $n$. The largest
+node is $u_0\cot\big(\tfrac{\pi}{2}\sin^2\tfrac{\pi}{2(n+1)}\big)$.
+
+Unknown scheme strings are an error (`QuadratureScheme::parse_config_str`).
+The defaults per entry point are those of `QuadratureConfig` (Gauss-Legendre,
+$n = 20$, $u_0 = 0.5$; $n = 48$ for the exact `drpa` kind, section "RPA
+Correlation Energy"); the grid properties ferric-quadrature documents
+(`crates/ferric-quadrature/theory.md`, section 2) are the same maps.
+
+`scripts/rpa_quadrature_sympy.py` checks both Jacobians symbolically (claim
+Q1), that the Chebyshev-Tan weight is the trapezoid step times
+$du/d\theta$ (Q2), the Gauss-Legendre exactness on pull-back polynomials of
+degree $\le 2n - 1$ with $2n$ as the negative control (Q3), the Chebyshev-Tan
+Lorentzian closed form and its $n^{-2}$ error (Q4), the closed-form
+integrals $\int_0^\infty a/(a^2 + u^2)\,du = \pi/2$ and the one-mode dRPA
+integral $\tfrac12(\sqrt{D(D + 2b)} - D - b)$ with every scheme, Gauss-Legendre
+at 48 nodes to rounding (Q5), and that MiniMax is the Gauss-Legendre map at
+the tabulated $u_0$ whatever $u_0$ is configured (Q6).
+
 ## The PDEP Eigenpotential Approach
 
 PDEP replaces the aux basis by a smaller, system-adapted one taken from the
@@ -198,6 +263,96 @@ The closed-shell $\mathbf{\Pi}$ carries the prefactor 4; with identical spin cha
 The open-shell driver (`u_pdep_rpa_core`) always takes the static-eigenbasis route. The static eigensolve is the dense full-rank `eigh` of $\tilde{\mathbf{\epsilon}}_U(0)$ (default `Eigensolver::Lanczos`) or Davidson from the identity seed; the matvec $\tilde{\mathbf{\epsilon}}_U \mathbf{V} = \mathbf{V} + \mathbf{\Pi}_\alpha \mathbf{V} + \mathbf{\Pi}_\beta \mathbf{V}$ is two closed-shell-shaped applications (`sternheimer::dielectric_apply_unrestricted`). Truncation follows the closed-shell rule. The frequency loop then always diagonalizes the projected $\mathbf U^{\mathsf T}\tilde{\mathbf{\epsilon}}_U(iu_k)\mathbf U$ (`eval_eigenvalues_at_frequencies_unrestricted`) and sums $\ln\lambda + 1 - \lambda$ over the eigenvalues: there is no aux-basis log-det route and no LU log-det branch on the open-shell path. The Laplace $\chi_0$ backend builds one Laplace quadrature per spin on that spin's gap range. `run_diagnostics` assembles $\tilde{\mathbf{\epsilon}}_U(iu_k)$ densely at every quadrature node (`diagnostics::u_ri_drpa_energy`). `run_u_pdep_rpa_from_parts` (pre-built intermediates) accepts only full rank, the dense $\chi_0$ and `Eigensolver::Lanczos`, and refuses $\alpha$ and $\beta$ intermediates with different dressings.
 
 The Boys-screened $\chi_0$ is closed-shell only: its screened tiles and localized orbital energies are built from the restricted MOs and Fock matrix, and `run_u_pdep_rpa` refuses it.
+
+## Laplace-transformed chi0
+
+`Chi0Backend::Laplace { n_quad }` (library only; the CLI and the Python
+bindings always use the dense kernel) replaces the frequency factor of
+$\chi_0$ by a sum of exponentials in $\Delta_i^a = \varepsilon_a - \varepsilon_i > 0$
+(`laplace_chi0.rs`). For $\Delta > 0$,
+
+$$ \frac{\Delta}{u^2 + \Delta^2} = \int_0^\infty e^{-\Delta t}\cos(ut)\,dt = \operatorname{Re}\frac{1}{\Delta + iu} . $$
+
+**The nodes.** `build_laplace_for_gaps` takes the gap range
+$\Delta_{\min} = \varepsilon_{\rm LUMO} - \varepsilon_{\rm HOMO}$,
+$\Delta_{\max} = \max\varepsilon_a - \min\varepsilon_i$ (one $\Delta$, so no
+factor 2 as in Laplace MP2), and `LaplaceQuadrature::new` scales the minimax
+table for $1/y$ on $[1, R]$ (Takatsuka, Ten-no and Hackbusch 2008),
+
+$$ t_l = t_l^{\rm tab}/\Delta_{\min}, \qquad w_l = w_l^{\rm tab}/\Delta_{\min}, \qquad r(x) = \sum_l w_le^{-t_lx} = \frac{1}{\Delta_{\min}}\,r^{\rm tab}\!\Big(\frac{x}{\Delta_{\min}}\Big) \approx \frac1x \ \ (x \in [\Delta_{\min}, \Delta_{\max}]), $$
+
+so the relative error of $r$ on the gap range is the table's relative error
+on $[1, R]$, $R = \Delta_{\max}/\Delta_{\min}$. The table entry is the first
+with $R_{\rm tab} \ge 0.99R$ (`select_minimax_points`, a 1% slack); only
+$n_{\rm quad} \in \{3, 5, 7\}$ exist, and an untabulated size or an $R$ beyond
+the last entry is an error. The orbital energies must be canonical, because
+$\Delta_i^a$ is a per-pair scalar only in a Fock-diagonal basis (debug
+assertion in `build_e_ia`).
+
+**The kernel as coded.** The code uses the same $(t_l, w_l)$ at every $u$:
+
+$$ \frac{\Delta}{u^2 + \Delta^2} \;\to\; \sum_l w_l\cos(ut_l)\,e^{-t_l\Delta} = \operatorname{Re}\,r(\Delta + iu) . $$
+
+This is the $1/x$ approximant evaluated at the complex argument
+$\Delta + iu$, not a quadrature of the cosine integral. It is the minimax
+approximant at $u = 0$, and its error is not controlled for large $u\,t_l$,
+where the cosine oscillates across the nodes. The code therefore uses the
+dense kernel at any node with
+
+$$ u\,t_{\max} > \frac{\pi}{2}, \qquad t_{\max} = \max_l t_l , $$
+
+which keeps every $\cos(ut_l) \ge 0$ on the Laplace side. Above the threshold
+the result is the dense dielectric exactly.
+
+**The dielectric** (`dielectric_matrix_laplace_into`). For a block of
+dressed-basis vectors $V$ ($N_{\rm aux}\times m$), $Y = V^{\mathsf T}B$
+($m \times n_on_v$, $B = MB^{\rm raw}$ the dressed factor), and
+$e^{-t\Delta} = (e^{-t\Delta/2})^2$:
+
+$$ V^{\mathsf T}\tilde{\boldsymbol\epsilon}(iu)V = \mathbf 1 + \sum_l 4w_l\cos(ut_l)\,\mathbf X_l\mathbf X_l^{\mathsf T}, \qquad (X_l)_{\xi,ia} = Y_{\xi,ia}\,e^{-t_l\Delta_i^a/2}, $$
+
+$$ = \mathbf 1 + 4\,Y\operatorname{diag}\big(\operatorname{Re}r(\Delta_i^a + iu)\big)Y^{\mathsf T} . $$
+
+The dense path is $\mathbf 1 + 4Y\operatorname{diag}(\Delta/(u^2 + \Delta^2))Y^{\mathsf T}$
+(`sternheimer::dielectric_matrix`), so at $u = 0$ the two differ by exactly
+$4Y\operatorname{diag}(r(\Delta) - 1/\Delta)Y^{\mathsf T}$, the minimax error
+and nothing else. Each term is accumulated as a general product (the module
+documentation's reason, a negative $4w_l\cos(ut_l)$, cannot occur on the
+Laplace side, where the fallback keeps every cosine non-negative). The
+factor $e^{-t\Delta_i^a} = e^{t\varepsilon_i}e^{-t\varepsilon_a}$ separates
+the occupied and virtual indices, which an AO pseudo-density form would use;
+in this MO form the cost equals the dense path's.
+
+**Open shell** (`dielectric_matrix_laplace_unrestricted_into`,
+`accumulate_one_spin`). Each spin gets its own quadrature on its own gap
+range (`run_u_pdep_rpa`; an empty $\beta$ channel reuses the $\alpha$ one and
+contributes nothing), the per-spin coefficient is $2w_l\cos(ut_l)$, and
+
+$$ V^{\mathsf T}\tilde{\boldsymbol\epsilon}_U(iu)V = \mathbf 1 + \sum_\sigma\sum_{l\in\sigma}2w_l\cos(ut_l)\,\mathbf X^\sigma_l\mathbf X^{\sigma\mathsf T}_l . $$
+
+The fallback threshold uses the larger $t_{\max}$ of the two spins, and both
+spins fall back to the dense kernel together. With identical channels the two
+prefactors 2 sum to the closed-shell 4.
+
+**Where it is used.** In `run_pdep_rpa` the Laplace kernel enters the
+frequency loop (`eval_eigenvalues_at_frequencies_laplace`, the eigenvalues of
+the projected matrix at each node) and the Davidson matvec of the static
+eigensolve; the default Lanczos static eigensolve, and the Boys-screened
+arms, build $\tilde{\boldsymbol\epsilon}(0)$ with the dense kernel. In
+`run_u_pdep_rpa` it enters both the static eigensolve and the frequency loop.
+The backend has no aux-basis log-det evaluator, so it always takes the
+static-eigenbasis route (`energy_route::static_route_required`), and the
+closed-shell inverse-dielectric stack is built only on the dense backend.
+
+`scripts/rpa_laplace_chi0_sympy.py` checks the cosine-Laplace identity and
+the real-part form and both exponential splits symbolically (claim L1), the
+gap scaling against the table (L2), the coded dielectric against
+$\mathbf 1 + 4Y\operatorname{diag}(\operatorname{Re}r(\Delta + iu))Y^{\mathsf T}$
+and, at $u = 0$, its difference from the dense dielectric against the
+minimax error exactly (L3), the kernel error bounded by the table's on
+$[1, R]$ and falling over $n_{\rm quad} = 3, 5, 7$ (L4), the fallback rule
+closed and open shell (L5) and the open-shell prefactors (L6); L0 checks the
+transcribed table entries against `crates/ferric-quadrature/src/minimax.rs`.
 
 ## Dispersion: Casimir-Polder C6
 

@@ -1317,6 +1317,59 @@ CASES = [
             ),
         ],
     ),
+    (
+        "rpa_quadrature_sympy.py",
+        15,
+        [
+            (
+                "weights = w * 2.0 * u0 / (1.0 - x) ** 2",
+                "weights = w * u0 / (1.0 - x) ** 2",
+                "FAIL Q3",
+            ),
+            (
+                "w_k = (math.pi / np1) * math.sin(theta_k) * (u0 * math.pi / 4.0) * sec2",
+                "w_k = (math.pi / np1) * math.sin(theta_k) ** 2 * (u0 * math.pi / 4.0) * sec2",
+                "FAIL Q2",
+            ),
+            ("(u0 * math.pi / 4.0) * sec2", "(u0 * math.pi / 2.0) * sec2", "FAIL Q4"),
+            (
+                "    if n <= 16:\n        return 0.4",
+                "    if n <= 16:\n        return 0.5",
+                "FAIL Q6",
+            ),
+        ],
+    ),
+    (
+        "rpa_laplace_chi0_sympy.py",
+        15,
+        [
+            (
+                "        coeff = 4.0 * w_l * math.cos(u * t_l)",
+                "        coeff = 2.0 * w_l * math.cos(u * t_l)",
+                "FAIL L3",
+            ),
+            (
+                "        x = y * np.exp(-0.5 * t_l * e)\n        coeff = 4.0",
+                "        x = y * np.exp(-t_l * e)\n        coeff = 4.0",
+                "FAIL L3",
+            ),
+            (
+                "    return t / ymin, w / ymin, r_tab",
+                "    return t * ymin, w / ymin, r_tab",
+                "FAIL L2",
+            ),
+            (
+                "    if u * t_max > math.pi / 2:\n        return dense_dielectric(v, b, eo, ev, u)",
+                "    if u * t_max > math.pi:\n        return dense_dielectric(v, b, eo, ev, u)",
+                "FAIL L5",
+            ),
+            (
+                "        coeff = 2.0 * w_l * math.cos(u * t_l)",
+                "        coeff = 4.0 * w_l * math.cos(u * t_l)",
+                "FAIL L6",
+            ),
+        ],
+    ),
 ]
 
 

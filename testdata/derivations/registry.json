@@ -439,18 +439,22 @@
     },
     "drpa": {
       "theory": [
-        "crates/ferric-rpa/theory.md#rpa-correlation-energy"
+        "crates/ferric-rpa/theory.md#rpa-correlation-energy",
+        "crates/ferric-rpa/theory.md#imaginary-frequency-quadratures"
       ],
       "scripts": [
-        "scripts/rpa_drpa_pdep_sympy.py"
+        "scripts/rpa_drpa_pdep_sympy.py",
+        "scripts/rpa_quadrature_sympy.py"
       ]
     },
     "gw": {
       "theory": [
-        "crates/ferric-gw/theory.md#4-correlation-self-energy-on-the-imaginary-axis"
+        "crates/ferric-gw/theory.md#4-correlation-self-energy-on-the-imaginary-axis",
+        "crates/ferric-rpa/theory.md#imaginary-frequency-quadratures"
       ],
       "scripts": [
-        "scripts/gw_self_energy_sympy.py"
+        "scripts/gw_self_energy_sympy.py",
+        "scripts/rpa_quadrature_sympy.py"
       ]
     },
     "harmonic-frequencies": {
@@ -685,10 +689,14 @@
     "pdep-rpa": {
       "theory": [
         "crates/ferric-rpa/theory.md#the-pdep-eigenpotential-approach",
-        "crates/ferric-rpa/theory.md#rpa-correlation-energy"
+        "crates/ferric-rpa/theory.md#rpa-correlation-energy",
+        "crates/ferric-rpa/theory.md#imaginary-frequency-quadratures",
+        "crates/ferric-rpa/theory.md#laplace-transformed-chi0"
       ],
       "scripts": [
-        "scripts/rpa_drpa_pdep_sympy.py"
+        "scripts/rpa_drpa_pdep_sympy.py",
+        "scripts/rpa_quadrature_sympy.py",
+        "scripts/rpa_laplace_chi0_sympy.py"
       ]
     },
     "pvp-integrals": {
@@ -759,19 +767,23 @@
       "theory": [
         "crates/ferric-rpa/theory.md#analytic-nuclear-gradient-closed-shell-ri-drpa-hf-reference",
         "crates/ferric-rpa/theory.md#lagrangian-and-z-vector",
-        "crates/ferric-rpa/theory.md#gradient"
+        "crates/ferric-rpa/theory.md#gradient",
+        "crates/ferric-rpa/theory.md#imaginary-frequency-quadratures"
       ],
       "scripts": [
-        "scripts/rpa_gradient_sympy.py"
+        "scripts/rpa_gradient_sympy.py",
+        "scripts/rpa_quadrature_sympy.py"
       ]
     },
     "rpa-polarizability-c6": {
       "theory": [
-        "crates/ferric-rpa/theory.md#dispersion-casimir-polder-c6"
+        "crates/ferric-rpa/theory.md#dispersion-casimir-polder-c6",
+        "crates/ferric-rpa/theory.md#imaginary-frequency-quadratures"
       ],
       "scripts": [
         "scripts/rpa_c6_polarizability_sympy.py",
-        "scripts/rpa_response_modes_sympy.py"
+        "scripts/rpa_response_modes_sympy.py",
+        "scripts/rpa_quadrature_sympy.py"
       ]
     },
     "rs-mp2-rpa": {
@@ -826,10 +838,14 @@
     },
     "u-pdep-rpa": {
       "theory": [
-        "crates/ferric-rpa/theory.md#open-shell-spin-summed-dielectric"
+        "crates/ferric-rpa/theory.md#open-shell-spin-summed-dielectric",
+        "crates/ferric-rpa/theory.md#imaginary-frequency-quadratures",
+        "crates/ferric-rpa/theory.md#laplace-transformed-chi0"
       ],
       "scripts": [
-        "scripts/rpa_drpa_pdep_sympy.py"
+        "scripts/rpa_drpa_pdep_sympy.py",
+        "scripts/rpa_quadrature_sympy.py",
+        "scripts/rpa_laplace_chi0_sympy.py"
       ]
     },
     "u-ri-mp2": {
