@@ -57,35 +57,136 @@ the full axis and divides by 6 instead of 36.
 
 ## CCSD(T), closed shell
 
-`ccsd_t_closed_shell.rs` (Rendell, Lee & Komornicki 1991; index convention of
-PySCF `ccsd_t_slow`). For an ordered occupied triple $(i,j,k)$
-(`raw_w_block`, :297):
+`ccsd_t_closed_shell.rs` computes the perturbative triples of a closed-shell
+RHF-reference CCSD in spatial orbitals (Rendell, Lee & Komornicki, CPL 178,
+462 (1991); index convention of PySCF `cc/ccsd_t_slow.py`). It needs the
+spatial amplitudes of `ccsd_closed_shell` and rejects spin-orbital ones.
+Indices $i,j,k,l$ run over the $n_o$ active occupied orbitals, $a,b,c,d$ over
+the $n_v$ virtuals, and all integrals are chemist RI integrals.
 
-$$w^{(0)}_{abc}(i,j,k) = \sum_d (ia|bd)\, t_{kj}^{cd} - \sum_l (ia|lj)\, t_{lk}^{bc}.$$
+**Definition.** Write $o=(i,j,k)$, $v=(a,b,c)$ and, for a permutation
+$\pi\in S_3$, $o_\pi = (o_{\pi(0)},o_{\pi(1)},o_{\pi(2)})$, likewise $v_\pi$.
+The raw connected block is
 
-$W$ sums $w^{(0)}$ over the six simultaneous permutations $\pi$ of the
-(occupied, virtual) pairs $(i,a),(j,b),(k,c)$ (`w_block`, :348):
+$$w^{(0)}_{ijk}{}^{abc} = \sum_d (ia|bd)\,t_{kj}^{cd} - \sum_l (ia|lj)\,t_{lk}^{bc}.$$
 
-$$W_{abc} = \sum_{\pi\in S_3} w^{(0)}(i_\pi, j_\pi, k_\pi)_{a_\pi b_\pi c_\pi}.$$
+$W$ sums it over the six simultaneous permutations of the (occupied, virtual)
+pairs $(i,a),(j,b),(k,c)$, and $V$ adds the singles:
 
-Singles (`add_v_singles`, :376):
+$$W_{o}^{v} = \sum_{\pi\in S_3} w^{(0)}{}_{o_\pi}^{v_\pi},\qquad
+V_{ijk}^{abc} = W_{ijk}^{abc} + (jb|kc)\,t_i^a + (ia|kc)\,t_j^b + (ia|jb)\,t_k^c .$$
 
-$$V_{abc} = W_{abc} + (jb|kc)\, t_i^a + (ia|kc)\, t_j^b + (ia|jb)\, t_k^c.$$
+The $f_{ai}\,t_2$ piece of PySCF's `get_v` is absent because $f_{ai}=0$ for
+canonical HF orbitals. The spin-summed weight is PySCF's `r3`, acting on the
+virtual labels at fixed $o$:
 
-Spin-summed weight (PySCF `r3`, :601–607) and energy (:611–634):
+$$\tilde W_{ijk}^{abc} = 4W_{ijk}^{abc} + W_{ijk}^{bca} + W_{ijk}^{cab}
+ - 2W_{ijk}^{cba} - 2W_{ijk}^{acb} - 2W_{ijk}^{bac},$$
 
-$$\tilde W_{abc} = 4W_{abc} + W_{bca} + W_{cab} - 2W_{cba} - 2W_{acb} - 2W_{bac},$$
+and the energy is the unrestricted sum
 
-$$E_{(T)} = \frac13 \sum_{i\le j\le k} m(i,j,k) \sum_{abc} \frac{\tilde W_{abc} V_{abc}}{D_{ijk}^{abc}},\qquad
-m(i,j,k) = \begin{cases} 1 & i=j=k \\ 3 & \text{exactly two equal} \\ 6 & \text{all distinct}\end{cases}$$
+$$E_{(T)} = \frac13 \sum_{ijk}\sum_{abc} f_{ijk}^{abc},\qquad
+f_{ijk}^{abc} = \frac{\tilde W_{ijk}^{abc}\,V_{ijk}^{abc}}{D_{ijk}^{abc}},\qquad
+D_{ijk}^{abc} = \varepsilon_i+\varepsilon_j+\varepsilon_k-\varepsilon_a-\varepsilon_b-\varepsilon_c .$$
 
-(`occ_triple_multiplicity`, :171). The per-triple sum
-$f(i,j,k) = \sum_{abc}\tilde W V/D$ is the same for all orderings of
-$(i,j,k)$, and $\sum_{i\le j\le k} m = n_o^3$, so the band equals the
-unrestricted sum $\sum_{ijk} f$, which is $3E_{(T)}$. Repeated spatial indices
-($i=j$, $i=j=k$) are physical here, unlike the spin-orbital case where the
-antisymmetrized amplitude vanishes: the spin-orbital banding ($i<j<k$, weight 6)
-drops them. Checked in `wiki/sympy_derivations.md` §23.
+The divisor 3 is not $1/36$ or $1/6$: the spin summation behind the
+$4,1,1,-2,-2,-2$ coefficients has already absorbed most of the spin-orbital
+antisymmetrizer's redundancy. This sum equals the spin-orbital $(T)$ of the
+previous section on the spin-orbital expansion of the same amplitudes and
+integrals.
+
+**Pair invariance.** Let $\sigma\in S_3$ act on both triples at once.
+
+- $W_{o_\sigma}^{v_\sigma} = W_o^v$, because $\pi\mapsto\pi\circ\sigma$ is a
+  bijection of $S_3$.
+- $V$: the three singles terms map onto each other, using $(pq|rs)=(rs|pq)$.
+  For $(i,a)\leftrightarrow(j,b)$, $(jb|kc)t_i^a \leftrightarrow (ia|kc)t_j^b$
+  and $(ia|jb)t_k^c$ is fixed.
+- $D$ is symmetric in $o$ and in $v$ separately.
+- $\tilde W_o^v = \sum_\tau c_\tau W_o^{v_\tau}$ with $c_\tau = 4$ for the
+  identity, $1$ for the two 3-cycles and $-2$ for the three transpositions.
+  Then $\tilde W_{o_\sigma}^{v_\sigma} = \sum_\tau c_\tau W_o^{v_{\sigma\tau\sigma^{-1}}}$
+  by pair invariance of $W$, and this is $\tilde W_o^v$ because $c_\tau$ is
+  constant on conjugacy classes.
+
+So $f_{o_\sigma}^{v_\sigma} = f_o^v$. Pair invariance also moves the `r3`
+pattern from the virtual labels to the occupied ones, which is the form the
+kernel uses at a fixed virtual triple:
+$W_{ijk}^{bca} = W_{kij}^{abc}$, $W_{ijk}^{cab} = W_{jki}^{abc}$,
+$W_{ijk}^{cba} = W_{kji}^{abc}$, $W_{ijk}^{acb} = W_{ikj}^{abc}$,
+$W_{ijk}^{bac} = W_{jik}^{abc}$, so
+
+$$\tilde W_{ijk}^{abc} = 4W_{ijk}^{abc} + W_{kij}^{abc} + W_{jki}^{abc}
+ - 2W_{kji}^{abc} - 2W_{ikj}^{abc} - 2W_{jik}^{abc}.$$
+
+**Virtual-triple banding.** Define $g(a,b,c) = \sum_{ijk} f_{ijk}^{abc}$, with
+$i,j,k$ over the full occupied axes. Relabelling the dummy $(i,j,k)$ by the
+same $\sigma$ shows that $g$ is symmetric in $(a,b,c)$ alone. Each multiset
+$\{a,b,c\}$ therefore contributes $m(a,b,c)$ equal terms to $\sum_{abc} g$,
+where $m$ counts its distinct orderings:
+
+$$\sum_{abc} g(a,b,c) = \sum_{a\le b\le c} m(a,b,c)\, g(a,b,c),\qquad
+m(a,b,c) = \begin{cases} 1 & a=b=c \\ 3 & \text{exactly two equal} \\ 6 & \text{all distinct,}\end{cases}$$
+
+and $\sum_{a\le b\le c<n_v} m = n_v^3$. Hence
+
+$$E_{(T)} = \frac13 \sum_{a\le b\le c} m(a,b,c) \sum_{ijk}
+\frac{\tilde W_{ijk}^{abc}\,V_{ijk}^{abc}}{D_{ijk}^{abc}} .$$
+
+Repeated indices are physical. Here $a,b,c$ (and $i,j,k$) label spatial
+orbitals that each hold two electrons, so $a=b$ or $i=j$ gives a nonzero
+contribution. In the spin-orbital formulation the antisymmetrized amplitude
+vanishes for a repeated index, which is why that path can band over $i<j<k$
+with a single weight. Transplanting that banding here (strict inequalities,
+weight 6) drops these terms. On a repeated virtual triple the kernel still
+sums all six permutations in $W$, some of them identical, as the definition
+requires; $m$ only counts how many orderings of the multiset the unrestricted
+sum would visit.
+
+**Kernel.** The code maps onto these equations as follows.
+
+- Layouts (`ccsd_t_closed_shell`, built once as `TripleIntegrals`):
+  `ovvv[i,a,b,d]` $=(ia|bd)$, `vooo[a,i,j,l]` $=(ia|lj)$,
+  `ovov[i,a,j,b]` $=(ia|jb)$, `t2x[c,d,j,k]` $=t_{kj}^{cd}$,
+  `t1t[a,i]` $=t_i^a$. The denominators use the canonical HF orbital energies
+  of the active occupied and virtual orbitals.
+- `raw_w_pair` evaluates $r_\pi[n] = w^{(0)}{}_n^{v_\pi}$ for every occupied
+  $n=(n_0,n_1,n_2)$ at once, for two permutations that share the third virtual
+  label (`PERM_PAIRS`). Term 1 is one GEMM of the stacked
+  `[ovvv[:,x0,y0,:]; ovvv[:,x1,y1,:]]` with `t2x[z]`; term 2 is
+  `vooo[x]` times the transpose of `t2x[y,z]`, scaled by $-1$.
+- `triple_energy(a,b,c)` accumulates $W_n = \sum_\pi r_\pi[n_\pi]$, the raw
+  block read with its occupied axes permuted by $\pi^{-1}$. One fused pass
+  over $(i,j,k)$ then forms $V$, the occupied-axis $\tilde W$ above and
+  $\tilde W V/D$, and returns $g(a,b,c)$.
+- `pair_job_energy(a,b)` sums `triple_multiplicity(a,b,c)` $\times\,g(a,b,c)$
+  over $c=b,\dots,n_v-1$. Jobs are the pairs $a\le b$ (`virtual_pairs`),
+  folded serially in ascending order, so the result does not depend on the
+  thread count.
+- `ccsd_t_closed_shell` returns the folded sum divided by 3.
+
+**DLPNO-(T).** `dlpno_ccsd_t.rs` keeps the occupied-banded form of the same
+identity: it screens occupied triples, so it needs $f$ summed per occupied
+triple. With $h(i,j,k) = \sum_{abc} f_{ijk}^{abc}$ (the `r3` pattern on the
+virtual labels; `dlpno_ccsd_t_kernel.rs` evaluates it per triple), $h$ is
+symmetric in $(i,j,k)$ by the same argument, and `screened_triple_energy` forms
+$\frac13\sum_{i\le j\le k} m(i,j,k)\,h(i,j,k)$ over the retained triples, with
+`occ_triple_multiplicity` giving the same $1,3,6$ weights. The screen retains
+or drops whole multisets $\{i,j,k\}$ and always keeps the repeated-index
+classes, so the weights stay exact.
+
+**Checks.** `scripts/cc_triples_weights_and_linlccd_spin_adaptation_sympy.py`
+proves $\sum_{a\le b\le c} m = n^3$ symbolically (claim 1). On random
+closed-shell amplitudes and 8-fold-symmetric RI integrals it checks that $h$
+is the same for all orderings of $(i,j,k)$ (claim 2), that the occupied
+banding equals the unrestricted sum (claim 3), and that the unrestricted sum
+over 3 equals the dense spin-orbital $(T)$ (claim 4); together these cover the
+DLPNO-(T) form. Claim 4b ports the dense kernel (virtual banding, $\tilde W$
+and singles on the occupied axes, divisor 3) and matches the spin-orbital
+$(T)$ to a few $10^{-16}$ relative. Claim 5 shows that the
+spin-orbital banding, divisor 6, unit weights and a $\tilde W$ without the
+cyclic terms all fail. In Rust, the `ccsd_t_closed_shell` tests compare with
+the spin-orbital `ccsd_t` given the same amplitudes and with PySCF.
 
 ## EE-EOM-CCSD singlets, closed shell
 

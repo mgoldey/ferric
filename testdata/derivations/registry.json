@@ -385,6 +385,14 @@
         "scripts/casci_slater_condon_phases_sympy.py"
       ]
     },
+    "ccsd-t": {
+      "theory": [
+        "crates/ferric-cc/theory.md#ccsdt-closed-shell"
+      ],
+      "scripts": [
+        "scripts/cc_triples_weights_and_linlccd_spin_adaptation_sympy.py"
+      ]
+    },
     "d3": {
       "theory": [
         "crates/ferric-d3/theory.md#gradient",
@@ -755,12 +763,6 @@
       "reason": "no theory.md derivation and no sympy proof",
       "theory": [
         "crates/ferric-cc/theory.md#ccsd"
-      ]
-    },
-    "ccsd-t": {
-      "reason": "theory.md section 'CCSD(T), closed shell' describes the removed occupied-banded kernel (raw_w_block, w_block, add_v_singles, occ_triple_multiplicity); scripts/cc_triples_weights_and_linlccd_spin_adaptation_sympy.py claim 4b ports the current virtual-banded triple_energy kernel",
-      "scripts": [
-        "scripts/cc_triples_weights_and_linlccd_spin_adaptation_sympy.py"
       ]
     },
     "cdft": {
