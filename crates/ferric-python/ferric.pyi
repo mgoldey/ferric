@@ -2797,8 +2797,10 @@ class DoubleHybridResult:
     @property
     def certificate(self) -> dict[str, Any]:
         """Validation certificate (same fields as ``RhfResult.certificate``):
-        ``capability`` ``"b2plyp"`` or ``"dsd-pbep86"``, ``grade`` ``"spike"``
-        (not compared with any reference code), ``approximations`` the KS
+        ``capability`` ``"b2plyp"`` or ``"dsd-pbep86"``, ``grade`` ``"proven"``
+        (both are compared with PySCF built from the definition; the
+        ``measured_error`` anchor rides only on the evidence's settings),
+        ``approximations`` the KS
         reference's (``scf ...``), ``ri``, ``frozen-core`` and
         ``spin-component-scaling`` (``c_os``, ``c_ss``)."""
         ...
@@ -6052,7 +6054,9 @@ def run_double_hybrid(
     scf_density_conv: float | None = None,
     scf_ri_j_precision: str | None = None,
 ) -> DoubleHybridResult:
-    """MP2-based double hybrid: kind="b2plyp" or "dsd-pbep86"."""
+    """MP2-based double hybrid: kind="b2plyp" (Grimme 2006) or "dsd-pbep86"
+    (Kozuch and Martin 2013, no dispersion: 0.72 HF, 0.28 PBE, 0.44 P86,
+    c_os 0.51, c_ss 0.36)."""
     ...
 
 def run_drpa(

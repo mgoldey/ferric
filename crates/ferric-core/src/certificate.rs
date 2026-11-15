@@ -187,7 +187,7 @@ pub const METHOD_KIND_GRADES: &[(&str, Grade)] = &[
     ("drpa", Grade::ProvenNarrow),
     ("wb97x-l-v", Grade::ProvenNarrow),
     ("b2plyp", Grade::Proven),
-    ("dsd-pbep86", Grade::Spike),
+    ("dsd-pbep86", Grade::Proven),
     ("tda", Grade::ProvenNarrow),
     ("tddft", Grade::ProvenNarrow),
     ("casscf", Grade::Proven),

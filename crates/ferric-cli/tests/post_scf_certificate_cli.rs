@@ -255,7 +255,7 @@ fn certificate_note(records: &[serde_json::Value], capability: &str) -> serde_js
 fn double_hybrids_log_a_certificate_with_their_grade_and_scaling() {
     for (kind, grade, c_os, c_ss) in [
         ("b2plyp", "proven", "0.27", "0.27"),
-        ("dsd-pbep86", "spike", "0.56", "0.29"),
+        ("dsd-pbep86", "proven", "0.51", "0.36"),
     ] {
         let (stdout, records) = run(
             kind,
@@ -268,7 +268,7 @@ fn double_hybrids_log_a_certificate_with_their_grade_and_scaling() {
         let c = certificate_note(&records, kind);
         assert_eq!(c["grade"], grade, "{c}");
         // The default run (pruned grid, f32 RI-J) is outside the B2PLYP
-        // evidence, so it carries no anchor.
+        // evidence, so it carries no anchor (either double hybrid).
         assert!(c.get("measured_error").is_none_or(|m| m.is_null()), "{c}");
         assert_eq!(c["build"]["commit"], ferric_build_info::COMMIT);
         let n = names(&c);

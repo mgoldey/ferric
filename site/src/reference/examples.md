@@ -124,6 +124,7 @@ See [Coupled cluster](../methods/cc.md) and
 | `water-ccsd-t.toml` | H2O / STO-3G | `ccsd(t)` | — | Prints the CCSD correlation energy, the (T) correction and the total. |
 | `water-eom-ccsd.toml` | H2O / cc-pVDZ | `eom-ccsd` | "PySCF EOMEESinglet run on the same density-fitted integrals gives the lowest root omega = 0.2999479405 Ha" | Five lowest singlets, all electrons, aux `cc-pvdz-ri`. |
 | `water-wb97xlv.toml` | H2O / 6-31G | `wb97x-l-v` | — | λ = 0.6, ω = 0.1 Bohr⁻¹ (published values). Proven (narrow) grade. |
+| `water-dsd-pbep86.toml` | H2O / cc-pVDZ | `dsd-pbep86` | — | Proven grade (Kozuch and Martin 2013, no dispersion); same notice as `water-b2plyp.toml`. |
 | `water-b2plyp.toml` | H2O / cc-pVDZ | `b2plyp` | — | Proven grade; prints a notice that the default grid and RI-J storage are outside the evidence. Aux `cc-pvdz-rifit` (an alias of `cc-pvdz-ri`). |
 
 ## Multireference

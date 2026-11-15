@@ -225,7 +225,7 @@ def test_double_hybrid_certificates_carry_their_grade_and_scaling():
     mol, bs, aux = _setup()
     for kind, grade, scaling in [
         ("b2plyp", "proven", "c_os = 0.27, c_ss = 0.27"),
-        ("dsd-pbep86", "spike", "c_os = 0.56, c_ss = 0.29"),
+        ("dsd-pbep86", "proven", "c_os = 0.51, c_ss = 0.36"),
     ]:
         r = ferric.run_double_hybrid(mol, bs, aux, kind=kind, frozen_core=1)
         c = r.certificate

@@ -216,9 +216,16 @@ Python `ferric.run_double_hybrid(mol, bs, aux, kind="b2plyp")`.
 0.27 PT2): the total energy matches PySCF built from the definition to
 1.3e-11 Ha on H2O, NH3 and CH4 (cc-pVDZ, def2-SVP), at the flat (75, 110) grid
 and f64 RI-J storage. The CLI's defaults (pruned grid, f32 RI-J) shift the total
-by up to 1.0e-6 Ha. **DSD-PBEP86 is Spike**: the name covers two published
-parameter sets (Kozuch and Martin 2011, 2013) and ferric's coefficients are not
-tied to either, so there is nothing definite to compare against yet.
+by up to 1.0e-6 Ha.
+
+**DSD-PBEP86 is Proven** as the no-dispersion set of Kozuch and Martin 2013
+(0.72 HF, 0.28 PBE exchange, 0.44 P86 correlation, c_os = 0.51, c_ss = 0.36; the
+"DSD-PBEP86" of Psi4): the total energy matches PySCF built from that
+definition at the same settings as B2PLYP (`examples/water-dsd-pbep86.toml`).
+The dispersion-corrected sets (DSD-PBEP86-D3BJ, and the 2011 DSD-PBEP86-D2) are
+not available. Earlier ferric releases used 0.69 HF, 0.31 PBE, c_os = 0.56,
+c_ss = 0.29, a set that is none of the published ones; energies shift by
+mHa against those.
 
 ## Implementation
 
@@ -245,5 +252,5 @@ CCSD: Scuseria, Janssen & Schaefer 1988; spin-adapted closed-shell CCSD
 equations: Hirata et al. 2004. (T): Raghavachari et al. 1989; closed-shell
 (T) algorithm: Rendell, Lee & Komornicki 1991. EOM-CCSD: Stanton & Bartlett 1993; Davidson correction: Olsen, Jørgensen & Simons 1990. LinLCCD(hh): Carter-Fenk 2025.
 ωB97X-L-V: Ransford & Carter-Fenk 2026. B2PLYP: Grimme 2006. DSD-PBEP86:
-Kozuch & Martin 2011. Review: Bartlett & Musiał 2007. Full entries in
+Kozuch & Martin 2013. Review: Bartlett & Musiał 2007. Full entries in
 [References](../reference/references.md).

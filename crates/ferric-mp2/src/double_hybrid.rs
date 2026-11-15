@@ -1,7 +1,9 @@
 //! Generic MP2-based double-hybrid DFT driver.
 //!
-//! Supports B2PLYP (Grimme, JCP 124, 034108, 2006) and DSD-PBEP86
-//! (Kozuch & Martin, PCCP 13, 20104, 2011). The pattern:
+//! Supports B2PLYP (Grimme, JCP 124, 034108, 2006) and DSD-PBEP86 without a
+//! dispersion term (Kozuch & Martin, J. Comput. Chem. 34, 2327, 2013: 0.72 HF,
+//! 0.28 PBE exchange, 0.44 P86 correlation, `c_os = 0.51`, `c_ss = 0.36`).
+//! The pattern:
 //!
 //! ```text
 //! E_DH = E_KS + c_os * E_OS + c_ss * E_SS
@@ -35,7 +37,7 @@ pub struct Mp2DoubleHybridConfig {
 pub enum DoubleHybridKind {
     /// B2PLYP: `c_os = c_ss = 0.27`.
     B2plyp,
-    /// DSD-PBEP86: `c_os = 0.56`, `c_ss = 0.29`.
+    /// DSD-PBEP86 without dispersion: `c_os = 0.51`, `c_ss = 0.36`.
     DsdPbep86,
 }
 
@@ -51,8 +53,8 @@ impl DoubleHybridKind {
                 memory_budget_bytes: None,
             },
             Self::DsdPbep86 => Mp2DoubleHybridConfig {
-                c_os: 0.56,
-                c_ss: 0.29,
+                c_os: 0.51,
+                c_ss: 0.36,
                 frozen_core: 0,
                 memory_budget_bytes: None,
             },
@@ -66,6 +68,12 @@ impl DoubleHybridKind {
             Self::B2plyp => "B2PLYP",
             Self::DsdPbep86 => "DSD-PBEP86",
         }
+    }
+
+    /// Name of this set's anchor in
+    /// `ferric_core::certificate::anchors::ENERGY_ANCHORS`.
+    pub fn anchor_name(&self) -> &'static str {
+        self.xc_name()
     }
 }
 

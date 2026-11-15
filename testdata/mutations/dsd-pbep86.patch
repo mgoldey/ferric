@@ -1,0 +1,13 @@
+diff --git a/crates/ferric-mp2/src/double_hybrid.rs b/crates/ferric-mp2/src/double_hybrid.rs
+index 0eb976459..35813451d 100644
+--- a/crates/ferric-mp2/src/double_hybrid.rs
++++ b/crates/ferric-mp2/src/double_hybrid.rs
+@@ -54,7 +54,7 @@ impl DoubleHybridKind {
+             },
+             Self::DsdPbep86 => Mp2DoubleHybridConfig {
+                 c_os: 0.51,
+-                c_ss: 0.36,
++                c_ss: 0.29,
+                 frozen_core: 0,
+                 memory_budget_bytes: None,
+             },

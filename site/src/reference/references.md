@@ -116,7 +116,7 @@ references the source code itself cites.
 ### Double hybrids
 
 - Grimme, *J. Chem. Phys.* **124**, 034108 (2006): B2PLYP
-- Kozuch & Martin, *Phys. Chem. Chem. Phys.* **13**, 20104 (2011): DSD-PBEP86
+- Kozuch & Martin, *J. Comput. Chem.* **34**, 2327 (2013): DSD-PBEP86 (no-dispersion set)
 
 ### RPA, GW and excited states
 

@@ -268,8 +268,10 @@ pub(crate) struct PyDoubleHybridResult {
 #[pymethods]
 impl PyDoubleHybridResult {
     /// Validation certificate (see `RhfResult.certificate`): capability
-    /// `"b2plyp"` or `"dsd-pbep86"`, `grade` `"spike"` (not compared with any
-    /// reference code) capped by the Kohn-Sham reference's, `approximations`
+    /// `"b2plyp"` or `"dsd-pbep86"`, `grade` `"proven"` (both are compared with
+    /// PySCF built from the definition) capped by the Kohn-Sham reference's,
+    /// `measured_error` the kind's anchor only inside the evidence's settings
+    /// (flat (75, 110) grid, f64 RI-J), `approximations`
     /// `scf ...` (the reference's), `ri`, `frozen-core` and
     /// `spin-component-scaling`.
     #[getter]
@@ -292,7 +294,8 @@ impl PyDoubleHybridResult {
 
 /// Run an MP2-based double hybrid (B2PLYP or DSD-PBEP86).
 ///
-/// `kind`: "b2plyp" or "dsd-pbep86".
+/// `kind`: "b2plyp" (Grimme 2006) or "dsd-pbep86" (the no-dispersion set of
+/// Kozuch and Martin, J. Comput. Chem. 34, 2327 (2013)).
 /// Converges the appropriate DFT reference, then adds scaled MP2 correlation.
 ///
 /// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,

@@ -531,6 +531,23 @@ pub const ENERGY_ANCHORS: &[EnergyAnchor] = &[
         functionals: &[],
     },
     EnergyAnchor {
+        method: "DSD-PBEP86",
+        kind: "dsd-pbep86",
+        quantity: "total energy",
+        value: "1.9e-11",
+        units: "Ha",
+        reference: "PySCF",
+        evidence: "crates/ferric-mp2/tests/validation_dsd_pbep86_pyscf.rs",
+        data: AnchorData::Directory {
+            dir: "testdata/reference/validation/dsd_pbep86_pyscf",
+            systems: &["h2o", "nh3", "ch4"],
+        },
+        elements: &["H", "C", "N", "O"],
+        basis_sets: &["cc-pvdz", "def2-svp"],
+        aux_basis_sets: &["cc-pvdz-ri", "def2-svp-rifit"],
+        functionals: &[],
+    },
+    EnergyAnchor {
         method: "CASSCF",
         kind: "casscf",
         quantity: "energy",

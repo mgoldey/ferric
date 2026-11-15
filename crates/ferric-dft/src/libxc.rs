@@ -1674,10 +1674,12 @@ pub fn b2plyp_def(nspin: u32) -> Result<XcDef, LibxcError> {
     })
 }
 
-/// DSD-PBEP86 SCF functional: 0.69 HF + 0.31 PBE exchange + 0.44 P86 correlation.
+/// DSD-PBEP86 SCF functional, the no-dispersion set of Kozuch & Martin,
+/// J. Comput. Chem. 34, 2327 (2013): 0.72 HF + 0.28 PBE exchange + 0.44 P86
+/// correlation.
 ///
 /// This is the DFT half only. The post-SCF SCS-MP2 correlation
-/// (0.56 * E_OS + 0.29 * E_SS) is added by the double-hybrid driver.
+/// (0.51 * E_OS + 0.36 * E_SS) is added by the double-hybrid driver.
 pub fn dsd_pbep86_def(nspin: u32) -> Result<XcDef, LibxcError> {
     let mut fx = XcFunctional::new("GGA_X_PBE", nspin)?;
     fx.set_family(FunctionalFamily::HybridGga);
@@ -1687,8 +1689,8 @@ pub fn dsd_pbep86_def(nspin: u32) -> Result<XcDef, LibxcError> {
         funcs: vec![fx, fc],
         cam: None,
         vv10: None,
-        b3lyp_mix: Some(0.69),
-        weights: Some(vec![0.31, 0.44]),
+        b3lyp_mix: Some(0.72),
+        weights: Some(vec![0.28, 0.44]),
     })
 }
 

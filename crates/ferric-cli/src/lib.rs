@@ -156,15 +156,6 @@ pub const EPISTEMIC_WARNINGS: &[(&str, &str)] = &[
          returning it, so if the job aborts on an unphysical alpha diagonal, set [gw] scissor \
          to ~0.3-0.4 Ha rather than treating it as a crash.",
     ),
-    (
-        "dsd-pbep86",
-        "method.kind = \"dsd-pbep86\" is Spike-grade: the KS reference uses weighted PBE+P86 via \
-         per-component XC weights (new infrastructure), and the SCS-MP2 correlation reuses the \
-         proven RI-MP2 spin-component path, but NO comparison to a reference code exists, and \
-         none is possible yet: the name covers two published parameter sets (Kozuch and \
-         Martin, PCCP 13, 20104 (2011); JCC 34, 2327 (2013)), and the set ferric uses \
-         (0.69 HF, 0.44 P86, c_os = 0.56, c_ss = 0.29) is not tied to either of them.",
-    ),
 ];
 
 /// Every `method.kind` the CLI dispatches, in the order the unknown-kind
@@ -5230,47 +5221,48 @@ fn run_mp2_double_hybrid_arm(
     );
     println!("  Total        = {:.10} Hartree", r.total_energy);
     // The RKS anchor's envelope (elements, basis, functional) describes the
-    // plain Kohn-Sham solver, not this functional: B2PLYP's own anchor covers
-    // its Kohn-Sham half and carries its own envelope below.
+    // plain Kohn-Sham solver, not this functional: each double hybrid's own
+    // anchor covers its Kohn-Sham half and carries its own envelope below.
     let scf_cert = scf_certificate_stamped(mol, &ks, &ks_cfg, None);
-    let reference = if method == "b2plyp" {
-        scf_cert
-    } else {
-        ferric_scf::certificate::with_scf_envelope(scf_cert, mol, &ks, &ks_cfg, bs)
-    };
     let cert = ferric_mp2::certificate::mp2_double_hybrid_certificate(
-        method, &reference, aux_name, &mp2_cfg,
+        method, &scf_cert, aux_name, &mp2_cfg,
     );
-    if method == "b2plyp" {
-        for line in b2plyp_notices() {
-            eprintln!("[warning] {line}");
-        }
-        print_and_note_certificate(&ferric_mp2::certificate::with_anchor_envelope(
-            cert,
-            "B2PLYP",
-            mol,
-            bs,
-            Some(&aux_bs),
-        ));
-    } else {
-        print_and_note_certificate(&cert);
+    for line in double_hybrid_notices(method) {
+        eprintln!("[warning] {line}");
     }
+    print_and_note_certificate(&ferric_mp2::certificate::with_anchor_envelope(
+        cert,
+        dh_kind.anchor_name(),
+        mol,
+        bs,
+        Some(&aux_bs),
+    ));
 }
 
-/// Run-time notices for `b2plyp`. The energy is Proven against PySCF at the
-/// settings of `validation_b2plyp_pyscf.rs` (see
+/// Run-time notices for `b2plyp` and `dsd-pbep86`. Each energy is Proven
+/// against PySCF at the settings of its `validation_*_pyscf.rs` (see
 /// `site/src/reference/validation.md`); the default KS grid and RI-J storage
 /// are not those settings. Not keyed into `EPISTEMIC_WARNINGS`, which is
 /// reserved for kinds that are not Proven.
-fn b2plyp_notices() -> Vec<String> {
-    vec![
-        "b2plyp: the energy is validated against PySCF on the flat (75, 110) grid with f64 \
+fn double_hybrid_notices(method: &str) -> Vec<String> {
+    let (parameters, shift) = match method {
+        "b2plyp" => (
+            "Grimme's 2006 set (0.53 HF, 0.47 B88, 0.73 LYP, 0.27 PT2)",
+            "1.0e-6",
+        ),
+        _ => (
+            "the no-dispersion set of Kozuch and Martin 2013 (0.72 HF, 0.28 PBE, 0.44 P86, \
+             c_os = 0.51, c_ss = 0.36); the dispersion-corrected DSD-PBEP86-D3BJ and -D2 sets \
+             are not available",
+            "1.2e-6",
+        ),
+    };
+    vec![format!(
+        "{method}: the energy is validated against PySCF on the flat (75, 110) grid with f64 \
          RI-J storage; the default pruned grid and f32 RI-J storage shift the total by a \
-         measured 1.0e-6 Ha at most on the validation systems. The parameters are Grimme's \
-         2006 set (0.53 HF, 0.47 B88, 0.73 LYP, 0.27 PT2); no benchmark of B2PLYP \
-         against experiment or a larger basis is claimed."
-            .to_string(),
-    ]
+         measured {shift} Ha at most on the validation systems. The parameters are {parameters}; \
+         no benchmark of {method} against experiment or a larger basis is claimed."
+    )]
 }
 
 /// `method.kind = "laplace-mp2"`. Extracted verbatim from the former
