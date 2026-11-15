@@ -708,6 +708,88 @@ CASES = [
             ),
         ],
     ),
+    (
+        "scf_jk_builders_sympy.py",
+        10,
+        [
+            ("return np.linalg.solve(v, gamma)", "return gamma", "FAIL [N1]"),
+            (
+                "return 2.0 * rik_occupied(b, c_occ)",
+                "return 1.0 * rik_occupied(b, c_occ)",
+                "FAIL [N4]",
+            ),
+            (
+                "return rik_occupied(b, xp) - rik_occupied(b, xm)",
+                "return rik_occupied(b, xp) + rik_occupied(b, xm)",
+                "FAIL [N5]",
+            ),
+            (
+                "wt = 1.0 if m == n else 2.0",
+                "wt = 1.0 if m == n else 1.0",
+                "FAIL [N7]",
+            ),
+            (
+                "jb, kb = jb + j_exact(dd), kb + k_exact(dd)",
+                "jb, kb = j_exact(dd), k_exact(dd)",
+                "FAIL [N9]",
+            ),
+            (
+                "qk = s_exact @ np.linalg.solve(s_num, k_tilde)",
+                "qk = k_tilde",
+                "FAIL [C2]",
+            ),
+        ],
+    ),
+    (
+        "scf_diis_sympy.py",
+        10,
+        [
+            (
+                "return f @ d @ s - s @ d @ f",
+                "return f @ d @ s + s @ d @ f",
+                "FAIL [S1]",
+            ),
+            ("a[:m, m] = 1.0", "a[:m, m] = -1.0", "FAIL [N3]"),
+            (
+                "return error_vector(f, ds, S)",
+                "return error_vector(f, dt, S)",
+                "FAIL [N5]",
+            ),
+            (
+                "return 4.0 * f[NOCC:, :NOCC]",
+                "return 2.0 * f[NOCC:, :NOCC]",
+                "FAIL [N1]",
+            ),
+            (
+                "return f + mu * scv @ scv.T",
+                "return f + mu * scv @ scv.T @ s",
+                "FAIL [L1]",
+            ),
+        ],
+    ),
+    (
+        "scf_orbital_hessian_sympy.py",
+        10,
+        [
+            (
+                "dd = 2.0 * c @ ksym @ c.T\n    df = jmat(dd) - 0.5 * kmat(dd)",
+                "dd = 1.0 * c @ ksym @ c.T\n    df = jmat(dd) - 0.5 * kmat(dd)",
+                "FAIL [H2]",
+            ),
+            (
+                "df = jmat(dd) - 0.5 * kmat(dd)",
+                "df = jmat(dd) - 1.0 * kmat(dd)",
+                "FAIL [H2]",
+            ),
+            ("df = jt - kmat(dd)", "df = jmat(dd) - kmat(dd)", "FAIL [H4]"),
+            ("df = -0.5 * kmat(dd)", "df = 0.0 * kmat(dd)", "FAIL [S1]"),
+            (
+                "g += 0.5 * dn * a + 0.5 * b + dn * dfm",
+                "g += 0.5 * dn * a + 1.0 * b + dn * dfm",
+                "FAIL [H5]",
+            ),
+        ],
+    ),
 ]
 
 

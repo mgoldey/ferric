@@ -293,6 +293,491 @@ feature: its far field is a flat leaf-to-leaf M2L with no M2M/L2L pass, so it
 does not have that asymptotic scaling, and it is slower than `DirectJ`. It
 reproduces the direct J to ~1e-14 in the all-near-field limit.
 
+## CFMM: the near and far fields as coded
+
+This section states what `CfmmJ` (`src/cfmm.rs`, feature `cfmm-incomplete`)
+computes; the short section above gives the idea.
+
+Shell pairs. Every ordered shell pair $(s_1, s_2)$ is placed at the weighted
+centre of its primitive products, $\sum w\,\mathbf P/\sum w$ with
+$w = |c_1 c_2|\,e^{-\alpha\beta|\mathbf{AB}|^2/p}$ (`pair_center`), and given
+the extent $\max\sqrt{-\ln\epsilon/p}$ over primitives whose prefactor is at
+least $\epsilon$ (`extent_thresh`, default $10^{-10}$). The pairs are binned
+into the leaves of an octree of uniform depth `max_level` (default 3) whose
+root is the bounding cube of the pair centres enlarged by 1.1.
+
+Near and far. A pair of leaves $(a, b)$ is far when
+$$|\mathbf C_a - \mathbf C_b| > e_a + e_b + w_s\,h,$$
+with $e_x$ the largest pair extent in leaf $x$, $h$ the leaf width and
+$w_s$ = `ws_factor` (default 2). A near pair is contracted exactly,
+$J_{\mu\nu} \mathrel{+}= \sum (\mu\nu|\lambda\sigma) D_{\lambda\sigma}$ over every
+bra pair in $a$ and ket pair in $b$, with no permutational folding and no
+screening. A far pair goes through Cartesian multipoles about the leaf
+centres:
+$$M^b_{ijk} = \sum_{\lambda\sigma\in b} D_{\lambda\sigma}\int \chi_\lambda\chi_\sigma\,(\mathbf r - \mathbf C_b)^{ijk}\,d\mathbf r,$$
+$$L^a_{ijk} = \frac{1}{i!\,j!\,k!}\sum_{i'+j'+k' \le l_{\max}} M^b_{i'j'k'}\,\frac{(-1)^{i'+j'+k'}}{i'!\,j'!\,k'!}\,
+\partial_x^{i+i'}\partial_y^{j+j'}\partial_z^{k+k'}\frac{1}{r}\Big|_{\mathbf C_a - \mathbf C_b},$$
+$$J_{\mu\nu} \mathrel{+}= \sum_{ijk} L^a_{ijk}\,M^{\mu\nu}_{ijk}(\mathbf C_a)$$
+(`add_m2l`, $l_{\max}$ default 6). This is one flat level of leaf-to-leaf
+M2L; there is no M2M or L2L pass and the far-field work is $O(n_{\mathrm{leaf}}^2)$.
+
+Exact limit. Each pair sits in exactly one leaf, so with every leaf pair
+treated as near (`force_all_near_field`) every quartet is counted once and $J$
+is the exact Coulomb matrix (`cfmm_matches_direct_j_in_the_trivial_limit`,
+$10^{-10}$). With the far field engaged the error falls with $l_{\max}$
+(`cfmm_far_field_engaged_matches_direct_j_on_alkane10`). `CfmmConfig::thresh`
+is not read by the code: the near field is unscreened.
+
+## Orthogonalization and starting guesses
+
+Canonical orthogonalization. The overlap is diagonalized once,
+$S = U\lambda U^{\mathsf T}$, and the columns with $\lambda_i \ge \tau$ are kept:
+$$X_{\mu c} = U_{\mu i_c}\,\lambda_{i_c}^{-1/2}, \qquad X^{\mathsf T} S X = 1_m,\quad m \le N .$$
+$\tau$ is absolute, $10^{-6}$ (`LINDEP_THRESH`), overridden by the environment
+variable `FERRIC_LINDEP_THRESH` (`lindep_thresh`). Each iteration diagonalizes
+$\tilde F = X^{\mathsf T} F X = \tilde C \varepsilon \tilde C^{\mathsf T}$ and
+sets $C = X\tilde C$, so $C^{\mathsf T} S C = 1_m$ and the orbitals span the
+retained space only (`canonical_orthogonalizer` in `src/rhf.rs`,
+`diagonalize_rect` in `src/driver.rs`; the $N - m$ dropped columns are padded
+with zeros and energy $10^6$). A guess that needs more occupied orbitals than
+$m$ is an error. ROHF uses the symmetric $X = U\lambda^{-1/2}U^{\mathsf T}$
+when nothing is dropped (`rohf_orthogonalizer`).
+
+Core guess (`hcore_guess`): diagonalize $X^{\mathsf T} h X$ and occupy the
+lowest $n_o$ orbitals, $D = 2C_oC_o^{\mathsf T}$.
+
+Default guess (`[scf] guess = "minao"`, alias `"sad"`;
+`minao_projection_guess`). $D$ is block diagonal over atoms, with zero
+inter-atomic blocks; each atomic block is built in the target basis (there is
+no projection from a minimal basis, despite the name):
+
+- $Z \le 20$ with no $g$ or higher shell: the density of a free-atom SCF in
+  that atom's basis (RHF for a singlet ground state, otherwise UHF with MOM
+  from iteration 5, then spherically averaged by replacing each diagonal
+  shell block by its mean diagonal times the unit matrix and zeroing the
+  cross-$l$ blocks).
+- Otherwise: a generalized-Wolfsberg–Helmholz block,
+  $$F_{\mu\mu} = h_{\mu\mu}, \qquad F_{\mu\nu} = \tfrac12 K S_{\mu\nu}(h_{\mu\mu} + h_{\nu\nu}),\quad K = 1.75,$$
+  diagonalized in the atom's own orthogonalizer, with occupation 2 on the
+  lowest doubly occupied orbitals and the $2S$ unpaired electrons spread
+  equally over the orbitals within $10^{-4}$ Ha of the first partly filled
+  one (`atomic_hcore_density`).
+
+The blocks are those of neutral atoms, so $\operatorname{tr}(DS) = N_{\mathrm{el}}$
+holds for a neutral molecule only; the first Fock build and the aufbau step
+restore the electron count.
+
+Open-shell guesses start from the same closed-shell $D$. UHF sets
+$D^\alpha = D^\beta = D/2$, builds $F^\alpha = F^\beta = h + J[D] - K[D/2]$
+without exchange–correlation, diagonalizes per spin, and for $n_\alpha = n_\beta$
+mixes the $\beta$ HOMO and LUMO by 0.1 rad (`uhf_guess_mos`,
+`mix_beta_homo_lumo`). ROHF scales $D^\sigma = D\,n_\sigma/N_{\mathrm{el}}$ and
+diagonalizes the Roothaan effective Fock matrix of the section on energy
+functionals (`rohf_guess_mos`).
+
+Secondary basis (`[scf] guess_basis`, `src/basis2.rs`). With
+$P = S_{bb}^{+} S_{bs}$, $S_{bb}^{+} = XX^{\mathsf T}$ the lindep-filtered
+inverse of the target overlap, the Fock projection carries the converged
+small-basis densities, $D^\sigma = P D^\sigma_{\mathrm{small}} P^{\mathsf T}$,
+and the overlap projection carries the occupied orbitals,
+$C = P C_{o,\mathrm{small}}$, re-orthonormalized as $C(C^{\mathsf T}S_{bb}C)^{-1/2}$
+(refused when the smallest eigenvalue of $C^{\mathsf T}S_{bb}C$ is below
+$10^{-8}$).
+
+## Direct and incremental J/K builds
+
+Unique quartets. The direct builder (`DirectJK`, `src/direct_jk.rs`) loops
+over canonical shell quartets $s_1 \ge s_2$, $s_3 \le s_1$,
+$s_4 \le (s_3 = s_1\ ?\ s_2 : s_3)$, computes the full block
+$(\mu\nu|\lambda\sigma)$, $\mu\in s_1,\nu\in s_2,\lambda\in s_3,\sigma\in s_4$,
+and scatters each element to every distinct image of the 8-fold symmetry.
+With $\delta_{12} = [s_1\ne s_2]$, $\delta_{34} = [s_3\ne s_4]$ and
+$\delta_{\rm bk} = [(s_1,s_2)\ne(s_3,s_4)]$, an element $v = (\mu\nu|\lambda\sigma)$ adds
+$$J_{\mu\nu} \mathrel{+}= v\,D_{\lambda\sigma},\qquad K_{\mu\lambda} \mathrel{+}= v\,D_{\nu\sigma}$$
+and, when the flag of the image is set, the same with $\mu\leftrightarrow\nu$
+($\delta_{12}$), $\lambda\leftrightarrow\sigma$ ($\delta_{34}$), both, and the
+bra–ket swap with its three sub-images ($\delta_{\rm bk}$): up to 16 adds per
+element (`scatter_bra_pair`, `scatter_bra_pair_probed`, and the blocked
+`digest_j`/`digest_k` for blocks of 16 or more integrals in
+`src/quartet_scatter.rs`). Because each distinct shell-index image is added
+once, there is no element-level degeneracy factor: the sum over unique
+quartets reproduces $J[D]_{\mu\nu} = \sum_{\lambda\sigma}(\mu\nu|\lambda\sigma)D_{\lambda\sigma}$
+and $K[D]_{\mu\nu} = \sum_{\lambda\sigma}(\mu\lambda|\nu\sigma)D_{\lambda\sigma}$
+exactly for a symmetric $D$.
+
+Screening. A quartet is skipped when
+$$Q_{s_1s_2}\,Q_{s_3s_4}\,d_{\max} < \tau_{\rm int},\qquad Q_{PQ} = \max_{a\in P,\,b\in Q}\sqrt{|(ab|ab)|},$$
+with $\tau_{\rm int}$ = `integral_thresh` (default $10^{-12}$) and $d_{\max}$ the
+largest shell-block maximum $\max|D_{\mu\nu}|$ over the six pairings of the
+four shells (`DensityScreen::SixPair`; the open shell uses $|D^\alpha| + |D^\beta|$).
+By Cauchy–Schwarz $|(\mu\nu|\lambda\sigma)| \le Q_{s_1s_2}Q_{s_3s_4}$, so each
+dropped contribution to any element of $J$ or $K$ is below $\tau_{\rm int}$.
+`[scf] screening = "csb"` replaces the bound by
+$\min(Q_{12}Q_{34}, M_{13}M_{24}, M_{14}M_{23})$; `"csam"` is not a rigorous
+bound.
+
+Fock matrix. $F = h + J - \tfrac12 c_x K$ ($c_x = 1$ for Hartree–Fock),
+$F^\sigma = h + J[D^\alpha + D^\beta] - c_x K[D^\sigma]$ for UHF, and
+$E = \tfrac12\operatorname{tr}[D(h+F)] + E_{nn}$.
+
+Incremental builds. $J$ and $K$ are linear in $D$, so with
+$\Delta D_n = D_n - D_{n-1}$,
+$$J[D_n] = J[D_{n-1}] + J[\Delta D_n], \qquad K[D_n] = K[D_{n-1}] + K[\Delta D_n] .$$
+The closed-shell loop of `solve_rhf` keeps $J$ and $K$ (not $F$) in buffers
+and adds $J[\Delta D]$, $K[\Delta D]$ built by `DirectJK::build_incremental`.
+The screen is the same absolute test with $d_{\max}$ taken from $\Delta D$, so
+as the SCF converges more quartets drop. The buffers are rebuilt from the full
+density on iterations $1, 9, 17, \dots$ (every 8), which bounds the number of
+screened increments that accumulate. No other event (a DIIS reset, MOM, a
+level-shift change) forces a rebuild. The scheme is on only when it can pay
+and cannot reach the convergence target: the direct route (no density
+fitting, no pluggable K, no in-core store), and
+`energy_conv` $\ge 10^4\,\tau_{\rm int}$ and `density_conv` $\ge 10^3\,\tau_{\rm int}$
+(`closed_shell_incremental_enabled` in `src/direct_jk.rs`; the environment
+variable `FERRIC_SCF_INCREMENTAL` forces it on or off), and the builder has
+no in-core store (`DirectJK::incremental_pays`). The open-shell loops build
+increments only under `FERRIC_SCF_UHF_INCREMENTAL=1`.
+
+In-core store (`[scf] eri`, `src/incore_jk.rs`). Below about 200 functions the
+unscreened integrals of one geometry are stored as the packed lower triangle
+of the pair matrix and $J$, $K$ come from matrix products; `"auto"` takes the
+store when it fits a quarter of the memory budget and both $J$ and $K$ are
+four-centre. The incremental build is off with the store.
+
+Proof: `scripts/scf_jk_builders_sympy.py` claim N9 (accumulation with the
+8-iteration rebuild reproduces $J[D]$, $K[D]$).
+
+## Density-fitted Coulomb and exchange (RI-J, RI-K, Split-RI-J)
+
+Notation: raw three-index integrals $(P|\mu\nu)$, metric $V_{PQ} = (P|Q)$,
+dressed factor $B^P_{\mu\nu} = \sum_Q M_{PQ}(Q|\mu\nu)$ with $M^{\mathsf T}M = V^{-1}$.
+
+RI-J (`DfJ`, `src/df_j.rs`). The fitted density $\tilde\rho = \sum_P c_P\chi_P$
+minimizes the Coulomb self-energy of the residual $\rho - \tilde\rho$, which
+gives
+$$\gamma_P = \sum_{\mu\nu}(P|\mu\nu)D_{\mu\nu},\qquad V c = \gamma,\qquad J_{\mu\nu} = \sum_P(\mu\nu|P)\,c_P .$$
+The code stores $(P|\mu\nu)$ undressed, as the packed lower triangle; with
+$w_{\mu\mu} = D_{\mu\mu}$ and $w_{\mu\nu} = D_{\mu\nu} + D_{\nu\mu}$ ($\nu<\mu$),
+$\gamma_P = \sum_{\mu\ge\nu}(P|\mu\nu)\,w_{\mu\nu}$ (`packed_density_weights`),
+which uses only the symmetric part of $D$. $V c = \gamma$ is solved with the
+Cholesky factor $V = LL^{\mathsf T}$ computed once (no explicit inverse, no
+eigenvalue cut; a metric that is not positive definite is an error). The fit
+error of the Coulomb energy is the self-interaction of the residual,
+$$\tfrac12(\rho|\rho) - \tfrac12\gamma^{\mathsf T}V^{-1}\gamma = \tfrac12(\rho - \tilde\rho\,|\,\rho - \tilde\rho) \ \ge 0,$$
+second order in the residual; the robust form $2\gamma^{\mathsf T}c' - c'^{\mathsf T}Vc'$
+has the same value at $c' = c$ and is stationary there, which is why the
+plain and robust (Dunlap) energies coincide for RI-J with one density.
+
+f32 storage (`ri_j_precision = "f32"`, the single-point default). Each
+$(P|\mu\nu)$ is rounded to f32 once; $w$, $\gamma$, $c$, the solve and $J$ are
+f64. The SCF converges on the operator of the rounded tensor, so the energy
+carries an error first order in the rounding. Geometry and frequency tasks
+default to f64.
+
+RI-K (`DfK`, `src/df_k.rs`). With the same expansion of each exchange
+product,
+$$K_{\mu\nu} = \sum_P\sum_{\lambda\sigma}B^P_{\mu\lambda}D_{\lambda\sigma}B^P_{\sigma\nu} = \sum_P\big(B^P D B^P\big)_{\mu\nu}.$$
+The dressing for K is the symmetric $M = U_s\lambda_s^{-1/2}U_s^{\mathsf T}$ over
+the eigenpairs of $V$ with $\lambda$ above a cut of about $10^{-10}$
+(`v_inv_sqrt_lindep`, `metric_lindep_cut`): $M^{\mathsf T}M$ is the
+pseudo-inverse of $V$ on the kept span. RI-J uses the full Cholesky inverse,
+so the two fits differ only when modes are cut. Three contractions give the
+same $K$:
+
+- density route, $\sum_P B^P D B^P$, for any $D$ (`density_chunk_k`);
+- occupied route, $K_{\rm occ}(X) = \sum_P (B^PX)(B^PX)^{\mathsf T}$, no
+  occupation factor (`occ_chunk_k`, `occ_half_panel`). RHF multiplies by 2,
+  since $D = 2C_oC_o^{\mathsf T}$; UHF passes $C^\sigma_o$ with factor 1;
+- signed factor route for a symmetric $D$ without orbitals
+  (`build_from_density_factor`): $D = W\Lambda W^{\mathsf T}$,
+  $X_\pm = W_\pm|\Lambda_\pm|^{1/2}$ over eigenvalues above $+\epsilon$ and below
+  $-\epsilon$ ($\epsilon = 10^{-11}\max|\Lambda|$), and
+  $K = K_{\rm occ}(X_+) - K_{\rm occ}(X_-)$. It falls back to the density
+  route when $D$ is not symmetric to $10^{-12}$ or the kept columns exceed $3N/4$.
+
+The incremental and response densities, which are indefinite, use the density
+route or the factored response form $K = G + G^{\mathsf T}$,
+$G = \sum_P (B^P X)(B^P C_o)^{\mathsf T}$ for $D = XC_o^{\mathsf T} + C_oX^{\mathsf T}$.
+A range-separated hybrid contracts two fitters,
+$K = c_{\rm SR}K[\mathrm{erfc}(\omega)] + c_{\rm LR}K[\mathrm{erf}(\omega)]$,
+each with its own metric and dressing on one auxiliary basis.
+
+Split-RI-J (`SplitRiJ`, `src/split_rij.rs`). The same three equations,
+$\gamma = (P|\mu\nu)D$, $Vc = \gamma$ by the same Cholesky factor,
+$J = (\mu\nu|P)c$, with $(P|\mu\nu)$ never stored: each build recomputes the
+integrals in a McMurchie–Davidson kernel that contracts $D$ into Hermite
+densities of each primitive pair before the auxiliary side, and $c$ into
+auxiliary Hermite vectors before the orbital side, so the
+$n_{\rm cart}^3$ integral block is never formed. Two approximations are
+added on top of RI-J: the large-argument asymptote of the Boys function where
+its relative error is at most $10^{-14}$ per term (`FAR_EPS`), and a
+Schwarz-type screen on (orbital pair, auxiliary shell) blocks at
+`integral_thresh`. It applies to the Coulomb operator with orbital $l \le 4$
+and auxiliary $l \le 6$.
+
+Proof: `scripts/scf_jk_builders_sympy.py` (claims S1–S3, N1–N8): the fit is a
+Coulomb-metric projection, the energy error is the residual self-energy,
+RI-J and RI-K are exact for a complete auxiliary set, $M = L^{-1}$ and
+$M = V^{-1/2}$ agree, the occupied and signed-factor routes equal the density
+route, the cut metric fits the kept span, and the packed weights are exact.
+
+## LinK and COSX exchange
+
+LinK (`LinkK`, `src/link_k.rs`). The same quartets and scatter as the direct
+builder, for $K$ only, with two pair lists in front of the quartet test. With
+$Q_{ij}$ the Schwarz factor and $q_x = \max_y Q_{xy}$:
+
+- significant pairs (geometry only): $j \in \mathrm{sp}(i)$ iff $Q_{ij}\,Q_{\max} > \tau$;
+- density pairs (every iteration): $\sigma \in \mathrm{dp}(j)$ iff
+  $D^{\rm blk}_{j\sigma}\,q_j\,q_\sigma > \tau$, $D^{\rm blk}$ the shell-block
+  maximum of $|D|$.
+
+The bra runs over $(i, j)$ with $j\in\mathrm{sp}(i)$, the third shell over
+$\mathrm{dp}(i)\cup\mathrm{dp}(j)$, the fourth over $\mathrm{sp}$ of the third.
+A quartet, canonicalized and deduplicated, is skipped when
+$$Q_{s_1s_2}Q_{s_3s_4}\,\max\big(D^{\rm blk}_{13}, D^{\rm blk}_{14}, D^{\rm blk}_{23}, D^{\rm blk}_{24}\big) < \tau,$$
+the four exchange pairings only (`DensityScreen::FourPairK`). The lists are
+necessary conditions of this test when the bound factorizes as
+$Q_{12}Q_{34}$ (Schwarz), so LinK is direct $K$ to the threshold. The skip
+rule is exact; the asymptotic count of surviving quartets is a property of
+the density, not of the code.
+
+COSX (`CosxK`, `src/cosx_k.rs`). One electron of each exchange integral is
+integrated on a Becke–Lebedev grid, the other analytically:
+$$K_{\mu\nu} = \sum_{\lambda\sigma}D_{\lambda\sigma}\int\!\!\int\frac{\chi_\mu(\mathbf r_1)\chi_\sigma(\mathbf r_1)\,\chi_\nu(\mathbf r_2)\chi_\lambda(\mathbf r_2)}{r_{12}}
+\approx \sum_g X_{\mu g}\,G_{\nu g},$$
+$$X_{\mu g} = \sqrt{w_g}\,\chi_\mu(\mathbf r_g),\quad F_{\lambda g} = \sum_\sigma D_{\lambda\sigma}X_{\sigma g},\quad
+A_{\nu\lambda}(g) = \int\frac{\chi_\nu\chi_\lambda}{|\mathbf r - \mathbf r_g|}\,d\mathbf r,\quad
+G_{\nu g} = \sum_\lambda A_{\nu\lambda}(g)F_{\lambda g}.$$
+$A(g)$ comes from the McMurchie–Davidson kernel (`cosx_backend = "md3c1e"`)
+and is never assembled as a matrix: each shell pair's block is added into
+$G$ for both orderings of the pair (`accumulate_pair`). The plain result is
+$K = \tfrac12(\tilde K + \tilde K^{\mathsf T})$, $\tilde K = XG^{\mathsf T}$. The
+overlap fit (`cosx_overlap_fit`, default on) replaces the left factor by its
+projection that makes the numerical overlap exact,
+$$K = \tfrac12\big(Q\tilde K + (Q\tilde K)^{\mathsf T}\big),\qquad Q = S\,S_{\rm num}^{-1},\quad S_{\rm num} = XX^{\mathsf T},$$
+computed with a Cholesky factor of $S_{\rm num}$ (built once per geometry).
+For a potential that is constant over the molecule, $A_{\nu\lambda}(g) = cS_{\nu\lambda}$,
+the plain result is $cS_{\rm num}DS$ and the fitted one is $cSDS$, exact on
+any grid: the fit removes the error of the grid's overlap. As the grid
+becomes exact $S_{\rm num}\to S$, $Q \to 1$ and both forms tend to the exact $K$.
+
+Screening. A shell pair is dropped for a sub-batch of points when
+$\mathrm{est}\cdot\max(f_{s_1}, f_{s_2}) < \tau_{\rm COSX}$, with est an upper
+bound on $\max_g|A^{(g)}|$ over the region (the minimum of a sphere and a
+box bound, both never below the true value) and $f_s = \max|F_{\mu g}|$ over
+the shell and the points. Each dropped pair perturbs an element of $G$ by at
+most $\tau_{\rm COSX}$ per component it contributes, so the bound on one
+element is the sum over the dropped partners. $\tau_{\rm COSX} = 0$ is
+bitwise the unscreened build. The default sparse half transform keeps only
+the shells whose $|X|$ and $|D|$ blocks exceed $10^{-10}$; zero thresholds
+are bitwise the dense build.
+
+Final pass. With `cosx_final_pass` the converged energy is corrected once,
+non-self-consistently, on a larger grid:
+$E = E_{\rm SCF} + \sum_s c_s\big(\operatorname{tr}[D_sK_{\rm final}(D_s)] - \operatorname{tr}[D_sK_{\rm SCF}(D_s)]\big)$,
+$c = -c_x/4$ closed shell and $-c_x/2$ per spin.
+
+Proof: `scripts/scf_jk_builders_sympy.py` claims C1 (one $s$ Gaussian: the
+grid sum tends to $(ss|ss) = 2\sqrt{\alpha/\pi}$) and C2 (the fit is exact for
+a constant potential, the plain form is not).
+
+## DIIS: the error vector and the extrapolation
+
+Stationarity. In the orthonormal MO basis, $f = C^{\mathsf T}FC$ and
+$n = \mathrm{diag}(2_o, 0_v)$ (closed shell). Since $C^{\mathsf T}SC = 1$ and
+$D = CnC^{\mathsf T}$,
+$$C^{\mathsf T}(FDS - SDF)C = fn - nf, \qquad (fn - nf)_{ai} = -2f_{ai},\ \ (fn-nf)_{ia} = 2f_{ia}.$$
+The error $e = FDS - SDF$ is antisymmetric and its occupied–virtual block is
+$2f_{ia}$, half the orbital gradient
+$\partial E/\partial\kappa_{ai} = 4f_{ai}$ of $E(Ce^{\kappa})$. The occupied–occupied
+and virtual–virtual blocks of $fn - nf$ vanish. So $e = 0$ exactly when the
+energy is stationary under every occupied–virtual rotation, which is the
+Roothaan condition $FC = SC\varepsilon$ up to rotations within each block.
+For UHF the same holds per spin with $e^\sigma = F^\sigma D^\sigma S - SD^\sigma F^\sigma$
+and $\partial E/\partial\kappa^\sigma_{ai} = 2f^\sigma_{ai}$. ROHF uses the gradient
+of the section on energy functionals mapped to the AO basis,
+$e = SC(g - g^{\mathsf T})C^{\mathsf T}S$, and extrapolates the Roothaan effective
+Fock matrix.
+
+Extrapolation. Given the last $m$ pairs $(F_i, e_i)$ ($m \le$ `diis_size`,
+default 8), Pulay DIIS minimizes $|\sum_i c_ie_i|^2$ subject to $\sum_ic_i = 1$.
+With $B_{ij} = \sum_{\mu\nu}(e_i)_{\mu\nu}(e_j)_{\mu\nu}$ (the AO matrices,
+not orthogonalized), the stationarity conditions of the Lagrangian are the
+bordered system the code solves (`solve_diis_coeffs`),
+$$\begin{pmatrix}\tilde B & \mathbf 1\\ \mathbf 1^{\mathsf T} & 0\end{pmatrix}\begin{pmatrix}c\\ \lambda\end{pmatrix} = \begin{pmatrix}0\\ 1\end{pmatrix},\qquad \tilde B = B/\max_{ij}|B_{ij}|,$$
+whose solution is $c = \tilde B^{-1}\mathbf 1/(\mathbf 1^{\mathsf T}\tilde B^{-1}\mathbf 1)$
+with $\lambda = -c^{\mathsf T}\tilde Bc$. The scaling leaves $c$ unchanged. The
+next Fock matrix is $\bar F = \sum_ic_iF_i$. UHF solves one system with
+$B_{ij} = \langle e^\alpha_i, e^\alpha_j\rangle + \langle e^\beta_i, e^\beta_j\rangle$
+and applies the same $c$ to both spins. Gaussian elimination with partial
+pivoting rejects a pivot below $10^{-13}$; the solve is then retried without
+the oldest vector, down to $m = 2$, for that step only. With fewer than two
+vectors the plain $F$ is used, so `diis_size = 1` is plain Roothaan iteration.
+
+EDIIS and ADIIS (`EnergyDiis`) minimize a quadratic model over the simplex,
+$c_i = t_i^2/\sum t^2$: EDIIS with $g_i = E_i$,
+$H_{ij} = -\langle D_i - D_j, F_i - F_j\rangle$; ADIIS with
+$g_i = 2\langle D_i - D_n, F_n\rangle$, $H_{ij} = 2\langle D_i - D_n, F_j - F_n\rangle$
+($n$ the newest entry). The driver uses them while $\max|e| \ge$
+`diis_switch_thresh` (default 0.1) and Pulay below it. Only the RHF solver
+reads the flavor (`[scf] diis`, `RhfConfig::diis_flavor`).
+
+Convergence test. The SCF exits when, between successive densities,
+$\Delta D_{\rm rms} <$ `density_conv`, $\Delta D_{\max} < 10\,$`density_conv`
+and $|\Delta E| <$ `energy_conv`, from iteration 2 on; the exit diagonalizes
+the unextrapolated, unshifted $F$. An exit with
+$\max|X^{\mathsf T}eX| > \max(\sqrt{\texttt{density\_conv}}, 10^{-3})$ is
+refused and DIIS restarts (`veto_nonstationary_rhf_exit`).
+
+Proof: `scripts/scf_diis_sympy.py` (claims S1–S3, N1–N6).
+
+## Level shift, MOM and Fermi smearing
+
+Level shift. After extrapolation the solvers add
+$$\bar F \leftarrow \bar F + \mu_{\rm eff}\,SC_vC_v^{\mathsf T}S,$$
+$C_v$ the virtual columns of the previous orbitals. In their MO basis,
+$C^{\mathsf T}SC_vC_v^{\mathsf T}SC = \mathrm{diag}(0_o, 1_v)$, so the shift
+adds $\mu_{\rm eff}$ to the virtual–virtual block and nothing else: the
+occupied–virtual coupling is unchanged, the step is damped (the virtual
+orbitals mix less into the occupied space), and at self-consistency the
+eigenvectors and density are those of the unshifted $F$, with the virtual
+energies raised by $\mu_{\rm eff}$. The ramp differs by solver: RHF uses
+$\mu_{\rm eff} = \mu\min(\max|e|/0.1, 1)$, UHF and ROHF
+$\mu\,\max|e|/(\max|e| + 10^{-3})$. $\mu$ is `level_shift`, or 0.5 Ha for a
+meta-GGA when `level_shift` is 0 (`effective_level_shift`). The energy and
+the convergence test use the unshifted $F$.
+
+MOM (`mom_reorder`, `src/mom.rs`). With the previous occupied orbitals
+$C^{\rm old}_o$ and the new eigenvectors $C$, the overlap
+$O = C_o^{{\rm old}\,\mathsf T}SC$ scores each new orbital by
+$p_j = \sum_iO_{ij}^2$, its squared projection on the old occupied space. The
+$n_o$ highest scores are occupied (ties to the lower index); for ROHF the
+open shell is then chosen the same way from the rest. The reference is the
+previous iteration's orbitals, or for UHF optionally the initial guess
+(`mom_reference = "initial"`). MOM starts after iteration `mom_after_iter`.
+
+Fermi smearing (`[scf] smearing_sigma`, RHF only; `src/smearing.rs`).
+$$f_p = \frac{1}{1 + e^{(\varepsilon_p - \mu_F)/\sigma}}, \qquad \sum_pf_p = N_{\rm el}/2, \qquad D = C\,\mathrm{diag}(2f)\,C^{\mathsf T},$$
+$\sigma$ in Hartree, $\mu_F$ by bisection on the bracket
+$[\varepsilon_{\min} - (20\sigma+1), \varepsilon_{\max} + (20\sigma+1)]$ to $10^{-14}$,
+the exponent clamped at $\pm40$. The entropy
+$S = -2\sum_p[f_p\ln f_p + (1-f_p)\ln(1-f_p)]$ is computed, but the returned
+energy is $E[D]$, not the Mermin free energy $E - \sigma S$.
+
+Proof: `scripts/scf_diis_sympy.py` claims L1 (the shift touches the
+virtual–virtual block only and leaves the converged density) and F1 (the
+Fermi level holds $N/2$ pairs; $\sigma\to0$ is aufbau).
+
+## Orbital Hessians: Newton, augmented Hessian, trust region
+
+Parametrization. $C \leftarrow CU(\kappa)$ with $\kappa$ antisymmetric, stored as
+$\kappa_{ai}$, and the Cayley $U = (1 - \kappa/2)^{-1}(1 + \kappa/2)$
+(`cayley_unitary`). $U$ equals $e^\kappa$ through second order, so first and
+second derivatives of $E(CU(t\kappa))$ at $t = 0$ are those of the
+exponential map.
+
+RHF. $D = 2C_oC_o^{\mathsf T}$ moves by $\delta D = 2C(\kappa + \kappa^{\mathsf T})C^{\mathsf T}$
+at first order ($\kappa + \kappa^{\mathsf T}$ is the symmetric matrix with
+$\kappa_{ai}$ in both corners). The derivatives of $E(CU(t\kappa))$ are
+$$\frac{dE}{dt} = 4\sum_{ai}f_{ai}\kappa_{ai},\qquad
+\frac{d^2E}{dt^2} = 4\,\kappa\cdot(\mathbf H\kappa),$$
+$$(\mathbf H\kappa)_{ai} = \sum_b f_{ab}\kappa_{bi} - \sum_j\kappa_{aj}f_{ji}
++ \sum_{bj}\big[4(ai|bj) - c_x\big((ab|ij) + (aj|bi)\big)\big]\kappa_{bj}
+\quad(+\,\text{the } f_{xc} \text{ term for KS}).$$
+The code's gradient is $g = f_{ai}$ and its product is $\mathbf H\kappa$, a
+quarter of the true derivatives (`hessian_matvec_jk` in `src/rhf_newton.rs`):
+it forms $\delta D$, $\delta F = J[\delta D] - \tfrac12c_xK[\delta D]$, takes the
+$vo$ block of $C^{\mathsf T}\delta FC$, and adds the diagonal gap
+$(f_{aa} - f_{ii})\kappa_{ai}$ for the Fock terms. That is exact only when
+$f_{oo}$ and $f_{vv}$ are diagonal (canonical orbitals);
+`offdiag_gap_correction` (`src/trah.rs`) adds $f_{vv}\kappa - \kappa f_{oo} - (f_{aa}-f_{ii})\kappa$
+for the general case. At canonical orbitals $\mathbf H$ is the singlet
+$\mathbf A + \mathbf B$ of linear response.
+
+UHF. $\delta D^\sigma = C^\sigma(\kappa^\sigma + \kappa^{\sigma\mathsf T})C^{\sigma\mathsf T}$,
+$\delta F^\sigma = J[\delta D^\alpha + \delta D^\beta] - c_xK[\delta D^\sigma]$, and
+$$\frac{dE}{dt} = 2\sum_\sigma\sum_{ai}f^\sigma_{ai}\kappa^\sigma_{ai},\qquad\frac{d^2E}{dt^2} = 2\sum_\sigma\kappa^\sigma\cdot(\mathbf H\kappa)^\sigma,$$
+$$(\mathbf H\kappa)^\sigma_{ai} = (f^\sigma_{aa} - f^\sigma_{ii})\kappa^\sigma_{ai} + \sum_{\tau,bj}\big[2(a_\sigma i_\sigma|b_\tau j_\tau) - \delta_{\sigma\tau}c_x\big((ab|ij)+(aj|bi)\big)\big]\kappa^\tau_{bj}$$
+(`hessian_matvec` in `src/uhf_newton.rs`, half the true derivatives, canonical orbitals).
+
+ROHF. One orbital set with occupations $n_\alpha$, $n_\beta$, packed rotations
+$vc$, $vo$, $oc$. With $X$ the unpacked antisymmetric generator,
+$X_\sigma = XN_\sigma - N_\sigma X$ ($(X_\sigma)_{pq} = X_{pq}(n_{\sigma q} - n_{\sigma p})$),
+$\delta D^\sigma = CX_\sigma C^{\mathsf T}$, $\delta f^\sigma = C^{\mathsf T}(J[\delta D^\alpha + \delta D^\beta] - c_xK[\delta D^\sigma])C$,
+$A_\sigma = f^\sigma X - Xf^\sigma$ and $\Delta n_{pq} = n_{\sigma p} - n_{\sigma q}$,
+$$G = \sum_\sigma\tfrac12\Delta n\circ A_\sigma + \tfrac12(X_\sigma f^\sigma - f^\sigma X_\sigma) + \Delta n\circ\delta f^\sigma,\qquad (\mathbf H x)_{pq} = G_{qp} - G_{pq}$$
+is the exact Hessian product of $E(CU(x))$ at any orbitals, not only at a
+stationary point (`rohf_exact_hessian_matvec` in `src/rohf_trah.rs`; the
+gradient is $2g$ with the blocks of the energy-functional section,
+`rohf_exact_gradient`). The molecular Newton and AH matvec
+(`src/rohf_newton.rs`) is half of it.
+
+Newton (`rhf_newton_step`, `uhf_newton_step`, `rohf_newton_step`).
+Preconditioned conjugate gradient on $(\mathbf H + \mu)\kappa = -g$ from
+$\kappa^0 = -g/(\Delta + \mu)$, $\Delta$ the diagonal gap, at most 20 iterations;
+the step is scaled so $\max|\kappa|$ is at most 0.2 (0.1 for ROHF). ROHF
+truncates at negative curvature (Steihaug); RHF and UHF do not.
+
+Augmented Hessian. The lowest eigenpair $(\mu, (v_0, v))$ of
+$$\begin{pmatrix}0 & \alpha g^{\mathsf T}\\ \alpha g & \mathbf H\end{pmatrix}$$
+gives $\kappa = v/(\alpha v_0)$. The lower rows read
+$\mathbf Hv + \alpha gv_0 = \mu v$, so
+$$(\mathbf H - \mu)\kappa = -g,$$
+a Newton step with the level shift $-\mu \ge 0$ chosen by the eigenproblem,
+and the top row gives $g^{\mathsf T}\kappa = \mu/\alpha^2$. The predicted change
+$g^{\mathsf T}\kappa + \tfrac12\kappa^{\mathsf T}\mathbf H\kappa$ then equals
+$\tfrac12(g^{\mathsf T}\kappa + \mu|\kappa|^2)$. ROHF's `rohf_ah_step` solves it
+at $\alpha = 1$ with block Davidson.
+
+Trust region (`solve_trust_region`, `src/trah.rs`; RHF and UHF). $\alpha$ is
+adjusted (grown by 8 then bisected in $\log\alpha$, $1 \le \alpha \le 1000$)
+until $|\kappa|_2$ lies within 5% below the radius $\Delta_{\rm tr}$. The
+prediction is multiplied by 4 (RHF) or 2 (UHF) to be a true energy change.
+With $\rho = \Delta E/\Delta E_{\rm pred}$: reject and shrink by 0.7 at
+$\rho \le 0$; accept and shrink by 0.7 at $\rho \le 0.25$; grow by 1.2 to at
+most 2.0 at $\rho > 0.75$; the region collapses below $10^{-4}$ and DIIS
+takes over. An eigenvector with a vanishing first component (the hard case)
+is deflated and the step completed along it to the boundary.
+
+Proof: `scripts/scf_orbital_hessian_sympy.py` claims C1, H1–H6, T1: every
+product against fourth-order differences of the energy itself.
+
+## SCF stability analysis
+
+The stability operators are the Newton products at the converged orbitals
+(`src/stability.rs`), so their eigenvalues carry the code's scale: a quarter
+of the RHF energy curvature, half of the UHF one.
+
+| Analysis | Operator | Function |
+|---|---|---|
+| RHF internal (real, singlet) | $\mathbf H$ of RHF: $(\varepsilon_a-\varepsilon_i)\delta + 4(ai\vert bj) - c_x[(ab\vert ij)+(aj\vert bi)]$ | `rhf_internal_stability` |
+| RHF external (RHF → UHF, triplet) | $(\varepsilon_a-\varepsilon_i)\delta - c_x[(ab\vert ij)+(aj\vert bi)]$ | `rhf_external_stability` |
+| UHF internal | $\mathbf H$ of UHF | `uhf_internal_stability` |
+
+The triplet operator is the UHF operator at the RHF point in the direction
+$\kappa^\alpha = -\kappa^\beta$: the Coulomb terms $2(a_\alpha i_\alpha|b_\beta j_\beta)$
+and $2(a_\alpha i_\alpha|b_\alpha j_\alpha)$ cancel, the exchange term stays.
+In the direction $\kappa^\alpha = \kappa^\beta$ the UHF operator is the RHF
+singlet operator, and the two channels do not couple. For a unit eigenvector
+$v$ of the triplet operator with eigenvalue $\lambda_T$, the UHF energy along
+$(v, -v)$ has curvature $4\lambda_T$, so $\lambda_T < 0$ means a UHF solution
+lower than the RHF one. Real-to-complex, UHF-to-GHF and ROHF stability are not
+implemented.
+
+The lowest eigenvalues come from a block Davidson (`davidson_lowest`; 8
+seed vectors, blocks of 6, subspace at most 40, residual $10^{-6}$, diagonal
+preconditioner $\varepsilon_a - \varepsilon_i$; `StabilityConfig`). The verdict is unstable when
+$\lambda < -\max(10^{-6}, \text{residual})$, marginal within that floor. The
+descent (`stability_descent` in `src/uhf.rs`, `rhf_stability_descent` in
+`src/rhf.rs`) rotates the orbitals by $\epsilon v$ for
+$\epsilon \in \{0.4, 0.8, 1.2\}$, reconverges each, and keeps the lowest energy
+below the incumbent, for up to three rounds.
+
+Proof: `scripts/scf_orbital_hessian_sympy.py` claims S1 (the channels of the
+UHF operator are the RHF singlet and triplet operators) and S2 (the
+curvature along a triplet mode is $4\lambda_T$).
+
 ## Kohn-Sham XC Hessian terms (fixed and moving grid)
 Implemented in `src/ks_fixed_grid.rs` (closed-shell LDA/GGA and global
 hybrids; the exchange and Coulomb Hessian terms live in `src/hessian/ks.rs`).

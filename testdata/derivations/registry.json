@@ -625,10 +625,21 @@
     },
     "rhf": {
       "theory": [
-        "crates/ferric-scf/theory.md#hartree-fock-energy-functionals-rhf-uhf-rohf"
+        "crates/ferric-scf/theory.md#hartree-fock-energy-functionals-rhf-uhf-rohf",
+        "crates/ferric-scf/theory.md#orthogonalization-and-starting-guesses",
+        "crates/ferric-scf/theory.md#direct-and-incremental-jk-builds",
+        "crates/ferric-scf/theory.md#density-fitted-coulomb-and-exchange-ri-j-ri-k-split-ri-j",
+        "crates/ferric-scf/theory.md#link-and-cosx-exchange",
+        "crates/ferric-scf/theory.md#diis-the-error-vector-and-the-extrapolation",
+        "crates/ferric-scf/theory.md#level-shift-mom-and-fermi-smearing",
+        "crates/ferric-scf/theory.md#orbital-hessians-newton-augmented-hessian-trust-region",
+        "crates/ferric-scf/theory.md#scf-stability-analysis"
       ],
       "scripts": [
-        "scripts/hf_energy_sympy.py"
+        "scripts/hf_energy_sympy.py",
+        "scripts/scf_jk_builders_sympy.py",
+        "scripts/scf_diis_sympy.py",
+        "scripts/scf_orbital_hessian_sympy.py"
       ]
     },
     "ri-mp2": {
@@ -651,10 +662,21 @@
     },
     "rohf": {
       "theory": [
-        "crates/ferric-scf/theory.md#hartree-fock-energy-functionals-rhf-uhf-rohf"
+        "crates/ferric-scf/theory.md#hartree-fock-energy-functionals-rhf-uhf-rohf",
+        "crates/ferric-scf/theory.md#orthogonalization-and-starting-guesses",
+        "crates/ferric-scf/theory.md#direct-and-incremental-jk-builds",
+        "crates/ferric-scf/theory.md#density-fitted-coulomb-and-exchange-ri-j-ri-k-split-ri-j",
+        "crates/ferric-scf/theory.md#link-and-cosx-exchange",
+        "crates/ferric-scf/theory.md#diis-the-error-vector-and-the-extrapolation",
+        "crates/ferric-scf/theory.md#level-shift-mom-and-fermi-smearing",
+        "crates/ferric-scf/theory.md#orbital-hessians-newton-augmented-hessian-trust-region",
+        "crates/ferric-scf/theory.md#scf-stability-analysis"
       ],
       "scripts": [
-        "scripts/hf_energy_sympy.py"
+        "scripts/hf_energy_sympy.py",
+        "scripts/scf_jk_builders_sympy.py",
+        "scripts/scf_diis_sympy.py",
+        "scripts/scf_orbital_hessian_sympy.py"
       ]
     },
     "rpa-gradient": {
@@ -741,10 +763,21 @@
     },
     "uhf": {
       "theory": [
-        "crates/ferric-scf/theory.md#hartree-fock-energy-functionals-rhf-uhf-rohf"
+        "crates/ferric-scf/theory.md#hartree-fock-energy-functionals-rhf-uhf-rohf",
+        "crates/ferric-scf/theory.md#orthogonalization-and-starting-guesses",
+        "crates/ferric-scf/theory.md#direct-and-incremental-jk-builds",
+        "crates/ferric-scf/theory.md#density-fitted-coulomb-and-exchange-ri-j-ri-k-split-ri-j",
+        "crates/ferric-scf/theory.md#link-and-cosx-exchange",
+        "crates/ferric-scf/theory.md#diis-the-error-vector-and-the-extrapolation",
+        "crates/ferric-scf/theory.md#level-shift-mom-and-fermi-smearing",
+        "crates/ferric-scf/theory.md#orbital-hessians-newton-augmented-hessian-trust-region",
+        "crates/ferric-scf/theory.md#scf-stability-analysis"
       ],
       "scripts": [
-        "scripts/hf_energy_sympy.py"
+        "scripts/hf_energy_sympy.py",
+        "scripts/scf_jk_builders_sympy.py",
+        "scripts/scf_diis_sympy.py",
+        "scripts/scf_orbital_hessian_sympy.py"
       ]
     }
   },
