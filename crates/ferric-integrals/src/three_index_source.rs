@@ -2089,6 +2089,16 @@ impl ThreeIndexSource {
         }
     }
 
+    /// Bytes of an f64 tensor held in memory that a gradient can read: the
+    /// tiers of [`Self::resident_f64_bytes`] plus the pair-screened tier
+    /// ([`Self::pair_screened`]); `None` for spilled, recomputed and f32.
+    pub fn kept_f64_bytes(&self) -> Option<usize> {
+        match &self.backend {
+            Backend::InCorePairScreened { data, .. } => Some(data.len() * 8),
+            _ => self.resident_f64_bytes(),
+        }
+    }
+
     /// The GLOBAL aux rows `[p0, p1)` as a `(p1 - p0, nao, nao)` view with the
     /// values `eri3_block(op, obs, dfbs, p0, p1)` returns (the packed tier
     /// stores the lower triangle of that exactly symmetric block, so

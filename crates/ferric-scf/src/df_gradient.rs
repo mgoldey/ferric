@@ -108,9 +108,9 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
 use ferric_integrals::engine::Engine;
 use ferric_integrals::operator::Operator;
-use ferric_integrals::three_index_source::ThreeIndexSource;
+use ferric_integrals::three_index_source::{PairScreen, ThreeIndexSource};
 use ferric_integrals::threeindex::coulomb_metric_2c;
-use ndarray::{Array1, Array2, Array3, Axis};
+use ndarray::{Array1, Array2, Array3, ArrayView2, Axis};
 use ndarray_linalg::cholesky::{FactorizeC, SolveC};
 use ndarray_linalg::{Eigh, UPLO};
 use rayon::prelude::*;
@@ -359,6 +359,50 @@ pub fn dfg_3c_blocks_computed_for_test() -> usize {
     DFG_3C_BLOCKS.with(std::cell::Cell::get)
 }
 
+/// `d̃_P = Σ_{(μν) kept} (P|μν) D_μν` over the stored columns of a
+/// pair-screened tensor (`data`: `(naux, screen.ncols())`, the full aux
+/// range): the same `d_P` the SCF's J pass formed, a dropped pair
+/// contributing zero. An off-diagonal column stands for `(μν)` and `(νμ)`,
+/// so its weight is `D_μν + D_νμ`.
+fn screened_d_p(data: ArrayView2<'_, f64>, screen: &PairScreen, d: &Array2<f64>) -> Array1<f64> {
+    let w: Vec<f64> = screen
+        .cols()
+        .iter()
+        .map(|&(mu, nu)| {
+            let (mu, nu) = (mu as usize, nu as usize);
+            if mu == nu {
+                d[(mu, mu)]
+            } else {
+                d[(mu, nu)] + d[(nu, mu)]
+            }
+        })
+        .collect();
+    let vals: Vec<f64> = (0..data.nrows())
+        .into_par_iter()
+        .map(|q| {
+            data.row(q)
+                .iter()
+                .zip(w.iter())
+                .map(|(a, c)| a * c)
+                .sum::<f64>()
+        })
+        .collect();
+    Array1::from(vals)
+}
+
+/// `d` with every pair the screen dropped set to zero (both triangles). The
+/// three-centre derivative pass contracts this density, so it differentiates
+/// exactly the integrals the screened energy kept.
+fn density_on_kept_pairs(d: &Array2<f64>, screen: &PairScreen) -> Array2<f64> {
+    let mut out = Array2::<f64>::zeros(d.dim());
+    for &(mu, nu) in screen.cols() {
+        let (mu, nu) = (mu as usize, nu as usize);
+        out[(mu, nu)] = d[(mu, nu)];
+        out[(nu, mu)] = d[(nu, mu)];
+    }
+    out
+}
+
 /// The one pass over the raw `(P|μν)`: `d_P = Σ (P|μν) D_μν` for J (`j`:
 /// the density and whether the SCF's RI-J tensor was f32) and `L^s_P = Xᵀ
 /// (P|··) X` per exchange factor.
@@ -387,9 +431,27 @@ fn three_center_pass(
     // (A recompute is reported where the tensor was not kept or not used.)
     if let Some(s) = kept {
         crate::raw_handoff::note(&format!(
-            "dfg:3c-pass reads the SCF's raw tensor ({:.2} GB)",
-            s.resident_f64_bytes().unwrap_or(0) as f64 / 1e9
+            "dfg:3c-pass reads the SCF's raw tensor ({:.2} GB{})",
+            s.kept_f64_bytes().unwrap_or(0) as f64 / 1e9,
+            if s.pair_screened().is_some() {
+                ", pair-screened"
+            } else {
+                ""
+            }
         ));
+        if let Some((data, screen)) = s.pair_screened() {
+            let Some((dj, false)) = j else {
+                return Err(FerricError::General(
+                    "DF gradient: a pair-screened kept tensor serves an f64 J-only pass".into(),
+                ));
+            };
+            if !factors.is_empty() {
+                return Err(FerricError::General(
+                    "DF gradient: a pair-screened kept tensor cannot feed an exchange pass".into(),
+                ));
+            }
+            return Ok((screened_d_p(data, screen, dj), Vec::new()));
+        }
     }
     let block_bytes = if kept.is_some() {
         0
@@ -608,6 +670,17 @@ fn df_jk_gradient_core(
     if j_density.is_none() && factors.is_empty() {
         return Ok(grad);
     }
+    // Only a J-only pass in f64 can read a pair-screened tensor.
+    let raw = raw.filter(|k| {
+        let ok = k.source().pair_screened().is_none()
+            || (factors.is_empty() && j_density.is_some() && j_precision == RiJPrecision::F64);
+        if !ok {
+            crate::raw_handoff::note(
+                "kept pair-screened tensor not used (not a J-only f64 pass): recomputing",
+            );
+        }
+        ok
+    });
 
     // --- memory plane: everything resident beyond the budget-bounded source.
     // (naux, m²) per channel for L/Lt and then Γ (two live at a time), plus
@@ -619,7 +692,7 @@ fn df_jk_gradient_core(
     // An unpacked kept tensor is viewed in place; a packed one is unpacked
     // one block at a time.
     let unpack_block = match raw.as_ref() {
-        Some(k) if k.source().incore_flat().is_none() => pass_block_bytes(obs, dfbs, budget_bytes),
+        Some(k) if k.source().packed_flat().is_some() => pass_block_bytes(obs, dfbs, budget_bytes),
         _ => 0,
     };
     // The SCF's kept `eigh` of this metric, taken before the plane below is
@@ -635,6 +708,18 @@ fn df_jk_gradient_core(
         unpack_block,
         raw,
     )?;
+
+    // A pair-screened kept tensor is the one the SCF energy used: pairs it
+    // dropped contribute zero to `d_P` and, through this density, to the
+    // derivative pass too.
+    let screened_density = match (
+        raw.as_ref().and_then(|k| k.source().pair_screened()),
+        j_density,
+    ) {
+        (Some((_, screen)), Some(d)) => Some(density_on_kept_pairs(d, screen)),
+        _ => None,
+    };
+    let j_density = screened_density.as_ref().or(j_density);
 
     let t_st = ferric_core::timing::Stage::start("dfg:metric2c");
     let v = coulomb_metric_2c(op, dfbs)?;

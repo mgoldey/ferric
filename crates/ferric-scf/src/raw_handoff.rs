@@ -6,13 +6,17 @@
 //! unscreened (a source shared with DF-K is never pair-screened, see
 //! `fock_assembly::build_df_jk`) and in f64 on a geometry task. A pure
 //! functional fits no K, and its RI-J tensor is kept the same way when it is
-//! held whole and unscreened in f64. A J-only build pair-screens its tensor
-//! once the screen drops pairs (sulfamethoxazole/def2-TZVP keeps 78% of the
-//! function pairs at the default `integral_thresh`); such a tensor is not the
-//! gradient's rows and the gradient recomputes it. Building it unscreened
-//! instead made the SCF slower by what the gradient saved (MEASURED, 3 paired
-//! reps: wall time unchanged within noise, peak RSS 3.4 -> 6.0 GB), so the
-//! screen is left alone. The gradient
+//! held in memory in f64: whole, or pair-screened. A J-only build pair-screens
+//! its tensor once the screen drops pairs (sulfamethoxazole/def2-TZVP keeps 78%
+//! of the function pairs at the default `integral_thresh`). The gradient reads
+//! that screened tensor as the SCF energy did: a dropped pair contributes
+//! zero to `d_P = Σ (P|μν) D_μν` and to the three-centre derivative pass, so
+//! the result is the gradient of the screened energy, not bitwise the
+//! recomputed unscreened one (`crates/ferric-scf/theory.md`, "RI-J gradient
+//! on a pair-screened tensor"). Building the tensor unscreened instead made
+//! the SCF slower by what the gradient saved (MEASURED, 3 paired reps: wall
+//! time unchanged within noise, peak RSS 3.4 -> 6.0 GB), so the screen is
+//! left alone. The gradient
 //! contracts exactly these integrals with the converged density, and
 //! regenerating them cost ~1.7 s of a ~10.5 s gradient (n-dodecane/def2-TZVP
 //! B3LYP, 2026-11-10).
@@ -27,7 +31,7 @@
 //! gradient never installs one, so nothing is held past the SCF.
 //!
 //! Kept only when: RI-J is fitted, one rank, the tensor is held
-//! whole in memory in f64 (unpacked or packed tier), and the tensor plus the
+//! in memory in f64 (unpacked, packed or pair-screened tier), and the tensor plus the
 //! gradient's metric and exchange intermediates fit the three-index budget.
 //! Otherwise the gradient recomputes exactly as before; under `FERRIC_TIMING`
 //! both sides say which happened and why. Before using a kept tensor the
@@ -102,7 +106,7 @@ impl KeptRaw {
 
     /// Resident bytes of the tensor.
     pub fn bytes(&self) -> usize {
-        self.raw.resident_f64_bytes().unwrap_or(0)
+        self.raw.kept_f64_bytes().unwrap_or(0)
     }
 
     /// The tensor itself.
@@ -489,9 +493,15 @@ fn kept_raw(
         return Err("several ranks");
     }
     let raw_bytes = match df_j.as_ref() {
-        Some(RiJ::Stored(j)) if j.precision() == crate::df_j::RiJPrecision::F64 => j
-            .resident_f64_bytes()
-            .ok_or("the tensor is pair-screened, spilled or recomputed, not held whole in f64")?,
+        Some(RiJ::Stored(j)) if j.precision() == crate::df_j::RiJPrecision::F64 => {
+            if j.is_pair_screened() && !exchange_ranks.is_empty() {
+                // DF-K never shares a pair-screened source; refuse rather than
+                // let an exchange pass read a tensor with dropped pairs.
+                return Err("a pair-screened tensor cannot feed an exchange pass");
+            }
+            j.kept_f64_bytes()
+                .ok_or("the tensor is spilled or recomputed, not held in memory in f64")?
+        }
         Some(RiJ::Stored(_)) => return Err("the RI-J tensor is stored in f32"),
         Some(RiJ::Split(_)) => return Err("Split-RI-J holds no tensor"),
         None => return Err("no RI-J builder"),

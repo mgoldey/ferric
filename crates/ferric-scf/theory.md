@@ -1830,3 +1830,49 @@ Z3 the UKS solve and contraction against the finite difference, and the
 $\alpha = \beta$ limit; Z4 the ROKS three-block solve, the transcribed product's
 symmetry and the contraction against the finite difference, with the
 closed-open cross term of the fixed path as a negative control).
+
+## Density-fitted gradient (RI-J) on a pair-screened tensor
+
+**Energy.** With auxiliary metric $V_{PQ}=(P|Q)$ and three-index integrals $(P|\mu\nu)$, RI-J is
+$$E_J=\tfrac12\,d^{\mathsf T}V^{-1}d,\qquad d_P=\sum_{\mu\nu}(P|\mu\nu)\,D_{\mu\nu}.$$
+A J-only SCF stores $(P|\mu\nu)$ only on a set $K$ of AO pairs that a Cauchy-Schwarz test keeps
+($Q_{\mu\nu}\,q_{\max}>\tau$, $Q_{\mu\nu}=\sqrt{(\mu\nu|\mu\nu)}$, $q_{\max}=\max_P\sqrt{(P|P)}$,
+$\tau=$ `integral_thresh`). Its energy is
+$$\tilde E_J=\tfrac12\,\tilde d^{\mathsf T}V^{-1}\tilde d,\qquad
+\tilde d_P=\sum_{(\mu\nu)\in K}(P|\mu\nu)\,D_{\mu\nu}=d_P(\tilde D),$$
+where $\tilde D_{\mu\nu}=D_{\mu\nu}$ for $(\mu\nu)\in K$ and $0$ otherwise (both triangles). The last
+equality is the whole point: $\tilde d$ is the unscreened $d$ evaluated at the masked density.
+
+**Gradient.** Treat $K$ as fixed (a step function of the geometry, constant almost everywhere) and
+write $c=V^{-1}d$ for the fit coefficients. For a nuclear coordinate $x$, with $D$ held fixed
+(the SCF is variational, so the orbital-response terms are collected in the energy-weighted overlap
+term, which does not involve $E_J$'s tensor),
+$$\frac{\partial\tilde E_J}{\partial x}
+=\sum_P\tilde c_P\sum_{(\mu\nu)\in K}\frac{\partial(P|\mu\nu)}{\partial x}D_{\mu\nu}
+-\tfrac12\,\tilde c^{\mathsf T}\frac{\partial V}{\partial x}\tilde c,\qquad \tilde c=V^{-1}\tilde d,$$
+using $\partial V^{-1}=-V^{-1}(\partial V)V^{-1}$. The first sum runs over $K$ only. Because the
+three-centre derivative pass is linear in the density it contracts, restricting its pair sum to $K$
+is the same as contracting $\tilde D$ over all pairs. Hence
+$$\boxed{\;\nabla\tilde E_J=g_J(\tilde D)\;}$$
+where $g_J(\cdot)$ is the ordinary (unscreened) RI-J gradient as a function of the density it is
+handed, with $d$, $c$ and the derivative contraction all formed from $\tilde D$. The implementation
+therefore (i) forms $\tilde d$ from the stored columns, an off-diagonal column standing for
+$(\mu\nu)$ and $(\nu\mu)$ with weight $D_{\mu\nu}+D_{\nu\mu}$, and (ii) hands the derivative pass
+$\tilde D$. Dropped pairs contribute zero to both, consistent with the screened energy.
+Nothing else changes: the metric terms use $V$ and $\tilde c$ only.
+
+**Difference from the unscreened gradient.** $g_J$ is a quadratic form $G(D,D)$, so
+$$g_J(\tilde D)-g_J(D)=-G(D_{\mathrm{drop}},D)-G(D,D_{\mathrm{drop}})+G(D_{\mathrm{drop}},D_{\mathrm{drop}}),
+\quad D_{\mathrm{drop}}=D-\tilde D,$$
+which is $O(\|D_{\mathrm{drop}}\|/\|D\|)\,\|g_J\|$. On the fitted density the Schwarz bound gives,
+for every $P$,
+$$|d_P-\tilde d_P|\le\sum_{\text{dropped}}|(P|\mu\nu)|\,|D_{\mu\nu}|
+\le\tau\sum_{\text{dropped}}|D_{\mu\nu}|\,\frac{Q_P}{q_{\max}}\le\tau\sum_{\text{dropped}}|D_{\mu\nu}|,$$
+and $\tilde c-c=-V^{-1}(d-\tilde d)$. At $\tau\le0$ nothing is dropped, $\tilde D=D$ and the two
+gradients are the same bits.
+
+**Cross-check.** Independent of the derivation above, `df_gradient_screened_j_handoff.rs` checks (a)
+$g_{\text{reuse}}-g_{\text{recompute}}=g_J(\tilde D)-g_J(D)$ with the right side from the public
+recomputing path and an independently built pair screen, (b) the Schwarz bound on $d_P$, and (c) a
+central finite difference of the SCF energy run with the same screening: the screened-tensor
+gradient is the derivative of that energy; the recompute gradient is not.

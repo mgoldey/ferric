@@ -1410,6 +1410,17 @@ impl DfJ<'_> {
         self.source.resident_f64_bytes()
     }
 
+    /// Bytes of the raw tensor when it is an f64 tensor a gradient can read:
+    /// held whole, or pair-screened ([`ThreeIndexSource::kept_f64_bytes`]).
+    pub fn kept_f64_bytes(&self) -> Option<usize> {
+        self.source.kept_f64_bytes()
+    }
+
+    /// Is the raw tensor the pair-screened tier?
+    pub fn is_pair_screened(&self) -> bool {
+        self.source.pair_screened().is_some()
+    }
+
     /// Is the raw tensor the packed f64 in-core tier (read by unpacking)?
     pub fn is_packed_raw(&self) -> bool {
         self.source.resident_f64_bytes().is_some() && self.source.incore_flat().is_none()

@@ -11,8 +11,10 @@
 //! after the SCF (else "reuse" would be a recompute equal to itself), and the
 //! `dfg:3c-pass` block counter tells reuse (0 blocks) from recompute.
 //!
-//! Artifact hypothesis. A stale or pair-screened tensor would move the
-//! gradient by O(step) or O(thresh) Ha/Bohr; a gradient that silently
+//! A pair-screened tensor is read too, with its own anchors in
+//! `df_gradient_screened_j_handoff.rs`.
+//!
+//! Artifact hypothesis. A stale tensor would move the gradient by O(step) Ha/Bohr; a gradient that silently
 //! recomputed would pass the equality and fail the counter.
 
 use ferric_core::mol::Molecule;
@@ -149,25 +151,4 @@ fn pure_functional_open_shell_gradients_read_the_kept_tensor_bitwise() {
         let (reuse, recompute) = reuse_and_recompute(&s, r);
         assert_eq!(bits(&reuse), bits(&recompute));
     }
-}
-
-#[test]
-fn pair_screened_ri_j_tensor_is_not_kept_and_the_gradient_recomputes() {
-    // A loose `integral_thresh` makes the J-only build drop AO pairs on
-    // n-butane; that tensor is not the gradient's rows, so the hand-off keeps
-    // nothing and the gradient computes its own, with the same bits as a
-    // run that never installed a hand-off.
-    let s = setup(Molecule::load_xyz("../../testdata/molecules/alkane_4.xyz").expect("butane"));
-    let base = RhfConfig {
-        integral_thresh: 1e-5,
-        ..pbe_geometry_config()
-    };
-    let cfg = with_fresh_handoff(&base);
-    let res = scf(&s, Ref::Rks, &cfg);
-    let slot = cfg.raw_handoff.as_ref().expect("hand-off installed");
-    assert!(!slot.is_filled(), "a pair-screened tensor was kept");
-    let (g_handoff, computed) = gradient(&s, Ref::Rks, &cfg, &res);
-    assert!(computed > 0, "the gradient did not compute its raw blocks");
-    let (g_plain, _) = gradient(&s, Ref::Rks, &base, &res);
-    assert_eq!(bits(&g_handoff), bits(&g_plain));
 }
