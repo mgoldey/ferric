@@ -446,21 +446,72 @@ pub fn mp3_certificate(
     ri_correlation_certificate("mp3", reference, aux, frozen_core, op)
 }
 
+/// The orbital-fitting basis of the double hybrid's Kohn-Sham reference and
+/// the correlation aux bases `validation_b2plyp_pyscf.rs` runs.
+const B2PLYP_JK_AUX: &str = "def2-universal-jkfit";
+
+/// Whether a `b2plyp` run is what the B2PLYP anchor's evidence
+/// (`validation_b2plyp_pyscf.rs`) runs: a Kohn-Sham `reference` on the flat
+/// (75, 110) grid with RI-J and RI-K over def2-universal-jkfit (J tensor stored
+/// in f64), the Grimme 2006 scaling (0.27, 0.27), and frozen core 0 or 1.
+/// The pruned production grid and the f32 RI-J default are outside it.
+fn in_b2plyp_anchor_scope(reference: &Certificate, cfg: &Mp2DoubleHybridConfig) -> bool {
+    let detail = |name: &str| {
+        reference
+            .approximations
+            .iter()
+            .find(|a| a.name == name)
+            .map(|a| a.detail.as_str())
+    };
+    let grid = format!(
+        "B2PLYP on {}",
+        ferric_scf::certificate::grid_text(&ferric_dft::grid::AtomicGridConfig::default())
+    );
+    reference.capability == "ksdft"
+        && reference
+            .approximations
+            .iter()
+            .all(|a| matches!(a.name.as_str(), "ri-j" | "ri-k" | "xc-grid"))
+        && detail("xc-grid") == Some(grid.as_str())
+        && detail("ri-j")
+            .is_some_and(|d| d.starts_with(&format!("aux {B2PLYP_JK_AUX}, f64 tensor storage")))
+        && detail("ri-k").is_some_and(|d| d.starts_with(&format!("aux {B2PLYP_JK_AUX}")))
+        && cfg.c_os == 0.27
+        && cfg.c_ss == 0.27
+        && cfg.frozen_core <= 1
+}
+
 /// MP2-based double hybrid (`kind` is `b2plyp` or `dsd-pbep86`) run with
 /// `cfg`: scaled RI-MP2 on the functional's own Kohn-Sham `reference`.
+/// `b2plyp` carries the B2PLYP anchor inside the scope of its evidence (see
+/// `in_b2plyp_anchor_scope`); `dsd-pbep86` has none.
 pub fn mp2_double_hybrid_certificate(
     kind: &str,
     reference: &Certificate,
     aux: &str,
     cfg: &Mp2DoubleHybridConfig,
 ) -> Certificate {
+    let anchored = kind == "b2plyp" && in_b2plyp_anchor_scope(reference, cfg);
+    with_anchor_in_scope(
+        double_hybrid_base(kind, reference, aux, cfg),
+        "B2PLYP",
+        anchored,
+    )
+}
+
+/// The double-hybrid certificate without an anchor: the reference, the
+/// correlation aux basis, the frozen core and the PT2 scaling.
+fn double_hybrid_base(
+    kind: &str,
+    reference: &Certificate,
+    aux: &str,
+    cfg: &Mp2DoubleHybridConfig,
+) -> Certificate {
+    let scaling = format!("c_os = {}, c_ss = {}", cfg.c_os, cfg.c_ss);
     Certificate::for_post_scf(kind, reference)
         .with_ri(aux)
         .with_frozen_core(cfg.frozen_core)
-        .with_approximation(
-            "spin-component-scaling",
-            format!("c_os = {}, c_ss = {}", cfg.c_os, cfg.c_ss),
-        )
+        .with_approximation("spin-component-scaling", scaling)
 }
 
 #[cfg(test)]
@@ -1003,21 +1054,35 @@ mod tests {
         assert_eq!(m.grade, Grade::Ungraded);
     }
 
+    /// A Kohn-Sham reference as `validation_b2plyp_pyscf.rs` runs it.
+    fn b2plyp_reference() -> Certificate {
+        let grid =
+            ferric_scf::certificate::grid_text(&ferric_dft::grid::AtomicGridConfig::default());
+        Certificate::for_method_kind("ksdft")
+            .with_build(BuildStamp::new("v", "c", Some(false)))
+            .with_approximation(
+                "ri-j",
+                "aux def2-universal-jkfit, f64 tensor storage (requested f64: explicit)",
+            )
+            .with_approximation("ri-k", "aux def2-universal-jkfit, f64 tensor storage")
+            .with_approximation("xc-grid", format!("B2PLYP on {grid}"))
+    }
+
     #[test]
-    fn double_hybrids_are_spike_with_their_scaling() {
+    fn double_hybrids_carry_their_grade_and_scaling() {
         use crate::double_hybrid::DoubleHybridKind;
         let ks = Certificate::for_method_kind("ksdft")
             .with_build(BuildStamp::new("v", "c", Some(false)))
             .with_approximation("xc-grid", "(75, 302)");
-        for (kind, dk) in [
-            ("b2plyp", DoubleHybridKind::B2plyp),
-            ("dsd-pbep86", DoubleHybridKind::DsdPbep86),
+        for (kind, dk, grade) in [
+            ("b2plyp", DoubleHybridKind::B2plyp, Grade::Proven),
+            ("dsd-pbep86", DoubleHybridKind::DsdPbep86, Grade::Spike),
         ] {
             let mut cfg = dk.mp2_config();
             cfg.frozen_core = 1;
             let c = mp2_double_hybrid_certificate(kind, &ks, "cc-pvdz-ri", &cfg);
             assert_eq!(c.capability, kind);
-            assert_eq!(c.grade, Grade::Spike, "{kind}");
+            assert_eq!(c.grade, grade, "{kind}");
             assert_eq!(c.grade, ferric_core::certificate::method_kind_grade(kind));
             assert_eq!(
                 names(&c),
@@ -1027,6 +1092,7 @@ mod tests {
                 c.approximations[3].detail,
                 format!("c_os = {}, c_ss = {}", cfg.c_os, cfg.c_ss)
             );
+            assert!(c.measured_error.is_none(), "{kind}: outside the evidence");
         }
         // An unconverged reference caps the grade below Spike.
         let bad = ks.cap_grade(Grade::Ungraded, "SCF did not converge");
@@ -1037,5 +1103,44 @@ mod tests {
             &crate::double_hybrid::DoubleHybridKind::B2plyp.mp2_config(),
         );
         assert_eq!(c.grade, Grade::Ungraded);
+    }
+
+    /// The B2PLYP anchor rides only on the settings the evidence runs.
+    #[test]
+    fn b2plyp_anchor_is_attached_inside_the_evidence_scope_only() {
+        use crate::double_hybrid::DoubleHybridKind;
+        let cert = |reference: &Certificate, fc: usize| {
+            let mut cfg = DoubleHybridKind::B2plyp.mp2_config();
+            cfg.frozen_core = fc;
+            mp2_double_hybrid_certificate("b2plyp", reference, "cc-pvdz-ri", &cfg)
+        };
+        let anchor = energy_anchor("B2PLYP").unwrap().measured_error();
+        for fc in [0, 1] {
+            assert_eq!(
+                cert(&b2plyp_reference(), fc).measured_error,
+                Some(anchor.clone())
+            );
+        }
+        assert!(
+            cert(&b2plyp_reference(), 2).measured_error.is_none(),
+            "frozen core 2"
+        );
+        let pruned = Certificate::for_method_kind("ksdft")
+            .with_approximation("ri-j", "aux def2-universal-jkfit, f64 tensor storage")
+            .with_approximation("ri-k", "aux def2-universal-jkfit, f64 tensor storage")
+            .with_approximation("xc-grid", "B2PLYP on (75, 110), nwchem, weight cut 1e-14");
+        assert!(cert(&pruned, 0).measured_error.is_none(), "pruned grid");
+        let f32_j = Certificate::for_method_kind("ksdft")
+            .with_approximation("ri-j", "aux def2-universal-jkfit, f32 tensor storage")
+            .with_approximation("ri-k", "aux def2-universal-jkfit, f64 tensor storage");
+        assert!(cert(&f32_j, 0).measured_error.is_none(), "f32 RI-J");
+        assert!(cert(&Certificate::for_method_kind("rhf"), 0)
+            .measured_error
+            .is_none());
+        // DSD-PBEP86 never carries it.
+        let mut cfg = DoubleHybridKind::DsdPbep86.mp2_config();
+        cfg.frozen_core = 0;
+        let d = mp2_double_hybrid_certificate("dsd-pbep86", &b2plyp_reference(), "x", &cfg);
+        assert!(d.measured_error.is_none());
     }
 }

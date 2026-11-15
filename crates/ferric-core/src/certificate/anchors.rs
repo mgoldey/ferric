@@ -514,6 +514,23 @@ pub const ENERGY_ANCHORS: &[EnergyAnchor] = &[
         functionals: &[],
     },
     EnergyAnchor {
+        method: "B2PLYP",
+        kind: "b2plyp",
+        quantity: "total energy",
+        value: "1.3e-11",
+        units: "Ha",
+        reference: "PySCF",
+        evidence: "crates/ferric-mp2/tests/validation_b2plyp_pyscf.rs",
+        data: AnchorData::Directory {
+            dir: "testdata/reference/validation/b2plyp_pyscf",
+            systems: &["h2o", "nh3", "ch4"],
+        },
+        elements: &["H", "C", "N", "O"],
+        basis_sets: &["cc-pvdz", "def2-svp"],
+        aux_basis_sets: &["cc-pvdz-ri", "def2-svp-rifit"],
+        functionals: &[],
+    },
+    EnergyAnchor {
         method: "CASSCF",
         kind: "casscf",
         quantity: "energy",

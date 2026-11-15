@@ -252,8 +252,11 @@ fn certificate_note(records: &[serde_json::Value], capability: &str) -> serde_js
 }
 
 #[test]
-fn double_hybrids_log_a_spike_certificate_with_their_scaling() {
-    for (kind, c_os, c_ss) in [("b2plyp", "0.27", "0.27"), ("dsd-pbep86", "0.56", "0.29")] {
+fn double_hybrids_log_a_certificate_with_their_grade_and_scaling() {
+    for (kind, grade, c_os, c_ss) in [
+        ("b2plyp", "proven", "0.27", "0.27"),
+        ("dsd-pbep86", "spike", "0.56", "0.29"),
+    ] {
         let (stdout, records) = run(
             kind,
             &format!("{WATER}[method]\nkind = \"{kind}\"\n[mp2]\nauxbasis = \"cc-pvdz-ri\"\n"),
@@ -263,7 +266,10 @@ fn double_hybrids_log_a_spike_certificate_with_their_scaling() {
             "{stdout}"
         );
         let c = certificate_note(&records, kind);
-        assert_eq!(c["grade"], "spike", "{c}");
+        assert_eq!(c["grade"], grade, "{c}");
+        // The default run (pruned grid, f32 RI-J) is outside the B2PLYP
+        // evidence, so it carries no anchor.
+        assert!(c.get("measured_error").is_none_or(|m| m.is_null()), "{c}");
         assert_eq!(c["build"]["commit"], ferric_build_info::COMMIT);
         let n = names(&c);
         assert!(n.contains(&"scf xc-grid".to_string()), "{n:?}");

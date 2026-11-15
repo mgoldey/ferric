@@ -210,8 +210,15 @@ against the paper's Be₂ bond energy (2.3 kcal/mol; ferric 2.299).
 **B2PLYP** and **DSD-PBEP86**: a KS reference with weighted exchange and
 correlation components, plus scaled (SCS-)RI-MP2 correlation.
 `method.kind = "b2plyp"` / `"dsd-pbep86"` (`examples/water-b2plyp.toml`);
-Python `ferric.run_double_hybrid(mol, bs, aux, kind="b2plyp")`. **Spike**: no
-comparison to a reference code yet.
+Python `ferric.run_double_hybrid(mol, bs, aux, kind="b2plyp")`.
+
+**B2PLYP is Proven** (Grimme 2006 parameters: 0.53 HF, 0.47 B88, 0.73 LYP,
+0.27 PT2): the total energy matches PySCF built from the definition to
+1.3e-11 Ha on H2O, NH3 and CH4 (cc-pVDZ, def2-SVP), at the flat (75, 110) grid
+and f64 RI-J storage. The CLI's defaults (pruned grid, f32 RI-J) shift the total
+by up to 1.0e-6 Ha. **DSD-PBEP86 is Spike**: the name covers two published
+parameter sets (Kozuch and Martin 2011, 2013) and ferric's coefficients are not
+tied to either, so there is nothing definite to compare against yet.
 
 ## Implementation
 

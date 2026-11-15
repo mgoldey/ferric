@@ -221,16 +221,16 @@ def test_mp2_v_certificate_records_operator_and_vv10():
     _row(c, "mp2-v", "proven_narrow", ["ri", "operator", "vv10"])
 
 
-def test_double_hybrid_certificates_are_spike_with_their_scaling():
+def test_double_hybrid_certificates_carry_their_grade_and_scaling():
     mol, bs, aux = _setup()
-    for kind, scaling in [
-        ("b2plyp", "c_os = 0.27, c_ss = 0.27"),
-        ("dsd-pbep86", "c_os = 0.56, c_ss = 0.29"),
+    for kind, grade, scaling in [
+        ("b2plyp", "proven", "c_os = 0.27, c_ss = 0.27"),
+        ("dsd-pbep86", "spike", "c_os = 0.56, c_ss = 0.29"),
     ]:
         r = ferric.run_double_hybrid(mol, bs, aux, kind=kind, frozen_core=1)
         c = r.certificate
         assert c["capability"] == kind
-        assert c["grade"] == "spike"
+        assert c["grade"] == grade
         assert c["build"]["commit"] == ferric.build_info()["commit"]
         names = _names(c)
         assert names[-3:] == ["ri", "frozen-core", "spin-component-scaling"], names

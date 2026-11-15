@@ -294,6 +294,13 @@
         "baseline_run": true,
         "date": "2026-11-14"
       }
+    },
+    {
+      "anchor": "B2PLYP",
+      "patch": "testdata/mutations/b2plyp.patch",
+      "mutation": "double_hybrid.rs: the B2PLYP PT2 fraction is 0.26 (c_os = c_ss) instead of 0.27.",
+      "evidence": "crates/ferric-mp2/tests/validation_b2plyp_pyscf.rs",
+      "test": "b2plyp_h2o_cc_pvdz_vs_pyscf"
     }
   ]
 }
