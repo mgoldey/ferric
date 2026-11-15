@@ -37,10 +37,13 @@
 //! [`crate::fock_assembly`]; reduction banding in [`crate::reduce`].
 
 use crate::df_k::DfK;
+use crate::fock::{JBuilder, KBuilder};
 use crate::rhf::{ConvergenceSignals, RhfConfig};
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
+use ferric_core::timing::PhaseAccumulator;
 use ferric_core::FerricError;
+use ferric_dft::xc_trait::KMix;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
 use ferric_integrals::oneelectron;
@@ -403,6 +406,349 @@ pub(crate) fn prepare<'a>(
         dfk_sr,
         dfk_lr,
     })
+}
+
+/// The pieces of a [`crate::rhf::PeriodicInjection`] as the drivers use
+/// them: `(S, h, V_nn)` for [`prepare`], the J/K builders the iteration
+/// drives, and the injected XC. All `None` on the molecular path.
+pub(crate) type SplitInjection<'a> = (
+    Option<(Array2<f64>, Array2<f64>, f64)>,
+    Option<(Box<dyn JBuilder + 'a>, Box<dyn KBuilder + 'a>)>,
+    Option<Box<dyn crate::rhf::XcBuilder + 'a>>,
+);
+
+/// Split an injection into what [`prepare`] takes and what the loop drives.
+pub(crate) fn split_injection(
+    inj: Option<crate::rhf::PeriodicInjection<'_>>,
+) -> SplitInjection<'_> {
+    match inj {
+        Some(crate::rhf::PeriodicInjection {
+            s,
+            h,
+            vnn,
+            j,
+            k,
+            xc,
+        }) => (Some((s, h, vnn)), Some((j, k)), xc),
+        None => (None, None, None),
+    }
+}
+
+/// The exact-exchange mix of a solve. Injected (periodic) KS: a global hybrid
+/// scales the injected K by its exact-exchange fraction, which must lie in
+/// `[0, 1]` (`solver` names the entry point in the error); the validators
+/// guarantee no molecular XC beside it. Molecular path: `molecular()`, the
+/// XC contribution's mix (the default, pure HF, without one).
+pub(crate) fn resolve_k_mix(
+    inj_xc: Option<&dyn crate::rhf::XcBuilder>,
+    molecular: impl FnOnce() -> KMix,
+    solver: &str,
+) -> Result<KMix, FerricError> {
+    match inj_xc {
+        Some(x) => {
+            let a = x.exact_exchange_fraction();
+            if !(a.is_finite() && (0.0..=1.0).contains(&a)) {
+                return Err(FerricError::General(format!(
+                    "{solver}: XcBuilder exact-exchange fraction must be in [0, 1], got {a}"
+                )));
+            }
+            Ok(KMix {
+                sr: a,
+                lr: a,
+                omega: 0.0,
+            })
+        }
+        None => Ok(molecular()),
+    }
+}
+
+/// [`prepare`], timed as `setup:prepare`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn prepare_timed<'a>(
+    phases: &mut PhaseAccumulator,
+    ctx: &'a ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    config: &RhfConfig,
+    k_mix: &KMix,
+    pre: Option<(Array2<f64>, Array2<f64>, f64)>,
+    xc_plan: ferric_dft::xc_trait::XcMemoryPlan,
+) -> Result<ScfEnv<'a>, FerricError> {
+    let prepare_t = phases.begin("setup:prepare");
+    let env = prepare(ctx, mol, prep, config, k_mix, pre, xc_plan)?;
+    phases.stop(prepare_t);
+    Ok(env)
+}
+
+/// The ONE SR/LR exchange response every Hessian matvec in a solve uses —
+/// Newton steps, TRAH steps and the post-SCF stability eigensolve alike. It
+/// borrows the SAME two fitters `subtract_rsh_exchange` assembles the
+/// converged Fock from and reads the SAME `k_mix`, so the Fock and the
+/// Hessian cannot disagree about the kernel (the #314 defect). `None` at
+/// omega == 0, where the matvecs keep their untouched plain-Coulomb path.
+pub(crate) fn rsh_response<'r>(
+    env: &'r ScfEnv<'_>,
+    k_mix: KMix,
+) -> Option<crate::rsh_response::RshResponse<'r>> {
+    match (env.dfk_sr.as_ref(), env.dfk_lr.as_ref()) {
+        (Some(sr), Some(lr)) => Some(crate::rsh_response::RshResponse::new(
+            sr,
+            lr,
+            k_mix.sr,
+            k_mix.lr,
+            k_mix.omega,
+        )),
+        _ => None,
+    }
+}
+
+/// The density-fitted J/K setup of every driver: the RI-J / RI-K fitters on
+/// `jk_route`'s aux bases (timed as `setup:df_fitters`; one shared
+/// `PreparedBasis` when the two names agree, see `build_df_jk`), and the
+/// record of the builders that actually produced the energy, so the analytic
+/// gradient differentiates this energy instead of re-deriving the aux
+/// resolution. The record is `None` when nothing is fitted: an all-exact
+/// run's gradient path is untouched. `xc_k_mix` is the functional's mix, or
+/// `None` without a molecular functional (it picks the RI-J precision site).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_df_fitters<'a>(
+    phases: &mut PhaseAccumulator,
+    ctx: &'a ParallelContext,
+    mol: &Molecule,
+    op: ferric_integrals::operator::Operator,
+    prep: &PreparedBasis,
+    config: &RhfConfig,
+    jk_route: &crate::fock_assembly::JkRoute,
+    env: &ScfEnv<'_>,
+    xc_k_mix: Option<KMix>,
+) -> Result<DfFitters<'a>, FerricError> {
+    let df_fitters_t = phases.begin("setup:df_fitters");
+    crate::raw_handoff::clear_slot(config);
+    let (df_j, df_k) = crate::raw_handoff::with_metric_capture(config, || {
+        crate::fock_assembly::build_df_jk(
+            ctx,
+            mol,
+            op,
+            prep,
+            jk_route.j_aux.as_deref(),
+            jk_route.k_aux.as_deref(),
+            env.ooc_budget,
+            config.integral_thresh,
+            config.resolved_ri_j_precision(crate::df_j::ri_j_site(prep.nbasis(), xc_k_mix)),
+            crate::df_k::RiKPrecision::resolve(config.ri_k_precision, prep.nbasis()),
+        )
+    })?;
+    phases.stop(df_fitters_t);
+    let df_jk_route = jk_route
+        .record(
+            op,
+            env.ooc_budget,
+            df_j.as_ref()
+                .map_or(crate::df_j::RiJPrecision::F64, |j| j.precision()),
+        )
+        .map(|r| {
+            // The precision the K tensor(s) were ACTUALLY stored at: the ω = 0
+            // DfK, else the SR fitter of a range-separated pair.
+            let stored = df_k
+                .as_ref()
+                .map(|k| k.precision())
+                .or_else(|| env.dfk_sr.as_ref().map(|k| k.borrow().precision()))
+                .unwrap_or(crate::df_k::RiKPrecision::F64);
+            r.with_ri_k_precision(stored)
+        });
+    Ok((df_j, df_k, df_jk_route))
+}
+
+/// What [`build_df_fitters`] returns: RI-J, the ω = 0 RI-K, and the route
+/// record.
+pub(crate) type DfFitters<'a> = (
+    Option<crate::split_rij::RiJ<'a>>,
+    Option<DfK<'a>>,
+    Option<crate::result::DfJkRoute>,
+);
+
+/// Mixed `dfj-pack`/`dfk-occ` builds only while the density moves, and an
+/// f64 exit (see `crate::jk_ladder`); inert unless one of them is requested.
+pub(crate) fn jk_ladder(df_j: bool, df_k: bool, env: &ScfEnv<'_>) -> crate::jk_ladder::JkLadder {
+    crate::jk_ladder::JkLadder::new([df_j, df_k, env.dfk_sr.is_some(), env.dfk_lr.is_some()])
+}
+
+/// The trust-region augmented-Hessian (TRAH) bookkeeping a driver carries
+/// across iterations (opt-in; inert when `config.trah_trigger` is `None`).
+///
+/// `state` carries the radius and the pending ρ assessment across SCF
+/// iterations (see `crate::trah::TrahState` for why ρ must span two).
+/// `undo` holds the orbitals the pending step departed FROM (`U` is the
+/// driver's undo payload), so a rejected step can be exactly undone. Both
+/// stay `None` when `config.trah_trigger` is `None`, which is what makes the
+/// disabled path allocation-free and bit-identical.
+pub(crate) struct TrahLoop<U> {
+    pub(crate) state: Option<crate::trah::TrahState>,
+    pub(crate) undo: Option<U>,
+    /// Set on the iteration a TRAH step is rejected; consumed at the next
+    /// iteration's arming gate (`crate::trah::settle_engaged_latch`).
+    last_rejected: bool,
+    /// TRAH keeps control from its first step until it declines a step as
+    /// worthless or its radius collapses -- see the drivers' arming gates.
+    pub(crate) engaged: bool,
+}
+
+/// What [`TrahLoop::arm`] decided for this iteration.
+pub(crate) struct TrahArm {
+    /// A TRAH step runs this iteration.
+    pub(crate) runs: bool,
+    /// The previous iteration rejected a step (see `settle_engaged_latch`).
+    pub(crate) after_rejection: bool,
+    /// The trust radius has collapsed.
+    pub(crate) collapsed: bool,
+}
+
+impl<U> TrahLoop<U> {
+    pub(crate) fn new(config: &RhfConfig) -> Self {
+        TrahLoop {
+            state: config
+                .trah_trigger
+                .map(|_| crate::trah::TrahState::new(config.trah)),
+            undo: None,
+            last_rejected: false,
+            engaged: false,
+        }
+    }
+
+    /// A TRAH step runs only if TRAH is `armed` AND the radius has not
+    /// collapsed. Both conditions are computed ONCE here, because the
+    /// "discard a stale prediction" rule must key off exactly the same
+    /// condition as "take a step": if the radius collapses while a
+    /// prediction is pending, DIIS resumes, and a later re-arm would
+    /// otherwise score that stale prediction against an energy produced by
+    /// DIIS steps in between — a ρ built from two unrelated points.
+    pub(crate) fn arm(&mut self, armed: bool) -> TrahArm {
+        let collapsed = self.state.as_ref().is_some_and(|s| s.collapsed());
+        let runs = armed && !collapsed;
+        let after_rejection =
+            crate::trah::settle_engaged_latch(&mut self.engaged, &mut self.last_rejected, runs);
+        if let Some(st) = self.state.as_mut() {
+            if !runs {
+                if st.has_pending() {
+                    crate::trah::note_trah_prediction_discarded();
+                }
+                st.clear_pending();
+                self.undo = None;
+            }
+        }
+        TrahArm {
+            runs,
+            after_rejection,
+            collapsed,
+        }
+    }
+
+    /// Phase 1: score the pending step against `energy`, the energy at the
+    /// density that step produced. `on_rho` receives ρ when a verdict was
+    /// reached.
+    ///
+    /// `assess` returns None when NOTHING was pending — the first armed
+    /// iteration, and the iteration right after a rejection (which consumed
+    /// its pending step and skipped Phase 2). That is not an acceptance:
+    /// treating it as one and then printing the PERSISTENT `last_rho` made
+    /// the trace show a frozen ρ repeated across a reject/"accept"
+    /// alternation that was not happening. Keep the Option so "no verdict"
+    /// stays distinguishable from "accepted".
+    pub(crate) fn assess(
+        &mut self,
+        energy: f64,
+        iter: usize,
+        on_rho: impl FnOnce(f64),
+    ) -> Option<crate::trah::TrahVerdict> {
+        let verdict = self.state.as_mut().and_then(|st| st.assess(energy));
+        let rho = self.state.as_ref().and_then(|s| s.last_rho);
+        if let (Some(_), Some(rho)) = (verdict, rho) {
+            on_rho(rho);
+        }
+        if crate::rhf::scf_trace() {
+            if let (Some(v), Some(rho)) = (verdict, rho) {
+                eprintln!(
+                    "TRAH iter={iter}: rho={rho:.6} verdict={v:?} \
+                     Delta={:.3e} acc={} rej={}",
+                    self.state.as_ref().map(|s| s.radius()).unwrap_or(0.0),
+                    self.state.as_ref().map(|s| s.accepted).unwrap_or(0),
+                    self.state.as_ref().map(|s| s.rejected).unwrap_or(0),
+                );
+            }
+        }
+        verdict
+    }
+
+    /// A rejected step: count it, latch the rejection, and hand back the
+    /// orbitals to restore. `engaged` is already set: the rejected step set
+    /// it when it was taken, and only a hand-off or a decline (both of which
+    /// clear the pending prediction) releases it. So the restored point
+    /// stays armed whatever its err_max.
+    pub(crate) fn reject(&mut self, iter: usize) -> Option<U> {
+        crate::trah::note_trah_rejection();
+        self.last_rejected = true;
+        let undo = self.undo.take();
+        if undo.is_some() && crate::rhf::scf_trace() {
+            eprintln!(
+                "TRAH iter={iter}: REJECTED (ρ={:.3e}), restoring orbitals, Δ→{:.3e}",
+                self.state.as_ref().and_then(|s| s.last_rho).unwrap_or(0.0),
+                self.state.as_ref().map(|s| s.radius()).unwrap_or(0.0)
+            );
+        }
+        undo
+    }
+}
+
+/// The per-iteration records of every driver, from values the loop already
+/// computed (nothing is computed for them and nothing is read back, so the
+/// energy is bit-identical with both on or off, `tests/runlog_bit_identity.rs`).
+///
+/// - The machine-readable run-log record (`crate::runlog`), streamed and
+///   flushed NOW: a run killed at iteration 90 of 100 must leave the first
+///   90 on disk. `label` names the method ("rhf", "uks", ...); `grad_rms` is
+///   `None` where a driver forms only commutator maxima, never an RMS
+///   (reporting a fabricated 0 would be worse than "not measured here").
+/// - Live progress for a user watching a long-running job (opt-in via
+///   `config.verbose`: CLI `--verbose`/`-v`, or TOML `[scf] verbose = true`),
+///   printed to STDOUT as `<prefix> iter=...` (normal-operation progress,
+///   not a warning), unlike the `FERRIC_SCF_TRACE` debug channel (stderr,
+///   separately gated).
+///
+/// Both are rank-0-only under MPI, so ranks > 0 never emit duplicate lines
+/// or interleave duplicate records into one file.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn log_scf_iter(
+    ctx: &ParallelContext,
+    config: &RhfConfig,
+    (label, prefix): (&str, &str),
+    iter: usize,
+    (energy, de): (f64, f64),
+    mon: &ScfMonitor,
+    err_max: f64,
+    grad_rms: Option<f64>,
+) {
+    if !ctx.is_root() {
+        return;
+    }
+    if let Some(rl) = crate::runlog::log() {
+        rl.scf_iter(
+            label,
+            crate::runlog::current_rung(),
+            iter,
+            energy,
+            de,
+            mon.dp_rms,
+            mon.dp_max,
+            err_max,
+            grad_rms,
+        );
+    }
+    if config.verbose {
+        println!(
+            "{prefix} iter={iter:4}  E={energy:.10}  dE={de:.3e}  dp_rms={:.3e}  err_max={err_max:.3e}",
+            mon.dp_rms
+        );
+    }
 }
 
 /// Whether `config` gets the automatic meta-GGA level shift: a meta-GGA
