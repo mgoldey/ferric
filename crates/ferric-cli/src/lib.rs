@@ -667,6 +667,12 @@ pub fn run(args: Vec<String>) {
         eprintln!("error: {e}");
         std::process::exit(1);
     }
+    // The open-shell SCF drivers read neither `[scf] diis` (energy-based
+    // flavours) nor `smearing_sigma`: refuse them rather than ignore them.
+    if let Err(e) = cfg.validate_open_shell_scf_keys(mol.multiplicity) {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    }
     let bs = if let Some(name) = &cfg.basis.name {
         basis::bundled(name)
     } else if let Some(path) = &cfg.basis.path {

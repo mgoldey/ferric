@@ -4456,6 +4456,47 @@ impl Config {
         ))
     }
 
+    /// Refuse the `[scf]` keys the open-shell SCF drivers (UHF/UKS, ROHF/ROKS)
+    /// never read, when the run is open-shell: `kind = "uhf"`/`"rohf"`, or any
+    /// kind on a molecule with `multiplicity > 1` (its reference is UHF).
+    ///
+    /// * `[scf] diis = "adiis" | "ediis"`: the open-shell solvers always run
+    ///   plain Pulay DIIS (the energy-based variants exist for the closed-shell
+    ///   driver only). `diis = "pulay"` is what they run, so it is admitted.
+    /// * `[scf] smearing_sigma`: Fermi-Dirac smearing is closed-shell only; the
+    ///   open-shell drivers keep integer occupations.
+    ///
+    /// A silently ignored convergence aid reads as "set, and it did not help".
+    /// Honouring either is a solver change (the energy-based DIIS history and
+    /// the fractional-occupation density are not one-line wire-ups there).
+    pub fn validate_open_shell_scf_keys(&self, multiplicity: usize) -> Result<(), String> {
+        let kind = self.method.kind.as_str();
+        if multiplicity <= 1 && !matches!(kind, "uhf" | "rohf") {
+            return Ok(());
+        }
+        let what = if multiplicity > 1 {
+            format!("multiplicity = {multiplicity}")
+        } else {
+            format!("method.kind = \"{kind}\"")
+        };
+        if self.scf.diis_flavor()? != ferric_scf::diis::DiisFlavor::Pulay {
+            return Err(format!(
+                "[scf] diis = {:?} is not supported for an open-shell reference ({what}): \
+                 UHF/UKS and ROHF/ROKS always run plain Pulay DIIS, so the key would be \
+                 silently ignored. Remove it (or use diis = \"pulay\")",
+                self.scf.diis
+            ));
+        }
+        if self.scf.smearing_sigma.is_some() {
+            return Err(format!(
+                "[scf] smearing_sigma is not supported for an open-shell reference ({what}): \
+                 Fermi smearing is implemented for the closed-shell solver only, so the key \
+                 would be silently ignored. Remove it"
+            ));
+        }
+        Ok(())
+    }
+
     /// Refuse a `[scf]`/`[rpa]` setting that the selected `method.task` path
     /// never reads, or reads inconsistently.
     ///
@@ -5546,6 +5587,42 @@ mod compat_guard_tests {
                 assert!(e.contains("task = \"energy\" only"), "{kind}/{task}: {e}");
             }
         }
+    }
+
+    /// `[scf] diis` (energy-based flavours) and `smearing_sigma` are read by
+    /// the closed-shell driver only. On an open-shell run they were silently
+    /// ignored; they are refused, and the same keys on a closed-shell run, and
+    /// the keys the open-shell solvers do read, still pass.
+    #[test]
+    fn open_shell_runs_refuse_the_closed_shell_only_scf_keys() {
+        for kind in ["uhf", "rohf"] {
+            for (key, needle) in [
+                ("diis = \"adiis\"", "[scf] diis"),
+                ("diis = \"ediis\"", "[scf] diis"),
+                ("smearing_sigma = 0.01", "[scf] smearing_sigma"),
+            ] {
+                let c = cfg(kind, "energy", &format!("[scf]\n{key}\n"));
+                let e = c.validate_open_shell_scf_keys(1).expect_err(key);
+                assert!(e.contains(needle), "{kind} {key}: {e}");
+            }
+        }
+        // A multiplicity > 1 run of a post-SCF kind reaches UHF too.
+        let c = cfg("rimp2", "energy", "[scf]\nsmearing_sigma = 0.01\n");
+        assert!(c.validate_open_shell_scf_keys(2).is_err());
+        // Reachability: closed-shell runs, plain Pulay, and the keys the
+        // open-shell drivers read all pass.
+        let c = cfg(
+            "rhf",
+            "energy",
+            "[scf]\ndiis = \"adiis\"\nsmearing_sigma = 0.01\n",
+        );
+        assert!(c.validate_open_shell_scf_keys(1).is_ok());
+        let c = cfg(
+            "uhf",
+            "energy",
+            "[scf]\ndiis = \"pulay\"\nlevel_shift = 0.2\nmom_after_iter = 5\n",
+        );
+        assert!(c.validate_open_shell_scf_keys(2).is_ok());
     }
 
     /// Reachability: a guard that refused everything would pass the test
