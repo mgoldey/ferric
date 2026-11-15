@@ -24,7 +24,7 @@ from pathlib import Path
 
 import pytest
 
-pytest.importorskip("sympy", reason="the derivation proofs need sympy")
+import sympy  # noqa: F401  (a missing sympy must fail, not skip)
 
 SCRIPTS = Path(__file__).resolve().parents[3] / "scripts"
 

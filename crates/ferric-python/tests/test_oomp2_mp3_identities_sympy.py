@@ -15,9 +15,7 @@ from pathlib import Path
 
 import pytest
 
-pytest.importorskip(
-    "sympy", reason="sympy is needed to run the second-quantization identities"
-)
+import sympy  # noqa: F401  (a missing sympy must fail, not skip)
 
 SCRIPT = (
     Path(__file__).resolve().parents[3] / "scripts" / "oomp2_mp3_identities_sympy.py"

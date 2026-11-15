@@ -3,13 +3,16 @@
 This module implements the Restricted Hartree-Fock (RHF) method and associated optimization techniques.
 
 ## Hartree-Fock Equations
-The RHF energy is given by:
-$$E_{HF} = 2 \sum_i H_{ii} + \sum_{ij} [2(ii|jj) - (ij|ij)] + V_{nn}$$
-where $H$ is the core Hamiltonian.
-
-The Fock matrix in the AO basis is:
-$$F_{\mu\nu} = H_{\mu\nu} + \sum_{\lambda\sigma} D_{\lambda\sigma} [2(\mu\nu|\lambda\sigma) - (\mu\lambda|\nu\sigma)]$$
-where $D_{\lambda\sigma} = \sum_i C_{\lambda i} C_{\sigma i}$ is the density matrix.
+The closed-shell density carries the occupation 2,
+$D_{\lambda\sigma} = 2\sum_i C_{\lambda i} C_{\sigma i}$, as in the code.
+The RHF energy is
+$$E_{HF} = 2 \sum_i H_{ii} + \sum_{ij} [2(ii|jj) - (ij|ij)] + V_{nn}
+= \tfrac12\,\mathrm{tr}[D(H + F)] + V_{nn},$$
+where $H$ is the core Hamiltonian, and the Fock matrix in the AO basis is
+$$F_{\mu\nu} = H_{\mu\nu} + \sum_{\lambda\sigma} D_{\lambda\sigma}
+\left[(\mu\nu|\lambda\sigma) - \tfrac12(\mu\lambda|\nu\sigma)\right],$$
+i.e. $F = H + J(D) - \tfrac12 K(D)$. The next section derives these and the
+open-shell forms.
 
 ## Hartree-Fock energy functionals (RHF, UHF, ROHF)
 
@@ -29,7 +32,7 @@ Both are linear and, by the 8-fold symmetry, satisfy
 $\mathrm{tr}[A\,J(B)] = \mathrm{tr}[B\,J(A)]$ and the same for $K$.
 
 **RHF.** The code's closed-shell density carries the occupation 2,
-$D = 2\,C_o C_o^{\mathsf T}$ (so it is twice the $D$ of the section above).
+$D = 2\,C_o C_o^{\mathsf T}$.
 The energy is
 $$E[D] = \mathrm{tr}(D h) + \tfrac12 \mathrm{tr}[D\,J(D)] - \tfrac14 \mathrm{tr}[D\,K(D)] + E_{nn}.$$
 Differentiating with the trace symmetry gives the Fock matrix

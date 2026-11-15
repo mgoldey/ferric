@@ -152,3 +152,23 @@ def test_gaps_only_shrink():
         assert not (theory and scripts), (
             f"gap {mid} has a theory section and a run script: move it to methods"
         )
+
+
+def test_runners_are_collected_without_the_extension():
+    """conftest.py ignores every test module when ferric is missing, except
+    the EXTENSION_FREE ones; a proof runner outside that set would pass by
+    running nothing."""
+    conftest = (TESTS / "conftest.py").read_text()
+    block = re.search(r"EXTENSION_FREE = frozenset\((.*?)\)\n", conftest, re.S)
+    exempt = set(re.findall(r'"([^"]+\.py)"', block.group(1)))
+    runners = _runner_sources()
+    scripts = {
+        Path(s).name
+        for entry in _registry()["methods"].values()
+        for s in entry["scripts"]
+    }
+    for script in scripts:
+        hosts = {n for n, src in runners.items() if script in src} - {
+            "test_derivation_registry.py"
+        }
+        assert hosts & exempt, f"{script} is run only by {sorted(hosts)}"
