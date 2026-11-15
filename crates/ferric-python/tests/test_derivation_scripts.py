@@ -799,6 +799,27 @@ CASES = [
         ],
     ),
     (
+        "cosmo_sympy.py",
+        20,
+        [
+            (
+                'return np.einsum("k,kmn->mn", q, m)',
+                'return 0.5 * np.einsum("k,kmn->mn", q, m)',
+                "FAIL C2 Tr[V dP]",
+            ),
+            (
+                "return (eps - 1) / (eps + sp.Rational(1, 2))",
+                "return (eps - 1) / eps",
+                "FAIL C3 f = Kirkwood",
+            ),
+            (
+                "return xk * xl / np.sqrt(xk * xk + xl * xl)",
+                "return xk * xl / (xk + xl)",
+                "FAIL C4 Gaussian S",
+            ),
+        ],
+    ),
+    (
         "pcm_ief_sympy.py",
         150,
         [

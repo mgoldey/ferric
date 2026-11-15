@@ -340,7 +340,7 @@ Code references are `crate/src/file.rs::item` under `crates/`.
 | 22.2 | The IEF-PCM operators, the symmetrized solve and the sphere limits | T pcm §3–5; S `pcm_ief_sympy.py`; R pcm | `ferric-pcm/src/solver.rs::solve_pcm_charges` | ready |
 | 22.3 | The reaction field in the Fock matrix | T pcm §7 | `ferric-pcm/src/potential.rs::{solute_potential_at_tesserae,build_reaction_field_operator}` | ready |
 | 22.4 | Nuclear gradient | T pcm §8; S `pcm_ief_sympy.py`; R pcm-gradient | `ferric-pcm/src/gradient.rs::pcm_gradient` | ready |
-| 22.5 | The conductor limit and COSMO | T pcm §6; R cosmo *gap* | `ferric-scf/src/cosmo.rs::{cosmo_reaction_field,f_epsilon}` | gap |
+| 22.5 | The conductor limit and COSMO | T pcm §6, T scf "COSMO reaction field"; S `cosmo_sympy.py`; R cosmo | `ferric-scf/src/cosmo.rs::{cosmo_reaction_field,f_epsilon}` | edit |
 
 **Chapter 23. Embedding and QM/MM**
 
@@ -452,13 +452,13 @@ registry row and are the largest block of `gap` sections.
 | VIII. Multireference | 5 | 0 | 1 | 0 | 6 |
 | IX. RPA, PDEP and GW | 12 | 1 | 1 | 1 | 15 |
 | X. Response and excited states | 7 | 1 | 1 | 0 | 9 |
-| XI. Environment | 5 | 0 | 4 | 0 | 9 |
+| XI. Environment | 5 | 1 | 3 | 0 | 9 |
 | XII. Periodic systems | 7 | 2 | 0 | 0 | 9 |
 | XIII. Dispersion | 2 | 1 | 0 | 0 | 3 |
 | XIV. Capstone | 1 | 2 | 4 | 0 | 7 |
 | XV. Interfaces | 1 | 5 | 1 | 0 | 7 |
 | Appendices | 3 | 0 | 1 | 0 | 4 |
-| **Total** | **87** | **44** | **21** | **7** | **159** |
+| **Total** | **87** | **45** | **20** | **7** | **159** |
 
 159 sections: 55% `ready`, 28% `edit`, 13% `gap` and 4% `verify`.
 <!-- status-table:end -->

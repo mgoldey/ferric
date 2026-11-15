@@ -912,12 +912,17 @@
         "scripts/opmp3_identities_sympy.py",
         "scripts/ump3_spin_blocks_sympy.py"
       ]
+    },
+    "cosmo": {
+      "theory": [
+        "crates/ferric-scf/theory.md#cosmo-reaction-field"
+      ],
+      "scripts": [
+        "scripts/cosmo_sympy.py"
+      ]
     }
   },
   "gaps": {
-    "cosmo": {
-      "reason": "no theory.md derivation and no sympy proof (PCM theory.md section 6 covers the conductor limit)"
-    },
     "double-hybrid": {
       "reason": "owned elsewhere: the double-hybrid grading branch writes its derivation"
     },

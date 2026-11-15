@@ -1043,3 +1043,97 @@ the RHF $G$ of the closed-shell factored route.
 
 Proof: `scripts/hessian_factored_k_sympy.py` (F1, F3 symbolic; F2, F4, F5
 against the explicit four-index exchange).
+
+## COSMO reaction field
+
+`cosmo.rs` implements the conductor-like screening model (Klamt and
+Schüürmann, J. Chem. Soc. Perkin Trans. 2, 799 (1993)) as a density-dependent
+term folded into the Fock matrix every iteration (`driver::solvent_terms`).
+The equations below are the ones `cosmo_reaction_field` evaluates.
+
+**Segment potential.** For a cavity of $N$ segments at $\mathbf{s}_k$ and the
+total AO density $\mathbf{P} = \sum_\sigma \mathbf{D}_\sigma$,
+
+$$v_k = \sum_{A} \frac{Z^{\rm eff}_A}{|\mathbf{s}_k - \mathbf{R}_A|}
+ + \sum_{\mu\nu} P_{\mu\nu} M_{k,\mu\nu},
+\qquad
+M_{k,\mu\nu} = \Big\langle \mu \Big| \frac{-1}{|\mathbf{r} - \mathbf{s}_k|} \Big| \nu \Big\rangle ,$$
+
+where $M_k$ is the nuclear-attraction engine block with a $+1$ probe at
+$\mathbf{s}_k$, $Z^{\rm eff}_A$ is `Atom::effective_z` (valence charge on an
+ECP atom) and ghost atoms are skipped. The probe is a point: the potential is
+not smeared over the segment's Gaussian.
+
+**Charges.** With the symmetric segment matrix $\mathbf{S}$ and the
+dielectric factor
+
+$$f(\varepsilon) = \frac{\varepsilon - 1}{\varepsilon + \tfrac12}
+ = \frac{2(\varepsilon-1)}{2\varepsilon+1},$$
+
+the code solves $\mathbf{S}\mathbf{q} = -f\,\mathbf{v}$ by one LU solve
+(`CosmoConfig::f_epsilon`). $f$ is Kirkwood's $k_1$: $f(1) = 0$ (vacuum) and
+$f \to 1$ as $\varepsilon \to \infty$, where the equation becomes the
+conductor condition $\mathbf{S}\mathbf{q} = -\mathbf{v}$ (the $f = 1$ limit of
+IEF-PCM, `crates/ferric-pcm/theory.md` section 6). C-PCM's $(\varepsilon-1)/\varepsilon$
+is not used.
+
+**Energy and Fock term.** With $\mathbf{Q} = -f\mathbf{S}^{-1}$,
+
+$$E_{\rm cosmo} = \tfrac12\,\mathbf{q}\cdot\mathbf{v}
+ = -\tfrac{f}{2}\,\mathbf{v}^{\mathsf T}\mathbf{S}^{-1}\mathbf{v},
+\qquad
+V^{\rm cosmo}_{\mu\nu} = \frac{\partial E_{\rm cosmo}}{\partial P_{\mu\nu}}
+ = -f\,(\mathbf{S}^{-1}\mathbf{v})\cdot\frac{\partial \mathbf{v}}{\partial P_{\mu\nu}}
+ = \sum_k q_k M_{k,\mu\nu}.$$
+
+The middle step uses $\mathbf{S} = \mathbf{S}^{\mathsf T}$; for a
+non-symmetric matrix the derivative would be
+$-\tfrac f2[(\mathbf{S}^{-1} + \mathbf{S}^{-\mathsf T})\mathbf{v}]\cdot\partial\mathbf{v}/\partial P$
+and $\sum_k q_kM_k$ would not be it. There is no factor $\tfrac12$ in
+$V^{\rm cosmo}$: the $\tfrac12$ of the energy cancels against the two factors
+of $\mathbf{v}$. $E_{\rm cosmo}$ depends on the spins only through
+$\mathbf{P}$, so the same $V^{\rm cosmo}$ is added to every spin Fock matrix,
+and $E_{\rm cosmo}$ is added to the SCF energy outside the
+$\tfrac12\mathrm{Tr}[\mathbf{P}(\mathbf{h}+\mathbf{F})]$ trace (the trace is
+taken before $V^{\rm cosmo}$ enters $\mathbf{F}$). $E_{\rm cosmo}$ includes the
+nuclear part of $\mathbf{v}$, so it is the full electrostatic solvation term
+of the solute. For a positive definite $\mathbf{S}$, $E_{\rm cosmo} \le 0$.
+
+**Segment matrix.** `SMatrixKind::GaussianSmeared` (the default, PySCF's
+`pcm.py` form) treats segment $k$ as the unit Gaussian
+$(\xi_k^2/\pi)^{3/2}e^{-\xi_k^2|\mathbf{r}-\mathbf{s}_k|^2}$ with
+$\xi_k = \Xi_{N_{\rm Leb}}/(R_A\sqrt{4\pi w_k})$ (`gaussian_xi_table`, $w_k$ the
+ferric Lebedev weight, which sums to 1):
+
+$$S_{kl} = \frac{\operatorname{erf}(\xi_{kl} r_{kl})}{r_{kl}},
+\quad \xi_{kl} = \frac{\xi_k\xi_l}{\sqrt{\xi_k^2+\xi_l^2}},
+\qquad
+S_{kk} = \frac{\xi_k\sqrt{2/\pi}}{\mathrm{swf}_k}.$$
+
+The off-diagonal element is the Coulomb energy of the two Gaussians
+($1/\xi_{kl}^2 = 1/\xi_k^2 + 1/\xi_l^2$), and $\xi_k\sqrt{2/\pi}$ is a Gaussian's
+self-energy, the $r\to0$ limit of $\operatorname{erf}(\xi r/\sqrt2)/r$. The
+self term is divided by the segment's switching weight $\mathrm{swf}_k$, the
+product of the smooth switching functions $h$ of every other atom's sphere
+(`ferric_pcm::cavity::switch_h`), so a segment fading out of the surface
+costs more to charge. `SMatrixKind::PointCharge` has $S_{kl} = 1/r_{kl}$,
+the $\xi\to\infty$ limit of the Gaussian form, and the Klamt–Schüürmann
+diagonal $S_{kk} = 3.8\sqrt{4\pi/a_k}$ with the switched area
+$a_k = 4\pi R_A^2 w_k\,\mathrm{swf}_k$; the constant 3.8 is a model constant,
+not derived here. Segments with $w_k\,\mathrm{swf}_k \le 10^{-16}$ are
+dropped; the radii are Bondi radii times `radius_scale` (default 1.17).
+
+**No gradient.** There is no COSMO nuclear gradient.
+`gradient::refuse_cosmo_gradient` stops every gradient dispatcher, geometry
+optimization, saddle search, IRC and finite-difference-of-gradient frequency
+run on a COSMO SCF. The derivative of $E_{\rm cosmo}$ with respect to the
+nuclei would need $\partial\mathbf{S}/\partial\mathbf{R}$ (segments move with
+their atoms, and $\mathrm{swf}_k$ and $\xi_k$ change), the derivative of
+$M_k$ with respect to both basis centres and segment positions, and the
+nuclear part of $\mathbf{v}$; none of it is implemented.
+
+Proof: `scripts/cosmo_sympy.py` (C1 the Fock term as $\partial E/\partial P$
+in symbols; C2 the same against a finite difference of $E(\mathbf{P})$ on a
+Gaussian $\mathbf{S}$, with $V/2$ and a non-symmetric $\mathbf{S}$ as negative
+controls; C3 $f = k_1$ and its limits; C4 the Gaussian $S_{kl}$ and $S_{kk}$
+against a Fourier-space Coulomb quadrature, and the point-charge limit).

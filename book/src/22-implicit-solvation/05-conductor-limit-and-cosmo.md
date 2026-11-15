@@ -1,7 +1,7 @@
 # 22.5 The conductor limit and COSMO
 
-<!-- section: 22.5; status: gap; registry: cosmo;
-     theory: crates/ferric-pcm/theory.md#"6. Conductor limit and COSMO" -->
+<!-- section: 22.5; status: edit; registry: cosmo;
+     theory: crates/ferric-pcm/theory.md#"6. Conductor limit and COSMO"; crates/ferric-scf/theory.md#"COSMO reaction field" -->
 
 A perfect conductor screens a charge completely: the potential on its surface
 is constant, and with the right reference, zero. Replacing the dielectric by a
@@ -11,9 +11,9 @@ conductor-like screening model, solves that system and rescales the answer by
 a function of $\varepsilon$ to account for a real, finite dielectric.
 
 This section has two halves. The limit of the IEF-PCM operators is derived and
-proved in `ferric-pcm`. The COSMO driver in `ferric-scf` has no `theory.md`
-text and no proof script yet, so its equations here are read from the code and
-marked unverified.
+proved in `ferric-pcm`. The COSMO driver in `ferric-scf` is derived in
+`crates/ferric-scf/theory.md` ("COSMO reaction field") and proved in
+`scripts/cosmo_sympy.py`.
 
 | Symbol | Meaning | Code name |
 |---|---|---|
@@ -64,14 +64,33 @@ IEF-PCM machinery's conventions where it can. Per SCF iteration it computes
 the segment potential, solves the symmetric system, and returns the operator
 and energy.
 
-**Equation 22.9, the COSMO charges, energy and operator.** (Transcribed from the code loop; see Known limits.)
+<!-- include: crates/ferric-scf/theory.md#"COSMO reaction field" -->
 
-$$ S\,q = -f_{1/2}(\varepsilon)\,v, \qquad f_{1/2}(\varepsilon) = \frac{\varepsilon-1}{\varepsilon+\tfrac12}, \qquad E_{\mathrm{cosmo}} = \tfrac12\,q\cdot v, \qquad V^{\mathrm{cosmo}}_{\mu\nu} = \sum_k q_k M_{k,\mu\nu} . $$
+> **Verified equation 22.9** · the COSMO charges, energy and operator
+>
+> $$ S\,q = -f_{1/2}(\varepsilon)\,v, \qquad f_{1/2}(\varepsilon) = \frac{\varepsilon-1}{\varepsilon+\tfrac12}, \qquad E_{\mathrm{cosmo}} = \tfrac12\,q\cdot v, \qquad V^{\mathrm{cosmo}}_{\mu\nu} = \sum_k q_k M_{k,\mu\nu} = \frac{\partial E_{\mathrm{cosmo}}}{\partial P_{\mu\nu}} . $$
+>
+> The Fock term is the density derivative of the energy with no factor
+> $\tfrac12$, because $S$ is symmetric: in symbols on two segments and two
+> AOs (claim C1), and against a central difference of $E_{\mathrm{cosmo}}(P)$
+> on a Gaussian-smeared $S$ (claim C2, where $V/2$ and a non-symmetric $S$
+> miss). $f_{1/2}$ is Kirkwood's $k_1$, zero at $\varepsilon = 1$ and $1$ in
+> the conductor limit (claim C3). The Gaussian $S_{kl}$ and $S_{kk}$ are the
+> Coulomb energies of unit Gaussians, checked against a Fourier-space
+> quadrature, and tend to the point-charge $1/r_{kl}$ (claim C4).
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/cosmo_sympy.py`, claims C1 to C4 |
+> | Negative control | the runner halves the Fock term (C2 fails), uses C-PCM's $(\varepsilon-1)/\varepsilon$ (C3 fails) and combines $\xi_{kl}$ wrongly (C4 fails) |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-scf/src/cosmo.rs::cosmo_reaction_field` |
+> | Code test | `cosmo_matches_vacuum_in_the_trivial_limit` in `crates/ferric-scf/tests/validation_cosmo.rs` |
+>
+> <!-- verified: id=cosmo.reaction.field; script=scripts/cosmo_sympy.py; claim=C2; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/cosmo.rs::cosmo_reaction_field; rust_test=ferric-scf/tests/validation_cosmo.rs::cosmo_matches_vacuum_in_the_trivial_limit; registry=cosmo -->
 
 $S$ is symmetric, so $q$ is already the symmetric response and no
-symmetrization is needed. The operator is the density derivative of
-$E_{\mathrm{cosmo}}$ by the argument of equation 22.6 with
-$Q = -f_{1/2}S^{-1}$ in place of $Q_{\mathrm{sym}}$.
+symmetrization is needed.
 
 The solve and the energy are three lines of
 `ferric-scf/src/cosmo.rs::cosmo_reaction_field`:
@@ -160,13 +179,13 @@ formulation difference to stock PySCF, whose potential is Gaussian.
 |---|---|
 | `crates/ferric-pcm/theory.md`, section 6 | the conductor limit and the finite-$\varepsilon$ factors |
 | `scripts/pcm_ief_sympy.py`, claims 3 and 4 | the limit and the Kirkwood comparison |
-| `crates/ferric-scf/src/cosmo.rs` | the driver (no `theory.md` text) |
+| `crates/ferric-scf/theory.md`, "COSMO reaction field" | the driver's equations, the $S$ matrices and why there is no gradient |
+| `scripts/cosmo_sympy.py`, claims C1 to C4 | the Fock term, $f(\varepsilon)$ and the Gaussian $S$ |
+| `crates/ferric-scf/src/cosmo.rs` | the driver |
 | `crates/ferric-scf/tests/validation_cosmo.rs`, `crates/ferric-scf/tests/cosmo_gradient_refusal.rs` | the PySCF comparison and the gradient refusal |
 
 **Known limits (2026-11-15).**
 
-- The displayed equation 22.9 are transcribed from the code loop and await a
-  `theory.md` derivation and a sympy proof; they are not machine-checked.
 - Energy only. `ferric-scf/src/gradient.rs::refuse_cosmo_gradient` stops every
   gradient dispatcher, geometry optimization, saddle search, IRC and
   finite-difference frequency run on a COSMO SCF, because each would follow
