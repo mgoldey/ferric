@@ -5816,8 +5816,9 @@ mod tests {
     }
 
     /// Solve RHF for `(mol, basis)` on the DIRECT DirectJK path (no df aux, no
-    /// xc, default config) with the incremental Fock build ON vs OFF, holding
-    /// ENV_LOCK for the `FERRIC_SCF_INCREMENTAL` mutation. Returns
+    /// xc, `eri = Direct`, otherwise the default config) with the incremental
+    /// Fock build ON vs OFF, holding ENV_LOCK for the
+    /// `FERRIC_SCF_INCREMENTAL` mutation. Returns
     /// `(energy_incremental, iters_incremental, energy_full, iters_full)`.
     ///
     /// `FERRIC_SCF_INCREMENTAL=0`/`1` force each mode (the default depends on
@@ -5831,7 +5832,14 @@ mod tests {
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &prep).unwrap();
         let ctx = ParallelContext::default();
-        let config = RhfConfig::default();
+        // The incremental build belongs to the integral-direct builder; the
+        // in-core ERI store (`eri = Auto` takes it at these sizes) has no
+        // incremental mode, so `incremental_pays()` would be false and both
+        // solves below would be the same full rebuild.
+        let config = RhfConfig {
+            eri: crate::incore_jk::EriMode::Direct,
+            ..RhfConfig::default()
+        };
 
         // Full-rebuild-every-iteration reference.
         std::env::set_var("FERRIC_SCF_INCREMENTAL", "0");
