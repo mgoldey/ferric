@@ -50,6 +50,16 @@ impl<'py> FromPyObject<'py> for DensitySource<'py> {
     }
 }
 
+/// The molecule with `basis_set`'s ECP applied (`Atom::n_core_ecp`), as the
+/// SCF drivers apply it. The nuclear charge a property pairs with the density
+/// is `Atom::effective_z`, so a property on an ECP atom needs this; a bare
+/// `PyMolecule` carries no ECP until a basis is attached.
+fn ecp_molecule(mol: &PyMolecule, basis_set: &PyBasisSet) -> ferric_core::mol::Molecule {
+    let mut emol = mol.inner.clone();
+    emol.apply_ecp(&basis_set.inner);
+    emol
+}
+
 /// Electrostatic potential at each nucleus, in Hartree atomic units (e/Bohr).
 /// `result` is an `RhfResult` or `DftResult` from a converged SCF.
 #[pyfunction]
@@ -58,8 +68,9 @@ pub(crate) fn esp_at_atoms(
     basis_set: &PyBasisSet,
     result: DensitySource,
 ) -> PyResult<Vec<f64>> {
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    ferric_rpa::properties::esp_at_atoms(&mol.inner, &prep, result.density()).map_err(make_err)
+    let emol = ecp_molecule(mol, basis_set);
+    let prep = PreparedBasis::new(&emol, &basis_set.inner).map_err(make_err)?;
+    ferric_rpa::properties::esp_at_atoms(&emol, &prep, result.density()).map_err(make_err)
 }
 
 /// Electrostatic potential at ARBITRARY points, in Hartree atomic units
@@ -79,7 +90,8 @@ pub(crate) fn esp_at_points(
     result: DensitySource,
     points: numpy::PyReadonlyArray2<f64>,
 ) -> PyResult<Vec<f64>> {
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
+    let emol = ecp_molecule(mol, basis_set);
+    let prep = PreparedBasis::new(&emol, &basis_set.inner).map_err(make_err)?;
     let arr = points.as_array();
     if arr.ncols() != 3 {
         return Err(pyo3::exceptions::PyValueError::new_err(format!(
@@ -88,8 +100,7 @@ pub(crate) fn esp_at_points(
         )));
     }
     let pts: Vec<[f64; 3]> = arr.rows().into_iter().map(|r| [r[0], r[1], r[2]]).collect();
-    ferric_scf::properties::esp_at_points(&mol.inner, &prep, result.density(), &pts)
-        .map_err(make_err)
+    ferric_scf::properties::esp_at_points(&emol, &prep, result.density(), &pts).map_err(make_err)
 }
 
 /// Electrostatic potential on a molecular van der Waals surface.
@@ -110,9 +121,10 @@ pub(crate) fn esp_on_surface<'py>(
     vdw_scale: f64,
     n_angular: usize,
 ) -> PyResult<(Bound<'py, PyArray2<f64>>, Vec<f64>, usize)> {
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
+    let emol = ecp_molecule(mol, basis_set);
+    let prep = PreparedBasis::new(&emol, &basis_set.inner).map_err(make_err)?;
     let (pts, esp, n_buried) = ferric_scf::properties::esp_on_surface_counted(
-        &mol.inner,
+        &emol,
         &prep,
         result.density(),
         vdw_scale,
@@ -175,7 +187,7 @@ impl HirshfeldJob {
     ) -> PyResult<Self> {
         Ok(Self {
             use_scf: parse_proatom(proatom)?,
-            mol: mol.inner.clone(),
+            mol: ecp_molecule(mol, basis_set),
             bs: basis_set.inner.clone(),
             density: result.density().clone(),
             config: result.scf_config().clone(),
@@ -500,8 +512,9 @@ pub(crate) fn lowdin_charges(
     basis_set: &PyBasisSet,
     result: DensitySource,
 ) -> PyResult<Vec<f64>> {
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    ferric_rpa::properties::lowdin_charges(&mol.inner, &prep, result.density()).map_err(make_err)
+    let emol = ecp_molecule(mol, basis_set);
+    let prep = PreparedBasis::new(&emol, &basis_set.inner).map_err(make_err)?;
+    ferric_rpa::properties::lowdin_charges(&emol, &prep, result.density()).map_err(make_err)
 }
 
 /// Mulliken partial charges (units of e), the standard textbook population
@@ -515,8 +528,9 @@ pub(crate) fn mulliken_charges(
     basis_set: &PyBasisSet,
     result: DensitySource,
 ) -> PyResult<Vec<f64>> {
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    ferric_rpa::properties::mulliken_charges(&mol.inner, &prep, result.density()).map_err(make_err)
+    let emol = ecp_molecule(mol, basis_set);
+    let prep = PreparedBasis::new(&emol, &basis_set.inner).map_err(make_err)?;
+    ferric_rpa::properties::mulliken_charges(&emol, &prep, result.density()).map_err(make_err)
 }
 
 /// CHELPG (CHarges from Electrostatic Potentials, Grid-based) partial
@@ -533,8 +547,9 @@ pub(crate) fn chelpg_charges(
     basis_set: &PyBasisSet,
     result: DensitySource,
 ) -> PyResult<Vec<f64>> {
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    ferric_rpa::properties::chelpg_charges(&mol.inner, &prep, result.density()).map_err(make_err)
+    let emol = ecp_molecule(mol, basis_set);
+    let prep = PreparedBasis::new(&emol, &basis_set.inner).map_err(make_err)?;
+    ferric_rpa::properties::chelpg_charges(&emol, &prep, result.density()).map_err(make_err)
 }
 
 /// RESP (Restrained ElectroStatic Potential) partial charges (units of e).
@@ -551,8 +566,9 @@ pub(crate) fn resp_charges(
     basis_set: &PyBasisSet,
     result: DensitySource,
 ) -> PyResult<Vec<f64>> {
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    ferric_rpa::properties::resp_charges(&mol.inner, &prep, result.density()).map_err(make_err)
+    let emol = ecp_molecule(mol, basis_set);
+    let prep = PreparedBasis::new(&emol, &basis_set.inner).map_err(make_err)?;
+    ferric_rpa::properties::resp_charges(&emol, &prep, result.density()).map_err(make_err)
 }
 
 /// Per-atom Hirshfeld-partitioned static dipole polarizability tensors
@@ -577,15 +593,16 @@ pub(crate) fn hirshfeld_polarizability<'py>(
     result: DensitySource,
     memory_budget_gb: Option<f64>,
 ) -> PyResult<Bound<'py, PyArray3<f64>>> {
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
+    let emol = ecp_molecule(mol, basis_set);
+    let prep = PreparedBasis::new(&emol, &basis_set.inner).map_err(make_err)?;
+    let dfbs = PreparedBasis::new(&emol, &auxbasis.inner).map_err(make_err)?;
     let op = Operator::coulomb();
     let cfg = ferric_rpa::PdepRpaConfig {
         memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
         ..Default::default()
     };
     let alpha = ferric_rpa::properties::pdep_polarizability_hirshfeld(
-        &mol.inner,
+        &emol,
         &prep,
         &basis_set.inner,
         &dfbs,

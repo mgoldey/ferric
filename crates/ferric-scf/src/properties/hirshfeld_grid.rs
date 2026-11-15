@@ -1208,7 +1208,7 @@ pub fn hirshfeld_i_charges(
         };
         let mut max_dq = 0.0_f64;
         for a in 0..natoms {
-            let q_new = mol.atoms[a].z as f64 - scale * n_e[a];
+            let q_new = mol.atoms[a].effective_z() as f64 - scale * n_e[a];
             max_dq = max_dq.max((q_new - q[a]).abs());
             q[a] = 0.5 * q[a] + 0.5 * q_new; // damped
         }
@@ -1384,6 +1384,6 @@ pub fn hirshfeld_charges(
     };
 
     Ok((0..natoms)
-        .map(|a| mol.atoms[a].z as f64 - scale * n_e_grid[a])
+        .map(|a| mol.atoms[a].effective_z() as f64 - scale * n_e_grid[a])
         .collect())
 }

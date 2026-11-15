@@ -1,0 +1,92 @@
+{
+  "row": "ESP / Mulliken / Lowdin on ECP atoms",
+  "system": "hi",
+  "basis": "def2-svp",
+  "nuclear_repulsion": 7.559674441714287,
+  "ecp_core_electrons": [
+    0,
+    28
+  ],
+  "scf_energy": -297.22428878160474,
+  "properties": {
+    "effective_z": [
+      1.0,
+      25.0
+    ],
+    "esp_at_atoms": [
+      -0.9387748512675804,
+      -27.269689838519035
+    ],
+    "mulliken_charges": [
+      0.08231471266739254,
+      -0.08231471266738666
+    ],
+    "lowdin_charges": [
+      0.010509429772634804,
+      -0.010509429772671552
+    ]
+  },
+  "provenance": {
+    "code": "PySCF",
+    "version": "2.13.1",
+    "keywords": {
+      "methods": [
+        "scf.RHF"
+      ],
+      "conv_tol": 1e-12,
+      "conv_tol_grad": 1e-09,
+      "ecp": "mol.ecp built by common.pyscf_ecp from the basis JSON",
+      "eri": "exact 4-index (no density fitting)",
+      "numpy": "1.26.4"
+    },
+    "grid": "none",
+    "aux_basis": "none",
+    "frozen_core": "none",
+    "scf_convergence": {
+      "conv_tol": 1e-12,
+      "conv_tol_grad": 1e-09
+    },
+    "stability": {
+      "internal_stable": true
+    },
+    "basis": "def2-svp",
+    "basis_json": "crates/ferric-core/src/basis/bundled/def2-svp.json",
+    "basis_sha256": "559cdaf30424e50e3956d0b9defd67f4447a263c04e09c9c9d3f43d5bdd0ecdd",
+    "ecp_json": "crates/ferric-core/src/basis/bundled/def2-svp.json",
+    "ecp_sha256": "559cdaf30424e50e3956d0b9defd67f4447a263c04e09c9c9d3f43d5bdd0ecdd",
+    "geometry_xyz": "testdata/molecules/validation/ecp/hi.xyz",
+    "geometry_xyz_sha256": "20aec50609f66afe6cf7628e6e9534421e883449a1922f9cc1a777fbb39f432e",
+    "geometry_bohr": [
+      [
+        "H",
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        "I",
+        0.0,
+        0.0,
+        3.307020717988858
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_ecp_properties.py",
+    "git_head": "6742eefa695f7d5946c90356f41a9a4db9f0cc0e",
+    "generated_utc": "2026-11-15T07:00:55+00:00",
+    "basis_self_check": {
+      "nao": 31,
+      "replica_self_overlap_max_dev": 4.440892098500626e-16,
+      "pyscf_diag_max_dev": 4.440892098500626e-16,
+      "diag_checked": 31,
+      "diag_skipped_cartesian": 0
+    },
+    "ecp_self_check": {
+      "ecp_core_electrons": [
+        0,
+        28
+      ],
+      "nelectron": 26
+    }
+  }
+}

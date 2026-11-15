@@ -237,7 +237,7 @@ pub fn esp_at_atoms(
                                 "esp_at_atoms: atoms {a} and {b} coincide"
                             )));
                         }
-                        v_nuc += atom_b.z as f64 / r;
+                        v_nuc += atom_b.effective_z() as f64 / r;
                     }
 
                     Ok(v_nuc + v_elec)
@@ -446,7 +446,7 @@ pub fn electric_field_at_atoms(
                             )));
                         }
                         let inv_r3 = 1.0 / (r2 * r);
-                        let zb = atom_b.z as f64;
+                        let zb = atom_b.effective_z() as f64;
                         e_nuc[0] += zb * dx * inv_r3;
                         e_nuc[1] += zb * dy * inv_r3;
                         e_nuc[2] += zb * dz * inv_r3;
@@ -690,7 +690,7 @@ pub fn becke_charges_chunked(
     };
 
     Ok((0..natoms)
-        .map(|a| mol.atoms[a].z as f64 - scale * n_e[a])
+        .map(|a| mol.atoms[a].effective_z() as f64 - scale * n_e[a])
         .collect())
 }
 
@@ -1158,18 +1158,16 @@ pub fn scf_proatom_provider<'a>(
 ///
 /// # Convention note
 ///
-/// Löwdin charges depend on the *AO ordering convention* of the basis set.
-/// Within a given convention the answer is well-defined and self-consistent
-/// (and conserves N_e exactly). Across conventions the per-atom split can
-/// differ — e.g. ferric (libint conventions) returns q_O = −0.48 on H2O /
-/// cc-pVDZ while PySCF returns q_O = −0.10 on the same density. Both are
-/// "Löwdin charges"; the difference reflects how each library orders d-
-/// functions (libint: l-major Cartesian or pure-spherical depending on
-/// shell setup; PySCF: spherical with its own canonical order).
-///
-/// This matters downstream only if you intend to mix Löwdin charges across
-/// engines. As a baseline for CM5 within ferric the result is fully
-/// self-consistent.
+/// The per-atom sums are invariant to the ORDER of the AOs (and to any
+/// orthogonal mixing of the functions on one atom): permuting the basis
+/// permutes `S^{1/2} D S^{1/2}` the same way and leaves each atom's diagonal
+/// sum unchanged. A different split between codes therefore means a different
+/// BASIS (Cartesian vs spherical d shells, contraction or normalisation), not
+/// a different ordering. On the same pure-function basis, density and ECP,
+/// ferric agrees with PySCF to the SCF floor
+/// (`tests/properties_effective_z.rs`, HI and CH3I/def2-SVP). The nuclear
+/// charge is `Atom::effective_z`, so on an ECP atom `q_A` is the valence
+/// charge.
 ///
 /// Closed-shell only.
 pub fn lowdin_charges(
@@ -1224,7 +1222,7 @@ pub fn lowdin_charges(
     }
 
     Ok((0..natoms)
-        .map(|a| mol.atoms[a].z as f64 - atom_pop[a])
+        .map(|a| mol.atoms[a].effective_z() as f64 - atom_pop[a])
         .collect())
 }
 
@@ -1272,7 +1270,7 @@ pub fn mulliken_charges(
     }
 
     Ok((0..natoms)
-        .map(|a| mol.atoms[a].z as f64 - atom_pop[a])
+        .map(|a| mol.atoms[a].effective_z() as f64 - atom_pop[a])
         .collect())
 }
 
@@ -1614,7 +1612,7 @@ pub fn esp_at_points(
                         let dy = r[1] - atom_b.y;
                         let dz = r[2] - atom_b.zpos;
                         let dist = (dx * dx + dy * dy + dz * dz).sqrt();
-                        v_nuc += atom_b.z as f64 / dist;
+                        v_nuc += atom_b.effective_z() as f64 / dist;
                     }
 
                     Ok(v_nuc + v_elec)
