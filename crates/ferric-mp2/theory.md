@@ -10,7 +10,13 @@ below is the one the code executes; references are `path:line` relative to
 Identities marked **[check n]** are verified by claim *n* of
 [`scripts/mp2_variant_identities.py`](../../scripts/mp2_variant_identities.py),
 which exits nonzero on any mismatch and carries a negative control per claim.
-Derivations that live in the project notes are cited as
+Identities marked **[family X]** are checked by part X of
+[`scripts/mp2_family_sympy.py`](../../scripts/mp2_family_sympy.py) and
+**[gradient X]** by part X of
+[`scripts/mp2_gradient_sympy.py`](../../scripts/mp2_gradient_sympy.py); both
+compare against an independent route (brute-force spin-orbital MP2, adaptive
+quadrature, or finite differences of a fully re-solved model) and exit nonzero
+on a failure. Derivations that live in the project notes are cited as
 `wiki/sympy_derivations.md` §*n*.
 
 ## Conventions
@@ -71,6 +77,17 @@ joint swap $(i,a)\leftrightarrow(j,b)$ **[check 1]**.
 (`rimp2.rs:1324`). $\kappa\to\infty$ recovers MP2 and $\kappa\to 0$ removes
 correlation; $\kappa$ is in Ha$^{-1}$ and must be finite and positive.
 
+**Spin adaptation.** With spin orbitals $p\sigma$,
+$\langle IJ\|AB\rangle = (IA|JB)\,\delta_{\sigma_I\sigma_A}\delta_{\sigma_J\sigma_B} - (IB|JA)\,\delta_{\sigma_I\sigma_B}\delta_{\sigma_J\sigma_A}$.
+An occupied $\alpha\beta$ pair keeps only the direct term when the virtuals
+are $\alpha\beta$ and only the exchange term when they are $\beta\alpha$, so it
+contributes $\tfrac14\sum_{ab}[(ia|jb)^2 + (ib|ja)^2]/D = \tfrac12\sum_{ab}(ia|jb)^2/D$;
+with the $\beta\alpha$ pair this is $E_{\mathrm{OS}}$. An $\alpha\alpha$ or
+$\beta\beta$ pair keeps both terms, and the two blocks give
+$2\cdot\tfrac14\sum[(ia|jb)-(ib|ja)]^2/D = E_{\mathrm{SS}}$ after the
+$a\leftrightarrow b$ relabelling of the cross term. Both identities hold for
+symbolic integrals **[family A]**.
+
 ## 3. Unrestricted RI-MP2
 
 `u_ri_mp2` (`u_rimp2.rs:159`) takes a UHF reference, or semicanonicalizes a
@@ -115,6 +132,29 @@ $$ \frac{\operatorname{terfc}(r;r_0)}{r} = \frac{1}{r}\Big[1 - \tfrac12\operator
 
 with the curvature constraint applied by `Operator::terfc`
 (`ferric-integrals/src/operator.rs:219`); `terf + terfc = 1/r` exactly.
+
+**Operator limits of SCS-MP2(2terfc).** terfc$(r;r_0)\to 0$ for $r>0$ as
+$r_0\to 0$ and $\to 1$ as $r_0\to\infty$ **[family D]**, and each spin
+component is quadratic in the integrals, so
+$E[r_0^{(1)}\to 0,\ r_0^{(2)}\to\infty] = c_{\mathrm{SS}}E_{\mathrm{SS}}[1/r]$
+and $E[r_0^{(1)},r_0^{(2)}\to\infty] = c_{\mathrm{OS}}E_{\mathrm{OS}}[1/r]$:
+the same-spin term is the window between the two cutoffs **[family C]**.
+
+**The terfc kernel.** terf is odd in $r$, so
+$\operatorname{terf}(r)/r = \tau_1 + \tau_3 r^2 + O(r^4)$ with
+
+$$ \tau_3 = \frac{\omega^3}{3\sqrt\pi}\left(4\omega^2r_0^2 - 2\right)e^{-\omega^2r_0^2}, $$
+
+whose only positive root is $\omega = 1/(\sqrt2\,r_0)$: the curvature
+constraint of `Operator::terfc` is a flat long-range kernel at the origin. The
+real-space forms in `ferric-dft` (`vv10.rs` `terfc_scalar`, linked, and
+`terfc_scalar_decoupled`, free $\omega$) coincide at the linked $\omega$, and
+terfc$(0) = 1$, so terfc$(r)/r$ keeps the full Coulomb singularity
+**[family D]**. `run_terfc_rimp2` is section 2 with $\hat w =$ terfc$(r;r_0)/r$,
+$r_0$ in Å converted to Bohr (default 1.05 Å,
+`ferric-python/src/mp2.rs`); its metric is positive definite and takes the
+Cholesky path (`metric_inverse_sqrt` sends only erf and terf to the
+eigendecomposition).
 
 ## 5. Attenuated MP2
 
@@ -341,6 +381,16 @@ of independent $(ia)$ and $(jb)$ contractions; the derivation is
 `AoSparse` requires $r$; passing $r$ with `Mo`/`Ao` is an error
 (`laplace.rs:1410`). The algebra is dense in all three.
 
+**Sign and quadrature, checked.** $\int_0^\infty e^{-tx}dt = 1/x$ for $x>0$,
+so a summand $N/D$ with $D = -x$ is $-N\int_0^\infty e^{-tx}dt$; the factor
+$e^{-t(\varepsilon_a-\varepsilon_i)/2}$ on $B^P_{ia}$ squares to
+$e^{-t(\varepsilon_a-\varepsilon_i)}$ in $J_{PQ}$, and $P(t)Q(t)$ carries the
+same unhalved weight **[family F]**. Integrated by adaptive quadrature instead
+of the minimax grid, the MO and AO forms reproduce brute-force spin-orbital
+$E_{\mathrm{OS}}+E_{\mathrm{SS}}$ and $E_{\mathrm{OS}}$ to $2\times10^{-15}$
+relative **[family F]**; the minimax grid's own error is a property of
+`ferric_quadrature`, not of these identities.
+
 ## 9. Analytic RI-MP2 gradient and Z-vector
 
 **Unrelaxed density** (`oo_rimp2.rs:990` `build_mp2_density`), with
@@ -409,6 +459,35 @@ the solver returns). No further J/K build follows the Z-vector. The sum
 differs from a direct build of $2D^{\mathrm{corr}}_{\mathrm{rel}}$ only by
 which quartets the absolute screen ($\text{bound}\cdot\max|D| < 10^{-12}$)
 drops in each of the three builds.
+
+**Working assembly, proven end to end.** For a parameter $x$ on which $S$, $h$,
+the four-centre ERIs and the RI factors $(P|\mu\nu)$, $V$ all depend,
+`mp2_relaxed_lagrangian_gradient` plus `integral_response_gradient_3c2c`
+evaluate
+
+$$ \frac{dE}{dx} = \operatorname{Tr}[D^{\mathrm{tot}}h'] + \sum_{\mu\nu}\big(\mathrm{im1} - \zeta - v^{\mathrm{s1occ}}\big)_{\mu\nu}S'_{\mu\nu}
++ \partial_x B\big(D^{\mathrm{HF}}, D^{\mathrm{HF}} + 2D^{\mathrm{corr}}_{\mathrm{rel}}\big)
++ 4\sum_{Pia} y^P_{ia}\,(P|ia)' - 2\sum_{PQ}V'_{PQ}\sum_{ia}(V^{-1}u)^P_{ia}\,y^Q_{ia}, $$
+
+with $D^{\mathrm{tot}} = D^{\mathrm{HF}} + D^{\mathrm{corr}}_{\mathrm{rel}}$,
+$\mathrm{im1} = C\,\tilde I\,C^{\mathsf T}$ ($\tilde I$ = $I$ with its
+vir–occ block replaced by the transpose of its occ–vir block),
+$\zeta = C\,(\zeta_{pq}D^{\mathrm{corr}}_{pq})\,C^{\mathsf T} + \sum_i 2\varepsilon_iC_iC_i^{\mathsf T}$
+with $\zeta_{pq} = \tfrac12(\varepsilon_p+\varepsilon_q)$ except
+$\zeta_{ai} = \zeta_{ia} = \varepsilon_i$,
+$v^{\mathrm{s1occ}} = P_{\mathrm{occ}}(2J-K)[D^{\mathrm{corr}}_{\mathrm{rel}}]P_{\mathrm{occ}}$
+($P_{\mathrm{occ}} = C_oC_o^{\mathsf T}$),
+$B(D_1,D_2) = \tfrac12\operatorname{Tr}[D_1(J-\tfrac12K)[D_2]]$
+differentiated through the ERIs only, $u^P_{ia} = (P|ia)$,
+$y = V^{-1/2}x$ and $(P|ia)'$ the AO derivative at fixed $C$. On a model with
+all five inputs moving, the right-hand side equals Richardson differences of
+the re-solved $E_{\mathrm{HF}} + E^{(2)}$ to $10^{-11}$ relative for MP2 and
+SCS-MP2 $(6/5, 1/3)$, with and without a frozen core, and
+$\operatorname{Tr}[(D^{\mathrm{HF}}+D^{\mathrm{corr}}_{\mathrm{rel}})R] = dE/d\lambda$
+for $h\to h+\lambda R$ to $10^{-12}$ **[gradient G]**. The model's MO-level
+factors 4 and $-2$ in the RI terms are the energy derivative; the AO-level
+bookkeeping of `integral_response_gradient_3c2c` (its $2y$ and symmetrized
+$\Gamma$) is not transcribed.
 
 ### 9.1 Fitted (RI-JK) reference
 
@@ -549,6 +628,35 @@ Checked against central finite differences of `scs_mp2` (H2O STO-3G and
 cc-pVDZ, NH3 6-31G; $(6/5, 1/3)$ and $(1, 0)$; frozen core; RI-JK) in
 `tests/scs_mp2_gradient.rs`.
 
+**SCS weights, checked.** Symbolically, $\partial E/\partial K_{ij}^{ab}$
+summed over both slots of a symmetric integral is $2\tilde T$, and
+$\partial E/\partial\varepsilon_k = (P+P^{\mathsf T})_{kk}$,
+$\partial E/\partial\varepsilon_c = (P+P^{\mathsf T})_{cc}$ with $\tilde T$ in
+the second slot of $P$ **[gradient S]**; the full SCS gradient is part of
+**[gradient G]**.
+
+### 9.3 OO-RI-MP2 nuclear gradient
+
+At converged OO-RI-MP2 orbitals the energy is stationary in every rotation
+(section 7), so `oo_rimp2_gradient.rs` sets $z = 0$ and uses the
+assembly above with the unrelaxed $W = (P+P^{\mathsf T})_{oo}\oplus(P+P^{\mathsf T})_{vv}$
+of the semicanonical frame, $D^{\mathrm{corr}} = CWC^{\mathsf T}$, and two
+changes in $\zeta$, because the orbitals are not canonical and $F_{ia}\ne0$:
+
+$$ \zeta^{\mathrm{MO}} = \tfrac12\big(FW + (FW)^{\mathsf T}\big), \quad
+\zeta^{\mathrm{MO}}_{ia} = \zeta^{\mathrm{MO}}_{ai} = (FW)_{ia}, \qquad
+\zeta = C\zeta^{\mathrm{MO}}C^{\mathsf T} + 2\,C_oF_{oo}C_o^{\mathsf T}
+\quad(\texttt{energy\_weighted\_density}), $$
+
+$F$ the MO Fock matrix of the OO orbitals, and
+$v^{\mathrm{s1occ}} = P_{\mathrm{occ}}\,(J-\tfrac12K)[2CWC^{\mathsf T}]\,P_{\mathrm{occ}}$
+(`vhf_s1occ`). The occ–vir entry is the one-sided $(FW)_{ia}$ that $\tilde I$
+uses. On the model of section 9, with OO-MP2 re-converged to
+$\max|g| < 10^{-11}$ at every displacement, this $z=0$ gradient equals the
+finite difference to $8\times10^{-12}$ relative; dropping $v^{\mathrm{s1occ}}$
+breaks it **[gradient O]**. Frozen core is not covered (the core rotations are
+not optimized, so the $z=0$ form is not exact there).
+
 ## 10. Static polarizability
 
 **Finite field** (`ff_polar.rs:390` `mp2_polarizability_static`). The core
@@ -615,6 +723,12 @@ $\alpha(i\omega) = 4\mu^{\mathsf T}(A-B)\left[(A-B)(A+B) + \omega^2\right]^{-1}\
 (`cpks_polar.rs:1000` `dynamic_cphf_alpha_iw`). `solve_cphf_cg` applies
 $(A+B) = \Delta\varepsilon + \tfrac12$`compute_az_product`.
 
+**Relaxed dipole.** The identity $\mu_d(0) = -\partial E/\partial F_d$ is
+the one-electron case $h \to h + \lambda R$ of **[gradient G]** (G1) for the
+`solve_zvector` relaxed density. That `static_relaxed_density_ao`'s $z$ equals
+`solve_zvector`'s, and the analytic field derivative, are not checked by a
+script.
+
 ## 11. CABS for F12
 
 `build_cabs` (`f12.rs:99`) forms the RI basis as the union OBS ∪ aux, ordered
@@ -631,3 +745,84 @@ builds CABS only; there is no F12 energy.
 Amplitude-threshold local MP2 (`lmp2_amplitude.rs`, `lmp2_direct.rs`) is
 derived in `wiki/sympy_derivations.md` §14; user-facing settings are in
 `site/src/methods/mp2.md`.
+
+## 13. MP2-V
+
+`att_mp2_vv10` (closed shell) and `u_att_mp2_vv10` (UHF or ROHF) in
+`att_vv10.rs` evaluate the post-HF MP2-V energy of Goldey, Belzunces and
+Head-Gordon (JCTC 11, 4159 (2015)), CLI `method.kind = "mp2-v"`, Python
+`run_mp2_v`:
+
+$$ E_{\mathrm{MP2\text{-}V}} = E_{\mathrm{HF}} + E_c^{\mathrm{att}}[r_0] + E_{\mathrm{nl}}[\rho_{\mathrm{HF}}; b, C, r_0] \qquad (\texttt{assemble}). $$
+
+**Correlation half.** $E_c^{\mathrm{att}}$ is RI-MP2 (section 2,
+`ri_mp2_spin_components`) or U-RI-MP2 (section 3, `u_ri_mp2`) with
+$\hat w = \operatorname{terfc}(r;r_0,\omega)/r$ (`mp2_operator`):
+`Operator::terfc` at the linked $\omega = 1/(\sqrt2 r_0)$ when
+`omega` is `None`, `Operator::terfc_with_omega` otherwise. The erfc control
+uses $\operatorname{erfc}(\omega r)/r$ with the same linked $\omega$.
+
+**Dispersion half.** VV10 (`ferric-dft` `vv10.rs`) on the HF total density
+$\rho = \rho_\alpha + \rho_\beta$ (`density_total`, spin-free in both
+paths), written as $E_{\mathrm{nl}} = \sum_g w_g\rho_g(\beta + \tfrac12 f_g)$
+with $\beta = (3/b^2)^{3/4}/32$ local and
+$f_g = \sum_{g'}w_{g'}\rho_{g'}\Phi(g,g')\,d(R_{gg'})$ the pair term. Eq. 11
+of the paper damps only the pair kernel:
+
+$$ d(R) = 1 - \operatorname{terfc}(R; r_0, \omega)^2 \qquad (\texttt{Vv10Damping::factor\_from\_r2}), $$
+
+with the same $(r_0,\omega)$ as the MP2 operator (`effective_vv10_damping`
+errors on a mismatch). $d(0) = 0$ and $d \to 1$ at large $R$, the complement of
+what attenuated MP2 keeps; beyond
+$r_{\mathrm{one}} = r_0 + 5/\omega$ (`damping_r_one`) terfc $< 10^{-12}$ and
+$1 - \operatorname{terfc}^2$ rounds to exactly 1.0, so skipping the erf pair
+there is bit-exact **[family E]**. The VV10 kernel $\Phi$ and $\beta$ are
+`ferric-dft`'s.
+
+**Spin.** The closed-shell path takes $E_{\mathrm{OS}} + E_{\mathrm{SS}}$, the
+open-shell path $E_{\alpha\alpha} + E_{\beta\beta} + E_{\alpha\beta}$; both
+are the spin-orbital MP2 energy of the attenuated integrals
+(**[family A]**, **[family B]**, **[check 1]**, **[check 2]**).
+
+## 14. Unrestricted OO-RI-MP2 orbital gradient
+
+`u_oo_ri_mp2` minimizes $E = E_{\mathrm{UHF}}(C^\alpha,C^\beta) +
+E_{\alpha\alpha} + E_{\beta\beta} + E_{\alpha\beta}$ (section 3) evaluated in
+each spin's semicanonical frame, over $C^\tau \leftarrow C^\tau U(\kappa^\tau)$
+(section 7). With $F^\tau = h + J[D^\alpha + D^\beta] - K[D^\tau]$ and
+$D^\tau = C^\tau_oC^{\tau\mathsf T}_o$, a rotation $\kappa^\tau_{ck}$ moves
+$\delta C_k = C_c$, $\delta C_c = -C_k$, so $\delta C = CX$ with
+$X_{ck} = 1 = -X_{kc}$, and
+
+$$ \delta E_{\mathrm{UHF}} = \operatorname{Tr}[F^\tau\delta D^\tau] = 2F^\tau_{ck}, \qquad
+\delta F^\sigma_{\mathrm{MO}} = F^\sigma X - XF^\sigma + C^{\sigma\mathsf T}\big(J[\delta D^\tau] - \delta_{\sigma\tau}K[\delta D^\tau]\big)C^\sigma . $$
+
+The U-MP2 energy depends on the orbitals through the integrals and, at fixed
+integrals, on $F^\sigma$ through $W^\sigma = \partial E/\partial F^\sigma$,
+the unrelaxed density of the full-Fock functional (`build_u_mp2_density`):
+
+$$ W^\alpha_{ij} = -\tfrac12\sum_{kab}t^{\alpha\alpha}_{ikab}t^{\alpha\alpha}_{jkab} - \sum_{KaB}t^{\alpha\beta}_{iKaB}t^{\alpha\beta}_{jKaB}, \qquad
+W^\alpha_{ab} = \tfrac12\sum_{ijc}t^{\alpha\alpha}_{ijac}t^{\alpha\alpha}_{ijbc} + \sum_{iJC}t^{\alpha\beta}_{iJaC}t^{\alpha\beta}_{iJbC}, $$
+
+$t^{\alpha\alpha} = [(ia|jb)-(ib|ja)]/D$, $t^{\alpha\beta} = (ia|JB)/D$, and
+$\beta$ by exchanging the spin labels. Contracting $W$ with $\delta F$, using
+$\sum_\sigma\operatorname{Tr}[P^\sigma G^\sigma[\delta D]] = \operatorname{Tr}[\delta D\,G[P]]$
+($P^\sigma = C^\sigma W^\sigma C^{\sigma\mathsf T}$) and the antisymmetry of
+$WF - FW$, gives the gradient `u_gradient_solver_frame` assembles:
+
+$$ g^\tau_{ck} = 2F^\tau_{ck} + \Big[\frac{\partial E_{\mathrm{MP2}}}{\partial\kappa^\tau_{ck}}\Big]_{\varepsilon}
++ 2\big[C^{\tau\mathsf T}(J[P^\alpha + P^\beta] - K[P^\tau])C^\tau\big]_{ck} + 2\big(F^\tau W^\tau - W^\tau F^\tau\big)_{ck} , $$
+
+all in the semicanonical frame $C^\tau u^\tau$, carried back by
+$g^\tau = u^\tau_v\,g^\tau_{\mathrm{sc}}\,u^{\tau\mathsf T}_o$. The integral
+term at fixed denominators is
+$\sum t^{\sigma\sigma}_{ijab}\,\delta(ia|jb) + 2\sum t^{\alpha\beta}_{iJaB}\,\delta(ia|JB)$ with
+$\delta(ia|jb) = \delta_{ik}(ca|jb) + \delta_{jk}(ia|cb) - \delta_{ac}(ik|jb) - \delta_{bc}(ia|jk)$
+for the rotated spin (`compute_u_mp2_orbital_gradient`). At non-stationary,
+non-semicanonical orbitals of a 3$\alpha$/2$\beta$ model with separate
+four-centre and RI factors, this equals Richardson differences of the
+brute-force spin-orbital energy to $5\times10^{-12}$ for both spins
+**[gradient U]**; the closed-shell restriction ($C^\alpha = C^\beta$,
+$g = g^\alpha + g^\beta$) is the optimizer of **[gradient O]**. The integral
+term in the proof is the derivation above, not a transcription of
+`compute_u_mp2_orbital_gradient`'s loop.

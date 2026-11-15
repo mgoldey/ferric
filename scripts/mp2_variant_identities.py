@@ -48,6 +48,15 @@ it. Exits nonzero on the first failure.
      of the full-RIBS complement S_RR - S_RO S_OO^-1 S_OR scaled by
      w^-1/2, without the OBS projection, are neither.
 
+Mutations (each turns the script red with the named failing check):
+  * claim 1, same-spin numerator (ia|jb) - (ib|ja) -> (ia|jb) + (ib|ja)
+    ("FAIL E_SS spatial").
+  * claim 2, same-spin kernel prefactor 0.25 -> 0.5 ("FAIL same-spin kernel").
+  * claim 3, Laplace half-exponent of B(t), -0.5 t -> -1.0 t
+    ("FAIL sum_PQ J_PQ(t)^2").
+  * claim 4, cross-term coefficient 4 s l -> 2 s l ("FAIL E[s+l]").
+  * claim 5, (4J - K - K^T) -> (4J - K) in the matvec ("FAIL (4J-K-K^T)").
+
 Run: python3 scripts/mp2_variant_identities.py  (needs numpy, scipy)
 """
 

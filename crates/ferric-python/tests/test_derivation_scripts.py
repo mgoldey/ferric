@@ -207,6 +207,109 @@ CASES = [
             ),
         ],
     ),
+    (
+        "mp2_family_sympy.py",
+        120,
+        [
+            (
+                "return g * (2 * g - gx) / d  # closed-shell kernel",
+                "return g * (2 * g + gx) / d  # closed-shell kernel",
+                "FAIL A",
+            ),
+            (
+                "quarter = sp.Rational(1, 4)  # u_rimp2 same-spin",
+                "quarter = sp.Rational(1, 2)  # u_rimp2 same-spin",
+                "FAIL B",
+            ),
+            (
+                "e_ss_win = e_ss2 - e_ss1  # scs.rs",
+                "e_ss_win = e_ss1 - e_ss2  # scs.rs",
+                "FAIL C",
+            ),
+            (
+                "half_w = sp.Rational(1, 2)  # Laplace factor",
+                "half_w = sp.Integer(1)  # Laplace factor",
+                "FAIL F",
+            ),
+            (
+                "omega_link = 1 / (r0 * sp.sqrt(2))  # Operator::terfc",
+                "omega_link = 1 / (r0 * 2)  # Operator::terfc",
+                "FAIL D",
+            ),
+        ],
+    ),
+    (
+        "mp2_gradient_sympy.py",
+        60,
+        [
+            (
+                "coupling = 0.5 * az  # Z-vector coupling",
+                "coupling = 1.0 * az  # Z-vector coupling",
+                "FAIL G",
+            ),
+            (
+                "xvo = veff_mo[nocc:, :nocc] + i_ia - i_ai  # RHS",
+                "xvo = veff_mo[nocc:, :nocc] + i_ia + i_ai  # RHS",
+                "FAIL G",
+            ),
+            (
+                "p_oo = c_ss * p_mp2_oo + (c_os - c_ss) * p_os_oo  # SCS density weight",
+                "p_oo = c_ss * p_mp2_oo + c_os * p_os_oo  # SCS density weight",
+                "FAIL G",
+            ),
+            (
+                "zeta[nocc:, :nocc] = eps[None, :nocc] * dm1[nocc:, :nocc]  # zeta occ-vir weight",
+                "zeta[nocc:, :nocc] = eps[nocc:, None] * dm1[nocc:, :nocc]  # zeta occ-vir weight",
+                "FAIL G",
+            ),
+            (
+                "w_overlap = im1 - zeta_ao - vhf  # oo_rimp2_gradient w_overlap",
+                "w_overlap = im1 - zeta_ao  # oo_rimp2_gradient w_overlap",
+                "FAIL O",
+            ),
+            (
+                "j_tot = jk(eri, pa + pb)[0]  # J[P^a + P^b]",
+                "j_tot = jk(eri, pa)[0]  # J[P^a + P^b]",
+                "FAIL U",
+            ),
+            (
+                "rot = 2 * (f_mo @ w - w @ f_mo)  # U-OO rotation part",
+                "rot = 2 * (w @ f_mo - f_mo @ w)  # U-OO rotation part",
+                "FAIL U",
+            ),
+        ],
+    ),
+    (
+        "mp2_variant_identities.py",
+        15,
+        [
+            (
+                "e_ss = np.sum(giajb * (giajb - gibja) / d)",
+                "e_ss = np.sum(giajb * (giajb + gibja) / d)",
+                "FAIL E_SS spatial",
+            ),
+            (
+                "def same_spin(bs, eo, ev, scale=0.25):",
+                "def same_spin(bs, eo, ev, scale=0.5):",
+                "FAIL same-spin kernel",
+            ),
+            (
+                "bt = b * np.exp(-0.5 * t * (ev[None, None, :] - eo[None, :, None]))",
+                "bt = b * np.exp(-1.0 * t * (ev[None, None, :] - eo[None, :, None]))",
+                "FAIL sum_PQ J_PQ(t)^2",
+            ),
+            (
+                "(4.0 * gs * gl - gs * gl.transpose(0, 1, 3, 2)",
+                "(2.0 * gs * gl - gs * gl.transpose(0, 1, 3, 2)",
+                "FAIL E[s+l]",
+            ),
+            (
+                "az = cv.T @ (4.0 * jz - kz - kz.T) @ co",
+                "az = cv.T @ (4.0 * jz - kz) @ co",
+                "FAIL (4J-K-K^T)",
+            ),
+        ],
+    ),
 ]
 
 

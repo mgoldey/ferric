@@ -367,6 +367,16 @@
     ]
   },
   "methods": {
+    "attenuated-mp2": {
+      "theory": [
+        "crates/ferric-mp2/theory.md#5-attenuated-mp2",
+        "crates/ferric-mp2/theory.md#4-spin-component-scaling"
+      ],
+      "scripts": [
+        "scripts/mp2_variant_identities.py",
+        "scripts/mp2_family_sympy.py"
+      ]
+    },
     "drpa": {
       "theory": [
         "crates/ferric-rpa/theory.md#rpa-correlation-energy"
@@ -399,6 +409,31 @@
         "scripts/hf_hessian_sympy.py"
       ]
     },
+    "laplace-mp2": {
+      "theory": [
+        "crates/ferric-mp2/theory.md#8-laplace-transform-mp2"
+      ],
+      "scripts": [
+        "scripts/mp2_variant_identities.py",
+        "scripts/mp2_family_sympy.py"
+      ]
+    },
+    "laplace-sos-mp2": {
+      "theory": [
+        "crates/ferric-mp2/theory.md#8-laplace-transform-mp2"
+      ],
+      "scripts": [
+        "scripts/mp2_family_sympy.py"
+      ]
+    },
+    "mp2-v": {
+      "theory": [
+        "crates/ferric-mp2/theory.md#13-mp2-v"
+      ],
+      "scripts": [
+        "scripts/mp2_family_sympy.py"
+      ]
+    },
     "mp3": {
       "theory": [
         "crates/ferric-mp2/theory.md#6-mp3"
@@ -413,6 +448,14 @@
       ],
       "scripts": [
         "scripts/oomp2_mp3_identities_sympy.py"
+      ]
+    },
+    "oo-rimp2-gradient": {
+      "theory": [
+        "crates/ferric-mp2/theory.md#93-oo-ri-mp2-nuclear-gradient"
+      ],
+      "scripts": [
+        "scripts/mp2_gradient_sympy.py"
       ]
     },
     "pdep-rpa": {
@@ -430,6 +473,24 @@
       ],
       "scripts": [
         "scripts/hf_energy_sympy.py"
+      ]
+    },
+    "ri-mp2": {
+      "theory": [
+        "crates/ferric-mp2/theory.md#2-closed-shell-ri-mp2"
+      ],
+      "scripts": [
+        "scripts/mp2_variant_identities.py",
+        "scripts/mp2_family_sympy.py"
+      ]
+    },
+    "ri-mp2-gradient": {
+      "theory": [
+        "crates/ferric-mp2/theory.md#9-analytic-ri-mp2-gradient-and-z-vector"
+      ],
+      "scripts": [
+        "scripts/mp2_gradient_sympy.py",
+        "scripts/mp2_variant_identities.py"
       ]
     },
     "rohf": {
@@ -466,12 +527,45 @@
         "scripts/rpa_rs_mp2_rpa_sympy.py"
       ]
     },
+    "scs-mp2": {
+      "theory": [
+        "crates/ferric-mp2/theory.md#4-spin-component-scaling"
+      ],
+      "scripts": [
+        "scripts/mp2_family_sympy.py"
+      ]
+    },
+    "scs-mp2-2terfc": {
+      "theory": [
+        "crates/ferric-mp2/theory.md#4-spin-component-scaling"
+      ],
+      "scripts": [
+        "scripts/mp2_family_sympy.py"
+      ]
+    },
+    "scs-mp2-gradient": {
+      "theory": [
+        "crates/ferric-mp2/theory.md#92-spin-component-scaled-scs-mp2-gradient"
+      ],
+      "scripts": [
+        "scripts/mp2_gradient_sympy.py"
+      ]
+    },
     "u-pdep-rpa": {
       "theory": [
         "crates/ferric-rpa/theory.md#open-shell-spin-summed-dielectric"
       ],
       "scripts": [
         "scripts/rpa_drpa_pdep_sympy.py"
+      ]
+    },
+    "u-ri-mp2": {
+      "theory": [
+        "crates/ferric-mp2/theory.md#3-unrestricted-ri-mp2"
+      ],
+      "scripts": [
+        "scripts/mp2_variant_identities.py",
+        "scripts/mp2_family_sympy.py"
       ]
     },
     "uhf": {
@@ -484,15 +578,6 @@
     }
   },
   "gaps": {
-    "attenuated-mp2": {
-      "reason": "script has no pytest runner and records no mutation",
-      "theory": [
-        "crates/ferric-mp2/theory.md#5-attenuated-mp2"
-      ],
-      "scripts": [
-        "scripts/mp2_variant_identities.py"
-      ]
-    },
     "bse-tda": {
       "reason": "no theory.md derivation and no sympy proof",
       "theory": [
@@ -627,24 +712,6 @@
         "scripts/dft_vv10_potential_sympy.py"
       ]
     },
-    "laplace-mp2": {
-      "reason": "script has no pytest runner and records no mutation",
-      "theory": [
-        "crates/ferric-mp2/theory.md#8-laplace-transform-mp2"
-      ],
-      "scripts": [
-        "scripts/mp2_variant_identities.py"
-      ]
-    },
-    "laplace-sos-mp2": {
-      "reason": "script has no pytest runner and records no mutation",
-      "theory": [
-        "crates/ferric-mp2/theory.md#8-laplace-transform-mp2"
-      ],
-      "scripts": [
-        "scripts/mp2_variant_identities.py"
-      ]
-    },
     "linlccd": {
       "reason": "script has no pytest runner and records no mutation",
       "theory": [
@@ -676,17 +743,11 @@
         "scripts/mm_cutoff_sympy.py"
       ]
     },
-    "mp2-v": {
-      "reason": "no theory.md derivation and no sympy proof"
-    },
     "nevpt2": {
       "reason": "no theory.md derivation and no sympy proof",
       "theory": [
         "crates/ferric-ci/theory.md#sc-nevpt2-srcnevpt2rs"
       ]
-    },
-    "oo-rimp2-gradient": {
-      "reason": "no theory.md derivation and no sympy proof"
     },
     "pbc-drpa": {
       "reason": "no theory.md derivation and no sympy proof"
@@ -739,45 +800,6 @@
     "qmmm": {
       "reason": "no theory.md derivation and no sympy proof"
     },
-    "ri-mp2": {
-      "reason": "script has no pytest runner and records no mutation",
-      "theory": [
-        "crates/ferric-mp2/theory.md#2-closed-shell-ri-mp2"
-      ],
-      "scripts": [
-        "scripts/mp2_variant_identities.py"
-      ]
-    },
-    "ri-mp2-gradient": {
-      "reason": "no theory.md derivation and no sympy proof (theory.md section exists)",
-      "theory": [
-        "crates/ferric-mp2/theory.md#9-analytic-ri-mp2-gradient-and-z-vector"
-      ]
-    },
-    "scs-mp2": {
-      "reason": "script has no pytest runner and records no mutation",
-      "theory": [
-        "crates/ferric-mp2/theory.md#4-spin-component-scaling"
-      ],
-      "scripts": [
-        "scripts/mp2_variant_identities.py"
-      ]
-    },
-    "scs-mp2-2terfc": {
-      "reason": "script has no pytest runner and records no mutation",
-      "theory": [
-        "crates/ferric-mp2/theory.md#4-spin-component-scaling"
-      ],
-      "scripts": [
-        "scripts/mp2_variant_identities.py"
-      ]
-    },
-    "scs-mp2-gradient": {
-      "reason": "no theory.md derivation and no sympy proof (theory.md section exists)",
-      "theory": [
-        "crates/ferric-mp2/theory.md#92-spin-component-scaled-scs-mp2-gradient"
-      ]
-    },
     "tddft": {
       "reason": "no theory.md derivation and no sympy proof (theory.md sections exist; no sympy proof)",
       "theory": [
@@ -800,19 +822,19 @@
       ]
     },
     "u-oo-rimp2": {
-      "reason": "no theory.md derivation and no sympy proof"
-    },
-    "u-ri-mp2": {
-      "reason": "script has no pytest runner and records no mutation",
+      "reason": "crates/ferric-mp2/theory.md section 14 derives the orbital gradient and scripts/mp2_gradient_sympy.py [U] checks it by FD, but its integral-response term is derived, not transcribed from compute_u_mp2_orbital_gradient's loop",
       "theory": [
-        "crates/ferric-mp2/theory.md#3-unrestricted-ri-mp2"
-      ],
-      "scripts": [
-        "scripts/mp2_variant_identities.py"
+        "crates/ferric-mp2/theory.md#14-unrestricted-oo-ri-mp2-orbital-gradient"
       ]
     },
     "xtb": {
       "reason": "no theory.md derivation of what ferric adds over the tblite reference"
+    },
+    "mp2-polarizability": {
+      "reason": "section 10 proves only mu(0) = -dE/dF through the solve_zvector density; static_relaxed_density_ao, the analytic alpha and the frozen-amplitude C6 are unproven; no CLI kind or run_* reaches it directly",
+      "theory": [
+        "crates/ferric-mp2/theory.md#10-static-polarizability"
+      ]
     }
   }
 }
