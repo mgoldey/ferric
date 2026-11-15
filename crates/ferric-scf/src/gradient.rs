@@ -1779,14 +1779,8 @@ fn field_density_gradient_fd(
                     mol_m.atoms[a].zpos -= h;
                 }
             }
-            let prep_p = match PreparedBasis::new(&mol_p, bs) {
-                Ok(p) => p,
-                Err(_) => continue,
-            };
-            let prep_m = match PreparedBasis::new(&mol_m, bs) {
-                Ok(p) => p,
-                Err(_) => continue,
-            };
+            let prep_p = PreparedBasis::new(&mol_p, bs)?;
+            let prep_m = PreparedBasis::new(&mol_m, bs)?;
             let e_p: f64 =
                 (d * &ferric_integrals::oneelectron::field_hcore_term(&prep_p, field)?).sum();
             let e_m: f64 =
@@ -2525,6 +2519,29 @@ mod tests {
             analytic[(0, 2)],
             fd
         );
+    }
+
+    #[test]
+    fn field_density_gradient_fd_propagates_basis_errors() {
+        // A basis that does not cover every element makes PreparedBasis::new
+        // fail on the displaced geometries; that must surface as an error, not
+        // as a silently zero gradient row.
+        let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
+        let full = ferric_core::basis::bundled("sto-3g").unwrap();
+        let h_only = ferric_core::basis::BasisSet {
+            name: "h-only".to_string(),
+            shells: full
+                .shells
+                .iter()
+                .filter(|(z, _)| **z == 1)
+                .map(|(z, v)| (*z, v.clone()))
+                .collect(),
+            ..full.clone()
+        };
+        let nbf = PreparedBasis::new(&mol, &full).unwrap().nbasis();
+        let d = Array2::<f64>::eye(nbf);
+        let r = field_density_gradient_fd(&mol, &h_only, &d, [0.0, 0.0, 0.01]);
+        assert!(r.is_err(), "uncovered element must be an error");
     }
 
     #[test]

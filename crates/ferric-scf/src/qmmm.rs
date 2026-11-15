@@ -24,14 +24,17 @@
 //!
 //! # Level of theory: mechanical/electrostatic embedding
 //!
-//! The MM charges polarize the QM density (one-way coupling: QM sees MM, MM does
-//! not see QM back). This is standard **electrostatic embedding**. There is no
-//! MM force field here — no MM-MM bonded/nonbonded energy, no Lennard-Jones
-//! QM-MM term, no MM polarizability. The energy this layer contributes to is
+//! The MM charges polarize the QM density. With plain fixed charges the
+//! coupling is one-way (QM sees MM, MM does not see QM back): standard
+//! **electrostatic embedding**. MM atoms may instead carry a Gaussian-smeared
+//! charge ([`QmmmAtom::new_smeared`]) and/or an isotropic Thole polarizability
+//! ([`QmmmAtom::with_alpha`], see `crate::polarizable`), in which case the MM
+//! sites respond to the QM field. The MM force field itself (MM-MM bonded and
+//! nonbonded terms, QM-MM Lennard-Jones) is not part of the SCF energy: it is
+//! evaluated separately by [`qmmm_mm_terms`] / [`full_gradient_with_mm`] from a
+//! `ferric_mm` topology. The energy the SCF layer contributes to is
 //! `E_QM(in the field of the MM charges)`, and the MM charges are fixed
-//! external parameters, not dynamical variables. A complete QM/MM total energy
-//! would add `E_MM` and a QM-MM van der Waals term from a force field; that is
-//! the caller's job and out of scope here.
+//! external parameters, not dynamical variables.
 //!
 //! # Known approximations (read before trusting a boundary number)
 //!
@@ -51,7 +54,7 @@
 //!   move the host charge onto the midpoints of its bonds to the next MM shell
 //!   (RC conserves charge; RCD conserves charge and dipole). The default,
 //!   [`BoundaryChargeScheme::Keep`], is the untreated boundary. Gaussian
-//!   smearing and double link atoms are not implemented. [`QmmmSystem`] always
+//!   Double link atoms are not implemented. [`QmmmSystem`] always
 //!   **excludes MM charges on atoms that are themselves in the QM region**
 //!   (they would be double-counted). If your link atom lands within a Bohr or
 //!   so of a nonzero MM charge under `Keep`, the result is unphysical and this
@@ -212,8 +215,9 @@ pub struct LinkAtomSpec {
     /// the frontier QM atom the cap is bonded to.
     pub qm_atom: usize,
     /// Index into the **full** atom list of the MM atom whose bond was cut.
-    /// Recorded so a caller can implement its own charge-redistribution scheme
-    /// (this module does not — see the module docs).
+    /// Used by [`QmmmSystem::with_boundary_charges`] to redistribute (RC/RCD)
+    /// or delete (Z1) the host's charge; under the default `Keep` scheme the
+    /// charge stays where it is.
     pub mm_atom_full_index: usize,
     /// Scale factor `g` along the bond vector.
     pub scale: f64,

@@ -107,9 +107,12 @@ pub use hirshfeld_grid::{
 /// excluding the divergent self-interaction Z_A/|R_A − R_A|.
 ///
 /// ```text
-///     V(R_A) = Σ_{B ≠ A} Z_B / |R_A − R_B|
+///     V(R_A) = Σ_{B ≠ A} Z_B^eff / |R_A − R_B|
 ///            − Σ_{μν} D_{μν} ⟨μ| 1/|r − R_A| |ν⟩
 /// ```
+///
+/// `Z_B^eff` is [`Atom::effective_z`](ferric_core::mol::Atom::effective_z): the
+/// valence charge on an ECP atom, zero on a ghost atom.
 ///
 /// Returns a `Vec<f64>` of length `mol.atoms.len()`, in Hartree (a.u.).
 ///
@@ -1169,7 +1172,8 @@ pub fn scf_proatom_provider<'a>(
 /// charge is `Atom::effective_z`, so on an ECP atom `q_A` is the valence
 /// charge.
 ///
-/// Closed-shell only.
+/// `density` is the TOTAL (alpha + beta) AO density, so the formula holds for
+/// closed- and open-shell references alike.
 pub fn lowdin_charges(
     mol: &Molecule,
     prep: &PreparedBasis,
@@ -1235,7 +1239,8 @@ pub fn lowdin_charges(
 /// analysis, well known to be basis-set-sensitive (can misbehave badly with
 /// diffuse/augmented functions) but included here as the standard baseline
 /// every QC package provides, not as a recommended charge scheme. Prefer
-/// `lowdin_charges` for a more basis-stable partition. Closed-shell only.
+/// `lowdin_charges` for a more basis-stable partition. `density` is the TOTAL
+/// (alpha + beta) AO density; there is no closed-shell restriction.
 pub fn mulliken_charges(
     mol: &Molecule,
     prep: &PreparedBasis,
@@ -1292,8 +1297,9 @@ struct EspGridPoint {
 ///     accurate — close to a nucleus the true multi-center ESP is dominated
 ///     by the local cusp, not the far-field 1/r tail a fitted point charge
 ///     reproduces); and
-///   * it lies **within** `outer_cutoff` (Bohr) of at least one atom (bounds
-///     the fit region to where the ESP is still chemically meaningful — far
+///   * it lies **within** `outer_cutoff` (Bohr) of at least one atom's scaled
+///     vdW sphere SURFACE, i.e. `dist <= vdw_scale·R_bondi + outer_cutoff`
+///     (bounds the fit region to where the ESP is still chemically meaningful — far
 ///     outside the molecule V_QM → 0 and contributes no information, only
 ///     numerical noise, to the fit).
 ///
@@ -1787,7 +1793,7 @@ fn chelpg_outer_cutoff() -> f64 {
 /// large charges on buried heavy atoms):
 ///
 /// ```text
-///     minimize  Σ_g (V_QM(r_g) − V_fit(r_g))²
+///     minimize  ½ Σ_g (V_QM(r_g) − V_fit(r_g))²
 ///               + restraint_weight · Σ_{A: Z_A≠1} (√(q_A² + b²) − b)
 ///     subject to Σ_A q_A = q_total
 /// ```
@@ -1809,9 +1815,9 @@ fn chelpg_outer_cutoff() -> f64 {
 ///
 /// The restraint term `√(q_A²+b²) − b` is nonlinear in `q_A`, so the fit is
 /// not a single linear solve. Standard RESP practice (and the approach here)
-/// is a fixed-point/Newton iteration: at each iteration, linearize the
-/// restraint's contribution to the gradient by evaluating its second
-/// derivative at the *current* charge estimate,
+/// is a fixed-point iteration (iteratively reweighted least squares): at each
+/// iteration, freeze the restraint's denominator at the *current* charge
+/// estimate,
 ///
 /// ```text
 ///     d/dq_A [ restraint_weight · (√(q_A²+b²) − b) ] = restraint_weight · q_A / √(q_A²+b²)
@@ -1821,8 +1827,10 @@ fn chelpg_outer_cutoff() -> f64 {
 /// which just adds a diagonal term `restraint_weight / √(q_A^(k)²+b²)` to the
 /// CHELPG normal-equations matrix `A` (non-hydrogen rows only) at each
 /// iteration `k`, then re-solves the same bordered linear system with the
-/// updated diagonal — a short Newton/fixed-point loop over an otherwise
-/// unchanged linear solve, not a black-box nonlinear optimizer.
+/// updated diagonal — a short reweighted-least-squares loop over an otherwise
+/// unchanged linear solve, not a black-box nonlinear optimizer. The loop stops
+/// when the largest charge change drops below 1e-8 e; if it has not done so
+/// after 50 iterations the fit returns an error rather than the last iterate.
 ///
 /// Returns `Vec<f64>` of length `mol.atoms.len()`, units of e.
 pub fn resp_charges(
@@ -1908,14 +1916,15 @@ fn resp_restraint_b() -> f64 {
     positive_f64("FERRIC_RESP_RESTRAINT_B", 0.1)
 }
 
-/// Newton/fixed-point iteration solving the RESP-restrained bordered normal
-/// equations. See [`resp_charges`]'s doc comment for the derivation.
+/// Reweighted-least-squares fixed-point iteration solving the RESP-restrained
+/// bordered normal equations. See [`resp_charges`]'s doc comment for the
+/// derivation.
 ///
-/// Starts from the unrestrained CHELPG solution (iteration 0's diagonal
-/// correction uses q_A=0 as the initial linearization point, which for the
-/// hyperbolic penalty is a finite, well-defined starting slope
-/// `restraint_weight / b` — no singularity at q=0 the way a bare `|q|`
-/// restraint would have).
+/// The iteration starts at q = 0 (iteration 0's diagonal correction is the
+/// finite slope `restraint_weight / b`; there is no singularity at q=0 the way
+/// a bare `|q|` restraint would have). It returns an error if the largest
+/// charge change has not dropped below 1e-8 e after [`RESP_MAX_ITER`]
+/// iterations.
 fn solve_resp_restrained(
     atom_pos: &[[f64; 3]],
     grid: &[EspGridPoint],
@@ -1923,6 +1932,29 @@ fn solve_resp_restrained(
     is_heavy: &[bool],
     restraint_weight: f64,
     b: f64,
+) -> Result<Vec<f64>, FerricError> {
+    solve_resp_restrained_with_max_iter(
+        atom_pos,
+        grid,
+        q_total,
+        is_heavy,
+        restraint_weight,
+        b,
+        RESP_MAX_ITER,
+    )
+}
+
+/// Iteration cap of the RESP fixed point.
+const RESP_MAX_ITER: usize = 50;
+
+fn solve_resp_restrained_with_max_iter(
+    atom_pos: &[[f64; 3]],
+    grid: &[EspGridPoint],
+    q_total: f64,
+    is_heavy: &[bool],
+    restraint_weight: f64,
+    b: f64,
+    max_iter: usize,
 ) -> Result<Vec<f64>, FerricError> {
     use ndarray_linalg::Solve;
 
@@ -1960,11 +1992,11 @@ fn solve_resp_restrained(
     }
     rhs[natoms] = q_total;
 
-    // Fixed-point/Newton loop on the restraint diagonal.
+    // Fixed-point (reweighted least squares) loop on the restraint diagonal.
     let mut q = vec![0.0_f64; natoms];
-    const MAX_ITER: usize = 50;
     const TOL: f64 = 1e-8;
-    for _iter in 0..MAX_ITER {
+    let mut max_dq = f64::INFINITY;
+    for _iter in 0..max_iter {
         let mut mat = base_mat.clone();
         for a in 0..natoms {
             if is_heavy[a] {
@@ -1978,18 +2010,21 @@ fn solve_resp_restrained(
             ))
         })?;
         let q_new: Vec<f64> = sol.iter().take(natoms).copied().collect();
-        let max_dq = q_new
+        max_dq = q_new
             .iter()
             .zip(&q)
             .map(|(a, b)| (a - b).abs())
             .fold(0.0_f64, f64::max);
         q = q_new;
         if max_dq < TOL {
-            break;
+            return Ok(q);
         }
     }
 
-    Ok(q)
+    Err(FerricError::Convergence(format!(
+        "solve_resp_restrained: restraint fixed point did not converge in {max_iter} \
+         iterations (last max |dq| = {max_dq:.3e} e, tolerance {TOL:.0e})"
+    )))
 }
 
 /// Slater single-exponential proatom exponent ξ (Bohr⁻¹) for element Z.
@@ -2060,6 +2095,39 @@ mod tests {
     use ferric_core::basis;
     use ferric_core::parallel::ParallelContext;
     use ferric_integrals::operator::Operator;
+
+    /// The RESP fixed point reports a missed tolerance as an error instead of
+    /// returning the last iterate: a one-iteration cap cannot converge from
+    /// q = 0, while the production cap does on the same synthetic problem.
+    #[test]
+    fn resp_fixed_point_errors_when_the_iteration_cap_is_reached() {
+        let atom_pos = [[0.0, 0.0, 0.0], [0.0, 0.0, 2.0]];
+        let mut grid = Vec::new();
+        for i in 0..6 {
+            for j in 0..6 {
+                let r = [-3.0 + i as f64, -3.0 + j as f64, 3.5];
+                let v: f64 = atom_pos
+                    .iter()
+                    .zip([0.3, -0.3])
+                    .map(|(p, q)| {
+                        let d: f64 = (0..3).map(|k| (r[k] - p[k]).powi(2)).sum::<f64>().sqrt();
+                        q / d
+                    })
+                    .sum();
+                grid.push(EspGridPoint { r, v });
+            }
+        }
+        let heavy = [true, true];
+        let ok = solve_resp_restrained(&atom_pos, &grid, 0.0, &heavy, 0.0005, 0.1)
+            .expect("production cap converges");
+        assert_eq!(ok.len(), 2);
+        let err =
+            solve_resp_restrained_with_max_iter(&atom_pos, &grid, 0.0, &heavy, 0.0005, 0.1, 1);
+        assert!(
+            matches!(err, Err(FerricError::Convergence(_))),
+            "got {err:?}"
+        );
+    }
 
     /// A molecular starting density (`dm0`, the molecule's basis dimension)
     /// does not reach the free-atom SCF: the proatom is bit-identical to the

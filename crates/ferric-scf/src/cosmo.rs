@@ -67,11 +67,11 @@
 //!   is the pure electrostatic COSMO reaction field only.
 //! * **Analytic gradients**: not implemented (no `cosmo_gradient` function).
 //! * **GEPOL-style segment re-tessellation** of partially-buried spheres:
-//!   segments are either fully kept or fully discarded based on their
-//!   center point only (no partial-area accounting for a segment whose
-//!   Lebedev "tile" straddles a burial boundary). This is a well-known
-//!   simplification relative to production GEPOL cavities but converges to
-//!   the same physics as the angular grid is refined.
+//!   not implemented. Each Lebedev segment keeps its own point and has its area
+//!   scaled by a smooth SWIG switching weight (see the cavity section above)
+//!   rather than being clipped to the exposed part of its tile. This is a
+//!   simplification relative to production GEPOL cavities but converges to the
+//!   same physics as the angular grid is refined.
 //! * **Point-charge vs Gaussian-smeared segment representation
 //!   (RESOLVED 2026-07-19)**: the `S`-matrix now defaults to
 //!   [`crate::cosmo::SMatrixKind::GaussianSmeared`] (PySCF `pcm.py` convention). This was
@@ -666,10 +666,9 @@ pub fn cosmo_reaction_field(
     // E_cosmo = 1/2 sum_k q_k v_k.
     let e_cosmo = 0.5 * charges.dot(&v);
 
-    // Pass 2: V_reaction_uv = -sum_k q_k * M_k_uv (M_k as defined above,
-    // <mu|-1/|r-s_k||nu> with Z=+1... wait: M_k = engine output with Z=+1 =
-    // <mu|-1/|r-s_k||nu>. We want the electron-charge interaction operator
-    // for a REAL charge q_k at s_k: <mu| -q_k/|r-s_k| |nu> = q_k * M_k.
+    // Pass 2: M_k is the engine output with a Z=+1 probe at s_k, i.e.
+    // <mu|-1/|r-s_k||nu>. The electron interaction operator for a REAL charge
+    // q_k at s_k is <mu| -q_k/|r-s_k| |nu> = q_k * M_k.
     // Summed over segments: V_reaction = sum_k q_k * M_k.
     let mut v_reaction = Array2::<f64>::zeros((nbas, nbas));
     for (k, seg) in cavity.segments.iter().enumerate() {

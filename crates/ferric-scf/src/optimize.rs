@@ -82,7 +82,9 @@ pub struct OptimizeConfig {
     pub g_rms_thresh: f64,
     /// Convergence threshold for the energy change (Hartree).
     pub e_conv: f64,
-    /// Initial step size for line search.
+    /// Trust radius: a BFGS step longer than this (2-norm over the coordinate
+    /// vector) is scaled down onto it. There is no line search; the scaled
+    /// step is always accepted.
     pub trust_radius: f64,
     /// Coordinate system for the search. Defaults to
     /// [`CoordSystem::Cartesian`], which is bit-identical to the behaviour
@@ -159,9 +161,9 @@ pub struct OptimizeResult {
     /// slow approach. The trace is what makes that visible, and it is what
     /// `tools.viz.energy_plots.optimization_trace` plots.
     ///
-    /// This is every EVALUATION, not every accepted step, so it is at least as
-    /// long as `steps` and includes any line-search probes. That is deliberate:
-    /// a rejected uphill probe is exactly the thing worth seeing.
+    /// This is every EVALUATION. Every step is accepted (there is no line
+    /// search and no rejection), so an uphill step shows up here as a rise in
+    /// the trace, which is exactly the thing worth seeing.
     pub energy_trace: Vec<f64>,
 }
 
@@ -667,6 +669,10 @@ fn run_bfgs_internal(
 
         let y = &g_int_new - &prev_grad_int;
         let ys = y.dot(&s);
+        // OPEN: the update runs for any |y.s| > 1e-12, including y.s < 0, where
+        // it does not keep H positive definite (no curvature condition and no
+        // damping). Left as is; the optimizer's behaviour is pinned by
+        // `test_optimize_h2_sto3g_step_energy_anchor`.
         if ys.abs() > 1e-12 {
             let hy = h_inv.dot(&y);
             let yhy = y.dot(&hy);
@@ -788,8 +794,8 @@ fn clip_internal_step(
 /// coordinates as atoms). Returns `(x_final, energy, steps, converged)`.
 ///
 /// This is the exact algorithm `run_bfgs` used before being rewritten on
-/// top of this function (same line search, same convergence tests, same
-/// Hessian update) — only the `Molecule`-specific flatten/unflatten at the
+/// top of this function (same trust-radius step scaling, same convergence
+/// tests, same Hessian update) — only the `Molecule`-specific flatten/unflatten at the
 /// boundary moved out. Pinned bit-for-bit by
 /// `test_optimize_h2_sto3g_step_energy_anchor`.
 pub fn optimize_coordinates(
@@ -845,7 +851,8 @@ pub fn optimize_coordinates(
         // BFGS step: p = -H * g
         let p = -h.dot(&grad);
 
-        // Simple trust-radius scaling
+        // Trust-radius scaling only: the step is always accepted (no line
+        // search, no uphill rejection).
         let p_norm = p.iter().map(|v| v * v).sum::<f64>().sqrt();
         let step = if p_norm > opt_config.trust_radius {
             &p * (opt_config.trust_radius / p_norm)
@@ -869,6 +876,10 @@ pub fn optimize_coordinates(
         let y = &grad - &prev_grad; // g_{k+1} - g_k
 
         let ys = y.dot(&s);
+        // OPEN: the update runs for any |y.s| > 1e-12, including y.s < 0, where
+        // it does not keep H positive definite (no curvature condition and no
+        // damping). Left as is; the optimizer's behaviour is pinned by
+        // `test_optimize_h2_sto3g_step_energy_anchor`.
         if ys.abs() > 1e-12 {
             let hy = h.dot(&y);
             let yhy = y.dot(&hy);
@@ -910,8 +921,8 @@ pub(crate) fn require_converged(res: &ScfResult) -> Result<(), FerricError> {
 /// Optimize a geometry on an arbitrary surface supplied as a closure.
 ///
 /// `energy_and_gradient(mol)` returns `(E, dE/dR)` in Hartree and Hartree/Bohr
-/// (`[natoms, 3]`). This is the same BFGS driver, line search, convergence
-/// tests and coordinate systems the SCF optimizers use; only the surface
+/// (`[natoms, 3]`). This is the same BFGS driver (trust-radius step scaling,
+/// no line search), convergence tests and coordinate systems the SCF optimizers use; only the surface
 /// differs. It is how a method that lives outside `ferric-scf` (GFN-xTB in
 /// `ferric-xtb`) reaches the existing optimizer without a second one.
 /// An error from the closure aborts the optimization and is returned.

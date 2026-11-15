@@ -62,42 +62,33 @@
 //! machinery reuses [`ferric_integrals::engine::Engine::compute_eri3_deriv`]
 //! exactly as Lane A's `smeared_charge_qm_gradient`/`smeared_site_forces` do.
 //!
-//! The exact scalar relating the raw p-shell integral `(mu nu|p_i)` to the
-//! physical field integral `<mu|(r-R_i)/|r-R_i|^3|nu>` was NOT assumed — it
-//! was MEASURED against an independent code path (the nuclear-attraction
-//! derivative-with-respect-to-an-extra-point-charge's-OWN-position, via
-//! `compute_1e_deriv_block_n`) in
-//! `crates/ferric-scf/tests/qmmm_polarizable.rs::p_shell_dipole_potential_matches_charge_derivative_block`,
-//! which ALSO caught a real ordering bug: libint2's cartesian p-shell
-//! function order for this build is **not** `[p_x, p_y, p_z]` matched to
-//! field axes `[x, y, z]` — an exhaustive 9-pairing least-squares fit (every
-//! (field axis, p-shell function) pair) found near-zero residual, shrinking
-//! ~10x per 10x increase in `zeta`, at EVERY `zeta` in
-//! `{1e2,1e3,1e4,1e5,1e6}`, ONLY for
+//! The scalar relating the raw p-shell integral `(mu nu|p_i)` to the physical
+//! field integral `<mu|(r-R_i)/|r-R_i|^3|nu>` follows from the definition of a
+//! pure l=1 shell, and is pinned against an independent code path (the
+//! nuclear-attraction derivative with respect to an extra point charge's OWN
+//! position, via `compute_1e_deriv_block_n`) in
+//! `crates/ferric-scf/tests/qmmm_polarizable.rs::p_shell_dipole_potential_matches_charge_derivative_block`:
+//!
+//! * **Axis order.** libint2's pure l=1 functions run over `m = -1, 0, +1`,
+//!   i.e. `(y, z, x)`, not `(x, y, z)`. The function that pairs with field axis
+//!   `c` (x, y, z = 0, 1, 2) therefore sits at index `(c + 2) mod 3`.
+//! * **Scale.** A normalised p function `N_p (x-R_x) exp(-zeta r^2)` with
+//!   `N_p = (2 zeta/pi)^(3/4) 2 sqrt(zeta)` acts, as `zeta -> infinity`, as a
+//!   gradient-of-delta probe: `int p_x g ~ c_p dg/dx(R)` with
+//!   `c_p = N_p pi^(3/2) / (2 zeta^(5/2)) = 1/norm_int_p(zeta)`. Applying it to
+//!   `g = 1/|r-R|` gives `grad_R (1/|r-R|) = -(r-R)/|r-R|^3`, so
 //!
 //! ```text
 //! field_axis[c] = -norm_int_p(zeta) * (mu nu | p_{(c+2) mod 3})
 //! norm_int_p(zeta) = 2^(1/4) zeta^(5/4) / (2 pi^(3/4))
 //! ```
 //!
-//! i.e. the p-shell function that pairs with field axis `c` is at cartesian
-//! index `(c + 2) mod 3` (a cyclic permutation, not the identity), and the
-//! raw p-shell integral must be MULTIPLIED by `norm_int_p(zeta)` (with a
-//! minus sign), not divided — an earlier symbolic derivation from first
-//! principles (unnormalized `p_x = (x-R_x) exp(-zeta r^2)` vs unnormalized
-//! `g = exp(-zeta r^2)`, both rescaled to unit self-overlap) predicted the
-//! IDENTITY permutation with a POSITIVE sign and a DIVISION by `norm_int_p`
-//! — that symbolic prediction was independently checked against this
-//! MEASURED result and falsified (both individually-verified sub-facts it
-//! was built from checked out under separate probes, but their combination
-//! did not match measurement, meaning the combination step itself, not
-//! either sub-fact, was where the derivation went wrong — an object lesson
-//! in trusting the independent numeric pin over a symbolic derivation that
-//! LOOKS complete). The empirical fit is what ships: `k(zeta) = -79.704,
-//! -1417.0, -25198.0, -448090, -7968290` for `zeta = 1e2..1e6` matches
-//! `-norm_int_p(zeta)` to 4-7 significant figures (converging as
-//! `zeta -> infinity`, tracked in `p_shell_zeta_convergence_sweep`) — see
-//! `p_axis_for_field_axis` and `norm_int_p_shell`.
+//!   the raw integral is MULTIPLIED by `norm_int_p(zeta)` (with a minus sign).
+//!   The relation is exact only as `zeta -> infinity`: the fitted
+//!   `k(zeta) = -79.704, -1417.0, -25198.0, -448090, -7968290` for
+//!   `zeta = 1e2..1e6` matches `-norm_int_p(zeta)` to 4-7 significant figures,
+//!   converging with `zeta` (`p_shell_zeta_convergence_sweep`). See
+//!   `p_axis_for_field_axis` and `norm_int_p_shell`.
 //!
 //! **A second, separate sign subtlety** bit the first implementation of
 //! `build_v_induced` even after this pin passed: the RAW derivative
@@ -160,9 +151,9 @@ pub const DEFAULT_MAX_SITES_DENSE: usize = 4000;
 /// module doc's Exclusions section.
 const COLOCATION_TOL: f64 = 1e-8;
 
-/// For field axis `c` (0=x, 1=y, 2=z), the cartesian p-shell FUNCTION index
-/// libint2 (this build) actually produces the matching field response at —
-/// `(c + 2) % 3`, NOT `c`. MEASURED, not assumed: see the module doc's
+/// For field axis `c` (0=x, 1=y, 2=z), the p-shell FUNCTION index at which
+/// libint2's pure l=1 shell (ordered `m = -1, 0, +1`, i.e. `(y, z, x)`) holds
+/// the matching field response: `(c + 2) % 3`, NOT `c`. See the module doc's
 /// "Integrals: the p-shell trick" section and
 /// `crates/ferric-scf/tests/qmmm_polarizable.rs`'s pin test, which fits all
 /// 9 (field axis, p-shell function) pairings and finds this the only one
@@ -175,8 +166,9 @@ pub(crate) fn p_axis_for_field_axis(field_axis: usize) -> usize {
 /// The scaling constant for a p-shell (l=1) site basis at exponent `zeta`:
 /// `field_axis[c] = -norm_int_p_shell(zeta) *
 /// (mu nu|p_{p_axis_for_field_axis(c)})` gives the field-integral component
-/// `<mu|(r-R)_c/|r-R|^3|nu>` directly (see module doc — this relationship
-/// was MEASURED, not derived; multiply by this constant, do not divide).
+/// `<mu|(r-R)_c/|r-R|^3|nu>` (see module doc: it is the reciprocal of the
+/// gradient-of-delta weight of a unit-normalised p function; multiply by this
+/// constant, do not divide).
 #[inline]
 pub(crate) fn norm_int_p_shell(zeta: f64) -> f64 {
     2f64.powf(0.25) * zeta.powf(1.25) / (2.0 * std::f64::consts::PI.powf(0.75))
@@ -853,7 +845,7 @@ pub fn polarizable_gradient_term(
 /// 3. `-mu_i . dE_i^perm/dR_i` for every OTHER permanent MM charge in `ext`
 ///    (respecting colocation-based exclusions, same convention as
 ///    `permanent_field_at_sites`), via the same point-charge-field
-///    formula, PLUS `-1/2 sum_{j!=i} mu_i . dT_ij/dR_i . mu_j` (the Thole
+///    formula, PLUS `-sum_{j!=i} mu_i . dT_ij/dR_i . mu_j` (coefficient 1, not 1/2; the Thole
 ///    tensor's OWN geometric derivative — this term has NO analogue in the
 ///    Fock/QM path). `dT_ij/dR` is evaluated by central finite difference
 ///    of the (cheap, closed-form) `thole_tensor` function itself — NOT a
