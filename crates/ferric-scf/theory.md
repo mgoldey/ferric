@@ -1137,3 +1137,112 @@ in symbols; C2 the same against a finite difference of $E(\mathbf{P})$ on a
 Gaussian $\mathbf{S}$, with $V/2$ and a non-symmetric $\mathbf{S}$ as negative
 controls; C3 $f = k_1$ and its limits; C4 the Gaussian $S_{kl}$ and $S_{kk}$
 against a Fourier-space Coulomb quadrature, and the point-charge limit).
+
+## External point charges and fields
+
+`ferric_core::external_potential::ExternalPotential` holds fixed point charges
+$\{q_c, \mathbf{r}_c\}$, Gaussian-smeared charges $\{q_s, \mathbf{r}_s, w_s\}$
+and an optional uniform field $\mathbf{E}$. It enters every SCF variant once,
+before the iterations: `oneelectron::hcore_with_external` adds the one-electron
+operator to $\mathbf{h}$, and `driver.rs` adds the classical terms to the
+nuclear repulsion $V_{nn}$. Nothing depends on the density, so the term needs
+no Fock update; `ext = None` and an empty potential take the plain
+`hcore` path. Charges interact with the nuclei through
+$Z^{\rm eff}_A$ (`Atom::effective_z`, the valence charge on an ECP atom);
+ghost atoms are skipped. Charge–charge interactions inside the environment are
+not computed (they are a constant).
+
+**Operators and energies.** For an electron at $\mathbf{r}$,
+
+$$h^{\rm ext}_{\mu\nu} = -\sum_c q_c\Big\langle\mu\Big|\frac{1}{|\mathbf{r}-\mathbf{r}_c|}\Big|\nu\Big\rangle
+ - \sum_s q_s\Big\langle\mu\Big|\frac{\operatorname{erf}(|\mathbf{r}-\mathbf{r}_s|/w_s)}{|\mathbf{r}-\mathbf{r}_s|}\Big|\nu\Big\rangle
+ + \mathbf{E}\cdot\langle\mu|\mathbf{r}|\nu\rangle,$$
+
+$$V^{\rm ext}_{nn} = \sum_A Z^{\rm eff}_A\Big[\sum_c \frac{q_c}{R_{Ac}}
+ + \sum_s q_s\frac{\operatorname{erf}(R_{As}/w_s)}{R_{As}}\Big]
+ - \mathbf{E}\cdot\sum_A Z^{\rm eff}_A\mathbf{R}_A .$$
+
+The point charges are appended to the nuclear-attraction engine
+(`nuclear_with_external`). The smeared operator is built as
+$-q_s(\mu\nu|g_s)/\!\int g_s$ from three-centre integrals against a normalized
+$s$ Gaussian of exponent $\zeta_s = 1/w_s^2$ (`smeared_attraction`). The field
+term uses the dipole integrals $\langle\mu|\mathbf{r}-\mathbf{O}|\nu\rangle$ at
+$\mathbf{O} = 0$ (`field_hcore_term`); the electron's charge $-1$ is folded in,
+so a charge $q$ at $\mathbf{R}$ has energy $-q\,\mathbf{E}\cdot\mathbf{R}$.
+
+**Smeared charges.** $\operatorname{erf}(r/w)/r$ is the potential of the unit
+Gaussian $(\zeta/\pi)^{3/2}e^{-\zeta r^2}$, $\zeta = 1/w^2$: it satisfies
+$-\nabla^2\phi = 4\pi\rho$, is finite at the centre ($2/(\sqrt\pi\,w)$), and
+tends to $1/r$ as $w \to 0$. $w = 0$ is not a valid smeared charge; the point
+charge is the separate representation. Only the environment charge is smeared:
+the nuclei stay points, so $V^{\rm ext}_{nn}$ has the form above. With
+$f(R) = \operatorname{erf}(R/w)/R$ and $g = \operatorname{erf}(R/w)$,
+
+$$f' = \frac{g'}{R} - \frac{g}{R^2},\qquad
+f'' = -g'\Big(\frac{2}{w^2} + \frac{2}{R^2}\Big) + \frac{2g}{R^3},\qquad
+g' = \frac{2e^{-R^2/w^2}}{\sqrt\pi\,w}$$
+
+(`smeared_radial_derivs`). With $\mathbf{d} = \mathbf{R}_A - \mathbf{r}_s$, the
+classical gradient is $Z_Aq_s f'(R)\,\mathbf{d}/R$ on the atom and its negative on
+the site (`smeared_charge_nuclear_site_gradient`), and the Hessian block on
+atom $A$'s diagonal is
+
+$$Z_Aq_s\Big[f''\frac{\mathbf{d}\mathbf{d}^{\mathsf T}}{R^2}
+ + \frac{f'}{R}\Big(\mathbf{1} - \frac{\mathbf{d}\mathbf{d}^{\mathsf T}}{R^2}\Big)\Big],$$
+
+whose $w\to0$ limit is the point block $Z_Aq_c(3\mathbf{d}\mathbf{d}^{\mathsf T}/R^5 - \mathbf{1}/R^3)$.
+The fixed charges do not move with the atoms, so the classical Hessian is block
+diagonal; the field is linear in $\mathbf{R}$ and contributes none.
+
+**Field origin.** At an origin $\mathbf{O}$ the electronic term is
+$\mathbf{E}\cdot\mathrm{Tr}[\mathbf{P}\langle\mathbf{r}\rangle] - (\mathbf{E}\cdot\mathbf{O})\mathrm{Tr}[\mathbf{P}\mathbf{S}]$
+and the nuclear term gains $+(\mathbf{E}\cdot\mathbf{O})\sum_AZ^{\rm eff}_A$, so
+
+$$E(\mathbf{O}) - E(0) = (\mathbf{E}\cdot\mathbf{O})\Big(\sum_A Z^{\rm eff}_A - N\Big)
+ = (\mathbf{E}\cdot\mathbf{O})\,Q .$$
+
+For a neutral molecule the energy does not depend on the origin. For a charged
+one it shifts by a constant that changes neither the orbitals (the shift adds
+$-(\mathbf{E}\cdot\mathbf{O})\mathbf{S}$ to $\mathbf{h}$, which moves every
+orbital energy by the same amount) nor the gradient; the code's
+$\mathbf{O} = 0$ fixes the constant.
+
+**Gradient** (`gradient::oneelectron_gradient` with `ext`). Three kinds of
+term:
+
+1. *Point charges, electronic.* The nuclear-attraction derivative engine is
+   built with the external charges appended (`set_point_charges_extra`,
+   `compute_1e_deriv_block_n`, $3(2 + N_{\rm at} + N_c)$ blocks). The two
+   shell-centre blocks and the $N_{\rm at}$ real-nucleus blocks are contracted
+   with $\mathbf{P}$; the $N_c$ charge-centre blocks are computed and
+   discarded, because the charges are fixed. Their contraction is minus the
+   force on each charge, which QM/MM takes from `electric_field_at_points`
+   instead. Analytic.
+2. *Smeared charges, electronic.* $\sum_{\mu\nu}P_{\mu\nu}\,\partial h^{\rm ext}_{\mu\nu}/\partial\mathbf{R}_A$
+   from the three-centre derivative engine, blocks 1 and 2 (the two orbital
+   centres; `smeared_charge_qm_gradient`). The site derivative is
+   $-(\text{block 1} + \text{block 2})$ by translational invariance
+   (`smeared_site_forces`), plus the classical site term above. Analytic.
+3. *Classical.* `charge_nuclear_gradient` ($-Z_Aq_c\mathbf{d}/R^3$ and the
+   smeared form) and `field_nuclear_gradient` ($-Z^{\rm eff}_A\mathbf{E}$).
+   Analytic.
+
+The fourth term, the field–density derivative
+$\partial/\partial\mathbf{R}_A\,\mathrm{Tr}[\mathbf{P}\,\mathbf{E}\cdot\langle\mathbf{r}\rangle]$
+at fixed $\mathbf{P}$, is a **central finite difference** of
+`field_hcore_term` rebuilt at displaced basis centres, step $h = 10^{-4}$ Bohr
+(`field_density_gradient_fd`), because the shim has no derivative engine for
+`emultipole1`. Its truncation error is $O(h^2)$, about $10^{-10}$ on the
+model of the proof. Translating every basis centre by $\mathbf{t}$ changes
+$\langle\mu|\mathbf{r}|\nu\rangle$ by $\mathbf{t}S_{\mu\nu}$, so the atom sum of
+this term is $\mathbf{E}\,\mathrm{Tr}[\mathbf{P}\mathbf{S}] = N\mathbf{E}$;
+with the field–nuclear rows the net force on the molecule is $Q\mathbf{E}$.
+The exact derivative obeys both; the finite difference obeys them to its
+$O(h^2)$ error. The Pulay and two-electron terms are those of
+the plain gradient at the embedded density.
+
+Proof: `scripts/external_potential_sympy.py` (E1 the smeared potential and its
+point limit; E2 $f'$ and $f''$; E3 the classical gradient, site gradient and
+Hessian blocks; E4 the origin shift; E5 the finite-difference field–density
+term against analytic dipole-integral derivatives of an $s$-Gaussian model,
+with the sum rule and net force).

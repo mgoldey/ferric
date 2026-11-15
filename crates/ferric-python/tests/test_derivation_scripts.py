@@ -820,6 +820,23 @@ CASES = [
         ],
     ),
     (
+        "external_potential_sympy.py",
+        20,
+        [
+            (
+                "f2 = -gp * (2.0 / (width * width) + 2.0 / (r * r)) + 2.0 * g / (r * r * r)",
+                "f2 = -gp * (1.0 / (width * width) + 2.0 / (r * r)) + 2.0 * g / (r * r * r)",
+                "FAIL E2 smeared_radial_derivs",
+            ),
+            ("    return +1\n", "    return -1\n", "FAIL E4 field origin"),
+            (
+                "grad[a, c] = (energy_of(cp) - energy_of(cm)) / (2.0 * h)",
+                "grad[a, c] = (energy_of(cp) - energy_of(cm)) / h",
+                "FAIL E5 FD field-density",
+            ),
+        ],
+    ),
+    (
         "pcm_ief_sympy.py",
         150,
         [

@@ -1,6 +1,7 @@
 # 23.1 Point charges, smeared charges and uniform fields
 
-<!-- section: 23.1; status: gap; registry: none; theory: none -->
+<!-- section: 23.1; status: edit; registry: none;
+     theory: crates/ferric-scf/theory.md#"External point charges and fields" -->
 
 The simplest environment is a set of fixed classical charges and a uniform
 electric field. The charges are not atoms: they have no basis functions, no
@@ -10,9 +11,8 @@ energy, and nothing else in the SCF changes. Every other embedding in this
 chapter, from QM/MM partial charges to the polarizable sites of section 23.3,
 is built on this operator.
 
-This section has no `theory.md` text and no proof script. The equations are
-read from the code loops and are marked unverified; the tests that pin them
-are named in each box.
+The equations are derived in `crates/ferric-scf/theory.md` ("External point
+charges and fields") and proved in `scripts/external_potential_sympy.py`.
 
 | Symbol | Meaning | Code name |
 |---|---|---|
@@ -39,11 +39,31 @@ exactly zero is not a valid smeared charge and a point charge is its own
 representation. The field adds $+\mathbf E\cdot\mathbf r$ for each electron,
 because the electron charge is $-1$.
 
-**Equation 23.1, the embedding operator and the classical energy.** (Transcribed from the code loop; see Known limits.)
+<!-- include: crates/ferric-scf/theory.md#"External point charges and fields" -->
 
 $$ H^{\mathrm{ext}}_{\mu\nu} = -\sum_i q_i\Big\langle\mu\Big|\tfrac{1}{|\mathbf r-\mathbf R_i|}\Big|\nu\Big\rangle - \sum_j q_j\Big\langle\mu\Big|\tfrac{\operatorname{erf}(|\mathbf r-\mathbf R_j|/w_j)}{|\mathbf r-\mathbf R_j|}\Big|\nu\Big\rangle + \mathbf E\cdot\langle\mu|\mathbf r|\nu\rangle , $$
 
 $$ E^{\mathrm{ext}}_{\mathrm{nuc}} = \sum_A Z_A\Big[\sum_i \frac{q_i}{|\mathbf R_A-\mathbf R_i|} + \sum_j q_j\frac{\operatorname{erf}(|\mathbf R_A-\mathbf R_j|/w_j)}{|\mathbf R_A-\mathbf R_j|}\Big] - \mathbf E\cdot\sum_A Z_A\mathbf R_A . $$
+
+> **Verified equation 23.1** · the smeared charge and the classical terms
+>
+> $\operatorname{erf}(r/w)/r$ solves Poisson's equation for the unit Gaussian
+> $(\zeta/\pi)^{3/2}e^{-\zeta r^2}$, $\zeta = 1/w^2$, and tends to $1/r$ as
+> $w \to 0$ (claim E1). The radial derivatives of `smeared_radial_derivs`
+> are those of $\operatorname{erf}(r/w)/r$ (claim E2), and the classical
+> charge–nucleus gradient, site gradient and Hessian blocks as coded are the
+> derivatives of the second line, with the point blocks as the $w\to0$
+> limit (claim E3).
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/external_potential_sympy.py`, claims E1 to E3 |
+> | Negative control | the runner changes $2/w^2$ to $1/w^2$ in $f''$ (claims E2 and E3 fail) |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-core/src/external_potential.rs::{charge_nuclear_energy,charge_nuclear_hessian}` |
+> | Code test | `smeared_charge_nuclear_hessian_matches_gradient_difference` in `crates/ferric-core/src/external_potential.rs` |
+>
+> <!-- verified: id=ext.smeared.classical; script=scripts/external_potential_sympy.py; claim=E3; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-core/src/external_potential.rs::charge_nuclear_hessian; rust_test=ferric-core/src/external_potential.rs::smeared_charge_nuclear_hessian_matches_gradient_difference -->
 
 The SCF energy is the vacuum functional with $h \to h + H^{\mathrm{ext}}$ and
 $V_{nn} \to V_{nn} + E^{\mathrm{ext}}_{\mathrm{nuc}}$. The interaction of
@@ -52,10 +72,12 @@ the electronic problem; section 23.4 supplies it from a force field).
 
 Origin dependence of the field. The field term uses dipole integrals about the
 coordinate origin, and $E^{\mathrm{ext}}_{\mathrm{nuc}}$ carries $-\mathbf E\cdot\sum_AZ_A\mathbf R_A$.
-Shifting every coordinate by $\mathbf a$ changes the total by
-$-\mathbf E\cdot\mathbf a\,(\sum_AZ_A - N_e)$, so the energy of a charged
-molecule depends on where the origin is; for a neutral molecule it does not.
-(This follows from the two terms above and is not separately tested.)
+Moving the origin to $\mathbf O$ changes the total by
+$(\mathbf E\cdot\mathbf O)(\sum_AZ_A - N_e) = (\mathbf E\cdot\mathbf O)\,Q$, so the
+energy of a charged molecule depends on where the origin is and that of a
+neutral one does not. The shift adds $-(\mathbf E\cdot\mathbf O)S$ to $h$, which
+moves every orbital energy equally, so neither the orbitals nor the gradient
+change (`scripts/external_potential_sympy.py`, claim E4).
 
 ## 23.1.2 Where the terms enter the SCF
 
@@ -130,7 +152,7 @@ pieces. They are added in `ferric-scf/src/gradient.rs::oneelectron_gradient`.
 | electron–point-charge, Hellmann–Feynman | the nuclear-attraction derivative engine with the charges as extra centres; the shell-centre and real-atom blocks are accumulated and the charge-centre blocks are written but not accumulated, since the charges are not variables | analytic, libint |
 | classical charge–nucleus | $\partial E^{\mathrm{ext}}_{\mathrm{nuc}}/\partial\mathbf R_A$ | analytic, `ExternalPotential::charge_nuclear_gradient` |
 | field–nucleus | $-Z_A\mathbf E$ per atom | analytic, `ExternalPotential::field_nuclear_gradient` |
-| field–electron, $\sum_{\mu\nu}D_{\mu\nu}\,\partial\langle\mu|\mathbf E\cdot\mathbf r|\nu\rangle/\partial\mathbf R_A$ | central difference ($h = 10^{-4}$ Bohr) of the field one-electron term at fixed $D$; libint has no derivative of the dipole operator | `field_density_gradient_fd` |
+| field–electron, $\sum_{\mu\nu}D_{\mu\nu}\,\partial\langle\mu|\mathbf E\cdot\mathbf r|\nu\rangle/\partial\mathbf R_A$ | central difference ($h = 10^{-4}$ Bohr) of the field one-electron term at fixed $D$; the shim has no derivative engine for the dipole operator. Its error is $O(h^2)$, and its atom sum is $\mathbf E\,\mathrm{Tr}[DS]$, so with the field–nucleus rows the net force is $Q\mathbf E$ (`scripts/external_potential_sympy.py`, claim E5) | `field_density_gradient_fd` |
 | smeared-charge attraction | three-index derivative integrals, `smeared_charge_qm_gradient` | analytic |
 
 The force on a charge itself is not part of this gradient. For a point charge
@@ -170,22 +192,16 @@ external-potential arguments; the RI-MP2 gradient in Rust threads one through
 
 | Source | What it gives |
 |---|---|
+| `crates/ferric-scf/theory.md`, "External point charges and fields" | the operators, the smeared limit, the origin shift and the gradient terms |
+| `scripts/external_potential_sympy.py`, claims E1 to E5 | the proof |
 | `crates/ferric-core/src/external_potential.rs` | the struct, the classical energy, gradient and Hessian |
 | `crates/ferric-integrals/src/oneelectron.rs` | the one-electron terms |
 | `crates/ferric-scf/tests/qmmm_vs_pyscf.rs`, `crates/ferric-scf/tests/qmmm_smeared.rs`, `crates/ferric-scf/tests/validation_qmmm_hessian.rs` | the PySCF comparisons |
 
 **Known limits (2026-11-15).**
 
-- The displayed equation 23.1 are transcribed from the code loop and await a
-  `theory.md` derivation and a sympy proof; they are not machine-checked.
 - The field–electron gradient term is a finite difference, not analytic.
 - No force on the charges appears in `oneelectron_gradient`; use section 23.2.
 - The MP2 and coupled-cluster Python drivers take no external potential, and
   analytic Hessians exclude some reference and functional combinations
   (see the validation matrix on `site/src/reference/validation.md`).
-
-**Theory text still needed in `crates/ferric-scf/theory.md`, which another pass is editing.**
-Equation 23.1 with the sign conventions of the two Coulomb terms; the $w\to0$
-limit of the smeared potential; the origin-shift identity of the field term;
-and the classification of the five gradient pieces of 23.1.3 by whether
-libint supplies the derivative.
