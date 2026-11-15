@@ -1,9 +1,11 @@
 //! Exactness anchors of the Kohn-Sham CPKS: the XC kernel in the MO form the
 //! solver iterates in ([`crate::ks_fixed_grid::XcMoResponse`] and its
 //! polarized twin) against the AO route it replaced (the oracle), and the
-//! lockstep blocks (the MO kernel and the fitted Coulomb matrix
-//! [`crate::df_j::DfJ::build_many`] of every coordinate of a block in one
-//! pass) against one-coordinate blocks.
+//! lockstep blocks (the MO kernel, the fitted Coulomb matrix
+//! [`crate::df_j::DfJ::build_many`] and the factored fitted exchange
+//! [`crate::df_k::DfK::build_factored_many`] of every coordinate of a block in
+//! one pass) against one-coordinate blocks, and the factored fitted exchange
+//! against the density path it replaced (the oracle).
 //!
 //! Bars:
 //! - kernel products: the MO and AO routes are the same sums regrouped, so
@@ -269,6 +271,93 @@ fn rks_cpks_block_matches_one_coordinate_blocks() {
     let ncoord = case.mol.atoms.len() * 3;
     let (all, one) = (case.response(&g, ncoord), case.response(&g, 1));
     assert_responses_agree("RKS CPKS block vs one-coordinate blocks", &all, &one);
+}
+
+/// The SCF's RI-K for the CPKS `G` (packed f64, the production tier).
+fn fitted_k(mol: &Molecule, prep: &PreparedBasis) -> crate::df_k::DfK<'static> {
+    let aux = PreparedBasis::new(mol, &ferric_core::basis::bundled(AUX).unwrap()).unwrap();
+    let df = crate::df_k::DfK::new(Operator::coulomb(), prep, &aux, 1 << 30).unwrap();
+    assert!(df.is_packed(), "the anchor must reach the packed f64 tier");
+    df
+}
+
+/// B3LYP (`a` = 0.2) exchange fraction of the RI-K anchors.
+const B3LYP_EXX: f64 = 0.2;
+
+impl RksCase {
+    /// RI-J and RI-K builder, the factored exchange route unless `density`.
+    fn builder_jk(&self, density: bool) -> TwoElectronBuilder<'_> {
+        let g = TwoElectronBuilder::new(&self.ctx, &self.prep, &self.bounds)
+            .unwrap()
+            .fitted(
+                Some(fitted_j(&self.mol, &self.prep)),
+                Some(fitted_k(&self.mol, &self.prep)),
+                false,
+            );
+        if density {
+            g.with_density_path_k()
+        } else {
+            g
+        }
+    }
+}
+
+/// Closed-shell B3LYP with RI-J and RI-K: the CPKS response through the
+/// factored exchange equals the density-path (oracle) response.
+#[test]
+fn rks_cpks_factored_k_matches_the_density_path() {
+    let case = RksCase::new("B3LYP");
+    let mo = case.mo_kernel();
+    let g_fac = case.builder_jk(false).with_xc_mo_response(&mo, B3LYP_EXX);
+    let g_den = case.builder_jk(true).with_xc_mo_response(&mo, B3LYP_EXX);
+    let block = case.mol.atoms.len() * 3;
+    let (r_fac, r_den) = (case.response(&g_fac, block), case.response(&g_den, block));
+    assert_responses_agree("RKS CPKS factored vs density-path K", &r_fac, &r_den);
+}
+
+/// Closed-shell B3LYP with RI-J and RI-K: the factored exchange of a block of
+/// all 9 coordinates equals one-coordinate blocks.
+#[test]
+fn rks_cpks_factored_k_block_matches_one_coordinate_blocks() {
+    let case = RksCase::new("B3LYP");
+    let mo = case.mo_kernel();
+    let g = case.builder_jk(false).with_xc_mo_response(&mo, B3LYP_EXX);
+    let ncoord = case.mol.atoms.len() * 3;
+    let (all, one) = (case.response(&g, ncoord), case.response(&g, 1));
+    assert_responses_agree(
+        "RKS CPKS factored K block vs one-coordinate blocks",
+        &all,
+        &one,
+    );
+}
+
+/// The factored fitted exchange of a coordinate's CPHF product does not
+/// depend on the block around it: a block of four equals four one-density
+/// calls bit for bit (the elementwise bar against the density path is
+/// `crate::df_k::response`'s `factored_k_matches_the_density_path`).
+#[test]
+fn rks_factored_k_products_ignore_the_block() {
+    let case = RksCase::new("B3LYP");
+    let frame = case.frame();
+    let nvir = frame.c_vir.ncols();
+    let us: Vec<Array2<f64>> = (1..=4)
+        .map(|k| probe(nvir, case.nocc, 0.21 * k as f64))
+        .collect();
+    let xs: Vec<Array2<f64>> = us.iter().map(|u| frame.response_factor(u)).collect();
+    let dens: Vec<Array2<f64>> = us.iter().map(|u| frame.response_density(u)).collect();
+    let refs: Vec<&Array2<f64>> = dens.iter().collect();
+    let g = case.builder_jk(false);
+    let block = g
+        .rhf_fitted_exchanges(&refs, Some((frame.c_occ, &xs)))
+        .unwrap()
+        .unwrap();
+    for (k, a) in block.iter().enumerate() {
+        let one = g
+            .rhf_fitted_exchanges(&[refs[k]], Some((frame.c_occ, &xs[k..k + 1])))
+            .unwrap()
+            .unwrap();
+        assert_eq!(&one[0], a, "product #{k} depends on its block");
+    }
 }
 
 /// A converged UKS reference (H2O+ doublet, PBE, RI-J) with its CPKS inputs.

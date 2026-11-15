@@ -1018,6 +1018,7 @@ fn rks_fixed_grid_hessian_core(
     let overlap = skeleton_hess_overlap(prep, natoms, &w)?;
     phases.stop(t);
     let t = phases.begin("2e skeleton + J/K first-order");
+    let sub = phases.begin("  fitted RI-J / RI-K terms");
     // Mutants: the RI-K pieces or the CPHF DfK fitted over the RI-J basis.
     let j_for_k = |on: bool| match (on, fits.j, fits.k) {
         (true, Some(j), Some(_)) => KsFits {
@@ -1036,6 +1037,7 @@ fn rks_fixed_grid_hessian_core(
         j_for_k(mutants.rik_terms_from_j_aux),
         mutants,
     )?;
+    phases.stop_nested(sub);
     // A fitted Coulomb (exchange) term replaces the four-centre Gamma_J
     // (Gamma_K); the mutants keep the exact one.
     let keep_j = fits.j.is_none() || mutants.exact_j_skeleton;
@@ -1046,6 +1048,7 @@ fn rks_fixed_grid_hessian_core(
     } else {
         0.0
     };
+    let sub = phases.begin("  four-centre 2e skeleton");
     let mut two_electron = if c_j == 0.0 && c_k == 0.0 {
         Array2::<f64>::zeros((3 * natoms, 3 * natoms))
     } else {
@@ -1054,6 +1057,7 @@ fn rks_fixed_grid_hessian_core(
         };
         skeleton_hess_2e(prep, op, bounds, natoms, max_abs(d), &gam)?
     };
+    phases.stop_nested(sub);
     phases.stop(t);
     let t = phases.begin("XC skeleton (2nd derivative)");
     two_electron += &grid.skeleton_hessian_for(mode, &geo, d, &mutants.xc)?;
@@ -1069,7 +1073,9 @@ fn rks_fixed_grid_hessian_core(
         exchange: if fitted_k_first { &no_density } else { d },
         k_scale: 0.5 * exx * mutants.fock_exx,
     };
+    let sub = phases.begin("  first-order 1e + four-centre Fock");
     let mut first = first_order_ao(prep, op, bounds, natoms, &[], &[spec])?;
+    phases.stop_nested(sub);
     for (f, g) in first.f1[0].iter_mut().zip(&fitted.first_order) {
         *f += g;
     }
@@ -1089,7 +1095,9 @@ fn rks_fixed_grid_hessian_core(
         mutants.response_gradient,
     )?;
     phases.stop(t);
+    let t = phases.begin("CPKS fitted J/K construction");
     let (df_j, df_k) = cphf_fitters(prep, op, j_for_k(mutants.cphf_dfk_from_j_aux), mutants)?;
+    phases.stop(t);
     let g = TwoElectronBuilder::new(ctx, prep, bounds)?
         .fitted(df_j, df_k, false)
         .with_xc_mo_response(&kernel, exx * mutants.response_exx);

@@ -517,7 +517,10 @@ pub fn rij_terms_with_aux_at_precision(
     j_precision: RiJPrecision,
 ) -> Result<RijTerms, FerricError> {
     let j_f32 = j_precision == RiJPrecision::F32;
+    let mut ph = ferric_core::timing::PhaseAccumulator::new().report_on_drop("RI-J Hessian terms");
+    let t = ph.begin("metric factorization");
     let fit = Fit::new(dfbs, op, budget, mutants)?;
+    ph.stop(t);
     let n3 = 3 * natoms;
     let nbf = obs.nbasis();
     // Peak inside this function: j1, j2 and the output `first_order_j` are
@@ -533,14 +536,22 @@ pub fn rij_terms_with_aux_at_precision(
             .saturating_mul(3 + chunk_len(n3, nbf))
             .saturating_add(8 * (3 * n3 * naux + 2 * naux * naux)),
     )?;
+    let t = ph.begin("3c integrals + fit c");
     let mut source = ThreeIndexSource::build(fit.op, obs, &fit.dfbs, fit.budget)?;
     let d_p = d_vector(&mut source, d, fit.dfbs.nbasis(), j_f32)?;
     let c = fit.solve(&d_p)?;
+    ph.stop(t);
+    let t = ph.begin("3c first-derivative pass (d_x, J1_x)");
     let (dx, j1) = first_derivative_3c(obs, &fit, natoms, d, &c)?;
+    ph.stop(t);
+    let t = ph.begin("2c first derivatives + row solves");
     let vc = first_derivative_2c(&fit, natoms, &c)?;
     let z = &dx - &vc;
     let y = solve_rows(&fit, &z)?;
+    ph.stop(t);
+    let t = ph.begin("aux-weighted AO pass (J2_x)");
     let j2 = aux_weighted_ao(&mut source, &y, nbf, j_f32)?;
+    ph.stop(t);
 
     let (z_skel, y_skel) = if mutants.drop_cross {
         (dx.clone(), solve_rows(&fit, &dx)?)
@@ -550,9 +561,12 @@ pub fn rij_terms_with_aux_at_precision(
     let cross = z_skel.dot(&y_skel.t());
     let cfg = &mutants.stencil;
     let cs = c.as_slice().expect("contiguous c");
+    let t = ph.begin("3c second-derivative stencil");
     let three_centre = eri3_deriv2_contract(obs, &fit.dfbs, fit.op, cfg, |sp, s1, s2, w| {
         weight_c_times_d(obs, &fit.dfbs, cs, d, (sp, s1, s2), w)
     })?;
+    ph.stop(t);
+    let t = ph.begin("2c second-derivative stencil");
     let metric_second = if mutants.drop_metric_second {
         Array2::zeros((n3, n3))
     } else {
@@ -561,6 +575,7 @@ pub fn rij_terms_with_aux_at_precision(
             weight_matrix(&fit.dfbs, &m2, (sp, sq), w)
         })?
     };
+    ph.stop(t);
     let raw = &three_centre + &metric_second + &cross;
     let skeleton_asymmetry = raw
         .iter()

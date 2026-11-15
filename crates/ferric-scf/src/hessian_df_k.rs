@@ -76,12 +76,13 @@
 //! ## CPHF
 //!
 //! `G(D1) = J(D1) − ½K(D1)` is linear in `D1`; the response uses the SCF's own
-//! `DfK` (the dressed `V^{-1/2}(Q|μν)` source) through its density path
-//! `K = Σ_P B_P D1 B_P`. That path is written for a general matrix: it never
-//! factors `D1`, so the non-positive-semidefinite response density
-//! `D1 = C_v U C_oᵀ + h.c.` and the occupied-block density are handled with no
-//! change (the occupied-orbital path `build_from_occ` is NOT used, it needs
-//! `D = C Cᵀ`).
+//! `DfK` (the dressed `V^{-1/2}(Q|μν)` source), `K = Σ_P B_P D1 B_P`. The
+//! response density `D1 = X C_oᵀ + C_o Xᵀ` (`X = 2 C_v U`; the occupied
+//! block `X = −C_o S_oo`) is indefinite, so the occupied path `build_from_occ`
+//! (which needs `D = C Cᵀ`) does not apply; instead
+//! `K = Σ_P (B_P X)(B_P C_o)ᵀ + h.c.` with `B_P C_o` built once per solve
+//! (`crate::df_k::DfK::build_factored_many`). The UHF kernel below keeps the
+//! density path, which takes a general matrix as it is.
 //!
 //! # UHF: one channel per spin
 //!
@@ -270,6 +271,7 @@ use crate::hessian_df_stencil::{
 };
 use crate::result::DfJkRoute;
 use ferric_core::mol::Molecule;
+use ferric_core::timing::PhaseAccumulator;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
@@ -735,11 +737,13 @@ fn build_core(
     x: &Array2<f64>,
     mutants: &RikMutants,
     with_k1: bool,
+    ph: &mut PhaseAccumulator,
 ) -> Result<Core, FerricError> {
     let (n, naux, m) = (obs.nbasis(), fit.dfbs.nbasis(), x.ncols());
     let m2 = m * m;
 
     // Pass 1: L_P = Xᵀ (P|··) X and B_{P,λj} = Σ_σ (P|λσ) X_σj.
+    let t = ph.begin("3c integrals + occupied half-transform");
     let mut source = ThreeIndexSource::build(fit.op, obs, &fit.dfbs, fit.budget)?;
     let mut l = Array2::<f64>::zeros((naux, m2));
     let mut b = Array3::<f64>::zeros((naux, n, m));
@@ -762,7 +766,9 @@ fn build_core(
         Ok(())
     })?;
     drop(source);
+    ph.stop(t);
 
+    let t = ph.begin("metric GEMMs (Gamma, C-hat)");
     let gamma = m_metric.dot(&l).as_standard_layout().to_owned();
     drop(l);
     let b_flat = b
@@ -780,8 +786,12 @@ fn build_core(
         .as_standard_layout()
         .to_owned();
 
+    ph.stop(t);
+
     // Pass 2: first-derivative 3c blocks: L_x always, K1_x on request.
+    let t = ph.begin("3c first-derivative pass (L_x, K1_x)");
     let (lx, k1) = first_derivative_3c(obs, fit, natoms, x, &chat_p, mutants, with_k1)?;
+    ph.stop(t);
     Ok(Core {
         gamma,
         lx,
@@ -876,9 +886,14 @@ pub fn rik_channel_terms_with_aux(
         "RI-K Hessian fit tensors, L^x/Z^x, V^x and K^x matrices",
         rik_peak_bytes_channels(natoms, n, &noccs, naux),
     )?;
+    let mut ph = PhaseAccumulator::new().report_on_drop("RI-K Hessian terms");
+    let t = ph.begin("metric factorization");
     let fit = Fit::new(dfbs, op, budget, mutants)?;
+    ph.stop(t);
     let n3 = 3 * natoms;
+    let t = ph.begin("2c first derivatives V_x");
     let vx = first_derivative_2c(&fit, natoms)?;
+    ph.stop(t);
 
     let mut gammas: Vec<Array2<f64>> = Vec::with_capacity(channels.len());
     let mut cross: Option<Array2<f64>> = None;
@@ -888,8 +903,9 @@ pub fn rik_channel_terms_with_aux(
         let m2 = m * m;
         let alpha = ch.alpha * mutants.alpha_factor;
         let m_metric = fit.m_for(ci);
-        let mut core = build_core(natoms, obs, &fit, m_metric, x, mutants, true)?;
+        let mut core = build_core(natoms, obs, &fit, m_metric, x, mutants, true, &mut ph)?;
         let gamma = core.gamma.clone();
+        let t = ph.begin("cross term (Z_x, M Z_x)");
 
         // Z_x = L_x - V_x Γ (in place), then ∂_xΓ = M Z_x.
         if !mutants.drop_cross {
@@ -922,6 +938,8 @@ pub fn rik_channel_terms_with_aux(
             None => cross = Some(cross_s),
             Some(acc) => *acc += &cross_s,
         }
+        ph.stop(t);
+        let t = ph.begin("K^x per coordinate");
 
         // K^x = K1 + K1ᵀ - Σ_j Ĉ_jᵀ V_x Ĉ_j
         let chat_flat = core
@@ -961,6 +979,7 @@ pub fn rik_channel_terms_with_aux(
             first_order_fock.push(&kx * scale);
             first_order_k.push(kx);
         }
+        ph.stop(t);
         fock_out.push(RikChannelFock {
             first_order_k,
             first_order_fock,
@@ -978,6 +997,7 @@ pub fn rik_channel_terms_with_aux(
         .iter()
         .map(|c| c.alpha * mutants.alpha_factor)
         .collect();
+    let t = ph.begin("3c second-derivative stencil");
     let three_centre = eri3_deriv2_contract(obs, dfbs, fit.op, cfg, |sp, s1, s2, w| {
         for (ci, ch) in channels.iter().enumerate() {
             let scale = 2.0 * alphas[ci];
@@ -1001,6 +1021,8 @@ pub fn rik_channel_terms_with_aux(
         }
         true
     })?;
+    ph.stop(t);
+    let t = ph.begin("2c second-derivative stencil");
     let metric_second = if mutants.drop_metric_second {
         Array2::zeros((n3, n3))
     } else {
@@ -1012,6 +1034,7 @@ pub fn rik_channel_terms_with_aux(
             weight_matrix(dfbs, &m2w, (sp, sq), w)
         })?
     };
+    ph.stop(t);
     let raw = &three_centre + &metric_second + &cross;
     let skeleton_asymmetry = raw
         .iter()
@@ -1052,7 +1075,16 @@ pub fn rik_first(
     )?;
     let n3 = 3 * natoms;
     let vx = first_derivative_2c(&fit, natoms)?;
-    let core = build_core(natoms, obs, &fit, &fit.m, x, &mutants, false)?;
+    let core = build_core(
+        natoms,
+        obs,
+        &fit,
+        &fit.m,
+        x,
+        &mutants,
+        false,
+        &mut PhaseAccumulator::new(),
+    )?;
     let g_star = gamma_fixed.unwrap_or(&core.gamma);
     let mut lg = Array1::<f64>::zeros(n3);
     let mut gvg = Array1::<f64>::zeros(n3);

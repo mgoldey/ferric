@@ -116,6 +116,14 @@
 //! is refused with a typed error naming the count (RI-K: those are the modes
 //! `DfK` drops, whose truncated energy this does not differentiate).
 //!
+//! Closed shell, the CPHF exchange: every density the RHF/RKS solve hands
+//! `G` is `X C_oᵀ + C_o Xᵀ` (the rotation response `X = 2 C_v U`, the
+//! occupied block `X = −C_o S_oo`), so `DfK` builds `L_P = B_P C_occ` once per
+//! solve and the fitted K of all densities of a lockstep block in one pass
+//! (`crate::df_k::DfK::build_factored_many`, `4 naux n² nocc` flops per
+//! density instead of the density path's `4 naux n³`). UHF, UKS and ROHF keep
+//! one density-path `DfK` build per spin density.
+//!
 //! ROHF with RI: the ROHF energy is the UHF functional of the constrained
 //! `(D_α, D_β)` with `X_α = C[:, ..n_α]`, `X_β = C[:, ..n_β]` of its single
 //! orbital set, so the skeleton, `J^x` and the per-spin `K^x` are the UHF ones
@@ -2595,6 +2603,17 @@ impl<'a> MoFrame<'a> {
         -self.occ * self.c_occ.dot(s1_oo).dot(&self.c_occ.t())
     }
 
+    /// `X = occ · C_v U` with [`Self::response_density`] `= X C_oᵀ + C_o Xᵀ`.
+    fn response_factor(&self, u_vo: &Array2<f64>) -> Array2<f64> {
+        self.occ * self.c_vir.dot(u_vo)
+    }
+
+    /// `X = −(occ/2) · C_o S_oo` with [`Self::occupied_density`]
+    /// `= X C_oᵀ + C_o Xᵀ` (`S_oo` symmetric).
+    fn occupied_factor(&self, s1_oo: &Array2<f64>) -> Array2<f64> {
+        (-0.5 * self.occ) * self.c_occ.dot(s1_oo)
+    }
+
     /// `Cᵀ M C_occ` (nmo × nocc).
     fn to_mo(&self, m: &Array2<f64>) -> Array2<f64> {
         self.c.t().dot(m).dot(&self.c_occ)
@@ -2627,6 +2646,14 @@ struct TwoElectronBuilder<'a> {
     /// RI-K: the SCF's `DfK` replaces the exact exchange matrix (its density
     /// path takes the indefinite response densities).
     df_k: Option<std::cell::RefCell<crate::df_k::DfK<'static>>>,
+    /// RI-K of factored densities (RHF/RKS): `L_P = B_P C_o` of the solve's
+    /// occupied block, built at the first factored exchange and rebuilt
+    /// whenever a different `C_o` is passed
+    /// ([`crate::df_k::DfK::build_factored_many`]).
+    k_half: std::cell::RefCell<Option<crate::df_k::OccHalfTransform>>,
+    /// Tests only: fitted K through the density path for every density (the
+    /// oracle of the factored route).
+    k_density_path: bool,
     /// RHF-only options of `G`.
     rhf_g: RhfG<'a>,
     /// Mutation tests only (UHF): the UHF channel defects of [`UhfDfMutants`]
@@ -2645,6 +2672,12 @@ struct TwoElectronBuilder<'a> {
     /// fitted K, XC kernel); inert when timing is off.
     phases: std::cell::RefCell<ferric_core::timing::PhaseAccumulator>,
 }
+
+/// The factored form `D_k = X_k C_oᵀ + C_o X_kᵀ` of a block of RHF/RKS
+/// densities: the occupied block `C_o` and one `X_k` (`n × nocc`) per
+/// density, in order. The fitted exchange of such densities goes through
+/// [`crate::df_k::DfK::build_factored_many`].
+type KFactors<'c, 'x> = (ArrayView2<'c, f64>, &'x [Array2<f64>]);
 
 /// RHF-only options of the CPHF `G`.
 #[derive(Default)]
@@ -2697,6 +2730,8 @@ impl<'a> TwoElectronBuilder<'a> {
             pool,
             df_j: None,
             df_k: None,
+            k_half: Default::default(),
+            k_density_path: false,
             rhf_g: RhfG::default(),
             uhf_mutants: UhfDfMutants::default(),
             uks_xc: None,
@@ -2770,6 +2805,14 @@ impl<'a> TwoElectronBuilder<'a> {
     fn with_xc_response(mut self, xc: Option<&'a XcResponseFn<'a>>, exx: f64) -> Self {
         self.rhf_g.xc = xc;
         self.rhf_g.exx = exx;
+        self
+    }
+
+    /// Fitted K through the density path for every density (the oracle of the
+    /// factored route, tests only).
+    #[cfg(test)]
+    fn with_density_path_k(mut self) -> Self {
+        self.k_density_path = true;
         self
     }
 
@@ -2863,8 +2906,14 @@ impl<'a> TwoElectronBuilder<'a> {
     /// RI-K the exchange matrix); the exact J (and K, unless fitted or `a` = 0)
     /// of all densities come from one quartet pass, the fitted J of all from
     /// one pass over the RI tensor, the XC responses of all from one lockstep
-    /// kernel application.
-    fn g_rhf_many(&self, ds: &[Array2<f64>]) -> Result<Vec<Array2<f64>>, FerricError> {
+    /// kernel application. With `factors` (the form of every density of `ds`)
+    /// the fitted K of all comes from one factored pass
+    /// ([`Self::rhf_fitted_exchanges`]).
+    fn g_rhf_many(
+        &self,
+        ds: &[Array2<f64>],
+        factors: Option<KFactors<'_, '_>>,
+    ) -> Result<Vec<Array2<f64>>, FerricError> {
         // Hartree-Fock: the whole exchange (`exx` = 1) and no XC response.
         let xc = self.rhf_g.xc;
         let exx = if self.rhf_g.kohn_sham() {
@@ -2881,15 +2930,15 @@ impl<'a> TwoElectronBuilder<'a> {
             if exact_k { &refs } else { &none },
         )?;
         let coulomb = self.rhf_coulombs(&refs, js)?;
+        let mut exchange = self.rhf_exchanges(&refs, ks, factors, exx)?.into_iter();
         let mut v_xc = match xc {
             Some(xc) => self.timed("XC kernel apply", || xc(&refs)),
             None => Vec::new(),
         }
         .into_iter();
         let mut out = Vec::with_capacity(ds.len());
-        for ((i, d), mut j) in ds.iter().enumerate().zip(coulomb) {
-            if exx != 0.0 {
-                let mut k = self.rhf_exchange(d, ks.get(i))?;
+        for mut j in coulomb {
+            if let Some(mut k) = exchange.next() {
                 if !self.rhf_g.kohn_sham() && self.rhf_g.swap_jk {
                     std::mem::swap(&mut j, &mut k);
                 }
@@ -2901,6 +2950,18 @@ impl<'a> TwoElectronBuilder<'a> {
             out.push(j);
         }
         Ok(out)
+    }
+
+    /// [`Self::g_rhf_many`] of the CPHF response densities of the vo
+    /// amplitudes `us`, each passed with its exchange factor.
+    fn g_rhf_responses(
+        &self,
+        frame: &MoFrame<'_>,
+        us: &[&Array2<f64>],
+    ) -> Result<Vec<Array2<f64>>, FerricError> {
+        let dens: Vec<Array2<f64>> = us.iter().map(|u| frame.response_density(u)).collect();
+        let xs: Vec<Array2<f64>> = us.iter().map(|u| frame.response_factor(u)).collect();
+        self.g_rhf_many(&dens, Some((frame.c_occ, &xs)))
     }
 
     /// The Coulomb matrices of `ds`: the SCF's RI-J where it fitted J (all
@@ -2920,25 +2981,107 @@ impl<'a> TwoElectronBuilder<'a> {
         }
     }
 
-    /// The exchange matrix of `d`: the SCF's RI-K where it fitted K, else the
-    /// `exact` matrix of the shared quartet pass.
-    fn rhf_exchange(
+    /// The exchange matrix of every density of `ds`, in order: the SCF's RI-K
+    /// where it fitted K ([`Self::rhf_fitted_exchanges`]), else the `exact`
+    /// matrices of the shared quartet pass. Empty when `exx` = 0.
+    fn rhf_exchanges(
         &self,
+        ds: &[&Array2<f64>],
+        exact: Vec<Array2<f64>>,
+        factors: Option<KFactors<'_, '_>>,
+        exx: f64,
+    ) -> Result<Vec<Array2<f64>>, FerricError> {
+        if exx == 0.0 {
+            return Ok(Vec::new());
+        }
+        let ks = match self.rhf_fitted_exchanges(ds, factors)? {
+            Some(ks) => ks,
+            None => ds
+                .iter()
+                .enumerate()
+                .map(|(i, d)| Self::exact_exchange(d, exact.get(i)))
+                .collect::<Result<Vec<_>, FerricError>>()?,
+        };
+        if ks.len() != ds.len() {
+            return Err(FerricError::General(
+                "CPHF G: one exchange matrix per density expected".into(),
+            ));
+        }
+        Ok(ks)
+    }
+
+    /// The `exact` exchange matrix of `d` from the shared quartet pass.
+    fn exact_exchange(
         d: &Array2<f64>,
         exact: Option<&Array2<f64>>,
     ) -> Result<Array2<f64>, FerricError> {
-        use crate::fock::KBuilder;
-        match (&self.df_k, exact) {
-            (Some(df), _) => {
-                let mut k = Array2::<f64>::zeros(d.dim());
-                self.timed("fitted K build", || df.borrow_mut().build(d, &mut k))?;
-                Ok(k)
-            }
-            (None, Some(k)) => Ok(k.clone()),
-            (None, None) => Err(FerricError::General(
+        match exact {
+            Some(k) if k.dim() == d.dim() => Ok(k.clone()),
+            _ => Err(FerricError::General(
                 "CPHF G: no exact exchange matrix was built for this density".into(),
             )),
         }
+    }
+
+    /// The SCF's RI-K of every density of `ds`, in order, or `None` where the
+    /// SCF did not fit K. With `factors` all come from one factored pass over
+    /// the tensor ([`crate::df_k::DfK::build_factored_many`]); without them
+    /// (or under [`Self::with_density_path_k`]) one density-path build each.
+    fn rhf_fitted_exchanges(
+        &self,
+        ds: &[&Array2<f64>],
+        factors: Option<KFactors<'_, '_>>,
+    ) -> Result<Option<Vec<Array2<f64>>>, FerricError> {
+        use crate::fock::KBuilder;
+        let Some(df) = &self.df_k else {
+            return Ok(None);
+        };
+        if let Some((c_occ, xs)) = factors.filter(|_| !self.k_density_path) {
+            if xs.len() != ds.len() {
+                return Err(FerricError::General(
+                    "CPHF G: one exchange factor per density expected".into(),
+                ));
+            }
+            let half = self.occupied_half(df, c_occ)?;
+            let xr: Vec<&Array2<f64>> = xs.iter().collect();
+            let ks = self.timed("fitted K build", || {
+                df.borrow_mut().build_factored_many(&half, &xr)
+            })?;
+            return Ok(Some(ks));
+        }
+        self.timed("fitted K build", || {
+            ds.iter()
+                .map(|d| {
+                    let mut k = Array2::<f64>::zeros(d.dim());
+                    df.borrow_mut().build(d, &mut k)?;
+                    Ok(k)
+                })
+                .collect::<Result<Vec<_>, FerricError>>()
+        })
+        .map(Some)
+    }
+
+    /// `L_P = B_P C_o` for `c_occ`: the one built for this solve, or built
+    /// now when there is none or it belongs to another `C_o`.
+    fn occupied_half(
+        &self,
+        df: &std::cell::RefCell<crate::df_k::DfK<'static>>,
+        c_occ: ArrayView2<'_, f64>,
+    ) -> Result<std::cell::Ref<'_, crate::df_k::OccHalfTransform>, FerricError> {
+        let stale = self
+            .k_half
+            .borrow()
+            .as_ref()
+            .is_none_or(|h| h.c_occ() != c_occ);
+        if stale {
+            let half = self.timed("fitted K half-transform", || {
+                df.borrow_mut().occupied_half_transform(c_occ)
+            })?;
+            *self.k_half.borrow_mut() = Some(half);
+        }
+        Ok(std::cell::Ref::map(self.k_half.borrow(), |h| {
+            h.as_ref().expect("built above")
+        }))
     }
 
     /// [`Self::g_uhf`] of many spin-density pairs: the exact J of every total
@@ -3346,7 +3489,8 @@ fn solve_cphf_blocks_of(
             .map(|x| s1[x].slice(s![..nocc, ..]).to_owned())
             .collect();
         let occ: Vec<Array2<f64>> = s1_oo.iter().map(|s| frame.occupied_density(s)).collect();
-        let g_oo = g.g_rhf_many(&occ)?;
+        let occ_x: Vec<Array2<f64>> = s1_oo.iter().map(|s| frame.occupied_factor(s)).collect();
+        let g_oo = g.g_rhf_many(&occ, Some((frame.c_occ, &occ_x)))?;
         let xc_oo = occupied_xc_mo(g, &s1_oo);
         let rhs: Vec<Array2<f64>> = xs
             .clone()
@@ -3361,10 +3505,7 @@ fn solve_cphf_blocks_of(
             })
             .collect();
         let precond = vec![frame.denom.clone(); rhs.len()];
-        let response = |us: &[&Array2<f64>]| -> Result<Vec<Array2<f64>>, FerricError> {
-            let dens: Vec<Array2<f64>> = us.iter().map(|u| frame.response_density(u)).collect();
-            g.g_rhf_many(&dens)
-        };
+        let response = |us: &[&Array2<f64>]| g.g_rhf_responses(frame, us);
         let matvec = |us: &[&Array2<f64>]| -> Result<Vec<Array2<f64>>, FerricError> {
             let mut av: Vec<Array2<f64>> = response(us)?
                 .iter()
@@ -3669,7 +3810,7 @@ fn cphf_matvec(
     frame: &MoFrame<'_>,
     u: &Array2<f64>,
 ) -> Result<Array2<f64>, FerricError> {
-    let gu = g.g_rhf_many(&[frame.response_density(u)])?.remove(0);
+    let gu = g.g_rhf_responses(frame, &[u])?.remove(0);
     Ok(&frame.denom * u + frame.vo(&gu))
 }
 

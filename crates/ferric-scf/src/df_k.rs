@@ -94,6 +94,9 @@ use ferric_integrals::threeindex::coulomb_metric_2c;
 use ndarray::linalg::general_mat_mul;
 use ndarray::{Array2, Array3, ArrayView3};
 
+mod response;
+pub use response::{factored_pass_width, OccHalfTransform};
+
 // Direct BLAS bindings for the occupied-path exchange build. OpenBLAS is already
 // linked via openblas-src; these avoid a cblas/blas-sys dep for two calls.
 // Fortran signatures:
@@ -1260,7 +1263,7 @@ enum OccChunk<'a> {
 
 /// One aux chunk's occupied-path K partial `Σ_{P∈chunk} M_P M_Pᵀ`,
 /// `M_P = B_P C_occ` ([`DfK::build_from_occ`](KBuilder::build_from_occ)).
-#[allow(clippy::manual_c_str_literals)] // b"R\0" byte literals match dsymm_'s *const u8 args; c".." would be *const i8
+#[allow(clippy::manual_c_str_literals)] // b"L\0" byte literals match dsyrk_'s *const u8 args; c".." would be *const i8
 fn occ_chunk_k(
     n: usize,
     c_occ: &Array2<f64>,
@@ -1268,6 +1271,53 @@ fn occ_chunk_k(
 ) -> Result<Array2<f64>, FerricError> {
     let nocc = c_occ.ncols();
     let c = match &src {
+        OccChunk::Square(v) => v.shape()[0],
+        OccChunk::Packed(_, q0, q1) => q1 - q0,
+    };
+    let m_chunk = occ_half_panel(n, c_occ, &src)?;
+    let ni = n as i32;
+    let ldw = (c * nocc) as i32;
+    let one = 1.0f64;
+    let zero = 0.0f64;
+    let mut kc = Array2::<f64>::zeros((n, n));
+    let k_dim = (c * nocc) as i32;
+    // SAFETY: m_chunk is (n, c·nocc) row-major = Fortran
+    // (c·nocc, n) with lda = c·nocc; kc is (n, n). TRANS='T'
+    // gives W_Fᵀ·W_F = the row-major W·Wᵀ = Σ_P M_P·M_Pᵀ.
+    unsafe {
+        dsyrk_(
+            b"L\0".as_ptr(),
+            b"T\0".as_ptr(),
+            &ni,
+            &k_dim,
+            &one,
+            m_chunk.as_ptr(),
+            &ldw,
+            &zero,
+            kc.as_mut_ptr(),
+            &ni,
+        );
+    }
+    // DSYRK wrote only one triangle (see the layout note in `occ_half_panel`).
+    for i in 0..n {
+        for j in (i + 1)..n {
+            kc[[j, i]] = kc[[i, j]];
+        }
+    }
+    Ok(kc)
+}
+
+/// The half-transformed panel `[M_{P0} | M_{P0+1} | …]` (`n × c·nocc`,
+/// `M_P = B_P C_occ`) of one aux chunk: the first stage of [`occ_chunk_k`]
+/// and the `L_P` of [`DfK::occupied_half_transform`].
+#[allow(clippy::manual_c_str_literals)] // b"R\0" byte literals match dsymm_'s *const u8 args; c".." would be *const i8
+fn occ_half_panel(
+    n: usize,
+    c_occ: &Array2<f64>,
+    src: &OccChunk<'_>,
+) -> Result<Array2<f64>, FerricError> {
+    let nocc = c_occ.ncols();
+    let c = match src {
         OccChunk::Square(v) => v.shape()[0],
         OccChunk::Packed(_, q0, q1) => q1 - q0,
     };
@@ -1320,12 +1370,12 @@ fn occ_chunk_k(
     let mut m_chunk = Array2::<f64>::zeros((n, c * nocc));
     // The packed tiers' unpack buffer: only its lower triangle is written
     // (and read, by DSYMM); the upper stays zero.
-    let mut unpacked = match &src {
+    let mut unpacked = match src {
         OccChunk::Square(_) => Vec::new(),
         OccChunk::Packed(..) => vec![0.0f64; n * n],
     };
     for p in 0..c {
-        let bp_slice: &[f64] = match &src {
+        let bp_slice: &[f64] = match src {
             OccChunk::Square(v) => {
                 // `blk.data` is standard-layout, so this row slice is
                 // contiguous; `to_slice` therefore never falls back.
@@ -1367,32 +1417,7 @@ fn occ_chunk_k(
             );
         }
     }
-    let mut kc = Array2::<f64>::zeros((n, n));
-    let k_dim = (c * nocc) as i32;
-    // SAFETY: m_chunk is (n, c·nocc) row-major = Fortran
-    // (c·nocc, n) with lda = c·nocc; kc is (n, n). TRANS='T'
-    // gives W_Fᵀ·W_F = the row-major W·Wᵀ = Σ_P M_P·M_Pᵀ.
-    unsafe {
-        dsyrk_(
-            b"L\0".as_ptr(),
-            b"T\0".as_ptr(),
-            &ni,
-            &k_dim,
-            &one,
-            m_chunk.as_ptr(),
-            &ldw,
-            &zero,
-            kc.as_mut_ptr(),
-            &ni,
-        );
-    }
-    // DSYRK wrote only one triangle (see the layout note above).
-    for i in 0..n {
-        for j in (i + 1)..n {
-            kc[[j, i]] = kc[[i, j]];
-        }
-    }
-    Ok(kc)
+    Ok(m_chunk)
 }
 
 impl KBuilder for DfK<'_> {

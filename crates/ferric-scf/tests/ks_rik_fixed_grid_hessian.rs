@@ -232,7 +232,16 @@ struct Ref {
 }
 
 fn reference(basis_name: &str, xc: &str, j: Option<&str>, k: Option<&str>) -> Ref {
-    let mol = water();
+    reference_at(water(), basis_name, xc, j, k)
+}
+
+fn reference_at(
+    mol: Molecule,
+    basis_name: &str,
+    xc: &str,
+    j: Option<&str>,
+    k: Option<&str>,
+) -> Ref {
     let grid = FixedGridKs::new(&mol, xc, &grid_cfg()).unwrap();
     let pt = scf(&grid, &mol, basis_name, j, k);
     Ref {
@@ -399,6 +408,26 @@ fn rik_hessian_matches_fd_hybrid_lda_631g_rij() {
 /// truncation (measured 5.7e-11 to 8.9e-11), so the response-side mutants are
 /// measured against 1e-9 instead of the 6-31G 5e-7.
 const TOL_HESS_FD_STO3G: f64 = 1e-9;
+
+/// Two analytic Hessians in one process at two geometries: the second still
+/// matches the FD of its own RI-K gradient at the STO-3G bar, so nothing the
+/// CPHF builds from one reference (the occupied half-transformed RI-K tensor)
+/// is reused at another.
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
+#[test]
+fn rik_hessian_after_another_geometry_matches_fd() {
+    if has_deriv2() {
+        let other = reference_at(
+            displaced(&water(), 0, 0.05),
+            "sto-3g",
+            "PBE0",
+            Some(AUX),
+            Some(AUX),
+        );
+        let _ = analytic(&other, &KsFixedGridMutants::default());
+        fd_case("sto-3g", "PBE0", Some(AUX), AUX, TOL_HESS_FD_STO3G);
+    }
+}
 
 /// J and K fitted over DIFFERENT auxiliary bases (def2-universal-jkfit for J,
 /// cc-pVTZ-JKFIT for K): every fitted piece must take its own basis. The
