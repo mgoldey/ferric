@@ -1765,13 +1765,14 @@ pub struct Mp2Cfg {
     /// alone at the single `omega`.
     pub formulations: Option<Vec<String>>,
     /// Bonded (shorter-range) terfc cutoff **r0(1)** in **Å**, used ONLY by
-    /// `method.kind = "scs-mp2-2terfc"`. Default 0.75 Å (the published
-    /// SCS-MP2(2terfc, aTZ) value, J. Phys. Chem. B 118, 6519 (2014)).
+    /// `method.kind = "scs-mp2-2terfc"`. Omitted: 0.75 Å for aug-cc-pVTZ (the
+    /// SCS-MP2(2terfc, aTZ) fit, J. Phys. Chem. B 118, 6519 (2014)); any other
+    /// basis needs both r0 set (`ferric_mp2::terfc_r0::resolve_scs_2terfc`).
     /// Requires the terfc interpolation tables (`FERRIC_TERF_TABLE_DIR`).
     pub r0_bonded: Option<f64>,
     /// Non-bonded (longer-range) terfc cutoff **r0(2)** in **Å**, used ONLY by
-    /// `method.kind = "scs-mp2-2terfc"`. Must be > `r0_bonded`. Default 1.05 Å
-    /// (published SCS-MP2(2terfc, aTZ) value). Requires the terfc interpolation tables
+    /// `method.kind = "scs-mp2-2terfc"`. Must be > `r0_bonded`. Omitted: 1.05 Å
+    /// for aug-cc-pVTZ only (the aTZ fit). Requires the terfc interpolation tables
     /// (`FERRIC_TERF_TABLE_DIR`).
     pub r0_nonbonded: Option<f64>,
 
@@ -1866,7 +1867,7 @@ pub struct Mp2Cfg {
     // Own keys rather than the rs-mp2-rpa `attenuator`/`r0`, for the same
     // reason as the `mp2v_*` block above: there `attenuator` names the range
     // SPLIT ("erf"/"terf") and `r0` defaults to 1.6828 Å; here the operator is
-    // the short-range one and the terfc r0 defaults to 1.05 Å. One key must
+    // the short-range one and the terfc r0 defaults per basis (`ferric_mp2::terfc_r0`). One key must
     // not mean two things depending on `method.kind`.
     /// Short-range operator on the att-rimp2 MP2 correlation (see
     /// `AttRimp2Op`; the SCF stays full Coulomb):
@@ -1879,8 +1880,9 @@ pub struct Mp2Cfg {
     /// Case-insensitive; anything else is an error, and so is the key on any
     /// kind other than att-rimp2.
     pub att_operator: Option<String>,
-    /// terfc cutoff r0 in **Å** for `att_operator = "terfc"` (default 1.05,
-    /// the paper aDZ-optimal value and the Python `run_terfc_rimp2` default).
+    /// terfc cutoff r0 in **Å** for `att_operator = "terfc"` (omitted: the
+    /// basis-aware table default of `ferric_mp2::terfc_r0`, e.g. 1.35 for
+    /// aug-cc-pVTZ, 1.05 for aug-cc-pVDZ; an untabulated basis is an error).
     /// Must be finite and > 0; an error with the erfc operator.
     pub att_r0: Option<f64>,
     /// Decoupled terfc seam sharpness ω in **Å⁻¹** for
@@ -1900,14 +1902,10 @@ pub enum AttRimp2Op {
     /// `ferric_mp2::attenuated::attenuated_ri_mp2`.
     Erfc,
     /// The exact tempered erfc `terfc(r, r0)/r` at `r0 = [mp2] att_r0` (Å,
-    /// default 1.05): `ri_mp2` with `Operator::terfc`, as in the Python
+    /// basis-aware default): `ri_mp2` with `Operator::terfc`, as in the Python
     /// `run_terfc_rimp2`.
     Terfc,
 }
-
-/// `[mp2] att_r0` default (Å) for `att_operator = "terfc"` — the Python
-/// `run_terfc_rimp2` default (paper aDZ-optimal).
-pub const ATT_RIMP2_TERFC_DEFAULT_R0_ANG: f64 = 1.05;
 
 impl Mp2Cfg {
     /// `[mp2] omega_scan` / `formulations` (rs-mp2-rpa multi-point run): read by
@@ -2038,7 +2036,14 @@ impl Mp2Cfg {
     /// `att_omega` keys ([`Mp2Cfg::att_rimp2_op`] has already refused the
     /// combinations that would be silently ignored). Å and Å⁻¹ at the TOML
     /// boundary, Bohr in the operator. The SCF operator is NOT this one.
-    pub fn att_rimp2_operator(&self) -> Result<ferric_integrals::operator::Operator, String> {
+    ///
+    /// With `att_operator = "terfc"` and no `att_r0`, `r0` is the basis-aware
+    /// default of [`ferric_mp2::terfc_r0`] for `basis`; an untabulated basis
+    /// is an error.
+    pub fn att_rimp2_operator(
+        &self,
+        basis: &str,
+    ) -> Result<ferric_integrals::operator::Operator, String> {
         use ferric_integrals::operator::Operator;
         let ang_to_bohr = ferric_core::units::ANGSTROM_TO_BOHR;
         // Å⁻¹ -> Bohr⁻¹ multiplies by BOHR_TO_ANGSTROM (Å per Bohr).
@@ -2046,13 +2051,23 @@ impl Mp2Cfg {
         Ok(match self.att_rimp2_op()? {
             AttRimp2Op::Erfc => Operator::erfc(self.omega.unwrap_or(0.420) * inv_ang_to_inv_bohr),
             AttRimp2Op::Terfc => {
-                let r0 = self.att_r0.unwrap_or(ATT_RIMP2_TERFC_DEFAULT_R0_ANG) * ang_to_bohr;
+                let r0 = self.att_terfc_r0(basis)?.r0_angstrom * ang_to_bohr;
                 match self.att_omega {
                     None => Operator::terfc(r0),
                     Some(w) => Operator::terfc_with_omega(r0, w * inv_ang_to_inv_bohr),
                 }
             }
         })
+    }
+
+    /// The terfc `r0` for `basis`: `[mp2] att_r0` when set, else the table
+    /// default (`note` carries the line to print), else an error.
+    pub fn att_terfc_r0(
+        &self,
+        basis: &str,
+    ) -> Result<ferric_mp2::terfc_r0::ResolvedTerfcR0, String> {
+        ferric_mp2::terfc_r0::resolve_terfc_r0(basis, self.att_r0)
+            .map_err(|e| format!("[mp2] att_r0: {e}"))
     }
 
     /// True when any `oo_*` orbital-optimization key is set.
@@ -4631,10 +4646,15 @@ impl Config {
             && model.direct.as_ref().is_some_and(|d| d.schwarz_skip > 0.0)
             && self.mp2.att_rimp2_op()? == AttRimp2Op::Terfc
         {
-            ferric_integrals::schwarz::check_terfc_parameters_validated(
-                self.mp2.att_rimp2_operator()?,
-            )
-            .map_err(|e| format!("[local] integral_direct: {e}"))?;
+            // A basis given by `path` has no registry name; the table default
+            // is not consulted there, so the check runs when r0 is explicit.
+            let basis = self.basis.name.as_deref().unwrap_or("");
+            if self.mp2.att_r0.is_some() || !basis.is_empty() {
+                ferric_integrals::schwarz::check_terfc_parameters_validated(
+                    self.mp2.att_rimp2_operator(basis)?,
+                )
+                .map_err(|e| format!("[local] integral_direct: {e}"))?;
+            }
         }
         Ok(())
     }
@@ -12986,10 +13006,50 @@ mod cli_wired_keys_tests {
     }
 
     #[test]
+    fn terfc_r0_default_is_basis_aware_and_explicit_wins() {
+        let bohr_per_ang = ferric_core::units::ANGSTROM_TO_BOHR;
+        let c = cfg(
+            "att-rimp2",
+            "energy",
+            1,
+            "[mp2]\natt_operator = \"terfc\"\n",
+        );
+        let r0_ang = |basis: &str| {
+            c.mp2
+                .att_rimp2_operator(basis)
+                .map(|o| o.distance / bohr_per_ang)
+        };
+        // aTZ uses 1.35, aDZ keeps 1.05; an alias hits the same row.
+        assert!((r0_ang("aug-cc-pvtz").unwrap() - 1.35).abs() < 1e-12);
+        assert!((r0_ang("AUG-CC-PVDZ").unwrap() - 1.05).abs() < 1e-12);
+        assert!((r0_ang("6-31G(d)").unwrap() - 1.75).abs() < 1e-12);
+        // Untabulated: hard error, never a silent 1.05.
+        let e = r0_ang("sto-3g").unwrap_err();
+        assert!(e.contains("set r0 explicitly"), "{e}");
+        // Explicit r0 overrides the table, tabulated or not.
+        let x = cfg(
+            "att-rimp2",
+            "energy",
+            1,
+            "[mp2]\natt_operator = \"terfc\"\natt_r0 = 1.05\n",
+        );
+        let d = |b: &str| x.mp2.att_rimp2_operator(b).unwrap().distance / bohr_per_ang;
+        assert!((d("aug-cc-pvtz") - 1.05).abs() < 1e-12);
+        assert!((d("sto-3g") - 1.05).abs() < 1e-12);
+    }
+
+    /// The att-rimp2 operator of `body` in aug-cc-pVDZ (a tabulated basis).
+    fn att_operator_in_adz(body: &str) -> Result<ferric_integrals::operator::Operator, String> {
+        cfg("att-rimp2", "energy", 1, body)
+            .mp2
+            .att_rimp2_operator("aug-cc-pvdz")
+    }
+
+    #[test]
     fn att_omega_decouples_terfc_and_is_strict() {
         use ferric_integrals::operator::{Operator, OperatorKind};
         let bohr_per_ang = ferric_core::units::ANGSTROM_TO_BOHR;
-        let op = |body: &str| cfg("att-rimp2", "energy", 1, body).mp2.att_rimp2_operator();
+        let op = att_operator_in_adz;
         // Linked default: byte-identical to Operator::terfc(r0).
         let linked = op("[mp2]\natt_operator = \"terfc\"\natt_r0 = 1.0\n").unwrap();
         let want = Operator::terfc(bohr_per_ang);
@@ -13047,7 +13107,9 @@ mod cli_wired_keys_tests {
                 "att-rimp2",
                 "energy",
                 1,
-                &format!("[mp2]\natt_operator = \"terfc\"\natt_omega = 4.0\n{loc}{extra}"),
+                &format!(
+                    "[mp2]\natt_operator = \"terfc\"\natt_r0 = 1.05\natt_omega = 4.0\n{loc}{extra}"
+                ),
             )
             .validate_local()
             .unwrap();

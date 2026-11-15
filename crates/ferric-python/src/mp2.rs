@@ -379,6 +379,7 @@ pub(crate) fn att_keys_on_exact_error() -> PyErr {
 pub(crate) fn local_correlation_operator(
     att_keys: Option<&ferric_cli::Mp2Cfg>,
     model: &ferric_cli::LocalModel,
+    basis_name: &str,
 ) -> PyResult<Operator> {
     let value_err = pyo3::exceptions::PyValueError::new_err;
     let Some(k) = att_keys else {
@@ -393,7 +394,7 @@ pub(crate) fn local_correlation_operator(
         ));
     }
     let op = k
-        .att_rimp2_operator()
+        .att_rimp2_operator(basis_name)
         .map_err(|e| value_err(format!("run_rimp2: {e}")))?;
     if matches!(op.kind, ferric_integrals::operator::OperatorKind::Terfc)
         && model.direct.as_ref().is_some_and(|d| d.schwarz_skip > 0.0)
@@ -426,7 +427,7 @@ pub(crate) fn local_correlation_operator(
 /// Local runs only: `att_operator="erfc"|"terfc"` runs the local MP2 of the
 /// ATTENUATED correlation (SCF stays full Coulomb) with the CLI's
 /// `[mp2]` keys of the same names: `omega` (A^-1, erfc, default 0.420),
-/// `att_r0` (A, terfc, default 1.05) and `att_omega` (A^-1, terfc only: the
+/// `att_r0` (A, terfc, default: the basis-aware table, ValueError for an untabulated basis) and `att_omega` (A^-1, terfc only: the
 /// decoupled seam sharpness, `Operator::terfc_with_omega`; omitted = the
 /// linked 1/(r0*sqrt2)). Omitted `att_operator` is the Coulomb operator.
 /// terfc needs `FERRIC_TERF_TABLE_DIR`; with `integral_direct=True` it takes
@@ -830,7 +831,7 @@ pub(crate) fn run_rimp2_local(
              kappa-regularized MP2 exists for the exact rimp2 only. Omit kappa or local=."
         )));
     }
-    let op = local_correlation_operator(att_keys, model)?;
+    let op = local_correlation_operator(att_keys, model, &basis_set.inner.name)?;
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
     let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
     let rhf = converged_rhf(&mol.inner, &prep, rhf_config)?;
@@ -2315,7 +2316,10 @@ pub(crate) fn run_attenuated_rimp2(
 /// MP2(terfc): RI-MP2 with the EXACT tempered-erfc operator (Dutoi/Goldey
 /// interpolation tables), a single cutoff `r0` (Å). SCF stays full-Coulomb; only
 /// the MP2 correlation is attenuated. Requires the terfc tables on disk
-/// (FERRIC_TERF_TABLE_DIR). Paper aDZ-optimal r0 = 1.05 Å.
+/// (FERRIC_TERF_TABLE_DIR). `r0` omitted: the basis-aware default of
+/// `ferric_mp2::terfc_r0` (S66-trained, no counterpoise; 1.35 Å for
+/// aug-cc-pVTZ, 1.05 Å for aug-cc-pVDZ); an untabulated basis raises
+/// ValueError. An explicit `r0` always wins.
 ///
 /// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
 /// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
@@ -2350,7 +2354,12 @@ pub(crate) fn run_terfc_rimp2(
     let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
     let rhf = converged_rhf(&mol.inner, &prep, &rhf_config)?;
     // r0 supplied in Å; convert to Bohr for the operator.
-    let r0_bohr = r0.unwrap_or(1.05) * ANGSTROM_TO_BOHR;
+    let resolved = ferric_mp2::terfc_r0::resolve_terfc_r0(&basis_set.inner.name, r0)
+        .map_err(pyo3::exceptions::PyValueError::new_err)?;
+    if let Some(note) = &resolved.note {
+        println!("{note}");
+    }
+    let r0_bohr = resolved.r0_angstrom * ANGSTROM_TO_BOHR;
     let terfc_op = Operator::terfc(r0_bohr);
     let mp2 = ri_mp2(
         &mol.inner,
@@ -2508,7 +2517,7 @@ pub(crate) fn run_scs_mp2(
 /// SCS-MP2(2terfc): dual-attenuated SCS-MP2 (Goldey & Head-Gordon, J. Phys.
 /// Chem. B 118, 6519 (2014)) using the EXACT terfc operator at two cutoffs `r0_bonded` < `r0_nonbonded`
 /// (Å). E = c_OS·E_OS(r0_1) + c_SS·[E_SS(r0_2) − E_SS(r0_1)]. Requires the terfc
-/// tables (FERRIC_TERF_TABLE_DIR). Paper defaults: r0=0.75/1.05 Å, c_OS=1.27, c_SS=4.05.
+/// tables (FERRIC_TERF_TABLE_DIR). The parameters are the aug-cc-pVTZ fit (r0=0.75/1.05 Å, c_OS=1.27, c_SS=4.05); other bases need explicit r0_bonded and r0_nonbonded (ValueError otherwise).
 ///
 /// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
 /// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
@@ -2546,11 +2555,22 @@ pub(crate) fn run_scs_mp2_2terfc(
     let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
     let rhf = converged_rhf(&mol.inner, &prep, &rhf_config)?;
     const ANG2BOHR: f64 = ANGSTROM_TO_BOHR;
+    let params = ferric_mp2::terfc_r0::resolve_scs_2terfc(
+        &basis_set.inner.name,
+        r0_bonded,
+        r0_nonbonded,
+        c_os,
+        c_ss,
+    )
+    .map_err(pyo3::exceptions::PyValueError::new_err)?;
+    if let Some(note) = &params.note {
+        println!("{note}");
+    }
     let cfg = ScsMp2TerfcConfig {
-        r0_bonded: r0_bonded.unwrap_or(0.75) * ANG2BOHR,
-        r0_nonbonded: r0_nonbonded.unwrap_or(1.05) * ANG2BOHR,
-        c_os: c_os.unwrap_or(1.27),
-        c_ss: c_ss.unwrap_or(4.05),
+        r0_bonded: params.r0_bonded_angstrom * ANG2BOHR,
+        r0_nonbonded: params.r0_nonbonded_angstrom * ANG2BOHR,
+        c_os: params.c_os,
+        c_ss: params.c_ss,
         frozen_core: frozen_core.unwrap_or(0),
         memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
     };

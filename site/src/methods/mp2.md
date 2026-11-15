@@ -152,12 +152,39 @@ defaults were fitted on S66 without counterpoise and with frozen core
 | Variant | Parameters | Basis of the fit | Source |
 |---|---|---|---|
 | erfc | ω; ferric's default is 0.420 Å⁻¹, recorded in the code as the dissertation's erfc optimum | aug-cc-pVDZ in the 2012 paper | Goldey & Head-Gordon 2012 |
-| terfc | one cutoff \\( r_0 \\) | aug-cc-pVTZ | Goldey, Dutoi & Head-Gordon 2013 |
+| terfc | one cutoff \\( r_0 \\) per basis set (table below); omitted `att_r0` / `r0` takes the tabulated value | S66-trained, no counterpoise, per basis | Goldey & Head-Gordon, Chem. Phys. Lett. 608, 249 (2014); dissertation Tables 6.2 and 6.4 |
 | SCS-MP2(2terfc) | \\( r_0(1) \\) = 0.75 Å, \\( r_0(2) \\) = 1.05 Å, c<sub>OS</sub> = 1.27, c<sub>SS</sub> = 4.05 | aug-cc-pVTZ, no counterpoise, frozen core | Goldey & Head-Gordon 2014 |
 | MP2-V | \\( r_0 \\) = 1.00 Å, b = 11.0, C = 0.0089, terfc | aug-cc-pVTZ, no counterpoise, frozen core | Goldey, Belzunces & Head-Gordon 2015 |
 
 Running a fitted variant in another basis, with counterpoise, or with
 `frozen_core = 0` (the default) is extrapolation outside the fit.
+
+**Default terfc \\( r_0 \\) by basis.** With `att_operator = "terfc"` and no
+`att_r0` (Python `run_terfc_rimp2` without `r0`), the run uses the S66-optimal
+\\( r_0 \\) of its basis set and prints one line naming the value and its
+source. An explicit `att_r0` / `r0` always wins. A basis not in the table is
+an error that asks for an explicit \\( r_0 \\); there is no fallback value.
+Names resolve through the basis registry, so `6-31G(d)` and `6-31G*` hit the
+same row. The table lives in `crates/ferric-mp2/src/terfc_r0.rs` (the calendar
+sets of the paper are not bundled and have no row).
+
+| Basis | \\( r_0 \\) (Å) | Basis | \\( r_0 \\) (Å) |
+|---|---|---|---|
+| cc-pVDZ | 1.55 | 6-31G* | 1.75 |
+| aug-cc-pVDZ | 1.05 | 6-31+G* | 1.45 |
+| cc-pVTZ | 1.50 | 6-31++G** | 1.35 |
+| aug-cc-pVTZ | 1.35 | 6-311++G** | 1.35 |
+| cc-pVQZ | 1.55 | def2-SVPD | 0.75 |
+| aug-cc-pVQZ | 1.50 | def2-TZVPD | 1.30 |
+| | | def2-TZVPPD | 1.35 |
+
+SCS-MP2(2terfc) is a four-parameter model fitted in aug-cc-pVTZ only, so its
+defaults (\\( r_0(1) \\) = 0.75 Å, \\( r_0(2) \\) = 1.05 Å, c<sub>OS</sub> = 1.27,
+c<sub>SS</sub> = 4.05) apply to aug-cc-pVTZ alone. In any other basis
+`scs-mp2-2terfc` / `run_scs_mp2_2terfc` is an error unless `r0_bonded` and
+`r0_nonbonded` are set; c<sub>OS</sub> and c<sub>SS</sub> are also aTZ-fit values
+and keep those defaults only with a printed note. The erfc \\( \\omega \\) and
+MP2-V defaults are not basis-aware.
 
 **Run it.**
 

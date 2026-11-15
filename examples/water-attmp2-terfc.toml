@@ -1,7 +1,8 @@
 # terfc-attenuated RI-MP2 / aug-cc-pVDZ on water: att-rimp2 with the exact
 # tempered-erfc operator terfc(r, r0)/r instead of the default erfc(omega r)/r
 # (the Python `run_terfc_rimp2`). att_r0 is in Angstrom; 1.05 is the paper
-# aDZ-optimal value and the default. `omega` is an error with terfc, and the
+# aDZ-optimal value, which is also the table default for aug-cc-pVDZ (omit
+# att_r0 to use the basis-aware default; an untabulated basis is an error). `omega` is an error with terfc, and the
 # rs-mp2-rpa keys `attenuator`/`r0` are an error on att-rimp2.
 # Needs the terf interpolation tables (FERRIC_TERF_TABLE_DIR).
 [molecule]

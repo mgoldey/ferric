@@ -170,6 +170,29 @@ $\operatorname{erf}(\omega r)/r$ and the eigendecomposition metric path.
 (`attenuated.rs:160`; e.g. `ferric-cli/src/lib.rs:3104`). The default
 0.420 Å$^{-1}$ is 0.222254 Bohr$^{-1}$ (`attenuated.rs:165`).
 
+**Default terfc cutoff by basis.** `terfc_r0.rs` holds the S66-trained
+optimal $r_0$ per basis set (no counterpoise), read by the CLI (`[mp2] att_r0`)
+and Python (`run_terfc_rimp2`, `run_rimp2(att_r0=)`) when $r_0$ is omitted; an
+explicit value wins and an untabulated basis is an error. Source: Goldey and
+Head-Gordon, Chem. Phys. Lett. 608, 249 (2014), and dissertation Tables 6.2
+(Dunning) and 6.4 (Pople, Karlsruhe):
+
+| Basis | $r_0$ (Å) | Basis | $r_0$ (Å) |
+|---|---|---|---|
+| cc-pVDZ | 1.55 | 6-31G\* | 1.75 |
+| aug-cc-pVDZ | 1.05 | 6-31+G\* | 1.45 |
+| cc-pVTZ | 1.50 | 6-31++G\*\* | 1.35 |
+| aug-cc-pVTZ | 1.35 | 6-311++G\*\* | 1.35 |
+| cc-pVQZ | 1.55 | def2-SVPD | 0.75 |
+| aug-cc-pVQZ | 1.50 | def2-TZVPD | 1.30 |
+| | | def2-TZVPPD | 1.35 |
+
+The calendar sets of Table 6.2 (jun-DZ 1.50, jul-DZ 1.25, may-TZ 1.60, jun-TZ
+1.45, jul-TZ 1.45, apr-QZ 1.65, may-QZ 1.60, jun-QZ 1.55, jul-QZ 1.55) are not
+bundled and have no row. SCS-MP2(2terfc) has a one-row table: the four-parameter
+fit of dissertation Eq. 5.6 exists only in aug-cc-pVTZ ($r_0^{(1)} = 0.75$ Å,
+$r_0^{(2)} = 1.05$ Å, $c_{\mathrm{OS}} = 1.27$, $c_{\mathrm{SS}} = 4.05$). No new equations.
+
 **Range split.** MP2 is quadratic in the integrals. Writing
 $(ia|jb) = s + l$ for the erfc and erf parts,
 

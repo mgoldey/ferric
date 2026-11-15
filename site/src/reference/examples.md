@@ -100,10 +100,10 @@ See [The MP2 family](../methods/mp2.md).
 | `water-mp3.toml` | H2O / cc-pVDZ | `mp3` | — | |
 | `water-oo-rimp2.toml` | H2O / cc-pVDZ | `oo-rimp2` | — | Proven (narrow) grade. |
 | `water-attmp2.toml` | H2O / aug-cc-pVDZ | `att-rimp2` | — | ω = 0.420 Å⁻¹. |
-| `water-attmp2-terfc.toml` | H2O / aug-cc-pVDZ | `att-rimp2` | — | `att_operator = "terfc"`, `att_r0` = 1.05 Å. Needs the terf tables. |
+| `water-attmp2-terfc.toml` | H2O / aug-cc-pVDZ | `att-rimp2` | — | `att_operator = "terfc"`, `att_r0` = 1.05 Å (the aug-cc-pVDZ table value, set explicitly). Needs the terf tables. |
 | `alkane8-attmp2-terfc-local-direct.toml` | C8H18 / 6-31G | `att-rimp2` | `[local]` | Integral-direct amplitude-threshold LMP2 with a decoupled terfc seam (`att_omega`, r0·ω = 4). Needs the terf tables. |
 | `water-scs-mp2.toml` | H2O / cc-pVDZ | `scs-mp2` | — | Grimme coefficients (defaults). |
-| `water-scs-mp2-2terfc.toml` | H2O / cc-pVDZ | `scs-mp2-2terfc` | — | Thesis defaults r0 = 0.75/1.05 Å. Needs the terf tables. |
+| `water-scs-mp2-2terfc.toml` | H2O / cc-pVDZ | `scs-mp2-2terfc` | — | aTZ-fit r0 = 0.75/1.05 Å set explicitly (cc-pVDZ has no fit of its own). Needs the terf tables. |
 | `water-laplace-rimp2.toml` | H2O / cc-pVDZ | `laplace-mp2` | — | |
 | `water-laplace-sos-mp2.toml` | H2O / cc-pVDZ | `laplace-sos-mp2` | — | |
 | `water-mp2v.toml` | H2O / aug-cc-pVDZ | `mp2-v` | — | The header warns that aDZ is outside the fitted basis. Needs the terf tables. |

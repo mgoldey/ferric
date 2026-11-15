@@ -184,7 +184,13 @@ HONOURING = [
     pytest.param("run_scs_mp2", {}, id="scs_mp2"),
     pytest.param("run_rs_mp2_rpa", {}, id="rs_mp2_rpa"),
     pytest.param("run_terfc_rimp2", {}, id="terfc_rimp2", marks=needs_terf),
-    pytest.param("run_scs_mp2_2terfc", {}, id="scs_mp2_2terfc", marks=needs_terf),
+    pytest.param(
+        "run_scs_mp2_2terfc",
+        # cc-pVDZ has no aTZ-fit default: both r0 are explicit.
+        {"r0_bonded": 0.75, "r0_nonbonded": 1.05},
+        id="scs_mp2_2terfc",
+        marks=needs_terf,
+    ),
     pytest.param("run_mp2_v", {}, id="mp2_v", marks=needs_terf),
 ]
 

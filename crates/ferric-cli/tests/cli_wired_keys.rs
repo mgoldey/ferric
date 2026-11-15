@@ -904,6 +904,56 @@ fn att_rimp2_terfc_matches_the_library() {
     );
 }
 
+/// Omitted `att_r0` on a terfc `att-rimp2` run is the basis-aware table value
+/// (cc-pVDZ 1.55 A, Goldey & Head-Gordon CPL 608, 249; dissertation Table
+/// 6.2), identical to writing it explicitly, and the run prints the value and
+/// its source. An untabulated basis (STO-3G) is refused, never run at 1.05;
+/// `scs-mp2-2terfc` is refused off its aug-cc-pVTZ fit unless both r0 are set.
+/// Negative control: the explicit 1.05 run differs from the default.
+#[test]
+fn terfc_r0_default_follows_the_basis() {
+    if terf_dir().is_none() {
+        eprintln!("skipping: terf interpolation tables not found");
+        return;
+    }
+    let mp2 = |r0: &str| {
+        format!("{TIGHT}[mp2]\nauxbasis = \"cc-pvdz-ri\"\natt_operator = \"terfc\"\n{r0}")
+    };
+    let run =
+        |tag: &str, r0: &str| run_ok(tag, &body("water.xyz", 1, "cc-pvdz", "att-rimp2", &mp2(r0)));
+    let dflt = run("terfc_r0_default", "");
+    let tab = run("terfc_r0_explicit_table", "att_r0 = 1.55\n");
+    let old = run("terfc_r0_explicit_old", "att_r0 = 1.05\n");
+    assert!(
+        dflt.contains("Table 6.2") && dflt.contains("1.55"),
+        "{dflt}"
+    );
+    assert!(dflt.contains("r0=1.550"), "{dflt}");
+    assert_close(
+        "default == explicit table r0",
+        value(&dflt, "Total"),
+        value(&tab, "Total"),
+        1e-10,
+    );
+    assert!((value(&dflt, "Total") - value(&old, "Total")).abs() > 1e-6);
+    assert_refused(
+        "terfc_r0_untabulated",
+        &body("water.xyz", 1, "sto-3g", "att-rimp2", &mp2("")),
+        &["set r0 explicitly"],
+    );
+    assert_refused(
+        "scs2terfc_untabulated",
+        &body(
+            "water.xyz",
+            1,
+            "cc-pvdz",
+            "scs-mp2-2terfc",
+            &format!("{TIGHT}[mp2]\nauxbasis = \"cc-pvdz-ri\"\n"),
+        ),
+        &["aug-cc-pVTZ only", "r0_bonded"],
+    );
+}
+
 /// `rs-mp2-rpa` terf split with `terf_omega` (Å⁻¹) is the library
 /// `rs_mp2_lr_rpa` with `RsMp2RpaConfig::terf_omega = Some(ω in Bohr⁻¹)` (the
 /// Python `run_rs_mp2_rpa(terf_omega=)`). Negative control: without it the

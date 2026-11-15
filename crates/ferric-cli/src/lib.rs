@@ -3266,10 +3266,11 @@ fn run_att_rimp2_local(
     let Some(model) = local_model else {
         return false;
     };
-    let att_operator = cfg.mp2.att_rimp2_operator().unwrap_or_else(|e| {
+    let att_operator = cfg.mp2.att_rimp2_operator(&bs.name).unwrap_or_else(|e| {
         eprintln!("config error: {e}");
         std::process::exit(1);
     });
+    print_terfc_r0_note(cfg, bs);
     run_rimp2_local(
         cfg,
         &model,
@@ -3282,6 +3283,16 @@ fn run_att_rimp2_local(
         scf_cert,
     );
     true
+}
+
+/// The one line a terfc run prints when `r0` came from the basis table.
+fn print_terfc_r0_note(cfg: &Config, bs: &BasisSet) {
+    if cfg.mp2.att_r0.is_some() || cfg.mp2.att_rimp2_op() != Ok(config::AttRimp2Op::Terfc) {
+        return;
+    }
+    if let Some(note) = cfg.mp2.att_terfc_r0(&bs.name).ok().and_then(|r| r.note) {
+        println!("{note}");
+    }
 }
 
 /// `method.kind = "att-rimp2"`. Extracted verbatim from the former `main()`
@@ -3389,7 +3400,7 @@ fn run_att_rimp2(
 /// `method.kind = "att-rimp2"` with `[mp2] att_operator = "terfc"`: RI-MP2 with
 /// the EXACT tempered-erfc operator `terfc(r, r0)/r` (Dutoi/Goldey
 /// interpolation tables, `FERRIC_TERF_TABLE_DIR`) at `r0 = [mp2] att_r0` Å
-/// (default 1.05). The SCF stays full Coulomb; only the correlation is
+/// (default: the basis-aware table of `ferric_mp2::terfc_r0`). The SCF stays full Coulomb; only the correlation is
 /// attenuated. The same call as the Python `run_terfc_rimp2`:
 /// `ri_mp2(.., Operator::terfc(r0_bohr), ..)` with the CLI's frozen core and
 /// memory budget.
@@ -3405,11 +3416,15 @@ fn run_att_rimp2_terfc(
     budget_bytes: Option<usize>,
     scf_cert: &Certificate,
 ) {
-    let r0_ang = cfg
-        .mp2
-        .att_r0
-        .unwrap_or(config::ATT_RIMP2_TERFC_DEFAULT_R0_ANG);
-    let terfc_op = cfg.mp2.att_rimp2_operator().unwrap_or_else(|e| {
+    let resolved = cfg.mp2.att_terfc_r0(&bs.name).unwrap_or_else(|e| {
+        eprintln!("config error: {e}");
+        std::process::exit(1);
+    });
+    if let Some(note) = &resolved.note {
+        println!("{note}");
+    }
+    let r0_ang = resolved.r0_angstrom;
+    let terfc_op = cfg.mp2.att_rimp2_operator(&bs.name).unwrap_or_else(|e| {
         eprintln!("config error: {e}");
         std::process::exit(1);
     });
@@ -3981,13 +3996,27 @@ fn run_scs_mp2_2terfc(
     // r0(1)/r0(2) are given in Å in the TOML (matching the Python
     // binding's convention); the library config wants Bohr.
     const ANG2BOHR: f64 = ferric_core::units::ANGSTROM_TO_BOHR;
-    let r0_bonded_ang = cfg.mp2.r0_bonded.unwrap_or(0.75);
-    let r0_nonbonded_ang = cfg.mp2.r0_nonbonded.unwrap_or(1.05);
+    let params = ferric_mp2::terfc_r0::resolve_scs_2terfc(
+        &bs.name,
+        cfg.mp2.r0_bonded,
+        cfg.mp2.r0_nonbonded,
+        cfg.mp2.c_os,
+        cfg.mp2.c_ss,
+    )
+    .unwrap_or_else(|e| {
+        eprintln!("config error: [mp2] {e}");
+        std::process::exit(1);
+    });
+    if let Some(note) = &params.note {
+        println!("{note}");
+    }
+    let r0_bonded_ang = params.r0_bonded_angstrom;
+    let r0_nonbonded_ang = params.r0_nonbonded_angstrom;
     let scs_config = ScsMp2TerfcConfig {
         r0_bonded: r0_bonded_ang * ANG2BOHR,
         r0_nonbonded: r0_nonbonded_ang * ANG2BOHR,
-        c_os: cfg.mp2.c_os.unwrap_or(1.27),
-        c_ss: cfg.mp2.c_ss.unwrap_or(4.05),
+        c_os: params.c_os,
+        c_ss: params.c_ss,
         frozen_core: cfg.mp2.frozen_core.resolve(mol),
         memory_budget_bytes: budget_bytes,
     };

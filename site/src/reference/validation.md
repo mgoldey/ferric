@@ -608,7 +608,7 @@ fitted operators (`terfc_fit`), SR-MP2 inside RS-MP2+RPA and OO-MP2 (the energy
 kernel inside a larger algorithm whose sensitivity to this error was not
 analysed) and kappa-regularised runs stay on the f64 device kernel.
 
-Measured at the repository defaults (erfc ω = 0.420 Å⁻¹, terfc r₀ = 1.05 Å),
+Measured at the repository defaults (erfc ω = 0.420 Å⁻¹, terfc r₀ = 1.05 Å set explicitly),
 cc-pVDZ / cc-pVDZ-RI, all electrons correlated, against the f64 CPU energy of
 the same `B_ov` (RI-JK RHF / UHF references). At these parameters the dressed
 `B_ov` is as well scaled as the Coulomb one (water: max|B| 0.209 erfc, 0.211

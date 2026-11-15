@@ -4901,7 +4901,7 @@ def run_rimp2(
     Local runs only: `att_operator="erfc"|"terfc"` runs the local MP2 of the
     attenuated correlation (the SCF stays full Coulomb) with the CLI's `[mp2]`
     keys of the same names: `omega` (1/Angstrom, erfc, default 0.420),
-    `att_r0` (Angstrom, terfc, default 1.05) and `att_omega` (1/Angstrom,
+    `att_r0` (Angstrom, terfc, default: the basis-aware table of ``ferric_mp2::terfc_r0``, ValueError for an untabulated basis) and `att_omega` (1/Angstrom,
     terfc only: the decoupled seam sharpness; omitted = the linked
     1/(r0*sqrt(2))). terfc needs `FERRIC_TERF_TABLE_DIR`; with
     `integral_direct=True` it takes the same `schwarz_skip` cut as the other
@@ -5054,7 +5054,12 @@ def run_terfc_rimp2(
     scf_energy_conv: float | None = None,
     scf_density_conv: float | None = None,
 ) -> RiMp2Result:
-    """MP2(terfc): RI-MP2 with exact tempered-erfc operator. r0 in Angstrom."""
+    """MP2(terfc): RI-MP2 with exact tempered-erfc operator. r0 in Angstrom.
+
+    ``r0`` omitted: the S66-trained basis-aware default (aug-cc-pVTZ 1.35, aug-cc-pVDZ 1.05;
+    Goldey & Head-Gordon, Chem. Phys. Lett. 608, 249 (2014)); ValueError for an
+    untabulated basis. An explicit ``r0`` always wins.
+    """
     ...
 
 def run_scs_mp2(
@@ -5094,7 +5099,11 @@ def run_scs_mp2_2terfc(
     scf_energy_conv: float | None = None,
     scf_density_conv: float | None = None,
 ) -> ScsMp2Result:
-    """SCS-MP2(2terfc): dual-attenuated SCS-MP2 with exact terfc. r0 in Angstrom."""
+    """SCS-MP2(2terfc): dual-attenuated SCS-MP2 with exact terfc. r0 in Angstrom.
+
+    The defaults (r0 0.75/1.05, c_os 1.27, c_ss 4.05) are the aug-cc-pVTZ fit; any
+    other basis needs explicit ``r0_bonded`` and ``r0_nonbonded`` (ValueError otherwise).
+    """
     ...
 
 def run_mp2_v(
