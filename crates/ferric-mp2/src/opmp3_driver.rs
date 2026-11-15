@@ -6,7 +6,7 @@
 //!
 //! Every total is `E_HF[ρ] + E_NBS + E_c(model)` (the paper's definition).
 
-use crate::opmp3::{paper_x_ss, w_matrices, Opmp3Models, WMatrices};
+use crate::opmp3::{paper_x_ss, w_matrices, Opmp3Models, WMatrices, PAPER_X_SS};
 use crate::opmp3_reference::{opmp3_reference, Opmp3Reference};
 use crate::u_mp3::{
     u_mp3_from_orbitals, UMp3Channels, UMp3Config, UMp3Dims, UMp3Eri, UMp3SpinReference,
@@ -115,10 +115,14 @@ impl Opmp3Config {
             .x_ss
             .or_else(|| paper_x_ss(self.reference.name()))
             .ok_or_else(|| {
+                let printed = PAPER_X_SS
+                    .iter()
+                    .map(|(k, x)| format!("{k} {x}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 FerricError::General(format!(
                     "opmp3: the paper prints no SSD-OPMP3 x_ss for reference {:?}; give x_ss \
-                     explicitly (printed: hf 0, pbe0 0.5, pbe 0.7, spw92 0.75, r2scan 0.6, \
-                     wb97x-v 0.5, wb97m-v 0.5)",
+                     explicitly (printed: {printed})",
                     self.reference.name()
                 ))
             })?;

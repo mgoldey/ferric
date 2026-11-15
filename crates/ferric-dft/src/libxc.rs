@@ -1564,7 +1564,6 @@ pub fn xc_def_from_name_nspin_omega(
     Ok(def)
 }
 
-/// nspin-aware variant. Use 1 for closed-shell and 2 for UKS / ROKS.
 /// ωB97X-L-V external parameters, in libxc's `HYB_GGA_XC_WB97X_V` order.
 ///
 /// Source: Ransford & Carter-Fenk, *Phys. Chem. Chem. Phys.* **2026**, 28, 14428,
@@ -1654,8 +1653,6 @@ fn apply_named_ext_params(f: &mut XcFunctional, spec: &[(&str, f64)]) -> Result<
     f.set_ext_params(&values)
 }
 
-/// Build the ωB97X-L-V exchange–correlation definition.
-///
 /// B2PLYP SCF functional: 0.53 HF + 0.47 B88 exchange + 0.73 LYP correlation.
 ///
 /// This is the DFT half only. The post-SCF MP2 correlation (0.27 * E_MP2)
@@ -1694,6 +1691,9 @@ pub fn dsd_pbep86_def(nspin: u32) -> Result<XcDef, LibxcError> {
     })
 }
 
+/// Build the ωB97X-L-V exchange–correlation definition. `nspin` is 1 for
+/// closed shell and 2 for UKS / ROKS.
+///
 /// This is the DFT half of the double hybrid only. The wave-function half —
 /// `λ · E_c,LinLCCD(hh)` evaluated with an erfc(ω)-attenuated operator on the
 /// converged Kohn–Sham orbitals — is added post-SCF by the double-hybrid driver.
