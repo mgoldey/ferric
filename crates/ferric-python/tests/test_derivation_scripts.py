@@ -307,6 +307,11 @@ CASES = [
                 "FAIL B2 inverse of the direct BFGS update",
             ),
             (
+                "    if ys <= CURVATURE_EPS * np.linalg.norm(y) * np.linalg.norm(s):",
+                "    if ys <= -np.inf:",
+                "FAIL B3 curvature guard",
+            ),
+            (
                 "lam_p = 0.5 * (b_p + np.sqrt(b_p * b_p + 4.0 * g_p * g_p))",
                 "lam_p = 0.5 * (b_p - np.sqrt(b_p * b_p + 4.0 * g_p * g_p))",
                 "FAIL P2 prfo_step equals the augmented-Hessian",

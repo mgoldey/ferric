@@ -1622,16 +1622,31 @@ $$H' = H + \rho^2\big(y^{\mathsf T}s + y^{\mathsf T}Hy\big)ss^{\mathsf T} - \rho
 This is the inverse of the direct BFGS update
 $B' = B - \frac{Bss^{\mathsf T}B}{s^{\mathsf T}Bs} + \frac{yy^{\mathsf T}}{y^{\mathsf T}s}$
 of $B = H^{-1}$ (Sherman–Morrison–Woodbury), it satisfies the secant condition
-$H'y = s$, and it keeps $H$ positive definite when $y^{\mathsf T}s > 0$. The update
-is applied whenever $\lvert y^{\mathsf T}s\rvert > 10^{-12}$, including
-$y^{\mathsf T}s < 0$, where positive definiteness is not guaranteed; otherwise
-$H$ is reset to the identity. Convergence needs at least one step and
+$H'y = s$, and it keeps $H$ positive definite when $y^{\mathsf T}s > 0$. The
+converse also holds for any update that satisfies the secant condition:
+$y^{\mathsf T}H'y = y^{\mathsf T}s$, so $y^{\mathsf T}s \le 0$ leaves no
+positive-definite $H'$, and a later step $-H'g$ can point uphill. Every step is
+accepted, so nothing downstream would catch that. The update is therefore
+guarded (`guarded_inverse_bfgs_update`):
+
+$$H' = \begin{cases} H & \lvert y^{\mathsf T}s\rvert \le 10^{-12}:\ \text{reset to the identity instead},\\ H & y^{\mathsf T}s \le \varepsilon\,\lVert y\rVert\,\lVert s\rVert,\ \ \varepsilon = 10^{-8}:\ \text{skipped},\\ \text{the update above} & \text{otherwise.} \end{cases}$$
+
+A skipped update leaves $H$ positive definite by induction from the identity,
+so every step is a descent direction. Above the threshold the guard changes
+nothing, bit for bit. Skipping was chosen over Powell damping, which replaces
+$y$ by $\theta y + (1-\theta)Bs$ so that $y^{\mathsf T}s$ becomes
+$0.2\,s^{\mathsf T}Bs$. On the triplet-water optimizations where
+$y^{\mathsf T}s < 0$ occurs, damping converged in the same or slightly more
+steps (58 vs 58 UMP2, 91 vs 88 UHF/STO-3G). It also needs $Bs = H^{-1}s$, a
+linear solve with the carried inverse. The saddle search does not use this
+update. It carries an indefinite $B$ with the Bofill update below, and the IRC
+walk carries no Hessian. Convergence needs at least one step and
 $\lvert\Delta E\rvert < e_{\rm conv}$, $\max\lvert g\rvert < g_{\max}$ and
 ${\rm rms}(g) < g_{\rm rms}$ together. Redundant internals
 (`CoordSystem::Internal`) run the same update on $g_q = G^{-}Bg_x$ from an
 empirical diagonal Hessian, clip bonds against $r_{\rm trust}$ and angles
 against 0.3 rad separately (`clip_internal_step`), update with the achieved
-internal displacement, and reset to the empirical diagonal.
+internal displacement under the same guard, and on a degenerate pair reset to the empirical diagonal.
 
 **Saddle points** (`find_saddle`). In mass-weighted Cartesians, with the
 projected Hessian's eigenvalues $b_i$ (rigid modes shifted to $+10^3$) and
@@ -1670,7 +1685,10 @@ minimum, where a fixed length would orbit.
 
 Proof: `scripts/geometry_search_steps_sympy.py` (B1 the secant condition in
 symbols; B2 the inverse update against the inverted direct update, symmetry and
-positive definiteness; P1 the followed-mode root and step in symbols; P2
+positive definiteness; B3 the curvature guard: $y^{\mathsf T}H'y = y^{\mathsf T}s$
+in symbols, the guarded update positive definite for every pair, the unguarded
+one indefinite for every $y^{\mathsf T}s < 0$ pair, and bitwise unchanged above
+the threshold; P1 the followed-mode root and step in symbols; P2
 `prfo_step` against the augmented-Hessian eigenvectors; F1 the two Bofill
 corrections' secant conditions; F2 the update's secant condition, symmetry and
 retained negative eigenvalue; I1 the mass-weighted step).

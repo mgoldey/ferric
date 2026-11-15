@@ -18,6 +18,11 @@ Checks (each label carries "(claim X)"):
   B1  BFGS inverse update satisfies the secant condition H' y = s, in symbols.
   B2  It equals the inverse of the direct BFGS update of B = H^-1, is
       symmetric, and stays positive definite when y.s > 0 (numerics).
+  B3  The curvature guard: the secant condition forces y^T H' y = y.s, so no
+      update satisfying it can be positive definite when y.s <= 0 (symbols);
+      the guarded update (skip when y.s <= eps |y||s|) keeps H positive
+      definite for every pair, the unguarded one loses it on every y.s < 0
+      pair, and above the threshold the two are bitwise identical (numerics).
   P1  The followed-mode shift lambda_p = (b + sqrt(b^2 + 4 g^2))/2 is the
       LARGEST root of lambda^2 - b lambda - g^2 = 0, the secular equation of
       the 2x2 augmented Hessian, and dq = -g/(b - lambda) (symbols).
@@ -34,6 +39,7 @@ Checks (each label carries "(claim X)"):
 
 Mutations (each turns the script red; exact one-occurrence substitutions):
   BFGS term1 = (ys + yhy) rho^2 -> yhy rho^2                 (B2 fails)
+  BFGS curvature guard removed                               (B3 fails)
   P-RFO followed shift: + sqrt -> - sqrt                      (P2 fails)
   Bofill PSB projector term dropped                          (F2 fails)
   IRC Cartesian step: divide by m, not sqrt(m)               (I1 fails)
@@ -66,6 +72,19 @@ def bfgs_inverse_update(h, s, y):
     rho = 1.0 / ys
     term1 = (ys + yhy) * rho * rho
     return h + term1 * np.outer(s, s) - rho * (np.outer(hy, s) + np.outer(s, hy))
+
+
+CURVATURE_EPS = 1e-8
+
+
+def guarded_bfgs_inverse_update(h, s, y):
+    """optimize.rs::guarded_inverse_bfgs_update: skip the update (keep H) when
+    y.s <= CURVATURE_EPS |y| |s|, otherwise apply bfgs_inverse_update.
+    Returns (H', applied)."""
+    ys = y @ s
+    if ys <= CURVATURE_EPS * np.linalg.norm(y) * np.linalg.norm(s):
+        return h.copy(), False
+    return bfgs_inverse_update(h, s, y), True
 
 
 def prfo_step(g_q, evals, follow):
@@ -185,6 +204,48 @@ def bfgs_checks():
         "B2 inverse of the direct BFGS update, symmetric, positive definite (claim B2)",
         worst_inv < 1e-9 and worst_sym < 1e-12 and pd_ok,
         f"inv {worst_inv:.1e} sym {worst_sym:.1e}",
+    )
+
+
+def bfgs_guard_checks():
+    n = 3
+    hs = sp.Matrix(n, n, lambda i, j: sp.Symbol(f"h{min(i, j)}{max(i, j)}"))
+    s = sp.Matrix(sp.symbols("s0:3"))
+    y = sp.Matrix(sp.symbols("y0:3"))
+    ys = (y.T * s)[0]
+    hy = hs * y
+    yhy = (y.T * hy)[0]
+    h_new = hs + (ys + yhy) / ys**2 * s * s.T - (hy * s.T + s * hy.T) / ys
+    # y^T H' y = y.s: the curvature H' assigns along y IS y.s, so y.s <= 0
+    # rules out a positive-definite H' for any secant update.
+    quad = sp.simplify((y.T * h_new * y)[0] - ys)
+
+    rng = np.random.default_rng(17)
+    guarded_pd = True
+    unguarded_lost = True
+    n_neg = n_pos = 0
+    identical = True
+    for _ in range(400):
+        m = rng.standard_normal((n, n))
+        h = m @ m.T + 0.1 * np.eye(n)
+        s_v = rng.standard_normal(n)
+        y_v = rng.standard_normal(n)
+        ys_v = y_v @ s_v
+        h_g, applied = guarded_bfgs_inverse_update(h, s_v, y_v)
+        guarded_pd = guarded_pd and np.min(np.linalg.eigvalsh(h_g)) > 0
+        h_u = bfgs_inverse_update(h, s_v, y_v)
+        if ys_v < 0:
+            n_neg += 1
+            unguarded_lost = unguarded_lost and np.min(np.linalg.eigvalsh(h_u)) < 0
+        elif applied:
+            n_pos += 1
+            identical = identical and np.array_equal(h_g, h_u)
+    check(
+        "B3 curvature guard: y^T H' y = y.s, guarded update positive definite, "
+        "unguarded loses it, no-op above the threshold (claim B3)",
+        quad == 0 and guarded_pd and unguarded_lost and identical
+        and n_neg > 50 and n_pos > 50,
+        f"neg {n_neg} pos {n_pos}",
     )
 
 
@@ -323,6 +384,7 @@ def irc_checks():
 
 def main():
     bfgs_checks()
+    bfgs_guard_checks()
     prfo_checks()
     bofill_checks()
     irc_checks()

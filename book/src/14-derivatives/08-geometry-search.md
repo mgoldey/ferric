@@ -45,8 +45,11 @@ $$ p = -H g, \qquad s = p\,\min\!\Big(1, \frac{r_{\mathrm{trust}}}{\lVert p\rVer
 H' = H + \frac{y^{\mathsf T}s + y^{\mathsf T}Hy}{(y^{\mathsf T}s)^2}\,s\,s^{\mathsf T} - \frac{H y\,s^{\mathsf T} + s\,y^{\mathsf T}H}{y^{\mathsf T}s} . \tag{14.18} $$
 
 If $\lvert y^{\mathsf T}s\rvert \le 10^{-12}$ the update is skipped and $H$ is reset to the
-identity. A step with $y^{\mathsf T}s < 0$ is still applied, and there positive
-definiteness is not guaranteed. Convergence needs at least one step taken and all three of
+identity. If $y^{\mathsf T}s \le 10^{-8}\lVert y\rVert\lVert s\rVert$, which means negative
+curvature along the step, the update is skipped and $H$ is kept, with a printed note. Any
+update that satisfies $H'y = s$ has $y^{\mathsf T}H'y = y^{\mathsf T}s$, so applying it there
+would make $H$ indefinite and could send the next step uphill. With the guard, $H$ stays
+positive definite and every step is a descent direction. Convergence needs at least one step taken and all three of
 $\lvert\Delta E\rvert < e_{\mathrm{conv}}$, $\max\lvert g\rvert < g_{\max}$,
 $\mathrm{rms}(g) < g_{\mathrm{rms}}$; the defaults are $10^{-6}$ Ha,
 $4.5\times10^{-4}$ and $3.0\times10^{-4}$ Ha/Bohr, a trust radius of 0.1 Bohr and 100
@@ -57,15 +60,17 @@ steps.
 > The update satisfies the secant condition $H'y = s$ in symbols for a generic
 > symmetric $H$, equals the inverse of the direct BFGS update of $B = H^{-1}$,
 > is symmetric, and stays positive definite when $y^{\mathsf T}s > 0$. A
-> positive-definite $H$ is what makes the step a descent direction.
+> positive-definite $H$ is what makes the step a descent direction. Claim B3 covers the
+> curvature guard: the guarded update stays positive definite for every pair, the unguarded
+> one loses it whenever $y^{\mathsf T}s < 0$, and above the threshold the two are bitwise equal.
 >
 > | | |
 > |---|---|
-> | Proof | `scripts/geometry_search_steps_sympy.py`, claims B1 and B2 |
-> | Negative control | the runner drops the $y^{\mathsf T}s$ term of the weight $(y^{\mathsf T}s + y^{\mathsf T}Hy)/(y^{\mathsf T}s)^2$ (claim B2 fails) |
+> | Proof | `scripts/geometry_search_steps_sympy.py`, claims B1, B2 and B3 |
+> | Negative control | the runner drops the $y^{\mathsf T}s$ term of the weight $(y^{\mathsf T}s + y^{\mathsf T}Hy)/(y^{\mathsf T}s)^2$ (claim B2 fails), and removes the curvature guard (claim B3 fails) |
 > | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
 > | Code | `ferric-scf/src/optimize.rs::optimize_coordinates` |
-> | Code test | `test_optimize_h2_sto3g_step_energy_anchor` in `crates/ferric-scf/src/optimize.rs` (the Cartesian path, pinned bit for bit) |
+> | Code test | `test_optimize_h2_sto3g_step_energy_anchor` in `crates/ferric-scf/src/optimize.rs` (the Cartesian path, pinned bit for bit); `negative_curvature_step_does_not_send_the_minimizer_uphill` (a double well started in its negative-curvature region; without the guard the search climbs to the maximum and reports converged there) |
 >
 > <!-- verified: id=geom.bfgs; script=scripts/geometry_search_steps_sympy.py; claim=B2; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/optimize.rs::optimize_coordinates; rust_test=ferric-scf/src/optimize.rs::test_optimize_h2_sto3g_step_energy_anchor; registry=geometry-search -->
 

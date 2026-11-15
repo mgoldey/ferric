@@ -668,29 +668,18 @@ fn run_bfgs_internal(
         debug_assert_eq!(s.len(), nq);
 
         let y = &g_int_new - &prev_grad_int;
-        let ys = y.dot(&s);
-        // OPEN: the update runs for any |y.s| > 1e-12, including y.s < 0, where
-        // it does not keep H positive definite (no curvature condition and no
-        // damping). Left as is; the optimizer's behaviour is pinned by
-        // `test_optimize_h2_sto3g_step_energy_anchor`.
-        if ys.abs() > 1e-12 {
-            let hy = h_inv.dot(&y);
-            let yhy = y.dot(&hy);
-            let rho = 1.0 / ys;
-            let term1 = (ys + yhy) * rho * rho;
-            for i in 0..nq {
-                for j in 0..nq {
-                    h_inv[(i, j)] += term1 * s[i] * s[j] - rho * (hy[i] * s[j] + s[i] * hy[j]);
+        match guarded_inverse_bfgs_update(&mut h_inv, &s, &y) {
+            BfgsUpdate::Applied => {}
+            BfgsUpdate::SkippedNonPositiveCurvature => report_skipped_update(step_idx, &s, &y),
+            BfgsUpdate::Degenerate => {
+                // Reset to the empirical guess, not to the identity: the
+                // identity is meaningless in internals, where the coordinates
+                // have different units.
+                let hd = coords.initial_hessian_diagonal(&current)?;
+                h_inv = Array2::zeros((nq, nq));
+                for i in 0..nq {
+                    h_inv[(i, i)] = 1.0 / hd[i];
                 }
-            }
-        } else {
-            // Reset to the empirical guess, not to the identity: the identity
-            // is meaningless in internals, where the coordinates have
-            // different units.
-            let hd = coords.initial_hessian_diagonal(&current)?;
-            h_inv = Array2::zeros((nq, nq));
-            for i in 0..nq {
-                h_inv[(i, i)] = 1.0 / hd[i];
             }
         }
 
@@ -740,6 +729,83 @@ fn bfgs_secant_step(
         };
     }
     s
+}
+
+/// Relative curvature threshold of the BFGS update: the pair `(s, y)` is used
+/// only when `y·s > CURVATURE_EPS ‖y‖‖s‖`.
+///
+/// The secant condition `H'y = s` forces `yᵀH'y = y·s`, so no update that
+/// satisfies it can be positive definite when `y·s ≤ 0`. A relative
+/// threshold, not an absolute one, because `s` and `y` carry the units of the
+/// coordinates (Bohr, radians) and of the gradient. 1e-8 rejects only pairs
+/// that are orthogonal to within rounding or point the wrong way; every
+/// positive-curvature pair the optimize regression set produces is far above
+/// it, and for those the update is unchanged.
+const CURVATURE_EPS: f64 = 1e-8;
+
+/// What [`guarded_inverse_bfgs_update`] did with one `(s, y)` pair.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BfgsUpdate {
+    /// `y·s > CURVATURE_EPS ‖y‖‖s‖`: the inverse BFGS update was applied.
+    Applied,
+    /// `y·s` is negative, or positive but below the relative threshold. `H`
+    /// is left unchanged, so it stays positive definite and the next step
+    /// `-Hg` is still a descent direction.
+    SkippedNonPositiveCurvature,
+    /// `|y·s| ≤ 1e-12`, typically a zero-length step at convergence. `H` is
+    /// left unchanged here and the caller resets it to its initial guess.
+    Degenerate,
+}
+
+/// Inverse-Hessian BFGS update for a minimizer, with a curvature guard.
+///
+/// With `ρ = 1/(y·s)`, applies
+/// `H ← H + ρ²(y·s + yᵀHy) ssᵀ − ρ(Hy sᵀ + s yᵀH)` when
+/// `y·s > CURVATURE_EPS ‖y‖‖s‖`, and otherwise leaves `H` unchanged (the
+/// "skip" safeguard of a quasi-Newton method run without a line search). The
+/// update keeps `H` positive definite exactly when `y·s > 0`; when `y·s < 0`
+/// it would make `yᵀH'y = y·s < 0`, and a later step could point uphill. The
+/// search has no line search and accepts every step, so nothing else would
+/// catch it.
+///
+/// Used by the Cartesian ([`optimize_coordinates`]) and redundant-internal
+/// (`run_bfgs_internal`) minimizers only. The saddle search carries an
+/// indefinite Hessian with its own Bofill update (`saddle.rs::bofill_update`),
+/// and the IRC walk takes steepest-descent steps with no Hessian, so neither
+/// passes through here.
+fn guarded_inverse_bfgs_update(
+    h: &mut Array2<f64>,
+    s: &Array1<f64>,
+    y: &Array1<f64>,
+) -> BfgsUpdate {
+    let ys = y.dot(s);
+    if ys.abs() <= 1e-12 {
+        return BfgsUpdate::Degenerate;
+    }
+    if ys <= CURVATURE_EPS * y.dot(y).sqrt() * s.dot(s).sqrt() {
+        return BfgsUpdate::SkippedNonPositiveCurvature;
+    }
+    let n = s.len();
+    let hy = h.dot(y);
+    let yhy = y.dot(&hy);
+    let rho = 1.0 / ys;
+    let term1 = (ys + yhy) * rho * rho;
+    for i in 0..n {
+        for j in 0..n {
+            h[(i, j)] += term1 * s[i] * s[j] - rho * (hy[i] * s[j] + s[i] * hy[j]);
+        }
+    }
+    BfgsUpdate::Applied
+}
+
+/// Print a line in the step table when an update is skipped.
+fn report_skipped_update(step: usize, s: &Array1<f64>, y: &Array1<f64>) {
+    println!(
+        "     | step {}: y.s = {:.2e} <= 0 (negative curvature along the step); \
+         BFGS update skipped, Hessian kept",
+        step + 1,
+        y.dot(s)
+    );
 }
 
 /// Clip a proposed internal step, separately per coordinate type.
@@ -793,11 +859,12 @@ fn clip_internal_step(
 /// closure agrees with itself on — this function never interprets the
 /// coordinates as atoms). Returns `(x_final, energy, steps, converged)`.
 ///
-/// This is the exact algorithm `run_bfgs` used before being rewritten on
-/// top of this function (same trust-radius step scaling, same convergence
-/// tests, same Hessian update) — only the `Molecule`-specific flatten/unflatten at the
-/// boundary moved out. Pinned bit-for-bit by
-/// `test_optimize_h2_sto3g_step_energy_anchor`.
+/// The step is `-Hg` scaled onto the trust radius and always accepted; `H`
+/// starts at the identity and is carried by `guarded_inverse_bfgs_update`,
+/// which skips a pair with non-positive curvature so `H` stays positive
+/// definite. Pinned bit-for-bit by
+/// `test_optimize_h2_sto3g_step_energy_anchor`; the guard by
+/// `negative_curvature_step_does_not_send_the_minimizer_uphill`.
 pub fn optimize_coordinates(
     x0: &[f64],
     opt_config: &OptimizeConfig,
@@ -875,26 +942,10 @@ pub fn optimize_coordinates(
         let s = step; // x_{k+1} - x_k
         let y = &grad - &prev_grad; // g_{k+1} - g_k
 
-        let ys = y.dot(&s);
-        // OPEN: the update runs for any |y.s| > 1e-12, including y.s < 0, where
-        // it does not keep H positive definite (no curvature condition and no
-        // damping). Left as is; the optimizer's behaviour is pinned by
-        // `test_optimize_h2_sto3g_step_energy_anchor`.
-        if ys.abs() > 1e-12 {
-            let hy = h.dot(&y);
-            let yhy = y.dot(&hy);
-            let rho = 1.0 / ys;
-
-            // H = H + (ys + yHy)/(ys^2) * (s s^T) - (H y s^T + s y^T H) / ys
-            let term1 = (ys + yhy) * rho * rho;
-            for i in 0..n_coord {
-                for j in 0..n_coord {
-                    h[(i, j)] += term1 * s[i] * s[j] - rho * (hy[i] * s[j] + s[i] * hy[j]);
-                }
-            }
-        } else {
-            // Reset Hessian if update is unstable
-            h = Array2::eye(n_coord);
+        match guarded_inverse_bfgs_update(&mut h, &s, &y) {
+            BfgsUpdate::Applied => {}
+            BfgsUpdate::SkippedNonPositiveCurvature => report_skipped_update(step_idx, &s, &y),
+            BfgsUpdate::Degenerate => h = Array2::eye(n_coord),
         }
 
         step_idx += 1;
@@ -1451,6 +1502,101 @@ mod tests {
         );
     }
 
+    /// `f = (x0^2 - 1)^2 + x1^2 + x2^2`: a double well in `x0` with a local
+    /// maximum at `x0 = 0` and negative curvature for `|x0| < 1/sqrt(3)`.
+    fn double_well(x: &[f64]) -> Result<(f64, Vec<f64>), FerricError> {
+        let a = x[0] * x[0] - 1.0;
+        Ok((
+            a * a + x[1] * x[1] + x[2] * x[2],
+            vec![4.0 * x[0] * a, 2.0 * x[1], 2.0 * x[2]],
+        ))
+    }
+
+    /// Started at `x0 = 0.1`, inside the negative-curvature region, the first
+    /// step (0.1 -> 0.2, the trust radius) gives `y.s = -3.7e-2`. An
+    /// unguarded update turns that into `H' = s/y < 0` along `x0`, the next
+    /// step points uphill, and the search climbs back to the MAXIMUM at
+    /// `x0 = 0`, where the gradient vanishes and it reports converged at
+    /// `E = 1`. The guard skips that update, keeps `H = I`, and the search
+    /// descends monotonically to the minimum at `x0 = 1`.
+    #[test]
+    fn negative_curvature_step_does_not_send_the_minimizer_uphill() {
+        let mut trace = Vec::new();
+        let (x, e, _steps, converged) =
+            optimize_coordinates(&[0.1, 0.0, 0.0], &OptimizeConfig::default(), |x| {
+                let r = double_well(x)?;
+                trace.push(r.0);
+                Ok(r)
+            })
+            .expect("model optimization runs");
+        for (k, w) in trace.windows(2).enumerate() {
+            assert!(
+                w[1] <= w[0],
+                "evaluation {} went uphill: {:.6} -> {:.6} (trace {trace:?})",
+                k + 1,
+                w[0],
+                w[1]
+            );
+        }
+        assert!(converged, "must converge (trace {trace:?})");
+        assert!(
+            (x[0] - 1.0).abs() < 1e-3 && e < 1e-6,
+            "must reach the minimum x0 = 1, E = 0; got x0 = {}, E = {e}",
+            x[0]
+        );
+    }
+
+    /// The guard itself: a positive-definite `H` with a `y.s < 0` pair is left
+    /// unchanged (the update it would replace makes `y^T H' y = y.s < 0`), and
+    /// a `y.s > 0` pair gets exactly the textbook inverse update, bit for bit.
+    #[test]
+    fn guarded_update_skips_negative_curvature_and_is_exact_otherwise() {
+        let h0 = Array2::from_shape_vec((3, 3), vec![1.0, 0.2, 0.0, 0.2, 0.8, 0.1, 0.0, 0.1, 0.5])
+            .expect("3x3");
+        let s = Array1::from_vec(vec![0.1, -0.05, 0.02]);
+
+        let y_neg = Array1::from_vec(vec![-0.3, 0.02, 0.01]);
+        assert!(y_neg.dot(&s) < 0.0);
+        let mut h = h0.clone();
+        assert_eq!(
+            guarded_inverse_bfgs_update(&mut h, &s, &y_neg),
+            BfgsUpdate::SkippedNonPositiveCurvature
+        );
+        assert_eq!(h, h0, "a skipped update must leave H untouched");
+
+        let y_pos = Array1::from_vec(vec![0.12, -0.03, 0.015]);
+        let ys = y_pos.dot(&s);
+        assert!(ys > 0.0);
+        let mut h = h0.clone();
+        assert_eq!(
+            guarded_inverse_bfgs_update(&mut h, &s, &y_pos),
+            BfgsUpdate::Applied
+        );
+        let hy = h0.dot(&y_pos);
+        let rho = 1.0 / ys;
+        let term1 = (ys + y_pos.dot(&hy)) * rho * rho;
+        let mut expect = h0.clone();
+        for i in 0..3 {
+            for j in 0..3 {
+                expect[(i, j)] += term1 * s[i] * s[j] - rho * (hy[i] * s[j] + s[i] * hy[j]);
+            }
+        }
+        assert_eq!(
+            h, expect,
+            "above the threshold the update is the plain BFGS one"
+        );
+        // Secant condition H' y = s.
+        let hy_new = h.dot(&y_pos);
+        for k in 0..3 {
+            assert!((hy_new[k] - s[k]).abs() < 1e-14);
+        }
+
+        let mut h = h0.clone();
+        assert_eq!(
+            guarded_inverse_bfgs_update(&mut h, &Array1::zeros(3), &y_pos),
+            BfgsUpdate::Degenerate
+        );
+    }
     // -- internal-coordinate step machinery -------------------------------
     //
     // These two tests exist because the integration suite
