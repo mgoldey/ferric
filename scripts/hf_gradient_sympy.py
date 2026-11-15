@@ -401,7 +401,7 @@ def numeric_checks():
     fd = fd_gradient(lambda lt, gs: rhf_state(model, lt, 3, gs), lam0, c)
     err = np.max(np.abs(grad - fd))
     check(
-        "G1 RHF gradient = FD of re-solved SCF",
+        "G1 RHF gradient = FD of re-solved SCF (claim G1)",
         err < bar,
         f"max err {err:.2e} grad {grad}",
     )
@@ -410,7 +410,7 @@ def numeric_checks():
     fd = fd_gradient(lambda lt, gs: uhf_state(model, lt, 4, 2, gs), lam0, cs)
     err = np.max(np.abs(grad - fd))
     check(
-        "G2 UHF gradient = FD of re-solved SCF",
+        "G2 UHF gradient = FD of re-solved SCF (claim G2)",
         err < bar,
         f"max err {err:.2e} grad {grad}",
     )
@@ -420,18 +420,18 @@ def numeric_checks():
     fd = fd_gradient(lambda lt, gs: rohf_state(model, lt, 2, 2, gs), lam0, c)
     err = np.max(np.abs(grad - fd))
     check(
-        "G3 ROHF gradient = FD of re-solved SCF",
+        "G3 ROHF gradient = FD of re-solved SCF (claim G3)",
         err < bar,
         f"max err {err:.2e} grad {grad}",
     )
     check(
-        "G4 ROHF W symmetric before sym()",
+        "G4 ROHF W symmetric before sym() (claim G4)",
         extra["asym"] < 1e-10,
         f"max asym {extra['asym']:.2e}",
     )
     miss = np.max(np.abs(extra["bad"] - fd))
     check(
-        "G5 eigenvalue-form ROHF W misses FD (negative control)",
+        "G5 eigenvalue-form ROHF W misses FD (negative control) (claim G5)",
         miss > 1e-4,
         f"miss {miss:.2e}",
     )
@@ -463,7 +463,7 @@ def symbolic_checks():
     skel = 2 * (c.T * sp.diff(h, lam) * c)[0, 0] + sp.diff(g0, lam) / nrm**2
     pulay = -2 * eps * (c.T * sp.diff(s, lam) * c)[0, 0]
     check(
-        "S1 dE/dlam = skeleton - tr(W S') at fixed c0 (sympy)",
+        "S1 dE/dlam = skeleton - tr(W S') at fixed c0 (sympy) (claim S1)",
         sp.simplify(de - skel - pulay) == 0,
     )
 

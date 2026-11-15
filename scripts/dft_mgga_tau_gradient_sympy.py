@@ -113,7 +113,10 @@ for a in AX:
     code = -2 * partial
     err1 = max(err1, abs(exact - num(code)))
     err1_bad = max(err1_bad, abs(exact - num(code / 2)))
-check(f"1. d tau/dR_A = -2 * mgga_tau_partials (err {float(err1):.1e})", err1 < TOL)
+check(
+    f"1. d tau/dR_A = -2 * mgga_tau_partials (err {float(err1):.1e}) (claim 1)",
+    err1 < TOL,
+)
 check(
     f"1. control: keeping the 1/2 of tau is detected (err {float(err1_bad):.1e})",
     err1_bad > 1e-6,
@@ -126,7 +129,9 @@ for a in AX:
     code = sum(d2[m][a][b] * Ddchi[m][b] for b in AX for m in range(NAO))
     err2 = max(err2, abs(exact - num(code)))
     err2_bad = max(err2_bad, abs(exact - num(code / 2)))
-check(f"2. d_alpha tau == tau_spatial_grad (err {float(err2):.1e})", err2 < TOL)
+check(
+    f"2. d_alpha tau == tau_spatial_grad (err {float(err2):.1e}) (claim 2)", err2 < TOL
+)
 check(
     f"2. control: halved spatial gradient is detected (err {float(err2_bad):.1e})",
     err2_bad > 1e-6,
@@ -140,7 +145,7 @@ for q in (rho, sigma, tau):
             err3, abs(num(sp.diff(q, A[a]) + sp.diff(q, B[a]) + sp.diff(q, X[a])))
         )
 check(
-    f"3. d/dR_A + d/dR_B + grad_r = 0 for rho, sigma, tau (err {float(err3):.1e})",
+    f"3. d/dR_A + d/dR_B + grad_r = 0 for rho, sigma, tau (err {float(err3):.1e}) (claim 3)",
     err3 < TOL,
 )
 
@@ -170,7 +175,7 @@ for a in AX:
     for coeff in (diff.coeff(vr), diff.coeff(vs), diff.coeff(vt)):
         err4 = max(err4, abs(num(coeff)))
 check(
-    f"4. -2 (gga_ao_partials + mgga_tau_partials) == dE/dR_A (err {float(err4):.1e})",
+    f"4. -2 (gga_ao_partials + mgga_tau_partials) == dE/dR_A (err {float(err4):.1e}) (claim 4)",
     err4 < TOL,
 )
 
@@ -187,7 +192,7 @@ for a in AX:
     lhs = num(2 * sum(grad_rho[b] * sp.diff(grad_rho[b], X[a]) for b in AX))
     err5 = max(err5, abs(lhs - num(sp.diff(sigma, X[a]))))
 check(
-    f"5. hess_col == d_alpha grad rho; 2 grad rho . hess_col == d_alpha sigma (err {float(err5):.1e})",
+    f"5. hess_col == d_alpha grad rho; 2 grad rho . hess_col == d_alpha sigma (err {float(err5):.1e}) (claim 5)",
     err5 < TOL,
 )
 

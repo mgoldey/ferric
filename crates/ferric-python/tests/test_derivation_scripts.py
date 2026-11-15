@@ -221,6 +221,96 @@ CASES = [
         ],
     ),
     (
+        "dft_becke_weight_hessian_sympy.py",
+        90,
+        [
+            (
+                "+ 2 * mu0 * r_x * r_y / rv**2",
+                "+ 0 * mu0 * r_x * r_y / rv**2",
+                "FAIL W1 mu_x, mu_xy and s_xy pair formulas",
+            ),
+            (
+                "+ 2 * p_val[home] * tg * tg.T / t0**3",
+                "+ 0 * p_val[home] * tg * tg.T / t0**3",
+                "FAIL W2 log-form",
+            ),
+        ],
+    ),
+    (
+        "df_jk_gradient_sympy.py",
+        10,
+        [
+            (
+                "term2 = -sp.Rational(1, 2) * (c.T * v1 * c)[0]",
+                "term2 = -(c.T * v1 * c)[0]",
+                "FAIL D1 RI-J gradient formula",
+            ),
+            (
+                "return 1.0 / (lk * (lk - ll))",
+                "return 0.0",
+                "FAIL D3 truncated-metric derivative",
+            ),
+        ],
+    ),
+    (
+        "fock_hook_gradient_sympy.py",
+        10,
+        [
+            (
+                "explicit = kappa * np.sum(d * model.bxp(x)) + lam * np.sum(d * model.sxp(x))",
+                "explicit = kappa * np.sum(d * model.bxp(x))",
+                "FAIL K1 hooked gradient",
+            ),
+            (
+                "w = 2.0 * eps0[0] * (c0 @ c0.T)",
+                "w = 2.0 * (c0.T @ fock_hooked(model, x, d, hook, hooked=False) @ c0)[0, 0] * (c0 @ c0.T)",
+                "FAIL K1 hooked gradient",
+            ),
+        ],
+    ),
+    (
+        "local_mp2_fit_pno_sympy.py",
+        10,
+        [
+            (
+                "e_pno, u = np.linalg.eigh(f_pno)",
+                "e_pno, u = np.diag(f_pno), np.eye(npno)",
+                "FAIL L3 full-rank PNO",
+            ),
+            (
+                "return w_i.T @ w_j",
+                "return w_i.T @ w_i",
+                "FAIL L1 whitened Gram product",
+            ),
+        ],
+    ),
+    (
+        "geometry_search_steps_sympy.py",
+        10,
+        [
+            (
+                "term1 = (ys + yhy) * rho * rho",
+                "term1 = yhy * rho * rho",
+                "FAIL B2 inverse of the direct BFGS update",
+            ),
+            (
+                "lam_p = 0.5 * (b_p + np.sqrt(b_p * b_p + 4.0 * g_p * g_p))",
+                "lam_p = 0.5 * (b_p - np.sqrt(b_p * b_p + 4.0 * g_p * g_p))",
+                "FAIL P2 prfo_step equals the augmented-Hessian",
+            ),
+            (
+                "- e_dx * dx[i] * dx[j] / (dx_dx * dx_dx)",
+                "- 0.0 * dx[i] * dx[j] / (dx_dx * dx_dx)",
+                "FAIL F2 bofill_update",
+            ),
+            (
+                "return -length * g / (masses * gn)",
+                "return -length * g / (np.sqrt(masses) * gn)",
+                "FAIL I1 mass-weighted gradient",
+            ),
+        ],
+    ),
+    (
         "hf_frequencies_sympy.py",
         15,
         [

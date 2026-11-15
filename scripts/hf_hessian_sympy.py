@@ -623,24 +623,26 @@ def numeric_checks():
     c, eps = solve_rhf(h_, s_, g_, 3)
     h_rhf = rhf_hessian(model, lam0, c, eps, 3)
     fd = fd_of_gradient(lambda lt, gs: rhf_state(model, lt, 3, gs), lam0, c)
-    report("H1 RHF Hessian = FD of the analytic gradient", h_rhf, fd, bar)
+    report("H1 RHF Hessian = FD of the analytic gradient (claim H1)", h_rhf, fd, bar)
 
     # Exactness anchor: closed-shell UHF reproduces the RHF Hessian.
     h_cs = uhf_hessian(model, lam0, (c, c), (eps, eps), (3, 3))
     err = np.max(np.abs(h_cs - h_rhf))
     check(
-        "H2 closed-shell UHF Hessian = RHF Hessian", err < 1e-10, f"max err {err:.2e}"
+        "H2 closed-shell UHF Hessian = RHF Hessian (claim H2)",
+        err < 1e-10,
+        f"max err {err:.2e}",
     )
 
     cs, epss = solve_uhf(h_, s_, g_, 4, 2)
     h_uhf = uhf_hessian(model, lam0, cs, epss, (4, 2))
     fd = fd_of_gradient(lambda lt, gs: uhf_state(model, lt, 4, 2, gs), lam0, cs)
-    report("H3 UHF Hessian = FD of the analytic gradient", h_uhf, fd, bar)
+    report("H3 UHF Hessian = FD of the analytic gradient (claim H3)", h_uhf, fd, bar)
 
     c, _ = solve_rohf(h_, s_, g_, 2, 2)
     h_rohf = rohf_hessian(model, lam0, c, 2, 2)
     fd = fd_of_gradient(lambda lt, gs: rohf_state(model, lt, 2, 2, gs), lam0, c)
-    report("H4 ROHF Hessian = FD of the analytic gradient", h_rohf, fd, bar)
+    report("H4 ROHF Hessian = FD of the analytic gradient (claim H4)", h_rohf, fd, bar)
 
 
 def symbolic_checks():
@@ -652,13 +654,13 @@ def symbolic_checks():
     smo = sp.Matrix([[s11, s12], [s12, s22]])
     u = sp.Matrix([[-s11 / 2, -s12 / 2 + k], [-s12 / 2 - k, -s22 / 2]])
     check(
-        "S1 U = -S/2 + kappa satisfies U + U^T + S = 0",
+        "S1 U = -S/2 + kappa satisfies U + U^T + S = 0 (claim S1)",
         sp.simplify(u + u.T + smo) == sp.zeros(2),
     )
     n = sp.diag(1, 1)
     d1 = u * n + n * u.T
     check(
-        "S2 occupied-occupied kappa drops out of D^x (both occupied)",
+        "S2 occupied-occupied kappa drops out of D^x (both occupied) (claim S2)",
         sp.simplify(d1 - (-smo)) == sp.zeros(2),
     )
 

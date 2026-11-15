@@ -566,16 +566,23 @@ for rg, w in PTS:
         add3(V_ex[s], exact_vx(ex, s, chi_g, d1_g, w, [0] * N3))
         add3(V_code[s], code_fock(p, spins, k, w, s))
 
-check("1. dE/dR_x = sum_s F^s rho^s_x + G^s.g^s_x", maxdiff(gr_code, gr_ex))
+check("1. dE/dR_x = sum_s F^s rho^s_x + G^s.g^s_x (claim 1)", maxdiff(gr_code, gr_ex))
 control("G^s without the f_sab cross-gradient term", maxdiff(gr_mut, gr_ex))
 check(
-    "2. polarized dF^s, dG^s = d/dt (F^s, G^s), unequal two-spin perturbation", err_dfdg
+    "2. polarized dF^s, dG^s = d/dt (F^s, G^s), unequal two-spin perturbation (claim 2)",
+    err_dfdg,
 )
-check("3. fixed-grid polarized skeleton = d2E/dRdR", maxdiff(H_code, H_ex))
+check("3. fixed-grid polarized skeleton = d2E/dRdR (claim 3)", maxdiff(H_code, H_ex))
 for name in SK_MUT:
     control(f"skeleton with {name}", maxdiff(H_mut[name], H_ex))
-check("4. first-order Fock spin a = dV^a/dR at frozen D", maxdiff(V_code[0], V_ex[0]))
-check("4. first-order Fock spin b = dV^b/dR at frozen D", maxdiff(V_code[1], V_ex[1]))
+check(
+    "4. first-order Fock spin a = dV^a/dR at frozen D (claim 4)",
+    maxdiff(V_code[0], V_ex[0]),
+)
+check(
+    "4. first-order Fock spin b = dV^b/dR at frozen D (claim 4)",
+    maxdiff(V_code[1], V_ex[1]),
+)
 
 # ---------------------------------------------------------------------------
 # (5) response V1^s[D1^a, D1^b]
@@ -619,8 +626,14 @@ for rg, w, spins, ex, p in point_data:
         add2(V1_code[s], v)
     for s, v in enumerate(response_code(p, ex.k, g, w, D1S, {"total_kernel": True})):
         add2(V1_tot[s], v)
-check("5. V1^s[D1^a, D1^b] = d/dt V^s(D + t D1), spin a", maxdiff(V1_code[0], V1_ex[0]))
-check("5. V1^s[D1^a, D1^b] = d/dt V^s(D + t D1), spin b", maxdiff(V1_code[1], V1_ex[1]))
+check(
+    "5. V1^s[D1^a, D1^b] = d/dt V^s(D + t D1), spin a (claim 5)",
+    maxdiff(V1_code[0], V1_ex[0]),
+)
+check(
+    "5. V1^s[D1^a, D1^b] = d/dt V^s(D + t D1), spin b (claim 5)",
+    maxdiff(V1_code[1], V1_ex[1]),
+)
 control("response with the total-density kernel", maxdiff(V1_tot, V1_ex))
 
 # ---------------------------------------------------------------------------
@@ -731,12 +744,13 @@ for u, sc in U:
                 add2(out[3 * HOME + x % 3], c, -1)
             add3(Vm[key][s], out)
 check(
-    "6. moving polarized skeleton T_h G_h T_h^T = d2E/dRdR", maxdiff(Hm["prod"], Hm_ex)
+    "6. moving polarized skeleton T_h G_h T_h^T = d2E/dRdR (claim 6)",
+    maxdiff(Hm["prod"], Hm_ex),
 )
 control("moving skeleton without the weight terms", maxdiff(Hm["noW"], Hm_ex))
 for s, lab in ((0, "a"), (1, "b")):
     check(
-        f"6. moving polarized first-order Fock spin {lab} = dV/dR",
+        f"6. moving polarized first-order Fock spin {lab} = dV/dR (claim 6)",
         maxdiff(Vm["prod"][s], Vm_ex[s]),
     )
 control("moving Fock without V^s[W' f_rs, W' Gu^s]", maxdiff(Vm["noWfock"], Vm_ex))
@@ -815,9 +829,14 @@ for rg, w in PTS:
             v1c,
         ),
     )
-check("7. closed-shell limit: polarized skeleton == closed skeleton", err7["skel"])
-check("7. closed-shell limit: first-order Fock (spin a) == closed", err7["fock"])
-check("7. closed-shell limit: V1^a[D1/2, D1/2] == closed V1[D1]", err7["v1"])
+check(
+    "7. closed-shell limit: polarized skeleton == closed skeleton (claim 7)",
+    err7["skel"],
+)
+check(
+    "7. closed-shell limit: first-order Fock (spin a) == closed (claim 7)", err7["fock"]
+)
+check("7. closed-shell limit: V1^a[D1/2, D1/2] == closed V1[D1] (claim 7)", err7["v1"])
 control_passes("the total-density kernel in the closed-shell limit", err7["v1tot"])
 
 if FAILS:

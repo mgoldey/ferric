@@ -181,10 +181,12 @@ def main():
     cm_ref = E_H / (H_PLANCK * C_LIGHT * 100.0)
     rel = abs(AU_FREQ_TO_CM / cm_ref - 1.0)
     check(
-        "C1 AU_FREQ_TO_CM = E_h/(h c)", rel < 1e-10, f"rel {rel:.1e} ref {cm_ref:.7f}"
+        "C1 AU_FREQ_TO_CM = E_h/(h c) (claim C1)",
+        rel < 1e-10,
+        f"rel {rel:.1e} ref {cm_ref:.7f}",
     )
     rel = abs(AMU_TO_ELECTRON_MASS / (M_U / M_E) - 1.0)
-    check("C2 AMU_TO_ELECTRON_MASS = m_u/m_e", rel < 1e-10, f"rel {rel:.1e}")
+    check("C2 AMU_TO_ELECTRON_MASS = m_u/m_e (claim C2)", rel < 1e-10, f"rel {rel:.1e}")
 
     # S1: symbolic diatomic.
     k, m1, m2 = sp.symbols("k m1 m2", positive=True)
@@ -193,7 +195,7 @@ def main():
     ok = any(sp.simplify(e) == 0 for e in ev) and any(
         sp.simplify(e - k * (1 / m1 + 1 / m2)) == 0 for e in ev
     )
-    check("S1 diatomic mass-weighted eigenvalues {0, k/mu}", ok)
+    check("S1 diatomic mass-weighted eigenvalues {0, k/mu} (claim S1)", ok)
 
     # D1: diatomic through the pipeline vs the SI route.
     masses = [1.00794, 18.9984032]
@@ -205,12 +207,13 @@ def main():
     nu_ref = np.sqrt(k_si / mu_si) / (2.0 * np.pi * C_LIGHT * 100.0)
     ok = len(res["vib"]) == 1 and abs(res["vib"][0] / nu_ref - 1.0) < 1e-9
     check(
-        "D1 diatomic wavenumber = (1/2 pi c) sqrt(k/mu) (SI route)",
+        "D1 diatomic wavenumber = (1/2 pi c) sqrt(k/mu) (SI route) (claim D1)",
         ok,
         f"ferric {res['vib']} ref {nu_ref:.6f}",
     )
     check(
-        "D1 diatomic: 5 projected modes are zero", max(abs(x) for x in res["tr"]) < 1e-3
+        "D1 diatomic: 5 projected modes are zero (claim D1)",
+        max(abs(x) for x in res["tr"]) < 1e-3,
     )
 
     # P1: nonlinear 4 atoms.
@@ -228,7 +231,7 @@ def main():
         and np.max(np.abs(p @ p - p)) < 1e-12
         and max(np.linalg.norm(p @ v) / np.linalg.norm(v) for v in raw) < 1e-12
     )
-    check("P1 nonlinear: rank 6, orthonormal, P idempotent, P kills T/R", ok)
+    check("P1 nonlinear: rank 6, orthonormal, P idempotent, P kills T/R (claim P1)", ok)
     # The raw rotations are rotations: they annihilate the gradient of any
     # pair-distance function (here each distance), i.e. d r_ab . v = 0.
     worst = 0.0
@@ -240,7 +243,7 @@ def main():
                 d = coords[a] - coords[b]
                 worst = max(worst, abs(d @ (dx[a] - dx[b])))
     check(
-        "P1 rotation vectors preserve every interatomic distance",
+        "P1 rotation vectors preserve every interatomic distance (claim P1)",
         worst < 1e-10,
         f"{worst:.1e}",
     )
@@ -249,7 +252,7 @@ def main():
     lin = [np.array([0.0, 0.0, z]) for z in (-2.2, 0.0, 2.2)]
     lmass = [m * AMU_TO_ELECTRON_MASS for m in (15.999, 12.011, 15.999)]
     ok = len(translation_rotation_basis(lin, lmass)) == 5 and detect_linear(lin, lmass)
-    check("P2 linear triatomic: rank 5 and detect_linear", ok)
+    check("P2 linear triatomic: rank 5 and detect_linear (claim P2)", ok)
 
     # P3: springs at their minimum.
     pairs = [
@@ -264,7 +267,7 @@ def main():
     rel = np.max(np.abs(vib_ev - nonzero) / np.abs(nonzero))
     ok = len(res["vib"]) == 6 and rel < 1e-9
     check(
-        "P3 at a minimum the projection leaves the vibrations unchanged",
+        "P3 at a minimum the projection leaves the vibrations unchanged (claim P3)",
         ok,
         f"rel {rel:.1e}",
     )
@@ -281,7 +284,7 @@ def main():
     zeros = np.sum(np.abs(ev_p) < 1e-12 * np.max(np.abs(ev_p)))
     ok = rot_un > 1e-8 and zeros == 6 and len(res["tr"]) == 6
     check(
-        "P4 off-minimum: rotations carry curvature, projection zeroes 6 modes",
+        "P4 off-minimum: rotations carry curvature, projection zeroes 6 modes (claim P4)",
         ok,
         f"max rot curvature {rot_un:.1e}, zeros {zeros}",
     )

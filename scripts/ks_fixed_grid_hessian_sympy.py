@@ -614,27 +614,34 @@ for rg, w in PTS:
     add3(V_code, p.fock(w))
     add3(V_mut, p.fock(w, mut={"ao_sign": -1}))
 
-check("1. g = 2 sum d_gam chi P (gradient_densities)", errs["g"])
-check("2. rho_x = -2 sum_{mu in B} d_a chi P (rho_derivative)", errs["rx"])
+check("1. g = 2 sum d_gam chi P (gradient_densities) (claim 1)", errs["g"])
+check("2. rho_x = -2 sum_{mu in B} d_a chi P (rho_derivative) (claim 2)", errs["rx"])
 control("rho_x without its factor 2", ctrl["rx1"])
 check(
-    "3. g_x = -2 sum_{mu in B} [d_g d_a chi P + d_a chi Q] (grad_rho_derivative)",
+    "3. g_x = -2 sum_{mu in B} [d_g d_a chi P + d_a chi Q] (grad_rho_derivative) (claim 3)",
     errs["gx"],
 )
 control("g_x without the d_a chi Q_gam term", ctrl["gxq"])
 check(
-    "4. rho_xy (same-centre 2 d_a d_b chi P + cross 2 D d_a chi d_b chi)", errs["rxy"]
+    "4. rho_xy (same-centre 2 d_a d_b chi P + cross 2 D d_a chi d_b chi) (claim 4)",
+    errs["rxy"],
 )
 control("rho_xy cross term without its factor 2", ctrl["rxy1"])
-check("4. g_{gam,xy} of the module doc", errs["gxy"])
-check("5. add_same_centre + add_cross_centre = F rho_xy + G.g_xy", errs["second"])
-check("6. weights_response dF, dG = d/dt (w f_r, 2 w f_s g)", errs["dFdG"])
-check("7. skeleton (kernel_part + F rho_xy + G.g_xy) = d2E/dRdR", maxdiff(H_code, H_ex))
+check("4. g_{gam,xy} of the module doc (claim 4)", errs["gxy"])
+check(
+    "5. add_same_centre + add_cross_centre = F rho_xy + G.g_xy (claim 5)",
+    errs["second"],
+)
+check("6. weights_response dF, dG = d/dt (w f_r, 2 w f_s g) (claim 6)", errs["dFdG"])
+check(
+    "7. skeleton (kernel_part + F rho_xy + G.g_xy) = d2E/dRdR (claim 7)",
+    maxdiff(H_code, H_ex),
+)
 for name in MUTANTS:
     control(f"skeleton with {name}", maxdiff(H_mut[name], H_ex))
-check("8. gradient F rho_x + G.g_x = dE/dR", maxdiff(gr_code, gr_ex))
+check("8. gradient F rho_x + G.g_x = dE/dR (claim 8)", maxdiff(gr_code, gr_ex))
 control("gradient with G = w f_s g", maxdiff(gr_mut, gr_ex))
-check("9. first_order_fock = dV/dR at frozen D", maxdiff(V_code, V_ex))
+check("9. first_order_fock = dV/dR at frozen D (claim 9)", maxdiff(V_code, V_ex))
 control(
     "first-order Fock with the AO-derivative rows of the wrong sign",
     maxdiff(V_mut, V_ex),
@@ -668,7 +675,10 @@ for (rg, w), (p, _) in zip(PTS, pts_obj):
         g1 = [two * sum(p.d1[m][c] * pd[m] for m in range(NAO)) for c in AX]
         df, dg = p.dFdG(w, rho1, g1)
         add2(tgt, p.vmat(df, dg))
-check("10. XcResponse::apply V1[D1] = d/dt V(D + t D1)", maxdiff(V1_code, V1_ex))
+check(
+    "10. XcResponse::apply V1[D1] = d/dt V(D + t D1) (claim 10)",
+    maxdiff(V1_code, V1_ex),
+)
 control(
     "response with g1 = sum D1 d chi chi (factor 2 dropped)", maxdiff(V1_mut, V1_ex)
 )
@@ -788,7 +798,7 @@ for u, s in U:
         add3(Vm[key], out)
 
 check(
-    "11. moving skeleton T_h G_h T_h^T = d2E/dRdR (points riding home)",
+    "11. moving skeleton T_h G_h T_h^T = d2E/dRdR (points riding home) (claim 11)",
     maxdiff(Hm["prod"], Hm_ex),
 )
 control("moving skeleton without the translation fill", maxdiff(Hm["nofill"], Hm_ex))
@@ -796,7 +806,7 @@ control("moving skeleton with the fill sign flipped", maxdiff(Hm["flip"], Hm_ex)
 control("moving skeleton without W'' f", maxdiff(Hm["noW2"], Hm_ex))
 control("moving skeleton without W' df^T + df W'^T", maxdiff(Hm["nocross"], Hm_ex))
 check(
-    "12. first_order_fock_moving = dV/dR (points riding home)",
+    "12. first_order_fock_moving = dV/dR (points riding home) (claim 12)",
     maxdiff(Vm["prod"], Vm_ex),
 )
 control("moving Fock without the translation fill", maxdiff(Vm["nofill"], Vm_ex))
