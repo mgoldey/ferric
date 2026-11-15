@@ -133,6 +133,15 @@ int scf_compute_eri_quartet(scf_engine *eng, const scf_basis *bs,
                               int sh1, int sh2, int sh3, int sh4,
                               double *out);
 
+/* scf_compute_eri_quartet without the copy: on success *out points at the
+ * engine's own result buffer (n1*n2*n3*n4 doubles, same layout), valid until
+ * the next compute call on this engine. Returns the count, 0 if libint
+ * screened the quartet (*out = NULL), SCF_EINVAL for out == NULL, or
+ * SCF_EINTERNAL. */
+int scf_compute_eri_quartet_view(scf_engine *eng, const scf_basis *bs,
+                                 int sh1, int sh2, int sh3, int sh4,
+                                 const double **out);
+
 /* Enable/disable the per-engine shell-pair (ShellPair::init) cache used by
  * scf_compute_eri_quartet. Cache is lazily populated (one entry per unique
  * (shell,shell) pair actually requested, triangular: (i,j) and (j,i) share

@@ -749,10 +749,11 @@ static inline Engine::compute2_ptr_type quartet_compute_ptr(const Engine &engine
     return ptrs[static_cast<size_t>(compute_ptr_idx)];
 }
 
-int scf_compute_eri_quartet(scf_engine *eng, const scf_basis *bs,
-                              int sh1, int sh2, int sh3, int sh4, double *out) {
-    FERRIC_TERF_HOOK_SCOPE(eng);
-  try {
+// Compute (sh1 sh2|sh3 sh4) into the engine's own result buffer and return
+// it (nullptr when libint2 screened the quartet). Throws on a libint2 error;
+// the extern "C" wrappers below catch.
+static const double *compute_eri_quartet_raw(scf_engine *eng, const scf_basis *bs,
+                                             int sh1, int sh2, int sh3, int sh4) {
     const auto &shells = bs->bs;
     Engine &engine = eng->engine;
 
@@ -781,13 +782,43 @@ int scf_compute_eri_quartet(scf_engine *eng, const scf_basis *bs,
     } else {
         engine.compute(shells[sh1], shells[sh2], shells[sh3], shells[sh4]);
     }
-    const auto &result = engine.results();
-    if (result[0] == nullptr) {
+    return engine.results()[0];
+}
+
+int scf_compute_eri_quartet(scf_engine *eng, const scf_basis *bs,
+                              int sh1, int sh2, int sh3, int sh4, double *out) {
+    FERRIC_TERF_HOOK_SCOPE(eng);
+  try {
+    const double *result = compute_eri_quartet_raw(eng, bs, sh1, sh2, sh3, sh4);
+    if (result == nullptr) {
         return 0;  // libint screened the quartet (all zero).
     }
     int n = bs->nfunc[sh1] * bs->nfunc[sh2] * bs->nfunc[sh3] * bs->nfunc[sh4];
-    for (int i = 0; i < n; ++i) out[i] = result[0][i];
+    for (int i = 0; i < n; ++i) out[i] = result[i];
     return n;
+  } catch (const std::exception &ex) {
+    std::fprintf(stderr, "%s: %s\n", __func__, ex.what());
+    return SCF_EINTERNAL;
+  } catch (...) {
+    return SCF_EINTERNAL;
+  }
+}
+
+int scf_compute_eri_quartet_view(scf_engine *eng, const scf_basis *bs,
+                                 int sh1, int sh2, int sh3, int sh4,
+                                 const double **out) {
+    FERRIC_TERF_HOOK_SCOPE(eng);
+    if (out == nullptr) {
+        return SCF_EINVAL;
+    }
+    *out = nullptr;
+  try {
+    const double *result = compute_eri_quartet_raw(eng, bs, sh1, sh2, sh3, sh4);
+    if (result == nullptr) {
+        return 0;  // libint screened the quartet (all zero).
+    }
+    *out = result;
+    return bs->nfunc[sh1] * bs->nfunc[sh2] * bs->nfunc[sh3] * bs->nfunc[sh4];
   } catch (const std::exception &ex) {
     std::fprintf(stderr, "%s: %s\n", __func__, ex.what());
     return SCF_EINTERNAL;

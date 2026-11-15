@@ -402,6 +402,58 @@ impl Engine {
         self.is_terf || self.is_terfc || self.libint2_terf
     }
 
+    /// The handle of an engine that is one libint2 operator with unit weight
+    /// (no table engine, no linear combination): its quartets can be read
+    /// straight from libint2's result buffer.
+    fn sole_libint_handle(&self) -> Option<*mut c_void> {
+        match self.handles[..] {
+            [(coeff, h)] if coeff == 1.0 && !self.can_refuse() => Some(h),
+            _ => None,
+        }
+    }
+
+    /// `(sh1 sh2|sh3 sh4)` from handle `h` of [`Engine::sole_libint_handle`],
+    /// as libint2's own result buffer instead of a copy summed into `buf`
+    /// (`0 + 1·x` is `x` for every finite `x`, so the values are the same).
+    /// `None` when libint2 screened the quartet.
+    fn quartet_view(
+        &mut self,
+        h: *mut c_void,
+        prep: &PreparedBasis,
+        sh1: usize,
+        sh2: usize,
+        sh3: usize,
+        sh4: usize,
+    ) -> Option<&[f64]> {
+        let mut out: *const f64 = std::ptr::null();
+        // SAFETY: `h` is this engine's valid libint2 handle and `prep.handle()`
+        // a valid basis; the shell indices are in bounds (PreparedBasis owns
+        // them). On a positive return `out` points at `written` doubles in the
+        // engine's result buffer, which stays valid and unchanged until the
+        // next compute call on `h`; the returned slice borrows `self` mutably,
+        // so no such call can happen while it lives.
+        let written = unsafe {
+            ffi::scf_compute_eri_quartet_view(
+                h,
+                prep.handle(),
+                sh1 as c_int,
+                sh2 as c_int,
+                sh3 as c_int,
+                sh4 as c_int,
+                &mut out,
+            )
+        };
+        assert!(
+            written >= 0,
+            "libint2 internal error in eri quartet ({sh1},{sh2},{sh3},{sh4}): status {written}"
+        );
+        if written == 0 || out.is_null() {
+            return None;
+        }
+        // SAFETY: see above; `written` doubles are readable at `out`.
+        Some(unsafe { std::slice::from_raw_parts(out, written as usize) })
+    }
+
     /// Like [`Engine::compute_quartet`], but a table-engine refusal (total L
     /// beyond the table depth, null tables, a caught C++ exception) is
     /// `Err(status)` instead of `None`. `Ok(None)` still means screened to zero.
@@ -413,6 +465,9 @@ impl Engine {
         sh3: usize,
         sh4: usize,
     ) -> Result<Option<&[f64]>, i32> {
+        if let Some(h) = self.sole_libint_handle() {
+            return Ok(self.quartet_view(h, prep, sh1, sh2, sh3, sh4));
+        }
         let n = prep.shell_dims()[sh1]
             * prep.shell_dims()[sh2]
             * prep.shell_dims()[sh3]

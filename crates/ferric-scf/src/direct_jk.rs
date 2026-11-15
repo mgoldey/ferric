@@ -1,5 +1,6 @@
 //! Combined direct Coulomb + exchange (J+K) matrix construction from a single quartet pass.
 
+use crate::quartet_scatter::ScatterTimes;
 use crate::screening::SchwarzBounds;
 use ferric_core::parallel::ParallelContext;
 use ferric_core::FerricError;
@@ -372,7 +373,7 @@ impl<'a> DirectJK<'a> {
         let mut total_k_a = Array2::<f64>::zeros((nbf, nbf));
         let mut total_k_b = Array2::<f64>::zeros((nbf, nbf));
         let band_bytes = crate::reduce::resolve_band_bytes(self.mem_budget);
-        crate::reduce::grouped_deterministic_sum_triple(
+        crate::reduce::ordered_stream_sum_triple(
             &mut total_j,
             &mut total_k_a,
             &mut total_k_b,
@@ -472,7 +473,7 @@ impl<'a> DirectJK<'a> {
         j: &mut Array2<f64>,
         k: &mut Array2<f64>,
     ) -> Result<usize, FerricError> {
-        use crate::quartet_scatter::{build_d_max_shell, scatter_bra_pair, DensityScreen, JkMode};
+        use crate::quartet_scatter::{build_d_max_shell, DensityScreen};
         use std::sync::atomic::{AtomicUsize, Ordering};
 
         self.ctx.check_interrupted()?;
@@ -480,10 +481,8 @@ impl<'a> DirectJK<'a> {
             store.add_jk(d, j, k);
             return Ok(store.quartets());
         }
+        let profile_t0 = ferric_core::timing::enabled().then(std::time::Instant::now);
 
-        let dims = self.prep.shell_dims();
-        let offs = self.prep.shell_offsets();
-        let thresh = self.thresh;
         let computed_quartets = AtomicUsize::new(0);
 
         // Shell-blocked density-max table d_max_shell[(si, sj)] = max |D_μν| over
@@ -540,7 +539,7 @@ impl<'a> DirectJK<'a> {
         // 32 threads) and combined them in a worker-count-dependent order. Group
         // the canonical quartet list, fold each group's (J,K) serially, and sum
         // group partials in strict group order — bit-identical across thread
-        // counts, live set bounded to one byte-budgeted band.
+        // counts, live set bounded by a byte-budgeted window of partials.
         // Group partition is a pure function of the quartet list (never the
         // thread count): group boundaries set the floating-point association of
         // the per-group folds, so a thread-dependent partition would break
@@ -553,7 +552,19 @@ impl<'a> DirectJK<'a> {
         let mut total_j = Array2::<f64>::zeros((nbf, nbf));
         let mut total_k = Array2::<f64>::zeros((nbf, nbf));
         let band_bytes = crate::reduce::resolve_band_bytes(self.mem_budget);
-        crate::reduce::grouped_deterministic_sum_pair(
+        let profile = profile_t0.map(|t0| BuildProfile::new(t0, n_pairs, n_groups));
+        let job = GroupJob {
+            pool,
+            prep,
+            q_table,
+            m_table,
+            x_table,
+            screen: &screen,
+            thresh: self.thresh,
+            d,
+        };
+        let mut band_times = crate::reduce::StreamTimes::default();
+        crate::reduce::ordered_stream_sum_pair(
             &mut total_j,
             &mut total_k,
             n_groups,
@@ -561,27 +572,12 @@ impl<'a> DirectJK<'a> {
             band_bytes,
             |g| {
                 let lo = g * group_size;
-                let hi = (lo + group_size).min(n_pairs);
-                let mut mode = JkMode::new_both(nbf);
-                let mut local_count = 0usize;
-                for &(s1, s2) in &shell_pairs[lo..hi] {
-                    if ferric_core::INTERRUPT.load(Ordering::Relaxed) {
-                        continue;
-                    }
-                    pool.with(|engine| {
-                        local_count += scatter_bra_pair(
-                            engine, prep, dims, offs, q_table, m_table, x_table, &screen, thresh,
-                            d, s1, s2, &mut mode, true,
-                        );
-                    });
-                }
-                let (local_j, local_k) = match mode {
-                    JkMode::Both(j, k) => (j, k),
-                    _ => unreachable!("DirectJK::build always uses JkMode::Both"),
-                };
-                computed_quartets.fetch_add(local_count, Ordering::Relaxed);
+                let pairs = &shell_pairs[lo..(lo + group_size).min(n_pairs)];
+                let (local_j, local_k, n) = job.run(pairs, profile.as_ref());
+                computed_quartets.fetch_add(n, Ordering::Relaxed);
                 Ok((local_j, local_k))
             },
+            profile.as_ref().map(|_| &mut band_times),
         )?;
 
         // MPI: reduce the rank-LOCAL partials, THEN accumulate — NOT the other way
@@ -595,7 +591,170 @@ impl<'a> DirectJK<'a> {
         *j += &total_j;
         *k += &total_k;
 
-        Ok(computed_quartets.load(Ordering::SeqCst))
+        let computed = computed_quartets.load(Ordering::SeqCst);
+        if let Some(p) = profile {
+            p.report(nbf, self.prep.nshells(), computed, &band_times);
+        }
+        Ok(computed)
+    }
+}
+
+/// The inputs every reduction group of [`DirectJK::build`] shares.
+struct GroupJob<'g> {
+    pool: &'g crate::engine_pool::EnginePool,
+    prep: &'g PreparedBasis,
+    q_table: &'g Array2<f64>,
+    m_table: Option<&'g Array2<f64>>,
+    x_table: Option<&'g Array2<f64>>,
+    screen: &'g crate::quartet_scatter::DensityScreen<'g>,
+    thresh: f64,
+    d: &'g Array2<f64>,
+}
+
+impl GroupJob<'_> {
+    /// The bra pairs `pairs` scattered into fresh `nbf × nbf` J and K
+    /// partials, with the number of quartets computed. With `profile`, the
+    /// group's stage times are recorded into it.
+    fn run(
+        &self,
+        pairs: &[(usize, usize)],
+        profile: Option<&BuildProfile>,
+    ) -> (Array2<f64>, Array2<f64>, usize) {
+        use crate::quartet_scatter::{scatter_bra_pair, scatter_bra_pair_probed, JkMode};
+        use std::sync::atomic::Ordering;
+        let t_group = std::time::Instant::now();
+        let (prep, d) = (self.prep, self.d);
+        let (dims, offs) = (prep.shell_dims(), prep.shell_offsets());
+        let mut mode = JkMode::new_both(prep.nbasis());
+        let mut count = 0usize;
+        let mut times = ScatterTimes::default();
+        for &(s1, s2) in pairs {
+            if ferric_core::INTERRUPT.load(Ordering::Relaxed) {
+                continue;
+            }
+            let (q, m, x, scr, t) = (
+                self.q_table,
+                self.m_table,
+                self.x_table,
+                self.screen,
+                self.thresh,
+            );
+            self.pool.with(|engine| {
+                count += match profile {
+                    Some(_) => scatter_bra_pair_probed::<true>(
+                        engine, prep, dims, offs, q, m, x, scr, t, d, s1, s2, &mut mode, true,
+                        &mut times,
+                    ),
+                    None => scatter_bra_pair(
+                        engine, prep, dims, offs, q, m, x, scr, t, d, s1, s2, &mut mode, true,
+                    ),
+                };
+            });
+        }
+        if let Some(p) = profile {
+            p.record_group(t_group, &times);
+        }
+        match mode {
+            JkMode::Both(j, k) => (j, k, count),
+            _ => unreachable!("DirectJK::build always uses JkMode::Both"),
+        }
+    }
+}
+
+/// `FERRIC_TIMING` profile of one closed-shell [`DirectJK::build`]: per-group
+/// wall times and stage sums, printed as one block of `[timing]` lines.
+///
+/// The phases it separates, and how each is measured:
+///
+/// * **setup** — density-max table, bra-pair list and engine pool, from entry
+///   to the first band;
+/// * **libint** — inside `Engine::compute_quartet` (summed over threads);
+/// * **digest** — contracting each returned block into J and K;
+/// * **loop+screen** — the rest of each group's wall time: the `(s3, s4)`
+///   candidate loop, the Schwarz × density test, and the group's two `nbf²`
+///   partial allocations;
+/// * **folds** — the in-order folds of the group partials into J and K (and
+///   their release), run by whichever worker finds the next group ready while
+///   the others keep computing;
+/// * **outside groups** — `threads × (groups and folds wall) − Σ group wall`:
+///   worker time spent folding, waiting for the fold window, or idle at the
+///   end (load imbalance).
+///
+/// The per-quartet clock reads are themselves a cost (two reads per computed
+/// quartet); compare the profiled wall with an unprofiled one before reading
+/// small phases.
+struct BuildProfile {
+    t0: std::time::Instant,
+    n_pairs: usize,
+    n_groups: usize,
+    /// `(rayon thread, group wall ns, stage times)` per group.
+    groups: std::sync::Mutex<Vec<(usize, u64, ScatterTimes)>>,
+}
+
+impl BuildProfile {
+    fn new(t0: std::time::Instant, n_pairs: usize, n_groups: usize) -> Self {
+        BuildProfile {
+            t0,
+            n_pairs,
+            n_groups,
+            groups: std::sync::Mutex::new(Vec::with_capacity(n_groups)),
+        }
+    }
+
+    fn record_group(&self, t: std::time::Instant, times: &ScatterTimes) {
+        let wall = t.elapsed().as_nanos() as u64;
+        let tid = rayon::current_thread_index().unwrap_or(usize::MAX);
+        if let Ok(mut g) = self.groups.lock() {
+            g.push((tid, wall, *times));
+        }
+    }
+
+    fn report(&self, nbf: usize, nsh: usize, computed: usize, bands: &crate::reduce::StreamTimes) {
+        let wall = self.t0.elapsed().as_secs_f64();
+        let groups = self.groups.lock().map(|g| g.clone()).unwrap_or_default();
+        let threads = rayon::current_num_threads();
+        let mut sum = ScatterTimes::default();
+        let mut group_ns = 0u64;
+        let mut busy = std::collections::BTreeMap::<usize, u64>::new();
+        for (tid, w, t) in &groups {
+            sum.add(t);
+            group_ns += w;
+            *busy.entry(*tid).or_default() += w;
+        }
+        let s = |ns: u64| ns as f64 * 1e-9;
+        let produce = s(bands.wall_ns);
+        let fold = s(bands.fold_ns);
+        let setup = wall - produce;
+        let idle = threads as f64 * produce - s(group_ns);
+        let loop_screen = s(group_ns) - s(sum.libint_ns) - s(sum.digest_ns);
+        let (bmin, bmax) = busy
+            .values()
+            .fold((u64::MAX, 0u64), |(a, b), &v| (a.min(v), b.max(v)));
+        eprintln!(
+            "[timing] direct-jk build: nbf {nbf} nsh {nsh} bra pairs {} groups {} \
+             threads {threads}",
+            self.n_pairs, self.n_groups
+        );
+        eprintln!(
+            "[timing] direct-jk   wall {wall:.3} s = setup {setup:.3} + groups and folds \
+             {produce:.3} (in-order folds {fold:.3}, overlapping the groups)"
+        );
+        eprintln!(
+            "[timing] direct-jk   thread-seconds: groups {:.3} = libint {:.3} + digest {:.3} \
+             + loop/screen/alloc {loop_screen:.3}; outside groups (folds, waits) {idle:.3}",
+            s(group_ns),
+            s(sum.libint_ns),
+            s(sum.digest_ns),
+        );
+        eprintln!(
+            "[timing] direct-jk   per-thread busy min {:.3} max {:.3} s over {} threads; \
+             candidates {} survivors {} computed {computed}",
+            s(if bmin == u64::MAX { 0 } else { bmin }),
+            s(bmax),
+            busy.len(),
+            sum.candidates,
+            sum.survivors,
+        );
     }
 }
 

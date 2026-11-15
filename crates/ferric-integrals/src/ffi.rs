@@ -162,6 +162,20 @@ extern "C" {
         sh4: c_int,
         out: *mut c_double,
     ) -> c_int;
+    /// [`scf_compute_eri_quartet`] without the copy: on success `*out` points
+    /// at the engine's own result buffer (`n1*n2*n3*n4` doubles, same layout),
+    /// valid until the next compute call on `eng`. Returns the count, 0 if
+    /// libint2 screened the quartet (`*out` null), `SCF_EINVAL` for a null
+    /// `out`, or [`SCF_EINTERNAL`].
+    pub fn scf_compute_eri_quartet_view(
+        eng: *mut c_void,
+        bs: *const c_void,
+        sh1: c_int,
+        sh2: c_int,
+        sh3: c_int,
+        sh4: c_int,
+        out: *mut *const c_double,
+    ) -> c_int;
     /// Programmatic override of the per-engine shell-pair cache used by
     /// `scf_compute_eri_quartet`, independent of the `FERRIC_SHELLPAIR_CACHE`
     /// env var (so tests can A/B within one process without mutating global

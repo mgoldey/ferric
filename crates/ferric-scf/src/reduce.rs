@@ -339,6 +339,211 @@ where
     Ok(())
 }
 
+/// Wall time of a streamed fold ([`ordered_stream_sum_pair`]).
+#[derive(Debug, Default, Clone, Copy)]
+pub struct StreamTimes {
+    /// The whole call: groups computed and folded.
+    pub wall_ns: u64,
+    /// Summed time of the in-order folds (they overlap the groups).
+    pub fold_ns: u64,
+}
+
+/// [`grouped_deterministic_sum_pair`] without band barriers: the same fold,
+/// group `0, 1, …, n_groups-1` onto `(acc0, acc1)`, so the result is
+/// bit-identical to it (and to itself across thread counts and budgets).
+///
+/// The banded version runs one band of groups in parallel, then folds the band
+/// while every worker waits, so each band ends with the pool idling behind its
+/// slowest group. Here each worker claims the next group index, computes it,
+/// and parks its partial; whichever worker finds the lowest unfolded group
+/// ready folds it, and every following ready one, while the others keep
+/// computing. A worker claims group `g` only once `g < folded + window`, with
+/// `window` the band width the byte budget affords, so at most `window`
+/// partials are ever live (computing or parked), the same bound as a band.
+///
+/// Progress: the lowest unfolded group was claimed inside the window, so its
+/// worker is computing, not waiting, and folding it advances the window.
+///
+/// `times` (optional) receives the wall time of the whole call as
+/// `wall_ns` and the summed fold time as `fold_ns` (folds overlap compute
+/// here, so the two are not additive).
+pub fn ordered_stream_sum_pair<F>(
+    acc0: &mut Array2<f64>,
+    acc1: &mut Array2<f64>,
+    n_groups: usize,
+    nbf: usize,
+    band_bytes: usize,
+    make: F,
+    times: Option<&mut StreamTimes>,
+) -> Result<(), FerricError>
+where
+    F: Fn(usize) -> Result<(Array2<f64>, Array2<f64>), FerricError> + Sync,
+{
+    let window = band_width(nbf, band_bytes / 2);
+    let mut acc = (acc0, acc1);
+    ordered_stream_sum(
+        &mut acc,
+        n_groups,
+        window,
+        make,
+        |a, (p0, p1)| {
+            *a.0 += &p0;
+            *a.1 += &p1;
+        },
+        times,
+    )
+}
+
+/// [`ordered_stream_sum_pair`] for `(J, K_α, K_β)` triples, folded like
+/// [`grouped_deterministic_sum_triple`] and bit-identical to it.
+#[allow(clippy::type_complexity)]
+pub fn ordered_stream_sum_triple<F>(
+    acc0: &mut Array2<f64>,
+    acc1: &mut Array2<f64>,
+    acc2: &mut Array2<f64>,
+    n_groups: usize,
+    nbf: usize,
+    band_bytes: usize,
+    make: F,
+) -> Result<(), FerricError>
+where
+    F: Fn(usize) -> Result<(Array2<f64>, Array2<f64>, Array2<f64>), FerricError> + Sync,
+{
+    let window = band_width(nbf, band_bytes / 3);
+    let mut acc = (acc0, acc1, acc2);
+    ordered_stream_sum(
+        &mut acc,
+        n_groups,
+        window,
+        make,
+        |a, (p0, p1, p2)| {
+            *a.0 += &p0;
+            *a.1 += &p1;
+            *a.2 += &p2;
+        },
+        None,
+    )
+}
+
+/// The engine of [`ordered_stream_sum_pair`]: `fold(acc, make(g))` for
+/// `g = 0, 1, …, n_groups-1` in that order, with the `make` calls run in
+/// parallel and at most `window` partials live at once.
+fn ordered_stream_sum<A, P, F, G>(
+    acc: &mut A,
+    n_groups: usize,
+    window: usize,
+    make: F,
+    fold: G,
+    times: Option<&mut StreamTimes>,
+) -> Result<(), FerricError>
+where
+    A: Send,
+    P: Send,
+    F: Fn(usize) -> Result<P, FerricError> + Sync,
+    G: Fn(&mut A, P) + Sync,
+{
+    use std::collections::BTreeMap;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::{Condvar, Mutex};
+
+    struct Fold<'a, A, P> {
+        acc: &'a mut A,
+        /// Groups `0..folded` are in the accumulator.
+        folded: usize,
+        /// A worker is folding (and alone touches `acc`).
+        folding: bool,
+        ready: BTreeMap<usize, P>,
+        error: Option<FerricError>,
+        fold_ns: u64,
+    }
+
+    let window = window.max(1);
+    let t0 = std::time::Instant::now();
+    let next = AtomicUsize::new(0);
+    let abort = AtomicBool::new(false);
+    let state = Mutex::new(Fold {
+        acc,
+        folded: 0,
+        folding: false,
+        ready: BTreeMap::new(),
+        error: None,
+        fold_ns: 0,
+    });
+    let advanced = Condvar::new();
+    let lock = || state.lock().unwrap_or_else(|e| e.into_inner());
+
+    let worker = || loop {
+        if abort.load(Ordering::Relaxed) {
+            return;
+        }
+        let g = next.fetch_add(1, Ordering::Relaxed);
+        if g >= n_groups {
+            return;
+        }
+        {
+            let mut st = lock();
+            while g >= st.folded + window && !abort.load(Ordering::Relaxed) {
+                st = advanced.wait(st).unwrap_or_else(|e| e.into_inner());
+            }
+        }
+        if abort.load(Ordering::Relaxed) {
+            return;
+        }
+        let part = make(g);
+        let mut st = lock();
+        match part {
+            Ok(p) => {
+                st.ready.insert(g, p);
+            }
+            Err(e) => {
+                st.error.get_or_insert(e);
+                abort.store(true, Ordering::Relaxed);
+                advanced.notify_all();
+                return;
+            }
+        }
+        if st.folding {
+            continue;
+        }
+        st.folding = true;
+        loop {
+            let key = st.folded;
+            let Some(p) = st.ready.remove(&key) else {
+                break;
+            };
+            let a: *mut A = &mut *st.acc;
+            drop(st);
+            let tf = std::time::Instant::now();
+            // SAFETY: `folding` is set, so this worker is the only one that
+            // dereferences the accumulator until it clears the flag under the
+            // lock below; the others only park partials in `ready`.
+            fold(unsafe { &mut *a }, p);
+            let ns = tf.elapsed().as_nanos() as u64;
+            st = lock();
+            st.fold_ns += ns;
+            st.folded += 1;
+            advanced.notify_all();
+        }
+        st.folding = false;
+    };
+    let workers = rayon::current_num_threads().clamp(1, n_groups.max(1));
+    rayon::scope(|s| {
+        for _ in 0..workers {
+            s.spawn(|_| worker());
+        }
+    });
+    let st = state.into_inner().unwrap_or_else(|e| e.into_inner());
+    if let Some(e) = st.error {
+        return Err(e);
+    }
+    debug_assert_eq!(st.folded, n_groups, "every group folded exactly once");
+    if let Some(t) = times {
+        t.wall_ns += t0.elapsed().as_nanos() as u64;
+        t.fold_ns += st.fold_ns;
+    }
+    Ok(())
+}
+
 /// Like [`grouped_deterministic_sum_pair`] but each group yields a **triple**
 /// `(J, K_α, K_β)` folded into `(acc0, acc1, acc2)` respectively. Used by the
 /// combined open-shell direct-JK builder, where one quartet pass produces the
@@ -733,6 +938,101 @@ mod tests {
         grouped_deterministic_sum_pair(&mut aj, &mut ak, n_groups, n, 400, make).unwrap();
         assert_eq!(aj, ej);
         assert_eq!(ak, ek);
+    }
+
+    /// Order-sensitive partials: group `g` carries values spanning many
+    /// binades, so any change to the order in which groups reach an element
+    /// changes its bits (checked by the second assertion of the test below).
+    fn spread_partial(n: usize, g: usize, salt: usize) -> Array2<f64> {
+        Array2::from_shape_fn((n, n), |(i, j)| {
+            let e = ((i * 7 + j * 3 + g * 5 + salt) % 41) as i32 - 20;
+            (1.0 + 0.1 * ((g * 13 + i + j + salt) % 17) as f64) * 2f64.powi(e)
+        })
+    }
+
+    /// The streamed fold has the bits of the banded fold, at every window
+    /// width (1 = strictly serial; 3 forces workers to wait on the window)
+    /// and every thread count, closed-shell pair and open-shell triple; and
+    /// the fixture can tell a reordered fold apart.
+    #[test]
+    fn streamed_fold_has_the_bits_of_the_banded_fold() {
+        let (n, n_groups) = (6usize, 37usize);
+        let per = n * n * std::mem::size_of::<f64>();
+        let make2 = |g: usize| -> Result<(Array2<f64>, Array2<f64>), FerricError> {
+            Ok((spread_partial(n, g, 0), spread_partial(n, g, 1)))
+        };
+        let make3 = |g: usize| -> Result<(Array2<f64>, Array2<f64>, Array2<f64>), FerricError> {
+            Ok((
+                spread_partial(n, g, 0),
+                spread_partial(n, g, 1),
+                spread_partial(n, g, 2),
+            ))
+        };
+        let z = || Array2::<f64>::zeros((n, n));
+        let (mut bj, mut bk) = (z(), z());
+        grouped_deterministic_sum_pair(&mut bj, &mut bk, n_groups, n, usize::MAX / 2, make2)
+            .unwrap();
+        let (mut tj, mut ta, mut tb) = (z(), z(), z());
+        grouped_deterministic_sum_triple(&mut tj, &mut ta, &mut tb, n_groups, n, 4 * per, make3)
+            .unwrap();
+        for threads in [1usize, 2, 6] {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap();
+            for window in [1usize, 3, 64] {
+                pool.install(|| {
+                    let (mut sj, mut sk) = (z(), z());
+                    ordered_stream_sum_pair(
+                        &mut sj,
+                        &mut sk,
+                        n_groups,
+                        n,
+                        2 * window * per,
+                        make2,
+                        None,
+                    )
+                    .unwrap();
+                    assert_eq!(sj, bj, "pair J, {threads} threads, window {window}");
+                    assert_eq!(sk, bk, "pair K, {threads} threads, window {window}");
+                    let (mut sj, mut sa, mut sb) = (z(), z(), z());
+                    ordered_stream_sum_triple(
+                        &mut sj,
+                        &mut sa,
+                        &mut sb,
+                        n_groups,
+                        n,
+                        3 * window * per,
+                        make3,
+                    )
+                    .unwrap();
+                    assert_eq!((sj, sa, sb), (tj.clone(), ta.clone(), tb.clone()));
+                });
+            }
+        }
+        // The fixture is order-sensitive: folding in reverse moves bits.
+        let mut rev = z();
+        for g in (0..n_groups).rev() {
+            rev += &spread_partial(n, g, 0);
+        }
+        assert_ne!(rev, bj, "fixture cannot detect a reordered fold");
+    }
+
+    /// An error from one group is returned, and no worker is left waiting.
+    #[test]
+    fn streamed_fold_returns_a_group_error() {
+        let n = 3;
+        let per = n * n * std::mem::size_of::<f64>();
+        let make = |g: usize| -> Result<(Array2<f64>, Array2<f64>), FerricError> {
+            if g == 5 {
+                Err(FerricError::Libint("group 5".into()))
+            } else {
+                Ok((Array2::zeros((n, n)), Array2::zeros((n, n))))
+            }
+        };
+        let (mut a, mut b) = (Array2::zeros((n, n)), Array2::zeros((n, n)));
+        let r = ordered_stream_sum_pair(&mut a, &mut b, 40, n, 2 * 2 * per, make, None);
+        assert!(r.is_err());
     }
 
     #[test]
