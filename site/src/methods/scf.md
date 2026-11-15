@@ -602,6 +602,15 @@ median of 3 where shown) it is 2.4 to 4.4 times faster than `"fd"`:
 
 There is no crossover to place: the finite-difference route never won.
 
+The coupled-perturbed KS solve applies the XC kernel to the occupied-virtual
+rotations directly and contracts every density of a block in one pass over the
+RI-J tensor; for closed-shell RHF and RKS the fitted K of the CPHF/CPKS blocks
+is formed from a factored occupied half-transform, so one tensor pass serves a
+whole block. Measured on butane with PBE, interleaved A B B A A B, three
+repetitions each: the Hessian took 43.1 s on def2-SVP and 106.0 s on def2-TZVP
+before the XC kernel change and 19.4 s and 40.3 s after it; the frequencies
+agree to the printed 0.01 cm⁻¹ in all six cases.
+
 The choice is made before the SCF. An error the analytic path raises after the
 SCF (for ROHF: the stored spin Fock matrices differing from those rebuilt from
 the final densities by more than 1e-4 Ha, which a loose `density_conv` can
@@ -644,6 +653,39 @@ Butane, one thread; TZ is def2-TZVP (184 functions), QZ is def2-QZVP (528).
 | `df_j_aux` / `df_k_aux` | density-fitted J and K (RI-JK) | fitting error, grows with size (see *Kohn–Sham DFT* above) | all SCF types |
 | `k_builder = "cosx"` | seminumerical (COSX) K on a grid; with RI-J active this is RIJCOSX | grid-dependent error, see below | RHF/UHF/ROHF and their Kohn–Sham variants, Coulomb operator only; analytic gradient for all six (see below) |
 
+**Which route runs.** RHF, UHF and ROHF and their Kohn–Sham variants take
+J and K from one decision, made from `df_j_aux`, `df_k_aux`, `k_builder`, the
+functional's exact-exchange mix and the spin case. The run's `SCF J/K` line,
+the JSON log and the certificate state the route that ran, and the certificate
+lists LinK or COSX only when they actually run. For J, `name` is a fitting
+basis such as `def2-universal-jkfit`:
+
+| Functional | Spin | `df_j_aux` omitted | `df_j_aux = ""` | `df_j_aux = name` |
+|---|---|---|---|---|
+| none (Hartree–Fock) | any | four-centre J | four-centre J | RI-J on `name` |
+| any functional | closed shell | RI-J on `def2-universal-jkfit` | four-centre J | RI-J on `name` |
+| any functional | open shell | four-centre J (the CLI and the Python `run_uks` / `run_roks` / `run_dft` entry points name `def2-universal-jkfit`) | four-centre J | RI-J on `name` |
+
+J does not depend on the range-separation parameter ω, so a range-separated
+hybrid fits J exactly as a global hybrid does, for UKS and ROKS as for RKS.
+For K:
+
+| Functional | Spin | `df_k_aux` omitted | `df_k_aux = ""` | `df_k_aux = name` |
+|---|---|---|---|---|
+| none (Hartree–Fock) | any | exact K | exact K | RI-K on `name` |
+| global hybrid | closed shell | RI-K on `def2-universal-jkfit` | exact K | RI-K on `name` |
+| global hybrid | open shell | exact K (as for J, the entry points above name the fit) | exact K | RI-K on `name` |
+| pure (no exact exchange) | any | no K | no K | no K |
+| range-separated (ω > 0) | any | short-range / long-range pair on `def2-universal-jkfit` | error | pair on `name` |
+
+"Exact K" is the four-centre builder, or the one `k_builder` names. In Python,
+`run_optimize` and `run_frequencies` with `xc=` and no `df_*_aux` fit J and K on
+`def2-universal-jkfit` for RKS, UKS and ROKS alike, so a geometry run matches
+`run_uks`, `run_roks`, `run_dft` and the CLI for the same input. Under a
+range-separated hybrid in the CLI, UKS and ROKS therefore run RI-JK (NH2 /
+6-31G CAM-B3LYP moved from −55.8219504993 to −55.8219773531 Ha for UKS when
+J became fitted). `omega` tuning accepts a named `df_j_aux`.
+
 **Time for one exchange build** (seconds, butane, one thread):
 
 | Builder | What the time covers | def2-TZVP | def2-QZVP |
@@ -685,6 +727,15 @@ recomputed each iteration, whichever a measurement on the machine says is
 cheaper (`[scf] jk_storage`). It is two to three orders of magnitude faster
 per build than anything else here. Its error is a fitting error, not zero, and
 it grows with system size.
+
+**Direct J/K against PySCF.** The direct four-centre builder digests integrals
+in shell-block tiles and streams its reduction. Measured with the same density,
+a Schwarz threshold of 1e-12 and 12 threads (paired, mean of 3, ferric's
+segmented shells in both codes), one J+K build took 5.20 s for octane /
+cc-pVDZ against 9.47 s for PySCF `get_jk`, and 47.8 s for octane / cc-pVTZ
+against 49.7 s. PySCF integrates cc-pVXZ sets as general contractions, which
+libint2 cannot, so its gap to ferric's segmented-shell timing at those sets
+is a property of the integral library, not of the digestion.
 
 **Need exact exchange?** Direct or LinK; both are exact to the screening
 threshold as *K builders* (butane/def2-SVP: `link` == direct to 9e-12 Ha).
@@ -880,8 +931,9 @@ restricted-open-shell response).
 Below about 200 basis functions the whole set of AO integrals fits in a few
 GB. With `[scf] eri = "incore"` (Python `eri=` / `scf_eri=`) the integrals of
 the geometry are computed once, every shell quartet with no screening, and
-stored with their pair symmetries (`(n(n+1)/2)²` doubles: 0.34 GB at 114
-functions, 1.1 GB at 154), charged to the `[memory]` budget. J is then one
+stored as the packed lower triangle of the pair matrix (`P(P+1)/2` doubles
+with `P = n(n+1)/2`, about `n⁴/8`: 0.17 GB at 114 functions, 0.57 GB at 154, and
+1.68 GB for octane / cc-pVDZ, which `"auto"` takes at a 10 GB budget), charged to the `[memory]` budget. J is then one
 matrix product per density and K a gathered matrix product, for any number
 of densities, symmetric or not. The SCF, and the CPHF of the analytic
 Hessian, the RI-MP2 Z-vector and the OO-MP2 loop that follow it on the same

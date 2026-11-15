@@ -100,6 +100,16 @@ on an imaginary-frequency quadrature.
 The static eigensolve defaults to **Lanczos**, with a dense path for small
 problems. Geometry optimization with `pdep-rpa` is supported
 (`task = "optimize"`) on a closed-shell RHF reference.
+The nuclear gradient comes from `[rpa] gradient`: `"fd"` (default) takes
+three-point finite differences of the RHF plus RPA energy, and `"analytic"` is
+the RI-dRPA gradient with Z-vector relaxed densities, the exact derivative of
+the n-point quadrature sum (one RHF, one frequency loop, one CPHF solve). The
+analytic route is closed shell, takes all-electron or frozen-core references,
+and requires `trunc_thresh = 0` and a dense `chi0_sparsity`; anything else is an
+error. On n-hexane / cc-pVDZ at n = 20 it took 38.4 s against 1556.6 s for the
+finite-difference gradient, and the two gradients differ by at most 2.25e-8
+Ha/Bohr (one run each, one BLAS thread, loaded box). `run_optimize` in Python has no
+`pdep-rpa` method; the keys are in the [input reference](../reference/input.md).
 
 ## Exact and local dRPA
 
