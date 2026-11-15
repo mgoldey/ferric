@@ -282,10 +282,18 @@
     {
       "anchor": "RS-MP2-RPA",
       "patch": "testdata/mutations/rs-mp2-rpa.patch",
-      "mutation": "rs_mp2_rpa.rs: the DeltaLr (B) ring subtraction uses 1·E_OS[erf] instead of 2·E_OS[erf].",
+      "mutation": "rs_mp2_rpa.rs: the DeltaLr (B) ring subtraction uses 1\u00b7E_OS[erf] instead of 2\u00b7E_OS[erf].",
       "evidence": "crates/ferric-rpa/tests/validation_rs_mp2_rpa_pyscf.rs",
       "test": "rs_mp2_rpa_h2o_cc_pvdz_vs_pyscf",
-      "result": null
+      "result": {
+        "patch_sha256": "aaef8eb84697bb3375ac1769fd34c17b8a8995346e1716fd4db3f15f41811cce",
+        "base_commit": "96c4494f6492d7b57e4ebf1f8cd4aff1b942cc34",
+        "failing_test": "rs_mp2_rpa_h2o_cc_pvdz_vs_pyscf",
+        "assertion": "crates/ferric-rpa/tests/validation_rs_mp2_rpa_pyscf.rs:447",
+        "message": "h2o/cc-pvdz GL-20: B_e_corr: ferric -0.204126208447 vs PySCF -0.204030980885 (|d| 9.52e-5 Ha) exceeds the bar 6.07e-12 Ha (metric shift 3.33e-13, integral shift 6.80e-15, floor 5.73e-12)",
+        "baseline_run": true,
+        "date": "2026-11-14"
+      }
     }
   ]
 }
