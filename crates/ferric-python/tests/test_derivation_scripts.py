@@ -837,6 +837,19 @@ CASES = [
         ],
     ),
     (
+        "qmmm_boundary_sympy.py",
+        30,
+        [
+            (
+                "full[q_full] += (1.0 - g) * d",
+                "full[q_full] += g * d",
+                "FAIL Q3 full_gradient",
+            ),
+            ("full[m1] -= 0.5 * f", "full[m1] -= 1.0 * f", "FAIL Q3 full_gradient"),
+            ("qb = 2 * q0", "qb = q0", "FAIL Q2 RCD conserves"),
+        ],
+    ),
+    (
         "pcm_ief_sympy.py",
         150,
         [

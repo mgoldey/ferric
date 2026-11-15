@@ -920,6 +920,16 @@
       "scripts": [
         "scripts/cosmo_sympy.py"
       ]
+    },
+    "qmmm": {
+      "theory": [
+        "crates/ferric-scf/theory.md#external-point-charges-and-fields",
+        "crates/ferric-scf/theory.md#qmmm-boundary-and-the-full-gradient"
+      ],
+      "scripts": [
+        "scripts/external_potential_sympy.py",
+        "scripts/qmmm_boundary_sympy.py"
+      ]
     }
   },
   "gaps": {
@@ -956,9 +966,6 @@
         "crates/ferric-pbc/theory.md#5-stress-tensor-strain-derivative",
         "crates/ferric-pbc/theory.md#8-k-point-hartree-fock-and-kohn-sham"
       ]
-    },
-    "qmmm": {
-      "reason": "no theory.md derivation and no sympy proof"
     },
     "u-oo-rimp2": {
       "reason": "crates/ferric-mp2/theory.md section 14 derives the orbital gradient and scripts/mp2_gradient_sympy.py [U] checks it by FD, but its integral-response term is derived, not transcribed from compute_u_mp2_orbital_gradient's loop",

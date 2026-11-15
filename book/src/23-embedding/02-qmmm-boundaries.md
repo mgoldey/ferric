@@ -1,6 +1,7 @@
 # 23.2 QM/MM boundaries, link atoms and the full gradient
 
-<!-- section: 23.2; status: gap; registry: qmmm; theory: none -->
+<!-- section: 23.2; status: edit; registry: qmmm;
+     theory: crates/ferric-scf/theory.md#"QM/MM boundary and the full gradient" -->
 
 A ligand in a protein pocket, a reacting site in an enzyme, or a solute in
 explicit solvent is too large to treat quantum mechanically in full. QM/MM
@@ -13,9 +14,9 @@ mechanics: it decides which atoms are quantum, caps the covalent bonds the
 split cuts, treats the charge next to the cut, and maps the gradient of the
 embedded SCF back onto the atoms of the full structure.
 
-This section has no `theory.md` text and no proof script. The equations are
-read from the code loops and marked unverified; each box names the test that
-pins it.
+The boundary bookkeeping and the chain rules are derived in
+`crates/ferric-scf/theory.md` ("QM/MM boundary and the full gradient") and
+proved in `scripts/qmmm_boundary_sympy.py`.
 
 | Symbol | Meaning | Code name |
 |---|---|---|
@@ -85,7 +86,25 @@ Truhlar, J. Phys. Chem. A 109, 3991 (2005).
 | `RedistributedCharge` (RC) | $q_{\mathrm{M1}} \to 0$; $q_0$ on the midpoint of each M1–M2 bond | total charge |
 | `RedistributedChargeDipole` (RCD) | $q_{\mathrm{M1}} \to 0$; $2q_0$ on each midpoint; $-q_0$ on each M2 | total charge and the dipole of {M1, M2} |
 
-**Equation 23.2, what RC and RCD conserve.** (Transcribed from the code loop; see Known limits.)
+<!-- include: crates/ferric-scf/theory.md#"QM/MM boundary and the full gradient" -->
+
+> **Verified equation 23.2** · what Z1, RC and RCD conserve
+>
+> For an M1 of charge $q$ with $n = 1, \ldots, 5$ M2 neighbours at symbolic
+> positions, the transcribed `with_boundary_charges` gives: RCD conserves the
+> total charge and the dipole of {M1, M2} about any origin; RC conserves the
+> charge and moves the dipole by $(q/2)(\bar{\mathbf R}_{\mathrm{M2}} - \mathbf R_{\mathrm{M1}})$,
+> nonzero in general; Z1 changes the charge by $-q$ (claim Q2).
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/qmmm_boundary_sympy.py`, claim Q2 |
+> | Negative control | the runner puts $q_0$ instead of $2q_0$ on the RCD midpoints (claim Q2 fails) |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-scf/src/qmmm.rs::with_boundary_charges` |
+> | Code test | `redistributed_charge_dipole_conserves_charge_and_dipole` in `crates/ferric-scf/tests/qmmm.rs` |
+>
+> <!-- verified: id=qmmm.boundary.rcd; script=scripts/qmmm_boundary_sympy.py; claim=Q2; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/qmmm.rs::with_boundary_charges; rust_test=ferric-scf/tests/qmmm.rs::redistributed_charge_dipole_conserves_charge_and_dipole; registry=qmmm -->
 
 For M1 at $\mathbf R_1$ with charge $q_1$ and $n$ M2 atoms at $\mathbf R_{2,m}$
 with charges $q_{2,m}$, put $q_0 = q_1/n$ and the midpoints at
@@ -157,8 +176,6 @@ The SCF gradient lives on the QM molecule, link hydrogens included. The full
 gradient is on the real atoms of the whole structure. Three chain rules map one
 to the other.
 
-**Equation 23.3, the full gradient across the cut.** (Transcribed from the code loop; see Known limits.)
-
 $$ \frac{\partial E}{\partial\mathbf R_Q} \mathrel{+}= (1-g)\frac{\partial E}{\partial\mathbf R_L}, \qquad \frac{\partial E}{\partial\mathbf R_M} \mathrel{+}= g\,\frac{\partial E}{\partial\mathbf R_L}, \qquad \frac{\partial E}{\partial\mathbf R_i} \mathrel{+}= -\mathbf F_i , $$
 
 and for a midpoint charge at $(\mathbf R_{M1}+\mathbf R_{M2})/2$ the force is
@@ -167,6 +184,25 @@ $\mathrel{+}= -\tfrac12\mathbf F$. The first pair is the chain rule through
 $\mathbf R_L = (1-g)\mathbf R_Q + g\mathbf R_M$. The sum of each column over
 atoms is unchanged by the fold, because a rigid translation moves the cap
 rigidly.
+
+> **Verified equation 23.3** · the full gradient across the cut
+>
+> The link chain rule $(1-g, g)$ follows from $\mathbf R_L = (1-g)\mathbf R_Q + g\mathbf R_M$
+> for any energy of $\mathbf R_L$ (claim Q1). The transcribed `full_gradient`
+> equals a central difference of a model embedded energy over every
+> coordinate of a capped ethane-like structure, with the link atom and the
+> RC/RCD midpoints rebuilt at each displacement, for Keep, Z1, RC and RCD
+> (claim Q3), and its rows sum to zero (claim Q4).
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/qmmm_boundary_sympy.py`, claims Q1, Q3 and Q4 |
+> | Negative control | the runner folds the link row onto the frontier atom with $g$ instead of $1-g$, and puts a midpoint force wholly on M1 (claim Q3 fails each time) |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-scf/src/qmmm.rs::full_gradient` |
+> | Code test | `full_gradient_matches_finite_difference_across_the_boundary` in `crates/ferric-scf/tests/qmmm.rs` |
+>
+> <!-- verified: id=qmmm.full.gradient; script=scripts/qmmm_boundary_sympy.py; claim=Q3; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/qmmm.rs::full_gradient; rust_test=ferric-scf/tests/qmmm.rs::full_gradient_matches_finite_difference_across_the_boundary; registry=qmmm -->
 
 The link fold is two lines of `ferric-scf/src/qmmm.rs::full_gradient`:
 
@@ -273,14 +309,16 @@ charge-bookkeeping assertions and scheme-swap controls.
 | Source | What it gives |
 |---|---|
 | `site/src/using/qmmm.md` | the user-facing description and the CLI section |
-| `crates/ferric-scf/src/qmmm.rs` | the module (no `theory.md` text) |
+| `crates/ferric-scf/theory.md`, "QM/MM boundary and the full gradient" | link atoms, boundary schemes and the chain rules |
+| `scripts/qmmm_boundary_sympy.py`, claims Q1 to Q4 | the proof |
+| `crates/ferric-scf/src/qmmm.rs` | the module |
 | `crates/ferric-scf/tests/qmmm.rs`, `crates/ferric-scf/tests/qmmm_mm.rs` | partition, boundary, gradient tests |
 | `crates/ferric-scf/tests/validation_optimize_qmmm.rs` | the optimization anchors |
 
 **Known limits (2026-11-15).**
 
-- The displayed equations 23.2 and 23.3 are transcribed from the code loop and await a
-  `theory.md` derivation and a sympy proof; they are not machine-checked.
+- The additive rule of section 23.2.5 (which MM terms are kept across the
+  cut) is described from `qmmm_mm_terms` and has no derivation.
 - Link atoms are an approximation with known artifacts. Cut only nonpolar
   single bonds (C–C, never a C=O, an amide C–N, or anything conjugated or
   charged), and keep the cut two or three bonds from anything chemically
@@ -296,9 +334,3 @@ charge-bookkeeping assertions and scheme-swap controls.
 - Combining a boundary scheme with a polarizable site (section 23.3) has no
   finite-difference cross-check yet (`crates/ferric-python/ferric.pyi`,
   `run_qmmm`).
-
-**Theory text still needed in `crates/ferric-scf/theory.md`, which another pass is editing.**
-The scaled-position link atom and its chain rule; the Z1, RC and RCD schemes
-with the charge and dipole bookkeeping of equation 23.2; the three chain rules
-of equation 23.3, with a proof on a model with a link atom and a midpoint
-charge; and the additive-QM/MM rule of 23.2.5 for which MM terms are kept.

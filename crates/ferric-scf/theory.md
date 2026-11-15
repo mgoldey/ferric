@@ -1246,3 +1246,91 @@ point limit; E2 $f'$ and $f''$; E3 the classical gradient, site gradient and
 Hessian blocks; E4 the origin shift; E5 the finite-difference field–density
 term against analytic dipole-integral derivatives of an $s$-Gaussian model,
 with the sum rule and net force).
+
+## QM/MM boundary and the full gradient
+
+`qmmm.rs` partitions one structure into a QM molecule and an
+`ExternalPotential` of MM charges (section "External point charges and
+fields"), caps cut bonds with link hydrogens, optionally moves the charge of
+each cut bond's MM host, and maps the gradient of the embedded SCF back onto
+every atom of the structure. MM charges on atoms selected into the QM region
+are dropped (they would be counted twice).
+
+**Link atoms** (`QmmmSystem::with_link_atoms`). A bond $(Q, M)$ with exactly
+one end in the QM region gets a hydrogen at
+
+$$\mathbf{R}_L = \mathbf{R}_Q + g(\mathbf{R}_M - \mathbf{R}_Q) = (1-g)\mathbf{R}_Q + g\mathbf{R}_M,
+\qquad 0 < g < 1,$$
+
+with $g = 1.09/1.53$ by default (`DEFAULT_LINK_SCALE`). $\mathbf{R}_L$ is not a
+variable: it moves with its two hosts, so
+
+$$\frac{\partial E}{\partial\mathbf{R}_Q} \mathrel{+}= (1-g)\frac{\partial E}{\partial\mathbf{R}_L},
+\qquad
+\frac{\partial E}{\partial\mathbf{R}_M} \mathrel{+}= g\,\frac{\partial E}{\partial\mathbf{R}_L},$$
+
+and the two contributions sum to $\partial E/\partial\mathbf{R}_L$, so a rigid
+translation still has zero net gradient. The link hydrogen is a real QM atom
+($Z = 1$, basis functions) in the SCF and in the classical charge–nuclear
+energy.
+
+**Boundary charges** (`QmmmSystem::with_boundary_charges`). For each MM host
+$M_1$ of a cut bond with charge $q$ and its $n$ MM neighbours $M_2^{(j)}$
+(bonded MM atoms that are not themselves hosts; a host bonded to another host
+is an error, as is a host with no MM neighbour under RC/RCD):
+
+| Scheme | $q(M_1)$ | $q(M_2^{(j)})$ | added at $\mathbf{m}_j = \tfrac12(\mathbf{R}_{M_1} + \mathbf{R}_{M_2^{(j)}})$ |
+|---|---|---|---|
+| `Keep` | $q$ | unchanged | nothing |
+| `DeleteHost` (Z1) | $0$ | unchanged | nothing |
+| `RedistributedCharge` (RC) | $0$ | unchanged | $q/n$ |
+| `RedistributedChargeDipole` (RCD) | $0$ | $-q/n$ added | $2q/n$ |
+
+Z1 changes the total charge by $-q$. RC and RCD conserve it. The dipole of
+the group $\{M_1, M_2^{(j)}\}$ about any origin changes under RC by
+
+$$\Delta\mathbf{d}_{\rm RC} = \sum_j \frac qn\,\mathbf{m}_j - q\mathbf{R}_{M_1}
+ = \frac q2\Big(\frac1n\sum_j\mathbf{R}_{M_2^{(j)}} - \mathbf{R}_{M_1}\Big),$$
+
+which is nonzero unless $M_1$ sits at the centroid of its neighbours, and
+under RCD by
+
+$$\Delta\mathbf{d}_{\rm RCD} = \sum_j\Big[\frac{2q}{n}\,\mathbf{m}_j - \frac qn\mathbf{R}_{M_2^{(j)}}\Big] - q\mathbf{R}_{M_1}
+ = \sum_j \frac qn\mathbf{R}_{M_1} - q\mathbf{R}_{M_1} = 0$$
+
+for every $n$. The charges are constants; only the midpoint positions depend on
+the geometry. The embedding charges are ordered as the MM atoms with a nonzero
+effective charge (ascending index), then the midpoint charges
+(`active_charges`); `mm_charge_positions`, `mm_forces` and `full_gradient` all
+use this order.
+
+**Forces on the charges** (`mm_forces`). For a point charge the force is
+$q_c\,\mathbf{E}^{\rm QM}(\mathbf{r}_c)$, the field of the QM nuclei and density at
+the charge (`electric_field_at_points`). For a smeared charge it is minus the
+site derivative of the embedded energy (`gradient::smeared_site_forces`,
+section "External point charges and fields"), which is not $q_s\mathbf{E}(\mathbf{r}_s)$.
+
+**Full gradient** (`full_gradient`). Given the QM gradient (real QM rows, then
+link rows) and the forces $\mathbf{F}_c$:
+
+1. real QM rows go to their atoms unchanged;
+2. each link row is split $(1-g, g)$ onto $(Q, M)$;
+3. an atom-centred charge adds $-\mathbf{F}_c$ to its atom;
+4. a midpoint charge adds $-\tfrac12\mathbf{F}_c$ to each of $M_1$ and $M_2$,
+   since $\partial\mathbf{m}/\partial\mathbf{R}_{M_1} = \partial\mathbf{m}/\partial\mathbf{R}_{M_2} = \tfrac12\mathbf{1}$.
+
+An MM atom whose charge is zero and that hosts nothing has a zero row. The
+result is $dE/d\mathbf{R}$ of the embedded SCF energy with the partition
+rebuilt at each geometry (`QmmmSystem::with_coordinates` does that rebuild in
+`optimize_qmmm`). Its rows sum to zero for an energy that depends on relative
+positions only. It contains no force-field term and no polarizable term:
+`qmmm_mm_terms`/`full_gradient_with_mm` add the force field and
+`full_gradient_with_polarizable` adds the Thole terms of section "Thole
+polarizable embedding".
+
+Proof: `scripts/qmmm_boundary_sympy.py` (Q1 the link chain rule; Q2 charge and
+dipole bookkeeping of Z1, RC and RCD for 1 to 5 neighbours; Q3
+`full_gradient` against a central difference of a model embedded energy over
+the full structure, for all four schemes, with the swapped link split and an
+unsplit midpoint as negative controls; Q4 translational invariance).
+
