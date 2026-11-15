@@ -1,0 +1,137 @@
+name: book
+
+# The ferric book (book/). On pull requests: run every derivation proof, check
+# the book against the code, build the HTML with mdBook. On v* tags: the same
+# checks in --release mode, then a PDF through pandoc and LaTeX.
+#
+# Builds no Rust. The proof runners import only pytest, sympy and the standard
+# library, so they run with --noconftest (conftest.py would skip every file when
+# the ferric extension is missing). A skipped test, a missing sympy or zero
+# collected tests is a red job, never a green one.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'book/**'
+      - 'crates/*/theory.md'
+      - 'scripts/*_sympy.py'
+      - 'scripts/mp2_variant_identities.py'
+      - 'scripts/book_build.py'
+      - 'testdata/derivations/registry.json'
+      - 'crates/ferric-python/tests/test_derivation_*.py'
+      - 'crates/ferric-python/tests/test_book_build.py'
+      - '.github/workflows/book.yml'
+  push:
+    tags: ['v*']
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: book-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  MDBOOK_VERSION: '0.4.40'
+
+jobs:
+  html:
+    name: book (proofs, check, mdbook)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install proof dependencies
+        run: python3 -m pip install pytest sympy numpy scipy mpmath
+
+      - name: Install mdBook
+        run: |
+          tar_url="https://github.com/rust-lang/mdBook/releases/download/v${MDBOOK_VERSION}/mdbook-v${MDBOOK_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          mkdir -p "$HOME/.local/bin"
+          curl -sSL "$tar_url" | tar -xz -C "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Run the proofs (fast and slow tiers, none skipped)
+        run: |
+          python3 -c "import sympy, numpy, scipy, mpmath"
+          python3 -m pytest --noconftest -p no:cacheprovider -rs \
+            --junitxml="$RUNNER_TEMP/proofs.xml" \
+            crates/ferric-python/tests/test_derivation_scripts.py \
+            crates/ferric-python/tests/test_derivation_registry.py \
+            crates/ferric-python/tests/test_book_build.py
+          python3 - "$RUNNER_TEMP/proofs.xml" <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+          root = ET.parse(sys.argv[1]).getroot()
+          suite = root if root.tag == "testsuite" else root.find("testsuite")
+          tests, skipped = int(suite.get("tests")), int(suite.get("skipped"))
+          print(f"proof tests: {tests}, skipped: {skipped}")
+          if tests == 0 or skipped:
+              sys.exit("proofs were skipped or not collected; a missing dependency is a failure")
+          PY
+
+      - name: Check the book against the code
+        run: |
+          base=()
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base=(--ceiling-base "origin/${{ github.base_ref }}")
+          fi
+          release=()
+          if [ "${{ github.ref_type }}" = "tag" ]; then release=(--release); fi
+          python3 scripts/book_build.py --check "${base[@]}" "${release[@]}"
+
+      - name: Build the HTML
+        run: python3 scripts/book_build.py --build
+
+      - name: Check internal links and anchors
+        run: python3 scripts/check_doc_links.py book/out/html
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: book-html
+          path: book/out/html
+
+  pdf:
+    name: book (PDF, release tags)
+    if: github.ref_type == 'tag'
+    needs: html
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install pandoc and LaTeX
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pandoc texlive-xetex texlive-latex-extra texlive-fonts-recommended fonts-dejavu
+
+      - name: Concatenate (release-strict check first)
+        run: python3 scripts/book_build.py --release --concat "$RUNNER_TEMP/ferric-book.md"
+
+      - name: Build the PDF
+        run: |
+          pandoc "$RUNNER_TEMP/ferric-book.md" \
+            --from markdown+tex_math_dollars --pdf-engine=xelatex \
+            --toc --number-sections -V mainfont="DejaVu Serif" \
+            -V monofont="DejaVu Sans Mono" -V geometry:margin=2.5cm \
+            -M title="ferric: theory and implementation" \
+            -M author="Matthew Goldey, with ferric contributors" \
+            -M date="${GITHUB_REF_NAME}" \
+            -o "ferric-book-${GITHUB_REF_NAME}.pdf"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: book-pdf
+          path: ferric-book-*.pdf

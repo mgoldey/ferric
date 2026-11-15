@@ -228,3 +228,31 @@ Each section file starts with a header comment:
 - The PDF page design: fonts, table style, box style.
 - Where the published HTML lives relative to the user guide, and whether the
   book is public before a first complete release.
+
+## 8. Building locally
+
+Needs Python 3 and, for HTML, `mdbook` 0.4.40 on `PATH`. No Rust build.
+
+| Goal | Command |
+|---|---|
+| Check the book against the code | `python3 scripts/book_build.py --check` |
+| The strict release check (ceiling, registry coverage, no `pending-merge`) | `python3 scripts/book_build.py --check --release` |
+| Regenerate `book/src/SUMMARY.md` after adding or moving a section | `python3 scripts/book_build.py --write-summary` |
+| Build the HTML to `book/out/html` | `python3 scripts/book_build.py --build` |
+| One Markdown file for pandoc | `python3 scripts/book_build.py --concat /tmp/book.md` |
+| Run the proofs and the checker's own tests | `python3 -m pytest --noconftest crates/ferric-python/tests/test_derivation_scripts.py crates/ferric-python/tests/test_book_build.py` |
+
+Conventions the checker enforces:
+
+- Sections are discovered by the glob `book/src/NN-slug/MM-name.md`; nothing lists them.
+  The header comment may follow the `#` title line, as in the sample.
+- `book/src/NN-slug/index.md` (optional) supplies the chapter title.
+- A derivation is pulled in with `<!-- include: crates/x/theory.md#"Heading text" -->`; the
+  build replaces it with the body under that heading.
+- `book/unverified-ceiling.txt` holds the largest allowed number of unverified boxes. Exceeding
+  it is a warning in `--check` and an error in `--release`; CI also fails a pull request that raises
+  the value above its value on the base branch.
+- `book/book.toml` reads the preprocessed tree `book/out/src`, so run `--build`, not bare `mdbook build`.
+
+CI is `.github/workflows/book.yml`. Not yet implemented: the box links to source lines in the HTML,
+the quoted-number check (rule 5), the PLAN.md status-table recount and the `check_doc_style.py` report.

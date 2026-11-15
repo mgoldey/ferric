@@ -1,0 +1,21 @@
+[book]
+title = "ferric: theory and implementation"
+description = "The methods in ferric, their derivations, and the code that runs them"
+authors = ["Matthew Goldey", "ferric contributors"]
+language = "en"
+# The source is the preprocessed tree written by `scripts/book_build.py --build`
+# (includes expanded, math delimiters escaped, footer stamped). Never edit it.
+src = "out/src"
+
+[build]
+build-dir = "out/html"
+create-missing = false
+
+[output.html]
+default-theme = "rust"
+preferred-dark-theme = "navy"
+git-repository-url = "https://github.com/mgoldey/ferric"
+mathjax-support = true
+
+[output.html.search]
+enable = true
