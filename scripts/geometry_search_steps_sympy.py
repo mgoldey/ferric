@@ -243,8 +243,12 @@ def bfgs_guard_checks():
     check(
         "B3 curvature guard: y^T H' y = y.s, guarded update positive definite, "
         "unguarded loses it, no-op above the threshold (claim B3)",
-        quad == 0 and guarded_pd and unguarded_lost and identical
-        and n_neg > 50 and n_pos > 50,
+        quad == 0
+        and guarded_pd
+        and unguarded_lost
+        and identical
+        and n_neg > 50
+        and n_pos > 50,
         f"neg {n_neg} pos {n_pos}",
     )
 
