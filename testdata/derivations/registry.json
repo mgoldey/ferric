@@ -743,9 +743,12 @@
         "crates/ferric-tddft/theory.md#2-tamm-dancoff-approximation",
         "crates/ferric-tddft/theory.md#3-casida-equations",
         "crates/ferric-tddft/theory.md#4-transition-dipoles-and-oscillator-strengths",
+        "crates/ferric-tddft/theory.md#5-functional-gate-and-kernel",
         "crates/ferric-tddft/theory.md#8-range-separated-hybrids",
         "crates/ferric-tddft/theory.md#9-triplets",
-        "crates/ferric-tddft/theory.md#10-unrestricted-uhf--uks-references"
+        "crates/ferric-tddft/theory.md#10-unrestricted-uhf--uks-references",
+        "crates/ferric-tddft/theory.md#11-s²-of-each-root",
+        "crates/ferric-tddft/theory.md#12-matrix-free-davidson-solvers"
       ],
       "scripts": [
         "scripts/tddft_response_sympy.py",

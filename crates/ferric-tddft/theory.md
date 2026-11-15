@@ -7,8 +7,8 @@ for LDA, GGA, global-hybrid, τ-only meta-GGA and range-separated-hybrid
 references. The driver is `run_tddft` (`src/tddft.rs`, `src/unrestricted.rs`);
 the XC kernel block comes from `ferric_dft::lr_kernel` (equations in
 `crates/ferric-dft/theory.md`). §8 derives the range-separated exchange, §9
-the triplet spin combination, §10 the unrestricted problem and §11 the
-⟨S²⟩ of its roots.
+the triplet spin combination, §10 the unrestricted problem, §11 the
+⟨S²⟩ of its roots and §12 the matrix-free Davidson solvers.
 
 ---
 
@@ -114,9 +114,14 @@ $\sum_n\Omega_n(X+Y)_n(X+Y)_n^{\mathsf T} = T\big(\sum_n Z_nZ_n^{\mathsf T}\big)
 
 ## 5. Functional gate and kernel
 
-`ferric_dft::lr_kernel::resolve_singlet_response_xc` maps the functional to
-$c_{\rm HF}$ and a kernel, and refuses functionals whose response would be
-incomplete:
+`run_tddft` resolves the functional through `tddft.rs::resolve_response_xc`,
+which calls `ferric_dft::lr_kernel::resolve_response_xc` for a named
+functional. That maps it to the exchange coefficients
+$(c_{\rm sr}, c_{\rm lr}, \omega)$ (a global hybrid has
+$c_{\rm sr} = c_{\rm lr} = c_{\rm HF}$, $\omega = 0$) and a kernel, and refuses
+functionals whose response would be incomplete. (The other entry point,
+`resolve_singlet_response_xc`, also refuses $\omega \ne 0$; it serves drivers
+that build only full-Coulomb exchange, not `run_tddft`.)
 
 | Functional class | Kernel | Status |
 |---|---|---|
@@ -124,7 +129,12 @@ incomplete:
 | LDA, GGA, global hybrid | `GgaFxcKernel` | accepted |
 | τ-only meta-GGA (SCAN, r2SCAN, TPSS) | `MggaFxcKernel` | accepted |
 | range-separated hybrid (`c_sr`, `c_lr`, ω) | `GgaFxcKernel` | accepted; exchange of §8 |
+| meta-GGA with no libxc second derivative | none | refused |
 | VV10-carrying functionals | none | refused (nonlocal response not in the kernel) |
+
+A `c_hf` override is refused on an HF reference unless it is 1, and on a
+range-separated functional at any value (it would not say which range it
+replaces); on a global functional it replaces $c_{\rm HF}$.
 
 The kernel is evaluated on `TddftConfig.grid`, the same grid as the reference
 SCF. For meta-GGAs the default is 150 × 434 with NWChem radial pruning
@@ -171,7 +181,9 @@ an error.
   singlet and triplet blocks; CIS by brute force over determinants
   (Jordan-Wigner) against $\mathbf A$, closed and open shell; the Casida roots and
   $X+Y$ against the full non-Hermitian problem; the sum rule of §4; the
-  unrestricted blocks of §10 and their closed-shell limit. With
+  unrestricted blocks of §10 and their closed-shell limit; the ⟨S²⟩ formula
+  of §11 against a Fock-space $\lVert S_+\Psi\rVert^2$ and the Casida $X$
+  extraction against the full eigenvector. With
   `DERIV_CROSSCHECK=1` and PySCF importable, H$_2$O/STO-3G RHF (TDA, TDHF, singlet and triplet) and
   H$_2$O$^+$/STO-3G UHF (TDA, TDHF) energies and oscillator strengths.
 - Refusals: `tests/refusals.rs`; memory plan: `tests/memory_budget.rs`.
@@ -465,3 +477,75 @@ $X$ into a full determinant vector over the UHF orbitals and takes
 $\langle S^2\rangle$ with `pyscf.fci.spin_op.spin_square` (from the 2-RDMs,
 an independent construction); it asserts agreement to $10^{-10}$ on every
 root. The Rust test compares ferric's values to the recorded ones.
+`scripts/tddft_response_sympy.py` (claims s2ref, s2, casidax) transcribes
+`SpinOverlap::reference`, `SpinOverlap::excited` and `casida_x` and checks
+them against $M^2 + M + \lVert S_+\Psi\rVert^2$ evaluated by Jordan-Wigner
+on the determinant space, for a general $O$ (α and β MOs spanning different
+AO subspaces, so $P \ne 1$) and an orthogonal one.
+
+---
+
+## 12. Matrix-free Davidson solvers
+
+`src/davidson.rs` solves the same problems as `solve_tda` and
+`solve_casida` with only products by $\mathbf A$ (TDA) or by
+$\mathbf A\pm\mathbf B$ (Casida), supplied by `matvec.rs` (closed shell) or
+the unrestricted operator. The preconditioner is the diagonal
+$D_{ia} = \varepsilon_a - \varepsilon_i$.
+
+**Solver choice.** `TddftSolver::Auto` takes the dense path when
+$d \le 200$ (`AUTO_DENSE_MAX_DIM`) or $4 n_{\rm roots} \ge d$, and the
+Davidson path otherwise; `dense` and `davidson` force one.
+
+**TDA.** Rayleigh-Ritz on an orthonormal subspace $V$,
+$H = V^{\mathsf T}\mathbf A V$, gives Ritz pairs $(\theta, x = Vy)$ with
+residual $r = \mathbf A x - \theta x$. The correction is Olsen's,
+
+$$t = P r - \epsilon P x,\qquad P = (\theta - D)^{-1},\qquad
+\epsilon = \frac{x^{\mathsf T}Pr}{x^{\mathsf T}Px},$$
+
+so $x^{\mathsf T}t = 0$ (`diagonal_correction`). The plain $Pr$ stalls on a
+root whose eigenvector lies on a block of equal orbital differences equal to
+$\theta$, where $Pr \approx -x$. $|\theta - D|$ is floored at
+`PRECOND_FLOOR`.
+
+**Casida.** One subspace $V$ carries both $X+Y$ and $X-Y$. With
+$M_\pm = V^{\mathsf T}(\mathbf A\pm\mathbf B)V$, the Galerkin conditions
+$M_+u = \Omega v$, $M_-v = \Omega u$ give $M_-M_+u = \Omega^2u$. With
+$L = M_-^{1/2}$ and $u = Lz$,
+
+$$L M_+ L\, z = \Omega^2 z,$$
+
+the subspace image of the dense $T(\mathbf A+\mathbf B)T$ of §3. For unit
+$z$, $u = \Omega^{-1/2}Lz$ and $v = M_+u/\Omega$ satisfy
+$u^{\mathsf T}v = z^{\mathsf T}LM_+Lz/\Omega^2 = 1$, the normalization
+$(X+Y)\cdot(X-Y) = 1$ of §3 (`casida_ritz`). A non-positive eigenvalue of
+$M_-$ or a negative $\Omega^2$ is an RPA instability and an error, as on the
+dense path. The residuals are
+
+$$r_+ = (\mathbf A+\mathbf B)(X+Y) - \Omega(X-Y),\qquad
+r_- = (\mathbf A-\mathbf B)(X-Y) - \Omega(X+Y),$$
+
+and the reported residual is $\sqrt{(\lVert r_+\rVert^2 + \lVert r_-\rVert^2)/2}$:
+with $r_X = (r_+ + r_-)/2$ and $r_Y = (r_+ - r_-)/2$ the residual of the
+full problem, $\lVert r_X\rVert^2 + \lVert r_Y\rVert^2 = (\lVert r_+\rVert^2 + \lVert r_-\rVert^2)/2$.
+The corrections solve the per-element model
+$\begin{pmatrix}D & -\Omega\\ -\Omega & D\end{pmatrix}\delta = -r$ with
+the Olsen projection against $q = (X-Y;\,X+Y)$ (`casida_correction`), and
+both $\delta_+$ and $\delta_-$ join the subspace.
+
+**Guesses and stopping.** The guesses are unit vectors on the lowest
+$\max(2n_{\rm roots}, n_{\rm roots}+8)$ diagonal elements, extended over any
+element tied with the last within $10^{-8}$ Ha so a degenerate pair is never
+split, each given a small deterministic dense part so the subspace reaches
+every point-group irrep (`guess_indices`, `guess_vectors`). The targets are
+the lowest $n_{\rm roots}$ Ritz values above $10^{-10}$ Ha, the dense path's
+cut. Defaults: `conv_tol` $= 10^{-6}$ on the residual norm, `max_iter`
+$= 100$, a subspace of $\max(n_{\rm guess} + 10n_{\rm roots}, 50)$ columns
+before collapse. An unconverged root after `max_iter` is an error.
+
+**Check.** `tda_matches_dense_eigh`, `casida_matches_dense_solve`,
+`root_in_a_block_no_guess_touches_is_found`, `unconverged_root_is_an_error`
+and `non_positive_a_minus_b_is_an_rpa_instability` in `src/davidson.rs`;
+the RSH, triplet and open-shell validation tests run both solvers against
+PySCF.

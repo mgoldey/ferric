@@ -726,6 +726,21 @@ CASES = [
             ("xpy = t_half @ z / np.sqrt(w)", "xpy = t_half @ z / w", "[FAIL] B4"),
             ("tdip = np.sqrt(2.0) * np.einsum", "tdip = np.einsum", "[FAIL] B2"),
             ("a[:da, da:] = cross", "a[:da, da:] = 0.0 * cross", "[FAIL] B5"),
+            (
+                "cross = 2.0 * np.trace(xa.T @ o[:na, :nb]",
+                "cross = 1.0 * np.trace(xa.T @ o[:na, :nb]",
+                "[FAIL] D2",
+            ),
+            (
+                "return s2_m_terms(na, nb) + beta_occ - np.sum(o[:na, :nb] ** 2)",
+                "return s2_m_terms(na, nb) + beta_occ",
+                "[FAIL] D1",
+            ),
+            (
+                "return 0.5 * (xpy + apb_xpy / omega)",
+                "return 0.5 * (xpy - apb_xpy / omega)",
+                "[FAIL] D4",
+            ),
         ],
     ),
     (

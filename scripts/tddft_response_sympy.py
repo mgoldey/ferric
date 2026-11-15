@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Proofs: ferric-tddft's spin-adapted response matrices, Casida reduction and oscillator strengths.
 
-Derivation: crates/ferric-tddft/theory.md (sections 1-4, 8-10). The code
+Derivation: crates/ferric-tddft/theory.md (sections 1-4, 8-11). The code
 transcribed here (index ia = i * nvir + a, chemist integrals, real orbitals):
 
   * tddft.rs build_a_matrix / build_b_matrix with coulomb_factor (c_J = 2
@@ -56,6 +56,17 @@ Checked:
           body term making both Fock matrices diagonal) equals A elementwise;
           for C_a = C_b the unrestricted roots are the restricted singlet union
           triplet and the transition moment reduces to the sqrt2 form.
+  D   <S^2> of an unrestricted root (theory.md section 11), against an
+      independent Fock-space construction <Psi|S^2|Psi> = M^2 + M +
+      |S_+ Psi|^2 with S_+ = sum O_pq a+_{p alpha} a_{q beta} and Jordan-Wigner
+      signs, 4 spatial orbitals per spin, (n_alpha, n_beta) = (2,1), (3,1),
+      (2,2), a general O = C_a^T S C_b (MOs spanning different AO subspaces, so
+      O^T O != 1) and an orthogonal O:
+      D1  SpinOverlap::reference = the brute force for Phi (claim s2ref).
+      D2  SpinOverlap::excited = the brute force for 24 random X (claim s2).
+      D3  O = 1: X_a = X_b gives 0, X_a = -X_b gives 2 (claim s2).
+      D4  casida_x = the X block of the eigenvector of [[A, B], [-B, -A]]
+          normalized to X.X - Y.Y = 1 (claim casidax).
   C   PySCF, run only with DERIV_CROSSCHECK=1 (skipped with a message when
       it is not importable): H2O/STO-3G
       RHF TDA and TDHF singlets and triplets, and H2O+/STO-3G UHF TDA and
@@ -70,6 +81,9 @@ Mutations (the runner substitutes the code line once; each exits 1):
   solve_casida scales X+Y by 1/W instead of W^{-1/2} -> B4 fails
   oscillator_strengths drops the singlet sqrt2 -> B2 fails
   u_dense_matrices drops the cross-spin Coulomb block of A -> B5 fails
+  SpinOverlap::excited drops the 2 on the cross-spin term -> D2 fails
+  SpinOverlap::reference drops the occupied-occupied overlap term -> D1 fails
+  casida_x uses (X+Y) - (A+B)(X+Y)/W (the Y block) -> D4 fails
 
 Run: python3 scripts/tddft_response_sympy.py
 """
@@ -868,10 +882,181 @@ def part_c():
         )
 
 
+# ================================================================ D: <S^2>
+
+
+def s2_m_terms(na, nb):
+    m = 0.5 * (na - nb)
+    return m * m + m
+
+
+def s2_reference(o, na, nb):
+    """unrestricted.rs SpinOverlap::reference."""
+    beta_occ = np.sum(o[:, :nb] ** 2)
+    return s2_m_terms(na, nb) + beta_occ - np.sum(o[:na, :nb] ** 2)
+
+
+def s2_excited(o, na, nb, x):
+    """unrestricted.rs SpinOverlap::excited (x = [X_alpha | X_beta], ia = i*nvir + a)."""
+    nva, nvb = o.shape[0] - na, o.shape[1] - nb
+    norm2 = x @ x
+    xa = x[: na * nva].reshape(na, nva) / np.sqrt(norm2)
+    xb = x[na * nva :].reshape(nb, nvb) / np.sqrt(norm2)
+    p = o.T @ o
+    q = o[:, :nb] @ o[:, :nb].T
+    r = o[:na, :].T @ o[:na, :]
+    wa, wb = np.sum(xa * xa), np.sum(xb * xb)
+    beta_occ = np.sum(o[:, :nb] ** 2)
+
+    def ph(xs, m, nocc):
+        return np.trace(xs @ m[nocc:, nocc:] @ xs.T) - np.trace(
+            xs.T @ m[:nocc, :nocc] @ xs
+        )
+
+    one_body = (wa + wb) * beta_occ + ph(xb, p, nb)
+    two_alpha = wa * np.trace(q[:na, :na]) + ph(xa, q, na)
+    two_beta = wb * np.trace(r[:nb, :nb]) + ph(xb, r, nb)
+    cross = 2.0 * np.trace(xa.T @ o[:na, :nb] @ xb @ o[na:, nb:].T)
+    return s2_m_terms(na, nb) + one_body - two_alpha - two_beta - cross
+
+
+def casida_x(xpy, apb_xpy, omega):
+    """unrestricted.rs casida_x: X = ((X+Y) + (A+B)(X+Y)/W) / 2."""
+    return 0.5 * (xpy + apb_xpy / omega)
+
+
+def s2_brute(o, na, nb, x):
+    """<Psi|S^2|Psi> = M^2 + M + |S_+ Psi|^2 in the Fock space (Jordan-Wigner).
+
+    Spin orbitals: alpha p -> p, beta q -> n + q. S_+ = sum O_pq a+_{p alpha} a_{q beta}.
+    |Psi> = sum X_{ia sigma} a+_{a sigma} a_{i sigma} |Phi>, X normalized.
+    """
+    n = o.shape[0]
+    phi = sum(1 << k for k in range(na)) + sum(1 << (n + k) for k in range(nb))
+    nva, nvb = n - na, n - nb
+    if x.size == 0:
+        psi = {phi: 1.0}
+    else:
+        x = x / np.sqrt(x @ x)
+        psi = {}
+        for i in range(na):
+            for a in range(nva):
+                sg, d = apply_excitation(phi, na + a, i)
+                psi[d] = psi.get(d, 0.0) + sg * x[i * nva + a]
+        for i in range(nb):
+            for a in range(nvb):
+                sg, d = apply_excitation(phi, n + nb + a, n + i)
+                psi[d] = psi.get(d, 0.0) + sg * x[na * nva + i * nvb + a]
+    sp_psi = {}
+    for det, cf in psi.items():
+        for pp in range(n):
+            for qq in range(n):
+                res = apply_excitation(det, pp, n + qq)
+                if res:
+                    sp_psi[res[1]] = sp_psi.get(res[1], 0.0) + cf * res[0] * o[pp, qq]
+    return s2_m_terms(na, nb) + sum(v * v for v in sp_psi.values())
+
+
+def part_d():
+    rng = np.random.default_rng(20261115)
+    n, nao = 4, 6
+    s_ao = rng.standard_normal((nao, nao))
+    s_ao = s_ao @ s_ao.T + nao * np.eye(nao)
+    s_ao /= np.sqrt(np.outer(np.diag(s_ao), np.diag(s_ao)))
+
+    def s_orthonormal(c):
+        w, v = np.linalg.eigh(c.T @ s_ao @ c)
+        return c @ v @ np.diag(w**-0.5) @ v.T
+
+    # alpha and beta MOs span different 4-dimensional subspaces of the 6 AOs,
+    # so O = C_a^T S C_b is not orthogonal and P = O^T O != 1.
+    ca = s_orthonormal(rng.standard_normal((nao, n)))
+    cb = s_orthonormal(rng.standard_normal((nao, n)))
+    o_gen = ca.T @ s_ao @ cb
+    q_a, _ = np.linalg.qr(rng.standard_normal((n, n)))
+    q_b, _ = np.linalg.qr(rng.standard_normal((n, n)))
+    o_orth = q_a.T @ q_b
+    worst_ref = worst_exc = 0.0
+    for o in (o_gen, o_orth):
+        for na, nb in ((2, 1), (3, 1), (2, 2)):
+            dim = na * (n - na) + nb * (n - nb)
+            worst_ref = max(
+                worst_ref,
+                abs(s2_reference(o, na, nb) - s2_brute(o, na, nb, np.zeros(0))),
+            )
+            for _ in range(4):
+                x = rng.standard_normal(dim)
+                worst_exc = max(
+                    worst_exc, abs(s2_excited(o, na, nb, x) - s2_brute(o, na, nb, x))
+                )
+    off_orth = maxabs(o_gen.T @ o_gen - np.eye(n))
+    check(
+        "D1 <S^2> of the reference: SpinOverlap::reference = Fock-space |S+ Phi|^2 "
+        "(claim s2ref)",
+        worst_ref < 1e-12,
+        f"max {worst_ref:.1e}; |O^T O - 1| = {off_orth:.2f}",
+    )
+    check(
+        "D2 <S^2> of a single-excitation state: SpinOverlap::excited = Fock-space "
+        "M^2 + M + |S+ Psi|^2, general and orthogonal O (claim s2)",
+        worst_exc < 1e-12,
+        f"max {worst_exc:.1e} over 24 random X",
+    )
+    # Closed-shell limit: O = 1, X_a = +-X_b gives 0 / 2.
+    eye = np.eye(n)
+    xs = rng.standard_normal(2 * (n - 2))
+    sing = s2_excited(eye, 2, 2, np.concatenate([xs, xs]))
+    trip = s2_excited(eye, 2, 2, np.concatenate([xs, -xs]))
+    check(
+        "D3 closed shell, O = 1: X_a = X_b gives 0, X_a = -X_b gives 2 (claim s2)",
+        abs(sing) < 1e-12 and abs(trip - 2.0) < 1e-12,
+        f"{sing:.1e}, {trip:.12f}",
+    )
+    # casida_x: the X block of the full eigenvector, normalized X.X - Y.Y = 1.
+    d = 5
+    a_m = rng.standard_normal((d, d))
+    a_m = a_m @ a_m.T + 4.0 * d * np.eye(d)
+    b_m = 0.3 * rng.standard_normal((d, d))
+    b_m = 0.5 * (b_m + b_m.T)
+    full = np.block([[a_m, b_m], [-b_m, -a_m]])
+    w_all, v_all = np.linalg.eig(full)
+    worst_x = 0.0
+    for k in np.argsort(w_all.real):
+        if w_all[k].real <= 0:
+            continue
+        v = v_all[:, k].real
+        xv, yv = v[:d], v[d:]
+        scale = np.sqrt(xv @ xv - yv @ yv)
+        xv, yv = xv / scale, yv / scale
+        xpy = xv + yv
+        got = casida_x(xpy, (a_m + b_m) @ xpy, w_all[k].real)
+        worst_x = max(worst_x, maxabs(got - xv))
+    check(
+        "D4 casida_x: ((X+Y) + (A+B)(X+Y)/W)/2 = the X block of the RPA eigenvector "
+        "(claim casidax)",
+        worst_x < 1e-10,
+        f"max {worst_x:.1e}",
+    )
+    # Control: dropping the cross term breaks D2 for a mixed-spin X.
+    o = o_gen
+    x = rng.standard_normal(2 * 2 + 1 * 3)
+    nva, nvb = 2, 3
+    xa = x[:4].reshape(2, nva) / np.sqrt(x @ x)
+    xb = x[4:].reshape(1, nvb) / np.sqrt(x @ x)
+    cross = 2.0 * np.trace(xa.T @ o[:2, :1] @ xb @ o[2:, 1:].T)
+    ctrl = abs(s2_excited(o, 2, 1, x) + cross - s2_brute(o, 2, 1, x))
+    check(
+        "D control: omitting the 2 tr(Xa^T O_oo Xb O_vv^T) term is detected",
+        ctrl > 1e-3,
+        f"error {ctrl:.1e}",
+    )
+
+
 def main():
     part_a()
     part_b()
     part_c()
+    part_d()
     print(f"{len(FAILS)} failed: {FAILS}" if FAILS else "all identities hold")
     return 1 if FAILS else 0
 
