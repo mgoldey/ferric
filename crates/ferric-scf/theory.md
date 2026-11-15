@@ -6,12 +6,12 @@ This module implements the Restricted Hartree-Fock (RHF) method and associated o
 The closed-shell density carries the occupation 2,
 $D_{\lambda\sigma} = 2\sum_i C_{\lambda i} C_{\sigma i}$, as in the code.
 The RHF energy is
-$$E_{HF} = 2 \sum_i H_{ii} + \sum_{ij} [2(ii|jj) - (ij|ij)] + V_{nn}
-= \tfrac12\,\mathrm{tr}[D(H + F)] + V_{nn},$$
-where $H$ is the core Hamiltonian, and the Fock matrix in the AO basis is
-$$F_{\mu\nu} = H_{\mu\nu} + \sum_{\lambda\sigma} D_{\lambda\sigma}
+$$E_{HF} = 2 \sum_i h_{ii} + \sum_{ij} [2(ii|jj) - (ij|ij)] + E_{nn}
+= \tfrac12\,\mathrm{tr}[D(h + F)] + E_{nn},$$
+where $h$ is the core Hamiltonian, and the Fock matrix in the AO basis is
+$$F_{\mu\nu} = h_{\mu\nu} + \sum_{\lambda\sigma} D_{\lambda\sigma}
 \left[(\mu\nu|\lambda\sigma) - \tfrac12(\mu\lambda|\nu\sigma)\right],$$
-i.e. $F = H + J(D) - \tfrac12 K(D)$. The next section derives these and the
+i.e. $F = h + J(D) - \tfrac12 K(D)$. The next section derives these and the
 open-shell forms.
 
 ## Hartree-Fock energy functionals (RHF, UHF, ROHF)
@@ -135,7 +135,7 @@ density with $\sum \Gamma (\mu\nu|\lambda\sigma) = E_{2e}$:
 | reference | $\Gamma_{\mu\nu\lambda\sigma}$ (`gamma`, `gamma_uhf`) | $W$ |
 |---|---|---|
 | RHF | $\tfrac12 D_{\mu\nu}D_{\lambda\sigma} - \tfrac14 D_{\mu\lambda}D_{\nu\sigma}$ | $2\,C_o\,\mathrm{diag}(\varepsilon_o)\,C_o^{\mathsf T}$ (`build_energy_weighted_density`) |
-| UHF | $\tfrac12 D_{\mu\nu}D_{\lambda\sigma} - \tfrac12\sum_\sigma D^\sigma_{\mu\lambda}D^\sigma_{\nu\sigma}$ | $\sum_\sigma C_{\sigma}\,\mathrm{diag}(f_\sigma \varepsilon_\sigma)\,C_\sigma^{\mathsf T}$ (`build_energy_weighted_density_uhf`) |
+| UHF | $\tfrac12 D_{\mu\nu}D_{\lambda\sigma} - \tfrac12\sum_\tau D^\tau_{\mu\lambda}D^\tau_{\nu\sigma}$ | $\sum_\sigma C_{\sigma}\,\mathrm{diag}(f_\sigma \varepsilon_\sigma)\,C_\sigma^{\mathsf T}$ (`build_energy_weighted_density_uhf`) |
 | ROHF | UHF form at the ROHF $D_\alpha, D_\beta$ | $\mathrm{sym}(D_\alpha F_\alpha D_\alpha + D_\alpha F_\beta D_\beta)$ (`rohf_energy_weighted_density`) |
 
 For RHF and UHF the canonical orbitals diagonalize the multiplier, so $W$ is
