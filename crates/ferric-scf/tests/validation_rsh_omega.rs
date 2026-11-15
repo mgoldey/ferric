@@ -40,7 +40,7 @@
 //!
 //! | piece | ferric (this file's config) | PySCF (generator) |
 //! |---|---|---|
-//! | J, cation | exact (uhf.rs forces `j_aux_eff = None` for ω > 0) | exact 4-index |
+//! | J, cation | exact (`df_j_aux = Some("")`) | exact 4-index |
 //! | J, neutral | exact: `df_j_aux = Some("")` (the RKS default would be RI-J) | exact 4-index |
 //! | K, both | c_SR K^DF[erfc(ω)] + c_LR K^DF[erf(ω)], jkfit aux | same, attenuated metric |
 //! | grid | (75,110) Becke + Becke radii; VV10 (50,50) | same |

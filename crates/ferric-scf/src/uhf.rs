@@ -847,6 +847,15 @@ fn solve_uhf_impl(
     // into hcore once, byte-identical to plain hcore for all-electron bases),
     // V_nn(+external), COSMO/PCM contexts, resolved memory budget, RSH
     // fitters. One construction serving all six SCF variants (crate::driver).
+    // Opt-in per-phase timing (`FERRIC_TIMING=1`; inert otherwise), with the
+    // RHF table's phase names (see `rhf::solve_rhf_impl` for the placement
+    // rules). On the open-shell path `jk_build` also holds the per-spin
+    // exchange fold `F_σ −= c·K_σ` (the K builds sit inside that assembly).
+    // Untimed: the Newton/TRAH steps and the converged-exit extras.
+    let mut phases = ferric_core::timing::PhaseAccumulator::new().report_on_drop(
+        crate::rhf::phase_table_title_for(Spin::Unrestricted, config, inj_xc.is_some()),
+    );
+    let prepare_t = phases.begin("setup:prepare");
     let crate::driver::ScfEnv {
         s,
         h,
@@ -866,6 +875,7 @@ fn solve_uhf_impl(
         pre_env,
         crate::driver::xc_plan(xc_contrib.as_deref()),
     )?;
+    phases.stop(prepare_t);
 
     // The ONE SR/LR exchange response every Hessian matvec in this solve uses —
     // Newton steps, TRAH steps and the post-SCF stability eigensolve alike. It
@@ -908,12 +918,14 @@ fn solve_uhf_impl(
     // Canonical orthogonalizer X (n × m): drops eigenvectors of S below
     // LINDEP_THRESH to handle near-linear-dependent basis sets (Na clusters in
     // aug-cc-pVDZ). m == n for well-conditioned S. See crate::rhf for details.
+    let orth_t = phases.begin("setup:orthogonalizer");
     let x = crate::rhf::canonical_orthogonalizer(&s)?;
     // Per-spin Fock diagonalizers: global by default, per-irrep under
     // point-group blocking (each spin has its own occupation request).
     let plain = crate::symmetric::PlainDiag::Rect(&x);
     let diag_a = crate::symmetric::FockDiag::new(sym.map(|p| p.0), &s, plain)?;
     let diag_b = crate::symmetric::FockDiag::new(sym.map(|p| p.1), &s, plain)?;
+    phases.stop(orth_t);
 
     // Initial guess: caller-supplied MOs if provided, else the configured
     // density guess (MINAO/SAD by default), else hcore.
@@ -948,6 +960,7 @@ fn solve_uhf_impl(
     // 0.79 eV high and UNSTABLE — on exactly the state PySCF's OWN default
     // guess finds before it follows its own instability. That residue is what
     // `config.scf_stability_descent` exists for; see `stability_descent` below.
+    let guess_t = phases.begin("setup:guess");
     let (mut c_a, mut c_b) = if let Some((ca0, cb0)) = initial_mos {
         if ca0.dim() != (n, n) || cb0.dim() != (n, n) {
             return Err(FerricError::General(format!(
@@ -987,6 +1000,7 @@ fn solve_uhf_impl(
 
     let mut d_a = density(&c_a, nocc_a);
     let mut d_b = density(&c_b, nocc_b);
+    phases.stop(guess_t);
 
     // ── Trust-region augmented-Hessian state (opt-in; None = TRAH disabled) ──
     // See the RHF counterpart in `rhf.rs` and `crate::trah::TrahState` for why
@@ -1069,36 +1083,29 @@ fn solve_uhf_impl(
     //   * Plain hybrid / pure HF (ω = 0): K_σ = c_K · K[D_σ] via DirectK, or DfK
     //     when config.df_k_aux is set (density-fitted exchange).
     //   * Pure DFT (c_K = 0): K skipped
-    // J (ω = 0 path only — RSH doesn't touch J here) is DirectJ, or DfJ when
-    // config.df_j_aux is set (density-fitted Coulomb).
+    // J is DirectJ, or DfJ when config.df_j_aux names an aux basis (any ω).
     // Builders hoisted out of the loop: each lazily builds a per-thread libint2
     // EnginePool on first use (ctors serialized behind a global mutex), so a
     // loop-local builder would pay that construction every iteration.
     let need_k = c_k != 0.0 || k_mix.omega > 0.0;
     let coulomb_op = bounds.op;
-    // Effective aux names under the existing gates (ω=0 for both; DF-K
-    // additionally needs `need_k`) — `None` reproduces the prior "skip this
-    // builder entirely" branch exactly. `build_df_jk` shares one
-    // `PreparedBasis` when both names are set and identical (see its doc);
-    // it independently gates each output on its own `Option`, so this is
-    // byte-identical to the previous two-independent-`if` structure.
-    let j_aux_eff = if k_mix.omega == 0.0 {
-        config.df_j_aux.as_deref()
-    } else {
-        None
-    };
-    // RIJCOSX: `k_builder = "cosx"` replaces the ω = 0 DF-K (an explicitly
-    // named `df_k_aux` alongside it is refused); DF-J is unaffected.
-    let cosx_k = crate::fock_assembly::cosx_replaces_df_k(
-        config.k_builder.as_deref(),
-        config.df_k_aux.as_deref(),
-        need_k && k_mix.omega == 0.0,
+    // The J/K route: one decision for all three solvers
+    // (`fock_assembly::resolve_jk_route`, whose module doc tabulates every
+    // case). The open-shell solvers fit only over a NAMED aux basis (no auto
+    // default), J fits for a range-separated hybrid exactly as for any
+    // other functional, and with `k_builder = "cosx"` COSX replaces the
+    // ω = 0 DF-K (a named `df_k_aux` alongside it is refused).
+    let jk_route = crate::fock_assembly::resolve_jk_route(
+        config,
+        crate::fock_assembly::JkExchange {
+            functional: xc_contrib.is_some(),
+            k_mix,
+        },
+        Spin::Unrestricted,
     )?;
-    let k_aux_eff = if need_k && k_mix.omega == 0.0 && !cosx_k {
-        config.df_k_aux.as_deref()
-    } else {
-        None
-    };
+    let j_aux_eff = jk_route.j_aux.as_deref();
+    let k_aux_eff = jk_route.k_aux.as_deref();
+    let df_fitters_t = phases.begin("setup:df_fitters");
     crate::raw_handoff::clear_slot(config);
     let (mut df_j, mut df_k) = crate::raw_handoff::with_metric_capture(config, || {
         crate::fock_assembly::build_df_jk(
@@ -1117,36 +1124,27 @@ fn solve_uhf_impl(
             crate::df_k::RiKPrecision::resolve(config.ri_k_precision, prep.nbasis()),
         )
     })?;
+    phases.stop(df_fitters_t);
     // Record the builders that produced the energy (same effective names as
     // `build_df_jk` above and `driver::prepare`'s RSH pair) so the analytic
     // gradient differentiates THIS energy. `None` when nothing is fitted.
-    let df_jk_route = crate::result::DfJkRoute::from_scf(
-        j_aux_eff,
-        k_aux_eff,
-        (k_mix.omega > 0.0).then(|| {
-            (
-                config
-                    .df_k_aux
-                    .as_deref()
-                    .unwrap_or(crate::fock_assembly::DEFAULT_JK_AUX),
-                k_mix.omega,
-            )
-        }),
-        coulomb_op,
-        ooc_budget,
-        df_j.as_ref()
-            .map_or(crate::df_j::RiJPrecision::F64, |j| j.precision()),
-    )
-    .map(|r| {
-        // The precision the K tensor(s) were ACTUALLY stored at: the ω = 0
-        // DfK, else the SR fitter of a range-separated pair.
-        let stored = df_k
-            .as_ref()
-            .map(|k| k.precision())
-            .or_else(|| dfk_sr.as_ref().map(|k| k.borrow().precision()))
-            .unwrap_or(crate::df_k::RiKPrecision::F64);
-        r.with_ri_k_precision(stored)
-    });
+    let df_jk_route = jk_route
+        .record(
+            coulomb_op,
+            ooc_budget,
+            df_j.as_ref()
+                .map_or(crate::df_j::RiJPrecision::F64, |j| j.precision()),
+        )
+        .map(|r| {
+            // The precision the K tensor(s) were ACTUALLY stored at: the ω = 0
+            // DfK, else the SR fitter of a range-separated pair.
+            let stored = df_k
+                .as_ref()
+                .map(|k| k.precision())
+                .or_else(|| dfk_sr.as_ref().map(|k| k.borrow().precision()))
+                .unwrap_or(crate::df_k::RiKPrecision::F64);
+            r.with_ri_k_precision(stored)
+        });
     // ── Combined open-shell direct J+K (single quartet pass) ────────────────
     // When BOTH J and K come from the direct (non-DF) path with an ordinary
     // ω = 0 kernel, one `DirectJK::build_uhf` pass produces J[D_α+D_β], K[D_α]
@@ -1183,11 +1181,7 @@ fn solve_uhf_impl(
     let pluggable_k_kind = crate::fock_assembly::resolve_k_builder(
         config.k_builder.as_deref(),
         df_j.is_some(),
-        crate::fock_assembly::open_shell_df_k_active(
-            df_k.is_some(),
-            config.df_k_aux.as_deref(),
-            k_mix.omega,
-        ),
+        jk_route.k_df_routed,
         df_k.is_some(),
         need_k,
         k_mix.omega,
@@ -1353,6 +1347,7 @@ fn solve_uhf_impl(
             k_b_buf.fill(0.0);
         }
 
+        let jk_t = phases.begin("jk_build");
         let jk_scope = jk_ladder.begin_build(&[&d_a, &d_b]);
         // Combined single-pass J + K_α + K_β when enabled; otherwise J alone
         // here (DF-J or DirectJ) and K below, as before. An injected
@@ -1472,10 +1467,14 @@ fn solve_uhf_impl(
             f_b.scaled_add(-c_k, &k_b_buf);
         }
         drop(jk_scope);
+        phases.stop(jk_t);
 
         // Electronic energy BEFORE adding V_xc (V_xc is one-body in F_σ but
         // E_xc is its own integral).
+        let energy_t = phases.begin("energy_trace");
         let e_elec_no_xc: f64 = 0.5 * ((&(&h + &f_a) * &d_a).sum() + (&(&h + &f_b) * &d_b).sum());
+        phases.stop(energy_t);
+        let xc_t = phases.begin("xc_digest");
         let e_xc = if let Some(x) = xc_contrib.as_ref() {
             // Occupied-factored density pass per spin (D_σ = C_σ·C_σᵀ); the XC
             // side re-checks each pair and falls back to the dense D_σ, which
@@ -1505,6 +1504,7 @@ fn solve_uhf_impl(
         } else {
             0.0
         };
+        phases.stop(xc_t);
         // Caller-supplied term (`solve_uhf_with_hook`): V_σ into F_σ, its
         // energy outside the trace (the E_xc convention). `None` adds nothing.
         let e_hook = crate::fock::apply_spin_fock_hook(
@@ -1529,6 +1529,7 @@ fn solve_uhf_impl(
         // identically to both spin Focks. Its energy is added directly to
         // `energy`, not via the e_elec_no_xc trace (matches PySCF's
         // e_solvent-added-on-top convention).
+        let solvent_t = phases.begin("solvent_terms");
         let (e_cosmo, e_pcm, e_pol, iter_induced_dipoles) = crate::driver::solvent_terms(
             mol,
             prep,
@@ -1540,11 +1541,13 @@ fn solve_uhf_impl(
             &mut [&mut f_a, &mut f_b],
         )?;
         last_induced_dipoles = iter_induced_dipoles;
+        phases.stop(solvent_t);
 
         let energy = e_elec_no_xc + e_xc + e_hook + e_cosmo + e_pcm + e_pol + vnn;
 
         // DIIS errors per spin: F_σ D_σ S − S D_σ F_σ. Serial section (outside
         // any rayon region): runs at the serial BLAS thread count.
+        let commutator_t = phases.begin("diis_commutator");
         let (err_a, err_b) = ferric_integrals::blas_threads::with_blas_threads(
             ferric_integrals::blas_threads::opt_in_blas_threads(),
             || {
@@ -1555,6 +1558,7 @@ fn solve_uhf_impl(
             },
         );
 
+        phases.stop(commutator_t);
         let sig = mon.signals(energy);
         let de = sig.de;
         let err_max_a = err_a.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
@@ -2211,7 +2215,9 @@ fn solve_uhf_impl(
 
         // Coupled DIIS extrapolation: one set of coefficients applied to
         // both spin Fock histories.
+        let extrapolate_t = phases.begin("diis_extrapolate");
         let (mut f_a_new, mut f_b_new) = diis.step_pair(&f_a, &f_b, &err_a, &err_b);
+        phases.stop(extrapolate_t);
         // Degenerate-flip pin (`FlipPin`). `None` unless a flip engaged it.
         let flip_pin = exit_gate.take_pin();
         let pin_now = flip_pin.is_some_and(|p| {
@@ -2240,8 +2246,10 @@ fn solve_uhf_impl(
                 f_b_new += &shift_b;
             }
         }
+        let diagonalize_t = phases.begin("diagonalize");
         let (mut eps_a_new, mut c_a_new) = diag_a.run(&f_a_new)?;
         let (mut eps_b_new, mut c_b_new) = diag_b.run(&f_b_new)?;
+        phases.stop(diagonalize_t);
 
         // Degenerate-flip pin: hold the occupied set by maximum overlap, from
         // the current occupation (`keep_current`) or from the one this aufbau

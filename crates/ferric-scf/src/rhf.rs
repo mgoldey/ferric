@@ -1967,13 +1967,26 @@ fn solve_rhf_routed(
 /// guess's free-atom SCFs, see `runlog::in_sub_solve`). Nested tables are
 /// retitled, never suppressed, so none disappears.
 fn phase_table_title(config: &RhfConfig, injected_xc: bool) -> &'static str {
+    phase_table_title_for(Spin::Restricted, config, injected_xc)
+}
+
+/// The phase-table title of a `spin` solve: the solver label (`RHF` ..
+/// `ROKS`), marked when the solve is a free-atom guess sub-solve.
+pub(crate) fn phase_table_title_for(
+    spin: Spin,
+    config: &RhfConfig,
+    injected_xc: bool,
+) -> &'static str {
     let ks = config.xc.is_some() || injected_xc;
-    match (ks, crate::runlog::in_sub_solve()) {
-        (false, false) => "RHF",
-        (true, false) => "RKS",
-        (false, true) => "RHF (free-atom guess)",
-        (true, true) => "RKS (free-atom guess)",
-    }
+    let label = match (spin, ks) {
+        (Spin::Restricted, false) => ["RHF", "RHF (free-atom guess)"],
+        (Spin::Restricted, true) => ["RKS", "RKS (free-atom guess)"],
+        (Spin::Unrestricted, false) => ["UHF", "UHF (free-atom guess)"],
+        (Spin::Unrestricted, true) => ["UKS", "UKS (free-atom guess)"],
+        (Spin::RestrictedOpen, false) => ["ROHF", "ROHF (free-atom guess)"],
+        (Spin::RestrictedOpen, true) => ["ROKS", "ROKS (free-atom guess)"],
+    };
+    label[usize::from(crate::runlog::in_sub_solve())]
 }
 
 /// The molecular closed-shell XC contribution [`solve_rhf`] builds for
@@ -2324,91 +2337,51 @@ fn solve_rhf_impl(
     // Meta-GGA default virtual-block level shift (see driver::effective_level_shift).
     let effective_level_shift = crate::driver::effective_level_shift(config);
 
-    // Auto-default JK aux bases when the functional needs exact exchange but
-    // the caller hasn't explicitly set df_j_aux / df_k_aux. This makes
-    // `cfg.xc = Some("B3LYP")` (or any hybrid/RSH) work out of the box.
-    // Pure HF (no xc) keeps the historical behavior of no auto-default.
-    let needs_k = xc_contrib.is_some() && (k_mix.sr > 0.0 || k_mix.omega > 0.0);
-    let needs_j = xc_contrib.is_some();
+    // The J/K route (`fock_assembly::resolve_jk_route`, one decision for all
+    // three solvers; its module doc tabulates every case). For a functional,
+    // unset `df_j_aux` / `df_k_aux` auto-default to `def2-universal-jkfit`
+    // here, `""` is the explicit four-centre opt-out, and a name is used as
+    // given. Comparing against an exact-Coulomb code measures the RI-J
+    // fitting error (PBE/STO-3G against conventional J: water 0.28, benzene
+    // 1.16, a 71-atom drug molecule 9.5 kcal/mol), so the opt-out matters.
+    //
+    // A K that never reaches F is not built: a pure functional's (k_mix = 0)
+    // and the main DfK of a range-separated one (its exchange comes from the
+    // SR/LR fitters `driver::prepare` built). MEASURED on danuglipron (71
+    // atoms) PBE/STO-3G before that gate: setup:df_fitters 91 s and
+    // jk_build 33 s, most of it the unused K. With `k_builder = "cosx"` COSX
+    // replaces the ω = 0 DF-K (RIJCOSX; a named `df_k_aux` next to it is
+    // refused) and DF-J keeps its own resolution.
+    let jk_route = crate::fock_assembly::resolve_jk_route(
+        config,
+        crate::fock_assembly::JkExchange {
+            functional: xc_contrib.is_some(),
+            k_mix,
+        },
+        Spin::Restricted,
+    )?;
     // Whether the SCF actually consumes an exact-exchange matrix. True for pure
     // HF (no functional) and for hybrids / RSH. FALSE for a pure functional
     // (LDA/GGA such as PBE), where k_mix is all-zero and any K built would be
     // multiplied by 0 and thrown away. Gates both the exchange-builder
     // construction and the per-iteration K build below, so pure DFT never pays
-    // for exact exchange it does not use. (For a pure functional this equals
-    // `needs_k`; for HF it is true where `needs_k` is false, since `needs_k` is
-    // DFT-specific.)
-    let k_consumed = xc_contrib.is_none() || k_mix.sr > 0.0 || k_mix.omega > 0.0;
-    use crate::fock_assembly::DEFAULT_JK_AUX;
-    // THREE states, not two. `None` has always meant "unset, so auto-default",
-    // which left no way to say "do NOT density-fit" for a functional -- the
-    // auto-default fired and RI-J was silently unavoidable.
-    //
-    // That silence had a cost: a caller comparing ferric against an
-    // exact-Coulomb reference measures the RI-J FITTING ERROR and reads it as
-    // a ferric defect. MEASURED at PBE/STO-3G against conventional J: water
-    // 0.28, benzene 1.16, and a 71-atom drug molecule **9.5 kcal/mol**. The
-    // other direction confirms it -- ORCA re-run WITH RI-J agrees with ferric
-    // to 2.7 kcal/mol where exact-Coulomb ORCA was 9.5 away.
-    //
-    //   None            -> auto-default (unchanged behaviour)
-    //   Some("")        -> EXPLICITLY conventional four-centre J/K
-    //   Some(basis)     -> density-fit with that basis (unchanged)
-    //
-    // An empty string is not a valid basis name, so it cannot collide with a
-    // real request.
-    fn resolve_aux(requested: &Option<String>, needed: bool) -> Option<String> {
-        match requested.as_deref() {
-            None => needed.then(|| DEFAULT_JK_AUX.to_string()),
-            Some("") => None, // explicit opt-out
-            Some(name) => Some(name.to_string()),
-        }
-    }
-    let df_j_aux_eff: Option<String> = resolve_aux(&config.df_j_aux, needs_j);
+    // for exact exchange it does not use.
+    let k_consumed = jk_route.k_consumed;
+    let df_j_aux_eff: Option<String> = jk_route.j_aux.clone();
     // Whether the K written into `k_buf` below ever reaches F. Narrower than
     // `k_consumed`: an RSH functional consumes exact exchange, but from its
     // own SR/LR fitters (`dfk_sr`/`dfk_lr`, built by `driver::prepare`), so
     // the F assembly never reads `k_buf` when ω > 0. True exactly for pure HF
     // (k_mix = {1, 1, 0}) and ω = 0 hybrids.
     let k_buf_consumed = k_consumed && k_mix.omega == 0.0;
-    // The DF-K the caller asked for (explicitly, or via the functional
-    // auto-default), BEFORE the consumption gate.
-    // RIJCOSX: with `k_builder = "cosx"` and a consumed ω = 0 exchange, COSX
-    // replaces the ω = 0 DF-K (auto-defaulted or not); an explicitly named
-    // `df_k_aux` alongside it is refused (`cosx_replaces_df_k`). DF-J keeps
-    // its own resolution, so a functional's RI-J auto-default stays on and the
-    // run is the RIJCOSX composite.
-    let cosx_k = crate::fock_assembly::cosx_replaces_df_k(
-        config.k_builder.as_deref(),
-        config.df_k_aux.as_deref(),
-        k_buf_consumed,
-    )?;
-    let df_k_aux_requested: Option<String> = if cosx_k {
-        None
-    } else {
-        resolve_aux(&config.df_k_aux, needs_k)
-    };
-    // Do not build a DF-K whose K is thrown away. `resolve_aux` honours an
-    // explicit `Some(name)` regardless of `needs_k`, and `run_dft` passes
-    // `def2-universal-jkfit` for every functional, so a pure GGA used to
-    // build a full DfK (V^{-1/2} dressing + `DfK::from_full_raw`) and run
-    // `build_from_occ` every iteration only for `k_mix = 0` to discard it.
-    // MEASURED on danuglipron (71 atoms) PBE/STO-3G: setup:df_fitters 91 s
-    // and jk_build 33 s, most of it that unused K. Same for the main DfK of
-    // an RSH functional. Energy is unaffected by construction: the K never
-    // entered F. Mirrors the open-shell solvers, whose `k_aux_eff` already
-    // requires `need_k && ω == 0`.
-    let df_k_aux_eff: Option<String> = if k_buf_consumed {
-        df_k_aux_requested.clone()
-    } else {
-        None
-    };
-    // A DF-K the gate above dropped still selects the DF ROUTING for J: with
+    let df_k_aux_eff: Option<String> = jk_route.k_aux.clone();
+    // A DF-K the route dropped (a pure functional's named fit, an RSH
+    // functional's main DfK) still selects the DF ROUTING for J: with
     // conventional J (`df_j_aux = Some("")`) and a requested-but-unused DF-K,
-    // the old code took the `df_any` branch (DirectJ + DfK). Without this the
-    // run would fall to the combined DirectJK path, which builds a 4-centre K
-    // for the same functional that has no use for it.
-    let df_k_skipped = df_k_aux_requested.is_some() && df_k_aux_eff.is_none();
+    // the run takes the `df_any` branch (DirectJ + DfK) rather than the
+    // combined DirectJK path, which would build a 4-centre K for a functional
+    // that has no use for it.
+    let df_k_skipped = jk_route.k_df_routed && df_k_aux_eff.is_none();
 
     // Density-fitted Coulomb (RI-J) / exchange (RI-K). Builds 3-center
     // tensor(s) + metric(s) once, sharing one `PreparedBasis` when
@@ -2443,30 +2416,23 @@ fn solve_rhf_impl(
     // differentiates this energy instead of re-deriving the aux resolution.
     // `None` when nothing is fitted: an all-exact run's gradient path is
     // untouched.
-    let df_jk_route = crate::result::DfJkRoute::from_scf(
-        df_j_aux_eff.as_deref(),
-        df_k_aux_eff.as_deref(),
-        (k_mix.omega > 0.0).then(|| {
-            (
-                config.df_k_aux.as_deref().unwrap_or(DEFAULT_JK_AUX),
-                k_mix.omega,
-            )
-        }),
-        op,
-        ooc_budget,
-        df_j.as_ref()
-            .map_or(crate::df_j::RiJPrecision::F64, |j| j.precision()),
-    )
-    .map(|r| {
-        // The precision the K tensor(s) were ACTUALLY stored at: the ω = 0
-        // DfK, else the SR fitter of a range-separated pair.
-        let stored = df_k
-            .as_ref()
-            .map(|k| k.precision())
-            .or_else(|| dfk_sr.as_ref().map(|k| k.borrow().precision()))
-            .unwrap_or(crate::df_k::RiKPrecision::F64);
-        r.with_ri_k_precision(stored)
-    });
+    let df_jk_route = jk_route
+        .record(
+            op,
+            ooc_budget,
+            df_j.as_ref()
+                .map_or(crate::df_j::RiJPrecision::F64, |j| j.precision()),
+        )
+        .map(|r| {
+            // The precision the K tensor(s) were ACTUALLY stored at: the ω = 0
+            // DfK, else the SR fitter of a range-separated pair.
+            let stored = df_k
+                .as_ref()
+                .map(|k| k.precision())
+                .or_else(|| dfk_sr.as_ref().map(|k| k.borrow().precision()))
+                .unwrap_or(crate::df_k::RiKPrecision::F64);
+            r.with_ri_k_precision(stored)
+        });
 
     // A pluggable K builder ("link" / "cosx") is only consumed on the
     // non-DF path (see the iteration branch structure below): when DF-J or

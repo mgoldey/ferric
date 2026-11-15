@@ -4458,7 +4458,8 @@ def run_optimize(
       open-shell molecule. `dispersion` (needs `xc`; "d3bj", "d3(bj)", "d3bj(<name>)",
       "mbd", "mbd(<name>)" as in `run_dft`) optimizes KS + dispersion, energy and
       gradient from one set of parameters. `df_j_aux` / `df_k_aux` density-fit J / K as
-      in `run_frequencies` (unset: exact four-centre J/K, also with `xc`);
+      in `run_frequencies` (unset: exact four-centre J/K for HF; with `xc`,
+      RI-J/RI-K on def2-universal-jkfit for RKS, UKS and ROKS as in the CLI);
       `scf_ri_j_precision` (unset: "f64" on geometry tasks) / `scf_ri_k_precision`.
     - "rimp2": closed-shell RI-MP2 (analytic Z-vector gradient). Needs `auxbasis` (the
       RI basis name, e.g. "cc-pvdz-ri"); `scf_jk` "exact" (default) or "rijk" on
@@ -4622,9 +4623,9 @@ def run_frequencies(
     Hessian is noisier, so pair it with a ~100x tighter `scf_density_conv`.
 
     `df_j_aux` / `df_k_aux` density-fit every SCF of the
-    run as in `run_rhf`. Unset means exact J/K for HF, but for KS (`xc=`) the
-    SCF's own default, RI-J (and RI-K for a hybrid) in def2-universal-jkfit;
-    pass `"none"` for exact. The analytic RHF/UHF/ROHF Hessian differentiates
+    run as in `run_rhf`. Unset means exact J/K for HF and, for KS (`xc=`),
+    RI-J and RI-K in def2-universal-jkfit for every reference (RKS, UKS,
+    ROKS: the CLI's default); pass `"none"` for exact. The analytic RHF/UHF/ROHF Hessian differentiates
     the fitted energy (RI-J, RI-K or both) and `"fd"` differences the fitted
     analytic gradient. RI with point charges / a field takes the
     finite-difference path under "auto" (`"analytic"` raises).

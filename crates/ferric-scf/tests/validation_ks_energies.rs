@@ -45,7 +45,7 @@
 //! | RKS HSE06 | **exact J** (`df_j_aux = ""`) + c_SR K[erfc] fitted in the attenuated metric | exact J + attenuated-metric DF-K (`_uks_exact_j_dfk_class(closed_shell=True)`) |
 //! | UKS PBE | RI-J (`df_j_aux`) | `density_fit` |
 //! | UKS B3LYP | RI-J + RI-K | `density_fit` |
-//! | UKS ωB97X-V | **exact J** (uhf.rs: `j_aux_eff` is `None` for ω > 0) + RI-K as c_SR K[erfc] + c_LR K[erf] | exact J + attenuated-metric DF-K, full-range K served as K_SR + K_LR |
+//! | UKS ωB97X-V | **exact J** (`df_j_aux` unset: the open-shell solvers take no auto-default aux) + RI-K as c_SR K[erfc] + c_LR K[erf] | exact J + attenuated-metric DF-K, full-range K served as K_SR + K_LR |
 //!
 //! A `density_fit` reference for UKS ωB97X-V would have compared ferric's
 //! EXACT J against PySCF's RI-J, i.e. measured the fitting error.
@@ -320,8 +320,8 @@ fn uks_config(xc: &str) -> RhfConfig {
         "pbe" => (Some(AUX.to_string()), None),
         // Plain hybrid: RI-J + RI-K.
         "b3lyp" => (Some(AUX.to_string()), Some(AUX.to_string())),
-        // RSH: the open-shell solver builds J exactly for ω > 0 whatever
-        // df_j_aux says, so leave it unset to make that visible; K is fitted.
+        // RSH: exact J (unset df_j_aux; the open-shell solvers take no
+        // auto-default aux) to match the exact-J reference; K is fitted.
         "wb97x-v" => (None, Some(AUX.to_string())),
         other => panic!("unknown functional {other}"),
     };

@@ -140,19 +140,13 @@ pub fn with_scf_envelope(
     )
 }
 
-/// Whether exact (HF-type) exchange enters the energy, and whether it is
-/// range-separated. HF: `(true, false)`. Unresolvable names count as HF-like,
-/// as `ferric-cli`'s `log_jk_path` does.
-fn exchange_used(config: &RhfConfig) -> (bool, bool) {
-    let k_mix = config
-        .xc
-        .as_deref()
-        .and_then(|name| ferric_dft::libxc::xc_def_from_name(name).ok())
-        .map(|d| ferric_dft::libxc::k_mix_from_xc_def(&d));
-    match k_mix {
-        None => (true, false),
-        Some(m) => (m.sr > 0.0 || m.omega > 0.0, m.omega > 0.0),
-    }
+/// The J/K route `config` resolves to for `result`'s solver
+/// (`ferric_scf::resolve_jk_route`, the decision the solver built from), or
+/// `None` for a config the solver refuses. For a solve with this `config` it
+/// names the same fitted builders as `result.df_jk`
+/// ([`crate::JkRoute::matches_record`]).
+pub fn scf_jk_route(result: &ScfResult, config: &RhfConfig) -> Option<crate::JkRoute> {
+    crate::resolve_jk_route(config, crate::JkExchange::from_config(config), result.spin).ok()
 }
 
 /// An integration grid as certificates write it:
@@ -207,26 +201,26 @@ fn approximations(
             format!("range-separated SR/LR pair, aux {a}, omega {w}{k_storage}"),
         ));
     }
-    let (k_used, rsh) = exchange_used(config);
-    let k_fitted = route.is_some_and(|r| r.k_aux.is_some() || r.rsh_k.is_some());
-    if k_used && !rsh && !k_fitted {
-        match config.k_builder.as_deref() {
-            Some("link") => out.push(("link", "LinK screened exchange".to_string())),
-            Some("cosx") => {
-                let fin = result.cosx_final.map_or_else(
-                    || "no final pass".to_string(),
-                    |f| format!("final pass on {} points reported", f.npts_final),
-                );
-                out.push((
-                    "cosx",
-                    format!(
-                        "seminumerical exchange, grid {}, {fin}",
-                        grid_text(&config.cosx.grid)
-                    ),
-                ));
-            }
-            _ => {}
+    // The pluggable exchange builder the solver ran: the route's decision,
+    // so a `k_builder` that density fitting overrode is not certified.
+    let pluggable =
+        scf_jk_route(result, config).and_then(|r| r.pluggable_k(config.k_builder.as_deref()));
+    match pluggable {
+        Some("link") => out.push(("link", "LinK screened exchange".to_string())),
+        Some("cosx") => {
+            let fin = result.cosx_final.map_or_else(
+                || "no final pass".to_string(),
+                |f| format!("final pass on {} points reported", f.npts_final),
+            );
+            out.push((
+                "cosx",
+                format!(
+                    "seminumerical exchange, grid {}, {fin}",
+                    grid_text(&config.cosx.grid)
+                ),
+            ));
         }
+        _ => {}
     }
     if let Some(xc) = config.xc.as_deref() {
         let grids = crate::ks_gradient::KsGradGrids::from_config(config);

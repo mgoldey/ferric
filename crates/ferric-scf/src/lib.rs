@@ -128,6 +128,7 @@ pub mod fock;
 pub(crate) mod fock_assembly;
 #[doc(hidden)]
 pub use fock_assembly::dress_first_count_for_test;
+pub use fock_assembly::{resolve_jk_route, JkExchange, JkRoute};
 #[cfg(test)]
 mod ks_vxc_tests;
 /// Range-separated hybrid ω-tuning via the IP (ΔSCF Koopmans) condition.

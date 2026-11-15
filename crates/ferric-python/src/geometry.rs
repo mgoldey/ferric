@@ -95,8 +95,10 @@ pub(crate) fn optimize_result_certificate(
 ///   KS + D3(BJ) or KS + MBD@rsSCS surface, energy and gradient from the same
 ///   parameters. `solvent=` adds IEF-PCM, `point_charges=` /
 ///   `external_field=` an external potential. `df_j_aux` / `df_k_aux`
-///   density-fit J / K as in `run_frequencies` (unset: exact four-centre J/K,
-///   also with `xc`); `scf_ri_j_precision` / `scf_ri_k_precision` as there.
+///   density-fit J / K as in `run_frequencies` (unset: exact four-centre J/K
+///   for HF; with `xc`, RI-J and RI-K on def2-universal-jkfit for RKS, UKS and
+///   ROKS, the CLI's default; `"none"` for exact); `scf_ri_j_precision` /
+///   `scf_ri_k_precision` as there.
 /// - `"rimp2"`: closed-shell RI-MP2 (analytic Z-vector gradient). Needs
 ///   `auxbasis` (the RI basis, e.g. `"cc-pvdz-ri"`). `scf_jk` is `"exact"`
 ///   (default) or `"rijk"` on `jk_auxbasis`, as in `run_rimp2`. The
@@ -207,8 +209,8 @@ pub(crate) fn run_optimize(
     };
     ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv).apply(&mut cfg);
     cfg.xc = xc.map(str::to_string);
-    cfg.df_j_aux = df_j_aux.map(ferric_scf::rhf::normalize_df_aux);
-    cfg.df_k_aux = df_k_aux.map(ferric_scf::rhf::normalize_df_aux);
+    cfg.df_j_aux = crate::geometry_df_aux(xc, df_j_aux);
+    cfg.df_k_aux = crate::geometry_df_aux(xc, df_k_aux);
     geometry_task_scf(&mut cfg, scf_ri_j_precision)?;
     cfg.ri_k_precision = parse_ri_k_precision(scf_ri_k_precision)?;
     cfg.eri = crate::scf::parse_eri(scf_eri)?;
@@ -1138,8 +1140,10 @@ impl PyFrequencyResult {
 /// Harmonic vibrational frequencies, mass-weighted with translations and
 /// rotations projected out.
 ///
-/// `df_j_aux` / `df_k_aux` (default: exact J/K) density-fit the Coulomb and
-/// exchange of every SCF the run does, exactly as in `run_rhf`; the analytic
+/// `df_j_aux` / `df_k_aux` density-fit the Coulomb and exchange of every SCF
+/// the run does, with `run_rhf`'s spellings. Unset is exact J/K for HF and,
+/// with `xc`, RI-J and RI-K on def2-universal-jkfit for every reference (the
+/// CLI's default; `"none"` for exact). The analytic
 /// RHF, UHF and ROHF Hessians then differentiate the fitted energy (RI-J,
 /// RI-K or both; ferric_scf::hessian_df / hessian_df_k), and the
 /// finite-difference path differences the fitted analytic gradient. RI with
@@ -1305,9 +1309,10 @@ pub(crate) fn run_frequencies(
     scf_cfg.max_iter = max_iter.unwrap_or(scf_cfg.max_iter);
     scf_cfg.energy_conv = energy_conv.unwrap_or(scf_cfg.energy_conv);
     scf_cfg.density_conv = density_conv.unwrap_or(scf_cfg.density_conv);
-    // Unset = exact J/K (unchanged); same opt-out spellings as run_rhf.
-    scf_cfg.df_j_aux = df_j_aux.map(ferric_scf::rhf::normalize_df_aux);
-    scf_cfg.df_k_aux = df_k_aux.map(ferric_scf::rhf::normalize_df_aux);
+    // Unset = exact J/K for HF, def2-universal-jkfit with `xc` (the CLI's
+    // rule, `geometry_df_aux`); same opt-out spellings as run_rhf.
+    scf_cfg.df_j_aux = crate::geometry_df_aux(xc, df_j_aux);
+    scf_cfg.df_k_aux = crate::geometry_df_aux(xc, df_k_aux);
     geometry_task_scf(&mut scf_cfg, scf_ri_j_precision)?;
     scf_cfg.ri_k_precision = parse_ri_k_precision(scf_ri_k_precision)?;
     scf_cfg.eri = crate::scf::parse_eri(scf_eri)?;

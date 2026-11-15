@@ -1,4 +1,5 @@
-//! Shared exchange-assembly helpers for all six SCF variants.
+//! Shared J/K route decision and exchange-assembly helpers for all six SCF
+//! variants.
 //!
 //! `solve_rhf` (RHF + RKS), `solve_uhf` (UHF + UKS) and `solve_rohf`
 //! (ROHF + ROKS) each assemble F = H + J − (exact-exchange mix) with the same
@@ -10,6 +11,47 @@
 //! - **HF / plain hybrid**: one K(D) folded in with a scalar exchange fraction
 //!   (a single `f.scaled_add(-c, &k)` at the call site — no helper needed).
 //!
+//! # The J/K route
+//!
+//! [`resolve_jk_route`] turns `df_j_aux`, `df_k_aux`, `k_builder`, the
+//! exchange mix and the spin case into the builders the SCF runs
+//! ([`JkRoute`]). The three solvers build exactly what it returns, record it
+//! in `ScfResult::df_jk` (via [`JkRoute::record`]), and the certificate and
+//! the CLI's `SCF J/K` line read the same decision back. Every combination:
+//!
+//! | Functional | Spin | `df_j_aux` unset | `df_j_aux = ""` | `df_j_aux = name` |
+//! |---|---|---|---|---|
+//! | none (HF) | any | four-centre J | four-centre J | RI-J on `name` |
+//! | any functional | restricted | RI-J on `def2-universal-jkfit` | four-centre J | RI-J on `name` |
+//! | any functional | open | four-centre J | four-centre J | RI-J on `name` |
+//!
+//! J does not depend on ω: a range-separated hybrid fits J exactly as a
+//! global hybrid does, in all three solvers.
+//!
+//! | Functional | Spin | `df_k_aux` unset | `df_k_aux = ""` | `df_k_aux = name` |
+//! |---|---|---|---|---|
+//! | none (HF) | any | exact K | exact K | RI-K on `name` |
+//! | global hybrid | restricted | RI-K on `def2-universal-jkfit` | exact K | RI-K on `name` |
+//! | global hybrid | open | exact K | exact K | RI-K on `name` |
+//! | pure (no exact exchange) | any | no K | no K | no K (the fit is dropped) |
+//! | range-separated (ω > 0) | any | SR/LR pair on `def2-universal-jkfit` | refused | SR/LR pair on `name` |
+//!
+//! "exact K" is the four-centre builder, or the pluggable one `k_builder`
+//! names. `k_builder` is honoured only where exchange is not density-fitted:
+//!
+//! - `"cosx"`: replaces the ω = 0 exchange of HF and global hybrids (auto
+//!   default included), with RI-J kept where the J row above fits it (the
+//!   RIJCOSX composite). A NAMED `df_k_aux` next to it is an error. Ignored
+//!   (with a warning) for pure and range-separated functionals.
+//! - `"link"`: needs exact J as well as exact K (it rides the four-centre J
+//!   pass); ignored, with a warning, under any RI-J or RI-K.
+//! - `"direct"`: the default builder, named.
+//!
+//! The open-shell solvers take no auto default because their callers (CLI,
+//! Python `run_uks`/`run_roks`/`run_dft`, the geometry drivers) name the KS
+//! default aux explicitly; a library caller passing `None` to `solve_uhf`
+//! gets the four-centre route it has always had.
+//!
 //! Before this module each solver carried its own verbatim copy of the RSH
 //! fitter-pair construction and the per-density RSH fold, so an exchange-
 //! assembly fix had to be applied three times in parallel (2026-07-22: the
@@ -18,8 +60,8 @@
 //! KS variants together.
 //!
 //! Known remaining duplication, deliberately NOT unified here: each solver
-//! still hand-rolls its builder-selection preamble (combined `DirectJK` in
-//! RHF, per-spin `DfK`/`DirectK` in UHF, `DirectJ`+`DirectK` in ROHF) and its
+//! still hand-rolls its builder construction (combined `DirectJK` in RHF,
+//! per-spin `DfK`/`DirectK` in UHF, `DirectJ`+`DirectK` in ROHF) and its
 //! iteration-loop scaffolding (DIIS error, COSMO/PCM hooks, convergence
 //! bookkeeping). Those differences are behavioral, not cosmetic, and the loops
 //! are convergence-critical — folding them into one spin-generic driver is a
@@ -40,6 +82,185 @@ use ndarray::Array2;
 /// Default JK-fit auxiliary basis when the caller hasn't set one (the same
 /// default the solvers use for RI-J/RI-K auto-selection).
 pub(crate) const DEFAULT_JK_AUX: &str = "def2-universal-jkfit";
+
+/// The exchange a solver's functional asks for, as the J/K route reads it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct JkExchange {
+    /// Whether a molecular XC functional is active (`config.xc`); `false` for
+    /// Hartree-Fock and for an injected (periodic) XC, whose route is all
+    /// exact by construction (`rhf::validate_injected`).
+    pub functional: bool,
+    /// The exact-exchange mix (`KMix::default()` = HF).
+    pub k_mix: ferric_dft::xc_trait::KMix,
+}
+
+impl JkExchange {
+    /// The exchange `config` asks for, read the way the solvers read it:
+    /// `config.xc` through libxc, with `config.xc_omega` replacing ω. An
+    /// unresolvable name counts as Hartree-Fock exchange (the SCF itself
+    /// reports the bad name).
+    pub fn from_config(config: &crate::rhf::RhfConfig) -> Self {
+        let Some(name) = config.xc.as_deref() else {
+            return JkExchange {
+                functional: false,
+                k_mix: ferric_dft::xc_trait::KMix::default(),
+            };
+        };
+        let def = match config.xc_omega {
+            Some(w) => ferric_dft::libxc::xc_def_from_name_nspin_omega(name, 1, w),
+            None => ferric_dft::libxc::xc_def_from_name(name),
+        };
+        JkExchange {
+            functional: true,
+            k_mix: def.map_or_else(
+                |_| ferric_dft::xc_trait::KMix::default(),
+                |d| ferric_dft::libxc::k_mix_from_xc_def(&d),
+            ),
+        }
+    }
+
+    /// Whether the SCF consumes exact exchange at all: HF, a global hybrid or
+    /// a range-separated hybrid. `false` only for a pure functional.
+    pub fn k_consumed(&self) -> bool {
+        !self.functional || self.k_mix.sr > 0.0 || self.k_mix.omega > 0.0
+    }
+}
+
+/// The J/K builders an SCF runs, resolved once by [`resolve_jk_route`] (see
+/// the module table).
+#[derive(Clone, Debug, PartialEq)]
+pub struct JkRoute {
+    /// Auxiliary basis of RI-J, or `None` for four-centre J.
+    pub j_aux: Option<String>,
+    /// Auxiliary basis of the ω = 0 RI-K (HF / global-hybrid exchange), or
+    /// `None` when that exchange is exact, COSX, or not consumed.
+    pub k_aux: Option<String>,
+    /// Range-separated exchange: aux basis and ω of the SR/LR `DfK` pair.
+    pub rsh_pair: Option<(String, f64)>,
+    /// `k_builder = "cosx"` supplies the ω = 0 exchange in place of RI-K.
+    pub cosx_k: bool,
+    /// Exchange is density-fitted, or a requested fit was dropped because
+    /// the functional uses no exact exchange: a pluggable `k_builder` is
+    /// then overridden (`resolve_k_builder`'s `df_k_active`).
+    pub k_df_routed: bool,
+    /// Whether the SCF consumes exact exchange ([`JkExchange::k_consumed`]).
+    pub k_consumed: bool,
+    /// ω of the functional (0 for HF, pure and global hybrids).
+    pub omega: f64,
+}
+
+/// The aux basis of a range-separated SR/LR fitter pair: `df_k_aux`, else
+/// `DEFAULT_JK_AUX`. One rule for `build_rsh_dfk_pair` and the route.
+fn rsh_pair_aux(df_k_aux: Option<&str>) -> &str {
+    df_k_aux.unwrap_or(DEFAULT_JK_AUX)
+}
+
+/// Resolve the J/K route of an SCF: what `config`'s `df_j_aux`, `df_k_aux`
+/// and `k_builder` mean for `exchange` in the `spin` solver. The table in
+/// the module doc lists every case. `Spin::Unrestricted` and
+/// `Spin::RestrictedOpen` resolve identically.
+///
+/// `Err` for `k_builder = "cosx"` next to a named `df_k_aux` (two builders
+/// for one exchange matrix, `cosx_replaces_df_k`). An unknown `k_builder`
+/// is reported by the solver (`resolve_k_builder`).
+pub fn resolve_jk_route(
+    config: &crate::rhf::RhfConfig,
+    exchange: JkExchange,
+    spin: crate::result::Spin,
+) -> Result<JkRoute, FerricError> {
+    let restricted = spin == crate::result::Spin::Restricted;
+    let omega = exchange.k_mix.omega;
+    let k_consumed = exchange.k_consumed();
+    // The restricted solver auto-defaults a functional's fits; `""` is the
+    // explicit four-centre opt-out on every solver.
+    let auto_j = restricted && exchange.functional;
+    let auto_k = auto_j && (exchange.k_mix.sr > 0.0 || omega > 0.0);
+    let resolve = |requested: Option<&str>, auto: bool| -> Option<String> {
+        match requested {
+            None => auto.then(|| DEFAULT_JK_AUX.to_string()),
+            Some("") => None,
+            Some(name) => Some(name.to_string()),
+        }
+    };
+    // The K that a single ω = 0 exchange builder supplies reaches F only for
+    // HF and global hybrids; a range-separated hybrid takes its exchange
+    // from the SR/LR pair, a pure functional takes none.
+    let k_single_consumed = k_consumed && omega == 0.0;
+    let cosx_k = cosx_replaces_df_k(
+        config.k_builder.as_deref(),
+        config.df_k_aux.as_deref(),
+        k_single_consumed,
+    )?;
+    let k_aux = if k_single_consumed && !cosx_k {
+        resolve(config.df_k_aux.as_deref(), auto_k)
+    } else {
+        None
+    };
+    let named_k = config.df_k_aux.as_deref().is_some_and(|s| !s.is_empty());
+    let rsh_pair = (omega > 0.0)
+        .then(|| rsh_pair_aux(config.df_k_aux.as_deref()))
+        .filter(|a| !a.is_empty())
+        .map(|a| (a.to_string(), omega));
+    Ok(JkRoute {
+        j_aux: resolve(config.df_j_aux.as_deref(), auto_j),
+        k_df_routed: k_aux.is_some() || omega > 0.0 || (!k_consumed && named_k),
+        k_aux,
+        rsh_pair,
+        cosx_k,
+        k_consumed,
+        omega,
+    })
+}
+
+impl JkRoute {
+    /// The record of this route in `ScfResult::df_jk` (`None` when nothing is
+    /// fitted). `ri_j_precision` is what the RI-J tensor was stored at.
+    pub fn record(
+        &self,
+        op: Operator,
+        budget_bytes: usize,
+        ri_j_precision: RiJPrecision,
+    ) -> Option<crate::result::DfJkRoute> {
+        crate::result::DfJkRoute::from_scf(
+            self.j_aux.as_deref(),
+            self.k_aux.as_deref(),
+            self.rsh_pair.as_ref().map(|(a, w)| (a.as_str(), *w)),
+            op,
+            budget_bytes,
+            ri_j_precision,
+        )
+    }
+
+    /// Whether `record` (an SCF's `df_jk`) names the same fitted builders as
+    /// this route: the RI-J aux, the ω = 0 RI-K aux and the SR/LR pair.
+    /// Storage precisions are not part of the route.
+    pub fn matches_record(&self, record: Option<&crate::result::DfJkRoute>) -> bool {
+        let rsh = self.rsh_pair.as_ref().map(|(a, w)| (a.as_str(), *w));
+        match record {
+            None => self.j_aux.is_none() && self.k_aux.is_none() && rsh.is_none(),
+            Some(r) => {
+                r.j_aux == self.j_aux
+                    && r.k_aux == self.k_aux
+                    && r.rsh_k.as_ref().map(|(a, w)| (a.as_str(), *w)) == rsh
+            }
+        }
+    }
+
+    /// The pluggable exchange builder (`"link"` / `"cosx"`) this route runs
+    /// for `k_builder`, or `None`: the decision of `resolve_k_builder` and
+    /// `narrow_k_builder_to_supported` without their warnings, for readers
+    /// that describe a finished run (the certificate). An unknown name is
+    /// `None` (the solver refused it).
+    pub fn pluggable_k(&self, k_builder: Option<&str>) -> Option<&'static str> {
+        let kind = match k_builder {
+            Some("link") => "link",
+            Some("cosx") => "cosx",
+            _ => return None,
+        };
+        let overridden = self.k_df_routed || (self.j_aux.is_some() && kind != "cosx");
+        (!overridden && self.k_consumed && self.omega <= 0.0).then_some(kind)
+    }
+}
 
 /// Build the (optional) DF-J and DF-K fitters for one non-RSH (ω = 0) SCF
 /// setup, sharing a single [`PreparedBasis`] when `j_aux == k_aux`.
@@ -509,7 +730,7 @@ pub(crate) fn build_rsh_dfk_pair<'a>(
     ooc_budget: usize,
     k_precision: crate::df_k::RiKPrecision,
 ) -> Result<(DfK<'a>, DfK<'a>), FerricError> {
-    let aux_name = df_k_aux.unwrap_or(DEFAULT_JK_AUX);
+    let aux_name = rsh_pair_aux(df_k_aux);
     let dfbs_set = ferric_core::basis::bundled(aux_name)?;
     let dfbs_prep = PreparedBasis::new(mol, &dfbs_set)?;
     Ok((
@@ -575,9 +796,9 @@ pub(crate) fn build_rsh_dfk_pair<'a>(
 /// four-centre builder, so the request is honoured. See
 /// [`k_builder_ignored_warning`].
 ///
-/// `df_k_active` is `df_k.is_some()` after the solver's own auto-defaulting,
-/// plus, in `solve_rhf`, a requested DF-K that was dropped because its K is
-/// never read (pure / RSH functionals). With `k_builder = "cosx"` the solvers
+/// `df_k_active` is [`JkRoute::k_df_routed`]: a DF-K the route builds, the
+/// SR/LR pair of a range-separated functional, or a requested fit dropped
+/// because the functional uses no exact exchange. With `k_builder = "cosx"` the solvers
 /// never build the ω = 0 DF-K in the first place (see
 /// [`cosx_replaces_df_k`]). `df_k_present`, `need_k` (the functional consumes
 /// exact exchange at all) and `omega` only pick the wording — see
@@ -607,23 +828,6 @@ pub(crate) fn resolve_k_builder(
         return Ok(None);
     }
     Ok(pluggable)
-}
-
-/// `df_k_active` for the open-shell solvers, matching `solve_rhf`'s
-/// `df_k.is_some() || df_k_skipped`.
-///
-/// `solve_uhf` / `solve_rohf` build the main ω = 0 DF-K only for an exact
-/// exchange they consume, so `df_k.is_some()` alone misses two runs whose
-/// exchange is density-fitted (or absent) all the same:
-///
-/// * ω > 0: exchange comes only from the SR/LR fitters (`driver::prepare`
-///   refuses `df_k_aux = ""` there), and DF-J is off for RSH, so without this
-///   nothing marks the run as overridden and `k_builder = "direct"` is silent;
-/// * a named `df_k_aux` the solver dropped because the functional uses no
-///   exact exchange (RHF's `df_k_skipped`).
-pub(crate) fn open_shell_df_k_active(df_k_built: bool, df_k_aux: Option<&str>, omega: f64) -> bool {
-    let requested = df_k_aux.is_some_and(|s| !s.is_empty());
-    df_k_built || omega > 0.0 || requested
 }
 
 /// The IGNORED warning [`resolve_k_builder`] prints for a validated `kb` that
@@ -793,13 +997,11 @@ pub(crate) fn build_pluggable_k<'a, B: crate::screening::Bound + Sync>(
 /// * **pure DFT** (`need_k == false`, k_mix all zero) — no exact exchange at
 ///   all, so any K built would be multiplied by zero and discarded;
 /// * **RSH** (`omega > 0`) — exchange is `c_SR·K[erfc(ω)] + c_LR·K[erf(ω)]`,
-///   contracted from the dedicated SR/LR `DfK` fitter pair. Note the open-shell
-///   solvers reach this with `df_j`/`df_k` BOTH `None` (their `k_aux_eff` gate
-///   deliberately excludes ω > 0), so [`resolve_k_builder`]'s `df_active`
-///   warning does not fire for RSH the way it does in `solve_rhf`, where an RSH
-///   functional auto-defaults `df_k_aux_eff` and trips it. Without this second
-///   warning an RSH open-shell run would skip the builder SILENTLY — the exact
-///   class of no-op this wiring exists to remove.
+///   contracted from the dedicated SR/LR `DfK` fitter pair. [`resolve_k_builder`]
+///   already overrides a pluggable K there (the route marks the SR/LR pair
+///   as density-fitted exchange); this second check keeps the warning for a
+///   caller that reaches it otherwise, so an RSH run never skips the builder
+///   silently.
 pub(crate) fn narrow_k_builder_to_supported(
     kind: Option<&str>,
     need_k: bool,
@@ -1070,36 +1272,6 @@ mod tests {
         let link = k_builder_ignored_warning("link", false, false, true, 0.0)
             .expect("link under DF-J alone is skipped, so it must warn");
         assert!(link.contains("direct 4-centre builder"), "{link}");
-    }
-
-    /// The open-shell solvers' `df_k_active` must count the two runs whose
-    /// main DF-K is never built but whose exchange is still not the direct
-    /// builder's: a range-separated functional (SR/LR fitters only) and a
-    /// pure functional with a dropped `df_k_aux`. With them `"direct"` is
-    /// overridden and warned; a plain exact run stays unoverridden.
-    ///
-    /// MUTATION: return `df_k_built` alone (the pre-fix UHF/ROHF argument)
-    /// and the RSH and dropped-aux asserts go RED.
-    #[test]
-    fn open_shell_df_k_active_counts_rsh_and_a_dropped_df_k() {
-        assert!(open_shell_df_k_active(
-            true,
-            Some("def2-universal-jkfit"),
-            0.0
-        ));
-        assert!(open_shell_df_k_active(false, None, 0.3), "RSH");
-        assert!(
-            open_shell_df_k_active(false, Some("def2-universal-jkfit"), 0.0),
-            "pure functional, df_k_aux dropped"
-        );
-        assert!(!open_shell_df_k_active(false, None, 0.0));
-        assert!(
-            !open_shell_df_k_active(false, Some(""), 0.0),
-            "exact sentinel"
-        );
-        // RSH under UKS with no DF-J (off for omega > 0): overridden.
-        let active = open_shell_df_k_active(false, None, 0.3);
-        assert!(k_builder_ignored_warning("direct", active, false, true, 0.3).is_some());
     }
 
     /// Without any density fitting nothing overrides `"direct"`: it resolves

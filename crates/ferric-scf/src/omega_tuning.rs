@@ -703,27 +703,19 @@ pub fn eval_j_seeded(
 /// Both states must build J the same way, or the IP (and ω*) inherits the
 /// difference: measured 2.3e-5 to 2.8e-5 Ha in the IP for ωB97X-V/def2-SVP
 /// H2O, ≈1.4e-4 Bohr⁻¹ in ω*. The cation is range-separated UKS, and
-/// `solve_uhf` never density-fits J when ω > 0: it uses exact J whatever
-/// `df_j_aux` says. `solve_rhf`, by contrast, auto-selects RI-J for a
-/// functional when `df_j_aux` is unset. So the only treatment both states can
-/// share is exact J: an unset `df_j_aux` resolves to exact J (`Some("")`), and
-/// a named aux basis is refused rather than applied to the neutral alone.
+/// `solve_uhf` takes no auto-default aux, while `solve_rhf` auto-selects RI-J
+/// for a functional when `df_j_aux` is unset. So an unset `df_j_aux` resolves
+/// to exact J (`Some("")`) for both states; `""` or a named aux basis reaches
+/// both solvers as given, which fit J on it identically (the J/K route,
+/// `ferric_scf::resolve_jk_route`).
 pub fn state_scf_config(cfg: &OmegaTuneConfig, omega: f64) -> Result<RhfConfig, FerricError> {
     let mut scf = RhfConfig {
         xc: Some(cfg.functional.clone()),
         xc_omega: Some(omega),
         ..cfg.scf.clone()
     };
-    match scf.df_j_aux.as_deref() {
-        None => scf.df_j_aux = Some(String::new()),
-        Some("") => {}
-        Some(aux) => {
-            return Err(FerricError::General(format!(
-                "tune_omega: df_j_aux = {aux:?} cannot be honoured: the range-separated \
-                 UKS cation always uses exact J, so the neutral must too. Leave df_j_aux \
-                 unset or set it to \"\" (exact J)."
-            )))
-        }
+    if scf.df_j_aux.is_none() {
+        scf.df_j_aux = Some(String::new());
     }
     Ok(scf)
 }

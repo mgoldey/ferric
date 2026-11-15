@@ -33,18 +33,17 @@
 //!
 //! | piece | ferric (this file's config) | PySCF (generator) |
 //! |---|---|---|
-//! | J | exact — `uhf.rs` forces `j_aux_eff = None` for ω > 0 | exact 4-index |
+//! | J | exact — `df_j_aux = Some("")` | exact 4-index |
 //! | K | `c_SR·K^DF[erfc(ω)] + c_LR·K^DF[erf(ω)]`, jkfit aux | same, attenuated metric |
 //! | grid | (75,110) Becke + Becke radii; VV10 (50,50) | same |
 //! | ω | `RhfConfig::xc_omega` → libxc `_omega` AND the SR/LR split | `mf.omega` |
 //! | cation state | default guess, NOT stability-followed | same (minao, not followed) |
 //!
 //! The J row matters and is the trap `omega_tuning::state_scf_config` names:
-//! `solve_uhf` never density-fits J when ω > 0, while `solve_rhf` auto-selects
-//! RI-J for a functional. Only the UKS cation is run here, so there is no
+//! `solve_uhf` takes no auto-default aux, while `solve_rhf` auto-selects RI-J
+//! for a functional. Only the UKS cation is run here, so there is no
 //! RKS-vs-UKS mismatch to make — but `df_j_aux = Some("")` is set explicitly
-//! anyway, so the configuration states the intent instead of relying on the
-//! solver's internal override.
+//! so the configuration states exact J instead of relying on the default.
 //!
 //! # Physics hypothesis vs artifact hypothesis
 //!
@@ -203,9 +202,8 @@ fn rsh_config(omega: f64) -> RhfConfig {
     RhfConfig {
         xc: Some(FUNCTIONAL.into()),
         xc_omega: Some(omega),
-        // Explicit exact J. `solve_uhf` would force this anyway for omega > 0
-        // (`j_aux_eff`), but stating it keeps the configuration self-describing
-        // and matches `omega_tuning::state_scf_config`.
+        // Explicit exact J, as `omega_tuning::state_scf_config` resolves an
+        // unset `df_j_aux`.
         df_j_aux: Some(String::new()),
         df_k_aux: Some(AUX.into()),
         energy_conv: 1e-10,

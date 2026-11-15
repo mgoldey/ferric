@@ -541,6 +541,25 @@ fn resolve_df_aux(requested: Option<&str>, default_aux: &str) -> Option<String> 
     }
 }
 
+/// `df_j_aux` / `df_k_aux` of a geometry driver (`run_optimize`,
+/// `run_frequencies`): the CLI's rule, one for both surfaces. With `xc` an
+/// unset aux is `def2-universal-jkfit` (`ferric_scf::scf_jk::DEFAULT_SCF_JK_AUX`)
+/// for RKS, UKS and ROKS alike, as `[scf]` with a functional resolves it;
+/// without `xc` an unset aux stays exact four-centre J/K. Opt-out spellings
+/// map to the `""` sentinel either way.
+///
+/// Why the CLI's rule and not exact J/K: the restricted solver already fits a
+/// functional's J/K when the aux is unset, so the old Python default gave
+/// RKS the fitted surface and UKS/ROKS the exact one for the same
+/// `run_optimize` call; the KS energy entry points (`run_dft`, `run_uks`,
+/// `run_roks`) and the CLI fit for every spin case.
+fn geometry_df_aux(xc: Option<&str>, requested: Option<&str>) -> Option<String> {
+    match xc {
+        Some(_) => resolve_df_aux(requested, ferric_scf::scf_jk::DEFAULT_SCF_JK_AUX),
+        None => requested.map(ferric_scf::rhf::normalize_df_aux),
+    }
+}
+
 /// One COSX grid kwarg: `(radial, angular)` (flat) or `(radial, angular,
 /// prune)` with `prune` in `"none"` / `"sgx"` / `"nwchem"` (the CLI's
 /// `cosx_grid = { radial, angular, prune }` table). Strict.

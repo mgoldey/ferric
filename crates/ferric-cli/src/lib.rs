@@ -2150,29 +2150,34 @@ fn log_scf_dispersion(scf_energy: f64, dispersion: Option<&DispersionCorrection>
 
 /// Print the `[ferric] SCF J/K:` line for an SCF about to run with `scf`.
 ///
-/// `exchange_used` is the test every SCF solver applies before building any
-/// K: plain HF, or a functional with nonzero short-range or range-separated
-/// exact exchange. An unparseable name is reported by the SCF itself, so it
-/// is treated as "uses K" here.
-///
-/// `open_shell`: `solve_uhf`/`solve_rohf` build J directly (four-centre) for
-/// a range-separated functional whatever `df_j_aux` says (their `j_aux_eff`
-/// requires omega == 0), so the line must say exact J there.
+/// The line states the route the solver resolves
+/// (`ferric_scf::resolve_jk_route`, the decision every SCF solver builds
+/// from), so it cannot drift from what runs. `open_shell` picks the UHF/ROHF
+/// resolution (no auto-default aux) over the RHF one. An unparseable
+/// functional name is reported by the SCF itself and counts as HF exchange
+/// here.
 fn log_jk_path(scf: &RhfConfig, open_shell: bool) {
-    let k_mix = scf
-        .xc
-        .as_deref()
-        .and_then(|name| ferric_dft::libxc::xc_def_from_name(name).ok())
-        .map(|d| ferric_dft::libxc::k_mix_from_xc_def(&d));
-    let (exchange_used, rsh) = match &k_mix {
-        None => (true, false),
-        Some(m) => (m.sr > 0.0 || m.omega > 0.0, m.omega > 0.0),
-    };
-    let df_j = if open_shell && rsh {
-        None
+    let spin = if open_shell {
+        ferric_scf::Spin::Unrestricted
     } else {
-        scf.df_j_aux.as_deref()
+        ferric_scf::Spin::Restricted
     };
+    let exchange = ferric_scf::JkExchange::from_config(scf);
+    // A cosx + named df_k_aux conflict is refused by the SCF right after this
+    // line; describe the request as written until then.
+    let Ok(route) = ferric_scf::resolve_jk_route(scf, exchange, spin) else {
+        eprintln!(
+            "[ferric] SCF J/K: {}",
+            config::describe_jk_path(
+                scf.df_j_aux.as_deref(),
+                scf.df_k_aux.as_deref(),
+                exchange.k_consumed()
+            )
+        );
+        return;
+    };
+    let (exchange_used, rsh) = (route.k_consumed, route.omega > 0.0);
+    let df_j = route.j_aux.as_deref();
     if scf.k_builder.as_deref() == Some("cosx") && exchange_used && !rsh {
         let j = df_j.filter(|s| !s.is_empty()).map_or_else(
             || "exact J (four-centre)".to_string(),
@@ -2203,9 +2208,13 @@ fn log_jk_path(scf: &RhfConfig, open_shell: bool) {
         );
         return;
     }
+    let df_k = route
+        .k_aux
+        .as_deref()
+        .or(route.rsh_pair.as_ref().map(|(a, _)| a.as_str()));
     eprintln!(
         "[ferric] SCF J/K: {}",
-        config::describe_jk_path(df_j, scf.df_k_aux.as_deref(), exchange_used)
+        config::describe_jk_path(df_j, df_k, exchange_used)
     );
 }
 

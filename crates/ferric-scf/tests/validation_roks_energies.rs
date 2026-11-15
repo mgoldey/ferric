@@ -27,8 +27,8 @@
 //!
 //! * Grid (75,110) unpruned Becke + Becke-1988 radii (ferric's default, the
 //!   KS-DFT row's recipe).
-//! * J/K: `solve_rohf` resolves `j_aux_eff = df_j_aux` (ω = 0) and
-//!   `k_aux_eff = df_k_aux` when exact exchange is used, through the same
+//! * J/K: `solve_rohf` resolves `j_aux = df_j_aux` and `k_aux = df_k_aux`
+//!   when exact exchange is used (`ferric_scf::resolve_jk_route`), through the same
 //!   `fock_assembly::build_df_jk` as `solve_uhf`; the CLI's
 //!   `scf_xc_and_aux_defaults` puts def2-universal-jkfit in both for a
 //!   functional. So PBE is RI-J, B3LYP is RI-J + RI-K; PySCF
