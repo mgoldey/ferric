@@ -3871,11 +3871,6 @@ fn solve_rhf_impl(
         let (eps, mut c) = diag.run(&f_new)?;
         phases.stop(diagonalize_t);
         last_eps = eps;
-        // Only retain C across iterations when the level shift needs it; the
-        // default (shift = 0) path skips the clone entirely.
-        if effective_level_shift > 0.0 {
-            c_prev = Some(c.clone());
-        }
 
         // MOM occupied-orbital selection from iter mom_after_iter+1: pin the
         // occupied set by AO-overlap with the previous accepted occupation
@@ -3890,6 +3885,14 @@ fn solve_rhf_impl(
         }
         if config.mom_after_iter > 0 && iter >= config.mom_after_iter {
             mom_ref = Some(c.slice(ndarray::s![.., ..nocc]).to_owned());
+        }
+        // Only retain C across iterations when the level shift needs it; the
+        // default (shift = 0) path skips the clone entirely. Taken AFTER the
+        // MOM reorder: the next iteration shifts `c_prev[:, nocc..]`, which
+        // must be the virtuals of the occupation MOM kept, not those of the
+        // aufbau ordering MOM just overrode.
+        if effective_level_shift > 0.0 {
+            c_prev = Some(c.clone());
         }
 
         // Rebuild density. Default path (smearing off): D = 2 * C_occ @ C_occ^T
