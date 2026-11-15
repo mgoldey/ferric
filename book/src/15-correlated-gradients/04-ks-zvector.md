@@ -1,15 +1,15 @@
 # 15.4 Kohn–Sham Z-vector for post-SCF corrections
 
-<!-- section: 15.4; status: gap; registry: mbd;
-     theory: crates/ferric-mp2/theory.md#"9. Analytic RI-MP2 gradient and Z-vector" -->
+<!-- section: 15.4; status: ready; registry: ks-zvector;
+     theory: crates/ferric-scf/theory.md#"Kohn-Sham Z-vector for post-SCF corrections" -->
 
 A correction computed after a Kohn–Sham SCF, such as a many-body dispersion
 energy evaluated from the converged density, depends on the orbitals and
 needs the same orbital relaxation term as a correlated method. ferric
 provides it as one module, `ferric_scf::zvector_ks`, for RKS, UKS and ROKS
-references. Its only production caller is the MBD@rsSCS gradient. It has no
-derivation in a `theory.md` file and no script; the module documentation is
-the source, and this section is marked as a gap.
+references. Its only production caller is the MBD@rsSCS gradient. The
+derivation is `crates/ferric-scf/theory.md`, "Kohn-Sham Z-vector for post-SCF
+corrections", and the proof is `scripts/ks_zvector_sympy.py`.
 
 | Symbol | Meaning | Code name |
 |---|---|---|
@@ -41,16 +41,15 @@ $dQ = 4\sum\kappa_{ai}V_{ai}$.
 **The contraction without new derivative integrals.** Because
 $F_{ai} = \tfrac14\partial E/\partial\kappa_{ai}$,
 
-$$ \sum_{ai}Z_{ai}\frac{\partial F_{ai}}{\partial R} = \frac14\,\frac{d}{dt}\,g\big(D + t\,\delta D_Z,\; W + t\,\dot W\big)\Big|_{t=0}, \qquad \delta D_Z = 2(\mathbf C_vZ\mathbf C_o^{\mathsf T} + \mathbf C_oZ^{\mathsf T}\mathbf C_v^{\mathsf T}), \tag{15.11} $$
+$$ \sum_{ai}Z_{ai}\frac{\partial F_{ai}}{\partial R} = \frac14\,\frac{d}{dt}\,g\big(D(t),\; W + t\,\dot W\big)\Big|_{t=0}, \qquad \delta D_Z = 2(\mathbf C_vZ\mathbf C_o^{\mathsf T} + \mathbf C_oZ^{\mathsf T}\mathbf C_v^{\mathsf T}), \tag{15.11} $$
 
-with $\dot W = \tfrac12(\delta D_ZFD + DF\delta D_Z + D\,\delta F\,D)$ and
+with $\dot D(0) = \delta D_Z$, $\dot W = \tfrac12(\delta D_ZFD + DF\delta D_Z + D\,\delta F\,D)$ and
 $\delta F$ the response Fock matrix of $\delta D_Z$. The code takes a central
 difference in $t$ of the SCF gradient routine itself, with $D(t)$ built from
-occupied orbitals rotated by $tZ$ (an exact projector). The one-electron, ECP
-and two-electron parts of $g$ are linear or bilinear in $D$ and $W$, so the
-central difference is exact for them up to rounding; only the XC part
-carries an $O(t^2)$ error. The step is chosen so that
-$t\max|\delta D_Z| = 10^{-4}$.
+occupied orbitals rotated by $tZ$ and re-orthonormalized (an exact
+projector). That projector has an odd $t^3$ term, so the central difference
+carries an $O(t^2)$ error in every part of $g$, not only the XC part; at the
+chosen step, $t\max|\delta D_Z| = 10^{-4}$, it is about $10^{-8}$ relative.
 
 <!-- excerpt: ferric-scf/src/zvector_ks.rs::relaxation_gradient_closed -->
 ```rust
@@ -66,18 +65,55 @@ let rhs = -4.0 * cv.t().dot(v_ao).dot(&co);
 The contraction (15.11) is returned as `0.25 * (&gp - &gm) / (2.0 * t)`,
 with `gp` and `gm` the SCF gradient expression at $\pm t$.
 
-> **Unverified equations 15.10 and 15.11** · the KS Z-vector
+> **Verified equation 15.10** · the Z-vector relaxation term
 >
-> The relaxation term, the Hessian convention, and the directional-derivative
-> contraction, for RKS; with $-2V_{vo}$ per spin and the factor $\tfrac12$ for
-> UKS; with three rotation blocks for ROKS.
+> For RKS, the caller's fixed-orbital part plus $\sum Z_{ai}\,\partial F_{ai}/\partial x$,
+> with $HZ = -4V_{vo}$ and $\partial F_{ai}/\partial x$ taken along the explicit
+> fixed path, equals a Richardson difference of $Q$ with the SCF re-solved, on
+> a model with $x$-dependent $S$, $h$, factorized integrals and an LDA-type XC
+> kernel. At $Q = E_{\rm SCF}$ the right-hand side vanishes and $Z = 0$.
 >
 > | | |
 > |---|---|
-> | Proof | none committed. The evidence is end to end: the MBD@rsSCS exact gradient against a central finite difference of the full SCF + MBD pipeline (section 15.4.4). |
-> | Status | gap: no `theory.md` section, no sympy script; the registry id `mbd` is a gap |
+> | Proof | `scripts/ks_zvector_sympy.py`, claims Z0 and Z1 |
+> | Negative control | the runner changes $-4V_{vo}$ to $-2V_{vo}$ |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-scf/src/zvector_ks.rs::relaxation_gradient_closed` |
+> | Code test | `mbd_exact_gradient_matches_fd_of_full_scf_pipeline` in `crates/ferric-rpa/tests/mbd_scf_gradient.rs` |
 >
-> <!-- unverified: id=ks.zvector; todo=derive (15.10)-(15.11) and the UKS and ROKS blocks in crates/ferric-scf/theory.md; add a sympy check of the contraction against FD on a model with x-dependent S, h and a model XC energy -->
+> <!-- verified: id=ks.zvector; script=scripts/ks_zvector_sympy.py; claim=Z1; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/zvector_ks.rs::relaxation_gradient_closed; rust_test=ferric-rpa/tests/mbd_scf_gradient.rs::mbd_exact_gradient_matches_fd_of_full_scf_pipeline; registry=ks-zvector -->
+
+> **Verified equation 15.11** · the contraction by a central difference
+>
+> $\tfrac14[g(+t) - g(-t)]/(2t)$ at the rotated projector and $W + t\dot W$
+> equals $\sum Z_{ai}\,\partial F_{ai}/\partial x$; halving $t$ divides the
+> error by 4, with and without the XC term.
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/ks_zvector_sympy.py`, claim Z2 |
+> | Negative control | the runner changes the factor $\tfrac14$ to $\tfrac12$, and drops $D\,\delta F\,D$ from $\dot W$ |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-scf/src/zvector_ks.rs::relaxation_gradient_closed` |
+>
+> <!-- verified: id=ks.zvector.contraction; script=scripts/ks_zvector_sympy.py; claim=Z2; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/zvector_ks.rs::relaxation_gradient_closed; rust_test=ferric-rpa/tests/mbd_scf_gradient.rs::mbd_exact_gradient_matches_fd_of_full_scf_pipeline; registry=ks-zvector -->
+
+> **Verified equations 15.10 and 15.11, open shell** · the UKS and ROKS blocks
+>
+> UKS with $HZ^\sigma = -2V^\sigma_{vo}$ and the factor $\tfrac12$, and ROKS
+> with $HZ = -(4V_{vc}, 2V_{vo}, 2V_{oc})$, the three-block product and the
+> closed-open cross term of the fixed path, each against a Richardson
+> difference of $Q$ with the SCF re-solved; $\alpha = \beta$ reproduces RKS.
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/ks_zvector_sympy.py`, claims Z3 and Z4 |
+> | Negative control | the runner changes the UKS $-2V_{vo}$ to $-4V_{vo}$, the ROKS $4V_{vc}$ to $2V_{vc}$, and drops the cross term of $\dot W$ |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-scf/src/zvector_ks.rs::{relaxation_gradient_unrestricted,relaxation_gradient_roks}` |
+> | Code test | `roks_path_on_a_closed_shell_reproduces_the_closed_shell_gradient` in `crates/ferric-rpa/tests/mbd_scf_gradient_roks.rs` |
+>
+> <!-- verified: id=ks.zvector.open-shell; script=scripts/ks_zvector_sympy.py; claim=Z4; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/zvector_ks.rs::{relaxation_gradient_unrestricted,relaxation_gradient_roks}; rust_test=ferric-rpa/tests/mbd_scf_gradient_roks.rs::roks_path_on_a_closed_shell_reproduces_the_closed_shell_gradient; registry=ks-zvector -->
 
 ## 15.4.2 The solver
 
@@ -94,7 +130,7 @@ meta-GGA kernels).
 |---|---|---|---|
 | RKS | $vo$ | $-4V_{vo}$ | $\tfrac14$ |
 | UKS | $vo$ per spin, coupled through $\delta J$ of the total density | $-2V_{vo}$ per spin | $\tfrac12$ |
-| ROKS | $vc$, $vo$, $oc$ | three blocks, as in the ROHF Newton solver | as in the module documentation |
+| ROKS | $vc$, $vo$, $oc$ | $-(4V_{vc}, 2V_{vo}, 2V_{oc})$ | $\tfrac12$ |
 
 For a linear ²Π radical the Hessian has a null mode (rotation about the
 molecular axis mixes the degenerate orbitals); the open-shell solvers detect
@@ -140,9 +176,10 @@ $2.7\times10^{-14}$.
 
 | Source | What it gives |
 |---|---|
-| module documentation of `crates/ferric-scf/src/zvector_ks.rs` | (15.10), (15.11), the UKS and ROKS blocks, the scope |
+| `crates/ferric-scf/theory.md`, "Kohn-Sham Z-vector for post-SCF corrections" | (15.10) to (15.12), the solve |
+| `scripts/ks_zvector_sympy.py`, claims Z0 to Z4 | the proofs |
+| module documentation of `crates/ferric-scf/src/zvector_ks.rs` | the scope and refusals |
 | section 15.1 | the Lagrangian argument |
 
-**Known limits (2026-11-15).** No `theory.md` derivation and no script. One
-production caller (MBD@rsSCS). HF references, VV10, solvation, embedding and
+**Known limits (2026-11-15).** One production caller (MBD@rsSCS). HF references, VV10, solvation, embedding and
 cDFT are refused.

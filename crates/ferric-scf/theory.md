@@ -1674,3 +1674,141 @@ positive definiteness; P1 the followed-mode root and step in symbols; P2
 `prfo_step` against the augmented-Hessian eigenvectors; F1 the two Bofill
 corrections' secant conditions; F2 the update's secant condition, symmetry and
 retained negative eigenvalue; I1 the mass-weighted step).
+
+## Kohn-Sham Z-vector for post-SCF corrections
+
+`zvector_ks.rs` supplies the orbital-relaxation term of the nuclear gradient
+of a quantity $Q(R, D)$ computed after a converged Kohn-Sham SCF (its
+production caller is the MBD@rsSCS gradient). With
+$V = \partial Q/\partial D_{\rm total}$ (AO, symmetric), the total derivative is
+
+$$ \frac{dQ}{dx} = \underbrace{\frac{\partial Q}{\partial x}\Big|_D + \operatorname{tr}\big[V\,\delta D^{\rm fix}\big]}_{\text{caller}} + \sum Z\cdot\frac{\partial F_{\rm vo}}{\partial x}\Big|_{\rm fix} . $$
+
+The caller's part holds the occupied orbitals on the fixed path, on which they
+follow their basis functions and are Löwdin re-orthonormalized among
+themselves: $\delta C_o = -\tfrac12 C_oS^x_{oo}$, and the virtual space follows
+as the $S(x)$-orthogonal complement. The module supplies the second term from
+one linear solve. Orbitals rotate as $C \leftarrow C\,U(\kappa)$ with
+$\kappa_{ai}$ stored (book notation §6), and the Brillouin condition holds on
+every geometry, so $\partial_xF_{ai}|_{\rm fix} + (H\kappa^x)_{ai} = 0$ with
+$H_{ai,bj} = \partial F_{ai}/\partial\kappa_{bj}$; with $dQ = c\,\kappa\cdot V_{vo}$
+($c$ the occupation factor below) and $H$ symmetric,
+$c\,V\cdot\kappa^x = -c\,V\cdot H^{-1}\partial_xF = Z\cdot\partial_xF$ with
+$HZ = -c\,V_{vo}$.
+
+**Closed shell (RKS).** $D = 2C_oC_o^{\mathsf T}$, a rotation changes it by
+$\delta D = 2(C_v\kappa C_o^{\mathsf T} + C_o\kappa^{\mathsf T}C_v^{\mathsf T})$, so
+$dE = 4\sum\kappa_{ai}F_{ai}$, $dQ = 4\sum\kappa_{ai}V_{ai}$, and
+
+$$ (Hx)_{ai} = (F_{vv}x - xF_{oo})_{ai} + \big(C_v^{\mathsf T}\,\delta F[\delta D(x)]\,C_o\big)_{ai}, \qquad HZ = -4V_{vo},\quad V_{vo} = C_v^{\mathsf T}VC_o, $$
+
+$\delta F[\delta D] = \delta J - \tfrac12(c_{\rm sr}\delta K_{\rm sr} + c_{\rm lr}\delta K_{\rm lr}) + \delta V_{xc}$,
+with $\delta V_{xc}$ the spin kernel applied to $\delta D_\alpha = \delta D_\beta = \tfrac12\delta D$.
+The fixed path gives $\delta D^{\rm fix} = -\tfrac12 DS^xD$.
+
+**The contraction without derivative integrals.** $F_{ai} = \tfrac14\partial E/\partial\kappa_{ai}$,
+and $\partial E/\partial x$ along the fixed path is the SCF gradient expression
+$g(D, W)$ with $W = \tfrac12DF[D]D$ (any projector $D$:
+$\operatorname{tr}(F\,\delta D^{\rm fix}) = -\operatorname{tr}(S^xW)$). Exchanging the order
+of the two derivatives,
+
+$$ \sum_{ai}Z_{ai}\frac{\partial F_{ai}}{\partial x} = \frac14\frac{d}{dt}\,g\big(D(t),\,W + t\dot W\big)\Big|_{t=0},\qquad \dot W = \tfrac12\big(\delta D_ZFD + DF\delta D_Z + D\,\delta F[\delta D_Z]\,D\big), $$
+
+$\delta D_Z = \delta D(Z)$. For $t \ne 0$ the fixed path of the rotated
+orbitals differs from the rotated fixed path by an occupied-virtual rotation
+of order $t$, whose energy gradient is itself of
+order $t$, so the $t$-derivative is unchanged. The code evaluates
+$\tfrac14[g(+t) - g(-t)]/(2t)$ with `ks_gradient_closed_for_density`, the same
+routine, $J/K$ route and grid response as the SCF gradient, at
+
+$$ D(t) = 2\,C_o(t)C_o(t)^{\mathsf T},\qquad C_o(t) = (C_o + tC_vZ)\,(\mathbf 1 + t^2Z^{\mathsf T}Z)^{-1/2}, $$
+
+an exact projector (positive semidefinite, which the fitted-exchange gradient
+needs; $D \pm t\,\delta D_Z$ is not), with $\dot D(0) = \delta D_Z$, and
+$t = 10^{-4}/\max\lvert\delta D_Z\rvert$ (`T_SCALE`). $g$ is linear in $W$, so
+$W + t\dot W$ is exact to the order needed. The central difference is not
+exact for the one- and two-electron parts: $D(t)$ has an odd $t^3$ term,
+$-t^3(C_vZZ^{\mathsf T}ZC_o^{\mathsf T} + {\rm h.c.})$ from the
+$(\mathbf 1 + t^2Z^{\mathsf T}Z)^{-1/2}$ factor, and its even $t^2$ term enters
+the bilinear two-electron part, so every part of the contraction carries an
+$O(t^2)$ error, of relative size $\sim 10^{-8}$ at this step.
+
+**Unrestricted (UKS).** Unit occupations: $D_\sigma = C_{\sigma o}C_{\sigma o}^{\mathsf T}$,
+$\delta D_\sigma = C_{\sigma v}x^\sigma C_{\sigma o}^{\mathsf T} + {\rm h.c.}$, so
+$dE = 2\sum_\sigma\kappa^\sigma\cdot F^\sigma_{vo}$ and, for $Q(D_\alpha + D_\beta)$,
+
+$$ (Hx)^\sigma = F^\sigma_{vv}x^\sigma - x^\sigma F^\sigma_{oo} + C_{\sigma v}^{\mathsf T}\,\delta F_\sigma[\delta D_\alpha, \delta D_\beta]\,C_{\sigma o},\qquad HZ^\sigma = -2V^\sigma_{vo}, $$
+
+$\delta F_\sigma = \delta J[\delta D_\alpha + \delta D_\beta] - (c_{\rm sr}\delta K_{\rm sr} + c_{\rm lr}\delta K_{\rm lr})[\delta D_\sigma] + \delta V^\sigma_{xc}$;
+$\delta D^{\rm fix}_\sigma = -D_\sigma S^xD_\sigma$, $W = \sum_\sigma D_\sigma F_\sigma D_\sigma$,
+$\dot W = \sum_\sigma(\delta D_\sigma F_\sigma D_\sigma + D_\sigma F_\sigma\delta D_\sigma + D_\sigma\delta F_\sigma D_\sigma)$,
+and the contraction is $\tfrac12\,d/dt$ of `ks_gradient_uks_for_density` at the
+rotated projectors of each spin (occupation 1). For $\alpha = \beta$ the spin
+blocks are half the closed-shell $Z$ and the relaxation is the RKS one.
+
+**Restricted open shell (ROKS).** One set $C = (C_c|C_o|C_v)$ (closed, open,
+virtual), $P_x = C_xC_x^{\mathsf T}$, $D_\alpha = P_c + P_o$, $D_\beta = P_c$. The
+density-changing rotations are $\kappa_{vc}$ (both spins), $\kappa_{vo}$
+($\alpha$ only) and $\kappa_{oc}$ ($\beta$ only), with
+$dE = 2(\kappa_{vc}\cdot g_{vc} + \kappa_{vo}\cdot g_{vo} + \kappa_{oc}\cdot g_{oc})$,
+$g_{vc} = (F_\alpha + F_\beta)_{vc}$, $g_{vo} = F_{\alpha,vo}$, $g_{oc} = F_{\beta,oc}$
+(MO spin Focks). The Hessian, written with the stationarity conditions so
+that it is symmetric ($F^+ = F_\alpha + F_\beta$, $G_{vc} = \tfrac12(F_\beta - F_\alpha)_{vc}$):
+
+$$ \begin{aligned}
+(Hx)_{vc} &= F^+_{vv}x_{vc} - x_{vc}F^+_{cc} + F_{\beta,vo}x_{oc} - x_{vo}F_{\alpha,oc} + C_v^{\mathsf T}(\delta F_\alpha + \delta F_\beta)C_c,\\
+(Hx)_{vo} &= F_{\alpha,vv}x_{vo} - x_{vo}F_{\alpha,oo} + G_{vc}x_{oc}^{\mathsf T} - x_{vc}F_{\alpha,oc}^{\mathsf T} + C_v^{\mathsf T}\delta F_\alpha C_o,\\
+(Hx)_{oc} &= F_{\beta,oo}x_{oc} - x_{oc}F_{\beta,cc} + F_{\beta,vo}^{\mathsf T}x_{vc} + x_{vo}^{\mathsf T}G_{vc} + C_o^{\mathsf T}\delta F_\beta C_c,
+\end{aligned} $$
+
+with $\delta D_\alpha = C_vx_{vc}C_c^{\mathsf T} + C_vx_{vo}C_o^{\mathsf T} + {\rm h.c.}$ and
+$\delta D_\beta = C_vx_{vc}C_c^{\mathsf T} + C_ox_{oc}C_c^{\mathsf T} + {\rm h.c.}$
+(`RoksBlocks::{densities,product}`). Since $\kappa_{vc}$ moves both spins of
+$D_{\rm total}$,
+
+$$ HZ = -(4V_{vc},\ 2V_{vo},\ 2V_{oc}),\qquad V_{xy} = C_x^{\mathsf T}VC_y . $$
+
+The fixed path re-orthonormalizes closed and open orbitals as one set, so
+$\delta D^{\rm fix}_\alpha = -D_\alpha S^xD_\alpha$ and
+$\delta D^{\rm fix}_\beta = -P_cS^xP_c - \tfrac12(P_oS^xP_c + P_cS^xP_o)$; the
+closed-open cross term is a real part of the caller's term because $V_{co} \ne 0$.
+For the energy the same path gives
+
+$$ W = D_\alpha F_\alpha D_\alpha + P_cF_\beta P_c + \tfrac12(P_cF_\beta P_o + P_oF_\beta P_c), $$
+
+whose cross term vanishes at convergence ($P_cF_\beta P_o = C_cF_{\beta,co}C_o^{\mathsf T}$, $F_{\beta,oc} = 0$)
+but whose derivative does not: $\dot W$ differentiates every term with
+$\delta P_c = \delta D_\beta$, $\delta P_o = \delta D_\alpha - \delta D_\beta$
+(`roks_energy_weighted_density_derivative`). The contraction is
+$\tfrac12[g(+t) - g(-t)]/(2t)$ of `ks_gradient_roks_for_density` at the orbitals
+$C\,(\mathbf 1 - t\kappa/2)^{-1}(\mathbf 1 + t\kappa/2)$, $\kappa$ the antisymmetric
+generator of the three $Z$ blocks.
+
+**The solve.** Preconditioned conjugate gradient with the diagonal gaps
+($F_{aa} - F_{ii}$ per spin; for ROKS the diagonals $F^+_{vv} - F^+_{cc}$,
+$F_{\alpha,vv} - F_{\alpha,oo}$ and $F_{\beta,oo} - F_{\beta,cc}$ of the three blocks), started from
+$\mathrm{rhs}/\mathrm{gap}$. It stops when $\max\lvert r\rvert \le 10^{-10}\max\lvert\mathrm{rhs}\rvert$
+and fails after 200 iterations. A step with
+$p\cdot Hp \le 10^{-12}\,p\cdot Mp$ is accepted as the rounding floor if
+$\max\lvert r\rvert \le 10^{-8}\max\lvert\mathrm{rhs}\rvert$ and is an error
+otherwise (negative curvature: not a minimum; zero: stalled). A non-positive
+gap is refused. For the UKS and ROKS solves of a linear molecule in a state
+that breaks the cylindrical symmetry, the rotation about the axis is an
+occupied-virtual null mode $u$ of $H$: when its gap-metric Rayleigh quotient is
+below $0.05$ and $\lvert\mathrm{rhs}\cdot u\rvert/\lVert\mathrm{rhs}\rVert \le 10^{-3}$,
+$u$ is projected out of the right-hand side and every iterate ($Z_u = 0$); a
+larger overlap is refused. The closed-shell solve has no such projection.
+The Hessian uses exact four-centre $J$ and $K$ even when the SCF fitted them;
+the contraction uses the SCF's own route.
+
+Proof: `scripts/ks_zvector_sympy.py` (Z0 the occupation factors in symbols and
+the anchor $Q = E_{\rm SCF}$, where $V_{vo} = F_{vo} = 0$ gives $Z = 0$ and the
+caller's part alone equals the finite difference of the energy; Z1 the RKS
+relaxation, with $\partial_xF_{ai}$ taken along the explicit fixed path, plus the
+caller's part against a Richardson difference of $Q$ with the SCF re-solved, with
+and without an XC kernel; Z2 the coded central-difference contraction against
+the same $\sum Z\cdot\partial_xF$, and its $O(t^2)$ error with and without XC;
+Z3 the UKS solve and contraction against the finite difference, and the
+$\alpha = \beta$ limit; Z4 the ROKS three-block solve, the transcribed product's
+symmetry and the contraction against the finite difference, with the
+closed-open cross term of the fixed path as a negative control).

@@ -121,7 +121,8 @@
     "optimize:ksdft": [
       "ks-gradient",
       "d3",
-      "geometry-search"
+      "geometry-search",
+      "ks-zvector"
     ],
     "optimize:oo-rimp2": [
       "oo-rimp2-gradient",
@@ -185,7 +186,8 @@
       "ks-hybrid-rsh",
       "ks-vv10",
       "ks-grid",
-      "d3"
+      "d3",
+      "ks-zvector"
     ],
     "py:run_double_hybrid": [
       "double-hybrid"
@@ -975,6 +977,14 @@
         "scripts/lmp2_hylleraas_vs_wshg23_sympy.py",
         "scripts/local_mp2_fit_pno_sympy.py",
         "scripts/mp2_variant_identities.py"
+      ]
+    },
+    "ks-zvector": {
+      "theory": [
+        "crates/ferric-scf/theory.md#kohn-sham-z-vector-for-post-scf-corrections"
+      ],
+      "scripts": [
+        "scripts/ks_zvector_sympy.py"
       ]
     }
   },

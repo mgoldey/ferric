@@ -1258,6 +1258,42 @@ CASES = [
             ),
         ],
     ),
+    (
+        "ks_zvector_sympy.py",
+        10,
+        [
+            (
+                "    rhs = -4.0 * cv.T @ v_ao @ co\n",
+                "    rhs = -2.0 * cv.T @ v_ao @ co\n",
+                "FAIL Z1 RKS:",
+            ),
+            (
+                "return 0.25 * (g_at(1.0) - g_at(-1.0)) / (2.0 * t), z, hmat",
+                "return 0.5 * (g_at(1.0) - g_at(-1.0)) / (2.0 * t), z, hmat",
+                "FAIL Z2 RKS:",
+            ),
+            (
+                "w_dot = 0.5 * (dd @ f_ao @ d + d @ f_ao @ dd + d @ df @ d)",
+                "w_dot = 0.5 * (dd @ f_ao @ d + d @ f_ao @ dd)",
+                "FAIL Z2 RKS:",
+            ),
+            (
+                "rhs = [-2.0 * cv.T @ v_ao @ co for co, cv, _ in blocks]",
+                "rhs = [-4.0 * cv.T @ v_ao @ co for co, cv, _ in blocks]",
+                "FAIL Z3 UKS",
+            ),
+            (
+                "rhs = [-4.0 * cv.T @ v_ao @ cc, -2.0",
+                "rhs = [-2.0 * cv.T @ v_ao @ cc, -2.0",
+                "FAIL Z4 ROKS",
+            ),
+            (
+                "return alpha + closed + 0.5 * (cross + cross.T)",
+                "return alpha + closed",
+                "FAIL Z4 ROKS",
+            ),
+        ],
+    ),
 ]
 
 
