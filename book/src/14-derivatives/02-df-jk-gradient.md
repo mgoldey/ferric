@@ -1,7 +1,7 @@
 # 14.2 Gradients of density-fitted J and K
 
-<!-- section: 14.2; status: gap; registry: none;
-     theory: crates/ferric-scf/theory.md#"Density-fitted Coulomb and exchange (RI-J, RI-K, Split-RI-J)" -->
+<!-- section: 14.2; status: edit; registry: hf-gradient;
+     theory: crates/ferric-scf/theory.md#"Density-fitted Coulomb and exchange (RI-J, RI-K, Split-RI-J)"; crates/ferric-scf/theory.md#"Density-fitted J/K nuclear gradient" -->
 
 Fitting Coulomb and exchange through an auxiliary basis changes the energy,
 so it changes the gradient. The fitted energy is a different function of the
@@ -12,10 +12,9 @@ four-centre derivative integrals is not the gradient of the energy the SCF
 reports, and an optimizer driven by it stops at a point that is stationary
 for neither surface.
 
-This section is marked `gap`: the derivation below is read from the code and
-its module documentation, and `crates/ferric-scf/theory.md` carries no
-derivation of it. The weights are machine-checked on a model by
-`scripts/df_jk_gradient_sympy.py`, which is not yet in the registry.
+The derivation is in `crates/ferric-scf/theory.md`, "Density-fitted J/K
+nuclear gradient", and the weights are machine-checked on a model by
+`scripts/df_jk_gradient_sympy.py`.
 
 | Symbol | Meaning | Code name |
 |---|---|---|
@@ -71,6 +70,8 @@ auxiliary function's, and $\partial V_{PQ}$ on both auxiliary centres. This is
 the standard DF-SCF gradient (Weigend, Häser, Patzelt and Ahlrichs, 1998, for
 RI-J; Weigend, Kattannek and Ahlrichs, 2009, for RI-K).
 
+<!-- include: crates/ferric-scf/theory.md#"Density-fitted J/K nuclear gradient" -->
+
 > **Verified equation 14.5** · the fitted J and K gradient
 >
 > On a model whose three-index integrals and metric depend on one parameter, at a
@@ -90,7 +91,7 @@ RI-J; Weigend, Kattannek and Ahlrichs, 2009, for RI-K).
 > | Code | `ferric-scf/src/df_gradient.rs::{df_jk_gradient_core,truncated_inverse_divided_difference}` |
 > | Code test | `hf_ri_jk_gradient_matches_fd_of_ri_energy` in `crates/ferric-scf/tests/df_jk_gradient.rs` |
 >
-> <!-- verified: id=df.grad.jk; script=scripts/df_jk_gradient_sympy.py; claim=D1; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/df_gradient.rs::{df_jk_gradient_core,truncated_inverse_divided_difference}; rust_test=ferric-scf/tests/df_jk_gradient.rs::hf_ri_jk_gradient_matches_fd_of_ri_energy -->
+> <!-- verified: id=df.grad.jk; script=scripts/df_jk_gradient_sympy.py; claim=D1; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/df_gradient.rs::{df_jk_gradient_core,truncated_inverse_divided_difference}; rust_test=ferric-scf/tests/df_jk_gradient.rs::hf_ri_jk_gradient_matches_fd_of_ri_energy; registry=hf-gradient -->
 
 ## 14.2.2 The truncated exchange metric
 

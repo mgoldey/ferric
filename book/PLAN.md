@@ -236,13 +236,13 @@ Code references are `crate/src/file.rs::item` under `crates/`.
 | § | Section | Sources | Code | Status |
 |---|---|---|---|---|
 | 14.1 | Hartree–Fock nuclear gradient | T scf "Hartree-Fock nuclear gradient"†; S `hf_gradient_sympy.py`†; R hf-gradient | `ferric-scf/src/gradient.rs::{rhf_gradient,uhf_gradient,rohf_gradient,build_energy_weighted_density}` | ready |
-| 14.2 | Gradients of density-fitted J and K | none | `ferric-scf/src/df_gradient.rs::df_jk_gradient` | gap |
+| 14.2 | Gradients of density-fitted J and K | T scf "Density-fitted J/K nuclear gradient"; S `df_jk_gradient_sympy.py`; R hf-gradient | `ferric-scf/src/df_gradient.rs::df_jk_gradient` | edit |
 | 14.3 | XC gradient: AO-derivative and grid-response terms | T dft "XC nuclear gradient"; S `dft_mgga_tau_gradient_sympy.py`; R ks-gradient | `ferric-dft/src/gradient.rs::{xc_gradient_closed_gga_from_density,xc_gradient_closed_mgga_from_density}`, `ferric-scf/src/ks_gradient.rs::ks_gradient_closed` | ready |
 | 14.4 | Hartree–Fock Hessian and coupled-perturbed equations | T scf "Hartree-Fock nuclear Hessian"†; S `hf_hessian_sympy.py`†; R hf-hessian | `ferric-scf/src/hessian.rs::{rhf_hessian,uhf_hessian}` | ready |
 | 14.5 | Kohn–Sham Hessian on a fixed and a moving grid | T scf "Kohn-Sham XC Hessian terms"; S `ks_fixed_grid_hessian_sympy.py`, `uks_xc_hessian_sympy.py`; R ks-hessian | `ferric-scf/src/ks_fixed_grid.rs::{skeleton_hessian,first_order_fock,skeleton_hessian_moving}`, `ferric-dft/src/becke_hessian.rs::becke_home_weight_hess` | ready |
 | 14.6 | Harmonic frequencies | T scf "Harmonic frequencies"†; S `hf_frequencies_sympy.py`†; R harmonic-frequencies | `ferric-scf/src/frequencies.rs::{frequencies_from_cartesian_hessian,harmonic_frequencies_analytic}` | ready |
 | 14.7 | Fock-hook gradients | T scf "Fock hooks and their nuclear gradient" | `ferric-scf/src/gradient.rs::with_fock_hook_gradient` | edit |
-| 14.8 | Geometry optimization, saddle points and reaction paths | M scf "Gradients, optimization, frequencies, transition states" | `ferric-scf/src/optimize.rs::optimize_geometry`, `ferric-scf/src/saddle.rs::find_saddle`, `ferric-scf/src/irc.rs::follow_irc` | gap |
+| 14.8 | Geometry optimization, saddle points and reaction paths | T scf "Geometry searches"; S `geometry_search_steps_sympy.py`; R geometry-search; M scf "Gradients, optimization, frequencies, transition states" | `ferric-scf/src/optimize.rs::optimize_geometry`, `ferric-scf/src/saddle.rs::find_saddle`, `ferric-scf/src/irc.rs::follow_irc` | edit |
 
 **Chapter 15. Correlated gradients and the Z-vector**
 
@@ -447,7 +447,7 @@ registry row and are the largest block of `gap` sections.
 | III. Self-consistent field | 8 | 2 | 0 | 0 | 10 |
 | IV. Density functional theory | 7 | 0 | 0 | 0 | 7 |
 | V. The MP2 family | 13 | 5 | 3 | 5 | 26 |
-| VI. Derivatives | 9 | 1 | 3 | 1 | 14 |
+| VI. Derivatives | 9 | 3 | 1 | 1 | 14 |
 | VII. Coupled cluster | 5 | 1 | 1 | 0 | 7 |
 | VIII. Multireference | 5 | 0 | 1 | 0 | 6 |
 | IX. RPA, PDEP and GW | 12 | 1 | 1 | 1 | 15 |
@@ -458,9 +458,9 @@ registry row and are the largest block of `gap` sections.
 | XIV. Capstone | 1 | 2 | 4 | 0 | 7 |
 | XV. Interfaces | 1 | 5 | 1 | 0 | 7 |
 | Appendices | 3 | 0 | 1 | 0 | 4 |
-| **Total** | **87** | **49** | **16** | **7** | **159** |
+| **Total** | **87** | **51** | **14** | **7** | **159** |
 
-159 sections: 55% `ready`, 31% `edit`, 10% `gap` and 4% `verify`.
+159 sections: 55% `ready`, 32% `edit`, 9% `gap` and 4% `verify`.
 <!-- status-table:end -->
 
 ## 5. Gaps, ranked by how much rests on them

@@ -119,29 +119,37 @@
     ],
     "optimize:ksdft": [
       "ks-gradient",
-      "d3"
+      "d3",
+      "geometry-search"
     ],
     "optimize:oo-rimp2": [
-      "oo-rimp2-gradient"
+      "oo-rimp2-gradient",
+      "geometry-search"
     ],
     "optimize:pdep-rpa": [
-      "rpa-gradient"
+      "rpa-gradient",
+      "geometry-search"
     ],
     "optimize:rhf": [
-      "hf-gradient"
+      "hf-gradient",
+      "geometry-search"
     ],
     "optimize:rimp2": [
       "ri-mp2-gradient",
-      "u-ri-mp2-gradient"
+      "u-ri-mp2-gradient",
+      "geometry-search"
     ],
     "optimize:rohf": [
-      "hf-gradient"
+      "hf-gradient",
+      "geometry-search"
     ],
     "optimize:scs-mp2": [
-      "scs-mp2-gradient"
+      "scs-mp2-gradient",
+      "geometry-search"
     ],
     "optimize:uhf": [
-      "hf-gradient"
+      "hf-gradient",
+      "geometry-search"
     ],
     "py:hirshfeld_polarizability": [
       "rpa-polarizability-c6"
@@ -206,7 +214,8 @@
     ],
     "py:run_irc": [
       "hf-gradient",
-      "ks-gradient"
+      "ks-gradient",
+      "geometry-search"
     ],
     "py:run_ksdft": [
       "ks-semilocal",
@@ -253,13 +262,16 @@
       "ri-mp2-gradient",
       "oo-rimp2-gradient",
       "scs-mp2-gradient",
-      "u-ri-mp2-gradient"
+      "u-ri-mp2-gradient",
+      "geometry-search"
     ],
     "py:run_optimize_qmmm": [
-      "qmmm"
+      "qmmm",
+      "geometry-search"
     ],
     "py:run_optimize_uhf": [
-      "hf-gradient"
+      "hf-gradient",
+      "geometry-search"
     ],
     "py:run_pdep_rpa": [
       "pdep-rpa",
@@ -314,7 +326,8 @@
     ],
     "py:run_saddle": [
       "hf-gradient",
-      "ks-gradient"
+      "ks-gradient",
+      "geometry-search"
     ],
     "py:run_scs_mp2": [
       "scs-mp2"
@@ -365,7 +378,8 @@
       "xtb"
     ],
     "py:run_xtb_optimize": [
-      "xtb"
+      "xtb",
+      "geometry-search"
     ],
     "cli:opmp3": [
       "opmp3"
@@ -445,10 +459,12 @@
     },
     "hf-gradient": {
       "theory": [
-        "crates/ferric-scf/theory.md#hartree-fock-nuclear-gradient"
+        "crates/ferric-scf/theory.md#hartree-fock-nuclear-gradient",
+        "crates/ferric-scf/theory.md#density-fitted-jk-nuclear-gradient"
       ],
       "scripts": [
-        "scripts/hf_gradient_sympy.py"
+        "scripts/hf_gradient_sympy.py",
+        "scripts/df_jk_gradient_sympy.py"
       ]
     },
     "hf-hessian": {
@@ -939,6 +955,14 @@
       ],
       "scripts": [
         "scripts/atomic_charges_sympy.py"
+      ]
+    },
+    "geometry-search": {
+      "theory": [
+        "crates/ferric-scf/theory.md#geometry-searches"
+      ],
+      "scripts": [
+        "scripts/geometry_search_steps_sympy.py"
       ]
     }
   },

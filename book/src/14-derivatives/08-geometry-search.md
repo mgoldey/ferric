@@ -1,7 +1,7 @@
 # 14.8 Geometry optimization, saddle points and reaction paths
 
-<!-- section: 14.8; status: gap; registry: none;
-     theory: crates/ferric-scf/theory.md#"Harmonic frequencies" -->
+<!-- section: 14.8; status: edit; registry: geometry-search;
+     theory: crates/ferric-scf/theory.md#"Harmonic frequencies"; crates/ferric-scf/theory.md#"Geometry searches" -->
 
 Three searches use the gradient of section 14.1 and, for saddles, the
 Hessian of section 14.4. A minimizer follows the gradient downhill with a
@@ -10,11 +10,10 @@ exactly that property: it climbs along one Hessian mode and descends along
 all others. A reaction-path walk answers a different question: which two
 minima does a saddle connect?
 
-This section is marked `gap` because `crates/ferric-scf/theory.md` has no
-section on the searches. The derivations below are written from the code, and
+The derivation is in `crates/ferric-scf/theory.md`, "Geometry searches", and
 the step formulas are machine-checked by
 `scripts/geometry_search_steps_sympy.py`, which carries its own mutations in
-the runner. The `theory.md` section and registry rows are still to land.
+the runner.
 
 | Symbol | Meaning | Code name |
 |---|---|---|
@@ -34,17 +33,20 @@ the runner. The `theory.md` section and registry rows are still to land.
 | CLI | `task = "optimize"`, section `[optimize]` (`max_steps`, `g_max_thresh`, `g_rms_thresh`, `e_conv`, `trust_radius`, `coordinates`, `scf_warm_start`) |
 | Python | `run_optimize`, `run_saddle`, `run_irc` |
 
+<!-- include: crates/ferric-scf/theory.md#"Geometry searches" -->
+
 ## 14.8.1 Minimization
 
 The default is Cartesian BFGS on the inverse Hessian, started from the
-identity, with a trust-radius clip and no line search. With $s = x_{k+1}-x_k$
+identity, with a trust-radius clip, no line search and no step rejection. With $s = x_{k+1}-x_k$
 and $y = g_{k+1}-g_k$:
 
 $$ p = -H g, \qquad s = p\,\min\!\Big(1, \frac{r_{\mathrm{trust}}}{\lVert p\rVert}\Big), \qquad
 H' = H + \frac{y^{\mathsf T}s + y^{\mathsf T}Hy}{(y^{\mathsf T}s)^2}\,s\,s^{\mathsf T} - \frac{H y\,s^{\mathsf T} + s\,y^{\mathsf T}H}{y^{\mathsf T}s} . \tag{14.18} $$
 
 If $\lvert y^{\mathsf T}s\rvert \le 10^{-12}$ the update is skipped and $H$ is reset to the
-identity. Convergence needs at least one step taken and all three of
+identity. A step with $y^{\mathsf T}s < 0$ is still applied, and there positive
+definiteness is not guaranteed. Convergence needs at least one step taken and all three of
 $\lvert\Delta E\rvert < e_{\mathrm{conv}}$, $\max\lvert g\rvert < g_{\max}$,
 $\mathrm{rms}(g) < g_{\mathrm{rms}}$; the defaults are $10^{-6}$ Ha,
 $4.5\times10^{-4}$ and $3.0\times10^{-4}$ Ha/Bohr, a trust radius of 0.1 Bohr and 100
@@ -65,7 +67,7 @@ steps.
 > | Code | `ferric-scf/src/optimize.rs::optimize_coordinates` |
 > | Code test | `test_optimize_h2_sto3g_step_energy_anchor` in `crates/ferric-scf/src/optimize.rs` (the Cartesian path, pinned bit for bit) |
 >
-> <!-- verified: id=geom.bfgs; script=scripts/geometry_search_steps_sympy.py; claim=B2; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/optimize.rs::optimize_coordinates; rust_test=ferric-scf/src/optimize.rs::test_optimize_h2_sto3g_step_energy_anchor -->
+> <!-- verified: id=geom.bfgs; script=scripts/geometry_search_steps_sympy.py; claim=B2; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/optimize.rs::optimize_coordinates; rust_test=ferric-scf/src/optimize.rs::test_optimize_h2_sto3g_step_energy_anchor; registry=geometry-search -->
 
 **Redundant internal coordinates** (`coordinates = "internal"`, opt-in) run the
 same update on bonds, angles and proper dihedrals:
@@ -137,7 +139,7 @@ $b_{\min}-10^{-3}$ if the iterate leaves the bracket.
 > | Code | `ferric-scf/src/saddle.rs::prfo_step` |
 > | Code test | `prfo_climbs_even_when_the_followed_mode_has_positive_curvature` in `crates/ferric-scf/src/saddle.rs` |
 >
-> <!-- verified: id=geom.prfo; script=scripts/geometry_search_steps_sympy.py; claim=P2; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/saddle.rs::prfo_step; rust_test=ferric-scf/src/saddle.rs::prfo_climbs_even_when_the_followed_mode_has_positive_curvature -->
+> <!-- verified: id=geom.prfo; script=scripts/geometry_search_steps_sympy.py; claim=P2; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/saddle.rs::prfo_step; rust_test=ferric-scf/src/saddle.rs::prfo_climbs_even_when_the_followed_mode_has_positive_curvature; registry=geometry-search -->
 
 The Rust test is the discriminating one. On a mode that is already negative
 the Newton step $-g/b$ and the RFO step point the same way, so a test built
@@ -166,7 +168,7 @@ $$ B' = B + \varphi\,\frac{e\,e^{\mathsf T}}{e\cdot\Delta x} + (1-\varphi)\Big[\
 > | Code | `ferric-scf/src/saddle.rs::bofill_update` |
 > | Code test | `bofill_reproduces_the_secant_condition` in `crates/ferric-scf/src/saddle.rs` |
 >
-> <!-- verified: id=geom.bofill; script=scripts/geometry_search_steps_sympy.py; claim=F2; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/saddle.rs::bofill_update; rust_test=ferric-scf/src/saddle.rs::bofill_reproduces_the_secant_condition -->
+> <!-- verified: id=geom.bofill; script=scripts/geometry_search_steps_sympy.py; claim=F2; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/saddle.rs::bofill_update; rust_test=ferric-scf/src/saddle.rs::bofill_reproduces_the_secant_condition; registry=geometry-search -->
 
 **What the search refuses.**
 
@@ -227,7 +229,7 @@ steps per branch.
 > | Code | `ferric-scf/src/irc.rs::walk` |
 > | Code test | `the_two_branches_land_on_opposite_sides_of_the_plane` in `crates/ferric-scf/tests/irc_connects_minima.rs` |
 >
-> <!-- verified: id=geom.irc-step; script=scripts/geometry_search_steps_sympy.py; claim=I1; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/irc.rs::walk; rust_test=ferric-scf/tests/irc_connects_minima.rs::the_two_branches_land_on_opposite_sides_of_the_plane -->
+> <!-- verified: id=geom.irc-step; script=scripts/geometry_search_steps_sympy.py; claim=I1; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/irc.rs::walk; rust_test=ferric-scf/tests/irc_connects_minima.rs::the_two_branches_land_on_opposite_sides_of_the_plane; registry=geometry-search -->
 
 **The damping.** A fixed-length step cannot settle into a basin: near a minimum it
 overshoots and orbits. The source records NH3 inversion at the default

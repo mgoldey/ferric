@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Step formulas of ferric's geometry searches: BFGS, P-RFO, Bofill, IRC.
 
-Derivation: book/src/14-derivatives/08-geometry-search.md (no theory.md section
-yet). Code: crates/ferric-scf/src/optimize.rs (the inverse-Hessian update of
+Derivation: crates/ferric-scf/theory.md, "Geometry searches";
+book/src/14-derivatives/08-geometry-search.md. Code:
+crates/ferric-scf/src/optimize.rs (the inverse-Hessian update of
 optimize_coordinates and run_bfgs_internal), crates/ferric-scf/src/saddle.rs
 (prfo_step, bofill_update) and crates/ferric-scf/src/irc.rs (walk). Each
 transcription below mirrors the Rust loop line by line.

@@ -1536,3 +1536,141 @@ Löwdin nonnegativity; A2 the grid rescale; A3 CHELPG's bordered system against
 a null-space constrained least-squares solve; A4 the RESP fixed point as the
 constrained minimizer of the objective above, the objective without the
 $\tfrac12$ as a negative control, and the $a\to0$ limit).
+
+## Density-fitted J/K nuclear gradient
+
+`df_gradient.rs` differentiates the fitted energies the SCF reports, not the
+four-centre ones. The orbital response is carried by the energy-weighted
+density of the Hartree–Fock gradient, because the SCF made the fitted energy
+stationary; what remains is the derivative at fixed density of the raw
+three-index integrals $(P|\mu\nu)$, which act on all three centres including the
+auxiliary one, and of the two-index metric $V_{PQ} = (P|Q)$ of the same
+operator, on both auxiliary centres.
+
+**RI-J.** With the Cholesky-solved metric (no truncation, as `DfJ` builds it),
+$d_P = \sum_{\mu\nu}D_{\mu\nu}(P|\mu\nu)$ and $c = V^{-1}d$:
+
+$$E_J = \tfrac12 d^{\mathsf T}V^{-1}d,\qquad
+\partial E_J = \sum_P c_P\sum_{\mu\nu}D_{\mu\nu}\,\partial(P|\mu\nu) - \tfrac12 c^{\mathsf T}(\partial V)c,$$
+
+using $\partial V^{-1} = -V^{-1}(\partial V)V^{-1}$.
+
+**RI-K.** One channel per density $D_s = X_sX_s^{\mathsf T}$ with weight
+$\alpha_s$ ($-c_K/4$ for a closed-shell total density, $-c_K/2$ per spin for
+UHF and ROHF, $c_K$ the exact-exchange fraction; `exchange_channels`), with
+$L^s_{P,ij} = \sum_{\mu\nu}X^s_{\mu i}(P|\mu\nu)X^s_{\nu j}$ and $V^{+}$ the
+metric inverse the exchange builder applies:
+
+$$E_K = \sum_s\alpha_s\sum_{ij}L^{s\,\mathsf T}_{ij}V^{+}L^s_{ij},\qquad
+\partial E_K = \sum_s 2\alpha_s\sum_{P,ij}\Gamma^s_{P,ij}\,\partial L^s_{P,ij} + \sum_{PQ}Y_{PQ}\,\partial V^{+}_{PQ},$$
+
+$\Gamma^s = V^{+}L^s$, $Y = \sum_s\alpha_s\sum_{ij}L^s_{ij}L^{s\,\mathsf T}_{ij}$, and the
+factor 2 from the two $L$ factors and the symmetry of $V^{+}$. Both gradients are
+two contractions with weights built once (`df_jk_gradient_core`):
+
+$$\partial E_{\rm DF} = \sum_{P,\mu\nu}G_{P,\mu\nu}\,\partial(P|\mu\nu) + \sum_{PQ}H_{PQ}\,\partial V_{PQ},\qquad
+G_{P,\mu\nu} = c_PD_{\mu\nu} + \sum_s2\alpha_s\big(X^s\Gamma^s_PX^{s\,\mathsf T}\big)_{\mu\nu},\qquad
+H = -\tfrac12cc^{\mathsf T} + H_K .$$
+
+**The truncated exchange metric.** `DfK` forms $V^{+} = f(V)$ from
+$V = U\Lambda U^{\mathsf T}$ with $f(\lambda) = 1/\lambda$ above the cut
+(`df_k::metric_lindep_cut`) and $0$ below. The derivative of a spectral
+function is the Daleckii–Krein formula,
+
+$$\partial V^{+} = U\big(\mathsf F\circ U^{\mathsf T}\partial V\,U\big)U^{\mathsf T},\qquad
+\mathsf F_{kl} = \frac{f(\lambda_k)-f(\lambda_l)}{\lambda_k-\lambda_l},\quad \mathsf F_{kk} = f'(\lambda_k),$$
+
+so $H_K = U\big(\mathsf F\circ U^{\mathsf T}YU\big)U^{\mathsf T}$. Case by case
+(`truncated_inverse_divided_difference`): kept/kept $-1/(\lambda_k\lambda_l)$,
+kept $k$/dropped $l$ $1/(\lambda_k(\lambda_k-\lambda_l))$, dropped $k$/kept $l$
+$1/(\lambda_l(\lambda_l-\lambda_k))$, dropped/dropped $0$. With nothing dropped
+this is $-V^{+}(\partial V)V^{+}$; the kept/dropped entries are the rotation of
+kept modes into dropped ones, which that formula misses. The formula is exact
+for a fixed partition of the spectrum, which holds when the cut lies in a gap.
+
+The gradient additionally treats modes below `DFK_GRADIENT_NOISE_FLOOR`
+($10^{-7}$) as dropped even where the energy kept them, because
+$\Gamma_k \propto 1/\lambda_k$ amplifies integral noise there; it warns when
+the energy held by that band exceeds `NOISE_BAND_ENERGY_WARN` ($10^{-6}$ Ha).
+The gradient is then that of the energy with this band removed, and differs
+from the reported energy's gradient by the band's derivative. With no metric
+eigenvalue below $10^{-7}$, the usual case for Coulomb and erfc metrics, the
+floor changes nothing.
+
+Proof: `scripts/df_jk_gradient_sympy.py` (D1 RI-J against the exact sympy
+derivative in rationals; D2 RI-K with every mode kept, likewise; D3 the
+case-by-case kernel against a fourth-order finite difference of $E_K$ with the
+cut in a gap, with $-V^{+}(\partial V)V^{+}$ as the negative control).
+
+## Geometry searches
+
+Three searches use the analytic gradient: a minimizer (`optimize.rs`), a
+saddle search (`saddle.rs`) and a reaction-path walk (`irc.rs`).
+
+**Minimization** (`optimize_coordinates`, Cartesian default). BFGS on the
+inverse Hessian $H$, started from the identity. There is no line search and no
+step rejection: each step is $p = -Hg$ scaled uniformly onto the trust radius
+when longer,
+
+$$s = p\,\min\!\Big(1, \frac{r_{\rm trust}}{\lVert p\rVert}\Big),$$
+
+and the new point is always accepted. With $y = g_{k+1} - g_k$ and
+$\rho = 1/(y^{\mathsf T}s)$,
+
+$$H' = H + \rho^2\big(y^{\mathsf T}s + y^{\mathsf T}Hy\big)ss^{\mathsf T} - \rho\big(Hys^{\mathsf T} + sy^{\mathsf T}H\big).$$
+
+This is the inverse of the direct BFGS update
+$B' = B - \frac{Bss^{\mathsf T}B}{s^{\mathsf T}Bs} + \frac{yy^{\mathsf T}}{y^{\mathsf T}s}$
+of $B = H^{-1}$ (Sherman–Morrison–Woodbury), it satisfies the secant condition
+$H'y = s$, and it keeps $H$ positive definite when $y^{\mathsf T}s > 0$. The update
+is applied whenever $\lvert y^{\mathsf T}s\rvert > 10^{-12}$, including
+$y^{\mathsf T}s < 0$, where positive definiteness is not guaranteed; otherwise
+$H$ is reset to the identity. Convergence needs at least one step and
+$\lvert\Delta E\rvert < e_{\rm conv}$, $\max\lvert g\rvert < g_{\max}$ and
+${\rm rms}(g) < g_{\rm rms}$ together. Redundant internals
+(`CoordSystem::Internal`) run the same update on $g_q = G^{-}Bg_x$ from an
+empirical diagonal Hessian, clip bonds against $r_{\rm trust}$ and angles
+against 0.3 rad separately (`clip_internal_step`), update with the achieved
+internal displacement, and reset to the empirical diagonal.
+
+**Saddle points** (`find_saddle`). In mass-weighted Cartesians, with the
+projected Hessian's eigenvalues $b_i$ (rigid modes shifted to $+10^3$) and
+gradient components $g_i$, partitioned rational-function optimization solves a
+separate augmented-Hessian problem per partition. For the followed mode $k$ the
+step maximizes along $\left[\begin{smallmatrix}b_k & g_k\\ g_k & 0\end{smallmatrix}\right]$,
+whose secular equation is $\lambda^2 - b_k\lambda - g_k^2 = 0$; the larger root
+
+$$\lambda_p = \tfrac12\big(b_k + \sqrt{b_k^2 + 4g_k^2}\big) > \max(b_k, 0),\qquad \Delta q_k = -\frac{g_k}{b_k - \lambda_p},$$
+
+so the denominator is negative and the step climbs whatever the sign of $b_k$.
+For the other modes the shift is the root of
+$\lambda_n = \sum_{i\ne k}g_i^2/(\lambda_n - b_i)$ below $\min_{i\ne k}b_i$, the
+lowest eigenvalue of their augmented Hessian, and
+$\Delta q_i = -g_i/(b_i - \lambda_n)$ descends (`prfo_step`, Newton iteration
+from $\min(b_{\min}-1, 0)$, falling back to $b_{\min} - 10^{-3}$ if it leaves
+the bracket). The Cartesian step is scaled uniformly onto the trust radius.
+The Hessian is carried by the Bofill update (`bofill_update`), with
+$e = \Delta g - B\Delta x$ and $\varphi = (e\cdot\Delta x)^2/(e\cdot e\,\Delta x\cdot\Delta x)$,
+
+$$B' = B + \varphi\frac{ee^{\mathsf T}}{e\cdot\Delta x} + (1-\varphi)\Big[\frac{e\Delta x^{\mathsf T} + \Delta xe^{\mathsf T}}{\Delta x\cdot\Delta x} - \frac{(e\cdot\Delta x)\Delta x\Delta x^{\mathsf T}}{(\Delta x\cdot\Delta x)^2}\Big],$$
+
+a mixture of the Murtagh–Sargent and Powell symmetric-Broyden corrections, each
+of which satisfies $\Delta B\,\Delta x = e$, so $B'\Delta x = \Delta g$ for every
+$\varphi$; unlike BFGS it does not force $B$ positive definite.
+
+**Reaction paths** (`irc::walk`). With $q_i = \sqrt{m_i}x_i$ the chain rule gives
+$\partial E/\partial q_i = g_i/\sqrt{m_i}$. Each step moves a length
+$\ell = \min(\ell_0, 2\lVert g_q\rVert)$ down the mass-weighted gradient,
+
+$$\Delta q = -\ell\frac{g_q}{\lVert g_q\rVert},\qquad \Delta x_i = \frac{\Delta q_i}{\sqrt{m_i}} = -\ell\frac{g_i}{m_i\lVert g_q\rVert},$$
+
+which is steepest descent in $q$ and differs from Cartesian steepest descent
+unless all masses are equal. The cap $2\lVert g_q\rVert$ shrinks the step near a
+minimum, where a fixed length would orbit.
+
+Proof: `scripts/geometry_search_steps_sympy.py` (B1 the secant condition in
+symbols; B2 the inverse update against the inverted direct update, symmetry and
+positive definiteness; P1 the followed-mode root and step in symbols; P2
+`prfo_step` against the augmented-Hessian eigenvectors; F1 the two Bofill
+corrections' secant conditions; F2 the update's secant condition, symmetry and
+retained negative eigenvalue; I1 the mass-weighted step).

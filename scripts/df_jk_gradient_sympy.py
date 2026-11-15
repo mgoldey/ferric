@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Nuclear gradient of density-fitted J and K at fixed density.
 
-Derivation: book/src/14-derivatives/02-df-jk-gradient.md (no theory.md section
-yet). Code: crates/ferric-scf/src/df_gradient.rs (df_jk_gradient_core,
+Derivation: crates/ferric-scf/theory.md, "Density-fitted J/K nuclear
+gradient"; book/src/14-derivatives/02-df-jk-gradient.md. Code:
+crates/ferric-scf/src/df_gradient.rs (df_jk_gradient_core,
 truncated_inverse_divided_difference) and df_gradient/deriv3c.rs.
 
 Model: raw three-index integrals A_P,mn(x) = A0 + x A1 and metric V(x) =
