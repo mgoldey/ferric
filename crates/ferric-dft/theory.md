@@ -158,9 +158,9 @@ The $\tau$-only meta-GGA kernel (`MggaFxcKernel::apply_with_ref`) extends the
 per-point Hessian to the 7 variables $(\rho_\alpha,\rho_\beta,\sigma_{\alpha\alpha},\sigma_{\alpha\beta},\sigma_{\beta\beta},\tau_\alpha,\tau_\beta)$
 (`point_hessians`; libxc `v2rhotau` $=[\rho_\alpha\tau_\alpha,\rho_\alpha\tau_\beta,\rho_\beta\tau_\alpha,\rho_\beta\tau_\beta]$,
 `v2sigmatau` $=[\sigma_{\alpha\alpha}\tau_\alpha,\sigma_{\alpha\alpha}\tau_\beta,\sigma_{\alpha\beta}\tau_\alpha,\dots,\sigma_{\beta\beta}\tau_\beta]$ and
-`v2tau2` $=[\alpha\alpha,\alpha\beta,\beta\beta]$ fill the $\tau$ rows, `scatter_tau`). With $\tau_\sigma = \tfrac12\sum_\kappa\sum_{\mu\nu} D^\sigma_{\mu\nu}\,\partial_\kappa\chi_\mu\,\partial_\kappa\chi_\nu$
+`v2tau2` $=[\alpha\alpha,\alpha\beta,\beta\beta]$ fill the $\tau$ rows, `scatter_tau`). With $\tau_\sigma = \tfrac12\sum_b\sum_{\mu\nu} D^\sigma_{\mu\nu}\,\partial_b\chi_\mu\,\partial_b\chi_\nu$
 linear in $D$,
-$$\delta\tau_\sigma = \tfrac12\sum_\kappa\sum_{\mu\nu}\delta D^\sigma_{\mu\nu}\,\partial_\kappa\chi_\mu\,\partial_\kappa\chi_\nu,\qquad
+$$\delta\tau_\sigma = \tfrac12\sum_b\sum_{\mu\nu}\delta D^\sigma_{\mu\nu}\,\partial_b\chi_\mu\,\partial_b\chi_\nu,\qquad
 \delta v_{x_i} = \sum_j f_{x_i x_j}\,\delta x_j,$$
 and the response adds one back-projected term to $u$ and $\mathbf w$ (`linearize_point`;
 `MggaFxcKernel::backproject`):
@@ -330,11 +330,11 @@ most one component, and refuses a definition that has both.
 `_omega` parameter and in `CamCoeffs.omega` together, leaving $\alpha$ and
 $\beta$ unchanged.
 
-**Exchange matrices.** For an AO density $P$ and kernel $v$,
-$K[v](P)_{\mu\nu} = \sum_{\lambda\sigma}(\mu\lambda|v|\nu\sigma)P_{\lambda\sigma}$
-and $J(P)_{\mu\nu} = \sum_{\lambda\sigma}(\mu\nu|\lambda\sigma)P_{\lambda\sigma}$.
+**Exchange matrices.** For an AO density $D$ and kernel $v$,
+$K[v](D)_{\mu\nu} = \sum_{\lambda\sigma}(\mu\lambda|v|\nu\sigma)D_{\lambda\sigma}$
+and $J(D)_{\mu\nu} = \sum_{\lambda\sigma}(\mu\nu|\lambda\sigma)D_{\lambda\sigma}$.
 The exchange matrix the SCF subtracts is
-$$K_{\rm tot}(P) = c_{\rm sr}\,K[\mathrm{erfc}](P) + c_{\rm lr}\,K[\mathrm{erf}](P)$$
+$$K_{\rm tot}(D) = c_{\rm sr}\,K[\mathrm{erfc}](D) + c_{\rm lr}\,K[\mathrm{erf}](D)$$
 (`fock_assembly::subtract_rsh_exchange`). For $\omega > 0$ the two matrices
 come from two density-fitting builders over the same auxiliary basis
 (`config.df_k_aux`, default `def2-universal-jkfit`), one per operator
@@ -352,11 +352,11 @@ $\mathrm d E_x^{\rm HF}/\mathrm dD = -\tfrac12 K_{\rm tot}(D)$: the exchange
 part of $F$ is the derivative of the exchange energy.
 
 **Open shell** (`uhf.rs` `solve_uhf`, `rohf.rs` `solve_rohf`, per-spin
-densities $D_\sigma = C_{\sigma,\rm occ}C_{\sigma,\rm occ}^{\mathsf T}$):
-$$E_x^{\rm HF} = -\tfrac12\sum_\sigma \mathrm{Tr}[D_\sigma K_{\rm tot}(D_\sigma)],\qquad
-F_\sigma = h + J(D_\alpha + D_\beta) - K_{\rm tot}(D_\sigma) + V_{xc}^\sigma.$$
+densities $D^\sigma = C^\sigma_{\rm occ}C^{\sigma\,\mathsf T}_{\rm occ}$):
+$$E_x^{\rm HF} = -\tfrac12\sum_\sigma \mathrm{Tr}[D^\sigma K_{\rm tot}(D^\sigma)],\qquad
+F_\sigma = h + J(D^\alpha + D^\beta) - K_{\rm tot}(D^\sigma) + V_{xc}^\sigma.$$
 ROHF assembles the same $F_\alpha$, $F_\beta$ and then couples them into its
-Roothaan operator. With $D_\alpha = D_\beta = D/2$ both the energy and
+Roothaan operator. With $D^\alpha = D^\beta = D/2$ both the energy and
 $F_\sigma$ equal the closed-shell ones.
 
 **Total energy.** The SCF evaluates the one- and two-electron energy from the
@@ -364,7 +364,7 @@ Fock matrix before $V_{xc}$ is added, and adds $E_{xc}$ from the grid:
 $$E = \tfrac12\mathrm{Tr}[D(h + F_{\rm no\,xc})] + E_{xc} + E_{nn}
 = \mathrm{Tr}[Dh] + \tfrac12\mathrm{Tr}[DJ] - \tfrac14\mathrm{Tr}[D K_{\rm tot}] + E_{xc} + E_{nn},$$
 with $F_{\rm no\,xc} = h + J - \tfrac12 K_{\rm tot}$ (closed shell; open
-shell $\tfrac12\sum_\sigma\mathrm{Tr}[D_\sigma(h + F_{\sigma,\rm no\,xc})]$).
+shell $\tfrac12\sum_\sigma\mathrm{Tr}[D^\sigma(h + F_{\sigma,\rm no\,xc})]$).
 The $\tfrac12$ appears once, on the trace; $E_{xc}$ is not
 $\mathrm{Tr}[D V_{xc}]$, which is why $V_{xc}$ is added to $F$ after the trace.
 
