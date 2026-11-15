@@ -837,8 +837,8 @@ fn eri4(imo: &Array4<f64>, p: usize, q: usize, r: usize, s: usize) -> f64 {
 //         `solve_cphf_cg` applies. So the static driver's M is (A+B), and
 //         the static α solves (A+B)X=−μ.  ⟹ α_static = 4 μᵀ(A+B)⁻¹μ.
 // Imaginary-frequency response (Casida, real symmetric reduced form):
-//   α(iω) = 4 μᵀ (A−B) [ (A−B)(A+B) + ω² ]⁻¹ μ
-//   ω=0:  α = 4 μᵀ (A−B)[(A−B)(A+B)]⁻¹ μ = 4 μᵀ(A+B)⁻¹μ  ✓ static limit.
+//   α(iu) = 4 μᵀ [ (A−B)(A+B) + u² ]⁻¹ (A−B) μ        (u = imaginary frequency)
+//   u=0:  α = 4 μᵀ [(A−B)(A+B)]⁻¹ (A−B) μ = 4 μᵀ(A+B)⁻¹μ  ✓ static limit.
 // Validated: cpks_dynamic_alpha_w0_matches_static (ω=0 == static HF α).
 // ===========================================================================
 
@@ -1124,6 +1124,11 @@ pub fn cphf_c6_molecular(
 /// iso, static HF iso). Closed shell, no frozen core. `bounds` must be built for
 /// the operator `rhf` was converged with (it sets the HF response); `op` is the
 /// MP2 correlation operator.
+///
+/// The scale is `α_MP2_iso(0) / α_HF_iso(0)`. Its denominator is the CPHF
+/// static α, which is built from the RI factor of `bounds.op`; the MP2 numerator
+/// comes from the RI-MP2 static response. The scale therefore also absorbs the
+/// RI error of the static HF term, not only the MP2 correlation correction.
 #[allow(clippy::too_many_arguments)]
 pub fn frozen_mp2_c6_molecular(
     ctx: &ParallelContext,

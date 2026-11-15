@@ -44,10 +44,16 @@
 //! projector) evaluated by a central difference in t of
 //! [`crate::ks_gradient::ks_gradient_closed_for_density`] — the SAME gradient
 //! code, routing (RI-J, fitted or COSX exchange) and XC grid response the SCF
-//! gradient uses. g is linear in W and linear or bilinear in D for the
-//! one-electron, ECP and two-electron parts, so the central difference is exact
-//! for them up to rounding; only the XC part carries an O(t²) truncation, and
-//! t is chosen so that t·max|δD_Z| = `T_SCALE`.
+//! gradient uses. Every part carries an O(t²) central-difference truncation,
+//! because D(t) is an exact projector but not linear in t (its t³ term
+//! survives the difference) and the XC part is nonlinear in D; t is chosen so
+//! that t·max|δD_Z| = `T_SCALE`. Measured at `T_SCALE`, the relative error is
+//! about 2e-9 without XC and about 5e-8 with it.
+//!
+//! The closed-shell solve (`relaxation_gradient_closed`) has no null-mode
+//! projection: only the unrestricted and ROKS solves remove the axis-rotation
+//! mode of a linear molecule, so a closed-shell reference with a near-null
+//! orbital Hessian mode ends in the PCG curvature error.
 //!
 //! # Scope
 //!
@@ -938,16 +944,11 @@ pub fn relaxation_gradient_closed(
         let grids = crate::ks_gradient::KsGradGrids::from_config(config);
         let cosx =
             crate::cosx_gradient::scf_exchange_is_cosx(config, false)?.then_some(&config.cosx);
-        // D(t) from the occupied orbitals rotated by t·Z and re-orthonormalized:
-        // C_occ(t) = (C_occ + t C_vir Z) (I + t² ZᵀZ)^{-1/2}. It is an exact
-        // projector (positive semidefinite, which the fitted-exchange gradient
-        // requires: D ± t·δD is not) with dD/dt = δD_Z at t = 0, and its O(t²)
-        // part is even in t, so the central difference cancels it.
         // D(t) from the occupied orbitals rotated by t·Z and re-orthonormalized
         // (see `rotated_projector`): an exact projector (positive semidefinite,
         // which the fitted-exchange gradient requires: D ± t·δD is not) with
-        // dD/dt = δD_Z at t = 0, and its O(t²) part is even in t, so the
-        // central difference cancels it.
+        // dD/dt = δD_Z at t = 0. Its t² part is even in t and cancels in the
+        // central difference; the t³ part remains as the O(t²) truncation error.
         let rotated_density = |tt: f64| rotated_projector(&co, &cv, &z, tt, 2.0);
         let g_at = |sgn: f64| -> Result<Array2<f64>, FerricError> {
             let dt = rotated_density(sgn * t)?;
@@ -1483,8 +1484,10 @@ impl RoksBlocks {
 /// densities that are not the projectors onto the first closed (+ open) MOs;
 /// a non-positive diagonal of the Hessian (not an aufbau ROKS minimum); a
 /// non-symmetric or mis-sized `v_ao`; a PCG solve that does not reach
-/// [`CG_REL_TOL`] in [`CG_MAX_ITER`] iterations or meets non-positive
-/// curvature; any integral, kernel or gradient error.
+/// [`CG_REL_TOL`] in [`CG_MAX_ITER`] iterations, or meets negative or zero
+/// curvature while its residual is still above [`CG_FLOOR_TOL`] · max|rhs|
+/// (curvature at the rounding floor with a residual below that is accepted,
+/// with `stopped_at_floor = true`); any integral, kernel or gradient error.
 #[allow(clippy::too_many_arguments)]
 pub fn relaxation_gradient_roks(
     ctx: &ParallelContext,

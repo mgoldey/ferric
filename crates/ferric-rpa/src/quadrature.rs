@@ -4,7 +4,9 @@
 //! - `GaussLegendre`: standard GL nodes mapped to [0,∞) via ω = u₀(1+x)/(1−x).
 //!   Unbounded — max ω ~ 100 a.u. at n=20. Scheme used when no scheme is named
 //!   (CLI `[rpa] quadrature` unset, Python `quadrature=None`).
-//! - `MiniMax`: same GL nodes with literature-optimized u₀ scale (Furche, JCP 2005).
+//! - `MiniMax`: the same mapped Gauss-Legendre nodes, with u₀ taken from a
+//!   three-entry step table in `n_points` (0.3 for n ≤ 8, 0.4 for n ≤ 16, 0.5
+//!   above). It is not a minimax-optimized grid.
 //! - `ChebyshevTan`: Eshuis-Yarkony-Furche (JCP 132, 234114, 2010) — Chebyshev-2
 //!   nodes mapped to [0,∞) via ω = u₀ tan(π(1+x)/4). Its largest node is about
 //!   0.4 of the Gauss-Legendre one at equal (n, u₀); both grow as n². Used with
@@ -108,7 +110,8 @@ pub fn gauss_legendre_nodes(n: usize, u0: f64) -> (Vec<f64>, Vec<f64>) {
     (freqs, weights)
 }
 
-/// Literature-optimized u₀ scale parameters (Furche, JCP 122, 164106, 2005).
+/// u₀ for the `MiniMax` scheme: a three-entry step table in `n` (0.3 for n ≤ 8,
+/// 0.4 for n ≤ 16, 0.5 above) feeding the mapped Gauss-Legendre nodes.
 fn optimized_u0(n: usize) -> f64 {
     match n {
         1..=8 => 0.3,

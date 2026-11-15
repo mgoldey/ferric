@@ -3,7 +3,7 @@
 //! Differentiates the full-rank `n`-point quadrature sum `run_pdep_rpa`
 //! evaluates (theory.md, "Analytic nuclear gradient"):
 //! `E_c = (1/2π) Σ_k w_k [ln det(1 + Π_k) − tr Π_k]`, `Π_k = B g_k(Δ) Bᵀ`,
-//! `g_k(e) = 4e / (ω_k² + e²)`. The frequency loop here builds the three-index
+//! `g_k(e) = 4e / (u_k² + e²)` (`u_k` the imaginary frequency). The frequency loop here builds the three-index
 //! density `Γ` and the orbital-energy densities `P_oo`, `P_vv` (Daleckii-Krein
 //! divided differences, so the energy is taken in its occupied/virtual
 //! rotation-invariant form); the Z-vector, the relaxed-density Lagrangian and
@@ -62,8 +62,8 @@ pub struct RpaRiDensities {
     pub p_vv: Array2<f64>,
 }
 
-/// Divided difference of `g(e) = 4e/(ω² + e²)`:
-/// `(g(x) − g(y))/(x − y) = 4(ω² − xy)/((ω² + x²)(ω² + y²))`, equal to `g'(x)`
+/// Divided difference of `g(e) = 4e/(u² + e²)` (`u` the imaginary frequency):
+/// `(g(x) − g(y))/(x − y) = 4(u² − xy)/((u² + x²)(u² + y²))`, equal to `g'(x)`
 /// at `x = y` with no cancellation.
 pub fn g_divided_difference(x: f64, y: f64, omega: f64) -> f64 {
     let w2 = omega * omega;

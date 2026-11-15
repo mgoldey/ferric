@@ -2374,7 +2374,9 @@ pub fn metric_inverse_sqrt(
 /// machine precision (not just RI-approximation tolerance).
 ///
 /// # Formula
-/// Build `B_ov[P,i,a] = V^{-1/2}_{PQ}(Q|ia)`, then:
+/// Build `B_ov[P,i,a] = F_{PQ}(Q|ia)` with `F = L⁻¹` the inverse Cholesky factor
+/// of the metric (`V = L Lᵀ`, [`cholesky_inverse_sqrt`]; any `F` with
+/// `Fᵀ F = V⁻¹` gives the same `(ia|jb)`), then:
 /// ```text
 /// V[i,j,a,b]   = (ia|jb) = einsum("Pia,Pjb->iajb") permuted (i,a,j,b)->(i,j,a,b)
 /// t[i,j,a,b]   = V[i,j,a,b] / (eps_i + eps_j - eps_a - eps_b)
