@@ -19,19 +19,20 @@ numerically. Paths are relative to `crates/ferric-pbc/`.
 
 ## 1. Ewald nuclear repulsion and the Madelung constant
 
-For point charges $Z_j$ at $\mathbf R_j$ and any splitting parameter
-$\omega > 0$ (`ewald.rs:109` `ewald_point_charges`):
+For point charges $Z_j$ at $\mathbf R_j$ and any Ewald splitting parameter
+$\eta > 0$ (the code's `omega`, which the heading of the next subsection keeps;
+`ewald.rs:109` `ewald_point_charges`):
 
 $$
 \begin{aligned}
 E ={}& \tfrac12 \sum_{\mathbf L}{\sum_{i,j}}' Z_i Z_j
-      \frac{\operatorname{erfc}(\omega d_{ij\mathbf L})}{d_{ij\mathbf L}},
+      \frac{\operatorname{erfc}(\eta d_{ij\mathbf L})}{d_{ij\mathbf L}},
       \qquad d_{ij\mathbf L} = |\mathbf R_i - \mathbf R_j - \mathbf L| \\
 &+ \frac{2\pi}{\Omega}\sum_{\mathbf G\neq 0}
-      \frac{e^{-G^2/4\omega^2}}{G^2}\,|S(\mathbf G)|^2,
+      \frac{e^{-G^2/4\eta^2}}{G^2}\,|S(\mathbf G)|^2,
       \qquad S(\mathbf G) = \sum_j Z_j e^{-i\mathbf G\cdot\mathbf R_j} \\
-&- \frac{\omega}{\sqrt\pi}\sum_j Z_j^2
- \;-\; \frac{\pi Q^2}{2\Omega\omega^2}, \qquad Q = \sum_j Z_j .
+&- \frac{\eta}{\sqrt\pi}\sum_j Z_j^2
+ \;-\; \frac{\pi Q^2}{2\Omega\eta^2}, \qquad Q = \sum_j Z_j .
 \end{aligned}
 $$
 
@@ -39,64 +40,64 @@ The prime drops $i=j$ at $\mathbf L = 0$. The last term is the uniform
 neutralising background (PySCF `Cell.energy_nuc()`); it vanishes for a
 neutral set. Code: SR `ewald.rs:164`, LR `ewald.rs:185`, self `ewald.rs:189`,
 background `ewald.rs:190`. Cutoffs: $\operatorname{erfc}(x) < e^{-x^2}$ and
-$e^{-G^2/4\omega^2} = e^{-x^2}$ at $x = G/2\omega$, so
-$r_\text{cut} = s/\omega$, $G_\text{cut} = 2\omega s$ with
+$e^{-G^2/4\eta^2} = e^{-x^2}$ at $x = G/2\eta$, so
+$r_\text{cut} = s/\eta$, $G_\text{cut} = 2\eta s$ with
 $s = \sqrt{\ln(1/\epsilon)} + 1$; all sums are Neumaier-compensated.
 
 ### Independence of $\omega$ (S1)
 
 $$
-\frac{\partial}{\partial\omega}\frac{\operatorname{erfc}(\omega r)}{r}
- = -\frac{2}{\sqrt\pi} e^{-\omega^2 r^2},
+\frac{\partial}{\partial\eta}\frac{\operatorname{erfc}(\eta r)}{r}
+ = -\frac{2}{\sqrt\pi} e^{-\eta^2 r^2},
 \qquad
-\int e^{-\omega^2 r^2} e^{-i\mathbf G\cdot\mathbf r}\,d^3r
- = \Big(\frac{\pi}{\omega^2}\Big)^{3/2} e^{-G^2/4\omega^2},
+\int e^{-\eta^2 r^2} e^{-i\mathbf G\cdot\mathbf r}\,d^3r
+ = \Big(\frac{\pi}{\eta^2}\Big)^{3/2} e^{-G^2/4\eta^2},
 $$
 
 $$
-\frac{\partial}{\partial\omega}\Big[\frac{4\pi}{G^2}e^{-G^2/4\omega^2}\Big]
- = \frac{2}{\sqrt\pi}\Big(\frac{\pi}{\omega^2}\Big)^{3/2} e^{-G^2/4\omega^2}.
+\frac{\partial}{\partial\eta}\Big[\frac{4\pi}{G^2}e^{-G^2/4\eta^2}\Big]
+ = \frac{2}{\sqrt\pi}\Big(\frac{\pi}{\eta^2}\Big)^{3/2} e^{-G^2/4\eta^2}.
 $$
 
 The Poisson sum
-$\sum_{\mathbf L} e^{-\omega^2|\mathbf d - \mathbf L|^2}
- = \Omega^{-1}\sum_{\mathbf G}(\pi/\omega^2)^{3/2} e^{-G^2/4\omega^2}
+$\sum_{\mathbf L} e^{-\eta^2|\mathbf d - \mathbf L|^2}
+ = \Omega^{-1}\sum_{\mathbf G}(\pi/\eta^2)^{3/2} e^{-G^2/4\eta^2}
  e^{i\mathbf G\cdot\mathbf d}$
-turns $\partial_\omega E_\text{SR}$ into a reciprocal sum over
+turns $\partial_\eta E_\text{SR}$ into a reciprocal sum over
 $|S(\mathbf G)|^2$ plus the excluded self pair. Per $\mathbf G \neq 0$ it
-cancels $\partial_\omega E_\text{LR}$; its $\mathbf G = 0$ term
-$-\pi Q^2/(\Omega\omega^3)$ cancels $\partial_\omega$ of the background, and
-the excluded self pair $+\pi^{-1/2}\sum Z_j^2$ cancels $\partial_\omega$ of the
-self term. Hence $dE/d\omega = 0$ exactly; truncation is the only source of
-$\omega$-dependence.
+cancels $\partial_\eta E_\text{LR}$; its $\mathbf G = 0$ term
+$-\pi Q^2/(\Omega\eta^3)$ cancels $\partial_\eta$ of the background, and
+the excluded self pair $+\pi^{-1/2}\sum Z_j^2$ cancels $\partial_\eta$ of the
+self term. Hence $dE/d\eta = 0$ exactly; truncation is the only source of
+$\eta$-dependence.
 
 ### Madelung constant
 
 $v_M = -2\,E[\text{one unit charge per cell, with background}]$, a function
 of the lattice only (`ewald.rs:94` `madelung_constant`, at
-$\omega = \sqrt\pi/\Omega^{1/3}$, `ewald.rs:61`). Simple cubic:
+$\eta = \sqrt\pi/\Omega^{1/3}$, `ewald.rs:61`). Simple cubic:
 $v_M a = 2.8372974794806$. A $k$-point mesh $N_1\times N_2\times N_3$ uses the
 Gamma constant of the $\operatorname{diag}(N)$ supercell (`kpts.rs:342`).
 
 ### Gradient
 
 $\partial E/\partial\mathbf R_i$ from the SR radial derivative
-$f'(d) = -[\operatorname{erfc}(\omega d)/d^2 + (2\omega/\sqrt\pi)e^{-\omega^2 d^2}/d]$
+$f'(d) = -[\operatorname{erfc}(\eta d)/d^2 + (2\eta/\sqrt\pi)e^{-\eta^2 d^2}/d]$
 and the LR phase derivative; the self and background terms are
 position-independent (`ewald.rs:213` `ewald_nuclear_gradient_parts`).
 
 **Tests.** `tests/pbc_stage0.rs`
 `ewald_matches_pyscf_and_is_omega_independent` (PySCF `energy_nuc` to 1e-10,
-$\omega$-spread < 1e-12 at $\omega$ = 0.8, 1.5, 3 on three charged nuclear
+$\eta$-spread < 1e-12 at $\eta$ = 0.8, 1.5, 3 on three charged nuclear
 cells), `madelung_matches_pyscf` (PySCF to 1e-11, simple-cubic textbook value),
 `ewald_rock_salt_madelung_is_textbook_and_omega_independent` (mixed-sign
-neutral set: rock-salt $M = 1.747564594633182$, $E = -8M/a$, $\omega$-spread
+neutral set: rock-salt $M = 1.747564594633182$, $E = -8M/a$, $\eta$-spread
 < 1e-12); `tests/pbc_grad.rs` `ewald_gradient_matches_pyscf_grad_nuc_and_fd`.
 
 ## 2. Fourier transform of lattice-summed Gaussian pairs
 
 $$
-P_{mn}(\mathbf G) = \sum_{\mathbf L}\int \phi_m(\mathbf r)\,\phi_n(\mathbf r - \mathbf L)\,
+P_{\mu\nu}(\mathbf G) = \sum_{\mathbf L}\int \phi_\mu(\mathbf r)\,\phi_\nu(\mathbf r - \mathbf L)\,
  e^{-i\mathbf G\cdot\mathbf r}\,d^3r
 $$
 
@@ -129,7 +130,7 @@ Gaussian `pair_ft/plan.rs:883-884`, $E$-tables and the
 $\sum_t E_t(-iG)^t$ rows `pair_ft/plan.rs:1336` `f_rows` (E from
 `ferric_integrals::md3c1e::e_table`), phase $e^{-i\mathbf G\cdot\mathbf P_c}$
 in `site_terms`. At $\mathbf G = 0$ only $E_0$ survives and
-$P_{mn}(0) = S^\text{latt}_{mn}$.
+$P_{\mu\nu}(0) = S^\text{latt}_{\mu\nu}$.
 
 **Tests.** `tests/pbc_stage0.rs`
 `pair_ft_at_g0_equals_independent_libint_lattice_overlap` (every element vs an
@@ -140,33 +141,33 @@ and off-lattice $\mathbf G$; 1e-10; asserts the imaginary part is exercised).
 ## 3. Ewald-split nuclear attraction (`hcore`)
 
 $$
-V = V_\text{SR}(\omega) + V_\text{LR}(\omega) + V_\text{G0}(\omega),
+V = V_\text{SR}(\eta) + V_\text{LR}(\eta) + V_\text{G0}(\eta),
 $$
 
 $$
 \begin{aligned}
 V_\text{SR} &= -\sum_{\mathbf L}\sum_{C,\mathbf M} Z_C
-  \Big\langle \mu_0 \Big| \frac{\operatorname{erfc}(\omega|\mathbf r - \mathbf R_C - \mathbf M|)}
+  \Big\langle \mu_0 \Big| \frac{\operatorname{erfc}(\eta|\mathbf r - \mathbf R_C - \mathbf M|)}
   {|\mathbf r - \mathbf R_C - \mathbf M|}\Big| \nu_{\mathbf L}\Big\rangle, \\
-V_\text{LR} &= -\frac{1}{\Omega}\sum_{\mathbf G\neq 0}\frac{4\pi}{G^2}e^{-G^2/4\omega^2}
+V_\text{LR} &= -\frac{1}{\Omega}\sum_{\mathbf G\neq 0}\frac{4\pi}{G^2}e^{-G^2/4\eta^2}
   \operatorname{Re}\big[P^*_{\mu\nu}(\mathbf G)\,S(\mathbf G)\big], \\
-V_\text{G0} &= +\frac{\pi Z_\text{tot}}{\omega^2\Omega}\,S^\text{latt}_{\mu\nu}.
+V_\text{G0} &= +\frac{\pi Z_\text{tot}}{\eta^2\Omega}\,S^\text{latt}_{\mu\nu}.
 \end{aligned}
 $$
 
 S3 asserts
 
 $$
-\int\frac{\operatorname{erfc}(\omega r)}{r}e^{-i\mathbf G\cdot\mathbf r}d^3r
- = \frac{4\pi}{G^2}\big(1 - e^{-G^2/4\omega^2}\big),
+\int\frac{\operatorname{erfc}(\eta r)}{r}e^{-i\mathbf G\cdot\mathbf r}d^3r
+ = \frac{4\pi}{G^2}\big(1 - e^{-G^2/4\eta^2}\big),
 \qquad
-\lim_{G\to 0} = \int\frac{\operatorname{erfc}(\omega r)}{r}d^3r = \frac{\pi}{\omega^2}.
+\lim_{G\to 0} = \int\frac{\operatorname{erfc}(\eta r)}{r}d^3r = \frac{\pi}{\eta^2}.
 $$
 
 So per $\mathbf G\neq 0$, $V_\text{SR} + V_\text{LR}$ is the bare
 $-4\pi Z/(\Omega G^2)$ kernel, and the real-space erfc sum carries the
-$\mathbf G = 0$ average $-\pi Z_\text{tot}/(\omega^2\Omega)$, which $V_\text{G0}$
-removes. $V$ is therefore $\omega$-independent and equals the pure
+$\mathbf G = 0$ average $-\pi Z_\text{tot}/(\eta^2\Omega)$, which $V_\text{G0}$
+removes. $V$ is therefore $\eta$-independent and equals the pure
 reciprocal-space attraction with $\mathbf G = 0$ dropped (the convention that
 cancels against the same term of $J$ in a neutral cell).
 
@@ -177,14 +178,14 @@ $Z\int\rho\,\operatorname{erfc}(\sqrt\zeta r)/r \approx \pi Z\rho(\mathbf R_C)/\
 
 Code: `hcore.rs:688` `reciprocal_nuclear` (kernel `hcore.rs:719`, half-sphere
 factor $-2/\Omega$ `hcore.rs:730`), $V_\text{G0}$ `hcore.rs:1485-1486`,
-oracle `hcore.rs:766` `pure_aft_nuclear` ($\omega\to\infty$, no SR, no
+oracle `hcore.rs:766` `pure_aft_nuclear` ($\eta\to\infty$, no SR, no
 $\mathbf G = 0$ bookkeeping), `hcore.rs:796` `gaussian_nucleus_attraction`.
 
 **Tests.** `tests/pbc_hcore.rs`
-`periodic_hcore_is_omega_independent_triclinic_sp` ($V(\omega)$ at three
-$\omega$ vs `pure_aft_nuclear`, with the negative control that $V_\text{G0}$ is
+`periodic_hcore_is_omega_independent_triclinic_sp` ($V(\eta)$ at three
+$\eta$ vs `pure_aft_nuclear`, with the negative control that $V_\text{G0}$ is
 visible), `single_s_primitive_matches_closed_form`
-($V_\text{erf} = -(2/\sqrt\pi)(1/\omega^2 + 1/p + 1/\zeta)^{-1/2}$),
+($V_\text{erf} = -(2/\sqrt\pi)(1/\eta^2 + 1/p + 1/\zeta)^{-1/2}$),
 `gaussian_nucleus_erf_plus_erfc_is_point_nuclear`,
 `periodic_hcore_matches_prototype_h2_sto3g_a4`.
 
@@ -249,8 +250,8 @@ and $S(\mathbf G)$, every $\mathbf G\cdot\mathbf X$ phase, are strain-invariant.
 
 ### Ewald part (`ewald.rs:362` `ewald_point_charges_strain`)
 
-With $k(G^2) = e^{-G^2/4\omega^2}/G^2$,
-$k' = -k\,(1/4\omega^2 + 1/G^2)$:
+With $k(G^2) = e^{-G^2/4\eta^2}/G^2$,
+$k' = -k\,(1/4\eta^2 + 1/G^2)$:
 
 $$
 \begin{aligned}
@@ -263,7 +264,7 @@ $$
 $$
 
 Code: `ewald.rs:455` ($k'$), `ewald.rs:469` ($-\delta E_\text{LR}$),
-`ewald.rs:477` (background). The total is $\omega$-independent; the parts are
+`ewald.rs:477` (background). The total is $\eta$-independent; the parts are
 not. $v_M$ is homogeneous of degree $-1$ in lengths, so
 $\operatorname{tr}\,dv_M/d\varepsilon = -v_M$ (`ewald.rs:507`
 `madelung_strain`). S5 checks the formula against central finite
@@ -289,7 +290,7 @@ strained closed form for s|s and p$_x$|s at exact rational points.
 
 Each reciprocal energy $E = \Omega^{-1}\sum_{\mathbf G} v(G^2)\Phi(\mathbf G)$
 contributes $-\delta_{ab}E + \Omega^{-1}\sum[v'(-2G_aG_b)\Phi + v\,d\Phi]$;
-overlap-coupled terms (Pulay, $c_0 = \pi/(\omega^2\Omega)$ and Madelung
+overlap-coupled terms (Pulay, $c_0 = \pi/(\eta^2\Omega)$ and Madelung
 $S$-terms) enter through the forces' energy-weighted matrix contracted with
 per-image pair vectors; the Madelung energy adds
 $-\tfrac{\alpha}{2}\sum_\sigma\operatorname{tr}(D_\sigma SD_\sigma S)\,dv_M/d\varepsilon$.
@@ -299,7 +300,7 @@ The module doc of `stress.rs` lists the XC, ECP and RS-GDF terms.
 
 **Tests.** `tests/pbc_stress.rs`
 `ewald_strain_matches_fd_is_omega_independent_and_madelung_is_homogeneous`
-(FD 1e-8, $\omega$ 1 vs 2.3 to 1e-10, Euler to 1e-12),
+(FD 1e-8, $\eta$ 1 vs 2.3 to 1e-10, Euler to 1e-12),
 `pair_ft_strain_matches_fd_at_fixed_miller_index`,
 `h2_rhf_stress_matches_fd_of_own_energy_all_nine_both_exxdiv`,
 `h2_rhf_pressure_matches_isotropic_scaling`,
