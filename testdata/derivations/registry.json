@@ -615,6 +615,14 @@
         "scripts/rpa_drpa_pdep_sympy.py"
       ]
     },
+    "pvp-integrals": {
+      "theory": [
+        "crates/ferric-integrals/theory.md#the-pvp-integral"
+      ],
+      "scripts": [
+        "scripts/pvp_ss_sympy.py"
+      ]
+    },
     "rhf": {
       "theory": [
         "crates/ferric-scf/theory.md#hartree-fock-energy-functionals-rhf-uhf-rohf"
@@ -818,12 +826,6 @@
     },
     "pbc-mp2": {
       "reason": "no theory.md derivation and no sympy proof"
-    },
-    "pvp-integrals": {
-      "reason": "no theory.md section derives W = sum_a <d_a mu|V|d_a nu> (crates/ferric-integrals/theory.md)",
-      "scripts": [
-        "scripts/pvp_ss_sympy.py"
-      ]
     },
     "qmmm": {
       "reason": "no theory.md derivation and no sympy proof"

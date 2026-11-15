@@ -375,6 +375,76 @@ CASES = [
         ],
     ),
     (
+        "terf_identities_sympy.py",
+        10,
+        [
+            (
+                "sp.erf(sp.sqrt(S) - sp.sqrt(s))",
+                "sp.erf(sp.sqrt(s) - sp.sqrt(S))",
+                "FAIL [two-center]",
+            ),
+            (
+                "df.append(df[-1] * (2 * i) / (2 * i + 1))",
+                "df.append(df[-1] * (2 * i + 1) / (2 * i + 2))",
+                "FAIL [series]",
+            ),
+            (
+                "return pref * mp.sqrt(ph2 / th2) * G0c_num(",
+                "return pref * G0c_num(",
+                "FAIL [two-center]",
+            ),
+            (
+                "CURVATURE_R0W = 1 / sp.sqrt(2)",
+                "CURVATURE_R0W = sp.Rational(1, 2)",
+                "FAIL [curvature]",
+            ),
+        ],
+    ),
+    (
+        "screening_bounds_sympy.py",
+        15,
+        [
+            (
+                "1 - mp.cos(kk * r0v) * mp.exp",
+                "1 + mp.cos(kk * r0v) * mp.exp",
+                "FAIL [fourier]",
+            ),
+            (
+                "m[i, j] = 2 * ph / mp.sqrt(mp.pi) * mp.exp(-(ph**2) * r0v**2)",
+                "m[i, j] = 2 * ph / mp.sqrt(mp.pi)",
+                "FAIL [indefinite]",
+            ),
+            (
+                'QQR_SAFETY = mp.mpf("1.10")',
+                'QQR_SAFETY = mp.mpf("0.50")',
+                "FAIL [qqr-s]",
+            ),
+            (
+                "return mp.sqrt(eri_s(name, fa, fb, fa, fb, w, r0v))",
+                "return eri_s(name, fa, fb, fa, fb, w, r0v)",
+                "FAIL [schwarz]",
+            ),
+        ],
+    ),
+    (
+        "robust_fit_sympy.py",
+        10,
+        [
+            (
+                "return cj + cj.T - coef.T @ VCm @ coef",
+                "return cj + cj.T",
+                "FAIL [model]",
+            ),
+            (
+                "G = robust_g(coef, VC, J)\n# residual-density",
+                "G = robust_g(coef, Vw, J)\n# residual-density",
+                "FAIL [model]",
+            ),
+            ("cj + cj.T - coef", "cj + cj - coef", "FAIL [model]"),
+            ("Vinv_used = M.T @ M", "Vinv_used = M @ M", "FAIL [collapse]"),
+        ],
+    ),
+    (
         "lmp2_hylleraas_vs_wshg23_sympy.py",
         10,
         [
