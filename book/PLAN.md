@@ -225,9 +225,9 @@ Code references are `crate/src/file.rs::item` under `crates/`.
 
 | § | Section | Sources | Code | Status |
 |---|---|---|---|---|
-| 13.1 | Amplitude-threshold local MP2 | T mp2 §12 (a pointer); S `lmp2_hylleraas_vs_wshg23_sympy.py`; W §14; R local-mp2 *gap* | `ferric-mp2/src/lmp2_amplitude.rs::{amplitude_lmp2,build_vvhv,hylleraas_energy}`, `ferric-mp2/src/ragged.rs::solve_ragged` | edit |
-| 13.2 | The integral-direct path | M mp2 "Exact and local MP2" | `ferric-mp2/src/lmp2_direct.rs::amplitude_lmp2_direct` | gap |
-| 13.3 | Pair natural orbitals and DLPNO-MP2 | W §10 | `ferric-mp2/src/dlpno_mp2.rs::dlpno_mp2_from_b_ov`, `ferric-mp2/src/local_pno.rs::build_pno_transforms` | gap |
+| 13.1 | Amplitude-threshold local MP2 | T mp2 §12 (a pointer); S `lmp2_hylleraas_vs_wshg23_sympy.py`; W §14; R local-mp2 *gap* | `ferric-mp2/src/lmp2_amplitude.rs::{amplitude_lmp2,build_vvhv,hylleraas_energy}`, `ferric-mp2/src/ragged.rs::solve_ragged` | ready |
+| 13.2 | The integral-direct path | M mp2 "Exact and local MP2" | `ferric-mp2/src/lmp2_direct.rs::amplitude_lmp2_direct` | ready |
+| 13.3 | Pair natural orbitals and DLPNO-MP2 | W §10 | `ferric-mp2/src/dlpno_mp2.rs::dlpno_mp2_from_b_ov`, `ferric-mp2/src/local_pno.rs::build_pno_transforms` | ready |
 
 ### Part VI. Derivatives
 
@@ -251,9 +251,9 @@ Code references are `crate/src/file.rs::item` under `crates/`.
 | 15.1 | Lagrangians and the Z-vector equation | T mp2 §9; S `mp2_variant_identities.py` claim 5 | `ferric-mp2/src/zvector.rs::{solve_zvector,build_relaxed_density_ao}` | ready |
 | 15.2 | RI-MP2 gradient with exact and RI-JK references; SCS-MP2 | T mp2 §9, §9.1, §9.2; S `mp2_gradient_sympy.py`†; R ri-mp2-gradient, scs-mp2-gradient | `ferric-mp2/src/gradient.rs::{rimp2_gradient_analytical,scs_mp2_gradient_analytical,total_rimp2_gradient}` | ready |
 | 15.3 | OO-RI-MP2 gradient | T mp2 "9.3 OO-RI-MP2 nuclear gradient"†; R oo-rimp2-gradient | `ferric-mp2/src/oo_rimp2_gradient.rs::oo_ri_mp2_gradient` | ready |
-| 15.4 | Kohn–Sham Z-vector for post-SCF corrections | none | `ferric-scf/src/zvector_ks.rs::relaxation_gradient_closed` | gap |
+| 15.4 | Kohn–Sham Z-vector for post-SCF corrections | none | `ferric-scf/src/zvector_ks.rs::relaxation_gradient_closed` | ready |
 | 15.5 | RI-dRPA gradient | T rpa "Analytic nuclear gradient"; S `rpa_gradient_sympy.py`†; R rpa-gradient | `ferric-rpa/src/gradient_analytic.rs::{rpa_analytic_gradient,rpa_ri_densities}` | ready |
-| 15.6 | MP2 static polarizability | T mp2 §10; R mp2-polarizability *gap* | `ferric-mp2/src/cpks_polar.rs::{mp2_polarizability_analytic,static_relaxed_density_ao}`, `ferric-mp2/src/ff_polar.rs::mp2_polarizability_static` | verify |
+| 15.6 | MP2 static polarizability | T mp2 §10; R mp2-polarizability *gap* | `ferric-mp2/src/cpks_polar.rs::{mp2_polarizability_analytic,static_relaxed_density_ao}`, `ferric-mp2/src/ff_polar.rs::mp2_polarizability_static` | ready |
 
 ### Part VII. Coupled cluster
 
@@ -289,10 +289,10 @@ Code references are `crate/src/file.rs::item` under `crates/`.
 | § | Section | Sources | Code | Status |
 |---|---|---|---|---|
 | 18.1 | dRPA three ways: frequency integral, plasmon formula, ring amplitudes | T rpa "RPA Correlation Energy" (extended†); S `rpa_drpa_pdep_sympy.py`†; R drpa; P derivation §7–9 | `ferric-rpa/src/energy.rs::rpa_correlation_energy`, `ferric-rpa/src/diagnostics.rs::ri_drpa_energy`, `ferric-mp2/src/drpa_amplitude.rs::canonical_plasmon_drpa` | ready |
-| 18.2 | Imaginary-frequency quadratures | T quadrature §2 | `ferric-rpa/src/quadrature.rs::{build_quadrature,chebyshev_tan_nodes,gauss_legendre_nodes}` | edit |
+| 18.2 | Imaginary-frequency quadratures | T quadrature §2 | `ferric-rpa/src/quadrature.rs::{build_quadrature,chebyshev_tan_nodes,gauss_legendre_nodes}` | ready |
 | 18.3 | Projective dielectric eigenpotentials | T rpa "The PDEP Eigenpotential Approach"; S `rpa_drpa_pdep_sympy.py`†; R pdep-rpa; W §7 | `ferric-rpa/src/lib.rs::run_pdep_rpa`, `ferric-rpa/src/sternheimer.rs::{dielectric_matrix,dielectric_apply}`, `ferric-rpa/src/lanczos.rs::run_lanczos_seeded` | ready |
 | 18.4 | Open-shell dielectric | T rpa "Open-Shell (Spin-Summed) Dielectric"; R u-pdep-rpa | `ferric-rpa/src/lib.rs::run_u_pdep_rpa`, `ferric-rpa/src/sternheimer.rs::dielectric_matrix_unrestricted` | ready |
-| 18.5 | Imaginary-time and AO forms of $\chi_0$ | T quadrature §1 | `ferric-rpa/src/laplace_chi0.rs::dielectric_matrix_laplace`, `ferric-rpa/src/ao_rpa.rs::ao_rpa_correlation_energy` | gap |
+| 18.5 | Imaginary-time and AO forms of $\chi_0$ | T quadrature §1 | `ferric-rpa/src/laplace_chi0.rs::dielectric_matrix_laplace`, `ferric-rpa/src/ao_rpa.rs::ao_rpa_correlation_energy` | ready |
 | 18.6 | Ring amplitudes with a threshold: local dRPA | W §12; M rpa-gw "Exact and local dRPA" | `ferric-mp2/src/drpa_amplitude.rs::{amplitude_drpa,amplitude_drpa_direct}`, `ferric-mp2/src/rccd_family.rs::{rccd,sosex}` | verify |
 
 **Chapter 19. GW and the Bethe–Salpeter equation**
@@ -446,11 +446,11 @@ registry row and are the largest block of `gap` sections.
 | II. Integrals, screening and density fitting | 1 | 15 | 1 | 0 | 17 |
 | III. Self-consistent field | 8 | 2 | 0 | 0 | 10 |
 | IV. Density functional theory | 7 | 0 | 0 | 0 | 7 |
-| V. The MP2 family | 13 | 5 | 3 | 5 | 26 |
-| VI. Derivatives | 9 | 3 | 1 | 1 | 14 |
+| V. The MP2 family | 16 | 4 | 1 | 5 | 26 |
+| VI. Derivatives | 11 | 3 | 0 | 0 | 14 |
 | VII. Coupled cluster | 5 | 1 | 1 | 0 | 7 |
 | VIII. Multireference | 5 | 0 | 1 | 0 | 6 |
-| IX. RPA, PDEP and GW | 12 | 1 | 1 | 1 | 15 |
+| IX. RPA, PDEP and GW | 14 | 0 | 0 | 1 | 15 |
 | X. Response and excited states | 7 | 2 | 0 | 0 | 9 |
 | XI. Environment | 5 | 4 | 0 | 0 | 9 |
 | XII. Periodic systems | 7 | 2 | 0 | 0 | 9 |
@@ -458,9 +458,9 @@ registry row and are the largest block of `gap` sections.
 | XIV. Capstone | 1 | 2 | 4 | 0 | 7 |
 | XV. Interfaces | 1 | 5 | 1 | 0 | 7 |
 | Appendices | 3 | 0 | 1 | 0 | 4 |
-| **Total** | **87** | **51** | **14** | **7** | **159** |
+| **Total** | **94** | **49** | **10** | **6** | **159** |
 
-159 sections: 55% `ready`, 32% `edit`, 9% `gap` and 4% `verify`.
+159 sections: 59% `ready`, 31% `edit`, 6% `gap` and 4% `verify`.
 <!-- status-table:end -->
 
 ## 5. Gaps, ranked by how much rests on them
