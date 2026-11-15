@@ -1,36 +1,150 @@
 # Random Phase Approximation (RPA) Theory
 
-This module implements the direct Random Phase Approximation (dRPA) correlation energy using the Projective Dielectric Eigenpotential (PDEP) approach.
+This crate computes the direct Random Phase Approximation (dRPA) correlation energy, closed and open shell, its analytic gradient, range-separated MP2 + RPA, and RPA polarizabilities and C6 coefficients. The proofs of the identities below are `scripts/rpa_drpa_pdep_sympy.py`, `scripts/rpa_rs_mp2_rpa_sympy.py`, `scripts/rpa_gradient_sympy.py` and `scripts/rpa_c6_polarizability_sympy.py`.
 
 ## RPA Correlation Energy
 
-The RPA correlation energy is commonly evaluated using the Adiabatic-Connection Fluctuation-Dissipation (ACFD) theorem via an imaginary frequency integration:
+The direct RPA (dRPA) correlation energy has three equivalent forms. ferric
+evaluates all three; they agree to round-off on a fixed problem
+(`scripts/rpa_drpa_pdep_sympy.py`).
 
-$$ E_c^{\text{RPA}} = \frac{1}{2\pi} \int_0^\infty \text{Tr}\left[ \ln(\mathbf{1} - \mathbf{\chi}_0(i\omega) \mathbf{v}) + \mathbf{\chi}_0(i\omega) \mathbf{v} \right] d\omega $$
+**Definition and conventions.** Closed shell, canonical RHF orbitals, $i,j$
+active occupied, $a,b$ virtual, $e_{ia} = \varepsilon_a - \varepsilon_i > 0$,
+compound index $ia = i\,n_v + a$. The RI factor
+$\tilde B^P_{ia} = \sum_Q (V^{-1/2})_{PQ}(Q|ia)$ gives $(ia|jb) = \sum_P \tilde B^P_{ia}\tilde B^P_{jb}$,
+$K_{ia,jb} = (ia|jb)$. In spin orbitals the direct RPA (no exchange) is
+$\mathbf A = \boldsymbol\Delta + \mathbf K$, $\mathbf B = \mathbf K$ over every
+spin-orbital ov pair, and $E_c = \tfrac12\sum_n(\Omega_n - A_{nn})$. Spin
+adaptation splits it into a singlet block, $\mathbf A = \boldsymbol\Delta + 2\mathbf K$,
+$\mathbf B = 2\mathbf K$, and a triplet block with no direct coupling
+($\Omega = \Delta$, contributing zero).
 
-where $\mathbf{\chi}_0(i\omega)$ is the independent-particle polarizability and $\mathbf{v}$ is the Coulomb interaction. The term $\mathbf{\epsilon}(i\omega) = \mathbf{1} - \mathbf{\chi}_0(i\omega) \mathbf{v}$ is the interacting dielectric matrix.
+**Plasmon formula** (`ferric_mp2::drpa_amplitude::canonical_plasmon_drpa`):
+
+$$ E_c = \tfrac12\Big(\sum_n \Omega_n - \operatorname{tr}\mathbf A\Big), \qquad \Omega_n^2 = \operatorname{eig}\big[(\mathbf A - \mathbf B)(\mathbf A + \mathbf B)\big], \qquad \mathbf A = \boldsymbol\Delta + 2\mathbf K,\ \mathbf B = 2\mathbf K . $$
+
+The occupied and virtual Fock blocks are re-diagonalized first, because
+the energy is first order in any Fock inconsistency.
+
+**drCCD Riccati** (`drpa_amplitude::amplitude_drpa_dense`,
+`riccati_masked_solve`, `fock_super`). With $\mathbf B = 2\mathbf K$ the ring
+amplitudes solve
+
+$$ \mathbf R(\mathbf T) = \mathbf B + \mathcal F(\mathbf T) + \mathbf B\mathbf T + \mathbf T\mathbf B + \mathbf T\mathbf B\mathbf T = 0, \qquad
+\mathcal F(\mathbf T) = \hat\Delta\mathbf T + \mathbf T\hat\Delta, \quad \hat\Delta = \mathbf 1_o\otimes F_{vv} - F_{oo}\otimes\mathbf 1_v, $$
+
+and $E_c = \tfrac12\sum_{ia,jb}B_{ia,jb}T_{ia,jb}$. $\hat\Delta$ is
+$\operatorname{diag}(e_{ia})$ in canonical orbitals; written with the Fock
+blocks the equation holds in any rotated occupied and virtual basis, which is
+why the solver runs in Boys-localized occupied and VV-HV virtual orbitals.
+The solver is the damped fixed point $\mathbf T \leftarrow \mathbf T - \mathbf R(\mathbf T)/D$,
+$D_{ia,jb} = F_{aa} + F_{bb} - F_{ii} - F_{jj}$, optionally DIIS-accelerated.
+In one mode ($\mathbf A = D + b$, $\mathbf B = b$) the root continuous at
+$b = 0$ of $b + 2(D + b)t + bt^2 = 0$ gives $\tfrac12 bt = \tfrac12(\sqrt{D(D+2b)} - D - b)$,
+the plasmon value.
+
+**Frequency integral** (the ACFD form; `energy.rs`):
+
+$$ E_c = \frac{1}{2\pi}\int_0^\infty \Big[\ln\det(\mathbf 1 + \boldsymbol\Pi(i\omega)) - \operatorname{tr}\boldsymbol\Pi(i\omega)\Big]\,d\omega,
+\qquad \boldsymbol\Pi(i\omega) = 4\,\tilde B\,\operatorname{diag}\!\Big(\frac{e_{ia}}{\omega^2 + e_{ia}^2}\Big)\tilde B^{\mathsf T}. $$
+
+$\boldsymbol\Pi = -\tilde{\boldsymbol\chi}_0\mathbf v$ in the Coulomb-metric
+basis, so $\tilde{\boldsymbol\epsilon} = \mathbf 1 + \boldsymbol\Pi$ is the
+symmetrized dielectric matrix, all eigenvalues $\ge 1$. The prefactor 4 is 2
+for spin and 2 for the $\pm\omega$ poles of $\chi_0$
+(`sternheimer::build_scale_factors`, which scales by
+$\sqrt{4e_{ia}/(\omega^2 + e_{ia}^2)}$, and
+`dielectric_matrix_from_projection_into`). In one mode
+$\frac{1}{2\pi}\int_0^\infty[\ln(1 + \frac{2bD}{\omega^2 + D^2}) - \frac{2bD}{\omega^2 + D^2}]d\omega = \tfrac12(\sqrt{D(D+2b)} - D - b)$
+with $b = 2K$. By Sylvester's identity
+$\ln\det(\mathbf 1 + \tilde Bg\tilde B^{\mathsf T}) = \ln\det(\mathbf 1 + g^{1/2}\mathbf Kg^{1/2})$,
+so the energy depends on $\tilde B$ only through $\mathbf K$ and any factor of
+$V^{-1}$ (Cholesky $L^{-1}$ or symmetric $V^{-1/2}$) gives the same result.
+
+The per-frequency summand is taken two ways with the same value:
+`trace_log_summands_of_projection` uses the LU log-determinant,
+$\ln\det\tilde{\boldsymbol\epsilon} + \operatorname{tr}(\mathbf 1 - \tilde{\boldsymbol\epsilon})$;
+the eigenvalue route (`rpa_correlation_energy`, `trace_log_sum`) sums
+$f(\lambda) = \ln\lambda + 1 - \lambda$ over the eigenvalues, with
+`trace_log_summand_term` switching to the series
+$f = -\sum_{k\ge2}(-x)^k/k$, $x = \lambda - 1$, for $|x| < 0.25$ to avoid the
+cancellation of the literal form near $\lambda = 1$.
+
+**Quadrature.** `quadrature::gauss_legendre_nodes` maps Gauss-Legendre nodes
+$x_k$ to $\omega_k = u_0(1 + x_k)/(1 - x_k)$ with weights
+$w_k^{\rm GL}\,2u_0/(1 - x_k)^2$, so $\int_0^\infty f\,d\omega \approx \sum_k w_kf(\omega_k)$
+and $E_c \approx \frac{1}{2\pi}\sum_k w_k S(i\omega_k)$. The grid depends only
+on $(n, u_0)$, never on the molecule. The exact `drpa` kind
+(`energy_route::exact_drpa_config`) uses $n = 48$, $u_0 = 0.5$, the aux-basis
+log-det route and no truncation; `run_drpa` without `local` solves the
+Riccati equation at $\varepsilon = 0$.
+
+**Second order.** Expanding the plasmon energy in $b$ gives
+$-b^2/(4D) + b^3/(4D^2) - \dots$; in many modes the first Riccati amplitude is
+$\mathbf T_1 = -\mathbf B/D$, so
+
+$$ E_c^{(2)} = \tfrac12\sum \mathbf B\circ\mathbf T_1 = -2\sum_{ijab}\frac{(ia|jb)^2}{e_{ia} + e_{jb}} = 2E_{\rm OS}, $$
+
+twice the opposite-spin MP2 energy (`ferric_mp2::rimp2::pair_energy`
+accumulates $E_{\rm OS} = \sum(ia|jb)^2/D_{ij}^{ab}$ with
+$D = \varepsilon_i + \varepsilon_j - \varepsilon_a - \varepsilon_b < 0$).
+dRPA has no second-order exchange term.
+
+**Amplitude-threshold local scheme** (`amplitude_drpa`, `amplitude_drpa_scan`,
+CLI `[local] scheme = "amplitude-threshold"`). In the localized basis the
+amplitudes are kept only on the pattern $|B_{ia,jb}| = 2|(ia|jb)| > \varepsilon$
+(symmetric, so swap-closed): $\mathbf R$ and $\mathbf T$ are projected onto it
+every iteration and $E_c = \tfrac12\sum_{\rm pattern}B\circ T$. At
+$\varepsilon = 0$ the pattern is everything and the energy is the exact one.
+The masked energy is not variational; its error is roughly linear in
+$\varepsilon$.
 
 ## The PDEP Eigenpotential Approach
 
-Instead of explicitly constructing and diagonalizing the large dense dielectric matrix $\mathbf{\epsilon}(i\omega)$ at each frequency point, the PDEP approach uses the rapid decay of the dielectric operator's spectrum.
+PDEP replaces the aux basis by a smaller, system-adapted one taken from the
+static dielectric matrix (`run_pdep_rpa`, `lib.rs`).
 
-1. **Static Dielectric Eigenpotentials:** The static ($\omega=0$) dielectric operator $\mathbf{\epsilon}(0)$ is diagonalized iteratively (block Lanczos by default, `Eigensolver::Lanczos`; Davidson is selectable) to find the dominant eigenpotentials (often called plasmon density eigenpotentials) $|V_\alpha\rangle$:
-   $$ \mathbf{\epsilon}(0) |V_\alpha\rangle = \lambda_\alpha(0) |V_\alpha\rangle $$
-   Because the eigenvalues decay steeply, only a small number of eigenpotentials with eigenvalues $\lambda_\alpha(0) > \epsilon_{\text{trunc}}$ need to be retained. They form a compressed, system-adapted basis.
+1. **Static eigenpotentials.** $\tilde{\boldsymbol\epsilon}(0) = \mathbf 1 + 4\tilde B\,\operatorname{diag}(1/e_{ia})\tilde B^{\mathsf T}$
+   is diagonalized iteratively (block Lanczos by default,
+   `Eigensolver::Lanczos`; Davidson is selectable):
+   $\tilde{\boldsymbol\epsilon}(0)\mathbf u_\alpha = \lambda_\alpha(0)\mathbf u_\alpha$.
+   The modes with $|\lambda_\alpha(0) - 1| > \texttt{trunc\_thresh}$ are kept
+   (`PdepRpaConfig::n_kept_modes`); `trunc_thresh = 0` keeps all of them.
 
-2. **Sternheimer Linear Response:** The action of the dielectric matrix on a trial potential is written in the Sternheimer form, which avoids an explicit sum over virtual states in a plane-wave or real-space implementation. The Sternheimer equation for each occupied orbital $i$ is the Sternheimer linear response equation for each occupied orbital $i$:
-   $$ (\hat{H}_0 - \epsilon_i \mathbf{1} + i\omega \mathbf{1}) |\Delta \Psi_i(i\omega, V)\rangle = - P_{\text{virt}} \hat{V} |\Psi_i\rangle $$
-   where $P_{\text{virt}}$ is the projector onto the virtual space.
+2. **Response matvec.** The Sternheimer equation
+   $(\hat H_0 - \epsilon_i + i\omega)|\Delta\Psi_i\rangle = -P_{\rm virt}\hat V|\Psi_i\rangle$
+   is the formulation; ferric's RI-MO implementation sums over every
+   occupied-virtual pair instead. With $\mathbf y = U^{\mathsf T}\tilde B$
+   ($m \times n_{ov}$, frequency independent),
+   $U^{\mathsf T}\tilde{\boldsymbol\epsilon}(i\omega)U = \mathbf 1 + 4\,\mathbf y\,\operatorname{diag}(e_{ia}/(\omega^2 + e_{ia}^2))\,\mathbf y^{\mathsf T}$
+   (`dielectric_matrix_from_projection_into`).
+   `sternheimer::chi_from_trial_potential` is a test helper that returns the
+   single-spin value $-2\sum_{ia} e_{ia}/(\omega^2 + e_{ia}^2)\,(\sum_P V_P\tilde B^P_{ia})^2$,
+   half the closed-shell $\langle V|\tilde\chi_0|V\rangle$.
 
-   ferric's RI-MO implementation does sum over every occupied-virtual pair: `sternheimer::chi_from_trial_potential` (`crates/ferric-rpa/src/sternheimer.rs:330`) evaluates $\chi_0$ as $-2\sum_{ia} e_{ia}/(\omega^2+e_{ia}^2)\,|\sum_P V_P B^P_{ia}|^2$. The Sternheimer form is the formulation; PDEP compresses the result of the sum.
+3. **Frequency-dependent eigenvalues.** The static basis does not diagonalize
+   $\tilde{\boldsymbol\epsilon}(i\omega)$. At each node the projected matrix
+   $U^{\mathsf T}\tilde{\boldsymbol\epsilon}(i\omega_k)U$ is diagonalized
+   (`eval_eigenvalues_at_frequencies_budgeted`, `eigvalsh_dc`), and
+   $\lambda_\alpha(i\omega_k)$ are its eigenvalues, not its diagonal
+   $\langle\mathbf u_\alpha|\tilde{\boldsymbol\epsilon}(i\omega_k)|\mathbf u_\alpha\rangle$.
+   The diagonal alone would drop the off-diagonal coupling (2.8e-2 Ha on the
+   test model).
 
-3. **Frequency-Dependent Eigenvalues:** Assuming the static eigenpotential basis $|V_\alpha\rangle$ is adequate for all frequencies, the frequency-dependent eigenvalues $\lambda_\alpha(i\omega)$ are evaluated by projecting the frequency-dependent dielectric operator onto the fixed static PDEP basis:
-   $$ \lambda_\alpha(i\omega) = \langle V_\alpha | \mathbf{\epsilon}(i\omega) | V_\alpha \rangle $$
+4. **Energy.**
+   $$ E_c = \frac{1}{2\pi}\sum_k w_k\sum_\alpha\big[\ln\lambda_\alpha(i\omega_k) + 1 - \lambda_\alpha(i\omega_k)\big]
+   = \frac{1}{2\pi}\sum_k w_k\big[\ln\det\tilde{\boldsymbol\epsilon}_U(i\omega_k) + \operatorname{tr}(\mathbf 1 - \tilde{\boldsymbol\epsilon}_U(i\omega_k))\big], $$
+   $\tilde{\boldsymbol\epsilon}_U = U^{\mathsf T}\tilde{\boldsymbol\epsilon}U$
+   (`rpa_correlation_energy`). Both terms are basis-invariant traces, so
+   with every mode kept ($U$ orthogonal, $m = n_{\rm aux}$) this is the
+   aux-basis log-det energy of the previous section exactly. That is why the
+   full-rank route (`RpaEnergyRoute::AuxBasisLogDet`) skips the static
+   eigensolve. With truncation the energy is that of the projected
+   dielectric and converges to the full one as `trunc_thresh` goes to 0.
 
-4. **Energy Integration:** The correlation energy trace is then evaluated via numerical quadrature (e.g., MiniMax or mapped Gauss-Legendre) over the imaginary frequency grid:
-   $$ E_c^{\text{RPA}} = \frac{1}{2\pi} \sum_k w_k \sum_\alpha \left[ \ln(\lambda_\alpha(i\omega_k)) + (1 - \lambda_\alpha(i\omega_k)) \right] $$
-
-This formulation avoids the $\mathcal{O}(N^6)$ cost and $\mathcal{O}(N^4)$ memory associated with forming and manipulating $\mathbf{\chi}_0(i\omega)$ across all frequencies.
+The PDEP basis avoids forming and diagonalizing the full
+$n_{\rm aux}\times n_{\rm aux}$ dielectric at every frequency when few modes
+are kept.
 
 ## Open-Shell (Spin-Summed) Dielectric
 
@@ -38,7 +152,7 @@ This formulation avoids the $\mathcal{O}(N^6)$ cost and $\mathcal{O}(N^4)$ memor
 
 $$ \tilde{\mathbf{\epsilon}}_U(i\omega) = \mathbf{1} + \mathbf{\Pi}_\alpha(i\omega) + \mathbf{\Pi}_\beta(i\omega), \qquad \Pi^\sigma_{PQ}(i\omega) = 2 \sum_{ia} \frac{e^\sigma_{ia}}{\omega^2 + (e^\sigma_{ia})^2} B^P_{i_\sigma a_\sigma} B^Q_{i_\sigma a_\sigma}. $$
 
-The closed-shell $\mathbf{\Pi}$ carries the prefactor 4; with identical spin channels $\mathbf{\Pi}_\alpha + \mathbf{\Pi}_\beta$ equals it, so a UHF singlet reproduces `run_pdep_rpa`. The PDEP eigensolve, truncation, frequency projection and trace-log integration are those of the closed-shell path applied to $\tilde{\mathbf{\epsilon}}_U$; the matvec $\tilde{\mathbf{\epsilon}}_U \mathbf{V} = \mathbf{V} + \mathbf{\Pi}_\alpha \mathbf{V} + \mathbf{\Pi}_\beta \mathbf{V}$ is two closed-shell-shaped applications (`sternheimer::dielectric_apply_unrestricted`). The Laplace $\chi_0$ backend builds one Laplace quadrature per spin on that spin's gap range. `run_diagnostics` assembles $\tilde{\mathbf{\epsilon}}_U(i\omega_k)$ densely at every quadrature node (`diagnostics::u_ri_drpa_energy`).
+The closed-shell $\mathbf{\Pi}$ carries the prefactor 4; with identical spin channels $\mathbf{\Pi}_\alpha + \mathbf{\Pi}_\beta$ equals it, so a UHF singlet reproduces `run_pdep_rpa`. With different $\alpha$ and $\beta$ orbitals, gaps and occupations, $\frac{1}{2\pi}\int[\ln\det\tilde{\boldsymbol\epsilon}_U - \operatorname{tr}(\boldsymbol\Pi_\alpha + \boldsymbol\Pi_\beta)]d\omega$ equals the spin-orbital definition of the "RPA Correlation Energy" section, $\tfrac12\sum_n(\Omega_n - A_{nn})$ with $\mathbf A = \boldsymbol\Delta + \mathbf K$, $\mathbf B = \mathbf K$ over both spin blocks, $K_{i_\sigma a_\sigma, j_\tau b_\tau} = (i_\sigma a_\sigma|j_\tau b_\tau)$ (`scripts/rpa_drpa_pdep_sympy.py`). The per-spin prefactor 2 is the $\pm\omega$ pole pair alone (`build_scale_factors_with_prefactor(.., 2.0)`). The PDEP eigensolve, truncation, frequency projection and trace-log integration are those of the closed-shell path applied to $\tilde{\mathbf{\epsilon}}_U$; the matvec $\tilde{\mathbf{\epsilon}}_U \mathbf{V} = \mathbf{V} + \mathbf{\Pi}_\alpha \mathbf{V} + \mathbf{\Pi}_\beta \mathbf{V}$ is two closed-shell-shaped applications (`sternheimer::dielectric_apply_unrestricted`). The Laplace $\chi_0$ backend builds one Laplace quadrature per spin on that spin's gap range. `run_diagnostics` assembles $\tilde{\mathbf{\epsilon}}_U(i\omega_k)$ densely at every quadrature node (`diagnostics::u_ri_drpa_energy`).
 
 The Boys-screened $\chi_0$ is closed-shell only: its screened tiles and localized orbital energies are built from the restricted MOs and Fock matrix.
 
@@ -79,6 +193,77 @@ tensor is recovered. The molecular tensor $\alpha_{\rm mol} = \langle\mu|R|\mu\r
 is not the atom sum: $\alpha_{\rm CT} = \alpha_{\rm mol} - \sum_A\alpha^A$ is the
 field-induced charge transfer between atoms (`charge_transfer_remainder`,
 `_dynamic`).
+
+**Per-atom kernel** (`properties/per_atom.rs`, `closed_per_atom_alpha`). With
+$G = \operatorname{diag}(g_{ia})$, $\mathbf K = \tilde B^{\mathsf T}\tilde B$ and
+the ov vectors $m^A_{d,ia} = \langle i|m^A_d|a\rangle$,
+$\mu_{j,ia} = \langle i|r_j|a\rangle$, the closed-shell dRPA response is
+$R = (G^{-1}/4 + \mathbf K)^{-1}$, which Woodbury turns into the aux-basis form
+the code evaluates:
+
+$$ \alpha^A_{dj}(i\omega) = 4\,m^A_d\cdot(g\circ\mu_j) - 16\,\big(\tilde B(g\circ m^A_d)\big)^{\mathsf T}\tilde{\boldsymbol\epsilon}^{-1}\big(\tilde B(g\circ\mu_j)\big), \qquad \tilde{\boldsymbol\epsilon} = \mathbf 1 + 4\tilde BG\tilde B^{\mathsf T}. $$
+
+The same $R$ is the sum over the dRPA (Casida) excitations,
+$\alpha(i\omega) = \sum_n f_n/(\Omega_n^2 + \omega^2)$ with
+$\Omega_n^2\mathbf Z_n = \Delta^{1/2}(\Delta + 4\mathbf K)\Delta^{1/2}\mathbf Z_n$ and
+$f_n = 4\,(m^{\mathsf T}\Delta^{1/2}\mathbf Z_n)(\mathbf Z_n^{\mathsf T}\Delta^{1/2}\mu)$.
+The static drivers use $g_{ia} = 1/e_{ia}$, the $\omega \to 0$ limit. The code
+then symmetrizes each tensor, $\alpha^A \to \tfrac12(\alpha^A + \alpha^{A\mathsf T})$
+(`symmetrize_tensor`). For partition weights with $\sum_Aw_A = 1$ the bras
+sum to $\sum_A m^A_d = \mu_d - \sum_A R_{A,d}\,w_A$ (and $\sum_A\langle i|w_A|a\rangle = 0$), so by linearity
+$\alpha_{\rm CT} = \alpha_{\rm mol} - \sum_A\operatorname{sym}\alpha^A = \operatorname{sym}\langle\sum_AR_Aw_A|R|\mu\rangle$.
+
+**Quadrature.** The C6 sums run on the RPA frequency grid of
+`quadrature.rs` (default Gauss-Legendre, 20 points, $u_0 = 0.5$). For the
+single-pole model the closed form is
+$\frac{3}{\pi}\int_0^\infty\bar\alpha_A\bar\alpha_B\,d\omega = \frac32\,\frac{\alpha_A\alpha_B\omega_A\omega_B}{\omega_A + \omega_B}$
+(London), and the 20-point sum reproduces it to $3\times10^{-14}$ relative
+for $\omega_{A,B} \approx 0.43\ E_h$ in the test model; the mapped rule converges geometrically on this rational integrand. For a pole expansion
+$\alpha(i\omega) = \sum_n f_n/(\Omega_n^2 + \omega^2)$,
+$C_6^{AB} = \frac32\sum_{mn}f^A_mf^B_n/(\Omega_m\Omega_n(\Omega_m + \Omega_n))$.
+`scripts/rpa_c6_polarizability_sympy.py` checks these identities, the kernel
+against the Casida sum and the charge-transfer sum rule.
+
+## Range-separated MP2 + RPA
+
+`rs_mp2_rpa::rs_mp2_lr_rpa` combines RI-MP2 and dRPA with the Coulomb
+operator split as $1/r = v_{\rm sr} + v_{\rm lr}$ ($\operatorname{erfc}/\operatorname{erf}$
+at $\omega$, or terfc/terf at $r_0$), so $(ia|jb)_{\rm C} = (ia|jb)_{\rm sr} + (ia|jb)_{\rm lr}$.
+With the spin components of `ferric_mp2::rimp2::pair_energy`,
+
+$$ E_{\rm OS}[v] = \sum_{ijab}\frac{(ia|jb)_v^2}{D_{ij}^{ab}}, \qquad
+E_{\rm SS}[v] = \sum_{ijab}\frac{(ia|jb)_v[(ia|jb)_v - (ib|ja)_v]}{D_{ij}^{ab}}, \qquad
+E_{\rm MP2}[v] = E_{\rm OS} + E_{\rm SS}, $$
+
+($D = \varepsilon_i + \varepsilon_j - \varepsilon_a - \varepsilon_b$; $E_{\rm OS} + E_{\rm SS}$ is the
+spin-orbital $\frac14\sum|\langle ij||ab\rangle|^2/D$), the two formulations are
+
+$$ E^{\rm B}_c = E_{\rm MP2}[\mathrm C] + \big(E_{\rm dRPA}[\mathrm{lr}] - 2E_{\rm OS}[\mathrm{lr}]\big) \quad (\texttt{DeltaLr}, \text{default}), $$
+
+$$ E^{\rm T}_c = E_{\rm MP2}[\mathrm C] + \big(E_{\rm dRPA}[\mathrm C] - 2E_{\rm OS}[\mathrm C]\big) - \big(E_{\rm dRPA}[\mathrm{sr}] - 2E_{\rm OS}[\mathrm{sr}]\big) \quad (\texttt{CoupledRings}). $$
+
+Each $E_{\rm dRPA}$ is a `run_pdep_rpa_from_intermediates` call (full rank by
+default, `RsMp2RpaConfig::default`) on the same dressed $\tilde B$ the MP2
+components use. The subtraction
+$2E_{\rm OS}$ is exactly the second-order term of the dRPA it accompanies
+(section "RPA Correlation Energy": $E^{(2)}_{\rm dRPA} = 2E_{\rm OS}$; on the
+$n$-point frequency grid it holds to the quadrature error), so every bracket
+starts at third order and both formulations equal $E_{\rm MP2}[\mathrm C]$ through second
+order, exchange included: nothing is counted twice. Scaling every integral by
+$\lambda$, the third-order terms are
+
+$$ E^{\rm B\,(3)}_c = E^{(3)}_{\rm dRPA}[\mathrm{lr}], \qquad E^{\rm T\,(3)}_c = E^{(3)}_{\rm dRPA}[\mathrm C] - E^{(3)}_{\rm dRPA}[\mathrm{sr}], $$
+
+with $E^{(3)}_{\rm dRPA} = \tfrac12\sum\mathbf B\circ\mathbf T_2$,
+$D\circ\mathbf T_2 = -(\mathbf B\mathbf T_1 + \mathbf T_1\mathbf B)$. In one mode
+($E_{\rm dRPA}(b) = -b^2/(4D) + b^3/(4D^2) + O(b^4)$, $b = b_s + b_l$) the
+difference is $E^{\rm T\,(3)} - E^{\rm B\,(3)} = 3b_sb_l(b_s + b_l)/(4D^2)$: the
+mixed short-range by long-range rings that B drops and T keeps. Both forms
+reduce to $E_{\rm MP2}[\mathrm C]$ when $v_{\rm lr} = 0$ ($\omega \to 0$) and
+to $E_{\rm MP2}[\mathrm C] + E_{\rm dRPA}[\mathrm C] - 2E_{\rm OS}[\mathrm C]$
+when $v_{\rm sr} = 0$. `scripts/rpa_rs_mp2_rpa_sympy.py` checks these
+statements, the ring orders against Cauchy-integral Taylor coefficients of the
+plasmon energy, and the spin components against spin-orbital MP2.
 
 ## Analytic nuclear gradient (closed-shell RI-dRPA, HF reference)
 
@@ -219,6 +404,17 @@ AOs, and $\gamma_{PQ} = \sum_{ia}\tilde\Gamma^P_{ia}c^Q_{ia}$ with
 $c = V^{-1}(Q|ia)$. (With $U_{oo}$ fixed at $-\tfrac12S^{(x)}_{oo}$ the
 $G[D^{(1)}]$ overlap term of $P^{\mathrm{AO}}$ and the one of the Z-vector
 combine into the single $G[D_2]$ term of $W_{oo}$.)
+
+`scripts/rpa_gradient_sympy.py` checks this gradient on a toy closed-shell
+system with $x$-dependent $S$, $h$ and exactly factorized integrals
+$(\mu\nu|\lambda\sigma) = \sum_PL_{P,\mu\nu}L_{P,\lambda\sigma}$ (unit metric, so
+the $\gamma$ term vanishes): the Lagrangian expression above, with
+$\Gamma = 4x$, $P = 2p$ from the transcribed `rpa_ri_densities`, equals a
+Richardson central difference of $E_{\rm RHF} + E_c$ with the RHF re-solved at
+$x \pm h$ to $2\times10^{-12}$ (and $3\times10^{-11}$ with one frozen core
+orbital). It also checks $\Gamma$ and $P$ directly as derivatives of
+$E_c(B, F_{oo}, F_{vv})$ with off-diagonal Fock blocks, the divided difference
+and the second-order integral.
 
 ### Frozen core
 

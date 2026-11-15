@@ -367,6 +367,14 @@
     ]
   },
   "methods": {
+    "drpa": {
+      "theory": [
+        "crates/ferric-rpa/theory.md#rpa-correlation-energy"
+      ],
+      "scripts": [
+        "scripts/rpa_drpa_pdep_sympy.py"
+      ]
+    },
     "mp3": {
       "theory": [
         "crates/ferric-mp2/theory.md#6-mp3"
@@ -381,6 +389,49 @@
       ],
       "scripts": [
         "scripts/oomp2_mp3_identities_sympy.py"
+      ]
+    },
+    "pdep-rpa": {
+      "theory": [
+        "crates/ferric-rpa/theory.md#the-pdep-eigenpotential-approach",
+        "crates/ferric-rpa/theory.md#rpa-correlation-energy"
+      ],
+      "scripts": [
+        "scripts/rpa_drpa_pdep_sympy.py"
+      ]
+    },
+    "rpa-gradient": {
+      "theory": [
+        "crates/ferric-rpa/theory.md#analytic-nuclear-gradient-closed-shell-ri-drpa-hf-reference",
+        "crates/ferric-rpa/theory.md#lagrangian-and-z-vector",
+        "crates/ferric-rpa/theory.md#gradient"
+      ],
+      "scripts": [
+        "scripts/rpa_gradient_sympy.py"
+      ]
+    },
+    "rpa-polarizability-c6": {
+      "theory": [
+        "crates/ferric-rpa/theory.md#dispersion-casimir-polder-c6"
+      ],
+      "scripts": [
+        "scripts/rpa_c6_polarizability_sympy.py"
+      ]
+    },
+    "rs-mp2-rpa": {
+      "theory": [
+        "crates/ferric-rpa/theory.md#range-separated-mp2--rpa"
+      ],
+      "scripts": [
+        "scripts/rpa_rs_mp2_rpa_sympy.py"
+      ]
+    },
+    "u-pdep-rpa": {
+      "theory": [
+        "crates/ferric-rpa/theory.md#open-shell-spin-summed-dielectric"
+      ],
+      "scripts": [
+        "scripts/rpa_drpa_pdep_sympy.py"
       ]
     }
   },
@@ -454,12 +505,6 @@
     },
     "double-hybrid": {
       "reason": "owned elsewhere: the double-hybrid grading branch writes its derivation"
-    },
-    "drpa": {
-      "reason": "no theory.md derivation and no sympy proof",
-      "theory": [
-        "crates/ferric-rpa/theory.md#rpa-correlation-energy"
-      ]
     },
     "eom-ccsd": {
       "reason": "no theory.md derivation and no sympy proof",
@@ -646,12 +691,6 @@
         "scripts/pcm_ief_sympy.py"
       ]
     },
-    "pdep-rpa": {
-      "reason": "no theory.md derivation and no sympy proof",
-      "theory": [
-        "crates/ferric-rpa/theory.md#the-pdep-eigenpotential-approach"
-      ]
-    },
     "pvp-integrals": {
       "reason": "script has no pytest runner and records no mutation",
       "scripts": [
@@ -683,21 +722,6 @@
       ]
     },
     "rohf": {
-      "reason": "no theory.md derivation and no sympy proof"
-    },
-    "rpa-gradient": {
-      "reason": "no theory.md derivation and no sympy proof (theory.md section exists)",
-      "theory": [
-        "crates/ferric-rpa/theory.md#analytic-nuclear-gradient-closed-shell-ri-drpa-hf-reference"
-      ]
-    },
-    "rpa-polarizability-c6": {
-      "reason": "no theory.md derivation and no sympy proof",
-      "theory": [
-        "crates/ferric-rpa/theory.md#dispersion-casimir-polder-c6"
-      ]
-    },
-    "rs-mp2-rpa": {
       "reason": "no theory.md derivation and no sympy proof"
     },
     "scs-mp2": {
@@ -747,12 +771,6 @@
     },
     "u-oo-rimp2": {
       "reason": "no theory.md derivation and no sympy proof"
-    },
-    "u-pdep-rpa": {
-      "reason": "no theory.md derivation and no sympy proof",
-      "theory": [
-        "crates/ferric-rpa/theory.md#open-shell-spin-summed-dielectric"
-      ]
     },
     "u-ri-mp2": {
       "reason": "script has no pytest runner and records no mutation",
