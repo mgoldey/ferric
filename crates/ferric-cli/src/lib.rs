@@ -842,6 +842,9 @@ pub fn run(args: Vec<String>) {
         }),
         nlc_grid: None,
         level_shift: cfg.scf.level_shift.unwrap_or(0.0),
+        // A written `[scf] level_shift`, 0 included, turns off the automatic
+        // meta-GGA shift.
+        meta_gga_auto_level_shift: cfg.scf.level_shift.is_none(),
         newton_trigger: if cfg.scf.soscf { 1e-3 } else { 0.0 },
         ah_trigger: 0.0,
         mom_after_iter: cfg.scf.mom_after_iter,

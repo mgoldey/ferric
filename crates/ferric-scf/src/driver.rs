@@ -405,11 +405,21 @@ pub(crate) fn prepare<'a>(
     })
 }
 
+/// Whether `config` gets the automatic meta-GGA level shift: a meta-GGA
+/// functional, no level shift written, and the auto shift not switched off
+/// (`meta_gga_auto_level_shift = false` is how an explicit `level_shift = 0`
+/// is told apart from an unset one).
+fn auto_level_shift_applies(config: &RhfConfig) -> bool {
+    config.meta_gga_auto_level_shift
+        && config.level_shift == 0.0
+        && crate::rohf::xc_is_metagga(config.xc.as_deref())
+}
+
 /// The default virtual-block level shift: the user's value, or 0.5 for
 /// meta-GGA when the user set none (meta-GGA SCF limit-cycles under plain
 /// DIIS — see the solve_rhf comment where this convention originated).
 pub(crate) fn effective_level_shift(config: &RhfConfig) -> f64 {
-    if config.level_shift == 0.0 && crate::rohf::xc_is_metagga(config.xc.as_deref()) {
+    if auto_level_shift_applies(config) {
         0.5
     } else {
         config.level_shift

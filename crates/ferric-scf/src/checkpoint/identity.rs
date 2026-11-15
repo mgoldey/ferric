@@ -339,6 +339,7 @@ fn config_fields(config: &RhfConfig, out: &mut Vec<IdentityField>) -> (f64, f64)
         diis_size,
         diis_switch_thresh,
         level_shift,
+        meta_gga_auto_level_shift,
         // Unchecked. Stop rules decide when an iteration ends, and the exit gate
         // judges where it ended. The rest are resources.
         max_iter: _,
@@ -429,6 +430,10 @@ fn config_fields(config: &RhfConfig, out: &mut Vec<IdentityField>) -> (f64, f64)
         ("diis_size", format!("{diis_size:?}")),
         ("diis_switch_thresh", format!("{diis_switch_thresh:?}")),
         ("level_shift", format!("{level_shift:?}")),
+        (
+            "meta_gga_auto_level_shift",
+            format!("{meta_gga_auto_level_shift:?}"),
+        ),
     ];
     for (class, group) in [
         (FieldClass::Environment, &environment[..]),

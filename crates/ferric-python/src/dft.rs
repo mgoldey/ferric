@@ -506,6 +506,7 @@ pub(crate) fn run_dft(
     cfg.energy_conv = energy_conv.unwrap_or(cfg.energy_conv);
     cfg.density_conv = density_conv.unwrap_or(cfg.density_conv);
     cfg.level_shift = level_shift.unwrap_or(cfg.level_shift);
+    cfg.meta_gga_auto_level_shift = level_shift.is_none();
     cfg.mom_after_iter = mom_after_iter.unwrap_or(cfg.mom_after_iter);
     cfg.external_potential = build_external_potential(point_charges, external_field);
     let xc_name = functional.unwrap_or("LDA").to_string();
@@ -1091,6 +1092,7 @@ fn run_open_ks(
     config.energy_conv = energy_conv.unwrap_or(config.energy_conv);
     config.density_conv = density_conv.unwrap_or(config.density_conv);
     config.level_shift = level_shift.unwrap_or(config.level_shift);
+    config.meta_gga_auto_level_shift = level_shift.is_none();
     config.mom_after_iter = mom_after_iter.unwrap_or(config.mom_after_iter);
     config.use_sad_guess = use_sad_guess;
     config.external_potential = build_external_potential(point_charges, external_field);

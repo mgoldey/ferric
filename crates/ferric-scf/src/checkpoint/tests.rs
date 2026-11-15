@@ -873,6 +873,9 @@ fn identity_table() -> Vec<(&'static str, FieldClass, Mutator)> {
         ("level_shift", StateSelecting, |s| {
             s.config.level_shift = 0.2
         }),
+        ("meta_gga_auto_level_shift", StateSelecting, |s| {
+            s.config.meta_gga_auto_level_shift = false;
+        }),
         ("external_potential", Environment, |s| {
             s.config.external_potential = Some(ExternalPotential {
                 field: Some([0.0, 0.0, 1e-3]),
@@ -2023,6 +2026,7 @@ fn full_config() -> RhfConfig {
         ah_trigger: 1e-3,
         diis_flavor: DiisFlavor::Ediis,
         level_shift: 0.2,
+        meta_gga_auto_level_shift: false,
         ..Default::default()
     }
 }

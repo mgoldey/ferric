@@ -122,6 +122,13 @@ pub struct RhfConfig {
     /// in open-shell SCF (ROHF/UHF/ROKS) where DIIS plateaus near a near-
     /// degenerate transition. A shift of 0.1–0.5 Ha is typical.
     pub level_shift: f64,
+    /// Whether a meta-GGA functional with `level_shift == 0` gets the automatic
+    /// 0.5 Ha virtual-block shift (`driver::effective_level_shift`). `true` (the
+    /// default) keeps that convention; `false` runs the literal `level_shift`, so
+    /// an explicit `level_shift = 0` really runs unshifted. Entry points that
+    /// know whether the caller wrote a `level_shift` (CLI `[scf] level_shift`,
+    /// the Python `level_shift=` kwarg) set it to `false` when the caller did.
+    pub meta_gga_auto_level_shift: bool,
     /// If > 0 in ROHF/ROKS: switch from DIIS to a damped-Newton step once the
     /// DIIS error (err_max) drops below this trigger. Setting `1e-2` is a
     /// reasonable default for OH-doublet LDA/PBE plateaus. A value of 0
@@ -560,6 +567,7 @@ impl Default for RhfConfig {
             dft_grid: None,
             nlc_grid: None,
             level_shift: 0.0,
+            meta_gga_auto_level_shift: true,
             newton_trigger: 0.0,
             aurora: crate::aurora::AuroraConfig::default(),
             ah_trigger: 0.0,
