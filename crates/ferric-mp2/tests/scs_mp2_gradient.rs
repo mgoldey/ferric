@@ -293,7 +293,10 @@ fn check_rijk(label: &str, xyz: &str, basis_name: &str, frozen_core: usize) {
     let fd = fd_gradients(&mol, &obs, &aux, Some(&jk), std::slice::from_ref(&cfg));
     let worst = max_abs_diff(&g, &fd[0]);
     eprintln!("{label} RI-JK SCS-MP2 (fc {frozen_core}): max |analytic - FD| = {worst:.3e} (bar {BAR:.0e})");
-    assert!(worst < BAR, "{label} RI-JK: max |analytic - FD| = {worst:.3e}");
+    assert!(
+        worst < BAR,
+        "{label} RI-JK: max |analytic - FD| = {worst:.3e}"
+    );
 }
 
 #[test]

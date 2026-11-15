@@ -214,7 +214,15 @@ pub fn optimize_geometry_oo_rimp2(
     let rhf_config = rhf_config.for_geometry_task();
     let mut warm = ScfWarmStart::new(opt_config.scf_warm_start);
     let out = ferric_scf::optimize::optimize_geometry_with_energy_gradient(mol, opt_config, |m| {
-        oo_rimp2_energy_gradient(m, obs_basis, aux_basis, op, &rhf_config, oo_config, &mut warm)
+        oo_rimp2_energy_gradient(
+            m,
+            obs_basis,
+            aux_basis,
+            op,
+            &rhf_config,
+            oo_config,
+            &mut warm,
+        )
     });
     if let Some(line) = warm.summary() {
         println!("{line}");
@@ -261,15 +269,7 @@ pub fn oo_rimp2_energy_gradient(
         &obs,
         rhf_config.screening,
     )?;
-    let rhf = ferric_scf::warm_start::solve_rhf_warm(
-        &ctx,
-        m,
-        &obs,
-        op,
-        &bounds,
-        rhf_config,
-        warm,
-    )?;
+    let rhf = ferric_scf::warm_start::solve_rhf_warm(&ctx, m, &obs, op, &bounds, rhf_config, warm)?;
     if !rhf.converged {
         return Err(FerricError::ScfConvergence {
             iterations: rhf.iterations,
@@ -285,8 +285,7 @@ pub fn oo_rimp2_energy_gradient(
             oo.iterations, oo.grad_norm
         )));
     }
-    let g =
-        crate::oo_rimp2_gradient::oo_ri_mp2_gradient(m, &obs, &dfbs, op, &bounds, &oo, 0, ext)?;
+    let g = crate::oo_rimp2_gradient::oo_ri_mp2_gradient(m, &obs, &dfbs, op, &bounds, &oo, 0, ext)?;
     Ok((oo.total_energy, g))
 }
 

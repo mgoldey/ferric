@@ -237,8 +237,16 @@ fn check_system(system: &str, basis_name: &str, aux_name: &str) {
     let aux_bs = basis::bundled(aux_name).unwrap();
     let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
     let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
-    assert_eq!(obs.nbasis() as u64, r["nao"].as_u64().unwrap(), "{ctx}: nao");
-    assert_eq!(dfbs.nbasis() as u64, r["naux"].as_u64().unwrap(), "{ctx}: naux");
+    assert_eq!(
+        obs.nbasis() as u64,
+        r["nao"].as_u64().unwrap(),
+        "{ctx}: nao"
+    );
+    assert_eq!(
+        dfbs.nbasis() as u64,
+        r["naux"].as_u64().unwrap(),
+        "{ctx}: naux"
+    );
     let n_frozen = r["n_frozen"].as_u64().expect("n_frozen") as usize;
 
     let op = Operator::coulomb();
@@ -248,11 +256,20 @@ fn check_system(system: &str, basis_name: &str, aux_name: &str) {
         max_iter: 200,
         ..Default::default()
     };
-    assert!(cfg.df_j_aux.is_none() && cfg.df_k_aux.is_none(), "exact J/K");
+    assert!(
+        cfg.df_j_aux.is_none() && cfg.df_k_aux.is_none(),
+        "exact J/K"
+    );
     let rhf = solve_rhf(&ParallelContext::default(), &mol, &obs, op, &bounds, &cfg)
         .unwrap_or_else(|e| panic!("{ctx}: solve_rhf failed: {e:?}"));
     assert!(rhf.converged, "{ctx}: RHF not converged");
-    check_close(&ctx, "E_RHF", rhf.energy, num(&r, "/pyscf/e_rhf", &ctx), TOL_E);
+    check_close(
+        &ctx,
+        "E_RHF",
+        rhf.energy,
+        num(&r, "/pyscf/e_rhf", &ctx),
+        TOL_E,
+    );
 
     // E_OS and E_SS from the scaling endpoints (1, 0) and (0, 1).
     for (fc, os_key, ss_key) in [
@@ -265,8 +282,20 @@ fn check_system(system: &str, basis_name: &str, aux_name: &str) {
         let e_ss = scs_mp2(&mol, &obs, &dfbs, &rhf, &scs_cfg((0.0, 1.0), fc))
             .unwrap()
             .scs_corr;
-        check_close(&ctx, &format!("E_OS fc={fc}"), e_os, num(&r, os_key, &ctx), TOL_E);
-        check_close(&ctx, &format!("E_SS fc={fc}"), e_ss, num(&r, ss_key, &ctx), TOL_E);
+        check_close(
+            &ctx,
+            &format!("E_OS fc={fc}"),
+            e_os,
+            num(&r, os_key, &ctx),
+            TOL_E,
+        );
+        check_close(
+            &ctx,
+            &format!("E_SS fc={fc}"),
+            e_ss,
+            num(&r, ss_key, &ctx),
+            TOL_E,
+        );
     }
 
     let g_rhf = rhf_gradient_exact_jk(&mol, &obs, op, &bounds, &rhf, None).unwrap();
@@ -322,7 +351,12 @@ fn check_system(system: &str, basis_name: &str, aux_name: &str) {
     check_miss(&ctx, "swapped (c_ss, c_os)", &g_swapped, &ref_grimme);
     check_miss(&ctx, "RI-MP2 (1,1)", &g_unit, &ref_grimme);
     check_miss(&ctx, "SOS (1,0)", &g_sos, &ref_grimme);
-    check_miss(&ctx, "Grimme all-e vs fc", &g_grimme, &composed(&r, natm, &ctx, GRIMME, true));
+    check_miss(
+        &ctx,
+        "Grimme all-e vs fc",
+        &g_grimme,
+        &composed(&r, natm, &ctx, GRIMME, true),
+    );
 }
 
 #[test]

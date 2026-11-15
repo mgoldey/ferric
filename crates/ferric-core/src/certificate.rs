@@ -913,7 +913,11 @@ mod tests {
             &Certificate::for_method_kind("scs-mp2"),
         );
         assert_eq!(c.grade, Grade::ProvenNarrow);
-        let c = Certificate::for_task("optimize", "oo-rimp2", &Certificate::for_method_kind("oo-rimp2"));
+        let c = Certificate::for_task(
+            "optimize",
+            "oo-rimp2",
+            &Certificate::for_method_kind("oo-rimp2"),
+        );
         assert_eq!(c.grade, Grade::ProvenNarrow);
     }
 

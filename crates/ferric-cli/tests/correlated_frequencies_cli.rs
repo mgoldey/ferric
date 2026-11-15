@@ -93,13 +93,13 @@ fn method_block(kind: &str) -> String {
 
 /// A well-formed input: `task` inside `[method]`.
 fn toml_for(xyz: &std::path::Path, kind: &str, task: &str, extra: &str) -> String {
-    let m = method_block(kind).replacen(
-        "[method]\n",
-        &format!("[method]\ntask = \"{task}\"\n"),
-        1,
-    );
+    let m = method_block(kind).replacen("[method]\n", &format!("[method]\ntask = \"{task}\"\n"), 1);
     // `[scf] jk` is read by the MP2 kinds only; pdep-rpa is always four-centre.
-    let jk = if kind == "pdep-rpa" { "" } else { "jk = \"exact\"\n" };
+    let jk = if kind == "pdep-rpa" {
+        ""
+    } else {
+        "jk = \"exact\"\n"
+    };
     format!(
         "[molecule]\nxyz = \"{}\"\n[basis]\nname = \"sto-3g\"\n{m}[scf]\nenergy_conv = 1e-12\ndensity_conv = 1e-10\nri_j_precision = \"f64\"\n{jk}{extra}",
         xyz.display()
@@ -109,7 +109,11 @@ fn toml_for(xyz: &std::path::Path, kind: &str, task: &str, extra: &str) -> Strin
 fn energy(kind: &str, r_ang: f64, tag: &str) -> f64 {
     let xyz = h2_xyz(tag, r_ang);
     let (out, records) = run_cli(tag, &toml_for(&xyz, kind, "energy", ""));
-    assert!(out.status.success(), "{tag}: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{tag}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     records
         .iter()
         .rev()
@@ -122,7 +126,13 @@ fn energy(kind: &str, r_ang: f64, tag: &str) -> f64 {
 /// Five-point central difference of `E(r)`, in Hartree/Bohr^2.
 fn force_constant_from_energies(kind: &str) -> f64 {
     let h = H_ANG / ANGSTROM_PER_BOHR;
-    let e = |k: i32| energy(kind, R0_ANG + f64::from(k) * H_ANG, &format!("e_{kind}_{k}"));
+    let e = |k: i32| {
+        energy(
+            kind,
+            R0_ANG + f64::from(k) * H_ANG,
+            &format!("e_{kind}_{k}"),
+        )
+    };
     let (m2, m1, p0, p1, p2) = (e(-2), e(-1), e(0), e(1), e(2));
     (-p2 + 16.0 * p1 - 30.0 * p0 + 16.0 * m1 - m2) / (12.0 * h * h)
 }
@@ -132,7 +142,11 @@ fn force_constant_from_frequencies(kind: &str, tag: &str) -> (f64, serde_json::V
     let tag = format!("{tag}_{kind}");
     let xyz = h2_xyz(&tag, R0_ANG);
     let (out, records) = run_cli(&tag, &toml_for(&xyz, kind, "frequencies", ""));
-    assert!(out.status.success(), "{tag}: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{tag}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let rec = records
         .iter()
         .find(|r| r["record"] == "frequencies")
@@ -213,7 +227,10 @@ fn rimp2_frequencies_differ_from_the_rhf_hessian() {
         ),
     );
     assert!(out.status.success());
-    let rec = records.iter().find(|r| r["record"] == "frequencies").unwrap();
+    let rec = records
+        .iter()
+        .find(|r| r["record"] == "frequencies")
+        .unwrap();
     let h: Vec<f64> = rec["cartesian_hessian"]
         .as_array()
         .unwrap()
@@ -238,8 +255,13 @@ fn a_kind_without_a_gradient_is_refused_with_the_supported_list() {
     );
     assert!(!out.status.success());
     let err = String::from_utf8_lossy(&out.stderr);
-    assert!(err.contains("needs a method.kind with a nuclear gradient"), "{err}");
-    for kind in ["rhf", "ksdft", "uhf", "rohf", "pdep-rpa", "rimp2", "scs-mp2", "oo-rimp2"] {
+    assert!(
+        err.contains("needs a method.kind with a nuclear gradient"),
+        "{err}"
+    );
+    for kind in [
+        "rhf", "ksdft", "uhf", "rohf", "pdep-rpa", "rimp2", "scs-mp2", "oo-rimp2",
+    ] {
         assert!(err.contains(kind), "{kind} missing from: {err}");
     }
 }
@@ -250,7 +272,12 @@ fn an_scf_hessian_key_on_a_correlated_kind_is_refused() {
     let xyz = h2_xyz("freq_hessian_key", R0_ANG);
     let (out, _) = run_cli(
         "freq_hessian_key",
-        &toml_for(&xyz, "rimp2", "frequencies", "[frequencies]\nhessian = \"analytic\"\n"),
+        &toml_for(
+            &xyz,
+            "rimp2",
+            "frequencies",
+            "[frequencies]\nhessian = \"analytic\"\n",
+        ),
     );
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("SCF Hessian"));
@@ -273,7 +300,11 @@ fn open_shell_rimp2_frequencies_match_an_energy_stencil() {
         let tag = format!("oh_e_{k}");
         let xyz = oh_xyz(&tag, R0 + f64::from(k) * H_ANG);
         let (out, records) = run_cli(&tag, &doublet(toml_for(&xyz, "rimp2", "energy", "")));
-        assert!(out.status.success(), "{tag}: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "{tag}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         records
             .iter()
             .rev()
@@ -283,7 +314,13 @@ fn open_shell_rimp2_frequencies_match_an_energy_stencil() {
             .unwrap()
     };
     let h = H_ANG / ANGSTROM_PER_BOHR;
-    let (m2, m1, p0, p1, p2) = (energy_at(-2), energy_at(-1), energy_at(0), energy_at(1), energy_at(2));
+    let (m2, m1, p0, p1, p2) = (
+        energy_at(-2),
+        energy_at(-1),
+        energy_at(0),
+        energy_at(1),
+        energy_at(2),
+    );
     let k_fd = (-p2 + 16.0 * p1 - 30.0 * p0 + 16.0 * m1 - m2) / (12.0 * h * h);
 
     let xyz = oh_xyz("oh_freq", R0);
@@ -291,8 +328,15 @@ fn open_shell_rimp2_frequencies_match_an_energy_stencil() {
         "oh_freq",
         &doublet(toml_for(&xyz, "rimp2", "frequencies", "")),
     );
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    let rec = records.iter().find(|r| r["record"] == "frequencies").unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let rec = records
+        .iter()
+        .find(|r| r["record"] == "frequencies")
+        .unwrap();
     let k_freq = rec["cartesian_hessian"][14].as_f64().unwrap();
     assert!(
         (k_freq - k_fd).abs() < BAR,

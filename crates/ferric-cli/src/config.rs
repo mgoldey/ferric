@@ -4830,9 +4830,7 @@ impl Config {
             );
         }
         let kind = self.method.kind.as_str();
-        if is_gradient_task(&self.method.task)
-            && matches!(kind, "rimp2" | "scs-mp2" | "pdep-rpa")
-        {
+        if is_gradient_task(&self.method.task) && matches!(kind, "rimp2" | "scs-mp2" | "pdep-rpa") {
             return Err(format!(
                 "[scf] guess_basis is not supported with method.kind = \"{kind}\", task = \
                  \"{}\": that gradient run builds its own RHF reference at each \
@@ -5640,10 +5638,7 @@ mod compat_guard_tests {
         }
         // Open-shell OO-RI-MP2 has no nuclear gradient: its energy route must
         // not leak into the other tasks, and the message must say why.
-        for (kind, task) in [
-            ("oo-rimp2", "optimize"),
-            ("oo-rimp2", "frequencies"),
-        ] {
+        for (kind, task) in [("oo-rimp2", "optimize"), ("oo-rimp2", "frequencies")] {
             let e = cfg(kind, task, "")
                 .validate_multiplicity(3)
                 .expect_err(kind);
@@ -5790,13 +5785,14 @@ mod compat_guard_tests {
                 Some("def2-universal-jkfit"),
                 "{kind}"
             );
-            let exact = choice(kind, task, "jk = \"exact\"\n")
-                .unwrap()
-                .unwrap();
+            let exact = choice(kind, task, "jk = \"exact\"\n").unwrap().unwrap();
             assert_eq!(exact.mode, ScfJkMode::Exact, "{kind}");
         }
         // A task the rule does not govern is untouched.
-        assert_eq!(choice("rimp2", "frequencies", "").map(|c| c.is_some()), Ok(true));
+        assert_eq!(
+            choice("rimp2", "frequencies", "").map(|c| c.is_some()),
+            Ok(true)
+        );
         assert_eq!(choice("pdep-rpa", "frequencies", ""), Ok(None));
         // Open shell: the rimp2 optimization and frequencies take the fitted
         // default, the energy stays four-centre.
@@ -5970,7 +5966,12 @@ mod compat_guard_tests {
                 "wired for task",
             ),
             ("ccsd", "energy", "jk = \"rijk\"\n", "wired for task"),
-            ("pdep-rpa", "frequencies", "jk = \"rijk\"\n", "wired for task"),
+            (
+                "pdep-rpa",
+                "frequencies",
+                "jk = \"rijk\"\n",
+                "wired for task",
+            ),
             (
                 "rimp2",
                 "frequencies",

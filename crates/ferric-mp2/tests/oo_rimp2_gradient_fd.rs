@@ -132,7 +132,11 @@ fn solve(mol: &Molecule, obs: &BasisSet, aux: &BasisSet, jk_aux: Option<&str>) -
     assert!(rhf.converged, "reference RHF did not converge");
     assert_eq!(rhf.df_jk.is_some(), jk_aux.is_some(), "J/K route");
     let oo = oo_ri_mp2(mol, &prep, &dfbs, op, &bounds, &rhf, &oo_config(), None).unwrap();
-    assert!(oo.converged, "OO did not converge: |g| {:.2e}", oo.grad_norm);
+    assert!(
+        oo.converged,
+        "OO did not converge: |g| {:.2e}",
+        oo.grad_norm
+    );
     assert!(
         oo.grad_norm <= MAX_GRAD_NORM,
         "OO residual |g| {:.2e} above {MAX_GRAD_NORM:.0e}",

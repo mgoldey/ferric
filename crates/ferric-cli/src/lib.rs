@@ -6686,13 +6686,13 @@ fn run_frequencies_correlated(
                 std::process::exit(1);
             });
             let label = ferric_mp2::optimize::rimp2_gradient_label(&scf_jk);
-        // An open shell runs on a UHF reference with the
-        // unrestricted gradient, as in `run_optimize_rimp2`.
-        let gradient_on = if mol.multiplicity > 1 {
-            ferric_mp2::u_rimp2_gradient::total_u_rimp2_gradient_on
-        } else {
-            ferric_mp2::gradient::total_rimp2_gradient_on
-        };
+            // An open shell runs on a UHF reference with the
+            // unrestricted gradient, as in `run_optimize_rimp2`.
+            let gradient_on = if mol.multiplicity > 1 {
+                ferric_mp2::u_rimp2_gradient::total_u_rimp2_gradient_on
+            } else {
+                ferric_mp2::gradient::total_rimp2_gradient_on
+            };
             (
                 Box::new(move |m, warm| {
                     gradient_on(
@@ -7423,7 +7423,8 @@ fn run_optimize(
             );
         }
         "pdep-rpa" => {
-            let (aux_bs, rpa_cfg, gradient, fallback) = rpa_gradient_setup(cfg, mol, op, budget_bytes);
+            let (aux_bs, rpa_cfg, gradient, fallback) =
+                rpa_gradient_setup(cfg, mol, op, budget_bytes);
             let opt_result = ferric_rpa::optimize::optimize_geometry_rpa(
                 mol,
                 bs,
