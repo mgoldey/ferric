@@ -389,6 +389,24 @@ Code references are `crate/src/file.rs::item` under `crates/`.
 | 26.6 | Shared intermediates across the two kernels | P derivation §19; code comments | `ferric-mp2/src/rimp2.rs::{compute_rpa_intermediates,spin_components_from_b_ov}`, `ferric-rpa/src/rs_mp2_rpa.rs::second_intermediate_bov_bytes` | gap |
 | 26.7 | What was measured, and what does not work | P paper "Results", P derivation §18, §20; D 7.2 | none | verify |
 
+### Part XV. Interfaces
+
+**Chapter 27. ML integration touchpoints**
+
+For an implementer wiring ferric outputs into ML models. Chapter 21 derives the
+properties; this chapter states what each exported array is, its frame behaviour,
+its evidence and its use as a feature or label.
+
+| § | Section | Sources | Code | Status |
+|---|---|---|---|---|
+| 27.1 | The NPZ feature bundle | T export §1; R pdep-rpa; `site/src/reference/validation.md` NPZ rows | `ferric-export/src/ml.rs::export_npz`, `ferric-rpa/src/property_bundle.rs::{compute_pdep_properties,write_pdep_npz}` | edit |
+| 27.2 | Electrostatic features and atomic charges | none (no theory text); validation anchors | `ferric-scf/src/properties.rs::{esp_at_atoms,electric_field_at_atoms,esp_at_points,lowdin_charges,mulliken_charges,chelpg_charges,resp_charges}`, `ferric-scf/src/properties/hirshfeld_grid.rs::hirshfeld_charges` | gap |
+| 27.3 | Polarizabilities, PDEP modes and $C_6$ | T rpa "Dispersion: Casimir-Polder C6"; S `rpa_c6_polarizability_sympy.py` claims 1, 2, 3, 5; R rpa-polarizability-c6 | `ferric-rpa/src/properties/per_atom.rs::{closed_per_atom_alpha,charge_transfer_remainder}`, `ferric-rpa/src/dispersion.rs::{casimir_polder_c6,ts_dynamic_polarizability,pdep_dynamic_polarizability}` | ready |
+| 27.4 | The Python surface, cube files and provenance | T export §2; `ferric.pyi`; M `site/src/using/{ase,qcschema,export}.md` | `ferric-export/src/cube.rs::export_cube`, `ferric-core/src/certificate.rs::Certificate` | edit |
+| 27.5 | Reproducibility and validation grades | `site/src/reference/{architecture,validation,input}.md`; `site/src/using/sharp-bits.md` | `ferric-core/src/blas_threads.rs::{with_blas_threads,opt_in_blas_threads}` | edit |
+| 27.6 | Energies, gradients, Hessians and response as labels | validation matrix and anchors; R hf-gradient, ks-gradient, ri-mp2-gradient, rpa-gradient, hf-hessian, ks-hessian, harmonic-frequencies | `ferric-rpa/src/gradient.rs::total_rpa_gradient`, `ferric-scf/src/noise_floor.rs::de_noise_floor` | edit |
+| 27.7 | A worked consumer: esp-conditioning | the esp-conditioning builder code (interface only) | none | edit |
+
 ### Appendices
 
 | § | Section | Sources | Code | Status |

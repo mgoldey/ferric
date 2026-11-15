@@ -374,10 +374,13 @@ def check_page(root: Path, p: Path, rep: Report, ctx: dict, release: bool) -> No
         elif resolve_item(root, path, item) is None:
             rep.err(where, f"code reference not declared: {path}::{item}")
 
-    # Local-only sources must not be linked.
+    # Local-only sources must not be linked; relative image targets must exist.
     for target in re.findall(r"\]\(([^)\s]+)\)", prose):
         if LOCAL_ONLY.search(target) and not target.startswith("http"):
             rep.err(where, f"link to a local-only source: {target}")
+    for target in re.findall(r"!\[[^\]]*\]\(([^)\s]+)\)", prose):
+        if not re.match(r"[a-z]+:", target) and not (p.parent / target).is_file():
+            rep.err(where, f"image not found: {target}")
 
     # Backticked repository paths exist.
     scrubbed = BOX_RE.sub("", CODE_REF_RE.sub("CODEREF", prose))
@@ -622,6 +625,11 @@ def build_tree(root: Path, ctx: dict, out: Path) -> None:
         dest.write_text(rewrite_math(expand_includes(root, p.read_text())) + stamp)
     (src / "appendix-a-unverified.md").write_text(appendix(ctx) + stamp)
     (src / "SUMMARY.md").write_text(build_summary(root, appendix=True))
+    # Figures (book/src/figures/<NN-slug>/: the generating script and its SVG) are
+    # copied verbatim; mdBook serves them next to the preprocessed pages.
+    figures = book_src(root) / "figures"
+    if figures.is_dir():
+        shutil.copytree(figures, src / "figures", dirs_exist_ok=True)
 
 
 def concat(root: Path, ctx: dict) -> str:

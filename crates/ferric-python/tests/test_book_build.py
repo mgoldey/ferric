@@ -339,3 +339,36 @@ def test_every_cited_claim_in_the_real_book_resolves_by_label():
             f"{script}: claim {claim!r} is a quoted string, not a label"
         )
         assert bb.claim_defined((root / script).read_text(), claim)
+
+
+FIG = "book/src/figures/10-mp2/toy.svg"
+
+
+def test_build_tree_copies_figures_and_keeps_them_out_of_the_chapter_glob(tree):
+    write(
+        tree,
+        {
+            FIG: "<svg xmlns='http://www.w3.org/2000/svg'/>\n",
+            "book/src/figures/10-mp2/toy.py": "# makes toy.svg\n",
+        },
+    )
+    sub(tree, SEC, "Inline math", "![toy](../figures/10-mp2/toy.svg)\n\nInline math")
+    rep, ctx = bb.run_check(tree)
+    assert rep.errors == []
+    assert all(
+        not bb.rel(tree, p).startswith("book/src/figures")
+        for p in bb.section_files(tree)
+    )
+    assert "figures" not in bb.build_summary(tree)
+    out = tree / "book" / "out"
+    bb.build_tree(tree, ctx, out)
+    assert (out / "src" / "figures/10-mp2/toy.svg").read_text().startswith("<svg")
+    assert (out / "src" / "figures/10-mp2/toy.py").is_file()
+    # The page's relative link resolves inside the preprocessed tree too.
+    page = out / "src" / "10-mp2" / "01-toy.md"
+    assert (page.parent / "../figures/10-mp2/toy.svg").resolve().is_file()
+
+
+def test_missing_figure_is_an_error(tree):
+    sub(tree, SEC, "Inline math", "![toy](../figures/10-mp2/gone.svg)\n\nInline math")
+    assert any("image not found" in e for e in check(tree).errors)

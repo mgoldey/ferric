@@ -1,0 +1,105 @@
+# 27.4 The Python surface, cube files and provenance
+
+<!-- section: 27.4; status: edit; registry: none;
+     theory: crates/ferric-export/theory.md#"2. Gaussian Cube Real-Space Grid Exporter" -->
+
+The NPZ file is one way to get features out. A dataset builder written in
+Python usually calls the bindings instead, either for a whole result or for
+the building blocks. This section maps the Python entry points onto the
+quantities of 27.1–27.3, then covers cube files and the certificate, which is
+the provenance record a dataset should keep with every sample.
+
+## 27.4.1 Results, property functions and building blocks
+
+| Layer | What it returns | Use it for |
+|---|---|---|
+| `run_*` results (`RhfResult`, `DftResult`, `PdepRpaResult`, …) | energy, MO coefficients and energies, density, gradient where requested, `.certificate` | labels and the reference wavefunction |
+| `run_pdep_rpa(..., properties=True)` | every NPZ array as an attribute of the same name, `None` when not requested or failed | the full feature bundle without a file |
+| property functions: `esp_at_atoms`, `esp_at_points`, `mulliken_charges`, `lowdin_charges`, `hirshfeld_charges`, `chelpg_charges`, `resp_charges`, `hirshfeld_polarizability`, `orbital_moments`, `density_second_moment` | one property from an `RhfResult` or `DftResult` | features from an SCF you already ran, including KS references |
+| `AoIntegrals(mol, basis)` | overlap, kinetic, nuclear, core Hamiltonian, dipole integrals, ERIs (4-, 3-, 2-index), J/K, their nuclear derivatives, `pvp`, `hcore_x2c` | rebuilding $S$ and the AO metadata the NPZ omits; custom features |
+| `DfJk`, `XcFunctional`, `Cphf` | density-fitted J/K, XC on a grid, coupled-perturbed solves | building a new response property |
+| `response_modes` | leading dielectric modes at one imaginary frequency | PDEP modes outside the NPZ path |
+
+The property functions differ from the NPZ path in one way that matters: they
+take the reference you give them, so they work on a Kohn–Sham density. The
+NPZ path always uses its own RHF reference. All of them are signed in
+`crates/ferric-python/ferric.pyi`.
+
+`AoIntegrals` reports AOs in ferric's shell order: `shell_offsets()`,
+`shell_atoms()` and `ao_atoms()` give the map from AO index to shell and atom.
+That is what an AO-resolved model (one that consumes `density_matrix` or
+`mo_coeffs`) needs to group AOs by atom.
+
+The ASE calculator and the QCSchema runner wrap the same `run_*` calls. Both
+pass the certificate through: `calc.results["certificate"]` and
+`extras["ferric"]["certificate"]`. Their options are in
+`site/src/using/ase.md` and `site/src/using/qcschema.md`.
+
+## 27.4.2 Cube files
+
+| Writer | Contents | Defaults |
+|---|---|---|
+| `write_cube(path, mol, basis, result, what="density")` | electron density, $e$/Bohr³ | spacing 0.3 Bohr, padding 4.0 Bohr |
+| `write_cube(..., what="mo", mo_index=p)` | one restricted MO | the same |
+| `[rpa] export_eigpot_prefix` / `export_eigpot_prefix=` | the leading PDEP mode densities, one file each | spacing 0.2 Bohr, margin 4.0 Bohr, 10 modes |
+
+The grid is axis-aligned, with the origin and shape taken from the atoms'
+bounding box plus the padding unless given. `write_cube` returns the origin
+and shape it used. Pass them back in (`origin=`, `shape=`) to put a series of
+molecules or conformers on one grid, which a voxel model needs.
+
+The eigenpotential cubes hold the auxiliary-basis **charge density**
+$\rho_\xi(\mathbf r) = \sum_P c_{P\xi}\chi_P(\mathbf r)$ of each mode, not
+the potential it generates. The potential is its Coulomb potential. A model
+trained on these files is trained on densities.
+
+## 27.4.3 The certificate as a provenance label
+
+Every result carries a certificate; the NPZ stores it as JSON bytes. Its
+fields, from `crates/ferric-core/src/certificate.rs`:
+
+| Field | Content | Use in a dataset |
+|---|---|---|
+| `capability` | the CLI `method.kind` or library capability | method label |
+| `build` | `version`, `commit`, `dirty` | which code produced the sample |
+| `grade`, `grade_source` | the validation grade of the capability's energy and where it came from | trust filter (section 27.5) |
+| `measured_error` | `quantity`, `value`, `units`, `reference`, `evidence`, present only when the run is inside its anchor's tested settings | error bar, when present |
+| `approximations` | `(name, detail)` pairs in effect: RI and its auxiliary basis, frozen core, local cutoffs, grids, Hessian construction, inherited SCF ones prefixed `scf ` | to split or filter a dataset by setting |
+| `precision` | `F64`, or `Mixed` with one record per kernel allowed to run mixed, when attached | to keep mixed-precision samples apart |
+| `warnings` | warnings raised during the run, duplicates dropped | to drop suspect samples |
+| `blocks`, `routes` | building-block records and exact routes, when used | composed or unusual paths |
+
+Three cautions:
+
+1. **The grade is the energy's.** A `pdep-rpa` certificate grades the
+   PDEP-RPA energy. It says nothing about `hirshfeld_charges` or `c6_iso`. The
+   trust level of an exported property is that of its own validation row
+   (section 27.5).
+2. **`measured_error` is often absent.** The `pdep-rpa` anchor covers frozen
+   core 0, `trunc_thresh` 0 or below, and Gauss–Legendre with 6 or 40 points
+   at $u_0 = 0.5$ (`site/src/reference/validation.md`, "Certificates"). The
+   default 20-point grid, or any truncation, is outside that scope and gives
+   no `measured_error`. Absence means "no anchor for these settings", not
+   "no error".
+3. **Composed results are ungraded.** `certificate_from_blocks` records the
+   `AoIntegrals.provenance()` dicts a custom result was built from and always
+   sets `grade` to `ungraded`: no validation row covers the caller's code.
+
+Keep the whole certificate with each sample. It is small, and it is the only
+record of settings, such as the reference's J/K route, that the arrays do not
+reveal.
+
+## Sources
+
+| Source | Used for |
+|---|---|
+| `crates/ferric-python/ferric.pyi` | the Python names, defaults and units |
+| `crates/ferric-python/src/blocks.rs` | the building-block classes |
+| `crates/ferric-python/python/ferric/ase.py`, `crates/ferric-python/python/ferric/qcschema.py` | where the certificate is passed through |
+| `crates/ferric-export/src/cube.rs`, `crates/ferric-rpa/src/property_bundle.rs` | cube contents and defaults |
+| `crates/ferric-core/src/certificate.rs` | the certificate fields and grade rules |
+| `site/src/reference/validation.md`, "Certificates" | the anchor scope of `pdep-rpa` |
+
+Changes from the sources: `crates/ferric-export/theory.md` §2 calls the
+eigenpotential cube the potential $V_\alpha$; the cube holds the mode's
+charge density (27.4.2).
