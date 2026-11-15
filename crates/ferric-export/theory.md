@@ -20,27 +20,27 @@ When the RPA/export pipeline is executed (driven by the `export_npz` configurati
 | `orbital_spreads` | $(N_{\text{MO}},)$ | `float64` | Bohr | Orbital spreads $\sqrt{\langle r^2\rangle_p - \lvert\langle\vec r\rangle_p\rvert^2}$. Restricted references only. |
 | `density_second_moment` | $(3, 3)$ | `float64` | Bohr$^2$ | Electronic density second moment $M_{xy} = \sum_{\mu\nu} D_{\mu\nu}\langle\mu\vert x\,y\vert\nu\rangle$ about the origin; trace is $\langle r^2\rangle$ of the density. Written with `density_matrix`. |
 | `dipole` | $(3,)$ | `float64` | $e\,a_0$ | Molecular dipole moment (electronic + nuclear). |
-| `pdep_eigenvectors` | $(N_{\text{aux}}, M)$ | `float64` | a.u. | PDEP eigenpotentials, where $M$ is the number of retained eigenvalues: column $\alpha$ holds the aux coefficients of the charge density $\rho_\alpha(\mathbf r)=\sum_P c_{P\alpha}\chi_P(\mathbf r)$ (with $c^\top V c = I$), whose Coulomb potential is the eigenpotential. |
+| `pdep_eigenvectors` | $(N_{\text{aux}}, N_{\text{pdep}})$ | `float64` | a.u. | PDEP eigenpotentials, where $N_{\text{pdep}}$ is the number of retained eigenvalues: column $\xi$ holds the aux coefficients of the charge density $\rho_\xi(\mathbf r)=\sum_P c_{P\xi}\chi_P(\mathbf r)$ (with $c^\top V c = I$), whose Coulomb potential is the eigenpotential. |
 | `esp_atoms` | $(N_{\text{atoms}},)$ | `float64` | Hartree / $e$ | Electrostatic potential $V(R_A)$ evaluated exactly at the coordinates of each atomic nucleus. |
 | `esp_surface` | $(N_{\text{pts}},)$ | `float64` | Hartree / $e$ | ESP on the van der Waals shell, in the order of `esp_points`. Written only together with `esp_points`. |
 | `esp_points` | $(N_{\text{pts}}, 3)$ | `float64` | Bohr | Shell points: per-atom Lebedev spheres at scaled vdW radii, buried points dropped. |
 | `electric_field` | $(N_{\text{atoms}}, 3)$ | `float64` | a.u. | Vector components of the electric field $\vec{E}(R_A)$ evaluated at each nucleus. |
-| `alpha_tensor` | $(3, 3)$ | `float64` | Bohr$^3$ | Static molecular polarizability tensor $\alpha_{ij}$ at $\omega=0$. |
-| `alpha_atomic` | $(N_{\text{atoms}}, 3, 3)$| `float64` | Bohr$^3$ | Per-atom Becke intrinsic polarizability (Krishtal, Senet, Van Alsenoy, J. Chem. Phys. 125, 034312 (2006)): $\alpha^A_{dj} = \langle w_A (r - R_A)_d \,\vert\, R \,\vert\, \mu_j \rangle$, atom-centred dipole on the bra, molecular dipole on the field-side ket. Charge transfer is excluded, so $\sum_A \alpha^A \neq \alpha$. |
+| `alpha_tensor` | $(3, 3)$ | `float64` | Bohr$^3$ | Static molecular polarizability tensor $\alpha_{\alpha_c\beta_c}$ at $u=0$. |
+| `alpha_atomic` | $(N_{\text{atoms}}, 3, 3)$| `float64` | Bohr$^3$ | Per-atom Becke intrinsic polarizability (Krishtal, Senet, Van Alsenoy, J. Chem. Phys. 125, 034312 (2006)): $\alpha^A_{\alpha_c\beta_c} = \langle w_A (r - R_A)_{\alpha_c} \,\vert\, R \,\vert\, \mu_{\beta_c} \rangle$, atom-centred dipole on the bra, molecular dipole on the field-side ket. Charge transfer is excluded, so $\sum_A \alpha^A \neq \alpha$. |
 | `alpha_ct` | $(3, 3)$ | `float64` | Bohr$^3$ | Charge-transfer polarizability $\alpha_{\text{CT}} = \alpha - \sum_A \alpha^A$ (same response as both), so `alpha_ct + alpha_atomic.sum(0) == alpha_tensor`. Present when both `alpha_tensor` and `alpha_atomic` are. |
-| `alpha_atomic_dynamic` | $(N_{\text{atoms}}, N_\omega, 3, 3)$ | `float64` | Bohr$^3$ | Per-atom $\alpha^A(i\omega_k)$ at the C6 quadrature nodes `c6_freqs`; intrinsic definition for `c6_source = "pdep"`, the TS/MBD model otherwise (`c6_source`, `c6_partition` record which). |
-| `alpha_ct_dynamic` | $(N_\omega, 3, 3)$ | `float64` | Bohr$^3$ | Dynamic charge-transfer remainder $\alpha(i\omega_k) - \sum_A \alpha^A(i\omega_k)$; `c6_source = "pdep"` only. |
+| `alpha_atomic_dynamic` | $(N_{\text{atoms}}, N_u, 3, 3)$ | `float64` | Bohr$^3$ | Per-atom $\alpha^A(iu_k)$ at the C6 quadrature nodes `c6_freqs`; intrinsic definition for `c6_source = "pdep"`, the TS/MBD model otherwise (`c6_source`, `c6_partition` record which). |
+| `alpha_ct_dynamic` | $(N_u, 3, 3)$ | `float64` | Bohr$^3$ | Dynamic charge-transfer remainder $\alpha(iu_k) - \sum_A \alpha^A(iu_k)$; `c6_source = "pdep"` only. |
 | `hirshfeld_charges` | $(N_{\text{atoms}},)$ | `float64` | $e$ | Atomic charges computed via Hirshfeld population analysis relative to a spherical proatom baseline. |
 | `lowdin_charges` | $(N_{\text{atoms}},)$ | `float64` | $e$ | Atomic charges computed via Löwdin symmetric orthogonalization. Recommended as the CM5 charge-model baseline. |
 | `mulliken_charges` | $(N_{\text{atoms}},)$ | `float64` | $e$ | Mulliken gross atomic charges. |
 | `chelpg_charges` | $(N_{\text{atoms}},)$ | `float64` | $e$ | CHELPG electrostatic-potential-fit charges. |
 | `resp_charges` | $(N_{\text{atoms}},)$ | `float64` | $e$ | RESP charges. |
 | `c6_partition` | $(L,)$ | `uint8` | - | UTF-8 bytes of the atomic partition (`becke` or `hirshfeld`) behind the per-atom C6 arrays; decode with `.tobytes().decode()`. |
-| `c6_source` | $(L,)$ | `uint8` | - | UTF-8 bytes of the $\alpha(i\omega)$ source (`ts`, `pdep` or `mbd`); decode as `c6_partition`. |
-| `c6_freqs` | $(N_\omega,)$ | `float64` | a.u. | Imaginary-frequency quadrature nodes $\omega_k$. |
-| `c6_weights` | $(N_\omega,)$ | `float64` | a.u. | Casimir-Polder quadrature weights $w_k$. |
+| `c6_source` | $(L,)$ | `uint8` | - | UTF-8 bytes of the $\alpha(iu)$ source (`ts`, `pdep` or `mbd`); decode as `c6_partition`. |
+| `c6_freqs` | $(N_u,)$ | `float64` | a.u. | Imaginary-frequency quadrature nodes $u_k$. |
+| `c6_weights` | $(N_u,)$ | `float64` | a.u. | Casimir-Polder quadrature weights $w_k$. |
 | `c6_iso` | $(N_{\text{atoms}}, N_{\text{atoms}})$ | `float64` | a.u. | Per-atom-pair isotropic $C_6^{AB}$. A partition convention, not an observable; `c6_iso.sum()` is not the molecular $C_6$. |
-| `c6_aniso` | $(N_{\text{atoms}}, N_{\text{atoms}}, 3, 3)$ | `float64` | a.u. | Per-atom-pair anisotropic $C_6^{AB}{}_{ij}$; same caveat as `c6_iso`. |
+| `c6_aniso` | $(N_{\text{atoms}}, N_{\text{atoms}}, 3, 3)$ | `float64` | a.u. | Per-atom-pair anisotropic $C_6^{AB}{}_{\alpha_c\beta_c}$; same caveat as `c6_iso`. |
 | `c6_molecular_iso` | $(1,)$ | `float64` | a.u. | Molecular isotropic $C_6$, the DOSD-comparable value. Read this, never the `c6_iso` sum. |
 | `certificate` | $(L,)$ | `uint8` | - | UTF-8 bytes of the result certificate as JSON (grade, build, measured error, approximations, warnings; `site/src/reference/validation.md` describes the fields); decode with `json.loads(f["certificate"].tobytes().decode())`. |
 
@@ -80,6 +80,6 @@ The grid is defined via:
 * **`margin`**: Pad distance surrounding the molecular bounding box to prevent boundary truncation, default is `4.0` Bohr.
 
 ### Voxel Evaluation
-For a real-space function expanded in the basis set (such as a PDEP eigenpotential $V_\alpha(r) = \sum_P c_\alpha^P \chi_P(r)$), the value at a voxel coordinate $r = [x_0 + i h, y_0 + j h, z_0 + k h]$ is computed as:
-$$ V_\alpha(r) = \sum_P c_\alpha^P \chi_P(r) $$
+For a real-space function expanded in the basis set (such as a PDEP eigenpotential $V_\xi(r) = \sum_P c_\xi^P \chi_P(r)$), the value at a voxel coordinate $r = [x_0 + i h, y_0 + j h, z_0 + k h]$ is computed as:
+$$ V_\xi(r) = \sum_P c_\xi^P \chi_P(r) $$
 where $\chi_P(r)$ is the auxiliary basis function evaluated at $r$. The resulting 3D scalar grid is written row-by-row into the standard `.cube` file.
