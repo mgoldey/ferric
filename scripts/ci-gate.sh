@@ -807,7 +807,11 @@ if [[ -f "$SO_PATH" ]]; then
     mkdir -p "$GATE_PYSHIM/ferric"
     _gate_init="$(find . -path '*/ferric/__init__.py' -not -path './target/*' 2>/dev/null | head -1)"
     if [[ -n "$_gate_init" ]]; then
-        cp "$_gate_init" "$GATE_PYSHIM/ferric/__init__.py"
+        # The whole pure-Python package, not just __init__.py: submodules
+        # such as ferric.fcidump / ferric.molden live beside it. The
+        # correctly-named extension symlink below wins over any copied .so
+        # (Python tries EXT_SUFFIX first).
+        cp -R "$(dirname "$_gate_init")/." "$GATE_PYSHIM/ferric/"
     else
         # Minimal re-export: mirrors the wheel's __init__.py.
         printf 'from .ferric import *  # noqa: F401,F403\n' > "$GATE_PYSHIM/ferric/__init__.py"
