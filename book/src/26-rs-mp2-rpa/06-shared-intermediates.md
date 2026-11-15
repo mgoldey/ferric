@@ -4,9 +4,9 @@
      theory: crates/ferric-rpa/theory.md#"Range-separated MP2 + RPA" -->
 
 The MP2 components and the dRPA energy of one operator need the same
-three-index tensor. `rs_mp2_lr_rpa` builds it once per operator and hands it
+three-index tensor. The driver builds it once per operator and hands it
 to both kernels. This section describes that sharing, the memory it costs,
-and the test that pins it.
+and the tests that pin it.
 
 | Symbol | Meaning | Code name |
 |---|---|---|
@@ -19,18 +19,25 @@ and the test that pins it.
 | `ferric-mp2/src/rimp2.rs::spin_components_from_b_ov` | $E_{\mathrm{OS}}[v]$, $E_{\mathrm{SS}}[v]$ from $(ia|jb)_v = \sum_P\tilde B^P_{ia}\tilde B^P_{jb}$ |
 | `ferric-rpa/src/lib.rs::run_pdep_rpa_from_intermediates` | $E_{\mathrm{dRPA}}[v]$ from the dielectric matrix (18.3) built on the same $\tilde{\mathbf B}$ |
 
-## 26.6.1 One transform per operator
+## 26.6.1 One transform per operator, and the ω-independent stage
 
 The transform to $\tilde{\mathbf B}$ is the expensive step of both kernels.
-Without sharing, a `coupled-rings` call would run five transforms: three for
-the MP2 components (C, sr, lr) and two for the dRPA evaluations (C, sr). With
-sharing it runs three, one per operator. A `delta-lr` call also runs three
-and reuses $\tilde{\mathbf B}[\mathrm{lr}]$ for its single dRPA evaluation.
+The driver (`rs_mp2_lr_rpa_scan`; `rs_mp2_lr_rpa` is its one-point case)
+builds each operator's tensor once and hands it to every kernel that needs
+that operator. Every term of (B) and (T) is a functional of one kernel
+(theory: `crates/ferric-rpa/theory.md`, "Range-separated MP2 + RPA: which
+terms depend on $\omega$"), so the Coulomb tensor does not depend on
+$\omega$ and is built once per run, not once per point.
 
-| Formulation | Transforms | dRPA evaluations | Shared tensor |
+| Stage | Tensor | Used for | Built |
 |---|---|---|---|
-| `delta-lr` | 3 (lr, C, sr) | 1 (lr) | $\tilde{\mathbf B}[\mathrm{lr}]$ |
-| `coupled-rings` | 3 (lr, C, sr) | 2 (C, sr) | $\tilde{\mathbf B}[\mathrm C]$, $\tilde{\mathbf B}[\mathrm{sr}]$ |
+| ω-independent | $\tilde{\mathbf B}[\mathrm C]$ | $E_{\mathrm{MP2}}[v]$; $E_{\mathrm{dRPA}}[v]$ only when `coupled-rings` is requested | once per run |
+| per ω, long range | $\tilde{\mathbf B}[\mathrm{lr}]$ | $E_{\mathrm{OS}}[\mathrm{lr}]$ always; $E_{\mathrm{dRPA}}[\mathrm{lr}]$ only when `delta-lr` is requested | once per ω |
+| per ω, short range | $\tilde{\mathbf B}[\mathrm{sr}]$ | spin components always; $E_{\mathrm{dRPA}}[\mathrm{sr}]$ only when `coupled-rings` is requested | once per ω |
+
+A run over $n_\omega$ points therefore performs $1 + 2n_\omega$ transforms,
+whether it asks for one formulation or both. Both formulations at one
+$\omega$ share the per-ω tensors.
 
 Sharing changes no number: the MP2 components and the dRPA energy of an
 operator see the same fitted integrals whether or not the tensor is shared.
@@ -38,39 +45,27 @@ That is also why the second-order cancellation of section 26.1.3 holds for
 any fit: $2E_{\mathrm{OS}}[v]$ and the second-order ring of $E_{\mathrm{dRPA}}[v]$
 are built from one $\tilde{\mathbf B}[v]$.
 
-`coupled_rings_fusion_is_bit_identical` in `crates/ferric-rpa/src/rs_mp2_rpa.rs`
-recomputes the `coupled-rings` energy for H2 at $\omega = 0.42$ Bohr⁻¹ from
-independent `ri_mp2_spin_components` and `run_pdep_rpa` calls, one transform
-each, and asserts agreement with the shared path to $10^{-10}$ Ha. The name
-says bit-identical; the assertion is the $10^{-10}$ bar.
+| Test | What it pins |
+|---|---|
+| `coupled_rings_fusion_is_bit_identical` (`crates/ferric-rpa/src/rs_mp2_rpa.rs`) | the `coupled-rings` energy for H2 at $\omega = 0.42$ Bohr⁻¹ from independent `ri_mp2_spin_components` and `run_pdep_rpa` calls agrees with the shared path to $10^{-10}$ Ha (the name says bit-identical; the assertion is the $10^{-10}$ bar) |
+| `scan_is_bitwise_the_single_omega_calls_{water,water_dimer,terf}` (`crates/ferric-rpa/tests/rs_mp2_rpa_scan.rs`) | every field of every scan point equals a separate single-ω call, bit for bit, for both formulations, erf and terf |
+| `t_carries_the_independently_computed_coulomb_drpa` (same file) | the once-built Coulomb dRPA in (T) equals an independent `run_pdep_rpa` / `ri_mp2_spin_components` evaluation |
 
 ## 26.6.2 Memory
 
-Each `match` arm holds two $\tilde{\mathbf B}$ tensors at once:
+Each tensor lives in its own block and is dropped before the next is
+built, so at most one $\tilde{\mathbf B}$ is resident at a time, for any
+number of $\omega$ points. The co-resident set is what one
+`compute_rpa_intermediates` + `run_pdep_rpa_from_intermediates` call holds,
+so the pre-flight estimate is the single `pdep-rpa` estimate:
 
-- `delta-lr` keeps $\tilde{\mathbf B}[\mathrm{lr}]$ bound for its dRPA
-  evaluation while it builds, uses and drops $\tilde{\mathbf B}[\mathrm C]$
-  and then $\tilde{\mathbf B}[\mathrm{sr}]$ for their MP2 components.
-- `coupled-rings` keeps $\tilde{\mathbf B}[\mathrm C]$ alive to the end of the
-  arm, so it is resident through the whole short-range dRPA evaluation on
-  $\tilde{\mathbf B}[\mathrm{sr}]$.
+$$ \texttt{scan\_peak\_bytes}(\text{shape}, n_\omega) = \texttt{estimate\_peak\_bytes}(\text{shape}) \quad \text{for all } n_\omega. \tag{26.11} $$
 
-The shared peak estimate (`ferric-rpa/src/budget.rs::estimate_peak_bytes`)
-charges one such tensor, as for a single `pdep-rpa` call. The driver's
-pre-flight adds the second,
-
-$$ \texttt{second\_intermediate\_bov\_bytes} = 8\,N_{\mathrm{aux}}\,n_o\,n_v \ \text{bytes}, \tag{26.11} $$
-
-to the estimate and to the hard (in-core) side of the memory-pool
-reservation, before any large allocation. A job whose budget fits one tensor
-but not two is refused at the start rather than killed part way.
-
-| Test (`crates/ferric-rpa/tests/mwe_rs_mp2_rpa_second_intermediate.rs`) | What it pins |
-|---|---|
-| `second_intermediate_bov_bytes_matches_one_bov_buffer` | (26.11) is one `b_ov` buffer |
-| `second_bov_term_is_additive_and_material` | the term adds to the estimate and is not negligible |
-| `ample_budget_still_passes_with_second_bov_charged` | an ample budget still passes |
-| `budget_sized_to_old_estimate_is_now_refused` | a budget sized to the one-tensor estimate is refused |
+`preflight_estimate_is_independent_of_the_number_of_points` (in
+`crates/ferric-rpa/tests/rs_mp2_rpa_scan.rs`) pins (26.11) at 1, 5 and 50
+points and checks the estimate is tensor-sized. The check runs before any
+large allocation, so a job whose budget does not fit one tensor is refused
+at the start rather than killed part way.
 
 After each tensor is built, `warn_if_rss_over` compares the resident memory
 with the budget and prints one line if it is more than 10% over. It never
@@ -88,6 +83,6 @@ stops the run.
 
 | Source | Used for |
 |---|---|
-| `crates/ferric-rpa/src/rs_mp2_rpa.rs`, the comments at the pre-flight gate and at `inter_of`, `second_intermediate_bov_bytes`, the `match` arms | 26.6.1, 26.6.2 |
+| `crates/ferric-rpa/src/rs_mp2_rpa.rs::{scan_impl,scan_peak_bytes}`, the comments at the pre-flight gate and at `inter_of` | 26.6.1, 26.6.2 |
 | `crates/ferric-mp2/src/rimp2.rs::RpaIntermediates` | the tensor and its metric factor |
 | tests named above | the anchors |
