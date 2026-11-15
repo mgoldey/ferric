@@ -75,6 +75,37 @@ CASES = [
         ],
     ),
     (
+        "mbd_coupled_dipole_sympy.py",
+        20,
+        [
+            (
+                "return 0.5 * np.sum(np.sqrt(lam)) - 1.5 * om.sum()",
+                "return 0.5 * np.sum(np.sqrt(lam)) - 1.0 * om.sum()",
+                "FAIL [qho-vs-frequency]",
+            ),
+            (
+                "extra = 2.0 * zeta * zeta * theta / r**5",
+                "extra = zeta * zeta * theta / r**5",
+                "FAIL [t-gg-is-hessian]",
+            ),
+            (
+                "FRAC = sp.sqrt(2 / sp.pi) / 3",
+                "FRAC = sp.Rational(1, 3)",
+                "FAIL [sigma-self-energy]",
+            ),
+            (
+                "for b in range(n) for i in range(3))\n",
+                "for b in [a] for i in range(3))\n",
+                "FAIL [scs-dimer-closed-form]",
+            ),
+            (
+                "return (v * (0.25 / np.sqrt(lam))) @ v.T",
+                "return (v * (0.5 / np.sqrt(lam))) @ v.T",
+                "FAIL [energy-adjoint]",
+            ),
+        ],
+    ),
+    (
         "rpa_gradient_sympy.py",
         20,
         [
