@@ -1,0 +1,773 @@
+{
+  "_doc": "Derivations registry (CONTRIBUTING.md, 'Every method has a derivation and a sympy proof'). routes: every derived CLI kind, analytic optimize/frequencies arm and Python entry point -> method ids. methods: theory.md anchors plus sympy scripts, each run by a test under crates/ferric-python/tests. gaps: methods missing a piece, with the reason. Checked by crates/ferric-python/tests/test_derivation_registry.py.",
+  "routes": {
+    "cli:att-rimp2": [
+      "attenuated-mp2"
+    ],
+    "cli:b2plyp": [
+      "double-hybrid"
+    ],
+    "cli:bse-tda": [
+      "bse-tda"
+    ],
+    "cli:casscf": [
+      "casscf"
+    ],
+    "cli:ccd": [
+      "ccd"
+    ],
+    "cli:ccsd": [
+      "ccsd"
+    ],
+    "cli:ccsd(t)": [
+      "ccsd-t"
+    ],
+    "cli:drpa": [
+      "drpa"
+    ],
+    "cli:dsd-pbep86": [
+      "double-hybrid"
+    ],
+    "cli:eom-ccsd": [
+      "eom-ccsd"
+    ],
+    "cli:gw": [
+      "gw"
+    ],
+    "cli:ksdft": [
+      "ks-semilocal",
+      "ks-mgga",
+      "ks-hybrid-rsh",
+      "ks-vv10",
+      "ks-grid",
+      "d3"
+    ],
+    "cli:laplace-mp2": [
+      "laplace-mp2"
+    ],
+    "cli:laplace-sos-mp2": [
+      "laplace-sos-mp2"
+    ],
+    "cli:linlccd": [
+      "linlccd"
+    ],
+    "cli:mp2-v": [
+      "mp2-v"
+    ],
+    "cli:mp3": [
+      "mp3"
+    ],
+    "cli:nevpt2": [
+      "nevpt2"
+    ],
+    "cli:oo-rimp2": [
+      "oo-rimp2"
+    ],
+    "cli:pdep-rpa": [
+      "pdep-rpa",
+      "u-pdep-rpa"
+    ],
+    "cli:rhf": [
+      "rhf"
+    ],
+    "cli:rimp2": [
+      "ri-mp2",
+      "u-ri-mp2"
+    ],
+    "cli:rohf": [
+      "rohf"
+    ],
+    "cli:rs-mp2-rpa": [
+      "rs-mp2-rpa"
+    ],
+    "cli:scs-mp2": [
+      "scs-mp2"
+    ],
+    "cli:scs-mp2-2terfc": [
+      "scs-mp2-2terfc"
+    ],
+    "cli:tda": [
+      "tddft"
+    ],
+    "cli:tddft": [
+      "tddft"
+    ],
+    "cli:tdhf-static-polarizability": [
+      "tdhf-static-polarizability"
+    ],
+    "cli:uhf": [
+      "uhf"
+    ],
+    "cli:wb97x-l-v": [
+      "double-hybrid"
+    ],
+    "frequencies:ksdft": [
+      "ks-hessian",
+      "harmonic-frequencies"
+    ],
+    "frequencies:rhf": [
+      "hf-hessian",
+      "harmonic-frequencies"
+    ],
+    "frequencies:rohf": [
+      "hf-hessian",
+      "harmonic-frequencies"
+    ],
+    "frequencies:uhf": [
+      "hf-hessian",
+      "harmonic-frequencies"
+    ],
+    "optimize:ksdft": [
+      "ks-gradient",
+      "d3"
+    ],
+    "optimize:oo-rimp2": [
+      "oo-rimp2-gradient"
+    ],
+    "optimize:pdep-rpa": [
+      "rpa-gradient"
+    ],
+    "optimize:rhf": [
+      "hf-gradient"
+    ],
+    "optimize:rimp2": [
+      "ri-mp2-gradient"
+    ],
+    "optimize:rohf": [
+      "hf-gradient"
+    ],
+    "optimize:scs-mp2": [
+      "scs-mp2-gradient"
+    ],
+    "optimize:uhf": [
+      "hf-gradient"
+    ],
+    "py:hirshfeld_polarizability": [
+      "rpa-polarizability-c6"
+    ],
+    "py:run_attenuated_rimp2": [
+      "attenuated-mp2"
+    ],
+    "py:run_bse_tda": [
+      "bse-tda"
+    ],
+    "py:run_casci": [
+      "casci"
+    ],
+    "py:run_casscf": [
+      "casscf"
+    ],
+    "py:run_ccd": [
+      "ccd"
+    ],
+    "py:run_ccsd": [
+      "ccsd"
+    ],
+    "py:run_ccsd_t": [
+      "ccsd-t"
+    ],
+    "py:run_cdft": [
+      "cdft"
+    ],
+    "py:run_dft": [
+      "ks-semilocal",
+      "ks-mgga",
+      "ks-hybrid-rsh",
+      "ks-vv10",
+      "ks-grid",
+      "d3"
+    ],
+    "py:run_double_hybrid": [
+      "double-hybrid"
+    ],
+    "py:run_drpa": [
+      "drpa"
+    ],
+    "py:run_drpa_gamma": [
+      "pbc-drpa"
+    ],
+    "py:run_drpa_kpts": [
+      "pbc-drpa"
+    ],
+    "py:run_drpa_scan": [
+      "drpa"
+    ],
+    "py:run_eom_ccsd": [
+      "eom-ccsd"
+    ],
+    "py:run_frequencies": [
+      "hf-hessian",
+      "ks-hessian",
+      "harmonic-frequencies"
+    ],
+    "py:run_gw": [
+      "gw"
+    ],
+    "py:run_irc": [
+      "hf-gradient",
+      "ks-gradient"
+    ],
+    "py:run_ksdft": [
+      "ks-semilocal",
+      "ks-mgga",
+      "ks-hybrid-rsh",
+      "ks-vv10",
+      "ks-grid"
+    ],
+    "py:run_laplace_mp2": [
+      "laplace-mp2"
+    ],
+    "py:run_laplace_sos_mp2": [
+      "laplace-sos-mp2"
+    ],
+    "py:run_linlccd": [
+      "linlccd"
+    ],
+    "py:run_mp2_gamma": [
+      "pbc-mp2"
+    ],
+    "py:run_mp2_kpts": [
+      "pbc-mp2"
+    ],
+    "py:run_mp2_v": [
+      "mp2-v"
+    ],
+    "py:run_mp2_v_scan": [
+      "mp2-v"
+    ],
+    "py:run_mp3": [
+      "mp3"
+    ],
+    "py:run_nevpt2": [
+      "nevpt2"
+    ],
+    "py:run_oo_rimp2": [
+      "oo-rimp2",
+      "u-oo-rimp2",
+      "oo-rimp2-gradient"
+    ],
+    "py:run_optimize": [
+      "hf-gradient",
+      "ks-gradient",
+      "ri-mp2-gradient",
+      "oo-rimp2-gradient",
+      "scs-mp2-gradient"
+    ],
+    "py:run_optimize_qmmm": [
+      "qmmm"
+    ],
+    "py:run_optimize_uhf": [
+      "hf-gradient"
+    ],
+    "py:run_pdep_rpa": [
+      "pdep-rpa",
+      "u-pdep-rpa"
+    ],
+    "py:run_qmmm": [
+      "qmmm"
+    ],
+    "py:run_rhf": [
+      "rhf"
+    ],
+    "py:run_rhf_gamma": [
+      "pbc-hf"
+    ],
+    "py:run_rhf_kpts": [
+      "pbc-hf"
+    ],
+    "py:run_rimp2": [
+      "ri-mp2",
+      "u-ri-mp2",
+      "ri-mp2-gradient"
+    ],
+    "py:run_rks_gamma": [
+      "pbc-ks"
+    ],
+    "py:run_rks_kpts": [
+      "pbc-ks"
+    ],
+    "py:run_rohf": [
+      "rohf"
+    ],
+    "py:run_rohf_gamma": [
+      "pbc-hf"
+    ],
+    "py:run_rohf_kpts": [
+      "pbc-hf"
+    ],
+    "py:run_roks": [
+      "ks-semilocal",
+      "ks-mgga",
+      "ks-hybrid-rsh",
+      "ks-grid"
+    ],
+    "py:run_roks_gamma": [
+      "pbc-ks"
+    ],
+    "py:run_roks_kpts": [
+      "pbc-ks"
+    ],
+    "py:run_rs_mp2_rpa": [
+      "rs-mp2-rpa"
+    ],
+    "py:run_saddle": [
+      "hf-gradient",
+      "ks-gradient"
+    ],
+    "py:run_scs_mp2": [
+      "scs-mp2"
+    ],
+    "py:run_scs_mp2_2terfc": [
+      "scs-mp2-2terfc"
+    ],
+    "py:run_tddft": [
+      "tddft"
+    ],
+    "py:run_tdhf_static_polarizability": [
+      "tdhf-static-polarizability"
+    ],
+    "py:run_terfc_rimp2": [
+      "attenuated-mp2"
+    ],
+    "py:run_u_gw": [
+      "u-gw"
+    ],
+    "py:run_uhf": [
+      "uhf"
+    ],
+    "py:run_uhf_gamma": [
+      "pbc-hf"
+    ],
+    "py:run_uhf_kpts": [
+      "pbc-hf"
+    ],
+    "py:run_uks": [
+      "ks-semilocal",
+      "ks-mgga",
+      "ks-hybrid-rsh",
+      "ks-grid"
+    ],
+    "py:run_uks_gamma": [
+      "pbc-ks"
+    ],
+    "py:run_uks_kpts": [
+      "pbc-ks"
+    ],
+    "py:run_vv10_variants": [
+      "ks-vv10"
+    ],
+    "py:run_xtb_energy_gradient": [
+      "xtb"
+    ],
+    "py:run_xtb_frequencies": [
+      "xtb"
+    ],
+    "py:run_xtb_optimize": [
+      "xtb"
+    ]
+  },
+  "methods": {
+    "mp3": {
+      "theory": [
+        "crates/ferric-mp2/theory.md#6-mp3"
+      ],
+      "scripts": [
+        "scripts/oomp2_mp3_identities_sympy.py"
+      ]
+    },
+    "oo-rimp2": {
+      "theory": [
+        "crates/ferric-mp2/theory.md#7-orbital-optimized-ri-mp2"
+      ],
+      "scripts": [
+        "scripts/oomp2_mp3_identities_sympy.py"
+      ]
+    }
+  },
+  "gaps": {
+    "attenuated-mp2": {
+      "reason": "script has no pytest runner and records no mutation",
+      "theory": [
+        "crates/ferric-mp2/theory.md#5-attenuated-mp2"
+      ],
+      "scripts": [
+        "scripts/mp2_variant_identities.py"
+      ]
+    },
+    "bse-tda": {
+      "reason": "no theory.md derivation and no sympy proof",
+      "theory": [
+        "crates/ferric-gw/theory.md#11-bse-tda"
+      ]
+    },
+    "casci": {
+      "reason": "script has no pytest runner and records no mutation",
+      "theory": [
+        "crates/ferric-ci/theory.md#slatercondon-rules-as-implemented"
+      ],
+      "scripts": [
+        "scripts/casci_slater_condon_phases_sympy.py"
+      ]
+    },
+    "casscf": {
+      "reason": "no theory.md derivation and no sympy proof",
+      "theory": [
+        "crates/ferric-ci/theory.md#two-step-casscf-srccasscfrs"
+      ]
+    },
+    "ccd": {
+      "reason": "no theory.md derivation and no sympy proof",
+      "theory": [
+        "crates/ferric-cc/theory.md#ccd"
+      ]
+    },
+    "ccsd": {
+      "reason": "no theory.md derivation and no sympy proof",
+      "theory": [
+        "crates/ferric-cc/theory.md#ccsd"
+      ]
+    },
+    "ccsd-t": {
+      "reason": "script has no pytest runner and records no mutation",
+      "theory": [
+        "crates/ferric-cc/theory.md#ccsdt-closed-shell"
+      ],
+      "scripts": [
+        "scripts/cc_triples_weights_and_linlccd_spin_adaptation_sympy.py"
+      ]
+    },
+    "cdft": {
+      "reason": "no theory.md derivation and no sympy proof"
+    },
+    "cosmo": {
+      "reason": "no theory.md derivation and no sympy proof (PCM theory.md section 6 covers the conductor limit)"
+    },
+    "d3": {
+      "reason": "script has no pytest runner and records no mutation",
+      "theory": [
+        "crates/ferric-d3/theory.md#gradient"
+      ],
+      "scripts": [
+        "scripts/d3_cn_chain_rule_gradient_sympy.py",
+        "scripts/d3_atm_gradient_sympy.py"
+      ]
+    },
+    "double-hybrid": {
+      "reason": "owned elsewhere: the double-hybrid grading branch writes its derivation"
+    },
+    "drpa": {
+      "reason": "no theory.md derivation and no sympy proof",
+      "theory": [
+        "crates/ferric-rpa/theory.md#rpa-correlation-energy"
+      ]
+    },
+    "eom-ccsd": {
+      "reason": "no theory.md derivation and no sympy proof",
+      "theory": [
+        "crates/ferric-cc/theory.md#ee-eom-ccsd-singlets-closed-shell"
+      ]
+    },
+    "gw": {
+      "reason": "script has no pytest runner and records no mutation",
+      "theory": [
+        "crates/ferric-gw/theory.md#4-correlation-self-energy-on-the-imaginary-axis"
+      ],
+      "scripts": [
+        "scripts/gw_self_energy_sympy.py"
+      ]
+    },
+    "harmonic-frequencies": {
+      "reason": "no theory.md derivation and no sympy proof"
+    },
+    "hf-gradient": {
+      "reason": "no theory.md derivation and no sympy proof"
+    },
+    "hf-hessian": {
+      "reason": "no theory.md derivation and no sympy proof"
+    },
+    "ks-gradient": {
+      "reason": "script has no pytest runner and records no mutation",
+      "theory": [
+        "crates/ferric-dft/theory.md#xc-nuclear-gradient-ao-derivative-and-grid-response-terms"
+      ],
+      "scripts": [
+        "scripts/dft_mgga_tau_gradient_sympy.py"
+      ]
+    },
+    "ks-grid": {
+      "reason": "script has no pytest runner and records no mutation",
+      "theory": [
+        "crates/ferric-dft/theory.md#becke-partition-and-its-nuclear-derivative"
+      ],
+      "scripts": [
+        "scripts/dft_becke_weight_grad_sympy.py"
+      ]
+    },
+    "ks-hessian": {
+      "reason": "script has no pytest runner and records no mutation",
+      "theory": [
+        "crates/ferric-scf/theory.md#kohn-sham-xc-hessian-terms-fixed-and-moving-grid"
+      ],
+      "scripts": [
+        "scripts/ks_fixed_grid_hessian_sympy.py",
+        "scripts/uks_xc_hessian_sympy.py"
+      ]
+    },
+    "ks-hybrid-rsh": {
+      "reason": "no theory.md derivation and no sympy proof"
+    },
+    "ks-mgga": {
+      "reason": "script has no pytest runner and records no mutation",
+      "theory": [
+        "crates/ferric-dft/theory.md#semilocal-v_xc-matrix-elements"
+      ],
+      "scripts": [
+        "scripts/dft_vxc_matrix_elements_sympy.py"
+      ]
+    },
+    "ks-semilocal": {
+      "reason": "script has no pytest runner and records no mutation",
+      "theory": [
+        "crates/ferric-dft/theory.md#semilocal-v_xc-matrix-elements"
+      ],
+      "scripts": [
+        "scripts/dft_vxc_matrix_elements_sympy.py"
+      ]
+    },
+    "ks-vv10": {
+      "reason": "script has no pytest runner and records no mutation",
+      "theory": [
+        "crates/ferric-dft/theory.md#vv10-nonlocal-correlation"
+      ],
+      "scripts": [
+        "scripts/dft_vv10_potential_sympy.py"
+      ]
+    },
+    "laplace-mp2": {
+      "reason": "script has no pytest runner and records no mutation",
+      "theory": [
+        "crates/ferric-mp2/theory.md#8-laplace-transform-mp2"
+      ],
+      "scripts": [
+        "scripts/mp2_variant_identities.py"
+      ]
+    },
+    "laplace-sos-mp2": {
+      "reason": "script has no pytest runner and records no mutation",
+      "theory": [
+        "crates/ferric-mp2/theory.md#8-laplace-transform-mp2"
+      ],
+      "scripts": [
+        "scripts/mp2_variant_identities.py"
+      ]
+    },
+    "linlccd": {
+      "reason": "script has no pytest runner and records no mutation",
+      "theory": [
+        "crates/ferric-cc/theory.md#linlccd-and-linlccdhh"
+      ],
+      "scripts": [
+        "scripts/cc_triples_weights_and_linlccd_spin_adaptation_sympy.py"
+      ]
+    },
+    "local-mp2": {
+      "reason": "script has no pytest runner and records no mutation",
+      "theory": [
+        "crates/ferric-mp2/theory.md#12-local-mp2"
+      ],
+      "scripts": [
+        "scripts/lmp2_hylleraas_vs_wshg23_sympy.py"
+      ]
+    },
+    "mbd": {
+      "reason": "no theory.md derivation and no sympy proof"
+    },
+    "mm": {
+      "reason": "script has no pytest runner and records no mutation",
+      "theory": [
+        "crates/ferric-mm/theory.md#4-the-dihedral-angle-phi-and-its-gradient-bekker-form"
+      ],
+      "scripts": [
+        "scripts/mm_dihedral_gradient_sympy.py",
+        "scripts/mm_cutoff_sympy.py"
+      ]
+    },
+    "mp2-v": {
+      "reason": "no theory.md derivation and no sympy proof"
+    },
+    "nevpt2": {
+      "reason": "no theory.md derivation and no sympy proof",
+      "theory": [
+        "crates/ferric-ci/theory.md#sc-nevpt2-srcnevpt2rs"
+      ]
+    },
+    "oo-rimp2-gradient": {
+      "reason": "no theory.md derivation and no sympy proof"
+    },
+    "pbc-drpa": {
+      "reason": "no theory.md derivation and no sympy proof"
+    },
+    "pbc-hf": {
+      "reason": "script has no pytest runner and records no mutation",
+      "theory": [
+        "crates/ferric-pbc/theory.md#1-ewald-nuclear-repulsion-and-the-madelung-constant"
+      ],
+      "scripts": [
+        "scripts/pbc_ewald_pairft_stress_sympy.py"
+      ]
+    },
+    "pbc-ks": {
+      "reason": "script has no pytest runner and records no mutation",
+      "theory": [
+        "crates/ferric-pbc/theory.md#5-stress-tensor-strain-derivative"
+      ],
+      "scripts": [
+        "scripts/pbc_ewald_pairft_stress_sympy.py"
+      ]
+    },
+    "pbc-mp2": {
+      "reason": "no theory.md derivation and no sympy proof"
+    },
+    "pcm": {
+      "reason": "script has no pytest runner and records no mutation",
+      "theory": [
+        "crates/ferric-pcm/theory.md#4-symmetrized-charge-solve-and-energy"
+      ],
+      "scripts": [
+        "scripts/pcm_ief_sympy.py"
+      ]
+    },
+    "pcm-gradient": {
+      "reason": "script has no pytest runner and records no mutation",
+      "theory": [
+        "crates/ferric-pcm/theory.md#8-nuclear-gradient"
+      ],
+      "scripts": [
+        "scripts/pcm_ief_sympy.py"
+      ]
+    },
+    "pdep-rpa": {
+      "reason": "no theory.md derivation and no sympy proof",
+      "theory": [
+        "crates/ferric-rpa/theory.md#the-pdep-eigenpotential-approach"
+      ]
+    },
+    "pvp-integrals": {
+      "reason": "script has no pytest runner and records no mutation",
+      "scripts": [
+        "scripts/pvp_ss_sympy.py"
+      ]
+    },
+    "qmmm": {
+      "reason": "no theory.md derivation and no sympy proof"
+    },
+    "rhf": {
+      "reason": "no theory.md derivation and no sympy proof",
+      "theory": [
+        "crates/ferric-scf/theory.md#hartree-fock-equations"
+      ]
+    },
+    "ri-mp2": {
+      "reason": "script has no pytest runner and records no mutation",
+      "theory": [
+        "crates/ferric-mp2/theory.md#2-closed-shell-ri-mp2"
+      ],
+      "scripts": [
+        "scripts/mp2_variant_identities.py"
+      ]
+    },
+    "ri-mp2-gradient": {
+      "reason": "no theory.md derivation and no sympy proof (theory.md section exists)",
+      "theory": [
+        "crates/ferric-mp2/theory.md#9-analytic-ri-mp2-gradient-and-z-vector"
+      ]
+    },
+    "rohf": {
+      "reason": "no theory.md derivation and no sympy proof"
+    },
+    "rpa-gradient": {
+      "reason": "no theory.md derivation and no sympy proof (theory.md section exists)",
+      "theory": [
+        "crates/ferric-rpa/theory.md#analytic-nuclear-gradient-closed-shell-ri-drpa-hf-reference"
+      ]
+    },
+    "rpa-polarizability-c6": {
+      "reason": "no theory.md derivation and no sympy proof",
+      "theory": [
+        "crates/ferric-rpa/theory.md#dispersion-casimir-polder-c6"
+      ]
+    },
+    "rs-mp2-rpa": {
+      "reason": "no theory.md derivation and no sympy proof"
+    },
+    "scs-mp2": {
+      "reason": "script has no pytest runner and records no mutation",
+      "theory": [
+        "crates/ferric-mp2/theory.md#4-spin-component-scaling"
+      ],
+      "scripts": [
+        "scripts/mp2_variant_identities.py"
+      ]
+    },
+    "scs-mp2-2terfc": {
+      "reason": "script has no pytest runner and records no mutation",
+      "theory": [
+        "crates/ferric-mp2/theory.md#4-spin-component-scaling"
+      ],
+      "scripts": [
+        "scripts/mp2_variant_identities.py"
+      ]
+    },
+    "scs-mp2-gradient": {
+      "reason": "no theory.md derivation and no sympy proof (theory.md section exists)",
+      "theory": [
+        "crates/ferric-mp2/theory.md#92-spin-component-scaled-scs-mp2-gradient"
+      ]
+    },
+    "tddft": {
+      "reason": "no theory.md derivation and no sympy proof (theory.md sections exist; no sympy proof)",
+      "theory": [
+        "crates/ferric-tddft/theory.md#1-response-matrices"
+      ]
+    },
+    "tdhf-static-polarizability": {
+      "reason": "no theory.md derivation and no sympy proof",
+      "theory": [
+        "crates/ferric-gw/theory.md#12-tdhfrpax-polarizability"
+      ]
+    },
+    "u-gw": {
+      "reason": "script has no pytest runner and records no mutation",
+      "theory": [
+        "crates/ferric-gw/theory.md#9-open-shell"
+      ],
+      "scripts": [
+        "scripts/gw_self_energy_sympy.py"
+      ]
+    },
+    "u-oo-rimp2": {
+      "reason": "no theory.md derivation and no sympy proof"
+    },
+    "u-pdep-rpa": {
+      "reason": "no theory.md derivation and no sympy proof",
+      "theory": [
+        "crates/ferric-rpa/theory.md#open-shell-spin-summed-dielectric"
+      ]
+    },
+    "u-ri-mp2": {
+      "reason": "script has no pytest runner and records no mutation",
+      "theory": [
+        "crates/ferric-mp2/theory.md#3-unrestricted-ri-mp2"
+      ],
+      "scripts": [
+        "scripts/mp2_variant_identities.py"
+      ]
+    },
+    "uhf": {
+      "reason": "no theory.md derivation and no sympy proof"
+    },
+    "xtb": {
+      "reason": "no theory.md derivation of what ferric adds over the tblite reference"
+    }
+  }
+}
