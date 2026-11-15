@@ -34,7 +34,8 @@ use ferric_scf::ScfResult;
 use ndarray::Array2;
 
 use crate::boys::{
-    boys_localize, build_domains, build_pseudo_density_occ_sparse, build_pseudo_density_vir_sparse,
+    boys_localize_checked, build_domains, build_pseudo_density_occ_sparse,
+    build_pseudo_density_vir_sparse,
 };
 use crate::rimp2::active_occ;
 
@@ -1018,7 +1019,7 @@ impl LaplaceMp2 {
         let _eps_occ: Vec<f64> = (frozen_core..nocc_total).map(|k| eps[k]).collect();
         let boys_domains = if let Some(cutoff) = domain_cutoff_bohr {
             let dip = ferric_integrals::oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
-            let boys = boys_localize(&c_occ, &dip, 200);
+            let boys = boys_localize_checked(&c_occ, &dip, 200)?;
             let f_loc = boys.c_loc.t().dot(rhf.fock_r()).dot(&boys.c_loc);
             let shell_centers = obs.shell_centers();
             let nshells = obs.nshells();
@@ -1106,12 +1107,12 @@ impl LaplaceMp2 {
             .points
             .par_iter()
             .zip(self.weights.par_iter())
-            .map(|(&t, &w)| {
+            .map(|(&t, &w)| -> Result<(f64, f64), FerricError> {
                 // --- J term in AO basis ---
                 // Build pseudo-densities: sparse (domain-restricted) when Boys-localized,
                 // dense (canonical) otherwise.
                 let (pt, qt) = if let Some((ref domains, ref c_loc, ref f_loc)) = boys_domains {
-                    let pt = build_pseudo_density_occ_sparse(c_loc, f_loc, t, domains);
+                    let pt = build_pseudo_density_occ_sparse(c_loc, f_loc, t, domains)?;
                     let qt = build_pseudo_density_vir_sparse(&c_vir, eps, t, nocc_total, domains);
                     (pt, qt)
                 } else {
@@ -1143,7 +1144,7 @@ impl LaplaceMp2 {
                 let e_exch_k = laplace_exchange_energy(&b_t, naux, nocc, nvir, task_budget);
 
                 let e_ss_k = e_os_k - e_exch_k;
-                (-w * e_os_k, -w * e_ss_k)
+                Ok((-w * e_os_k, -w * e_ss_k))
                 // `collect` then fold in ASCENDING QUADRATURE-POINT ORDER, not
                 // `.reduce(|| (0.0,0.0), ..)`.
                 //
@@ -1175,7 +1176,7 @@ impl LaplaceMp2 {
                 // and it costs nothing at n_quad ≤ 9, not because a test caught it.
                 // Do not cite this line as a fixed defect.
             })
-            .collect::<Vec<(f64, f64)>>();
+            .collect::<Result<Vec<(f64, f64)>, FerricError>>()?;
         let (e_os, e_ss) = e_terms
             .iter()
             .fold((0.0f64, 0.0f64), |acc, &(os, ss)| (acc.0 + os, acc.1 + ss));
@@ -1389,7 +1390,7 @@ impl LaplaceMp2 {
 
         let boys_domains = if let Some(cutoff) = domain_cutoff_bohr {
             let dip = ferric_integrals::oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
-            let boys = boys_localize(&c_occ, &dip, 200);
+            let boys = boys_localize_checked(&c_occ, &dip, 200)?;
             // See compute_ao: the domain index must refer to the SAME orbital as
             // the coefficient index, so carry the localized coefficients and the
             // occupied-block Fock in that basis rather than canonical ones.
@@ -1428,10 +1429,10 @@ impl LaplaceMp2 {
             .points
             .par_iter()
             .zip(self.weights.par_iter())
-            .map(|(&t, &w)| {
+            .map(|(&t, &w)| -> Result<f64, FerricError> {
                 let (pt, qt) = if let Some((ref domains, ref c_loc, ref f_loc)) = boys_domains {
                     (
-                        build_pseudo_density_occ_sparse(c_loc, f_loc, t, domains),
+                        build_pseudo_density_occ_sparse(c_loc, f_loc, t, domains)?,
                         build_pseudo_density_vir_sparse(&c_vir, eps, t, nocc_total, domains),
                     )
                 } else {
@@ -1440,8 +1441,10 @@ impl LaplaceMp2 {
                         build_pseudo_density_vir(c, eps, t, nvir, nocc_total),
                     )
                 };
-                -w * laplace_ao_coulomb_energy(&b_sparse, &pt, &qt, naux, nbas, block_mu)
+                Ok(-w * laplace_ao_coulomb_energy(&b_sparse, &pt, &qt, naux, nbas, block_mu))
             })
+            .collect::<Result<Vec<f64>, FerricError>>()?
+            .into_iter()
             .sum();
 
         Ok(e_os)

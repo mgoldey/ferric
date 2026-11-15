@@ -76,7 +76,6 @@ use ndarray::linalg::general_mat_mul;
 use ndarray::{s, Array2};
 use rayon::prelude::*;
 
-use crate::boys::boys_localize;
 use crate::lmp2_amplitude::{checked_vvhv, column_expectations};
 
 /// Thresholds of the truncations; see the module doc.
@@ -499,7 +498,7 @@ pub fn sos_local_energy(
 
     let t0 = Instant::now();
     let dip = ferric_integrals::oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
-    let boys = boys_localize(&c_occ, &dip, 200);
+    let boys = crate::boys::boys_localize_checked(&c_occ, &dip, 200)?;
     let (vvhv, _) = checked_vvhv(mol, obs, obs_bs, rhf, "laplace-sos-mp2 local")?;
     let c_vl = vvhv.c_vloc;
     let s_ao = ferric_integrals::oneelectron::overlap(obs);

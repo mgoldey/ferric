@@ -16,10 +16,12 @@
 //! The pair density is built from the first-order (semicanonical MP2) amplitudes:
 //!
 //! ```text
-//! D^ij = T^ij (T^ij)† + (T^ij)† T^ij        (symmetrized, trace-normalized)
+//! D^ij = T^ij (T^ij)† + (T^ij)† T^ij        (symmetrized; NOT trace-normalized)
 //! ```
 //!
-//! Diagonalizing it gives occupation numbers `n_a^ij`; virtuals with
+//! Diagonalizing it gives occupation numbers `n_a^ij` (the raw eigenvalues of that
+//! symmetrized matrix, with no division by its trace, so `T_CutPNO` thresholds
+//! them in the amplitude-squared units of `T^ij`); virtuals with
 //! `n_a^ij < T_CutPNO` are discarded. The retained count is what buys the compression.
 //!
 //! # What this is honestly worth, on ferric, today

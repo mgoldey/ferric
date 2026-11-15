@@ -161,6 +161,29 @@ pub fn boys_localize(c_occ: &Array2<f64>, dip: &[Array2<f64>; 3], max_iter: usiz
     }
 }
 
+/// [`boys_localize`] that refuses an unconverged localization.
+///
+/// The sparse Laplace formulations mask the pseudo-densities by the localized
+/// orbitals' domains; orbitals from a localization that stopped short of its
+/// tolerance still span the occupied space but give domains that were not
+/// meant to be used, so the run errors instead of continuing.
+pub fn boys_localize_checked(
+    c_occ: &Array2<f64>,
+    dip: &[Array2<f64>; 3],
+    max_iter: usize,
+) -> Result<BoysResult, ferric_core::FerricError> {
+    let res = boys_localize(c_occ, dip, max_iter);
+    if res.converged {
+        Ok(res)
+    } else {
+        Err(ferric_core::FerricError::Convergence(format!(
+            "Boys localization did not converge in {} sweeps (max {max_iter}); the \
+             domain-truncated Laplace formulation needs converged localized orbitals",
+            res.iterations
+        )))
+    }
+}
+
 /// LMP2 domain for a set of Boys-localized orbitals.
 ///
 /// `ao_mask[μ]` is true if basis function μ belongs to at least one orbital's domain.
@@ -272,12 +295,14 @@ pub fn build_domains(
 /// `c_loc`: **localized** occupied MOs (nbas × nocc), from [`boys_localize`].
 /// `f_loc`: occupied-block Fock in that SAME localized basis (nocc × nocc).
 /// `domains`: orbital domains, indexed consistently with `c_loc`'s columns.
+///
+/// Errors if `f_loc` cannot be diagonalized (not square, or non-finite).
 pub fn build_pseudo_density_occ_sparse(
     c_loc: &Array2<f64>,
     f_loc: &Array2<f64>,
     t: f64,
     domains: &LmpDomains,
-) -> Array2<f64> {
+) -> Result<Array2<f64>, ferric_core::FerricError> {
     let nbas = c_loc.nrows();
     let nocc = c_loc.ncols();
     debug_assert_eq!(f_loc.dim(), (nocc, nocc));
@@ -286,7 +311,7 @@ pub fn build_pseudo_density_occ_sparse(
     // exp(+t F_loc): the localized-basis generalization of the canonical
     // scalar exp(t·ε_i). Done once per quadrature point on the small
     // (nocc × nocc) block.
-    let expf = sym_matrix_exp(f_loc, t);
+    let expf = sym_matrix_exp(f_loc, t)?;
 
     // Element mask, as the doc has always promised: keep (μ,ν) iff μ and ν lie
     // in a COMMON orbital domain. This masks the FINAL matrix, not per-orbital
@@ -310,19 +335,21 @@ pub fn build_pseudo_density_occ_sparse(
             }
         }
     }
-    p
+    Ok(p)
 }
 
 /// `exp(scale · A)` for symmetric `A`, via eigendecomposition.
-fn sym_matrix_exp(a: &Array2<f64>, scale: f64) -> Array2<f64> {
+///
+/// Returns an error (never panics) if the eigensolve fails, e.g. for a
+/// non-square or non-finite block: that must not feed garbage into an energy.
+fn sym_matrix_exp(a: &Array2<f64>, scale: f64) -> Result<Array2<f64>, ferric_core::FerricError> {
     use ndarray_linalg::{Eigh, UPLO};
     let n = a.nrows();
-    // Symmetric eigensolve on the small occupied block. A failure here means
-    // the caller passed a non-symmetric Fock block — a caller bug that must
-    // not silently feed garbage into an energy expression.
-    let (vals, vecs) = a
-        .eigh(UPLO::Lower)
-        .expect("occupied-block Fock must be symmetric and diagonalizable");
+    let (vals, vecs) = a.eigh(UPLO::Lower).map_err(|e| {
+        ferric_core::FerricError::Lapack(format!(
+            "sym_matrix_exp: occupied-block Fock eigensolve failed: {e}"
+        ))
+    })?;
     let mut scaled = Array2::zeros((n, n));
     for k in 0..n {
         let w = (scale * vals[k]).exp();
@@ -330,7 +357,7 @@ fn sym_matrix_exp(a: &Array2<f64>, scale: f64) -> Array2<f64> {
             scaled[(i, k)] = vecs[(i, k)] * w;
         }
     }
-    scaled.dot(&vecs.t())
+    Ok(scaled.dot(&vecs.t()))
 }
 
 /// Build a sparse virtual pseudo-density restricted to the active AO union.
@@ -371,6 +398,33 @@ mod tests {
     use ferric_scf::rhf::{solve_rhf, RhfConfig};
     use ferric_scf::screening::SchwarzBounds;
     use ndarray::s;
+
+    #[test]
+    fn sym_matrix_exp_errors_instead_of_panicking() {
+        let bad = Array2::<f64>::zeros((2, 3));
+        assert!(sym_matrix_exp(&bad, 1.0).is_err());
+        let ok = Array2::<f64>::from_diag(&ndarray::arr1(&[0.0, 1.0]));
+        let e = sym_matrix_exp(&ok, 1.0).unwrap();
+        assert!((e[(1, 1)] - 1.0_f64.exp()).abs() < 1e-14);
+    }
+
+    #[test]
+    fn checked_boys_refuses_an_unconverged_localization() {
+        let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
+        let bs = basis::bundled("sto-3g").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let ctx = ParallelContext::default();
+        let rhf = solve_rhf(&ctx, &mol, &prep, op, &bounds, &RhfConfig::default()).unwrap();
+        let nocc = mol.nelec() as usize / 2;
+        let c_occ = rhf.mos_r().slice(s![.., ..nocc]).to_owned();
+        let dip = dipole(&prep, [0.0, 0.0, 0.0]).unwrap();
+        // One sweep cannot reach the 1e-8 rotation-angle tolerance.
+        assert!(!boys_localize(&c_occ, &dip, 1).converged);
+        assert!(boys_localize_checked(&c_occ, &dip, 1).is_err());
+        assert!(boys_localize_checked(&c_occ, &dip, 200).is_ok());
+    }
 
     #[test]
     fn test_boys_water_sto3g() {
@@ -565,7 +619,7 @@ mod tests {
         };
 
         for &t in &[0.05_f64, 0.3, 1.0, 3.0] {
-            let p_loc = build_pseudo_density_occ_sparse(&boys.c_loc, &f_loc, t, &full);
+            let p_loc = build_pseudo_density_occ_sparse(&boys.c_loc, &f_loc, t, &full).unwrap();
             // Canonical reference, built inline so this test does not depend on
             // the laplace module's blocking/frozen-core plumbing.
             let mut p_can: Array2<f64> = Array2::zeros((nbas, nbas));
