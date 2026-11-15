@@ -65,47 +65,50 @@ $$
 + \sum_{p\in A,\,q\in B} (pp|qq).
 $$
 
+Every orbital here is active, so the excitation labels are the book's
+active letters $t,u,v,w$: $t,u$ are vacated and $v,w$ filled.
+
 **Single** ($d=2$ in one channel, `single_excitation_same_spin`): electron
-$i\to a$ in channel $\sigma$, ket string $s$ of that channel, other-channel
-string $\bar s$:
+$t\to v$ in channel $\sigma$, ket string $s$ of that channel, other-channel
+string $\tilde s$:
 
 $$
 \langle D'|H|D\rangle = \epsilon_1
-\Big[h_{ai} + \sum_{p\in s\setminus\{i\}} \big((ai|pp)-(ap|pi)\big)
-     + \sum_{p\in\bar s} (ai|pp)\Big],
+\Big[h_{vt} + \sum_{p\in s\setminus\{t\}} \big((vt|pp)-(vp|pt)\big)
+     + \sum_{p\in\tilde s} (vt|pp)\Big],
 \qquad
-\epsilon_1 = \text{pb}(s,i)\;\text{pb}(s\setminus i,\,a),
+\epsilon_1 = \text{pb}(s,t)\;\text{pb}(s\setminus t,\,v),
 $$
 
-with $\text{pb}$ = `phase_below`; $\epsilon_1 = \langle D'|a^\dagger_a a_i|D\rangle$.
+with $\text{pb}$ = `phase_below`; $\epsilon_1 = \langle D'|a^\dagger_v a_t|D\rangle$.
 
-**Same-spin double** ($d=4$ in one channel, `double_same_spin`): $i<j$
-removed, $a<b$ added:
+**Same-spin double** ($d=4$ in one channel, `double_same_spin`): $t<u$
+removed, $v<w$ added:
 
 $$
-\langle D'|H|D\rangle = \epsilon_2\big[(ai|bj)-(aj|bi)\big],
+\langle D'|H|D\rangle = \epsilon_2\big[(vt|wu)-(vu|wt)\big],
 \qquad
-\epsilon_2 = \langle D'|a^\dagger_a a^\dagger_b a_j a_i|D\rangle ,
+\epsilon_2 = \langle D'|a^\dagger_v a^\dagger_w a_u a_t|D\rangle ,
 $$
 
 evaluated by `double_phase_same_spin` as successive single-channel parities:
-annihilate $i$, then $j$, then create $b$, then $a$ (right-to-left operator
+annihilate $t$, then $u$, then create $w$, then $v$ (right-to-left operator
 application). The four terms of $\tfrac12\sum(pq|rs)\ldots$ that connect $D$
-and $D'$ reduce to this pair by $a^\dagger_a a^\dagger_b = -a^\dagger_b a^\dagger_a$
-and $a_j a_i = -a_i a_j$.
+and $D'$ reduce to this pair by $a^\dagger_v a^\dagger_w = -a^\dagger_w a^\dagger_v$
+and $a_u a_t = -a_t a_u$.
 
 **Opposite-spin double** ($d_\alpha=d_\beta=2$, `double_opposite_spin`):
-$i\to a$ in α, $j\to b$ in β:
+$t\to v$ in α, $u\to w$ in β:
 
 $$
-\langle D'|H|D\rangle = \epsilon_\alpha\,\epsilon_\beta\,(ai|bj),
+\langle D'|H|D\rangle = \epsilon_\alpha\,\epsilon_\beta\,(vt|wu),
 \qquad
-\epsilon_\alpha = \text{pb}(A,i)\,\text{pb}(A\setminus i,a),\;
-\epsilon_\beta = \text{pb}(B,j)\,\text{pb}(B\setminus j,b).
+\epsilon_\alpha = \text{pb}(A,t)\,\text{pb}(A\setminus t,v),\;
+\epsilon_\beta = \text{pb}(B,u)\,\text{pb}(B\setminus u,w).
 $$
 
 The $\sigma\tau = \alpha\beta$ and $\beta\alpha$ terms of $H$ each give
-$\tfrac12(ai|bj)$; no exchange term exists.
+$\tfrac12(vt|wu)$; no exchange term exists.
 
 All other classes ($d_\alpha+d_\beta>4$, or $d=2$ split across channels) are
 zero. `sigma_naive` and `dense_hamiltonian` use `general_element` for every
@@ -161,10 +164,10 @@ integrals $\langle J|E_{pq}|I\rangle = \langle I|E_{qp}|J\rangle$ and $H$ is
 symmetric, so all three contractions run over the excitations OF the output
 string:
 
-* $\sigma_2$, per row $I_\alpha$: $F(K) \mathrel{+}= \epsilon_1 g_{kl}$ for each
-  $E_{kl}|I_\alpha\rangle=\epsilon_1|K\rangle$, and
-  $F(J) \mathrel{+}= \tfrac12\epsilon_1\epsilon_2 (ij|kl)$ for each
-  $E_{ij}|K\rangle=\epsilon_2|J\rangle$; then $\sigma(I_\alpha,:) \mathrel{+}= \sum_J F(J)\, C(J,:)$.
+* $\sigma_2$, per row $I_\alpha$: $F(K) \mathrel{+}= \epsilon_1 g_{tu}$ for each
+  $E_{tu}|I_\alpha\rangle=\epsilon_1|K\rangle$, and
+  $F(J) \mathrel{+}= \tfrac12\epsilon_1\epsilon_2 (vw|tu)$ for each
+  $E_{vw}|K\rangle=\epsilon_2|J\rangle$; then $\sigma(I_\alpha,:) \mathrel{+}= \sum_J F(J)\, C(J,:)$.
   $F(J) = \langle J|H_\alpha|I_\alpha\rangle$.
 * $\sigma_1$: the same on $C^\mathsf{T}$ with the β table.
 * $\sigma_3$, per β pair $rs$: gather $C'(J_\alpha,m) = \epsilon_m C(J_\alpha, J_{\beta,m})$
@@ -335,8 +338,8 @@ builds $J$ and $K$ with ferric-scf's direct builder (`build_jk_with_pool`,
 Schwarz and density screened) and $(pu|vw)$ for all $p$ by a direct half
 transform: per canonical bra shell pair, every ket shell pair with
 $Q_\text{bra}Q_\text{ket} \ge$ `thresh` is contracted with $C_a$ on both ket
-indices, $X_{mn,vw} = \sum_{ls}(mn|ls)C_{lv}C_{sw}$, then
-$(pu|vw) = \sum_{mn}C_{mp}C_{nu}X_{mn,vw}$ by GEMMs. Peak memory is
+indices, $X_{\mu\nu,vw} = \sum_{\lambda\sigma}(\mu\nu|\lambda\sigma)C_{\lambda v}C_{\sigma w}$, then
+$(pu|vw) = \sum_{\mu\nu}C_{\mu p}C_{\nu u}X_{\mu\nu,vw}$ by GEMMs. Peak memory is
 $X$, $n_\text{bas}^2n_a^2$ doubles. The dense route holds the
 $n_\text{bas}^4$ AO block, contracts $J$, $K$ from it and transforms it by four
 quarter transforms (`integrals::transform_eri_mixed`); it is the test oracle
@@ -344,16 +347,17 @@ quarter transforms (`integrals::transform_eri_mixed`); it is the test oracle
 $10^{-12}$ in $F$, $(pu|vw)$, $E$ and $g$).
 
 The RI route (`integrals = "ri"`, a bundled `auxbasis`, `src/ri.rs`) is a
-different Hamiltonian, the density-fitted one, $(mn|ls) \approx
-\sum_P B_{P,mn}B_{P,ls}$ with $B = L^{-1}(Q|mn)$ and $L$ the Cholesky factor
-of the Coulomb metric $(P|Q)$. It holds $B$, $n_\text{aux}n_\text{bas}^2$
+different Hamiltonian, the density-fitted one, $(\mu\nu|\lambda\sigma) \approx
+\sum_P B^P_{\mu\nu}B^P_{\lambda\sigma}$ with $B^P_{\mu\nu} = \sum_Q M_{PQ}(Q|\mu\nu)$,
+$M = L^{-1}$ and $L$ the Cholesky factor of the Coulomb metric
+$V_{PQ} = (P|Q)$, so $M^\mathsf{T}M = V^{-1}$. It holds $B$, $N_\text{aux}n_\text{bas}^2$
 doubles, and nothing of size $n_\text{bas}^4$. For a density given in factored
-form $D = XMX^\mathsf{T}$ (the core density $2C_cC_c^\mathsf{T}$ and the active
+form $D = XWX^\mathsf{T}$ (the core density $2C_cC_c^\mathsf{T}$ and the active
 density $C_a\gamma C_a^\mathsf{T}$) $J = B^\mathsf{T}(B\,\mathrm{vec}D)$ and
-$K = \sum_P (B_PX)M(B_PX)^\mathsf{T}$ as one GEMM over $(P, j)$; a general
+$K = \sum_P (B_PX)W(B_PX)^\mathsf{T}$ as one GEMM over $(P, j)$; a general
 $D$ (the AH Hessian's trial densities) is summed over aux blocks,
 $K = \sum_P B_PDB_P$. The MO blocks are half transforms
-$(P|ab) = C_l^\mathsf{T}B_PC_r$ followed by one GEMM over $P$:
+$(P|pq) = C_l^\mathsf{T}B_PC_r$ followed by one GEMM over $P$:
 $(pu|vw) = (P|pu)^\mathsf{T}(P|vw)$, and the AH occupied kernel's
 $(pq|vw)$ and $(pu|qv)$ the same way, so the AH optimizer runs unchanged.
 SC-NEVPT2 on an RI CASSCF reference takes its MO blocks and $J/K$ from the
