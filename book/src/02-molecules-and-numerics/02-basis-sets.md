@@ -1,7 +1,7 @@
 # 2.2 Contracted Gaussians, normalization and parsers
 
 <!-- section: 2.2; status: edit; registry: ;
-     theory: crates/ferric-integrals/theory.md#"Basis Sets" -->
+     theory: crates/ferric-integrals/theory.md#"Conventions" -->
 
 Molecular orbitals are expanded in atom-centered contracted Gaussian shells.
 This section defines a shell, states the normalization the code guarantees,
