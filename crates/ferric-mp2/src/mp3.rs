@@ -254,7 +254,37 @@ pub fn mp3_energy(
         ev[2 * a] = eps[nocc_total + a];
         ev[2 * a + 1] = eps[nocc_total + a];
     }
+    let (e_mp2, e_mp3) =
+        mp3_energy_from_spin_orbital_blocks(asym_oovv_t, v_vvvv, v_oooo, v_ovvo, &eo, &ev);
+    let e_corr = e_mp2 + e_mp3;
 
+    Ok(Mp3Result {
+        e_hf: rhf.energy,
+        e_mp2,
+        e_mp3,
+        e_corr,
+        e_total: rhf.energy + e_corr,
+    })
+}
+
+/// Spin-orbital MP2 and MP3 correlation energies `(e_mp2, e_mp3)` from the
+/// antisymmetrized blocks [`mp3_energy`] builds: `<ij||ab>` `(O,O,V,V)`,
+/// `<ab||cd>` `(V,V,V,V)`, `<ij||kl>` `(O,O,O,O)` and `<kb||cj>` `(O,V,V,O)`
+/// (indexed `[k,b,c,j]`), with spin-orbital energies `eo` (length O) and `ev`
+/// (length V). The blocks are consumed in the order that keeps the
+/// [`mp3_energy`] peak.
+///
+/// This is the contraction [`mp3_energy`] runs on its RI blocks; feeding it
+/// blocks from exact integrals gives the exact-integral spin-orbital MP3.
+pub fn mp3_energy_from_spin_orbital_blocks(
+    asym_oovv_t: ArrayD<f64>,
+    v_vvvv: ArrayD<f64>,
+    v_oooo: ArrayD<f64>,
+    v_ovvo: ArrayD<f64>,
+    eo: &[f64],
+    ev: &[f64],
+) -> (f64, f64) {
+    let (no2, nv2) = (eo.len(), ev.len());
     // t[i,j,a,b] = <ij||ab> / (eo_i + eo_j - ev_a - ev_b)
     let mut t = ArrayD::zeros(IxDyn(&[no2, no2, nv2, nv2]));
     for i in 0..no2 {
@@ -314,16 +344,7 @@ pub fn mp3_energy(
         einsum!("iakc,iakc->", &z_t, &t_iakc_t)
     };
 
-    let e_mp3 = e_pp + e_hh + e_ph;
-    let e_corr = e_mp2 + e_mp3;
-
-    Ok(Mp3Result {
-        e_hf: rhf.energy,
-        e_mp2,
-        e_mp3,
-        e_corr,
-        e_total: rhf.energy + e_corr,
-    })
+    (e_mp2, e_pp + e_hh + e_ph)
 }
 
 #[cfg(test)]

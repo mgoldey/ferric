@@ -142,7 +142,7 @@ RS-MP2 + LR-RPA (`ferric-rpa::rs_mp2_rpa`) is built on this cross term.
 ## 6. MP3
 
 `mp3_energy` (`mp3.rs:143`) works in spin orbitals with
-$t_{ij}^{ab} = \langle ij\|ab\rangle/D_{ij}^{ab}$ (`mp3.rs:265`) built from RI
+$t_{ij}^{ab} = \langle ij\|ab\rangle/D_{ij}^{ab}$ (`mp3.rs:295`) built from RI
 integrals:
 
 $$ E^{(2)} = \tfrac14\sum t_{ij}^{ab}\langle ij\|ab\rangle, \qquad
@@ -150,8 +150,80 @@ E^{(3)} = \tfrac18\sum t_{ij}^{ab}\langle ab\|cd\rangle t_{ij}^{cd}
 + \tfrac18\sum \langle kl\|ij\rangle t_{ij}^{ab} t_{kl}^{ab}
 + \sum t_{ij}^{ab}\langle kb\|cj\rangle t_{ik}^{ac} $$
 
-(`mp3.rs:281`, `:292`, `:300`, `:314`). The ladder prefactors and the
+(`mp3.rs:310`, `:318`, `:326`, `:334`; the contraction is
+`mp3_energy_from_spin_orbital_blocks`, `mp3.rs:279`). The ladder prefactors and the
 ring-term convention are derived in `wiki/sympy_derivations.md` §2b.
+
+### 6.1 Spin-blocked unrestricted MP3
+
+`u_mp3` (`u_mp3.rs:492`) evaluates the same energies on an RHF, UHF or
+semicanonicalized ROHF reference (`reference_orbitals`, `u_mp3.rs:247`;
+doubles only, no non-Brillouin singles) and keeps both amplitude orders. The
+spin-orbital sums of §6 are split by the spin of every index. Lower case is
+α, upper case β; a tensor carries its spin block as a superscript, and the
+αβ block is stored α first, $c^{\alpha\beta}_{iJaB}$. With
+$D^{\sigma\tau}_{ij,ab} = \varepsilon_{i\sigma}+\varepsilon_{j\tau}-\varepsilon_{a\sigma}-\varepsilon_{b\tau}$:
+
+$$ K^{\sigma\sigma}_{ijab} = (ia|jb)-(ib|ja), \qquad K^{\alpha\beta}_{iJaB} = (ia|JB), \qquad
+c^{(1)} = K/D, \qquad c^{(2)} = R/D $$
+
+(`antisymmetrize` `u_mp3.rs:411`, `divide_blocks` `u_mp3.rs:430`,
+`amplitudes` `u_mp3.rs:462`). The spin-orbital amplitudes are recovered as
+$t_{ijab}=c^{\sigma\sigma}_{ijab}$ for four indices of one spin and
+$t_{i\bar J a\bar B} = -t_{\bar J i a \bar B} = -t_{i \bar J \bar B a} = t_{\bar J i \bar B a} = c^{\alpha\beta}_{iJaB}$,
+the four orderings that give the αβ factor 1 below. Writing $t=c^{(1)}$, the
+residual $R = D\,c^{(2)}$ of the spin-orbital
+$R_{ijab} = \tfrac12\sum\langle ab\|cd\rangle t_{ijcd} + \tfrac12\sum\langle kl\|ij\rangle t_{klab} + P(ij)P(ab)\sum\langle kb\|cj\rangle t_{ikac}$
+is, block by block (`mp3_residual`, `u_mp3_residual.rs:215`):
+
+$$ R^{\alpha\alpha}_{ijab} = \sum_{cd}(ac|bd)\,t^{\alpha\alpha}_{ijcd} + \sum_{kl}(ki|lj)\,t^{\alpha\alpha}_{klab}
++ P(ij)P(ab)\,X_{iajb}, $$
+$$ X_{iajb} = \sum_{kc}\big[(kc|jb)-(kj|bc)\big]\,t^{\alpha\alpha}_{ikac} + \sum_{KC}(KC|jb)\,t^{\alpha\beta}_{iKaC}, $$
+
+$R^{\beta\beta}$ the same with α↔β (its mixed ring is $\sum_{kc}(kc|JB)\,t^{\alpha\beta}_{kIcA}$), and
+
+$$ \begin{aligned} R^{\alpha\beta}_{iJaB} ={}& \sum_{cD}(ac|BD)\,t^{\alpha\beta}_{iJcD} + \sum_{kL}(ki|LJ)\,t^{\alpha\beta}_{kLaB}
++ \sum_{kc}(kc|JB)\,t^{\alpha\alpha}_{ikac} + \sum_{KC}\big[(KC|JB)-(KJ|BC)\big]\,t^{\alpha\beta}_{iKaC} \\
+&+ \sum_{kc}\big[(ia|kc)-(ik|ac)\big]\,t^{\alpha\beta}_{kJcB} + \sum_{KC}(ia|KC)\,t^{\beta\beta}_{JKBC}
+- \sum_{kC}(ki|BC)\,t^{\alpha\beta}_{kJaC} - \sum_{Kc}(KJ|ac)\,t^{\alpha\beta}_{iKcB}. \end{aligned} $$
+
+The same-spin ladders lose the ½ of the spin-orbital form because
+$\tfrac12\sum_{cd}\langle ab\|cd\rangle t_{ijcd} = \sum_{cd}(ac|bd)\,t_{ijcd}$ for
+$t$ antisymmetric in $cd$; the αβ ladders pick up the two equal orderings
+$(c\,\bar D)$, $(\bar D\, c)$. The last two αβ terms are the exchange halves of
+$\langle k\bar B\|c\bar J\rangle$ when $k,c$ and $\bar B,\bar J$ have opposite
+spins, which only the αβ block has. Implementations: same-spin and mixed
+rings as GEMMs over compound $(ov)$ indices with
+$M^\sigma_{(kc),(jb)} = (kc|jb)-(kj|bc)$ (`ring_terms`,
+`u_mp3_residual.rs:103`; $P(ij)P(ab)$ in `scatter_same_spin`, `:82`), the two
+αβ exchange rings (`mixed_exchange_rings`, `:144`), hole ladders
+(`hole_ladder`, `:173`) and particle ladders one $(ac|\cdot\,\cdot)$ slab per
+$a$ (`particle_ladder`, `:187`; slabs from `for_each_vvvv_slab`,
+`u_mp3_eri.rs:252`). The energies (`channel_energy`, `u_mp3.rs:421`) are
+
+$$ E^{(n)} = \tfrac14\sum c^{(n-1),\alpha\alpha}K^{\alpha\alpha} + \tfrac14\sum c^{(n-1),\beta\beta}K^{\beta\beta} + \sum c^{(n-1),\alpha\beta}K^{\alpha\beta}, $$
+
+so the αα + ββ and αβ parts of $E^{(2)}$ are the same-spin and opposite-spin
+energies of §3, and $E^{(3)}$ is split the same way. Summing $\tfrac14 K R/D$
+over the blocks reproduces the three spin-orbital terms of §6 with their
+coefficients ⅛, ⅛ and 1 term class by term class:
+[`scripts/ump3_spin_blocks_sympy.py`](../../scripts/ump3_spin_blocks_sympy.py)
+proves this as exact polynomial identities in symbolic integrals and checks
+the energies against brute-force Rayleigh–Schrödinger theory
+(runner `crates/ferric-python/tests/test_ump3_spin_blocks_sympy.py`). For an
+RHF input the blocks satisfy
+$c^{\alpha\alpha}_{ijab} = c^{\alpha\beta}_{ijab} - c^{\alpha\beta}_{ijba}$ and
+$c^{\beta\beta} = c^{\alpha\alpha}$ at both orders, and the energies equal
+`mp3_energy` (RI) and `mp3_energy_from_spin_orbital_blocks` (`mp3.rs:279`,
+exact) (`tests/u_mp3.rs`).
+
+Integrals are RI (the §1 build, per spin) or exact (`exact_mo_block`,
+`u_mp3_eri.rs:96`, four quarter transforms of the dense AO tensor). The
+largest VVVV piece is one $n_{v\sigma}^2 n_{v\tau}^2$ block (exact) or one
+$n_{v\sigma} n_{v\tau}^2$ slab (RI), against $(2n_v)^4$ in §6. The memory
+peak `u_mp3_peak_bytes` (`u_mp3.rs:373`) is pre-flighted and charged; it
+matches the measured heap high-water to < 0.5 KiB
+(`tests/u_mp3_peak_matches_the_heap.rs`).
 
 ## 7. Orbital-optimized RI-MP2
 

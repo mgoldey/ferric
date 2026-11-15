@@ -87,6 +87,12 @@ pub mod scs;
 pub mod spinorbital;
 /// Spin-orbital integral/amplitude helpers for unrestricted references.
 pub mod spinorbital_u;
+/// Spin-blocked unrestricted MP3 keeping the c^(1) and c^(2) amplitudes.
+pub mod u_mp3;
+/// Spatial MO integral blocks (RI and exact) of the unrestricted MP3 driver.
+pub mod u_mp3_eri;
+/// The spin-blocked MP3 doubles residual.
+pub(crate) mod u_mp3_residual;
 /// Unrestricted orbital-optimized RI-MP2.
 pub mod u_oo_rimp2;
 /// Unrestricted RI-MP2 (α/β spin channels).
