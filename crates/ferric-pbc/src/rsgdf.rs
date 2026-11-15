@@ -93,9 +93,10 @@
 //! diffuse metric terms) from the SR real-space walks to G space; the
 //! G = 0 subtract gets the kept inputs (PySCF grouping). FINDINGS
 //! "Iteration 23"; details in the `split` module. `None` is today's
-//! construction bit for bit. The Gamma forces and stress differentiate the
-//! split energy (FINDINGS "Iteration 26"); the k-point build refuses a
-//! split config ([`RsGdf::range_split`]).
+//! construction bit for bit. The Gamma and k-point builds both honour it, and
+//! the forces and stress differentiate the split energy (FINDINGS "Iteration
+//! 26"; the k-point partition is documented in the `kpoint` module). The config
+//! a B was built with is [`RsGdf::range_split`].
 //!
 //! # Orbital-pair symmetry of the Gamma SR 3-centre sum (s2)
 //!
@@ -284,8 +285,8 @@ pub struct RsGdfConfig {
     /// G = 0 handling — [`G0Handling::Consistent`] except in mutation tests.
     pub g0: G0Handling,
     /// Opt-in primitive-level range split of the SR sums (`split` module
-    /// doc; Gamma energy, forces and stress). `None` = today's construction,
-    /// bit for bit. The k-point build refuses it.
+    /// doc; Gamma and k-point energy, forces and stress). `None` = today's
+    /// construction, bit for bit.
     pub range_split: Option<RangeSplit>,
     /// Column rotation of generally contracted orbital shells inside the
     /// SR 3-centre walk (module doc "Column rotation"). Default
@@ -2637,8 +2638,8 @@ impl RsGdf {
     }
 
     /// The range split B was built with (`None`: today's construction).
-    /// The Gamma forces and stress follow it (`split`'s `deriv`); the
-    /// k-point build refuses a split config.
+    /// The Gamma forces and stress follow it (`split`'s `deriv`), and so does
+    /// the k-point build (`split`'s `ksplit`).
     pub fn range_split(&self) -> Option<RangeSplit> {
         self.range_split
     }

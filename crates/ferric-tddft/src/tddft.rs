@@ -1,4 +1,5 @@
-//! Linear-response TDDFT for closed-shell references.
+//! Linear-response TDDFT for closed-shell references (the restricted driver;
+//! UHF/UKS references are dispatched to [`crate::unrestricted`]).
 //!
 //! Implements the Tamm–Dancoff approximation (TDA, equivalent to CIS for HF)
 //! and the full Casida equations for singlet or (`M_S = 0`) triplet
@@ -26,8 +27,10 @@
 //! the Coulomb term and take the `f_αα − f_αβ` kernel. Derivations:
 //! `crates/ferric-tddft/theory.md` §8 (range separation) and §9 (triplets).
 //!
-//! Scope: closed-shell (restricted) references. An open-shell reference is
-//! refused — there is no spin-resolved A/B assembly here, for HF or KS.
+//! Scope: this module assembles the closed-shell (restricted) problem.
+//! [`run_tddft`] sends an unrestricted (UHF / UKS) reference to
+//! [`crate::unrestricted`], which builds the two-spin A/B space; only ROHF /
+//! ROKS references are refused (theory.md §10).
 //!
 //! # Solvers
 //!
@@ -773,10 +776,11 @@ fn roks_refusal() -> FerricError {
 
 /// Refuse any reference `run_tddft` cannot treat, and return `nocc`.
 ///
-/// There is no spin-resolved A/B assembly here: `eps_r`/`mos_r` and
+/// There is no spin-resolved A/B assembly in this module: `eps_r`/`mos_r` and
 /// `nocc = nelec/2` are closed-shell by construction (and `eps_r`/`mos_r`
-/// ASSERT a restricted reference, so an open-shell input used to panic).
-/// Refused for HF as well as KS — neither has an open-shell path here.
+/// ASSERT a restricted reference). [`run_tddft`] routes UHF/UKS to
+/// [`crate::unrestricted`] before reaching this check, so it only fires for a
+/// direct caller of the restricted path.
 fn closed_shell_nocc(mol: &Molecule, scf: &ScfResult) -> Result<usize, FerricError> {
     if !scf.converged {
         return Err(FerricError::ScfConvergence {
@@ -1340,7 +1344,7 @@ fn transition_properties(
 /// # Errors
 ///
 /// Hard errors — never a warning plus a number — for: an unconverged or
-/// open-shell reference; a functional without a complete kernel (VV10);
+/// ROHF/ROKS reference (UHF/UKS are supported); a functional without a complete kernel (VV10);
 /// a `c_hf` override on an HF reference or a range-separated hybrid; an
 /// empty `(ia)` space; an over-budget allocation; an f_xc block whose
 /// asymmetry exceeds the grid-noise tolerance; an RPA instability (Casida,

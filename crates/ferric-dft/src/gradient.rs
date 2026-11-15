@@ -1629,7 +1629,7 @@ fn mgga_closed_batch(
 
 /// Spin-polarized (UKS) analytic XC gradient.
 ///
-/// Per-spin gradient (AO-derivative term only — no grid response):
+/// Per-spin gradient. The AO-derivative term is
 /// ```text
 ///   ∂E_xc/∂R_A,axis = -2 Σ_σ Σ_g Σ_{μ∈A, ν} D_σ_μν · [
 ///       w · v_ρσ · ∂_axis χ_μ · χ_ν
@@ -1639,6 +1639,10 @@ fn mgga_closed_batch(
 /// where
 ///   `G^α_b = 2 v_σαα · ∇ρ_α_b + v_σαβ · ∇ρ_β_b`
 ///   `G^β_b = 2 v_σββ · ∇ρ_β_b + v_σαβ · ∇ρ_α_b`
+///
+/// On top of it the grid response (PySCF `grid_response=True`) is applied: the
+/// Becke-weight derivative term and the home-atom translation of each grid
+/// point, as in the closed-shell gradient.
 #[allow(clippy::too_many_arguments)]
 pub fn xc_gradient_uks_from_density(
     mol: &Molecule,
