@@ -45,20 +45,34 @@ every MP2-family Python driver (`[scf] jk` in the CLI, task `energy`, and
 basis. It is never the MP2 `auxbasis`, because an MP2-fit set used for K costs
 mHa.
 
-In the CLI an omitted `[scf] jk` gives a closed-shell energy of these kinds
+In the CLI an omitted `[scf] jk` gives a closed-shell energy of these kinds,
+and a closed-shell `rimp2`, `scs-mp2` or `oo-rimp2` optimization,
 `"rijk"` on the JK-fit set matched to the orbital basis: `cc-pvtz-jkfit` for
 cc-pVDZ and cc-pVTZ, `cc-pvqz-jkfit` for cc-pVQZ, `aug-cc-pvXz-jkfit` for
 aug-cc-pVXZ, `def2-universal-jkfit` for every other basis. The reference stays
-four-centre for an open-shell molecule, for `task = "optimize"` (the fitted
-gradient's peak memory is about twice the four-centre route's) and for an
-input that sets a key only the four-centre route reads (`k_builder`, `eri`,
-`screening`, `df_increments`, `df_guess = true`, `df_guess_aux`). `rs-mp2-rpa` takes
+four-centre for an open-shell molecule and for an input that sets a key only
+the four-centre route reads (`k_builder`, `eri`, `screening`,
+`df_increments`, `df_guess = true`, `df_guess_aux`). `rs-mp2-rpa` takes
 `"rijk"` on `def2-universal-jkfit`. The run prints `Reference SCF J/K:` with
 the route, its aux set and why it was chosen, and the certificate lists the fit
-as `scf ri-j` and `scf ri-k` with the aux set. `jk = "exact"` gives the
-four-centre reference. The Python `scf_jk` keyword defaults to `"exact"`
-(`jk_auxbasis` default `def2-universal-jkfit`). Every result echoes `scf_jk`
-and `jk_auxbasis`.
+as `scf ri-j` and `scf ri-k` with the aux set (an optimization's `gradient`
+line names the RI-JK reference). `jk = "exact"` gives the four-centre
+reference. Python's `run_optimize` resolves an omitted `scf_jk` for
+`method="rimp2"`, `"scs-mp2"` and `"oo-rimp2"` the same way (four-centre for
+`oo-rimp2` when `scf_eri` is set). The energy entry points' `scf_jk` keyword
+defaults to `"exact"` (`jk_auxbasis` default `def2-universal-jkfit`). Every
+result echoes `scf_jk` and `jk_auxbasis`.
+
+**Memory of the fitted gradient.** The gradient on an RI-JK reference keeps
+the reference's RI-J and RI-K tensors for the Z-vector and differentiates the
+fitted two-electron energy of the full-rank relaxed density, whose exchange
+intermediates are several times the RI-J tensor. Its peak is a multiple of
+the four-centre route's at the same size (measured below). Before the
+reference SCF it declares that peak from the shapes
+(`ferric_mp2::gradient_memory`, model in `crates/ferric-scf/theory.md`) and
+stops with the per-term breakdown when it exceeds `[memory] budget_gb`
+(Python `memory_budget_gb`; unset, the auto-detected budget). Raise the
+budget or set `jk = "exact"`.
 
 On the matched set the fitted reference moves the RI-MP2 total energy by
 less than the RI-MP2 fit error itself. Closed-shell n-alkanes against the

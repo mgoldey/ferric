@@ -100,15 +100,21 @@ pub(crate) fn optimize_result_certificate(
 ///   ROKS, the CLI's default; `"none"` for exact); `scf_ri_j_precision` /
 ///   `scf_ri_k_precision` as there.
 /// - `"rimp2"`: closed-shell RI-MP2 (analytic Z-vector gradient). Needs
-///   `auxbasis` (the RI basis, e.g. `"cc-pvdz-ri"`). `scf_jk` is `"exact"`
-///   (default) or `"rijk"` on `jk_auxbasis`, as in `run_rimp2`. The
+///   `auxbasis` (the RI basis, e.g. `"cc-pvdz-ri"`). `scf_jk` is `"rijk"`
+///   (default, on `jk_auxbasis`, unset the JK-fit set matched to the orbital
+///   basis: cc-pvtz-jkfit for cc-pVDZ/cc-pVTZ, def2-universal-jkfit for a
+///   basis without a matched set) or `"exact"`, resolved as the CLI resolves
+///   an omitted `[scf] jk`. The fitted gradient checks its peak memory
+///   against `memory_budget_gb` (unset: the auto-detected budget) before
+///   it allocates and raises when it does not fit. The
 ///   reference RHF is solved by the gradient driver at a fixed tight density
 ///   threshold (1e-9), so the `scf_max_iter` / `scf_energy_conv` /
 ///   `scf_density_conv` kwargs raise here. `frozen_core` and
 ///   `memory_budget_gb` as in `run_rimp2`.
 /// - `"oo-rimp2"`: closed-shell orbital-optimized RI-MP2 (zero-response
 ///   gradient at the converged orbitals). Needs `auxbasis`; `scf_jk` is
-///   `"exact"` (default) or `"rijk"` on `jk_auxbasis`, whose fitted J/K the
+///   `"rijk"` or `"exact"` with the default of `"rimp2"` (four-centre when
+///   `scf_eri` is set) on `jk_auxbasis`, whose fitted J/K the
 ///   orbital steps and the gradient reuse (RI-J stored in f64); `frozen_core`
 ///   must be 0; `oo_max_iter` / `oo_grad_conv` control the
 ///   orbital loop (defaults of `run_oo_rimp2`), the `scf_*` kwargs its
@@ -848,7 +854,7 @@ fn run_optimize_rimp2(
     opt_config: &OptimizeConfig,
     k: &OptimizeKwargs,
 ) -> PyResult<PyOptimizeResult> {
-    let scf_jk = mp2_gradient_scf_jk(k, "rimp2")?;
+    let scf_jk = mp2_gradient_scf_jk(k, basis_name, "rimp2")?;
     let mp2_config = RiMp2Config {
         frozen_core: k.frozen_core.unwrap_or(0),
         memory_budget_bytes: budget_bytes_from_gb(k.memory_budget_gb),
@@ -887,7 +893,7 @@ fn run_optimize_scs_mp2(
     opt_config: &OptimizeConfig,
     k: &OptimizeKwargs,
 ) -> PyResult<PyOptimizeResult> {
-    let scf_jk = mp2_gradient_scf_jk(k, "scs-mp2")?;
+    let scf_jk = mp2_gradient_scf_jk(k, basis_name, "scs-mp2")?;
     let d = ferric_mp2::scs::ScsMp2Config::default();
     let scs_config = ferric_mp2::scs::ScsMp2Config {
         c_os: k.c_os.unwrap_or(d.c_os),
@@ -916,19 +922,44 @@ fn run_optimize_scs_mp2(
     ))
 }
 
+/// `scf_jk` / `jk_auxbasis` of an MP2-family optimize on `basis_name`, by
+/// the CLI's rule for an omitted `[scf] jk` (`ferric-cli`
+/// `Config::omitted_scf_jk`): unset, RI-JK on the JK-fit set matched to the
+/// orbital basis (`ferric_scf::scf_jk::matched_jk_aux`), or four-centre when
+/// `scf_eri` (read only by the four-centre route) is set; `jk_auxbasis`
+/// without `scf_jk` raises, as `[scf] jk_aux` without `jk` does.
+fn optimize_scf_jk(k: &OptimizeKwargs, basis_name: &str) -> PyResult<ferric_scf::scf_jk::ScfJk> {
+    use ferric_scf::scf_jk::{matched_jk_aux, ScfJk, ScfJkKeys, ScfJkMode};
+    if k.scf_jk.is_none() {
+        if let Some(a) = k.jk_auxbasis {
+            return Err(value_error(format!(
+                "run_optimize: jk_auxbasis = \"{a}\" is only read with scf_jk = \"rijk\""
+            )));
+        }
+    }
+    let default = if k.scf_eri {
+        ScfJkMode::Exact
+    } else {
+        ScfJkMode::RiJk
+    };
+    let mut jk = ScfJk::resolve(k.scf_jk, k.jk_auxbasis, None, default, ScfJkKeys::PYTHON)
+        .map_err(|e| value_error(format!("run_optimize: {e}")))?;
+    if k.scf_jk.is_none() && jk.mode == ScfJkMode::RiJk {
+        jk.aux = Some(matched_jk_aux(basis_name).to_string());
+    }
+    Ok(jk)
+}
+
 /// `scf_jk` / `jk_auxbasis` of a relaxed-MP2-gradient optimize (`who` =
-/// "rimp2" / "scs-mp2"): four-centre (default) or RI-JK; anything else
-/// raises.
-fn mp2_gradient_scf_jk(k: &OptimizeKwargs, who: &str) -> PyResult<ferric_scf::scf_jk::ScfJk> {
-    use ferric_scf::scf_jk::{ScfJk, ScfJkKeys, ScfJkMode};
-    let jk = ScfJk::resolve(
-        k.scf_jk,
-        k.jk_auxbasis,
-        None,
-        ScfJkMode::Exact,
-        ScfJkKeys::PYTHON,
-    )
-    .map_err(|e| value_error(format!("run_optimize: {e}")))?;
+/// "rimp2" / "scs-mp2"): [`optimize_scf_jk`], four-centre or RI-JK; anything
+/// else raises.
+fn mp2_gradient_scf_jk(
+    k: &OptimizeKwargs,
+    basis_name: &str,
+    who: &str,
+) -> PyResult<ferric_scf::scf_jk::ScfJk> {
+    use ferric_scf::scf_jk::{ScfJk, ScfJkMode};
+    let jk = optimize_scf_jk(k, basis_name)?;
     match jk.mode {
         ScfJkMode::Exact => Ok(ferric_mp2::gradient::exact_scf_jk()),
         ScfJkMode::RiJk => Ok(ScfJk {
@@ -991,7 +1022,7 @@ fn run_optimize_oo_rimp2(
     opt_config: &OptimizeConfig,
     k: &OptimizeKwargs,
 ) -> PyResult<PyOptimizeResult> {
-    use ferric_scf::scf_jk::{ScfJk, ScfJkKeys, ScfJkMode, OO_BUILDS_EXACT_OR_RIJK};
+    use ferric_scf::scf_jk::{ScfJkKeys, OO_BUILDS_EXACT_OR_RIJK};
     if let Some(n) = k.frozen_core.filter(|&n| n > 0) {
         return Err(value_error(format!(
             "run_optimize: method=\"oo-rimp2\" needs frozen_core=0 (got {n}): the core-active \
@@ -999,18 +1030,9 @@ fn run_optimize_oo_rimp2(
              the derivative of the frozen-core energy"
         )));
     }
-    let jk = ScfJk::resolve(
-        k.scf_jk,
-        k.jk_auxbasis,
-        None,
-        ScfJkMode::Exact,
-        ScfJkKeys::PYTHON,
-    )
-    .and_then(|jk| {
-        jk.require_exact_or_rijk(ScfJkKeys::PYTHON, OO_BUILDS_EXACT_OR_RIJK)?;
-        Ok(jk)
-    })
-    .map_err(|e| value_error(format!("run_optimize: {e}")))?;
+    let jk = optimize_scf_jk(k, basis_name)?;
+    jk.require_exact_or_rijk(ScfJkKeys::PYTHON, OO_BUILDS_EXACT_OR_RIJK)
+        .map_err(|e| value_error(format!("run_optimize: {e}")))?;
     // The reference route is the surface's route: the driver's orbital steps
     // and gradient reuse an RI-JK reference's fits (`df_j_aux`/`df_k_aux`
     // are refused for this method, so `cfg` carries no other fit).

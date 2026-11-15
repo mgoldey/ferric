@@ -3078,9 +3078,11 @@ pub struct ScfCfg {
     /// `"rijcosx"` (RI-J + COSX K). The same rule as the Python `scf_jk`
     /// kwarg (`ferric_scf::scf_jk`). Omitted = [`Config::omitted_scf_jk`]:
     /// RI-JK on the JK-fit set matched to the orbital basis for a
-    /// closed-shell energy, four-centre for an open shell, a geometry task
-    /// or when a key only the four-centre route reads is set, RI-JK on
-    /// def2-universal-jkfit for rs-mp2-rpa. The Python `scf_jk` kwarg still defaults to "exact".
+    /// closed-shell energy or MP2 optimization, four-centre for an open
+    /// shell or when a key only the four-centre route reads is set, RI-JK on
+    /// def2-universal-jkfit for rs-mp2-rpa. Python's `run_optimize` resolves
+    /// an omitted `scf_jk` the same way; the energy entry points' `scf_jk`
+    /// still defaults to "exact".
     /// Exclusive with `df_j_aux` / `df_k_aux`; see [`ScfCfg::scf_jk_choice`].
     pub jk: Option<String>,
     /// JK-fitting basis for `jk = "rijk" | "rijcosx"` (bundled name, default
@@ -4136,13 +4138,14 @@ impl Config {
     /// What the reference SCF takes when `[scf] jk` is omitted
     /// ([`ScfCfg::scf_jk_choice`]): RI-JK for `rs-mp2-rpa` (on the shared
     /// default JK-fit set); four-centre for an open shell (no fitted
-    /// default has been measured there), for a task other than "energy" (the fitted MP2
-    /// gradient's peak memory is about twice the four-centre route's and
-    /// exceeded a 10 GB budget at octane / cc-pVTZ) and for an input that
-    /// sets a key only the four-centre route reads; otherwise RI-JK on the JK-fit set matched to the orbital
-    /// basis (`ferric_scf::scf_jk::matched_jk_aux`). The evidence for the
+    /// default has been measured there) and for an input that sets a key
+    /// only the four-centre route reads; otherwise RI-JK on the JK-fit set
+    /// matched to the orbital basis (`ferric_scf::scf_jk::matched_jk_aux`),
+    /// for an energy and for the MP2 optimizations alike (the fitted
+    /// gradient checks its peak memory against `[memory] budget_gb` before
+    /// it allocates, `ferric_mp2::gradient_memory`). The evidence for the
     /// fitted default is `crates/ferric-mp2/theory.md` §9.1.
-    pub fn omitted_scf_jk(&self, task: &str) -> OmittedJk {
+    pub fn omitted_scf_jk(&self) -> OmittedJk {
         use ferric_scf::scf_jk::{matched_jk_aux, ScfJkMode};
         let kind = self.method.kind.as_str();
         if kind == "rs-mp2-rpa" {
@@ -4154,12 +4157,6 @@ impl Config {
         }
         if self.molecule.multiplicity > 1 {
             return OmittedJk::exact("open-shell reference".into());
-        }
-        if task != "energy" {
-            return OmittedJk::exact(format!(
-                "task = \"{task}\": the fitted gradient's peak memory is about twice the \
-                 four-centre route's"
-            ));
         }
         if let Some(key) = self.scf.exact_route_key() {
             return OmittedJk::exact(format!("[scf] {key} reads the four-centre route"));
@@ -4176,7 +4173,7 @@ impl Config {
     /// [`Config::omitted_scf_jk`] for an omitted `jk`.
     pub fn scf_jk_choice(&self, task: &str) -> Result<Option<ferric_scf::scf_jk::ScfJk>, String> {
         self.scf
-            .scf_jk_choice(&self.method.kind, task, &self.omitted_scf_jk(task))
+            .scf_jk_choice(&self.method.kind, task, &self.omitted_scf_jk())
     }
 
     /// The Kohn-Sham functional the SCF of this run uses when it is one of
@@ -5699,9 +5696,23 @@ mod compat_guard_tests {
         assert_eq!(rs_default.mode, ScfJkMode::RiJk);
         assert_eq!(rs_default.aux.as_deref(), Some("def2-universal-jkfit"));
         assert_eq!(choice("rhf", "energy", ""), Ok(None));
-        // A geometry task keeps the four-centre reference.
-        let opt_default = choice("rimp2", "optimize", "").unwrap().unwrap();
-        assert_eq!(opt_default.mode, ScfJkMode::Exact);
+        // The MP2 optimizations take the same fitted default; an explicit
+        // "exact" still wins.
+        for kind in ["rimp2", "scs-mp2", "oo-rimp2"] {
+            let opt_default = choice(kind, "optimize", "").unwrap().unwrap();
+            assert_eq!(opt_default.mode, ScfJkMode::RiJk, "{kind}");
+            assert_eq!(
+                opt_default.aux.as_deref(),
+                Some("def2-universal-jkfit"),
+                "{kind}"
+            );
+            let exact = choice(kind, "optimize", "jk = \"exact\"\n")
+                .unwrap()
+                .unwrap();
+            assert_eq!(exact.mode, ScfJkMode::Exact, "{kind}");
+        }
+        // A task the rule does not govern is untouched.
+        assert_eq!(choice("rimp2", "frequencies", ""), Ok(None));
         // A key only the four-centre route reads keeps an omitted jk exact.
         for key in [
             "k_builder = \"link\"",

@@ -193,6 +193,22 @@ pub fn optimize_geometry_oo_rimp2(
     let out = ferric_scf::optimize::optimize_geometry_with_energy_gradient(mol, opt_config, |m| {
         let obs = ferric_integrals::basis_bridge::PreparedBasis::new(m, obs_basis)?;
         let dfbs = ferric_integrals::basis_bridge::PreparedBasis::new(m, aux_basis)?;
+        let route = ferric_scf::scf_jk::effective_jk(&rhf_config);
+        if let ("rijk", Some(aux)) = (route.mode, route.j_aux.as_deref()) {
+            // The orbital steps and the gradient keep the RI-J/RI-K tensors
+            // of the reference: check the peak before any integral.
+            let shape = crate::gradient_memory::FittedGradientShape::new(
+                m,
+                &obs,
+                &dfbs,
+                aux,
+                oo_config.frozen_core,
+            )?;
+            crate::gradient_memory::preflight_fitted_gradient(
+                shape,
+                ferric_core::memory::resolve_budget_bytes(oo_config.memory_budget_bytes),
+            )?;
+        }
         let bounds = ferric_scf::screening::SchwarzBounds::compute_for_screening(
             op,
             &obs,

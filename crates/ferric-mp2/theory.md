@@ -606,10 +606,13 @@ and its shift is below the RI-MP2 fit error where that was measured (0.28 of
 it at octane/cc-pVDZ, 0.71 at propane/cc-pVTZ, where def2-universal-jkfit
 exceeds it); the two have the same sign and add. An open shell keeps the
 four-centre reference when `jk` is omitted (no fitted default was measured
-for an open shell), as does a geometry task (the fitted
-gradient's peak RSS is 2.1 times the four-centre route's at dodecane/cc-pVDZ,
-8.3 against 4.0 GB, and 11.4 GB against a 10 GB budget at octane/cc-pVTZ) and
-an input that sets a key only the four-centre route reads.
+for an open shell), as does an input that sets a key only the four-centre
+route reads. A closed-shell `rimp2`, `scs-mp2` or `oo-rimp2` optimization
+takes the fitted default too. Its gradient's peak RSS is a multiple of the
+four-centre route's (2.1 times at dodecane/cc-pVDZ, 8.3 against 4.0 GB), so
+it declares that peak before the reference SCF and refuses a budget below
+it (`gradient_memory.rs`; the model is in `crates/ferric-scf/theory.md`,
+"Peak memory of the fitted MP2 gradient").
 
 ### 9.2 Spin-component-scaled (SCS-MP2) gradient
 

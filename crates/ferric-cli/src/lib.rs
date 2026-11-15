@@ -308,17 +308,17 @@ fn apply_scf_jk(cfg: &Config, task: &str, rhf_config: &mut RhfConfig) -> bool {
     if let Some(w) = jk.aux_warning(ferric_scf::scf_jk::ScfJkKeys::CLI) {
         eprintln!("warning: {w}");
     }
-    println!("{}", scf_jk_route_line(cfg, task, &jk));
+    println!("{}", scf_jk_route_line(cfg, &jk));
     jk.apply(rhf_config);
     jk.is_fitted()
 }
 
 /// The run-log line naming the reference SCF's J/K route: what `[scf] jk`
 /// resolved to and, when the key was omitted, the rule that chose it.
-fn scf_jk_route_line(cfg: &Config, task: &str, jk: &ferric_scf::scf_jk::ScfJk) -> String {
+fn scf_jk_route_line(cfg: &Config, jk: &ferric_scf::scf_jk::ScfJk) -> String {
     let source = match &cfg.scf.jk {
         Some(_) => "[scf] jk".to_string(),
-        None => format!("[scf] jk omitted: {}", cfg.omitted_scf_jk(task).why),
+        None => format!("[scf] jk omitted: {}", cfg.omitted_scf_jk().why),
     };
     format!("Reference SCF J/K: {} ({source})", jk.label())
 }

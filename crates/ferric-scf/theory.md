@@ -949,3 +949,53 @@ the un-hooked gradients do, and that $\mathbf{V}$ is exactly $\partial E_h /
 \partial \mathbf{D}$: a hook whose $\mathbf{V}$ is not the derivative of its
 $E_h$ converges to a non-stationary point of $E$, and no gradient of the
 reported energy follows from this formula.
+
+## Peak memory of the fitted MP2 gradient
+
+An MP2-family gradient on an RI-JK reference keeps the reference's fitted
+J and K for the Z-vector and differentiates the fitted two-electron energy
+of the relaxed density (`response_jk.rs`, `fitted_bilinear_gradient`).
+`ferric_mp2::gradient_memory` declares its peak from the shapes before any
+integral and refuses a budget below it. With $n$ basis functions, $N_J$
+JK-fitting and $N_R$ correlation auxiliary functions, $o$ correlated
+occupied and $v$ virtual orbitals, $w$ rayon workers, $s_J$ the widest
+JK-fitting shell and 8-byte elements, the declared peak is
+
+$$ M = M_0 + R + \max_k T_k, $$
+
+where $M_0$ is the process's resident set at entry and the terms resident
+from the J/K route set-up to the end of the gradient are
+
+$$ R = (ov)^2 + N_R\,ov + N_R^2 + t(N_J) + N_J\,\tfrac{n(n+1)}{2} + 2N_J^2 , $$
+
+the amplitudes, $B^P_{ia}$, the RI metric, the RI-J raw tensor $(P|\mu\nu)$
+in the tier it takes under the budget, the packed RI-K dressed band and the
+JK metrics. $t(N) = Nn^2$ in core, $Nn(n+1)/2 + b$ packed, $b$ spilled, with
+$b$ one $(N_b, n, n)$ block of at most a quarter of the budget and 512 MiB
+(plus one shell). The stage transients, of which only the largest is live
+at a time, are
+
+$$
+\begin{aligned}
+T_{\mathrm{MP2}} &= t(N_R) + (ov)^2 + w\,o v^2, \\
+T_{\mathrm{RI\text{-}K}} &= t(N_J), \\
+T_{\partial B} &= 2N_J \textstyle\sum_s m_s^2 + 5N_J^2 + 2b + w\,s_J n^2, \\
+T_{\mathrm{RI}} &= 3N_R\,ov + N_R^2 + w\,v\max(ov, n^2):
+\end{aligned}
+$$
+
+the MP2 intermediates (raw RI tensor, $(ia|jb)$, the per-worker $g_i$
+panel), the second raw JK tensor while RI-K dresses it, the fitted
+derivative's exchange intermediates $L^s$ and $\Gamma^s$ for every channel,
+its metric matrices, 3c block and per-worker weight slab, and the RI
+response's $x$, $y$, $c$, $\Gamma_{2c}$ and per-worker panels. The channel
+ranks are not known before the Z-vector; the bound uses the split
+$B(d_1, d_2) = Q(u) - Q(v)$. A positive-semidefinite density is one channel of
+rank $m \le n$; an indefinite one is the three channels $P$, $N$, $P + N$
+with $m_P + m_N \le n$, so $m_P^2 + m_N^2 + m_{P+N}^2 \le 2n^2$. With both
+$u$ and $v$ indefinite,
+
+$$ \textstyle\sum_s m_s^2 \le 4n^2 . $$
+
+The four-centre route holds none of the JK terms, which is why the fitted
+gradient's peak is a multiple of the four-centre one at the same size.

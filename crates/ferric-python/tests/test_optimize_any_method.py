@@ -73,7 +73,7 @@ def _cli_binary():
     return path if path.is_file() else None
 
 
-def _run_cli(tmp_path, xyz, mult, body):
+def _run_cli(tmp_path, xyz, mult, body, basis="sto-3g"):
     cli = _cli_binary()
     if cli is None:
         pytest.skip("no ferric-cli binary (build it, or set FERRIC_CLI)")
@@ -82,7 +82,7 @@ def _run_cli(tmp_path, xyz, mult, body):
     toml = tmp_path / "opt.toml"
     toml.write_text(
         f'[molecule]\nxyz = "{geom}"\nmultiplicity = {mult}\n\n'
-        f'[basis]\nname = "sto-3g"\n\n{body}'
+        f'[basis]\nname = "{basis}"\n\n{body}'
     )
     env = dict(os.environ)
     # Same rayon width as this process, so both run the same reduction order.
@@ -159,6 +159,36 @@ ROUTES = [
     pytest.param(
         WATER,
         1,
+        dict(method="rimp2", auxbasis="cc-pvdz-ri", scf_jk="exact"),
+        '[method]\nkind = "rimp2"\ntask = "optimize"\n\n'
+        '[mp2]\nauxbasis = "cc-pvdz-ri"\n\n[scf]\njk = "exact"\n',
+        id="rimp2-exact-water",
+    ),
+    pytest.param(
+        WATER,
+        1,
+        dict(
+            method="oo-rimp2",
+            auxbasis="cc-pvdz-ri",
+            scf_jk="exact",
+            oo_grad_conv=1e-7,
+            **SCF_CONV,
+        ),
+        '[method]\nkind = "oo-rimp2"\ntask = "optimize"\n\n'
+        f'[mp2]\nauxbasis = "cc-pvdz-ri"\noo_grad_conv = 1e-7\n\n{SCF_TOML}jk = "exact"\n',
+        id="oo-rimp2-exact-water",
+    ),
+    pytest.param(
+        WATER,
+        1,
+        dict(method="scs-mp2", auxbasis="cc-pvdz-ri", scf_jk="exact"),
+        '[method]\nkind = "scs-mp2"\ntask = "optimize"\n\n'
+        '[mp2]\nauxbasis = "cc-pvdz-ri"\n\n[scf]\njk = "exact"\n',
+        id="scs-mp2-exact-water",
+    ),
+    pytest.param(
+        WATER,
+        1,
         dict(method="rimp2", auxbasis="cc-pvdz-ri", scf_jk="rijk"),
         '[method]\nkind = "rimp2"\ntask = "optimize"\n\n'
         '[mp2]\nauxbasis = "cc-pvdz-ri"\n\n[scf]\njk = "rijk"\n',
@@ -214,6 +244,48 @@ def test_matches_the_cli(tmp_path, xyz, mult, kwargs, toml):
     assert _py_result(py) == cli
     assert len(py.energy_trace) >= py.steps + 1
     assert py.energy_trace[-1] == py.energy
+
+
+def test_omitted_scf_jk_is_the_clis_matched_rijk_route(tmp_path):
+    """An omitted `scf_jk` resolves as the CLI's omitted `[scf] jk`: RI-JK on
+    the JK-fit set matched to cc-pVDZ (cc-pvtz-jkfit). The default and the
+    explicit spelling are the same run (bitwise); the CLI's default prints
+    the same final energy and geometry (10 and 8 decimals, so the energies
+    agree to < 1e-10); "exact" is a different surface (fit error ~1e-5 Ha)."""
+    mol = ferric.Molecule.from_xyz_string(WATER)
+    kw = dict(method="rimp2", auxbasis="cc-pvdz-ri")
+    default = ferric.run_optimize(mol, "cc-pvdz", **kw)
+    explicit = ferric.run_optimize(
+        mol, "cc-pvdz", scf_jk="rijk", jk_auxbasis="cc-pvtz-jkfit", **kw
+    )
+    exact = ferric.run_optimize(mol, "cc-pvdz", scf_jk="exact", **kw)
+    assert default.converged and exact.converged
+    assert default.energy == explicit.energy
+    assert abs(default.energy - exact.energy) > 1e-7
+    labels = {a["name"]: a["detail"] for a in default.certificate["approximations"]}
+    assert labels["gradient"] == (
+        "analytic (Z-vector), RI-JK reference (cc-pvtz-jkfit)"
+    )
+    cli = _cli_result(
+        _run_cli(
+            tmp_path,
+            WATER,
+            1,
+            '[method]\nkind = "rimp2"\ntask = "optimize"\n\n'
+            '[mp2]\nauxbasis = "cc-pvdz-ri"\n',
+            basis="cc-pvdz",
+        )
+    )
+    assert _py_result(default) == cli
+
+
+def test_jk_auxbasis_without_scf_jk_is_refused():
+    """`jk_auxbasis` alone raises, as `[scf] jk_aux` without `jk` does."""
+    mol = ferric.Molecule.from_xyz_string(WATER)
+    with pytest.raises(ValueError, match="only read with scf_jk"):
+        ferric.run_optimize(
+            mol, "sto-3g", method="rimp2", auxbasis="cc-pvdz-ri", jk_auxbasis=JKFIT
+        )
 
 
 def test_certificates_name_the_route():

@@ -4465,13 +4465,19 @@ def run_optimize(
       RI-J/RI-K on def2-universal-jkfit for RKS, UKS and ROKS as in the CLI);
       `scf_ri_j_precision` (unset: "f64" on geometry tasks) / `scf_ri_k_precision`.
     - "rimp2": closed-shell RI-MP2 (analytic Z-vector gradient). Needs `auxbasis` (the
-      RI basis name, e.g. "cc-pvdz-ri"); `scf_jk` "exact" (default) or "rijk" on
-      `jk_auxbasis`; `frozen_core`, `memory_budget_gb` as in `run_rimp2`. The gradient
-      driver solves its reference RHF at density_conv 1e-9, so the `scf_*` convergence
-      kwargs raise.
+      RI basis name, e.g. "cc-pvdz-ri"); `scf_jk` "rijk" or "exact" on `jk_auxbasis`.
+      Unset, `scf_jk` resolves as the CLI's omitted `[scf] jk`: "rijk" on the JK-fit
+      set matched to the orbital basis (cc-pvtz-jkfit for cc-pVDZ / cc-pVTZ,
+      def2-universal-jkfit for a basis without one); `jk_auxbasis` without `scf_jk`
+      raises. The RI-JK gradient checks its declared peak memory against
+      `memory_budget_gb` (unset: the auto-detected budget) before the reference SCF
+      and raises with the breakdown when it does not fit. `frozen_core`,
+      `memory_budget_gb` as in `run_rimp2`. The gradient driver solves its reference
+      RHF at density_conv 1e-9, so the `scf_*` convergence kwargs raise.
     - "oo-rimp2": closed-shell OO-RI-MP2 (zero-response gradient at converged orbitals).
-      Needs `auxbasis`; `scf_jk` "exact" (default) or "rijk" on `jk_auxbasis`, whose
-      fitted J/K the orbital steps and the gradient reuse (RI-J stored in f64);
+      Needs `auxbasis`; `scf_jk` "rijk" or "exact" with the default of "rimp2"
+      (four-centre when `scf_eri` is set) on `jk_auxbasis`, whose fitted J/K the
+      orbital steps and the gradient reuse (RI-J stored in f64);
       `frozen_core` must be 0; `oo_max_iter` / `oo_grad_conv` control the orbital loop, the `scf_*` kwargs its starting RHF. An
       orbital optimization that does not converge at some geometry raises.
     - "scs-mp2": closed-shell SCS-MP2, E_HF + c_os E_os + c_ss E_ss (analytic Z-vector

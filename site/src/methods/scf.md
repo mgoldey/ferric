@@ -652,6 +652,7 @@ Butane, one thread; TZ is def2-TZVP (184 functions), QZ is def2-QZVP (528).
 | `k_builder = "link"` | LinK: pair-list-screened direct K | yes (== direct to 9e-12 Ha, butane/def2-SVP) | RHF, UHF, ROHF |
 | `df_j_aux` / `df_k_aux` | density-fitted J and K (RI-JK) | fitting error, grows with size (see *Kohn–Sham DFT* above) | all SCF types |
 | `k_builder = "cosx"` | seminumerical (COSX) K on a grid; with RI-J active this is RIJCOSX | grid-dependent error, see below | RHF/UHF/ROHF and their Kohn–Sham variants, Coulomb operator only; analytic gradient for all six (see below) |
+| `jk = "rijk"` | RI-J + RI-K for the reference SCF of an MP2-family kind, on `jk_aux` | fitting error, below the RI-MP2 fit error on the matched set (see *MP2*) | MP2-family kinds; the default with `jk` omitted for a closed-shell energy and for `rimp2` / `scs-mp2` / `oo-rimp2` optimizations, whose gradient checks its peak memory against `[memory] budget_gb` first |
 
 **Which route runs.** RHF, UHF and ROHF and their Kohn–Sham variants take
 J and K from one decision, made from `df_j_aux`, `df_k_aux`, `k_builder`, the

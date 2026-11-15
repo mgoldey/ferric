@@ -996,7 +996,6 @@ fn total_mp2_gradient_scaled_on(
     let ctx = ferric_core::parallel::ParallelContext::default();
     let obs = PreparedBasis::new(mol, obs_basis)?;
     let dfbs = PreparedBasis::new(mol, aux_basis)?;
-    let bounds = SchwarzBounds::compute(op, &obs)?;
     // Tight SCF via density_conv (reachable under the ΔP gate); energy_conv left
     // at the loose default — a tight 1e-10 would hang at MaxIter. See total_energy above.
     // A geometry task: an unset RI-J precision resolves to f64 (no effect on
@@ -1008,6 +1007,22 @@ fn total_mp2_gradient_scaled_on(
     }
     .for_geometry_task();
     scf_jk.apply(&mut rhf_cfg);
+    if let (ScfJkMode::RiJk, Some(aux)) = (scf_jk.mode, scf_jk.aux.as_deref()) {
+        // The fitted route keeps the reference's RI-J/RI-K tensors through
+        // the gradient: check the whole peak before any integral, and size
+        // the reference's tensors by the same budget.
+        let budget = ferric_core::memory::resolve_budget_bytes(mp2_config.memory_budget_bytes);
+        let shape = crate::gradient_memory::FittedGradientShape::new(
+            mol,
+            &obs,
+            &dfbs,
+            aux,
+            mp2_config.frozen_core,
+        )?;
+        crate::gradient_memory::preflight_fitted_gradient(shape, budget)?;
+        rhf_cfg.three_index_budget_bytes = mp2_config.memory_budget_bytes.unwrap_or(0);
+    }
+    let bounds = SchwarzBounds::compute(op, &obs)?;
     let rhf = solve_rhf_warm(&ctx, mol, &obs, op, &bounds, &rhf_cfg, warm)?;
     if !rhf.converged {
         return Err(FerricError::ScfConvergence {

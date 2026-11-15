@@ -48,6 +48,8 @@ pub mod f12;
 pub mod ff_polar;
 /// RI-MP2 nuclear gradient via Z-vector response.
 pub mod gradient;
+/// Memory pre-flight of the MP2 gradients on an RI-JK reference.
+pub mod gradient_memory;
 /// Laplace-transform SOS-MP2 (MO, AO, and AO-sparse formulations).
 pub mod laplace;
 /// Laplace SOS-MP2 `local`: Boys LMOs x VV-HV localized virtuals with orbital domains.

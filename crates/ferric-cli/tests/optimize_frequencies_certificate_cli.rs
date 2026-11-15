@@ -119,7 +119,12 @@ fn rimp2_optimize_records_its_gradient_and_caps_at_the_scf() {
     let c = record(&records, "certificate");
     assert_eq!(c["capability"], "optimize:rimp2");
     assert_eq!(c["grade"], "proven");
-    assert_eq!(approx(c, "gradient"), "analytic (Z-vector)");
+    // An omitted [scf] jk is the RI-JK reference on the matched set
+    // (def2-universal-jkfit for STO-3G).
+    assert_eq!(
+        approx(c, "gradient"),
+        "analytic (Z-vector), RI-JK reference (def2-universal-jkfit)"
+    );
 }
 
 /// `[optimize] coordinates` reaches every correlated optimization and the

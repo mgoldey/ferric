@@ -203,6 +203,84 @@ fn omitted_jk_runs_and_names_the_matched_rijk_reference() {
     }
 }
 
+/// The final energy printed by an optimization (10 decimals).
+fn final_energy(stdout: &str) -> f64 {
+    stdout
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("final E    = "))
+        .and_then(|r| r.split_whitespace().next())
+        .and_then(|v| v.parse().ok())
+        .unwrap_or_else(|| panic!("no final E line in {stdout}"))
+}
+
+/// The optimize certificate's `gradient` detail.
+fn optimize_gradient_label(records: &[serde_json::Value]) -> String {
+    record(records, "certificate")["approximations"]
+        .as_array()
+        .expect("approximations")
+        .iter()
+        .find(|a| a["name"] == "gradient")
+        .and_then(|a| a["detail"].as_str())
+        .expect("a gradient approximation")
+        .to_string()
+}
+
+/// A closed-shell rimp2 optimization with `jk` omitted runs the RI-JK
+/// reference on the matched set (cc-pvtz-jkfit for cc-pVDZ), as the energy
+/// does: the printout and the run log name the route, the certificate's
+/// gradient line names the fitted reference, and `jk = "exact"` still runs
+/// the four-centre one. A default that ran four-centre while printing RI-JK
+/// fails the energy assert (the fitted and exact surfaces differ by the fit
+/// error, ~1e-5 Ha here); one that ran RI-JK while the certificate said
+/// exact fails the label asserts.
+#[test]
+fn omitted_jk_optimize_takes_the_matched_rijk_reference_and_exact_wins() {
+    let body = "[molecule]\nxyz = \"testdata/molecules/water.xyz\"\n\n\
+                [basis]\nname = \"cc-pvdz\"\n\n[method]\nkind = \"rimp2\"\n\
+                task = \"optimize\"\n\n[mp2]\nauxbasis = \"cc-pvdz-ri\"\n";
+    let (out, omitted) = run("opt_omitted", body);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains(
+            "Reference SCF J/K: rijk(cc-pvtz-jkfit) ([scf] jk omitted: the closed-shell \
+             MP2-family default)"
+        ),
+        "{stdout}"
+    );
+    let c = &record(&omitted, "run_start")["config"];
+    assert_eq!(
+        (&c["scf_jk"], &c["jk_aux"]),
+        (&"rijk".into(), &"cc-pvtz-jkfit".into())
+    );
+    assert_eq!(
+        optimize_gradient_label(&omitted),
+        "analytic (Z-vector), RI-JK reference (cc-pvtz-jkfit)"
+    );
+    let exact_body = body.replace("[mp2]", "[scf]\njk = \"exact\"\n[mp2]");
+    let (out_exact, exact) = run("opt_exact", &exact_body);
+    assert!(
+        out_exact.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out_exact.stderr)
+    );
+    let stdout_exact = String::from_utf8_lossy(&out_exact.stdout);
+    assert!(
+        stdout_exact.contains("Reference SCF J/K: exact ([scf] jk)"),
+        "{stdout_exact}"
+    );
+    assert_eq!(optimize_gradient_label(&exact), "analytic (Z-vector)");
+    let (e_fit, e_exact) = (final_energy(&stdout), final_energy(&stdout_exact));
+    assert!(
+        (e_fit - e_exact).abs() > 1e-7,
+        "the omitted jk ran the four-centre surface: {e_fit} vs {e_exact}"
+    );
+}
+
 /// An omitted `jk` with a key only the four-centre route reads keeps the
 /// four-centre reference and says why.
 #[test]
