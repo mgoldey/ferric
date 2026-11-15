@@ -152,15 +152,15 @@ reference value for them.
 
 ## 27.2.6 Known limits (2026-11-15)
 
-- **Bare nuclear charges.** `esp_at_atoms`, `electric_field_at_atoms`,
-  `esp_at_points`, `becke_charges`, `lowdin_charges`, `mulliken_charges` and
-  `hirshfeld_charges` use the bare $Z_A$, where `dipole_moment` uses
-  $Z^{\mathrm{eff}}_A$. On an atom with an ECP, each charge is off by the
-  number of core electrons the ECP removed, and the ESP and field contain the
-  full nuclear charge without the core electrons that screen it. A ghost atom
-  contributes a nucleus it should not have. None of these functions checks for
-  either case. Until this is fixed, do not use them on ECP or ghost-atom
-  systems.
+- **Effective nuclear charges.** `esp_at_atoms`, `electric_field_at_atoms`,
+  `esp_at_points`, `becke_charges`, `lowdin_charges`, `mulliken_charges`,
+  `hirshfeld_charges` and `hirshfeld_i_charges` pair the density with
+  $Z^{\mathrm{eff}}_A$ (2.1): the valence charge on an ECP atom and zero on a
+  ghost, so $Z_A$ in (27.3)–(27.6) reads as $Z^{\mathrm{eff}}_A$. Checked
+  against PySCF RHF with ECPs on HI and CH3I / def2-SVP (max |d| 1.8e-9;
+  `crates/ferric-scf/tests/properties_effective_z.rs`, and through the Python
+  bindings, which apply the basis's ECP first). Hirshfeld on an ECP atom still
+  divides by a proatom built for the full $Z$; that pairing is unchecked.
 - CHELPG and RESP charges depend on molecular orientation (27.2.4).
 - The surface-ESP point set depends on orientation (27.2.2).
 
@@ -168,7 +168,7 @@ reference value for them.
 
 | Source | Used for |
 |---|---|
-| `crates/ferric-scf/src/properties.rs` | eqs. 27.1–27.5, 27.7, the lattice and restraint parameters, the bare-$Z$ finding |
+| `crates/ferric-scf/src/properties.rs` | eqs. 27.1–27.5, 27.7, the lattice and restraint parameters, the effective-$Z$ pairing |
 | `crates/ferric-scf/src/properties/hirshfeld_grid.rs` | eq. 27.6, the grid, the proatoms and the rescaling |
 | `crates/ferric-pcm/src/radii.rs` | the Bondi radii |
 | `crates/ferric-python/ferric.pyi` | the Python names and argument units |

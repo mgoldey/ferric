@@ -17,7 +17,7 @@ a degenerate frontier.
 
 | Entry point | Location |
 |---|---|
-| Rust | `ferric-scf/src/driver.rs::effective_level_shift`, `ferric-scf/src/mom.rs::mom_reorder`, `ferric-scf/src/smearing.rs::{fermi_dirac,solve_fermi_level}` |
+| Rust | `ferric-scf/src/driver.rs::{effective_level_shift,auto_level_shift_applies}`, `ferric-scf/src/mom.rs::mom_reorder`, `ferric-scf/src/smearing.rs::{fermi_dirac,solve_fermi_level}` |
 | CLI | the options above |
 | Python | `level_shift=`, `mom_after_iter=`, `smearing_sigma=` on the SCF entry points |
 
@@ -58,18 +58,20 @@ a degenerate frontier.
 
 The value used is not always the option's value:
 
-<!-- excerpt: ferric-scf/src/driver.rs::effective_level_shift -->
+<!-- excerpt: ferric-scf/src/driver.rs::auto_level_shift_applies -->
 ```rust
-if config.level_shift == 0.0 && crate::rohf::xc_is_metagga(config.xc.as_deref()) {
-        0.5
-    } else {
-        config.level_shift
-    }
+config.meta_gga_auto_level_shift
+        && config.level_shift == 0.0
+        && crate::rohf::xc_is_metagga(config.xc.as_deref())
 ```
+
+`effective_level_shift` returns 0.5 when this holds and `config.level_shift`
+otherwise.
 
 | Code | Meaning |
 |---|---|
 | `config.level_shift` | `[scf] level_shift`, default 0 |
+| `meta_gga_auto_level_shift` | `true` unless a level shift was written; the CLI and Python set it to `false` whenever `level_shift` is given, so an explicit 0 turns the automatic shift off |
 | `xc_is_metagga` | a meta-GGA functional (SCAN, r2SCAN, TPSS, ...) |
 | `0.5` | the automatic shift for meta-GGAs, whose $\tau$ term makes plain DIIS limit-cycle |
 
@@ -90,13 +92,18 @@ the occupations. In Python, a gradient run with `smearing_sigma` is a
 
 ## 8.2.4 Code issues found
 
-These are reported, not changed here.
+Three findings of the first draft are fixed (2026-11-15):
+
+| Finding | Fix |
+|---|---|
+| Under MOM, the RHF level shift projected onto the pre-MOM virtual block | `c_prev` is now cloned after `mom_reorder`, so the shift follows the occupation MOM kept; pinned on CO / 6-31G (MOM from iteration 1, shift 0.5) |
+| An explicit `level_shift = 0` could not turn off the meta-GGA shift | the `meta_gga_auto_level_shift` flag above |
+| UHF and ROHF ignored `[scf] diis` and `smearing_sigma` without a warning | the CLI refuses both keys on an open-shell run (`Config::validate_open_shell_scf_keys`); the Python open-shell entry points do not take them |
+
+Still open, reported, not changed here:
 
 | Finding | Evidence |
 |---|---|
-| Under MOM, the RHF level shift projects onto the pre-MOM virtual block. `c_prev` is cloned from the eigenvectors before `mom_reorder` permutes them, so if MOM keeps an orbital above the aufbau frontier occupied, that orbital is shifted as a virtual. | `solve_rhf` in `crates/ferric-scf/src/rhf.rs`: the shift reads `c_p.slice(s![.., nocc..])`, `c_prev = Some(c.clone())` precedes the `mom_reorder` call |
-| An explicit `level_shift = 0` cannot turn off the meta-GGA shift: 0 is the default and the sentinel | the excerpt above |
-| UHF and ROHF ignore `[scf] diis` (`diis_flavor`) and `smearing_sigma` without a warning | the open-shell solvers in `crates/ferric-scf/src/uhf.rs`, `crates/ferric-scf/src/rohf.rs` |
 | the `mom_after_iter` doc counts DIIS iterations; the code counts SCF iterations | the `iter > config.mom_after_iter` test in `solve_rhf` |
 | the ramp docs state one formula for all solvers | the table above |
 

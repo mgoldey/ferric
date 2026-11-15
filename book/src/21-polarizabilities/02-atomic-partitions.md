@@ -267,13 +267,11 @@ sum rule (21.6) the proof above.
   and (21.9) are read from the code loops and derived above, but no sympy
   script checks them, so they are displayed without a verified box. The
   `ferric-scf` `theory.md` has no section on them.
-- **Bare nuclear charges.** `becke_charges`, `lowdin_charges`,
-  `mulliken_charges` and `hirshfeld_charges` use $Z_A$ as an integer atomic
-  number, where `dipole_moment` uses the ECP-reduced $Z^{\rm eff}_A$. On an
-  atom with an ECP the charge is off by the number of core electrons removed.
-  A ghost atom adds a nucleus it should not have. Neither case is checked. Do
-  not use these rules on ECP or ghost-atom systems. This is the finding of
-  section 27.2.6.
+- **Effective nuclear charges.** The charge rules use $Z^{\mathrm{eff}}_A$
+  (2.1): the valence charge on an ECP atom and zero on a ghost (checked
+  against PySCF on HI and CH3I, section 27.2.6). Hirshfeld on an ECP atom
+  still divides by a proatom built for the full $Z$; that pairing is
+  unchecked.
 - **Closed shell.** Mulliken, Löwdin, CHELPG and RESP are documented as
   closed-shell only. `becke_charges` and `hirshfeld_charges` take any total
   density.
