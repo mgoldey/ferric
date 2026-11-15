@@ -631,8 +631,10 @@ fn oo_keys_match_the_library_closed_shell() {
             "sto-3g",
             "oo-rimp2",
             &format!(
-                "{TIGHT}[mp2]\noo_max_iter = 80\noo_grad_conv = 1e-7\noo_level_shift = 0.2\n\
-                 oo_diis_size = 4\n"
+                // `jk = "exact"`: the library side runs the four-centre reference,
+                // and an omitted `[scf] jk` would take RI-JK.
+                "{TIGHT}jk = \"exact\"\n[mp2]\noo_max_iter = 80\noo_grad_conv = 1e-7\n\
+                 oo_level_shift = 0.2\noo_diis_size = 4\n"
             ),
         ),
     );
