@@ -606,19 +606,24 @@ fn oo_rimp2_on_a_doublet_runs_unrestricted_orbital_optimization() {
 }
 
 /// What stays refused on the open-shell MP2 route, each for a stated
-/// reason: no unrestricted MP2 nuclear gradient (optimize), kappa-MP2 is
-/// closed-shell only, and kinds with no open-shell variant (mp3). Dropping
-/// any of these guards makes the corresponding run succeed.
+/// reason: no unrestricted OO-MP2 nuclear gradient (oo-rimp2 optimize),
+/// kappa-MP2 is closed-shell only, and kinds with no open-shell variant
+/// (mp3). Dropping any of these guards makes the corresponding run go
+/// ahead. Open-shell rimp2 optimize is NOT refused: it runs on the
+/// unrestricted RI-MP2 gradient (`open_shell_rimp2_optimize_runs`).
 #[test]
 fn open_shell_mp2_refuses_what_it_cannot_honour() {
     let water = "testdata/molecules/water.xyz";
     let mp2 = "[mp2]\nauxbasis = \"cc-pvdz-ri\"\n";
     assert_refused(
         &run_toml(
-            "rimp2_triplet_opt",
-            &body_at(water, 3, "sto-3g", "rimp2", "optimize", mp2),
+            "oo_rimp2_triplet_opt",
+            &body_at(water, 3, "sto-3g", "oo-rimp2", "optimize", mp2),
         ),
-        &["multiplicity = 3", "task = \"energy\" only"],
+        &[
+            "multiplicity = 3",
+            "no unrestricted OO-MP2 nuclear gradient",
+        ],
     );
     assert_refused(
         &run_toml(
@@ -640,6 +645,23 @@ fn open_shell_mp2_refuses_what_it_cannot_honour() {
             &body_at(water, 3, "sto-3g", "mp3", "energy", mp2),
         ),
         &["multiplicity = 3", "closed-shell"],
+    );
+}
+
+/// Open-shell rimp2 optimize takes the unrestricted RI-MP2 gradient on a
+/// UHF reference instead of being refused. Triplet water at STO-3G sits on
+/// a dissociating surface; the BFGS curvature guard is what lets it reach
+/// the gradient threshold.
+#[test]
+fn open_shell_rimp2_optimize_runs() {
+    let water = "testdata/molecules/water.xyz";
+    let mp2 = "[mp2]\nauxbasis = \"cc-pvdz-ri\"\n";
+    assert_runs(
+        &run_toml(
+            "rimp2_triplet_opt",
+            &body_at(water, 3, "sto-3g", "rimp2", "optimize", mp2),
+        ),
+        "open-shell rimp2 optimize on triplet water",
     );
 }
 
