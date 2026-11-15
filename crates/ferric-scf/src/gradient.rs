@@ -1851,6 +1851,54 @@ pub fn twoelectron_gradient_bilinear(
     })
 }
 
+/// Open-shell bilinear two-electron gradient: `Σ Γ(X, Y)_μνλσ · d(μν|λσ)/dR`
+/// for spin-density pairs `x = (X_α, X_β)`, `y = (Y_α, Y_β)`.
+///
+/// `Γ(X, Y)` is the polarization of the UHF two-particle density
+/// `gamma_uhf` (`Γ(D) = ½ D_T D_T − ½ Σ_σ D_σ D_σ` with the exchange
+/// pairing `(μλ)(νσ)`), with `T = α + β`:
+///
+/// ```text
+///   Γ(X, Y) = ¼ (X_T,μν Y_T,λσ + Y_T,μν X_T,λσ)
+///           − ¼ Σ_σ (X_σ,μλ Y_σ,νσ + Y_σ,μλ X_σ,νσ),
+/// ```
+///
+/// so `Γ(D, D)` is `gamma_uhf` and this reduces to
+/// [`twoelectron_gradient_uhf`] when `x == y`. For a closed-shell pair
+/// (`X_α = X_β = X/2`, the same for `Y`) it is
+/// [`twoelectron_gradient_bilinear`] of the totals. The unrestricted MP2
+/// gradient contracts `Γ(D_HF, D_HF + 2 P_corr)` per spin with it.
+pub fn twoelectron_gradient_bilinear_uhf(
+    prep: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    x: (&Array2<f64>, &Array2<f64>),
+    y: (&Array2<f64>, &Array2<f64>),
+) -> Result<Array2<f64>, FerricError> {
+    let (xa, xb) = x;
+    let (ya, yb) = y;
+    let xt = xa + xb;
+    let yt = ya + yb;
+    let mx = xt.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
+    let my = yt.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
+    // As in `twoelectron_gradient_bilinear`: screen on the largest element of
+    // any operand, totals and spin densities alike.
+    let ms = [xa, xb, ya, yb]
+        .iter()
+        .flat_map(|m| m.iter())
+        .map(|v| v.abs())
+        .fold(0.0f64, f64::max);
+    let max_d = mx.max(my).max(ms);
+    par_twoelectron_gradient(prep, op, bounds, max_d, |mu, nu, la, sg| {
+        0.25 * (xt[(mu, nu)] * yt[(la, sg)] + yt[(mu, nu)] * xt[(la, sg)])
+            - 0.25
+                * (xa[(mu, la)] * ya[(nu, sg)]
+                    + ya[(mu, la)] * xa[(nu, sg)]
+                    + xb[(mu, la)] * yb[(nu, sg)]
+                    + yb[(mu, la)] * xb[(nu, sg)])
+    })
+}
+
 /// Geometry and permutational-symmetry bundle for one shell quartet.
 ///
 /// Groups the per-quartet scalars that the 2e-gradient kernels need: the AO

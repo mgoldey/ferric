@@ -1,6 +1,6 @@
 //! Coulomb and exchange matrices of arbitrary symmetric densities, and the
 //! explicit derivative of the two-electron energy, on the route a
-//! closed-shell Hartree-Fock reference took.
+//! Hartree-Fock reference (RHF, or UHF for the open-shell derivative) took.
 //!
 //! A correlated gradient on top of an SCF (the RI-MP2 Z-vector and
 //! relaxed-density Lagrangian) needs `J[D]` and `K[D]` of densities that are
@@ -22,6 +22,12 @@
 //!   budget and storage precision; `DfK`'s density path takes indefinite
 //!   matrices), and the fitted bilinear derivative of
 //!   [`fitted_bilinear_gradient`].
+//!
+//! The open-shell bilinear derivative
+//! [`ResponseJk::two_electron_gradient_bilinear_open`] (the unrestricted
+//! RI-MP2 gradient) takes a density pair per argument and uses
+//! [`crate::gradient::twoelectron_gradient_bilinear_uhf`] or
+//! [`fitted_bilinear_gradient_open`] on the same two routes.
 //!
 //! Any other route (RI-J with four-centre or COSX exchange, range-separated
 //! exchange, J and K on different bases) is refused: nothing here builds its
@@ -266,6 +272,30 @@ impl<'a> ResponseJk<'a> {
             Some(f) => fitted_bilinear_gradient(mol, self.prep, &f.route, d1, d2),
         }
     }
+
+    /// `∂_R U(x, y)` at fixed spin densities `x = (X_α, X_β)`, `y = (Y_α,
+    /// Y_β)`, `(natoms, 3)`: the open-shell sibling of
+    /// [`Self::two_electron_gradient_bilinear`], the polarization of the
+    /// UHF two-electron energy `U(D, D) = ½ Σ D_T D_T (μν|λσ) − ½ Σ_σ Σ D_σ
+    /// D_σ (μλ|νσ)`. Four-centre:
+    /// [`crate::gradient::twoelectron_gradient_bilinear_uhf`] with operator
+    /// `op`; fitted: [`fitted_bilinear_gradient_open`] with the route's
+    /// operator. For `X_α = X_β = X/2` (and the same for `Y`) it is
+    /// [`Self::two_electron_gradient_bilinear`] of the totals.
+    pub fn two_electron_gradient_bilinear_open(
+        &self,
+        mol: &Molecule,
+        op: Operator,
+        x: (&Array2<f64>, &Array2<f64>),
+        y: (&Array2<f64>, &Array2<f64>),
+    ) -> Result<Array2<f64>, FerricError> {
+        match &self.fitted {
+            None => {
+                crate::gradient::twoelectron_gradient_bilinear_uhf(self.prep, op, self.bounds, x, y)
+            }
+            Some(f) => fitted_bilinear_gradient_open(mol, self.prep, &f.route, x, y),
+        }
+    }
 }
 
 fn fitted_jk(
@@ -364,6 +394,76 @@ pub fn fitted_bilinear_gradient(
         &dfbs,
         route.op,
         Some(&v),
+        &[],
+        route.budget_bytes,
+        route.ri_j_precision,
+    )?;
+    Ok(grad)
+}
+
+/// The aux basis of an RI-JK route (`j_aux == k_aux`, no range separation),
+/// or an error naming `who`.
+fn rijk_aux<'r>(route: &'r DfJkRoute, who: &str) -> Result<&'r String, FerricError> {
+    match (&route.j_aux, &route.k_aux, &route.rsh_k) {
+        (Some(j), Some(k), None) if j == k => Ok(j),
+        _ => Err(FerricError::General(format!(
+            "{who}: the route is not RI-J + RI-K on one basis"
+        ))),
+    }
+}
+
+/// `∂_R U(x, y)` at fixed spin densities under an RI-JK route, with `U` the
+/// polarization of the fitted UHF two-electron energy
+/// `Q(D) = ½ d_Tᵀ V⁻¹ d_T − ½ Σ_σ Q_K(D_σ)` (`d_T,P = (P|μν) (D_α + D_β)_μν`).
+///
+/// `U(x, y) = Q(u) − Q(v)` with `u_σ = (X_σ + Y_σ)/2`, `v_σ = (X_σ − Y_σ)/2`:
+/// the exchange channels of `u_α, u_β` (weight `−½`) and `v_α, v_β` (weight
+/// `+½`) share one three-centre pass with the Coulomb part of `u_T`; the
+/// Coulomb part of `v_T` is a second, J-only pass. The closed-shell
+/// [`fitted_bilinear_gradient`] is the case `X_α = X_β`, `Y_α = Y_β`
+/// (`2 · Q_K(D/2) · ½ = ¼ Q_K(D)`). Derivation: `crates/ferric-mp2/theory.md`,
+/// "Unrestricted RI-MP2 nuclear gradient".
+pub fn fitted_bilinear_gradient_open(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    route: &DfJkRoute,
+    x: (&Array2<f64>, &Array2<f64>),
+    y: (&Array2<f64>, &Array2<f64>),
+) -> Result<Array2<f64>, FerricError> {
+    let aux = rijk_aux(route, "fitted_bilinear_gradient_open")?;
+    let dfbs = crate::df_gradient::aux_basis(mol, aux)?;
+    let half = |a: &Array2<f64>, b: &Array2<f64>, s: f64| 0.5 * &(a + &(s * b));
+    let (ua, ub) = (half(x.0, y.0, 1.0), half(x.1, y.1, 1.0));
+    let (va, vb) = (half(x.0, y.0, -1.0), half(x.1, y.1, -1.0));
+    let mut owned = signed_channels(&ua, -0.5)?;
+    owned.extend(signed_channels(&ub, -0.5)?);
+    owned.extend(signed_channels(&va, 0.5)?);
+    owned.extend(signed_channels(&vb, 0.5)?);
+    let channels: Vec<DfKChannel<'_>> = owned
+        .iter()
+        .map(|(density, alpha)| DfKChannel {
+            density,
+            alpha: *alpha,
+        })
+        .collect();
+    let natoms = mol.atoms.len();
+    let (ut, vt) = (&ua + &ub, &va + &vb);
+    let mut grad = df_jk_gradient_at_precision(
+        natoms,
+        prep,
+        &dfbs,
+        route.op,
+        Some(&ut),
+        &channels,
+        route.budget_bytes,
+        route.ri_j_precision,
+    )?;
+    grad -= &df_jk_gradient_at_precision(
+        natoms,
+        prep,
+        &dfbs,
+        route.op,
+        Some(&vt),
         &[],
         route.budget_bytes,
         route.ri_j_precision,
@@ -512,5 +612,122 @@ mod tests {
             dj < 1e-2 && dk < 1e-2,
             "fit error too large: {dj:.3e} {dk:.3e}"
         );
+    }
+
+    const OH: &str = "2\nOH doublet\nO 0.0 0.0 0.0\nH 0.05 0.0 0.9697\n";
+
+    /// A converged UHF on OH/cc-pVDZ, four-centre or RI-JK.
+    fn setup_uhf(fit: bool) -> (Molecule, PreparedBasis, SchwarzBounds, ScfResult) {
+        let mol = Molecule::parse_xyz(OH, 0, 2).unwrap();
+        let prep =
+            PreparedBasis::new(&mol, &ferric_core::basis::bundled("cc-pvdz").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let mut cfg = RhfConfig {
+            density_conv: 1e-9,
+            ..Default::default()
+        }
+        .for_geometry_task();
+        if fit {
+            cfg.df_j_aux = Some("def2-universal-jkfit".into());
+            cfg.df_k_aux = Some("def2-universal-jkfit".into());
+        }
+        let ctx = ParallelContext::default();
+        let scf = crate::uhf::solve_uhf(&ctx, &mol, &prep, &bounds, &cfg).unwrap();
+        assert!(scf.converged);
+        (mol, prep, bounds, scf)
+    }
+
+    fn max_abs(a: &Array2<f64>) -> f64 {
+        a.iter().fold(0.0f64, |m, v| m.max(v.abs()))
+    }
+
+    /// Rounding bar of two evaluations of one gradient that associate their
+    /// sums differently: `2⁸ ε max|g|`. Each element is a sum over
+    /// `O(nao⁴)` (four-centre) or `O(naux nao²)` (fitted) terms of mixed sign;
+    /// the measured spread is at most `13 ε max|g|` (fitted route, spin-
+    /// symmetric operands; exact route 0.7 ε).
+    fn rounding_bar(g: &Array2<f64>) -> f64 {
+        256.0 * f64::EPSILON * max_abs(g)
+    }
+
+    /// Open-shell bilinear at spin-symmetric operands `(X/2, X/2)`, `(Y/2,
+    /// Y/2)` is the closed-shell bilinear of the totals, on both routes; the
+    /// test density is indefinite so the fitted route's signed channels are
+    /// exercised.
+    #[test]
+    fn open_bilinear_at_symmetric_spins_is_the_closed_bilinear() {
+        for fit in [false, true] {
+            let (mol, prep, bounds, scf) = setup(fit);
+            let ctx = ParallelContext::default();
+            let jk = ResponseJk::for_scf(&ctx, &mol, &prep, &bounds, &scf).unwrap();
+            let op = Operator::coulomb();
+            let hf = scf.density_r();
+            let d = indefinite(hf);
+            let closed = jk.two_electron_gradient_bilinear(&mol, op, hf, &d).unwrap();
+            let (h2, d2) = (0.5 * hf, 0.5 * &d);
+            let open = jk
+                .two_electron_gradient_bilinear_open(&mol, op, (&h2, &h2), (&d2, &d2))
+                .unwrap();
+            let diff = max_abs(&(&open - &closed));
+            eprintln!(
+                "symmetric spins fit={fit}: spread {:.1} eps max|g|",
+                diff / (f64::EPSILON * max_abs(&closed))
+            );
+            assert!(max_abs(&closed) > 1e-3, "non-trivial bilinear");
+            assert!(
+                diff <= rounding_bar(&closed),
+                "fit={fit}: |open - closed| = {diff:.3e}, bar {:.3e}",
+                rounding_bar(&closed)
+            );
+        }
+    }
+
+    /// At `x = y = (D_α, D_β)` of a converged UHF the open bilinear is the
+    /// UHF two-electron gradient: `twoelectron_gradient_uhf` (four-centre),
+    /// the routed RI-JK gradient of the SCF (fitted).
+    #[test]
+    fn open_bilinear_at_the_uhf_densities_is_the_uhf_two_electron_gradient() {
+        for fit in [false, true] {
+            let (mol, prep, bounds, scf) = setup_uhf(fit);
+            let ctx = ParallelContext::default();
+            let jk = ResponseJk::for_scf(&ctx, &mol, &prep, &bounds, &scf).unwrap();
+            let op = Operator::coulomb();
+            let da = &scf.density_alpha;
+            let db = scf.density_beta.as_ref().unwrap();
+            let open = jk
+                .two_electron_gradient_bilinear_open(&mol, op, (da, db), (da, db))
+                .unwrap();
+            let reference = match jk.route() {
+                None => {
+                    let dt = da + db;
+                    crate::gradient::twoelectron_gradient_uhf(&prep, op, &bounds, &dt, da, db)
+                        .unwrap()
+                }
+                Some(route) => routed_two_electron_gradient(
+                    &mol,
+                    &prep,
+                    op,
+                    &bounds,
+                    TwoElectronDensity::Open {
+                        alpha: da,
+                        beta: db,
+                    },
+                    route,
+                    ExchangeMix::hartree_fock(),
+                )
+                .unwrap(),
+            };
+            let diff = max_abs(&(&open - &reference));
+            eprintln!(
+                "uhf densities fit={fit}: spread {:.1} eps max|g|",
+                diff / (f64::EPSILON * max_abs(&reference))
+            );
+            assert!(
+                diff <= rounding_bar(&reference),
+                "fit={fit}: |open - uhf| = {diff:.3e}, bar {:.3e}",
+                rounding_bar(&reference)
+            );
+        }
     }
 }

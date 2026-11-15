@@ -6974,6 +6974,8 @@ fn task_reference_certificate(
     let spin = match method {
         "uhf" => ferric_scf::Spin::Unrestricted,
         "rohf" => ferric_scf::Spin::RestrictedOpen,
+        // An open-shell correlated optimization (rimp2) runs on a UHF.
+        _ if mol.multiplicity > 1 => ferric_scf::Spin::Unrestricted,
         _ => ferric_scf::Spin::Restricted,
     };
     let (scf, used) =
@@ -7219,67 +7221,17 @@ fn run_optimize(
                 &gradient.certificate_label_with(fallback.as_deref()),
             );
         }
-        "rimp2" => {
-            let aux_name = cfg
-                .mp2
-                .auxbasis
-                .as_deref()
-                .unwrap_or(config::DEFAULT_CORRELATION_AUX);
-            let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
-                eprintln!("error: {e}");
-                std::process::exit(1);
-            });
-            let mp2_config = RiMp2Config {
-                frozen_core: cfg.mp2.frozen_core.resolve(mol),
-                memory_budget_bytes: budget_bytes,
-                ..Default::default()
-            };
-            let scf_jk = rimp2_gradient_scf_jk("rimp2", rhf_config).unwrap_or_else(|e| {
-                eprintln!("error: {e}");
-                std::process::exit(1);
-            });
-            let opt_result = ferric_mp2::optimize::optimize_geometry_rimp2_on(
-                mol,
-                bs,
-                &aux_bs,
-                op,
-                &mp2_config,
-                &opt_config,
-                rhf_config.external_potential.as_ref(),
-                &scf_jk,
-            )
-            .unwrap_or_else(|e| {
-                eprintln!("error during RI-MP2 optimization: {e}");
-                std::process::exit(1);
-            });
-            println!("\nFinal Optimized Geometry (Bohr):");
-            for (i, atom) in opt_result.mol.atoms.iter().enumerate() {
-                println!(
-                    "  {:2} {:2} {:12.8} {:12.8} {:12.8}",
-                    i, atom.symbol, atom.x, atom.y, atom.zpos
-                );
-            }
-            println!("\nRI-MP2 Optimization Result:");
-            println!("  converged  = {}", opt_result.converged);
-            println!("  steps      = {}", opt_result.steps);
-            println!(
-                "  final E    = {:.10} Hartree (RHF + MP2)",
-                opt_result.energy
-            );
-            certify_optimization(
-                method,
-                cfg,
-                ctx,
-                bs,
-                op,
-                rhf_config,
-                &opt_config,
-                &opt_result.mol,
-                None,
-                (opt_result.converged, opt_result.steps, opt_result.energy),
-                &ferric_mp2::optimize::rimp2_gradient_label(&scf_jk),
-            );
-        }
+        "rimp2" => run_optimize_rimp2(
+            method,
+            cfg,
+            ctx,
+            mol,
+            bs,
+            op,
+            rhf_config,
+            &opt_config,
+            budget_bytes,
+        ),
         "uhf" => {
             // UKS when `rhf_config.xc` is set (`kind = "uhf"` + functional, or
             // `ksdft` on an open-shell molecule): `optimize_geometry_uhf_with_scf_correction` then
@@ -7429,6 +7381,96 @@ fn run_optimize(
             std::process::exit(1);
         }
     }
+}
+
+/// `task = "optimize"`, `kind = "rimp2"`: the RI-MP2 surface on an RHF
+/// reference, or the unrestricted RI-MP2 surface on a UHF reference for an
+/// open-shell molecule (`ferric_mp2::optimize::optimize_geometry_u_rimp2_on`),
+/// with the reference on `[scf] jk` (`exact` or `rijk`).
+#[allow(clippy::too_many_arguments)]
+fn run_optimize_rimp2(
+    method: &str,
+    cfg: &Config,
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    bs: &BasisSet,
+    op: Operator,
+    rhf_config: &RhfConfig,
+    opt_config: &OptimizeConfig,
+    budget_bytes: Option<usize>,
+) {
+    let aux_name = cfg
+        .mp2
+        .auxbasis
+        .as_deref()
+        .unwrap_or(config::DEFAULT_CORRELATION_AUX);
+    let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    let mp2_config = RiMp2Config {
+        frozen_core: cfg.mp2.frozen_core.resolve(mol),
+        memory_budget_bytes: budget_bytes,
+        ..Default::default()
+    };
+    let scf_jk = rimp2_gradient_scf_jk("rimp2", rhf_config).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    // An open shell (validated by `Config::validate_multiplicity`)
+    // runs on a UHF reference with the unrestricted gradient.
+    let open_shell = mol.multiplicity > 1;
+    let driver = if open_shell {
+        ferric_mp2::optimize::optimize_geometry_u_rimp2_on
+    } else {
+        ferric_mp2::optimize::optimize_geometry_rimp2_on
+    };
+    let opt_result = driver(
+        mol,
+        bs,
+        &aux_bs,
+        op,
+        &mp2_config,
+        opt_config,
+        rhf_config.external_potential.as_ref(),
+        &scf_jk,
+    )
+    .unwrap_or_else(|e| {
+        eprintln!("error during RI-MP2 optimization: {e}");
+        std::process::exit(1);
+    });
+    println!("\nFinal Optimized Geometry (Bohr):");
+    for (i, atom) in opt_result.mol.atoms.iter().enumerate() {
+        println!(
+            "  {:2} {:2} {:12.8} {:12.8} {:12.8}",
+            i, atom.symbol, atom.x, atom.y, atom.zpos
+        );
+    }
+    println!("\nRI-MP2 Optimization Result:");
+    println!("  converged  = {}", opt_result.converged);
+    println!("  steps      = {}", opt_result.steps);
+    println!(
+        "  final E    = {:.10} Hartree ({})",
+        opt_result.energy,
+        if open_shell {
+            "UHF + UMP2"
+        } else {
+            "RHF + MP2"
+        }
+    );
+    certify_optimization(
+        method,
+        cfg,
+        ctx,
+        bs,
+        op,
+        rhf_config,
+        opt_config,
+        &opt_result.mol,
+        None,
+        (opt_result.converged, opt_result.steps, opt_result.energy),
+        &ferric_mp2::optimize::rimp2_gradient_label(&scf_jk),
+    );
 }
 
 /// `method.kind = "scs-mp2"`, `task = "optimize"`: closed-shell SCS-MP2

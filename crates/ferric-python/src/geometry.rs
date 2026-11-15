@@ -99,7 +99,10 @@ pub(crate) fn optimize_result_certificate(
 ///   for HF; with `xc`, RI-J and RI-K on def2-universal-jkfit for RKS, UKS and
 ///   ROKS, the CLI's default; `"none"` for exact); `scf_ri_j_precision` /
 ///   `scf_ri_k_precision` as there.
-/// - `"rimp2"`: closed-shell RI-MP2 (analytic Z-vector gradient). Needs
+/// - `"rimp2"`: RI-MP2 (analytic Z-vector gradient): RHF + RI-MP2 on a
+///   singlet, UHF + unrestricted RI-MP2 on an open-shell molecule or with
+///   `reference="uhf"` (`reference="rohf"` raises: the gradient needs a UHF
+///   reference). Needs
 ///   `auxbasis` (the RI basis, e.g. `"cc-pvdz-ri"`). `scf_jk` is `"rijk"`
 ///   (default, on `jk_auxbasis`, unset the JK-fit set matched to the orbital
 ///   basis: cc-pvtz-jkfit for cc-pVDZ/cc-pVTZ, def2-universal-jkfit for a
@@ -260,7 +263,9 @@ pub(crate) fn run_optimize(
     }
     match method {
         OptimizeMethod::Scf => run_optimize_scf(py, &emol, basis_name, &cfg, &opt_config, spin, &k),
-        OptimizeMethod::RiMp2 => run_optimize_rimp2(py, &emol, basis_name, &cfg, &opt_config, &k),
+        OptimizeMethod::RiMp2 => {
+            run_optimize_rimp2(py, &emol, basis_name, &cfg, &opt_config, &k, spin)
+        }
         OptimizeMethod::OoRiMp2 => {
             run_optimize_oo_rimp2(py, &emol, basis_name, &cfg, &opt_config, &k)
         }
@@ -480,10 +485,17 @@ fn refuse_unread_optimize_kwargs(
     if method != OptimizeMethod::ScsMp2 {
         unread(&scs_only, who)?;
     }
-    if spin != ferric_scf::Spin::Restricted {
+    if method == OptimizeMethod::RiMp2 && spin == ferric_scf::Spin::RestrictedOpen {
         return Err(value_error(format!(
-            "run_optimize: method=\"{who}\" is closed-shell only (there is no unrestricted MP2 \
-             nuclear gradient); use reference=\"rhf\" on a singlet"
+            "run_optimize: method=\"rimp2\": {}",
+            ferric_mp2::u_rimp2_gradient::ROHF_REFUSAL
+        )));
+    }
+    let open_ok = method == OptimizeMethod::RiMp2 && spin == ferric_scf::Spin::Unrestricted;
+    if spin != ferric_scf::Spin::Restricted && !open_ok {
+        return Err(value_error(format!(
+            "run_optimize: method=\"{who}\" is closed-shell only (the unrestricted MP2 \
+             nuclear gradient is method=\"rimp2\"); use reference=\"rhf\" on a singlet"
         )));
     }
     unread(&scf_only, who)?;
@@ -895,9 +907,9 @@ fn correlated_optimize_certificate(
     (converged, steps, energy): (bool, usize, f64),
     opt_config: &OptimizeConfig,
     gradient: &str,
+    spin: ferric_scf::Spin,
 ) -> ferric_core::certificate::Certificate {
-    let (_, reference) =
-        task_reference_certificate(final_mol, basis_name, ref_cfg, ferric_scf::Spin::Restricted);
+    let (_, reference) = task_reference_certificate(final_mol, basis_name, ref_cfg, spin);
     match reference {
         Ok(reference) => ferric_scf::certificate::optimize_certificate(
             kind, &reference, converged, steps, energy, opt_config, gradient,
@@ -917,6 +929,7 @@ fn run_optimize_rimp2(
     cfg: &RhfConfig,
     opt_config: &OptimizeConfig,
     k: &OptimizeKwargs,
+    spin: ferric_scf::Spin,
 ) -> PyResult<PyOptimizeResult> {
     let scf_jk = mp2_gradient_scf_jk(k, basis_name, "rimp2")?;
     let mp2_config = RiMp2Config {
@@ -927,9 +940,16 @@ fn run_optimize_rimp2(
     let obs = basis::bundled(basis_name).map_err(make_err)?;
     let aux = basis::bundled(k.auxbasis.unwrap_or_default()).map_err(make_err)?;
     let ext = cfg.external_potential.clone();
+    // UHF reference (`refuse_unread_optimize_kwargs` admitted only RHF/UHF):
+    // the unrestricted gradient.
+    let driver = if spin == ferric_scf::Spin::Unrestricted {
+        ferric_mp2::optimize::optimize_geometry_u_rimp2_on
+    } else {
+        ferric_mp2::optimize::optimize_geometry_rimp2_on
+    };
     let r = py
         .allow_threads(|| {
-            ferric_mp2::optimize::optimize_geometry_rimp2_on(
+            driver(
                 emol,
                 &obs,
                 &aux,
@@ -942,7 +962,7 @@ fn run_optimize_rimp2(
         })
         .map_err(make_err)?;
     Ok(mp2_gradient_optimize_result(
-        "rimp2", r, basis_name, ext, &scf_jk, opt_config,
+        "rimp2", r, basis_name, ext, &scf_jk, opt_config, spin,
     ))
 }
 
@@ -1095,7 +1115,13 @@ fn run_optimize_scs_mp2(
         })
         .map_err(make_err)?;
     Ok(mp2_gradient_optimize_result(
-        "scs-mp2", r, basis_name, ext, &scf_jk, opt_config,
+        "scs-mp2",
+        r,
+        basis_name,
+        ext,
+        &scf_jk,
+        opt_config,
+        ferric_scf::Spin::Restricted,
     ))
 }
 
@@ -1162,6 +1188,7 @@ fn mp2_gradient_optimize_result(
     ext: Option<ferric_core::external_potential::ExternalPotential>,
     scf_jk: &ferric_scf::scf_jk::ScfJk,
     opt_config: &OptimizeConfig,
+    spin: ferric_scf::Spin,
 ) -> PyOptimizeResult {
     let mut ref_cfg = RhfConfig {
         density_conv: 1e-9,
@@ -1178,6 +1205,7 @@ fn mp2_gradient_optimize_result(
         (r.converged, r.steps, r.energy),
         opt_config,
         &ferric_mp2::optimize::rimp2_gradient_label(scf_jk),
+        spin,
     );
     PyOptimizeResult {
         energy: r.energy,
@@ -1247,6 +1275,7 @@ fn run_optimize_oo_rimp2(
         (r.converged, r.steps, r.energy),
         opt_config,
         &ferric_mp2::optimize::oo_rimp2_gradient_label(cfg),
+        ferric_scf::Spin::Restricted,
     );
     Ok(PyOptimizeResult {
         energy: r.energy,

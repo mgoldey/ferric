@@ -19,13 +19,31 @@ for an open shell, below) with 3-centre/2-centre density fitting. Canonical (non
 for cross-validation, not production.
 
 **Open shells.** `rimp2` and `oo-rimp2` accept an open-shell molecule
-(`multiplicity > 1`) from the CLI, for `task = "energy"` only: they solve the
-same plain UHF that `kind = "uhf"` runs, then take unrestricted RI-MP2 (UMP2,
-as PySCF `mp.MP2(uhf)`) or unrestricted OO-RI-MP2. There is no unrestricted
-MP2 nuclear gradient, and `[mp2] kappa` is refused on an open shell. From
-Python, `run_rimp2` does the same (UHF + UMP2 when `multiplicity > 1`;
+(`multiplicity > 1`) from the CLI for `task = "energy"`, and `rimp2` also for
+`task = "optimize"`: they solve the same plain UHF that `kind = "uhf"` runs,
+then take unrestricted RI-MP2 (UMP2, as PySCF `mp.MP2(uhf)`) or unrestricted
+OO-RI-MP2. `[mp2] kappa` is refused on an open shell. From Python,
+`run_rimp2` does the same (UHF + UMP2 when `multiplicity > 1`;
 `result.reference` says which, and `kappa` raises); `run_oo_rimp2` is closed
-shell only. Both unrestricted methods are validated on the CH3 doublet at
+shell only.
+
+**Open-shell geometry optimization.** `kind = "rimp2"`, `task = "optimize"` on
+an open-shell molecule, and Python `run_optimize(method="rimp2")` on one (or
+with `reference="uhf"`), optimize on the UHF + U-RI-MP2 surface with an
+analytic gradient: the per-spin Lagrangian of the closed-shell gradient, a
+coupled UHF Z-vector and one RI-response channel per spin (derivation in
+`crates/ferric-mp2/theory.md` §15). Frozen core applies to both spins. An
+omitted `[scf] jk` gives the RI-JK reference on the matched JK-fit set, as
+for the closed-shell optimization, and the fitted gradient checks its peak
+memory first; `jk = "exact"` gives the four-centre reference. A ROHF
+reference is refused (`reference="rohf"` in Python): its gradient needs the
+ROHF Z-vector and the semicanonicalization response, which are not built.
+`oo-rimp2` and `scs-mp2` optimize closed shells only, and the open-shell
+`rimp2` has no analytic Hessian (`task = "frequencies"` is closed shell). The
+gradient matches a finite difference of the U-RI-MP2 energy on OH, NH2 and O2
+in 6-31G on both routes, and a closed-shell molecule written as a UHF gives
+the restricted gradient (see the [anchors](../reference/validation.md#anchors));
+PySCF has no density-fitted UMP2 gradient to compare against. Both unrestricted methods are validated on the CH3 doublet at
 cc-pVDZ: U-RI-MP2 against ORCA `RI-MP2 NoRI`, U-OO-RI-MP2 against an
 independent numpy OO-RI-MP2 (see the
 [anchors](../reference/validation.md#anchors)).
@@ -46,11 +64,12 @@ basis. It is never the MP2 `auxbasis`, because an MP2-fit set used for K costs
 mHa.
 
 In the CLI an omitted `[scf] jk` gives a closed-shell energy of these kinds,
-and a closed-shell `rimp2`, `scs-mp2` or `oo-rimp2` optimization,
+a closed-shell `rimp2`, `scs-mp2` or `oo-rimp2` optimization, and an
+open-shell `rimp2` optimization,
 `"rijk"` on the JK-fit set matched to the orbital basis: `cc-pvtz-jkfit` for
 cc-pVDZ and cc-pVTZ, `cc-pvqz-jkfit` for cc-pVQZ, `aug-cc-pvXz-jkfit` for
 aug-cc-pVXZ, `def2-universal-jkfit` for every other basis. The reference stays
-four-centre for an open-shell molecule and for an input that sets a key only
+four-centre for an open-shell energy and for an input that sets a key only
 the four-centre route reads (`k_builder`, `eri`, `screening`,
 `df_increments`, `df_guess = true`, `df_guess_aux`). `rs-mp2-rpa` takes
 `"rijk"` on `def2-universal-jkfit`. The run prints `Reference SCF J/K:` with

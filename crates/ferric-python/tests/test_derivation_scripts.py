@@ -381,6 +381,32 @@ CASES = [
         ],
     ),
     (
+        "u_rimp2_gradient_sympy.py",
+        5,
+        [
+            (
+                "AB_IN_X_BETA = 1.0  # alpha-beta weight in x^beta",
+                "AB_IN_X_BETA = 0.0  # alpha-beta weight in x^beta",
+                "FAIL S",
+            ),
+            (
+                "z[1] = 1.0 * z[1]  # beta Z-vector",
+                "z[1] = 0.0 * z[1]  # beta Z-vector",
+                "FAIL G",
+            ),
+            (
+                "coupled = [ja + jb - ka, ja + jb - kb]  # CPHF opposite-spin Coulomb",
+                "coupled = [ja - ka, jb - kb]  # CPHF opposite-spin Coulomb",
+                "FAIL G",
+            ),
+            (
+                "RI_SPIN_WEIGHT = 1.0  # RI response weight per spin",
+                "RI_SPIN_WEIGHT = 2.0  # RI response weight per spin",
+                "FAIL G",
+            ),
+        ],
+    ),
+    (
         "mp2_gradient_sympy.py",
         60,
         [

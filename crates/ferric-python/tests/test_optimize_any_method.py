@@ -3,6 +3,7 @@
 Every route calls the library driver the CLI's `task = "optimize"` calls for
 the same `method.kind` (`optimize_geometry{,_uhf,_rohf}_with_scf_correction`,
 `ferric_mp2::optimize::optimize_geometry_rimp2_on`,
+`ferric_mp2::optimize::optimize_geometry_u_rimp2_on` (open shell),
 `ferric_mp2::optimize::optimize_geometry_scs_mp2_on`,
 `ferric_mp2::optimize::optimize_geometry_oo_rimp2`), so on the same molecule
 and settings the two surfaces run the same arithmetic. The CLI prints the
@@ -187,6 +188,22 @@ ROUTES = [
         id="scs-mp2-exact-water",
     ),
     pytest.param(
+        NH2,
+        2,
+        dict(method="rimp2", auxbasis="cc-pvdz-ri"),
+        '[method]\nkind = "rimp2"\ntask = "optimize"\n\n'
+        '[mp2]\nauxbasis = "cc-pvdz-ri"\n',
+        id="u-rimp2-nh2",
+    ),
+    pytest.param(
+        NH2,
+        2,
+        dict(method="rimp2", auxbasis="cc-pvdz-ri", scf_jk="exact"),
+        '[method]\nkind = "rimp2"\ntask = "optimize"\n\n'
+        '[mp2]\nauxbasis = "cc-pvdz-ri"\n\n[scf]\njk = "exact"\n',
+        id="u-rimp2-exact-nh2",
+    ),
+    pytest.param(
         WATER,
         1,
         dict(method="rimp2", auxbasis="cc-pvdz-ri", scf_jk="rijk"),
@@ -345,7 +362,11 @@ AUX = {"auxbasis": "cc-pvdz-ri"}
         ),
         (WATER_MOL, dict(method="rimp2", scf_jk="rijcosx", **AUX), "rijcosx"),
         (WATER_MOL, dict(method="rimp2", oo_grad_conv=1e-6, **AUX), "oo_grad_conv"),
-        (NH2_MOL, dict(method="rimp2", **AUX), "closed-shell only"),
+        (
+            NH2_MOL,
+            dict(method="rimp2", reference="rohf", **AUX),
+            "needs a UHF reference",
+        ),
         (WATER_MOL, dict(method="oo-rimp2", frozen_core=1, **AUX), "frozen_core=0"),
         (
             WATER_MOL,

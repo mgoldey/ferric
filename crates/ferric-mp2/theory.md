@@ -855,3 +855,95 @@ brute-force spin-orbital energy to $5\times10^{-12}$ for both spins
 $g = g^\alpha + g^\beta$) is the optimizer of **[gradient O]**. The integral
 term in the proof is the derivation above, not a transcription of
 `compute_u_mp2_orbital_gradient`'s loop.
+
+## 15. Unrestricted RI-MP2 nuclear gradient
+
+`u_rimp2_gradient.rs` `u_rimp2_gradient_analytical`; UHF reference, both J/K
+routes of §9.1 (four-centre and RI-JK on one auxiliary basis). Proof:
+`scripts/u_rimp2_gradient_sympy.py` (parts S, G, C below).
+
+**Energy and its weights.** With $B^{\sigma}_{P,ia}$ the dressed factors of
+spin $\sigma$ ($i,a$ of that spin; capital indices for $\beta$),
+$t^{\alpha\alpha}_{ijab} = [(ia|jb) - (ib|ja)]/D_{ijab}$ and
+$t^{\alpha\beta}_{iJaB} = (ia|JB)/D_{iJaB}$,
+
+$$ E^{(2)} = \tfrac14\sum |\langle ij\Vert ab\rangle|^2/D \,(\alpha\alpha)
+ + \tfrac14\sum |\langle IJ\Vert AB\rangle|^2/D \,(\beta\beta)
+ + \sum_{iJaB} (ia|JB)\,t^{\alpha\beta}_{iJaB}, $$
+
+and at fixed orbital energies $\partial E^{(2)}/\partial B^{\sigma} = 2x^{\sigma}$ with
+
+$$ x^{\alpha}_{P,ia} = \sum_{jb} t^{\alpha\alpha}_{ijab}B^{\alpha}_{P,jb} + \sum_{JB} t^{\alpha\beta}_{iJaB}B^{\beta}_{P,JB}, \qquad
+ x^{\beta}_{P,JB} = \sum_{KC} t^{\beta\beta}_{JKBC}B^{\beta}_{P,KC} + \sum_{ia} t^{\alpha\beta}_{iJaB}B^{\alpha}_{P,ia}. $$
+
+The opposite-spin block enters both weights **[check S]**; $E^{(2)}$ is
+homogeneous of degree 4 in $B$, so $\sum_\sigma B^{\sigma}\cdot x^{\sigma} = 2E^{(2)}$
+(the in-module test `energy_weights_at_alpha_equals_beta_are_the_closed_weights`).
+
+**Per-spin Lagrangian pieces.** Each is the closed-shell piece of §9 built
+from one spin, with the closed factors halved where the closed form carries
+both spins:
+
+$$ I^{\sigma}_{qi} = -\sum_{Pa} x^{\sigma}_{P,ia}B^{\sigma}_{P,qa}, \qquad I^{\sigma}_{qa} = -\sum_{Pi} x^{\sigma}_{P,ia}B^{\sigma}_{P,qi}, $$
+
+$P^{\sigma}$ the unrelaxed spin density (`build_u_mp2_density`) symmetrized,
+$P^{\sigma}_{kI} = I^{\sigma}_{kI}/(\varepsilon_k-\varepsilon_I)$ on a frozen
+core, $v^{\sigma}[X] = J[X^{\alpha}+X^{\beta}] - K[X^{\sigma}]$, and
+
+$$ X^{\sigma}_{ai} = \big[C_\sigma^{\mathsf T} v^{\sigma}[P]\,C_\sigma\big]_{ai} + I^{\sigma}_{ia} - I^{\sigma}_{ai}. $$
+
+**Coupled Z-vector.** The UHF orbital Hessian couples the spins through
+Coulomb only:
+
+$$ (\varepsilon^{\sigma}_a - \varepsilon^{\sigma}_i)\,z^{\sigma}_{ai} + \big[C_\sigma^{\mathsf T}\big(J[D^{z,\alpha}+D^{z,\beta}] - K[D^{z,\sigma}]\big)C_\sigma\big]_{ai} = -X^{\sigma}_{ai}, \qquad
+ D^{z,\sigma} = C_{v\sigma}z^{\sigma}C_{o\sigma}^{\mathsf T} + \text{h.c.}, $$
+
+solved for the pair by DIIS to $\max|r| < 10^{-8}$; a solve that reaches its
+cap is an error.
+
+**Assembly.** With $P^{\sigma}_{\mathrm{rel}} = P^{\sigma} + z^{\sigma}$ (both
+off-diagonal blocks), $D^{\sigma}$ the UHF spin densities,
+
+$$ \frac{dE}{dx} = \operatorname{Tr}\big[(D+P_{\mathrm{rel}})_{\mathrm T}h'\big]
+ + \sum_{\mu\nu}\Big(\sum_\sigma \big[\mathrm{im1}^{\sigma} - \zeta^{\sigma} - W^{\sigma}_{\mathrm{HF}} - P^{\sigma}_{\mathrm{occ}}v^{\sigma}[P_{\mathrm{rel}}]P^{\sigma}_{\mathrm{occ}}\big]\Big)_{\mu\nu}S'_{\mu\nu}
+ + \partial_x U\big((D^{\alpha},D^{\beta}),(D^{\alpha}+2P^{\alpha}_{\mathrm{rel}},D^{\beta}+2P^{\beta}_{\mathrm{rel}})\big)
+ + \sum_\sigma\Big[2\sum y^{\sigma}(P|ia)'_\sigma - \sum_{PQ}V'_{PQ}\sum_{ia}(V^{-1}u^{\sigma})^P_{ia}y^{\sigma,Q}_{ia}\Big], $$
+
+$\mathrm{im1}$, $\zeta$ and $P_{\mathrm{occ}}$ per spin as in §9 (unit
+occupation, $W^{\sigma}_{\mathrm{HF}} = C_{o\sigma}\varepsilon_{o}C_{o\sigma}^{\mathsf T}$),
+$y^{\sigma} = V^{-1/2}x^{\sigma}$ and
+
+$$ U(A,B) = \tfrac12\operatorname{Tr}\big[A_{\mathrm T}J[B_{\mathrm T}]\big] - \tfrac12\sum_\sigma\operatorname{Tr}\big[A^{\sigma}K[B^{\sigma}]\big] $$
+
+differentiated through the ERIs only (`twoelectron_gradient_bilinear_uhf`;
+on RI-JK `fitted_bilinear_gradient_open`, the polarization of §9.1 per spin).
+On a model with $S$, $h$, the ERIs, $u$ and $V$ all moving, the right-hand side
+equals Richardson differences of the re-solved $E_{\mathrm{UHF}}+E^{(2)}$
+($n_\alpha=3$, $n_\beta=2$) to $1.5\times10^{-11}$ relative with and without a
+frozen core, and $\operatorname{Tr}[(D+P_{\mathrm{rel}})_{\mathrm T}R]$ equals
+$dE/d\lambda$ for $h\to h+\lambda R$ to $10^{-11}$ **[check G]**.
+
+**Closed-shell limit.** For $\alpha\equiv\beta$: $t^{\alpha\alpha} = t - t^{\mathrm{swap}}$,
+$t^{\alpha\beta} = t$, so $x^{\sigma} = x$ of §9; $I^{\sigma} = I/2$,
+$P^{\alpha}+P^{\beta} = P+P^{\mathsf T}$, $X^{\sigma} = X/2$, $z^{\sigma} = z/2$,
+$U = B$ of §9, and the RI response is the closed one (weight 1 per spin
+against 2). The model reproduces the closed assembly to $2\times10^{-16}$
+**[check C]**; in Rust, a closed-shell RHF written as a UHF gives the
+restricted gradient on both routes (`closed_shell_limit_matches_restricted_*`).
+
+**ROHF is refused.** A ROHF reference is not stationary under independent
+$\alpha$/$\beta$ rotations and its MP2 is evaluated on semicanonical orbitals,
+so its gradient needs the ROHF Z-vector and the semicanonicalization
+response; neither is built (`ROHF_REFUSAL`).
+
+**No external reference.** PySCF has no density-fitted UMP2 gradient
+(`pyscf/grad/ump2.py` is conventional), so the molecular anchor is the finite
+difference of ferric's own U-RI-MP2 energy (`tests/u_rimp2_gradient_fd.rs`,
+OH, NH2, O2 in 6-31G, the bar derived in the file header).
+
+**Memory.** The RI-JK route's peak is
+`gradient_memory::fitted_gradient_plan_unrestricted`: §9.1's terms with the
+three amplitude blocks, two $B^{\sigma}$ and two $x^{\sigma}$, one full-MO
+$b^{\sigma}(P|pq)$ at a time, and four exchange-channel densities
+($8\,n_{\mathrm{ao}}^2$ in place of $4\,n_{\mathrm{ao}}^2$); checked before the
+UHF.

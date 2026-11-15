@@ -4099,14 +4099,25 @@ impl ScfCfg {
 /// (`optimize`, `frequencies`) other than `uhf`/`rohf`/`ksdft` builds an RHF
 /// reference internally, and there is no unrestricted MP2 nuclear gradient.
 fn open_shell_kinds(task: &str) -> &'static [&'static str] {
-    if task == "energy" {
-        &[
-            "uhf", "rohf", "ksdft", "rimp2", "oo-rimp2", "pdep-rpa", "gw", "mp2-v", "tda", "tddft",
-        ]
-    } else {
-        &["uhf", "rohf", "ksdft"]
+    match task {
+        "energy" => OPEN_SHELL_ENERGY_KINDS,
+        "optimize" => OPEN_SHELL_OPTIMIZE_KINDS,
+        _ => OPEN_SHELL_SCF_KINDS,
     }
 }
+
+/// Kinds with an open-shell route for `task = "energy"`.
+const OPEN_SHELL_ENERGY_KINDS: &[&str] = &[
+    "uhf", "rohf", "ksdft", "rimp2", "oo-rimp2", "pdep-rpa", "gw", "mp2-v", "tda", "tddft",
+];
+
+/// Kinds with an open-shell analytic gradient for `task = "optimize"`;
+/// `rimp2` is the unrestricted RI-MP2 gradient on a UHF reference
+/// (`ferric_mp2::u_rimp2_gradient`).
+const OPEN_SHELL_OPTIMIZE_KINDS: &[&str] = &["uhf", "rohf", "ksdft", "rimp2"];
+
+/// Kinds with an open-shell route for every other task.
+const OPEN_SHELL_SCF_KINDS: &[&str] = &["uhf", "rohf", "ksdft"];
 
 /// Correlated `method.kind`s with no nuclear gradient, refused up front by
 /// [`Config::validate_task_compat`] for `optimize`/`frequencies` so the run
@@ -4157,7 +4168,8 @@ impl Config {
     /// What the reference SCF takes when `[scf] jk` is omitted
     /// ([`ScfCfg::scf_jk_choice`]): RI-JK for `rs-mp2-rpa` (on the shared
     /// default JK-fit set); four-centre for an open shell (no fitted
-    /// default has been measured there) and for an input that sets a key
+    /// default has been measured there) except the open-shell `rimp2`
+    /// optimization, which takes the matched RI-JK set like the closed shell and for an input that sets a key
     /// only the four-centre route reads; otherwise RI-JK on the JK-fit set
     /// matched to the orbital basis (`ferric_scf::scf_jk::matched_jk_aux`),
     /// for an energy and for the MP2 optimizations alike (the fitted
@@ -4174,7 +4186,11 @@ impl Config {
                 why: "the rs-mp2-rpa default".into(),
             };
         }
-        if self.molecule.multiplicity > 1 {
+        // The open-shell rimp2 optimization is the one open-shell run with a
+        // fitted default: its UHF, Z-vector and two-electron derivative all
+        // share the RI-JK route, as the closed-shell MP2 optimizations do.
+        let open_rimp2_opt = kind == "rimp2" && self.method.task == "optimize";
+        if self.molecule.multiplicity > 1 && !open_rimp2_opt {
             return OmittedJk::exact("open-shell reference".into());
         }
         if let Some(key) = self.scf.exact_route_key() {
@@ -4184,7 +4200,11 @@ impl Config {
         OmittedJk {
             mode: ScfJkMode::RiJk,
             aux: Some(matched_jk_aux(basis)),
-            why: "the closed-shell MP2-family default".into(),
+            why: if self.molecule.multiplicity > 1 {
+                "the open-shell rimp2 optimize default".into()
+            } else {
+                "the closed-shell MP2-family default".into()
+            },
         }
     }
 
@@ -4439,9 +4459,14 @@ impl Config {
                 "kind = \"{kind}\" accepts an open-shell molecule for task = \"energy\" only; \
                  its task = \"{task}\" path builds an RHF reference"
             ),
-            "rimp2" | "oo-rimp2" => format!(
+            "rimp2" => format!(
+                "kind = \"rimp2\" accepts an open-shell molecule (on a UHF reference) for \
+                 task = \"energy\" and \"optimize\" only; task = \"{task}\" has no \
+                 unrestricted path"
+            ),
+            "oo-rimp2" => format!(
                 "kind = \"{kind}\" accepts an open-shell molecule (on a UHF reference) for \
-                 task = \"energy\" only; there is no unrestricted MP2 nuclear gradient"
+                 task = \"energy\" only; there is no unrestricted OO-MP2 nuclear gradient"
             ),
             "linlccd" => "open-shell LinLCCD(hh) is library-only (ferric_cc::linlccd_u::u_linlccd)"
                 .to_string(),
@@ -5594,15 +5619,18 @@ mod compat_guard_tests {
                 .expect_err(kind);
             assert!(e.contains("multiplicity = 3"), "{kind}: {e}");
         }
-        // Open-shell RI-MP2 has no nuclear gradient: its energy route must not
-        // leak into optimize/frequencies, and the message must say why.
-        for kind in ["rimp2", "oo-rimp2"] {
-            for task in ["optimize", "frequencies"] {
-                let e = cfg(kind, task, "")
-                    .validate_multiplicity(3)
-                    .expect_err(kind);
-                assert!(e.contains("task = \"energy\" only"), "{kind}/{task}: {e}");
-            }
+        // Open-shell OO-RI-MP2 has no nuclear gradient and open-shell RI-MP2
+        // no Hessian: their energy (and, for rimp2, optimize) routes must not
+        // leak into the other tasks, and the message must say why.
+        for (kind, task) in [
+            ("oo-rimp2", "optimize"),
+            ("oo-rimp2", "frequencies"),
+            ("rimp2", "frequencies"),
+        ] {
+            let e = cfg(kind, task, "")
+                .validate_multiplicity(3)
+                .expect_err(kind);
+            assert!(e.contains("task = \"energy\""), "{kind}/{task}: {e}");
         }
     }
 
@@ -5678,6 +5706,22 @@ mod compat_guard_tests {
             .is_err());
     }
 
+    /// rimp2 optimizes an open shell on the U-RI-MP2 gradient; its
+    /// frequencies and oo-rimp2's optimize stay closed-shell only. Dropping
+    /// `rimp2` from `OPEN_SHELL_OPTIMIZE_KINDS` fails the first assert.
+    #[test]
+    fn open_shell_rimp2_optimize_is_admitted_and_nothing_else_new() {
+        assert!(cfg("rimp2", "optimize", "")
+            .validate_multiplicity(2)
+            .is_ok());
+        assert!(cfg("rimp2", "frequencies", "")
+            .validate_multiplicity(2)
+            .is_err());
+        assert!(cfg("oo-rimp2", "optimize", "")
+            .validate_multiplicity(2)
+            .is_err());
+    }
+
     /// Pre-fix, pdep-rpa + optimize + `[rpa] xc = "PBE"` ran RPA@HF and
     /// printed "(RHF + RPA)". Reverting `validate_task_compat` to `Ok(())`
     /// fails the `expect_err`; the two `Ok` cases are its reachability
@@ -5732,6 +5776,18 @@ mod compat_guard_tests {
         }
         // A task the rule does not govern is untouched.
         assert_eq!(choice("rimp2", "frequencies", ""), Ok(None));
+        // Open shell: the rimp2 optimization takes the fitted default, the
+        // energy stays four-centre.
+        let open = |task: &str| {
+            let mut c = cfg("rimp2", task, "[scf]\n");
+            c.molecule.multiplicity = 2;
+            c.scf_jk_choice(task)
+        };
+        let opt = open("optimize").unwrap().unwrap();
+        assert_eq!(opt.mode, ScfJkMode::RiJk);
+        assert_eq!(opt.aux.as_deref(), Some("def2-universal-jkfit"));
+        let energy = open("energy").unwrap().unwrap();
+        assert_eq!((energy.mode, energy.aux), (ScfJkMode::Exact, None));
         // A key only the four-centre route reads keeps an omitted jk exact.
         for key in [
             "k_builder = \"link\"",

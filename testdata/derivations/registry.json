@@ -131,7 +131,8 @@
       "hf-gradient"
     ],
     "optimize:rimp2": [
-      "ri-mp2-gradient"
+      "ri-mp2-gradient",
+      "u-ri-mp2-gradient"
     ],
     "optimize:rohf": [
       "hf-gradient"
@@ -251,7 +252,8 @@
       "ks-gradient",
       "ri-mp2-gradient",
       "oo-rimp2-gradient",
-      "scs-mp2-gradient"
+      "scs-mp2-gradient",
+      "u-ri-mp2-gradient"
     ],
     "py:run_optimize_qmmm": [
       "qmmm"
@@ -885,6 +887,14 @@
       ],
       "scripts": [
         "scripts/cc_ccsd_eom_brute_force_sympy.py"
+      ]
+    },
+    "u-ri-mp2-gradient": {
+      "theory": [
+        "crates/ferric-mp2/theory.md#15-unrestricted-ri-mp2-nuclear-gradient"
+      ],
+      "scripts": [
+        "scripts/u_rimp2_gradient_sympy.py"
       ]
     }
   },

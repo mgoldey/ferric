@@ -100,6 +100,8 @@ pub(crate) mod u_mp3_residual;
 pub mod u_oo_rimp2;
 /// Unrestricted RI-MP2 (α/β spin channels).
 pub mod u_rimp2;
+/// Analytic unrestricted RI-MP2 nuclear gradient (UHF reference).
+pub mod u_rimp2_gradient;
 /// Atom-group block-sparse matrices of the local VV-HV build.
 pub(crate) mod vvhv_bsr;
 /// Opt-in local (threshold-sparse) build of the VV-HV localized virtuals.

@@ -4468,7 +4468,9 @@ def run_optimize(
       in `run_frequencies` (unset: exact four-centre J/K for HF; with `xc`,
       RI-J/RI-K on def2-universal-jkfit for RKS, UKS and ROKS as in the CLI);
       `scf_ri_j_precision` (unset: "f64" on geometry tasks) / `scf_ri_k_precision`.
-    - "rimp2": closed-shell RI-MP2 (analytic Z-vector gradient). Needs `auxbasis` (the
+    - "rimp2": RI-MP2 (analytic Z-vector gradient): RHF + RI-MP2 on a singlet, UHF +
+      unrestricted RI-MP2 on an open-shell molecule or with `reference="uhf"`
+      (`reference="rohf"` raises: the gradient needs a UHF reference). Needs `auxbasis` (the
       RI basis name, e.g. "cc-pvdz-ri"); `scf_jk` "rijk" or "exact" on `jk_auxbasis`.
       Unset, `scf_jk` resolves as the CLI's omitted `[scf] jk`: "rijk" on the JK-fit
       set matched to the orbital basis (cc-pvtz-jkfit for cc-pVDZ / cc-pVTZ,
@@ -4477,7 +4479,7 @@ def run_optimize(
       `memory_budget_gb` (unset: the auto-detected budget) before the reference SCF
       and raises with the breakdown when it does not fit. `frozen_core`,
       `memory_budget_gb` as in `run_rimp2`. The gradient driver solves its reference
-      RHF at density_conv 1e-9, so the `scf_*` convergence kwargs raise.
+      RHF / UHF at density_conv 1e-9, so the `scf_*` convergence kwargs raise.
     - "oo-rimp2": closed-shell OO-RI-MP2 (zero-response gradient at converged orbitals).
       Needs `auxbasis`; `scf_jk` "rijk" or "exact" with the default of "rimp2"
       (four-centre when `scf_eri` is set) on `jk_auxbasis`, whose fitted J/K the

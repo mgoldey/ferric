@@ -5,6 +5,7 @@
 //! Cartesian or redundant internal coordinates per
 //! `OptimizeConfig::coord_system`; this module supplies the surfaces:
 //! `total_rimp2_gradient_on` (the analytic RI-MP2 gradient),
+//! `total_u_rimp2_gradient_on` (its unrestricted sibling on a UHF reference),
 //! `total_scs_mp2_gradient_on` and the OO-RI-MP2 zero-response gradient.
 
 use crate::gradient::{exact_scf_jk, total_rimp2_gradient_on, total_scs_mp2_gradient_on};
@@ -81,6 +82,30 @@ pub fn optimize_geometry_rimp2_on(
 ) -> Result<RiMp2OptimizeResult, FerricError> {
     bfgs_optimize(mol, opt_config, |m, warm| {
         total_rimp2_gradient_on(m, obs_basis, aux_basis, op, mp2_config, ext, scf_jk, warm)
+    })
+}
+
+/// Optimize an open-shell geometry on the unrestricted RI-MP2 surface
+/// `E_UHF + E_UMP2`, with the analytic gradient
+/// [`crate::u_rimp2_gradient::total_u_rimp2_gradient_on`] (UHF reference of
+/// the molecule's charge and multiplicity on `scf_jk`, `"exact"` or
+/// `"rijk"`). The optimizer is the one of [`optimize_geometry_rimp2_on`];
+/// [`RiMp2OptimizeResult::energy`] is the UHF + U-MP2 total.
+#[allow(clippy::too_many_arguments)]
+pub fn optimize_geometry_u_rimp2_on(
+    mol: &Molecule,
+    obs_basis: &BasisSet,
+    aux_basis: &BasisSet,
+    op: Operator,
+    mp2_config: &RiMp2Config,
+    opt_config: &OptimizeConfig,
+    ext: Option<&ExternalPotential>,
+    scf_jk: &ScfJk,
+) -> Result<RiMp2OptimizeResult, FerricError> {
+    bfgs_optimize(mol, opt_config, |m, warm| {
+        crate::u_rimp2_gradient::total_u_rimp2_gradient_on(
+            m, obs_basis, aux_basis, op, mp2_config, ext, scf_jk, warm,
+        )
     })
 }
 

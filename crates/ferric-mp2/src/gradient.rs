@@ -181,7 +181,7 @@ pub fn rimp2_gradient_analytical(
 /// Z-vector, the Lagrangian blocks and the 3c/2c response are those of
 /// RI-MP2, on the reference J/K route of `rhf` (four-centre or RI-JK).
 #[allow(clippy::too_many_arguments)]
-fn rimp2_gradient_analytical_timed(
+pub(crate) fn rimp2_gradient_analytical_timed(
     mol: &Molecule,
     obs: &PreparedBasis,
     dfbs: &PreparedBasis,
@@ -465,8 +465,6 @@ fn integral_response_gradient_3c2c_timed(
     c: &Array2<f64>,
     acc: &mut PhaseAccumulator,
 ) -> Result<Array2<f64>, FerricError> {
-    let mut grad = Array2::<f64>::zeros((mol.atoms.len(), 3));
-
     // 3-center derivative: Σ_{P,μ,ν} G3c_{P,μ,ν} * d(P|μν)/dR
     // G3c = "effective density" contracted with t2-weighted amplitudes
     let nocc = inter.nocc;
@@ -558,17 +556,73 @@ fn integral_response_gradient_3c2c_timed(
     let y_ov = acc.time("resp: y_ov = V^-1/2 x_ov", || {
         with_blas_threads(opt_in_blas_threads(), || inter.v_inv_sqrt.t().dot(&*x_ov))
     });
+    let channel = RiResponseChannel {
+        y_ov: &y_ov,
+        b_ov: &inter.b_ov,
+        c_occ: c
+            .slice(ndarray::s![.., inter.first_occ..inter.first_occ + nocc])
+            .to_owned(),
+        c_vir: c.slice(ndarray::s![.., inter.nocc_total..]).to_owned(),
+        weight: 2.0,
+    };
+    ri_response_gradient_channels(
+        mol,
+        obs,
+        dfbs,
+        op,
+        &inter.v_inv_sqrt,
+        std::slice::from_ref(&channel),
+        acc,
+    )
+}
 
+/// One spin channel of the RI 3c/2c integral response
+/// ([`ri_response_gradient_channels`]): the `V^{-1/2}`-dressed amplitude
+/// weight `y_ov = V^{-1/2}ᵀ x_ov` and the dressed `B(P|ia)` of the same
+/// occupied (`c_occ`) and virtual (`c_vir`) orbitals, shape
+/// `(naux, nocc·nvir)` each, and the factor `weight` the channel enters
+/// with. The closed-shell RI-MP2 response is one channel of weight 2 (the
+/// 2-PDM factor `Γ2 = 2·(2t − t̄)`); the unrestricted one is one channel per
+/// spin of weight 1, with `x_ov^σ` the per-spin energy weight.
+pub(crate) struct RiResponseChannel<'a> {
+    /// `V^{-1/2}ᵀ x_ov`, `(naux, nocc·nvir)`.
+    pub(crate) y_ov: &'a Array2<f64>,
+    /// Dressed `B(P|ia)`, `(naux, nocc·nvir)`.
+    pub(crate) b_ov: &'a Array2<f64>,
+    /// Active occupied MO coefficients, `(nao, nocc)`.
+    pub(crate) c_occ: Array2<f64>,
+    /// Virtual MO coefficients, `(nao, nvir)`.
+    pub(crate) c_vir: Array2<f64>,
+    /// The channel's factor.
+    pub(crate) weight: f64,
+}
+
+/// The RI 3c/2c integral-response gradient of a sum of channels:
+///
+/// ```text
+///   3c:  Σ_{P,μν} [Σ_ch w (G_ch + G_chᵀ)]_{P,μν} d(P|μν)/dR,   G_ch,P = C_occ Y_P C_virᵀ
+///   2c:  Σ_{PQ} [−Σ_ch w C_fit,ch y_chᵀ]_{PQ} d(P|Q)/dR,        C_fit = V^{-1/2}ᵀ B
+/// ```
+///
+/// (`Y_P` the row `P` of `y_ov` reshaped `(nocc, nvir)`), for a shared
+/// metric factor `v_inv_sqrt`. One channel of weight 2 is the closed-shell
+/// arithmetic of [`integral_response_gradient_3c2c`] exactly.
+pub(crate) fn ri_response_gradient_channels(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    v_inv_sqrt: &Array2<f64>,
+    channels: &[RiResponseChannel<'_>],
+    acc: &mut PhaseAccumulator,
+) -> Result<Array2<f64>, FerricError> {
+    let mut grad = Array2::<f64>::zeros((mol.atoms.len(), 3));
     // Back-transform X to AO and contract with 3-center derivative integrals,
     // blocked over the aux SHELL index. For each aux shell sp we build only its
     // g3c slab G3c_{p,μ,ν} = Σ_{ia} X^p_{ia} C_{μi} C_{νa} (symmetrized), then
     // contract it with that shell's derivative block. Peak g3c footprint is one
     // aux-shell slab (np, nbf, nbf) instead of the full (naux, nbf, nbf) tensor.
     let nbas = obs.nbasis();
-    let c_occ = c
-        .slice(ndarray::s![.., inter.first_occ..inter.first_occ + nocc])
-        .to_owned();
-    let c_vir = c.slice(ndarray::s![.., inter.nocc_total..]).to_owned();
     let d3c_tok = acc.begin("resp: 3c derivs");
     {
         use ferric_integrals::engine::Engine;
@@ -618,25 +672,34 @@ fn integral_response_gradient_3c2c_timed(
                     let mut g3c_sp = ndarray::Array3::<f64>::zeros((np, nbas, nbas));
                     for p in 0..np {
                         let pf = pf0 + p;
-                        let x_p = y_ov
-                            .slice(ndarray::s![pf, ..])
-                            .into_shape_with_order((nocc, nvir))
-                            .unwrap();
-                        // G_raw_{μν} = Σ_{ia} X^p_{ia} C_{μi} C_{νa} = C_occ · X_p · C_vir^T
-                        // Symmetrized: dE/d(P|μν)_raw = g_raw[μν] + g_raw[νμ] (the aux fn P
-                        // couples ia symmetrically; a raw 3c integral (P|μν) and its μ↔ν
-                        // transpose share the derivative). g_raw + g_raw^T doubles the
-                        // diagonal correctly (matches the FD single-element probe).
-                        // The 3-center weight carries the closed-shell 2-PDM factor
-                        // Γ2 = 2·(2t−t̄) (PySCF `part_dm2 = 4t − 2t^T`, grad/mp2.py
-                        // lines 61-62). `x_ov`/`y_ov` are built with the ENERGY weight
-                        // (2t−t̄) (shared with the Imat/energy path), so the separable
-                        // 2-PDM gradient needs an explicit ×2 here. Verified: the term
-                        // then equals PySCF's `dm2buf·int2e_ip1` contribution and drives
-                        // both H2 (nocc=1) and H2O (nocc=5) analytic−FD to ~1e-9.
-                        let g_raw = c_occ.dot(&x_p).dot(&c_vir.t());
-                        let g_sym = 2.0 * (&g_raw + &g_raw.t());
-                        g3c_sp.slice_mut(ndarray::s![p, .., ..]).assign(&g_sym);
+                        let mut g_slot = g3c_sp.slice_mut(ndarray::s![p, .., ..]);
+                        for (n_ch, ch) in channels.iter().enumerate() {
+                            let (nocc, nvir) = (ch.c_occ.ncols(), ch.c_vir.ncols());
+                            let x_p = ch
+                                .y_ov
+                                .slice(ndarray::s![pf, ..])
+                                .into_shape_with_order((nocc, nvir))
+                                .unwrap();
+                            // G_raw_{μν} = Σ_{ia} X^p_{ia} C_{μi} C_{νa} = C_occ · X_p · C_vir^T
+                            // Symmetrized: dE/d(P|μν)_raw = g_raw[μν] + g_raw[νμ] (the aux fn P
+                            // couples ia symmetrically; a raw 3c integral (P|μν) and its μ↔ν
+                            // transpose share the derivative). g_raw + g_raw^T doubles the
+                            // diagonal correctly (matches the FD single-element probe).
+                            // The 3-center weight carries the closed-shell 2-PDM factor
+                            // Γ2 = 2·(2t−t̄) (PySCF `part_dm2 = 4t − 2t^T`, grad/mp2.py
+                            // lines 61-62). `x_ov`/`y_ov` are built with the ENERGY weight
+                            // (2t−t̄) (shared with the Imat/energy path), so the separable
+                            // 2-PDM gradient needs an explicit ×2 here. Verified: the term
+                            // then equals PySCF's `dm2buf·int2e_ip1` contribution and drives
+                            // both H2 (nocc=1) and H2O (nocc=5) analytic−FD to ~1e-9.
+                            let g_raw = ch.c_occ.dot(&x_p).dot(&ch.c_vir.t());
+                            let g_sym = ch.weight * (&g_raw + &g_raw.t());
+                            if n_ch == 0 {
+                                g_slot.assign(&g_sym);
+                            } else {
+                                g_slot += &g_sym;
+                            }
+                        }
                     }
 
                     for s1 in 0..nsh_obs {
@@ -715,10 +778,18 @@ fn integral_response_gradient_3c2c_timed(
     // analytic−FD ~1e-9; the pre-fix ×1 weight left H2O ~1e-2 off).
     acc.stop(d3c_tok);
     let g2c_tok = acc.begin("resp: Gamma_2c GEMMs");
-    let c_fit = with_blas_threads(opt_in_blas_threads(), || {
-        inter.v_inv_sqrt.t().dot(&inter.b_ov)
-    });
-    let gamma_2c = with_blas_threads(opt_in_blas_threads(), || -2.0 * c_fit.dot(&y_ov.t()));
+    let mut gamma_2c = Array2::<f64>::zeros((v_inv_sqrt.ncols(), v_inv_sqrt.ncols()));
+    for (n_ch, ch) in channels.iter().enumerate() {
+        let c_fit = with_blas_threads(opt_in_blas_threads(), || v_inv_sqrt.t().dot(ch.b_ov));
+        let g = with_blas_threads(opt_in_blas_threads(), || {
+            -ch.weight * c_fit.dot(&ch.y_ov.t())
+        });
+        if n_ch == 0 {
+            gamma_2c = g;
+        } else {
+            gamma_2c += &g;
+        }
+    }
     acc.stop(g2c_tok);
     let d2c_tok = acc.begin("resp: 2c derivs");
 
