@@ -1,0 +1,19 @@
+# Harmonic frequencies on the RI-MP2 surface: central differences of the
+# analytic RI-MP2 nuclear gradient (6 N_atoms gradients). The same task takes
+# kind = "scs-mp2", "oo-rimp2" and "pdep-rpa" (with [rpa] auxbasis).
+[molecule]
+xyz = "testdata/molecules/h2.xyz"
+
+[basis]
+name = "cc-pvdz"
+
+[method]
+kind = "rimp2"
+task = "frequencies"
+
+[mp2]
+auxbasis = "cc-pvdz-ri"
+
+[frequencies]
+# Central-difference displacement in Bohr (the SCF default).
+delta = 5.0e-3

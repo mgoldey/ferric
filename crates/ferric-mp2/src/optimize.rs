@@ -212,60 +212,9 @@ pub fn optimize_geometry_oo_rimp2(
 ) -> Result<ferric_scf::optimize::OptimizeResult, FerricError> {
     refuse_oo_rimp2_optimize(rhf_config, oo_config)?;
     let rhf_config = rhf_config.for_geometry_task();
-    let ext = rhf_config.external_potential.as_ref();
-    let ctx = ferric_core::parallel::ParallelContext::default();
     let mut warm = ScfWarmStart::new(opt_config.scf_warm_start);
     let out = ferric_scf::optimize::optimize_geometry_with_energy_gradient(mol, opt_config, |m| {
-        let obs = ferric_integrals::basis_bridge::PreparedBasis::new(m, obs_basis)?;
-        let dfbs = ferric_integrals::basis_bridge::PreparedBasis::new(m, aux_basis)?;
-        let route = ferric_scf::scf_jk::effective_jk(&rhf_config);
-        if let ("rijk", Some(aux)) = (route.mode, route.j_aux.as_deref()) {
-            // The orbital steps and the gradient keep the RI-J/RI-K tensors
-            // of the reference: check the peak before any integral.
-            let shape = crate::gradient_memory::FittedGradientShape::new(
-                m,
-                &obs,
-                &dfbs,
-                aux,
-                oo_config.frozen_core,
-            )?;
-            crate::gradient_memory::preflight_fitted_gradient(
-                shape,
-                ferric_core::memory::resolve_budget_bytes(oo_config.memory_budget_bytes),
-            )?;
-        }
-        let bounds = ferric_scf::screening::SchwarzBounds::compute_for_screening(
-            op,
-            &obs,
-            rhf_config.screening,
-        )?;
-        let rhf = ferric_scf::warm_start::solve_rhf_warm(
-            &ctx,
-            m,
-            &obs,
-            op,
-            &bounds,
-            &rhf_config,
-            &mut warm,
-        )?;
-        if !rhf.converged {
-            return Err(FerricError::ScfConvergence {
-                iterations: rhf.iterations,
-                last_energy: rhf.energy,
-            });
-        }
-        let oo = crate::oo_rimp2::oo_ri_mp2(m, &obs, &dfbs, op, &bounds, &rhf, oo_config, ext)?;
-        if !oo.converged {
-            return Err(FerricError::General(format!(
-                "OO-RI-MP2 optimize: the orbital optimisation did not converge at this \
-                 geometry ({} iterations, orbital gradient norm {:.2e}); the zero-response \
-                 gradient holds only at a stationary point",
-                oo.iterations, oo.grad_norm
-            )));
-        }
-        let g =
-            crate::oo_rimp2_gradient::oo_ri_mp2_gradient(m, &obs, &dfbs, op, &bounds, &oo, 0, ext)?;
-        Ok((oo.total_energy, g))
+        oo_rimp2_energy_gradient(m, obs_basis, aux_basis, op, &rhf_config, oo_config, &mut warm)
     });
     if let Some(line) = warm.summary() {
         println!("{line}");
@@ -273,7 +222,82 @@ pub fn optimize_geometry_oo_rimp2(
     out
 }
 
+/// `(E_OO-RI-MP2, dE/dR)` at `m`: the RHF reference on `rhf_config`
+/// (already a geometry task, [`ferric_scf::rhf::RhfConfig::for_geometry_task`]),
+/// the orbital optimisation, and the zero-response analytic gradient. The
+/// surface of [`optimize_geometry_oo_rimp2`] and of the CLI frequency run;
+/// call [`check_oo_rimp2_surface`] first.
+pub fn oo_rimp2_energy_gradient(
+    m: &Molecule,
+    obs_basis: &BasisSet,
+    aux_basis: &BasisSet,
+    op: Operator,
+    rhf_config: &ferric_scf::rhf::RhfConfig,
+    oo_config: &crate::oo_rimp2::OoRiMp2Config,
+    warm: &mut ScfWarmStart,
+) -> Result<(f64, Array2<f64>), FerricError> {
+    let ext = rhf_config.external_potential.as_ref();
+    let ctx = ferric_core::parallel::ParallelContext::default();
+    let obs = ferric_integrals::basis_bridge::PreparedBasis::new(m, obs_basis)?;
+    let dfbs = ferric_integrals::basis_bridge::PreparedBasis::new(m, aux_basis)?;
+    let route = ferric_scf::scf_jk::effective_jk(rhf_config);
+    if let ("rijk", Some(aux)) = (route.mode, route.j_aux.as_deref()) {
+        // The orbital steps and the gradient keep the RI-J/RI-K tensors
+        // of the reference: check the peak before any integral.
+        let shape = crate::gradient_memory::FittedGradientShape::new(
+            m,
+            &obs,
+            &dfbs,
+            aux,
+            oo_config.frozen_core,
+        )?;
+        crate::gradient_memory::preflight_fitted_gradient(
+            shape,
+            ferric_core::memory::resolve_budget_bytes(oo_config.memory_budget_bytes),
+        )?;
+    }
+    let bounds = ferric_scf::screening::SchwarzBounds::compute_for_screening(
+        op,
+        &obs,
+        rhf_config.screening,
+    )?;
+    let rhf = ferric_scf::warm_start::solve_rhf_warm(
+        &ctx,
+        m,
+        &obs,
+        op,
+        &bounds,
+        rhf_config,
+        warm,
+    )?;
+    if !rhf.converged {
+        return Err(FerricError::ScfConvergence {
+            iterations: rhf.iterations,
+            last_energy: rhf.energy,
+        });
+    }
+    let oo = crate::oo_rimp2::oo_ri_mp2(m, &obs, &dfbs, op, &bounds, &rhf, oo_config, ext)?;
+    if !oo.converged {
+        return Err(FerricError::General(format!(
+            "OO-RI-MP2 optimize: the orbital optimisation did not converge at this \
+             geometry ({} iterations, orbital gradient norm {:.2e}); the zero-response \
+             gradient holds only at a stationary point",
+            oo.iterations, oo.grad_norm
+        )));
+    }
+    let g =
+        crate::oo_rimp2_gradient::oo_ri_mp2_gradient(m, &obs, &dfbs, op, &bounds, &oo, 0, ext)?;
+    Ok((oo.total_energy, g))
+}
+
 /// What [`optimize_geometry_oo_rimp2`] refuses before any integral.
+pub fn check_oo_rimp2_surface(
+    rhf_config: &ferric_scf::rhf::RhfConfig,
+    oo_config: &crate::oo_rimp2::OoRiMp2Config,
+) -> Result<(), FerricError> {
+    refuse_oo_rimp2_optimize(rhf_config, oo_config)
+}
+
 fn refuse_oo_rimp2_optimize(
     rhf_config: &ferric_scf::rhf::RhfConfig,
     oo_config: &crate::oo_rimp2::OoRiMp2Config,

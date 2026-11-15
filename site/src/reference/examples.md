@@ -56,6 +56,7 @@ See [SCF and DFT](../methods/scf.md).
 | `water-rhf-symmetry.toml` | H2O / STO-3G | `rhf` + `[scf] symmetry` | — | Point-group-blocked RHF (C2v); `irrep_nelec` shown commented. |
 | `h_uhf.toml` | H atom / STO-3G, doublet | `uhf` | — | |
 | `h2_opt.toml` | stretched H2 / STO-3G | `rhf` / optimize | — | |
+| `h2-rimp2-frequencies.toml` | H2 / cc-pVDZ | `rimp2` / frequencies | — | Central differences of the analytic RI-MP2 gradient (6 N gradients); also `scs-mp2`, `oo-rimp2`, `pdep-rpa`. |
 | `water-frequencies.toml` | H2O / STO-3G | `rhf` / frequencies | — | Finite-difference Hessian (`hessian = "fd"`). Check `Hessian asymmetry`. |
 | `nh2-rohf-frequencies.toml` | NH2 doublet / cc-pVDZ | `rohf` / frequencies | `crates/ferric-scf/tests/validation_rohf_hessian.rs` | Analytic ROHF Hessian. |
 | `benzene-dfb3lyp.toml` | benzene / def2-SVP | `ksdft` B3LYP | — | RI-JK is on automatically for `ksdft`. |

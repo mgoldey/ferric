@@ -3432,14 +3432,20 @@ impl Config {
 /// `total_scs_mp2_gradient_on`) on an exact or an RI-JK reference.
 pub const MP2_GRADIENT_OPTIMIZE_KINDS: &[&str] = &["rimp2", "scs-mp2"];
 
+/// The tasks that differentiate the analytic correlated gradient: the
+/// optimizer follows it, a frequency run central-differences it.
+fn is_gradient_task(task: &str) -> bool {
+    matches!(task, "optimize" | "frequencies")
+}
+
 /// Whether `[scf] jk` governs the reference SCF of `kind` / `task`: the
 /// [`SCF_JK_KINDS`] energies, the [`MP2_GRADIENT_OPTIMIZE_KINDS`]
 /// optimizations and the OO-RI-MP2 optimize, whose analytic gradients
 /// differentiate an exact or an RI-JK reference
 /// (`ferric_mp2::oo_rimp2_gradient::oo_ri_mp2_gradient` for OO-RI-MP2).
 fn scf_jk_governs(kind: &str, task: &str) -> bool {
-    let mp2_optimize =
-        (MP2_GRADIENT_OPTIMIZE_KINDS.contains(&kind) || kind == "oo-rimp2") && task == "optimize";
+    let mp2_optimize = (MP2_GRADIENT_OPTIMIZE_KINDS.contains(&kind) || kind == "oo-rimp2")
+        && is_gradient_task(task);
     SCF_JK_KINDS.contains(&kind) && (task == "energy" || mp2_optimize)
 }
 
@@ -3456,12 +3462,12 @@ fn refuse_scf_jk_for_kind(
         jk.require_exact_or_rijk(ScfJkKeys::CLI, OO_BUILDS_EXACT_OR_RIJK)?;
     }
     if MP2_GRADIENT_OPTIMIZE_KINDS.contains(&kind)
-        && task == "optimize"
+        && is_gradient_task(task)
         && jk.mode == ScfJkMode::RiJCosx
     {
         return Err(format!(
             "[scf] jk = \"rijcosx\" is refused for method.kind = \"{kind}\", task = \
-             \"optimize\": the RI-MP2 gradient has no COSX exchange response. Use [scf] \
+             \"{task}\": the RI-MP2 gradient has no COSX exchange response. Use [scf] \
              jk = \"exact\" or \"rijk\""
         ));
     }
@@ -3590,7 +3596,7 @@ impl ScfCfg {
                 return Err(format!(
                     "[scf] jk / jk_aux are wired for task = \"energy\" with method.kind = {} \
                      and for method.kind = \"rimp2\" / \"scs-mp2\" / \"oo-rimp2\" with \
-                     task = \"optimize\" only; got \
+                     task = \"optimize\" or \"frequencies\" only; got \
                      kind = \"{kind}\", task = \"{task}\". Use [scf] df_j_aux / df_k_aux / \
                      k_builder there",
                     SCF_JK_KINDS.join(", ")
@@ -4110,7 +4116,7 @@ impl ScfCfg {
 fn open_shell_kinds(task: &str) -> &'static [&'static str] {
     match task {
         "energy" => OPEN_SHELL_ENERGY_KINDS,
-        "optimize" => OPEN_SHELL_OPTIMIZE_KINDS,
+        "optimize" | "frequencies" => OPEN_SHELL_OPTIMIZE_KINDS,
         _ => OPEN_SHELL_SCF_KINDS,
     }
 }
@@ -4120,8 +4126,8 @@ const OPEN_SHELL_ENERGY_KINDS: &[&str] = &[
     "uhf", "rohf", "ksdft", "rimp2", "oo-rimp2", "pdep-rpa", "gw", "mp2-v", "tda", "tddft",
 ];
 
-/// Kinds with an open-shell analytic gradient for `task = "optimize"`;
-/// `rimp2` is the unrestricted RI-MP2 gradient on a UHF reference
+/// Kinds with an open-shell analytic gradient for `task = "optimize"` and
+/// (by finite differences of it) `task = "frequencies"`; `rimp2` is the unrestricted RI-MP2 gradient on a UHF reference
 /// (`ferric_mp2::u_rimp2_gradient`).
 const OPEN_SHELL_OPTIMIZE_KINDS: &[&str] = &["uhf", "rohf", "ksdft", "rimp2"];
 
@@ -4198,7 +4204,7 @@ impl Config {
         // The open-shell rimp2 optimization is the one open-shell run with a
         // fitted default: its UHF, Z-vector and two-electron derivative all
         // share the RI-JK route, as the closed-shell MP2 optimizations do.
-        let open_rimp2_opt = kind == "rimp2" && self.method.task == "optimize";
+        let open_rimp2_opt = kind == "rimp2" && is_gradient_task(&self.method.task);
         if self.molecule.multiplicity > 1 && !open_rimp2_opt {
             return OmittedJk::exact("open-shell reference".into());
         }
@@ -4470,8 +4476,8 @@ impl Config {
             ),
             "rimp2" => format!(
                 "kind = \"rimp2\" accepts an open-shell molecule (on a UHF reference) for \
-                 task = \"energy\" and \"optimize\" only; task = \"{task}\" has no \
-                 unrestricted path"
+                 task = \"energy\", \"optimize\" and \"frequencies\" only; task = \"{task}\" \
+                 has no unrestricted path"
             ),
             "oo-rimp2" => format!(
                 "kind = \"{kind}\" accepts an open-shell molecule (on a UHF reference) for \
@@ -4575,11 +4581,11 @@ impl Config {
     pub fn validate_task_compat(&self) -> Result<(), String> {
         let kind = self.method.kind.as_str();
         let task = self.method.task.as_str();
-        if kind == "pdep-rpa" && task == "optimize" {
+        if kind == "pdep-rpa" && is_gradient_task(task) {
             if let Some(xc) = self.rpa.xc.as_deref() {
                 return Err(format!(
                     "[rpa] xc = \"{xc}\" is not supported with method.kind = \"pdep-rpa\", \
-                     task = \"optimize\": the RPA geometry optimizer always builds an RHF \
+                     task = \"{task}\": the RPA gradient always differentiates an RHF \
                      reference (RPA@HF), so the functional would be silently ignored. Remove \
                      [rpa] xc to optimize on the RPA@HF surface, or use task = \"energy\" for \
                      RPA@{xc}."
@@ -4823,12 +4829,15 @@ impl Config {
             );
         }
         let kind = self.method.kind.as_str();
-        if self.method.task == "optimize" && matches!(kind, "rimp2" | "scs-mp2" | "pdep-rpa") {
+        if is_gradient_task(&self.method.task)
+            && matches!(kind, "rimp2" | "scs-mp2" | "pdep-rpa")
+        {
             return Err(format!(
                 "[scf] guess_basis is not supported with method.kind = \"{kind}\", task = \
-                 \"optimize\": that geometry optimizer builds its own RHF reference at each \
+                 \"{}\": that gradient run builds its own RHF reference at each \
                  geometry and never reads guess_basis, so it would be silently ignored. Remove \
-                 it, or use task = \"energy\""
+                 it, or use task = \"energy\"",
+                self.method.task
             ));
         }
         Ok(())
@@ -5628,13 +5637,11 @@ mod compat_guard_tests {
                 .expect_err(kind);
             assert!(e.contains("multiplicity = 3"), "{kind}: {e}");
         }
-        // Open-shell OO-RI-MP2 has no nuclear gradient and open-shell RI-MP2
-        // no Hessian: their energy (and, for rimp2, optimize) routes must not
-        // leak into the other tasks, and the message must say why.
+        // Open-shell OO-RI-MP2 has no nuclear gradient: its energy route must
+        // not leak into the other tasks, and the message must say why.
         for (kind, task) in [
             ("oo-rimp2", "optimize"),
             ("oo-rimp2", "frequencies"),
-            ("rimp2", "frequencies"),
         ] {
             let e = cfg(kind, task, "")
                 .validate_multiplicity(3)
@@ -5715,9 +5722,10 @@ mod compat_guard_tests {
             .is_err());
     }
 
-    /// rimp2 optimizes an open shell on the U-RI-MP2 gradient; its
-    /// frequencies and oo-rimp2's optimize stay closed-shell only. Dropping
-    /// `rimp2` from `OPEN_SHELL_OPTIMIZE_KINDS` fails the first assert.
+    /// rimp2 optimizes an open shell on the U-RI-MP2 gradient and takes
+    /// frequencies by finite differences of it; oo-rimp2's optimize stays
+    /// closed-shell only. Dropping `rimp2` from `OPEN_SHELL_OPTIMIZE_KINDS`
+    /// fails the first assert.
     #[test]
     fn open_shell_rimp2_optimize_is_admitted_and_nothing_else_new() {
         assert!(cfg("rimp2", "optimize", "")
@@ -5725,7 +5733,7 @@ mod compat_guard_tests {
             .is_ok());
         assert!(cfg("rimp2", "frequencies", "")
             .validate_multiplicity(2)
-            .is_err());
+            .is_ok());
         assert!(cfg("oo-rimp2", "optimize", "")
             .validate_multiplicity(2)
             .is_err());
@@ -5770,31 +5778,37 @@ mod compat_guard_tests {
         assert_eq!(choice("rhf", "energy", ""), Ok(None));
         // The MP2 optimizations take the same fitted default; an explicit
         // "exact" still wins.
-        for kind in ["rimp2", "scs-mp2", "oo-rimp2"] {
-            let opt_default = choice(kind, "optimize", "").unwrap().unwrap();
+        for (kind, task) in ["rimp2", "scs-mp2", "oo-rimp2"]
+            .into_iter()
+            .flat_map(|k| ["optimize", "frequencies"].map(move |t| (k, t)))
+        {
+            let opt_default = choice(kind, task, "").unwrap().unwrap();
             assert_eq!(opt_default.mode, ScfJkMode::RiJk, "{kind}");
             assert_eq!(
                 opt_default.aux.as_deref(),
                 Some("def2-universal-jkfit"),
                 "{kind}"
             );
-            let exact = choice(kind, "optimize", "jk = \"exact\"\n")
+            let exact = choice(kind, task, "jk = \"exact\"\n")
                 .unwrap()
                 .unwrap();
             assert_eq!(exact.mode, ScfJkMode::Exact, "{kind}");
         }
         // A task the rule does not govern is untouched.
-        assert_eq!(choice("rimp2", "frequencies", ""), Ok(None));
-        // Open shell: the rimp2 optimization takes the fitted default, the
-        // energy stays four-centre.
+        assert_eq!(choice("rimp2", "frequencies", "").map(|c| c.is_some()), Ok(true));
+        assert_eq!(choice("pdep-rpa", "frequencies", ""), Ok(None));
+        // Open shell: the rimp2 optimization and frequencies take the fitted
+        // default, the energy stays four-centre.
         let open = |task: &str| {
             let mut c = cfg("rimp2", task, "[scf]\n");
             c.molecule.multiplicity = 2;
             c.scf_jk_choice(task)
         };
-        let opt = open("optimize").unwrap().unwrap();
-        assert_eq!(opt.mode, ScfJkMode::RiJk);
-        assert_eq!(opt.aux.as_deref(), Some("def2-universal-jkfit"));
+        for task in ["optimize", "frequencies"] {
+            let opt = open(task).unwrap().unwrap();
+            assert_eq!(opt.mode, ScfJkMode::RiJk, "{task}");
+            assert_eq!(opt.aux.as_deref(), Some("def2-universal-jkfit"), "{task}");
+        }
         let energy = open("energy").unwrap().unwrap();
         assert_eq!((energy.mode, energy.aux), (ScfJkMode::Exact, None));
         // A key only the four-centre route reads keeps an omitted jk exact.
@@ -5955,7 +5969,13 @@ mod compat_guard_tests {
                 "wired for task",
             ),
             ("ccsd", "energy", "jk = \"rijk\"\n", "wired for task"),
-            ("rimp2", "frequencies", "jk = \"rijk\"\n", "wired for task"),
+            ("pdep-rpa", "frequencies", "jk = \"rijk\"\n", "wired for task"),
+            (
+                "rimp2",
+                "frequencies",
+                "jk = \"rijcosx\"\n",
+                "no COSX exchange response",
+            ),
             ("att-rimp2", "optimize", "jk = \"rijk\"\n", "wired for task"),
             (
                 "scs-mp2",

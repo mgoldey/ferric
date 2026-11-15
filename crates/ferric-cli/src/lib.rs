@@ -1072,7 +1072,7 @@ pub fn run(args: Vec<String>) {
     }
 
     if task == "frequencies" {
-        run_frequencies(method, &cfg, &ctx, &mol, &bs, op, &rhf_config);
+        run_frequencies(method, &cfg, &ctx, &mol, &bs, op, &rhf_config, budget_bytes);
         note_run_precision(&run_probe);
         return;
     }
@@ -6591,6 +6591,202 @@ fn run_rohf(
     // (optimize_geometry_rohf), which returns before reaching here.
 }
 
+/// `method.kind`s with a correlated analytic nuclear gradient: the surfaces
+/// `task = "optimize"` and `task = "frequencies"` both differentiate.
+const CORRELATED_GRADIENT_KINDS: &[&str] = &["pdep-rpa", "rimp2", "scs-mp2", "oo-rimp2"];
+/// Every `method.kind` the `optimize` and `frequencies` tasks accept: the SCF
+/// kinds plus [`CORRELATED_GRADIENT_KINDS`].
+const GRADIENT_KINDS: &[&str] = &[
+    "rhf", "ksdft", "uhf", "rohf", "pdep-rpa", "rimp2", "scs-mp2", "oo-rimp2",
+];
+
+/// `task = "frequencies"` for a correlated `method.kind`
+/// ([`CORRELATED_GRADIENT_KINDS`]): central differences (`[frequencies]
+/// delta`, the SCF default otherwise) of the same analytic gradient
+/// `task = "optimize"` follows, `6 N_atoms` gradients, through the shared
+/// symmetrization, mass-weighting and translation/rotation projection of
+/// `harmonic_frequencies_from_gradient`. The certificate names the gradient.
+#[allow(clippy::too_many_arguments)]
+fn run_frequencies_correlated(
+    method: &str,
+    cfg: &Config,
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    bs: &BasisSet,
+    op: Operator,
+    rhf_config: &RhfConfig,
+    budget_bytes: Option<usize>,
+) {
+    use ferric_scf::frequencies::{harmonic_frequencies_from_gradient, FrequencyConfig};
+    use ferric_scf::warm_start::ScfWarmStart;
+
+    if let Some(h) = cfg.frequencies.hessian.as_deref() {
+        if !h.eq_ignore_ascii_case("auto") && !h.eq_ignore_ascii_case("finite-difference") {
+            eprintln!(
+                "error: [frequencies] hessian = \"{h}\" is an SCF Hessian; method.kind = \
+                 \"{method}\" differentiates its gradient by finite differences"
+            );
+            std::process::exit(1);
+        }
+    }
+    if dispersion_request(cfg).is_some() {
+        eprintln!(
+            "error: [dft] dispersion is not applied to method.kind = \"{method}\" frequencies"
+        );
+        std::process::exit(1);
+    }
+    let mut fcfg = FrequencyConfig::default();
+    if let Some(d) = cfg.frequencies.delta {
+        if !(d.is_finite() && d > 0.0) {
+            eprintln!("error: [frequencies] delta must be finite and > 0 (got {d})");
+            std::process::exit(1);
+        }
+        fcfg.delta = d;
+    }
+    fcfg.scf_warm_start = cfg.frequencies.scf_warm_start.unwrap_or(false);
+
+    // (E, dE/dR) at a geometry: the per-kind surface of `run_optimize`, plus
+    // the certificate's gradient label.
+    type Surface<'a> = Box<
+        dyn FnMut(
+                &Molecule,
+                &mut ScfWarmStart,
+            ) -> Result<(f64, ndarray::Array2<f64>), ferric_core::FerricError>
+            + 'a,
+    >;
+    let aux_of = |name: Option<&str>| {
+        let n = name.unwrap_or(config::DEFAULT_CORRELATION_AUX);
+        basis::bundled(n).unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        })
+    };
+    let (mut surface, label): (Surface<'_>, String) = match method {
+        "pdep-rpa" => {
+            let (aux_bs, rpa_cfg, gradient, fallback) =
+                rpa_gradient_setup(cfg, mol, op, budget_bytes);
+            (
+                Box::new(move |m, warm| {
+                    ferric_rpa::gradient::total_rpa_gradient_by(
+                        m, bs, &aux_bs, op, &rpa_cfg, gradient, warm,
+                    )
+                }),
+                gradient.certificate_label_with(fallback.as_deref()),
+            )
+        }
+        "rimp2" => {
+            let aux_bs = aux_of(cfg.mp2.auxbasis.as_deref());
+            let mp2_config = RiMp2Config {
+                frozen_core: cfg.mp2.frozen_core.resolve(mol),
+                memory_budget_bytes: budget_bytes,
+                ..Default::default()
+            };
+            let scf_jk = rimp2_gradient_scf_jk("rimp2", rhf_config).unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            });
+            let label = ferric_mp2::optimize::rimp2_gradient_label(&scf_jk);
+        // An open shell runs on a UHF reference with the
+        // unrestricted gradient, as in `run_optimize_rimp2`.
+        let gradient_on = if mol.multiplicity > 1 {
+            ferric_mp2::u_rimp2_gradient::total_u_rimp2_gradient_on
+        } else {
+            ferric_mp2::gradient::total_rimp2_gradient_on
+        };
+            (
+                Box::new(move |m, warm| {
+                    gradient_on(
+                        m,
+                        bs,
+                        &aux_bs,
+                        op,
+                        &mp2_config,
+                        rhf_config.external_potential.as_ref(),
+                        &scf_jk,
+                        warm,
+                    )
+                }),
+                label,
+            )
+        }
+        "scs-mp2" => {
+            let aux_bs = aux_of(cfg.mp2.auxbasis.as_deref());
+            let scs_config = scs_mp2_config(cfg, mol, budget_bytes);
+            let scf_jk = rimp2_gradient_scf_jk("scs-mp2", rhf_config).unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            });
+            let label = ferric_mp2::optimize::rimp2_gradient_label(&scf_jk);
+            (
+                Box::new(move |m, warm| {
+                    ferric_mp2::gradient::total_scs_mp2_gradient_on(
+                        m,
+                        bs,
+                        &aux_bs,
+                        &scs_config,
+                        rhf_config.external_potential.as_ref(),
+                        &scf_jk,
+                        warm,
+                    )
+                }),
+                label,
+            )
+        }
+        "oo-rimp2" => {
+            let aux_bs = aux_of(cfg.mp2.auxbasis.as_deref());
+            let oo_config = oo_rimp2_config(cfg, mol, budget_bytes);
+            ferric_mp2::optimize::check_oo_rimp2_surface(rhf_config, &oo_config).unwrap_or_else(
+                |e| {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                },
+            );
+            let geometry_rhf = rhf_config.for_geometry_task();
+            let label = ferric_mp2::optimize::oo_rimp2_gradient_label(rhf_config);
+            (
+                Box::new(move |m, warm| {
+                    ferric_mp2::optimize::oo_rimp2_energy_gradient(
+                        m,
+                        bs,
+                        &aux_bs,
+                        op,
+                        &geometry_rhf,
+                        &oo_config,
+                        warm,
+                    )
+                }),
+                label,
+            )
+        }
+        other => unreachable!("{other} is not in CORRELATED_GRADIENT_KINDS"),
+    };
+
+    let mut warm = ScfWarmStart::anchored(fcfg.scf_warm_start);
+    let res = surface(mol, &mut warm)
+        .and_then(|(energy, _)| {
+            harmonic_frequencies_from_gradient(mol, fcfg.delta, energy, |m| {
+                surface(m, &mut warm).map(|(_, g)| g)
+            })
+        })
+        .unwrap_or_else(|e| {
+            eprintln!("error computing frequencies: {e}");
+            std::process::exit(1);
+        });
+
+    let cert = match task_reference_certificate(method, cfg, ctx, bs, op, rhf_config, mol) {
+        Ok(reference) => {
+            ferric_scf::certificate::frequencies_certificate(method, &reference, &res, &fcfg)
+                .with_approximation("gradient", label)
+        }
+        Err(why) => Certificate::ungraded(format!("frequencies:{method}")).warn(why),
+    };
+    log_frequencies(&res, &cert);
+    println!("Harmonic frequencies/{} on {}", bs.name, cfg.molecule.xyz);
+    print_frequency_energy(&res, None);
+    print_frequency_table(&res);
+    print!("{cert}");
+}
+
 /// `method.task = "frequencies"` — harmonic vibrational frequencies.
 ///
 /// FD of the ANALYTIC gradient (6N gradient evaluations) or an analytic
@@ -6606,6 +6802,7 @@ fn run_rohf(
 /// geometry (`harmonic_frequencies_with_scf_correction`); MBD@rsSCS's density
 /// dependence enters through its exact (Z-vector-relaxed) gradient for the
 /// reference's own spin densities.
+#[allow(clippy::too_many_arguments)]
 fn run_frequencies(
     method: &str,
     cfg: &Config,
@@ -6614,18 +6811,24 @@ fn run_frequencies(
     bs: &BasisSet,
     op: Operator,
     rhf_config: &RhfConfig,
+    budget_bytes: Option<usize>,
 ) {
     use ferric_scf::frequencies::{FrequencyConfig, FrequencyReference, HessianMethod};
 
+    if CORRELATED_GRADIENT_KINDS.contains(&method) {
+        run_frequencies_correlated(method, cfg, ctx, mol, bs, op, rhf_config, budget_bytes);
+        return;
+    }
     let reference = match method {
         "rhf" | "ksdft" => FrequencyReference::Rhf,
         "uhf" => FrequencyReference::Uhf,
         "rohf" => FrequencyReference::Rohf,
         other => {
             eprintln!(
-                "error: method.task = \"frequencies\" supports method.kind = rhf, uhf, \
-                 rohf or ksdft (got \"{other}\"). Correlated methods have no analytic \
-                 gradient, and a frequency run needs 6N of them."
+                "error: method.task = \"frequencies\" needs a method.kind with a nuclear \
+                 gradient ({}); got \"{other}\", which has none, and a frequency run needs \
+                 6N gradients.",
+                GRADIENT_KINDS.join(", ")
             );
             std::process::exit(1);
         }
@@ -6671,6 +6874,12 @@ fn run_frequencies(
     log_frequencies(&res, &cert);
     println!("Harmonic frequencies/{} on {}", bs.name, cfg.molecule.xyz);
     print_frequency_energy(&res, at_reference.as_ref());
+    print_frequency_table(&res);
+    print!("{cert}");
+}
+
+/// The Hessian/asymmetry/mode lines shared by every frequency printout.
+fn print_frequency_table(res: &ferric_scf::frequencies::FrequencyResult) {
     println!("  Hessian           = {}", res.hessian_source.label());
     println!("  gradient evals    = {}", res.n_gradient_evaluations);
     println!("  linear molecule   = {}", res.is_linear);
@@ -6691,7 +6900,6 @@ fn run_frequencies(
             .map(|v| (v * 100.0).round() / 100.0)
             .collect::<Vec<_>>()
     );
-    print!("{cert}");
 }
 
 /// The stamped SCF certificate at the reference geometry of a frequency run.
@@ -7023,7 +7231,7 @@ fn task_reference_certificate_from(
 }
 
 /// The reference route `[scf] jk` resolved to (`apply_scf_jk`) for the
-/// RI-MP2 / SCS-MP2 optimize of `kind`: four-centre or RI-JK, the SCF its
+/// RI-MP2 / SCS-MP2 optimize or frequency run of `kind`: four-centre or RI-JK, the SCF its
 /// analytic gradient differentiates; any other route is an error.
 fn rimp2_gradient_scf_jk(
     kind: &str,
@@ -7038,11 +7246,80 @@ fn rimp2_gradient_scf_jk(
             k_builder: None,
         }),
         other => Err(format!(
-            "method.kind = \"{kind}\", task = \"optimize\" differentiates a four-centre or an \
-             RI-JK reference ([scf] jk = \"exact\" | \"rijk\"); the [scf] fields give the J/K \
+            "method.kind = \"{kind}\", task = \"optimize\" or \"frequencies\" differentiates a \
+             four-centre or an RI-JK reference ([scf] jk = \"exact\" | \"rijk\"); the [scf] fields give the J/K \
              route \"{other}\""
         )),
     }
+}
+
+/// The `[rpa]` pieces of an RI-dRPA gradient run (`task = "optimize"` or
+/// `"frequencies"`): the RI basis, the RPA configuration, the gradient
+/// method (`[rpa] gradient`, else `resolve_default`) and the reason for a
+/// finite-difference fallback. Exits 1 on a bad `[rpa]` value.
+fn rpa_gradient_setup(
+    cfg: &Config,
+    mol: &Molecule,
+    op: Operator,
+    budget_bytes: Option<usize>,
+) -> (
+    BasisSet,
+    PdepRpaConfig,
+    ferric_rpa::gradient::RpaGradientMethod,
+    Option<String>,
+) {
+    let aux_name = cfg
+        .rpa
+        .auxbasis
+        .as_deref()
+        .unwrap_or(config::DEFAULT_CORRELATION_AUX);
+    let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    let scheme = cfg.rpa.parse_quadrature().unwrap_or_else(|e| {
+        eprintln!("config error: {e}");
+        std::process::exit(1);
+    });
+    let requested = cfg.rpa.requested_gradient().unwrap_or_else(|e| {
+        eprintln!("config error: {e}");
+        std::process::exit(1);
+    });
+    let rpa_cfg = PdepRpaConfig {
+        frozen_core: cfg.rpa.frozen_core.resolve(mol),
+        trunc_thresh: cfg.rpa.optimize_trunc_thresh(requested),
+        eigensolver_max_vecs: 0,
+        eigensolver_conv_thresh: cfg.rpa.eigensolver_conv_thresh_or(1e-8),
+        quadrature: QuadratureConfig {
+            scheme,
+            n_points: cfg.rpa.n_quad.unwrap_or(16),
+            u0: cfg.rpa.u0.unwrap_or(0.5),
+        },
+        sternheimer: SternheimerConfig::default(),
+        run_diagnostics: false,
+        eigensolver: ferric_rpa::Eigensolver::default(),
+        chi0_backend: ferric_rpa::config::Chi0Backend::default(),
+        chi0_sparsity: cfg.rpa.parse_chi0_sparsity().unwrap_or_else(|e| {
+            eprintln!("config error: {e}");
+            std::process::exit(1);
+        }),
+        memory_budget_bytes: budget_bytes,
+        // CLI RPA optimize is energy/gradient only (M9 gate).
+        need_inv_dielectric_freq: false,
+        // Energy/gradient only: no consumer reads `eigenvalues_freq`
+        // here, so skip the per-frequency diagonalization and take the
+        // LU log-det path for the correlation energy.
+        need_eigenvalues_freq: false,
+        verbose: cfg.scf.verbose,
+    };
+    let (gradient, fallback) = match requested {
+        Some(g) => (g, None),
+        None => ferric_rpa::gradient::RpaGradientMethod::resolve_default(&rpa_cfg, op),
+    };
+    if let Some(why) = &fallback {
+        eprintln!("note: [rpa] gradient unset; using finite differences ({why})");
+    }
+    (aux_bs, rpa_cfg, gradient, fallback)
 }
 
 /// `task.method = "optimize"` dispatch. Extracted verbatim from the former
@@ -7146,57 +7423,7 @@ fn run_optimize(
             );
         }
         "pdep-rpa" => {
-            let aux_name = cfg
-                .rpa
-                .auxbasis
-                .as_deref()
-                .unwrap_or(config::DEFAULT_CORRELATION_AUX);
-            let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
-                eprintln!("error: {e}");
-                std::process::exit(1);
-            });
-            let scheme = cfg.rpa.parse_quadrature().unwrap_or_else(|e| {
-                eprintln!("config error: {e}");
-                std::process::exit(1);
-            });
-            let requested = cfg.rpa.requested_gradient().unwrap_or_else(|e| {
-                eprintln!("config error: {e}");
-                std::process::exit(1);
-            });
-            let rpa_cfg = PdepRpaConfig {
-                frozen_core: cfg.rpa.frozen_core.resolve(mol),
-                trunc_thresh: cfg.rpa.optimize_trunc_thresh(requested),
-                eigensolver_max_vecs: 0,
-                eigensolver_conv_thresh: cfg.rpa.eigensolver_conv_thresh_or(1e-8),
-                quadrature: QuadratureConfig {
-                    scheme,
-                    n_points: cfg.rpa.n_quad.unwrap_or(16),
-                    u0: cfg.rpa.u0.unwrap_or(0.5),
-                },
-                sternheimer: SternheimerConfig::default(),
-                run_diagnostics: false,
-                eigensolver: ferric_rpa::Eigensolver::default(),
-                chi0_backend: ferric_rpa::config::Chi0Backend::default(),
-                chi0_sparsity: cfg.rpa.parse_chi0_sparsity().unwrap_or_else(|e| {
-                    eprintln!("config error: {e}");
-                    std::process::exit(1);
-                }),
-                memory_budget_bytes: budget_bytes,
-                // CLI RPA optimize is energy/gradient only (M9 gate).
-                need_inv_dielectric_freq: false,
-                // Energy/gradient only: no consumer reads `eigenvalues_freq`
-                // here, so skip the per-frequency diagonalization and take the
-                // LU log-det path for the correlation energy.
-                need_eigenvalues_freq: false,
-                verbose: cfg.scf.verbose,
-            };
-            let (gradient, fallback) = match requested {
-                Some(g) => (g, None),
-                None => ferric_rpa::gradient::RpaGradientMethod::resolve_default(&rpa_cfg, op),
-            };
-            if let Some(why) = &fallback {
-                eprintln!("note: [rpa] gradient unset; using finite differences ({why})");
-            }
+            let (aux_bs, rpa_cfg, gradient, fallback) = rpa_gradient_setup(cfg, mol, op, budget_bytes);
             let opt_result = ferric_rpa::optimize::optimize_geometry_rpa(
                 mol,
                 bs,
@@ -7394,7 +7621,10 @@ fn run_optimize(
             budget_bytes,
         ),
         _ => {
-            eprintln!("error: geometry optimization is currently only supported for method.kind = \"rhf\", \"ksdft\", \"uhf\", \"rohf\", \"pdep-rpa\", \"rimp2\", \"scs-mp2\", or \"oo-rimp2\"");
+            eprintln!(
+                "error: geometry optimization is currently only supported for method.kind = {}",
+                GRADIENT_KINDS.join(", ")
+            );
             std::process::exit(1);
         }
     }
@@ -7577,6 +7807,21 @@ fn scs_mp2_config(cfg: &Config, mol: &Molecule, budget_bytes: Option<usize>) -> 
     }
 }
 
+/// The `[mp2] oo_*` OO-RI-MP2 configuration of the optimize and frequency runs.
+fn oo_rimp2_config(cfg: &Config, mol: &Molecule, budget_bytes: Option<usize>) -> OoRiMp2Config {
+    let d = OoRiMp2Config::default();
+    OoRiMp2Config {
+        max_iter: cfg.mp2.oo_max_iter.unwrap_or(d.max_iter),
+        grad_conv: cfg.mp2.oo_grad_conv.unwrap_or(d.grad_conv),
+        level_shift: cfg.mp2.oo_level_shift.unwrap_or(d.level_shift),
+        diis_size: cfg.mp2.oo_diis_size.unwrap_or(d.diis_size),
+        frozen_core: cfg.mp2.frozen_core.resolve(mol),
+        memory_budget_bytes: budget_bytes,
+        verbose: cfg.scf.verbose,
+        ..d
+    }
+}
+
 /// `method.kind = "oo-rimp2"`, `task = "optimize"`: closed-shell OO-RI-MP2
 /// through [`ferric_mp2::optimize::optimize_geometry_oo_rimp2`] (the driver
 /// the Python `run_optimize(method="oo-rimp2")` calls), with the `[mp2] oo_*`
@@ -7604,17 +7849,7 @@ fn run_optimize_oo_rimp2(
         eprintln!("error: {e}");
         std::process::exit(1);
     });
-    let d = OoRiMp2Config::default();
-    let oo_config = OoRiMp2Config {
-        max_iter: cfg.mp2.oo_max_iter.unwrap_or(d.max_iter),
-        grad_conv: cfg.mp2.oo_grad_conv.unwrap_or(d.grad_conv),
-        level_shift: cfg.mp2.oo_level_shift.unwrap_or(d.level_shift),
-        diis_size: cfg.mp2.oo_diis_size.unwrap_or(d.diis_size),
-        frozen_core: cfg.mp2.frozen_core.resolve(mol),
-        memory_budget_bytes: budget_bytes,
-        verbose: cfg.scf.verbose,
-        ..d
-    };
+    let oo_config = oo_rimp2_config(cfg, mol, budget_bytes);
     let opt_result = ferric_mp2::optimize::optimize_geometry_oo_rimp2(
         mol, bs, &aux_bs, op, rhf_config, &oo_config, opt_config,
     )
