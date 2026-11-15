@@ -573,6 +573,357 @@ pub(crate) fn jk_ladder(df_j: bool, df_k: bool, env: &ScfEnv<'_>) -> crate::jk_l
     crate::jk_ladder::JkLadder::new([df_j, df_k, env.dfk_sr.is_some(), env.dfk_lr.is_some()])
 }
 
+/// Periodic full-rebuild guard against f64 drift accumulating across many
+/// incremental Fock updates (PySCF re-triggers via `direct_scf_tol`; Psi4 hard
+/// resets every `INCFOCK_FULL_FOCK_EVERY = 5`). 8 is a compromise between
+/// Psi4's 5 and amortizing the full-build cost, verified to hold the
+/// incremental-vs-full energy well within the direct-path noise floor. A full
+/// rebuild fires on iteration 1, whenever `iter % INCREMENTAL_FULL_REBUILD_EVERY
+/// == 1`, and whenever no last-Fock density is held. One value for all three
+/// drivers.
+pub(crate) const INCREMENTAL_FULL_REBUILD_EVERY: usize = 8;
+
+/// The J/K builders of an open-shell (UHF or ROHF) solve and the per-spin
+/// buffers they fill: J[D_α + D_β], K[D_α] and K[D_β].
+///
+/// ROHF's Fock build is structurally the same three-matrix problem as UHF's;
+/// the ROHF-specific work (the Roothaan coupling) acts on the ASSEMBLED
+/// `F_α`/`F_β` downstream of [`Self::build_fock`] and is not touched here.
+///
+/// K is built per spin:
+/// - range-separated (ω > 0): `K_σ = c_SR·K_SR[D_σ] + c_LR·K_LR[D_σ]` from
+///   the SR/LR DfK pair [`prepare`] built;
+/// - plain hybrid / pure HF (ω = 0): `K_σ = c_K·K[D_σ]` from the combined
+///   DirectJK, a pluggable builder, DF-K, or DirectK;
+/// - pure DFT (`c_K = 0`): no K.
+///
+/// J is the combined DirectJK, DF-J when an aux basis is named (any ω), or
+/// DirectJ. Every builder lives for the whole solve: each lazily builds a
+/// per-thread libint2 EnginePool on first use (ctors serialized behind a
+/// global mutex), so a loop-local builder would pay that construction every
+/// iteration.
+pub(crate) struct OpenShellJk<'a> {
+    /// The injected (periodic) J/K pair; pre-empts every molecular builder.
+    pub(crate) inj_jk: Option<(Box<dyn JBuilder + 'a>, Box<dyn KBuilder + 'a>)>,
+    pub(crate) df_j: Option<crate::split_rij::RiJ<'a>>,
+    pub(crate) df_k: Option<DfK<'a>>,
+    pub(crate) direct_jk: Option<crate::direct_jk::DirectJK<'a>>,
+    pub(crate) direct_j: Option<crate::direct_j::DirectJ<'a>>,
+    pub(crate) direct_k: Option<crate::direct_k::DirectK<'a>>,
+    /// A pluggable exchange builder ("link" / "cosx"); ONE instance serves
+    /// BOTH spins (see [`crate::fock_assembly::build_open_shell_pluggable_k`]).
+    pub(crate) pluggable_k: Option<Box<dyn KBuilder + 'a>>,
+    /// The COSX grid schedule (`None` without one).
+    pub(crate) cosx_sched: Option<crate::cosx_schedule::ScheduleRun>,
+    /// The in-core ERI store serving the combined DirectJK, if any.
+    _incore: Option<std::sync::Arc<crate::incore_jk::IncoreEri>>,
+    /// See [`Self::new`].
+    incremental_direct: bool,
+    /// The (α, β) densities that produced the CURRENT contents of the
+    /// buffers. `None` until the first full build; reset to force one.
+    pub(crate) d_last_fock: Option<(Array2<f64>, Array2<f64>)>,
+    pub(crate) j_buf: Array2<f64>,
+    pub(crate) k_a_buf: Array2<f64>,
+    pub(crate) k_b_buf: Array2<f64>,
+    pub(crate) total_quartets: usize,
+}
+
+/// What an open-shell driver hands [`OpenShellJk::new`].
+pub(crate) struct OpenShellJkSetup<'a> {
+    pub(crate) inj_jk: Option<(Box<dyn JBuilder + 'a>, Box<dyn KBuilder + 'a>)>,
+    pub(crate) df_j: Option<crate::split_rij::RiJ<'a>>,
+    pub(crate) df_k: Option<DfK<'a>>,
+    pub(crate) started_k: crate::cosx_schedule::StartedK<'a>,
+    /// Exact exchange reaches F (`c_K != 0` or ω > 0).
+    pub(crate) need_k: bool,
+    pub(crate) omega: f64,
+}
+
+impl<'a> OpenShellJk<'a> {
+    /// Build the direct builders the route needs.
+    ///
+    /// Combined open-shell direct J+K (single quartet pass): when BOTH J and
+    /// K come from the direct (non-DF) path with an ordinary ω = 0 kernel,
+    /// one `DirectJK::build_uhf` pass produces J[D_α+D_β], K[D_α] and K[D_β]
+    /// together, replacing three separate quartet traversals that each
+    /// re-evaluated the same integrals and screened on the loose global
+    /// max|D| scalar instead of the tight six-pairwise shell table. Gated to
+    /// exactly the case where all three matrices are direct and share the
+    /// Coulomb operator, with no pluggable K and no injection; every other
+    /// combination keeps the per-matrix builders. `FERRIC_SCF_COMBINED_JK=0`
+    /// (or `off`/`false`) restores the three-pass build for A/B checks.
+    ///
+    /// Incremental (differential) Fock build, combined DirectJK path only:
+    /// the same scheme as the closed-shell path (see `rhf::RhfJk::new`), for
+    /// the same reason restricted to the direct path (the DF/RI paths carry a
+    /// naux-dependent fitted-Fock noise floor that ΔD accumulation would
+    /// compound). It screens on |ΔD_α| + |ΔD_β| (see
+    /// `DirectJK::build_uhf_incremental`) and is opt-IN, unlike the
+    /// closed-shell path: `direct_jk::open_shell_incremental_enabled` holds
+    /// the measurements (correct, ~1.00-1.05x). A pluggable K is never fed a
+    /// ΔD: the combined DirectJK requires `pluggable_k.is_none()`, so there
+    /// is no DirectJK (and no incremental path) whenever one is active. LinK
+    /// would otherwise build its density-pair list from a difference density
+    /// and COSX's overlap fit is defined against a true density.
+    pub(crate) fn new(
+        (ctx, prep, bounds, config): (
+            &'a ParallelContext,
+            &'a PreparedBasis,
+            &'a crate::screening::SchwarzBounds,
+            &RhfConfig,
+        ),
+        ooc_budget: usize,
+        setup: OpenShellJkSetup<'a>,
+    ) -> Result<Self, FerricError> {
+        let OpenShellJkSetup {
+            inj_jk,
+            df_j,
+            df_k,
+            started_k: (cosx_sched, pluggable_k),
+            need_k,
+            omega,
+        } = setup;
+        let n = prep.nbasis();
+        let injected = inj_jk.is_some();
+        let combined_direct_jk = df_j.is_none()
+            && df_k.is_none()
+            && need_k
+            && omega == 0.0
+            && pluggable_k.is_none()
+            && !injected
+            && crate::direct_jk::combined_open_shell_jk_enabled();
+        // `[scf] eri`: the in-core ERI store serves the combined DirectJK.
+        let incore = crate::incore_jk::attach_for_scf(
+            ctx,
+            prep,
+            bounds,
+            config,
+            ooc_budget,
+            (combined_direct_jk, omega),
+        )?;
+        let thresh = config.integral_thresh;
+        let direct_jk = combined_direct_jk
+            .then(|| crate::direct_jk::DirectJK::new(ctx, prep, bounds, thresh, ooc_budget));
+        // No molecular direct builders on the injected path (J/K come from
+        // `inj_jk`).
+        let direct_j = (df_j.is_none() && !combined_direct_jk && !injected)
+            .then(|| crate::direct_j::DirectJ::new(ctx, prep, bounds, thresh, ooc_budget));
+        let direct_k = (need_k
+            && omega == 0.0
+            && df_k.is_none()
+            && !combined_direct_jk
+            && pluggable_k.is_none()
+            && !injected)
+            .then(|| crate::direct_k::DirectK::new(ctx, prep, bounds, thresh, ooc_budget));
+        let incremental_direct = direct_jk.is_some()
+            && incore.is_none()
+            && crate::direct_jk::open_shell_incremental_enabled();
+        Ok(OpenShellJk {
+            inj_jk,
+            df_j,
+            df_k,
+            direct_jk,
+            direct_j,
+            direct_k,
+            pluggable_k,
+            cosx_sched,
+            _incore: incore,
+            incremental_direct,
+            d_last_fock: None,
+            j_buf: Array2::<f64>::zeros((n, n)),
+            k_a_buf: Array2::<f64>::zeros((n, n)),
+            k_b_buf: Array2::<f64>::zeros((n, n)),
+            total_quartets: 0,
+        })
+    }
+
+    /// Zero the buffers unless this iteration accumulates onto them: on an
+    /// incremental iteration they KEEP the previous iteration's J/K_σ (the
+    /// delta is added onto them). Returns whether it is incremental.
+    pub(crate) fn begin_iteration(&mut self, iter: usize) -> bool {
+        let direct_full_rebuild = self.incremental_direct
+            && (self.d_last_fock.is_none() || iter % INCREMENTAL_FULL_REBUILD_EVERY == 1);
+        let direct_incremental = self.incremental_direct && !direct_full_rebuild;
+        if !direct_incremental {
+            self.j_buf.fill(0.0);
+            self.k_a_buf.fill(0.0);
+            self.k_b_buf.fill(0.0);
+        }
+        direct_incremental
+    }
+
+    /// The Fock build stage: J (and, on the combined path, K_α/K_β) into the
+    /// buffers, then `F_σ = H + J − K_σ_total` per spin, assembled in place:
+    /// no K_σ_total clones for HF/plain hybrids and no zeros allocations for
+    /// pure DFT. `F_σ += (−c)·K` is bit-identical to `F_σ −= c·K` (the sign
+    /// flip is exact); the range-separated branch keeps the explicit SR/LR
+    /// combination for the same reason. `d_occ` is each spin's bare C_occ
+    /// for the DF-K half-transform (`None` takes the density factor); `c_k`
+    /// the ω = 0 exchange coefficient.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn build_fock(
+        &mut self,
+        direct_incremental: bool,
+        (d_a, d_b, d_total): (&Array2<f64>, &Array2<f64>, &Array2<f64>),
+        (d_occ_a, d_occ_b): (Option<&Array2<f64>>, Option<&Array2<f64>>),
+        env: &ScfEnv<'_>,
+        (k_mix, need_k, c_k): (KMix, bool, f64),
+        jk_ladder: &crate::jk_ladder::JkLadder,
+        phases: &mut PhaseAccumulator,
+    ) -> Result<(Array2<f64>, Array2<f64>), FerricError> {
+        let jk_t = phases.begin("jk_build");
+        let jk_scope = jk_ladder.begin_build(&[d_a, d_b]);
+        self.build_j(direct_incremental, (d_a, d_b, d_total))?;
+        let h = &env.h;
+        let mut f_a: Array2<f64> = h + &self.j_buf;
+        let mut f_b: Array2<f64> = h + &self.j_buf;
+        if k_mix.omega > 0.0 {
+            let mut dfk_sr = env
+                .dfk_sr
+                .as_ref()
+                .expect("dfk_sr built when omega>0")
+                .borrow_mut();
+            let mut dfk_lr = env
+                .dfk_lr
+                .as_ref()
+                .expect("dfk_lr built when omega>0")
+                .borrow_mut();
+            let (dfk_sr, dfk_lr) = (&mut *dfk_sr, &mut *dfk_lr);
+            crate::fock_assembly::subtract_rsh_exchange(
+                dfk_sr, dfk_lr, d_a, d_occ_a, 1.0, &mut f_a, k_mix.sr, k_mix.lr, 1.0,
+            )?;
+            crate::fock_assembly::subtract_rsh_exchange(
+                dfk_sr, dfk_lr, d_b, d_occ_b, 1.0, &mut f_b, k_mix.sr, k_mix.lr, 1.0,
+            )?;
+        } else if need_k {
+            self.build_k((d_a, d_b), (d_occ_a, d_occ_b))?;
+            f_a.scaled_add(-c_k, &self.k_a_buf);
+            f_b.scaled_add(-c_k, &self.k_b_buf);
+        }
+        drop(jk_scope);
+        phases.stop(jk_t);
+        Ok((f_a, f_b))
+    }
+
+    /// J from the total density: the injected J, the combined single-pass
+    /// J + K_α + K_β (incremental on ΔD_σ when this iteration is), DF-J, or
+    /// DirectJ. An injected (periodic) J pre-empts all of them (the injected
+    /// validators guarantee no DF/pluggable builder beside it).
+    fn build_j(
+        &mut self,
+        direct_incremental: bool,
+        (d_a, d_b, d_total): (&Array2<f64>, &Array2<f64>, &Array2<f64>),
+    ) -> Result<(), FerricError> {
+        if let Some((ij, _)) = self.inj_jk.as_mut() {
+            self.total_quartets += ij.build(d_total, &mut self.j_buf)?;
+        } else if let Some(djk) = self.direct_jk.as_mut() {
+            let (j, ka, kb) = (&mut self.j_buf, &mut self.k_a_buf, &mut self.k_b_buf);
+            if direct_incremental {
+                let (da_prev, db_prev) = self
+                    .d_last_fock
+                    .as_ref()
+                    .expect("d_last_fock set on full rebuild");
+                let delta_a = d_a - da_prev;
+                let delta_b = d_b - db_prev;
+                let delta_total = &delta_a + &delta_b;
+                self.total_quartets +=
+                    djk.build_uhf_incremental(&delta_total, &delta_a, &delta_b, j, ka, kb)?;
+            } else {
+                self.total_quartets += djk.build_uhf(d_total, d_a, d_b, j, ka, kb)?;
+            }
+            self.d_last_fock = Some((d_a.clone(), d_b.clone()));
+        } else if let Some(dfj) = self.df_j.as_mut() {
+            dfj.build(d_total, &mut self.j_buf)?;
+        } else {
+            let dj = self.direct_j.as_mut().expect("DirectJ built before loop");
+            self.total_quartets += dj.build(d_total, &mut self.j_buf)?;
+        }
+        Ok(())
+    }
+
+    /// K_α/K_β at ω = 0: the injected K, the combined pass (already filled by
+    /// [`Self::build_j`]), the pluggable builder, DF-K (the C_occ
+    /// half-transform per spin when available, D_σ = C_occ,σ·C_occ,σᵀ; else
+    /// the density factor), or DirectK. The injected and pluggable builders
+    /// take a per-spin `update_density(D_σ)` + `build(D_σ)` from one instance
+    /// (see [`crate::fock_assembly::build_open_shell_pluggable_k`]); an
+    /// injected Madelung term (if any) is linear in D_σ, so no per-spin
+    /// factor.
+    fn build_k(
+        &mut self,
+        (d_a, d_b): (&Array2<f64>, &Array2<f64>),
+        (d_occ_a, d_occ_b): (Option<&Array2<f64>>, Option<&Array2<f64>>),
+    ) -> Result<(), FerricError> {
+        let (ka, kb) = (&mut self.k_a_buf, &mut self.k_b_buf);
+        if let Some((_, ik)) = self.inj_jk.as_mut() {
+            self.total_quartets +=
+                crate::fock_assembly::build_open_shell_pluggable_k(ik.as_mut(), d_a, d_b, ka, kb)?;
+        } else if self.direct_jk.is_some() {
+            // K_α/K_β already filled by the combined single-pass build.
+        } else if let Some(pk) = self.pluggable_k.as_mut() {
+            self.total_quartets +=
+                crate::fock_assembly::build_open_shell_pluggable_k(pk.as_mut(), d_a, d_b, ka, kb)?;
+        } else if let Some(dfk) = self.df_k.as_mut() {
+            match d_occ_a {
+                Some(c) => dfk.build_from_occ(c, ka)?,
+                None => dfk.build_from_density_factor(d_a, ka)?,
+            };
+            match d_occ_b {
+                Some(c) => dfk.build_from_occ(c, kb)?,
+                None => dfk.build_from_density_factor(d_b, kb)?,
+            };
+        } else {
+            let dk = self.direct_k.as_mut().expect("DirectK built before loop");
+            use crate::direct_k::DirectK;
+            self.total_quartets += <DirectK as KBuilder>::build(dk, d_a, ka)?;
+            self.total_quartets += <DirectK as KBuilder>::build(dk, d_b, kb)?;
+        }
+        Ok(())
+    }
+
+    /// The Newton/TRAH/stability matvec responses of these builders
+    /// (`uhf::scf_responses`).
+    pub(crate) fn responses(&mut self) -> crate::uhf_newton::ScfResponses<'_> {
+        crate::uhf::scf_responses(
+            self.df_j.as_mut(),
+            self.df_k.as_mut(),
+            self.direct_j.as_mut(),
+            self.direct_k.as_mut(),
+        )
+    }
+}
+
+/// The XC of one open-shell solve: the molecular UKS contribution or an
+/// injected (periodic) polarized one (never both).
+pub(crate) struct OpenShellXc<'a> {
+    pub(crate) xc_contrib: Option<Box<dyn ferric_dft::xc_trait::UksXcContribution>>,
+    pub(crate) inj_xc: Option<Box<dyn crate::rhf::XcBuilder + 'a>>,
+}
+
+impl OpenShellXc<'_> {
+    /// Kohn-Sham: a functional is active (the SCF's own, or an injected one).
+    pub(crate) fn active(&self) -> [bool; 2] {
+        [self.xc_contrib.is_some(), self.inj_xc.is_some()]
+    }
+}
+
+/// The divergence / stall early exit of the open-shell drivers (the shared
+/// [`ScfMonitor`] tests; both are no-ops at the `None` defaults): an error
+/// carrying the last energy.
+pub(crate) fn bail_if_diverged_or_stalled(
+    mon: &mut ScfMonitor,
+    (energy, err_max, iter): (f64, f64, usize),
+    config: &RhfConfig,
+) -> Result<(), FerricError> {
+    if mon.diverging(energy, config.divergence_tol) || mon.stalled(err_max, config.stall_window) {
+        return Err(FerricError::ScfConvergence {
+            iterations: iter,
+            last_energy: mon.prev_e,
+        });
+    }
+    Ok(())
+}
+
 /// The trust-region augmented-Hessian (TRAH) bookkeeping a driver carries
 /// across iterations (opt-in; inert when `config.trah_trigger` is `None`).
 ///

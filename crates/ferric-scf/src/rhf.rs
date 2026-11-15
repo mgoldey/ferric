@@ -2622,15 +2622,6 @@ struct RhfJk<'a> {
     total_quartets: usize,
 }
 
-/// Periodic full-rebuild guard against f64 drift accumulating across many
-/// incremental updates (PySCF re-triggers via `direct_scf_tol`; Psi4 hard
-/// resets every `INCFOCK_FULL_FOCK_EVERY = 5`). We use 8: a compromise
-/// between Psi4's 5 and amortizing the full-build cost, verified to hold the
-/// incremental-vs-full energy well within the direct-path noise floor. A full
-/// rebuild fires on iter 1, whenever `iter % INCREMENTAL_FULL_REBUILD_EVERY ==
-/// 1`, and whenever the last-Fock density is None.
-const INCREMENTAL_FULL_REBUILD_EVERY: usize = 8;
-
 impl<'a> RhfJk<'a> {
     /// Build the direct J/K builders the route needs, then let XC take its
     /// memory and start.
@@ -2822,7 +2813,8 @@ impl<'a> RhfJk<'a> {
     ) -> Result<Option<f64>, FerricError> {
         let d = &st.d;
         let direct_full_rebuild = self.incremental_direct
-            && (self.d_last_fock.is_none() || iter % INCREMENTAL_FULL_REBUILD_EVERY == 1);
+            && (self.d_last_fock.is_none()
+                || iter % crate::driver::INCREMENTAL_FULL_REBUILD_EVERY == 1);
         let direct_incremental = self.incremental_direct && !direct_full_rebuild;
         if !direct_incremental {
             self.j_buf.fill(0.0);
