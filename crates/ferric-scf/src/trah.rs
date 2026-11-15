@@ -86,8 +86,8 @@
 //!
 //! | ρ            | step     | radius     |
 //! |--------------|----------|------------|
-//! | ρ < 0        | rejected | Δ ← 0.7 Δ  |
-//! | 0 ≤ ρ ≤ 0.25 | accepted | Δ ← 0.7 Δ  |
+//! | ρ ≤ 0        | rejected | Δ ← 0.7 Δ  |
+//! | 0 < ρ ≤ 0.25 | accepted | Δ ← 0.7 Δ  |
 //! | 0.25 < ρ ≤ 0.75 | accepted | unchanged |
 //! | ρ > 0.75     | accepted | Δ ← 1.2 Δ  |
 //!
@@ -595,7 +595,8 @@ pub struct TrahConfig {
     /// (~1e-14 relative) and far below any convergence threshold anyone would
     /// set, so it only ever fires when the step is genuinely pointless.
     pub predicted_min: f64,
-    /// ρ below this ⇒ the step is **rejected**. Default 0.0 (paper: ρ < 0).
+    /// ρ at or below this ⇒ the step is **rejected**. Default 0.0 (the paper
+    /// rejects ρ < 0; ferric also rejects ρ = 0, a step that bought nothing).
     pub rho_reject: f64,
     /// ρ at or below this (but above `rho_reject`) ⇒ accept but contract.
     /// Default 0.25 (paper).

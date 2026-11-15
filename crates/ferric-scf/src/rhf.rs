@@ -357,11 +357,13 @@ pub struct RhfConfig {
     /// guess and [`crate::basis2::GuessBasisReport::converged`] is `false`.
     pub guess_basis: Option<crate::basis2::GuessBasis>,
     /// When `true` (the default) and no `init_guess_density` is supplied, the SCF
-    /// starts from a SAD (superposition-of-atomic-densities) guess computed via
-    /// `guess::sad_guess`, falling back to the hcore guess if SAD fails. SAD cures
-    /// the heavy-atom RHF divergence class (COSe/C2H3Br) that hcore triggers. Set
-    /// `false` to force the bare hcore guess — used internally by `sad_guess` for
-    /// its free-atom solves to break the recursion.
+    /// starts from the MINAO-style superposed-atomic-density guess
+    /// (`guess::minao_projection_guess`, the config string `"sad"` is an alias of
+    /// it), falling back to the hcore guess if it fails. It cures the heavy-atom
+    /// RHF divergence class (COSe/C2H3Br) that hcore triggers. Set `false` to
+    /// force the bare hcore guess — used internally by `sad_guess` for its
+    /// free-atom solves to break the recursion. The field name predates the switch
+    /// from the free-atom-SCF `sad_guess` to MINAO.
     pub use_sad_guess: bool,
     /// If `Some(n)`: abort early when the running minimum of `err_max` over the
     /// last `n` iters has not dropped below 0.9× its value over the previous `n`

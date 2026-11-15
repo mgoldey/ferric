@@ -145,23 +145,13 @@ pub fn rpa_correlation_energy(quad_weights: &[f64], eigenvalues_freq: &Array2<f6
     e_c / (2.0 * std::f64::consts::PI)
 }
 
-/// Evaluate λ_α(iω_k) for each quadrature point given converged eigenpotentials.
-///
-/// Uses the diagonal of the projected dielectric matrix as λ_α(iω_k).
-///
-/// # Arguments
-/// * `eigenvectors` - Converged eigenvectors V_α from PDEP, shape (naux, M)
-/// * `b_ov` - RI-MO tensor B^P_ia, shape (naux, nocc*nvir)
-/// * `eps_occ` - Occupied orbital energies
-/// * `eps_vir` - Virtual orbital energies
-/// * `quad_freqs` - Imaginary quadrature frequencies ω_k
-///
-/// # Returns
-/// Array2 of shape (N_quad, M) containing eigenvalues λ_α(iω_k).
 /// Laplace-separable variant of [`eval_eigenvalues_at_frequencies`].
 ///
 /// Uses the χ₀ kernel from [`crate::laplace_chi0`] in place of the dense
-/// `dielectric_matrix`. The output shape and convention are identical.
+/// `dielectric_matrix`, and returns the eigenvalues of the projected
+/// dielectric matrix `Vᵀ ε̃(iω_k) V` (`m × m`, `m` = number of eigenpotentials)
+/// at each quadrature frequency. The output shape `(N_quad, M)` and convention
+/// are identical to the dense routine's.
 pub fn eval_eigenvalues_at_frequencies_laplace(
     eigenvectors: &Array2<f64>,
     b_ov: &Array2<f64>,

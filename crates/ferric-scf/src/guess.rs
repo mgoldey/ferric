@@ -866,6 +866,10 @@ fn atomic_hcore_density(
 ///    cc-pVDZ PBE at energy_conv 1e-10) still converge cleanly, matching the prior
 ///    SAD default.
 ///
+/// Despite the name, nothing is projected: the guess superposes block-diagonal
+/// atomic densities written directly in the molecule's own basis (no minimal
+/// reference basis is overlapped with it).
+///
 /// Off-diagonal atom-atom blocks stay zero (standard SAD/MINAO structure); the
 /// block diagonal is trace-exact (`tr(D·S) == nelec`). If a per-element build
 /// fails, that atom's block is left zero and the molecular SCF fills it in from

@@ -4885,7 +4885,7 @@ fn run_drpa(
             e_ref,
             "E_corr(canonical)",
             "threshold error",
-            "~linear in eps; not variational",
+            "superlinear in eps; not variational",
         ) {
             println!("{line}");
         }

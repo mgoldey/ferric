@@ -1,8 +1,8 @@
-//! Guard for the large-S asymptotic (`TERF_ASYMPTOTIC_S = 75`).
+//! Guard for the large-S asymptotic (`TERF_ASYMPTOTIC_S = 50`, shim.cc).
 //!
 //! WHY THIS FILE EXISTS: the five existing terf guards all run on water, whose
-//! S values never exceed 75, so they do NOT execute the asymptotic branch.
-//! Mutation-tested 2026-09-15: corrupting the asymptotic by 5% left every one
+//! S values stay below the crossover, so they do NOT execute the asymptotic
+//! branch. Mutation-tested 2026-09-15: corrupting the asymptotic by 5% left every one
 //! of them green. They are regression protection for the table path, not
 //! evidence about this one.
 //!
@@ -18,7 +18,7 @@ fn asymptotic_matches_the_exact_series_at_the_crossover() {
     assert_eq!(ok, 1, "probe failed with status {ok}");
 
     // The probe sweeps S in {25,50,100,200,400} x s in {0.05,0.2,0.5}. S=25 is
-    // BELOW the 75 crossover and is deliberately included: it is where the
+    // BELOW the 50 crossover and is deliberately included: it is where the
     // asymptotic is NOT yet converged, so this bar also pins that we did not
     // set the threshold too low. Measured worst over that whole sweep: 2.5e-5,
     // dominated entirely by the S=25 row (S>=50 is ~1e-13).

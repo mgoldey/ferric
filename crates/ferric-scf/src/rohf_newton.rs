@@ -7,9 +7,10 @@
 //! by the κ-rotation, rebuilding J/K (+ XC kernel for ROKS) on those
 //! perturbations, and reading back the three relevant MO blocks.
 //!
-//! The linear solver is the same DIIS-preconditioned fixed-point iteration
-//! that the RI-MP2 Z-vector solver (`ferric-mp2::zvector`) uses; we don't
-//! need a Davidson eigensolve because we want a single RHS, not eigenpairs.
+//! The linear solver is preconditioned conjugate gradients (`pcg_refine`,
+//! Steihaug truncation on non-positive curvature, diagonal-gap
+//! preconditioner); a Davidson eigensolve is not needed because there is a
+//! single RHS, not eigenpairs.
 //!
 //! Rotation is applied via the Cayley unitary U = (I − κ/2)^{−1}(I + κ/2),
 //! which exactly preserves orthonormality.

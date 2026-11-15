@@ -509,7 +509,7 @@ pub(crate) const PAR_MO_TRANSFORM_WORK_THRESHOLD: usize = 200_000;
 /// the reason is numerical, not effort.
 ///
 /// The dressing step below is
-/// `general_mat_mul(1.0, &msub, &mo_blk, 1.0, &mut b_flat)` — **beta = 1**, i.e.
+/// `par_gemm(1.0, &msub, &mo_blk.view(), 1.0, &mut b_flat)` — **beta = 1**, i.e.
 /// each chunk accumulates a partial sum into the same output. `MO_STREAM_CHUNK`
 /// is therefore the k-blocking of that reduction, and k-blocking is an
 /// ACCURACY-and-DETERMINISM knob: summing the k axis in fixed-size blocks is a
@@ -560,7 +560,7 @@ static MO_STREAM_TRACE: ferric_core::config::ConfigVar<bool> = ferric_core::conf
 /// # This width changes results — deliberately, and reproducibly
 ///
 /// The dressing step is
-/// `general_mat_mul(1.0, &msub, &mo_blk, 1.0, &mut b_flat)` — **beta = 1** — so
+/// `par_gemm(1.0, &msub, &mo_blk.view(), 1.0, &mut b_flat)` — **beta = 1** — so
 /// the chunk width is the k-blocking of a partial-sum accumulation, and
 /// k-blocking is an accuracy knob, not only a memory one. Changing it perturbs
 /// the last digits (`three_index_source.rs`'s `DRESS_ROW_BLOCK` measured ~7e-15
@@ -582,7 +582,7 @@ static MO_STREAM_TRACE: ferric_core::config::ConfigVar<bool> = ferric_core::conf
 /// The consequence a user must understand: **two runs of the same system at
 /// different `budget_gb` may differ in the last digits.** That is the price of
 /// letting the budget bound this transient. Runs at the same budget are
-/// bit-identical, and the resolved width is logged under `FERRIC_OOC_TRACE`.
+/// bit-identical, and the resolved width is logged under `FERRIC_MO_STREAM_TRACE`.
 /// Test-only re-export of [`mo_stream_chunk_for`] for the budget contracts in
 /// `tests/mwe_mo_stream_chunk_budget.rs`.
 #[doc(hidden)]

@@ -3,9 +3,10 @@
 # same file runs exact dRPA (see water-drpa.toml).
 #
 # eps is part of the model and has no default: eps = 0 reproduces exact dRPA;
-# a finite eps carries a one-sided error that is ~linear in eps (dRPA is not
-# variational). reference = true also computes the canonical plasmon-formula
-# dRPA (a dense eigensolve, off by default) and prints the error against it.
+# a finite eps carries a one-sided error that is superlinear in eps (a
+# log-log slope above 1; dRPA is not variational). reference = true also
+# computes the canonical plasmon-formula dRPA (a dense eigensolve, off by
+# default) and prints the error against it.
 #
 # To scan several thresholds on ONE SCF, replace eps with e.g.
 #   eps_sweep = [0.0, 1e-4, 1e-3]

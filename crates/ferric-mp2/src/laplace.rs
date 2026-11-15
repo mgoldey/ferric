@@ -22,7 +22,7 @@
 //!    (`laplace_exchange_energy`) on τ-weighted amplitudes hoisted out of the point loop.
 //!
 //! ## Reference
-//! Häser & Almlöf, Chem. Phys. Lett. 191, 299 (1992).
+//! Häser & Almlöf, J. Chem. Phys. 96, 489 (1992).
 //! Takatsuka, Ten-no, Hackbusch, J. Chem. Phys. 129, 044112 (2008).
 
 use ferric_core::mol::Molecule;

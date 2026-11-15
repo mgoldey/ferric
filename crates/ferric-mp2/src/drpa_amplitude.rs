@@ -12,8 +12,10 @@
 //!    perturbations (unlike MP2's Hylleraas stationarity), so the canonical
 //!    reference is built on the exactly SEMICANONICALIZED recomputed Fock
 //!    (the Python rig measured a 4e-7 Fock inconsistency producing a 1.7e-9
-//!    anchor failure), and masked-solve energy errors are expected ~linear
-//!    in ε, not quadratic.
+//!    anchor failure), and masked-solve energy errors are one-sided and
+//!    SUPERLINEAR in ε (a log-log slope above 1, not 1 and not 2; the local
+//!    MP2 C4 record is ~1.2 per decade of ε,
+//!    `lmp2_certificate::MEASURED_SLOPE_C4`), not quadratic.
 //!
 //! Spin-adapted closed-shell drCCD: `B_iajb = 2 (ia|jb)`,
 //! `R(T) = B + F(T) + BT + TB + TBT = 0` with `F` the same non-canonical

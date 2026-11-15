@@ -2866,8 +2866,9 @@ pub struct ScfCfg {
     /// Hartree. Absent/None = integer occupation (default). A convergence aid
     /// for near-degenerate frontier manifolds (metals / TM dimers).
     pub smearing_sigma: Option<f64>,
-    /// SCF initial guess: "minao" (default, no per-element free-atom SCF for
-    /// heavy atoms), "sad" (legacy free-atom-SCF superposition), or "hcore".
+    /// SCF initial guess: "minao" (default; per-atom blocks, free-atom SCF only
+    /// for light main-group atoms), "sad" (an ALIAS of "minao": the free-atom-SCF
+    /// SAD guess is not selectable), or "hcore".
     pub guess: Option<String>,
     /// Secondary-basis guess (Q-Chem `BASIS2`): a bundled basis name. The SCF
     /// is converged in it first and projected into the target basis as the

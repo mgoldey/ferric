@@ -680,9 +680,9 @@ fn same_spin_energy_only(ch: SpinChannel, mixed_ok: bool) -> f64 {
     // PAIR SYMMETRY (energy-only path only). The summand
     //   K_iajb^2 / D_ijab,   K_iajb = (ia|jb) - (ib|ja)
     // is invariant under the JOINT swap (i,j)<->(j,i), (a,b)<->(b,a): K is
-    // antisymmetric under it (K_jbia = (jb|ia) - (ja|ib) = -K_iajb, using
-    // the real-orbital 2-electron symmetry (ia|jb) = (jb|ia)), so K^2 is
-    // symmetric, and D_ijab = e_i + e_j - e_a - e_b is manifestly symmetric.
+    // symmetric under it (K_jbia = (jb|ia) - (ja|ib) = (ia|jb) - (ib|ja)
+    // = K_iajb, using the real-orbital 2-electron symmetry (ia|jb) = (jb|ia)),
+    // and D_ijab = e_i + e_j - e_a - e_b is manifestly symmetric.
     // The (j,i) block therefore contributes exactly what the (i,j) block
     // does, so we visit only unique pairs j >= i and weight the strictly
     // off-diagonal ones by 2 — the same argument and the same fac=2/fac=1

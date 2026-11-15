@@ -102,9 +102,8 @@ pub fn scs_mp2(
 /// Citation note (2026-09-23): this was previously attributed to Goldey, Dutoi
 /// & Head-Gordon, PCCP 15, 15869 (2013). That paper is attenuated MP2 in
 /// aug-cc-pVTZ; the separately-attenuated SCS variant is the 2014 JPCB paper.
-/// The "thesis Eq 5.6" references are to the author's dissertation and were
-/// NOT checked against its text; the formula implemented is the one written
-/// out below and pinned by `scs_2terfc_matches_eq12_assembled_by_hand`.
+/// The formula implemented is the one written out below and pinned by
+/// `scs_2terfc_matches_eq12_assembled_by_hand`.
 #[derive(Debug, Clone)]
 pub struct ScsMp2TerfcConfig {
     /// Bonded attenuation distance r0(1) in Bohr.

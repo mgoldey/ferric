@@ -225,7 +225,7 @@ fn check_operator_supported(op: Operator, prep: &PreparedBasis) -> Result<(), Fe
         // to be an inner product — i.e. the kernel positive-definite. terf is
         // not: its Fourier transform
         //     F_terf(k) = cos(k*r0) * exp(-k^2/4w^2) / (2 pi^2 k^2)
-        // changes sign at k*r0 = pi (Bochner), so the form is indefinite,
+        // first changes sign at k*r0 = pi/2 (Bochner), so the form is indefinite,
         // `(ij|ij)` can be NEGATIVE, and `Q = sqrt((ij|ij))` is not even real.
         //
         // MEASURED, not merely derived — water/cc-pVDZ 2-center diagonals:
@@ -244,7 +244,7 @@ fn check_operator_supported(op: Operator, prep: &PreparedBasis) -> Result<(), Fe
             return Err(FerricError::Libint(
                 "Schwarz screening is INVALID for the Terf operator, not merely unimplemented: \
                  terf's kernel is not positive-definite (its Fourier transform cos(k*r0) \
-                 exp(-k^2/4w^2)/(2 pi^2 k^2) changes sign at k*r0 = pi), so the two-electron \
+                 exp(-k^2/4w^2)/(2 pi^2 k^2) first changes sign at k*r0 = pi/2), so the two-electron \
                  form is indefinite, (ij|ij) can be negative, and Q = sqrt((ij|ij)) is not real. \
                  Measured: min (P|P)_terf = -7.543e-3 on water/cc-pVDZ at r0=2. Use RI/DF for \
                  the long-range piece; terf integrals do not decay with separation, so there is \

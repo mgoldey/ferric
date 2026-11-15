@@ -400,7 +400,7 @@ pub fn csb_m_table(op: Operator, prep: &PreparedBasis) -> Result<Array2<f64>, Fe
         // is `min{Q Q, M M, M M}` and every one of those terms comes from the
         // SAME Cauchy-Schwarz argument, so CSB inherits Schwarz's requirement
         // that the kernel be positive-definite. terf is not (sign change at
-        // k*r0 = pi; measured -7.543e-3 diagonal), so CSB is invalid there
+        // k*r0 = pi/2; measured -7.543e-3 diagonal), so CSB is invalid there
         // permanently. terfc IS positive-definite and CSB-eligible; the
         // 4-center engine it needed now exists (shim.cc compute_cart_eri4), and
         // the bound has been measured for Schwarz on water/cc-pVDZ at r0=2

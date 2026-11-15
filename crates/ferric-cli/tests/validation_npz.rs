@@ -9,8 +9,10 @@
 //!
 //! # What this row pins
 //!
-//! The CLI's `[rpa] export_npz` path (`ferric_cli::lib.rs`, the block that
-//! fills `NpzBundle` and calls `ferric_export::ml::export_npz`) writes arrays
+//! The CLI's `[rpa] export_npz` path (`export_pdep_npz_bundle` in
+//! `crates/ferric-cli/src/lib.rs`, which calls `write_pdep_npz` in
+//! `crates/ferric-rpa/src/property_bundle.rs`, the code that fills `NpzBundle`
+//! and calls `ferric_export::ml::export_npz`) writes arrays
 //! that a FOREIGN reader (`numpy.load`) reads back equal to INDEPENDENTLY
 //! computed values, and no requested field is missing. The companion pytest
 //! (`crates/ferric-python/tests/test_validation_npz_export.py`) checks the
@@ -105,13 +107,15 @@
 //!
 //! # MUTATIONS (documented; each must turn this file red)
 //!
-//! * A — `crates/ferric-cli/src/lib.rs`, in the `NpzBundle` literal:
-//!   `lowdin: lq_vec.as_deref(),` → `lowdin: mq_vec.as_deref(),`
-//!   (Mulliken exported as Löwdin). Fails "lowdin_charges integral" by ~0.17 e.
-//! * B — same literal: `hirshfeld: hq_vec.as_deref(),` → `hirshfeld: None,`.
-//!   The CLI still exits 0 (that arm never records a gap); the key-set check
-//!   fails naming `hirshfeld_charges`.
-//! * C — `crates/ferric-cli/src/lib.rs`, the `coords_arr` block:
+//! * A — `crates/ferric-rpa/src/property_bundle.rs`, in the `NpzBundle`
+//!   literal of `write_pdep_npz`: `lowdin: props.lowdin.as_deref(),` →
+//!   `lowdin: props.mulliken.as_deref(),` (Mulliken exported as Löwdin).
+//!   Fails "lowdin_charges integral" by ~0.17 e.
+//! * B — same literal: `hirshfeld: props.hirshfeld.as_deref(),` →
+//!   `hirshfeld: None,`. The CLI still exits 0 (that arm never records a gap);
+//!   the key-set check fails naming `hirshfeld_charges`.
+//! * C — `crates/ferric-rpa/src/property_bundle.rs`, the `coords` block of
+//!   `compute_pdep_properties`:
 //!   `a[(i, 1)] = atom.y;` → `a[(i, 1)] = atom.zpos;`. Fails the bit-exact
 //!   coords check.
 

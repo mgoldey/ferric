@@ -44,9 +44,11 @@ use ndarray::Array2;
 ///
 /// Computes K using pair-list-driven loops instead of the canonical O(N^4) shell
 /// quartet iteration. For each (ish, jsh) significant pair, the ket shells are
-/// restricted to the intersection of geometry-significant and density-significant
-/// partners, dramatically reducing the number of computed quartets for spatially
-/// extended systems.
+/// the UNION of the density-significant partners of ish and of jsh (the quartet
+/// feeds K through the density blocks `D[i,k]`, `D[i,l]`, `D[j,k]` and
+/// `D[j,l]`), with the ket pair's own geometry significance enforced by the
+/// pair list. This dramatically reduces
+/// the number of computed quartets for spatially extended systems.
 pub struct LinkK<'a, B: Bound> {
     ctx: &'a ParallelContext,
     prep: &'a PreparedBasis,
