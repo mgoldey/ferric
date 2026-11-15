@@ -564,6 +564,49 @@ CASES = [
             ),
         ],
     ),
+    (
+        "dft_hybrid_rsh_sympy.py",
+        10,
+        [
+            ("return alpha + beta, alpha", "return alpha, alpha + beta", "[FAIL] C1"),
+            (
+                "return h + j - 0.5 * k_total(d, mix)",
+                "return h + j - 0.25 * k_total(d, mix)",
+                "[FAIL] B5",
+            ),
+            (
+                "return h + j - k_total(ds, mix)",
+                "return h + j - 0.5 * k_total(ds, mix)",
+                "[FAIL] B5",
+            ),
+            (
+                "return c_sr * k_of(eri_erfc, d) + c_lr * k_of(eri_erf, d)",
+                "return c_sr * k_of(eri_erf, d) + c_lr * k_of(eri_erfc, d)",
+                "[FAIL] B3",
+            ),
+            (
+                "return 0.5 * np.sum(d * (h + f))",
+                "return np.sum(d * (h + f))",
+                "[FAIL] B4",
+            ),
+        ],
+    ),
+    (
+        "tddft_response_sympy.py",
+        10,
+        [
+            (
+                'return 2.0 if spin == "singlet" else 0.0',
+                'return 1.0 if spin == "singlet" else 0.0',
+                "[FAIL] B1",
+            ),
+            ('s = 1.0 if spin == "singlet" else -1.0', "s = 1.0", "[FAIL] B1"),
+            ("kov4.transpose(0, 3, 2, 1)", "kov4.transpose(0, 1, 2, 3)", "[FAIL] B1"),
+            ("xpy = t_half @ z / np.sqrt(w)", "xpy = t_half @ z / w", "[FAIL] B4"),
+            ("tdip = np.sqrt(2.0) * np.einsum", "tdip = np.einsum", "[FAIL] B2"),
+            ("a[:da, da:] = cross", "a[:da, da:] = 0.0 * cross", "[FAIL] B5"),
+        ],
+    ),
 ]
 
 

@@ -469,6 +469,14 @@
         "scripts/dft_fxc_kernel_sympy.py"
       ]
     },
+    "ks-hybrid-rsh": {
+      "theory": [
+        "crates/ferric-dft/theory.md#exact-exchange-in-hybrid-and-range-separated-hybrid-functionals"
+      ],
+      "scripts": [
+        "scripts/dft_hybrid_rsh_sympy.py"
+      ]
+    },
     "ks-mgga": {
       "theory": [
         "crates/ferric-dft/theory.md#semilocal-v_xc-matrix-elements"
@@ -683,6 +691,21 @@
         "scripts/mp2_gradient_sympy.py"
       ]
     },
+    "tddft": {
+      "theory": [
+        "crates/ferric-tddft/theory.md#1-response-matrices",
+        "crates/ferric-tddft/theory.md#2-tamm-dancoff-approximation",
+        "crates/ferric-tddft/theory.md#3-casida-equations",
+        "crates/ferric-tddft/theory.md#4-transition-dipoles-and-oscillator-strengths",
+        "crates/ferric-tddft/theory.md#8-range-separated-hybrids",
+        "crates/ferric-tddft/theory.md#9-triplets",
+        "crates/ferric-tddft/theory.md#10-unrestricted-uhf--uks-references"
+      ],
+      "scripts": [
+        "scripts/tddft_response_sympy.py",
+        "scripts/dft_fxc_kernel_sympy.py"
+      ]
+    },
     "u-pdep-rpa": {
       "theory": [
         "crates/ferric-rpa/theory.md#open-shell-spin-summed-dielectric"
@@ -755,9 +778,6 @@
         "crates/ferric-cc/theory.md#ee-eom-ccsd-singlets-closed-shell"
       ]
     },
-    "ks-hybrid-rsh": {
-      "reason": "no theory.md derivation and no sympy proof"
-    },
     "local-mp2": {
       "reason": "crates/ferric-mp2/theory.md section 12 is a pointer to the wiki, with no derivation or function names",
       "scripts": [
@@ -805,12 +825,6 @@
     },
     "qmmm": {
       "reason": "no theory.md derivation and no sympy proof"
-    },
-    "tddft": {
-      "reason": "no theory.md derivation and no sympy proof (theory.md sections exist; no sympy proof)",
-      "theory": [
-        "crates/ferric-tddft/theory.md#1-response-matrices"
-      ]
     },
     "tdhf-static-polarizability": {
       "reason": "no theory.md derivation and no sympy proof",

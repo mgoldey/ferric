@@ -23,15 +23,20 @@ $$A_{ia,jb} = \delta_{ij}\delta_{ab}(\epsilon_a-\epsilon_i) + 2(ia|jb) - c_{\rm 
 
 $$B_{ia,jb} = 2(ia|bj) - c_{\rm HF}(ib|aj) + K_{ia,jb}$$
 
+(`build_a_matrix`, `build_b_matrix`; the Coulomb coefficient 2 is
+`coulomb_factor`, and `add_fxc_block` adds $K$ to both.)
+
 - The factor 2 on the Coulomb term is the singlet spin adaptation.
 - $c_{\rm HF}$ is the exact-exchange fraction: 1 for HF, the functional's
   global fraction for a hybrid, 0 for LDA/GGA/meta-GGA.
 - $K_{ia,jb} = (ia|f_{\alpha\alpha}+f_{\alpha\beta}|jb)$ is the singlet XC-kernel
-  block built by `singlet_fxc_ov_block`. With real orbitals
+  block built by `ferric_dft::lr_kernel::fxc_ov_block` with
+  `ResponseSpin::Singlet` (`singlet_fxc_ov_block`). With real orbitals
   $(ia|f_{xc}|jb) = (ia|f_{xc}|bj)$, so the same block enters $A$ and $B$.
-  It is zero for an HF reference. Its normalization equals PySCF
-  `tdscf.rhf.get_ab`'s `iajb`; that factor is pinned by comparison with
-  PySCF, not derived here (§5).
+  It is zero for an HF reference. For a spin-symmetric $e(\rho_\alpha,\rho_\beta)$,
+  $f_{\alpha\alpha}+f_{\alpha\beta} = 2\,\partial^2 e(\rho/2,\rho/2)/\partial\rho^2$,
+  so the block is twice the unpolarized kernel: PySCF `tdscf.rhf.get_ab`'s
+  `iajb`, which carries the same factor 2 (§5).
 - $(ia|bj) = (ia|jb)$ for real orbitals, so $A$ and $B$ share the Coulomb
   block $2\,B_{ov}^{\mathsf T}B_{ov}$. The exchange terms differ:
   $(ij|ab)$ in $A$ and $(ib|aj)$ in $B$, where
@@ -94,7 +99,13 @@ f_n = \tfrac23\,\Omega_n\,|\langle 0|\mathbf r|n\rangle|^2,$$
 
 with $Y = 0$ and $|X| = 1$ in TDA. This is PySCF's convention
 (`oscillator_strengths`, dipole origin at the coordinate origin; the result
-is origin-independent because $\langle i|a\rangle = 0$).
+is origin-independent because $\langle i|a\rangle = 0$). The $\sqrt2$ is the
+spin sum: the singlet amplitude is $X_{ia\alpha} = X_{ia\beta} = X_{ia}/\sqrt2$
+and the spin-free dipole adds the two spins. With all roots, the
+normalization of §3 gives the sum rule
+$\sum_n f_n = \tfrac43\sum_{x}\mathbf r_x^{\mathsf T}(A-B)\,\mathbf r_x$
+($\mathbf r_x$ the vector of $\langle i|x|a\rangle$), since
+$\sum_n\Omega_n(X+Y)_n(X+Y)_n^{\mathsf T} = T\big(\sum_n Z_nZ_n^{\mathsf T}\big)T = A-B$.
 
 ---
 
@@ -149,6 +160,17 @@ an error.
   the kernel block; with $K = 0$ and $c_{\rm HF} = 1$ it reduces to CIS.
 - Prototype: `scripts/proto_tddft.py` (hand-built TDA/Casida matrices from
   PySCF integrals against PySCF `tdscf`, water/cc-pVDZ).
+- Proof: `scripts/tddft_response_sympy.py`. Symbolically: the singlet and
+  triplet spin adaptation of $A$ and $B$ (§1, §9), the kernel factor 2 (§1),
+  the scalar Casida reduction and its normalization (§3) and the
+  range-separated exchange split (§8). Numerically, on random models with
+  RI tensors and a grid kernel: the spin-orbital $A$, $B$ against the code's
+  singlet and triplet blocks; CIS by brute force over determinants
+  (Jordan-Wigner) against $A$, closed and open shell; the Casida roots and
+  $X+Y$ against the full non-Hermitian problem; the sum rule of §4; the
+  unrestricted blocks of §10 and their closed-shell limit. With
+  `DERIV_CROSSCHECK=1` and PySCF importable, H$_2$O/STO-3G RHF (TDA, TDHF, singlet and triplet) and
+  H$_2$O$^+$/STO-3G UHF (TDA, TDHF) energies and oscillator strengths.
 - Refusals: `tests/refusals.rs`; memory plan: `tests/memory_budget.rs`.
 
 ---

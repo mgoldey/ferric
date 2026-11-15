@@ -270,6 +270,121 @@ with $D\to D^\sigma$, $\mathbf{G}^\sigma$ in place of $2v_\sigma\nabla\rho$.
   `ferric-python/tests/test_xc_blocks.py::test_xc_grad_matches_finite_difference_at_fixed_density`
   (PBE, SCAN; fixed-$D$ FD, closed and polarized).
 
+## Exact exchange in hybrid and range-separated hybrid functionals
+
+A hybrid functional adds a fraction of exact (Hartree-Fock) exchange to a
+semilocal functional. A range-separated hybrid uses a different fraction at
+short and long electron-electron distance. libxc supplies the semilocal part
+and the fractions; the SCF builds the exact exchange itself. The proof script
+is `scripts/dft_hybrid_rsh_sympy.py`.
+
+**Operator split.** With $\mathrm{erf}+\mathrm{erfc}=1$ the Coulomb operator
+splits at the range-separation parameter $\omega$ (Bohr$^{-1}$):
+$$\frac1r = \frac{\mathrm{erfc}(\omega r)}{r} + \frac{\mathrm{erf}(\omega r)}{r}.$$
+The CAM form of Yanai, Tew and Handy writes the exact-exchange kernel as
+$[a + b\,\mathrm{erf}(\omega r)]/r$ and gives the rest,
+$[1 - a - b\,\mathrm{erf}(\omega r)]/r$, to the semilocal exchange; the two
+sum to $1/r$. ferric writes every exact-exchange kernel as
+$$v_x^{\rm HF}(r) = c_{\rm sr}\,\frac{\mathrm{erfc}(\omega r)}{r} + c_{\rm lr}\,\frac{\mathrm{erf}(\omega r)}{r},$$
+so $c_{\rm sr}$ is the exact-exchange fraction as $r\to0$ and $c_{\rm lr}$ the
+fraction as $r\to\infty$. In the Yanai notation $c_{\rm sr} = a$ and
+$c_{\rm lr} = a + b$.
+
+**libxc convention as ferric reads it.** libxc's `xc_hyb_cam_coef` returns
+$(\omega, \alpha, \beta)$ for the kernel $\alpha/r + \beta\,\mathrm{erfc}(\omega r)/r$:
+`cam_alpha` multiplies the full-range operator and `cam_beta` the short-range
+one. Matching the two forms term by term,
+$$c_{\rm sr} = \alpha + \beta,\qquad c_{\rm lr} = \alpha$$
+(`XcFunctional::cam_coefficients`, stored in `CamCoeffs { omega, c_sr, c_lr }`).
+A functional with $\omega = 0$ has no `CamCoeffs`; its global fraction
+$a$ is `xc_hyb_exx_coef` (`XcFunctional::exact_exchange_mix`, stored in
+`XcDef::b3lyp_mix`). PySCF's `dft.libxc.rsh_coeff` returns
+$(\omega, c_{\rm lr}, c_{\rm sr} - c_{\rm lr})$, the same split. The sign
+of `cam_beta` tells the two families apart:
+
+| Functional | libxc $(\alpha, \beta, \omega)$ | $c_{\rm sr}$ | $c_{\rm lr}$ | Kind |
+|---|---|---|---|---|
+| ωB97X | $(1, -0.842294, 0.3)$ | 0.157706 | 1 | long-range corrected |
+| ωB97X-V | $(1, -0.833, 0.3)$ | 0.167 | 1 | long-range corrected |
+| CAM-B3LYP | $(0.65, -0.46, 0.33)$ | 0.19 | 0.65 | long-range corrected |
+| LC-ωPBE | $(1, -1, 0.4)$ | 0 | 1 | long-range only |
+| HSE06 | $(0, 0.25, 0.11)$ | 0.25 | 0 | screened (short-range only) |
+| B3LYP, PBE0 | $\omega = 0$, $a = 0.2$, $0.25$ | $a$ | $a$ | global hybrid |
+
+$\beta < 0$ means more exact exchange at long range, $\beta > 0$ more at
+short range. libxc's semilocal energy and potential for these functionals
+already carry the complementary semilocal exchange (scaled, and for an RSH
+attenuated by the matching short- or long-range factor), so ferric adds only
+the exact exchange.
+
+**Mixing coefficients.** `k_mix_from_xc_def` and `KsXc::k_mix` /
+`KsXcUks::k_mix` (`src/ks.rs`) turn the definition into
+`KMix { sr, lr, omega }` (`src/xc_trait.rs`):
+$(c_{\rm sr}, c_{\rm lr}, \omega)$ for an RSH, $(a, a, 0)$ for a global hybrid,
+$(0, 0, 0)$ for a pure functional, and $(1, 1, 0)$ for HF (no functional).
+A meta-GGA built from several libxc components (`metagga_def_from_handles`)
+sums the components' `xc_hyb_exx_coef` into one global $a$ (M06-2X: 0.54
+from the exchange component, 0 from correlation), takes `CamCoeffs` from at
+most one component, and refuses a definition that has both.
+`xc_def_from_name_nspin_omega` overrides $\omega$ in every component's
+`_omega` parameter and in `CamCoeffs.omega` together, leaving $\alpha$ and
+$\beta$ unchanged.
+
+**Exchange matrices.** For an AO density $P$ and kernel $v$,
+$K[v](P)_{\mu\nu} = \sum_{\lambda\sigma}(\mu\lambda|v|\nu\sigma)P_{\lambda\sigma}$
+and $J(P)_{\mu\nu} = \sum_{\lambda\sigma}(\mu\nu|\lambda\sigma)P_{\lambda\sigma}$.
+The exchange matrix the SCF subtracts is
+$$K_{\rm tot}(P) = c_{\rm sr}\,K[\mathrm{erfc}](P) + c_{\rm lr}\,K[\mathrm{erf}](P)$$
+(`fock_assembly::subtract_rsh_exchange`). For $\omega > 0$ the two matrices
+come from two density-fitting builders over the same auxiliary basis
+(`config.df_k_aux`, default `def2-universal-jkfit`), one per operator
+(`fock_assembly::build_rsh_dfk_pair`, `Operator::erfc(ω)` and
+`Operator::erf(ω)`). For $\omega = 0$, $K_{\rm tot} = a\,K[1/r]$ from whichever
+K builder the run selected.
+
+**Closed shell** (`rhf.rs` `solve_rhf`, $D$ the total density,
+$D = 2C_{\rm occ}C_{\rm occ}^{\mathsf T}$):
+$$E_x^{\rm HF} = -\tfrac14\,\mathrm{Tr}[D\,K_{\rm tot}(D)],\qquad
+F = h + J(D) - \tfrac12 K_{\rm tot}(D) + V_{xc}.$$
+$K_{\rm tot}$ is linear in $D$ and $(\mu\lambda|v|\nu\sigma)$ is symmetric
+under $(\mu\nu)\leftrightarrow(\lambda\sigma)$, so
+$\mathrm d E_x^{\rm HF}/\mathrm dD = -\tfrac12 K_{\rm tot}(D)$: the exchange
+part of $F$ is the derivative of the exchange energy.
+
+**Open shell** (`uhf.rs` `solve_uhf`, `rohf.rs` `solve_rohf`, per-spin
+densities $D_\sigma = C_{\sigma,\rm occ}C_{\sigma,\rm occ}^{\mathsf T}$):
+$$E_x^{\rm HF} = -\tfrac12\sum_\sigma \mathrm{Tr}[D_\sigma K_{\rm tot}(D_\sigma)],\qquad
+F_\sigma = h + J(D_\alpha + D_\beta) - K_{\rm tot}(D_\sigma) + V_{xc}^\sigma.$$
+ROHF assembles the same $F_\alpha$, $F_\beta$ and then couples them into its
+Roothaan operator. With $D_\alpha = D_\beta = D/2$ both the energy and
+$F_\sigma$ equal the closed-shell ones.
+
+**Total energy.** The SCF evaluates the one- and two-electron energy from the
+Fock matrix before $V_{xc}$ is added, and adds $E_{xc}$ from the grid:
+$$E = \tfrac12\mathrm{Tr}[D(h + F_{\rm no\,xc})] + E_{xc} + E_{nn}
+= \mathrm{Tr}[Dh] + \tfrac12\mathrm{Tr}[DJ] - \tfrac14\mathrm{Tr}[D K_{\rm tot}] + E_{xc} + E_{nn},$$
+with $F_{\rm no\,xc} = h + J - \tfrac12 K_{\rm tot}$ (closed shell; open
+shell $\tfrac12\sum_\sigma\mathrm{Tr}[D_\sigma(h + F_{\sigma,\rm no\,xc})]$).
+The $\tfrac12$ appears once, on the trace; $E_{xc}$ is not
+$\mathrm{Tr}[D V_{xc}]$, which is why $V_{xc}$ is added to $F$ after the trace.
+
+**Proof** (`scripts/dft_hybrid_rsh_sympy.py`): symbolically, the erf/erfc
+and CAM operator splits, the libxc-to-ferric map and the Yanai map, and
+$\mathrm dE_x/\mathrm dD = F_x$ for the closed- and open-shell forms with
+generic 8-fold-symmetric integrals for both kernels, plus their closed-shell
+equality. Numerically, on four s-type Gaussians: the erf integrals in closed
+form against quadrature of
+$1/r = (2/\sqrt\pi)\int_0^\infty e^{-t^2r^2}\,\mathrm dt$ split at
+$t = \omega$, the limits $\omega\to\infty$ (Coulomb) and $\omega\to0$ (zero),
+$K_{\rm tot}$ against a K built on the CAM kernel directly, and central
+differences of the total electronic energy against $\mathrm{Tr}[F\,\delta D]$
+(RHF RSH, global hybrid, HF; UHF RSH). The libxc values in the table map to
+the published short- and long-range fractions. With
+`DERIV_CROSSCHECK=1` (PySCF and ferric importable) it also checks PySCF's `rsh_coeff`, ferric's
+`XcFunctional.exchange_mix`, and ferric's `AoIntegrals.veff` energy against
+its potential by central differences (ωB97X-V, CAM-B3LYP, HSE06 on
+H$_2$/STO-3G).
+
 ## Follow-ups (identities with no direct Rust test)
 
 - $\sum_b \partial w_g/\partial\mathbf R_b = 0$ for the assembled weight1 rows
