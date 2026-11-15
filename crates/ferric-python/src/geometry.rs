@@ -1068,6 +1068,7 @@ fn run_optimize_pdep_rpa(
         (r.converged, r.steps, r.energy),
         opt_config,
         &gradient.certificate_label_with(fallback.as_deref()),
+        ferric_scf::Spin::Restricted,
     );
     Ok(PyOptimizeResult {
         energy: r.energy,
