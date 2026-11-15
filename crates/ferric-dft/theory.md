@@ -36,7 +36,7 @@ $$\rho = \sum_{\mu\nu} D_{\mu\nu}\chi_\mu\chi_\nu,\qquad
 \sigma = |\nabla\rho|^2,\qquad
 \tau = \tfrac12\sum_b\sum_{\mu\nu} D_{\mu\nu}\,\partial_b\chi_\mu\,\partial_b\chi_\nu .$$
 $\tau = \tfrac12\sum_i|\nabla\phi_i|^2$ is built from $D$ directly
-(`eval_tau_closed`, `src/density_on_grid.rs:266`; checked against the explicit
+(`eval_tau_closed`, `src/density_on_grid.rs`; checked against the explicit
 MO sum by `density_on_grid::tests::tau_from_density_matrix_matches_explicit_mo_sum`).
 No density Laplacian is used: meta-GGAs are evaluated $\tau$-only.
 
@@ -68,14 +68,14 @@ Each atom carries a Treutler-Ahlrichs radial grid times a Lebedev angular grid; 
 
 ## Becke partition and its nuclear derivative
 
-`becke_weights_and_grad` (`src/becke.rs:365`). For atoms $A, B$ with
+`becke_weights_and_grad` (`src/becke.rs`). For atoms $A, B$ with
 $r_X = |\mathbf{r}-\mathbf{R}_X|$, $R_{AB} = |\mathbf{R}_A-\mathbf{R}_B|$:
 $$\mu_{AB} = \frac{r_A-r_B}{R_{AB}},\qquad
 \nu_{AB} = \mu_{AB} + a_{AB}(1-\mu_{AB}^2),\qquad
 s_{AB} = \tfrac12\bigl(1 - f^{(3)}(\nu_{AB})\bigr),\quad f(x)=\tfrac12(3x-x^3),$$
 $$a_{AB} = \operatorname{clip}_{[-1/2,\,1/2]}\frac{u}{u^2-1},\quad u=\frac{\chi-1}{\chi+1},\ \chi = R^{BS}_A/R^{BS}_B,\qquad
 P_A = \prod_{B\ne A}s_{AB},\qquad w^A = P_A/T,\ T=\sum_C P_C .$$
-Derivatives the loop codes (`becke.rs:422-434`):
+Derivatives the loop codes (`becke_weights_and_grad`):
 $$\frac{\partial\mu_{AB}}{\partial R_A^\alpha} = -\frac{(\mathbf{r}-\mathbf{R}_A)^\alpha}{r_A R_{AB}} - \frac{\mu_{AB}}{R_{AB}^2}(\mathbf{R}_A-\mathbf{R}_B)^\alpha,\qquad
 \frac{\partial\mu_{AB}}{\partial R_B^\alpha} = +\frac{(\mathbf{r}-\mathbf{R}_B)^\alpha}{r_B R_{AB}} + \frac{\mu_{AB}}{R_{AB}^2}(\mathbf{R}_A-\mathbf{R}_B)^\alpha,$$
 $$\frac{d f^{(3)}}{d\nu} = f_2' f_1' f_0',\quad f_k' = \tfrac32(1-f_k^2),\qquad
@@ -84,7 +84,7 @@ $$\frac{d f^{(3)}}{d\nu} = f_2' f_1' f_0',\quad f_k' = \tfrac32(1-f_k^2),\qquad
 Every $\mu_{AB}$ is invariant under a rigid translation of nuclei and point,
 so
 $$\sum_C \frac{\partial w^A}{\partial \mathbf{R}_C}\Big|_{\mathbf{r}} + \nabla_{\mathbf{r}} w^A = 0 .$$
-`build_atomic_grid_with_response` (`src/grid.rs:673`) uses this to form the
+`build_atomic_grid_with_response` (`src/grid.rs`) uses this to form the
 PySCF "weight1" derivative, in which each point rides its home atom:
 $\partial w_g/\partial \mathbf{R}_b = w_r w_l[\partial w^{A}/\partial\mathbf{R}_b + \delta_{b,A}\nabla_{\mathbf{r}}w^{A}]$, so $\sum_b \partial w_g/\partial\mathbf{R}_b = 0$.
 
@@ -98,22 +98,24 @@ $\partial w_g/\partial \mathbf{R}_b = w_r w_l[\partial w^{A}/\partial\mathbf{R}_
 
 ## Semilocal $V_{xc}$ matrix elements
 
-`semilocal_vxc_closed_scratch` (`src/vxc.rs:262`). Treating $D_{\mu\nu}$ and
+`semilocal_vxc_closed_scratch` (`src/vxc.rs`). Treating $D_{\mu\nu}$ and
 $D_{\nu\mu}$ as independent,
 $$\frac{\partial E_{xc}}{\partial D_{\mu\nu}} = \sum_g w_g\Bigl[v_\rho\,\chi_\mu\chi_\nu
 + 2v_\sigma\,\nabla\rho\cdot(\chi_\mu\nabla\chi_\nu + \chi_\nu\nabla\chi_\mu)
 + \tfrac12 v_\tau \sum_b \partial_b\chi_\mu\,\partial_b\chi_\nu\Bigr].$$
 The code builds the GGA piece as $M + M^\top$ with
-$M_{\mu\nu} = \sum_g f_{b,g}\chi_\mu\partial_b\chi_\nu$, $f_b = 2 w v_\sigma \partial_b\rho$
-(`vxc.rs:338`), the $\tau$ piece with $\tfrac12 w v_\tau$ (`vxc.rs:370`), then
-$\tfrac12(V+V^\top)$. Points with $\rho \le 10^{-10}$ (`DENSITY_FLOOR`) are dropped.
+$M_{\mu\nu} = \sum_g f_{b,g}\chi_\mu\partial_b\chi_\nu$, $f_b = 2 w v_\sigma \partial_b\rho$, the $\tau$ piece with
+$\tfrac12 w v_\tau$, then $\tfrac12(V+V^\top)$. An LDA has $v_\sigma = v_\tau = 0$ (only the first
+term is built), a GGA $v_\tau = 0$. Points with $\rho$ at or below the functional's
+`DensityFloor` are dropped (`DensityFloor::for_xc`: $10^{-14}$ for LDA/GGA and their hybrids,
+$10^{-10}$ when any component is a meta-GGA).
 
-Spin-polarized (`semilocal_vxc_polarized_scratch`, `src/vxc.rs:542`):
+Spin-polarized (`semilocal_vxc_polarized_scratch`, `src/vxc.rs`):
 $$\frac{\partial E_{xc}}{\partial D^\alpha_{\mu\nu}} = \sum_g w_g\Bigl[v_{\rho_\alpha}\chi_\mu\chi_\nu
 + \mathbf{G}^\alpha\cdot(\chi_\mu\nabla\chi_\nu+\chi_\nu\nabla\chi_\mu) + \tfrac12 v_{\tau_\alpha}\sum_b\partial_b\chi_\mu\partial_b\chi_\nu\Bigr],\qquad
 \mathbf{G}^\alpha = 2v_{\sigma_{\alpha\alpha}}\nabla\rho_\alpha + v_{\sigma_{\alpha\beta}}\nabla\rho_\beta,$$
 and $\alpha\leftrightarrow\beta$. The cross coefficient is 1 because
-$\partial\sigma_{\alpha\beta}/\partial\nabla\rho_\alpha = \nabla\rho_\beta$ (`vxc.rs:629-639`).
+$\partial\sigma_{\alpha\beta}/\partial\nabla\rho_\alpha = \nabla\rho_\beta$.
 Each spin block is floored on its own $\rho_\sigma$.
 
 The matrix-element form and the functional-derivative potential
@@ -123,7 +125,9 @@ which integrates to zero for decaying AOs, so both define the same Fock matrix;
 the code uses the left form (no second derivatives of $\rho$ needed).
 
 - Proof: `scripts/dft_vxc_matrix_elements_sympy.py` (generic $e(\rho,\sigma,\tau)$
-  and generic 7-variable polarized $e$; the divergence identity in 3D).
+  and generic 7-variable polarized $e$; the divergence identity in 3D; a central
+  difference of $E_{xc}(D)$ vs $\mathrm{Tr}[VX]$ for a concrete meta-GGA-like $e$ on a
+  4-point, 3-AO model, closed and polarized, residual $\le 7\times10^{-17}$).
 - Tests: `ferric-python/tests/test_xc_blocks.py::test_vxc_is_the_derivative_of_exc`
   (FD of $E_{xc}$ along a random symmetric $X$ vs $\mathrm{Tr}[VX]$, PBE / SCAN / ωB97X,
   closed and polarized, $10^{-9}$ relative),
@@ -133,7 +137,7 @@ the code uses the left form (no second derivatives of $\rho$ needed).
 
 ## $f_{xc}$ response kernels
 
-`GgaFxcKernel::apply_with_ref` (`src/fxc.rs:314`) returns
+`GgaFxcKernel::apply_with_ref` (`src/fxc.rs`) returns
 $\delta V^\sigma$ for a perturbation $(\delta D^\alpha, \delta D^\beta)$. Because
 $V^\sigma$ enters the AO matrix only through $v_{\rho_\sigma}$ and $\mathbf{G}^\sigma$,
 and the back-projection is linear in them, $\delta V^\sigma$ uses the same
@@ -142,34 +146,35 @@ $$u^\sigma = \delta v_{\rho_\sigma},\qquad \mathbf{w}^\sigma = \delta\mathbf{G}^
 $$\delta v_{\rho_\alpha} = f_{\rho_\alpha\rho_\alpha}\delta\rho_\alpha + f_{\rho_\alpha\rho_\beta}\delta\rho_\beta + \sum_c f_{\rho_\alpha\sigma_c}\delta\sigma_c,\qquad
 \delta v_{\sigma_c} = \sum_{\sigma'} f_{\sigma_c\rho_{\sigma'}}\delta\rho_{\sigma'} + \sum_{c'} f_{\sigma_c\sigma_{c'}}\delta\sigma_{c'},$$
 $$\delta\sigma_{\alpha\alpha} = 2\nabla\rho_\alpha\cdot\nabla\delta\rho_\alpha,\quad
-\delta\sigma_{\alpha\beta} = \nabla\rho_\alpha\cdot\nabla\delta\rho_\beta + \nabla\rho_\beta\cdot\nabla\delta\rho_\alpha\quad(\texttt{fxc.rs:415}),$$
+\delta\sigma_{\alpha\beta} = \nabla\rho_\alpha\cdot\nabla\delta\rho_\beta + \nabla\rho_\beta\cdot\nabla\delta\rho_\alpha,$$
 $$\mathbf{w}^\alpha = 2\,\delta v_{\sigma_{\alpha\alpha}}\nabla\rho_\alpha + \delta v_{\sigma_{\alpha\beta}}\nabla\rho_\beta
-+ 2 v_{\sigma_{\alpha\alpha}}\nabla\delta\rho_\alpha + v_{\sigma_{\alpha\beta}}\nabla\delta\rho_\beta\quad(\texttt{fxc.rs:478, 534}).$$
++ 2 v_{\sigma_{\alpha\alpha}}\nabla\delta\rho_\alpha + v_{\sigma_{\alpha\beta}}\nabla\delta\rho_\beta .$$
 libxc's second derivatives are read packed: `v2rho2` $=[\alpha\alpha,\alpha\beta,\beta\beta]$,
 `v2rhosigma` $=[\alpha\cdot\alpha\alpha,\alpha\cdot\alpha\beta,\alpha\cdot\beta\beta,\beta\cdot\alpha\alpha,\beta\cdot\alpha\beta,\beta\cdot\beta\beta]$,
 `v2sigma2` the upper triangle $[\alpha\alpha\cdot\alpha\alpha,\alpha\alpha\cdot\alpha\beta,\alpha\alpha\cdot\beta\beta,\alpha\beta\cdot\alpha\beta,\alpha\beta\cdot\beta\beta,\beta\beta\cdot\beta\beta]$.
-The LDA kernel (`LdaFxcKernel::apply_with_ref`, `fxc.rs:121`) is the
+The LDA kernel (`LdaFxcKernel::apply_with_ref`) is the
 $\sigma$-free case $u^\alpha = f_{\alpha\alpha}\delta\rho_\alpha + f_{\alpha\beta}\delta\rho_\beta$, $\mathbf{w}=0$.
-The $\tau$-only meta-GGA kernel (`MggaFxcKernel`, `fxc.rs:817`) extends the
+The $\tau$-only meta-GGA kernel (`MggaFxcKernel::apply_with_ref`) extends the
 per-point Hessian to the 7 variables $(\rho_\alpha,\rho_\beta,\sigma_{\alpha\alpha},\sigma_{\alpha\beta},\sigma_{\beta\beta},\tau_\alpha,\tau_\beta)$
-(`point_hessians`, `fxc.rs:709`; libxc `v2rhotau`, `v2sigmatau`, `v2tau2` fill the
-$\tau$ rows). With $\tau_\sigma = \tfrac12\sum_\kappa\sum_{\mu\nu} D^\sigma_{\mu\nu}\,\partial_\kappa\chi_\mu\,\partial_\kappa\chi_\nu$
+(`point_hessians`; libxc `v2rhotau` $=[\rho_\alpha\tau_\alpha,\rho_\alpha\tau_\beta,\rho_\beta\tau_\alpha,\rho_\beta\tau_\beta]$,
+`v2sigmatau` $=[\sigma_{\alpha\alpha}\tau_\alpha,\sigma_{\alpha\alpha}\tau_\beta,\sigma_{\alpha\beta}\tau_\alpha,\dots,\sigma_{\beta\beta}\tau_\beta]$ and
+`v2tau2` $=[\alpha\alpha,\alpha\beta,\beta\beta]$ fill the $\tau$ rows, `scatter_tau`). With $\tau_\sigma = \tfrac12\sum_\kappa\sum_{\mu\nu} D^\sigma_{\mu\nu}\,\partial_\kappa\chi_\mu\,\partial_\kappa\chi_\nu$
 linear in $D$,
 $$\delta\tau_\sigma = \tfrac12\sum_\kappa\sum_{\mu\nu}\delta D^\sigma_{\mu\nu}\,\partial_\kappa\chi_\mu\,\partial_\kappa\chi_\nu,\qquad
 \delta v_{x_i} = \sum_j f_{x_i x_j}\,\delta x_j,$$
-and the response adds one back-projected term to $u$ and $\mathbf w$ (`linearize_point`,
-`fxc.rs:746`; `backproject`, `fxc.rs:960`):
+and the response adds one back-projected term to $u$ and $\mathbf w$ (`linearize_point`;
+`MggaFxcKernel::backproject`):
 $$\delta V^\sigma_{\mu\nu} = \sum_g w_g\Big[u^\sigma\chi_\mu\chi_\nu + \mathbf w^\sigma\cdot\nabla(\chi_\mu\chi_\nu)
 + \tfrac12\, t^\sigma\,\nabla\chi_\mu\cdot\nabla\chi_\nu\Big],\qquad t^\sigma = \delta v_{\tau_\sigma}.$$
 $v_\tau$ itself does not appear (only $\delta v_\tau$), because $V^\tau$ is linear in $v_\tau$
 and $\tau$ is linear in $D$. Every term is zeroed at points where the reference
-$\rho_\sigma$ is below the production `DENSITY_FLOOR`, as $V^\sigma$ is. None of these
-kernels contains the VV10 response; that is `vv10_potential_tangent` (`src/vv10.rs:1555`).
+$\rho_\sigma$ is at or below the functional's `DensityFloor`, as $V^\sigma$ is. None of these
+kernels contains the VV10 response; that is `vv10_potential_tangent` (`src/vv10.rs`).
 
-Consumers. `ferric_scf::rohf::FxcKernelStore` (`ferric-scf/src/rohf.rs:113`) dispatches
+Consumers. `ferric_scf::rohf::FxcKernelStore` (`ferric-scf/src/rohf.rs`) dispatches
 LDA / GGA / meta-GGA for the orbital-Hessian users: RKS and UKS Newton steps,
 RKS/UKS internal stability, and the RKS/UKS/ROKS Z-vector
-(`zvector_ks`). `lr_kernel::SingletKernel` (`src/lr_kernel.rs:87`) does the same for
+(`zvector_ks`). `lr_kernel::SingletKernel` (`src/lr_kernel.rs`) does the same for
 the singlet $(ia|f_{\alpha\alpha}+f_{\alpha\beta}|jb)$ block of TDA / Casida TDDFT
 (`ferric_tddft::run_tddft`, `ferric_gw::tddft::run_tda_dft`). Refused for meta-GGA:
 ROKS Newton / augmented-Hessian and TRAH (DIIS is kept; not anchored) and the analytic nuclear Hessian (its $\tau$-dependent
@@ -177,7 +182,9 @@ $V_{xc}$ nuclear derivatives are not implemented).
 
 - Proof: `scripts/dft_fxc_kernel_sympy.py` ($\delta\sigma$, $u$, $\mathbf w$ for a
   generic cubic $e$ whose first and second derivatives are independent symbols;
-  packing-swap control).
+  packing-swap control; the meta-GGA `linearize_point` $(u,\mathbf w,t)$ with libxc-packed
+  second derivatives vs a central difference of $(v_\rho,\mathbf G,v_\tau)$ for a concrete
+  7-variable $e$, residual $6\times10^{-18}$).
 - Tests: `fxc::tests::gga_fxc_matches_finite_difference_of_vxc` (OH doublet, all
   spin channels), `fxc::tests::gga_kernel_matches_lda_kernel_on_lda_functional`,
   `fxc::tests::mgga_fxc_matches_finite_difference_of_production_vxc_polarized` /
@@ -193,7 +200,7 @@ $V_{xc}$ nuclear derivatives are not implemented).
 
 ## VV10 nonlocal correlation
 
-`vv10_internal_screened` (`src/vv10.rs:908`), closed shell, total density:
+`vv10_internal_screened` (`src/vv10.rs`), closed shell, total density:
 $$E_{nl} = \sum_i W_i\rho_i\Bigl[\beta + \tfrac12 f_i\Bigr],\qquad
 f_i = \sum_p W_p\rho_p\,\Phi_{ip},\qquad
 \Phi_{ip} = -\frac{3}{2\,g_i g_p (g_i+g_p)},\qquad g_x = \omega_0(\mathbf r_x) R_{ip}^2 + \kappa(\mathbf r_x),$$
@@ -203,15 +210,14 @@ $$\omega_0 = \sqrt{C\,(\sigma/\rho^2)^2 + \tfrac{4\pi}{3}\rho},\qquad
 The pair sum includes the self pair $p=i$ ($R=0$). With
 $t_{ip} = W_p\rho_p/(g_i g_p g_t)$, $g_t = g_i+g_p$,
 $u_i = \sum_p t_{ip}(1/g_i + 1/g_t)$ and $w_i = \sum_p t_{ip}(1/g_i+1/g_t)R_{ip}^2$, the
-per-point potentials (`vv10.rs:1150-1151`) are
+per-point potentials are
 $$v_{\rho,i} = \beta + f_i + \tfrac32\Bigl(u_i\,\rho\frac{\partial\kappa}{\partial\rho} + w_i\,\rho\frac{\partial\omega_0}{\partial\rho}\Bigr)_i,\qquad
 v_{\sigma,i} = \tfrac32\,w_i\,\Bigl(\rho\frac{\partial\omega_0}{\partial\sigma}\Bigr)_i,$$
 so that $W_i v_{\rho,i} = \partial E_{nl}/\partial\rho_i$ and $W_i v_{\sigma,i} = \partial E_{nl}/\partial\sigma_i$.
-The code's `dk_dr`, `dw0_dr`, `dw0_dg` (`vv10.rs:966`) are $\rho$ times the
+The code's `dk_dr`, `dw0_dr`, `dw0_dg` are $\rho$ times the
 partial derivatives: the $\rho_i$ prefactor of $E_{nl}$ is folded in.
-$V_{nl}$ is assembled by `add_vv10_scratch` (`vv10.rs:1373`) with the closed-shell
-GGA form $w v_\rho\chi_\mu\chi_\nu + 2 w v_\sigma\nabla\rho\cdot(\chi_\mu\nabla\chi_\nu+\chi_\nu\nabla\chi_\mu)$
-(`vv10.rs:1425`). Points with $\rho < 10^{-8}$ are excluded from the pair sum.
+$V_{nl}$ is assembled by `add_vv10_scratch` with the closed-shell
+GGA form $w v_\rho\chi_\mu\chi_\nu + 2 w v_\sigma\nabla\rho\cdot(\chi_\mu\nabla\chi_\nu+\chi_\nu\nabla\chi_\mu)$. Points with $\rho < 10^{-8}$ are excluded from the pair sum.
 $\rho\,\partial\omega_0/\partial\sigma = C\sigma/(\rho^3\omega_0)$ is kept at every active
 point, including $\sigma \le 10^{-8}$: $\omega_0$ depends on $\sigma$ wherever $\rho$ is
 active, so $V_{nl} = \partial E_{nl}/\partial D$.
@@ -229,16 +235,17 @@ active, so $V_{nl} = \partial E_{nl}/\partial D$.
 
 ## XC nuclear gradient: AO-derivative and grid-response terms
 
-`xc_gradient_closed_mgga_from_density` (`src/gradient.rs:1312`, batch body
-`mgga_closed_batch`, `gradient.rs:1370`); the GGA path is the $v_\tau = 0$ case.
+`xc_gradient_closed_mgga_from_density` (`src/gradient.rs`, batch body
+`mgga_closed_batch`). The GGA path (`xc_gradient_closed_gga_from_density`) is the
+$v_\tau = 0$ case and the LDA path (`xc_gradient_closed_lda_from_density`) the
+$v_\sigma = v_\tau = 0$ case.
 Translating nucleus $A$ moves the AOs centred on $A$:
 $\partial\chi_\mu/\partial R_{A,\alpha} = -\partial_\alpha\chi_\mu$ for $\mu\in A$.
 At fixed $D$ and fixed grid, with $m = D\chi$ and $(D\partial_b\chi)_\mu = \sum_\nu D_{\mu\nu}\partial_b\chi_\nu$,
 $$\frac{\partial\tau}{\partial R_{A,\alpha}} = -\sum_b\sum_{\mu\in A}\partial^2_{\alpha b}\chi_\mu\,(D\partial_b\chi)_\mu .$$
 The $\tfrac12$ in $\tau$ cancels against the $\mu\leftrightarrow\nu$ doubling.
-`mgga_tau_partials` (`gradient.rs:232`) returns half of this sum and
-`scatter_partials` (`gradient.rs:108`) applies $-2\times$, which reproduces it.
-The $\rho,\sigma$ partials (`gga_ao_partials`, `gradient.rs:149`) with
+`mgga_tau_partials` returns half of this sum and `scatter_partials` applies
+$-2\times$, which reproduces it. The $\rho,\sigma$ partials (`gga_ao_partials`) with
 $c_b = 2w v_\sigma\partial_b\rho$:
 $$\frac{\partial E_{xc}}{\partial R_{A,\alpha}}\Big|_{\rm AO} = -2\sum_g\sum_{\mu\in A}\Bigl[w v_\rho\,\partial_\alpha\chi_\mu m_\mu
 + \sum_b c_b\bigl(\partial_\alpha\chi_\mu (D\partial_b\chi)_\mu + \partial^2_{\alpha b}\chi_\mu m_\mu\bigr)
@@ -246,12 +253,12 @@ $$\frac{\partial E_{xc}}{\partial R_{A,\alpha}}\Big|_{\rm AO} = -2\sum_g\sum_{\m
 Grid response: the weight term $\sum_g (\partial w_g/\partial\mathbf R_b)\,\rho_g\epsilon_g$
 (weight1, above) plus the home-atom translation of the integrand,
 $\sum_{g:\,{\rm home}=A} w_g[v_\rho\partial_\alpha\rho + v_\sigma\partial_\alpha\sigma + v_\tau\partial_\alpha\tau]$, with
-$$\partial_\alpha(\partial_b\rho) = 2\Bigl[\sum_\mu\partial_\alpha\chi_\mu(D\partial_b\chi)_\mu + \sum_\mu m_\mu\,\partial^2_{\alpha b}\chi_\mu\Bigr]\ (\texttt{hess\_col},\ \texttt{gradient.rs:1483}),\qquad
-\partial_\alpha\tau = \sum_b\sum_\mu\partial^2_{\alpha b}\chi_\mu (D\partial_b\chi)_\mu\ (\texttt{tau\_spatial\_grad},\ \texttt{gradient.rs:266}).$$
+$$\partial_\alpha(\partial_b\rho) = 2\Bigl[\sum_\mu\partial_\alpha\chi_\mu(D\partial_b\chi)_\mu + \sum_\mu m_\mu\,\partial^2_{\alpha b}\chi_\mu\Bigr]\ (\texttt{hess\_col}),\qquad
+\partial_\alpha\tau = \sum_b\sum_\mu\partial^2_{\alpha b}\chi_\mu (D\partial_b\chi)_\mu\ (\texttt{tau\_spatial\_grad}).$$
 The home-translation term is the correct correction because $\rho$, $\sigma$
 and $\tau$ are translation invariant:
 $\sum_C\partial q/\partial\mathbf R_C + \nabla_{\mathbf r}q = 0$. The UKS path
-(`xc_gradient_uks_mgga_from_density`, `gradient.rs:1844`) is the same per spin
+(`xc_gradient_uks_mgga_from_density`; LDA/GGA `xc_gradient_uks_from_density`) is the same per spin
 with $D\to D^\sigma$, $\mathbf{G}^\sigma$ in place of $2v_\sigma\nabla\rho$.
 
 - Proof: `scripts/dft_mgga_tau_gradient_sympy.py` (p- and s-Gaussians on two
@@ -266,4 +273,4 @@ with $D\to D^\sigma$, $\mathbf{G}^\sigma$ in place of $2v_\sigma\nabla\rho$.
 ## Follow-ups (identities with no direct Rust test)
 
 - $\sum_b \partial w_g/\partial\mathbf R_b = 0$ for the assembled weight1 rows
-  (`grid.rs:673`); covered only end to end through the KS gradients.
+  (`build_atomic_grid_with_response`); covered only end to end through the KS gradients.

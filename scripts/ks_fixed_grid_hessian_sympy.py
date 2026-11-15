@@ -46,7 +46,17 @@ prove the riding / translation-fill algebra for any such W.
 Negative controls: each mutated formula (a factor or sign the Rust code could
 plausibly get wrong) must miss. Exit nonzero on any mismatch.
 
-Run: python3 scripts/ks_fixed_grid_hessian_sympy.py   (a few minutes)
+Independent route: every code-form quantity is compared with sympy's exact
+nuclear derivatives of the definitions rho(r_g; R), grad rho(r_g; R),
+chi(r_g; R) and W(r_g; R) on the concrete model, at 50 digits.
+
+Mutations (each turns the script red; the script runs to the end, ~4 min):
+  * weights_response with f_ss g.g1 instead of 2 f_ss g.g1 in the dG
+    coefficient: "6. weights_response" fails (and 7, 9, 10);
+  * the AO-derivative Fock row T with the d_a chi_m d_c chi_n term negated:
+    "9. first_order_fock" fails.
+
+Run: python3 scripts/ks_fixed_grid_hessian_sympy.py   (about 4 minutes)
 """
 
 import sys

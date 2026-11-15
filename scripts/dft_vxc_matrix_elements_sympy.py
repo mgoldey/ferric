@@ -18,14 +18,32 @@ and gradients are free symbols, so nothing depends on a particular
 functional. D_mu,nu and D_nu,mu are independent symbols, matching the
 non-symmetrized derivative the code assembles before its final 1/2(V+V^T).
 
+Numerical cross-check (independent route): a concrete meta-GGA-like
+e(rho, sigma, tau) and a 7-variable polarized e with alpha-beta couplings on
+4 grid points and 3 AOs with fixed values and gradients. The central
+difference of E_xc(D) along every symmetric unit X must equal Tr[V X], with
+V assembled as vxc.rs does; the bar is the Taylor remainder (h^2/6)|E'''|
+(E''' from a third difference) plus rounding.
+
 Negative controls: each identity is re-checked against a mutated code
 formula and must fail. Exit status is nonzero on any mismatch.
+
+Mutations (each turns the script red):
+  * tau piece with w v_tau instead of (1/2) w v_tau in the numeric
+    back-projection: "numeric closed" (and both polarized checks) fail;
+  * polarized cross coefficient 2 v_sab instead of v_sab in the numeric G^s:
+    "numeric polarized alpha" fails;
+  * default GGA factor 1 instead of 2 in the symbolic closed_code:
+    "closed: V_mn" fails.
+
+Runtime: about 4 minutes (the symbolic part; the numeric block takes ~1 s).
 
 Run: python3 scripts/dft_vxc_matrix_elements_sympy.py
 """
 
 import sys
 
+import mpmath as mp
 import sympy as sp
 
 FAILS = []
@@ -186,6 +204,220 @@ check(
         - (vr3 - sum(sp.diff(vs3 * sp.diff(rho3, q), q) for q in X3)) * cm * cn
         - divergence
     ),
+)
+
+# ── numerical cross-check: central difference of E_xc(D) ────────────────────
+# A concrete meta-GGA-like e(rho, sigma, tau) (and a 7-variable polarized one
+# with alpha-beta couplings) on 4 grid points with 3 AOs whose values and
+# gradients are fixed numbers. The independent route is the central
+# difference (E(D + hX) - E(D - hX)) / 2h along each symmetric unit X; the
+# code route is Tr[V X] with V assembled as vxc.rs does it (LDA GEMM,
+# M + M^T with f_b = 2 w v_sigma d_b rho, (1/2) w v_tau, then 1/2(V + V^T);
+# polarized G^s = 2 v_sss grad rho_s + v_sab grad rho_t). Bar: the central
+# difference error is (h^2/6) |E'''| (Taylor remainder) plus rounding
+# ~10^-dps |E| / h; |E'''| is estimated by a third difference at step H.
+mp.mp.dps = 40
+NG = 4
+H_FD = mp.mpf("1e-8")
+H3 = mp.mpf("1e-3")
+CHI_N = [  # chi_mu(r_g): NAO_N x NG
+    [mp.mpf(v) for v in row]
+    for row in (
+        ["0.62", "0.35", "0.18", "0.51"],
+        ["0.27", "0.48", "0.66", "0.12"],
+        ["0.41", "0.09", "0.33", "0.58"],
+    )
+]
+NAO_N = len(CHI_N)
+DCHI_N = [  # d_b chi_mu(r_g): [mu][b][g]
+    [[mp.mpf((7 * m + 3 * b + 5 * g) % 11 - 5) / 10 for g in range(NG)] for b in AX]
+    for m in range(NAO_N)
+]
+W_N = [mp.mpf(v) for v in ("0.3", "0.7", "0.5", "1.1")]
+D_N = [
+    [mp.mpf(v) for v in row]
+    for row in (["0.9", "0.2", "-0.1"], ["0.2", "0.8", "0.15"], ["-0.1", "0.15", "0.7"])
+]
+DB_N = [
+    [mp.mpf(v) for v in row]
+    for row in (["0.5", "-0.1", "0.05"], ["-0.1", "0.6", "0.1"], ["0.05", "0.1", "0.4"])
+]
+
+
+def lam(expr, args):
+    return sp.lambdify(args, expr, "mpmath")
+
+
+RHO_, SIG_, TAU_ = sp.symbols("rho_ sigma_ tau_", positive=True)
+E_CL = (
+    -(RHO_ ** sp.Rational(4, 3))
+    - sp.Rational(1, 5)
+    * SIG_
+    * RHO_ ** sp.Rational(-4, 3)
+    / (1 + sp.Rational(3, 10) * SIG_ * RHO_ ** sp.Rational(-8, 3))
+    + sp.Rational(1, 20) * TAU_**2 * RHO_ ** sp.Rational(-5, 3)
+)
+CL_ARGS = (RHO_, SIG_, TAU_)
+e_cl = lam(E_CL, CL_ARGS)
+de_cl = [lam(sp.diff(E_CL, v), CL_ARGS) for v in CL_ARGS]
+
+PV = sp.symbols("ra_ rb_ saa_ sab_ sbb_ ta_ tb_", positive=True)
+ra_, rb_, saa_, sab_, sbb_, ta_, tb_ = PV
+E_POL = (
+    E_CL.subs({RHO_: 2 * ra_, SIG_: 4 * saa_, TAU_: 2 * ta_}) / 2
+    + E_CL.subs({RHO_: 2 * rb_, SIG_: 4 * sbb_, TAU_: 2 * tb_}) / 2
+    - sp.Rational(1, 10) * ra_ * rb_ / (ra_ + rb_) ** sp.Rational(2, 3)
+    - sp.Rational(3, 100) * sab_ * (ra_ + rb_) ** sp.Rational(-4, 3)
+    + sp.Rational(1, 50) * ta_ * tb_ * (ra_ + rb_) ** sp.Rational(-5, 3)
+)
+e_pol = lam(E_POL, PV)
+de_pol = [lam(sp.diff(E_POL, v), PV) for v in PV]
+
+
+def grid_density(dm, g):
+    rho = sum(
+        dm[m][n] * CHI_N[m][g] * CHI_N[n][g] for m in range(NAO_N) for n in range(NAO_N)
+    )
+    grad = [
+        sum(
+            dm[m][n] * (DCHI_N[m][b][g] * CHI_N[n][g] + CHI_N[m][g] * DCHI_N[n][b][g])
+            for m in range(NAO_N)
+            for n in range(NAO_N)
+        )
+        for b in AX
+    ]
+    tau = (
+        sum(
+            dm[m][n] * DCHI_N[m][b][g] * DCHI_N[n][b][g]
+            for b in AX
+            for m in range(NAO_N)
+            for n in range(NAO_N)
+        )
+        / 2
+    )
+    return rho, grad, tau
+
+
+def energy_closed(dm):
+    tot = 0
+    for g in range(NG):
+        rho, grad, tau = grid_density(dm, g)
+        tot += W_N[g] * e_cl(rho, dot(grad, grad), tau)
+    return tot
+
+
+def energy_pol(dms):
+    tot = 0
+    for g in range(NG):
+        ra, ga, ta = grid_density(dms[0], g)
+        rb, gb, tb = grid_density(dms[1], g)
+        tot += W_N[g] * e_pol(ra, rb, dot(ga, ga), dot(ga, gb), dot(gb, gb), ta, tb)
+    return tot
+
+
+def assemble(coef):
+    """vxc.rs back-projection: coef[g] = (w v_rho, f_b (3), w v_tau) per point."""
+    v = [[mp.mpf(0)] * NAO_N for _ in range(NAO_N)]
+    for g in range(NG):
+        lda, fb, vt = coef[g]
+        for m in range(NAO_N):
+            for n in range(NAO_N):
+                v[m][n] += lda * CHI_N[m][g] * CHI_N[n][g]
+                for b in AX:
+                    mab = fb[b] * CHI_N[m][g] * DCHI_N[n][b][g]  # M_axis
+                    v[m][n] += mab
+                    v[n][m] += mab  # + M_axis^T
+                    v[m][n] += (
+                        sp.Rational(1, 2) * vt * DCHI_N[m][b][g] * DCHI_N[n][b][g]
+                    )
+    return [[(v[m][n] + v[n][m]) / 2 for n in range(NAO_N)] for m in range(NAO_N)]
+
+
+def vxc_closed_code(dm, gga_fac=2):
+    coef = []
+    for g in range(NG):
+        rho, grad, tau = grid_density(dm, g)
+        vr, vs, vt = (f(rho, dot(grad, grad), tau) for f in de_cl)
+        coef.append(
+            (W_N[g] * vr, [gga_fac * W_N[g] * vs * grad[b] for b in AX], W_N[g] * vt)
+        )
+    return assemble(coef)
+
+
+def vxc_pol_code(dms, spin):
+    coef = []
+    for g in range(NG):
+        ra, ga, ta = grid_density(dms[0], g)
+        rb, gb, tb = grid_density(dms[1], g)
+        d = [f(ra, rb, dot(ga, ga), dot(ga, gb), dot(gb, gb), ta, tb) for f in de_pol]
+        vr, vss, vt = (d[0], d[2], d[5]) if spin == 0 else (d[1], d[4], d[6])
+        gs, gc = (ga, gb) if spin == 0 else (gb, ga)
+        fb = [W_N[g] * (2 * vss * gs[b] + d[3] * gc[b]) for b in AX]
+        coef.append((W_N[g] * vr, fb, W_N[g] * vt))
+    return assemble(coef)
+
+
+def unit_sym(m, n):
+    x = [[mp.mpf(0)] * NAO_N for _ in range(NAO_N)]
+    x[m][n] = x[n][m] = mp.mpf(1)
+    return x
+
+
+def shifted(dm, x, t):
+    return [[dm[i][j] + t * x[i][j] for j in range(NAO_N)] for i in range(NAO_N)]
+
+
+def fd_check(label, energy_of, v_code, base, slot):
+    """max |FD - Tr[V X]| / bar over every symmetric unit X."""
+    worst = absmax = 0
+    for m in range(NAO_N):
+        for n in range(m, NAO_N):
+            x = unit_sym(m, n)
+
+            def line(t):
+                dms = [d for d in base]
+                dms[slot] = shifted(base[slot], x, t)
+                return energy_of(dms)
+
+            fd = (line(H_FD) - line(-H_FD)) / (2 * H_FD)
+            d3 = (line(2 * H3) - 2 * line(H3) + 2 * line(-H3) - line(-2 * H3)) / (
+                2 * H3**3
+            )
+            bar = 10 * H_FD**2 / 6 * abs(d3) + mp.mpf(10) ** (5 - mp.mp.dps) / H_FD
+            tr = sum(v_code[i][j] * x[i][j] for i in range(NAO_N) for j in range(NAO_N))
+            worst = max(worst, abs(fd - tr) / bar)
+            absmax = max(absmax, abs(fd - tr))
+    check(
+        f"{label} (max |FD - Tr[VX]| {mp.nstr(absmax, 3)}, / bar {mp.nstr(worst, 3)})",
+        worst < 1,
+    )
+    return worst
+
+
+fd_check(
+    "numeric closed: central difference of E_xc(D) == Tr[V_code X]",
+    lambda dms: energy_closed(dms[0]),
+    vxc_closed_code(D_N),
+    [D_N],
+    0,
+)
+for spin, name in ((0, "alpha"), (1, "beta")):
+    fd_check(
+        f"numeric polarized {name}: central difference of E_xc(D^a, D^b) == Tr[V^s_code X]",
+        energy_pol,
+        vxc_pol_code([D_N, DB_N], spin),
+        [D_N, DB_N],
+        spin,
+    )
+# reachability: the bar is far below an O(1) factor error
+bad = vxc_closed_code(D_N, gga_fac=1)
+x01 = unit_sym(0, 1)
+fd01 = (
+    energy_closed(shifted(D_N, x01, H_FD)) - energy_closed(shifted(D_N, x01, -H_FD))
+) / (2 * H_FD)
+check(
+    "numeric control: GGA factor 1 instead of 2 misses the central difference",
+    abs(fd01 - 2 * bad[0][1]) > mp.mpf("1e-6"),
 )
 
 if FAILS:

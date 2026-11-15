@@ -293,6 +293,10 @@ reproduces the direct J to ~1e-14 in the all-near-field limit.
 ## Kohn-Sham XC Hessian terms (fixed and moving grid)
 Implemented in `src/ks_fixed_grid.rs` (closed-shell LDA/GGA and global
 hybrids; the exchange and Coulomb Hessian terms live in `src/hessian/ks.rs`).
+`FixedGridKs::from_points` accepts only LDA, GGA and hybrid-GGA components;
+a meta-GGA is refused before the SCF (`hessian/ks.rs`, "tau-dependent XC
+nuclear derivatives"), so no $\tau$ terms appear below. An LDA is the
+$f_\sigma = 0$ case ($\mathbf G = 0$, no $\mathbf g_x$ terms).
 Proof: `scripts/ks_fixed_grid_hessian_sympy.py`. The first-order identities
 $V_{xc}=\partial E_{xc}/\partial D$, the per-point $f_{xc}$ linearization and
 the Becke weight derivatives are proved in the scripts listed in
@@ -367,7 +371,7 @@ analytic gradient).
 | $\partial V/\partial x$ | `first_order_fock`, `add_ao_derivative_fock` | same two tests (FD of $V_{xc}$ at displaced nuclei) |
 | $V^{(1)}[D_1]$ | `XcResponse::apply` | `xc_kernel_response_matches_difference_of_vxc_in_the_density`, `gga_kernel_response_…` |
 | polarized $F^\sigma,\mathbf G^\sigma,\delta F^\sigma,\delta\mathbf G^\sigma$, skeleton, $\partial V^\sigma/\partial x$, $V^{(1)\sigma}$ | `ks_fixed_grid/polarized.rs` (`PolarizedKs`, `pol_response`, `PolarizedXcResponse`) | `uks_xc_pieces.rs` (closed-shell limit, frozen-density and frozen-grid FD, kernel FD with $D_1^\alpha\neq D_1^\beta$, mutants); full Hessian `uks_moving_grid_hessian.rs` |
-| $T G_h T^{\mathsf T}$, moving $\partial V/\partial x$ | `skeleton_hessian_moving`, `translation_fill`, `first_order_fock_moving`, `weight_fock` | `ks_moving_grid_hessian.rs::moving_xc_pieces_match_frozen_density_differences`, `moving_grid_mutants_each_fail_a_frozen_density_anchor` |
+| $T G_h T^{\mathsf T}$, moving $\partial V/\partial x$ | `skeleton_hessian_moving`, `translation_fill`, `first_order_fock_moving`, `weight_terms` | `ks_moving_grid_hessian.rs::moving_xc_pieces_match_frozen_density_differences`, `moving_grid_mutants_each_fail_a_frozen_density_anchor` |
 
 ## Fock hooks and their nuclear gradient
 

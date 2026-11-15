@@ -30,6 +30,15 @@ is differentiated symbolically and compared at an exact rational point
 Negative controls: the un-cancelled 1/2 (and a halved spatial gradient)
 must fail. Exit nonzero on any mismatch.
 
+Independent route: every code-form sum is compared with sympy's exact
+derivative of rho, sigma, tau (definitions on the concrete Gaussians),
+evaluated at the rational point to 60 digits.
+
+Mutations (each turns the script red):
+  * GGA weight column c_b = v_sigma d_b rho (the 2 of t_sig = 2 w v_sigma
+    dropped): check 4 fails;
+  * hess_col without its factor 2: check 5 fails.
+
 Run: python3 scripts/dft_mgga_tau_gradient_sympy.py
 """
 

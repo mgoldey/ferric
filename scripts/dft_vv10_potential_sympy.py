@@ -24,7 +24,14 @@ dft_vxc_matrix_elements_sympy.py). The measured residual FD(E) - Tr[V X] of
 -1.31e-7 (3.6e-6 relative) on NH2/6-31G (test_xc_blocks.py, xfail; task
 T015) is therefore NOT in these partials.
 
+Independent route: the code-form potentials are compared with sympy's exact
+derivative of E_nl on the concrete two-point grid (50 digits).
+
 Negative controls: mutated formulas must fail. Exit nonzero on mismatch.
+
+Mutations (each turns the script red; the "W_i vrho_i, W_i vsig_i" check fails):
+  * rho dkappa/drho = kappa/3 instead of kappa/6;
+  * v_sigma built from u_i instead of w_i (the R^2-weighted sum).
 
 Run: python3 scripts/dft_vv10_potential_sympy.py
 """

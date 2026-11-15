@@ -21,6 +21,20 @@ Checked:
   4. LDA: with e independent of sigma the response is f_rr . d_rho and w = 0
      (LdaFxcKernel, fxc.rs:121).
 
+  5. numerical cross-check (independent route) of the meta-GGA kernel
+     (MggaFxcKernel, linearize_point): a concrete 7-variable e with
+     alpha-beta and tau couplings at one point; libxc-packed second
+     derivatives scattered as scatter_rho_sigma / scatter_tau do, then
+     linearize_point's (u, w, t), against the central difference in t of
+     (v_rho_s, G^s, v_tau_s). Bar: (h^2/6)|q'''| plus rounding.
+
+Mutations (each turns the script red):
+  * v2sigmatau read tau-major (index 3 t + c instead of 2 c + t): check 5 fails;
+  * reference pass with v_saa grad d_rho_a instead of 2 v_saa grad d_rho_a in
+    the numeric w^a: check 5 fails;
+  * symbolic w^a with dv_saa grad rho_a instead of 2 dv_saa grad rho_a:
+    "3. w^a" fails.
+
 e(rho_a, rho_b, s_aa, s_ab, s_bb) is a generic cubic (every monomial of degree
 <= 3 with its own symbolic coefficient), so its first and second derivatives
 at the point are independent symbols. Negative
@@ -31,6 +45,7 @@ Run: python3 scripts/dft_fxc_kernel_sympy.py
 
 import sys
 
+import mpmath as mp
 import sympy as sp
 
 FAILS = []
@@ -217,6 +232,167 @@ check(
     zero(
         lda_u_a - (sp.diff(elda, Ra, Ra) * dra + sp.diff(elda, Ra, Rb) * drb).subs(at_0)
     ),
+)
+
+# 5. Numerical cross-check of the meta-GGA kernel (MggaFxcKernel's
+# linearize_point; GGA and LDA are its tau-free and sigma-free cases).
+# A concrete 7-variable e(rho_a, rho_b, s_aa, s_ab, s_bb, tau_a, tau_b) with
+# alpha-beta couplings, one grid point, and a perturbation of both spins.
+# Code route: libxc's packed second derivatives (v2rho2, v2rhosigma,
+# v2sigma2, v2rhotau, v2sigmatau, v2tau2), scattered into the 7x7 Hessian as
+# scatter_rho_sigma / scatter_tau do, then linearize_point. Independent route:
+# the central difference in t of (v_rho_s, G^s, v_tau_s) evaluated at
+# rho_s + t d_rho_s, grad rho_s + t grad d_rho_s, tau_s + t d_tau_s. Bar:
+# (h^2/6) |q'''| estimated by a third difference at step H, plus rounding.
+mp.mp.dps = 40
+X7 = sp.symbols("xra xrb xsaa xsab xsbb xta xtb", positive=True)
+xra, xrb, xsaa, xsab, xsbb, xta, xtb = X7
+E7 = (
+    -(xra ** sp.Rational(4, 3) + xrb ** sp.Rational(4, 3))
+    - sp.Rational(1, 5)
+    * (xsaa * xra ** sp.Rational(-4, 3) + xsbb * xrb ** sp.Rational(-4, 3))
+    / (1 + sp.Rational(3, 10) * (xsaa + xsbb) * (xra + xrb) ** sp.Rational(-8, 3))
+    - sp.Rational(1, 10) * xra * xrb / (xra + xrb) ** sp.Rational(2, 3)
+    - sp.Rational(3, 100) * xsab * (xra + xrb) ** sp.Rational(-4, 3)
+    + sp.Rational(1, 20)
+    * (xta**2 * xra ** sp.Rational(-5, 3) + xtb**2 * xrb ** sp.Rational(-5, 3))
+    + sp.Rational(1, 50) * xta * xtb * xsab * (xra + xrb) ** sp.Rational(-3, 1)
+    + sp.Rational(1, 40) * xta * xsbb * (xra + xrb) ** sp.Rational(-4, 1)
+)
+d1_7 = [sp.lambdify(X7, sp.diff(E7, v), "mpmath") for v in X7]
+d2_7 = {
+    (i, j): sp.lambdify(X7, sp.diff(E7, X7[i], X7[j]), "mpmath")
+    for i in range(7)
+    for j in range(7)
+}
+I_RA, I_RB, I_SAA, I_SAB, I_SBB, I_TA, I_TB = range(7)
+
+
+def mf(v):
+    return mp.mpf(v)
+
+
+p_rho = [mf("0.31"), mf("0.17")]
+p_grad = [[mf("0.12"), mf("-0.08"), mf("0.21")], [mf("-0.05"), mf("0.14"), mf("0.09")]]
+p_tau = [mf("0.23"), mf("0.11")]
+p_drho = [mf("0.07"), mf("-0.04")]
+p_dgrad = [[mf("0.03"), mf("0.05"), mf("-0.02")], [mf("-0.06"), mf("0.01"), mf("0.04")]]
+p_dtau = [mf("-0.03"), mf("0.05")]
+
+
+def point_vars(t):
+    ga_t = [p_grad[0][c] + t * p_dgrad[0][c] for c in AX]
+    gb_t = [p_grad[1][c] + t * p_dgrad[1][c] for c in AX]
+    return (
+        p_rho[0] + t * p_drho[0],
+        p_rho[1] + t * p_drho[1],
+        dot(ga_t, ga_t),
+        dot(ga_t, gb_t),
+        dot(gb_t, gb_t),
+        p_tau[0] + t * p_dtau[0],
+        p_tau[1] + t * p_dtau[1],
+    ), (ga_t, gb_t)
+
+
+def potential_at(t):
+    """(v_rho_a, v_rho_b, G^a (3), G^b (3), v_tau_a, v_tau_b) at parameter t."""
+    x, (ga_t, gb_t) = point_vars(t)
+    v = [f(*x) for f in d1_7]
+    G_a = [2 * v[I_SAA] * ga_t[c] + v[I_SAB] * gb_t[c] for c in AX]
+    G_b = [2 * v[I_SBB] * gb_t[c] + v[I_SAB] * ga_t[c] for c in AX]
+    return [v[I_RA], v[I_RB], *G_a, *G_b, v[I_TA], v[I_TB]]
+
+
+x0, _ = point_vars(0)
+hx = {k: f(*x0) for k, f in d2_7.items()}
+# libxc packing (polarized), as the arrays fxc.rs reads
+v2rho2_n = [hx[I_RA, I_RA], hx[I_RA, I_RB], hx[I_RB, I_RB]]
+v2rhosigma_n = [hx[I_RA + s, I_SAA + c] for s in range(2) for c in range(3)]
+v2sigma2_n = [
+    hx[I_SAA + c1, I_SAA + c2]
+    for c1, c2 in [(0, 0), (0, 1), (0, 2), (1, 1), (1, 2), (2, 2)]
+]
+v2rhotau_n = [hx[I_RA + s, I_TA + t_] for s in range(2) for t_ in range(2)]
+v2sigmatau_n = [hx[I_SAA + c, I_TA + t_] for c in range(3) for t_ in range(2)]
+v2tau2_n = [hx[I_TA, I_TA], hx[I_TA, I_TB], hx[I_TB, I_TB]]
+vs_n = [f(*x0) for f in d1_7[I_SAA : I_SBB + 1]]
+
+
+def add_sym(h, i, j, v):
+    h[i][j] += v
+    if i != j:
+        h[j][i] += v
+
+
+def code_hessian():
+    """scatter_rho_sigma + scatter_tau (fxc.rs)."""
+    h = [[mp.mpf(0)] * 7 for _ in range(7)]
+    rr, rs, ss = v2rho2_n, v2rhosigma_n, v2sigma2_n
+    add_sym(h, I_RA, I_RA, rr[0])
+    add_sym(h, I_RA, I_RB, rr[1])
+    add_sym(h, I_RB, I_RB, rr[2])
+    for s in range(2):
+        for c in range(3):
+            add_sym(h, I_RA + s, I_SAA + c, rs[3 * s + c])
+    for k, (c1, c2) in enumerate([(0, 0), (0, 1), (0, 2), (1, 1), (1, 2), (2, 2)]):
+        add_sym(h, I_SAA + c1, I_SAA + c2, ss[k])
+    rt, st, tt = v2rhotau_n, v2sigmatau_n, v2tau2_n
+    for t_ in range(2):
+        for s in range(2):
+            add_sym(h, I_RA + s, I_TA + t_, rt[2 * s + t_])
+        for c in range(3):
+            add_sym(h, I_SAA + c, I_TA + t_, st[2 * c + t_])
+    add_sym(h, I_TA, I_TA, tt[0])
+    add_sym(h, I_TA, I_TB, tt[1])
+    add_sym(h, I_TB, I_TB, tt[2])
+    return h
+
+
+def linearize_point(h, vs):
+    """fxc.rs linearize_point: (u^a, u^b, w^a, w^b, t^a, t^b)."""
+    ga, gb = p_grad
+    da, db = p_dgrad
+    dx = [0] * 7
+    dx[I_RA] = p_drho[0]
+    dx[I_RB] = p_drho[1]
+    dx[I_SAA] = 2 * dot(ga, da)
+    dx[I_SAB] = dot(ga, db) + dot(gb, da)
+    dx[I_SBB] = 2 * dot(gb, db)
+    dx[I_TA] = p_dtau[0]
+    dx[I_TB] = p_dtau[1]
+    dv = [sum(h[i][j] * dx[j] for j in range(7)) for i in range(7)]
+    w_a = [
+        2 * dv[I_SAA] * ga[c] + dv[I_SAB] * gb[c] + 2 * vs[0] * da[c] + vs[1] * db[c]
+        for c in AX
+    ]
+    w_b = [
+        2 * dv[I_SBB] * gb[c] + dv[I_SAB] * ga[c] + 2 * vs[2] * db[c] + vs[1] * da[c]
+        for c in AX
+    ]
+    return [dv[I_RA], dv[I_RB], *w_a, *w_b, dv[I_TA], dv[I_TB]]
+
+
+H_FD = mp.mpf("1e-8")
+H3 = mp.mpf("1e-3")
+q_p, q_m = potential_at(H_FD), potential_at(-H_FD)
+q_2p, q_1p, q_1m, q_2m = (potential_at(s * H3) for s in (2, 1, -1, -2))
+code_lin = linearize_point(code_hessian(), vs_n)
+worst = absmax = 0
+for k in range(len(code_lin)):
+    fd = (q_p[k] - q_m[k]) / (2 * H_FD)
+    d3 = (q_2p[k] - 2 * q_1p[k] + 2 * q_1m[k] - q_2m[k]) / (2 * H3**3)
+    bar = 10 * H_FD**2 / 6 * abs(d3) + mp.mpf(10) ** (5 - mp.mp.dps) / H_FD
+    worst = max(worst, abs(fd - code_lin[k]) / bar)
+    absmax = max(absmax, abs(fd - code_lin[k]))
+check(
+    f"5. numeric: linearize_point (u, w, t) == central difference of (v_rho, G, v_tau) "
+    f"(max |diff| {mp.nstr(absmax, 3)}, / bar {mp.nstr(worst, 3)})",
+    worst < 1,
+)
+scale = max(abs(c) for c in code_lin)
+check(
+    f"5. numeric: response is not trivially small (max |u, w, t| {mp.nstr(scale, 3)})",
+    scale > 1e-3,
 )
 
 if FAILS:

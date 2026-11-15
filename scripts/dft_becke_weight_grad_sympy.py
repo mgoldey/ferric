@@ -17,6 +17,14 @@ Checks the identities `becke_weights_and_grad`
 Negative controls: each claim is re-run against a deliberately broken
 formula and must FAIL. Exit status is nonzero on any mismatch.
 
+Independent route: item 5 compares the code-form assembly with sympy's exact
+derivative of the definition of w^A (60-digit geometry), not with a second
+transcription of the code.
+
+Mutations (each turns the script red; check 5 fails):
+  * drop the 1/2 of ds/dmu = -1/2 f2' f1' f0' dnu/dmu in the code assembly;
+  * flip the sign of the mu/R_AB^2 (R_A - R_B) term of dmu/dR_B.
+
 Run: python3 scripts/dft_becke_weight_grad_sympy.py
 """
 

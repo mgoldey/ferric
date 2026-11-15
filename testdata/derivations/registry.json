@@ -435,6 +435,66 @@
         "scripts/hf_hessian_sympy.py"
       ]
     },
+    "ks-gradient": {
+      "theory": [
+        "crates/ferric-dft/theory.md#xc-nuclear-gradient-ao-derivative-and-grid-response-terms",
+        "crates/ferric-dft/theory.md#becke-partition-and-its-nuclear-derivative",
+        "crates/ferric-scf/theory.md#hartree-fock-nuclear-gradient"
+      ],
+      "scripts": [
+        "scripts/dft_mgga_tau_gradient_sympy.py",
+        "scripts/dft_becke_weight_grad_sympy.py",
+        "scripts/hf_gradient_sympy.py"
+      ]
+    },
+    "ks-grid": {
+      "theory": [
+        "crates/ferric-dft/theory.md#becke-partition-and-its-nuclear-derivative",
+        "crates/ferric-dft/theory.md#integration-grid"
+      ],
+      "scripts": [
+        "scripts/dft_becke_weight_grad_sympy.py"
+      ]
+    },
+    "ks-hessian": {
+      "theory": [
+        "crates/ferric-scf/theory.md#kohn-sham-xc-hessian-terms-fixed-and-moving-grid",
+        "crates/ferric-scf/theory.md#hartree-fock-nuclear-hessian",
+        "crates/ferric-dft/theory.md#f_xc-response-kernels"
+      ],
+      "scripts": [
+        "scripts/ks_fixed_grid_hessian_sympy.py",
+        "scripts/uks_xc_hessian_sympy.py",
+        "scripts/hf_hessian_sympy.py",
+        "scripts/dft_fxc_kernel_sympy.py"
+      ]
+    },
+    "ks-mgga": {
+      "theory": [
+        "crates/ferric-dft/theory.md#semilocal-v_xc-matrix-elements"
+      ],
+      "scripts": [
+        "scripts/dft_vxc_matrix_elements_sympy.py",
+        "scripts/dft_mgga_tau_gradient_sympy.py"
+      ]
+    },
+    "ks-semilocal": {
+      "theory": [
+        "crates/ferric-dft/theory.md#semilocal-v_xc-matrix-elements",
+        "crates/ferric-dft/theory.md#kohn-sham-equations"
+      ],
+      "scripts": [
+        "scripts/dft_vxc_matrix_elements_sympy.py"
+      ]
+    },
+    "ks-vv10": {
+      "theory": [
+        "crates/ferric-dft/theory.md#vv10-nonlocal-correlation"
+      ],
+      "scripts": [
+        "scripts/dft_vv10_potential_sympy.py"
+      ]
+    },
     "laplace-mp2": {
       "theory": [
         "crates/ferric-mp2/theory.md#8-laplace-transform-mp2"
@@ -472,10 +532,12 @@
     },
     "mp2-v": {
       "theory": [
-        "crates/ferric-mp2/theory.md#13-mp2-v"
+        "crates/ferric-mp2/theory.md#13-mp2-v",
+        "crates/ferric-dft/theory.md#vv10-nonlocal-correlation"
       ],
       "scripts": [
-        "scripts/mp2_family_sympy.py"
+        "scripts/mp2_family_sympy.py",
+        "scripts/dft_vv10_potential_sympy.py"
       ]
     },
     "mp3": {
@@ -693,63 +755,8 @@
         "crates/ferric-cc/theory.md#ee-eom-ccsd-singlets-closed-shell"
       ]
     },
-    "ks-gradient": {
-      "reason": "script has no pytest runner and records no mutation",
-      "theory": [
-        "crates/ferric-dft/theory.md#xc-nuclear-gradient-ao-derivative-and-grid-response-terms"
-      ],
-      "scripts": [
-        "scripts/dft_mgga_tau_gradient_sympy.py"
-      ]
-    },
-    "ks-grid": {
-      "reason": "script has no pytest runner and records no mutation",
-      "theory": [
-        "crates/ferric-dft/theory.md#becke-partition-and-its-nuclear-derivative"
-      ],
-      "scripts": [
-        "scripts/dft_becke_weight_grad_sympy.py"
-      ]
-    },
-    "ks-hessian": {
-      "reason": "script has no pytest runner and records no mutation",
-      "theory": [
-        "crates/ferric-scf/theory.md#kohn-sham-xc-hessian-terms-fixed-and-moving-grid"
-      ],
-      "scripts": [
-        "scripts/ks_fixed_grid_hessian_sympy.py",
-        "scripts/uks_xc_hessian_sympy.py"
-      ]
-    },
     "ks-hybrid-rsh": {
       "reason": "no theory.md derivation and no sympy proof"
-    },
-    "ks-mgga": {
-      "reason": "script has no pytest runner and records no mutation",
-      "theory": [
-        "crates/ferric-dft/theory.md#semilocal-v_xc-matrix-elements"
-      ],
-      "scripts": [
-        "scripts/dft_vxc_matrix_elements_sympy.py"
-      ]
-    },
-    "ks-semilocal": {
-      "reason": "script has no pytest runner and records no mutation",
-      "theory": [
-        "crates/ferric-dft/theory.md#semilocal-v_xc-matrix-elements"
-      ],
-      "scripts": [
-        "scripts/dft_vxc_matrix_elements_sympy.py"
-      ]
-    },
-    "ks-vv10": {
-      "reason": "script has no pytest runner and records no mutation",
-      "theory": [
-        "crates/ferric-dft/theory.md#vv10-nonlocal-correlation"
-      ],
-      "scripts": [
-        "scripts/dft_vv10_potential_sympy.py"
-      ]
     },
     "local-mp2": {
       "reason": "crates/ferric-mp2/theory.md section 12 is a pointer to the wiki, with no derivation or function names",

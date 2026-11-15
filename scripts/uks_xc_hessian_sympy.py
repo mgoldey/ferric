@@ -52,6 +52,16 @@ Negative controls (each must miss item 3 or 5 with unequal spins):
   * G^s without the f_sab cross-gradient term (gradient, item 1)
   * the moving-grid weight terms dropped (item 6)
 
+Independent route: every code-form quantity is compared with sympy's exact
+nuclear (and D1) derivatives of the definitions on the concrete model, at 50
+digits.
+
+Mutations (each turns the script red; the script runs to the end):
+  * the polarized kernel's d sigma_aa = g^a.g1^a (the factor 2 dropped):
+    "5. V1^s[D1^a, D1^b]" fails (and 2, 3);
+  * dG^s with the cross reference term -f_sab g1^t instead of +f_sab g1^t:
+    "5. V1^s[D1^a, D1^b]" fails.
+
 Exit nonzero on any mismatch.  Run: python3 scripts/uks_xc_hessian_sympy.py
 """
 

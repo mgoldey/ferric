@@ -9,6 +9,9 @@ crash, not a detection) and print the named failing check. The substitution
 must occur exactly once in the source, so a renamed line cannot turn a mutation
 into a silent no-op. Each script's header lists the same mutations.
 
+Scripts with a runtime budget of ``SLOW_S`` seconds or more are marked
+``validation`` (the weekly tier, ``pytest -m validation``).
+
 The registry (``testdata/derivations/registry.json``,
 ``test_derivation_registry.py``) counts a script as run when its file name
 appears in a test here.
@@ -451,6 +454,116 @@ CASES = [
             ),
         ],
     ),
+    (
+        "dft_becke_weight_grad_sympy.py",
+        120,
+        [
+            (
+                "* (1 - 2 * ac * mu_ij) / 2",
+                "* (1 - 2 * ac * mu_ij)",
+                "[FAIL] 5. becke_weights_and_grad assembly",
+            ),
+            (
+                "/ (rJ * Rij) + mu_ij / Rij**2 * vij[k])",
+                "/ (rJ * Rij) - mu_ij / Rij**2 * vij[k])",
+                "[FAIL] 5. becke_weights_and_grad assembly",
+            ),
+        ],
+    ),
+    (
+        "dft_vxc_matrix_elements_sympy.py",
+        750,
+        [
+            ("sp.Rational(1, 2) * vt * DCHI_N", "vt * DCHI_N", "[FAIL] numeric closed"),
+            (
+                "2 * vss * gs[b] + d[3] * gc[b]",
+                "2 * vss * gs[b] + 2 * d[3] * gc[b]",
+                "[FAIL] numeric polarized alpha",
+            ),
+            (
+                "def closed_code(m, n, gga_fac=2, tau_fac=sp.Rational(1, 2)):",
+                "def closed_code(m, n, gga_fac=1, tau_fac=sp.Rational(1, 2)):",
+                "[FAIL] closed: V_mn",
+            ),
+        ],
+    ),
+    (
+        "dft_fxc_kernel_sympy.py",
+        30,
+        [
+            ("st[2 * c + t_]", "st[3 * t_ + c]", "[FAIL] 5. numeric: linearize_point"),
+            (
+                "2 * vs[0] * da[c] + vs[1] * db[c]",
+                "vs[0] * da[c] + vs[1] * db[c]",
+                "[FAIL] 5. numeric: linearize_point",
+            ),
+            (
+                "w_a = [2 * dv_sig_aa * ga[b] + c * dv_sig_ab * gb[b] for b in AX]",
+                "w_a = [dv_sig_aa * ga[b] + c * dv_sig_ab * gb[b] for b in AX]",
+                "[FAIL] 3. w^a == d G^a / dt",
+            ),
+        ],
+    ),
+    (
+        "dft_mgga_tau_gradient_sympy.py",
+        40,
+        [
+            (
+                "c = [2 * vs * grad_rho[b] for b in AX]",
+                "c = [vs * grad_rho[b] for b in AX]",
+                "[FAIL] 4. -2 (gga_ao_partials",
+            ),
+            ("        hess_col = 2 * (", "        hess_col = (", "[FAIL] 5. hess_col"),
+        ],
+    ),
+    (
+        "dft_vv10_potential_sympy.py",
+        20,
+        [
+            (
+                "    dk_dr = kap(i) / 6",
+                "    dk_dr = kap(i) / 3",
+                "[FAIL] W_i vrho_i, W_i vsig_i",
+            ),
+            (
+                "    vsig = fac * wv * dw0_dg",
+                "    vsig = fac * u * dw0_dg",
+                "[FAIL] W_i vrho_i, W_i vsig_i",
+            ),
+        ],
+    ),
+    (
+        "ks_fixed_grid_hessian_sympy.py",
+        700,
+        [
+            (
+                'coef = two_out * w * (k["rs"] * rho1 + 2 * k["ss"] * gg1)',
+                'coef = two_out * w * (k["rs"] * rho1 + k["ss"] * gg1)',
+                "[FAIL] 6. weights_response",
+            ),
+            (
+                "+ self.d1[m][a] * self.d1[n][c]",
+                "- self.d1[m][a] * self.d1[n][c]",
+                "[FAIL] 9. first_order_fock",
+            ),
+        ],
+    ),
+    (
+        "uks_xc_hessian_sympy.py",
+        1800,
+        [
+            (
+                "2 * dot(g[0], g1[0]),",
+                "dot(g[0], g1[0]),",
+                "[FAIL] 5. V1^s[D1^a, D1^b]",
+            ),
+            (
+                "+ k.d1[3] * g1[t][c]",
+                "- k.d1[3] * g1[t][c]",
+                "[FAIL] 5. V1^s[D1^a, D1^b]",
+            ),
+        ],
+    ),
 ]
 
 
@@ -472,8 +585,18 @@ def _crashed(stderr):
     return not last.startswith("AssertionError")
 
 
+# Proofs whose own runtime budget is SLOW_S or more (the exact-derivative XC
+# Hessian and V_xc models, minutes each) run in the weekly validation tier.
+SLOW_S = 600
+
+
+def _tier(budget, *values, id):
+    marks = [pytest.mark.validation] if budget >= SLOW_S else []
+    return pytest.param(*values, marks=marks, id=id)
+
+
 @pytest.mark.parametrize(
-    ("script", "timeout"), [(c[0], c[1]) for c in CASES], ids=[c[0] for c in CASES]
+    ("script", "timeout"), [_tier(c[1], c[0], c[1], id=c[0]) for c in CASES]
 )
 def test_script_holds(script, timeout):
     r = _run(SCRIPTS / script, timeout)
@@ -489,8 +612,7 @@ MUTATIONS = [
 
 @pytest.mark.parametrize(
     ("script", "timeout", "old", "new", "marker"),
-    MUTATIONS,
-    ids=[f"{m[0]}:{i}" for i, m in enumerate(MUTATIONS)],
+    [_tier(m[1], *m, id=f"{m[0]}:{i}") for i, m in enumerate(MUTATIONS)],
 )
 def test_mutation_turns_the_script_red(tmp_path, script, timeout, old, new, marker):
     src = (SCRIPTS / script).read_text()
