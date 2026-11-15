@@ -13,8 +13,11 @@ of each. Two conventions are used:
   `linlccd_amplitude`, `dlpno_ccsd*`): indices run over $n_o$ / $n_v$
   spatial orbitals and amplitudes satisfy $t_{ij}^{ab} = t_{ji}^{ba}$.
 
-Denominators are $D_{ij}^{ab} = \varepsilon_i + \varepsilon_j - \varepsilon_a - \varepsilon_b$
-(negative for a gapped reference). Canonical HF orbitals are assumed, so
+Denominators are positive, $\Delta_{ij}^{ab} = \varepsilon_a + \varepsilon_b - \varepsilon_i - \varepsilon_j$
+and $\Delta_{ijk}^{abc} = \varepsilon_a+\varepsilon_b+\varepsilon_c-\varepsilon_i-\varepsilon_j-\varepsilon_k$
+for a gapped reference, and every energy carries its minus sign
+explicitly. The code stores the negative $-\Delta$ (the `d` arrays,
+`pno_denominators`) and divides by it. Canonical HF orbitals are assumed, so
 $f_{ia} = 0$ and the occupied/virtual Fock blocks are diagonal.
 
 ## Exponential ansatz
@@ -47,8 +50,7 @@ Eqs. 35–45; the spin-orbital solver (`ccsd.rs`) is its cross-check.
 $$W_{ijk}^{abc} = P(i/jk)\,P(a/bc)\Big[\sum_e t_{jk}^{ae}\langle bc\|ei\rangle - \sum_m t_{im}^{bc}\langle ma\|jk\rangle\Big],\qquad
 V_{ijk}^{abc} = P(i/jk)\,P(a/bc)\big[t_i^a \langle bc\|jk\rangle\big],$$
 
-$$E_{(T)} = \frac{1}{36}\sum_{ijkabc} \frac{(W + V)_{ijk}^{abc}\, W_{ijk}^{abc}}{D_{ijk}^{abc}},\qquad
-D_{ijk}^{abc} = \varepsilon_i+\varepsilon_j+\varepsilon_k-\varepsilon_a-\varepsilon_b-\varepsilon_c,$$
+$$E_{(T)} = -\frac{1}{36}\sum_{ijkabc} \frac{(W + V)_{ijk}^{abc}\, W_{ijk}^{abc}}{\Delta_{ijk}^{abc}},$$
 
 with $P(i/jk)x = x - x_{i\leftrightarrow j} - x_{i\leftrightarrow k}$. The
 summand is invariant under any simultaneous relabelling of $(i,j,k)$ and of
@@ -86,8 +88,7 @@ $$\tilde W_{ijk}^{abc} = 4W_{ijk}^{abc} + W_{ijk}^{bca} + W_{ijk}^{cab}
 and the energy is the unrestricted sum
 
 $$E_{(T)} = \frac13 \sum_{ijk}\sum_{abc} f_{ijk}^{abc},\qquad
-f_{ijk}^{abc} = \frac{\tilde W_{ijk}^{abc}\,V_{ijk}^{abc}}{D_{ijk}^{abc}},\qquad
-D_{ijk}^{abc} = \varepsilon_i+\varepsilon_j+\varepsilon_k-\varepsilon_a-\varepsilon_b-\varepsilon_c .$$
+f_{ijk}^{abc} = -\frac{\tilde W_{ijk}^{abc}\,V_{ijk}^{abc}}{\Delta_{ijk}^{abc}} .$$
 
 The divisor 3 is not $1/36$ or $1/6$: the spin summation behind the
 $4,1,1,-2,-2,-2$ coefficients has already absorbed most of the spin-orbital
@@ -102,7 +103,7 @@ integrals.
 - $V$: the three singles terms map onto each other, using $(pq|rs)=(rs|pq)$.
   For $(i,a)\leftrightarrow(j,b)$, $(jb|kc)t_i^a \leftrightarrow (ia|kc)t_j^b$
   and $(ia|jb)t_k^c$ is fixed.
-- $D$ is symmetric in $o$ and in $v$ separately.
+- $\Delta$ is symmetric in $o$ and in $v$ separately.
 - $\tilde W_o^v = \sum_\tau c_\tau W_o^{v_\tau}$ with $c_\tau = 4$ for the
   identity, $1$ for the two 3-cycles and $-2$ for the three transpositions.
   Then $\tilde W_{o_\sigma}^{v_\sigma} = \sum_\tau c_\tau W_o^{v_{\sigma\tau\sigma^{-1}}}$
@@ -130,8 +131,8 @@ m(a,b,c) = \begin{cases} 1 & a=b=c \\ 3 & \text{exactly two equal} \\ 6 & \text{
 
 and $\sum_{a\le b\le c<n_v} m = n_v^3$. Hence
 
-$$E_{(T)} = \frac13 \sum_{a\le b\le c} m(a,b,c) \sum_{ijk}
-\frac{\tilde W_{ijk}^{abc}\,V_{ijk}^{abc}}{D_{ijk}^{abc}} .$$
+$$E_{(T)} = -\frac13 \sum_{a\le b\le c} m(a,b,c) \sum_{ijk}
+\frac{\tilde W_{ijk}^{abc}\,V_{ijk}^{abc}}{\Delta_{ijk}^{abc}} .$$
 
 Repeated indices are physical. Here $a,b,c$ (and $i,j,k$) label spatial
 orbitals that each hold two electrons, so $a=b$ or $i=j$ gives a nonzero
@@ -158,7 +159,7 @@ sum would visit.
 - `triple_energy(a,b,c)` accumulates $W_n = \sum_\pi r_\pi[n_\pi]$, the raw
   block read with its occupied axes permuted by $\pi^{-1}$. One fused pass
   over $(i,j,k)$ then forms $V$, the occupied-axis $\tilde W$ above and
-  $\tilde W V/D$, and returns $g(a,b,c)$.
+  $-\tilde W V/\Delta$ (as $\tilde W V$ over the stored $-\Delta$), and returns $g(a,b,c)$.
 - `pair_job_energy(a,b)` sums `triple_multiplicity(a,b,c)` $\times\,g(a,b,c)$
   over $c=b,\dots,n_v-1$. Jobs are the pairs $a\le b$ (`virtual_pairs`),
   folded serially in ascending order, so the result does not depend on the
@@ -227,10 +228,10 @@ The solver (`eom_davidson.rs`, `davidson_nonsymmetric` :241) diagonalizes
 the projected matrix with `dgeev`, keeps the lowest $n$ roots by real part
 above $10^{-10}$, and adds the Olsen correction (`olsen_correction`, :159)
 
-$$\delta = -(D - \theta)^{-1} r + \epsilon (D - \theta)^{-1} x,\qquad
-\epsilon = \frac{x^\top (D-\theta)^{-1} r}{x^\top (D-\theta)^{-1} x},$$
+$$\delta = -(\Delta - \theta)^{-1} r + \epsilon (\Delta - \theta)^{-1} x,\qquad
+\epsilon = \frac{x^\top (\Delta-\theta)^{-1} r}{x^\top (\Delta-\theta)^{-1} x},$$
 
-where $D$ is the diagonal $F_{vv,aa} - F_{oo,ii}$ (doubles: the sum over both
+where $\Delta$ is the diagonal $F_{vv,aa} - F_{oo,ii}$ (doubles: the sum over both
 pairs). For a non-symmetric matrix the eigenvalue error is first order in the
 residual $\|r\|$, not second.
 
@@ -242,7 +243,7 @@ quadratic terms (eq. 7):
 
 $$0 = \langle ij\|ab\rangle + \Delta_{ij}^{ab}\, t_{ij}^{ab}
 + \tfrac12 \sum_{kl}\langle kl\|ij\rangle\, t_{kl}^{ab}
-+ \tfrac12 \sum_{cd}\langle ab\|cd\rangle\, t_{ij}^{cd},\qquad \Delta_{ij}^{ab} = -D_{ij}^{ab}.$$
++ \tfrac12 \sum_{cd}\langle ab\|cd\rangle\, t_{ij}^{cd}.$$
 
 `LadderVariant` (`linlccd.rs`) selects the ladder terms:
 
@@ -257,7 +258,7 @@ block (`needs_vvvv`, `linlccd.rs:112`).
 
 **Spin-orbital solver** (`linlccd.rs`, restricted orbitals; `linlccd_u.rs`,
 unrestricted). Jacobi iteration with DIIS on
-$t \leftarrow R/D$ (:388), starting from the MP2 guess $t = \langle ij\|ab\rangle/D$ (:345):
+$t \leftarrow -R/\Delta$ (:388), starting from the MP2 guess $t = -\langle ij\|ab\rangle/\Delta$ (:345):
 
 $$R_{ij}^{ab} = \langle ij\|ab\rangle + \tfrac12\sum_{kl}\langle kl\|ij\rangle t_{kl}^{ab}\ (\text{:378})
 + \tfrac12\sum_{cd} t_{ij}^{cd}\langle ab\|cd\rangle\ (\text{:383, Full only}),$$
@@ -320,7 +321,7 @@ bases; spin-orbital indices are used throughout, so pairs run over $2n_o$
 occupied spin orbitals.
 
 **PNOs.** From the canonical MP2 guess
-$t_{ij}^{ab} = \langle ij\|ab\rangle/D_{ij}^{ab}$ (:584), each retained pair
+$t_{ij}^{ab} = -\langle ij\|ab\rangle/\Delta_{ij}^{ab}$ (:584), each retained pair
 gets the pair density (`ferric_mp2::local_pno::pno_for_pair`, local_pno.rs:147)
 
 $$D^{ij} = T^{ij} T^{ij\,\mathsf T} + T^{ij\,\mathsf T} T^{ij},\qquad (T^{ij})_{ab} = t_{ij}^{ab},$$
@@ -333,15 +334,15 @@ are not interchangeable with ORCA's `TCutPNO`. The kept columns $Q_{ij}$ are
 semicanonicalized: $F^{ij} = Q_{ij}^{\mathsf T}\,\mathrm{diag}(\varepsilon_v)\,Q_{ij}$
 is diagonalized and $\tilde Q_{ij} = Q_{ij} U$, giving PNO energies
 $\tilde\varepsilon^{ij}_{\tilde a}$ (`PairPnoBasis::build`, dlpno_ccsd_virtual.rs:138).
-Denominators are $\tilde D^{ij}_{\tilde a\tilde b} = \varepsilon_i+\varepsilon_j-\tilde\varepsilon^{ij}_{\tilde a}-\tilde\varepsilon^{ij}_{\tilde b}$
-(`pno_denominators`, dlpno_ccsd_kernel.rs:381).
+Denominators are $\tilde\Delta^{ij}_{\tilde a\tilde b} = \tilde\varepsilon^{ij}_{\tilde a}+\tilde\varepsilon^{ij}_{\tilde b}-\varepsilon_i-\varepsilon_j$
+(`pno_denominators`, dlpno_ccsd_kernel.rs:381, stores $-\tilde\Delta$).
 
 **Iteration** (`dlpno_linlccd_hh`, :623–700). With
 $S^{ij,kl} = \tilde Q_{ij}^{\mathsf T}\tilde Q_{kl}$ (`pair_overlap`,
 dlpno_ccsd_kernel.rs:134),
 
 $$\tilde R^{ij} = \tilde v^{ij} + \tfrac12\sum_{kl}\langle kl\|ij\rangle\, S^{ij,kl}\,\tilde t^{kl}\,(S^{ij,kl})^{\mathsf T}\quad(\text{:325, :673}),\qquad
-\tilde t^{ij} \leftarrow \tilde R^{ij} / \tilde D^{ij},$$
+\tilde t^{ij} \leftarrow -\tilde R^{ij} / \tilde\Delta^{ij},$$
 
 $$E_c = \tfrac14\sum_{i\le j} w_{ij} \sum_{\tilde a\tilde b} \tilde v^{ij}_{\tilde a\tilde b}\tilde t^{ij}_{\tilde a\tilde b},\qquad w_{ii}=1,\ w_{i<j}=2\quad(\text{:659, :728}).$$
 
@@ -358,7 +359,7 @@ $i\le j$; diagonal pairs are always kept:
   $(i,j)$ if $|\mathbf r_i - \mathbf r_j| \le R_{\mathrm{pair}}$ (Boys centres, Bohr);
 - estimated MP2 pair energy (`pair_energy_screen`): keep $(i,j)$ if
   $|e_{ij}| \ge T_{\mathrm{cut,pairs}}$, with
-  $e_{ij} = (2-\delta_{ij})\sum_{ab} (2(ia|jb) - (ib|ja))(ia|jb)/D_{ij}^{ab}$.
+  $e_{ij} = -(2-\delta_{ij})\sum_{ab} (2(ia|jb) - (ib|ja))(ia|jb)/\Delta_{ij}^{ab}$.
 
 `dlpno_ccsd::apply_pair_mask` (dlpno_ccsd.rs:49) zeroes $t_{ij}$ and
 $t_{ji}$ of every screened pair in the closed-shell CCSD amplitudes; with
@@ -394,7 +395,7 @@ taking eigenvectors with eigenvalue $> 10^{-8}$ (`UNION_RANK_TOL`, :157,
 :447); in-span eigenvalues are $\ge 1$, out-of-span ones are 0. The pairs are
 summed in sorted order, so the basis is bit-identical for all orderings of
 $(i,j,k)$. The union is then semicanonicalized as for PNOs, and the per-triple
-$\sum \tilde W V/D$ is evaluated with every virtual index (free and summed)
+$-\sum \tilde W V/\Delta$ is evaluated with every virtual index (free and summed)
 projected onto that basis (`dlpno_ccsd_t_kernel::triple_contribution_in_tno`,
 :558). The kernel returns the unweighted $f(i,j,k)$; $m$ and the divisor 3 are
 applied only in `screened_triple_energy`. At $t_{\mathrm{cut,tno}} = 0$ every
