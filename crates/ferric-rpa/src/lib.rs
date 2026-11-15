@@ -866,8 +866,27 @@ pub(crate) fn run_pdep_rpa_eigensolve(
             // eigh of A = ε̃(0) = I + Π. Assembles A in column-panels so the
             // matvec never materializes the whole naux-wide block at once.
             let nov = nocc * nvir;
+            // Same χ₀ backend as the Davidson arm and the open-shell Lanczos
+            // arm: with `Chi0Backend::Laplace` the static ε̃(0) being
+            // diagonalized is the Laplace one, not the dense one.
+            let laplace_q = laplace_for_davidson.as_ref();
             let matvec = |v: &Array2<f64>| -> Array2<f64> {
-                sternheimer::dielectric_apply(v, b_ov_ref, eps_occ_ref, eps_vir_ref, 0.0)
+                match laplace_q {
+                    None => {
+                        sternheimer::dielectric_apply(v, b_ov_ref, eps_occ_ref, eps_vir_ref, 0.0)
+                    }
+                    // ε̃·V (naux × m), not the projected m × m matrix: the
+                    // paneled assembly needs the operator form for any panel
+                    // narrower than naux.
+                    Some(q) => laplace_chi0::dielectric_apply_laplace(
+                        v,
+                        b_ov_ref,
+                        eps_occ_ref,
+                        eps_vir_ref,
+                        0.0,
+                        q,
+                    ),
+                }
             };
             let lz = lanczos::run_lanczos_full_rank_budgeted(
                 naux,
@@ -1058,7 +1077,12 @@ pub fn run_pdep_rpa_from_intermediates(
             &eps_vir,
             &quad_freqs,
         )?),
-        _ => None,
+        (true, Some(_)) => return Err(FerricError::General(
+            "PDEP-RPA: need_inv_dielectric_freq cannot be honoured on the Laplace chi0_backend \
+                 (no inverse-dielectric evaluator); refusing rather than returning none"
+                .into(),
+        )),
+        (false, _) => None,
     };
 
     _t_quad.end();
@@ -1814,7 +1838,8 @@ fn u_pdep_rpa_core(
                 let chan_b = channel::RpaChannel::new(b_b, eb_o, eb_v);
                 match &lap {
                     None => sternheimer::dielectric_apply_unrestricted(v, &chan_a, &chan_b, 0.0),
-                    Some((qa, qb)) => laplace_chi0::dielectric_matrix_laplace_unrestricted(
+                    // Operator form ε̃_U·V (naux × m), not the projected matrix.
+                    Some((qa, qb)) => laplace_chi0::dielectric_apply_laplace_unrestricted(
                         v, &chan_a, qa, &chan_b, qb, 0.0,
                     ),
                 }
@@ -1902,7 +1927,12 @@ fn u_pdep_rpa_core(
             &freq_chan_b,
             &quad_freqs,
         )?),
-        _ => None,
+        (true, Some(_)) => return Err(FerricError::General(
+            "U-PDEP-RPA: need_inv_dielectric_freq cannot be honoured on the Laplace chi0_backend \
+                 (no inverse-dielectric evaluator); refusing rather than returning none"
+                .into(),
+        )),
+        (false, _) => None,
     };
 
     // Full-basis U-RI-dRPA diagnostic (spin-summed ε̃ assembled densely at
