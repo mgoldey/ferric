@@ -1,6 +1,6 @@
 # 15.6 MP2 static polarizability
 
-<!-- section: 15.6; status: verify; registry: mp2-polarizability;
+<!-- section: 15.6; status: ready; registry: mp2-polarizability;
      theory: crates/ferric-mp2/theory.md#"10. Static polarizability" -->
 
 The relaxed density of section 15.1 is the derivative of the energy with
@@ -8,8 +8,10 @@ respect to any one-electron perturbation, so its dipole is the MP2 dipole,
 and the field derivative of that dipole is the static polarizability. ferric
 computes it two ways, both library only: by finite field with the SCF
 re-converged at each field, and by a central difference of the relaxed
-density along an analytic first-order reference. Only the relaxed dipole is
-proven by a script, so this section is marked verify.
+density along an analytic first-order reference. The derivation is
+`crates/ferric-mp2/theory.md` section 10; `scripts/mp2_polarizability_sympy.py`
+proves the relaxed dipole, the analytic polarizability and the
+frozen-amplitude C6 on a model with the SCF re-solved at every field.
 
 | Symbol | Meaning | Code name |
 |---|---|---|
@@ -46,8 +48,27 @@ gradient path's, and $\mu_d(0) = -\partial E/\partial F_d$.
 >
 > <!-- verified: id=mp2.polar.relaxed-dipole; script=scripts/mp2_gradient_sympy.py; claim=G; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/zvector.rs::{solve_zvector,build_relaxed_density_ao}; rust_test=ferric-mp2/tests/cpks_polar.rs::cpks_static_relaxed_dipole_vs_pyscf -->
 
-The script proves the identity for the `solve_zvector` density. That
-`static_relaxed_density_ao` builds the same $z$ is not checked by a script.
+The script proves the identity for the `solve_zvector` density. The
+polarizability path builds its $z$ with a different right-hand side, the
+four-term `build_lagrangian` loop $L$ plus $(2J - K)[P + P^{\mathsf T}]$; at
+canonical orbitals $L_{ck} = I_{kc} - I_{ck}$, so it is the same $z$.
+
+> **Verified equation 15.15b** · `static_relaxed_density_ao` is the gradient's relaxed density
+>
+> The right-hand side $L + (2J - K)[P + P^{\mathsf T}]_{vo}$ equals the
+> `solve_zvector` right-hand side and the two $z$ agree to $10^{-14}$ (claim
+> P1); $-\operatorname{Tr}[P^{\mathrm{rel}}r_d]$ equals $-dE/dF_d$ with the RHF
+> re-solved at each field (claim P2).
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/mp2_polarizability_sympy.py`, claims P1, P2 |
+> | Negative control | the runner flips the sign of one `build_lagrangian` term (P1), and drops the $(2J - K)[P + P^{\mathsf T}]$ term (P2) |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-mp2/src/cpks_polar.rs::static_relaxed_density_ao` |
+> | Code test | `cpks_static_relaxed_dipole_vs_pyscf` in `crates/ferric-mp2/tests/cpks_polar.rs` |
+>
+> <!-- verified: id=mp2.polar.static-density; script=scripts/mp2_polarizability_sympy.py; claim=P1; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/cpks_polar.rs::static_relaxed_density_ao; rust_test=ferric-mp2/tests/cpks_polar.rs::cpks_static_relaxed_dipole_vs_pyscf; registry=mp2-polarizability -->
 
 ## 15.6.2 The analytic polarizability
 
@@ -84,17 +105,50 @@ same for the SCF density.
 **Exactness anchor.** The same difference of the SCF density reproduces the
 CPHF $\alpha^{\mathrm{HF}} = 4\mu^{\mathsf T}(A + B)^{-1}\mu$.
 
-> **Unverified equation 15.16** · the analytic polarizability
+> **Verified equation 15.16** · the analytic polarizability
 >
-> The first-order reference and (15.16) as the second field derivative of
-> $E_{\mathrm{RHF}} + E^{(2)}$.
+> With no correlation the coded tensor is the CPHF $\alpha^{\mathrm{HF}}$
+> exactly (claim P0). With correlation the $h \to 0$ limit of (15.16) equals
+> $-\partial^2(E_{\mathrm{RHF}} + E^{(2)})/\partial F_x\partial F_y$ from a
+> finite-field energy Hessian with the RHF re-solved, for $xx$, $yy$ and $xy$,
+> and the $h = 10^{-4}$ value differs only by its own $O(h^2)$ term (claim P3).
 >
 > | | |
 > |---|---|
-> | Proof | none committed; the evidence is the comparison with PySCF finite field below |
-> | Status | verify: the registry lists `mp2-polarizability` as a gap |
+> | Proof | `scripts/mp2_polarizability_sympy.py`, claims P0, P3 |
+> | Negative control | the runner doubles $J[\partial D]$ in the first-order Fock response |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-mp2/src/cpks_polar.rs::{analytic_alpha_relaxed,first_order_fock_response,reference_at_field}` |
+> | Code test | `relaxed_alpha_matches_pyscf_energy_hessian` in `crates/ferric-mp2/tests/cpks_polar.rs` |
 >
-> <!-- unverified: id=mp2.polar.analytic; todo=prove that static_relaxed_density_ao's z equals solve_zvector's and that (15.16) is -d2E/dF2 on the model of mp2_gradient_sympy.py -->
+> <!-- verified: id=mp2.polar.analytic; script=scripts/mp2_polarizability_sympy.py; claim=P3; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/cpks_polar.rs::{analytic_alpha_relaxed,first_order_fock_response,reference_at_field}; rust_test=ferric-mp2/tests/cpks_polar.rs::relaxed_alpha_matches_pyscf_energy_hessian; registry=mp2-polarizability -->
+
+**HF dynamic response and the frozen-amplitude C6.**
+`dynamic_cphf_alpha_iw` returns
+$\alpha(iu) = 4\mu^{\mathsf T}[(A-B)(A+B) + u^2]^{-1}(A-B)\mu$, the TDHF
+response at imaginary frequency; `frozen_mp2_c6_molecular` rescales its
+isotropic shape to the static MP2 magnitude,
+$\alpha^{\mathrm{MP2}}(iu) = s\,\alpha^{\mathrm{HF}}(iu)$ with
+$s = \alpha^{\mathrm{MP2}}(0)/\alpha^{\mathrm{HF}}(0)$, and integrates
+$C_6 = \tfrac3\pi\sum_kw_k\,\alpha^{\mathrm{MP2}}(iu_k)^2$.
+
+> **Verified equation 15.17** · HF $\alpha(iu)$ and the frozen-amplitude C6
+>
+> $\tfrac12$`compute_az_product` $+ \Delta$ is the $(A+B)$ of `build_apb_amb`;
+> the coded $\alpha(iu)$ equals a complex TDHF linear-response solve at
+> $u = 0, 0.3, 1.7$ and its $u = 0$ value is the static CPHF $\alpha$ (claim
+> P4); the rescaled C6 equals the closed-form pole sum
+> $\tfrac32 s^2\sum_{mn}f_mf_n/(\Omega_m\Omega_n(\Omega_m + \Omega_n))$ (claim P5).
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/mp2_polarizability_sympy.py`, claims P4, P5 |
+> | Negative control | the runner replaces $u^2$ by $u$ in the system matrix (P4), and uses $3/(2\pi)$ (P5) |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-mp2/src/cpks_polar.rs::{dynamic_cphf_alpha_iw,frozen_mp2_c6_molecular}` |
+> | Code test | `cpks_dynamic_alpha_w0_matches_static` in `crates/ferric-mp2/tests/cpks_polar.rs` |
+>
+> <!-- verified: id=mp2.polar.c6-frozen; script=scripts/mp2_polarizability_sympy.py; claim=P5; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/cpks_polar.rs::{dynamic_cphf_alpha_iw,frozen_mp2_c6_molecular}; rust_test=ferric-mp2/tests/cpks_polar.rs::cpks_dynamic_alpha_w0_matches_static; registry=mp2-polarizability -->
 
 **Operators.** The SCF response terms (CPHF, $\partial F$, the
 $(2J - K)[P + P^{\mathsf T}]$ term, the Z-vector Hessian) use the operator the
@@ -122,9 +176,10 @@ From `site/src/reference/validation.md` (the RI-MP2 polarizability rows).
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-mp2/theory.md`, "10. Static polarizability" | (15.15), (15.16), the response matrices |
+| `crates/ferric-mp2/theory.md`, "10. Static polarizability" | (15.15) to (15.17), the response matrices |
+| `scripts/mp2_polarizability_sympy.py`, claims P0 to P5 | the proofs |
 | `scripts/cpks/ff_dfmp2_dipole_alpha.py` | the PySCF finite-field reference |
 
 **Known limits (2026-11-15).** Library only, closed shell, no frozen core.
-Only the relaxed dipole is proven by a script; the analytic $\alpha$ and the
-frozen-amplitude C6 built on it are not.
+The frozen-amplitude C6 takes its frequency dependence from HF; it has no
+MP2 correction to the shape.

@@ -986,6 +986,15 @@
       "scripts": [
         "scripts/ks_zvector_sympy.py"
       ]
+    },
+    "mp2-polarizability": {
+      "theory": [
+        "crates/ferric-mp2/theory.md#10-static-polarizability"
+      ],
+      "scripts": [
+        "scripts/mp2_polarizability_sympy.py",
+        "scripts/mp2_gradient_sympy.py"
+      ]
     }
   },
   "gaps": {
@@ -996,12 +1005,6 @@
       "reason": "no theory.md derivation (book section 25.3 carries it standalone until crates/ferric-rpa/theory.md gains an MBD section)",
       "scripts": [
         "scripts/mbd_coupled_dipole_sympy.py"
-      ]
-    },
-    "mp2-polarizability": {
-      "reason": "section 10 proves only mu(0) = -dE/dF through the solve_zvector density; static_relaxed_density_ao, the analytic alpha and the frozen-amplitude C6 are unproven; no CLI kind or run_* reaches it directly",
-      "theory": [
-        "crates/ferric-mp2/theory.md#10-static-polarizability"
       ]
     },
     "nevpt2": {

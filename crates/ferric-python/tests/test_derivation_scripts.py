@@ -1294,6 +1294,29 @@ CASES = [
             ),
         ],
     ),
+    (
+        "mp2_polarizability_sympy.py",
+        15,
+        [
+            (
+                'grad -= np.einsum("ijcb,ikjb->ck"',
+                'grad += np.einsum("ijcb,ikjb->ck"',
+                "FAIL P1",
+            ),
+            ("xvo = lag + veff_vo(c, dm_p)", "xvo = lag", "FAIL P2"),
+            ("return r + jd - 0.5 * kd", "return r + 2 * jd - 0.5 * kd", "FAIL P3"),
+            (
+                "sysm = amb @ apb + omega**2 * np.eye(n)",
+                "sysm = amb @ apb + omega * np.eye(n)",
+                "FAIL P4",
+            ),
+            (
+                "return 3.0 / np.pi * np.sum",
+                "return 3.0 / (2 * np.pi) * np.sum",
+                "FAIL P5",
+            ),
+        ],
+    ),
 ]
 
 

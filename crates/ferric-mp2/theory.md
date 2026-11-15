@@ -777,75 +777,167 @@ not optimized, so the $z=0$ form is not exact there).
 
 ## 10. Static polarizability
 
-**Finite field** (`ff_polar.rs:390` `mp2_polarizability_static`). The core
-Hamiltonian gains $-\sum_d F_d\,r_d$; at each field the RHF is reconverged and
-the relaxed MP2 density $P^{\mathrm{rel}}(F)$ built. Then
+Closed shell, RHF reference, no frozen core (both drivers refuse
+`frozen_core > 0`: there is no core–active relaxation block on this path).
+A uniform field $F$ along axis $d$ enters the core Hamiltonian as
+$h \to h + F\,r_d$, with $r_d$ the AO dipole integrals about the origin
+(electron charge $-1$). Then
 
-$$ \mu_d(F) = -\operatorname{Tr}[P^{\mathrm{rel}}(F)\,r_d] + \sum_A Z_AR_{A,d}, \qquad
-\alpha_{de} = -\frac{\mu_d(+F_e) - \mu_d(-F_e)}{2|F|} , $$
+$$ \mu_d = -\frac{\partial E}{\partial F_d}, \qquad \alpha_{de} = -\frac{\partial^2 E}{\partial F_d\,\partial F_e}, \qquad E = E_{\mathrm{RHF}} + E^{(2)} . $$
 
-symmetrized. $P^{\mathrm{rel}}$ is `static_relaxed_density_ao`
-(`cpks_polar.rs:483`): $2\delta_{ij} + (P+P^{\mathsf T}) + z$ with
-$X_{ai} = L_{ai} + [(2J-K)[P+P^{\mathsf T}]]_{ai}$ ($L$ = `build_lagrangian`) and
-the section-9 operator, $(\Delta\varepsilon + \tfrac12$`compute_az_product`$)\,z = -X$.
-This $z$ equals `solve_zvector`'s, and $\mu_d(0) = -\partial E/\partial F_d$
-of the RI-MP2 energy. `DensityMode::Unrelaxed` sets $z = 0$.
+The MP2 amplitudes are $t_{ij}^{ab} = -(ia|jb)/\Delta_{ij}^{ab}$ (the code's
+`t2`, divided by the negative `denom`), $\tilde t = 2t - t^{\mathrm{swap}}$,
+and $P_{ij}$, $P_{ab}$ are the unrelaxed blocks of section 9
+(`build_mp2_density`).
 
-**Analytic** (`mp2_polarizability_analytic`, delegating to
-`analytic_alpha_relaxed`). The field enters $h$ as $+F\,r$. Per axis $x$, the
-dipole CPHF $(A+B)\,U^x = -r^x_{vo}$ gives the first-order Fock response
-(`first_order_fock_response`)
+### 10.1 The relaxed density
 
-$$ \partial F = r^x + J[\partial D] - \tfrac12 K[\partial D], \qquad
-\partial D = 2\,(C_v U^x C_o^{\mathsf T} + C_o U^{x\mathsf T} C_v^{\mathsf T}) , $$
+`static_relaxed_density_ao` builds the MO density
 
-and the first-order reference at field $s$ is the set of canonical orbitals of
-$F + s\,\partial F$ (`reference_at_field`). Its occupied space, orbital energies
-and oo/vv Fock blocks equal the field-$s$ SCF's to $O(s^2)$. Then
+$$ D^{\mathrm{rel}} = 2\delta_{ij} \oplus \big(P + P^{\mathsf T}\big) + z , $$
 
-$$ \alpha_{xy} = -\operatorname{Tr}\!\left[\frac{P^{\mathrm{rel}}(+h) - P^{\mathrm{rel}}(-h)}{2h}\, r_y\right],
-\qquad h = 10^{-4}, $$
+$2\delta_{ij} + P_{ij} + P_{ji}$ on the occupied block, $P_{ab} + P_{ba}$ on
+the virtual block and $z_{ai}$ on both off-diagonal blocks, and returns
+$C D^{\mathrm{rel}} C^{\mathsf T}$. The Z-vector solves
 
-with $P^{\mathrm{rel}}$ = `static_relaxed_density_ao` on that reference. The
-same difference of the SCF density reproduces the CPHF
-$\alpha^{\mathrm{HF}} = 4\mu^{\mathsf T}(A+B)^{-1}\mu$ to $4\times10^{-9}$
-relative. A hand assembly $\partial P + \partial z + 2U$ with the
-canonical-denominator $\partial t_2$ omits the off-diagonal oo/vv Fock response
-and the rotation $\Theta D^{\mathrm{corr}} + D^{\mathrm{corr}}\Theta^{\mathsf T}$
-of the correlated density $D^{\mathrm{corr}} = P + P^{\mathsf T} + z$; on
-water/STO-3G these contribute 0.0009 and $-0.0054$ to $\alpha_{zz}$, and 0.048
-and $-0.040$ to $\alpha_{yy}$.
+$$ \big(\Delta_i^a + \tfrac12\,\mathcal A\big)\,z = -X, \qquad
+X_{ai} = L_{ai} + \Big[C^{\mathsf T}(2J - K)\big[C(P + P^{\mathsf T})C^{\mathsf T}\big]C\Big]_{ai}, $$
 
-The SCF response (CPHF, $\partial F$, the $(2J-K)[P+P^{\mathsf T}]$ term and
-the Z-vector Hessian) uses `bounds.op`, the operator the RHF was converged
-with; the MP2 amplitudes and the Lagrangian $L$ use `op`. With a Coulomb RHF
-and `op` $=\operatorname{erfc}(\omega r)$ this is $-\partial^2/\partial F^2$ of
-$E_{\mathrm{RHF}} + E_{\mathrm{MP2}}[\operatorname{erfc}]$ (att-MP2), checked
-against a 5-point finite field of that energy
+with $\tfrac12\mathcal A$ = $\tfrac12$ `compute_az_product`, the
+$(A+B) - \Delta$ coupling of section 9, applied by Jacobi-preconditioned
+conjugate gradient to $\max|r| < 10^{-10}$ (`solve_cphf_cg`). $L$ is
+`build_lagrangian`:
+
+$$ L_{ck} = \sum_j P_{kj}F_{cj} + \sum_b P_{cb}F_{bk}
++ 2\sum_{jab}\tilde t_{kj}^{ab}(ca|jb) - 2\sum_{ijb}\tilde t_{ij}^{cb}(ik|jb), $$
+
+written in the code as four loops (the two $\tilde t$ terms each appear twice,
+once per amplitude slot, with $2(\cdot|\cdot) - (\cdot|\cdot)$ integrals over
+the full-MO factor $B^P_{pq}$). At canonical orbitals the $PF$ terms vanish
+and $L_{ck} = I_{kc} - I_{ck}$ with the $I$ of `build_imat_ri`, so $X$ is the
+right-hand side of `solve_zvector` and the two solves return the same $z$
+**[claim P1]**. $D^{\mathrm{rel}}$ is the relaxed density whose trace with a
+one-electron perturbation is the energy derivative (section 9, **[gradient G]**
+G1), so
+
+$$ \mu_d = -\operatorname{Tr}\big[D^{\mathrm{rel}}_{\mathrm{AO}}\,r_d\big] + \sum_A Z_AR_{A,d}, \qquad \mu_d(0) = -\frac{\partial E}{\partial F_d} $$
+
+(`mp2_dipole`) **[claim P2]**.
+
+`build_relaxed_density_ao` takes $P$ one-sided, so it gives this density only
+when passed $P + P^{\mathsf T}$; `DensityMode::Unrelaxed` passes $z = 0$.
+
+### 10.2 Finite field
+
+`mp2_polarizability_static` (`ff_polar.rs`) adds $V = -h\,r_e$ and
+$V = +h\,r_e$ to the core Hamiltonian (a physical field of $\mp h$),
+reconverges the RHF at each, builds `static_relaxed_density_ao` on each and
+
+$$ \alpha_{de} = -\frac{\mu_d(V = -h r_e) - \mu_d(V = +h r_e)}{2h}, $$
+
+then symmetrizes; the default step is $10^{-3}$.
+
+### 10.3 Analytic (field-reference) polarizability
+
+`mp2_polarizability_analytic` delegates to `analytic_alpha_relaxed`, which
+calls `relaxed_alpha_tensors`. Per field axis $x$:
+
+1. **Dipole CPHF** (`first_order_fock_response`). Solve
+   $(\Delta + \tfrac12\mathcal A)\,U^x = -C_v^{\mathsf T}r_xC_o$ and form
+
+   $$ \partial D = 2\big(C_vU^xC_o^{\mathsf T} + C_oU^{x\mathsf T}C_v^{\mathsf T}\big), \qquad
+   \partial F = r_x + J[\partial D] - \tfrac12K[\partial D] . $$
+
+2. **Reference at field $s$** (`reference_at_field`). Diagonalize
+   $C^{\mathsf T}(F + s\,\partial F)\,C$ (symmetrized) as $V\,w\,V^{\mathsf T}$ and
+   take $C_s = CV$, orbital energies $w$, Fock matrix $F + s\,\partial F$ and
+   density $2C_{s,o}C_{s,o}^{\mathsf T}$. Its occupied space, orbital energies
+   and $oo$/$vv$ Fock blocks are those of the SCF converged at field $s$ to
+   $O(s^2)$; the off-diagonal $oo$/$vv$ Fock response is re-canonicalized away.
+   The $O(s^2)$ error is even in $s$, so it cancels in the central difference.
+3. **Central difference** at $h$ = `LR_FIELD_STEP` = $10^{-4}$:
+
+   $$ \alpha_{xy} = -\operatorname{Tr}\Big[\frac{D^{\mathrm{rel}}(+h) - D^{\mathrm{rel}}(-h)}{2h}\,r_y\Big], $$
+
+   with $D^{\mathrm{rel}}$ = `static_relaxed_density_ao` on each reference,
+   then symmetrized. No SCF is reconverged, so the difference carries no SCF
+   noise; its truncation error is $O(h^2)$.
+
+The same difference of the SCF density is the CPHF polarizability
+(`mp2_polarizability_analytic_hf`)
+
+$$ \alpha^{\mathrm{HF}}_{xy} = -4\sum_{ai}(r_y)_{ai}\,U^x_{ai} = 4\,\mu_x^{\mathsf T}(A+B)^{-1}\mu_y, \qquad \mu_{d,ai} = (C_v^{\mathsf T}r_dC_o)_{ai}, $$
+
+the exactness anchor of the construction, and with no correlation ($t = 0$)
+the MP2 tensor equals it exactly **[claim P0]**. With correlation the
+$h \to 0$ limit of the difference is $-\partial^2E/\partial F_x\partial F_y$
+of $E_{\mathrm{RHF}} + E^{(2)}$, and the value at $h = 10^{-4}$ differs from
+it by its $O(h^2)$ truncation only **[claim P3]**. The two contributions a
+hand assembly $\partial P + \partial z + 2U$ with the canonical-denominator
+$\partial t$ would miss, the off-diagonal $oo$/$vv$ Fock response and the
+rotation $\Theta D^{\mathrm{corr}} + D^{\mathrm{corr}}\Theta^{\mathsf T}$ of
+$D^{\mathrm{corr}} = P + P^{\mathsf T} + z$, are carried by the reference
+construction; on water/STO-3G they contribute 0.0009 and $-0.0054$ to
+$\alpha_{zz}$, and 0.048 and $-0.040$ to $\alpha_{yy}$.
+
+**Operators.** The SCF response (the CPHF, $\partial F$, the
+$(2J-K)[P+P^{\mathsf T}]$ term and the Z-vector Hessian) uses `bounds.op`, the
+operator the RHF was converged with, through four-centre J/K; the MP2
+amplitudes and $L$ use `op` through the RI factor. With a Coulomb RHF and
+`op` $=\operatorname{erfc}(\omega r)$ the result is
+$-\partial^2/\partial F^2$ of $E_{\mathrm{RHF}} + E^{(2)}[\operatorname{erfc}]$
+(att-MP2), checked against a 5-point finite field of that energy
 (`attenuated_relaxed_alpha_matches_energy_finite_field`).
 
-**Frozen-amplitude C6** (`cpks_polar.rs:1128` `frozen_mp2_c6_molecular`):
-$\alpha^{\mathrm{MP2}}(i\omega) = \alpha^{\mathrm{MP2}}_{\mathrm{iso}}(0)\,
-\alpha^{\mathrm{HF}}_{\mathrm{iso}}(i\omega)/\alpha^{\mathrm{HF}}_{\mathrm{iso}}(0)$,
-the static magnitude from `analytic_alpha_relaxed` and the HF shape on
-`bounds.op`; $C_6 = \tfrac{3}{\pi}\sum_k w_k\,\alpha^{\mathrm{MP2}}(i\omega_k)^2$.
+### 10.4 Response matrices and $\alpha(iu)$
 
-The singlet response matrices are (`cpks_polar.rs:846` `build_apb_amb`)
+`build_apb_amb` builds, from the dense MO ERIs of the RI factor
+(`compute_b_full_mo` on the operator passed in),
 
-$$ (A+B)_{ai,bj} = \Delta\varepsilon\,\delta + 4(ai|bj) - (ab|ij) - (aj|bi), \qquad
-(A-B)_{ai,bj} = \Delta\varepsilon\,\delta + (aj|bi) - (ab|ij), $$
+$$ (A+B)_{ai,bj} = \Delta_i^a\delta_{ai,bj} + 4(ai|bj) - (ab|ij) - (aj|bi), \qquad
+(A-B)_{ai,bj} = \Delta_i^a\delta_{ai,bj} + (aj|bi) - (ab|ij), $$
 
-and the HF-level polarizabilities are
-$\alpha = 4\mu^{\mathsf T}(A+B)^{-1}\mu$ and
-$\alpha(i\omega) = 4\mu^{\mathsf T}(A-B)\left[(A-B)(A+B) + \omega^2\right]^{-1}\mu$
-(`cpks_polar.rs:1000` `dynamic_cphf_alpha_iw`). `solve_cphf_cg` applies
-$(A+B) = \Delta\varepsilon + \tfrac12$`compute_az_product`.
+and $\Delta + \tfrac12\mathcal A$ is the same $(A+B)$ applied through J/K.
+`dynamic_cphf_alpha_iw` solves $\big[(A-B)(A+B) + u^2\big]\,t_y = (A-B)\,\mu_y$
+and returns the symmetrized
 
-**Relaxed dipole.** The identity $\mu_d(0) = -\partial E/\partial F_d$ is
-the one-electron case $h \to h + \lambda R$ of **[gradient G]** (G1) for the
-`solve_zvector` relaxed density. That `static_relaxed_density_ao`'s $z$ equals
-`solve_zvector`'s, and the analytic field derivative, are not checked by a
-script.
+$$ \alpha_{xy}(iu) = 4\,\mu_x^{\mathsf T}\big[(A-B)(A+B) + u^2\big]^{-1}(A-B)\,\mu_y
+= 4\,\mu_x^{\mathsf T}(A-B)^{1/2}\big[\boldsymbol\Omega^2 + u^2\big]^{-1}(A-B)^{1/2}\mu_y, $$
+
+with $\boldsymbol\Omega^2 = (A-B)^{1/2}(A+B)(A-B)^{1/2}$, the TDHF response at
+imaginary frequency $iu$. At $u = 0$ it is the static CPHF
+$4\mu^{\mathsf T}(A+B)^{-1}\mu$. The $(A+B)$ operator, the CPHF anchor and
+$\alpha(iu)$ against an independent complex TDHF linear-response solve are
+**[claim P4]**. `cphf_c6_molecular` integrates it,
+$C_6 = \tfrac3\pi\sum_kw_k\,\alpha_{\mathrm{iso}}(iu_k)^2$, on the caller's
+grid.
+
+### 10.5 Frozen-amplitude C6
+
+`frozen_mp2_c6_molecular` rescales the HF frequency shape to the static MP2
+magnitude,
+
+$$ \alpha^{\mathrm{MP2}}_{\mathrm{iso}}(iu) = s\,\alpha^{\mathrm{HF}}_{\mathrm{iso}}(iu), \qquad
+s = \frac{\alpha^{\mathrm{MP2}}_{\mathrm{iso}}(0)}{\alpha^{\mathrm{HF}}_{\mathrm{iso}}(i0)}, \qquad
+C_6 = \frac{3}{\pi}\sum_kw_k\,\alpha^{\mathrm{MP2}}_{\mathrm{iso}}(iu_k)^2 , $$
+
+with $\alpha^{\mathrm{MP2}}(0)$ from `analytic_alpha_relaxed` and
+$\alpha^{\mathrm{HF}}$ from `dynamic_cphf_alpha_iw` on `bounds.op`
+($s = 1$ if $|\alpha^{\mathrm{HF}}_{\mathrm{iso}}| \le 10^{-12}$). It
+reproduces the static MP2 $\alpha$ at $u = 0$ by construction and inherits
+the HF frequency dependence. With the pole form above,
+$\alpha^{\mathrm{HF}}_{\mathrm{iso}}(iu) = \sum_nf_n/(\Omega_n^2 + u^2)$, the
+integral is
+$C_6 = \tfrac32 s^2\sum_{mn}f_mf_n/\big(\Omega_m\Omega_n(\Omega_m + \Omega_n)\big)$
+**[claim P5]**. The numerator uses four-centre J/K and the denominator the
+RI-factor $(A+B)$, so $s$ also absorbs the RI error of the HF static term.
+
+`scripts/mp2_polarizability_sympy.py` checks claims P0 to P5 on a toy closed
+shell (non-orthogonal $S$, factorized four-centre ERIs for the reference, an
+independent Cholesky-dressed RI factorization for MP2, two dipole matrices),
+with the RHF re-solved at every field: P1 to $10^{-14}$, P2 to $10^{-9}$
+relative, P3 to $6\times10^{-9}$ in the $h \to 0$ limit (and the $h = 10^{-4}$
+value off by its own $6\times10^{-7}$ $O(h^2)$ term), P4 to $10^{-14}$.
 
 ## 11. CABS for F12
 
