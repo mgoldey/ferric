@@ -48,7 +48,7 @@ def check(name, expr, expect_zero=True):
 
 k_rf = (eps - 1) / ((2 * eps + 1) * rc**3)
 c_rf = 3 * eps / ((2 * eps + 1) * rc)
-check("1 c_rf = 1/rc + k_rf rc^2", c_rf - (1 / rc + k_rf * rc**2))
+check("1 c_rf = 1/rc + k_rf rc^2 (claim 1)", c_rf - (1 / rc + k_rf * rc**2))
 check(
     "1 control: c_rf with 2 eps",
     2 * eps / ((2 * eps + 1) * rc) - (1 / rc + k_rf * rc**2),
@@ -56,9 +56,12 @@ check(
 )
 
 e_rf = qq * (1 / r + k_rf * r**2 - c_rf)
-check("2 E_rf(r_c) = 0", e_rf.subs(r, rc))
-check("2 slope at r_c", sp.diff(e_rf, r).subs(r, rc) + 3 * qq / ((2 * eps + 1) * rc**2))
-check("2 code dE/dr", sp.diff(e_rf, r) - qq * (-1 / r**2 + 2 * k_rf * r))
+check("2 E_rf(r_c) = 0 (claim 2)", e_rf.subs(r, rc))
+check(
+    "2 slope at r_c (claim 2)",
+    sp.diff(e_rf, r).subs(r, rc) + 3 * qq / ((2 * eps + 1) * rc**2),
+)
+check("2 code dE/dr (claim 2)", sp.diff(e_rf, r) - qq * (-1 / r**2 + 2 * k_rf * r))
 check(
     "2 control: code dE/dr without the 2",
     sp.diff(e_rf, r) - qq * (-1 / r**2 + k_rf * r),
@@ -67,15 +70,15 @@ check(
 
 s_code = 1 + x**3 * (-10 + x * (15 - 6 * x))
 s_ref = 1 - 10 * x**3 + 15 * x**4 - 6 * x**5
-check("3 Horner S", s_code - s_ref)
+check("3 Horner S (claim 3)", s_code - s_ref)
 for k in (1, 2):
     for end in (0, 1):
-        check(f"3 S^({k})({end}) = 0", sp.diff(s_ref, x, k).subs(x, end))
-check("3 S(0) = 1", s_ref.subs(x, 0) - 1)
-check("3 S(1) = 0", s_ref.subs(x, 1))
+        check(f"3 S^({k})({end}) = 0 (claim 3)", sp.diff(s_ref, x, k).subs(x, end))
+check("3 S(0) = 1 (claim 3)", s_ref.subs(x, 0) - 1)
+check("3 S(1) = 0 (claim 3)", s_ref.subs(x, 1))
 xr = (r - rsw) / w
 ds_code = (x**2 * (-30 + x * (60 - 30 * x)) / w).subs(x, xr)
-check("3 code dS/dr", sp.diff(s_ref.subs(x, xr), r) - ds_code)
+check("3 code dS/dr (claim 3)", sp.diff(s_ref.subs(x, xr), r) - ds_code)
 check(
     "3 control: dS/dr missing 1/w", sp.diff(s_ref.subs(x, xr), r) - ds_code * w, False
 )
@@ -83,8 +86,8 @@ check(
 e_lj = 4 * ep * ((sig / r) ** 12 - (sig / r) ** 6)
 dedr = 4 * ep * (-12 * (sig / r) ** 12 + 6 * (sig / r) ** 6) / r
 S = s_ref.subs(x, xr)
-check("4 dedr = dE_LJ/dr", sp.diff(e_lj, r) - dedr)
-check("4 d(E S)/dr", sp.diff(e_lj * S, r) - (dedr * S + e_lj * ds_code))
+check("4 dedr = dE_LJ/dr (claim 4)", sp.diff(e_lj, r) - dedr)
+check("4 d(E S)/dr (claim 4)", sp.diff(e_lj * S, r) - (dedr * S + e_lj * ds_code))
 check(
     "4 control: minus sign", sp.diff(e_lj * S, r) - (dedr * S - e_lj * ds_code), False
 )
@@ -131,13 +134,15 @@ for rr in ("5.3", "6.9", "7.9", "8.6", "9.3"):
     worst = max(worst, abs(d - fd))
 ok5 = worst < 1e-18
 print(
-    f"{'ok ' if ok5 else 'BAD'} 5 FD of code energy vs code dE/dr: {mp.nstr(worst, 3)}"
+    f"{'ok ' if ok5 else 'BAD'} 5 FD of code energy vs code dE/dr (claim 5): {mp.nstr(worst, 3)}"
 )
 if not ok5:
     fails.append("5 FD")
 e_at_rc = code_pair(par["rc_"], **par)[2]
 ok5b = abs(e_at_rc) < 1e-40
-print(f"{'ok ' if ok5b else 'BAD'} 5 E_rf(r_c) = 0 numerically: {mp.nstr(e_at_rc, 3)}")
+print(
+    f"{'ok ' if ok5b else 'BAD'} 5 E_rf(r_c) = 0 numerically (claim 5): {mp.nstr(e_at_rc, 3)}"
+)
 if not ok5b:
     fails.append("5 E_rf(r_c)")
 

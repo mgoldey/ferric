@@ -16,12 +16,12 @@ tesserae, $\mu,\nu$ AO basis functions, $A,B$ atoms. $N$ is the tessera count.
 ## 1. Cavity
 
 One sphere per non-ghost atom, radius $R_A = s_{\mathrm{vdW}}\, r_{\mathrm{mB}}(Z_A)$
-with $s_{\mathrm{vdW}} = 1.2$ (`cavity.rs:131`) and $r_{\mathrm{mB}}$ the
+with $s_{\mathrm{vdW}} = 1.2$ (`CavityConfig::default` in `cavity.rs`) and $r_{\mathrm{mB}}$ the
 modified Bondi radius: Bondi 1964 except H = 1.10 Å and B = 1.92 Å
-(`radii.rs:97` `modified_bondi_radius_bohr`; PySCF's `modified_Bondi` values).
+(`radii.rs` `modified_bondi_radius_bohr`; PySCF's `modified_Bondi` values).
 Each sphere carries a Lebedev grid $\{\hat n_g, w_g\}$ with
 $\sum_g w_g = 1$ (`ferric_quadrature::lebedev`); tessera $k$ on sphere $A$ is
-(`cavity.rs:147` `build_cavity`)
+(`cavity.rs` `build_cavity`)
 
 $$ \mathbf r_k = \mathbf R_A + R_A \hat n_g, \qquad \hat{\mathbf n}_k = \hat n_g \ \text{(outward)}, \qquad a_k = 4\pi R_A^2\, w_g\, \mathrm{swf}_k , $$
 
@@ -29,9 +29,9 @@ $$ \xi_k = \frac{\Xi(N_{\mathrm{Leb}})}{R_A\sqrt{4\pi w_g}}, \qquad \mathrm{swf}
 
 with $h$ the quintic smoothstep of Lange & Herbert (JCP 133, 244111 (2010),
 eq. 3.19; `cavity.rs` `switch_h`), $R^{\mathrm{sw}}_B = R_B\sqrt{14/N_{\mathrm{Leb}}}$
-(`cavity.rs:174`) and $\Xi$ the per-Lebedev-order Gaussian-width table
-`matrices.rs:88` `gaussian_xi_table` (the values of PySCF's `pcm.py` `XI`). Tesserae with $w_g\,\mathrm{swf}_k \le 10^{-16}$ are
-dropped (`cavity.rs:242`). A lone sphere has $\mathrm{swf}_k = 1$ and total
+(`SphereGeometry::new` in `cavity.rs`) and $\Xi$ the per-Lebedev-order Gaussian-width table
+`matrices.rs` `gaussian_xi_table` (the values of PySCF's `pcm.py` `XI`). Tesserae with $w_g\,\mathrm{swf}_k \le 10^{-16}$ are
+dropped (`build_cavity`). A lone sphere has $\mathrm{swf}_k = 1$ and total
 area exactly $4\pi R_A^2$. Ferric's cavity has no interstitial spheres
 (GEPOL "added spheres").
 
@@ -54,7 +54,7 @@ surface (Gauss), which is what the $-2\pi$ eigenvalue below expresses.
 ### 2.1 `SdKind::GaussianSmeared` (default)
 
 Each tessera charge is a normalized Gaussian of exponent $\xi_k^2$
-(`matrices.rs:126` `build_s_d_kind`, branch at `:161`), with
+(`matrices.rs` `build_s_d_kind`, the `GaussianSmeared` branch), with
 $\xi_{ij} = \xi_i\xi_j/\sqrt{\xi_i^2+\xi_j^2}$:
 
 $$ S_{ij} = \frac{\operatorname{erf}(\xi_{ij} r_{ij})}{r_{ij}}, \qquad
@@ -62,13 +62,13 @@ $$ S_{ij} = \frac{\operatorname{erf}(\xi_{ij} r_{ij})}{r_{ij}}, \qquad
    \quad (i\ne j), $$
 
 $$ S_{ii} = \frac{\xi_i\sqrt{2/\pi}}{\mathrm{swf}_i}, \qquad
-   D_{ii} = -\frac{\xi_i\sqrt{2/\pi}}{2R_i} \quad (`matrices.rs:168`,\ `:169`). $$
+   D_{ii} = -\frac{\xi_i\sqrt{2/\pi}}{2R_i} \quad (`build_s_d_kind`). $$
 
 ### 2.2 `SdKind::PointCharge`
 
-Bare point charges (`matrices.rs:132`): $S_{ij} = 1/r_{ij}$,
-$D_{ij} = \nu_{ij}/r_{ij}^3$, $S_{ii} = 1.0694\sqrt{4\pi/a_i}$ (`matrices.rs:80`),
-$D_{ii} = -S_{ii}/(2R_i)$ (`matrices.rs:137`).
+Bare point charges (`build_s_d_kind`, the `PointCharge` branch): $S_{ij} = 1/r_{ij}$,
+$D_{ij} = \nu_{ij}/r_{ij}^3$, $S_{ii} = 1.0694\sqrt{4\pi/a_i}$ (`XI_SELF` in `matrices.rs`),
+$D_{ii} = -S_{ii}/(2R_i)$ (`build_s_d_kind`).
 
 ### 2.3 Why $D_{ii} = -S_{ii}/(2R_i)$
 
@@ -98,9 +98,9 @@ $$ \left[ 2\pi\frac{\varepsilon+1}{\varepsilon-1} I - DA \right] S\,q = -\left( 
 
 is multiplied through by $f/2\pi$ with
 
-$$ f(\varepsilon) = \frac{\varepsilon-1}{\varepsilon+1} \quad (`matrices.rs:227`) , $$
+$$ f(\varepsilon) = \frac{\varepsilon-1}{\varepsilon+1} \quad (`build_k_r`) , $$
 
-giving (`matrices.rs:215` `build_k_r`, `:242`, `:246`)
+giving (`matrices.rs` `build_k_r`)
 
 $$ K = S - \frac{f}{2\pi}\, DA\, S = \left(I - \tfrac{f}{2\pi}DA\right) S, \qquad
    R = -f\left(I - \frac{DA}{2\pi}\right), \qquad K q = R v . $$
@@ -108,18 +108,18 @@ $$ K = S - \frac{f}{2\pi}\, DA\, S = \left(I - \tfrac{f}{2\pi}DA\right) S, \qqua
 $DA$ is $D$ with column $j$ scaled by $a_j$. `build_k_r` rejects
 $\varepsilon \le 1$ and non-finite $\varepsilon$ (vacuum has no reaction field).
 $K$, $R$ depend on geometry and $\varepsilon$ only and are built once per SCF
-(`lib.rs:110` `PcmContext::from_tesserae`).
+(`lib.rs` `PcmContext::from_tesserae`).
 
 ## 4. Symmetrized charge solve and energy
 
 $Q = K^{-1}R$ is not symmetric (because $D$ is not). The code applies its
-symmetric part (`solver.rs:58` `solve_pcm_charges`):
+symmetric part (`solver.rs` `solve_pcm_charges`):
 
-$$ q = \tfrac12\left[ K^{-1} R v + R^{\mathsf T} (K^{\mathsf T})^{-1} v \right] = \tfrac12 (Q + Q^{\mathsf T})\, v \qquad (`solver.rs:73`,\ `:85`,\ `:87`), $$
+$$ q = \tfrac12\left[ K^{-1} R v + R^{\mathsf T} (K^{\mathsf T})^{-1} v \right] = \tfrac12 (Q + Q^{\mathsf T})\, v \qquad (`solve_pcm_charges`), $$
 
 two LU solves ($Kx = Rv$ and $K^{\mathsf T}y = v$). The energy is
 
-$$ E_{\mathrm{pcm}} = \tfrac12\, q\cdot v = \tfrac12\, v^{\mathsf T} Q v \qquad (`solver.rs:88`), $$
+$$ E_{\mathrm{pcm}} = \tfrac12\, q\cdot v = \tfrac12\, v^{\mathsf T} Q v \qquad (`solve_pcm_charges`), $$
 
 identical to the unsymmetrized quadratic form **[sympy 5]**. The order of
 the second term matters: $(K^{\mathsf T})^{-1}R^{\mathsf T}v = (RK^{-1})^{\mathsf T}v$
@@ -200,17 +200,17 @@ S matrix of `ferric_scf::cosmo` are a separate implementation.
 ## 7. Solute potential, Fock contribution, total energy
 
 The potential at tessera $k$ from the current total density $P$
-(`potential.rs:37` `solute_potential_at_tesserae`, default `ProbeKind::Point`):
+(`potential.rs` `solute_potential_at_tesserae`, default `ProbeKind::Point`):
 
 $$ v_k = \sum_A \frac{Z_A}{|\mathbf r_k-\mathbf R_A|} + \sum_{\mu\nu} P_{\mu\nu} B^k_{\mu\nu}, \qquad
    B^k_{\mu\nu} = \left\langle \mu \middle| -\frac{1}{|\mathbf r-\mathbf r_k|} \middle| \nu \right\rangle , $$
 
 $B^k$ being libint's nuclear-attraction integral for a $+1$ charge at
-$\mathbf r_k$. `ProbeKind::GaussianSmeared` (`potential.rs:256`, `:347`) replaces
+$\mathbf r_k$. `ProbeKind::GaussianSmeared` (`solute_potential_at_tesserae_smeared`, `build_reaction_field_operator_smeared`) replaces
 every $1/r$ by $\operatorname{erf}(\xi_k r)/r$ (PySCF's probe convention).
 
-Per SCF iteration `pcm_step` (`lib.rs:166`) evaluates $v$, solves §4, and
-returns the reaction-field operator (`potential.rs:150`
+Per SCF iteration `pcm_step` (`ferric-pcm/src/lib.rs`) evaluates $v$, solves §4, and
+returns the reaction-field operator (`potential.rs`
 `build_reaction_field_operator`)
 
 $$ V^{\mathrm{pcm}}_{\mu\nu} = \sum_k q_k\, B^k_{\mu\nu} $$
@@ -219,10 +219,10 @@ with $E_{\mathrm{pcm}}$. Because $q$ is the symmetrized response,
 $E_{\mathrm{pcm}}(P) = \tfrac12 v(P)^{\mathsf T} Q_{\mathrm{sym}}\, v(P)$ has
 $\partial E_{\mathrm{pcm}}/\partial P_{\mu\nu} = V^{\mathrm{pcm}}_{\mu\nu}$
 **[sympy 6]**; the raw $Qv$ would not be this gradient (control). The SCF adds
-$V^{\mathrm{pcm}}$ to every spin Fock matrix (`ferric-scf/src/driver.rs:588`
+$V^{\mathrm{pcm}}$ to every spin Fock matrix (`ferric-scf/src/driver.rs`
 in `solvent_terms`) and $E_{\mathrm{pcm}}$ once to the total energy, outside
 the $\tfrac12\operatorname{Tr}[P(h+F)]$ trace
-(`ferric-scf/src/rhf.rs:2805`; PySCF's `e_solvent` convention). The
+(`solve_rhf` in `ferric-scf/src/rhf.rs`; PySCF's `e_solvent` convention). The
 self-consistency between $q$ and $P$ is carried by the outer SCF/DIIS loop;
 the charge solve itself is direct.
 
@@ -232,12 +232,12 @@ The SCF energy is variational in the density, so its nuclear gradient is the
 solvent-free SCF gradient evaluated with the solvated orbitals and
 energy-weighted density (which already carry $V^{\mathrm{pcm}}$ through the
 Fock matrix) plus the derivative of $E_{\mathrm{pcm}}$ at fixed AO density $P$
-(`gradient.rs:71` `pcm_gradient_parts`; added to the SCF gradient in
+(`gradient.rs` `pcm_gradient_parts`; added to the SCF gradient in
 `ferric-scf/src/gradient.rs` `with_pcm_gradient` by
 `restricted_scf_gradient`, `unrestricted_scf_gradient` and
 `restricted_open_scf_gradient`). With
 
-$$ x = K^{-1}Rv, \qquad y = K^{-\mathsf T}v, \qquad q = \tfrac12\left(x + R^{\mathsf T}y\right) \quad (`gradient.rs:100`,\ `:106`), $$
+$$ x = K^{-1}Rv, \qquad y = K^{-\mathsf T}v, \qquad q = \tfrac12\left(x + R^{\mathsf T}y\right) \quad (`pcm_gradient_parts`), $$
 
 $$ \frac{\partial E_{\mathrm{pcm}}}{\partial R_{A\alpha}} = q^{\mathsf T}\frac{\partial v}{\partial R_{A\alpha}} + \tfrac12\, v^{\mathsf T}\frac{\partial (K^{-1}R)}{\partial R_{A\alpha}}\, v . $$
 
@@ -251,35 +251,35 @@ $\mathrm{swf}_k$.
 
 $q^{\mathsf T}\partial v$ is the gradient of the interaction of fixed charges
 $q_k$ at $\mathbf r_k$ with the solute's nuclei and electrons. For point
-probes (`gradient.rs:269` `potential_term_point`) the electronic part is
+probes (`gradient.rs` `potential_term_point`) the electronic part is
 $\sum_{\mu\nu}P_{\mu\nu}\,\partial V^{\mathrm{pcm}}_{\mu\nu}(q)$ from libint's
 nuclear-attraction derivative engine with the tesserae as the only charges:
 the two shell-centre blocks go to the AO atoms, the block of charge $k$
-(`gradient.rs:319`) to $A(k)$. The classical part
+(in `potential_term_point`) to $A(k)$. The classical part
 $\sum_k q_k \sum_{B\ne A(k)} Z_B\,\phi(|\mathbf r_k-\mathbf R_B|)$,
-$\phi(r) = 1/r$, moves $A(k)$ against $B$ (`gradient.rs:403`
-`nuclear_tessera_term`). For Gaussian probes (`gradient.rs:336`
-`potential_term_smeared`) $\phi(r) = \operatorname{erf}(\xi_k r)/r$ and the
+$\phi(r) = 1/r$, moves $A(k)$ against $B$
+(`nuclear_tessera_term`). For Gaussian probes
+(`potential_term_smeared`) $\phi(r) = \operatorname{erf}(\xi_k r)/r$ and the
 electronic part uses the derivative 3-centre integrals
 $\partial(\mu\nu|g_k)/N_k$ (site block to $A(k)$).
 
 ### 8.2 Response term
 
 With $f/2\pi$ written $p$, differentiating $K = (I - pDA)S$ and
-$R = -f(I - DA/2\pi)$ gives **[sympy 8]** (`gradient.rs:189` `response_term`)
+$R = -f(I - DA/2\pi)$ gives **[sympy 8]** (`gradient.rs` `response_term`)
 
 $$ \tfrac12 v^{\mathsf T}\partial(K^{-1}R)v = \tfrac12\Big[ -z^{\mathsf T}(\partial S)\,x + p\, y^{\mathsf T}(\partial D)\,u + p\sum_j (D^{\mathsf T}y)_j\, w_j\, \partial a_j \Big], $$
 
 $$ w = Sx + v, \qquad u = Aw, \qquad z = y - p\,A D^{\mathsf T} y . $$
 
 Off-diagonal elements depend on $\mathbf r_{ij}$. With $S_{ij} = S(r_{ij})$
-and $D_{ij} = h(r_{ij})\,\nu_{ij}$, $h(r) = -S'(r)/r$ (`gradient.rs:135`
-`sd_kernel`),
+and $D_{ij} = h(r_{ij})\,\nu_{ij}$, $h(r) = -S'(r)/r$
+(`sd_kernel`),
 
 $$ \nabla_{\mathbf r_i} S_{ij} = S'(r)\,\hat{\mathbf r}_{ij}, \qquad
    \nabla_{\mathbf r_i} D_{ij} = h'(r)\,\nu_{ij}\,\hat{\mathbf r}_{ij} + h(r)\,\hat{\mathbf n}_j , $$
 
-and $\nabla_{\mathbf r_j} = -\nabla_{\mathbf r_i}$ (`gradient.rs:230`; pairs on
+and $\nabla_{\mathbf r_j} = -\nabla_{\mathbf r_i}$ (`response_term`; pairs on
 one sphere cancel and are skipped). For `GaussianSmeared`
 ($c = 2/\sqrt\pi$, $\xi = \xi_{ij}$):
 
@@ -292,15 +292,14 @@ Diagonal and area terms are all proportional to
 $\partial\ln\mathrm{swf}_j$: $\partial a_j = a_j\,\partial\ln\mathrm{swf}_j$;
 `GaussianSmeared` $\partial S_{jj} = -S_{jj}\,\partial\ln\mathrm{swf}_j$ and
 $D_{jj}$ constant; `PointCharge` $\partial S_{jj} = -\tfrac12 S_{jj}\,\partial\ln\mathrm{swf}_j$
-and $\partial D_{jj} = -\tfrac12 D_{jj}\,\partial\ln\mathrm{swf}_j$ (`gradient.rs:243`,
-`:247`). The switching derivative is
+and $\partial D_{jj} = -\tfrac12 D_{jj}\,\partial\ln\mathrm{swf}_j$ (`response_term`). The switching derivative is
 
 $$ \nabla_{\mathbf r_j}\ln\mathrm{swf}_j = \sum_{B\ne A(j)} \frac{h_{\mathrm{sw}}'(t_{jB})}{h_{\mathrm{sw}}(t_{jB})}\,\frac{1}{R^{\mathrm{sw}}_B}\,\hat{\mathbf r}_{jB},
    \qquad t_{jB} = \frac{|\mathbf r_j-\mathbf R_B| - R^{\mathrm{in}}_B}{R^{\mathrm{sw}}_B}, $$
 
-with $h_{\mathrm{sw}}'(t) = 30t^2(1-t)^2$ (`cavity.rs:79` `switch_h_deriv`),
-$A(j)$ receiving $+$ and $B$ receiving $-$ (`gradient.rs:261`). $R^{\mathrm{sw}}$,
-$R^{\mathrm{in}}$ come from the shared `cavity.rs:100` `SphereGeometry::new`
+with $h_{\mathrm{sw}}'(t) = 30t^2(1-t)^2$ (`cavity.rs` `switch_h_deriv`),
+$A(j)$ receiving $+$ and $B$ receiving $-$ (`response_term`). $R^{\mathrm{sw}}$,
+$R^{\mathrm{in}}$ come from the shared `cavity.rs` `SphereGeometry::new`
 that `build_cavity` uses.
 
 ### 8.3 Validation
