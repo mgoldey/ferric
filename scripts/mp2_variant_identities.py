@@ -7,8 +7,8 @@ inputs with the symmetry the code assumes (real orbitals, density-fitted
 carries a negative control: a plausible wrong variant that must NOT satisfy
 it. Exits nonzero on the first failure.
 
-  1  Closed-shell spin components (rimp2.rs spin_components_from_g :960,
-     pair_energy :1291, j >= i weighting :1417): the spatial
+  1  Closed-shell spin components (rimp2.rs spin_components_from_g,
+     pair_energy and its j >= i weighting): the spatial
      E_OS = sum (ia|jb)^2/D and E_SS = sum (ia|jb)[(ia|jb)-(ib|ja)]/D equal
      the opposite-spin and same-spin parts of the spin-orbital
      1/4 sum |<ij||ab>|^2/D, and the unique-pair sum (j >= i, off-diagonal

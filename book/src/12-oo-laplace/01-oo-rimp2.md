@@ -279,8 +279,8 @@ is listed as not graded.
 
 Changes from the sources:
 
-- The amplitudes are written $t = -(ia|jb)/\Delta$, with a positive $\Delta$.
-- The DIIS error is written with the rotated coefficients $C_{\mathrm{new}}$,
-  as the code forms it. `theory.md` writes $C\,G\,C^{\mathsf T}$.
-- The convergence recheck and the "last halved step" rule are stated from the
-  loop. `theory.md` does not give them.
+- The amplitudes are written $t = -(ia|jb)/\Delta$, with a positive $\Delta$,
+  as in `theory.md`.
+- The DIIS error uses the rotated coefficients $C_{\mathrm{new}}$, and the
+  convergence recheck and the "last halved step" rule are stated from the
+  loop; `theory.md` section 7 states them the same way.

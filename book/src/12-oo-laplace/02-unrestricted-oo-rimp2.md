@@ -184,7 +184,6 @@ transcription in the box above lands.
 Changes from the sources:
 
 - $\beta$ indices are written with overbars, not capitals.
-- `theory.md` section 7 says that $\mu$ doubles up to 5 Ha but does not give
-  the three-strike exit. It also does not say that the unrestricted
-  energy-change stop skips the gradient recompute. Both rules are stated
-  here from the loop.
+- The $\mu$ doubling with its three-strike exit, and the unrestricted
+  energy-change stop that skips the gradient recompute, are stated from the
+  loop, as in `theory.md` section 7.

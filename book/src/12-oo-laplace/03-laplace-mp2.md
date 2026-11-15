@@ -281,6 +281,6 @@ Changes from the sources:
 
 - The pseudo-densities are underlined.
 - The quadrature range is stated with the frozen-core caveat and the 1%
-  table slack, which `theory.md` does not give.
-- `theory.md` section 8's formulation table omits `local`. The full list is
-  in section 12.4.
+  table slack, as in `theory.md` section 8.
+- `theory.md` section 8's formulation table lists `local`; its full
+  treatment is section 12.4.

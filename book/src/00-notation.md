@@ -45,12 +45,11 @@ A $\beta$-spin spatial orbital carries an overbar: $\bar\imath, \bar a$.
 
 **Disagreements.**
 
-- `crates/ferric-mp2/theory.md:87` writes $\beta$ orbitals as capitals
-  ($J, B$). Capitals collide with atoms ($A, B$) and auxiliary functions
+- `crates/ferric-mp2/theory.md` sections 6.1, 14 and 15 write $\beta$
+  orbitals as capitals ($J, B$). Capitals collide with atoms ($A, B$) and auxiliary functions
   ($P, Q$). The book uses overbars.
-- `crates/ferric-gw/theory.md:16` uses $\alpha, \beta$ for PDEP modes, and
-  `crates/ferric-rpa/theory.md:17-18` writes the eigenpotentials
-  $|V_\alpha\rangle$. Both letters also label spin, and $\alpha$ is the
+- `crates/ferric-gw/theory.md:16` uses $\alpha, \beta$ for PDEP modes. Both
+  letters also label spin, and $\alpha$ is the
   polarizability. The book uses $\xi, \eta$ for PDEP modes.
 - `crates/ferric-gw/theory.md:16` uses $m, n, p, q$ for any active MO. The book
   uses $p, q, r, s$ only.
@@ -114,8 +113,7 @@ The spin-orbital coupled-cluster code uses this convention
 $(pr|qs)$ is implied: the integral vanishes unless $p, r$ share a spin and
 $q, s$ share a spin.
 
-The exchange partner of an $ov$-$ov$ integral is written out, $(ib|ja)$. The
-shorthand $(ia|jb)^\times$ of `crates/ferric-mp2/theory.md:24` is not used.
+The exchange partner of an $ov$-$ov$ integral is written out, $(ib|ja)$.
 
 **Disagreements.**
 
@@ -144,7 +142,7 @@ $$ E^{(2)} = -\sum_{ijab} \frac{(ia|jb)\,\big[\,2(ia|jb) - (ib|ja)\,\big]}{\Delt
 
 | Source | Definition | Sign |
 |---|---|---|
-| `crates/ferric-mp2/theory.md:20-23` | $D_{ij}^{ab} = \varepsilon_i + \varepsilon_j - \varepsilon_a - \varepsilon_b$ | negative |
+| `crates/ferric-mp2/theory.md`, Conventions | $\Delta_{ij}^{ab} = \varepsilon_a + \varepsilon_b - \varepsilon_i - \varepsilon_j$ | positive |
 | `crates/ferric-cc/theory.md:16-17` | same | negative |
 | `wiki/papers/sr-mp2-lr-rpa-derivation.tex:207` | $D_{ij}^{ab} = \varepsilon_a + \varepsilon_b - \varepsilon_i - \varepsilon_j$ | positive |
 | `dissertation.txt:2852-2857` (Eq. 4.3) | $\varepsilon_a + \varepsilon_b - \varepsilon_i - \varepsilon_j$, unnamed | positive |
@@ -219,7 +217,7 @@ $C' = C\,e^{K}$ with $K_{pq} = \kappa_{pq} = -K_{qp}$ for $p > q$
 **Disagreements.**
 
 - The code and the `theory.md` files agree today
-  (`crates/ferric-mp2/theory.md:238-244`). The module documentation of
+  (`crates/ferric-mp2/theory.md` section 7). The module documentation of
   `crates/ferric-mp2/src/orbital_rotation.rs:5-13` records that the closed-shell
   driver once used the reversed Cayley form. Any derivation older than that
   module is suspect for the sign of $\kappa$ and of the gradient.
@@ -228,7 +226,7 @@ $C' = C\,e^{K}$ with $K_{pq} = \kappa_{pq} = -K_{qp}$ for $p > q$
   matches the matrix convention above.
 - The letter $\kappa$ has two other meanings in the sources. It is the
   regularization strength of $\kappa$-MP2, in Ha$^{-1}$
-  (`crates/ferric-mp2/src/rimp2.rs:50-56`, `crates/ferric-mp2/theory.md:69-72`),
+  (`crates/ferric-mp2/src/rimp2.rs:50-56`, `crates/ferric-mp2/theory.md` section 2),
   and it is the particle-hole kernel in the derivation notes
   (`wiki/papers/sr-mp2-lr-rpa-derivation.tex:417`). The book keeps $\kappa$ for
   orbital rotations, writes the regularization strength as
@@ -264,7 +262,7 @@ $$ V_{PQ} = (P|\hat w|Q), \qquad B^P_{pq} = \sum_Q M_{PQ}\,(Q|\hat w|pq), \qquad
   auxiliary index last: $B^Q_{ia} = \sum_P (ia|P)(P|Q)^{-1/2}$
   (`dissertation.txt:2871-2876`, Eq. 4.5 at `dissertation.txt:2909-2925`). The
   code's default is the Cholesky factor
-  (`crates/ferric-mp2/theory.md:43-45`). The energies are identical. The book
+  (`crates/ferric-mp2/theory.md` section 1). The energies are identical. The book
   writes $M$ and names the factor used where it matters (conditioning, rank
   loss).
 - `crates/ferric-gw/theory.md:21-25` writes the dressed factor as $\tilde B$
@@ -305,7 +303,7 @@ $\operatorname{terfc}(r; r_0)$ for the constrained form and
 $\operatorname{terfc}(r; r_0, \omega)$ for the free form.
 
 **Short and long range.** $s$ and $l$ denote the short- and long-range parts of
-an integral, $(ia|jb) = s + l$, as in `crates/ferric-mp2/theory.md:133-136` and
+an integral, $(ia|jb) = s + l$, as in `crates/ferric-mp2/theory.md` section 5 and
 `dissertation.txt:2826-2839`. Energies of a method evaluated with one part
 carry the operator in brackets: $E_{\mathrm{OS}}[\operatorname{erfc}]$.
 
@@ -374,8 +372,7 @@ there.
 **Disagreements.**
 
 - `crates/ferric-core/theory.md:13` gives the Bohr radius as
-  $0.5291772109$ Å, and `crates/ferric-mp2/theory.md:129` rounds the
-  conversion to $0.529177$. The code constant is $0.52917721092$ Å. The book
+  $0.5291772109$ Å. The code constant is $0.52917721092$ Å. The book
   quotes the code constant.
 - The Hartree-to-eV factor is written as the literal `27.211_386_245_988`
   (CODATA 2018) in `crates/ferric-gw/src/bse.rs:102`, while the length and
@@ -397,9 +394,6 @@ files.
 | File | Statement | Code |
 |---|---|---|
 | `crates/ferric-scf/theory.md:11-12` | $D = \sum_i C C^{\mathsf T}$, no factor 2 | `crates/ferric-scf/src/rhf.rs:3738` builds $2 C C^{\mathsf T}$ |
-| `crates/ferric-mp2/theory.md:38`, `:43`, `:56`, `:65` | line references `rimp2.rs:997`, `:1975`, `:1291`, `:1417` | the functions are at `:1007`, `:2219`, `:1312`, `:1438` |
-| `crates/ferric-mp2/theory.md:108-110` | the "thesis Eq 5.6" label is not checked against the dissertation | Eq. 5.6 (`dissertation.txt:3697-3703`) is $E = c_{\mathrm{OS}}E_{\mathrm{OS}}(r_0^{(1)}) + c_{\mathrm{SS}}[E_{\mathrm{SS}}(r_0^{(2)}) - E_{\mathrm{SS}}(r_0^{(1)})]$, which is the expression at `crates/ferric-mp2/theory.md:103` |
-| `scripts/mp2_variant_identities.py:10-12` | line references `:960`, `:1291`, `:1417` | same drift as above |
 | `crates/ferric-core/theory.md:13` | Bohr radius to 10 digits | `crates/ferric-core/src/units.rs:17` has 11 |
 
 Line references drift with every edit to a source file. The book cites
@@ -412,7 +406,7 @@ functions by name and resolves the line at build time; see `book/BUILD.md`.
 - Operators carry a hat: $\hat w$, $\hat T_2$.
 - Amplitudes are $t_{ij}^{ab}$ with occupied indices below. The closed-shell
   antisymmetrized combination is $\tilde t_{ij}^{ab} = 2t_{ij}^{ab} - t_{ij}^{ba}$
-  (written $\tilde T = 2t - t^{\mathrm{swap}}$ at `crates/ferric-mp2/theory.md:248`).
+  (written $\tilde T = 2t - t^{\mathrm{swap}}$ in `crates/ferric-mp2/theory.md` section 7).
 - Spin components: $E_{\mathrm{OS}}$ and $E_{\mathrm{SS}}$, with scaling
   coefficients $c_{\mathrm{OS}}$ and $c_{\mathrm{SS}}$.
 - Code names are in monospace and are never translated: `b_ov`, `nocc`,

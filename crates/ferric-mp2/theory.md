@@ -23,14 +23,15 @@ on a failure. Derivations that live in the project notes are cited as
 
 - Hartree atomic units. Real orbitals. $i,j,k$ index active occupied, $a,b,c$
   virtual, $P,Q$ auxiliary, $\mu,\nu$ AO functions; $\sigma$ labels spin.
-- Denominators carry the code's sign,
-  $D_{ij}^{ab} = \varepsilon_i + \varepsilon_j - \varepsilon_a - \varepsilon_b < 0$,
-  so every correlation energy is a sum of numerator$/D$ and is negative.
-  $\Delta_{ij}^{ab} = -D_{ij}^{ab} > 0$.
-- $(ia|jb)$ is a chemist-notation integral; $(ia|jb)^\times \equiv (ib|ja)$.
+- Denominators are positive,
+  $\Delta_{ij}^{ab} = \varepsilon_a + \varepsilon_b - \varepsilon_i - \varepsilon_j > 0$,
+  and every correlation energy carries an explicit minus sign. The code
+  stores the negative, $\varepsilon_i + \varepsilon_j - \varepsilon_a - \varepsilon_b$,
+  and divides by it. $D$ is a density matrix.
+- $(ia|jb)$ is a chemist-notation integral.
 - **Frozen core.** The active occupied orbitals are
   `first_occ = frozen_core` through `nocc_total − 1`;
-  `active_occ(nocc_total, frozen_core)` (`rimp2.rs:96`) returns their count
+  `active_occ(nocc_total, frozen_core)` (`rimp2.rs:98`) returns their count
   and errors when the freeze covers every occupied orbital. Virtuals always
   start at `nocc_total`. Unrestricted paths freeze the same count in each spin
   (`u_rimp2.rs:149`).
@@ -41,50 +42,50 @@ on a failure. Derivations that live in the project notes are cited as
 ## 1. Density fitting
 
 The 4-index integrals are factorized through the auxiliary basis
-(`rimp2.rs:997` `ri_mp2_spin_components`):
+(`rimp2.rs:1007` `ri_mp2_spin_components`):
 
 $$ (ia|\hat w|jb) \approx \sum_P B^P_{ia} B^P_{jb}, \qquad
 B^P_{ia} = \sum_Q [L^{-1}]_{PQ}\,(Q|\hat w|ia), \qquad V_{PQ} = (P|\hat w|Q) = (LL^{\mathsf T})_{PQ}. $$
 
-$L^{-1}$ is the inverse Cholesky factor (`rimp2.rs:1975`
+$L^{-1}$ is the inverse Cholesky factor (`rimp2.rs:2219`
 `cholesky_inverse_sqrt`), so $L^{-1} V L^{-\mathsf T} = I$. The fitting
 metric uses the same operator $\hat w$ as the 3-index integrals
-(`rimp2.rs:1029`, `metric_op = None`). For $\hat w = \operatorname{erf}$ or
+(`RiMp2Config::metric_op = None`). For $\hat w = \operatorname{erf}$ or
 `terf` the metric is not positive definite in a Coulomb-fitted auxiliary
 basis and goes through a regularized eigendecomposition instead
-(`rimp2.rs:2112` `metric_inverse_sqrt`). A metric operator different from
+(`rimp2.rs:2356` `metric_inverse_sqrt`). A metric operator different from
 $\hat w$ (`RiMp2Config::metric_op`) is a measurement option; its robust
-(Dunlap) form is `ri_mp2_robust_attenuated_metric` (`rimp2.rs:784`).
+(Dunlap) form is `ri_mp2_robust_attenuated_metric` (`rimp2.rs:794`).
 
 ## 2. Closed-shell RI-MP2
 
 The energy is accumulated as opposite-spin and same-spin parts
-(`rimp2.rs:1291` `pair_energy`):
+(`rimp2.rs:1312` `pair_energy`):
 
-$$ E_{\mathrm{OS}} = \sum_{ijab} \frac{(ia|jb)^2}{D_{ij}^{ab}}, \qquad
-E_{\mathrm{SS}} = \sum_{ijab} \frac{(ia|jb)\left[(ia|jb) - (ia|jb)^\times\right]}{D_{ij}^{ab}}, \qquad
-E^{(2)} = E_{\mathrm{OS}} + E_{\mathrm{SS}} = \sum_{ijab} \frac{(ia|jb)\left[2(ia|jb) - (ib|ja)\right]}{D_{ij}^{ab}} . $$
+$$ E_{\mathrm{OS}} = -\sum_{ijab} \frac{(ia|jb)^2}{\Delta_{ij}^{ab}}, \qquad
+E_{\mathrm{SS}} = -\sum_{ijab} \frac{(ia|jb)\left[(ia|jb) - (ib|ja)\right]}{\Delta_{ij}^{ab}}, \qquad
+E^{(2)} = E_{\mathrm{OS}} + E_{\mathrm{SS}} = -\sum_{ijab} \frac{(ia|jb)\left[2(ia|jb) - (ib|ja)\right]}{\Delta_{ij}^{ab}} . $$
 
 $E_{\mathrm{OS}}$ is the $\alpha\beta+\beta\alpha$ part and $E_{\mathrm{SS}}$
 the $\alpha\alpha+\beta\beta$ part of the spin-orbital
-$\tfrac14\sum |\langle ij\|ab\rangle|^2/D$ **[check 1]**. The loop visits
-unique pairs $j \ge i$ and weights off-diagonal pairs by 2 (`rimp2.rs:1417`),
+$-\tfrac14\sum |\langle ij\|ab\rangle|^2/\Delta$ **[check 1]**. The loop visits
+unique pairs $j \ge i$ and weights off-diagonal pairs by 2 (`rimp2.rs:1438`),
 which equals the full $(i,j)$ sum because each summand is invariant under the
 joint swap $(i,a)\leftrightarrow(j,b)$ **[check 1]**.
 
 **κ-regularized MP2** (`RiMp2Config::kappa`, Lee & Head-Gordon, JCTC 14, 5203
 (2018)) multiplies every term by $(1 - e^{-\kappa\Delta_{ij}^{ab}})^2$
-(`rimp2.rs:1324`). $\kappa\to\infty$ recovers MP2 and $\kappa\to 0$ removes
+(`rimp2.rs:1345`). $\kappa\to\infty$ recovers MP2 and $\kappa\to 0$ removes
 correlation; $\kappa$ is in Ha$^{-1}$ and must be finite and positive.
 
 **Spin adaptation.** With spin orbitals $p\sigma$,
 $\langle IJ\|AB\rangle = (IA|JB)\,\delta_{\sigma_I\sigma_A}\delta_{\sigma_J\sigma_B} - (IB|JA)\,\delta_{\sigma_I\sigma_B}\delta_{\sigma_J\sigma_A}$.
 An occupied $\alpha\beta$ pair keeps only the direct term when the virtuals
 are $\alpha\beta$ and only the exchange term when they are $\beta\alpha$, so it
-contributes $\tfrac14\sum_{ab}[(ia|jb)^2 + (ib|ja)^2]/D = \tfrac12\sum_{ab}(ia|jb)^2/D$;
+contributes $-\tfrac14\sum_{ab}[(ia|jb)^2 + (ib|ja)^2]/\Delta = -\tfrac12\sum_{ab}(ia|jb)^2/\Delta$;
 with the $\beta\alpha$ pair this is $E_{\mathrm{OS}}$. An $\alpha\alpha$ or
 $\beta\beta$ pair keeps both terms, and the two blocks give
-$2\cdot\tfrac14\sum[(ia|jb)-(ib|ja)]^2/D = E_{\mathrm{SS}}$ after the
+$-2\cdot\tfrac14\sum[(ia|jb)-(ib|ja)]^2/\Delta = E_{\mathrm{SS}}$ after the
 $a\leftrightarrow b$ relabelling of the cross term. Both identities hold for
 symbolic integrals **[family A]**.
 
@@ -97,11 +98,11 @@ $\sum_{ia}|f^\sigma_{ia}|^2/(\varepsilon_i-\varepsilon_a)$ is not included. With
 $K_{iajb} = (ia|jb)_{\sigma\sigma} - (ib|ja)_{\sigma\sigma}$ and one shared
 auxiliary metric,
 
-$$ E_{\sigma\sigma} = \tfrac14 \sum_{j\ge i} f_{ij} \sum_{ab}\frac{K_{iajb}^2}{D_{ij}^{ab}} \quad (f_{ii}=1,\ f_{i\ne j}=2), \qquad
-E_{\alpha\beta} = \sum_{iJaB}\frac{(ia|JB)^2}{\varepsilon_i+\varepsilon_J-\varepsilon_a-\varepsilon_B} $$
+$$ E_{\sigma\sigma} = -\tfrac14 \sum_{j\ge i} f_{ij} \sum_{ab}\frac{K_{iajb}^2}{\Delta_{ij}^{ab}} \quad (f_{ii}=1,\ f_{i\ne j}=2), \qquad
+E_{\alpha\beta} = -\sum_{i\bar j a\bar b}\frac{(ia|\bar j\bar b)^2}{\varepsilon_a+\varepsilon_{\bar b}-\varepsilon_i-\varepsilon_{\bar j}} $$
 
 (`u_rimp2.rs:586` `same_spin_block_energy`, `u_rimp2.rs:624`
-`opposite_spin_block_energy`; capitals index $\beta$). These are the
+`opposite_spin_block_energy`; overbars mark $\beta$). These are the
 spin-orbital $\alpha\alpha$ and $\alpha\beta$ components, and with
 $\alpha=\beta$ orbitals $E_{\alpha\alpha}+E_{\beta\beta} = E_{\mathrm{SS}}$ and
 $E_{\alpha\beta} = E_{\mathrm{OS}}$ of section 2 **[check 2]**.
@@ -122,9 +123,8 @@ $$ E = c_{\mathrm{OS}}\,E_{\mathrm{OS}}\big[r_0^{(1)}\big] + c_{\mathrm{SS}}\Big
 The same-spin term is a difference, so $r_0^{(2)} \le r_0^{(1)}$ is an error
 (`scs.rs:188`). Defaults (`scs.rs:147`): $r_0^{(1)} = 0.75$ Å,
 $r_0^{(2)} = 1.05$ Å, $c_{\mathrm{OS}} = 1.27$, $c_{\mathrm{SS}} = 4.05$, the
-non-VV10 aug-cc-pVTZ fit. The code's "thesis Eq 5.6" label is not checked
-against the dissertation text (`scs.rs:105`); the formula above is the one
-pinned by `scs_2terfc_matches_eq12_assembled_by_hand`.
+non-VV10 aug-cc-pVTZ fit. The formula is dissertation Eq. 5.6, the label at
+`scs.rs:105`, and is pinned by `scs_2terfc_matches_eq12_assembled_by_hand`.
 
 The terfc kernel (`ferric-integrals/shim/shim.cc:1641`) is
 
@@ -166,8 +166,8 @@ correlation energy. `attenuated_ri_mp2_long_range` (`attenuated.rs:219`) uses
 $\operatorname{erf}(\omega r)/r$ and the eigendecomposition metric path.
 
 **Units.** $\omega$ is in Bohr$^{-1}$ in the Rust API. The CLI and Python take
-Å$^{-1}$ and multiply by `BOHR_INV_PER_ANG_INV` = 0.529177 Bohr/Å
-(`attenuated.rs:160`; e.g. `ferric-cli/src/lib.rs:3104`). The default
+Å$^{-1}$ and multiply by `BOHR_INV_PER_ANG_INV` = 0.52917721092 Bohr/Å
+(`attenuated.rs:160`, `ferric_core::units::BOHR_RADIUS_ANGSTROM`; e.g. `ferric-cli/src/lib.rs:3104`). The default
 0.420 Å$^{-1}$ is 0.222254 Bohr$^{-1}$ (`attenuated.rs:165`).
 
 **Default terfc cutoff by basis.** `terfc_r0.rs` holds the S66-trained
@@ -194,9 +194,9 @@ fit of dissertation Eq. 5.6 exists only in aug-cc-pVTZ ($r_0^{(1)} = 0.75$ Å,
 $r_0^{(2)} = 1.05$ Å, $c_{\mathrm{OS}} = 1.27$, $c_{\mathrm{SS}} = 4.05$). No new equations.
 
 **Range split.** MP2 is quadratic in the integrals. Writing
-$(ia|jb) = s + l$ for the erfc and erf parts,
+$(ia|jb) = s_{iajb} + l_{iajb}$ for the erfc and erf parts,
 
-$$ E[s+l] = E[s] + E[l] + \sum_{ijab}\frac{4sl - s\,l^\times - l\,s^\times}{D_{ij}^{ab}} , $$
+$$ E[s+l] = E[s] + E[l] - \sum_{ijab}\frac{4s_{iajb}l_{iajb} - s_{iajb}l_{ibja} - l_{iajb}s_{ibja}}{\Delta_{ij}^{ab}} , $$
 
 so $E[\operatorname{erfc}] + E[\operatorname{erf}] \ne E[1/r]$ **[check 4]**.
 `rs_mp2_decomposition` (`attenuated.rs:347`) returns the three energies, and
@@ -205,7 +205,7 @@ RS-MP2 + LR-RPA (`ferric-rpa::rs_mp2_rpa`) is built on this cross term.
 ## 6. MP3
 
 `mp3_energy` (`mp3.rs:143`) works in spin orbitals with
-$t_{ij}^{ab} = \langle ij\|ab\rangle/D_{ij}^{ab}$ (`mp3.rs:295`) built from RI
+$t_{ij}^{ab} = -\langle ij\|ab\rangle/\Delta_{ij}^{ab}$ (`mp3.rs:295`) built from RI
 integrals:
 
 $$ E^{(2)} = \tfrac14\sum t_{ij}^{ab}\langle ij\|ab\rangle, \qquad
@@ -225,17 +225,17 @@ doubles only, no non-Brillouin singles) and keeps both amplitude orders. The
 spin-orbital sums of §6 are split by the spin of every index. Lower case is
 α, upper case β; a tensor carries its spin block as a superscript, and the
 αβ block is stored α first, $c^{\alpha\beta}_{iJaB}$. With
-$D^{\sigma\tau}_{ij,ab} = \varepsilon_{i\sigma}+\varepsilon_{j\tau}-\varepsilon_{a\sigma}-\varepsilon_{b\tau}$:
+$\Delta^{\sigma\tau}_{ij,ab} = \varepsilon_{a\sigma}+\varepsilon_{b\tau}-\varepsilon_{i\sigma}-\varepsilon_{j\tau}$:
 
 $$ K^{\sigma\sigma}_{ijab} = (ia|jb)-(ib|ja), \qquad K^{\alpha\beta}_{iJaB} = (ia|JB), \qquad
-c^{(1)} = K/D, \qquad c^{(2)} = R/D $$
+c^{(1)} = -K/\Delta, \qquad c^{(2)} = -R/\Delta $$
 
 (`antisymmetrize` `u_mp3.rs:411`, `divide_blocks` `u_mp3.rs:430`,
 `amplitudes` `u_mp3.rs:462`). The spin-orbital amplitudes are recovered as
 $t_{ijab}=c^{\sigma\sigma}_{ijab}$ for four indices of one spin and
 $t_{i\bar J a\bar B} = -t_{\bar J i a \bar B} = -t_{i \bar J \bar B a} = t_{\bar J i \bar B a} = c^{\alpha\beta}_{iJaB}$,
 the four orderings that give the αβ factor 1 below. Writing $t=c^{(1)}$, the
-residual $R = D\,c^{(2)}$ of the spin-orbital
+residual $R = -\Delta\,c^{(2)}$ of the spin-orbital
 $R_{ijab} = \tfrac12\sum\langle ab\|cd\rangle t_{ijcd} + \tfrac12\sum\langle kl\|ij\rangle t_{klab} + P(ij)P(ab)\sum\langle kb\|cj\rangle t_{ikac}$
 is, block by block (`mp3_residual`, `u_mp3_residual.rs:215`):
 
@@ -267,7 +267,7 @@ $a$ (`particle_ladder`, `:187`; slabs from `for_each_vvvv_slab`,
 $$ E^{(n)} = \tfrac14\sum c^{(n-1),\alpha\alpha}K^{\alpha\alpha} + \tfrac14\sum c^{(n-1),\beta\beta}K^{\beta\beta} + \sum c^{(n-1),\alpha\beta}K^{\alpha\beta}, $$
 
 so the αα + ββ and αβ parts of $E^{(2)}$ are the same-spin and opposite-spin
-energies of §3, and $E^{(3)}$ is split the same way. Summing $\tfrac14 K R/D$
+energies of §3, and $E^{(3)}$ is split the same way. Summing $-\tfrac14 K R/\Delta$
 over the blocks reproduces the three spin-orbital terms of §6 with their
 coefficients ⅛, ⅛ and 1 term class by term class:
 [`scripts/ump3_spin_blocks_sympy.py`](../../scripts/ump3_spin_blocks_sympy.py)
@@ -382,7 +382,7 @@ mutation that turns it red (runner
 **Functional.** `oo_ri_mp2` minimizes $E(C) = E_{\mathrm{HF}}(C) + E^{(2)}_{\mathrm{RI}}(C)$
 with $E^{(2)}$ evaluated in the semicanonical frame of $C$: the active
 occupied–occupied and virtual–virtual blocks of $C^{\mathsf T}F(C)C$ are
-diagonalized first (`oo_rimp2.rs:425` `semicanonical_rotation`). That is the
+diagonalized first (`oo_rimp2.rs:591` `semicanonical_rotation`). That is the
 full-Fock Hylleraas functional of OMP2 (Bozkaya et al., JCP 135, 104103
 (2011)); it is invariant to occupied–occupied and virtual–virtual rotations,
 so occupied–virtual stationarity is full stationarity.
@@ -395,7 +395,7 @@ $$ U(\kappa) = \left(I - \tfrac12\kappa\right)^{-1}\left(I + \tfrac12\kappa\righ
 which is exactly orthogonal and equals $e^{\kappa}$ to second order
 **[check 6]**. The gradient is $g_{ai} = +\partial E/\partial\kappa_{ai}$.
 
-**Gradient** (closed shell, `oo_rimp2.rs:1045`):
+**Gradient** (closed shell, `oo_rimp2.rs:1278` `compute_orbital_gradient`):
 
 $$ g_{ck} = 4F_{ck} + 2\sum_{ijab}\tilde T_{ij}^{ab}\,\frac{\partial (ia|jb)}{\partial\kappa_{ck}} + \sum_{pq} W_{pq}\frac{\partial F_{pq}}{\partial\kappa_{ck}}, \qquad \tilde T = 2t - t^{\mathrm{swap}}, $$
 
@@ -403,28 +403,44 @@ $$ \frac{\partial (ia|jb)}{\partial\kappa_{ck}} = \delta_{ik}(ca|jb) + \delta_{j
 
 at fixed denominators, with $W$ the unrelaxed MP2 density of section 9 and the
 last term the Fock (orbital-energy) response. The HF term is $+4F_{ai}$
-closed-shell (`oo_rimp2.rs:1236`) and $+2F^\sigma_{ai}$ per spin unrestricted
-(`u_oo_rimp2.rs:333`). The gradient derivation is in
+closed-shell (`oo_rimp2.rs:1404`) and $+2F^\sigma_{ai}$ per spin unrestricted
+(`u_oo_rimp2.rs:459`). The gradient derivation is in
 `wiki/sympy_derivations.md` §3.
 
 **Step.** A level-shifted diagonal Newton step in the solver's frame
-(`oo_rimp2.rs:1561`):
+(`oo_rimp2.rs:1705`):
 
 $$ \kappa_{ai} = -\frac{g_{ai}}{\varepsilon_a - \varepsilon_i + \mu}, \qquad \mu = \texttt{level\_shift} = 0.1\ \mathrm{Ha}, $$
 
 with $\varepsilon = \operatorname{diag}(C^{\mathsf T}FC)$, uniformly rescaled
-so $\max|\kappa_{ai}| \le 0.3$ rad (`oo_rimp2.rs:1450`). DIIS extrapolates the
-MO coefficients with error vector $C\,G\,C^{\mathsf T}$, $G$ the
-antisymmetric matrix of $g$ (`oo_rimp2.rs:1611`), followed by Löwdin
-reorthonormalization. A trial step that raises the energy by more than
-$10^{-4}$ Ha (`oo_rimp2.rs:1624`) is replaced by up to ten halvings of
-$\kappa$ without DIIS, the first with $E \le E_{\mathrm{old}} + 10^{-12}$ Ha
-accepted (`oo_rimp2.rs:1649`), and the DIIS subspace is reset.
+so $\max|\kappa_{ai}| \le 0.3$ rad (`oo_rimp2.rs:1711`). DIIS extrapolates the
+MO coefficients: the trial vector is the rotated $C_{\mathrm{new}} = C\,U(\kappa)$
+and its error vector is $C_{\mathrm{new}}\,G\,C_{\mathrm{new}}^{\mathsf T}$, $G$
+the antisymmetric matrix of $g$ at the current point; the extrapolated
+coefficients are Löwdin reorthonormalized. A trial that raises the energy by
+more than $10^{-4}$ Ha is replaced by up to ten halvings of the undamped
+$\kappa$ without DIIS ($\kappa/2, \kappa/4, \dots$). The first with
+$E \le E_{\mathrm{old}} + 10^{-12}$ Ha is accepted; when none is, the last
+halved step ($\kappa/1024$) is taken anyway. Either way the DIIS subspace is
+reset.
+
+**Stop rules** (closed shell). The run converges when $\lVert g\rVert$ at the
+start of an iteration is below `grad_conv`. When the trial energy change
+$|E_{\mathrm{trial}} - E_{\mathrm{old}}|$ (measured before any halving) is
+below `energy_conv` after the first iteration, the gradient is recomputed at
+the accepted point; the run converges if it is below $10\,$`grad_conv`, and
+otherwise that gradient is reused at the next iteration.
 
 **Unrestricted** (`u_oo_rimp2.rs`) applies the same step per spin with
-independent $\kappa^\alpha, \kappa^\beta$ and the per-spin cap
-`max_kappa` = 0.3. When ten halvings fail, $\mu$ doubles up to 5 Ha
-(`u_oo_rimp2.rs:931`, `:758`).
+independent $\kappa^\alpha, \kappa^\beta$, one shared $\mu$, the per-spin cap
+`max_kappa` = 0.3 and one DIIS per spin. Halvings scale both spins together.
+When ten halvings all fail the orbitals do not move, $\mu$ doubles (capped at
+5 Ha, never lowered) and the DIIS subspaces are reset; three consecutive such
+iterations end the run unconverged (`STUCK_LIMIT`), and an accepted step
+resets the count. The energy-change stop does not recompute the gradient: it
+converges when $|E_{\mathrm{trial}} - E_{\mathrm{old}}| <$ `energy_conv` after
+the first iteration and the gradient at the start of the iteration was below
+$10\,$`grad_conv`.
 
 The OO-RI-MP2 nuclear gradient (`oo_rimp2_gradient.rs`) needs no Z-vector,
 because the converged orbitals are stationary.
@@ -450,7 +466,13 @@ With $x = \Delta_{ij}^{ab} > 0$,
 $1/x = \int_0^\infty e^{-tx}\,dt \approx \sum_k w_k e^{-t_k x}$ on a minimax
 grid (`ferric_quadrature::LaplaceQuadrature`) fitted on
 $[2(\varepsilon_{\mathrm{LUMO}}-\varepsilon_{\mathrm{HOMO}}),\ 2(\varepsilon_{\max}-\varepsilon_{\min})]$
-(`laplace.rs:762`). `n_quad` must be 3, 5 or 7. Because $x$ is a sum of
+(`LaplaceMp2::compute*`, `ymin`/`ymax`). $\varepsilon_{\min}$ is the lowest
+orbital, frozen core included, so with a frozen core the interval is wider
+than the active denominators need. `n_quad` must be 3, 5 or 7, and the grid is
+the first tabulated entry with $R_{\mathrm{tab}} \ge 0.99\,R$,
+$R = y_{\max}/y_{\min}$ (`select_minimax_points`): the fitted range may fall
+short of $y_{\max}$ by up to 1%, and a wider $R$ than the table holds is an
+error. Nodes and weights are the table's divided by $y_{\min}$. Because $x$ is a sum of
 one-orbital energies, $e^{-tx}$ splits over the $(i,a)$ and $(j,b)$ pairs:
 
 $$ B^P_{ia}(t) = B^P_{ia}\,e^{-t(\varepsilon_a-\varepsilon_i)/2}\quad(\texttt{laplace.rs:666}), \qquad
@@ -492,12 +514,24 @@ of independent $(ia)$ and $(jb)$ contractions; the derivation is
 | `Mo` (default) | $J = B(t)B(t)^{\mathsf T}$ (`laplace.rs:1157`) | yes |
 | `Ao` | $\operatorname{Tr}[B^P P(t) B^Q Q(t)]$ (`laplace.rs:1249`) | yes |
 | `AoSparse(r)` | `Ao` with Boys-localized occupied orbitals and $P(t)$ restricted to AO domains of radius $r$ Bohr | no |
+| `Local(r)` | the `Mo` Coulomb term rotated to Boys occupieds and VV-HV virtuals (§12.2), with $(P|ia)$ kept for virtuals within $r$ Bohr of orbital $i$ (`laplace_local.rs`) | no |
 
-`AoSparse` requires $r$; passing $r$ with `Mo`/`Ao` is an error
-(`laplace.rs:1410`). The algebra is dense in all three.
+`AoSparse` and `Local` require $r$; passing $r$ with `Mo`/`Ao` is an error
+(`SosFormulation::parse_config_str`). The algebra of `Mo`, `Ao` and `AoSparse`
+is dense, so `AoSparse`'s radius changes the energy and not the cost. In
+`Local` the rotation is exact,
+$E_{\mathrm{OS}} = -\sum_kw_k\lVert L_V^{-1}\tilde Z(t_k)L_V^{-\mathsf T}\rVert_F^2$ with
+$\tilde Z_{PQ}(t) = \sum_{ijab}E_{ij}(t)(P|ia)Q_{ab}(t)(Q|jb)$,
+$E(t) = U^{\mathsf T}e^{t\varepsilon_o}U$, $Q(t) = R^{\mathsf T}e^{-t\varepsilon_v}R$
+($U$, $R$ the two localizing rotations, $V = L_VL_V^{\mathsf T}$), and the
+truncations are the virtual domain (which sets the inner dimension of the Gram
+product, so the cost), the LMO coefficient support, a Schwarz-significance
+rule on the half-transform's AO index and the pair rule that keeps $E_{ij}$
+when the two virtual domains share an orbital. Each is exact as its radius
+grows.
 
 **Sign and quadrature, checked.** $\int_0^\infty e^{-tx}dt = 1/x$ for $x>0$,
-so a summand $N/D$ with $D = -x$ is $-N\int_0^\infty e^{-tx}dt$; the factor
+so a summand $-N/\Delta$ is $-N\int_0^\infty e^{-t\Delta}dt$; the factor
 $e^{-t(\varepsilon_a-\varepsilon_i)/2}$ on $B^P_{ia}$ squares to
 $e^{-t(\varepsilon_a-\varepsilon_i)}$ in $J_{PQ}$, and $P(t)Q(t)$ carries the
 same unhalved weight **[family F]**. Integrated by adaptive quadrature instead
@@ -508,8 +542,8 @@ relative **[family F]**; the minimax grid's own error is a property of
 
 ## 9. Analytic RI-MP2 gradient and Z-vector
 
-**Unrelaxed density** (`oo_rimp2.rs:990` `build_mp2_density`), with
-$t_{ij}^{ab} = (ia|jb)/D_{ij}^{ab}$:
+**Unrelaxed density** (`oo_rimp2.rs:1128` `build_mp2_density`), with
+$t_{ij}^{ab} = -(ia|jb)/\Delta_{ij}^{ab}$:
 
 $$ P_{ij} = -\sum_{kab} t_{ik}^{ab}\left(2t_{jk}^{ab} - t_{jk}^{ba}\right), \qquad
 P_{ab} = \sum_{ijc} t_{ij}^{ac}\left(2t_{ij}^{bc} - t_{ij}^{cb}\right). $$
@@ -1201,7 +1235,7 @@ the unrelaxed density of the full-Fock functional (`build_u_mp2_density`):
 $$ W^\alpha_{ij} = -\tfrac12\sum_{kab}t^{\alpha\alpha}_{ikab}t^{\alpha\alpha}_{jkab} - \sum_{KaB}t^{\alpha\beta}_{iKaB}t^{\alpha\beta}_{jKaB}, \qquad
 W^\alpha_{ab} = \tfrac12\sum_{ijc}t^{\alpha\alpha}_{ijac}t^{\alpha\alpha}_{ijbc} + \sum_{iJC}t^{\alpha\beta}_{iJaC}t^{\alpha\beta}_{iJbC}, $$
 
-$t^{\alpha\alpha} = [(ia|jb)-(ib|ja)]/D$, $t^{\alpha\beta} = (ia|JB)/D$, and
+$t^{\alpha\alpha} = -[(ia|jb)-(ib|ja)]/\Delta$, $t^{\alpha\beta} = -(ia|JB)/\Delta$, and
 $\beta$ by exchanging the spin labels. Contracting $W$ with $\delta F$, using
 $\sum_\sigma\operatorname{Tr}[P^\sigma G^\sigma[\delta D]] = \operatorname{Tr}[\delta D\,G[P]]$
 ($P^\sigma = C^\sigma W^\sigma C^{\sigma\mathsf T}$) and the antisymmetry of
@@ -1224,6 +1258,9 @@ $g = g^\alpha + g^\beta$) is the optimizer of **[gradient O]**. The integral
 term in the proof is the derivation above, not a transcription of
 `compute_u_mp2_orbital_gradient`'s loop.
 
+The step, the shared level shift with its doubling and three-strike exit, and
+the stop rules are those of section 7, "Unrestricted".
+
 ## 15. Unrestricted RI-MP2 nuclear gradient
 
 `u_rimp2_gradient.rs` `u_rimp2_gradient_analytical`; UHF reference, both J/K
@@ -1232,11 +1269,11 @@ routes of §9.1 (four-centre and RI-JK on one auxiliary basis). Proof:
 
 **Energy and its weights.** With $B^{\sigma}_{P,ia}$ the dressed factors of
 spin $\sigma$ ($i,a$ of that spin; capital indices for $\beta$),
-$t^{\alpha\alpha}_{ijab} = [(ia|jb) - (ib|ja)]/D_{ijab}$ and
-$t^{\alpha\beta}_{iJaB} = (ia|JB)/D_{iJaB}$,
+$t^{\alpha\alpha}_{ijab} = -[(ia|jb) - (ib|ja)]/\Delta_{ij}^{ab}$ and
+$t^{\alpha\beta}_{iJaB} = -(ia|JB)/\Delta_{iJ}^{aB}$,
 
-$$ E^{(2)} = \tfrac14\sum |\langle ij\Vert ab\rangle|^2/D \,(\alpha\alpha)
- + \tfrac14\sum |\langle IJ\Vert AB\rangle|^2/D \,(\beta\beta)
+$$ E^{(2)} = -\tfrac14\sum |\langle ij\Vert ab\rangle|^2/\Delta \,(\alpha\alpha)
+ - \tfrac14\sum |\langle IJ\Vert AB\rangle|^2/\Delta \,(\beta\beta)
  + \sum_{iJaB} (ia|JB)\,t^{\alpha\beta}_{iJaB}, $$
 
 and at fixed orbital energies $\partial E^{(2)}/\partial B^{\sigma} = 2x^{\sigma}$ with

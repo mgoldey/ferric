@@ -81,6 +81,5 @@ smoke check that the three energies are wired, not a measurement of $X$.
 | `crates/ferric-mp2/src/attenuated.rs` | the decomposition, the test |
 | `scripts/mp2_variant_identities.py`, claim 4 | verified box |
 
-Changes from the sources: theory.md writes the cross term over the negative
-denominator $D$ with a plus sign; (10.18) uses the positive $\Delta$ and an
-explicit minus sign.
+Changes from the sources: none; theory.md and (10.18) both use the positive
+$\Delta$ with an explicit minus sign.
