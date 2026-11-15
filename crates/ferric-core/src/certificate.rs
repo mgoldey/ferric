@@ -360,6 +360,14 @@ pub struct Certificate {
     pub routes: Vec<Approximation>,
 }
 
+/// The [`TASK_KIND_GRADE_CAPS`] ceiling for `(task, kind)`, if it has one.
+fn task_grade_cap(task: &str, kind: &str) -> Option<Grade> {
+    TASK_KIND_GRADE_CAPS
+        .iter()
+        .find(|&&(t, k, _)| t == task && k == kind)
+        .map(|&(_, _, cap)| cap)
+}
+
 impl Certificate {
     /// A certificate with no recorded grade.
     pub fn ungraded(capability: impl Into<String>) -> Self {
@@ -406,14 +414,8 @@ impl Certificate {
         let mut c = Self::ungraded(format!("{task}:{kind}"));
         if TASK_KIND_ROWS.contains(&(task, kind)) {
             let base = Self::for_method_kind(kind);
-            c.grade = base.grade;
+            c.grade = task_grade_cap(task, kind).map_or(base.grade, |cap| base.grade.min(cap));
             c.grade_source = base.grade_source;
-            if let Some(&(_, _, ceiling)) = TASK_KIND_GRADE_CAPS
-                .iter()
-                .find(|&&(t, k, _)| t == task && k == kind)
-            {
-                c.grade = c.grade.min(ceiling);
-            }
         } else {
             c.push_warning(format!(
                 "{GRADE_SOURCE_PAGE} grades no task = \"{task}\" run with method.kind = \

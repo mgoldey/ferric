@@ -187,6 +187,23 @@ fn dielectric_apply(
     }
 }
 
+/// ε̃(iω)·V (naux × m) with the χ₀ backend `laplace` selects: the operator
+/// form, not the projected m × m matrix [`dielectric_apply`] returns. The
+/// paneled Lanczos assembly needs it for any panel narrower than naux.
+fn dielectric_operator_apply(
+    v_mat: &Array2<f64>,
+    b_ov: &Array2<f64>,
+    eps_occ: &[f64],
+    eps_vir: &[f64],
+    omega: f64,
+    laplace: Option<&ferric_quadrature::LaplaceQuadrature>,
+) -> Array2<f64> {
+    match laplace {
+        None => sternheimer::dielectric_apply(v_mat, b_ov, eps_occ, eps_vir, omega),
+        Some(q) => laplace_chi0::dielectric_apply_laplace(v_mat, b_ov, eps_occ, eps_vir, omega, q),
+    }
+}
+
 /// Build an atom-localized seed for Davidson in the dressed aux basis.
 ///
 /// For each atom A, constructs:
@@ -871,22 +888,7 @@ pub(crate) fn run_pdep_rpa_eigensolve(
             // diagonalized is the Laplace one, not the dense one.
             let laplace_q = laplace_for_davidson.as_ref();
             let matvec = |v: &Array2<f64>| -> Array2<f64> {
-                match laplace_q {
-                    None => {
-                        sternheimer::dielectric_apply(v, b_ov_ref, eps_occ_ref, eps_vir_ref, 0.0)
-                    }
-                    // ε̃·V (naux × m), not the projected m × m matrix: the
-                    // paneled assembly needs the operator form for any panel
-                    // narrower than naux.
-                    Some(q) => laplace_chi0::dielectric_apply_laplace(
-                        v,
-                        b_ov_ref,
-                        eps_occ_ref,
-                        eps_vir_ref,
-                        0.0,
-                        q,
-                    ),
-                }
+                dielectric_operator_apply(v, b_ov_ref, eps_occ_ref, eps_vir_ref, 0.0, laplace_q)
             };
             let lz = lanczos::run_lanczos_full_rank_budgeted(
                 naux,
