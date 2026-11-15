@@ -999,3 +999,47 @@ $$ \textstyle\sum_s m_s^2 \le 4n^2 . $$
 
 The four-centre route holds none of the JK terms, which is why the fitted
 gradient's peak is a multiple of the four-centre one at the same size.
+
+## Factored RI-K in the open-shell CPHF
+
+The RI-K exchange of the CPHF kernel (`TwoElectronBuilder::uhf_fitted_exchanges`
+in `src/hessian.rs`, `DfK::build_factored_many` in `src/df_k/response.rs`) is
+$K[D] = \sum_P B^P D B^P$ with every $B^P$ symmetric. For any density of the
+form $D = XC_o^{\mathsf T} + C_oX^{\mathsf T}$,
+$$K[D] = G + G^{\mathsf T},\qquad G = \sum_P (B^PX)(B^PC_o)^{\mathsf T},$$
+since $B^P X C_o^{\mathsf T} B^P = (B^P X)(B^P C_o)^{\mathsf T}$ and the
+$C_oX^{\mathsf T}$ half is its transpose.
+$L^P = B^PC_o$ is built once per $C_o$ and reused for every $X$:
+$4\,n_{\rm aux}n^2 o$ flops per density against $4\,n_{\rm aux}n^3$ for the
+density route. $D$ need not be definite or idempotent; only its form matters.
+
+**UHF and UKS.** Each spin's CPHF density has this form with that spin's
+occupied block, $C_o = C_{\sigma,o}$: the rotation response
+$D_1(U_\sigma) = C_{\sigma,v}U_\sigma C_{\sigma,o}^{\mathsf T} + {\rm h.c.}$ has
+$X_\sigma = C_{\sigma,v}U_\sigma$, and the occupied block
+$D^y_{\sigma,oo} = -C_{\sigma,o}S^y_{\sigma,oo}C_{\sigma,o}^{\mathsf T}$ has
+$X_\sigma = -\tfrac12 C_{\sigma,o}S^y_{\sigma,oo}$ ($S_{oo}$ symmetric). The
+kernel $v_\sigma = J(D_{1\alpha} + D_{1\beta}) - a\,K(D_{1\sigma})$ never couples
+the spins in $K$, so the factored pass runs once per spin, with $L^P_\sigma =
+B^PC_{\sigma,o}$, over every coordinate of a lockstep block.
+
+**ROHF.** One orbital set $C$ (closed | open | virtual) and occupation vectors
+$n_\sigma$ whose first $n_\sigma$ entries are one. Every density change of the
+ROHF response is $C(Un_\sigma + n_\sigma U^{\mathsf T})C^{\mathsf T}$ for a
+generator $U$: the rotation part $(n_{\sigma q} - n_{\sigma p})\kappa_{pq}$ is
+$U = \kappa$ ($\kappa$ antisymmetric), the overlap part
+$-\tfrac12 S^y_{pq}(n_{\sigma p} + n_{\sigma q})$ is $U = -\tfrac12 S^y_{\rm MO}$
+(symmetric), and the total $D^y_\sigma$ is $U = \kappa - \tfrac12 S^y_{\rm MO}$.
+With $(Un_\sigma)_{pq} = U_{pq}$ for $q < n_\sigma$ and zero otherwise,
+$$C\,U n_\sigma\,C^{\mathsf T} = (CU)_{:,\,<n_\sigma}\,C_{:,\,<n_\sigma}^{\mathsf T},$$
+so $C_{\sigma,o} = C_{:,\,<n_\sigma}$ and $X_\sigma = (CU)_{:,\,<n_\sigma}$
+(`Frame::spin_factors`). The ROHF response solves one coordinate at a time, so
+each factored pass carries one density per spin.
+
+**Closed-shell limit.** With $C_\alpha = C_\beta$ and $U_\alpha = U_\beta$,
+$X_{\rm RHF} = 2X_\sigma$, so $K_{\rm RHF} = 2K(D_{1\sigma})$ and
+$v_\sigma = J(2D_{1\sigma}) - K(D_{1\sigma}) = J(D_{\rm RHF}) - \tfrac12K(D_{\rm RHF})$,
+the RHF $G$ of the closed-shell factored route.
+
+Proof: `scripts/hessian_factored_k_sympy.py` (F1, F3 symbolic; F2, F4, F5
+against the explicit four-index exchange).

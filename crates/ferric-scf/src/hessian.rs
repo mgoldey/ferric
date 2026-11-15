@@ -121,8 +121,14 @@
 //! occupied block `X = −C_o S_oo`), so `DfK` builds `L_P = B_P C_occ` once per
 //! solve and the fitted K of all densities of a lockstep block in one pass
 //! (`crate::df_k::DfK::build_factored_many`, `4 naux n² nocc` flops per
-//! density instead of the density path's `4 naux n³`). UHF, UKS and ROHF keep
-//! one density-path `DfK` build per spin density.
+//! density instead of the density path's `4 naux n³`). UHF, UKS and ROHF do
+//! the same per spin: each spin response density is
+//! `X_σ C_σ,oᵀ + C_σ,o X_σᵀ` (ROHF: `C_σ,o = C[:, ..n_σ]` of its single orbital
+//! set, `X_σ = (C U)[:, ..n_σ]` for the generator `U` of the MO density
+//! change `U n_σ + n_σ Uᵀ`), so `L_P^σ = B_P C_σ,o` is built once per spin per
+//! solve and each spin's K comes from one factored pass (UHF/UKS: over the
+//! lockstep block; ROHF solves one coordinate at a time, one density per
+//! pass).
 //!
 //! ROHF with RI: the ROHF energy is the UHF functional of the constrained
 //! `(D_α, D_β)` with `X_α = C[:, ..n_α]`, `X_β = C[:, ..n_β]` of its single
@@ -232,6 +238,8 @@ pub use uks::{
 pub use uks::{uks_fock_residual, uks_hessian_parts_with, uks_response_operator};
 #[cfg(test)]
 mod cpks_block_tests;
+#[cfg(test)]
+mod open_shell_k_tests;
 mod uhf_df;
 use uhf_df::{
     open_shell_two_electron, rohf_occupied_factors, uhf_hessian_parts_with, OpenShellDensities,
@@ -2648,11 +2656,12 @@ struct TwoElectronBuilder<'a> {
     /// RI-K: the SCF's `DfK` replaces the exact exchange matrix (its density
     /// path takes the indefinite response densities).
     df_k: Option<std::cell::RefCell<crate::df_k::DfK<'static>>>,
-    /// RI-K of factored densities (RHF/RKS): `L_P = B_P C_o` of the solve's
-    /// occupied block, built at the first factored exchange and rebuilt
-    /// whenever a different `C_o` is passed
+    /// RI-K of factored densities: `L_P = B_P C_o` of the solve's occupied
+    /// block, one slot per spin (RHF/RKS use slot 0, the open-shell kernels
+    /// slot `σ` for `C_σ,o`), built at the first factored exchange and
+    /// rebuilt whenever a different `C_o` is passed to that slot
     /// ([`crate::df_k::DfK::build_factored_many`]).
-    k_half: std::cell::RefCell<Option<crate::df_k::OccHalfTransform>>,
+    k_half: std::cell::RefCell<[Option<crate::df_k::OccHalfTransform>; 2]>,
     /// Tests only: fitted K through the density path for every density (the
     /// oracle of the factored route).
     k_density_path: bool,
@@ -2680,6 +2689,19 @@ struct TwoElectronBuilder<'a> {
 /// density, in order. The fitted exchange of such densities goes through
 /// [`crate::df_k::DfK::build_factored_many`].
 type KFactors<'c, 'x> = (ArrayView2<'c, f64>, &'x [Array2<f64>]);
+
+/// The per-spin factored form of a block of open-shell spin-density pairs:
+/// `D_σ,k = X_σ,k C_σ,oᵀ + C_σ,o X_σ,kᵀ`, one [`KFactors`] per spin (α, β).
+/// UHF/UKS: `C_σ,o` the spin's occupied MOs, `X_σ = C_σ,v U_σ` or
+/// `−½ C_σ,o S_σ,oo`; ROHF: `C_σ,o = C[:, ..n_σ]` of its one orbital set and
+/// `X_σ = (C U)[:, ..n_σ]` (`hessian::rohf`).
+type UhfKFactors<'c, 'x> = [KFactors<'c, 'x>; 2];
+
+/// One `[α, β]` pair of AO matrices.
+type SpinPair = [Array2<f64>; 2];
+
+/// The optional per-spin factored form a `G` build may be given.
+type SpinFactors<'c, 'x> = Option<UhfKFactors<'c, 'x>>;
 
 /// RHF-only options of the CPHF `G`.
 #[derive(Default)]
@@ -2811,11 +2833,20 @@ impl<'a> TwoElectronBuilder<'a> {
     }
 
     /// Fitted K through the density path for every density (the oracle of the
-    /// factored route, tests only).
-    #[cfg(test)]
+    /// factored route; tests and the `cphf_density_path_k` oracle switch of
+    /// [`UhfDfMutants`] / [`ks::KsFixedGridMutants`] only).
     fn with_density_path_k(mut self) -> Self {
         self.k_density_path = true;
         self
+    }
+
+    /// [`Self::with_density_path_k`] when `on`.
+    fn with_density_path_k_if(self, on: bool) -> Self {
+        if on {
+            self.with_density_path_k()
+        } else {
+            self
+        }
     }
 
     /// Replace the exact Coulomb and/or exchange matrix of `G` by the SCF's
@@ -2837,6 +2868,7 @@ impl<'a> TwoElectronBuilder<'a> {
             // Mutant: the exact four-centre K where the SCF fitted it.
             self.df_k = None;
         }
+        self = self.with_density_path_k_if(m.cphf_density_path_k);
         self.uhf_mutants = m;
         self
     }
@@ -3044,7 +3076,7 @@ impl<'a> TwoElectronBuilder<'a> {
                     "CPHF G: one exchange factor per density expected".into(),
                 ));
             }
-            let half = self.occupied_half(df, c_occ)?;
+            let half = self.occupied_half(df, c_occ, 0)?;
             let xr: Vec<&Array2<f64>> = xs.iter().collect();
             let ks = self.timed("fitted K build", || {
                 df.borrow_mut().build_factored_many(&half, &xr)
@@ -3063,35 +3095,87 @@ impl<'a> TwoElectronBuilder<'a> {
         .map(Some)
     }
 
-    /// `L_P = B_P C_o` for `c_occ`: the one built for this solve, or built
-    /// now when there is none or it belongs to another `C_o`.
+    /// `L_P = B_P C_o` for `c_occ` in cache `slot` (the spin): the one built
+    /// for this solve, or built now when there is none or it belongs to
+    /// another `C_o`.
     fn occupied_half(
         &self,
         df: &std::cell::RefCell<crate::df_k::DfK<'static>>,
         c_occ: ArrayView2<'_, f64>,
+        slot: usize,
     ) -> Result<std::cell::Ref<'_, crate::df_k::OccHalfTransform>, FerricError> {
-        let stale = self
-            .k_half
-            .borrow()
+        let stale = self.k_half.borrow()[slot]
             .as_ref()
             .is_none_or(|h| h.c_occ() != c_occ);
         if stale {
+            // Release the stale tensor (and its pool charge) before building.
+            self.k_half.borrow_mut()[slot] = None;
             let half = self.timed("fitted K half-transform", || {
                 df.borrow_mut().occupied_half_transform(c_occ)
             })?;
-            *self.k_half.borrow_mut() = Some(half);
+            self.k_half.borrow_mut()[slot] = Some(half);
         }
         Ok(std::cell::Ref::map(self.k_half.borrow(), |h| {
-            h.as_ref().expect("built above")
+            h[slot].as_ref().expect("built above")
         }))
+    }
+
+    /// The SCF's RI-K `[K(D_α), K(D_β)]` of every spin pair of `ds`, in
+    /// order. With `factors` (the per-spin form of every pair) each spin's
+    /// matrices come from one factored pass over the tensor with that spin's
+    /// `L_P = B_P C_σ,o` ([`crate::df_k::DfK::build_factored_many`]); without
+    /// them (or under [`Self::with_density_path_k`]) one density-path build
+    /// per spin density. The `cphf_k_from_total` mutant of [`UhfDfMutants`]
+    /// gives both spins `K(D_α + D_β)` on either route.
+    fn uhf_fitted_exchanges(
+        &self,
+        df: &std::cell::RefCell<crate::df_k::DfK<'static>>,
+        ds: &[[Array2<f64>; 2]],
+        factors: Option<UhfKFactors<'_, '_>>,
+    ) -> Result<Vec<[Array2<f64>; 2]>, FerricError> {
+        let Some(factors) = factors.filter(|_| !self.k_density_path) else {
+            return ds.iter().map(|d| self.fitted_exchange(df, d)).collect();
+        };
+        let mut per_spin: [Vec<Array2<f64>>; 2] = Default::default();
+        for (sp, (c_occ, xs)) in factors.into_iter().enumerate() {
+            if xs.len() != ds.len() {
+                return Err(FerricError::General(
+                    "CPHF G: one exchange factor per spin density expected".into(),
+                ));
+            }
+            let half = self.occupied_half(df, c_occ, sp)?;
+            let xr: Vec<&Array2<f64>> = xs.iter().collect();
+            per_spin[sp] = self.timed("fitted K build", || {
+                df.borrow_mut().build_factored_many(&half, &xr)
+            })?;
+        }
+        let [ka, kb] = per_spin;
+        Ok(ka
+            .into_iter()
+            .zip(kb)
+            .map(|(a, b)| {
+                if self.uhf_mutants.cphf_k_from_total {
+                    let t = a + &b;
+                    [t.clone(), t]
+                } else {
+                    [a, b]
+                }
+            })
+            .collect())
     }
 
     /// [`Self::g_uhf`] of many spin-density pairs: the exact J of every total
     /// density (and the K of every spin density, for Hartree-Fock or a hybrid,
     /// where the SCF did not fit them) in one quartet pass, the fitted J of
-    /// every total density in one RI pass, and the XC responses of every pair
-    /// in one lockstep kernel application.
-    fn g_uhf_many(&self, ds: &[[Array2<f64>; 2]]) -> Result<Vec<[Array2<f64>; 2]>, FerricError> {
+    /// every total density in one RI pass, the fitted K of every spin density
+    /// in one factored pass per spin when `factors` gives their form
+    /// ([`Self::uhf_fitted_exchanges`]), and the XC responses of every pair in
+    /// one lockstep kernel application.
+    fn g_uhf_many(
+        &self,
+        ds: &[[Array2<f64>; 2]],
+        factors: Option<UhfKFactors<'_, '_>>,
+    ) -> Result<Vec<[Array2<f64>; 2]>, FerricError> {
         // Hartree-Fock: the whole exchange (`exx` = 1) and no XC response.
         let xc = self.uks_xc.map(|(xc, _)| xc);
         let (exx, hartree_fock) = self.uhf_exx();
@@ -3100,15 +3184,21 @@ impl<'a> TwoElectronBuilder<'a> {
             Some(df) => self.fitted_coulombs(df, ds)?,
             None => js,
         };
+        let mut fitted_k = match &self.df_k {
+            Some(df) if exx != 0.0 => self.uhf_fitted_exchanges(df, ds, factors)?,
+            _ => Vec::new(),
+        }
+        .into_iter();
         let mut v_xc = self.uks_xc_many(xc, ds).into_iter();
         let mut out = Vec::with_capacity(ds.len());
-        for ((i, d), j) in ds.iter().enumerate().zip(coulomb) {
+        for (i, j) in coulomb.into_iter().enumerate() {
             let (mut ga, mut gb) = match v_xc.next() {
                 Some([va, vb]) => (&j + &va, j + &vb),
                 None => (j.clone(), j),
             };
             if exx != 0.0 {
-                let [ka, kb] = self.uhf_exchange(d, ks.get(2 * i..2 * i + 2), hartree_fock)?;
+                let [ka, kb] =
+                    self.uhf_exchange(fitted_k.next(), ks.get(2 * i..2 * i + 2), hartree_fock)?;
                 ga.scaled_add(-exx, &ka);
                 gb.scaled_add(-exx, &kb);
             }
@@ -3153,17 +3243,18 @@ impl<'a> TwoElectronBuilder<'a> {
     }
 
     /// The per-spin exchange matrices `[K(D_α), K(D_β)]`: the SCF's RI-K
-    /// where it fitted K, else the `exact` pair of the shared quartet pass.
-    /// `hartree_fock` applies the UHF CPHF mutant of [`UhfDfMutants`].
+    /// pair `fitted` where it fitted K, else the `exact` pair of the shared
+    /// quartet pass. `hartree_fock` applies the UHF CPHF mutant of
+    /// [`UhfDfMutants`].
     fn uhf_exchange(
         &self,
-        d: &[Array2<f64>; 2],
+        fitted: Option<[Array2<f64>; 2]>,
         exact: Option<&[Array2<f64>]>,
         hartree_fock: bool,
     ) -> Result<[Array2<f64>; 2], FerricError> {
-        let mut k = match (&self.df_k, exact) {
-            (Some(df), _) => self.fitted_exchange(df, d)?,
-            (None, Some([ka, kb])) => [ka.clone(), kb.clone()],
+        let mut k = match (fitted, exact) {
+            (Some(k), _) => k,
+            (None, Some([ka, kb])) if self.df_k.is_none() => [ka.clone(), kb.clone()],
             (None, _) => {
                 return Err(FerricError::General(
                     "CPHF G: no exact exchange matrices were built for this density pair".into(),
@@ -3178,11 +3269,13 @@ impl<'a> TwoElectronBuilder<'a> {
 
     /// UHF spin potentials `v_σ = J(D_α + D_β) − K(D_σ)` for spin densities
     /// `d = [D_α, D_β]` (PySCF `gen_response` of a UHF object, `hermi = 1`).
-    fn g_uhf(&self, d: &[Array2<f64>; 2]) -> Result<[Array2<f64>; 2], FerricError> {
+    /// With `factors` (one factor per spin, the form of `d`) the fitted K
+    /// takes the factored route ([`Self::uhf_fitted_exchanges`]).
+    fn g_uhf(&self, d: &SpinPair, factors: SpinFactors<'_, '_>) -> Result<SpinPair, FerricError> {
         if let Some((xc, exx)) = self.uks_xc {
-            return self.g_uks(d, xc, exx);
+            return self.g_uks(d, xc, exx, factors);
         }
-        let (j, [ka, kb]) = self.uhf_jk(d)?;
+        let (j, [ka, kb]) = self.uhf_jk(d, factors)?;
         Ok([&j - &ka, j - &kb])
     }
 
@@ -3194,6 +3287,7 @@ impl<'a> TwoElectronBuilder<'a> {
         d: &[Array2<f64>; 2],
         xc: &UksXcResponseFn<'_>,
         exx: f64,
+        factors: Option<UhfKFactors<'_, '_>>,
     ) -> Result<[Array2<f64>; 2], FerricError> {
         let zero = || Array2::<f64>::zeros(d[0].dim());
         // The exact quartet pass builds only what is not fitted: J alone for a
@@ -3222,7 +3316,7 @@ impl<'a> TwoElectronBuilder<'a> {
         }
         if exx != 0.0 {
             if let Some(df) = &self.df_k {
-                k = self.fitted_exchange(df, d)?;
+                k = self.fitted_exchange_pair(df, d, factors)?;
             }
         }
         let [va, vb] = self
@@ -3240,15 +3334,15 @@ impl<'a> TwoElectronBuilder<'a> {
     /// of each spin's response density. Where the SCF fitted a matrix its own
     /// builder replaces the exact one: RI-J on the total density (one Coulomb
     /// matrix for both spins), RI-K per spin density (the fitted exchange never
-    /// couples the spins; its density path takes the indefinite response
-    /// densities as they are).
-    fn uhf_jk(&self, d: &[Array2<f64>; 2]) -> Result<UhfJk, FerricError> {
+    /// couples the spins; with `factors` it takes the factored route, else
+    /// the density path takes the indefinite response densities as they are).
+    fn uhf_jk(&self, d: &SpinPair, factors: SpinFactors<'_, '_>) -> Result<UhfJk, FerricError> {
         let (mut j, mut k) = self.exact_spin_jk(d)?;
         if let Some(df) = &self.df_j {
             j = self.fitted_coulomb(df, d)?;
         }
         if let Some(df) = &self.df_k {
-            k = self.fitted_exchange(df, d)?;
+            k = self.fitted_exchange_pair(df, d, factors)?;
         }
         if self.uhf_mutants.cphf_wrong_spin_k {
             k.swap(0, 1);
@@ -3300,6 +3394,21 @@ impl<'a> TwoElectronBuilder<'a> {
         self.timed("fitted J build", || df.borrow_mut().build_many(&refs))
     }
 
+    /// [`Self::uhf_fitted_exchanges`] of one spin pair.
+    fn fitted_exchange_pair(
+        &self,
+        df: &std::cell::RefCell<crate::df_k::DfK<'static>>,
+        d: &[Array2<f64>; 2],
+        factors: Option<UhfKFactors<'_, '_>>,
+    ) -> Result<[Array2<f64>; 2], FerricError> {
+        Ok(self
+            .uhf_fitted_exchanges(df, std::slice::from_ref(d), factors)?
+            .remove(0))
+    }
+
+    /// The density-path RI-K `[K(D_α), K(D_β)]` of one spin pair (the oracle
+    /// of the factored route, and the route for densities given without
+    /// their factors).
     fn fitted_exchange(
         &self,
         df: &std::cell::RefCell<crate::df_k::DfK<'static>>,
@@ -3611,7 +3720,13 @@ fn solve_ucphf_blocks_of(
             .iter()
             .map(|p| [0, 1].map(|sp| frames[sp].occupied_density(&p[sp])))
             .collect();
-        let g_oo = g.g_uhf_many(&occ)?;
+        let occ_x: [Vec<Array2<f64>>; 2] = [0, 1].map(|sp| {
+            s1_pairs
+                .iter()
+                .map(|p| frames[sp].occupied_factor(&p[sp]))
+                .collect()
+        });
+        let g_oo = g.g_uhf_many(&occ, Some(spin_factors(frames, &occ_x)))?;
         let xc_oo = occupied_xc_mo_uhf(g, &s1_pairs);
         let rhs: Vec<Array2<f64>> = xs
             .clone()
@@ -3633,7 +3748,12 @@ fn solve_ucphf_blocks_of(
                 .iter()
                 .map(|u| [0, 1].map(|sp| frames[sp].response_density(&u[sp])))
                 .collect();
-            g.g_uhf_many(&dens)
+            let xs: [Vec<Array2<f64>>; 2] = [0, 1].map(|sp| {
+                us.iter()
+                    .map(|u| frames[sp].response_factor(&u[sp]))
+                    .collect()
+            });
+            g.g_uhf_many(&dens, Some(spin_factors(frames, &xs)))
         };
         let matvec = |vs: &[&Array2<f64>]| -> Result<Vec<Array2<f64>>, FerricError> {
             let us: Vec<[Array2<f64>; 2]> = vs.iter().map(|v| unpack(v, frames)).collect();
@@ -3673,6 +3793,15 @@ fn solve_ucphf_blocks_of(
         }
     }
     Ok(out)
+}
+
+/// The per-spin factored form `(C_σ,o, X_σ)` of a block of UHF/UKS spin
+/// densities whose factors are `xs[σ]`.
+fn spin_factors<'c, 'x>(
+    frames: &[MoFrame<'c>; 2],
+    xs: &'x [Vec<Array2<f64>>; 2],
+) -> UhfKFactors<'c, 'x> {
+    [(frames[0].c_occ, &xs[0]), (frames[1].c_occ, &xs[1])]
 }
 
 /// `[&a, &b]` views of owned spin pairs.

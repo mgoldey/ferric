@@ -199,6 +199,19 @@ CASES = [
         ],
     ),
     (
+        "hessian_factored_k_sympy.py",
+        10,
+        [
+            ("    return g + g.T", "    return g", "FAIL [F1]"),
+            (
+                "kb = k_factored(BS, xb, cb_o)",
+                "kb = k_factored(BS, xb, ca_o[:, :nb])",
+                "FAIL [F2]",
+            ),
+            ("return (c @ u)[:, :k]", "return (c @ u.T)[:, :k]", "FAIL [F3]"),
+        ],
+    ),
+    (
         "hf_hessian_sympy.py",
         20,
         [

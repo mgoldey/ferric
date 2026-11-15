@@ -406,3 +406,67 @@ fn uks_hessian_mutants_each_fail_the_gradient_difference() {
     }
     eprintln!("weakest mutant: {weakest:.1e} bars");
 }
+
+/// EXACTNESS ANCHOR of the per-spin factored CPKS exchange: the production
+/// UKS B3LYP RI-J/RI-K Hessian (each spin's fitted K of a lockstep block
+/// from one factored pass) equals the one whose CPKS builds every fitted K
+/// through the density path (the oracle,
+/// `KsFixedGridMutants::cphf_density_path_k`), NH2 and the O2 triplet,
+/// 6-31G. Bar: the sum of the two responses' asymmetries `max |R − Rᵀ|` (the
+/// solve error at the production tolerance; the kernels are equal to
+/// rounding, elementwise anchor in `hessian::open_shell_k_tests`); the
+/// response-exchange-dropped mutant must miss it.
+#[test]
+fn factored_cpks_exchange_equals_the_density_path_hessian() {
+    if !has_deriv2() {
+        return;
+    }
+    let xc = "B3LYP";
+    let cfg = RhfConfig {
+        df_j_aux: Some("def2-universal-jkfit".into()),
+        df_k_aux: Some("def2-universal-jkfit".into()),
+        ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
+        ..config(xc)
+    };
+    for (label, mol) in [("NH2", nh2()), ("O2 triplet", o2())] {
+        let p = scf(&mol, "6-31g", &cfg);
+        let grid = FixedGridKs::new(&p.mol, xc, &p.grid).unwrap();
+        let run = |m: &KsFixedGridMutants| {
+            uks_hessian_parts_with(
+                &ParallelContext::default(),
+                &p.mol,
+                &p.prep,
+                Operator::coulomb(),
+                &p.bounds,
+                &p.res,
+                &cfg,
+                &grid,
+                m,
+                GridMode::Moving,
+            )
+            .unwrap()
+        };
+        let fac = run(&KsFixedGridMutants::default());
+        let den = run(&KsFixedGridMutants {
+            cphf_density_path_k: true,
+            ..Default::default()
+        });
+        let diff = max_abs_diff(&fac.total(), &den.total());
+        // Plus the rounding floor of the response assembly (a contraction
+        // of at most n² terms per element), which the asymmetry probe does
+        // not see when the solve is exact (H2+: zero CPHF iterations).
+        let n = p.prep.nbasis();
+        let floor =
+            (n * n) as f64 * f64::EPSILON * fac.total().iter().fold(0.0f64, |m, v| m.max(v.abs()));
+        let bar = fac.response_asymmetry + den.response_asymmetry + floor;
+        eprintln!("{label}: factored vs density-path K Hessian {diff:.3e} (bar {bar:.3e})");
+        assert!(diff <= bar, "{label}: {diff:.3e} > {bar:.3e}");
+        let dropped = run(&KsFixedGridMutants {
+            response_exx: 0.0,
+            ..Default::default()
+        });
+        let miss = max_abs_diff(&dropped.total(), &den.total());
+        eprintln!("{label}: CPKS exchange dropped misses by {miss:.3e}");
+        assert!(miss > bar, "{label}: the bar cannot fail ({miss:.3e})");
+    }
+}

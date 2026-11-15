@@ -445,10 +445,12 @@
     },
     "hf-hessian": {
       "theory": [
-        "crates/ferric-scf/theory.md#hartree-fock-nuclear-hessian"
+        "crates/ferric-scf/theory.md#hartree-fock-nuclear-hessian",
+        "crates/ferric-scf/theory.md#factored-ri-k-in-the-open-shell-cphf"
       ],
       "scripts": [
-        "scripts/hf_hessian_sympy.py"
+        "scripts/hf_hessian_sympy.py",
+        "scripts/hessian_factored_k_sympy.py"
       ]
     },
     "ks-gradient": {
@@ -476,13 +478,15 @@
       "theory": [
         "crates/ferric-scf/theory.md#kohn-sham-xc-hessian-terms-fixed-and-moving-grid",
         "crates/ferric-scf/theory.md#hartree-fock-nuclear-hessian",
-        "crates/ferric-dft/theory.md#f_xc-response-kernels"
+        "crates/ferric-dft/theory.md#f_xc-response-kernels",
+        "crates/ferric-scf/theory.md#factored-ri-k-in-the-open-shell-cphf"
       ],
       "scripts": [
         "scripts/ks_fixed_grid_hessian_sympy.py",
         "scripts/uks_xc_hessian_sympy.py",
         "scripts/hf_hessian_sympy.py",
-        "scripts/dft_fxc_kernel_sympy.py"
+        "scripts/dft_fxc_kernel_sympy.py",
+        "scripts/hessian_factored_k_sympy.py"
       ]
     },
     "ks-hybrid-rsh": {

@@ -399,7 +399,8 @@ pub fn uks_hessian_parts_with(
     phases.stop(t);
     let g = TwoElectronBuilder::new(ctx, prep, bounds)?
         .fitted(fitted.df_j.take(), fitted.df_k.take(), false)
-        .with_uks_xc_mo_response(&kernel, exx * mutants.response_exx);
+        .with_uks_xc_mo_response(&kernel, exx * mutants.response_exx)
+        .with_density_path_k_if(mutants.cphf_density_path_k);
     let t = phases.begin("coupled UKS CPHF");
     let resp = ucphf_response_with(&g, uks, nocc, &fitted.first)?;
     phases.stop(t);
@@ -464,7 +465,7 @@ pub fn uks_response_operator(
     let g = TwoElectronBuilder::new(ctx, prep, bounds)?
         .fitted(df_j, df_k, false)
         .with_uks_xc_response(&kernel_fn, grid.exact_exchange());
-    g.g_uhf(&[d1[0].clone(), d1[1].clone()])
+    g.g_uhf(&[d1[0].clone(), d1[1].clone()], None)
 }
 
 /// [`analytic_frequencies`] from [`uks_moving_grid_hessian`] at a converged

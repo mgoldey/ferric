@@ -81,8 +81,8 @@
 //! block `X = −C_o S_oo`) is indefinite, so the occupied path `build_from_occ`
 //! (which needs `D = C Cᵀ`) does not apply; instead
 //! `K = Σ_P (B_P X)(B_P C_o)ᵀ + h.c.` with `B_P C_o` built once per solve
-//! (`crate::df_k::DfK::build_factored_many`). The UHF kernel below keeps the
-//! density path, which takes a general matrix as it is.
+//! (`crate::df_k::DfK::build_factored_many`). The open-shell kernels below
+//! use the same route per spin (see "CPHF kernel").
 //!
 //! # UHF: one channel per spin
 //!
@@ -115,9 +115,18 @@
 //!   the spin Fock derivative gets `2α_σ K^x[D_σ] = −K^x[D_σ]`.
 //! * **CPHF kernel.** `v_σ(D1_α, D1_β) = J_DF(D1_α + D1_β) − K_DF(D1_σ)`:
 //!   `DfJ` on the TOTAL response density (one Coulomb matrix, both spins), `DfK`
-//!   on each spin's own response density (its density path takes the indefinite
-//!   `C_v U C_oᵀ + h.c.` as it is). The α and β rotations stay ONE coupled
-//!   system through the Coulomb term.
+//!   on each spin's own response density. Every such density is
+//!   `D1_σ = X_σ C_σ,oᵀ + C_σ,o X_σᵀ` (`X_σ = C_σ,v U_σ`, the occupied block
+//!   `X_σ = −½ C_σ,o S_σ,oo`), so
+//!   `K(D1_σ) = Σ_P (B_P X_σ)(B_P C_σ,o)ᵀ + h.c.` with `B_P C_σ,o` built once
+//!   per spin per solve and the K of every coordinate of a lockstep block from
+//!   one factored pass per spin (`crate::df_k::DfK::build_factored_many`,
+//!   `4 naux n² n_σ` flops per spin density instead of `4 naux n³`). ROHF's
+//!   response densities `C (U n_σ + n_σ Uᵀ) Cᵀ` have the same form with
+//!   `C_σ,o = C[:, ..n_σ]`, `X_σ = (C U)[:, ..n_σ]` (`crate::hessian::rohf`).
+//!   The α and β rotations stay ONE coupled system through the Coulomb term.
+//!   Derivation: `crates/ferric-scf/theory.md`, "Factored RI-K in the
+//!   open-shell CPHF".
 //! * **Closed-shell limit.** `D_α = D_β = D/2`: `X_σ = X/√2`, `L^σ = L/2`, so
 //!   `Σ_σ α_σ L^σ·M L^σ = 2(−½)(¼) L·M L = −¼ L·M L`, the closed-shell
 //!   energy; every piece above reduces to the closed-shell piece, which is the
@@ -436,6 +445,10 @@ pub struct UhfDfMutants {
     /// The CPHF kernel applies each spin's exchange to the TOTAL response
     /// density `D1_α + D1_β` instead of that spin's own.
     pub cphf_k_from_total: bool,
+    /// Not a defect: the CPHF kernel builds every fitted K through the density
+    /// path instead of the per-spin factored route (the oracle the factored
+    /// route is anchored against).
+    pub cphf_density_path_k: bool,
 }
 
 /// Exchange weight of one UHF spin channel: `E_K = −½ Σ_σ tr(D_σ K[D_σ])`,

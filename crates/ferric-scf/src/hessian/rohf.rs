@@ -107,7 +107,11 @@
 //! RI-K channel per spin with `X_α = C[:, ..n_α]`, `X_β = C[:, ..n_β]`, weight
 //! `−½` each, shared metric). The CPHF kernel `G_σ(D^y) = J(D^y_α + D^y_β) −
 //! K(D^y_σ)` uses the SCF's own `DfJ` on the total response density and `DfK`
-//! on each spin's response density (indefinite densities taken as they are);
+//! on each spin's response density. Every density change here is
+//! `C (U n_σ + n_σ Uᵀ) Cᵀ` for a generator `U` (`κ` for `D^κ`, `−½ S^y_MO` for
+//! `D^S`, `κ − ½ S^y_MO` for `D^y`), i.e. `X_σ C_σ,oᵀ + C_σ,o X_σᵀ` with
+//! `C_σ,o = C[:, ..n_σ]`, `X_σ = (C U)[:, ..n_σ]`, so the fitted K takes the
+//! factored route per spin (`B_P C_σ,o` built once per spin per Hessian);
 //! the rebuilt spin Focks and `W` go through the same fitted builders. The
 //! rotation algebra above is unchanged: it never used the four-centre
 //! structure of `G`. Closed-shell limit: no open shell, equal to the RHF RI
@@ -280,6 +284,28 @@ impl Frame {
         self.c.dot(m).dot(&self.c.t())
     }
 
+    /// Occupied counts `[n_α, n_β]` (the closed|open|virtual order puts each
+    /// spin's occupied MOs first).
+    fn noccs(&self) -> [usize; 2] {
+        [self.blocks.o.end, self.blocks.c.end]
+    }
+
+    /// The per-spin exchange factors of the MO density change
+    /// `U n_σ + n_σ Uᵀ` of a generator `U` (`nmo × nmo`): in the AO basis it
+    /// is `X_σ C_σ,oᵀ + C_σ,o X_σᵀ` with `C_σ,o = C[:, ..n_σ]` and
+    /// `X_σ = (C U)[:, ..n_σ]`, the form the factored RI-K takes
+    /// (`crates/ferric-scf/theory.md`, "Factored RI-K in the open-shell CPHF").
+    fn spin_factors(&self, u: &Array2<f64>) -> [Array2<f64>; 2] {
+        let cu = self.c.dot(u);
+        self.noccs()
+            .map(|k| cu.slice(ndarray::s![.., ..k]).to_owned())
+    }
+
+    /// `C_σ,o = C[:, ..n_σ]` of both spins.
+    fn occupied(&self) -> [ndarray::ArrayView2<'_, f64>; 2] {
+        self.noccs().map(|k| self.c.slice(ndarray::s![.., ..k]))
+    }
+
     fn sizes(&self) -> [usize; 3] {
         let (nc, no, nv) = (
             self.blocks.c.len(),
@@ -400,6 +426,22 @@ struct Response<'a> {
 }
 
 impl Response<'_> {
+    /// `G_σ` of the AO spin densities `d = C (U n_σ + n_σ Uᵀ) Cᵀ` of the
+    /// generator `u`, the fitted K through the factored route
+    /// ([`Frame::spin_factors`]).
+    fn g_of(&self, u: &Array2<f64>, d: &[Array2<f64>; 2]) -> Result<[Array2<f64>; 2], FerricError> {
+        let fr = self.frame;
+        let [xa, xb] = fr.spin_factors(u);
+        let [ca, cb] = fr.occupied();
+        self.g.g_uhf(
+            d,
+            Some([
+                (ca, std::slice::from_ref(&xa)),
+                (cb, std::slice::from_ref(&xb)),
+            ]),
+        )
+    }
+
     /// `A κ`: the J/K response of `D^κ` plus the Fock commutator, projected.
     fn apply(&self, x: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
         let fr = self.frame;
@@ -409,7 +451,8 @@ impl Response<'_> {
         }
         let kappa = fr.kappa_matrix(&x);
         let dk = fr.kappa_densities(&kappa).map(|m| fr.to_ao(&m));
-        let v = self.g.g_uhf(&dk)?;
+        // `(n_q − n_p) κ_pq = (κ n + n κᵀ)_pq` (κ antisymmetric).
+        let v = self.g_of(&kappa, &dk)?;
         let diag = self.mutation == RohfMutation::DiagonalGapOperator;
         let m = [0, 1].map(|s| fr.to_mo(&v[s]) + commutator(&fr.f_mo[s], &kappa, diag));
         let mut out = fr.project(&m[0], &m[1]);
@@ -419,7 +462,8 @@ impl Response<'_> {
         Ok(out)
     }
 
-    /// `S^x_MO` and the AO overlap-part densities `D^S_σ`.
+    /// `S^x_MO` and the AO overlap-part densities `D^S_σ`
+    /// (`−½ S_pq (n_p + n_q) = (U n + n Uᵀ)_pq`, `U = −½ S^x_MO` symmetric).
     fn overlap_densities(&self, x: usize) -> (Array2<f64>, [Array2<f64>; 2]) {
         let fr = self.frame;
         let s_mo = fr.to_mo(&self.first.s1[x]);
@@ -439,7 +483,7 @@ impl Response<'_> {
         let gs = if self.mutation == RohfMutation::DropOverlapDensityG {
             [0, 1].map(|_| Array2::zeros(ds[0].dim()))
         } else {
-            self.g.g_uhf(&ds)?
+            self.g_of(&(-0.5 * &s_mo), &ds)?
         };
         let sign = if self.mutation == RohfMutation::FlipOverlapFockSign {
             -1.0
@@ -492,9 +536,9 @@ impl Response<'_> {
         });
         let gy = if self.mutation == RohfMutation::DropOverlapDensityG {
             let dk = fr.kappa_densities(&kappa).map(|m| fr.to_ao(&m));
-            self.g.g_uhf(&dk)?
+            self.g_of(&kappa, &dk)?
         } else {
-            self.g.g_uhf(&dy)?
+            self.g_of(&u, &dy)?
         };
         let fy = [0, 1].map(|s| &self.first.f1[s][y] + &gy[s]);
         let w = self.w_response(&dy, &fy);
@@ -633,7 +677,8 @@ fn trusted_focks(
     // V_ECP is part of the core Hamiltonian the SCF converged with (identical
     // to `hcore` without an ECP).
     let h = ferric_integrals::oneelectron::hcore_ecp(prep, mol, prep.basis_set());
-    let v = g.g_uhf(&[dens.d_alpha.clone(), dens.d_beta.clone()])?;
+    // One build of the converged densities (not a response): the density path.
+    let v = g.g_uhf(&[dens.d_alpha.clone(), dens.d_beta.clone()], None)?;
     let rebuilt = [&h + &v[0], &h + &v[1]];
     let dev = max_abs(&(&rebuilt[0] - sa)).max(max_abs(&(&rebuilt[1] - sb)));
     if dev > FOCK_TRUST_TOL {
@@ -841,4 +886,100 @@ pub fn rohf_hessian_parts_df_mutated(
         ],
         term,
     ))
+}
+
+/// Exactness anchor of the ROHF factored RI-K ([`Frame::spin_factors`],
+/// [`Frame::occupied`]): every density change of the response,
+/// `C (U n_σ + n_σ Uᵀ) Cᵀ` for `U = κ`, `−½ S_MO` and `κ − ½ S_MO`, built by
+/// the production density formulas, has the fitted K of its factors equal to
+/// the density-path K within the bar of `hessian::open_shell_k_tests`.
+#[cfg(test)]
+mod factored_k_tests {
+    use super::super::open_shell_k_tests::{assert_k_within_bar, fitted_k};
+    use super::*;
+
+    #[test]
+    fn rohf_factored_k_matches_the_density_path_per_spin_density() {
+        let ctx = ParallelContext::default();
+        // Distorted NH2 doublet, 6-31G*: closed, open and virtual blocks all
+        // non-empty.
+        let xyz = "3\nNH2\nN 0.0 0.0 0.0\nH 0.01 0.81 -0.63\nH -0.02 -0.79 -0.64\n";
+        let mol = Molecule::parse_xyz(xyz, 0, 2).unwrap();
+        let prep =
+            PreparedBasis::new(&mol, &ferric_core::basis::bundled("6-31g*").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let aux = "def2-universal-jkfit";
+        let cfg = RhfConfig {
+            df_j_aux: Some(aux.into()),
+            df_k_aux: Some(aux.into()),
+            ri_j_precision: Some(crate::df_j::RiJPrecision::F64),
+            energy_conv: 1e-12,
+            density_conv: 1e-10,
+            ..Default::default()
+        };
+        let rohf = crate::rohf::solve_rohf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
+        assert!(rohf.converged);
+        let (sa, sb) = rohf.rohf_spin_focks.clone().expect("spin Focks");
+        let fr = Frame::new(&mol, &rohf, [sa, sb]).unwrap();
+        let [na, nb] = fr.noccs();
+        assert!(
+            na > nb && nb > 0 && fr.nmo > na,
+            "closed, open and virtual MOs"
+        );
+        let g = TwoElectronBuilder::new(&ctx, &prep, &bounds)
+            .unwrap()
+            .fitted(None, Some(fitted_k(&mol, &prep)), false);
+        let df = g.df_k.as_ref().expect("fitted K");
+        // A rotation in the three physical blocks and a symmetric "overlap".
+        let sizes: usize = fr.sizes().iter().sum();
+        let col = Array2::from_shape_fn((sizes, 1), |(i, _)| ((i * 29) as f64 * 0.13).sin());
+        let kappa = fr.kappa_matrix(&col);
+        let s = Array2::from_shape_fn((fr.nmo, fr.nmo), |(p, q)| {
+            ((p * 7 + q * 7 + p * q) as f64 * 0.11).cos()
+        });
+        let half_s = -0.5 * &s;
+        let n = &fr.n;
+        let overlap = [0, 1].map(|sp| {
+            Array2::from_shape_fn(s.dim(), |(p, q)| -0.5 * s[(p, q)] * (n[sp][p] + n[sp][q]))
+        });
+        let dk = fr.kappa_densities(&kappa);
+        let total_u = &kappa + &half_s;
+        let cases: [(&str, &Array2<f64>, [Array2<f64>; 2]); 3] = [
+            ("kappa", &kappa, dk.clone()),
+            ("overlap", &half_s, overlap.clone()),
+            (
+                "total",
+                &total_u,
+                [&dk[0] + &overlap[0], &dk[1] + &overlap[1]],
+            ),
+        ];
+        for (label, u, d_mo) in cases {
+            let d = d_mo.map(|m| fr.to_ao(&m));
+            let xs = fr.spin_factors(u);
+            let [ca, cb] = fr.occupied();
+            let got = g
+                .uhf_fitted_exchanges(
+                    df,
+                    std::slice::from_ref(&d),
+                    Some([
+                        (ca, std::slice::from_ref(&xs[0])),
+                        (cb, std::slice::from_ref(&xs[1])),
+                    ]),
+                )
+                .unwrap()
+                .remove(0);
+            let want = g.fitted_exchange(df, &d).unwrap();
+            for (sp, c_o) in [ca, cb].into_iter().enumerate() {
+                assert_k_within_bar(
+                    &format!("ROHF {label} spin {sp}"),
+                    &df.borrow(),
+                    &got[sp],
+                    &want[sp],
+                    &xs[sp],
+                    c_o,
+                );
+            }
+        }
+    }
 }

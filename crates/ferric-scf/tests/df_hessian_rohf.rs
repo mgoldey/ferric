@@ -898,3 +898,70 @@ fn semicanonicalized_input_gives_the_plain_rohf_hessian_with_ri() {
         );
     }
 }
+
+/// EXACTNESS ANCHOR of the ROHF factored CPHF exchange: the production ROHF
+/// RI-K Hessian (every response density `C (U n_σ + n_σ Uᵀ) Cᵀ` through its
+/// factors `X_σ = (C U)[:, ..n_σ]`, `C_σ,o = C[:, ..n_σ]`) equals the one
+/// whose CPHF builds every fitted K through the density path (the oracle,
+/// `UhfDfMutants::cphf_density_path_k`). Bar: the sum of the two responses'
+/// asymmetries (the solve error; as `df_hessian_uhf`'s
+/// `factored_cphf_exchange_equals_the_density_path_hessian`); the wrong-spin
+/// CPHF exchange mutant must miss it.
+#[test]
+fn factored_cphf_exchange_equals_the_density_path_hessian() {
+    if !has_deriv2() {
+        return;
+    }
+    for (label, xyz, mult, j) in [
+        (
+            "NH2 doublet RI-JK",
+            NH2_DISTORTED,
+            2,
+            "def2-universal-jkfit",
+        ),
+        ("CH2 triplet RI-K", CH2_DISTORTED, 3, ""),
+    ] {
+        let s = setup(xyz, mult, "6-31g", j, "def2-universal-jkfit");
+        let run = |m: UhfDfMutants| {
+            rohf_hessian_parts_df_mutated(
+                &ParallelContext::default(),
+                &s.mol,
+                &s.prep,
+                Operator::coulomb(),
+                &s.bounds,
+                &s.rohf,
+                &s.cfg,
+                RohfMutation::None,
+                (&RijMutants::default(), &RikMutants::default(), &m),
+            )
+        };
+        let fac = run(UhfDfMutants::default()).unwrap();
+        let den = run(UhfDfMutants {
+            cphf_density_path_k: true,
+            ..Default::default()
+        })
+        .unwrap();
+        let diff = (&fac.total() - &den.total())
+            .iter()
+            .fold(0.0f64, |m, v| m.max(v.abs()));
+        // Plus the rounding floor of the response assembly (a contraction
+        // of at most n² terms per element), which the asymmetry probe does
+        // not see when the solve is exact (H2+: zero CPHF iterations).
+        let n = s.prep.nbasis();
+        let floor =
+            (n * n) as f64 * f64::EPSILON * fac.total().iter().fold(0.0f64, |m, v| m.max(v.abs()));
+        let bar = fac.response_asymmetry + den.response_asymmetry + floor;
+        eprintln!("{label}: factored vs density-path K Hessian {diff:.3e} (bar {bar:.3e})");
+        assert!(diff <= bar, "{label}: {diff:.3e} > {bar:.3e}");
+        if let Ok(w) = run(UhfDfMutants {
+            cphf_wrong_spin_k: true,
+            ..Default::default()
+        }) {
+            let miss = (&w.total() - &den.total())
+                .iter()
+                .fold(0.0f64, |m, v| m.max(v.abs()));
+            eprintln!("{label}: wrong-spin CPHF K misses by {miss:.3e}");
+            assert!(miss > bar, "{label}: the bar cannot fail ({miss:.3e})");
+        }
+    }
+}

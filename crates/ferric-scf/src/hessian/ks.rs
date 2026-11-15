@@ -143,6 +143,10 @@ pub struct KsFixedGridMutants {
     /// RI-K: the CPHF `DfK` built over the RI-J auxiliary basis instead of
     /// the exchange one (visible only when the two differ).
     pub cphf_dfk_from_j_aux: bool,
+    /// Not a defect: the CPHF fitted K through the density path instead of
+    /// the factored route (the oracle the factored route is anchored
+    /// against).
+    pub cphf_density_path_k: bool,
 }
 
 impl Default for KsFixedGridMutants {
@@ -165,6 +169,7 @@ impl Default for KsFixedGridMutants {
             rik_alpha_ignores_exx: false,
             rik_terms_from_j_aux: false,
             cphf_dfk_from_j_aux: false,
+            cphf_density_path_k: false,
         }
     }
 }
@@ -1100,7 +1105,8 @@ fn rks_fixed_grid_hessian_core(
     phases.stop(t);
     let g = TwoElectronBuilder::new(ctx, prep, bounds)?
         .fitted(df_j, df_k, false)
-        .with_xc_mo_response(&kernel, exx * mutants.response_exx);
+        .with_xc_mo_response(&kernel, exx * mutants.response_exx)
+        .with_density_path_k_if(mutants.cphf_density_path_k);
     let t = phases.begin("CPKS");
     let resp = cpks_response_with(&g, rks, nocc, &first)?;
     phases.stop(t);
