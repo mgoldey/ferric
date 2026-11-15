@@ -65,7 +65,7 @@ def r2(i, p):
 k_vv = b * sp.Rational(3, 2) * pi * (9 * pi) ** sp.Rational(-1, 6)
 beta = (3 / b**2) ** sp.Rational(3, 4) / 32
 check(
-    "kappa: k_vv rho^(1/6) == b (3pi/2) (rho/(9pi))^(1/6)",
+    "kappa: k_vv rho^(1/6) == b (3pi/2) (rho/(9pi))^(1/6) (claim constants)",
     sp.simplify(
         k_vv * rho[0] ** sp.Rational(1, 6)
         - b * sp.Rational(3, 2) * pi * (rho[0] / (9 * pi)) ** sp.Rational(1, 6)
@@ -162,7 +162,7 @@ for name, kwargs in [
         scale = max(scale, abs(dEr), abs(dEs))
     if name == "code":
         check(
-            f"W_i vrho_i, W_i vsig_i == dE/drho_i, dE/dsigma_i (max err {float(err):.1e}, scale {float(scale):.2e})",
+            f"W_i vrho_i, W_i vsig_i == dE/drho_i, dE/dsigma_i (max err {float(err):.1e}, scale {float(scale):.2e}) (claim potentials)",
             err < sp.Float("1e-40") and scale > sp.Float("1e-6"),
         )
     else:

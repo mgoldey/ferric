@@ -116,7 +116,7 @@ ok = all(
     sp.expand(sp.diff(at_t[X], t).subs(t, 0) - code_dsig[X]) == 0
     for X in (Saa, Sab, Sbb)
 )
-check("1. dsig_aa / dsig_ab / dsig_bb match fxc.rs", ok)
+check("1. dsig_aa / dsig_ab / dsig_bb match fxc.rs (claim dsigma)", ok)
 check(
     "1. control: dsig_ab = 2 grad rho_a . grad d_rho_b is detected",
     sp.expand(sp.diff(at_t[Sab], t).subs(t, 0) - 2 * dot(ga, gdb)) != 0,
@@ -203,9 +203,11 @@ exact_w_b = [lin(G_b_t[b]) for b in AX]
 
 u_a, u_b, w_a, w_b = code_u_w()
 sub0 = lambda v: v.subs(at_0, simultaneous=True)  # noqa: E731
-check("2. u^a (dv_rho_a) == d v_rho_a / dt", zero(exact_u_a - sub0(u_a)))
+check("2. u^a (dv_rho_a) == d v_rho_a / dt (claim u)", zero(exact_u_a - sub0(u_a)))
 check("2. u^b (dv_rho_b) == d v_rho_b / dt", zero(exact_u_b - sub0(u_b)))
-check("3. w^a == d G^a / dt", all(zero(exact_w_a[b] - sub0(w_a[b])) for b in AX))
+check(
+    "3. w^a == d G^a / dt (claim w)", all(zero(exact_w_a[b] - sub0(w_a[b])) for b in AX)
+)
 check("3. w^b == d G^b / dt", all(zero(exact_w_b[b] - sub0(w_b[b])) for b in AX))
 _, _, w_a_bad, _ = code_u_w(cross2=True)
 check(
@@ -228,7 +230,7 @@ check(
 elda = generic_cubic((Ra, Rb), "l")
 lda_u_a = sp.diff(elda, Ra).subs(at_t, simultaneous=True).diff(t).subs(t, 0)
 check(
-    "4. LDA: d v_rho_a/dt = f_aa d_rho_a + f_ab d_rho_b",
+    "4. LDA: d v_rho_a/dt = f_aa d_rho_a + f_ab d_rho_b (claim lda)",
     zero(
         lda_u_a - (sp.diff(elda, Ra, Ra) * dra + sp.diff(elda, Ra, Rb) * drb).subs(at_0)
     ),
@@ -386,7 +388,7 @@ for k in range(len(code_lin)):
     absmax = max(absmax, abs(fd - code_lin[k]))
 check(
     f"5. numeric: linearize_point (u, w, t) == central difference of (v_rho, G, v_tau) "
-    f"(max |diff| {mp.nstr(absmax, 3)}, / bar {mp.nstr(worst, 3)})",
+    f"(max |diff| {mp.nstr(absmax, 3)}, / bar {mp.nstr(worst, 3)}) (claim mgga)",
     worst < 1,
 )
 scale = max(abs(c) for c in code_lin)

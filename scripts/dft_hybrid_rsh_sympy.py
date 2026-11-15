@@ -138,7 +138,7 @@ def part_a():
         sp.simplify((sp.erf(x) + sp.erfc(x) - 1).rewrite(sp.erf)) == 0,
     )
     cam = (a + b * sp.erf(w * r)) / r + (1 - a - b * sp.erf(w * r)) / r
-    check("A1 CAM split sums to 1/r", sp.simplify(cam - 1 / r) == 0)
+    check("A1 CAM split sums to 1/r (claim A1)", sp.simplify(cam - 1 / r) == 0)
 
     # A2: kernel identities, matched as polynomials in E = erf(w r).
     e = sp.Symbol("E")
@@ -152,7 +152,7 @@ def part_a():
     )
     code_sr, code_lr = libxc_to_ferric(al, be)
     check(
-        "A2 libxc (cam_alpha, cam_beta) -> c_sr = alpha + beta, c_lr = alpha",
+        "A2 libxc (cam_alpha, cam_beta) -> c_sr = alpha + beta, c_lr = alpha (claim A2)",
         len(sol) == 1
         and sp.simplify(sol[0][csr] - code_sr) == 0
         and sp.simplify(sol[0][clr] - code_lr) == 0,
@@ -207,7 +207,7 @@ def part_a():
     f_rhf = -sp.Rational(1, 2) * k_sym(d)
     lhs = sp.diff(e_rhf(d + t * dd), t).subs(t, 0)
     check(
-        "A3 RHF: d/dt E_x = Tr[F_x dD], F_x = -1/2 K_total",
+        "A3 RHF: d/dt E_x = Tr[F_x dD], F_x = -1/2 K_total (claim A3)",
         sp.expand(lhs - tr(f_rhf, dd)) == 0,
     )
 
@@ -312,7 +312,9 @@ def part_b():
     q_erfc = eri_quadrature(prims, omega, 0.0, 1.0)
     r1, r2 = rel(eri_erf, q_erf), rel(eri_erfc, q_erfc)
     check(
-        "B1 erf ERIs: closed form = quadrature on [0, w]", r1 < 1e-11, f"rel {r1:.1e}"
+        "B1 erf ERIs: closed form = quadrature on [0, w] (claim B1)",
+        r1 < 1e-11,
+        f"rel {r1:.1e}",
     )
     check(
         "B1 erfc ERIs: Coulomb - erf = quadrature on [w, inf)",
@@ -348,7 +350,7 @@ def part_b():
     cam_direct = eri_quadrature(prims, omega, mix[1], mix[0])
     r4 = rel(k_total(d, mix), k_of(cam_direct, d))
     check(
-        "B3 K_total = K over the CAM kernel (c_lr below w, c_sr above)",
+        "B3 K_total = K over the CAM kernel (c_lr below w, c_sr above) (claim B3)",
         r4 < 1e-11,
         f"rel {r4:.1e}",
     )
@@ -374,7 +376,11 @@ def part_b():
         fd = (e_r(d + step * dd) - e_r(d - step * dd)) / (2 * step)
         an = float(np.sum(rhf_fock(h, eri, k_total, d, mx) * dd))
         err = abs(fd - an) / max(abs(an), 1.0)
-        check(f"B4 RHF {label}: FD dE/dD = Tr[F dD]", err < 1e-9, f"rel {err:.1e}")
+        check(
+            f"B4 RHF {label}: FD dE/dD = Tr[F dD] (claim B4)",
+            err < 1e-9,
+            f"rel {err:.1e}",
+        )
 
     da = rng.standard_normal((4, 4))
     da = da + da.T
@@ -407,7 +413,7 @@ def part_b():
         float(np.max(np.abs(fb - f_r))),
     )
     check(
-        "B5 closed-shell limit: UHF energy and Fock = RHF",
+        "B5 closed-shell limit: UHF energy and Fock = RHF (claim B5)",
         lim < 1e-12,
         f"max {lim:.1e}",
     )

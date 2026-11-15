@@ -13,6 +13,13 @@ Checks the identities `becke_weights_and_grad`
   5. the assembled quotient-rule gradient dw^A/dR_C (code formula) equals the
      sympy derivative of w^A for a 3-atom, unequal-radius cluster at a
      generic point, and sum_A dw^A/dR_C = 0 (partition of unity).
+  6. the Treutler-Ahlrichs M4 radial grid of radial.rs: the code's dr/dx is
+     the derivative of the map, and the transcribed 75-point loop integrates
+     4 pi r^2 e^{-a r^2} (a = 0.3 to 40) to its closed form to 1e-12 (an
+     independent route); the sin^2 weight of the other Chebyshev rule fails.
+
+The checks the book cites carry a label "(claim assembly)", "(claim pou)",
+"(claim translation)" or "(claim radial)" in their printed name.
 
 Negative controls: each claim is re-run against a deliberately broken
 formula and must FAIL. Exit status is nonzero on any mismatch.
@@ -23,11 +30,13 @@ transcription of the code.
 
 Mutations (each turns the script red; check 5 fails):
   * drop the 1/2 of ds/dmu = -1/2 f2' f1' f0' dnu/dmu in the code assembly;
-  * flip the sign of the mu/R_AB^2 (R_A - R_B) term of dmu/dR_B.
+  * flip the sign of the mu/R_AB^2 (R_A - R_B) term of dmu/dR_B;
+  * square the Chebyshev weight sin(theta) in the radial loop (check 6 fails).
 
 Run: python3 scripts/dft_becke_weight_grad_sympy.py
 """
 
+import math
 import sys
 
 import sympy as sp
@@ -198,13 +207,13 @@ scale = max(abs(v) for v in exact.values())
 max_err = max(abs(exact[key] - code_dw[key]) for key in exact)
 check(
     f"5. becke_weights_and_grad assembly == sympy dw/dR "
-    f"(max err {float(max_err):.1e}, max |dw| {float(scale):.2e})",
+    f"(max err {float(max_err):.1e}, max |dw| {float(scale):.2e}) (claim assembly)",
     max_err < 1e-40 and scale > 1e-3,
 )
 pou = max(
     abs(sum(code_dw[i, c, k] for i in range(N))) for c in range(N) for k in range(3)
 )
-check(f"5. sum_A dw^A/dR_C = 0 (max {float(pou):.1e})", pou < 1e-40)
+check(f"5. sum_A dw^A/dR_C = 0 (max {float(pou):.1e}) (claim pou)", pou < 1e-40)
 # grid.rs:646 rebuilds grad_r w^A as -sum_C dw^A/dR_C; check against the
 # direct electron-coordinate derivative of w^A.
 r_err = 0
@@ -216,12 +225,77 @@ for k in range(3):
     pt = saved
     for i in range(N):
         r_err = max(r_err, abs(direct[i] + sum(code_dw[i, c, k] for c in range(N))))
-check(f"4. grad_r w^A = -sum_C dw^A/dR_C (max err {float(r_err):.1e})", r_err < 1e-40)
+check(
+    f"4. grad_r w^A = -sum_C dw^A/dR_C (max err {float(r_err):.1e}) (claim translation)",
+    r_err < 1e-40,
+)
 # negative control: drop the -P_A dT/T^2 normalization term
 bad_err = abs(exact[0, 1, 0] - dP[0][1][0] / Tv)
 check("5. control: dropping the dT/T^2 term is detected", bad_err > 1e-6)
 
+# ── 6. Treutler-Ahlrichs M4 radial grid (radial.rs treutler_ahlrichs_m4) ────
+# Transcription of the loop: r(x) = -(xi/ln2)(1+x)^0.6 ln((1-x)/2) at
+# x_k = cos(pi k/(n+1)), weight (pi/(n+1)) sin(theta_k) |dr/dx| 4 pi r^2.
+xs_ = sp.symbols("x")
+xi_s = sp.Symbol("xi", positive=True)
+r_of_x = -(xi_s / sp.log(2)) * (1 + xs_) ** sp.Rational(3, 5) * sp.log((1 - xs_) / 2)
+code_drdx = (
+    (xi_s / sp.log(2))
+    * (1 + xs_) ** sp.Rational(3, 5)
+    * (-sp.Rational(3, 5) / (1 + xs_) * sp.log((1 - xs_) / 2) + 1 / (1 - xs_))
+)
+check(
+    "6. radial: code dr/dx == d/dx of the TA-M4 map (claim radial)",
+    sp.simplify(sp.diff(r_of_x, xs_) - code_drdx) == 0,
+)
+
+
+def ta_m4(xi, n):
+    rs, ws = [], []
+    np1 = n + 1
+    for k in range(1, n + 1):
+        theta = math.pi * k / np1
+        x = math.cos(theta)
+        log_term = math.log((1 - x) / 2)
+        r = -(xi / math.log(2)) * (1 + x) ** 0.6 * log_term
+        dr_dx = (
+            (xi / math.log(2))
+            * (1 + x) ** 0.6
+            * (-0.6 / (1 + x) * log_term + 1 / (1 - x))
+        )
+        w_cheb = (math.pi / np1) * math.sin(theta)
+        rs.append(r)
+        ws.append(w_cheb * dr_dx * 4 * math.pi * r * r)
+    return rs[::-1], ws[::-1]
+
+
+# Independent route: the closed-form 3D Gaussian integral
+# int 4 pi r^2 e^{-a r^2} dr = (pi/a)^{3/2}, exponents from diffuse to core.
+rad_err = 0.0
+for xi in (0.8, 0.9, 1.2):
+    rs, ws = ta_m4(xi, 75)
+    for a in (0.3, 1.0, 5.0, 40.0):
+        got = sum(w * math.exp(-a * r * r) for r, w in zip(rs, ws))
+        rad_err = max(rad_err, abs(got / (math.pi / a) ** 1.5 - 1))
+    ok_order = all(rs[i] < rs[i + 1] for i in range(len(rs) - 1))
+check(
+    f"6. radial: 75-point TA-M4 integrates 4 pi r^2 exp(-a r^2) to its closed form "
+    f"(max rel err {rad_err:.1e}) (claim radial)",
+    rad_err < 1e-12,
+)
+check("6. radial: radii returned smallest first", ok_order)
+# negative control: the second-kind Chebyshev weight sin^2 (the f sqrt(1-x^2) rule)
+rs, ws = ta_m4(0.9, 75)
+bad = [
+    w * math.sin(math.acos(math.cos(math.pi * (75 - i) / 76))) for i, w in enumerate(ws)
+]
+bad_got = sum(w * math.exp(-r * r) for r, w in zip(rs, bad))
+check(
+    "6. control: sin^2 Chebyshev weight is detected",
+    abs(bad_got / math.pi**1.5 - 1) > 1e-3,
+)
+
 if FAILS:
     print(f"\n{len(FAILS)} check(s) FAILED: {FAILS}")
     sys.exit(1)
-print("\nall Becke identities verified")
+print("\nall Becke and radial-grid identities verified")

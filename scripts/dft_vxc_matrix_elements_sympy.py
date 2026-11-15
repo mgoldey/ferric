@@ -120,7 +120,7 @@ ok = all(
     for m in range(NAO)
     for n in range(NAO)
 )
-check("closed: V_mn (LDA + 2 v_sigma M+M^T + 1/2 v_tau) == dE/dD_mn", ok)
+check("closed: V_mn (LDA + 2 v_sigma M+M^T + 1/2 v_tau) == dE/dD_mn (claim closed)", ok)
 check(
     "closed control: GGA factor 1 instead of 2 is detected",
     not zero(sp.diff(E, D[0][1]) - closed_code(0, 1, gga_fac=1).subs(at)),
@@ -173,7 +173,7 @@ ok_b = all(
     for n in range(NAO)
 )
 check(
-    "polarized: V^alpha_mn == dE/dD^alpha_mn (G^a = 2 v_saa grad rho_a + v_sab grad rho_b)",
+    "polarized: V^alpha_mn == dE/dD^alpha_mn (G^a = 2 v_saa grad rho_a + v_sab grad rho_b) (claim polarized)",
     ok_a,
 )
 check("polarized: V^beta_mn == dE/dD^beta_mn", ok_b)
@@ -194,7 +194,7 @@ potential_form = v_xc * cm * cn
 flux = [2 * vs3 * sp.diff(rho3, q) * cm * cn for q in X3]
 divergence = sum(sp.diff(flux[i], X3[i]) for i in range(3))
 check(
-    "IBP: matrix form - (v_rho - 2 div(v_sigma grad rho)) chi chi == div(2 v_sigma grad rho chi chi)",
+    "IBP: matrix form - (v_rho - 2 div(v_sigma grad rho)) chi chi == div(2 v_sigma grad rho chi chi) (claim ibp)",
     zero(matrix_form - potential_form - divergence),
 )
 check(
@@ -395,7 +395,7 @@ def fd_check(label, energy_of, v_code, base, slot):
 
 
 fd_check(
-    "numeric closed: central difference of E_xc(D) == Tr[V_code X]",
+    "numeric closed: central difference of E_xc(D) == Tr[V_code X] (claim numeric)",
     lambda dms: energy_closed(dms[0]),
     vxc_closed_code(D_N),
     [D_N],

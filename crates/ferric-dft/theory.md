@@ -9,11 +9,13 @@ negative controls (a mutated formula that must fail):
 
 | Script | Proves |
 |---|---|
-| `scripts/dft_becke_weight_grad_sympy.py` | Becke weight derivatives, translational invariance |
+| `scripts/dft_becke_weight_grad_sympy.py` | Becke weight derivatives, translational invariance, the radial grid |
 | `scripts/dft_vxc_matrix_elements_sympy.py` | LDA/GGA/meta-GGA $V_{xc}$ is $\partial E_{xc}/\partial D$; integration by parts |
 | `scripts/dft_fxc_kernel_sympy.py` | GGA $f_{xc}$ response is the linearization of $V_{xc}$ |
 | `scripts/dft_vv10_potential_sympy.py` | VV10 per-point potentials are $\partial E_{nl}/\partial(\rho,\sigma)$ |
 | `scripts/dft_mgga_tau_gradient_sympy.py` | GGA/meta-GGA nuclear-gradient AO-derivative and grid-response terms |
+| `scripts/dft_hybrid_rsh_sympy.py` | exact-exchange splits, libxc CAM map, $\mathrm dE_x/\mathrm dD = F_x$ |
+| `scripts/cdft_constraint_coupling_sympy.py` | cDFT Fock shift and envelope theorem; Wu-Van Voorhis coupling |
 
 Run any of them with `python3 scripts/<name>.py` (needs `sympy`).
 
@@ -23,9 +25,44 @@ in `crates/ferric-scf/theory.md` ("Kohn-Sham XC Hessian terms"), proved by
 `scripts/ks_fixed_grid_hessian_sympy.py`.
 
 ## Kohn-Sham Equations
-The DFT energy is:
-$$E_{DFT} = T_s + V_{ext} + J + E_{xc}$$
-where $E_{xc}$ is the exchange-correlation functional.
+The Kohn-Sham energy of a closed shell with total density matrix
+$D = 2\mathbf C_o\mathbf C_o^{\mathsf T}$ is
+$$E_{\rm KS}[D] = \mathrm{Tr}[Dh] + \tfrac12\mathrm{Tr}[DJ(D)] - \tfrac14\,\mathrm{Tr}[D\,K_{\rm tot}(D)] + E_{xc}[\rho_D] + E_{nn},$$
+with $h$ the kinetic plus nuclear (and ECP and external) one-electron
+operator, $J(D)_{\mu\nu} = \sum_{\lambda\sigma}(\mu\nu|\lambda\sigma)D_{\lambda\sigma}$,
+$K_{\rm tot}$ the exact-exchange matrix of a hybrid or range-separated hybrid
+(zero for a pure functional; section "Exact exchange in hybrid and
+range-separated hybrid functionals") and $E_{xc}$ the grid quadrature of the
+next section. Making $E_{\rm KS}$ stationary under orthonormal variations of
+$\mathbf C_o$ gives the Kohn-Sham equations
+$$F\mathbf C = S\mathbf C\boldsymbol\varepsilon,\qquad F = h + J(D) - \tfrac12K_{\rm tot}(D) + V_{xc},\qquad (V_{xc})_{\mu\nu} = \frac{\partial E_{xc}}{\partial D_{\mu\nu}} .$$
+Open shell (UKS, ROKS): per-spin densities $D^\sigma = \mathbf C^\sigma_o\mathbf C^{\sigma\,\mathsf T}_o$,
+$$E_{\rm KS} = \sum_\sigma\mathrm{Tr}[D^\sigma h] + \tfrac12\mathrm{Tr}[D^{\rm t}J(D^{\rm t})] - \tfrac12\sum_\sigma\mathrm{Tr}[D^\sigma K_{\rm tot}(D^\sigma)] + E_{xc}[\rho_\alpha,\rho_\beta] + E_{nn},\qquad
+F_\sigma = h + J(D^{\rm t}) - K_{\rm tot}(D^\sigma) + V^\sigma_{xc},$$
+with $D^{\rm t} = D^\alpha + D^\beta$. There is no separate KS solver: `solve_rhf`,
+`solve_uhf` and `solve_rohf` (`ferric-scf`) run KS when `RhfConfig.xc` names a
+functional, and add $(E_{xc}, V_{xc})$ once per iteration through
+`KsXc::add_xc` (closed shell) or `KsXcUks::add_xc_uks` (`src/ks.rs`, which
+route to the batched path `src/xc_batch.rs`). `ferric_scf::rhf::ks_vxc_closed`
+returns the same closed-shell pair outside the loop and is pinned against the
+SCF's own Fock matrix (`ks_vxc_tests`).
+
+**Energy assembly in the SCF loop.** The electronic energy is taken from the
+Fock matrix before $V_{xc}$ is added,
+$e_{\rm no\,xc} = \tfrac12\mathrm{Tr}[D(h + F_{\rm no\,xc})]$, and the energy is
+$e_{\rm no\,xc} + E_{xc} + E_{nn}$ plus any solvation, embedding or hook term.
+$E_{xc}$ is not $\mathrm{Tr}[DV_{xc}]$ (that equality holds only for a
+functional homogeneous of degree one in $\rho$), which is why $V_{xc}$ is
+added to $F$ after the trace.
+
+**Density floor.** $E_{xc} = \sum_g w_g\rho_g\epsilon_g$ is summed over every
+grid point (libxc returns $\epsilon = 0$ below its own per-functional
+threshold). $V_{xc}$, the gradient and the response kernels skip points with
+$\rho$ (per spin, $\rho_\sigma$) at or below `DensityFloor::for_xc`: $10^{-14}$
+for LDA, GGA and their hybrids, $10^{-10}$ when any component is a meta-GGA.
+The energy and the matrix therefore differ by at most the floored points'
+contribution, which the tests below bound through
+$\mathrm{Tr}[V_{xc}X] = \mathrm{d}E_{xc}/\mathrm{d}t$ at $10^{-9}$ relative.
 
 ## Numerical Integration
 The exchange-correlation energy is a quadrature over grid points
@@ -55,8 +92,85 @@ $\epsilon(\rho,\sigma)$, hybrids and range-separated hybrids (the exact-exchange
 fraction is built by the SCF), $\tau$-only meta-GGAs (SCAN, r2SCAN, TPSS) and
 VV10 nonlocal correlation.
 
+Each definition (`XcDef`, `src/libxc.rs`) is one or more libxc components and
+a family (`FunctionalFamily`, `src/vxc.rs`), which fixes the variables the
+grid evaluates and the terms of $V_{xc}$:
+
+| Family | Variables per point | $V_{xc}$ terms | Exact exchange | Friendly names (`FRIENDLY_NAMES`) |
+|---|---|---|---|---|
+| `Lda` | $\rho$ | $v_\rho$ | none | LDA, SVWN |
+| `Gga` | $\rho,\sigma$ | $v_\rho, v_\sigma$ | none | PBE, PBEsol, BLYP, BP86 |
+| `HybridGga` | $\rho,\sigma$ | $v_\rho, v_\sigma$ | global $a$ | PBE0, B3LYP |
+| `RangeSepGga` | $\rho,\sigma$ | $v_\rho, v_\sigma$ | $c_{\rm sr}, c_{\rm lr}, \omega$ | HSE06, ωB97X-V (+VV10) |
+| `MetaGga` | $\rho,\sigma,\tau$ | $v_\rho, v_\sigma, v_\tau$ | none, global or CAM | SCAN, r2SCAN, TPSS, TPSSh, M06-2X, SCAN0, r2SCAN0, ωB97M-V |
+
+Any libxc name is also accepted directly. A meta-GGA definition
+(`metagga_def_from_handles`) refuses, with an error rather than a silent
+approximation: a component libxc flags as needing the density Laplacian
+(`XC_FLAGS_NEEDS_LAPLACIAN`), a component with no energy density, more than
+one range-separated or more than one VV10 component, and a range-separated
+component combined with a separate global exact-exchange fraction.
+
 ## Integration Grid
 Each atom carries a Treutler-Ahlrichs radial grid times a Lebedev angular grid; atomic grids are combined with Becke partition weights $w_A(\mathbf{r})$, so the weight of a point on atom $A$ is $w_r\,w_\Omega\,w_A(\mathbf{r})$.
+
+**Radial grid** (`treutler_ahlrichs_m4`, `src/radial.rs`). Treutler and
+Ahlrichs' M4 map of the second-kind Chebyshev nodes $x_k = \cos\theta_k$,
+$\theta_k = \pi k/(n+1)$, $k = 1,\dots,n$:
+$$r(x) = -\frac{\xi}{\ln 2}\,(1+x)^{0.6}\ln\frac{1-x}{2},\qquad
+\frac{dr}{dx} = \frac{\xi}{\ln 2}(1+x)^{0.6}\Bigl[-\frac{0.6}{1+x}\ln\frac{1-x}{2} + \frac{1}{1-x}\Bigr],$$
+$$w^{\rm rad}_k = \frac{\pi}{n+1}\sin\theta_k\,\Bigl|\frac{dr}{dx}\Bigr|_{x_k}\,4\pi r_k^2,\qquad
+\int_0^\infty 4\pi r^2 f(r)\,dr \approx \sum_k w^{\rm rad}_k f(r_k) .$$
+The weight is $\sin\theta_k$, not the $\sin^2\theta_k$ of the rule for
+$\int f(x)\sqrt{1-x^2}\,dx$: with $x = \cos\theta$, $\int_{-1}^1 g\,dx = \int_0^\pi g(\cos\theta)\sin\theta\,d\theta$,
+integrated by the trapezoid rule in $\theta$. $\xi$ is the per-element
+Treutler-Ahlrichs scale (`TA_XI`: H 0.8, C 1.1, N 0.9, O 0.9, ...; 1.5 past
+the table). The radii are returned smallest first.
+
+**Angular grid** (`ferric_quadrature::lebedev::lebedev`). Lebedev-Laikov
+rules with weights normalized to $\sum_j w^{\Omega}_j = 1$, so a point's weight
+is $w_g = w^{\rm rad}_k\,w^{\Omega}_j\,w^A(\mathbf r_g)$ and
+$\sum_g w_g f(\mathbf r_g)\approx\int f\,d\mathbf r$.
+
+**Pruning** (`angular_orders_for_atom`, `src/prune.rs`). Each radial shell
+takes an angular order from a five-region table, the region being the number
+of boundaries $a$ with $r/R^{\rm BS}_A > a$ ($R^{\rm BS}$ the Bragg-Slater radius):
+
+| Element row | Region boundaries $a$ |
+|---|---|
+| H, He | 0.25, 0.5, 1.0, 4.5 |
+| Li to Ne | 0.1667, 0.5, 0.9, 3.5 |
+| Na and heavier | 0.1, 0.4, 0.8, 2.5 |
+
+The orders (`region_orders`) start from NWChem's request
+$[\ell_1, \ell_3, \ell_{p-1}, \ell_p, \ell_{p-1}]$ on the ladder
+$\ell = (38, 50, 74, 86, 110, 146, \dots)$ with $\ell_p$ the requested order,
+put the innermost region on order 26, and snap the other four up onto
+ferric's rule set $\{6, 14, 26, 50, 110, 194, 302, 434, 590, \dots\}$, never past
+$\ell_p$. At $\ell_p = 110$ the regions are $(26, 110, 110, 110, 110)$; at 302,
+$(26, 110, 302, 302, 302)$. Orders below 50 are not pruned, and 50 is refused
+(the snapped table would be larger than the flat grid). `NwchemRadial` (the
+default) also shortens the radial grid: $\lfloor(n_r m + 37)/75\rfloor$ shells
+with $m = 50$ for H and He and $m = 66$ for Li to Ne (50 and 66 at
+$n_r = 75$), the full $n_r$ beyond. The `Sgx` and ORCA `DefGrid` schemes use
+their own tables (`sgx_region_orders`, `defgrid_region_orders`).
+
+**Weight cut.** A point whose final weight $|w_g|$ is below `weight_cut` is
+dropped. The KS default is $10^{-14}$.
+
+| Constructor | Radial $\times$ angular | Prune | Weight cut | Used for |
+|---|---|---|---|---|
+| `AtomicGridConfig::production()` | $75\times110$ | `NwchemRadial` | $10^{-14}$ | every KS path when no grid is set |
+| `AtomicGridConfig::default()` | $75\times110$ | none | none | analysis grids, flat-grid tests |
+| `AtomicGridConfig::default_nlc()` | $50\times50$ | none | none | the VV10 nonlocal grid |
+| `AtomicGridConfig::meta_gga_response()` | $150\times434$ | `NwchemRadial` | $10^{-14}$ | `response_default_grid` when any component is a meta-GGA (TDDFT) |
+
+- Proof: `scripts/dft_becke_weight_grad_sympy.py`, check 6: the code's
+  $dr/dx$ is the derivative of the map, and the transcribed 75-point loop
+  integrates $4\pi r^2 e^{-ar^2}$ ($a = 0.3$ to 40) to $(\pi/a)^{3/2}$ within
+  $10^{-12}$; the $\sin^2\theta$ weight fails.
+- Tests: `radial::tests` (the $\xi$ table vs PySCF), `prune::tests` (region
+  tables, point counts), `grid::tests::response_default_grid_is_finer_for_meta_gga_only`.
 
 **Default grid.** A Kohn-Sham calculation with no grid set (`RhfConfig::dft_grid = None`, CLI `[dft]` grid keys absent, Python grid kwargs `None`) runs on `AtomicGridConfig::production()`: 75 radial $\times$ 110 angular points per atom, pruned with `NwchemRadial` (NWChem angular regions; 50 radial shells for H/He and 66 for Li-Ne), with points of final weight below $10^{-14}$ dropped (`DEFAULT_WEIGHT_CUT`, ORCA's `WeightCut`). Every KS path (SCF, gradients, Hessians, response, TDDFT) resolves `None` to this grid, so they integrate on the same points.
 
@@ -216,6 +330,15 @@ v_{\sigma,i} = \tfrac32\,w_i\,\Bigl(\rho\frac{\partial\omega_0}{\partial\sigma}\
 so that $W_i v_{\rho,i} = \partial E_{nl}/\partial\rho_i$ and $W_i v_{\sigma,i} = \partial E_{nl}/\partial\sigma_i$.
 The code's `dk_dr`, `dw0_dr`, `dw0_dg` are $\rho$ times the
 partial derivatives: the $\rho_i$ prefactor of $E_{nl}$ is folded in.
+The production pair sum (`vv10_internal`) drops pairs with
+$R_{ip} > 40$ Bohr (`NLC_CUTOFF_BOHR`) on grids of at least `CELL_LIST_MIN_PTS`
+active points, visiting the 27 neighbouring cells of a cell list of that
+edge; below that size the dense sum is exact. Because
+$|\Phi_{ip}|\lesssim R^{-6}$, the omitted energy obeys
+$|\Delta E_{nl}| \le \tfrac34 a^{-3/2}R_{\rm cut}^{-6}\bigl[\sum_g w_g\rho_g^{1/4}\bigr]^2$,
+below $10^{-8}$ Ha for $\sum_g w_g\rho_g^{1/4}\lesssim 60$
+(`cutoff_energy_bounded_*` tests). A UKS run evaluates $E_{nl}$ on the total
+density and adds the same $V_{nl}$ to both spin Fock matrices.
 $V_{nl}$ is assembled by `add_vv10_scratch` with the closed-shell
 GGA form $w v_\rho\chi_\mu\chi_\nu + 2 w v_\sigma\nabla\rho\cdot(\chi_\mu\nabla\chi_\nu+\chi_\nu\nabla\chi_\mu)$. Points with $\rho < 10^{-8}$ are excluded from the pair sum.
 $\rho\,\partial\omega_0/\partial\sigma = C\sigma/(\rho^3\omega_0)$ is kept at every active
@@ -384,6 +507,79 @@ the published short- and long-range fractions. With
 `XcFunctional.exchange_mix`, and ferric's `AoIntegrals.veff` energy against
 its potential by central differences (ωB97X-V, CAM-B3LYP, HSE06 on
 H$_2$/STO-3G).
+
+## Constrained DFT and the diabatic coupling
+
+`ferric-dft/src/cdft.rs`, `ferric-scf/src/cdft_driver.rs`,
+`ferric-scf/src/cdft_coupling.rs`. Proof:
+`scripts/cdft_constraint_coupling_sympy.py`.
+
+**Weight operator.** A constraint on a group of atoms $C$ uses the Becke
+partition (section "Becke partition and its nuclear derivative") as its
+population function, $w_C(\mathbf r) = \sum_{A\in C}w^A(\mathbf r)$, on a grid
+of its own (default $99\times302$):
+$$W^C_{\mu\nu} = \sum_g w_g\,w_C(\mathbf r_g)\,\chi_\mu(\mathbf r_g)\chi_\nu(\mathbf r_g)\quad(\texttt{build\_weight\_matrix}),\qquad
+N_C = \mathrm{Tr}[W^C(D^\alpha \pm D^\beta)]\quad(\texttt{population}),$$
+with $+$ for a charge constraint (`SpinChannel::Total`) and $-$ for a spin
+constraint (`SpinChannel::SpinDiff`).
+
+**Constrained SCF.** The constrained state makes
+$$V(\boldsymbol\lambda) = E[\rho] + \sum_C\lambda_C\,(N_C[\rho] - N^{\rm target}_C)$$
+stationary in $\rho$ and in $\boldsymbol\lambda$. Stationarity in $\rho$ at
+fixed $\lambda$ is a UKS solve with the shifted Fock matrices
+$$\text{Total: } F_\alpha \mathrel{+}= \lambda W,\ F_\beta \mathrel{+}= \lambda W;\qquad
+\text{SpinDiff: } F_\alpha \mathrel{+}= \lambda W,\ F_\beta \mathrel{-}= \lambda W$$
+(`solve_uhf_fockmod`). The outer loop solves $c(\lambda) = N[\rho_\lambda] - N^{\rm target} = 0$.
+Two derivatives follow from stationarity in $\rho$ (Hellmann-Feynman):
+$$\frac{dV}{d\lambda} = c(\lambda),\qquad \frac{dE}{dN^{\rm target}} = -\lambda .$$
+On the lowest solution $V(\lambda) = \min_\rho(E + \lambda c)$ is concave, so
+$dc/d\lambda\le0$; a negative $\lambda$ deepens the well on $C$ and draws
+electrons into it. For one constraint the driver takes Newton steps on $c$
+with a finite-difference slope (step $10^{-3}$), clamped to a trust radius and
+replaced by bisection inside a sign-change bracket when a step leaves it; the
+pair of solves behind each slope is trusted only if
+$V(\lambda+h) - V(\lambda)$ matches $h(c_\lambda + c_{\lambda+h})/2$ (same SCF
+branch). Several constraints take a plain $k\times k$ Newton step. The
+reported energy is $E$ at the constrained density, without $\lambda c$.
+
+**Coupling between two diabatic states** (Wu and Van Voorhis). For UHF
+determinants $\Psi_a$, $\Psi_b$ with different MO sets, per spin
+$M_\sigma = \mathbf C^{\sigma\,\mathsf T}_{a,o} S\,\mathbf C^\sigma_{b,o} = U_\sigma\Sigma_\sigma V_\sigma^{\mathsf T}$
+(`biorth_pairing`). In the rotated orbitals $\tilde{\mathbf C}_a = \mathbf C_aU$,
+$\tilde{\mathbf C}_b = \mathbf C_bV$ the overlap is diagonal, and for a
+one-body operator $\hat O$
+$$\langle\tilde\Psi_a|\tilde\Psi_b\rangle = \prod_\sigma\prod_i s^\sigma_i,\qquad
+\langle\tilde\Psi_a|\hat O|\tilde\Psi_b\rangle = \sum_\sigma\Bigl[\sum_i d^\sigma_i\prod_{j\ne i}s^\sigma_j\Bigr]\prod_j s^{\sigma'}_j,\quad d^\sigma_i = \tilde{\mathbf c}^{\sigma\,\mathsf T}_{a,i}\,O\,\tilde{\mathbf c}^\sigma_{b,i}$$
+(`cross_one_body`, `cofactor_sum`), which is $\frac{d}{dt}\det(M + tO)$ and has
+no division: it holds with any number of zero singular values. The rotated
+determinants differ from the original ones by the phase
+$\det U_\sigma\det V_\sigma$ per spin, so $S_{ab}$ and $H_{ab}$ carry that
+sign convention; $|H_{ab}|$ does not depend on it. Each converged state is
+treated as an eigenfunction of $\hat H + \lambda_X\hat w_X$ with eigenvalue
+$F_X = E_X + \lambda_XN_X$, $N_X = \langle\Psi_X|\hat w_X|\Psi_X\rangle$ from its
+own orbitals (`own_population`):
+$$H_{\rm raw} = \tfrac12\bigl[(F_b S_{ab} - \lambda_b\langle a|\hat w_b|b\rangle) + (F_a S_{ab} - \lambda_a\langle a|\hat w_a|b\rangle)\bigr],\qquad
+H_{ab} = \frac{H_{\rm raw} - \tfrac12(E_a+E_b)S_{ab}}{1 - S_{ab}^2}$$
+(`coupling_hab`; $E_a$ is returned when $|1 - S_{ab}^2| < 10^{-10}$). The
+second form is the off-diagonal element of $S^{-1/2}HS^{-1/2}$ for the
+$2\times2$ problem $H = \bigl[\begin{smallmatrix}E_a & H_{\rm raw}\\ H_{\rm raw} & E_b\end{smallmatrix}\bigr]$,
+$S = \bigl[\begin{smallmatrix}1 & S_{ab}\\ S_{ab} & 1\end{smallmatrix}\bigr]$. Each $\lambda_X$
+multiplies $\langle a|\hat w_X - N_X|b\rangle$, so $H_{ab}$ is unchanged by
+$W\to W - cS$ (target $N\to N - cN_e$): $\langle a|\hat w|b\rangle$ moves by
+$-cN_eS_{ab}$ and $N_X$ by $-cN_e$. With $E_X$ in place of $F_X$ the
+coupling is not invariant. Charge constraints only: the same $\hat w$ acts on
+both spins.
+
+- Proof: `scripts/cdft_constraint_coupling_sympy.py`: (1) `cross_one_body`
+  against the Fock-space matrix element by brute force over occupation strings
+  in a Löwdin-orthonormalized basis, generic and with one and two zero
+  singular values; (2) the orthogonalization formula symbolically; (3) the
+  offset invariance, with the $E_X$ form as a control; (4) for a model UHF
+  solved self-consistently with the code's Fock shift, $dV/d\lambda = c$ and
+  $dE/dN = -\lambda$ by central differences, Total and SpinDiff.
+- Tests: `ferric-scf/tests/cdft_outer_loop.rs` (HeNe$^+$ outer loop),
+  `ferric-scf/tests/cdft_uhf.rs`, `ferric-scf/tests/validation_cdft_et.rs`
+  (He$_2^+$ coupling against NWChem's direct $\langle A|\hat H|B\rangle$).
 
 ## Follow-ups (identities with no direct Rust test)
 

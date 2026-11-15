@@ -584,6 +584,11 @@ CASES = [
                 "/ (rJ * Rij) - mu_ij / Rij**2 * vij[k])",
                 "[FAIL] 5. becke_weights_and_grad assembly",
             ),
+            (
+                "w_cheb = (math.pi / np1) * math.sin(theta)",
+                "w_cheb = (math.pi / np1) * math.sin(theta) ** 2",
+                "[FAIL] 6. radial: 75-point",
+            ),
         ],
     ),
     (
@@ -721,6 +726,23 @@ CASES = [
             ("xpy = t_half @ z / np.sqrt(w)", "xpy = t_half @ z / w", "[FAIL] B4"),
             ("tdip = np.sqrt(2.0) * np.einsum", "tdip = np.einsum", "[FAIL] B2"),
             ("a[:da, da:] = cross", "a[:da, da:] = 0.0 * cross", "[FAIL] B5"),
+        ],
+    ),
+    (
+        "cdft_constraint_coupling_sympy.py",
+        30,
+        [
+            (
+                "f_a, f_b = f_a + lw, f_b + lw",
+                "f_a, f_b = f_a - lw, f_b - lw",
+                "[FAIL] 4. total: dE/dN",
+            ),
+            ('f_b = e_b + st_b["lam"] * n_b', "f_b = e_b", "[FAIL] 3. H_ab invariant"),
+            (
+                'return alpha * pb["det_m"] + beta * pa["det_m"]',
+                'return alpha * pa["det_m"] + beta * pb["det_m"]',
+                "[FAIL] 1. cross_one_body",
+            ),
         ],
     ),
     (

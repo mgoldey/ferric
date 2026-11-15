@@ -393,6 +393,14 @@
         "scripts/cc_triples_weights_and_linlccd_spin_adaptation_sympy.py"
       ]
     },
+    "cdft": {
+      "theory": [
+        "crates/ferric-dft/theory.md#constrained-dft-and-the-diabatic-coupling"
+      ],
+      "scripts": [
+        "scripts/cdft_constraint_coupling_sympy.py"
+      ]
+    },
     "d3": {
       "theory": [
         "crates/ferric-d3/theory.md#gradient",
@@ -805,9 +813,6 @@
       "theory": [
         "crates/ferric-cc/theory.md#ccsd"
       ]
-    },
-    "cdft": {
-      "reason": "no theory.md derivation and no sympy proof"
     },
     "cosmo": {
       "reason": "no theory.md derivation and no sympy proof (PCM theory.md section 6 covers the conductor limit)"

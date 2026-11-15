@@ -227,7 +227,8 @@ def part_a():
         rot = sp.simplify(u.T * sp.Matrix([[m_aa, m_ab], [m_ab, m_aa]]) * u)
         ok = sp.simplify(rot - sp.diag(sing, trip)) == sp.zeros(2, 2)
         check(
-            f"A1 spin adaptation of {lbl}: U^T {lbl}_so U = diag(singlet, triplet)", ok
+            f"A1 spin adaptation of {lbl}: U^T {lbl}_so U = diag(singlet, triplet) (claim A1)",
+            ok,
         )
 
     ra, rb, rho = sp.symbols("rho_a rho_b rho", positive=True)
@@ -241,14 +242,14 @@ def part_a():
     lhs = 2 * sp.diff(e_unpol, rho, 2)
     rhs = (f_aa + f_ab).subs({ra: rho / 2, rb: rho / 2}, simultaneous=True)
     check(
-        "A2 2 d2e(rho/2, rho/2)/drho2 = f_aa + f_ab (singlet kernel normalization)",
+        "A2 2 d2e(rho/2, rho/2)/drho2 = f_aa + f_ab (singlet kernel normalization) (claim A2)",
         sp.expand(lhs - rhs) == 0,
     )
 
     a, b, lam, z = sp.symbols("a b lambda z", positive=True)
     poly = (lam * sp.eye(2) - sp.Matrix([[a, b], [-b, -a]])).det()
     check(
-        "A3 eig [[a,b],[-b,-a]] = +-sqrt((a-b)(a+b))",
+        "A3 eig [[a,b],[-b,-a]] = +-sqrt((a-b)(a+b)) (claim A3)",
         sp.expand(poly - (lam**2 - (a - b) * (a + b))) == 0,
     )
     w = sp.sqrt((a - b) * (a + b))
@@ -261,7 +262,7 @@ def part_a():
 
     x, csr, clr = sp.symbols("x c_sr c_lr", positive=True)
     check(
-        "A4 c_sr erfc + c_lr erf = c_sr + (c_lr - c_sr) erf",
+        "A4 c_sr erfc + c_lr erf = c_sr + (c_lr - c_sr) erf (claim A4)",
         sp.simplify(
             (
                 csr * sp.erfc(x) + clr * sp.erf(x) - (csr + (clr - csr) * sp.erf(x))
@@ -493,7 +494,7 @@ def part_b():
             maxabs(u.T @ b_so @ u - np.block([[b_s, z], [z, b_t]])),
         )
         check(
-            f"B1 {label}: U^T (A,B)_so U = blockdiag(code singlet, code triplet)",
+            f"B1 {label}: U^T (A,B)_so U = blockdiag(code singlet, code triplet) (claim B1)",
             err < 1e-13,
             f"max {err:.1e}",
         )
@@ -522,7 +523,7 @@ def part_b():
     a_cis, h0s = cis_brute(spin_orbs, occ, pairs, h1, g2)
     err = maxabs(a_cis - a_so)
     check(
-        "B2 CIS <Phi_i^a|H - E0|Phi_j^b> (Jordan-Wigner) = spin-orbital A",
+        "B2 CIS <Phi_i^a|H - E0|Phi_j^b> (Jordan-Wigner) = spin-orbital A (claim B2)",
         err < 1e-12,
         f"max {err:.1e}",
     )
@@ -555,7 +556,7 @@ def part_b():
     ev0 = np.sort(np.linalg.eigvals(full0).real)
     err = maxabs(ev0[d:] - solve_tda(a_s)[0])
     check(
-        "B3 TDA: eig(A) = positive roots of the full problem with B = 0",
+        "B3 TDA: eig(A) = positive roots of the full problem with B = 0 (claim B3)",
         err < 1e-12,
         f"max {err:.1e}",
     )
@@ -567,7 +568,7 @@ def part_b():
     pos = order[d:]
     err = maxabs(ev.real[pos] - w)
     check(
-        "B4 Casida W = positive eigenvalues of [[A,B],[-B,-A]]",
+        "B4 Casida W = positive eigenvalues of [[A,B],[-B,-A]] (claim B4)",
         err < 1e-11,
         f"max {err:.1e}",
     )
@@ -607,7 +608,7 @@ def part_b():
     trk = 4.0 / 3.0 * sum(rv @ (a_s - b_s) @ rv for rv in r_ov)
     err = abs(np.sum(osc) - trk) / abs(trk)
     check(
-        "B4 sum rule: sum_n f_n = 4/3 sum_x r_x.(A-B).r_x",
+        "B4 sum rule: sum_n f_n = 4/3 sum_x r_x.(A-B).r_x (claim sumrule)",
         err < 1e-11,
         f"rel {err:.1e}",
     )
@@ -690,7 +691,7 @@ def part_b5(rng, m):
     a, b, a_so, b_so, _ = run(cs, eps, nocc, nvir, f, mix)
     err = max(maxabs(a - a_so), maxabs(b - b_so))
     check(
-        "B5 unrestricted dense A, B (RSH + kernel) = spin-orbital construction",
+        "B5 unrestricted dense A, B (RSH + kernel) = spin-orbital construction (claim B5)",
         err < 1e-13,
         f"max {err:.1e}",
     )
@@ -816,7 +817,7 @@ def part_c():
                 w, amp = solve_casida(a, b)
             err_e = maxabs(w - td.e)
             check(
-                f"C H2O/STO-3G {kind} {spin}: excitation energies = PySCF",
+                f"C H2O/STO-3G {kind} {spin}: excitation energies = PySCF (claim C)",
                 err_e < 1e-8,
                 f"max {err_e:.1e}",
             )
