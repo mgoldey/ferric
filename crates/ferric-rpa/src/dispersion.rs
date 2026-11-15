@@ -395,6 +395,27 @@ pub fn ts_dynamic_polarizability(
     })
 }
 
+/// The partition [`pdep_dynamic_polarizability`] actually applies for a
+/// `requested` one on a reference of the given `spin`.
+///
+/// The Hirshfeld dynamic per-atom path exists for a restricted (closed-shell)
+/// reference only; an unrestricted or restricted-open-shell reference runs the
+/// Becke partition, which has the per-spin branch. Callers that LABEL their
+/// per-atom output (the NPZ `c6_partition` tag) must use this, not the
+/// requested value.
+pub fn effective_dynamic_partition(
+    requested: DispersionPartition,
+    spin: ferric_scf::result::Spin,
+) -> DispersionPartition {
+    if requested == DispersionPartition::Hirshfeld
+        && !matches!(spin, ferric_scf::result::Spin::Restricted)
+    {
+        DispersionPartition::Becke
+    } else {
+        requested
+    }
+}
+
 /// PDEP-RPA per-atom dynamic polarizability α^A(iω) (Phase 2 source).
 ///
 /// Evaluates the per-atom polarizability tensors at the imaginary-frequency
@@ -431,16 +452,16 @@ pub fn pdep_dynamic_polarizability(
     // per-atom decomposition differs — and per-atom magnitudes are already
     // partition-sensitive (see per-atom-c6-status). CLAUDE.md documents this
     // "Hirshfeld (dynamic falls back to Becke)" behavior; this wires it.
-    let is_closed = matches!(rhf.spin, ferric_scf::result::Spin::Restricted);
-    let per_atom = if partition == DispersionPartition::Hirshfeld && is_closed {
-        crate::properties::pdep_polarizability_hirshfeld_dynamic(
-            mol, obs, obs_bs, dfbs, rhf, op, cfg, &freqs, proatom,
-        )?
-    } else {
-        crate::properties::pdep_polarizability_becke_dynamic(
-            mol, obs, obs_bs, dfbs, rhf, op, cfg, &freqs,
-        )?
-    };
+    let per_atom =
+        if effective_dynamic_partition(partition, rhf.spin) == DispersionPartition::Hirshfeld {
+            crate::properties::pdep_polarizability_hirshfeld_dynamic(
+                mol, obs, obs_bs, dfbs, rhf, op, cfg, &freqs, proatom,
+            )?
+        } else {
+            crate::properties::pdep_polarizability_becke_dynamic(
+                mol, obs, obs_bs, dfbs, rhf, op, cfg, &freqs,
+            )?
+        };
 
     // Molecular (whole-system) α(iω) for the DOSD-comparable molecular C6 total.
     // Partition-independent; computed from the lab-frame molecular dipole. Now

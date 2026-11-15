@@ -598,6 +598,22 @@ fn compute_c6_block(
     let partition = DispersionPartition::parse_config_str(req.c6_partition.as_deref())?
         .unwrap_or_else(|| c6_source.default_partition());
     let use_pdep = c6_source == C6Source::Pdep;
+    // The PDEP dynamic path runs the Hirshfeld partition for a closed-shell
+    // reference only. Label (and warn) with what will actually run.
+    let partition = if use_pdep {
+        let used = crate::dispersion::effective_dynamic_partition(partition, inp.result.spin);
+        if used != partition {
+            rep.warn(&format!(
+                "warning: c6_partition = \"{}\" is closed-shell only; this open-shell \
+                 reference uses the \"{}\" partition for the per-atom PDEP-RPA C6",
+                partition.as_config_str(),
+                used.as_config_str()
+            ));
+        }
+        used
+    } else {
+        partition
+    };
     let res_opt = if use_pdep {
         // PDEP-RPA dynamic α(iω). Origin-independent for the molecular total
         // AND the per-atom intrinsic α^A (atom-centred (r−R_A); bond-axis

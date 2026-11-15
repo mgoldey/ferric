@@ -60,8 +60,14 @@ struct Water {
 }
 
 fn water() -> Water {
+    water_with(0, 1)
+}
+
+/// Water in the given charge/multiplicity; an odd-electron state is solved by
+/// UHF (an open-shell reference).
+fn water_with(charge: i32, mult: usize) -> Water {
     let xyz = "3\nh2o\nO 0 0 0.117790\nH 0 0.755453 -0.471161\nH 0 -0.755453 -0.471161\n";
-    let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+    let mol = Molecule::parse_xyz(xyz, charge, mult).unwrap();
     let obs_bs = basis::bundled("sto-3g").unwrap();
     let aux = basis::bundled("cc-pvdz-ri").unwrap();
     let op = Operator::coulomb();
@@ -70,7 +76,11 @@ fn water() -> Water {
     let ctx = ParallelContext::default();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
     let rhf_cfg = RhfConfig::default();
-    let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &rhf_cfg).unwrap();
+    let rhf = if mult == 1 {
+        solve_rhf(&ctx, &mol, &obs, op, &bounds, &rhf_cfg).unwrap()
+    } else {
+        ferric_scf::uhf::solve_uhf(&ctx, &mol, &obs, &bounds, &rhf_cfg).unwrap()
+    };
     Water {
         mol,
         obs_bs,
@@ -288,4 +298,56 @@ fn c6_provenance_tracks_the_parsed_source_and_partition() {
         worst < 1e-10,
         "bundle alpha(i omega) vs direct Becke dynamic: {worst:.3e}"
     );
+}
+
+/// The Hirshfeld dynamic per-atom path is closed-shell only: an open-shell
+/// reference runs the Becke partition. The tag and a warning must say so; the
+/// requested `"hirshfeld"` is not what ran.
+///
+/// Artifact hypothesis: if the tag were still the requested string it would
+/// read "hirshfeld" while the arrays are the Becke ones (the pre-fix state);
+/// the arrays are cross-checked against the direct Becke dynamic call, so
+/// the label and the numbers cannot drift apart.
+#[test]
+fn open_shell_hirshfeld_request_is_labelled_and_warned_as_becke() {
+    let w = water_with(1, 2);
+    let (out, warnings) = run(
+        &w,
+        &only(|r| {
+            r.c6 = true;
+            r.c6_source = Some("pdep".into());
+            r.c6_partition = Some("hirshfeld".into());
+        }),
+    );
+    let c6 = out.unwrap().c6.expect("c6 block");
+    assert_eq!(c6.partition, "becke", "label must name the partition used");
+    assert!(
+        warnings
+            .iter()
+            .any(|m| m.contains("hirshfeld") && m.contains("becke")),
+        "expected a fallback warning, got {warnings:?}"
+    );
+    let direct = pdep_polarizability_becke_dynamic(
+        &w.mol,
+        &w.obs,
+        &w.obs_bs,
+        &w.dfbs,
+        &w.rhf,
+        Operator::coulomb(),
+        &w.cfg,
+        &c6.freqs,
+    )
+    .unwrap();
+    for (a, per_freq) in c6.alpha_atomic_dynamic.iter().enumerate() {
+        for (k, t) in per_freq.iter().enumerate() {
+            for i in 0..3 {
+                for j in 0..3 {
+                    assert!(
+                        (t[i][j] - direct[a][k][i][j]).abs() < 1e-10,
+                        "atom {a} freq {k} [{i}][{j}]"
+                    );
+                }
+            }
+        }
+    }
 }
