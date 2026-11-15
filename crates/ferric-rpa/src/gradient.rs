@@ -252,6 +252,7 @@ impl RpaGradientMethod {
 
     /// Strict parse of `[rpa] gradient`: `"fd"` (step
     /// [`Self::DEFAULT_FD_STEP`]) or `"analytic"`; anything else is an error.
+    /// Unset resolves through [`Self::resolve_default`].
     pub fn parse_config_str(s: &str) -> Result<Self, FerricError> {
         match s {
             "fd" => Ok(Self::FiniteDifference {
@@ -261,6 +262,38 @@ impl RpaGradientMethod {
             other => Err(FerricError::General(format!(
                 "[rpa] gradient = {other:?}: expected \"fd\" or \"analytic\""
             ))),
+        }
+    }
+
+    /// The method an unset `[rpa] gradient` (CLI) or `rpa_gradient` (Python)
+    /// resolves to for `cfg` and `op`: [`Self::Analytic`] when
+    /// [`crate::gradient_analytic::check_analytic_scope`] accepts the
+    /// configuration (full-rank PDEP basis, dense chi0, Coulomb operator),
+    /// otherwise the finite-difference gradient at [`Self::DEFAULT_FD_STEP`]
+    /// with the reason the analytic route was not used, which callers print
+    /// and record in the certificate. An explicit `"analytic"` never falls
+    /// back: it raises the same reason as an error.
+    pub fn resolve_default(cfg: &PdepRpaConfig, op: Operator) -> (Self, Option<String>) {
+        match crate::gradient_analytic::check_analytic_scope(cfg, op) {
+            Ok(()) => (Self::Analytic, None),
+            Err(e) => (
+                Self::FiniteDifference {
+                    h: Self::DEFAULT_FD_STEP,
+                },
+                Some(e.to_string()),
+            ),
+        }
+    }
+
+    /// [`Self::certificate_label`] plus, when the default fell back to finite
+    /// differences, why the analytic gradient was not used.
+    pub fn certificate_label_with(&self, fallback: Option<&str>) -> String {
+        match fallback {
+            None => self.certificate_label(),
+            Some(why) => format!(
+                "{} (default fell back from the analytic gradient: {why})",
+                self.certificate_label()
+            ),
         }
     }
 
@@ -323,6 +356,38 @@ mod tests {
             },
             ..Default::default()
         }
+    }
+
+    /// The unset gradient resolves to the analytic one for a full-rank dense
+    /// Coulomb configuration (the default of `[rpa] gradient` and Python's
+    /// `rpa_gradient`) and to finite differences, with the reason, for a
+    /// truncating PDEP basis or a non-Coulomb operator.
+    #[test]
+    fn unset_gradient_defaults_to_analytic_and_falls_back_with_a_reason() {
+        let full = PdepRpaConfig {
+            trunc_thresh: 0.0,
+            ..small_rpa_cfg()
+        };
+        let (m, why) = RpaGradientMethod::resolve_default(&full, Operator::coulomb());
+        assert_eq!(m, RpaGradientMethod::Analytic);
+        assert!(why.is_none());
+
+        let (m, why) = RpaGradientMethod::resolve_default(&small_rpa_cfg(), Operator::coulomb());
+        assert_eq!(
+            m,
+            RpaGradientMethod::FiniteDifference {
+                h: RpaGradientMethod::DEFAULT_FD_STEP
+            }
+        );
+        let why = why.expect("a truncating basis must say why");
+        assert!(why.contains("trunc_thresh"), "{why}");
+        assert!(m
+            .certificate_label_with(Some(&why))
+            .contains("default fell back from the analytic gradient"));
+
+        let (m, why) = RpaGradientMethod::resolve_default(&full, Operator::erf(0.4));
+        assert!(matches!(m, RpaGradientMethod::FiniteDifference { .. }));
+        assert!(why.expect("non-Coulomb must say why").contains("Coulomb"));
     }
 
     /// Warm vs cold FD RPA gradient against `2 K n density_conv / h`

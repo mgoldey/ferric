@@ -126,6 +126,17 @@ pub(crate) fn optimize_result_certificate(
 ///   Grimme's 6/5 and 1/3 as in `run_scs_mp2`; every other kwarg as for
 ///   `"rimp2"`.
 ///
+/// - `"pdep-rpa"`: closed-shell RHF + RI-dRPA, the CLI's `[rpa]` optimize
+///   route (`ferric_rpa::optimize::optimize_geometry_rpa`). Needs `auxbasis`;
+///   `frozen_core`, `memory_budget_gb`, `n_quad` (16), `quadrature`
+///   (gauss-legendre). The reference RHF is exact four-centre at density_conv
+///   1e-9, so the `scf_*`, `scf_jk`, `point_charges` and `external_field`
+///   kwargs raise. `rpa_gradient`: `"analytic"` (Z-vector, full rank, dense
+///   chi0, Coulomb; raises with a nonzero `trunc_thresh`) or `"fd"` (h = 5e-4
+///   Bohr); unset runs analytic where it applies and finite differences
+///   otherwise, the reason recorded in the certificate. `trunc_thresh` unset
+///   is 0 for analytic and 1e-4 for an explicit `"fd"`.
+///
 /// The correlated methods are closed-shell only, take no
 /// `xc`, `dispersion` or `solvent`, and every kwarg a method does not read
 /// raises `ValueError` rather than being ignored.
@@ -143,6 +154,7 @@ pub(crate) fn optimize_result_certificate(
     auxbasis=None, frozen_core=None, scf_jk=None, jk_auxbasis=None, memory_budget_gb=None,
     oo_max_iter=None, oo_grad_conv=None, c_os=None, c_ss=None, scf_eri=None,
     scf_relativistic=None, fock_hook=None, fock_hook_grad=None, coordinates=None,
+    rpa_gradient=None, n_quad=None, quadrature=None, trunc_thresh=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_optimize(
@@ -181,6 +193,10 @@ pub(crate) fn run_optimize(
     fock_hook: Option<&Bound<'_, PyAny>>,
     fock_hook_grad: Option<&Bound<'_, PyAny>>,
     coordinates: Option<&str>,
+    rpa_gradient: Option<&str>,
+    n_quad: Option<usize>,
+    quadrature: Option<&str>,
+    trunc_thresh: Option<f64>,
 ) -> PyResult<PyOptimizeResult> {
     // Before any setup: no method here has an X2C-1e gradient.
     refuse_relativistic_kwarg(scf_relativistic, "analytic nuclear gradient (run_optimize)")?;
@@ -205,6 +221,11 @@ pub(crate) fn run_optimize(
             || scf_energy_conv.is_some()
             || scf_density_conv.is_some(),
         scf_eri: scf_eri.is_some(),
+        external: point_charges.is_some() || external_field.is_some(),
+        rpa_gradient,
+        n_quad,
+        quadrature,
+        trunc_thresh,
     };
     let method = parse_optimize_method(method)?;
     let spin = parse_optimize_reference(reference, &mol.inner)?;
@@ -246,6 +267,7 @@ pub(crate) fn run_optimize(
         OptimizeMethod::ScsMp2 => {
             run_optimize_scs_mp2(py, &emol, basis_name, &cfg, &opt_config, &k)
         }
+        OptimizeMethod::PdepRpa => run_optimize_pdep_rpa(py, &emol, basis_name, &opt_config, &k),
     }
 }
 
@@ -310,6 +332,10 @@ pub(crate) fn run_optimize_uhf(
         None,
         None,
         coordinates,
+        None,
+        None,
+        None,
+        None,
     )
 }
 
@@ -327,6 +353,7 @@ pub(crate) enum OptimizeMethod {
     RiMp2,
     OoRiMp2,
     ScsMp2,
+    PdepRpa,
 }
 
 /// `run_optimize`'s method- and reference-specific kwargs.
@@ -352,6 +379,12 @@ pub(crate) struct OptimizeKwargs<'a> {
     scf_conv_set: bool,
     /// `scf_eri=` was given.
     scf_eri: bool,
+    /// `point_charges=` or `external_field=` was given.
+    external: bool,
+    rpa_gradient: Option<&'a str>,
+    n_quad: Option<usize>,
+    quadrature: Option<&'a str>,
+    trunc_thresh: Option<f64>,
 }
 
 fn value_error(msg: String) -> PyErr {
@@ -365,9 +398,10 @@ pub(crate) fn parse_optimize_method(method: &str) -> PyResult<OptimizeMethod> {
         "rimp2" => Ok(OptimizeMethod::RiMp2),
         "oo-rimp2" => Ok(OptimizeMethod::OoRiMp2),
         "scs-mp2" => Ok(OptimizeMethod::ScsMp2),
+        "pdep-rpa" => Ok(OptimizeMethod::PdepRpa),
         other => Err(value_error(format!(
             "run_optimize: unknown method {other:?}; expected \"scf\", \"rimp2\", \
-             \"oo-rimp2\" or \"scs-mp2\""
+             \"oo-rimp2\", \"scs-mp2\" or \"pdep-rpa\""
         ))),
     }
 }
@@ -422,16 +456,27 @@ fn refuse_unread_optimize_kwargs(
         ("df_k_aux", k.df_k_aux.is_some()),
         ("scf_ri_k_precision", k.scf_ri_k_precision.is_some()),
     ];
+    let rpa_only = [
+        ("rpa_gradient", k.rpa_gradient.is_some()),
+        ("n_quad", k.n_quad.is_some()),
+        ("quadrature", k.quadrature.is_some()),
+        ("trunc_thresh", k.trunc_thresh.is_some()),
+    ];
     let who = match method {
         OptimizeMethod::Scf => {
             unread(&correlated_only, "scf")?;
             unread(&scs_only, "scf")?;
+            unread(&rpa_only, "scf")?;
             return unread(&oo_only, "scf");
         }
         OptimizeMethod::RiMp2 => "rimp2",
         OptimizeMethod::OoRiMp2 => "oo-rimp2",
         OptimizeMethod::ScsMp2 => "scs-mp2",
+        OptimizeMethod::PdepRpa => "pdep-rpa",
     };
+    if method != OptimizeMethod::PdepRpa {
+        unread(&rpa_only, who)?;
+    }
     if method != OptimizeMethod::ScsMp2 {
         unread(&scs_only, who)?;
     }
@@ -442,6 +487,25 @@ fn refuse_unread_optimize_kwargs(
         )));
     }
     unread(&scf_only, who)?;
+    if method == OptimizeMethod::PdepRpa {
+        // The RPA gradient drivers solve their own exact four-centre RHF at a
+        // fixed tight density threshold and carry no environment terms.
+        unread(&oo_only, who)?;
+        unread(
+            &[
+                ("scf_jk", k.scf_jk.is_some()),
+                ("jk_auxbasis", k.jk_auxbasis.is_some()),
+                (
+                    "scf_max_iter / scf_energy_conv / scf_density_conv",
+                    k.scf_conv_set,
+                ),
+                ("scf_ri_j_precision", k.scf_ri_j_precision.is_some()),
+                ("scf_eri", k.scf_eri),
+                ("point_charges / external_field", k.external),
+            ],
+            who,
+        )?;
+    }
     if k.auxbasis.is_none() {
         return Err(value_error(format!(
             "run_optimize: method=\"{who}\" needs auxbasis= (the RI basis, e.g. \"cc-pvdz-ri\")"
@@ -882,6 +946,119 @@ fn run_optimize_rimp2(
     ))
 }
 
+/// The RPA settings of `run_optimize` and `run_frequencies` with
+/// `method="pdep-rpa"`, the CLI's optimize settings (`n_quad` 16,
+/// Gauss-Legendre) with the strict parsers, plus the requested gradient
+/// (`None`: resolve the default). An unset `trunc_thresh` is 0 for the
+/// analytic gradient (the default) and the energy runs' 1e-4 for an explicit
+/// `rpa_gradient="fd"`.
+fn rpa_gradient_config(
+    frozen_core: Option<usize>,
+    rpa_gradient: Option<&str>,
+    n_quad: Option<usize>,
+    quadrature: Option<&str>,
+    trunc_thresh: Option<f64>,
+    memory_budget_bytes: Option<usize>,
+) -> PyResult<(
+    ferric_rpa::PdepRpaConfig,
+    Option<ferric_rpa::gradient::RpaGradientMethod>,
+)> {
+    use ferric_rpa::config::{QuadratureConfig, QuadratureScheme, SternheimerConfig};
+    use ferric_rpa::gradient::RpaGradientMethod;
+    let requested = rpa_gradient
+        .map(RpaGradientMethod::parse_config_str)
+        .transpose()
+        .map_err(|e| value_error(format!("rpa_gradient: {e}")))?;
+    let scheme = QuadratureScheme::parse_config_str(quadrature)
+        .map_err(|e| value_error(format!("quadrature: {e}")))?;
+    let trunc_thresh = trunc_thresh.unwrap_or(match requested {
+        Some(RpaGradientMethod::FiniteDifference { .. }) => 1e-4,
+        _ => 0.0,
+    });
+    let cfg = ferric_rpa::PdepRpaConfig {
+        frozen_core: frozen_core.unwrap_or(0),
+        trunc_thresh,
+        eigensolver_max_vecs: 0,
+        eigensolver_conv_thresh: 1e-8,
+        quadrature: QuadratureConfig {
+            scheme,
+            n_points: n_quad.unwrap_or(16),
+            u0: 0.5,
+        },
+        sternheimer: SternheimerConfig::default(),
+        run_diagnostics: false,
+        eigensolver: ferric_rpa::Eigensolver::default(),
+        chi0_backend: ferric_rpa::config::Chi0Backend::default(),
+        chi0_sparsity: ferric_rpa::config::Chi0Sparsity::Dense,
+        memory_budget_bytes,
+        need_inv_dielectric_freq: false,
+        need_eigenvalues_freq: false,
+        verbose: false,
+    };
+    Ok((cfg, requested))
+}
+
+/// `method="pdep-rpa"`: `ferric_rpa::optimize::optimize_geometry_rpa`, the
+/// driver of the CLI's pdep-rpa `optimize`, with the CLI's settings
+/// (`n_quad` 16, Gauss-Legendre). `rpa_gradient` unset resolves through
+/// `RpaGradientMethod::resolve_default`: analytic when the configuration is
+/// full-rank, dense and Coulomb (unset `trunc_thresh` is then 0), else finite
+/// differences, the reason recorded in the certificate's `gradient` entry.
+/// `rpa_gradient="analytic"` with a truncating `trunc_thresh` raises.
+fn run_optimize_pdep_rpa(
+    py: Python<'_>,
+    emol: &Molecule,
+    basis_name: &str,
+    opt_config: &OptimizeConfig,
+    k: &OptimizeKwargs,
+) -> PyResult<PyOptimizeResult> {
+    use ferric_rpa::gradient::RpaGradientMethod;
+    let op = Operator::coulomb();
+    let (rpa_cfg, requested) = rpa_gradient_config(
+        k.frozen_core,
+        k.rpa_gradient,
+        k.n_quad,
+        k.quadrature,
+        k.trunc_thresh,
+        budget_bytes_from_gb(k.memory_budget_gb),
+    )?;
+    let (gradient, fallback) = match requested {
+        Some(g) => (g, None),
+        None => RpaGradientMethod::resolve_default(&rpa_cfg, op),
+    };
+    let obs = basis::bundled(basis_name).map_err(make_err)?;
+    let aux = basis::bundled(k.auxbasis.unwrap_or_default()).map_err(make_err)?;
+    let r = py
+        .allow_threads(|| {
+            ferric_rpa::optimize::optimize_geometry_rpa(
+                emol, &obs, &aux, op, &rpa_cfg, opt_config, gradient,
+            )
+        })
+        .map_err(make_err)?;
+    let ref_cfg = RhfConfig {
+        density_conv: 1e-9,
+        ..Default::default()
+    }
+    .for_geometry_task();
+    let certificate_data = correlated_optimize_certificate(
+        "pdep-rpa",
+        &r.mol,
+        basis_name,
+        &ref_cfg,
+        (r.converged, r.steps, r.energy),
+        opt_config,
+        &gradient.certificate_label_with(fallback.as_deref()),
+    );
+    Ok(PyOptimizeResult {
+        energy: r.energy,
+        converged: r.converged,
+        steps: r.steps,
+        energy_trace: r.energy_trace,
+        mol_data: r.mol,
+        certificate_data,
+    })
+}
+
 /// `method="scs-mp2"`: `ferric_mp2::optimize::optimize_geometry_scs_mp2_on`,
 /// the driver of the CLI's scs-mp2 `optimize`, on a four-centre or RI-JK
 /// reference, `c_os` / `c_ss` defaulting as in `run_scs_mp2`.
@@ -1250,6 +1427,8 @@ impl PyFrequencyResult {
     df_j_aux=None, df_k_aux=None, scf_ri_k_precision=None,
     scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None,
     scf_warm_start=None, scf_ri_j_precision=None, scf_eri=None, scf_relativistic=None,
+    method="scf", auxbasis=None, frozen_core=None, rpa_gradient=None, n_quad=None,
+    quadrature=None, trunc_thresh=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_frequencies(
@@ -1277,8 +1456,88 @@ pub(crate) fn run_frequencies(
     scf_ri_j_precision: Option<&str>,
     scf_eri: Option<&str>,
     scf_relativistic: Option<&str>,
+    method: &str,
+    auxbasis: Option<&str>,
+    frozen_core: Option<usize>,
+    rpa_gradient: Option<&str>,
+    n_quad: Option<usize>,
+    quadrature: Option<&str>,
+    trunc_thresh: Option<f64>,
 ) -> PyResult<PyFrequencyResult> {
     use ferric_scf::frequencies::{FrequencyConfig, FrequencyReference, HessianMethod};
+    match method {
+        "scf" => {
+            let rpa_only = [
+                ("auxbasis", auxbasis.is_some()),
+                ("frozen_core", frozen_core.is_some()),
+                ("rpa_gradient", rpa_gradient.is_some()),
+                ("n_quad", n_quad.is_some()),
+                ("quadrature", quadrature.is_some()),
+                ("trunc_thresh", trunc_thresh.is_some()),
+            ];
+            if let Some((name, _)) = rpa_only.iter().find(|(_, set)| *set) {
+                return Err(value_error(format!(
+                    "run_frequencies: {name} is not read by method=\"scf\""
+                )));
+            }
+        }
+        "pdep-rpa" => {
+            let unread = [
+                ("reference", reference.is_some_and(|r| r != "rhf")),
+                ("xc", xc.is_some()),
+                ("multiplicity", multiplicity.is_some()),
+                (
+                    "point_charges / external_field",
+                    point_charges.is_some() || external_field.is_some(),
+                ),
+                ("hessian", hessian != "auto"),
+                ("dispersion", dispersion.is_some()),
+                (
+                    "scf_max_iter / scf_energy_conv / scf_density_conv / max_iter / \
+                     energy_conv / density_conv",
+                    max_iter.is_some()
+                        || energy_conv.is_some()
+                        || density_conv.is_some()
+                        || scf_max_iter.is_some()
+                        || scf_energy_conv.is_some()
+                        || scf_density_conv.is_some(),
+                ),
+                (
+                    "df_j_aux / df_k_aux / scf_ri_j_precision / scf_ri_k_precision / scf_eri",
+                    df_j_aux.is_some()
+                        || df_k_aux.is_some()
+                        || scf_ri_j_precision.is_some()
+                        || scf_ri_k_precision.is_some()
+                        || scf_eri.is_some(),
+                ),
+                ("scf_relativistic", scf_relativistic.is_some()),
+            ];
+            if let Some((name, _)) = unread.iter().find(|(_, set)| *set) {
+                return Err(value_error(format!(
+                    "run_frequencies: {name} is not read by method=\"pdep-rpa\" (closed-shell \
+                     RHF + RI-dRPA, central differences of its nuclear gradient)"
+                )));
+            }
+            return run_frequencies_pdep_rpa(
+                mol,
+                basis_name,
+                delta,
+                scf_warm_start,
+                auxbasis,
+                frozen_core,
+                rpa_gradient,
+                n_quad,
+                quadrature,
+                trunc_thresh,
+                py,
+            );
+        }
+        other => {
+            return Err(value_error(format!(
+                "run_frequencies: unknown method {other:?}; expected \"scf\" or \"pdep-rpa\""
+            )))
+        }
+    }
     let max_iter = alias_kwarg(
         py,
         "run_frequencies",
@@ -1387,7 +1646,113 @@ pub(crate) fn run_frequencies(
             ferric_core::certificate::Certificate::ungraded(format!("frequencies:{kind}")).warn(why)
         }
     };
-    Ok(PyFrequencyResult {
+    Ok(frequency_result_to_py(r, e_dispersion, certificate_data))
+}
+
+/// `run_frequencies(method="pdep-rpa")`: central differences (`delta`, Bohr)
+/// of the RHF + RI-dRPA nuclear gradient, `6 N_atoms` gradients, through the
+/// same shared mass-weighting and projection as the SCF frequencies. The
+/// gradient follows `rpa_gradient` exactly as in `run_optimize`
+/// (`resolve_default` when unset).
+#[allow(clippy::too_many_arguments)]
+fn run_frequencies_pdep_rpa(
+    mol: &PyMolecule,
+    basis_name: &str,
+    delta: Option<f64>,
+    scf_warm_start: Option<bool>,
+    auxbasis: Option<&str>,
+    frozen_core: Option<usize>,
+    rpa_gradient: Option<&str>,
+    n_quad: Option<usize>,
+    quadrature: Option<&str>,
+    trunc_thresh: Option<f64>,
+    py: Python<'_>,
+) -> PyResult<PyFrequencyResult> {
+    use ferric_scf::frequencies::FrequencyConfig;
+    let aux_name = auxbasis.ok_or_else(|| {
+        value_error(
+            "run_frequencies: method=\"pdep-rpa\" needs auxbasis= (the RI basis, e.g. \
+             \"cc-pvdz-ri\")"
+                .to_string(),
+        )
+    })?;
+    let mut fcfg = FrequencyConfig::default();
+    if let Some(d) = delta {
+        if !(d.is_finite() && d > 0.0) {
+            return Err(value_error(format!(
+                "delta must be finite and > 0 (got {d})"
+            )));
+        }
+        fcfg.delta = d;
+    }
+    fcfg.scf_warm_start = scf_warm_start.unwrap_or(false);
+    let (rpa_cfg, requested) = rpa_gradient_config(
+        frozen_core,
+        rpa_gradient,
+        n_quad,
+        quadrature,
+        trunc_thresh,
+        None,
+    )?;
+    let op = Operator::coulomb();
+    let (gradient, fallback) = match requested {
+        Some(g) => (g, None),
+        None => ferric_rpa::gradient::RpaGradientMethod::resolve_default(&rpa_cfg, op),
+    };
+    let obs = basis::bundled(basis_name).map_err(make_err)?;
+    let aux = basis::bundled(aux_name).map_err(make_err)?;
+    let mut m = mol.inner.clone();
+    m.apply_ecp(&obs);
+    let delta_used = fcfg.delta;
+    let r = py
+        .allow_threads(|| {
+            let mut warm = ferric_scf::warm_start::ScfWarmStart::anchored(fcfg.scf_warm_start);
+            let (energy, _) = ferric_rpa::gradient::total_rpa_gradient_by(
+                &m, &obs, &aux, op, &rpa_cfg, gradient, &mut warm,
+            )?;
+            ferric_scf::frequencies::harmonic_frequencies_from_gradient(
+                &m,
+                delta_used,
+                energy,
+                |g| {
+                    ferric_rpa::gradient::total_rpa_gradient_by(
+                        g, &obs, &aux, op, &rpa_cfg, gradient, &mut warm,
+                    )
+                    .map(|(_, grad)| grad)
+                },
+            )
+        })
+        .map_err(make_err)?;
+    let ref_cfg = RhfConfig {
+        density_conv: 1e-9,
+        ..Default::default()
+    }
+    .for_geometry_task();
+    let (kind, reference) =
+        task_reference_certificate(&m, basis_name, &ref_cfg, ferric_scf::Spin::Restricted);
+    let _ = kind;
+    let certificate_data = match reference {
+        Ok(reference) => {
+            ferric_scf::certificate::frequencies_certificate("pdep-rpa", &reference, &r, &fcfg)
+                .with_approximation(
+                    "gradient",
+                    gradient.certificate_label_with(fallback.as_deref()),
+                )
+        }
+        Err(why) => {
+            ferric_core::certificate::Certificate::ungraded("frequencies:pdep-rpa").warn(why)
+        }
+    };
+    Ok(frequency_result_to_py(r, None, certificate_data))
+}
+
+/// The `PyFrequencyResult` of a library `FrequencyResult`.
+fn frequency_result_to_py(
+    r: ferric_scf::frequencies::FrequencyResult,
+    e_dispersion: Option<f64>,
+    certificate_data: ferric_core::certificate::Certificate,
+) -> PyFrequencyResult {
+    PyFrequencyResult {
         frequencies: r.frequencies,
         trans_rot_frequencies: r.trans_rot_frequencies,
         is_linear: r.is_linear,
@@ -1402,9 +1767,6 @@ pub(crate) fn run_frequencies(
             .collect(),
         energy: r.energy,
         e_dispersion,
-        // Array2 -> Vec<Vec<f64>>, one row per mode. `.rows()` preserves the
-        // (mode, 3N) layout the Rust field documents; collecting from the flat
-        // slice would silently transpose whenever the array is not square.
         normal_modes: r
             .normal_modes
             .rows()
@@ -1412,7 +1774,7 @@ pub(crate) fn run_frequencies(
             .map(|row| row.to_vec())
             .collect(),
         certificate_data,
-    })
+    }
 }
 
 /// Parse the xTB knobs shared by `run_xtb_*`. Method names go through

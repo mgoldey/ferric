@@ -25,7 +25,7 @@ section 15.2 is reused unchanged.
 |---|---|
 | Rust | `ferric-rpa/src/gradient_analytic.rs::{rpa_analytic_gradient,rpa_analytic_gradient_warm,rpa_analytic_gradient_on}` |
 | CLI | `method.kind = "pdep-rpa"`, `task = "optimize"`, `[rpa] gradient = "analytic"` |
-| Python | none; `run_optimize` has no `pdep-rpa` method |
+| Python | `run_optimize(..., method="pdep-rpa", rpa_gradient="analytic")`; `run_frequencies(..., method="pdep-rpa")` |
 
 ## 15.5.1 The densities
 
@@ -121,11 +121,11 @@ density cost for the $P$ blocks.
 
 | Option | Values | Default | Effect |
 |---|---|---|---|
-| `[rpa] gradient` | `"fd"`, `"analytic"` | `"fd"` | the finite-difference gradient (3-point, $6N_{\mathrm{at}}$ energies) or this one |
+| `[rpa] gradient` (Python `rpa_gradient`) | `"fd"`, `"analytic"` | this one where `check_analytic_scope` accepts the configuration, else `"fd"` | the finite-difference gradient (3-point, $6N_{\mathrm{at}}$ energies) or this one |
 | `[rpa] n_quad`, `u0`, `quadrature` | | as in section 18.2 | the grid that is differentiated |
 | `[rpa] frozen_core` | integer | as for the energy | the core-active block |
 
-`check_analytic_scope` refuses, and points to `gradient = "fd"`:
+An explicit `"analytic"` raises, and an unset gradient falls back to `"fd"` and records the reason in the certificate, when `check_analytic_scope` refuses:
 `trunc_thresh` $\ne 0$, the Laplace $\chi_0$ backend, a non-dense
 `chi0_sparsity`, and a non-Coulomb operator. `[rpa] xc` (a KS reference) is
 refused for any pdep-rpa gradient.

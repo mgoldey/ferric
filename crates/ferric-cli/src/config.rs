@@ -2286,11 +2286,14 @@ pub struct RpaCfg {
     /// "chebyshev-tan"; "minimax" derives u₀ from `n_quad` and ignores it.
     pub quadrature: Option<String>,
     pub trunc_thresh: Option<f64>,
-    /// Nuclear gradient of `task = "optimize"`: `"fd"` (default; 3-point
+    /// Nuclear gradient of `task = "optimize"`: `"analytic"` (Z-vector relaxed
+    /// densities; full-rank, dense chi0, Coulomb only) or `"fd"` (3-point
     /// central finite difference, h = 5e-4 Bohr, `6 N_atoms` RHF + RPA
-    /// energies) or `"analytic"` (Z-vector relaxed densities; needs
-    /// `trunc_thresh = 0` and dense `chi0_sparsity`). Unknown values are a
-    /// hard error.
+    /// energies). Unset: analytic when the configuration allows it (an unset
+    /// `trunc_thresh` is then 0), else finite differences with the reason
+    /// printed and recorded in the certificate. An explicit `"analytic"` with
+    /// a truncating `trunc_thresh` or a sparse `chi0_sparsity` is an error.
+    /// Unknown values are a hard error.
     pub gradient: Option<String>,
     /// Convergence threshold for the static dielectric eigensolver. IGNORED
     /// (with a warning) by the CLI's Lanczos eigensolver, whose full-rank
@@ -2489,15 +2492,31 @@ impl RpaCfg {
     ///   `"auto:<cutoff>"`                → Auto with that atom cutoff
     ///   `"auto:<cutoff>:<thresh>"`       → …and that Boys threshold
     ///   `"auto:<cutoff>:<thresh>@<rad>"` → …and that distance-cutoff radius (Bohr)
-    /// `[rpa] gradient` (unset = `"fd"`), via the strict shared parser.
-    pub fn parse_gradient(&self) -> Result<ferric_rpa::gradient::RpaGradientMethod, String> {
+    /// `[rpa] gradient` through the strict shared parser; `None` when unset
+    /// (the default then resolves by `RpaGradientMethod::resolve_default`).
+    pub fn requested_gradient(
+        &self,
+    ) -> Result<Option<ferric_rpa::gradient::RpaGradientMethod>, String> {
         use ferric_rpa::gradient::RpaGradientMethod;
-        match self.gradient.as_deref() {
-            None => Ok(RpaGradientMethod::FiniteDifference {
-                h: RpaGradientMethod::DEFAULT_FD_STEP,
-            }),
-            Some(s) => RpaGradientMethod::parse_config_str(s).map_err(|e| e.to_string()),
-        }
+        self.gradient
+            .as_deref()
+            .map(|s| RpaGradientMethod::parse_config_str(s).map_err(|e| e.to_string()))
+            .transpose()
+    }
+
+    /// `trunc_thresh` of an RPA `task = "optimize"`. An explicit value wins.
+    /// Unset, the analytic gradient (the default, or `gradient = "analytic"`)
+    /// differentiates the full-rank energy, so the fallback is 0; an explicit
+    /// `gradient = "fd"` keeps the 1e-4 truncation of the energy runs.
+    pub fn optimize_trunc_thresh(
+        &self,
+        requested: Option<ferric_rpa::gradient::RpaGradientMethod>,
+    ) -> f64 {
+        use ferric_rpa::gradient::RpaGradientMethod;
+        self.trunc_thresh.unwrap_or(match requested {
+            Some(RpaGradientMethod::FiniteDifference { .. }) => 1e-4,
+            _ => 0.0,
+        })
     }
 
     pub fn parse_chi0_sparsity(&self) -> Result<ferric_rpa::config::Chi0Sparsity, String> {
@@ -13300,5 +13319,47 @@ mod cli_wired_keys_tests {
                 "RPA_XC_KINDS lists \"{kind}\", which is not a supported method.kind"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod rpa_gradient_default_tests {
+    use super::*;
+    use ferric_rpa::gradient::RpaGradientMethod;
+
+    fn rpa(gradient: Option<&str>, trunc: Option<f64>) -> RpaCfg {
+        RpaCfg {
+            gradient: gradient.map(str::to_string),
+            trunc_thresh: trunc,
+            ..RpaCfg::default()
+        }
+    }
+
+    /// An unset `[rpa] gradient` is not parsed to a method (it resolves in
+    /// `RpaGradientMethod::resolve_default`), and the unset `trunc_thresh` of
+    /// an optimization is 0 for it and for `"analytic"`, 1e-4 for `"fd"`.
+    #[test]
+    fn unset_gradient_resolves_late_and_trunc_thresh_follows_the_method() {
+        let c = rpa(None, None);
+        let req = c.requested_gradient().unwrap();
+        assert_eq!(req, None);
+        assert_eq!(c.optimize_trunc_thresh(req), 0.0);
+
+        let c = rpa(Some("analytic"), None);
+        let req = c.requested_gradient().unwrap();
+        assert_eq!(req, Some(RpaGradientMethod::Analytic));
+        assert_eq!(c.optimize_trunc_thresh(req), 0.0);
+
+        let c = rpa(Some("fd"), None);
+        let req = c.requested_gradient().unwrap();
+        assert!(matches!(
+            req,
+            Some(RpaGradientMethod::FiniteDifference { .. })
+        ));
+        assert_eq!(c.optimize_trunc_thresh(req), 1e-4);
+
+        let c = rpa(None, Some(1e-3));
+        assert_eq!(c.optimize_trunc_thresh(None), 1e-3);
+        assert!(rpa(Some("numeric"), None).requested_gradient().is_err());
     }
 }

@@ -4451,8 +4451,12 @@ def run_optimize(
     fock_hook: Callable[..., tuple[Any, ...]] | None = None,
     fock_hook_grad: Callable[..., NDArray[np.float64]] | None = None,
     coordinates: Literal["cartesian", "internal"] | None = None,
+    rpa_gradient: Literal["fd", "analytic"] | None = None,
+    n_quad: int | None = None,
+    quadrature: str | None = None,
+    trunc_thresh: float | None = None,
 ) -> OptimizeResult:
-    """Geometry optimization on any surface with an analytic gradient.
+    """Geometry optimization on any surface with an analytic or finite-difference gradient.
 
     `method` picks the surface:
 
@@ -4483,6 +4487,18 @@ def run_optimize(
     - "scs-mp2": closed-shell SCS-MP2, E_HF + c_os E_os + c_ss E_ss (analytic Z-vector
       gradient of that energy). `c_os` / `c_ss` default to 6/5 and 1/3 as in
       `run_scs_mp2`; the other kwargs as for "rimp2".
+    - "pdep-rpa": closed-shell RHF + RI-dRPA (Coulomb), the CLI's `[rpa]` optimize
+      route. Needs `auxbasis`; `frozen_core`, `memory_budget_gb`, `n_quad` (default 16),
+      `quadrature` (default "gauss-legendre") as in `run_pdep_rpa`. The reference RHF is
+      exact four-centre, solved at density_conv 1e-9, so the `scf_*`, `scf_jk`,
+      `point_charges` and `external_field` kwargs raise. `rpa_gradient` picks the gradient:
+      "analytic" is the RI-dRPA Z-vector gradient (full-rank PDEP basis, dense chi0,
+      Coulomb only; with a nonzero `trunc_thresh` it raises); "fd" is the 3-point central
+      difference of RHF + RPA at h = 5e-4 Bohr (6 N_atoms energies). Unset, the analytic
+      gradient runs whenever it applies, and finite differences otherwise, with the reason
+      recorded in the certificate's `gradient` entry. `trunc_thresh` unset is 0 for the
+      analytic gradient and 1e-4 for an explicit "fd". `rpa_gradient`, `n_quad`,
+      `quadrature` and `trunc_thresh` raise for every other method.
 
     The correlated methods are closed-shell only and take no `xc`, `dispersion` or
     `solvent`; any kwarg a method does not read raises ValueError.
@@ -4521,7 +4537,7 @@ def run_optimize(
 
     Each route calls the library driver the CLI's `task = "optimize"` calls for the same
     `method.kind`. The certificate's capability is "optimize:<kind>" (rhf, ksdft, uhf,
-    rohf, rimp2, scs-mp2, oo-rimp2).
+    rohf, rimp2, scs-mp2, oo-rimp2, pdep-rpa).
     """
     ...
 
@@ -4623,8 +4639,24 @@ def run_frequencies(
     scf_ri_j_precision: str | None = None,
     scf_eri: Literal["auto", "direct", "incore"] | None = None,
     scf_relativistic: Literal["x2c1e"] | None = None,
+    method: Literal["scf", "pdep-rpa"] = "scf",
+    auxbasis: str | None = None,
+    frozen_core: int | None = None,
+    rpa_gradient: Literal["fd", "analytic"] | None = None,
+    n_quad: int | None = None,
+    quadrature: str | None = None,
+    trunc_thresh: float | None = None,
 ) -> FrequencyResult:
     """Harmonic vibrational frequencies.
+
+    `method="pdep-rpa"`: closed-shell RHF + RI-dRPA frequencies, central differences
+    (`delta`, `scf_warm_start`) of the RPA nuclear gradient (6 N_atoms gradients,
+    `.hessian_source` "finite-difference"). Needs `auxbasis`; `frozen_core`,
+    `rpa_gradient`, `n_quad`, `quadrature` and `trunc_thresh` are as in
+    `run_optimize(method="pdep-rpa")`, including the default that runs the analytic
+    gradient wherever it applies. Every SCF-route kwarg (`reference`, `xc`, `hessian`,
+    `dispersion`, `multiplicity`, `point_charges`, `external_field`, the SCF controls and
+    the density-fitting kwargs) raises. The RPA kwargs raise for `method="scf"`.
 
     `scf_max_iter`, `scf_energy_conv`, `scf_density_conv` control every SCF of the run
     (`run_rhf`'s `max_iter`, `energy_conv`, `density_conv`); the bare spellings are

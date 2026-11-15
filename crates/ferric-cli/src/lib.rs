@@ -7030,14 +7030,6 @@ fn rimp2_gradient_scf_jk(
 /// `main()` `if task == "optimize" { ... }` block; each `method` sub-arm below
 /// is byte-for-byte the original match-arm body.
 #[allow(clippy::too_many_arguments)]
-/// `[rpa] gradient` for an RPA optimization; a bad value is a config error.
-fn rpa_gradient_method_or_exit(rpa: &config::RpaCfg) -> ferric_rpa::gradient::RpaGradientMethod {
-    rpa.parse_gradient().unwrap_or_else(|e| {
-        eprintln!("config error: {e}");
-        std::process::exit(1);
-    })
-}
-
 fn run_optimize(
     method: &str,
     cfg: &Config,
@@ -7148,9 +7140,13 @@ fn run_optimize(
                 eprintln!("config error: {e}");
                 std::process::exit(1);
             });
+            let requested = cfg.rpa.requested_gradient().unwrap_or_else(|e| {
+                eprintln!("config error: {e}");
+                std::process::exit(1);
+            });
             let rpa_cfg = PdepRpaConfig {
                 frozen_core: cfg.rpa.frozen_core.resolve(mol),
-                trunc_thresh: cfg.rpa.trunc_thresh.unwrap_or(1e-4),
+                trunc_thresh: cfg.rpa.optimize_trunc_thresh(requested),
                 eigensolver_max_vecs: 0,
                 eigensolver_conv_thresh: cfg.rpa.eigensolver_conv_thresh_or(1e-8),
                 quadrature: QuadratureConfig {
@@ -7175,7 +7171,13 @@ fn run_optimize(
                 need_eigenvalues_freq: false,
                 verbose: cfg.scf.verbose,
             };
-            let gradient = rpa_gradient_method_or_exit(&cfg.rpa);
+            let (gradient, fallback) = match requested {
+                Some(g) => (g, None),
+                None => ferric_rpa::gradient::RpaGradientMethod::resolve_default(&rpa_cfg, op),
+            };
+            if let Some(why) = &fallback {
+                eprintln!("note: [rpa] gradient unset; using finite differences ({why})");
+            }
             let opt_result = ferric_rpa::optimize::optimize_geometry_rpa(
                 mol,
                 bs,
@@ -7214,7 +7216,7 @@ fn run_optimize(
                 &opt_result.mol,
                 None,
                 (opt_result.converged, opt_result.steps, opt_result.energy),
-                &gradient.certificate_label(),
+                &gradient.certificate_label_with(fallback.as_deref()),
             );
         }
         "rimp2" => {

@@ -100,16 +100,28 @@ on an imaginary-frequency quadrature.
 The static eigensolve defaults to **Lanczos**, with a dense path for small
 problems. Geometry optimization with `pdep-rpa` is supported
 (`task = "optimize"`) on a closed-shell RHF reference.
-The nuclear gradient comes from `[rpa] gradient`: `"fd"` (default) takes
-three-point finite differences of the RHF plus RPA energy, and `"analytic"` is
+The nuclear gradient comes from `[rpa] gradient`: `"analytic"` is
 the RI-dRPA gradient with Z-vector relaxed densities, the exact derivative of
-the n-point quadrature sum (one RHF, one frequency loop, one CPHF solve). The
-analytic route is closed shell, takes all-electron or frozen-core references,
-and requires `trunc_thresh = 0` and a dense `chi0_sparsity`; anything else is an
-error. On n-hexane / cc-pVDZ at n = 20 it took 38.4 s against 1556.6 s for the
-finite-difference gradient, and the two gradients differ by at most 2.25e-8
-Ha/Bohr (one run each, one BLAS thread, loaded box). `run_optimize` in Python has no
-`pdep-rpa` method; the keys are in the [input reference](../reference/input.md).
+the n-point quadrature sum (one RHF, one frequency loop, one CPHF solve), and
+`"fd"` takes three-point finite differences of the RHF plus RPA energy. Unset,
+the analytic gradient runs whenever it applies (closed shell, all-electron or
+frozen core, Coulomb operator, `trunc_thresh = 0`, dense `chi0_sparsity`, and
+an unset `trunc_thresh` is then 0); otherwise the run uses finite differences
+and the printed note and the certificate's `gradient` entry give the reason.
+An explicit `"analytic"` with a truncating `trunc_thresh` is an error. On
+distorted H2O, NH3 and CH4 / cc-pVDZ with cc-pVDZ-RI at n = 16 the analytic
+gradient takes 0.6 s against 2.6 to 5.3 s for the finite-difference one, and
+the two differ by at most 5.6e-8 Ha/Bohr, within the finite-difference
+truncation (h = 5e-4 against h = 2.5e-4 differ by 4.2e-8 at most). On
+n-hexane / cc-pVDZ at n = 20 it took 38.4 s against 1556.6 s, and the two
+gradients differ by at most 2.25e-8 Ha/Bohr (one run each, one BLAS thread,
+loaded box).
+
+Python takes the same route: `run_optimize(mol, basis, method="pdep-rpa",
+auxbasis=..., rpa_gradient="analytic" | "fd")` with the same default and the
+same refusal, and `run_frequencies(..., method="pdep-rpa")` differences that
+gradient (`6 N_atoms` gradients). The keys are in the
+[input reference](../reference/input.md).
 
 ## Exact and local dRPA
 
