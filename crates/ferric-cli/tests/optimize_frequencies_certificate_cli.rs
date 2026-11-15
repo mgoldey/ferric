@@ -122,6 +122,36 @@ fn rimp2_optimize_records_its_gradient_and_caps_at_the_scf() {
     assert_eq!(approx(c, "gradient"), "analytic (Z-vector)");
 }
 
+/// `[optimize] coordinates` reaches every correlated optimization and the
+/// certificate's `optimizer` line names it (RI-MP2, SCS-MP2, RPA: each ran its
+/// own Cartesian-only loop before the shared one).
+#[test]
+fn correlated_optimizations_take_internal_coordinates_and_the_certificate_names_them() {
+    for (tag, method, extra) in [
+        ("opt_rimp2_int", "rimp2", ""),
+        ("opt_scs_int", "scs-mp2", ""),
+        (
+            "opt_rpa_int",
+            "pdep-rpa",
+            "[rpa]\ngradient = \"analytic\"\ntrunc_thresh = 0.0\n",
+        ),
+    ] {
+        let (_, records) = run(
+            tag,
+            &format!(
+                "{H2}[method]\nkind = \"{method}\"\ntask = \"optimize\"\n\
+                 [optimize]\ncoordinates = \"internal\"\n{extra}"
+            ),
+        );
+        let c = record(&records, "certificate");
+        assert_eq!(c["capability"], format!("optimize:{method}"));
+        assert!(
+            approx(c, "optimizer").contains("RedundantInternal"),
+            "{method}: {c}"
+        );
+    }
+}
+
 #[test]
 fn frequencies_certificate_sits_beside_the_frequencies_fields() {
     let (stdout, records) = run(

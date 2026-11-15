@@ -1,14 +1,10 @@
-//! RPA-driven geometry optimization (BFGS in Cartesian coordinates).
+//! RPA-driven geometry optimization.
 //!
-//! Mirrors `ferric_scf::optimize::optimize_geometry` but uses
-//! `total_rpa_gradient_by` (a finite difference of E_RHF + E_c^RPA, or the
-//! analytic gradient, per [`RpaGradientMethod`](crate::gradient::RpaGradientMethod)) as the gradient driver.
-//!
-//! The BFGS update and trust-radius scaling are copied from the RHF
-//! optimizer; only the energy + gradient evaluation differs.  Keeping the
-//! optimizer here (rather than extending ferric-scf with an RPA call) avoids
-//! a circular dependency (ferric-scf does not currently depend on
-//! ferric-rpa).
+//! The search loop is the SCF crate's
+//! ([`ferric_scf::optimize::optimize_geometry_with_energy_gradient`]); this
+//! module supplies the surface: `total_rpa_gradient_by` (a finite difference
+//! of E_RHF + E_c^RPA, or the analytic gradient, per
+//! [`RpaGradientMethod`](crate::gradient::RpaGradientMethod)).
 
 use crate::gradient::{total_rpa_gradient_by, RpaGradientMethod};
 use crate::PdepRpaConfig;
@@ -16,9 +12,8 @@ use ferric_core::basis::BasisSet;
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::operator::Operator;
-use ferric_scf::optimize::OptimizeConfig;
+use ferric_scf::optimize::{optimize_geometry_with_energy_gradient, OptimizeConfig};
 use ferric_scf::warm_start::{ScfWarmStart, WarmStartRecord};
-use ndarray::{Array1, Array2};
 
 /// Result of an RPA geometry optimization.
 #[derive(Debug, Clone)]
@@ -37,11 +32,19 @@ pub struct RpaOptimizeResult {
     /// RHF followed, on the finite-difference route, by its `6N` displaced RHFs (see `ferric_scf::warm_start`;
     /// all cold `Disabled` when `OptimizeConfig::scf_warm_start` is off).
     pub scf_warm_start: Vec<WarmStartRecord>,
+    /// Energy at every geometry the optimizer evaluated, in order (the
+    /// starting geometry first).
+    pub energy_trace: Vec<f64>,
 }
 
 /// Optimize a molecular geometry on the RPA PES, the gradient from
 /// `gradient` (a central finite difference of the total RPA energy with a
 /// fresh RHF + PDEP-RPA at every displaced point, or the analytic gradient).
+///
+/// The search is [`ferric_scf::optimize::optimize_geometry_with_energy_gradient`]:
+/// the energy and gradient at a geometry are the closure below, and
+/// `opt_config.coord_system` selects Cartesian or redundant internal
+/// coordinates as for the SCF optimizers.
 pub fn optimize_geometry_rpa(
     mol: &Molecule,
     obs_basis: &BasisSet,
@@ -51,121 +54,22 @@ pub fn optimize_geometry_rpa(
     opt_config: &OptimizeConfig,
     gradient: RpaGradientMethod,
 ) -> Result<RpaOptimizeResult, FerricError> {
-    let mut current_mol = mol.clone();
-    let natoms = current_mol.atoms.len();
-    let n_coord = natoms * 3;
-
     // Each step's reference RHF starts from the previous step's, and the
     // displaced RHFs of its finite-difference gradient from that reference
     // (`opt_config.scf_warm_start`, see `ferric_scf::warm_start`).
     let mut warm = ScfWarmStart::new(opt_config.scf_warm_start);
-    let mut eval = |m: &Molecule| {
+    let out = optimize_geometry_with_energy_gradient(mol, opt_config, |m| {
         total_rpa_gradient_by(m, obs_basis, aux_basis, op, rpa_config, gradient, &mut warm)
-    };
-    let (mut energy, mut grad_arr) = eval(&current_mol)?;
-    let mut grad = flatten(&grad_arr);
-
-    let mut h_inv = Array2::<f64>::eye(n_coord);
-    let mut prev_energy = energy;
-    let mut converged = false;
-    let mut step_idx = 0;
-
-    println!("Step | Energy (Ha) | Delta E | Max Grad | RMS Grad");
-    println!("-----+--------------+----------+----------+---------");
-
-    while step_idx < opt_config.max_steps {
-        let g_max = grad.iter().map(|g| g.abs()).fold(0.0f64, f64::max);
-        let g_rms = (grad.iter().map(|g| g * g).sum::<f64>() / n_coord as f64).sqrt();
-        let de = if step_idx == 0 {
-            0.0
-        } else {
-            energy - prev_energy
-        };
-
-        println!(
-            "{:4} | {:12.8} | {:+8.1e} | {:8.2e} | {:8.2e}",
-            step_idx, energy, de, g_max, g_rms
-        );
-
-        if step_idx > 0
-            && de.abs() < opt_config.e_conv
-            && g_max < opt_config.g_max_thresh
-            && g_rms < opt_config.g_rms_thresh
-        {
-            converged = true;
-            break;
-        }
-
-        // BFGS step: p = -H_inv * g, trust-radius limited.
-        let p = -h_inv.dot(&grad);
-        let p_norm = p.iter().map(|x| x * x).sum::<f64>().sqrt();
-        let step = if p_norm > opt_config.trust_radius {
-            &p * (opt_config.trust_radius / p_norm)
-        } else {
-            p
-        };
-
-        apply_step(&mut current_mol, &step);
-
-        let prev_grad = grad.clone();
-        prev_energy = energy;
-
-        let (e_new, g_new) = eval(&current_mol)?;
-        energy = e_new;
-        grad_arr = g_new;
-        grad = flatten(&grad_arr);
-
-        // BFGS inverse-Hessian update.
-        let s = step;
-        let y = &grad - &prev_grad;
-        let ys = y.dot(&s);
-        if ys.abs() > 1e-12 {
-            let hy = h_inv.dot(&y);
-            let yhy = y.dot(&hy);
-            let rho = 1.0 / ys;
-            let term1 = (ys + yhy) * rho * rho;
-            for i in 0..n_coord {
-                for j in 0..n_coord {
-                    h_inv[(i, j)] += term1 * s[i] * s[j] - rho * (hy[i] * s[j] + s[i] * hy[j]);
-                }
-            }
-        } else {
-            h_inv = Array2::eye(n_coord);
-        }
-
-        step_idx += 1;
-    }
-
+    })?;
     if let Some(line) = warm.summary() {
         println!("{line}");
     }
     Ok(RpaOptimizeResult {
-        mol: current_mol,
-        energy,
-        steps: step_idx,
-        converged,
+        mol: out.mol,
+        energy: out.energy,
+        steps: out.steps,
+        converged: out.converged,
         scf_warm_start: warm.records().to_vec(),
+        energy_trace: out.energy_trace,
     })
-}
-
-fn flatten(g: &Array2<f64>) -> Array1<f64> {
-    let mut flat = Array1::zeros(g.len());
-    let mut k = 0;
-    for i in 0..g.nrows() {
-        for j in 0..3 {
-            flat[k] = g[(i, j)];
-            k += 1;
-        }
-    }
-    flat
-}
-
-fn apply_step(mol: &mut Molecule, step: &Array1<f64>) {
-    let mut k = 0;
-    for atom in mol.atoms.iter_mut() {
-        atom.x += step[k];
-        atom.y += step[k + 1];
-        atom.zpos += step[k + 2];
-        k += 3;
-    }
 }
