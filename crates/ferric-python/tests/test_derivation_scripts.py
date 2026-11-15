@@ -132,6 +132,11 @@ CASES = [
         [
             ("f = h + jm - 0.5 * km", "f = h + jm - km", "FAIL N2 E_RHF"),
             (
+                "return 1 if sp_p == sp_q else 0",
+                "return 1",
+                "FAIL N8 <0|H|0>",
+            ),
+            (
                 "f = f + pot @ fb @ pc",
                 "f = f + pot @ fa @ pc",
                 "FAIL N3 Roothaan effective Fock block table",
@@ -395,6 +400,16 @@ CASES = [
                 "FAIL n=",
             ),
             ("- gsym(a, p, p, i)", "", "FAIL n="),
+            (
+                "def hamiltonians_claim5(n, seed, exchange_sign=-1.0, quarter=0.25)",
+                "def hamiltonians_claim5(n, seed, exchange_sign=1.0, quarter=0.25)",
+                "FAIL claim 5 forms",
+            ),
+            (
+                "f = hso + np.einsum(",
+                "f = hso + 0.0 * np.einsum(",
+                "FAIL claim 6 split",
+            ),
         ],
     ),
     (
@@ -605,6 +620,22 @@ CASES = [
             ("xpy = t_half @ z / np.sqrt(w)", "xpy = t_half @ z / w", "[FAIL] B4"),
             ("tdip = np.sqrt(2.0) * np.einsum", "tdip = np.einsum", "[FAIL] B2"),
             ("a[:da, da:] = cross", "a[:da, da:] = 0.0 * cross", "[FAIL] B5"),
+        ],
+    ),
+    (
+        "basis_normalization_sympy.py",
+        15,
+        [
+            (
+                "** (l + sp.Rational(3, 2))",
+                "** (l + 1)",
+                "FAIL S_l(a,b)",
+            ),
+            (
+                "c_unit = coef / np.sqrt(s)  # overlap-matrix renormalization",
+                "c_unit = coef / np.sqrt(np.sum(coef**2))  # overlap-matrix renormalization",
+                "FAIL max |<phi|phi>",
+            ),
         ],
     ),
 ]

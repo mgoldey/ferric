@@ -290,3 +290,52 @@ def test_include_expands_section_body(tree):
 def test_notes_flag_identity_only_boxes(tree):
     sub(tree, SEC, "; rust_test=ferric-toy/src/lib.rs::toy_test", "")
     assert any("identity-only" in n for n in check(tree).notes)
+
+
+LABELLED = (
+    '"""Claims:\n  1  toy identity\n"""\n'
+    'check("B0 model: a long printed name (claim B0)", ok)\n'
+    'check("B01 other check (claim B01)", ok)\n'
+)
+
+
+def test_claim_label_is_matched_exactly(tree):
+    """claim=B0 resolves to a check labelled "(claim B0)", never to B01 or to prose."""
+    write(tree, {"scripts/toy_sympy.py": LABELLED})
+    sub(tree, SEC, "claim=1;", "claim=B0;")
+    assert check(tree).errors == []
+    sub(tree, SEC, "claim=B0;", "claim=B02;")
+    assert any("defines no claim B02" in e for e in check(tree).errors)
+
+
+def test_claim_label_needs_the_label_not_the_printed_name(tree):
+    """The label form does not loosen matching: a bare prefix of the printed
+    name, or the name without its label, is not a claim."""
+    write(
+        tree,
+        {"scripts/toy_sympy.py": '"""x"""\ncheck("B0 model: spin-orbital Fock", ok)\n'},
+    )
+    sub(tree, SEC, "claim=1;", "claim=B0;")
+    assert any("defines no claim B0" in e for e in check(tree).errors)
+    sub(tree, SEC, "claim=B0;", "claim=B0 model: spin-orbital Fock;")
+    assert check(tree).errors == []  # the full quoted string still resolves, as before
+
+
+def test_every_cited_claim_in_the_real_book_resolves_by_label():
+    """The book's own oomp2 and hf_energy boxes cite labels, not quoted strings."""
+    root = Path(__file__).resolve().parents[3]
+    import re
+
+    cited = set()
+    for page in (root / "book/src").rglob("*.md"):
+        for m in re.finditer(
+            r"script=(scripts/(?:oomp2_mp3_identities|hf_energy)_sympy\.py);\s*claim=([^;]+);",
+            page.read_text(),
+        ):
+            cited.add(m.groups())
+    assert cited, "no boxes cite the oomp2 or hf_energy scripts"
+    for script, claim in cited:
+        assert len(claim) <= 3, (
+            f"{script}: claim {claim!r} is a quoted string, not a label"
+        )
+        assert bb.claim_defined((root / script).read_text(), claim)

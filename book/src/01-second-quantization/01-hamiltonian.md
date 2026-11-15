@@ -79,7 +79,7 @@ indices in one space, and the general
 spins pair as $\sigma(p) = \sigma(r)$ and $\sigma(q) = \sigma(s)$, and the
 exchange term when they pair crosswise.
 
-> **Unverified equation 1.2** · the two operator forms are equal
+> **Verified equation 1.2** · the two operator forms are equal
 >
 > Equation (1.1) with the spin sums written out equals (1.2) with (1.3), as
 > operators on the Fock space. The proof is the antisymmetry of the operator
@@ -89,10 +89,12 @@ exchange term when they pair crosswise.
 >
 > | | |
 > |---|---|
-> | Proof | none committed for this statement. To add: a claim that builds both operators as Jordan–Wigner matrices on 3 spatial orbitals with random $h$ and an 8-fold symmetric $(pq\vert rs)$ and compares them. `scripts/casci_slater_condon_phases_sympy.py`, claim 3, already builds form (1.1) as explicit matrices. |
-> | Status | derived by hand; the equality was checked once in a scratch run, which is not committed |
+> | Proof | `scripts/casci_slater_condon_phases_sympy.py`, claim 5: both operators as 64 × 64 Jordan–Wigner matrices on 3 spatial orbitals, with random symmetric $h$, a random 8-fold symmetric $(pq\vert rs)$ and a random $E_{\mathrm{nn}}$ |
+> | Negative control | the $\tfrac14$ replaced by $\tfrac12$, and a $+$ sign on the exchange term of (1.3), must each differ |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py`, which also applies the recorded mutation (exchange sign) |
+> | Code | `ferric-mp2/src/spinorbital.rs::asym_phys` builds the tensor (1.3) |
 >
-> <!-- unverified: id=so.operator-forms; todo=add a claim to scripts/casci_slater_condon_phases_sympy.py comparing the JW matrix of form (1.1) with that of (1.2) -->
+> <!-- verified: id=so.operator-forms; script=scripts/casci_slater_condon_phases_sympy.py; claim=5; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/spinorbital.rs::asym_phys -->
 
 ## 1.1.3 The reference determinant and normal ordering
 
@@ -114,12 +116,12 @@ $$ E_{\mathrm{ref}} = \langle 0|\hat H|0\rangle = E_{\mathrm{nn}} + \sum_i h_{ii
 >
 > | | |
 > |---|---|
-> | Proof | `scripts/oomp2_mp3_identities_sympy.py`, the check "B1 E_HF (wicks)" |
+> | Proof | `scripts/oomp2_mp3_identities_sympy.py`, the check labelled "claim B1" ($E_{\mathrm{HF}}$ from Wick's theorem) |
 > | Negative control | none for this check; the script's mutations act on the MP3 ring coefficient and the rotation sign |
 > | Runner | `crates/ferric-python/tests/test_oomp2_mp3_identities_sympy.py` |
 > | Code | `ferric-mp2/src/spinorbital.rs::asym_same` builds the $\langle pq\Vert rs\rangle$ the sum reads |
 >
-> <!-- verified: id=so.ref-energy; script=scripts/oomp2_mp3_identities_sympy.py; claim=B1 E_HF (wicks) == sum h_ii + 1/2 sum <ij||ij>; runner=crates/ferric-python/tests/test_oomp2_mp3_identities_sympy.py; code=ferric-mp2/src/spinorbital.rs::asym_same -->
+> <!-- verified: id=so.ref-energy; script=scripts/oomp2_mp3_identities_sympy.py; claim=B1; runner=crates/ferric-python/tests/test_oomp2_mp3_identities_sympy.py; code=ferric-mp2/src/spinorbital.rs::asym_same -->
 
 The Fock operator has matrix elements
 
@@ -136,17 +138,19 @@ form, with $|0\rangle$ the Hartree–Fock determinant. For canonical orbitals
 $f_{pq} = \varepsilon_p\delta_{pq}$, and the denominators of the notation
 chapter are built from $\varepsilon$.
 
-> **Unverified equation 1.6** · the split of the Hamiltonian
+> **Verified equation 1.6** · the split of the Hamiltonian
 >
 > Equations (1.4), (1.5) and (1.6) together say $\hat H = E_{\mathrm{ref}} +
 > \hat F_{\mathrm N} + \hat V_{\mathrm N}$ as operators.
 >
 > | | |
 > |---|---|
-> | Proof | none committed for the operator identity. Its pieces are exercised: the reference energy by the verified box 1.4, and the Fock matrix inside the OO-MP2 gradient checks of `scripts/oomp2_mp3_identities_sympy.py`, part B. To add: a claim comparing $\hat H$ with $E_{\mathrm{ref}} + \hat F_{\mathrm N} + \hat V_{\mathrm N}$ as Jordan–Wigner matrices. |
-> | Status | derived by hand; checked once in a scratch run, not committed |
+> | Proof | `scripts/casci_slater_condon_phases_sympy.py`, claim 6: $\hat H$ and $E_{\mathrm{ref}} + \hat F_{\mathrm N} + \hat V_{\mathrm N}$ as Jordan–Wigner matrices, for a closed-shell and an open-shell reference. The normal-ordered products come from the quasi-particle operators of the reference and the permutation sign alone, so the check does not use Wick's theorem |
+> | Negative control | $\hat F_{\mathrm N}$ and $\hat V_{\mathrm N}$ without normal ordering, and $f_{pq}$ without the sum over $k$, must each differ |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py`, which also applies the recorded mutation (the $k$ sum dropped from $f$) |
+> | Code | `ferric-mp2/src/spinorbital.rs::asym_same` |
 >
-> <!-- unverified: id=so.normal-order-split; todo=add a claim comparing the JW matrix of H with E_ref + F_N + V_N, next to so.operator-forms -->
+> <!-- verified: id=so.normal-order-split; script=scripts/casci_slater_condon_phases_sympy.py; claim=6; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/spinorbital.rs::asym_same -->
 
 ## 1.1.4 What a determinant is, in this code
 

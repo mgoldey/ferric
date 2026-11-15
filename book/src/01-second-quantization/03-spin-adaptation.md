@@ -53,14 +53,21 @@ for the exchange term,
 
 $$ E_{\mathrm{ref}} - E_{\mathrm{nn}} = 2\sum_i h_{ii} + \sum_{ij}\big[\,2(ii|jj) - (ij|ij)\,\big] . \tag{1.10} $$
 
-> **Unverified equation 1.10** · the closed-shell reference energy
+> **Verified equation 1.10** · the closed-shell reference energy
+>
+> $\langle 0|\hat H|0\rangle$ expanded from spatial integrals with the spin
+> selection rule of (1.3) equals $2\sum_i h_{ii} + \sum_{ij}[2(ii|jj) - (ij|ij)]$,
+> symbolically on 3 occupied orbitals and numerically against the AO route
+> $\mathrm{tr}[D(h+F)]/2$ with $D = 2C_oC_o^{\mathsf T}$ at random orbitals.
 >
 > | | |
 > |---|---|
-> | Proof | none committed for the spin sum from (1.4) to (1.10). What is committed: `scripts/hf_energy_sympy.py`, the "N2" check, proves that the converged RHF energy equals the right side of (1.10); the "S3" check proves that the UHF functional at $(D/2, D/2)$ equals the RHF functional. Neither starts from the spin-orbital determinant energy (1.4). To add: a claim that expands (1.4) from spatial integrals by (1.3) and compares it with (1.10). |
-> | Status | derived by hand; checked once in a scratch run, not committed |
+> | Proof | `scripts/hf_energy_sympy.py`, the check labelled "claim N8". The converged-SCF check labelled "claim N2" and the UHF-to-RHF check labelled "claim S3" are the neighbouring anchors |
+> | Negative control | exchange without the spin delta must differ from the AO energy; the runner applies that edit to the script and requires a red run |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-scf/src/rhf.rs::solve_rhf` |
 >
-> <!-- unverified: id=so.closed-shell-energy; todo=add a claim to scripts/hf_energy_sympy.py that expands <0|H|0> from spatial integrals with the spin selection rule and compares it with 2 sum h + sum (2J - K) -->
+> <!-- verified: id=so.closed-shell-energy; script=scripts/hf_energy_sympy.py; claim=N8; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/rhf.rs::solve_rhf -->
 
 The Fock matrix of (1.5) reduces the same way. For occupied $k_\sigma$ summed
 over both spins, $f_{pq} = \big(h + 2J - K\big)_{[p][q]}\,\delta_{\sigma(p)\sigma(q)}$,
@@ -76,12 +83,12 @@ code builds (notation chapter, section 5).
 >
 > | | |
 > |---|---|
-> | Proof | `scripts/oomp2_mp3_identities_sympy.py`, the check "B0 model" |
+> | Proof | `scripts/oomp2_mp3_identities_sympy.py`, the check labelled "claim B0" |
 > | Negative control | none for this check |
 > | Runner | `crates/ferric-python/tests/test_oomp2_mp3_identities_sympy.py` |
 > | Code | `ferric-mp2/src/spinorbital.rs::asym_oovv` |
 >
-> <!-- verified: id=so.fock-closed-shell; script=scripts/oomp2_mp3_identities_sympy.py; claim=B0 model: spin-orbital Fock == F (x) 1, f_oo and f_vv diagonal, f_ov != 0; runner=crates/ferric-python/tests/test_oomp2_mp3_identities_sympy.py; code=ferric-mp2/src/spinorbital.rs::asym_oovv -->
+> <!-- verified: id=so.fock-closed-shell; script=scripts/oomp2_mp3_identities_sympy.py; claim=B0; runner=crates/ferric-python/tests/test_oomp2_mp3_identities_sympy.py; code=ferric-mp2/src/spinorbital.rs::asym_oovv -->
 
 ## 1.3.3 The closed-shell second-order energy
 

@@ -57,6 +57,10 @@ Checks, in spin-orbital notation (<pq||rs> = g[p,q,r,s], t_ij^ab = t[a,b,i,j]):
            term is live), against dE/dkappa_ck of the spin-orbital energy with
            the spatial kappa applied to both spins.
 
+The checks the book cites carry an explicit label "(claim A2)", "(claim A3)",
+"(claim B0)" or "(claim B1)" in their printed name; book/ boxes cite these
+labels (claim=B0), not the whole quoted string.
+
 Residuals are printed. Exits nonzero on the first failed identity (all are run).
 
 Mutations, each of which turns this script red (set OOMP2_MP3_MUTATION):
@@ -319,7 +323,7 @@ def part_a():
     )
     coeff_sym = s_ph / ring_raw
     check(
-        "A2 ring: wicks (four orderings) == coefficient 1 on the mp3.rs contraction",
+        "A2 ring: wicks (four orderings) == coefficient 1 on the mp3.rs contraction (claim A2)",
         abs(coeff_sym - 1.0) < 1e-11,
         f"coefficient {coeff_sym:.12f}",
     )
@@ -387,7 +391,7 @@ def part_a():
     e2_rs = phi @ v @ psi1
     e3_rs = psi1 @ (v - e1 * np.eye(dim)) @ psi1
     check(
-        "A3 RS E2 == 1/4 <ij||ab> t (singles vanish by the diagonal Fock operator)",
+        "A3 RS E2 == 1/4 <ij||ab> t (singles vanish by the diagonal Fock operator) (claim A3)",
         abs(e2_rs - e_mp2) < 1e-11,
         f"{abs(e2_rs - e_mp2):.1e}",
     )
@@ -567,7 +571,7 @@ def part_b():
         for s in range(2):
             fsp_so[so(p, s), so(q_, s)] = fsp[p, q_]
     check(
-        "B0 model: spin-orbital Fock == F (x) 1, f_oo and f_vv diagonal, f_ov != 0",
+        "B0 model: spin-orbital Fock == F (x) 1, f_oo and f_vv diagonal, f_ov != 0 (claim B0)",
         np.max(np.abs(f_so - fsp_so)) < 1e-13 and np.max(np.abs(f_so[:no, no:])) > 1e-2,
     )
 
@@ -604,7 +608,8 @@ def part_b():
         "ijij->", g_so[:no, :no, :no, :no]
     )
     check(
-        "B1 E_HF (wicks) == sum h_ii + 1/2 sum <ij||ij>", abs(e_hf0 - e_hf_ref) < 1e-12
+        "B1 E_HF (wicks) == sum h_ii + 1/2 sum <ij||ij> (claim B1)",
+        abs(e_hf0 - e_hf_ref) < 1e-12,
     )
 
     # ---- B2: gradient from the sympy densities

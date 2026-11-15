@@ -72,12 +72,12 @@ number.
 >
 > | | |
 > |---|---|
-> | Proof | `scripts/oomp2_mp3_identities_sympy.py`, the checks "B1 J(t*) == E2" and "A3 RS E2" |
+> | Proof | `scripts/oomp2_mp3_identities_sympy.py`, the checks "B1 J(t*) == E2" and the one labelled "claim A3" (Rayleigh–Schrödinger $E_2$) |
 > | Negative control | none specific to this identity; the mutations change the MP3 ring coefficient, the sign of $\kappa$ and the two-particle density |
 > | Runner | `crates/ferric-python/tests/test_oomp2_mp3_identities_sympy.py` |
 > | Code | `ferric-mp2/src/mp3.rs::mp3_energy` |
 >
-> <!-- verified: id=so.e2-wick; script=scripts/oomp2_mp3_identities_sympy.py; claim=A3 RS E2 == 1/4 <ij||ab> t (singles vanish by the diagonal Fock operator); runner=crates/ferric-python/tests/test_oomp2_mp3_identities_sympy.py; code=ferric-mp2/src/mp3.rs::mp3_energy -->
+> <!-- verified: id=so.e2-wick; script=scripts/oomp2_mp3_identities_sympy.py; claim=A3; runner=crates/ferric-python/tests/test_oomp2_mp3_identities_sympy.py; code=ferric-mp2/src/mp3.rs::mp3_energy -->
 
 The closed-shell form of (1.8), the one RI-MP2 evaluates, follows in
 section 1.3.
@@ -105,12 +105,12 @@ as a negative control and asserts that it differs.
 >
 > | | |
 > |---|---|
-> | Proof | `scripts/oomp2_mp3_identities_sympy.py`, the "A2 ring" check (four orderings give coefficient 1; one ordering gives $\tfrac14$) |
+> | Proof | `scripts/oomp2_mp3_identities_sympy.py`, the check labelled "claim A2" (four orderings give coefficient 1; one ordering gives $\tfrac14$) |
 > | Negative control | the script's `ring_quarter` mutation sets the coefficient to $\tfrac14$; the script must turn red, and the runner asserts it does |
 > | Runner | `crates/ferric-python/tests/test_oomp2_mp3_identities_sympy.py` |
 > | Code | `ferric-mp2/src/mp3.rs::mp3_energy` |
 >
-> <!-- verified: id=so.mp3-prefactors; script=scripts/oomp2_mp3_identities_sympy.py; claim=A2 ring: wicks (four orderings) == coefficient 1 on the mp3.rs contraction; runner=crates/ferric-python/tests/test_oomp2_mp3_identities_sympy.py; code=ferric-mp2/src/mp3.rs::mp3_energy -->
+> <!-- verified: id=so.mp3-prefactors; script=scripts/oomp2_mp3_identities_sympy.py; claim=A2; runner=crates/ferric-python/tests/test_oomp2_mp3_identities_sympy.py; code=ferric-mp2/src/mp3.rs::mp3_energy -->
 
 The unrestricted code works in spin blocks, not in spin orbitals. Its
 equivalence to the spin-orbital form is the subject of

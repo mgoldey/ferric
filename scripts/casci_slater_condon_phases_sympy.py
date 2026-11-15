@@ -51,6 +51,24 @@ Claims
           spectrum. That is checked numerically below, which shows claim 3
           is convention-specific (strictly stronger than an energy test).
 
+  5  The spatial second-quantized Hamiltonian (book eq. 1.1, spin sums written
+     out) equals the spin-orbital one with antisymmetrized integrals (book
+     eqs. 1.2 and 1.3), as 64 x 64 Jordan-Wigner matrices on 3 spatial
+     orbitals with random symmetric h, a random 8-fold-symmetric (pq|rs) and a
+     random E_nn. Negative controls: the 1/4 replaced by 1/2, and the exchange
+     term of <pq||rs> with the wrong sign, must differ. Book: verified
+     equation 1.2.
+  6  H = E_ref + F_N + V_N as Jordan-Wigner matrices (book eqs. 1.4 to 1.6),
+     with E_ref = E_nn + sum_i h_ii + 1/2 sum_ij <ij||ij>, f_pq = h_pq + sum_k
+     <pk||qk>, and the normal-ordered products {..} formed from the
+     quasi-particle operators of the reference (occupied a+ is a quasi-particle
+     annihilator, occupied a a quasi-particle creator), reordered with the
+     permutation sign and no contraction. That uses only the anticommutation
+     algebra, so it is independent of Wick's theorem. Closed-shell and
+     open-shell references. Negative controls: F_N and V_N without normal
+     ordering, and f without the sum over k, must differ. Book: verified
+     equation 1.6.
+
 Independent route: claim 3 is a brute-force comparison with the explicit
 Jordan-Wigner Hamiltonian in the full Fock space of 8-10 spin orbitals.
 
@@ -58,11 +76,16 @@ Scope: `general_element` is the dense / naive-sigma oracle. The production
 Davidson sigma is `sigma.rs` DirectSigma, which this script does not port; the
 Rust tests compare DirectSigma with the oracle.
 
-Mutations (each turns the script red, marker "FAIL n="):
+Mutations (each turns the script red, marker "FAIL n=" for claim 3; the
+markers for claims 5 and 6 are given with them):
   - flip the sign of the same-spin exchange integral in the transcribed
     diagonal_element;
   - drop the same-spin exchange term (ap|pi) from the transcribed single
-    excitation.
+    excitation;
+  - claim 5: the exchange term of <pq||rs> in the spin-orbital build of
+    hamiltonians_claim5 takes a + sign (marker "FAIL claim 5 forms");
+  - claim 6: the mean-field sum over k dropped from the Fock matrix f_pq
+    (marker "FAIL claim 6 split").
 
 Run: python3 scripts/casci_slater_condon_phases_sympy.py
 """
@@ -355,6 +378,214 @@ def claim3():
         check(bad == 0, f"n={n} (Na,Nb)=({na},{nb}): {nd}^2 elements, {bad} mismatches")
 
 
+# ---------------------------------------- claims 5 and 6: operator algebra
+N_SP = 3  # spatial orbitals; 6 spin orbitals, 64 x 64 Fock-space matrices
+
+
+def random_model(n, seed):
+    rng = np.random.default_rng(seed)
+    h = rng.standard_normal((n, n))
+    h = h + h.T
+    g = rng.standard_normal((n,) * 4)
+    g = sum(
+        np.transpose(g, perm)
+        for perm in [
+            (0, 1, 2, 3),
+            (1, 0, 2, 3),
+            (0, 1, 3, 2),
+            (1, 0, 3, 2),
+            (2, 3, 0, 1),
+            (3, 2, 0, 1),
+            (2, 3, 1, 0),
+            (3, 2, 1, 0),
+        ]
+    )
+    return h, g, float(rng.standard_normal())
+
+
+def spin_orbital_tensors(h, g, n, exchange_sign=-1.0):
+    """h_PQ and <PQ||RS> of book (1.3); mode P = p + n * sigma (alpha first)."""
+    nso = 2 * n
+    sig = lambda P: P // n  # noqa: E731
+    sp_ = lambda P: P % n  # noqa: E731
+    hso = np.zeros((nso, nso))
+    asym = np.zeros((nso,) * 4)
+    for P, Q in itertools.product(range(nso), repeat=2):
+        if sig(P) == sig(Q):
+            hso[P, Q] = h[sp_(P), sp_(Q)]
+    for P, Q, R, S in itertools.product(range(nso), repeat=4):
+        d = 0.0
+        if sig(P) == sig(R) and sig(Q) == sig(S):
+            d += g[sp_(P), sp_(R), sp_(Q), sp_(S)]
+        if sig(P) == sig(S) and sig(Q) == sig(R):
+            d += exchange_sign * g[sp_(P), sp_(S), sp_(Q), sp_(R)]
+        asym[P, Q, R, S] = d
+    return hso, asym
+
+
+def four_op_sum(coef, ops, order):
+    """sum coef[P,Q,R,S] o1 o2 o3 o4, the operators taken in the index order `order`.
+
+    ops[k][P] are the four operator families (matrices). `order` is a permutation
+    of "PQRS" naming which index each factor carries.
+    """
+    nso = coef.shape[0]
+    pos = {c: i for i, c in enumerate("PQRS")}
+    c_op = np.transpose(coef, [pos[c] for c in order])
+    dim = ops[0][0].shape[0]
+    out = np.zeros((dim, dim))
+    for a, b in itertools.product(range(nso), repeat=2):
+        w = np.zeros((dim, dim))
+        for c, d in itertools.product(range(nso), repeat=2):
+            x = c_op[a, b, c, d]
+            if x != 0.0:
+                w += x * (ops[2][c] @ ops[3][d])
+        out += (ops[0][a] @ ops[1][b]) @ w
+    return out
+
+
+def jw_float(nso):
+    a = [m.astype(float) for m in jw_annihilators(nso)]
+    return a, [m.T.copy() for m in a]
+
+
+def hamiltonians_claim5(n, seed, exchange_sign=-1.0, quarter=0.25):
+    h, g, enn = random_model(n, seed)
+    nso = 2 * n
+    ann, cre = jw_float(nso)
+    dim = 1 << nso
+    eye = np.eye(dim)
+    # form (1.1): spin sums written out, operator order a+_{p s} a+_{r t} a_{s t} a_{q s}
+    c11 = np.zeros((nso,) * 4)  # indexed [P, Q, R, S] = (p s1, q s1, r s2, s s2)
+    for s1, s2 in itertools.product((0, 1), repeat=2):
+        for p, q, r, s_ in itertools.product(range(n), repeat=4):
+            c11[p + n * s1, q + n * s1, r + n * s2, s_ + n * s2] = 0.5 * g[p, q, r, s_]
+    h1 = enn * eye
+    for s1 in (0, 1):
+        for p, q in itertools.product(range(n), repeat=2):
+            h1 = h1 + h[p, q] * cre[p + n * s1] @ ann[q + n * s1]
+    h1 = h1 + four_op_sum(c11, [cre, cre, ann, ann], "PRSQ")
+    # form (1.2): antisymmetrized spin-orbital integrals
+    hso, asym = spin_orbital_tensors(h, g, n, exchange_sign)
+    h2 = enn * eye
+    for P, Q in itertools.product(range(nso), repeat=2):
+        h2 = h2 + hso[P, Q] * cre[P] @ ann[Q]
+    h2 = h2 + four_op_sum(quarter * asym, [cre, cre, ann, ann], "PQSR")
+    return h1, h2
+
+
+def claim5():
+    print("\n=== 5  spatial (1.1) == antisymmetrized spin-orbital (1.2), JW matrices")
+    h1, h2 = hamiltonians_claim5(N_SP, 3)
+    d = np.abs(h1 - h2).max()
+    check(
+        d < 1e-11 and np.abs(h1).max() > 1.0,
+        f"claim 5 forms: max |H(1.1) - H(1.2)| = {d:.1e}",
+    )
+    for tag, kw in (
+        ("1/4 -> 1/2", {"quarter": 0.5}),
+        ("exchange sign +", {"exchange_sign": 1.0}),
+    ):
+        a, b = hamiltonians_claim5(N_SP, 3, **kw)
+        check(np.abs(a - b).max() > 1e-3, f"claim 5 negative control ({tag}) differs")
+
+
+def normal_ordered(ops_cd, occ_modes, ann, cre):
+    """{o1 o2 ...} relative to the determinant `occ_modes`, by anticommutation only.
+
+    ops_cd: [("c" | "a", P), ...]. Each factor is the matrix of a_P or a+_P; as
+    a quasi-particle operator it is a creator when (kind == "c") XOR occupied.
+    The product is reordered creators-first, annihilators-last, with the sign of
+    the permutation (stable), and NO contraction terms.
+    """
+    items = []
+    for kind, P in ops_cd:
+        mat = cre[P] if kind == "c" else ann[P]
+        is_qp_creator = (kind == "c") != (P in occ_modes)
+        items.append((is_qp_creator, mat))
+    inversions = sum(
+        1
+        for i in range(len(items))
+        for j in range(i + 1, len(items))
+        if (not items[i][0]) and items[j][0]
+    )
+    ordered = [m for c, m in items if c] + [m for c, m in items if not c]
+    out = ordered[0]
+    for m in ordered[1:]:
+        out = out @ m
+    return (-1) ** inversions * out
+
+
+def split_claim6(n, seed, occ_modes, drop_k=False, normal_order=True):
+    h, g, enn = random_model(n, seed)
+    nso = 2 * n
+    ann, cre = jw_float(nso)
+    dim = 1 << nso
+    eye = np.eye(dim)
+    hso, asym = spin_orbital_tensors(h, g, n)
+    h_full = enn * eye
+    for P, Q in itertools.product(range(nso), repeat=2):
+        h_full = h_full + hso[P, Q] * cre[P] @ ann[Q]
+    for P, Q, R, S in itertools.product(range(nso), repeat=4):
+        if asym[P, Q, R, S] != 0.0:
+            h_full = h_full + 0.25 * asym[P, Q, R, S] * (
+                cre[P] @ cre[Q] @ ann[S] @ ann[R]
+            )
+    occ = sorted(occ_modes)
+    e_ref = (
+        enn
+        + sum(hso[i, i] for i in occ)
+        + 0.5 * sum(asym[i, j, i, j] for i in occ for j in occ)
+    )
+    if drop_k:
+        f = hso.copy()
+    else:
+        f = hso + np.einsum("pkqk->pq", asym[:, occ, :, :][:, :, :, occ])
+    f_n = np.zeros((dim, dim))
+    v_n = np.zeros((dim, dim))
+    for P, Q in itertools.product(range(nso), repeat=2):
+        if normal_order:
+            f_n = f_n + f[P, Q] * normal_ordered(
+                [("c", P), ("a", Q)], occ_modes, ann, cre
+            )
+        else:
+            f_n = f_n + f[P, Q] * cre[P] @ ann[Q]
+    for P, Q, R, S in itertools.product(range(nso), repeat=4):
+        c = 0.25 * asym[P, Q, R, S]
+        if c != 0.0:
+            if normal_order:
+                v_n = v_n + c * normal_ordered(
+                    [("c", P), ("c", Q), ("a", S), ("a", R)], occ_modes, ann, cre
+                )
+            else:
+                v_n = v_n + c * (cre[P] @ cre[Q] @ ann[S] @ ann[R])
+    return h_full, e_ref * eye + f_n + v_n
+
+
+def claim6():
+    print(
+        "\n=== 6  H = E_ref + F_N + V_N, JW matrices (normal ordering by anticommutation)"
+    )
+    refs = {
+        "closed-shell {0,1 alpha; 0,1 beta}": {0, 1, 3, 4},
+        "open-shell {0,1 alpha; 0 beta}": {0, 1, 3},
+    }
+    for tag, occ_modes in refs.items():
+        h_full, h_split = split_claim6(N_SP, 4, occ_modes)
+        d = np.abs(h_full - h_split).max()
+        check(
+            d < 1e-11 and np.abs(h_full).max() > 1.0,
+            f"claim 6 split, {tag}: max |H - (E_ref + F_N + V_N)| = {d:.1e}",
+        )
+    occ_modes = {0, 1, 3, 4}
+    for tag, kw in (
+        ("no normal ordering", {"normal_order": False}),
+        ("f without the sum over k", {"drop_k": True}),
+    ):
+        a, b = split_claim6(N_SP, 4, occ_modes, **kw)
+        check(np.abs(a - b).max() > 1e-3, f"claim 6 negative control ({tag}) differs")
+
+
 def claim4():
     print("\n=== 4  negative controls (each must mismatch)")
     for mut, what in [
@@ -416,6 +647,8 @@ def main():
     claim1()
     claim2()
     claim3()
+    claim5()
+    claim6()
     claim4()
     if FAILED:
         print(f"\n{len(FAILED)} FAILED")

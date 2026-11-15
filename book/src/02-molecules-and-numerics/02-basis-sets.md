@@ -59,19 +59,22 @@ applies only the per-primitive factor $N_p$, so without the rescaling a def2
 shell would be wrong on the DFT grid and right in every analytic integral.
 After the rescaling libint2's own renormalization changes nothing.
 
-> **Unverified equation 2.5** · unit self-overlap
+> **Verified equation 2.5** · unit self-overlap
 >
-> Every contracted shell of every bundled set has unit self-overlap to
-> $10^{-12}$, evaluated from the closed-form primitive overlap, independently
-> of the parser's renormalizer and of libint2.
+> The overlap of two normalized radial Gaussians $r^l e^{-ar^2}$ is
+> $\big(2\sqrt{ab}/(a+b)\big)^{l+3/2}$, and a contraction renormalized with
+> that overlap matrix has unit self-overlap when integrated numerically,
+> independently of the parser's renormalizer and of libint2.
 >
 > | | |
 > |---|---|
-> | Proof | none as a sympy claim. The closed-form overlap in (2.5) is checked by a Rust test over every bundled shell. To add: a sympy claim that integrates two radial Gaussians of angular momentum $l$ and compares with the closed form. |
-> | Rust test | `every_bundled_contraction_has_unit_self_overlap` in `crates/ferric-core/src/basis.rs` |
-> | Status | tested, not derived in a committed proof |
+> | Proof | `scripts/basis_normalization_sympy.py`, claim 3. Claim 1 is the symbolic integral for $l = 0$ to $6$; claim 2 is quadrature of the closed form, to $10^{-12}$ |
+> | Negative control | an unrenormalized contraction is not unit-norm; the runner applies two edits to the script (the exponent $l + \tfrac32$ and the renormalization) and requires a red run |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Rust test | `every_bundled_contraction_has_unit_self_overlap` in `crates/ferric-core/src/basis.rs` checks every bundled shell |
+> | Code | `ferric-core/src/basis.rs::parse_bse_json` |
 >
-> <!-- unverified: id=basis.unit-self-overlap; todo=add a sympy claim for the radial Gaussian overlap (2 sqrt(ab)/(a+b))^(l+3/2), then cite it here -->
+> <!-- verified: id=basis.unit-self-overlap; script=scripts/basis_normalization_sympy.py; claim=3; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-core/src/basis.rs::parse_bse_json; rust_test=ferric-core/src/basis.rs::every_bundled_contraction_has_unit_self_overlap -->
 
 ## 2.2.3 Parsers and the bundled library
 

@@ -40,6 +40,15 @@ orthonormal AO basis, n = 7):
   N6  The ROHF energy (UHF functional at the ROHF densities) equals the
       high-spin Slater-Condon energy of the same determinant.
   N7  E_UHF <= E_ROHF for the same occupation (variational ordering).
+  N8  (claim N8) <0|H|0> of the spin-orbital determinant energy, expanded
+      from SPATIAL integrals with the spin selection rule (spin-orbital
+      h_PQ = h_[P][Q] delta_sigma and <PQ||PQ> = (pp|qq) - (pq|qp) delta_sigma(P)sigma(Q),
+      the book's (1.3)), equals 2 sum_i h_ii + sum_ij [2 (ii|jj) - (ij|ij)].
+      Symbolic (3 occupied orbitals, canonical 8-fold-symmetric integral
+      symbols, so (pq|qp) = (pq|pq) is exercised), then numerical on random
+      orthonormal orbitals against the AO route tr[D (h + F)]/2 with
+      D = 2 C_o C_o^T. Negative control: dropping the spin delta of the
+      exchange term must differ. Book: verified equation 1.10.
 
 Mutations (each turns the script red; the runner applies them as exact
 one-occurrence substitutions):
@@ -47,6 +56,8 @@ one-occurrence substitutions):
   uhf_focks: exchange weight 1 -> 1/2                (N1 UHF fails)
   roothaan_fock: open-closed block F_b -> F_a        (N3 block table fails)
   rohf_gradient_mo: closed-virtual F_a + F_b -> F_a  (N4 dE/dkappa fails)
+  spin_exchange: the exchange term of N8 ignores the spin delta
+                                                     (N8 symbolic and numeric fail)
 Exits nonzero on the first failed check; prints "FAIL <label>".
 """
 
@@ -164,7 +175,7 @@ def symbolic_checks():
     ok = sp.simplify(eu.subs(sub) - e) == 0 and all(
         sp.simplify(x.subs(sub) - y) == 0 for x, y in zip(fa, f)
     )
-    check("S3 UHF(D/2, D/2) = RHF(D) and F_a = F_RHF", ok)
+    check("S3 UHF(D/2, D/2) = RHF(D) and F_a = F_RHF (claim S3)", ok)
 
     idx = [
         (m, n, la, s)
@@ -441,7 +452,7 @@ def numeric_checks():
         2 * gmo[i, i, j, j] - gmo[i, j, i, j] for i in range(nocc) for j in range(nocc)
     )
     check(
-        "N2 E_RHF = Slater-Condon closed shell",
+        "N2 E_RHF = Slater-Condon closed shell (claim N2)",
         abs(e_rhf - e_sc) < 1e-10,
         f"diff {e_rhf - e_sc:.2e}",
     )
@@ -558,9 +569,88 @@ def numeric_checks():
     )
 
 
+# ---------------------------------------------------------------------------
+# N8: <0|H|0> from spatial integrals with the spin selection rule
+# ---------------------------------------------------------------------------
+def spin_delta(sp_p, sp_q):
+    """Spin selection rule delta_{sigma(P) sigma(Q)} (the line the mutation edits)."""
+    return 1 if sp_p == sp_q else 0
+
+
+def spin_sum_energy(hh, gg, occ_spatial):
+    """<0|H|0> = sum_P h_PP + 1/2 sum_PQ <PQ||PQ> over spin orbitals P = (p, sigma).
+
+    hh(p, q) and gg(p, q, r, s) = (pq|rs) are SPATIAL; the spin orbitals enter
+    only through the deltas of (1.3): <PQ||PQ> = (pp|qq) - (pq|qp) delta(P, Q).
+    """
+    spin_orbitals = [(i, s_) for i in occ_spatial for s_ in (0, 1)]
+    e = 0
+    for p, sp_p in spin_orbitals:
+        e += hh(p, p)
+    for p, sp_p in spin_orbitals:
+        for q, sp_q in spin_orbitals:
+            e += sp.Rational(1, 2) * (
+                gg(p, p, q, q) - gg(p, q, q, p) * spin_delta(sp_p, sp_q)
+            )
+    return e
+
+
+def spin_sum_checks():
+    # Symbolic: 3 occupied spatial orbitals, canonical symmetric integral symbols.
+    occ = range(3)
+
+    def hh(p, q):
+        a, b = sorted((p, q))
+        return sp.Symbol(f"h_{a}{b}")
+
+    def gg(p, q, r, s_):
+        a, b = sorted((p, q))
+        c, d = sorted((r, s_))
+        k = min((a, b, c, d), (c, d, a, b))
+        return sp.Symbol("g_" + "".join(map(str, k)))
+
+    e_spin = sp.expand(spin_sum_energy(hh, gg, occ))
+    e_closed = sp.expand(
+        sum(2 * hh(i, i) for i in occ)
+        + sum(2 * gg(i, i, j, j) - gg(i, j, i, j) for i in occ for j in occ)
+    )
+    check(
+        "N8 <0|H|0> from spatial integrals + spin rule == 2 sum h + sum (2J - K), symbolic (claim N8)",
+        sp.expand(e_spin - e_closed) == 0,
+    )
+
+    # Numerical, independent route: AO density, E = tr[D (h + F)]/2.
+    h, g = make_model()
+    k0 = rng.standard_normal((N, N))
+    c = expm_antisym(k0 - k0.T)
+    nocc = 3
+    co = c[:, :nocc]
+    hmo = co.T @ h @ co
+    gmo = np.einsum("mnls,mi,nj,lk,sq->ijkq", g, co, co, co, co)
+    e_mo = spin_sum_energy(
+        lambda p, q: hmo[p, q], lambda p, q, r, s_: gmo[p, q, r, s_], range(nocc)
+    )
+    e_ao = rhf_energy(h, g, 2.0 * co @ co.T)
+    check(
+        "N8 spin-rule MO sum == AO tr[D(h+F)]/2 at a random orbital set (claim N8)",
+        abs(e_mo - e_ao) < 1e-11,
+        f"diff {e_mo - e_ao:.2e}",
+    )
+    e_nodelta = sum(2 * hmo[i, i] for i in range(nocc)) + sum(
+        2 * gmo[i, i, j, j] - 2 * gmo[i, j, j, i]
+        for i in range(nocc)
+        for j in range(nocc)
+    )
+    check(
+        "N8 negative control: exchange without the spin delta differs from the AO energy",
+        abs(e_nodelta - e_ao) > 1e-3,
+    )
+
+
 def main():
     symbolic_checks()
     numeric_checks()
+    spin_sum_checks()
     if failures:
         print(f"{len(failures)} check(s) failed")
         sys.exit(1)
