@@ -40,7 +40,8 @@ RI-JK reference (section 27.5.2). Fix both for a dataset of geometries.
 | RHF, UHF, ROHF, RKS, UKS, ROKS, exact or density-fitted J/K | analytic, D3(BJ) and MBD@rsSCS included with `[dft] dispersion` | 1e-7 to 3e-7 Ha/Bohr vs FD of the energy; about 1e-10 vs PySCF `df.grad` | `hf-gradient`, `ks-gradient` |
 | KS on a custom or pruned grid | analytic on that grid | 0.9e-7 to 1.4e-7 Ha/Bohr vs FD on the same grid | — |
 | RI-MP2, closed shell | analytic (Z-vector) | ≤ 2.1e-9 Ha/Bohr vs PySCF FD; ≤ 5.1e-8 vs ORCA | `ri-mp2-gradient` |
-| SCS-MP2, OO-RI-MP2 | analytic | — | not graded |
+| SCS-MP2 (closed shell, exact or RI-JK) | analytic | ≤ 2.5e-9 Ha/Bohr vs PySCF FD; ≤ 5.7e-8 vs own FD | `scs-mp2-gradient` |
+| OO-RI-MP2 (closed shell, frozen core 0) | analytic | ≤ 1.8e-9 Ha/Bohr vs own FD | `oo-rimp2-gradient` |
 | PDEP-RPA, closed-shell RHF reference | analytic SCF part plus a central finite difference of the correlation energy (`ferric-rpa/src/gradient.rs::total_rpa_gradient`) | ≤ 1.9e-9 Ha/Bohr vs PySCF at the same step; ≤ 5.7e-8 vs a converged 5-point FD | `rpa-gradient` |
 | every other `method.kind` | none in the CLI | — | — |
 

@@ -99,9 +99,15 @@ From the `oo-rimp2` row of `site/src/reference/validation.md`.
 | Quantity | Systems | Error | Test |
 |---|---|---|---|
 | analytic gradient vs FD of its own energy | H2O, NH3 / cc-pVDZ | $8\times10^{-9}$ Ha/Bohr | `crates/ferric-mp2/tests/validation_oo_rimp2.rs` |
+| analytic gradient vs Richardson FD, RI-JK reference | H2O / cc-pVDZ, NH3 / 6-31G | $\le 1.8\times10^{-9}$ Ha/Bohr (bar $2\times10^{-8}$) | `crates/ferric-mp2/tests/oo_rimp2_gradient_fd.rs` |
+| analytic gradient vs Richardson FD, exact J/K | NH3 / 6-31G | $6.6\times10^{-10}$ Ha/Bohr | the same |
 | energy vs an independent numpy OO-RI-MP2 | H2O, NH3, CH3 (UHF) / cc-pVDZ | $7.5\times10^{-13}$ Ha | the same |
 
-The gradient is not graded; the energy is Proven (narrow).
+The gradient is Proven (narrow): closed shell, frozen core 0, exact or RI-JK
+J/K, two molecules at double-zeta size or smaller. No independent code has an
+orbital-optimized MP2 gradient to compare with (PySCF has no OMP2); the
+independent evidence is ORCA's analytic gradient (loose, $3\times10^{-5}$) and
+the finite differences of ferric's own energy. The energy is Proven (narrow).
 
 ## 15.3.5 Sources
 

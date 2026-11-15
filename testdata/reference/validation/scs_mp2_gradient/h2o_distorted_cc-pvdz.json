@@ -1,0 +1,166 @@
+{
+  "row": "SCS-MP2 analytic gradient",
+  "system": "h2o_distorted",
+  "basis": "cc-pvdz",
+  "aux_basis": "cc-pvdz-ri",
+  "charge": 0,
+  "multiplicity": 1,
+  "nao": 24,
+  "naux": 84,
+  "nuclear_repulsion": 9.152765916310292,
+  "n_frozen": 1,
+  "pyscf": {
+    "e_rhf": -76.02585838435135,
+    "e_os": -0.15273682998746158,
+    "e_ss": -0.051653807435721025,
+    "e_os_fc": -0.1512145427970414,
+    "e_ss_fc": -0.050846761694160386,
+    "gradient_fd": {
+      "hf": [
+        [
+          -0.0008100588188426627,
+          -0.030932793165447947,
+          0.0201035195377699
+        ],
+        [
+          0.0006889099481668381,
+          0.02769990699380287,
+          -0.021531483789203776
+        ],
+        [
+          0.00012114915625716094,
+          0.0032328859037988877,
+          0.0014279644910857314
+        ]
+      ],
+      "os": [
+        [
+          -0.00021142916393213085,
+          0.0007607019119566516,
+          -0.022870678080902707
+        ],
+        [
+          -0.00025001746655561874,
+          -0.011051528555038104,
+          0.010992960537971719
+        ],
+        [
+          0.00046144663180225365,
+          0.010290826606946801,
+          0.011877717375233132
+        ]
+      ],
+      "ss": [
+        [
+          -5.407558578873761e-05,
+          -4.8226827825459395e-05,
+          -0.005076717504075567
+        ],
+        [
+          -2.7790209097933172e-05,
+          -0.0015890166340430945,
+          0.0023696342266465997
+        ],
+        [
+          8.186579535252037e-05,
+          0.0016372434379974266,
+          0.002707083204755989
+        ]
+      ],
+      "os_fc": [
+        [
+          -0.0002161498174864107,
+          0.0007399869401600867,
+          -0.02326133020629051
+        ],
+        [
+          -0.0002562014884599506,
+          -0.011293834447311468,
+          0.011166049425974656
+        ],
+        [
+          0.0004723513073496832,
+          0.010553847470752054,
+          0.012095280612580694
+        ]
+      ],
+      "ss_fc": [
+        [
+          -5.740880499693901e-05,
+          -5.701865803064976e-05,
+          -0.005371125296671053
+        ],
+        [
+          -3.174683469797657e-05,
+          -0.001751229985192726,
+          0.0025032396509550026
+        ],
+        [
+          8.91556402700111e-05,
+          0.0018082486184458624,
+          0.002867885568209161
+        ]
+      ]
+    },
+    "fd": {
+      "stencil": "5-point central",
+      "step_bohr": 0.002
+    },
+    "step_check": {
+      "coordinate": [
+        0,
+        2
+      ],
+      "step_bohr": 0.001,
+      "max_change": 1.2892531486841108e-10
+    }
+  },
+  "provenance": {
+    "code": "PySCF 2.13.1",
+    "version": "PySCF 2.13.1",
+    "keywords": {
+      "pyscf": "scf.RHF (exact J/K, conv_tol 1e-12, conv_tol_grad 1e-10) + mp.dfmp2.DFMP2 (frozen None and range(n_frozen)) with auxmol from ferric's aux JSON; e_corr_os / e_corr_ss tags; gradient = 5-point central FD of E_RHF, E_OS, E_SS separately, h = 0.002 Bohr"
+    },
+    "grid": "none",
+    "aux_basis": {
+      "correlation": "cc-pvdz-ri",
+      "correlation_json": "crates/ferric-core/src/basis/bundled/cc-pvdz-ri.json",
+      "correlation_sha256": "8221d2a31b5bbebd39218fc3f9244917e173a338ff9c56904038443a06e2a250",
+      "scf": "none (exact four-centre J/K)"
+    },
+    "frozen_core": "none, and the first 1 orbital(s)",
+    "scf_convergence": "PySCF conv_tol 1e-12 conv_tol_grad 1e-10",
+    "stability": null,
+    "basis": "cc-pvdz",
+    "basis_json": "crates/ferric-core/src/basis/bundled/cc-pvdz.json",
+    "basis_sha256": "4c2f450a81a8545e4df9e24a313111642cf70d5f7213fc8e879ef9dacab5da2f",
+    "ecp_json": "none",
+    "ecp_sha256": "none",
+    "geometry_xyz": "testdata/molecules/validation/h2o_distorted.xyz",
+    "geometry_xyz_sha256": "9defe113f6a56b0510911e233fbf8feb18849b2c11813428d86ab0a3cd5fe142",
+    "geometry_bohr": [
+      [
+        "O",
+        0.01889726124565062,
+        -0.03779452249130124,
+        0.22676713494780742
+      ],
+      [
+        "H",
+        0.056691783736951856,
+        1.4550891159150976,
+        -0.8692740172999285
+      ],
+      [
+        "H",
+        -0.03779452249130124,
+        -1.3983973321781458,
+        -0.9259658010368803
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_scs_mp2_gradient.py",
+    "git_head": "55c4e3c6f21333de6b56d81914942d6022abe082",
+    "generated_utc": "2026-11-15T15:21:51+00:00"
+  }
+}

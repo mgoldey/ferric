@@ -217,12 +217,22 @@ pub const TASK_KIND_ROWS: &[(&str, &str)] = &[
     ("optimize", "rohf"),
     ("optimize", "ksdft"),
     ("optimize", "rimp2"),
+    ("optimize", "scs-mp2"),
+    ("optimize", "oo-rimp2"),
     ("optimize", "pdep-rpa"),
     ("frequencies", "rhf"),
     ("frequencies", "uhf"),
     ("frequencies", "rohf"),
     ("frequencies", "ksdft"),
 ];
+
+/// `(task, method.kind, ceiling)`: task rows whose cell on
+/// [`GRADE_SOURCE_PAGE`] names a grade below the kind's own (the energy's). The
+/// task certificate takes the lower of the two. The
+/// `task_grade_caps_match_the_page` test fails unless the page cell of each
+/// pair names the ceiling.
+pub const TASK_KIND_GRADE_CAPS: &[(&str, &str, Grade)] =
+    &[("optimize", "scs-mp2", Grade::ProvenNarrow)];
 
 /// The build that produced a result. Filled by the top-level artifact from
 /// `ferric-build-info` (`VERSION`, `COMMIT`, `DIRTY`).
@@ -398,6 +408,12 @@ impl Certificate {
             let base = Self::for_method_kind(kind);
             c.grade = base.grade;
             c.grade_source = base.grade_source;
+            if let Some(&(_, _, ceiling)) = TASK_KIND_GRADE_CAPS
+                .iter()
+                .find(|&&(t, k, _)| t == task && k == kind)
+            {
+                c.grade = c.grade.min(ceiling);
+            }
         } else {
             c.push_warning(format!(
                 "{GRADE_SOURCE_PAGE} grades no task = \"{task}\" run with method.kind = \
@@ -861,6 +877,44 @@ mod tests {
             }
         }
         out
+    }
+
+    #[test]
+    fn task_grade_caps_match_the_page() {
+        let path = workspace_root().join(GRADE_SOURCE_PAGE);
+        let page =
+            std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        let start = page.find(GRADE_SOURCE_HEADING).expect("matrix heading");
+        let rows: Vec<&str> = page[start..]
+            .lines()
+            .skip_while(|l| !l.trim_start().starts_with('|'))
+            .take_while(|l| l.trim_start().starts_with('|'))
+            .collect();
+        for &(task, kind, ceiling) in TASK_KIND_GRADE_CAPS {
+            let head = format!("`task = \"{task}\"`");
+            let col = rows[0]
+                .trim()
+                .trim_matches('|')
+                .split('|')
+                .position(|h| h.trim() == head)
+                .expect("task column");
+            let prefix = format!("| `{kind}` |");
+            let row = rows.iter().find(|r| r.starts_with(&prefix)).expect("row");
+            let cell = row.trim().trim_matches('|').split('|').nth(col).unwrap();
+            assert!(
+                cell.contains(&ceiling.to_string()),
+                "{task}:{kind} cell {cell:?} does not name {ceiling}"
+            );
+            assert!(TASK_KIND_ROWS.contains(&(task, kind)));
+        }
+        let c = Certificate::for_task(
+            "optimize",
+            "scs-mp2",
+            &Certificate::for_method_kind("scs-mp2"),
+        );
+        assert_eq!(c.grade, Grade::ProvenNarrow);
+        let c = Certificate::for_task("optimize", "oo-rimp2", &Certificate::for_method_kind("oo-rimp2"));
+        assert_eq!(c.grade, Grade::ProvenNarrow);
     }
 
     #[test]

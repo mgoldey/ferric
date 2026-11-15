@@ -193,7 +193,8 @@ From `site/src/reference/validation.md` and the tests named.
 | RI-MP2 gradient vs ORCA 6.1.1 (NoRI, no frozen core) | the same | $\le 5.1\times10^{-8}$ Ha/Bohr | the same |
 | frozen core vs FD | H2O, HCN, NH3 | $4.9\times10^{-8}$, $1.3\times10^{-8}$, $1.7\times10^{-8}$ | the same |
 | fitted-reference gradient vs FD of the fitted energy | water, methane, water with frozen core | test tolerance | `crates/ferric-mp2/tests/rimp2_gradient_rijk.rs` |
-| SCS-MP2 gradient vs central FD of `scs_mp2` | H2O / STO-3G and cc-pVDZ, NH3 / 6-31G; $(6/5, 1/3)$ and $(1, 0)$; frozen core; RI-JK | test tolerance; not graded | `crates/ferric-mp2/tests/scs_mp2_gradient.rs` |
+| SCS-MP2 gradient vs PySCF 5-point FD of DF-MP2 $E_\mathrm{OS}$, $E_\mathrm{SS}$ | H2O / cc-pVDZ, NH3 / def2-SVP; $(6/5, 1/3)$, $(1, 0)$, $(1, 1)$; frozen core | $\le 2.5\times10^{-9}$ Ha/Bohr | `crates/ferric-mp2/tests/validation_scs_mp2_gradient.rs` |
+| SCS-MP2 gradient vs central FD of `scs_mp2` | H2O / STO-3G and cc-pVDZ, NH3 / 6-31G; $(6/5, 1/3)$ and $(1, 0)$; frozen core; exact and RI-JK | $\le 5.7\times10^{-8}$ Ha/Bohr (bar $2\times10^{-7}$) | `crates/ferric-mp2/tests/scs_mp2_gradient.rs` |
 
 ## 15.2.8 Sources
 
@@ -204,5 +205,6 @@ From `site/src/reference/validation.md` and the tests named.
 | PySCF `grad/mp2.py` | the convention the right-hand side follows (cited in `theory.md`) |
 
 **Known limits (2026-11-15).** Closed shell only; the unrestricted RI-MP2
-is energy only. The SCS-MP2 gradient is not graded. The AO-level RI
+is energy only. The SCS-MP2 gradient is Proven (narrow): closed shell, Coulomb operator,
+exact or RI-JK J/K, frozen core 0 or 1. The AO-level RI
 bookkeeping is not covered by a script.

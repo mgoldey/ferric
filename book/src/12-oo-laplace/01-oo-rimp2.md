@@ -258,7 +258,8 @@ $9.2\times10^{-4}$ Ha for H2O and $8.7\times10^{-4}$ Ha for NH3). It must
 also miss the gradient by more than $10^{-5}$ Ha/Bohr.
 
 The validation page grades the method Proven (narrow). The analytic gradient
-is listed as not graded.
+is also Proven (narrow), for a closed shell with frozen core 0 on the exact
+and RI-JK J/K routes (section 15.3).
 
 **Known limits (2026-11-15).**
 

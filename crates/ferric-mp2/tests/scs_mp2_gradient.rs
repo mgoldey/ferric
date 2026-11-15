@@ -266,12 +266,11 @@ fn scs_gradient_matches_fd_water_ccpvdz_frozen_core() {
 /// The RI-JK reference: [`total_scs_mp2_gradient_on`] with `scf_jk =
 /// "rijk"` against FD of the SCS-MP2 energy of the fitted SCF; its energy is
 /// that FD energy at the reference geometry.
-#[test]
-fn scs_gradient_matches_fd_water_ccpvdz_rijk() {
-    let mol = Molecule::parse_xyz(WATER, 0, 1).unwrap();
-    let obs = basis::bundled("cc-pvdz").unwrap();
+fn check_rijk(label: &str, xyz: &str, basis_name: &str, frozen_core: usize) {
+    let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+    let obs = basis::bundled(basis_name).unwrap();
     let aux = basis::bundled(AUX).unwrap();
-    let cfg = scs_config(GRIMME, 0);
+    let cfg = scs_config(GRIMME, frozen_core);
     let jk = rijk();
     let (e, g) = total_scs_mp2_gradient_on(
         &mol,
@@ -293,8 +292,23 @@ fn scs_gradient_matches_fd_water_ccpvdz_rijk() {
     );
     let fd = fd_gradients(&mol, &obs, &aux, Some(&jk), std::slice::from_ref(&cfg));
     let worst = max_abs_diff(&g, &fd[0]);
-    eprintln!("H2O/cc-pVDZ RI-JK SCS-MP2: max |analytic - FD| = {worst:.3e} (bar {BAR:.0e})");
-    assert!(worst < BAR, "RI-JK: max |analytic - FD| = {worst:.3e}");
+    eprintln!("{label} RI-JK SCS-MP2 (fc {frozen_core}): max |analytic - FD| = {worst:.3e} (bar {BAR:.0e})");
+    assert!(worst < BAR, "{label} RI-JK: max |analytic - FD| = {worst:.3e}");
+}
+
+#[test]
+fn scs_gradient_matches_fd_water_ccpvdz_rijk() {
+    check_rijk("H2O/cc-pVDZ", WATER, "cc-pvdz", 0);
+}
+
+#[test]
+fn scs_gradient_matches_fd_ammonia_631g_rijk() {
+    check_rijk("NH3/6-31G", AMMONIA, "6-31g", 0);
+}
+
+#[test]
+fn scs_gradient_matches_fd_water_ccpvdz_rijk_frozen_core() {
+    check_rijk("H2O/cc-pVDZ", WATER, "cc-pvdz", 1);
 }
 
 /// The exactness anchor: `(c_os, c_ss) = (1, 1)` is the RI-MP2 gradient bit
