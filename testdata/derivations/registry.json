@@ -72,7 +72,8 @@
     ],
     "cli:rimp2": [
       "ri-mp2",
-      "u-ri-mp2"
+      "u-ri-mp2",
+      "local-mp2"
     ],
     "cli:rohf": [
       "rohf"
@@ -292,7 +293,8 @@
     "py:run_rimp2": [
       "ri-mp2",
       "u-ri-mp2",
-      "ri-mp2-gradient"
+      "ri-mp2-gradient",
+      "local-mp2"
     ],
     "py:run_rks_gamma": [
       "pbc-ks"
@@ -964,17 +966,21 @@
       "scripts": [
         "scripts/geometry_search_steps_sympy.py"
       ]
+    },
+    "local-mp2": {
+      "theory": [
+        "crates/ferric-mp2/theory.md#12-local-mp2"
+      ],
+      "scripts": [
+        "scripts/lmp2_hylleraas_vs_wshg23_sympy.py",
+        "scripts/local_mp2_fit_pno_sympy.py",
+        "scripts/mp2_variant_identities.py"
+      ]
     }
   },
   "gaps": {
     "double-hybrid": {
       "reason": "owned elsewhere: the double-hybrid grading branch writes its derivation"
-    },
-    "local-mp2": {
-      "reason": "crates/ferric-mp2/theory.md section 12 is a pointer to the wiki, with no derivation or function names",
-      "scripts": [
-        "scripts/lmp2_hylleraas_vs_wshg23_sympy.py"
-      ]
     },
     "mbd": {
       "reason": "no theory.md derivation (book section 25.3 carries it standalone until crates/ferric-rpa/theory.md gains an MBD section)",

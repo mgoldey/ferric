@@ -1,7 +1,7 @@
 # 13.1 Amplitude-threshold local MP2
 
-<!-- section: 13.1; status: edit; registry: local-mp2;
-     theory: crates/ferric-mp2/theory.md#"2. Closed-shell RI-MP2" -->
+<!-- section: 13.1; status: ready; registry: local-mp2;
+     theory: crates/ferric-mp2/theory.md#"12.1 Amplitude equations in localized orbitals" -->
 
 Canonical RI-MP2 sums over every $(i,j,a,b)$. In a localized basis most of
 those amplitudes are small, because an occupied orbital $i$ only interacts

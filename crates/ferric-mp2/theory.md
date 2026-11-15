@@ -871,9 +871,185 @@ both properties unchanged, $c^{\mathsf T}S_{RR}\,c = I$ and $S_{O,R}\,c = 0$
 
 ## 12. Local MP2
 
-Amplitude-threshold local MP2 (`lmp2_amplitude.rs`, `lmp2_direct.rs`) is
-derived in `wiki/sympy_derivations.md` §14; user-facing settings are in
-`site/src/methods/mp2.md`.
+Two local MP2 families share the RI factors of §1 and the closed-shell
+energy of §2. Amplitude-threshold local MP2 (`lmp2_amplitude.rs`,
+`lmp2_direct.rs`, `ragged.rs`; CLI `method.kind = "rimp2"` with
+`[local] scheme = "amplitude-threshold"`, Python
+`run_rimp2(local="amplitude-threshold", eps=...)`) keeps an amplitude when
+the integral that drives it exceeds one threshold $\varepsilon$ (Wang,
+Aldossary, Shi, Liu, Li and Head-Gordon, JCTC 19, 7577 (2023)). DLPNO-MP2
+(`dlpno_mp2.rs`, `local_pno.rs`, `pair_energy_screen.rs`,
+`dlpno_localized.rs`) drops pairs by estimated pair energy and compresses
+each pair's virtual space to pair natural orbitals; it is a library path with
+no CLI kind. Both are closed shell and energy only. Proofs:
+[`scripts/lmp2_hylleraas_vs_wshg23_sympy.py`](../../scripts/lmp2_hylleraas_vs_wshg23_sympy.py)
+(claims 1, 2, 4, 5, 6) and
+[`scripts/local_mp2_fit_pno_sympy.py`](../../scripts/local_mp2_fit_pno_sympy.py)
+(claims L1 to L4), with the unique-pair weight of **[check 1]**.
+
+### 12.1 Amplitude equations in localized orbitals
+
+The active occupied orbitals are Boys-localized and the virtuals are the
+VV-HV space of §12.2. Neither Fock block is diagonal: $f_{ik}$ is the
+occupied block and $F_{ab}$ the virtual block of the SCF Fock matrix in
+those bases. With $J_{ia,jb} = (ia|jb)$ in the localized basis and one
+amplitude block $t_{ij}$ ($n_v \times n_v$, one per ordered pair), the
+first-order equations are
+
+$$ (\mathcal A\,t)_{ij} = F\,t_{ij} + t_{ij}\,F - \sum_k\big(f_{ik}\,t_{kj} + f_{kj}\,t_{ik}\big), \qquad
+R(t) = J + \mathcal A\,t = 0, \qquad t^{*} = -\mathcal A^{-1}J $$
+
+(`ragged::matvec_indexed`: per pair block the two virtual-Fock products on
+the pair's domain, the two occupied-coupling sums over the pairs that share
+$j$ and $i$, each partner block gathered onto this pair's domain, then
+projection onto the retained pattern). In canonical orbitals $\mathcal A$ is
+diagonal with entries $\Delta_{ij}^{ab}$ and $t = -J/\Delta$, the amplitudes
+of §2. With the exchange swap $\mathcal S: t_{ij}^{ab} \mapsto t_{ij}^{ba}$
+and $\tilde t = (2 - \mathcal S)\,t$, the energy on the retained pattern is
+evaluated in the Hylleraas form
+
+$$ E_H(t) = \langle\tilde t,\ 2J + \mathcal A\,t\rangle = E_{\mathrm{lin}}(t) + \langle\tilde t,\ R(t)\rangle, \qquad E_{\mathrm{lin}}(t) = \sum_{ijab}\big(2t_{ij}^{ab} - t_{ij}^{ba}\big)J_{ia,jb} $$
+
+(`hylleraas_energy_and_residual`, which also returns the true residual
+$\lVert J + \mathcal A t\rVert$; `linear_energy` is the oracle). The two agree
+at $t^*$, and $E_H$ has no term linear in $t - t^*$ while $E_{\mathrm{lin}}$
+does (claims 1, 2). The exchange sign $2 - \mathcal S$ is pinned against
+$2 + \mathcal S$, which has the same spectrum (claim 4). Stationarity needs a
+swap-closed pattern, one that keeps $(b,a)$ whenever it keeps $(a,b)$; on a
+one-sided pattern a first-order term survives (claim 5), so
+`hylleraas_energy` calls `ragged::check_swap_closed` and errors instead of
+returning a non-stationary number.
+
+### 12.2 The retained pattern, the pair gate and the virtual space
+
+**Eq-8 mask** (`ragged::pair_block_from_g_cand_gated`). Element $(a,b)$ of
+pair $(i,j)$ is kept when $\varepsilon = 0$ or
+$|J_{ia,jb}| > \varepsilon$ or $|J_{ib,ja}| > \varepsilon$. The test is
+symmetric in $(a,b)$, so the pattern is swap-closed by construction. A pair
+block holds the rows and columns that carry any kept element (the pair
+domain, the same for rows and columns), and the kept values are the exact
+fitted $J$. $\varepsilon = 0$ keeps everything and reproduces canonical
+RI-MP2 to the solver tolerance.
+
+**Pair gate** (`pair_gate_keep`). An off-diagonal pair is skipped before any
+integral work when
+
+$$ \mathrm{cal}\,\frac{(\sigma_i\sigma_j)^3}{\max(R_{ij}^6,\,10^{-12})} < 10^{-2}\,\varepsilon , $$
+
+$R_{ij}$ the distance between Boys centroids and $\sigma_i$ the orbital
+spread. Diagonal pairs are never gated, $\varepsilon = 0$ makes the gate
+inert, and `cal` (`pair_gate_cal`) is off by default.
+
+**VV-HV virtuals** (`build_vvhv`). Valence virtuals are the STO-3G functions
+projected into the working basis through the combined-basis cross overlap,
+orthogonalized to the occupied space and Boys-localized. The hard virtuals
+come from projected-AO candidates (unit AO vectors with the occupied and
+valence parts removed), selected by a spread-weighted pivoted Cholesky,
+Löwdin orthonormalized and pseudo-canonicalized per atom. The set spans the full virtual space, so the $\varepsilon = 0$
+energy does not depend on the selection; only the compactness of the
+domains does.
+
+### 12.3 The solver and its energy-error bound
+
+The amplitudes come from preconditioned conjugate gradients on
+$\mathcal A t = -J$ with the diagonal $\Delta_{ij}^{ab}$ (from the Fock
+diagonals) as preconditioner. With $\mathcal A$ symmetric positive definite
+on the pattern, $\mathcal S$ commuting with it and $\mathcal S^2 = 1$, the
+error of $E_H$ at residual $R$ is
+
+$$ E_H(t) - E^{*} = \langle(2 - \mathcal S)\,\mathcal A^{-1}R,\ R\rangle \le \frac{3\lVert R\rVert^2}{\lambda_{\min}(\mathcal A)}, \qquad
+\lambda_{\min}(\mathcal A) \ge 2\big(\epsilon_{\mathrm{LUMO}} - \epsilon_{\mathrm{HOMO}}\big) $$
+
+(claim 6; `cg_energy_error_bound` $= 3(\lVert J\rVert\,r_{\mathrm{rel}})^2/\lambda_{\min}$,
+`operator_lambda_min_lower_bound` from the eigenvalues of `f_oo` and `f_vv`,
+`NaN` when the gap is not positive). The second inequality is Cauchy
+interlacing: the pattern projection compresses an operator whose
+eigenvalues are $\epsilon_a + \epsilon_b - \epsilon_i - \epsilon_j$; the
+script proves the first inequality on a model, not the interlacing step. The
+policy (`solve_under_rtol_policy`): stop at relative residual $10^{-6}$
+(`LMP2_CG_RTOL_DEFAULT`); if the bound there exceeds $10^{-10}$ Ha
+(`LMP2_CG_ENERGY_ERROR_TARGET`), continue on the same Krylov sequence to
+$r_{\mathrm{rel}} = \max\big(\tfrac12\sqrt{\lambda_{\min}\,10^{-10}/3}\,/\lVert J\rVert,\ 10^{-11}\big)$
+(`tightened_cg_rtol`, `CG_TIGHTEN_SAFETY` $= \tfrac12$, so the bound lands at
+a quarter of the target; `LMP2_CG_RTOL_STRICT` is the floor). With no
+positive gap the solve runs at $10^{-11}$. An explicit `cg_rtol` disables
+the tightening. The bound covers the solver error only, not the truncation
+by $\varepsilon$.
+
+### 12.4 The integral-direct domain-local fit
+
+`lmp2_direct.rs` (`integral_direct = true`) never forms the global
+$(N_{\mathrm{aux}}, n_on_v)$ tensor. Each occupied $i$ has an auxiliary
+domain $D_i$ (aux shells within `aux_radius` of its centroid) and a virtual
+domain $V_i$ (within `virt_radius`). A pair is fitted in
+$D_{ij} = D_i \cup D_j$ over the candidate virtuals $C_{ij} = V_i \cup V_j$
+from unwhitened strips $A_i = (P|ia)$, $P \in D_{ij}$, $a \in C_{ij}$, with the
+metric restricted to the domain:
+
+$$ J_{ia,jb} = \sum_{P,Q\in D_{ij}}(P|ia)\,[V_{DD}^{-1}]_{PQ}\,(Q|jb) = (W_i^{\mathsf T}W_j)_{ab}, \qquad V_{DD} = LL^{\mathsf T}, \quad W_k = L^{-1}A_k $$
+
+(`fit_domain_group`: one Cholesky factor per pair-domain group, one
+triangular solve per distinct occupied, one product per pair; claim L1). The
+Dunlap robust form $A_i^{\mathsf T}c_j + c_i^{\mathsf T}A_j - c_i^{\mathsf T}V_{DD}c_j$,
+$c = V_{DD}^{-1}A$, equals this Gram form when one domain and one kernel serve
+the pair, so the robust correction cancels (claim L2). The result goes
+through the same mask, solver and energy as §12.1–12.3. With every map a
+no-op (no `virt_radius`, `ao_tail = 0`, `aux_radius` $\ge 10^5$ Bohr, no
+gate, `schwarz_skip = 0`) and $\varepsilon = 0$ the energy is canonical
+RI-MP2 to the solver tolerance
+(`trivial_limit_matches_global_domain_fit_and_canonical`).
+
+### 12.5 DLPNO-MP2
+
+**Pair screen** (`estimate_pair_energies_from_b_ov`,
+`pair_energy_screen::build_pair_domains_by_energy`). With $f = 1$ for
+$i = j$ and $f = 2$ for $i < j$,
+
+$$ e_{ij} = -f\sum_{ab}\frac{(ia|jb)\big[2(ia|jb) - (ib|ja)\big]}{\Delta_{ij}^{ab}}, \qquad \sum_{i\le j}e_{ij} = E^{(2)} $$
+
+(**[check 1]**). A pair is kept when $|e_{ij}| \ge t_{\mathrm{cut,pairs}}$
+(`DlpnoConfig::t_cut_pairs`, default $10^{-5}$ Ha); diagonal pairs are
+always kept. A distance cutoff (`pair_cutoff`) is the alternative and the
+energy criterion wins when both are set.
+
+**Pair natural orbitals** (`local_pno::pno_for_pair`). From the canonical
+first-order amplitudes $T^{ij}_{ab} = -(ia|jb)/\Delta_{ij}^{ab}$,
+
+$$ \mathcal D^{ij} = T^{ij}(T^{ij})^{\mathsf T} + (T^{ij})^{\mathsf T}T^{ij}, \qquad \mathcal D^{ij}q_k = n_kq_k, \qquad Q = [\,q_k : |n_k| \ge t_{\mathrm{cut,PNO}}\,] , $$
+
+symmetrized and not normalized: $\operatorname{tr}\mathcal D^{ij} = 2\lVert T^{ij}\rVert_F^2$
+and `t_cut_pno` thresholds these raw occupations (claim L4). If no
+occupation passes, the largest is kept.
+
+**Pair energy in the PNO basis** (`pair_energy_in_pno_basis`). The PNOs are
+not eigenvectors of the virtual Fock matrix, so the kernel semicanonicalizes:
+
+$$ Q^{\mathsf T}\operatorname{diag}(\epsilon_v)\,Q = U\operatorname{diag}(\tilde\epsilon)\,U^{\mathsf T}, \qquad
+\tilde G = U^{\mathsf T}Q^{\mathsf T}G^{ij}QU, \qquad \tilde G^{\times} = U^{\mathsf T}Q^{\mathsf T}(G^{ij})^{\mathsf T}QU, $$
+$$ E^{ij}_{\mathrm{OS}} = -f\sum_{ab}\frac{\tilde G_{ab}^2}{\tilde\Delta_{ab}}, \qquad
+E^{ij}_{\mathrm{SS}} = -f\sum_{ab}\frac{\tilde G_{ab}(\tilde G_{ab} - \tilde G^{\times}_{ab})}{\tilde\Delta_{ab}}, \qquad
+\tilde\Delta_{ab} = \tilde\epsilon_a + \tilde\epsilon_b - \epsilon_i - \epsilon_j , $$
+
+with $G^{ij}_{ab} = (ia|jb) = (B_i^{\mathsf T}B_j)_{ab}$, whose transpose is the
+exchange block $(ib|ja)$. With every PNO kept this is the canonical pair
+energy; the diagonal $f_{aa} = \sum_cQ_{ca}^2\epsilon_c$ in place of the
+semicanonicalization is not (claim L3). The pair-driven path assumes the Gram
+form of $G$, true for every factorized $B$ and false for the robust
+three-term fit, which only the dense-$g$ reference
+`dlpno_mp2_spin_components` accepts.
+
+**Localized occupieds** (`dlpno_localized::dlpno_mp2_localized_from_b_ov`).
+The occupieds are Boys-localized, which rotates $B$ exactly and makes $f$
+non-diagonal; the amplitudes then solve the coupled equations of §12.1 with
+canonical virtuals, by Jacobi iteration over the retained pairs. This path
+screens pairs only (no PNO truncation, because the coupling sums blocks of
+different pairs and needs one virtual basis); `add_back_truncation` adds the
+screened pairs' estimated energy, which is an estimate, not a bound.
+
+`DlpnoConfig::exact()` (both thresholds 0, no distance cutoff) reproduces
+canonical RI-MP2 (`dlpno_mp2_exact_at_zero_truncation`,
+`pair_driven_exact_at_zero_truncation`). The PNO truncation error has no
+bound.
 
 ## 13. MP2-V
 

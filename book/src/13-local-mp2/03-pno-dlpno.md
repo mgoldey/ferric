@@ -1,7 +1,7 @@
 # 13.3 Pair natural orbitals and DLPNO-MP2
 
-<!-- section: 13.3; status: gap; registry: none;
-     theory: crates/ferric-mp2/theory.md#"2. Closed-shell RI-MP2" -->
+<!-- section: 13.3; status: ready; registry: local-mp2;
+     theory: crates/ferric-mp2/theory.md#"12.5 DLPNO-MP2" -->
 
 The domain-based local pair natural orbital (DLPNO) idea truncates MP2 in two
 places. Pairs of occupied orbitals whose estimated correlation energy is small are
@@ -11,8 +11,8 @@ library path. It is separate from the amplitude-threshold method of sections
 13.1 and 13.2, with a different truncation, and the two are not compared like for
 like.
 
-This section is marked `gap`: no `theory.md` text covers it. The text is read
-from `crates/ferric-mp2/src/dlpno_mp2.rs`, `local_pno.rs`,
+The derivation is `crates/ferric-mp2/theory.md` §12.5, read from
+`crates/ferric-mp2/src/dlpno_mp2.rs`, `local_pno.rs`,
 `pair_energy_screen.rs` and `dlpno_localized.rs`. The pair-energy sum, the
 PNO energy and the pair density are machine-checked below. The PNO-truncation
 error itself has no bound.

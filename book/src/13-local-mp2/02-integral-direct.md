@@ -1,7 +1,7 @@
 # 13.2 The integral-direct path
 
-<!-- section: 13.2; status: gap; registry: none;
-     theory: crates/ferric-mp2/theory.md#"2. Closed-shell RI-MP2" -->
+<!-- section: 13.2; status: ready; registry: local-mp2;
+     theory: crates/ferric-mp2/theory.md#"12.4 The integral-direct domain-local fit" -->
 
 The amplitude-threshold method of section 13.1 builds the global
 three-index tensor of shape $(N_{\mathrm{aux}}, n_on_v)$ before it truncates
@@ -12,10 +12,9 @@ integrals that the retained pairs need, half-transforms them into one small
 strip per occupied orbital, and fits each pair in a domain-local auxiliary
 basis. Solve and energy are the unchanged ragged machinery of 13.1.
 
-This section is marked `gap`: the construction is documented in the module
-header of `crates/ferric-mp2/src/lmp2_direct.rs` and the user guide, and
-`crates/ferric-mp2/theory.md` section 12 is a pointer with no derivation. The
-fit identities are machine-checked below. The locality maps are definitions, not
+The derivation is `crates/ferric-mp2/theory.md` §12.4; the construction is
+also documented in the module header of `crates/ferric-mp2/src/lmp2_direct.rs`
+and the user guide. The fit identities are machine-checked below. The locality maps are definitions, not
 equations, and are checked by the trivial-limit tests.
 
 | Symbol | Meaning | Code name |
