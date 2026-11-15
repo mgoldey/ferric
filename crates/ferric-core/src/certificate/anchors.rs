@@ -497,6 +497,23 @@ pub const ENERGY_ANCHORS: &[EnergyAnchor] = &[
         functionals: &[],
     },
     EnergyAnchor {
+        method: "RS-MP2-RPA",
+        kind: "rs-mp2-rpa",
+        quantity: "correlation energy",
+        value: "2.0e-12",
+        units: "Ha",
+        reference: "PySCF",
+        evidence: "crates/ferric-rpa/tests/validation_rs_mp2_rpa_pyscf.rs",
+        data: AnchorData::Directory {
+            dir: "testdata/reference/validation/rs_mp2_rpa_pyscf",
+            systems: &["h2o", "c2h4", "water_dimer"],
+        },
+        elements: &["H", "C", "O"],
+        basis_sets: &["cc-pvdz", "aug-cc-pvdz"],
+        aux_basis_sets: &["cc-pvdz-ri", "aug-cc-pvdz-rifit"],
+        functionals: &[],
+    },
+    EnergyAnchor {
         method: "CASSCF",
         kind: "casscf",
         quantity: "energy",

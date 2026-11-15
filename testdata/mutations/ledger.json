@@ -278,6 +278,14 @@
         "baseline_run": true,
         "date": "2026-11-13"
       }
+    },
+    {
+      "anchor": "RS-MP2-RPA",
+      "patch": "testdata/mutations/rs-mp2-rpa.patch",
+      "mutation": "rs_mp2_rpa.rs: the DeltaLr (B) ring subtraction uses 1·E_OS[erf] instead of 2·E_OS[erf].",
+      "evidence": "crates/ferric-rpa/tests/validation_rs_mp2_rpa_pyscf.rs",
+      "test": "rs_mp2_rpa_h2o_cc_pvdz_vs_pyscf",
+      "result": null
     }
   ]
 }

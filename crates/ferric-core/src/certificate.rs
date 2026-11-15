@@ -175,7 +175,7 @@ pub const METHOD_KIND_GRADES: &[(&str, Grade)] = &[
     ("laplace-mp2", Grade::Proven),
     ("laplace-sos-mp2", Grade::Proven),
     ("pdep-rpa", Grade::Proven),
-    ("rs-mp2-rpa", Grade::Smoke),
+    ("rs-mp2-rpa", Grade::Proven),
     ("gw", Grade::ProvenNarrow),
     ("bse-tda", Grade::Smoke),
     ("tdhf-static-polarizability", Grade::Smoke),

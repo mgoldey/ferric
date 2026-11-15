@@ -1,0 +1,13 @@
+diff --git a/crates/ferric-rpa/src/rs_mp2_rpa.rs b/crates/ferric-rpa/src/rs_mp2_rpa.rs
+index 360c6470b..b75aa496c 100644
+--- a/crates/ferric-rpa/src/rs_mp2_rpa.rs
++++ b/crates/ferric-rpa/src/rs_mp2_rpa.rs
+@@ -407,7 +407,7 @@ pub fn rs_mp2_lr_rpa(
+             let sc_lr = sc_of(&it_lr);
+             let sc_full = sc_of(&inter_of(Operator::coulomb())?);
+             let sc_sr = sc_of(&inter_of(op_sr)?);
+-            let e_dmp2_lr = 2.0 * sc_lr.e_os;
++            let e_dmp2_lr = 1.0 * sc_lr.e_os;
+             // op_lr is erf(ω) for Erf, terf(r0) for Terf — the LR dRPA must
+             // use the SAME long-range operator the attenuator selected, not a
+             // hardcoded erf. drpa_cfg carries main's memory budget knobs.

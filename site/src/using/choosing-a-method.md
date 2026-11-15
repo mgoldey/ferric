@@ -34,7 +34,7 @@ has no validated option for a task, the row says so.
 
 | Task | Recommended | Where | Grade | Scaling | Example |
 |---|---|---|---|---|---|
-| Long-range correlation from response | RS-MP2 + LR-RPA, or PDEP-RPA | CLI `rs-mp2-rpa`, `pdep-rpa` | RS-MP2+RPA Smoke; PDEP-RPA Proven | N⁵ (MP2 part); N⁴ (RI-RPA) | `water-rs-mp2-rpa.toml`, `water-pdep-rpa.toml` |
+| Long-range correlation from response | RS-MP2 + LR-RPA, or PDEP-RPA | CLI `rs-mp2-rpa`, `pdep-rpa` | RS-MP2+RPA Proven at the default ω (the ω choice is unbenchmarked); PDEP-RPA Proven | N⁵ (MP2 part); N⁴ (RI-RPA) | `water-rs-mp2-rpa.toml`, `water-pdep-rpa.toml` |
 | Ionization potentials / electron affinities | G0W0@PBE (or @HF); U-GW for open shells | CLI `gw`, Python `run_gw`, `run_u_gw` | Smoke, about ±0.3 eV | — | `water-g0w0-pbe.toml`, `oh-ugw.toml` |
 | Static polarizability | PDEP-RPA properties, or RPAx@KS (static α only) | CLI `pdep-rpa` with `compute_polarizability`, `tdhf-static-polarizability` | PDEP-RPA Proven (energy); RPAx Smoke | N⁴ (RI) | `h2o-pdep-rpa-props.toml`, `water-tdhf-static-alpha.toml` |
 | \\( C_6 \\) dispersion coefficients | PDEP-RPA dynamic α (`c6_source = "pdep"`) or TS/MBD, in an augmented basis. Not RPAx: its \\( C_6 \\) is ~63% low | CLI `pdep-rpa` + `[rpa] compute_c6` | which source is better is not established | N⁴ (RI) | `water-c6-pdep.toml`, `argon-c6-rpa-pbe.toml` |

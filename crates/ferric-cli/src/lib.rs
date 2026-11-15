@@ -157,14 +157,6 @@ pub const EPISTEMIC_WARNINGS: &[(&str, &str)] = &[
          to ~0.3-0.4 Ha rather than treating it as a crash.",
     ),
     (
-        "rs-mp2-rpa",
-        "method.kind = \"rs-mp2-rpa\" has Proven energy LIMITS (omega->0/infinity reduce exactly \
-         to MP2/MP2+dRPA) but is only Smoke-grade at production omega (see site/src/reference/validation.md): \
-         ACONF ties RI-MP2 at omega<=0.3 1/A, and the aug-cc-pVTZ benchmark criterion was met \
-         only marginally on one small subset -- treat mid-range-omega numbers as unproven on \
-         new systems.",
-    ),
-    (
         "b2plyp",
         "method.kind = \"b2plyp\" is Spike-grade: the KS reference uses weighted B88+LYP via \
          per-component XC weights (new infrastructure), and the MP2 correlation reuses the proven \
@@ -3579,6 +3571,12 @@ fn run_rs_mp2_rpa(
         rs_cfg.drpa.trunc_thresh = t;
     }
     rs_cfg.drpa.memory_budget_bytes = budget_bytes;
+    for line in rs_mp2_rpa_notices(matches!(
+        attenuator,
+        ferric_rpa::rs_mp2_rpa::Attenuator::Terf
+    )) {
+        eprintln!("[warning] {line}");
+    }
 
     // One point per r0 in the sweep (or just the single configured r0). The
     // SCF `result` is shared across all of them by construction.
@@ -3895,6 +3893,30 @@ fn run_scs_mp2_2terfc(
 ///    `solve_rhf` ignores multiplicity and fails outright on an odd-electron
 ///    molecule). So `result` is already UHF here for `multiplicity > 1`; this
 ///    function never re-solves.
+/// Run-time notices for `rs-mp2-rpa`. The implementation is Proven at the
+/// default omega against PySCF (see `site/src/reference/validation.md`); the
+/// omega parameterization is not benchmarked, and the terf/terfc split has no
+/// reference-code comparison. Not keyed into `EPISTEMIC_WARNINGS`, which is
+/// reserved for kinds that are not Proven.
+fn rs_mp2_rpa_notices(terf: bool) -> Vec<String> {
+    let mut out = vec![
+        "rs-mp2-rpa: the energy at a given omega is validated against PySCF (see \
+         site/src/reference/validation.md); the choice of omega is not. The default 0.420 1/A \
+         is the erfc-optimal value of attenuated MP2 in aug-cc-pVDZ; on benchmarks ACONF ties \
+         RI-MP2 at omega <= 0.3 1/A and the aug-cc-pVTZ criterion was met only marginally on \
+         one small subset, so interaction energies on new systems are unbenchmarked."
+            .to_string(),
+    ];
+    if terf {
+        out.push(
+            "rs-mp2-rpa with attenuator = \"terf\": the terf/terfc split is checked only by its \
+             exact limits and the split identity, not against another code."
+                .to_string(),
+        );
+    }
+    out
+}
+
 /// Run-time notices that the MP2-V PARAMETERS (r0, b, C) are being used outside
 /// the setting they were fitted in. The implementation is Proven (narrow); the
 /// parameterization is not benchmarked (see `site/src/reference/validation.md`),
@@ -7817,6 +7839,21 @@ mod scf_functional_tests {
         // Every other kind follows the config.
         assert!(overlap_site("ksdft", Some("PBE")));
         assert!(!overlap_site("ksdft", Some("B3LYP")));
+    }
+}
+
+#[cfg(test)]
+mod rs_mp2_rpa_notice_tests {
+    use super::rs_mp2_rpa_notices as notices;
+
+    #[test]
+    fn erf_prints_the_omega_notice_and_terf_adds_its_own() {
+        let erf = notices(false);
+        assert_eq!(erf.len(), 1);
+        assert!(erf[0].contains("choice of omega is not"));
+        let terf = notices(true);
+        assert_eq!(terf.len(), 2);
+        assert!(terf[1].contains("attenuator = \"terf\""));
     }
 }
 

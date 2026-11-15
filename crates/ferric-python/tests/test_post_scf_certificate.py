@@ -164,7 +164,7 @@ def test_drpa_and_linlccd_dicts_carry_certificates():
 def test_rs_mp2_rpa_certificate_names_its_split():
     mol, bs, aux = _setup()
     c = ferric.run_rs_mp2_rpa(mol, bs, aux, omega=0.42).certificate
-    _row(c, "rs-mp2-rpa", "smoke", ["ri", "range-separation", "frequency-quadrature"])
+    _row(c, "rs-mp2-rpa", "proven", ["ri", "range-separation", "frequency-quadrature"])
     detail = [
         a["detail"] for a in c["approximations"] if a["name"] == "range-separation"
     ]
