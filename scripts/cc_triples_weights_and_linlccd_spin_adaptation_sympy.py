@@ -12,29 +12,52 @@ identity that must hold for any closed-shell-structured t1/t2 and any
 Claims
   1  (sympy) sum_{i<=j<=k<n} m(i,j,k) = n^3 with m = 1/3/6 for
      i=j=k / exactly two equal / all distinct
-     (ccsd_t_closed_shell.rs:171 occ_triple_multiplicity).
-  2  The closed-shell per-triple sum f(i,j,k) = sum_abc Wt V / D, ported from
-     ccsd_t_closed_shell.rs:297 raw_w_block, :348 w_block, :376 add_v_singles
-     and the Wt pattern at :601-607, is the same for all 6 orderings of (i,j,k).
-  3  sum_{i<=j<=k} m f / 3  ==  sum_{i,j,k} f / 3   (the band at :611-622, the
-     divisor at :634; also dlpno_ccsd_t.rs:374 screened_triple_energy).
+     (dlpno_ccsd_t.rs occ_triple_multiplicity; the same weights on virtual
+     triples are ccsd_t_closed_shell.rs triple_multiplicity).
+  2  The closed-shell per-triple sum f(i,j,k) = sum_abc Wt V / D at a fixed
+     OCCUPIED triple (the module-doc equations of ccsd_t_closed_shell.rs: raw
+     block w0, W summed over the 6 pair permutations, V with the singles, Wt
+     with PySCF's r3 pattern on the virtual axes) is the same for all 6
+     orderings of (i,j,k).
+  3  sum_{i<=j<=k} m f / 3  ==  sum_{i,j,k} f / 3   (the occupied banding and
+     divisor of dlpno_ccsd_t.rs screened_triple_energy).
   4  sum_{i,j,k} f / 3 equals the dense spin-orbital (T) of ccsd_t.rs (module
      doc formula, E = 1/36 sum (W+V) W / D) on the spin-orbital expansion of
      the same t1/t2/integrals. This pins the divisor 3 against an independent
      construction.
+  4b The production kernel's banding: virtual triples a<=b<=c with weight
+     m(a,b,c), the Wt pattern and the singles on the OCCUPIED axes of W at
+     fixed (a,b,c), divisor 3 (ccsd_t_closed_shell.rs triple_energy,
+     pair_job_energy, triple_multiplicity), equals the dense spin-orbital (T).
   5  Negative controls for 3/4: the spin-orbital banding transplanted
      (i<j<k, weight 6), the divisor 6, unit weights, and dropping the
      W(bca)+W(cab) terms of Wt must each FAIL.
-  6  LinLCCD spin adaptation: the spin-orbital equations of linlccd.rs:345-388
+  6  LinLCCD spin adaptation: the spin-orbital equations of linlccd.rs linlccd
        D t = <ij||ab> + 1/2 sum_kl <kl||ij> t_klab [+ 1/2 sum_cd <ab||cd> t_ijcd],
        E = 1/4 sum <ij||ab> t
-     and the spatial equations of linlccd_amplitude.rs:316-357 / :391-407
+     and the spatial equations of linlccd_amplitude.rs linlccd_masked_solve
+     (hh coefficient OoGram::coeff = (ik|jl), energy loop)
        D T_iajb = (ia|jb) + sum_kl (ik|jl) T_kalb [+ sum_cd (ac|bd) T_icjd],
        E = sum (ia|jb) (2 T_iajb - T_ibja)
      give the same energy for drivers-only, hh and full, and
      T_iajb = t[i alpha, j beta, a alpha, b beta].
   7  Negative controls for 6: hh coefficient 1 instead of 1/2 (spin-orbital)
      and (ij|kl) instead of (ik|jl) (spatial) must each FAIL.
+
+Independent routes: claims 4 and 4b compare with the dense spin-orbital (T)
+built from the antisymmetrized integrals; claim 6 solves the spin-orbital
+LinLCCD system densely and compares energy and amplitudes.
+
+Scope: closed shell only. There is no open-shell (T). The unrestricted
+spin-orbital LinLCCD (linlccd_u.rs) is not checked here.
+
+Mutations (each turns the script red):
+  - 2 W instead of 4 W in the transcribed occupied-axis Wt of claim 4b
+    (marker "[FAIL] claim 4b");
+  - (jc|kb) instead of (jb|kc) in the first singles term of claim 4b's V
+    (marker "[FAIL] claim 4b");
+  - drop the 2 on T in the transcribed spatial LinLCCD energy
+    (2 T_iajb - T_ibja) (marker "[FAIL] claim 6").
 
 Run: python3 scripts/cc_triples_weights_and_linlccd_spin_adaptation_sympy.py
 """
@@ -106,14 +129,14 @@ PERMS3 = [(0, 1, 2), (0, 2, 1), (1, 0, 2), (1, 2, 0), (2, 0, 1), (2, 1, 0)]
 
 
 def raw_w(i, j, k):
-    """ccsd_t_closed_shell.rs:297 raw_w_block."""
+    """Raw block w0(i,j,k)[a,b,c] (ccsd_t_closed_shell.rs module doc, raw_w_pair)."""
     term1 = np.einsum("abd,cd->abc", ovvv[i], t2[k, j])
     term2 = np.einsum("al,lbc->abc", ovoo[i, :, :, j], t2[:, k])
     return term1 - term2
 
 
 def w_block(i, j, k):
-    """ccsd_t_closed_shell.rs:348 w_block (np.transpose == ndarray permuted_axes)."""
+    """W: w0 summed over the 6 pair permutations (np.transpose == permuted_axes)."""
     occ = (i, j, k)
     out = np.zeros((nv, nv, nv))
     for p in PERMS3:
@@ -127,7 +150,7 @@ def w_block(i, j, k):
 
 def f_triple(i, j, k, drop_cyclic=False):
     w = w_block(i, j, k)
-    vv = w.copy()  # add_v_singles, :376
+    vv = w.copy()  # V = W + singles
     vv += np.einsum("bc,a->abc", ovov[j, :, k, :], t1[i])
     vv += np.einsum("ac,b->abc", ovov[i, :, k, :], t1[j])
     vv += np.einsum("ab,c->abc", ovov[i, :, j, :], t1[k])
@@ -286,6 +309,55 @@ no_cyc = sum(
 )
 control("Wt without W(bca)+W(cab)", no_cyc / 3.0, e_so, 1e-3)
 
+# ---------------------------------------------------------------- claim 4b
+# The production kernel bands over VIRTUAL triples a<=b<=c (ccsd_t_closed_shell
+# triple_energy, pair_job_energy, triple_multiplicity) and applies the Wt
+# pattern and the singles to the OCCUPIED axes of W[i,j,k] at fixed (a,b,c).
+# Port of that fused pass, on W from w_block, against the spin-orbital (T).
+Wf = np.array(
+    [[[w_block(i, j, k) for k in range(no)] for j in range(no)] for i in range(no)]
+)
+Wt_occ = (
+    4.0 * Wf
+    + np.einsum("kij...->ijk...", Wf)
+    + np.einsum("jki...->ijk...", Wf)
+    - 2.0
+    * (
+        np.einsum("kji...->ijk...", Wf)
+        + np.einsum("ikj...->ijk...", Wf)
+        + np.einsum("jik...->ijk...", Wf)
+    )
+)
+V_occ = (
+    Wf
+    + np.einsum("jbkc,ia->ijkabc", ovov, t1)
+    + np.einsum("iakc,jb->ijkabc", ovov, t1)
+    + np.einsum("iajb,kc->ijkabc", ovov, t1)
+)
+D_occ = (
+    eps_o[:, None, None, None, None, None]
+    + eps_o[None, :, None, None, None, None]
+    + eps_o[None, None, :, None, None, None]
+    - eps_v[None, None, None, :, None, None]
+    - eps_v[None, None, None, None, :, None]
+    - eps_v[None, None, None, None, None, :]
+)
+g_abc = np.einsum("ijkabc->abc", Wt_occ * V_occ / D_occ)
+e_virt_band = (
+    sum(
+        multiplicity(a, b, c) * g_abc[a, b, c]  # triple_multiplicity(a, b, c)
+        for a in range(nv)
+        for b in range(a, nv)
+        for c in range(b, nv)
+    )
+    / 3.0
+)
+check(
+    "claim 4b: virtual-banded kernel (triple_energy) == spin-orbital (T)",
+    abs(e_virt_band - e_so) < 1e-12 * abs(e_so),
+    f"({e_virt_band:.15e} vs {e_so:.15e})",
+)
+
 # ---------------------------------------------------------------- claim 6
 no_l, nv_l = 3, 4  # LinLCCD: smaller so the spin-orbital system solves densely
 nmo_l = no_l + nv_l
@@ -298,7 +370,7 @@ ol, vl = slice(0, no_l), slice(no_l, nmo_l)
 
 
 def spinorbital_linlccd(variant, hh_coeff=0.5):
-    """linlccd.rs:345-388, solved as one dense linear system."""
+    """linlccd.rs linlccd, solved as one dense linear system."""
     n2o, n2v = 2 * no_l, 2 * nv_l
 
     def asym_block(p_sp, q_sp, r_sp, s_sp):
@@ -342,7 +414,7 @@ def spinorbital_linlccd(variant, hh_coeff=0.5):
 
 
 def spatial_linlccd(variant, hh_exchange_bug=False):
-    """linlccd_amplitude.rs:316-357 (operator) and :391-407 (energy)."""
+    """linlccd_amplitude.rs linlccd_masked_solve (operator and energy)."""
     iajb = g[ol, vl, ol, vl]
     d = (
         eo[:, None, None, None]

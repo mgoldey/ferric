@@ -29,7 +29,16 @@ Negative controls (each must NOT reproduce the quadrature): dropping one axis
 block <d_a d_a m | V | n> (Laplacian on the bra), which differs from pVp by
 the integration-by-parts term <m | grad V . grad n>, nonzero for D > 0.
 
-Exits nonzero on the first mismatch. Prints reference values used in the
+Independent route: the s/s closed form `pvp_ss` (the same expression as
+`i2` in crates/ferric-integrals/tests/pvp.rs) is compared with a 30-digit 1-D
+radial quadrature of the definition; the p/p trace is rebuilt from the
+Cartesian components by direct symbolic integration.
+
+Mutations (each turns the script red, marker "FAIL s/s"):
+  - drop the 2 in the 2 D p^(5/2) denominator of the numeric closed form;
+  - flip the sign of the exp(-p D^2) term of the numeric closed form.
+
+Exits nonzero on any mismatch. Prints reference values used in the
 Rust test docs.
 """
 

@@ -3,7 +3,7 @@
 
 Each claim names the Rust function it checks. Theory and notation:
 crates/ferric-gw/theory.md. Every claim asserts; the script exits nonzero on
-the first mismatch. Negative controls (a deliberately wrong variant that must
+any mismatch. Negative controls (a deliberately wrong variant that must
 NOT satisfy the identity) are included where a pass could otherwise be vacuous.
 
   1  One-pair RPA dielectric -> single-pole W. With the closed-shell Pi
@@ -17,6 +17,12 @@ NOT satisfy the identity) are included where a pass could otherwise be vacuous.
      s/(z - eps_n + Omega) (Re(z - eps_n) > 0, occupied side) and
      s/(z - eps_n - Omega) (Re(z - eps_n) < 0, virtual side). Proven
      symbolically for real arguments, checked at complex z to 40 digits.
+  2b Product integration (ferric_gw::sigma::sigma_c_at_z_product, the rule
+     every closed- and open-shell driver uses): the kernel identity
+     a/(a^2+w'^2) dw' = (i/2)[1/(x-x1) - 1/(x-x2)] dx for w' = u0(1+x)/(1-x),
+     and a port of the product rule with ProductQuadrature::cauchy that
+     reproduces the claim-2 residue result for a single-pole W at 40 nodes,
+     including a state 0.015 Ha from eps_F.
   3  Static-W limit = COHSEX (ferric_gw::cohsex::cohsex_pieces). A frequency-
      independent W in the same integral gives -(W/2) sgn(Re(z - eps_n)); at z in
      the gap that is  -sum_i W_mi + 1/2 sum_p W_mp = dSigma_SEX + Sigma_COH.
@@ -44,6 +50,21 @@ NOT satisfy the identity) are included where a pass could otherwise be vacuous.
      the bare RI (pq|rs), so Sigma_x + dSigma_SEX = full screened exchange
      (ferric_gw::cohsex::run_cohsex) and v + sum_alpha w_alpha M M = sum_alpha
      (1/lambda_alpha) M M (ferric_gw::bse::run_bse_tda's `screened`).
+
+Independent routes: claim 2 integrates the definition by 40-digit quadrature
+at complex z; claim 2b compares the product rule with the residue closed form;
+claim 4 runs Newton to the exact root; claims 6-8 use exact rationals.
+
+Open shell (theory.md section 9): only the spin-summed dielectric (claim 1,
+prefactor 2 per spin) is open-shell specific. The per-spin Sigma_c is the same
+integral over that spin's MOs, so claims 2-4 cover it; the per-spin mid-gap
+eps_F and the U-COHSEX drivers are not checked separately.
+
+Mutations (each turns the script red):
+  - prefactor 1 instead of 2 on the first spin's Pi in claim 1 (marker
+    "[FAIL] unrestricted");
+  - "+" instead of "-" between the two Cauchy integrals in the product-rule
+    port (marker "[FAIL] product rule").
 
 Run: python3 scripts/gw_self_energy_sympy.py
 """
@@ -155,6 +176,58 @@ for Omv, sv, epsn, zc in [
         abs(num - closed) < mpf(10) ** -30,
         f"complex z={zc}, eps_n={epsn}: |quad - closed| = {mp.nstr(abs(num - closed), 3)}",
     )
+
+# ---------------------------------------------------------------------------
+section("2b product integration (sigma_c_at_z_product, the drivers' default)")
+# Change of variables w' = u0 (1+x)/(1-x): the kernel a/(a^2+w'^2) dw' is
+# (i/2)[1/(x-x1) - 1/(x-x2)] dx with x1 = (a - i u0)/(a + i u0), x2 = 1/x1.
+xs, u0s, a_s = sp.symbols("x u0 a_s")
+wprime = u0s * (1 + xs) / (1 - xs)
+x1s = (a_s - sp.I * u0s) / (a_s + sp.I * u0s)
+kern_x = a_s / (a_s**2 + wprime**2) * sp.diff(wprime, xs)
+pf = sp.I / 2 * (1 / (xs - x1s) - 1 / (xs - 1 / x1s))
+check(is_zero(kern_x - pf), "a/(a^2+w'^2) dw'/dx = (i/2)[1/(x-x1) - 1/(x-1/x1)]")
+
+
+def sigma_product(Omv, sv, epsn, zc, u0v, n):
+    """Port of sigma_c_at_z_product + ProductQuadrature::cauchy for one state n."""
+    import numpy as np
+
+    xk, wk = np.polynomial.legendre.leggauss(n)
+    om = u0v * (1 + xk) / (1 - xk)
+    pk = -2 * Omv * sv / (om**2 + Omv**2)  # W_mn(i w') at the nodes
+    lam = np.array(
+        [1 / np.prod([xk[k] - xk[j] for j in range(n) if j != k]) for k in range(n)]
+    )
+
+    def cauchy(x0):
+        r = abs(x0 + np.sqrt(x0 * x0 - 1))
+        rho = max(r, 1 / r)
+        if n * np.log(rho) > np.log(1e6):
+            return np.sum(wk * pk / (xk - x0))
+        t = lam / (x0 - xk)
+        p0 = np.sum(t * pk) / np.sum(t)
+        return p0 * np.log((1 - x0) / (-1 - x0)) + np.sum(wk * (pk - p0) / (xk - x0))
+
+    av = zc - epsn
+    x1 = (av - 1j * u0v) / (av + 1j * u0v)
+    return -(0.5j * (cauchy(x1) - cauchy(1 / x1))) / np.pi
+
+
+worst_pr = 0.0
+for Omv, sv, epsn, zc in [
+    (0.9, 0.3, -0.6, -0.1 + 0.7j),
+    (0.9, 0.3, 0.4, -0.1 + 0.7j),
+    (0.9, 0.3, -0.115, -0.1 + 0.05j),  # state 0.015 Ha below eps_F: the hard case
+    (1.7, 0.05, -1.2, -0.25 + 2.5j),
+]:
+    d = zc - epsn
+    closed = sv / (d + Omv) if d.real > 0 else sv / (d - Omv)
+    worst_pr = max(worst_pr, abs(sigma_product(Omv, sv, epsn, zc, 1.0, 40) - closed))
+check(
+    worst_pr < 1e-10,
+    f"product rule (40 nodes) vs closed-form residues: max |diff| = {worst_pr:.1e}",
+)
 
 # ---------------------------------------------------------------------------
 section("3  static W limit = COHSEX (dSigma_SEX + Sigma_COH)")

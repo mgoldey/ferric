@@ -4,7 +4,7 @@ Fourier transform, Ewald-split nuclear attraction, exxdiv correction and
 strain derivatives. Theory: crates/ferric-pbc/theory.md (section numbers below
 match its sections).
 
-Each claim asserts; the script exits nonzero on the first mismatch.
+Each claim is checked; the script exits nonzero on any mismatch.
 
   S1  Ewald omega-independence: d/domega of the SR, LR, self and background
       terms cancel (symbolic, via the Gaussian Poisson sum), and a pure-python
@@ -32,6 +32,17 @@ Each claim asserts; the script exits nonzero on the first mismatch.
       (frozen index sets) and Euler homogeneity tr dv_M/deps = -v_M.
       Rust: crates/ferric-pbc/src/ewald.rs ewald_point_charges_strain,
       madelung_strain; crates/ferric-pbc/src/pair_ft.rs pair_ft_strain_chunked.
+
+Independent routes: S1 reproduces textbook Madelung constants and checks
+omega-independence numerically; S2 compares with mpmath quadrature of the 1-D
+Fourier integral; S5 compares the analytic Ewald strain with a central finite
+difference of the transcribed energy (h = 1e-5, bar 1e-7).
+
+Mutations (each turns the script red):
+  - drop the 1/G^2 part of the transcribed LR kernel derivative
+    k' = -k (1/4w^2 + 1/G^2) (marker "[FAIL] S5 Ewald strain");
+  - drop the 2 in the transcribed background term -pi Q^2/(2 Omega w^2)
+    (marker "[FAIL] S1 charged triclinic toy").
 
 Run: python3 scripts/pbc_ewald_pairft_stress_sympy.py   (about a minute)
 """

@@ -17,10 +17,20 @@ Claims:
      dS/dr = x^2 (-30 + x (60 - 30 x)) / w is dS/dr for x = (r - r_sw)/w
      (cutoff.rs:237-247).
   4. The switched LJ derivative dedr*S + E*dS/dr (code order) is d(E S)/dr.
+  5. Independent route: the code's pair energy and dE/dr, transcribed in
+     floating point from `nonbonded_cutoff`, agree with a central finite
+     difference of that energy (50-digit mpmath, h = 1e-12, so the O(h^2)
+     truncation is below 1e-20) at radii below r_sw and inside the switching
+     window; E_rf(r_c) = 0 numerically.
+
+Mutations (each turns the script red, marker "BAD 5"):
+  - drop the 1/w from the transcribed switch derivative dS/dr;
+  - drop the factor 2 from the transcribed reaction-field force 2 qq k_rf r.
 """
 
 import sys
 
+import mpmath as mp
 import sympy as sp
 
 r, rc, eps, qq, rsw, w, x, sig, ep = sp.symbols(
@@ -78,6 +88,58 @@ check("4 d(E S)/dr", sp.diff(e_lj * S, r) - (dedr * S + e_lj * ds_code))
 check(
     "4 control: minus sign", sp.diff(e_lj * S, r) - (dedr * S - e_lj * ds_code), False
 )
+
+# 5. Numerical route: central differences of the transcribed code energy.
+mp.mp.dps = 50
+
+
+def code_pair(rr, qq_, eps_, rc_, rsw_, sig_, ep_):
+    """Pair energy and dE/dr as `nonbonded_cutoff` evaluates them."""
+    k = (eps_ - 1) / ((2 * eps_ + 1) * rc_ * rc_ * rc_)
+    c = 3 * eps_ / ((2 * eps_ + 1) * rc_)
+    sr6 = (sig_ / rr) ** 6
+    sr12 = sr6 * sr6
+    e_lj = 4.0 * ep_ * (sr12 - sr6)
+    d_lj = 4.0 * ep_ * (-12.0 * sr12 + 6.0 * sr6) / rr
+    if rr > rsw_:
+        w_ = rc_ - rsw_
+        xx = (rr - rsw_) / w_
+        x2 = xx * xx
+        s = 1.0 + x2 * xx * (-10.0 + xx * (15.0 - 6.0 * xx))
+        ds = x2 * (-30.0 + xx * (60.0 - 30.0 * xx)) / w_  # dS/dr
+        d_lj = d_lj * s + e_lj * ds
+        e_lj *= s
+    e_c = qq_ / rr + qq_ * k * rr * rr - c * qq_
+    d_c = -qq_ / (rr * rr) + 2.0 * qq_ * k * rr
+    return e_lj + e_c, d_lj + d_c, e_c
+
+
+par = dict(
+    qq_=mp.mpf("-0.42"),
+    eps_=mp.mpf("78.3"),
+    rc_=mp.mpf("9.5"),
+    rsw_=mp.mpf("7.6"),
+    sig_=mp.mpf("6.1"),
+    ep_=mp.mpf("0.00024"),
+)
+h = mp.mpf("1e-12")
+worst = mp.mpf(0)
+for rr in ("5.3", "6.9", "7.9", "8.6", "9.3"):
+    rr = mp.mpf(rr)
+    _, d, _ = code_pair(rr, **par)
+    fd = (code_pair(rr + h, **par)[0] - code_pair(rr - h, **par)[0]) / (2 * h)
+    worst = max(worst, abs(d - fd))
+ok5 = worst < 1e-18
+print(
+    f"{'ok ' if ok5 else 'BAD'} 5 FD of code energy vs code dE/dr: {mp.nstr(worst, 3)}"
+)
+if not ok5:
+    fails.append("5 FD")
+e_at_rc = code_pair(par["rc_"], **par)[2]
+ok5b = abs(e_at_rc) < 1e-40
+print(f"{'ok ' if ok5b else 'BAD'} 5 E_rf(r_c) = 0 numerically: {mp.nstr(e_at_rc, 3)}")
+if not ok5b:
+    fails.append("5 E_rf(r_c)")
 
 if fails:
     print("FAILED:", fails)

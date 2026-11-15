@@ -20,6 +20,16 @@ the first mismatch.
   4  Bond-angle gradient (energy.rs angle block) equals d theta / d R from
      theta = acos(r_ji . r_jk / (|r_ji||r_jk|)). Control: dropping the
      cos(theta) term.
+
+Independent route: claims 2 and 4 compare the code-transcribed gradients with
+the exact derivative of the angle's definition (atan2 / acos form) evaluated
+at concrete rational geometries to 60 digits.
+
+Mutations (each turns the script red):
+  - flip the sign of the q-projection term in the transcribed d phi/d R_j
+    (marker "FAIL: claim 2");
+  - normalize the cos(theta) term of the transcribed d theta/d R_k by
+    |r_ji|^2 instead of |r_jk|^2 (marker "FAIL: claim 4").
 """
 
 import sys

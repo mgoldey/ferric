@@ -3,10 +3,10 @@
 
 Theory and notation: crates/ferric-pcm/theory.md. Each claim names the Rust
 function it checks, asserts, and carries a negative control (a deliberately
-wrong variant that must NOT satisfy the identity). Exits nonzero on the first
+wrong variant that must NOT satisfy the identity). Exits nonzero on any
 mismatch.
 
-  1  Sphere kernels (matrices.rs build_s_d_kind diagonal, :137 and :169): on a
+  1  Sphere kernels (matrices.rs build_s_d_kind, both kinds' diagonals): on a
      sphere of radius R the double-layer kernel with the source-point normal,
      (r - r').n' / |r - r'|^3, equals -1/(2R) times the single-layer kernel
      1/|r - r'|. The code's D_ii = -S_ii/(2R) is this identity applied to
@@ -48,6 +48,16 @@ mismatch.
      w_j A'_jj ] with x = K^-1 R v, y = K^-T v, w = S x + v, u = A w,
      z = y - f/(2 pi) A D^T y (exact, n = 3). Controls: dropping the area
      term, or using q_sym for x, breaks it.
+
+Independent routes: claim 7 compares the discrete Lebedev-sphere IEF solve
+with the exact Kirkwood series and Gauss's law; claim 8 compares the response
+gradient formula with the exact t-derivative of 1/2 v^T K^-1 R v.
+
+Mutations (each turns the script red):
+  - "+" instead of "-" in the transcribed z = y - f/(2 pi) A D^T y of the
+    response gradient (marker "[FAIL] 8 response gradient");
+  - D_ii = -S_ii/R instead of -S_ii/(2R) in the transcribed GaussianSmeared
+    diagonal (marker "[FAIL] 7 sphere").
 
 Run: python3 scripts/pcm_ief_sympy.py  (needs sympy, numpy, scipy >= 1.15)
 """

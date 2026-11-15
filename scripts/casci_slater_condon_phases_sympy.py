@@ -12,7 +12,7 @@ Convention under test (ferric-ci, crates/ferric-ci/src):
     a+_{q beta} |0>, A/B the alpha/beta u64 strings;
   * a single-channel annihilation/creation at orbital p carries
     (-1)^{#occupied below p IN THAT CHANNEL'S STRING}
-    (strings.rs:82 phase_below), i.e. the alpha electrons are NOT counted
+    (strings.rs phase_below), i.e. the alpha electrons are NOT counted
     for a beta operator.
 
 Claims
@@ -29,18 +29,18 @@ Claims
      built from the explicit JW matrices with SYMBOLIC h_pq = h_qp and
      8-fold-symmetric (pq|rs) equals, as an exact linear form in those
      symbols, a line-for-line port of
-       hamiltonian.rs:128 general_element
-         -> :63  diagonal_element
-         -> :190 single_excitation_same_spin   (phase :206-209)
-         -> :231 double_same_spin              (phase :282 double_phase_same_spin)
-         -> :252 double_opposite_spin          (phase :266-273)
+       hamiltonian.rs general_element
+         -> diagonal_element
+         -> single_excitation_same_spin   (phase_i * phase_a)
+         -> double_same_spin              (phase: double_phase_same_spin)
+         -> double_opposite_spin          (pa_i pa_a pb_j pb_b)
      The odd-N_alpha sectors are the ones that test the omission of the alpha
      parity from beta operators (it cancels pairwise); with N_alpha even it
      would be invisible.
   4  Negative controls, each must FAIL claim 3 somewhere:
-       a  same-spin double, create a before b (swap of :291/:293);
+       a  same-spin double, create a before b (swap of the two creations in double_phase_same_spin);
        b  single excitation, phase_a taken in the full ket instead of
-          ket-minus-i (:208);
+          ket-minus-i (single_excitation_same_spin);
        c  beta single excitation multiplied by (-1)^{N_alpha} only once
           (a non-cancelling alpha parity);
        d  opposite-spin double with the sign dropped from the beta channel;
@@ -50,6 +50,19 @@ Claims
           +-1 similarity, so it must mismatch element-wise yet give the same
           spectrum. That is checked numerically below, which shows claim 3
           is convention-specific (strictly stronger than an energy test).
+
+Independent route: claim 3 is a brute-force comparison with the explicit
+Jordan-Wigner Hamiltonian in the full Fock space of 8-10 spin orbitals.
+
+Scope: `general_element` is the dense / naive-sigma oracle. The production
+Davidson sigma is `sigma.rs` DirectSigma, which this script does not port; the
+Rust tests compare DirectSigma with the oracle.
+
+Mutations (each turns the script red, marker "FAIL n="):
+  - flip the sign of the same-spin exchange integral in the transcribed
+    diagonal_element;
+  - drop the same-spin exchange term (ap|pi) from the transcribed single
+    excitation.
 
 Run: python3 scripts/casci_slater_condon_phases_sympy.py
 """
@@ -146,7 +159,7 @@ def gsym(p, q, r, s):
 
 
 # -------------------------------------------- ferric port (hamiltonian.rs)
-def phase_below(s, p):  # strings.rs:82
+def phase_below(s, p):  # strings.rs phase_below
     return -1 if bin(s & ((1 << p) - 1)).count("1") % 2 else 1
 
 
@@ -154,7 +167,7 @@ def occ(s):
     return [p for p in range(64) if s >> p & 1]
 
 
-def diagonal_element(ao, bo):  # hamiltonian.rs:63
+def diagonal_element(ao, bo):  # hamiltonian.rs diagonal_element
     e = 0
     for p in ao + bo:
         e += hsym(p, p)
@@ -169,7 +182,7 @@ def diagonal_element(ao, bo):  # hamiltonian.rs:63
     return e
 
 
-def single(bra, ket, other, mut):  # hamiltonian.rs:190
+def single(bra, ket, other, mut):  # single_excitation_same_spin
     diff = bra ^ ket
     i = (diff & ket).bit_length() - 1
     a = (diff & bra).bit_length() - 1
@@ -187,7 +200,7 @@ def single(bra, ket, other, mut):  # hamiltonian.rs:190
     return phase_i * phase_a * val
 
 
-def double_same(bra, ket, mut):  # hamiltonian.rs:231, :282
+def double_same(bra, ket, mut):  # double_same_spin, double_phase_same_spin
     diff = bra ^ ket
     i, j = occ(diff & ket)
     a, b = occ(diff & bra)
@@ -203,7 +216,7 @@ def double_same(bra, ket, mut):  # hamiltonian.rs:231, :282
     return ph * (gsym(a, i, b, j) - gsym(a, j, b, i))
 
 
-def double_opp(a_bra, a_ket, b_bra, b_ket, mut):  # hamiltonian.rs:252
+def double_opp(a_bra, a_ket, b_bra, b_ket, mut):  # double_opposite_spin
     da, db = a_bra ^ a_ket, b_bra ^ b_ket
     i = (da & a_ket).bit_length() - 1
     a = (da & a_bra).bit_length() - 1
@@ -216,7 +229,7 @@ def double_opp(a_bra, a_ket, b_bra, b_ket, mut):  # hamiltonian.rs:252
     return pa * pb * gsym(a, i, b, j)
 
 
-def general_element(a_bra, b_bra, a_ket, b_ket, mut=None):  # hamiltonian.rs:128
+def general_element(a_bra, b_bra, a_ket, b_ket, mut=None):  # general_element
     da = bin(a_bra ^ a_ket).count("1")
     db = bin(b_bra ^ b_ket).count("1")
     nd = da + db

@@ -19,6 +19,16 @@ Negative controls (each must FAIL): the 15/16 term dropped, alpha/6 instead of
 alpha in d fdmp/dq, the w-component of dN with the x-component's signs, and
 dE/dC = E/C (no 1/2).
 
+Independent route: claim 5 differentiates the definition E(R) directly with
+sympy and evaluates it at a concrete triangle (40 digits), against the
+code-transcribed dE/dq assembled into Cartesian components.
+
+Mutations (each turns the script red):
+  - 3/4 instead of 3/2 in the transcribed -3/(2 q P^3) term of d ang/dq
+    (marker "[FAIL] 3.");
+  - drop the factor 2 of d(R^2)/dR_a = 2 (R_a - R_b) in the assembled
+    gradient (marker "[FAIL] 5.").
+
 Exit status is nonzero on any mismatch.
 
 Run: python3 scripts/d3_atm_gradient_sympy.py

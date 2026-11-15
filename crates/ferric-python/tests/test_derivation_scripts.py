@@ -310,6 +310,147 @@ CASES = [
             ),
         ],
     ),
+    (
+        "mm_cutoff_sympy.py",
+        15,
+        [
+            ("/ w_  # dS/dr", "# dS/dr", "BAD 5"),
+            ("2.0 * qq_ * k * rr", "qq_ * k * rr", "BAD 5"),
+        ],
+    ),
+    (
+        "mm_dihedral_gradient_sympy.py",
+        15,
+        [
+            (
+                "gj = -gi + p * gi - q * gl",
+                "gj = -gi + p * gi + q * gl",
+                "FAIL: claim 2",
+            ),
+            ("- ct * B / bn**2)", "- ct * B / an**2)", "FAIL: claim 4"),
+        ],
+    ),
+    (
+        "d3_atm_gradient_sympy.py",
+        30,
+        [
+            (
+                "- sp.Rational(3, 2) / (q * P**3)",
+                "- sp.Rational(3, 4) / (q * P**3)",
+                "[FAIL] 3.",
+            ),
+            ("comp = 2 * dq[q]", "comp = dq[q]", "[FAIL] 5."),
+        ],
+    ),
+    (
+        "d3_cn_chain_rule_gradient_sympy.py",
+        480,
+        [
+            (
+                "w = (de_dcn[i] + de_dcn[j]) * dg_dr",
+                "w = de_dcn[i] * dg_dr",
+                "[FAIL] 5a.",
+            ),
+            ("c8 = 3 * c6 * q  # c8", "c8 = c6 * q  # c8", "[FAIL] 5a."),
+        ],
+    ),
+    (
+        "pvp_ss_sympy.py",
+        15,
+        [
+            ("(2 * dv * pv**2.5)", "(dv * pv**2.5)", "FAIL s/s"),
+            (
+                "- mpmath.pi * mpmath.exp(-pv * dv**2) / pv**2",
+                "+ mpmath.pi * mpmath.exp(-pv * dv**2) / pv**2",
+                "FAIL s/s",
+            ),
+        ],
+    ),
+    (
+        "lmp2_hylleraas_vs_wshg23_sympy.py",
+        10,
+        [
+            (
+                "- _t[b * 2 + a] * J[a * 2 + b]",
+                "+ _t[b * 2 + a] * J[a * 2 + b]",
+                "claim 4: exchange sign",
+            ),
+            (
+                "(2 * J_num + A_num * t_m)",
+                "(J_num + A_num * t_m)",
+                "closed mask must have no first-order term",
+            ),
+        ],
+    ),
+    (
+        "casci_slater_condon_phases_sympy.py",
+        300,
+        [
+            (
+                "e += gsym(p, p, q, q) - gsym(p, q, q, p)",
+                "e += gsym(p, p, q, q) + gsym(p, q, q, p)",
+                "FAIL n=",
+            ),
+            ("- gsym(a, p, p, i)", "", "FAIL n="),
+        ],
+    ),
+    (
+        "cc_triples_weights_and_linlccd_spin_adaptation_sympy.py",
+        15,
+        [
+            ("4.0 * Wf", "2.0 * Wf", "[FAIL] claim 4b"),
+            ('"jbkc,ia->ijkabc"', '"jckb,ia->ijkabc"', "[FAIL] claim 4b"),
+            (
+                "iajb * (2.0 * T - T.transpose(0, 3, 2, 1))",
+                "iajb * (T - T.transpose(0, 3, 2, 1))",
+                "[FAIL] claim 6",
+            ),
+        ],
+    ),
+    (
+        "gw_self_energy_sympy.py",
+        30,
+        [
+            ("Pi_u = 2 * b**2", "Pi_u = 1 * b**2", "[FAIL] unrestricted"),
+            (
+                "0.5j * (cauchy(x1) - cauchy(1 / x1))",
+                "0.5j * (cauchy(x1) + cauchy(1 / x1))",
+                "[FAIL] product rule",
+            ),
+        ],
+    ),
+    (
+        "pcm_ief_sympy.py",
+        150,
+        [
+            (
+                "z8 = y8 - p8 * A8 * dty8",
+                "z8 = y8 + p8 * A8 * dty8",
+                "[FAIL] 8 response gradient",
+            ),
+            (
+                "np.fill_diagonal(D, -xi * np.sqrt(2 / np.pi) / (2 * rad))",
+                "np.fill_diagonal(D, -xi * np.sqrt(2 / np.pi) / rad)",
+                "[FAIL] 7 sphere",
+            ),
+        ],
+    ),
+    (
+        "pbc_ewald_pairft_stress_sympy.py",
+        60,
+        [
+            (
+                "kp = -k * (1 / (4 * omega**2) + 1 / g2)",
+                "kp = -k * (1 / (4 * omega**2))",
+                "[FAIL] S5 Ewald strain",
+            ),
+            (
+                "e_g0 = -math.pi * sum(q) ** 2 / (2 * vol * omega**2)",
+                "e_g0 = -math.pi * sum(q) ** 2 / (vol * omega**2)",
+                "[FAIL] S1 charged triclinic toy",
+            ),
+        ],
+    ),
 ]
 
 

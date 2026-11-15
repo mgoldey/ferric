@@ -7,22 +7,22 @@ coordination number CN_A depends on every distance R_AB. This script checks
 the gradient ferric implements in crates/ferric-d3/src/lib.rs:
 
   1. counting function   g(R) = 1/(1+exp(-k(rc/R - 1)))
-                         dg/dR = -k rc/R^2 g(1-g)               (lib.rs:484-487)
-  2. Gaussian weights    W_i(CN) = exp(-wf (CN - CNref_i)^2)    (lib.rs:202-211)
-                         dW_i/dCN = -2 wf (CN - CNref_i) W_i    (lib.rs:527,530)
+                         dg/dR = -k rc/R^2 g(1-g)               (d3bj_gradient, CN pass)
+  2. Gaussian weights    W_i(CN) = exp(-wf (CN - CNref_i)^2)    (reference_weights)
+                         dW_i/dCN = -2 wf (CN - CNref_i) W_i    (c6_interpolated_derivatives)
   3. C6 interpolation    C6 = N/D, dC6/dCN = (dN/dCN - C6 dD/dCN)/D
-                                                                (lib.rs:213-246, 513-548)
+                                                                (c6_interpolated, c6_interpolated_derivatives)
   4. BJ pair terms       dE_p/dR  = s6 C6 6R^5/d6^2 + s8 C8 8R^7/d8^2
-                                                                (lib.rs:449-450)
-                         dE_p/dC6 = -(s6/d6 + 3 qq s8/d8)       (lib.rs:463)
+                                                                (d3bj_gradient, de_dr)
+                         dE_p/dC6 = -(s6/d6 + 3 qq s8/d8)       (d3bj_gradient, de_dc6)
                          R0 = sqrt(C8/C6) = sqrt(3 qq), no geometry dependence
-                                                                (lib.rs:428-430)
+                                                                (d3bj_gradient, r0)
   5. assembled gradient (two passes: explicit pair term + banked dE/dCN_A,
      then sum_{pairs} (dE/dCN_i + dE/dCN_j) dg/dR_ij dR_ij/dx)
-                                                                (lib.rs:368-500)
+                                                                (d3bj_gradient)
      for a 4-atom, two-element model with 3 and 2 reference CNs, the code's
-     KCN = 16 and WF = 4 (lib.rs:97,99), equals
-       (a) sympy's exact derivative of the energy (lib.rs:262-339 transcribed),
+     KCN = 16 and WF = 4 (consts KCN, WF), equals
+       (a) sympy's exact derivative of the energy (d3bj_energy transcribed),
        (b) a 60-digit central finite difference of the same energy.
 
 Anchors and controls:
@@ -31,6 +31,15 @@ Anchors and controls:
   - the chain term is a non-negligible fraction of the gradient in the model;
   - negative controls (each must FAIL): chain term dropped, only the i-side of
     dE/dCN banked, dW/dCN with -wf instead of -2 wf, dg/dR sign flipped.
+
+Independent routes: claim 5 compares the code-transcribed gradient with the
+exact sympy derivative of the energy and with a 60-digit central finite
+difference of it (h = 1e-15).
+
+Mutations (each turns the script red, marker "[FAIL] 5a."):
+  - bank only dE/dCN_i in the transcribed contraction weight (drop the
+    de_dcn[j] side of w);
+  - drop the factor 3 of C8 = 3 C6 qq in the transcribed gradient.
 
 Exit status is nonzero on any mismatch.
 
@@ -65,7 +74,7 @@ def is_zero(expr):
 # ---------------------------------------------------------------------------
 k, rc, R, wf = sp.symbols("k rc R wf", positive=True)
 g = 1 / (1 + sp.exp(-k * (rc / R - 1)))
-code_dg = -k * rc / R**2 * g * (1 - g)  # lib.rs:487
+code_dg = -k * rc / R**2 * g * (1 - g)  # d3bj_gradient, dg_dr
 check("1. dg/dR = -k rc/R^2 g(1-g)", is_zero(sp.diff(g, R) - code_dg))
 check(
     "1. control: +k rc/R^2 g(1-g) fails",
@@ -95,7 +104,7 @@ dN_A = sum(c[i, j] * dWa[i] * Wb[j] for i in range(3) for j in range(2))
 dD_A = sum(dWa[i] * Wb[j] for i in range(3) for j in range(2))
 dN_B = sum(c[i, j] * Wa[i] * dWb[j] for i in range(3) for j in range(2))
 dD_B = sum(Wa[i] * dWb[j] for i in range(3) for j in range(2))
-code_dC6_A = (dN_A - C6 * dD_A) / Den  # lib.rs:544
+code_dC6_A = (dN_A - C6 * dD_A) / Den  # c6_interpolated_derivatives
 code_dC6_B = (dN_B - C6 * dD_B) / Den
 check("3. dC6/dCN_A quotient form", is_zero(sp.diff(C6, CNA) - code_dC6_A))
 check("3. dC6/dCN_B quotient form", is_zero(sp.diff(C6, CNB) - code_dC6_B))
@@ -110,20 +119,20 @@ r0 = sp.sqrt(c8s / c6s)
 check("4. R0 = sqrt(C8/C6) = sqrt(3 qq) (C6 cancels)", is_zero(r0 - sp.sqrt(3 * qq)))
 f = a1 * sp.sqrt(3 * qq) + a2
 d6, d8 = R**6 + f**6, R**8 + f**8
-Ep = -(s6 * c6s / d6 + s8 * c8s / d8)  # lib.rs:335
+Ep = -(s6 * c6s / d6 + s8 * c8s / d8)  # d3bj_energy
 code_dEdR = s6 * c6s * 6 * R**5 / d6**2 + s8 * c8s * 8 * R**7 / d8**2  # :449-450
-code_dEdC6 = -(s6 / d6 + 3 * qq * s8 / d8)  # lib.rs:463
+code_dEdC6 = -(s6 / d6 + 3 * qq * s8 / d8)  # d3bj_gradient, de_dc6
 check("4. dE_pair/dR", is_zero(sp.diff(Ep, R) - code_dEdR))
 check("4. dE_pair/dC6", is_zero(sp.diff(Ep, c6s) - code_dEdC6))
 
 # ---------------------------------------------------------------------------
 # 5. Assembled gradient on a 4-atom model
 # ---------------------------------------------------------------------------
-KCN = 16  # lib.rs:97
-WF = 4  # lib.rs:99
-# Two model elements. rcov in Bohr (lib.rs:107 scale), sqrt_q (lib.rs:117),
+KCN = 16  # const KCN
+WF = 4  # const WF
+# Two model elements. rcov in Bohr (rcov scale), sqrt_q,
 # reference CNs. The C6 table is stored for (X,X), (X,Y), (Y,Y); (Y,X) is the
-# transpose, which is what reference_c6's swap (lib.rs:135-139) enforces.
+# transpose, which is what reference_c6's swap (pair_index) enforces.
 Fr = sp.Rational
 ELEM = {
     "X": dict(rcov=Fr(189, 100), sq=Fr(17, 10), cnref=[Fr(0), Fr(1), Fr(5, 2)]),
@@ -159,14 +168,14 @@ def c6ref(ei, ej, a, b, table):
 
 
 def energy(xyz, elem, table, exp, sqrt):
-    """Transcription of d3bj_energy (lib.rs:262-339) over a generic backend."""
+    """Transcription of d3bj_energy over a generic backend."""
     n = len(ATOMS)
 
     def dist(i, j):
         return sqrt(sum((xyz[i][a] - xyz[j][a]) ** 2 for a in range(3)))
 
     cn = [0] * n
-    for i in range(n):  # coordination_numbers, lib.rs:170-190
+    for i in range(n):  # coordination_numbers
         for j in range(i):
             rc = elem[ATOMS[i]]["rcov"] + elem[ATOMS[j]]["rcov"]
             gij = 1 / (1 + exp(-KCN * (rc / dist(i, j) - 1)))
@@ -203,8 +212,8 @@ def code_gradient(
     dg_sign=-1,
     return_parts=False,
 ):
-    """Term-by-term mpmath port of d3bj_gradient (lib.rs:368-500) and
-    c6_interpolated_derivatives (lib.rs:513-548). Keyword arguments switch on
+    """Term-by-term mpmath port of d3bj_gradient (d3bj_gradient) and
+    c6_interpolated_derivatives. Keyword arguments switch on
     the negative-control mutations."""
     n = len(ATOMS)
     x = [[mp.mpf(v) for v in row] for row in xyz]
@@ -227,14 +236,14 @@ def code_gradient(
         for j in range(i):
             ei, ej = ATOMS[i], ATOMS[j]
             r = dist(i, j)
-            # c6_interpolated_derivatives, lib.rs:513-548
+            # c6_interpolated_derivatives
             num = den = dni = ddi = dnj = ddj = mp.mpf(0)
             for a, cri in enumerate(elem[ei]["cnref"]):
                 wa = mp.exp(-WF * (cn[i] - cri) ** 2)
-                da = -wf_factor * WF * (cn[i] - cri) * wa  # lib.rs:527
+                da = -wf_factor * WF * (cn[i] - cri) * wa  # dW_i/dCN_i
                 for b, crj in enumerate(elem[ej]["cnref"]):
                     wb = mp.exp(-WF * (cn[j] - crj) ** 2)
-                    db = -2 * WF * (cn[j] - crj) * wb  # lib.rs:530
+                    db = -2 * WF * (cn[j] - crj) * wb  # dW_j/dCN_j
                     cc = mp.mpf(c6ref(ei, ej, a, b, table))
                     num += cc * wa * wb
                     den += wa * wb
@@ -243,36 +252,36 @@ def code_gradient(
                     dnj += cc * wa * db
                     ddj += wa * db
             c6 = num / den
-            dc6_di = (dni - c6 * ddi) / den  # lib.rs:544
+            dc6_di = (dni - c6 * ddi) / den  # c6_interpolated_derivatives
             dc6_dj = (dnj - c6 * ddj) / den
-            q = mp.mpf(elem[ei]["sq"] * elem[ej]["sq"])  # lib.rs:426
-            c8 = 3 * c6 * q  # lib.rs:427
-            r0 = mp.sqrt(3 * q)  # lib.rs:430
-            fdmp = PARAMS["a1"] * r0 + PARAMS["a2"]  # lib.rs:432
+            q = mp.mpf(elem[ei]["sq"] * elem[ej]["sq"])  # qq
+            c8 = 3 * c6 * q  # c8
+            r0 = mp.sqrt(3 * q)  # r0
+            fdmp = PARAMS["a1"] * r0 + PARAMS["a2"]  # f
             d6 = r**6 + fdmp**6
             d8 = r**8 + fdmp**8
             de_dr = (
                 PARAMS["s6"] * c6 * 6 * r**5 / d6**2
                 + PARAMS["s8"] * c8 * 8 * r**7 / d8**2
-            )  # lib.rs:449-450
-            for a in range(3):  # lib.rs:454-458
+            )  # de_dr
+            for a in range(3):  # explicit pass
                 comp = (x[i][a] - x[j][a]) / r * de_dr
                 grad[i][a] += comp
                 grad[j][a] -= comp
                 explicit[i][a] += comp
                 explicit[j][a] -= comp
-            de_dc6 = -(PARAMS["s6"] / d6 + 3 * q * PARAMS["s8"] / d8)  # lib.rs:463
-            if chain:  # lib.rs:465-466
+            de_dc6 = -(PARAMS["s6"] / d6 + 3 * q * PARAMS["s8"] / d8)  # de_dc6
+            if chain:  # banked de_dcn
                 de_dcn[i] += de_dc6 * dc6_di
                 if not i_side_only:
                     de_dcn[j] += de_dc6 * dc6_dj
-    for i in range(n):  # contraction pass, lib.rs:474-497
+    for i in range(n):  # contraction pass
         for j in range(i):
             r = dist(i, j)
             rc = elem[ATOMS[i]]["rcov"] + elem[ATOMS[j]]["rcov"]
             gij = 1 / (1 + mp.exp(-KCN * (rc / r - 1)))
-            dg_dr = dg_sign * KCN * rc / r**2 * gij * (1 - gij)  # lib.rs:487
-            w = (de_dcn[i] + de_dcn[j]) * dg_dr  # lib.rs:489
+            dg_dr = dg_sign * KCN * rc / r**2 * gij * (1 - gij)  # d3bj_gradient, dg_dr
+            w = (de_dcn[i] + de_dcn[j]) * dg_dr  # w
             for a in range(3):
                 comp = (x[i][a] - x[j][a]) / r * w
                 grad[i][a] += comp

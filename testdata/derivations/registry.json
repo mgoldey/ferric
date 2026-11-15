@@ -377,12 +377,38 @@
         "scripts/mp2_family_sympy.py"
       ]
     },
+    "casci": {
+      "theory": [
+        "crates/ferric-ci/theory.md#slatercondon-rules-as-implemented"
+      ],
+      "scripts": [
+        "scripts/casci_slater_condon_phases_sympy.py"
+      ]
+    },
+    "d3": {
+      "theory": [
+        "crates/ferric-d3/theory.md#gradient",
+        "crates/ferric-d3/theory.md#three-body-term-atm"
+      ],
+      "scripts": [
+        "scripts/d3_cn_chain_rule_gradient_sympy.py",
+        "scripts/d3_atm_gradient_sympy.py"
+      ]
+    },
     "drpa": {
       "theory": [
         "crates/ferric-rpa/theory.md#rpa-correlation-energy"
       ],
       "scripts": [
         "scripts/rpa_drpa_pdep_sympy.py"
+      ]
+    },
+    "gw": {
+      "theory": [
+        "crates/ferric-gw/theory.md#4-correlation-self-energy-on-the-imaginary-axis"
+      ],
+      "scripts": [
+        "scripts/gw_self_energy_sympy.py"
       ]
     },
     "harmonic-frequencies": {
@@ -426,6 +452,24 @@
         "scripts/mp2_family_sympy.py"
       ]
     },
+    "linlccd": {
+      "theory": [
+        "crates/ferric-cc/theory.md#linlccd-and-linlccdhh"
+      ],
+      "scripts": [
+        "scripts/cc_triples_weights_and_linlccd_spin_adaptation_sympy.py"
+      ]
+    },
+    "mm": {
+      "theory": [
+        "crates/ferric-mm/theory.md#4-the-dihedral-angle-phi-and-its-gradient-bekker-form",
+        "crates/ferric-mm/theory.md#8-opt-in-nonbonded-cutoff-openmm-cutoffnonperiodic"
+      ],
+      "scripts": [
+        "scripts/mm_dihedral_gradient_sympy.py",
+        "scripts/mm_cutoff_sympy.py"
+      ]
+    },
     "mp2-v": {
       "theory": [
         "crates/ferric-mp2/theory.md#13-mp2-v"
@@ -456,6 +500,32 @@
       ],
       "scripts": [
         "scripts/mp2_gradient_sympy.py"
+      ]
+    },
+    "pbc-ewald-pairft-stress": {
+      "theory": [
+        "crates/ferric-pbc/theory.md#1-ewald-nuclear-repulsion-and-the-madelung-constant",
+        "crates/ferric-pbc/theory.md#2-fourier-transform-of-lattice-summed-gaussian-pairs",
+        "crates/ferric-pbc/theory.md#5-stress-tensor-strain-derivative"
+      ],
+      "scripts": [
+        "scripts/pbc_ewald_pairft_stress_sympy.py"
+      ]
+    },
+    "pcm": {
+      "theory": [
+        "crates/ferric-pcm/theory.md#4-symmetrized-charge-solve-and-energy"
+      ],
+      "scripts": [
+        "scripts/pcm_ief_sympy.py"
+      ]
+    },
+    "pcm-gradient": {
+      "theory": [
+        "crates/ferric-pcm/theory.md#8-nuclear-gradient"
+      ],
+      "scripts": [
+        "scripts/pcm_ief_sympy.py"
       ]
     },
     "pdep-rpa": {
@@ -584,15 +654,6 @@
         "crates/ferric-gw/theory.md#11-bse-tda"
       ]
     },
-    "casci": {
-      "reason": "script has no pytest runner and records no mutation",
-      "theory": [
-        "crates/ferric-ci/theory.md#slatercondon-rules-as-implemented"
-      ],
-      "scripts": [
-        "scripts/casci_slater_condon_phases_sympy.py"
-      ]
-    },
     "casscf": {
       "reason": "no theory.md derivation and no sympy proof",
       "theory": [
@@ -612,10 +673,7 @@
       ]
     },
     "ccsd-t": {
-      "reason": "script has no pytest runner and records no mutation",
-      "theory": [
-        "crates/ferric-cc/theory.md#ccsdt-closed-shell"
-      ],
+      "reason": "theory.md section 'CCSD(T), closed shell' describes the removed occupied-banded kernel (raw_w_block, w_block, add_v_singles, occ_triple_multiplicity); scripts/cc_triples_weights_and_linlccd_spin_adaptation_sympy.py claim 4b ports the current virtual-banded triple_energy kernel",
       "scripts": [
         "scripts/cc_triples_weights_and_linlccd_spin_adaptation_sympy.py"
       ]
@@ -626,16 +684,6 @@
     "cosmo": {
       "reason": "no theory.md derivation and no sympy proof (PCM theory.md section 6 covers the conductor limit)"
     },
-    "d3": {
-      "reason": "script has no pytest runner and records no mutation",
-      "theory": [
-        "crates/ferric-d3/theory.md#gradient"
-      ],
-      "scripts": [
-        "scripts/d3_cn_chain_rule_gradient_sympy.py",
-        "scripts/d3_atm_gradient_sympy.py"
-      ]
-    },
     "double-hybrid": {
       "reason": "owned elsewhere: the double-hybrid grading branch writes its derivation"
     },
@@ -643,15 +691,6 @@
       "reason": "no theory.md derivation and no sympy proof",
       "theory": [
         "crates/ferric-cc/theory.md#ee-eom-ccsd-singlets-closed-shell"
-      ]
-    },
-    "gw": {
-      "reason": "script has no pytest runner and records no mutation",
-      "theory": [
-        "crates/ferric-gw/theory.md#4-correlation-self-energy-on-the-imaginary-axis"
-      ],
-      "scripts": [
-        "scripts/gw_self_energy_sympy.py"
       ]
     },
     "ks-gradient": {
@@ -712,20 +751,8 @@
         "scripts/dft_vv10_potential_sympy.py"
       ]
     },
-    "linlccd": {
-      "reason": "script has no pytest runner and records no mutation",
-      "theory": [
-        "crates/ferric-cc/theory.md#linlccd-and-linlccdhh"
-      ],
-      "scripts": [
-        "scripts/cc_triples_weights_and_linlccd_spin_adaptation_sympy.py"
-      ]
-    },
     "local-mp2": {
-      "reason": "script has no pytest runner and records no mutation",
-      "theory": [
-        "crates/ferric-mp2/theory.md#12-local-mp2"
-      ],
+      "reason": "crates/ferric-mp2/theory.md section 12 is a pointer to the wiki, with no derivation or function names",
       "scripts": [
         "scripts/lmp2_hylleraas_vs_wshg23_sympy.py"
       ]
@@ -733,14 +760,10 @@
     "mbd": {
       "reason": "no theory.md derivation and no sympy proof"
     },
-    "mm": {
-      "reason": "script has no pytest runner and records no mutation",
+    "mp2-polarizability": {
+      "reason": "section 10 proves only mu(0) = -dE/dF through the solve_zvector density; static_relaxed_density_ao, the analytic alpha and the frozen-amplitude C6 are unproven; no CLI kind or run_* reaches it directly",
       "theory": [
-        "crates/ferric-mm/theory.md#4-the-dihedral-angle-phi-and-its-gradient-bekker-form"
-      ],
-      "scripts": [
-        "scripts/mm_dihedral_gradient_sympy.py",
-        "scripts/mm_cutoff_sympy.py"
+        "crates/ferric-mp2/theory.md#10-static-polarizability"
       ]
     },
     "nevpt2": {
@@ -753,46 +776,22 @@
       "reason": "no theory.md derivation and no sympy proof"
     },
     "pbc-hf": {
-      "reason": "script has no pytest runner and records no mutation",
+      "reason": "the Ewald, pair-FT and strain pieces are proven (method pbc-ewald-pairft-stress); the k-point HF energy functional, exxdiv and the RS-GDF J/K are not",
       "theory": [
-        "crates/ferric-pbc/theory.md#1-ewald-nuclear-repulsion-and-the-madelung-constant"
-      ],
-      "scripts": [
-        "scripts/pbc_ewald_pairft_stress_sympy.py"
+        "crates/ferric-pbc/theory.md#4-exchange-divergence-exxdiv"
       ]
     },
     "pbc-ks": {
-      "reason": "script has no pytest runner and records no mutation",
+      "reason": "as pbc-hf; the periodic XC terms and their force/stress are not proven",
       "theory": [
         "crates/ferric-pbc/theory.md#5-stress-tensor-strain-derivative"
-      ],
-      "scripts": [
-        "scripts/pbc_ewald_pairft_stress_sympy.py"
       ]
     },
     "pbc-mp2": {
       "reason": "no theory.md derivation and no sympy proof"
     },
-    "pcm": {
-      "reason": "script has no pytest runner and records no mutation",
-      "theory": [
-        "crates/ferric-pcm/theory.md#4-symmetrized-charge-solve-and-energy"
-      ],
-      "scripts": [
-        "scripts/pcm_ief_sympy.py"
-      ]
-    },
-    "pcm-gradient": {
-      "reason": "script has no pytest runner and records no mutation",
-      "theory": [
-        "crates/ferric-pcm/theory.md#8-nuclear-gradient"
-      ],
-      "scripts": [
-        "scripts/pcm_ief_sympy.py"
-      ]
-    },
     "pvp-integrals": {
-      "reason": "script has no pytest runner and records no mutation",
+      "reason": "no theory.md section derives W = sum_a <d_a mu|V|d_a nu> (crates/ferric-integrals/theory.md)",
       "scripts": [
         "scripts/pvp_ss_sympy.py"
       ]
@@ -813,12 +812,9 @@
       ]
     },
     "u-gw": {
-      "reason": "script has no pytest runner and records no mutation",
+      "reason": "scripts/gw_self_energy_sympy.py checks only the spin-summed dielectric (2 per spin); the per-spin mid-gap and U-COHSEX are unproven",
       "theory": [
         "crates/ferric-gw/theory.md#9-open-shell"
-      ],
-      "scripts": [
-        "scripts/gw_self_energy_sympy.py"
       ]
     },
     "u-oo-rimp2": {
@@ -829,12 +825,6 @@
     },
     "xtb": {
       "reason": "no theory.md derivation of what ferric adds over the tblite reference"
-    },
-    "mp2-polarizability": {
-      "reason": "section 10 proves only mu(0) = -dE/dF through the solve_zvector density; static_relaxed_density_ao, the analytic alpha and the frozen-amplitude C6 are unproven; no CLI kind or run_* reaches it directly",
-      "theory": [
-        "crates/ferric-mp2/theory.md#10-static-polarizability"
-      ]
     }
   }
 }
