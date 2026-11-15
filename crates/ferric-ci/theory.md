@@ -315,6 +315,8 @@ smaller; `converged` is then $\|r\| <$ `conv_thresh`.
 
 ## Two-step CASSCF (`src/casscf.rs`)
 
+### The two-step method
+
 Orbitals $C = [C_c\,|\,C_a\,|\,C_v]$: $n_c$ doubly occupied core orbitals
 $i,j$, $n_a$ active $t,u,v,w$, virtual $a$; $p,q,r,s$ run over all MOs.
 Real orbitals, single root, spin-summed RDMs of the section above.
@@ -383,6 +385,11 @@ For any normalized CI vector $c$ with residual $r = Hc - \theta c$,
 $2(F_{pq} - F_{qp}) = \langle c|[H, E_{pq} - E_{qp}]|c\rangle = -2\,c^\mathsf{T}(E_{pq}-E_{qp})\,r$,
 so a redundant element is bounded by $8\lVert r\rVert$ ($\lVert E_{pq}\rVert \le 2$
 for $p\ne q$).
+`scripts/ci_rdm_casscf_gradient_sympy.py` checks both statements on a
+six-orbital model with random N-representable RDMs: `casscf-gradient`, the
+central difference of $E(C\exp K)$ at fixed RDMs against $2(F_{pq}-F_{qp})$
+for every pair and the two non-redundant reductions; `redundant-residual`,
+the active-active identity.
 
 **Step.** Inverse BFGS in the current orbital frame, no transport of earlier
 steps. The initial and reset inverse Hessian is $1/\max(|H_\text{diag}|, 0.05)$
@@ -502,6 +509,8 @@ $(pu|vw)$, $J/K[D^a]$); the start is a
 restricted RHF (an even electron count). No orbital-CI coupling: both
 optimizers are two-step, and the augmented-Hessian step uses the orbital
 Hessian at fixed RDMs.
+
+### Measurements and optimizer records
 
 **Measured (2026-11-11, `tests/casscf.rs`).** Geometries
 `testdata/molecules/water.xyz` and `n2.xyz`, 6-31G, ferric exact-J/K RHF
@@ -1005,6 +1014,8 @@ $\pi$ CAS(6,6) needs an active window placed on the six $\pi$ orbitals, which ne
 `[cas]` nor `run_casscf` offers: the active orbitals are the `n_active`
 orbitals after the first `n_core` in the RHF order.
 
+### Second-order check
+
 **Second-order check (`src/casscf_stability.rs`, `[cas] stability`,
 2026-11-14).** The optimizers converge to stationary points, so after
 convergence the lowest eigenvalue of the CI-relaxed orbital Hessian decides
@@ -1057,6 +1068,8 @@ so it caps the grade to not graded and removes the anchor from scope, like an
 unconverged run. `MARGINAL` and `INDETERMINATE` add a warning only. The
 check's summary is recorded as the route `stability`, and an SC-NEVPT2
 certificate carries its reference's.
+
+### Second-order check, measurements
 
 Measured (2026-11-14, `tests/casscf_stability.rs`, `tests/casscf_vs_pyscf.rs`,
 `tests/casscf_stability_saddle.rs`, release, `OPENBLAS_NUM_THREADS=1`).
@@ -1226,6 +1239,7 @@ through one `MemoryPlan` before the AO block is built.
 | Check | What it constrains |
 |---|---|
 | `scripts/casci_slater_condon_phases_sympy.py` | JW matrices obey the CAR; the ascending-creation product is the bit-string basis vector with sign $+1$; a line-for-line port of `general_element` equals the explicit JW $H$ as an exact linear form in symbolic $h_{pq}$, $(pq\|rs)$ for every pair in $(n,N_\alpha,N_\beta)=(4,2,2),(5,3,2),(5,2,3),(5,3,3)$. Four sign mutations and the interleaved order each mismatch; the interleaved $H$ has the same spectrum. |
+| `scripts/ci_rdm_casscf_gradient_sympy.py` | On Jordan–Wigner matrices of a three-orbital active space: the RDM energy $E_\text{core} + \sum h\gamma + \tfrac12\sum(pq\|rs)\Gamma$ equals $\langle C\|H\|C\rangle$ with the PySCF index order of $\Gamma$; $\Gamma = \langle E_{pq}E_{rs}\rangle - \delta_{qr}\gamma_{ps}$ and the trace identities; the direct-sigma split of $H$ with $g_{pq} = h_{pq} - \tfrac12\sum_r(pr\|rq)$; the CASSCF gradient $2(F - F^\mathsf{T})$ against a central difference of the energy at fixed RDMs, and the active-active residual identity. Four mutations each fail it. |
 | `tests/direct_sigma_vs_naive.rs` | The direct `sigma` against `sigma_naive` (the `general_element` pair loop) on random vectors, element-wise to $10^{-12}$: random 8-fold-symmetric integrals in ten sectors with $N_\alpha \ne N_\beta$, empty and full channels; real H2O/STO-3G integrals for full CI (441 det), 8 electrons in 6 orbitals above a frozen O 1s (225 det) and four unequal-spin sectors; `hamiltonian_diagonal` against the dense diagonal; unit vectors against dense columns. |
 | `tests/slater_condon_brute_force.rs` | The Rust `general_element`, `sigma` (direct) and `hamiltonian_diagonal` against an independent bit-loop second-quantized $H$ on random asymmetric integrals, element-wise to $10^{-12}$, sectors with odd and even $N_\alpha$, every excitation class exercised. |
 | `tests/casci_rdms.rs` | The RDM energy equals $c\cdot Hc$ from the direct sigma to rounding and the Davidson eigenvalue to rounding plus the residual norm; the traces, partial trace and symmetries above; `make_rdm12` (PySCF) of PySCF's dense ground state on ferric's integrals, rotated into the run's orbitals. A dropped β phase, the missing αβ cross terms and a doubled diagonal each fail it. |

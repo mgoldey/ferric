@@ -1,7 +1,7 @@
 # Coupled Cluster Theory
 
-Equations as `crates/ferric-cc/src` implements them, with the file and line
-of each. Two conventions are used:
+Equations as `crates/ferric-cc/src` implements them, with the function that
+implements each. Two conventions are used:
 
 - **Spin-orbital** (`ccd`, `ccsd`, `ccsd_t`, `linlccd`, `linlccd_u`,
   `linlccd_exact`, `dlpno_linlccd`): indices run over $2n_o$ / $2n_v$ spin
@@ -26,22 +26,135 @@ $$|\Psi_{CC}\rangle = e^{\hat{T}} |\Phi_0\rangle,\qquad \hat{T} = \hat{T}_1 + \h
 
 ## CCD
 
-$\langle ab | \hat{H}_N e^{\hat{T}_2} | ij \rangle_C = 0$, solved by Jacobi
-iteration plus DIIS. Energy (`ccd.rs:271`):
+$\langle\Phi_{ij}^{ab}| e^{-\hat T_2}\hat H e^{\hat T_2} |\Phi_0\rangle = 0$ in
+spin orbitals, $\hat T_2 = \tfrac14\sum t_{ij}^{ab}\, a^\dagger_a a^\dagger_b a_j a_i$,
+$t$ antisymmetric in $ij$ and in $ab$ (`ccd.rs::ccd_spinorbital`; `ccd` delegates
+to it). With canonical HF orbitals the Fock terms reduce to
+$\Delta_{ij}^{ab} t_{ij}^{ab}$ and the projection is
+$R_{ij}^{ab} = \Delta_{ij}^{ab} t_{ij}^{ab} + r_{ij}^{ab}$, where
+
+$$
+\begin{aligned}
+r_{ij}^{ab} ={}& \langle ij\|ab\rangle
+ + \tfrac12\sum_{cd}\langle ab\|cd\rangle t_{ij}^{cd}
+ + \tfrac12\sum_{kl}\langle kl\|ij\rangle t_{kl}^{ab}
+ + P(ij)P(ab)\sum_{kc}\langle kb\|cj\rangle t_{ik}^{ac} \\
+ &+ \tfrac14\sum_{klcd}\langle kl\|cd\rangle t_{ij}^{cd} t_{kl}^{ab}
+ + \tfrac12 P(ij)P(ab)\sum_{klcd}\langle kl\|cd\rangle t_{ik}^{ac} t_{jl}^{bd} \\
+ &- \tfrac12 P(ab)\sum_{klcd}\langle kl\|cd\rangle t_{ij}^{ac} t_{kl}^{bd}
+ - \tfrac12 P(ij)\sum_{klcd}\langle kl\|cd\rangle t_{ik}^{ab} t_{jl}^{cd},
+\end{aligned}
+$$
+
+$P(ij)x = x - x_{i\leftrightarrow j}$ (`helpers.rs::{p_ij,p_ab,p_ij_ab}`). The
+loop sets $t \leftarrow r/(-\Delta)$ (the stored `d` is $-\Delta$), with DIIS
+on the increment, from the MP2 guess $t = \langle ij\|ab\rangle/(-\Delta)$, and
+stops when the energy changes by less than $10^{-10}$:
 
 $$E_c = \tfrac14 \sum_{ijab} \langle ij\|ab\rangle\, t_{ij}^{ab}.$$
 
 The closed-shell spatial form of the same energy is
 $E_c = \sum_{ijab} (ia|jb)\,(2 t_{ij}^{ab} - t_{ij}^{ba})$.
 
+**Check.** `scripts/cc_ccsd_eom_brute_force_sympy.py` (`ccd-residual`) builds
+$H$, $\hat T_2$ and $e^{-\hat T_2}\hat He^{\hat T_2}$ as Jordan–Wigner
+matrices on a ten-spin-orbital model whose Fock matrix is diagonal by
+construction, and compares $r + \Delta t$ and $E_c$ with the projections at
+random antisymmetric $t$. That route uses no diagram or intermediate.
+
 ## CCSD
 
-$R_i^a = \langle a | \hat{H}_N e^{\hat{T}_1 + \hat{T}_2} | i \rangle_C = 0$ and
-$R_{ij}^{ab} = \langle ab | \hat{H}_N e^{\hat{T}_1 + \hat{T}_2} | ij \rangle_C = 0$,
-built from effective Fock blocks $F_{oo}, F_{vv}, F_{ov}$ and dressed
-two-electron intermediates $W_{oooo}, W_{vvvv}, W_{ovvo}$. The closed-shell
-solver (`ccsd_closed_shell.rs`) transcribes Hirata, JCP 120, 2581 (2004),
-Eqs. 35–45; the spin-orbital solver (`ccsd.rs`) is its cross-check.
+$R_i^a = \langle\Phi_i^a| e^{-\hat T}\hat H e^{\hat T} |\Phi_0\rangle = 0$ and
+$R_{ij}^{ab} = \langle\Phi_{ij}^{ab}| e^{-\hat T}\hat H e^{\hat T} |\Phi_0\rangle = 0$,
+$\hat T = \hat T_1 + \hat T_2$, $\hat T_1 = \sum t_i^a a^\dagger_a a_i$.
+
+### CCSD in spin orbitals
+
+`ccsd.rs::ccsd` follows Stanton, Gauss, Watts and Bartlett,
+JCP 94, 4334 (1991), with $f_{ia} = 0$ and the diagonal Fock moved into
+$\Delta$. With
+$\tilde\tau_{ij}^{ab} = t_{ij}^{ab} + \tfrac12(t_i^at_j^b - t_j^at_i^b)$ and
+$\tau_{ij}^{ab} = t_{ij}^{ab} + t_i^at_j^b - t_j^at_i^b$,
+
+$$
+\begin{aligned}
+F_{ae} &= \sum_{mf} t_m^f\langle ma\|fe\rangle - \tfrac12\sum_{mnf}\tilde\tau_{mn}^{af}\langle mn\|ef\rangle, &
+F_{mi} &= \sum_{ne} t_n^e\langle mn\|ie\rangle + \tfrac12\sum_{nef}\tilde\tau_{in}^{ef}\langle mn\|ef\rangle, \\
+F_{me} &= \sum_{nf} t_n^f\langle mn\|ef\rangle, &
+W_{mnij} &= \langle mn\|ij\rangle + P(ij)\sum_e t_j^e\langle mn\|ie\rangle + \tfrac14\sum_{ef}\tau_{ij}^{ef}\langle mn\|ef\rangle,
+\end{aligned}
+$$
+
+$$
+W_{abef} = \langle ab\|ef\rangle - P(ab)\sum_m t_m^b\langle am\|ef\rangle + \tfrac14\sum_{mn}\tau_{mn}^{ab}\langle mn\|ef\rangle,
+$$
+
+$$
+W_{mbej} = \langle mb\|ej\rangle + \sum_f t_j^f\langle mb\|ef\rangle - \sum_n t_n^b\langle mn\|ej\rangle
+ - \sum_{nf}\big(\tfrac12 t_{jn}^{fb} + t_j^ft_n^b\big)\langle mn\|ef\rangle ,
+$$
+
+the singles and doubles are $R = \Delta t + r$ with
+
+$$
+\begin{aligned}
+r_i^a ={}& \sum_e t_i^eF_{ae} - \sum_m t_m^aF_{mi} + \sum_{me} t_{im}^{ae}F_{me}
+ - \sum_{nf} t_n^f\langle na\|if\rangle
+ - \tfrac12\sum_{mef} t_{im}^{ef}\langle ma\|ef\rangle
+ - \tfrac12\sum_{men} t_{mn}^{ae}\langle nm\|ei\rangle , \\
+r_{ij}^{ab} ={}& \langle ij\|ab\rangle
+ + P(ab)\sum_e t_{ij}^{ae}\big(F_{be} - \tfrac12\sum_m t_m^bF_{me}\big)
+ - P(ij)\sum_m t_{im}^{ab}\big(F_{mj} + \tfrac12\sum_e t_j^eF_{me}\big) \\
+ &+ \tfrac12\sum_{mn}\tau_{mn}^{ab}W_{mnij} + \tfrac12\sum_{ef}\tau_{ij}^{ef}W_{abef}
+ + P(ij)P(ab)\sum_{me}\big(t_{im}^{ae}W_{mbej} - t_i^et_m^a\langle mb\|ej\rangle\big) \\
+ &+ P(ij)\sum_e t_i^e\langle ab\|ej\rangle - P(ab)\sum_m t_m^a\langle mb\|ij\rangle ,
+\end{aligned}
+$$
+
+$t \leftarrow r/(-\Delta)$ for both ranks (DIIS on $t_2$ only), and
+
+$$E_c = \tfrac14\sum_{ijab}\langle ij\|ab\rangle t_{ij}^{ab} + \tfrac12\sum_{ijab}\langle ij\|ab\rangle t_i^at_j^b .$$
+
+At $t_1 = 0$ the doubles residual is the CCD one above.
+
+**Checks.** `scripts/cc_ccsd_eom_brute_force_sympy.py`: `ccsd-residual` and
+`ccsd-energy` compare $r + \Delta t$ and $E_c$ with the brute-force
+projections at random $t_1$, $t_2$; `ccsd-ccd-limit` checks the $t_1 = 0$ limit.
+
+### CCSD, closed shell
+
+`ccsd_closed_shell.rs::ccsd_closed_shell`. For an RHF
+reference the spin-orbital amplitudes are fixed by spatial ones
+(`expand_amplitudes_to_spin_orbital`):
+$t_{i\sigma}^{a\tau} = \delta_{\sigma\tau}t_i^a$ and
+$t_{i\sigma j\tau}^{a\sigma' b\tau'} = \delta_{\sigma\sigma'}\delta_{\tau\tau'}t_{ij}^{ab} - \delta_{\sigma\tau'}\delta_{\tau\sigma'}t_{ij}^{ba}$,
+with $t_{ij}^{ab} = t_{ji}^{ba}$. On such amplitudes the spin-orbital
+residual is spin-adapted: the $\alpha$ and $\beta$ singles are equal, the
+opposite-spin block $R_{ij}^{ab} = R_{i\alpha j\beta}^{a\alpha b\beta}$ has
+$R_{ij}^{ab} = R_{ji}^{ba}$, and the same-spin block is $R_{ij}^{ab} - R_{ij}^{ba}$.
+Solving the spatial equations $R_i^a = 0$, $R_{ij}^{ab} = 0$ is therefore
+solving CCSD. The code evaluates them in the factorization of Hirata,
+Podeszwa, Tobita and Bartlett, JCP 120, 2581 (2004), Eqs. 35–45 (PySCF
+`rccsd.update_amps` and `rintermediates`): the $F_{oo}$, $F_{vv}$, $F_{ov}$
+and $L_{oo}$, $L_{vv}$ intermediates (Eqs. 37–41, no orbital-energy shift, so
+$\varepsilon$ enters only through $\Delta$), $W_{oooo}$, $W_{voov}$, $W_{vovo}$
+(Eqs. 42–45) and the T1 and T2 equations (Eqs. 35, 36), the T2 part
+symmetrized as $x + x^{(ij)(ab)}$. The $\sum_{cd}W_{abcd}\tau_{ij}^{cd}$ ladder
+is never formed as $W_{abcd}$: the dense route contracts $(ac|bd)$ and the
+$t_1$ terms with $\tau$ separately (`dense_ladder`), the RI route rebuilds
+the integrals in panels (`ri_ladder.rs::ri_ladder_contract`,
+$W_{abcd} = \sum_P[(B_{vv}+B_x)^P_{ac}B^P_{vv,bd} + B^P_{vv,ac}B^P_{x,bd}]$ with
+$B^P_{x,bd} = -\sum_k B^P_{kd}t_k^b$). The energy is
+
+$$E_c = \sum_{ijab}\big(2(ia|jb) - (ib|ja)\big)\big(t_{ij}^{ab} + t_i^at_j^b\big),$$
+
+and $(t_1, t_2)$ are extrapolated jointly by DIIS (`diis_step_two`).
+
+**Checks.** `scripts/cc_ccsd_eom_brute_force_sympy.py`, `spin-adaptation`:
+the block structure above and the closed-shell energy on expanded spatial
+amplitudes, against the brute-force projections. The Hirata factorization itself is checked in
+Rust: `ccsd_closed_shell` against the spin-orbital `ccsd` on the same
+integrals and against PySCF `cc.CCSD` (`tests/validation_cc.rs`).
 
 ## CCSD(T), spin-orbital
 
@@ -205,10 +318,9 @@ where $\Omega$ is the closed-shell CCSD residual. The prototype
 Jacobian by a 5-point central difference, which is exact for the quartic
 $\Omega$.
 
-The product (`sigma`, :517) uses the dressed intermediates of `intermediates`
-(:430): $F_{oo}, F_{vv}, F_{ov}$, $W_{mnij}$, $W_{mbij}$, $W_{ejab}$ and the
+The product (`sigma`) uses the dressed intermediates of `intermediates`: $F_{oo}, F_{vv}, F_{ov}$, $W_{mnij}$, $W_{mbij}$, $W_{ejab}$ and the
 two $W_{mbej}$ couplings. $\tau$ with a right vector is
-`make_tau` (:305), $\theta = 2r_{ij}^{ab} - r_{ij}^{ba}$ is `theta_of` (:317),
+`make_tau`, $\theta = 2r_{ij}^{ab} - r_{ij}^{ba}$ is `theta_of`,
 and the doubles part is symmetrized at the end, $\sigma_{ijab} \leftarrow
 \sigma_{ijab} + \sigma_{jiba}$. The particle–particle ladder takes the dense
 $(ae|bf)$ block or RI panels, the same choice as the CCSD ladder.
@@ -216,17 +328,17 @@ $(ae|bf)$ block or RI panels, the same choice as the CCSD ladder.
 At $t = 0$ the singles–singles block is the CIS matrix
 $\delta_{ij}\delta_{ab}(\varepsilon_a - \varepsilon_i) + 2(ia|jb) - (ij|ab)$.
 
-The packed vector (`pack`, :578) is $r_1$ then the lower triangle of
+The packed vector (`pack`) is $r_1$ then the lower triangle of
 $M_{ia,jb} = r_{ij}^{ab}$. The reported singles weight uses the spin-summed
-norm (`spin_norm`, :829):
+norm (`spin_norm`):
 
 $$\|R\|^2 = 2\|r_1\|^2 + \|r_2\|^2 + \tfrac12 \|r_2 - r_2^{(ab)}\|^2,$$
 
 with $r_2^{(ab)}$ the vector with $a,b$ swapped.
 
-The solver (`eom_davidson.rs`, `davidson_nonsymmetric` :241) diagonalizes
+The solver (`eom_davidson.rs::davidson_nonsymmetric`) diagonalizes
 the projected matrix with `dgeev`, keeps the lowest $n$ roots by real part
-above $10^{-10}$, and adds the Olsen correction (`olsen_correction`, :159)
+above $10^{-10}$, and adds the Olsen correction (`olsen_correction`)
 
 $$\delta = -(\Delta - \theta)^{-1} r + \epsilon (\Delta - \theta)^{-1} x,\qquad
 \epsilon = \frac{x^\top (\Delta-\theta)^{-1} r}{x^\top (\Delta-\theta)^{-1} x},$$
@@ -234,6 +346,17 @@ $$\delta = -(\Delta - \theta)^{-1} r + \epsilon (\Delta - \theta)^{-1} x,\qquad
 where $\Delta$ is the diagonal $F_{vv,aa} - F_{oo,ii}$ (doubles: the sum over both
 pairs). For a non-symmetric matrix the eigenvalue error is first order in the
 residual $\|r\|$, not second.
+
+**Checks.** `scripts/cc_ccsd_eom_brute_force_sympy.py`: `eom-jacobian`
+builds $e^{-T}He^{T}$ as a matrix at converged CCSD amplitudes of a
+ten-spin-orbital model and shows that its singles-and-doubles block minus
+$E_{CC}$ equals the 5-point Jacobian of the spin-orbital residual of the CCSD
+section; `cis-limit` the singlet singles block at $t = 0$; `spin-norm` that
+the norm above is the norm of the spin-orbital expansion of $(r_1, r_2)$ over
+distinct determinants. The closed-shell intermediates of `sigma` are a
+transcription of PySCF and are checked against it
+(`tests/validation_eom_ccsd.rs`) and against the CIS block at $t=0$
+(`tests/eom_ccsd_anchors.rs`).
 
 ## LinLCCD and LinLCCD(hh)
 
@@ -254,20 +377,20 @@ $$0 = \langle ij\|ab\rangle + \Delta_{ij}^{ab}\, t_{ij}^{ab}
 | `Full` — LinLCCD | + particle–particle ladder; $O(n_o^2 n_v^4)$ | OOVV, OOOO, VVVV |
 
 The hh truncation is the absence of the pp term: `Hh` never forms the VVVV
-block (`needs_vvvv`, `linlccd.rs:112`).
+block (`needs_vvvv`, `linlccd.rs`).
 
 **Spin-orbital solver** (`linlccd.rs`, restricted orbitals; `linlccd_u.rs`,
 unrestricted). Jacobi iteration with DIIS on
-$t \leftarrow -R/\Delta$ (:388), starting from the MP2 guess $t = -\langle ij\|ab\rangle/\Delta$ (:345):
+$t \leftarrow -R/\Delta$, starting from the MP2 guess $t = -\langle ij\|ab\rangle/\Delta$:
 
-$$R_{ij}^{ab} = \langle ij\|ab\rangle + \tfrac12\sum_{kl}\langle kl\|ij\rangle t_{kl}^{ab}\ (\text{:378})
-+ \tfrac12\sum_{cd} t_{ij}^{cd}\langle ab\|cd\rangle\ (\text{:383, Full only}),$$
+$$R_{ij}^{ab} = \langle ij\|ab\rangle + \tfrac12\sum_{kl}\langle kl\|ij\rangle t_{kl}^{ab}
++ \tfrac12\sum_{cd} t_{ij}^{cd}\langle ab\|cd\rangle\ (\text{Full only}),$$
 
-$$E_c = \tfrac14\sum_{ijab}\langle ij\|ab\rangle\, t_{ij}^{ab}\quad(\text{:358}).$$
+$$E_c = \tfrac14\sum_{ijab}\langle ij\|ab\rangle\, t_{ij}^{ab}.$$
 
 `linlccd_u.rs` builds the same blocks from per-spin orbitals
 (`ferric_mp2::spinorbital_u`); a slot where one spin has fewer orbitals than
-the other gets $\varepsilon_i = 10^6$, $\varepsilon_a = -10^6$ (:311), so its
+the other gets $\varepsilon_i = 10^6$, $\varepsilon_a = -10^6$, so its
 zero integrals give a zero amplitude without a $0/0$. A raw ROHF reference is
 rejected; it must be semicanonicalized first. `linlccd_exact.rs` solves the
 same equations from exact four-centre integrals.
@@ -279,14 +402,14 @@ $$0 = (ia|jb) + \Delta_{ij}^{ab} T_{iajb} + \sum_{kl}(ik|jl)\, T_{kalb} + \sum_{
 E_c = \sum_{iajb}(ia|jb)\,(2T_{iajb} - T_{ibja}).$$
 
 It gives the same $E_c$ and amplitudes as the spin-orbital equations for all
-three variants (§23 claim 6).
+three variants (`scripts/cc_triples_weights_and_linlccd_spin_adaptation_sympy.py`, claim 6).
 
 ### ωB97X-L-V correlation
 
 `double_hybrid.rs` (Ransford & Carter-Fenk 2026, eqns 22 and 27). $\lambda$
 multiplies the driver and the hh ladder; the Fock terms stay unscaled. The
 solver therefore runs LinLCCD(hh) once under the operator
-$\lambda\,\mathrm{erfc}(\omega r)/r$ (`lambda_scaled_sr_operator`, :127): the
+$\lambda\,\mathrm{erfc}(\omega r)/r$ (`lambda_scaled_sr_operator`): the
 three-centre integrals and the RI metric both scale by $\lambda$, so
 $B^P_{pq}$ scales by $\sqrt\lambda$ and every four-index integral by $\lambda$.
 The returned energy $\tfrac14\sum(\lambda\langle ij\|ab\rangle^{sr})t$ is
@@ -301,14 +424,11 @@ keeps $(i,a,j,b)$ iff
 
 $$|(ia|jb)| > \epsilon \quad\text{or}\quad |(ib|ja)| > \epsilon,$$
 
-the swap-closed test of `ferric_mp2::lmp2_amplitude` (derivation
-`wiki/sympy_derivations.md` §14). The spatial equations above are solved by
-pattern-projected CG on the ragged per-pair blocks (`linlccd_masked_solve`,
-:299): the Fock part in the localized basis (:316), the hh ladder as a gather
-over source pairs with coefficient $(ik|jl)$ (:331), and for `Full` the pp
-block $\sum_P B^P_{ac} B^P_{bd}$ restricted to each pair's virtual domain
-(:356). The energy is the linear form $\sum (ia|jb)(2T - \tilde T)$ over the
-pattern (:407), so its error is first order in the CG residual
+the swap-closed test of `ferric_mp2::lmp2_amplitude`. The spatial equations above are solved by
+pattern-projected CG on the ragged per-pair blocks (`linlccd_masked_solve`): the Fock part in the localized basis, the hh ladder as a gather
+over source pairs with coefficient $(ik|jl)$, and for `Full` the pp
+block $\sum_P B^P_{ac} B^P_{bd}$ restricted to each pair's virtual domain. The energy is the linear form $\sum (ia|jb)(2T - \tilde T)$ over the
+pattern, so its error is first order in the CG residual
 (`cg_rtol` default $10^{-11}$). $\epsilon = 0$ keeps every amplitude and
 reproduces exact LinLCCD of the same variant. The optional integral-free pair
 gate (`pair_gate_cal`, direct path only) drops pair $(i,j)$, $i\ne j$, when
@@ -321,33 +441,33 @@ bases; spin-orbital indices are used throughout, so pairs run over $2n_o$
 occupied spin orbitals.
 
 **PNOs.** From the canonical MP2 guess
-$t_{ij}^{ab} = -\langle ij\|ab\rangle/\Delta_{ij}^{ab}$ (:584), each retained pair
-gets the pair density (`ferric_mp2::local_pno::pno_for_pair`, local_pno.rs:147)
+$t_{ij}^{ab} = -\langle ij\|ab\rangle/\Delta_{ij}^{ab}$, each retained pair
+gets the pair density (`ferric_mp2::local_pno::pno_for_pair`, local_pno.rs)
 
 $$D^{ij} = T^{ij} T^{ij\,\mathsf T} + T^{ij\,\mathsf T} T^{ij},\qquad (T^{ij})_{ab} = t_{ij}^{ab},$$
 
-and keeps the eigenvectors with $|n| \ge t_{\mathrm{cut,pno}}$ (local_pno.rs:172);
-if none survives, the largest one is kept (:177). $D^{ij}$ carries no
+and keeps the eigenvectors with $|n| \ge t_{\mathrm{cut,pno}}$ (`local_pno.rs`);
+if none survives, the largest one is kept. $D^{ij}$ carries no
 $1/(1+\delta_{ij})$ normalization and, in the spin-orbital basis, no
 closed-shell $\tilde T = 2T - T^{\mathsf T}$, so $t_{\mathrm{cut,pno}}$ values
 are not interchangeable with ORCA's `TCutPNO`. The kept columns $Q_{ij}$ are
 semicanonicalized: $F^{ij} = Q_{ij}^{\mathsf T}\,\mathrm{diag}(\varepsilon_v)\,Q_{ij}$
 is diagonalized and $\tilde Q_{ij} = Q_{ij} U$, giving PNO energies
-$\tilde\varepsilon^{ij}_{\tilde a}$ (`PairPnoBasis::build`, dlpno_ccsd_virtual.rs:138).
+$\tilde\varepsilon^{ij}_{\tilde a}$ (`PairPnoBasis::build`, dlpno_ccsd_virtual.rs).
 Denominators are $\tilde\Delta^{ij}_{\tilde a\tilde b} = \tilde\varepsilon^{ij}_{\tilde a}+\tilde\varepsilon^{ij}_{\tilde b}-\varepsilon_i-\varepsilon_j$
-(`pno_denominators`, dlpno_ccsd_kernel.rs:381, stores $-\tilde\Delta$).
+(`pno_denominators`, dlpno_ccsd_kernel.rs, stores $-\tilde\Delta$).
 
-**Iteration** (`dlpno_linlccd_hh`, :623–700). With
+**Iteration** (`dlpno_linlccd_hh`). With
 $S^{ij,kl} = \tilde Q_{ij}^{\mathsf T}\tilde Q_{kl}$ (`pair_overlap`,
-dlpno_ccsd_kernel.rs:134),
+dlpno_ccsd_kernel.rs),
 
-$$\tilde R^{ij} = \tilde v^{ij} + \tfrac12\sum_{kl}\langle kl\|ij\rangle\, S^{ij,kl}\,\tilde t^{kl}\,(S^{ij,kl})^{\mathsf T}\quad(\text{:325, :673}),\qquad
+$$\tilde R^{ij} = \tilde v^{ij} + \tfrac12\sum_{kl}\langle kl\|ij\rangle\, S^{ij,kl}\,\tilde t^{kl}\,(S^{ij,kl})^{\mathsf T},\qquad
 \tilde t^{ij} \leftarrow -\tilde R^{ij} / \tilde\Delta^{ij},$$
 
-$$E_c = \tfrac14\sum_{i\le j} w_{ij} \sum_{\tilde a\tilde b} \tilde v^{ij}_{\tilde a\tilde b}\tilde t^{ij}_{\tilde a\tilde b},\qquad w_{ii}=1,\ w_{i<j}=2\quad(\text{:659, :728}).$$
+$$E_c = \tfrac14\sum_{i\le j} w_{ij} \sum_{\tilde a\tilde b} \tilde v^{ij}_{\tilde a\tilde b}\tilde t^{ij}_{\tilde a\tilde b},\qquad w_{ii}=1,\ w_{i<j}=2.$$
 
 Only the $i\le j$ block is stored; $t_{lk} = -t_{kl}$ with $a,b$ in place
-(`so_oriented_amp`, :246). At $t_{\mathrm{cut,pno}} = 0$ every $S$ is
+(`so_oriented_amp`). At $t_{\mathrm{cut,pno}} = 0$ every $S$ is
 orthogonal and the iteration reproduces `linlccd(.., Hh)`.
 
 ## DLPNO-CCSD: pair screen and PNO substrate
@@ -355,13 +475,13 @@ orthogonal and the iteration reproduces `linlccd(.., Hh)`.
 **Pair lists** (`ferric_mp2`). Two criteria build the retained pairs
 $i\le j$; diagonal pairs are always kept:
 
-- distance (`pair_domains::build_pair_domains`, pair_domains.rs:152): keep
+- distance (`pair_domains::build_pair_domains`, pair_domains.rs): keep
   $(i,j)$ if $|\mathbf r_i - \mathbf r_j| \le R_{\mathrm{pair}}$ (Boys centres, Bohr);
 - estimated MP2 pair energy (`pair_energy_screen`): keep $(i,j)$ if
   $|e_{ij}| \ge T_{\mathrm{cut,pairs}}$, with
   $e_{ij} = -(2-\delta_{ij})\sum_{ab} (2(ia|jb) - (ib|ja))(ia|jb)/\Delta_{ij}^{ab}$.
 
-`dlpno_ccsd::apply_pair_mask` (dlpno_ccsd.rs:49) zeroes $t_{ij}$ and
+`dlpno_ccsd::apply_pair_mask` (dlpno_ccsd.rs) zeroes $t_{ij}$ and
 $t_{ji}$ of every screened pair in the closed-shell CCSD amplitudes; with
 complete domains it is the identity.
 
@@ -378,25 +498,23 @@ iteration does not exist.
 
 **Triple list** (`dlpno_ccsd_t.rs`). A banded triple $i\le j\le k$ is kept if
 any two indices coincide, or else if all three pairwise Boys distances are
-$\le R_{\mathrm{triple}}$ (`triple_is_retained`, :186). The predicate depends
+$\le R_{\mathrm{triple}}$ (`triple_is_retained`). The predicate depends
 only on the multiset $\{i,j,k\}$, so retained triples keep the dense weights
 $m\in\{1,3,6\}$, and
 $E_{(T)} = \tfrac13\sum_{\text{kept}} m\, f(i,j,k)$
-(`screened_triple_energy`, :353–374). Only $m=6$ triples can be screened.
+(`screened_triple_energy`). Only $m=6$ triples can be screened.
 
 **TNOs** (`dlpno_ccsd_t_virtual.rs`). Each constituent pair
 $(p,q)\subset\{i,j,k\}$ gets a PNO basis $P^{pq}$ at $t_{\mathrm{cut,tno}}$
-(same `pno_for_pair` criterion, :315). The union is the range of the
+(same `pno_for_pair` criterion). The union is the range of the
 projector sum
 
-$$M^{ijk} = \sum_{(p,q)} P^{pq} P^{pq\,\mathsf T}\quad(\text{:439}),$$
+$$M^{ijk} = \sum_{(p,q)} P^{pq} P^{pq\,\mathsf T},$$
 
-taking eigenvectors with eigenvalue $> 10^{-8}$ (`UNION_RANK_TOL`, :157,
-:447); in-span eigenvalues are $\ge 1$, out-of-span ones are 0. The pairs are
+taking eigenvectors with eigenvalue $> 10^{-8}$ (`UNION_RANK_TOL`); in-span eigenvalues are $\ge 1$, out-of-span ones are 0. The pairs are
 summed in sorted order, so the basis is bit-identical for all orderings of
 $(i,j,k)$. The union is then semicanonicalized as for PNOs, and the per-triple
 $-\sum \tilde W V/\Delta$ is evaluated with every virtual index (free and summed)
-projected onto that basis (`dlpno_ccsd_t_kernel::triple_contribution_in_tno`,
-:558). The kernel returns the unweighted $f(i,j,k)$; $m$ and the divisor 3 are
+projected onto that basis (`dlpno_ccsd_t_kernel::triple_contribution_in_tno`). The kernel returns the unweighted $f(i,j,k)$; $m$ and the divisor 3 are
 applied only in `screened_triple_energy`. At $t_{\mathrm{cut,tno}} = 0$ every
 transform is square orthogonal and the dense $f$ is recovered.

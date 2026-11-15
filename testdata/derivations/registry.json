@@ -815,38 +815,46 @@
       "scripts": [
         "scripts/gw_ucohsex_sympy.py"
       ]
-    }
-  },
-  "gaps": {
-    "casscf": {
-      "reason": "no theory.md derivation and no sympy proof",
-      "theory": [
-        "crates/ferric-ci/theory.md#two-step-casscf-srccasscfrs"
-      ]
     },
     "ccd": {
-      "reason": "no theory.md derivation and no sympy proof",
       "theory": [
         "crates/ferric-cc/theory.md#ccd"
+      ],
+      "scripts": [
+        "scripts/cc_ccsd_eom_brute_force_sympy.py"
+      ]
+    },
+    "casscf": {
+      "theory": [
+        "crates/ferric-ci/theory.md#two-step-casscf-srccasscfrs"
+      ],
+      "scripts": [
+        "scripts/ci_rdm_casscf_gradient_sympy.py"
       ]
     },
     "ccsd": {
-      "reason": "no theory.md derivation and no sympy proof",
       "theory": [
         "crates/ferric-cc/theory.md#ccsd"
+      ],
+      "scripts": [
+        "scripts/cc_ccsd_eom_brute_force_sympy.py"
       ]
     },
+    "eom-ccsd": {
+      "theory": [
+        "crates/ferric-cc/theory.md#ee-eom-ccsd-singlets-closed-shell"
+      ],
+      "scripts": [
+        "scripts/cc_ccsd_eom_brute_force_sympy.py"
+      ]
+    }
+  },
+  "gaps": {
     "cosmo": {
       "reason": "no theory.md derivation and no sympy proof (PCM theory.md section 6 covers the conductor limit)"
     },
     "double-hybrid": {
       "reason": "owned elsewhere: the double-hybrid grading branch writes its derivation"
-    },
-    "eom-ccsd": {
-      "reason": "no theory.md derivation and no sympy proof",
-      "theory": [
-        "crates/ferric-cc/theory.md#ee-eom-ccsd-singlets-closed-shell"
-      ]
     },
     "local-mp2": {
       "reason": "crates/ferric-mp2/theory.md section 12 is a pointer to the wiki, with no derivation or function names",

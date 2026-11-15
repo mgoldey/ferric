@@ -514,6 +514,69 @@ CASES = [
         ],
     ),
     (
+        "cc_ccsd_eom_brute_force_sympy.py",
+        60,
+        [
+            (
+                "r += 0.5 * (\n",
+                "r += 1.0 * (\n",
+                "FAIL [ccd-residual]",
+            ),
+            (
+                "def ccsd_r(t1, t2, wmbej_t2=0.5)",
+                "def ccsd_r(t1, t2, wmbej_t2=1.0)",
+                "FAIL [ccsd-residual]",
+            ),
+            (
+                "def ccsd_energy(t1, t2, quarter_t1=0.5)",
+                "def ccsd_energy(t1, t2, quarter_t1=0.25)",
+                "FAIL [ccsd-energy]",
+            ),
+            (
+                "def cs_energy(t1s, t2s, exchange=1.0)",
+                "def cs_energy(t1s, t2s, exchange=0.0)",
+                "FAIL [spin-adaptation]",
+            ),
+            (
+                "hsd = basis @ hbar @ basis.T - e_cc * np.eye(n)",
+                "hsd = basis @ hbar @ basis.T + e_cc * np.eye(n)",
+                "FAIL [eom-jacobian]",
+            ),
+            (
+                "def claim_cis(coulomb=2.0)",
+                "def claim_cis(coulomb=1.0)",
+                "FAIL [cis-limit]",
+            ),
+            (
+                "+ 0.5 * ((r2 - r2.transpose(0, 1, 3, 2)) ** 2).sum()",
+                "+ 1.0 * ((r2 - r2.transpose(0, 1, 3, 2)) ** 2).sum()",
+                "FAIL [spin-norm]",
+            ),
+        ],
+    ),
+    (
+        "ci_rdm_casscf_gradient_sympy.py",
+        30,
+        [
+            (
+                "def generalized_fock(c, gam, big, core_factor=2.0, k_active=0.5)",
+                "def generalized_fock(c, gam, big, core_factor=1.0, k_active=0.5)",
+                "FAIL [casscf-gradient]",
+            ),
+            (
+                "def generalized_fock(c, gam, big, core_factor=2.0, k_active=0.5)",
+                "def generalized_fock(c, gam, big, core_factor=2.0, k_active=0.0)",
+                "FAIL [casscf-gradient]",
+            ),
+            ("def rdms(c, swap=False)", "def rdms(c, swap=True)", "FAIL [rdm-energy]"),
+            (
+                "def claim_sigma(h_eff, g_act, hm, half=0.5)",
+                "def claim_sigma(h_eff, g_act, hm, half=1.0)",
+                "FAIL [sigma-split]",
+            ),
+        ],
+    ),
+    (
         "cc_triples_weights_and_linlccd_spin_adaptation_sympy.py",
         15,
         [
