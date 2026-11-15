@@ -33,6 +33,11 @@ Mutations measured to fail (each on an assertion, then restored):
   `test_matches_the_cli[scs-mp2-sos-water]` (final E -75.01214 vs -75.00345);
 - `parse_optimize_reference` mapping unset to ROHF on an open shell fails
   `test_open_shell_defaults_to_uhf`;
+- `optimize_config` ignoring `coordinates` (always Cartesian) fails all three
+  `test_internal_coordinates_match_the_cli` cases (steps 7 vs 5, 8 vs 5,
+  7 vs 6) and `test_certificate_names_the_coordinates`;
+  `test_run_optimize_uhf_passes_coordinates` cannot see it (both sides
+  drop the kwarg alike) and guards only the wrapper's pass-through;
 - `refuse_unread_optimize_kwargs` returning early fails the nine cases it
   owns (two of them, "needs auxbasis" and "closed-shell only", then fail on
   the downstream RuntimeError rather than the ValueError match); the other
@@ -381,3 +386,76 @@ def test_oo_rimp2_rijk_endpoint_is_stationary_on_the_fitted_surface():
     g_exact = _fd_gradient(symbols, coords, "exact")
     miss = np.abs(analytic - g_exact).max()
     assert miss > 10 * fd_bar, miss
+
+
+# `coordinates=` is the CLI's `[optimize] coordinates`. Each case optimizes the
+# same molecule through both surfaces in redundant internal coordinates; a
+# binding that dropped the kwarg would run the Cartesian BFGS, whose step
+# count and final digits differ from the internal-coordinate path.
+INTERNAL_ROUTES = [
+    pytest.param(
+        WATER,
+        1,
+        dict(**SCF_CONV),
+        f'[method]\nkind = "rhf"\ntask = "optimize"\n\n{SCF_TOML}',
+        id="rhf-water",
+    ),
+    pytest.param(
+        NH2,
+        2,
+        dict(xc="PBE", df_j_aux=JKFIT, df_k_aux=JKFIT, **SCF_CONV),
+        f'[method]\nkind = "uhf"\ntask = "optimize"\n\n'
+        f'[dft]\nfunctional = "PBE"\n\n{SCF_TOML}',
+        id="uks-pbe-nh2",
+    ),
+    pytest.param(
+        WATER,
+        1,
+        dict(method="rimp2", auxbasis="cc-pvdz-ri"),
+        '[method]\nkind = "rimp2"\ntask = "optimize"\n\n'
+        '[mp2]\nauxbasis = "cc-pvdz-ri"\n',
+        id="rimp2-water",
+    ),
+]
+
+
+@pytest.mark.parametrize("xyz,mult,kwargs,toml", INTERNAL_ROUTES)
+def test_internal_coordinates_match_the_cli(tmp_path, xyz, mult, kwargs, toml):
+    toml = toml + '\n[optimize]\ncoordinates = "internal"\n'
+    cli = _cli_result(_run_cli(tmp_path, xyz, mult, toml))
+    mol = ferric.Molecule.from_xyz_string(xyz, 0, mult)
+    py = ferric.run_optimize(mol, "sto-3g", coordinates="internal", **kwargs)
+    assert py.converged
+    assert _py_result(py) == cli
+    cart = ferric.run_optimize(mol, "sto-3g", **kwargs)
+    # The kwarg must change the path, or this test cannot see it dropped.
+    assert (cart.steps, cart.energy_trace) != (py.steps, py.energy_trace)
+
+
+def test_certificate_names_the_coordinates():
+    water = ferric.Molecule.from_xyz_string(WATER)
+    for coordinates, name in [
+        (None, "Cartesian"),
+        ("cartesian", "Cartesian"),
+        ("internal", "RedundantInternal"),
+    ]:
+        kwargs = {} if coordinates is None else {"coordinates": coordinates}
+        r = ferric.run_optimize(water, "sto-3g", max_steps=2, **kwargs)
+        details = {a["name"]: a["detail"] for a in r.certificate["approximations"]}
+        assert f"BFGS, {name} coordinates" in details["optimizer"], details
+
+
+def test_run_optimize_uhf_passes_coordinates():
+    nh2 = ferric.Molecule.from_xyz_string(NH2, 0, 2)
+    a = ferric.run_optimize_uhf(nh2, "sto-3g", coordinates="internal", **SCF_CONV)
+    b = ferric.run_optimize(
+        nh2, "sto-3g", reference="uhf", coordinates="internal", **SCF_CONV
+    )
+    assert (a.steps, a.energy_trace) == (b.steps, b.energy_trace)
+
+
+@pytest.mark.parametrize("bad", ["", "internl", "z-matrix", "delocalized"])
+def test_unknown_coordinates_raise(bad):
+    water = ferric.Molecule.from_xyz_string(WATER)
+    with pytest.raises(ValueError, match='expected "cartesian" or "internal"'):
+        ferric.run_optimize(water, "sto-3g", coordinates=bad)

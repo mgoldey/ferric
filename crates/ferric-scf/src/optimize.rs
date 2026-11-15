@@ -49,6 +49,28 @@ pub enum CoordSystem {
     RedundantInternal,
 }
 
+impl CoordSystem {
+    /// Parse a user-facing coordinate-system name: `"cartesian"` (also
+    /// `"cart"`) or `"internal"` (also `"internals"`, `"redundant-internal"`,
+    /// `"redundant_internal"`), case-insensitive. Strict: any other value is
+    /// an error naming the accepted values, never a silent Cartesian.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message naming the accepted values if `s` is not one of them.
+    pub fn parse_config_str(s: &str) -> Result<Self, String> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "cartesian" | "cart" => Ok(Self::Cartesian),
+            "internal" | "internals" | "redundant-internal" | "redundant_internal" => {
+                Ok(Self::RedundantInternal)
+            }
+            other => Err(format!(
+                "unknown coordinates = \"{other}\"; expected \"cartesian\" or \"internal\""
+            )),
+        }
+    }
+}
+
 /// Configuration for geometry optimization.
 #[derive(Debug, Clone)]
 pub struct OptimizeConfig {

@@ -136,7 +136,7 @@ pub(crate) fn optimize_result_certificate(
     df_j_aux=None, df_k_aux=None, scf_ri_j_precision=None, scf_ri_k_precision=None,
     auxbasis=None, frozen_core=None, scf_jk=None, jk_auxbasis=None, memory_budget_gb=None,
     oo_max_iter=None, oo_grad_conv=None, c_os=None, c_ss=None, scf_eri=None,
-    scf_relativistic=None, fock_hook=None, fock_hook_grad=None,
+    scf_relativistic=None, fock_hook=None, fock_hook_grad=None, coordinates=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_optimize(
@@ -174,6 +174,7 @@ pub(crate) fn run_optimize(
     scf_relativistic: Option<&str>,
     fock_hook: Option<&Bound<'_, PyAny>>,
     fock_hook_grad: Option<&Bound<'_, PyAny>>,
+    coordinates: Option<&str>,
 ) -> PyResult<PyOptimizeResult> {
     // Before any setup: no method here has an X2C-1e gradient.
     refuse_relativistic_kwarg(scf_relativistic, "analytic nuclear gradient (run_optimize)")?;
@@ -221,7 +222,7 @@ pub(crate) fn run_optimize(
     let bs = basis::bundled(basis_name).map_err(make_err)?;
     let mut emol = mol.inner.clone();
     emol.apply_ecp(&bs);
-    let opt_config = optimize_config(max_steps, e_conv, scf_warm_start);
+    let opt_config = optimize_config(max_steps, e_conv, scf_warm_start, coordinates)?;
     if fock_hook.is_some() || fock_hook_grad.is_some() {
         let hooks = check_optimize_hooks(fock_hook, fock_hook_grad, method, &k, scf_warm_start)?;
         let opt_config = OptimizeConfig {
@@ -249,7 +250,7 @@ pub(crate) fn run_optimize(
 /// `run_uhf` -- there is no `multiplicity` kwarg here, and passing a
 /// closed-shell molecule simply runs UHF on a singlet.
 #[pyfunction]
-#[pyo3(signature = (mol, basis_name, max_steps=None, e_conv=None, point_charges=None, external_field=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, solvent=None, pcm_lebedev_order=None, scf_warm_start=None))]
+#[pyo3(signature = (mol, basis_name, max_steps=None, e_conv=None, point_charges=None, external_field=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, solvent=None, pcm_lebedev_order=None, scf_warm_start=None, coordinates=None))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_optimize_uhf(
     py: Python<'_>,
@@ -265,6 +266,7 @@ pub(crate) fn run_optimize_uhf(
     solvent: Option<&Bound<'_, PyAny>>,
     pcm_lebedev_order: Option<usize>,
     scf_warm_start: Option<bool>,
+    coordinates: Option<&str>,
 ) -> PyResult<PyOptimizeResult> {
     run_optimize(
         py,
@@ -301,6 +303,7 @@ pub(crate) fn run_optimize_uhf(
         None,
         None,
         None,
+        coordinates,
     )
 }
 
@@ -457,18 +460,26 @@ fn refuse_unread_optimize_kwargs(
 }
 
 /// The optimizer settings `run_optimize` exposes; the rest stay at the
-/// library defaults.
+/// library defaults. `coordinates` takes the CLI's `[optimize] coordinates`
+/// values ("cartesian", the default, or "internal") and is just as strict.
 fn optimize_config(
     max_steps: Option<usize>,
     e_conv: Option<f64>,
     scf_warm_start: Option<bool>,
-) -> OptimizeConfig {
-    OptimizeConfig {
+    coordinates: Option<&str>,
+) -> PyResult<OptimizeConfig> {
+    let coord_system = match coordinates {
+        None => ferric_scf::optimize::CoordSystem::Cartesian,
+        Some(s) => ferric_scf::optimize::CoordSystem::parse_config_str(s)
+            .map_err(pyo3::exceptions::PyValueError::new_err)?,
+    };
+    Ok(OptimizeConfig {
         max_steps: max_steps.unwrap_or(100),
         e_conv: e_conv.unwrap_or(1e-6),
         scf_warm_start: scf_warm_start.unwrap_or(true),
+        coord_system,
         ..Default::default()
-    }
+    })
 }
 
 /// `method="scf"`: `optimize_geometry{,_uhf,_rohf}_with_scf_correction`, the

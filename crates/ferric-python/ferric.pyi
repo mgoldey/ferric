@@ -4448,6 +4448,7 @@ def run_optimize(
     scf_relativistic: Literal["x2c1e"] | None = None,
     fock_hook: Callable[..., tuple[Any, ...]] | None = None,
     fock_hook_grad: Callable[..., NDArray[np.float64]] | None = None,
+    coordinates: Literal["cartesian", "internal"] | None = None,
 ) -> OptimizeResult:
     """Geometry optimization on any surface with an analytic gradient.
 
@@ -4494,6 +4495,13 @@ def run_optimize(
     (large step) and after a failed warm-started SCF. Energies agree with a cold start to
     SCF convergence tolerance, not bitwise; False restores the from-scratch guess.
 
+    `coordinates` (default "cartesian"): the coordinates of the BFGS step, as the CLI's
+    `[optimize] coordinates`, for every method. "internal" uses redundant internal
+    coordinates (bonds, angles, dihedrals) with a Schlegel initial Hessian; it often
+    needs fewer steps on floppy molecules, and falls back to Cartesian with a printed
+    warning if the coordinates cannot be built. Any other value raises ValueError. The
+    certificate's `optimizer` approximation names the requested coordinates.
+
     `fock_hook` / `fock_hook_grad` ("scf" only, both or neither): optimize the
     hooked surface (run_rhf's fock_hook and fock_hook_grad). The geometry moves,
     so both are called with the step's Molecule as their LAST argument:
@@ -4522,6 +4530,7 @@ def run_optimize_uhf(
     solvent: float | str | None = None,
     pcm_lebedev_order: int | None = None,
     scf_warm_start: bool | None = None,
+    coordinates: Literal["cartesian", "internal"] | None = None,
 ) -> OptimizeResult:
     """Geometry optimization (UHF): `run_optimize(..., reference="uhf")`.
 
@@ -4529,7 +4538,8 @@ def run_optimize_uhf(
 
     The spin state comes from the `Molecule`'s multiplicity, as in `run_uhf`.
     `scf_max_iter`, `scf_energy_conv`, `scf_density_conv` control the SCF at every
-    geometry, and `scf_warm_start` the guess, as in `run_optimize`.
+    geometry, `scf_warm_start` the guess and `coordinates` the step coordinates, as in
+    `run_optimize`.
     """
     ...
 

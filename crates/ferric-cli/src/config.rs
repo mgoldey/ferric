@@ -996,16 +996,8 @@ pub struct OptimizeCfg {
 ///
 /// Returns a message naming the accepted values if `s` is not one of them.
 pub fn parse_coord_system(s: &str) -> Result<ferric_scf::optimize::CoordSystem, String> {
-    use ferric_scf::optimize::CoordSystem;
-    match s.trim().to_ascii_lowercase().as_str() {
-        "cartesian" | "cart" => Ok(CoordSystem::Cartesian),
-        "internal" | "internals" | "redundant-internal" | "redundant_internal" => {
-            Ok(CoordSystem::RedundantInternal)
-        }
-        other => Err(format!(
-            "unknown [optimize] coordinates = \"{other}\"; expected \"cartesian\" or \"internal\""
-        )),
-    }
+    ferric_scf::optimize::CoordSystem::parse_config_str(s)
+        .map_err(|e| e.replacen("coordinates", "[optimize] coordinates", 1))
 }
 
 /// `[frequencies]` — harmonic vibrational frequencies (`method.task =
