@@ -196,7 +196,7 @@ Code references are `crate/src/file.rs::item` under `crates/`.
 | 10.7 | The range split is not additive: the cross term | T mp2 §5 "Range split"; S `mp2_variant_identities.py` claim 4 | `ferric-mp2/src/attenuated.rs::rs_mp2_decomposition` | ready |
 | 10.8 | MP2-V: attenuated MP2 with damped VV10 | T mp2 "13. MP2-V"†; S `mp2_family_sympy.py`† part E; R mp2-v | `ferric-mp2/src/att_vv10.rs::{att_mp2_vv10,u_att_mp2_vv10}`, `ferric-dft/src/vv10.rs::compute_vv10_damped_energy_and_potentials` | edit |
 | 10.9 | MP3, restricted and spin-blocked unrestricted | T mp2 §6, §6.1; S `oomp2_mp3_identities_sympy.py`, `ump3_spin_blocks_sympy.py`; R mp3. W §2b is superseded by the scripts: its ring prefactor was wrong. | `ferric-mp2/src/mp3.rs::{mp3_energy,mp3_energy_from_spin_orbital_blocks}`, `ferric-mp2/src/u_mp3.rs::u_mp3` | ready |
-| 10.10 | MP2-based double hybrids | R double-hybrid *gap* (owned by another branch); M cc "MP2-based double hybrids" | `ferric-mp2/src/double_hybrid.rs::mp2_double_hybrid` | edit |
+| 10.10 | MP2-based double hybrids | R double-hybrid *gap* (owned by another branch); M cc "MP2-based double hybrids" | `ferric-mp2/src/double_hybrid.rs::mp2_double_hybrid` | ready |
 | 10.11 | Orbital-partitioned Padé MP3 | T mp2 §6.2; S `opmp3_identities_sympy.py`; R opmp3 | `ferric-mp2/src/opmp3.rs::{w_channels,pade,op_mp3,sop_mp3,ssd_opmp3}`, `ferric-mp2/src/opmp3_driver.rs::run_opmp3` | ready |
 
 **Chapter 11. RI-MP2 algorithms and memory** (dissertation chapter 4)
@@ -268,7 +268,7 @@ Code references are `crate/src/file.rs::item` under `crates/`.
 | 16.3 | (T) in spin orbitals and in closed-shell form | T cc "CCSD(T), spin-orbital", "CCSD(T), closed shell"; S `cc_triples_weights_and_linlccd_spin_adaptation_sympy.py`; R ccsd-t *gap* (the closed-shell text describes a removed kernel) | `ferric-cc/src/ccsd_t.rs::ccsd_t`, `ferric-cc/src/ccsd_t_closed_shell.rs::ccsd_t_closed_shell` | ready |
 | 16.4 | EOM-CCSD singlets | T cc "EE-EOM-CCSD singlets"; R eom-ccsd *gap* | `ferric-cc/src/eom_ccsd.rs::eom_ccsd_singlets`, `ferric-cc/src/eom_davidson.rs::davidson_nonsymmetric` | ready |
 | 16.5 | LinLCCD and LinLCCD(hh) | T cc "LinLCCD and LinLCCD(hh)"; S `cc_triples_weights_and_linlccd_spin_adaptation_sympy.py`; R linlccd; W §9 | `ferric-cc/src/linlccd.rs::linlccd`, `ferric-cc/src/linlccd_u.rs::u_linlccd`, `ferric-cc/src/helpers.rs::contract_hh_ladder` | ready |
-| 16.6 | The ωB97X-L-V double hybrid | T cc "ωB97X-L-V correlation"; R double-hybrid *gap* | `ferric-cc/src/double_hybrid.rs::run_wb97x_l_v` | gap |
+| 16.6 | The ωB97X-L-V double hybrid | T cc "ωB97X-L-V correlation"; R double-hybrid *gap* | `ferric-cc/src/double_hybrid.rs::run_wb97x_l_v` | ready |
 | 16.7 | Local coupled cluster: amplitude threshold and DLPNO | T cc "Amplitude-threshold LinLCCD", "DLPNO-…" (three sections); W §10, §13 | `ferric-cc/src/linlccd_amplitude.rs::amplitude_linlccd`, `ferric-cc/src/dlpno_linlccd.rs::dlpno_linlccd_hh`, `ferric-cc/src/dlpno_ccsd_virtual.rs::pno_ccsd_energy`, `ferric-cc/src/dlpno_ccsd_t.rs::screened_triple_energy` | edit |
 
 ### Part VIII. Multireference
@@ -448,9 +448,9 @@ registry row and are the largest block of `gap` sections.
 | II. Integrals, screening and density fitting | 1 | 15 | 1 | 0 | 17 |
 | III. Self-consistent field | 8 | 2 | 0 | 0 | 10 |
 | IV. Density functional theory | 7 | 0 | 0 | 0 | 7 |
-| V. The MP2 family | 17 | 4 | 1 | 5 | 27 |
+| V. The MP2 family | 18 | 3 | 1 | 5 | 27 |
 | VI. Derivatives | 12 | 3 | 0 | 0 | 15 |
-| VII. Coupled cluster | 5 | 1 | 1 | 0 | 7 |
+| VII. Coupled cluster | 6 | 1 | 0 | 0 | 7 |
 | VIII. Multireference | 5 | 0 | 1 | 0 | 6 |
 | IX. RPA, PDEP and GW | 14 | 0 | 0 | 1 | 15 |
 | X. Response and excited states | 7 | 2 | 0 | 0 | 9 |
@@ -460,9 +460,9 @@ registry row and are the largest block of `gap` sections.
 | XIV. Capstone | 1 | 2 | 4 | 0 | 7 |
 | XV. Interfaces | 1 | 5 | 1 | 0 | 7 |
 | Appendices | 3 | 0 | 1 | 0 | 4 |
-| **Total** | **96** | **49** | **10** | **6** | **161** |
+| **Total** | **98** | **48** | **9** | **6** | **161** |
 
-161 sections: 60% `ready`, 30% `edit`, 6% `gap` and 4% `verify`.
+161 sections: 61% `ready`, 30% `edit`, 6% `gap` and 4% `verify`.
 <!-- status-table:end -->
 
 ## 5. Gaps, ranked by how much rests on them

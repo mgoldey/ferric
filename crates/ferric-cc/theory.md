@@ -416,6 +416,54 @@ The returned energy $\tfrac14\sum(\lambda\langle ij\|ab\rangle^{sr})t$ is
 $\lambda E_c^{sr,\omega,\lambda}$, quadratic in $\lambda$ at leading order
 (exactly $\lambda^2 E_{c,\mathrm{MP2}}^{sr}$ with the ladder off).
 
+**The whole functional** (Ransford and Carter-Fenk, Phys. Chem. Chem. Phys.
+28, 14428 (2026), eqn 27) is
+
+$$ E = E_{\mathrm{KS}}[\omega\mathrm{B97X\text{-}L}] + E_{c,\mathrm{VV10}} + \lambda E_c^{sr,\omega,\lambda}, \qquad \lambda = 0.6,\ \omega = 0.1\ \mathrm{Bohr}^{-1}. $$
+
+The KS half (`ferric-dft/src/libxc.rs` `wb97x_l_v_def`) is libxc's
+`HYB_GGA_XC_WB97X_V` form with the paper's Table 2 coefficients set through
+the external-parameter interface (`WB97X_L_V_EXT_PARAMS`, checked by name
+against libxc's order) and its own VV10 ($b = 10.0$, $C = 0.01$,
+`WB97X_L_V_VV10`). Exact exchange is full at long range and $\lambda$-scaled at
+short range: in libxc's CAM convention $\alpha = 1$, $\beta = -0.4$, so
+$c_{\mathrm{lr}} = \alpha = 1$ and $c_{\mathrm{sr}} = \alpha + \beta = 0.6 = \lambda$,
+with $\omega = 0.1$; the complementary semilocal exchange carries
+$c_{x,0} = 1 - \lambda = 0.4$ and the same- and opposite-spin correlation
+$c_{ss,0} = c_{os,0} = 1 - \lambda^2 = 0.64$, the uniform-electron-gas
+constraints; the other twelve B97 coefficients are fitted:
+
+| | $c_{\cdot,0}$ | $c_{\cdot,1}$ | $c_{\cdot,2}$ | $c_{\cdot,3}$ | $c_{\cdot,4}$ |
+|---|---|---|---|---|---|
+| exchange $c_x$ | 0.4 | 0.154 | 3.884 | −11.300 | 8.425 |
+| same-spin $c_{ss}$ | 0.64 | −1.417 | 4.716 | −2.956 | −0.861 |
+| opposite-spin $c_{os}$ | 0.64 | −1.194 | −1.348 | 11.869 | −9.571 |
+
+The SCF converges the KS half alone (`run_wb97x_l_v`: the KS convergence
+ladder, RI-J and RI-K on def2-universal-jkfit unless the input names another
+fit, an error if no rung converges); the LinLCCD(hh) term is evaluated once
+on its orbitals and orbital energies, with the RI auxiliary basis of `[mp2]
+auxbasis`.
+
+**Overrides.** `DoubleHybridConfig` carries $\lambda$ and $\omega$ for the
+correlation term only, and the CLI's `[dft] lambda` and `[dft] omega` set
+those two fields. `wb97x_l_v_def` takes no $\lambda$ or $\omega$: its
+$c_{\mathrm{sr}}$, $\omega$ and the constrained $c_{x,0}$, $c_{ss,0}$,
+$c_{os,0}$ stay at the published 0.6 and 0.1. An override therefore changes
+the correlation term on the published KS reference, not the functional as a
+whole. $\lambda$ must lie in $[0, 1]$ and $\omega$ must be positive; at
+$\lambda = 0$ no correlation is computed (the operator, and with it the RI
+metric, vanishes).
+
+[`scripts/double_hybrid_sympy.py`](../../scripts/double_hybrid_sympy.py)
+proves (P) that the Rust tables equal Table 2 and the constraints above, and
+that `wb97x_l_v_def` takes only `nspin`; and (L) on a model, that LinLCCD(hh)
+with the three-centre integrals and metric both scaled by $\lambda$ equals
+$\lambda E_c$ of eqn 22 with $\lambda$ on the driver and the hh ladder, that
+with the ladder off it is $\lambda^2E_{\mathrm{MP2}}$, that the linear form
+$\lambda E_c(\lambda = 1)$ misses it, and that at $\lambda = 1$ with the ladder
+off it is the brute-force MP2 doubles sum.
+
 ## Amplitude-threshold LinLCCD
 
 `linlccd_amplitude.rs`, closed shell, in Boys-localized occupieds and VV-HV

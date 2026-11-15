@@ -1,6 +1,6 @@
 # 16.6 The ωB97X-L-V double hybrid
 
-<!-- section: 16.6; status: gap; registry: double-hybrid;
+<!-- section: 16.6; status: ready; registry: double-hybrid;
      theory: crates/ferric-cc/theory.md#"ωB97X-L-V correlation" -->
 
 ωB97X-L-V replaces the MP2 correlation of a double hybrid with the
@@ -45,9 +45,24 @@ under the composite operator:
 At $\lambda = 0$ the operator vanishes and its RI metric is singular, so no
 correlation is computed.
 
-This section has no verified box. The derivation and sympy proof of the
-double hybrid belong to the double-hybrid grading work, and the registry
-lists `double-hybrid` as a gap until they land.
+With the three-centre integrals and the RI metric both scaled by
+$\lambda$, $B^P_{pq} \to \sqrt\lambda\,B^P_{pq}$ and every four-index
+integral scales by $\lambda$; the returned energy
+$\tfrac14\sum(\lambda\langle ij\Vert ab\rangle^{sr})\,t$ is
+$\lambda E_c^{sr,\omega,\lambda}$ of the paper's eqn 22, which puts $\lambda$
+on the driver and the hh ladder and leaves the Fock terms unscaled. With the
+ladder off it is exactly $\lambda^2 E^{sr}_{c,\mathrm{MP2}}$.
+
+> **Verified equation 16.9** · λ placement and parameters
+>
+> | | |
+> |---|---|
+> | Claim | LinLCCD(hh) on λ-scaled three-centre integrals and metric equals $\lambda E_c$ of eqn 22 (λ on driver and hh ladder); with the ladder off it is $\lambda^2 E_{\mathrm{MP2}}$; the linear form $\lambda E_c(\lambda = 1)$ misses it by more than 10 %; at λ = 1 with the ladder off it is the brute-force MP2 doubles sum. The Rust ωB97X-L-V tables equal the paper's Table 2, with $c_{\mathrm{sr}} = \lambda$, $c_{x,0} = 1-\lambda$, $c_{ss,0} = c_{os,0} = 1-\lambda^2$ |
+> | Proof | claim L (and claim P) of `scripts/double_hybrid_sympy.py` |
+> | Code | `ferric-cc/src/double_hybrid.rs::{lambda_scaled_sr_operator,assemble}`, `ferric-dft/src/libxc.rs::{wb97x_l_v_def,WB97X_L_V_EXT_PARAMS}` |
+> | Code test | `wb97xlv_h2o_def2svp_components_vs_pyscf` in `crates/ferric-cc/tests/validation_wb97xlv.rs` |
+>
+> <!-- verified: id=wb97xlv.lambda; script=scripts/double_hybrid_sympy.py; claim=L; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-cc/src/double_hybrid.rs::{lambda_scaled_sr_operator,assemble}; rust_test=ferric-cc/tests/validation_wb97xlv.rs::wb97xlv_h2o_def2svp_components_vs_pyscf; registry=double-hybrid -->
 
 ## 16.6.2 The algorithm
 
@@ -59,8 +74,13 @@ lists `double-hybrid` as a gap until they land.
 | 4 | $E = E_{\rm KS} + \lambda E_c$, components kept separate | `assemble` |
 
 The CLI kind converges its own ωB97X-L-V reference before the shared SCF
-path, and takes `[dft] lambda` and `omega` as overrides of the published
-0.6 and 0.1; an omitted key is the published value.
+path. `[dft] lambda` and `[dft] omega` set `DoubleHybridConfig::lambda` and
+`omega`, which enter only the correlation term; an omitted key is the
+published value. `wb97x_l_v_def` takes no λ or ω, so the KS half keeps the
+published $c_{\rm sr} = 0.6$, $\omega = 0.1$ and the constrained
+$c_{x,0} = 0.4$, $c_{ss,0} = c_{os,0} = 0.64$ whatever the override: an
+override changes the correlation term on the published KS reference, not the
+functional as a whole. λ must lie in $[0, 1]$ and ω must be positive.
 
 ## 16.6.3 Numerical anchors
 
@@ -75,7 +95,8 @@ path, and takes `[dft] lambda` and `omega` as overrides of the published
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-cc/theory.md`, "ωB97X-L-V correlation" | the λ placement |
+| `crates/ferric-cc/theory.md`, "ωB97X-L-V correlation" | the λ placement, the KS half, the override semantics |
+| `scripts/double_hybrid_sympy.py` | claims L and P |
 | Ransford and Carter-Fenk, PCCP 28, 14428 (2026), eqns 22 and 27, Tables 2 and 4 | the functional, parameters and the Be₂ reference |
 | `ferric-cc/src/double_hybrid.rs`, module documentation | the post-SCF argument and the λ subtlety |
 

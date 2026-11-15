@@ -381,6 +381,39 @@ CASES = [
         ],
     ),
     (
+        "double_hybrid_sympy.py",
+        5,
+        [
+            ('"c_os": 0.51, "c_ss": 0.36}', '"c_os": 0.51, "c_ss": 0.35}', "FAIL P"),
+            ('"cab_3": 11.869,', '"cab_3": -11.869,', "FAIL P"),
+            (
+                "e_ss = np.sum(g * (g - g.transpose(0, 3, 2, 1)) / den)",
+                "e_ss = np.sum(g * g / den)",
+                "FAIL E1",
+            ),
+            (
+                "return e_ks + c_os * e_os + c_ss * e_ss",
+                "return e_ks + c_ss * e_os + c_os * e_ss",
+                "FAIL E2",
+            ),
+            (
+                "f = h + jm - 0.5 * a_x * km + vxc",
+                "f = h + jm - a_x * km + vxc",
+                "FAIL E1",
+            ),
+            (
+                "inv_sqrt(lam * v2), lam * t3)",
+                "inv_sqrt(v2), lam * t3)",
+                "FAIL L1",
+            ),
+            (
+                "e_c = linlccd_hh(so_1, e_so, lam, lam)",
+                "e_c = linlccd_hh(so_1, e_so, lam, 1.0)",
+                "FAIL L1",
+            ),
+        ],
+    ),
+    (
         "u_rimp2_gradient_sympy.py",
         5,
         [

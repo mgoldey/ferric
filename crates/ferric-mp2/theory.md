@@ -1352,3 +1352,64 @@ three amplitude blocks, two $B^{\sigma}$ and two $x^{\sigma}$, one full-MO
 $b^{\sigma}(P|pq)$ at a time, and four exchange-channel densities
 ($8\,n_{\mathrm{ao}}^2$ in place of $4\,n_{\mathrm{ao}}^2$); checked before the
 UHF.
+
+## 16. Double hybrids
+
+`double_hybrid.rs` `mp2_double_hybrid`; the Kohn–Sham halves are
+`ferric-dft/src/libxc.rs` `b2plyp_def` and `dsd_pbep86_def`. The CLI kinds
+`b2plyp` and `dsd-pbep86` and Python `run_double_hybrid(kind=)` converge their
+own closed-shell KS reference (the KS convergence ladder, RI-J and RI-K on
+def2-universal-jkfit unless the input names another fit), then add the
+scaled MP2 term. `wb97x-l-v` is the same construction with LinLCCD(hh) in
+place of MP2; it is derived in `crates/ferric-cc/theory.md`, "ωB97X-L-V
+correlation".
+
+**Energy.** With $D$ the closed-shell KS density and $\{\phi_p, \varepsilon_p\}$
+its orbitals and orbital energies,
+
+$$ E_{\mathrm{DH}} = \underbrace{E_{nn} + \operatorname{Tr}[Dh] + \tfrac12\operatorname{Tr}\big[DJ[D]\big] - \tfrac{a_x}{4}\operatorname{Tr}\big[DK[D]\big] + b_x E_x^{\mathrm{DFA}}[\rho] + a_c E_c^{\mathrm{DFA}}[\rho]}_{E_{\mathrm{KS}}} + c_{\mathrm{OS}}E_{\mathrm{OS}} + c_{\mathrm{SS}}E_{\mathrm{SS}}, $$
+
+where the SCF minimizes $E_{\mathrm{KS}}$ alone, with Fock matrix
+$F = h + J[D] - \tfrac{a_x}{2}K[D] + b_xV_x + a_cV_c$. $a_x$ is the `XcDef`
+`b3lyp_mix`; $b_x$ and $a_c$ are its per-component `weights`, multiplying the
+whole libxc exchange and correlation components. $E_{\mathrm{OS}}$ and
+$E_{\mathrm{SS}}$ are the closed-shell sums of §2 as `pair_energy` codes them,
+
+$$ E_{\mathrm{OS}} = \sum_{ijab}\frac{(ia|jb)^2}{\varepsilon_i + \varepsilon_j - \varepsilon_a - \varepsilon_b}, \qquad
+E_{\mathrm{SS}} = \sum_{ijab}\frac{(ia|jb)\big[(ia|jb) - (ib|ja)\big]}{\varepsilon_i + \varepsilon_j - \varepsilon_a - \varepsilon_b}, $$
+
+evaluated by `ri_mp2_spin_components` on the KS orbitals and the KS orbital
+energies, with the RI integrals of §1 and the frozen core of the input. A
+non-converged KS reference is an error.
+
+| Kind | $a_x$ (HF) | $b_x$ (DFA exchange) | $a_c$ (DFA correlation) | $c_{\mathrm{OS}}$ | $c_{\mathrm{SS}}$ | Source |
+|---|---|---|---|---|---|---|
+| `b2plyp` | 0.53 | 0.47 B88 | 0.73 LYP | 0.27 | 0.27 | Grimme, J. Chem. Phys. 124, 034108 (2006) |
+| `dsd-pbep86` | 0.72 | 0.28 PBE | 0.44 P86 | 0.51 | 0.36 | Kozuch and Martin, J. Comput. Chem. 34, 2327 (2013), no dispersion |
+
+Both sets have $a_x + b_x = 1$; B2PLYP also has $a_c = 1 - c_{\mathrm{OS}}$,
+DSD-PBEP86 no such link. The D3BJ variant of DSD-PBEP86 is not offered.
+
+**What the two terms are.** In Møller–Plesset partitioning on the KS
+determinant, $H_0 = \sum_p \varepsilon_p\,a_p^\dagger a_p$, the second-order
+energy is $\sum_{D\neq0}|\langle D|H|0\rangle|^2/(E^{(0)}_0 - E^{(0)}_D)$ over
+singly and doubly excited determinants. The doubles split by the spins of
+the two holes: the αβ doubles sum to $E_{\mathrm{OS}}$ and the αα and ββ
+doubles to $E_{\mathrm{SS}}$. The KS orbitals do not diagonalize the HF Fock
+operator, so the singles elements $\langle\Phi_i^a|H|0\rangle$ do not vanish;
+standard double hybrids, B2PLYP and DSD-PBEP86 included, keep only the
+doubles, and so does the code. In the plain-MP2 limit $(a_x, b_x, a_c, c_{\mathrm{OS}}, c_{\mathrm{SS}}) = (1, 0, 0, 1, 1)$
+the SCF is RHF, the singles vanish by Brillouin's theorem, and
+$E_{\mathrm{DH}} = E_{\mathrm{HF}} + E_{\mathrm{MP2}}$.
+
+[`scripts/double_hybrid_sympy.py`](../../scripts/double_hybrid_sympy.py)
+proves (P) that the fractions parsed from `double_hybrid.rs` and `libxc.rs`
+equal the cited table above (and the ωB97X-L-V Table 2 values, see
+ferric-cc), with the constraints $a_x + b_x = 1$ and B2PLYP's
+$a_c = 1 - c_{\mathrm{OS}}$; (E) on a model with a semilocal functional on a
+grid, the assembled energy against a determinant-space route that applies $H$
+to the reference by second quantization: the plain-MP2 limit is
+$\langle 0|H|0\rangle + E^{(2)}$ with vanishing singles, and on B2PLYP and
+DSD-PBEP86 orbitals $E_{\mathrm{OS}}$ and $E_{\mathrm{SS}}$ are the αβ and
+same-spin doubles with KS orbital energies while the singles are not zero.
+Its recorded mutations are in `crates/ferric-python/tests/test_derivation_scripts.py`.

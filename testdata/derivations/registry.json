@@ -1011,12 +1011,18 @@
         "scripts/mp2_polarizability_sympy.py",
         "scripts/mp2_gradient_sympy.py"
       ]
+    },
+    "double-hybrid": {
+      "theory": [
+        "crates/ferric-mp2/theory.md#16-double-hybrids",
+        "crates/ferric-cc/theory.md#ωb97x-l-v-correlation"
+      ],
+      "scripts": [
+        "scripts/double_hybrid_sympy.py"
+      ]
     }
   },
   "gaps": {
-    "double-hybrid": {
-      "reason": "owned elsewhere: the double-hybrid grading branch writes its derivation"
-    },
     "mbd": {
       "reason": "no theory.md derivation (book section 25.3 carries it standalone until crates/ferric-rpa/theory.md gains an MBD section)",
       "scripts": [
