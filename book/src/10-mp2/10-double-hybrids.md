@@ -27,7 +27,7 @@ Hartree–Fock ones. The SCF never sees the MP2 term.
 | Kind | Exchange | Semilocal correlation | $c_{\mathrm{OS}}$ | $c_{\mathrm{SS}}$ |
 |---|---|---|---|---|
 | B2PLYP (Grimme, J. Chem. Phys. 124, 034108 (2006)) | 0.53 HF + 0.47 B88 | 0.73 LYP | 0.27 | 0.27 |
-| DSD-PBEP86 | 0.69 HF + 0.31 PBE | 0.44 P86 | 0.56 | 0.29 |
+| DSD-PBEP86, no dispersion (Kozuch and Martin, J. Comput. Chem. 34, 2327 (2013)) | 0.72 HF + 0.28 PBE | 0.44 P86 | 0.51 | 0.36 |
 
 The KS orbitals are not Hartree–Fock orbitals, so the Brillouin condition
 fails and the singles term of MP2 is not zero. Standard double hybrids,
@@ -41,12 +41,13 @@ The CLI kinds converge their own KS reference before the MP2 step, and
 | Kind | Grade | Evidence |
 |---|---|---|
 | `b2plyp` | Proven | total energy vs PySCF built from the definition (`dft.RKS` with 0.53 HF + 0.47 B88, 0.73 LYP, then `mp.dfmp2.DFMP2` on the KS orbitals): ≤ 1.3e-11 Ha; E_KS ≤ 7.1e-13, E_OS ≤ 4.1e-11, E_SS ≤ 1.5e-11 Ha (H2O, NH3, CH4 / cc-pVDZ and def2-SVP, frozen core 0 and 1); test `crates/ferric-mp2/tests/validation_b2plyp_pyscf.rs` |
-| `dsd-pbep86` | Spike | compared with no reference code; ferric's parameters are tied to neither of the two published DSD-PBEP86 sets (2011, 2013) |
+| `dsd-pbep86` | Proven | total energy vs PySCF built from the definition (`dft.RKS` with 0.72 HF + 0.28 PBE, 0.44 P86, then `mp.dfmp2.DFMP2` scaled 0.51/0.36): ≤ 1.9e-11 Ha; E_KS ≤ 6.5e-13, E_OS ≤ 2.2e-11, E_SS ≤ 2.3e-11 Ha (same cases as B2PLYP); test `crates/ferric-mp2/tests/validation_dsd_pbep86_pyscf.rs`, which also asserts that the superseded 0.69/0.31/0.56/0.29 set misses by at least 100 bars |
 
-The B2PLYP reference runs a flat (75, 110) grid with RI-J in f64. The CLI
-default (pruned grid, f32 RI-J) moves the total by up to 1.0e-6 Ha, so a
-default run carries no anchor and the CLI prints a notice. Only Grimme's
-2006 parameters are checked; no comparison of B2PLYP with experiment is
+Both references run a flat (75, 110) grid with RI-J in f64. The CLI
+default (pruned grid, f32 RI-J) moves the total by up to 1.0e-6 Ha (B2PLYP)
+and 1.2e-6 Ha (DSD-PBEP86), so a default run carries no anchor and the CLI
+prints a notice. Only Grimme's 2006 B2PLYP parameters and the 2013
+no-dispersion DSD-PBEP86 set are checked; the -D3BJ variant is not offered; no comparison of B2PLYP with experiment is
 claimed. Figures from `site/src/reference/validation.md`.
 
 ## 10.10.3 Derivation status
@@ -65,7 +66,7 @@ being written on the double-hybrid grading branch; the registry lists
 - Closed-shell (RKS) only.
 - No gradient or Hessian: the MP2 term is not differentiated (the KS
   Hessian refuses double hybrids with a typed error).
-- DSD-PBEP86 parameters are not tied to a published set.
+- DSD-PBEP86 is the no-dispersion 2013 set only; DSD-PBEP86-D3BJ (0.69/0.31/0.44, 0.52/0.22 plus D3BJ) is not offered.
 
 ## Sources
 

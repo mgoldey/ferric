@@ -18,7 +18,7 @@ The grades are those of `site/src/reference/validation.md`, which is the authori
 
 ## C.2 Grade of each CLI method kind
 
-31 kinds: 16 Proven, 12 Proven (narrow), 2 Smoke, 1 Spike.
+31 kinds: 17 Proven, 12 Proven (narrow), 2 Smoke.
 
 | `method.kind` | Family | Python | Grade |
 |---|---|---|---|
@@ -48,7 +48,7 @@ The grades are those of `site/src/reference/validation.md`, which is the authori
 | `drpa` | RPA/GW | `run_drpa`, `run_drpa_scan` (local ε scan) | Proven (narrow) |
 | `wb97x-l-v` | CC § ωB97X-L-V | none | Proven (narrow) |
 | `b2plyp` | CC § double hybrids | `run_double_hybrid(kind="b2plyp")` | Proven |
-| `dsd-pbep86` | CC § double hybrids | `run_double_hybrid(kind="dsd-pbep86")` | Spike |
+| `dsd-pbep86` | CC § double hybrids | `run_double_hybrid(kind="dsd-pbep86")` | Proven |
 | `tda` | RPA/GW § TDDFT | `run_tddft(method="tda")` | Proven (narrow) |
 | `tddft` | RPA/GW § TDDFT | `run_tddft(method="casida")` | Proven (narrow) |
 | `casscf` | CAS-CI and CASSCF | `run_casscf` | Proven |
