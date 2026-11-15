@@ -194,7 +194,7 @@ def resolve_item(root: Path, path: str, item: str) -> tuple[Path, int] | None:
 
 def item_body(text: str, start: int) -> str:
     """Text from ``start`` to the end of the braced item (comments and strings skipped)."""
-    i, n, depth, opened = start, len(text), 0, False
+    i, n, depth, opened, nest = start, len(text), 0, False, 0
     while i < n:
         c = text[i]
         if text.startswith("//", i):
@@ -216,7 +216,12 @@ def item_body(text: str, start: int) -> str:
             depth -= 1
             if opened and depth == 0:
                 return text[start : i + 1]
-        elif c == ";" and not opened:
+        elif c in "([":
+            nest += 1
+        elif c in ")]":
+            nest -= 1
+        elif c == ";" and not opened and nest == 0:
+            # A `;` inside brackets, e.g. `[[f64; 3]; 3]` in a signature, does not end the item.
             return text[start : i + 1]
         i += 1
     return text[start:]

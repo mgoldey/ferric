@@ -48,7 +48,7 @@ $F = h + J[D] - \tfrac12 K[D]$.
 > | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
 > | Code | `ferric-scf/src/rhf.rs::solve_rhf`, `ferric-scf/src/uhf.rs::solve_uhf` |
 >
-> <!-- verified: id=scf.fock-is-de-dd; script=scripts/hf_energy_sympy.py; claim=S1 dE_RHF/dD = F_RHF (symbolic, n=2); runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/rhf.rs::solve_rhf, ferric-scf/src/uhf.rs::solve_uhf; registry=rhf -->
+> <!-- verified: id=scf.fock-is-de-dd; script=scripts/hf_energy_sympy.py; claim=S1; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/rhf.rs::solve_rhf, ferric-scf/src/uhf.rs::solve_uhf; registry=rhf -->
 
 > **Verified equation 7.2** · the ROHF orbital gradient and the effective Fock matrix
 >
@@ -64,7 +64,7 @@ $F = h + J[D] - \tfrac12 K[D]$.
 > | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
 > | Code | `ferric-scf/src/rohf.rs::{rohf_gradient_mo,roothaan_fock_inner}` |
 >
-> <!-- verified: id=scf.rohf-gradient; script=scripts/hf_energy_sympy.py; claim=N4 dE/dkappa = 2 g (rohf_gradient_mo) off convergence; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/rohf.rs::{rohf_gradient_mo,roothaan_fock_inner}; registry=rohf -->
+> <!-- verified: id=scf.rohf-gradient; script=scripts/hf_energy_sympy.py; claim=N4; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/rohf.rs::{rohf_gradient_mo,roothaan_fock_inner}; registry=rohf -->
 
 ## 7.1.2 One iteration
 

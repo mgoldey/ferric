@@ -372,3 +372,11 @@ def test_build_tree_copies_figures_and_keeps_them_out_of_the_chapter_glob(tree):
 def test_missing_figure_is_an_error(tree):
     sub(tree, SEC, "Inline math", "![toy](../figures/10-mp2/gone.svg)\n\nInline math")
     assert any("image not found" in e for e in check(tree).errors)
+
+
+def test_item_body_skips_semicolons_inside_brackets():
+    """A `;` in an array type in the signature must not end the item early."""
+    src = "pub fn f(a: [[f64; 3]; 3]) -> Result<([[f64; 3]; 3], u8)> {\n    let x = 1;\n    x\n}\nfn g();\n"
+    body = bb.item_body(src, 0)
+    assert body.rstrip().endswith("}") and "let x = 1;" in body
+    assert bb.item_body("fn g();\nfn h() {}", 0) == "fn g();"

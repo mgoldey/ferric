@@ -146,7 +146,7 @@ def symbolic_checks():
         and sp.simplify(sp.diff(e, d22) - f[1, 1]) == 0
         and sp.simplify(sp.diff(e, d12) - 2 * f[0, 1]) == 0
     )
-    check("S1 dE_RHF/dD = F_RHF (symbolic, n=2)", ok)
+    check("S1 dE_RHF/dD = F_RHF (symbolic, n=2) (claim S1)", ok)
 
     da, (a11, a12, a22) = sym_matrix("Da")
     db, (b11, b12, b22) = sym_matrix("Db")
@@ -514,7 +514,7 @@ def numeric_checks():
         else:
             worst = max(worst, abs(val - 2.0 * gm[p, q]))
     check(
-        "N4 dE/dkappa = 2 g (rohf_gradient_mo) off convergence",
+        "N4 dE/dkappa = 2 g (rohf_gradient_mo) off convergence (claim N4)",
         worst < 1e-9,
         f"max err {worst:.2e}",
     )
