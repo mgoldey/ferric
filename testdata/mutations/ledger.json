@@ -300,7 +300,16 @@
       "patch": "testdata/mutations/b2plyp.patch",
       "mutation": "double_hybrid.rs: the B2PLYP PT2 fraction is 0.26 (c_os = c_ss) instead of 0.27.",
       "evidence": "crates/ferric-mp2/tests/validation_b2plyp_pyscf.rs",
-      "test": "b2plyp_h2o_cc_pvdz_vs_pyscf"
+      "test": "b2plyp_h2o_cc_pvdz_vs_pyscf",
+      "result": {
+        "patch_sha256": "2b39fe8d7a9ad5927537206f8589e45679d23583528d5efb0c1dd0f8aa2575c9",
+        "base_commit": "c1399fbdedf7761cd8979e79862af25ecf0b4378",
+        "failing_test": "b2plyp_h2o_cc_pvdz_vs_pyscf",
+        "assertion": "crates/ferric-mp2/tests/validation_b2plyp_pyscf.rs:257",
+        "message": "h2o/cc-pvdz fc0: total -76.351370433849 vs reference -76.353789597077 (|d| 2.42e-3 >= 6e-11)",
+        "baseline_run": true,
+        "date": "2026-11-14"
+      }
     }
   ]
 }
