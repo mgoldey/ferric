@@ -1425,6 +1425,7 @@ pub fn run(args: Vec<String>) {
         "drpa",
         "mp2-v",
         "rs-mp2-rpa",
+        "pdep-rpa",
     ];
     let scf_only = matches!(method, "rhf" | "uhf" | "rohf" | "ksdft");
     if !scf_only && !RESULT_LOGGED.contains(&method) {
@@ -5600,6 +5601,19 @@ fn run_pdep_rpa_arm(
         Some(&aux_bs),
     );
     print_and_note_certificate(&rpa_cert);
+    if let Some(rl) = ferric_scf::runlog::log() {
+        rl.result(
+            "pdep-rpa",
+            result.energy + rpa_result.e_rpa,
+            serde_json::json!({
+                "e_corr": rpa_result.e_rpa,
+                "reference": ref_label,
+                "e_scf_reference": result.energy,
+                "scf_converged": result.converged,
+                "eigensolver_converged": rpa_result.eigensolver_converged,
+            }),
+        );
+    }
     if let Some(prefix) = cfg.rpa.export_eigpot_prefix.as_deref() {
         let d = ferric_rpa::property_bundle::EigpotCubeSpec::default();
         let spec = ferric_rpa::property_bundle::EigpotCubeSpec {

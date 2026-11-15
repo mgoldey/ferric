@@ -404,3 +404,39 @@ fn incore_eri_reference_is_a_route_of_the_correlated_certificate() {
     assert_eq!(routes, ["scf eri"], "{c}");
     assert!(!names(c).iter().any(|n| n.contains("eri")), "{c}");
 }
+
+/// PDEP-RPA writes its own `result` record: the total (reference + RPA
+/// correlation), the correlation energy and the reference energy, so a log
+/// consumer does not scrape stdout.
+#[test]
+fn pdep_rpa_logs_its_total_in_the_run_log() {
+    let (stdout, records) = run(
+        "pdep_rpa_result",
+        &format!("{WATER}[method]\nkind = \"pdep-rpa\"\n[rpa]\nauxbasis = \"cc-pvdz-ri\"\n"),
+    );
+    assert!(
+        !records
+            .iter()
+            .any(|r| r["record"] == "result_unlogged" && r["kind"] == "pdep-rpa"),
+        "pdep-rpa must not claim to be unlogged: {records:?}"
+    );
+    let r = records
+        .iter()
+        .find(|r| r["record"] == "result" && r["kind"] == "pdep-rpa")
+        .unwrap_or_else(|| panic!("no pdep-rpa result record in {records:?}"));
+    let total = r["total"].as_f64().expect("numeric total");
+    let e_corr = r["components"]["e_corr"].as_f64().expect("e_corr");
+    let e_ref = r["components"]["e_scf_reference"]
+        .as_f64()
+        .expect("e_scf_reference");
+    assert!(e_corr < 0.0, "RPA correlation is negative: {e_corr}");
+    assert_eq!(total, e_ref + e_corr);
+    // The record carries the same number stdout prints for the total.
+    let printed = stdout
+        .lines()
+        .find(|l| l.starts_with("Total (RHF+RPA):"))
+        .and_then(|l| l.split_whitespace().nth(2))
+        .and_then(|t| t.parse::<f64>().ok())
+        .unwrap_or_else(|| panic!("no total line in {stdout}"));
+    assert!((printed - total).abs() < 1e-9, "{printed} vs {total}");
+}
