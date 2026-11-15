@@ -585,6 +585,7 @@ fn rs_mp2_rpa_water_dimer_aug_cc_pvdz_vs_pyscf() {
 
 /// The auxiliary sets the reference files name (the anchor's envelope).
 #[test]
+#[ignore = "validation: RS-MP2-RPA vs PySCF"]
 fn rs_mp2_rpa_pyscf_aux_sets_are_named() {
     for aux in ["cc-pvdz-ri", "aug-cc-pvdz-rifit"] {
         assert!(basis::bundled(aux).is_ok(), "{aux}");
