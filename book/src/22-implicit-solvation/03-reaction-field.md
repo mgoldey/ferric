@@ -54,9 +54,9 @@ e_pcm
 The energy of the iteration is the trace plus the standalone terms, and the
 PCM energy is one of them:
 
-<!-- excerpt: ferric-scf/src/rhf.rs::solve_rhf_impl -->
+<!-- excerpt: ferric-scf/src/rhf.rs::RhfState::energy -->
 ```rust
-let energy = e_elec_no_xc + e_xc + e_hook + e_cosmo + e_pcm + e_pol + vnn;
+Ok(e_elec_no_xc + e_xc + e_hook + e_cosmo + e_pcm + e_pol + env.vnn)
 ```
 
 | Symbol | Code |
@@ -65,7 +65,7 @@ let energy = e_elec_no_xc + e_xc + e_hook + e_cosmo + e_pcm + e_pol + vnn;
 | $E_{xc}$ | `e_xc` |
 | $E_{\mathrm{pcm}}$ | `e_pcm` |
 | $E_{\mathrm{cosmo}}$, $E_{\mathrm{pol}}$ | `e_cosmo`, `e_pol` (sections 22.5 and 23.3) |
-| $V_{nn}$ plus any external-charge nuclear energy | `vnn` |
+| $V_{nn}$ plus any external-charge nuclear energy | `env.vnn` |
 
 `e_elec_no_xc` is formed before `solvent_terms` adds $V^{\mathrm{pcm}}$ to $F$,
 so $E_{\mathrm{pcm}}$ is not counted twice. It cannot be folded into the trace:

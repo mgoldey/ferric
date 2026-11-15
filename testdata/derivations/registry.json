@@ -366,6 +366,12 @@
     ],
     "py:run_xtb_optimize": [
       "xtb"
+    ],
+    "cli:opmp3": [
+      "opmp3"
+    ],
+    "py:run_opmp3": [
+      "opmp3"
     ]
   },
   "methods": {
@@ -575,7 +581,8 @@
         "crates/ferric-mp2/theory.md#6-mp3"
       ],
       "scripts": [
-        "scripts/oomp2_mp3_identities_sympy.py"
+        "scripts/oomp2_mp3_identities_sympy.py",
+        "scripts/ump3_spin_blocks_sympy.py"
       ]
     },
     "oo-rimp2": {
@@ -895,6 +902,15 @@
       ],
       "scripts": [
         "scripts/u_rimp2_gradient_sympy.py"
+      ]
+    },
+    "opmp3": {
+      "theory": [
+        "crates/ferric-mp2/theory.md#62-orbital-partitioned-padé-mp3-op-mp3"
+      ],
+      "scripts": [
+        "scripts/opmp3_identities_sympy.py",
+        "scripts/ump3_spin_blocks_sympy.py"
       ]
     }
   },

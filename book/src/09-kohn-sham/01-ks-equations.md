@@ -43,36 +43,36 @@ fractions.
 > | Proof | `scripts/dft_hybrid_rsh_sympy.py`, claims A3 and B4; `scripts/dft_vxc_matrix_elements_sympy.py`, claim numeric |
 > | Negative control | the runner's mutation of the energy trace, $\tfrac12\mathrm{Tr}[D(h+F)] \to \mathrm{Tr}[D(h+F)]$, fails B4 |
 > | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
-> | Code | `ferric-scf/src/rhf.rs::solve_rhf_impl`, `ferric-scf/src/fock_assembly.rs::subtract_rsh_exchange` |
+> | Code | `ferric-scf/src/rhf.rs::RhfState::energy`, `ferric-scf/src/fock_assembly.rs::subtract_rsh_exchange` |
 > | Code test | `ks_vxc_closed_is_the_scf_fock_xc_term_pbe0` in `crates/ferric-scf/src/ks_vxc_tests.rs` |
 >
-> <!-- verified: id=ks.fock-is-dE-dD; script=scripts/dft_hybrid_rsh_sympy.py; claim=B4; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/rhf.rs::solve_rhf_impl; rust_test=ferric-scf/src/ks_vxc_tests.rs::ks_vxc_closed_is_the_scf_fock_xc_term_pbe0; registry=ks-semilocal -->
+> <!-- verified: id=ks.fock-is-dE-dD; script=scripts/dft_hybrid_rsh_sympy.py; claim=B4; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/rhf.rs::RhfState::energy; rust_test=ferric-scf/src/ks_vxc_tests.rs::ks_vxc_closed_is_the_scf_fock_xc_term_pbe0; registry=ks-semilocal -->
 
 ## 9.1.2 One SCF iteration
 
 | Step | What | Function |
 |---|---|---|
 | 1 | $J(D)$ and, for a hybrid, $K$ (or the short- and long-range pair) | the run's J and K builders; `subtract_rsh_exchange` |
-| 2 | $F_{\rm no\,xc} = h + J - \tfrac12K_{\rm tot}$ | `solve_rhf_impl` |
-| 3 | $e_{\rm no\,xc} = \tfrac12\mathrm{Tr}[D(h + F_{\rm no\,xc})]$ | `solve_rhf_impl` |
+| 2 | $F_{\rm no\,xc} = h + J - \tfrac12K_{\rm tot}$ | `RhfJk::build_fock` |
+| 3 | $e_{\rm no\,xc} = \tfrac12\mathrm{Tr}[D(h + F_{\rm no\,xc})]$ | `RhfState::energy` |
 | 4 | $(E_{xc}, V_{xc})$ on the grid, $F \mathrel{+}= V_{xc}$ | `KsXc::add_xc` (section 9.3) |
-| 5 | $E = e_{\rm no\,xc} + E_{xc} + E_{nn}$ (+ solvation, embedding, hook) | `solve_rhf_impl` |
+| 5 | $E = e_{\rm no\,xc} + E_{xc} + E_{nn}$ (+ solvation, embedding, hook) | `RhfState::energy` |
 | 6 | DIIS, diagonalize, new $D$ | as for HF |
 
-<!-- excerpt: ferric-scf/src/rhf.rs::solve_rhf_impl -->
+<!-- excerpt: ferric-scf/src/rhf.rs::RhfState::energy -->
 ```rust
-let e_elec_no_xc: f64 = 0.5 * (&d * &(&h + &f)).sum();
+let e_elec_no_xc: f64 = 0.5 * (d * &(&env.h + &*f)).sum();
 ```
 
-<!-- excerpt: ferric-scf/src/rhf.rs::solve_rhf_impl -->
+<!-- excerpt: ferric-scf/src/rhf.rs::RhfState::energy -->
 ```rust
-let energy = e_elec_no_xc + e_xc + e_hook + e_cosmo + e_pcm + e_pol + vnn;
+Ok(e_elec_no_xc + e_xc + e_hook + e_cosmo + e_pcm + e_pol + env.vnn)
 ```
 
 | Symbol | Code |
 |---|---|
-| $D$, $h$, $F_{\rm no\,xc}$ | `d`, `h`, `f` |
-| $E_{xc}$, $E_{nn}$ | `e_xc`, `vnn` |
+| $D$, $h$, $F_{\rm no\,xc}$ | `d`, `env.h`, `f` |
+| $E_{xc}$, $E_{nn}$ | `e_xc`, `env.vnn` |
 
 **Reproducibility.** $E_{xc}$ is a grouped, fixed-order sum over points
 (`deterministic_point_sum`), so it is bit-identical across thread counts.
