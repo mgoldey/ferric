@@ -316,7 +316,16 @@
       "patch": "testdata/mutations/dsd-pbep86.patch",
       "mutation": "double_hybrid.rs: the DSD-PBEP86 same-spin scaling is 0.29 (the previous value) instead of 0.36.",
       "evidence": "crates/ferric-mp2/tests/validation_dsd_pbep86_pyscf.rs",
-      "test": "dsd_pbep86_h2o_cc_pvdz_vs_pyscf"
+      "test": "dsd_pbep86_h2o_cc_pvdz_vs_pyscf",
+      "result": {
+        "patch_sha256": "813fa2d8f60eac73af4894732c4b708fbf758a5dce52f4a03853ace4fa844f74",
+        "base_commit": "ca55076bd0e053897301433e4da5315a4500ee02",
+        "failing_test": "dsd_pbep86_h2o_cc_pvdz_vs_pyscf",
+        "assertion": "crates/ferric-mp2/tests/validation_dsd_pbep86_pyscf.rs:264",
+        "message": "h2o/cc-pvdz fc0: total -76.281045389203 vs reference -76.285015637144 (|d| 3.97e-3 >= 1e-10)",
+        "baseline_run": true,
+        "date": "2026-11-15"
+      }
     }
   ]
 }
