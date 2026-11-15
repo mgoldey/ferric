@@ -104,9 +104,8 @@ The per-frequency scalar eigenvalues $\lambda_\xi(iu)$ that chapter 18 uses for
 the energy live in an $u$-dependent rotated eigenbasis, so they are valid
 only for basis-invariant traces. The self-energy contracts the matrix
 $\tilde W_d$ with specific $B^\xi_{pq}$ vectors and so needs the full matrix in
-the fixed static basis. `ferric-gw/src/w_pdep.rs::inverse_dielectric_weights`
-computes the diagonal weights $1/\lambda_\xi(iu_k) - 1$; no self-energy path
-calls it, and it must not be used for $\Sigma^c$.
+the fixed static basis. The diagonal weights $1/\lambda_\xi(iu_k) - 1$ are
+therefore never formed for $\Sigma^c$.
 
 ## 19.2.4 Options that change the equation
 

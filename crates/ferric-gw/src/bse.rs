@@ -9,10 +9,13 @@
 //!
 //! Conventions (verified against the COHSEX self-energy, `cohsex.rs:88`):
 //!   * the **Hartree/coupling** term `2(ia|jb)` uses the BARE Coulomb v;
-//!   * the **screened-exchange** term uses the FULL static screened interaction
-//!     `(ab|W|ij) = Σ_α (1/λ_α(0)) M[α,a,b] M[α,i,j]`, i.e. weight `1/λ_α(0)`
-//!     (the SEX weight `w_α + 1`), NOT the reduced `w_α = 1/λ_α − 1` used by the
-//!     COH/Σ_c terms. This is the static-screening (Tamm–Dancoff) BSE kernel.
+//!   * the **screened-exchange** term uses the static screened interaction
+//!     `(ab|W|ij) = (ab|v|ij) + Σ_α w_α M[α,a,b] M[α,i,j]` with the reduced
+//!     weight `w_α = 1/λ_α(0) − 1`: the bare Coulomb `v` from the complete RI
+//!     basis plus the PDEP-mode correction. This equals the full weight
+//!     `1/λ_α(0)` when the PDEP mode set is complete, and stays correct when it
+//!     is truncated (modes dropped by `trunc_thresh` have `w_α ≈ 0` and `v`
+//!     is not projected onto them), which a bare `Σ 1/λ_α M M` would not.
 //!   * `M[α,p,q] = Σ_P (Ṽ_α)_P b̃^P_{pq}` is `project_b_into_pdep`, identical to
 //!     the GW self-energy projection — reuses the validated dressed-basis path.
 //!

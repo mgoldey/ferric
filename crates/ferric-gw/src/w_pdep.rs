@@ -144,15 +144,6 @@ pub fn redress_with_check(
     Ok((v_dressed, max_dev))
 }
 
-/// Inverse-dielectric weights w_α(iω) = 1/λ_α(iω) − 1, shape (N_quad, M).
-pub fn inverse_dielectric_weights(eigenvalues_freq: &Array2<f64>) -> Array2<f64> {
-    let mut w = eigenvalues_freq.clone();
-    for v in w.iter_mut() {
-        *v = 1.0 / *v - 1.0;
-    }
-    w
-}
-
 /// Static screened weights w_α(0) = 1/λ_α(0) − 1, length M.
 pub fn static_weights(eigenvalues_static: &[f64]) -> Vec<f64> {
     eigenvalues_static.iter().map(|&l| 1.0 / l - 1.0).collect()

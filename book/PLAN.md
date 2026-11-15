@@ -300,7 +300,7 @@ Code references are `crate/src/file.rs::item` under `crates/`.
 | § | Section | Sources | Code | Status |
 |---|---|---|---|---|
 | 19.1 | RI factors and the exchange self-energy | T gw §1 | `ferric-gw/src/mo_b.rs::build_full_b`, `ferric-gw/src/cohsex.rs::sigma_x_diag` | ready |
-| 19.2 | The screened interaction on the imaginary axis; PDEP as $W$ | T gw §2, §3, §10; S `gw_self_energy_sympy.py` | `ferric-gw/src/w_pdep.rs::inverse_dielectric_weights`, `ferric-gw/src/cohsex.rs::project_b_into_pdep` | ready |
+| 19.2 | The screened interaction on the imaginary axis; PDEP as $W$ | T gw §2, §3, §10; S `gw_self_energy_sympy.py` | `ferric-gw/src/w_pdep.rs::static_weights`, `ferric-gw/src/cohsex.rs::project_b_into_pdep` | ready |
 | 19.3 | Correlation self-energy | T gw §4; S `gw_self_energy_sympy.py`; R gw | `ferric-gw/src/sigma.rs::{sigma_c_at_z,run_g0w0}` | ready |
 | 19.4 | COHSEX | T gw §5 | `ferric-gw/src/cohsex.rs::run_cohsex` | ready |
 | 19.5 | Analytic continuation and the quasiparticle equation | T gw §6, §7 | `ferric-gw/src/pade.rs::{fit,eval}`, `ferric-gw/src/sigma.rs::solve_qp_for_mo` | ready |
