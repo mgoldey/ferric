@@ -40,6 +40,10 @@ as exact substitutions of the tagged lines):
     (J[Dz_a + Dz_b] -> J[Dz_s]) breaks G ("FAIL G").
   * the RI response weight per spin 1 -> 2 breaks G ("FAIL G").
 
+Book boxes (book/src/15-correlated-gradients/07-u-rimp2-gradient.md) cite
+claim S (the energy weights) and claim G (the assembled gradient, with part C
+beside it).
+
 Run: python3 scripts/u_rimp2_gradient_sympy.py  (needs sympy, numpy, scipy)
 """
 

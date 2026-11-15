@@ -197,6 +197,7 @@ Code references are `crate/src/file.rs::item` under `crates/`.
 | 10.8 | MP2-V: attenuated MP2 with damped VV10 | T mp2 "13. MP2-V"†; S `mp2_family_sympy.py`† part E; R mp2-v | `ferric-mp2/src/att_vv10.rs::{att_mp2_vv10,u_att_mp2_vv10}`, `ferric-dft/src/vv10.rs::compute_vv10_damped_energy_and_potentials` | edit |
 | 10.9 | MP3, restricted and spin-blocked unrestricted | T mp2 §6, §6.1; S `oomp2_mp3_identities_sympy.py`, `ump3_spin_blocks_sympy.py`; R mp3. W §2b is superseded by the scripts: its ring prefactor was wrong. | `ferric-mp2/src/mp3.rs::{mp3_energy,mp3_energy_from_spin_orbital_blocks}`, `ferric-mp2/src/u_mp3.rs::u_mp3` | ready |
 | 10.10 | MP2-based double hybrids | R double-hybrid *gap* (owned by another branch); M cc "MP2-based double hybrids" | `ferric-mp2/src/double_hybrid.rs::mp2_double_hybrid` | edit |
+| 10.11 | Orbital-partitioned Padé MP3 | T mp2 §6.2; S `opmp3_identities_sympy.py`; R opmp3 | `ferric-mp2/src/opmp3.rs::{w_channels,pade,op_mp3,sop_mp3,ssd_opmp3}`, `ferric-mp2/src/opmp3_driver.rs::run_opmp3` | ready |
 
 **Chapter 11. RI-MP2 algorithms and memory** (dissertation chapter 4)
 
@@ -254,6 +255,7 @@ Code references are `crate/src/file.rs::item` under `crates/`.
 | 15.4 | Kohn–Sham Z-vector for post-SCF corrections | none | `ferric-scf/src/zvector_ks.rs::relaxation_gradient_closed` | ready |
 | 15.5 | RI-dRPA gradient | T rpa "Analytic nuclear gradient"; S `rpa_gradient_sympy.py`†; R rpa-gradient | `ferric-rpa/src/gradient_analytic.rs::{rpa_analytic_gradient,rpa_ri_densities}` | ready |
 | 15.6 | MP2 static polarizability | T mp2 §10; R mp2-polarizability *gap* | `ferric-mp2/src/cpks_polar.rs::{mp2_polarizability_analytic,static_relaxed_density_ao}`, `ferric-mp2/src/ff_polar.rs::mp2_polarizability_static` | ready |
+| 15.7 | Unrestricted RI-MP2 gradient | T mp2 §15; S `u_rimp2_gradient_sympy.py`; R u-ri-mp2-gradient | `ferric-mp2/src/u_rimp2_gradient.rs::{u_rimp2_gradient_analytical,u_energy_weights,solve_u_zvector}` | ready |
 
 ### Part VII. Coupled cluster
 
@@ -446,8 +448,8 @@ registry row and are the largest block of `gap` sections.
 | II. Integrals, screening and density fitting | 1 | 15 | 1 | 0 | 17 |
 | III. Self-consistent field | 8 | 2 | 0 | 0 | 10 |
 | IV. Density functional theory | 7 | 0 | 0 | 0 | 7 |
-| V. The MP2 family | 16 | 4 | 1 | 5 | 26 |
-| VI. Derivatives | 11 | 3 | 0 | 0 | 14 |
+| V. The MP2 family | 17 | 4 | 1 | 5 | 27 |
+| VI. Derivatives | 12 | 3 | 0 | 0 | 15 |
 | VII. Coupled cluster | 5 | 1 | 1 | 0 | 7 |
 | VIII. Multireference | 5 | 0 | 1 | 0 | 6 |
 | IX. RPA, PDEP and GW | 14 | 0 | 0 | 1 | 15 |
@@ -458,9 +460,9 @@ registry row and are the largest block of `gap` sections.
 | XIV. Capstone | 1 | 2 | 4 | 0 | 7 |
 | XV. Interfaces | 1 | 5 | 1 | 0 | 7 |
 | Appendices | 3 | 0 | 1 | 0 | 4 |
-| **Total** | **94** | **49** | **10** | **6** | **159** |
+| **Total** | **96** | **49** | **10** | **6** | **161** |
 
-159 sections: 59% `ready`, 31% `edit`, 6% `gap` and 4% `verify`.
+161 sections: 60% `ready`, 30% `edit`, 6% `gap` and 4% `verify`.
 <!-- status-table:end -->
 
 ## 5. Gaps, ranked by how much rests on them

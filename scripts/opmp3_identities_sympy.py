@@ -67,6 +67,10 @@ printed 12 digits; N agrees to 2.8e-16); each mutation exits 1 with exactly
 the checks listed above red.
 
 Exit code 0 iff every check passes; "all identities hold" is printed then.
+
+Book boxes (book/src/10-mp2/11-opmp3.md) cite claim a3 (the Eq. 18 split),
+claim b1 (the Pade series, with b2, b3, c1-c3 and N beside it) and claim d2
+(the traces against Rayleigh-Schroedinger theory, with d1 beside it).
 """
 
 from __future__ import annotations
