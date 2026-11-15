@@ -257,7 +257,7 @@ def s1():
     es = [ewald(lat, q, pos, om, sets) for om in (0.6, 1.1, 1.8)]
     spread = max(es) - min(es)
     check(
-        "S1 charged triclinic toy: omega spread < 1e-12",
+        "S1 charged triclinic toy: omega spread < 1e-12 (claim ewald-omega)",
         spread < 1e-12,
         f"E={es[0]:.14f} spread={spread:.2e}",
     )
@@ -288,7 +288,7 @@ def s1():
     sets_ns = index_sets(cub, 0.7, 1.0)
     m_ns = [-ewald(cub, q_ns, pos_ns, om, sets_ns) * a / 8.0 for om in (0.7, 1.0)]
     check(
-        "S1 rock-salt Madelung 1.747564594633182, omega-independent",
+        "S1 rock-salt Madelung 1.747564594633182, omega-independent (claim madelung)",
         abs(m_ns[0] - 1.747564594633182) < 1e-11 and abs(m_ns[0] - m_ns[1]) < 1e-12,
         f"{m_ns[0]:.15f}, {m_ns[1]:.15f}",
     )
@@ -354,7 +354,7 @@ def s2():
         closed = pref * sum(et * (-1j * Gv) ** t for t, et in enumerate(e))
         worst = max(worst, float(abs(num - closed)))
     check(
-        "S2 MD expansion (l_a,l_b) in {00,10,11,20} vs quadrature",
+        "S2 MD expansion (l_a,l_b) in {00,10,11,20} vs quadrature (claim pairft-md)",
         worst < 1e-20,
         f"max err {worst:.1e}",
     )
@@ -400,13 +400,13 @@ def s3():
     v_sr_g = -Z / Om * ft_sr  # V_SR as a reciprocal sum, per G != 0
     v_lr_g = -Z / Om * 4 * sp.pi / G**2 * sp.exp(-(G**2) / (4 * w**2))
     check(
-        "S3 V_SR + V_LR per G != 0 is the bare -4pi Z/(Omega G^2)",
+        "S3 V_SR + V_LR per G != 0 is the bare -4pi Z/(Omega G^2) (claim hcore-split)",
         is_zero(v_sr_g + v_lr_g + 4 * sp.pi * Z / (Om * G**2)),
     )
     v_sr_0 = -Z / Om * sp.pi / w**2
     v_g0 = sp.pi * Z / (w**2 * Om)
     check(
-        "S3 V_G0 = +pi Z_tot/(w^2 Omega) cancels the SR G = 0 average",
+        "S3 V_G0 = +pi Z_tot/(w^2 Omega) cancels the SR G = 0 average (claim hcore-g0)",
         is_zero(v_sr_0 + v_g0),
     )
 
@@ -441,7 +441,7 @@ def s4():
     N = sp.simplify((D * S).trace())
     dE = -sp.Rational(1, 4) * vm * (D * S * D * S).trace()
     check(
-        "S4 Delta E = -(v_M/4) tr(DSDS) = -N v_M/2",
+        "S4 Delta E = -(v_M/4) tr(DSDS) = -N v_M/2 (claim exxdiv-shift)",
         is_zero(dE + N * vm / 2),
         f"N = {N}",
     )
@@ -546,7 +546,7 @@ def s5():
                 diff = complex(sp.N((lhs - rhs).subs(vals), 40))
                 worst = max(worst, abs(diff))
         check(
-            f"S5 pair-FT strain formula, {name}",
+            f"S5 pair-FT strain formula, {name} (claim pairft-strain)",
             worst < 1e-30,
             f"max |lhs - rhs| {worst:.1e}",
         )
@@ -570,7 +570,7 @@ def s5():
             fd = (ewald(lp, q, pp, om, sets) - ewald(lm, q, pm, om, sets)) / (2 * h)
             worst = max(worst, abs(fd - ana[a_][b_]))
     check(
-        "S5 Ewald strain (SR virial + LR + background) vs FD",
+        "S5 Ewald strain (SR virial + LR + background) vs FD (claim ewald-strain)",
         worst < 1e-7,
         f"max err {worst:.1e}",
     )
@@ -579,7 +579,7 @@ def s5():
     vm, dv = ewald(lat, [1.0], [[0.0] * 3], 1.0, sets1, strain=True)
     vm, tr = -2 * vm, -2 * (dv[0][0] + dv[1][1] + dv[2][2])
     check(
-        "S5 tr dv_M/deps = -v_M (Euler homogeneity)",
+        "S5 tr dv_M/deps = -v_M (Euler homogeneity) (claim madelung-euler)",
         abs(tr + vm) < 1e-12,
         f"v_M={vm:.12f} tr={tr:.12f}",
     )

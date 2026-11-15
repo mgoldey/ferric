@@ -792,6 +792,48 @@ CASES = [
         ],
     ),
     (
+        "pbc_rsgdf_sympy.py",
+        60,
+        [
+            (
+                "j3_split = j3_split - g0",
+                "j3_split = j3_split + 0 * g0",
+                "[FAIL] (claim split-j3)",
+            ),
+            (
+                "w = evecs[:, keep] / np.sqrt(evals[keep])",
+                "w = evecs[:, keep] / evals[keep]",
+                "[FAIL] (claim fit-trivial)",
+            ),
+        ],
+    ),
+    (
+        "pbc_kpoint_corr_sympy.py",
+        60,
+        [
+            (
+                "km[k] += mad * madelung_scale",
+                "km[k] += mad * madelung_scale / NK",
+                "[FAIL] (claim krhf-supercell)",
+            ),
+            (
+                "def kmesh_jk(dms, madelung_scale=1.0, kernel_at_g=False):",
+                "def kmesh_jk(dms, madelung_scale=1.0, kernel_at_g=True):",
+                "[FAIL] (claim krhf-supercell)",
+            ),
+            (
+                "kb = (ki + kj - ka) % NK",
+                "kb = (ki - kj + ka) % NK",
+                "[FAIL] (claim kmp2-supercell)",
+            ),
+            (
+                "pi_q = (4.0 / NK) *",
+                "pi_q = (4.0) *",
+                "[FAIL] (claim kdrpa-supercell)",
+            ),
+        ],
+    ),
+    (
         "dft_becke_weight_grad_sympy.py",
         120,
         [

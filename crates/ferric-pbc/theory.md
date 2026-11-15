@@ -4,7 +4,8 @@ Gaussian-basis periodic Hartree-Fock and Kohn-Sham in the PySCF conventions:
 Ewald nuclear repulsion with a neutralising background, an analytic Fourier
 transform of lattice-summed Gaussian pair densities, an Ewald-split nuclear
 attraction, the Madelung treatment of the exchange divergence, and the
-strain derivative (stress) of each term.
+strain derivative (stress) of each term; range-separated density fitting,
+the k-point mesh, and periodic MP2 and dRPA.
 
 Units are atomic (Bohr, Hartree); energies are per cell. Lattice rows
 $\mathbf a_i$, cell volume $\Omega = \det(\mathbf a)$, reciprocal rows
@@ -12,10 +13,14 @@ $\mathbf b_i$ with $\mathbf a_i\cdot\mathbf b_j = 2\pi\delta_{ij}$, translations
 $\mathbf L = \sum_i n_i \mathbf a_i$, reciprocal vectors
 $\mathbf G = \sum_i m_i \mathbf b_i$ ($m_i$ the Miller index).
 
-Every identity below is asserted by
+Sections 1-5 are asserted by
 [`scripts/pbc_ewald_pairft_stress_sympy.py`](../../scripts/pbc_ewald_pairft_stress_sympy.py)
-(section tags S1–S5); the Rust tests listed check the implementation
-numerically. Paths are relative to `crates/ferric-pbc/`.
+(section tags S1–S5), section 7 by
+[`scripts/pbc_rsgdf_sympy.py`](../../scripts/pbc_rsgdf_sympy.py), and
+sections 8 and 9 by
+[`scripts/pbc_kpoint_corr_sympy.py`](../../scripts/pbc_kpoint_corr_sympy.py),
+except where a section says it has no proof; the Rust tests listed check
+the implementation numerically. Paths are relative to `crates/ferric-pbc/`.
 
 ## 1. Ewald nuclear repulsion and the Madelung constant
 
@@ -362,3 +367,357 @@ kept-triple count mismatch), and `tests/pbc_grad_ecp.rs` (Gamma force and
 stress triple-count mismatch). Every max-reduction feeding a refusal
 propagates NaN (`grad::max_nan`) and the gate is written `!(x <= bar)`, so a
 NaN is refused.
+
+## 7. Range-separated Gaussian density fitting (RS-GDF)
+
+`jk = "rsgdf"` replaces the dense AFT tensor of §4 by a fitted one,
+$I_{\mu\nu,\lambda\sigma} \approx \sum_k B_{k,\mu\nu}B_{k,\lambda\sigma}$,
+in the PySCF RSGDF conventions (`rsgdf.rs`). Every fitted quantity uses the
+same kernel as the energy, $v(\mathbf G) = 4\pi/G^2$ with $\mathbf G = 0$
+dropped. With $X_P(\mathbf G)$ the Fourier transform of the auxiliary function
+$\chi_P$ and $P_{\mu\nu}(\mathbf G)$ the lattice-summed pair transform of §2,
+
+$$
+J2_{PQ} = \frac{1}{\Omega}\sum_{\mathbf G\neq0}v(\mathbf G)\,X_P^*(\mathbf G)X_Q(\mathbf G),\qquad
+J3_{\mu\nu,P} = \frac{1}{\Omega}\sum_{\mathbf G\neq0}v(\mathbf G)\,P_{\mu\nu}^*(\mathbf G)X_P(\mathbf G).
+$$
+
+### Evaluation by an Ewald split
+
+Neither sum is evaluated as written. With $1/r = \operatorname{erfc}(\eta r)/r
++ \operatorname{erf}(\eta r)/r$ (the code's `omega`, PySCF `omega` of the
+fit):
+
+$$
+\begin{aligned}
+J2_{PQ} &= \sum_{\mathbf T}(P_0|Q_{\mathbf T})_{\operatorname{erfc}}
+ + \frac{1}{\Omega}\sum_{\mathbf G\neq0}\frac{4\pi}{G^2}e^{-G^2/4\eta^2}X_P^*X_Q
+ - c_0\,q_Pq_Q, \\
+J3_{\mu\nu,P} &= \sum_{\mathbf L,\mathbf T}(\mu_0\nu_{\mathbf L}|P_{\mathbf T})_{\operatorname{erfc}}
+ + \frac{1}{\Omega}\sum_{\mathbf G\neq0}\frac{4\pi}{G^2}e^{-G^2/4\eta^2}P_{\mu\nu}^*X_P
+ - c_0\,S_{\mu\nu}\,q_P,
+\end{aligned}
+$$
+
+with $c_0 = \pi/(\eta^2\Omega)$, $q_P = \int\chi_P = X_P(0)$ and
+$S_{\mu\nu} = P_{\mu\nu}(0)$ the lattice overlap. The real-space erfc sums
+(libint2 `erfc` integrals on translated shells, `Engine::compute_eri2_shifted`
+and `compute_eri3_shifted`) contain the $\mathbf G = 0$ term of the erfc
+kernel, $\int\operatorname{erfc}(\eta r)/r\,d^3r = \pi/\eta^2$ (§3), times the
+two charges; `subtract_g0` removes it from both $J2$ and $J3$, the one place
+the convention lives. Per $\mathbf G\neq0$ the erfc and erf pieces add to the
+bare kernel, as in §3, so $J2$ and $J3$ are independent of $\eta$ up to
+truncation. The erfc interaction of two unit Gaussian charges of exponents
+$a, b$ at distance $d$ is
+
+$$
+\frac{\operatorname{erf}(\gamma d) - \operatorname{erf}(\gamma_\eta d)}{d},\qquad
+\frac{1}{\gamma^2} = \frac1a + \frac1b,\quad
+\frac{1}{\gamma_\eta^2} = \frac1a + \frac1b + \frac{1}{\eta^2},
+$$
+
+with limit $2(\gamma - \gamma_\eta)/\sqrt\pi$ at $d = 0$; the per-triplet
+screen of `rsgdf.rs` bounds this function.
+
+### The fit
+
+$J2 = U s U^{\mathsf T}$ by a symmetric eigendecomposition; the eigenvalues
+$s_k \le$ `lindep` (default $10^{-10}$, PySCF `LINEAR_DEP_THR`) are dropped and
+counted, never inverted (`fit_with_metric`):
+
+$$
+W = U_\text{kept}\,s_\text{kept}^{-1/2},\qquad B = (J3\,W)^{\mathsf T},\qquad
+B^{\mathsf T}B = J3\,J2^{+}J3^{\mathsf T}.
+$$
+
+Because $I$, $J2$ and $J3$ are Gram matrices of one positive kernel, the block
+matrix $\begin{pmatrix}I & J3\\ J3^{\mathsf T} & J2\end{pmatrix}$ is positive
+semidefinite and the fitting error $I - B^{\mathsf T}B$ is its Schur
+complement: positive semidefinite. The fit is therefore variational in the
+kernel the energy uses (the fitted Coulomb energy never exceeds the exact
+one), and a charged auxiliary function needs no compensating charge, because
+the only divergent term ($\mathbf G = 0$) is absent from $I$, $J2$ and $J3$
+alike. When the auxiliary functions span the pair densities the fit is exact,
+$B^{\mathsf T}B = I$.
+
+### J and K
+
+One $B$ serves both builders (`RsGdfJ`, `RsGdfK`), so the fitted ERI stays a
+single positive semidefinite $B^{\mathsf T}B$:
+
+$$
+J_{\mu\nu} = \sum_k B_{k,\mu\nu}\sum_{\lambda\sigma}B_{k,\lambda\sigma}D_{\lambda\sigma},\qquad
+K = \sum_k B_k\,D\,B_k^{\mathsf T} + v_M\,SDS ,
+$$
+
+with $B_k$ the $(n_\text{ao}, n_\text{ao})$ slice of row $k$ and the Madelung
+term of §4 for `exxdiv = ewald`. The exchange sum runs over 24 fixed
+auxiliary groups (`EXCHANGE_AUX_GROUPS`), so every bit of $K$ depends on
+$n_\text{aux}$ alone, not on the thread count.
+
+### At a k-point mesh
+
+`rsgdf/kpoint.rs` fits each momentum-transfer class $q = k' - k$ separately:
+the Bloch pair density $P^{k'}_{\mu\nu}(\mathbf K)$ at $\mathbf K = \mathbf G
++ q$ (§8) in the q-Bloch auxiliary set
+$X^q_P = \sum_{\mathbf T}e^{iq\cdot\mathbf T}\chi_P(\mathbf r - \mathbf T)$,
+with a Hermitian metric $J2(q) = U s U^{\mathsf H}$ cut per $q$. The
+real-space erfc integrals do not depend on $q$ or $k$: the Gamma walk is
+computed once, binned by $(\mathbf L \bmod N, \mathbf T \bmod N)$, and each
+$(q, k')$ is a phase contraction of the bins. Only $q = 0$ contains
+$\mathbf K = 0$, so only $q = 0$ subtracts $c_0$. Time reversal gives
+$J2(-q) = J2(q)^*$, and only one of each $(q, -q)$ is built. The mesh fit is
+the Gamma fit of the $\operatorname{diag}(N)$ supercell, block-diagonal in $q$.
+
+**Proof.** `scripts/pbc_rsgdf_sympy.py`: claim `erfc-pair` (the pair formula,
+its limits, and a radial quadrature), `split-j2` and `split-j3` (the split
+sums against the pure reciprocal sums at two $\eta$ on s Gaussians in a
+triclinic cell), `fit-psd`, `fit-trivial` and `fit-jk`.
+
+**Tests.** `tests/pbc_rsgdf.rs` `rsgdf_matches_dense_aft_in_the_trivial_limit`
+(fitted ERI vs the dense AFT tensor below $10^{-10}$ when the auxiliary set
+spans the pairs), `g0_mutants_and_incomplete_aux_fail_the_anchor`,
+`fitted_eri_is_omega_independent`,
+`rhf_energy_is_rsgdf_omega_independent_and_the_build_follows_omega`;
+`tests/pbc_krsgdf.rs` for the k-point fit.
+
+## 8. k-point Hartree-Fock and Kohn-Sham
+
+### Mesh and Bloch functions
+
+A mesh $N_1\times N_2\times N_3$ (`kpts.rs`, PySCF `cell.make_kpts`) has
+fractional points $f_i = \mathrm{num}_i/(2N_i)$ with integer numerators:
+$\mathrm{num}_i = 2m_i$ for the Gamma-centred mesh and
+$\mathrm{num}_i = 2m_i + 1 - N_i$ for the Monkhorst-Pack mesh, $m_i = 0, \dots,
+N_i - 1$. For odd $N_i$ the two are the same set modulo the reciprocal
+lattice; for even $N_i$ the Monkhorst-Pack set is shifted by half a step. The
+Bloch AOs and the one-electron matrices are
+
+$$
+\chi_{\mu k}(\mathbf r) = \sum_{\mathbf L}e^{ik\cdot\mathbf L}\phi_\mu(\mathbf r - \mathbf L),\qquad
+S_{\mu\nu}(k) = \sum_{\mathbf L}e^{ik\cdot\mathbf L}\langle\mu_0|\nu_{\mathbf L}\rangle ,
+$$
+
+and $h(k)$ likewise. Every phase is computed from the integer
+$\sum_i\mathrm{num}_in_iD/(2N_i) \bmod D$, $D = \prod_i 2N_i$, so
+$X(-k) = X(k)^*$ holds exactly for every one-particle matrix.
+
+### Energy and Fock matrix
+
+With orbitals normalized per cell and $D(k) = 2C_o(k)C_o(k)^{\mathsf H}$
+(`kscf.rs`):
+
+$$
+\begin{aligned}
+F(k) &= h(k) + J(k) - \tfrac12K(k), \\
+J_{\mu\nu}(k) &= \frac{1}{N_k}\sum_{k'}\frac{1}{\Omega}\sum_{\mathbf G\neq0}v(\mathbf G)\,
+ P^{k}_{\mu\nu}(\mathbf G)\sum_{\lambda\sigma}P^{k'}_{\lambda\sigma}(\mathbf G)^*D_{\lambda\sigma}(k'), \\
+K_{\mu\nu}(k) &= \frac{1}{N_k}\sum_{k'}\frac{1}{\Omega}\sum_{\mathbf K\in\mathbf G+q,\ \mathbf K\neq0}
+ v(\mathbf K)\sum_{\lambda\sigma}P^{k'}_{\mu\lambda}(\mathbf K)P^{k'}_{\nu\sigma}(\mathbf K)^*D_{\lambda\sigma}(k')
+ + v_M\,S(k)D(k)S(k), \\
+E/\text{cell} &= \frac{1}{N_k}\sum_k\tfrac12\operatorname{Re}\operatorname{tr}\big[(h(k) + F(k))D(k)\big] + E_{nn},
+\end{aligned}
+$$
+
+with $q = k' - k$ and
+$P^{k'}_{\mu\nu}(\mathbf K) = \sum_{\mathbf L}e^{ik'\cdot\mathbf L}\int\phi_\mu\,\phi_\nu(\cdot - \mathbf L)\,e^{-i\mathbf K\cdot\mathbf r}$,
+the transform of the Bloch pair $\chi_{\mu k}^*\chi_{\nu k'}$, which is
+nonzero only on $\mathbf G + q$ (`kdense_aft.rs`). Exchange takes the kernel
+at $\mathbf G + q$, Coulomb at $\mathbf G$; the only dropped term is
+$\mathbf K = 0$. $v_M$ is the Madelung constant of the
+$\operatorname{diag}(N)$ supercell (`KPointMesh::madelung`), added at every
+$k$ with no $1/N_k$ (PySCF `_ewald_exxdiv_for_G0`).
+
+For a Gamma-centred mesh $\{\mathbf G + q\}$ is the reciprocal lattice of the
+$\operatorname{diag}(N)$ supercell. With the supercell density
+$D^\text{sc}_{(\mu\mathbf L_1),(\nu\mathbf L_2)} = N_k^{-1}\sum_k
+e^{ik\cdot(\mathbf L_1 - \mathbf L_2)}D_{\mu\nu}(k)$, the $J$, $K$ and energy
+above are, term by term, the Gamma ones of the supercell per cell, and
+$X(k) = \sum_{\mathbf L}e^{ik\cdot\mathbf L}X^\text{sc}_{(\mu0),(\nu\mathbf L)}$
+maps the supercell Fock matrix to $F(k)$. A shifted mesh is a
+twisted-boundary supercell and has no such anchor.
+
+### The SCF
+
+| Step | What | Code |
+|---|---|---|
+| orthogonalizer | eigenvectors of $S(k)$ with eigenvalue $\ge$ `lindep` ($10^{-6}$), scaled by $\lambda^{-1/2}$ | `complex_canonical_orthogonalizer` |
+| diagonalize | one of each $\{k, -k\}$; $C(-k) = C(k)^*$, $\varepsilon(-k) = \varepsilon(k)$ | `diagonalize_all` |
+| occupy | the $N_kN_e/2$ lowest levels over all $k$ (PySCF `KRHF.get_occ`); a converged gap below `min_gap` is an error (no metals) | `aufbau` |
+| extrapolate | DIIS on $X^{\mathsf H}(FDS - SDF)X$ stacked over $k$, Gram $\operatorname{Re}\sum_k\langle e_i, e_j\rangle$, real weights | `KDiis::step` |
+
+### Open shells
+
+Per spin, $D_\sigma(k) = C_{\sigma,o}C_{\sigma,o}^{\mathsf H}$ and (`kuscf.rs`)
+
+$$
+F_\sigma(k) = h(k) + J[D_\alpha + D_\beta](k) - K[D_\sigma](k),\qquad
+E/\text{cell} = \frac{1}{N_k}\sum_{k,\sigma}\tfrac12\operatorname{Re}\operatorname{tr}\big[(h + F_\sigma)D_\sigma\big] + E_{nn},
+$$
+
+where $K[D_\sigma]$ carries $v_M S D_\sigma S$ with coefficient 1: the builder
+is linear in the density, and there is no per-spin $\tfrac12$. Occupations
+are a global aufbau per spin over the whole mesh. ROHF and ROKS combine the
+same per-spin Fock matrices into the Guest-Saunders (Roothaan) effective Fock
+on one orbital set: at Gamma through `ferric_scf::rohf`, on a mesh per $k$ in
+`kroks.rs` (PySCF `get_roothaan_fock`).
+
+### The Madelung shift
+
+For S-orthonormal orbitals and a closed shell,
+$C^{\mathsf H}\big(-\tfrac12 v_MSDS\big)C = -v_M\,\mathrm{diag}(1_\text{occ}, 0_\text{virt})$
+at every $k$: `exxdiv = ewald` lowers every occupied level by $v_M$, leaves the
+virtual levels and the orbitals unchanged, and changes the energy by
+$-v_MN_e/2$ per cell. The same holds per spin, $-v_M(N_\alpha + N_\beta)/2$.
+`none` and `ewald` therefore share their stationary densities; a state with a
+hole shallower than $v_M$ can be aufbau-consistent under `ewald` only, which
+is why the open-shell drivers converge with `none` first and restart with
+`ewald` (`EwaldStart::Staged`).
+
+In the force (`grad.rs`), the overlap-coupled matrix carries
+$-\alpha v_M\sum_\sigma D_\sigma SD_\sigma$ per spin. Because
+$D_\sigma SD_\sigma = D_\sigma$, it cancels the $-\alpha v_M$ shift inside
+$W = \sum_\sigma D_\sigma F_\sigma D_\sigma$, and the forces for `ewald` and
+`none` agree. The total-density form $-\tfrac{\alpha v_M}{2}DSD$ does not
+cancel on an open shell.
+
+### Kohn-Sham
+
+With an exact-exchange fraction $a$ (`kdft.rs`, `solve_krks_injected`):
+
+$$
+F(k) = h(k) + J(k) - \tfrac a2K(k) + V_{xc}(k),\qquad
+E/\text{cell} = \frac{1}{N_k}\sum_k\operatorname{Re}\operatorname{tr}\big[D(k)\big(h + \tfrac12J - \tfrac a4K\big)(k)\big] + E_{xc} + E_{nn},
+$$
+
+$$
+\rho(\mathbf r) = \frac{1}{N_k}\sum_k\sum_{\mu\nu}D_{\mu\nu}(k)\,\chi_{\mu k}(\mathbf r)\chi_{\nu k}(\mathbf r)^*,\qquad
+V_{xc}(k)_{\mu\nu} = \int_\text{cell}\chi_{\mu k}^*\,v_\rho\,\chi_{\nu k} + \text{(GGA terms)},
+$$
+
+the $D(k)$ derivative of $E_{xc}$ times $N_k$, the same convention as $h$,
+$J$ and $K$. The injected $K$ carries the Madelung term, so it is scaled by
+$a$ with the rest of the exchange. The cell integral runs on atom-centred
+grids weighted by an SSF partition of the infinite crystal (`dft.rs`,
+`PeriodicGrid`).
+
+**Proof.** `scripts/pbc_kpoint_corr_sympy.py`: claims `mesh`,
+`krhf-supercell` (the $J(k)$, $K(k)$ and energy above against the supercell's
+Gamma $J$, $K$ and energy), `kuhf-supercell`, `madelung-shift` and
+`madelung-force`. The model is one-dimensional with s Gaussians; the
+k-point bookkeeping it checks does not depend on the dimension. The
+periodic XC grid and the XC force and stress terms have no proof script.
+
+**Tests.** `tests/pbc_krhf.rs` `h2_1x1x3_mesh_is_the_gamma_supercell` and
+`h2_2x2x2_mesh_is_the_gamma_supercell` (k-mesh energy against the explicit
+supercell, $10^{-11}$ Ha, both `exxdiv`),
+`bloch_convention_time_reversal_and_hermiticity`,
+`monkhorst_pack_points_and_mesh_madelung_match_pyscf`, the PySCF pins
+`h2_1x1x2_matches_pinned_pyscf_krhf_aftdf` and siblings ($10^{-9}$ Ha), and
+the mutants `mutant_kernel_without_q_shift_is_caught`,
+`mutant_phase_sign_in_pair_ft_is_caught`,
+`mutant_primitive_madelung_is_caught_and_leaves_exxdiv_none_exact`;
+`tests/pbc_kuhf.rs` for the open shell.
+
+## 9. Periodic MP2 and dRPA
+
+### Gamma point
+
+At $\Gamma$ the orbitals are real and the molecular closed-shell formulas
+apply unchanged (`mp2.rs`, `drpa.rs`):
+
+$$
+E_\text{MP2} = \sum_{ijab}\frac{(ia|jb)\big[2(ia|jb) - (ib|ja)\big]}{\varepsilon_i + \varepsilon_j - \varepsilon_a - \varepsilon_b},\qquad
+E_c^\text{dRPA} = \frac{1}{2\pi}\int_0^\infty\Big[\ln\det\big(1 + \Pi(iu)\big) - \operatorname{tr}\Pi(iu)\Big]du,
+$$
+
+$$
+\Pi_{PQ}(iu) = 4\sum_{ia}B^P_{ia}\frac{\Delta_{ia}}{u^2 + \Delta_{ia}^2}B^Q_{ia},\qquad
+\Delta_{ia} = \varepsilon_a - \varepsilon_i .
+$$
+
+$(ia|jb)$ is in the $\mathbf G = 0$-dropped kernel of the SCF, and needs no
+correction: $C_o^{\mathsf T}SC_v = 0$, so an occupied-virtual pair density
+has no $\mathbf G = 0$ component. The production integrals are the SCF's own
+RS-GDF $B$ of §7 transformed to $B_{k,ia}$ (`b_ov_from_ao_b`), handed to the
+molecular kernels: `ferric_mp2::rimp2::spin_components_from_b_ov` for MP2 and
+`ferric_rpa::run_pdep_rpa_from_parts` (full rank, the log-det summand) for
+dRPA. $B$ is already metric-dressed, so no further $V^{-1/2}$ is applied.
+The dRPA quadrature is Gauss-Legendre mapped by
+$u = u_0(1 + x)/(1 - x)$, $u_0 = 0.5$, with 40 points by default
+(`DEFAULT_GAMMA_DRPA_QUAD_POINTS`).
+
+### Denominators
+
+The exchange divergence enters correlation only through the occupied
+orbital energies (§8, the Madelung shift). Two conventions exist
+(`Mp2Denominators`): `MadelungShifted`, occupied $\varepsilon$ of the `ewald`
+Fock, and `Unshifted`, those of the `none` Fock. The reference's `exxdiv`
+cannot be read off the SCF result, so the caller states it, and
+`occupied_shift` adds the shift that converts it:
+
+| reference `exxdiv` | denominators | added to $\varepsilon_\text{occ}$ |
+|---|---|---|
+| ewald | `MadelungShifted` | 0 |
+| none | `MadelungShifted` | $-v_M$ |
+| none | `Unshifted` | 0 |
+| ewald | `Unshifted` | $+v_M$ |
+
+The conversion is exact because the orbitals are the same under both.
+
+### k-point mesh
+
+With per-cell normalized $C(k)$ and the pair tensors of the class
+$q = k' - k$ (`kcorr.rs`):
+
+$$
+\begin{aligned}
+V^{k_ik_jk_a}_{iajb} &= (i k_i\,a k_a|j k_j\,b k_b) = \frac{1}{\Omega}\sum_{\mathbf K\in\mathbf G+q}v(\mathbf K)\,
+ P^{ov}_{ia}(\mathbf K)\,P^{vo}_{bj}(\mathbf K)^*,\qquad k_b = k_i + k_j - k_a,\ q = k_a - k_i, \\
+E_\text{MP2}/\text{cell} &= \frac{1}{N_k^3}\sum_{k_ik_jk_a}\sum_{ijab}
+ \frac{V_{iajb}^*\big[2V_{iajb} - V_{ibja}\big]}{\varepsilon_i + \varepsilon_j - \varepsilon_a - \varepsilon_b}, \\
+\Pi(q, iu) &= \frac{4}{N_k}\sum_{k'}\sum_{ia}B_{ia}(k'-q, k')\,B_{ia}(k'-q, k')^{\mathsf H}
+ \frac{\Delta}{u^2 + \Delta^2},\qquad \Delta = \varepsilon_a(k') - \varepsilon_i(k' - q), \\
+E_c^\text{dRPA}/\text{cell} &= \frac{1}{N_k}\sum_q\frac{1}{2\pi}\int_0^\infty
+ \Big[\ln\det\big(1 + \Pi(q, iu)\big) - \operatorname{tr}\Pi(q, iu)\Big]du ,
+\end{aligned}
+$$
+
+where $V_{ibja}$ is the element of $V^{k_ik_jk_b}$. Both legs of $V$ lie in one
+class ($k_a - k_i = k_j - k_b$) and share its auxiliary set. With these
+normalizations a Gamma-centred mesh is, term by term, the Gamma MP2 and dRPA
+of the $\operatorname{diag}(N)$ supercell per cell. The second leg $B^{vo}$ is
+transformed from $B(k_b, k_j)$ itself, not obtained by conjugating the $-q$
+class, which would require a time-reversal gauge that a caller-built SCF
+result need not have.
+
+$\Pi(q)$ is complex Hermitian. The production energy (`drpa_q_realified`)
+writes $B_q = X + iY$ and uses the real
+$B_R = \begin{pmatrix}X & -Y\\ Y & X\end{pmatrix}$ with every excitation
+energy duplicated: $B_R F B_R^{\mathsf T} =
+\begin{pmatrix}\operatorname{Re}\Pi & -\operatorname{Im}\Pi\\ \operatorname{Im}\Pi & \operatorname{Re}\Pi\end{pmatrix}$
+has the spectrum of $\Pi$ with every eigenvalue twice, so
+$E_q = \tfrac12E[\Pi_R]$ through the unchanged real Gamma pipeline. The
+$O(\Pi^2)$ term of the dRPA energy is the direct part
+$\sum 2|V|^2/(\varepsilon_i + \varepsilon_j - \varepsilon_a - \varepsilon_b)$ of
+MP2, from $\int_0^\infty e_1e_2/((u^2 + e_1^2)(u^2 + e_2^2))\,du = \pi/(2(e_1 + e_2))$.
+
+Scope: closed shell; every $k$ must hold the same number of occupied levels
+(the global aufbau of §8 can violate this; refused). The $q = 0$ head
+correction is not implemented.
+
+**Proof.** `scripts/pbc_kpoint_corr_sympy.py`: claims `ov-neutral`,
+`kmp2-supercell`, `kdrpa-supercell` (the k-point formulas above against the
+supercell's real closed-shell MP2 and plasmon dRPA), `realify` and
+`drpa-second-order`.
+
+**Tests.** `tests/pbc_mp2.rs`
+`mp2_from_rsgdf_matches_dense_aft_in_the_trivial_aux_limit`,
+`h2_sto3g_a4_matches_pinned_pyscf_rmp2`,
+`box_limit_shifted_is_a3_with_the_predicted_coefficient_unshifted_is_1_over_a`;
+`tests/pbc_drpa.rs` `drpa_from_rsgdf_matches_dense_plasmon_in_the_trivial_aux_limit`,
+`drpa_second_order_term_is_direct_mp2_from_gamma_mp2`;
+`tests/pbc_kcorr.rs` `h2_1x1x3_mesh_is_the_gamma_supercell` (k-point MP2 and
+plasmon dRPA against the supercell, $10^{-11}$ Ha),
+`supercell_anchor_catches_momentum_conj_madelung_occupied_k_and_normalisation_mutants`,
+`kmp2_h2_1x1x2_matches_pinned_pyscf_kmp2_both_exxdiv`.

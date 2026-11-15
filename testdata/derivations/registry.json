@@ -598,6 +598,41 @@
         "scripts/pbc_ewald_pairft_stress_sympy.py"
       ]
     },
+    "pbc-drpa": {
+      "theory": [
+        "crates/ferric-pbc/theory.md#9-periodic-mp2-and-drpa",
+        "crates/ferric-pbc/theory.md#7-range-separated-gaussian-density-fitting-rs-gdf"
+      ],
+      "scripts": [
+        "scripts/pbc_kpoint_corr_sympy.py",
+        "scripts/pbc_rsgdf_sympy.py",
+        "scripts/rpa_drpa_pdep_sympy.py"
+      ]
+    },
+    "pbc-hf": {
+      "theory": [
+        "crates/ferric-pbc/theory.md#4-exchange-divergence-exxdiv",
+        "crates/ferric-pbc/theory.md#7-range-separated-gaussian-density-fitting-rs-gdf",
+        "crates/ferric-pbc/theory.md#8-k-point-hartree-fock-and-kohn-sham",
+        "crates/ferric-scf/theory.md#hartree-fock-energy-functionals-rhf-uhf-rohf"
+      ],
+      "scripts": [
+        "scripts/pbc_kpoint_corr_sympy.py",
+        "scripts/pbc_rsgdf_sympy.py",
+        "scripts/pbc_ewald_pairft_stress_sympy.py",
+        "scripts/hf_energy_sympy.py"
+      ]
+    },
+    "pbc-mp2": {
+      "theory": [
+        "crates/ferric-pbc/theory.md#9-periodic-mp2-and-drpa",
+        "crates/ferric-pbc/theory.md#7-range-separated-gaussian-density-fitting-rs-gdf"
+      ],
+      "scripts": [
+        "scripts/pbc_kpoint_corr_sympy.py",
+        "scripts/pbc_rsgdf_sympy.py"
+      ]
+    },
     "pcm": {
       "theory": [
         "crates/ferric-pcm/theory.md#4-symmetrized-charge-solve-and-energy"
@@ -880,23 +915,12 @@
         "crates/ferric-ci/theory.md#sc-nevpt2-srcnevpt2rs"
       ]
     },
-    "pbc-drpa": {
-      "reason": "no theory.md derivation and no sympy proof"
-    },
-    "pbc-hf": {
-      "reason": "the Ewald, pair-FT and strain pieces are proven (method pbc-ewald-pairft-stress); the k-point HF energy functional, exxdiv and the RS-GDF J/K are not",
-      "theory": [
-        "crates/ferric-pbc/theory.md#4-exchange-divergence-exxdiv"
-      ]
-    },
     "pbc-ks": {
-      "reason": "as pbc-hf; the periodic XC terms and their force/stress are not proven",
+      "reason": "the energy functional, Fock convention, exxdiv and RS-GDF J/K are proven with pbc-hf (theory sections 7 and 8); the periodic XC grid quadrature and the XC force and stress terms have no sympy proof",
       "theory": [
-        "crates/ferric-pbc/theory.md#5-stress-tensor-strain-derivative"
+        "crates/ferric-pbc/theory.md#5-stress-tensor-strain-derivative",
+        "crates/ferric-pbc/theory.md#8-k-point-hartree-fock-and-kohn-sham"
       ]
-    },
-    "pbc-mp2": {
-      "reason": "no theory.md derivation and no sympy proof"
     },
     "qmmm": {
       "reason": "no theory.md derivation and no sympy proof"
