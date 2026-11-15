@@ -9,8 +9,8 @@ This module implements the foundational structures of the `ferric` engine, handl
 ### Coordinates (Bohr)
 All chemical calculations in `ferric` (integrals, solvers, gradients) use atomic units (a.u.).
 * Molecular coordinates are stored internally in Bohr.
-* The external XYZ file parser expects coordinates in Angstroms and converts them to Bohr using the conversion factor:
-  $$ 1\,\text{Bohr} \approx 0.5291772109\,\text{Å} $$
+* The external XYZ file parser expects coordinates in Angstroms and converts them to Bohr using the CODATA 2010 Bohr radius of `units.rs` (`BOHR_RADIUS_ANGSTROM`):
+  $$ 1\,\text{Bohr} = 0.52917721092\,\text{Å} $$
 * Nuclear repulsion is calculated directly as:
   $$ E_{\text{nuc}} = \sum_{A < B} \frac{Z_A Z_B}{|R_A - R_B|} $$
 
