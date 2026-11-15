@@ -1234,6 +1234,106 @@ Memory: the dense AO block $n_\text{bas}^4$, the MO blocks (twice, transformed
 and permuted), twelve $n^6$ intermediates and the per-label tensors, reserved
 through one `MemoryPlan` before the AO block is built.
 
+### The classes as coded
+
+One perturber per label gives the class energy directly: since
+$\langle\Psi_l|H|\Psi_0\rangle = \langle P_lH\Psi_0|P_lH\Psi_0\rangle = N_l$
+and $\langle\Psi_l|H_D|\Psi_l\rangle/N_l - E_0 = \Delta_l + K_l/N_l$, the
+second-order term $-|\langle\Psi_l|H|\Psi_0\rangle|^2/N_l/(E_l - E_0)$ is
+$-N_l/(\Delta_l + K_l/N_l)$ (`norm_to_energy`). The notation below is the
+code's: $\gamma$ = `dm1`; $G_2$, $G_3$ = `dm2`, `dm3` of `Inputs`, the
+E-product RDMs $\langle E_{pq}E_{rs}\rangle$ and
+$\langle E_{pq}E_{rs}E_{tu}\rangle$; $\bar\gamma$, $\bar G_2$, $\bar G_3$ the
+hole RDMs; $f^{ca}$, $f^{ac}$ the $(aa|aa)$-contracted 4-RDMs of "NEVPT RDMs";
+$h$ = `h1e` $= F^I_{\rm act}$ and $g_{pqrs}$ = `h2e` $= (pr|qs)$ over active
+orbitals; $i, j$ core, $r, s$ virtual, every other index active. Specs are
+`einsum` strings over the named operands; a sum without a repeated label is a
+product.
+
+| Class | Labels $l$ (weight) | $\Delta_l$ | $N_l$ | $K_l$ |
+|---|---|---|---|---|
+| `Sr` | $r$ | $\varepsilon_r$ | `ipqr,rpqbac,iabc` $(V,G_3,V)$ $+\,2$ `ipqr,rpqa,ia` $(V,G_2,h^{\rm sr})$ $+$ `ip,pa,ia` $(h^{\rm sr},\gamma,h^{\rm sr})$ | the same with $A_{16}$ (`pqrabc`), $A_{17}$ (`pqra`), $A_{19}$ (`pa`) |
+| `Si` | $i$ | $-\varepsilon_i$ | `qpir,rpqbac,baic` $(V,G_3^h,V)$ $+\,2$ `qpir,rpqa,ai` $(V,G_2^h,h^{\rm si})$ $+$ `pi,pa,ai` $(h^{\rm si},\gamma^h,h^{\rm si})$ | the same with $A_{22}$, $A_{23}$, $A_{25}$ |
+| `Sijrs` | $(i,r,j,s)$, all ordered | $\varepsilon_r + \varepsilon_s - \varepsilon_i - \varepsilon_j$ | $v\,\theta$ | 0 |
+| `Sijr` | $r$, $i \ge j$ ($\tfrac12$ at $i = j$) | $\varepsilon_r - \varepsilon_i - \varepsilon_j$ | $T[\bar\gamma]$ | $T[A_3]$ |
+| `Srsi` | $s \ge r$ ($\tfrac12$ at $r = s$), $i$ | $\varepsilon_r + \varepsilon_s - \varepsilon_i$ | $U[\gamma]$ | $U[K_{27}]$ |
+| `Srs` | $(r,s)$, all ordered | $\varepsilon_r + \varepsilon_s$ | $\tfrac12$ `rsqp,rsba,pqba` $(V,V,R_2)$ | $\tfrac12$ `rsqp,rsba,pqab` $(V,V,A_7)$ |
+| `Sij` | $(i,j)$, all ordered | $-(\varepsilon_i + \varepsilon_j)$ | $\tfrac12$ `qpij,baij,pqab` $(V,V,\bar G_2)$ | $\tfrac12$ `qpij,baij,pqab` $(V,V,A_9)$ |
+| `Sir` | $(i,r)$ | $\varepsilon_r - \varepsilon_i$ | nine terms below | four terms below |
+
+Integral blocks (chemist $(pq|rs)$ over MO blocks, laid out as in PySCF):
+`Sr` $V_{rqps} = (rp|qs)$, $h^{\rm sr}_{rp} = F^I_{rp} - \sum_b (rb|bp)$;
+`Si` $V_{pqir} = (pi|qr)$, $h^{\rm si}_{pi} = F^I_{pi}$;
+`Sijrs` $v = (ir|js)$, $\theta = 2(ir|js) - (is|jr)$; the class is the
+direct sum $\sum_{irjs} v\theta/(\varepsilon_i + \varepsilon_j - \varepsilon_r - \varepsilon_s)$
+with no $|N_l|$ test ($K_l = 0$: the active part of each label is $\Psi_0$);
+`Sijr` $V_{rpij} = (jp|ir)$; `Srsi` $V_{rsip} = (sp|ir)$; `Srs`
+$V_{rspq} = (rp|sq)$; `Sij` $V_{pqij} = (ip|jq)$; `Sir`
+$V^1_{rpiq} = (ri|pq)$, $V^2_{rqpi} = (rp|iq)$, $h^{\rm ir}_{ri} = F^I_{ri}$.
+
+The hole-type inputs of `Si`: $G^h_3 = 2\,G_2\otimes\delta$ (`abef,cd->abcdef`)
+$-\,G_3$ with axes $(0,1,3,2,4,5)$; $G^h_2 = 2\,\gamma\otimes\delta - G_2$ with
+axes $(0,1,3,2)$; $\gamma^h = 2\delta - \gamma^{\sf T}$.
+
+`Sijr` and `Srsi` are pair-symmetrized: with $M$ the active matrix,
+$t = 2\,$`s1`$(V,V,M) - $`s2`$(V,V,M)$ and $T = t + t^{\sf T}$ over the pair
+axes. `Sijr`: `s1` = `rpji,raji,pa->rji`, `s2` = `rpji,raij,pa->rji`, pair
+axes $(i, j)$; `Srsi`: `s1` = `rsip,rsia,pa->rsi`, `s2` = `rsip,sria,pa->rsi`,
+pair axes $(r, s)$. The pair-diagonal label carries $\tfrac12$ of both $N$ and
+$K$; `Srs` and `Sij` sum every ordered pair with $\tfrac12$ instead, which is
+the same sum.
+
+`Sir`: $N_{ir} = 2$`rpiq,raib,qpab`$(V^1,V^1,G_2)$ $-$ `rpiq,rabi,qpab`$(V^1,V^2,G_2)$
+$-$ `rpqi,raib,qpab`$(V^2,V^1,G_2)$ $+\,2$`raqi,rabi,qb`$(V^2,V^2,\gamma)$
+$-$ `rpqi,rabi,qbap`$(V^2,V^2,G_2)$ $+$ `rpqi,raai,qp`$(V^2,V^2,\gamma)$
+$+\,4$`rpiq,ri,qp`$(V^1,h^{\rm ir},\gamma)$ $-\,2$`rpqi,ri,qp`$(V^2,h^{\rm ir},\gamma)$
+$+\,2\,h^{\rm ir}_{ri}h^{\rm ir}_{ri}$;
+$K_{ir} = 2$`rpiq,raib,pqab`$(V^1,V^1,A_{12})$ $-$ `rpiq,rabi,pqab`$(V^1,V^2,A_{12})$
+$-$ `rpqi,raib,pqab`$(V^2,V^1,A_{12})$ $+$ `rpqi,rabi,pqab`$(V^2,V^2,A_{13})$.
+$K$ has no $h^{\rm ir}$ term: the part of $\Psi_l$ that is $F^I_{ri}E_{ri}\Psi_0$
+leaves the active space untouched, and $E_{ri}$ commutes with $H_{\rm act}$,
+so its contribution to $\langle\Psi_l|H_{\rm act} - E_0|\Psi_l\rangle$ is
+$\langle\Psi_0|(H_{\rm act} - E_0)\cdots\rangle = 0$.
+
+The intermediates, term by term ($\delta$ the active identity, $h' = h - $
+`mjjn->mn`$(g)$ the shifted one-electron matrix of `make_a17`/`make_a19`).
+The 3-RDM enters through $G_3$ (and $\bar G_3$ in $A_9$); the 4-RDM only
+through $f^{ca}$, $f^{ac}$, permuted:
+
+| Intermediate | Terms (coefficient, spec, operands) |
+|---|---|
+| $A_{16}$ `pqrabc` | $-$`ib,rpqiac`$(h,G_3)$; $+$`ia,rpqbic`$(h,G_3)$; $-$`ci,rpqbai`$(h,G_3)$; $-f^{ca}$ axes $(1,4,0,2,5,3)$; $-$`kbia,rpqcki`$(g,G_3)$; $-$`kbaj,rpqjkc`$(g,G_3)$; $+$`cbij,rpqjai`$(g,G_3)$; $+$`prab,qc`$(F,\delta)$ with $F$ = `kbij,rpajki->prab`$(g,G_3)$; $+f^{ac}$ axes $(1,2,0,4,3,5)$; $-f^{ca}$ axes $(1,2,0,4,3,5)$; $+$`jbij,rpqiac`$(g,G_3)$; $-$`cjka,rpqbjk`$(g,G_3)$; $+$`jcij,rpqbai`$(g,G_3)$ |
+| $A_{17}$ `abcp` | $-$`pi,cabi`$(h',G_2)$; $-$`kpij,cabjki`$(g,G_3)$ |
+| $A_{19}$ `ap` | $-$`pi,ai`$(h',\gamma)$; $-$`kpij,ajki`$(g,G_2)$ |
+| $A_{22}$ `ijkabc` | $-$`pb,kipjac`$(h,G_3)$; $-$`pa,kibjpc`$(h,G_3)$; $+$`cp,kibjap`$(h,G_3)$; $+$`cqra,kibjqr`$(g,G_3)$; $-$`qcpq,kibjap`$(g,G_3)$; $-f^{ac}$ axes $(1,5,0,2,4,3)$; $-$`ikbc,ja`$(F,\delta)$ with $F$ = `pqrb,kiqcpr->ikbc`$(g,G_3)$; $-$`pqab,kiqjpc`$(g,G_3)$; $+$`pcrb,kiajpr`$(g,G_3)$; $+$`cqrb,kiqjar`$(g,G_3)$; $-f^{ac}$ axes $(1,3,0,4,2,5)$; $+f^{ca}$ axes $(1,3,0,4,2,5)$; $+2$`jb,kiac`$(h,G_2)$; $+2$`pjrb,kiprac`$(g,G_3)$; $+2$`ikac,jb`$(F',\delta)$ with $F'$ = `pa,kipc`$(h,G_2)$ $-$ `cp,kiap`$(h,G_2)$ $-$ `cqra,kiqr`$(g,G_2)$ $+$ `qcpq,kiap`$(g,G_2)$ $+$ `pqra,kiqcpr`$(g,G_3)$ $-$ `rcpq,kiaqrp`$(g,G_3)$ |
+| $A_{23}$ `abcp` | $-$`ip,caib`$(h,G_2)$; $-$`pijk,cajbik`$(g,G_3)$; $+2$`bp,ca`$(h,\gamma)$; $+2$`pibk,caik`$(g,G_2)$ |
+| $A_{25}$ `ap` | $-$`pi,ai`$(h,\gamma)$; $-$`pijk,jaik`$(g,G_2)$; $+2h^{\sf T}$; $+2$`piaj,ij`$(g,\gamma)$ |
+| $A_3$ `pa` | $+$`ia,ip`$(h,\bar\gamma)$; $+2$`ijka,pj,ik`$(g,\delta,\gamma)$; $-$`ijka,jpik`$(g,G_2)$ |
+| $K_{27}$ `pa` | $-$`ai,pi`$(h,\gamma)$; $-$`iajk,pkij`$(g,G_2)$; $+$`iaji,pj`$(g,\gamma)$ |
+| $R_2$, $A_7$ `pqab` | $R_2$ = `iljk->ijkl`$(G_2)$ $-$ `ik,jl`$(\gamma,\delta)$; $R_3$ = `injmkl->ijklmn`$(G_3)$ $-$ `jn,imkl`$(\delta,G_2)$ $-$ `km,ijln`$(\delta,R_2)$ $-$ `kn,ijml`$(\delta,R_2)$; $A_7$ = $-$`bi,pqia`$(h,R_2)$ $-$ `ai,pqbi`$(h,R_2)$ $-$ `kbij,pqkija`$(g,R_3)$ $-$ `kaij,pqkibj`$(g,R_3)$ $-$ `baij,pqij`$(g,R_2)$ |
+| $A_9$ `pqab` | $+$`ib,pqai`$(h,\bar G_2)$; $+2$`ijib,pqaj`$(g,\bar G_2)$; $-$`ijjb,pqai`$(g,\bar G_2)$; $-$`ijkb,pkqaij`$(g,\bar G_3)$; $+$`ia,pqib`$(h,\bar G_2)$; $-$`ijja,pqib`$(g,\bar G_2)$; $-$`ijba,pqji`$(g,\bar G_2)$; $+2$`ijia,pqjb`$(g,\bar G_2)$; $-$`ijka,pqkjbi`$(g,\bar G_3)$ |
+| $A_{12}$ `pqab` | $+$`ia,qpib`$(h,G_2)$; $-$`bi,qpai`$(h,G_2)$; $+$`ijka,qpjbik`$(g,G_3)$; $-$`kbij,qpajki`$(g,G_3)$; $-$`bjka,qpjk`$(g,G_2)$; $+$`jbij,qpai`$(g,G_2)$ |
+| $A_{13}$ `pqab` | $-$`ia,qbip`$(h,G_2)$; $+2$`pa,qb`$(h,\gamma)$; $+$`bi,qiap`$(h,G_2)$; $-2$`pa,bi,qi`$(\delta,h,\gamma)$; $-$`ijka,qbjpik`$(g,G_3)$; $+$`kbij,qjapki`$(g,G_3)$; $+$`blma,qmlp`$(g,G_2)$; $+2$`kpma,qbkm`$(g,G_2)$; $-2$`bpma,qm`$(g,\gamma)$; $-$`lbkl,qkap`$(g,G_2)$; $-2$`ap,mbkl,qlmk`$(\delta,g,G_2)$; $+2$`ap,lbkl,qk`$(\delta,g,\gamma)$ |
+
+A spec without `->` produces the intermediate's own index string; an axes
+tuple is a numpy transpose.
+
+[`scripts/nevpt2_sympy.py`](../../scripts/nevpt2_sympy.py) proves (D, sympy)
+the single-perturber energy above; (R) on a CAS(4,4) model, the normal-ordered
+and E-product 1- to 3-RDMs and the reorder formula, the hole RDMs of
+`hole_rdms` against $\langle aa\,a^\dagger a^\dagger\rangle$ and
+$\langle aaa\,a^\dagger a^\dagger a^\dagger\rangle$ from created vectors, and
+`f3ca`/`f3ac` by the `rdm3.rs` construction against a stored E-product 4-RDM;
+(T) that its transcription of every function in the tables uses the specs
+and axes of `nevpt2.rs`, in order, parsed from the file; (C) that each of the
+eight class norms and energies of that transcription equals the definition
+in the full 4900-determinant space ($P_lH\Psi_0$ grouped by external
+occupation, $K_l$ from Dyall's $H_{\rm act}$ on active indices only), for the
+lowest singlet and the lowest $M_s = 0$ triplet root, with
+$\langle\Psi_0|H|\Psi_0\rangle = E_{\rm core} + E_0$ and
+$\sum_l N_l = |QH\Psi_0|^2$ as anchors. Its recorded mutations are in
+`crates/ferric-python/tests/test_derivation_scripts.py`.
+
 ## Checks
 
 | Check | What it constrains |

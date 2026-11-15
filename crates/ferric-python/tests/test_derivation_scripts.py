@@ -414,6 +414,45 @@ CASES = [
         ],
     ),
     (
+        "nevpt2_sympy.py",
+        10,
+        [
+            (
+                'a -= perm(x["f3ca"], (1, 4, 0, 2, 5, 3))',
+                'a += perm(x["f3ca"], (1, 4, 0, 2, 5, 3))',
+                "FAIL C1",
+            ),
+            (
+                'a -= ein("bi,qpai->pqab", h1e, dm2)',
+                'a += ein("bi,qpai->pqab", h1e, dm2)',
+                "FAIL C8",
+            ),
+            ("f = 0.5 if i == j else 1.0", "f = 1.0", "FAIL C4"),
+            ("theta = 2.0 * v - g[i, bb, j, a]", "theta = v", "FAIL C3"),
+            ("val += dm2[p, u, r, s_]", "val += 0.0", "FAIL R1"),
+            (
+                "- 2.0 * dl(i, k) * dm1[l_, j]",
+                "- 1.0 * dl(i, k) * dm1[l_, j]",
+                "FAIL R2",
+            ),
+            (
+                'rp = ein("jfDE,ejE->efD", e, w)',
+                'rp = ein("ejDE,fjE->efD", e, w)',
+                "FAIL R3",
+            ),
+            (
+                "v_sijr=perm(blk([cc, ca, cc, cv]), (3, 1, 2, 0))",
+                "v_sijr=perm(blk([cc, ca, cc, cv]), (3, 1, 0, 2))",
+                "FAIL T",
+            ),
+            (
+                '-(x["eps_c"][i] + x["eps_c"][j])))',
+                '(x["eps_c"][i] + x["eps_c"][j])))',
+                "FAIL C7",
+            ),
+        ],
+    ),
+    (
         "u_rimp2_gradient_sympy.py",
         5,
         [

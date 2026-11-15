@@ -1020,6 +1020,15 @@
       "scripts": [
         "scripts/double_hybrid_sympy.py"
       ]
+    },
+    "nevpt2": {
+      "theory": [
+        "crates/ferric-ci/theory.md#sc-nevpt2-srcnevpt2rs",
+        "crates/ferric-ci/theory.md#nevpt-rdms-srcrdm3rs"
+      ],
+      "scripts": [
+        "scripts/nevpt2_sympy.py"
+      ]
     }
   },
   "gaps": {
@@ -1027,12 +1036,6 @@
       "reason": "no theory.md derivation (book section 25.3 carries it standalone until crates/ferric-rpa/theory.md gains an MBD section)",
       "scripts": [
         "scripts/mbd_coupled_dipole_sympy.py"
-      ]
-    },
-    "nevpt2": {
-      "reason": "no theory.md derivation and no sympy proof",
-      "theory": [
-        "crates/ferric-ci/theory.md#sc-nevpt2-srcnevpt2rs"
       ]
     },
     "pbc-ks": {

@@ -282,7 +282,7 @@ Code references are `crate/src/file.rs::item` under `crates/`.
 | 17.3 | Direct sigma and the Davidson solver | T ci "Direct sigma" | `ferric-ci/src/sigma.rs::DirectSigma`, `ferric-ci/src/davidson.rs::davidson_lowest`, `ferric-ci/src/lib.rs::run_cas_ci` | ready |
 | 17.4 | Reduced density matrices | T ci "Reduced density matrices", "NEVPT RDMs" | `ferric-ci/src/rdm.rs::{spin_summed_rdms,rdm_energy}`, `ferric-ci/src/rdm3.rs::nevpt_rdms` | ready |
 | 17.5 | Two-step CASSCF | T ci "Two-step CASSCF" (835 lines, mostly measurement records to be cut); R casscf *gap* | `ferric-ci/src/casscf.rs::{run_casscf,optimize,expm_antisymmetric}`, `ferric-ci/src/casscf_newton.rs::{orbital_hessian,ah_davidson}`, `ferric-ci/src/casscf_stability.rs::stability` | ready |
-| 17.6 | SC-NEVPT2 | T ci "SC-NEVPT2"; R nevpt2 *gap* | `ferric-ci/src/nevpt2.rs::sc_nevpt2` | gap |
+| 17.6 | SC-NEVPT2 | T ci "SC-NEVPT2"; R nevpt2 *gap* | `ferric-ci/src/nevpt2.rs::sc_nevpt2` | ready |
 
 ### Part IX. RPA, PDEP and GW
 
@@ -451,7 +451,7 @@ registry row and are the largest block of `gap` sections.
 | V. The MP2 family | 18 | 3 | 1 | 5 | 27 |
 | VI. Derivatives | 12 | 3 | 0 | 0 | 15 |
 | VII. Coupled cluster | 6 | 1 | 0 | 0 | 7 |
-| VIII. Multireference | 5 | 0 | 1 | 0 | 6 |
+| VIII. Multireference | 6 | 0 | 0 | 0 | 6 |
 | IX. RPA, PDEP and GW | 14 | 0 | 0 | 1 | 15 |
 | X. Response and excited states | 7 | 2 | 0 | 0 | 9 |
 | XI. Environment | 5 | 4 | 0 | 0 | 9 |
@@ -460,9 +460,9 @@ registry row and are the largest block of `gap` sections.
 | XIV. Capstone | 1 | 2 | 4 | 0 | 7 |
 | XV. Interfaces | 1 | 5 | 1 | 0 | 7 |
 | Appendices | 3 | 0 | 1 | 0 | 4 |
-| **Total** | **98** | **48** | **9** | **6** | **161** |
+| **Total** | **99** | **48** | **8** | **6** | **161** |
 
-161 sections: 61% `ready`, 30% `edit`, 6% `gap` and 4% `verify`.
+161 sections: 61% `ready`, 30% `edit`, 5% `gap` and 4% `verify`.
 <!-- status-table:end -->
 
 ## 5. Gaps, ranked by how much rests on them

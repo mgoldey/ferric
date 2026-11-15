@@ -1,6 +1,6 @@
 # 17.6 SC-NEVPT2
 
-<!-- section: 17.6; status: gap; registry: nevpt2;
+<!-- section: 17.6; status: ready; registry: nevpt2;
      theory: crates/ferric-ci/theory.md#"SC-NEVPT2 (`src/nevpt2.rs`)" -->
 
 A CASSCF energy has the static correlation of the active space and none of
@@ -28,13 +28,57 @@ denominator.
 
 <!-- include: crates/ferric-ci/theory.md#"SC-NEVPT2 (`src/nevpt2.rs`)" -->
 
-This section has no verified box. The class formulas are a transcription of
-PySCF `mrpt.nevpt2`, and their derivation from Dyall's Hamiltonian is in a
-working note (`scripts/prototypes/nevpt2_derivation.md`), not in
-`theory.md`. A sympy proof needs the 3-RDM and the 4-RDM contractions of
-section 17.4.2 on a model space, so the registry lists `nevpt2` as a gap.
-The evidence below is two independent constructions: the numpy prototype's
-Wick construction and PySCF.
+> **Verified equation 17.6** · the eight class energies
+>
+> On a CAS(4,4) model (two core, four active, two virtual orbitals, random
+> positive semidefinite $(pq|rs)$, core and virtual orbitals canonical in
+> $F^I + F^A$), a numpy transcription of every class and intermediate
+> function of `nevpt2.rs` gives each class norm $\sum_l N_l$ and energy
+> $E_\text{class} = -\sum_l N_l/(\Delta_l + K_l/N_l)$ equal to the
+> definition evaluated in the full 4900-determinant space:
+> $\Psi_l = P_lH\Psi_0$ grouped by external occupation, $K_l$ from Dyall's
+> $H_\text{act}$ on active indices only. It holds on the lowest singlet and on
+> the lowest $M_s = 0$ triplet root of the $(2, 2)$ sector. Anchors:
+> $\langle\Psi_0|H|\Psi_0\rangle = E_\text{core} + E_0$ and
+> $\sum_l N_l = |QH\Psi_0|^2$. The transcription is pinned to the Rust file:
+> every `einsum` specification and permutation of those functions, in order,
+> is parsed from `nevpt2.rs` and compared (claim T).
+>
+> | | |
+> |---|---|
+> | Proof | claims C and T of `scripts/nevpt2_sympy.py` (claim D: the single-perturber energy, sympy) |
+> | Negative control | the runner's mutations: a sign flip of the `f3ca` term of `make_a16` (`Sr`) and of one `make_a12` term (`Sir`), the `Sijr` pair diagonal not halved, $\theta$ of `Sijrs` replaced by $v$, the sign of the `Sij` denominator, an $i \leftrightarrow j$ swap of the `Sijr` block (seen by claim T only: `Sijr` is symmetric in the pair) |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-ci/src/nevpt2.rs::{sr,si,sijrs,sijr,srsi,srs,sij,sir,norm_to_energy}` |
+> | Code test | `matches_prototype_h2o_cas44` in `crates/ferric-ci/tests/nevpt2.rs` |
+>
+> <!-- verified: id=ci.nevpt2.classes; script=scripts/nevpt2_sympy.py; claim=C; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-ci/src/nevpt2.rs::{sr,si,sijrs,sijr,srsi,srs,sij,sir,norm_to_energy}; rust_test=ferric-ci/tests/nevpt2.rs::matches_prototype_h2o_cas44; registry=nevpt2 -->
+
+> **Verified equation 17.7** · the RDM inputs
+>
+> On the same model's CI vector, each input of the class formulas by two
+> routes: the normal-ordered 1- to 3-RDMs (Gram matrices of annihilated
+> vectors) against the E-product $\langle EE\rangle$, $\langle EEE\rangle$
+> through the reorder formula and `e_product_rdms`; `hole_rdms` against
+> $\langle aa\,a^\dagger a^\dagger\rangle$ and
+> $\langle aaa\,a^\dagger a^\dagger a^\dagger\rangle$ from created vectors;
+> $f^\text{ca}$, $f^\text{ac}$ by the `rdm3.rs` construction
+> ($\langle E_{dc}X_{ba}|R_{ef}\rangle$) against the contraction of a stored
+> E-product 4-RDM with $(aa|aa)$.
+>
+> | | |
+> |---|---|
+> | Proof | claim R of `scripts/nevpt2_sympy.py` |
+> | Negative control | the runner's mutations: the $\delta_{qt}$ term of `e_product_rdms` dropped; a coefficient 2 → 1 in `hole_rdms`; $R'$ built with the index order of $R$ |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-ci/src/rdm3.rs::{e_product_rdms,hole_rdms,nevpt_rdms}` |
+> | Code test | `rdm3_and_f3_match_pyscf_h2o_cas44` in `crates/ferric-ci/tests/casci_rdm3.rs` |
+>
+> <!-- verified: id=ci.nevpt2.rdms; script=scripts/nevpt2_sympy.py; claim=R; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-ci/src/rdm3.rs::{e_product_rdms,hole_rdms,nevpt_rdms}; rust_test=ferric-ci/tests/casci_rdm3.rs::rdm3_and_f3_match_pyscf_h2o_cas44; registry=nevpt2 -->
+
+The proof checks the factorization against the definition on a model; the
+Rust tests below check the Rust code against the numpy prototype's Wick
+construction and against PySCF on molecules.
 
 ## 17.6.2 The algorithm
 
@@ -68,7 +112,8 @@ $1.7\times10^{-7}$ Ha between codes.
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-ci/theory.md`, "SC-NEVPT2" | definitions, orbitals, evaluation, cost |
+| `crates/ferric-ci/theory.md`, "SC-NEVPT2" | definitions, orbitals, the classes and intermediates as coded, cost |
+| `scripts/nevpt2_sympy.py` | claims D, R, T and C |
 | Angeli, Cimiraglia and Malrieu, JCP 117, 9138 (2002) | the method |
 | `scripts/prototypes/nevpt2_derivation.md`, `nevpt2_proto.py` | the derivation note and the Wick-construction reference |
 | PySCF `mrpt/nevpt2.py` | the factorization transcribed |
