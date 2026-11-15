@@ -52,6 +52,46 @@ fn spill_block_naux_for(budget_bytes: usize, nao: usize) -> usize {
     block_naux_for(budget_bytes / 2, nao)
 }
 
+/// The tier [`ThreeIndexSource::build_band`] takes for a band of `band` aux
+/// rows under `budget_bytes`, and the most bytes that tier holds resident at
+/// once, build included.
+///
+/// `build_band_screened` reads its tier from here, so a caller that plans
+/// with this function sees the tier the build takes. The packed test also
+/// reads the shared pool's free bytes ([`packed_in_core_fits`]), so plan after
+/// the planes that stay resident across the build have been reserved.
+///
+/// ```text
+///   tier          resident peak
+///   InCore        band·nao²·8
+///   InCorePacked  band·nao(nao+1)/2·8 + step·nao²·8   (one unpacked block)
+///   Spill         2·block·nao²·8                      (build double buffer)
+/// ```
+///
+/// The spill read-back holds one unpacked block plus one packed read buffer,
+/// 1.5 blocks, below the build's two.
+pub fn planned_residency(
+    nao: usize,
+    band: usize,
+    budget_bytes: usize,
+) -> (jk_storage::Tier, usize) {
+    let tier = jk_storage::memory_tier(nao, band, budget_bytes).unwrap_or(jk_storage::Tier::Spill);
+    let row = nao.saturating_mul(nao).saturating_mul(8);
+    let bytes = match tier {
+        jk_storage::Tier::InCore => band.saturating_mul(row),
+        jk_storage::Tier::InCorePacked => {
+            let packed = band.saturating_mul(packed_pair_len(nao)).saturating_mul(8);
+            let step = packed_scratch_rows(packed, nao, budget_bytes).min(band.max(1));
+            packed.saturating_add(step.saturating_mul(row))
+        }
+        jk_storage::Tier::Spill | jk_storage::Tier::Recompute => {
+            let block = spill_block_naux_for(budget_bytes, nao).min(band.max(1));
+            block.saturating_mul(row).saturating_mul(2)
+        }
+    };
+    (tier, bytes)
+}
+
 /// Largest unpacked scratch block (bytes) a packed in-core source unpacks into
 /// for a `for_each_block` consumer. Bounded so that a budget with a large
 /// headroom does not allocate gigabytes for a block that only the dressing
@@ -1460,8 +1500,7 @@ impl ThreeIndexSource {
             .saturating_mul(nao)
             .saturating_mul(8);
         let packed_bytes = band.saturating_mul(packed_pair_len(nao)).saturating_mul(8);
-        let tier =
-            jk_storage::memory_tier(nao, band, budget_bytes).unwrap_or(jk_storage::Tier::Spill);
+        let (tier, _) = planned_residency(nao, band, budget_bytes);
         if ooc_trace() {
             eprintln!(
                 "[OOC build] naux={naux} band=[{band_p0},{band_p1}) nao={nao} needed={:.2}GB packed={:.2}GB budget={:.2}GB -> {}",

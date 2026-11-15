@@ -307,8 +307,8 @@ fn t_carries_the_independently_computed_coulomb_drpa() {
     }
 }
 
-/// The preflight estimate does not grow with the number of ω points and
-/// bounds a single call's estimate.
+/// The preflight estimate does not grow with the number of ω points, covers
+/// each phase of one operator's set, and is tensor-sized.
 #[test]
 fn preflight_estimate_is_independent_of_the_number_of_points() {
     let shape = ferric_rpa::budget::PeakEstimateShape {
@@ -322,9 +322,18 @@ fn preflight_estimate_is_independent_of_the_number_of_points() {
         need_inv_dielectric: false,
         nao: 414,
     };
-    let one = scan_peak_bytes(shape, 1);
-    assert_eq!(scan_peak_bytes(shape, 5), one);
-    assert_eq!(scan_peak_bytes(shape, 50), one);
-    assert!(one >= ferric_rpa::budget::estimate_peak_bytes(shape));
+    let budget = 1usize << 40;
+    let one = scan_peak_bytes(shape, 1, budget);
+    assert_eq!(scan_peak_bytes(shape, 5, budget), one);
+    assert_eq!(scan_peak_bytes(shape, 50, budget), one);
+    // At an ample budget the AO tensor is in core, and the build phase holds
+    // it beside the persistent planes.
+    let ao = ferric_rpa::budget::ao_tensor_bytes(shape);
+    let persistent = ferric_rpa::budget::scan_persistent_bytes(shape);
+    assert!(one >= persistent + ao, "{one} < {persistent} + {ao}");
+    // The dRPA phase holds the eigensolve planes and the full-width scratch.
+    let drpa = ferric_rpa::budget::static_eigensolve_bytes(shape)
+        + ferric_rpa::budget::quad_scratch_bytes(shape);
+    assert!(one >= persistent + drpa);
     assert!(one > 100_000_000, "estimate is tensor-sized: {one}");
 }

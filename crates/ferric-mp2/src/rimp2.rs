@@ -533,6 +533,17 @@ pub(crate) const PAR_MO_TRANSFORM_WORK_THRESHOLD: usize = 200_000;
 /// GEMM constrains this value.
 pub(crate) const MO_STREAM_CHUNK: usize = 256;
 
+/// Bytes of the `mo_blk` chunk an unbudgeted [`stream_dressed_mo_band`] holds
+/// beside its output: at most `MO_STREAM_CHUNK` aux rows of `width` MO pairs
+/// (fewer when `naux` is smaller). A memory planner adds it to the source and
+/// the output, which are the two large planes of the stream.
+pub fn mo_stream_scratch_bytes(naux: usize, width: usize) -> usize {
+    MO_STREAM_CHUNK
+        .min(naux.max(1))
+        .saturating_mul(width)
+        .saturating_mul(8)
+}
+
 /// Smallest budget-derived chunk. Never go below this: the dressing GEMM's
 /// inner dimension is the chunk width, so a very small width both destroys
 /// BLAS3 efficiency and maximizes the number of partial sums accumulated into

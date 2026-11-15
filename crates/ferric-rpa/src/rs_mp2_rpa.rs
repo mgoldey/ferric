@@ -196,18 +196,91 @@ impl std::fmt::Display for RsMp2RpaResult {
     }
 }
 
-/// Preflight estimate (bytes) for [`rs_mp2_lr_rpa_scan`].
+/// Preflight estimate (bytes) for [`rs_mp2_lr_rpa_scan`] under `budget_bytes`,
+/// with the frequency scratch at full width.
 ///
 /// The driver builds one `RpaIntermediates` at a time and drops it before the
 /// next is built: the Coulomb set (MP2 spin components, plus the Coulomb dRPA
 /// for formulation T) first, then per ω the erf set and the erfc set in turn.
-/// The co-resident set is therefore exactly what one
-/// `compute_rpa_intermediates` + `run_pdep_rpa_from_intermediates` call holds,
-/// which is `estimate_peak_bytes`, for any number of ω points. `n_omega` is
-/// taken so that independence is stated (and tested) rather than implied.
-pub fn scan_peak_bytes(shape: crate::budget::PeakEstimateShape, n_omega: usize) -> usize {
+/// Inside each set the AO tensor is dropped when `b_ov` is built, before the
+/// spin components and the dRPA run. The estimate is therefore the largest
+/// phase of one set ([`crate::budget::scan_charge`]), with the AO tensor at
+/// the tier the build takes under the budget left for it, for any number of
+/// ω points. `n_omega` is taken so that independence is stated (and tested)
+/// rather than implied.
+pub fn scan_peak_bytes(
+    shape: crate::budget::PeakEstimateShape,
+    n_omega: usize,
+    budget_bytes: usize,
+) -> usize {
     let _ = n_omega;
-    crate::budget::estimate_peak_bytes(shape)
+    let nov = shape.nocc.saturating_mul(shape.nvir);
+    let stream = ferric_mp2::rimp2::mo_stream_scratch_bytes(shape.naux, nov);
+    crate::budget::scan_charge(shape, budget_bytes, nov, stream).total
+}
+
+/// The preflight shape and [`crate::budget::ScanCharge`] of an rs-mp2-rpa run
+/// of `cfg` under its resolved budget, as the driver computes them.
+///
+/// The packed-tier test reads the shared pool, and the driver plans after it
+/// has reserved the persistent planes; with no pool installed the two agree.
+pub fn scan_charge_for(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    cfg: &RsMp2RpaConfig,
+) -> Result<(crate::budget::PeakEstimateShape, crate::budget::ScanCharge), FerricError> {
+    let shape = scan_shape(mol, obs, dfbs, cfg)?;
+    let budget = ferric_core::memory::resolve_budget_bytes(cfg.drpa.memory_budget_bytes);
+    Ok((shape, charge_of(shape, cfg, budget)))
+}
+
+/// The closed-shell preflight shape (the formula `compute_rpa_intermediates`
+/// uses for nocc/nvir). Cheap shape values only.
+fn scan_shape(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    cfg: &RsMp2RpaConfig,
+) -> Result<crate::budget::PeakEstimateShape, FerricError> {
+    let naux = dfbs.nbasis();
+    let nbas = obs.nbasis();
+    let nocc_total = (mol.nelec() as usize) / 2;
+    let nocc = ferric_mp2::rimp2::active_occ(nocc_total, cfg.frozen_core)?;
+    Ok(crate::budget::PeakEstimateShape {
+        naux,
+        nocc,
+        nvir: nbas.saturating_sub(nocc_total),
+        n_quad: cfg.drpa.quadrature.n_points,
+        n_workers: rayon::current_num_threads().max(1),
+        // trunc_thresh is unknown pre-eigensolve; the default is 0.0 (keep-all).
+        n_keep: naux,
+        grid: None,
+        nao: nbas,
+        // rs-mp2-rpa consumes the RPA correlation energy only; it never asks
+        // for inv_dielectric_freq, so the per-frequency stack is built,
+        // consumed and dropped rather than retained.
+        need_inv_dielectric: false,
+    })
+}
+
+/// [`crate::budget::scan_charge`] with the panel width the frequency loop
+/// will allocate under `cfg`'s budget and the unbudgeted stream chunk that
+/// `compute_rpa_intermediates` uses.
+fn charge_of(
+    shape: crate::budget::PeakEstimateShape,
+    cfg: &RsMp2RpaConfig,
+    budget_bytes: usize,
+) -> crate::budget::ScanCharge {
+    let nov = shape.nocc.saturating_mul(shape.nvir);
+    let panel_width = crate::energy::quad_panel_width(
+        shape.n_keep,
+        nov,
+        shape.n_workers,
+        cfg.drpa.memory_budget_bytes,
+    );
+    let stream = ferric_mp2::rimp2::mo_stream_scratch_bytes(shape.naux, nov);
+    crate::budget::scan_charge(shape, budget_bytes, panel_width, stream)
 }
 
 /// SR-MP2 + LR-RPA, Δ-form (B) or coupled-rings (T).
@@ -336,64 +409,49 @@ fn scan_impl(
     let resolved_budget_bytes =
         ferric_core::memory::resolve_budget_bytes(cfg.drpa.memory_budget_bytes);
 
-    // Pre-flight peak-memory gate (see budget.rs). Cheap shape values only, so
-    // this runs before ANY large allocation. nocc/nvir use the same
-    // closed-shell formula `compute_rpa_intermediates` uses (rimp2.rs).
+    // Pre-flight peak-memory gate (see `budget::scan_charge`). Cheap shape
+    // values only, so this runs before ANY large allocation.
     //
-    // POOL LIFETIME: `_pool_charge` lives to the end of the function; the
-    // planes it covers stay resident through every `inter_of` /
-    // `run_pdep_rpa_from_intermediates` call below.
+    // Phases. Each operator's set runs build -> spin -> dRPA on top of the
+    // persistent planes (metric + one b_ov), and the AO tensor is dropped
+    // when b_ov is built. The ceiling check charges the largest phase, with
+    // the AO tensor at the tier `ThreeIndexSource::build` takes under the
+    // budget left after the persistent planes and the stream chunk. That
+    // budget is handed to the build (`ri_cfg` below), so the tier charged is
+    // the tier taken: in core, packed, or spilled.
     //
-    // The `(naux, nao, nao)` AO tensor is NOT among them: ferric-integrals'
-    // `ThreeIndexSource` charges it against the same pool under its own guard,
-    // so charging it here too self-refuses. `budget::estimate_peak_split`
-    // subtracts it; see `budget::ao_tensor_bytes` for the measured evidence.
-    let _pool_charge = {
-        use ferric_mp2::rimp2::active_occ;
-        let naux = dfbs.nbasis();
-        let nbas = obs.nbasis();
-        let nocc_total = (mol.nelec() as usize) / 2;
-        let nocc = active_occ(nocc_total, cfg.frozen_core)?;
-        let nvir = nbas.saturating_sub(nocc_total);
-        let n_workers = rayon::current_num_threads().max(1);
-        let shape = crate::budget::PeakEstimateShape {
-            naux,
-            nocc,
-            nvir,
-            n_quad: cfg.drpa.quadrature.n_points,
-            n_workers,
-            // trunc_thresh is unknown pre-eigensolve; the default is 0.0 (keep-all).
-            n_keep: naux,
-            grid: None,
-            nao: nbas,
-            // rs-mp2-rpa consumes the RPA correlation energy only; it never
-            // asks for inv_dielectric_freq, so the per-frequency stack is
-            // built, consumed and dropped rather than retained.
-            need_inv_dielectric: false,
-        };
-        let est = scan_peak_bytes(shape, ops.len());
-        let label = format!(
-            "RS-MP2-RPA preflight (naux={naux}, nocc={nocc}, nvir={nvir}, \
-             n_workers={n_workers}, points={}, formulations={formulations:?})",
-            ops.len()
-        );
-        // Historical ceiling check: decides admissibility on the unbudgeted
-        // path, where the pool is inert.
-        ferric_core::memory::check_alloc(&label, est, resolved_budget_bytes)?;
-
-        // Debit the shared ledger, split hard/soft: the per-worker frequency
-        // scratch has a real panelled fallback (`energy::quad_panel_width`),
-        // so hard-charging it would refuse jobs this tree completes.
-        let (hard, soft) = crate::budget::estimate_peak_split(shape);
-        let _hard = ferric_core::memory::pool::reserve_global(&format!("{label} [in-core]"), hard)?;
-        let _soft =
-            ferric_core::memory::pool::try_reserve_global(&format!("{label} [freq scratch]"), soft);
-        (_hard, _soft)
-    };
+    // Pool. The persistent planes are reserved for the whole call, and first,
+    // because the packed-tier test reads the pool's free bytes. The AO
+    // tensor is charged by `ThreeIndexSource` itself for as long as it lives.
+    // The dRPA planes are reserved around each dRPA call and the spin scratch
+    // around each spin-component call, so no phase holds another's bytes.
+    let shape = scan_shape(mol, obs, dfbs, cfg)?;
+    let label = format!(
+        "RS-MP2-RPA preflight (naux={}, nocc={}, nvir={}, n_workers={}, points={}, \
+         formulations={formulations:?})",
+        shape.naux,
+        shape.nocc,
+        shape.nvir,
+        shape.n_workers,
+        ops.len()
+    );
+    let _persistent = ferric_core::memory::pool::reserve_global(
+        &format!("{label} [metric + b_ov]"),
+        crate::budget::scan_persistent_bytes(shape),
+    )?;
+    let charge = charge_of(shape, cfg, resolved_budget_bytes);
+    // Decides admissibility on the unbudgeted path too, where the pool is
+    // inert.
+    ferric_core::memory::check_alloc(
+        &format!("{label} (AO tensor tier {})", charge.ao_tier.name()),
+        charge.total,
+        resolved_budget_bytes,
+    )?;
 
     let ri_cfg = RiMp2Config {
         frozen_core: cfg.frozen_core,
-        memory_budget_bytes: cfg.drpa.memory_budget_bytes,
+        // The AO tier's budget; never 0, which would read as unset.
+        memory_budget_bytes: Some(charge.ao_budget.max(1)),
         ..Default::default()
     };
 
@@ -414,11 +472,29 @@ fn scan_impl(
         Ok(it)
     };
     let sc_of = |it: &ferric_mp2::rimp2::RpaIntermediates| {
+        // Soft: the per-worker transient runs at whatever width is active.
+        let _spin = ferric_core::memory::pool::try_reserve_global(
+            &format!("{label} [spin g_i]"),
+            charge.spin_scratch,
+        );
         spin_components_from_b_ov(&it.b_ov, eps, it.nocc, it.nvir, it.first_occ, it.nocc_total)
     };
 
     let mut drpa_cfg = cfg.drpa.clone();
     drpa_cfg.frozen_core = cfg.frozen_core;
+    let drpa_of =
+        |it: &ferric_mp2::rimp2::RpaIntermediates, op: Operator| -> Result<f64, FerricError> {
+            let _hard = ferric_core::memory::pool::reserve_global(
+                &format!("{label} [dRPA eigensolve]"),
+                charge.drpa_hard,
+            )?;
+            // Soft: `energy::quad_panel_width` narrows the loop under a budget.
+            let _soft = ferric_core::memory::pool::try_reserve_global(
+                &format!("{label} [dRPA freq scratch]"),
+                charge.drpa_soft,
+            );
+            Ok(run_pdep_rpa_from_intermediates(it, mol, obs, dfbs, op, rhf, &drpa_cfg)?.e_rpa)
+        };
 
     // ω-independent stage: Coulomb spin components, and for T the Coulomb dRPA.
     // `it_full` is dropped at the end of this block.
@@ -426,18 +502,7 @@ fn scan_impl(
         let it_full = inter_of(Operator::coulomb())?;
         let sc_full = sc_of(&it_full);
         let drpa_coul_e = if want_t {
-            Some(
-                run_pdep_rpa_from_intermediates(
-                    &it_full,
-                    mol,
-                    obs,
-                    dfbs,
-                    Operator::coulomb(),
-                    rhf,
-                    &drpa_cfg,
-                )?
-                .e_rpa,
-            )
+            Some(drpa_of(&it_full, Operator::coulomb())?)
         } else {
             None
         };
@@ -453,10 +518,7 @@ fn scan_impl(
             let it_lr = inter_of(op_lr)?;
             let sc_lr = sc_of(&it_lr);
             let e = if want_b {
-                Some(
-                    run_pdep_rpa_from_intermediates(&it_lr, mol, obs, dfbs, op_lr, rhf, &drpa_cfg)?
-                        .e_rpa,
-                )
+                Some(drpa_of(&it_lr, op_lr)?)
             } else {
                 None
             };
@@ -467,10 +529,7 @@ fn scan_impl(
             let it_sr = inter_of(op_sr)?;
             let sc_sr = sc_of(&it_sr);
             let e = if want_t {
-                Some(
-                    run_pdep_rpa_from_intermediates(&it_sr, mol, obs, dfbs, op_sr, rhf, &drpa_cfg)?
-                        .e_rpa,
-                )
+                Some(drpa_of(&it_sr, op_sr)?)
             } else {
                 None
             };

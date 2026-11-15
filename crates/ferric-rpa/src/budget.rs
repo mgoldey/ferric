@@ -484,6 +484,98 @@ pub fn closed_shell_run_charge(
     }
 }
 
+/// Planes the rs-mp2-rpa scan holds for its whole run: the metric buffers
+/// (`3 naux²`, as in [`estimate_peak_bytes`]) and one `b_ov` (`naux·nov`).
+/// The driver keeps one `RpaIntermediates` at a time, so one `b_ov`.
+pub fn scan_persistent_bytes(shape: PeakEstimateShape) -> usize {
+    let nov = shape.nocc.saturating_mul(shape.nvir);
+    shape
+        .naux
+        .saturating_mul(shape.naux)
+        .saturating_mul(3)
+        .saturating_add(shape.naux.saturating_mul(nov))
+        .saturating_mul(F64_BYTES)
+}
+
+/// What the rs-mp2-rpa preflight charges, phase by phase.
+///
+/// Every operator of a scan (Coulomb, then the long- and short-range pair of
+/// each ω) runs the same three phases on top of [`scan_persistent_bytes`],
+/// and the AO tensor of one phase is dropped before the next starts:
+///
+/// ```text
+///   build   AO tensor at its tier + the stream chunk   (compute_rpa_intermediates)
+///   spin    per-worker g_i, nocc·nvir² each            (spin_components_from_b_ov)
+///   drpa    static eigensolve planes + freq scratch     (run_pdep_rpa_from_intermediates)
+/// ```
+///
+/// All operators share one shape, so the charge is the same for every ω and
+/// both formulations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScanCharge {
+    /// The ceiling-check figure: `persistent + max(build, spin, drpa)`.
+    pub total: usize,
+    /// [`scan_persistent_bytes`].
+    pub persistent: usize,
+    /// The budget handed to `ThreeIndexSource::build`: what is left after the
+    /// persistent planes and the stream chunk. The AO tier is chosen at it.
+    pub ao_budget: usize,
+    /// The tier the AO tensor takes at `ao_budget`.
+    pub ao_tier: ferric_integrals::three_index_source::jk_storage::Tier,
+    /// The AO tensor's resident peak at that tier.
+    pub ao_resident: usize,
+    /// The `mo_blk` chunk of the stream.
+    pub stream_scratch: usize,
+    /// The spin-component phase: `n_workers · nocc · nvir² · 8`.
+    pub spin_scratch: usize,
+    /// The dRPA planes with no fallback ([`static_eigensolve_bytes`]).
+    pub drpa_hard: usize,
+    /// The dRPA per-worker frequency scratch at the loop's panel width.
+    pub drpa_soft: usize,
+}
+
+/// [`ScanCharge`] for `shape` under `budget_bytes`, with the frequency
+/// scratch at `panel_width` and the stream chunk at `stream_scratch` bytes.
+///
+/// The AO tier is planned with `ferric_integrals::three_index_source::
+/// planned_residency`, which is the decision `ThreeIndexSource::build` makes,
+/// so the charge follows the tier the build takes: the whole tensor in core,
+/// the packed triangle, or two spill blocks.
+pub fn scan_charge(
+    shape: PeakEstimateShape,
+    budget_bytes: usize,
+    panel_width: usize,
+    stream_scratch: usize,
+) -> ScanCharge {
+    let persistent = scan_persistent_bytes(shape);
+    let ao_budget = budget_bytes
+        .saturating_sub(persistent)
+        .saturating_sub(stream_scratch);
+    let (ao_tier, ao_resident) =
+        ferric_integrals::three_index_source::planned_residency(shape.nao, shape.naux, ao_budget);
+    let spin_scratch = shape
+        .nocc
+        .saturating_mul(shape.nvir)
+        .saturating_mul(shape.nvir)
+        .saturating_mul(F64_BYTES)
+        .saturating_mul(shape.n_workers.max(1));
+    let drpa_hard = static_eigensolve_bytes(shape);
+    let drpa_soft = quad_scratch_bytes_at_width(shape, panel_width);
+    let build = ao_resident.saturating_add(stream_scratch);
+    let drpa = drpa_hard.saturating_add(drpa_soft);
+    ScanCharge {
+        total: persistent.saturating_add(build.max(spin_scratch).max(drpa)),
+        persistent,
+        ao_budget,
+        ao_tier,
+        ao_resident,
+        stream_scratch,
+        spin_scratch,
+        drpa_hard,
+        drpa_soft,
+    }
+}
+
 /// Upper-bound estimate, in bytes, of the peak resident memory of a PDEP-RPA
 /// run with the given shape.
 ///

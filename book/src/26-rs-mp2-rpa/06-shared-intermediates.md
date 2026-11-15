@@ -55,17 +55,40 @@ are built from one $\tilde{\mathbf B}[v]$.
 
 Each tensor lives in its own block and is dropped before the next is
 built, so at most one $\tilde{\mathbf B}$ is resident at a time, for any
-number of $\omega$ points. The co-resident set is what one
-`compute_rpa_intermediates` + `run_pdep_rpa_from_intermediates` call holds,
-so the pre-flight estimate is the single `pdep-rpa` estimate:
+number of $\omega$ points. Each operator's set runs three phases on top
+of the planes it keeps throughout, the metric buffers and one
+$\tilde{\mathbf B}$:
 
-$$ \texttt{scan\_peak\_bytes}(\text{shape}, n_\omega) = \texttt{estimate\_peak\_bytes}(\text{shape}) \quad \text{for all } n_\omega. \tag{26.11} $$
+| Phase | Holds besides the persistent planes | Code |
+|---|---|---|
+| build | the AO tensor $(Q|\mu\nu)_v$ at its storage tier, and one stream chunk | `compute_rpa_intermediates` |
+| spin | the per-worker $n_o n_v^2$ pair blocks | `spin_components_from_b_ov` |
+| dRPA | the static eigensolve planes and the per-worker frequency scratch | `run_pdep_rpa_from_intermediates` |
 
-`preflight_estimate_is_independent_of_the_number_of_points` (in
-`crates/ferric-rpa/tests/rs_mp2_rpa_scan.rs`) pins (26.11) at 1, 5 and 50
-points and checks the estimate is tensor-sized. The check runs before any
-large allocation, so a job whose budget does not fit one tensor is refused
-at the start rather than killed part way.
+The AO tensor is dropped when $\tilde{\mathbf B}$ is built, before the
+other two phases. The pre-flight charge is the persistent planes plus the
+largest phase:
+
+$$ \texttt{scan\_peak\_bytes}(\text{shape}, n_\omega, b) = P + \max(\text{build}, \text{spin}, \text{dRPA}) \quad \text{for all } n_\omega. \tag{26.11} $$
+
+The AO tensor takes the tier `ThreeIndexSource::build` picks at the budget
+$b - P - \text{chunk}$, and the driver hands the build that budget. The
+tier is in core when the tensor fits, the packed triangle when that fits,
+and a disk spill (two blocks resident) otherwise. The charge is the tier's
+resident bytes, so a run whose in-core tensor does not fit is admitted and
+spills. The tier is the same for every operator, every $\omega$ and both
+formulations, since they share one shape.
+
+| Test | What it pins |
+|---|---|
+| `preflight_estimate_is_independent_of_the_number_of_points` (`crates/ferric-rpa/tests/rs_mp2_rpa_scan.rs`) | (26.11) at 1, 5 and 50 points; the estimate covers the build and dRPA phases and is tensor-sized |
+| `the_charge_follows_the_tier_the_build_takes` (`crates/ferric-rpa/tests/rs_mp2_rpa_spill_tier.rs`) | in core, packed and spill are each reachable on the water dimer, each charge fits its budget, the build takes the planned tier, and the run is admitted |
+| `ample_budget_is_bitwise_the_in_core_path` (same file) | at an ample budget both formulations equal the public pieces called at the full budget, bit for bit |
+| `packed_and_spilled_match_in_core_within_the_reduction_order_bar` (same file) | both formulations at two $\omega$ agree with the in-core run within a bar derived from the summation order of the $\tilde{\mathbf B}$ stream |
+
+The check runs before any large allocation, so a job whose budget does not
+fit even a spilled tensor is refused at the start rather than killed part
+way.
 
 After each tensor is built, `warn_if_rss_over` compares the resident memory
 with the budget and prints one line if it is more than 10% over. It never
@@ -84,5 +107,6 @@ stops the run.
 | Source | Used for |
 |---|---|
 | `crates/ferric-rpa/src/rs_mp2_rpa.rs::{scan_impl,scan_peak_bytes}`, the comments at the pre-flight gate and at `inter_of` | 26.6.1, 26.6.2 |
+| `crates/ferric-rpa/src/budget.rs::scan_charge`, `crates/ferric-integrals/src/three_index_source.rs::planned_residency` | 26.6.2 |
 | `crates/ferric-mp2/src/rimp2.rs::RpaIntermediates` | the tensor and its metric factor |
 | tests named above | the anchors |

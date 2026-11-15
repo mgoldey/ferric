@@ -739,6 +739,23 @@ No new equation is introduced, so there is no new sympy proof: the evidence is
 that every scan entry equals the single-$\omega$ call bit for bit
 (`crates/ferric-rpa/tests/rs_mp2_rpa_scan.rs`).
 
+### Memory: the storage tier of the AO tensor
+
+The AO tensor $(Q|v|\mu\nu)$ is resident only while $B^{v}$ streams out of
+it, and is dropped before the spin components and the dRPA solve run. The
+pre-flight charge is therefore the persistent planes $P$ (metric buffers and
+one $B^{v}$) plus the largest of three phases: the AO tensor at its storage
+tier with one stream chunk, the per-worker spin-component blocks, and the
+dRPA eigensolve planes with the frequency scratch
+(`budget::scan_charge`). The tier is chosen at $b - P - \text{chunk}$, which
+is also the budget the build receives, so the charge is the tier taken.
+
+Only the summation order of $B^{v} = F\,(Q|ia)$ depends on the tier. Two
+orders of a sum of $n$ terms differ by at most $2\gamma_n\sum|x|$, so
+$|\delta B| \le 2\gamma_{N_\mathrm{aux}}\,|F|\,|(Q|ia)|$ elementwise. The
+energy bar derived from this bound, for both formulations, is in
+`crates/ferric-rpa/tests/rs_mp2_rpa_spill_tier.rs`.
+
 ## Literature Citations
 
 1. **PDEP Eigenpotentials:** F. Gygi and G. Galli, *Phys. Rev. B* **65**, 220102(R) (2002).
