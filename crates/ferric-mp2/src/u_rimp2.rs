@@ -1032,6 +1032,25 @@ pub fn build_u_mp2_density(amps: &UMp2Amplitudes) -> UMp2Density {
     )
 }
 
+/// The unrelaxed densities of `c_ss · (E_αα + E_ββ) + c_os · E_αβ`: every
+/// block of [`build_u_mp2_density`] is a same-spin Gram product (of `t_αα` or
+/// `t_ββ`) plus an opposite-spin one (of `t_αβ`), with no cross term, so the
+/// same-spin products carry `c_ss` and the opposite-spin ones `c_os`.
+/// `(1, 1)` is [`build_u_mp2_density`] bit for bit.
+pub(crate) fn build_u_mp2_density_scaled(
+    amps: &UMp2Amplitudes,
+    c_ss: f64,
+    c_os: f64,
+) -> UMp2Density {
+    u_mp2_density_weighted(
+        amps.t_aa.view(),
+        amps.t_bb.view(),
+        amps.t_ab.view(),
+        U_DENSITY_K_SLAB,
+        (c_ss, c_os),
+    )
+}
+
 /// [`build_u_mp2_density`] on bare amplitude tensors, with the `P_oo` slab
 /// width as an argument so a test can force several slabs on a small system.
 fn u_mp2_density_from_amplitudes(
@@ -1039,6 +1058,18 @@ fn u_mp2_density_from_amplitudes(
     t_bb: ndarray::ArrayView4<'_, f64>,
     t_ab: ndarray::ArrayView4<'_, f64>,
     k_slab: usize,
+) -> UMp2Density {
+    u_mp2_density_weighted(t_aa, t_bb, t_ab, k_slab, (1.0, 1.0))
+}
+
+/// [`u_mp2_density_from_amplitudes`] with the same-spin Gram products
+/// weighted by `w_ss` and the opposite-spin ones by `w_os`.
+fn u_mp2_density_weighted(
+    t_aa: ndarray::ArrayView4<'_, f64>,
+    t_bb: ndarray::ArrayView4<'_, f64>,
+    t_ab: ndarray::ArrayView4<'_, f64>,
+    k_slab: usize,
+    (w_ss, w_os): (f64, f64),
 ) -> UMp2Density {
     use ndarray::s;
     let (t_aa, t_bb, t_ab) = (
@@ -1067,11 +1098,11 @@ fn u_mp2_density_from_amplitudes(
         x_ab.expect("standard-layout t_ab"),
         x_bb.expect("standard-layout t_bb"),
     );
-    let oo_a_terms = [(x_aa, -0.5), (x_ab, -1.0)];
+    let oo_a_terms = [(x_aa, -0.5 * w_ss), (x_ab, -w_os)];
     let p_oo_a = gram_sum_slabbed("U-MP2 density P_oo^α partials", &oo_a_terms, oa, k_slab);
 
-    let mut oo_b_terms = vec![(x_bb, -0.5)];
-    oo_b_terms.extend((0..oa).map(|k| (y(k), -1.0)));
+    let mut oo_b_terms = vec![(x_bb, -0.5 * w_ss)];
+    oo_b_terms.extend((0..oa).map(|k| (y(k), -w_os)));
     let p_oo_b = gram_sum_slabbed("U-MP2 density P_oo^β partials", &oo_b_terms, ob, k_slab);
 
     use crate::orbital_gradient_gemm::ordered_task_sum;
@@ -1079,11 +1110,11 @@ fn u_mp2_density_from_amplitudes(
     let p_vv_a = ordered_task_sum("U-MP2 density P_vv^α partials", oa, (va, va), |i, acc| {
         for j in 0..oa {
             let a = t_aa.slice(s![i, j, .., ..]);
-            general_mat_mul(0.5, &a, &a.t(), 1.0, acc);
+            general_mat_mul(0.5 * w_ss, &a, &a.t(), 1.0, acc);
         }
         for jj in 0..ob {
             let c = t_ab.slice(s![i, jj, .., ..]);
-            general_mat_mul(1.0, &c, &c.t(), 1.0, acc);
+            general_mat_mul(w_os, &c, &c.t(), 1.0, acc);
         }
     });
     let p_vv_b = ordered_task_sum(
@@ -1094,14 +1125,14 @@ fn u_mp2_density_from_amplitudes(
             if n < ob {
                 for j in 0..ob {
                     let b = t_bb.slice(s![n, j, .., ..]);
-                    general_mat_mul(0.5, &b, &b.t(), 1.0, acc);
+                    general_mat_mul(0.5 * w_ss, &b, &b.t(), 1.0, acc);
                 }
             } else {
                 let z = t_ab
                     .slice(s![n - ob, .., .., ..])
                     .into_shape_with_order((ob * va, vb))
                     .expect("standard-layout t_ab");
-                general_mat_mul(1.0, &z.t(), &z, 1.0, acc);
+                general_mat_mul(w_os, &z.t(), &z, 1.0, acc);
             }
         },
     );

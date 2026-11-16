@@ -284,8 +284,17 @@ fn relaxed_gradient_from_intermediates(
     // reference's own two-electron derivative runs on the operator its
     // Schwarz bounds (and SCF) were built for. The two are the same for
     // RI-MP2 and differ for attenuated RI-MP2 (Coulomb HF, erfc correlation).
-    let mut grad =
-        mp2_relaxed_lagrangian_gradient(mol, obs, bounds.op, &jk, rhf, inter, &zv, ext, acc)?;
+    let mut grad = mp2_relaxed_lagrangian_gradient(
+        mol,
+        obs,
+        bounds.op,
+        &jk,
+        rhf,
+        inter.unrelaxed(),
+        &zv,
+        ext,
+        acc,
+    )?;
     grad += &integral_response_gradient_3c2c_timed(mol, obs, dfbs, op, inter, rhf.mos_r(), acc)?;
     Ok(grad)
 }
@@ -307,7 +316,7 @@ fn mp2_relaxed_lagrangian_gradient(
     ref_op: Operator,
     jk: &ResponseJk<'_>,
     rhf: &ScfResult,
-    inter: &crate::rimp2::Mp2Intermediates,
+    dens: crate::zvector::UnrelaxedDensity<'_>,
     zv: &crate::zvector::ZvectorSolution,
     ext: Option<&ExternalPotential>,
     acc: &mut PhaseAccumulator,
@@ -319,16 +328,16 @@ fn mp2_relaxed_lagrangian_gradient(
     let c = rhf.mos_r();
     let eps = rhf.eps_r();
     let nmo = c.ncols();
-    let crate::rimp2::Mp2Intermediates {
+    let ferric_core::orbitals::OrbitalSpace {
         nvir, nocc_total, ..
-    } = *inter;
+    } = dens.orb;
 
     let dens_tok = acc.begin("lagr: densities (MO->AO)");
     // --- dm1mo: full relaxed correlation 1-PDM (MO), no HF 2·I part. ---
     // occ-occ: doo+doo^T; vir-vir: dvv+dvv^T; the frozen core–active block
     // (PySCF lines 125-129); occ-vir/vir-occ: z over every occupied orbital,
     // frozen core included (PySCF lines 134-135 + _response_dm1).
-    let dm1mo = crate::zvector::correlation_density_mo(inter, imat, eps, Some(z))?;
+    let dm1mo = crate::zvector::correlation_density_mo(dens, imat, eps, Some(z))?;
     // Correlation density in AO, and the total (correlation + HF) density.
     let dm1_corr_ao = {
         let cp = c.dot(&dm1mo);
@@ -1076,6 +1085,50 @@ pub(crate) fn total_mp2_gradient_scaled_on(
     scf_jk: &ScfJk,
     warm: &mut ScfWarmStart,
 ) -> Result<(f64, Array2<f64>), FerricError> {
+    let (rhf, obs, dfbs, bounds) = solve_rhf_reference(
+        mol, obs_basis, aux_basis, ref_op, mp2_config, ext, scf_jk, warm,
+    )?;
+    let mut acc = PhaseAccumulator::new().report_on_drop("RI-MP2 energy + gradient");
+    let energy = acc.time("ri_mp2 energy", || {
+        if scaling == SpinScaling::MP2 {
+            ri_mp2(mol, &obs, &dfbs, corr_op, &rhf, mp2_config).map(|r| r.total_energy)
+        } else {
+            let (sc, _) = ri_mp2_spin_components(mol, &obs, &dfbs, corr_op, &rhf, mp2_config)?;
+            Ok(rhf.energy + (scaling.c_os * sc.e_os + scaling.c_ss * sc.e_ss))
+        }
+    })?;
+    let grad = rimp2_gradient_analytical_timed(
+        mol,
+        &obs,
+        &dfbs,
+        corr_op,
+        &bounds,
+        &rhf,
+        mp2_config,
+        scaling,
+        ext,
+        ZvectorControls::DEFAULT,
+        &mut acc,
+    )?;
+    Ok((energy, grad))
+}
+
+/// The Coulomb (`ref_op`) RHF reference of the closed-shell total-gradient
+/// drivers at `density_conv = 1e-9`, on `scf_jk` (`"exact"` or `"rijk"`;
+/// the fitted route's whole peak is checked against
+/// `mp2_config.memory_budget_bytes` before any integral), warm-started
+/// through `warm`, with its prepared bases and Schwarz bounds.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn solve_rhf_reference(
+    mol: &Molecule,
+    obs_basis: &BasisSet,
+    aux_basis: &BasisSet,
+    ref_op: Operator,
+    mp2_config: &RiMp2Config,
+    ext: Option<&ExternalPotential>,
+    scf_jk: &ScfJk,
+    warm: &mut ScfWarmStart,
+) -> Result<(ScfResult, PreparedBasis, PreparedBasis, SchwarzBounds), FerricError> {
     if scf_jk.mode == ScfJkMode::RiJCosx {
         return Err(FerricError::General(
             "RI-MP2 gradient: scf_jk = \"rijcosx\" is not supported (no COSX exchange \
@@ -1120,29 +1173,92 @@ pub(crate) fn total_mp2_gradient_scaled_on(
             last_energy: rhf.energy,
         });
     }
-    let mut acc = PhaseAccumulator::new().report_on_drop("RI-MP2 energy + gradient");
-    let energy = acc.time("ri_mp2 energy", || {
-        if scaling == SpinScaling::MP2 {
-            ri_mp2(mol, &obs, &dfbs, corr_op, &rhf, mp2_config).map(|r| r.total_energy)
-        } else {
-            let (sc, _) = ri_mp2_spin_components(mol, &obs, &dfbs, corr_op, &rhf, mp2_config)?;
-            Ok(rhf.energy + (scaling.c_os * sc.e_os + scaling.c_ss * sc.e_ss))
-        }
+    Ok((rhf, obs, dfbs, bounds))
+}
+
+/// One correlation term of a closed-shell energy that is a sum of
+/// RI-MP2-shaped terms on one Coulomb reference: the spin-component scaling
+/// `scaling` of RI-MP2 with `op` in the `(P|ia)` integrals and the RI metric.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CorrelationTerm {
+    pub(crate) op: Operator,
+    pub(crate) scaling: SpinScaling,
+}
+
+/// `d(E_HF + Σ_k E_k)/dR` on the converged RHF `rhf` (J/K route `bounds`),
+/// `E_k` the correlation energy of `terms[k]`: one relaxed Lagrangian and
+/// ONE Z-vector (theory.md §9.6). Each term contributes its own `Imat_k`
+/// and unrelaxed density (on `op_k`, with its scaling) and its own 3c/2c
+/// response; the Z-vector right-hand side, the relaxed density and every
+/// reference-side term are linear in `(Σ Imat_k, Σ P_k)`. The terms are
+/// built one at a time, so only one term's intermediates are resident.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn rimp2_terms_gradient_timed(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    terms: &[CorrelationTerm],
+    bounds: &SchwarzBounds,
+    rhf: &ScfResult,
+    config: &RiMp2Config,
+    ext: Option<&ExternalPotential>,
+    controls: ZvectorControls,
+    acc: &mut PhaseAccumulator,
+) -> Result<Array2<f64>, FerricError> {
+    let mut sum: Option<(
+        ferric_core::orbitals::OrbitalSpace,
+        [Array2<f64>; 3],
+        Array2<f64>,
+    )> = None;
+    for term in terms {
+        let mut inter = acc.time("intermediates (b_ov, t2, P)", || {
+            compute_mp2_intermediates_ov_only(mol, obs, dfbs, term.op, rhf, config)
+        })?;
+        acc.time("intermediates: spin scaling", || {
+            inter.apply_spin_scaling(term.scaling)
+        })?;
+        let imat = crate::zvector::lagrangian_imat_timed(obs, dfbs, term.op, rhf, &inter, acc)?;
+        let g_ri = integral_response_gradient_3c2c_timed(
+            mol,
+            obs,
+            dfbs,
+            term.op,
+            &inter,
+            rhf.mos_r(),
+            acc,
+        )?;
+        let orb = inter.orbital_space();
+        sum = Some(match sum {
+            None => (orb, [imat, inter.p_oo.clone(), inter.p_vv.clone()], g_ri),
+            Some((o, [im, po, pv], g)) => {
+                debug_assert_eq!(o, orb, "terms on one reference share the orbital space");
+                (
+                    o,
+                    [im + &imat, po + &inter.p_oo, pv + &inter.p_vv],
+                    g + &g_ri,
+                )
+            }
+        });
+    }
+    let (orb, [imat, p_oo, p_vv], g_ri) =
+        sum.ok_or_else(|| FerricError::General("correlated gradient: no correlation term".into()))?;
+    let dens = crate::zvector::UnrelaxedDensity {
+        orb,
+        p_oo: &p_oo,
+        p_vv: &p_vv,
+    };
+    let budget_bytes = ferric_core::memory::resolve_budget_bytes(config.memory_budget_bytes);
+    let ctx = ferric_core::parallel::ParallelContext::default();
+    let jk = acc.time("J/K route setup", || {
+        ResponseJk::for_scf(&ctx, mol, obs, bounds, rhf)
     })?;
-    let grad = rimp2_gradient_analytical_timed(
-        mol,
-        &obs,
-        &dfbs,
-        corr_op,
-        &bounds,
-        &rhf,
-        mp2_config,
-        scaling,
-        ext,
-        ZvectorControls::DEFAULT,
-        &mut acc,
-    )?;
-    Ok((energy, grad))
+    let zv =
+        crate::zvector::solve_zvector_with_imat(&jk, rhf, dens, imat, budget_bytes, controls, acc)?
+            .require_converged()?;
+    let mut grad =
+        mp2_relaxed_lagrangian_gradient(mol, obs, bounds.op, &jk, rhf, dens, &zv, ext, acc)?;
+    grad += &g_ri;
+    Ok(grad)
 }
 
 #[cfg(test)]

@@ -975,10 +975,8 @@ $\operatorname{terfc}(r; 0, \omega) = \operatorname{erfc}(\omega r)$ and the
 gradient is the erfc gradient of §9.4. $\operatorname{terf}$ is even in $r_0$,
 so the difference is $O(r_0^2)$.
 
-**Not covered.** Open shells (the UHF form of §15.1 with terfc) and
-`scs-mp2-2terfc` have no gradient yet; the CLI and Python refuse both for
-`optimize` and `frequencies`. A decoupled `metric_op` and $\kappa$
-regularization are refused.
+**Not covered.** A decoupled `metric_op` and $\kappa$ regularization are
+refused. Open shells are §15.2; `scs-mp2-2terfc` is §9.6.
 
 **Checks.** `scripts/terfc_rimp2_gradient_sympy.py` proves the $s$-type terf
 integral and its $R$-derivative against a $k$-space quadrature of the kernel's
@@ -994,6 +992,66 @@ with one frozen core (1.7e-9), CH3F/cc-pVDZ with two frozen cores (4.0e-10),
 acetaldehyde/6-31G* (5.7e-10), against the bar of §9.4's test (2.1e-7). The
 translational sum is below 7e-13. At $r_0 = 10^{-6}$ Bohr the gradient equals
 the erfc gradient to 1.2e-14 (bar 1e-9; the gap at $r_0 = 1.05$ Å is 7.4e-3).
+
+### 9.6 SCS-MP2(2terfc) gradient
+
+`scs_2terfc_gradient.rs` `scs_mp2_2terfc_gradient_analytical` and
+`total_scs_mp2_2terfc_gradient_on`, over `gradient.rs`
+`rimp2_terms_gradient_timed`; CLI `scs-mp2-2terfc` with `task = "optimize"` or
+`"frequencies"`, Python `run_optimize` / `run_frequencies` with
+`method="scs-mp2-2terfc"`. Proof: `scripts/scs_2terfc_gradient_sympy.py`
+(parts S, C, U, L).
+
+**Energy.** `scs.rs` `scs_mp2_2terfc` evaluates, on a Coulomb RHF,
+
+$$ E = E_{\mathrm{HF}}[1/r] + c_{\mathrm{OS}}E_{\mathrm{OS}}[\tau_1] + c_{\mathrm{SS}}\big(E_{\mathrm{SS}}[\tau_2] - E_{\mathrm{SS}}[\tau_1]\big), \qquad
+\tau_k = \frac{\operatorname{terfc}(r; r_0^{(k)}, \omega_k)}{r},\quad \omega_k = \frac{1}{\sqrt2\,r_0^{(k)}}, $$
+
+with $r_0^{(1)} < r_0^{(2)}$ (published 0.75 and 1.05 Å, $c_{\mathrm{OS}} = 1.27$,
+$c_{\mathrm{SS}} = 4.05$). Each $E_{\mathrm{OS}}[\tau]$, $E_{\mathrm{SS}}[\tau]$
+is the spin component of §9.2 with $(P|\mu\nu)$ and $V$ under $\tau$.
+
+**Two terms.** Write $E_c[\tau; a, b] = a\,E_{\mathrm{OS}}[\tau] + b\,E_{\mathrm{SS}}[\tau]$.
+Then
+
+$$ E = E_{\mathrm{HF}} + E_c[\tau_1;\, c_{\mathrm{OS}}, -c_{\mathrm{SS}}] + E_c[\tau_2;\, 0, c_{\mathrm{SS}}] $$
+
+**[check S1]** (`scs_2terfc_terms`). Each term is the SCS gradient of §9.2 on
+the terfc operator of §9.5: $\tilde T = (a+b)\,t - b\,\bar t$ in $x^P_{ia}$
+and in the second slot of $P$ **[check S2]**. Negative and zero weights are
+allowed; nothing in §9.2 assumes $a, b > 0$.
+
+**One Z-vector.** Every first variation of $E_c$ at fixed orbitals is linear
+in $(I, P_{oo}, P_{vv}, x)$: the frozen-core block, $X_{ai}$, $z$, the
+relaxed and energy-weighted densities and the RI response are all built from
+them. The orbital Hessian is the Coulomb RHF one for both terms. So
+
+$$ \frac{dE}{dx} = \text{(§9 assembly on } I_1 + I_2,\ P_1 + P_2\text{, one } z) + \sum_{k=1,2}\Big[4\sum y_k (P|ia)'_{\tau_k} - 2\sum V'_{\tau_k}(V_{\tau_k}^{-1}u_k)\,y_k\Big], $$
+
+where $y_k = V_{\tau_k}^{-1/2}x_k$ and each 3c/2c response runs on its own
+operator. The code builds one term's intermediates, takes its $I$, $P$ and RI
+response, drops the intermediates and moves to the next, so the peak is one
+term's. One Z-vector solve, not two.
+
+**Limits.** At $r_0^{(1)} = r_0^{(2)}$ the same-spin terms cancel and the
+gradient is the SOS gradient $(c_{\mathrm{OS}}, 0)$ on $\tau_1$
+(`scs_2terfc_gradient_matches_sos_in_the_trivial_limit`: 1.3e-15 Ha/Bohr; the
+published-parameter gap is 1.4e-3). The two-term gradient equals the sum of
+the single-term gradients, each closed by its own Z-vector
+(`scs_2terfc_one_zvector_is_the_sum_of_its_terms*`: 1.3e-13 on H2O/6-31G,
+9.2e-14 on RI-JK with a frozen core; term sizes 2.7e-3 and 2.8e-2). Neither
+anchor can see a wrong cutoff or weight in `scs_2terfc_terms`, since both read
+it; finite differences of `scs_mp2_2terfc` can.
+
+**Checks.** On the 1-D model of §9.5 with terfc integrals at both cutoffs,
+the analytic gradient equals Richardson differences of the re-solved energy,
+evaluated from $E_{\mathrm{OS}}$ and $E_{\mathrm{SS}}$ directly and not from
+the term list, to 1.6e-10 relative with frozen core 0 and 1 **[check C]**.
+`tests/scs_2terfc_gradient_fd.rs` compares the code with Richardson
+differences of `scs_mp2_2terfc` at the published parameters, cc-pVDZ /
+cc-pVDZ-RI: distorted H2O (7.5e-10 Ha/Bohr), H2O on RI-JK with one frozen core
+(1.6e-9), distorted CH3F with two frozen cores (6.4e-10); bar of §9.4's test
+(≥ 2.1e-7); translational sums below 4e-13.
 
 ## 10. Static polarizability
 
@@ -1709,9 +1767,68 @@ against Richardson differences of PySCF's UHF + DF-UMP2 energy on an erfc fit
 (`scripts/validation/gen_u_att_rimp2_gradient_pyscf.py`, OH and NH2,
 cc-pVDZ / cc-pVDZ-RI).
 
-**Not covered.** ROHF is refused for the reason of §15. The terfc operator
-has no derivative engine, and `scs-mp2` and `scs-mp2-2terfc` have no
-open-shell gradient; the CLI refuses them for `optimize` and `frequencies`.
+**Not covered.** ROHF is refused for the reason of §15. Open-shell `scs-mp2`
+(Coulomb) has no gradient wired; the CLI refuses it for `optimize` and
+`frequencies`. terfc and `scs-mp2-2terfc` are §15.2.
+
+### 15.2 Open-shell terfc and SCS-MP2(2terfc) gradients
+
+`att_rimp2_gradient.rs` `u_terfc_rimp2_gradient_analytical` and
+`total_u_terfc_rimp2_gradient_on`; `scs_2terfc_gradient.rs`
+`u_scs_mp2_2terfc_gradient_analytical` and `total_u_scs_mp2_2terfc_gradient_on`;
+both over `u_rimp2_gradient.rs` `u_terms_gradient_timed`. CLI `att-rimp2` with
+`att_operator = "terfc"` and `scs-mp2-2terfc`, `task = "optimize"` or
+`"frequencies"`, at multiplicity > 1; Python `run_optimize` /
+`run_frequencies` on a UHF. Proof: `scripts/scs_2terfc_gradient_sympy.py`
+(parts S, U, L).
+
+**terfc.** §15.1 with $\hat w = \tau$ of §9.5 and $s = 1$. The operator
+table of §15.1 holds row by row with terfc in place of erfc.
+
+**Spin-component weights.** On a UHF the opposite-spin energy is
+$E_{\alpha\beta}$ and the same-spin energy is $E_{\alpha\alpha} + E_{\beta\beta}$.
+A term $E_c[\tau; a, b] = a\,E_{\alpha\beta} + b\,(E_{\alpha\alpha} + E_{\beta\beta})$
+has, at fixed orbital energies, $\partial E_c/\partial B^{\sigma} = 2x^{\sigma}$ with
+
+$$ x^{\alpha}_{P,ia} = b\sum_{jb} t^{\alpha\alpha}_{ijab}B^{\alpha}_{P,jb} + a\sum_{JB} t^{\alpha\beta}_{iJaB}B^{\beta}_{P,JB}, $$
+
+and $x^{\beta}$ likewise, and the denominator derivatives are the unrelaxed
+densities of §15 with $b$ on the same-spin Gram products and $a$ on the
+opposite-spin ones:
+
+$$ P^{\alpha}_{ij} = -\tfrac12 b\sum t^{\alpha\alpha}_{ikab}t^{\alpha\alpha}_{jkab} - a\sum t^{\alpha\beta}_{iKaB}t^{\alpha\beta}_{jKaB}, \qquad
+P^{\alpha}_{ab} = \tfrac12 b\sum t^{\alpha\alpha}_{ijac}t^{\alpha\alpha}_{ijbc} + a\sum t^{\alpha\beta}_{iJaC}t^{\alpha\beta}_{iJbC} $$
+
+**[check S3]** (`u_energy_weights_scaled`, `build_u_mp2_density_scaled`). The
+spin blocks carry no cross terms, so the weights split cleanly. At $a = b$ the
+code keeps the uniform-scale path of §15.1, unchanged bit for bit.
+
+**One Z-vector.** As in §9.6, each term contributes its $I^{\sigma}$,
+$P^{\sigma}$ and RI response on its own operator, and one coupled UHF
+Z-vector closes the sum.
+
+**Closed-shell limit.** For $\alpha \equiv \beta$: $E_{\alpha\beta} = E_{\mathrm{OS}}$
+and $E_{\alpha\alpha} + E_{\beta\beta} = E_{\mathrm{SS}}$, and the reduction of
+§15 holds term by term. A closed-shell RHF written as a UHF gives the
+closed-shell terfc and SCS-MP2(2terfc) gradients: 8.9e-16 and 2.6e-15 Ha/Bohr
+(four-centre), 3.0e-15 and 3.1e-15 (RI-JK, frozen core), bar $10^{-10}$
+(`open_shell_terfc_gradients_match_closed_in_the_trivial_limit*`). On the 1-D
+model the open-shell assembly at $n_\alpha = n_\beta$ equals the closed one to
+6.6e-15 **[check L]**. The open-shell two-term gradient equals the sum of its
+single-term gradients on OH (7.6e-14; correlation part 2.0e-2,
+`open_shell_scs_2terfc_one_zvector_is_the_sum_of_its_terms`).
+
+**Checks.** On the 1-D model ($n_\alpha = 3$, $n_\beta = 2$) the analytic
+gradients of SCS-MP2(2terfc) (frozen core 0 and 1) and terfc RI-MP2 equal
+Richardson differences of the re-solved energy to 1.4e-10 relative
+**[check U]**. `tests/u_terfc_gradient_fd.rs` compares the code with
+Richardson differences of ferric's own `u_ri_mp2` (terfc) and
+`scs_mp2_2terfc` energies on a UHF, OH and NH2 doublets, 6-31G /
+cc-pVDZ-RI, four-centre and RI-JK, frozen core 0 and 1: worst 3.9e-9 Ha/Bohr
+(terfc, NH2, RI-JK) and 1.2e-9 (SCS-MP2(2terfc), NH2, RI-JK), against bars of
+at least 2.1e-7.
+
+**Not covered.** ROHF is refused for the reason of §15.
 
 ## 16. Double hybrids
 

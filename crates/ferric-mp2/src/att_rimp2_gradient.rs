@@ -29,8 +29,11 @@
 //! [`total_terfc_rimp2_gradient_on`](crate::att_rimp2_gradient::total_terfc_rimp2_gradient_on).
 //! The 3c/2c derivative integrals come from the terf table engine
 //! (`crates/ferric-integrals/theory.md`, "Derivative integrals of terf and
-//! terfc"). Closed shell only: the open-shell terfc gradient is refused by
-//! its callers.
+//! terfc"). On a UHF reference the terfc energy `E_UHF + E_c[terfc]`
+//! ([`crate::u_rimp2::u_ri_mp2`] on terfc) has the unrestricted gradient
+//! with the same split (theory.md §15.1):
+//! [`u_terfc_rimp2_gradient_analytical`](crate::att_rimp2_gradient::u_terfc_rimp2_gradient_analytical),
+//! [`total_u_terfc_rimp2_gradient_on`](crate::att_rimp2_gradient::total_u_terfc_rimp2_gradient_on).
 //!
 //! On a UHF reference ([`u_att_rimp2_gradient_analytical`](crate::att_rimp2_gradient::u_att_rimp2_gradient_analytical),
 //! [`total_u_att_rimp2_gradient_on`](crate::att_rimp2_gradient::total_u_att_rimp2_gradient_on)) the energy is
@@ -272,6 +275,146 @@ pub fn total_terfc_rimp2_gradient_on(
     )
 }
 
+/// `dE/dR`, `(natoms, 3)`, of `uhf.energy + E_c[terfc]` (`E_c = E_αα +
+/// E_ββ + E_αβ`, the energy [`crate::u_rimp2::u_ri_mp2`] reports on `op`) on
+/// the converged, aufbau Coulomb UHF `uhf`, whose J/K route `bounds`
+/// describes. `op`, `ri` and `ext` as in [`terfc_rimp2_gradient_analytical`].
+///
+/// # Errors
+///
+/// The errors of [`u_att_rimp2_gradient_analytical`] (a ROHF, restricted,
+/// unconverged, non-aufbau or X2C reference; no beta electron; a non-Coulomb
+/// reference) and the `op` / `ri` refusals of
+/// [`terfc_rimp2_gradient_analytical`].
+#[allow(clippy::too_many_arguments)]
+pub fn u_terfc_rimp2_gradient_analytical(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    bounds: &SchwarzBounds,
+    uhf: &ScfResult,
+    op: Operator,
+    ri: &RiMp2Config,
+    ext: Option<&ExternalPotential>,
+) -> Result<Array2<f64>, FerricError> {
+    require_coulomb_reference(bounds.op)?;
+    require_terfc(op, ri)?;
+    let mut acc = PhaseAccumulator::new().report_on_drop("U-terfc-RI-MP2 gradient");
+    u_correlated_gradient_timed(
+        mol,
+        obs,
+        dfbs,
+        UCorrelation::uniform(op, 1.0),
+        bounds,
+        uhf,
+        ri,
+        ext,
+        ZvectorControls::DEFAULT,
+        &mut acc,
+    )
+}
+
+/// The total open-shell terfc RI-MP2 energy (`E_UHF + E_c[terfc]`, the
+/// Coulomb UHF of the molecule's charge and multiplicity solved here at
+/// `density_conv = 1e-9`) and its analytic gradient at one geometry, the
+/// reference on `scf_jk` (`"exact"` or `"rijk"`) and warm-started through
+/// `warm`. `op` and `ri` as in [`terfc_rimp2_gradient_analytical`].
+#[allow(clippy::too_many_arguments)]
+pub fn total_u_terfc_rimp2_gradient_on(
+    mol: &Molecule,
+    obs_basis: &BasisSet,
+    aux_basis: &BasisSet,
+    op: Operator,
+    ri: &RiMp2Config,
+    ext: Option<&ExternalPotential>,
+    scf_jk: &ScfJk,
+    warm: &mut ScfWarmStart,
+) -> Result<(f64, Array2<f64>), FerricError> {
+    let scf_base = RhfConfig {
+        density_conv: 1e-9,
+        external_potential: ext.cloned(),
+        ..Default::default()
+    };
+    total_u_terfc_rimp2_gradient_with(
+        mol, obs_basis, aux_basis, op, ri, ext, scf_jk, warm, scf_base,
+    )
+}
+
+/// [`total_u_terfc_rimp2_gradient_on`] with the UHF solved on `scf_base`
+/// (before the geometry-task and `scf_jk` adjustments), for the
+/// finite-difference tests.
+#[allow(clippy::too_many_arguments)]
+#[doc(hidden)]
+pub fn total_u_terfc_rimp2_gradient_with(
+    mol: &Molecule,
+    obs_basis: &BasisSet,
+    aux_basis: &BasisSet,
+    op: Operator,
+    ri: &RiMp2Config,
+    ext: Option<&ExternalPotential>,
+    scf_jk: &ScfJk,
+    warm: &mut ScfWarmStart,
+    scf_base: RhfConfig,
+) -> Result<(f64, Array2<f64>), FerricError> {
+    require_terfc(op, ri)?;
+    let (uhf, obs, dfbs, bounds) = solve_reference(
+        mol,
+        obs_basis,
+        aux_basis,
+        Operator::coulomb(),
+        ri,
+        scf_jk,
+        warm,
+        scf_base,
+    )?;
+    let mut acc = PhaseAccumulator::new().report_on_drop("U-terfc-RI-MP2 energy + gradient");
+    let energy = acc.time("terfc U-RI-MP2 energy", || {
+        crate::u_rimp2::u_ri_mp2(mol, &obs, &dfbs, op, &uhf, ri).map(|r| r.total_energy)
+    })?;
+    let grad = u_correlated_gradient_timed(
+        mol,
+        &obs,
+        &dfbs,
+        UCorrelation::uniform(op, 1.0),
+        &bounds,
+        &uhf,
+        ri,
+        ext,
+        ZvectorControls::DEFAULT,
+        &mut acc,
+    )?;
+    Ok((energy, grad))
+}
+
+/// The total open-shell terfc RI-MP2 energy on the reference of
+/// [`total_u_terfc_rimp2_gradient_with`] (same SCF settings and route),
+/// without the gradient: the finite-difference reference of the tests.
+/// Returns the UHF too, so a test can check its convergence.
+#[doc(hidden)]
+pub fn total_u_terfc_rimp2_energy_with(
+    mol: &Molecule,
+    obs_basis: &BasisSet,
+    aux_basis: &BasisSet,
+    op: Operator,
+    ri: &RiMp2Config,
+    scf_jk: &ScfJk,
+    scf_base: RhfConfig,
+) -> Result<(f64, ScfResult), FerricError> {
+    require_terfc(op, ri)?;
+    let (uhf, obs, dfbs, _) = solve_reference(
+        mol,
+        obs_basis,
+        aux_basis,
+        Operator::coulomb(),
+        ri,
+        scf_jk,
+        &mut ScfWarmStart::new(false),
+        scf_base,
+    )?;
+    let e = crate::u_rimp2::u_ri_mp2(mol, &obs, &dfbs, op, &uhf, ri)?.total_energy;
+    Ok((e, uhf))
+}
+
 /// `dE/dR`, `(natoms, 3)`, of `uhf.energy + s · E_c[erfc]` (the total
 /// [`crate::attenuated::attenuated_ri_mp2`] reports for `config` on a UHF
 /// reference: `E_c = E_αα + E_ββ + E_αβ`) on the converged, aufbau Coulomb
@@ -301,10 +444,7 @@ pub fn u_att_rimp2_gradient_analytical(
         mol,
         obs,
         dfbs,
-        UCorrelation {
-            op,
-            scale: scaling.c_os,
-        },
+        UCorrelation::uniform(op, scaling.c_os),
         bounds,
         uhf,
         &ri,
@@ -374,10 +514,7 @@ pub fn total_u_att_rimp2_gradient_with(
         mol,
         &obs,
         &dfbs,
-        UCorrelation {
-            op,
-            scale: scaling.c_os,
-        },
+        UCorrelation::uniform(op, scaling.c_os),
         &bounds,
         &uhf,
         &ri,
@@ -529,10 +666,7 @@ mod tests {
             &mol,
             &obs,
             &dfbs,
-            UCorrelation {
-                op,
-                scale: scaling.c_os,
-            },
+            UCorrelation::uniform(op, scaling.c_os),
             &bounds,
             &uhf,
             &ri,
@@ -589,10 +723,7 @@ mod tests {
                 &mol,
                 &obs,
                 &dfbs,
-                UCorrelation {
-                    op,
-                    scale: scaling.c_os,
-                },
+                UCorrelation::uniform(op, scaling.c_os),
                 &bounds,
                 &uhf,
                 &ri,
@@ -606,10 +737,7 @@ mod tests {
             &mol,
             &obs,
             &dfbs,
-            UCorrelation {
-                op: coul,
-                scale: 1.0,
-            },
+            UCorrelation::uniform(coul, 1.0),
             &bounds,
             &uhf,
             &RiMp2Config::default(),

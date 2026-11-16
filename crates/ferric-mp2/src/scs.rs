@@ -172,30 +172,7 @@ pub fn scs_mp2_2terfc(
     rhf: &ScfResult,
     config: &ScsMp2TerfcConfig,
 ) -> Result<ScsMp2Result, FerricError> {
-    // Config validation returns an error rather than panicking: r0_bonded /
-    // r0_nonbonded are unvalidated user config, and the repo convention is that
-    // bad config hard-ERRORS, never aborts the process (and never silently
-    // proceeds to a meaningless number). The ordering matters physically — the
-    // same-spin term is the DIFFERENCE E_SS(r0_MR) - E_SS(r0_SR), which changes
-    // sign if the two are swapped.
-    #[allow(clippy::nonminimal_bool)] // NaN-aware guard: !(x > 0 && finite) must REJECT NaN
-    if !(config.r0_bonded > 0.0 && config.r0_bonded.is_finite())
-        || !(config.r0_nonbonded > 0.0 && config.r0_nonbonded.is_finite())
-    {
-        return Err(FerricError::General(format!(
-            "scs_mp2_2terfc: r0 values must be finite and > 0 (got r0(1)={} Bohr, \
-             r0(2)={} Bohr)",
-            config.r0_bonded, config.r0_nonbonded
-        )));
-    }
-    if config.r0_nonbonded <= config.r0_bonded {
-        return Err(FerricError::General(format!(
-            "scs_mp2_2terfc: the midrange r0(2)={} Bohr must exceed the short-range \
-             r0(1)={} Bohr — the same-spin term is the difference \
-             E_SS(r0(2)) - E_SS(r0(1)) and inverts sign if these are swapped.",
-            config.r0_nonbonded, config.r0_bonded
-        )));
-    }
+    check_scs_2terfc_config(config)?;
     let ri_config = RiMp2Config {
         frozen_core: config.frozen_core,
         memory_budget_bytes: config.memory_budget_bytes,
@@ -231,6 +208,36 @@ pub fn scs_mp2_2terfc(
         e_os: sc1.e_os,
         e_ss,
     })
+}
+
+/// The checks of [`scs_mp2_2terfc`] on `config`: both cutoffs finite and
+/// positive, `r0(2) > r0(1)`.
+pub(crate) fn check_scs_2terfc_config(config: &ScsMp2TerfcConfig) -> Result<(), FerricError> {
+    // Config validation returns an error rather than panicking: r0_bonded /
+    // r0_nonbonded are unvalidated user config, and the repo convention is that
+    // bad config hard-ERRORS, never aborts the process (and never silently
+    // proceeds to a meaningless number). The ordering matters physically — the
+    // same-spin term is the DIFFERENCE E_SS(r0_MR) - E_SS(r0_SR), which changes
+    // sign if the two are swapped.
+    #[allow(clippy::nonminimal_bool)] // NaN-aware guard: !(x > 0 && finite) must REJECT NaN
+    if !(config.r0_bonded > 0.0 && config.r0_bonded.is_finite())
+        || !(config.r0_nonbonded > 0.0 && config.r0_nonbonded.is_finite())
+    {
+        return Err(FerricError::General(format!(
+            "scs_mp2_2terfc: r0 values must be finite and > 0 (got r0(1)={} Bohr, \
+             r0(2)={} Bohr)",
+            config.r0_bonded, config.r0_nonbonded
+        )));
+    }
+    if config.r0_nonbonded <= config.r0_bonded {
+        return Err(FerricError::General(format!(
+            "scs_mp2_2terfc: the midrange r0(2)={} Bohr must exceed the short-range \
+             r0(1)={} Bohr — the same-spin term is the difference \
+             E_SS(r0(2)) - E_SS(r0(1)) and inverts sign if these are swapped.",
+            config.r0_nonbonded, config.r0_bonded
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

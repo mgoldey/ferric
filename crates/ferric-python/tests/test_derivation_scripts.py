@@ -691,6 +691,42 @@ CASES = [
         ],
     ),
     (
+        "scs_2terfc_gradient_sympy.py",
+        60,
+        [
+            (
+                "(r2, 0 * c_os, c_ss),  # term 2: the non-bonded cutoff",
+                "(r1, 0 * c_os, c_ss),  # term 2: the non-bonded cutoff",
+                "FAIL C",
+            ),
+            (
+                "w_ss, w_os = b_, a_  # (same-spin, opposite-spin) weights",
+                "w_ss, w_os = a_, b_  # (same-spin, opposite-spin) weights",
+                "FAIL U",
+            ),
+            (
+                "z[1] = 1.0 * z[1]  # beta Z-vector",
+                "z[1] = 0.0 * z[1]  # beta Z-vector",
+                "FAIL U",
+            ),
+            (
+                "eri_z = eri_ref  # Z-vector coupling kernel",
+                'eri_z = np.einsum("Pmn,PQ,Qls->mnls", u, np.linalg.inv(v), u)  # Z-vector coupling kernel',
+                "FAIL C",
+            ),
+            (
+                "imat_sum = imat_sum + imat  # every term's Imat",
+                "imat_sum = imat  # every term's Imat",
+                "FAIL C",
+            ),
+            (
+                "w_same, w_opp = w_ss, w_os  # (same-spin, opposite-spin) weights of x",
+                "w_same, w_opp = w_os, w_ss  # (same-spin, opposite-spin) weights of x",
+                "FAIL S",
+            ),
+        ],
+    ),
+    (
         "u_att_rimp2_gradient_sympy.py",
         15,
         [

@@ -6,7 +6,8 @@
       "att-rimp2-gradient",
       "u-att-rimp2-gradient",
       "u-attenuated-mp2",
-      "terfc-rimp2-gradient"
+      "terfc-rimp2-gradient",
+      "scs-2terfc-gradient"
     ],
     "cli:b2plyp": [
       "double-hybrid",
@@ -98,7 +99,8 @@
     ],
     "cli:scs-mp2-2terfc": [
       "scs-mp2-2terfc",
-      "u-attenuated-mp2"
+      "u-attenuated-mp2",
+      "scs-2terfc-gradient"
     ],
     "cli:tda": [
       "tddft"
@@ -249,7 +251,8 @@
       "rrho-thermo",
       "ir-intensities",
       "mbd",
-      "terfc-rimp2-gradient"
+      "terfc-rimp2-gradient",
+      "scs-2terfc-gradient"
     ],
     "py:run_gw": [
       "gw"
@@ -309,7 +312,8 @@
       "u-ri-mp2-gradient",
       "geometry-search",
       "mbd",
-      "terfc-rimp2-gradient"
+      "terfc-rimp2-gradient",
+      "scs-2terfc-gradient"
     ],
     "py:run_optimize_qmmm": [
       "qmmm",
@@ -1177,6 +1181,15 @@
       ],
       "scripts": [
         "scripts/u_attenuated_sympy.py"
+      ]
+    },
+    "scs-2terfc-gradient": {
+      "theory": [
+        "crates/ferric-mp2/theory.md#96-scs-mp22terfc-gradient",
+        "crates/ferric-mp2/theory.md#152-open-shell-terfc-and-scs-mp22terfc-gradients"
+      ],
+      "scripts": [
+        "scripts/scs_2terfc_gradient_sympy.py"
       ]
     }
   },
