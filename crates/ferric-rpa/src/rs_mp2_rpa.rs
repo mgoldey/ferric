@@ -401,6 +401,9 @@ fn scan_impl(
             )));
         }
     }
+    if !matches!(rhf.spin, ferric_scf::Spin::Restricted) {
+        return scan_impl_unrestricted(mol, obs, dfbs, rhf, cfg, ops, formulations);
+    }
     let want_b = formulations.contains(&RsMp2RpaFormulation::DeltaLr);
     let want_t = formulations.contains(&RsMp2RpaFormulation::CoupledRings);
 
@@ -537,48 +540,316 @@ fn scan_impl(
         };
         // Closed shell: E_MP2 = Σ (ia|jb)[2(ia|jb)−(ib|ja)]/Δ; the direct (ring)
         // part 2Σ(ia|jb)²/Δ — the 2nd-order truncation of dRPA — equals 2·E_OS.
-        let e_dmp2_lr = 2.0 * sc_lr.e_os;
-
+        let parts = |sc: &ferric_mp2::rimp2::SpinComponents| OpParts {
+            e_total: sc.e_total,
+            dmp2: 2.0 * sc.e_os,
+        };
+        let rings = Rings {
+            full: parts(&sc_full),
+            lr: parts(&sc_lr),
+            sr: parts(&sc_sr),
+            drpa_lr: drpa_lr_e,
+            drpa_coulomb: drpa_coul_e,
+            drpa_sr: drpa_sr_e,
+        };
         for &formulation in formulations {
-            let (e_corr, e_drpa_lr, e_corr_naive, e_delta_drpa_full, e_delta_drpa_sr) =
-                match formulation {
-                    RsMp2RpaFormulation::DeltaLr => {
-                        let e_drpa = drpa_lr_e.expect("B requested => LR dRPA computed");
-                        (
-                            sc_full.e_total + e_drpa - e_dmp2_lr,
-                            Some(e_drpa),
-                            Some(sc_sr.e_total + e_drpa),
-                            None,
-                            None,
-                        )
-                    }
-                    RsMp2RpaFormulation::CoupledRings => {
-                        let e_coul = drpa_coul_e.expect("T requested => Coulomb dRPA computed");
-                        let e_erfc = drpa_sr_e.expect("T requested => SR dRPA computed");
-                        let delta_full = e_coul - 2.0 * sc_full.e_os;
-                        let delta_sr = e_erfc - 2.0 * sc_sr.e_os;
-                        // T: E_MP2[Coulomb] + ΔdRPA[Coulomb] − ΔdRPA[erfc]
-                        (
-                            sc_full.e_total + delta_full - delta_sr,
-                            None,
-                            None,
-                            Some(delta_full),
-                            Some(delta_sr),
-                        )
-                    }
-                };
-            out.push(RsMp2RpaResult {
-                e_mp2_full: sc_full.e_total,
-                e_sr_mp2: sc_sr.e_total,
-                e_lr_mp2: sc_lr.e_total,
-                e_dmp2_lr,
-                e_drpa_lr,
-                e_corr_naive,
-                e_delta_drpa_full,
-                e_delta_drpa_sr,
-                e_corr,
-                total_energy: rhf.energy + e_corr,
-            });
+            out.push(rings.assemble(formulation, rhf.energy));
+        }
+    }
+    Ok(out)
+}
+
+/// One operator's MP2 numbers as the assembly reads them: the MP2
+/// correlation energy and its direct (ring) second-order part `dMP2`, the
+/// second-order term of the dRPA under the same operator.
+///
+/// Closed shell `dMP2 = 2·E_OS`. Open shell
+/// `dMP2 = E_αβ + ½(D_αα + D_ββ)` with `D_σσ = Σ_{ijab∈σ} (ia|jb)²/Δ` (the
+/// same-spin direct sum, no exchange); `2·E_αβ` would be wrong whenever the
+/// two spins differ (theory.md, "Open-shell SR-MP2 + LR-RPA").
+#[derive(Debug, Clone, Copy)]
+struct OpParts {
+    e_total: f64,
+    dmp2: f64,
+}
+
+/// Every number one (ω, formulation) result is assembled from.
+#[derive(Debug, Clone, Copy)]
+struct Rings {
+    full: OpParts,
+    lr: OpParts,
+    sr: OpParts,
+    drpa_lr: Option<f64>,
+    drpa_coulomb: Option<f64>,
+    drpa_sr: Option<f64>,
+}
+
+impl Rings {
+    /// B: `E_MP2[C] + E_dRPA[lr] − dMP2[lr]`;
+    /// T: `E_MP2[C] + (E_dRPA[C] − dMP2[C]) − (E_dRPA[sr] − dMP2[sr])`.
+    fn assemble(&self, formulation: RsMp2RpaFormulation, e_ref: f64) -> RsMp2RpaResult {
+        let (e_corr, e_drpa_lr, e_corr_naive, e_delta_drpa_full, e_delta_drpa_sr) =
+            match formulation {
+                RsMp2RpaFormulation::DeltaLr => {
+                    let e_drpa = self.drpa_lr.expect("B requested => LR dRPA computed");
+                    (
+                        self.full.e_total + e_drpa - self.lr.dmp2,
+                        Some(e_drpa),
+                        Some(self.sr.e_total + e_drpa),
+                        None,
+                        None,
+                    )
+                }
+                RsMp2RpaFormulation::CoupledRings => {
+                    let e_coul = self
+                        .drpa_coulomb
+                        .expect("T requested => Coulomb dRPA computed");
+                    let e_sr = self.drpa_sr.expect("T requested => SR dRPA computed");
+                    let delta_full = e_coul - self.full.dmp2;
+                    let delta_sr = e_sr - self.sr.dmp2;
+                    (
+                        self.full.e_total + delta_full - delta_sr,
+                        None,
+                        None,
+                        Some(delta_full),
+                        Some(delta_sr),
+                    )
+                }
+            };
+        RsMp2RpaResult {
+            e_mp2_full: self.full.e_total,
+            e_sr_mp2: self.sr.e_total,
+            e_lr_mp2: self.lr.e_total,
+            e_dmp2_lr: self.lr.dmp2,
+            e_drpa_lr,
+            e_corr_naive,
+            e_delta_drpa_full,
+            e_delta_drpa_sr,
+            e_corr,
+            total_energy: e_ref + e_corr,
+        }
+    }
+}
+
+/// One operator's open-shell [`OpParts`]: `E_MP2 = E_αα + E_ββ + E_αβ`
+/// (`u_ri_mp2_from_parts`) and `dMP2 = E_αβ + ½(D_αα + D_ββ)`.
+///
+/// `D_σσ = Σ_{ijab∈σ} (ia|jb)²/Δ` is the `e_os` of the closed-shell kernel
+/// run on spin σ's `b_ov` and energies; an empty channel contributes 0.
+fn open_shell_parts(
+    a: &ferric_mp2::rimp2::RpaIntermediates,
+    b: &ferric_mp2::rimp2::RpaIntermediates,
+    eps_a: &[f64],
+    eps_b: &[f64],
+) -> Result<OpParts, FerricError> {
+    let direct_same_spin = |it: &ferric_mp2::rimp2::RpaIntermediates, eps: &[f64]| -> f64 {
+        if it.nocc == 0 || it.nvir == 0 {
+            return 0.0;
+        }
+        spin_components_from_b_ov(&it.b_ov, eps, it.nocc, it.nvir, it.first_occ, it.nocc_total).e_os
+    };
+    let c = ferric_mp2::u_rimp2::u_ri_mp2_from_parts(a, b, eps_a, eps_b)?;
+    let d_aa = direct_same_spin(a, eps_a);
+    let d_bb = direct_same_spin(b, eps_b);
+    Ok(OpParts {
+        e_total: c.e_total,
+        dmp2: c.e_ab + 0.5 * (d_aa + d_bb),
+    })
+}
+
+/// The open-shell preflight shapes `(alpha, beta)`: the occupation counts
+/// `compute_rpa_intermediates_spin` uses (`nocc_σ = (N ± 2S)/2`).
+fn scan_shapes_unrestricted(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    cfg: &RsMp2RpaConfig,
+) -> Result<
+    (
+        crate::budget::PeakEstimateShape,
+        crate::budget::PeakEstimateShape,
+    ),
+    FerricError,
+> {
+    let closed = scan_shape(mol, obs, dfbs, cfg)?;
+    let nbas = obs.nbasis();
+    let nelec = mol.nelec() as i64;
+    let two_s = mol.multiplicity as i64 - 1;
+    let shape_for = |nocc_total: usize| -> Result<_, FerricError> {
+        Ok(crate::budget::PeakEstimateShape {
+            nocc: ferric_mp2::rimp2::active_occ(nocc_total, cfg.frozen_core)?,
+            nvir: nbas.saturating_sub(nocc_total),
+            ..closed
+        })
+    };
+    let a = shape_for(((nelec + two_s) / 2) as usize)?;
+    // The AO tensor is spin-independent and charged once, on alpha.
+    let b = crate::budget::PeakEstimateShape {
+        nao: 0,
+        ..shape_for(((nelec - two_s) / 2) as usize)?
+    };
+    Ok((a, b))
+}
+
+/// [`crate::budget::scan_charge_unrestricted`] for `cfg` under `budget_bytes`.
+fn charge_of_unrestricted(
+    (a, b): (
+        crate::budget::PeakEstimateShape,
+        crate::budget::PeakEstimateShape,
+    ),
+    cfg: &RsMp2RpaConfig,
+    budget_bytes: usize,
+) -> crate::budget::ScanCharge {
+    let panel = |s: crate::budget::PeakEstimateShape| {
+        crate::energy::quad_panel_width(
+            s.n_keep,
+            s.nocc.saturating_mul(s.nvir),
+            s.n_workers,
+            cfg.drpa.memory_budget_bytes,
+        )
+    };
+    let stream = |s: crate::budget::PeakEstimateShape| {
+        ferric_mp2::rimp2::mo_stream_scratch_bytes(s.naux, s.nocc.saturating_mul(s.nvir))
+    };
+    crate::budget::scan_charge_unrestricted(
+        (a, b),
+        budget_bytes,
+        (panel(a), panel(b)),
+        stream(a).max(stream(b)),
+    )
+}
+
+/// Open-shell (UHF, or ROHF semi-canonicalized per spin) driver of
+/// [`scan_impl`].
+///
+/// Per operator one pair of spin intermediates `B_σ = V^{-1/2}(P|op|ia)_σ`
+/// feeds the U-MP2 blocks (`u_ri_mp2_from_parts`: `E_αα`, `E_ββ`, `E_αβ`),
+/// the same-spin direct sums `D_σσ` and the spin-summed dRPA
+/// (`ε̃ = I + Π_α + Π_β`, [`crate::u_pdep_rpa_from_intermediates`]). The pair
+/// is dropped before the next operator's is built. The assembly is the
+/// closed-shell one with `dMP2 = E_αβ + ½(D_αα + D_ββ)`.
+///
+/// Memory: the closed-shell charge model ([`crate::budget::scan_charge`]),
+/// extended to two co-resident spin sets
+/// ([`crate::budget::scan_charge_unrestricted`]).
+fn scan_impl_unrestricted(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    rhf: &ScfResult,
+    cfg: &RsMp2RpaConfig,
+    ops: &[(Operator, Operator)],
+    formulations: &[RsMp2RpaFormulation],
+) -> Result<Vec<RsMp2RpaResult>, FerricError> {
+    use ferric_mp2::rimp2::{compute_rpa_intermediates_spin, RpaIntermediates};
+    let want_b = formulations.contains(&RsMp2RpaFormulation::DeltaLr);
+    let want_t = formulations.contains(&RsMp2RpaFormulation::CoupledRings);
+    // The screened chi0 is closed-shell only (run_u_pdep_rpa refuses it too).
+    if let crate::Chi0Sparsity::BoysScreened { .. } =
+        cfg.drpa.chi0_sparsity.resolve(mol.atoms.len())
+    {
+        return Err(FerricError::General(format!(
+            "rs-mp2-rpa: chi0_sparsity {:?} resolves to the Boys-screened chi0 for this \
+             {}-atom molecule, which has no open-shell version; use chi0_sparsity = \"dense\"",
+            cfg.drpa.chi0_sparsity,
+            mol.atoms.len()
+        )));
+    }
+    let view = ferric_scf::semicanonical::unrestricted_reference(mol, rhf)?;
+    let uhf: &ScfResult = &view;
+    let (eps_a, eps_b) = (uhf.eps_a(), uhf.eps_b());
+
+    let resolved_budget_bytes =
+        ferric_core::memory::resolve_budget_bytes(cfg.drpa.memory_budget_bytes);
+    let shapes = scan_shapes_unrestricted(mol, obs, dfbs, cfg)?;
+    let label = format!(
+        "U-RS-MP2-RPA preflight (naux={}, nocc_a={}, nvir_a={}, nocc_b={}, nvir_b={}, \
+         n_workers={}, points={}, formulations={formulations:?})",
+        shapes.0.naux,
+        shapes.0.nocc,
+        shapes.0.nvir,
+        shapes.1.nocc,
+        shapes.1.nvir,
+        shapes.0.n_workers,
+        ops.len()
+    );
+    let charge = charge_of_unrestricted(shapes, cfg, resolved_budget_bytes);
+    let _persistent = ferric_core::memory::pool::reserve_global(
+        &format!("{label} [metric + b_ov, both spins]"),
+        charge.persistent,
+    )?;
+    ferric_core::memory::check_alloc(
+        &format!("{label} (AO tensor tier {})", charge.ao_tier.name()),
+        charge.total,
+        resolved_budget_bytes,
+    )?;
+    let ri_cfg = RiMp2Config {
+        frozen_core: cfg.frozen_core,
+        memory_budget_bytes: Some(charge.ao_budget.max(1)),
+        ..Default::default()
+    };
+
+    let pair_of = |op: Operator| -> Result<(RpaIntermediates, RpaIntermediates), FerricError> {
+        let a = compute_rpa_intermediates_spin(mol, obs, dfbs, op, uhf, &ri_cfg, true)?;
+        let b = compute_rpa_intermediates_spin(mol, obs, dfbs, op, uhf, &ri_cfg, false)?;
+        ferric_core::memory::warn_if_rss_over(
+            &format!("U-RS-MP2-RPA spin intermediates (op={op:?})"),
+            resolved_budget_bytes,
+            1.1,
+        );
+        Ok((a, b))
+    };
+    let parts_of = |(a, b): &(RpaIntermediates, RpaIntermediates)| -> Result<OpParts, FerricError> {
+        let _spin = ferric_core::memory::pool::try_reserve_global(
+            &format!("{label} [spin g_i]"),
+            charge.spin_scratch,
+        );
+        open_shell_parts(a, b, eps_a, eps_b)
+    };
+    let mut drpa_cfg = cfg.drpa.clone();
+    drpa_cfg.frozen_core = cfg.frozen_core;
+    let drpa_of = |(a, b): &(RpaIntermediates, RpaIntermediates)| -> Result<f64, FerricError> {
+        let _hard = ferric_core::memory::pool::reserve_global(
+            &format!("{label} [dRPA eigensolve]"),
+            charge.drpa_hard,
+        )?;
+        let _soft = ferric_core::memory::pool::try_reserve_global(
+            &format!("{label} [dRPA freq scratch]"),
+            charge.drpa_soft,
+        );
+        Ok(crate::u_pdep_rpa_from_intermediates(a, b, uhf, &drpa_cfg)?.e_rpa)
+    };
+
+    let (full, drpa_coulomb) = {
+        let p = pair_of(Operator::coulomb())?;
+        let full = parts_of(&p)?;
+        let e = if want_t { Some(drpa_of(&p)?) } else { None };
+        (full, e)
+    };
+    let mut out = Vec::with_capacity(ops.len() * formulations.len());
+    for &(op_lr, op_sr) in ops {
+        let (lr, drpa_lr) = {
+            let p = pair_of(op_lr)?;
+            let lr = parts_of(&p)?;
+            let e = if want_b { Some(drpa_of(&p)?) } else { None };
+            (lr, e)
+        };
+        let (sr, drpa_sr) = {
+            let p = pair_of(op_sr)?;
+            let sr = parts_of(&p)?;
+            let e = if want_t { Some(drpa_of(&p)?) } else { None };
+            (sr, e)
+        };
+        let rings = Rings {
+            full,
+            lr,
+            sr,
+            drpa_lr,
+            drpa_coulomb,
+            drpa_sr,
+        };
+        for &formulation in formulations {
+            out.push(rings.assemble(formulation, rhf.energy));
         }
     }
     Ok(out)
@@ -996,5 +1267,265 @@ mod tests {
         let r = rs_mp2_lr_rpa(&mol, &obs, &dfbs, &rhf, &cfg)
             .expect("small H2/cc-pVDZ run must complete under the default auto-resolved budget");
         assert!(r.total_energy.is_finite());
+    }
+
+    // ── Open shell (scan_impl_unrestricted) ──────────────────────────────
+
+    const WATER: &str =
+        "3\nwater\nO 0.000 0.000 0.118\nH 0.000 0.755 -0.471\nH 0.000 -0.755 -0.471\n";
+    const OH: &str = "2\nOH\nO 0 0 0\nH 0 0 0.97\n";
+
+    /// The RHF `rhf` written as a UHF with identical α and β orbitals,
+    /// energies, densities and Fock matrices: a UHF stationary point.
+    fn lift_to_unrestricted(rhf: &ScfResult) -> ScfResult {
+        let mut u = rhf.clone();
+        u.spin = ferric_scf::Spin::Unrestricted;
+        u.density_beta = Some(rhf.density_alpha.clone());
+        u.mos_beta = Some(rhf.mos_alpha.clone());
+        u.eps_beta = Some(rhf.eps_alpha.clone());
+        u.fock_beta = Some(rhf.fock_alpha.clone());
+        u
+    }
+
+    fn setup_water_cs() -> (Molecule, PreparedBasis, PreparedBasis, ScfResult) {
+        let mol = Molecule::parse_xyz(WATER, 0, 1).unwrap();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let rhf = solve_rhf(
+            &ParallelContext::default(),
+            &mol,
+            &obs,
+            op,
+            &bounds,
+            &RhfConfig {
+                energy_conv: 1e-11,
+                density_conv: 1e-10,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(rhf.converged);
+        let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+        (mol, obs, dfbs, rhf)
+    }
+
+    fn setup_oh_uhf() -> (Molecule, PreparedBasis, PreparedBasis, ScfResult) {
+        let mol = Molecule::parse_xyz(OH, 0, 2).unwrap();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+        let bounds = SchwarzBounds::compute(Operator::coulomb(), &obs).unwrap();
+        let uhf = ferric_scf::uhf::solve_uhf(
+            &ParallelContext::default(),
+            &mol,
+            &obs,
+            &bounds,
+            &RhfConfig {
+                energy_conv: 1e-11,
+                density_conv: 1e-9,
+                max_iter: 300,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(uhf.converged);
+        let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+        (mol, obs, dfbs, uhf)
+    }
+
+    /// EXACTNESS ANCHOR (singlet limit). A closed-shell water RHF written as a
+    /// UHF (α ≡ β) takes `scan_impl_unrestricted`; every field of both
+    /// formulations must equal the restricted driver's.
+    ///
+    /// Bar 1e-10 Ha. Same orbitals on both sides, so what differs is only the
+    /// arithmetic: (i) the MP2 blocks are summed in a different order
+    /// (`u_ri_mp2_from_parts` vs `spin_components_from_b_ov`), O(ε·Σ|terms|)
+    /// ≈ 1e-16 · 0.3 Ha; (ii) the dRPA takes the open-shell static-eigenbasis
+    /// route, whose ε̃_U(0) is assembled as Π_α + Π_β (prefactor 2 + 2)
+    /// instead of one prefactor-4 Π, and is diagonalized at full rank: the
+    /// eigenvalues agree to n·ε·λ_max ≈ 84 · 2.2e-16 · O(10) ≈ 2e-13 each,
+    /// and the energy sums ln λ + 1 − λ over ≤ 84 modes on 20 nodes, so its
+    /// change is ≲ 84 · 20 · 2e-13 / (2π) · w_max ≈ 1e-11.
+    #[test]
+    fn unrestricted_matches_restricted_in_the_singlet_limit() {
+        let (mol, obs, dfbs, rhf) = setup_water_cs();
+        let uhf = lift_to_unrestricted(&rhf);
+        for formulation in [
+            RsMp2RpaFormulation::DeltaLr,
+            RsMp2RpaFormulation::CoupledRings,
+        ] {
+            let cfg = RsMp2RpaConfig {
+                formulation,
+                ..Default::default()
+            };
+            let r = rs_mp2_lr_rpa(&mol, &obs, &dfbs, &rhf, &cfg).unwrap();
+            let u = rs_mp2_lr_rpa(&mol, &obs, &dfbs, &uhf, &cfg).unwrap();
+            let opt = |a: Option<f64>, b: Option<f64>| match (a, b) {
+                (Some(x), Some(y)) => (x - y).abs(),
+                (None, None) => 0.0,
+                _ => f64::INFINITY,
+            };
+            let diffs = [
+                ("e_mp2_full", (r.e_mp2_full - u.e_mp2_full).abs()),
+                ("e_sr_mp2", (r.e_sr_mp2 - u.e_sr_mp2).abs()),
+                ("e_lr_mp2", (r.e_lr_mp2 - u.e_lr_mp2).abs()),
+                ("e_dmp2_lr", (r.e_dmp2_lr - u.e_dmp2_lr).abs()),
+                ("e_drpa_lr", opt(r.e_drpa_lr, u.e_drpa_lr)),
+                (
+                    "e_delta_drpa_full",
+                    opt(r.e_delta_drpa_full, u.e_delta_drpa_full),
+                ),
+                ("e_delta_drpa_sr", opt(r.e_delta_drpa_sr, u.e_delta_drpa_sr)),
+                ("e_corr", (r.e_corr - u.e_corr).abs()),
+            ];
+            for (name, d) in diffs {
+                eprintln!("{formulation:?} {name}: |R - U| = {d:.3e}");
+                assert!(
+                    d <= 1e-10,
+                    "{formulation:?} {name}: |R - U| = {d:.3e} > 1e-10"
+                );
+            }
+        }
+    }
+
+    /// `open_shell_parts`' dMP2 is the second-order term of the spin-summed
+    /// U-dRPA it is subtracted from, on a genuine open shell (OH doublet).
+    ///
+    /// Independent route: the U-dRPA kernel itself on the Coulomb pair with
+    /// every b_ov scaled by `s`, so each integral scales by t = s². Then
+    /// E(t) = d t² + c3 t³ + c4 t⁴ + …, and the two-point Richardson value
+    /// 2E(t)/t² − E(2t)/(2t)² = d − 2 c4 t² (the t³ term cancels).
+    ///
+    /// Bar. At t = 5e-3 the truncation is 2|c4| t² = 5e-5 |c4|; with
+    /// |c4| ≤ |d| (the ring series of a gapped molecule converges, |c_{n+1}/c_n|
+    /// < 1, measured |c3/d| is printed) that is ≤ 5e-5 |d|. The frequency grid is
+    /// 80 Gauss–Legendre nodes, on which the rational t² integrand is exact to
+    /// ~1e-12 relative. Rounding: E(t) ≈ 2.5e-5 d, computed to ~84·ε absolute, so
+    /// ~1e-9 relative. Bar 1e-4 · |d|. The closed-shell rule 2·E_αβ must miss by
+    /// more than ten bars, or this test could not tell them apart.
+    #[test]
+    fn unrestricted_dmp2_is_the_second_order_of_the_udrpa() {
+        use ferric_mp2::rimp2::compute_rpa_intermediates_spin;
+        let (mol, obs, dfbs, uhf) = setup_oh_uhf();
+        let ri = RiMp2Config::default();
+        let op = Operator::coulomb();
+        let a = compute_rpa_intermediates_spin(&mol, &obs, &dfbs, op, &uhf, &ri, true).unwrap();
+        let b = compute_rpa_intermediates_spin(&mol, &obs, &dfbs, op, &uhf, &ri, false).unwrap();
+        let parts = open_shell_parts(&a, &b, uhf.eps_a(), uhf.eps_b()).unwrap();
+        let comps =
+            ferric_mp2::u_rimp2::u_ri_mp2_from_parts(&a, &b, uhf.eps_a(), uhf.eps_b()).unwrap();
+        let mut cfg = PdepRpaConfig {
+            trunc_thresh: 0.0,
+            ..Default::default()
+        };
+        cfg.quadrature.n_points = 80;
+        let e_of = |t: f64| {
+            let s = t.sqrt();
+            let mut a2 = a.clone();
+            let mut b2 = b.clone();
+            a2.b_ov *= s;
+            b2.b_ov *= s;
+            crate::u_pdep_rpa_from_intermediates(&a2, &b2, &uhf, &cfg)
+                .unwrap()
+                .e_rpa
+        };
+        let t = 5e-3;
+        let (e1, e2) = (e_of(t), e_of(2.0 * t));
+        let d_rich = 2.0 * e1 / (t * t) - e2 / (4.0 * t * t);
+        let c3 = (e2 / (4.0 * t * t) - e1 / (t * t)) / t;
+        let bar = 1e-4 * parts.dmp2.abs();
+        let miss = (2.0 * comps.e_ab - d_rich).abs();
+        eprintln!(
+            "dMP2 {:.12}  Richardson {:.12}  |diff| {:.3e}  bar {:.3e}  c3/d {:.3}  \
+             |2 E_ab - d| {:.3e}",
+            parts.dmp2,
+            d_rich,
+            (parts.dmp2 - d_rich).abs(),
+            bar,
+            c3 / d_rich,
+            miss
+        );
+        assert!((parts.dmp2 - d_rich).abs() <= bar);
+        assert!(
+            miss > 10.0 * bar,
+            "2 E_ab is not distinguishable: {miss:.3e}"
+        );
+        assert_eq!(parts.e_total.to_bits(), comps.e_total.to_bits());
+    }
+
+    /// Open-shell ω limits (OH doublet, UHF), both formulations, mirroring the
+    /// closed-shell tests above: as ω → 0 (erf → 0) the energy tends to
+    /// U-RI-MP2 at least linearly in ω; as ω → ∞ (erf → 1/r) the energy tends to
+    /// E_MP2[C] + E_U-dRPA[C] − dMP2[C], with E_U-dRPA from the standalone
+    /// `run_u_pdep_rpa` driver, and the gap shrinks as 1/ω².
+    #[test]
+    fn unrestricted_omega_limits() {
+        use ferric_mp2::rimp2::compute_rpa_intermediates_spin;
+        let (mol, obs, dfbs, uhf) = setup_oh_uhf();
+        let ri = RiMp2Config::default();
+        let ump2 = ferric_mp2::u_rimp2::u_ri_mp2(&mol, &obs, &dfbs, Operator::coulomb(), &uhf, &ri)
+            .unwrap();
+        let drpa_cfg = PdepRpaConfig {
+            trunc_thresh: 0.0,
+            ..Default::default()
+        };
+        let e_urpa = crate::run_u_pdep_rpa(&mol, &obs, &dfbs, Operator::coulomb(), &uhf, &drpa_cfg)
+            .unwrap()
+            .e_rpa;
+        let op = Operator::coulomb();
+        let a = compute_rpa_intermediates_spin(&mol, &obs, &dfbs, op, &uhf, &ri, true).unwrap();
+        let b = compute_rpa_intermediates_spin(&mol, &obs, &dfbs, op, &uhf, &ri, false).unwrap();
+        let d_c = open_shell_parts(&a, &b, uhf.eps_a(), uhf.eps_b())
+            .unwrap()
+            .dmp2;
+        let full = ump2.mp2_corr + e_urpa - d_c;
+        for formulation in [
+            RsMp2RpaFormulation::DeltaLr,
+            RsMp2RpaFormulation::CoupledRings,
+        ] {
+            let at = |omega: f64| {
+                rs_mp2_lr_rpa(
+                    &mol,
+                    &obs,
+                    &dfbs,
+                    &uhf,
+                    &RsMp2RpaConfig {
+                        omega,
+                        formulation,
+                        ..Default::default()
+                    },
+                )
+                .unwrap()
+            };
+            let (lo, lo4) = (at(0.05), at(0.0125));
+            let (hi, hi4) = (at(200.0), at(800.0));
+            let (l, l4) = (
+                (lo.e_corr - ump2.mp2_corr).abs(),
+                (lo4.e_corr - ump2.mp2_corr).abs(),
+            );
+            let (g, g4) = ((hi.e_corr - full).abs(), (hi4.e_corr - full).abs());
+            eprintln!(
+                "{formulation:?}: w->0 gap {l:.3e} (w=0.05) {l4:.3e} (w=0.0125); \
+                 w->inf gap {g:.3e} (w=200) {g4:.3e} (w=800)"
+            );
+            // ω → 0: the leading long-range term is at least linear in ω (the
+            // fitted erf(ωr)/r ≈ 2ω/√π − …), so a fourfold smaller ω cuts the
+            // gap by ≥ 4, and at ω = 0.0125 it is below 1e-5 (closed shell:
+            // 1e-5 at ω = 0.05 on H2, where T is cancellation-limited). A gap
+            // already at the 1e-11 rounding floor needs no ratio.
+            assert!(
+                l4 < 1e-5 && (l4 * 4.0 <= l || l4 < 1e-11),
+                "{formulation:?} omega->0"
+            );
+            // ω → ∞: erf(ωr)/r − 1/r integrated against Gaussians is O(1/ω²)
+            // once ω² exceeds the tightest exponents (O 1s ~1e4 Bohr⁻² here),
+            // so a fourfold ω cuts the gap by ≥ 8 (16 expected), and at ω = 800
+            // it is below 1e-6. A construction error (wrong dMP2, a dropped
+            // spin) leaves an ω-independent gap ≥ 1e-4 and fails both.
+            assert!(
+                g4 < 1e-6 && (g4 * 8.0 <= g || g4 < 1e-11),
+                "{formulation:?} omega->inf"
+            );
+            assert!((hi.total_energy - (uhf.energy + hi.e_corr)).abs() < 1e-12);
+        }
     }
 }

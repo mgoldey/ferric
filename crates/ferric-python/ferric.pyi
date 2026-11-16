@@ -2013,6 +2013,12 @@ class AttenuatedMp2Result:
     @property
     def total_energy(self) -> float: ...
     @property
+    def reference(self) -> str:
+        """"RHF" for a singlet, "UHF" for multiplicity > 1 (then
+        ``rhf_energy`` is the UHF energy, ``e_os`` = E_ab, ``e_ss`` = E_aa + E_bb)."""
+        ...
+
+    @property
     def rhf_energy(self) -> float: ...
     @property
     def mp2_corr(self) -> float: ...
@@ -2043,6 +2049,12 @@ class ScsMp2Result:
 
     @property
     def total_energy(self) -> float: ...
+    @property
+    def reference(self) -> str:
+        """"RHF" for a singlet, "UHF" for multiplicity > 1 (then
+        ``rhf_energy`` is the UHF energy, ``e_os`` = E_ab, ``e_ss`` = E_aa + E_bb)."""
+        ...
+
     @property
     def rhf_energy(self) -> float: ...
     @property
@@ -2121,6 +2133,12 @@ class RsMp2RpaResult:
 
     @property
     def total_energy(self) -> float: ...
+    @property
+    def reference(self) -> str:
+        """"RHF" for a singlet, "UHF" for multiplicity > 1 (then
+        ``rhf_energy`` is the UHF energy and ``e_dmp2_lr`` = E_ab + (D_aa + D_bb)/2)."""
+        ...
+
     @property
     def rhf_energy(self) -> float: ...
     @property
@@ -5189,7 +5207,11 @@ def run_attenuated_rimp2(
     scf_energy_conv: float | None = None,
     scf_density_conv: float | None = None,
 ) -> AttenuatedMp2Result:
-    """Attenuated RI-MP2 (erfc(omega*r)/r). omega in Angstrom^-1."""
+    """Attenuated RI-MP2 (erfc(omega*r)/r). omega in Angstrom^-1.
+
+    RHF reference for a singlet; UHF reference + unrestricted RI-MP2 for
+    multiplicity > 1 (`result.reference` says which; e_os = E_ab,
+    e_ss = E_aa + E_bb)."""
     ...
 
 def run_terfc_rimp2(
@@ -5208,6 +5230,9 @@ def run_terfc_rimp2(
     scf_density_conv: float | None = None,
 ) -> RiMp2Result:
     """MP2(terfc): RI-MP2 with exact tempered-erfc operator. r0 in Angstrom.
+
+    RHF reference for a singlet; UHF reference + unrestricted RI-MP2 for
+    multiplicity > 1 (`result.reference` says which).
 
     ``r0`` omitted: the S66-trained basis-aware default (aug-cc-pVTZ 1.35, aug-cc-pVDZ 1.05;
     Goldey & Head-Gordon, Chem. Phys. Lett. 608, 249 (2014)); ValueError for an
@@ -5231,7 +5256,10 @@ def run_scs_mp2(
     scf_energy_conv: float | None = None,
     scf_density_conv: float | None = None,
 ) -> ScsMp2Result:
-    """Spin-component-scaled MP2."""
+    """Spin-component-scaled MP2.
+
+    RHF reference for a singlet; UHF reference for multiplicity > 1, with
+    e_os = E_ab and e_ss = E_aa + E_bb (`result.reference` says which)."""
     ...
 
 def run_scs_mp2_2terfc(
@@ -5253,6 +5281,9 @@ def run_scs_mp2_2terfc(
     scf_density_conv: float | None = None,
 ) -> ScsMp2Result:
     """SCS-MP2(2terfc): dual-attenuated SCS-MP2 with exact terfc. r0 in Angstrom.
+
+    RHF reference for a singlet; UHF reference for multiplicity > 1, with
+    e_os = E_ab and e_ss = E_aa + E_bb at both cutoffs.
 
     The defaults (r0 0.75/1.05, c_os 1.27, c_ss 4.05) are the aug-cc-pVTZ fit; any
     other basis needs explicit ``r0_bonded`` and ``r0_nonbonded`` (ValueError otherwise).
@@ -5351,6 +5382,10 @@ def run_rs_mp2_rpa(
     scf_density_conv: float | None = None,
 ) -> RsMp2RpaResult | list[RsMp2RpaResult]:
     """SR-MP2 + LR-dRPA. omega/terf_omega in Angstrom^-1, r0 in Angstrom.
+
+    RHF reference for a singlet; UHF reference for multiplicity > 1, with the
+    spin-summed U-MP2 and U-dRPA (eps = I + Pi_a + Pi_b) and
+    dMP2 = E_ab + (D_aa + D_bb)/2 (`result.reference` says which).
 
     `scf_jk` / `jk_auxbasis` as in `run_rimp2`, but the default differs: this
     entry point has always used RI-JK, so `scf_jk` defaults to "rijk" (on

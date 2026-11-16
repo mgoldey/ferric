@@ -768,6 +768,39 @@ pub(crate) fn converged_rhf(
     converged_rhf_with_bounds(mol, prep, &bounds, config)
 }
 
+/// The reference of the attenuated / SCS / rs-mp2-rpa entry points: the
+/// closed-shell RHF for a singlet, the UHF for multiplicity > 1 (the rule of
+/// `run_rimp2`). Non-convergence is an error on both routes.
+pub(crate) fn converged_reference(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    config: &RhfConfig,
+) -> PyResult<ferric_scf::result::ScfResult> {
+    if mol.multiplicity <= 1 {
+        return converged_rhf(mol, prep, config);
+    }
+    let bounds = SchwarzBounds::compute(Operator::coulomb(), prep).map_err(make_err)?;
+    let ctx = ParallelContext::default();
+    let uhf = solve_uhf(&ctx, mol, prep, &bounds, config).map_err(make_err)?;
+    if !uhf.converged {
+        return Err(make_err(ferric_core::FerricError::ScfConvergence {
+            iterations: uhf.iterations,
+            last_energy: uhf.energy,
+        }));
+    }
+    Ok(uhf)
+}
+
+/// "RHF" or "UHF": what `converged_reference` solved.
+pub(crate) fn reference_name(scf: &ferric_scf::result::ScfResult) -> String {
+    match scf.spin {
+        ferric_scf::Spin::Restricted => "RHF",
+        ferric_scf::Spin::Unrestricted => "UHF",
+        ferric_scf::Spin::RestrictedOpen => "ROHF",
+    }
+    .to_string()
+}
+
 /// Solve the closed-shell Coulomb RHF reference every MP2-family entry point
 /// shares, erroring on non-convergence (same rule as every `run_*` driver).
 pub(crate) fn converged_rhf_with_bounds(
@@ -2201,6 +2234,11 @@ pub(crate) fn run_laplace_sos_mp2(
 pub(crate) struct PyAttenuatedMp2Result {
     #[pyo3(get)]
     pub(crate) total_energy: f64,
+    /// The reference SCF: "RHF" for a singlet, "UHF" for multiplicity > 1
+    /// (then `rhf_energy` is the UHF energy, `e_os = E_ab` and
+    /// `e_ss = E_aa + E_bb`).
+    #[pyo3(get)]
+    pub(crate) reference: String,
     #[pyo3(get)]
     pub(crate) rhf_energy: f64,
     #[pyo3(get)]
@@ -2277,7 +2315,7 @@ pub(crate) fn run_attenuated_rimp2(
     )?;
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
     let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
-    let rhf = converged_rhf(&mol.inner, &prep, &rhf_config)?;
+    let rhf = converged_reference(&mol.inner, &prep, &rhf_config)?;
     // omega is supplied in Å⁻¹; convert to Bohr⁻¹ for the operator.
     let cfg = AttenuatedMp2Config {
         omega: omega.unwrap_or(0.420) * ferric_mp2::attenuated::BOHR_INV_PER_ANG_INV,
@@ -2300,6 +2338,7 @@ pub(crate) fn run_attenuated_rimp2(
     );
     Ok(PyAttenuatedMp2Result {
         total_energy: r.total_energy,
+        reference: reference_name(&rhf),
         rhf_energy: rhf.energy,
         mp2_corr: r.mp2_corr,
         e_os: r.spin_components.e_os,
@@ -2352,7 +2391,7 @@ pub(crate) fn run_terfc_rimp2(
     )?;
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
     let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
-    let rhf = converged_rhf(&mol.inner, &prep, &rhf_config)?;
+    let rhf = converged_reference(&mol.inner, &prep, &rhf_config)?;
     // r0 supplied in Å; convert to Bohr for the operator.
     let resolved = ferric_mp2::terfc_r0::resolve_terfc_r0(&basis_set.inner.name, r0)
         .map_err(pyo3::exceptions::PyValueError::new_err)?;
@@ -2361,19 +2400,24 @@ pub(crate) fn run_terfc_rimp2(
     }
     let r0_bohr = resolved.r0_angstrom * ANGSTROM_TO_BOHR;
     let terfc_op = Operator::terfc(r0_bohr);
-    let mp2 = ri_mp2(
-        &mol.inner,
-        &prep,
-        &dfbs,
-        terfc_op,
-        &rhf,
-        &RiMp2Config {
-            frozen_core: frozen_core.unwrap_or(0),
-            memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
-            ..Default::default()
-        },
-    )
-    .map_err(make_err)?;
+    let mp2_config = RiMp2Config {
+        frozen_core: frozen_core.unwrap_or(0),
+        memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
+        ..Default::default()
+    };
+    // Open shell: the unrestricted RI-MP2 under the same terfc operator.
+    let mp2 = if mol.inner.multiplicity > 1 {
+        let u =
+            ferric_mp2::u_rimp2::u_ri_mp2(&mol.inner, &prep, &dfbs, terfc_op, &rhf, &mp2_config)
+                .map_err(make_err)?;
+        ferric_mp2::rimp2::RiMp2Result {
+            mp2_corr: u.mp2_corr,
+            total_energy: u.total_energy,
+            precision: u.precision,
+        }
+    } else {
+        ri_mp2(&mol.inner, &prep, &dfbs, terfc_op, &rhf, &mp2_config).map_err(make_err)?
+    };
     let certificate_data = ferric_mp2::certificate::ri_correlation_certificate(
         "att-rimp2",
         &reference_certificate(&mol.inner, &rhf, &rhf_config, &basis_set.inner),
@@ -2386,7 +2430,7 @@ pub(crate) fn run_terfc_rimp2(
         total_energy: mp2.total_energy,
         rhf_energy: rhf.energy,
         mp2_corr: mp2.mp2_corr,
-        reference: "RHF".to_string(),
+        reference: reference_name(&rhf),
         local: None,
         scf_jk: jk.mode.as_str().to_string(),
         jk_label: jk.label(),
@@ -2405,6 +2449,11 @@ pub(crate) fn run_terfc_rimp2(
 pub(crate) struct PyScsMp2Result {
     #[pyo3(get)]
     pub(crate) total_energy: f64,
+    /// The reference SCF: "RHF" for a singlet, "UHF" for multiplicity > 1
+    /// (then `rhf_energy` is the UHF energy, `e_os = E_ab` and
+    /// `e_ss = E_aa + E_bb`).
+    #[pyo3(get)]
+    pub(crate) reference: String,
     #[pyo3(get)]
     pub(crate) rhf_energy: f64,
     #[pyo3(get)]
@@ -2482,7 +2531,7 @@ pub(crate) fn run_scs_mp2(
     )?;
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
     let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
-    let rhf = converged_rhf(&mol.inner, &prep, &rhf_config)?;
+    let rhf = converged_reference(&mol.inner, &prep, &rhf_config)?;
     let cfg = ScsMp2Config {
         c_os: c_os.unwrap_or(6.0 / 5.0),
         c_ss: c_ss.unwrap_or(1.0 / 3.0),
@@ -2503,6 +2552,7 @@ pub(crate) fn run_scs_mp2(
     );
     Ok(PyScsMp2Result {
         total_energy: r.total_energy,
+        reference: reference_name(&rhf),
         rhf_energy: rhf.energy,
         scs_corr: r.scs_corr,
         e_os: r.e_os,
@@ -2553,7 +2603,7 @@ pub(crate) fn run_scs_mp2_2terfc(
     )?;
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
     let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
-    let rhf = converged_rhf(&mol.inner, &prep, &rhf_config)?;
+    let rhf = converged_reference(&mol.inner, &prep, &rhf_config)?;
     const ANG2BOHR: f64 = ANGSTROM_TO_BOHR;
     let params = ferric_mp2::terfc_r0::resolve_scs_2terfc(
         &basis_set.inner.name,
@@ -2587,6 +2637,7 @@ pub(crate) fn run_scs_mp2_2terfc(
     );
     Ok(PyScsMp2Result {
         total_energy: r.total_energy,
+        reference: reference_name(&rhf),
         rhf_energy: rhf.energy,
         scs_corr: r.scs_corr,
         e_os: r.e_os,

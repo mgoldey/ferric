@@ -665,6 +665,55 @@ fn open_shell_rimp2_optimize_runs() {
     );
 }
 
+/// The attenuated, SCS and RS-MP2 + LR-RPA kinds run on a UHF reference at
+/// multiplicity > 1 and say so, and their correlation energies are the
+/// unrestricted ones: SCS with c_os = c_ss = 1 is UMP2, and RS-MP2-RPA's
+/// e_mp2_full is UMP2. Reverting the admission in
+/// `config::OPEN_SHELL_ENERGY_KINDS` makes the runs refuse; routing them to
+/// the closed-shell kernel makes the energies differ from `rimp2`'s by the
+/// triplet-singlet gap (> 1e-2 Ha).
+#[test]
+fn attenuated_scs_and_rs_kinds_run_on_a_uhf_triplet() {
+    let water = "testdata/molecules/water.xyz";
+    let mp2 = "[mp2]\nauxbasis = \"cc-pvdz-ri\"\n";
+    let ump2 = run_toml(
+        "rimp2_triplet_ref",
+        &body_at(water, 3, "sto-3g", "rimp2", "energy", mp2),
+    );
+    assert_runs(&ump2, "rimp2 on triplet water");
+    let e_ump2 = stdout_value(&ump2, "Total  ");
+    let scs = run_toml(
+        "scs_triplet",
+        &body_at(
+            water,
+            3,
+            "sto-3g",
+            "scs-mp2",
+            "energy",
+            "[mp2]\nauxbasis = \"cc-pvdz-ri\"\nc_os = 1.0\nc_ss = 1.0\n",
+        ),
+    );
+    assert_runs(&scs, "scs-mp2 on triplet water");
+    assert!(String::from_utf8_lossy(&scs.stdout).contains("UHF energy"));
+    let e_scs = stdout_value(&scs, "Total  ");
+    assert!(
+        (e_scs - e_ump2).abs() < 1e-9,
+        "scs(1,1) {e_scs} vs UMP2 {e_ump2}"
+    );
+    let att = run_toml(
+        "att_triplet",
+        &body_at(water, 3, "sto-3g", "att-rimp2", "energy", mp2),
+    );
+    assert_runs(&att, "att-rimp2 on triplet water");
+    assert!(String::from_utf8_lossy(&att.stdout).contains("UHF energy"));
+    let rs = run_toml(
+        "rs_triplet",
+        &body_at(water, 3, "sto-3g", "rs-mp2-rpa", "energy", mp2),
+    );
+    assert_runs(&rs, "rs-mp2-rpa on triplet water");
+    assert!(String::from_utf8_lossy(&rs.stdout).contains("reference = UHF"));
+}
+
 /// Reachability anchor: the open-shell kinds and closed-shell singlets are
 /// untouched.
 #[test]

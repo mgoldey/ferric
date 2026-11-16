@@ -11,7 +11,8 @@
 //!   E = c_OS * E_OS(r0_1) + c_SS * [E_SS(r0_2) - E_SS(r0_1)], using the EXACT
 //!   `terfc` operator (2D interpolation tables), not the erfc approximation.
 
-use crate::rimp2::{ri_mp2_spin_components, RiMp2Config};
+use crate::rimp2::RiMp2Config;
+use crate::u_rimp2::ri_mp2_spin_components_any;
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
@@ -73,7 +74,8 @@ impl std::fmt::Display for ScsMp2Result {
 /// Standard SCS-MP2: E = c_OS * E_OS + c_SS * E_SS.
 ///
 /// Uses full Coulomb operator (no attenuation). With c_OS=1, c_SS=1 this
-/// recovers standard MP2.
+/// recovers standard MP2. On a UHF or ROHF reference `E_OS = E_αβ` and
+/// `E_SS = E_αα + E_ββ` ([`ri_mp2_spin_components_any`]).
 pub fn scs_mp2(
     mol: &Molecule,
     obs: &PreparedBasis,
@@ -86,7 +88,7 @@ pub fn scs_mp2(
         memory_budget_bytes: config.memory_budget_bytes,
         ..Default::default()
     };
-    let (sc, _) = ri_mp2_spin_components(mol, obs, dfbs, Operator::coulomb(), rhf, &ri_config)?;
+    let sc = ri_mp2_spin_components_any(mol, obs, dfbs, Operator::coulomb(), rhf, &ri_config)?;
     let scs_corr = config.c_os * sc.e_os + config.c_ss * sc.e_ss;
     Ok(ScsMp2Result {
         total_energy: rhf.energy + scs_corr,
@@ -161,6 +163,8 @@ impl Default for ScsMp2TerfcConfig {
 /// `ri_mp2_spin_components` twice with the EXACT `terfc` operator at the bonded
 /// (r0_1) and non-bonded (r0_2) attenuation distances. Unlike the deprecated
 /// spike, this uses the interpolation-table terfc integrals, not an erfc fit.
+/// A UHF or ROHF reference takes the open-shell split of
+/// [`ri_mp2_spin_components_any`] at both cutoffs.
 pub fn scs_mp2_2terfc(
     mol: &Molecule,
     obs: &PreparedBasis,
@@ -199,7 +203,7 @@ pub fn scs_mp2_2terfc(
     };
 
     // Spin components at r0(1) (bonded, shorter range) via exact terfc.
-    let (sc1, _) = ri_mp2_spin_components(
+    let sc1 = ri_mp2_spin_components_any(
         mol,
         obs,
         dfbs,
@@ -208,7 +212,7 @@ pub fn scs_mp2_2terfc(
         &ri_config,
     )?;
     // Spin components at r0(2) (non-bonded, longer range).
-    let (sc2, _) = ri_mp2_spin_components(
+    let sc2 = ri_mp2_spin_components_any(
         mol,
         obs,
         dfbs,
@@ -232,6 +236,7 @@ pub fn scs_mp2_2terfc(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rimp2::ri_mp2_spin_components;
     use ferric_core::basis;
     use ferric_core::mol::Molecule;
     use ferric_integrals::basis_bridge::PreparedBasis;

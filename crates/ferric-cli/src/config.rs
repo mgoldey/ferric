@@ -4145,7 +4145,12 @@ impl ScfCfg {
 /// `method.kind`s that accept an open-shell molecule, per task. For
 /// `task = "energy"`, `pdep-rpa`/`gw`/`mp2-v` switch to a UHF(+MOM) reference
 /// themselves, and `rimp2`/`oo-rimp2` run their unrestricted variants
-/// (`u_ri_mp2`/`u_oo_ri_mp2`) on a UHF reference. `tda`/`tddft` run the
+/// (`u_ri_mp2`/`u_oo_ri_mp2`) on a UHF reference. `att-rimp2` (erfc and
+/// terfc), `scs-mp2` and `scs-mp2-2terfc` take the open-shell spin split of
+/// `ferric_mp2::u_rimp2::ri_mp2_spin_components_any` (`E_OS = E_αβ`,
+/// `E_SS = E_αα + E_ββ`) and `rs-mp2-rpa` the spin-summed U-dRPA, all on a UHF
+/// reference (energy only; their local and gradient paths stay closed-shell).
+/// `tda`/`tddft` run the
 /// spin-conserving unrestricted response on a UHF/UKS reference (ROHF/ROKS is
 /// refused by `ferric_tddft::run_tddft`). `ksdft` on an open-shell
 /// molecule runs UKS (see [`Config::dispatch_kind`]). Every gradient path
@@ -4161,7 +4166,20 @@ fn open_shell_kinds(task: &str) -> &'static [&'static str] {
 
 /// Kinds with an open-shell route for `task = "energy"`.
 const OPEN_SHELL_ENERGY_KINDS: &[&str] = &[
-    "uhf", "rohf", "ksdft", "rimp2", "oo-rimp2", "pdep-rpa", "gw", "mp2-v", "tda", "tddft",
+    "uhf",
+    "rohf",
+    "ksdft",
+    "rimp2",
+    "oo-rimp2",
+    "att-rimp2",
+    "scs-mp2",
+    "scs-mp2-2terfc",
+    "rs-mp2-rpa",
+    "pdep-rpa",
+    "gw",
+    "mp2-v",
+    "tda",
+    "tddft",
 ];
 
 /// Kinds with an open-shell analytic gradient for `task = "optimize"` and
@@ -5657,7 +5675,6 @@ mod compat_guard_tests {
         for kind in [
             "rhf",
             "mp3",
-            "scs-mp2",
             "ccsd",
             "ccd",
             "ccsd(t)",
@@ -5725,6 +5742,19 @@ mod compat_guard_tests {
     /// tasks they support, and ONLY those. Removing `ksdft`/`rimp2`/
     /// `oo-rimp2` from `open_shell_kinds` (i.e. restoring the refusal) fails
     /// the second and third loops.
+    /// The attenuated, SCS and RS-MP2 + LR-RPA kinds take a UHF reference for
+    /// an energy. Removing any of them from `OPEN_SHELL_ENERGY_KINDS` fails
+    /// this test.
+    #[test]
+    fn attenuated_scs_and_rs_kinds_pass_at_multiplicity_two() {
+        for kind in ["att-rimp2", "scs-mp2", "scs-mp2-2terfc", "rs-mp2-rpa"] {
+            assert!(
+                cfg(kind, "energy", "").validate_multiplicity(2).is_ok(),
+                "{kind}"
+            );
+        }
+    }
+
     #[test]
     fn open_shell_capable_kinds_and_all_singlets_pass() {
         for kind in ["rhf", "ksdft", "rimp2", "ccsd"] {
@@ -5771,6 +5801,11 @@ mod compat_guard_tests {
         assert!(cfg("oo-rimp2", "optimize", "")
             .validate_multiplicity(2)
             .is_err());
+        // scs-mp2's optimizer is the closed-shell SCS gradient: its open-shell
+        // energy route must not leak into the gradient tasks.
+        for task in ["optimize", "frequencies"] {
+            assert!(cfg("scs-mp2", task, "").validate_multiplicity(2).is_err());
+        }
     }
 
     /// Pre-fix, pdep-rpa + optimize + `[rpa] xc = "PBE"` ran RPA@HF and

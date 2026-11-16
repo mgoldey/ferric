@@ -1,7 +1,7 @@
 # 10.4 Attenuated MP2: erfc and terfc
 
-<!-- section: 10.4; status: edit; registry: attenuated-mp2;
-     theory: crates/ferric-mp2/theory.md#"5. Attenuated MP2", "4. Spin-component scaling" -->
+<!-- section: 10.4; status: edit; registry: attenuated-mp2, u-attenuated-mp2;
+     theory: crates/ferric-mp2/theory.md#"5. Attenuated MP2", "4. Spin-component scaling", "5.1 Open-shell attenuated and spin-scaled MP2" -->
 
 Attenuated MP2 keeps the Hartree–Fock energy and replaces $1/r_{12}$ in the
 MP2 correlation integrals with a short-range kernel. The long-range
@@ -170,11 +170,27 @@ terfc energy of this section is their sum. Figures from
 - Parameters were fitted without counterpoise; applying them to
   counterpoise-corrected interaction energies is a different method.
 
+## Open shell
+
+With `multiplicity > 1` the CLI kinds `att-rimp2`, `scs-mp2` and
+`scs-mp2-2terfc`, and the Python drivers `run_attenuated_rimp2`,
+`run_terfc_rimp2`, `run_scs_mp2` and `run_scs_mp2_2terfc`, take a UHF
+reference (energies only). The spin components are the blocks of
+unrestricted RI-MP2 under the same operator:
+$E_{m OS} = E_{lphaeta}$ and $E_{m SS} = E_{lphalpha} + E_{etaeta}$.
+The exchange integral needs both electrons in one spin, so it appears only in
+the same-spin blocks. With $lpha = eta$ orbitals the blocks reduce to the
+closed-shell components, and a closed-shell molecule run through the UHF path
+gives the restricted energies to rounding (≤ 6e-17 Ha on water/cc-pVDZ for
+erfc, erf, terfc, SCS and SCS(2terfc)). On OH, NH2 and O2 at cc-pVDZ the erfc
+energy and the SCS energy match PySCF `DFUMP2` on the same fits to ≤ 4e-15 Ha.
+The QQR-3 screened build (`screen_thresh`) is closed shell only.
+
 ## Sources
 
 | Source | Used for |
 |---|---|
-| `crates/ferric-mp2/theory.md`, "4. Spin-component scaling" (terfc kernel), "5. Attenuated MP2" | equations 10.11–10.15, units |
+| `crates/ferric-mp2/theory.md`, "4. Spin-component scaling" (terfc kernel), "5. Attenuated MP2", "5.1 Open-shell attenuated and spin-scaled MP2" | equations 10.11–10.15, units, open shell |
 | `crates/ferric-mp2/src/attenuated.rs`, `crates/ferric-integrals/src/operator.rs`, `crates/ferric-cli/src/config.rs` | defaults, keys, metric, screening |
 | Goldey dissertation, chapter 2 (Table 2.1), chapter 3 (Eqs. 3.1–3.2, Table 3.1), chapter 6 (Eq. 6.3) | definitions, parameters, summary table |
 | `scripts/mp2_family_sympy.py`, part D | verified box |

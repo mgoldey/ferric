@@ -48,9 +48,24 @@ cc-pVDZ: U-RI-MP2 against ORCA `RI-MP2 NoRI`, U-OO-RI-MP2 against an
 independent numpy OO-RI-MP2 (see the
 [anchors](../reference/validation.md#anchors)).
 
-The other MP2-family kinds (`mp3`, `att-rimp2`, `scs-mp2`, `scs-mp2-2terfc`,
-`laplace-mp2`, `laplace-sos-mp2`, `rs-mp2-rpa`) and their Python drivers are
-closed shell only: set `multiplicity = 1`. `mp2-v` switches to a UHF reference
+**Open-shell attenuated, SCS and RS-MP2 + LR-RPA energies.** `att-rimp2`
+(erfc and terfc), `scs-mp2`, `scs-mp2-2terfc` and `rs-mp2-rpa` take a UHF
+reference when `multiplicity > 1` (task `energy` only). So do Python
+`run_attenuated_rimp2`, `run_terfc_rimp2`, `run_scs_mp2`,
+`run_scs_mp2_2terfc` and `run_rs_mp2_rpa`; `result.reference` says which. The
+opposite-spin component is the αβ block of U-RI-MP2 and the same-spin
+component is the αα plus ββ blocks, under the kind's operator. `rs-mp2-rpa`
+uses the spin-summed U-dRPA, and subtracts its second-order term
+$E_{lphaeta} + 	frac12(D_{lphalpha} + D_{etaeta})$, not
+$2E_{lphaeta}$ (derivations in `crates/ferric-mp2/theory.md` §5.1 and
+`crates/ferric-rpa/theory.md`, "Open-shell SR-MP2 + LR-RPA"). The QQR-3
+screened `att-rimp2` build is closed shell
+only, and so is the Boys-screened χ₀ of `rs-mp2-rpa`. The values match PySCF
+`DFUMP2` and `URPA` and a numpy route on OH, NH2 and O2 at cc-pVDZ
+(`crates/ferric-rpa/tests/validation_u_attenuated_pyscf.rs`).
+
+The other MP2-family kinds (`mp3`, `laplace-mp2`, `laplace-sos-mp2`) and
+their Python drivers are closed shell only: set `multiplicity = 1`. `mp2-v` switches to a UHF reference
 when `multiplicity > 1` (CLI, energy only); Python `run_mp2_v` is closed shell
 only.
 

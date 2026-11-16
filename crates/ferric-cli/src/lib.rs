@@ -3306,6 +3306,17 @@ fn run_att_rimp2_local(
     true
 }
 
+/// The reference a post-SCF arm ran on, as its printout and run-log name it:
+/// "RHF" for a closed-shell result, "UHF" or "ROHF" otherwise. The
+/// closed-shell printout is unchanged ("RHF energy = ...").
+fn reference_name(result: &ferric_scf::result::ScfResult) -> &'static str {
+    match result.spin {
+        ferric_scf::result::Spin::Restricted => "RHF",
+        ferric_scf::result::Spin::Unrestricted => "UHF",
+        ferric_scf::result::Spin::RestrictedOpen => "ROHF",
+    }
+}
+
 /// The one line a terfc run prints when `r0` came from the basis table.
 fn print_terfc_r0_note(cfg: &Config, bs: &BasisSet) {
     if cfg.mp2.att_r0.is_some() || cfg.mp2.att_rimp2_op() != Ok(config::AttRimp2Op::Terfc) {
@@ -3386,7 +3397,11 @@ fn run_att_rimp2(
         bs.name, aux_name, omega_ang_inv, cfg.molecule.xyz
     );
     println!("  nbasis     = {}", prep.nbasis());
-    println!("  RHF energy = {:.10} Hartree", result.energy);
+    println!(
+        "  {} energy = {:.10} Hartree",
+        reference_name(result),
+        result.energy
+    );
     println!("  MP2 corr   = {:.10} Hartree", att_result.mp2_corr);
     println!(
         "  E_OS       = {:.10} Hartree",
@@ -3410,6 +3425,7 @@ fn run_att_rimp2(
             att_result.total_energy,
             serde_json::json!({
                 "e_corr": att_result.mp2_corr,
+                "reference": reference_name(result),
                 "e_scf_reference": result.energy,
                 "scf_converged": result.converged,
                 "certificate": cert,
@@ -3454,12 +3470,18 @@ fn run_att_rimp2_terfc(
         memory_budget_bytes: budget_bytes,
         ..Default::default()
     };
-    let (sc, _) =
-        ferric_mp2::rimp2::ri_mp2_spin_components(mol, prep, dfbs, terfc_op, result, &mp2_config)
-            .unwrap_or_else(|e| {
-                eprintln!("error: {e}");
-                std::process::exit(1);
-            });
+    let sc = ferric_mp2::u_rimp2::ri_mp2_spin_components_any(
+        mol,
+        prep,
+        dfbs,
+        terfc_op,
+        result,
+        &mp2_config,
+    )
+    .unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
     let total = result.energy + sc.e_total;
     println!(
         "Attenuated RI-MP2 (terfc)/{} (aux: {}, r0={:.3} Å{}) on {}",
@@ -3472,7 +3494,11 @@ fn run_att_rimp2_terfc(
         cfg.molecule.xyz
     );
     println!("  nbasis     = {}", prep.nbasis());
-    println!("  RHF energy = {:.10} Hartree", result.energy);
+    println!(
+        "  {} energy = {:.10} Hartree",
+        reference_name(result),
+        result.energy
+    );
     println!("  MP2 corr   = {:.10} Hartree", sc.e_total);
     println!("  E_OS       = {:.10} Hartree", sc.e_os);
     println!("  E_SS       = {:.10} Hartree", sc.e_ss);
@@ -3493,6 +3519,7 @@ fn run_att_rimp2_terfc(
                 "r0_angstrom": r0_ang,
                 "omega_inv_angstrom": cfg.mp2.att_omega,
                 "e_corr": sc.e_total,
+                "reference": reference_name(result),
                 "e_scf_reference": result.energy,
                 "scf_converged": result.converged,
                 "certificate": cert,
@@ -3726,6 +3753,12 @@ fn print_rs_mp2_rpa_block(
         bs.name, aux_name, omega_ang_inv, cfg.molecule.xyz
     );
     println!("  nbasis     = {}", prep.nbasis());
+    if result.spin != ferric_scf::result::Spin::Restricted {
+        println!(
+            "  reference  = {} (spin-summed U-MP2 and U-dRPA; dMP2 = E_ab + (D_aa + D_bb)/2)",
+            reference_name(result)
+        );
+    }
     match rs_cfg.attenuator {
         ferric_rpa::rs_mp2_rpa::Attenuator::Erf => {
             println!(
@@ -3806,6 +3839,7 @@ fn print_rs_mp2_rpa_block(
             "e_mp2_full": r.e_mp2_full,
             "e_sr_mp2": r.e_sr_mp2,
             "e_lr_mp2": r.e_lr_mp2,
+            "reference": reference_name(result),
             "e_scf_reference": result.energy,
             "scf_converged": result.converged,
             "certificate": cert,
@@ -3962,7 +3996,11 @@ fn run_scs_mp2(
         bs.name, aux_name, scs_config.c_os, scs_config.c_ss, cfg.molecule.xyz
     );
     println!("  nbasis     = {}", prep.nbasis());
-    println!("  RHF energy = {:.10} Hartree", result.energy);
+    println!(
+        "  {} energy = {:.10} Hartree",
+        reference_name(result),
+        result.energy
+    );
     println!("  SCS corr   = {:.10} Hartree", scs_result.scs_corr);
     println!("  E_OS       = {:.10} Hartree", scs_result.e_os);
     println!("  E_SS       = {:.10} Hartree", scs_result.e_ss);
@@ -3982,6 +4020,7 @@ fn run_scs_mp2(
                 "e_corr": scs_result.scs_corr,
                 "e_os": scs_result.e_os,
                 "e_ss": scs_result.e_ss,
+                "reference": reference_name(result),
                 "e_scf_reference": result.energy,
                 "scf_converged": result.converged,
                 "certificate": cert,
@@ -4060,7 +4099,11 @@ fn run_scs_mp2_2terfc(
         cfg.molecule.xyz
     );
     println!("  nbasis     = {}", prep.nbasis());
-    println!("  RHF energy = {:.10} Hartree", result.energy);
+    println!(
+        "  {} energy = {:.10} Hartree",
+        reference_name(result),
+        result.energy
+    );
     println!("  SCS corr   = {:.10} Hartree", scs_result.scs_corr);
     println!("  E_OS       = {:.10} Hartree", scs_result.e_os);
     println!("  E_SS       = {:.10} Hartree", scs_result.e_ss);
@@ -4078,6 +4121,7 @@ fn run_scs_mp2_2terfc(
                 "e_corr": scs_result.scs_corr,
                 "e_os": scs_result.e_os,
                 "e_ss": scs_result.e_ss,
+                "reference": reference_name(result),
                 "e_scf_reference": result.energy,
                 "scf_converged": result.converged,
                 "certificate": cert,

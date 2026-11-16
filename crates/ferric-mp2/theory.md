@@ -203,6 +203,53 @@ so $E[\operatorname{erfc}] + E[\operatorname{erf}] \ne E[1/r]$ **[check 4]**.
 `rs_mp2_decomposition` (`attenuated.rs:347`) returns the three energies, and
 RS-MP2 + LR-RPA (`ferric-rpa::rs_mp2_rpa`) is built on this cross term.
 
+### 5.1 Open-shell attenuated and spin-scaled MP2
+
+`attenuated_ri_mp2`, `attenuated_ri_mp2_long_range`, `scs_mp2`,
+`scs_mp2_2terfc` and the CLI terfc arm of `att-rimp2` read their spin
+components from `u_rimp2::ri_mp2_spin_components_any`. On a restricted
+reference that is section 2. On a UHF reference (or a ROHF one,
+semi-canonicalized per spin) it is section 3 under the same operator
+$\hat w$, regrouped by the spins of the two electrons:
+
+$$ E_{\rm OS}[\hat w] = E_{\alpha\beta}[\hat w], \qquad E_{\rm SS}[\hat w] = E_{\alpha\alpha}[\hat w] + E_{\beta\beta}[\hat w]. $$
+
+Derivation. The spin-orbital MP2 energy is
+$\tfrac14\sum_{ijab}|\langle ij||ab\rangle|^2/D_{ij}^{ab}$ with
+$D = \varepsilon_i + \varepsilon_j - \varepsilon_a - \varepsilon_b$. The
+operator is spin-free, so $\langle ij|ab\rangle = (ia|jb)$ is nonzero only
+when $\sigma_i = \sigma_a$ and $\sigma_j = \sigma_b$. Split the sum by
+$\sigma_i$ and $\sigma_j$:
+
+* $\sigma_i = \sigma_j = \sigma$: both the direct and the exchange integral
+  survive and the block is
+  $E_{\sigma\sigma} = \tfrac12\sum_{ijab\in\sigma}(ia|jb)[(ia|jb) - (ib|ja)]/D$.
+* $\sigma_i \ne \sigma_j$: the exchange integral $(ib|ja)$ needs
+  $\sigma_i = \sigma_b = \sigma_j$, so it vanishes. The $\alpha\beta$ and
+  $\beta\alpha$ orderings are equal, and with the $\tfrac14$ and the two
+  $(a, b)$ orderings of the virtual pair the block is
+  $E_{\alpha\beta} = \sum_{i a\in\alpha,\,\bar j\bar b\in\beta}(ia|\bar j\bar b)^2/D$.
+
+So "opposite spin" is the $\alpha\beta$ block and "same spin" the sum of the
+two same-spin blocks; neither needs a new kernel. With $\alpha = \beta$
+orbitals $E_{\alpha\beta} = E_{\rm OS}$ and
+$E_{\alpha\alpha} + E_{\beta\beta} = E_{\rm SS}$ of section 2, so a closed-shell
+molecule run through the UHF path reproduces every restricted result. The
+spin-scaled energies are then section 4 unchanged:
+
+$$ E_{\rm SCS} = c_{\rm OS}E_{\alpha\beta}[1/r] + c_{\rm SS}\big(E_{\alpha\alpha} + E_{\beta\beta}\big)[1/r], $$
+
+$$ E_{\rm SCS(2terfc)} = c_{\rm OS}E_{\alpha\beta}\big[r_0^{(1)}\big] + c_{\rm SS}\Big(\big(E_{\alpha\alpha}+E_{\beta\beta}\big)\big[r_0^{(2)}\big] - \big(E_{\alpha\alpha}+E_{\beta\beta}\big)\big[r_0^{(1)}\big]\Big), $$
+
+and attenuated MP2 is $E_{\alpha\alpha} + E_{\beta\beta} + E_{\alpha\beta}$
+under erfc, erf or terfc. The operator limits of section 5 hold per block:
+$\omega \to 0$ sends erfc$(\omega r)/r$ to $1/r$ and the erfc energy to
+U-RI-MP2; $\omega \to \infty$ sends every block to zero. The QQR-3 screened
+build (`screen_thresh`) is closed-shell only and refuses an open-shell
+reference. `scripts/u_attenuated_sympy.py` checks the block split against the
+spin-orbital sum on a model with different $\alpha$ and $\beta$ orbitals and
+occupations, and the singlet limit.
+
 ## 6. MP3
 
 `mp3_energy` (`mp3.rs:143`) works in spin orbitals with

@@ -792,6 +792,59 @@ when $v_{\rm sr} = 0$. `scripts/rpa_rs_mp2_rpa_sympy.py` checks these
 statements, the ring orders against Cauchy-integral Taylor coefficients of the
 plasmon energy, and the spin components against spin-orbital MP2.
 
+### Open-shell SR-MP2 + LR-RPA
+
+On a UHF reference (or a ROHF one, semi-canonicalized per spin)
+`rs_mp2_lr_rpa` takes `scan_impl_unrestricted`. Per operator $v$ it builds one
+pair of spin intermediates $B_\sigma[v]$ in one shared aux basis and feeds the
+pair to the U-MP2 blocks (`u_ri_mp2_from_parts`: $E_{\alpha\alpha}$,
+$E_{\beta\beta}$, $E_{\alpha\beta}$, ferric-mp2 theory section 5.1) and to the
+spin-summed dRPA of the "Open-Shell (Spin-Summed) Dielectric" section
+(`u_pdep_rpa_from_intermediates`). The formulations are the closed-shell
+ones with $2E_{\rm OS}$ replaced by the second-order term of that dRPA:
+
+$$ E^{\rm B}_c = E_{\rm MP2}[\mathrm C] + E_{\rm dRPA}[\mathrm{lr}] - d[\mathrm{lr}], \qquad
+E^{\rm T}_c = E_{\rm MP2}[\mathrm C] + \big(E_{\rm dRPA}[\mathrm C] - d[\mathrm C]\big) - \big(E_{\rm dRPA}[\mathrm{sr}] - d[\mathrm{sr}]\big), $$
+
+$$ d[v] = E_{\alpha\beta}[v] + \tfrac12\big(D_{\alpha\alpha}[v] + D_{\beta\beta}[v]\big), \qquad D_{\sigma\sigma} = \sum_{ijab\in\sigma}\frac{(ia|jb)^2}{D_{ij}^{ab}}. $$
+
+Derivation of $d$. Expand
+$E_{\rm dRPA} = \frac1{2\pi}\int_0^\infty[\ln\det(\mathbf 1 + \boldsymbol\Pi) - \operatorname{tr}\boldsymbol\Pi]\,du$
+to second order in the integrals: $\ln(1+x) - x = -x^2/2 + O(x^3)$, so
+$E^{(2)} = -\frac1{4\pi}\int_0^\infty\operatorname{tr}\boldsymbol\Pi^2\,du$. With
+$\boldsymbol\Pi = \boldsymbol\Pi_\alpha + \boldsymbol\Pi_\beta$ and the
+prefactor 2 per spin,
+
+$$ \operatorname{tr}\boldsymbol\Pi^2 = \sum_{\sigma\tau}\sum_{ia\in\sigma}\sum_{jb\in\tau}
+\frac{4\,\Delta_{ia}\Delta_{jb}\,(ia|jb)^2}{(u^2+\Delta_{ia}^2)(u^2+\Delta_{jb}^2)}, \qquad
+\int_0^\infty\frac{\Delta_1\Delta_2\,du}{(u^2+\Delta_1^2)(u^2+\Delta_2^2)} = \frac{\pi}{2(\Delta_1+\Delta_2)}, $$
+
+so $E^{(2)} = \tfrac12\sum_{\sigma\tau}\sum(ia|jb)^2/D$ with
+$D = -(\Delta_{ia} + \Delta_{jb})$. The $\alpha\alpha$ and $\beta\beta$ terms
+give $\tfrac12 D_{\alpha\alpha} + \tfrac12 D_{\beta\beta}$, and the
+$\alpha\beta$ and $\beta\alpha$ terms together give $E_{\alpha\beta}$. That is
+$d$. It is the direct (no-exchange) part of the spin-orbital MP2 energy,
+$\tfrac12\sum_{ijab}\langle ij|ab\rangle^2/D$.
+
+$2E_{\alpha\beta}$, the closed-shell rule carried over, is wrong for an open
+shell: it equals $d$ only when $D_{\alpha\alpha} = D_{\beta\beta} = E_{\alpha\beta}$,
+which holds when the two spins have the same orbitals. On a singlet run
+through the UHF path $d = 2E_{\rm OS}$, the U-dRPA equals the closed-shell
+dRPA (prefactor $2+2 = 4$), and every open-shell result equals the restricted
+one. $D_{\sigma\sigma}$ is the $E_{\rm OS}$ of the closed-shell kernel
+(`spin_components_from_b_ov`) run on spin $\sigma$'s $B$ and energies.
+
+Every bracket again starts at third order, so both forms equal the open-shell
+$E_{\rm MP2}[\mathrm C] = E_{\alpha\alpha} + E_{\beta\beta} + E_{\alpha\beta}$
+through second order, and the limits are the closed-shell ones:
+$v_{\rm lr} = 0$ gives $E_{\rm MP2}[\mathrm C]$, $v_{\rm sr} = 0$ gives
+$E_{\rm MP2}[\mathrm C] + E_{\rm dRPA}[\mathrm C] - d[\mathrm C]$. The two
+spin sets of one operator are co-resident, so the preflight charges both
+(`budget::scan_charge_unrestricted`); the closed-shell Boys-screened $\chi_0$
+is refused. `scripts/u_attenuated_sympy.py` checks $d$ symbolically, against
+the Cauchy-integral $\lambda^2$ coefficient of the spin-orbital plasmon energy,
+the second-order and limit statements, and the singlet limit.
+
 ## Analytic nuclear gradient (closed-shell RI-dRPA, HF reference)
 
 `gradient_analytic.rs` differentiates the energy `run_pdep_rpa` evaluates at

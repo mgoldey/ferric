@@ -3,7 +3,8 @@
   "routes": {
     "cli:att-rimp2": [
       "attenuated-mp2",
-      "att-rimp2-gradient"
+      "att-rimp2-gradient",
+      "u-attenuated-mp2"
     ],
     "cli:b2plyp": [
       "double-hybrid"
@@ -82,13 +83,16 @@
       "rohf"
     ],
     "cli:rs-mp2-rpa": [
-      "rs-mp2-rpa"
+      "rs-mp2-rpa",
+      "u-rs-mp2-rpa"
     ],
     "cli:scs-mp2": [
-      "scs-mp2"
+      "scs-mp2",
+      "u-attenuated-mp2"
     ],
     "cli:scs-mp2-2terfc": [
-      "scs-mp2-2terfc"
+      "scs-mp2-2terfc",
+      "u-attenuated-mp2"
     ],
     "cli:tda": [
       "tddft"
@@ -174,7 +178,8 @@
       "rpa-polarizability-c6"
     ],
     "py:run_attenuated_rimp2": [
-      "attenuated-mp2"
+      "attenuated-mp2",
+      "u-attenuated-mp2"
     ],
     "py:run_bse_tda": [
       "bse-tda"
@@ -278,7 +283,8 @@
     ],
     "py:run_oo_rimp2": [
       "oo-rimp2",
-      "oo-rimp2-gradient"
+      "oo-rimp2-gradient",
+      "u-oo-rimp2"
     ],
     "py:run_optimize": [
       "att-rimp2-gradient",
@@ -349,7 +355,8 @@
       "pbc-ks"
     ],
     "py:run_rs_mp2_rpa": [
-      "rs-mp2-rpa"
+      "rs-mp2-rpa",
+      "u-rs-mp2-rpa"
     ],
     "py:run_saddle": [
       "hf-gradient",
@@ -357,10 +364,12 @@
       "geometry-search"
     ],
     "py:run_scs_mp2": [
-      "scs-mp2"
+      "scs-mp2",
+      "u-attenuated-mp2"
     ],
     "py:run_scs_mp2_2terfc": [
-      "scs-mp2-2terfc"
+      "scs-mp2-2terfc",
+      "u-attenuated-mp2"
     ],
     "py:run_tddft": [
       "tddft"
@@ -369,7 +378,8 @@
       "tdhf-static-polarizability"
     ],
     "py:run_terfc_rimp2": [
-      "attenuated-mp2"
+      "attenuated-mp2",
+      "u-attenuated-mp2"
     ],
     "py:run_u_gw": [
       "u-gw"
@@ -1101,6 +1111,22 @@
       ],
       "scripts": [
         "scripts/ir_intensity_sympy.py"
+      ]
+    },
+    "u-attenuated-mp2": {
+      "theory": [
+        "crates/ferric-mp2/theory.md#51-open-shell-attenuated-and-spin-scaled-mp2"
+      ],
+      "scripts": [
+        "scripts/u_attenuated_sympy.py"
+      ]
+    },
+    "u-rs-mp2-rpa": {
+      "theory": [
+        "crates/ferric-rpa/theory.md#open-shell-sr-mp2--lr-rpa"
+      ],
+      "scripts": [
+        "scripts/u_attenuated_sympy.py"
       ]
     }
   },

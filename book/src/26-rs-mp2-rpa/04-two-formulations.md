@@ -1,7 +1,7 @@
 # 26.4 The two formulations in the code
 
-<!-- section: 26.4; status: ready; registry: rs-mp2-rpa;
-     theory: crates/ferric-rpa/theory.md#"Range-separated MP2 + RPA" -->
+<!-- section: 26.4; status: ready; registry: rs-mp2-rpa, u-rs-mp2-rpa;
+     theory: crates/ferric-rpa/theory.md#"Range-separated MP2 + RPA", "Open-shell SR-MP2 + LR-RPA" -->
 
 `rs_mp2_lr_rpa` evaluates one of two energies. Both keep full-Coulomb MP2
 and add dRPA brackets that start at third order (section 26.1.3). They differ
@@ -180,11 +180,31 @@ The terf split is checked by its limits only.
   beyond its limits.
 - The fusion test of section 26.6 covers `coupled-rings` only.
 
+## Open shell
+
+With `multiplicity > 1`, `kind = "rs-mp2-rpa"` and `run_rs_mp2_rpa` take a
+UHF reference (energies only). Each operator builds one pair of spin
+intermediates in one aux basis. The pair feeds the unrestricted MP2 blocks
+and the spin-summed dRPA, $oldsymbol\epsilon = \mathbf 1 + oldsymbol\Pi_lpha + oldsymbol\Pi_eta$.
+The subtracted second-order term is not $2E_{m OS}$. It is
+
+$$ d = E_{lphaeta} + 	frac12ig(D_{lphalpha} + D_{etaeta}ig), \qquad D_{\sigma\sigma} = \sum_{ijab\in\sigma}rac{(ia|jb)^2}{D_{ij}^{ab}}, $$
+
+the direct part of spin-orbital MP2. It equals $2E_{m OS}$ only when the two
+spins have the same orbitals. With $d$ in place of $2E_{m OS}$, both forms
+again equal $E_{m MP2}[\mathrm C]$ through second order. On OH, NH2 and O2
+at cc-pVDZ the T form matches PySCF (`DFUMP2` + `URPA`) to ≤ 1.5e-13 Ha.
+Using $2E_{lphaeta}$ instead moves T by 1.9e-4 to 3.4e-3 Ha. The B form
+needs the erf fit, whose metric PySCF factors differently, so it is checked
+against numpy on ferric's integrals (≤ 7e-14 Ha). The Boys-screened $\chi_0$
+is closed shell only.
+
 ## Sources
 
 | Source | Used for |
 |---|---|
 | `crates/ferric-rpa/theory.md`, "Range-separated MP2 + RPA" | (26.7)–(26.10), the limits |
+| `crates/ferric-rpa/theory.md`, "Open-shell SR-MP2 + LR-RPA" | the open-shell $d$ |
 | `crates/ferric-rpa/src/rs_mp2_rpa.rs` (the `match` arms, `RsMp2RpaConfig`, `RsMp2RpaResult`) | 26.4.3, 26.4.4 |
 | `crates/ferric-mp2/src/rimp2.rs::metric_inverse_sqrt` | the RI paragraph |
 | `scripts/rpa_rs_mp2_rpa_sympy.py` | the verified boxes |

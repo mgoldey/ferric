@@ -75,6 +75,29 @@ CASES = [
         ],
     ),
     (
+        "u_attenuated_sympy.py",
+        15,
+        [
+            (
+                "return e_ab + 0.5 * (d_aa + d_bb)",
+                "return 2.0 * e_ab",
+                "FAIL [u-ring2-equals-dmp2]",
+            ),
+            ("pi = pi_a + pi_b", "pi = pi_a", "FAIL [u-freq-vs-plasmon]"),
+            (
+                "return 0.5 * e, direct  # same-spin block",
+                "return 1.0 * e, direct  # same-spin block",
+                "FAIL [u-mp2-vs-spin-orbital]",
+            ),
+            ("e_os = e_ab", "e_os = e_ab + e_aa", "FAIL [os-is-ab]"),
+            (
+                "return e_mp2_c + (e_rpa_c - dmp2_c) - (e_rpa_s - dmp2_s)",
+                "return e_mp2_c + (e_rpa_c - dmp2_c) - e_rpa_s",
+                "FAIL [u-t-form-second-order]",
+            ),
+        ],
+    ),
+    (
         "mbd_coupled_dipole_sympy.py",
         20,
         [

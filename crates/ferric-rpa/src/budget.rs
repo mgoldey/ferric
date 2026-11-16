@@ -576,6 +576,68 @@ pub fn scan_charge(
     }
 }
 
+/// [`ScanCharge`] of the open-shell rs-mp2-rpa driver: [`scan_charge`]'s
+/// three phases on top of TWO co-resident spin sets.
+///
+/// Per operator the alpha intermediates are built, then the beta ones with
+/// alpha still resident, and both live through the spin and dRPA phases.
+/// So:
+///
+/// ```text
+///   persistent  scan_persistent_bytes(alpha) + scan_persistent_bytes(beta)
+///   build       AO tensor at its tier (once: `shape_b.nao` is 0) + stream
+///   spin        the larger spin's n_workers · nocc · nvir² (the U-MP2 and
+///               D_σσ kernels run one spin at a time)
+///   drpa        static_eigensolve_bytes and the frequency scratch of each
+///               spin, summed
+/// ```
+///
+/// The two eigensolve terms each count the `2 naux²` ε̃(0) planes, which the
+/// spin-summed eigensolve allocates once, so the dRPA phase over-counts by
+/// `2 naux² + 2 naux·m` doubles. That is the over-estimating direction. On a
+/// closed-shell shape pair (`shape_a == shape_b` but for `nao`) the
+/// persistent term is twice the closed-shell one, as it must be: two `b_ov`
+/// are resident where the closed-shell driver holds one.
+pub fn scan_charge_unrestricted(
+    (shape_a, shape_b): (PeakEstimateShape, PeakEstimateShape),
+    budget_bytes: usize,
+    (panel_a, panel_b): (usize, usize),
+    stream_scratch: usize,
+) -> ScanCharge {
+    let persistent = scan_persistent_bytes(shape_a).saturating_add(scan_persistent_bytes(shape_b));
+    let ao_budget = budget_bytes
+        .saturating_sub(persistent)
+        .saturating_sub(stream_scratch);
+    let nao = shape_a.nao.max(shape_b.nao);
+    let (ao_tier, ao_resident) =
+        ferric_integrals::three_index_source::planned_residency(nao, shape_a.naux, ao_budget);
+    let spin = |s: PeakEstimateShape| {
+        s.nocc
+            .saturating_mul(s.nvir)
+            .saturating_mul(s.nvir)
+            .saturating_mul(F64_BYTES)
+            .saturating_mul(s.n_workers.max(1))
+    };
+    let spin_scratch = spin(shape_a).max(spin(shape_b));
+    let drpa_hard =
+        static_eigensolve_bytes(shape_a).saturating_add(static_eigensolve_bytes(shape_b));
+    let drpa_soft = quad_scratch_bytes_at_width(shape_a, panel_a)
+        .saturating_add(quad_scratch_bytes_at_width(shape_b, panel_b));
+    let build = ao_resident.saturating_add(stream_scratch);
+    let drpa = drpa_hard.saturating_add(drpa_soft);
+    ScanCharge {
+        total: persistent.saturating_add(build.max(spin_scratch).max(drpa)),
+        persistent,
+        ao_budget,
+        ao_tier,
+        ao_resident,
+        stream_scratch,
+        spin_scratch,
+        drpa_hard,
+        drpa_soft,
+    }
+}
+
 /// Upper-bound estimate, in bytes, of the peak resident memory of a PDEP-RPA
 /// run with the given shape.
 ///
@@ -1004,5 +1066,31 @@ mod tests {
             ..shape
         });
         assert_eq!(est, clamped);
+    }
+
+    /// The open-shell scan charge holds two spin sets: on a singlet shape
+    /// pair (β carrying no AO tensor) every per-spin term doubles against the
+    /// closed-shell charge, the AO tier and the spin scratch do not, and a
+    /// larger β spin raises the total. Charging only the α set (the closed-
+    /// shell `scan_charge` on `shape_a`) fails the first and last assertions.
+    #[test]
+    fn the_open_shell_scan_charge_holds_both_spins() {
+        let a = run_charge_shape();
+        let b = PeakEstimateShape { nao: 0, ..a };
+        let budget = 64usize << 30;
+        let nov = a.nocc * a.nvir;
+        let cs = scan_charge(a, budget, nov, 1 << 20);
+        let u = scan_charge_unrestricted((a, b), budget, (nov, nov), 1 << 20);
+        assert_eq!(u.persistent, 2 * cs.persistent);
+        assert_eq!(u.drpa_hard, 2 * cs.drpa_hard);
+        assert_eq!(u.drpa_soft, 2 * cs.drpa_soft);
+        assert_eq!(u.spin_scratch, cs.spin_scratch);
+        assert!(u.total > cs.total);
+        let bigger = PeakEstimateShape {
+            nocc: a.nocc + 5,
+            ..b
+        };
+        let u2 = scan_charge_unrestricted((a, bigger), budget, (nov, nov), 1 << 20);
+        assert!(u2.total > u.total && u2.persistent > u.persistent);
     }
 }

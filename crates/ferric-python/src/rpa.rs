@@ -12,6 +12,11 @@ use crate::pdep_properties::{
 pub(crate) struct PyRsMp2RpaResult {
     #[pyo3(get)]
     pub(crate) total_energy: f64,
+    /// The reference SCF: "RHF" for a singlet, "UHF" for multiplicity > 1
+    /// (then `rhf_energy` is the UHF energy and `e_dmp2_lr` is
+    /// `E_ab + (D_aa + D_bb)/2`, the second-order term of the U-dRPA).
+    #[pyo3(get)]
+    pub(crate) reference: String,
     #[pyo3(get)]
     pub(crate) rhf_energy: f64,
     #[pyo3(get)]
@@ -74,7 +79,8 @@ impl PyRsMp2RpaResult {
     }
 }
 
-/// SR-MP2 + LR-dRPA on an RHF reference (`formulation` "delta-lr" or
+/// SR-MP2 + LR-dRPA on an RHF reference, or a UHF one for multiplicity > 1
+/// (spin-summed U-MP2 and U-dRPA) (`formulation` "delta-lr" or
 /// "coupled-rings"; `attenuator` "erf" with `omega` in A^-1, or "terf" with
 /// `r0` in A).
 ///
@@ -124,7 +130,7 @@ pub(crate) fn run_rs_mp2_rpa(
     )?;
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
     let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
-    let rhf = converged_rhf(&mol.inner, &prep, &cfg_rhf)?;
+    let rhf = crate::mp2::converged_reference(&mol.inner, &prep, &cfg_rhf)?;
     let (forms, forms_seq) = rs_scan_axis::<String>(formulation, "formulation")?;
     let forms = forms
         .unwrap_or_else(|| vec!["delta-lr".to_string()])
@@ -236,6 +242,7 @@ pub(crate) fn run_rs_mp2_rpa(
             ferric_rpa::certificate::rs_mp2_rpa_certificate(&base_cert, &auxbasis.inner.name, &c);
         out.push(PyRsMp2RpaResult {
             total_energy: r.total_energy,
+            reference: crate::mp2::reference_name(&rhf),
             rhf_energy: rhf.energy,
             e_corr: r.e_corr,
             e_corr_naive: r.e_corr_naive,

@@ -1523,7 +1523,23 @@ pub fn run_u_pdep_rpa(
     let inter_a = compute_rpa_intermediates_spin(mol, obs, dfbs, op, rhf, &mp2_cfg, true)?;
     let inter_b = compute_rpa_intermediates_spin(mol, obs, dfbs, op, rhf, &mp2_cfg, false)?;
     debug_assert_eq!(inter_a.naux, inter_b.naux);
+    u_pdep_rpa_from_intermediates(&inter_a, &inter_b, rhf, config)
+}
 
+/// The part of [`run_u_pdep_rpa`] after the two spin intermediates are built:
+/// slice each spin's active occupied / virtual energies out of the
+/// UHF-shaped `rhf` (a ROHF reference must already be semi-canonicalized),
+/// refuse an ungapped channel, and run the shared spin-summed core.
+///
+/// `run_u_pdep_rpa` calls this, and so does the open-shell rs-mp2-rpa driver,
+/// which builds one pair of intermediates per operator and feeds it to both
+/// the U-MP2 components and this dRPA.
+pub(crate) fn u_pdep_rpa_from_intermediates(
+    inter_a: &ferric_mp2::rimp2::RpaIntermediates,
+    inter_b: &ferric_mp2::rimp2::RpaIntermediates,
+    rhf: &ScfResult,
+    config: &PdepRpaConfig,
+) -> Result<PdepRpaResult, FerricError> {
     let eps_occ_a: Vec<f64> =
         rhf.eps_a()[inter_a.first_occ..inter_a.first_occ + inter_a.nocc].to_vec();
     let eps_vir_a: Vec<f64> =
@@ -1564,7 +1580,7 @@ pub fn run_u_pdep_rpa(
     // slices and `config` (no mol/obs/dfbs/rhf), so it is shared verbatim with
     // `run_u_pdep_rpa_from_parts` — bit-identical by construction.
     u_pdep_rpa_core(
-        &inter_a, &inter_b, &eps_occ_a, &eps_vir_a, &eps_occ_b, &eps_vir_b, config,
+        inter_a, inter_b, &eps_occ_a, &eps_vir_a, &eps_occ_b, &eps_vir_b, config,
     )
 }
 

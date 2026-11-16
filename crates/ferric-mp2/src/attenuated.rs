@@ -119,9 +119,10 @@
 
 use crate::mo_transform::transform_3center_ov;
 use crate::rimp2::{
-    active_occ, cholesky_inverse_sqrt, ri_mp2_spin_components, spin_components_from_b_ov,
-    spin_components_from_b_ov_kappa, RiMp2Config, SpinComponents,
+    active_occ, cholesky_inverse_sqrt, spin_components_from_b_ov, spin_components_from_b_ov_kappa,
+    RiMp2Config, SpinComponents,
 };
+use crate::u_rimp2::ri_mp2_spin_components_any;
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
@@ -232,7 +233,7 @@ pub fn attenuated_ri_mp2_long_range(
         memory_budget_bytes: config.memory_budget_bytes,
         ..Default::default()
     };
-    let (sc, _) = ri_mp2_spin_components(mol, obs, dfbs, op, rhf, &ri_config)?;
+    let sc = ri_mp2_spin_components_any(mol, obs, dfbs, op, rhf, &ri_config)?;
     let scaled_corr = config.scaling * sc.e_total;
     Ok(AttenuatedMp2Result {
         mp2_corr: scaled_corr,
@@ -242,6 +243,10 @@ pub fn attenuated_ri_mp2_long_range(
 }
 
 /// Compute attenuated RI-MP2 using erfc(omega*r)/r operator.
+///
+/// `rhf` may be restricted, UHF or ROHF: the spin components come from
+/// [`ri_mp2_spin_components_any`] (`e_os = E_αβ`, `e_ss = E_αα + E_ββ` on an
+/// open-shell reference). `screen_thresh` is closed-shell only.
 ///
 /// The range-separation parameter omega is supplied directly (Bohr⁻¹). As
 /// omega → 0, erfc → 1 and the result converges to standard MP2; as omega
@@ -263,7 +268,7 @@ pub fn attenuated_ri_mp2(
             memory_budget_bytes: config.memory_budget_bytes,
             ..Default::default()
         };
-        ri_mp2_spin_components(mol, obs, dfbs, op, rhf, &ri_config)?.0
+        ri_mp2_spin_components_any(mol, obs, dfbs, op, rhf, &ri_config)?
     };
     let scaled_corr = config.scaling * sc.e_total;
     Ok(AttenuatedMp2Result {
@@ -275,7 +280,7 @@ pub fn attenuated_ri_mp2(
 
 /// QQR-3 screened spin-component RI-MP2 energy under operator `op`.
 ///
-/// Mirrors [`ri_mp2_spin_components`] but builds the 3-index AO tensor via
+/// Mirrors [`crate::rimp2::ri_mp2_spin_components`] but builds the 3-index AO tensor via
 /// the distance-aware QQR-3 screen (zero-filled dense Array3). Reports the
 /// kept/total shell-triple counts on stderr so callers can see whether the
 /// screening is firing.
@@ -288,6 +293,13 @@ fn attenuated_spin_components_screened(
     frozen_core: usize,
     thresh: f64,
 ) -> Result<SpinComponents, FerricError> {
+    if !matches!(rhf.spin, ferric_scf::Spin::Restricted) {
+        return Err(FerricError::General(
+            "attenuated_ri_mp2: screen_thresh (the QQR-3 screened 3-index build) is \
+             closed-shell only; unset it for a UHF or ROHF reference"
+                .into(),
+        ));
+    }
     let nbas = obs.nbasis();
     let nelec = mol.nelec() as usize;
     let nocc_total = nelec / 2;
@@ -363,7 +375,7 @@ pub fn rs_mp2_decomposition(
         memory_budget_bytes: config.memory_budget_bytes,
         ..Default::default()
     };
-    let (sc, _) = ri_mp2_spin_components(mol, obs, dfbs, op, rhf, &ri_config)?;
+    let sc = ri_mp2_spin_components_any(mol, obs, dfbs, op, rhf, &ri_config)?;
     Ok((sr, lr, sc.e_total))
 }
 

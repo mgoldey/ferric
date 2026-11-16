@@ -316,6 +316,52 @@ pub fn u_ri_mp2(
     })
 }
 
+impl URiMp2Components {
+    /// The opposite-spin / same-spin split the SCS and attenuated drivers
+    /// read: `e_os = e_ab`, `e_ss = e_aa + e_bb`. On a closed-shell reference
+    /// written as a UHF (α ≡ β) these equal the restricted
+    /// [`crate::rimp2::SpinComponents`] (theory.md, "Open-shell attenuated
+    /// and spin-scaled MP2").
+    pub fn spin_components(&self) -> crate::rimp2::SpinComponents {
+        crate::rimp2::SpinComponents {
+            e_os: self.e_ab,
+            e_ss: self.e_aa + self.e_bb,
+            e_total: self.e_total,
+        }
+    }
+}
+
+/// RI-MP2 opposite-/same-spin components under `op` on ANY reference.
+///
+/// A restricted reference runs [`crate::rimp2::ri_mp2_spin_components`]
+/// unchanged. A UHF or ROHF reference runs [`u_ri_mp2`] (ROHF is
+/// semi-canonicalized there) and returns `e_os = E_αβ`,
+/// `e_ss = E_αα + E_ββ`. This is the single entry point the attenuated and
+/// spin-component-scaled drivers use, so each of them takes an open-shell
+/// reference with no code of its own.
+pub fn ri_mp2_spin_components_any(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    scf: &ScfResult,
+    config: &RiMp2Config,
+) -> Result<crate::rimp2::SpinComponents, FerricError> {
+    if matches!(scf.spin, Spin::Restricted) {
+        return Ok(crate::rimp2::ri_mp2_spin_components(mol, obs, dfbs, op, scf, config)?.0);
+    }
+    if config.kappa.is_some() {
+        return Err(FerricError::General(
+            "ri_mp2_spin_components_any: kappa regularization is closed-shell only; an \
+             open-shell reference has no kappa kernel"
+                .into(),
+        ));
+    }
+    Ok(u_ri_mp2(mol, obs, dfbs, op, scf, config)?
+        .components
+        .spin_components())
+}
+
 /// U-RI-MP2 correlation components from caller-supplied parts: the two
 /// per-spin RI intermediates (dressed `B^P_{ia,σ}` in ONE shared aux metric)
 /// and each spin's FULL orbital-energy array (`eps_σ[first_occ + i]` occupied,
