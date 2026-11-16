@@ -143,7 +143,9 @@ check(
 pt = {m: 18 * 1.66e-27, k: K_B, h: H_PL, T: 298.15, P: 101325.0, N: 1}
 s_num = float(S_tr_sub.subs(pt)) / E_H
 s_tr_code = translational(18.0 * 1.66e-27 / ATOMIC_MASS_KG, 298.15, 101325.0)["s"]
-check("S1 transcribed S_trans", abs(s_num - s_tr_code) < 1e-14, f"{s_num} vs {s_tr_code}")
+check(
+    "S1 transcribed S_trans", abs(s_num - s_tr_code) < 1e-14, f"{s_num} vs {s_tr_code}"
+)
 
 # Rotation
 q_lin = k * T / (sigma * h * B)
@@ -152,8 +154,13 @@ check(
     "S2 S_rot linear = k (1 + ln q)",
     sp.simplify(k * sp.log(q_lin) + e_from(q_lin) / T - k * (1 + sp.log(q_lin))) == 0,
 )
-q_nl = (k * T / h) ** sp.Rational(3, 2) * sp.sqrt(sp.pi) / (sigma * sp.sqrt(A_ * B_ * C_))
-check("S2 E_rot nonlinear = 3/2 kT", sp.simplify(e_from(q_nl) - sp.Rational(3, 2) * k * T) == 0)
+q_nl = (
+    (k * T / h) ** sp.Rational(3, 2) * sp.sqrt(sp.pi) / (sigma * sp.sqrt(A_ * B_ * C_))
+)
+check(
+    "S2 E_rot nonlinear = 3/2 kT",
+    sp.simplify(e_from(q_nl) - sp.Rational(3, 2) * k * T) == 0,
+)
 
 # Vibration
 x = sp.symbols("x", positive=True)
@@ -165,10 +172,15 @@ xs = theta / T
 E_code = k * theta / 2 + k * T * xs / (sp.exp(xs) - 1)
 S_code_v = k * (xs / (sp.exp(xs) - 1) - sp.log(1 - sp.exp(-xs)))
 Cv_code = k * xs**2 * sp.exp(xs) / (sp.exp(xs) - 1) ** 2
+
+
 # exp() forms do not always simplify to 0; evaluate at exact rational points
 # to 40 digits instead (an identity holds at every point).
 def vanishes(expr):
-    pts = [{k: 1, theta: sp.Rational(th), T: sp.Rational(tt)} for th, tt in ((2000, 300), (150, 900), (5000, 77))]
+    pts = [
+        {k: 1, theta: sp.Rational(th), T: sp.Rational(tt)}
+        for th, tt in ((2000, 300), (150, 900), (5000, 77))
+    ]
     return all(abs(sp.N(expr.subs(p0), 40)) < sp.Float("1e-30") for p0 in pts)
 
 
@@ -188,19 +200,27 @@ Cv_x = k * x**2 * sp.exp(x) / (sp.exp(x) - 1) ** 2
 zpe_x = k * x * T / 2
 check("L1 high T: E - ZPE -> kT", sp.limit((ET_x - zpe_x) / (k * T), x, 0) == 1)
 check("L1 high T: Cv -> k", sp.limit(Cv_x / k, x, 0) == 1)
-check("L1 high T: S -> k (1 - ln x)", sp.limit((S_x - k * (1 - sp.log(x))) / k, x, 0) == 0)
+check(
+    "L1 high T: S -> k (1 - ln x)", sp.limit((S_x - k * (1 - sp.log(x))) / k, x, 0) == 0
+)
 check("L1 low T: E -> ZPE", sp.limit((ET_x - zpe_x) / (k * T), x, sp.oo) == 0)
 check("L1 low T: S -> 0", sp.limit(S_x, x, sp.oo) == 0)
 
 # ---------------------------------------------------------------------------
 # N1 independent route: ln Q of water from level sums, E and S by FD in T.
 MASS = {"O": 15.999, "H": 1.008}
-geom_ang = [("O", 0.0, 0.0, 0.1173), ("H", 0.0, 0.7572, -0.4692), ("H", 0.0, -0.7572, -0.4692)]
+geom_ang = [
+    ("O", 0.0, 0.0, 0.1173),
+    ("H", 0.0, 0.7572, -0.4692),
+    ("H", 0.0, -0.7572, -0.4692),
+]
 masses = np.array([MASS[s] for s, *_ in geom_ang])
 xyz = np.array([c for _, *c in geom_ang]) / 0.52917721092  # Bohr
 com = masses @ xyz / masses.sum()
 r = xyz - com
-inertia = sum(mi * (np.dot(ri, ri) * np.eye(3) - np.outer(ri, ri)) for mi, ri in zip(masses, r))
+inertia = sum(
+    mi * (np.dot(ri, ri) * np.eye(3) - np.outer(ri, ri)) for mi, ri in zip(masses, r)
+)
 moments = np.sort(np.linalg.eigvalsh(inertia))
 b_hz = [rotational_constant_hz(i) for i in moments]
 freqs = [1650.0, 3800.0, 3900.0]
@@ -217,7 +237,9 @@ def transcribed_total(t, p):
 def ln_q_molecule(t, p):
     """ln of the per-molecule partition function with V/N = kT/P (no e)."""
     kt = K_B * t
-    ln_tr = 1.5 * math.log(2 * math.pi * masses.sum() * M_U * kt / H_PL**2) + math.log(kt / p)
+    ln_tr = 1.5 * math.log(2 * math.pi * masses.sum() * M_U * kt / H_PL**2) + math.log(
+        kt / p
+    )
     ln_rot = (
         1.5 * math.log(kt / H_PL)
         + 0.5 * math.log(math.pi)
@@ -238,7 +260,9 @@ def numeric_total(t, p):
     dt = 1e-3 * t
     q_int = lambda tt: ln_q_molecule(tt, p)[1]  # noqa: E731
     # Five-point stencil: truncation dt^4 / 30 |f^(5)| ~ 1e-13 relative.
-    d1 = (q_int(t - 2 * dt) - 8 * q_int(t - dt) + 8 * q_int(t + dt) - q_int(t + 2 * dt)) / (12 * dt)
+    d1 = (
+        q_int(t - 2 * dt) - 8 * q_int(t - dt) + 8 * q_int(t + dt) - q_int(t + 2 * dt)
+    ) / (12 * dt)
     e_int = K_B * t**2 * d1
     e = 1.5 * K_B * t + e_int
     ln_tr, ln_int = ln_q_molecule(t, p)
@@ -250,7 +274,11 @@ for t in (100.0, 298.15, 1000.0):
     e_c, s_c = transcribed_total(t, 101325.0)
     e_n, s_n = numeric_total(t, 101325.0)
     ok = abs(e_c / e_n - 1) < 1e-10 and abs(s_c / s_n - 1) < 1e-10
-    check(f"N1 water T={t}: E, S closed form = level sums (claim N1)", ok, f"{e_c:.10e} {e_n:.10e} {s_c:.10e} {s_n:.10e}")
+    check(
+        f"N1 water T={t}: E, S closed form = level sums (claim N1)",
+        ok,
+        f"{e_c:.10e} {e_n:.10e} {s_c:.10e} {s_n:.10e}",
+    )
 
 # N2 rigid-rotor level sum vs closed form (HF, B ~ 20.56 cm^-1)
 b_hf = 20.56 * C_L * 100  # Hz
@@ -268,7 +296,11 @@ check(
 
 # N3 argon (Sackur-Tetrode)
 s_ar = translational(39.948, 298.15, 1.0e5)["s"] * E_H * N_A
-check("N3 Ar S(298.15 K, 1 bar) = 154.845 J/(mol K)", abs(s_ar - 154.845) < 0.01, f"{s_ar:.4f}")
+check(
+    "N3 Ar S(298.15 K, 1 bar) = 154.845 J/(mol K)",
+    abs(s_ar - 154.845) < 0.01,
+    f"{s_ar:.4f}",
+)
 
 if failures:
     print(f"\n{len(failures)} check(s) failed: {failures}")

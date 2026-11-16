@@ -780,6 +780,14 @@ fn ks_hessian_parts_in_mode(
     mode: GridMode,
 ) -> Result<RhfHessianParts, FerricError> {
     ks_refusal(rks, config)?;
+    let nbf = prep.nbasis();
+    if rks.density_total.dim() != (nbf, nbf) {
+        return Err(FerricError::General(format!(
+            "KS Hessian: the SCF result has a {:?} density but the basis has {nbf} functions; \
+             pass the result converged for this molecule and basis",
+            rks.density_total.dim()
+        )));
+    }
     // Everything but the functional is the closed-shell checklist; a stated or
     // recorded RI-J / RI-K basis goes through the same engine and metric probes
     // as RHF.

@@ -126,7 +126,11 @@ def norm(e):
 def pair(e1, z1, e2, z2):
     """(exponent, centre, prefactor) of the product of two normalized s functions."""
     p = e1 + e2
-    return p, (e1 * z1 + e2 * z2) / p, norm(e1) * norm(e2) * sp.exp(-e1 * e2 / p * (z1 - z2) ** 2)
+    return (
+        p,
+        (e1 * z1 + e2 * z2) / p,
+        norm(e1) * norm(e2) * sp.exp(-e1 * e2 / p * (z1 - z2) ** 2),
+    )
 
 
 def single(e, z):
@@ -177,7 +181,11 @@ def part_e():
     # E1: the 2-centre (P|erfc|Q) closed form vs a quadrature over t.
     i2 = sp.lambdify((al, be, zp, zq, w), eri2_expr("erfc"), modules=MODULES)
     worst = 0.0
-    for alv, bev, r, wv in [(0.4, 1.2, 1.3, OMEGA), (2.0, 0.7, 0.0, 0.5), (1.1, 1.1, 3.0, 1.7)]:
+    for alv, bev, r, wv in [
+        (0.4, 1.2, 1.3, OMEGA),
+        (2.0, 0.7, 0.0, 0.5),
+        (1.1, 1.1, 3.0, 1.7),
+    ]:
         n1, n2 = (2 * alv / np.pi) ** 0.75, (2 * bev / np.pi) ** 0.75
         rho = alv * bev / (alv + bev)
 
@@ -185,7 +193,13 @@ def part_e():
             g = (np.pi**2 / (alv * bev)) ** 1.5 * (rho / (rho + t * t)) ** 1.5
             return g * np.exp(-rho * t * t / (rho + t * t) * r * r)
 
-        ref = n1 * n2 * 2 / np.sqrt(np.pi) * quad(kern, wv, np.inf, epsabs=1e-14, epsrel=1e-13)[0]
+        ref = (
+            n1
+            * n2
+            * 2
+            / np.sqrt(np.pi)
+            * quad(kern, wv, np.inf, epsabs=1e-14, epsrel=1e-13)[0]
+        )
         worst = max(worst, abs(i2(alv, bev, 0.0, r, wv) - ref) / abs(ref))
     report("E", "E1 (P|erfc|Q) closed form vs t-quadrature", worst, 1e-10)
 
@@ -205,9 +219,19 @@ def part_e():
                 if shift is not None:
                     zz[shift] += h
                 return f(
-                    base["a"], base["b"], 0.0, 0.0, base["al"], base["be"],
-                    zz.get(za, 0.0), zz.get(zb, 0.0), 0.0, 0.0,
-                    zz.get(zp, 0.0), zz.get(zq, 0.0), base["w"],
+                    base["a"],
+                    base["b"],
+                    0.0,
+                    0.0,
+                    base["al"],
+                    base["be"],
+                    zz.get(za, 0.0),
+                    zz.get(zb, 0.0),
+                    0.0,
+                    0.0,
+                    zz.get(zp, 0.0),
+                    zz.get(zq, 0.0),
+                    base["w"],
                 )
 
             for cen, der in zip(cents, ders):
@@ -218,7 +242,12 @@ def part_e():
     # E3: translational invariance, symbolically.
     s3 = sp.simplify(sum(sp.diff(eri3_expr("erfc"), z) for z in (zp, za, zb)))
     s2 = sp.simplify(sum(sp.diff(eri2_expr("erfc"), z) for z in (zp, zq)))
-    report("E", "E3 sum of centre derivatives (3c, 2c) == 0", float(s3 != 0) + float(s2 != 0), 0)
+    report(
+        "E",
+        "E3 sum of centre derivatives (3c, 2c) == 0",
+        float(s3 != 0) + float(s2 != 0),
+        0,
+    )
 
 
 # ================================================================ part W
@@ -234,11 +263,17 @@ def part_w():
         report("W", f"lim_(w->0) I_erf ({name}) == 0", float(sp.simplify(lim) != 0), 0)
         n = [k * (sp.pi / p) ** sp.Rational(3, 2) for p, _, k in charges]
         # F0(T) = 1 - T/3 + O(T^2) and T = O(w^2), so to first order in w:
-        series_expr = e_erfc.replace(F0, sp.Lambda(sp.Symbol("t"), 1 - sp.Symbol("t") / 3))
+        series_expr = e_erfc.replace(
+            F0, sp.Lambda(sp.Symbol("t"), 1 - sp.Symbol("t") / 3)
+        )
         slope = sp.diff(series_expr, w).subs(w, 0)
-        target = sp.diff(e_coul.replace(F0, sp.Lambda(sp.Symbol("t"), 1 - sp.Symbol("t") / 3)), w)
+        target = sp.diff(
+            e_coul.replace(F0, sp.Lambda(sp.Symbol("t"), 1 - sp.Symbol("t") / 3)), w
+        )
         resid = sp.simplify(slope - target + 2 / sp.sqrt(sp.pi) * n[0] * n[1])
-        report("W", f"dI_erfc/dw|_0 == -(2/sqrt pi) n1 n2 ({name})", float(resid != 0), 0)
+        report(
+            "W", f"dI_erfc/dw|_0 == -(2/sqrt pi) n1 n2 ({name})", float(resid != 0), 0
+        )
 
 
 # ================================================================ part L model
@@ -286,8 +321,21 @@ def build(x, omega):
         eri = np.zeros((n, n, n, n))
         deri = np.zeros_like(eri)
         for i, j, k, l in itertools.product(range(n), repeat=4):
-            f = (ao[i][0], ao[j][0], ao[k][0], ao[l][0], 0.0, 0.0,
-                 ao[i][1], ao[j][1], ao[k][1], ao[l][1], 0.0, 0.0, omega)
+            f = (
+                ao[i][0],
+                ao[j][0],
+                ao[k][0],
+                ao[l][0],
+                0.0,
+                0.0,
+                ao[i][1],
+                ao[j][1],
+                ao[k][1],
+                ao[l][1],
+                0.0,
+                0.0,
+                omega,
+            )
             eri[i, j, k, l] = v4(*f)
             deri[i, j, k, l] = sum(
                 dd(*f) for dd, idx in zip(d4, (i, j, k, l)) if ao[idx][2] == MOVING
@@ -297,18 +345,46 @@ def build(x, omega):
         u = np.zeros((m, n, n))
         du = np.zeros_like(u)
         for pp, i, j in itertools.product(range(m), range(n), range(n)):
-            f = (ao[i][0], ao[j][0], 0.0, 0.0, aux[pp][0], 0.0,
-                 ao[i][1], ao[j][1], 0.0, 0.0, aux[pp][1], 0.0, omega)
+            f = (
+                ao[i][0],
+                ao[j][0],
+                0.0,
+                0.0,
+                aux[pp][0],
+                0.0,
+                ao[i][1],
+                ao[j][1],
+                0.0,
+                0.0,
+                aux[pp][1],
+                0.0,
+                omega,
+            )
             u[pp, i, j] = v3(*f)
             du[pp, i, j] = sum(
-                dd(*f) for dd, cen in zip(d3, (aux[pp], ao[i], ao[j])) if cen[2] == MOVING
+                dd(*f)
+                for dd, cen in zip(d3, (aux[pp], ao[i], ao[j]))
+                if cen[2] == MOVING
             )
         v2, d2 = INTS[("2", kern)]
         v = np.zeros((m, m))
         dv = np.zeros_like(v)
         for pp, qq in itertools.product(range(m), range(m)):
-            f = (0.0, 0.0, 0.0, 0.0, aux[pp][0], aux[qq][0],
-                 0.0, 0.0, 0.0, 0.0, aux[pp][1], aux[qq][1], omega)
+            f = (
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                aux[pp][0],
+                aux[qq][0],
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                aux[pp][1],
+                aux[qq][1],
+                omega,
+            )
             v[pp, qq] = v2(*f)
             dv[pp, qq] = sum(
                 dd(*f) for dd, cen in zip(d2, (aux[pp], aux[qq])) if cen[2] == MOVING
@@ -366,7 +442,12 @@ def mp2_pieces(c, eps, u, v, nocc, fc, scale):
     ia = b_full[:, fc:nocc, nocc:]
     g = np.einsum("Pia,Pjb->ijab", ia, ia)
     eo, ev = eps[fc:nocc], eps[nocc:]
-    dd = eo[:, None, None, None] + eo[None, :, None, None] - ev[None, None, :, None] - ev[None, None, None, :]
+    dd = (
+        eo[:, None, None, None]
+        + eo[None, :, None, None]
+        - ev[None, None, :, None]
+        - ev[None, None, None, :]
+    )
     t = g / dd
     tt = scale * (2 * t - t.transpose(0, 1, 3, 2))
     return np.sum(g * tt), t, tt, b_full, vm12
@@ -411,7 +492,10 @@ def analytic_gradient(x, omega, fc, scale, corr="erfc"):
         zm = zvec.reshape(nv, nocc)
         dz = cv @ zm @ co.T + co @ zm.T @ cv.T
         jz, kz = jk(eri_ref, dz)
-        return ((eps[nocc:, None] - eps[None, :nocc]) * zm + 0.5 * (cv.T @ (4 * jz - kz - kz.T) @ co)).ravel()
+        return (
+            (eps[nocc:, None] - eps[None, :nocc]) * zm
+            + 0.5 * (cv.T @ (4 * jz - kz - kz.T) @ co)
+        ).ravel()
 
     amat = np.array([a_z(e) for e in np.eye(nv * nocc)]).T
     z = np.linalg.solve(amat, -xvo.ravel()).reshape(nv, nocc)
@@ -449,7 +533,9 @@ def part_l():
     for scale, fc in itertools.product((1.0, 1.2), (0, 1)):
         g = analytic_gradient(x0, OMEGA, fc, scale)
         fd = richardson(lambda xx: total_energy(xx, OMEGA, fc, scale), x0, 2e-3)
-        report("L", f"s = {scale}, frozen core {fc}", abs(g - fd) / max(1.0, abs(fd)), 1e-8)
+        report(
+            "L", f"s = {scale}, frozen core {fc}", abs(g - fd) / max(1.0, abs(fd)), 1e-8
+        )
 
 
 def part_z():
@@ -457,7 +543,12 @@ def part_z():
     x0 = 0.05
     g_att = analytic_gradient(x0, 1e-6, 0, 1.0)
     g_mp2 = analytic_gradient(x0, 1e-6, 0, 1.0, corr="coul")
-    report("Z", "|g_att(w=1e-6) - g_RI-MP2|", abs(g_att - g_mp2) / max(1.0, abs(g_mp2)), 1e-9)
+    report(
+        "Z",
+        "|g_att(w=1e-6) - g_RI-MP2|",
+        abs(g_att - g_mp2) / max(1.0, abs(g_mp2)),
+        1e-9,
+    )
     gap = abs(analytic_gradient(x0, OMEGA, 0, 1.0) - g_mp2)
     report("Z", "non-vacuity: 1e-5 / |g_att(w=0.2222) - g_RI-MP2|", 1e-5 / gap, 1.0)
 

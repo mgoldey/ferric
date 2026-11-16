@@ -98,7 +98,9 @@ OH = "2\n\nO 0 0 0\nH 0 0 0.97\n"
 @pytest.fixture(scope="module")
 def water_run():
     mol = ferric.run_optimize(ferric.Molecule.from_xyz_string(WATER), "sto-3g").mol()
-    return mol, ferric.run_frequencies(mol, "sto-3g", scf_density_conv=1e-10, scf_energy_conv=1e-10)
+    return mol, ferric.run_frequencies(
+        mol, "sto-3g", scf_density_conv=1e-10, scf_energy_conv=1e-10
+    )
 
 
 @pytest.mark.parametrize(
@@ -110,7 +112,9 @@ def water_run():
     ],
     ids=["water", "co2-linear", "oh-doublet"],
 )
-def test_thermo_matches_pyscf_on_the_same_hessian(xyz, kw, sigma, spin, points, water_run):
+def test_thermo_matches_pyscf_on_the_same_hessian(
+    xyz, kw, sigma, spin, points, water_run
+):
     if xyz is WATER:
         mol, fr = water_run
     else:
@@ -126,7 +130,9 @@ def test_thermo_matches_pyscf_on_the_same_hessian(xyz, kw, sigma, spin, points, 
     for t, p in points:
         ours = fr.thermo(temperature=t, pressure=p, symmetry_number=sigma)
         with _Codata2018():
-            ha, theirs = _pyscf_thermo(pmol, masses, fr.cartesian_hessian, fr.energy, t, p)
+            ha, theirs = _pyscf_thermo(
+                pmol, masses, fr.cartesian_hessian, fr.energy, t, p
+            )
         wn = np.sort(ha["freq_wavenumber"].real)
         dnu = np.abs(wn - np.sort(fr.frequencies)).max()
         worst = _compare(ours, theirs, t)
@@ -147,7 +153,10 @@ def test_wrong_symmetry_number_is_visible(water_run):
     r = 1.380649e-23 / 4.3597447222071e-18
     ds = one["rotational"]["entropy"] - two["rotational"]["entropy"]
     assert abs(ds - r * np.log(2)) < 1e-16
-    assert abs((two["total"]["gibbs"] - one["total"]["gibbs"]) - 298.15 * r * np.log(2)) < 1e-12
+    assert (
+        abs((two["total"]["gibbs"] - one["total"]["gibbs"]) - 298.15 * r * np.log(2))
+        < 1e-12
+    )
 
 
 def test_thermo_refuses_bad_inputs(water_run):
@@ -194,13 +203,18 @@ def test_ir_intensities_match_pyscf_dipoles(water_run):
     symbols, coords = mol.symbols(), mol.coords()
     pmol, masses = _pyscf_mol(symbols, coords, "sto-3g")
     with _Codata2018():
-        ha, _ = _pyscf_thermo(pmol, masses, fr.cartesian_hessian, fr.energy, 298.15, 101325.0)
+        ha, _ = _pyscf_thermo(
+            pmol, masses, fr.cartesian_hessian, fr.energy, 298.15, 101325.0
+        )
     # PySCF norm_mode: (mode, atom, xyz), = M^-1/2 u with M in u.
     modes = ha["norm_mode"].real.reshape(len(ha["freq_au"]), -1)
     order = np.argsort(ha["freq_wavenumber"].real)
     modes = modes[order]
     d = 5e-3
-    p1, p2 = _pyscf_apt(symbols, coords, "sto-3g", d), _pyscf_apt(symbols, coords, "sto-3g", 2 * d)
+    p1, p2 = (
+        _pyscf_apt(symbols, coords, "sto-3g", d),
+        _pyscf_apt(symbols, coords, "sto-3g", 2 * d),
+    )
     t = np.abs(p2 - p1).max() / 3.0
     b_p = 2.0 * t + 2e-5
     c_amu = 974.8801118
@@ -212,7 +226,9 @@ def test_ir_intensities_match_pyscf_dipoles(water_run):
         b = b_p * np.sqrt(3) * np.abs(xk).sum()
         bounds.append(c_amu * (2 * np.linalg.norm(v) + b) * b)
     theirs = np.array(theirs)
-    print(f"ferric {ours} vs PySCF dipoles {theirs} (bounds {bounds}, Richardson t {t:.1e})")
+    print(
+        f"ferric {ours} vs PySCF dipoles {theirs} (bounds {bounds}, Richardson t {t:.1e})"
+    )
     assert len(ours) == len(theirs) == 3
     assert np.all(np.abs(ours - theirs) <= np.array(bounds))
 

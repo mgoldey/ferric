@@ -57,6 +57,15 @@ fn water() -> Molecule {
     .unwrap()
 }
 
+/// NH2 doublet: a non-degenerate singly occupied orbital (2B1). OH's two pi
+/// components are near-degenerate, and under a 1e-3 field the UHF orbital
+/// Hessian has an eigenvalue of ~1e-8 Ha, so its 1e-10 density convergence
+/// ran past 300 iterations on some machines; NH2 converges in 20-24 under
+/// every field this test applies.
+fn amidogen() -> Molecule {
+    Molecule::parse_xyz("3\n\nN 0 0 0\nH 0 0.80 0.62\nH 0.05 -0.78 0.60\n", 0, 2).unwrap()
+}
+
 fn hydroxyl() -> Molecule {
     Molecule::parse_xyz("2\n\nO 0 0 0\nH 0 0.15 0.95\n", 0, 2).unwrap()
 }
@@ -221,8 +230,8 @@ fn rks_field_and_dipole_routes_agree() {
 #[test]
 fn uhf_field_and_dipole_routes_agree() {
     check_routes(
-        "UHF OH/6-31G",
-        &hydroxyl(),
+        "UHF NH2/6-31G",
+        &amidogen(),
         "6-31g",
         None,
         FrequencyReference::Uhf,

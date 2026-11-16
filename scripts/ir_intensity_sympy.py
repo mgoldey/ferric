@@ -96,11 +96,19 @@ def field_route(grad_at_field, h):
 # ---------------------------------------------------------------------------
 # C1 constant
 c_si = N_A * E_C**2 / (12 * EPS0 * C_L**2 * M_E) / 1000.0
-check("C1 AU_TO_KM_PER_MOL from CODATA 2018", abs(AU_TO_KM_PER_MOL / c_si - 1) < 1e-12, f"{c_si!r}")
+check(
+    "C1 AU_TO_KM_PER_MOL from CODATA 2018",
+    abs(AU_TO_KM_PER_MOL / c_si - 1) < 1e-12,
+    f"{c_si!r}",
+)
 per_amu = AU_TO_KM_PER_MOL / AMU_TO_ELECTRON_MASS
 check("C1 974.880 km/mol per e^2/u", abs(per_amu - 974.880) < 1e-3, f"{per_amu:.4f}")
 d_per_ang = (DEBYE / ANG) ** 2 / M_U * N_A / (12 * EPS0 * C_L**2) / 1000.0
-check("C1 42.2561 km/mol per (D/A)^2/u", abs(d_per_ang - 42.2561) < 1e-3, f"{d_per_ang:.4f}")
+check(
+    "C1 42.2561 km/mol per (D/A)^2/u",
+    abs(d_per_ang - 42.2561) < 1e-3,
+    f"{d_per_ang:.4f}",
+)
 
 # ---------------------------------------------------------------------------
 # S1 harmonic 0 -> 1 band
@@ -109,7 +117,10 @@ d01_sq = dmu**2 * hbar / (2 * w)  # |<0|mu|1>|^2 along the mode
 sigma_omega = sp.pi * w * d01_sq / (3 * eps0 * hbar * c)  # int sigma d omega
 # d(omega) = 2 pi c d(nu~): int sigma d(nu~) = int sigma d(omega) / (2 pi c)
 a_molar = NA * sigma_omega / (2 * sp.pi * c)
-check("S1 A = N_A |dmu/dQ|^2 / (12 eps0 c^2)", sp.simplify(a_molar - NA * dmu**2 / (12 * eps0 * c**2)) == 0)
+check(
+    "S1 A = N_A |dmu/dQ|^2 / (12 eps0 c^2)",
+    sp.simplify(a_molar - NA * dmu**2 / (12 * eps0 * c**2)) == 0,
+)
 check("S1 hbar and omega cancel (classical)", not ({hbar, w} & a_molar.free_symbols))
 
 # S2 temperature independence of the net ladder absorption
@@ -134,7 +145,10 @@ g = sp.diff(E, R)
 apt_exact = -sp.diff(g, F).subs(F, 0)
 check("S3 -d2E/dFdR = dmu/dR", sp.simplify(apt_exact - sp.diff(mu, R)) == 0)
 cd = -(g.subs(F, hh) - g.subs(F, -hh)) / (2 * hh)
-check("S3 central difference exact for quadratic E(F)", sp.simplify(cd - sp.diff(mu, R)) == 0)
+check(
+    "S3 central difference exact for quadratic E(F)",
+    sp.simplify(cd - sp.diff(mu, R)) == 0,
+)
 
 # ---------------------------------------------------------------------------
 # N1 bent triatomic model
@@ -181,7 +195,9 @@ a_contract = ir_intensities(apt_fd(r0), modes)
 a_mode = []
 for xk in modes:
     s = 1e-3
-    dm = (dipole(r0 + s * xk.reshape(-1, 3)) - dipole(r0 - s * xk.reshape(-1, 3))) / (2 * s)
+    dm = (dipole(r0 + s * xk.reshape(-1, 3)) - dipole(r0 - s * xk.reshape(-1, 3))) / (
+        2 * s
+    )
     a_mode.append(AU_TO_KM_PER_MOL * np.dot(dm, dm))
 a_mode = np.array(a_mode)
 check(
@@ -206,7 +222,11 @@ for b in range(3):
 mu_red = m2[0] * m2[1] / (m2[0] + m2[1]) * AMU_TO_ELECTRON_MASS
 a2 = ir_intensities(apt2, modes2)
 exact2 = AU_TO_KM_PER_MOL * q * q / mu_red
-check("N2 diatomic A = C q^2 / mu_red", len(a2) == 1 and abs(a2[0] / exact2 - 1) < 1e-12, f"{a2} vs {exact2}")
+check(
+    "N2 diatomic A = C q^2 / mu_red",
+    len(a2) == 1 and abs(a2[0] / exact2 - 1) < 1e-12,
+    f"{a2} vs {exact2}",
+)
 
 # N3 field route with a cubic field term
 alpha = np.diag([2.0, 3.0, 4.0])
@@ -242,7 +262,11 @@ p_ref = apt_fd(r0)
 # inner gradient and dipole stencils add ~1e-9.
 n3_bound = beta * np.abs(r0).max() * H_FIELD**2 / 3.0 + 1e-8
 n3_diff = np.abs(p_field - p_ref).max()
-check("N3 field route = dmu/dR", n3_diff <= n3_bound, f"max diff {n3_diff:.2e} (bound {n3_bound:.2e})")
+check(
+    "N3 field route = dmu/dR",
+    n3_diff <= n3_bound,
+    f"max diff {n3_diff:.2e} (bound {n3_bound:.2e})",
+)
 
 if failures:
     print(f"\n{len(failures)} check(s) failed: {failures}")

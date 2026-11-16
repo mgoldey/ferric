@@ -112,7 +112,13 @@ EV_B = np.sort(rng.uniform(0.1, 1.2, NV_B))
 
 
 def spin(no, nv, eo, ev):
-    return {"no": no, "nv": nv, "eo": eo, "ev": ev, "d": (ev[None, :] - eo[:, None]).ravel()}
+    return {
+        "no": no,
+        "nv": nv,
+        "eo": eo,
+        "ev": ev,
+        "d": (ev[None, :] - eo[:, None]).ravel(),
+    }
 
 
 SA = spin(NO_A, NV_A, EO_A, EV_A)
@@ -124,7 +130,12 @@ def b_pair(scale_s, scale_l):
     out = []
     for sp_ in (SA, SB):
         n = sp_["no"] * sp_["nv"]
-        out.append((scale_s * rng.standard_normal((NAUX_S, n)), scale_l * rng.standard_normal((NAUX_L, n))))
+        out.append(
+            (
+                scale_s * rng.standard_normal((NAUX_S, n)),
+                scale_l * rng.standard_normal((NAUX_L, n)),
+            )
+        )
     return out
 
 
@@ -151,7 +162,9 @@ def opposite_spin(ba, bb):
         for j in range(SB["no"]):
             for a in range(SA["nv"]):
                 for c in range(SB["nv"]):
-                    e += g[i, a, j, c] ** 2 / (SA["eo"][i] + SB["eo"][j] - SA["ev"][a] - SB["ev"][c])
+                    e += g[i, a, j, c] ** 2 / (
+                        SA["eo"][i] + SB["eo"][j] - SA["ev"][a] - SB["ev"][c]
+                    )
     return e
 
 
@@ -223,7 +236,11 @@ def u_drpa_freq(bs, nw=400, x0=0.5):
     e = 0.0
     for wk, ck in zip(w, wt):
         pi = pi_matrix(bs, wk)
-        e += ck / (2 * np.pi) * (np.linalg.slogdet(np.eye(pi.shape[0]) + pi)[1] - np.trace(pi))
+        e += (
+            ck
+            / (2 * np.pi)
+            * (np.linalg.slogdet(np.eye(pi.shape[0]) + pi)[1] - np.trace(pi))
+        )
     return e
 
 
@@ -248,7 +265,10 @@ def lam_coeffs(fun, n=3, radius=0.2, npts=64):
     th = 2 * np.pi * np.arange(npts) / npts
     z = radius * np.exp(1j * th)
     vals = np.array([fun(x) for x in z])
-    return [float(np.real(np.mean(vals * np.exp(-1j * m * th)) / radius**m)) for m in range(2, n + 1)]
+    return [
+        float(np.real(np.mean(vals * np.exp(-1j * m * th)) / radius**m))
+        for m in range(2, n + 1)
+    ]
 
 
 def b_form(e_mp2_c, e_rpa_l, dmp2_l):
@@ -275,7 +295,11 @@ def open_shell():
     )
     e_os, e_ss = scs_split(e_aa, e_bb, e_ab)
     check("os-is-ab", abs(e_os - opp) < 1e-13 * abs(opp), f"{e_os:.15f} vs {opp:.15f}")
-    check("ss-is-aa-plus-bb", abs(e_ss - same) < 1e-13 * abs(same), f"{e_ss:.15f} vs {same:.15f}")
+    check(
+        "ss-is-aa-plus-bb",
+        abs(e_ss - same) < 1e-13 * abs(same),
+        f"{e_ss:.15f} vs {same:.15f}",
+    )
 
     k = k_spin_orbital((ba, bb))
     e_pl = plasmon(k, D_SO)
@@ -340,7 +364,12 @@ def open_shell():
     liminf_t = t_form(mp2_c, plasmon(k_c, D_SO), dm_c, plasmon(zero, D_SO), 0.0)
     check(
         "u-limits",
-        max(abs(lim0_b - mp2_c), abs(lim0_t - mp2_c), abs(liminf_b - full), abs(liminf_t - full))
+        max(
+            abs(lim0_b - mp2_c),
+            abs(lim0_t - mp2_c),
+            abs(liminf_b - full),
+            abs(liminf_t - full),
+        )
         < 1e-14,
         "omega->0: E_MP2[C]; omega->inf: E_MP2[C] + E_dRPA[C] - dMP2[C]",
     )
@@ -373,7 +402,11 @@ def singlet():
     k1 = b.T @ b
     e_cs = plasmon(2.0 * k1, SA["d"])
     e_u = plasmon(k_spin_orbital((b, b)), D_SO)
-    check("singlet-drpa", abs(e_u - e_cs) < 1e-12 * abs(e_cs), f"U {e_u:.15f} vs closed {e_cs:.15f}")
+    check(
+        "singlet-drpa",
+        abs(e_u - e_cs) < 1e-12 * abs(e_cs),
+        f"U {e_u:.15f} vs closed {e_cs:.15f}",
+    )
     SA, SB, D_SO = keep
 
 

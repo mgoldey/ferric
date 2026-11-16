@@ -971,7 +971,11 @@ fn a_result_of_another_energy_is_refused_by_the_fock_consistency_guard() {
 }
 
 #[test]
-fn an_ecp_system_is_refused() {
+/// ECPs are supported (the ECP skeleton and `∂V_ECP/∂x`, validated by FD in
+/// the ECP Hessian suite), so an ECP system is no longer refused. A result
+/// converged for another molecule and basis is: it used to reach an ndarray
+/// index panic.
+fn a_result_for_another_basis_is_refused() {
     let r = reference("sto-3g");
     let bs = basis::bundled("def2-svp").unwrap();
     let mut mol = Molecule::parse_xyz(
@@ -992,9 +996,9 @@ fn an_ecp_system_is_refused() {
         &r.fixed.res,
         &hessian_config(),
     )
-    .expect_err("an ECP system must be refused");
+    .expect_err("a result for another basis must be refused");
     let msg = err.to_string();
-    assert!(msg.contains("ECP") && msg.contains("next unit:"), "{msg}");
+    assert!(msg.contains("functions"), "{msg}");
 }
 
 #[test]

@@ -118,7 +118,7 @@ def l1_checks():
         sp.simplify(sp.diff(sp.log(k_bend), r1) + 2 * a * r1) == 0,
     )
 
-    src = RUST.read_text()
+    src = RUST.read_text(encoding="utf-8")
 
     def const(name):
         m = re.search(rf"pub const {name}: f64 = ([0-9.e-]+);", src)
@@ -339,7 +339,7 @@ def l4_checks(hs, write):
     if write:
         REF.write_text(json.dumps(payload, indent=1) + "\n")
         print(f"wrote {REF}")
-    stored = json.loads(REF.read_text())
+    stored = json.loads(REF.read_text(encoding="utf-8"))
     for name in ("water", "ethanol"):
         ref = np.array(stored["systems"][name]["hessian"])
         d = np.abs(ref - hs[name][0]).max()

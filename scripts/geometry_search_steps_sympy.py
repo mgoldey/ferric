@@ -426,7 +426,7 @@ def _rust_source(rel):
         cands.insert(0, Path(os.environ["FERRIC_ROOT"]))
     for c in cands:
         if (c / rel).is_file():
-            return (c / rel).read_text()
+            return (c / rel).read_text(encoding="utf-8")
     return None
 
 

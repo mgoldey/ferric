@@ -135,9 +135,9 @@ def d3bj(symbols, coords_bohr, method):
         RationalDampingParam(method=method, atm=False), grad=False
     )["energy"]
     p = D3_EXPLICIT[method]
-    explicit = model.get_dispersion(
-        RationalDampingParam(s9=0.0, **p), grad=False
-    )["energy"]
+    explicit = model.get_dispersion(RationalDampingParam(s9=0.0, **p), grad=False)[
+        "energy"
+    ]
     assert abs(by_name - explicit) < 1e-14, (method, by_name, explicit)
     return float(by_name), p
 
@@ -183,7 +183,9 @@ def gen_case(key):
             distinct_tol=STATE_TOL,
         )
         if res["multiple_stable_minima"]:
-            raise RuntimeError(f"{key}/{name}: several stable UKS states: {res['guess_scan']}")
+            raise RuntimeError(
+                f"{key}/{name}: several stable UKS states: {res['guess_scan']}"
+            )
         entry = {
             "xc": xc,
             "c_os": c_os,
@@ -198,7 +200,9 @@ def gen_case(key):
             },
             "stability": res["stability"],
             "guess_energies": [
-                g["energy"] for g in res["guess_scan"] if g["converged"] and g["internal_stable"]
+                g["energy"]
+                for g in res["guess_scan"]
+                if g["converged"] and g["internal_stable"]
             ],
         }
         # Reproduction: the same case from the atom guess alone, to the same
@@ -279,7 +283,10 @@ def gen_case(key):
         },
         frozen_core=list(FROZEN),
         scf_conv={"conv_tol": CONV_TOL, "conv_tol_grad": CONV_TOL_GRAD},
-        stability={"internal_stable": True, "kind": "internal, real (common.run_open_shell)"},
+        stability={
+            "internal_stable": True,
+            "kind": "internal, real (common.run_open_shell)",
+        },
         generator="scripts/validation/gen_udh_pyscf.py",
     )
     path = common.write_reference(ROW, system, basis_name, out)

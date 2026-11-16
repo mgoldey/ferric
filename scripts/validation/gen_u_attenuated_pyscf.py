@@ -187,7 +187,9 @@ def assemble(k):
         "B_e_corr": c["e_mp2"] + lr["e_drpa"] - lr["dmp2"],
         "T_e_delta_drpa_full": c["e_drpa"] - c["dmp2"],
         "T_e_delta_drpa_sr": sr["e_drpa"] - sr["dmp2"],
-        "T_e_corr": c["e_mp2"] + (c["e_drpa"] - c["dmp2"]) - (sr["e_drpa"] - sr["dmp2"]),
+        "T_e_corr": c["e_mp2"]
+        + (c["e_drpa"] - c["dmp2"])
+        - (sr["e_drpa"] - sr["dmp2"]),
         # Controls: the closed-shell rule carried over, and a dropped beta ring.
         "B_control_2eab": c["e_mp2"] + lr["e_drpa"] - 2.0 * lr["e_ab"],
         "T_control_2eab": c["e_mp2"]

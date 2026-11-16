@@ -773,7 +773,9 @@ def brute_force_u(model, b_ao, cs, epss, na, nb):
     hs = [cs[s].T @ model[0] @ cs[s] for s in (0, 1)]
     bm = [np.einsum("Pmn,mp,nq->Ppq", b_ao, cs[s], cs[s]) for s in (0, 1)]
     gs = [[np.einsum("Ppq,Prs->pqrs", bm[s], bm[t]) for t in (0, 1)] for s in (0, 1)]
-    ref = sum(1 << (2 * i) for i in range(na)) + sum(1 << (2 * i + 1) for i in range(nb))
+    ref = sum(1 << (2 * i) for i in range(na)) + sum(
+        1 << (2 * i + 1) for i in range(nb)
+    )
     hv = apply_h_u(hs, gs, ref)
     e0 = hv[ref]
     e_s = e_os = e_ss = max_s = 0.0
@@ -850,7 +852,9 @@ def part_u(model):
         e_ks_f, csf, epssf, bf = uks_scf(model, nb, na, p["a_x"], p["b_x"], p["a_c"])
         fos, fss = spin_components_u(bf, csf, epssf, nb, na)
         d5 = abs(assemble(e_ks_f, fos, fss, p["c_os"], p["c_ss"]) - e_dh)
-        check(f"U5 {kind}: alpha/beta relabelling leaves E_DH", d5 < TOL, f"|d| {d5:.1e}")
+        check(
+            f"U5 {kind}: alpha/beta relabelling leaves E_DH", d5 < TOL, f"|d| {d5:.1e}"
+        )
 
 
 def spin_components_rks(b_ao, c, eps):
@@ -896,7 +900,9 @@ def part_d():
             RationalDampingParam(method=name, atm=False), grad=False
         )["energy"]
         explicit = model.get_dispersion(
-            RationalDampingParam(s6=c["s6"], s8=c["s8"], a1=c["a1"], a2=c["a2"], s9=0.0),
+            RationalDampingParam(
+                s6=c["s6"], s8=c["s8"], a1=c["a1"], a2=c["a2"], s9=0.0
+            ),
             grad=False,
         )["energy"]
         check(

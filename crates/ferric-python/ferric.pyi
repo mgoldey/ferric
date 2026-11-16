@@ -2014,7 +2014,7 @@ class AttenuatedMp2Result:
     def total_energy(self) -> float: ...
     @property
     def reference(self) -> str:
-        """"RHF" for a singlet, "UHF" for multiplicity > 1 (then
+        """ "RHF" for a singlet, "UHF" for multiplicity > 1 (then
         ``rhf_energy`` is the UHF energy, ``e_os`` = E_ab, ``e_ss`` = E_aa + E_bb)."""
         ...
 
@@ -2051,7 +2051,7 @@ class ScsMp2Result:
     def total_energy(self) -> float: ...
     @property
     def reference(self) -> str:
-        """"RHF" for a singlet, "UHF" for multiplicity > 1 (then
+        """ "RHF" for a singlet, "UHF" for multiplicity > 1 (then
         ``rhf_energy`` is the UHF energy, ``e_os`` = E_ab, ``e_ss`` = E_aa + E_bb)."""
         ...
 
@@ -2135,7 +2135,7 @@ class RsMp2RpaResult:
     def total_energy(self) -> float: ...
     @property
     def reference(self) -> str:
-        """"RHF" for a singlet, "UHF" for multiplicity > 1 (then
+        """ "RHF" for a singlet, "UHF" for multiplicity > 1 (then
         ``rhf_energy`` is the UHF energy and ``e_dmp2_lr`` = E_ab + (D_aa + D_bb)/2)."""
         ...
 

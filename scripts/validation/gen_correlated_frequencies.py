@@ -112,7 +112,9 @@ def geometries() -> dict[str, tuple[list[str], np.ndarray, int]]:
     nh3 = [[0.0, 0.0, 0.0]]
     for r, ph in ((1.02, 0.0), (1.01, 118.0), (1.00, 243.0)):
         p = ph * d2r
-        nh3.append([r * np.sin(th) * np.cos(p), r * np.sin(th) * np.sin(p), -r * np.cos(th)])
+        nh3.append(
+            [r * np.sin(th) * np.cos(p), r * np.sin(th) * np.sin(p), -r * np.cos(th)]
+        )
     oh = np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 0.97]])
     return {
         "h2o": (["O", "H", "H"], rotate(h2o), 1),
@@ -233,7 +235,12 @@ def fd_gradient(energy, x0: np.ndarray) -> np.ndarray:
 def ferric_masses(symbols: list[str]) -> list[float]:
     src = (ROOT / "crates/ferric-core/src/elements.rs").read_text()
     body = src.split("const ATOMIC_MASSES: &[f64] = &[")[1].split("];")[0]
-    table = [float(v.replace("_", "")) for v in re.findall(r"[0-9][0-9_]*\.?[0-9_]*(?:e-?[0-9]+)?", re.sub(r"//.*", "", body))]
+    table = [
+        float(v.replace("_", ""))
+        for v in re.findall(
+            r"[0-9][0-9_]*\.?[0-9_]*(?:e-?[0-9]+)?", re.sub(r"//.*", "", body)
+        )
+    ]
     return [table[common.z_of(s) - 1] for s in symbols]
 
 
@@ -283,7 +290,9 @@ def generate(case: str) -> dict:
         xp, xm = x0.copy(), x0.copy()
         xp[a, c] += DELTA_BOHR
         xm[a, c] -= DELTA_BOHR
-        hess[:, j] = ((fd_gradient(energy, xp) - fd_gradient(energy, xm)) / (2 * DELTA_BOHR)).ravel()
+        hess[:, j] = (
+            (fd_gradient(energy, xp) - fd_gradient(energy, xm)) / (2 * DELTA_BOHR)
+        ).ravel()
         print(f"  {case}: column {j + 1}/{3 * (n - 1)}", flush=True)
     # Last atom's columns from translation invariance (sum_k H[:, 3k+c] = 0).
     for c in range(3):
@@ -361,8 +370,11 @@ def main(argv: list[str]) -> int:
     for case in cases:
         payload = generate(case)
         (OUT_DIR / f"{case}.json").write_text(json.dumps(payload, indent=1) + "\n")
-        print(f"{case}: nu = {np.round(payload['frequencies_cm1'], 2).tolist()}  "
-              f"bar = {np.round(payload['bar']['cm1_per_mode'], 3).tolist()}", flush=True)
+        print(
+            f"{case}: nu = {np.round(payload['frequencies_cm1'], 2).tolist()}  "
+            f"bar = {np.round(payload['bar']['cm1_per_mode'], 3).tolist()}",
+            flush=True,
+        )
     return 0
 
 

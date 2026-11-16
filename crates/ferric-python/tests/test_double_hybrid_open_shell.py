@@ -82,7 +82,9 @@ def test_dsd_pbep86_d3bj_is_the_refit_set_as_a_whole():
     assert (plain.c_os, plain.c_ss) == (0.51, 0.36)
     # 0.69 HF against 0.72 HF: the SCF itself differs.
     assert abs(d3.e_ks - plain.e_ks) > 1e-4
-    assert d3.e_dispersion == pytest.approx(ferric.d3bj_energy(mol, "dsdpbep86"), abs=1e-14)
+    assert d3.e_dispersion == pytest.approx(
+        ferric.d3bj_energy(mol, "dsdpbep86"), abs=1e-14
+    )
     assert abs(d3.total_energy - (d3.e_ks + d3.e_corr_scaled + d3.e_dispersion)) < 1e-14
 
 
