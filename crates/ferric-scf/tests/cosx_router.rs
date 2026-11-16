@@ -246,9 +246,8 @@ fn the_flop_weight_is_the_pair_flops_table_times_points() {
     // pairs), so the denominator is bracketed: at most the whole table x npts.
     let npts = pool().install(|| {
         let ctx = ParallelContext::default();
-        CosxK::new(&ctx, &s.mol, &s.prep, cfg(0.0), usize::MAX)
-            .expect("CosxK")
-            .npts()
+        let kb = CosxK::new(&ctx, &s.mol, &s.prep, cfg(0.0), usize::MAX).expect("CosxK");
+        kb.npts()
     }) as u64;
     assert!(all.pairs_kept as f64 > 0.99 * all.pairs_total as f64);
     let full = table_sum * npts;

@@ -870,6 +870,9 @@ pub struct CosxK<'a> {
     /// Functions per shell.
     shell_dim: Vec<usize>,
     last: CosxTimings,
+    /// Grid blocks whose kernel sub-batches share one parallel region
+    /// ([`block_group_len`]). Scheduling only: `K` does not depend on it.
+    block_group: usize,
     /// `FERRIC_TIMING` phase table over every build of this builder, printed
     /// on drop (inert when timing is off). A `Mutex` only because the kernel
     /// closures borrow `self` across threads; it is locked at phase
@@ -879,19 +882,19 @@ pub struct CosxK<'a> {
     sub_stats: Mutex<SubBatchStats>,
 }
 
-/// Kernel load balance, summed over every block of every build: the busy
-/// time of each md3c1e sub-batch task and, per block, the slowest one. A
-/// block ends at a join, so `sum / max_sum` is the most cores the kernel
+/// Kernel load balance, summed over every kernel region of every build: the
+/// busy time of each md3c1e sub-batch task and, per region, the slowest one.
+/// A region ends at a join, so `sum / max_sum` is the most cores the kernel
 /// phase can keep busy whatever the pool size.
 #[derive(Debug, Default, Clone, Copy)]
 struct SubBatchStats {
     /// Sub-batch tasks run.
     n: usize,
-    /// Blocks run.
+    /// Kernel regions run (one per block group).
     blocks: usize,
     /// Sum over tasks of their wall time, seconds.
     sum_s: f64,
-    /// Sum over blocks of the slowest task's wall time, seconds.
+    /// Sum over regions of the slowest task's wall time, seconds.
     max_sum_s: f64,
 }
 
@@ -932,7 +935,7 @@ impl<'a> CosxK<'a> {
         }
         let points: Vec<[f64; 3]> = grid.iter().map(|p| p.xyz).collect();
         let sqrt_w: Vec<f64> = grid.iter().map(|p| p.weight.abs().sqrt()).collect();
-        check_budget(prep.nbasis(), cfg.backend, cfg.half_transform, mem_budget)?;
+        let block_group = check_budget(prep.nbasis(), cfg.backend, cfg.half_transform, mem_budget)?;
         if let CosxHalfTransform::Sparse { eps_ao, eps_d } = cfg.half_transform {
             if !(eps_ao >= 0.0 && eps_ao.is_finite() && eps_d >= 0.0 && eps_d.is_finite()) {
                 return Err(FerricError::General(format!(
@@ -987,6 +990,7 @@ impl<'a> CosxK<'a> {
             shell_off: prep.shell_offsets()[..prep.nshells()].to_vec(),
             shell_dim: prep.shell_dims().to_vec(),
             last: CosxTimings::default(),
+            block_group,
             phases: Mutex::new(phases),
             sub_stats: Mutex::new(SubBatchStats::default()),
         })
@@ -1005,6 +1009,20 @@ impl<'a> CosxK<'a> {
         if tok.is_some() {
             self.phases.lock().expect("phase table lock").stop(tok);
         }
+    }
+
+    /// Override the number of grid blocks per kernel region (default:
+    /// [`block_group_len`]). Test hook for the scheduling anchor: `K` must not
+    /// depend on it.
+    #[doc(hidden)]
+    pub fn set_block_group(&mut self, blocks: usize) {
+        self.block_group = blocks.max(1);
+    }
+
+    /// Grid blocks per kernel region in force.
+    #[doc(hidden)]
+    pub fn block_group(&self) -> usize {
+        self.block_group
     }
 
     /// Number of grid points in the exchange grid.
@@ -1055,36 +1073,6 @@ impl<'a> CosxK<'a> {
         }
     }
 
-    /// `G_{nu,g} = sum_lam A^g_{nu,lam} F_{lam,g}` for one block, `(nbf, B)`,
-    /// dispatched on the backend's worker state. The second value is the set
-    /// of shells whose rows of `G` were written (md3c1e: both shells of every
-    /// surviving pair, union over the block's sub-batches — rows outside it
-    /// are exactly zero); `None` from the cosx_a backend, which builds every
-    /// row (the sparse path then takes `B` = all shells).
-    fn contract_block(
-        &self,
-        workers: &Workers,
-        pts: &[[f64; 3]],
-        f: &Array2<f64>,
-        acc: &BlockCounters,
-    ) -> Result<(Array2<f64>, Option<Vec<bool>>), FerricError> {
-        match workers {
-            Workers::CosxA(engines) => {
-                let tok = self.tbegin("cosx:kernel (parallel)");
-                let g = self.contract_block_cosx_a(engines, pts, f, acc)?;
-                self.tstop(tok);
-                Ok((g, None))
-            }
-            Workers::Md3c1e(scratch) => {
-                let kern = self
-                    .kernel
-                    .as_ref()
-                    .expect("md3c1e kernel built in new() for this backend");
-                self.contract_block_md3c1e(kern, scratch, pts, f, acc)
-            }
-        }
-    }
-
     /// cosx_a backend: per-point dense `A^g` then a GEMV, parallel over
     /// points; each point owns one contiguous row of `G^T` `(B, nbf)`, returned
     /// transposed as a `(nbf, B)` view of the same memory (so the block GEMM
@@ -1123,102 +1111,161 @@ impl<'a> CosxK<'a> {
         Ok(gt.reversed_axes())
     }
 
-    /// md3c1e backend: parallel over fixed sub-batches of
-    /// `COSX_SUB_BATCH_POINTS` points; each sub-batch builds its density-driven
-    /// pair screen (`BatchScreen`, from its own columns of `F`), sweeps the
-    /// surviving shell pairs once and accumulates its own columns of `G` (see
-    /// `accumulate_pair`). `pairs_*` are scaled by the sub-batch size so they
-    /// stay "summed over points" like the cosx_a path. The screen setup time
-    /// is counted as A-build time.
-    fn contract_block_md3c1e(
+    /// `G` for every block of a group, `(nbf, B)` each, in item order.
+    ///
+    /// md3c1e: the fixed `COSX_SUB_BATCH_POINTS` sub-batches of ALL the
+    /// group's blocks run in ONE parallel region. A 1024-point block alone
+    /// holds only four sub-batches, so a per-block region can never keep more
+    /// than four cores busy. Each sub-batch builds its density-driven pair
+    /// screen from its own columns of `F`, sweeps the surviving shell pairs
+    /// once and writes its own columns of its own block's `G` (see
+    /// `accumulate_pair`), so `G` does not depend on the grouping or the pool
+    /// size. The second value is the set of shells whose rows of `G` were
+    /// written (both shells of every surviving pair, union over the block's
+    /// sub-batches; rows outside it are exactly zero). `pairs_*` are scaled by
+    /// the sub-batch size so they stay "summed over points" like the cosx_a
+    /// path. The screen setup time is counted as A-build time.
+    ///
+    /// cosx_a: one block at a time, each already parallel over its points;
+    /// the shell set is `None` (every row is built).
+    fn contract_group(
         &self,
-        kern: &Md3c1e,
-        scratch: &ThreadSlots<Md3c1eScratch>,
-        pts: &[[f64; 3]],
-        f: &Array2<f64>,
+        workers: &Workers,
+        items: &[(&[[f64; 3]], &Array2<f64>)],
         acc: &BlockCounters,
-    ) -> Result<(Array2<f64>, Option<Vec<bool>>), FerricError> {
+    ) -> Result<Vec<(Array2<f64>, Option<Vec<bool>>)>, FerricError> {
+        let scratch = match workers {
+            Workers::CosxA(engines) => {
+                let tok = self.tbegin("cosx:kernel (parallel)");
+                let out = items
+                    .iter()
+                    .map(|&(pts, f)| Ok((self.contract_block_cosx_a(engines, pts, f, acc)?, None)))
+                    .collect::<Result<Vec<_>, FerricError>>();
+                self.tstop(tok);
+                return out;
+            }
+            Workers::Md3c1e(scratch) => scratch,
+        };
+        let kern = self
+            .kernel
+            .as_ref()
+            .expect("md3c1e kernel built in new() for this backend");
         let nbf = self.prep.nbasis();
         let nsh = kern.nshells();
         let tok = self.tbegin("cosx:kernel (parallel)");
-        let f_std = f.as_standard_layout();
-        let ys: Vec<(Vec<f64>, Vec<bool>, u64)> = pts
-            .par_chunks(COSX_SUB_BATCH_POINTS)
+        let f_std: Vec<_> = items.iter().map(|(_, f)| f.as_standard_layout()).collect();
+        let tasks: Vec<(usize, usize)> = items
+            .iter()
             .enumerate()
-            .map(
-                |(c, sub)| -> Result<(Vec<f64>, Vec<bool>, u64), FerricError> {
-                    let c0 = c * COSX_SUB_BATCH_POINTS;
-                    let n = sub.len();
-                    let fsub = copy_columns(&f_std.view(), c0, n);
-                    let mut y = vec![0.0_f64; nbf * n];
-                    let mut touched = vec![false; nsh];
-                    let mut c_ns = 0u64;
-                    let t0 = Instant::now();
-                    let mut screen = self.batch_screen(kern, sub, &fsub, n);
-                    let mut tally = RouteTally::default();
-                    let sum = self.cfg.f32_route.unwrap_or(PrimPairSum::F64);
-                    let counts = scratch.with(|scr| {
-                        kern.for_each_pair_routed(
-                            sub,
-                            |s1, s2| self.route_unit(&mut screen, &mut tally, s1, s2, n),
-                            sum,
-                            scr,
-                            |s1, s2, blk| {
-                                let t = Instant::now();
-                                accumulate_pair(kern, s1, s2, n, blk, &fsub, &mut y);
-                                touched[s1] = true;
-                                touched[s2] = true;
-                                c_ns += t.elapsed().as_nanos() as u64;
-                            },
-                        )
-                    })?;
-                    let (kept, total) = (counts.kept, counts.total);
-                    tally.f32_blocks = counts.f32_blocks;
-                    tally.f32_fallbacks = counts.f32_fallbacks;
-                    tally.flush(acc);
-                    let geom = screen.as_ref().map_or(total, |sc| sc.geom_kept);
-                    let (bev, deg) = screen
-                        .as_ref()
-                        .map_or((0, 0), |sc| (sc.bound_evals, sc.degenerate));
-                    let all_ns = t0.elapsed().as_nanos() as u64;
-                    acc.a_ns
-                        .fetch_add(all_ns.saturating_sub(c_ns), Ordering::Relaxed);
-                    acc.c_ns.fetch_add(c_ns, Ordering::Relaxed);
-                    acc.kept.fetch_add(kept * n, Ordering::Relaxed);
-                    acc.kept_geom.fetch_add(geom * n, Ordering::Relaxed);
-                    acc.total.fetch_add(total * n, Ordering::Relaxed);
-                    acc.bound_evals.fetch_add(bev, Ordering::Relaxed);
-                    acc.degenerate.fetch_add(deg, Ordering::Relaxed);
-                    Ok((y, touched, all_ns))
-                },
-            )
+            .flat_map(|(b, (pts, _))| {
+                (0..pts.len().div_ceil(COSX_SUB_BATCH_POINTS)).map(move |c| (b, c))
+            })
+            .collect();
+        let ys: Vec<SubBatchOut> = tasks
+            .par_iter()
+            .map(|&(b, c)| {
+                let pts = items[b].0;
+                let c0 = c * COSX_SUB_BATCH_POINTS;
+                let sub = &pts[c0..(c0 + COSX_SUB_BATCH_POINTS).min(pts.len())];
+                self.sub_batch(kern, scratch, sub, &f_std[b].view(), c0, acc)
+            })
             .collect::<Result<_, _>>()?;
         self.tstop(tok);
         if ferric_core::timing::enabled() {
             let mut st = self.sub_stats.lock().expect("sub-batch stats lock");
             st.n += ys.len();
             st.blocks += 1;
-            st.sum_s += ys.iter().map(|y| y.2).sum::<u64>() as f64 * 1e-9;
-            st.max_sum_s += ys.iter().map(|y| y.2).max().unwrap_or(0) as f64 * 1e-9;
+            st.sum_s += ys.iter().map(|y| y.ns).sum::<u64>() as f64 * 1e-9;
+            st.max_sum_s += ys.iter().map(|y| y.ns).max().unwrap_or(0) as f64 * 1e-9;
         }
         let tok = self.tbegin("cosx:g_merge");
-        let mut g = Array2::<f64>::zeros((nbf, pts.len()));
-        let mut touched = vec![false; nsh];
-        for (c, (y, tch, _)) in ys.iter().enumerate() {
+        let mut out: Vec<(Array2<f64>, Option<Vec<bool>>)> = items
+            .iter()
+            .map(|(pts, _)| {
+                (
+                    Array2::<f64>::zeros((nbf, pts.len())),
+                    Some(vec![false; nsh]),
+                )
+            })
+            .collect();
+        for (&(b, c), y) in tasks.iter().zip(&ys) {
             let c0 = c * COSX_SUB_BATCH_POINTS;
-            let n = y.len() / nbf;
-            for (mu, row) in y.chunks_exact(n).enumerate() {
+            let n = y.y.len() / nbf;
+            let (g, touched) = &mut out[b];
+            for (mu, row) in y.y.chunks_exact(n).enumerate() {
                 g.slice_mut(ndarray::s![mu, c0..c0 + n])
                     .as_slice_mut()
                     .expect("row segment of a standard-layout matrix is contiguous")
                     .copy_from_slice(row);
             }
-            for (t, &v) in touched.iter_mut().zip(tch) {
+            let touched = touched.as_mut().expect("md3c1e reports touched shells");
+            for (t, &v) in touched.iter_mut().zip(&y.touched) {
                 *t |= v;
             }
         }
         self.tstop(tok);
-        Ok((g, Some(touched)))
+        Ok(out)
+    }
+
+    /// One md3c1e sub-batch: its columns `c0..c0 + sub.len()` of its block's
+    /// `G`, as an `(nbf, n)` row-major buffer.
+    fn sub_batch(
+        &self,
+        kern: &Md3c1e,
+        scratch: &ThreadSlots<Md3c1eScratch>,
+        sub: &[[f64; 3]],
+        f_std: &ndarray::ArrayView2<f64>,
+        c0: usize,
+        acc: &BlockCounters,
+    ) -> Result<SubBatchOut, FerricError> {
+        let nbf = self.prep.nbasis();
+        let nsh = kern.nshells();
+        let n = sub.len();
+        let fsub = copy_columns(f_std, c0, n);
+        let mut y = vec![0.0_f64; nbf * n];
+        let mut touched = vec![false; nsh];
+        let mut c_ns = 0u64;
+        let t0 = Instant::now();
+        let mut screen = self.batch_screen(kern, sub, &fsub, n);
+        let mut tally = RouteTally::default();
+        let sum = self.cfg.f32_route.unwrap_or(PrimPairSum::F64);
+        let counts = scratch.with(|scr| {
+            kern.for_each_pair_routed(
+                sub,
+                |s1, s2| self.route_unit(&mut screen, &mut tally, s1, s2, n),
+                sum,
+                scr,
+                |s1, s2, blk| {
+                    let t = Instant::now();
+                    accumulate_pair(kern, s1, s2, n, blk, &fsub, &mut y);
+                    touched[s1] = true;
+                    touched[s2] = true;
+                    c_ns += t.elapsed().as_nanos() as u64;
+                },
+            )
+        })?;
+        let (kept, total) = (counts.kept, counts.total);
+        tally.f32_blocks = counts.f32_blocks;
+        tally.f32_fallbacks = counts.f32_fallbacks;
+        tally.flush(acc);
+        let geom = screen.as_ref().map_or(total, |sc| sc.geom_kept);
+        let (bev, deg) = screen
+            .as_ref()
+            .map_or((0, 0), |sc| (sc.bound_evals, sc.degenerate));
+        let all_ns = t0.elapsed().as_nanos() as u64;
+        acc.a_ns
+            .fetch_add(all_ns.saturating_sub(c_ns), Ordering::Relaxed);
+        acc.c_ns.fetch_add(c_ns, Ordering::Relaxed);
+        acc.kept.fetch_add(kept * n, Ordering::Relaxed);
+        acc.kept_geom.fetch_add(geom * n, Ordering::Relaxed);
+        acc.total.fetch_add(total * n, Ordering::Relaxed);
+        acc.bound_evals.fetch_add(bev, Ordering::Relaxed);
+        acc.degenerate.fetch_add(deg, Ordering::Relaxed);
+        Ok(SubBatchOut {
+            y,
+            touched,
+            ns: all_ns,
+        })
     }
 
     /// The exchange grid points (error-law diagnostics).
@@ -1442,7 +1489,7 @@ impl<'a> CosxK<'a> {
         match self.cfg.half_transform {
             CosxHalfTransform::Dense => {
                 let ct;
-                let half: Box<dyn Fn(&Array2<f64>) -> Array2<f64>> = match src {
+                let half: Box<dyn Fn(&Array2<f64>) -> Array2<f64> + Sync> = match src {
                     HalfSource::Density(d) => Box::new(move |x| d.dot(x)),
                     HalfSource::Occ(c) => {
                         ct = c.t().to_owned();
@@ -1526,51 +1573,97 @@ impl<'a> CosxK<'a> {
         Ok(0)
     }
 
-    /// The DENSE block loop — the pre-sparse builder, operation for operation
-    /// (only the timers were split), so it stays byte-identical to it.
+    /// The grid blocks, in grid order, in groups of `block_group`.
+    fn block_groups(&self) -> Vec<Vec<(&[[f64; 3]], &[f64])>> {
+        let blocks: Vec<(&[[f64; 3]], &[f64])> = self
+            .points
+            .chunks(COSX_BLOCK_POINTS)
+            .zip(self.sqrt_w.chunks(COSX_BLOCK_POINTS))
+            .collect();
+        blocks
+            .chunks(self.block_group.max(1))
+            .map(<[_]>::to_vec)
+            .collect()
+    }
+
+    /// The DENSE block loop. Per group of blocks: `X`, `S_num`'s term and
+    /// `F = half(X)` for each block in parallel, one kernel region over the
+    /// group, the `X G^T` products in parallel, then both folds into
+    /// `S_num` and `Ktilde` serially in grid order. Every GEMM is the call
+    /// the one-block-at-a-time loop made, on equal inputs, and the folds add
+    /// the same matrices in the same order, so `K` does not depend on the
+    /// group size or the pool (anchored bitwise).
     #[allow(clippy::too_many_arguments)]
     fn blocks_dense(
         &self,
-        half: &dyn Fn(&Array2<f64>) -> Array2<f64>,
+        half: &(dyn Fn(&Array2<f64>) -> Array2<f64> + Sync),
         workers: &Workers,
         acc: &BlockCounters,
         t: &mut CosxTimings,
         ktilde: &mut Array2<f64>,
         mut snum: Option<&mut Array2<f64>>,
     ) -> Result<(), FerricError> {
-        for (pts, sw) in self
-            .points
-            .chunks(COSX_BLOCK_POINTS)
-            .zip(self.sqrt_w.chunks(COSX_BLOCK_POINTS))
-        {
+        let want_snum = snum.is_some();
+        for group in self.block_groups() {
             self.ctx.check_interrupted()?;
-            let t0 = Instant::now();
-            let tok = self.tbegin("cosx:ao_eval");
-            let x = self.eval_x_block(pts, sw)?;
+            let tok = self.tbegin("cosx:prep (ao_eval+half, parallel)");
+            let preps: Vec<DensePrep> = group
+                .par_iter()
+                .map(|&(pts, sw)| {
+                    let t0 = Instant::now();
+                    let x = self.eval_x_block(pts, sw)?;
+                    let ao = t0.elapsed().as_secs_f64();
+                    let t0 = Instant::now();
+                    let s_xx = want_snum.then(|| x.dot(&x.t()));
+                    let sn = t0.elapsed().as_secs_f64();
+                    let t0 = Instant::now();
+                    let f = half(&x);
+                    let hf = t0.elapsed().as_secs_f64();
+                    Ok(DensePrep {
+                        x,
+                        f,
+                        s_xx,
+                        secs: [ao, sn, hf],
+                    })
+                })
+                .collect::<Result<_, FerricError>>()?;
             self.tstop(tok);
-            t.ao_eval_s += t0.elapsed().as_secs_f64();
-
-            let t0 = Instant::now();
-            if let Some(s) = snum.as_deref_mut() {
-                let tok = self.tbegin("cosx:snum X.X^T");
-                *s += &x.dot(&x.t());
-                self.tstop(tok);
+            let tok = self.tbegin("cosx:snum fold");
+            for p in &preps {
+                t.ao_eval_s += p.secs[0];
+                t.snum_s += p.secs[1];
+                t.half_s += p.secs[2];
+                if let (Some(s), Some(sxx)) = (snum.as_deref_mut(), p.s_xx.as_ref()) {
+                    *s += sxx;
+                }
             }
-            t.snum_s += t0.elapsed().as_secs_f64();
-            let t0 = Instant::now();
-            let tok = self.tbegin("cosx:half F=D.X");
-            let f = half(&x);
             self.tstop(tok);
-            t.half_s += t0.elapsed().as_secs_f64();
 
-            let (g, _touched) = self.contract_block(workers, pts, &f, acc)?;
+            let items: Vec<(&[[f64; 3]], &Array2<f64>)> = group
+                .iter()
+                .zip(&preps)
+                .map(|(&(pts, _), p)| (pts, &p.f))
+                .collect();
+            let gs = self.contract_group(workers, &items, acc)?;
 
-            let t0 = Instant::now();
-            let tok = self.tbegin("cosx:ktilde X.G^T");
-            *ktilde += &x.dot(&g.t());
+            let tok = self.tbegin("cosx:ktilde X.G^T (parallel)");
+            let prods: Vec<(Array2<f64>, f64)> = preps
+                .par_iter()
+                .zip(gs.par_iter())
+                .map(|(p, (g, _))| {
+                    let t0 = Instant::now();
+                    let prod = p.x.dot(&g.t());
+                    (prod, t0.elapsed().as_secs_f64())
+                })
+                .collect();
             self.tstop(tok);
-            t.ktilde_s += t0.elapsed().as_secs_f64();
-            t.n_blocks += 1;
+            let tok = self.tbegin("cosx:ktilde fold");
+            for (prod, secs) in &prods {
+                *ktilde += prod;
+                t.ktilde_s += secs;
+                t.n_blocks += 1;
+            }
+            self.tstop(tok);
         }
         // Honest counters: the dense path uses every row and column.
         t.active_ao_frac = 1.0;
@@ -1589,6 +1682,10 @@ impl<'a> CosxK<'a> {
     /// Gathers preserve each operand's memory orientation and the scatters
     /// are one addition per element, so with every shell active this is the
     /// dense loop's dgemm calls on equal inputs (bitwise, anchored).
+    ///
+    /// Blocks run in groups as in [`CosxK::blocks_dense`]: the per-block
+    /// work and the products are parallel over the group's blocks, the
+    /// scatter-adds into `S_num` and `Ktilde` stay serial in grid order.
     #[allow(clippy::too_many_arguments)]
     fn blocks_sparse(
         &self,
@@ -1603,88 +1700,79 @@ impl<'a> CosxK<'a> {
     ) -> Result<(), FerricError> {
         let nbf = self.prep.nbasis();
         let t0 = Instant::now();
-        let tok = self.tbegin("cosx:masks+gathers");
+        let tok = self.tbegin("cosx:masks (D shell maxima)");
         let dmax = shell_block_max(d, &self.shell_off, &self.shell_dim);
         self.tstop(tok);
         t.gather_s += t0.elapsed().as_secs_f64();
         t.active_ao_frac_min = f64::INFINITY;
         t.active_ao_frac_max = 0.0;
-        for (pts, sw) in self
-            .points
-            .chunks(COSX_BLOCK_POINTS)
-            .zip(self.sqrt_w.chunks(COSX_BLOCK_POINTS))
-        {
+        let want_snum = snum.is_some();
+        for group in self.block_groups() {
             self.ctx.check_interrupted()?;
-            let t0 = Instant::now();
-            let tok = self.tbegin("cosx:ao_eval");
-            let x = self.eval_x_block(pts, sw)?;
+            let tok = self.tbegin("cosx:prep (ao_eval+masks+half, parallel)");
+            let preps: Vec<SparsePrep> = group
+                .par_iter()
+                .map(|&(pts, sw)| self.prep_sparse(pts, sw, d, &dmax, eps_ao, eps_d, want_snum))
+                .collect::<Result<_, FerricError>>()?;
             self.tstop(tok);
-            t.ao_eval_s += t0.elapsed().as_secs_f64();
-
-            let t0 = Instant::now();
-            let tok = self.tbegin("cosx:masks+gathers");
-            let a = active_shells(&x, eps_ao, &self.shell_off, &self.shell_dim);
-            let lam = lambda_shells(&dmax, &a.shells, eps_d, &self.shell_off, &self.shell_dim);
-            let x_a = gather_rows(&x, &a.aos);
-            self.tstop(tok);
-            t.gather_s += t0.elapsed().as_secs_f64();
-            let fa = a.aos.len() as f64 / nbf as f64;
-            t.n_blocks += 1;
-            t.active_ao_frac += fa;
-            t.active_ao_frac_min = t.active_ao_frac_min.min(fa);
-            t.active_ao_frac_max = t.active_ao_frac_max.max(fa);
-            t.lambda_frac += lam.aos.len() as f64 / nbf as f64;
-            if a.aos.is_empty() {
-                // Every |X| on this block is below eps_ao: it contributes
-                // nothing to Ktilde or S_num (never reached at eps_ao = 0).
-                continue;
-            }
-
-            if let Some(s) = snum.as_deref_mut() {
-                let t0 = Instant::now();
-                let tok = self.tbegin("cosx:snum X.X^T");
-                let s_aa = x_a.dot(&x_a.t());
-                scatter_add(s, &a.aos, &a.aos, &s_aa);
-                self.tstop(tok);
-                t.snum_s += t0.elapsed().as_secs_f64();
-            }
-            if lam.aos.is_empty() {
-                // F is exactly zero on this block: G and its Ktilde term vanish
-                // (never reached at eps_d = 0).
-                continue;
-            }
-
-            let t0 = Instant::now();
-            let tok = self.tbegin("cosx:half F=D.X");
-            let d_la = gather_block(d, &lam.aos, &a.aos);
-            let f_la = d_la.dot(&x_a);
-            let mut f = Array2::<f64>::zeros((nbf, pts.len()));
-            for (i, &lambda) in lam.aos.iter().enumerate() {
-                f.row_mut(lambda).assign(&f_la.row(i));
+            let tok = self.tbegin("cosx:snum fold");
+            for p in &preps {
+                t.ao_eval_s += p.secs[0];
+                t.gather_s += p.secs[1];
+                t.snum_s += p.secs[2];
+                t.half_s += p.secs[3];
+                let fa = p.a.aos.len() as f64 / nbf as f64;
+                t.n_blocks += 1;
+                t.active_ao_frac += fa;
+                t.active_ao_frac_min = t.active_ao_frac_min.min(fa);
+                t.active_ao_frac_max = t.active_ao_frac_max.max(fa);
+                t.lambda_frac += p.lam_aos as f64 / nbf as f64;
+                if let (Some(s), Some(s_aa)) = (snum.as_deref_mut(), p.s_aa.as_ref()) {
+                    scatter_add(s, &p.a.aos, &p.a.aos, s_aa);
+                }
             }
             self.tstop(tok);
-            t.half_s += t0.elapsed().as_secs_f64();
 
-            let (g, touched) = self.contract_block(workers, pts, &f, acc)?;
+            // Blocks with F == 0 (every |X| below eps_ao, or Λ empty) add
+            // nothing to G or Ktilde; neither is reached at eps = 0.
+            let live: Vec<usize> = (0..preps.len()).filter(|&i| preps[i].f.is_some()).collect();
+            let items: Vec<(&[[f64; 3]], &Array2<f64>)> = live
+                .iter()
+                .map(|&i| (group[i].0, preps[i].f.as_ref().expect("live block has F")))
+                .collect();
+            let gs = self.contract_group(workers, &items, acc)?;
 
-            let t0 = Instant::now();
-            let tok = self.tbegin("cosx:ktilde X.G^T");
-            let b_aos: Vec<usize> = match touched {
-                None => (0..nbf).collect(),
-                Some(tch) => aos_of_shells(
-                    tch.iter().enumerate().filter(|(_, &v)| v).map(|(s, _)| s),
-                    &self.shell_off,
-                    &self.shell_dim,
-                ),
-            };
-            t.out_ao_frac += b_aos.len() as f64 / nbf as f64;
-            if !b_aos.is_empty() {
-                let g_b = gather_rows_same_layout(&g, &b_aos);
-                let prod = x_a.dot(&g_b.t());
-                scatter_add(ktilde, &a.aos, &b_aos, &prod);
+            let tok = self.tbegin("cosx:ktilde X.G^T (parallel)");
+            let prods: Vec<(Vec<usize>, Option<Array2<f64>>, f64)> = live
+                .par_iter()
+                .zip(gs.par_iter())
+                .map(|(&i, (g, touched))| {
+                    let t0 = Instant::now();
+                    let b_aos: Vec<usize> = match touched {
+                        None => (0..nbf).collect(),
+                        Some(tch) => aos_of_shells(
+                            tch.iter().enumerate().filter(|(_, &v)| v).map(|(s, _)| s),
+                            &self.shell_off,
+                            &self.shell_dim,
+                        ),
+                    };
+                    let prod = (!b_aos.is_empty()).then(|| {
+                        let g_b = gather_rows_same_layout(g, &b_aos);
+                        preps[i].x_a.dot(&g_b.t())
+                    });
+                    (b_aos, prod, t0.elapsed().as_secs_f64())
+                })
+                .collect();
+            self.tstop(tok);
+            let tok = self.tbegin("cosx:ktilde fold");
+            for (&i, (b_aos, prod, secs)) in live.iter().zip(&prods) {
+                t.out_ao_frac += b_aos.len() as f64 / nbf as f64;
+                if let Some(prod) = prod {
+                    scatter_add(ktilde, &preps[i].a.aos, b_aos, prod);
+                }
+                t.ktilde_s += secs;
             }
             self.tstop(tok);
-            t.ktilde_s += t0.elapsed().as_secs_f64();
         }
         let nb = t.n_blocks.max(1) as f64;
         t.active_ao_frac /= nb;
@@ -1694,6 +1782,75 @@ impl<'a> CosxK<'a> {
             t.active_ao_frac_min = 0.0;
         }
         Ok(())
+    }
+
+    /// One block of the sparse loop up to the kernel: `X`, the masks `A`
+    /// and `Λ`, `X[A]`, `S_num`'s term and `F` (`None` when `F == 0`).
+    #[allow(clippy::too_many_arguments)]
+    fn prep_sparse(
+        &self,
+        pts: &[[f64; 3]],
+        sw: &[f64],
+        d: &Array2<f64>,
+        dmax: &[f64],
+        eps_ao: f64,
+        eps_d: f64,
+        want_snum: bool,
+    ) -> Result<SparsePrep, FerricError> {
+        let nbf = self.prep.nbasis();
+        let mut secs = [0.0; 4];
+        let t0 = Instant::now();
+        let x = self.eval_x_block(pts, sw)?;
+        secs[0] = t0.elapsed().as_secs_f64();
+
+        let t0 = Instant::now();
+        let a = active_shells(&x, eps_ao, &self.shell_off, &self.shell_dim);
+        let lam = lambda_shells(dmax, &a.shells, eps_d, &self.shell_off, &self.shell_dim);
+        let x_a = gather_rows(&x, &a.aos);
+        drop(x);
+        secs[1] = t0.elapsed().as_secs_f64();
+        let lam_aos = lam.aos.len();
+        if a.aos.is_empty() {
+            return Ok(SparsePrep {
+                a,
+                lam_aos,
+                x_a,
+                f: None,
+                s_aa: None,
+                secs,
+            });
+        }
+
+        let t0 = Instant::now();
+        let s_aa = want_snum.then(|| x_a.dot(&x_a.t()));
+        secs[2] = t0.elapsed().as_secs_f64();
+        if lam.aos.is_empty() {
+            return Ok(SparsePrep {
+                a,
+                lam_aos,
+                x_a,
+                f: None,
+                s_aa,
+                secs,
+            });
+        }
+
+        let t0 = Instant::now();
+        let d_la = gather_block(d, &lam.aos, &a.aos);
+        let f_la = d_la.dot(&x_a);
+        let mut f = Array2::<f64>::zeros((nbf, pts.len()));
+        for (i, &lambda) in lam.aos.iter().enumerate() {
+            f.row_mut(lambda).assign(&f_la.row(i));
+        }
+        secs[3] = t0.elapsed().as_secs_f64();
+        Ok(SparsePrep {
+            a,
+            lam_aos,
+            x_a,
+            f: Some(f),
+            s_aa,
+            secs,
+        })
     }
 
     /// Per-worker state for the configured backend.
@@ -1711,6 +1868,40 @@ impl<'a> CosxK<'a> {
             }
         })
     }
+}
+
+/// One md3c1e sub-batch's output (see [`CosxK::sub_batch`]).
+struct SubBatchOut {
+    /// `(nbf, n)` row-major columns of `G`.
+    y: Vec<f64>,
+    /// Shells whose rows of `y` were written.
+    touched: Vec<bool>,
+    /// Task wall time, ns (the balance statistic).
+    ns: u64,
+}
+
+/// One block of the dense loop up to the kernel.
+struct DensePrep {
+    x: Array2<f64>,
+    f: Array2<f64>,
+    /// `X X^T` (first build with the fit only).
+    s_xx: Option<Array2<f64>>,
+    /// AO evaluation, `S_num` term, half transform; seconds on one thread.
+    secs: [f64; 3],
+}
+
+/// One block of the sparse loop up to the kernel.
+struct SparsePrep {
+    a: ShellMask,
+    /// `|Λ|` in AOs.
+    lam_aos: usize,
+    x_a: Array2<f64>,
+    /// `F` with rows outside `Λ` zero; `None` when `F == 0`.
+    f: Option<Array2<f64>>,
+    /// `X[A] X[A]^T` (first build with the fit only).
+    s_aa: Option<Array2<f64>>,
+    /// AO evaluation, masks + gather, `S_num` term, half transform.
+    secs: [f64; 4],
 }
 
 /// What a `build_with` call transforms: the density itself, or the occupied
@@ -2191,7 +2382,7 @@ fn check_budget(
     backend: CosxBackend,
     half: CosxHalfTransform,
     mem_budget: usize,
-) -> Result<(), FerricError> {
+) -> Result<usize, FerricError> {
     let budget = if mem_budget == 0 {
         ferric_core::memory::resolve_budget_bytes(None)
     } else {
@@ -2230,7 +2421,31 @@ fn check_budget(
             budget as f64 / 1e9
         )));
     }
-    Ok(())
+    // Each further block in a group holds its planes plus two nbf^2 products
+    // (`S_num`'s term and `X G^T`) until the serial fold.
+    let per_block = planes.saturating_add(
+        2usize
+            .saturating_mul(nbf)
+            .saturating_mul(nbf)
+            .saturating_mul(8),
+    );
+    let fit = 1 + (budget - needed) / per_block.max(1);
+    Ok(block_group_len(rayon::current_num_threads()).min(fit))
+}
+
+/// Kernel tasks wanted per rayon thread in one region: enough that the
+/// region's slowest task is a small share of it (sub-batch times vary with
+/// how many pairs their screen keeps).
+const COSX_TASKS_PER_THREAD: usize = 8;
+
+/// Grid blocks per kernel region for a pool of `threads`: one block holds
+/// `COSX_BLOCK_POINTS / COSX_SUB_BATCH_POINTS` (= 4) sub-batch tasks, so a
+/// region of one block can keep at most four cores busy.
+/// [`check_budget`] caps it by memory. Scheduling only: `K` is the same for
+/// every value (anchored bitwise).
+pub fn block_group_len(threads: usize) -> usize {
+    let per_block = COSX_BLOCK_POINTS / COSX_SUB_BATCH_POINTS;
+    (threads.max(1) * COSX_TASKS_PER_THREAD).div_ceil(per_block)
 }
 
 /// `K = 0.5 (Ktilde + Ktilde^T)`.
@@ -2316,8 +2531,8 @@ impl<'a> Drop for CosxK<'a> {
         if let Ok(st) = self.sub_stats.lock() {
             if st.blocks > 0 && st.max_sum_s > 0.0 {
                 eprintln!(
-                    "[timing]   cosx kernel balance: {} blocks, {} sub-batches ({:.2}/block), task sum {:.3} s, \
-                     sum of per-block max {:.3} s, sum/max = {:.2} cores at most",
+                    "[timing]   cosx kernel balance: {} regions, {} sub-batches ({:.2}/region), task sum {:.3} s, \
+                     sum of per-region max {:.3} s, sum/max = {:.2} cores at most",
                     st.blocks,
                     st.n,
                     st.n as f64 / st.blocks as f64,

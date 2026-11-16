@@ -760,6 +760,15 @@ J became fitted). `omega` tuning accepts a named `df_j_aux`.
 | RI-JK | not measured | not measured |
 | COSX | 358 | not measured |
 
+**Threads.** COSX splits the grid into 1024-point blocks and each block
+into four 256-point kernel tasks. It runs the tasks of several blocks in one
+parallel region (about eight tasks per thread) and adds the blocks into K
+in grid order. K is bitwise the same for every thread count. Sulfamethoxazole /
+def2-TZVP (599 basis functions), B3LYP energy, 6 threads, default grids, 14
+iterations: RIJCOSX takes 365 s wall (median of 3; 5.5 cores busy, 2.5 GB
+peak RSS), and RI-JK takes 31 s (7.7 GB). The two energies differ by 1.9e-4 Ha.
+The COSX kernel is 93% of the exchange build.
+
 **Energy error against exact exchange:**
 
 | Builder | System / basis | Error |
