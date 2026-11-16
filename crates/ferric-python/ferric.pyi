@@ -1497,8 +1497,9 @@ class FrequencyResult:
     @property
     def normal_modes(self) -> list[list[float]]:
         """Cartesian displacement vector of each mode (one row per entry of
-        `frequencies`, 3N values ordered [x0, y0, z0, x1, ...]): the
-        mass-weighted eigenvector divided by sqrt(m), not normalised."""
+        `frequencies`, 3N values ordered [x0, y0, z0, x1, ...]): the unit
+        mass-weighted eigenvector (masses in electron masses) divided by
+        sqrt(m), i.e. dR/dQ for the mass-weighted normal coordinate Q."""
         ...
 
     @property
@@ -1509,6 +1510,43 @@ class FrequencyResult:
     @property
     def e_dispersion(self) -> float | None:
         """Dispersion energy at the undisplaced geometry, included in `energy`; None without `dispersion=`."""
+        ...
+
+    def thermo(
+        self,
+        temperature: float = 298.15,
+        pressure: float = 101325.0,
+        symmetry_number: int = 1,
+    ) -> dict[str, Any]:
+        """Ideal-gas rigid-rotor / harmonic-oscillator thermochemistry (PySCF
+        ``hessian.thermo`` conventions) at ``temperature`` (K) and ``pressure``
+        (Pa, default one atmosphere).
+
+        ``symmetry_number`` is the rotational symmetry number (default 1; ferric
+        does not detect it: 2 for water, 3 for NH3, 12 for CH4). Imaginary modes
+        are left out of the vibrational terms with a ``RuntimeWarning``.
+
+        Keys: ``temperature_k``, ``pressure_pa``, ``symmetry_number``, ``rotor``
+        ("atom", "linear", "nonlinear"), ``rotational_constants_ghz``, ``e0``
+        (= ``energy``), ``zpe``, ``n_imaginary_excluded``, ``warnings``, and
+        ``electronic``, ``translational``, ``rotational``, ``vibrational``,
+        ``total``, each a dict of ``energy``, ``enthalpy``, ``entropy``,
+        ``gibbs``, ``cv``, ``cp``. Energies in Hartree, entropies and heat
+        capacities in Hartree/K, per molecule. ``total["gibbs"]`` includes
+        ``e0``.
+        """
+        ...
+
+    def ir_intensities(self) -> list[float]:
+        """Harmonic IR intensity of each mode in km/mol, in the order of
+        ``frequencies`` (imaginary modes included).
+
+        The dipole derivative comes from the analytic gradient of SCFs solved in
+        a uniform field of +-1e-3 a.u. (six SCF + gradient evaluations, run on
+        the first call and cached; SCFs at ``scf_density_conv`` capped at
+        1e-9). SCF references only: raises ``ValueError`` for
+        ``method="pdep-rpa"`` and xTB results.
+        """
         ...
 
 class WeightedStats:

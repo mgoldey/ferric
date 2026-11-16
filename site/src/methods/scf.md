@@ -624,6 +624,61 @@ case is OH (²Π): its β π hole rotates about the bond at no energy cost, an
 exact zero mode of the orbital Hessian, and the solve meets a curvature of
 −1.9e-10; `"analytic-moving-grid"` still reports that error.
 
+### Thermochemistry and IR intensities
+
+Every frequency run also reports ideal-gas thermochemistry and, for the SCF
+kinds, IR intensities.
+
+**Thermochemistry.** The rigid-rotor / harmonic-oscillator model, with the
+conventions of PySCF `hessian.thermo`: translational, rotational,
+vibrational and electronic E, H, S and G, and the heat capacities, at
+`[frequencies] temperature` (K, default 298.15) and `pressure` (Pa, default
+101325, one atmosphere). Linear molecules use one rotational constant. The
+electronic entropy is `R ln(2S+1)`. Imaginary modes are left out of the
+vibrational terms with a warning. The masses are those of the frequency
+calculation (isotope-averaged standard atomic weights); the constants are
+CODATA 2018.
+
+The rotational symmetry number `[frequencies] symmetry_number` defaults to 1.
+ferric does not detect it, so set it: 2 for water or CO2, 3 for NH3, 12 for
+CH4. With the default, a molecule whose true number is σ gets an entropy too
+large by `R ln σ` (1.38 cal/(mol K) for σ = 2) and a G too low by `RT ln σ`.
+
+Python: `fr = ferric.run_frequencies(...)`, then
+`fr.thermo(temperature=298.15, pressure=101325.0, symmetry_number=2)`
+returns a dict of the parts (Hartree and Hartree/K per molecule; the
+`.pyi` lists the keys). The CLI prints a table and writes the same numbers
+to the `thermochemistry` field of the run log's `frequencies` record.
+
+Checked against PySCF's `thermo` on the same Hessian, geometry and masses
+(RHF/STO-3G water at 298.15 K and at 500 K, 2e5 Pa; linear CO2; UHF OH
+doublet): every E, H, TS and G term agrees to 8e-13 Hartree once PySCF's
+constants are set to CODATA 2018. With PySCF's own CODATA 2014 constants the
+difference is 8e-9 to 1.5e-8 Hartree, from k_B.
+
+**IR intensities.** The harmonic intensity of each mode in km/mol, from the
+dipole derivative along the normal mode. The dipole derivative comes from
+the analytic nuclear gradient of SCFs solved in a uniform field of ±1e-3
+a.u. (`dμ/dR = −∂²E/∂F∂R`): six extra SCF + gradient evaluations at any
+molecule size, with the SCF density threshold capped at 1e-9. The CLI adds
+an `IR (km/mol)` column and writes `ir_intensities_km_mol` and the dipole
+derivatives to the run log (`[frequencies] ir_intensities = false` skips
+them). Python: `fr.ir_intensities()`, computed on the first call.
+
+This covers `rhf`, `uhf`, `rohf` and `ksdft` (RKS, UKS, ROKS). The correlated
+kinds (`rimp2`, `scs-mp2`, `oo-rimp2`, `pdep-rpa`) have no dipole derivative
+in ferric: the CLI leaves the column out, and `ir_intensities = true` is an
+error. With `[dft] dispersion` the modes come from the corrected Hessian and
+the dipole derivative from the SCF alone.
+
+Checked against a second route, central differences of the SCF dipole along
+every Cartesian displacement, with a bar built from each route's
+Richardson truncation estimate and measured SCF-noise bounds. On water/6-31G
+(RHF, PBE) and OH/6-31G (UHF, ROHF, UKS-PBE) the two routes give dipole
+derivatives within 7.5e-6 to 1.5e-5 e of each other, against bars of 2.2e-5
+to 3.3e-5 e; the intensities agree to 1e-3 km/mol on modes of 1.7 to 98
+km/mol. The field route meets the translational sum rule to 3e-9 e.
+
 **Transition states and IRC (Python only, closed shell).**
 `ferric.run_saddle(mol, basis_name, xc=...)` searches for a first-order saddle
 by P-RFO, using two finite-difference Hessians with Bofill updates between

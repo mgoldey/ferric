@@ -14,6 +14,7 @@ mod gpu_flag;
 mod opmp3;
 mod periodic;
 mod polarization;
+mod thermo_ir;
 
 use config::{load_config, Config};
 /// The `[local]` model types, re-exported for the Python bindings, which
@@ -6761,6 +6762,9 @@ fn run_frequencies_correlated(
         other => unreachable!("{other} is not in CORRELATED_GRADIENT_KINDS"),
     };
 
+    // Refuse a bad thermochemistry key or an IR request before any SCF.
+    thermo_ir::thermo_config(cfg);
+    thermo_ir::ir_requested(method, cfg, None);
     let mut warm = ScfWarmStart::anchored(fcfg.scf_warm_start);
     let res = surface(mol, &mut warm)
         .and_then(|(energy, _)| {
@@ -6780,10 +6784,12 @@ fn run_frequencies_correlated(
         }
         Err(why) => Certificate::ungraded(format!("frequencies:{method}")).warn(why),
     };
-    log_frequencies(&res, &cert);
+    let extras = thermo_ir::frequency_extras(method, cfg, ctx, mol, bs, op, rhf_config, None, &res);
+    log_frequencies(&res, &cert, &extras.json);
     println!("Harmonic frequencies/{} on {}", bs.name, cfg.molecule.xyz);
     print_frequency_energy(&res, None);
-    print_frequency_table(&res);
+    print_frequency_table(&res, extras.intensities());
+    extras.print();
     print!("{cert}");
 }
 
@@ -6855,6 +6861,8 @@ fn run_frequencies(
         });
     }
 
+    // Refuse a bad thermochemistry key before any SCF.
+    thermo_ir::thermo_config(cfg);
     let (res, at_reference) = frequencies_maybe_dispersion(
         cfg, ctx, mol, bs, op, rhf_config, &fcfg,
     )
@@ -6871,15 +6879,28 @@ fn run_frequencies(
         }
         Err(why) => Certificate::ungraded(format!("frequencies:{method}")).warn(why),
     };
-    log_frequencies(&res, &cert);
+    let extras = thermo_ir::frequency_extras(
+        method,
+        cfg,
+        ctx,
+        mol,
+        bs,
+        op,
+        rhf_config,
+        Some(fcfg.reference),
+        &res,
+    );
+    log_frequencies(&res, &cert, &extras.json);
     println!("Harmonic frequencies/{} on {}", bs.name, cfg.molecule.xyz);
     print_frequency_energy(&res, at_reference.as_ref());
-    print_frequency_table(&res);
+    print_frequency_table(&res, extras.intensities());
+    extras.print();
     print!("{cert}");
 }
 
-/// The Hessian/asymmetry/mode lines shared by every frequency printout.
-fn print_frequency_table(res: &ferric_scf::frequencies::FrequencyResult) {
+/// The Hessian/asymmetry/mode lines shared by every frequency printout, with
+/// an IR intensity column (km/mol) when `ir` holds one per mode.
+fn print_frequency_table(res: &ferric_scf::frequencies::FrequencyResult, ir: Option<&[f64]>) {
     println!("  Hessian           = {}", res.hessian_source.label());
     println!("  gradient evals    = {}", res.n_gradient_evaluations);
     println!("  linear molecule   = {}", res.is_linear);
@@ -6888,10 +6909,12 @@ fn print_frequency_table(res: &ferric_scf::frequencies::FrequencyResult) {
     // unconditionally rather than burying it -- a large value invalidates every
     // number above it.
     println!("  Hessian asymmetry = {:.3e} Hartree/Bohr^2", res.asymmetry);
-    println!("\n  mode   frequency (cm^-1)");
+    let ir_head = if ir.is_some() { "   IR (km/mol)" } else { "" };
+    println!("\n  mode   frequency (cm^-1){ir_head}");
     for (k, w) in res.frequencies.iter().enumerate() {
         let tag = if *w < 0.0 { "  (imaginary)" } else { "" };
-        println!("  {:>4}   {:>16.2}{}", k + 1, w, tag);
+        let col = ir.map_or(String::new(), |a| format!("{:>14.4}", a[k]));
+        println!("  {:>4}   {:>16.2}{col}{tag}", k + 1, w);
     }
     println!(
         "\n  projected trans/rot (should be ~0): {:?}",
@@ -6939,27 +6962,41 @@ fn frequency_reference_certificate(
 /// reports (with `[dft] dispersion`, KS + dispersion; `correction_energy` is
 /// the dispersion part, 0 without one). `certificate` is the result
 /// certificate. `cartesian_hessian` is row-major,
-/// Hartree/Bohr^2. Floats use the run log's non-finite convention
+/// Hartree/Bohr^2. `extras` adds the thermochemistry and IR fields
+/// ([`thermo_ir::frequency_extras`]). Floats use the run log's non-finite convention
 /// ([`ferric_scf::runlog::json_f64`]). No-op without a log.
-fn log_frequencies(res: &ferric_scf::frequencies::FrequencyResult, cert: &Certificate) {
+fn log_frequencies(
+    res: &ferric_scf::frequencies::FrequencyResult,
+    cert: &Certificate,
+    extras: &serde_json::Map<String, serde_json::Value>,
+) {
+    if let Some(rl) = ferric_scf::runlog::log() {
+        let mut record = frequency_record(res, cert);
+        if let Some(o) = record.as_object_mut() {
+            o.extend(extras.clone());
+        }
+        rl.note("frequencies", record);
+    }
+}
+
+/// The Hessian part of the `frequencies` run-log record.
+fn frequency_record(
+    res: &ferric_scf::frequencies::FrequencyResult,
+    cert: &Certificate,
+) -> serde_json::Value {
     use ferric_scf::runlog::json_f64;
     let floats = |v: &mut dyn Iterator<Item = f64>| v.map(json_f64).collect::<Vec<_>>();
-    if let Some(rl) = ferric_scf::runlog::log() {
-        rl.note(
-            "frequencies",
-            serde_json::json!({
-                "hessian_source": res.hessian_source.label(),
-                "energy": json_f64(res.energy),
-                "correction_energy": json_f64(res.correction_energy),
-                "frequencies_cm1": floats(&mut res.frequencies.iter().copied()),
-                "trans_rot_frequencies_cm1": floats(&mut res.trans_rot_frequencies.iter().copied()),
-                "asymmetry": json_f64(res.asymmetry),
-                "n_gradient_evaluations": res.n_gradient_evaluations,
-                "cartesian_hessian": floats(&mut res.cartesian_hessian.iter().copied()),
-                "certificate": cert.to_json(),
-            }),
-        );
-    }
+    serde_json::json!({
+            "hessian_source": res.hessian_source.label(),
+            "energy": json_f64(res.energy),
+            "correction_energy": json_f64(res.correction_energy),
+            "frequencies_cm1": floats(&mut res.frequencies.iter().copied()),
+            "trans_rot_frequencies_cm1": floats(&mut res.trans_rot_frequencies.iter().copied()),
+            "asymmetry": json_f64(res.asymmetry),
+            "n_gradient_evaluations": res.n_gradient_evaluations,
+            "cartesian_hessian": floats(&mut res.cartesian_hessian.iter().copied()),
+            "certificate": cert.to_json(),
+    })
 }
 
 /// The frequency run itself: plain, or on the KS + `[dft] dispersion` surface

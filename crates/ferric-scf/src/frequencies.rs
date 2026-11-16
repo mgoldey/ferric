@@ -349,8 +349,11 @@ pub struct FrequencyResult {
     /// These should be numerically zero; they are retained as a diagnostic.
     pub trans_rot_frequencies: Vec<f64>,
     /// Normal-mode displacement vectors in *Cartesian* coordinates, one row
-    /// per mode, `3N` entries each (mass-weighted eigenvectors divided back
-    /// through by `sqrt(m)`). Not normalized to any particular convention.
+    /// per mode, `3N` entries each: the unit eigenvectors of the
+    /// mass-weighted Hessian (masses in electron masses) divided back through
+    /// by `sqrt(m)`, so `sum_i m_i x_i^2 = 1` with `m` in electron masses and
+    /// each row is `dR/dQ` for the mass-weighted normal coordinate `Q`
+    /// ([`crate::infrared`] contracts dipole derivatives with them as is).
     pub normal_modes: Array2<f64>,
     /// Whether the molecule was detected as linear (so `3N - 5` modes).
     pub is_linear: bool,
@@ -1537,7 +1540,7 @@ fn displace(mol: &mut Molecule, atom: usize, coord: usize, d: f64) {
 /// `ks_gradient_uks` / `ks_gradient_roks`); each raises its own named error for
 /// a combination it cannot handle, and frequencies inherit it rather than
 /// silently producing a noisy Hessian.
-fn energy_gradient_and_result(
+pub(crate) fn energy_gradient_and_result(
     ctx: &ParallelContext,
     mol: &Molecule,
     basis_name: &str,

@@ -1057,6 +1057,21 @@ pub struct FrequenciesCfg {
     /// equal `[scf] density_conv` the warm Hessian is noisier, so pair `true`
     /// with a ~100x tighter `density_conv`. No effect on an analytic Hessian.
     pub scf_warm_start: Option<bool>,
+    /// RRHO thermochemistry temperature in K (default 298.15).
+    pub temperature: Option<f64>,
+    /// RRHO thermochemistry pressure in Pa (default 101325, one atmosphere).
+    pub pressure: Option<f64>,
+    /// Rotational symmetry number of the RRHO thermochemistry (default 1).
+    /// ferric does not detect it: set 2 for water (C2v), 3 for NH3, 12 for
+    /// CH4. A value of 1 for a molecule whose true number is `s` makes the
+    /// entropy too large by `R ln s`.
+    pub symmetry_number: Option<u32>,
+    /// IR intensities (km/mol) from the dipole derivative along each mode:
+    /// six extra SCF + gradient evaluations in a field of +-1e-3 a.u.
+    /// Default `true` for the SCF kinds (`rhf`, `uhf`, `rohf`, `ksdft`) and
+    /// off for the correlated kinds, where `true` is an error (their dipole
+    /// derivative is not implemented).
+    pub ir_intensities: Option<bool>,
 }
 
 /// The `frozen_core` key of a correlation section (`[mp2]`, `[rpa]`, `[gw]`):

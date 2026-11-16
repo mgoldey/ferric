@@ -42,7 +42,7 @@ identity, with a trust-radius clip, no line search and no step rejection. With $
 and $y = g_{k+1}-g_k$:
 
 $$ p = -H g, \qquad s = p\,\min\!\Big(1, \frac{r_{\mathrm{trust}}}{\lVert p\rVert}\Big), \qquad
-H' = H + \frac{y^{\mathsf T}s + y^{\mathsf T}Hy}{(y^{\mathsf T}s)^2}\,s\,s^{\mathsf T} - \frac{H y\,s^{\mathsf T} + s\,y^{\mathsf T}H}{y^{\mathsf T}s} . \tag{14.18} $$
+H' = H + \frac{y^{\mathsf T}s + y^{\mathsf T}Hy}{(y^{\mathsf T}s)^2}\,s\,s^{\mathsf T} - \frac{H y\,s^{\mathsf T} + s\,y^{\mathsf T}H}{y^{\mathsf T}s} . \tag{14.20} $$
 
 If $\lvert y^{\mathsf T}s\rvert \le 10^{-12}$ the update is skipped and $H$ is reset to the
 identity. If $y^{\mathsf T}s \le 10^{-8}\lVert y\rVert\lVert s\rVert$, which means negative
@@ -55,7 +55,7 @@ $\mathrm{rms}(g) < g_{\mathrm{rms}}$; the defaults are $10^{-6}$ Ha,
 $4.5\times10^{-4}$ and $3.0\times10^{-4}$ Ha/Bohr, a trust radius of 0.1 Bohr and 100
 steps.
 
-> **Verified equation 14.18** · the BFGS inverse update
+> **Verified equation 14.20** · the BFGS inverse update
 >
 > The update satisfies the secant condition $H'y = s$ in symbols for a generic
 > symmetric $H$, equals the inverse of the direct BFGS update of $B = H^{-1}$,
@@ -119,13 +119,13 @@ $\lambda_n$ is the most negative root of the secular equation of the remaining
 augmented matrix, and every step is downhill:
 
 $$ \lambda_p = \tfrac12\big(b_k + \sqrt{b_k^2 + 4g_k^2}\big), \quad \Delta q_k = -\frac{g_k}{b_k - \lambda_p}; \qquad
-\lambda_n = \sum_{i\ne k}\frac{g_i^2}{\lambda_n - b_i}\ \ (\lambda_n < \min_{i\neq k}b_i), \quad \Delta q_i = -\frac{g_i}{b_i - \lambda_n} . \tag{14.19} $$
+\lambda_n = \sum_{i\ne k}\frac{g_i^2}{\lambda_n - b_i}\ \ (\lambda_n < \min_{i\neq k}b_i), \quad \Delta q_i = -\frac{g_i}{b_i - \lambda_n} . \tag{14.21} $$
 
 The code solves the second equation by Newton iteration from
 $\lambda_n = \min(b_{\min}-1, 0)$, at most 100 iterations, and falls back to
 $b_{\min}-10^{-3}$ if the iterate leaves the bracket.
 
-> **Verified equation 14.19** · the P-RFO step
+> **Verified equation 14.21** · the P-RFO step
 >
 > The followed-mode shift is the largest root of
 > $\lambda^2 - b\lambda - g^2 = 0$, which is the characteristic equation of the
@@ -156,14 +156,14 @@ Newton steps downhill. That is why the test uses all-positive eigenvalues.
 symmetric-Broyden corrections, with $e = \Delta g - B\Delta x$ and
 $\varphi = (e\!\cdot\!\Delta x)^2/(e\!\cdot\! e\;\Delta x\!\cdot\!\Delta x)$:
 
-$$ B' = B + \varphi\,\frac{e\,e^{\mathsf T}}{e\cdot\Delta x} + (1-\varphi)\Big[\frac{e\,\Delta x^{\mathsf T} + \Delta x\,e^{\mathsf T}}{\Delta x\cdot\Delta x} - \frac{(e\cdot\Delta x)\,\Delta x\,\Delta x^{\mathsf T}}{(\Delta x\cdot\Delta x)^2}\Big] . \tag{14.20} $$
+$$ B' = B + \varphi\,\frac{e\,e^{\mathsf T}}{e\cdot\Delta x} + (1-\varphi)\Big[\frac{e\,\Delta x^{\mathsf T} + \Delta x\,e^{\mathsf T}}{\Delta x\cdot\Delta x} - \frac{(e\cdot\Delta x)\,\Delta x\,\Delta x^{\mathsf T}}{(\Delta x\cdot\Delta x)^2}\Big] . \tag{14.22} $$
 
-> **Verified equation 14.20** · the Bofill update
+> **Verified equation 14.22** · the Bofill update
 >
 > Each of the two corrections satisfies the secant condition
 > $\Delta B\,\Delta x = e$ in symbols, so every mixture $\varphi$ does. The code's
 > update satisfies $B'\Delta x = \Delta g$, is symmetric, and keeps a negative
-> eigenvalue of an indefinite $B$ that the BFGS update of 14.18 would drive out.
+> eigenvalue of an indefinite $B$ that the BFGS update of 14.20 would drive out.
 >
 > | | |
 > |---|---|
@@ -213,16 +213,16 @@ unweighted steepest descent gives a different path.
 With $q_i = \sqrt{m_i}\,x_i$ and $g_q = g/\sqrt m$, each step moves by
 
 $$ \Delta q = -\ell\,\frac{g_q}{\lVert g_q\rVert}, \qquad \ell = \min(\ell_0,\,2\lVert g_q\rVert), \qquad
-\Delta x_i = -\,\ell\,\frac{g_i}{m_i\,\lVert g_q\rVert}, \tag{14.21} $$
+\Delta x_i = -\,\ell\,\frac{g_i}{m_i\,\lVert g_q\rVert}, \tag{14.23} $$
 
 with $\ell_0 = 0.1$ $\sqrt{\mathrm u}$ Bohr, starting from $q_{\mathrm{saddle}} \pm 0.2\,\hat q$ where $\hat q$ is the mass-weighted,
 normalized mode, and stopping when $\max\lvert g\rvert < 10^{-4}$ Ha/Bohr or after 200
 steps per branch.
 
-> **Verified equation 14.21** · the mass-weighted step
+> **Verified equation 14.23** · the mass-weighted step
 >
 > $\partial E/\partial q_i = (\partial E/\partial x_i)/\sqrt{m_i}$ by the chain rule
-> (symbols), the Cartesian step of (14.21) equals the code's two-stage form
+> (symbols), the Cartesian step of (14.23) equals the code's two-stage form
 > through $q$, and it differs from unweighted steepest descent unless all masses
 > are equal.
 >
@@ -302,7 +302,7 @@ negative mode.
 | Source | Used for |
 |---|---|
 | `crates/ferric-scf/src/optimize.rs`, `saddle.rs`, `irc.rs` module documentation and loops | every formula and refusal in this section |
-| `scripts/geometry_search_steps_sympy.py` | verified equations 14.18 to 14.21 |
+| `scripts/geometry_search_steps_sympy.py` | verified equations 14.20 to 14.23 |
 | Banerjee, Adams, Simons and Shepard, J. Phys. Chem. 89, 52 (1985); Bofill, J. Comput. Chem. 15, 1 (1994) | P-RFO and the Hessian update, as cited in `saddle.rs` |
 | Pulay and Fogarasi, J. Chem. Phys. 96, 2856 (1992); Schlegel, Theor. Chim. Acta 66, 333 (1984) | redundant internals and the initial Hessian, as cited in `ferric-core/src/internal_coords.rs` |
 | `site/src/reference/validation.md` | the optimization rows and the saddle and IRC capability rows |

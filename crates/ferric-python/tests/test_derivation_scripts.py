@@ -1447,6 +1447,58 @@ CASES = [
             ),
         ],
     ),
+    (
+        "rrho_thermo_sympy.py",
+        15,
+        [
+            (
+                "q = kt_over_h**1.5 * math.sqrt(math.pi) / (sigma * math.sqrt(abc))",
+                "q = kt_over_h**1.5 * math.sqrt(math.pi) / math.sqrt(abc)",
+                "FAIL N1 water",
+            ),
+            (
+                "return dict(e=1.5 * R_EH * t, h=2.5 * R_EH * t, s=R_EH * (2.5 + math.log(q)))",
+                "return dict(e=1.5 * R_EH * t, h=2.5 * R_EH * t, s=R_EH * (1.5 + math.log(q)))",
+                "FAIL S1 transcribed S_trans",
+            ),
+            (
+                "s += x * bose - math.log(-math.expm1(-x))",
+                "s += x * bose + math.log(-math.expm1(-x))",
+                "FAIL S3 transcribed S_vib",
+            ),
+            (
+                "C2 = 100.0 * PLANCK_J_S * LIGHT_SPEED_M_PER_S / BOLTZMANN_J_PER_K",
+                "C2 = 100.0 * PLANCK_J_S / BOLTZMANN_J_PER_K",
+                "FAIL K1 c2",
+            ),
+        ],
+    ),
+    (
+        "ir_intensity_sympy.py",
+        15,
+        [
+            (
+                "return w[keep], (u[:, keep] * inv[:, None]).T",
+                "return w[keep], u[:, keep].T",
+                "FAIL N2 diatomic",
+            ),
+            (
+                "AU_TO_KM_PER_MOL = 1_777_097.731_306",
+                "AU_TO_KM_PER_MOL = 974.880_111_8",
+                "FAIL C1 AU_TO_KM_PER_MOL",
+            ),
+            (
+                "rows.append(-(gp - gm) / (2.0 * h))",
+                "rows.append((gp - gm) / (2.0 * h))",
+                "FAIL N3 field route",
+            ),
+            (
+                "return AU_TO_KM_PER_MOL * np.sum(dmu**2, axis=0)",
+                "return AU_TO_KM_PER_MOL * dmu[2] ** 2",
+                "FAIL N1 contraction",
+            ),
+        ],
+    ),
 ]
 
 

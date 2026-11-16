@@ -203,6 +203,10 @@ precision:
 | `asymmetry` | largest \|H_ij − H_ji\| of the raw Hessian, Hartree/Bohr² |
 | `n_gradient_evaluations` | gradients the finite-difference Hessian took (0 when analytic) |
 | `cartesian_hessian` | the Cartesian Hessian before mass-weighting, row-major 3N × 3N, Hartree/Bohr² |
+| `thermochemistry` | RRHO thermochemistry: `temperature_k`, `pressure_pa`, `symmetry_number`, `rotor`, `rotational_constants_ghz`, `e0`, `zpe`, `n_imaginary_excluded`, `warnings`, and `electronic`/`translational`/`rotational`/`vibrational`/`total`, each `{energy, enthalpy, entropy, gibbs, cv, cp}` in Hartree and Hartree/K |
+| `ir_intensities_km_mol` | IR intensity of each mode, km/mol, in the order of `frequencies_cm1`; `null` for the correlated kinds or with `ir_intensities = false` |
+| `dipole_derivatives` | the dipole derivative ∂μ_a/∂R_i, row-major 3 × 3N, e (only with intensities) |
+| `ir_sum_rule_residual` | max \|Σ_A ∂μ_a/∂R_{A,b} − Q δ_ab\|, e; `null` with external point charges (only with intensities) |
 
 Non-finite floats are written as the strings `"NaN"`, `"inf"`, `"-inf"`, as
 everywhere in the log.

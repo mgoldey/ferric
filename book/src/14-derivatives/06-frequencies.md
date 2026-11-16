@@ -1,7 +1,7 @@
 # 14.6 Harmonic frequencies
 
-<!-- section: 14.6; status: ready; registry: harmonic-frequencies;
-     theory: crates/ferric-scf/theory.md#"Harmonic frequencies" -->
+<!-- section: 14.6; status: ready; registry: harmonic-frequencies, rrho-thermo, ir-intensities;
+     theory: crates/ferric-scf/theory.md#"Harmonic frequencies"; crates/ferric-scf/theory.md#"RRHO thermochemistry"; crates/ferric-scf/theory.md#"Infrared intensities" -->
 
 Harmonic frequencies need only the Cartesian Hessian and the masses. Whether
 the Hessian came from section 14.4, from section 14.5 or from differences of
@@ -152,6 +152,61 @@ re-symmetrized afterwards to remove accumulated round-off.
 sections 14.4 and 14.5. UHF states are not checked for internal stability, so
 an unstable UHF solution gets the frequencies of that solution.
 
+## 14.6.6 Thermochemistry and IR intensities
+
+A frequency run ends with two quantities built on the modes: the ideal-gas
+thermochemistry of the rigid rotor and harmonic oscillator, and the IR
+intensity of each mode.
+
+| Entry point | Location |
+|---|---|
+| Rust | `ferric-scf/src/thermo.rs::rrho_thermochemistry`, `ferric-scf/src/infrared.rs::{ir_spectrum,dipole_derivatives_field,ir_intensities}` |
+| CLI | `task = "frequencies"`, keys `temperature`, `pressure`, `symmetry_number`, `ir_intensities` |
+| Python | `FrequencyResult.thermo`, `FrequencyResult.ir_intensities` |
+
+<!-- include: crates/ferric-scf/theory.md#"RRHO thermochemistry" -->
+
+> **Verified equation 14.17** · RRHO partition functions
+>
+> Each closed form follows from its partition function in symbols, with the
+> classical and low-temperature limits of the oscillator; for water the
+> transcribed formulas equal $\ln Q(T)$ summed over the vibrational levels and
+> differentiated numerically to $10^{-10}$ relative.
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/rrho_thermo_sympy.py`, claims S1 to S3, L1 and N1 |
+> | Negative control | the runner drops the symmetry number from the nonlinear rotor (claim N1 fails) |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-scf/src/thermo.rs::rrho_thermochemistry_with_masses` |
+> | Code test | `thermo_matches_exact_in_the_trivial_limit` in `crates/ferric-scf/src/thermo.rs` |
+>
+> <!-- verified: id=freq.rrho-thermo; script=scripts/rrho_thermo_sympy.py; claim=N1; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/thermo.rs::rrho_thermochemistry_with_masses; rust_test=ferric-scf/src/thermo.rs::thermo_matches_exact_in_the_trivial_limit; registry=rrho-thermo -->
+
+<!-- include: crates/ferric-scf/theory.md#"Infrared intensities" -->
+
+> **Verified equation 14.18** · the intensity and its units
+>
+> The constant equals $N_Ae^2/(12arepsilon_0c^2m_e)$ from CODATA 2018;
+> the $0	o1$ band strength from the harmonic matrix element is the classical
+> one; contracting the dipole derivative with the stored modes equals
+> differencing the dipole along each mode of a model triatomic; and the field
+> route recovers the dipole derivative to its $O(h^2)$ truncation.
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/ir_intensity_sympy.py`, claims C1, S1, N1 to N3 |
+> | Negative control | the runner drops the mass weighting of the modes (claim N2 fails) and flips the sign of the field route (claim N3 fails) |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-scf/src/infrared.rs::ir_intensities` |
+> | Code test | `ir_intensity_matches_exact_in_the_trivial_limit` in `crates/ferric-scf/src/infrared.rs` |
+>
+> <!-- verified: id=freq.ir-intensity; script=scripts/ir_intensity_sympy.py; claim=N1; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/infrared.rs::ir_intensities; rust_test=ferric-scf/src/infrared.rs::ir_intensity_matches_exact_in_the_trivial_limit; registry=ir-intensities -->
+
+**The symmetry number is an input.** ferric detects Abelian point groups
+only, so it cannot count the proper rotations of NH3 or CH4; the default
+$\sigma = 1$ overstates the entropy by $k\ln\sigma$.
+
 ## Sources
 
 | Source | Used for |
@@ -160,3 +215,5 @@ an unstable UHF solution gets the frequencies of that solution.
 | `scripts/hf_frequencies_sympy.py`, claims C1, C2, S1, D1, P1 to P4 | verified equations 14.15 and 14.16 |
 | `crates/ferric-scf/src/frequencies.rs` module documentation | the pipeline and the Hessian options |
 | `site/src/reference/validation.md` | the anchor rows |
+| `crates/ferric-scf/theory.md`, "RRHO thermochemistry" and "Infrared intensities" | section 14.6.6 |
+| `scripts/rrho_thermo_sympy.py`, `scripts/ir_intensity_sympy.py` | verified equations 14.17 and 14.18 |

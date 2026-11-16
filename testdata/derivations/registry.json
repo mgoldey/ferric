@@ -104,19 +104,27 @@
     ],
     "frequencies:ksdft": [
       "ks-hessian",
-      "harmonic-frequencies"
+      "harmonic-frequencies",
+      "rrho-thermo",
+      "ir-intensities"
     ],
     "frequencies:rhf": [
       "hf-hessian",
-      "harmonic-frequencies"
+      "harmonic-frequencies",
+      "rrho-thermo",
+      "ir-intensities"
     ],
     "frequencies:rohf": [
       "hf-hessian",
-      "harmonic-frequencies"
+      "harmonic-frequencies",
+      "rrho-thermo",
+      "ir-intensities"
     ],
     "frequencies:uhf": [
       "hf-hessian",
-      "harmonic-frequencies"
+      "harmonic-frequencies",
+      "rrho-thermo",
+      "ir-intensities"
     ],
     "optimize:ksdft": [
       "ks-gradient",
@@ -210,7 +218,9 @@
     "py:run_frequencies": [
       "hf-hessian",
       "ks-hessian",
-      "harmonic-frequencies"
+      "harmonic-frequencies",
+      "rrho-thermo",
+      "ir-intensities"
     ],
     "py:run_gw": [
       "gw"
@@ -1028,6 +1038,22 @@
       ],
       "scripts": [
         "scripts/nevpt2_sympy.py"
+      ]
+    },
+    "rrho-thermo": {
+      "theory": [
+        "crates/ferric-scf/theory.md#rrho-thermochemistry"
+      ],
+      "scripts": [
+        "scripts/rrho_thermo_sympy.py"
+      ]
+    },
+    "ir-intensities": {
+      "theory": [
+        "crates/ferric-scf/theory.md#infrared-intensities"
+      ],
+      "scripts": [
+        "scripts/ir_intensity_sympy.py"
       ]
     }
   },

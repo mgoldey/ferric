@@ -268,12 +268,16 @@ pub mod hessian_df_stencil;
 pub mod hessian_ecp;
 mod hessian_field;
 mod hessian_smeared;
+/// Harmonic infrared intensities from dipole derivatives along the normal modes.
+pub mod infrared;
 pub mod irc;
 /// Geometry optimization via L-BFGS with energy/gradient convergence.
 pub mod optimize;
 pub mod raw_handoff;
 pub mod response_jk;
 pub mod saddle;
+/// Rigid-rotor / harmonic-oscillator thermochemistry from harmonic frequencies.
+pub mod thermo;
 pub mod warm_start;
 pub use frequencies::{harmonic_frequencies, FrequencyConfig, FrequencyReference, FrequencyResult};
 /// Continuous Fast Multipole Method (CFMM) for long-range Coulomb.

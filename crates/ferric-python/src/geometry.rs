@@ -1331,9 +1331,10 @@ pub(crate) struct PyFrequencyResult {
     pub(crate) e_dispersion: Option<f64>,
     /// Normal-mode displacement vectors in CARTESIAN coordinates: one row per
     /// entry of `frequencies`, `3N` values each, ordered `[x0,y0,z0,x1,...]`
-    /// to match `Molecule.symbols()`. These are the mass-weighted eigenvectors
-    /// divided back through by `sqrt(m)`, so light atoms visibly move further
-    /// than heavy ones; they are not normalized to any convention.
+    /// to match `Molecule.symbols()`. These are the unit mass-weighted
+    /// eigenvectors (masses in electron masses) divided back through by
+    /// `sqrt(m)`, so light atoms visibly move further than heavy ones and each
+    /// row is `dR/dQ` for the mass-weighted normal coordinate `Q`.
     ///
     /// Needed because `n_imaginary() == 1` is NECESSARY BUT NOT SUFFICIENT for
     /// a transition state -- a methyl rotor gives one imaginary frequency too.
@@ -1342,10 +1343,88 @@ pub(crate) struct PyFrequencyResult {
     #[pyo3(get)]
     pub(crate) normal_modes: Vec<Vec<f64>>,
     pub(crate) certificate_data: ferric_core::certificate::Certificate,
+    /// The geometry the frequencies were computed at (`thermo`).
+    pub(crate) molecule: ferric_core::mol::Molecule,
+    /// What `ir_intensities` differentiates, or why it cannot.
+    pub(crate) ir_source: Result<IrSource, String>,
+    /// `ir_intensities` after its first call.
+    pub(crate) ir_cache: Option<Vec<f64>>,
+}
+
+/// The SCF of a frequency run, kept so `FrequencyResult.ir_intensities` can
+/// differentiate it on demand.
+pub(crate) struct IrSource {
+    pub(crate) basis_name: String,
+    pub(crate) scf_cfg: RhfConfig,
+    pub(crate) reference: ferric_scf::frequencies::FrequencyReference,
+    pub(crate) normal_modes: ndarray::Array2<f64>,
 }
 
 #[pymethods]
 impl PyFrequencyResult {
+    /// RRHO thermochemistry (dict; see the .pyi). Imaginary modes are left
+    /// out with a `RuntimeWarning`.
+    #[pyo3(signature = (temperature=298.15, pressure=101325.0, symmetry_number=1))]
+    fn thermo(
+        &self,
+        py: Python<'_>,
+        temperature: f64,
+        pressure: f64,
+        symmetry_number: u32,
+    ) -> PyResult<PyObject> {
+        let cfg = ferric_scf::thermo::ThermoConfig {
+            temperature,
+            pressure,
+            symmetry_number,
+        };
+        cfg.validate().map_err(|e| value_error(e.to_string()))?;
+        let th = ferric_scf::thermo::rrho_thermochemistry(
+            &self.molecule,
+            &self.frequencies,
+            self.energy,
+            &cfg,
+        )
+        .map_err(make_err)?;
+        for w in &th.warnings {
+            crate::scf::emit_runtime_warning(py, w.clone());
+        }
+        let json = py.import("json")?;
+        Ok(json
+            .call_method1("loads", (th.to_json().to_string(),))?
+            .unbind())
+    }
+
+    /// IR intensity of each mode in km/mol, in the order of `frequencies`
+    /// (the field route: six SCF + gradient evaluations in a field of
+    /// +-1e-3 a.u., computed on the first call and cached).
+    fn ir_intensities(&mut self, py: Python<'_>) -> PyResult<Vec<f64>> {
+        if let Some(a) = &self.ir_cache {
+            return Ok(a.clone());
+        }
+        let src = self
+            .ir_source
+            .as_ref()
+            .map_err(|why| value_error(why.clone()))?;
+        let ctx = ParallelContext::default();
+        let mol = &self.molecule;
+        let apt = py
+            .allow_threads(|| {
+                ferric_scf::infrared::dipole_derivatives_field(
+                    &ctx,
+                    mol,
+                    &src.basis_name,
+                    Operator::coulomb(),
+                    &src.scf_cfg,
+                    src.reference,
+                    ferric_scf::infrared::DEFAULT_IR_FIELD,
+                )
+            })
+            .map_err(make_err)?;
+        let a = ferric_scf::infrared::ir_intensities(&apt, &src.normal_modes).map_err(make_err)?;
+        self.ir_cache = Some(a.clone());
+        Ok(a)
+    }
+
     /// Validation certificate of this result (dict form of
     /// `ferric_core::certificate::Certificate`; see `RhfResult.certificate`).
     /// `capability` is `"frequencies:<kind>"`; the SCF at the input geometry
@@ -1676,7 +1755,19 @@ pub(crate) fn run_frequencies(
             ferric_core::certificate::Certificate::ungraded(format!("frequencies:{kind}")).warn(why)
         }
     };
-    Ok(frequency_result_to_py(r, e_dispersion, certificate_data))
+    let ir_source = Ok(IrSource {
+        basis_name: basis_name.to_string(),
+        scf_cfg: scf_cfg.clone(),
+        reference: refr,
+        normal_modes: r.normal_modes.clone(),
+    });
+    Ok(frequency_result_to_py(
+        r,
+        e_dispersion,
+        certificate_data,
+        m,
+        ir_source,
+    ))
 }
 
 /// `run_frequencies(method="pdep-rpa")`: central differences (`delta`, Bohr)
@@ -1773,7 +1864,12 @@ fn run_frequencies_pdep_rpa(
             ferric_core::certificate::Certificate::ungraded("frequencies:pdep-rpa").warn(why)
         }
     };
-    Ok(frequency_result_to_py(r, None, certificate_data))
+    let no_ir = Err(
+        "ir_intensities: method=\"pdep-rpa\" has no dipole derivative; IR intensities are \
+         computed for the SCF references only"
+            .to_string(),
+    );
+    Ok(frequency_result_to_py(r, None, certificate_data, m, no_ir))
 }
 
 /// The `PyFrequencyResult` of a library `FrequencyResult`.
@@ -1781,6 +1877,8 @@ fn frequency_result_to_py(
     r: ferric_scf::frequencies::FrequencyResult,
     e_dispersion: Option<f64>,
     certificate_data: ferric_core::certificate::Certificate,
+    molecule: ferric_core::mol::Molecule,
+    ir_source: Result<IrSource, String>,
 ) -> PyFrequencyResult {
     PyFrequencyResult {
         frequencies: r.frequencies,
@@ -1804,6 +1902,9 @@ fn frequency_result_to_py(
             .map(|row| row.to_vec())
             .collect(),
         certificate_data,
+        molecule,
+        ir_source,
+        ir_cache: None,
     }
 }
 
@@ -1981,6 +2082,13 @@ pub(crate) fn run_xtb_frequencies(
                 .map(|row| row.to_vec())
                 .collect(),
             certificate_data,
+            molecule: m,
+            ir_source: Err(
+                "ir_intensities: GFN-xTB frequencies have no dipole derivative \
+                            in ferric"
+                    .to_string(),
+            ),
+            ir_cache: None,
         })
     }
     #[cfg(not(feature = "xtb"))]

@@ -277,6 +277,142 @@ the rigid modes, distance-preserving rotations, rank 5 for a linear
 triatomic), and that the projection leaves the vibrations of a pair-spring
 model unchanged at its minimum and zeroes six modes away from it.
 
+## RRHO thermochemistry
+
+`rrho_thermochemistry` (`src/thermo.rs`; `FrequencyResult::thermochemistry`;
+CLI `task = "frequencies"`; Python `FrequencyResult.thermo`) evaluates the
+ideal-gas rigid-rotor / harmonic-oscillator model at temperature $T$ and
+pressure $P$. Proof: `scripts/rrho_thermo_sympy.py`. The conventions are
+those of PySCF `pyscf.hessian.thermo`.
+
+Per molecule, with $k = k_B$, the energies follow from the partition
+function $q$ as $E = kT^2\,\partial\ln q/\partial T$ and the entropies as
+$S = k\ln q + E/T$, with the indistinguishability term $k(1 - \ln N)$
+(Stirling) carried by the translations.
+
+Translation. With $q_V = (2\pi M kT/h^2)^{3/2} V$ and $V/N = kT/P$,
+$$q_{\rm tr} = \left(\frac{2\pi M k T}{h^2}\right)^{3/2}\frac{kT}{P},\qquad
+E_{\rm tr} = \tfrac32 kT,\quad H_{\rm tr} = \tfrac52 kT,\quad
+S_{\rm tr} = k\left(\tfrac52 + \ln q_{\rm tr}\right),$$
+the Sackur-Tetrode entropy; $C_V = \tfrac32 k$, $C_P = \tfrac52 k$.
+
+Rotation. The principal moments $I_a$ of the inertia tensor about the centre
+of mass give $B_a = h/(8\pi^2 I_a)$ (Hz). With the rotational symmetry number
+$\sigma$,
+$$q_{\rm rot}^{\rm lin} = \frac{kT}{\sigma h B},\quad
+E = H = kT,\quad S = k(1 + \ln q);\qquad
+q_{\rm rot}^{\rm nonlin} = \frac{\sqrt\pi}{\sigma}\left(\frac{kT}{h}\right)^{3/2}
+\frac{1}{\sqrt{B_A B_B B_C}},\quad E = H = \tfrac32 kT,\quad S = k(\tfrac32 + \ln q).$$
+These are the high-temperature (classical) limits of the rigid-rotor level
+sums; for a linear rotor the level sum is
+$kT/(\sigma hB)\,[1 + y/3 + y^2/15 + \dots]$, $y = hB/kT$. A single atom has
+no rotational part. Linearity is `detect_linear`, the same test the
+frequency projection uses. $\sigma$ is an input (default 1); with
+$\sigma = 1$ for a molecule whose true value is $\sigma$, $S_{\rm rot}$ is
+too large by $k\ln\sigma$ and $G$ too low by $kT\ln\sigma$.
+
+Vibration. Each real mode with wavenumber $\tilde\nu$ has
+$\theta = hc\tilde\nu/k$ (`C2` $= 100\,hc/k$ in K per cm$^{-1}$) and
+$x = \theta/T$. From $q = e^{-x/2}/(1 - e^{-x})$,
+$$E_{\rm vib} = H_{\rm vib} = \sum\left[\tfrac12 k\theta + kT\,\frac{x}{e^x - 1}\right],\quad
+S_{\rm vib} = k\sum\left[\frac{x}{e^x - 1} - \ln(1 - e^{-x})\right],\quad
+C_V = k\sum\frac{x^2 e^x}{(e^x - 1)^2}.$$
+The first sum is the zero-point energy. As $x \to 0$, $E - E_{\rm ZPE} \to kT$,
+$C_V \to k$ and $S \to k(1 - \ln x)$ (the classical oscillator); as
+$x \to \infty$, $E \to E_{\rm ZPE}$ and $S \to 0$. Imaginary modes
+(negative wavenumbers) are left out, with a warning. The code evaluates
+$x/(e^x-1)$ with `exp_m1` and $C_V$ as $x^2 e^{-x}/(1-e^{-x})^2$ so neither
+soft nor stiff modes lose precision or overflow.
+
+Electronic. $E = H = E_0$ (the SCF energy, with any dispersion correction) and
+$S = k\ln(2S+1)$ from the spin multiplicity alone.
+
+Totals are sums of the four parts and $G = H - TS$ for each. Energies are in
+Hartree and entropies in Hartree/K, so $k$ is used as
+$k_B/E_h = 3.166811563\times10^{-6}$ Hartree/K. Constants are CODATA 2018;
+lengths go to metres with ferric's own Bohr radius
+(`units::BOHR_RADIUS_ANGSTROM`, the value that read the Angstrom input) and
+masses are the isotope-averaged standard atomic weights of the frequency
+calculation.
+
+The script derives each closed form from its partition function in sympy,
+takes the high- and low-temperature limits, checks the transcribed formulas
+for water against $\ln Q(T)$ summed over the vibrational levels and
+differentiated numerically (relative $10^{-10}$), the rigid-rotor level sum
+against its Euler-Maclaurin series, and the argon entropy against
+NIST-JANAF (154.845 J/(mol K) at 298.15 K and 1 bar). The Python test
+`test_thermo_ir.py` compares the full result with PySCF's `thermo` on the
+same frequencies, geometry, masses and constants.
+
+## Infrared intensities
+
+`ir_spectrum` and `ir_intensities` (`src/infrared.rs`; CLI `task =
+"frequencies"`; Python `FrequencyResult.ir_intensities`) give the harmonic
+intensity of every normal mode. Proof: `scripts/ir_intensity_sympy.py`.
+
+Intensity. For the $0 \to 1$ band of a harmonic mode with normal coordinate
+$Q$ (mass-weighted, $Q = \sum_i \sqrt{m_i}\,\Delta x_i\,u_i$), the integrated
+cross section is $\int\sigma\,d\omega = \pi\omega|\langle0|\mu|1\rangle|^2/(3\varepsilon_0\hbar c)$
+(isotropic average included) and $|\langle 0|Q|1\rangle|^2 = \hbar/(2\omega)$.
+Integrating over wavenumber ($d\omega = 2\pi c\,d\tilde\nu$) and per mole,
+$$A_k = \frac{N_A}{12\,\varepsilon_0 c^2}\left|\frac{\partial\boldsymbol\mu}{\partial Q_k}\right|^2,$$
+the Napierian integrated absorption coefficient in m/mol. $\hbar$ and
+$\omega$ cancel: the result is the classical one, and because the
+$n \to n+1$ band is $n+1$ times stronger, the Boltzmann-weighted net
+absorption $\sum_n (p_n - p_{n+1})(n+1) = 1$ makes it independent of $T$.
+
+Units. With $\partial\mu/\partial Q$ in atomic units, $e/\sqrt{m_e}$,
+$$A_k\,[\text{km/mol}] = C\,\left|\frac{\partial\boldsymbol\mu}{\partial Q_k}\right|^2_{\rm a.u.},\qquad
+C = \frac{N_A e^2}{12\,\varepsilon_0 c^2 m_e}\times10^{-3} = 1\,777\,097.7313$$
+(`AU_TO_KM_PER_MOL`, CODATA 2018), i.e. 974.880 km/mol per $e^2/u$ and
+42.2561 km/mol per (D/Å)$^2$/u.
+
+Normal modes. `FrequencyResult::normal_modes` stores
+$x_k = M^{-1/2}u_k$ with $u_k$ the unit eigenvectors of the mass-weighted
+Hessian in electron masses, so $\sum_i m_i x_{k,i}^2 = 1$ and
+$x_k = \partial R/\partial Q_k$. Then
+$$\frac{\partial\mu_a}{\partial Q_k} = \sum_i P_{ai}\,x_{k,i},\qquad P_{ai} = \frac{\partial\mu_a}{\partial R_i},$$
+with no further mass factor. $P$ is the atomic polar tensor ($3\times3N$, in $e$).
+
+Dipole derivative. In a uniform field $\mathbf F$ ferric's energy is
+$E(\mathbf F) = E(0) - \boldsymbol\mu\cdot\mathbf F - \tfrac12\mathbf F\alpha\mathbf F + \dots$
+(a charge $q$ at $\mathbf R$ gains $-q\mathbf F\cdot\mathbf R$, see
+"External point charges and fields"), so $\boldsymbol\mu = -\partial E/\partial\mathbf F$ and
+$$P_{ai} = -\frac{\partial^2 E}{\partial F_a\,\partial R_i}
+\approx -\frac{g_i(+h\mathbf e_a) - g_i(-h\mathbf e_a)}{2h},$$
+the production route (`dipole_derivatives_field`): six SCF plus analytic
+gradient evaluations in fields $\pm h$ ($h = 10^{-3}$ a.u.), independent of
+the molecule size. The gradient of an SCF converged in the field carries the
+orbital relaxation, so this is the relaxed (response) dipole derivative of
+the SCF energy. Truncation is $h^2/6\,|\partial^4E/\partial F^3\partial R|$;
+SCF noise is at most $K n\,\delta_D/h$ ($K$ the gradient's density
+sensitivity, $n$ the basis size, $\delta_D$ the density threshold), so the
+field SCFs run at $\delta_D \le 10^{-9}$ (`IR_DENSITY_CONV`). The validation
+route (`dipole_derivatives_dipole_fd`) differences the SCF dipole
+$\mu_a = \sum_A Z_A R_{A,a} - \mathrm{tr}(D\,r_a)$ along each Cartesian
+displacement ($6N$ SCFs). Both satisfy the translational sum rule
+$\sum_A P_{a,(A,b)} = Q\,\delta_{ab}$ for molecular charge $Q$ without
+external point charges; `IrSpectrum::sum_rule_residual` records the
+deviation. The dipole origin is fixed at 0; the intensities do not depend on
+it because vibrations conserve the centre of mass.
+
+Scope. The SCF references (RHF, UHF, ROHF and their Kohn-Sham variants).
+Correlated kinds are refused: their dipole derivative would be the field
+derivative of the correlated gradient, which is not validated. With
+`[dft] dispersion` the modes come from the corrected Hessian and the dipole
+derivative from the SCF alone (D3 does not depend on the field; MBD's
+density dependence is not included in $P$).
+
+The script derives $C$ from CODATA, the $0\to1$ band strength from the
+matrix element (classical limit), the temperature independence, and the
+field-route identity on a model $E(R,F)$; it checks the transcribed
+contraction against differencing $\mu$ along each mode of a bent triatomic
+model, the closed form $A = C q^2/\mu_{\rm red}$ for point charges on a
+diatomic, and the field route's $O(h^2)$ truncation. The Rust test
+`tests/ir_intensity_routes.rs` compares the two routes for RHF, RKS, UHF,
+UKS and ROHF against a bar built from Richardson truncation estimates and
+measured SCF-noise bounds.
+
 ## Convergence Acceleration (DIIS)
 Direct Inversion in the Iterative Subspace (DIIS) minimizes the error vector:
 $$\mathbf{e}_k = \mathbf{F}_k \mathbf{D}_k \mathbf{S} - \mathbf{S} \mathbf{D}_k \mathbf{F}_k$$
