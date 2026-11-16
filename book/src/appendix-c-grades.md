@@ -26,12 +26,12 @@ The grades are those of `site/src/reference/validation.md`, which is the authori
 | `uhf` | SCF | `run_uhf`, `run_frequencies(reference="uhf", xc=..., dispersion=...)` | Proven |
 | `rohf` | SCF | `run_rohf`, `run_frequencies(reference="rohf", xc=..., dispersion=...)` | Proven |
 | `ksdft` | SCF/DFT | `run_dft` / `run_ksdft`, `run_frequencies(xc=..., dispersion=...)` | Proven |
-| `rimp2` | MP2 | `run_rimp2` (UHF + UMP2 when multiplicity > 1), `run_optimize(method="rimp2")` | Proven |
+| `rimp2` | MP2 | `run_rimp2` (UHF + UMP2 when multiplicity > 1), `run_optimize(method="rimp2")`, `run_frequencies(method="rimp2")` (RHF, or UHF when multiplicity > 1) | Proven |
 | `mp3` | MP2 | `run_mp3` | Proven |
-| `oo-rimp2` | MP2 | `run_oo_rimp2` (closed shell only), `run_optimize(method="oo-rimp2")` | Proven (narrow) |
+| `oo-rimp2` | MP2 | `run_oo_rimp2` (closed shell only), `run_optimize(method="oo-rimp2")`, `run_frequencies(method="oo-rimp2")` (closed shell) | Proven (narrow) |
 | `att-rimp2` | MP2 | `run_attenuated_rimp2`, `run_optimize(method="att-rimp2")`, `run_frequencies(method="att-rimp2")` (RHF or UHF) | Proven |
 | `mp2-v` | MP2 | `run_mp2_v` (closed shell only) | Proven (narrow) |
-| `scs-mp2` | MP2 | `run_scs_mp2`, `run_optimize(method="scs-mp2")` | Proven |
+| `scs-mp2` | MP2 | `run_scs_mp2`, `run_optimize(method="scs-mp2")`, `run_frequencies(method="scs-mp2")` (closed shell) | Proven |
 | `scs-mp2-2terfc` | MP2 | `run_scs_mp2_2terfc` | Proven (narrow) |
 | `laplace-mp2` | MP2 | `run_laplace_mp2` | Proven |
 | `laplace-sos-mp2` | MP2 | `run_laplace_sos_mp2` | Proven |
