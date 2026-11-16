@@ -110,6 +110,7 @@
   - [16.5 LinLCCD and LinLCCD(hh)](16-coupled-cluster/05-linlccd.md)
   - [16.6 The ωB97X-L-V double hybrid](16-coupled-cluster/06-wb97x-l-v.md)
   - [16.7 Local coupled cluster: amplitude threshold and DLPNO](16-coupled-cluster/07-local-cc.md)
+  - [16.8 Unrestricted CCSD and CCSD(T)](16-coupled-cluster/08-uccsd.md)
 - [17. CAS-CI, CASSCF and NEVPT2](17-multireference/index.md)
   - [17.1 Determinants, strings and the phase convention](17-multireference/01-determinants.md)
   - [17.2 Slater–Condon rules as implemented](17-multireference/02-slater-condon.md)

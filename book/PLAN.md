@@ -270,6 +270,7 @@ Code references are `crate/src/file.rs::item` under `crates/`.
 | 16.5 | LinLCCD and LinLCCD(hh) | T cc "LinLCCD and LinLCCD(hh)"; S `cc_triples_weights_and_linlccd_spin_adaptation_sympy.py`; R linlccd; W §9 | `ferric-cc/src/linlccd.rs::linlccd`, `ferric-cc/src/linlccd_u.rs::u_linlccd`, `ferric-cc/src/helpers.rs::contract_hh_ladder` | ready |
 | 16.6 | The ωB97X-L-V double hybrid | T cc "ωB97X-L-V correlation"; R double-hybrid *gap* | `ferric-cc/src/double_hybrid.rs::run_wb97x_l_v` | ready |
 | 16.7 | Local coupled cluster: amplitude threshold and DLPNO | T cc "Amplitude-threshold LinLCCD", "DLPNO-…" (three sections); W §10, §13 | `ferric-cc/src/linlccd_amplitude.rs::amplitude_linlccd`, `ferric-cc/src/dlpno_linlccd.rs::dlpno_linlccd_hh`, `ferric-cc/src/dlpno_ccsd_virtual.rs::pno_ccsd_energy`, `ferric-cc/src/dlpno_ccsd_t.rs::screened_triple_energy` | edit |
+| 16.8 | Unrestricted CCSD and CCSD(T) | T cc "Unrestricted CCSD and CCSD(T)"; S `cc_uccsd_spin_blocks_sympy.py`; R u-ccsd, u-ccsd-t | `ferric-cc/src/u_ccsd.rs::u_ccsd`, `ferric-cc/src/u_ccsd_t.rs::u_ccsd_t` | ready |
 
 ### Part VIII. Multireference
 
@@ -450,7 +451,7 @@ registry row and are the largest block of `gap` sections.
 | IV. Density functional theory | 7 | 0 | 0 | 0 | 7 |
 | V. The MP2 family | 18 | 3 | 1 | 5 | 27 |
 | VI. Derivatives | 12 | 3 | 0 | 0 | 15 |
-| VII. Coupled cluster | 6 | 1 | 0 | 0 | 7 |
+| VII. Coupled cluster | 7 | 1 | 0 | 0 | 8 |
 | VIII. Multireference | 6 | 0 | 0 | 0 | 6 |
 | IX. RPA, PDEP and GW | 14 | 0 | 0 | 1 | 15 |
 | X. Response and excited states | 7 | 2 | 0 | 0 | 9 |
@@ -460,9 +461,9 @@ registry row and are the largest block of `gap` sections.
 | XIV. Capstone | 1 | 2 | 4 | 0 | 7 |
 | XV. Interfaces | 1 | 5 | 1 | 0 | 7 |
 | Appendices | 3 | 0 | 1 | 0 | 4 |
-| **Total** | **99** | **48** | **8** | **6** | **161** |
+| **Total** | **100** | **48** | **8** | **6** | **162** |
 
-161 sections: 61% `ready`, 30% `edit`, 5% `gap` and 4% `verify`.
+162 sections: 62% `ready`, 30% `edit`, 5% `gap` and 4% `verify`.
 <!-- status-table:end -->
 
 ## 5. Gaps, ranked by how much rests on them

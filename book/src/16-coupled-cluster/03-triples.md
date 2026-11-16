@@ -130,6 +130,7 @@ spin-orbital amplitudes (section 16.1, or the closed-shell ones expanded by
 | Rendell, Lee and Komornicki, CPL 178, 462 (1991); PySCF `cc/ccsd_t_slow.py` | the closed-shell algorithm and its index convention |
 | `scripts/cc_triples_weights_and_linlccd_spin_adaptation_sympy.py` | claims 1–5 and 4b |
 
-**Known limits (2026-11-15).** Closed shell only; no open-shell (T). The
+**Known limits (2026-11-15).** Closed shell only; the open-shell (T) on a
+UHF reference is section 16.8. The
 DLPNO-(T) screen of section 16.7 keeps the occupied banding of the same
 identity.
