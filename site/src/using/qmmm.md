@@ -129,7 +129,7 @@ must have been built with `residue_ids=`), or `"all"`. Any value other than
 `"none"` requires `mm_topology=`: without a force field, nothing holds the
 moving MM atoms' geometry together.
 
-The search is Cartesian BFGS over the atoms that move. It starts from the
+The search is Cartesian BFGS over the atoms that move (internal coordinates cannot follow the net force and torque of the fixed MM charges). It starts from the
 Lindh model Hessian of the whole structure (QM and MM atoms) restricted to
 those atoms, so a bond from a QM frontier atom to a fixed MM host keeps its
 stiffness (`initial_hessian="lindh"`, the default; `"simple"` starts from the

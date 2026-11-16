@@ -83,6 +83,62 @@ impl CoordSystem {
     }
 }
 
+/// What in `cfg` makes the energy depend on where the molecule sits in the
+/// lab frame, or `None` when the energy is invariant to a rigid rotation and
+/// translation of the optimized atoms.
+///
+/// Fixed classical charges (point or Gaussian-smeared, including every
+/// QM/MM `[qmmm]` MM charge), a uniform field and polarizable embedding sites
+/// all stay put while the atoms move, so they exert a net force and torque.
+/// COSMO and PCM cavities are built from the atoms and move with them, so
+/// they keep the invariance and are not listed. A `fock_hook` is opaque and
+/// is not inspected.
+#[must_use]
+pub fn fixed_frame_cause(cfg: &RhfConfig) -> Option<&'static str> {
+    if let Some(ext) = cfg.external_potential.as_ref() {
+        if !ext.point_charges.is_empty() || !ext.smeared_charges.is_empty() {
+            return Some("fixed point or smeared charges (point_charges / QM/MM MM atoms)");
+        }
+        if ext.field.is_some() {
+            return Some("a uniform external field");
+        }
+    }
+    if cfg.polarizable.is_some() {
+        return Some("fixed polarizable embedding sites");
+    }
+    None
+}
+
+/// Refuse `coordinates = "internal"` when the energy is not invariant to a
+/// rigid rotation or translation of the optimized atoms ([`fixed_frame_cause`]).
+///
+/// Internal coordinates (bonds, angles, dihedrals) are blind to those six
+/// motions, so a step in them can never remove a net force or torque, while
+/// the convergence test reads the Cartesian gradient, which includes both.
+/// The search then stalls (water in a 0.02 a.u. field: no convergence in 100
+/// steps, 14 mHa high; Cartesian converges in 22). Call this before any SCF.
+///
+/// # Errors
+///
+/// A message naming the cause and suggesting `"cartesian"`.
+pub fn refuse_internal_coordinates_in_fixed_frame(
+    coord_system: CoordSystem,
+    cfg: &RhfConfig,
+) -> Result<(), FerricError> {
+    if coord_system != CoordSystem::RedundantInternal {
+        return Ok(());
+    }
+    match fixed_frame_cause(cfg) {
+        None => Ok(()),
+        Some(cause) => Err(FerricError::General(format!(
+            "coordinates = \"internal\" cannot optimize with {cause}: the energy then depends \
+             on the molecule's position and orientation, and internal coordinates cannot \
+             translate or rotate it, so the search cannot follow the net force or torque and \
+             does not converge. Use coordinates = \"cartesian\" (the default)."
+        ))),
+    }
+}
+
 /// Initial Hessian of the BFGS search.
 ///
 /// Explicit in [`OptimizeConfig::initial_hessian`]; `None` there takes
@@ -480,6 +536,7 @@ pub fn optimize_geometry_with_scf_correction(
 ) -> Result<OptimizeResult, FerricError> {
     // Geometry task: an unset `ri_j_precision` resolves to f64 (jagged f32
     // surface; `RhfConfig::ri_j_task`), an explicit one is kept.
+    refuse_internal_coordinates_in_fixed_frame(opt_config.coord_system, rhf_config)?;
     let rhf_config = &rhf_config.for_geometry_task();
     let mut warm = ScfWarmStart::new(opt_config.scf_warm_start);
     let out = run_bfgs(mol, opt_config, |m| {
@@ -578,6 +635,7 @@ pub fn optimize_geometry_uhf_with_scf_correction(
 ) -> Result<OptimizeResult, FerricError> {
     // Geometry task: an unset `ri_j_precision` resolves to f64 (jagged f32
     // surface; `RhfConfig::ri_j_task`), an explicit one is kept.
+    refuse_internal_coordinates_in_fixed_frame(opt_config.coord_system, uhf_config)?;
     let uhf_config = &uhf_config.for_geometry_task();
     let mut warm = ScfWarmStart::new(opt_config.scf_warm_start);
     let out = run_bfgs(mol, opt_config, |m| {
@@ -627,6 +685,7 @@ pub fn optimize_geometry_rohf_with_scf_correction(
 ) -> Result<OptimizeResult, FerricError> {
     // Geometry task: an unset `ri_j_precision` resolves to f64 (jagged f32
     // surface; `RhfConfig::ri_j_task`), an explicit one is kept.
+    refuse_internal_coordinates_in_fixed_frame(opt_config.coord_system, rohf_config)?;
     let rohf_config = &rohf_config.for_geometry_task();
     let mut warm = ScfWarmStart::new(opt_config.scf_warm_start);
     let out = run_bfgs(mol, opt_config, |m| {

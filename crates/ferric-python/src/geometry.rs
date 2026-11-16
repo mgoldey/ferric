@@ -276,6 +276,8 @@ pub(crate) fn run_optimize(
         opt_config.trust_update = ferric_scf::optimize::TrustUpdate::parse_config_str(s)
             .map_err(pyo3::exceptions::PyValueError::new_err)?;
     }
+    ferric_scf::optimize::refuse_internal_coordinates_in_fixed_frame(opt_config.coord_system, &cfg)
+        .map_err(|e| value_error(format!("run_optimize: {e}")))?;
     if fock_hook.is_some() || fock_hook_grad.is_some() {
         let hooks = check_optimize_hooks(fock_hook, fock_hook_grad, method, &k, scf_warm_start)?;
         let opt_config = OptimizeConfig {
