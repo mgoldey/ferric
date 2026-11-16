@@ -35,7 +35,7 @@ The grades are those of `site/src/reference/validation.md`, which is the authori
 | `scs-mp2-2terfc` | MP2 | `run_scs_mp2_2terfc` | Proven (narrow) |
 | `laplace-mp2` | MP2 | `run_laplace_mp2` | Proven |
 | `laplace-sos-mp2` | MP2 | `run_laplace_sos_mp2` | Proven |
-| `pdep-rpa` | RPA/GW | `run_pdep_rpa` (closed shell only; open-shell U-PDEP-RPA is CLI-only), `run_optimize(method="pdep-rpa")`, `run_frequencies(method="pdep-rpa")` | Proven |
+| `pdep-rpa` | RPA/GW | `run_pdep_rpa` (closed shell only; open-shell U-PDEP-RPA is CLI-only; `with_gradient=True` returns the analytic gradient), `run_optimize(method="pdep-rpa")`, `run_frequencies(method="pdep-rpa")` | Proven |
 | `rs-mp2-rpa` | MP2 / RPA | `run_rs_mp2_rpa` | Proven |
 | `gw` | RPA/GW | `run_gw`, `run_u_gw` | Proven (narrow) |
 | `bse-tda` | RPA/GW | `run_bse_tda` | Smoke |
