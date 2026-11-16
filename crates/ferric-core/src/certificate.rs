@@ -225,6 +225,8 @@ pub const TASK_KIND_ROWS: &[(&str, &str)] = &[
     ("frequencies", "uhf"),
     ("frequencies", "rohf"),
     ("frequencies", "ksdft"),
+    ("frequencies", "rimp2"),
+    ("frequencies", "pdep-rpa"),
 ];
 
 /// `(task, method.kind, ceiling)`: task rows whose cell on
@@ -235,6 +237,8 @@ pub const TASK_KIND_ROWS: &[(&str, &str)] = &[
 pub const TASK_KIND_GRADE_CAPS: &[(&str, &str, Grade)] = &[
     ("optimize", "scs-mp2", Grade::ProvenNarrow),
     ("optimize", "att-rimp2", Grade::ProvenNarrow),
+    ("frequencies", "rimp2", Grade::ProvenNarrow),
+    ("frequencies", "pdep-rpa", Grade::ProvenNarrow),
 ];
 
 /// The build that produced a result. Filled by the top-level artifact from
@@ -958,7 +962,7 @@ mod tests {
             Grade::Smoke
         );
         // No row for the pair: ungraded, with the reason, even on a Proven reference.
-        let n = Certificate::for_task("frequencies", "rimp2", &proven);
+        let n = Certificate::for_task("frequencies", "scs-mp2", &proven);
         assert_eq!(n.grade, Grade::Ungraded);
         assert!(n.grade_source.is_none());
         assert!(
