@@ -39,6 +39,12 @@ dependencies = [
     "numpy>=2.0.0",
 ]
 
+[project.urls]
+Homepage = "https://matthew.thegoldeys.com/ferric/"
+Documentation = "https://matthew.thegoldeys.com/ferric/"
+Source = "https://github.com/mgoldey/ferric"
+Issues = "https://github.com/mgoldey/ferric/issues"
+
 # `pip install ferric` puts `ferric` on PATH -- calls straight into
 # ferric_cli::main() (crates/ferric-cli/src/lib.rs) compiled into the SAME
 # .so this extension module already is, via the `_cli_main` #[pyfunction]
