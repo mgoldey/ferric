@@ -36,8 +36,8 @@
 //! (spin-adapted CCSD and (T) only — the spin-orbital driver holds two
 //! (2·nv)⁴ = 98⁴ tensors there, ~1.5 GB, and is too slow for this tier).
 //!
-//! Closed shell only: ferric's CC and MP3 drivers take a restricted reference
-//! (`ScfResult::eps_r`/`mos_r`), so there is no open-shell CC to validate.
+//! Closed shell only. The open-shell UCCSD / UCCSD(T) row is
+//! `validation_uccsd.rs`.
 //!
 //! # Physics hypothesis vs artifact hypothesis (per the Experimental Protocol)
 //!

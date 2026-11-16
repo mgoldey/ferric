@@ -5,7 +5,11 @@
 //! closed-shell form ([`ccsd_closed_shell`], [`ccsd_t_closed_shell`], which the
 //! CLI `ccsd` / `ccsd(t)` kinds run); LinLCCD(hh) closed shell ([`linlccd`]) and
 //! open shell ([`linlccd_u`]); DLPNO-CCSD(T); and the ωB97X-L-V double hybrid.
-//! Both CCSD forms require a restricted reference. RI integrals come from ferric-mp2.
+//! Both of those CCSD forms require a restricted reference. On a UHF reference
+//! the CLI and Python run spin-blocked UCCSD ([`u_ccsd`]) and its (T)
+//! ([`u_ccsd_t`]); the spin-orbital solvers also accept UHF spin orbitals
+//! ([`ccsd::ccsd_uhf_spin_orbital`], [`ccsd_t::ccsd_t_uhf_spin_orbital`]) as
+//! the independent check. RI integrals come from ferric-mp2.
 
 use ndarray::{Array2, Array4};
 
@@ -83,6 +87,10 @@ pub mod linlccd_exact;
 pub mod linlccd_u;
 /// Integral-direct (RI) particle-particle ladder for closed-shell CCSD.
 pub mod ri_ladder;
+/// Spin-blocked unrestricted CCSD on a UHF reference.
+pub mod u_ccsd;
+/// Spin-blocked (T) correction for unrestricted CCSD.
+pub mod u_ccsd_t;
 
 pub use ferric_mp2::local_pno as pno;
 /// Local-correlation machinery, re-exported from `ferric-mp2`.

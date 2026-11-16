@@ -44,10 +44,9 @@ use ferric_scf::rohf::RohfConfig;
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::uhf::{solve_uhf, UhfConfig};
 // NOTE: the spin-orbital `ferric_cc::ccsd::ccsd` is deliberately NOT imported
-// here. `solve_rhf` always yields a restricted reference, so both `run_ccsd`
-// and `run_ccsd_t` take the spin-adapted solver — the latter by expanding its
-// amplitudes into the spin-orbital convention. An open-shell CC entry point
-// would need to import it again.
+// here. A closed-shell `run_ccsd` / `run_ccsd_t` takes the spin-adapted
+// solvers; an open-shell molecule takes the spin-blocked `ferric_cc::u_ccsd`
+// and `ferric_cc::u_ccsd_t` (see `cc.rs`).
 use ferric_cc::ccsd_closed_shell::ccsd_closed_shell as run_ccsd_cs_inner;
 use ferric_cc::ccsd_t_closed_shell::ccsd_t_closed_shell as run_ccsd_t_cs_inner;
 use ferric_cc::CcConfig;

@@ -21,10 +21,12 @@
       "ccd"
     ],
     "cli:ccsd": [
-      "ccsd"
+      "ccsd",
+      "u-ccsd"
     ],
     "cli:ccsd(t)": [
-      "ccsd-t"
+      "ccsd-t",
+      "u-ccsd-t"
     ],
     "cli:drpa": [
       "drpa"
@@ -198,10 +200,12 @@
       "ccd"
     ],
     "py:run_ccsd": [
-      "ccsd"
+      "ccsd",
+      "u-ccsd"
     ],
     "py:run_ccsd_t": [
-      "ccsd-t"
+      "ccsd-t",
+      "u-ccsd-t"
     ],
     "py:run_cdft": [
       "cdft"
@@ -465,6 +469,22 @@
       ],
       "scripts": [
         "scripts/cc_triples_weights_and_linlccd_spin_adaptation_sympy.py"
+      ]
+    },
+    "u-ccsd": {
+      "theory": [
+        "crates/ferric-cc/theory.md#unrestricted-ccsd-and-ccsdt"
+      ],
+      "scripts": [
+        "scripts/cc_uccsd_spin_blocks_sympy.py"
+      ]
+    },
+    "u-ccsd-t": {
+      "theory": [
+        "crates/ferric-cc/theory.md#unrestricted-ccsd-and-ccsdt"
+      ],
+      "scripts": [
+        "scripts/cc_uccsd_spin_blocks_sympy.py"
       ]
     },
     "cdft": {

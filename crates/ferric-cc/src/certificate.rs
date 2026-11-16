@@ -44,6 +44,21 @@ pub fn cc_certificate(
     }
 }
 
+/// Spin-blocked UCCSD / UCCSD(T) (`kind` = `ccsd` or `ccsd(t)`) on a UHF
+/// `reference`, run with `cfg`. The CCSD energy anchor covers the RHF route
+/// only, so this certificate is outside it.
+pub fn u_cc_certificate(
+    kind: &str,
+    reference: &Certificate,
+    aux: &str,
+    cfg: &CcConfig,
+) -> Certificate {
+    let c = Certificate::for_post_scf(kind, reference)
+        .with_ri(aux)
+        .with_frozen_core(cfg.frozen_core);
+    with_anchor_in_scope(c, "CCSD", false)
+}
+
 /// LinLCCD (`linlccd`) with `variant`; `local` is `(eps, keep_fraction)`
 /// under `[local]`, `None` for the exact method. A local PCG that did not
 /// converge is a warning (the run still reports its energy).

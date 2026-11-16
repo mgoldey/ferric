@@ -27,7 +27,9 @@ message about SCF convergence instead of one naming the multiplicity.
 unrestricted RI-MP2 (UMP2), checked against PySCF at the bottom of this file.
 Nor are run_attenuated_rimp2, run_terfc_rimp2, run_scs_mp2,
 run_scs_mp2_2terfc and run_rs_mp2_rpa, which take the same UHF route
-(checked against run_rimp2's UMP2 below).
+(checked against run_rimp2's UMP2 below). run_ccsd and run_ccsd_t take a UHF
+reference and spin-blocked UCCSD / UCCSD(T) (checked against PySCF in
+test_uccsd.py).
 """
 
 from __future__ import annotations
@@ -62,7 +64,6 @@ def triplet_water():
         pytest.param(lambda m, bs, aux: ferric.run_dft(m, bs, "PBE"), id="run_dft"),
         pytest.param(lambda m, bs, aux: ferric.run_mp3(m, bs, aux), id="run_mp3"),
         pytest.param(lambda m, bs, aux: ferric.run_ccd(m, bs, aux), id="run_ccd"),
-        pytest.param(lambda m, bs, aux: ferric.run_ccsd(m, bs, aux), id="run_ccsd"),
     ],
 )
 def test_triplet_water_is_refused_not_answered_as_the_singlet(
@@ -71,6 +72,14 @@ def test_triplet_water_is_refused_not_answered_as_the_singlet(
     bs, aux = bases
     with pytest.raises(RuntimeError, match="multiplicity 3"):
         call(triplet_water, bs, aux)
+
+
+def test_triplet_water_ccsd_takes_the_uhf_route(triplet_water, bases):
+    """run_ccsd runs spin-blocked UCCSD on a UHF reference, not the singlet."""
+    bs, aux = bases
+    r = ferric.run_ccsd(triplet_water, bs, aux)
+    assert r.reference == "uhf"
+    assert r.spin_components is not None
 
 
 def test_odd_electron_KS_names_the_multiplicity_not_convergence(bases):

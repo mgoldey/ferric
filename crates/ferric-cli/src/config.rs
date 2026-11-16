@@ -4240,6 +4240,9 @@ const OPEN_SHELL_ENERGY_KINDS: &[&str] = &[
     // The MP2-based double hybrids run on a UKS reference.
     "b2plyp",
     "dsd-pbep86",
+    // Spin-blocked UCCSD / UCCSD(T) on a UHF reference.
+    "ccsd",
+    "ccsd(t)",
 ];
 
 /// Kinds with an open-shell analytic gradient for `task = "optimize"` and
@@ -4629,17 +4632,14 @@ impl Config {
             ),
             "linlccd" => "open-shell LinLCCD(hh) is library-only (ferric_cc::linlccd_u::u_linlccd)"
                 .to_string(),
-            "ccd" | "ccsd" | "ccsd(t)" | "eom-ccsd" => format!(
-                "no open-shell {} exists in ferric: every coupled-cluster solver, including \
-                 the spin-orbital ones, is built from restricted (RHF) orbitals; the only \
-                 open-shell coupled-cluster-type method is LinLCCD(hh), which is library-only \
-                 (ferric_cc::linlccd_u::u_linlccd)",
-                match kind {
-                    "ccd" => "CCD",
-                    "ccsd" => "CCSD",
-                    "eom-ccsd" => "EOM-CCSD",
-                    _ => "CCSD(T)",
-                }
+            "ccsd" | "ccsd(t)" => format!(
+                "kind = \"{kind}\" accepts an open-shell molecule (on a UHF reference) for \
+                 task = \"energy\" only; there is no UCCSD nuclear gradient"
+            ),
+            "ccd" | "eom-ccsd" => format!(
+                "no open-shell {} exists in ferric; for an open-shell molecule use \
+                 kind = \"ccsd\" or \"ccsd(t)\" (spin-blocked UCCSD on a UHF reference)",
+                if kind == "ccd" { "CCD" } else { "EOM-CCSD" }
             ),
             "drpa" => "dRPA (exact or local) runs on a single restricted occupied space; \
                        no open-shell variant exists in the CLI (open-shell RPA is \
@@ -5440,7 +5440,7 @@ mod compat_guard_tests {
 
     /// The kinds with an open-shell route for `task = "energy"`, spelled out
     /// here independently of `OPEN_SHELL_ENERGY_KINDS`.
-    const OPEN_SHELL_ENERGY_EXPECTED: [&str; 16] = [
+    const OPEN_SHELL_ENERGY_EXPECTED: [&str; 18] = [
         "uhf",
         "rohf",
         "ksdft",
@@ -5457,6 +5457,8 @@ mod compat_guard_tests {
         "tddft",
         "b2plyp",
         "dsd-pbep86",
+        "ccsd",
+        "ccsd(t)",
     ];
 
     fn cfg(kind: &str, task: &str, extra: &str) -> Config {
@@ -5784,9 +5786,7 @@ mod compat_guard_tests {
         for kind in [
             "rhf",
             "mp3",
-            "ccsd",
             "ccd",
-            "ccsd(t)",
             "eom-ccsd",
             "drpa",
             "linlccd",
@@ -5799,9 +5799,15 @@ mod compat_guard_tests {
                 .expect_err(kind);
             assert!(e.contains("multiplicity = 3"), "{kind}: {e}");
         }
-        // Open-shell OO-RI-MP2 has no nuclear gradient: its energy route must
-        // not leak into the other tasks, and the message must say why.
-        for (kind, task) in [("oo-rimp2", "optimize"), ("oo-rimp2", "frequencies")] {
+        // Open-shell OO-RI-MP2 and UCCSD(T) have no nuclear gradient: their
+        // energy route must not leak into the other tasks, and the message
+        // must say why.
+        for (kind, task) in [
+            ("oo-rimp2", "optimize"),
+            ("oo-rimp2", "frequencies"),
+            ("ccsd", "optimize"),
+            ("ccsd(t)", "frequencies"),
+        ] {
             let e = cfg(kind, task, "")
                 .validate_multiplicity(3)
                 .expect_err(kind);

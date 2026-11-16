@@ -21,7 +21,6 @@ use config::{load_config, Config};
 /// apply the SAME rules to their `local=`/`eps=` kwargs.
 pub use config::{LocalCfg, LocalDirectKnobs, LocalModel, LocalScheme, Mp2Cfg};
 use ferric_cc::ccd::ccd;
-use ferric_cc::ccsd::ccsd;
 use ferric_cc::ccsd_closed_shell::ccsd_closed_shell;
 use ferric_cc::ccsd_t_closed_shell::ccsd_t_closed_shell;
 use ferric_cc::double_hybrid::{run_wb97x_l_v, DoubleHybridConfig};
@@ -4382,7 +4381,7 @@ fn ladder_label(cc_result: &ferric_cc::CcResult, cc_config: &CcConfig) -> Option
 }
 
 /// `method.kind = "ccsd"`. Extracted verbatim from the former `main()`
-/// `"ccsd" => { ... }` match arm.
+/// `"ccsd" => { ... }` match arm. A UHF reference goes to [`run_u_ccsd`].
 fn run_ccsd(
     cfg: &Config,
     mol: &Molecule,
@@ -4393,6 +4392,21 @@ fn run_ccsd(
     budget_bytes: Option<usize>,
     scf_cert: &Certificate,
 ) {
+    if matches!(result.spin, ferric_scf::result::Spin::Unrestricted) {
+        run_u_ccsd(
+            cfg,
+            mol,
+            bs,
+            prep,
+            op,
+            result,
+            budget_bytes,
+            scf_cert,
+            false,
+        );
+        return;
+    }
+    require_restricted(result, "ccsd");
     let aux_name = cfg
         .mp2
         .auxbasis
@@ -4414,27 +4428,14 @@ fn run_ccsd(
     // `cc.CCSD` uses. Routing every closed-shell job through the spin-orbital
     // path was leaving that on the floor: water/aug-cc-pVDZ was 24.7 s here vs
     // 1.1 s for PySCF RCCSD, and only ~2.5x of that was implementation.
-    //
-    // `ccsd_closed_shell` requires a restricted reference (it calls `eps_r()`/
-    // `mos_r()`, which assert on `Spin::Restricted`) — but so does the
-    // spin-orbital `ccsd`, so this is a strict upgrade, not a narrowing. The
-    // fallback exists so a future UHF/ROHF-fed CCSD keeps working rather than
-    // silently taking a path that assumes closed shells.
-    let is_closed_shell = matches!(result.spin, ferric_scf::result::Spin::Restricted);
-    let solver: &str = if is_closed_shell {
-        "spin-adapted"
-    } else {
-        "spin-orbital"
-    };
-    let cc_result = if is_closed_shell {
-        ccsd_closed_shell(mol, prep, &dfbs, op, result, &cc_config)
-    } else {
-        ccsd(mol, prep, &dfbs, op, result, &cc_config)
-    }
-    .unwrap_or_else(|e| {
-        eprintln!("error: {e}");
-        std::process::exit(1);
-    });
+    // A UHF reference went to `run_u_ccsd` above and any other open-shell
+    // reference was refused, so this is always the spin-adapted solver.
+    let solver = "spin-adapted";
+    let cc_result =
+        ccsd_closed_shell(mol, prep, &dfbs, op, result, &cc_config).unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        });
     let ladder = ladder_label(&cc_result, &cc_config);
     println!(
         "CCSD/{} (aux: {}, {solver}) on {}",
@@ -4741,6 +4742,10 @@ fn run_ccsd_t(
     budget_bytes: Option<usize>,
     scf_cert: &Certificate,
 ) {
+    if matches!(result.spin, ferric_scf::result::Spin::Unrestricted) {
+        run_u_ccsd(cfg, mol, bs, prep, op, result, budget_bytes, scf_cert, true);
+        return;
+    }
     require_restricted(result, "ccsd(t)");
     let (aux_name, dfbs) = correlation_aux(cfg, mol);
     let cc_config = closed_shell_cc_config(cfg, mol, budget_bytes);
@@ -4783,6 +4788,94 @@ fn run_ccsd_t(
                 "certificate": cert,
             }),
         );
+    }
+}
+
+/// `method.kind = "ccsd"` / `"ccsd(t)"` on a UHF reference (multiplicity
+/// > 1): spin-blocked UCCSD (`ferric_cc::u_ccsd`) and, with `triples`, the
+/// spin-blocked (T) (`ferric_cc::u_ccsd_t`). Aux and frozen core come from
+/// `[mp2]` as on the closed-shell route; frozen core drops the lowest
+/// orbitals of each spin.
+#[allow(clippy::too_many_arguments)]
+fn run_u_ccsd(
+    cfg: &Config,
+    mol: &Molecule,
+    bs: &BasisSet,
+    prep: &PreparedBasis,
+    op: Operator,
+    result: &ferric_scf::result::ScfResult,
+    budget_bytes: Option<usize>,
+    scf_cert: &Certificate,
+    triples: bool,
+) {
+    let kind = if triples { "ccsd(t)" } else { "ccsd" };
+    if cfg.cc.as_ref().is_some_and(|c| c.ladder.is_some()) {
+        eprintln!(
+            "warning: [cc] ladder is read by closed-shell CCSD only; the UHF route \
+             builds its VVVV blocks densely and ignores it"
+        );
+    }
+    let (aux_name, dfbs) = correlation_aux(cfg, mol);
+    let cc_config = closed_shell_cc_config(cfg, mol, budget_bytes);
+    let cc = or_exit(
+        ferric_cc::u_ccsd::u_ccsd(mol, prep, &dfbs, op, result, &cc_config)
+            .map_err(|e| e.to_string()),
+    );
+    let tri = triples.then(|| {
+        or_exit(
+            ferric_cc::u_ccsd_t::u_ccsd_t(mol, prep, &dfbs, op, result, &cc, &cc_config)
+                .map_err(|e| e.to_string()),
+        )
+    });
+    let e_ccsd = cc.correlation_energy;
+    let e_t = tri.as_ref().map_or(0.0, |t| t.e_t);
+    let total = result.energy + e_ccsd + e_t;
+    let label = if triples { "UCCSD(T)" } else { "UCCSD" };
+    println!(
+        "{label}/{} (aux: {}, spin-blocked) on {}",
+        bs.name, aux_name, cfg.molecule.xyz
+    );
+    println!("  nbasis     = {}", prep.nbasis());
+    println!("  reference  = UHF, multiplicity {}", mol.multiplicity);
+    println!(
+        "  frozen     = {} core orbitals per spin",
+        cc_config.frozen_core
+    );
+    println!("  UHF energy = {:.10} Hartree", result.energy);
+    println!("  CCSD corr  = {e_ccsd:.10} Hartree");
+    println!("    aa       = {:.10} Hartree", cc.e_aa);
+    println!("    ab       = {:.10} Hartree", cc.e_ab);
+    println!("    bb       = {:.10} Hartree", cc.e_bb);
+    if let Some(t) = &tri {
+        println!("  (T) corr   = {:.10} Hartree", t.e_t);
+        println!("    aaa      = {:.10} Hartree", t.aaa);
+        println!("    aab      = {:.10} Hartree", t.aab);
+        println!("    abb      = {:.10} Hartree", t.abb);
+        println!("    bbb      = {:.10} Hartree", t.bbb);
+    }
+    println!("  Total      = {total:.10} Hartree");
+    let cert = print_certificate(&ferric_cc::certificate::u_cc_certificate(
+        kind, scf_cert, &aux_name, &cc_config,
+    ));
+    if let Some(rl) = ferric_scf::runlog::log() {
+        let mut extra = serde_json::json!({
+            "e_corr": e_ccsd + e_t,
+            "e_ccsd_corr": e_ccsd,
+            "e_ccsd_aa": cc.e_aa,
+            "e_ccsd_ab": cc.e_ab,
+            "e_ccsd_bb": cc.e_bb,
+            "reference": "uhf",
+            "e_scf_reference": result.energy,
+            "scf_converged": result.converged,
+            "certificate": cert,
+        });
+        if let Some(t) = &tri {
+            extra["e_t"] = t.e_t.into();
+            extra["e_t_classes"] = serde_json::json!({
+                "aaa": t.aaa, "aab": t.aab, "abb": t.abb, "bbb": t.bbb,
+            });
+        }
+        rl.result(kind, total, extra);
     }
 }
 

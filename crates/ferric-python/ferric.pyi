@@ -2354,6 +2354,16 @@ class CcResult:
     def ladder_block(self) -> int | None:
         """RI ladder block width (None unless ladder_route == "ri")."""
         ...
+    @property
+    def reference(self) -> str:
+        """The reference the CC ran on: "rhf", or "uhf" for an open-shell molecule."""
+        ...
+    @property
+    def spin_components(self) -> dict[str, float] | None:
+        """UHF reference only (None on RHF): ``e_aa``, ``e_ab``, ``e_bb`` (CCSD)
+        and, from ``run_ccsd_t``, ``t_aaa``, ``t_aab``, ``t_abb``, ``t_bbb``
+        (the (T) classes by occupied spins), in Hartree."""
+        ...
 
 class EomCcsdResult:
     """Result of an EE-EOM-CCSD singlet calculation (right eigenvectors)."""
@@ -5982,7 +5992,13 @@ def run_ccsd(
     scf_energy_conv: float | None = None,
     scf_density_conv: float | None = None,
 ) -> CcResult:
-    """Coupled-cluster singles and doubles (CCSD), spin-adapted.
+    """Coupled-cluster singles and doubles (CCSD).
+
+    A closed-shell molecule runs spin-adapted CCSD on an RHF reference. An
+    open-shell molecule (multiplicity > 1) runs spin-blocked UCCSD on a UHF
+    reference; ``CcResult.reference`` is then ``"uhf"`` and
+    ``CcResult.spin_components`` holds the aa / ab / bb energies.
+    ``frozen_core`` drops the lowest orbitals of each spin.
 
     ``ladder`` picks how the particle-particle ladder is evaluated:
     ``"auto"`` (default: dense when its memory plan fits the budget, RI
@@ -5990,7 +6006,8 @@ def run_ccsd(
     ``"ri"`` (integral-direct: at most one nv^4-sized panel at full width,
     narrower panels when the budget requires; same energy to round-off,
     1.3-1.5x slower per iteration). The route taken is on
-    ``CcResult.ladder_route``. Any other value raises ValueError.
+    ``CcResult.ladder_route``. Any other value raises ValueError. An
+    open-shell molecule accepts ``ladder="auto"`` only.
     """
     ...
 
@@ -6035,7 +6052,12 @@ def run_ccsd_t(
     scf_energy_conv: float | None = None,
     scf_density_conv: float | None = None,
 ) -> CcResult:
-    """CCSD(T): CCSD plus perturbative triples correction, spin-adapted.
+    """CCSD(T): CCSD plus perturbative triples correction.
+
+    A closed-shell molecule runs spin-adapted CCSD(T) on an RHF reference. An
+    open-shell molecule (multiplicity > 1) runs spin-blocked UCCSD(T) on a
+    UHF reference; ``CcResult.spin_components`` then holds the CCSD aa / ab /
+    bb energies and the four (T) classes.
 
     ``ladder`` picks how the particle-particle ladder is evaluated:
     ``"auto"`` (default: dense when its memory plan fits the budget, RI
@@ -6043,7 +6065,8 @@ def run_ccsd_t(
     ``"ri"`` (integral-direct: at most one nv^4-sized panel at full width,
     narrower panels when the budget requires; same energy to round-off,
     1.3-1.5x slower per iteration). The route taken is on
-    ``CcResult.ladder_route``. Any other value raises ValueError.
+    ``CcResult.ladder_route``. Any other value raises ValueError. An
+    open-shell molecule accepts ``ladder="auto"`` only.
     """
     ...
 
