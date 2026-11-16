@@ -430,6 +430,20 @@ int scf_debug_md_coulomb_eri3_deriv(const scf_basis *obs, const scf_basis *dfbs,
 int scf_debug_md_coulomb_eri2_deriv(const scf_basis *dfbs, int shP, int shQ,
                                     double *out, int out_len);
 
+/* Validation hooks: the reference MD kernels of a terf/terfc table engine
+ * (compute_cart_eri3, two passes subtracted for terfc; compute_cart_eri3_deriv),
+ * for comparison with scf_compute_terf{,c}_eri3 and
+ * scf_compute_terf_table_eri3_deriv. Same layouts and return contracts. */
+int scf_debug_md_reference_eri3(scf_engine *eng, const scf_basis *obs,
+                                const scf_basis *dfbs, int shP, int sh1, int sh2,
+                                double *out);
+int scf_debug_md_reference_eri3_deriv(scf_engine *eng, const scf_basis *obs,
+                                      const scf_basis *dfbs, int shP, int sh1,
+                                      int sh2, double *out, int out_len);
+/* Process-wide test switch: nonzero routes scf_compute_terf{,c}_eri3 and
+ * scf_compute_terf_table_eri3_deriv through the reference kernels above. */
+void scf_debug_md_use_reference(int on);
+
 /* Validation hook: the 4-center MD path with the plain Coulomb kernel, for
  * cross-checking against libint2's scf_compute_eri_quartet. Needs no engine.
  * Same [n1][n2][n3][n4] layout and return contract as the eri4 entry points. */
