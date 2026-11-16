@@ -655,6 +655,42 @@ CASES = [
         ],
     ),
     (
+        "terfc_rimp2_gradient_sympy.py",
+        90,
+        [
+            (
+                'grad += -2 * np.einsum("PQ,Pia,Qia->", dv, m_u, y)  # metric derivative',
+                'grad += 0.0 * np.einsum("PQ,Pia,Qia->", dv, m_u, y)  # metric derivative',
+                "FAIL L",
+            ),
+            (
+                'dv = m[f"dv_{corr}"]  # 2-centre derivative operator',
+                'dv = m["dv_coul"]  # 2-centre derivative operator',
+                "FAIL L",
+            ),
+            (
+                'deri_ref = m["deri_coul"]  # four-centre derivative operator',
+                'deri_ref = m["deri_terfc"]  # four-centre derivative operator',
+                "FAIL L",
+            ),
+            (
+                "jz, kz = jk(eri_ref, dz)  # Z-vector coupling operator",
+                'jz, kz = jk(m["eri_terfc"], dz)  # Z-vector coupling operator',
+                "FAIL L",
+            ),
+            (
+                "TERFC_SIGN = -1  # terfc = Coulomb + TERFC_SIGN * terf",
+                "TERFC_SIGN = 1  # terfc = Coulomb + TERFC_SIGN * terf",
+                "FAIL K",
+            ),
+            (
+                "HERMITE_LOWER = 1  # weight of the -i E^{i-1,j} term of the derivative",
+                "HERMITE_LOWER = 0  # weight of the -i E^{i-1,j} term of the derivative",
+                "FAIL H",
+            ),
+        ],
+    ),
+    (
         "u_att_rimp2_gradient_sympy.py",
         15,
         [
