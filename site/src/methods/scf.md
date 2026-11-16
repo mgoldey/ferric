@@ -404,15 +404,28 @@ frequencies with MBD@rsSCS run through the CLI or `run_frequencies`.
 ## Frequencies with dispersion
 
 **What it is.** Harmonic frequencies on the dispersion-corrected surface
-E(KS) + E(disp), on an RKS, UKS or ROKS reference. The Hessian is the central
-difference of the corrected analytic gradient: at each of the 6N displaced
-geometries the SCF of that reference is converged, the KS gradient and the dispersion gradient
-are evaluated there, and their sum is differenced. For MBD@rsSCS the
-dispersion gradient is the exact one above, with the Z-vector of the
-reference solved (RKS, UKS or ROKS), so the response of the Hirshfeld
-volumes to the displacement, through the SCF density, is in the Hessian.
-There is no analytic Hessian on this path: `[frequencies] hessian = "analytic"`
-is an error and `"auto"` runs finite differences.
+E(KS) + E(disp), on an RKS, UKS or ROKS reference.
+
+D3(BJ) depends on the geometry only. Its Hessian is analytic
+(`ferric_d3::d3bj_hessian`, derivation in `crates/ferric-d3/theory.md`,
+"Hessian"). The run takes the Hessian route it would take without
+dispersion and adds the D3(BJ) Hessian: under `hessian = "auto"`, the analytic
+moving-grid KS Hessian (RKS or UKS; LDA, GGA, pure or global hybrid; ECPs
+allowed) plus the D3(BJ) Hessian, with no gradient evaluations. Where no
+analytic KS Hessian applies (ROKS, meta-GGA, VV10, range-separated hybrids),
+`auto` differences the KS + D3(BJ) gradient. An explicit
+`hessian = "analytic-moving-grid"` on one of those references is refused
+before the SCF. The ATM three-body term (`s9 != 0`, Rust API only) has no
+Hessian and is refused.
+
+MBD@rsSCS follows the density. Its Hessian is the central difference of the
+corrected analytic gradient: at each of the 6N displaced geometries the SCF
+of that reference is converged, the KS gradient and the MBD gradient are
+evaluated there, and their sum is differenced. The MBD gradient is the exact
+one above, with the Z-vector of the reference solved (RKS, UKS or ROKS), so
+the response of the Hirshfeld volumes to the displacement, through the SCF
+density, is in the Hessian. With MBD, `[frequencies] hessian = "analytic"` and
+`"analytic-moving-grid"` are errors and `"auto"` runs finite differences.
 
 **Run it.** `[dft] dispersion` with `method.task = "frequencies"` on a KS
 SCF: `ksdft`, or `rhf`/`uhf`/`rohf` with `[dft] functional`. The printout gives the corrected `energy`, `E(KS-DFT)`

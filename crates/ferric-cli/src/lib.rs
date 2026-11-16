@@ -628,7 +628,9 @@ pub fn run(args: Vec<String>) {
     // `optimize_geometry_rohf_with_scf_correction` (the ROKS Z-vector);
     // `frequencies` passes the reference to
     // `harmonic_frequencies_with_scf_correction`, which solves the matching
-    // UKS/ROKS SCF at every displaced geometry.
+    // UKS/ROKS SCF at every displaced geometry; for D3(BJ) it goes through
+    // `harmonic_frequencies_with_geometric_correction`, which adds the analytic
+    // D3(BJ) Hessian to an analytic KS Hessian where one applies.
     // ...and the same for the METHOD, which the task guard above does not
     // cover. The correction is evaluated only where a Kohn-Sham SCF result is
     // printed (`print_scf_energy`), so a plain `rhf` energy run passes the
@@ -6834,12 +6836,16 @@ fn run_frequencies_correlated(
 /// `method.kind` the same way `run_optimize` does; `[dft] xc` promotes RHF/UHF/
 /// ROHF to the corresponding KS variant automatically.
 ///
-/// With `[dft] dispersion` (RKS, UKS or ROKS, as in `run_optimize`) the
-/// Hessian is the central difference of the CORRECTED gradient
-/// `g_KS + g_disp`, each evaluated from the SCF converged at that displaced
-/// geometry (`harmonic_frequencies_with_scf_correction`); MBD@rsSCS's density
-/// dependence enters through its exact (Z-vector-relaxed) gradient for the
-/// reference's own spin densities.
+/// With `[dft] dispersion = "d3bj"` the Hessian is the analytic KS Hessian
+/// plus the analytic D3(BJ) Hessian wherever the run without dispersion would
+/// use an analytic Hessian (`harmonic_frequencies_with_geometric_correction`),
+/// and central differences of the corrected gradient otherwise. With MBD@rsSCS
+/// (RKS, UKS or ROKS, as in `run_optimize`) the Hessian is always the central
+/// difference of the CORRECTED gradient `g_KS + g_disp`, each evaluated from
+/// the SCF converged at that displaced geometry
+/// (`harmonic_frequencies_with_scf_correction`); its density dependence enters
+/// through its exact (Z-vector-relaxed) gradient for the reference's own spin
+/// densities.
 #[allow(clippy::too_many_arguments)]
 fn run_frequencies(
     method: &str,
@@ -7032,7 +7038,8 @@ fn frequency_record(
 }
 
 /// The frequency run itself: plain, or on the KS + `[dft] dispersion` surface
-/// (`harmonic_frequencies_with_scf_correction`), returning the correction at
+/// (`harmonic_frequencies_with_geometric_correction` for D3(BJ),
+/// `harmonic_frequencies_with_scf_correction` for MBD@rsSCS), returning the correction at
 /// the UNDISPLACED geometry for the printout and the run log (the driver
 /// evaluates the closure there first).
 #[allow(clippy::type_complexity)]
@@ -7062,9 +7069,15 @@ fn frequencies_maybe_dispersion(
         FrequencyReference::Uhf => ferric_scf::Spin::Unrestricted,
         FrequencyReference::Rohf => ferric_scf::Spin::RestrictedOpen,
     };
-    // Refuse an unsupported configuration (e.g. hessian = "analytic") before
-    // the dispersion model is built (MBD@rsSCS solves free atoms), not after.
-    if dispersion_request(cfg).is_some() {
+    // MBD@rsSCS follows the density, so its Hessian is always finite
+    // differences of the corrected gradient: refuse an analytic request before
+    // the model is built (it solves free atoms), not after. D3(BJ) depends on
+    // the geometry only and carries its own analytic Hessian, so every route
+    // is open to it.
+    if matches!(
+        dispersion_request(cfg),
+        Some(crate::config::DispersionRequest::Mbd { .. })
+    ) {
         ferric_scf::frequencies::check_scf_correction_config(fcfg)?;
     }
     let Some(model) =
@@ -7072,6 +7085,9 @@ fn frequencies_maybe_dispersion(
     else {
         return harmonic_frequencies(ctx, mol, &bs.name, op, rhf_config, fcfg).map(|r| (r, None));
     };
+    if let DispersionGradientModel::D3Bj { functional, params } = &model {
+        return d3_frequencies(ctx, mol, bs, op, rhf_config, fcfg, functional, params);
+    }
     let mut at_reference: Option<DispersionCorrection> = None;
     let res = harmonic_frequencies_with_scf_correction(
         ctx,
@@ -7088,6 +7104,61 @@ fn frequencies_maybe_dispersion(
         },
     )?;
     Ok((res, at_reference))
+}
+
+/// Frequencies on the KS + D3(BJ) surface: the analytic SCF Hessian plus the
+/// analytic D3(BJ) Hessian wherever `harmonic_frequencies` would use an
+/// analytic SCF Hessian, finite differences of the corrected gradient
+/// otherwise (`harmonic_frequencies_with_geometric_correction`).
+#[allow(clippy::too_many_arguments)]
+fn d3_frequencies(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    bs: &BasisSet,
+    op: Operator,
+    rhf_config: &RhfConfig,
+    fcfg: &ferric_scf::frequencies::FrequencyConfig,
+    functional: &str,
+    params: &ferric_d3::D3Params,
+) -> Result<
+    (
+        ferric_scf::frequencies::FrequencyResult,
+        Option<DispersionCorrection>,
+    ),
+    ferric_core::FerricError,
+> {
+    let res = ferric_scf::frequencies::harmonic_frequencies_with_geometric_correction(
+        ctx,
+        mol,
+        &bs.name,
+        op,
+        rhf_config,
+        fcfg,
+        |m| d3_geometric_correction(m, params),
+    )?;
+    let at_reference = DispersionCorrection {
+        model: "D3(BJ)",
+        params: functional.to_string(),
+        energy: res.correction_energy,
+        mbd: None,
+    };
+    Ok((res, Some(at_reference)))
+}
+
+/// D3(BJ) energy, gradient and Hessian at `mol`.
+fn d3_geometric_correction(
+    mol: &Molecule,
+    params: &ferric_d3::D3Params,
+) -> Result<ferric_scf::frequencies::GeometricCorrection, ferric_core::FerricError> {
+    let energy = ferric_d3::d3bj_energy_for_molecule(mol, params)?;
+    let rows = ferric_d3::d3bj_gradient_for_molecule(mol, params)?;
+    let gradient = ndarray::Array2::from_shape_fn((rows.len(), 3), |(k, a)| rows[k][a]);
+    let hessian = ferric_d3::d3bj_hessian_for_molecule(mol, params)?;
+    Ok(ferric_scf::frequencies::GeometricCorrection {
+        energy,
+        gradient,
+        hessian,
+    })
 }
 
 /// The energy lines of a frequency printout. With `[dft] dispersion` they
@@ -7116,10 +7187,17 @@ fn print_frequency_energy(
                     d.energy, d.params
                 ),
             }
-            println!(
-                "  dispersion        = in the Hessian (central differences of the KS + \
-                 dispersion analytic gradient)"
-            );
+            match res.hessian_source {
+                ferric_scf::frequencies::HessianSource::FiniteDifference => println!(
+                    "  dispersion        = in the Hessian (central differences of the KS + \
+                     dispersion analytic gradient)"
+                ),
+                _ => println!(
+                    "  dispersion        = in the Hessian (analytic KS Hessian + analytic {} \
+                     Hessian)",
+                    d.model
+                ),
+            }
             log_scf_dispersion(scf_energy, Some(d));
         }
     }

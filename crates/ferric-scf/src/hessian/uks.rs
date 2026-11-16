@@ -25,13 +25,14 @@
 //!   of `f_xc`, `σ` couplings included for a GGA).
 //!
 //! Equations: `crates/ferric-scf/theory.md` ("Open shell"); the spin algebra
-//! is proved in `scripts/uks_xc_hessian_sympy.py`. Refused with a typed error:
-//! meta-GGA, VV10, range-separated and double hybrids, ROKS, ECPs, external
-//! potentials and everything the UHF Hessian refuses.
+//! is proved in `scripts/uks_xc_hessian_sympy.py`. An ECP adds its skeleton
+//! (total density) and `∂V_ECP/∂x` to both spins' `F^{s,x}`, as in the UHF
+//! Hessian. Refused with a typed error: meta-GGA, VV10, range-separated and
+//! double hybrids, ROKS, external potentials and everything the UHF Hessian
+//! refuses.
 
 use super::ks::{
-    checklist_config, ecp_or_embedding_refusal, functional_refusal, unsupported,
-    FOCK_CONSISTENCY_TOL,
+    checklist_config, embedding_refusal, functional_refusal, unsupported, FOCK_CONSISTENCY_TOL,
 };
 use super::uhf_df::{open_shell_two_electron, OpenShellDensities};
 use super::*;
@@ -40,12 +41,7 @@ use ferric_dft::libxc::xc_def_from_name;
 
 /// Typed refusals for everything outside UKS LDA/GGA (pure or global hybrid)
 /// with exact or RI-J Coulomb and exact or RI-K exchange, that need the SCF.
-fn uks_refusal(
-    mol: &Molecule,
-    prep: &PreparedBasis,
-    uks: &ScfResult,
-    config: &RhfConfig,
-) -> Result<(), FerricError> {
+fn uks_refusal(uks: &ScfResult, config: &RhfConfig) -> Result<(), FerricError> {
     let name = config.xc.as_deref().ok_or_else(|| {
         FerricError::General(
             "the analytic UKS Hessian needs a Kohn-Sham configuration (RhfConfig::xc is unset); \
@@ -84,16 +80,16 @@ fn uks_refusal(
             "range-separated exchange (erfc/erf pair) in the CPHF",
         ));
     }
-    ecp_or_embedding_refusal(mol, prep.basis_set(), config)
+    embedding_refusal(config)
 }
 
 /// The refusals of [`uks_moving_grid_hessian`] that need no SCF (the UKS
 /// counterpart of [`super::rks_moving_grid_hessian_preflight`]): no functional,
-/// meta-GGA, VV10, range-separated or double hybrids, an ECP, an external
-/// potential, and everything the UHF Hessian refuses before its SCF.
+/// meta-GGA, VV10, range-separated or double hybrids, an external potential,
+/// and everything the UHF Hessian refuses before its SCF.
 pub fn uks_moving_grid_hessian_preflight(
-    mol: &Molecule,
-    bs: &ferric_core::basis::BasisSet,
+    _mol: &Molecule,
+    _bs: &ferric_core::basis::BasisSet,
     op: Operator,
     config: &RhfConfig,
 ) -> Result<(), FerricError> {
@@ -108,7 +104,7 @@ pub fn uks_moving_grid_hessian_preflight(
     let xc = xc_def_from_name(name)
         .map_err(|e| FerricError::General(format!("moving-grid UKS Hessian: libxc: {e:?}")))?;
     functional_refusal(name, &xc)?;
-    ecp_or_embedding_refusal(mol, bs, config)?;
+    embedding_refusal(config)?;
     let hf = RhfConfig {
         xc: None,
         ..config.clone()
@@ -277,7 +273,7 @@ pub fn uks_moving_grid_hessian_parts(
     config: &RhfConfig,
 ) -> Result<UhfHessianParts, FerricError> {
     crate::x2c::refuse_relativistic(uks.relativistic, "analytic Hessian")?;
-    uks_refusal(mol, prep, uks, config)?;
+    uks_refusal(uks, config)?;
     let name = config.xc.as_deref().unwrap_or_default();
     let cfg = config
         .dft_grid
@@ -318,7 +314,7 @@ pub fn uks_hessian_parts_with(
     mode: GridMode,
 ) -> Result<UhfHessianParts, FerricError> {
     crate::x2c::refuse_relativistic(uks.relativistic, "analytic Hessian")?;
-    uks_refusal(mol, prep, uks, config)?;
+    uks_refusal(uks, config)?;
     // Opt-in stage timing (`FERRIC_TIMING=1`), whole calls only.
     let mut phases = ferric_core::timing::PhaseAccumulator::new().report_on_drop("UKS Hessian");
     let exx = grid.exact_exchange();
@@ -344,7 +340,9 @@ pub fn uks_hessian_parts_with(
     let w = build_energy_weighted_density_uhf(uks, prep, nocc[0], nocc[1])?;
     let nuclear = nuclear_term(mol, &hf);
     let t = phases.begin("1e + overlap skeleton");
-    let one_electron = skeleton_hess_1e(prep, natoms, &[], &d)?;
+    // `extra_skeleton` is the ECP skeleton here (an external potential is refused).
+    let one_electron =
+        skeleton_hess_1e(prep, natoms, &[], &d)? + extra_skeleton(mol, prep, config, &d)?;
     let overlap = skeleton_hess_overlap(prep, natoms, &w)?;
     phases.stop(t);
     let t = phases.begin("2e skeleton + J/K first-order");
@@ -369,6 +367,7 @@ pub fn uks_hessian_parts_with(
         &UhfDfMutants::default(),
         &mut phases,
     )?;
+    add_extra_first_order(&mut fitted.first, mol, prep, config)?;
     phases.stop(t);
     let geo = XcGeometry::new(mol, prep)?;
     let pol: PolarizedKs<'_> = grid.polarized()?;

@@ -69,18 +69,28 @@
 //! part. A pure functional (`a = 0`) never builds K, so a named `df_k_aux` is
 //! inert there, as in the SCF. RI-K composes with exact or RI-J Coulomb.
 //!
+//! # ECPs
+//!
+//! `V_ECP` is part of the core Hamiltonian, so it adds the same two terms as in
+//! the Hartree-Fock Hessian (`crate::hessian_ecp`): the skeleton
+//! `Σ D ∂²V_ECP` to the one-electron part and `∂V_ECP/∂x` to `F^x`. The XC,
+//! J/K and fitted pieces do not change: the grid and the density are the
+//! valence ones the SCF used.
+//!
 //! Refused with a typed error naming the next unit: meta-GGA, VV10,
 //! range-separated hybrids (and so range-separated RI-K), open-shell
-//! references, ECPs and external potentials.
+//! references (here; UKS has [`crate::hessian::uks_moving_grid_hessian`]) and
+//! external potentials.
 //!
 //! [`HessianMethod::Auto`]: crate::frequencies::HessianMethod::Auto
 //! [`HessianMethod::Analytic`]: crate::frequencies::HessianMethod::Analytic
 //! [`HessianMethod::AnalyticMovingGrid`]: crate::frequencies::HessianMethod::AnalyticMovingGrid
 
 use super::{
-    check_supported_except_functional, cpks_response_with, first_order_ao, has_ecp, max_abs,
-    nuclear_term, parts_from_terms, skeleton_hess_1e, skeleton_hess_2e, skeleton_hess_overlap,
-    FockSpec, Reference, RhfHessianParts, TwoElectronBuilder,
+    add_extra_first_order, check_supported_except_functional, cpks_response_with, extra_skeleton,
+    first_order_ao, has_ecp, max_abs, nuclear_term, parts_from_terms, skeleton_hess_1e,
+    skeleton_hess_2e, skeleton_hess_overlap, FockSpec, Reference, RhfHessianParts,
+    TwoElectronBuilder,
 };
 use crate::gradient::build_energy_weighted_density;
 use crate::hessian_df::RijMutants;
@@ -183,12 +193,7 @@ pub(super) fn unsupported(what: &str, next: &str) -> FerricError {
 
 /// Typed refusals for everything outside closed-shell LDA/GGA (pure or global hybrid)
 /// with exact or RI-J Coulomb and exact or RI-K exchange.
-fn ks_refusal(
-    mol: &Molecule,
-    prep: &PreparedBasis,
-    rks: &ScfResult,
-    config: &RhfConfig,
-) -> Result<(), FerricError> {
+fn ks_refusal(rks: &ScfResult, config: &RhfConfig) -> Result<(), FerricError> {
     let name = config.xc.as_deref().ok_or_else(|| {
         FerricError::General(
             "the analytic Kohn-Sham Hessian needs a Kohn-Sham configuration \
@@ -213,18 +218,20 @@ fn ks_refusal(
             "range-separated exchange (erfc/erf pair) in the CPHF",
         ));
     }
-    ecp_or_embedding_refusal(mol, prep.basis_set(), config)
+    embedding_refusal(config)
 }
 
-pub(super) fn ecp_or_embedding_refusal(
-    mol: &Molecule,
-    bs: &BasisSet,
-    config: &RhfConfig,
-) -> Result<(), FerricError> {
-    if has_ecp(mol, bs) || config.external_potential.is_some() {
+/// An external potential (point charges, a field, smeared charges) is refused.
+/// An ECP is supported: it is a one-electron operator of the core Hamiltonian,
+/// so its skeleton and `∂V_ECP/∂x` enter exactly as in the Hartree-Fock
+/// Hessian ([`super::extra_skeleton`], [`super::add_extra_first_order`]); the
+/// ECP-specific limits (shells above f, the libecpint backend, an ECP not
+/// applied to the molecule) are the closed- and open-shell checklists'.
+pub(super) fn embedding_refusal(config: &RhfConfig) -> Result<(), FerricError> {
+    if config.external_potential.is_some() {
         return Err(unsupported(
-            "an ECP or an external potential",
-            "ECP and embedding terms with the XC kernel",
+            "an external potential",
+            "embedding terms with the XC kernel",
         ));
     }
     Ok(())
@@ -233,7 +240,7 @@ pub(super) fn ecp_or_embedding_refusal(
 /// The refusals of [`rks_moving_grid_hessian`] that need no SCF, so a driver
 /// can refuse an unsupported request before paying for one: no functional
 /// (Hartree-Fock has no XC grid), meta-GGA, VV10, range-separated or double
-/// hybrids, an ECP, an external potential, and everything the closed-shell RHF Hessian
+/// hybrids, an external potential, and everything the closed-shell RHF Hessian
 /// refuses before its SCF (a non-Coulomb operator, COSX, implicit solvation,
 /// polarizable embedding, fractional occupations, cDFT, MOM). The production
 /// SCF grid is always the atom-centred one, so an explicit-point grid cannot
@@ -241,8 +248,8 @@ pub(super) fn ecp_or_embedding_refusal(
 /// checks that need the SCF (open shell, the recorded fitting route, Fock
 /// consistency) stay in the Hessian itself.
 pub fn rks_moving_grid_hessian_preflight(
-    mol: &Molecule,
-    bs: &BasisSet,
+    _mol: &Molecule,
+    _bs: &BasisSet,
     op: Operator,
     config: &RhfConfig,
 ) -> Result<(), FerricError> {
@@ -257,7 +264,7 @@ pub fn rks_moving_grid_hessian_preflight(
     let xc = xc_def_from_name(name)
         .map_err(|e| FerricError::General(format!("moving-grid KS Hessian: libxc: {e:?}")))?;
     functional_refusal(name, &xc)?;
-    ecp_or_embedding_refusal(mol, bs, config)?;
+    embedding_refusal(config)?;
     // Everything but the functional is the closed-shell checklist (operator,
     // COSX, solvation, embedding, fractional occupations, cDFT, MOM), which
     // the Hessian runs again after the SCF.
@@ -625,7 +632,7 @@ pub fn rks_fixed_grid_hessian_parts(
     config: &RhfConfig,
 ) -> Result<RhfHessianParts, FerricError> {
     crate::x2c::refuse_relativistic(rks.relativistic, "analytic Hessian")?;
-    ks_refusal(mol, prep, rks, config)?;
+    ks_refusal(rks, config)?;
     let name = config.xc.as_deref().unwrap_or_default();
     let cfg = config
         .dft_grid
@@ -708,7 +715,7 @@ pub fn rks_moving_grid_hessian_parts(
     config: &RhfConfig,
 ) -> Result<RhfHessianParts, FerricError> {
     crate::x2c::refuse_relativistic(rks.relativistic, "analytic Hessian")?;
-    ks_refusal(mol, prep, rks, config)?;
+    ks_refusal(rks, config)?;
     let name = config.xc.as_deref().unwrap_or_default();
     let cfg = config
         .dft_grid
@@ -772,7 +779,7 @@ fn ks_hessian_parts_in_mode(
     mutants: &KsFixedGridMutants,
     mode: GridMode,
 ) -> Result<RhfHessianParts, FerricError> {
-    ks_refusal(mol, prep, rks, config)?;
+    ks_refusal(rks, config)?;
     // Everything but the functional is the closed-shell checklist; a stated or
     // recorded RI-J / RI-K basis goes through the same engine and metric probes
     // as RHF.
@@ -838,7 +845,7 @@ pub fn rks_fixed_grid_hessian_parts_with_aux(
     mutants: &KsFixedGridMutants,
 ) -> Result<RhfHessianParts, FerricError> {
     crate::x2c::refuse_relativistic(rks.relativistic, "analytic Hessian")?;
-    ks_refusal(mol, prep, rks, config)?;
+    ks_refusal(rks, config)?;
     let hf_config = RhfConfig {
         xc: None,
         df_j_aux: None,
@@ -1019,7 +1026,9 @@ fn rks_fixed_grid_hessian_core(
 
     let nuclear = nuclear_term(mol, config);
     let t = phases.begin("1e + overlap skeleton");
-    let one_electron = skeleton_hess_1e(prep, natoms, &[], d)?;
+    // `extra_skeleton` is the ECP skeleton here (an external potential is refused).
+    let one_electron =
+        skeleton_hess_1e(prep, natoms, &[], d)? + extra_skeleton(mol, prep, config, d)?;
     let overlap = skeleton_hess_overlap(prep, natoms, &w)?;
     phases.stop(t);
     let t = phases.begin("2e skeleton + J/K first-order");
@@ -1080,6 +1089,7 @@ fn rks_fixed_grid_hessian_core(
     };
     let sub = phases.begin("  first-order 1e + four-centre Fock");
     let mut first = first_order_ao(prep, op, bounds, natoms, &[], &[spec])?;
+    add_extra_first_order(&mut first, mol, prep, config)?;
     phases.stop_nested(sub);
     for (f, g) in first.f1[0].iter_mut().zip(&fitted.first_order) {
         *f += g;

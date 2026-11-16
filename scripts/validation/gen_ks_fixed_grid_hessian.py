@@ -50,7 +50,7 @@ XC = "LDA_X,LDA_C_VWN"
 HYBRID_XC = "HYB_LDA_XC_LDA0"
 CONV_TOL = 1e-12
 FD_STEP = 5.0e-4
-FERRIC_MASSES = {"H": 1.008, "C": 12.011, "N": 14.007, "O": 15.999}
+FERRIC_MASSES = {"H": 1.008, "C": 12.011, "N": 14.007, "O": 15.999, "I": 126.90447}
 # RI-J cases: (system, basis, xc, suffix, auxiliary basis). Pure functionals only:
 # PySCF has no analytic RI-J + exact-K Hessian, and a pure functional never
 # builds K, so `density_fit(only_dfj=True)` IS the RI-J surface ferric
@@ -67,6 +67,10 @@ RIJK_SYSTEMS = (
     ("h2o_distorted", "6-31g", "PBE0", "_pbe0_rijk", AUX),
     ("h2o_distorted", "6-31g", "B3LYP", "_b3lyp_rijk", AUX),
 )
+# ECP cases: geometry from testdata/molecules/validation/ecp/, ferric's def2 ECP
+# (common.build_pyscf_mol(..., ecp_json=...)), exact J/K. PySCF's RKS Hessian
+# inherits the ECP terms of its RHF Hessian.
+ECP_SYSTEMS = (("hi", "def2-svp", "PBE", "_pbe_ecp"),)
 SYSTEMS = (
     ("h2o_distorted", "6-31g", XC, ""),
     ("h2o_distorted", "cc-pvdz", XC, ""),
@@ -169,14 +173,21 @@ def _run(
     suffix: str = "",
     aux_name: str | None = None,
     only_dfj: bool = True,
+    ecp: bool = False,
 ) -> Path:
     import numpy as np
     import pyscf
 
-    xyz = common.MOL_DIR / f"{system}.xyz"
+    xyz = (common.MOL_DIR / "ecp" if ecp else common.MOL_DIR) / f"{system}.xyz"
     symbols, coords = common.read_xyz(xyz)
-    mol = common.build_pyscf_mol(xyz, basis_name)
+    ecp_json = common.basis_json_path(basis_name) if ecp else None
+    mol = common.build_pyscf_mol(xyz, basis_name, ecp_json=ecp_json)
     basis_check = common.check_basis_like_for_like(mol, basis_name, symbols)
+    if ecp:
+        basis_check = {
+            "basis": basis_check,
+            "ecp": common.check_ecp_like_for_like(mol, ecp_json, symbols),
+        }
     pts, w = _grid(system)
     masses = [FERRIC_MASSES[s.capitalize()] for s in symbols]
 
@@ -257,6 +268,11 @@ def main() -> int:
         + [
             _run(s, b, x, sfx, a, only_dfj=False)
             for s, b, x, sfx, a in RIJK_SYSTEMS
+            if not only or b + sfx in only
+        ]
+        + [
+            _run(s, b, x, sfx, ecp=True)
+            for s, b, x, sfx in ECP_SYSTEMS
             if not only or b + sfx in only
         ]
     )

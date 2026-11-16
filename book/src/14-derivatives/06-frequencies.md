@@ -137,7 +137,8 @@ re-symmetrized afterwards to remove accumulated round-off.
 | `hessian = "analytic-moving-grid"` | the analytic RKS or UKS Hessian of 14.5 |
 | `hessian = "fd"` | central differences of the analytic gradient |
 | `delta` | FD displacement; unused by analytic Hessians |
-| dispersion (D3(BJ), MBD@rsSCS) | finite differences of the gradient on the corrected surface (`harmonic_frequencies_with_scf_correction`); never the analytic Hessian, so the SCF and correction parts come from one construction |
+| dispersion D3(BJ) | the route the run without dispersion takes, plus the analytic D3(BJ) Hessian (`harmonic_frequencies_with_geometric_correction`); on the finite-difference route, differences of the corrected gradient |
+| dispersion MBD@rsSCS | finite differences of the gradient on the corrected surface (`harmonic_frequencies_with_scf_correction`); the MBD energy follows the density, so `analytic` and `analytic-moving-grid` are refused |
 
 ## 14.6.5 Numerical anchors
 

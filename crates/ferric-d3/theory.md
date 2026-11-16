@@ -1,4 +1,4 @@
-# D3(BJ) Dispersion: Energy and Analytic Gradient
+# D3(BJ) Dispersion: Energy, Analytic Gradient and Hessian
 
 Grimme D3 with Becke-Johnson (rational) damping and the optional
 Axilrod-Teller-Muto (ATM) three-body term, as implemented in `src/lib.rs`.
@@ -7,7 +7,8 @@ implemented. Coordinates are in Bohr, energies in Hartree.
 
 The two-body identities below are proved by
 `scripts/d3_cn_chain_rule_gradient_sympy.py`, the three-body ones by
-`scripts/d3_atm_gradient_sympy.py` (both exit nonzero on mismatch, with
+`scripts/d3_atm_gradient_sympy.py`, the Hessian by
+`scripts/d3_hessian_sympy.py` (all exit nonzero on mismatch, with
 negative controls), and the full gradient is checked against finite
 differences of the energy in `tests/gradient_vs_fd.rs`.
 
@@ -111,6 +112,71 @@ explicit term and accumulates the $N$ scalars $\partial E/\partial \mathrm{CN}_A
 Moving atom $X$ changes $C_6^{AB}$ for pairs that do not contain $X$; the chain
 part carries that.
 
+## Hessian
+
+`d3bj_hessian` is the analytic second derivative of the two-body energy. The
+three-body term has no Hessian; $s_9 \neq 0$ is refused.
+
+Write the energy as a sum over pairs $P = (A, B)$ of $-C_6^P\,G_P(R_P)$, with
+
+$$G(R) = \frac{s_6}{R^6 + f^6} + \frac{3\,q\,s_8}{R^8 + f^8},$$
+
+$$G' = -\frac{6 s_6 R^5}{d_6^2} - \frac{8 S_8 R^7}{d_8^2},\qquad
+G'' = s_6\left(-\frac{30R^4}{d_6^2} + \frac{72R^{10}}{d_6^3}\right)
+    + S_8\left(-\frac{56R^6}{d_8^2} + \frac{128R^{14}}{d_8^3}\right),$$
+
+where $S_8 = 3 q s_8$. The damping radius $f$ does not depend on the geometry.
+
+**Pair block.** For any $\phi(R_{AB})$ with $\mathbf{n} = (\mathbf{R}_A - \mathbf{R}_B)/R_{AB}$,
+
+$$K = \phi''\,\mathbf{n}\mathbf{n}^\mathsf{T} + \frac{\phi'}{R}\left(\mathbf{1} - \mathbf{n}\mathbf{n}^\mathsf{T}\right),$$
+
+and $\partial^2\phi/\partial\mathbf{R}_A\partial\mathbf{R}_A = \partial^2\phi/\partial\mathbf{R}_B\partial\mathbf{R}_B = K$,
+$\partial^2\phi/\partial\mathbf{R}_A\partial\mathbf{R}_B = -K$.
+
+**Second derivatives of $C_6$.** With $C_6 = N/D$, $N = \sum_{ab} C_{6,ab}^\mathrm{ref} W_a W_b$
+and $D = \sum_{ab} W_a W_b$ (subscripts after a comma are derivatives with
+respect to $\mathrm{CN}_A$ and $\mathrm{CN}_B$):
+
+$$C_{6,A} = \frac{N_{,A} - C_6 D_{,A}}{D},\qquad
+C_{6,AA} = \frac{N_{,AA} - 2C_{6,A}D_{,A} - C_6 D_{,AA}}{D},$$
+
+$$C_{6,AB} = \frac{N_{,AB} - C_{6,A}D_{,B} - C_{6,B}D_{,A} - C_6 D_{,AB}}{D}.$$
+
+The Gaussian weights give $W' = \alpha W$ and $W'' = (\alpha^2 - 2w_f)W$, with
+$\alpha = -2w_f(\mathrm{CN} - \mathrm{CN}^\mathrm{ref})$.
+
+**Counting function.** With $a = -k\,r_c/R^2$, $g' = a\,g(1-g)$ and
+
+$$g'' = -\frac{2}{R}\,g' + a\,(1 - 2g)\,g'.$$
+
+**Assembly.** Let $J_{A} = \partial\mathrm{CN}_A/\partial\mathbf{x}$ (a row of
+length $3N$), $e_A = \partial E/\partial\mathrm{CN}_A$ (the gradient's
+`de_dcn`), $M_{AB} = \partial^2 E/\partial\mathrm{CN}_A\partial\mathrm{CN}_B$,
+and $u_A = \partial e_A/\partial\mathbf{x}$ at fixed CN. Then
+
+$$H = \sum_P K_P\!\left[-C_6^P G_P\right]
+    + \sum_A \left(u_A^\mathsf{T} J_A + J_A^\mathsf{T} u_A\right)
+    + J^\mathsf{T} M J
+    + \sum_{P=(A,B)} (e_A + e_B)\,K_P[g_P].$$
+
+The four terms are the direct pair blocks at fixed $C_6$, the mixed
+distance/CN term, the CN-CN term and the curvature of the CNs. Per pair,
+$u_A$ gets $-G'_P C_{6,A}^P\,\partial R_P/\partial\mathbf{x}$ and
+$M_{AA}$, $M_{AB}$, $M_{BB}$ get $-G_P C_{6,AA}^P$, $-G_P C_{6,AB}^P$, $-G_P C_{6,BB}^P$.
+The cost is $O(N^2)$ for the pair loops and $O(N^3)$ for $J^\mathsf{T} M J$.
+
+With one reference per element, $C_6$ is constant, $e_A = 0$, $u_A = 0$ and
+$M = 0$, so only the direct pair blocks remain. A dimer of atoms with
+$\mathrm{CN} \approx 0$ is close to this limit, which is why the FD test runs
+on fragments with mixed coordination.
+
+**Frequencies.** D3(BJ) depends on the geometry only. The frequency driver
+adds this Hessian to the analytic KS Hessian wherever the run without
+dispersion uses an analytic Hessian
+(`harmonic_frequencies_with_geometric_correction`); otherwise it central-differences
+the corrected gradient.
+
 ## Three-body term (ATM)
 
 Enabled by $s_9 \neq 0$ (`D3Params::s9`, `src/params.rs:39`); named
@@ -180,3 +246,8 @@ cutoff (upstream skips triples with any distance above 40 Bohr).
 | three-body gradient alone = central FD to $<10^{-7}$ relative (measured $\le 4\times10^{-8}$) on Ar$_3$, water, C/H, C/F/O/N/H; full D3(BJ)-ATM to $10^{-7}$ Ha/Bohr | `tests/gradient_vs_fd.rs::atm_gradient_matches_finite_difference` |
 | $s_9 = 0$ energy and gradient bit-identical to the two-body code (4 functionals × 4 systems, checked against the pre-ATM build); linear in $s_9$; no effect on dimers | `tests/vs_reference_dftd3_atm.rs::three_body_term_is_linear_in_s9_and_absent_for_dimers` |
 | mutants: three-body CN chain dropped, $\partial E/\partial C_6 = E/C_6$, the $15/16$ term dropped, $\alpha/6$ in $\partial f/\partial q$ (each fails the FD test); $\alpha = 14$, $r_s = 1$ (each fails the reference test). Removing the $s_9 \neq 0$ guard is an equivalent mutant (adds $+0.0$) | mutation |
+| $g''$, $W''$, the quotient-rule $C_{6,AA}$, $C_{6,AB}$ (abstract $N$, $D$), $G'$, $G''$, the pair block $K$ | `scripts/d3_hessian_sympy.py`, claims 1-5 |
+| assembled Hessian (the gradient proof's 4-atom model) = 60-digit FD of the transcribed gradient ($2\times10^{-42}$) and = 60-digit second difference of the energy ($4\times10^{-32}$); each CN part is 2-69% of max$\lvert H\rvert$; one reference per element ⇒ CN parts exactly 0 | sympy script, claims 6-7 |
+| `d3bj_hessian` = central FD of `d3bj_gradient` on Ar$_2$, water, a C/H cluster and a C/F/O/N/H fragment, inside twice the truncation estimate from steps $h = 2\times10^{-3}$ and $h/2$ (error ratio 4.00 per halving on every system; water $3.7\times10^{-10}$, mixed $1.6\times10^{-8}$ Ha/Bohr²); symmetric and translation sums $\le 10^{-18}$ | `tests/hessian_vs_fd.rs` |
+| `d3bj_hessian` = central FD of the simple-dftd3 1.6.0 gradient (water, C/H cluster, C/F/O/N/H, CHBr$_3$), bar from the same $h$, $h/2$ data | `tests/hessian_vs_dftd3.rs` |
+| mutants: the mixed term without its transpose, $72\to36$ in $G''$, the off-diagonal $M_{AB}$ dropped, the $(1-2g)$ factor of $g''$ dropped (sympy); the $e_A\,\partial^2\mathrm{CN}_A$ term dropped, the mixed transpose dropped (Rust FD test) | mutation |

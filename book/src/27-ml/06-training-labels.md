@@ -68,8 +68,8 @@ construction under `hessian = "auto"`:
 | Reference | Default construction | Agreement |
 |---|---|---|
 | RHF, UHF, ROHF (exact or RI J/K, ECPs allowed) | analytic | RHF ≤ 1.6e-7 Ha/Bohr² vs PySCF analytic; frequencies ≤ 6.9e-4 cm⁻¹ |
-| RKS, UKS: LDA, GGA, global hybrids, exact or RI J/K, no ECP, unpruned grid | analytic on the moving grid (grid response included) | see the validation row "Analytic closed-shell KS Hessian on the MOVING grid" |
-| everything else (ROKS, meta-GGA, VV10, range-separated hybrids, dispersion) | finite differences of analytic gradients | same-step vs PySCF 2.4e-7 Ha/Bohr², 7.5e-4 cm⁻¹; HF FD vs analytic 2.75e-5 Ha/Bohr², 0.10 cm⁻¹ (the 5e-3 Bohr step) |
+| RKS, UKS: LDA, GGA, global hybrids, exact or RI J/K, ECPs allowed, optionally D3(BJ) (its analytic Hessian is added), unpruned grid | analytic on the moving grid (grid response included) | see the validation row "Analytic closed-shell KS Hessian on the MOVING grid" |
+| everything else (ROKS, meta-GGA, VV10, range-separated hybrids, MBD@rsSCS) | finite differences of analytic gradients | same-step vs PySCF 2.4e-7 Ha/Bohr², 7.5e-4 cm⁻¹; HF FD vs analytic 2.75e-5 Ha/Bohr², 0.10 cm⁻¹ (the 5e-3 Bohr step) |
 
 A KS Hessian from PySCF's analytic code differs from ferric's by 5–35 cm⁻¹
 because that Hessian has no grid response; this is a difference of

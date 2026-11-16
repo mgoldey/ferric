@@ -167,7 +167,7 @@
   - [24.8 The stress tensor](24-periodic/08-stress.md)
   - [24.9 Periodic MP2 and dRPA](24-periodic/09-mp2-drpa.md)
 - [25. Dispersion](25-dispersion/index.md)
-  - [25.1 D3(BJ): energy, coordination numbers, gradient, three-body term](25-dispersion/01-d3bj.md)
+  - [25.1 D3(BJ): energy, coordination numbers, gradient, Hessian, three-body term](25-dispersion/01-d3bj.md)
   - [25.2 Casimir–Polder $C_6$ from dynamic polarizabilities](25-dispersion/02-casimir-polder-c6.md)
   - [25.3 Many-body dispersion](25-dispersion/03-mbd.md)
 - [26. Short-range MP2 with long-range RPA](26-rs-mp2-rpa/index.md)

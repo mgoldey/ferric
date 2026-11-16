@@ -123,9 +123,6 @@ fn ks(xc: &str) -> RhfConfig {
 fn every_refusal_is_named() {
     let water = Molecule::parse_xyz(WATER, 0, 1).unwrap();
     let h2_triplet = Molecule::parse_xyz("2\nh2\nH 0 0 0\nH 0 0 0.74\n", 0, 3).unwrap();
-    let svp = basis::bundled("def2-svp").unwrap();
-    let mut hi = Molecule::parse_xyz("2\nHI\nH 0 0 0\nI 0 0 1.75\n", 0, 1).unwrap();
-    hi.apply_ecp(&svp);
     let rhf = FrequencyReference::Rhf;
     let embedded = RhfConfig {
         external_potential: Some(ExternalPotential {
@@ -172,14 +169,9 @@ fn every_refusal_is_named() {
             vec![PREFIX, "a range-separated hybrid ('HSE06')"],
         ),
         (
-            "ECP",
-            run(&hi, "def2-svp", ks("LDA"), rhf),
-            vec![PREFIX, "an ECP or an external potential"],
-        ),
-        (
             "external potential",
             run(&water, "sto-3g", embedded, rhf),
-            vec![PREFIX, "an ECP or an external potential"],
+            vec![PREFIX, "an external potential"],
         ),
         (
             "MOM",

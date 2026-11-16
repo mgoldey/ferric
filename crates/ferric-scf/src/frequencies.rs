@@ -36,7 +36,13 @@
 //! correction (dispersion) evaluated from the converged SCF at every displaced
 //! geometry, on every reference (RHF/RKS, UHF/UKS, ROHF/ROKS); it never uses
 //! the analytic Hessian, so the SCF and the correction parts of its Hessian
-//! come from one construction.
+//! come from one construction. It is the route of a density-dependent
+//! correction (MBD@rsSCS).
+//! [`harmonic_frequencies_with_geometric_correction`](crate::frequencies::harmonic_frequencies_with_geometric_correction)
+//! serves a correction that depends on the geometry only and carries its own
+//! analytic Hessian (D3(BJ)): wherever [`harmonic_frequencies`] would use an
+//! analytic SCF Hessian, it adds the correction's Hessian to it; otherwise it
+//! is the finite-difference path above.
 //!
 //! **Analytic gradients only.** There is deliberately no finite-difference-of-
 //! finite-difference fallback. A method without an analytic gradient produces a
@@ -225,8 +231,9 @@ pub enum HessianMethod {
     /// [`crate::hessian::uks_moving_grid_hessian_available`] accepts it, at
     /// every size (measured faster than finite differences from 3 atoms up);
     /// otherwise central differences of the analytic gradient (always for
-    /// ROKS, meta-GGA, VV10, range-separated hybrids, ECPs, external
-    /// potentials, a response AO table above its size cap (large basis times
+    /// ROKS, meta-GGA, VV10, range-separated hybrids, external
+    /// potentials, an ECP system with shells above f or on the libecpint
+    /// backend, a response AO table above its size cap (large basis times
     /// grid) and every other configuration those predicates refuse). The
     /// choice is made before the SCF; an error the chosen analytic path raises
     /// after it (a non-converged SCF included) is returned, never retried with
@@ -254,8 +261,9 @@ pub enum HessianMethod {
     /// refused with a typed error before the SCF
     /// ([`crate::hessian::rks_moving_grid_hessian_available`],
     /// [`crate::hessian::uks_moving_grid_hessian_available`]): Hartree-Fock,
-    /// ROKS, meta-GGA, VV10, range-separated hybrids, ECPs, and external
-    /// potentials. `Auto` selects it for every RKS and UKS system the
+    /// ROKS, meta-GGA, VV10, range-separated hybrids and external
+    /// potentials (an ECP is supported, within the limits of the Hartree-Fock
+    /// ECP Hessian: shells up to f, the default quadrature backend). `Auto` selects it for every RKS and UKS system the
     /// matching predicate accepts; `Analytic` never does (it stays the
     /// Hartree-Fock analytic Hessian).
     AnalyticMovingGrid,
@@ -679,6 +687,110 @@ pub fn harmonic_frequencies_with_scf_correction(
     res.correction_energy = correction_energy;
     attach_warm_start(&mut res, warm);
     Ok(res)
+}
+
+/// A correction that depends on the geometry only (no density), evaluated
+/// with its exact analytic gradient and Hessian: what
+/// [`harmonic_frequencies_with_geometric_correction`] adds to the SCF surface.
+/// D3(BJ) is one (`ferric_d3::d3bj_hessian_for_molecule`); MBD@rsSCS is not
+/// (its Hirshfeld volumes follow the density).
+#[derive(Debug, Clone)]
+pub struct GeometricCorrection {
+    /// `E_corr`, Hartree.
+    pub energy: f64,
+    /// `dE_corr/dR`, `(natoms, 3)`, Hartree/Bohr.
+    pub gradient: Array2<f64>,
+    /// `d²E_corr/dR²`, `(3N, 3N)` with index `3·atom + xyz`, Hartree/Bohr².
+    pub hessian: Array2<f64>,
+}
+
+/// Harmonic frequencies on `E_SCF + E_corr` for a GEOMETRY-ONLY correction
+/// ([`GeometricCorrection`], e.g. D3(BJ)).
+///
+/// The SCF Hessian is chosen exactly as [`harmonic_frequencies`] chooses it
+/// (`freq_config.hessian`, the same pre-SCF predicates). When that choice is
+/// an analytic Hessian, the result is the analytic SCF Hessian plus
+/// `correction(mol).hessian` at the undisplaced geometry: both are exact
+/// second derivatives of their own terms, so the sum is the Hessian of the
+/// corrected surface with no finite-difference error. When it is finite
+/// differences, the run is [`harmonic_frequencies_with_scf_correction`] with
+/// the correction's energy and gradient (the Hessian part unused).
+///
+/// `correction` is called first at the undisplaced geometry, before any SCF,
+/// so its own refusals cost nothing. [`FrequencyResult::energy`] is the
+/// corrected energy and [`FrequencyResult::correction_energy`] the correction;
+/// `hessian_source` says which construction produced the SCF part.
+pub fn harmonic_frequencies_with_geometric_correction(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    basis_name: &str,
+    op: Operator,
+    scf_config: &RhfConfig,
+    freq_config: &FrequencyConfig,
+    mut correction: impl FnMut(&Molecule) -> Result<GeometricCorrection, FerricError>,
+) -> Result<FrequencyResult, FerricError> {
+    crate::x2c::refuse_relativistic(
+        scf_config.relativistic,
+        "harmonic frequencies (analytic Hessian or finite differences of the gradient)",
+    )?;
+    let scf_config = &scf_config.for_geometry_task();
+    require_two_atoms(mol)?;
+    let at_reference = correction(mol)?;
+    check_geometric_correction_shape(mol, &at_reference)?;
+    if let Some(res) = analytic_route(ctx, mol, basis_name, op, scf_config, freq_config)? {
+        return with_correction_hessian(mol, res, &at_reference);
+    }
+    harmonic_frequencies_with_scf_correction(
+        ctx,
+        mol,
+        basis_name,
+        op,
+        scf_config,
+        freq_config,
+        |m, _| {
+            let c = correction(m)?;
+            Ok((c.energy, Some(c.gradient)))
+        },
+    )
+}
+
+fn check_geometric_correction_shape(
+    mol: &Molecule,
+    c: &GeometricCorrection,
+) -> Result<(), FerricError> {
+    let (n, n3) = (mol.atoms.len(), 3 * mol.atoms.len());
+    if c.gradient.dim() != (n, 3) || c.hessian.dim() != (n3, n3) {
+        return Err(FerricError::General(format!(
+            "harmonic frequencies: correction gradient {:?} / Hessian {:?} for {n} atoms \
+             (expected ({n}, 3) / ({n3}, {n3}))",
+            c.gradient.dim(),
+            c.hessian.dim()
+        )));
+    }
+    Ok(())
+}
+
+/// The analytic-route result `res` with the correction's Hessian added to its
+/// Cartesian Hessian (then mass-weighted, projected and diagonalized again)
+/// and its energy to the reported energy. Everything describing the SCF part
+/// (source, response asymmetry, metric conditioning, reference SCF) is kept.
+fn with_correction_hessian(
+    mol: &Molecule,
+    res: FrequencyResult,
+    c: &GeometricCorrection,
+) -> Result<FrequencyResult, FerricError> {
+    let masses = atom_masses(mol)?;
+    let h = &res.cartesian_hessian + &c.hessian;
+    let mut out = frequencies_from_cartesian_hessian(mol, &h, &masses)?;
+    out.asymmetry = res.asymmetry;
+    out.n_gradient_evaluations = res.n_gradient_evaluations;
+    out.hessian_source = res.hessian_source;
+    out.energy = res.energy + c.energy;
+    out.correction_energy = c.energy;
+    out.scf_warm_start = res.scf_warm_start;
+    out.rik_metric = res.rik_metric;
+    out.reference_scf = res.reference_scf;
+    Ok(out)
 }
 
 /// Harmonic frequencies on an arbitrary surface supplied as a gradient closure.
@@ -1119,7 +1231,7 @@ pub fn harmonic_frequencies_analytic_rohf(
 /// [`FrequencyReference::Rhf`] or [`FrequencyReference::Uhf`] (ROKS; a UKS
 /// reference is handed to [`harmonic_frequencies_uks_moving_grid`]), and everything
 /// [`crate::hessian::rks_moving_grid_hessian_available`] refuses (no `xc`,
-/// meta-GGA, VV10, range-separated or double hybrids, ECPs, external
+/// meta-GGA, VV10, range-separated or double hybrids, external
 /// potentials, and the closed-shell RHF Hessian's
 /// configuration refusals: non-Coulomb operator, COSX, solvation, polarizable
 /// embedding, fractional occupations, cDFT, MOM). The checks that need the
@@ -1172,7 +1284,7 @@ pub fn harmonic_frequencies_ks_moving_grid(
 /// ([`solve_uhf`] with `scf_config.xc` set) and the analytic Hessian of the
 /// surface the production UKS gradient differentiates. Refused BEFORE the SCF
 /// with the typed errors of [`crate::hessian::uks_moving_grid_hessian_available`]
-/// (no `xc`, meta-GGA, VV10, range-separated or double hybrids, ECPs,
+/// (no `xc`, meta-GGA, VV10, range-separated or double hybrids,
 /// external potentials, the UHF Hessian's configuration refusals); the
 /// recorded fitting route and the Fock consistency are checked after it.
 /// `hessian_source` is [`HessianSource::AnalyticMovingGrid`].

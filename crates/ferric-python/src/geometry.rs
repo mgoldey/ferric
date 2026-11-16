@@ -1557,7 +1557,7 @@ impl PyFrequencyResult {
 /// `reference="rhf"` or `"uhf"`) the "analytic-moving-grid" Hessian below
 /// wherever it applies; and a finite difference of the ANALYTIC gradient (6N
 /// gradient evaluations) otherwise (ROKS, meta-GGA, VV10, range-separated
-/// hybrids, ECPs or external potentials with `xc=`, `dispersion=`, and large
+/// hybrids, external potentials with `xc=`, MBD@rsSCS `dispersion=`, and large
 /// systems whose response AO table -- basis functions x grid points x 4 for
 /// a GGA, 8 bytes each -- exceeds 2 GiB: on the default grid a GGA above
 /// about 8,100 basis functions x atoms). The choice is made before the SCF;
@@ -1573,7 +1573,8 @@ impl PyFrequencyResult {
 /// finite-difference error. It needs `xc=` (LDA/GGA, pure or global hybrid)
 /// and `reference="rhf"` or `"uhf"`, and raises before the SCF for
 /// Hartree-Fock, "rohf" (ROKS), meta-GGA, VV10, range-separated hybrids,
-/// ECPs, `point_charges=`/`external_field=` and `dispersion=`.
+/// `point_charges=`/`external_field=` and MBD@rsSCS `dispersion=`. An ECP
+/// (shells up to f) and D3(BJ) `dispersion=` are supported.
 ///
 /// `reference` selects the SCF: "rhf" (default), "uhf", or "rohf". Setting
 /// `xc` promotes it to the matching KS variant (RKS/UKS/ROKS).
@@ -1598,11 +1599,14 @@ impl PyFrequencyResult {
 ///
 /// `dispersion`: the same strict spellings as `run_dft` ("d3bj", "d3(bj)",
 /// "d3bj(<functional>)", "mbd", "mbd(<functional>)"). Requires `xc`; any
-/// reference ("rhf", "uhf", "rohf", i.e. RKS, UKS or ROKS). The Hessian is
-/// then the central difference of the corrected analytic gradient
-/// (KS + dispersion), each from the SCF converged at that displaced geometry,
-/// so `hessian="analytic"` and "analytic-moving-grid" raise and "auto" runs
-/// finite differences. MBD@rsSCS
+/// reference ("rhf", "uhf", "rohf", i.e. RKS, UKS or ROKS). D3(BJ) depends
+/// on the geometry only: wherever the run without dispersion would use an
+/// analytic Hessian, the Hessian is that one plus the analytic D3(BJ) Hessian;
+/// otherwise the central difference of the corrected analytic gradient. With
+/// MBD@rsSCS the Hessian is always the central difference of the corrected
+/// analytic gradient (KS + dispersion), each from the SCF converged at that
+/// displaced geometry, so `hessian="analytic"` and "analytic-moving-grid"
+/// raise and "auto" runs finite differences. MBD@rsSCS
 /// enters through its exact gradient, including the orbital relaxation of its
 /// Hirshfeld volumes (the reference's own Z-vector: RKS, UKS or ROKS). `.energy` is then the corrected total and
 /// `.e_dispersion` the dispersion part.
@@ -2240,9 +2244,13 @@ pub(crate) fn frequencies_with_dispersion(
     Ok((r, e_dispersion))
 }
 
-/// Harmonic frequencies on the KS + `spec` surface: central differences of
-/// the corrected analytic gradient, each from the SCF converged at that
-/// displaced geometry.
+/// Harmonic frequencies on the KS + `spec` surface. D3(BJ) depends on the
+/// geometry only: the analytic KS Hessian plus the analytic D3(BJ) Hessian
+/// wherever the run without dispersion would use an analytic Hessian, central
+/// differences of the corrected gradient otherwise
+/// (`harmonic_frequencies_with_geometric_correction`). MBD@rsSCS follows the
+/// density: always central differences of the corrected analytic gradient,
+/// each from the SCF converged at that displaced geometry.
 pub(crate) fn dispersion_frequencies(
     ctx: &ParallelContext,
     mol: &ferric_core::mol::Molecule,
@@ -2251,10 +2259,22 @@ pub(crate) fn dispersion_frequencies(
     fcfg: &ferric_scf::frequencies::FrequencyConfig,
     spec: &DispersionSpec,
 ) -> Result<ferric_scf::frequencies::FrequencyResult, ferric_core::FerricError> {
+    let op = Operator::coulomb();
+    if let DispersionSpec::D3Bj(functional) = spec {
+        let params = ferric_d3::d3bj_params_for_functional(functional)?;
+        return ferric_scf::frequencies::harmonic_frequencies_with_geometric_correction(
+            ctx,
+            mol,
+            basis_name,
+            op,
+            scf_cfg,
+            fcfg,
+            |m| d3_geometric_correction(m, &params),
+        );
+    }
     // Refuse an unsupported configuration (e.g. hessian = "analytic") before
     // the MBD@rsSCS free-atom SCFs below, not after them.
     ferric_scf::frequencies::check_scf_correction_config(fcfg)?;
-    let op = Operator::coulomb();
     let bs = ferric_core::basis::bundled(basis_name)?;
     // MBD@rsSCS free-atom references are per element: built once, not at each
     // of the 6N + 1 geometries.
@@ -2276,4 +2296,20 @@ pub(crate) fn dispersion_frequencies(
             Ok((d.energy, d.gradient))
         },
     )
+}
+
+/// D3(BJ) energy, gradient and Hessian at `mol`.
+fn d3_geometric_correction(
+    mol: &ferric_core::mol::Molecule,
+    params: &ferric_d3::D3Params,
+) -> Result<ferric_scf::frequencies::GeometricCorrection, ferric_core::FerricError> {
+    let energy = ferric_d3::d3bj_energy_for_molecule(mol, params)?;
+    let rows = ferric_d3::d3bj_gradient_for_molecule(mol, params)?;
+    let gradient = ndarray::Array2::from_shape_fn((rows.len(), 3), |(k, a)| rows[k][a]);
+    let hessian = ferric_d3::d3bj_hessian_for_molecule(mol, params)?;
+    Ok(ferric_scf::frequencies::GeometricCorrection {
+        energy,
+        gradient,
+        hessian,
+    })
 }

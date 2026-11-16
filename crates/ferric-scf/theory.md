@@ -988,6 +988,11 @@ the closed-shell limit exactly and misses the polarized response. ROKS is not im
 `HessianMethod::Analytic` and `AnalyticMovingGrid` refuse it before the SCF; ROKS frequencies are central differences of the
 analytic gradient).
 
+**ECPs.** $V_{\rm ECP}$ is part of $h$ and does not enter $E_{xc}$, so it adds the same two terms to the RKS and UKS Hessians
+as to the RHF and UHF ones: the skeleton $\sum_{\mu\nu} D_{\mu\nu}\,\partial^2 V^{\rm ECP}_{\mu\nu}/\partial x\partial y$ (`hessian_ecp.rs`,
+a stencil of the first-derivative blocks) and $\partial V^{\rm ECP}/\partial x$ in every first-order Fock matrix $F^x$ (`D` the total
+density in the skeleton; the same $\partial V^{\rm ECP}/\partial x$ for both spins). The XC terms above are unchanged.
+
 | Equation | Rust | Numerical test |
 |---|---|---|
 | $g$, $\rho_x$, $\mathbf g_x$ | `gradient_densities`, `rho_derivative`, `grad_rho_derivative` | `ks_fixed_grid_hessian.rs::gradient_matches_central_difference_of_the_fixed_grid_energy` |
@@ -996,6 +1001,7 @@ analytic gradient).
 | $V^{(1)}[D_1]$ | `XcResponse::apply` | `xc_kernel_response_matches_difference_of_vxc_in_the_density`, `gga_kernel_response_…` |
 | polarized $F^\sigma,\mathbf G^\sigma,\delta F^\sigma,\delta\mathbf G^\sigma$, skeleton, $\partial V^\sigma/\partial x$, $V^{(1)\sigma}$ | `ks_fixed_grid/polarized.rs` (`PolarizedKs`, `pol_response`, `PolarizedXcResponse`) | `uks_xc_pieces.rs` (closed-shell limit, frozen-density and frozen-grid FD, kernel FD with $D_1^\alpha\neq D_1^\beta$, mutants); full Hessian `uks_moving_grid_hessian.rs` |
 | $T G_h T^{\mathsf T}$, moving $\partial V/\partial x$ | `skeleton_hessian_moving`, `translation_fill`, `first_order_fock_moving`, `weight_terms` | `ks_moving_grid_hessian.rs::moving_xc_pieces_match_frozen_density_differences`, `moving_grid_mutants_each_fail_a_frozen_density_anchor` |
+| ECP skeleton and $\partial V^{\rm ECP}/\partial x$ in the KS Hessian | `extra_skeleton`, `add_extra_first_order` (`hessian.rs`), called from `hessian/ks.rs` and `hessian/uks.rs` | `ks_ecp_hessian.rs` (RKS HI, UKS H-I-H vs FD of the production gradient, both terms as negative controls); `validation_ks_fixed_grid_hessian.rs::fixed_grid_pbe_hessian_with_an_ecp_matches_pyscf_on_the_same_grid` |
 
 ## Fock hooks and their nuclear gradient
 

@@ -8,7 +8,7 @@ number. To go from a task to a method, start with
 
 | Family | Methods | Page |
 |---|---|---|
-| SCF and DFT | RHF, UHF, ROHF; KS-DFT, closed and open shell (LDA, GGA, hybrid, range-separated, VV10, SCAN/r2SCAN/TPSS); D3(BJ) and MBD@rsSCS dispersion; IEF-PCM and COSMO solvation; gradients, optimization, frequencies (analytic Hessian for RHF/UHF/ROHF and RKS/UKS LDA/GGA, pure or global hybrid; finite differences otherwise), TS search and IRC | [SCF and DFT](./scf.md) |
+| SCF and DFT | RHF, UHF, ROHF; KS-DFT, closed and open shell (LDA, GGA, hybrid, range-separated, VV10, SCAN/r2SCAN/TPSS); D3(BJ) and MBD@rsSCS dispersion; IEF-PCM and COSMO solvation; gradients, optimization, frequencies (analytic Hessian for RHF/UHF/ROHF and RKS/UKS LDA/GGA, pure or global hybrid, with ECPs and D3(BJ); finite differences otherwise), TS search and IRC | [SCF and DFT](./scf.md) |
 | MP2 | SCS, OO-RI-MP2, MP3, Laplace MP2 and SOS-MP2; local approximation of RI-MP2. Maintainer focus ([note](#maintainers-focus-marker)): RI-MP2, attenuated (erfc, terfc) MP2, SCS-MP2(2terfc), MP2-V, RS-MP2 + LR-RPA | [The MP2 family](./mp2.md) |
 | Coupled cluster | CCD, CCSD, CCSD(T), LinLCCD (hh, drivers-only, full; exact or local); double hybrids B2PLYP, DSD-PBEP86, ωB97X-L-V | [Coupled cluster](./cc.md) |
 | Multireference | CAS-CI (library and Python), CASSCF and SC-NEVPT2 (CLI kinds `casscf` and `nevpt2`, and Python `run_casscf`, `run_nevpt2`) on a closed-shell RHF start, lowest root | [CAS-CI and CASSCF](./ci.md) |

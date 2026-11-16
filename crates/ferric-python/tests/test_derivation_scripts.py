@@ -722,6 +722,20 @@ CASES = [
         ],
     ),
     (
+        "d3_hessian_sympy.py",
+        10,
+        [
+            ("            h = madd(h, mixed_tt)", "            h = h", "[FAIL] 6a."),
+            ('kw.get("g2_coeff", 72)', 'kw.get("g2_coeff", 36)', "[FAIL] 6a."),
+            ("m[i][j] -= g * cij", "m[i][j] -= 0 * cij", "[FAIL] 6a."),
+            (
+                "code_c2 = -2 / R * c1 + a_ * (1 - 2 * cfun) * c1",
+                "code_c2 = -2 / R * c1 + a_ * c1",
+                "[FAIL] 1. c''",
+            ),
+        ],
+    ),
+    (
         "pvp_ss_sympy.py",
         15,
         [

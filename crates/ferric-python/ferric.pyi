@@ -4776,7 +4776,7 @@ def run_frequencies(
     functions; for Kohn-Sham (`xc` with `reference="rhf"` or `"uhf"`) the
     `"analytic-moving-grid"` Hessian below wherever it applies; and a finite
     difference of analytic gradients otherwise (ROKS, meta-GGA, VV10,
-    range-separated hybrids, ECPs or external potentials with `xc`,
+    range-separated hybrids, external potentials with `xc`, MBD@rsSCS
     `dispersion`, and large systems whose response AO table -- basis
     functions x grid points x 4 for a GGA, 8 bytes each -- exceeds 2 GiB: on
     the default grid a GGA above about 8,100 basis functions x atoms). The
@@ -4793,8 +4793,9 @@ def run_frequencies(
     differentiates, so it agrees with `"fd"` to the finite-difference error.
     It needs `xc` (LDA/GGA, pure or global hybrid) and `reference="rhf"` or
     `"uhf"`, and raises before the SCF for Hartree-Fock, `"rohf"` (ROKS),
-    meta-GGA, VV10, range-separated hybrids, ECPs, `point_charges` /
-    `external_field` and `dispersion`.
+    meta-GGA, VV10, range-separated hybrids, `point_charges` /
+    `external_field` and MBD@rsSCS `dispersion`. An ECP is supported (shells
+    up to f), as is D3(BJ) `dispersion` (its analytic Hessian is added).
 
     `max_iter`, `energy_conv`, `density_conv` are the SCF controls of every
     SCF the run does (defaults 200, 1e-3, 1e-6, as in `run_rhf`); a
@@ -4805,9 +4806,13 @@ def run_frequencies(
 
     `dispersion` ("d3bj", "d3(bj)", "d3bj(<functional>)", "mbd",
     "mbd(<functional>)", as in `run_dft`) requires `xc` and works on every
-    reference (RKS, UKS, ROKS); the Hessian is then the finite difference of
-    the KS + dispersion analytic gradient, so `hessian="analytic"` and
-    `hessian="analytic-moving-grid"` raise.
+    reference (RKS, UKS, ROKS). D3(BJ) depends on the geometry only: wherever
+    the run without dispersion would use an analytic Hessian, the Hessian is
+    that one plus the analytic D3(BJ) Hessian; otherwise the finite difference
+    of the KS + D3(BJ) analytic gradient. MBD@rsSCS follows the density: its
+    Hessian is always the finite difference of the KS + MBD analytic gradient,
+    so `hessian="analytic"` and `hessian="analytic-moving-grid"` raise with
+    it.
     """
     ...
 

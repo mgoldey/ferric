@@ -107,6 +107,7 @@
     ],
     "frequencies:ksdft": [
       "ks-hessian",
+      "d3-hessian",
       "harmonic-frequencies",
       "rrho-thermo",
       "ir-intensities"
@@ -227,6 +228,7 @@
     "py:run_frequencies": [
       "hf-hessian",
       "ks-hessian",
+      "d3-hessian",
       "harmonic-frequencies",
       "rrho-thermo",
       "ir-intensities",
@@ -464,6 +466,14 @@
       "scripts": [
         "scripts/d3_cn_chain_rule_gradient_sympy.py",
         "scripts/d3_atm_gradient_sympy.py"
+      ]
+    },
+    "d3-hessian": {
+      "theory": [
+        "crates/ferric-d3/theory.md#hessian"
+      ],
+      "scripts": [
+        "scripts/d3_hessian_sympy.py"
       ]
     },
     "drpa": {

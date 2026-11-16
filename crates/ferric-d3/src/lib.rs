@@ -70,14 +70,16 @@
 //! ATM three-body term, for elements Z = 1..103, any molecular geometry, and
 //! the analytic nuclear gradient of both ([`d3bj_gradient`],
 //! [`d3bj_gradient_for_molecule`]) including the coordination-number chain
-//! rule. The CLI uses it for `task = "optimize"` with `[dft] dispersion`;
-//! `task = "frequencies"` is refused (the finite-difference Hessian built from
-//! it is unvalidated). The CLI and the DFT-path `dispersion=` option use the
+//! rule, and the analytic nuclear Hessian of the two-body term
+//! ([`d3bj_hessian`], [`d3bj_hessian_for_molecule`]) with that chain rule to
+//! second order. The CLI uses them for `task = "optimize"` and
+//! `task = "frequencies"` with `[dft] dispersion`. The CLI and the DFT-path `dispersion=` option use the
 //! named-functional parameters and therefore `s9 = 0`; the standalone Python
 //! `d3bj_energy(mol, functional, s9=...)` exposes `s9`.
 //!
-//! Not implemented: zero damping for the two-body term, second derivatives,
-//! and periodic boundary conditions.
+//! Not implemented: zero damping for the two-body term, the second
+//! derivative of the three-body term (`d3bj_hessian` refuses `s9 != 0`), and
+//! periodic boundary conditions.
 //!
 //! # Provenance of the reference data
 //!
@@ -104,9 +106,11 @@
 //! [`d3bj_energy`]: two-body and full to 1e-7 Ha/Bohr, the three-body term
 //! alone to 1e-7 relative (`tests/gradient_vs_fd.rs`).
 
+mod hessian;
 pub mod params;
 pub mod tables;
 
+pub use hessian::{d3bj_hessian, d3bj_hessian_for_molecule};
 pub use params::{d3bj_params_for_functional, d3bj_tabulated_functionals, D3Params};
 
 use ferric_core::FerricError;
