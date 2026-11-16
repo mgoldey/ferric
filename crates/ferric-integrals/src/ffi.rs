@@ -601,6 +601,35 @@ extern "C" {
         out: *mut c_double,
         out_len: c_int,
     ) -> c_int;
+    /// Validation hook: the reference McMurchie-Davidson 3-center values of a
+    /// terf/terfc table engine (two passes subtracted for terfc), for
+    /// comparison with [`scf_compute_terfc_eri3`] / [`scf_compute_terf_eri3`].
+    pub fn scf_debug_md_reference_eri3(
+        eng: *mut c_void,
+        obs: *const c_void,
+        dfbs: *const c_void,
+        shP: c_int,
+        sh1: c_int,
+        sh2: c_int,
+        out: *mut c_double,
+    ) -> c_int;
+    /// Validation hook: the reference McMurchie-Davidson 3-center derivative
+    /// kernel of a terf/terfc table engine, for comparison with
+    /// [`scf_compute_terf_table_eri3_deriv`]. Same layout and contract.
+    pub fn scf_debug_md_reference_eri3_deriv(
+        eng: *mut c_void,
+        obs: *const c_void,
+        dfbs: *const c_void,
+        shP: c_int,
+        sh1: c_int,
+        sh2: c_int,
+        out: *mut c_double,
+        out_len: c_int,
+    ) -> c_int;
+    /// Process-wide test switch: nonzero routes [`scf_compute_terfc_eri3`],
+    /// [`scf_compute_terf_eri3`] and [`scf_compute_terf_table_eri3_deriv`]
+    /// through the reference McMurchie-Davidson kernels.
+    pub fn scf_debug_md_use_reference(on: c_int);
     /// Validation hook: [`scf_compute_terf_table_eri2_deriv`] with the plain
     /// Coulomb kernel, for comparison with libint2's [`scf_compute_eri2_deriv`].
     pub fn scf_debug_md_coulomb_eri2_deriv(

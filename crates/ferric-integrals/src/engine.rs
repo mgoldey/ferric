@@ -1913,6 +1913,93 @@ impl Engine {
         &self.buf[..total]
     }
 
+    /// Process-wide test switch: `true` makes every terf/terfc table engine's
+    /// [`Self::compute_eri3`] and [`Self::compute_eri3_deriv`] use the
+    /// reference McMurchie-Davidson kernels ([`Self::debug_reference_eri3`],
+    /// [`Self::debug_reference_eri3_deriv`]) instead of the term-list
+    /// kernels. For oracle comparisons in tests only: it affects every
+    /// thread of the process.
+    #[doc(hidden)]
+    pub fn debug_use_reference_md_kernels(on: bool) {
+        // SAFETY: stores to a process-global atomic; no pointers.
+        unsafe { ffi::scf_debug_md_use_reference(c_int::from(on)) }
+    }
+
+    /// The reference McMurchie-Davidson values of `(P|μν)` on a terf/terfc
+    /// table engine: the kernel [`Self::compute_eri3`] is checked against
+    /// (two passes subtracted for terfc). `None` on any other engine.
+    #[doc(hidden)]
+    pub fn debug_reference_eri3(
+        &mut self,
+        obs: &PreparedBasis,
+        dfbs: &PreparedBasis,
+        sh_p: usize,
+        sh1: usize,
+        sh2: usize,
+    ) -> Option<Vec<f64>> {
+        if !self.is_terfc {
+            return None;
+        }
+        let n = dfbs.shell_dims()[sh_p] * obs.shell_dims()[sh1] * obs.shell_dims()[sh2];
+        let mut out = vec![0.0; n];
+        // SAFETY: a live terf/terfc table handle, `out` holds the n doubles
+        // the shim writes; the shim checks the shell indices.
+        let written = unsafe {
+            ffi::scf_debug_md_reference_eri3(
+                self.handles[0].1,
+                obs.handle(),
+                dfbs.handle(),
+                sh_p as c_int,
+                sh1 as c_int,
+                sh2 as c_int,
+                out.as_mut_ptr(),
+            )
+        };
+        assert!(
+            written as usize == n,
+            "reference eri3 ({sh_p}|{sh1},{sh2}): status {written}"
+        );
+        Some(out)
+    }
+
+    /// The reference McMurchie-Davidson derivative kernel of a terf/terfc
+    /// table engine, the one [`Self::compute_eri3_deriv`] is checked against.
+    /// Same 9-block layout. `None` on any other engine.
+    #[doc(hidden)]
+    pub fn debug_reference_eri3_deriv(
+        &mut self,
+        obs: &PreparedBasis,
+        dfbs: &PreparedBasis,
+        sh_p: usize,
+        sh1: usize,
+        sh2: usize,
+    ) -> Option<Vec<f64>> {
+        if !self.is_terfc {
+            return None;
+        }
+        let n = 9 * dfbs.shell_dims()[sh_p] * obs.shell_dims()[sh1] * obs.shell_dims()[sh2];
+        let mut out = vec![0.0; n];
+        let cap = c_int::try_from(n).expect("derivative buffer exceeds c_int");
+        // SAFETY: as debug_reference_eri3; the shim checks 9*n <= cap.
+        let written = unsafe {
+            ffi::scf_debug_md_reference_eri3_deriv(
+                self.handles[0].1,
+                obs.handle(),
+                dfbs.handle(),
+                sh_p as c_int,
+                sh1 as c_int,
+                sh2 as c_int,
+                out.as_mut_ptr(),
+                cap,
+            )
+        };
+        assert!(
+            written as usize == n,
+            "reference eri3 deriv ({sh_p}|{sh1},{sh2}): status {written}"
+        );
+        Some(out)
+    }
+
     /// The 6 derivative blocks of a terf/terfc table engine
     /// ([`Self::compute_eri2_deriv`]); as [`Self::table_eri3_deriv`].
     fn table_eri2_deriv(

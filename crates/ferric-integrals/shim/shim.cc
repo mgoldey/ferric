@@ -3585,6 +3585,360 @@ void compute_cart_eri2_deriv(const Shell &shP, const Shell &shQ, MdKernel kernel
         for (size_t k = 0; k < blk; ++k) out[(3 + c) * blk + k] = -out[c * blk + k];
 }
 
+// --------------------------------------------------------------------------
+//  Term-list form of the MD 3-center kernels (values and first derivatives).
+//
+//  These compute the same integrals as compute_cart_eri3 and
+//  compute_cart_eri3_deriv above, which stay as the reference the tests
+//  compare against. Three things change:
+//
+//  1. Each Cartesian component's Hermite expansion is gathered once into a
+//     list of (coefficient, offset) terms, the offset being the flat index of
+//     (t, u, v) in an R cube of stride L + 1. The index is linear in (t, u, v),
+//     so R[t'+t, u'+u, v'+v] = R[off_P + off_K] and each integral is a double
+//     loop over two short lists. Lists of the orbital pair are built once per
+//     primitive pair, those of the aux shell once per call. The terms keep the
+//     reference loop order and products, so a single-kernel value (Coulomb or
+//     terf) is bit-identical to compute_cart_eri3.
+//  2. terfc = Coulomb - terf is formed on the seeds of the R recurrence,
+//     R^n_000 = (-2 theta)^n F_n - (-2 phi)^n G_n. The recurrence
+//     R^n_{t+1,u,v} = t R^{n+1}_{t-1,u,v} + X_PQ R^{n+1}_{t,u,v} is linear in
+//     its seeds and does not involve the exponent, so one recurrence and one
+//     contraction give the difference (the reference runs two full passes).
+//  3. Scratch is thread-local and reused, so a call allocates only its output.
+// --------------------------------------------------------------------------
+namespace md_terms {
+
+// Test switch: route the production terf/terfc 3-center entry points through
+// the reference kernels (scf_debug_md_use_reference). Off by default; a
+// relaxed load per shell triple.
+std::atomic<bool> use_reference{false};
+
+struct Term {
+    double c;
+    int off;
+};
+
+// Term lists of a set of Cartesian components: component k owns
+// terms[start[k] .. start[k + 1]).
+struct TermLists {
+    std::vector<Term> terms;
+    std::vector<int> start;
+    void reset() {
+        terms.clear();
+        start.assign(1, 0);
+    }
+    void close() { start.push_back((int)terms.size()); }
+};
+
+// Derivative of a 1-D E table built to (i + 1, j): 2a E^{i+1,j}_t - i E^{i-1,j}_t.
+inline double e_deriv(const HermiteE &H, double a, int i, int j, int t) {
+    double x = 2.0 * a * H.at(i + 1, j, t);
+    if (i > 0) x -= i * H.at(i - 1, j, t);
+    return x;
+}
+
+// One axis of a ket list: either the value table or its derivative.
+struct KetAxis {
+    const HermiteE *H;
+    double a;     // exponent of the differentiated centre
+    bool deriv;   // true: differentiate (one more Hermite order)
+    inline int tmax(int i, int j) const { return i + j + (deriv ? 1 : 0); }
+    inline double at(int i, int j, int t) const {
+        return deriv ? e_deriv(*H, a, i, j, t) : H->at(i, j, t);
+    }
+};
+
+// Ket (orbital pair) lists: one per (ia, ib), coefficient (ex ey ez) * (-1)^{t+u+v}.
+void ket_lists(const std::vector<std::array<int, 3>> &compA,
+               const std::vector<std::array<int, 3>> &compB, const KetAxis &X,
+               const KetAxis &Y, const KetAxis &Z, int S, TermLists &out) {
+    out.reset();
+    for (const auto &ca : compA) {
+        for (const auto &cb : compB) {
+            const int ax = ca[0], ay = ca[1], az = ca[2];
+            const int bx = cb[0], by = cb[1], bz = cb[2];
+            for (int t = 0; t <= X.tmax(ax, bx); ++t) {
+                const double ex = X.at(ax, bx, t);
+                if (ex == 0.0) continue;
+                for (int u = 0; u <= Y.tmax(ay, by); ++u) {
+                    const double ey = Y.at(ay, by, u);
+                    if (ey == 0.0) continue;
+                    for (int v = 0; v <= Z.tmax(az, bz); ++v) {
+                        const double ez = Z.at(az, bz, v);
+                        if (ez == 0.0) continue;
+                        const double sgn = ((t + u + v) & 1) ? -1.0 : 1.0;
+                        out.terms.push_back({ex * ey * ez * sgn, (t * S + u) * S + v});
+                    }
+                }
+            }
+            out.close();
+        }
+    }
+}
+
+// Aux (single Gaussian) lists: one per component, coefficient e1 e2 e3.
+void aux_lists(const std::vector<std::array<int, 3>> &compP, const KetAxis &X,
+               const KetAxis &Y, const KetAxis &Z, int S, TermLists &out) {
+    out.reset();
+    for (const auto &cp : compP) {
+        const int px = cp[0], py = cp[1], pz = cp[2];
+        for (int t = 0; t <= X.tmax(px, 0); ++t) {
+            const double e1 = X.at(px, 0, t);
+            if (e1 == 0.0) continue;
+            for (int u = 0; u <= Y.tmax(py, 0); ++u) {
+                const double e2 = Y.at(py, 0, u);
+                if (e2 == 0.0) continue;
+                for (int v = 0; v <= Z.tmax(pz, 0); ++v) {
+                    const double e3 = Z.at(pz, 0, v);
+                    if (e3 == 0.0) continue;
+                    out.terms.push_back({e1 * e2 * e3, (t * S + u) * S + v});
+                }
+            }
+        }
+        out.close();
+    }
+}
+
+// out[ip][k] += scale * sum_{a in P[ip]} sum_{b in K[k]} c_a c_b R[off_a + off_b].
+inline void contract(const TermLists &P, const TermLists &K, const double *R,
+                     double scale, double *out) {
+    const int nP = (int)P.start.size() - 1, nK = (int)K.start.size() - 1;
+    const Term *pt = P.terms.data();
+    const Term *kt = K.terms.data();
+    for (int ip = 0; ip < nP; ++ip) {
+        const int p0 = P.start[ip], p1 = P.start[ip + 1];
+        double *o = out + (size_t)ip * nK;
+        for (int k = 0; k < nK; ++k) {
+            const int k0 = K.start[k], k1 = K.start[k + 1];
+            double sum = 0.0;
+            for (int a = p0; a < p1; ++a) {
+                const double ca = pt[a].c;
+                const double *Ra = R + pt[a].off;
+                for (int b = k0; b < k1; ++b) sum += ca * kt[b].c * Ra[kt[b].off];
+            }
+            o[k] += scale * sum;
+        }
+    }
+}
+
+// Per-thread scratch of one kernel call.
+struct Scratch {
+    std::vector<double> Rn;                  // (L+1) levels of an (L+1)^3 cube
+    HermiteE Ex, Ey, Ez;                     // orbital pair
+    TermLists kval, kd[3];                   // ket lists: value, d/dA_{x,y,z}
+    std::vector<TermLists> pval, pd[3];      // aux lists per aux primitive
+    std::vector<std::array<int, 3>> compP, compA, compB;
+};
+
+Scratch &scratch() {
+    thread_local Scratch s;
+    return s;
+}
+
+// R^0_{tuv} (stride L+1, t+u+v <= L) of `kernel` for one primitive triple,
+// left in s.Rn[0 .. (L+1)^3). Same recurrence and arithmetic as
+// build_hermite_R; entries with t+u+v > L are never written or read.
+const double *kernel_R(MdKernel kernel, int L, double theta2, double PQx, double PQy,
+                       double PQz, const TerfcTableSet *tables, double omega, double r0,
+                       Scratch &s) {
+    const int S = L + 1;
+    const size_t dim = (size_t)S * S * S;
+    if (s.Rn.size() < (size_t)S * dim) s.Rn.resize((size_t)S * dim);
+    double *Rn = s.Rn.data();
+    auto RI = [&](int n, int t, int u, int v) {
+        return (size_t)n * dim + (size_t)(t * S + u) * S + v;
+    };
+    const double PQ2 = PQx * PQx + PQy * PQy + PQz * PQz;
+    double F[TERFC_DIMM], G[TERFC_DIMM];
+    if (L >= TERFC_DIMM) md_Ltot_overflow(L);
+    double phi2 = 0.0;
+    if (kernel == MdKernel::Coulomb || kernel == MdKernel::Terfc) {
+        boys_upto(L, theta2 * PQ2, F);
+    }
+    if (kernel == MdKernel::Terf || kernel == MdKernel::Terfc) {
+        if (!tables) throw std::invalid_argument("terf MD kernel: no table set");
+        const double omega2 = omega * omega;
+        phi2 = theta2 * omega2 / (theta2 + omega2);
+        const double S_arg = phi2 * PQ2;
+        const double r02 = r0 * r0;   // phi2 * r02, as compute_cart_eri3 forms s
+        const double s_arg = phi2 * r02;
+        const double phi_over_theta = std::sqrt(phi2 / theta2);
+        if (!terf_aux(*tables, S_arg, s_arg, phi_over_theta, L, G)) md_Ltot_overflow(L);
+    }
+    double facC = 1.0, facT = 1.0;
+    for (int n = 0; n <= L; ++n) {
+        double seed;
+        if (kernel == MdKernel::Coulomb) {
+            seed = facC * F[n];
+        } else if (kernel == MdKernel::Terf) {
+            seed = facT * G[n];
+        } else {
+            seed = facC * F[n] - facT * G[n];
+        }
+        Rn[RI(n, 0, 0, 0)] = seed;
+        facC *= (-2.0 * theta2);
+        facT *= (-2.0 * phi2);
+    }
+    for (int tot = 1; tot <= L; ++tot) {
+        for (int t = 0; t <= tot; ++t) {
+            for (int u = 0; u <= tot - t; ++u) {
+                const int v = tot - t - u;
+                for (int n = 0; n <= L - tot; ++n) {
+                    double val;
+                    if (t > 0) {
+                        val = PQx * Rn[RI(n + 1, t - 1, u, v)];
+                        if (t > 1) val += (t - 1) * Rn[RI(n + 1, t - 2, u, v)];
+                    } else if (u > 0) {
+                        val = PQy * Rn[RI(n + 1, t, u - 1, v)];
+                        if (u > 1) val += (u - 1) * Rn[RI(n + 1, t, u - 2, v)];
+                    } else {
+                        val = PQz * Rn[RI(n + 1, t, u, v - 1)];
+                        if (v > 1) val += (v - 1) * Rn[RI(n + 1, t, u, v - 2)];
+                    }
+                    Rn[RI(n, t, u, v)] = val;
+                }
+            }
+        }
+    }
+    return Rn;
+}
+
+// Cartesian (P|AB) values under `kernel`, row-major [ncP][ncA][ncB].
+void eri3_values(const Shell &shP, const Shell &shA, const Shell &shB, MdKernel kernel,
+                 const TerfcTableSet *tables, double omega, double r0,
+                 std::vector<double> &out) {
+    Scratch &s = scratch();
+    const int lP = shP.contr[0].l, lA = shA.contr[0].l, lB = shB.contr[0].l;
+    const int L = lP + lA + lB;
+    if (L >= TERFC_DIMM) md_Ltot_overflow(L);
+    const int S = L + 1;
+    cart_components(lP, s.compP);
+    cart_components(lA, s.compA);
+    cart_components(lB, s.compB);
+    out.assign((size_t)s.compP.size() * s.compA.size() * s.compB.size(), 0.0);
+    const auto &AO = shA.O, &BO = shB.O, &PO = shP.O;
+
+    const size_t nprimP = shP.alpha.size();
+    if (s.pval.size() < nprimP) s.pval.resize(nprimP);
+    for (size_t pp = 0; pp < nprimP; ++pp) {
+        const double p = shP.alpha[pp];
+        HermiteE &Hx = s.Ex, &Hy = s.Ey, &Hz = s.Ez;   // reused, rebuilt below
+        build_hermite_E(p, 0.0, PO[0], PO[0], lP, 0, Hx);
+        build_hermite_E(p, 0.0, PO[1], PO[1], lP, 0, Hy);
+        build_hermite_E(p, 0.0, PO[2], PO[2], lP, 0, Hz);
+        aux_lists(s.compP, {&Hx, p, false}, {&Hy, p, false}, {&Hz, p, false}, S,
+                  s.pval[pp]);
+    }
+
+    for (size_t pa = 0; pa < shA.alpha.size(); ++pa) {
+        const double a = shA.alpha[pa];
+        const double ca = shA.contr[0].coeff[pa];
+        for (size_t pb = 0; pb < shB.alpha.size(); ++pb) {
+            const double b = shB.alpha[pb];
+            const double cb = shB.contr[0].coeff[pb];
+            const double q = a + b;
+            const double Qx = (a * AO[0] + b * BO[0]) / q;
+            const double Qy = (a * AO[1] + b * BO[1]) / q;
+            const double Qz = (a * AO[2] + b * BO[2]) / q;
+            const double cab = ca * cb;
+            build_hermite_E(a, b, AO[0], BO[0], lA, lB, s.Ex);
+            build_hermite_E(a, b, AO[1], BO[1], lA, lB, s.Ey);
+            build_hermite_E(a, b, AO[2], BO[2], lA, lB, s.Ez);
+            ket_lists(s.compA, s.compB, {&s.Ex, a, false}, {&s.Ey, a, false},
+                      {&s.Ez, a, false}, S, s.kval);
+            for (size_t pp = 0; pp < nprimP; ++pp) {
+                const double p = shP.alpha[pp];
+                const double cP = shP.contr[0].coeff[pp];
+                const double theta2 = p * q / (p + q);
+                const double *R = kernel_R(kernel, L, theta2, PO[0] - Qx, PO[1] - Qy,
+                                           PO[2] - Qz, tables, omega, r0, s);
+                const double pref = 2.0 * std::pow(M_PI, 2.5) / (p * q * std::sqrt(p + q));
+                const double scale = pref * cab * cP;
+                contract(s.pval[pp], s.kval, R, scale, out.data());
+            }
+        }
+    }
+}
+
+// The 9 first-derivative blocks of (P|AB) under `kernel`, the layout of
+// compute_cart_eri3_deriv: [dP, dA, dB] x [x, y, z], each [ncP][ncA][ncB].
+void eri3_derivs(const Shell &shP, const Shell &shA, const Shell &shB, MdKernel kernel,
+                 const TerfcTableSet *tables, double omega, double r0,
+                 std::vector<double> &out) {
+    Scratch &s = scratch();
+    const int lP = shP.contr[0].l, lA = shA.contr[0].l, lB = shB.contr[0].l;
+    const int L = lP + lA + lB + 1;
+    if (L >= TERFC_DIMM) md_Ltot_overflow(L);
+    const int S = L + 1;
+    cart_components(lP, s.compP);
+    cart_components(lA, s.compA);
+    cart_components(lB, s.compB);
+    const size_t blk = s.compP.size() * s.compA.size() * s.compB.size();
+    out.assign(9 * blk, 0.0);
+    const auto &AO = shA.O, &BO = shB.O, &PO = shP.O;
+
+    const size_t nprimP = shP.alpha.size();
+    if (s.pval.size() < nprimP) s.pval.resize(nprimP);
+    for (int c = 0; c < 3; ++c)
+        if (s.pd[c].size() < nprimP) s.pd[c].resize(nprimP);
+    for (size_t pp = 0; pp < nprimP; ++pp) {
+        const double p = shP.alpha[pp];
+        HermiteE &Hx = s.Ex, &Hy = s.Ey, &Hz = s.Ez;
+        build_hermite_E(p, 0.0, PO[0], PO[0], lP + 1, 0, Hx);
+        build_hermite_E(p, 0.0, PO[1], PO[1], lP + 1, 0, Hy);
+        build_hermite_E(p, 0.0, PO[2], PO[2], lP + 1, 0, Hz);
+        const KetAxis vx{&Hx, p, false}, vy{&Hy, p, false}, vz{&Hz, p, false};
+        const KetAxis dx{&Hx, p, true}, dy{&Hy, p, true}, dz{&Hz, p, true};
+        aux_lists(s.compP, vx, vy, vz, S, s.pval[pp]);
+        aux_lists(s.compP, dx, vy, vz, S, s.pd[0][pp]);
+        aux_lists(s.compP, vx, dy, vz, S, s.pd[1][pp]);
+        aux_lists(s.compP, vx, vy, dz, S, s.pd[2][pp]);
+    }
+
+    double *o = out.data();
+    for (size_t pa = 0; pa < shA.alpha.size(); ++pa) {
+        const double a = shA.alpha[pa];
+        const double ca = shA.contr[0].coeff[pa];
+        for (size_t pb = 0; pb < shB.alpha.size(); ++pb) {
+            const double b = shB.alpha[pb];
+            const double cb = shB.contr[0].coeff[pb];
+            const double q = a + b;
+            const double Qx = (a * AO[0] + b * BO[0]) / q;
+            const double Qy = (a * AO[1] + b * BO[1]) / q;
+            const double Qz = (a * AO[2] + b * BO[2]) / q;
+            build_hermite_E(a, b, AO[0], BO[0], lA + 1, lB, s.Ex);
+            build_hermite_E(a, b, AO[1], BO[1], lA + 1, lB, s.Ey);
+            build_hermite_E(a, b, AO[2], BO[2], lA + 1, lB, s.Ez);
+            const KetAxis vx{&s.Ex, a, false}, vy{&s.Ey, a, false}, vz{&s.Ez, a, false};
+            const KetAxis dx{&s.Ex, a, true}, dy{&s.Ey, a, true}, dz{&s.Ez, a, true};
+            ket_lists(s.compA, s.compB, vx, vy, vz, S, s.kval);
+            ket_lists(s.compA, s.compB, dx, vy, vz, S, s.kd[0]);
+            ket_lists(s.compA, s.compB, vx, dy, vz, S, s.kd[1]);
+            ket_lists(s.compA, s.compB, vx, vy, dz, S, s.kd[2]);
+            for (size_t pp = 0; pp < nprimP; ++pp) {
+                const double p = shP.alpha[pp];
+                const double cP = shP.contr[0].coeff[pp];
+                const double theta2 = p * q / (p + q);
+                const double *R = kernel_R(kernel, L, theta2, PO[0] - Qx, PO[1] - Qy,
+                                           PO[2] - Qz, tables, omega, r0, s);
+                const double scale = 2.0 * std::pow(M_PI, 2.5) /
+                                     (p * q * std::sqrt(p + q)) * ca * cb * cP;
+                for (int c = 0; c < 3; ++c) {
+                    contract(s.pd[c][pp], s.kval, R, scale, o + c * blk);
+                    contract(s.pval[pp], s.kd[c], R, scale, o + (3 + c) * blk);
+                }
+            }
+        }
+    }
+    // Translational invariance: dB = -(dP + dA).
+    for (int c = 0; c < 3; ++c)
+        for (size_t k = 0; k < blk; ++k)
+            out[(6 + c) * blk + k] = -(out[c * blk + k] + out[(3 + c) * blk + k]);
+}
+
+} // namespace md_terms
+
 // 4-center quartet (a b | c d): both sides are GENUINE Gaussian pairs.
 //
 // compute_cart_eri3 is the special case of this routine in which the bra side
@@ -4060,8 +4414,8 @@ extern "C" int scf_terfc_debug_coulomb_eri3(const scf_basis *obs,
         const Shell &shBsh = obs->bs[sh2];
         if (eri3_Ltot_exceeds_tables(shPsh, shAsh, shBsh)) return SCF_EINVAL;
         std::vector<double> cart;
-        compute_cart_eri3(shPsh, shAsh, shBsh, nullptr, 0.0, 0.0,
-                          /*use_boys=*/true, cart);
+        md_terms::eri3_values(shPsh, shAsh, shBsh, MdKernel::Coulomb, nullptr, 0.0, 0.0,
+                              cart);
         int n = dfbs->nfunc[shP] * obs->nfunc[sh1] * obs->nfunc[sh2];
         std::vector<double> pureout;
         transform_cart_to_pure3(shPsh, shAsh, shBsh, cart, pureout);
@@ -4177,29 +4531,15 @@ extern "C" int scf_compute_terfc_eri3(scf_engine *eng, const scf_basis *obs,
         // ordering, prefactor, normalisation, cart->pure transform), so the
         // subtraction is valid element-by-element in the Cartesian basis.
         if (eri3_Ltot_exceeds_tables(shPsh, shAsh, shBsh)) return SCF_EINVAL;
-        std::vector<double> cart_coul, cart_terf;
-        bool any_c = compute_cart_eri3(shPsh, shAsh, shBsh, nullptr,
-                                       eng->omega, eng->r0, /*use_boys=*/true,
-                                       cart_coul);
-        bool any_t = compute_cart_eri3(shPsh, shAsh, shBsh, eng->terfc_tables.get(),
-                                       eng->omega, eng->r0, /*use_boys=*/false,
-                                       cart_terf);
-        int nP = dfbs->nfunc[shP];
-        int n1 = obs->nfunc[sh1];
-        int n2 = obs->nfunc[sh2];
-        int n = nP * n1 * n2;
-        if (!any_c && !any_t) {
-            for (int i = 0; i < n; ++i) out[i] = 0.0;
-            return 0;  // fully screened
-        }
-        // Form the Cartesian difference (terf may screen where Coulomb doesn't;
-        // treat a screened piece as an all-zero block of the right size).
-        std::vector<double> cart(cart_coul.size(), 0.0);
-        if (any_c) cart = cart_coul;
-        if (any_t) {
-            if (cart_terf.size() != cart.size()) return SCF_EINTERNAL;
-            for (size_t i = 0; i < cart.size(); ++i) cart[i] -= cart_terf[i];
-        }
+        // One MD pass with the difference formed on the R seeds
+        // (md_terms::eri3_values); compute_cart_eri3 run twice and subtracted
+        // is the reference (scf_debug_md_reference_eri3).
+        if (md_terms::use_reference.load(std::memory_order_relaxed))
+            return scf_debug_md_reference_eri3(eng, obs, dfbs, shP, sh1, sh2, out);
+        std::vector<double> cart;
+        md_terms::eri3_values(shPsh, shAsh, shBsh, MdKernel::Terfc,
+                              eng->terfc_tables.get(), eng->omega, eng->r0, cart);
+        int n = dfbs->nfunc[shP] * obs->nfunc[sh1] * obs->nfunc[sh2];
         std::vector<double> pureout;
         transform_cart_to_pure3(shPsh, shAsh, shBsh, cart, pureout);
         if ((int)pureout.size() != n) return SCF_EINTERNAL;
@@ -4298,18 +4638,13 @@ extern "C" int scf_compute_terf_eri3(scf_engine *eng, const scf_basis *obs,
         // terf is the SAME Cartesian block terfc subtracts from Coulomb --
         // return it directly (no combine), so terf + terfc = coulomb exactly.
         if (eri3_Ltot_exceeds_tables(shPsh, shAsh, shBsh)) return SCF_EINVAL;
+        // Bit-identical to compute_cart_eri3 (md_terms keeps its arithmetic).
+        if (md_terms::use_reference.load(std::memory_order_relaxed))
+            return scf_debug_md_reference_eri3(eng, obs, dfbs, shP, sh1, sh2, out);
         std::vector<double> cart_terf;
-        bool any_t = compute_cart_eri3(shPsh, shAsh, shBsh, eng->terfc_tables.get(),
-                                       eng->omega, eng->r0, /*use_boys=*/false,
-                                       cart_terf);
-        int nP = dfbs->nfunc[shP];
-        int n1 = obs->nfunc[sh1];
-        int n2 = obs->nfunc[sh2];
-        int n = nP * n1 * n2;
-        if (!any_t) {
-            for (int i = 0; i < n; ++i) out[i] = 0.0;
-            return 0;  // fully screened
-        }
+        md_terms::eri3_values(shPsh, shAsh, shBsh, MdKernel::Terf,
+                              eng->terfc_tables.get(), eng->omega, eng->r0, cart_terf);
+        int n = dfbs->nfunc[shP] * obs->nfunc[sh1] * obs->nfunc[sh2];
         std::vector<double> pureout;
         transform_cart_to_pure3(shPsh, shAsh, shBsh, cart_terf, pureout);
         if ((int)pureout.size() != n) return SCF_EINTERNAL;
@@ -4419,9 +4754,12 @@ extern "C" int scf_compute_terf_eri2(scf_engine *eng, const scf_basis *dfbs,
  * -------------------------------------------------------------------------- */
 namespace {
 
+// `reference` selects compute_cart_eri3_deriv (the kernel md_terms::eri3_derivs
+// is checked against) instead of md_terms::eri3_derivs.
 int md_eri3_deriv_entry(MdKernel kernel, const TerfcTableSet *tables, double omega,
                         double r0, const scf_basis *obs, const scf_basis *dfbs,
-                        int shP, int sh1, int sh2, double *out, int out_len) {
+                        int shP, int sh1, int sh2, double *out, int out_len,
+                        bool reference = false) {
     if (!obs || !dfbs || !out) return SCF_EINVAL;
     if (shP < 0 || sh1 < 0 || sh2 < 0 || shP >= (int)dfbs->bs.size() ||
         sh1 >= (int)obs->bs.size() || sh2 >= (int)obs->bs.size()) {
@@ -4435,7 +4773,11 @@ int md_eri3_deriv_entry(MdKernel kernel, const TerfcTableSet *tables, double ome
     const int n = dfbs->nfunc[shP] * obs->nfunc[sh1] * obs->nfunc[sh2];
     if (out_len < 9 * n) return SCF_EINVAL;
     std::vector<double> cart;
-    compute_cart_eri3_deriv(sP, sA, sB, kernel, tables, omega, r0, cart);
+    if (reference || md_terms::use_reference.load(std::memory_order_relaxed)) {
+        compute_cart_eri3_deriv(sP, sA, sB, kernel, tables, omega, r0, cart);
+    } else {
+        md_terms::eri3_derivs(sP, sA, sB, kernel, tables, omega, r0, cart);
+    }
     const size_t cblk = cart.size() / 9;
     std::vector<double> one(cblk), pure;
     for (int d = 0; d < 9; ++d) {
@@ -4519,6 +4861,63 @@ extern "C" int scf_debug_md_coulomb_eri2_deriv(const scf_basis *dfbs, int shP, i
     } catch (...) {
         return SCF_EINTERNAL;
     }
+}
+
+// The reference MD kernels (compute_cart_eri3, run twice and subtracted for
+// terfc, and compute_cart_eri3_deriv) on a terf/terfc table engine, for
+// checking md_terms against them. Same layouts and return contracts as
+// scf_compute_terf{,c}_eri3 and scf_compute_terf_table_eri3_deriv.
+extern "C" int scf_debug_md_reference_eri3(scf_engine *eng, const scf_basis *obs,
+                                           const scf_basis *dfbs, int shP, int sh1,
+                                           int sh2, double *out) {
+    try {
+        if (!eng || !eng->is_terfc || !eng->terfc_tables || !obs || !dfbs || !out)
+            return SCF_EINVAL;
+        if (shP < 0 || sh1 < 0 || sh2 < 0 || shP >= (int)dfbs->bs.size() ||
+            sh1 >= (int)obs->bs.size() || sh2 >= (int)obs->bs.size())
+            return SCF_EINVAL;
+        const Shell &sP = dfbs->bs[shP];
+        const Shell &sA = obs->bs[sh1];
+        const Shell &sB = obs->bs[sh2];
+        if (eri3_Ltot_exceeds_tables(sP, sA, sB)) return SCF_EINVAL;
+        std::vector<double> cart, cart_terf;
+        compute_cart_eri3(sP, sA, sB, eng->terfc_tables.get(), eng->omega, eng->r0,
+                          /*use_boys=*/false, cart_terf);
+        if (eng->is_terf_complement) {
+            cart = cart_terf;
+        } else {
+            compute_cart_eri3(sP, sA, sB, nullptr, eng->omega, eng->r0,
+                              /*use_boys=*/true, cart);
+            for (size_t i = 0; i < cart.size(); ++i) cart[i] -= cart_terf[i];
+        }
+        const int n = dfbs->nfunc[shP] * obs->nfunc[sh1] * obs->nfunc[sh2];
+        std::vector<double> pureout;
+        transform_cart_to_pure3(sP, sA, sB, cart, pureout);
+        if ((int)pureout.size() != n) return SCF_EINTERNAL;
+        std::copy(pureout.begin(), pureout.end(), out);
+        return n;
+    } catch (...) {
+        return SCF_EINTERNAL;
+    }
+}
+
+extern "C" int scf_debug_md_reference_eri3_deriv(scf_engine *eng, const scf_basis *obs,
+                                                 const scf_basis *dfbs, int shP, int sh1,
+                                                 int sh2, double *out, int out_len) {
+    try {
+        if (!eng || !eng->is_terfc || !eng->terfc_tables) return SCF_EINVAL;
+        const MdKernel k = eng->is_terf_complement ? MdKernel::Terf : MdKernel::Terfc;
+        return md_eri3_deriv_entry(k, eng->terfc_tables.get(), eng->omega, eng->r0, obs,
+                                   dfbs, shP, sh1, sh2, out, out_len, /*reference=*/true);
+    } catch (...) {
+        return SCF_EINTERNAL;
+    }
+}
+
+// Process-wide test switch: nonzero routes scf_compute_terf{,c}_eri3 and
+// scf_compute_terf_table_eri3_deriv through the reference kernels.
+extern "C" void scf_debug_md_use_reference(int on) {
+    md_terms::use_reference.store(on != 0, std::memory_order_relaxed);
 }
 
 extern "C" int scf_compute_terf_eri4(scf_engine *eng, const scf_basis *obs,
