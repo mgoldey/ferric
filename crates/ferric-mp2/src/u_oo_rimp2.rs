@@ -377,6 +377,21 @@ fn check_u_oo_reference(uhf: &ScfResult) -> Result<(), FerricError> {
     Ok(())
 }
 
+/// Unrestricted OO-RI-MP2 correlates every occupied orbital. The orbital
+/// gradient assembly sizes its occupied block by the total occupied count
+/// while the response kernel returns only the active orbitals, so a frozen
+/// core would mismatch the two (OH/6-31G doublet, frozen_core = 1: 5 columns
+/// against 4). The frozen-core case is refused until that indexing is built.
+pub fn refuse_u_oo_frozen_core(frozen_core: usize) -> Result<(), FerricError> {
+    if frozen_core > 0 {
+        return Err(FerricError::General(format!(
+            "u_oo_ri_mp2: frozen_core = {frozen_core} is not supported for the unrestricted \
+             orbital-optimized RI-MP2; set frozen_core = 0 (correlate every occupied orbital)"
+        )));
+    }
+    Ok(())
+}
+
 /// MO-basis orbital energies from diagonal of F_mo = C^T F C.
 fn orbital_energies_mo(c: &Array2<f64>, f: &Array2<f64>) -> Vec<f64> {
     let f_mo = c.t().dot(f).dot(c);
@@ -788,6 +803,7 @@ pub fn u_oo_ri_mp2(
     ext: Option<&ExternalPotential>,
 ) -> Result<UOoRiMp2Result, FerricError> {
     check_u_oo_reference(uhf)?;
+    refuse_u_oo_frozen_core(config.frozen_core)?;
     let ctx = ParallelContext::default();
     let nbas = obs.nbasis();
     let nelec_total = mol.nelec();
