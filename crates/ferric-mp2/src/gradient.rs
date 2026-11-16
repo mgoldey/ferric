@@ -199,11 +199,46 @@ pub(crate) fn rimp2_gradient_analytical_timed(
     controls: ZvectorControls,
     acc: &mut PhaseAccumulator,
 ) -> Result<Array2<f64>, FerricError> {
-    // ov-only intermediates: the gradient/zvector pipeline never reads
-    // b_oo/b_vv, so the (naux, nvir²) block is never materialized here.
-    let mut inter = acc.time("intermediates (b_ov, t2, P)", || {
+    let inter = rimp2_gradient_intermediates_timed(mol, obs, dfbs, op, rhf, config, acc)?;
+    rimp2_gradient_from_intermediates_timed(
+        mol, obs, dfbs, op, bounds, rhf, config, scaling, inter, ext, controls, acc,
+    )
+}
+
+/// The ov-only intermediates of [`rimp2_gradient_analytical_timed`]: the
+/// gradient/zvector pipeline never reads b_oo/b_vv, so the (naux, nvir²)
+/// block is never materialized here.
+fn rimp2_gradient_intermediates_timed(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    rhf: &ScfResult,
+    config: &RiMp2Config,
+    acc: &mut PhaseAccumulator,
+) -> Result<crate::rimp2::Mp2Intermediates, FerricError> {
+    acc.time("intermediates (b_ov, t2, P)", || {
         compute_mp2_intermediates_ov_only(mol, obs, dfbs, op, rhf, config)
-    })?;
+    })
+}
+
+/// [`rimp2_gradient_analytical_timed`] on intermediates already built by
+/// [`rimp2_gradient_intermediates_timed`] (unscaled, as built).
+#[allow(clippy::too_many_arguments)]
+fn rimp2_gradient_from_intermediates_timed(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    rhf: &ScfResult,
+    config: &RiMp2Config,
+    scaling: SpinScaling,
+    mut inter: crate::rimp2::Mp2Intermediates,
+    ext: Option<&ExternalPotential>,
+    controls: ZvectorControls,
+    acc: &mut PhaseAccumulator,
+) -> Result<Array2<f64>, FerricError> {
     acc.time("intermediates: spin scaling", || {
         inter.apply_spin_scaling(scaling)
     })?;
@@ -1089,15 +1124,23 @@ pub(crate) fn total_mp2_gradient_scaled_on(
         mol, obs_basis, aux_basis, ref_op, mp2_config, ext, scf_jk, warm,
     )?;
     let mut acc = PhaseAccumulator::new().report_on_drop("RI-MP2 energy + gradient");
-    let energy = acc.time("ri_mp2 energy", || {
-        if scaling == SpinScaling::MP2 {
-            ri_mp2(mol, &obs, &dfbs, corr_op, &rhf, mp2_config).map(|r| r.total_energy)
-        } else {
-            let (sc, _) = ri_mp2_spin_components(mol, &obs, &dfbs, corr_op, &rhf, mp2_config)?;
-            Ok(rhf.energy + (scaling.c_os * sc.e_os + scaling.c_ss * sc.e_ss))
-        }
-    })?;
-    let grad = rimp2_gradient_analytical_timed(
+    let inter =
+        rimp2_gradient_intermediates_timed(mol, &obs, &dfbs, corr_op, &rhf, mp2_config, &mut acc)?;
+    let energy = if energy_is_the_intermediates(mp2_config, scaling) {
+        // The intermediates hold E_os + E_ss from the same B[P,ia] as the
+        // energy driver, so the 3c integrals are not built a second time.
+        rhf.energy + scaling.c_os * inter.e_mp2
+    } else {
+        acc.time("ri_mp2 energy", || {
+            if scaling == SpinScaling::MP2 {
+                ri_mp2(mol, &obs, &dfbs, corr_op, &rhf, mp2_config).map(|r| r.total_energy)
+            } else {
+                let (sc, _) = ri_mp2_spin_components(mol, &obs, &dfbs, corr_op, &rhf, mp2_config)?;
+                Ok(rhf.energy + (scaling.c_os * sc.e_os + scaling.c_ss * sc.e_ss))
+            }
+        })?
+    };
+    let grad = rimp2_gradient_from_intermediates_timed(
         mol,
         &obs,
         &dfbs,
@@ -1106,11 +1149,23 @@ pub(crate) fn total_mp2_gradient_scaled_on(
         &rhf,
         mp2_config,
         scaling,
+        inter,
         ext,
         ZvectorControls::DEFAULT,
         &mut acc,
     )?;
     Ok((energy, grad))
+}
+
+/// Whether the correlation energy `ri_mp2` would report for `config` and
+/// `scaling` is `c · e_mp2` of the gradient's own intermediates: equal spin
+/// scaling `c_os = c_ss = c`, and nothing the intermediates do not apply
+/// (QQR-3 3c screening, a decoupled metric operator, kappa regularization).
+fn energy_is_the_intermediates(config: &RiMp2Config, scaling: SpinScaling) -> bool {
+    scaling.c_os == scaling.c_ss
+        && config.eri3_screen_thresh.is_none_or(|t| t == 0.0)
+        && config.metric_op.is_none()
+        && config.kappa.is_none()
 }
 
 /// The Coulomb (`ref_op`) RHF reference of the closed-shell total-gradient
@@ -1268,6 +1323,86 @@ mod tests {
     use ferric_scf::gradient::{
         hf_gradient_with_density, oneelectron_gradient, twoelectron_gradient,
     };
+
+    /// The total driver takes its energy from the gradient's own
+    /// intermediates when the spin scaling is equal
+    /// ([`energy_is_the_intermediates`]); it must be the energy `ri_mp2`
+    /// reports on the same reference. Both are `E_os + E_ss` of the same
+    /// `B[P,ia]`, built through two MO-transform routes that differ in
+    /// association only: `|ΔE_c| ≲ ε · nocc² nvir² · max|term| ≈ 1e-15` for
+    /// water / cc-pVDZ, so the bar is 1e-12 Ha. The unequal-scaling case
+    /// (SCS) keeps the energy driver and is checked against it too.
+    #[test]
+    fn total_driver_energy_is_ri_mp2_on_the_same_reference() {
+        let mol = Molecule::parse_xyz(
+            "3\nwater\nO 0.02 -0.01 0.117790\nH 0.0 0.785453 -0.451161\nH 0.03 -0.735453 -0.491161\n",
+            0,
+            1,
+        )
+        .unwrap();
+        let obs_bs = basis::bundled("cc-pvdz").unwrap();
+        let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
+        let cfg = RiMp2Config {
+            frozen_core: 1,
+            ..Default::default()
+        };
+        let cases = [
+            (Operator::coulomb(), SpinScaling::MP2),
+            (
+                Operator::erfc(0.33),
+                SpinScaling {
+                    c_os: 0.8,
+                    c_ss: 0.8,
+                },
+            ),
+            (
+                Operator::coulomb(),
+                SpinScaling {
+                    c_os: 1.2,
+                    c_ss: 0.33,
+                },
+            ),
+        ];
+        for (op, scaling) in cases {
+            let jk = exact_scf_jk();
+            let (e_drv, _) = total_mp2_gradient_scaled_on(
+                &mol,
+                &obs_bs,
+                &aux_bs,
+                Operator::coulomb(),
+                op,
+                &cfg,
+                scaling,
+                None,
+                &jk,
+                &mut ScfWarmStart::new(false),
+            )
+            .unwrap();
+            let (rhf, obs, dfbs, _) = solve_rhf_reference(
+                &mol,
+                &obs_bs,
+                &aux_bs,
+                Operator::coulomb(),
+                &cfg,
+                None,
+                &jk,
+                &mut ScfWarmStart::new(false),
+            )
+            .unwrap();
+            let (sc, _) = ri_mp2_spin_components(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
+            let e = rhf.energy + scaling.c_os * sc.e_os + scaling.c_ss * sc.e_ss;
+            eprintln!(
+                "{:?} {scaling:?}: driver - ri_mp2 = {:.2e}",
+                op.kind,
+                e_drv - e
+            );
+            assert!(
+                (e_drv - e).abs() < 1e-12,
+                "{:?} {scaling:?}: driver {e_drv:.15} vs ri_mp2 {e:.15}",
+                op.kind
+            );
+        }
+    }
 
     #[test]
     fn test_rimp2_gradient_fd_h2_symmetry() {
