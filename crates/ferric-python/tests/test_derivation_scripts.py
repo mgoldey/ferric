@@ -516,6 +516,17 @@ CASES = [
                 "FAIL E1",
             ),
             (
+                '"dsdpbep86": {"s6": 0.48,',
+                '"dsdpbep86": {"s6": 0.418,',
+                "FAIL P",
+            ),
+            ("e_ss = e_aa + e_bb", "e_ss = e_aa", "FAIL U2"),
+            (
+                'e_dh = assemble(e_ks, e_os, e_ss, p["c_os"], p["c_ss"])  # U assembly',
+                'e_dh = assemble(e_ks, e_os, e_ss, p["c_ss"], p["c_os"])  # U assembly',
+                "FAIL U2",
+            ),
+            (
                 "inv_sqrt(lam * v2), lam * t3)",
                 "inv_sqrt(v2), lam * t3)",
                 "FAIL L1",

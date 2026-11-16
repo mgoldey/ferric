@@ -38,7 +38,7 @@ use ferric_mp2::att_vv10::{
     att_mp2_vv10, u_att_mp2_vv10, AttVv10Attenuator, AttVv10SpinComponents,
 };
 use ferric_mp2::attenuated::{attenuated_ri_mp2, AttenuatedMp2Config};
-use ferric_mp2::double_hybrid::{mp2_double_hybrid, DoubleHybridKind};
+use ferric_mp2::double_hybrid::{mp2_double_hybrid, u_mp2_double_hybrid, DoubleHybridKind};
 use ferric_mp2::laplace::{
     laplace_ri_mp2, laplace_sos_mp2_with_basis, SosFormulation, SosMp2Config,
 };
@@ -405,6 +405,14 @@ fn print_df_guess_outcome(
 /// `[dft] dispersion` needs a Kohn-Sham SCF (see the comment at the call
 /// site in `run`); exits with an error otherwise.
 fn refuse_dispersion_without_ks(cfg: &Config, method: &str) {
+    if matches!(method, "b2plyp" | "dsd-pbep86") {
+        // The double hybrids add D3(BJ) themselves (`run_mp2_double_hybrid_arm`).
+        if let Err(e) = cfg.double_hybrid_d3bj() {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
     if cfg.dft.dispersion.is_some() && cfg.ks_functional().is_none() {
         eprintln!(
             "error: [dft] dispersion is only supported on a Kohn-Sham SCF (method.kind = \
@@ -5210,10 +5218,23 @@ fn run_mp2_double_hybrid_arm(
     budget_bytes: Option<usize>,
     method: &str,
 ) {
-    let dh_kind = match method {
+    let base_kind = match method {
         "b2plyp" => DoubleHybridKind::B2plyp,
         "dsd-pbep86" => DoubleHybridKind::DsdPbep86,
         _ => unreachable!(),
+    };
+    // `[dft] dispersion = "d3bj"` selects the published D3(BJ) set of this
+    // double hybrid: B2PLYP keeps its coefficients, DSD-PBEP86 switches to the
+    // refit set (0.69 HF, 0.31 PBE, 0.44 P86, c_os 0.52, c_ss 0.22). Already
+    // validated by `refuse_dispersion_without_ks`.
+    let d3bj = cfg.double_hybrid_d3bj().unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    let dh_kind = if d3bj {
+        base_kind.with_d3bj()
+    } else {
+        base_kind
     };
     let aux_name = cfg
         .mp2
@@ -5229,18 +5250,7 @@ fn run_mp2_double_hybrid_arm(
         std::process::exit(1);
     });
 
-    // Same courtesy as the wb97x-l-v arm: the double hybrid always converges
-    // its own functional, so a different `[dft] functional` is overridden --
-    // say so rather than let the user believe it did anything.
-    if let Some(f) = cfg.dft.functional.as_deref() {
-        if !f.eq_ignore_ascii_case(dh_kind.xc_name()) {
-            eprintln!(
-                "warning: [dft] functional = \"{f}\" is ignored for method.kind = \"{method}\"; \
-                 the double hybrid always converges its own {} reference",
-                dh_kind.xc_name()
-            );
-        }
-    }
+    warn_ignored_dh_functional(cfg, method, base_kind, dh_kind);
     // `rhf_config.df_*_aux` already carry `[scf] df_j_aux`/`df_k_aux` through
     // the shared spelling parser (`""`/"exact"/"none"/"off" -> the `""`
     // no-fit sentinel, a name -> that aux). Only an OMITTED key falls back to
@@ -5253,55 +5263,48 @@ fn run_mp2_double_hybrid_arm(
     ks_cfg.df_k_aux = config::jk_aux_or_default(&rhf_config.df_k_aux);
     log_jk_path(&ks_cfg, false);
 
-    let ladder = ferric_scf::ladder::ksdft_ladder(&ks_cfg);
-    let lr =
-        ferric_scf::ladder::solve_rhf_ladder(ctx, mol, prep, Operator::coulomb(), bounds, &ladder)
-            .unwrap_or_else(|e| {
-                eprintln!("error: {e}");
-                std::process::exit(1);
-            });
-    let ks = lr.result;
-    if !ks.converged {
-        eprintln!(
-            "error: {} SCF did not converge after {} iterations",
-            method, ks.iterations
-        );
-        std::process::exit(1);
-    }
+    let open_shell = mol.multiplicity > 1;
+    let ks = solve_double_hybrid_reference(ctx, mol, prep, bounds, &ks_cfg, method);
 
     let mut mp2_cfg = dh_kind.mp2_config();
     mp2_cfg.frozen_core = cfg.mp2.frozen_core.resolve(mol);
     mp2_cfg.memory_budget_bytes = budget_bytes;
 
-    let r = mp2_double_hybrid(mol, prep, &dfbs, &ks, &mp2_cfg).unwrap_or_else(|e| {
+    let dh = if open_shell {
+        u_mp2_double_hybrid(mol, prep, &dfbs, &ks, &mp2_cfg)
+    } else {
+        mp2_double_hybrid(mol, prep, &dfbs, &ks, &mp2_cfg)
+    };
+    let r = dh.unwrap_or_else(|e| {
         eprintln!("error: {e}");
         std::process::exit(1);
     });
-    println!(
-        "{}/{} (aux: {}) on {}",
-        method.to_uppercase(),
-        bs.name,
-        aux_name,
-        cfg.molecule.xyz
+    let dispersion = double_hybrid_d3bj_correction(dh_kind, mol);
+    let e_total = r.total_energy + dispersion.as_ref().map_or(0.0, |d| d.energy);
+    print_double_hybrid_result(
+        cfg,
+        mol,
+        bs,
+        prep,
+        &DhPrint {
+            method,
+            d3bj,
+            aux_name,
+            open_shell,
+            iterations: ks.iterations,
+            r: &r,
+            dispersion: dispersion.as_ref(),
+            e_total,
+        },
     );
-    println!("  nbasis       = {}", prep.nbasis());
-    println!("  SCF iters    = {}", ks.iterations);
-    println!("  E_KS         = {:.10} Hartree", r.e_ks);
-    println!("  E_OS (raw)   = {:.10} Hartree", r.spin_components.e_os);
-    println!("  E_SS (raw)   = {:.10} Hartree", r.spin_components.e_ss);
-    println!(
-        "  scaled corr  = {:.10} Hartree (c_os={}, c_ss={})",
-        r.e_corr_scaled, r.c_os, r.c_ss
-    );
-    println!("  Total        = {:.10} Hartree", r.total_energy);
     // The RKS anchor's envelope (elements, basis, functional) describes the
     // plain Kohn-Sham solver, not this functional: each double hybrid's own
     // anchor covers its Kohn-Sham half and carries its own envelope below.
-    let scf_cert = scf_certificate_stamped(mol, &ks, &ks_cfg, None);
+    let scf_cert = scf_certificate_stamped(mol, &ks, &ks_cfg, dispersion.as_ref());
     let cert = ferric_mp2::certificate::mp2_double_hybrid_certificate(
         method, &scf_cert, aux_name, &mp2_cfg,
     );
-    for line in double_hybrid_notices(method) {
+    for line in double_hybrid_notices(method, d3bj, open_shell) {
         eprintln!("[warning] {line}");
     }
     print_and_note_certificate(&ferric_mp2::certificate::with_anchor_envelope(
@@ -5313,29 +5316,187 @@ fn run_mp2_double_hybrid_arm(
     ));
 }
 
-/// Run-time notices for `b2plyp` and `dsd-pbep86`. Each energy is Proven
-/// against PySCF at the settings of its `validation_*_pyscf.rs` (see
-/// `site/src/reference/validation.md`); the default KS grid and RI-J storage
-/// are not those settings. Not keyed into `EPISTEMIC_WARNINGS`, which is
-/// reserved for kinds that are not Proven.
-fn double_hybrid_notices(method: &str) -> Vec<String> {
-    let (parameters, shift) = match method {
-        "b2plyp" => (
-            "Grimme's 2006 set (0.53 HF, 0.47 B88, 0.73 LYP, 0.27 PT2)",
+/// Warn when `[dft] functional` names something other than the double hybrid's
+/// own functional: the double hybrid always converges its own reference, so a
+/// different one is overridden -- say so rather than let the user believe it
+/// did anything (the same courtesy as the wb97x-l-v arm).
+fn warn_ignored_dh_functional(
+    cfg: &Config,
+    method: &str,
+    base_kind: DoubleHybridKind,
+    dh_kind: DoubleHybridKind,
+) {
+    if let Some(f) = cfg.dft.functional.as_deref() {
+        if !f.eq_ignore_ascii_case(dh_kind.xc_name())
+            && !f.eq_ignore_ascii_case(base_kind.xc_name())
+        {
+            eprintln!(
+                "warning: [dft] functional = \"{f}\" is ignored for method.kind = \"{method}\"; \
+                 the double hybrid always converges its own {} reference",
+                dh_kind.xc_name()
+            );
+        }
+    }
+}
+
+/// The double hybrid's own Kohn-Sham reference. An open-shell molecule runs a
+/// UKS (`solve_uhf` with the functional set, as `kind = "uhf"` + `[dft]
+/// functional` does); a closed shell takes the RKS ladder. An unconverged SCF
+/// exits.
+fn solve_double_hybrid_reference(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bounds: &SchwarzBounds,
+    ks_cfg: &RhfConfig,
+    method: &str,
+) -> ferric_scf::result::ScfResult {
+    let ks = if mol.multiplicity > 1 {
+        log_jk_path(ks_cfg, true);
+        solve_uhf(ctx, mol, prep, bounds, ks_cfg).unwrap_or_else(|e| {
+            eprintln!("error: UKS reference for method.kind = \"{method}\" failed: {e}");
+            std::process::exit(1);
+        })
+    } else {
+        let ladder = ferric_scf::ladder::ksdft_ladder(ks_cfg);
+        ferric_scf::ladder::solve_rhf_ladder(ctx, mol, prep, Operator::coulomb(), bounds, &ladder)
+            .unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            })
+            .result
+    };
+    if !ks.converged {
+        eprintln!(
+            "error: {} SCF did not converge after {} iterations",
+            method, ks.iterations
+        );
+        std::process::exit(1);
+    }
+    ks
+}
+
+/// The D3(BJ) term of a D3 double-hybrid set: a geometry sum with the set's
+/// published damping row; `None` for a set without one.
+fn double_hybrid_d3bj_correction(
+    kind: DoubleHybridKind,
+    mol: &Molecule,
+) -> Option<DispersionCorrection> {
+    kind.d3bj_functional().map(|functional| {
+        ferric_d3::d3bj_params_for_functional(functional)
+            .and_then(|params| ferric_d3::d3bj_energy_for_molecule(mol, &params))
+            .map(|energy| DispersionCorrection {
+                model: "D3(BJ)",
+                params: functional.to_string(),
+                energy,
+                mbd: None,
+            })
+            .unwrap_or_else(|e| {
+                eprintln!("error: [dft] dispersion: {e}");
+                std::process::exit(1);
+            })
+    })
+}
+
+/// What `print_double_hybrid_result` prints.
+struct DhPrint<'a> {
+    method: &'a str,
+    d3bj: bool,
+    aux_name: &'a str,
+    open_shell: bool,
+    iterations: usize,
+    r: &'a ferric_mp2::double_hybrid::Mp2DoubleHybridResult,
+    dispersion: Option<&'a DispersionCorrection>,
+    e_total: f64,
+}
+
+fn print_double_hybrid_result(
+    cfg: &Config,
+    mol: &Molecule,
+    bs: &BasisSet,
+    prep: &PreparedBasis,
+    p: &DhPrint<'_>,
+) {
+    let r = p.r;
+    println!(
+        "{}{}/{} (aux: {}) on {}",
+        p.method.to_uppercase(),
+        if p.d3bj { "-D3(BJ)" } else { "" },
+        bs.name,
+        p.aux_name,
+        cfg.molecule.xyz
+    );
+    if p.open_shell {
+        println!(
+            "  reference    = UKS (mult = {}, spin components: E_OS = alpha-beta, E_SS = \
+             alpha-alpha + beta-beta)",
+            mol.multiplicity
+        );
+    }
+    println!("  nbasis       = {}", prep.nbasis());
+    println!("  SCF iters    = {}", p.iterations);
+    println!("  E_KS         = {:.10} Hartree", r.e_ks);
+    println!("  E_OS (raw)   = {:.10} Hartree", r.spin_components.e_os);
+    println!("  E_SS (raw)   = {:.10} Hartree", r.spin_components.e_ss);
+    println!(
+        "  scaled corr  = {:.10} Hartree (c_os={}, c_ss={})",
+        r.e_corr_scaled, r.c_os, r.c_ss
+    );
+    if let Some(d) = p.dispersion {
+        println!(
+            "  E_disp       = {:.10} Hartree ({} with {} parameters)",
+            d.energy, d.model, d.params
+        );
+    }
+    println!("  Total        = {:.10} Hartree", p.e_total);
+}
+
+/// Run-time notices for `b2plyp` and `dsd-pbep86`. Each closed-shell energy
+/// is Proven against PySCF at the settings of its `validation_*_pyscf.rs`
+/// (see `site/src/reference/validation.md`); the default KS grid and RI-J
+/// storage are not those settings. `d3bj` names the D3(BJ) set, and
+/// `open_shell` a UKS reference, whose evidence is the small-molecule
+/// comparison of `validation_udh_pyscf.rs`. Not keyed into
+/// `EPISTEMIC_WARNINGS`, which is reserved for kinds that are not Proven.
+fn double_hybrid_notices(method: &str, d3bj: bool, open_shell: bool) -> Vec<String> {
+    let (parameters, shift) = match (method, d3bj) {
+        ("b2plyp", false) => (
+            "Grimme's 2006 set (0.53 HF, 0.47 B88, 0.73 LYP, 0.27 PT2)".to_string(),
             "1.0e-6",
         ),
-        _ => (
+        ("b2plyp", true) => (
+            "Grimme's 2006 set (0.53 HF, 0.47 B88, 0.73 LYP, 0.27 PT2) plus D3(BJ) with the \
+             B2PLYP row of Goerigk and Grimme 2011"
+                .to_string(),
+            "1.0e-6",
+        ),
+        (_, false) => (
             "the no-dispersion set of Kozuch and Martin 2013 (0.72 HF, 0.28 PBE, 0.44 P86, \
-             c_os = 0.51, c_ss = 0.36); the dispersion-corrected DSD-PBEP86-D3BJ and -D2 sets \
-             are not available",
+             c_os = 0.51, c_ss = 0.36); the 2011 DSD-PBEP86-D2 set is not available"
+                .to_string(),
+            "1.2e-6",
+        ),
+        (_, true) => (
+            "the D3(BJ) refit set of Kozuch and Martin 2013 (0.69 HF, 0.31 PBE, 0.44 P86, \
+             c_os = 0.52, c_ss = 0.22, D3(BJ) s6 = 0.48, a1 = 0, s8 = 0, a2 = 5.6); the 2011 \
+             DSD-PBEP86-D2 set is not available"
+                .to_string(),
             "1.2e-6",
         ),
     };
+    let scope = if open_shell {
+        "The UKS reference is validated against PySCF on small radicals (see \
+         validation_udh_pyscf.rs); the closed-shell grid and storage shifts are not measured \
+         for it."
+    } else {
+        "The energy is validated against PySCF on the flat (75, 110) grid with f64 RI-J storage; \
+         the default pruned grid and f32 RI-J storage shift the total by a measured {shift} Ha \
+         at most on the validation systems."
+    };
+    let scope = scope.replace("{shift}", shift);
     vec![format!(
-        "{method}: the energy is validated against PySCF on the flat (75, 110) grid with f64 \
-         RI-J storage; the default pruned grid and f32 RI-J storage shift the total by a \
-         measured {shift} Ha at most on the validation systems. The parameters are {parameters}; \
-         no benchmark of {method} against experiment or a larger basis is claimed."
+        "{method}: {scope} The parameters are {parameters}; no benchmark of {method} against \
+         experiment or a larger basis is claimed."
     )]
 }
 

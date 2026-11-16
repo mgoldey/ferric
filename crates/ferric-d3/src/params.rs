@@ -134,6 +134,13 @@ const TABLE: &[Entry] = &[
     // Goerigk, Grimme, PCCP 13, 6670 (2011), doi 10.1039/c0cp02984j.
     row(&["b2plyp"], 0.64, 0.9147, 0.3065, 5.0570),
     row(&["bhlyp", "bhandhlyp"], 1.0, 1.0354, 0.2793, 4.9615),
+    // Kozuch, Martin, J. Comput. Chem. 34, 2327 (2013), doi
+    // 10.1002/jcc.23391: the DSD-PBEP86-D3(BJ) set (0.69 HF, 0.31 PBE, 0.44
+    // P86, c_os 0.52, c_ss 0.22); cross-checked against Psi4's
+    // dh_functionals.py "DSD-PBEP86-D3BJ". The damping is a1 = 0, s8 = 0, so the
+    // pairwise term is `-s6 C6 / (R^6 + a2^6)`. The row belongs to that refit
+    // set, not to the no-dispersion DSD-PBEP86 set.
+    row(&["dsdpbep86"], 0.48, 0.0, 0.0, 5.6),
     // Brandenburg, Bates, Sun, Perdew, PRB 94, 115144 (2016),
     // doi 10.1103/physrevb.94.115144.
     row(&["scan"], 1.0, 0.0000, 0.5380, 5.4200),
@@ -220,15 +227,31 @@ mod tests {
         }
     }
 
+    /// The functionals the physical-parameter check covers.
+    const TABULATED: [&str; 15] = [
+        "blyp",
+        "bp86",
+        "b97d",
+        "pbe",
+        "pbe0",
+        "revpbe",
+        "b3lyp",
+        "tpss",
+        "tpss0",
+        "b2plyp",
+        "bhlyp",
+        "scan",
+        "r2scan",
+        "wb97x",
+        "dsdpbep86",
+    ];
+
     /// Every tabulated entry must be physically sensible. A zeroed a2 (the BJ
     /// offset) would make the damping vanish and the energy diverge at short
     /// range, so this pins the table against a transcription slip.
     #[test]
     fn tabulated_parameters_are_physical() {
-        for name in [
-            "blyp", "bp86", "b97d", "pbe", "pbe0", "revpbe", "b3lyp", "tpss", "tpss0", "b2plyp",
-            "bhlyp", "scan", "r2scan", "wb97x",
-        ] {
+        for name in TABULATED {
             let p = d3bj_params_for_functional(name).unwrap();
             assert!(
                 p.s6 > 0.0 && p.s6 <= 1.0,

@@ -222,10 +222,33 @@ by up to 1.0e-6 Ha.
 (0.72 HF, 0.28 PBE exchange, 0.44 P86 correlation, c_os = 0.51, c_ss = 0.36; the
 "DSD-PBEP86" of Psi4): the total energy matches PySCF built from that
 definition at the same settings as B2PLYP (`examples/water-dsd-pbep86.toml`).
-The dispersion-corrected sets (DSD-PBEP86-D3BJ, and the 2011 DSD-PBEP86-D2) are
-not available. Earlier ferric releases used 0.69 HF, 0.31 PBE, c_os = 0.56,
+The 2011 DSD-PBEP86-D2 set is not available. Earlier ferric releases used 0.69 HF, 0.31 PBE, c_os = 0.56,
 c_ss = 0.29, a set that is none of the published ones; energies shift by
 mHa against those.
+
+**D3(BJ) sets.** `[dft] dispersion = "d3bj"` (Python `dispersion="d3bj"`) on
+`b2plyp` or `dsd-pbep86` selects the kind's own published D3(BJ) set and adds its
+D3(BJ) energy. B2PLYP-D3(BJ) keeps B2PLYP's coefficients and takes the B2PLYP row
+of Goerigk and Grimme 2011. DSD-PBEP86-D3(BJ) is the refit set of Kozuch and
+Martin 2013 as a whole (0.69 HF, 0.31 PBE, 0.44 P86, c_os = 0.52, c_ss = 0.22;
+D3(BJ) s6 = 0.48, a1 = 0, s8 = 0, a2 = 5.6; checked against Psi4's
+`dh_functionals.py`), not the no-dispersion set plus a D3 term. A named
+functional (`d3bj(pbe)`) and `mbd` are errors for a double hybrid.
+(`examples/nh2-dsd-pbep86-d3bj.toml`.)
+
+**Open shell.** With `multiplicity > 1` (CLI) or `mol.multiplicity > 1` /
+`unrestricted=True` (Python) both kinds converge a UKS reference with the
+double hybrid's functional and add `c_os E_αβ + c_ss (E_αα + E_ββ)` of the
+unrestricted RI-MP2 on its orbitals (`examples/nh2-b2plyp.toml`). Energy only:
+there is no nuclear gradient, so `optimize` and `frequencies` are errors, and
+`wb97x-l-v` stays closed shell. The singlet UKS route equals the RKS route to
+1e-13 Ha (water, cc-pVDZ, both PT2 frozen-core settings). Against PySCF
+(`dft.UKS` + `mp.dfump2.DFUMP2` with the spin components scaled, same grid, fits
+and stable state) the NH2 and CH3 doublets at cc-pVDZ and def2-SVP, three SCF
+sets, frozen core 0 and 1, agree to at most 3.1e-13 (E_KS), 7.6e-11 (E_OS),
+1.8e-11 (E_SS) and 3.2e-11 Ha (total); the D3(BJ) energy equals simple-dftd3's to
+3.6e-16 Ha. The open-shell runs have no CLI default-grid measurement, so a default
+run carries no anchor.
 
 ## Implementation
 

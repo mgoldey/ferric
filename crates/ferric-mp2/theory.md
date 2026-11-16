@@ -1571,12 +1571,15 @@ UHF.
 
 ## 16. Double hybrids
 
-`double_hybrid.rs` `mp2_double_hybrid`; the Kohn–Sham halves are
-`ferric-dft/src/libxc.rs` `b2plyp_def` and `dsd_pbep86_def`. The CLI kinds
-`b2plyp` and `dsd-pbep86` and Python `run_double_hybrid(kind=)` converge their
-own closed-shell KS reference (the KS convergence ladder, RI-J and RI-K on
-def2-universal-jkfit unless the input names another fit), then add the
-scaled MP2 term. `wb97x-l-v` is the same construction with LinLCCD(hh) in
+`double_hybrid.rs` `mp2_double_hybrid` (closed shell) and
+`u_mp2_double_hybrid` (unrestricted); the Kohn–Sham halves are
+`ferric-dft/src/libxc.rs` `b2plyp_def`, `dsd_pbep86_def` and
+`dsd_pbep86_d3bj_def`. The CLI kinds `b2plyp` and `dsd-pbep86` and Python
+`run_double_hybrid(kind=)` converge their own KS reference (a closed-shell
+molecule: the KS convergence ladder; `multiplicity > 1`: a UKS; RI-J and RI-K
+on def2-universal-jkfit unless the input names another fit), then add the
+scaled MP2 term and, with `[dft] dispersion = "d3bj"` /
+`dispersion="d3bj"`, the D3(BJ) term. `wb97x-l-v` is the same construction with LinLCCD(hh) in
 place of MP2; it is derived in `crates/ferric-cc/theory.md`, "ωB97X-L-V
 correlation".
 
@@ -1602,9 +1605,58 @@ non-converged KS reference is an error.
 |---|---|---|---|---|---|---|
 | `b2plyp` | 0.53 | 0.47 B88 | 0.73 LYP | 0.27 | 0.27 | Grimme, J. Chem. Phys. 124, 034108 (2006) |
 | `dsd-pbep86` | 0.72 | 0.28 PBE | 0.44 P86 | 0.51 | 0.36 | Kozuch and Martin, J. Comput. Chem. 34, 2327 (2013), no dispersion |
+| `dsd-pbep86` + `dispersion = "d3bj"` | 0.69 | 0.31 PBE | 0.44 P86 | 0.52 | 0.22 | Kozuch and Martin, J. Comput. Chem. 34, 2327 (2013), the D3(BJ) refit; Psi4 `dh_functionals.py` "DSD-PBEP86-D3BJ", ORCA 6 manual "DSD-PBEP86/2013 D3BJ" |
+| `b2plyp` + `dispersion = "d3bj"` | 0.53 | 0.47 B88 | 0.73 LYP | 0.27 | 0.27 | the B2PLYP set unchanged; its D3(BJ) row is from Goerigk and Grimme, Phys. Chem. Chem. Phys. 13, 6670 (2011) |
 
-Both sets have $a_x + b_x = 1$; B2PLYP also has $a_c = 1 - c_{\mathrm{OS}}$,
-DSD-PBEP86 no such link. The D3BJ variant of DSD-PBEP86 is not offered.
+All sets have $a_x + b_x = 1$; B2PLYP also has $a_c = 1 - c_{\mathrm{OS}}$,
+DSD-PBEP86 no such link. The 2011 DSD-PBEP86-D2 set is not offered.
+
+**The D3(BJ) term.** The dispersion energy is the damped two-body sum of
+Grimme, Ehrlich and Goerigk, J. Comput. Chem. 32, 1456 (2011),
+
+$$ E_{\mathrm{D3(BJ)}} = -\sum_{A<B}\Big[ s_6\frac{C_6^{AB}}{R_{AB}^6 + f_{AB}^6} + s_8\frac{C_8^{AB}}{R_{AB}^8 + f_{AB}^8}\Big],\qquad f_{AB} = a_1\sqrt{C_8^{AB}/C_6^{AB}} + a_2, $$
+
+a geometry function with no dependence on the orbitals, so it adds to the
+total and does not enter the SCF. The damping row is per functional and
+travels with the coefficient set that was fitted with it. B2PLYP-D3(BJ) uses
+$(s_6, s_8, a_1, a_2) = (0.64, 0.9147, 0.3065, 5.0570)$ on the unchanged
+B2PLYP coefficients. DSD-PBEP86-D3(BJ) uses $(0.48, 0, 0, 5.6)$ ($a_1 = 0$
+and $s_8 = 0$, so each pair term is $-s_6 C_6/(R^6 + a_2^6)$) with the refit
+coefficients of the table above. Adding that row to the no-dispersion
+DSD-PBEP86 coefficients would mix two fits, so `dispersion = "d3bj"` on
+`dsd-pbep86` selects the refit set as a whole. The rows are in
+`ferric-d3/src/params.rs` (`b2plyp`, `dsdpbep86`) and equal simple-dftd3's
+rational-damping rows (`testdata/d3bj_params_snapshot.json`).
+
+**Unrestricted reference.** For a UKS reference with orbitals
+$\{\phi^\sigma_p, \varepsilon^\sigma_p\}$, $\sigma\in\{\alpha,\beta\}$,
+$D = D^\alpha + D^\beta$, the SCF minimizes
+
+$$ E_{\mathrm{KS}} = E_{nn} + \sum_\sigma\operatorname{Tr}[D^\sigma h] + \tfrac12\operatorname{Tr}\big[DJ[D]\big] - \tfrac{a_x}{2}\sum_\sigma\operatorname{Tr}\big[D^\sigma K[D^\sigma]\big] + b_xE_x^{\mathrm{DFA}}[\rho_\alpha,\rho_\beta] + a_cE_c^{\mathrm{DFA}}[\rho_\alpha,\rho_\beta], $$
+
+with $F^\sigma = h + J[D] - a_xK[D^\sigma] + b_xV_x^\sigma + a_cV_c^\sigma$. The
+PT2 term is the second-order energy of the doubles on the UKS determinant,
+split by the spins of the two holes. With $(ia|jb)_\sigma$ the $\sigma\sigma$
+integrals, $(ia|JB)$ the $\alpha\beta$ ones and $D^{ab}_{ij} = \varepsilon^\sigma_i +
+\varepsilon^\sigma_j - \varepsilon^\sigma_a - \varepsilon^\sigma_b$,
+
+$$ E_{\alpha\alpha} = \tfrac14\sum_{ijab}\frac{\big[(ia|jb)_\alpha - (ib|ja)_\alpha\big]^2}{D^{ab}_{ij}},\qquad
+E_{\alpha\beta} = \sum_{iJaB}\frac{(ia|JB)^2}{\varepsilon^\alpha_i + \varepsilon^\beta_J - \varepsilon^\alpha_a - \varepsilon^\beta_B}, $$
+
+$E_{\beta\beta}$ as $E_{\alpha\alpha}$ with the β quantities, and
+`u_ri_mp2` returns the three. The double hybrid takes
+
+$$ E_{\mathrm{OS}} = E_{\alpha\beta},\qquad E_{\mathrm{SS}} = E_{\alpha\alpha} + E_{\beta\beta},\qquad E_{\mathrm{DH}} = E_{\mathrm{KS}} + c_{\mathrm{OS}}E_{\mathrm{OS}} + c_{\mathrm{SS}}E_{\mathrm{SS}}. $$
+
+Two checks fix the convention. For a closed shell ($D^\alpha = D^\beta$, one
+set of orbitals) $E_{\alpha\alpha} = E_{\beta\beta} = \tfrac12\sum (ia|jb)[(ia|jb)-(ib|ja)]/D$,
+so $E_{\alpha\alpha}+E_{\beta\beta}$ is the closed-shell $E_{\mathrm{SS}}$ above
+and $E_{\alpha\beta}$ is the closed-shell $E_{\mathrm{OS}}$: a singlet on the
+UKS route equals the RKS route. And the plain-MP2 limit
+$(a_x, b_x, a_c, c_{\mathrm{OS}}, c_{\mathrm{SS}}) = (1, 0, 0, 1, 1)$ is UHF,
+where the singles vanish and $E_{\mathrm{DH}} = E_{\mathrm{UHF}} + E_{\mathrm{UMP2}}$.
+Singles stay out, as in the closed-shell definition. A ROKS reference would be
+semicanonicalized by `u_ri_mp2`; the CLI and Python route a UKS.
 
 **What the two terms are.** In Møller–Plesset partitioning on the KS
 determinant, $H_0 = \sum_p \varepsilon_p\,a_p^\dagger a_p$, the second-order
@@ -1627,5 +1679,12 @@ grid, the assembled energy against a determinant-space route that applies $H$
 to the reference by second quantization: the plain-MP2 limit is
 $\langle 0|H|0\rangle + E^{(2)}$ with vanishing singles, and on B2PLYP and
 DSD-PBEP86 orbitals $E_{\mathrm{OS}}$ and $E_{\mathrm{SS}}$ are the αβ and
-same-spin doubles with KS orbital energies while the singles are not zero.
-Its recorded mutations are in `crates/ferric-python/tests/test_derivation_scripts.py`.
+same-spin doubles with KS orbital energies while the singles are not zero;
+(U) the unrestricted assembly above on a model with 3 α and 2 β electrons and a
+spin-polarised model functional, against the same determinant-space route with
+spin-dependent orbitals: the UHF limit, $E_{\mathrm{OS}}$ and $E_{\mathrm{SS}}$
+for each set, the singlet UKS against the RKS route, and invariance under
+relabelling α and β; (D) $a_1 = 0$, $s_8 = 0$ reduces the pair energy to
+$-s_6C_6/(R^6+a_2^6)$, and the `dftd3` package's table row for each method
+name equals the explicit cited parameters. P also covers the D3(BJ) sets and
+rows. Its recorded mutations are in `crates/ferric-python/tests/test_derivation_scripts.py`.

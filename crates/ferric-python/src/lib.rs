@@ -27,7 +27,7 @@ use ferric_mp2::att_vv10::{
     AttVv10SpinComponents,
 };
 use ferric_mp2::attenuated::{attenuated_ri_mp2, AttenuatedMp2Config};
-use ferric_mp2::double_hybrid::{mp2_double_hybrid, DoubleHybridKind};
+use ferric_mp2::double_hybrid::{mp2_double_hybrid, u_mp2_double_hybrid, DoubleHybridKind};
 use ferric_mp2::laplace::{
     laplace_ri_mp2, laplace_sos_mp2_with_basis, SosFormulation, SosMp2Config,
 };

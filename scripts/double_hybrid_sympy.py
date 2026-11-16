@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
-"""Proofs for the double hybrids ferric codes: B2PLYP, DSD-PBEP86 and wB97X-L-V.
+"""Proofs for the double hybrids ferric codes: B2PLYP, DSD-PBEP86 (with the
+D3(BJ) sets and an unrestricted reference) and wB97X-L-V.
 
 Theory: crates/ferric-mp2/theory.md, "16. Double hybrids" (B2PLYP,
-DSD-PBEP86) and crates/ferric-cc/theory.md, "ωB97X-L-V correlation".
+DSD-PBEP86, D3(BJ) sets, UKS reference) and crates/ferric-cc/theory.md,
+"ωB97X-L-V correlation".
 Code: crates/ferric-mp2/src/double_hybrid.rs (mp2_double_hybrid,
-DoubleHybridKind::mp2_config), crates/ferric-dft/src/libxc.rs (b2plyp_def,
-dsd_pbep86_def, wb97x_l_v_def, WB97X_L_V_EXT_PARAMS, WB97X_L_V_VV10),
-crates/ferric-cc/src/double_hybrid.rs (lambda_scaled_sr_operator, assemble).
+u_mp2_double_hybrid, DoubleHybridKind::mp2_config), crates/ferric-dft/src/
+libxc.rs (b2plyp_def, dsd_pbep86_def, dsd_pbep86_d3bj_def, wb97x_l_v_def,
+WB97X_L_V_EXT_PARAMS, WB97X_L_V_VV10), crates/ferric-d3/src/params.rs (the
+b2plyp and dsdpbep86 rows), crates/ferric-cc/src/double_hybrid.rs
+(lambda_scaled_sr_operator, assemble).
 
-Claims (the book cites claim P, claim E and claim L):
+Claims (the book cites claim P, claim E, claim U and claim L):
 
   P  Parameter tables. The values in the Rust sources (parsed from the files,
      not copied) equal the cited values held in CITED below:
@@ -16,6 +20,13 @@ Claims (the book cites claim P, claim E and claim L):
        exchange, 0.73 LYP correlation, c_os = c_ss = 0.27;
        DSD-PBEP86 without dispersion, Kozuch and Martin, J. Comput. Chem. 34,
        2327 (2013): 0.72 HF + 0.28 PBE exchange, 0.44 P86, c_os 0.51, c_ss 0.36;
+       DSD-PBEP86-D3(BJ), the refit set of Kozuch and Martin (2013), as
+       tabulated in Psi4's dh_functionals.py and the ORCA 6 manual
+       ("DSD-PBEP86/2013 D3BJ"): 0.69 HF + 0.31 PBE exchange, 0.44 P86,
+       c_os 0.52, c_ss 0.22, D3(BJ) s6 0.48, a1 0, s8 0, a2 5.6 (the
+       simple-dftd3 row "dsdpbep86"); B2PLYP-D3(BJ) keeps B2PLYP's
+       coefficients with the D3(BJ) row of Goerigk and Grimme, Phys. Chem.
+       Chem. Phys. 13, 6670 (2011): s6 0.64, s8 0.9147, a1 0.3065, a2 5.0570;
        wB97X-L-V, Ransford and Carter-Fenk, Phys. Chem. Chem. Phys. 28, 14428
        (2026), Table 2 "Final" column: the 15 B97 coefficients, lambda 0.6,
        omega 0.1 Bohr^-1, VV10 b 10.0 and C 0.01; and the exchange mixing
@@ -44,6 +55,27 @@ Claims (the book cites claim P, claim E and claim L):
        E3 control: on the KS orbitals the singles elements do not vanish
           (|E_singles| > 1e-6 Ha), so dropping them is a definition, not an
           identity.
+  U  Unrestricted (UKS) reference. The same model with separate alpha and
+     beta orbitals (5 spatial orbitals; 3 alpha, 2 beta electrons), a model
+     spin-polarised exchange (spin scaling of the closed-shell model) and a
+     correlation that depends on the total density. The code's assembly is
+     E_OS = E_alpha-beta, E_SS = E_alpha-alpha + E_beta-beta with
+     E_alpha-alpha = 1/4 sum (g - g_x)^2 / D (and beta likewise) and
+     E_alpha-beta = sum g^2 / D. The independent route is the same
+     determinant-space computation with spin-dependent orbitals.
+       U1 UHF plain-MP2 limit: E_DH == <0|H|0> + E2, singles vanish.
+       U2 B2PLYP, DSD-PBEP86 and DSD-PBEP86-D3(BJ) fractions: E_OS and E_SS on
+          the UKS orbitals and orbital energies equal the alpha-beta and
+          same-spin doubles sums; E_DH = E_KS + c_os E_OS + c_ss E_SS.
+       U3 control: the UKS singles are not zero.
+       U4 singlet anchor: the UKS route with 2 alpha and 2 beta electrons
+          equals the restricted route (E_KS, E_OS, E_SS and E_DH).
+       U5 alpha-beta relabelling (3 alpha + 2 beta against 2 alpha + 3 beta)
+          leaves E_DH unchanged.
+  D  The D3(BJ) term. With a1 = 0 and s8 = 0 the damped pair energy is
+     -s6 C6 / (R^6 + a2^6) (sympy). Where the dftd3 package is installed, the
+     energy of a test geometry with the explicit cited parameters equals the
+     one with the method name ("dsdpbep86", "b2plyp").
   L  wB97X-L-V lambda placement, on the same model's MO integrals. Route A
      (the code): scale the three-centre integrals AND the metric by lambda
      (the composite operator lambda*erfc), B -> sqrt(lambda) B, every
@@ -62,6 +94,9 @@ Claims (the book cites claim P, claim E and claim L):
 Mutations (the runner applies each as an exact substitution):
   * DSD-PBEP86 cited c_ss 0.36 -> 0.35: FAIL P.
   * wB97X-L-V cited cab_3 11.869 -> -11.869 (the pdftotext sign trap): FAIL P.
+  * DSD-PBEP86-D3(BJ) cited s6 0.48 -> 0.418 (the 2011 row): FAIL P.
+  * unrestricted E_SS without the beta channel: FAIL U2.
+  * the unrestricted assembly with c_os and c_ss swapped: FAIL U2.
   * E_SS without the exchange integral: FAIL E1.
   * c_os and c_ss swapped in the assembly: FAIL E2.
   * the HF exchange in the Fock at a_x instead of a_x/2: FAIL E1.
@@ -95,10 +130,23 @@ TOL = 1e-10
 CITED = {
     "b2plyp": {"a_x": 0.53, "b_x": 0.47, "a_c": 0.73, "c_os": 0.27, "c_ss": 0.27},
     "dsd-pbep86": {"a_x": 0.72, "b_x": 0.28, "a_c": 0.44, "c_os": 0.51, "c_ss": 0.36},
+    "dsd-pbep86-d3bj": {
+        "a_x": 0.69,
+        "b_x": 0.31,
+        "a_c": 0.44,
+        "c_os": 0.52,
+        "c_ss": 0.22,
+    },
 }
 CITED_FUNCS = {
     "b2plyp": ("GGA_X_B88", "GGA_C_LYP"),
     "dsd-pbep86": ("GGA_X_PBE", "GGA_C_P86"),
+    "dsd-pbep86-d3bj": ("GGA_X_PBE", "GGA_C_P86"),
+}
+# D3(BJ) rows (s6, s8, a1, a2): ferric-d3's table name -> cited values.
+CITED_D3 = {
+    "dsdpbep86": {"s6": 0.48, "s8": 0.0, "a1": 0.0, "a2": 5.6},
+    "b2plyp": {"s6": 0.64, "s8": 0.9147, "a1": 0.3065, "a2": 5.0570},
 }
 # Ransford and Carter-Fenk 2026, Table 2, "Final" column (signs as recovered in
 # testdata/reference/wb97x_l_v_params.json); libxc names _cx*, _css*, _cos*.
@@ -185,6 +233,7 @@ def part_p():
     for kind, fname, variant in (
         ("b2plyp", "b2plyp_def", "B2plyp"),
         ("dsd-pbep86", "dsd_pbep86_def", "DsdPbep86"),
+        ("dsd-pbep86-d3bj", "dsd_pbep86_d3bj_def", "DsdPbep86D3bj"),
     ):
         c = CITED[kind]
         body = fn_body(libxc, fname)
@@ -197,8 +246,7 @@ def part_p():
             .split(",")
         ]
         m = re.search(
-            rf"Self::{variant} => Mp2DoubleHybridConfig \{{\s*c_os: ([-\d.]+),\s*c_ss: ([-\d.]+)",
-            dh_mp2,
+            rf"[^\n]*\bSelf::{variant}\b[^\n]*=> \(([-\d.]+), ([-\d.]+)\)", dh_mp2
         )
         code = {
             "a_x": a_x,
@@ -222,6 +270,29 @@ def part_p():
     check(
         "P b2plyp a_c == 1 - c_os (Grimme's link)",
         abs(CITED["b2plyp"]["a_c"] - (1 - CITED["b2plyp"]["c_os"])) < 1e-15,
+    )
+    d3src = (root / "crates/ferric-d3/src/params.rs").read_text()
+    for name, c in CITED_D3.items():
+        m = re.search(
+            rf'row\(&\[[^\]]*"{name}"[^\]]*\], ([\d.]+), ([\d.]+), ([\d.]+), ([\d.]+)\)',
+            d3src,
+        )
+        code = dict(zip(("s6", "s8", "a1", "a2"), map(float, m.groups())))
+        bad = {k: (code[k], c[k]) for k in c if abs(code[k] - c[k]) > 1e-15}
+        check(
+            f"P D3(BJ) row {name} == cited",
+            not bad,
+            f"code vs cited {bad}" if bad else str(code),
+        )
+    dh_names = {
+        "B2plypD3bj": "b2plyp",
+        "DsdPbep86D3bj": "dsdpbep86",
+    }
+    got = dict(re.findall(r"Self::(\w+) => Some\(\"(\w+)\"\)", dh_mp2))
+    check(
+        "P d3bj_functional() names the cited rows",
+        got == dh_names,
+        str(got),
     )
 
     cw = CITED_WB97XLV
@@ -517,7 +588,7 @@ def part_e():
     )
     check("E1 E_KS == <0|H|0>", abs(e_ks - e0) < TOL, f"|d| {abs(e_ks - e0):.1e}")
     # E2 / E3: the cited fractions, KS orbitals.
-    for kind in ("b2plyp", "dsd-pbep86"):
+    for kind in ("b2plyp", "dsd-pbep86", "dsd-pbep86-d3bj"):
         p = CITED[kind]
         e_ks, c, eps, b = ks_scf(model, p["a_x"], p["b_x"], p["a_c"])
         e_os, e_ss = spin_components(b, c, eps)
@@ -539,6 +610,300 @@ def part_e():
             f"{e_s:.2e}",
         )
     return model
+
+
+# ----------------------------------------------------------------- part U
+def xc_model_polarised(rho_a, rho_b):
+    """Model spin-polarised XC: exchange by spin scaling of the closed-shell
+    model, E_x = 1/2 (e_x(2 rho_a) + e_x(2 rho_b)); correlation of the total
+    density. Returns e_x, v_x_a, v_x_b, e_c, v_c (v = d e / d rho_sigma)."""
+    ex_a, vx_a, _, _ = xc_model(2 * rho_a)
+    ex_b, vx_b, _, _ = xc_model(2 * rho_b)
+    _, _, ec, vc = xc_model(rho_a + rho_b)
+    return 0.5 * (ex_a + ex_b), vx_a, vx_b, ec, vc
+
+
+def uks_scf(model, na, nb, a_x, b_x, a_c):
+    """UKS: F_s = h + J[D_a + D_b] - a_x K[D_s] + b_x v_x,s + a_c v_c."""
+    h, t3, v2, chi, w = model
+    b = ri_factor(t3, v2)
+    eri = np.einsum("Pmn,Pls->mnls", b, b)
+
+    def energy_fock(da, db):
+        dt = da + db
+        jm = np.einsum("mnls,ls->mn", eri, dt)
+        ka = np.einsum("mlns,ls->mn", eri, da)
+        kb = np.einsum("mlns,ls->mn", eri, db)
+        ra = np.einsum("gm,mn,gn->g", chi, da, chi)
+        rb = np.einsum("gm,mn,gn->g", chi, db, chi)
+        ex, vxa, vxb, ec, vc = xc_model_polarised(ra, rb)
+        va = np.einsum("g,gm,gn->mn", w * (b_x * vxa + a_c * vc), chi, chi)
+        vb = np.einsum("g,gm,gn->mn", w * (b_x * vxb + a_c * vc), chi, chi)
+        fa = h + jm - a_x * ka + va
+        fb = h + jm - a_x * kb + vb
+        e = (
+            np.sum(dt * h)
+            + 0.5 * np.sum(dt * jm)
+            - 0.5 * a_x * (np.sum(da * ka) + np.sum(db * kb))
+            + np.sum(w * (b_x * ex + a_c * ec))
+        )
+        return e, fa, fb
+
+    def density(f, n):
+        eps, c = np.linalg.eigh(f)
+        return c[:, :n] @ c[:, :n].T
+
+    da, db = density(h, na), density(h, nb)
+    fs, rs = [], []
+    for _ in range(400):
+        e, fa, fb = energy_fock(da, db)
+        r = np.concatenate([(fa @ da - da @ fa).ravel(), (fb @ db - db @ fb).ravel()])
+        if np.abs(r).max() < 1e-12:
+            break
+        fs.append(np.concatenate([fa.ravel(), fb.ravel()]))
+        rs.append(r)
+        fs, rs = fs[-8:], rs[-8:]
+        m = len(fs)
+        bm = -np.ones((m + 1, m + 1))
+        bm[m, m] = 0
+        for i, j in itertools.product(range(m), repeat=2):
+            bm[i, j] = rs[i] @ rs[j]
+        rhs = np.zeros(m + 1)
+        rhs[m] = -1
+        coef = np.linalg.solve(bm, rhs)[:m]
+        f = sum(ci * fi for ci, fi in zip(coef, fs))
+        da = density(f[: N * N].reshape(N, N), na)
+        db = density(f[N * N :].reshape(N, N), nb)
+    else:
+        raise AssertionError("model UKS did not converge")
+    e, fa, fb = energy_fock(da, db)
+    epsa, ca = np.linalg.eigh(fa)
+    epsb, cb = np.linalg.eigh(fb)
+    return e, (ca, cb), (epsa, epsb), b
+
+
+def spin_components_u(b_ao, cs, epss, na, nb):
+    """E_OS = E_ab and E_SS = E_aa + E_bb, as u_rimp2.rs forms them:
+    E_aa = 1/4 sum (g - g_x)^2 / D, E_ab = sum g_ab^2 / D."""
+    (ca, cb), (ea, eb) = cs, epss
+    bov = []
+    for c, n in ((ca, na), (cb, nb)):
+        bov.append(np.einsum("Pmn,mi,na->Pia", b_ao, c[:, :n], c[:, n:]))
+    boa, bob = bov
+
+    def same(bo, eps, n):
+        g = np.einsum("Pia,Pjb->iajb", bo, bo)
+        eo, ev = eps[:n], eps[n:]
+        den = (
+            eo[:, None, None, None]
+            + eo[None, None, :, None]
+            - ev[None, :, None, None]
+            - ev[None, None, None, :]
+        )
+        a = g - g.transpose(0, 3, 2, 1)
+        return 0.25 * np.sum(a * a / den)
+
+    e_aa, e_bb = same(boa, ea, na), same(bob, eb, nb)
+    gab = np.einsum("Pia,PJB->iaJB", boa, bob)
+    den = (
+        ea[:na][:, None, None, None]
+        - ea[na:][None, :, None, None]
+        + eb[:nb][None, None, :, None]
+        - eb[nb:][None, None, None, :]
+    )
+    e_ab = np.sum(gab * gab / den)
+    e_os = e_ab
+    e_ss = e_aa + e_bb
+    return e_os, e_ss
+
+
+def apply_h_u(hs, gs, det):
+    """H|det> with spin-dependent orbitals; spin orbital 2p + s. hs[s][p, q];
+    gs[s][t][p, q, r, u] = (p_s q_s | r_t u_t)."""
+    n = hs[0].shape[0]
+    out = {}
+
+    def ann(d, k):
+        if not d >> k & 1:
+            return None, 0
+        return d ^ (1 << k), (-1) ** bin(d & ((1 << k) - 1)).count("1")
+
+    def cre(d, k):
+        if d >> k & 1:
+            return None, 0
+        return d | (1 << k), (-1) ** bin(d & ((1 << k) - 1)).count("1")
+
+    def add(d, v):
+        out[d] = out.get(d, 0.0) + v
+
+    so = range(2 * n)
+    for p, q in itertools.product(so, repeat=2):
+        if p % 2 != q % 2:
+            continue
+        d1, s1 = ann(det, q)
+        if d1 is None:
+            continue
+        d2, s2 = cre(d1, p)
+        if d2 is None:
+            continue
+        add(d2, hs[p % 2][p // 2, q // 2] * s1 * s2)
+    for p, q, r, s_ in itertools.product(so, repeat=4):
+        if p % 2 != r % 2 or q % 2 != s_ % 2:
+            continue
+        v = gs[p % 2][q % 2][p // 2, r // 2, q // 2, s_ // 2]
+        d1, s1 = ann(det, r)
+        if d1 is None:
+            continue
+        d2, s2 = ann(d1, s_)
+        if d2 is None:
+            continue
+        d3, s3 = cre(d2, q)
+        if d3 is None:
+            continue
+        d4, s4 = cre(d3, p)
+        if d4 is None:
+            continue
+        add(d4, 0.5 * v * s1 * s2 * s3 * s4)
+    return out
+
+
+def brute_force_u(model, b_ao, cs, epss, na, nb):
+    """E0, singles energy, max singles element and the MP2 doubles split."""
+    n = N
+    hs = [cs[s].T @ model[0] @ cs[s] for s in (0, 1)]
+    bm = [np.einsum("Pmn,mp,nq->Ppq", b_ao, cs[s], cs[s]) for s in (0, 1)]
+    gs = [[np.einsum("Ppq,Prs->pqrs", bm[s], bm[t]) for t in (0, 1)] for s in (0, 1)]
+    ref = sum(1 << (2 * i) for i in range(na)) + sum(1 << (2 * i + 1) for i in range(nb))
+    hv = apply_h_u(hs, gs, ref)
+    e0 = hv[ref]
+    e_s = e_os = e_ss = max_s = 0.0
+    occ0 = [k for k in range(2 * n) if ref >> k & 1]
+    for d, v in hv.items():
+        if d == ref or abs(v) < 1e-300:
+            continue
+        holes = [k for k in occ0 if not d >> k & 1]
+        parts = [k for k in range(2 * n) if d >> k & 1 and not ref >> k & 1]
+        de = sum(epss[k % 2][k // 2] for k in holes) - sum(
+            epss[k % 2][k // 2] for k in parts
+        )
+        if len(holes) == 1:
+            e_s += v * v / de
+            max_s = max(max_s, abs(v))
+        elif len(holes) == 2:
+            if holes[0] % 2 != holes[1] % 2:
+                e_os += v * v / de
+            else:
+                e_ss += v * v / de
+    return e0, e_s, max_s, e_os, e_ss
+
+
+def part_u(model):
+    print("U: unrestricted reference, E_DH against a spin-dependent determinant route")
+    na, nb = 3, 2
+    # U1: UHF plain-MP2 limit.
+    e_ks, cs, epss, b = uks_scf(model, na, nb, 1.0, 0.0, 0.0)
+    e_os, e_ss = spin_components_u(b, cs, epss, na, nb)
+    e_dh = assemble(e_ks, e_os, e_ss, 1.0, 1.0)
+    e0, e_s, max_s, bos, bss = brute_force_u(model, b, cs, epss, na, nb)
+    d = abs(e_dh - (e0 + e_s + bos + bss))
+    check("U1 UHF plain-MP2 limit: E_DH == <0|H|0> + E2", d < TOL, f"|d| {d:.1e}")
+    check("U1 Brillouin: max |<S|H|0>| == 0", max_s < 1e-9, f"{max_s:.1e}")
+    check("U1 E_KS == <0|H|0>", abs(e_ks - e0) < TOL, f"|d| {abs(e_ks - e0):.1e}")
+    # U2 / U3.
+    for kind in ("b2plyp", "dsd-pbep86", "dsd-pbep86-d3bj"):
+        p = CITED[kind]
+        e_ks, cs, epss, b = uks_scf(model, na, nb, p["a_x"], p["b_x"], p["a_c"])
+        e_os, e_ss = spin_components_u(b, cs, epss, na, nb)
+        e_dh = assemble(e_ks, e_os, e_ss, p["c_os"], p["c_ss"])  # U assembly
+        _, e_s, _, bos, bss = brute_force_u(model, b, cs, epss, na, nb)
+        want = e_ks + p["c_os"] * bos + p["c_ss"] * bss
+        d_os, d_ss, d_t = abs(e_os - bos), abs(e_ss - bss), abs(e_dh - want)
+        check(f"U2 {kind}: E_OS == alpha-beta doubles", d_os < TOL, f"|d| {d_os:.1e}")
+        check(f"U2 {kind}: E_SS == same-spin doubles", d_ss < TOL, f"|d| {d_ss:.1e}")
+        check(
+            f"U2 {kind}: E_DH == E_KS + c_os E_OS + c_ss E_SS",
+            d_t < TOL,
+            f"|d| {d_t:.1e}",
+        )
+        check(
+            f"U3 {kind}: UKS singles are not zero (dropped by definition)",
+            abs(e_s) > 1e-6,
+            f"{e_s:.2e}",
+        )
+        # U4: singlet anchor, UKS (2, 2) against the restricted route.
+        e_ks_u, cs2, epss2, b2 = uks_scf(model, 2, 2, p["a_x"], p["b_x"], p["a_c"])
+        uos, uss = spin_components_u(b2, cs2, epss2, 2, 2)
+        e_ks_r, c, eps, b_r = ks_scf(model, p["a_x"], p["b_x"], p["a_c"])
+        ros, rss = spin_components_rks(b_r, c, eps)
+        d = max(abs(e_ks_u - e_ks_r), abs(uos - ros), abs(uss - rss))
+        d_dh = abs(
+            assemble(e_ks_u, uos, uss, p["c_os"], p["c_ss"])
+            - assemble(e_ks_r, ros, rss, p["c_os"], p["c_ss"])
+        )
+        check(
+            f"U4 {kind}: singlet UKS == RKS (E_KS, E_OS, E_SS)",
+            d < TOL,
+            f"|d| {d:.1e}",
+        )
+        check(f"U4 {kind}: singlet UKS E_DH == RKS E_DH", d_dh < TOL, f"|d| {d_dh:.1e}")
+        # U5: relabel alpha and beta.
+        e_ks_f, csf, epssf, bf = uks_scf(model, nb, na, p["a_x"], p["b_x"], p["a_c"])
+        fos, fss = spin_components_u(bf, csf, epssf, nb, na)
+        d5 = abs(assemble(e_ks_f, fos, fss, p["c_os"], p["c_ss"]) - e_dh)
+        check(f"U5 {kind}: alpha/beta relabelling leaves E_DH", d5 < TOL, f"|d| {d5:.1e}")
+
+
+def spin_components_rks(b_ao, c, eps):
+    """The closed-shell sums (rimp2.rs::pair_energy), kept as in part E."""
+    return spin_components(b_ao, c, eps)
+
+
+# ----------------------------------------------------------------- part D
+def part_d():
+    print("D: the D3(BJ) term")
+    # a1 = 0, s8 = 0: f = a1 sqrt(C8/C6) + a2 = a2, so the pair energy is
+    # -s6 C6 / (R^6 + a2^6).
+    s6, s8, a1, a2, c6, c8, r = sp.symbols("s6 s8 a1 a2 C6 C8 R", positive=True)
+    f6 = (a1 * sp.sqrt(c8 / c6) + a2) ** 6
+    f8 = (a1 * sp.sqrt(c8 / c6) + a2) ** 8
+    e = -s6 * c6 / (r**6 + f6) - s8 * c8 / (r**8 + f8)
+    e0 = e.subs({a1: 0, s8: 0})
+    check(
+        "D sympy: a1 = 0, s8 = 0 gives -s6 C6 / (R^6 + a2^6)",
+        sp.simplify(e0 + s6 * c6 / (r**6 + a2**6)) == 0,
+    )
+    try:
+        from dftd3.interface import DispersionModel, RationalDampingParam
+    except ImportError:
+        print("  skip D dftd3 not installed: table cross-check not run")
+        return
+    numbers = np.array([8, 1, 1, 8, 1, 1, 6, 1])
+    coords = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [0.0, 1.43, 1.11],
+            [0.0, -1.43, 1.11],
+            [5.4, 0.2, 0.3],
+            [6.1, 1.6, -0.8],
+            [6.0, -1.5, -0.5],
+            [-2.1, 4.9, -3.2],
+            [-3.9, 5.3, -2.4],
+        ]
+    )
+    model = DispersionModel(numbers, coords)
+    for name, c in CITED_D3.items():
+        by_name = model.get_dispersion(
+            RationalDampingParam(method=name, atm=False), grad=False
+        )["energy"]
+        explicit = model.get_dispersion(
+            RationalDampingParam(s6=c["s6"], s8=c["s8"], a1=c["a1"], a2=c["a2"], s9=0.0),
+            grad=False,
+        )["energy"]
+        check(
+            f"D {name}: dftd3 table row == cited parameters",
+            abs(by_name - explicit) < 1e-14,
+            f"|d| {abs(by_name - explicit):.1e}",
+        )
 
 
 # ----------------------------------------------------------------- part L
@@ -643,6 +1008,8 @@ def part_l(model):
 if __name__ == "__main__":
     part_p()
     model = part_e()
+    part_u(model)
+    part_d()
     part_l(model)
     if FAILED:
         print("FAILED:", *FAILED, sep="\n  ")

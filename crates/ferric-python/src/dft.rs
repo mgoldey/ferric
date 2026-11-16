@@ -258,6 +258,12 @@ pub(crate) struct PyDoubleHybridResult {
     pub(crate) e_os: f64,
     #[pyo3(get)]
     pub(crate) e_ss: f64,
+    /// D3(BJ) energy included in `total_energy`; `None` without `dispersion=`.
+    #[pyo3(get)]
+    pub(crate) e_dispersion: Option<f64>,
+    /// `"restricted"` (RKS reference) or `"unrestricted"` (UKS reference).
+    #[pyo3(get)]
+    pub(crate) reference: &'static str,
     #[pyo3(get)]
     pub(crate) c_os: f64,
     #[pyo3(get)]
@@ -298,10 +304,22 @@ impl PyDoubleHybridResult {
 /// Kozuch and Martin, J. Comput. Chem. 34, 2327 (2013)).
 /// Converges the appropriate DFT reference, then adds scaled MP2 correlation.
 ///
+/// `dispersion="d3bj"` (or `"d3(bj)"`) selects the double hybrid's published
+/// D3(BJ) set and adds its D3(BJ) energy: B2PLYP-D3(BJ) keeps B2PLYP's
+/// coefficients (D3(BJ) row of Goerigk and Grimme, PCCP 13, 6670 (2011));
+/// DSD-PBEP86-D3(BJ) is the refit set of Kozuch and Martin (2013): 0.69 HF,
+/// 0.31 PBE, 0.44 P86, c_os 0.52, c_ss 0.22, D3(BJ) s6 0.48, a1 0, s8 0,
+/// a2 5.6. Any other spelling is an error.
+///
+/// The reference is a UKS when `mol.multiplicity > 1` or `unrestricted=True`
+/// (a singlet UKS equals the RKS route); the PT2 term is then
+/// `c_os * E_alpha-beta + c_ss * (E_alpha-alpha + E_beta-beta)` of the
+/// unrestricted RI-MP2 on the UKS orbitals.
+///
 /// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
 /// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, kind="b2plyp", frozen_core=None, k_builder=None, memory_budget_gb=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, scf_ri_j_precision=None))]
+#[pyo3(signature = (mol, basis_set, auxbasis, kind="b2plyp", frozen_core=None, k_builder=None, memory_budget_gb=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, scf_ri_j_precision=None, dispersion=None, unrestricted=false))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_double_hybrid(
     mol: &PyMolecule,
@@ -315,8 +333,10 @@ pub(crate) fn run_double_hybrid(
     scf_energy_conv: Option<f64>,
     scf_density_conv: Option<f64>,
     scf_ri_j_precision: Option<&str>,
+    dispersion: Option<&str>,
+    unrestricted: bool,
 ) -> PyResult<PyDoubleHybridResult> {
-    let dh_kind = match kind.to_lowercase().replace(['-', '_'], "").as_str() {
+    let base_kind = match kind.to_lowercase().replace(['-', '_'], "").as_str() {
         "b2plyp" => DoubleHybridKind::B2plyp,
         "dsdpbep86" => DoubleHybridKind::DsdPbep86,
         _ => {
@@ -325,6 +345,17 @@ pub(crate) fn run_double_hybrid(
             )))
         }
     };
+    let dh_kind = match dispersion.map(|d| d.trim().to_ascii_lowercase()) {
+        None => base_kind,
+        Some(d) if d == "d3bj" || d == "d3(bj)" => base_kind.with_d3bj(),
+        Some(d) => {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "dispersion={d:?} is not available for a double hybrid: pass \"d3bj\" (or \
+                 \"d3(bj)\") for its own published D3(BJ) set, or omit it"
+            )))
+        }
+    };
+    let open_shell = unrestricted || mol.inner.multiplicity > 1;
 
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
     let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
@@ -342,13 +373,18 @@ pub(crate) fn run_double_hybrid(
     cfg.ri_j_precision = parse_ri_j_precision(scf_ri_j_precision)?;
     cfg.df_k_aux = Some("def2-universal-jkfit".to_string());
 
-    let ladder = ferric_scf::ladder::ksdft_ladder(&cfg);
-    let lr = ferric_scf::ladder::solve_rhf_ladder(&ctx, &mol.inner, &prep, op, &bounds, &ladder)
-        .map_err(make_err)?;
-    if let Some(r) = ladder.get(lr.rung_reached) {
-        cfg = r.config.clone();
-    }
-    let ks = lr.result;
+    let ks = if open_shell {
+        solve_uhf(&ctx, &mol.inner, &prep, &bounds, &cfg).map_err(make_err)?
+    } else {
+        let ladder = ferric_scf::ladder::ksdft_ladder(&cfg);
+        let lr =
+            ferric_scf::ladder::solve_rhf_ladder(&ctx, &mol.inner, &prep, op, &bounds, &ladder)
+                .map_err(make_err)?;
+        if let Some(r) = ladder.get(lr.rung_reached) {
+            cfg = r.config.clone();
+        }
+        lr.result
+    };
     if !ks.converged {
         return Err(make_err(ferric_core::FerricError::ScfConvergence {
             iterations: ks.iterations,
@@ -362,24 +398,44 @@ pub(crate) fn run_double_hybrid(
     }
     mp2_cfg.memory_budget_bytes = budget_bytes_from_gb(memory_budget_gb);
 
-    let r = mp2_double_hybrid(&mol.inner, &prep, &dfbs, &ks, &mp2_cfg).map_err(make_err)?;
+    let r = if open_shell {
+        u_mp2_double_hybrid(&mol.inner, &prep, &dfbs, &ks, &mp2_cfg)
+    } else {
+        mp2_double_hybrid(&mol.inner, &prep, &dfbs, &ks, &mp2_cfg)
+    }
+    .map_err(make_err)?;
+    let e_dispersion = match dh_kind.d3bj_functional() {
+        Some(f) => {
+            let params = ferric_d3::d3bj_params_for_functional(f).map_err(make_err)?;
+            Some(ferric_d3::d3bj_energy_for_molecule(&mol.inner, &params).map_err(make_err)?)
+        }
+        None => None,
+    };
+    let mut reference = reference_certificate(&mol.inner, &ks, &cfg, &basis_set.inner);
+    if let Some(f) = dh_kind.d3bj_functional() {
+        reference =
+            reference.with_approximation("dispersion", format!("D3(BJ) with {f} parameters"));
+    }
     let certificate_data = ferric_mp2::certificate::mp2_double_hybrid_certificate(
-        match dh_kind {
-            DoubleHybridKind::B2plyp => "b2plyp",
-            DoubleHybridKind::DsdPbep86 => "dsd-pbep86",
-        },
-        &reference_certificate(&mol.inner, &ks, &cfg, &basis_set.inner),
+        dh_kind.base_kind(),
+        &reference,
         &auxbasis.inner.name,
         &mp2_cfg,
     );
 
     Ok(PyDoubleHybridResult {
         certificate_data,
-        total_energy: r.total_energy,
+        total_energy: r.total_energy + e_dispersion.unwrap_or(0.0),
         e_ks: r.e_ks,
         e_corr_scaled: r.e_corr_scaled,
         e_os: r.spin_components.e_os,
         e_ss: r.spin_components.e_ss,
+        e_dispersion,
+        reference: if open_shell {
+            "unrestricted"
+        } else {
+            "restricted"
+        },
         c_os: r.c_os,
         c_ss: r.c_ss,
     })

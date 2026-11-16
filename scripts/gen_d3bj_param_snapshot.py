@@ -54,6 +54,7 @@ FERRIC_TO_UPSTREAM = {
     "scan": "scan",
     "r2scan": "r2scan",
     "wb97x": "wb97x",
+    "dsdpbep86": "dsdpbep86",
 }
 
 # Names ferric rejects by name because upstream has no D3(BJ) fit for them.

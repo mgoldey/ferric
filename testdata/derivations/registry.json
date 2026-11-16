@@ -7,7 +7,8 @@
       "u-attenuated-mp2"
     ],
     "cli:b2plyp": [
-      "double-hybrid"
+      "double-hybrid",
+      "d3"
     ],
     "cli:bse-tda": [
       "bse-tda"
@@ -28,7 +29,8 @@
       "drpa"
     ],
     "cli:dsd-pbep86": [
-      "double-hybrid"
+      "double-hybrid",
+      "d3"
     ],
     "cli:eom-ccsd": [
       "eom-ccsd"
@@ -213,7 +215,8 @@
       "mbd"
     ],
     "py:run_double_hybrid": [
-      "double-hybrid"
+      "double-hybrid",
+      "d3"
     ],
     "py:run_drpa": [
       "drpa"

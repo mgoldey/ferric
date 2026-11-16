@@ -53,3 +53,4 @@ test-seams = ["gpu", "ferric-core/test-seams"]
 [dev-dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
+ferric-d3 = { path = "../ferric-d3" }

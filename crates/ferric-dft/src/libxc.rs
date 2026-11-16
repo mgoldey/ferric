@@ -1691,6 +1691,26 @@ pub fn dsd_pbep86_def(nspin: u32) -> Result<XcDef, LibxcError> {
     })
 }
 
+/// DSD-PBEP86-D3(BJ) SCF functional, the dispersion-refit set of Kozuch &
+/// Martin, J. Comput. Chem. 34, 2327 (2013): 0.69 HF + 0.31 PBE exchange +
+/// 0.44 P86 correlation (Psi4 `dh_functionals.py`, ORCA `DSD-PBEP86/2013
+/// D3BJ`). Its PT2 scaling is `c_os = 0.52`, `c_ss = 0.22`, added by the
+/// double-hybrid driver, and its D3(BJ) term is `s6 = 0.48`, `a1 = 0`,
+/// `s8 = 0`, `a2 = 5.6`.
+pub fn dsd_pbep86_d3bj_def(nspin: u32) -> Result<XcDef, LibxcError> {
+    let mut fx = XcFunctional::new("GGA_X_PBE", nspin)?;
+    fx.set_family(FunctionalFamily::HybridGga);
+    let mut fc = XcFunctional::new("GGA_C_P86", nspin)?;
+    fc.set_family(FunctionalFamily::HybridGga);
+    Ok(XcDef {
+        funcs: vec![fx, fc],
+        cam: None,
+        vv10: None,
+        b3lyp_mix: Some(0.69),
+        weights: Some(vec![0.31, 0.44]),
+    })
+}
+
 /// Build the ωB97X-L-V exchange–correlation definition. `nspin` is 1 for
 /// closed shell and 2 for UKS / ROKS.
 ///
@@ -1735,6 +1755,9 @@ pub fn xc_def_from_name_nspin(name: &str, nspin: u32) -> Result<XcDef, LibxcErro
         }
         if key == "DSDPBEP86" {
             return dsd_pbep86_def(nspin);
+        }
+        if key == "DSDPBEP86D3BJ" {
+            return dsd_pbep86_d3bj_def(nspin);
         }
         if key == "B2PLYP" {
             return b2plyp_def(nspin);

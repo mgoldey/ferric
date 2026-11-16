@@ -1,0 +1,12 @@
+[molecule]
+xyz = "testdata/molecules/nh2.xyz"
+multiplicity = 2
+
+[basis]
+name = "cc-pvdz"
+
+[method]
+kind = "b2plyp"
+
+[mp2]
+auxbasis = "cc-pvdz-rifit"

@@ -2887,9 +2887,28 @@ class DoubleHybridResult:
         ...
 
     @property
-    def e_os(self) -> float: ...
+    def e_os(self) -> float:
+        """Unscaled opposite-spin RI-MP2 energy on the KS orbitals (alpha-beta
+        for a UKS reference)."""
+        ...
+
     @property
-    def e_ss(self) -> float: ...
+    def e_ss(self) -> float:
+        """Unscaled same-spin RI-MP2 energy (alpha-alpha + beta-beta for a UKS
+        reference)."""
+        ...
+
+    @property
+    def e_dispersion(self) -> float | None:
+        """D3(BJ) energy included in ``total_energy``; None without
+        ``dispersion=``."""
+        ...
+
+    @property
+    def reference(self) -> str:
+        """``"restricted"`` (RKS) or ``"unrestricted"`` (UKS reference)."""
+        ...
+
     @property
     def c_os(self) -> float: ...
     @property
@@ -6239,10 +6258,23 @@ def run_double_hybrid(
     scf_energy_conv: float | None = None,
     scf_density_conv: float | None = None,
     scf_ri_j_precision: str | None = None,
+    dispersion: str | None = None,
+    unrestricted: bool = False,
 ) -> DoubleHybridResult:
     """MP2-based double hybrid: kind="b2plyp" (Grimme 2006) or "dsd-pbep86"
     (Kozuch and Martin 2013, no dispersion: 0.72 HF, 0.28 PBE, 0.44 P86,
-    c_os 0.51, c_ss 0.36)."""
+    c_os 0.51, c_ss 0.36).
+
+    ``dispersion="d3bj"`` (or ``"d3(bj)"``) selects the kind's published
+    D3(BJ) set and adds the D3(BJ) energy: B2PLYP-D3(BJ) keeps B2PLYP's
+    coefficients; DSD-PBEP86-D3(BJ) is the refit set of Kozuch and Martin
+    (2013): 0.69 HF, 0.31 PBE, 0.44 P86, c_os 0.52, c_ss 0.22, D3(BJ) s6 0.48,
+    a1 0, s8 0, a2 5.6. Other values raise ValueError.
+
+    The reference is a UKS when ``mol.multiplicity > 1`` or ``unrestricted``
+    is True (a singlet UKS equals the RKS route); the PT2 term then uses the
+    unrestricted RI-MP2 spin components: E_OS = alpha-beta, E_SS =
+    alpha-alpha + beta-beta."""
     ...
 
 def run_drpa(

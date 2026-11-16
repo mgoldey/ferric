@@ -831,7 +831,7 @@ See [QM/MM](./qmmm.md) for a worked example.
 | `run_scs_mp2` | Spin-component-scaled MP2 (defaults c_OS = 6/5, c_SS = 1/3). | `scs-mp2` |
 | `run_scs_mp2_2terfc` | Dual-attenuated SCS-MP2(2terfc); needs the terfc tables. | `scs-mp2-2terfc` |
 | `run_mp2_v` | MP2-V: attenuated MP2 plus damped VV10 nonlocal correlation. | `mp2-v` |
-| `run_double_hybrid` | B2PLYP or DSD-PBEP86 double hybrid; the result carries a `certificate` (Proven). | `b2plyp`, `dsd-pbep86` |
+| `run_double_hybrid` | B2PLYP or DSD-PBEP86 double hybrid; UKS reference for `multiplicity > 1` or `unrestricted=True`; `dispersion="d3bj"` selects the kind's D3(BJ) set; the result carries a `certificate` (Proven). | `b2plyp`, `dsd-pbep86` |
 | `run_laplace_mp2` | Laplace-transform RI-MP2 (default 7 quadrature points). | `laplace-mp2` |
 | `run_laplace_sos_mp2` | Laplace-transform SOS-MP2, `E = c_os · E_OS`; MO, AO or AO-sparse formulations. | `laplace-sos-mp2` |
 | `RiMp2Result` | Result of `run_rimp2` and `run_terfc_rimp2`: `total_energy`, `rhf_energy` (the reference SCF energy, RHF or UHF), `mp2_corr`, `reference`, `local` (`None` for the exact method, else the local model dict) and `gradient()`. | |

@@ -4180,6 +4180,9 @@ const OPEN_SHELL_ENERGY_KINDS: &[&str] = &[
     "mp2-v",
     "tda",
     "tddft",
+    // The MP2-based double hybrids run on a UKS reference.
+    "b2plyp",
+    "dsd-pbep86",
 ];
 
 /// Kinds with an open-shell analytic gradient for `task = "optimize"` and
@@ -4236,6 +4239,29 @@ pub const SCF_JK_KINDS: &[&str] = &[
 const DOUBLE_HYBRID_KINDS: &[&str] = &["wb97x-l-v", "b2plyp", "dsd-pbep86"];
 
 impl Config {
+    /// Whether `[dft] dispersion` asks an MP2-based double hybrid
+    /// (`b2plyp`, `dsd-pbep86`) for its D3(BJ) set.
+    ///
+    /// `Ok(false)` when the key is absent. `Ok(true)` for `"d3bj"` or
+    /// `"d3(bj)"`: the parameters are the double hybrid's own published
+    /// D3(BJ) fit, so an explicit functional name (`"d3bj(pbe)"`) and `mbd` are
+    /// errors, never a silent substitution.
+    pub fn double_hybrid_d3bj(&self) -> Result<bool, String> {
+        let Some(spec) = self.dft.dispersion.as_deref() else {
+            return Ok(false);
+        };
+        match spec.trim().to_ascii_lowercase().as_str() {
+            "d3bj" | "d3(bj)" => Ok(true),
+            _ => Err(format!(
+                "[dft] dispersion = {spec:?} is not available for method.kind = \"{}\": a \
+                 double hybrid takes \"d3bj\" (or \"d3(bj)\"), which selects its own published \
+                 D3(BJ) set (B2PLYP-D3(BJ), DSD-PBEP86-D3(BJ)). A named functional would \
+                 substitute another fit, and MBD@rsSCS has no double-hybrid beta.",
+                self.method.kind
+            )),
+        }
+    }
+
     /// What the reference SCF takes when `[scf] jk` is omitted
     /// ([`ScfCfg::scf_jk_choice`]): RI-JK for `rs-mp2-rpa` (on the shared
     /// default JK-fit set); four-centre for an open shell (no fitted
@@ -5350,6 +5376,27 @@ pub fn describe_jk_path(
 mod compat_guard_tests {
     use super::*;
 
+    /// The kinds with an open-shell route for `task = "energy"`, spelled out
+    /// here independently of `OPEN_SHELL_ENERGY_KINDS`.
+    const OPEN_SHELL_ENERGY_EXPECTED: [&str; 16] = [
+        "uhf",
+        "rohf",
+        "ksdft",
+        "rimp2",
+        "oo-rimp2",
+        "att-rimp2",
+        "scs-mp2",
+        "scs-mp2-2terfc",
+        "rs-mp2-rpa",
+        "pdep-rpa",
+        "gw",
+        "mp2-v",
+        "tda",
+        "tddft",
+        "b2plyp",
+        "dsd-pbep86",
+    ];
+
     fn cfg(kind: &str, task: &str, extra: &str) -> Config {
         let src = format!(
             "[molecule]\nxyz = \"testdata/molecules/water.xyz\"\n\
@@ -5684,7 +5731,6 @@ mod compat_guard_tests {
             "laplace-sos-mp2",
             "bse-tda",
             "wb97x-l-v",
-            "b2plyp",
         ] {
             let e = cfg(kind, "energy", "")
                 .validate_multiplicity(3)
@@ -5763,9 +5809,7 @@ mod compat_guard_tests {
                 "{kind}"
             );
         }
-        for kind in [
-            "uhf", "rohf", "ksdft", "rimp2", "oo-rimp2", "pdep-rpa", "gw", "mp2-v", "tda", "tddft",
-        ] {
+        for kind in OPEN_SHELL_ENERGY_EXPECTED {
             assert!(
                 cfg(kind, "energy", "").validate_multiplicity(2).is_ok(),
                 "{kind}"
@@ -5784,6 +5828,48 @@ mod compat_guard_tests {
         assert!(cfg("pdep-rpa", "optimize", "")
             .validate_multiplicity(3)
             .is_err());
+    }
+
+    /// The MP2-based double hybrids take an open-shell molecule on a UKS
+    /// reference for the energy task only: no nuclear gradient exists for
+    /// them, and wB97X-L-V stays closed shell. Dropping them from
+    /// `OPEN_SHELL_ENERGY_KINDS` fails the first assert; leaking them into the
+    /// optimize list fails the second.
+    #[test]
+    fn open_shell_double_hybrids_are_energy_only() {
+        for kind in ["b2plyp", "dsd-pbep86"] {
+            assert!(cfg(kind, "energy", "").validate_multiplicity(2).is_ok());
+            for task in ["optimize", "frequencies"] {
+                let e = cfg(kind, task, "")
+                    .validate_multiplicity(2)
+                    .expect_err(kind);
+                assert!(e.contains("multiplicity = 2"), "{kind}/{task}: {e}");
+            }
+        }
+        assert!(cfg("wb97x-l-v", "energy", "")
+            .validate_multiplicity(2)
+            .is_err());
+    }
+
+    /// `[dft] dispersion` on a double hybrid selects the kind's own D3(BJ)
+    /// set. "d3bj" and "d3(bj)" do; a named functional (a substituted fit),
+    /// MBD, and an unknown value are errors, and no key is `false`.
+    #[test]
+    fn double_hybrid_d3bj_accepts_only_its_own_set() {
+        for kind in ["b2plyp", "dsd-pbep86"] {
+            assert_eq!(cfg(kind, "energy", "").double_hybrid_d3bj(), Ok(false));
+            for spec in ["d3bj", "D3(BJ)"] {
+                let extra = format!("[dft]\ndispersion = \"{spec}\"\n");
+                assert_eq!(cfg(kind, "energy", &extra).double_hybrid_d3bj(), Ok(true));
+            }
+            for spec in ["d3bj(pbe)", "mbd", "d2"] {
+                let extra = format!("[dft]\ndispersion = \"{spec}\"\n");
+                let e = cfg(kind, "energy", &extra)
+                    .double_hybrid_d3bj()
+                    .expect_err(spec);
+                assert!(e.contains(kind) && e.contains("d3bj"), "{spec}: {e}");
+            }
+        }
     }
 
     /// rimp2 optimizes an open shell on the U-RI-MP2 gradient and takes
