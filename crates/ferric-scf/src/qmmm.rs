@@ -2146,6 +2146,52 @@ fn structure_molecule(system: &QmmmSystem, coords: &Array2<f64>) -> Molecule {
     }
 }
 
+/// The refusals of [`optimize_qmmm`]: configurations it cannot run.
+fn refuse_unsupported_qmmm_optimize(cfg: &QmmmOptimizeConfig) -> Result<(), FerricError> {
+    if cfg.move_mm != MoveMm::None && cfg.mm_topology.is_none() {
+        return Err(FerricError::General(
+            "optimize_qmmm: move_mm != MoveMm::None requires mm_topology (moving MM atoms \
+             with no MM force field to hold their own geometry together is meaningless)"
+                .to_string(),
+        ));
+    }
+    crate::gradient::refuse_cosmo_gradient(&cfg.scf)?;
+    crate::gradient::refuse_relativistic_gradient(&cfg.scf)?;
+    if cfg.scf.polarizable.is_some() {
+        return Err(FerricError::General(
+            "optimize_qmmm: cfg.scf.polarizable is not supported yet (Lane B5 scope). Every \
+             step here rebuilds external_potential from the current geometry via \
+             step_sys.to_external_potential(), but polarizable is copied UNCHANGED from \
+             cfg.scf on every iteration — it would go stale as soon as any polarizable site \
+             or embedding charge moved (site positions/permanent-charge positions both need \
+             to track step_sys, and the analytic gradient this optimizer's line search relies \
+             on would ALSO need the polarizable_site_gradient/polarizable_charge_gradient_rows \
+             terms folded in, which this function does not do). Set cfg.scf.polarizable = \
+             None and use a non-polarizable QM/MM optimization, or run single-point \
+             `full_gradient_with_polarizable` steps by hand."
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// The starting inverse Hessian of [`optimize_qmmm`] over the free atoms at
+/// `coords` (full structure): the identity for `simple`, the free block of
+/// the whole-structure Lindh model for `lindh`.
+fn qmmm_initial_inverse_hessian(
+    initial: crate::optimize::InitialHessian,
+    system: &QmmmSystem,
+    coords: &Array2<f64>,
+    free: &[usize],
+) -> Result<Array2<f64>, FerricError> {
+    match initial {
+        crate::optimize::InitialHessian::Simple => Ok(Array2::eye(3 * free.len())),
+        crate::optimize::InitialHessian::Lindh => {
+            crate::optimize::lindh_inverse_hessian_free(&structure_molecule(system, coords), free)
+        }
+    }
+}
+
 /// Optimize a QM/MM system's geometry: real QM atoms always move, MM atoms
 /// move per `cfg.move_mm`. Every energy/gradient evaluation rebuilds the
 /// partition at the current geometry via [`QmmmSystem::with_coordinates`] (so
@@ -2171,30 +2217,7 @@ pub fn optimize_qmmm(
     basis_name: &str,
     cfg: &QmmmOptimizeConfig,
 ) -> Result<QmmmOptimizeResult, FerricError> {
-    if cfg.move_mm != MoveMm::None && cfg.mm_topology.is_none() {
-        return Err(FerricError::General(
-            "optimize_qmmm: move_mm != MoveMm::None requires mm_topology (moving MM atoms \
-             with no MM force field to hold their own geometry together is meaningless)"
-                .to_string(),
-        ));
-    }
-    crate::gradient::refuse_cosmo_gradient(&cfg.scf)?;
-    crate::gradient::refuse_relativistic_gradient(&cfg.scf)?;
-    if cfg.scf.polarizable.is_some() {
-        return Err(FerricError::General(
-            "optimize_qmmm: cfg.scf.polarizable is not supported yet (Lane B5 scope). Every \
-             step here rebuilds external_potential from the current geometry via \
-             step_sys.to_external_potential(), but polarizable is copied UNCHANGED from \
-             cfg.scf on every iteration — it would go stale as soon as any polarizable site \
-             or embedding charge moved (site positions/permanent-charge positions both need \
-             to track step_sys, and the analytic gradient this optimizer's line search relies \
-             on would ALSO need the polarizable_site_gradient/polarizable_charge_gradient_rows \
-             terms folded in, which this function does not do). Set cfg.scf.polarizable = \
-             None and use a non-polarizable QM/MM optimization, or run single-point \
-             `full_gradient_with_polarizable` steps by hand."
-                .to_string(),
-        ));
-    }
+    refuse_unsupported_qmmm_optimize(cfg)?;
 
     let free = free_atom_indices(system, &cfg.move_mm)?;
     let natoms = system.atoms.len();
@@ -2242,17 +2265,9 @@ pub fn optimize_qmmm(
     // free-atom block (`lindh_inverse_hessian_free`).
     let initial = qmmm_search_settings(&cfg.opt).initial_hessian;
     let seed = |x: &[f64]| -> Result<Array2<f64>, FerricError> {
-        match initial {
-            crate::optimize::InitialHessian::Simple => Ok(Array2::eye(x.len())),
-            crate::optimize::InitialHessian::Lindh => {
-                let mut coords = coords0.clone();
-                unflatten_free(x, &mut coords);
-                crate::optimize::lindh_inverse_hessian_free(
-                    &structure_molecule(system, &coords),
-                    &free,
-                )
-            }
-        }
+        let mut coords = coords0.clone();
+        unflatten_free(x, &mut coords);
+        qmmm_initial_inverse_hessian(initial, system, &coords, &free)
     };
 
     let (x_final, energy_final, steps, converged) =
