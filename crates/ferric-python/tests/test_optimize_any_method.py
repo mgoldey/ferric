@@ -567,17 +567,28 @@ def test_internal_coordinates_match_the_cli(tmp_path, xyz, mult, kwargs, toml):
     assert (cart.steps, cart.energy_trace) != (py.steps, py.energy_trace)
 
 
-def test_certificate_names_the_coordinates():
+def test_certificate_names_the_search():
     water = ferric.Molecule.from_xyz_string(WATER)
-    for coordinates, name in [
-        (None, "Cartesian"),
-        ("cartesian", "Cartesian"),
-        ("internal", "RedundantInternal"),
+    for kwargs, want in [
+        ({}, ("cartesian", "lindh", "ratio")),
+        ({"coordinates": "cartesian"}, ("cartesian", "lindh", "ratio")),
+        ({"coordinates": "internal"}, ("internal", "lindh", "ratio")),
+        (
+            {"initial_hessian": "simple", "trust_update": "fixed"},
+            ("cartesian", "simple", "fixed"),
+        ),
     ]:
-        kwargs = {} if coordinates is None else {"coordinates": coordinates}
         r = ferric.run_optimize(water, "sto-3g", max_steps=2, **kwargs)
         details = {a["name"]: a["detail"] for a in r.certificate["approximations"]}
-        assert f"BFGS, {name} coordinates" in details["optimizer"], details
+        got = tuple(
+            details[f"optimizer-{k}"]
+            for k in ("coordinates", "initial-hessian", "trust-update")
+        )
+        assert got == want, (kwargs, details)
+        assert (
+            f"BFGS, {want[0]} coordinates, {want[1]} initial Hessian"
+            in details["optimizer"]
+        )
 
 
 def test_run_optimize_uhf_passes_coordinates():

@@ -1960,8 +1960,10 @@ pub struct QmmmOptimizeConfig {
     pub method: QmmmMethod,
     /// Which MM atoms are free coordinates.
     pub move_mm: MoveMm,
-    /// BFGS settings (step cap, trust radius, convergence thresholds, SCF
-    /// warm start), passed to `optimize_coordinates`.
+    /// BFGS settings (step cap, trust radius, convergence thresholds, initial
+    /// Hessian, trust rule, SCF warm start). The search is Cartesian over the
+    /// free atoms; an unset `initial_hessian` is the Lindh model of the whole
+    /// structure restricted to the free atoms (see [`optimize_qmmm`]).
     pub opt: crate::optimize::OptimizeConfig,
     /// The MM force field. `None` means no MM energy/gradient terms at all —
     /// the same "all-zero" contract [`qmmm_mm_terms`] documents. Required
@@ -1988,7 +1990,8 @@ pub struct QmmmOptimizeResult {
     pub converged: bool,
     /// BFGS steps taken (coordinate updates), at most `opt.max_steps`.
     pub steps: usize,
-    /// Total energy at every step, in order (length `steps + 1`).
+    /// Total energy at every evaluation, in order (length `steps + 1`),
+    /// including steps the ratio trust rule rejected.
     pub energies: Vec<f64>,
 }
 
@@ -2107,6 +2110,42 @@ pub(crate) fn qmmm_qm_energy_and_gradient_warm(
     }
 }
 
+/// The search [`optimize_qmmm`] runs for `opt`: Cartesian over the free
+/// atoms, an unset initial Hessian as the molecular default.
+#[must_use]
+pub fn qmmm_search_settings(
+    opt: &crate::optimize::OptimizeConfig,
+) -> crate::optimize::SearchSettings {
+    crate::optimize::SearchSettings {
+        coord_system: crate::optimize::CoordSystem::Cartesian,
+        ..opt.requested_search()
+    }
+}
+
+/// Every atom of `system` (QM real atoms and MM atoms, in full-structure
+/// order, no link atoms) at `coords` (Bohr), as a [`Molecule`] for the model
+/// Hessian.
+fn structure_molecule(system: &QmmmSystem, coords: &Array2<f64>) -> Molecule {
+    Molecule {
+        atoms: system
+            .atoms
+            .iter()
+            .enumerate()
+            .map(|(i, a)| Atom {
+                symbol: a.symbol.clone(),
+                z: a.z,
+                x: coords[(i, 0)],
+                y: coords[(i, 1)],
+                zpos: coords[(i, 2)],
+                ghost: false,
+                n_core_ecp: 0,
+            })
+            .collect(),
+        charge: system.qm_charge,
+        multiplicity: system.qm_multiplicity,
+    }
+}
+
 /// Optimize a QM/MM system's geometry: real QM atoms always move, MM atoms
 /// move per `cfg.move_mm`. Every energy/gradient evaluation rebuilds the
 /// partition at the current geometry via [`QmmmSystem::with_coordinates`] (so
@@ -2197,8 +2236,27 @@ pub fn optimize_qmmm(
     // (`RhfConfig::ri_j_task`), an explicit one is kept.
     let scf = cfg.scf.for_geometry_task();
 
+    // Initial Hessian: an unset one is the molecular default (Lindh). The
+    // model is built over the whole structure (QM real atoms and MM atoms; a
+    // link atom is not an independent coordinate), and the search uses its
+    // free-atom block (`lindh_inverse_hessian_free`).
+    let initial = qmmm_search_settings(&cfg.opt).initial_hessian;
+    let seed = |x: &[f64]| -> Result<Array2<f64>, FerricError> {
+        match initial {
+            crate::optimize::InitialHessian::Simple => Ok(Array2::eye(x.len())),
+            crate::optimize::InitialHessian::Lindh => {
+                let mut coords = coords0.clone();
+                unflatten_free(x, &mut coords);
+                crate::optimize::lindh_inverse_hessian_free(
+                    &structure_molecule(system, &coords),
+                    &free,
+                )
+            }
+        }
+    };
+
     let (x_final, energy_final, steps, converged) =
-        crate::optimize::optimize_coordinates(&x0, &cfg.opt, |x| {
+        crate::optimize::optimize_coordinates_seeded(&x0, &cfg.opt, &seed, |x| {
             let mut coords = coords0.clone();
             unflatten_free(x, &mut coords);
             let step_sys = system.with_coordinates(&coords)?;

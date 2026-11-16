@@ -1633,7 +1633,7 @@ fn rhf_rcd_ethane_waters_residues() {
 //   differentiate the energy the SCF computed, so the pre-registered looser
 //   KS floor (1e-7..1e-6) did not materialize.
 // - Keep: the host charge (q = -0.1) sits 0.8315 Bohr = 0.44 A from the link H,
-//   and the optimization CONVERGES (13 steps, gradient FD-correct). The
+//   and the optimization CONVERGES (8 steps from the Lindh start, gradient FD-correct). The
 //   divergence recorded elsewhere for Keep does not occur at this host charge.
 // - UHF/UKS: <S^2> 0.7525..0.7649, stability STABLE at start and end; <S^2>
 //   drift over every FD displacement < 1e-4.

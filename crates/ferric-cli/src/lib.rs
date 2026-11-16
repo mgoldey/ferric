@@ -7502,7 +7502,7 @@ mod last_scf_tests {
 /// The certificate of a finished geometry optimization: the SCF at the
 /// returned geometry is the reference, printed after the result and written
 /// as a `certificate` run-log record. `outcome` is `(converged, steps, final
-/// energy)`. `final_scf` is the optimizer's own last SCF at `final_mol`
+/// energy)` and `search` the search that ran. `final_scf` is the optimizer's own last SCF at `final_mol`
 /// ([`LastScf::take_for`]); `None` re-solves it (the correlated optimizers do
 /// not expose theirs).
 #[allow(clippy::too_many_arguments)]
@@ -7517,6 +7517,7 @@ fn certify_optimization(
     final_mol: &Molecule,
     final_scf: Option<ferric_scf::result::ScfResult>,
     outcome: (bool, usize, f64),
+    search: ferric_scf::optimize::SearchSettings,
     gradient: &str,
 ) {
     let (converged, steps, energy) = outcome;
@@ -7536,7 +7537,7 @@ fn certify_optimization(
     };
     let cert = match reference {
         Ok(reference) => ferric_scf::certificate::optimize_certificate(
-            method, &reference, converged, steps, energy, opt_config, gradient,
+            method, &reference, converged, steps, energy, opt_config, search, gradient,
         ),
         Err(why) => Certificate::ungraded(capability).warn(why),
     };
@@ -7782,6 +7783,7 @@ fn run_optimize(
                 &opt_result.mol,
                 last_scf.take_for(&opt_result.mol),
                 (opt_result.converged, opt_result.steps, opt_result.energy),
+                opt_result.search,
                 "analytic",
             );
         }
@@ -7826,6 +7828,7 @@ fn run_optimize(
                 &opt_result.mol,
                 None,
                 (opt_result.converged, opt_result.steps, opt_result.energy),
+                opt_result.search,
                 &gradient.certificate_label_with(fallback.as_deref()),
             );
         }
@@ -7903,6 +7906,7 @@ fn run_optimize(
                 &opt_result.mol,
                 last_scf.take_for(&opt_result.mol),
                 (opt_result.converged, opt_result.steps, opt_result.energy),
+                opt_result.search,
                 "analytic",
             );
         }
@@ -7967,6 +7971,7 @@ fn run_optimize(
                 &opt_result.mol,
                 last_scf.take_for(&opt_result.mol),
                 (opt_result.converged, opt_result.steps, opt_result.energy),
+                opt_result.search,
                 "analytic",
             );
         }
@@ -8091,6 +8096,7 @@ fn run_optimize_rimp2(
         &opt_result.mol,
         None,
         (opt_result.converged, opt_result.steps, opt_result.energy),
+        opt_result.search,
         &ferric_mp2::optimize::rimp2_gradient_label(&scf_jk),
     );
 }
@@ -8167,6 +8173,7 @@ fn run_optimize_scs_mp2(
         &opt_result.mol,
         None,
         (opt_result.converged, opt_result.steps, opt_result.energy),
+        opt_result.search,
         &ferric_mp2::optimize::rimp2_gradient_label(&scf_jk),
     );
 }
@@ -8257,6 +8264,7 @@ fn run_optimize_att_rimp2(
         &opt_result.mol,
         None,
         (opt_result.converged, opt_result.steps, opt_result.energy),
+        opt_result.search,
         &ferric_mp2::optimize::rimp2_gradient_label(&scf_jk),
     );
 }
@@ -8365,6 +8373,7 @@ fn run_optimize_oo_rimp2(
         &opt_result.mol,
         None,
         (opt_result.converged, opt_result.steps, opt_result.energy),
+        opt_result.search,
         &ferric_mp2::optimize::oo_rimp2_gradient_label(rhf_config),
     );
 }

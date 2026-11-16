@@ -93,7 +93,19 @@ def test_qmmm_optimize_certificate_records_the_moved_atoms_and_optimizer():
     assert c["capability"] == "qmmm-optimize:rhf"
     _ungraded_without_source(c)
     assert _detail(c, "qmmm-move-mm") == "None"
-    assert "BFGS, at most 2 steps" in _detail(c, "optimizer")
+    assert "at most 2 steps" in _detail(c, "optimizer")
+    assert _detail(c, "optimizer-coordinates") == "cartesian"
+    assert _detail(c, "optimizer-initial-hessian") == "lindh"
+    assert _detail(c, "optimizer-trust-update") == "ratio"
+    s = ferric.run_optimize_qmmm(
+        _system(), "sto-3g", max_steps=2, initial_hessian="simple", trust_update="fixed"
+    ).certificate
+    assert _detail(s, "optimizer-initial-hessian") == "simple"
+    assert _detail(s, "optimizer-trust-update") == "fixed"
+    with pytest.raises(ValueError, match="initial_hessian"):
+        ferric.run_optimize_qmmm(
+            _system(), "sto-3g", max_steps=2, initial_hessian="model"
+        )
     assert "qmmm-embedding" in _names(c)
     assert "scf external-potential" in _names(c)
     assert r.converged or any("did not converge" in w for w in c["warnings"])

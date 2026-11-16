@@ -485,6 +485,8 @@ def run_optimize_qmmm(
     scf_density_conv: float | None = None,
     scf_warm_start: bool | None = None,
     scf_ri_j_precision: str | None = None,
+    initial_hessian: str | None = None,
+    trust_update: str | None = None,
 ) -> QmmmOptimizeResult:
     """Optimize a QmmmSystem's geometry. Real QM atoms always move; MM atoms move per move_mm.
 
@@ -503,6 +505,11 @@ def run_optimize_qmmm(
     `scf_ri_j_precision`: RI-J tensor storage, "f32" or "f64"; unset is "f64" here
     (geometry task: the f32 surface jitters between nearby geometries), an explicit
     "f32" is honoured.
+    `initial_hessian`: "lindh" (default; the Lindh model Hessian of the whole structure,
+    QM and MM atoms, restricted to the free atoms) or "simple" (the identity).
+    `trust_update`: "ratio" (default) or "fixed". The search is Cartesian; the certificate
+    records all three as `optimizer-coordinates`, `optimizer-initial-hessian` and
+    `optimizer-trust-update`. Anything else raises ValueError.
     """
     ...
 

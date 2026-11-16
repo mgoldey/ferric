@@ -83,6 +83,10 @@ fn optimize_prints_and_logs_the_final_point_certificate() {
     assert_eq!(c["build"]["commit"], ferric_build_info::COMMIT);
     assert_eq!(approx(c, "gradient"), "analytic");
     assert!(approx(c, "optimizer").starts_with("BFGS"), "{c}");
+    // The search that ran, in the config spellings (defaults here).
+    assert_eq!(approx(c, "optimizer-coordinates"), "cartesian", "{c}");
+    assert_eq!(approx(c, "optimizer-initial-hessian"), "lindh", "{c}");
+    assert_eq!(approx(c, "optimizer-trust-update"), "ratio", "{c}");
     assert_eq!(c["warnings"], serde_json::json!([]));
     let mut body = c.clone();
     // The run-log envelope is not part of the certificate.
@@ -173,7 +177,22 @@ fn correlated_optimizations_take_internal_coordinates_and_the_certificate_names_
         let c = record(&records, "certificate");
         assert_eq!(c["capability"], format!("optimize:{method}"));
         assert!(
-            approx(c, "optimizer").contains("RedundantInternal"),
+            approx(c, "optimizer").contains("internal coordinates"),
+            "{method}: {c}"
+        );
+        assert_eq!(
+            approx(c, "optimizer-coordinates"),
+            "internal",
+            "{method}: {c}"
+        );
+        assert_eq!(
+            approx(c, "optimizer-initial-hessian"),
+            "lindh",
+            "{method}: {c}"
+        );
+        assert_eq!(
+            approx(c, "optimizer-trust-update"),
+            "ratio",
             "{method}: {c}"
         );
     }

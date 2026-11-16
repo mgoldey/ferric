@@ -35,6 +35,8 @@ pub struct RpaOptimizeResult {
     /// Energy at every geometry the optimizer evaluated, in order (the
     /// starting geometry first).
     pub energy_trace: Vec<f64>,
+    /// The search that ran (see `ferric_scf::optimize::SearchSettings`).
+    pub search: ferric_scf::optimize::SearchSettings,
 }
 
 /// Optimize a molecular geometry on the RPA PES, the gradient from
@@ -71,5 +73,6 @@ pub fn optimize_geometry_rpa(
         converged: out.converged,
         scf_warm_start: warm.records().to_vec(),
         energy_trace: out.energy_trace,
+        search: out.search,
     })
 }

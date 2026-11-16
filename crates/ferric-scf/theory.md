@@ -1812,7 +1812,18 @@ Under `"ratio"` the internal search scales both radii by one factor $f \in
 achieved internal step $s$ (a linear solve, since a redundant step is not
 $\alpha p$), and measures the step as
 $\max(\lVert s_{\rm dist}\rVert/r_{\rm trust}, \lVert s_{\rm ang}\rVert/0.3)$
-in the units of $f$.
+in the units of $f$. Two properties of this internal rule are known and not
+changed. (1) The prediction is on the achieved step, so it can be $\ge 0$;
+a rise predicted as a rise then gives $r > \tfrac34$ and the radius grows on
+a rejected step (pregabalin at HF/STO-3G: 37 of 51 steps rejected, 22 in a
+row at $f = 4$). (2) The step is clipped with separate factors for the
+distance and the angular block, so $-g_q^{\mathsf T}DHg_q$, the first-order
+change, is not sign-definite and a short step need not descend. Shrinking on
+every rejection (a fix of 1 alone, tried and not kept) stalls alanine
+dipeptide at $f = 0.01$: the same step, +1.3e-7 Ha uphill, is rejected for
+the remaining 283 steps, which (2) would explain (not isolated further). Both
+are reasons the coordinate default is Cartesian (see
+*Measured defaults* below).
 
 **Saddle points** (`find_saddle`). In mass-weighted Cartesians, with the
 projected Hessian's eigenvalues $b_i$ (rigid modes shifted to $+10^3$) and
@@ -1900,9 +1911,32 @@ $k_\tau\lVert b\rVert^2 \approx 3\times10^{-3}$. The identity block on $T$
 matches the simple start, so a gradient with a rigid-body component (an
 external field) is treated as before. In redundant internals the seed is the
 diagonal $1/\max(k_q, 10^{-3})$ over the bonded primitives. The
-coordinate-only search `optimize_coordinates` (periodic cells, QM/MM) has no
+coordinate-only search `optimize_coordinates` (periodic cells) has no
 molecule to build the model from: it starts from the identity, refuses an
 explicit `lindh`, and uses the trust rule it is given.
+
+**QM/MM** (`optimize_qmmm`). The search moves the free atoms $f$ (the QM real
+atoms, plus the MM atoms `move_mm` frees) and holds the others fixed, so its
+Hessian is the free-free block $H^{\rm L}_{ff}$ of the model of the whole
+structure: QM real atoms and MM atoms, but not link atoms, whose positions
+follow from their frontier and host atoms. A QM-only model would drop the
+boundary bonds that tie a frontier atom to its fixed host and, under
+`move_mm`, every MM curvature. $H^{\rm L}_{ff}$ only needs the terms that
+contain a free atom. Each factor of a term is at most
+$\rho_{\max} = \max(1, \max_{i<j}\rho_{ij})$, so every link of a term
+above the cutoff has $\rho \ge 10^{-8}/\rho_{\max}^2$, and every atom of
+such a term is within three such links of a free atom. The block is taken
+from the model of that environment (`lindh_environment`), which gives the
+same block to rounding without the $(3N)^2$ matrix of a large MM region.
+Fixed atoms make the rigid motions of the free atoms physical, but the model
+gives them curvature only through bonds to fixed atoms, so the seed keeps the
+identity on them:
+
+$$H_0 = Q_fV\,{\rm diag}\big(1/\max(w_i, 10^{-3})\big)V^{\mathsf T}Q_f^{\mathsf T} + T_fT_f^{\mathsf T},$$
+
+with $T_f$ the rigid-body basis of the free atoms and $Q_f^{\mathsf T}H^{\rm L}_{ff}Q_f = VwV^{\mathsf T}$.
+With every atom free this is the molecular seed, bit for bit. The
+search is Cartesian; `initial_hessian = "simple"` restores the identity start.
 
 Proof: `scripts/lindh_hessian_sympy.py` (L1 the force constants and their
 distance derivatives in symbols, and the constants and tables read from the
@@ -1929,6 +1963,11 @@ outside reference:
 | ibuprofen (33) | 80 | 19 | 67 | 30 | 16 |
 | sulfamethoxazole (28) | 170 | 92 | 46 | 26 | 25 |
 | total | 538 | 211 | 252 | 156 | 130 |
+| pregabalin (28) | | 21 | | 51 | 17 |
+| procaine (37) | | 13 | | 28 | 18 |
+| lidocaine (39) | | 78 | | 49 | 42 |
+| metoprolol (44) | | 43 | | 52 | 30 |
+| total, 12 molecules | | 366 | | 336 | 237 |
 
 `lindh` alone (Cartesian, `fixed`) gives 4, 5, 49, 30, 26 steps on ethanol,
 butane, alanine dipeptide, aspirin and ibuprofen; `ratio` alone reproduces the
@@ -1940,10 +1979,48 @@ within 3e-3 mHa of each other, except Cartesian new on sulfamethoxazole: its
 long early steps turn the sulfonamide C–C–N–S torsion from 13° to −64°
 (internals and geomeTRIC stop at +60°) and it ends in a rotamer 3.4 mHa lower.
 Both end points are minima: re-optimizing either one with the other search
-moves the energy by less than 0.02 mHa. The coordinate default stays
-Cartesian: with the new options internals take fewer steps on four
-molecules, Cartesians on three (one tie), and the internal total leads mainly
-because of sulfamethoxazole.
+moves the energy by less than 0.02 mHa. 
+
+**Default coordinates.** The default was chosen on three criteria, in order:
+the search stays in the starting basin, it does not fail, and then the step
+count. The four flexible molecules in the lower rows (RDKit ETKDG seed 7 +
+MMFF starts) were added for this choice. The basin test is the largest
+change of any heavy-atom dihedral between start and end point. Before the
+runs the artifact hypothesis was written down: a broken internal
+back-transformation would show as many rejected steps and back-transformation
+warnings, as dihedrals that stay near the start only because steps are
+suppressed, and as an end point that differs from geomeTRIC's and moves when
+a Cartesian search restarts from it. A real coordinate effect gives the same
+end point as geomeTRIC. The two cases are told apart by the end-point
+comparison, not by the step count.
+
+| molecule | largest dihedral change: Cartesian / internal / geomeTRIC | rejected steps: Cartesian / internal |
+|---|---|---|
+| paracetamol | 22° / 22° (opposite signs, same energy) / – | |
+| sulfamethoxazole | 77° (C–C–N–S, +13° → −64°) / 46° (→ +59°) / – | |
+| pregabalin | 15.6° / 14.6° / 16.1° | 1 / 37 |
+| procaine | 4.7° / 4.7° / 4.7° | 0 / 14 |
+| lidocaine | 80° / 80° / 80° (N–C–C–N, −107° → +172°) | 5 / 17 |
+| metoprolol | 22.7° / 24.7° / 24.5° | 2 / 31 |
+
+The other molecules change no dihedral by more than 17° in either search.
+On the four new molecules both searches end at geomeTRIC's end point (largest
+dihedral difference 1.9°, RMSD at most 0.027 Å), with no back-transformation
+warnings, so the internal rejections are a cost, not a wrong result. Lidocaine
+turns by 80° in all three optimizers: that is a downhill relaxation from the
+MMFF start, not a barrier crossing. Only Cartesian sulfamethoxazole leaves the
+starting basin. On step counts internals lead in total (336 against 366) but
+take more steps on six of the twelve molecules (one tie), and they reject 14 to 37
+steps per new molecule against 0 to 5. The data do not separate the two on
+the first criterion beyond the one sulfamethoxazole case, and on the second
+they favour Cartesians, so the default stays Cartesian; `coordinates =
+"internal"` is the choice when a soft torsion near a barrier matters.
+
+Pregabalin at PBE/def2-SVP (RI-J/RI-K, f64), same start: Cartesian 34 steps
+(2 rejected), internal 61 (24 rejected), no back-transformation warnings.
+Both turn the C–C–C–O torsion from +100° to +128/129° and end 1.2° and
+0.013 Å RMSD apart; the internal end point is 0.17 mHa higher, within the
+loose default thresholds.
 
 Sulfamethoxazole at PBE/def2-SVP (RI-J/RI-K, f64), same start: Cartesian
 old does not converge in 150 steps; Cartesian new converges in 47 steps,

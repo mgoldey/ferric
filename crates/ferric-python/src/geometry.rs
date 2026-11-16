@@ -76,6 +76,7 @@ pub(crate) fn optimize_result_certificate(
             r.steps,
             r.energy,
             opt_config,
+            r.search,
             "analytic",
         ),
         Err(why) => {
@@ -883,6 +884,7 @@ fn hooked_optimize_certificate(
                 r.steps,
                 r.energy,
                 opt_config,
+                r.search,
                 "analytic",
             )
         }
@@ -949,13 +951,14 @@ fn correlated_optimize_certificate(
     ref_cfg: &RhfConfig,
     (converged, steps, energy): (bool, usize, f64),
     opt_config: &OptimizeConfig,
+    search: ferric_scf::optimize::SearchSettings,
     gradient: &str,
     spin: ferric_scf::Spin,
 ) -> ferric_core::certificate::Certificate {
     let (_, reference) = task_reference_certificate(final_mol, basis_name, ref_cfg, spin);
     match reference {
         Ok(reference) => ferric_scf::certificate::optimize_certificate(
-            kind, &reference, converged, steps, energy, opt_config, gradient,
+            kind, &reference, converged, steps, energy, opt_config, search, gradient,
         ),
         Err(why) => {
             ferric_core::certificate::Certificate::ungraded(format!("optimize:{kind}")).warn(why)
@@ -1110,6 +1113,7 @@ fn run_optimize_pdep_rpa(
         &ref_cfg,
         (r.converged, r.steps, r.energy),
         opt_config,
+        r.search,
         &gradient.certificate_label_with(fallback.as_deref()),
         ferric_scf::Spin::Restricted,
     );
@@ -1311,6 +1315,7 @@ fn mp2_gradient_optimize_result(
         &ref_cfg,
         (r.converged, r.steps, r.energy),
         opt_config,
+        r.search,
         &ferric_mp2::optimize::rimp2_gradient_label(scf_jk),
         spin,
     );
@@ -1381,6 +1386,7 @@ fn run_optimize_oo_rimp2(
         &cfg.for_geometry_task(),
         (r.converged, r.steps, r.energy),
         opt_config,
+        r.search,
         &ferric_mp2::optimize::oo_rimp2_gradient_label(cfg),
         ferric_scf::Spin::Restricted,
     );
