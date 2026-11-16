@@ -1332,12 +1332,103 @@ non-semicanonical orbitals of a 3$\alpha$/2$\beta$ model with separate
 four-centre and RI factors, this equals Richardson differences of the
 brute-force spin-orbital energy to $5\times10^{-12}$ for both spins
 **[gradient U]**; the closed-shell restriction ($C^\alpha = C^\beta$,
-$g = g^\alpha + g^\beta$) is the optimizer of **[gradient O]**. The integral
-term in the proof is the derivation above, not a transcription of
-`compute_u_mp2_orbital_gradient`'s loop.
+$g = g^\alpha + g^\beta$) is the optimizer of **[gradient O]**. Section 14.1
+writes out the loop that computes the integral term, and
+`scripts/u_oo_rimp2_response_sympy.py` transcribes it together with
+`u_gradient_solver_frame`.
 
 The step, the shared level shift with its doubling and three-strike exit, and
 the stop rules are those of section 7, "Unrestricted".
+
+### 14.1 The integral-response loop
+
+`compute_u_mp2_orbital_gradient` evaluates the integral term through the RI
+factors $B^{\sigma P}_{pq}$ of each spin's semicanonical orbitals (the
+$V^{-1/2}$-dressed tensor of `compute_b_full_mo_with`), so that
+$(pq|rs) = \sum_PB^{\sigma P}_{pq}B^{\tau P}_{rs}$. Indices $i, j, k$ run
+over the active occupied orbitals (`first_occ..nocc_total`), $a, b, c, x, y$
+over the virtuals; capitals are $\beta$. The amplitudes are those of
+`UMp2Amplitudes`,
+
+$$ t^{\sigma\sigma}_{ijab} = \frac{(ia|jb) - (ib|ja)}{D_{ijab}}, \qquad t^{\alpha\beta}_{iJaB} = \frac{(ia|JB)}{D_{iJaB}}, \qquad D_{ijab} = \varepsilon_i + \varepsilon_j - \varepsilon_a - \varepsilon_b , $$
+
+and $A_{ij} = t_{ij\,\cdot\,\cdot}$ is one $n_v\times n_v$ block.
+`GradientB::extract` copies the blocks $B_{ov}$, $B_{oo}$ and $B_{vv}$ of each
+spin, and the kernel forms four occupied-occupied integral blocks by GEMM:
+$(ik|jb)_\alpha$, $(ik|jb)_\beta$, $(ik|JB)$ and $(ia|JK)$.
+
+**Pair combination.** `pair_combination` builds
+$M(X, Y) = X - X^{\mathsf T} + Y^{\mathsf T} - Y$ (the code's $p = q = 1$).
+For amplitudes antisymmetric in $(i,j)$ and in $(a,b)$,
+
+$$ M(A_{kj}, A_{jk}) = 4A_{kj} \qquad \textbf{[pair-combination]} . $$
+
+**Virtual-virtual part.** `pair_gamma_rows` with weight $\tfrac12$ and
+`cross_gamma_rows` fill, per occupied $k$, an $(N_{\rm aux}, n_v)$ row
+
+$$ \Gamma^{\alpha}_k[P,x] = \tfrac12\sum_{jy}B^{\alpha P}_{jy}M(A_{kj},A_{jk})_{xy} = 2\sum_{jy}B^{\alpha P}_{jy}t^{\alpha\alpha}_{kjxy}, \qquad
+\Gamma^{\alpha\times}_k[P,x] = \sum_{JY}B^{\beta P}_{JY}t^{\alpha\beta}_{kJxY}, $$
+
+$$ \Gamma^{\beta\times}_K[P,X] = \sum_{iy}B^{\alpha P}_{iy}t^{\alpha\beta}_{iKyX}, $$
+
+and $\Gamma^\beta_K$ as $\Gamma^\alpha_k$ with the $\beta$ amplitudes.
+`contract_vv_gamma` contracts each row with $B_{vv}$ in slabs of 32
+auxiliary functions, added in slab order:
+$G^\sigma[c, r] = \sum_{Px}B^{\sigma P}_{cx}\Gamma_r[P,x]$. The rows are the
+same-spin $k$ first, then the cross $k$.
+
+**Occupied-occupied part.** `pair_ooov_term` with weight $-\tfrac12$ and the
+explicit cross loops add
+
+$$ G^\sigma[c,k] \mathrel{-}= \tfrac12\sum_{ij}\sum_yM(A_{ij},A_{ji})_{cy}(ik|jy) = 2\sum_{ijy}t^{\sigma\sigma}_{ijcy}(ik|jy), $$
+
+$$ G^{\alpha\times}[c,k] \mathrel{-}= \sum_{iJY}t^{\alpha\beta}_{iJcY}(ik|JY), \qquad G^{\beta\times}[C,K] \mathrel{-}= \sum_{iJa}t^{\alpha\beta}_{iJaC}(ia|JK) . $$
+
+**Output.** `same_σ` is the same-spin columns of $G^\sigma$ and `ab_σ` is
+twice the cross columns. Written out,
+
+$$ \begin{aligned}
+\texttt{same\_}\alpha[c,k] &= 2\sum_{jab}t^{\alpha\alpha}_{kjab}(ca|jb) - 2\sum_{ijb}t^{\alpha\alpha}_{ijcb}(ik|jb), \\
+\texttt{ab\_}\alpha[c,k] &= 2\sum_{JaB}t^{\alpha\beta}_{kJaB}(ca|JB) - 2\sum_{iJB}t^{\alpha\beta}_{iJcB}(ik|JB), \\
+\texttt{ab\_}\beta[C,K] &= 2\sum_{iaB}t^{\alpha\beta}_{iKaB}(ia|CB) - 2\sum_{iJa}t^{\alpha\beta}_{iJaC}(ia|JK),
+\end{aligned} $$
+
+and `same_β` as `same_α` with $\beta$ amplitudes and integrals.
+
+**Why these are the derivatives.** At fixed denominators,
+$\frac{d}{d\lambda}\tfrac14\sum t^{\sigma\sigma}K\,|_{g+\lambda\delta g} = \sum t^{\sigma\sigma}_{ijab}\delta(ia|jb)$
+(one $\tfrac12$ from the square, one factor 2 from the antisymmetry of $t$)
+and $\frac{d}{d\lambda}\sum(g + \lambda\delta g)^2/D = 2\sum t^{\alpha\beta}\delta g$
+**[chain-rule-factors]**. Inserting the rotation derivative
+$\delta(ia|jb) = \delta_{ik}(ca|jb) + \delta_{jk}(ia|cb) - \delta_{ac}(ik|jb) - \delta_{bc}(ia|jk)$
+and using $t_{ijab} = t_{jiba}$ to fold the two occupied (and the two
+virtual) terms into one gives the three lines above: the $\tfrac12$ of
+`pair_gamma_rows` times the 4 of the pair combination is the folded factor
+2, and the explicit 2 on `ab_σ` is the opposite-spin chain-rule factor.
+The kernel equals the section-14 formula evaluated term by term to
+$6\times10^{-17}$ relative (bar $10^{-13}$) **[kernel-equals-derivation]**,
+and each block equals a Richardson difference of its block energy at fixed
+denominators to $7\times10^{-13}$ relative (bar $10^{-9}$), with and
+without one frozen core orbital **[kernel-vs-fd]**,
+**[kernel-vs-fd-frozen-core]**.
+
+**Assembly.** `u_gradient_solver_frame` adds $2F^\sigma_{ck}$
+(`add_hf_gradient`), then $2[C^{\sigma\mathsf T}(J[P^\alpha + P^\beta] - K[P^\sigma])C^\sigma]_{ck}
++ 2(F^\sigma W^\sigma - W^\sigma F^\sigma)_{ck}$ with $W^\sigma$ the
+symmetrized `build_u_mp2_density` blocks (`embed_u_density`), and rotates the
+result back with $u^\sigma_v\,g\,u^{\sigma\mathsf T}_o$. The transcribed
+assembly equals a Richardson difference of $E_{\rm UHF}$ plus the
+brute-force spin-orbital MP2 energy in the semicanonical frame to
+$1.4\times10^{-11}$ relative (bar $10^{-9}$) **[assembled-vs-fd]**. With
+$C^\alpha = C^\beta$ and $n_\alpha = n_\beta$ the kernel gives identical
+$\alpha$ and $\beta$ blocks, and with $B = 0$ it returns zero
+**[closed-shell-anchor]**.
+
+The assembly indexes the gradient columns as MO indices $0..n_{\rm occ}$ and
+`add_hf_gradient` asserts that the kernel returned $n_{\rm occ}$ columns.
+The kernel returns the active columns only, so `u_oo_ri_mp2` with
+`frozen_core > 0` does not reach a frozen-core gradient. The bracketed names
+are the checks of `scripts/u_oo_rimp2_response_sympy.py`.
 
 ## 15. Unrestricted RI-MP2 nuclear gradient
 

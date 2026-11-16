@@ -242,7 +242,6 @@ a direct-RPA polarizability is to experiment.
 - On an open-shell reference, `pdep_dynamic_polarizability` falls back from
   the Hirshfeld to the Becke partition while the label still says
   `hirshfeld` (section 27.1).
-- MBD has no committed derivation yet (registry gap `mbd`).
 
 ## Sources
 

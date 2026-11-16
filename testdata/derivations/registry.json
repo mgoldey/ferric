@@ -41,7 +41,8 @@
       "ks-hybrid-rsh",
       "ks-vv10",
       "ks-grid",
-      "d3"
+      "d3",
+      "mbd"
     ],
     "cli:laplace-mp2": [
       "laplace-mp2"
@@ -62,7 +63,8 @@
       "nevpt2"
     ],
     "cli:oo-rimp2": [
-      "oo-rimp2"
+      "oo-rimp2",
+      "u-oo-rimp2"
     ],
     "cli:pdep-rpa": [
       "pdep-rpa",
@@ -135,7 +137,8 @@
       "ks-gradient",
       "d3",
       "geometry-search",
-      "ks-zvector"
+      "ks-zvector",
+      "mbd"
     ],
     "optimize:oo-rimp2": [
       "oo-rimp2-gradient",
@@ -200,7 +203,8 @@
       "ks-vv10",
       "ks-grid",
       "d3",
-      "ks-zvector"
+      "ks-zvector",
+      "mbd"
     ],
     "py:run_double_hybrid": [
       "double-hybrid"
@@ -225,7 +229,8 @@
       "ks-hessian",
       "harmonic-frequencies",
       "rrho-thermo",
-      "ir-intensities"
+      "ir-intensities",
+      "mbd"
     ],
     "py:run_gw": [
       "gw"
@@ -271,7 +276,6 @@
     ],
     "py:run_oo_rimp2": [
       "oo-rimp2",
-      "u-oo-rimp2",
       "oo-rimp2-gradient"
     ],
     "py:run_optimize": [
@@ -282,7 +286,8 @@
       "oo-rimp2-gradient",
       "scs-mp2-gradient",
       "u-ri-mp2-gradient",
-      "geometry-search"
+      "geometry-search",
+      "mbd"
     ],
     "py:run_optimize_qmmm": [
       "qmmm",
@@ -604,6 +609,14 @@
         "scripts/cc_triples_weights_and_linlccd_spin_adaptation_sympy.py"
       ]
     },
+    "mbd": {
+      "theory": [
+        "crates/ferric-rpa/theory.md#many-body-dispersion-mbdrsscs"
+      ],
+      "scripts": [
+        "scripts/mbd_coupled_dipole_sympy.py"
+      ]
+    },
     "mm": {
       "theory": [
         "crates/ferric-mm/theory.md#4-the-dihedral-angle-phi-and-its-gradient-bekker-form",
@@ -860,6 +873,16 @@
         "scripts/dft_fxc_kernel_sympy.py"
       ]
     },
+    "u-oo-rimp2": {
+      "theory": [
+        "crates/ferric-mp2/theory.md#14-unrestricted-oo-ri-mp2-orbital-gradient",
+        "crates/ferric-mp2/theory.md#141-the-integral-response-loop"
+      ],
+      "scripts": [
+        "scripts/u_oo_rimp2_response_sympy.py",
+        "scripts/mp2_gradient_sympy.py"
+      ]
+    },
     "u-pdep-rpa": {
       "theory": [
         "crates/ferric-rpa/theory.md#open-shell-spin-summed-dielectric",
@@ -1072,23 +1095,11 @@
     }
   },
   "gaps": {
-    "mbd": {
-      "reason": "no theory.md derivation (book section 25.3 carries it standalone until crates/ferric-rpa/theory.md gains an MBD section)",
-      "scripts": [
-        "scripts/mbd_coupled_dipole_sympy.py"
-      ]
-    },
     "pbc-ks": {
       "reason": "the energy functional, Fock convention, exxdiv and RS-GDF J/K are proven with pbc-hf (theory sections 7 and 8); the periodic XC grid quadrature and the XC force and stress terms have no sympy proof",
       "theory": [
         "crates/ferric-pbc/theory.md#5-stress-tensor-strain-derivative",
         "crates/ferric-pbc/theory.md#8-k-point-hartree-fock-and-kohn-sham"
-      ]
-    },
-    "u-oo-rimp2": {
-      "reason": "crates/ferric-mp2/theory.md section 14 derives the orbital gradient and scripts/mp2_gradient_sympy.py [U] checks it by FD, but its integral-response term is derived, not transcribed from compute_u_mp2_orbital_gradient's loop",
-      "theory": [
-        "crates/ferric-mp2/theory.md#14-unrestricted-oo-ri-mp2-orbital-gradient"
       ]
     },
     "xtb": {

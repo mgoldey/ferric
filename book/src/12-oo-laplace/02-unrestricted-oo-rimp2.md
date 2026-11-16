@@ -1,7 +1,7 @@
 # 12.2 Unrestricted orbital-optimized RI-MP2
 
 <!-- section: 12.2; status: verify; registry: u-oo-rimp2;
-     theory: crates/ferric-mp2/theory.md#"14. Unrestricted OO-RI-MP2 orbital gradient", "7. Orbital-optimized RI-MP2" -->
+     theory: crates/ferric-mp2/theory.md#"14. Unrestricted OO-RI-MP2 orbital gradient", "14.1 The integral-response loop", "7. Orbital-optimized RI-MP2" -->
 
 *Notation follows `book/notation.md`: $\beta$ orbitals carry an overbar
 ($\bar\imath, \bar a$), and $\sigma$ stands for either spin. `theory.md`
@@ -12,7 +12,7 @@ independent rotations, one per spin. Its loop has the shape of section 12.1.
 It differs in four places:
 
 - the gradient has a Coulomb coupling between the spins (12.6);
-- there is no J/K route choice;
+- J and K are built per spin (`UOoJk`);
 - the safeguard against a failed backtrack is different;
 - the convergence test is different.
 
@@ -40,8 +40,10 @@ $$ E(C^\alpha, C^\beta) = \tfrac12\sum_\sigma \operatorname{Tr}\big[D^\sigma(h +
 
 with the three U-RI-MP2 terms of section 10.2 evaluated in each spin's
 semicanonical frame. The code builds both $D^\sigma$ and the energy in
-`ferric-mp2/src/u_oo_rimp2.rs::compute_uhf_energy`, with exact four-centre
-`DirectJ` and `DirectK` at a $10^{-12}$ threshold. Each spin rotates as
+`ferric-mp2/src/u_oo_rimp2.rs::compute_uhf_energy`. J and K follow the
+reference's route: four-centre `DirectJ` and `DirectK` at a $10^{-12}$
+threshold, or the reference's RI-JK fit when it fitted J and K on one
+auxiliary basis (`UOoJk::for_reference`). Each spin rotates as
 $C^\sigma \leftarrow C^\sigma U(\kappa^\sigma)$ with the Cayley form (12.2).
 $\kappa^\alpha$ and $\kappa^\beta$ are independent.
 
@@ -66,32 +68,43 @@ rotated back as in section 12.1.
 - **The Coulomb term** couples the spins: $J$ is built once from
   $P^\alpha + P^\beta$, and $K$ separately for each spin.
 - **The integral response** $g^\sigma_{\mathrm{MP2}}$ is
-  `ferric-mp2/src/u_rimp2.rs::compute_u_mp2_orbital_gradient`. Its doc comment
-  writes it per spin as
-  $\sum_{P,x}B^P_{cx}\Gamma_k[P,x] - \tfrac12\sum_{ijy}N_{ij}[c,y](ik|jy)$,
-  plus the $\alpha\beta$ blocks.
+  `ferric-mp2/src/u_rimp2.rs::compute_u_mp2_orbital_gradient`. Per spin it
+  is $\sum_{P,x}B^P_{cx}\Gamma_k[P,x] - \tfrac12\sum_{ijy}N_{ij}[c,y](ik|jy)$
+  plus the $\alpha\bar\beta$ blocks. With antisymmetric amplitudes the pair
+  combinations are $N_{ij} = 4t_{ij}$ and
+  $\Gamma_k = 2\sum_jB_jt_{kj}^{\mathsf T}$, so for $\alpha$
+  $$ g^{\alpha\alpha}_{ck} = 2\sum_{jab}t^{ab}_{kj}(ca|jb) - 2\sum_{ijb}t^{cb}_{ij}(ik|jb), \qquad
+  g^{\alpha\bar\beta}_{ck} = 2\sum_{\bar\jmath a\bar b}t^{a\bar b}_{k\bar\jmath}(ca|\bar\jmath\bar b) - 2\sum_{i\bar\jmath\bar b}t^{c\bar b}_{i\bar\jmath}(ik|\bar\jmath\bar b). \tag{12.8} $$
+  The first factor 2 folds the two occupied (and the two virtual) terms of
+  the rotation derivative; the second, on the $\alpha\bar\beta$ block, is
+  the chain-rule factor of the squared integral (`theory.md` section 14.1).
 
-> **Unverified equation 12.6** · unrestricted OO-MP2 orbital gradient
+> **Verified equation 12.6** · unrestricted OO-MP2 orbital gradient
 >
-> Equation (12.6), with $g^\sigma_{\mathrm{MP2}}$ the derivative of the
-> U-MP2 energy through its integrals at fixed amplitudes, equals
-> $\partial E/\partial\kappa^\sigma_{ai}$ of (12.5).
+> The integral-response kernel and `u_gradient_solver_frame` are transcribed
+> loop by loop. The kernel equals (12.8) and the section-14 derivation to
+> $6\times10^{-17}$ relative (bar $10^{-13}$), and each block equals a
+> Richardson difference of its block energy at fixed denominators to
+> $7\times10^{-13}$ relative (bar $10^{-9}$), with and without one frozen
+> core orbital. The assembled gradient (12.6) equals a Richardson difference
+> of the spin-orbital energy (12.5) at non-stationary, non-semicanonical
+> orbitals of a 3$\alpha$/2$\beta$ model to $1.4\times10^{-11}$ relative (bar
+> $10^{-9}$). `scripts/mp2_gradient_sympy.py`, part U, checks the derived
+> form of the same equation independently.
 >
 > | | |
 > |---|---|
-> | Proof | `scripts/mp2_gradient_sympy.py`, part U: the derived gradient against a Richardson finite difference of the spin-orbital energy on a 3$\alpha$/2$\beta$ model, at a point rotated off both the UHF solution and the semicanonical frame; agreement $5\times10^{-12}$ |
+> | Proof | `scripts/u_oo_rimp2_response_sympy.py`, checks `pair-combination`, `chain-rule-factors`, `kernel-equals-derivation`, `kernel-vs-fd`, `kernel-vs-fd-frozen-core`, `assembled-vs-fd`, `closed-shell-anchor` |
+> | Negative control | the runner sets the same-spin $\Gamma$ weight to 1, the $\alpha\bar\beta$ factor to 1, flips the sign of the same-spin and of the cross $(ik\vert jb)$ term, drops the frozen-core row offset, uses $u_o$ for $u_o^{\mathsf T}$, halves the HF term, flips a sign in the pair combination; each turns its check red |
 > | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
-> | Missing | part U computes the integral term from its own derivation; it does not transcribe the loop of `compute_u_mp2_orbital_gradient`. The HF and Fock-response terms (`u_gradient_solver_frame`) are not transcribed either. That link is the open item behind the registry gap. |
 > | Code | `ferric-mp2/src/u_oo_rimp2.rs::u_gradient_solver_frame`, `ferric-mp2/src/u_rimp2.rs::compute_u_mp2_orbital_gradient` |
 > | Code test | `u_oo_gradient_matches_fd_on_and_off_reference_oh_631g` in `crates/ferric-mp2/src/u_oo_rimp2.rs`: the production gradient against a finite difference of the production energy on OH/6-31G, at rotations of norm 0, 0.05 and 0.2 |
 >
-> <!-- unverified: id=oo.u.gradient; todo=transcribe compute_u_mp2_orbital_gradient and u_gradient_solver_frame into scripts/mp2_gradient_sympy.py part U -->
+> <!-- verified: id=oo.u.gradient; script=scripts/u_oo_rimp2_response_sympy.py; claim=assembled-vs-fd; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/u_oo_rimp2.rs::u_gradient_solver_frame, ferric-mp2/src/u_rimp2.rs::compute_u_mp2_orbital_gradient; rust_test=ferric-mp2/src/u_oo_rimp2.rs::u_oo_gradient_matches_fd_on_and_off_reference_oh_631g; registry=u-oo-rimp2 -->
 
-The Rust test and part U together cover the equation from both sides. The
-test shows that the code's gradient is the derivative of the code's energy.
-The script shows that the written equation is the derivative of the written
-energy. What is not shown is that the code computes the written equation term
-by term.
+The Rust test shows that the code's gradient is the derivative of the
+code's energy. The script shows that the code's loop computes (12.6) term by
+term and that (12.6) is the derivative of (12.5).
 
 ## 12.2.3 The algorithm
 
@@ -107,7 +120,7 @@ The loop follows the table in section 12.1.4. The differences, read from
 | No halving accepted | takes the last halved step | keeps the old point, doubles $\mu$ up to `MU_MAX` = 5.0 Ha, resets DIIS; after `STUCK_LIMIT` = 3 such iterations it returns unconverged |
 | Gradient norm | $\lVert g\rVert_2$ | $\big(\lVert g^\alpha\rVert_2^2 + \lVert g^\beta\rVert_2^2\big)^{1/2}$ |
 | Energy-change stop | recomputes the gradient at the new point, needs $< 10\,$`grad_conv` | uses the gradient norm of the previous point, needs $< 10\,$`grad_conv`; no recompute |
-| J and K | the reference's route (`OoJk`) | always exact four-centre `DirectJ`/`DirectK` |
+| J and K | the reference's route (`OoJk`) | the reference's route per spin (`UOoJk`) |
 
 A system with no $\beta$ electrons ($n_{\bar o} = 0$) has a zero $\beta$
 gradient and skips the $\beta$ exchange build.
@@ -162,12 +175,10 @@ $h$ by `hcore_ecp_with_external`. A relativistic reference is refused.
 <!-- figures: site/src/reference/validation.md row "oo-rimp2" -->
 
 The validation page lists the unrestricted path under the `oo-rimp2` row as
-energy only. The registry keeps `u-oo-rimp2` as a gap until the
-transcription in the box above lands.
+energy only.
 
 **Known limits (2026-11-15).**
 
-- J and K are always exact four-centre, whatever route the reference SCF used.
 - There is no nuclear gradient and no Python entry point.
 - The convergence recheck does not recompute the gradient (table above).
 

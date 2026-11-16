@@ -480,6 +480,277 @@ $C_6^{AB} = \frac32\sum_{mn}f^A_mf^B_n/(\Omega_m\Omega_n(\Omega_m + \Omega_n))$.
 `scripts/rpa_c6_polarizability_sympy.py` checks these identities, the kernel
 against the Casida sum and the charge-transfer sum rule.
 
+## Many-body dispersion (MBD@rsSCS)
+
+`dispersion/mbd_rsscs.rs` computes the MBD@rsSCS energy of Ambrosetti,
+Reilly, DiStasio and Tkatchenko (JCP 140, 18A508 (2014)) for a finite
+molecule, following libMBD / pymbd 0.15.0 (`variant = "rsscs"`) step by
+step. `dispersion/mbd_scf.rs` evaluates it on an SCF density and assembles
+the nuclear gradient. `dispersion/mbd.rs` holds the full-range screening of
+the `[rpa] c6_source = "mbd"` path. Everything below is transcribed from
+those loops; the bracketed names are checks of
+`scripts/mbd_coupled_dipole_sympy.py`. Atomic units throughout; $A, B$ are
+atoms, and the $3N$-dimensional dipole space has $3\times3$ blocks $AB$
+(row `3*a + i`).
+
+### TS inputs and the frequency grid
+
+`ts_params_from_volume_ratios` maps the Hirshfeld volume ratio
+$r_A = v_A/v_A^{\rm free}$ and the free-atom table (`ts_free_atom`,
+`ts_free_atom_r_vdw`, $Z \le 54$) to
+
+$$ \alpha_A = r_A\alpha^{\rm free}_A, \qquad C_{6,A} = r_A^2C^{\rm free}_{6,A}, \qquad R_A = r_A^{1/3}R^{\rm free}_A, \qquad \omega_A = \frac{4C_{6,A}}{3\alpha_A^2}, \qquad \alpha_A(iu) = \frac{\alpha_A}{1 + (u/\omega_A)^2} . $$
+
+`mbd_freq_grid(n)` is libMBD's grid: $n = 15$ Gauss–Legendre nodes mapped by
+$u = L(1+x)/(1-x)$, $L = 0.6$, with weights $w_k$, listed in reverse order
+after a $u_0 = 0$ node of weight 0. The $u = 0$ node only supplies the static
+polarizability.
+
+### Dipole tensors
+
+With $\mathbf R = \mathbf R_A - \mathbf R_B$ (`sep(a, b)`), the bare tensor
+(`t_bare`) and the Gaussian-damped one (`t_gg`, pymbd `T_erf_coulomb`) are
+
+$$ \mathbf T^{\rm bare} = \frac{R^2\mathbf 1 - 3\mathbf R\mathbf R^{\mathsf T}}{R^5} = -\nabla\nabla\frac1R, \qquad
+\mathbf T^{\rm GG} = (\operatorname{erf}\zeta - \theta)\,\mathbf T^{\rm bare} + 2\zeta^2\theta\,\frac{\mathbf R\mathbf R^{\mathsf T}}{R^5} = -\nabla\nabla\frac{\operatorname{erf}(R/\sigma_{AB})}{R}, $$
+
+$\zeta = R/\sigma_{AB}$, $\theta = 2\zeta e^{-\zeta^2}/\sqrt\pi$, with the
+Gaussian widths
+
+$$ \sigma_A(u) = \Big(\sqrt{2/\pi}\,\alpha_A(iu)/3\Big)^{1/3}, \qquad \sigma_{AB} = \sqrt{\sigma_A^2 + \sigma_B^2} . $$
+
+**[t-bare-is-hessian]**, **[t-gg-is-hessian]**. The width makes the
+$R \to 0$ limit of $\mathbf T^{\rm GG}$ with $\sigma_{AA} = \sqrt2\sigma_A$
+equal to $\mathbf 1/\alpha_A$ **[sigma-self-energy]**: the diagonal
+$1/\alpha_A$ below is the self-interaction of the atom's Gaussian dipole.
+In this sign convention $\mathbf A^{-1} + \mathbf T$ is the screening
+operator, and on the bond axis $T_{zz} = -2/R^3$.
+
+`mbd.rs::dipole_coupling_tensor` writes the same tensor as
+$\zeta'(\mathbf 1 - 3\hat n\hat n^{\mathsf T})/R^3 + \eta\,3\hat n\hat n^{\mathsf T}/R^3$ with
+$\zeta' = \operatorname{erf}u - 2ue^{-u^2}/\sqrt\pi$,
+$\eta = 4u^3e^{-u^2}/(3\sqrt\pi)$, $u = R/\sigma_{AB}$; this equals
+$\mathbf T^{\rm GG}$ symbolically **[t-gg-is-hessian]**. Its doc comment
+states the tensor with the opposite overall sign; the loop agrees with
+`t_gg`. That path keeps an Abramowitz–Stegun `erf`; `mbd_rsscs.rs` uses the
+double-precision `erf` of `ferric_core::special`.
+
+### Range-separated self-consistent screening
+
+`rsscs_screen` builds, at every node $u_k$,
+
+$$ \mathbf C(u_k) = \operatorname{diag}\big(1/\alpha_A(iu_k)\big)\otimes\mathbf 1_3 + (1 - f_{AB})\,\mathbf T^{\rm GG}_{AB}(\sigma_{AB}(u_k)), \qquad
+f_{AB} = \frac{1}{1 + e^{-a(R/S_{AB} - 1)}}, \quad S_{AB} = \beta(R_A + R_B), $$
+
+inverts it, $\mathbf B(u_k) = \mathbf C(u_k)^{-1}$, and contracts the row of
+blocks of each atom with the trace:
+
+$$ \tilde\alpha_A(iu_k) = \frac13\sum_B\sum_{i}\big[\mathbf B(u_k)\big]_{(A,i)(B,i)} . $$
+
+A singular $\mathbf C$ or a non-positive $\tilde\alpha_A$ is an error. From
+the screened values (`rsscs_forward`)
+
+$$ \tilde\alpha_A = \tilde\alpha_A(iu_0), \qquad \tilde C_{6,A} = \frac3\pi\sum_kw_k\tilde\alpha_A(iu_k)^2, \qquad \tilde\omega_A = \frac{4\tilde C_{6,A}}{3\tilde\alpha_A^2}, \qquad \tilde R_A = R_A\Big(\frac{\tilde\alpha_A}{\alpha_A}\Big)^{1/3} . $$
+
+With no coupling the screening returns $\alpha_A(iu_k)$ exactly and the
+15-node sum returns the TS $C_6$ to $10^{-8}$ relative
+**[scs-trivial-limit]**; for a homonuclear dimer on $z$ the contraction is
+$\tfrac13\sum_d\alpha/(1 + \alpha t_d)$, $t = (1-f)\operatorname{diag}\mathbf T^{\rm GG}$
+**[scs-dimer-closed-form]**.
+
+### Coupled-oscillator energy
+
+The code computes the energy as a sum over eigenmodes. With all quantities
+screened and $\tilde f_{AB}$ the Fermi function of the screened radii,
+
+$$ \mathbf H_{AB} = \tilde\omega_A^2\delta_{AB}\mathbf 1 + \tilde\omega_A\tilde\omega_B\sqrt{\tilde\alpha_A\tilde\alpha_B}\,\tilde f_{AB}\,\mathbf T^{\rm bare}_{AB}, \qquad
+E_{\rm MBD} = \frac12\sum_p\sqrt{\lambda_p} - \frac32\sum_A\tilde\omega_A , $$
+
+$\lambda_p$ the eigenvalues of $\mathbf H$ (`eigh`). A non-positive
+$\lambda_{\min}$ (polarization catastrophe) is an error. The same number is
+the frequency integral
+
+$$ E_{\rm MBD} = \frac1{2\pi}\int_0^\infty\ln\det\big(\mathbf 1 + \mathbf A(iu)\mathbf T\big)\,du, \qquad \mathbf A(iu) = \operatorname{diag}\tilde\alpha_A(iu), \quad \mathbf T_{AB} = \tilde f_{AB}\mathbf T^{\rm bare}_{AB}, $$
+
+with $\tilde\alpha_A(iu) = \tilde\alpha_A/(1 + (u/\tilde\omega_A)^2)$, from
+$\det(u^2 + \mathbf H) = \det(u^2 + \boldsymbol\Omega^2)\det(\mathbf 1 + \mathbf A(iu)\mathbf T)$
+and $\int_0^\infty\ln\frac{u^2 + a^2}{u^2 + b^2}du = \pi(a - b)$
+**[qho-vs-frequency]**. Its second-order term for two atoms is
+$-f^2C_6^{AB}/R^6$ with the London
+$C_6^{AB} = \tfrac32\alpha_A\alpha_B\omega_A\omega_B/(\omega_A + \omega_B)$
+**[qho-second-order-london]**.
+
+`mbd.rs::coupled_qho_energy_plain_gg` evaluates the same eigenmode sum with
+the unscreened $\alpha$, $\omega$ and the full-range $\mathbf T^{\rm GG}$
+(widths from the static $\alpha$, no Fermi function). It is a check of the
+oscillator algebra against libMBD `variant = "plain"`, not a dispersion
+energy.
+
+### Full-range screening for the C6 path
+
+`mbd_screen` (`[rpa] c6_source = "mbd"`) screens the TS poles on the RPA
+frequency grid with the full-range tensor and no Fermi function:
+
+$$ \mathbf C(u) = \operatorname{diag}\big(1/\bar\alpha_A(iu)\big)\otimes\mathbf 1_3 + \mathbf T^{\rm GG}(\sigma(u)), \qquad \boldsymbol\alpha^{\rm SCS}_A(iu) = \sum_B\big[\mathbf C(u)^{-1}\big]_{AB}, $$
+
+with $\bar\alpha_A(iu) = \tfrac13\operatorname{tr}$ of the TS per-atom tensor
+(floored at $10^{-10}$), widths from $\bar\alpha_A(iu)$, and the full
+$3\times3$ block sum kept as the per-atom tensor. The molecular tensor is the
+sum over atoms; `casimir_polder_c6` takes it from there.
+
+### Gradient at fixed volume ratios
+
+`mbd_rsscs_gradient_from_params` runs the forward pass once, keeping
+$\mathbf B(u_k)$ for every node and the eigenpairs $(\lambda_p, \mathbf v_p)$
+of $\mathbf H$, then one reverse (adjoint) pass, `rsscs_backward`. Write
+$\bar x = \partial E/\partial x$. The steps are:
+
+1. **Seed.** $E = \tfrac12\operatorname{tr}\mathbf H^{1/2} - \tfrac32\sum\tilde\omega$, so
+   $\bar{\mathbf H} = \mathbf G = \tfrac14\mathbf V\operatorname{diag}(\lambda^{-1/2})\mathbf V^{\mathsf T}$
+   and $\bar{\tilde\omega}_A = -\tfrac32$ **[energy-adjoint]**. It holds with
+   degenerate eigenvalues.
+2. **Through $\mathbf H$.** Diagonal: $\bar{\tilde\omega}_A \mathrel{+}= 2\tilde\omega_A\sum_i G_{(A,i)(A,i)}$.
+   Pair $A > B$ with value $P\,T^{\rm bare}_{ij}$ at $(A,i),(B,j)$ and its
+   transpose: $\bar v_{ij} = G_{(A,i)(B,j)} + G_{(B,j)(A,i)}$,
+   $\bar P = \sum_{ij}\bar v_{ij}T^{\rm bare}_{ij}$, and
+   $P = \tilde\omega_A\tilde\omega_B\sqrt{\tilde\alpha_A\tilde\alpha_B}\tilde f$ gives
+   $\bar{\tilde\omega}_A \mathrel{+}= \bar P\,P/\tilde\omega_A$,
+   $\bar{\tilde\alpha}_A \mathrel{+}= \tfrac12\bar P\,P/\tilde\alpha_A$,
+   $\bar{\tilde f} = \bar P\,P/\tilde f$; then
+   $\bar{\tilde R}_{A,B} \mathrel{+}= \beta\bar{\tilde f}\,\partial f/\partial S$ and the
+   position term $\nabla_{\mathbf R}\sum_{ij}P\bar v_{ij}T^{\rm bare}_{ij} + \bar{\tilde f}\,(\partial f/\partial R)\,\mathbf R/R$.
+3. **Through $\tilde\omega$ and $\tilde R$.**
+   $\bar{\tilde C}_{6,A} = \bar{\tilde\omega}_A\cdot4/(3\tilde\alpha_A^2)$,
+   $\bar{\tilde\alpha}_A \mathrel{-}= 2\bar{\tilde\omega}_A\tilde\omega_A/\tilde\alpha_A$,
+   $\bar{\tilde\alpha}_A \mathrel{+}= \bar{\tilde R}_A\tilde R_A/(3\tilde\alpha_A)$,
+   $\bar R_A \mathrel{+}= \bar{\tilde R}_A\tilde R_A/R_A$,
+   $\bar\alpha_A \mathrel{-}= \bar{\tilde R}_A\tilde R_A/(3\alpha_A)$.
+4. **Per node $k$.** $\bar{\tilde\alpha}_A(iu_k) = \bar{\tilde C}_{6,A}\,(6/\pi)\,w_k\,\tilde\alpha_A(iu_k)$,
+   plus $\bar{\tilde\alpha}_A$ at the $u = 0$ node. Since
+   $\tilde\alpha_A = \tfrac13\sum_{B,i}B_{(A,i)(B,i)}$ and
+   $\bar{\mathbf C} = -\mathbf B^{\mathsf T}\bar{\mathbf B}\mathbf B^{\mathsf T}$ with
+   $\bar B_{(A,i)(B,j)} = \delta_{ij}\bar{\tilde\alpha}_A/3$, the adjoint factors through
+   rank 3: $\bar C_{mn} = -\sum_iz_{mi}w_{ni}$,
+   $z_{mi} = \sum_AB_{(A,i)m}\bar{\tilde\alpha}_A/3$, $w_{ni} = \sum_BB_{n(B,i)}$.
+   The diagonal gives $\bar\alpha_A(iu_k) \mathrel{-}= \sum_i\bar C_{(A,i)(A,i)}/\alpha_A(iu_k)^2$.
+   A pair block $v = (1 - f)\mathbf T^{\rm GG}(\mathbf R, \sigma_{AB})$ gives
+   $\bar f = -\sum\bar v\cdot\mathbf T^{\rm GG}$ and, through `t_gg_vjp` with
+   $M = (1-f)\bar v$, the position term and $\bar\sigma_{AB}$;
+   $\bar\sigma_A \mathrel{+}= \bar\sigma_{AB}\sigma_A/\sigma_{AB}$,
+   $\bar\alpha_A(iu_k) \mathrel{+}= \bar\sigma_A\sigma_A/(3\alpha_A(iu_k))$,
+   $\bar\alpha_A \mathrel{+}= \bar\alpha_A(iu_k)\,\alpha_A(iu_k)/\alpha_A$,
+   $\bar\omega_A \mathrel{+}= \bar\alpha_A(iu_k)\,2\alpha_A(iu_k)^2u_k^2/(\alpha_A\omega_A^3)$.
+   The radius partial goes to $\bar R_{A,B} \mathrel{+}= \beta\bar f\,\partial f/\partial S$.
+5. **Through $\omega$.** $\bar C_{6,A} \mathrel{+}= \bar\omega_A\cdot4/(3\alpha_A^2)$,
+   $\bar\alpha_A \mathrel{-}= 2\bar\omega_A\omega_A/\alpha_A$.
+
+Every pair term depends on $\mathbf R = \mathbf R_A - \mathbf R_B$ only: its
+$\partial/\partial\mathbf R$ goes to $A$ with $+$ and to $B$ with $-$, so the
+explicit force sums to zero **[gradient-translation]**. The Fermi partials
+(`fermi_partials`) are $\partial f/\partial R = f'a/S$, $\partial f/\partial S = -f'aR/S^2$,
+$f' = e^{-z}/(1 + e^{-z})^2$, $z = a(R/S - 1)$ ($f' = 0$ when $e^{-z}$
+overflows). The vector-Jacobian products, with $M$ symmetrized,
+$q = \mathbf R^{\mathsf T}M\mathbf R$ and $L_b = \sum M\cdot\mathbf T^{\rm bare}$:
+
+$$ \frac{\partial L_b}{\partial\mathbf R} = -\frac{3\operatorname{tr}M\,\mathbf R}{R^5} - \frac{6M\mathbf R}{R^5} + \frac{15q\,\mathbf R}{R^7}, $$
+
+and with $\mathbf T^{\rm GG} = g_1\mathbf T^{\rm bare} + g_2\mathbf R\mathbf R^{\mathsf T}$,
+$g_1 = \operatorname{erf}\zeta - \theta$, $g_2 = 2\zeta^2\theta/R^5$,
+
+$$ \frac{\partial g_1}{\partial R} = \frac{2\zeta^2\theta}{R}, \quad \frac{\partial g_1}{\partial\sigma} = -\frac{2\zeta^2\theta}{\sigma}, \quad
+\frac{\partial g_2}{\partial R} = -\frac{4\zeta^2\theta(1 + \zeta^2)}{R^6}, \quad \frac{\partial g_2}{\partial\sigma} = -\frac{2\zeta^2\theta(3 - 2\zeta^2)}{\sigma R^5}, $$
+
+$$ \frac{\partial L}{\partial\mathbf R} = g_1\frac{\partial L_b}{\partial\mathbf R} + 2g_2M\mathbf R + \Big(L_b\frac{\partial g_1}{\partial R} + q\frac{\partial g_2}{\partial R}\Big)\frac{\mathbf R}{R}, \qquad
+\frac{\partial L}{\partial\sigma} = L_b\frac{\partial g_1}{\partial\sigma} + q\frac{\partial g_2}{\partial\sigma} . $$
+
+Both equal sympy's gradient of $\sum M_{ij}T_{ij}$ **[vjp-partials]**, and
+the whole transcribed backward pass equals a Richardson difference of the
+transcribed energy in every coordinate, $\alpha_A$, $C_{6,A}$ and $R_A$, to
+within 50 times the round-off floor $\epsilon S/(h\max|g|)$,
+$S = \tfrac12\sum\sqrt{\lambda_p}$ **[gradient-vs-fd]**. `mbd_rsscs_gradient`
+then chains to the volume ratios,
+
+$$ \frac{\partial E}{\partial r_A} = \alpha^{\rm free}_A\bar\alpha_A + 2r_AC^{\rm free}_{6,A}\bar C_{6,A} + \tfrac13r_A^{-2/3}R^{\rm free}_A\bar R_A \qquad \textbf{[ratio-chain-rule]} . $$
+
+### Gradient on an SCF density
+
+`mbd_rsscs_impl` integrates the Hirshfeld volumes
+$v_A = \sum_g\Delta V\,w_A(\mathbf r_g)\rho(\mathbf r_g)|\mathbf r_g - \mathbf R_A|^3$,
+$w_A = \rho^0_A/(\sum_C\rho^0_C + 10^{-12})$, on `mbd_volume_grid`: a cubic
+lattice anchored to the centroid of the nuclei, so every point moves by
+$1/N$ of each atom's displacement. The free-atom volumes come from the same
+lattice (`FreeAtomVolumeQuadrature::Lattice`), cached per element. With
+$c_A = (\partial E/\partial r_A)/v^{\rm free}_A$ and
+$V = \partial(\sum_Ac_Av_A)/\partial D = \sum_g\Delta V\,q(\mathbf r_g)\chi_\mu\chi_\nu$,
+$q = \sum_Ac_Aw_A|\mathbf r - \mathbf R_A|^3$
+(`hirshfeld_volume_density_derivative`), the gradient is
+
+$$ \frac{dE}{d\mathbf R_B} = \underbrace{\frac{\partial E}{\partial\mathbf R_B}\Big|_r}_{\text{fixed ratios}}
++ \underbrace{\sum_Ac_A\frac{\partial v_A}{\partial\mathbf R_B}\Big|_{D,\ \text{lattice}}}_{\text{volumes}}
++ \underbrace{\mathcal O_B}_{\text{orthonormality}}
+- \underbrace{\frac1N\sum_C\sum_Ac_A\frac{\partial v_A}{\partial\mathbf R_C}\Big|_{D,\ \text{lattice}}}_{\text{lattice}}
++ \underbrace{\sum_{ai}Z_{ai}\frac{\partial F_{ai}}{\partial\mathbf R_B}}_{\text{relaxation}} . $$
+
+- **Volumes** (`hirshfeld_volume_gradient`): the AOs and proatoms move with
+  their atoms, the lattice does not. Per point: the density term
+  $-2\Delta V\,q\sum_{\mu\in B}\nabla\chi_\mu(D\chi)_\mu$, the weight term
+  $\Delta V\rho\,(c_Br_B^3 - q)\,\mathbf g_B/(\sum\rho^0 + 10^{-12})$ with
+  $\mathbf g_B = \partial\rho^0_B/\partial\mathbf R_B$, and the radial term
+  $-3\Delta V\rho\,c_Bw_Br_B\,\mathbf d_B$, $\mathbf d_B = \mathbf r - \mathbf R_B$.
+- **Orthonormality** (`orthonormality_term`): the occupied orbitals follow
+  their basis functions and are Löwdin re-orthonormalized,
+  $\delta C_o = -\tfrac12C_oS^x_{oo}$. For a closed shell
+  ($D = 2C_oC_o^{\mathsf T}$) $\delta D = -\tfrac12DS^xD$ and
+  $\mathcal O = -\tfrac12\operatorname{tr}[VDS^xD]$; for UKS each spin
+  separately, $\mathcal O = -\sum_\sigma\operatorname{tr}[VD_\sigma S^xD_\sigma]$;
+  for ROKS the closed and open orbitals are orthonormalized as one set, so
+  $\mathcal O = -\operatorname{tr}[S^xW_Q]$,
+  $W_Q = D_\alpha VD_\alpha + P_cVP_c + \tfrac12(P_cVP_o + P_oVP_c)$ with
+  $D_\alpha = P_c + P_o$, $D_\beta = P_c$ **[orthonormality-term]**. The code
+  first checks $DSD = 2D$ (closed), $D_\sigma SD_\sigma = D_\sigma$, and for
+  ROKS $D_\alpha SD_\beta = D_\beta$.
+- **Lattice**: at fixed $D$, moving all atoms and the lattice together
+  leaves $v_A$ unchanged, so the lattice shift of $\tfrac1N\sum_C\delta\mathbf R_C$
+  contributes $-\tfrac1N\sum_C$ of the fixed-lattice volume term to every
+  atom. On a toy volume with a centroid lattice this reproduces the total
+  derivative to $3\times10^{-11}$ while the lattice term is 7% of it
+  **[lattice-term]**.
+- **Relaxation** (`mbd_rsscs_for_scf`): the Kohn–Sham Z-vector of
+  `ferric_scf::zvector_ks` with $V$ as its right-hand side
+  (`relaxation_gradient_closed`, `_unrestricted`, `_roks`); MBD depends on
+  the total density, so both spins see the same $V$. The derivation is in
+  `crates/ferric-scf/theory.md`, "Kohn-Sham Z-vector for post-SCF
+  corrections". A reference the Z-vector does not support is an error; no
+  unrelaxed gradient is returned as the exact one.
+
+The first four terms are `gradient_unrelaxed`. The total is checked against
+central differences of the full SCF + MBD energy in
+`crates/ferric-rpa/tests/mbd_scf_gradient.rs` (RKS, $\le 3.5\times10^{-9}$
+Ha/Bohr at 6-31G), `mbd_scf_gradient_uks.rs` and `mbd_scf_gradient_roks.rs`.
+
+### Differences from the papers and the other dispersion paths
+
+The reference implementation is libMBD / pymbd 0.15.0, not the papers'
+text; where the two could differ, the code follows libMBD.
+
+- The Fermi function uses the sum of the radii, $S_{AB} = \beta(R_A + R_B)$,
+  and $f(0) = 1/(1 + e^a) \approx 2.5\times10^{-3}$ at $a = 6$: a large
+  $\beta$ scales the long-range coupling by $1/(1 + e^a)$ instead of
+  switching it off.
+- The frequency grid is libMBD's 15-node mapped Gauss–Legendre rule with a
+  zero-weight $u = 0$ node; $a$ and the node count are not exposed in the CLI.
+- Each atom is one isotropic oscillator. `mbd_screen` (the $C_6$ path) also
+  inverts only the isotropic TS magnitude, not the anisotropic per-atom
+  tensor it is handed.
+- $\beta$ is published for PBE (0.83), PBE0 and HSE06 (0.85) only
+  (`mbd_rsscs_beta_for_functional`); any other functional needs an explicit
+  $\beta$.
+- The Hirshfeld volumes are lattice sums, not Becke-grid integrals, so that
+  the lattice term above is a single translation identity; the TS $C_6$ path
+  uses the Becke grid.
+- `mbd.rs::dipole_coupling_tensor`'s doc comment has the opposite overall
+  sign to its loop (see "Dipole tensors").
+
 ## Range-separated MP2 + RPA
 
 `rs_mp2_rpa::rs_mp2_lr_rpa` combines RI-MP2 and dRPA with the Coulomb

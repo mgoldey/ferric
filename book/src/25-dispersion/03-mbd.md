@@ -1,7 +1,7 @@
 # 25.3 Many-body dispersion
 
 <!-- section: 25.3; status: edit; registry: mbd;
-     theory: crates/ferric-rpa/theory.md#"Dispersion: Casimir-Polder C6" -->
+     theory: crates/ferric-rpa/theory.md#"Many-body dispersion (MBD@rsSCS)", "Dispersion: Casimir-Polder C6" -->
 
 A pairwise $C_6$ sum treats each atom's polarizability as fixed. In a
 molecule the atoms' induced dipoles screen one another, and the dispersion
@@ -14,9 +14,9 @@ the oscillators through the dipole tensor. ferric implements MBD@rsSCS
 DiStasio, Car and Scheffler (PRL 108, 236402 (2012)) as the `mbd` source of
 section 25.2.
 
-`crates/ferric-rpa/theory.md` has no MBD section yet (registry gap `mbd`).
-This section carries the derivation, and
-`scripts/mbd_coupled_dipole_sympy.py` proves its identities.
+The derivation, transcribed from the loops, is in
+`crates/ferric-rpa/theory.md`, "Many-body dispersion (MBD@rsSCS)", and
+`scripts/mbd_coupled_dipole_sympy.py` proves its identities and the gradient.
 
 | Symbol | Meaning | Code name |
 |---|---|---|
@@ -200,6 +200,30 @@ $\partial E/\partial R_A$.
 >
 > <!-- verified: id=disp.mbd.adjoint-seed; script=scripts/mbd_coupled_dipole_sympy.py; claim=energy-adjoint; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-rpa/src/dispersion/mbd_rsscs.rs::rsscs_backward; rust_test=ferric-rpa/tests/validation_mbd_rsscs.rs::mbd_rsscs_gradient_matches_libmbd -->
 
+> **Verified equation 25.20** · the whole backward pass
+>
+> The script transcribes `rsscs_backward` (the five adjoint steps, the Fermi
+> partials and the vector-Jacobian products of $\mathbf T^{\mathrm{bare}}$ and
+> $\mathbf T^{\mathrm{GG}}$). The vector-Jacobian products equal sympy's
+> gradient of $\sum M_{ij}T_{ij}$ to $7\times10^{-15}$ relative (bar
+> $10^{-12}$). The transcribed gradient equals a Richardson difference of the
+> transcribed energy on a four-atom model: positions $1.2\times10^{-8}$,
+> $\alpha_A$ $4.9\times10^{-9}$, $C_{6,A}$ $2.0\times10^{-9}$, $R_A$
+> $1.6\times10^{-10}$ relative, each under 50 times the round-off floor
+> $\epsilon S/(h\max|g|)$ with $S = \tfrac12\sum\sqrt{\lambda}$. The position
+> gradient sums to zero ($10^{-20}$), and the chain rule to volume ratios
+> agrees with a difference in $r_A$ to $2.5\times10^{-9}$ (bar $10^{-7}$).
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/mbd_coupled_dipole_sympy.py`, checks `vjp-partials`, `gradient-vs-fd`, `gradient-translation`, `ratio-chain-rule` |
+> | Negative control | the runner flips a sign in $\partial g_2/\partial\sigma$, uses $3/\pi$ for the $6/\pi$ of step 4, uses $\tfrac12$ for the $\tfrac13$ of the $\tilde R$ chain, drops the static adjoint at the $u = 0$ node, uses $r^{-1/3}$ for $r^{-2/3}$ in the ratio chain; each turns its check red |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-rpa/src/dispersion/mbd_rsscs.rs::mbd_rsscs_gradient_from_params`, `ferric-rpa/src/dispersion/mbd_rsscs.rs::mbd_rsscs_gradient` |
+> | Code test | `mbd_rsscs_gradient_matches_libmbd` in `crates/ferric-rpa/tests/validation_mbd_rsscs.rs` |
+>
+> <!-- verified: id=disp.mbd.backward-pass; script=scripts/mbd_coupled_dipole_sympy.py; claim=gradient-vs-fd; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-rpa/src/dispersion/mbd_rsscs.rs::{mbd_rsscs_gradient_from_params,mbd_rsscs_gradient}; rust_test=ferric-rpa/tests/validation_mbd_rsscs.rs::mbd_rsscs_gradient_matches_libmbd; registry=mbd -->
+
 On an SCF density the volume ratios move with the nuclei too.
 `mbd_rsscs_for_scf` assembles
 
@@ -211,8 +235,36 @@ On an SCF density the volume ratios move with the nuclei too.
 | lattice | the volume lattice (`ferric-scf/src/properties/hirshfeld_grid.rs::mbd_volume_grid`, centred on the atom centroid) moves by $1/N$ of each displacement; translation invariance turns this into minus $1/N$ of the summed fixed-lattice term | `mbd_rsscs_for_scf` |
 | relaxation | $\sum_{ai}Z_{ai}\,\partial F_{ai}/\partial\mathbf R_B$ with the Kohn–Sham Z-vector driven by $\mathbf V$ | `ferric_scf::zvector_ks` |
 
-These terms are checked against central finite differences of the full
-SCF + MBD energy, not by a derivation script (see 25.3.8).
+The total is checked against central finite differences of the full
+SCF + MBD energy (25.3.8). The orthonormality and lattice terms are also
+proved on their own:
+
+> **Verified** · the orthonormality and lattice terms
+>
+> With $\delta C_o = -\tfrac12C_oS^x_{oo}$ (Löwdin), the change of
+> $\operatorname{tr}[\mathbf V\mathbf D]$ along an overlap derivative equals
+> the code's closed-shell, UKS and ROKS traces to $1.0\times10^{-12}$,
+> $2.2\times10^{-12}$ and $1.2\times10^{-12}$ (bar $10^{-9}$); the ROKS form
+> $-\operatorname{tr}[\mathbf S^x\mathbf W_Q]$,
+> $\mathbf W_Q = \mathbf D_\alpha\mathbf V\mathbf D_\alpha + \mathbf P_c\mathbf V\mathbf P_c + \tfrac12(\mathbf P_c\mathbf V\mathbf P_o + \mathbf P_o\mathbf V\mathbf P_c)$,
+> orthonormalizes the closed and open orbitals as one set. On a toy volume
+> sum with a centroid-anchored lattice, the fixed-lattice term minus $1/N$ of
+> its atom sum equals the total derivative to $3.2\times10^{-11}$ relative
+> (bar $10^{-8}$) while the lattice term is 7.5% of the gradient.
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/mbd_coupled_dipole_sympy.py`, checks `orthonormality-term`, `lattice-term` |
+> | Negative control | the runner uses $-1$ for the closed-shell $-\tfrac12$, drops the closed–open term of $\mathbf W_Q$, drops the $-1/N$ lattice shift; each turns its check red |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-rpa/src/dispersion/mbd_scf.rs::orthonormality_term`, `ferric-rpa/src/dispersion/mbd_scf.rs::mbd_rsscs_for_scf` |
+> | Code test | `mbd_exact_gradient_matches_fd_of_full_scf_pipeline` in `crates/ferric-rpa/tests/mbd_scf_gradient.rs` |
+>
+> <!-- verified: id=disp.mbd.scf-terms; script=scripts/mbd_coupled_dipole_sympy.py; claim=orthonormality-term; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-rpa/src/dispersion/mbd_scf.rs::{orthonormality_term,mbd_rsscs_for_scf}; rust_test=ferric-rpa/tests/mbd_scf_gradient.rs::mbd_exact_gradient_matches_fd_of_full_scf_pipeline; registry=mbd -->
+
+The Hirshfeld volume term and the Z-vector are not transcribed by the
+script; they rest on `hirshfeld_volume_gradient_matches_fd_slater_proatom`
+and the full-pipeline difference test.
 
 ## 25.3.6 Full-range screening for $C_6$
 
@@ -264,8 +316,8 @@ nuclear gradient" and "TS C6 and MBD@TS"):
   only.
 - The exact SCF gradient needs a Kohn–Sham Z-vector for the functional;
   `mbd_rsscs_for_scf` names the reason when there is none.
-- No derivation in `crates/ferric-rpa/theory.md` yet; the SCF gradient terms
-  of 25.3.5 rest on finite-difference tests, not on a proof script.
+- The Hirshfeld volume gradient and the Z-vector relaxation of 25.3.5 rest
+  on finite-difference tests, not on a proof script.
 
 ## Sources
 

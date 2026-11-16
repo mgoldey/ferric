@@ -103,6 +103,92 @@ CASES = [
                 "return (v * (0.5 / np.sqrt(lam))) @ v.T",
                 "FAIL [energy-adjoint]",
             ),
+            (
+                "dg2_ds = -2.0 * z2t * (3.0 - 2.0 * zeta * zeta) / (sigma * r5)\n    radial",
+                "dg2_ds = -2.0 * z2t * (3.0 + 2.0 * zeta * zeta) / (sigma * r5)\n    radial",
+                "FAIL [vjp-partials]",
+            ),
+            (
+                'abar = c6t_bar * (6.0 / np.pi) * tp["weights"][k] * ak',
+                'abar = c6t_bar * (3.0 / np.pi) * tp["weights"][k] * ak',
+                "FAIL [gradient-vs-fd]",
+            ),
+            (
+                "a0t_bar += rt_bar * rt / (3.0 * a0t)",
+                "a0t_bar += rt_bar * rt / (2.0 * a0t)",
+                "FAIL [gradient-vs-fd]",
+            ),
+            (
+                "            abar = abar + a0t_bar\n",
+                "            abar = abar + 0.0 * a0t_bar\n",
+                "FAIL [gradient-vs-fd]",
+            ),
+            (
+                "+ r_free / (3.0 * np.cbrt(ratio) ** 2) * gr",
+                "+ r_free / (3.0 * np.cbrt(ratio)) * gr",
+                "FAIL [ratio-chain-rule]",
+            ),
+            (
+                'errs["closed"] = abs(fd - (-0.5 * np.sum(s1 * (d @ v @ d))))',
+                'errs["closed"] = abs(fd - (-1.0 * np.sum(s1 * (d @ v @ d))))',
+                "FAIL [orthonormality-term]",
+            ),
+            (
+                "w_q = da @ v @ da + pc @ v @ pc + 0.5 * (cross + cross.T)",
+                "w_q = da @ v @ da + pc @ v @ pc",
+                "FAIL [orthonormality-term]",
+            ),
+            (
+                "lattice = np.tile(-fixed.sum(axis=0) / n, (n, 1))",
+                "lattice = np.tile(0.0 * fixed.sum(axis=0) / n, (n, 1))",
+                "FAIL [lattice-term]",
+            ),
+        ],
+    ),
+    (
+        "u_oo_rimp2_response_sympy.py",
+        15,
+        [
+            (
+                "pair_gamma_rows(blk_aa, 1.0, 1.0, 0.5, ba, gamma_a[:oa])",
+                "pair_gamma_rows(blk_aa, 1.0, 1.0, 1.0, ba, gamma_a[:oa])",
+                "FAIL [kernel-vs-fd]",
+            ),
+            (
+                '"ab_a": 2.0 * g_a[:, oa:]',
+                '"ab_a": 1.0 * g_a[:, oa:]',
+                "FAIL [kernel-vs-fd]",
+            ),
+            (
+                "pair_ooov_term(blk_aa, 1.0, 1.0, -0.5, ooov_a, i, oa, va, same)",
+                "pair_ooov_term(blk_aa, 1.0, 1.0, 0.5, ooov_a, i, oa, va, same)",
+                "FAIL [kernel-vs-fd]",
+            ),
+            (
+                "cross += -1.0 * ab(i, jj).T @ o",
+                "cross += 1.0 * ab(i, jj).T @ o",
+                "FAIL [kernel-vs-fd]",
+            ),
+            (
+                "row = bp[first_occ + i]",
+                "row = bp[i]",
+                "FAIL [kernel-vs-fd-frozen-core]",
+            ),
+            (
+                "return u_v @ g_act @ u_o.T",
+                "return u_v @ g_act @ u_o",
+                "FAIL [assembled-vs-fd]",
+            ),
+            (
+                "g[a, i] += 2.0 * f_mo[nocc + a, i]",
+                "g[a, i] += 1.0 * f_mo[nocc + a, i]",
+                "FAIL [assembled-vs-fd]",
+            ),
+            (
+                "return p * a - q * a.T + p * b.T - q * b",
+                "return p * a - q * a.T + p * b.T + q * b",
+                "FAIL [pair-combination]",
+            ),
         ],
     ),
     (
