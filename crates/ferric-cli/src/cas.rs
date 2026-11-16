@@ -108,12 +108,12 @@ pub struct CasPlan {
 }
 
 /// The sections a CAS run reads.
-const READ_SECTIONS: &[&str] = &[
+pub(crate) const READ_SECTIONS: &[&str] = &[
     "molecule", "basis", "method", "cas", "scf", "memory", "parallel", "output",
 ];
 
 /// The `[scf]` keys a CAS run reads.
-const READ_SCF_KEYS: &[&str] = &["max_iter", "energy_conv", "density_conv"];
+pub(crate) const READ_SCF_KEYS: &[&str] = &["max_iter", "energy_conv", "density_conv"];
 
 fn positive(name: &str, v: Option<f64>) -> Result<(), String> {
     match v {

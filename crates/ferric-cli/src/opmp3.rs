@@ -54,12 +54,12 @@ pub struct Opmp3Plan {
 }
 
 /// The sections an OP-MP3 run reads.
-const READ_SECTIONS: &[&str] = &[
+pub(crate) const READ_SECTIONS: &[&str] = &[
     "molecule", "basis", "method", "opmp3", "scf", "memory", "parallel", "output",
 ];
 
 /// The `[scf]` keys an OP-MP3 run reads.
-const READ_SCF_KEYS: &[&str] = &["max_iter", "energy_conv", "density_conv"];
+pub(crate) const READ_SCF_KEYS: &[&str] = &["max_iter", "energy_conv", "density_conv"];
 
 /// The keys written in the raw TOML table `name` (empty if absent).
 fn written<'a>(raw: &'a toml::Value, name: &str) -> Vec<&'a str> {
