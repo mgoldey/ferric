@@ -21,7 +21,7 @@ use ferric_rpa::config::{QuadratureConfig, QuadratureScheme};
 use ferric_rpa::gradient::RpaGradientMethod;
 use ferric_rpa::optimize::{optimize_geometry_rpa, RpaOptimizeResult};
 use ferric_rpa::PdepRpaConfig;
-use ferric_scf::optimize::{CoordSystem, OptimizeConfig};
+use ferric_scf::optimize::{CoordSystem, InitialHessian, OptimizeConfig, TrustUpdate};
 use ferric_scf::warm_start::ScfWarmStart;
 use std::io::Write;
 
@@ -70,7 +70,7 @@ fn dump(label: &str, r: &RpaOptimizeResult) {
 /// from r = 0.95 Angstrom, analytic gradient, default thresholds.
 #[test]
 fn rpa_cartesian_path_matches_the_recorded_path_analytic() {
-    let r = run(RpaGradientMethod::Analytic, &OptimizeConfig::default());
+    let r = run(RpaGradientMethod::Analytic, &legacy());
     dump("rpa-analytic", &r);
     assert!(r.converged);
     assert_eq!(r.energy_trace.len(), r.steps + 1);
@@ -78,6 +78,17 @@ fn rpa_cartesian_path_matches_the_recorded_path_analytic() {
         assert!((g - w).abs() < 1e-9, "step {i}: {g} vs {w}");
     }
     assert_eq!(r.energy_trace.len(), RPA_H2_TRACE.len());
+}
+
+/// The search the recorded paths were taken with: identity start, fixed
+/// trust radius (`initial_hessian = "simple"`, `trust_update = "fixed"`).
+/// Pinned so the paths keep testing the shared loop, not the defaults.
+fn legacy() -> OptimizeConfig {
+    OptimizeConfig {
+        initial_hessian: Some(InitialHessian::Simple),
+        trust_update: TrustUpdate::Fixed,
+        ..Default::default()
+    }
 }
 
 /// Step energies of H2/STO-3G RPA (analytic gradient, 8-point Gauss-Legendre,
@@ -94,10 +105,7 @@ const RPA_H2_TRACE: [f64; 6] = [
 
 #[test]
 fn rpa_cartesian_path_matches_the_recorded_path_fd() {
-    let r = run(
-        RpaGradientMethod::FiniteDifference { h: 5e-4 },
-        &OptimizeConfig::default(),
-    );
+    let r = run(RpaGradientMethod::FiniteDifference { h: 5e-4 }, &legacy());
     dump("rpa-fd", &r);
     assert!(r.converged);
 }

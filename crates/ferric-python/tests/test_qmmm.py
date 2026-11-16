@@ -1117,6 +1117,12 @@ def test_the_energy_trace_exposes_a_divergence_the_scalars_hide():
     its best value, and the three scalars report the same shape as a run that
     simply needed more steps. Without the trace there is nothing to look at --
     which is how the wrong diagnosis got written into the golden path.
+
+    Pinned to the search the measurement was taken with (identity start, fixed
+    trust radius). Under the default Lindh start and ratio rule the same
+    retained-host surface is followed downhill without bound instead (below
+    -1e4 Ha in 60 steps, unconverged), which flags the broken embedding by a
+    different route.
     """
     symbols = ["C", "H", "H", "H", "C", "H", "H", "H"]
     coords = [
@@ -1135,11 +1141,20 @@ def test_the_energy_trace_exposes_a_divergence_the_scalars_hide():
     ).with_link_atoms([(0, 4)])
     z1 = base.with_boundary_charges([(0, 4)], "delete-host")
 
+    legacy = {"initial_hessian": "simple", "trust_update": "fixed"}
     bad = ferric.run_optimize(
-        base.qm_molecule(), "sto-3g", point_charges=base.point_charges(), max_steps=60
+        base.qm_molecule(),
+        "sto-3g",
+        point_charges=base.point_charges(),
+        max_steps=60,
+        **legacy,
     )
     good = ferric.run_optimize(
-        z1.qm_molecule(), "sto-3g", point_charges=z1.point_charges(), max_steps=60
+        z1.qm_molecule(),
+        "sto-3g",
+        point_charges=z1.point_charges(),
+        max_steps=60,
+        **legacy,
     )
 
     assert len(bad.energy_trace) >= bad.steps, (

@@ -2197,7 +2197,7 @@ pub fn optimize_qmmm(
     // (`RhfConfig::ri_j_task`), an explicit one is kept.
     let scf = cfg.scf.for_geometry_task();
 
-    let (x_final, _energy_final, steps, converged) =
+    let (x_final, energy_final, steps, converged) =
         crate::optimize::optimize_coordinates(&x0, &cfg.opt, |x| {
             let mut coords = coords0.clone();
             unflatten_free(x, &mut coords);
@@ -2250,9 +2250,9 @@ pub fn optimize_qmmm(
     let mut coords_final = coords0;
     unflatten_free(&x_final, &mut coords_final);
     let final_system = system.with_coordinates(&coords_final)?;
-    let final_energy = *energies
-        .last()
-        .expect("at least one energy evaluation always occurs");
+    // The energy at the returned geometry: the last evaluation can be a step
+    // the ratio trust rule rejected.
+    let final_energy = energy_final;
 
     Ok(QmmmOptimizeResult {
         system: final_system,

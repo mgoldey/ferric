@@ -156,7 +156,8 @@ const TOL_ANG_DEG: f64 = 1e-3;
 /// Optimized energy (ferric's minimum vs the reference's minimum). Measured
 /// max 9.3e-13 Ha.
 const TOL_E_OPT: f64 = 1e-10;
-/// ⟨S²⟩ (UHF/UKS) at start and end. Measured max 4.9e-9.
+/// ⟨S²⟩ (UHF/UKS) at the start and at the reference minimum (shared
+/// geometries). Measured max 4.9e-9.
 const TOL_S2: f64 = 5e-8;
 /// Distances that must be MISSED (moved-from-start, method swaps): this
 /// factor × TOL_R. The closest pair is UHF vs ROHF on NH2 (2.64e-3 Bohr).
@@ -640,15 +641,23 @@ fn check_method(system: &str, m: &Method) -> Molecule {
     }
     eprintln!("{ctx}: max |d angle| vs reference {a_miss:.2e} deg (tol {TOL_ANG_DEG:.0e})");
 
-    // 8. Open-shell state at the end.
+    // 8. Open-shell state at the end. ⟨S²⟩ is compared like for like, at the
+    // reference minimum, where both codes see the same geometry. At ferric's
+    // own end point it also carries the geometry difference, which step 7
+    // already bounds: ⟨S²⟩ is not variational, so it moves at first order in
+    // the geometry (HO2: 1.1e-7 from a 1.1e-6 Bohr difference, inside TOL_R).
     if m.kind == Kind::Uhf {
         assert_stable(&format!("{ctx} (end)"), &at_end);
         check_close(
             &ctx,
-            "<S^2> end",
-            s_squared(&at_end, &end),
+            "<S^2> at ref minimum",
+            s_squared(&at_ref, &ref_min),
             num(&r, &format!("{blk}/s_squared_opt"), &ctx),
             TOL_S2,
+        );
+        eprintln!(
+            "{ctx}: <S^2> at ferric's end point {:.12} (geometry-dependent, not asserted)",
+            s_squared(&at_end, &end)
         );
     }
 

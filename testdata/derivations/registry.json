@@ -1049,10 +1049,12 @@
     },
     "geometry-search": {
       "theory": [
-        "crates/ferric-scf/theory.md#geometry-searches"
+        "crates/ferric-scf/theory.md#geometry-searches",
+        "crates/ferric-scf/theory.md#lindh-model-hessian"
       ],
       "scripts": [
-        "scripts/geometry_search_steps_sympy.py"
+        "scripts/geometry_search_steps_sympy.py",
+        "scripts/lindh_hessian_sympy.py"
       ]
     },
     "local-mp2": {

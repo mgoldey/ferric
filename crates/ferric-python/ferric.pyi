@@ -4575,6 +4575,8 @@ def run_optimize(
     quadrature: str | None = None,
     trunc_thresh: float | None = None,
     omega: float | None = None,
+    initial_hessian: Literal["simple", "lindh"] | None = None,
+    trust_update: Literal["fixed", "ratio"] | None = None,
 ) -> OptimizeResult:
     """Geometry optimization on any surface with an analytic or finite-difference gradient.
 
@@ -4651,6 +4653,14 @@ def run_optimize(
     needs fewer steps on floppy molecules, and falls back to Cartesian with a printed
     warning if the coordinates cannot be built. Any other value raises ValueError. The
     certificate's `optimizer` approximation names the requested coordinates.
+
+    `initial_hessian`, `trust_update`: as the CLI's `[optimize]` keys. "simple" starts
+    BFGS from the identity (Cartesian) or the Schlegel diagonal (internal); "lindh" from
+    the Lindh (1995) model Hessian. "fixed" keeps the trust radius and accepts every
+    step; "ratio" moves the radius with the actual/predicted energy ratio and rejects a
+    step that raises the energy. Unset is "lindh" and "ratio"; "simple" with "fixed"
+    reproduces the search before these options existed. Any other value raises
+    ValueError.
 
     `fock_hook` / `fock_hook_grad` ("scf" only, both or neither): optimize the
     hooked surface (run_rhf's fock_hook and fock_hook_grad). The geometry moves,

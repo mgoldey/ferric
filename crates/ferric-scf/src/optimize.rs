@@ -19,6 +19,7 @@ use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ndarray::{Array1, Array2};
+use ndarray_linalg::{Eigh, Solve, UPLO};
 
 /// Which coordinate system the BFGS search runs in.
 ///
@@ -71,6 +72,143 @@ impl CoordSystem {
     }
 }
 
+/// Initial Hessian of the BFGS search.
+///
+/// Explicit in [`OptimizeConfig::initial_hessian`]; `None` there takes
+/// [`DEFAULT_INITIAL_HESSIAN`] on the molecular entry points and
+/// [`InitialHessian::Simple`] on [`optimize_coordinates`], which has no atoms
+/// to build a model from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InitialHessian {
+    /// The identity in Cartesians; Schlegel's empirical diagonal in internals
+    /// ([`InternalCoords::initial_hessian_diagonal`]).
+    Simple,
+    /// The Lindh (1995) model Hessian ([`ferric_core::model_hessian`]). In
+    /// Cartesians the full matrix, with the rigid-body block set to the
+    /// identity and the other eigenvalues floored at [`MODEL_HESSIAN_FLOOR`];
+    /// in internals the Lindh force constant of each primitive on the
+    /// diagonal, with the same floor.
+    Lindh,
+}
+
+impl InitialHessian {
+    /// Parse `"simple"` or `"lindh"`, case-insensitive. Strict: any other
+    /// value is an error naming the accepted values.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message naming the accepted values if `s` is not one of them.
+    pub fn parse_config_str(s: &str) -> Result<Self, String> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "simple" => Ok(Self::Simple),
+            "lindh" => Ok(Self::Lindh),
+            other => Err(format!(
+                "unknown initial_hessian = \"{other}\"; expected \"simple\" or \"lindh\""
+            )),
+        }
+    }
+}
+
+/// How the trust radius moves between steps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TrustUpdate {
+    /// The radius stays at [`OptimizeConfig::trust_radius`] and every step is
+    /// accepted.
+    Fixed,
+    /// The radius follows the ratio of the actual to the predicted energy
+    /// change ([`ratio_trust_update`]), and a step that raises the energy is
+    /// rejected. The default.
+    #[default]
+    Ratio,
+}
+
+impl TrustUpdate {
+    /// Parse `"fixed"` or `"ratio"`, case-insensitive. Strict.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message naming the accepted values if `s` is not one of them.
+    pub fn parse_config_str(s: &str) -> Result<Self, String> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "fixed" => Ok(Self::Fixed),
+            "ratio" => Ok(Self::Ratio),
+            other => Err(format!(
+                "unknown trust_update = \"{other}\"; expected \"fixed\" or \"ratio\""
+            )),
+        }
+    }
+}
+
+/// The initial Hessian an unset [`OptimizeConfig::initial_hessian`] takes on
+/// the molecular entry points. Lindh: on eight molecules from water to
+/// sulfamethoxazole at HF/STO-3G it cut the Cartesian step count from 538 to
+/// 211 and the internal one from 252 to 156 (with [`TrustUpdate::Ratio`]);
+/// `crates/ferric-scf/theory.md#lindh-model-hessian` has the table.
+pub const DEFAULT_INITIAL_HESSIAN: InitialHessian = InitialHessian::Lindh;
+
+/// Floor on the model Hessian's eigenvalues (Cartesian) or diagonal
+/// (internals), Hartree/Bohr² or Hartree/rad². Directions the model gives no
+/// curvature (a linear molecule's bends, whose primitives are dropped) would
+/// otherwise get an unbounded inverse. 1e-3 is below a single torsion's
+/// Cartesian curvature (`k_tau |b|^2`, about 3e-3 for a bonded torsion), so
+/// it does not stiffen a real mode.
+pub const MODEL_HESSIAN_FLOOR: f64 = 1e-3;
+
+/// Ratio below which the trust radius shrinks ([`ratio_trust_update`]).
+pub const TRUST_SHRINK_RATIO: f64 = 0.25;
+/// Ratio above which a step on the boundary grows the trust radius.
+pub const TRUST_GROW_RATIO: f64 = 0.75;
+/// Energy changes below this (Hartree) are treated as noise by the ratio rule.
+pub const TRUST_ENERGY_NOISE: f64 = 1e-8;
+/// Trust-radius bounds, as multiples of [`OptimizeConfig::trust_radius`]
+/// (Cartesian) or of the starting scale 1 (internals).
+pub const TRUST_SCALE_MIN: f64 = 0.01;
+/// Upper bound for the Cartesian trust radius, as a multiple of
+/// [`OptimizeConfig::trust_radius`].
+pub const CARTESIAN_TRUST_SCALE_MAX: f64 = 10.0;
+/// Upper bound for the internal-coordinate trust scale (it multiplies both the
+/// distance and the angular radius).
+pub const INTERNAL_TRUST_SCALE_MAX: f64 = 4.0;
+
+/// One decision of the ratio trust-radius rule (Nocedal and Wright,
+/// "Numerical Optimization", 2nd ed., Algorithm 4.1, with `eta = 0`).
+///
+/// `actual` and `predicted` are the energy change and the quadratic model's
+/// prediction for the step (`predicted < 0` for a descent step);
+/// `step_norm` is the step length in the units of `radius`. Returns whether
+/// the step is accepted and the next radius:
+///
+/// * `r = actual / predicted < TRUST_SHRINK_RATIO`: radius `TRUST_SHRINK_RATIO * step_norm`;
+/// * `r > TRUST_GROW_RATIO` and the step reached the boundary: radius doubled;
+/// * otherwise unchanged; always clamped to `[r_min, r_max]`.
+///
+/// The step is accepted when the energy fell (`r > 0`), or rose by less
+/// than [`TRUST_ENERGY_NOISE`]. When both changes are below the noise the
+/// ratio carries no information and the radius is kept.
+#[must_use]
+pub fn ratio_trust_update(
+    actual: f64,
+    predicted: f64,
+    step_norm: f64,
+    radius: f64,
+    r_min: f64,
+    r_max: f64,
+) -> (bool, f64) {
+    let accept = actual < TRUST_ENERGY_NOISE;
+    if predicted.abs() < TRUST_ENERGY_NOISE && actual.abs() < TRUST_ENERGY_NOISE {
+        return (accept, radius);
+    }
+    let ratio = actual / predicted;
+    let next = if ratio < TRUST_SHRINK_RATIO {
+        TRUST_SHRINK_RATIO * step_norm
+    } else if ratio > TRUST_GROW_RATIO && step_norm >= 0.99 * radius {
+        2.0 * radius
+    } else {
+        radius
+    };
+    (accept, next.clamp(r_min, r_max))
+}
+
 /// Configuration for geometry optimization.
 #[derive(Debug, Clone)]
 pub struct OptimizeConfig {
@@ -90,6 +228,11 @@ pub struct OptimizeConfig {
     /// [`CoordSystem::Cartesian`], which is bit-identical to the behaviour
     /// before internals existed.
     pub coord_system: CoordSystem,
+    /// Initial Hessian; `None` takes the entry point's default (see
+    /// [`InitialHessian`]).
+    pub initial_hessian: Option<InitialHessian>,
+    /// Trust-radius rule.
+    pub trust_update: TrustUpdate,
     /// Start each geometry's SCF from the previous geometry's converged MOs
     /// (re-orthonormalized in the new overlap) instead of the default guess.
     /// See [`crate::warm_start`] for the construction, the cold-guess
@@ -108,6 +251,8 @@ impl Default for OptimizeConfig {
             e_conv: 1.0e-6,
             trust_radius: 0.1,
             coord_system: CoordSystem::Cartesian,
+            initial_hessian: None,
+            trust_update: TrustUpdate::default(),
             scf_warm_start: true,
         }
     }
@@ -161,10 +306,13 @@ pub struct OptimizeResult {
     /// slow approach. The trace is what makes that visible, and it is what
     /// `tools.viz.energy_plots.optimization_trace` plots.
     ///
-    /// This is every EVALUATION. Every step is accepted (there is no line
-    /// search and no rejection), so an uphill step shows up here as a rise in
-    /// the trace, which is exactly the thing worth seeing.
+    /// This is every EVALUATION, including the steps the ratio trust rule
+    /// rejected. Under [`TrustUpdate::Fixed`] every step is accepted, so an
+    /// uphill step shows up here as a rise in the trace.
     pub energy_trace: Vec<f64>,
+    /// Evaluated steps the ratio trust rule rejected (always 0 under
+    /// [`TrustUpdate::Fixed`]). Counted in `steps`, absent from `mol`.
+    pub rejected_steps: usize,
 }
 
 impl std::fmt::Display for OptimizeResult {
@@ -421,7 +569,7 @@ pub fn optimize_geometry_rohf_with_scf_correction(
 fn run_bfgs(
     mol: &Molecule,
     opt_config: &OptimizeConfig,
-    mut energy_and_gradient: impl FnMut(&Molecule) -> Result<(f64, Array2<f64>), FerricError>,
+    energy_and_gradient: impl FnMut(&Molecule) -> Result<(f64, Array2<f64>), FerricError>,
 ) -> Result<OptimizeResult, FerricError> {
     if opt_config.coord_system == CoordSystem::RedundantInternal {
         // Build the coordinate system ONCE, from the starting geometry, and
@@ -453,7 +601,16 @@ fn run_bfgs(
             }
         }
     }
+    run_bfgs_cartesian(mol, opt_config, energy_and_gradient)
+}
 
+/// The Cartesian search of [`run_bfgs`]: the seed from
+/// [`OptimizeConfig::initial_hessian`], then [`bfgs_cartesian`].
+fn run_bfgs_cartesian(
+    mol: &Molecule,
+    opt_config: &OptimizeConfig,
+    mut energy_and_gradient: impl FnMut(&Molecule) -> Result<(f64, Array2<f64>), FerricError>,
+) -> Result<OptimizeResult, FerricError> {
     let x0 = flatten_molecule_coords(mol);
     let mol_template = mol.clone();
 
@@ -462,7 +619,20 @@ fn run_bfgs(
     // `optimize_coordinates` would change a signature two callers share for
     // no gain over this.
     let mut energy_trace: Vec<f64> = Vec::new();
-    let (x_final, energy, steps, converged) = optimize_coordinates(&x0, opt_config, |x| {
+    let initial = opt_config
+        .initial_hessian
+        .unwrap_or(DEFAULT_INITIAL_HESSIAN);
+    let seed = |x: &[f64]| -> Result<Array2<f64>, FerricError> {
+        match initial {
+            InitialHessian::Simple => Ok(Array2::eye(x.len())),
+            InitialHessian::Lindh => {
+                let mut m = mol_template.clone();
+                set_molecule_coords(&mut m, x);
+                lindh_inverse_hessian(&m)
+            }
+        }
+    };
+    let out = bfgs_cartesian(&x0, opt_config, &seed, |x| {
         let mut m = mol_template.clone();
         set_molecule_coords(&mut m, x);
         let (e, grad_arr) = energy_and_gradient(&m)?;
@@ -471,15 +641,98 @@ fn run_bfgs(
     })?;
 
     let mut current_mol = mol_template;
-    set_molecule_coords(&mut current_mol, &x_final);
+    set_molecule_coords(&mut current_mol, &out.x);
 
     Ok(OptimizeResult {
         mol: current_mol,
-        energy,
-        steps,
-        converged,
+        energy: out.energy,
+        steps: out.steps,
+        converged: out.converged,
         energy_trace,
+        rejected_steps: out.rejected,
     })
+}
+
+/// Rigid-body motions of `mol` (translations, and rotations about the
+/// centroid) as orthonormal columns of a `(3N, m)` matrix; `m` is 6, or 5 for
+/// a linear molecule, or 3 for an atom.
+fn rigid_body_basis(mol: &Molecule) -> Array2<f64> {
+    let n = mol.atoms.len();
+    let mut c = [0.0; 3];
+    for a in &mol.atoms {
+        c[0] += a.x / n as f64;
+        c[1] += a.y / n as f64;
+        c[2] += a.zpos / n as f64;
+    }
+    let mut cols: Vec<Array1<f64>> = Vec::new();
+    let mut push = |mut v: Array1<f64>| {
+        for u in &cols {
+            let d = u.dot(&v);
+            v = &v - &(u * d);
+        }
+        let nv = v.dot(&v).sqrt();
+        if nv > 1e-6 {
+            cols.push(v / nv);
+        }
+    };
+    for k in 0..3 {
+        let mut v = Array1::zeros(3 * n);
+        for a in 0..n {
+            v[3 * a + k] = 1.0;
+        }
+        push(v);
+    }
+    for axis in 0..3 {
+        let (p, q) = ((axis + 1) % 3, (axis + 2) % 3);
+        let mut v = Array1::zeros(3 * n);
+        for (i, a) in mol.atoms.iter().enumerate() {
+            let r = [a.x - c[0], a.y - c[1], a.zpos - c[2]];
+            v[3 * i + q] += r[p];
+            v[3 * i + p] -= r[q];
+        }
+        push(v);
+    }
+    let mut t = Array2::zeros((3 * n, cols.len()));
+    for (j, v) in cols.iter().enumerate() {
+        t.column_mut(j).assign(v);
+    }
+    t
+}
+
+/// Inverse of the Lindh model Hessian for the Cartesian search.
+///
+/// The model has the rigid-body motions `T` in its null space. On the
+/// complement `Q` (orthonormal, `QᵀT = 0`) the projected model `QᵀHQ` is
+/// inverted with its eigenvalues floored at [`MODEL_HESSIAN_FLOOR`]; on `T`
+/// the inverse is the identity, the same as the simple start, so a gradient
+/// with a rigid-body component (an external field) moves the molecule as it
+/// did before:
+///
+/// `H⁻¹ = Q V diag(1/max(w, floor)) Vᵀ Qᵀ + T Tᵀ`.
+fn lindh_inverse_hessian(mol: &Molecule) -> Result<Array2<f64>, FerricError> {
+    let h = ferric_core::model_hessian::lindh_cartesian_hessian(mol)?;
+    let n = h.nrows();
+    let t = rigid_body_basis(mol);
+    let p = Array2::<f64>::eye(n) - t.dot(&t.t());
+    let (pw, pv) = p
+        .eigh(UPLO::Upper)
+        .map_err(|e| FerricError::General(format!("rigid-body projector eigh: {e}")))?;
+    let keep: Vec<usize> = (0..n).filter(|&i| pw[i] > 0.5).collect();
+    let mut q = Array2::zeros((n, keep.len()));
+    for (j, &i) in keep.iter().enumerate() {
+        q.column_mut(j).assign(&pv.column(i));
+    }
+    let hq = q.t().dot(&h).dot(&q);
+    let (w, v) = hq
+        .eigh(UPLO::Upper)
+        .map_err(|e| FerricError::General(format!("Lindh model Hessian eigh: {e}")))?;
+    let qv = q.dot(&v);
+    let mut scaled = qv.clone();
+    for (j, &wj) in w.iter().enumerate() {
+        let inv = 1.0 / wj.max(MODEL_HESSIAN_FLOOR);
+        scaled.column_mut(j).mapv_inplace(|x| x * inv);
+    }
+    Ok(scaled.dot(&qv.t()) + t.dot(&t.t()))
 }
 
 /// BFGS in redundant internal coordinates.
@@ -521,15 +774,18 @@ fn run_bfgs_internal(
 
     // Inverse Hessian in internals, seeded from the empirical diagonal. BFGS
     // updates the INVERSE, so seed with 1/k.
-    let h_diag = coords.initial_hessian_diagonal(&current)?;
-    let mut h_inv = Array2::<f64>::zeros((nq, nq));
-    for i in 0..nq {
-        h_inv[(i, i)] = 1.0 / h_diag[i];
-    }
+    let initial = opt_config
+        .initial_hessian
+        .unwrap_or(DEFAULT_INITIAL_HESSIAN);
+    let mut h_inv = internal_inverse_seed(coords, &current, initial)?;
 
     let mut prev_energy = energy;
     let mut converged = false;
     let mut step_idx = 0;
+    let mut rejected = 0;
+    let mut fresh_point = true;
+    // Multiplies both the distance and the angular trust radius.
+    let mut trust_scale = 1.0;
 
     println!(
         "Redundant internal coordinates: {} primitives ({} bonds, {} angles, {} dihedrals) \
@@ -556,33 +812,23 @@ fn run_bfgs_internal(
     println!("-----+-------------+---------+----------+---------");
 
     while step_idx < opt_config.max_steps {
-        let n_cart = grad_cart.len();
-        let g_max = grad_cart.iter().map(|g| g.abs()).fold(0.0f64, f64::max);
-        let g_rms = (grad_cart.iter().map(|g| g * g).sum::<f64>() / n_cart as f64).sqrt();
-        let e_diff = (energy - prev_energy).abs();
+        if fresh_point {
+            let n_cart = grad_cart.len();
+            let g_max = grad_cart.iter().map(|g| g.abs()).fold(0.0f64, f64::max);
+            let g_rms = (grad_cart.iter().map(|g| g * g).sum::<f64>() / n_cart as f64).sqrt();
+            let e_diff = (energy - prev_energy).abs();
+            print_step_row(step_idx, energy, prev_energy, g_max, g_rms);
 
-        println!(
-            "{:4} | {:11.8} | {:7.1e} | {:8.2e} | {:8.2e}",
-            step_idx,
-            energy,
-            if step_idx == 0 {
-                0.0
-            } else {
-                energy - prev_energy
-            },
-            g_max,
-            g_rms
-        );
-
-        // Same convergence test as the Cartesian path, on the same (Cartesian)
-        // gradient — so "converged" is one definition, not two.
-        if step_idx > 0
-            && e_diff < opt_config.e_conv
-            && g_max < opt_config.g_max_thresh
-            && g_rms < opt_config.g_rms_thresh
-        {
-            converged = true;
-            break;
+            // Same convergence test as the Cartesian path, on the same
+            // (Cartesian) gradient — so "converged" is one definition, not two.
+            if step_idx > 0
+                && e_diff < opt_config.e_conv
+                && g_max < opt_config.g_max_thresh
+                && g_rms < opt_config.g_rms_thresh
+            {
+                converged = true;
+                break;
+            }
         }
 
         let b = coords.b_matrix(&current)?;
@@ -595,7 +841,9 @@ fn run_bfgs_internal(
 
         // BFGS step in internals.
         let p = -h_inv.dot(&g_int);
-        let dq = clip_internal_step(coords, &p, opt_config.trust_radius);
+        let dist_trust = trust_scale * opt_config.trust_radius;
+        let ang_trust = trust_scale * INTERNAL_ANGULAR_TRUST;
+        let dq = clip_internal_step(coords, &p, dist_trust, ang_trust);
 
         // Back-transform, shrinking the step if the nonlinear solve cannot
         // reach it. A failed back-transformation means the step left the
@@ -641,23 +889,20 @@ fn run_bfgs_internal(
             taken.expect("the retry loop always assigns on its last pass");
 
         let q_before = coords.values(&current)?;
-        set_molecule_coords(&mut current, &new_coords);
-        let q_after = coords.values(&current)?;
+        let mut trial = current.clone();
+        set_molecule_coords(&mut trial, &new_coords);
+        let q_after = coords.values(&trial)?;
 
-        let prev_grad_int = g_int;
-        prev_energy = energy;
-
-        let (e_new, grad_arr_new) = energy_and_gradient(&current)?;
+        let (e_new, grad_arr_new) = energy_and_gradient(&trial)?;
         energy_trace.push(e_new);
-        energy = e_new;
-        grad_cart = flatten_gradient(&grad_arr_new);
+        let grad_cart_new = flatten_gradient(&grad_arr_new);
 
-        let b_new = coords.b_matrix(&current)?;
+        let b_new = coords.b_matrix(&trial)?;
         let ginv_new = generalized_inverse(&b_new)?;
         let g_int_new = gradient_to_internal(
             &b_new,
             &ginv_new,
-            grad_cart.as_slice().expect("gradient is contiguous"),
+            grad_cart_new.as_slice().expect("gradient is contiguous"),
         )?;
 
         // The BFGS `s` must be the displacement ACTUALLY achieved, not the one
@@ -667,19 +912,51 @@ fn run_bfgs_internal(
         let s = bfgs_secant_step(coords, &q_before, &q_after);
         debug_assert_eq!(s.len(), nq);
 
-        let y = &g_int_new - &prev_grad_int;
-        match guarded_inverse_bfgs_update(&mut h_inv, &s, &y) {
+        let accept = match opt_config.trust_update {
+            TrustUpdate::Fixed => true,
+            TrustUpdate::Ratio => {
+                // Quadratic model g.s + s.Bs/2 on the ACHIEVED internal step,
+                // B = H^-1 (H is positive definite: the guarded update keeps it so).
+                let bs = h_inv.solve(&s).map_err(|e| {
+                    FerricError::General(format!("internal-coordinate model solve: {e}"))
+                })?;
+                let predicted = g_int.dot(&s) + 0.5 * s.dot(&bs);
+                let step_norm =
+                    trust_scale * internal_step_length(coords, &s, dist_trust, ang_trust);
+                let (acc, next) = ratio_trust_update(
+                    e_new - energy,
+                    predicted,
+                    step_norm,
+                    trust_scale,
+                    TRUST_SCALE_MIN,
+                    INTERNAL_TRUST_SCALE_MAX,
+                );
+                trust_scale = next;
+                acc
+            }
+        };
+
+        let y = &g_int_new - &g_int;
+        let update = guarded_inverse_bfgs_update(&mut h_inv, &s, &y);
+        if accept {
+            current = trial;
+            prev_energy = energy;
+            energy = e_new;
+            grad_cart = grad_cart_new;
+            fresh_point = true;
+        } else {
+            rejected += 1;
+            fresh_point = false;
+            print_rejected_row(step_idx, e_new, energy, trust_scale);
+        }
+        match update {
             BfgsUpdate::Applied => {}
             BfgsUpdate::SkippedNonPositiveCurvature => report_skipped_update(step_idx, &s, &y),
             BfgsUpdate::Degenerate => {
-                // Reset to the empirical guess, not to the identity: the
+                // Reset to the initial guess, not to the identity: the
                 // identity is meaningless in internals, where the coordinates
                 // have different units.
-                let hd = coords.initial_hessian_diagonal(&current)?;
-                h_inv = Array2::zeros((nq, nq));
-                for i in 0..nq {
-                    h_inv[(i, i)] = 1.0 / hd[i];
-                }
+                h_inv = internal_inverse_seed(coords, &current, initial)?;
             }
         }
 
@@ -692,7 +969,49 @@ fn run_bfgs_internal(
         steps: step_idx,
         converged,
         energy_trace,
+        rejected_steps: rejected,
     })
+}
+
+/// Diagonal inverse Hessian in internals: `1/k` per primitive, `k` from
+/// Schlegel ([`InitialHessian::Simple`]) or Lindh floored at
+/// [`MODEL_HESSIAN_FLOOR`].
+fn internal_inverse_seed(
+    coords: &InternalCoords,
+    mol: &Molecule,
+    initial: InitialHessian,
+) -> Result<Array2<f64>, FerricError> {
+    let nq = coords.len();
+    let h_diag = match initial {
+        InitialHessian::Simple => coords.initial_hessian_diagonal(mol)?,
+        InitialHessian::Lindh => Array1::from_iter(coords.primitives.iter().map(|&p| {
+            ferric_core::model_hessian::lindh_force_constant(mol, p).max(MODEL_HESSIAN_FLOOR)
+        })),
+    };
+    let mut h_inv = Array2::<f64>::zeros((nq, nq));
+    for i in 0..nq {
+        h_inv[(i, i)] = 1.0 / h_diag[i];
+    }
+    Ok(h_inv)
+}
+
+/// Length of an internal step relative to the trust radii: the larger of
+/// `|s_dist| / dist_trust` and `|s_ang| / ang_trust`, 1 on the boundary.
+fn internal_step_length(
+    coords: &InternalCoords,
+    s: &Array1<f64>,
+    dist_trust: f64,
+    ang_trust: f64,
+) -> f64 {
+    let (mut d, mut a) = (0.0, 0.0);
+    for (idx, prim) in coords.primitives.iter().enumerate() {
+        if prim.is_angular() {
+            a += s[idx] * s[idx];
+        } else {
+            d += s[idx] * s[idx];
+        }
+    }
+    (d.sqrt() / dist_trust).max(a.sqrt() / ang_trust)
 }
 
 /// The BFGS secant vector `s`: the internal displacement **actually achieved**
@@ -810,8 +1129,9 @@ fn report_skipped_update(step: usize, s: &Array1<f64>, y: &Array1<f64>) {
 
 /// Clip a proposed internal step, separately per coordinate type.
 ///
-/// Bonds are clipped against the caller's Cartesian `trust_radius` (both are
-/// Bohr); angles and dihedrals against [`INTERNAL_ANGULAR_TRUST`] radians.
+/// Bonds are clipped against `cartesian_trust` (Bohr); angles and dihedrals
+/// against `angular_trust` (radians; [`INTERNAL_ANGULAR_TRUST`] times the
+/// trust scale).
 /// Mixing the two into a single vector norm would be a units error: adding
 /// Bohr² to rad² produces a number with no meaning, and whichever group
 /// happened to be numerically larger would dominate the clip.
@@ -819,6 +1139,7 @@ fn clip_internal_step(
     coords: &InternalCoords,
     p: &Array1<f64>,
     cartesian_trust: f64,
+    angular_trust: f64,
 ) -> Array1<f64> {
     let mut dist_norm = 0.0;
     let mut ang_norm = 0.0;
@@ -837,8 +1158,8 @@ fn clip_internal_step(
     } else {
         1.0
     };
-    let ang_scale = if ang_norm > INTERNAL_ANGULAR_TRUST {
-        INTERNAL_ANGULAR_TRUST / ang_norm
+    let ang_scale = if ang_norm > angular_trust {
+        angular_trust / ang_norm
     } else {
         1.0
     };
@@ -859,17 +1180,81 @@ fn clip_internal_step(
 /// closure agrees with itself on — this function never interprets the
 /// coordinates as atoms). Returns `(x_final, energy, steps, converged)`.
 ///
-/// The step is `-Hg` scaled onto the trust radius and always accepted; `H`
-/// starts at the identity and is carried by `guarded_inverse_bfgs_update`,
-/// which skips a pair with non-positive curvature so `H` stays positive
-/// definite. Pinned bit-for-bit by
-/// `test_optimize_h2_sto3g_step_energy_anchor`; the guard by
+/// The step is `-Hg` scaled onto the trust radius; `H` starts at the
+/// identity and is carried by `guarded_inverse_bfgs_update`, which skips a
+/// pair with non-positive curvature so `H` stays positive definite. Under
+/// [`TrustUpdate::Fixed`] every step is accepted; under
+/// [`TrustUpdate::Ratio`] the radius follows [`ratio_trust_update`]. Pinned
+/// bit-for-bit by `test_optimize_h2_sto3g_step_energy_anchor`; the guard by
 /// `negative_curvature_step_does_not_send_the_minimizer_uphill`.
+///
+/// # Errors
+///
+/// Refuses `initial_hessian = Some(Lindh)`: this entry point has no atoms to
+/// build the model from. Propagates errors from `f`.
 pub fn optimize_coordinates(
     x0: &[f64],
     opt_config: &OptimizeConfig,
-    mut f: impl FnMut(&[f64]) -> Result<(f64, Vec<f64>), FerricError>,
+    f: impl FnMut(&[f64]) -> Result<(f64, Vec<f64>), FerricError>,
 ) -> Result<(Vec<f64>, f64, usize, bool), FerricError> {
+    if opt_config.initial_hessian == Some(InitialHessian::Lindh) {
+        return Err(FerricError::General(
+            "initial_hessian = \"lindh\" needs a molecule; this optimizer (QM/MM free \
+             atoms, periodic cells) has none, so only \"simple\" is available"
+                .to_string(),
+        ));
+    }
+    let out = bfgs_cartesian(x0, opt_config, &|x: &[f64]| Ok(Array2::eye(x.len())), f)?;
+    if out.rejected > 0 {
+        println!("{} step(s) rejected by the trust-radius rule", out.rejected);
+    }
+    Ok((out.x, out.energy, out.steps, out.converged))
+}
+
+/// What [`bfgs_cartesian`] returns.
+struct CartesianOutcome {
+    x: Vec<f64>,
+    energy: f64,
+    steps: usize,
+    converged: bool,
+    rejected: usize,
+}
+
+/// Print one row of the step table.
+fn print_step_row(step_idx: usize, energy: f64, prev_energy: f64, g_max: f64, g_rms: f64) {
+    println!(
+        "{:4} | {:11.8} | {:7.1e} | {:8.2e} | {:8.2e}",
+        step_idx,
+        energy,
+        if step_idx == 0 {
+            0.0
+        } else {
+            energy - prev_energy
+        },
+        g_max,
+        g_rms
+    );
+}
+
+/// Print the line of a step the ratio rule rejected.
+fn print_rejected_row(step_idx: usize, e_trial: f64, energy: f64, radius: f64) {
+    println!(
+        "{:4} | {:11.8} | {:+7.1e} | rejected: energy rose; trust radius -> {:.3e}",
+        step_idx + 1,
+        e_trial,
+        e_trial - energy,
+        radius
+    );
+}
+
+/// The Cartesian BFGS loop, from the inverse Hessian `seed(x0)`. `seed` is
+/// also the reset on a degenerate update pair.
+fn bfgs_cartesian(
+    x0: &[f64],
+    opt_config: &OptimizeConfig,
+    seed: &dyn Fn(&[f64]) -> Result<Array2<f64>, FerricError>,
+    mut f: impl FnMut(&[f64]) -> Result<(f64, Vec<f64>), FerricError>,
+) -> Result<CartesianOutcome, FerricError> {
     let n_coord = x0.len();
     let mut x = Array1::from_vec(x0.to_vec());
 
@@ -877,81 +1262,98 @@ pub fn optimize_coordinates(
     let (mut energy, grad0) = f(x.as_slice().expect("x is contiguous"))?;
     let mut grad = Array1::from_vec(grad0);
 
-    // Approximate inverse Hessian (initialized to identity)
-    let mut h = Array2::<f64>::eye(n_coord);
+    // Approximate inverse Hessian
+    let mut h = seed(x0)?;
 
     let mut prev_energy = energy;
     let mut converged = false;
     let mut step_idx = 0;
+    let mut rejected = 0;
+    let mut fresh_point = true;
+    let mut radius = opt_config.trust_radius;
+    let r_min = TRUST_SCALE_MIN * opt_config.trust_radius;
+    let r_max = CARTESIAN_TRUST_SCALE_MAX * opt_config.trust_radius;
 
     println!("Step | Energy (Ha) | Delta E | Max Grad | RMS Grad");
     println!("-----+-------------+---------+----------+---------");
 
     while step_idx < opt_config.max_steps {
-        let g_max = grad.iter().map(|g| g.abs()).fold(0.0f64, f64::max);
-        let g_rms = (grad.iter().map(|g| g * g).sum::<f64>() / n_coord as f64).sqrt();
-        let e_diff = (energy - prev_energy).abs();
-
-        println!(
-            "{:4} | {:11.8} | {:7.1e} | {:8.2e} | {:8.2e}",
-            step_idx,
-            energy,
-            if step_idx == 0 {
-                0.0
-            } else {
-                energy - prev_energy
-            },
-            g_max,
-            g_rms
-        );
-
-        // Check convergence
-        if step_idx > 0
-            && e_diff < opt_config.e_conv
-            && g_max < opt_config.g_max_thresh
-            && g_rms < opt_config.g_rms_thresh
-        {
-            converged = true;
-            break;
+        if fresh_point {
+            let g_max = grad.iter().map(|g| g.abs()).fold(0.0f64, f64::max);
+            let g_rms = (grad.iter().map(|g| g * g).sum::<f64>() / n_coord as f64).sqrt();
+            let e_diff = (energy - prev_energy).abs();
+            print_step_row(step_idx, energy, prev_energy, g_max, g_rms);
+            if step_idx > 0
+                && e_diff < opt_config.e_conv
+                && g_max < opt_config.g_max_thresh
+                && g_rms < opt_config.g_rms_thresh
+            {
+                converged = true;
+                break;
+            }
         }
 
-        // BFGS step: p = -H * g
+        // BFGS step: p = -H * g, scaled onto the trust radius.
         let p = -h.dot(&grad);
-
-        // Trust-radius scaling only: the step is always accepted (no line
-        // search, no uphill rejection).
         let p_norm = p.iter().map(|v| v * v).sum::<f64>().sqrt();
-        let step = if p_norm > opt_config.trust_radius {
-            &p * (opt_config.trust_radius / p_norm)
+        let g_dot_p = grad.dot(&p);
+        let (step, alpha) = if p_norm > radius {
+            (&p * (radius / p_norm), radius / p_norm)
         } else {
-            p
+            (p, 1.0)
         };
 
-        // Update coordinates
-        x = &x + &step;
+        let x_trial = &x + &step;
+        let (e_new, grad_new) = f(x_trial.as_slice().expect("x is contiguous"))?;
+        let grad_new = Array1::from_vec(grad_new);
 
-        let prev_grad = grad.clone();
-        prev_energy = energy;
+        let accept = match opt_config.trust_update {
+            TrustUpdate::Fixed => true,
+            TrustUpdate::Ratio => {
+                // s = alpha p and B = H^-1 give B s = -alpha g, so the
+                // quadratic model's change g.s + s.Bs/2 is alpha g.p (1 - alpha/2).
+                let predicted = alpha * g_dot_p * (1.0 - 0.5 * alpha);
+                let step_norm = alpha * p_norm;
+                let (acc, next) =
+                    ratio_trust_update(e_new - energy, predicted, step_norm, radius, r_min, r_max);
+                radius = next;
+                acc
+            }
+        };
 
-        // Compute new energy and gradient
-        let (e_new, grad_new) = f(x.as_slice().expect("x is contiguous"))?;
-        energy = e_new;
-        grad = Array1::from_vec(grad_new);
+        // BFGS update for H, with the pair of this step whether or not it is
+        // kept: the curvature it measured is real either way.
+        let s = step; // x_trial - x
+        let y = &grad_new - &grad;
+        let update = guarded_inverse_bfgs_update(&mut h, &s, &y);
 
-        // BFGS update for H
-        let s = step; // x_{k+1} - x_k
-        let y = &grad - &prev_grad; // g_{k+1} - g_k
-
-        match guarded_inverse_bfgs_update(&mut h, &s, &y) {
+        if accept {
+            x = x_trial;
+            prev_energy = energy;
+            energy = e_new;
+            grad = grad_new;
+            fresh_point = true;
+        } else {
+            rejected += 1;
+            fresh_point = false;
+            print_rejected_row(step_idx, e_new, energy, radius);
+        }
+        match update {
             BfgsUpdate::Applied => {}
             BfgsUpdate::SkippedNonPositiveCurvature => report_skipped_update(step_idx, &s, &y),
-            BfgsUpdate::Degenerate => h = Array2::eye(n_coord),
+            BfgsUpdate::Degenerate => h = seed(x.as_slice().expect("x is contiguous"))?,
         }
 
         step_idx += 1;
     }
 
-    Ok((x.to_vec(), energy, step_idx, converged))
+    Ok(CartesianOutcome {
+        x: x.to_vec(),
+        energy,
+        steps: step_idx,
+        converged,
+        rejected,
+    })
 }
 
 /// `solve_rhf` returns an unconverged result as `Ok` (the UHF and ROHF solvers
@@ -1235,8 +1637,12 @@ mod tests {
             energy_conv: 1e-10,
             ..Default::default()
         };
+        // The search the anchor was captured with (identity start, fixed
+        // trust radius), pinned so the anchor tests the loop, not the defaults.
         let opt_config = OptimizeConfig {
             trust_radius: 0.1,
+            initial_hessian: Some(InitialHessian::Simple),
+            trust_update: TrustUpdate::Fixed,
             ..Default::default()
         };
         let ctx = ParallelContext::default();
@@ -1522,13 +1928,18 @@ mod tests {
     #[test]
     fn negative_curvature_step_does_not_send_the_minimizer_uphill() {
         let mut trace = Vec::new();
-        let (x, e, _steps, converged) =
-            optimize_coordinates(&[0.1, 0.0, 0.0], &OptimizeConfig::default(), |x| {
-                let r = double_well(x)?;
-                trace.push(r.0);
-                Ok(r)
-            })
-            .expect("model optimization runs");
+        // Fixed trust radius: every evaluation is kept, so an uphill entry in
+        // the trace is a step the search took.
+        let cfg = OptimizeConfig {
+            trust_update: TrustUpdate::Fixed,
+            ..Default::default()
+        };
+        let (x, e, _steps, converged) = optimize_coordinates(&[0.1, 0.0, 0.0], &cfg, |x| {
+            let r = double_well(x)?;
+            trace.push(r.0);
+            Ok(r)
+        })
+        .expect("model optimization runs");
         for (k, w) in trace.windows(2).enumerate() {
             assert!(
                 w[1] <= w[0],
@@ -1654,7 +2065,7 @@ mod tests {
             "precondition: the distance block must already be inside the trust radius"
         );
 
-        let out = clip_internal_step(&coords, &p, cartesian_trust);
+        let out = clip_internal_step(&coords, &p, cartesian_trust, INTERNAL_ANGULAR_TRUST);
 
         let mut dist_norm_out = 0.0;
         let mut ang_norm_out = 0.0;
@@ -1972,5 +2383,68 @@ mod tests {
             },
             crate::result::Spin::Restricted,
         );
+    }
+
+    /// The ratio rule's decision table (the same cases as claim T2 of
+    /// `scripts/geometry_search_steps_sympy.py`).
+    #[test]
+    fn ratio_trust_update_follows_the_decision_table() {
+        let cases = [
+            ((-0.1e-3, -1e-3, 0.1, 0.1), (true, 0.025)),
+            ((1e-3, -1e-3, 0.1, 0.1), (false, 0.025)),
+            ((-0.9e-3, -1e-3, 0.1, 0.1), (true, 0.2)),
+            ((-0.9e-3, -1e-3, 0.05, 0.1), (true, 0.1)),
+            ((-0.5e-3, -1e-3, 0.1, 0.1), (true, 0.1)),
+            ((-1.5e-3, -1e-3, 0.1, 0.1), (true, 0.2)),
+            ((5e-9, -5e-9, 0.1, 0.1), (true, 0.1)),
+            ((-0.9e-3, -1e-3, 1.0, 1.0), (true, 1.0)),
+            ((1e-3, -1e-3, 1e-3, 1e-3), (false, 1e-3)),
+        ];
+        for ((a, p, s, r), want) in cases {
+            let got = ratio_trust_update(a, p, s, r, 1e-3, 1.0);
+            assert_eq!(got.0, want.0, "accept for {:?}", (a, p, s, r));
+            assert!(
+                (got.1 - want.1).abs() < 1e-15,
+                "radius {got:?} for {:?}",
+                (a, p, s, r)
+            );
+        }
+    }
+
+    /// The Cartesian Lindh seed: symmetric positive definite; the identity on
+    /// the rigid-body motions; and the exact inverse of the model on the
+    /// directions whose eigenvalue is above the floor (`H0 H_L v = v`).
+    #[test]
+    fn lindh_inverse_seed_inverts_the_model_off_the_rigid_body_space() {
+        let mol = Molecule::parse_xyz(
+            "9\nethanol\n\
+             C -0.0478 -0.4252 0.0000\nC 1.2600 0.3599 0.0000\nO -1.1661 0.4545 0.0000\n\
+             H -0.0951 -1.0675 0.8857\nH -0.0951 -1.0675 -0.8857\nH 2.1102 -0.3268 0.0000\n\
+             H 1.3184 1.0000 0.8810\nH 1.3184 1.0000 -0.8810\nH -1.9867 -0.0507 0.0000\n",
+            0,
+            1,
+        )
+        .unwrap();
+        let h0 = lindh_inverse_hessian(&mol).unwrap();
+        let hl = ferric_core::model_hessian::lindh_cartesian_hessian(&mol).unwrap();
+        let asym = (&h0 - &h0.t()).iter().fold(0.0f64, |m, v| m.max(v.abs()));
+        assert!(asym < 1e-10, "asymmetry {asym:e}");
+        let (w0, _) = h0.eigh(UPLO::Upper).unwrap();
+        assert!(w0[0] > 0.0, "H0 not positive definite: {}", w0[0]);
+        let t = rigid_body_basis(&mol);
+        assert_eq!(t.ncols(), 6);
+        let ht = h0.dot(&t) - &t;
+        assert!(ht.iter().fold(0.0f64, |m, v| m.max(v.abs())) < 1e-10);
+        let (w, v) = hl.eigh(UPLO::Upper).unwrap();
+        let mut checked = 0;
+        for (j, &wj) in w.iter().enumerate() {
+            if wj > 10.0 * MODEL_HESSIAN_FLOOR {
+                let col = v.column(j).to_owned();
+                let back = h0.dot(&hl.dot(&col)) - &col;
+                assert!(back.dot(&back).sqrt() < 1e-9, "mode {j} (w = {wj})");
+                checked += 1;
+            }
+        }
+        assert!(checked >= 15, "only {checked} modes above the floor");
     }
 }

@@ -163,6 +163,7 @@ pub(crate) fn optimize_result_certificate(
     oo_max_iter=None, oo_grad_conv=None, c_os=None, c_ss=None, scf_eri=None,
     scf_relativistic=None, fock_hook=None, fock_hook_grad=None, coordinates=None,
     rpa_gradient=None, n_quad=None, quadrature=None, trunc_thresh=None, omega=None,
+    initial_hessian=None, trust_update=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_optimize(
@@ -206,6 +207,8 @@ pub(crate) fn run_optimize(
     quadrature: Option<&str>,
     trunc_thresh: Option<f64>,
     omega: Option<f64>,
+    initial_hessian: Option<&str>,
+    trust_update: Option<&str>,
 ) -> PyResult<PyOptimizeResult> {
     // Before any setup: no method here has an X2C-1e gradient.
     refuse_relativistic_kwarg(scf_relativistic, "analytic nuclear gradient (run_optimize)")?;
@@ -259,7 +262,17 @@ pub(crate) fn run_optimize(
     let bs = basis::bundled(basis_name).map_err(make_err)?;
     let mut emol = mol.inner.clone();
     emol.apply_ecp(&bs);
-    let opt_config = optimize_config(max_steps, e_conv, scf_warm_start, coordinates)?;
+    let mut opt_config = optimize_config(max_steps, e_conv, scf_warm_start, coordinates)?;
+    if let Some(s) = initial_hessian {
+        opt_config.initial_hessian = Some(
+            ferric_scf::optimize::InitialHessian::parse_config_str(s)
+                .map_err(pyo3::exceptions::PyValueError::new_err)?,
+        );
+    }
+    if let Some(s) = trust_update {
+        opt_config.trust_update = ferric_scf::optimize::TrustUpdate::parse_config_str(s)
+            .map_err(pyo3::exceptions::PyValueError::new_err)?;
+    }
     if fock_hook.is_some() || fock_hook_grad.is_some() {
         let hooks = check_optimize_hooks(fock_hook, fock_hook_grad, method, &k, scf_warm_start)?;
         let opt_config = OptimizeConfig {
@@ -347,6 +360,8 @@ pub(crate) fn run_optimize_uhf(
         None,
         None,
         coordinates,
+        None,
+        None,
         None,
         None,
         None,

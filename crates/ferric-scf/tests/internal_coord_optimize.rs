@@ -48,7 +48,9 @@
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
 use ferric_integrals::operator::Operator;
-use ferric_scf::optimize::{optimize_geometry, CoordSystem, OptimizeConfig, OptimizeResult};
+use ferric_scf::optimize::{
+    optimize_geometry, CoordSystem, InitialHessian, OptimizeConfig, OptimizeResult, TrustUpdate,
+};
 use ferric_scf::rhf::RhfConfig;
 
 fn rhf_cfg() -> RhfConfig {
@@ -101,18 +103,23 @@ fn run(mol: &Molecule, cfg: &OptimizeConfig) -> OptimizeResult {
     optimize_geometry(&ctx, mol, "sto-3g", Operator::coulomb(), &rhf_cfg(), cfg).unwrap()
 }
 
+/// The search the recorded paths in this file were taken with: identity
+/// (Cartesian) or Schlegel (internal) start and a fixed trust radius. Pinned so
+/// these anchors keep testing the coordinate machinery, not the defaults; the
+/// Lindh and ratio options are tested in `optimizer_model_hessian.rs`.
 fn cartesian_cfg() -> OptimizeConfig {
     OptimizeConfig {
         trust_radius: 0.1,
+        initial_hessian: Some(InitialHessian::Simple),
+        trust_update: TrustUpdate::Fixed,
         ..Default::default()
     }
 }
 
 fn internal_cfg() -> OptimizeConfig {
     OptimizeConfig {
-        trust_radius: 0.1,
         coord_system: CoordSystem::RedundantInternal,
-        ..Default::default()
+        ..cartesian_cfg()
     }
 }
 

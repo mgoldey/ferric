@@ -30,7 +30,7 @@ the runner.
 | Rust, minimum | `ferric-scf/src/optimize.rs::{optimize_geometry,optimize_coordinates}`; open shell `optimize_geometry_uhf`, `optimize_geometry_rohf` |
 | Rust, saddle | `ferric-scf/src/saddle.rs::find_saddle` |
 | Rust, path | `ferric-scf/src/irc.rs::follow_irc` |
-| CLI | `task = "optimize"`, section `[optimize]` (`max_steps`, `g_max_thresh`, `g_rms_thresh`, `e_conv`, `trust_radius`, `coordinates`, `scf_warm_start`) |
+| CLI | `task = "optimize"`, section `[optimize]` (`max_steps`, `g_max_thresh`, `g_rms_thresh`, `e_conv`, `trust_radius`, `coordinates`, `initial_hessian`, `trust_update`, `scf_warm_start`) |
 | Python | `run_optimize`, `run_saddle`, `run_irc` |
 
 <!-- include: crates/ferric-scf/theory.md#"Geometry searches" -->
@@ -38,14 +38,20 @@ the runner.
 ## 14.8.1 Minimization
 
 The default is Cartesian BFGS on the inverse Hessian, started from the
-identity, with a trust-radius clip, no line search and no step rejection. With $s = x_{k+1}-x_k$
-and $y = g_{k+1}-g_k$:
+inverse of the Lindh model Hessian (`initial_hessian = "lindh"`), with a
+trust radius moved by the ratio of the actual to the predicted energy change
+and a rejected step when the energy rises (`trust_update = "ratio"`), and no
+line search. `initial_hessian = "simple"` starts from the identity and
+`trust_update = "fixed"` keeps the radius and every step; the two together are
+the search before these keys existed. The ratio rule and the measured step
+counts are in the included theory text above and in section 14.8.2. With
+$s = x_{k+1}-x_k$ and $y = g_{k+1}-g_k$:
 
 $$ p = -H g, \qquad s = p\,\min\!\Big(1, \frac{r_{\mathrm{trust}}}{\lVert p\rVert}\Big), \qquad
 H' = H + \frac{y^{\mathsf T}s + y^{\mathsf T}Hy}{(y^{\mathsf T}s)^2}\,s\,s^{\mathsf T} - \frac{H y\,s^{\mathsf T} + s\,y^{\mathsf T}H}{y^{\mathsf T}s} . \tag{14.20} $$
 
 If $\lvert y^{\mathsf T}s\rvert \le 10^{-12}$ the update is skipped and $H$ is reset to the
-identity. If $y^{\mathsf T}s \le 10^{-8}\lVert y\rVert\lVert s\rVert$, which means negative
+starting Hessian. If $y^{\mathsf T}s \le 10^{-8}\lVert y\rVert\lVert s\rVert$, which means negative
 curvature along the step, the update is skipped and $H$ is kept, with a printed note. Any
 update that satisfies $H'y = s$ has $y^{\mathsf T}H'y = y^{\mathsf T}s$, so applying it there
 would make $H$ indefinite and could send the next step uphill. With the guard, $H$ stays
@@ -74,6 +80,29 @@ steps.
 >
 > <!-- verified: id=geom.bfgs; script=scripts/geometry_search_steps_sympy.py; claim=B2; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/optimize.rs::optimize_coordinates; rust_test=ferric-scf/src/optimize.rs::test_optimize_h2_sto3g_step_energy_anchor; registry=geometry-search -->
 
+## 14.8.2 Lindh model Hessian
+
+<!-- include: crates/ferric-scf/theory.md#"Lindh model Hessian" -->
+
+> **Verified equation** · the Lindh model Hessian
+>
+> The force constants and their distance derivatives hold in symbols, the
+> constants in the Rust equal Table 1 of the paper, the closed-form Wilson
+> vectors equal sympy gradients of the primitive values, and the Cartesian sum
+> is symmetric and positive semi-definite with exactly six rigid-body null
+> vectors. An independent brute-force numpy sum over every stretch, bend and
+> torsion gives the stored reference that the Rust matches to 1e-12.
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/lindh_hessian_sympy.py`, claims L1 to L4 |
+> | Negative control | the runner changes one α entry, the bend constant, a Wilson torsion term and the sign of the ρ exponent (claims L4, L4, L2 and L1 fail) |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-core/src/model_hessian.rs::lindh_cartesian_hessian` |
+> | Code test | `lindh_hessian_matches_the_numpy_reference` in `crates/ferric-scf/tests/optimizer_model_hessian.rs` (fails when an α entry changes from 0.3949 to 0.28) |
+>
+> <!-- verified: id=geom.lindh; script=scripts/lindh_hessian_sympy.py; claim=L4; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-core/src/model_hessian.rs::lindh_cartesian_hessian; rust_test=ferric-scf/tests/optimizer_model_hessian.rs::lindh_hessian_matches_the_numpy_reference; registry=geometry-search -->
+
 **Redundant internal coordinates** (`coordinates = "internal"`, opt-in) run the
 same update on bonds, angles and proper dihedrals:
 
@@ -93,7 +122,7 @@ if they cannot be built the run falls back to Cartesians with a printed
 warning. Internals are not the default because they add ways to fail
 (bond perception, back-transformation) that Cartesians do not have.
 
-## 14.8.2 Saddle points: P-RFO
+## 14.8.3 Saddle points: P-RFO
 
 The saddle search of `ferric-scf/src/saddle.rs::find_saddle` works in mass-weighted
 Cartesians. It does not reuse the minimizer, because a positive-definite
@@ -202,7 +231,7 @@ displaced gradients, for closed-shell references that the analytic Hessian
 accepts. Recomputing every step is available and, on the system tested,
 did not reduce the step count.
 
-## 14.8.3 Reaction paths: mass-weighted descent
+## 14.8.4 Reaction paths: mass-weighted descent
 
 `ferric-scf/src/irc.rs::follow_irc` displaces the saddle along the imaginary mode in
 each direction and follows the mass-weighted gradient downhill. The path is the
@@ -254,7 +283,7 @@ threshold must be finite and positive: infinities fail silently (an infinite
 threshold reports the first point as converged), so they are refused at the
 boundary.
 
-## 14.8.4 Reproducibility
+## 14.8.5 Reproducibility
 
 - The Cartesian minimizer path is pinned bit for bit by
   `cartesian_path_is_reproducible_and_matches_the_recorded_path` and the
@@ -270,18 +299,20 @@ boundary.
 - An energy correction without a gradient is a hard error, so a search never
   walks one surface while reporting another.
 
-## 14.8.5 Options
+## 14.8.6 Options
 
 | Option | Effect |
 |---|---|
 | `coordinates` | `cartesian` (default) or `internal`; strict parse, no silent default |
+| `initial_hessian` | `lindh` (default) or `simple`; strict parse. The coordinate-only search (periodic cells, QM/MM) has no model, starts from the identity and refuses `lindh` |
+| `trust_update` | `ratio` (default) or `fixed`; strict parse. `simple` with `fixed` reproduces the earlier search bit for bit (`simple_hessian_and_fixed_trust_reproduce_the_recorded_trajectories`) |
 | energy correction (dispersion) | added to energy and gradient at every step by a caller closure. With the default no-correction closure the path is byte-identical (`a_zero_correction_is_byte_identical_to_no_correction`) |
 | `follow_mode` | which projected mode to climb, by ascending eigenvalue; 0 follows the lowest |
 | `hessian_recalc_every` | rebuild the exact Hessian every $N$ steps instead of carrying the Bofill update |
 | open shell | `run_optimize` covers UHF and ROHF; `run_saddle` and `run_irc` are closed shell only |
 | QM/MM | `run_optimize_qmmm` has its own boundary handling; see chapter 23 |
 
-## 14.8.6 Numerical anchors
+## 14.8.7 Numerical anchors
 
 | Check | Reference | Agreement | Test |
 |---|---|---|---|

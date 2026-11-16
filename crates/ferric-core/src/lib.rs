@@ -40,6 +40,8 @@ pub mod internal_coords;
 pub mod linalg;
 /// Memory budget discovery and enforcement.
 pub mod memory;
+/// Lindh (1995) model Hessian, the initial Hessian of the geometry optimizer.
+pub mod model_hessian;
 /// Molecular geometry: [`Atom`](mol::Atom), [`Molecule`](mol::Molecule), XYZ parser, nuclear repulsion.
 pub mod mol;
 /// Occupied/virtual orbital partitions for post-HF methods.

@@ -11,7 +11,7 @@ use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
 use ferric_integrals::operator::Operator;
 use ferric_mm::{Angle, Bond, LjParams, MmTopology, Torsion};
-use ferric_scf::optimize::{optimize_geometry, OptimizeConfig};
+use ferric_scf::optimize::{optimize_geometry, InitialHessian, OptimizeConfig};
 use ferric_scf::qmmm::{
     optimize_qmmm, BoundaryChargeScheme, MoveMm, QmSelection, QmmmAtom, QmmmMethod,
     QmmmOptimizeConfig, QmmmSystem, DEFAULT_LINK_SCALE,
@@ -212,8 +212,11 @@ fn optimize_qmmm_with_no_mm_matches_optimize_geometry() {
         energy_conv: 1e-10,
         ..Default::default()
     };
+    // The QM/MM optimizer has no model Hessian (it starts from the
+    // identity), so the plain run is pinned to the same start.
     let opt_config = OptimizeConfig {
         trust_radius: 0.1,
+        initial_hessian: Some(InitialHessian::Simple),
         ..Default::default()
     };
 

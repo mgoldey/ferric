@@ -1750,13 +1750,31 @@ Three searches use the analytic gradient: a minimizer (`optimize.rs`), a
 saddle search (`saddle.rs`) and a reaction-path walk (`irc.rs`).
 
 **Minimization** (`optimize_coordinates`, Cartesian default). BFGS on the
-inverse Hessian $H$, started from the identity. There is no line search and no
-step rejection: each step is $p = -Hg$ scaled uniformly onto the trust radius
-when longer,
+inverse Hessian $H$, started from the inverse of the Lindh model Hessian
+(`initial_hessian = "lindh"`, the default; next section) or from the identity
+(`"simple"`).
+There is no line search. Each step is $p = -Hg$ scaled uniformly onto the
+trust radius $\Delta$ when longer,
 
-$$s = p\,\min\!\Big(1, \frac{r_{\rm trust}}{\lVert p\rVert}\Big),$$
+$$s = \alpha p,\qquad \alpha = \min\!\Big(1, \frac{\Delta}{\lVert p\rVert}\Big).$$
 
-and the new point is always accepted. With $y = g_{k+1} - g_k$ and
+With `trust_update = "fixed"` $\Delta = r_{\rm trust}$ and the new point is
+always accepted. With `"ratio"` (the default; `ratio_trust_update`; Nocedal and Wright,
+*Numerical Optimization*, Algorithm 4.1 with $\eta = 0$) the quadratic model
+$m(s) = g^{\mathsf T}s + \tfrac12 s^{\mathsf T}Bs$, $B = H^{-1}$, predicts
+the change. Because $Bs = -\alpha BHg = -\alpha g$,
+
+$$\Delta E_{\rm pred} = \alpha\, g^{\mathsf T}p\,\big(1 - \tfrac{\alpha}{2}\big) < 0,$$
+
+with no linear solve. With $r = \Delta E/\Delta E_{\rm pred}$ the radius becomes
+$\tfrac14\lVert s\rVert$ when $r < \tfrac14$, $2\Delta$ when $r > \tfrac34$ and
+$\lVert s\rVert \ge 0.99\,\Delta$, and stays otherwise, clamped to
+$[0.01, 10]\,r_{\rm trust}$. The step is kept when $\Delta E < 10^{-8}$ Ha
+(the energy fell, or rose by less than the noise of an SCF energy); a rejected
+step costs its evaluation, the search stays at the old point, and its
+$(s, y)$ pair still updates $H$. When both $\lvert\Delta E\rvert$ and
+$\lvert\Delta E_{\rm pred}\rvert$ are below $10^{-8}$ the ratio is noise and
+$\Delta$ is kept. With $y = g_{k+1} - g_k$ and
 $\rho = 1/(y^{\mathsf T}s)$,
 
 $$H' = H + \rho^2\big(y^{\mathsf T}s + y^{\mathsf T}Hy\big)ss^{\mathsf T} - \rho\big(Hys^{\mathsf T} + sy^{\mathsf T}H\big).$$
@@ -1767,11 +1785,11 @@ of $B = H^{-1}$ (Sherman–Morrison–Woodbury), it satisfies the secant conditi
 $H'y = s$, and it keeps $H$ positive definite when $y^{\mathsf T}s > 0$. The
 converse also holds for any update that satisfies the secant condition:
 $y^{\mathsf T}H'y = y^{\mathsf T}s$, so $y^{\mathsf T}s \le 0$ leaves no
-positive-definite $H'$, and a later step $-H'g$ can point uphill. Every step is
-accepted, so nothing downstream would catch that. The update is therefore
+positive-definite $H'$, and a later step $-H'g$ can point uphill. Under
+`"fixed"` every step is accepted, so nothing downstream would catch that. The update is therefore
 guarded (`guarded_inverse_bfgs_update`):
 
-$$H' = \begin{cases} H & \lvert y^{\mathsf T}s\rvert \le 10^{-12}:\ \text{reset to the identity instead},\\ H & y^{\mathsf T}s \le \varepsilon\,\lVert y\rVert\,\lVert s\rVert,\ \ \varepsilon = 10^{-8}:\ \text{skipped},\\ \text{the update above} & \text{otherwise.} \end{cases}$$
+$$H' = \begin{cases} H & \lvert y^{\mathsf T}s\rvert \le 10^{-12}:\ \text{reset to the seed instead},\\ H & y^{\mathsf T}s \le \varepsilon\,\lVert y\rVert\,\lVert s\rVert,\ \ \varepsilon = 10^{-8}:\ \text{skipped},\\ \text{the update above} & \text{otherwise.} \end{cases}$$
 
 A skipped update leaves $H$ positive definite by induction from the identity,
 so every step is a descent direction. Above the threshold the guard changes
@@ -1789,6 +1807,12 @@ ${\rm rms}(g) < g_{\rm rms}$ together. Redundant internals
 empirical diagonal Hessian, clip bonds against $r_{\rm trust}$ and angles
 against 0.3 rad separately (`clip_internal_step`), update with the achieved
 internal displacement under the same guard, and on a degenerate pair reset to the empirical diagonal.
+Under `"ratio"` the internal search scales both radii by one factor $f \in
+[0.01, 4]$, predicts $g_q^{\mathsf T}s + \tfrac12 s^{\mathsf T}H^{-1}s$ on the
+achieved internal step $s$ (a linear solve, since a redundant step is not
+$\alpha p$), and measures the step as
+$\max(\lVert s_{\rm dist}\rVert/r_{\rm trust}, \lVert s_{\rm ang}\rVert/0.3)$
+in the units of $f$.
 
 **Saddle points** (`find_saddle`). In mass-weighted Cartesians, with the
 projected Hessian's eigenvalues $b_i$ (rigid modes shifted to $+10^3$) and
@@ -1834,6 +1858,112 @@ the threshold; P1 the followed-mode root and step in symbols; P2
 `prfo_step` against the augmented-Hessian eigenvectors; F1 the two Bofill
 corrections' secant conditions; F2 the update's secant condition, symmetry and
 retained negative eigenvalue; I1 the mass-weighted step).
+
+## Lindh model Hessian
+
+`ferric_core::model_hessian` (R. Lindh, A. Bernhardsson, G. Karlström and
+P.-Å. Malmqvist, Chem. Phys. Lett. 241, 423 (1995)). For atoms $i, j$ in
+periods $p_i, p_j$ (H–He, Li–Ne, Na and heavier),
+
+$$\rho_{ij} = \exp\!\big[\alpha_{p_ip_j}\big(r_{{\rm ref},p_ip_j}^2 - r_{ij}^2\big)\big],$$
+
+with $\alpha$ = (1.0000, 0.3949, 0.3949; 0.3949, 0.2800, 0.2800; 0.3949,
+0.2800, 0.2800) Bohr$^{-2}$ and $r_{\rm ref}$ = (1.35, 2.10, 2.53; 2.10, 2.87,
+3.40; 2.53, 3.40, 3.40) Bohr (Table 1 of the paper). The force constants are
+
+$$k_{ij} = k_r\rho_{ij},\qquad k_{ijk} = k_\varphi\rho_{ij}\rho_{jk},\qquad k_{ijkl} = k_\tau\rho_{ij}\rho_{jk}\rho_{kl},$$
+
+$k_r = 0.45$ Ha/Bohr$^2$, $k_\varphi = 0.15$, $k_\tau = 0.005$ Ha/rad$^2$, so
+$\rho = 1$ and $k = k_r$ at the reference distance, and
+$\partial\ln\rho_{ij}/\partial r_{ij} = -2\alpha r_{ij}$. The Cartesian model is
+a sum over every stretch, bend and torsion of the molecule, bonded or not,
+
+$$H^{\rm L} = \sum_q k_q\, b_q b_q^{\mathsf T},\qquad b_q = \partial q/\partial x,$$
+
+with the Wilson vectors of `primitive_derivatives`. Each term is a rank-one
+positive semi-definite matrix, so $H^{\rm L}$ is symmetric and positive
+semi-definite. Each primitive is invariant under rigid motions $t$, so
+$b_q^{\mathsf T}t = 0$ and $H^{\rm L}t = 0$ term by term: the three
+translations and three rotations are null vectors. Bends within 5° of linear
+and torsions containing one are dropped (their $b_q$ diverge), and so are terms
+with $\rho$ product below $10^{-8}$. Dropping a positive semi-definite term
+keeps the sum positive semi-definite.
+
+The optimizer seeds BFGS with an inverse. With $T$ the orthonormal rigid-body
+basis and $Q$ its orthonormal complement, $Q^{\mathsf T}H^{\rm L}Q = VwV^{\mathsf T}$,
+
+$$H_0 = QV\,{\rm diag}\big(1/\max(w_i, 10^{-3})\big)V^{\mathsf T}Q^{\mathsf T} + TT^{\mathsf T}.$$
+
+The floor covers directions with no model curvature (a linear molecule's
+bends); $10^{-3}$ is below the curvature of one bonded torsion, about
+$k_\tau\lVert b\rVert^2 \approx 3\times10^{-3}$. The identity block on $T$
+matches the simple start, so a gradient with a rigid-body component (an
+external field) is treated as before. In redundant internals the seed is the
+diagonal $1/\max(k_q, 10^{-3})$ over the bonded primitives. The
+coordinate-only search `optimize_coordinates` (periodic cells, QM/MM) has no
+molecule to build the model from: it starts from the identity, refuses an
+explicit `lindh`, and uses the trust rule it is given.
+
+Proof: `scripts/lindh_hessian_sympy.py` (L1 the force constants and their
+distance derivatives in symbols, and the constants and tables read from the
+Rust against Table 1; L2 the Wilson vectors against sympy gradients of the
+primitive values; L3 symmetry, positive semi-definiteness and the six null
+vectors; L4 a brute-force numpy sum over every term, which the Rust test
+`lindh_hessian_matches_the_numpy_reference` matches through
+`testdata/reference/lindh_model_hessian.json`).
+
+**Measured defaults.** Steps to convergence at HF/STO-3G from RDKit/MMFF
+starting geometries, default thresholds (`g_max` 4.5e-4, `g_rms` 3e-4,
+`e_conv` 1e-6), "old" = `simple` + `fixed`, "new" = `lindh` + `ratio`,
+geomeTRIC 1.1 in TRIC coordinates on ferric gradients (`ferric.ase`) as an
+outside reference:
+
+| molecule (atoms) | Cartesian old | Cartesian new | internal old | internal new | geomeTRIC |
+|---|---|---|---|---|---|
+| water (3) | 5 | 3 | 5 | 3 | 4 |
+| ethanol (9) | 28 | 4 | 16 | 15 | 5 |
+| butane (14) | 19 | 5 | 16 | 14 | 8 |
+| paracetamol (20) | 60 | 33 | 30 | 22 | 29 |
+| alanine dipeptide (22) | 118 | 39 | 40 | 31 | 22 |
+| aspirin (21) | 58 | 16 | 32 | 15 | 21 |
+| ibuprofen (33) | 80 | 19 | 67 | 30 | 16 |
+| sulfamethoxazole (28) | 170 | 92 | 46 | 26 | 25 |
+| total | 538 | 211 | 252 | 156 | 130 |
+
+`lindh` alone (Cartesian, `fixed`) gives 4, 5, 49, 30, 26 steps on ethanol,
+butane, alanine dipeptide, aspirin and ibuprofen; `ratio` alone reproduces the
+old trajectories exactly, since with the identity seed no step reaches the
+trust boundary. The old Cartesian search stops 0.01 to 0.10 mHa above the
+minimum the others reach (0.03 to 0.21 Å RMSD): with the identity seed a soft
+mode meets the gradient thresholds before it is relaxed. The new searches end
+within 3e-3 mHa of each other, except Cartesian new on sulfamethoxazole: its
+long early steps turn the sulfonamide C–C–N–S torsion from 13° to −64°
+(internals and geomeTRIC stop at +60°) and it ends in a rotamer 3.4 mHa lower.
+Both end points are minima: re-optimizing either one with the other search
+moves the energy by less than 0.02 mHa. The coordinate default stays
+Cartesian: with the new options internals take fewer steps on four
+molecules, Cartesians on three (one tie), and the internal total leads mainly
+because of sulfamethoxazole.
+
+Sulfamethoxazole at PBE/def2-SVP (RI-J/RI-K, f64), same start: Cartesian
+old does not converge in 150 steps; Cartesian new converges in 47 steps,
+internal new in 37, internal old in 35. The new searches end within 0.04 mHa
+of each other. A further 150 internal steps from each end point at `g_max`
+1.5e-5 (none reaches that threshold) move them by less
+than 0.05 mHa, and they stay 0.02 mHa apart. The analytic Hessian at the
+internal end point has one mode at 22.7i cm⁻¹ (NH2 and methyl hydrogens);
+re-optimizing from ±0.15 Å along it lowers the energy by at most 0.05 mHa, so
+it is a soft region of the same basin at the loose default thresholds, not a
+saddle above a lower one.
+The unconverged old search ends 1.39 mHa lower and keeps falling in the same
+re-optimization, to 1.50 mHa below the new end points: its 150 short steps carry it out of
+the starting basin into a lower one. geomeTRIC on the same surface (checked:
+its calculator and `run_optimize` agree to 0.01 mHa at one geometry) takes 53
+steps and ends 2.3 mHa below the new end points, in a third basin. At this
+level the molecule has several rotamers within a few mHa, and which one a local
+search reaches depends on its early steps. An end-point gap of this size between the
+old Cartesian and internal searches is a different basin, not a convergence
+criterion.
 
 ## Kohn-Sham Z-vector for post-SCF corrections
 

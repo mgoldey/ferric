@@ -435,6 +435,37 @@ CASES = [
                 "return -length * g / (np.sqrt(masses) * gn)",
                 "FAIL I1 mass-weighted gradient",
             ),
+            (
+                "TRUST_SHRINK_RATIO = 0.25\nTRUST_GROW_RATIO = 0.75",
+                "TRUST_SHRINK_RATIO = 0.75\nTRUST_GROW_RATIO = 0.25",
+                "FAIL T2 ratio_trust_update decision table",
+            ),
+        ],
+    ),
+    (
+        "lindh_hessian_sympy.py",
+        10,
+        [
+            (
+                "BF_ALPHA = [\n    [1.0000, 0.3949, 0.3949],",
+                "BF_ALPHA = [\n    [1.0000, 0.2800, 0.3949],",
+                "FAIL L4 water = stored reference",
+            ),
+            (
+                'add((i, j, k), 0.15 * w, "angle")',
+                'add((i, j, k), 0.45 * w, "angle")',
+                "FAIL L4 water = stored reference",
+            ),
+            (
+                "    dj = -(t1 + 1.0) * di + t2 * dl\n",
+                "    dj = (t1 - 1.0) * di + t2 * dl\n",
+                "FAIL L2 Wilson tors",
+            ),
+            (
+                "    return np.exp(alpha * (rref * rref - r * r))",
+                "    return np.exp(-alpha * (rref * rref - r * r))",
+                "FAIL L1 numeric rho below 1 past r_ref",
+            ),
         ],
     ),
     (

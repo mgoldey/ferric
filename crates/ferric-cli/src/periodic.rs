@@ -2840,7 +2840,12 @@ fn run_periodic_optimize(
     s: &Setup,
 ) -> (Outcome, Option<OptimizeInfo>) {
     use ferric_scf::optimize::{optimize_coordinates, CoordSystem, OptimizeConfig};
+    // An explicit initial_hessian = "lindh" is refused by optimize_coordinates
+    // (a periodic cell has no molecular model Hessian here).
+    let (initial_hessian, trust_update) = cfg.optimize.search_options();
     let opt_config = OptimizeConfig {
+        initial_hessian,
+        trust_update,
         max_steps: cfg.optimize.max_steps.unwrap_or(100),
         g_max_thresh: cfg.optimize.g_max_thresh.unwrap_or(4.5e-4),
         g_rms_thresh: cfg.optimize.g_rms_thresh.unwrap_or(3.0e-4),

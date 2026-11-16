@@ -7688,12 +7688,15 @@ fn run_optimize(
     rhf_config: &RhfConfig,
     budget_bytes: Option<usize>,
 ) {
+    let (initial_hessian, trust_update) = cfg.optimize.search_options();
     let opt_config = OptimizeConfig {
         max_steps: cfg.optimize.max_steps.unwrap_or(100),
         g_max_thresh: cfg.optimize.g_max_thresh.unwrap_or(4.5e-4),
         g_rms_thresh: cfg.optimize.g_rms_thresh.unwrap_or(3.0e-4),
         e_conv: cfg.optimize.e_conv.unwrap_or(1e-6),
         trust_radius: cfg.optimize.trust_radius.unwrap_or(0.1),
+        initial_hessian,
+        trust_update,
         coord_system: match cfg.optimize.coordinates.as_deref() {
             None => Default::default(),
             Some(s) => crate::config::parse_coord_system(s).unwrap_or_else(|e| {

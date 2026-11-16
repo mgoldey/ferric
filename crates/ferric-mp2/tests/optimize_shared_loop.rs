@@ -28,17 +28,28 @@ use ferric_mp2::optimize::{
     optimize_geometry_rimp2, optimize_geometry_scs_mp2_on, RiMp2OptimizeResult,
 };
 use ferric_mp2::rimp2::RiMp2Config;
-use ferric_scf::optimize::{CoordSystem, OptimizeConfig};
+use ferric_scf::optimize::{CoordSystem, InitialHessian, OptimizeConfig, TrustUpdate};
 use ferric_scf::warm_start::ScfWarmStart;
 use ndarray::Array2;
 use ndarray_linalg::{Eigh, UPLO};
 use std::io::Write;
 
+/// The search the recorded paths were taken with: identity start, fixed
+/// trust radius (`initial_hessian = "simple"`, `trust_update = "fixed"`).
+/// Pinned so the paths keep testing the shared loop, not the defaults.
+fn legacy() -> OptimizeConfig {
+    OptimizeConfig {
+        initial_hessian: Some(InitialHessian::Simple),
+        trust_update: TrustUpdate::Fixed,
+        ..Default::default()
+    }
+}
+
 const WATER: &str = "3\ndistorted water\nO 0 0 0\nH 0 0.9 0\nH 0 -0.3 0.85\n";
 const H2: &str = "2\nH2\nH 0 0 0\nH 0 0 1.0\n";
 
 /// Step energies of RI-MP2 / STO-3G / cc-pVDZ-RI on `WATER`, default
-/// `OptimizeConfig`, from the pre-refactor loop.
+/// `OptimizeConfig` of the time ([`legacy`]), from the pre-refactor loop.
 const RIMP2_WATER_TRACE: [f64; 8] = [
     -74.97420096032445,
     -74.99605176110357,
@@ -111,7 +122,7 @@ fn rimp2(xyz: &str, opt: &OptimizeConfig) -> RiMp2OptimizeResult {
 
 #[test]
 fn rimp2_cartesian_path_matches_the_recorded_path_water() {
-    let r = rimp2(WATER, &OptimizeConfig::default());
+    let r = rimp2(WATER, &legacy());
     dump("rimp2-water", &r);
     assert_trace("rimp2-water", &r.energy_trace, &RIMP2_WATER_TRACE);
     assert!(r.converged);
@@ -119,7 +130,7 @@ fn rimp2_cartesian_path_matches_the_recorded_path_water() {
 
 #[test]
 fn rimp2_cartesian_path_matches_the_recorded_path_h2() {
-    let r = rimp2(H2, &OptimizeConfig::default());
+    let r = rimp2(H2, &legacy());
     dump("rimp2-h2", &r);
     assert!(r.converged);
 }
@@ -134,7 +145,7 @@ fn scs_cartesian_path_matches_the_recorded_path_water() {
         &obs,
         &aux,
         &ferric_mp2::scs::ScsMp2Config::default(),
-        &OptimizeConfig::default(),
+        &legacy(),
         None,
         &ferric_mp2::gradient::exact_scf_jk(),
     )

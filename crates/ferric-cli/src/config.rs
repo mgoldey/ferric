@@ -986,6 +986,13 @@ pub struct OptimizeCfg {
     /// `"internals"` asked for internals and must be told they did not get
     /// them.
     pub coordinates: Option<String>,
+    /// Initial Hessian: `"simple"` (identity in Cartesians, Schlegel diagonal
+    /// in internals) or `"lindh"` (Lindh 1995 model Hessian). Unset takes
+    /// `ferric_scf::optimize::DEFAULT_INITIAL_HESSIAN`. Strict parser.
+    pub initial_hessian: Option<String>,
+    /// Trust-radius rule: `"fixed"` or `"ratio"` (actual/predicted energy
+    /// ratio, uphill steps rejected). Unset takes the library default. Strict.
+    pub trust_update: Option<String>,
     /// Start each geometry's SCF from the previous geometry's converged MOs
     /// (`ferric_scf::warm_start`) instead of the default guess. Default
     /// `true`; `false` re-guesses every geometry from scratch (the behaviour
@@ -994,6 +1001,54 @@ pub struct OptimizeCfg {
     /// displaced RHFs of its finite-difference gradient, each started from
     /// that step's reference RHF).
     pub scf_warm_start: Option<bool>,
+}
+
+/// Parse the `[optimize] initial_hessian` key (strict).
+///
+/// # Errors
+///
+/// Returns a message naming the accepted values if `s` is not one of them.
+pub fn parse_initial_hessian(s: &str) -> Result<ferric_scf::optimize::InitialHessian, String> {
+    ferric_scf::optimize::InitialHessian::parse_config_str(s)
+        .map_err(|e| e.replacen("initial_hessian", "[optimize] initial_hessian", 1))
+}
+
+/// Parse the `[optimize] trust_update` key (strict).
+///
+/// # Errors
+///
+/// Returns a message naming the accepted values if `s` is not one of them.
+pub fn parse_trust_update(s: &str) -> Result<ferric_scf::optimize::TrustUpdate, String> {
+    ferric_scf::optimize::TrustUpdate::parse_config_str(s)
+        .map_err(|e| e.replacen("trust_update", "[optimize] trust_update", 1))
+}
+
+impl OptimizeCfg {
+    /// The `initial_hessian` and `trust_update` keys, parsed; exits with the
+    /// parser's message on a bad value.
+    #[must_use]
+    pub fn search_options(
+        &self,
+    ) -> (
+        Option<ferric_scf::optimize::InitialHessian>,
+        ferric_scf::optimize::TrustUpdate,
+    ) {
+        let die = |e: String| -> ! {
+            eprintln!("error in [optimize]: {e}");
+            std::process::exit(1);
+        };
+        let ih = self
+            .initial_hessian
+            .as_deref()
+            .map(|s| parse_initial_hessian(s).unwrap_or_else(|e| die(e)));
+        let tu = self
+            .trust_update
+            .as_deref()
+            .map_or_else(Default::default, |s| {
+                parse_trust_update(s).unwrap_or_else(|e| die(e))
+            });
+        (ih, tu)
+    }
 }
 
 /// Parse the `[optimize] coordinates` key into a
@@ -12329,6 +12384,46 @@ max_iter = 42
                 "the error must name the accepted values, got {msg:?}"
             );
         }
+    }
+
+    /// `[optimize] initial_hessian` and `trust_update` parse strictly: near
+    /// misses error with the accepted values, and an absent key takes the
+    /// library defaults (`None`, which is Lindh, and `Ratio`).
+    #[test]
+    fn optimize_search_option_parsers_are_strict() {
+        use ferric_scf::optimize::{InitialHessian, TrustUpdate};
+        assert_eq!(
+            super::parse_initial_hessian("lindh").unwrap(),
+            InitialHessian::Lindh
+        );
+        assert_eq!(
+            super::parse_initial_hessian(" Simple ").unwrap(),
+            InitialHessian::Simple
+        );
+        assert_eq!(
+            super::parse_trust_update("ratio").unwrap(),
+            TrustUpdate::Ratio
+        );
+        assert_eq!(
+            super::parse_trust_update("FIXED").unwrap(),
+            TrustUpdate::Fixed
+        );
+        for bad in ["", "lind", "schlegel", "true"] {
+            let msg = super::parse_initial_hessian(bad).unwrap_err();
+            assert!(
+                msg.contains("simple") && msg.contains("lindh"),
+                "{bad:?}: {msg:?}"
+            );
+        }
+        for bad in ["", "rat", "nocedal", "1"] {
+            let msg = super::parse_trust_update(bad).unwrap_err();
+            assert!(
+                msg.contains("fixed") && msg.contains("ratio"),
+                "{bad:?}: {msg:?}"
+            );
+        }
+        let cfg = super::OptimizeCfg::default();
+        assert_eq!(cfg.search_options(), (None, TrustUpdate::Ratio));
     }
 
     /// The `coordinates` key must actually reach the parsed [`Config`], and an

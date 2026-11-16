@@ -33,6 +33,16 @@ Checks (each label carries "(claim X)"):
       the secant condition, so any mixture phi does (symbols).
   F2  bofill_update satisfies H' dx = dg and is symmetric, and keeps a
       negative eigenvalue that BFGS removes (numerics).
+  T1  The ratio rule's predicted change: for s = alpha p, p = -H g and
+      B = H^-1, g.s + s.B s / 2 = alpha g.p (1 - alpha/2), and it is negative
+      for H positive definite and 0 < alpha <= 1 (symbols).
+  T2  ratio_trust_update, transcribed: shrinks to s/4 when r < 1/4, doubles
+      only when r > 3/4 AND the step reached the boundary, keeps the radius in
+      between and inside the noise band, clamps to [r_min, r_max], and rejects
+      exactly the steps that raised the energy by 1e-8 Ha or more; driven on
+      the Rosenbrock function from a far start, the ratio search never keeps
+      an uphill step and reaches the minimum, while the fixed-radius search at
+      the same radius keeps uphill steps (numerics).
   I1  The mass-weighted gradient is dE/dq = (dE/dx)/sqrt(m), so the downhill
       step of length l in q is dx_i = -l g_i /(m_i |g_q|), which differs from
       unweighted steepest descent unless all masses are equal.
@@ -43,10 +53,14 @@ Mutations (each turns the script red; exact one-occurrence substitutions):
   P-RFO followed shift: + sqrt -> - sqrt                      (P2 fails)
   Bofill PSB projector term dropped                          (F2 fails)
   IRC Cartesian step: divide by m, not sqrt(m)               (I1 fails)
+  ratio rule thresholds inverted (shrink above 3/4)          (T2 fails)
 Exits nonzero on any failed check; prints "FAIL <label>".
 """
 
+import os
+import re
 import sys
+from pathlib import Path
 
 import numpy as np
 import sympy as sp
@@ -85,6 +99,26 @@ def guarded_bfgs_inverse_update(h, s, y):
     if ys <= CURVATURE_EPS * np.linalg.norm(y) * np.linalg.norm(s):
         return h.copy(), False
     return bfgs_inverse_update(h, s, y), True
+
+
+TRUST_SHRINK_RATIO = 0.25
+TRUST_GROW_RATIO = 0.75
+TRUST_ENERGY_NOISE = 1e-8
+
+
+def ratio_trust_update(actual, predicted, step_norm, radius, r_min, r_max):
+    """optimize.rs::ratio_trust_update. Returns (accept, next radius)."""
+    accept = actual < TRUST_ENERGY_NOISE
+    if abs(predicted) < TRUST_ENERGY_NOISE and abs(actual) < TRUST_ENERGY_NOISE:
+        return accept, radius
+    ratio = actual / predicted
+    if ratio < TRUST_SHRINK_RATIO:
+        nxt = TRUST_SHRINK_RATIO * step_norm
+    elif ratio > TRUST_GROW_RATIO and step_norm >= 0.99 * radius:
+        nxt = 2.0 * radius
+    else:
+        nxt = radius
+    return accept, min(max(nxt, r_min), r_max)
 
 
 def prfo_step(g_q, evals, follow):
@@ -386,7 +420,132 @@ def irc_checks():
     )
 
 
+def _rust_source(rel):
+    cands = [Path(__file__).resolve().parents[1], Path.cwd(), *Path.cwd().parents]
+    if os.environ.get("FERRIC_ROOT"):
+        cands.insert(0, Path(os.environ["FERRIC_ROOT"]))
+    for c in cands:
+        if (c / rel).is_file():
+            return (c / rel).read_text()
+    return None
+
+
+def trust_checks():
+    # T1: the predicted change of a scaled quasi-Newton step, in symbols.
+    n = 3
+    a = sp.symbols("alpha", positive=True)
+    hs = sp.Matrix(n, n, lambda i, j: sp.Symbol(f"h{min(i, j)}{max(i, j)}"))
+    g = sp.Matrix(sp.symbols(f"g0:{n}"))
+    p = -hs * g
+    s_vec = a * p
+    b = hs.inv()
+    model = (g.T * s_vec)[0] + sp.Rational(1, 2) * (s_vec.T * b * s_vec)[0]
+    closed = a * (g.T * p)[0] * (1 - a / 2)
+    check(
+        "T1 predicted change = alpha g.p (1 - alpha/2) (claim T1)",
+        sp.simplify(model - closed) == 0,
+    )
+    rng = np.random.default_rng(5)
+    neg = True
+    for _ in range(50):
+        m = rng.normal(size=(4, 4))
+        h = m @ m.T + 0.1 * np.eye(4)
+        gv = rng.normal(size=4)
+        pv = -h @ gv
+        for al in (0.1, 0.5, 1.0):
+            neg &= al * (gv @ pv) * (1 - al / 2) < 0
+    check("T1 predicted change negative for H > 0, 0 < alpha <= 1 (claim T1)", neg)
+
+    # T2: the decision table.
+    cases = [
+        # actual, pred, step, radius -> accept, radius
+        ((-0.1e-3, -1e-3, 0.1, 0.1), (True, 0.025)),  # r = 0.1: shrink to s/4
+        ((+1e-3, -1e-3, 0.1, 0.1), (False, 0.025)),  # uphill: reject + shrink
+        ((-0.9e-3, -1e-3, 0.1, 0.1), (True, 0.2)),  # r = 0.9 on boundary: grow
+        ((-0.9e-3, -1e-3, 0.05, 0.1), (True, 0.1)),  # r = 0.9 inside: keep
+        ((-0.5e-3, -1e-3, 0.1, 0.1), (True, 0.1)),  # r = 0.5: keep
+        ((-1.5e-3, -1e-3, 0.1, 0.1), (True, 0.2)),  # r = 1.5 on boundary: grow
+        ((5e-9, -5e-9, 0.1, 0.1), (True, 0.1)),  # both below noise: keep
+        ((-0.9e-3, -1e-3, 1.0, 1.0), (True, 1.0)),  # growth clamped at r_max
+        ((+1e-3, -1e-3, 1e-3, 1e-3), (False, 1e-3)),  # shrink clamped at r_min
+    ]
+    ok = all(ratio_trust_update(*args, 1e-3, 1.0) == want for args, want in cases)
+    check("T2 ratio_trust_update decision table (claim T2)", ok)
+    rust = _rust_source("crates/ferric-scf/src/optimize.rs")
+    if rust is None:
+        check("T2 optimize.rs found (set FERRIC_ROOT) (claim T2)", False)
+    else:
+        consts = {}
+        for name in ("TRUST_SHRINK_RATIO", "TRUST_GROW_RATIO", "TRUST_ENERGY_NOISE"):
+            m = re.search(rf"pub const {name}: f64 = ([0-9.e-]+);", rust)
+            consts[name] = float(m.group(1)) if m else None
+        mine = {
+            "TRUST_SHRINK_RATIO": TRUST_SHRINK_RATIO,
+            "TRUST_GROW_RATIO": TRUST_GROW_RATIO,
+            "TRUST_ENERGY_NOISE": TRUST_ENERGY_NOISE,
+        }
+        check(
+            "T2 transcribed constants = optimize.rs (claim T2)",
+            consts == mine,
+            f"{consts}",
+        )
+
+    def rosen(x):
+        f = (1 - x[0]) ** 2 + 100 * (x[1] - x[0] ** 2) ** 2
+        gr = np.array(
+            [
+                -2 * (1 - x[0]) - 400 * x[0] * (x[1] - x[0] ** 2),
+                200 * (x[1] - x[0] ** 2),
+            ]
+        )
+        return f, gr
+
+    def search(ratio, radius0=0.5, steps=400):
+        x = np.array([-1.2, 1.0])
+        e, g = rosen(x)
+        h = np.eye(2)
+        radius, kept_uphill = radius0, 0
+        for _ in range(steps):
+            if np.linalg.norm(g) < 1e-8:
+                break
+            pv = -h @ g
+            pn = np.linalg.norm(pv)
+            al = min(1.0, radius / pn)
+            sv = al * pv
+            e_t, g_t = rosen(x + sv)
+            accept = True
+            if ratio:
+                accept, radius = ratio_trust_update(
+                    e_t - e,
+                    al * (g @ pv) * (1 - al / 2),
+                    al * pn,
+                    radius,
+                    0.01 * radius0,
+                    10 * radius0,
+                )
+            h, _ = guarded_bfgs_inverse_update(h, sv, g_t - g)
+            if accept:
+                kept_uphill += e_t > e + TRUST_ENERGY_NOISE
+                x, e, g = x + sv, e_t, g_t
+        return x, kept_uphill
+
+    xr, up_r = search(True)
+    xf, up_f = search(False)
+    check(
+        "T2 ratio search on Rosenbrock: no uphill step kept (claim T2)",
+        up_r == 0,
+        f"{up_r}",
+    )
+    check(
+        "T2 ratio search reaches the minimum (claim T2)",
+        np.linalg.norm(xr - 1.0) < 1e-6,
+        f"x = {xr}",
+    )
+    check("T2 fixed radius keeps uphill steps (claim T2)", up_f > 0, f"{up_f}")
+
+
 def main():
+    trust_checks()
     bfgs_checks()
     bfgs_guard_checks()
     prfo_checks()
