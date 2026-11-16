@@ -406,6 +406,30 @@ int scf_compute_terf_eri2(scf_engine *eng, const scf_basis *dfbs,
 int scf_compute_terf_eri4(scf_engine *eng, const scf_basis *obs,
                              int sh1, int sh2, int sh3, int sh4, double *out);
 
+/* First nuclear derivatives of the terf / terfc table integrals (the MD
+ * kernel of scf_compute_terf{,c}_eri3/2 differentiated through
+ * d/dA x_A^i e^{-a x_A^2} = 2a x_A^{i+1} e - i x_A^{i-1} e). `eng` is a terf or
+ * terfc table engine; which kernel is the engine's. 3-center: 9 blocks
+ * [dP, d1, d2] x [x, y, z] of nP*n1*n2, 2-center: 6 blocks [dP, dQ] x [x, y, z]
+ * of nP*nQ, the order of libint2's derivative engines. `out_len` is the
+ * capacity of `out` in doubles. Returns the count written, SCF_EINVAL (bad
+ * engine, null pointer, shell out of range, short buffer, or total angular
+ * momentum + 1 at the table depth) or SCF_EINTERNAL. */
+int scf_compute_terf_table_eri3_deriv(scf_engine *eng, const scf_basis *obs,
+                                      const scf_basis *dfbs, int shP, int sh1,
+                                      int sh2, double *out, int out_len);
+int scf_compute_terf_table_eri2_deriv(scf_engine *eng, const scf_basis *dfbs,
+                                      int shP, int shQ, double *out, int out_len);
+
+/* Validation hooks: the same derivative kernels with the plain Coulomb
+ * kernel (no engine, no tables), for comparison with libint2's derivative
+ * engines. Same layout and return contract. */
+int scf_debug_md_coulomb_eri3_deriv(const scf_basis *obs, const scf_basis *dfbs,
+                                    int shP, int sh1, int sh2, double *out,
+                                    int out_len);
+int scf_debug_md_coulomb_eri2_deriv(const scf_basis *dfbs, int shP, int shQ,
+                                    double *out, int out_len);
+
 /* Validation hook: the 4-center MD path with the plain Coulomb kernel, for
  * cross-checking against libint2's scf_compute_eri_quartet. Needs no engine.
  * Same [n1][n2][n3][n4] layout and return contract as the eri4 entry points. */
