@@ -85,7 +85,8 @@ def _add_crate(root, directory, name):
         f"{directory}/Cargo.toml",
         f'[package]\nname = "{name}"\nversion = "0.1.0"\n',
     )
-    _write(root, f"{directory}/src/lib.rs", "")
+    # rustfmt formats an empty file as one newline; the gate runs cargo fmt --check.
+    _write(root, f"{directory}/src/lib.rs", "\n")
 
 
 def _commit(root, message="change"):
