@@ -6,7 +6,7 @@ scaling. The crate assigns no parameters; every equation below is the one the
 code executes. References are `path:line` relative to `crates/ferric-mm/`.
 
 Identities marked **[sympy n]** are checked by claim *n* of
-[`scripts/mm_dihedral_gradient_sympy.py`](../../scripts/mm_dihedral_gradient_sympy.py)
+[`scripts/mm_dihedral_gradient_sympy.py`](https://github.com/mgoldey/ferric/blob/main/scripts/mm_dihedral_gradient_sympy.py)
 (60-digit arithmetic, negative control per claim, exits nonzero on mismatch).
 Finite-difference tests are in `tests/terms_fd.rs`; agreement with OpenMM's
 Reference platform is in `tests/vs_openmm.rs` and `tests/validation_mm.rs`.
@@ -241,7 +241,7 @@ $S(0)=1$, $S(1)=0$, and $S'$, $S''$ vanish at both ends, so the switched LJ
 energy and force are continuous. The switch applies to LJ only.
 
 The identities of 8.1 and 8.2, including the Horner forms the code evaluates,
-are checked by [`scripts/mm_cutoff_sympy.py`](../../scripts/mm_cutoff_sympy.py)
+are checked by [`scripts/mm_cutoff_sympy.py`](https://github.com/mgoldey/ferric/blob/main/scripts/mm_cutoff_sympy.py)
 (negative control per claim, exits nonzero on mismatch).
 
 ### 8.3 Cell list

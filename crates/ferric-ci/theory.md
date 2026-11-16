@@ -1318,7 +1318,7 @@ through $f^{ca}$, $f^{ac}$, permuted:
 A spec without `->` produces the intermediate's own index string; an axes
 tuple is a numpy transpose.
 
-[`scripts/nevpt2_sympy.py`](../../scripts/nevpt2_sympy.py) proves (D, sympy)
+[`scripts/nevpt2_sympy.py`](https://github.com/mgoldey/ferric/blob/main/scripts/nevpt2_sympy.py) proves (D, sympy)
 the single-perturber energy above; (R) on a CAS(4,4) model, the normal-ordered
 and E-product 1- to 3-RDMs and the reorder formula, the hole RDMs of
 `hole_rdms` against $\langle aa\,a^\dagger a^\dagger\rangle$ and

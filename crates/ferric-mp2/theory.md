@@ -8,12 +8,12 @@ below is the one the code executes; references are `path:line` relative to
 `crates/ferric-mp2/src/` unless another crate is named.
 
 Identities marked **[check n]** are verified by claim *n* of
-[`scripts/mp2_variant_identities.py`](../../scripts/mp2_variant_identities.py),
+[`scripts/mp2_variant_identities.py`](https://github.com/mgoldey/ferric/blob/main/scripts/mp2_variant_identities.py),
 which exits nonzero on any mismatch and carries a negative control per claim.
 Identities marked **[family X]** are checked by part X of
-[`scripts/mp2_family_sympy.py`](../../scripts/mp2_family_sympy.py) and
+[`scripts/mp2_family_sympy.py`](https://github.com/mgoldey/ferric/blob/main/scripts/mp2_family_sympy.py) and
 **[gradient X]** by part X of
-[`scripts/mp2_gradient_sympy.py`](../../scripts/mp2_gradient_sympy.py); both
+[`scripts/mp2_gradient_sympy.py`](https://github.com/mgoldey/ferric/blob/main/scripts/mp2_gradient_sympy.py); both
 compare against an independent route (brute-force spin-orbital MP2, adaptive
 quadrature, or finite differences of a fully re-solved model) and exit nonzero
 on a failure. Derivations that live in the project notes are cited as
@@ -270,7 +270,7 @@ so the αα + ββ and αβ parts of $E^{(2)}$ are the same-spin and opposite-sp
 energies of §3, and $E^{(3)}$ is split the same way. Summing $-\tfrac14 K R/\Delta$
 over the blocks reproduces the three spin-orbital terms of §6 with their
 coefficients ⅛, ⅛ and 1 term class by term class:
-[`scripts/ump3_spin_blocks_sympy.py`](../../scripts/ump3_spin_blocks_sympy.py)
+[`scripts/ump3_spin_blocks_sympy.py`](https://github.com/mgoldey/ferric/blob/main/scripts/ump3_spin_blocks_sympy.py)
 proves this as exact polynomial identities in symbolic integrals and checks
 the energies against brute-force Rayleigh–Schrödinger theory
 (runner `crates/ferric-python/tests/test_ump3_spin_blocks_sympy.py`). For an
@@ -368,7 +368,7 @@ $E = E_{\text{HF}}[\rho] + E_{\text{NBS}} + E_c$ (`Opmp3Result::total`,
 for singlets, ROHF or ROKS otherwise (`opmp3_scf`, `opmp3_driver.rs:168`). A
 UHF result is also accepted, with $E_{\text{NBS}}=0$.
 
-[`scripts/opmp3_identities_sympy.py`](../../scripts/opmp3_identities_sympy.py)
+[`scripts/opmp3_identities_sympy.py`](https://github.com/mgoldey/ferric/blob/main/scripts/opmp3_identities_sympy.py)
 proves four identities: (a) the Eq. 18 SS/OS split of the spin-orbital
 Eq. 11a, with the ¼ OS prefactor; (b) the Padé Taylor coefficients and its
 commuting-block scalar limit; (c) block additivity of $\operatorname{Tr}P$, and
@@ -477,14 +477,14 @@ one-orbital energies, $e^{-tx}$ splits over the $(i,a)$ and $(j,b)$ pairs:
 
 $$ B^P_{ia}(t) = B^P_{ia}\,e^{-t(\varepsilon_a-\varepsilon_i)/2}\quad(\texttt{laplace.rs:666}), \qquad
 J_{PQ}(t) = \sum_{ia} B^P_{ia}(t)B^Q_{ia}(t), \qquad
-G_{PQ}[i,j](t) = \sum_a B^P_{ia}(t)B^Q_{ja}(t), $$
+G_{PQ}[i,j]{}(t) = \sum_a B^P_{ia}(t)B^Q_{ja}(t), $$
 
 $$ \sum_{PQ}J_{PQ}(t)^2 = \sum_{ijab}(ia|jb)^2e^{-tx}, \qquad
 \sum_{PQij}G_{PQ}[i,j]\,G_{PQ}[j,i] = \sum_{ijab}(ia|jb)(ib|ja)\,e^{-tx} $$
 
 **[check 3]**. The RI-Laplace MP2 energy (`laplace.rs:818`, `:1073`) is
 
-$$ E^{(2)} \approx -\sum_k w_k\Big[2\sum_{PQ}J_{PQ}(t_k)^2 - \sum_{PQij}G_{PQ}[i,j](t_k)\,G_{PQ}[j,i](t_k)\Big] , $$
+$$ E^{(2)} \approx -\sum_k w_k\Big[2\sum_{PQ}J_{PQ}(t_k)^2 - \sum_{PQij}G_{PQ}[i,j]{}(t_k)\,G_{PQ}[j,i]{}(t_k)\Big] , $$
 
 with $E_{\mathrm{OS}}$ the $J^2$ term and $E_{\mathrm{SS}}$ the $J^2 - G\cdot G$
 term. `compute_mo` (`laplace.rs:745`) evaluates both in the MO basis.
@@ -1008,9 +1008,9 @@ Aldossary, Shi, Liu, Li and Head-Gordon, JCTC 19, 7577 (2023)). DLPNO-MP2
 `dlpno_localized.rs`) drops pairs by estimated pair energy and compresses
 each pair's virtual space to pair natural orbitals; it is a library path with
 no CLI kind. Both are closed shell and energy only. Proofs:
-[`scripts/lmp2_hylleraas_vs_wshg23_sympy.py`](../../scripts/lmp2_hylleraas_vs_wshg23_sympy.py)
+[`scripts/lmp2_hylleraas_vs_wshg23_sympy.py`](https://github.com/mgoldey/ferric/blob/main/scripts/lmp2_hylleraas_vs_wshg23_sympy.py)
 (claims 1, 2, 4, 5, 6) and
-[`scripts/local_mp2_fit_pno_sympy.py`](../../scripts/local_mp2_fit_pno_sympy.py)
+[`scripts/local_mp2_fit_pno_sympy.py`](https://github.com/mgoldey/ferric/blob/main/scripts/local_mp2_fit_pno_sympy.py)
 (claims L1 to L4), with the unique-pair weight of **[check 1]**.
 
 ### 12.1 Amplitude equations in localized orbitals
@@ -1402,7 +1402,7 @@ doubles, and so does the code. In the plain-MP2 limit $(a_x, b_x, a_c, c_{\mathr
 the SCF is RHF, the singles vanish by Brillouin's theorem, and
 $E_{\mathrm{DH}} = E_{\mathrm{HF}} + E_{\mathrm{MP2}}$.
 
-[`scripts/double_hybrid_sympy.py`](../../scripts/double_hybrid_sympy.py)
+[`scripts/double_hybrid_sympy.py`](https://github.com/mgoldey/ferric/blob/main/scripts/double_hybrid_sympy.py)
 proves (P) that the fractions parsed from `double_hybrid.rs` and `libxc.rs`
 equal the cited table above (and the ωB97X-L-V Table 2 values, see
 ferric-cc), with the constraints $a_x + b_x = 1$ and B2PLYP's

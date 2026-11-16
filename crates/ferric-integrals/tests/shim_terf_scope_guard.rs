@@ -79,23 +79,8 @@ fn entry_points(code: &str) -> Vec<(String, String)> {
                 .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
                 .unwrap_or(rest.len());
             let name = format!("scf_compute_{}", &rest[..name_len]);
-            let open = pos + code[pos..].find('{').expect("definition has a body");
-            let mut depth = 0usize;
-            let mut end = open;
-            for (k, ch) in code[open..].char_indices() {
-                match ch {
-                    '{' => depth += 1,
-                    '}' => {
-                        depth -= 1;
-                        if depth == 0 {
-                            end = open + k;
-                            break;
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            v.push((name, code[open..=end].to_string()));
+            let (body, end) = body_from(code, pos);
+            v.push((name, body));
             pos = end;
             continue;
         }
@@ -104,14 +89,72 @@ fn entry_points(code: &str) -> Vec<(String, String)> {
     v
 }
 
-/// Violations: entry points that use `eng->engine` without opening the scope
-/// first, and exempt-list drift.
+/// The brace-balanced body of the definition starting at `pos`, and the
+/// offset of its closing brace.
+fn body_from(code: &str, pos: usize) -> (String, usize) {
+    let open = pos + code[pos..].find('{').expect("definition has a body");
+    let mut depth = 0usize;
+    for (k, ch) in code[open..].char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return (code[open..=open + k].to_string(), open + k);
+                }
+            }
+            _ => {}
+        }
+    }
+    panic!("unbalanced braces after offset {pos}");
+}
+
+/// Names of the file-local `static` helpers that take `scf_engine *eng` and
+/// use `eng->engine`. An entry point that calls one drives the engine just as
+/// if it used `eng->engine` itself.
+fn engine_helpers(code: &str) -> Vec<String> {
+    let mut v = Vec::new();
+    let mut pos = 0;
+    while pos < code.len() {
+        let line_end = code[pos..].find('\n').map_or(code.len(), |n| pos + n);
+        let line = &code[pos..line_end];
+        if line.starts_with("static ") && line.contains("(scf_engine *eng") {
+            let paren = line.find('(').expect("checked above");
+            let name_start = line[..paren]
+                .rfind(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .map_or(0, |i| i + 1);
+            let (body, end) = body_from(code, pos);
+            if body.contains("eng->engine") {
+                v.push(line[name_start..paren].to_string());
+            }
+            pos = end;
+            continue;
+        }
+        pos = line_end + 1;
+    }
+    v
+}
+
+/// Offset of the first place `body` drives the engine: `eng->engine` itself
+/// or a call into an [`engine_helpers`] helper.
+fn first_engine_use(body: &str, helpers: &[String]) -> Option<usize> {
+    std::iter::once(body.find("eng->engine"))
+        .chain(helpers.iter().map(|h| body.find(&format!("{h}(eng"))))
+        .flatten()
+        .min()
+}
+
+/// Violations: entry points that drive the engine (directly or through an
+/// [`engine_helpers`] helper) without opening the scope first, and
+/// exempt-list drift.
 fn violations(src: &str) -> Vec<String> {
-    let eps = entry_points(&strip_comments(src));
+    let code = strip_comments(src);
+    let eps = entry_points(&code);
+    let helpers = engine_helpers(&code);
     let mut bad = Vec::new();
     for (name, body) in &eps {
         let exempt = EXEMPT.contains(&name.as_str());
-        match (body.find("eng->engine"), body.find(SCOPE)) {
+        match (first_engine_use(body, &helpers), body.find(SCOPE)) {
             (Some(_), None) => bad.push(format!("{name}: uses eng->engine, no {SCOPE}")),
             (Some(u), Some(s)) if s > u => {
                 bad.push(format!("{name}: {SCOPE} comes after the first eng->engine"))
@@ -159,4 +202,19 @@ fn the_guard_fails_on_a_shim_missing_one_scope() {
     let bad = violations(&mutated);
     assert_eq!(bad.len(), 1, "{bad:#?}");
     assert!(bad[0].starts_with("scf_compute_eri2:"), "{bad:#?}");
+}
+
+#[test]
+fn the_guard_fails_on_a_helper_route_missing_its_scope() {
+    // Mutated copy: drop the scope from scf_compute_eri_quartet, which drives
+    // the engine only through compute_eri_quartet_raw.
+    let start = SHIM
+        .find("int scf_compute_eri_quartet(")
+        .expect("scf_compute_eri_quartet exists");
+    let rel = SHIM[start..].find(SCOPE).expect("it opens the scope");
+    let at = start + rel;
+    let mutated = format!("{}{}", &SHIM[..at], &SHIM[at + SCOPE.len() + 1..]);
+    let bad = violations(&mutated);
+    assert_eq!(bad.len(), 1, "{bad:#?}");
+    assert!(bad[0].starts_with("scf_compute_eri_quartet:"), "{bad:#?}");
 }

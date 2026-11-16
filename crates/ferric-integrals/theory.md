@@ -344,7 +344,7 @@ McMurchie-Davidson pass so the two share ordering and normalization.
 $\pi_S(i) = e^{-S}S^i/i!$, $c_s(i) = \sum_{j \le i} e^{-s}s^j/j!$,
 $\nabla f(i) = f(i) - f(i-1)$ and $(2i)!!/(2i+1)!!$,
 
-$$ G_n(S, s) = \sum_{i \ge 0} \frac{(2i)!!}{(2i+1)!!}\, [\nabla^{n}\pi_S](i)\, c_s(i) . $$
+$$ G_n(S, s) = \sum_{i \ge 0} \frac{(2i)!!}{(2i+1)!!}\, [\nabla^{n}\pi_S]{}(i)\, c_s(i) . $$
 
 $-\partial_S \pi_S(i) = \pi_S(i) - \pi_S(i-1)$, so each $\nabla$ is one
 $S$-derivative, and at $s = 0$ the series is the Boys series
@@ -352,7 +352,7 @@ $F_n(S) = e^{-S}\sum_i (2S)^i/(2i+1)!!$ differentiated $n$ times. Writing
 $c_s = 1 - \tau_s$ with the Poisson tail $\tau_s(i) = \sum_{j > i} e^{-s}s^j/j!$
 splits it exactly:
 
-$$ G_n(S, s) = F_n(S) - \Delta_n(S, s), \qquad \Delta_n(S, s) = \sum_{i \ge 0} \frac{(2i)!!}{(2i+1)!!}\, [\nabla^{n}\pi_S](i)\, \tau_s(i) . $$
+$$ G_n(S, s) = F_n(S) - \Delta_n(S, s), \qquad \Delta_n(S, s) = \sum_{i \ge 0} \frac{(2i)!!}{(2i+1)!!}\, [\nabla^{n}\pi_S]{}(i)\, \tau_s(i) . $$
 
 $\Delta_n$ is the terfc auxiliary itself, and its sum length is set by $s$, not
 $S$, because $\tau_s(i)$ decays super-exponentially once $i > s$

@@ -9,13 +9,13 @@ convention the code uses and points at the function that implements it
 (`path:line` on the commit that added this file) and the test that checks it.
 
 Identities marked **[sympy n]** are proven or checked to ≥30 digits by claim
-*n* of [`scripts/gw_self_energy_sympy.py`](../../scripts/gw_self_energy_sympy.py),
+*n* of [`scripts/gw_self_energy_sympy.py`](https://github.com/mgoldey/ferric/blob/main/scripts/gw_self_energy_sympy.py),
 which exits nonzero on any mismatch and carries a negative control per claim.
 Identities marked **[bse X]** are claim *X* of
-[`scripts/gw_bse_rpax_sympy.py`](../../scripts/gw_bse_rpax_sympy.py) (BSE-TDA
+[`scripts/gw_bse_rpax_sympy.py`](https://github.com/mgoldey/ferric/blob/main/scripts/gw_bse_rpax_sympy.py) (BSE-TDA
 and RPAx, against spin-orbital, Fock-space and finite-field routes) and
 **[ugw X]** claim *X* of
-[`scripts/gw_ucohsex_sympy.py`](../../scripts/gw_ucohsex_sympy.py)
+[`scripts/gw_ucohsex_sympy.py`](https://github.com/mgoldey/ferric/blob/main/scripts/gw_ucohsex_sympy.py)
 (per-spin static self-energy and Fermi level); each has a negative control and
 recorded mutations in `crates/ferric-python/tests/test_derivation_scripts.py`.
 
@@ -435,7 +435,7 @@ frequency $\omega = iu$ the first-order amplitudes solve
 $\begin{pmatrix}\mathbf A-\omega&\mathbf B\\\mathbf B&\mathbf A+\omega\end{pmatrix}\binom{X}{Y} = \binom{\boldsymbol\mu}{\boldsymbol\mu}F$
 and the induced dipole is $\boldsymbol\mu\cdot(X+Y)$. Adding and subtracting
 the two block rows, $(\mathbf A-\mathbf B)(X-Y) = \omega(X+Y)$ and
-$[(\mathbf A+\mathbf B) - \omega^2(\mathbf A-\mathbf B)^{-1}](X+Y) = 2\boldsymbol\mu F$. At $\omega = iu$ and in the singlet space,
+$[(\mathbf A+\mathbf B) - \omega^2(\mathbf A-\mathbf B)^{-1}]{}(X+Y) = 2\boldsymbol\mu F$. At $\omega = iu$ and in the singlet space,
 where $\boldsymbol\mu_{\rm so} = \sqrt2\,\boldsymbol\mu$ in the rotated basis,
 
 $$ \alpha_{xy}(iu) = 4\,\mu_x^{\mathsf T}\big[(\mathbf A-\mathbf B)(\mathbf A+\mathbf B)+u^2\big]^{-1}(\mathbf A-\mathbf B)\,\mu_y = 4\,\mu_x^{\mathsf T}\big[(\mathbf A+\mathbf B) + u^2(\mathbf A-\mathbf B)^{-1}\big]^{-1}\mu_y, $$

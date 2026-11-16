@@ -122,7 +122,15 @@ fn rohf_and_level_shift_sites_follow_the_serial_blas_setting() {
             s2.energy.to_bits(),
             "run {i}: blas_threads = 1 is not reproducible"
         );
-        assert_eq!(t.iterations, s1.iterations, "run {i}: iteration count");
+        // Threaded BLAS drifts the last bits (~1e-13), which can move a
+        // convergence test across its threshold by one iteration; only
+        // blas_threads = 1 promises bit-identity (asserted above).
+        assert!(
+            t.iterations.abs_diff(s1.iterations) <= 1,
+            "run {i}: iteration count {} threaded vs {} single",
+            t.iterations,
+            s1.iterations
+        );
         let de = (t.energy - s1.energy).abs();
         assert!(de <= 1e-10, "run {i}: threaded vs single BLAS dE = {de:e}");
     }

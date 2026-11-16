@@ -192,8 +192,12 @@ fn child_runs_one_u_fitted_gradient() {
 /// The declared peak bounds the measured peak RSS at n-butyl and n-octyl.
 #[test]
 fn declared_peak_bounds_the_measured_peak_rss() {
+    // An explicit budget just above this system's admission threshold, not
+    // "auto": the auto budget follows the machine's RAM (3.2 GB on a CI
+    // runner, which refuses octane), and the bound under test does not
+    // depend on which budget admitted the run.
     for n in [4, 8] {
-        let c = run_child(n, "auto");
+        let c = run_child(n, "above");
         assert!(c.result.is_ok(), "alkane_{n}: {:?}", c.result);
         let gb = |b: usize| b as f64 / 1e9;
         eprintln!(

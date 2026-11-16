@@ -6,7 +6,7 @@ below is the one the code executes; references are `path:line` relative to
 `crates/ferric-pcm/src/` unless another crate is named.
 
 Identities marked **[sympy n]** are proven (exact arithmetic) or checked by
-claim *n* of [`scripts/pcm_ief_sympy.py`](../../scripts/pcm_ief_sympy.py),
+claim *n* of [`scripts/pcm_ief_sympy.py`](https://github.com/mgoldey/ferric/blob/main/scripts/pcm_ief_sympy.py),
 which exits nonzero on any mismatch and carries a negative control per claim.
 The discrete sphere limits are also Rust tests in `tests/ief_limits.rs`.
 

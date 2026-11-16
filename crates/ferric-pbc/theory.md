@@ -14,11 +14,11 @@ $\mathbf L = \sum_i n_i \mathbf a_i$, reciprocal vectors
 $\mathbf G = \sum_i m_i \mathbf b_i$ ($m_i$ the Miller index).
 
 Sections 1-5 are asserted by
-[`scripts/pbc_ewald_pairft_stress_sympy.py`](../../scripts/pbc_ewald_pairft_stress_sympy.py)
+[`scripts/pbc_ewald_pairft_stress_sympy.py`](https://github.com/mgoldey/ferric/blob/main/scripts/pbc_ewald_pairft_stress_sympy.py)
 (section tags S1–S5), section 7 by
-[`scripts/pbc_rsgdf_sympy.py`](../../scripts/pbc_rsgdf_sympy.py), and
+[`scripts/pbc_rsgdf_sympy.py`](https://github.com/mgoldey/ferric/blob/main/scripts/pbc_rsgdf_sympy.py), and
 sections 8 and 9 by
-[`scripts/pbc_kpoint_corr_sympy.py`](../../scripts/pbc_kpoint_corr_sympy.py),
+[`scripts/pbc_kpoint_corr_sympy.py`](https://github.com/mgoldey/ferric/blob/main/scripts/pbc_kpoint_corr_sympy.py),
 except where a section says it has no proof; the Rust tests listed check
 the implementation numerically. Paths are relative to `crates/ferric-pbc/`.
 
@@ -551,7 +551,7 @@ twisted-boundary supercell and has no such anchor.
 Per spin, $D_\sigma(k) = C_{\sigma,o}C_{\sigma,o}^{\mathsf H}$ and (`kuscf.rs`)
 
 $$
-F_\sigma(k) = h(k) + J[D_\alpha + D_\beta](k) - K[D_\sigma](k),\qquad
+F_\sigma(k) = h(k) + J[D_\alpha + D_\beta]{}(k) - K[D_\sigma]{}(k),\qquad
 E/\text{cell} = \frac{1}{N_k}\sum_{k,\sigma}\tfrac12\operatorname{Re}\operatorname{tr}\big[(h + F_\sigma)D_\sigma\big] + E_{nn},
 $$
 

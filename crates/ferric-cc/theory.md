@@ -455,7 +455,7 @@ whole. $\lambda$ must lie in $[0, 1]$ and $\omega$ must be positive; at
 $\lambda = 0$ no correlation is computed (the operator, and with it the RI
 metric, vanishes).
 
-[`scripts/double_hybrid_sympy.py`](../../scripts/double_hybrid_sympy.py)
+[`scripts/double_hybrid_sympy.py`](https://github.com/mgoldey/ferric/blob/main/scripts/double_hybrid_sympy.py)
 proves (P) that the Rust tables equal Table 2 and the constraints above, and
 that `wb97x_l_v_def` takes only `nspin`; and (L) on a model, that LinLCCD(hh)
 with the three-centre integrals and metric both scaled by $\lambda$ equals

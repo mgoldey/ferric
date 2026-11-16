@@ -120,11 +120,13 @@ def _cli(tmp, mol, basis, extra):
     toml = tmp / "cli.toml"
     toml.write_text(
         TOML.format(
-            xyz=MOLS / f"{mol}.xyz",
+            # POSIX separators: a Windows backslash is an escape inside a
+            # TOML basic string.
+            xyz=(MOLS / f"{mol}.xyz").as_posix(),
             basis=basis,
             aux=AUX,
-            npz=npz,
-            cube=tmp / "cli",
+            npz=npz.as_posix(),
+            cube=(tmp / "cli").as_posix(),
             extra=extra,
         )
     )

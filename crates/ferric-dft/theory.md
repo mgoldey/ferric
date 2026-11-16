@@ -454,10 +454,10 @@ most one component, and refuses a definition that has both.
 $\beta$ unchanged.
 
 **Exchange matrices.** For an AO density $D$ and kernel $v$,
-$K[v](D)_{\mu\nu} = \sum_{\lambda\sigma}(\mu\lambda|v|\nu\sigma)D_{\lambda\sigma}$
+$K[v]{}(D)_{\mu\nu} = \sum_{\lambda\sigma}(\mu\lambda|v|\nu\sigma)D_{\lambda\sigma}$
 and $J(D)_{\mu\nu} = \sum_{\lambda\sigma}(\mu\nu|\lambda\sigma)D_{\lambda\sigma}$.
 The exchange matrix the SCF subtracts is
-$$K_{\rm tot}(D) = c_{\rm sr}\,K[\mathrm{erfc}](D) + c_{\rm lr}\,K[\mathrm{erf}](D)$$
+$$K_{\rm tot}(D) = c_{\rm sr}\,K[\mathrm{erfc}]{}(D) + c_{\rm lr}\,K[\mathrm{erf}]{}(D)$$
 (`fock_assembly::subtract_rsh_exchange`). For $\omega > 0$ the two matrices
 come from two density-fitting builders over the same auxiliary basis
 (`config.df_k_aux`, default `def2-universal-jkfit`), one per operator

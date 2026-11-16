@@ -87,9 +87,9 @@ and nothing proves them. Their error is measured instead (section 12.3.6).
 Since $x = (\varepsilon_a - \varepsilon_i) + (\varepsilon_b - \varepsilon_j)$,
 the exponential splits. With the dressed factors $B^P_{ia}$ of (10.4):
 
-$$ B^P_{ia}(t) = B^P_{ia}\,e^{-t(\varepsilon_a - \varepsilon_i)/2}, \qquad J_{PQ}(t) = \sum_{ia} B^P_{ia}(t)B^Q_{ia}(t), \qquad G_{PQ}[i,j](t) = \sum_a B^P_{ia}(t)\,B^Q_{ja}(t), $$
+$$ B^P_{ia}(t) = B^P_{ia}\,e^{-t(\varepsilon_a - \varepsilon_i)/2}, \qquad J_{PQ}(t) = \sum_{ia} B^P_{ia}(t)B^Q_{ia}(t), \qquad G_{PQ}[i,j]{}(t) = \sum_a B^P_{ia}(t)\,B^Q_{ja}(t), $$
 
-$$ E^{(2)} \approx -\sum_k w_k\Big[\,2\sum_{PQ}J_{PQ}(t_k)^2 - \sum_{PQ}\sum_{ij} G_{PQ}[i,j](t_k)\,G_{PQ}[j,i](t_k)\Big], \qquad E_{\mathrm{OS}} \approx -\sum_k w_k\sum_{PQ}J_{PQ}(t_k)^2 . \tag{12.10} $$
+$$ E^{(2)} \approx -\sum_k w_k\Big[\,2\sum_{PQ}J_{PQ}(t_k)^2 - \sum_{PQ}\sum_{ij} G_{PQ}[i,j]{}(t_k)\,G_{PQ}[j,i]{}(t_k)\Big], \qquad E_{\mathrm{OS}} \approx -\sum_k w_k\sum_{PQ}J_{PQ}(t_k)^2 . \tag{12.10} $$
 
 The first sum is the Coulomb-like term $\sum (ia|jb)^2 e^{-tx}$. The second
 is the exchange term $\sum (ia|jb)(ib|ja)\,e^{-tx}$. In the split of (10.2),
