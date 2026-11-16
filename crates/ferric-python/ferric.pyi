@@ -843,8 +843,8 @@ class XcFunctional:
         the XC skeleton of run_frequencies(hessian="analytic-moving-grid"),
         grid response included (the derivative of grad). Closed-shell LDA/GGA,
         pure or global hybrid, on any grid (pruned or flat); meta-GGA, VV10,
-        range-separated or double hybrids, ghost atoms and ECPs raise
-        ValueError."""
+        range-separated or double hybrids and ghost atoms raise
+        ValueError. An ECP basis is accepted (V_ECP is not an XC term)."""
         ...
     def vxc_deriv(self, density: NDArray[np.float64]) -> NDArray[np.float64]:
         """dV_xc / dx at fixed total density, (3N, n, n), same moving grid as
@@ -4775,13 +4775,17 @@ def run_frequencies(
     scf_ri_j_precision: str | None = None,
     scf_eri: Literal["auto", "direct", "incore"] | None = None,
     scf_relativistic: Literal["x2c1e"] | None = None,
-    method: Literal["scf", "pdep-rpa"] = "scf",
+    method: Literal["scf", "pdep-rpa", "att-rimp2"] = "scf",
     auxbasis: str | None = None,
     frozen_core: int | None = None,
     rpa_gradient: Literal["fd", "analytic"] | None = None,
     n_quad: int | None = None,
     quadrature: str | None = None,
     trunc_thresh: float | None = None,
+    omega: float | None = None,
+    scf_jk: str | None = None,
+    jk_auxbasis: str | None = None,
+    memory_budget_gb: float | None = None,
 ) -> FrequencyResult:
     """Harmonic vibrational frequencies.
 
@@ -4793,6 +4797,16 @@ def run_frequencies(
     gradient wherever it applies. Every SCF-route kwarg (`reference`, `xc`, `hessian`,
     `dispersion`, `multiplicity`, `point_charges`, `external_field`, the SCF controls and
     the density-fitting kwargs) raises. The RPA kwargs raise for `method="scf"`.
+
+    `method="att-rimp2"`: closed-shell RHF + attenuated RI-MP2 (erfc(omega r)/r
+    correlation) frequencies, central differences of its analytic nuclear gradient
+    (`ferric_mp2::att_rimp2_gradient`), as the CLI's `kind = "att-rimp2"`,
+    `task = "frequencies"`. Needs `auxbasis`; `frozen_core` (default 0), `omega`
+    (inverse Angstrom, default 0.420), `scf_jk` ("exact" or "rijk"; unset is RI-JK
+    on the matched JK-fit basis, or four-centre with `scf_eri`), `jk_auxbasis` and
+    `memory_budget_gb` are as in `run_optimize(method="att-rimp2")`. The SCF-route
+    kwargs raise, `omega`, `scf_jk`, `jk_auxbasis` and `memory_budget_gb` raise for
+    the other methods, an open shell raises. No IR intensities.
 
     `scf_max_iter`, `scf_energy_conv`, `scf_density_conv` control every SCF of the run
     (`run_rhf`'s `max_iter`, `energy_conv`, `density_conv`); the bare spellings are

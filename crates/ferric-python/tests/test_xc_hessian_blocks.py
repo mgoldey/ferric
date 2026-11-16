@@ -386,23 +386,37 @@ def test_unsupported_functionals_raise(functional, what):
             method(0.5 * d, 0.5 * d)
 
 
-def test_ecp_systems_raise():
-    # The analytic KS Hessian refuses ECPs (ECP and embedding terms with the
-    # XC kernel); its XC pieces do the same. def2-SVP carries an ECP on I.
-    _, _, ints = _ints("2\n\nH 0 0 0\nI 0 0 1.609\n", "def2-svp")
-    xc = ints.xc_functional("PBE")
-    d = np.eye(ints.nao)
-    for method, args in [
-        (xc.hess, (d,)),
-        (xc.vxc_deriv, (d,)),
-        (xc.hess_polarized, (0.5 * d, 0.5 * d)),
-        (xc.vxc_deriv_polarized, (0.5 * d, 0.5 * d)),
-    ]:
-        with pytest.raises(ValueError, match="an ECP"):
-            method(*args)
-    # Without the ECP the same functional is supported.
-    _, _, light = _ints("2\n\nH 0 0 0\nCl 0 0 1.27\n", "def2-svp")
-    assert np.all(np.isfinite(light.xc_functional("PBE").hess(np.eye(light.nao))))
+HI = "2\n\nH 0 0 0\nI 0 0 1.609\n"
+
+
+@pytest.mark.parametrize("functional", ["LDA", "PBE"])
+def test_ecp_systems_are_supported_and_match_finite_differences(functional):
+    # The XC pieces are grid terms at a fixed density; V_ECP is not one of
+    # them, so an ECP system is accepted (the full KS Hessian adds the ECP
+    # skeleton elsewhere). def2-SVP carries an ECP on I. The anchors are the
+    # same independent finite differences as for the all-electron cases,
+    # with the ECP applied at every displaced geometry.
+    mol, bs, ints = _ints(HI, "def2-svp")
+    n = ints.nao
+    rng = np.random.default_rng(7)
+    d = rng.normal(size=(n, n))
+    d = 0.02 * (d + d.T) + np.eye(n) * 0.3
+    xc = ints.xc_functional(functional)
+    h = xc.hess(d)
+    v = xc.vxc_deriv(d)
+    assert h.shape == (6, 6) and v.shape == (6, n, n)
+    assert np.abs(h).max() > 1e-2
+    for atom, axis in [(0, 2), (1, 2)]:
+        fd_h = _richardson(
+            lambda m: m.xc_functional(functional).grad(d), mol, HI, bs, atom, axis
+        ).reshape(-1)
+        np.testing.assert_allclose(h[3 * atom + axis], fd_h, atol=5e-7)
+        fd_v = _richardson(
+            lambda m: m.xc_functional(functional).eval(d)[1], mol, HI, bs, atom, axis
+        )
+        np.testing.assert_allclose(v[3 * atom + axis], fd_v, atol=1e-8)
+    hp = xc.hess_polarized(0.5 * d, 0.5 * d)
+    np.testing.assert_allclose(hp, h, atol=1e-10)
 
 
 def test_pruned_grid_is_supported_and_bad_densities_raise():

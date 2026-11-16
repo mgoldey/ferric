@@ -88,9 +88,8 @@
 
 use super::{
     add_extra_first_order, check_supported_except_functional, cpks_response_with, extra_skeleton,
-    first_order_ao, has_ecp, max_abs, nuclear_term, parts_from_terms, skeleton_hess_1e,
-    skeleton_hess_2e, skeleton_hess_overlap, FockSpec, Reference, RhfHessianParts,
-    TwoElectronBuilder,
+    first_order_ao, max_abs, nuclear_term, parts_from_terms, skeleton_hess_1e, skeleton_hess_2e,
+    skeleton_hess_overlap, FockSpec, Reference, RhfHessianParts, TwoElectronBuilder,
 };
 use crate::gradient::build_energy_weighted_density;
 use crate::hessian_df::RijMutants;
@@ -1149,8 +1148,8 @@ fn rks_fixed_grid_hessian_core(
 /// derivatives of the surface `ks_gradient::xc_gradient_open` differentiates.
 ///
 /// Refused with the Hessian's own typed errors: meta-GGA, VV10, range-
-/// separated and double hybrids, unequal short/long-range exchange, ghost
-/// atoms and ECPs. A pruned grid is supported: every point still rides its
+/// separated and double hybrids, unequal short/long-range exchange and ghost
+/// atoms. An ECP is accepted (V_ECP is not an XC term). A pruned grid is supported: every point still rides its
 /// home atom (`atomic_quadrature_points` follows `cfg.prune`).
 pub mod xc_blocks {
     use super::*;
@@ -1172,12 +1171,9 @@ pub mod xc_blocks {
         if mol.atoms.iter().any(|a| a.ghost) {
             return Err(unsupported("ghost atoms", "ghost-atom XC grid response"));
         }
-        if has_ecp(mol, bs) {
-            return Err(unsupported(
-                "an ECP",
-                "ECP and embedding terms with the XC kernel",
-            ));
-        }
+        // An ECP is not refused: these pieces are the XC grid terms at a
+        // fixed density, and neither the grid nor the AOs depend on V_ECP.
+        let _ = bs;
         Ok(())
     }
 

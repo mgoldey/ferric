@@ -1634,7 +1634,8 @@ impl PyFrequencyResult {
     scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None,
     scf_warm_start=None, scf_ri_j_precision=None, scf_eri=None, scf_relativistic=None,
     method="scf", auxbasis=None, frozen_core=None, rpa_gradient=None, n_quad=None,
-    quadrature=None, trunc_thresh=None,
+    quadrature=None, trunc_thresh=None, omega=None, scf_jk=None, jk_auxbasis=None,
+    memory_budget_gb=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_frequencies(
@@ -1669,8 +1670,19 @@ pub(crate) fn run_frequencies(
     n_quad: Option<usize>,
     quadrature: Option<&str>,
     trunc_thresh: Option<f64>,
+    omega: Option<f64>,
+    scf_jk: Option<&str>,
+    jk_auxbasis: Option<&str>,
+    memory_budget_gb: Option<f64>,
 ) -> PyResult<PyFrequencyResult> {
     use ferric_scf::frequencies::{FrequencyConfig, FrequencyReference, HessianMethod};
+    // Kwargs only `method="att-rimp2"` reads.
+    let att_only = [
+        ("omega", omega.is_some()),
+        ("scf_jk", scf_jk.is_some()),
+        ("jk_auxbasis", jk_auxbasis.is_some()),
+        ("memory_budget_gb", memory_budget_gb.is_some()),
+    ];
     match method {
         "scf" => {
             let rpa_only = [
@@ -1681,11 +1693,67 @@ pub(crate) fn run_frequencies(
                 ("quadrature", quadrature.is_some()),
                 ("trunc_thresh", trunc_thresh.is_some()),
             ];
-            if let Some((name, _)) = rpa_only.iter().find(|(_, set)| *set) {
+            if let Some((name, _)) = rpa_only.iter().chain(att_only.iter()).find(|(_, set)| *set) {
                 return Err(value_error(format!(
                     "run_frequencies: {name} is not read by method=\"scf\""
                 )));
             }
+        }
+        "att-rimp2" => {
+            let unread = [
+                ("reference", reference.is_some_and(|r| r != "rhf")),
+                ("xc", xc.is_some()),
+                ("multiplicity", multiplicity.is_some()),
+                (
+                    "point_charges / external_field",
+                    point_charges.is_some() || external_field.is_some(),
+                ),
+                ("hessian", hessian != "auto"),
+                ("dispersion", dispersion.is_some()),
+                (
+                    "scf_max_iter / scf_energy_conv / scf_density_conv / max_iter / \
+                     energy_conv / density_conv",
+                    max_iter.is_some()
+                        || energy_conv.is_some()
+                        || density_conv.is_some()
+                        || scf_max_iter.is_some()
+                        || scf_energy_conv.is_some()
+                        || scf_density_conv.is_some(),
+                ),
+                (
+                    "df_j_aux / df_k_aux / scf_ri_j_precision / scf_ri_k_precision \
+                     (use scf_jk / jk_auxbasis)",
+                    df_j_aux.is_some()
+                        || df_k_aux.is_some()
+                        || scf_ri_j_precision.is_some()
+                        || scf_ri_k_precision.is_some(),
+                ),
+                ("scf_relativistic", scf_relativistic.is_some()),
+                ("rpa_gradient", rpa_gradient.is_some()),
+                ("n_quad", n_quad.is_some()),
+                ("quadrature", quadrature.is_some()),
+                ("trunc_thresh", trunc_thresh.is_some()),
+            ];
+            if let Some((name, _)) = unread.iter().find(|(_, set)| *set) {
+                return Err(value_error(format!(
+                    "run_frequencies: {name} is not read by method=\"att-rimp2\" (closed-shell \
+                     RHF + attenuated RI-MP2, central differences of its nuclear gradient)"
+                )));
+            }
+            return run_frequencies_att_rimp2(
+                mol,
+                basis_name,
+                delta,
+                scf_warm_start,
+                auxbasis,
+                frozen_core,
+                omega,
+                scf_jk,
+                jk_auxbasis,
+                scf_eri.is_some(),
+                memory_budget_gb,
+                py,
+            );
         }
         "pdep-rpa" => {
             let unread = [
@@ -1718,7 +1786,7 @@ pub(crate) fn run_frequencies(
                 ),
                 ("scf_relativistic", scf_relativistic.is_some()),
             ];
-            if let Some((name, _)) = unread.iter().find(|(_, set)| *set) {
+            if let Some((name, _)) = unread.iter().chain(att_only.iter()).find(|(_, set)| *set) {
                 return Err(value_error(format!(
                     "run_frequencies: {name} is not read by method=\"pdep-rpa\" (closed-shell \
                      RHF + RI-dRPA, central differences of its nuclear gradient)"
@@ -1740,7 +1808,7 @@ pub(crate) fn run_frequencies(
         }
         other => {
             return Err(value_error(format!(
-                "run_frequencies: unknown method {other:?}; expected \"scf\" or \"pdep-rpa\""
+                "run_frequencies: unknown method {other:?}; expected \"scf\", \"pdep-rpa\" or \"att-rimp2\""
             )))
         }
     }
@@ -1963,6 +2031,154 @@ fn run_frequencies_pdep_rpa(
     };
     let no_ir = Err(
         "ir_intensities: method=\"pdep-rpa\" has no dipole derivative; IR intensities are \
+         computed for the SCF references only"
+            .to_string(),
+    );
+    Ok(frequency_result_to_py(r, None, certificate_data, m, no_ir))
+}
+
+/// `run_frequencies(method="att-rimp2")`: central differences (`delta`, Bohr)
+/// of the closed-shell attenuated RI-MP2 nuclear gradient
+/// (`total_att_rimp2_gradient_on`, the surface of the CLI's att-rimp2
+/// `frequencies`), `6 N_atoms` gradients, through the same shared
+/// mass-weighting and projection as the SCF frequencies. `omega` (Å⁻¹) and
+/// the reference (`scf_jk`, `jk_auxbasis`) follow `run_optimize`.
+#[allow(clippy::too_many_arguments)]
+fn run_frequencies_att_rimp2(
+    mol: &PyMolecule,
+    basis_name: &str,
+    delta: Option<f64>,
+    scf_warm_start: Option<bool>,
+    auxbasis: Option<&str>,
+    frozen_core: Option<usize>,
+    omega: Option<f64>,
+    scf_jk: Option<&str>,
+    jk_auxbasis: Option<&str>,
+    scf_eri_set: bool,
+    memory_budget_gb: Option<f64>,
+    py: Python<'_>,
+) -> PyResult<PyFrequencyResult> {
+    use ferric_scf::frequencies::FrequencyConfig;
+    let aux_name = auxbasis.ok_or_else(|| {
+        value_error(
+            "run_frequencies: method=\"att-rimp2\" needs auxbasis= (the RI basis, e.g. \
+             \"cc-pvdz-ri\")"
+                .to_string(),
+        )
+    })?;
+    if mol.inner.multiplicity != 1 {
+        return Err(value_error(
+            "run_frequencies: method=\"att-rimp2\" is closed-shell (singlet) only".to_string(),
+        ));
+    }
+    let omega = omega.unwrap_or(0.420);
+    if !(omega.is_finite() && omega > 0.0) {
+        return Err(value_error(format!(
+            "run_frequencies: method=\"att-rimp2\": omega must be finite and > 0 (Å⁻¹), got {omega}"
+        )));
+    }
+    let mut fcfg = FrequencyConfig::default();
+    if let Some(d) = delta {
+        if !(d.is_finite() && d > 0.0) {
+            return Err(value_error(format!(
+                "delta must be finite and > 0 (got {d})"
+            )));
+        }
+        fcfg.delta = d;
+    }
+    fcfg.scf_warm_start = scf_warm_start.unwrap_or(false);
+    let k = OptimizeKwargs {
+        xc: None,
+        dispersion: None,
+        df_j_aux: None,
+        df_k_aux: None,
+        scf_ri_j_precision: None,
+        scf_ri_k_precision: None,
+        auxbasis,
+        frozen_core,
+        scf_jk,
+        jk_auxbasis,
+        memory_budget_gb,
+        oo_max_iter: None,
+        oo_grad_conv: None,
+        c_os: None,
+        c_ss: None,
+        solvent: false,
+        scf_conv_set: false,
+        scf_eri: scf_eri_set,
+        external: false,
+        rpa_gradient: None,
+        n_quad: None,
+        quadrature: None,
+        trunc_thresh: None,
+        omega: Some(omega),
+    };
+    let scf_jk = mp2_gradient_scf_jk(&k, basis_name, "att-rimp2")?;
+    let att_config = ferric_mp2::attenuated::AttenuatedMp2Config {
+        omega: omega * ferric_mp2::attenuated::BOHR_INV_PER_ANG_INV,
+        scaling: 1.0,
+        frozen_core: frozen_core.unwrap_or(0),
+        screen_thresh: None,
+        memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
+    };
+    let obs = basis::bundled(basis_name).map_err(make_err)?;
+    let aux = basis::bundled(aux_name).map_err(make_err)?;
+    let mut m = mol.inner.clone();
+    m.apply_ecp(&obs);
+    let delta_used = fcfg.delta;
+    let r = py
+        .allow_threads(|| {
+            let mut warm = ferric_scf::warm_start::ScfWarmStart::anchored(fcfg.scf_warm_start);
+            let (energy, _) = ferric_mp2::att_rimp2_gradient::total_att_rimp2_gradient_on(
+                &m,
+                &obs,
+                &aux,
+                &att_config,
+                None,
+                &scf_jk,
+                &mut warm,
+            )?;
+            ferric_scf::frequencies::harmonic_frequencies_from_gradient(
+                &m,
+                delta_used,
+                energy,
+                |g| {
+                    ferric_mp2::att_rimp2_gradient::total_att_rimp2_gradient_on(
+                        g,
+                        &obs,
+                        &aux,
+                        &att_config,
+                        None,
+                        &scf_jk,
+                        &mut warm,
+                    )
+                    .map(|(_, grad)| grad)
+                },
+            )
+        })
+        .map_err(make_err)?;
+    let mut ref_cfg = RhfConfig {
+        density_conv: 1e-9,
+        ..Default::default()
+    }
+    .for_geometry_task();
+    scf_jk.apply(&mut ref_cfg);
+    let (_, reference) =
+        task_reference_certificate(&m, basis_name, &ref_cfg, ferric_scf::Spin::Restricted);
+    let certificate_data = match reference {
+        Ok(reference) => {
+            ferric_scf::certificate::frequencies_certificate("att-rimp2", &reference, &r, &fcfg)
+                .with_approximation(
+                    "gradient",
+                    ferric_mp2::optimize::rimp2_gradient_label(&scf_jk),
+                )
+        }
+        Err(why) => {
+            ferric_core::certificate::Certificate::ungraded("frequencies:att-rimp2").warn(why)
+        }
+    };
+    let no_ir = Err(
+        "ir_intensities: method=\"att-rimp2\" has no dipole derivative; IR intensities are \
          computed for the SCF references only"
             .to_string(),
     );
