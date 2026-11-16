@@ -1,7 +1,7 @@
 # 15.7 Unrestricted RI-MP2 gradient
 
-<!-- section: 15.7; status: ready; registry: u-ri-mp2-gradient;
-     theory: crates/ferric-mp2/theory.md#"15. Unrestricted RI-MP2 nuclear gradient" -->
+<!-- section: 15.7; status: ready; registry: u-ri-mp2-gradient, u-att-rimp2-gradient;
+     theory: crates/ferric-mp2/theory.md#"15. Unrestricted RI-MP2 nuclear gradient", "15.1 Open-shell attenuated (erfc) RI-MP2 gradient" -->
 
 The unrestricted RI-MP2 gradient is the closed-shell Lagrangian of section
 15.2 written once per spin. Two things are new. The opposite-spin amplitudes
@@ -161,13 +161,34 @@ the restricted gradient on both $J/K$ routes
 There is no external reference: PySCF's UMP2 gradient uses conventional
 integrals, not density fitting. Figures from `site/src/reference/validation.md`.
 
+## 15.7.6 The attenuated (erfc) variant
+
+The open-shell attenuated gradient (`att-rimp2` at multiplicity > 1) is this
+Lagrangian with the correlation energy evaluated on
+$\hat w = \operatorname{erfc}(\omega r)/r$ and scaled by $s$. As in the
+closed-shell case of section 15.2, each term takes the operator of what it
+differentiates. The amplitudes, $b^\sigma(P|pq)$ and the RI response use erfc,
+both the 3-index integrals and the metric. The UHF reference, its Fock
+stationarity and the Z-vector coupling stay Coulomb. Every first variation of
+the correlation energy is linear in $x^\sigma$ and the unrelaxed densities, so
+the scaling enters by multiplying those by $s$. The derivation is
+`crates/ferric-mp2/theory.md` §15.1, and its proof is
+`scripts/u_att_rimp2_gradient_sympy.py`.
+
+| Check | System | Measured | Bar | Test |
+|---|---|---|---|---|
+| analytic vs Richardson FD of PySCF's UHF + `DFUMP2` energy on an erfc fit | OH, NH2 doublets / cc-pVDZ, ω = 0.420 Å⁻¹ | ≤ 4.0e-10 Ha/Bohr (OH), 1.7e-10 (NH2) | about 2.8e-7 Ha/Bohr | `crates/ferric-mp2/tests/validation_u_att_rimp2_gradient_pyscf.rs` |
+| analytic vs FD of ferric's own energy | OH, NH2 / 6-31G; OH at ω = 1.0 Å⁻¹, s = 1.2, frozen core 1; OH on RI-JK | ≤ 4.8e-9 Ha/Bohr | 2.1e-7 Ha/Bohr | `crates/ferric-mp2/tests/u_att_rimp2_gradient_fd.rs` |
+| closed-shell limit vs the restricted attenuated gradient | H2O / 6-31G, both routes, frozen core | ≤ 2.2e-15 Ha/Bohr | 1e-10 Ha/Bohr | `crates/ferric-mp2/src/att_rimp2_gradient.rs` |
+| ω → 0 vs the Coulomb U-RI-MP2 gradient | OH, ω = 1e-7 | 1.7e-13 Ha/Bohr | 1e-10 Ha/Bohr | `crates/ferric-mp2/src/att_rimp2_gradient.rs` |
+
 ## Known limits (2026-11-15)
 
 - UHF reference only. A ROHF reference is refused (`ROHF_REFUSAL`): it is not
   stationary under independent $\alpha$/$\beta$ rotations and its MP2 runs on
   semicanonical orbitals, so it needs the ROHF Z-vector and the
   semicanonicalization response, neither of which is built.
-- No COSX reference, no X2C, Coulomb operator only, at least one $\beta$
+- No COSX reference, no X2C, Coulomb or erfc operator only, at least one $\beta$
   electron.
 - No SCS or OO variant of the unrestricted gradient.
 
@@ -178,4 +199,5 @@ integrals, not density fitting. Figures from `site/src/reference/validation.md`.
 | `crates/ferric-mp2/theory.md`, "15. Unrestricted RI-MP2 nuclear gradient" | equations 15.12–15.15 |
 | `crates/ferric-mp2/src/u_rimp2_gradient.rs` | implementation |
 | `scripts/u_rimp2_gradient_sympy.py` | proofs |
+| `crates/ferric-mp2/theory.md`, "15.1 Open-shell attenuated (erfc) RI-MP2 gradient"; `scripts/u_att_rimp2_gradient_sympy.py` | section 15.7.6 |
 | `site/src/reference/validation.md`, `crates/ferric-mp2/tests/u_rimp2_gradient_fd.rs` | anchors |
