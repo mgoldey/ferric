@@ -866,6 +866,7 @@ fn freq_matches_library(
     tag: &str,
     xyz: &str,
     mult: usize,
+    basis_name: &str,
     kind: &str,
     mp2: &str,
     surface: impl Fn(
@@ -878,7 +879,7 @@ fn freq_matches_library(
         &body(
             xyz,
             mult,
-            "sto-3g",
+            basis_name,
             kind,
             &format!("[scf]\njk = \"exact\"\n{mp2}"),
         )
@@ -912,12 +913,15 @@ fn freq_matches_library(
     (e, res.frequencies)
 }
 
-/// `scs-mp2-2terfc` frequencies (closed shell on H2, open shell on OH with
-/// one frozen core) are central differences of
+/// `scs-mp2-2terfc` frequencies (closed shell on water / STO-3G, open shell
+/// on OH / 6-31G with one frozen core) are central differences of
 /// `total_scs_mp2_2terfc_gradient_on` / `total_u_scs_mp2_2terfc_gradient_on`,
 /// and open-shell `att-rimp2` terfc frequencies of
-/// `total_u_terfc_rimp2_gradient_on`. Negative control: on OH the two
-/// surfaces differ.
+/// `total_u_terfc_rimp2_gradient_on`. The parameters are off the published
+/// set and both systems have a same-spin energy (c_SS 3.0 -> 1.2 moves the
+/// energy by about 2e-4 Ha), so a key the CLI drops changes the answer. H2 /
+/// STO-3G and OH / STO-3G have E_SS = 0 and cannot see `c_ss`. Negative
+/// control: on OH the two surfaces differ.
 #[test]
 fn terfc_gradient_frequencies_match_the_library() {
     if terf_dir().is_none() {
@@ -927,28 +931,30 @@ fn terfc_gradient_frequencies_match_the_library() {
     use ferric_mp2::scs::ScsMp2TerfcConfig;
     let a2b = ferric_core::units::ANGSTROM_TO_BOHR;
     let aux = basis::bundled("cc-pvdz-ri").unwrap();
-    let obs = basis::bundled("sto-3g").unwrap();
+    let sto = basis::bundled("sto-3g").unwrap();
+    let g631 = basis::bundled("6-31g").unwrap();
     let jk = ferric_mp2::gradient::exact_scf_jk();
     let scs = |fc: usize| ScsMp2TerfcConfig {
-        r0_bonded: 0.75 * a2b,
-        r0_nonbonded: 1.05 * a2b,
-        c_os: 1.27,
-        c_ss: 4.05,
+        r0_bonded: 0.8 * a2b,
+        r0_nonbonded: 1.2 * a2b,
+        c_os: 1.2,
+        c_ss: 3.0,
         frozen_core: fc,
         memory_budget_bytes: None,
     };
-    let scs_mp2 = "[mp2]\nauxbasis = \"cc-pvdz-ri\"\nr0_bonded = 0.75\nr0_nonbonded = 1.05\n\
-                   c_os = 1.27\nc_ss = 4.05\n";
+    let scs_mp2 = "[mp2]\nauxbasis = \"cc-pvdz-ri\"\nr0_bonded = 0.8\nr0_nonbonded = 1.2\n\
+                   c_os = 1.2\nc_ss = 3.0\n";
     let c0 = scs(0);
     freq_matches_library(
-        "scs2terfc_freq_h2",
-        "h2.xyz",
+        "scs2terfc_freq_water",
+        "water.xyz",
         1,
+        "sto-3g",
         "scs-mp2-2terfc",
         &format!("{scs_mp2}frozen_core = 0\n"),
         |m, w| {
             ferric_mp2::scs_2terfc_gradient::total_scs_mp2_2terfc_gradient_on(
-                m, &obs, &aux, &c0, None, &jk, w,
+                m, &sto, &aux, &c0, None, &jk, w,
             )
         },
     );
@@ -957,11 +963,12 @@ fn terfc_gradient_frequencies_match_the_library() {
         "scs2terfc_freq_oh",
         "oh.xyz",
         2,
+        "6-31g",
         "scs-mp2-2terfc",
         &format!("{scs_mp2}frozen_core = 1\n"),
         |m, w| {
             ferric_mp2::scs_2terfc_gradient::total_u_scs_mp2_2terfc_gradient_on(
-                m, &obs, &aux, &c1, None, &jk, w,
+                m, &g631, &aux, &c1, None, &jk, w,
             )
         },
     );
@@ -973,13 +980,14 @@ fn terfc_gradient_frequencies_match_the_library() {
         "att_terfc_freq_oh",
         "oh.xyz",
         2,
+        "6-31g",
         "att-rimp2",
         "[mp2]\nauxbasis = \"cc-pvdz-ri\"\natt_operator = \"terfc\"\natt_r0 = 1.05\n\
          frozen_core = 1\n",
         |m, w| {
             ferric_mp2::att_rimp2_gradient::total_u_terfc_rimp2_gradient_on(
                 m,
-                &obs,
+                &g631,
                 &aux,
                 Operator::terfc(1.05 * a2b),
                 &ri,

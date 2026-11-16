@@ -32,7 +32,7 @@ The grades are those of `site/src/reference/validation.md`, which is the authori
 | `att-rimp2` | MP2 | `run_attenuated_rimp2`, `run_optimize(method="att-rimp2")`, `run_frequencies(method="att-rimp2")` (RHF or UHF) | Proven |
 | `mp2-v` | MP2 | `run_mp2_v` (closed shell only) | Proven (narrow) |
 | `scs-mp2` | MP2 | `run_scs_mp2`, `run_optimize(method="scs-mp2")`, `run_frequencies(method="scs-mp2")` (closed shell) | Proven |
-| `scs-mp2-2terfc` | MP2 | `run_scs_mp2_2terfc` | Proven (narrow) |
+| `scs-mp2-2terfc` | MP2 | `run_scs_mp2_2terfc`, `run_optimize(method="scs-mp2-2terfc")`, `run_frequencies(method="scs-mp2-2terfc")` (RHF or UHF) | Proven (narrow) |
 | `laplace-mp2` | MP2 | `run_laplace_mp2` | Proven |
 | `laplace-sos-mp2` | MP2 | `run_laplace_sos_mp2` | Proven |
 | `pdep-rpa` | RPA/GW | `run_pdep_rpa` (closed shell only; open-shell U-PDEP-RPA is CLI-only; `with_gradient=True` returns the analytic gradient), `run_optimize(method="pdep-rpa")`, `run_frequencies(method="pdep-rpa")` | Proven |

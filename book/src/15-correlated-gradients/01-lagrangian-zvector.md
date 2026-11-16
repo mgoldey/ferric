@@ -80,7 +80,7 @@ $(−X − Az)/\Delta$ extrapolated by DIIS with eight vectors and the residual
 as error. It stops when $\max|r| < 10^{-8}$; after 50 iterations without that,
 the gradient path refuses the result (`ZvectorSolution::require_converged`).
 
-<!-- excerpt: ferric-mp2/src/zvector.rs::solve_zvector_timed -->
+<!-- excerpt: ferric-mp2/src/zvector.rs::solve_zvector_with_imat -->
 ```rust
 let (az2, jz, kz) = az_product_with_jk(c, &z, jk, &zorb, pool.as_ref(), budget_bytes)?;
 let az = 0.5 * &az2;
