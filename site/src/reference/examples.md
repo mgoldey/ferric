@@ -13,9 +13,15 @@ OPENBLAS_NUM_THREADS=1 cargo run --release --bin ferric -- examples/water-rhf.to
 
 CI parses every shipped example and runs the three listed below. The test
 `all_shipped_examples_parse` (in `crates/ferric-cli/src/config.rs`) loads
-every `examples/*.toml` through the strict parser. It also checks that each
-file's `[molecule] xyz` path exists. It does not execute the calculation or
-compare any energy.
+every `examples/*.toml` and `examples/full/*.toml` through the strict parser.
+It also checks that each file's `[molecule] xyz` path exists. It does not
+execute the calculation or compare any energy.
+
+`examples/full/` holds one fully specified input per `method.kind`: every key
+written at its default (see
+[Fully specified examples](./input.md#fully-specified-examples)). The test
+`full_examples_anchor.rs` runs each of them and the minimal input in its
+header, and requires identical run logs.
 
 Three examples are also executed by integration tests in
 `crates/ferric-cli/tests/`:

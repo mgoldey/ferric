@@ -74,7 +74,7 @@ impl<'de> serde::Deserializer<'de> for &mut FieldRecorder {
 
 /// The key names `T` accepts, as serde's derived impl declares them
 /// (aliases included).
-fn fields_of<T: DeserializeOwned>() -> BTreeSet<&'static str> {
+pub(super) fn fields_of<T: DeserializeOwned>() -> BTreeSet<&'static str> {
     let mut rec = FieldRecorder(None);
     let _ = T::deserialize(&mut rec);
     rec.0
@@ -127,11 +127,11 @@ fn accepted_keys_by_section() -> BTreeMap<&'static str, BTreeSet<&'static str>> 
 /// these alone may be documented in another key's Notes instead of in a row
 /// of their own. A missing entry fails loudly (the alias has no row); a stale
 /// one is caught by the check at the end of the sync test.
-const SERDE_ALIASES: &[(&str, &str)] = &[("rpa", "davidson_conv_thresh")];
+pub(super) const SERDE_ALIASES: &[(&str, &str)] = &[("rpa", "davidson_conv_thresh")];
 
 /// The repository root, found at RUN time (see `all_shipped_examples_parse`
 /// for why `CARGO_MANIFEST_DIR` alone breaks under `cargo nextest archive`).
-fn repo_root() -> PathBuf {
+pub(super) fn repo_root() -> PathBuf {
     let looks_like_root = |p: &Path| p.join("Cargo.toml").is_file() && p.join("site/src").is_dir();
     if let Ok(cwd) = std::env::current_dir() {
         let mut here: Option<&Path> = Some(cwd.as_path());

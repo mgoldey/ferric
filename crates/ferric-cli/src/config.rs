@@ -9957,6 +9957,21 @@ json = [1, 2]
         assert!(err.contains("expected 10"), "{err}");
     }
 
+    /// The files of `examples/` and of its fully specified inputs in
+    /// `examples/full/` (which must not be empty).
+    fn shipped_example_paths(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+        let full = dir.join("full");
+        let paths: Vec<std::path::PathBuf> = [dir, full.as_path()]
+            .into_iter()
+            .flat_map(|d| std::fs::read_dir(d).unwrap().map(|e| e.unwrap().path()))
+            .collect();
+        assert!(
+            paths.iter().any(|p| p.starts_with(&full)),
+            "examples/full/ has no files"
+        );
+        paths
+    }
+
     #[test]
     fn all_shipped_examples_parse() {
         // Resolve the workspace at RUN time. `env!("CARGO_MANIFEST_DIR")` is
@@ -9969,8 +9984,7 @@ json = [1, 2]
         let workspace_root = runtime_workspace_root();
         let dir = workspace_root.join("examples");
         let mut n = 0;
-        for entry in std::fs::read_dir(&dir).unwrap() {
-            let path = entry.unwrap().path();
+        for path in shipped_example_paths(&dir) {
             if path.extension().and_then(|e| e.to_str()) != Some("toml") {
                 continue;
             }
@@ -12862,6 +12876,10 @@ impl QmmmCfg {
 #[cfg(test)]
 #[path = "config_doc_tests.rs"]
 mod doc_tests;
+
+#[cfg(test)]
+#[path = "full_examples.rs"]
+mod full_examples;
 
 /// Pure-config checks for the keys that wire Python-only capabilities into
 /// the CLI (`[pcm]`, `[scf] stability_descent`, `[dft] grid_radial` /
