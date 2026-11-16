@@ -888,12 +888,20 @@ fn att_rimp2_terfc_matches_the_library() {
             1,
             "sto-3g",
             "att-rimp2",
-            &format!("{TIGHT}[mp2]\natt_operator = \"terfc\"\natt_r0 = 1.05\n"),
+            // `jk = "exact"`: the library side runs the four-centre reference,
+            // and an omitted `[scf] jk` would take RI-JK.
+            &format!("{TIGHT}jk = \"exact\"\n[mp2]\natt_operator = \"terfc\"\natt_r0 = 1.05\n"),
         ),
     );
     let erfc = run_ok(
         "att_erfc",
-        &body("water.xyz", 1, "sto-3g", "att-rimp2", TIGHT),
+        &body(
+            "water.xyz",
+            1,
+            "sto-3g",
+            "att-rimp2",
+            &format!("{TIGHT}jk = \"exact\"\n"),
+        ),
     );
     let (e_t, e_e) = (value(&terfc, "Total"), value(&erfc, "Total"));
     assert!(terfc.contains("(terfc)"), "{terfc}");
