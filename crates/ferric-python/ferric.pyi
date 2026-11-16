@@ -4600,6 +4600,8 @@ def run_optimize(
     omega: float | None = None,
     initial_hessian: Literal["simple", "lindh"] | None = None,
     trust_update: Literal["fixed", "ratio"] | None = None,
+    att_operator: Literal["erfc", "terfc"] | None = None,
+    r0: float | None = None,
 ) -> OptimizeResult:
     """Geometry optimization on any surface with an analytic or finite-difference gradient.
 
@@ -4638,8 +4640,11 @@ def run_optimize(
       Coulomb UHF for an open shell (reference="uhf", the default at multiplicity > 1;
       reference="rohf" raises as for "rimp2"), with the analytic Z-vector gradient of
       the `run_attenuated_rimp2` energy. `omega` in Å⁻¹ (default 0.420; it raises for
-      every other method); the other kwargs as for "rimp2". The terfc operator has no
-      gradient and is not offered here.
+      every other method); the other kwargs as for "rimp2". `att_operator="terfc"`
+      replaces erfc with terfc(r; r0)/r, the `run_terfc_rimp2` energy: `r0` in Å
+      (default: the basis default of `run_terfc_rimp2`), closed shell only (an open
+      shell raises), and `omega` raises. `att_operator` and `r0` raise for every other
+      method.
     - "pdep-rpa": closed-shell RHF + RI-dRPA (Coulomb), the CLI's `[rpa]` optimize
       route. Needs `auxbasis`; `frozen_core`, `memory_budget_gb`, `n_quad` (default 16),
       `quadrature` (default "gauss-legendre") as in `run_pdep_rpa`. The reference RHF is
@@ -4817,6 +4822,8 @@ def run_frequencies(
     oo_grad_conv: float | None = None,
     c_os: float | None = None,
     c_ss: float | None = None,
+    att_operator: Literal["erfc", "terfc"] | None = None,
+    r0: float | None = None,
 ) -> FrequencyResult:
     """Harmonic vibrational frequencies.
 
@@ -4835,9 +4842,11 @@ def run_frequencies(
     `task = "frequencies"`. Needs `auxbasis`; `frozen_core` (default 0), `omega`
     (inverse Angstrom, default 0.420), `scf_jk` ("exact" or "rijk"; unset is RI-JK
     on the matched JK-fit basis, or four-centre with `scf_eri`), `jk_auxbasis` and
-    `memory_budget_gb` are as in `run_optimize(method="att-rimp2")`. The SCF-route
-    kwargs raise, `omega`, `scf_jk`, `jk_auxbasis` and `memory_budget_gb` raise for
-    the other methods; `reference="rohf"` raises. No IR intensities.
+    `memory_budget_gb` are as in `run_optimize(method="att-rimp2")`, and so are
+    `att_operator` / `r0` (`"terfc"`: closed shell only). The SCF-route
+    kwargs raise, `omega`, `att_operator`, `r0`, `scf_jk`, `jk_auxbasis` and
+    `memory_budget_gb` raise for the other methods; `reference="rohf"` raises. No IR
+    intensities.
 
     `method="rimp2"`, `"scs-mp2"`, `"oo-rimp2"`: central differences of the analytic
     nuclear gradient of RHF + RI-MP2, SCS-MP2 and orbital-optimized RI-MP2, as the CLI's

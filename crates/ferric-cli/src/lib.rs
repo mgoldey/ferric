@@ -7050,27 +7050,45 @@ fn run_frequencies_correlated(
                 std::process::exit(1);
             });
             let label = ferric_mp2::optimize::rimp2_gradient_label(&scf_jk);
-            // An open shell runs on a UHF reference with the unrestricted
-            // gradient, as in `run_optimize_att_rimp2`.
-            let gradient_on = if mol.multiplicity > 1 {
-                ferric_mp2::att_rimp2_gradient::total_u_att_rimp2_gradient_on
-            } else {
-                ferric_mp2::att_rimp2_gradient::total_att_rimp2_gradient_on
-            };
-            (
-                Box::new(move |m, warm| {
-                    gradient_on(
+            if let Some((terfc_op, ri)) = att_rimp2_terfc_gradient(cfg, mol, bs, budget_bytes) {
+                // terfc: closed shell only (an open shell is refused by
+                // `Config::validate_task_compat`).
+                let surface: Surface<'_> = Box::new(move |m, warm| {
+                    ferric_mp2::att_rimp2_gradient::total_terfc_rimp2_gradient_on(
                         m,
                         bs,
                         &aux_bs,
-                        &att_config,
+                        terfc_op,
+                        &ri,
                         rhf_config.external_potential.as_ref(),
                         &scf_jk,
                         warm,
                     )
-                }),
-                label,
-            )
+                });
+                (surface, label)
+            } else {
+                // An open shell runs on a UHF reference with the unrestricted
+                // gradient, as in `run_optimize_att_rimp2`.
+                let gradient_on = if mol.multiplicity > 1 {
+                    ferric_mp2::att_rimp2_gradient::total_u_att_rimp2_gradient_on
+                } else {
+                    ferric_mp2::att_rimp2_gradient::total_att_rimp2_gradient_on
+                };
+                (
+                    Box::new(move |m, warm| {
+                        gradient_on(
+                            m,
+                            bs,
+                            &aux_bs,
+                            &att_config,
+                            rhf_config.external_potential.as_ref(),
+                            &scf_jk,
+                            warm,
+                        )
+                    }),
+                    label,
+                )
+            }
         }
         "oo-rimp2" => {
             let aux_bs = aux_of(cfg.mp2.auxbasis.as_deref());
@@ -8308,25 +8326,36 @@ fn run_optimize_att_rimp2(
         std::process::exit(1);
     });
     let att_config = att_rimp2_gradient_config(cfg, mol, budget_bytes);
+    let terfc = att_rimp2_terfc_gradient(cfg, mol, bs, budget_bytes);
     let scf_jk = rimp2_gradient_scf_jk("att-rimp2", rhf_config).unwrap_or_else(|e| {
         eprintln!("error: {e}");
         std::process::exit(1);
     });
     let open_shell = mol.multiplicity > 1;
-    let driver = if open_shell {
-        ferric_mp2::optimize::optimize_geometry_u_att_rimp2_on
-    } else {
-        ferric_mp2::optimize::optimize_geometry_att_rimp2_on
-    };
-    let opt_result = driver(
-        mol,
-        bs,
-        &aux_bs,
-        &att_config,
-        opt_config,
-        rhf_config.external_potential.as_ref(),
-        &scf_jk,
-    )
+    let ext = rhf_config.external_potential.as_ref();
+    let opt_result = match terfc {
+        Some((terfc_op, ref ri)) => ferric_mp2::optimize::optimize_geometry_terfc_rimp2_on(
+            mol, bs, &aux_bs, terfc_op, ri, opt_config, ext, &scf_jk,
+        ),
+        None if open_shell => ferric_mp2::optimize::optimize_geometry_u_att_rimp2_on(
+            mol,
+            bs,
+            &aux_bs,
+            &att_config,
+            opt_config,
+            ext,
+            &scf_jk,
+        ),
+        None => ferric_mp2::optimize::optimize_geometry_att_rimp2_on(
+            mol,
+            bs,
+            &aux_bs,
+            &att_config,
+            opt_config,
+            ext,
+            &scf_jk,
+        ),
+    }
     .unwrap_or_else(|e| {
         eprintln!("error during attenuated RI-MP2 optimization: {e}");
         std::process::exit(1);
@@ -8338,10 +8367,17 @@ fn run_optimize_att_rimp2(
             i, atom.symbol, atom.x, atom.y, atom.zpos
         );
     }
-    println!(
-        "\nAttenuated RI-MP2 (erfc, ω={:.3} Å⁻¹) Optimization Result:",
-        att_config.omega / ferric_mp2::attenuated::BOHR_INV_PER_ANG_INV
-    );
+    match terfc {
+        Some((terfc_op, _)) => println!(
+            "\nAttenuated RI-MP2 (terfc, r0={:.3} Å, ω={:.4} Å⁻¹) Optimization Result:",
+            terfc_op.distance * ferric_core::units::BOHR_TO_ANGSTROM,
+            terfc_op.omega / ferric_core::units::BOHR_TO_ANGSTROM
+        ),
+        None => println!(
+            "\nAttenuated RI-MP2 (erfc, ω={:.3} Å⁻¹) Optimization Result:",
+            att_config.omega / ferric_mp2::attenuated::BOHR_INV_PER_ANG_INV
+        ),
+    }
     println!("  converged  = {}", opt_result.converged);
     println!("  steps      = {}", opt_result.steps);
     println!(
@@ -8369,10 +8405,56 @@ fn run_optimize_att_rimp2(
     );
 }
 
+/// The terfc operator and RI-MP2 configuration of an att-rimp2 optimize or
+/// frequency run with `att_operator = "terfc"` (the operator of the energy
+/// run, `r0` from `[mp2] att_r0` or the basis default, `att_omega` when
+/// decoupled), or `None` for the default erfc operator. The open-shell terfc
+/// gradient is refused before this by `Config::validate_task_compat`.
+fn att_rimp2_terfc_gradient(
+    cfg: &Config,
+    mol: &Molecule,
+    bs: &BasisSet,
+    budget_bytes: Option<usize>,
+) -> Option<(Operator, RiMp2Config)> {
+    let terfc = cfg
+        .mp2
+        .att_rimp2_op()
+        .map(|o| o == config::AttRimp2Op::Terfc)
+        .unwrap_or_else(|e| {
+            eprintln!("config error: {e}");
+            std::process::exit(1);
+        });
+    if !terfc {
+        return None;
+    }
+    if let Some(note) = cfg
+        .mp2
+        .att_terfc_r0(&bs.name)
+        .unwrap_or_else(|e| {
+            eprintln!("config error: {e}");
+            std::process::exit(1);
+        })
+        .note
+    {
+        println!("{note}");
+    }
+    let op = cfg.mp2.att_rimp2_operator(&bs.name).unwrap_or_else(|e| {
+        eprintln!("config error: {e}");
+        std::process::exit(1);
+    });
+    let ri = RiMp2Config {
+        frozen_core: cfg.mp2.frozen_core.resolve(mol),
+        memory_budget_bytes: budget_bytes,
+        ..Default::default()
+    };
+    Some((op, ri))
+}
+
 /// The `[mp2]` attenuated RI-MP2 configuration of the optimize and frequency
 /// runs: the erfc ω of the energy run (`omega`, Å⁻¹, default 0.420), its
-/// frozen core and the memory budget. `att_operator = "terfc"` and `[local]`
-/// are refused before this by `Config::validate_task_compat`.
+/// frozen core and the memory budget. `[local]` is refused before this by
+/// `Config::validate_task_compat`; `att_operator = "terfc"` takes
+/// [`att_rimp2_terfc_gradient`] instead.
 fn att_rimp2_gradient_config(
     cfg: &Config,
     mol: &Molecule,

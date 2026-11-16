@@ -3506,19 +3506,22 @@ impl Config {
 pub const MP2_GRADIENT_OPTIMIZE_KINDS: &[&str] = &["rimp2", "scs-mp2", "att-rimp2"];
 
 impl Config {
-    /// An error for att-rimp2 with the terfc operator on a gradient task: the
-    /// terfc operator has no derivative integrals, so it has no analytic
-    /// gradient.
+    /// An error for att-rimp2 with the terfc operator on a gradient task of
+    /// an open shell: the terfc gradient
+    /// (`ferric_mp2::att_rimp2_gradient::total_terfc_rimp2_gradient_on`) is
+    /// closed shell only. A singlet runs it on an RHF reference.
     fn refuse_terfc_gradient(&self, kind: &str, task: &str) -> Result<(), String> {
         if kind == "att-rimp2"
             && is_gradient_task(task)
             && self.mp2.att_rimp2_op()? == AttRimp2Op::Terfc
+            && self.molecule.multiplicity > 1
         {
             return Err(format!(
-                "[mp2] att_operator = \"terfc\" is not supported with method.kind = \
-                 \"att-rimp2\", task = \"{task}\": the terfc operator has no derivative \
-                 integrals, so there is no analytic gradient. Use the default erfc operator, \
-                 or task = \"energy\"."
+                "[mp2] att_operator = \"terfc\" with method.kind = \"att-rimp2\", task = \
+                 \"{task}\" is closed shell only (multiplicity 1, got {}): the open-shell \
+                 terfc gradient is not implemented. Use the default erfc operator (it has an \
+                 open-shell gradient), or task = \"energy\".",
+                self.molecule.multiplicity
             ));
         }
         Ok(())
@@ -13454,24 +13457,34 @@ mod cli_wired_keys_tests {
         );
     }
 
-    /// The attenuated RI-MP2 gradient is erfc-only: terfc has no derivative
-    /// integrals, so a gradient task with it is refused before any SCF;
-    /// the default erfc operator is accepted on both gradient tasks.
+    /// The terfc att-rimp2 gradient is closed shell only: a gradient task
+    /// with terfc on an open shell is refused before any SCF; a singlet and
+    /// the erfc operator are accepted on both gradient tasks.
     #[test]
-    fn att_rimp2_gradient_tasks_refuse_terfc() {
+    fn att_rimp2_gradient_tasks_refuse_open_shell_terfc() {
         for task in ["optimize", "frequencies"] {
             let e = cfg(
+                "att-rimp2",
+                task,
+                3,
+                "[mp2]\natt_operator = \"terfc\"\natt_r0 = 1.0\n",
+            )
+            .validate_task_compat()
+            .expect_err("open-shell terfc gradient must be refused");
+            assert!(e.contains("closed shell only"), "{task}: {e}");
+            cfg(
                 "att-rimp2",
                 task,
                 1,
                 "[mp2]\natt_operator = \"terfc\"\natt_r0 = 1.0\n",
             )
             .validate_task_compat()
-            .expect_err("terfc gradient must be refused");
-            assert!(e.contains("no derivative"), "{task}: {e}");
-            cfg("att-rimp2", task, 1, "[mp2]\nomega = 0.5\n")
-                .validate_task_compat()
-                .unwrap_or_else(|e| panic!("{task}: erfc refused: {e}"));
+            .unwrap_or_else(|e| panic!("{task}: closed-shell terfc refused: {e}"));
+            for mult in [1, 3] {
+                cfg("att-rimp2", task, mult, "[mp2]\nomega = 0.5\n")
+                    .validate_task_compat()
+                    .unwrap_or_else(|e| panic!("{task}: erfc refused: {e}"));
+            }
         }
         cfg(
             "att-rimp2",
