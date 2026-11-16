@@ -2083,8 +2083,18 @@ against internals.
   converge in 100, 14 mHa higher, with the largest gradient component fixed
   at 1.1e-2. A field exerts a torque, the internal step cannot rotate the
   molecule, and the convergence test is on the Cartesian gradient, which
-  contains the torque. Point charges can exert a net torque in the same
-  way (not measured).
+  contains the torque. Fixed point or smeared charges (QM/MM MM atoms) and
+  polarizable sites break the invariance the same way (a net force and
+  torque). PCM and COSMO cavities are built from the atoms and move with
+  them, so they keep it.
+
+An explicit `coordinates = "internal"` with any of those terms is refused
+before the first SCF, with an error that names the cause and suggests
+`"cartesian"` (`refuse_internal_coordinates_in_fixed_frame`, called by every
+SCF and OO-RI-MP2 optimizer, the CLI and `run_optimize`). Adding the six
+rigid-body coordinates to the internal set was not chosen: it changes the
+B matrix, the model Hessian and every recorded internal path, and Cartesian
+already handles these systems. A `fock_hook` is opaque and is not inspected.
 
 The default therefore stays Cartesian. `coordinates = "internal"` is the
 choice for an isolated molecule where a soft torsion near a barrier matters.

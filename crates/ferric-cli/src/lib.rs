@@ -7808,6 +7808,13 @@ fn run_optimize(
         },
         scf_warm_start: cfg.optimize.scf_warm_start.unwrap_or(true),
     };
+    if let Err(e) = ferric_scf::optimize::refuse_internal_coordinates_in_fixed_frame(
+        opt_config.coord_system,
+        rhf_config,
+    ) {
+        eprintln!("error in [optimize]: {e}");
+        std::process::exit(1);
+    }
     match method {
         "rhf" | "ksdft" => {
             // Dispersion (D3(BJ) or MBD@rsSCS) as an ADDITIVE correction on

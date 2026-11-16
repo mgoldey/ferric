@@ -259,6 +259,10 @@ pub fn optimize_geometry_oo_rimp2(
     opt_config: &OptimizeConfig,
 ) -> Result<ferric_scf::optimize::OptimizeResult, FerricError> {
     refuse_oo_rimp2_optimize(rhf_config, oo_config)?;
+    ferric_scf::optimize::refuse_internal_coordinates_in_fixed_frame(
+        opt_config.coord_system,
+        rhf_config,
+    )?;
     let rhf_config = rhf_config.for_geometry_task();
     let mut warm = ScfWarmStart::new(opt_config.scf_warm_start);
     let out = ferric_scf::optimize::optimize_geometry_with_energy_gradient(mol, opt_config, |m| {
