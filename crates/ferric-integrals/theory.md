@@ -338,7 +338,14 @@ $$ R^n_{000} = (-2\phi^2)^n\, \frac{\phi}{\theta}\, G_n(S, s), \qquad G_n(S, s) 
 
 The shim calls $A_n = (\phi/\theta)G_n(S, s)$ the Boys-replacement vector
 (`terf_aux`). terfc integrals are Coulomb minus terf, built by the same
-McMurchie-Davidson pass so the two share ordering and normalization.
+McMurchie-Davidson pass so the two share ordering and normalization. The
+$R^n_{tuv}$ recursion is linear in its seeds and does not contain the exponent,
+so the 3-centre values and derivatives form the difference on the seeds,
+
+$$ R^n_{000} = (-2	heta^2)^n F_n(	heta^2 R^2) - (-2\phi^2)^n rac{\phi}{	heta} G_n(S, s) , $$
+
+and run one recursion and one contraction (`md_terms` in the shim). The
+2-centre values subtract two passes.
 
 **The defining series.** The code evaluates $G_n$ from a Poisson series. With
 $\pi_S(i) = e^{-S}S^i/i!$, $c_s(i) = \sum_{j \le i} e^{-s}s^j/j!$,
@@ -383,8 +390,18 @@ Proof: `scripts/terf_identities_sympy.py` [two-center], [series], [boys-shape],
 `Operator::terfc` return the first nuclear derivatives of $(P|\mu\nu)$ and
 $(P|Q)$ in libint2's block order (9 and 6 blocks, "Derivative integrals and
 buffer sizing"). libint2 has no terf kernel, so the shim computes them with
-its own McMurchie-Davidson pass (`compute_cart_eri3_deriv`,
-`compute_cart_eri2_deriv`).
+its own McMurchie-Davidson pass (`md_terms::eri3_derivs` for 3 centres,
+`compute_cart_eri2_deriv` for 2).
+
+**Term lists.** The 3-centre kernels (values and derivatives) write each
+Cartesian component as a list of Hermite terms $(c, t, u, v)$, and store
+$(t, u, v)$ as its flat index $(tS + u)S + v$ in an $R$ cube of side
+$S = L + 1$. The index is linear, so $R_{t'+t,\,u'+u,\,v'+v}$ is the cube at
+the sum of the two indices, and an integral is a double sum over the aux list
+and the orbital-pair list. Pair lists are built once per primitive pair and
+aux lists once per shell triple. The kernels they replaced
+(`compute_cart_eri3`, `compute_cart_eri3_deriv`) stay as the reference the
+tests compare against.
 
 **The Hermite derivative.** A Cartesian Gaussian on $\mathbf A$ differentiates as
 
@@ -410,8 +427,8 @@ $\partial_Q = -\partial_P$.
 $(-2\phi^2)^n(\phi/\theta)G_n(S, s)$ ("Two-center integrals over the terf
 kernel"), read from the tables at $n \le L$. For terfc the shim forms
 $R_{\mathrm{terfc}} = R_{\mathrm{Coulomb}} - R_{\mathrm{terf}}$ before the
-contraction (`md_kernel_R`), so both share the $E$ coefficients and the
-prefactor. The derivative reads $G$ one order higher than the value. The
+contraction, from the combined seeds in 3 centres and from two $R$ tables in
+2 (`md_kernel_R`), so both share the $E$ coefficients and the prefactor. The derivative reads $G$ one order higher than the value. The
 tables hold $m < 24$, so the engine refuses $L + 1 \ge 24$ (with s..g
 auxiliaries and s..f orbitals $L \le 11$).
 
@@ -427,6 +444,13 @@ sum. Schwarz bounds are not used for terfc derivatives.
 | Coulomb kernel through the same MD derivative vs libint2 | water, cc-pVTZ + cc-pVTZ-RI, every class to $(g\vert ff)$ and $(g\vert g)$ | 3.8e-14 | 1e-10 |
 | terf and terfc derivatives vs five-point FD of the engine's values ($\omega r_0 = 1/\sqrt2$ and 4) | water, cc-pVDZ + cc-pVDZ-RI, every class | 2.6e-11 | 10× the Coulomb FD floor (3.9e-11) |
 | terfc derivative = libint2 Coulomb − table terf | same | 2.1e-14 | 1e-10 |
+
+`crates/ferric-integrals/tests/terfc_md_terms_vs_reference.rs` compares the
+term-list kernels with the reference kernels on every class of water /
+cc-pVTZ + cc-pVTZ-RI: terf values are bit-identical, terfc values and all
+derivatives agree to 5.1e-15 (bar $10^{-13}$ times the largest element).
+Flipping the sign of the terf seed, swapping $u$ and $v$ in the pair index,
+or dropping $-i\,E^{i-1,j}$ each fails it.
 
 Dropping the $-i\,E^{i-1,j}$ term fails all three. Writing
 $R_{\mathrm{Coulomb}} + R_{\mathrm{terf}}$ fails the second and third.

@@ -158,7 +158,7 @@ fn check(op: Operator, derivs: bool, want_identical: bool, label: &str) {
     let tensor_max = stats.values().fold(0.0_f64, |m, s| m.max(s.1));
     let bar = REL_TOL * tensor_max;
     let mut worst = 0.0_f64;
-    for (k, &(diff, scale)) in &stats {
+    for (k, &(diff, _)) in &stats {
         worst = worst.max(diff);
         assert!(
             diff <= bar,
