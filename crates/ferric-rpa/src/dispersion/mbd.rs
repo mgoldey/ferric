@@ -16,10 +16,11 @@ use ndarray_linalg::Inverse;
 /// Block (A,B), A≠B: T_AB^{ij} = damping · (δ_ij − 3 n_i n_j)/r³, n = r̂_AB, with
 /// the sign convention that pairs with the screening equation A_scs⁻¹ = α⁻¹ + T
 /// (parallel dipoles along the bond couple attractively → enhanced bond-axis α).
-/// the standard Gaussian-overlap (error-function) damping of two QHO dipoles of
+/// The damping is the standard Gaussian-overlap (error-function) damping of two QHO dipoles of
 /// combined width σ_AB = √(σ_A²+σ_B²) (Tkatchenko et al., PRL 108, 236402, 2012):
 ///   ζ = erf(u) − (2u/√π) e^{−u²},   η = (4u³/(3√π)) e^{−u²},   u = r/σ_AB
-///   T_ij = ζ·(3 n_i n_j − δ_ij)/r³ − η·(3 n_i n_j)/r³.
+///   T_ij = ζ·(δ_ij − 3 n_i n_j)/r³ + η·(3 n_i n_j)/r³.
+/// (Undamped limit ζ=1, η=0: T = (δ − 3nn)/r³, which is −2/r³ along the bond.)
 /// On-site blocks (A=A) are zero. Symmetric.
 pub fn dipole_coupling_tensor(positions: &[[f64; 3]], sigma: &[f64]) -> Array2<f64> {
     let n = positions.len();
