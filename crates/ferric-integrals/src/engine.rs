@@ -13,6 +13,11 @@ use ferric_core::external_potential::PointCharge;
 use ferric_core::FerricError;
 use std::os::raw::{c_int, c_void};
 
+/// The m-depth of the terf tables (`TERFC_DIMM` in the shim): a block of
+/// total angular momentum `L` reads `m = 0..=L`, its first derivative
+/// `m = 0..=L+1`. Pinned to the shim by a unit test.
+const TERF_TABLE_DEPTH: i32 = 24;
+
 fn operator_kind_to_ffi(kind: OperatorKind) -> Result<c_int, FerricError> {
     match kind {
         OperatorKind::Coulomb => Ok(ffi::OP_COULOMB),
@@ -1638,13 +1643,95 @@ impl Engine {
         }
     }
 
+    /// The terf / terfc table engine of a derivative engine: the value engine's
+    /// handle (same tables, r0 and omega; the shim's derivative entry points
+    /// read the kernel from it), sized for `nblocks` derivative blocks of
+    /// `block` doubles. `ltot_max` is the largest total angular momentum of a
+    /// block; one more unit must stay below the table depth.
+    fn new_table_deriv(
+        op: Operator,
+        max_nprim: c_int,
+        max_l: c_int,
+        ltot_max: i32,
+        precision: f64,
+        len: usize,
+        what: &str,
+    ) -> Result<Self, FerricError> {
+        let is_terf = matches!(op.kind, OperatorKind::Terf);
+        let name = if is_terf { "terf" } else { "terfc" };
+        if ltot_max + 1 >= TERF_TABLE_DEPTH {
+            return Err(FerricError::Libint(format!(
+                "{name} {what} derivative engine: total angular momentum {ltot_max} + 1 \
+                 reaches the table depth {TERF_TABLE_DEPTH}"
+            )));
+        }
+        // SAFETY: FFI call to create a terfc/terf table engine; a null
+        // table_dir falls back to FERRIC_TERF_TABLE_DIR. Null-checked below;
+        // the handle is owned by this Engine and destroyed in Drop.
+        let h = unsafe {
+            if is_terf {
+                ffi::scf_engine_create_terf_3center(
+                    op.distance,
+                    op.omega,
+                    max_nprim,
+                    max_l,
+                    precision,
+                    std::ptr::null(),
+                )
+            } else {
+                ffi::scf_engine_create_terfc_3center(
+                    op.distance,
+                    op.omega,
+                    max_nprim,
+                    max_l,
+                    precision,
+                    std::ptr::null(),
+                )
+            }
+        };
+        if h.is_null() {
+            return Err(FerricError::Libint(format!(
+                "{name} {what} derivative engine not available (tables missing? set \
+                 FERRIC_TERF_TABLE_DIR)"
+            )));
+        }
+        Ok(Engine {
+            handles: vec![(1.0, h)],
+            buf: vec![0.0; len],
+            scratch: vec![0.0; len],
+            is_terfc: true,
+            is_terf,
+            libint2_terf: false,
+        })
+    }
+
     /// Create a 3-center derivative engine: d(P|mu nu)/dR.
+    ///
+    /// For [`OperatorKind::Terfc`] and [`OperatorKind::Terf`] this is the
+    /// shim's table engine: the McMurchie-Davidson kernel of the values,
+    /// differentiated through `d/dA x_A^i e^{-a x_A^2} = 2a x_A^{i+1} e - i x_A^{i-1} e`
+    /// (`crates/ferric-integrals/theory.md`, "Derivative integrals of terf and
+    /// terfc"). It never screens, and it errors when the largest
+    /// `l_P + l_mu + l_nu + 1` reaches the table depth.
     pub fn new_3center_deriv(
         op: Operator,
         obs: &PreparedBasis,
         dfbs: &PreparedBasis,
         precision: f64,
     ) -> Result<Self, FerricError> {
+        if matches!(op.kind, OperatorKind::Terfc | OperatorKind::Terf) && !op.is_composite {
+            let max_fn_obs = obs.shell_dims().iter().copied().max().unwrap_or(1);
+            let max_fn_df = dfbs.shell_dims().iter().copied().max().unwrap_or(1);
+            return Self::new_table_deriv(
+                op,
+                obs.max_nprim().max(dfbs.max_nprim()),
+                obs.max_l().max(dfbs.max_l()),
+                dfbs.max_l() + 2 * obs.max_l(),
+                precision,
+                9 * max_fn_df * max_fn_obs * max_fn_obs,
+                "3-center",
+            );
+        }
         require_libint_class(LibintClass::ThreeCentre, 1, dfbs.max_l(), obs.max_l())?;
         let max_nprim = obs.max_nprim().max(dfbs.max_nprim());
         let max_l = obs.max_l().max(dfbs.max_l());
@@ -1691,6 +1778,18 @@ impl Engine {
         dfbs: &PreparedBasis,
         precision: f64,
     ) -> Result<Self, FerricError> {
+        if matches!(op.kind, OperatorKind::Terfc | OperatorKind::Terf) && !op.is_composite {
+            let max_fn = dfbs.shell_dims().iter().copied().max().unwrap_or(1);
+            return Self::new_table_deriv(
+                op,
+                dfbs.max_nprim(),
+                dfbs.max_l(),
+                2 * dfbs.max_l(),
+                precision,
+                6 * max_fn * max_fn,
+                "2-center",
+            );
+        }
         require_libint_class(LibintClass::TwoCentre, 1, dfbs.max_l(), dfbs.max_l())?;
         let max_fn = dfbs.shell_dims().iter().copied().max().unwrap_or(1);
         let mut handles = Vec::new();
@@ -1752,6 +1851,9 @@ impl Engine {
             self.scratch.resize(total, 0.0);
         }
 
+        if self.is_terfc {
+            return Some(self.table_eri3_deriv(obs, dfbs, sh_p, sh1, sh2, total));
+        }
         let mut max_written = 0;
         self.buf[..total].fill(0.0);
 
@@ -1786,6 +1888,72 @@ impl Engine {
         } else {
             Some(&self.buf[..max_written])
         }
+    }
+
+    /// The 9 derivative blocks of a terf/terfc table engine
+    /// ([`Self::compute_eri3_deriv`]). The table engines never screen, so a
+    /// successful call fills all `total` values; a failure is a bug or a
+    /// refusal the constructor should have made, and panics with the status.
+    fn table_eri3_deriv(
+        &mut self,
+        obs: &PreparedBasis,
+        dfbs: &PreparedBasis,
+        sh_p: usize,
+        sh1: usize,
+        sh2: usize,
+        total: usize,
+    ) -> &[f64] {
+        let h = self.handles[0].1;
+        let cap = c_int::try_from(self.buf.len()).expect("derivative buffer exceeds c_int");
+        // SAFETY: a live terf/terfc table handle; `self.buf` holds `cap`
+        // doubles and the shim checks 9*n <= cap and the shell indices before
+        // writing. Every C++ exception is caught in the shim (status < 0).
+        let written = unsafe {
+            ffi::scf_compute_terf_table_eri3_deriv(
+                h,
+                obs.handle(),
+                dfbs.handle(),
+                sh_p as c_int,
+                sh1 as c_int,
+                sh2 as c_int,
+                self.buf.as_mut_ptr(),
+                cap,
+            )
+        };
+        assert!(
+            written >= 0 && written as usize == total,
+            "terf/terfc eri3 deriv ({sh_p}|{sh1},{sh2}): status/length {written}, expected {total}"
+        );
+        &self.buf[..total]
+    }
+
+    /// The 6 derivative blocks of a terf/terfc table engine
+    /// ([`Self::compute_eri2_deriv`]); as [`Self::table_eri3_deriv`].
+    fn table_eri2_deriv(
+        &mut self,
+        dfbs: &PreparedBasis,
+        sh_p: usize,
+        sh_q: usize,
+        total: usize,
+    ) -> &[f64] {
+        let h = self.handles[0].1;
+        let cap = c_int::try_from(self.buf.len()).expect("derivative buffer exceeds c_int");
+        // SAFETY: as in `table_eri3_deriv`.
+        let written = unsafe {
+            ffi::scf_compute_terf_table_eri2_deriv(
+                h,
+                dfbs.handle(),
+                sh_p as c_int,
+                sh_q as c_int,
+                self.buf.as_mut_ptr(),
+                cap,
+            )
+        };
+        assert!(
+            written >= 0 && written as usize == total,
+            "terf/terfc eri2 deriv ({sh_p}|{sh_q}): status/length {written}, expected {total}"
+        );
+        &self.buf[..total]
     }
 
     /// [`Self::compute_eri3_deriv`] with every shell translated, as
@@ -1910,6 +2078,9 @@ impl Engine {
             self.scratch.resize(total, 0.0);
         }
 
+        if self.is_terfc {
+            return Some(self.table_eri2_deriv(dfbs, sh_p, sh_q, total));
+        }
         let mut max_written = 0;
         self.buf[..total].fill(0.0);
 
@@ -2344,6 +2515,26 @@ mod tests {
         let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
         let bs = basis::bundled("sto-3g").unwrap();
         PreparedBasis::new(&mol, &bs).unwrap()
+    }
+
+    #[test]
+    fn terf_table_depth_equals_the_shim_table_depth() {
+        let shim = include_str!("../shim/shim.cc");
+        let line = shim
+            .lines()
+            .find(|l| l.contains("constexpr int TERFC_DIMM"))
+            .expect("TERFC_DIMM definition");
+        let val: i32 = line
+            .split('=')
+            .nth(1)
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert_eq!(val, TERF_TABLE_DEPTH);
     }
 
     #[test]

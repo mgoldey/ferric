@@ -3298,6 +3298,293 @@ bool compute_cart_eri2(const Shell &shP, const Shell &shQ,
     return any;
 }
 
+// --------------------------------------------------------------------------
+//  First nuclear derivatives of the MD 3-center / 2-center integrals.
+//
+//  The derivative of a primitive Cartesian Gaussian with respect to its own
+//  centre is a combination of the same Gaussian one angular-momentum unit up
+//  and down (crates/ferric-integrals/theory.md, "Derivative integrals"):
+//
+//      d/dA_x [ x_A^i e^{-a x_A^2} ] = 2a x_A^{i+1} e^{-a x_A^2} - i x_A^{i-1} e^{-a x_A^2}.
+//
+//  In the Hermite form this is the same linear combination of the E
+//  coefficients, so the derivative of an E table is
+//      dE^{i,j}_t/dA_x = 2a E^{i+1,j}_t - i E^{i-1,j}_t   (t <= i+j+1),
+//  and the operator enters only through R_{tuv}, now needed to t+u+v <= Ltot+1.
+//  Nothing here depends on the operator: the same tables give Coulomb, terf
+//  and terfc, which is what lets the Coulomb branch be checked against
+//  libint2's derivative engine.
+//
+//  The aux centre P and the bra centre A are differentiated explicitly; the
+//  ket centre B follows from translational invariance, dB = -(dP + dA), since
+//  each kernel depends on r12 only.
+// --------------------------------------------------------------------------
+
+// Which kernel an MD derivative pass contracts: Coulomb (Boys F_m), terf
+// (the table G_m), or terfc = Coulomb - terf, formed on the Hermite R table
+// before the contraction (both pieces share the same E coefficients and the
+// same prefactor, so subtracting R is the same as subtracting the integrals).
+enum class MdKernel { Coulomb = 0, Terf = 1, Terfc = 2 };
+
+// A 1-D Hermite table T(i, j, t) with i <= ni, j <= nj and t <= i + j + extra.
+// Out-of-range indices read as zero.
+struct HermiteTab {
+    int ni = 0, nj = 0, nt = 0;
+    std::vector<double> v;
+    void init(int ni_, int nj_, int extra) {
+        ni = ni_;
+        nj = nj_;
+        nt = ni_ + nj_ + extra;
+        v.assign((size_t)(ni + 1) * (nj + 1) * (nt + 1), 0.0);
+    }
+    inline double at(int i, int j, int t) const {
+        if (i < 0 || j < 0 || t < 0 || i > ni || j > nj || t > nt) return 0.0;
+        return v[((size_t)i * (nj + 1) + j) * (nt + 1) + t];
+    }
+    inline void set(int i, int j, int t, double x) {
+        v[((size_t)i * (nj + 1) + j) * (nt + 1) + t] = x;
+    }
+};
+
+// Value table (i <= li, j <= lj) copied out of an E table built to (li+1, lj+1).
+void hermite_value_tab(const HermiteE &H, int li, int lj, HermiteTab &T) {
+    T.init(li, lj, 0);
+    for (int i = 0; i <= li; ++i)
+        for (int j = 0; j <= lj; ++j)
+            for (int t = 0; t <= i + j; ++t) T.set(i, j, t, H.at(i, j, t));
+}
+
+// d/d(first centre) of an E table built to (li+1, lj): 2a E^{i+1,j} - i E^{i-1,j}.
+void hermite_deriv_first(const HermiteE &H, double a, int li, int lj, HermiteTab &T) {
+    T.init(li, lj, 1);
+    for (int i = 0; i <= li; ++i)
+        for (int j = 0; j <= lj; ++j)
+            for (int t = 0; t <= i + j + 1; ++t) {
+                double x = 2.0 * a * H.at(i + 1, j, t);
+                if (i > 0) x -= i * H.at(i - 1, j, t);
+                T.set(i, j, t, x);
+            }
+}
+
+// Contract one Cartesian block of the 3-center form
+//   sum_{t'u'v'} P_x P_y P_z sum_{tuv} X Y Z (-1)^{t+u+v} R_{t'+t, u'+u, v'+v}
+// into out (row-major [ncP][ncA][ncB]), times `scale`.
+void md_contract3(const std::vector<std::array<int, 3>> &compP,
+                  const std::vector<std::array<int, 3>> &compA,
+                  const std::vector<std::array<int, 3>> &compB,
+                  const HermiteTab &Px, const HermiteTab &Py, const HermiteTab &Pz,
+                  const HermiteTab &X, const HermiteTab &Y, const HermiteTab &Z,
+                  const HermiteR &R, double scale, double *out) {
+    const int ncA = (int)compA.size(), ncB = (int)compB.size();
+    for (size_t ip = 0; ip < compP.size(); ++ip) {
+        const int px = compP[ip][0], py = compP[ip][1], pz = compP[ip][2];
+        for (int ia = 0; ia < ncA; ++ia) {
+            const int ax = compA[ia][0], ay = compA[ia][1], az = compA[ia][2];
+            for (int ib = 0; ib < ncB; ++ib) {
+                const int bx = compB[ib][0], by = compB[ib][1], bz = compB[ib][2];
+                double sum = 0.0;
+                for (int tp = 0; tp <= px + 1; ++tp) {
+                    const double e1 = Px.at(px, 0, tp);
+                    if (e1 == 0.0) continue;
+                    for (int up = 0; up <= py + 1; ++up) {
+                        const double e2 = Py.at(py, 0, up);
+                        if (e2 == 0.0) continue;
+                        for (int vp = 0; vp <= pz + 1; ++vp) {
+                            const double e3 = Pz.at(pz, 0, vp);
+                            if (e3 == 0.0) continue;
+                            const double eP = e1 * e2 * e3;
+                            for (int t = 0; t <= ax + bx + 1; ++t) {
+                                const double ex = X.at(ax, bx, t);
+                                if (ex == 0.0) continue;
+                                for (int u = 0; u <= ay + by + 1; ++u) {
+                                    const double ey = Y.at(ay, by, u);
+                                    if (ey == 0.0) continue;
+                                    for (int v = 0; v <= az + bz + 1; ++v) {
+                                        const double ez = Z.at(az, bz, v);
+                                        if (ez == 0.0) continue;
+                                        const double sgn = ((t + u + v) & 1) ? -1.0 : 1.0;
+                                        sum += eP * ex * ey * ez * sgn *
+                                               R.at(tp + t, up + u, vp + v);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                out[((size_t)ip * ncA + ia) * ncB + ib] += scale * sum;
+            }
+        }
+    }
+}
+
+// The Hermite R table of `kernel` for one primitive pair of Gaussian
+// distributions (reduced Coulomb exponent theta2, separation PQ), built to
+// t+u+v <= L. terfc is R[Coulomb] - R[terf].
+void md_kernel_R(MdKernel kernel, int L, double theta2, double PQx, double PQy,
+                 double PQz, const TerfcTableSet *tables, double omega, double r0,
+                 HermiteR &R) {
+    const double PQ2 = PQx * PQx + PQy * PQy + PQz * PQz;
+    double Fn[TERFC_DIMM];
+    if (L >= TERFC_DIMM) md_Ltot_overflow(L);
+    if (kernel == MdKernel::Coulomb || kernel == MdKernel::Terfc) {
+        boys_upto(L, theta2 * PQ2, Fn);
+        build_hermite_R(L, theta2, PQx, PQy, PQz, Fn, R);
+    }
+    if (kernel == MdKernel::Terf || kernel == MdKernel::Terfc) {
+        if (!tables) throw std::invalid_argument("terf MD derivative: no table set");
+        const double omega2 = omega * omega;
+        const double phi2 = theta2 * omega2 / (theta2 + omega2);
+        const double S = phi2 * PQ2;
+        const double s = phi2 * r0 * r0;
+        const double phi_over_theta = std::sqrt(phi2 / theta2);
+        if (!terf_aux(*tables, S, s, phi_over_theta, L, Fn)) md_Ltot_overflow(L);
+        if (kernel == MdKernel::Terf) {
+            build_hermite_R(L, phi2, PQx, PQy, PQz, Fn, R);
+        } else {
+            HermiteR Rt;
+            build_hermite_R(L, phi2, PQx, PQy, PQz, Fn, Rt);
+            for (size_t k = 0; k < R.r.size(); ++k) R.r[k] -= Rt.r[k];
+        }
+    }
+}
+
+// The 9 Cartesian first-derivative blocks of (P|AB) under `kernel`, layout
+// [dP_x, dP_y, dP_z, dA_x, dA_y, dA_z, dB_x, dB_y, dB_z], each row-major
+// [ncP][ncA][ncB] (the order of libint2's 3-center derivative engine).
+void compute_cart_eri3_deriv(const Shell &shP, const Shell &shA, const Shell &shB,
+                             MdKernel kernel, const TerfcTableSet *tables,
+                             double omega, double r0, std::vector<double> &out) {
+    const int lP = shP.contr[0].l, lA = shA.contr[0].l, lB = shB.contr[0].l;
+    const int L = lP + lA + lB + 1;
+    if (L >= TERFC_DIMM) md_Ltot_overflow(L);
+    const int ncP = ncart_of(lP), ncA = ncart_of(lA), ncB = ncart_of(lB);
+    const size_t blk = (size_t)ncP * ncA * ncB;
+    out.assign(9 * blk, 0.0);
+    std::vector<std::array<int, 3>> compP, compA, compB;
+    cart_components(lP, compP);
+    cart_components(lA, compA);
+    cart_components(lB, compB);
+    const auto &AO = shA.O, &BO = shB.O, &PO = shP.O;
+
+    for (size_t pa = 0; pa < shA.alpha.size(); ++pa) {
+        const double a = shA.alpha[pa];
+        const double ca = shA.contr[0].coeff[pa];
+        for (size_t pb = 0; pb < shB.alpha.size(); ++pb) {
+            const double b = shB.alpha[pb];
+            const double cb = shB.contr[0].coeff[pb];
+            const double q = a + b;
+            const double Qx = (a * AO[0] + b * BO[0]) / q;
+            const double Qy = (a * AO[1] + b * BO[1]) / q;
+            const double Qz = (a * AO[2] + b * BO[2]) / q;
+            HermiteE Hx, Hy, Hz;
+            build_hermite_E(a, b, AO[0], BO[0], lA + 1, lB, Hx);
+            build_hermite_E(a, b, AO[1], BO[1], lA + 1, lB, Hy);
+            build_hermite_E(a, b, AO[2], BO[2], lA + 1, lB, Hz);
+            HermiteTab Ex, Ey, Ez, DAx, DAy, DAz;
+            hermite_value_tab(Hx, lA, lB, Ex);
+            hermite_value_tab(Hy, lA, lB, Ey);
+            hermite_value_tab(Hz, lA, lB, Ez);
+            hermite_deriv_first(Hx, a, lA, lB, DAx);
+            hermite_deriv_first(Hy, a, lA, lB, DAy);
+            hermite_deriv_first(Hz, a, lA, lB, DAz);
+            for (size_t pp = 0; pp < shP.alpha.size(); ++pp) {
+                const double p = shP.alpha[pp];
+                const double cP = shP.contr[0].coeff[pp];
+                HermiteE GPx, GPy, GPz;
+                build_hermite_E(p, 0.0, PO[0], PO[0], lP + 1, 0, GPx);
+                build_hermite_E(p, 0.0, PO[1], PO[1], lP + 1, 0, GPy);
+                build_hermite_E(p, 0.0, PO[2], PO[2], lP + 1, 0, GPz);
+                HermiteTab EPx, EPy, EPz, DPx, DPy, DPz;
+                hermite_value_tab(GPx, lP, 0, EPx);
+                hermite_value_tab(GPy, lP, 0, EPy);
+                hermite_value_tab(GPz, lP, 0, EPz);
+                hermite_deriv_first(GPx, p, lP, 0, DPx);
+                hermite_deriv_first(GPy, p, lP, 0, DPy);
+                hermite_deriv_first(GPz, p, lP, 0, DPz);
+
+                const double theta2 = p * q / (p + q);
+                HermiteR R;
+                md_kernel_R(kernel, L, theta2, PO[0] - Qx, PO[1] - Qy, PO[2] - Qz,
+                            tables, omega, r0, R);
+                const double scale = 2.0 * std::pow(M_PI, 2.5) /
+                                     (p * q * std::sqrt(p + q)) * ca * cb * cP;
+                double *o = out.data();
+                md_contract3(compP, compA, compB, DPx, EPy, EPz, Ex, Ey, Ez, R, scale, o + 0 * blk);
+                md_contract3(compP, compA, compB, EPx, DPy, EPz, Ex, Ey, Ez, R, scale, o + 1 * blk);
+                md_contract3(compP, compA, compB, EPx, EPy, DPz, Ex, Ey, Ez, R, scale, o + 2 * blk);
+                md_contract3(compP, compA, compB, EPx, EPy, EPz, DAx, Ey, Ez, R, scale, o + 3 * blk);
+                md_contract3(compP, compA, compB, EPx, EPy, EPz, Ex, DAy, Ez, R, scale, o + 4 * blk);
+                md_contract3(compP, compA, compB, EPx, EPy, EPz, Ex, Ey, DAz, R, scale, o + 5 * blk);
+            }
+        }
+    }
+    // Translational invariance: dB = -(dP + dA).
+    for (int c = 0; c < 3; ++c)
+        for (size_t k = 0; k < blk; ++k)
+            out[(6 + c) * blk + k] = -(out[c * blk + k] + out[(3 + c) * blk + k]);
+}
+
+// The 6 Cartesian first-derivative blocks of (P|Q) under `kernel`, layout
+// [dP_x, dP_y, dP_z, dQ_x, dQ_y, dQ_z], each row-major [ncP][ncQ]. Q is a
+// single Gaussian, written as the 3-center form with an s "partner" of
+// exponent 0 at its own centre; dQ = -dP.
+void compute_cart_eri2_deriv(const Shell &shP, const Shell &shQ, MdKernel kernel,
+                             const TerfcTableSet *tables, double omega, double r0,
+                             std::vector<double> &out) {
+    const int lP = shP.contr[0].l, lQ = shQ.contr[0].l;
+    const int L = lP + lQ + 1;
+    if (L >= TERFC_DIMM) md_Ltot_overflow(L);
+    const int ncP = ncart_of(lP), ncQ = ncart_of(lQ);
+    const size_t blk = (size_t)ncP * ncQ;
+    out.assign(6 * blk, 0.0);
+    std::vector<std::array<int, 3>> compP, compQ, compS;
+    cart_components(lP, compP);
+    cart_components(lQ, compQ);
+    cart_components(0, compS);
+    const auto &PO = shP.O, &QO = shQ.O;
+    for (size_t pp = 0; pp < shP.alpha.size(); ++pp) {
+        const double p = shP.alpha[pp];
+        const double cP = shP.contr[0].coeff[pp];
+        HermiteE GPx, GPy, GPz;
+        build_hermite_E(p, 0.0, PO[0], PO[0], lP + 1, 0, GPx);
+        build_hermite_E(p, 0.0, PO[1], PO[1], lP + 1, 0, GPy);
+        build_hermite_E(p, 0.0, PO[2], PO[2], lP + 1, 0, GPz);
+        HermiteTab EPy, EPz, EPx, DPx, DPy, DPz;
+        hermite_value_tab(GPx, lP, 0, EPx);
+        hermite_value_tab(GPy, lP, 0, EPy);
+        hermite_value_tab(GPz, lP, 0, EPz);
+        hermite_deriv_first(GPx, p, lP, 0, DPx);
+        hermite_deriv_first(GPy, p, lP, 0, DPy);
+        hermite_deriv_first(GPz, p, lP, 0, DPz);
+        for (size_t pq = 0; pq < shQ.alpha.size(); ++pq) {
+            const double q = shQ.alpha[pq];
+            const double cQ = shQ.contr[0].coeff[pq];
+            HermiteE HQx, HQy, HQz;
+            build_hermite_E(q, 0.0, QO[0], QO[0], lQ, 0, HQx);
+            build_hermite_E(q, 0.0, QO[1], QO[1], lQ, 0, HQy);
+            build_hermite_E(q, 0.0, QO[2], QO[2], lQ, 0, HQz);
+            HermiteTab EQx, EQy, EQz;
+            hermite_value_tab(HQx, lQ, 0, EQx);
+            hermite_value_tab(HQy, lQ, 0, EQy);
+            hermite_value_tab(HQz, lQ, 0, EQz);
+            const double theta2 = p * q / (p + q);
+            HermiteR R;
+            md_kernel_R(kernel, L, theta2, PO[0] - QO[0], PO[1] - QO[1], PO[2] - QO[2],
+                        tables, omega, r0, R);
+            const double scale =
+                2.0 * std::pow(M_PI, 2.5) / (p * q * std::sqrt(p + q)) * cP * cQ;
+            double *o = out.data();
+            // (P | Q s): the ket pair is Q with an s partner, so the ket table is
+            // EQ(i, 0, t) and the B axis is the single s component.
+            md_contract3(compP, compQ, compS, DPx, EPy, EPz, EQx, EQy, EQz, R, scale, o + 0 * blk);
+            md_contract3(compP, compQ, compS, EPx, DPy, EPz, EQx, EQy, EQz, R, scale, o + 1 * blk);
+            md_contract3(compP, compQ, compS, EPx, EPy, DPz, EQx, EQy, EQz, R, scale, o + 2 * blk);
+        }
+    }
+    for (int c = 0; c < 3; ++c)
+        for (size_t k = 0; k < blk; ++k) out[(3 + c) * blk + k] = -out[c * blk + k];
+}
+
 // 4-center quartet (a b | c d): both sides are GENUINE Gaussian pairs.
 //
 // compute_cart_eri3 is the special case of this routine in which the bra side
@@ -4115,6 +4402,120 @@ extern "C" int scf_compute_terf_eri2(scf_engine *eng, const scf_basis *dfbs,
         if ((int)pureout.size() != n) return SCF_EINTERNAL;
         for (int i = 0; i < n; ++i) out[i] = pureout[i];
         return n;
+    } catch (...) {
+        return SCF_EINTERNAL;
+    }
+}
+
+/* --------------------------------------------------------------------------
+ *  C ABI: first nuclear derivatives of the terf / terfc table integrals.
+ *
+ *  compute_cart_eri3_deriv / compute_cart_eri2_deriv (the MD kernels above)
+ *  followed by the solid-harmonic transform of each derivative block. The
+ *  layout is libint2's: 3-center [dP, d1, d2] x [x, y, z], 2-center
+ *  [dP, dQ] x [x, y, z], each block row-major and spherical where a shell is
+ *  pure. The table engines never screen, so a successful call always writes
+ *  every block.
+ * -------------------------------------------------------------------------- */
+namespace {
+
+int md_eri3_deriv_entry(MdKernel kernel, const TerfcTableSet *tables, double omega,
+                        double r0, const scf_basis *obs, const scf_basis *dfbs,
+                        int shP, int sh1, int sh2, double *out, int out_len) {
+    if (!obs || !dfbs || !out) return SCF_EINVAL;
+    if (shP < 0 || sh1 < 0 || sh2 < 0 || shP >= (int)dfbs->bs.size() ||
+        sh1 >= (int)obs->bs.size() || sh2 >= (int)obs->bs.size()) {
+        return SCF_EINVAL;
+    }
+    const Shell &sP = dfbs->bs[shP];
+    const Shell &sA = obs->bs[sh1];
+    const Shell &sB = obs->bs[sh2];
+    // One unit more angular momentum than the values: refuse at the table depth.
+    if (sP.contr[0].l + sA.contr[0].l + sB.contr[0].l + 1 >= TERFC_DIMM) return SCF_EINVAL;
+    const int n = dfbs->nfunc[shP] * obs->nfunc[sh1] * obs->nfunc[sh2];
+    if (out_len < 9 * n) return SCF_EINVAL;
+    std::vector<double> cart;
+    compute_cart_eri3_deriv(sP, sA, sB, kernel, tables, omega, r0, cart);
+    const size_t cblk = cart.size() / 9;
+    std::vector<double> one(cblk), pure;
+    for (int d = 0; d < 9; ++d) {
+        std::copy(cart.begin() + d * cblk, cart.begin() + (d + 1) * cblk, one.begin());
+        transform_cart_to_pure3(sP, sA, sB, one, pure);
+        if ((int)pure.size() != n) return SCF_EINTERNAL;
+        std::copy(pure.begin(), pure.end(), out + (size_t)d * n);
+    }
+    return 9 * n;
+}
+
+int md_eri2_deriv_entry(MdKernel kernel, const TerfcTableSet *tables, double omega,
+                        double r0, const scf_basis *dfbs, int shP, int shQ,
+                        double *out, int out_len) {
+    if (!dfbs || !out) return SCF_EINVAL;
+    if (shP < 0 || shQ < 0 || shP >= (int)dfbs->bs.size() || shQ >= (int)dfbs->bs.size()) {
+        return SCF_EINVAL;
+    }
+    const Shell &sP = dfbs->bs[shP];
+    const Shell &sQ = dfbs->bs[shQ];
+    if (sP.contr[0].l + sQ.contr[0].l + 1 >= TERFC_DIMM) return SCF_EINVAL;
+    const int n = dfbs->nfunc[shP] * dfbs->nfunc[shQ];
+    if (out_len < 6 * n) return SCF_EINVAL;
+    std::vector<double> cart;
+    compute_cart_eri2_deriv(sP, sQ, kernel, tables, omega, r0, cart);
+    const size_t cblk = cart.size() / 6;
+    std::vector<double> one(cblk), pure;
+    for (int d = 0; d < 6; ++d) {
+        std::copy(cart.begin() + d * cblk, cart.begin() + (d + 1) * cblk, one.begin());
+        transform_cart_to_pure2(sP, sQ, one, pure);
+        if ((int)pure.size() != n) return SCF_EINTERNAL;
+        std::copy(pure.begin(), pure.end(), out + (size_t)d * n);
+    }
+    return 6 * n;
+}
+
+} // anonymous namespace
+
+extern "C" int scf_compute_terf_table_eri3_deriv(scf_engine *eng, const scf_basis *obs,
+                                                 const scf_basis *dfbs, int shP, int sh1,
+                                                 int sh2, double *out, int out_len) {
+    try {
+        if (!eng || !eng->is_terfc || !eng->terfc_tables) return SCF_EINVAL;
+        const MdKernel k = eng->is_terf_complement ? MdKernel::Terf : MdKernel::Terfc;
+        return md_eri3_deriv_entry(k, eng->terfc_tables.get(), eng->omega, eng->r0, obs,
+                                   dfbs, shP, sh1, sh2, out, out_len);
+    } catch (...) {
+        return SCF_EINTERNAL;
+    }
+}
+
+extern "C" int scf_compute_terf_table_eri2_deriv(scf_engine *eng, const scf_basis *dfbs,
+                                                 int shP, int shQ, double *out,
+                                                 int out_len) {
+    try {
+        if (!eng || !eng->is_terfc || !eng->terfc_tables) return SCF_EINVAL;
+        const MdKernel k = eng->is_terf_complement ? MdKernel::Terf : MdKernel::Terfc;
+        return md_eri2_deriv_entry(k, eng->terfc_tables.get(), eng->omega, eng->r0, dfbs,
+                                   shP, shQ, out, out_len);
+    } catch (...) {
+        return SCF_EINTERNAL;
+    }
+}
+
+extern "C" int scf_debug_md_coulomb_eri3_deriv(const scf_basis *obs, const scf_basis *dfbs,
+                                               int shP, int sh1, int sh2, double *out,
+                                               int out_len) {
+    try {
+        return md_eri3_deriv_entry(MdKernel::Coulomb, nullptr, 0.0, 0.0, obs, dfbs, shP,
+                                   sh1, sh2, out, out_len);
+    } catch (...) {
+        return SCF_EINTERNAL;
+    }
+}
+
+extern "C" int scf_debug_md_coulomb_eri2_deriv(const scf_basis *dfbs, int shP, int shQ,
+                                               double *out, int out_len) {
+    try {
+        return md_eri2_deriv_entry(MdKernel::Coulomb, nullptr, 0.0, 0.0, dfbs, shP, shQ,
+                                   out, out_len);
     } catch (...) {
         return SCF_EINTERNAL;
     }

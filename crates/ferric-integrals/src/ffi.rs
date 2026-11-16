@@ -561,6 +561,55 @@ extern "C" {
         sh4: c_int,
         out: *mut c_double,
     ) -> c_int;
+    /// First nuclear derivatives of the terf / terfc 3-centre table integrals
+    /// (the kernel is the engine's: an engine from
+    /// [`scf_engine_create_terfc_3center`] or [`scf_engine_create_terf_3center`]).
+    /// Writes 9 blocks `[dP, d1, d2] x [x, y, z]` of `nP*n1*n2` doubles, the
+    /// layout of [`scf_compute_eri3_deriv`], into `out` (capacity `out_len`).
+    /// Returns `9*nP*n1*n2`, [`SCF_EINVAL`] (bad engine, null pointer, shell out
+    /// of range, short buffer, or total angular momentum + 1 at the table depth)
+    /// or [`SCF_EINTERNAL`]. The table engines never screen.
+    pub fn scf_compute_terf_table_eri3_deriv(
+        eng: *mut c_void,
+        obs: *const c_void,
+        dfbs: *const c_void,
+        shP: c_int,
+        sh1: c_int,
+        sh2: c_int,
+        out: *mut c_double,
+        out_len: c_int,
+    ) -> c_int;
+    /// 2-centre counterpart of [`scf_compute_terf_table_eri3_deriv`]: 6 blocks
+    /// `[dP, dQ] x [x, y, z]` of `nP*nQ`.
+    pub fn scf_compute_terf_table_eri2_deriv(
+        eng: *mut c_void,
+        dfbs: *const c_void,
+        shP: c_int,
+        shQ: c_int,
+        out: *mut c_double,
+        out_len: c_int,
+    ) -> c_int;
+    /// Validation hook: [`scf_compute_terf_table_eri3_deriv`] with the plain
+    /// Coulomb kernel (no engine, no tables), for comparison with libint2's
+    /// [`scf_compute_eri3_deriv`].
+    pub fn scf_debug_md_coulomb_eri3_deriv(
+        obs: *const c_void,
+        dfbs: *const c_void,
+        shP: c_int,
+        sh1: c_int,
+        sh2: c_int,
+        out: *mut c_double,
+        out_len: c_int,
+    ) -> c_int;
+    /// Validation hook: [`scf_compute_terf_table_eri2_deriv`] with the plain
+    /// Coulomb kernel, for comparison with libint2's [`scf_compute_eri2_deriv`].
+    pub fn scf_debug_md_coulomb_eri2_deriv(
+        dfbs: *const c_void,
+        shP: c_int,
+        shQ: c_int,
+        out: *mut c_double,
+        out_len: c_int,
+    ) -> c_int;
     /// Test probe comparing the exact terf series with the Boys-function
     /// asymptotic `G_m(S,s) -> F_m(S)` on fixed out-of-table points (S = 25..400,
     /// s = 0.05..0.5) for `m = 0..=mmax`. Writes the worst relative error to
