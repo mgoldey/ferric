@@ -202,7 +202,7 @@ impl std::fmt::Display for SearchSettings {
 /// The initial Hessian an unset [`OptimizeConfig::initial_hessian`] takes on
 /// the molecular entry points. Lindh: on eight molecules from water to
 /// sulfamethoxazole at HF/STO-3G it cut the Cartesian step count from 538 to
-/// 211 and the internal one from 252 to 156 (with [`TrustUpdate::Ratio`]);
+/// 211 and the internal one from 252 to 139 (with [`TrustUpdate::Ratio`]);
 /// `crates/ferric-scf/theory.md#lindh-model-hessian` has the table.
 pub const DEFAULT_INITIAL_HESSIAN: InitialHessian = InitialHessian::Lindh;
 
@@ -238,7 +238,9 @@ pub const INTERNAL_TRUST_SCALE_MAX: f64 = 4.0;
 /// `step_norm` is the step length in the units of `radius`. Returns whether
 /// the step is accepted and the next radius:
 ///
-/// * `r = actual / predicted < TRUST_SHRINK_RATIO`: radius `TRUST_SHRINK_RATIO * step_norm`;
+/// * the step is rejected, or `predicted >= 0` (the model does not predict a
+///   descent), or `r = actual / predicted < TRUST_SHRINK_RATIO`: radius
+///   `TRUST_SHRINK_RATIO * step_norm`, so a rejected step never grows it;
 /// * `r > TRUST_GROW_RATIO` and the step reached the boundary: radius doubled;
 /// * otherwise unchanged; always clamped to `[r_min, r_max]`.
 ///
@@ -259,7 +261,7 @@ pub fn ratio_trust_update(
         return (accept, radius);
     }
     let ratio = actual / predicted;
-    let next = if ratio < TRUST_SHRINK_RATIO {
+    let next = if !accept || predicted >= 0.0 || ratio < TRUST_SHRINK_RATIO {
         TRUST_SHRINK_RATIO * step_norm
     } else if ratio > TRUST_GROW_RATIO && step_norm >= 0.99 * radius {
         2.0 * radius
@@ -940,7 +942,9 @@ fn lindh_free_block(mol: &Molecule, free: &[usize]) -> Result<Array2<f64>, Ferri
 ///    both coordinate systems and the two are comparable. A coordinate system
 ///    is a parameterization of the search, not of the convergence criterion.
 /// 3. Transform the gradient to internals: `g_q = G^- B g_x`.
-/// 4. Take a BFGS step in internals, clipped per coordinate type.
+/// 4. Take a BFGS step in internals ([`internal_trial_step`]): each block
+///    clipped onto its own radius under `fixed`, the whole step by one factor
+///    under `ratio`.
 /// 5. Back-transform iteratively to Cartesians; halve the step and retry if the
 ///    back-transformation fails to converge.
 /// 6. Update the inverse Hessian with the internal-coordinate `s` and `y`.
@@ -973,6 +977,8 @@ fn run_bfgs_internal(
         .initial_hessian
         .unwrap_or(DEFAULT_INITIAL_HESSIAN);
     let mut h_inv = internal_inverse_seed(coords, &current, initial)?;
+    // Positive diagonal metric of the fallback step under the ratio rule.
+    let h_seed = h_inv.clone();
 
     let mut prev_energy = energy;
     let mut converged = false;
@@ -1035,53 +1041,31 @@ fn run_bfgs_internal(
         )?;
 
         // BFGS step in internals.
-        let p = -h_inv.dot(&g_int);
         let dist_trust = trust_scale * opt_config.trust_radius;
         let ang_trust = trust_scale * INTERNAL_ANGULAR_TRUST;
-        let dq = clip_internal_step(coords, &p, dist_trust, ang_trust);
-
-        // Back-transform, shrinking the step if the nonlinear solve cannot
-        // reach it. A failed back-transformation means the step left the
-        // regime where B is a good linearization — the fix is a shorter step,
-        // not a different coordinate system.
-        let mut scale = 1.0;
-        let mut taken: Option<(Array1<f64>, Vec<f64>)> = None;
-        for attempt in 0..5 {
-            let trial = &dq * scale;
-            let bt = step_to_cartesian(
-                coords,
-                &current,
-                &trial,
-                BACKTRANSFORM_MAX_ITER,
-                BACKTRANSFORM_TOL,
-            )?;
-            if bt.converged {
-                taken = Some((trial, bt.coords));
-                break;
-            }
-            if attempt == 4 {
-                // Out of retries: take the best iterate the back-transformation
-                // reached rather than stalling. It is a descent direction and
-                // the next gradient will correct it; report it so a user can
-                // see the optimizer is working harder than it should.
-                println!(
-                    "Warning: internal→Cartesian back-transformation did not converge \
-                     (residual {:.2e} after {} passes, step scaled to {:.3}); \
-                     accepting the best iterate.",
-                    bt.residual, bt.iterations, scale
-                );
-                taken = Some((trial, bt.coords));
-                break;
-            }
-            scale *= 0.5;
+        let (dq, fell_back) = internal_trial_step(
+            coords,
+            &g_int,
+            &h_inv,
+            &h_seed,
+            dist_trust,
+            ang_trust,
+            opt_config.trust_update,
+        );
+        if fell_back {
+            println!(
+                "     | step {}: -H g is not a descent direction; \
+                 stepping along -H0 g (the seed metric)",
+                step_idx + 1
+            );
         }
-        // The requested step is deliberately dropped here: from this point on
-        // only the ACHIEVED displacement (measured from the two geometries by
-        // `bfgs_secant_step`) is allowed to reach the Hessian update. Keeping
-        // the requested vector in scope is what made the old
+
+        // The requested step is deliberately dropped inside the helper: from
+        // here on only the ACHIEVED displacement (measured from the two
+        // geometries by `bfgs_secant_step`) is allowed to reach the Hessian
+        // update. Keeping the requested vector in scope is what made the old
         // "s = requested step" defect possible.
-        let (_dq_requested, new_coords) =
-            taken.expect("the retry loop always assigns on its last pass");
+        let new_coords = back_transform_with_retries(coords, &current, &dq)?;
 
         let q_before = coords.values(&current)?;
         let mut trial = current.clone();
@@ -1170,6 +1154,46 @@ fn run_bfgs_internal(
             ..opt_config.requested_search()
         },
     })
+}
+
+/// Back-transform an internal step to Cartesians, halving it (up to four
+/// times) when the nonlinear solve does not converge. A failed
+/// back-transformation means the step left the regime where B is a good
+/// linearization; the fix is a shorter step, not a different coordinate
+/// system. Out of retries, the best iterate of the last attempt is taken
+/// rather than stalling (it is a descent direction and the next gradient
+/// corrects it), with a printed warning. Returns the new Cartesian
+/// coordinates only.
+fn back_transform_with_retries(
+    coords: &InternalCoords,
+    current: &Molecule,
+    dq: &Array1<f64>,
+) -> Result<Vec<f64>, FerricError> {
+    let mut scale = 1.0;
+    for attempt in 0..5 {
+        let trial = dq * scale;
+        let bt = step_to_cartesian(
+            coords,
+            current,
+            &trial,
+            BACKTRANSFORM_MAX_ITER,
+            BACKTRANSFORM_TOL,
+        )?;
+        if bt.converged {
+            return Ok(bt.coords);
+        }
+        if attempt == 4 {
+            println!(
+                "Warning: internal→Cartesian back-transformation did not converge \
+                 (residual {:.2e} after {} passes, step scaled to {:.3}); \
+                 accepting the best iterate.",
+                bt.residual, bt.iterations, scale
+            );
+            return Ok(bt.coords);
+        }
+        scale *= 0.5;
+    }
+    unreachable!("the retry loop returns on its last pass")
 }
 
 /// Diagonal inverse Hessian in internals: `1/k` per primitive, `k` from
@@ -1372,6 +1396,90 @@ fn clip_internal_step(
         };
     }
     out
+}
+
+/// The requested internal step for one trust rule, and whether it fell back
+/// to the seed metric.
+///
+/// `Fixed` is the search before the ratio rule: `-H g` with each block
+/// clipped onto its own radius ([`clip_internal_step`]). `Ratio` takes
+/// [`internal_model_direction`] and clips it by one factor
+/// ([`clip_internal_step_uniform`]), so the step is a descent direction at
+/// every radius.
+fn internal_trial_step(
+    coords: &InternalCoords,
+    g: &Array1<f64>,
+    h_inv: &Array2<f64>,
+    h_seed: &Array2<f64>,
+    dist_trust: f64,
+    ang_trust: f64,
+    rule: TrustUpdate,
+) -> (Array1<f64>, bool) {
+    match rule {
+        TrustUpdate::Fixed => (
+            clip_internal_step(coords, &-h_inv.dot(g), dist_trust, ang_trust),
+            false,
+        ),
+        TrustUpdate::Ratio => {
+            let (p, fell_back) = internal_model_direction(g, h_inv, h_seed);
+            (
+                clip_internal_step_uniform(coords, &p, dist_trust, ang_trust),
+                fell_back,
+            )
+        }
+    }
+}
+
+/// Clip a proposed internal step by ONE factor (`trust_update = "ratio"`).
+///
+/// `alpha = min(1, cartesian_trust / |p_dist|, angular_trust / |p_ang|)`
+/// and the step is `alpha p`: each block stays within its own radius (the
+/// units are never mixed), and the step keeps the model direction, so
+/// `g.dq = alpha g.p < 0` whenever `p` descends. [`clip_internal_step`]
+/// scales the two blocks by different factors. That step need not descend,
+/// and the ratio of the two factors does not depend on the radius, so a
+/// shrinking radius cannot recover a descent step
+/// (`crates/ferric-scf/theory.md`, "Geometry searches").
+fn clip_internal_step_uniform(
+    coords: &InternalCoords,
+    p: &Array1<f64>,
+    cartesian_trust: f64,
+    angular_trust: f64,
+) -> Array1<f64> {
+    let (mut dist_norm, mut ang_norm) = (0.0, 0.0);
+    for (idx, prim) in coords.primitives.iter().enumerate() {
+        if prim.is_angular() {
+            ang_norm += p[idx] * p[idx];
+        } else {
+            dist_norm += p[idx] * p[idx];
+        }
+    }
+    let (dist_norm, ang_norm) = (f64::sqrt(dist_norm), f64::sqrt(ang_norm));
+    let mut alpha = 1.0f64;
+    if dist_norm > cartesian_trust {
+        alpha = alpha.min(cartesian_trust / dist_norm);
+    }
+    if ang_norm > angular_trust {
+        alpha = alpha.min(angular_trust / ang_norm);
+    }
+    p * alpha
+}
+
+/// The internal model direction under the ratio rule: `p = -H g`, or
+/// `-H0 g` with `H0` the positive diagonal seed when `-H g` is not a descent
+/// direction (`g.p >= 0`, which a positive definite `H` rules out but
+/// rounding can produce). Returns the direction and whether it fell back.
+fn internal_model_direction(
+    g: &Array1<f64>,
+    h_inv: &Array2<f64>,
+    h_seed: &Array2<f64>,
+) -> (Array1<f64>, bool) {
+    let p = -h_inv.dot(g);
+    if g.dot(&p) < 0.0 {
+        (p, false)
+    } else {
+        (-h_seed.dot(g), true)
+    }
 }
 
 /// Coordinate-vector core of the BFGS driver: minimizes `f(x)` over a flat
@@ -2610,6 +2718,10 @@ mod tests {
             ((5e-9, -5e-9, 0.1, 0.1), (true, 0.1)),
             ((-0.9e-3, -1e-3, 1.0, 1.0), (true, 1.0)),
             ((1e-3, -1e-3, 1e-3, 1e-3), (false, 1e-3)),
+            // predicted >= 0: a rise predicted as a rise (r = 2 on the
+            // boundary) and a fall predicted as a rise both shrink.
+            ((2e-3, 1e-3, 0.1, 0.1), (false, 0.025)),
+            ((-1e-3, 1e-3, 0.1, 0.1), (true, 0.025)),
         ];
         for ((a, p, s, r), want) in cases {
             let got = ratio_trust_update(a, p, s, r, 1e-3, 1.0);
@@ -2620,6 +2732,106 @@ mod tests {
                 (a, p, s, r)
             );
         }
+    }
+
+    /// A rejected step, or one whose predicted change is `>= 0`, never grows
+    /// the radius, over a grid that reaches every branch of the rule.
+    /// Mutation: dropping `!accept || predicted >= 0.0 ||` lets the grid's
+    /// rises predicted as rises double the radius.
+    #[test]
+    fn ratio_trust_update_never_grows_on_rejection_or_a_non_descent_model() {
+        let values = [-2e-3, -1e-3, -1e-5, -5e-9, 5e-9, 2e-8, 1e-5, 1e-3, 2e-3];
+        let (mut n_rej, mut n_pos) = (0, 0);
+        for actual in values {
+            for predicted in values {
+                for radius in [0.01, 0.1, 1.0] {
+                    for frac in [0.25, 0.99, 1.0] {
+                        let (acc, next) =
+                            ratio_trust_update(actual, predicted, frac * radius, radius, 0.01, 4.0);
+                        if !acc || predicted >= 0.0 {
+                            n_rej += usize::from(!acc);
+                            n_pos += usize::from(predicted >= 0.0);
+                            assert!(
+                                next <= radius,
+                                "radius grew {radius} -> {next} (accept {acc}, actual \
+                                 {actual:e}, predicted {predicted:e}, step {})",
+                                frac * radius
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        assert!(n_rej > 50 && n_pos > 50, "grid too small: {n_rej} {n_pos}");
+    }
+
+    /// Internal step under the ratio rule: one clip factor, so the step is
+    /// `alpha p` and descends. The constructed case is one where the per-block
+    /// clip (the `fixed` search, and the ratio search before this fix) goes
+    /// uphill at every radius: with `g = (1, 0.1)` on one bond and one angle
+    /// and the positive definite block `H = [[1, -20], [-20, 1000]]`,
+    /// `p = (1, -80)` descends (`g.p = -7`), but clipping the bond to 0.1 and
+    /// the angle to 0.3 gives `g.dq = 0.1 - 0.03 > 0`. Mutation: the ratio arm
+    /// of `internal_trial_step` calling `clip_internal_step`.
+    #[test]
+    fn ratio_internal_step_descends_where_the_per_block_clip_does_not() {
+        let mol = ethane_for_steps();
+        let coords = InternalCoords::generate(&mol).unwrap();
+        let nq = coords.len();
+        let i_d = coords
+            .primitives
+            .iter()
+            .position(|p| !p.is_angular())
+            .unwrap();
+        let i_a = coords
+            .primitives
+            .iter()
+            .position(|p| p.is_angular())
+            .unwrap();
+        let mut g = Array1::zeros(nq);
+        g[i_d] = 1.0;
+        g[i_a] = 0.1;
+        let mut h = Array2::eye(nq) * 1e-6;
+        h[(i_d, i_d)] = 1.0;
+        h[(i_a, i_a)] = 1000.0;
+        h[(i_d, i_a)] = -20.0;
+        h[(i_a, i_d)] = -20.0;
+        let seed = Array2::eye(nq);
+        let p = -h.dot(&g);
+        assert!(g.dot(&p) < 0.0, "precondition: -H g descends");
+        for scale in [1.0, 1e-2, 1e-4] {
+            let (dist, ang) = (0.1 * scale, INTERNAL_ANGULAR_TRUST * scale);
+            let (fixed, _) =
+                internal_trial_step(&coords, &g, &h, &seed, dist, ang, TrustUpdate::Fixed);
+            assert!(
+                g.dot(&fixed) > 0.0,
+                "precondition: the per-block clip goes uphill at scale {scale}"
+            );
+            let (dq, fell_back) =
+                internal_trial_step(&coords, &g, &h, &seed, dist, ang, TrustUpdate::Ratio);
+            assert!(!fell_back);
+            assert!(
+                g.dot(&dq) < 0.0,
+                "ratio step uphill at scale {scale}: g.dq = {:e}",
+                g.dot(&dq)
+            );
+            // dq = alpha p with alpha = min(dist / |p_d|, ang / |p_a|) = ang / 80.
+            let alpha = ang / 80.0;
+            for k in 0..nq {
+                assert!((dq[k] - alpha * p[k]).abs() <= 1e-15 * p[k].abs().max(1.0));
+            }
+        }
+        // A model that does not descend falls back to the seed metric.
+        let (dq, fell_back) = internal_trial_step(
+            &coords,
+            &g,
+            &(-&h),
+            &seed,
+            0.1,
+            INTERNAL_ANGULAR_TRUST,
+            TrustUpdate::Ratio,
+        );
+        assert!(fell_back && g.dot(&dq) < 0.0);
     }
 
     /// The Cartesian Lindh seed: symmetric positive definite; the identity on

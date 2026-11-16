@@ -1804,26 +1804,69 @@ walk carries no Hessian. Convergence needs at least one step and
 $\lvert\Delta E\rvert < e_{\rm conv}$, $\max\lvert g\rvert < g_{\max}$ and
 ${\rm rms}(g) < g_{\rm rms}$ together. Redundant internals
 (`CoordSystem::Internal`) run the same update on $g_q = G^{-}Bg_x$ from an
-empirical diagonal Hessian, clip bonds against $r_{\rm trust}$ and angles
-against 0.3 rad separately (`clip_internal_step`), update with the achieved
+empirical diagonal Hessian, keep bonds within $r_{\rm trust}$ and angles
+within 0.3 rad (two radii, never one mixed-unit norm; the clip is below), update with the achieved
 internal displacement under the same guard, and on a degenerate pair reset to the empirical diagonal.
 Under `"ratio"` the internal search scales both radii by one factor $f \in
 [0.01, 4]$, predicts $g_q^{\mathsf T}s + \tfrac12 s^{\mathsf T}H^{-1}s$ on the
 achieved internal step $s$ (a linear solve, since a redundant step is not
 $\alpha p$), and measures the step as
 $\max(\lVert s_{\rm dist}\rVert/r_{\rm trust}, \lVert s_{\rm ang}\rVert/0.3)$
-in the units of $f$. Two properties of this internal rule are known and not
-changed. (1) The prediction is on the achieved step, so it can be $\ge 0$;
-a rise predicted as a rise then gives $r > \tfrac34$ and the radius grows on
-a rejected step (pregabalin at HF/STO-3G: 37 of 51 steps rejected, 22 in a
-row at $f = 4$). (2) The step is clipped with separate factors for the
-distance and the angular block, so $-g_q^{\mathsf T}DHg_q$, the first-order
-change, is not sign-definite and a short step need not descend. Shrinking on
-every rejection (a fix of 1 alone, tried and not kept) stalls alanine
-dipeptide at $f = 0.01$: the same step, +1.3e-7 Ha uphill, is rejected for
-the remaining 283 steps, which (2) would explain (not isolated further). Both
-are reasons the coordinate default is Cartesian (see
-*Measured defaults* below).
+in the units of $f$.
+
+*The internal step under `"ratio"`.* With $\rho_d = f r_{\rm trust}$,
+$\rho_a = 0.3 f$ and $p = -Hg_q$ split into its distance and angular blocks,
+the step is clipped by one factor (`clip_internal_step_uniform`),
+
+$$\Delta q = \alpha p,\qquad \alpha = \min\!\Big(1, \frac{\rho_d}{\lVert p_d\rVert}, \frac{\rho_a}{\lVert p_a\rVert}\Big),$$
+
+so each block stays inside its own radius and the units are never added.
+The first-order change is $g_q^{\mathsf T}\Delta q = -\alpha\, g_q^{\mathsf T}Hg_q < 0$
+for $H$ positive definite, and the model change is
+$\alpha g_q^{\mathsf T}p\,(1 - \alpha/2) < 0$ for $0 < \alpha \le 1$, as in
+Cartesians. If rounding leaves $g_q^{\mathsf T}p \ge 0$ the step is taken along
+$-H_0g_q$ instead, $H_0$ the positive diagonal seed (`internal_model_direction`).
+Under `"fixed"` the two blocks are clipped by their own factors $a$ and $b$
+(`clip_internal_step`, the search before the ratio rule, kept bit for bit),
+
+$$g_q^{\mathsf T}\Delta q = a\,g_d^{\mathsf T}p_d + b\,g_a^{\mathsf T}p_a,$$
+
+which is not sign-definite: $g_d^{\mathsf T}p_d$ can be positive while the
+sum $g_q^{\mathsf T}p$ is negative. With both blocks clipped,
+$a/b = (\rho_d\lVert p_a\rVert)/(\rho_a\lVert p_d\rVert)$ does not depend on
+$f$, so the clipped direction is the same at every radius and shrinking the
+radius cannot restore descent. With $\Delta E(\Delta q) \approx g^{\mathsf T}\Delta q + \tfrac12\Delta q^{\mathsf T}B\Delta q$,
+a direction whose first-order descent is small against its curvature rises
+until the radius is below $2\lvert g^{\mathsf T}u\rvert/(u^{\mathsf T}Bu)$
+along the unit direction $u$, which can be below the floor $f = 0.01$.
+
+*The achieved step.* The back-transformation returns $s = P\Delta q$ to first
+order, $P = GG^{-}$ the projector onto the range of $G = BB^{\mathsf T}$, and
+$g_q = G^{-}Bg_x$ lies in that range, so $g_q^{\mathsf T}s = g_q^{\mathsf T}\Delta q$,
+which is also the Cartesian change $g_x^{\mathsf T}\Delta x$ with
+$\Delta x = B^{\mathsf T}G^{-}\Delta q$. A descent $\Delta q$ therefore gives a
+descent $s$ for a short enough step.
+
+*The radius.* `ratio_trust_update` sets the radius to
+$\tfrac14\lVert s\rVert$ when the step is rejected, when
+$\Delta E_{\rm pred} \ge 0$, or when $r < \tfrac14$; it doubles only for an
+accepted step with $\Delta E_{\rm pred} < 0$, $r > \tfrac34$ and
+$\lVert s\rVert \ge 0.99\Delta$. A rise predicted as a rise has $r > 0$ and
+would otherwise double the radius on a rejected step. In Cartesians
+$\Delta E_{\rm pred} < 0$ always (above), so there the rule is unchanged.
+
+*The stall this removes.* Alanine dipeptide at HF/STO-3G (internal, Lindh,
+`"ratio"`) with the radius rule fixed and the per-block clip kept fails in
+300 steps, 284 of them at $f = 0.01$. Each logged step there has $a = 3.1\times10^{-2}$,
+$b = 2.9\times10^{-3}$, $g_q^{\mathsf T}p = -3.9\times10^{-3}$ but
+$g_q^{\mathsf T}\Delta q = -4.7\times10^{-8}$ and
+$g_q^{\mathsf T}s = -4.6\times10^{-8}$, and the model predicts
+$+1.300\times10^{-7}$ Ha against $+1.302\times10^{-7}$ Ha measured. The
+model is right ($r = 1.00$), the back-transformation is not the cause
+($g_q^{\mathsf T}s \approx g_q^{\mathsf T}\Delta q$), and the energy rise is far
+above SCF noise: the per-block direction is barely downhill and its curvature
+term wins at the floor radius. One factor would have given
+$g_q^{\mathsf T}\Delta q = b\,g_q^{\mathsf T}p = -1.1\times10^{-5}$.
 
 **Saddle points** (`find_saddle`). In mass-weighted Cartesians, with the
 projected Hessian's eigenvalues $b_i$ (rigid modes shifted to $+10^3$) and
@@ -1868,7 +1911,15 @@ one indefinite for every $y^{\mathsf T}s < 0$ pair, and bitwise unchanged above
 the threshold; P1 the followed-mode root and step in symbols; P2
 `prfo_step` against the augmented-Hessian eigenvectors; F1 the two Bofill
 corrections' secant conditions; F2 the update's secant condition, symmetry and
-retained negative eigenvalue; I1 the mass-weighted step).
+retained negative eigenvalue; T1 the Cartesian predicted change; T2 the
+ratio rule's decision table and a Rosenbrock search; T3 the radius never
+growing on a rejected step or a predicted change $\ge 0$, over a grid of
+every branch, and the Rust shrink condition; C1 the one-factor clip's
+$g^{\mathsf T}\Delta q = -\alpha g^{\mathsf T}Hg$ in symbols, the
+per-block ratio $a/b$ independent of $f$, and random positive definite $H$
+where the per-block clip is uphill at every radius and the one-factor clip
+never is; C2 $g_q^{\mathsf T}P\Delta q = g_q^{\mathsf T}\Delta q = g_x^{\mathsf T}\Delta x$
+for random rank-deficient $B$; I1 the mass-weighted step).
 
 ## Lindh model Hessian
 
@@ -1955,19 +2006,20 @@ outside reference:
 | molecule (atoms) | Cartesian old | Cartesian new | internal old | internal new | geomeTRIC |
 |---|---|---|---|---|---|
 | water (3) | 5 | 3 | 5 | 3 | 4 |
-| ethanol (9) | 28 | 4 | 16 | 15 | 5 |
-| butane (14) | 19 | 5 | 16 | 14 | 8 |
-| paracetamol (20) | 60 | 33 | 30 | 22 | 29 |
-| alanine dipeptide (22) | 118 | 39 | 40 | 31 | 22 |
-| aspirin (21) | 58 | 16 | 32 | 15 | 21 |
-| ibuprofen (33) | 80 | 19 | 67 | 30 | 16 |
-| sulfamethoxazole (28) | 170 | 92 | 46 | 26 | 25 |
-| total | 538 | 211 | 252 | 156 | 130 |
-| pregabalin (28) | | 21 | | 51 | 17 |
-| procaine (37) | | 13 | | 28 | 18 |
-| lidocaine (39) | | 78 | | 49 | 42 |
-| metoprolol (44) | | 43 | | 52 | 30 |
-| total, 12 molecules | | 366 | | 336 | 237 |
+| ethanol (9) | 28 | 4 | 16 | 12 | 5 |
+| butane (14) | 19 | 5 | 16 | 12 | 8 |
+| paracetamol (20) | 60 | 33 | 30 | 23 | 29 |
+| alanine dipeptide (22) | 118 | 39 | 40 | 27 | 22 |
+| aspirin (21) | 58 | 16 | 32 | 17 | 21 |
+| ibuprofen (33) | 80 | 19 | 67 | 21 | 16 |
+| sulfamethoxazole (28) | 170 | 92 | 46 | 24 | 25 |
+| total | 538 | 211 | 252 | 139 | 130 |
+| pregabalin (28) | | 21 | | 30 | 17 |
+| procaine (37) | | 13 | | 17 | 18 |
+| lidocaine (39) | | 78 | | 34 | 42 |
+| metoprolol (44) | | 43 | | 31 | 30 |
+| total, 12 molecules | | 366 | | 251 | 237 |
+| rejected steps, 12 molecules | | 18 | | 24 | |
 
 `lindh` alone (Cartesian, `fixed`) gives 4, 5, 49, 30, 26 steps on ethanol,
 butane, alanine dipeptide, aspirin and ibuprofen; `ratio` alone reproduces the
@@ -1975,9 +2027,9 @@ old trajectories exactly, since with the identity seed no step reaches the
 trust boundary. The old Cartesian search stops 0.01 to 0.10 mHa above the
 minimum the others reach (0.03 to 0.21 Å RMSD): with the identity seed a soft
 mode meets the gradient thresholds before it is relaxed. The new searches end
-within 3e-3 mHa of each other, except Cartesian new on sulfamethoxazole: its
+within 4e-3 mHa of each other, except Cartesian new on sulfamethoxazole: its
 long early steps turn the sulfonamide C–C–N–S torsion from 13° to −64°
-(internals and geomeTRIC stop at +60°) and it ends in a rotamer 3.4 mHa lower.
+(internals and geomeTRIC stop at +59°) and it ends in a rotamer 3.3 mHa lower.
 Both end points are minima: re-optimizing either one with the other search
 moves the energy by less than 0.02 mHa. 
 
@@ -1996,36 +2048,53 @@ comparison, not by the step count.
 
 | molecule | largest dihedral change: Cartesian / internal / geomeTRIC | rejected steps: Cartesian / internal |
 |---|---|---|
-| paracetamol | 22° / 22° (opposite signs, same energy) / – | |
-| sulfamethoxazole | 77° (C–C–N–S, +13° → −64°) / 46° (→ +59°) / – | |
-| pregabalin | 15.6° / 14.6° / 16.1° | 1 / 37 |
-| procaine | 4.7° / 4.7° / 4.7° | 0 / 14 |
-| lidocaine | 80° / 80° / 80° (N–C–C–N, −107° → +172°) | 5 / 17 |
-| metoprolol | 22.7° / 24.7° / 24.5° | 2 / 31 |
+| paracetamol | 22° / 22° (opposite signs, same energy) / – | 2 / 3 |
+| sulfamethoxazole | 77° (C–C–N–S, +13° → −64°) / 46° (→ +59°) / – | 7 / 0 |
+| pregabalin | 15.6° / 16.5° / 16.1° | 1 / 3 |
+| procaine | 4.7° / 4.7° / 4.7° | 0 / 1 |
+| lidocaine | 80° / 80° / 80° (N–C–C–N, −107° → +172°) | 5 / 2 |
+| metoprolol | 22.7° / 24.3° / 24.5° | 2 / 4 |
 
 The other molecules change no dihedral by more than 17° in either search.
-On the four new molecules both searches end at geomeTRIC's end point (largest
-dihedral difference 1.9°, RMSD at most 0.027 Å), with no back-transformation
-warnings, so the internal rejections are a cost, not a wrong result. Lidocaine
+On the four new molecules the internal search ends within 0.4° and 0.003 Å
+RMSD of geomeTRIC's end point and within 1.7° and 0.024 Å of the Cartesian
+one, with no back-transformation warnings and no fallback steps. Lidocaine
 turns by 80° in all three optimizers: that is a downhill relaxation from the
 MMFF start, not a barrier crossing. Only Cartesian sulfamethoxazole leaves the
-starting basin. On step counts internals lead in total (336 against 366) but
-take more steps on six of the twelve molecules (one tie), and they reject 14 to 37
-steps per new molecule against 0 to 5. The data do not separate the two on
-the first criterion beyond the one sulfamethoxazole case, and on the second
-they favour Cartesians, so the default stays Cartesian; `coordinates =
-"internal"` is the choice when a soft torsion near a barrier matters.
+starting basin. On this set internals lead on the first criterion (the one
+sulfamethoxazole case), tie on the second (no failures; 24 rejected steps
+against 18) and lead on steps in total (251 against 366), while taking more
+steps than Cartesians on six of the twelve molecules (ethanol 12 against 4,
+butane 12 against 5, pregabalin 30 against 21).
 
-Pregabalin at PBE/def2-SVP (RI-J/RI-K, f64), same start: Cartesian 34 steps
-(2 rejected), internal 61 (24 rejected), no back-transformation warnings.
-Both turn the C–C–C–O torsion from +100° to +128/129° and end 1.2° and
-0.013 Å RMSD apart; the internal end point is 0.17 mHa higher, within the
-loose default thresholds.
+The default also governs searches outside this set, and two of them go
+against internals.
+
+* Pregabalin at PBE/def2-SVP (RI-J/RI-K, f64), same start: Cartesian 34
+  steps (2 rejected), internal 21 (1 rejected). The internal search stops
+  0.44 mHa above the Cartesian end point, with the C5–C8–C9–O10 torsion at
+  +109° where the Cartesian search reaches +129°: its last steps still lower
+  the energy by about 1e-6 Ha each, and $\Delta E$ falls below `e_conv` while
+  the gradient is under its thresholds. A Cartesian search restarted from the
+  internal end point stops after one step, so the default thresholds do not
+  tell the two end points apart.
+* Water at HF/STO-3G in a uniform field of 0.02 a.u. along $x$
+  (`external_field`): Cartesian converges in 22 steps; internal does not
+  converge in 100, 14 mHa higher, with the largest gradient component fixed
+  at 1.1e-2. A field exerts a torque, the internal step cannot rotate the
+  molecule, and the convergence test is on the Cartesian gradient, which
+  contains the torque. Point charges can exert a net torque in the same
+  way (not measured).
+
+The default therefore stays Cartesian. `coordinates = "internal"` is the
+choice for an isolated molecule where a soft torsion near a barrier matters.
 
 Sulfamethoxazole at PBE/def2-SVP (RI-J/RI-K, f64), same start: Cartesian
 old does not converge in 150 steps; Cartesian new converges in 47 steps,
-internal new in 37, internal old in 35. The new searches end within 0.04 mHa
-of each other. A further 150 internal steps from each end point at `g_max`
+internal new in 36 (1 rejected), internal old in 35. The new searches end
+within 1e-3 mHa of each other. Before the one-factor clip the internal search
+took 37 steps and ended 0.04 mHa above the Cartesian one; from those two end
+points a further 150 internal steps at `g_max`
 1.5e-5 (none reaches that threshold) move them by less
 than 0.05 mHa, and they stay 0.02 mHa apart. The analytic Hessian at the
 internal end point has one mode at 22.7i cm⁻¹ (NH2 and methyl hydrogens);

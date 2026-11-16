@@ -327,8 +327,8 @@ fn lindh_hessian_matches_the_numpy_reference() {
 /// trace holds every evaluation; an evaluation above the last kept energy must
 /// be one the optimizer counted as rejected, and the returned energy is the
 /// last kept one. Ethane in internals does take uphill trial steps under this
-/// rule (6 with Simple, 5 with Lindh when this test was written), so the count
-/// is asserted non-zero there: a search that keeps every step fails.
+/// rule (1 with Simple, 1 with Lindh), so the count is asserted non-zero
+/// there: a search that keeps every step fails.
 #[test]
 fn ratio_rule_never_keeps_an_uphill_step() {
     for tag in ["h2o", "h2o2", "ethane"] {

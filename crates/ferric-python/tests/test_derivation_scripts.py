@@ -445,6 +445,16 @@ CASES = [
                 "TRUST_SHRINK_RATIO = 0.75\nTRUST_GROW_RATIO = 0.25",
                 "FAIL T2 ratio_trust_update decision table",
             ),
+            (
+                "    if not accept or predicted >= 0.0 or ratio < TRUST_SHRINK_RATIO:",
+                "    if ratio < TRUST_SHRINK_RATIO:",
+                "FAIL T3 the radius never grows",
+            ),
+            (
+                "    return alpha * p\n",
+                "    return clip_per_block(p, angular, dist_trust, ang_trust)\n",
+                "FAIL C1 uniform clip always descends",
+            ),
         ],
     ),
     (
