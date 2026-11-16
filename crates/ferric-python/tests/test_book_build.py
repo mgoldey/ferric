@@ -77,6 +77,7 @@ FILES = {
     ),
     "crates/ferric-toy/src/sub/deep.rs": "pub fn in_submodule() {}\n",
     "book/src/00-notation.md": "# Notation\n\nText.\n",
+    "book/src/10-mp2/index.md": "# 10. Toy chapter\n\nText.\n",
     "book/src/10-mp2/01-toy.md": SECTION,
     "book/unverified-ceiling.txt": "1\n",
 }
@@ -132,12 +133,19 @@ def test_unseen_chapter_is_accepted_and_listed(tree):
     write(
         tree,
         {
-            "book/src/42-new/03-thing.md": "# 42.3 Thing\n\n<!-- section: 42.3; status: edit; registry: toy2 -->\n"
+            "book/src/42-new/index.md": "# 42. New\n",
+            "book/src/42-new/03-thing.md": "# 42.3 Thing\n\n<!-- section: 42.3; status: edit; registry: toy2 -->\n",
         },
     )
     (tree / "book/src/SUMMARY.md").write_text(bb.build_summary(tree))
     assert check(tree).errors == []
     assert "42-new/03-thing.md" in (tree / "book/src/SUMMARY.md").read_text()
+
+
+def test_chapter_without_index_is_an_error(tree):
+    (tree / "book/src/10-mp2/index.md").unlink()
+    resummarize(tree)
+    assert any("no index.md" in e for e in check(tree).errors)
 
 
 def test_submodule_directory_resolves(tree):
@@ -230,6 +238,17 @@ MUTATIONS = {
         SEC,
         "../../crates/ferric-toy/theory.md",
         "../../wiki/notes.md",
+    ),
+    "section title carries another number": (
+        SEC,
+        "# 10.1 Toy section",
+        "# 11.1 Toy section",
+    ),
+    "section title has no number": (SEC, "# 10.1 Toy section", "# Toy section"),
+    "chapter title has no number": (
+        "book/src/10-mp2/index.md",
+        "# 10. Toy chapter",
+        "# Toy chapter",
     ),
     "stale summary": ("book/src/SUMMARY.md", "Toy section", "Renamed section"),
     "unknown registry file": (
@@ -480,11 +499,12 @@ def test_appendix_b_lists_each_function_once_with_its_sections(tree):
     write(
         tree,
         {
+            "book/src/11-x/index.md": "# 11. X\n",
             "book/src/11-x/01-y.md": (
                 "# 11.1 Y\n\n<!-- section: 11.1; status: edit; registry: toy2 -->\n\n"
                 "Uses `ferric-toy/src/lib.rs::pair_energy` and "
                 "`ferric-toy/src/sub/deep.rs::in_submodule`.\n"
-            )
+            ),
         },
     )
     resummarize(tree)

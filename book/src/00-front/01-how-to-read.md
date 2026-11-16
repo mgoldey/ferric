@@ -1,4 +1,4 @@
-# 0.1 How to read this book
+# How to read this book
 
 <!-- section: 0.1; status: edit; registry: ;
      theory: -->

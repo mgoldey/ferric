@@ -462,29 +462,55 @@ def check_section_header(root: Path, p: Path, rep: Report, ctx: dict) -> None:
         check_theory(root, where + " theory", f["theory"], rep)
 
 
+def chapter_dirs(root: Path) -> list[Path]:
+    return sorted(d for d in book_src(root).glob("[0-9][0-9]-*") if d.is_dir())
+
+
+def chapter_intro(chapter: Path) -> Path | None:
+    """The chapter's own page: index.md, or 00-chapter.md when it carries a header."""
+    for name in ("index.md", "00-chapter.md"):
+        if (chapter / name).is_file():
+            return chapter / name
+    return None
+
+
+def chapter_sections(chapter: Path) -> list[Path]:
+    return sorted(
+        p for p in chapter.glob("[0-9][0-9]-*.md") if p.name != "00-chapter.md"
+    )
+
+
 def build_summary(root: Path) -> str:
+    """Front matter and notation are unnumbered prefix chapters; every other chapter
+    is a numbered part whose page and section titles carry their own number in the
+    H1 (book.toml turns mdBook's automatic section labels off)."""
     src = book_src(root)
 
     def h1(p: Path, default: str) -> str:
-        for lvl, h in headings(p.read_text()):
+        for lvl, h in headings(p.read_text(encoding="utf-8")):
             if lvl == 1:
                 return h
         return default
 
     out = ["# Summary", ""]
+    for chapter in chapter_dirs(root):
+        if chapter.name.startswith("00-"):
+            for s in chapter_sections(chapter):
+                out.append(f"[{h1(s, s.stem)}]({chapter.name}/{s.name})")
     for p in sorted(src.glob("*.md")):
         if p.name != "SUMMARY.md" and not p.name.startswith("appendix-"):
             out.append(f"[{h1(p, p.stem)}]({p.name})")
     out.append("")
-    for chapter in sorted(d for d in src.glob("[0-9][0-9]-*") if d.is_dir()):
-        secs = sorted(chapter.glob("[0-9][0-9]-*.md"))
-        if not secs:
+    for chapter in chapter_dirs(root):
+        if chapter.name.startswith("00-"):
             continue
-        idx = chapter / "index.md"
-        title = h1(idx, "") if idx.exists() else ""
-        title = title or chapter.name.split("-", 1)[1].replace("-", " ").upper()
-        target = f"{chapter.name}/index.md" if idx.exists() else ""
-        out.append(f"- [{title}]({target})")
+        secs = chapter_sections(chapter)
+        intro = chapter_intro(chapter)
+        if intro is None:
+            # check_chapter_titles reports the missing page as an error.
+            out.append(f"- [{chapter.name}]()")
+        else:
+            out.append(f"- [{h1(intro, chapter.name)}]({chapter.name}/{intro.name})")
         for s in secs:
             out.append(f"  - [{h1(s, s.stem)}]({chapter.name}/{s.name})")
     apps = appendix_files(root)
@@ -492,6 +518,52 @@ def build_summary(root: Path) -> str:
         out.append("")
         out += [f"[{h1(a, a.stem)}]({a.name})" for a in apps]
     return "\n".join(out) + "\n"
+
+
+def first_h1(text: str) -> str | None:
+    for lvl, h in headings(text):
+        if lvl == 1:
+            return h
+    return None
+
+
+def check_chapter_titles(root: Path, rep: Report) -> None:
+    """One number per title, and it is the right one.
+
+    A chapter page is titled 'N. Title'; a section page 'N.M Title' with N.M equal
+    to its `section:` marker and N equal to its chapter's number. Front matter and
+    the notation page are unnumbered. Appendices are titled 'Appendix X'."""
+    for chapter in chapter_dirs(root):
+        n = int(chapter.name[:2])
+        where = rel(root, chapter)
+        intro = chapter_intro(chapter)
+        if n > 0 and intro is None:
+            rep.err(where, "chapter has no index.md (a chapter intro page is required)")
+        for p in ([intro] if intro else []) + chapter_sections(chapter):
+            w = rel(root, p)
+            h = first_h1(p.read_text(encoding="utf-8"))
+            if h is None:
+                rep.err(w, "no H1 title")
+                continue
+            if n == 0:
+                if re.match(r"\d", h):
+                    rep.err(w, f"front matter is unnumbered, title is {h!r}")
+                continue
+            if p == intro:
+                if not re.match(rf"{n}\. \S", h):
+                    rep.err(w, f"chapter title must start '{n}. ', got {h!r}")
+                continue
+            # The path fixes the number; check_section_header ties it to the marker.
+            want = section_label(p)
+            if not re.match(rf"{re.escape(str(want))} \S", h):
+                rep.err(w, f"section title must start '{want} ', got {h!r}")
+    for p in appendix_files(root):
+        h = first_h1(p.read_text(encoding="utf-8")) or ""
+        if re.match(r"\d", h):
+            rep.err(rel(root, p), f"appendix title must not start with a number: {h!r}")
+    n0 = book_src(root) / "00-notation.md"
+    if n0.is_file() and re.match(r"\d", first_h1(n0.read_text(encoding="utf-8")) or ""):
+        rep.err(rel(root, n0), "notation title must be unnumbered")
 
 
 def git_show(root: Path, ref: str, path: str) -> str | None:
@@ -944,6 +1016,7 @@ def run_check(
             "missing or stale; run scripts/book_build.py --write-summary",
         )
 
+    check_chapter_titles(root, rep)
     check_appendices(root, rep)
     check_plan(root, rep)
 

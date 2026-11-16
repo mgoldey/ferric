@@ -16,6 +16,9 @@ default-theme = "rust"
 preferred-dark-theme = "navy"
 git-repository-url = "https://github.com/mgoldey/ferric"
 mathjax-support = true
+# Titles carry their own number (the section: markers and cross-references use it),
+# so mdBook must not add a second one.
+no-section-label = true
 
 [output.html.search]
 enable = true

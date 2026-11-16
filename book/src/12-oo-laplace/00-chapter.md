@@ -1,4 +1,4 @@
-# 12 Orbital optimization and Laplace forms
+# 12. Orbital optimization and Laplace forms
 
 <!-- section: 12.0; status: verify; registry: oo-rimp2, u-oo-rimp2, laplace-mp2, laplace-sos-mp2;
      theory: crates/ferric-mp2/theory.md#"7. Orbital-optimized RI-MP2", "8. Laplace-transform MP2", "14. Unrestricted OO-RI-MP2 orbital gradient" -->
