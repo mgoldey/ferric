@@ -17,7 +17,7 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 
 use crate::frequencies::{FrequencyConfig, FrequencyResult, HessianSource};
-use crate::optimize::OptimizeConfig;
+use crate::optimize::{OptimizeConfig, SearchSettings};
 use crate::result::{ScfExit, ScfResult, Spin};
 use crate::rhf::{solve_rhf, RhfConfig};
 use crate::rohf::solve_rohf;
@@ -363,9 +363,14 @@ pub fn final_point_scf(
 ///
 /// `final_point` is the certificate of the SCF at the returned geometry (its
 /// grade, approximations and warnings are inherited; see
-/// [`Certificate::for_task`]). `gradient` names how the gradient was formed
+/// [`Certificate::for_task`]). `search` is the search that ran
+/// ([`crate::optimize::OptimizeResult::search`]); its coordinates, initial
+/// Hessian and trust rule are recorded as the `optimizer-coordinates`,
+/// `optimizer-initial-hessian` and `optimizer-trust-update` approximations, in
+/// the config spellings. `gradient` names how the gradient was formed
 /// (`"analytic"`, `"analytic SCF + finite-difference correlation"`). A run
 /// that did not converge is capped to [`Grade::Ungraded`].
+#[allow(clippy::too_many_arguments)]
 pub fn optimize_certificate(
     kind: &str,
     final_point: &Certificate,
@@ -373,22 +378,26 @@ pub fn optimize_certificate(
     steps: usize,
     energy: f64,
     config: &OptimizeConfig,
+    search: SearchSettings,
     gradient: &str,
 ) -> Certificate {
-    let mut c = Certificate::for_task("optimize", kind, final_point)
-        .with_approximation("gradient", gradient)
-        .with_approximation(
-            "optimizer",
-            format!(
-                "BFGS, {:?} coordinates, at most {} steps; thresholds g_max {:e}, \
-                 g_rms {:e} Ha/Bohr, e_conv {:e} Ha",
-                config.coord_system,
-                config.max_steps,
-                config.g_max_thresh,
-                config.g_rms_thresh,
-                config.e_conv
-            ),
-        );
+    let mut c = with_search_settings(
+        Certificate::for_task("optimize", kind, final_point)
+            .with_approximation("gradient", gradient),
+        search,
+    )
+    .with_approximation(
+        "optimizer",
+        format!(
+            "BFGS, {search}, trust radius {} Bohr, at most {} steps; thresholds g_max {:e}, \
+             g_rms {:e} Ha/Bohr, e_conv {:e} Ha",
+            config.trust_radius,
+            config.max_steps,
+            config.g_max_thresh,
+            config.g_rms_thresh,
+            config.e_conv
+        ),
+    );
     if !converged {
         c = c.cap_grade(
             Grade::Ungraded,
@@ -396,6 +405,13 @@ pub fn optimize_certificate(
         );
     }
     c
+}
+
+/// `c` with the three search settings as approximations.
+fn with_search_settings(c: Certificate, search: SearchSettings) -> Certificate {
+    c.with_approximation("optimizer-coordinates", search.coord_system.as_str())
+        .with_approximation("optimizer-initial-hessian", search.initial_hessian.as_str())
+        .with_approximation("optimizer-trust-update", search.trust_update.as_str())
 }
 
 /// Certificate of a harmonic frequency run (`task = "frequencies"`) of
@@ -520,16 +536,24 @@ pub fn qmmm_optimize_certificate(
     energy: f64,
 ) -> Certificate {
     let n_top = cfg.mm_topology.as_ref().map(|t| t.n_atoms());
-    let mut c = qmmm_base(format!("qmmm-optimize:{method}"), reference, sys, n_top)
-        .with_approximation("qmmm-move-mm", format!("{:?}", cfg.move_mm))
-        .with_approximation(
-            "optimizer",
-            format!(
-                "BFGS, at most {} steps; thresholds g_max {:e}, g_rms {:e} Ha/Bohr, \
-                 e_conv {:e} Ha",
-                cfg.opt.max_steps, cfg.opt.g_max_thresh, cfg.opt.g_rms_thresh, cfg.opt.e_conv
-            ),
-        );
+    let search = crate::qmmm::qmmm_search_settings(&cfg.opt);
+    let mut c = with_search_settings(
+        qmmm_base(format!("qmmm-optimize:{method}"), reference, sys, n_top)
+            .with_approximation("qmmm-move-mm", format!("{:?}", cfg.move_mm)),
+        search,
+    )
+    .with_approximation(
+        "optimizer",
+        format!(
+            "BFGS, {search}, trust radius {} Bohr, at most {} steps; thresholds g_max {:e}, \
+             g_rms {:e} Ha/Bohr, e_conv {:e} Ha",
+            cfg.opt.trust_radius,
+            cfg.opt.max_steps,
+            cfg.opt.g_max_thresh,
+            cfg.opt.g_rms_thresh,
+            cfg.opt.e_conv
+        ),
+    );
     if !converged {
         c.push_warning(format!(
             "the optimizer did not converge ({steps} steps, final energy {energy:.10} Ha)"

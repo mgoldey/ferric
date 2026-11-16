@@ -919,8 +919,12 @@ impl PyQmmmOptimizeResult {
 ///
 /// `method`/`xc` follow `run_qmmm`'s convention: `"rhf"` (default), `"uhf"`,
 /// `"rks"`, `"uks"`; `xc` required for the KS variants, rejected otherwise.
+///
+/// `initial_hessian`: `"lindh"` (default; the Lindh model of the whole
+/// structure, restricted to the free atoms) or `"simple"` (the identity);
+/// `trust_update`: `"ratio"` (default) or `"fixed"`. The search is Cartesian.
 #[pyfunction]
-#[pyo3(signature = (system, basis_name, method=None, xc=None, move_mm=None, mm_topology=None, max_steps=None, e_conv=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, scf_warm_start=None, scf_ri_j_precision=None))]
+#[pyo3(signature = (system, basis_name, method=None, xc=None, move_mm=None, mm_topology=None, max_steps=None, e_conv=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, scf_warm_start=None, scf_ri_j_precision=None, initial_hessian=None, trust_update=None))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_optimize_qmmm(
     py: Python<'_>,
@@ -937,6 +941,8 @@ pub(crate) fn run_optimize_qmmm(
     scf_density_conv: Option<f64>,
     scf_warm_start: Option<bool>,
     scf_ri_j_precision: Option<&str>,
+    initial_hessian: Option<&str>,
+    trust_update: Option<&str>,
 ) -> PyResult<PyQmmmOptimizeResult> {
     use ferric_scf::qmmm::{optimize_qmmm, QmmmMethod, QmmmOptimizeConfig};
 
@@ -969,12 +975,22 @@ pub(crate) fn run_optimize_qmmm(
     let mut scf = RhfConfig::default();
     geometry_task_scf(&mut scf, scf_ri_j_precision)?;
     ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv).apply(&mut scf);
-    let opt = OptimizeConfig {
+    let mut opt = OptimizeConfig {
         max_steps: max_steps.unwrap_or(100),
         e_conv: e_conv.unwrap_or(1e-6),
         scf_warm_start: scf_warm_start.unwrap_or(true),
         ..Default::default()
     };
+    if let Some(s) = initial_hessian {
+        opt.initial_hessian = Some(
+            ferric_scf::optimize::InitialHessian::parse_config_str(s)
+                .map_err(pyo3::exceptions::PyValueError::new_err)?,
+        );
+    }
+    if let Some(s) = trust_update {
+        opt.trust_update = ferric_scf::optimize::TrustUpdate::parse_config_str(s)
+            .map_err(pyo3::exceptions::PyValueError::new_err)?;
+    }
     let cfg = QmmmOptimizeConfig {
         method: qmmm_method,
         move_mm,

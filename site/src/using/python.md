@@ -813,7 +813,7 @@ See [Constrained DFT](../methods/cdft.md) for a worked example.
 | `QmmmSystem` | A QM/MM partition with link atoms and boundary-charge schemes (coordinates in Å). | `[qmmm]` |
 | `MmTopology` | Explicit-parameter AMBER-form MM force field; assigns no parameters itself. | — |
 | `run_qmmm` | Embedded SCF energy plus QM gradient, MM forces and full gradient. | `[qmmm]` (energy) |
-| `run_optimize_qmmm` | Optimize a `QmmmSystem`; QM atoms always move, MM atoms per `move_mm`. | — |
+| `run_optimize_qmmm` | Optimize a `QmmmSystem`; QM atoms always move, MM atoms per `move_mm`; `initial_hessian=` and `trust_update=` as on `run_optimize`. | — |
 | `QmmmResult` | `energy`, `qm_gradient()`, `mm_forces()` (forces, not gradients), `full_gradient()`. | |
 | `QmmmOptimizeResult` | The relaxed partition and its energy trajectory. | |
 

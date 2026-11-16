@@ -72,6 +72,17 @@ impl CoordSystem {
     }
 }
 
+impl CoordSystem {
+    /// The config spelling: `"cartesian"` or `"internal"`.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Cartesian => "cartesian",
+            Self::RedundantInternal => "internal",
+        }
+    }
+}
+
 /// Initial Hessian of the BFGS search.
 ///
 /// Explicit in [`OptimizeConfig::initial_hessian`]; `None` there takes
@@ -109,6 +120,17 @@ impl InitialHessian {
     }
 }
 
+impl InitialHessian {
+    /// The config spelling: `"simple"` or `"lindh"`.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Simple => "simple",
+            Self::Lindh => "lindh",
+        }
+    }
+}
+
 /// How the trust radius moves between steps.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TrustUpdate {
@@ -136,6 +158,44 @@ impl TrustUpdate {
                 "unknown trust_update = \"{other}\"; expected \"fixed\" or \"ratio\""
             )),
         }
+    }
+}
+
+impl TrustUpdate {
+    /// The config spelling: `"fixed"` or `"ratio"`.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Fixed => "fixed",
+            Self::Ratio => "ratio",
+        }
+    }
+}
+
+/// The search an optimization runs: coordinates, initial Hessian and trust
+/// rule, each resolved (no `None`). [`OptimizeConfig::requested_search`] is
+/// what a config asks for; [`OptimizeResult::search`] is what ran, which
+/// differs when internal coordinates could not be built and the search fell
+/// back to Cartesian.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SearchSettings {
+    /// Coordinates of the BFGS search.
+    pub coord_system: CoordSystem,
+    /// Initial Hessian.
+    pub initial_hessian: InitialHessian,
+    /// Trust-radius rule.
+    pub trust_update: TrustUpdate,
+}
+
+impl std::fmt::Display for SearchSettings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} coordinates, {} initial Hessian, {} trust radius",
+            self.coord_system.as_str(),
+            self.initial_hessian.as_str(),
+            self.trust_update.as_str()
+        )
     }
 }
 
@@ -258,6 +318,20 @@ impl Default for OptimizeConfig {
     }
 }
 
+impl OptimizeConfig {
+    /// The search the molecular entry points run for this config: the
+    /// coordinates as set, an unset initial Hessian as
+    /// [`DEFAULT_INITIAL_HESSIAN`].
+    #[must_use]
+    pub fn requested_search(&self) -> SearchSettings {
+        SearchSettings {
+            coord_system: self.coord_system,
+            initial_hessian: self.initial_hessian.unwrap_or(DEFAULT_INITIAL_HESSIAN),
+            trust_update: self.trust_update,
+        }
+    }
+}
+
 /// Maximum passes of the iterative internal→Cartesian back-transformation
 /// before the step is declared non-convergent and halved.
 const BACKTRANSFORM_MAX_ITER: usize = 25;
@@ -313,6 +387,9 @@ pub struct OptimizeResult {
     /// Evaluated steps the ratio trust rule rejected (always 0 under
     /// [`TrustUpdate::Fixed`]). Counted in `steps`, absent from `mol`.
     pub rejected_steps: usize,
+    /// The search that ran (Cartesian if internal coordinates were asked for
+    /// but could not be built).
+    pub search: SearchSettings,
 }
 
 impl std::fmt::Display for OptimizeResult {
@@ -650,6 +727,10 @@ fn run_bfgs_cartesian(
         converged: out.converged,
         energy_trace,
         rejected_steps: out.rejected,
+        search: SearchSettings {
+            coord_system: CoordSystem::Cartesian,
+            ..opt_config.requested_search()
+        },
     })
 }
 
@@ -711,6 +792,15 @@ fn rigid_body_basis(mol: &Molecule) -> Array2<f64> {
 /// `H⁻¹ = Q V diag(1/max(w, floor)) Vᵀ Qᵀ + T Tᵀ`.
 fn lindh_inverse_hessian(mol: &Molecule) -> Result<Array2<f64>, FerricError> {
     let h = ferric_core::model_hessian::lindh_cartesian_hessian(mol)?;
+    model_inverse_with_rigid_identity(&h, mol)
+}
+
+/// `H⁻¹ = Q V diag(1/max(w, floor)) Vᵀ Qᵀ + T Tᵀ` for a model `h` over the
+/// atoms of `mol` (see [`lindh_inverse_hessian`]).
+fn model_inverse_with_rigid_identity(
+    h: &Array2<f64>,
+    mol: &Molecule,
+) -> Result<Array2<f64>, FerricError> {
     let n = h.nrows();
     let t = rigid_body_basis(mol);
     let p = Array2::<f64>::eye(n) - t.dot(&t.t());
@@ -718,11 +808,15 @@ fn lindh_inverse_hessian(mol: &Molecule) -> Result<Array2<f64>, FerricError> {
         .eigh(UPLO::Upper)
         .map_err(|e| FerricError::General(format!("rigid-body projector eigh: {e}")))?;
     let keep: Vec<usize> = (0..n).filter(|&i| pw[i] > 0.5).collect();
+    if keep.is_empty() {
+        // Only rigid motions (one free atom): the simple start.
+        return Ok(t.dot(&t.t()));
+    }
     let mut q = Array2::zeros((n, keep.len()));
     for (j, &i) in keep.iter().enumerate() {
         q.column_mut(j).assign(&pv.column(i));
     }
-    let hq = q.t().dot(&h).dot(&q);
+    let hq = q.t().dot(h).dot(&q);
     let (w, v) = hq
         .eigh(UPLO::Upper)
         .map_err(|e| FerricError::General(format!("Lindh model Hessian eigh: {e}")))?;
@@ -733,6 +827,107 @@ fn lindh_inverse_hessian(mol: &Molecule) -> Result<Array2<f64>, FerricError> {
         scaled.column_mut(j).mapv_inplace(|x| x * inv);
     }
     Ok(scaled.dot(&qv.t()) + t.dot(&t.t()))
+}
+
+/// The atoms of `mol` that share a Lindh term with an atom of `free`
+/// (`free` included), sorted.
+///
+/// A term is a chain of at most four atoms whose `rho` product is at least
+/// [`ferric_core::model_hessian::LINDH_RHO_CUTOFF`]. Every factor is at most
+/// `rho_max`, so each link of such a chain has `rho >= cutoff / rho_max²`,
+/// and every atom of a term that contains a free atom is within three such
+/// links of it. The set is that three-link closure.
+fn lindh_environment(mol: &Molecule, free: &[usize]) -> Vec<usize> {
+    use ferric_core::model_hessian::{lindh_rho, LINDH_RHO_CUTOFF};
+    let n = mol.atoms.len();
+    let mut rho_max = 1.0f64;
+    for i in 0..n {
+        for j in i + 1..n {
+            rho_max = rho_max.max(lindh_rho(mol, i, j));
+        }
+    }
+    let pair_cut = LINDH_RHO_CUTOFF / (rho_max * rho_max);
+    let mut inside = vec![false; n];
+    let mut frontier: Vec<usize> = free.to_vec();
+    for &i in free {
+        inside[i] = true;
+    }
+    for _hop in 0..3 {
+        let mut next = Vec::new();
+        for &i in &frontier {
+            for j in 0..n {
+                if !inside[j] && lindh_rho(mol, i, j) >= pair_cut {
+                    inside[j] = true;
+                    next.push(j);
+                }
+            }
+        }
+        frontier = next;
+    }
+    (0..n).filter(|&i| inside[i]).collect()
+}
+
+/// Inverse Lindh model Hessian over the atoms `free` of `mol` (sorted,
+/// distinct), with every other atom held fixed: the seed of a search that
+/// moves only those atoms, as `optimize_qmmm` does.
+///
+/// With the others fixed the search's Hessian is the free-free block `H_ff`
+/// of the model of the whole structure, so the terms that tie a free atom to
+/// a fixed one (a boundary bond to an MM host) are kept. `H_ff` is built from
+/// the model of [`lindh_environment`] only (the same block, without the
+/// `(3N)²` matrix of a large MM region), and inverted as in
+/// [`lindh_inverse_hessian`], with the rigid-body motions of the free atoms
+/// on the identity. Fixed atoms make those motions physical, but the model
+/// gives them no curvature unless a fixed atom is bonded, so the identity
+/// (the simple start) is the safe choice there. With every atom free this is
+/// [`lindh_inverse_hessian`] of `mol`, the molecular seed.
+///
+/// # Errors
+///
+/// Propagates the model's degenerate-primitive error.
+pub(crate) fn lindh_inverse_hessian_free(
+    mol: &Molecule,
+    free: &[usize],
+) -> Result<Array2<f64>, FerricError> {
+    let n = mol.atoms.len();
+    if free.len() == n && free.iter().enumerate().all(|(k, &i)| k == i) {
+        return lindh_inverse_hessian(mol);
+    }
+    let sub = Molecule {
+        atoms: free.iter().map(|&i| mol.atoms[i].clone()).collect(),
+        ..mol.clone()
+    };
+    model_inverse_with_rigid_identity(&lindh_free_block(mol, free)?, &sub)
+}
+
+/// The free-free block `H_ff` of the Lindh model of `mol`, built from the
+/// model of [`lindh_environment`] (the same block to rounding).
+fn lindh_free_block(mol: &Molecule, free: &[usize]) -> Result<Array2<f64>, FerricError> {
+    let env = lindh_environment(mol, free);
+    let sub = Molecule {
+        atoms: env.iter().map(|&i| mol.atoms[i].clone()).collect(),
+        ..mol.clone()
+    };
+    let h_env = ferric_core::model_hessian::lindh_cartesian_hessian(&sub)?;
+    let pos: Vec<usize> = free
+        .iter()
+        .map(|f| {
+            env.binary_search(f)
+                .expect("free atoms are in their environment")
+        })
+        .collect();
+    let nf = free.len();
+    let mut h_ff = Array2::<f64>::zeros((3 * nf, 3 * nf));
+    for (a, &pa) in pos.iter().enumerate() {
+        for (b, &pb) in pos.iter().enumerate() {
+            for c in 0..3 {
+                for d in 0..3 {
+                    h_ff[(3 * a + c, 3 * b + d)] = h_env[(3 * pa + c, 3 * pb + d)];
+                }
+            }
+        }
+    }
+    Ok(h_ff)
 }
 
 /// BFGS in redundant internal coordinates.
@@ -970,6 +1165,10 @@ fn run_bfgs_internal(
         converged,
         energy_trace,
         rejected_steps: rejected,
+        search: SearchSettings {
+            coord_system: CoordSystem::RedundantInternal,
+            ..opt_config.requested_search()
+        },
     })
 }
 
@@ -1199,12 +1398,24 @@ pub fn optimize_coordinates(
 ) -> Result<(Vec<f64>, f64, usize, bool), FerricError> {
     if opt_config.initial_hessian == Some(InitialHessian::Lindh) {
         return Err(FerricError::General(
-            "initial_hessian = \"lindh\" needs a molecule; this optimizer (QM/MM free \
-             atoms, periodic cells) has none, so only \"simple\" is available"
+            "initial_hessian = \"lindh\" needs a molecule; this optimizer (periodic \
+             cells) has none, so only \"simple\" is available"
                 .to_string(),
         ));
     }
-    let out = bfgs_cartesian(x0, opt_config, &|x: &[f64]| Ok(Array2::eye(x.len())), f)?;
+    optimize_coordinates_seeded(x0, opt_config, &|x: &[f64]| Ok(Array2::eye(x.len())), f)
+}
+
+/// [`optimize_coordinates`] from the inverse Hessian `seed(x)` (also the
+/// reset on a degenerate update pair), for a caller that has atoms to build a
+/// model from (`optimize_qmmm`).
+pub(crate) fn optimize_coordinates_seeded(
+    x0: &[f64],
+    opt_config: &OptimizeConfig,
+    seed: &dyn Fn(&[f64]) -> Result<Array2<f64>, FerricError>,
+    f: impl FnMut(&[f64]) -> Result<(f64, Vec<f64>), FerricError>,
+) -> Result<(Vec<f64>, f64, usize, bool), FerricError> {
+    let out = bfgs_cartesian(x0, opt_config, seed, f)?;
     if out.rejected > 0 {
         println!("{} step(s) rejected by the trust-radius rule", out.rejected);
     }
@@ -2446,5 +2657,119 @@ mod tests {
             }
         }
         assert!(checked >= 15, "only {checked} modes above the floor");
+    }
+
+    /// Ethanol, a water 6 Bohr from its hydroxyl H (inside the Lindh
+    /// environment of the hydroxyl) and a water 80 Bohr away (outside it).
+    fn ethanol_and_two_waters() -> Molecule {
+        Molecule::parse_xyz(
+            "15\nethanol + 2 H2O\n\
+             C -0.0478 -0.4252 0.0000\nC 1.2600 0.3599 0.0000\nO -1.1661 0.4545 0.0000\n\
+             H -0.0951 -1.0675 0.8857\nH -0.0951 -1.0675 -0.8857\nH 2.1102 -0.3268 0.0000\n\
+             H 1.3184 1.0000 0.8810\nH 1.3184 1.0000 -0.8810\nH -1.9867 -0.0507 0.0000\n\
+             O -4.9 -1.2 0.3\nH -5.5 -1.9 0.1\nH -5.4 -0.5 0.8\n\
+             O 40.0 0.0 0.0\nH 40.6 0.7 0.0\nH 40.6 -0.7 0.0\n",
+            0,
+            1,
+        )
+        .unwrap()
+    }
+
+    /// The free-free block built from the Lindh environment is the block of
+    /// the whole structure's model. Same terms, different summation order:
+    /// each entry is a sum of at most a few hundred terms of size <= max|H|,
+    /// so the two agree to ~1e2 eps max|H|; 1e-13 max|H| is the bar. The
+    /// environment is checked to be a strict subset of the structure and a
+    /// strict superset of the free atoms, so both the pruning and the fixed
+    /// neighbours are exercised.
+    #[test]
+    fn lindh_free_block_matches_the_block_of_the_whole_structure() {
+        let mol = ethanol_and_two_waters();
+        let n = mol.atoms.len();
+        // The hydroxyl O and H, and one methylene H: the rest is fixed.
+        let free = [2usize, 3, 8];
+        let env = lindh_environment(&mol, &free);
+        assert!(env.len() < n, "environment is the whole structure");
+        assert!(env.len() > free.len(), "environment adds no fixed atom");
+        assert!(!env.contains(&12), "the far water is in the environment");
+        assert!(env.contains(&9), "the near water is not in the environment");
+        let full = ferric_core::model_hessian::lindh_cartesian_hessian(&mol).unwrap();
+        let block = lindh_free_block(&mol, &free).unwrap();
+        let scale = full.iter().fold(0.0f64, |m, v| m.max(v.abs()));
+        let mut worst = 0.0f64;
+        for (a, &fa) in free.iter().enumerate() {
+            for (b, &fb) in free.iter().enumerate() {
+                for c in 0..3 {
+                    for d in 0..3 {
+                        let diff = block[(3 * a + c, 3 * b + d)] - full[(3 * fa + c, 3 * fb + d)];
+                        worst = worst.max(diff.abs());
+                    }
+                }
+            }
+        }
+        assert!(
+            worst < 1e-13 * scale,
+            "block differs by {worst:e} (scale {scale:e})"
+        );
+        // The fixed neighbours put curvature on the free atoms: the block is
+        // not the model of the free atoms alone.
+        let alone = ferric_core::model_hessian::lindh_cartesian_hessian(&Molecule {
+            atoms: free.iter().map(|&i| mol.atoms[i].clone()).collect(),
+            ..mol.clone()
+        })
+        .unwrap();
+        let gap = (&block - &alone).iter().fold(0.0f64, |m, v| m.max(v.abs()));
+        assert!(
+            gap > 1e-2,
+            "fixed neighbours change the block by only {gap:e}"
+        );
+    }
+
+    /// With every atom free the QM/MM seed is the molecular seed, bit for bit.
+    #[test]
+    fn lindh_free_seed_with_every_atom_free_is_the_molecular_seed() {
+        let mol = ethanol_and_two_waters();
+        let all: Vec<usize> = (0..mol.atoms.len()).collect();
+        let a = lindh_inverse_hessian_free(&mol, &all).unwrap();
+        let b = lindh_inverse_hessian(&mol).unwrap();
+        assert!(a
+            .iter()
+            .zip(b.iter())
+            .all(|(x, y)| x.to_bits() == y.to_bits()));
+    }
+
+    /// `OptimizeResult::search` is the search that ran: internals asked for on
+    /// an atom (no bonds, so no internal coordinates) fall back to Cartesian,
+    /// and the result says so; a bonded molecule keeps internals. Unset
+    /// fields resolve to the defaults.
+    #[test]
+    fn the_result_records_the_search_that_ran() {
+        let ctx = ParallelContext::default();
+        let rhf_config = RhfConfig::default();
+        let cfg = OptimizeConfig {
+            coord_system: CoordSystem::RedundantInternal,
+            max_steps: 2,
+            ..Default::default()
+        };
+        let he = Molecule::parse_xyz("1\nHe\nHe 0 0 0\n", 0, 1).unwrap();
+        let r =
+            optimize_geometry(&ctx, &he, "sto-3g", Operator::coulomb(), &rhf_config, &cfg).unwrap();
+        assert_eq!(
+            r.search,
+            SearchSettings {
+                coord_system: CoordSystem::Cartesian,
+                initial_hessian: DEFAULT_INITIAL_HESSIAN,
+                trust_update: TrustUpdate::Ratio,
+            }
+        );
+        let h2 = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.8\n", 0, 1).unwrap();
+        let r =
+            optimize_geometry(&ctx, &h2, "sto-3g", Operator::coulomb(), &rhf_config, &cfg).unwrap();
+        assert_eq!(r.search, cfg.requested_search());
+        assert_eq!(r.search.coord_system, CoordSystem::RedundantInternal);
+        assert_eq!(
+            r.search.to_string(),
+            "internal coordinates, lindh initial Hessian, ratio trust radius"
+        );
     }
 }
