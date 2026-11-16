@@ -373,8 +373,21 @@ struct UksCase {
 
 impl UksCase {
     fn new() -> Self {
+        Self::of(distorted_water(1, 2))
+    }
+
+    /// H2 triplet: every electron is alpha, so the beta spin has no occupied
+    /// MOs and each of its response densities is exactly zero.
+    fn empty_beta() -> Self {
+        let mol = Molecule::parse_xyz("2\nh2\nH 0.01 -0.02 0.0\nH 0.0 0.03 0.76\n", 0, 3).unwrap();
+        let prep =
+            PreparedBasis::new(&mol, &ferric_core::basis::bundled("6-31g*").unwrap()).unwrap();
+        let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
+        Self::of((mol, prep, bounds))
+    }
+
+    fn of((mol, prep, bounds): (Molecule, PreparedBasis, SchwarzBounds)) -> Self {
         let ctx = ParallelContext::default();
-        let (mol, prep, bounds) = distorted_water(1, 2);
         let uks = crate::uhf::solve_uhf(&ctx, &mol, &prep, &bounds, &scf_config("PBE")).unwrap();
         assert!(uks.converged);
         let grid = FixedGridKs::new(&mol, "PBE", &grid_cfg()).unwrap();
@@ -451,7 +464,19 @@ impl UksCase {
 /// route, two rotation pairs at once.
 #[test]
 fn polarized_mo_product_equals_the_projected_ao_product() {
-    let case = UksCase::new();
+    polarized_mo_product_case(&UksCase::new());
+}
+
+/// The same with a spin that has no occupied MOs (H2 triplet): the MO kernel
+/// must keep one (zero) density per beta rotation, not drop them.
+#[test]
+fn polarized_mo_product_with_an_empty_spin_equals_the_ao_product() {
+    let case = UksCase::empty_beta();
+    assert_eq!(case.nocc[1], 0);
+    polarized_mo_product_case(&case);
+}
+
+fn polarized_mo_product_case(case: &UksCase) {
     let (mo, ao) = case.kernels();
     let frames = case.frames();
     let len = case.grid.npts() + case.prep.nbasis();

@@ -146,17 +146,20 @@ fn stack_transposed(us: &[&Array2<f64>]) -> Array2<f64> {
     out
 }
 
-/// The densities on a chunk of the rotations stacked in `ut` (rows over the
-/// MOs `input`), each scaled by `scale` = `2 occ`.
+/// The `n` densities on a chunk of the rotations stacked in `ut` (rows over
+/// the MOs `input`), each scaled by `scale` = `2 occ`. `n` is passed, not read
+/// from `ut`: a spin with no occupied MOs stacks zero rows for every density,
+/// and each of its densities is exactly zero.
 fn chunk_densities(
     table: MoChunk<'_>,
     nocc: usize,
     ut: &Array2<f64>,
+    n: usize,
     input: Range<usize>,
     scale: f64,
 ) -> PointDensities {
     let (occ, rin) = (table.rows(0..nocc), table.rows(input));
-    let n = ut.nrows() / nocc.max(1);
+    debug_assert_eq!(ut.nrows(), n * nocc);
     let nc = table.phi.ncols();
     let tilde = ut.dot(&rin.phi);
     let dtilde = rin
@@ -311,7 +314,10 @@ impl MoProduct<'_> {
             .map(|s| {
                 let t = self.tables[s];
                 let input = t.range(self.input);
-                chunk_densities(t.chunk(c0, c1), t.nocc(), &stacked[s], input, self.scale)
+                // Densities of spin `s` among the pass's `n` (interleaved).
+                let members = (n + nspin - 1 - s) / nspin;
+                let chunk = t.chunk(c0, c1);
+                chunk_densities(chunk, t.nocc(), &stacked[s], members, input, self.scale)
             })
             .collect();
         let pd = interleave(per_spin, n);
