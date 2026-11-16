@@ -25,10 +25,10 @@
 //! # Terms that are dropped
 //!
 //! * Bends within 5 degrees of linear and torsions with such a bend
-//!   ([`is_near_linear`]): their Wilson derivatives diverge. Dropping a
+//!   ([`is_near_linear`](crate::internal_coords::is_near_linear)): their Wilson derivatives diverge. Dropping a
 //!   positive semi-definite term keeps the sum positive semi-definite. The
 //!   optimizer gives directions with no model curvature a floor value.
-//! * Terms whose `rho` product is below [`LINDH_RHO_CUTOFF`]. At that weight a
+//! * Terms whose `rho` product is below [`LINDH_RHO_CUTOFF`](crate::model_hessian::LINDH_RHO_CUTOFF). At that weight a
 //!   torsion's force constant is `5e-11` Ha/rad² and a stretch's `5e-9`
 //!   Ha/Bohr², below anything that changes a step.
 
