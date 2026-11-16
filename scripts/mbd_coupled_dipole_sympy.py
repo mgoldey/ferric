@@ -451,7 +451,9 @@ def rsscs_forward(pos, a0, c6, rvdw, beta, fa, n_freq=15):
         a_dyn.append(
             np.array(
                 [
-                    sum(cinv[3 * a + i, 3 * b + i] for b in range(n) for i in range(3))
+                    sum(
+                        cinv[3 * a + i, 3 * bb + i] for bb in range(n) for i in range(3)
+                    )
                     / 3.0
                     for a in range(n)
                 ]
