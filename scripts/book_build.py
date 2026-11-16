@@ -367,8 +367,29 @@ def check_theory(root: Path, where: str, spec: str, rep: Report) -> None:
                 rep.err(where, f"heading not found in {path}: {want!r}")
 
 
+# Any C0 control byte but newline, and DEL. A LaTeX command written through a
+# non-raw Python string loses its backslash this way: "\beta" becomes a
+# backspace and "eta", "\frac" a form feed and "rac", "\rm" a carriage return.
+# HTML renders the damage silently; xelatex rejects the file ("Text line
+# contains an invalid character"), which first showed on the v0.1.0rc12 PDF.
+CONTROL_RE = re.compile(rb"[\x00-\x09\x0b-\x1f\x7f]")
+CONTROL_NAMES = {7: r"\a", 8: r"\b", 9: r"\t", 11: r"\v", 12: r"\f", 13: r"\r"}
+
+
+def check_control_chars(p: Path, where: str, rep: Report) -> None:
+    # Read bytes: text mode turns a lone carriage return into a newline.
+    data = p.read_bytes()
+    for m in CONTROL_RE.finditer(data):
+        line = data.count(b"\n", 0, m.start()) + 1
+        byte = m.group()[0]
+        hint = CONTROL_NAMES.get(byte)
+        cause = f" (a lost backslash? {hint} was read as an escape)" if hint else ""
+        rep.err(where, f"line {line}: control character 0x{byte:02x}{cause}")
+
+
 def check_page(root: Path, p: Path, rep: Report, ctx: dict, release: bool) -> None:
     where = rel(root, p)
+    check_control_chars(p, where, rep)
     text = p.read_text()
     prose = strip_fences(text)
 

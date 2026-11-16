@@ -102,18 +102,18 @@ the COSMO functional of section 22.5.
 
 > **Verified equation 23.4** · stationarity and the Fock term
 >
-> $oldsymbollpha^{-1} - \mathsf T$ is symmetric because $\mathsf T_{ab} = \partial_a\partial_b\phi$
+> $\boldsymbol\alpha^{-1} - \mathsf T$ is symmetric because $\mathsf T_{ab} = \partial_a\partial_b\phi$
 > with $\phi' = -\lambda_3/r^2$, which holds because $\lambda_5 = \lambda_3 - (u/3)\,d\lambda_3/du$
 > (claim T1). $W$ is stationary at the induction solution with
-> $W[oldsymbol\mu^*] = E_{\mathrm{pol}}$ (claim T2). With $\mathbf E^{\mathrm{QM}}$
-> linear in $D$, the derivative of $E_{\mathrm{pol}}$ with $oldsymbol\mu$ re-solved
-> equals $-\sum_ioldsymbol\mu_i\cdot\mathbf F_i$, with no $	frac12$ (claim T4), and
-> $lpha	o0$ gives no induction (claim T5).
+> $W[\boldsymbol\mu^*] = E_{\mathrm{pol}}$ (claim T2). With $\mathbf E^{\mathrm{QM}}$
+> linear in $D$, the derivative of $E_{\mathrm{pol}}$ with $\boldsymbol\mu$ re-solved
+> equals $-\sum_i\boldsymbol\mu_i\cdot\mathbf F_i$, with no $\tfrac12$ (claim T4), and
+> $\alpha\to0$ gives no induction (claim T5).
 >
 > | | |
 > |---|---|
 > | Proof | `scripts/thole_polarizable_sympy.py`, claims T1, T2, T4 and T5 |
-> | Negative control | the runner puts $	frac12$ on the Fock term (claim T4 fails) and $v^3/2$ in $\lambda_5$ (claim T1 fails) |
+> | Negative control | the runner puts $\tfrac12$ on the Fock term (claim T4 fails) and $v^3/2$ in $\lambda_5$ (claim T1 fails) |
 > | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
 > | Code | `ferric-scf/src/polarizable.rs::build_v_induced` |
 > | Code test | `matches_pyscf_prototype_three_sites` in `crates/ferric-scf/tests/qmmm_polarizable.rs` |

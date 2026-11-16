@@ -177,9 +177,9 @@ With `multiplicity > 1` the CLI kinds `att-rimp2`, `scs-mp2` and
 `run_terfc_rimp2`, `run_scs_mp2` and `run_scs_mp2_2terfc`, take a UHF
 reference (energies only). The spin components are the blocks of
 unrestricted RI-MP2 under the same operator:
-$E_{m OS} = E_{lphaeta}$ and $E_{m SS} = E_{lphalpha} + E_{etaeta}$.
+$E_{\rm OS} = E_{\alpha\beta}$ and $E_{\rm SS} = E_{\alpha\alpha} + E_{\beta\beta}$.
 The exchange integral needs both electrons in one spin, so it appears only in
-the same-spin blocks. With $lpha = eta$ orbitals the blocks reduce to the
+the same-spin blocks. With $\alpha = \beta$ orbitals the blocks reduce to the
 closed-shell components, and a closed-shell molecule run through the UHF path
 gives the restricted energies to rounding (≤ 6e-17 Ha on water/cc-pVDZ for
 erfc, erf, terfc, SCS and SCS(2terfc)). On OH, NH2 and O2 at cc-pVDZ the erfc

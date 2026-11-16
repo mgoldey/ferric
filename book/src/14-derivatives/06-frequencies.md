@@ -188,8 +188,8 @@ intensity of each mode.
 
 > **Verified equation 14.18** · the intensity and its units
 >
-> The constant equals $N_Ae^2/(12arepsilon_0c^2m_e)$ from CODATA 2018;
-> the $0	o1$ band strength from the harmonic matrix element is the classical
+> The constant equals $N_Ae^2/(12\varepsilon_0c^2m_e)$ from CODATA 2018;
+> the $0\to1$ band strength from the harmonic matrix element is the classical
 > one; contracting the dipole derivative with the stored modes equals
 > differencing the dipole along each mode of a model triatomic; and the field
 > route recovers the dipole derivative to its $O(h^2)$ truncation.
