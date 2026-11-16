@@ -85,9 +85,10 @@ through `[basis] path` as a Gaussian-94 file (orbital basis only).
   RKS and UKS LDA/GGA (pure or global hybrid, moving-grid Hessian). ROKS, meta-GGA,
   range-separated hybrids and correlated methods' frequencies are by finite
   differences of the analytic gradient.
-- **Open-shell coupled cluster and open-shell TS search** are not available
-  (the one open-shell CC-type method, LinLCCD(hh), is library-only). `run_saddle`
-  and `run_irc` refuse a multiplicity other than 1. Open-shell
+- **Open-shell coupled cluster** is UCCSD and UCCSD(T) on a UHF reference:
+  `ccsd` / `ccsd(t)` with `multiplicity > 1`, energy only. There is no
+  open-shell CCD or EOM-CCSD. **Open-shell TS search** is not available:
+  `run_saddle` and `run_irc` refuse a multiplicity other than 1. Open-shell
   KS-DFT is available from the CLI: `ksdft` with `multiplicity > 1` runs UKS,
   and `uhf`/`rohf` with `[dft] functional` run UKS/ROKS. See
   [Capabilities and validation: open shells in the CLI](../reference/validation.md#open-shells-in-the-cli).

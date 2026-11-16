@@ -18,7 +18,86 @@ pub(crate) struct PyCcResult {
     /// The RI ladder's `a`-block width (`None` unless `ladder_route == "ri"`).
     #[pyo3(get)]
     pub(crate) ladder_block: Option<usize>,
+    /// The reference the CC ran on: `"rhf"`, or `"uhf"` for an open-shell
+    /// molecule (spin-blocked UCCSD / UCCSD(T)).
+    #[pyo3(get)]
+    pub(crate) reference: String,
+    /// Spin components of a UHF-reference run, in Hartree: `e_aa`, `e_ab`,
+    /// `e_bb` (CCSD) and, for `run_ccsd_t`, `t_aaa`, `t_aab`, `t_abb`,
+    /// `t_bbb` (the (T) classes by occupied spins). `None` on an RHF
+    /// reference.
+    #[pyo3(get)]
+    pub(crate) spin_components: Option<std::collections::HashMap<String, f64>>,
     pub(crate) certificate_data: ferric_core::certificate::Certificate,
+}
+
+/// Spin-blocked UCCSD and, with `triples`, UCCSD(T) on a UHF reference of
+/// the open-shell `mol` (the open-shell branch of `run_ccsd` / `run_ccsd_t`).
+/// Returns the result for Python, built without the GIL.
+#[allow(clippy::too_many_arguments)]
+fn run_u_ccsd_inner(
+    mol: &Molecule,
+    basis: &ferric_core::basis::BasisSet,
+    aux: &ferric_core::basis::BasisSet,
+    scf_config: &RhfConfig,
+    cfg: &CcConfig,
+    triples: bool,
+) -> Result<PyCcResult, ferric_core::FerricError> {
+    let prep = PreparedBasis::new(mol, basis)?;
+    let dfbs = PreparedBasis::new(mol, aux)?;
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &prep)?;
+    let ctx = ParallelContext::default();
+    let uhf = solve_uhf(&ctx, mol, &prep, &bounds, scf_config)?;
+    if !uhf.converged {
+        return Err(ferric_core::FerricError::ScfConvergence {
+            iterations: uhf.iterations,
+            last_energy: uhf.energy,
+        });
+    }
+    let cc = ferric_cc::u_ccsd::u_ccsd(mol, &prep, &dfbs, op, &uhf, cfg)?;
+    let mut comps = std::collections::HashMap::from([
+        ("e_aa".to_string(), cc.e_aa),
+        ("e_ab".to_string(), cc.e_ab),
+        ("e_bb".to_string(), cc.e_bb),
+    ]);
+    let t_correction = if triples {
+        let t = ferric_cc::u_ccsd_t::u_ccsd_t(mol, &prep, &dfbs, op, &uhf, &cc, cfg)?;
+        comps.extend([
+            ("t_aaa".to_string(), t.aaa),
+            ("t_aab".to_string(), t.aab),
+            ("t_abb".to_string(), t.abb),
+            ("t_bbb".to_string(), t.bbb),
+        ]);
+        Some(t.e_t)
+    } else {
+        None
+    };
+    let reference = reference_certificate(mol, &uhf, scf_config, basis);
+    let kind = if triples { "ccsd(t)" } else { "ccsd" };
+    Ok(PyCcResult {
+        correlation_energy: cc.correlation_energy,
+        t_correction,
+        ladder_route: None,
+        ladder_block: None,
+        reference: "uhf".into(),
+        spin_components: Some(comps),
+        certificate_data: ferric_cc::certificate::u_cc_certificate(
+            kind, &reference, &aux.name, cfg,
+        ),
+    })
+}
+
+/// The `ladder` argument is read by closed-shell CCSD only; an explicit
+/// route on an open-shell molecule is refused rather than ignored.
+fn refuse_open_shell_ladder(mol: &Molecule, ladder: &str) -> PyResult<()> {
+    if mol.multiplicity > 1 && ladder != "auto" {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "ladder={ladder:?} is read by closed-shell CCSD only; the UHF route for an \
+             open-shell molecule builds its VVVV blocks densely (use ladder=\"auto\")"
+        )));
+    }
+    Ok(())
 }
 
 /// `(ladder_route, ladder_block)` for the Python result.
@@ -118,6 +197,8 @@ pub(crate) fn run_ccd(
         t_correction: None,
         ladder_route: None,
         ladder_block: None,
+        reference: "rhf".into(),
+        spin_components: None,
         certificate_data,
     })
 }
@@ -156,12 +237,19 @@ pub(crate) fn run_ccsd(
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?,
         ..Default::default()
     };
+    refuse_open_shell_ladder(&emol, ladder)?;
+    if emol.multiplicity > 1 {
+        return py
+            .allow_threads(|| run_u_ccsd_inner(&emol, &ebasis, &eaux, &rhf_config, &cfg, false))
+            .map_err(make_err);
+    }
     // Release the GIL for the SCF + CCSD compute. All captured values are
     // owned clones/locals built above, so nothing Python-borrowed crosses
     // the closure boundary.
     //
-    // `solve_rhf` always yields a restricted reference, so this is the
-    // spin-adapted path unconditionally: same CCSD energy, but over spatial
+    // A closed-shell molecule reaches here, and `solve_rhf` yields a
+    // restricted reference, so this is the spin-adapted path
+    // unconditionally: same CCSD energy, but over spatial
     // orbitals (no/nv) rather than spin orbitals (2no/2nv), so the O(N^6) VVVV
     // block is 16x smaller. Measured on water/aug-cc-pVDZ: 24.6 s -> 1.10 s
     // (22x) and peak RSS 1.82 GB -> 0.48 GB.
@@ -195,6 +283,8 @@ pub(crate) fn run_ccsd(
         t_correction: None,
         ladder_route,
         ladder_block,
+        reference: "rhf".into(),
+        spin_components: None,
         certificate_data: ferric_mp2::certificate::with_anchor_envelope(
             ferric_cc::certificate::cc_certificate("ccsd", &reference, &eaux.name, &cfg, &r),
             "CCSD",
@@ -239,6 +329,12 @@ pub(crate) fn run_ccsd_t(
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?,
         ..Default::default()
     };
+    refuse_open_shell_ladder(&emol, ladder)?;
+    if emol.multiplicity > 1 {
+        return py
+            .allow_threads(|| run_u_ccsd_inner(&emol, &ebasis, &eaux, &rhf_config, &cfg, true))
+            .map_err(make_err);
+    }
     // Release the GIL for the SCF + CCSD + (T) compute. All captured values
     // are owned clones/locals built above, so nothing Python-borrowed
     // crosses the closure boundary.
@@ -282,6 +378,8 @@ pub(crate) fn run_ccsd_t(
         t_correction: Some(e_t),
         ladder_route,
         ladder_block,
+        reference: "rhf".into(),
+        spin_components: None,
         certificate_data: ferric_cc::certificate::cc_certificate(
             "ccsd(t)", &reference, &eaux.name, &cfg, &r_cs,
         ),

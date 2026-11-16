@@ -1048,6 +1048,23 @@ CASES = [
         ],
     ),
     (
+        "cc_uccsd_spin_blocks_sympy.py",
+        15,
+        [
+            ("W_AAB = 0.5", "W_AAB = 1.0 / 6.0", "[FAIL] claim 2"),
+            (
+                "            return -self.t2ab[iq, ir].T",
+                "            return self.t2ab[iq, ir].T",
+                "[FAIL] claim 2",
+            ),
+            (
+                "- x * 0.25 * np.einsum(",
+                "- 0.0 * 0.25 * np.einsum(",
+                "[FAIL] claim 3",
+            ),
+        ],
+    ),
+    (
         "gw_self_energy_sympy.py",
         30,
         [

@@ -9,6 +9,8 @@ implements each. Two conventions are used:
   $\langle pq\|rs\rangle = (pr|qs) - (ps|qr)$, with chemist integrals
   $(pq|rs) = \sum_P B^P_{pq} B^P_{rs}$ from the dressed RI factors
   (`ferric_mp2::spinorbital::asym_*`).
+- **Spin blocks, UHF** (`u_ccsd`, `u_ccsd_t`): separate $\alpha$ and $\beta$
+  occupied and virtual spaces; see "Unrestricted CCSD and CCSD(T)".
 - **Spatial, closed shell** (`ccsd_closed_shell`, `ccsd_t_closed_shell`,
   `linlccd_amplitude`, `dlpno_ccsd*`): indices run over $n_o$ / $n_v$
   spatial orbitals and amplitudes satisfy $t_{ij}^{ab} = t_{ji}^{ba}$.
@@ -301,6 +303,125 @@ $(T)$ to a few $10^{-16}$ relative. Claim 5 shows that the
 spin-orbital banding, divisor 6, unit weights and a $\tilde W$ without the
 cyclic terms all fail. In Rust, the `ccsd_t_closed_shell` tests compare with
 the spin-orbital `ccsd_t` given the same amplitudes and with PySCF.
+
+## Unrestricted CCSD and CCSD(T)
+
+`u_ccsd.rs::u_ccsd` and `u_ccsd_t.rs::u_ccsd_t` solve CCSD and its $(T)$
+correction on a UHF reference. The $\alpha$ and $\beta$ orbitals are
+different, so no spin adaptation is possible, but the spin-orbital
+amplitudes vanish unless spin is conserved. The solver keeps only the
+nonzero blocks. Lower-case indices are $\alpha$, upper-case $\beta$:
+
+$$t_i^a,\quad t_I^A,\quad t_{ij}^{ab},\quad t_{iJ}^{aB} = t_{i\alpha J\beta}^{a\alpha B\beta},\quad t_{IJ}^{AB}.$$
+
+`t2aa` and `t2bb` are antisymmetric in $(i,j)$ and in $(a,b)$. These are
+PySCF's `uccsd` conventions. The other mixed-spin spin-orbital elements
+follow from antisymmetry:
+
+| spins of $(q,r,s,e)$ | $t_{qr}^{se}$ |
+|---|---|
+| $\alpha\alpha\alpha\alpha$ | $t_{qr}^{se}$ (`t2aa`) |
+| $\beta\beta\beta\beta$ | $t_{QR}^{SE}$ (`t2bb`) |
+| $\alpha\beta\alpha\beta$ | $t_{qR}^{sE}$ |
+| $\alpha\beta\beta\alpha$ | $-t_{qR}^{eS}$ |
+| $\beta\alpha\alpha\beta$ | $-t_{rQ}^{sE}$ |
+| $\beta\alpha\beta\alpha$ | $t_{rQ}^{eS}$ |
+
+Every other spin pattern is zero.
+
+**Integrals.** Each spin has its own dressed RI factors
+$B^P_{pq,\sigma}$ over its active occupied and virtual orbitals
+(`URiBlocks`), so $(pq|rs)$ with $p,q$ of spin $\sigma$ and $r,s$ of spin
+$\tau$ is $\sum_P B^P_{pq,\sigma}B^P_{rs,\tau}$. A chemist integral is zero
+unless each bra and each ket pair shares a spin, and
+$\langle pq\|rs\rangle = (pr|qs)\delta_{\sigma_p\sigma_r}\delta_{\sigma_q\sigma_s} - (ps|qr)\delta_{\sigma_p\sigma_s}\delta_{\sigma_q\sigma_r}$.
+`UEris` holds the chemist blocks of PySCF's `_ChemistsERIs` for UCCSD, all
+three `vvvv` blocks dense. The Fock matrix is taken as diagonal (canonical
+UHF orbital energies), as on the restricted route.
+
+**Amplitude equations.** The residuals are the spin-orbital CCSD residuals
+of the section above with $p,q,\dots$ restricted to the spin-allowed
+blocks. `update_amps` evaluates them in the factorization of PySCF
+`uccsd.update_amps` (with $f_{ia}=0$), line for line: the $F_{oo}$,
+$F_{vv}$, $F_{ov}$ intermediates per spin, the six $W_{ovvo}$ ring blocks
+(`wovvo`, `wOVVO`, `woVvO`, `woVVo`, `wOvVo`, `wOvvO`), the hole-hole and
+particle-particle ladders on $\tau$, and the singles. The update is
+$t \leftarrow r/(-\Delta)$ with the per-spin denominators, and DIIS runs
+on all five blocks jointly.
+
+**Energy.** With $\tau_{ij}^{ab} = t_{ij}^{ab} + t_i^at_j^b - t_j^at_i^b$
+the spin-orbital energy $\tfrac14\sum\langle ij\|ab\rangle\tau_{ij}^{ab}$
+splits by the spins of $(i,j)$:
+
+$$
+\begin{aligned}
+E_{\alpha\alpha} &= \tfrac14\sum_{ijab}\big[(ia|jb)-(ib|ja)\big]t_{ij}^{ab}
+ + \tfrac12\sum_{ijab}\big[(ia|jb)-(ib|ja)\big]t_i^at_j^b, \\
+E_{\alpha\beta} &= \sum_{iJaB}(ia|JB)\big(t_{iJ}^{aB} + t_i^at_J^B\big),
+\end{aligned}
+$$
+
+and $E_{\beta\beta}$ is $E_{\alpha\alpha}$ with $\beta$ blocks. The $\alpha\beta$
+term already counts both $(i\alpha,J\beta)$ and $(J\beta,i\alpha)$ orderings.
+
+**(T).** `u_ccsd_t` evaluates the spin-orbital formula of the section
+"CCSD(T), spin-orbital" on the spin blocks. The summand
+$f = (W+V)W/\Delta$ is invariant under any permutation of $(i,j,k)$ and,
+separately, any permutation of $(a,b,c)$. It vanishes unless the occupied
+and virtual triples carry the same spins, and unless $i,j,k$ are distinct.
+Classify the occupied triple by its number of $\beta$ indices,
+$n_\beta = 0,1,2,3$ (classes aaa, aab, abb, bbb). For each class the loop
+visits canonical occupied triples ($i<j<k$ within one spin) and one
+canonical virtual spin layout ($\alpha$ positions first), with each
+same-spin virtual index running over its full range:
+
+| class | occupied loop | virtual layout | weight |
+|---|---|---|---|
+| aaa | $i<j<k$ | $(\alpha,\alpha,\alpha)$ | $1/6$ |
+| aab | $i<j$, $K$ | $(\alpha,\alpha,\beta)$ | $1/2$ |
+| abb | $i$, $J<K$ | $(\alpha,\beta,\beta)$ | $1/2$ |
+| bbb | $I<J<K$ | $(\beta,\beta,\beta)$ | $1/6$ |
+
+A canonical occupied triple stands for $3!$ ordered ones, and a canonical
+virtual layout stands for $\binom{3}{n_\beta}$ placements of its $\beta$
+labels. The weight is therefore
+
+$$w(n_\beta) = \frac{3!\binom{3}{n_\beta}}{36},$$
+
+and $E_{(T)} = -\sum_{\text{class}} w \sum_{\text{canonical}} (W+V)W/\Delta$.
+For each occupied triple the kernel builds $X$ and $Y$ block by block: a
+term enters only when the spins of its $t_2$ element (table above) and its
+integral both match, and $P(i/jk)P(a/bc)$ acts on the three occupied
+labels and on the three virtual positions with their spins. The loop runs
+over canonical triples of all four classes in parallel and folds them
+serially in a fixed order. The class energies are reported.
+
+**Frozen core.** `frozen_core` drops the lowest `frozen_core` orbitals of
+each spin, as `rimp2::active_occ` does for U-RI-MP2.
+
+**Limits.**
+
+- Closed-shell molecule, RHF orbitals given to both spins: $t_{ij}^{ab}$
+  (`t2aa`) $= t_{iJ}^{aB} - t_{iJ}^{bA}$, $E_{\alpha\alpha} = E_{\beta\beta}$,
+  aaa $=$ bbb and aab $=$ abb. The CCSD energy, $t_{iJ}^{aB}$ and
+  $E_{(T)}$ equal those of `ccsd_closed_shell` and `ccsd_t_closed_shell`.
+- On the same UHF orbitals, the spin-orbital solver of `ccsd.rs` and
+  `ccsd_t.rs`, fed the $\alpha$-then-$\beta$ spin-orbital space
+  (`ccsd_uhf_spin_orbital`, `ccsd_t_uhf_spin_orbital`), has no spin
+  bookkeeping and must give the same amplitudes, energy and $(T)$ classes.
+
+**Checks.** `scripts/cc_uccsd_spin_blocks_sympy.py` proves the class
+weights with sympy and a brute-force count (claim 1). On random spin-blocked
+amplitudes and per-spin RI factors with unequal $\alpha$ and $\beta$ spaces it
+checks that the transcribed spin-blocked $(T)$ equals the dense spin-orbital
+$(T)$ per class (claim 2), that the energy split above equals the dense
+spin-orbital energy (claim 3) and the closed-shell limit (claim 4). Claim 5
+shows that an aab weight of $1/6$, a wrong sign in the $t_2$ table, swapped
+$\alpha$/$\beta$ virtual energies, a dropped $t_I^A$ and a dropped exchange term
+each fail. In Rust, `tests/uccsd_anchors.rs` runs both limits above and
+`tests/validation_uccsd.rs` compares with PySCF DF-UCCSD and UCCSD(T). The
+two Rust solvers share the per-spin RI factors and orbital energies, so a
+fault in those inputs is caught only by the PySCF comparison.
 
 ## EE-EOM-CCSD singlets, closed shell
 

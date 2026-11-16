@@ -48,8 +48,9 @@ Independent routes: claims 4 and 4b compare with the dense spin-orbital (T)
 built from the antisymmetrized integrals; claim 6 solves the spin-orbital
 LinLCCD system densely and compares energy and amplitudes.
 
-Scope: closed shell only. There is no open-shell (T). The unrestricted
-spin-orbital LinLCCD (linlccd_u.rs) is not checked here.
+Scope: closed shell only. The open-shell (T) of u_ccsd_t.rs is checked by
+scripts/cc_uccsd_spin_blocks_sympy.py. The unrestricted spin-orbital LinLCCD
+(linlccd_u.rs) is not checked here.
 
 Mutations (each turns the script red):
   - 2 W instead of 4 W in the transcribed occupied-axis Wt of claim 4b

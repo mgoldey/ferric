@@ -21,16 +21,25 @@ implementations:
   the (T) loop takes 6.2–6.8 s on butane/cc-pVDZ and 86–93 s on hexane/cc-pVDZ.
   PySCF 2.13 takes 9.4 s and 110 s for the same (T) step on the same machine.
 - **Spin-orbital** (`ccsd`, `ccsd_t`): built from the same RHF spatial
-  orbitals and kept as the cross-check of the spin-adapted solvers, so it is
-  closed shell only as well. Its (T) streams one occupied triple at a time, so
-  memory is O(n<sub>o</sub>·n<sub>v</sub>³)-class rather than the dense
+  orbitals and kept as the cross-check of the spin-adapted solvers. The
+  library also feeds it UHF spin orbitals (`ccsd_uhf_spin_orbital`,
+  `ccsd_t_uhf_spin_orbital`) as the cross-check of the spin-blocked solvers
+  below; no CLI kind runs it. Its (T) streams one occupied triple at a time,
+  so memory is O(n<sub>o</sub>·n<sub>v</sub>³)-class rather than the dense
   six-index tensor.
+- **Spin-blocked, UHF reference** (`u_ccsd`, `u_ccsd_t`): the CLI `ccsd`
+  and `ccsd(t)` kinds and Python `run_ccsd` / `run_ccsd_t` run it when the
+  molecule has multiplicity > 1, for `task = "energy"` only. It solves a UHF
+  reference with exact J/K, then CCSD on the five amplitude blocks t1a, t1b,
+  t2aa, t2ab, t2bb, and prints E_CCSD split into αα, αβ and ββ. Its (T)
+  streams over canonical occupied triples in four spin classes (aaa, aab,
+  abb, bbb) and prints each class. `[mp2] frozen_core` (Python
+  `frozen_core`) drops the lowest orbitals of each spin. The three VVVV
+  blocks are held dense; `[cc] ladder` does not apply. Equations:
+  `crates/ferric-cc/theory.md`, "Unrestricted CCSD and CCSD(T)".
 
-No open-shell CCD, CCSD or CCSD(T) exists in ferric: every CC solver reads
-restricted orbitals and refuses an unrestricted reference. The only open-shell
-coupled-cluster-type method is LinLCCD(hh): the CLI `linlccd` kind is
-closed shell, and its open-shell (UHF) version is library-only
-(`ferric_cc::linlccd_u::u_linlccd`).
+There is no open-shell CCD or EOM-CCSD, and no ROHF-reference CCSD. The
+open-shell LinLCCD(hh) is library-only (`ferric_cc::linlccd_u::u_linlccd`).
 
 **Run it.**
 
@@ -39,7 +48,9 @@ closed shell, and its open-shell (UHF) version is library-only
 - CCSD(T): `method.kind = "ccsd(t)"` (`examples/water-ccsd-t.toml`); Python
   `ferric.run_ccsd_t(mol, bs, aux)`.
 - CCD: `method.kind = "ccd"` (`examples/water-ccd.toml`); Python `ferric.run_ccd(mol, bs, aux)`.
-- All three kinds are closed shell only and refuse `multiplicity > 1`.
+- `ccsd` and `ccsd(t)` with `multiplicity > 1` run UCCSD / UCCSD(T) on a
+  UHF reference (energy only; Python: an open-shell `Molecule`). `ccd`
+  refuses `multiplicity > 1`.
 
 **Aux basis.** The RI error is not negligible at CC accuracy: on water /
 cc-pVDZ with `cc-pvdz-ri`, RI-CCSD differs from exact-integral CCSD by about

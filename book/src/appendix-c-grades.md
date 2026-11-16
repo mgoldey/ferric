@@ -40,9 +40,9 @@ The grades are those of `site/src/reference/validation.md`, which is the authori
 | `gw` | RPA/GW | `run_gw`, `run_u_gw` | Proven (narrow) |
 | `bse-tda` | RPA/GW | `run_bse_tda` | Smoke |
 | `tdhf-static-polarizability` | RPA/GW | `run_tdhf_static_polarizability` | Smoke |
-| `ccsd` | CC | `run_ccsd` | Proven |
+| `ccsd` | CC | `run_ccsd` (UHF + UCCSD when multiplicity > 1) | Proven |
 | `ccd` | CC | `run_ccd` | Proven (narrow) |
-| `ccsd(t)` | CC | `run_ccsd_t` | Proven (narrow) |
+| `ccsd(t)` | CC | `run_ccsd_t` (UHF + UCCSD(T) when multiplicity > 1) | Proven (narrow) |
 | `eom-ccsd` | CC | `run_eom_ccsd` | Proven (narrow) |
 | `linlccd` | CC | `run_linlccd` | Proven (narrow) |
 | `drpa` | RPA/GW | `run_drpa`, `run_drpa_scan` (local ε scan) | Proven (narrow) |
