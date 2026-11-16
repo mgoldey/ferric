@@ -185,7 +185,9 @@ def _run_cli_optimize(tmp_path, ref):
         f'[basis]\nname = "6-31g"\n\n[method]\nkind = "{kind}"\ntask = "optimize"\n\n'
         '[dft]\nfunctional = "PBE"\n\n'
         "[scf]\nenergy_conv = 1e-10\ndensity_conv = 1e-9\n\n"
-        "[optimize]\nmax_steps = 1\n\n[output]\njson = false\n"
+        # The identity start with a fixed radius makes the first step x0 - g.
+        '[optimize]\nmax_steps = 1\ninitial_hessian = "simple"\ntrust_update = "fixed"\n\n'
+        "[output]\njson = false\n"
     )
     p = subprocess.run([str(cli), str(toml)], capture_output=True, text=True)
     assert p.returncode == 0, p.stderr[-2000:]
