@@ -2,7 +2,8 @@
   "_doc": "Derivations registry (CONTRIBUTING.md, 'Every method has a derivation and a sympy proof'). routes: every derived CLI kind, analytic optimize/frequencies arm and Python entry point -> method ids. methods: theory.md anchors plus sympy scripts, each run by a test under crates/ferric-python/tests. gaps: methods missing a piece, with the reason. Checked by crates/ferric-python/tests/test_derivation_registry.py.",
   "routes": {
     "cli:att-rimp2": [
-      "attenuated-mp2"
+      "attenuated-mp2",
+      "att-rimp2-gradient"
     ],
     "cli:b2plyp": [
       "double-hybrid"
@@ -125,6 +126,10 @@
       "harmonic-frequencies",
       "rrho-thermo",
       "ir-intensities"
+    ],
+    "optimize:att-rimp2": [
+      "att-rimp2-gradient",
+      "geometry-search"
     ],
     "optimize:ksdft": [
       "ks-gradient",
@@ -270,6 +275,7 @@
       "oo-rimp2-gradient"
     ],
     "py:run_optimize": [
+      "att-rimp2-gradient",
       "hf-gradient",
       "ks-gradient",
       "ri-mp2-gradient",
@@ -403,6 +409,14 @@
     ]
   },
   "methods": {
+    "att-rimp2-gradient": {
+      "theory": [
+        "crates/ferric-mp2/theory.md#94-attenuated-erfc-ri-mp2-gradient"
+      ],
+      "scripts": [
+        "scripts/att_rimp2_gradient_sympy.py"
+      ]
+    },
     "attenuated-mp2": {
       "theory": [
         "crates/ferric-mp2/theory.md#5-attenuated-mp2",

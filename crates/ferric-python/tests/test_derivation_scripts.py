@@ -458,6 +458,37 @@ CASES = [
         ],
     ),
     (
+        "att_rimp2_gradient_sympy.py",
+        10,
+        [
+            (
+                'grad += -2 * np.einsum("PQ,Pia,Qia->", dv, m_u, y)  # metric derivative',
+                'grad += 0.0 * np.einsum("PQ,Pia,Qia->", dv, m_u, y)  # metric derivative',
+                "FAIL L",
+            ),
+            (
+                'du_3c = m[f"du_{corr}"]  # 3-centre derivative operator',
+                'du_3c = m["du_coul"]  # 3-centre derivative operator',
+                "FAIL L",
+            ),
+            (
+                "xvo = veff_mo[nocc:, :nocc] + i_ia - i_ai  # Z-vector RHS",
+                "xvo = i_ia - i_ai  # Z-vector RHS",
+                "FAIL L",
+            ),
+            (
+                'deri_ref = m["deri_coul"]  # four-centre derivative operator',
+                'deri_ref = m["deri_erfc"]  # four-centre derivative operator',
+                "FAIL L",
+            ),
+            (
+                "RHO_W_SCALE = 1  # erf-part exponent",
+                "RHO_W_SCALE = 0  # erf-part exponent",
+                "FAIL E",
+            ),
+        ],
+    ),
+    (
         "u_rimp2_gradient_sympy.py",
         5,
         [

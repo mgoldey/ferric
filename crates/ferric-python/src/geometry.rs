@@ -129,6 +129,11 @@ pub(crate) fn optimize_result_certificate(
 ///   Grimme's 6/5 and 1/3 as in `run_scs_mp2`; every other kwarg as for
 ///   `"rimp2"`.
 ///
+/// - `"att-rimp2"`: closed-shell attenuated RI-MP2, `E_HF + E_c[erfc(ωr)/r]`
+///   on a Coulomb RHF (analytic Z-vector gradient of that energy; the
+///   energy of `run_attenuated_rimp2`). `omega` in Å⁻¹ (default 0.420);
+///   every other kwarg as for `"rimp2"`. The terfc operator has no gradient.
+///
 /// - `"pdep-rpa"`: closed-shell RHF + RI-dRPA, the CLI's `[rpa]` optimize
 ///   route (`ferric_rpa::optimize::optimize_geometry_rpa`). Needs `auxbasis`;
 ///   `frozen_core`, `memory_budget_gb`, `n_quad` (16), `quadrature`
@@ -157,7 +162,7 @@ pub(crate) fn optimize_result_certificate(
     auxbasis=None, frozen_core=None, scf_jk=None, jk_auxbasis=None, memory_budget_gb=None,
     oo_max_iter=None, oo_grad_conv=None, c_os=None, c_ss=None, scf_eri=None,
     scf_relativistic=None, fock_hook=None, fock_hook_grad=None, coordinates=None,
-    rpa_gradient=None, n_quad=None, quadrature=None, trunc_thresh=None,
+    rpa_gradient=None, n_quad=None, quadrature=None, trunc_thresh=None, omega=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_optimize(
@@ -200,6 +205,7 @@ pub(crate) fn run_optimize(
     n_quad: Option<usize>,
     quadrature: Option<&str>,
     trunc_thresh: Option<f64>,
+    omega: Option<f64>,
 ) -> PyResult<PyOptimizeResult> {
     // Before any setup: no method here has an X2C-1e gradient.
     refuse_relativistic_kwarg(scf_relativistic, "analytic nuclear gradient (run_optimize)")?;
@@ -229,6 +235,7 @@ pub(crate) fn run_optimize(
         n_quad,
         quadrature,
         trunc_thresh,
+        omega,
     };
     let method = parse_optimize_method(method)?;
     let spin = parse_optimize_reference(reference, &mol.inner)?;
@@ -271,6 +278,9 @@ pub(crate) fn run_optimize(
         }
         OptimizeMethod::ScsMp2 => {
             run_optimize_scs_mp2(py, &emol, basis_name, &cfg, &opt_config, &k)
+        }
+        OptimizeMethod::AttRiMp2 => {
+            run_optimize_att_rimp2(py, &emol, basis_name, &cfg, &opt_config, &k)
         }
         OptimizeMethod::PdepRpa => run_optimize_pdep_rpa(py, &emol, basis_name, &opt_config, &k),
     }
@@ -341,6 +351,7 @@ pub(crate) fn run_optimize_uhf(
         None,
         None,
         None,
+        None,
     )
 }
 
@@ -358,6 +369,7 @@ pub(crate) enum OptimizeMethod {
     RiMp2,
     OoRiMp2,
     ScsMp2,
+    AttRiMp2,
     PdepRpa,
 }
 
@@ -390,6 +402,8 @@ pub(crate) struct OptimizeKwargs<'a> {
     n_quad: Option<usize>,
     quadrature: Option<&'a str>,
     trunc_thresh: Option<f64>,
+    /// `omega=` (Å⁻¹), read by `method="att-rimp2"` only.
+    omega: Option<f64>,
 }
 
 fn value_error(msg: String) -> PyErr {
@@ -403,10 +417,11 @@ pub(crate) fn parse_optimize_method(method: &str) -> PyResult<OptimizeMethod> {
         "rimp2" => Ok(OptimizeMethod::RiMp2),
         "oo-rimp2" => Ok(OptimizeMethod::OoRiMp2),
         "scs-mp2" => Ok(OptimizeMethod::ScsMp2),
+        "att-rimp2" => Ok(OptimizeMethod::AttRiMp2),
         "pdep-rpa" => Ok(OptimizeMethod::PdepRpa),
         other => Err(value_error(format!(
             "run_optimize: unknown method {other:?}; expected \"scf\", \"rimp2\", \
-             \"oo-rimp2\", \"scs-mp2\" or \"pdep-rpa\""
+             \"oo-rimp2\", \"scs-mp2\", \"att-rimp2\" or \"pdep-rpa\""
         ))),
     }
 }
@@ -453,6 +468,7 @@ fn refuse_unread_optimize_kwargs(
         ("oo_grad_conv", k.oo_grad_conv.is_some()),
     ];
     let scs_only = [("c_os", k.c_os.is_some()), ("c_ss", k.c_ss.is_some())];
+    let att_only = [("omega", k.omega.is_some())];
     let scf_only = [
         ("xc", k.xc.is_some()),
         ("dispersion", k.dispersion.is_some()),
@@ -471,14 +487,19 @@ fn refuse_unread_optimize_kwargs(
         OptimizeMethod::Scf => {
             unread(&correlated_only, "scf")?;
             unread(&scs_only, "scf")?;
+            unread(&att_only, "scf")?;
             unread(&rpa_only, "scf")?;
             return unread(&oo_only, "scf");
         }
         OptimizeMethod::RiMp2 => "rimp2",
         OptimizeMethod::OoRiMp2 => "oo-rimp2",
         OptimizeMethod::ScsMp2 => "scs-mp2",
+        OptimizeMethod::AttRiMp2 => "att-rimp2",
         OptimizeMethod::PdepRpa => "pdep-rpa",
     };
+    if method != OptimizeMethod::AttRiMp2 {
+        unread(&att_only, who)?;
+    }
     if method != OptimizeMethod::PdepRpa {
         unread(&rpa_only, who)?;
     }
@@ -523,7 +544,10 @@ fn refuse_unread_optimize_kwargs(
             "run_optimize: method=\"{who}\" needs auxbasis= (the RI basis, e.g. \"cc-pvdz-ri\")"
         )));
     }
-    if matches!(method, OptimizeMethod::RiMp2 | OptimizeMethod::ScsMp2) {
+    if matches!(
+        method,
+        OptimizeMethod::RiMp2 | OptimizeMethod::ScsMp2 | OptimizeMethod::AttRiMp2
+    ) {
         unread(&oo_only, who)?;
         let fixed_scf = [
             (
@@ -1117,6 +1141,60 @@ fn run_optimize_scs_mp2(
         .map_err(make_err)?;
     Ok(mp2_gradient_optimize_result(
         "scs-mp2",
+        r,
+        basis_name,
+        ext,
+        &scf_jk,
+        opt_config,
+        ferric_scf::Spin::Restricted,
+    ))
+}
+
+/// `method="att-rimp2"`:
+/// `ferric_mp2::optimize::optimize_geometry_att_rimp2_on`, the driver of the
+/// CLI's att-rimp2 `optimize` (erfc(ωr)/r correlation on a Coulomb RHF, four-
+/// centre or RI-JK), `omega` in Å⁻¹ defaulting to 0.420 as in
+/// `run_attenuated_rimp2`.
+fn run_optimize_att_rimp2(
+    py: Python<'_>,
+    emol: &Molecule,
+    basis_name: &str,
+    cfg: &RhfConfig,
+    opt_config: &OptimizeConfig,
+    k: &OptimizeKwargs,
+) -> PyResult<PyOptimizeResult> {
+    let omega = k.omega.unwrap_or(0.420);
+    if !(omega.is_finite() && omega > 0.0) {
+        return Err(value_error(format!(
+            "run_optimize: method=\"att-rimp2\": omega must be finite and > 0 (Å⁻¹), got {omega}"
+        )));
+    }
+    let scf_jk = mp2_gradient_scf_jk(k, basis_name, "att-rimp2")?;
+    let att_config = ferric_mp2::attenuated::AttenuatedMp2Config {
+        omega: omega * ferric_mp2::attenuated::BOHR_INV_PER_ANG_INV,
+        scaling: 1.0,
+        frozen_core: k.frozen_core.unwrap_or(0),
+        screen_thresh: None,
+        memory_budget_bytes: budget_bytes_from_gb(k.memory_budget_gb),
+    };
+    let obs = basis::bundled(basis_name).map_err(make_err)?;
+    let aux = basis::bundled(k.auxbasis.unwrap_or_default()).map_err(make_err)?;
+    let ext = cfg.external_potential.clone();
+    let r = py
+        .allow_threads(|| {
+            ferric_mp2::optimize::optimize_geometry_att_rimp2_on(
+                emol,
+                &obs,
+                &aux,
+                &att_config,
+                opt_config,
+                ext.as_ref(),
+                &scf_jk,
+            )
+        })
+        .map_err(make_err)?;
+    Ok(mp2_gradient_optimize_result(
+        "att-rimp2",
         r,
         basis_name,
         ext,

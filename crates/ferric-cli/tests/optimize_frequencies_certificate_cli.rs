@@ -127,6 +127,28 @@ fn rimp2_optimize_records_its_gradient_and_caps_at_the_scf() {
     );
 }
 
+/// Attenuated RI-MP2 optimize: its own capability, graded Proven (narrow)
+/// (the task cap; no independent gradient code exists), the gradient line
+/// names the RI-JK reference an omitted `[scf] jk` takes.
+#[test]
+fn att_rimp2_optimize_records_its_gradient_and_its_grade() {
+    let (stdout, records) = run(
+        "opt_att_rimp2",
+        &format!("{H2}[method]\nkind = \"att-rimp2\"\ntask = \"optimize\"\n"),
+    );
+    assert!(
+        stdout.contains("Attenuated RI-MP2 (erfc, ω=0.420 Å⁻¹)"),
+        "{stdout}"
+    );
+    let c = record(&records, "certificate");
+    assert_eq!(c["capability"], "optimize:att-rimp2");
+    assert_eq!(c["grade"], "proven_narrow", "{c}");
+    assert_eq!(
+        approx(c, "gradient"),
+        "analytic (Z-vector), RI-JK reference (def2-universal-jkfit)"
+    );
+}
+
 /// `[optimize] coordinates` reaches every correlated optimization and the
 /// certificate's `optimizer` line names it (RI-MP2, SCS-MP2, RPA: each ran its
 /// own Cartesian-only loop before the shared one).

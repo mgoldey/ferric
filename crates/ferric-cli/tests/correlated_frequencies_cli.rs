@@ -1,5 +1,6 @@
 //! `task = "frequencies"` on the correlated kinds that have an analytic
-//! nuclear gradient (RI-MP2, SCS-MP2, OO-RI-MP2, pdep-rpa), through the CLI
+//! nuclear gradient (RI-MP2, SCS-MP2, OO-RI-MP2, attenuated RI-MP2,
+//! pdep-rpa), through the CLI
 //! binary: the Hessian is the central difference of the same gradient
 //! `task = "optimize"` follows.
 //!
@@ -209,6 +210,11 @@ fn oo_rimp2_frequencies_match_an_energy_stencil() {
 }
 
 #[test]
+fn att_rimp2_frequencies_match_an_energy_stencil() {
+    check_kind("att-rimp2");
+}
+
+#[test]
 fn pdep_rpa_frequencies_match_an_energy_stencil() {
     check_kind("pdep-rpa");
 }
@@ -260,7 +266,15 @@ fn a_kind_without_a_gradient_is_refused_with_the_supported_list() {
         "{err}"
     );
     for kind in [
-        "rhf", "ksdft", "uhf", "rohf", "pdep-rpa", "rimp2", "scs-mp2", "oo-rimp2",
+        "rhf",
+        "ksdft",
+        "uhf",
+        "rohf",
+        "pdep-rpa",
+        "rimp2",
+        "scs-mp2",
+        "oo-rimp2",
+        "att-rimp2",
     ] {
         assert!(err.contains(kind), "{kind} missing from: {err}");
     }

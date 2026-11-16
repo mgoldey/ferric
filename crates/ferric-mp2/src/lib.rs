@@ -31,6 +31,8 @@ pub mod lmp2_certificate;
 /// Ring-CCD family: rCCD, drCCD amplitude solvers.
 pub mod rccd_family;
 
+/// Analytic nuclear gradient of attenuated (erfc) RI-MP2 on a Coulomb RHF.
+pub mod att_rimp2_gradient;
 /// Attenuated MP2 + VV10 nonlocal correlation combination.
 pub mod att_vv10;
 /// Attenuated MP2: erfc(ωr)/r screened correlation energy.

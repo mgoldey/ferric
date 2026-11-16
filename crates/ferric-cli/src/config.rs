@@ -3445,8 +3445,30 @@ impl Config {
 
 /// The kinds whose `task = "optimize"` runs the analytic relaxed RI-MP2
 /// gradient (`ferric_mp2::gradient::total_rimp2_gradient_on` /
-/// `total_scs_mp2_gradient_on`) on an exact or an RI-JK reference.
-pub const MP2_GRADIENT_OPTIMIZE_KINDS: &[&str] = &["rimp2", "scs-mp2"];
+/// `total_scs_mp2_gradient_on` /
+/// `ferric_mp2::att_rimp2_gradient::total_att_rimp2_gradient_on`) on an
+/// exact or an RI-JK reference.
+pub const MP2_GRADIENT_OPTIMIZE_KINDS: &[&str] = &["rimp2", "scs-mp2", "att-rimp2"];
+
+impl Config {
+    /// An error for att-rimp2 with the terfc operator on a gradient task: the
+    /// terfc operator has no derivative integrals, so it has no analytic
+    /// gradient.
+    fn refuse_terfc_gradient(&self, kind: &str, task: &str) -> Result<(), String> {
+        if kind == "att-rimp2"
+            && is_gradient_task(task)
+            && self.mp2.att_rimp2_op()? == AttRimp2Op::Terfc
+        {
+            return Err(format!(
+                "[mp2] att_operator = \"terfc\" is not supported with method.kind = \
+                 \"att-rimp2\", task = \"{task}\": the terfc operator has no derivative \
+                 integrals, so there is no analytic gradient. Use the default erfc operator, \
+                 or task = \"energy\"."
+            ));
+        }
+        Ok(())
+    }
+}
 
 /// The tasks that differentiate the analytic correlated gradient: the
 /// optimizer follows it, a frequency run central-differences it.
@@ -3611,8 +3633,8 @@ impl ScfCfg {
             if self.jk.is_some() || self.jk_aux.is_some() {
                 return Err(format!(
                     "[scf] jk / jk_aux are wired for task = \"energy\" with method.kind = {} \
-                     and for method.kind = \"rimp2\" / \"scs-mp2\" / \"oo-rimp2\" with \
-                     task = \"optimize\" or \"frequencies\" only; got \
+                     and for method.kind = \"rimp2\" / \"scs-mp2\" / \"att-rimp2\" / \
+                     \"oo-rimp2\" with task = \"optimize\" or \"frequencies\" only; got \
                      kind = \"{kind}\", task = \"{task}\". Use [scf] df_j_aux / df_k_aux / \
                      k_builder there",
                     SCF_JK_KINDS.join(", ")
@@ -4615,6 +4637,7 @@ impl Config {
                  gradients. Use task = \"energy\"."
             ));
         }
+        self.refuse_terfc_gradient(kind, task)?;
         self.validate_cli_wired_keys()?;
         if task != "energy"
             && self.scf.k_builder.as_deref() == Some("cosx")
@@ -5993,7 +6016,13 @@ mod compat_guard_tests {
                 "jk = \"rijcosx\"\n",
                 "no COSX exchange response",
             ),
-            ("att-rimp2", "optimize", "jk = \"rijk\"\n", "wired for task"),
+            ("mp2-v", "optimize", "jk = \"rijk\"\n", "wired for task"),
+            (
+                "att-rimp2",
+                "optimize",
+                "jk = \"rijcosx\"\n",
+                "no COSX exchange response",
+            ),
             (
                 "scs-mp2",
                 "optimize",
@@ -13173,6 +13202,35 @@ mod cli_wired_keys_tests {
             ),
             "finite and > 0",
         );
+    }
+
+    /// The attenuated RI-MP2 gradient is erfc-only: terfc has no derivative
+    /// integrals, so a gradient task with it is refused before any SCF;
+    /// the default erfc operator is accepted on both gradient tasks.
+    #[test]
+    fn att_rimp2_gradient_tasks_refuse_terfc() {
+        for task in ["optimize", "frequencies"] {
+            let e = cfg(
+                "att-rimp2",
+                task,
+                1,
+                "[mp2]\natt_operator = \"terfc\"\natt_r0 = 1.0\n",
+            )
+            .validate_task_compat()
+            .expect_err("terfc gradient must be refused");
+            assert!(e.contains("no derivative"), "{task}: {e}");
+            cfg("att-rimp2", task, 1, "[mp2]\nomega = 0.5\n")
+                .validate_task_compat()
+                .unwrap_or_else(|e| panic!("{task}: erfc refused: {e}"));
+        }
+        cfg(
+            "att-rimp2",
+            "energy",
+            1,
+            "[mp2]\natt_operator = \"terfc\"\natt_r0 = 1.0\n",
+        )
+        .validate_task_compat()
+        .unwrap();
     }
 
     #[test]

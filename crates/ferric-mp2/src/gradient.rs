@@ -141,6 +141,11 @@ pub fn rimp2_gradient_fd(
 /// Cross-checked block-by-block against `pyscf/grad/mp2.py::grad_elec`: blocks 1-5
 /// match to ≤1e-4, block 6 to PySCF's `part_dm2·int2e_ip1`, for H2/cc-pVDZ AND
 /// H2O/STO-3G. Both H2 (nocc=1) and H2O (nocc>1) are exact overall (~1e-9 vs FD).
+///
+/// `op` is the correlation operator (the `(P|ia)` integrals, the RI metric and
+/// block 6); block 5 runs on `bounds.op`, the reference SCF's operator. They
+/// are the same operator for RI-MP2; [`crate::att_rimp2_gradient`] passes erfc
+/// on a Coulomb reference.
 pub fn rimp2_gradient_analytical(
     mol: &Molecule,
     obs: &PreparedBasis,
@@ -274,7 +279,13 @@ fn relaxed_gradient_from_intermediates(
     })?;
     let zv = solve_zvector_timed(obs, dfbs, op, &jk, rhf, inter, budget_bytes, controls, acc)?
         .require_converged()?;
-    let mut grad = mp2_relaxed_lagrangian_gradient(mol, obs, op, &jk, rhf, inter, &zv, ext, acc)?;
+    // `op` is the CORRELATION operator (the (P|ia) integrals and the RI
+    // metric, so `b_full` in the Z-vector and the 3c/2c response); the
+    // reference's own two-electron derivative runs on the operator its
+    // Schwarz bounds (and SCF) were built for. The two are the same for
+    // RI-MP2 and differ for attenuated RI-MP2 (Coulomb HF, erfc correlation).
+    let mut grad =
+        mp2_relaxed_lagrangian_gradient(mol, obs, bounds.op, &jk, rhf, inter, &zv, ext, acc)?;
     grad += &integral_response_gradient_3c2c_timed(mol, obs, dfbs, op, inter, rhf.mos_r(), acc)?;
     Ok(grad)
 }
@@ -286,12 +297,14 @@ fn relaxed_gradient_from_intermediates(
 /// paths. The caller adds the RI 3c/2c integral-response term separately.
 ///
 /// See [`rimp2_gradient_analytical`] for the block-by-block derivation and PySCF
-/// line citations.
+/// line citations. `ref_op` is the reference SCF's two-electron operator: it
+/// is the operator of the four-centre derivative term, the only operator this
+/// function reads.
 #[allow(clippy::too_many_arguments)]
 fn mp2_relaxed_lagrangian_gradient(
     mol: &Molecule,
     obs: &PreparedBasis,
-    op: Operator,
+    ref_op: Operator,
     jk: &ResponseJk<'_>,
     rhf: &ScfResult,
     inter: &crate::rimp2::Mp2Intermediates,
@@ -421,7 +434,7 @@ fn mp2_relaxed_lagrangian_gradient(
     // the HF case; the bilinear form generalizes it to −∂veff(hf_dm1)·dm1p.
     let dm1p = hf_dm1 + &two_dm_corr;
     grad += &acc.time("lagr: 2e derivs", || {
-        jk.two_electron_gradient_bilinear(mol, op, hf_dm1, &dm1p)
+        jk.two_electron_gradient_bilinear(mol, ref_op, hf_dm1, &dm1p)
     })?;
 
     Ok(grad)
@@ -1006,6 +1019,7 @@ pub fn total_rimp2_gradient_on(
         obs_basis,
         aux_basis,
         op,
+        op,
         mp2_config,
         SpinScaling::MP2,
         ext,
@@ -1033,6 +1047,7 @@ pub fn total_scs_mp2_gradient_on(
         obs_basis,
         aux_basis,
         Operator::coulomb(),
+        Operator::coulomb(),
         &scs_rimp2_config(config),
         scs_scaling(config),
         ext,
@@ -1045,12 +1060,16 @@ pub fn total_scs_mp2_gradient_on(
 /// `scaling`. `SpinScaling::MP2` takes the energy from [`ri_mp2`]; any
 /// other scaling from [`ri_mp2_spin_components`] as
 /// `E_HF + c_os E_os + c_ss E_ss`, the arithmetic of [`crate::scs::scs_mp2`].
+/// `ref_op` is the reference SCF's operator, `corr_op` the operator of the
+/// correlation energy's `(P|ia)` integrals and RI metric (the same for
+/// RI-MP2 and SCS-MP2; erfc on a Coulomb reference for attenuated RI-MP2).
 #[allow(clippy::too_many_arguments)]
-fn total_mp2_gradient_scaled_on(
+pub(crate) fn total_mp2_gradient_scaled_on(
     mol: &Molecule,
     obs_basis: &BasisSet,
     aux_basis: &BasisSet,
-    op: Operator,
+    ref_op: Operator,
+    corr_op: Operator,
     mp2_config: &RiMp2Config,
     scaling: SpinScaling,
     ext: Option<&ExternalPotential>,
@@ -1093,8 +1112,8 @@ fn total_mp2_gradient_scaled_on(
         crate::gradient_memory::preflight_fitted_gradient(shape, budget)?;
         rhf_cfg.three_index_budget_bytes = mp2_config.memory_budget_bytes.unwrap_or(0);
     }
-    let bounds = SchwarzBounds::compute(op, &obs)?;
-    let rhf = solve_rhf_warm(&ctx, mol, &obs, op, &bounds, &rhf_cfg, warm)?;
+    let bounds = SchwarzBounds::compute(ref_op, &obs)?;
+    let rhf = solve_rhf_warm(&ctx, mol, &obs, ref_op, &bounds, &rhf_cfg, warm)?;
     if !rhf.converged {
         return Err(FerricError::ScfConvergence {
             iterations: rhf.iterations,
@@ -1104,9 +1123,9 @@ fn total_mp2_gradient_scaled_on(
     let mut acc = PhaseAccumulator::new().report_on_drop("RI-MP2 energy + gradient");
     let energy = acc.time("ri_mp2 energy", || {
         if scaling == SpinScaling::MP2 {
-            ri_mp2(mol, &obs, &dfbs, op, &rhf, mp2_config).map(|r| r.total_energy)
+            ri_mp2(mol, &obs, &dfbs, corr_op, &rhf, mp2_config).map(|r| r.total_energy)
         } else {
-            let (sc, _) = ri_mp2_spin_components(mol, &obs, &dfbs, op, &rhf, mp2_config)?;
+            let (sc, _) = ri_mp2_spin_components(mol, &obs, &dfbs, corr_op, &rhf, mp2_config)?;
             Ok(rhf.energy + (scaling.c_os * sc.e_os + scaling.c_ss * sc.e_ss))
         }
     })?;
@@ -1114,7 +1133,7 @@ fn total_mp2_gradient_scaled_on(
         mol,
         &obs,
         &dfbs,
-        op,
+        corr_op,
         &bounds,
         &rhf,
         mp2_config,

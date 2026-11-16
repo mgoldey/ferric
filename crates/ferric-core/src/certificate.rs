@@ -218,6 +218,7 @@ pub const TASK_KIND_ROWS: &[(&str, &str)] = &[
     ("optimize", "ksdft"),
     ("optimize", "rimp2"),
     ("optimize", "scs-mp2"),
+    ("optimize", "att-rimp2"),
     ("optimize", "oo-rimp2"),
     ("optimize", "pdep-rpa"),
     ("frequencies", "rhf"),
@@ -231,8 +232,10 @@ pub const TASK_KIND_ROWS: &[(&str, &str)] = &[
 /// task certificate takes the lower of the two. The
 /// `task_grade_caps_match_the_page` test fails unless the page cell of each
 /// pair names the ceiling.
-pub const TASK_KIND_GRADE_CAPS: &[(&str, &str, Grade)] =
-    &[("optimize", "scs-mp2", Grade::ProvenNarrow)];
+pub const TASK_KIND_GRADE_CAPS: &[(&str, &str, Grade)] = &[
+    ("optimize", "scs-mp2", Grade::ProvenNarrow),
+    ("optimize", "att-rimp2", Grade::ProvenNarrow),
+];
 
 /// The build that produced a result. Filled by the top-level artifact from
 /// `ferric-build-info` (`VERSION`, `COMMIT`, `DIRTY`).
@@ -919,6 +922,12 @@ mod tests {
             "optimize",
             "oo-rimp2",
             &Certificate::for_method_kind("oo-rimp2"),
+        );
+        assert_eq!(c.grade, Grade::ProvenNarrow);
+        let c = Certificate::for_task(
+            "optimize",
+            "att-rimp2",
+            &Certificate::for_method_kind("att-rimp2"),
         );
         assert_eq!(c.grade, Grade::ProvenNarrow);
     }

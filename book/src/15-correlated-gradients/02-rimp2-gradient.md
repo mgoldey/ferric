@@ -1,7 +1,7 @@
 # 15.2 RI-MP2 gradient with exact and RI-JK references; SCS-MP2
 
-<!-- section: 15.2; status: ready; registry: ri-mp2-gradient, scs-mp2-gradient;
-     theory: crates/ferric-mp2/theory.md#"9. Analytic RI-MP2 gradient and Z-vector", "9.1 Fitted (RI-JK) reference", "9.2 Spin-component-scaled (SCS-MP2) gradient" -->
+<!-- section: 15.2; status: ready; registry: ri-mp2-gradient, scs-mp2-gradient, att-rimp2-gradient;
+     theory: crates/ferric-mp2/theory.md#"9. Analytic RI-MP2 gradient and Z-vector", "9.1 Fitted (RI-JK) reference", "9.2 Spin-component-scaled (SCS-MP2) gradient", "9.4 Attenuated (erfc) RI-MP2 gradient" -->
 
 The closed-shell RI-MP2 gradient is the Lagrangian of section 15.1 with the
 MP2 right-hand side, assembled as one-electron, overlap, two-electron and
@@ -26,8 +26,9 @@ is negative; the book's positive-gap convention is the negative of it.
 | Entry point | Location |
 |---|---|
 | Rust | `ferric-mp2/src/gradient.rs::{rimp2_gradient_analytical,relaxed_ri_gradient,scs_mp2_gradient_analytical,total_rimp2_gradient}` |
-| CLI | `method.kind = "rimp2"` or `"scs-mp2"` with `task = "optimize"` |
-| Python | `run_rimp2(with_gradient=True)`, `run_optimize(method="rimp2")`, `run_optimize(method="scs-mp2")` |
+| Rust (attenuated) | `ferric-mp2/src/att_rimp2_gradient.rs::{att_rimp2_gradient_analytical,total_att_rimp2_gradient_on}` |
+| CLI | `method.kind = "rimp2"`, `"scs-mp2"` or `"att-rimp2"` with `task = "optimize"` |
+| Python | `run_rimp2(with_gradient=True)`, `run_optimize(method="rimp2")`, `run_optimize(method="scs-mp2")`, `run_optimize(method="att-rimp2")` |
 
 ## 15.2.1 Densities and the right-hand side
 
@@ -164,7 +165,32 @@ intermediates, so the RI-MP2 gradient goes through the same code bit for bit
 >
 > <!-- verified: id=mp2.grad.scs-weights; script=scripts/mp2_gradient_sympy.py; claim=G; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/rimp2.rs::apply_spin_scaling; rust_test=ferric-mp2/tests/scs_mp2_gradient.rs::scs_gradient_matches_fd_water_ccpvdz; registry=scs-mp2-gradient -->
 
-## 15.2.5 Reproducibility and memory
+## 15.2.5 Attenuated (erfc) RI-MP2
+
+The attenuated energy is $E_{\mathrm{HF}}[1/r] + s\,E_c[\operatorname{erfc}(\omega r)/r]$.
+The reference is Coulomb RHF. The correlation uses $\operatorname{erfc}(\omega r)/r$
+in both the $(P\vert ia)$ integrals and the metric $V_{PQ}$. The gradient is
+the Lagrangian of this section with the operator chosen per term:
+
+| Term | Operator |
+|---|---|
+| amplitudes, $x$, $P$, $I$ (15.5, 15.6) | erfc |
+| three- and two-center RI response | erfc |
+| $(2J - K)[D^{\mathrm{corr}}]$ in (15.7), the Z-vector Hessian, the separable two-electron term | Coulomb |
+
+The Coulomb terms come from the HF stationarity condition, so they keep the
+reference operator. The scaling $s$ enters as $c_{\mathrm{OS}} = c_{\mathrm{SS}} = s$
+in (15.8). At $\omega \to 0$ the erfc operator becomes Coulomb and the
+gradient becomes the RI-MP2 gradient: at $\omega = 10^{-7}$ Bohr⁻¹ the two
+agree to $1.6\times10^{-13}$ Ha/Bohr (`att_gradient_matches_rimp2_in_the_trivial_limit`).
+The terfc operator has no derivative integrals and is refused for gradient
+tasks, as is the QQR-3 screened energy (`screen_thresh`). The derivation
+and the operator table are in `theory.md` section 9.4.
+`scripts/att_rimp2_gradient_sympy.py` proves the erfc chain rule and the
+$\omega \to 0$ limit, and checks the operator split on a one-dimensional
+s-Gaussian model against finite differences.
+
+## 15.2.6 Reproducibility and memory
 
 The Z-vector assumes a stationary RHF, so the gradient error follows the
 SCF density convergence; tighten `scf_density_conv` for finite-difference
@@ -172,18 +198,19 @@ work. An unconverged Z-vector is an error, not a gradient. The fitted
 reference costs a few full-rank RI-K gradient channels, which is the memory
 reason the CLI keeps the four-center reference for geometry tasks.
 
-## 15.2.6 Options
+## 15.2.7 Options
 
 | Option | Values | Default | Effect |
 |---|---|---|---|
 | `[scf] jk`, `scf_jk=` | `"exact"`, `"rijk"` | four-center for geometry tasks; Python four-center | the reference and every $J$, $K$ of the gradient |
 | `[mp2] frozen_core`, `frozen_core=` | integer | 0 | adds the core-active block |
 | `[mp2] c_os`, `c_ss` (`scs-mp2`) | floats | 6/5, 1/3 (`ScsMp2Config` default) | the weights of (15.8) |
+| `[mp2] omega`, `omega=` (`att-rimp2`) | float, Å⁻¹ | 0.420 | the erfc range parameter |
 
 `scf_jk="rijcosx"`, `k_builder="cosx"`, `local=`, the attenuation keys,
 `kappa` and an open-shell molecule are refused with `with_gradient=True`.
 
-## 15.2.7 Numerical anchors
+## 15.2.8 Numerical anchors
 
 From `site/src/reference/validation.md` and the tests named.
 
@@ -194,17 +221,21 @@ From `site/src/reference/validation.md` and the tests named.
 | frozen core vs FD | H2O, HCN, NH3 | $4.9\times10^{-8}$, $1.3\times10^{-8}$, $1.7\times10^{-8}$ | the same |
 | fitted-reference gradient vs FD of the fitted energy | water, methane, water with frozen core | test tolerance | `crates/ferric-mp2/tests/rimp2_gradient_rijk.rs` |
 | SCS-MP2 gradient vs PySCF 5-point FD of DF-MP2 $E_\mathrm{OS}$, $E_\mathrm{SS}$ | H2O / cc-pVDZ, NH3 / def2-SVP; $(6/5, 1/3)$, $(1, 0)$, $(1, 1)$; frozen core | $\le 2.5\times10^{-9}$ Ha/Bohr | `crates/ferric-mp2/tests/validation_scs_mp2_gradient.rs` |
+| att-RI-MP2 gradient vs Richardson FD of `attenuated_ri_mp2` | H2O, CH3F (frozen core 0 and 2) / cc-pVDZ, CH3CHO / 6-31G\*, H2O on RI-JK; $\omega = 0.420$ and 1.0 Å⁻¹ | $\le 2.5\times10^{-9}$ Ha/Bohr (bar about $2\times10^{-7}$) | `crates/ferric-mp2/tests/att_rimp2_gradient_fd.rs` |
 | SCS-MP2 gradient vs central FD of `scs_mp2` | H2O / STO-3G and cc-pVDZ, NH3 / 6-31G; $(6/5, 1/3)$ and $(1, 0)$; frozen core; exact and RI-JK | $\le 5.7\times10^{-8}$ Ha/Bohr (bar $2\times10^{-7}$) | `crates/ferric-mp2/tests/scs_mp2_gradient.rs` |
 
-## 15.2.8 Sources
+## 15.2.9 Sources
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-mp2/theory.md`, sections 9, 9.1, 9.2 | the derivation, the fitted-term table, the RI-JK shift measurements |
+| `crates/ferric-mp2/theory.md`, sections 9, 9.1, 9.2, 9.4 | the derivation, the fitted-term table, the RI-JK shift measurements |
 | `scripts/mp2_gradient_sympy.py`, parts G and S | the proofs |
+| `scripts/att_rimp2_gradient_sympy.py` | the erfc chain rule, the $\omega \to 0$ limit, the operator split |
 | PySCF `grad/mp2.py` | the convention the right-hand side follows (cited in `theory.md`) |
 
 **Known limits (2026-11-15).** Closed shell only; the unrestricted RI-MP2
 is energy only. The SCS-MP2 gradient is Proven (narrow): closed shell, Coulomb operator,
-exact or RI-JK J/K, frozen core 0 or 1. The AO-level RI
+exact or RI-JK J/K, frozen core 0 or 1. The attenuated RI-MP2 gradient is
+Proven (narrow): closed shell, erfc only, exact or RI-JK J/K; its
+frequencies are central differences of it and are not graded. The AO-level RI
 bookkeeping is not covered by a script.

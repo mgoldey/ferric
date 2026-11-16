@@ -6594,11 +6594,20 @@ fn run_rohf(
 
 /// `method.kind`s with a correlated analytic nuclear gradient: the surfaces
 /// `task = "optimize"` and `task = "frequencies"` both differentiate.
-const CORRELATED_GRADIENT_KINDS: &[&str] = &["pdep-rpa", "rimp2", "scs-mp2", "oo-rimp2"];
+const CORRELATED_GRADIENT_KINDS: &[&str] =
+    &["pdep-rpa", "rimp2", "scs-mp2", "oo-rimp2", "att-rimp2"];
 /// Every `method.kind` the `optimize` and `frequencies` tasks accept: the SCF
 /// kinds plus [`CORRELATED_GRADIENT_KINDS`].
 const GRADIENT_KINDS: &[&str] = &[
-    "rhf", "ksdft", "uhf", "rohf", "pdep-rpa", "rimp2", "scs-mp2", "oo-rimp2",
+    "rhf",
+    "ksdft",
+    "uhf",
+    "rohf",
+    "pdep-rpa",
+    "rimp2",
+    "scs-mp2",
+    "oo-rimp2",
+    "att-rimp2",
 ];
 
 /// `task = "frequencies"` for a correlated `method.kind`
@@ -6725,6 +6734,29 @@ fn run_frequencies_correlated(
                         bs,
                         &aux_bs,
                         &scs_config,
+                        rhf_config.external_potential.as_ref(),
+                        &scf_jk,
+                        warm,
+                    )
+                }),
+                label,
+            )
+        }
+        "att-rimp2" => {
+            let aux_bs = aux_of(cfg.mp2.auxbasis.as_deref());
+            let att_config = att_rimp2_gradient_config(cfg, mol, budget_bytes);
+            let scf_jk = rimp2_gradient_scf_jk("att-rimp2", rhf_config).unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            });
+            let label = ferric_mp2::optimize::rimp2_gradient_label(&scf_jk);
+            (
+                Box::new(move |m, warm| {
+                    ferric_mp2::att_rimp2_gradient::total_att_rimp2_gradient_on(
+                        m,
+                        bs,
+                        &aux_bs,
+                        &att_config,
                         rhf_config.external_potential.as_ref(),
                         &scf_jk,
                         warm,
@@ -7658,6 +7690,17 @@ fn run_optimize(
             &opt_config,
             budget_bytes,
         ),
+        "att-rimp2" => run_optimize_att_rimp2(
+            method,
+            cfg,
+            ctx,
+            mol,
+            bs,
+            op,
+            rhf_config,
+            &opt_config,
+            budget_bytes,
+        ),
         _ => {
             eprintln!(
                 "error: geometry optimization is currently only supported for method.kind = {}",
@@ -7832,6 +7875,101 @@ fn run_optimize_scs_mp2(
         (opt_result.converged, opt_result.steps, opt_result.energy),
         &ferric_mp2::optimize::rimp2_gradient_label(&scf_jk),
     );
+}
+
+/// `method.kind = "att-rimp2"`, `task = "optimize"`: closed-shell attenuated
+/// (erfc) RI-MP2 through
+/// [`ferric_mp2::optimize::optimize_geometry_att_rimp2_on`] (the driver the
+/// Python `run_optimize(method="att-rimp2")` calls), with the `[mp2]
+/// auxbasis` / `omega` / `frozen_core` of the energy run and the Coulomb
+/// reference on `[scf] jk` (`"exact"` or `"rijk"`).
+#[allow(clippy::too_many_arguments)]
+fn run_optimize_att_rimp2(
+    method: &str,
+    cfg: &Config,
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    bs: &BasisSet,
+    op: Operator,
+    rhf_config: &RhfConfig,
+    opt_config: &OptimizeConfig,
+    budget_bytes: Option<usize>,
+) {
+    let aux_name = cfg
+        .mp2
+        .auxbasis
+        .as_deref()
+        .unwrap_or(config::DEFAULT_CORRELATION_AUX);
+    let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    let att_config = att_rimp2_gradient_config(cfg, mol, budget_bytes);
+    let scf_jk = rimp2_gradient_scf_jk("att-rimp2", rhf_config).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    let opt_result = ferric_mp2::optimize::optimize_geometry_att_rimp2_on(
+        mol,
+        bs,
+        &aux_bs,
+        &att_config,
+        opt_config,
+        rhf_config.external_potential.as_ref(),
+        &scf_jk,
+    )
+    .unwrap_or_else(|e| {
+        eprintln!("error during attenuated RI-MP2 optimization: {e}");
+        std::process::exit(1);
+    });
+    println!("\nFinal Optimized Geometry (Bohr):");
+    for (i, atom) in opt_result.mol.atoms.iter().enumerate() {
+        println!(
+            "  {:2} {:2} {:12.8} {:12.8} {:12.8}",
+            i, atom.symbol, atom.x, atom.y, atom.zpos
+        );
+    }
+    println!(
+        "\nAttenuated RI-MP2 (erfc, ω={:.3} Å⁻¹) Optimization Result:",
+        att_config.omega / ferric_mp2::attenuated::BOHR_INV_PER_ANG_INV
+    );
+    println!("  converged  = {}", opt_result.converged);
+    println!("  steps      = {}", opt_result.steps);
+    println!(
+        "  final E    = {:.10} Hartree (RHF + att-MP2)",
+        opt_result.energy
+    );
+    certify_optimization(
+        method,
+        cfg,
+        ctx,
+        bs,
+        op,
+        rhf_config,
+        opt_config,
+        &opt_result.mol,
+        None,
+        (opt_result.converged, opt_result.steps, opt_result.energy),
+        &ferric_mp2::optimize::rimp2_gradient_label(&scf_jk),
+    );
+}
+
+/// The `[mp2]` attenuated RI-MP2 configuration of the optimize and frequency
+/// runs: the erfc ω of the energy run (`omega`, Å⁻¹, default 0.420), its
+/// frozen core and the memory budget. `att_operator = "terfc"` and `[local]`
+/// are refused before this by `Config::validate_task_compat`.
+fn att_rimp2_gradient_config(
+    cfg: &Config,
+    mol: &Molecule,
+    budget_bytes: Option<usize>,
+) -> AttenuatedMp2Config {
+    AttenuatedMp2Config {
+        omega: cfg.mp2.omega.unwrap_or(0.420) * ferric_mp2::attenuated::BOHR_INV_PER_ANG_INV,
+        scaling: 1.0,
+        frozen_core: cfg.mp2.frozen_core.resolve(mol),
+        screen_thresh: None,
+        memory_budget_bytes: budget_bytes,
+    }
 }
 
 /// The `[mp2]` SCS-MP2 configuration of the energy and optimize runs.

@@ -6,7 +6,8 @@
 //! `OptimizeConfig::coord_system`; this module supplies the surfaces:
 //! `total_rimp2_gradient_on` (the analytic RI-MP2 gradient),
 //! `total_u_rimp2_gradient_on` (its unrestricted sibling on a UHF reference),
-//! `total_scs_mp2_gradient_on` and the OO-RI-MP2 zero-response gradient.
+//! `total_scs_mp2_gradient_on`, `total_att_rimp2_gradient_on` (attenuated
+//! RI-MP2) and the OO-RI-MP2 zero-response gradient.
 
 use crate::gradient::{exact_scf_jk, total_rimp2_gradient_on, total_scs_mp2_gradient_on};
 use crate::rimp2::RiMp2Config;
@@ -125,6 +126,27 @@ pub fn optimize_geometry_scs_mp2_on(
 ) -> Result<RiMp2OptimizeResult, FerricError> {
     bfgs_optimize(mol, opt_config, |m, warm| {
         total_scs_mp2_gradient_on(m, obs_basis, aux_basis, scs_config, ext, scf_jk, warm)
+    })
+}
+
+/// Optimize a closed-shell geometry on the attenuated RI-MP2 surface
+/// `E_HF + s · E_c[erfc(ωr)/r]` (`att_config`, Coulomb RHF reference on
+/// `scf_jk`, `"exact"` or `"rijk"`), with the analytic gradient
+/// [`crate::att_rimp2_gradient::total_att_rimp2_gradient_on`]. The optimizer
+/// is the one of [`optimize_geometry_rimp2_on`].
+pub fn optimize_geometry_att_rimp2_on(
+    mol: &Molecule,
+    obs_basis: &BasisSet,
+    aux_basis: &BasisSet,
+    att_config: &crate::attenuated::AttenuatedMp2Config,
+    opt_config: &OptimizeConfig,
+    ext: Option<&ExternalPotential>,
+    scf_jk: &ScfJk,
+) -> Result<RiMp2OptimizeResult, FerricError> {
+    bfgs_optimize(mol, opt_config, |m, warm| {
+        crate::att_rimp2_gradient::total_att_rimp2_gradient_on(
+            m, obs_basis, aux_basis, att_config, ext, scf_jk, warm,
+        )
     })
 }
 

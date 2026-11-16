@@ -4537,6 +4537,7 @@ def run_optimize(
     n_quad: int | None = None,
     quadrature: str | None = None,
     trunc_thresh: float | None = None,
+    omega: float | None = None,
 ) -> OptimizeResult:
     """Geometry optimization on any surface with an analytic or finite-difference gradient.
 
@@ -4571,6 +4572,10 @@ def run_optimize(
     - "scs-mp2": closed-shell SCS-MP2, E_HF + c_os E_os + c_ss E_ss (analytic Z-vector
       gradient of that energy). `c_os` / `c_ss` default to 6/5 and 1/3 as in
       `run_scs_mp2`; the other kwargs as for "rimp2".
+    - "att-rimp2": closed-shell attenuated RI-MP2, E_HF + E_c[erfc(ωr)/r] on a Coulomb
+      RHF (analytic Z-vector gradient of the `run_attenuated_rimp2` energy). `omega` in
+      Å⁻¹ (default 0.420; it raises for every other method); the other kwargs as for
+      "rimp2". The terfc operator has no gradient and is not offered here.
     - "pdep-rpa": closed-shell RHF + RI-dRPA (Coulomb), the CLI's `[rpa]` optimize
       route. Needs `auxbasis`; `frozen_core`, `memory_budget_gb`, `n_quad` (default 16),
       `quadrature` (default "gauss-legendre") as in `run_pdep_rpa`. The reference RHF is
@@ -4621,7 +4626,7 @@ def run_optimize(
 
     Each route calls the library driver the CLI's `task = "optimize"` calls for the same
     `method.kind`. The certificate's capability is "optimize:<kind>" (rhf, ksdft, uhf,
-    rohf, rimp2, scs-mp2, oo-rimp2, pdep-rpa).
+    rohf, rimp2, scs-mp2, att-rimp2, oo-rimp2, pdep-rpa).
     """
     ...
 

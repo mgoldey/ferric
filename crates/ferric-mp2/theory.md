@@ -162,7 +162,8 @@ eigendecomposition).
 $\hat w = \operatorname{erfc}(\omega r)/r$ in both the 3-index integrals and the
 fitting metric, so the fit is variational in the attenuated metric
 (Goldey & Head-Gordon, JPCL 3, 3592 (2012)). `scaling` multiplies the
-correlation energy. `attenuated_ri_mp2_long_range` (`attenuated.rs:219`) uses
+correlation energy; its analytic nuclear gradient is section 9.4.
+`attenuated_ri_mp2_long_range` (`attenuated.rs:219`) uses
 $\operatorname{erf}(\omega r)/r$ and the eigendecomposition metric path.
 
 **Units.** $\omega$ is in Bohr$^{-1}$ in the Rust API. The CLI and Python take
@@ -808,6 +809,83 @@ $\max|g| < 10^{-11}$ at every displacement, this $z=0$ gradient equals the
 finite difference to $8\times10^{-12}$ relative; dropping $v^{\mathrm{s1occ}}$
 breaks it **[gradient O]**. Frozen core is not covered (the core rotations are
 not optimized, so the $z=0$ form is not exact there).
+
+### 9.4 Attenuated (erfc) RI-MP2 gradient
+
+The energy of section 5 is
+
+$$ E = E_{\mathrm{HF}}[1/r] + s\,E_c[\hat w], \qquad \hat w = \frac{\operatorname{erfc}(\omega r)}{r}, \qquad
+E_c = \sum_{ijab} K_{ij}^{ab}\,\tilde T_{ij}^{ab}, \qquad
+K_{ij}^{ab} = \sum_{PQ}(ia|P)_{\hat w}\,[V_{\hat w}^{-1}]_{PQ}\,(Q|jb)_{\hat w}, $$
+
+with $(P|\mu\nu)_{\hat w}$ and $V_{\hat w,PQ} = (P|\hat w|Q)$ both under erfc
+(`ri_mp2_spin_components` builds the metric with the same operator as the
+3-index integrals) and $s$ the `scaling`. The orbitals and orbital energies
+are those of Coulomb RHF. The Lagrangian of section 9 is therefore
+
+$$ \mathcal L = E_{\mathrm{HF}}[1/r] + s\,E_c[\hat w;\,C,\varepsilon] + \sum_{ai} z_{ai}\,F_{ai}[1/r] - \operatorname{Tr}[W(C^{\mathsf T}SC - 1)], $$
+
+and the operator of each term follows from what it differentiates:
+
+| term | differentiates | operator |
+|---|---|---|
+| $t$, $\tilde T$, $P_{ij}$, $P_{ab}$, $x^P_{ia}$ | $E_c$ | erfc |
+| $B^P_{pq}$ and $I$ (Z-vector right-hand side) | $E_c$ in the orbitals | erfc |
+| $(2J-K)[D^{\mathrm{corr}}]$ in the right-hand side | $\varepsilon$ in $E_c$ through $F[1/r]$ | Coulomb |
+| CPHF coupling $(4J-K-K^{\mathsf T})[D^z]$ | the stationarity $F_{ai}[1/r]$ | Coulomb |
+| $v^{\mathrm{s1occ}}$ and $\partial_x B(D^{\mathrm{HF}}, D^{\mathrm{HF}}+2D^{\mathrm{corr}}_{\mathrm{rel}})$ | $E_{\mathrm{HF}}$ and $F[1/r]$ | Coulomb |
+| $4\sum y^P_{ia}(P|ia)'$ and $-2\sum V'_{PQ}(V^{-1}u)^P_{ia}y^Q_{ia}$ | $E_c$ at fixed $C$ | erfc |
+
+The assembly of section 9 is unchanged term by term. In code the
+correlation operator is the `op` argument (intermediates, `b_full` in
+`solve_zvector`, `integral_response_gradient_3c2c`), and the four-centre
+derivative term runs on `bounds.op`, the operator of the reference's
+Schwarz bounds and J/K route (`relaxed_gradient_from_intermediates`). For
+RI-MP2 the two are the same operator. The scaling enters as
+$(c_{\mathrm{OS}}, c_{\mathrm{SS}}) = (s, s)$ of section 9.2. A fitted (RI-JK)
+reference changes only the Coulomb rows, as in 9.1.
+
+**The erfc derivative integrals.** For $s$-type Gaussian charge distributions
+(exponent $p$ at $P$ with prefactor $K_1$, $q$ at $Q$ with $K_2$,
+$\rho = pq/(p+q)$, $R = |P-Q|$, $A = 2\pi^{5/2}K_1K_2/(pq\sqrt{p+q})$),
+
+$$ (\,\cdot\,|\tfrac1r|\,\cdot\,) = A\,F_0(\rho R^2), \qquad
+(\,\cdot\,|\tfrac{\operatorname{erf}(\omega r)}{r}|\,\cdot\,) = A\sqrt{\frac{\omega^2}{\omega^2+\rho}}\,F_0(\rho_\omega R^2), \qquad
+\rho_\omega = \frac{\rho\,\omega^2}{\rho+\omega^2}, $$
+
+and the erfc integral is their difference. Its nuclear derivative is the
+chain rule through $F_0' = -F_1$ on both parts, with $\rho_\omega$ in place of
+$\rho$ in the erf part; the centre derivatives sum to zero. libint2 evaluates
+the general-$l$ form of the same integrals; `Engine::new_3center_deriv` and
+`new_2center_deriv` with `Operator::erfc` are its op-kind-2 engines, checked
+against finite differences of the integrals in
+`crates/ferric-integrals/tests/erfc_deriv_fd.rs`. No erf or erfc nuclear
+attraction enters: $h$ is the Coulomb core Hamiltonian.
+
+**The $\omega \to 0$ limit.** $\operatorname{erfc}(\omega r)/r = 1/r - 2\omega/\sqrt\pi + O(\omega^3r^2)$,
+so the erfc integrals tend to the Coulomb ones and the gradient to the RI-MP2
+gradient. To first order the kernel shifts by a constant:
+$(P|\mu\nu)$ moves by $-(2\omega/\sqrt\pi)\,n_P S_{\mu\nu}$, which is zero in
+$(P|ia)$ because $S_{ia} = 0$, and $V$ by the rank-one $-(2\omega/\sqrt\pi)\,nn^{\mathsf T}$,
+which moves the fitted $K_{ij}^{ab}$ by $(2\omega/\sqrt\pi)\,q_{ia}q_{jb}$ with
+$q_{ia} = n^{\mathsf T}V^{-1}(P|ia)$ the fitted charge of an orthogonal pair.
+
+**Not covered.** The QQR-3 screened energy (`screen_thresh`) is not
+differentiated and is refused. The terfc operator has no derivative engine
+(`operator_kind_to_ffi` rejects it), so `att_operator = "terfc"` is refused
+for `optimize` and `frequencies`. Open-shell attenuated MP2 has no gradient.
+
+**Checks.** `scripts/att_rimp2_gradient_sympy.py` proves the closed forms
+against an independent $t$-quadrature of
+$\operatorname{erfc}(\omega r)/r = (2/\sqrt\pi)\int_\omega^\infty e^{-t^2r^2}dt$,
+their sympy derivatives against Richardson differences, the limit and first
+order in $\omega$, and the assembled Lagrangian on a model with real
+$s$-Gaussian Coulomb and erfc integrals against the re-solved energy
+**[gradient A]**. `crates/ferric-mp2/tests/att_rimp2_gradient_fd.rs` compares
+the code with Richardson differences of `attenuated_ri_mp2` (H2O, CH3F with
+and without a frozen core, acetaldehyde, $\omega = 1.0$ Å$^{-1}$ with $s = 1.2$,
+an RI-JK reference), checks the translational sum, and checks the
+$\omega = 10^{-7}$ Bohr$^{-1}$ limit against `rimp2_gradient_analytical`.
 
 ## 10. Static polarizability
 
