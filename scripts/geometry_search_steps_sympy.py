@@ -4,7 +4,8 @@
 Derivation: crates/ferric-scf/theory.md, "Geometry searches";
 book/src/14-derivatives/08-geometry-search.md. Code:
 crates/ferric-scf/src/optimize.rs (the inverse-Hessian update of
-optimize_coordinates and run_bfgs_internal), crates/ferric-scf/src/saddle.rs
+optimize_coordinates and run_bfgs_internal, the internal
+clip and ratio rule), crates/ferric-scf/src/saddle.rs
 (prfo_step, bofill_update) and crates/ferric-scf/src/irc.rs (walk). Each
 transcription below mirrors the Rust loop line by line.
 
@@ -43,6 +44,18 @@ Checks (each label carries "(claim X)"):
       the Rosenbrock function from a far start, the ratio search never keeps
       an uphill step and reaches the minimum, while the fixed-radius search at
       the same radius keeps uphill steps (numerics).
+  T3  The radius never grows on a rejected step, nor on a step whose
+      predicted change is >= 0 (a grid sweep over every branch), and the Rust
+      source has the same shrink condition.
+  C1  Internal clip (trust_update = "ratio"): one factor alpha keeps
+      dq = alpha p, so g.dq = -alpha g^T H g < 0 (symbols). Separate factors
+      for the distance and angular blocks fix a direction that does not
+      change with the trust scale (symbols) and is uphill for some positive
+      definite H; it stays uphill at every radius (numerics). A model direction
+      that does not descend falls back to -D g, D the positive diagonal seed.
+  C2  The back-transformed step is s = P dq to first order, P = G G^-, and
+      g_q.s = g_q.dq = g_x.dx, the last the Cartesian first-order change
+      (numerics, random rank-deficient B).
   I1  The mass-weighted gradient is dE/dq = (dE/dx)/sqrt(m), so the downhill
       step of length l in q is dx_i = -l g_i /(m_i |g_q|), which differs from
       unweighted steepest descent unless all masses are equal.
@@ -54,6 +67,8 @@ Mutations (each turns the script red; exact one-occurrence substitutions):
   Bofill PSB projector term dropped                          (F2 fails)
   IRC Cartesian step: divide by m, not sqrt(m)               (I1 fails)
   ratio rule thresholds inverted (shrink above 3/4)          (T2 fails)
+  ratio rule: shrink only on r < 1/4 (no rejection guard)    (T3 fails)
+  ratio internal clip: per block, not one factor             (C1 fails)
 Exits nonzero on any failed check; prints "FAIL <label>".
 """
 
@@ -112,13 +127,47 @@ def ratio_trust_update(actual, predicted, step_norm, radius, r_min, r_max):
     if abs(predicted) < TRUST_ENERGY_NOISE and abs(actual) < TRUST_ENERGY_NOISE:
         return accept, radius
     ratio = actual / predicted
-    if ratio < TRUST_SHRINK_RATIO:
+    if not accept or predicted >= 0.0 or ratio < TRUST_SHRINK_RATIO:
         nxt = TRUST_SHRINK_RATIO * step_norm
     elif ratio > TRUST_GROW_RATIO and step_norm >= 0.99 * radius:
         nxt = 2.0 * radius
     else:
         nxt = radius
     return accept, min(max(nxt, r_min), r_max)
+
+
+def clip_per_block(p, angular, dist_trust, ang_trust):
+    """optimize.rs::clip_internal_step (trust_update = "fixed"): the distance
+    and the angular block each scaled onto its own radius."""
+    dn = np.linalg.norm(p[~angular])
+    an = np.linalg.norm(p[angular])
+    out = p.copy()
+    out[~angular] *= dist_trust / dn if dn > dist_trust else 1.0
+    out[angular] *= ang_trust / an if an > ang_trust else 1.0
+    return out
+
+
+def clip_uniform(p, angular, dist_trust, ang_trust):
+    """optimize.rs::clip_internal_step_uniform (trust_update = "ratio"): one
+    factor alpha = min(1, dist_trust/|p_dist|, ang_trust/|p_ang|) for the whole
+    step."""
+    dn = np.linalg.norm(p[~angular])
+    an = np.linalg.norm(p[angular])
+    alpha = 1.0
+    if dn > dist_trust:
+        alpha = min(alpha, dist_trust / dn)
+    if an > ang_trust:
+        alpha = min(alpha, ang_trust / an)
+    return alpha * p
+
+
+def internal_ratio_direction(g, h, seed):
+    """optimize.rs::internal_model_direction: p = -H g, or -D g with D the
+    positive diagonal seed when -H g is not a descent direction."""
+    p = -h @ g
+    if g @ p >= 0.0:
+        return -seed @ g, True
+    return p, False
 
 
 def prfo_step(g_q, evals, follow):
@@ -544,8 +593,130 @@ def trust_checks():
     check("T2 fixed radius keeps uphill steps (claim T2)", up_f > 0, f"{up_f}")
 
 
+def ratio_rule_never_grows_checks():
+    # T3: a rejected step, or one the model does not predict to descend, never
+    # grows the radius. Swept over a grid that includes every branch.
+    worst = 0.0
+    n_rej = n_pos = 0
+    for actual in (-2e-3, -1e-3, -1e-5, -5e-9, 0.0, 5e-9, 2e-8, 1e-5, 1e-3, 2e-3):
+        for predicted in (-2e-3, -1e-3, -1e-5, -5e-9, 5e-9, 1e-5, 1e-3, 2e-3):
+            for radius in (0.01, 0.1, 1.0):
+                for frac in (0.25, 0.99, 1.0):
+                    acc, nxt = ratio_trust_update(
+                        actual, predicted, frac * radius, radius, 0.01, 4.0
+                    )
+                    if not acc or predicted >= 0.0:
+                        n_rej += not acc
+                        n_pos += predicted >= 0.0
+                        worst = max(worst, nxt - radius)
+    check(
+        "T3 the radius never grows on a rejected step or a predicted change >= 0 (claim T3)",
+        worst <= 0.0 and n_rej > 50 and n_pos > 50,
+        f"max growth {worst:.1e}, rejected {n_rej}, predicted>=0 {n_pos}",
+    )
+    # the two cases that used to grow: a rise predicted as a rise (r > 3/4 on
+    # the boundary) and a fall predicted as a rise
+    cases = [
+        ((+2e-3, +1e-3, 0.1, 0.1), (False, 0.025)),
+        ((-1e-3, +1e-3, 0.1, 0.1), (True, 0.025)),
+    ]
+    ok = all(ratio_trust_update(*args, 1e-3, 1.0) == want for args, want in cases)
+    check("T3 predicted >= 0 shrinks, accepted or not (claim T3)", ok)
+    rust = _rust_source("crates/ferric-scf/src/optimize.rs")
+    check(
+        "T3 optimize.rs has the same shrink condition (claim T3)",
+        rust is not None
+        and "if !accept || predicted >= 0.0 || ratio < TRUST_SHRINK_RATIO {" in rust,
+    )
+
+
+def clip_checks():
+    # C1: one factor keeps the model direction, so the first-order change is
+    # -alpha g^T H g < 0 (symbols); separate factors do not.
+    a_d, a_a = sp.symbols("a_d a_a", positive=True)
+    al = sp.symbols("alpha", positive=True)
+    hs = sp.Matrix(4, 4, lambda i, j: sp.Symbol(f"h{min(i, j)}{max(i, j)}"))
+    g = sp.Matrix(sp.symbols("g0:4"))
+    p = -hs * g
+    uniform = (g.T * (al * p))[0]
+    check(
+        "C1 uniform clip: g.dq = -alpha g^T H g (symbols) (claim C1)",
+        sp.simplify(uniform + al * (g.T * hs * g)[0]) == 0,
+    )
+    # separate factors: g.dq = a_d g_d.p_d + a_a g_a.p_a, and with both blocks
+    # on their radii a_d / a_a = (rho_d |p_a|)/(rho_a |p_d|) does not depend on
+    # the trust scale f (rho = f rho0), so the clipped DIRECTION is fixed as f
+    # shrinks.
+    f, rd, ra, pd_, pa_ = sp.symbols("f rho_d rho_a pd pa", positive=True)
+    ratio = (f * rd / pd_) / (f * ra / pa_)
+    check(
+        "C1 per-block clip direction is independent of the trust scale (symbols) (claim C1)",
+        sp.diff(sp.simplify(ratio), f) == 0,
+    )
+    rng = np.random.default_rng(23)
+    n, nd = 8, 4
+    angular = np.array([False] * nd + [True] * (n - nd))
+    n_bad = 0
+    uniform_ok = True
+    stuck = True
+    for _ in range(2000):
+        # inverse Hessian spanning three decades, as stretches against torsions
+        qm, _ = np.linalg.qr(rng.standard_normal((n, n)))
+        h = qm @ np.diag(np.logspace(-1, 2, n)) @ qm.T
+        gv = rng.standard_normal(n)
+        pv = -h @ gv
+        for scale in (1.0, 1e-2):
+            dq_u = clip_uniform(pv, angular, 0.1 * scale, 0.3 * scale)
+            uniform_ok &= gv @ dq_u < 0.0
+        dq_b = clip_per_block(pv, angular, 0.1 * 1e-3, 0.3 * 1e-3)
+        if gv @ dq_b > 0.0:
+            n_bad += 1
+            # shrinking the radius a hundredfold keeps it uphill
+            stuck &= gv @ clip_per_block(pv, angular, 0.1 * 1e-5, 0.3 * 1e-5) > 0.0
+    check(
+        "C1 uniform clip always descends; per-block clip has uphill cases that stay "
+        "uphill at every radius (claim C1)",
+        uniform_ok and n_bad > 20 and stuck,
+        f"per-block uphill in {n_bad} of 2000",
+    )
+    # fallback: -D g with D the positive diagonal seed descends when -H g does not
+    seed = np.diag(rng.uniform(0.5, 20.0, n))
+    h_bad = -np.eye(n)
+    gv = rng.standard_normal(n)
+    pv, fell_back = internal_ratio_direction(gv, h_bad, seed)
+    pv2, fell_back2 = internal_ratio_direction(gv, np.eye(n), seed)
+    check(
+        "C1 non-descent model direction falls back to -D g (claim C1)",
+        fell_back and gv @ pv < 0 and not fell_back2 and np.array_equal(pv2, -gv),
+    )
+
+    # C2: the back-transformed step. To first order the achieved internal step
+    # is s = P dq with P = G G^- (G = B B^T), and g_q = G^- B g_x lies in the
+    # range of G, so g_q.s = g_q.dq. Independent route: the Cartesian
+    # first-order change g_x.dx with dx = B^T G^- dq.
+    worst = 0.0
+    for _ in range(50):
+        nq, nx, rank = 12, 9, 6
+        b = rng.standard_normal((nq, rank)) @ rng.standard_normal((rank, nx))
+        gx = b.T @ rng.standard_normal(nq)  # a gradient of q(x): in range(B^T)
+        gmat = b @ b.T
+        ginv = np.linalg.pinv(gmat, rcond=1e-10)
+        gq = ginv @ b @ gx
+        dq = rng.standard_normal(nq)
+        dx = b.T @ ginv @ dq
+        s_vec = b @ dx
+        worst = max(worst, abs(gq @ s_vec - gq @ dq), abs(gx @ dx - gq @ dq))
+    check(
+        "C2 achieved step: g_q.(P dq) = g_q.dq = g_x.dx to first order (claim C2)",
+        worst < 1e-9,
+        f"max diff {worst:.1e}",
+    )
+
+
 def main():
     trust_checks()
+    ratio_rule_never_grows_checks()
+    clip_checks()
     bfgs_checks()
     bfgs_guard_checks()
     prfo_checks()
