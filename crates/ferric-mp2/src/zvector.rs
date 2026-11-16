@@ -151,6 +151,31 @@ impl ZvectorSolution {
     }
 }
 
+/// The unrelaxed correlation density of a closed-shell RI correlation
+/// energy: the active orbital space and the (scaled) `P_oo`, `P_vv` blocks
+/// ([`Mp2Intermediates::p_oo`], [`Mp2Intermediates::p_vv`]). With the
+/// Lagrangian matrix `Imat` it fixes the Z-vector right-hand side, the
+/// frozen core–active block and the relaxed density. Every one of those is
+/// linear in `(P_oo, P_vv, Imat)`, so a sum of correlation terms on one
+/// reference is the sum of their parts.
+#[derive(Clone, Copy)]
+pub(crate) struct UnrelaxedDensity<'a> {
+    pub(crate) orb: OrbitalSpace,
+    pub(crate) p_oo: &'a Array2<f64>,
+    pub(crate) p_vv: &'a Array2<f64>,
+}
+
+impl Mp2Intermediates {
+    /// The unrelaxed density these intermediates carry.
+    pub(crate) fn unrelaxed(&self) -> UnrelaxedDensity<'_> {
+        UnrelaxedDensity {
+            orb: self.orbital_space(),
+            p_oo: &self.p_oo,
+            p_vv: &self.p_vv,
+        }
+    }
+}
+
 /// [`solve_zvector`] with its phases recorded in `acc` (inert unless
 /// `FERRIC_TIMING` is set; the arithmetic is the same either way), every
 /// J/K built on `jk`, the reference SCF's route.
@@ -166,14 +191,30 @@ pub(crate) fn solve_zvector_timed(
     controls: ZvectorControls,
     acc: &mut PhaseAccumulator,
 ) -> Result<ZvectorSolution, FerricError> {
+    let imat = lagrangian_imat_timed(prep, dfbs, op, rhf, inter, acc)?;
+    solve_zvector_with_imat(
+        jk,
+        rhf,
+        inter.unrelaxed(),
+        imat,
+        budget_bytes,
+        controls,
+        acc,
+    )
+}
+
+/// The RI-MP2 Lagrangian matrix `Imat` (all-MO, `(nmo, nmo)`) of one
+/// correlation term: `b_full` on `op` contracted with the term's `x_ov`.
+pub(crate) fn lagrangian_imat_timed(
+    prep: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    rhf: &ScfResult,
+    inter: &Mp2Intermediates,
+    acc: &mut PhaseAccumulator,
+) -> Result<Array2<f64>, FerricError> {
     let orb = inter.orbital_space();
-    let OrbitalSpace {
-        nocc,
-        nvir,
-        nocc_total,
-        ..
-    } = orb;
-    let eps = rhf.eps_r();
+    let OrbitalSpace { nocc, nvir, .. } = orb;
     let c = rhf.mos_r();
 
     // RI-MP2 Lagrangian matrix Imat (all-MO), from the shared x_ov / b_full.
@@ -199,12 +240,32 @@ pub(crate) fn solve_zvector_timed(
     let x_ov = acc.time("zvec: x_ov", || inter.x_ov());
     let imat = acc.time("zvec: Imat", || build_imat_ri(&x_ov, &b_full, &orb));
     drop(worker_charge);
+    Ok(imat)
+}
+
+/// The Z-vector of the unrelaxed density `dens` and the Lagrangian matrix
+/// `imat` (the sums over the correlation terms of one energy), every J/K on
+/// `jk`. The orbital Hessian is that of the reference (`rhf`, `jk`).
+pub(crate) fn solve_zvector_with_imat(
+    jk: &ResponseJk<'_>,
+    rhf: &ScfResult,
+    dens: UnrelaxedDensity<'_>,
+    imat: Array2<f64>,
+    budget_bytes: usize,
+    controls: ZvectorControls,
+    acc: &mut PhaseAccumulator,
+) -> Result<ZvectorSolution, FerricError> {
+    let OrbitalSpace {
+        nvir, nocc_total, ..
+    } = dens.orb;
+    let eps = rhf.eps_r();
+    let c = rhf.mos_r();
 
     // Unrelaxed correlation density (MO): doo+doo^T on occ-occ, dvv+dvv^T on
     // vir-vir, the frozen core–active block. inter.p_oo == PySCF doo,
     // inter.p_vv == PySCF dvv (see build_mp2_density / rimp2 doc: doo returned
     // negated, matching PySCF).
-    let dm1mo_corr = correlation_density_mo(inter, &imat, eps, None)?;
+    let dm1mo_corr = correlation_density_mo(dens, &imat, eps, None)?;
     // veff(dm1_corr_ao): 2J − K in AO (closed-shell), via build_jk.
     let rhs_tok = acc.begin("zvec: rhs (J/K of dm1_corr)");
     let dm1_corr_ao = {
@@ -330,12 +391,12 @@ pub(crate) fn solve_zvector_timed(
 /// with `z`, the Z-vector on both occupied-virtual blocks (the relaxed
 /// density; without it the unrelaxed one the right-hand side needs).
 pub(crate) fn correlation_density_mo(
-    inter: &Mp2Intermediates,
+    dens: UnrelaxedDensity<'_>,
     imat: &Array2<f64>,
     eps: &[f64],
     z: Option<&Array2<f64>>,
 ) -> Result<Array2<f64>, FerricError> {
-    let orb = inter.orbital_space();
+    let orb = dens.orb;
     let OrbitalSpace {
         nocc,
         nvir,
@@ -347,13 +408,13 @@ pub(crate) fn correlation_density_mo(
     for i in 0..nocc {
         let i_mo = first_occ + i;
         for j in 0..nocc {
-            dm1mo[(i_mo, first_occ + j)] = inter.p_oo[(i, j)] + inter.p_oo[(j, i)];
+            dm1mo[(i_mo, first_occ + j)] = dens.p_oo[(i, j)] + dens.p_oo[(j, i)];
         }
     }
     for a in 0..nvir {
         let a_mo = nocc_total + a;
         for b in 0..nvir {
-            dm1mo[(a_mo, nocc_total + b)] = inter.p_vv[(a, b)] + inter.p_vv[(b, a)];
+            dm1mo[(a_mo, nocc_total + b)] = dens.p_vv[(a, b)] + dens.p_vv[(b, a)];
         }
     }
     let dco = frozen_core_block(imat, eps, &orb)?;
@@ -1549,7 +1610,8 @@ mod tests {
         .unwrap();
         let (j_sum, k_sum) = sol.corr_jk.clone().expect("converged solve carries J/K");
         let c = rhf.mos_r();
-        let dm1mo = correlation_density_mo(&inter, &sol.imat, rhf.eps_r(), Some(&sol.z)).unwrap();
+        let dm1mo = correlation_density_mo(inter.unrelaxed(), &sol.imat, rhf.eps_r(), Some(&sol.z))
+            .unwrap();
         let d_rel = c.dot(&dm1mo).dot(&c.t());
         let n = obs.nbasis();
         let (mut j, mut k) = (Array2::zeros((n, n)), Array2::zeros((n, n)));
@@ -1566,7 +1628,8 @@ mod tests {
         );
         // The z part is not negligible at this bar (else the test could not
         // see a reuse of the unrelaxed density alone).
-        let dm1mo_u = correlation_density_mo(&inter, &sol.imat, rhf.eps_r(), None).unwrap();
+        let dm1mo_u =
+            correlation_density_mo(inter.unrelaxed(), &sol.imat, rhf.eps_r(), None).unwrap();
         let d_u = c.dot(&dm1mo_u).dot(&c.t());
         let (mut ju, mut ku) = (Array2::zeros((n, n)), Array2::zeros((n, n)));
         ferric_scf::rhf::build_jk(&ctx, &obs, &bounds, 1e-12, &d_u, &mut ju, &mut ku).unwrap();

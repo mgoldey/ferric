@@ -39,8 +39,11 @@
 //! A ROHF reference is refused (see [`u_rimp2_gradient_analytical`](crate::u_rimp2_gradient::u_rimp2_gradient_analytical)).
 
 use crate::gradient::{ri_response_gradient_channels, RiResponseChannel};
-use crate::rimp2::RiMp2Config;
-use crate::u_rimp2::{build_u_mp2_density, compute_u_mp2_amplitudes, u_ri_mp2, UMp2Amplitudes};
+use crate::rimp2::{RiMp2Config, SpinScaling};
+use crate::u_rimp2::{
+    build_u_mp2_density, build_u_mp2_density_scaled, compute_u_mp2_amplitudes, u_ri_mp2,
+    UMp2Amplitudes,
+};
 use crate::zvector::ZvectorControls;
 use ferric_core::basis::BasisSet;
 use ferric_core::external_potential::ExternalPotential;
@@ -100,26 +103,38 @@ impl SpinOrbitals<'_> {
     }
 }
 
-/// The correlation energy an unrestricted gradient differentiates,
-/// `scale · E_c[op]`: `(Coulomb, 1)` for U-RI-MP2, `(erfc(ωr)/r, s)` for
-/// attenuated U-RI-MP2 ([`crate::att_rimp2_gradient`]). `op` is the operator
-/// of the `(P|ia)` integrals, of the RI metric and of their derivatives; the
-/// reference's own two-electron terms run on the operator of its Schwarz
-/// bounds.
+/// One correlation term an unrestricted gradient differentiates,
+/// `c_os · E_αβ[op] + c_ss · (E_αα + E_ββ)[op]` (`scaling`): `(Coulomb,
+/// (1, 1))` for U-RI-MP2, `(erfc(ωr)/r, (s, s))` for attenuated U-RI-MP2
+/// and `(terfc, (1, 1))` for terfc U-RI-MP2 ([`crate::att_rimp2_gradient`]);
+/// SCS-MP2(2terfc) is a sum of two terms ([`crate::scs_2terfc_gradient`]).
+/// `op` is the operator of the `(P|ia)` integrals, of the RI metric and of
+/// their derivatives; the reference's own two-electron terms run on the
+/// operator of its Schwarz bounds.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct UCorrelation {
     pub op: Operator,
-    pub scale: f64,
+    pub scaling: SpinScaling,
+}
+
+impl UCorrelation {
+    /// `s · E_c[op]`, both spin components scaled by `s`.
+    pub(crate) fn uniform(op: Operator, s: f64) -> Self {
+        Self {
+            op,
+            scaling: SpinScaling { c_os: s, c_ss: s },
+        }
+    }
 }
 
 /// Refuse a reference the unrestricted RI-MP2 gradient does not
 /// differentiate: anything but a converged, aufbau UHF with at least one
 /// electron of each spin, an X2C reference, a non-Coulomb reference, or a
-/// correlation operator other than Coulomb or erfc.
+/// correlation operator other than Coulomb, erfc or terfc.
 fn check_reference(
     mol: &Molecule,
     uhf: &ScfResult,
-    corr: UCorrelation,
+    corr: &[UCorrelation],
     ref_op: Operator,
     obs: &PreparedBasis,
 ) -> Result<(usize, usize), FerricError> {
@@ -148,22 +163,31 @@ fn check_reference(
             ref_op.kind
         )));
     }
-    if corr.op.is_composite()
-        || !matches!(
-            corr.op.kind,
-            OperatorKind::Coulomb | OperatorKind::ErfcCoulomb
-        )
-    {
-        return Err(FerricError::General(format!(
-            "U-RI-MP2 gradient: the correlation operator must be Coulomb or erfc (got {:?})",
-            corr.op.kind
-        )));
+    if corr.is_empty() {
+        return Err(FerricError::General(
+            "U-RI-MP2 gradient: no correlation term".into(),
+        ));
     }
-    if !corr.scale.is_finite() {
-        return Err(FerricError::General(format!(
-            "U-RI-MP2 gradient: the correlation scaling must be finite (got {})",
-            corr.scale
-        )));
+    for c in corr {
+        if c.op.is_composite()
+            || !matches!(
+                c.op.kind,
+                OperatorKind::Coulomb | OperatorKind::ErfcCoulomb | OperatorKind::Terfc
+            )
+        {
+            return Err(FerricError::General(format!(
+                "U-RI-MP2 gradient: the correlation operator must be Coulomb, erfc or terfc \
+                 (got {:?})",
+                c.op.kind
+            )));
+        }
+        if !(c.scaling.c_os.is_finite() && c.scaling.c_ss.is_finite()) {
+            return Err(FerricError::General(format!(
+                "U-RI-MP2 gradient: the correlation scaling must be finite (got c_os = {}, \
+                 c_ss = {})",
+                c.scaling.c_os, c.scaling.c_ss
+            )));
+        }
     }
     let nelec = mol.nelec() as i64;
     let two_s = mol.multiplicity as i64 - 1;
@@ -226,7 +250,33 @@ fn max_abs(a: &Array2<f64>) -> f64 {
 /// occupied orbital; each writes its own column band, so the result does not
 /// depend on the number of workers.
 pub(crate) fn u_energy_weights(amps: &UMp2Amplitudes) -> (Array2<f64>, Array2<f64>) {
+    u_energy_weights_impl(amps, None)
+}
+
+/// [`u_energy_weights`] of `c_ss · (E_αα + E_ββ) + c_os · E_αβ`: the
+/// same-spin products carry `c_ss`, the opposite-spin ones `c_os`.
+fn u_energy_weights_scaled(
+    amps: &UMp2Amplitudes,
+    c_ss: f64,
+    c_os: f64,
+) -> (Array2<f64>, Array2<f64>) {
+    u_energy_weights_impl(amps, Some((c_ss, c_os)))
+}
+
+fn u_energy_weights_impl(
+    amps: &UMp2Amplitudes,
+    weights: Option<(f64, f64)>,
+) -> (Array2<f64>, Array2<f64>) {
     use rayon::prelude::*;
+    // `x = w_ss · B M_ssᵀ + w_os · B̄ N_osᵀ`; unweighted, the plain sum.
+    let combine = |ss: Array2<f64>, os: Array2<f64>| match weights {
+        None => ss + &os,
+        Some((w_ss, w_os)) => {
+            let mut x = ss * w_ss;
+            x.scaled_add(w_os, &os);
+            x
+        }
+    };
     let (ba, bb) = (&amps.inter_a.b_ov, &amps.inter_b.b_ov);
     let (oa, _, va, _) = amps.t_aa.dim();
     let (ob, _, vb, _) = amps.t_bb.dim();
@@ -256,8 +306,7 @@ pub(crate) fn u_energy_weights(amps: &UMp2Amplitudes) -> (Array2<f64>, Array2<f6
                     .into_owned()
                     .into_shape_with_order((va, ob * vb))
                     .expect("standard layout");
-                let mut x = ba.dot(&m.t());
-                x += &bb.dot(&n.t());
+                let x = combine(ba.dot(&m.t()), bb.dot(&n.t()));
                 slot.assign(&x);
             });
     }
@@ -281,8 +330,7 @@ pub(crate) fn u_energy_weights(amps: &UMp2Amplitudes) -> (Array2<f64>, Array2<f6
                     .into_owned()
                     .into_shape_with_order((vb, oa * va))
                     .expect("standard layout");
-                let mut x = bb.dot(&m.t());
-                x += &ba.dot(&n.t());
+                let x = combine(bb.dot(&m.t()), ba.dot(&n.t()));
                 slot.assign(&x);
             });
     }
@@ -512,18 +560,18 @@ fn u_rimp2_gradient_timed(
             op.kind
         )));
     }
-    let corr = UCorrelation { op, scale: 1.0 };
+    let corr = UCorrelation::uniform(op, 1.0);
     u_correlated_gradient_timed(
         mol, obs, dfbs, corr, bounds, uhf, config, ext, controls, acc,
     )
 }
 
-/// `d(E_UHF + corr.scale · E_c[corr.op])/dR` on the converged Coulomb UHF
-/// `uhf`: the U-RI-MP2 Lagrangian with the operators split as in the
-/// closed-shell attenuated gradient (`theory.md` §15.1). `corr.op` builds
-/// the amplitudes, `b_full` of `Imat^σ` and the 3c/2c RI response;
-/// `bounds.op` (Coulomb) the Z-vector Hessian, the `veff` of the correlation
-/// density and the two-electron derivative.
+/// `d(E_UHF + E_c[corr])/dR` on the converged Coulomb UHF `uhf`: the
+/// U-RI-MP2 Lagrangian with the operators split as in the closed-shell
+/// attenuated gradient (`theory.md` §15.1). `corr.op` builds the amplitudes,
+/// `b_full` of `Imat^σ` and the 3c/2c RI response; `bounds.op` (Coulomb) the
+/// Z-vector Hessian, the `veff` of the correlation density and the
+/// two-electron derivative.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn u_correlated_gradient_timed(
     mol: &Molecule,
@@ -537,86 +585,116 @@ pub(crate) fn u_correlated_gradient_timed(
     controls: ZvectorControls,
     acc: &mut PhaseAccumulator,
 ) -> Result<Array2<f64>, FerricError> {
+    u_terms_gradient_timed(
+        mol,
+        obs,
+        dfbs,
+        &[corr],
+        bounds,
+        uhf,
+        config,
+        ext,
+        controls,
+        acc,
+    )
+}
+
+/// One spin-resolved correlation term's contribution to the Lagrangian:
+/// `Imat^σ`, the unrelaxed `P^σ_oo`, `P^σ_vv` (index `[α, β]`) and the 3c/2c
+/// RI response.
+struct UTermParts {
+    imat: [Array2<f64>; 2],
+    p_oo: [Array2<f64>; 2],
+    p_vv: [Array2<f64>; 2],
+    g_ri: Array2<f64>,
+}
+
+impl UTermParts {
+    fn add(self, o: UTermParts) -> UTermParts {
+        let [ia, ib] = self.imat;
+        let [oa, ob] = self.p_oo;
+        let [va, vb] = self.p_vv;
+        UTermParts {
+            imat: [ia + &o.imat[0], ib + &o.imat[1]],
+            p_oo: [oa + &o.p_oo[0], ob + &o.p_oo[1]],
+            p_vv: [va + &o.p_vv[0], vb + &o.p_vv[1]],
+            g_ri: self.g_ri + &o.g_ri,
+        }
+    }
+}
+
+/// `d(E_UHF + Σ_k E_c[corr_k])/dR`: each term builds its own amplitudes,
+/// `Imat^σ`, unrelaxed densities and RI response on its operator and with
+/// its spin scaling, one term resident at a time; the sums close ONE coupled
+/// Z-vector and one relaxed Lagrangian (theory.md §15.2). Every first
+/// variation of `E_c` is linear in `x^σ` and the unrelaxed densities, so
+/// the sums are exact.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn u_terms_gradient_timed(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    corr: &[UCorrelation],
+    bounds: &SchwarzBounds,
+    uhf: &ScfResult,
+    config: &RiMp2Config,
+    ext: Option<&ExternalPotential>,
+    controls: ZvectorControls,
+    acc: &mut PhaseAccumulator,
+) -> Result<Array2<f64>, FerricError> {
     use ferric_scf::gradient::{
         build_energy_weighted_density_uhf, ecp_gradient, oneelectron_gradient,
         overlap_deriv_contract,
     };
     let (nocc_a, nocc_b) = check_reference(mol, uhf, corr, bounds.op, obs)?;
-    let op = corr.op;
-    let ctx = ferric_core::parallel::ParallelContext::default();
-    let jk = acc.time("J/K route setup", || {
-        ResponseJk::for_scf(&ctx, mol, obs, bounds, uhf)
-    })?;
     let budget_bytes = ferric_core::memory::resolve_budget_bytes(config.memory_budget_bytes);
 
-    let amps = acc.time("amplitudes (b_ov, t_aa/t_bb/t_ab)", || {
-        compute_u_mp2_amplitudes(mol, obs, dfbs, op, uhf, config)
-    })?;
-    let mut dens = acc.time("unrelaxed densities", || build_u_mp2_density(&amps));
+    let mut sum: Option<UTermParts> = None;
+    let mut orbs: Option<[OrbitalSpace; 2]> = None;
+    for &term in corr {
+        let (parts, o) = u_term_parts(mol, obs, dfbs, term, uhf, config, acc)?;
+        debug_assert!(orbs.is_none_or(|p| p == o), "one reference, one partition");
+        orbs = Some(o);
+        sum = Some(match sum {
+            None => parts,
+            Some(acc_parts) => acc_parts.add(parts),
+        });
+    }
+    let (Some(parts), Some(orbs)) = (sum, orbs) else {
+        return Err(FerricError::General(
+            "U-RI-MP2 gradient: no correlation term".into(),
+        ));
+    };
+    let UTermParts {
+        imat,
+        p_oo,
+        p_vv,
+        g_ri,
+    } = parts;
     let spins = [
         SpinOrbitals {
             c: uhf.mos_a(),
             eps: uhf.eps_a(),
-            orb: amps.inter_a.orbital_space(),
+            orb: orbs[0],
         },
         SpinOrbitals {
             c: uhf.mos_b(),
             eps: uhf.eps_b(),
-            orb: amps.inter_b.orbital_space(),
+            orb: orbs[1],
         },
     ];
     debug_assert_eq!(spins[0].orb.nocc_total, nocc_a);
     debug_assert_eq!(spins[1].orb.nocc_total, nocc_b);
     let so = [&spins[0], &spins[1]];
-
-    // The per-spin energy weights, held to the RI response at the end.
-    let naux = amps.inter_a.naux;
-    let ov = |o: &OrbitalSpace| o.nocc * o.nvir;
-    let _x_charge = crate::rimp2::charge_mo_side(
-        "U-RI-MP2 gradient x^α/x^β",
-        naux.saturating_mul(ov(&spins[0].orb) + ov(&spins[1].orb))
-            .saturating_mul(8),
-    )?;
-    let (mut x_a, mut x_b) = acc.time("energy weights x^σ", || u_energy_weights(&amps));
-    // `scale · E_c`: every first variation of E_c is linear in x^σ and the
-    // unrelaxed densities (Imat^σ, the frozen-core block and the RI response
-    // are built from them), so scaling those two scales the whole response.
-    let s = corr.scale;
-    x_a *= s;
-    x_b *= s;
-    for p in [
-        &mut dens.p_oo_a,
-        &mut dens.p_vv_a,
-        &mut dens.p_oo_b,
-        &mut dens.p_vv_b,
-    ] {
-        *p *= s;
-    }
-
-    // Imat^σ = ½ build_imat_ri(x^σ, b^σ_full): the closed-shell builder's
-    // factor −2 is the 2-PDM weight 2·(2t − t̄) of both spins; one spin with
-    // its energy weight carries half of it (theory.md).
-    let imat = {
-        let tok = acc.begin("Imat^σ (b_full per spin)");
-        let ao = crate::oo_rimp2::OoRiMp2AoTensors::build_with_budget(
-            obs,
-            dfbs,
-            op,
-            crate::rimp2::eri3_budget_bytes(config.memory_budget_bytes),
-        )?;
-        let mut out = Vec::with_capacity(2);
-        for (s, x) in [(0usize, &x_a), (1, &x_b)] {
-            let b_full = crate::oo_rimp2::compute_b_full_mo_with(&ao, spins[s].c)?;
-            out.push(0.5 * crate::zvector::build_imat_ri(x, &b_full, &spins[s].orb));
-        }
-        acc.stop(tok);
-        [out.remove(0), out.remove(0)]
-    };
+    let ctx = ferric_core::parallel::ParallelContext::default();
+    let jk = acc.time("J/K route setup", || {
+        ResponseJk::for_scf(&ctx, mol, obs, bounds, uhf)
+    })?;
 
     // Unrelaxed MO correlation densities and their J/K.
     let p_mo = [
-        unrelaxed_density_mo(&dens.p_oo_a, &dens.p_vv_a, &imat[0], &spins[0])?,
-        unrelaxed_density_mo(&dens.p_oo_b, &dens.p_vv_b, &imat[1], &spins[1])?,
+        unrelaxed_density_mo(&p_oo[0], &p_vv[0], &imat[0], &spins[0])?,
+        unrelaxed_density_mo(&p_oo[1], &p_vv[1], &imat[1], &spins[1])?,
     ];
     let rhs_tok = acc.begin("u-zvec: rhs (J/K of P^σ)");
     let p_ao = [spins[0].to_ao(&p_mo[0]), spins[1].to_ao(&p_mo[1])];
@@ -632,7 +710,6 @@ pub(crate) fn u_correlated_gradient_timed(
     });
     acc.stop(rhs_tok);
     let zv = solve_u_zvector(&jk, so, rhs, corr_jk, budget_bytes, controls, acc)?;
-
     let lag_tok = acc.begin("lagr: densities, im1, zeta, vhf_s1occ");
     let mut p_rel_ao = Vec::with_capacity(2);
     let mut w_overlap = Array2::<f64>::zeros((obs.nbasis(), obs.nbasis()));
@@ -697,6 +774,100 @@ pub(crate) fn u_correlated_gradient_timed(
         jk.two_electron_gradient_bilinear_open(mol, bounds.op, (d_a, d_b), (&dpa, &dpb))
     })?;
 
+    grad += &g_ri;
+    Ok(grad)
+}
+
+/// One term's [`UTermParts`] and the per-spin orbital partition: the
+/// amplitudes on `term.op`, the energy weights `x^σ` and unrelaxed densities
+/// with the term's spin scaling, `Imat^σ` and the 3c/2c RI response.
+fn u_term_parts(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    term: UCorrelation,
+    uhf: &ScfResult,
+    config: &RiMp2Config,
+    acc: &mut PhaseAccumulator,
+) -> Result<(UTermParts, [OrbitalSpace; 2]), FerricError> {
+    let op = term.op;
+    let amps = acc.time("amplitudes (b_ov, t_aa/t_bb/t_ab)", || {
+        compute_u_mp2_amplitudes(mol, obs, dfbs, op, uhf, config)
+    })?;
+    let spins = [
+        SpinOrbitals {
+            c: uhf.mos_a(),
+            eps: uhf.eps_a(),
+            orb: amps.inter_a.orbital_space(),
+        },
+        SpinOrbitals {
+            c: uhf.mos_b(),
+            eps: uhf.eps_b(),
+            orb: amps.inter_b.orbital_space(),
+        },
+    ];
+
+    // The per-spin energy weights, held to the RI response at the end.
+    let naux = amps.inter_a.naux;
+    let ov = |o: &OrbitalSpace| o.nocc * o.nvir;
+    let _x_charge = crate::rimp2::charge_mo_side(
+        "U-RI-MP2 gradient x^α/x^β",
+        naux.saturating_mul(ov(&spins[0].orb) + ov(&spins[1].orb))
+            .saturating_mul(8),
+    )?;
+    let SpinScaling { c_os, c_ss } = term.scaling;
+    let (x_a, x_b, dens) = if c_os == c_ss {
+        // `s · E_c`: every first variation of E_c is linear in x^σ and the
+        // unrelaxed densities (Imat^σ, the frozen-core block and the RI
+        // response are built from them), so scaling those two scales the
+        // whole response.
+        let mut dens = acc.time("unrelaxed densities", || build_u_mp2_density(&amps));
+        let (mut x_a, mut x_b) = acc.time("energy weights x^σ", || u_energy_weights(&amps));
+        let s = c_os;
+        x_a *= s;
+        x_b *= s;
+        for p in [
+            &mut dens.p_oo_a,
+            &mut dens.p_vv_a,
+            &mut dens.p_oo_b,
+            &mut dens.p_vv_b,
+        ] {
+            *p *= s;
+        }
+        (x_a, x_b, dens)
+    } else {
+        // `c_ss (E_αα + E_ββ) + c_os E_αβ`: x^σ and the densities split into
+        // same-spin and opposite-spin products with no cross term, each
+        // carrying its own coefficient (theory.md §15.2).
+        let dens = acc.time("unrelaxed densities", || {
+            build_u_mp2_density_scaled(&amps, c_ss, c_os)
+        });
+        let (x_a, x_b) = acc.time("energy weights x^σ", || {
+            u_energy_weights_scaled(&amps, c_ss, c_os)
+        });
+        (x_a, x_b, dens)
+    };
+
+    // Imat^σ = ½ build_imat_ri(x^σ, b^σ_full): the closed-shell builder's
+    // factor −2 is the 2-PDM weight 2·(2t − t̄) of both spins; one spin with
+    // its energy weight carries half of it (theory.md).
+    let imat = {
+        let tok = acc.begin("Imat^σ (b_full per spin)");
+        let ao = crate::oo_rimp2::OoRiMp2AoTensors::build_with_budget(
+            obs,
+            dfbs,
+            op,
+            crate::rimp2::eri3_budget_bytes(config.memory_budget_bytes),
+        )?;
+        let mut out = Vec::with_capacity(2);
+        for (s, x) in [(0usize, &x_a), (1, &x_b)] {
+            let b_full = crate::oo_rimp2::compute_b_full_mo_with(&ao, spins[s].c)?;
+            out.push(0.5 * crate::zvector::build_imat_ri(x, &b_full, &spins[s].orb));
+        }
+        acc.stop(tok);
+        [out.remove(0), out.remove(0)]
+    };
+
     // RI 3c/2c response: one channel per spin, weight 1.
     let f = &amps.inter_a.v_inv_sqrt;
     let y = [&x_a, &x_b].map(|x| with_blas_threads(opt_in_blas_threads(), || f.t().dot(x)));
@@ -716,8 +887,23 @@ pub(crate) fn u_correlated_gradient_timed(
             weight: 1.0,
         },
     ];
-    grad += &ri_response_gradient_channels(mol, obs, dfbs, op, f, &channels, acc)?;
-    Ok(grad)
+    let g_ri = ri_response_gradient_channels(mol, obs, dfbs, op, f, &channels, acc)?;
+    let orbs = [spins[0].orb, spins[1].orb];
+    let crate::u_rimp2::UMp2Density {
+        p_oo_a,
+        p_vv_a,
+        p_oo_b,
+        p_vv_b,
+    } = dens;
+    Ok((
+        UTermParts {
+            imat,
+            p_oo: [p_oo_a, p_oo_b],
+            p_vv: [p_vv_a, p_vv_b],
+            g_ri,
+        },
+        orbs,
+    ))
 }
 
 /// The total U-RI-MP2 energy `E_UHF + E_UMP2` ([`u_ri_mp2`]) and its analytic

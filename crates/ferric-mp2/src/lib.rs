@@ -93,6 +93,8 @@ pub mod rimp2;
 pub mod rimp2_gpu;
 /// Spin-component-scaled MP2 (SCS-MP2 and 2-terfc variants).
 pub mod scs;
+/// Analytic gradient of SCS-MP2(2terfc), closed and open shell.
+pub mod scs_2terfc_gradient;
 /// Spin-orbital integral/amplitude helpers for closed-shell references.
 pub mod spinorbital;
 /// Spin-orbital integral/amplitude helpers for unrestricted references.

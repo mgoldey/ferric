@@ -7,8 +7,10 @@
 //! `total_rimp2_gradient_on` (the analytic RI-MP2 gradient),
 //! `total_u_rimp2_gradient_on` (its unrestricted sibling on a UHF reference),
 //! `total_scs_mp2_gradient_on`, `total_att_rimp2_gradient_on` (attenuated
-//! RI-MP2) and its unrestricted sibling `total_u_att_rimp2_gradient_on`, and
-//! the OO-RI-MP2 zero-response gradient.
+//! RI-MP2) and its unrestricted sibling `total_u_att_rimp2_gradient_on`, the
+//! terfc RI-MP2 surfaces (`total_terfc_rimp2_gradient_on`,
+//! `total_u_terfc_rimp2_gradient_on`), SCS-MP2(2terfc)
+//! (`scs_2terfc_gradient`), and the OO-RI-MP2 zero-response gradient.
 
 use crate::gradient::{exact_scf_jk, total_rimp2_gradient_on, total_scs_mp2_gradient_on};
 use crate::rimp2::RiMp2Config;
@@ -197,6 +199,55 @@ pub fn optimize_geometry_u_att_rimp2_on(
         crate::att_rimp2_gradient::total_u_att_rimp2_gradient_on(
             m, obs_basis, aux_basis, att_config, ext, scf_jk, warm,
         )
+    })
+}
+
+/// Optimize an open-shell geometry on the terfc RI-MP2 surface
+/// `E_UHF + E_c[terfc(r; r0, ω)/r]` (`op`, `ri` as in
+/// [`optimize_geometry_terfc_rimp2_on`]; Coulomb UHF of the molecule's charge
+/// and multiplicity on `scf_jk`), with the analytic gradient
+/// [`crate::att_rimp2_gradient::total_u_terfc_rimp2_gradient_on`].
+#[allow(clippy::too_many_arguments)]
+pub fn optimize_geometry_u_terfc_rimp2_on(
+    mol: &Molecule,
+    obs_basis: &BasisSet,
+    aux_basis: &BasisSet,
+    op: Operator,
+    ri: &RiMp2Config,
+    opt_config: &OptimizeConfig,
+    ext: Option<&ExternalPotential>,
+    scf_jk: &ScfJk,
+) -> Result<RiMp2OptimizeResult, FerricError> {
+    bfgs_optimize(mol, opt_config, |m, warm| {
+        crate::att_rimp2_gradient::total_u_terfc_rimp2_gradient_on(
+            m, obs_basis, aux_basis, op, ri, ext, scf_jk, warm,
+        )
+    })
+}
+
+/// Optimize a geometry on the SCS-MP2(2terfc) surface of `config`
+/// ([`crate::scs::scs_mp2_2terfc`]) with its analytic gradient: a singlet
+/// on a Coulomb RHF
+/// ([`crate::scs_2terfc_gradient::total_scs_mp2_2terfc_gradient_on`]), a
+/// higher multiplicity on a Coulomb UHF
+/// ([`crate::scs_2terfc_gradient::total_u_scs_mp2_2terfc_gradient_on`]),
+/// either on `scf_jk` (`"exact"` or `"rijk"`).
+pub fn optimize_geometry_scs_mp2_2terfc_on(
+    mol: &Molecule,
+    obs_basis: &BasisSet,
+    aux_basis: &BasisSet,
+    config: &crate::scs::ScsMp2TerfcConfig,
+    opt_config: &OptimizeConfig,
+    ext: Option<&ExternalPotential>,
+    scf_jk: &ScfJk,
+) -> Result<RiMp2OptimizeResult, FerricError> {
+    let surface = if mol.multiplicity > 1 {
+        crate::scs_2terfc_gradient::total_u_scs_mp2_2terfc_gradient_on
+    } else {
+        crate::scs_2terfc_gradient::total_scs_mp2_2terfc_gradient_on
+    };
+    bfgs_optimize(mol, opt_config, |m, warm| {
+        surface(m, obs_basis, aux_basis, config, ext, scf_jk, warm)
     })
 }
 
