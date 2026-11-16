@@ -4611,10 +4611,12 @@ def run_optimize(
     - "scs-mp2": closed-shell SCS-MP2, E_HF + c_os E_os + c_ss E_ss (analytic Z-vector
       gradient of that energy). `c_os` / `c_ss` default to 6/5 and 1/3 as in
       `run_scs_mp2`; the other kwargs as for "rimp2".
-    - "att-rimp2": closed-shell attenuated RI-MP2, E_HF + E_c[erfc(ωr)/r] on a Coulomb
-      RHF (analytic Z-vector gradient of the `run_attenuated_rimp2` energy). `omega` in
-      Å⁻¹ (default 0.420; it raises for every other method); the other kwargs as for
-      "rimp2". The terfc operator has no gradient and is not offered here.
+    - "att-rimp2": attenuated RI-MP2, E_HF + E_c[erfc(ωr)/r] on a Coulomb RHF, or on a
+      Coulomb UHF for an open shell (reference="uhf", the default at multiplicity > 1;
+      reference="rohf" raises as for "rimp2"), with the analytic Z-vector gradient of
+      the `run_attenuated_rimp2` energy. `omega` in Å⁻¹ (default 0.420; it raises for
+      every other method); the other kwargs as for "rimp2". The terfc operator has no
+      gradient and is not offered here.
     - "pdep-rpa": closed-shell RHF + RI-dRPA (Coulomb), the CLI's `[rpa]` optimize
       route. Needs `auxbasis`; `frozen_core`, `memory_budget_gb`, `n_quad` (default 16),
       `quadrature` (default "gauss-legendre") as in `run_pdep_rpa`. The reference RHF is

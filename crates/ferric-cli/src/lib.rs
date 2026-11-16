@@ -6957,9 +6957,16 @@ fn run_frequencies_correlated(
                 std::process::exit(1);
             });
             let label = ferric_mp2::optimize::rimp2_gradient_label(&scf_jk);
+            // An open shell runs on a UHF reference with the unrestricted
+            // gradient, as in `run_optimize_att_rimp2`.
+            let gradient_on = if mol.multiplicity > 1 {
+                ferric_mp2::att_rimp2_gradient::total_u_att_rimp2_gradient_on
+            } else {
+                ferric_mp2::att_rimp2_gradient::total_att_rimp2_gradient_on
+            };
             (
                 Box::new(move |m, warm| {
-                    ferric_mp2::att_rimp2_gradient::total_att_rimp2_gradient_on(
+                    gradient_on(
                         m,
                         bs,
                         &aux_bs,
@@ -7551,7 +7558,8 @@ fn task_reference_certificate(
     let spin = match method {
         "uhf" => ferric_scf::Spin::Unrestricted,
         "rohf" => ferric_scf::Spin::RestrictedOpen,
-        // An open-shell correlated optimization (rimp2) runs on a UHF.
+        // An open-shell correlated optimization (rimp2, att-rimp2) runs on a
+        // UHF.
         _ if mol.multiplicity > 1 => ferric_scf::Spin::Unrestricted,
         _ => ferric_scf::Spin::Restricted,
     };
@@ -8163,12 +8171,14 @@ fn run_optimize_scs_mp2(
     );
 }
 
-/// `method.kind = "att-rimp2"`, `task = "optimize"`: closed-shell attenuated
-/// (erfc) RI-MP2 through
-/// [`ferric_mp2::optimize::optimize_geometry_att_rimp2_on`] (the driver the
-/// Python `run_optimize(method="att-rimp2")` calls), with the `[mp2]
-/// auxbasis` / `omega` / `frozen_core` of the energy run and the Coulomb
-/// reference on `[scf] jk` (`"exact"` or `"rijk"`).
+/// `method.kind = "att-rimp2"`, `task = "optimize"`: attenuated (erfc)
+/// RI-MP2 through [`ferric_mp2::optimize::optimize_geometry_att_rimp2_on`]
+/// on an RHF reference, or
+/// [`ferric_mp2::optimize::optimize_geometry_u_att_rimp2_on`] on a UHF
+/// reference for an open-shell molecule (the drivers the Python
+/// `run_optimize(method="att-rimp2")` calls), with the `[mp2] auxbasis` /
+/// `omega` / `frozen_core` of the energy run and the Coulomb reference on
+/// `[scf] jk` (`"exact"` or `"rijk"`).
 #[allow(clippy::too_many_arguments)]
 fn run_optimize_att_rimp2(
     method: &str,
@@ -8195,7 +8205,13 @@ fn run_optimize_att_rimp2(
         eprintln!("error: {e}");
         std::process::exit(1);
     });
-    let opt_result = ferric_mp2::optimize::optimize_geometry_att_rimp2_on(
+    let open_shell = mol.multiplicity > 1;
+    let driver = if open_shell {
+        ferric_mp2::optimize::optimize_geometry_u_att_rimp2_on
+    } else {
+        ferric_mp2::optimize::optimize_geometry_att_rimp2_on
+    };
+    let opt_result = driver(
         mol,
         bs,
         &aux_bs,
@@ -8222,8 +8238,13 @@ fn run_optimize_att_rimp2(
     println!("  converged  = {}", opt_result.converged);
     println!("  steps      = {}", opt_result.steps);
     println!(
-        "  final E    = {:.10} Hartree (RHF + att-MP2)",
-        opt_result.energy
+        "  final E    = {:.10} Hartree ({})",
+        opt_result.energy,
+        if open_shell {
+            "UHF + att-UMP2"
+        } else {
+            "RHF + att-MP2"
+        }
     );
     certify_optimization(
         method,

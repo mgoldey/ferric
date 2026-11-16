@@ -6,6 +6,7 @@ the same `method.kind` (`optimize_geometry{,_uhf,_rohf}_with_scf_correction`,
 `ferric_mp2::optimize::optimize_geometry_u_rimp2_on` (open shell),
 `ferric_mp2::optimize::optimize_geometry_scs_mp2_on`,
 `ferric_mp2::optimize::optimize_geometry_att_rimp2_on`,
+`ferric_mp2::optimize::optimize_geometry_u_att_rimp2_on` (open shell),
 `ferric_mp2::optimize::optimize_geometry_oo_rimp2`), so on the same molecule
 and settings the two surfaces run the same arithmetic. The CLI prints the
 final energy to 10 decimals and the geometry to 8 (Bohr); the bar here is
@@ -208,6 +209,14 @@ ROUTES = [
         id="u-rimp2-exact-nh2",
     ),
     pytest.param(
+        NH2,
+        2,
+        dict(method="att-rimp2", auxbasis="cc-pvdz-ri", omega=1.0),
+        '[method]\nkind = "att-rimp2"\ntask = "optimize"\n\n'
+        '[mp2]\nauxbasis = "cc-pvdz-ri"\nomega = 1.0\n',
+        id="u-att-rimp2-omega-nh2",
+    ),
+    pytest.param(
         WATER,
         1,
         dict(method="rimp2", auxbasis="cc-pvdz-ri", scf_jk="rijk"),
@@ -364,7 +373,11 @@ AUX = {"auxbasis": "cc-pvdz-ri"}
         (WATER_MOL, dict(c_ss=0.0), "c_ss is not read"),
         (NH2_MOL, dict(method="scs-mp2", **AUX), "closed-shell only"),
         (WATER_MOL, dict(method="rimp2", omega=0.4, **AUX), "omega is not read"),
-        (NH2_MOL, dict(method="att-rimp2", **AUX), "closed-shell only"),
+        (
+            NH2_MOL,
+            dict(method="att-rimp2", reference="rohf", **AUX),
+            "needs a UHF reference",
+        ),
         (WATER_MOL, dict(method="att-rimp2", omega=-0.1, **AUX), "omega must be"),
         (
             WATER_MOL,

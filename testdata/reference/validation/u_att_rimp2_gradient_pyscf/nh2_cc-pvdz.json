@@ -1,0 +1,248 @@
+{
+  "system": "nh2",
+  "basis": "cc-pvdz",
+  "aux": "cc-pvdz-ri",
+  "charge": 0,
+  "multiplicity": 2,
+  "like_for_like": {
+    "nao": 24,
+    "replica_self_overlap_max_dev": 2.220446049250313e-16,
+    "pyscf_diag_max_dev": 4.440892098500626e-16,
+    "diag_checked": 24,
+    "diag_skipped_cartesian": 0
+  },
+  "omega_bohr_inv": 0.22225442858640002,
+  "frozen_core": 0,
+  "scaling": 1.0,
+  "h_bohr": 0.002,
+  "uhf": {
+    "energy": -55.56709059690499,
+    "converged": true,
+    "s_squared": 0.7578257869790272,
+    "multiplicity_from_s2": 2.0078105358614167,
+    "nelec_alpha": 5,
+    "nelec_beta": 4,
+    "stability": {
+      "internal_stable": true,
+      "kind": "PySCF UHF internal (real)",
+      "rounds": 0,
+      "selected_guess": "minao",
+      "lambda_min": 0.08147435718745762
+    },
+    "guess_scan": [
+      {
+        "guess": "minao",
+        "energy": -55.56709059690499,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0,
+        "energy_trajectory": [
+          -55.56709059690499
+        ]
+      },
+      {
+        "guess": "atom",
+        "energy": -55.56709059690499,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0,
+        "energy_trajectory": [
+          -55.56709059690499
+        ]
+      },
+      {
+        "guess": "huckel",
+        "energy": -55.5670905969049,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0,
+        "energy_trajectory": [
+          -55.5670905969049
+        ]
+      }
+    ],
+    "multiple_stable_minima": false,
+    "homo_alpha": -0.49599486565862794,
+    "lumo_alpha": 0.18270099850731158,
+    "homo_beta": -0.45241331174943067,
+    "lumo_beta": 0.15174329672127707,
+    "somo_alpha": [
+      -0.49599486565862794
+    ]
+  },
+  "energy_total": -55.70705642604124,
+  "s2": 0.7578257869778025,
+  "fd": [
+    {
+      "atom": 0,
+      "coord": 1,
+      "energies": {
+        "-2": -55.70705187728558,
+        "-1": -55.70705528885425,
+        "1": -55.707055288853866,
+        "2": -55.70705187728566
+      },
+      "s2": {
+        "-2": 0.7578260564937178,
+        "-1": 0.7578258543526051,
+        "1": 0.7578258543526353,
+        "2": 0.7578260564937134
+      },
+      "d_h": 9.592326932761353e-11,
+      "d_2h": -9.769962616701378e-12,
+      "richardson": 1.3115434664238515e-10
+    },
+    {
+      "atom": 0,
+      "coord": 2,
+      "energies": {
+        "-2": -55.70701260924752,
+        "-1": -55.7070353075591,
+        "1": -55.707075967227084,
+        "2": -55.707093933670116
+      },
+      "s2": {
+        "-2": 0.7577927078936382,
+        "-1": 0.7578091891023684,
+        "1": 0.7578425025260507,
+        "2": 0.7578593367712068
+      },
+      "d_h": -0.010164916995236695,
+      "d_2h": -0.01016555282440379,
+      "richardson": -0.010164705052180997
+    },
+    {
+      "atom": 1,
+      "coord": 1,
+      "energies": {
+        "-2": -55.70704321438885,
+        "-1": -55.707050446610424,
+        "1": -55.707061157403174,
+        "2": -55.707064645409496
+      },
+      "s2": {
+        "-2": 0.7578048081169602,
+        "-1": 0.7578152624701895,
+        "1": 0.7578363822605487,
+        "2": 0.7578470489539568
+      },
+      "d_h": -0.0026776981876253103,
+      "d_2h": -0.0026788775810970833,
+      "richardson": -0.0026773050564680525
+    },
+    {
+      "atom": 1,
+      "coord": 2,
+      "energies": {
+        "-2": -55.707075255469455,
+        "-1": -55.70706621556813,
+        "1": -55.70704588579406,
+        "2": -55.707034593739365
+      },
+      "s2": {
+        "-2": 0.7578425501587676,
+        "-1": 0.7578341418398198,
+        "1": 0.7578174851666803,
+        "2": 0.7578092360122088
+      },
+      "d_h": 0.005082443518489299,
+      "d_2h": 0.005082716261206599,
+      "richardson": 0.005082352604250199
+    },
+    {
+      "atom": 2,
+      "coord": 1,
+      "energies": {
+        "-2": -55.70706464540944,
+        "-1": -55.707061157403,
+        "1": -55.707050446610495,
+        "2": -55.70704321438908
+      },
+      "s2": {
+        "-2": 0.7578470489539555,
+        "-1": 0.7578363822605594,
+        "1": 0.7578152624701868,
+        "2": 0.7578048081169442
+      },
+      "d_h": 0.002677698125452821,
+      "d_2h": 0.002678877544681768,
+      "richardson": 0.0026773049857098385
+    },
+    {
+      "atom": 2,
+      "coord": 2,
+      "energies": {
+        "-2": -55.707075255469526,
+        "-1": -55.70706621556818,
+        "1": -55.707045885794,
+        "2": -55.70703459373917
+      },
+      "s2": {
+        "-2": 0.7578425501587631,
+        "-1": 0.7578341418398229,
+        "1": 0.7578174851666848,
+        "2": 0.7578092360122266
+      },
+      "d_h": 0.005082443545134652,
+      "d_2h": 0.0050827162940692006,
+      "richardson": 0.005082352628823135
+    }
+  ],
+  "generator_seconds": 229.28946923700278,
+  "provenance": {
+    "code": "PySCF (scf.UHF exact integrals; df.DF under Mole.with_range_coulomb(-w); mp.dfump2.DFUMP2), central differences of the total energy",
+    "version": "2.13.1",
+    "keywords": {
+      "uhf": "scf.UHF, conv_tol 1e-13, conv_tol_grad 1e-11; reference stability-followed, displaced points from its density",
+      "operator": "erfc(w r)/r on the fit's 3-centre integrals and metric",
+      "fd": "h = 0.002 Bohr and 2h, Richardson (4 D(h) - D(2h)) / 3"
+    },
+    "grid": "none",
+    "aux_basis": "cc-pvdz-ri",
+    "frozen_core": 0,
+    "scf_convergence": {
+      "conv_tol": 1e-13,
+      "conv_tol_grad": 1e-11
+    },
+    "stability": {
+      "uhf": {
+        "internal_stable": true,
+        "kind": "PySCF UHF internal (real)",
+        "rounds": 0,
+        "selected_guess": "minao",
+        "lambda_min": 0.08147435718745762
+      }
+    },
+    "basis": "cc-pvdz",
+    "basis_json": "crates/ferric-core/src/basis/bundled/cc-pvdz.json",
+    "basis_sha256": "4c2f450a81a8545e4df9e24a313111642cf70d5f7213fc8e879ef9dacab5da2f",
+    "ecp_json": "none",
+    "ecp_sha256": "none",
+    "geometry_xyz": "testdata/molecules/validation/nh2.xyz",
+    "geometry_xyz_sha256": "a93f4ddd65a01379beb9335bab6cbeb2165454f5784960ee705f49ec9c0d28e5",
+    "geometry_bohr": [
+      [
+        "N",
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        "H",
+        0.0,
+        1.5186047006878538,
+        -1.1993217336336612
+      ],
+      [
+        "H",
+        0.0,
+        -1.5186047006878538,
+        -1.1993217336336612
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_u_att_rimp2_gradient_pyscf.py",
+    "git_head": "a975d23a4cc60679d4c4cefedd7237a8350f480d",
+    "generated_utc": "2026-11-16T12:59:40+00:00"
+  }
+}

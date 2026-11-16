@@ -297,12 +297,12 @@ fn an_scf_hessian_key_on_a_correlated_kind_is_refused() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("SCF Hessian"));
 }
 
-/// Open-shell RI-MP2 (OH doublet, UHF reference, unrestricted gradient):
-/// the frequency Hessian's zz element against a five-point stencil of the
-/// U-RI-MP2 energy, same bar as above (the bond is stiffer, ~0.5 Ha/Bohr^2,
-/// and the stencil error scales with the same derivatives).
-#[test]
-fn open_shell_rimp2_frequencies_match_an_energy_stencil() {
+/// Open-shell RI-MP2 and attenuated RI-MP2 (OH doublet, UHF reference,
+/// unrestricted gradient): the frequency Hessian's zz element against a
+/// five-point stencil of the same kind's energy, same bar as above (the bond
+/// is stiffer, ~0.5 Ha/Bohr^2, and the stencil error scales with the same
+/// derivatives).
+fn check_open_shell_kind(kind: &str) {
     const R0: f64 = 0.97;
     let doublet = |toml: String| toml.replacen("[basis]", "multiplicity = 2\n[basis]", 1);
     let oh_xyz = |tag: &str, r: f64| {
@@ -311,9 +311,9 @@ fn open_shell_rimp2_frequencies_match_an_energy_stencil() {
         path
     };
     let energy_at = |k: i32| {
-        let tag = format!("oh_e_{k}");
+        let tag = format!("oh_{kind}_e_{k}");
         let xyz = oh_xyz(&tag, R0 + f64::from(k) * H_ANG);
-        let (out, records) = run_cli(&tag, &doublet(toml_for(&xyz, "rimp2", "energy", "")));
+        let (out, records) = run_cli(&tag, &doublet(toml_for(&xyz, kind, "energy", "")));
         assert!(
             out.status.success(),
             "{tag}: {}",
@@ -322,7 +322,7 @@ fn open_shell_rimp2_frequencies_match_an_energy_stencil() {
         records
             .iter()
             .rev()
-            .find(|r| r["record"] == "result" && r["kind"] == "rimp2")
+            .find(|r| r["record"] == "result" && r["kind"] == kind)
             .unwrap_or_else(|| panic!("{tag}: no result record"))["total"]
             .as_f64()
             .unwrap()
@@ -337,11 +337,9 @@ fn open_shell_rimp2_frequencies_match_an_energy_stencil() {
     );
     let k_fd = (-p2 + 16.0 * p1 - 30.0 * p0 + 16.0 * m1 - m2) / (12.0 * h * h);
 
-    let xyz = oh_xyz("oh_freq", R0);
-    let (out, records) = run_cli(
-        "oh_freq",
-        &doublet(toml_for(&xyz, "rimp2", "frequencies", "")),
-    );
+    let tag = format!("oh_{kind}_freq");
+    let xyz = oh_xyz(&tag, R0);
+    let (out, records) = run_cli(&tag, &doublet(toml_for(&xyz, kind, "frequencies", "")));
     assert!(
         out.status.success(),
         "{}",
@@ -352,8 +350,22 @@ fn open_shell_rimp2_frequencies_match_an_energy_stencil() {
         .find(|r| r["record"] == "frequencies")
         .unwrap();
     let k_freq = rec["cartesian_hessian"][14].as_f64().unwrap();
+    eprintln!(
+        "OH {kind}: k_freq {k_freq:.8} k_fd {k_fd:.8} diff {:.3e}",
+        k_freq - k_fd
+    );
     assert!(
         (k_freq - k_fd).abs() < BAR,
-        "OH rimp2: k from the gradient Hessian {k_freq:.8} vs energy stencil {k_fd:.8}"
+        "OH {kind}: k from the gradient Hessian {k_freq:.8} vs energy stencil {k_fd:.8}"
     );
+}
+
+#[test]
+fn open_shell_rimp2_frequencies_match_an_energy_stencil() {
+    check_open_shell_kind("rimp2");
+}
+
+#[test]
+fn open_shell_att_rimp2_frequencies_match_an_energy_stencil() {
+    check_open_shell_kind("att-rimp2");
 }

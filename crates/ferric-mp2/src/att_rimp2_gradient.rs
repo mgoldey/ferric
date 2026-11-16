@@ -22,10 +22,21 @@
 //! ([`SpinScaling`](crate::rimp2::SpinScaling)). The QQR-3 screened energy (`screen_thresh`) is not
 //! differentiated and is refused, as is the terfc operator (it has no
 //! derivative engine).
+//!
+//! On a UHF reference ([`u_att_rimp2_gradient_analytical`](crate::att_rimp2_gradient::u_att_rimp2_gradient_analytical),
+//! [`total_u_att_rimp2_gradient_on`](crate::att_rimp2_gradient::total_u_att_rimp2_gradient_on)) the energy is
+//! `E_UHF[1/r] + s · (E_αα + E_ββ + E_αβ)[erfc]` (theory.md §5.1) and the
+//! gradient is the unrestricted RI-MP2 gradient of
+//! [`crate::u_rimp2_gradient`] with the same split (theory.md §15.1): erfc in
+//! the per-spin amplitudes, `x^σ`, `Imat^σ` and the 3c/2c response; Coulomb
+//! in the coupled UHF Z-vector, the `veff^σ` of the correlation densities and
+//! the two-electron derivative. A ROHF reference is refused
+//! ([`crate::u_rimp2_gradient::ROHF_REFUSAL`]).
 
 use crate::attenuated::AttenuatedMp2Config;
 use crate::gradient::{rimp2_gradient_analytical_timed, total_mp2_gradient_scaled_on};
 use crate::rimp2::{RiMp2Config, SpinScaling};
+use crate::u_rimp2_gradient::{solve_reference, u_correlated_gradient_timed, UCorrelation};
 use crate::zvector::ZvectorControls;
 use ferric_core::basis::BasisSet;
 use ferric_core::external_potential::ExternalPotential;
@@ -34,6 +45,7 @@ use ferric_core::timing::PhaseAccumulator;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::{Operator, OperatorKind};
+use ferric_scf::rhf::RhfConfig;
 use ferric_scf::scf_jk::ScfJk;
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::warm_start::ScfWarmStart;
@@ -150,4 +162,411 @@ pub fn total_att_rimp2_gradient_on(
         scf_jk,
         warm,
     )
+}
+
+/// `dE/dR`, `(natoms, 3)`, of `uhf.energy + s · E_c[erfc]` (the total
+/// [`crate::attenuated::attenuated_ri_mp2`] reports for `config` on a UHF
+/// reference: `E_c = E_αα + E_ββ + E_αβ`) on the converged, aufbau Coulomb
+/// UHF `uhf`, whose J/K route `bounds` describes (four-centre, or the RI-JK
+/// route `uhf` carries). `ext` as in
+/// [`crate::u_rimp2_gradient::u_rimp2_gradient_analytical`].
+///
+/// # Errors
+///
+/// The errors of [`crate::u_rimp2_gradient::u_rimp2_gradient_analytical`]
+/// (a ROHF, restricted, unconverged, non-aufbau or X2C reference; no beta
+/// electron; an unconverged Z-vector), a non-Coulomb reference, and the
+/// `config` refusals of [`att_rimp2_gradient_analytical`].
+pub fn u_att_rimp2_gradient_analytical(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    bounds: &SchwarzBounds,
+    uhf: &ScfResult,
+    config: &AttenuatedMp2Config,
+    ext: Option<&ExternalPotential>,
+) -> Result<Array2<f64>, FerricError> {
+    require_coulomb_reference(bounds.op)?;
+    let (op, ri, scaling) = att_parts(config)?;
+    let mut acc = PhaseAccumulator::new().report_on_drop("U-att-RI-MP2 gradient");
+    u_correlated_gradient_timed(
+        mol,
+        obs,
+        dfbs,
+        UCorrelation {
+            op,
+            scale: scaling.c_os,
+        },
+        bounds,
+        uhf,
+        &ri,
+        ext,
+        ZvectorControls::DEFAULT,
+        &mut acc,
+    )
+}
+
+/// The total open-shell attenuated RI-MP2 energy (`E_UHF + s · E_c[erfc]`,
+/// the Coulomb UHF of the molecule's charge and multiplicity solved here at
+/// `density_conv = 1e-9`) and its analytic gradient at one geometry, the
+/// reference on `scf_jk` (`"exact"` or `"rijk"`, as in
+/// [`crate::u_rimp2_gradient::total_u_rimp2_gradient_on`]) and
+/// warm-started through `warm`.
+pub fn total_u_att_rimp2_gradient_on(
+    mol: &Molecule,
+    obs_basis: &BasisSet,
+    aux_basis: &BasisSet,
+    config: &AttenuatedMp2Config,
+    ext: Option<&ExternalPotential>,
+    scf_jk: &ScfJk,
+    warm: &mut ScfWarmStart,
+) -> Result<(f64, Array2<f64>), FerricError> {
+    let scf_base = RhfConfig {
+        density_conv: 1e-9,
+        external_potential: ext.cloned(),
+        ..Default::default()
+    };
+    total_u_att_rimp2_gradient_with(
+        mol, obs_basis, aux_basis, config, ext, scf_jk, warm, scf_base,
+    )
+}
+
+/// [`total_u_att_rimp2_gradient_on`](crate::att_rimp2_gradient::total_u_att_rimp2_gradient_on) with the UHF solved on `scf_base`
+/// (before the geometry-task and `scf_jk` adjustments): the
+/// finite-difference tests converge every displaced reference far below the
+/// default.
+#[allow(clippy::too_many_arguments)]
+#[doc(hidden)]
+pub fn total_u_att_rimp2_gradient_with(
+    mol: &Molecule,
+    obs_basis: &BasisSet,
+    aux_basis: &BasisSet,
+    config: &AttenuatedMp2Config,
+    ext: Option<&ExternalPotential>,
+    scf_jk: &ScfJk,
+    warm: &mut ScfWarmStart,
+    scf_base: RhfConfig,
+) -> Result<(f64, Array2<f64>), FerricError> {
+    let (op, ri, scaling) = att_parts(config)?;
+    let (uhf, obs, dfbs, bounds) = solve_reference(
+        mol,
+        obs_basis,
+        aux_basis,
+        Operator::coulomb(),
+        &ri,
+        scf_jk,
+        warm,
+        scf_base,
+    )?;
+    let mut acc = PhaseAccumulator::new().report_on_drop("U-att-RI-MP2 energy + gradient");
+    let energy = acc.time("attenuated U-RI-MP2 energy", || {
+        crate::attenuated::attenuated_ri_mp2(mol, &obs, &dfbs, &uhf, config).map(|r| r.total_energy)
+    })?;
+    let grad = u_correlated_gradient_timed(
+        mol,
+        &obs,
+        &dfbs,
+        UCorrelation {
+            op,
+            scale: scaling.c_os,
+        },
+        &bounds,
+        &uhf,
+        &ri,
+        ext,
+        ZvectorControls::DEFAULT,
+        &mut acc,
+    )?;
+    Ok((energy, grad))
+}
+
+/// The total open-shell attenuated RI-MP2 energy on the reference of
+/// [`total_u_att_rimp2_gradient_with`] (same SCF settings and route), without
+/// the gradient: the finite-difference reference of the tests. Returns the
+/// UHF too, so a test can check its convergence.
+#[doc(hidden)]
+pub fn total_u_att_rimp2_energy_with(
+    mol: &Molecule,
+    obs_basis: &BasisSet,
+    aux_basis: &BasisSet,
+    config: &AttenuatedMp2Config,
+    scf_jk: &ScfJk,
+    scf_base: RhfConfig,
+) -> Result<(f64, ScfResult), FerricError> {
+    let (_, ri, _) = att_parts(config)?;
+    let (uhf, obs, dfbs, _) = solve_reference(
+        mol,
+        obs_basis,
+        aux_basis,
+        Operator::coulomb(),
+        &ri,
+        scf_jk,
+        &mut ScfWarmStart::new(false),
+        scf_base,
+    )?;
+    let e = crate::attenuated::attenuated_ri_mp2(mol, &obs, &dfbs, &uhf, config)?.total_energy;
+    Ok((e, uhf))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::gradient::rimp2_gradient_analytical_timed;
+    use ferric_core::basis;
+    use ferric_scf::rhf::solve_rhf;
+    use ferric_scf::scf_jk::ScfJkMode;
+    use ferric_scf::Spin;
+
+    const WATER: &str = "3\nwater, off C2v\nO 0.02 -0.01 0.117790\nH 0.0 0.785453 -0.451161\nH 0.03 -0.735453 -0.491161\n";
+    const OH: &str = "2\nOH\nO 0 0 0\nH 0 0 0.97\n";
+
+    /// Both anchors compare two solves, so each Z-vector must sit far below
+    /// the comparison bar.
+    const TIGHT: ZvectorControls = ZvectorControls {
+        max_iter: 200,
+        tol: 1e-12,
+    };
+
+    /// The bar of both anchors, derived in `u_rimp2_gradient.rs`
+    /// (`closed_limit`): two Z-vector residuals `< 1e-12` move the gradient
+    /// by `≲ 10 · 2 · 1e-12 = 2e-11`, operation-order rounding is `≈ 1e-14`.
+    /// For the ω → 0 anchor the operator itself differs by
+    /// `erfc(ωr)/r − 1/r = −2ω/√π + O(ω³r²)`: at `ω = 1e-7` Bohr⁻¹ the shift
+    /// of the fitted `(ia|jb)` is `(2ω/√π) q_ia q_jb ≲ 1.1e-7 · 1e-4`, and of
+    /// the gradient the same order, `≲ 1e-11` (theory.md §9.4).
+    const ANCHOR_BAR: f64 = 1e-10;
+
+    fn att(omega_bohr_inv: f64, scaling: f64, frozen_core: usize) -> AttenuatedMp2Config {
+        AttenuatedMp2Config {
+            omega: omega_bohr_inv,
+            scaling,
+            frozen_core,
+            screen_thresh: None,
+            memory_budget_bytes: None,
+        }
+    }
+
+    fn max_abs_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
+        (a - b).iter().fold(0.0f64, |m, v| m.max(v.abs()))
+    }
+
+    /// The RHF `rhf` written as the UHF with identical α and β orbitals,
+    /// densities and Fock matrices: a UHF stationary point.
+    fn lift_to_unrestricted(rhf: &ScfResult) -> ScfResult {
+        let mut u = rhf.clone();
+        u.spin = Spin::Unrestricted;
+        u.density_beta = Some(rhf.density_alpha.clone());
+        u.mos_beta = Some(rhf.mos_alpha.clone());
+        u.eps_beta = Some(rhf.eps_alpha.clone());
+        u.fock_beta = Some(rhf.fock_alpha.clone());
+        u
+    }
+
+    fn scf_cfg(fit: bool) -> RhfConfig {
+        let mut cfg = RhfConfig {
+            density_conv: 1e-11,
+            max_iter: 300,
+            ..Default::default()
+        }
+        .for_geometry_task();
+        if fit {
+            ScfJk {
+                mode: ScfJkMode::RiJk,
+                aux: Some("def2-universal-jkfit".to_string()),
+                k_builder: None,
+            }
+            .apply(&mut cfg);
+        }
+        cfg
+    }
+
+    /// EXACTNESS ANCHOR (closed-shell limit). A closed-shell Coulomb RHF
+    /// written as a UHF (α ≡ β) runs the open-shell attenuated gradient; it
+    /// must equal the closed-shell attenuated gradient
+    /// ([`rimp2_gradient_analytical_timed`] with erfc and `(s, s)`) on the
+    /// same orbitals. ω = 1.0 Å⁻¹ and `s = 1.2` so the scaling and the
+    /// operator are both away from their trivial values.
+    fn closed_limit(fit: bool, frozen_core: usize) -> f64 {
+        let mol = Molecule::parse_xyz(WATER, 0, 1).unwrap();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("6-31g").unwrap()).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+        let coul = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(coul, &obs).unwrap();
+        let ctx = ferric_core::parallel::ParallelContext::default();
+        let rhf = solve_rhf(&ctx, &mol, &obs, coul, &bounds, &scf_cfg(fit)).unwrap();
+        assert!(rhf.converged);
+        assert_eq!(rhf.df_jk.is_some(), fit, "route not recorded");
+        let uhf = lift_to_unrestricted(&rhf);
+        let config = att(
+            1.0 * crate::attenuated::BOHR_INV_PER_ANG_INV,
+            1.2,
+            frozen_core,
+        );
+        let (op, ri, scaling) = att_parts(&config).unwrap();
+        let g_r = rimp2_gradient_analytical_timed(
+            &mol,
+            &obs,
+            &dfbs,
+            op,
+            &bounds,
+            &rhf,
+            &ri,
+            scaling,
+            None,
+            TIGHT,
+            &mut PhaseAccumulator::new(),
+        )
+        .unwrap();
+        let g_u = u_correlated_gradient_timed(
+            &mol,
+            &obs,
+            &dfbs,
+            UCorrelation {
+                op,
+                scale: scaling.c_os,
+            },
+            &bounds,
+            &uhf,
+            &ri,
+            None,
+            TIGHT,
+            &mut PhaseAccumulator::new(),
+        )
+        .unwrap();
+        let d = max_abs_diff(&g_r, &g_u);
+        eprintln!(
+            "att closed limit fit={fit} fc={frozen_core}: max|g_U - g_R| = {d:.3e}, max|g| = {:.3e}",
+            g_r.iter().fold(0.0f64, |m, v| m.max(v.abs()))
+        );
+        d
+    }
+
+    #[test]
+    fn open_shell_att_gradient_matches_closed_in_the_trivial_limit() {
+        let d = closed_limit(false, 0);
+        assert!(d < ANCHOR_BAR, "max|g_U - g_R| = {d:.3e}");
+    }
+
+    #[test]
+    fn open_shell_att_gradient_matches_closed_in_the_trivial_limit_frozen_core() {
+        let d = closed_limit(false, 1);
+        assert!(d < ANCHOR_BAR, "max|g_U - g_R| = {d:.3e}");
+    }
+
+    #[test]
+    fn open_shell_att_gradient_matches_closed_in_the_trivial_limit_rijk() {
+        let d = closed_limit(true, 0);
+        assert!(d < ANCHOR_BAR, "max|g_U - g_R| = {d:.3e}");
+    }
+
+    /// EXACTNESS ANCHOR (operator limit). On a genuine open shell (the OH
+    /// doublet, UHF), the attenuated gradient at ω = 1e-7 Bohr⁻¹ equals the
+    /// U-RI-MP2 (Coulomb) gradient on the same UHF. Non-vacuity: at the
+    /// production ω = 0.420 Å⁻¹ the two differ by more than 1e-5 Ha/Bohr.
+    #[test]
+    fn open_shell_att_gradient_is_u_rimp2_as_omega_goes_to_zero() {
+        let mol = Molecule::parse_xyz(OH, 0, 2).unwrap();
+        let obs_bs = basis::bundled("6-31g").unwrap();
+        let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
+        let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
+        let coul = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(coul, &obs).unwrap();
+        let ctx = ferric_core::parallel::ParallelContext::default();
+        let uhf = ferric_scf::uhf::solve_uhf(&ctx, &mol, &obs, &bounds, &scf_cfg(false)).unwrap();
+        assert!(uhf.converged && uhf.spin == Spin::Unrestricted);
+        let run = |omega: f64| {
+            let (op, ri, scaling) = att_parts(&att(omega, 1.0, 0)).unwrap();
+            u_correlated_gradient_timed(
+                &mol,
+                &obs,
+                &dfbs,
+                UCorrelation {
+                    op,
+                    scale: scaling.c_os,
+                },
+                &bounds,
+                &uhf,
+                &ri,
+                None,
+                TIGHT,
+                &mut PhaseAccumulator::new(),
+            )
+            .unwrap()
+        };
+        let g_mp2 = u_correlated_gradient_timed(
+            &mol,
+            &obs,
+            &dfbs,
+            UCorrelation {
+                op: coul,
+                scale: 1.0,
+            },
+            &bounds,
+            &uhf,
+            &RiMp2Config::default(),
+            None,
+            TIGHT,
+            &mut PhaseAccumulator::new(),
+        )
+        .unwrap();
+        let d = max_abs_diff(&run(1e-7), &g_mp2);
+        let gap = max_abs_diff(
+            &run(0.420 * crate::attenuated::BOHR_INV_PER_ANG_INV),
+            &g_mp2,
+        );
+        eprintln!("OH: max|g_att(1e-7) - g_UMP2| = {d:.3e}; at 0.420 A^-1: {gap:.3e}");
+        assert!(d < ANCHOR_BAR, "omega -> 0: {d:.3e}");
+        assert!(gap > 1e-5, "non-vacuity: {gap:.3e}");
+    }
+
+    /// The public entry point refuses a ROHF reference (with the reason), a
+    /// non-Coulomb reference, and the config the closed-shell gradient
+    /// refuses.
+    #[test]
+    fn open_shell_att_gradient_refuses_what_it_does_not_differentiate() {
+        let mol = Molecule::parse_xyz(OH, 0, 2).unwrap();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("sto-3g").unwrap()).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+        let coul = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(coul, &obs).unwrap();
+        let ctx = ferric_core::parallel::ParallelContext::default();
+        let good = att(0.2222, 1.0, 0);
+        let rohf =
+            ferric_scf::rohf::solve_rohf(&ctx, &mol, &obs, coul, &bounds, &RhfConfig::default())
+                .unwrap();
+        let err = u_att_rimp2_gradient_analytical(&mol, &obs, &dfbs, &bounds, &rohf, &good, None)
+            .unwrap_err();
+        assert!(format!("{err}").contains("needs a UHF reference"), "{err}");
+        let uhf =
+            ferric_scf::uhf::solve_uhf(&ctx, &mol, &obs, &bounds, &RhfConfig::default()).unwrap();
+        assert!(
+            u_att_rimp2_gradient_analytical(&mol, &obs, &dfbs, &bounds, &uhf, &good, None).is_ok()
+        );
+        let erfc_bounds = SchwarzBounds::compute(Operator::erfc(0.2222), &obs).unwrap();
+        assert!(u_att_rimp2_gradient_analytical(
+            &mol,
+            &obs,
+            &dfbs,
+            &erfc_bounds,
+            &uhf,
+            &good,
+            None
+        )
+        .is_err());
+        for bad in [
+            att(0.0, 1.0, 0),
+            att(f64::NAN, 1.0, 0),
+            att(0.2222, f64::INFINITY, 0),
+            AttenuatedMp2Config {
+                screen_thresh: Some(1e-10),
+                ..good.clone()
+            },
+        ] {
+            assert!(
+                u_att_rimp2_gradient_analytical(&mol, &obs, &dfbs, &bounds, &uhf, &bad, None)
+                    .is_err()
+            );
+        }
+    }
 }
