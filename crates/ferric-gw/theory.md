@@ -245,7 +245,7 @@ SCF's KS Fock).
   $\epsilon_p$ **[sympy 4]**.
 - **Newton**: $E_{k+1} = E_k - d\,f(E_k)/f'(E_k)$,
   $f' = 1 - \partial_E\mathrm{Re}\,\Sigma^c$, damping
-  $d = $ `qp_newton_damp` clamped to $[0.1, 1]$; at most 30
+  $d$ is `qp_newton_damp` clamped to $[0.1, 1]$; at most 30
   steps; converged when $|\text{step}| < 10^{-7}$ Ha; stops
   unconverged if $|f'| < 10^{-3}$ (a root near a pole of
   $C_N$).
