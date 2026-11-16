@@ -1,7 +1,7 @@
 <!-- section: 11.0; status: ready; registry: ri-mp2;
      theory: crates/ferric-mp2/theory.md#"1. Density fitting", "2. Closed-shell RI-MP2" -->
 
-# 11 RI-MP2 algorithms and memory
+# 11. RI-MP2 algorithms and memory
 
 *Notation follows `book/notation.md`. Code references are to commit
 `95ce704ce`.*
