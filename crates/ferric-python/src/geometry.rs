@@ -136,10 +136,15 @@ pub(crate) fn optimize_result_certificate(
 ///   analytic Z-vector gradient of that energy (the energy of
 ///   `run_attenuated_rimp2`). `omega` in Å⁻¹ (default 0.420); every other
 ///   kwarg as for `"rimp2"`. `att_operator="terfc"` replaces erfc with
-///   terfc(r; r0)/r, the energy of `run_terfc_rimp2`: `r0` in Å (default:
-///   the basis default of `run_terfc_rimp2`), closed shell only (an open
-///   shell raises), and `omega` raises. `att_operator` and `r0` are read by
-///   `"att-rimp2"` only.
+///   terfc(r; r0)/r, the energy of `run_terfc_rimp2` on an RHF or UHF: `r0`
+///   in Å (default: the basis default of `run_terfc_rimp2`), and `omega`
+///   raises. `att_operator` and `r0` are read by `"att-rimp2"` only.
+///
+/// - `"scs-mp2-2terfc"`: SCS-MP2(2terfc), the energy of `run_scs_mp2_2terfc`,
+///   on a Coulomb RHF for a singlet or a Coulomb UHF for an open shell (the
+///   reference follows the multiplicity). `r0_bonded` / `r0_nonbonded` (Å),
+///   `c_os` / `c_ss` with that function's defaults and basis rules; every
+///   other kwarg as for `"rimp2"`.
 ///
 /// - `"pdep-rpa"`: closed-shell RHF + RI-dRPA, the CLI's `[rpa]` optimize
 ///   route (`ferric_rpa::optimize::optimize_geometry_rpa`). Needs `auxbasis`;
@@ -152,9 +157,10 @@ pub(crate) fn optimize_result_certificate(
 ///   otherwise, the reason recorded in the certificate. `trunc_thresh` unset
 ///   is 0 for analytic and 1e-4 for an explicit `"fd"`.
 ///
-/// The correlated methods are closed-shell only, take no
-/// `xc`, `dispersion` or `solvent`, and every kwarg a method does not read
-/// raises `ValueError` rather than being ignored.
+/// `"rimp2"`, `"att-rimp2"` and `"scs-mp2-2terfc"` also run open shells; the
+/// other correlated methods are closed-shell only. None takes `xc`,
+/// `dispersion` or `solvent`, and every kwarg a method does not read raises
+/// `ValueError` rather than being ignored.
 ///
 /// The SCF of every step starts from the previous step's orbitals
 /// (`scf_warm_start`, default True). Each route calls the library driver the
@@ -171,6 +177,7 @@ pub(crate) fn optimize_result_certificate(
     scf_relativistic=None, fock_hook=None, fock_hook_grad=None, coordinates=None,
     rpa_gradient=None, n_quad=None, quadrature=None, trunc_thresh=None, omega=None,
     initial_hessian=None, trust_update=None, att_operator=None, r0=None,
+    r0_bonded=None, r0_nonbonded=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_optimize(
@@ -218,6 +225,8 @@ pub(crate) fn run_optimize(
     trust_update: Option<&str>,
     att_operator: Option<&str>,
     r0: Option<f64>,
+    r0_bonded: Option<f64>,
+    r0_nonbonded: Option<f64>,
 ) -> PyResult<PyOptimizeResult> {
     // Before any setup: no method here has an X2C-1e gradient.
     refuse_relativistic_kwarg(scf_relativistic, "analytic nuclear gradient (run_optimize)")?;
@@ -250,6 +259,8 @@ pub(crate) fn run_optimize(
         omega,
         att_operator,
         r0,
+        r0_bonded,
+        r0_nonbonded,
     };
     let method = parse_optimize_method(method)?;
     let spin = parse_optimize_reference(reference, &mol.inner)?;
@@ -307,6 +318,9 @@ pub(crate) fn run_optimize(
         }
         OptimizeMethod::AttRiMp2 => {
             run_optimize_att_rimp2(py, &emol, basis_name, &cfg, &opt_config, &k, spin)
+        }
+        OptimizeMethod::ScsMp2Terfc => {
+            run_optimize_scs_mp2_2terfc(py, &emol, basis_name, &cfg, &opt_config, &k, spin)
         }
         OptimizeMethod::PdepRpa => run_optimize_pdep_rpa(py, &emol, basis_name, &opt_config, &k),
     }
@@ -382,6 +396,8 @@ pub(crate) fn run_optimize_uhf(
         None,
         None,
         None,
+        None,
+        None,
     )
 }
 
@@ -400,6 +416,7 @@ pub(crate) enum OptimizeMethod {
     OoRiMp2,
     ScsMp2,
     AttRiMp2,
+    ScsMp2Terfc,
     PdepRpa,
 }
 
@@ -438,6 +455,10 @@ pub(crate) struct OptimizeKwargs<'a> {
     att_operator: Option<&'a str>,
     /// `r0=` (Å), read by `method="att-rimp2"` with `att_operator="terfc"` only.
     r0: Option<f64>,
+    /// `r0_bonded=` (Å), read by `method="scs-mp2-2terfc"` only.
+    r0_bonded: Option<f64>,
+    /// `r0_nonbonded=` (Å), read by `method="scs-mp2-2terfc"` only.
+    r0_nonbonded: Option<f64>,
 }
 
 fn value_error(msg: String) -> PyErr {
@@ -452,10 +473,11 @@ pub(crate) fn parse_optimize_method(method: &str) -> PyResult<OptimizeMethod> {
         "oo-rimp2" => Ok(OptimizeMethod::OoRiMp2),
         "scs-mp2" => Ok(OptimizeMethod::ScsMp2),
         "att-rimp2" => Ok(OptimizeMethod::AttRiMp2),
+        "scs-mp2-2terfc" => Ok(OptimizeMethod::ScsMp2Terfc),
         "pdep-rpa" => Ok(OptimizeMethod::PdepRpa),
         other => Err(value_error(format!(
             "run_optimize: unknown method {other:?}; expected \"scf\", \"rimp2\", \
-             \"oo-rimp2\", \"scs-mp2\", \"att-rimp2\" or \"pdep-rpa\""
+             \"oo-rimp2\", \"scs-mp2\", \"att-rimp2\", \"scs-mp2-2terfc\" or \"pdep-rpa\""
         ))),
     }
 }
@@ -502,6 +524,10 @@ fn refuse_unread_optimize_kwargs(
         ("oo_grad_conv", k.oo_grad_conv.is_some()),
     ];
     let scs_only = [("c_os", k.c_os.is_some()), ("c_ss", k.c_ss.is_some())];
+    let two_terfc_only = [
+        ("r0_bonded", k.r0_bonded.is_some()),
+        ("r0_nonbonded", k.r0_nonbonded.is_some()),
+    ];
     let att_only = [
         ("omega", k.omega.is_some()),
         ("att_operator", k.att_operator.is_some()),
@@ -525,6 +551,7 @@ fn refuse_unread_optimize_kwargs(
         OptimizeMethod::Scf => {
             unread(&correlated_only, "scf")?;
             unread(&scs_only, "scf")?;
+            unread(&two_terfc_only, "scf")?;
             unread(&att_only, "scf")?;
             unread(&rpa_only, "scf")?;
             return unread(&oo_only, "scf");
@@ -533,6 +560,7 @@ fn refuse_unread_optimize_kwargs(
         OptimizeMethod::OoRiMp2 => "oo-rimp2",
         OptimizeMethod::ScsMp2 => "scs-mp2",
         OptimizeMethod::AttRiMp2 => "att-rimp2",
+        OptimizeMethod::ScsMp2Terfc => "scs-mp2-2terfc",
         OptimizeMethod::PdepRpa => "pdep-rpa",
     };
     if method != OptimizeMethod::AttRiMp2 {
@@ -541,10 +569,16 @@ fn refuse_unread_optimize_kwargs(
     if method != OptimizeMethod::PdepRpa {
         unread(&rpa_only, who)?;
     }
-    if method != OptimizeMethod::ScsMp2 {
+    if !matches!(method, OptimizeMethod::ScsMp2 | OptimizeMethod::ScsMp2Terfc) {
         unread(&scs_only, who)?;
     }
-    let has_u_gradient = matches!(method, OptimizeMethod::RiMp2 | OptimizeMethod::AttRiMp2);
+    if method != OptimizeMethod::ScsMp2Terfc {
+        unread(&two_terfc_only, who)?;
+    }
+    let has_u_gradient = matches!(
+        method,
+        OptimizeMethod::RiMp2 | OptimizeMethod::AttRiMp2 | OptimizeMethod::ScsMp2Terfc
+    );
     if has_u_gradient && spin == ferric_scf::Spin::RestrictedOpen {
         return Err(value_error(format!(
             "run_optimize: method=\"{who}\": {}",
@@ -555,8 +589,8 @@ fn refuse_unread_optimize_kwargs(
     if spin != ferric_scf::Spin::Restricted && !open_ok {
         return Err(value_error(format!(
             "run_optimize: method=\"{who}\" is closed-shell only (the unrestricted MP2 \
-             nuclear gradients are method=\"rimp2\" and \"att-rimp2\"); use \
-             reference=\"rhf\" on a singlet"
+             nuclear gradients are method=\"rimp2\", \"att-rimp2\" and \"scs-mp2-2terfc\"); \
+             use reference=\"rhf\" on a singlet"
         )));
     }
     unread(&scf_only, who)?;
@@ -586,7 +620,10 @@ fn refuse_unread_optimize_kwargs(
     }
     if matches!(
         method,
-        OptimizeMethod::RiMp2 | OptimizeMethod::ScsMp2 | OptimizeMethod::AttRiMp2
+        OptimizeMethod::RiMp2
+            | OptimizeMethod::ScsMp2
+            | OptimizeMethod::AttRiMp2
+            | OptimizeMethod::ScsMp2Terfc
     ) {
         unread(&oo_only, who)?;
         let fixed_scf = [
@@ -1193,19 +1230,101 @@ fn run_optimize_scs_mp2(
     ))
 }
 
+/// The SCS-MP2(2terfc) configuration of a gradient run (`caller` prefixes
+/// the errors): `r0_bonded` / `r0_nonbonded` in Å and `c_os` / `c_ss`
+/// resolved for the basis as `run_scs_mp2_2terfc` resolves them
+/// (`ferric_mp2::terfc_r0::resolve_scs_2terfc`), Bohr in the result.
+fn scs_2terfc_gradient_config(
+    caller: &str,
+    basis_name: &str,
+    k: &OptimizeKwargs,
+) -> PyResult<ferric_mp2::scs::ScsMp2TerfcConfig> {
+    let params = ferric_mp2::terfc_r0::resolve_scs_2terfc(
+        basis_name,
+        k.r0_bonded,
+        k.r0_nonbonded,
+        k.c_os,
+        k.c_ss,
+    )
+    .map_err(|e| value_error(format!("{caller}: {e}")))?;
+    if let Some(note) = &params.note {
+        println!("{note}");
+    }
+    let config = ferric_mp2::scs::ScsMp2TerfcConfig {
+        r0_bonded: params.r0_bonded_angstrom * ferric_core::units::ANGSTROM_TO_BOHR,
+        r0_nonbonded: params.r0_nonbonded_angstrom * ferric_core::units::ANGSTROM_TO_BOHR,
+        c_os: params.c_os,
+        c_ss: params.c_ss,
+        frozen_core: k.frozen_core.unwrap_or(0),
+        memory_budget_bytes: budget_bytes_from_gb(k.memory_budget_gb),
+    };
+    ferric_mp2::scs::check_scs_2terfc_config(&config)
+        .map_err(|e| value_error(format!("{caller}: {e}")))?;
+    Ok(config)
+}
+
+/// `method="scs-mp2-2terfc"`:
+/// `ferric_mp2::optimize::optimize_geometry_scs_mp2_2terfc_on`, the driver of
+/// the CLI's scs-mp2-2terfc `optimize`, on a four-centre or RI-JK Coulomb
+/// reference: RHF for a singlet, UHF for an open shell (the reference follows
+/// the molecule's multiplicity).
+fn run_optimize_scs_mp2_2terfc(
+    py: Python<'_>,
+    emol: &Molecule,
+    basis_name: &str,
+    cfg: &RhfConfig,
+    opt_config: &OptimizeConfig,
+    k: &OptimizeKwargs,
+    spin: ferric_scf::Spin,
+) -> PyResult<PyOptimizeResult> {
+    if (spin == ferric_scf::Spin::Unrestricted) != (emol.multiplicity > 1) {
+        return Err(value_error(
+            "run_optimize: method=\"scs-mp2-2terfc\": the reference follows the molecule \
+             (RHF for a singlet, UHF for an open shell); reference=\"uhf\" on a singlet is \
+             not supported"
+                .to_string(),
+        ));
+    }
+    let scs_config = scs_2terfc_gradient_config("run_optimize", basis_name, k)?;
+    let scf_jk = mp2_gradient_scf_jk(k, basis_name, "scs-mp2-2terfc")?;
+    let obs = basis::bundled(basis_name).map_err(make_err)?;
+    let aux = basis::bundled(k.auxbasis.unwrap_or_default()).map_err(make_err)?;
+    let ext = cfg.external_potential.clone();
+    let r = py
+        .allow_threads(|| {
+            ferric_mp2::optimize::optimize_geometry_scs_mp2_2terfc_on(
+                emol,
+                &obs,
+                &aux,
+                &scs_config,
+                opt_config,
+                ext.as_ref(),
+                &scf_jk,
+            )
+        })
+        .map_err(make_err)?;
+    Ok(mp2_gradient_optimize_result(
+        "scs-mp2-2terfc",
+        r,
+        basis_name,
+        ext,
+        &scf_jk,
+        opt_config,
+        spin,
+    ))
+}
+
 /// The terfc operator of an att-rimp2 gradient run (`caller` prefixes the
 /// errors): `None` for `att_operator` unset or `"erfc"` (then `r0` raises),
 /// `Some(Operator::terfc(r0))` for `"terfc"`, `r0` in Å resolved as
 /// `run_terfc_rimp2` resolves it (`ferric_mp2::terfc_r0::resolve_terfc_r0`).
-/// terfc raises with `omega` set or on an open-shell (UHF) reference: its
-/// gradient is closed shell only.
+/// terfc raises with `omega` set (its sharpness is fixed by `r0`).
 pub(crate) fn att_terfc_operator(
     caller: &str,
     att_operator: Option<&str>,
     r0: Option<f64>,
     omega: Option<f64>,
     basis_name: &str,
-    spin: ferric_scf::Spin,
 ) -> PyResult<Option<ferric_integrals::operator::Operator>> {
     match att_operator {
         None | Some("erfc") => {
@@ -1221,13 +1340,6 @@ pub(crate) fn att_terfc_operator(
                 return Err(value_error(format!(
                     "{caller}: method=\"att-rimp2\": omega is not read with \
                      att_operator=\"terfc\" (the terfc sharpness is fixed by r0)"
-                )));
-            }
-            if spin != ferric_scf::Spin::Restricted {
-                return Err(value_error(format!(
-                    "{caller}: method=\"att-rimp2\", att_operator=\"terfc\" is closed shell \
-                     only (RHF reference): the open-shell terfc gradient is not implemented; \
-                     use att_operator=\"erfc\" for an open shell"
                 )));
             }
             if let Some(r) = r0 {
@@ -1258,7 +1370,8 @@ pub(crate) fn att_terfc_operator(
 /// att-rimp2 `optimize` (erfc(ωr)/r correlation on a Coulomb reference,
 /// four-centre or RI-JK), `omega` in Å⁻¹ defaulting to 0.420 as in
 /// `run_attenuated_rimp2`; with `att_operator="terfc"`,
-/// `optimize_geometry_terfc_rimp2_on` (RHF only).
+/// `optimize_geometry_terfc_rimp2_on` (RHF) or
+/// `optimize_geometry_u_terfc_rimp2_on` (UHF).
 fn run_optimize_att_rimp2(
     py: Python<'_>,
     emol: &Molecule,
@@ -1268,14 +1381,9 @@ fn run_optimize_att_rimp2(
     k: &OptimizeKwargs,
     spin: ferric_scf::Spin,
 ) -> PyResult<PyOptimizeResult> {
-    if let Some(terfc_op) = att_terfc_operator(
-        "run_optimize",
-        k.att_operator,
-        k.r0,
-        k.omega,
-        basis_name,
-        spin,
-    )? {
+    if let Some(terfc_op) =
+        att_terfc_operator("run_optimize", k.att_operator, k.r0, k.omega, basis_name)?
+    {
         let scf_jk = mp2_gradient_scf_jk(k, basis_name, "att-rimp2")?;
         let ri = ferric_mp2::rimp2::RiMp2Config {
             frozen_core: k.frozen_core.unwrap_or(0),
@@ -1285,9 +1393,14 @@ fn run_optimize_att_rimp2(
         let obs = basis::bundled(basis_name).map_err(make_err)?;
         let aux = basis::bundled(k.auxbasis.unwrap_or_default()).map_err(make_err)?;
         let ext = cfg.external_potential.clone();
+        let driver = if spin == ferric_scf::Spin::Unrestricted {
+            ferric_mp2::optimize::optimize_geometry_u_terfc_rimp2_on
+        } else {
+            ferric_mp2::optimize::optimize_geometry_terfc_rimp2_on
+        };
         let r = py
             .allow_threads(|| {
-                ferric_mp2::optimize::optimize_geometry_terfc_rimp2_on(
+                driver(
                     emol,
                     &obs,
                     &aux,
@@ -1790,7 +1903,7 @@ impl PyFrequencyResult {
     method="scf", auxbasis=None, frozen_core=None, rpa_gradient=None, n_quad=None,
     quadrature=None, trunc_thresh=None, omega=None, scf_jk=None, jk_auxbasis=None,
     memory_budget_gb=None, oo_max_iter=None, oo_grad_conv=None, c_os=None, c_ss=None,
-    att_operator=None, r0=None,
+    att_operator=None, r0=None, r0_bonded=None, r0_nonbonded=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_frequencies(
@@ -1835,10 +1948,13 @@ pub(crate) fn run_frequencies(
     c_ss: Option<f64>,
     att_operator: Option<&str>,
     r0: Option<f64>,
+    r0_bonded: Option<f64>,
+    r0_nonbonded: Option<f64>,
 ) -> PyResult<PyFrequencyResult> {
     use ferric_scf::frequencies::{FrequencyConfig, FrequencyReference, HessianMethod};
     // Kwargs only the RI-MP2-family methods read (`omega`, `att_operator`,
-    // `r0`: att-rimp2 only; `c_os` / `c_ss`: scs-mp2 only; `oo_*`: oo-rimp2
+    // `r0`: att-rimp2 only; `c_os` / `c_ss`: scs-mp2 and scs-mp2-2terfc;
+    // `r0_bonded` / `r0_nonbonded`: scs-mp2-2terfc only; `oo_*`: oo-rimp2
     // only). The "scf" and "pdep-rpa" routes read none of them.
     let omega_only = [
         ("omega", omega.is_some()),
@@ -1850,7 +1966,16 @@ pub(crate) fn run_frequencies(
         ("jk_auxbasis", jk_auxbasis.is_some()),
         ("memory_budget_gb", memory_budget_gb.is_some()),
     ];
-    let scs_only = [("c_os", c_os.is_some()), ("c_ss", c_ss.is_some())];
+    let scs_only = [
+        ("c_os", c_os.is_some()),
+        ("c_ss", c_ss.is_some()),
+        ("r0_bonded", r0_bonded.is_some()),
+        ("r0_nonbonded", r0_nonbonded.is_some()),
+    ];
+    let two_terfc_only = [
+        ("r0_bonded", r0_bonded.is_some()),
+        ("r0_nonbonded", r0_nonbonded.is_some()),
+    ];
     let oo_only = [
         ("oo_max_iter", oo_max_iter.is_some()),
         ("oo_grad_conv", oo_grad_conv.is_some()),
@@ -1939,7 +2064,7 @@ pub(crate) fn run_frequencies(
                 py,
             );
         }
-        "rimp2" | "scs-mp2" | "oo-rimp2" => {
+        "rimp2" | "scs-mp2" | "oo-rimp2" | "scs-mp2-2terfc" => {
             let unread = [
                 ("xc", xc.is_some()),
                 ("multiplicity", multiplicity.is_some()),
@@ -1974,7 +2099,11 @@ pub(crate) fn run_frequencies(
                 ("quadrature", quadrature.is_some()),
                 ("trunc_thresh", trunc_thresh.is_some()),
             ];
-            let scs_refused: &[(&str, bool)] = if method == "scs-mp2" { &[] } else { &scs_only };
+            let scs_refused: &[(&str, bool)] = match method {
+                "scs-mp2-2terfc" => &[],
+                "scs-mp2" => &two_terfc_only,
+                _ => &scs_only,
+            };
             let oo_refused: &[(&str, bool)] = if method == "oo-rimp2" { &[] } else { &oo_only };
             if let Some((name, _)) = unread
                 .iter()
@@ -2022,6 +2151,8 @@ pub(crate) fn run_frequencies(
                     omega: None,
                     att_operator: None,
                     r0: None,
+                    r0_bonded,
+                    r0_nonbonded,
                 },
                 py,
             );
@@ -2079,7 +2210,7 @@ pub(crate) fn run_frequencies(
         }
         other => {
             return Err(value_error(format!(
-                "run_frequencies: unknown method {other:?}; expected \"scf\", \"pdep-rpa\", \"att-rimp2\", \"rimp2\", \"scs-mp2\" or \"oo-rimp2\""
+                "run_frequencies: unknown method {other:?}; expected \"scf\", \"pdep-rpa\", \"att-rimp2\", \"rimp2\", \"scs-mp2\", \"scs-mp2-2terfc\" or \"oo-rimp2\""
             )))
         }
     }
@@ -2350,8 +2481,12 @@ fn run_frequencies_att_rimp2(
     } else {
         ferric_mp2::att_rimp2_gradient::total_att_rimp2_gradient_on
     };
-    let terfc_op =
-        att_terfc_operator("run_frequencies", att_operator, r0, omega, basis_name, spin)?;
+    let terfc_op = att_terfc_operator("run_frequencies", att_operator, r0, omega, basis_name)?;
+    let terfc_on = if open_shell {
+        ferric_mp2::att_rimp2_gradient::total_u_terfc_rimp2_gradient_on
+    } else {
+        ferric_mp2::att_rimp2_gradient::total_terfc_rimp2_gradient_on
+    };
     let omega = omega.unwrap_or(0.420);
     if !(omega.is_finite() && omega > 0.0) {
         return Err(value_error(format!(
@@ -2395,6 +2530,8 @@ fn run_frequencies_att_rimp2(
         omega: Some(omega),
         att_operator: None,
         r0: None,
+        r0_bonded: None,
+        r0_nonbonded: None,
     };
     let scf_jk = mp2_gradient_scf_jk(&k, basis_name, "att-rimp2")?;
     let ri = ferric_mp2::rimp2::RiMp2Config {
@@ -2419,9 +2556,7 @@ fn run_frequencies_att_rimp2(
             let mut warm = ferric_scf::warm_start::ScfWarmStart::anchored(fcfg.scf_warm_start);
             let eval =
                 |g: &Molecule, warm: &mut ferric_scf::warm_start::ScfWarmStart| match terfc_op {
-                    Some(op) => ferric_mp2::att_rimp2_gradient::total_terfc_rimp2_gradient_on(
-                        g, &obs, &aux, op, &ri, None, &scf_jk, warm,
-                    ),
+                    Some(op) => terfc_on(g, &obs, &aux, op, &ri, None, &scf_jk, warm),
                     None => gradient_on(g, &obs, &aux, &att_config, None, &scf_jk, warm),
                 };
             let (energy, _) = eval(&m, &mut warm)?;
@@ -2470,15 +2605,17 @@ fn mp2_frequency_spin(
     multiplicity: usize,
 ) -> PyResult<ferric_scf::Spin> {
     let open_shell = multiplicity != 1;
-    if open_shell && !matches!(kind, "rimp2" | "att-rimp2") {
+    let has_u_gradient = matches!(kind, "rimp2" | "att-rimp2" | "scs-mp2-2terfc");
+    if open_shell && !has_u_gradient {
         return Err(value_error(format!(
             "run_frequencies: method=\"{kind}\" is closed-shell (singlet) only; open-shell \
-             frequencies are method=\"rimp2\" and \"att-rimp2\" (UHF reference)"
+             frequencies are method=\"rimp2\", \"att-rimp2\" and \"scs-mp2-2terfc\" (UHF \
+             reference)"
         )));
     }
     match reference {
         None => {}
-        Some("rohf") if matches!(kind, "rimp2" | "att-rimp2") => {
+        Some("rohf") if has_u_gradient => {
             return Err(value_error(format!(
                 "run_frequencies: method=\"{kind}\": {}",
                 ferric_mp2::u_rimp2_gradient::ROHF_REFUSAL
@@ -2582,6 +2719,15 @@ fn run_frequencies_mp2_family(
             memory_budget_bytes: budget,
         }
     };
+    let scs_2terfc_config = if kind == "scs-mp2-2terfc" {
+        Some(scs_2terfc_gradient_config(
+            "run_frequencies",
+            basis_name,
+            k,
+        )?)
+    } else {
+        None
+    };
     let op = Operator::coulomb();
     let delta_used = fcfg.delta;
     let r = py
@@ -2623,6 +2769,18 @@ fn run_frequencies_mp2_family(
                                 jk,
                                 warm,
                             )
+                        }
+                        ("scs-mp2-2terfc", Some(jk), _) => {
+                            let c = scs_2terfc_config.as_ref().expect("set for this kind");
+                            if open_shell {
+                                ferric_mp2::scs_2terfc_gradient::total_u_scs_mp2_2terfc_gradient_on(
+                                    g, &obs, &aux, c, None, jk, warm,
+                                )
+                            } else {
+                                ferric_mp2::scs_2terfc_gradient::total_scs_mp2_2terfc_gradient_on(
+                                    g, &obs, &aux, c, None, jk, warm,
+                                )
+                            }
                         }
                         ("oo-rimp2", _, Some(oo)) => {
                             ferric_mp2::optimize::oo_rimp2_energy_gradient(

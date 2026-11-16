@@ -3501,32 +3501,11 @@ impl Config {
 /// The kinds whose `task = "optimize"` runs the analytic relaxed RI-MP2
 /// gradient (`ferric_mp2::gradient::total_rimp2_gradient_on` /
 /// `total_scs_mp2_gradient_on` /
-/// `ferric_mp2::att_rimp2_gradient::total_att_rimp2_gradient_on`) on an
+/// `ferric_mp2::att_rimp2_gradient::total_att_rimp2_gradient_on` /
+/// `ferric_mp2::scs_2terfc_gradient::total_scs_mp2_2terfc_gradient_on`) on an
 /// exact or an RI-JK reference.
-pub const MP2_GRADIENT_OPTIMIZE_KINDS: &[&str] = &["rimp2", "scs-mp2", "att-rimp2"];
-
-impl Config {
-    /// An error for att-rimp2 with the terfc operator on a gradient task of
-    /// an open shell: the terfc gradient
-    /// (`ferric_mp2::att_rimp2_gradient::total_terfc_rimp2_gradient_on`) is
-    /// closed shell only. A singlet runs it on an RHF reference.
-    fn refuse_terfc_gradient(&self, kind: &str, task: &str) -> Result<(), String> {
-        if kind == "att-rimp2"
-            && is_gradient_task(task)
-            && self.mp2.att_rimp2_op()? == AttRimp2Op::Terfc
-            && self.molecule.multiplicity > 1
-        {
-            return Err(format!(
-                "[mp2] att_operator = \"terfc\" with method.kind = \"att-rimp2\", task = \
-                 \"{task}\" is closed shell only (multiplicity 1, got {}): the open-shell \
-                 terfc gradient is not implemented. Use the default erfc operator (it has an \
-                 open-shell gradient), or task = \"energy\".",
-                self.molecule.multiplicity
-            ));
-        }
-        Ok(())
-    }
-}
+pub const MP2_GRADIENT_OPTIMIZE_KINDS: &[&str] =
+    &["rimp2", "scs-mp2", "att-rimp2", "scs-mp2-2terfc"];
 
 /// The tasks that differentiate the analytic correlated gradient: the
 /// optimizer follows it, a frequency run central-differences it.
@@ -4207,14 +4186,15 @@ impl ScfCfg {
 /// terfc), `scs-mp2` and `scs-mp2-2terfc` take the open-shell spin split of
 /// `ferric_mp2::u_rimp2::ri_mp2_spin_components_any` (`E_OS = E_αβ`,
 /// `E_SS = E_αα + E_ββ`) and `rs-mp2-rpa` the spin-summed U-dRPA, all on a UHF
-/// reference (energy only, except that `att-rimp2` with erfc also has the
-/// unrestricted gradient; their local paths stay closed-shell).
+/// reference (energy only, except that `att-rimp2` (erfc and terfc) and
+/// `scs-mp2-2terfc` also have the unrestricted gradient; their local paths
+/// stay closed-shell).
 /// `tda`/`tddft` run the
 /// spin-conserving unrestricted response on a UHF/UKS reference (ROHF/ROKS is
 /// refused by `ferric_tddft::run_tddft`). `ksdft` on an open-shell
 /// molecule runs UKS (see [`Config::dispatch_kind`]). The gradient paths
-/// (`optimize`, `frequencies`) of `rimp2` and `att-rimp2` run the
-/// unrestricted RI-MP2 gradient on a UHF reference; every other correlated
+/// (`optimize`, `frequencies`) of `rimp2`, `att-rimp2` and `scs-mp2-2terfc`
+/// run the unrestricted RI-MP2 gradient on a UHF reference; every other correlated
 /// gradient path builds an RHF reference.
 fn open_shell_kinds(task: &str) -> &'static [&'static str] {
     match task {
@@ -4251,9 +4231,20 @@ const OPEN_SHELL_ENERGY_KINDS: &[&str] = &[
 /// Kinds with an open-shell analytic gradient for `task = "optimize"` and
 /// (by finite differences of it) `task = "frequencies"`; `rimp2` is the
 /// unrestricted RI-MP2 gradient on a UHF reference
-/// (`ferric_mp2::u_rimp2_gradient`), `att-rimp2` its erfc-attenuated form
-/// (`ferric_mp2::att_rimp2_gradient::total_u_att_rimp2_gradient_on`).
-const OPEN_SHELL_OPTIMIZE_KINDS: &[&str] = &["uhf", "rohf", "ksdft", "rimp2", "att-rimp2"];
+/// (`ferric_mp2::u_rimp2_gradient`), `att-rimp2` its erfc- and
+/// terfc-attenuated forms
+/// (`ferric_mp2::att_rimp2_gradient::total_u_att_rimp2_gradient_on`,
+/// `total_u_terfc_rimp2_gradient_on`), `scs-mp2-2terfc` its two-cutoff
+/// spin-scaled form
+/// (`ferric_mp2::scs_2terfc_gradient::total_u_scs_mp2_2terfc_gradient_on`).
+const OPEN_SHELL_OPTIMIZE_KINDS: &[&str] = &[
+    "uhf",
+    "rohf",
+    "ksdft",
+    "rimp2",
+    "att-rimp2",
+    "scs-mp2-2terfc",
+];
 
 /// Kinds with an open-shell route for every other task.
 const OPEN_SHELL_SCF_KINDS: &[&str] = &["uhf", "rohf", "ksdft"];
@@ -4349,12 +4340,12 @@ impl Config {
                 why: "the rs-mp2-rpa default".into(),
             };
         }
-        // The open-shell rimp2 and att-rimp2 gradient tasks are the open-shell
-        // runs with a fitted default: their UHF, Z-vector and two-electron
-        // derivative all share the RI-JK route, as the closed-shell MP2
-        // optimizations do.
-        let open_rimp2_opt =
-            matches!(kind, "rimp2" | "att-rimp2") && is_gradient_task(&self.method.task);
+        // The open-shell rimp2, att-rimp2 and scs-mp2-2terfc gradient tasks
+        // are the open-shell runs with a fitted default: their UHF, Z-vector
+        // and two-electron derivative all share the RI-JK route, as the
+        // closed-shell MP2 optimizations do.
+        let open_rimp2_opt = matches!(kind, "rimp2" | "att-rimp2" | "scs-mp2-2terfc")
+            && is_gradient_task(&self.method.task);
         if self.molecule.multiplicity > 1 && !open_rimp2_opt {
             return OmittedJk::exact("open-shell reference".into());
         }
@@ -4746,7 +4737,6 @@ impl Config {
                  gradients. Use task = \"energy\"."
             ));
         }
-        self.refuse_terfc_gradient(kind, task)?;
         self.validate_cli_wired_keys()?;
         if task != "energy"
             && self.scf.k_builder.as_deref() == Some("cosx")
@@ -5943,10 +5933,11 @@ mod compat_guard_tests {
         }
     }
 
-    /// rimp2 and att-rimp2 optimize an open shell on the U-RI-MP2 gradient
-    /// (Coulomb and erfc) and take frequencies by finite differences of it;
-    /// oo-rimp2's optimize stays closed-shell only. Dropping `rimp2` or
-    /// `att-rimp2` from `OPEN_SHELL_OPTIMIZE_KINDS` fails its assert.
+    /// rimp2, att-rimp2 and scs-mp2-2terfc optimize an open shell on the
+    /// U-RI-MP2 gradient (Coulomb, erfc/terfc, two-cutoff SCS terfc) and take
+    /// frequencies by finite differences of it; oo-rimp2's optimize stays
+    /// closed-shell only. Dropping `rimp2`, `att-rimp2` or `scs-mp2-2terfc`
+    /// from `OPEN_SHELL_OPTIMIZE_KINDS` fails its assert.
     #[test]
     fn open_shell_rimp2_optimize_is_admitted_and_nothing_else_new() {
         assert!(cfg("rimp2", "optimize", "")
@@ -5957,6 +5948,9 @@ mod compat_guard_tests {
             .is_ok());
         for task in ["optimize", "frequencies"] {
             assert!(cfg("att-rimp2", task, "").validate_multiplicity(2).is_ok());
+            assert!(cfg("scs-mp2-2terfc", task, "")
+                .validate_multiplicity(2)
+                .is_ok());
         }
         assert!(cfg("oo-rimp2", "optimize", "")
             .validate_multiplicity(2)
@@ -13457,29 +13451,22 @@ mod cli_wired_keys_tests {
         );
     }
 
-    /// The terfc att-rimp2 gradient is closed shell only: a gradient task
-    /// with terfc on an open shell is refused before any SCF; a singlet and
-    /// the erfc operator are accepted on both gradient tasks.
+    /// The terfc att-rimp2 gradient runs closed and open shell: both
+    /// gradient tasks pass the task check at multiplicity 1 and 3, with terfc
+    /// and with the erfc operator.
     #[test]
-    fn att_rimp2_gradient_tasks_refuse_open_shell_terfc() {
+    fn att_rimp2_gradient_tasks_admit_terfc_at_any_multiplicity() {
         for task in ["optimize", "frequencies"] {
-            let e = cfg(
-                "att-rimp2",
-                task,
-                3,
-                "[mp2]\natt_operator = \"terfc\"\natt_r0 = 1.0\n",
-            )
-            .validate_task_compat()
-            .expect_err("open-shell terfc gradient must be refused");
-            assert!(e.contains("closed shell only"), "{task}: {e}");
-            cfg(
-                "att-rimp2",
-                task,
-                1,
-                "[mp2]\natt_operator = \"terfc\"\natt_r0 = 1.0\n",
-            )
-            .validate_task_compat()
-            .unwrap_or_else(|e| panic!("{task}: closed-shell terfc refused: {e}"));
+            for mult in [1, 3] {
+                cfg(
+                    "att-rimp2",
+                    task,
+                    mult,
+                    "[mp2]\natt_operator = \"terfc\"\natt_r0 = 1.0\n",
+                )
+                .validate_task_compat()
+                .unwrap_or_else(|e| panic!("{task}: terfc at multiplicity {mult} refused: {e}"));
+            }
             for mult in [1, 3] {
                 cfg("att-rimp2", task, mult, "[mp2]\nomega = 0.5\n")
                     .validate_task_compat()

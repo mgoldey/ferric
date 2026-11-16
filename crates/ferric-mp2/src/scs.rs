@@ -212,7 +212,7 @@ pub fn scs_mp2_2terfc(
 
 /// The checks of [`scs_mp2_2terfc`] on `config`: both cutoffs finite and
 /// positive, `r0(2) > r0(1)`.
-pub(crate) fn check_scs_2terfc_config(config: &ScsMp2TerfcConfig) -> Result<(), FerricError> {
+pub fn check_scs_2terfc_config(config: &ScsMp2TerfcConfig) -> Result<(), FerricError> {
     // Config validation returns an error rather than panicking: r0_bonded /
     // r0_nonbonded are unvalidated user config, and the repo convention is that
     // bad config hard-ERRORS, never aborts the process (and never silently
