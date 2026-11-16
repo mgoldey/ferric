@@ -19,7 +19,7 @@
 //!   come from the HF stationarity condition and the Coulomb Fock matrix.
 //!
 //! The scaling `s` enters as the spin scaling `c_os = c_ss = s`
-//! ([`SpinScaling`]). The QQR-3 screened energy (`screen_thresh`) is not
+//! ([`SpinScaling`](crate::rimp2::SpinScaling)). The QQR-3 screened energy (`screen_thresh`) is not
 //! differentiated and is refused, as is the terfc operator (it has no
 //! derivative engine).
 

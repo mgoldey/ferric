@@ -2441,7 +2441,7 @@ const COSX_TASKS_PER_THREAD: usize = 8;
 /// Grid blocks per kernel region for a pool of `threads`: one block holds
 /// `COSX_BLOCK_POINTS / COSX_SUB_BATCH_POINTS` (= 4) sub-batch tasks, so a
 /// region of one block can keep at most four cores busy.
-/// [`check_budget`] caps it by memory. Scheduling only: `K` is the same for
+/// `check_budget` caps it by memory. Scheduling only: `K` is the same for
 /// every value (anchored bitwise).
 pub fn block_group_len(threads: usize) -> usize {
     let per_block = COSX_BLOCK_POINTS / COSX_SUB_BATCH_POINTS;

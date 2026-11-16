@@ -3,9 +3,9 @@
 //! Supports B2PLYP (Grimme, JCP 124, 034108, 2006) and DSD-PBEP86 without a
 //! dispersion term (Kozuch & Martin, J. Comput. Chem. 34, 2327, 2013: 0.72 HF,
 //! 0.28 PBE exchange, 0.44 P86 correlation, `c_os = 0.51`, `c_ss = 0.36`),
-//! plus their D3(BJ) sets ([`DoubleHybridKind`]). A closed-shell Kohn-Sham
-//! reference takes [`mp2_double_hybrid`]; an unrestricted one takes
-//! [`u_mp2_double_hybrid`]. The pattern:
+//! plus their D3(BJ) sets ([`DoubleHybridKind`](crate::double_hybrid::DoubleHybridKind)). A closed-shell Kohn-Sham
+//! reference takes [`mp2_double_hybrid`](crate::double_hybrid::mp2_double_hybrid); an unrestricted one takes
+//! [`u_mp2_double_hybrid`](crate::double_hybrid::u_mp2_double_hybrid). The pattern:
 //!
 //! ```text
 //! E_DH = E_KS + c_os * E_OS + c_ss * E_SS

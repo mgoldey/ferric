@@ -58,7 +58,7 @@ fn spill_block_naux_for(budget_bytes: usize, nao: usize) -> usize {
 ///
 /// `build_band_screened` reads its tier from here, so a caller that plans
 /// with this function sees the tier the build takes. The packed test also
-/// reads the shared pool's free bytes ([`packed_in_core_fits`]), so plan after
+/// reads the shared pool's free bytes (`packed_in_core_fits`), so plan after
 /// the planes that stay resident across the build have been reserved.
 ///
 /// ```text

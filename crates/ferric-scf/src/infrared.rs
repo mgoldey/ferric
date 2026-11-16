@@ -14,7 +14,7 @@
 //! exactly those `x_k`: unit vectors in electron-mass-weighted coordinates
 //! divided back through by `sqrt(m)`, so `sum_i m_i x_k[i]^2 = 1` with `m` in
 //! electron masses and no further mass factor is applied here. In atomic units
-//! `d mu / d Q` is in `e / sqrt(m_e)`, and [`AU_TO_KM_PER_MOL`] converts
+//! `d mu / d Q` is in `e / sqrt(m_e)`, and [`AU_TO_KM_PER_MOL`](crate::infrared::AU_TO_KM_PER_MOL) converts
 //! `|d mu / d Q|^2` to km/mol. Derivation: `crates/ferric-scf/theory.md`,
 //! "Infrared intensities"; proof: `scripts/ir_intensity_sympy.py`.
 //!
@@ -27,11 +27,11 @@
 //! P[a, i] = d mu_a / d R_i = - d^2 E / (dF_a dR_i) = - d g_i / d F_a .
 //! ```
 //!
-//! [`dipole_derivatives_field`] (the production route) central-differences
+//! [`dipole_derivatives_field`](crate::infrared::dipole_derivatives_field) (the production route) central-differences
 //! the ANALYTIC nuclear gradient in a field `+-h e_a`: six SCF + gradient
 //! evaluations whatever the molecule size. It is exact in the SCF's own
 //! response, because the gradient of an SCF solved in the field carries the
-//! field's orbital relaxation. [`dipole_derivatives_dipole_fd`] instead
+//! field's orbital relaxation. [`dipole_derivatives_dipole_fd`](crate::infrared::dipole_derivatives_dipole_fd) instead
 //! central-differences the SCF dipole along each Cartesian displacement
 //! (`6N` SCFs); the two share no code beyond the SCF solver, so their
 //! agreement tests both.
@@ -43,7 +43,7 @@
 //!
 //! The translational sum rule `sum_A P[a, (A, b)] = Q delta_ab` (`Q` the
 //! molecular charge) holds for both routes in exact arithmetic when no
-//! external point charges are present; [`IrSpectrum::sum_rule_residual`]
+//! external point charges are present; [`IrSpectrum::sum_rule_residual`](crate::infrared::IrSpectrum::sum_rule_residual)
 //! records how far the computed tensor is from it.
 
 use ferric_core::external_potential::ExternalPotential;

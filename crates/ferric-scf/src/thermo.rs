@@ -1,6 +1,6 @@
 //! Rigid-rotor / harmonic-oscillator (RRHO) thermochemistry of an ideal gas.
 //!
-//! [`rrho_thermochemistry`] turns harmonic wavenumbers, the geometry and the
+//! [`rrho_thermochemistry`](crate::thermo::rrho_thermochemistry) turns harmonic wavenumbers, the geometry and the
 //! electronic energy into translational, rotational, vibrational and
 //! electronic internal energy `E`, enthalpy `H`, entropy `S`, Gibbs energy
 //! `G`, and heat capacities `Cv`, `Cp`, at a temperature `T` and pressure `P`.
@@ -25,8 +25,8 @@
 //!
 //! Imaginary modes (negative wavenumbers) are left out of the vibrational
 //! sums, as in PySCF, and each run that drops one records a warning in
-//! [`Thermochemistry::warnings`]. The rotational symmetry number is an
-//! input ([`ThermoConfig::symmetry_number`], default 1): ferric does not
+//! [`Thermochemistry::warnings`](crate::thermo::Thermochemistry::warnings). The rotational symmetry number is an
+//! input ([`ThermoConfig::symmetry_number`](crate::thermo::ThermoConfig::symmetry_number), default 1): ferric does not
 //! detect non-Abelian point groups, so it cannot count the proper rotations
 //! of, say, NH3 (sigma 3) or CH4 (sigma 12). With sigma = 1 the rotational
 //! entropy is too large by `R ln sigma`.
