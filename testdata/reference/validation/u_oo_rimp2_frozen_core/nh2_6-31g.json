@@ -1,0 +1,150 @@
+{
+  "row": "U-OO-RI-MP2 energy with a frozen core",
+  "system": "nh2",
+  "basis": "6-31g",
+  "aux_basis": "cc-pvdz-ri",
+  "charge": 0,
+  "multiplicity": 2,
+  "nao": 13,
+  "naux": 84,
+  "nuclear_repulsion": 7.564094299642846,
+  "pyscf": {
+    "e_scf": -55.532312001691274,
+    "uhf": {
+      "energy": -55.532312001691274,
+      "converged": true,
+      "s_squared": 0.7568384911417434,
+      "multiplicity_from_s2": 2.0068268397066484,
+      "nelec_alpha": 5,
+      "nelec_beta": 4,
+      "stability": {
+        "internal_stable": true,
+        "kind": "PySCF UHF internal (real)",
+        "rounds": 0,
+        "selected_guess": "atom",
+        "lambda_min": 0.07500756177409643
+      },
+      "guess_scan": [
+        {
+          "guess": "minao",
+          "energy": -55.532312001691245,
+          "converged": true,
+          "internal_stable": true,
+          "stability_rounds": 0,
+          "energy_trajectory": [
+            -55.532312001691245
+          ]
+        },
+        {
+          "guess": "atom",
+          "energy": -55.532312001691274,
+          "converged": true,
+          "internal_stable": true,
+          "stability_rounds": 0,
+          "energy_trajectory": [
+            -55.532312001691274
+          ]
+        },
+        {
+          "guess": "huckel",
+          "energy": -55.53231200169127,
+          "converged": true,
+          "internal_stable": true,
+          "stability_rounds": 0,
+          "energy_trajectory": [
+            -55.53231200169127
+          ]
+        }
+      ],
+      "multiple_stable_minima": false,
+      "homo_alpha": -0.4948340936228226,
+      "lumo_alpha": 0.2128261800518525,
+      "homo_beta": -0.44158443496913025,
+      "lumo_beta": 0.13862100409338596,
+      "somo_alpha": [
+        -0.4948340936228226
+      ]
+    }
+  },
+  "numpy_oo": {
+    "fc0": {
+      "frozen_core": 0,
+      "e_total": -55.62003472840305,
+      "e_reference": -55.531806945689354,
+      "e_doubles": -0.08822778271369383,
+      "max_orbital_gradient": 6.039613253960852e-11,
+      "iterations": 45,
+      "optimizer_message": "scipy BFGS 36 it (Desired error not necessarily achieved due to precision loss.) + 9 gradient-only BFGS it",
+      "anchor_kappa0_diff": -4.050093593832571e-13,
+      "e_dfump2_corr_kappa0": -0.08720829342308266,
+      "n_parameters": 76
+    },
+    "fc1": {
+      "frozen_core": 1,
+      "e_total": -55.61897494671132,
+      "e_reference": -55.53181296832444,
+      "e_doubles": -0.08716197838687803,
+      "max_orbital_gradient": 7.579122514774402e-11,
+      "iterations": 27,
+      "optimizer_message": "scipy BFGS 22 it (Desired error not necessarily achieved due to precision loss.) + 5 gradient-only BFGS it",
+      "anchor_kappa0_diff": -4.121147867408581e-13,
+      "e_dfump2_corr_kappa0": -0.0861547291287744,
+      "n_parameters": 59
+    }
+  },
+  "provenance": {
+    "code": "PySCF 2.13.1 + numpy",
+    "version": "PySCF 2.13.1",
+    "keywords": {
+      "pyscf": "common.run_open_shell('uhf', conv_tol 1e-12, conv_tol_grad 1e-9), exact J/K, stability loop; mp.dfump2.DFUMP2(frozen=fc) with auxmol from ferric's aux JSON",
+      "numpy_oo": "numpy U-OO-RI-MP2 with frozen core fc: C_s = C_UHF,s expm(K_s), K_s antisymmetric with only the active-occupied/virtual block free (core orbitals fixed); exact four-centre J/K from PySCF int2e; doubles over the active occupied orbitals in each spin's semicanonical frame (active-occupied and virtual blocks), Coulomb-metric fitted B; scipy BFGS on a 5-point central-difference gradient (h = 0.001) + gradient-only BFGS"
+    },
+    "grid": "none",
+    "aux_basis": {
+      "correlation": "cc-pvdz-ri",
+      "correlation_json": "crates/ferric-core/src/basis/bundled/cc-pvdz-ri.json",
+      "correlation_sha256": "8221d2a31b5bbebd39218fc3f9244917e173a338ff9c56904038443a06e2a250",
+      "scf_and_oo_fock": "none (exact four-centre J/K)"
+    },
+    "frozen_core": "0 and 1 per spin (blocks fc0, fc1); core orbitals not rotated",
+    "scf_convergence": "PySCF conv_tol 1e-12, conv_tol_grad 1e-9",
+    "stability": {
+      "internal_stable": true,
+      "kind": "PySCF UHF internal (real)",
+      "rounds": 0,
+      "selected_guess": "atom",
+      "lambda_min": 0.07500756177409643
+    },
+    "basis": "6-31g",
+    "basis_json": "crates/ferric-core/src/basis/bundled/6-31g.json",
+    "basis_sha256": "0c5f3f03df3efd000bf8750687caa1c2a6e777015d5c35b5e45aba794249bff8",
+    "ecp_json": "none",
+    "ecp_sha256": "none",
+    "geometry_xyz": "testdata/molecules/validation/nh2.xyz",
+    "geometry_xyz_sha256": "a93f4ddd65a01379beb9335bab6cbeb2165454f5784960ee705f49ec9c0d28e5",
+    "geometry_bohr": [
+      [
+        "N",
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        "H",
+        0.0,
+        1.5186047006878538,
+        -1.1993217336336612
+      ],
+      [
+        "H",
+        0.0,
+        -1.5186047006878538,
+        -1.1993217336336612
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_u_oo_rimp2_frozen_core.py",
+    "git_head": "a975d23a4cc60679d4c4cefedd7237a8350f480d",
+    "generated_utc": "2026-11-16T12:26:04+00:00"
+  }
+}
