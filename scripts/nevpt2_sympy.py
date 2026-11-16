@@ -808,7 +808,9 @@ def part_t():
     if root is None:
         check("T  nevpt2.rs found (set FERRIC_ROOT)", False)
         return
-    src = (root / "crates" / "ferric-ci" / "src" / "nevpt2.rs").read_text()
+    src = (root / "crates" / "ferric-ci" / "src" / "nevpt2.rs").read_text(
+        encoding="utf-8"
+    )
     names = [
         "make_a16",
         "make_a22",

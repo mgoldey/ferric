@@ -176,9 +176,11 @@ def part_p():
     if root is None:
         check("P repository sources found", False, "set FERRIC_ROOT")
         return
-    libxc = (root / "crates/ferric-dft/src/libxc.rs").read_text()
-    dh_mp2 = (root / "crates/ferric-mp2/src/double_hybrid.rs").read_text()
-    dh_cc = (root / "crates/ferric-cc/src/double_hybrid.rs").read_text()
+    libxc = (root / "crates/ferric-dft/src/libxc.rs").read_text(encoding="utf-8")
+    dh_mp2 = (root / "crates/ferric-mp2/src/double_hybrid.rs").read_text(
+        encoding="utf-8"
+    )
+    dh_cc = (root / "crates/ferric-cc/src/double_hybrid.rs").read_text(encoding="utf-8")
 
     for kind, fname, variant in (
         ("b2plyp", "b2plyp_def", "B2plyp"),

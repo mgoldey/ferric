@@ -240,6 +240,18 @@ def test_solve_releases_the_gil(which):
     mol = ferric.Molecule.from_xyz_string(_H2O)
     bs = ferric.BasisSet.bundled("cc-pvdz")
     fn = ferric.run_casci if which == "casci" else ferric.run_casscf
-    gap, wall = _longest_main_thread_stall(lambda: fn(mol, bs, 4, (2, 2)))
+    min_wall = 30 * sys.getswitchinterval()
+
+    def solve_long_enough():
+        # A fast machine finishes one H2O solve inside the 20-interval floor
+        # below (0.0998 s on a Windows runner), which would leave the stall
+        # bar met by hand-off granularity alone. Repeat the solve until the
+        # call lasts long enough; each repeat releases the GIL the same way.
+        t0 = time.perf_counter()
+        fn(mol, bs, 4, (2, 2))
+        while time.perf_counter() - t0 < min_wall:
+            fn(mol, bs, 4, (2, 2))
+
+    gap, wall = _longest_main_thread_stall(solve_long_enough)
     assert wall > 20 * sys.getswitchinterval(), wall
     assert gap < 0.5 * wall, (gap, wall)

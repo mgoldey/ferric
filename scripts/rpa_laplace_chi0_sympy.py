@@ -134,7 +134,7 @@ R5 = {
 
 
 def parse_rust_tables(path):
-    src = path.read_text()
+    src = path.read_text(encoding="utf-8")
     tables = {}
     for k, body in re.findall(
         r"static MINIMAX_K(\d+): &\[MinimaxEntry\] = &\[(.*?)\n\];", src, re.S
