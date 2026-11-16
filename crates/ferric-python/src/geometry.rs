@@ -129,10 +129,12 @@ pub(crate) fn optimize_result_certificate(
 ///   Grimme's 6/5 and 1/3 as in `run_scs_mp2`; every other kwarg as for
 ///   `"rimp2"`.
 ///
-/// - `"att-rimp2"`: closed-shell attenuated RI-MP2, `E_HF + E_c[erfc(ωr)/r]`
-///   on a Coulomb RHF (analytic Z-vector gradient of that energy; the
-///   energy of `run_attenuated_rimp2`). `omega` in Å⁻¹ (default 0.420);
-///   every other kwarg as for `"rimp2"`. The terfc operator has no gradient.
+/// - `"att-rimp2"`: attenuated RI-MP2, `E_HF + E_c[erfc(ωr)/r]` on a
+///   Coulomb RHF, or on a UHF for an open shell (`reference="uhf"`, the
+///   default at multiplicity > 1; ROHF raises as for `"rimp2"`), with the
+///   analytic Z-vector gradient of that energy (the energy of
+///   `run_attenuated_rimp2`). `omega` in Å⁻¹ (default 0.420); every other
+///   kwarg as for `"rimp2"`. The terfc operator has no gradient.
 ///
 /// - `"pdep-rpa"`: closed-shell RHF + RI-dRPA, the CLI's `[rpa]` optimize
 ///   route (`ferric_rpa::optimize::optimize_geometry_rpa`). Needs `auxbasis`;
@@ -293,7 +295,7 @@ pub(crate) fn run_optimize(
             run_optimize_scs_mp2(py, &emol, basis_name, &cfg, &opt_config, &k)
         }
         OptimizeMethod::AttRiMp2 => {
-            run_optimize_att_rimp2(py, &emol, basis_name, &cfg, &opt_config, &k)
+            run_optimize_att_rimp2(py, &emol, basis_name, &cfg, &opt_config, &k, spin)
         }
         OptimizeMethod::PdepRpa => run_optimize_pdep_rpa(py, &emol, basis_name, &opt_config, &k),
     }
@@ -521,17 +523,19 @@ fn refuse_unread_optimize_kwargs(
     if method != OptimizeMethod::ScsMp2 {
         unread(&scs_only, who)?;
     }
-    if method == OptimizeMethod::RiMp2 && spin == ferric_scf::Spin::RestrictedOpen {
+    let has_u_gradient = matches!(method, OptimizeMethod::RiMp2 | OptimizeMethod::AttRiMp2);
+    if has_u_gradient && spin == ferric_scf::Spin::RestrictedOpen {
         return Err(value_error(format!(
-            "run_optimize: method=\"rimp2\": {}",
+            "run_optimize: method=\"{who}\": {}",
             ferric_mp2::u_rimp2_gradient::ROHF_REFUSAL
         )));
     }
-    let open_ok = method == OptimizeMethod::RiMp2 && spin == ferric_scf::Spin::Unrestricted;
+    let open_ok = has_u_gradient && spin == ferric_scf::Spin::Unrestricted;
     if spin != ferric_scf::Spin::Restricted && !open_ok {
         return Err(value_error(format!(
             "run_optimize: method=\"{who}\" is closed-shell only (the unrestricted MP2 \
-             nuclear gradient is method=\"rimp2\"); use reference=\"rhf\" on a singlet"
+             nuclear gradients are method=\"rimp2\" and \"att-rimp2\"); use \
+             reference=\"rhf\" on a singlet"
         )));
     }
     unread(&scf_only, who)?;
@@ -1166,9 +1170,10 @@ fn run_optimize_scs_mp2(
 }
 
 /// `method="att-rimp2"`:
-/// `ferric_mp2::optimize::optimize_geometry_att_rimp2_on`, the driver of the
-/// CLI's att-rimp2 `optimize` (erfc(ωr)/r correlation on a Coulomb RHF, four-
-/// centre or RI-JK), `omega` in Å⁻¹ defaulting to 0.420 as in
+/// `ferric_mp2::optimize::optimize_geometry_att_rimp2_on` (RHF) or
+/// `optimize_geometry_u_att_rimp2_on` (UHF), the drivers of the CLI's
+/// att-rimp2 `optimize` (erfc(ωr)/r correlation on a Coulomb reference,
+/// four-centre or RI-JK), `omega` in Å⁻¹ defaulting to 0.420 as in
 /// `run_attenuated_rimp2`.
 fn run_optimize_att_rimp2(
     py: Python<'_>,
@@ -1177,6 +1182,7 @@ fn run_optimize_att_rimp2(
     cfg: &RhfConfig,
     opt_config: &OptimizeConfig,
     k: &OptimizeKwargs,
+    spin: ferric_scf::Spin,
 ) -> PyResult<PyOptimizeResult> {
     let omega = k.omega.unwrap_or(0.420);
     if !(omega.is_finite() && omega > 0.0) {
@@ -1195,9 +1201,16 @@ fn run_optimize_att_rimp2(
     let obs = basis::bundled(basis_name).map_err(make_err)?;
     let aux = basis::bundled(k.auxbasis.unwrap_or_default()).map_err(make_err)?;
     let ext = cfg.external_potential.clone();
+    // UHF reference (`refuse_unread_optimize_kwargs` admitted only RHF/UHF):
+    // the unrestricted gradient.
+    let driver = if spin == ferric_scf::Spin::Unrestricted {
+        ferric_mp2::optimize::optimize_geometry_u_att_rimp2_on
+    } else {
+        ferric_mp2::optimize::optimize_geometry_att_rimp2_on
+    };
     let r = py
         .allow_threads(|| {
-            ferric_mp2::optimize::optimize_geometry_att_rimp2_on(
+            driver(
                 emol,
                 &obs,
                 &aux,
@@ -1215,7 +1228,7 @@ fn run_optimize_att_rimp2(
         ext,
         &scf_jk,
         opt_config,
-        ferric_scf::Spin::Restricted,
+        spin,
     ))
 }
 

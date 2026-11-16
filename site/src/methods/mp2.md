@@ -50,19 +50,30 @@ independent numpy OO-RI-MP2 (see the
 
 **Open-shell attenuated, SCS and RS-MP2 + LR-RPA energies.** `att-rimp2`
 (erfc and terfc), `scs-mp2`, `scs-mp2-2terfc` and `rs-mp2-rpa` take a UHF
-reference when `multiplicity > 1` (task `energy` only). So do Python
+reference when `multiplicity > 1`. So do Python
 `run_attenuated_rimp2`, `run_terfc_rimp2`, `run_scs_mp2`,
 `run_scs_mp2_2terfc` and `run_rs_mp2_rpa`; `result.reference` says which. The
 opposite-spin component is the αβ block of U-RI-MP2 and the same-spin
 component is the αα plus ββ blocks, under the kind's operator. `rs-mp2-rpa`
 uses the spin-summed U-dRPA, and subtracts its second-order term
-$E_{lphaeta} + 	frac12(D_{lphalpha} + D_{etaeta})$, not
-$2E_{lphaeta}$ (derivations in `crates/ferric-mp2/theory.md` §5.1 and
+$E_{\alpha\beta} + \tfrac12(D_{\alpha\alpha} + D_{\beta\beta})$, not
+$2E_{\alpha\beta}$ (derivations in `crates/ferric-mp2/theory.md` §5.1 and
 `crates/ferric-rpa/theory.md`, "Open-shell SR-MP2 + LR-RPA"). The QQR-3
 screened `att-rimp2` build is closed shell
 only, and so is the Boys-screened χ₀ of `rs-mp2-rpa`. The values match PySCF
 `DFUMP2` and `URPA` and a numpy route on OH, NH2 and O2 at cc-pVDZ
 (`crates/ferric-rpa/tests/validation_u_attenuated_pyscf.rs`).
+
+**Open-shell attenuated gradient.** `att-rimp2` with erfc has an analytic
+gradient on a UHF reference: `task = "optimize"` and `"frequencies"` (central
+differences of the gradient) at `multiplicity > 1`, and Python
+`run_optimize(method="att-rimp2")` with `reference="uhf"` (the default for an
+open shell). It is the U-RI-MP2 gradient with erfc in the correlation pieces
+and Coulomb in the reference's terms (`crates/ferric-mp2/theory.md` §15.1).
+The other open-shell kinds above stay energy only, and terfc has no gradient.
+The gradient matches finite differences of ferric's own energy on OH and NH2
+and of PySCF's UHF + DF-UMP2 energy on an erfc fit (see the
+[anchors](../reference/validation.md#anchors)).
 
 The other MP2-family kinds (`mp3`, `laplace-mp2`, `laplace-sos-mp2`) and
 their Python drivers are closed shell only: set `multiplicity = 1`. `mp2-v` switches to a UHF reference

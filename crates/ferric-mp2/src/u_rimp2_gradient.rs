@@ -100,13 +100,27 @@ impl SpinOrbitals<'_> {
     }
 }
 
+/// The correlation energy an unrestricted gradient differentiates,
+/// `scale · E_c[op]`: `(Coulomb, 1)` for U-RI-MP2, `(erfc(ωr)/r, s)` for
+/// attenuated U-RI-MP2 ([`crate::att_rimp2_gradient`]). `op` is the operator
+/// of the `(P|ia)` integrals, of the RI metric and of their derivatives; the
+/// reference's own two-electron terms run on the operator of its Schwarz
+/// bounds.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct UCorrelation {
+    pub op: Operator,
+    pub scale: f64,
+}
+
 /// Refuse a reference the unrestricted RI-MP2 gradient does not
 /// differentiate: anything but a converged, aufbau UHF with at least one
-/// electron of each spin, an X2C reference, or a non-Coulomb operator.
+/// electron of each spin, an X2C reference, a non-Coulomb reference, or a
+/// correlation operator other than Coulomb or erfc.
 fn check_reference(
     mol: &Molecule,
     uhf: &ScfResult,
-    op: Operator,
+    corr: UCorrelation,
+    ref_op: Operator,
     obs: &PreparedBasis,
 ) -> Result<(usize, usize), FerricError> {
     ferric_scf::x2c::refuse_relativistic(uhf.relativistic, "U-RI-MP2 analytic gradient")?;
@@ -127,10 +141,28 @@ fn check_reference(
             last_energy: uhf.energy,
         });
     }
-    if op.kind != OperatorKind::Coulomb {
+    if ref_op.is_composite() || ref_op.kind != OperatorKind::Coulomb {
         return Err(FerricError::General(format!(
-            "U-RI-MP2 gradient: only the Coulomb operator is differentiated (got {:?})",
-            op.kind
+            "U-RI-MP2 gradient: the reference UHF must be Coulomb (its Schwarz bounds are for \
+             {:?})",
+            ref_op.kind
+        )));
+    }
+    if corr.op.is_composite()
+        || !matches!(
+            corr.op.kind,
+            OperatorKind::Coulomb | OperatorKind::ErfcCoulomb
+        )
+    {
+        return Err(FerricError::General(format!(
+            "U-RI-MP2 gradient: the correlation operator must be Coulomb or erfc (got {:?})",
+            corr.op.kind
+        )));
+    }
+    if !corr.scale.is_finite() {
+        return Err(FerricError::General(format!(
+            "U-RI-MP2 gradient: the correlation scaling must be finite (got {})",
+            corr.scale
         )));
     }
     let nelec = mol.nelec() as i64;
@@ -473,11 +505,44 @@ fn u_rimp2_gradient_timed(
     controls: ZvectorControls,
     acc: &mut PhaseAccumulator,
 ) -> Result<Array2<f64>, FerricError> {
+    if op.kind != OperatorKind::Coulomb {
+        return Err(FerricError::General(format!(
+            "U-RI-MP2 gradient: only the Coulomb operator is differentiated (got {:?}); the \
+             erfc-attenuated gradient is ferric_mp2::att_rimp2_gradient",
+            op.kind
+        )));
+    }
+    let corr = UCorrelation { op, scale: 1.0 };
+    u_correlated_gradient_timed(
+        mol, obs, dfbs, corr, bounds, uhf, config, ext, controls, acc,
+    )
+}
+
+/// `d(E_UHF + corr.scale · E_c[corr.op])/dR` on the converged Coulomb UHF
+/// `uhf`: the U-RI-MP2 Lagrangian with the operators split as in the
+/// closed-shell attenuated gradient (`theory.md` §15.1). `corr.op` builds
+/// the amplitudes, `b_full` of `Imat^σ` and the 3c/2c RI response;
+/// `bounds.op` (Coulomb) the Z-vector Hessian, the `veff` of the correlation
+/// density and the two-electron derivative.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn u_correlated_gradient_timed(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    corr: UCorrelation,
+    bounds: &SchwarzBounds,
+    uhf: &ScfResult,
+    config: &RiMp2Config,
+    ext: Option<&ExternalPotential>,
+    controls: ZvectorControls,
+    acc: &mut PhaseAccumulator,
+) -> Result<Array2<f64>, FerricError> {
     use ferric_scf::gradient::{
         build_energy_weighted_density_uhf, ecp_gradient, oneelectron_gradient,
         overlap_deriv_contract,
     };
-    let (nocc_a, nocc_b) = check_reference(mol, uhf, op, obs)?;
+    let (nocc_a, nocc_b) = check_reference(mol, uhf, corr, bounds.op, obs)?;
+    let op = corr.op;
     let ctx = ferric_core::parallel::ParallelContext::default();
     let jk = acc.time("J/K route setup", || {
         ResponseJk::for_scf(&ctx, mol, obs, bounds, uhf)
@@ -487,7 +552,7 @@ fn u_rimp2_gradient_timed(
     let amps = acc.time("amplitudes (b_ov, t_aa/t_bb/t_ab)", || {
         compute_u_mp2_amplitudes(mol, obs, dfbs, op, uhf, config)
     })?;
-    let dens = acc.time("unrelaxed densities", || build_u_mp2_density(&amps));
+    let mut dens = acc.time("unrelaxed densities", || build_u_mp2_density(&amps));
     let spins = [
         SpinOrbitals {
             c: uhf.mos_a(),
@@ -512,7 +577,21 @@ fn u_rimp2_gradient_timed(
         naux.saturating_mul(ov(&spins[0].orb) + ov(&spins[1].orb))
             .saturating_mul(8),
     )?;
-    let (x_a, x_b) = acc.time("energy weights x^σ", || u_energy_weights(&amps));
+    let (mut x_a, mut x_b) = acc.time("energy weights x^σ", || u_energy_weights(&amps));
+    // `scale · E_c`: every first variation of E_c is linear in x^σ and the
+    // unrelaxed densities (Imat^σ, the frozen-core block and the RI response
+    // are built from them), so scaling those two scales the whole response.
+    let s = corr.scale;
+    x_a *= s;
+    x_b *= s;
+    for p in [
+        &mut dens.p_oo_a,
+        &mut dens.p_vv_a,
+        &mut dens.p_oo_b,
+        &mut dens.p_vv_b,
+    ] {
+        *p *= s;
+    }
 
     // Imat^σ = ½ build_imat_ri(x^σ, b^σ_full): the closed-shell builder's
     // factor −2 is the 2-PDM weight 2·(2t − t̄) of both spins; one spin with
@@ -615,7 +694,7 @@ fn u_rimp2_gradient_timed(
     let dpa = d_a + &(2.0 * &p_rel_ao[0]);
     let dpb = d_b + &(2.0 * &p_rel_ao[1]);
     grad += &acc.time("lagr: 2e derivs", || {
-        jk.two_electron_gradient_bilinear_open(mol, op, (d_a, d_b), (&dpa, &dpb))
+        jk.two_electron_gradient_bilinear_open(mol, bounds.op, (d_a, d_b), (&dpa, &dpb))
     })?;
 
     // RI 3c/2c response: one channel per spin, weight 1.
@@ -735,9 +814,10 @@ pub fn total_u_rimp2_energy_with(
     Ok((e, uhf))
 }
 
-/// The UHF reference of the total-gradient drivers.
+/// The UHF reference of the total-gradient drivers, on the operator `op`
+/// (Coulomb) of its Schwarz bounds.
 #[allow(clippy::too_many_arguments)]
-fn solve_reference(
+pub(crate) fn solve_reference(
     mol: &Molecule,
     obs_basis: &BasisSet,
     aux_basis: &BasisSet,

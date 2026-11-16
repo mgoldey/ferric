@@ -665,6 +665,25 @@ fn open_shell_rimp2_optimize_runs() {
     );
 }
 
+/// Open-shell att-rimp2 optimize takes the unrestricted attenuated (erfc)
+/// RI-MP2 gradient on a UHF reference and says which surface it followed.
+/// Dropping `att-rimp2` from `OPEN_SHELL_OPTIMIZE_KINDS` makes it refuse;
+/// routing it to the closed-shell driver fails in the RHF.
+#[test]
+fn open_shell_att_rimp2_optimize_runs() {
+    let water = "testdata/molecules/water.xyz";
+    let mp2 = "[mp2]\nauxbasis = \"cc-pvdz-ri\"\n";
+    let out = run_toml(
+        "att_rimp2_triplet_opt",
+        &body_at(water, 3, "sto-3g", "att-rimp2", "optimize", mp2),
+    );
+    assert_runs(&out, "open-shell att-rimp2 optimize on triplet water");
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("UHF + att-UMP2"),
+        "the final energy line names the unrestricted surface"
+    );
+}
+
 /// The attenuated, SCS and RS-MP2 + LR-RPA kinds run on a UHF reference at
 /// multiplicity > 1 and say so, and their correlation energies are the
 /// unrestricted ones: SCS with c_os = c_ss = 1 is UMP2, and RS-MP2-RPA's

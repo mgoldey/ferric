@@ -66,7 +66,7 @@ virtual blocks and, on a frozen core, $P^\sigma_{kI} = I^\sigma_{kI}/(\varepsilo
 The closed-shell builder `build_imat_ri` carries a factor $-2$ that is the
 weight of both spins; one spin's weight is half of it:
 
-<!-- excerpt: ferric-mp2/src/u_rimp2_gradient.rs::u_rimp2_gradient_timed -->
+<!-- excerpt: ferric-mp2/src/u_rimp2_gradient.rs::u_correlated_gradient_timed -->
 ```rust
 out.push(0.5 * crate::zvector::build_imat_ri(x, &b_full, &spins[s].orb));
 ```
@@ -83,7 +83,7 @@ Before each $J/K$ build the pair is scaled by the power of two that brings
 $\max|z|$ into $(\tfrac12, 1]$, so the screening sees a unit-scale density;
 the scale is exact.
 
-<!-- excerpt: ferric-mp2/src/u_rimp2_gradient.rs::u_rimp2_gradient_timed -->
+<!-- excerpt: ferric-mp2/src/u_rimp2_gradient.rs::u_correlated_gradient_timed -->
 ```rust
 -(v[s][(a, i)] + imat[s][(i, a_mo)] - imat[s][(a_mo, i)])
 ```

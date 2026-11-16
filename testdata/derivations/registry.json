@@ -4,6 +4,7 @@
     "cli:att-rimp2": [
       "attenuated-mp2",
       "att-rimp2-gradient",
+      "u-att-rimp2-gradient",
       "u-attenuated-mp2"
     ],
     "cli:b2plyp": [
@@ -138,6 +139,7 @@
     ],
     "optimize:att-rimp2": [
       "att-rimp2-gradient",
+      "u-att-rimp2-gradient",
       "geometry-search"
     ],
     "optimize:ksdft": [
@@ -291,6 +293,7 @@
     ],
     "py:run_optimize": [
       "att-rimp2-gradient",
+      "u-att-rimp2-gradient",
       "hf-gradient",
       "ks-gradient",
       "ri-mp2-gradient",
@@ -1008,6 +1011,14 @@
       ],
       "scripts": [
         "scripts/u_rimp2_gradient_sympy.py"
+      ]
+    },
+    "u-att-rimp2-gradient": {
+      "theory": [
+        "crates/ferric-mp2/theory.md#151-open-shell-attenuated-erfc-ri-mp2-gradient"
+      ],
+      "scripts": [
+        "scripts/u_att_rimp2_gradient_sympy.py"
       ]
     },
     "opmp3": {

@@ -4204,13 +4204,15 @@ impl ScfCfg {
 /// terfc), `scs-mp2` and `scs-mp2-2terfc` take the open-shell spin split of
 /// `ferric_mp2::u_rimp2::ri_mp2_spin_components_any` (`E_OS = E_αβ`,
 /// `E_SS = E_αα + E_ββ`) and `rs-mp2-rpa` the spin-summed U-dRPA, all on a UHF
-/// reference (energy only; their local and gradient paths stay closed-shell).
+/// reference (energy only, except that `att-rimp2` with erfc also has the
+/// unrestricted gradient; their local paths stay closed-shell).
 /// `tda`/`tddft` run the
 /// spin-conserving unrestricted response on a UHF/UKS reference (ROHF/ROKS is
 /// refused by `ferric_tddft::run_tddft`). `ksdft` on an open-shell
-/// molecule runs UKS (see [`Config::dispatch_kind`]). Every gradient path
-/// (`optimize`, `frequencies`) other than `uhf`/`rohf`/`ksdft` builds an RHF
-/// reference internally, and there is no unrestricted MP2 nuclear gradient.
+/// molecule runs UKS (see [`Config::dispatch_kind`]). The gradient paths
+/// (`optimize`, `frequencies`) of `rimp2` and `att-rimp2` run the
+/// unrestricted RI-MP2 gradient on a UHF reference; every other correlated
+/// gradient path builds an RHF reference.
 fn open_shell_kinds(task: &str) -> &'static [&'static str] {
     match task {
         "energy" => OPEN_SHELL_ENERGY_KINDS,
@@ -4241,9 +4243,11 @@ const OPEN_SHELL_ENERGY_KINDS: &[&str] = &[
 ];
 
 /// Kinds with an open-shell analytic gradient for `task = "optimize"` and
-/// (by finite differences of it) `task = "frequencies"`; `rimp2` is the unrestricted RI-MP2 gradient on a UHF reference
-/// (`ferric_mp2::u_rimp2_gradient`).
-const OPEN_SHELL_OPTIMIZE_KINDS: &[&str] = &["uhf", "rohf", "ksdft", "rimp2"];
+/// (by finite differences of it) `task = "frequencies"`; `rimp2` is the
+/// unrestricted RI-MP2 gradient on a UHF reference
+/// (`ferric_mp2::u_rimp2_gradient`), `att-rimp2` its erfc-attenuated form
+/// (`ferric_mp2::att_rimp2_gradient::total_u_att_rimp2_gradient_on`).
+const OPEN_SHELL_OPTIMIZE_KINDS: &[&str] = &["uhf", "rohf", "ksdft", "rimp2", "att-rimp2"];
 
 /// Kinds with an open-shell route for every other task.
 const OPEN_SHELL_SCF_KINDS: &[&str] = &["uhf", "rohf", "ksdft"];
@@ -4320,8 +4324,9 @@ impl Config {
     /// What the reference SCF takes when `[scf] jk` is omitted
     /// ([`ScfCfg::scf_jk_choice`]): RI-JK for `rs-mp2-rpa` (on the shared
     /// default JK-fit set); four-centre for an open shell (no fitted
-    /// default has been measured there) except the open-shell `rimp2`
-    /// optimization, which takes the matched RI-JK set like the closed shell and for an input that sets a key
+    /// default has been measured there) except the open-shell `rimp2` and
+    /// `att-rimp2` gradient tasks, which take the matched RI-JK set like the
+    /// closed shell, and for an input that sets a key
     /// only the four-centre route reads; otherwise RI-JK on the JK-fit set
     /// matched to the orbital basis (`ferric_scf::scf_jk::matched_jk_aux`),
     /// for an energy and for the MP2 optimizations alike (the fitted
@@ -4338,10 +4343,12 @@ impl Config {
                 why: "the rs-mp2-rpa default".into(),
             };
         }
-        // The open-shell rimp2 optimization is the one open-shell run with a
-        // fitted default: its UHF, Z-vector and two-electron derivative all
-        // share the RI-JK route, as the closed-shell MP2 optimizations do.
-        let open_rimp2_opt = kind == "rimp2" && is_gradient_task(&self.method.task);
+        // The open-shell rimp2 and att-rimp2 gradient tasks are the open-shell
+        // runs with a fitted default: their UHF, Z-vector and two-electron
+        // derivative all share the RI-JK route, as the closed-shell MP2
+        // optimizations do.
+        let open_rimp2_opt =
+            matches!(kind, "rimp2" | "att-rimp2") && is_gradient_task(&self.method.task);
         if self.molecule.multiplicity > 1 && !open_rimp2_opt {
             return OmittedJk::exact("open-shell reference".into());
         }
@@ -4353,7 +4360,7 @@ impl Config {
             mode: ScfJkMode::RiJk,
             aux: Some(matched_jk_aux(basis)),
             why: if self.molecule.multiplicity > 1 {
-                "the open-shell rimp2 optimize default".into()
+                format!("the open-shell {kind} optimize default")
             } else {
                 "the closed-shell MP2-family default".into()
             },
@@ -5927,10 +5934,10 @@ mod compat_guard_tests {
         }
     }
 
-    /// rimp2 optimizes an open shell on the U-RI-MP2 gradient and takes
-    /// frequencies by finite differences of it; oo-rimp2's optimize stays
-    /// closed-shell only. Dropping `rimp2` from `OPEN_SHELL_OPTIMIZE_KINDS`
-    /// fails the first assert.
+    /// rimp2 and att-rimp2 optimize an open shell on the U-RI-MP2 gradient
+    /// (Coulomb and erfc) and take frequencies by finite differences of it;
+    /// oo-rimp2's optimize stays closed-shell only. Dropping `rimp2` or
+    /// `att-rimp2` from `OPEN_SHELL_OPTIMIZE_KINDS` fails its assert.
     #[test]
     fn open_shell_rimp2_optimize_is_admitted_and_nothing_else_new() {
         assert!(cfg("rimp2", "optimize", "")
@@ -5939,6 +5946,9 @@ mod compat_guard_tests {
         assert!(cfg("rimp2", "frequencies", "")
             .validate_multiplicity(2)
             .is_ok());
+        for task in ["optimize", "frequencies"] {
+            assert!(cfg("att-rimp2", task, "").validate_multiplicity(2).is_ok());
+        }
         assert!(cfg("oo-rimp2", "optimize", "")
             .validate_multiplicity(2)
             .is_err());

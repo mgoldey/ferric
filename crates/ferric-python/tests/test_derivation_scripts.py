@@ -645,6 +645,42 @@ CASES = [
         ],
     ),
     (
+        "u_att_rimp2_gradient_sympy.py",
+        15,
+        [
+            (
+                "ck = corr  # correlation operator of amplitudes, b_full, Imat, RI response",
+                'ck = "coul"  # correlation operator of amplitudes, b_full, Imat, RI response',
+                "FAIL U",
+            ),
+            (
+                'deri_ref = m["deri_coul"]  # two-electron derivative operator',
+                'deri_ref = m["deri_erfc"]  # two-electron derivative operator',
+                "FAIL U",
+            ),
+            (
+                'eri_ref = m["eri_coul"]  # Z-vector and veff operator',
+                'eri_ref = m["eri_erfc"]  # Z-vector and veff operator',
+                "FAIL U",
+            ),
+            (
+                "dtot = d_hf[0] + d_hf[1] + d_rel[0] + d_rel[1]  # relaxed density",
+                "dtot = d_hf[0] + d_hf[1] + d_rel[0]  # relaxed density",
+                "FAIL U",
+            ),
+            (
+                "z[1] = 1.0 * z[1]  # beta Z-vector",
+                "z[1] = 0.0 * z[1]  # beta Z-vector",
+                "FAIL U",
+            ),
+            (
+                "p_scale = scale  # scaling of the unrelaxed densities",
+                "p_scale = 1.0  # scaling of the unrelaxed densities",
+                "FAIL U",
+            ),
+        ],
+    ),
+    (
         "u_rimp2_gradient_sympy.py",
         5,
         [

@@ -930,7 +930,7 @@ $q_{ia} = n^{\mathsf T}V^{-1}(P|ia)$ the fitted charge of an orthogonal pair.
 **Not covered.** The QQR-3 screened energy (`screen_thresh`) is not
 differentiated and is refused. The terfc operator has no derivative engine
 (`operator_kind_to_ffi` rejects it), so `att_operator = "terfc"` is refused
-for `optimize` and `frequencies`. Open-shell attenuated MP2 has no gradient.
+for `optimize` and `frequencies`. The open-shell (UHF) gradient is §15.1.
 
 **Checks.** `scripts/att_rimp2_gradient_sympy.py` proves the closed forms
 against an independent $t$-quadrature of
@@ -1585,6 +1585,82 @@ three amplitude blocks, two $B^{\sigma}$ and two $x^{\sigma}$, one full-MO
 $b^{\sigma}(P|pq)$ at a time, and four exchange-channel densities
 ($8\,n_{\mathrm{ao}}^2$ in place of $4\,n_{\mathrm{ao}}^2$); checked before the
 UHF.
+
+### 15.1 Open-shell attenuated (erfc) RI-MP2 gradient
+
+`att_rimp2_gradient.rs` `u_att_rimp2_gradient_analytical` and
+`total_u_att_rimp2_gradient_on`, over `u_rimp2_gradient.rs`
+`u_correlated_gradient_timed`; CLI `att-rimp2` with `task = "optimize"` or
+`"frequencies"` at multiplicity > 1, Python `run_optimize(method="att-rimp2")`
+on a UHF. Proof: `scripts/u_att_rimp2_gradient_sympy.py` (parts K, U, C, Z
+below).
+
+**Energy.** On a Coulomb UHF with orbitals $C_\sigma$ and energies
+$\varepsilon^\sigma$, §5.1 gives
+
+$$ E = E_{\mathrm{UHF}}[1/r] + s\,\big(E_{\alpha\alpha} + E_{\beta\beta} + E_{\alpha\beta}\big)[\hat w], \qquad \hat w = \frac{\operatorname{erfc}(\omega r)}{r}, $$
+
+the spin blocks of §15 built from $B^{\sigma}_{P,ia} = \sum_Q [V_{\hat w}^{-1/2}]_{PQ}(Q|ia)_{\hat w}$,
+both the 3-index integrals and the metric under erfc.
+
+**Lagrangian.** The Lagrangian of §15 with $E^{(2)} \to s\,E_c[\hat w]$:
+
+$$ \mathcal L = E_{\mathrm{UHF}}[1/r] + s\,E_c[\hat w;\,C_\alpha, C_\beta, \varepsilon] + \sum_\sigma\sum_{ai} z^\sigma_{ai}F^\sigma_{ai}[1/r] - \sum_\sigma\operatorname{Tr}\big[W^\sigma(C_\sigma^{\mathsf T}SC_\sigma - 1)\big]. $$
+
+Each term takes the operator of what it differentiates, as in §9.4:
+
+| term | differentiates | operator |
+|---|---|---|
+| $t^{\sigma\sigma'}$, $P^{\sigma}$, $x^{\sigma}$, $I^{\sigma}$ ($b^{\sigma}(P|pq)$) | $s\,E_c$ | erfc |
+| $v^{\sigma}[P]$ in $X^{\sigma}$ | $\varepsilon^\sigma$ in $E_c$ through $F^\sigma[1/r]$ | Coulomb |
+| UHF Z-vector coupling $J[D^{z,\alpha}+D^{z,\beta}] - K[D^{z,\sigma}]$ | the stationarity $F^\sigma_{ai}[1/r]$ | Coulomb |
+| $P_{\mathrm{occ}}v^\sigma[P_{\mathrm{rel}}]P_{\mathrm{occ}}$, $\partial_x U$ | $E_{\mathrm{UHF}}$ and $F^\sigma[1/r]$ | Coulomb |
+| $2\sum y^\sigma(P|ia)'_\sigma - \sum V'_{PQ}(V^{-1}u^\sigma)^P_{ia}y^{\sigma,Q}_{ia}$ | $E_c$ at fixed $C$ | erfc |
+
+The scaling enters only through $E_c$. Every first variation of $E_c$ is
+linear in $x^{\sigma}$ and in the unrelaxed $P^{\sigma}_{oo}$, $P^{\sigma}_{vv}$:
+$I^{\sigma}$, the frozen-core block $I^\sigma_{kI}/(\varepsilon_k-\varepsilon_I)$,
+$X^{\sigma}$, $z^{\sigma}$ and the RI response are all built from them. So the
+code multiplies $x^{\sigma}$ and the unrelaxed densities by $s$ and leaves the
+rest of the §15 assembly unchanged. In code the correlation operator is
+`UCorrelation::op` (amplitudes, $b^\sigma$ of $I^\sigma$, the 3c/2c response)
+and the Coulomb terms run on the reference's J/K route and on `bounds.op`
+(the two-electron derivative). Both J/K routes of §9.1 are supported.
+
+**Closed-shell limit.** For $\alpha \equiv \beta$ the reduction of §15
+($x^\sigma = x$, $I^\sigma = I/2$, $z^\sigma = z/2$) holds for any
+operator and scaling, so the open-shell gradient equals the closed-shell
+attenuated gradient of §9.4 **[check C]**. In Rust a closed-shell RHF written
+as a UHF gives the §9.4 gradient on both routes, with and without a frozen
+core, at $\omega = 1$ Å$^{-1}$ and $s = 1.2$
+(`open_shell_att_gradient_matches_closed_in_the_trivial_limit*`, bar
+$10^{-10}$ Ha/Bohr from the two Z-vector residuals).
+
+**The $\omega \to 0$ limit.** As in §9.4 the erfc integrals tend to the
+Coulomb ones with a first-order constant-kernel shift that vanishes in
+$(P|ia)$, so the gradient tends to the U-RI-MP2 gradient of §15
+**[check Z]**. In Rust: OH at $\omega = 10^{-7}$ Bohr$^{-1}$ against
+`u_rimp2` on the same UHF (`open_shell_att_gradient_is_u_rimp2_as_omega_goes_to_zero`).
+
+**Assembled gradient.** On a 1-D model with real $s$-Gaussian Coulomb and erfc
+integrals ($n_\alpha = 3$, $n_\beta = 2$), the analytic gradient equals
+Richardson differences of the re-solved $E_{\mathrm{UHF}} + s\,E_c[\hat w]$
+for $s = 1, 1.2$, with and without a frozen core **[check U]**; the model's
+closed forms are checked against a $t$-quadrature of the erfc kernel and
+their derivatives against differences **[check K]**.
+
+**Molecular checks.** `tests/u_att_rimp2_gradient_fd.rs` compares the code
+with Richardson differences of ferric's own `attenuated_ri_mp2` on a UHF (OH
+and NH2 doublets, 6-31G / cc-pVDZ-RI, four-centre and RI-JK, $\omega =
+1.0$ Å$^{-1}$ with $s = 1.2$ and a frozen core). The independent route is
+`tests/validation_u_att_rimp2_gradient_pyscf.rs`: the analytic gradient
+against Richardson differences of PySCF's UHF + DF-UMP2 energy on an erfc fit
+(`scripts/validation/gen_u_att_rimp2_gradient_pyscf.py`, OH and NH2,
+cc-pVDZ / cc-pVDZ-RI).
+
+**Not covered.** ROHF is refused for the reason of §15. The terfc operator
+has no derivative engine, and `scs-mp2` and `scs-mp2-2terfc` have no
+open-shell gradient; the CLI refuses them for `optimize` and `frequencies`.
 
 ## 16. Double hybrids
 
