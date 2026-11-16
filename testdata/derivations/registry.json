@@ -5,7 +5,8 @@
       "attenuated-mp2",
       "att-rimp2-gradient",
       "u-att-rimp2-gradient",
-      "u-attenuated-mp2"
+      "u-attenuated-mp2",
+      "terfc-rimp2-gradient"
     ],
     "cli:b2plyp": [
       "double-hybrid",
@@ -142,7 +143,8 @@
     "optimize:att-rimp2": [
       "att-rimp2-gradient",
       "u-att-rimp2-gradient",
-      "geometry-search"
+      "geometry-search",
+      "terfc-rimp2-gradient"
     ],
     "optimize:ksdft": [
       "ks-gradient",
@@ -246,7 +248,8 @@
       "harmonic-frequencies",
       "rrho-thermo",
       "ir-intensities",
-      "mbd"
+      "mbd",
+      "terfc-rimp2-gradient"
     ],
     "py:run_gw": [
       "gw"
@@ -305,7 +308,8 @@
       "scs-mp2-gradient",
       "u-ri-mp2-gradient",
       "geometry-search",
-      "mbd"
+      "mbd",
+      "terfc-rimp2-gradient"
     ],
     "py:run_optimize_qmmm": [
       "qmmm",
@@ -443,6 +447,15 @@
       ],
       "scripts": [
         "scripts/att_rimp2_gradient_sympy.py"
+      ]
+    },
+    "terfc-rimp2-gradient": {
+      "theory": [
+        "crates/ferric-mp2/theory.md#95-terfc-attenuated-ri-mp2-gradient",
+        "crates/ferric-integrals/theory.md#derivative-integrals-of-terf-and-terfc"
+      ],
+      "scripts": [
+        "scripts/terfc_rimp2_gradient_sympy.py"
       ]
     },
     "attenuated-mp2": {

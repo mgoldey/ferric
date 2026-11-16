@@ -377,6 +377,63 @@ Outside every table the tail form above is summed directly.
 Proof: `scripts/terf_identities_sympy.py` [two-center], [series], [boys-shape],
 [s-zero], [tail-form], [far-field], [s-bound], [terfc-split].
 
+## Derivative integrals of terf and terfc
+
+`Engine::new_3center_deriv` and `new_2center_deriv` with `Operator::terf` or
+`Operator::terfc` return the first nuclear derivatives of $(P|\mu\nu)$ and
+$(P|Q)$ in libint2's block order (9 and 6 blocks, "Derivative integrals and
+buffer sizing"). libint2 has no terf kernel, so the shim computes them with
+its own McMurchie-Davidson pass (`compute_cart_eri3_deriv`,
+`compute_cart_eri2_deriv`).
+
+**The Hermite derivative.** A Cartesian Gaussian on $\mathbf A$ differentiates as
+
+$$ \frac{\partial}{\partial A_x}\big(x_A^{i} e^{-a x_A^2}\big) = 2a\, x_A^{i+1} e^{-a x_A^2} - i\, x_A^{i-1} e^{-a x_A^2} . $$
+
+The product $x_A^i x_B^j e^{-a x_A^2 - b x_B^2}$ expands in Hermite Gaussians
+$\Lambda_t(x; P)$ with coefficients $E^{ij}_t$. The derivative is the same
+expansion with
+
+$$ \frac{\partial E^{ij}_t}{\partial A_x} \to 2a\,E^{i+1,j}_t - i\,E^{i-1,j}_t, \qquad t \le i + j + 1 , $$
+
+over the same $\Lambda_t$ (`hermite_deriv_first`). The ket side is unchanged,
+so the contraction with $R_{tuv}$ needs $R$ one order higher: total order
+$L = l_P + l_A + l_B + 1$. An auxiliary function on $\mathbf P$ alone has no
+partner, and its derivative uses $E^{i\pm1,0}$ the same way.
+
+**The third centre.** The derivatives with respect to all centres sum to
+zero, so the shim computes $\partial_P$ and $\partial_A$ and sets
+$\partial_B = -(\partial_P + \partial_A)$. In the 2-centre case
+$\partial_Q = -\partial_P$.
+
+**The kernel.** The kernel enters only through $R^n_{000}$. For terf it is
+$(-2\phi^2)^n(\phi/\theta)G_n(S, s)$ ("Two-center integrals over the terf
+kernel"), read from the tables at $n \le L$. For terfc the shim forms
+$R_{\mathrm{terfc}} = R_{\mathrm{Coulomb}} - R_{\mathrm{terf}}$ before the
+contraction (`md_kernel_R`), so both share the $E$ coefficients and the
+prefactor. The derivative reads $G$ one order higher than the value. The
+tables hold $m < 24$, so the engine refuses $L + 1 \ge 24$ (with s..g
+auxiliaries and s..f orbitals $L \le 11$).
+
+**Screening.** The derivative loop of the RI-MP2 gradient screens nothing:
+every $(P|\mu\nu)$ shell triple is evaluated. The terfc energy is also
+unscreened (no `eri3_screen_thresh`), so the gradient differentiates the same
+sum. Schwarz bounds are not used for terfc derivatives.
+
+**Checks.** `crates/ferric-integrals/tests/terfc_deriv_integrals.rs`:
+
+| Check | Systems | Measured | Bar |
+|---|---|---|---|
+| Coulomb kernel through the same MD derivative vs libint2 | water, cc-pVTZ + cc-pVTZ-RI, every class to $(g\vert ff)$ and $(g\vert g)$ | 3.8e-14 | 1e-10 |
+| terf and terfc derivatives vs five-point FD of the engine's values ($\omega r_0 = 1/\sqrt2$ and 4) | water, cc-pVDZ + cc-pVDZ-RI, every class | 2.6e-11 | 10× the Coulomb FD floor (3.9e-11) |
+| terfc derivative = libint2 Coulomb − table terf | same | 2.1e-14 | 1e-10 |
+
+Dropping the $-i\,E^{i-1,j}$ term fails all three. Writing
+$R_{\mathrm{Coulomb}} + R_{\mathrm{terf}}$ fails the second and third.
+Proof of the $s$-type closed forms, their derivatives against a $k$-space
+quadrature and the Hermite identity for $i, j \le 3$:
+`scripts/terfc_rimp2_gradient_sympy.py` [K], [H].
+
 ## Yukawa and Slater-geminal kernels
 
 | Kernel | `Operator` | libint2 class | Parameter |

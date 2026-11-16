@@ -928,9 +928,8 @@ which moves the fitted $K_{ij}^{ab}$ by $(2\omega/\sqrt\pi)\,q_{ia}q_{jb}$ with
 $q_{ia} = n^{\mathsf T}V^{-1}(P|ia)$ the fitted charge of an orthogonal pair.
 
 **Not covered.** The QQR-3 screened energy (`screen_thresh`) is not
-differentiated and is refused. The terfc operator has no derivative engine
-(`operator_kind_to_ffi` rejects it), so `att_operator = "terfc"` is refused
-for `optimize` and `frequencies`. The open-shell (UHF) gradient is §15.1.
+differentiated and is refused. The terfc operator is §9.5. The open-shell
+(UHF) gradient is §15.1.
 
 **Checks.** `scripts/att_rimp2_gradient_sympy.py` proves the closed forms
 against an independent $t$-quadrature of
@@ -943,6 +942,58 @@ the code with Richardson differences of `attenuated_ri_mp2` (H2O, CH3F with
 and without a frozen core, acetaldehyde, $\omega = 1.0$ Å$^{-1}$ with $s = 1.2$,
 an RI-JK reference), checks the translational sum, and checks the
 $\omega = 10^{-7}$ Bohr$^{-1}$ limit against `rimp2_gradient_analytical`.
+
+### 9.5 terfc-attenuated RI-MP2 gradient
+
+The `att_operator = "terfc"` energy is
+
+$$ E = E_{\mathrm{HF}}[1/r] + E_c[\hat w], \qquad \hat w = \frac{\operatorname{terfc}(r; r_0, \omega)}{r}, $$
+
+with $(P|\mu\nu)_{\hat w}$ and $V_{\hat w}$ both under terfc and no scaling.
+The Lagrangian is that of §9.4 with terfc in place of erfc, and the operator
+table of §9.4 holds row by row: terfc in $t$, $\tilde T$, the unrelaxed
+densities, $x^P_{ia}$, $B^P_{pq}$, $I$ and the 3c/2c response; Coulomb in the
+Z-vector coupling, the $(2J-K)[D^{\mathrm{corr}}]$ term, $v^{\mathrm{s1occ}}$
+and the four-centre (or RI-JK) derivative. The code is the RI-MP2 gradient
+with the correlation operator `Operator::terfc(r0)` or
+`Operator::terfc_with_omega(r0, ω)` and a Coulomb reference
+(`terfc_rimp2_gradient_analytical`, `total_terfc_rimp2_gradient_on`).
+
+**The derivative integrals.** $\partial(P|\mu\nu)_{\hat w}$ and
+$\partial V_{\hat w}$ come from the terf table engine
+(`crates/ferric-integrals/theory.md`, "Derivative integrals of terf and
+terfc"). For $s$ functions, with $A$, $\theta^2 = \rho$ and
+$1/\phi^2 = 1/\rho + 1/\omega^2$ as in §9.4,
+
+$$ (\,\cdot\,|\hat w|\,\cdot\,) = A\Big[F_0(\rho R^2) - \frac{\phi}{\theta}\,G_0(\phi^2R^2, \phi^2r_0^2)\Big], $$
+
+and only $S = \phi^2R^2$ depends on the nuclei, so the derivative is the
+chain rule through $\partial_S G_0 = -G_1$ with $s = \phi^2 r_0^2$ fixed.
+
+**The $r_0 \to 0$ limit.** $G_0(S, 0) = F_0(S)$, so at fixed $\omega$
+$\operatorname{terfc}(r; 0, \omega) = \operatorname{erfc}(\omega r)$ and the
+gradient is the erfc gradient of §9.4. $\operatorname{terf}$ is even in $r_0$,
+so the difference is $O(r_0^2)$.
+
+**Not covered.** Open shells (the UHF form of §15.1 with terfc) and
+`scs-mp2-2terfc` have no gradient yet; the CLI and Python refuse both for
+`optimize` and `frequencies`. A decoupled `metric_op` and $\kappa$
+regularization are refused.
+
+**Checks.** `scripts/terfc_rimp2_gradient_sympy.py` proves the $s$-type terf
+integral and its $R$-derivative against a $k$-space quadrature of the kernel's
+Fourier transform (no $G_0$), $G_1 = -\partial_S G_0$ symbolically, the
+Hermite derivative identity, and the assembled Lagrangian on a 1-D model with
+real $s$-Gaussian Coulomb and terfc integrals against the re-solved energy
+($\omega r_0 = 1/\sqrt2$ and 4, frozen core 0 and 1; 1.1e-10 relative), and
+the $r_0 \to 0$ limit **[K] [H] [L] [R]**.
+`crates/ferric-mp2/tests/terfc_rimp2_gradient_fd.rs` compares the code with
+Richardson differences of `ri_mp2` under terfc ($r_0 = 1.05$ Å): H2O/cc-pVDZ
+(8.2e-10 Ha/Bohr), H2O at $\omega r_0 = 4$ (1.8e-9), H2O on an RI-JK reference
+with one frozen core (1.7e-9), CH3F/cc-pVDZ with two frozen cores (4.0e-10),
+acetaldehyde/6-31G* (5.7e-10), against the bar of §9.4's test (2.1e-7). The
+translational sum is below 7e-13. At $r_0 = 10^{-6}$ Bohr the gradient equals
+the erfc gradient to 1.2e-14 (bar 1e-9; the gap at $r_0 = 1.05$ Å is 7.4e-3).
 
 ## 10. Static polarizability
 
