@@ -711,7 +711,15 @@ fn attenuated_scs_and_rs_kinds_run_on_a_uhf_triplet() {
         &body_at(water, 3, "sto-3g", "rs-mp2-rpa", "energy", mp2),
     );
     assert_runs(&rs, "rs-mp2-rpa on triplet water");
-    assert!(String::from_utf8_lossy(&rs.stdout).contains("reference = UHF"));
+    // The label is padded to align with its neighbours, so match the line,
+    // not a fixed number of spaces.
+    let rs_out = String::from_utf8_lossy(&rs.stdout);
+    assert!(
+        rs_out
+            .lines()
+            .any(|l| l.trim_start().starts_with("reference") && l.contains("= UHF")),
+        "rs-mp2-rpa on a triplet prints its UHF reference:\n{rs_out}"
+    );
 }
 
 /// Reachability anchor: the open-shell kinds and closed-shell singlets are
