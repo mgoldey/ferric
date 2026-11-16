@@ -435,6 +435,16 @@ full-Fock Hylleraas functional of OMP2 (Bozkaya et al., JCP 135, 104103
 (2011)); it is invariant to occupied–occupied and virtual–virtual rotations,
 so occupied–virtual stationarity is full stationarity.
 
+**Frozen core.** With `frozen_core` $= n_c > 0$ the lowest $n_c$ orbitals
+(of each spin, unrestricted) are left out of the MP2 sum and are not rotated:
+$\kappa$ has only active-occupied–virtual entries $\kappa_{ak}$,
+$k \ge n_c$, and the core columns of $C$ stay those of the reference SCF.
+The semicanonical frame diagonalizes the active block and leaves the core
+block alone. Both drivers (`oo_rimp2.rs`, `u_oo_rimp2.rs`) use this
+convention. The energy is then stationary in the active–virtual rotations
+only; it is not stationary in core–active or core–virtual rotations, which
+is why the nuclear gradient (zero orbital response) refuses $n_c > 0$.
+
 **Rotation.** $C \leftarrow C\,U(\kappa)$ with the Cayley transform
 (`orbital_rotation.rs:53`)
 
@@ -1471,11 +1481,18 @@ $C^\alpha = C^\beta$ and $n_\alpha = n_\beta$ the kernel gives identical
 $\alpha$ and $\beta$ blocks, and with $B = 0$ it returns zero
 **[closed-shell-anchor]**.
 
-The assembly indexes the gradient columns as MO indices $0..n_{\rm occ}$ and
-`add_hf_gradient` asserts that the kernel returned $n_{\rm occ}$ columns.
-The kernel returns the active columns only, so `u_oo_ri_mp2` with
-`frozen_core > 0` does not reach a frozen-core gradient. The bracketed names
-are the checks of `scripts/u_oo_rimp2_response_sympy.py`.
+**Frozen core.** The assembly indexes the gradient columns as MO indices
+$0..n_{\rm occ}$, and the kernel returns the active columns
+$n_c..n_{\rm occ}$ only. `embed_active_columns` puts the kernel's columns at
+MO columns $n_c..n_{\rm occ}$ (the core columns are zero) before
+`add_hf_gradient`. The Fock response needs no change: $W^\sigma$ is zero on
+the core rows and columns, and $\delta F^\sigma_{\rm MO}$ is the same for any
+$\kappa^\tau_{ck}$. The back-rotation and the step take the active columns
+only (section 7, "Frozen core"). With one frozen orbital per spin, the
+transcribed assembly equals a Richardson difference of $E_{\rm UHF}$ plus the
+active-space spin-orbital MP2 energy (core block of the semicanonical frame
+left alone) **[assembled-vs-fd-frozen-core]**. The bracketed names are the
+checks of `scripts/u_oo_rimp2_response_sympy.py`.
 
 ## 15. Unrestricted RI-MP2 nuclear gradient
 

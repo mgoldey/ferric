@@ -40,6 +40,10 @@ four-centre ERI from a second factor for the UHF J/K. Each check prints
      back-rotation U_v g U_o^T) equals a Richardson difference of
      E_UHF + E_MP2(spin-orbital, semicanonical) at non-stationary,
      non-semicanonical orbitals.
+  6b assembled-vs-fd-frozen-core: as 6 with one frozen core orbital per
+     spin. The core orbitals are not rotated and are left out of the MP2 sum;
+     the kernel's active columns land at MO columns first_occ.. (the
+     embed_active_columns step) before the UHF and Fock-response terms.
   7  closed-shell-anchor (exactness anchor): with C_alpha = C_beta and
      n_alpha = n_beta the kernel gives same_a = same_b and ab_a = ab_b
      exactly, and with B = 0 it returns zero.
@@ -58,6 +62,7 @@ Mutations (each turns the named check red):
   - GradientB::extract's occupied offset first_occ + i -> i     [kernel-vs-fd-frozen-core]
   - back-rotation U_o^T -> U_o                                   [assembled-vs-fd]
   - add_hf_gradient 2 F_ck -> 1 F_ck                             [assembled-vs-fd]
+  - embed_active_columns at columns 0.. instead of first_occ..   [assembled-vs-fd-frozen-core]
   - pair_combination's last term - q B -> + q B                  [pair-combination]
 
 Run: python3 scripts/u_oo_rimp2_response_sympy.py  (needs sympy, numpy, scipy)
@@ -338,6 +343,14 @@ def add_hf_gradient(g_mp2, f_mo, nocc):
     return g
 
 
+def embed_active_columns(g_act, first_occ, nocc_total):
+    nvir, nocc = g_act.shape
+    assert first_occ + nocc == nocc_total
+    g = np.zeros((nvir, nocc_total))
+    g[:, first_occ:nocc_total] = g_act
+    return g
+
+
 def embed_u_density(p_oo, p_vv, first_occ, nocc_total, nmo):
     w = np.zeros((nmo, nmo))
     no, nv = p_oo.shape[0], p_vv.shape[0]
@@ -348,25 +361,27 @@ def embed_u_density(p_oo, p_vv, first_occ, nocc_total, nmo):
     return w
 
 
-def u_gradient_solver_frame(h, eri, bfac, ca, cb, na, nb):
-    """Full gradient (g_a, g_b), shape (nvir, nocc), first_occ = 0."""
+def u_gradient_solver_frame(h, eri, bfac, ca, cb, na, nb, fc=0):
+    """Full gradient (g_a, g_b), shape (nvir, nocc - fc): active columns only."""
     _, f_a, f_b = compute_uhf_energy(eri, ca, cb, na, nb, h)
-    u_a, eps_a = semicanonical_rotation(ca.T @ f_a @ ca, 0, na)
-    u_b, eps_b = semicanonical_rotation(cb.T @ f_b @ cb, 0, nb)
+    u_a, eps_a = semicanonical_rotation(ca.T @ f_a @ ca, fc, na)
+    u_b, eps_b = semicanonical_rotation(cb.T @ f_b @ cb, fc, nb)
     c_a_sc, c_b_sc = ca @ u_a, cb @ u_b
     bfa, bfb = b_full_mo(bfac, c_a_sc), b_full_mo(bfac, c_b_sc)
-    t_aa, t_bb, t_ab = amplitudes(bfa, bfb, eps_a, eps_b, na, nb, 0)
-    ba = GradientB(bfa, na, NBF - na, 0, na)
-    bb = GradientB(bfb, nb, NBF - nb, 0, nb)
+    t_aa, t_bb, t_ab = amplitudes(bfa, bfb, eps_a, eps_b, na, nb, fc)
+    ba = GradientB(bfa, na - fc, NBF - na, fc, na)
+    bb = GradientB(bfb, nb - fc, NBF - nb, fc, nb)
     bl = u_mp2_orbital_gradient_kernel(t_aa, t_bb, t_ab, ba, bb, VV_CONTRACT_AUX_SLAB)
     g_mp2_a, g_mp2_b = bl["same_a"] + bl["ab_a"], bl["same_b"] + bl["ab_b"]
     f_mo_a = c_a_sc.T @ f_a @ c_a_sc
     f_mo_b = c_b_sc.T @ f_b @ c_b_sc
+    g_mp2_a = embed_active_columns(g_mp2_a, fc, na)
     g_a = add_hf_gradient(g_mp2_a, f_mo_a, na)
+    g_mp2_b = embed_active_columns(g_mp2_b, fc, nb)
     g_b = add_hf_gradient(g_mp2_b, f_mo_b, nb)
     p_oo_a, p_vv_a, p_oo_b, p_vv_b = u_mp2_density_from_amplitudes(t_aa, t_bb, t_ab)
-    w_a = embed_u_density(p_oo_a, p_vv_a, 0, na, NBF)
-    w_b = embed_u_density(p_oo_b, p_vv_b, 0, nb, NBF)
+    w_a = embed_u_density(p_oo_a, p_vv_a, fc, na, NBF)
+    w_b = embed_u_density(p_oo_b, p_vv_b, fc, nb, NBF)
     pa_ao = c_a_sc @ w_a @ c_a_sc.T
     pb_ao = c_b_sc @ w_b @ c_b_sc.T
     j_tot, k_a, k_b = spin_jk(eri, pa_ao, pb_ao)
@@ -384,12 +399,12 @@ def u_gradient_solver_frame(h, eri, bfac, ca, cb, na, nb):
     add_response(g_b, c_b_sc, k_b, w_b, f_mo_b, nb)
 
     def back(g, u, nocc, nocc_total):
-        g_act = g[:, 0:nocc]
-        u_o = u[0:nocc, 0:nocc]
+        g_act = g[:, fc : fc + nocc]
+        u_o = u[fc : fc + nocc, fc : fc + nocc]
         u_v = u[nocc_total:, nocc_total:]
         return u_v @ g_act @ u_o.T
 
-    return back(g_a, u_a, na, na), back(g_b, u_b, nb, nb)
+    return back(g_a, u_a, na - fc, na), back(g_b, u_b, nb - fc, nb)
 
 
 # ========================================== independent routes
@@ -413,13 +428,14 @@ def rotated(c, nocc, c_vir, k_occ, step):
     return c @ expm(k - k.T)
 
 
-def u_mp2_energy_so(bfac, ca, cb, ea, eb, na, nb):
-    """Brute-force spin-orbital MP2, 1/4 sum |<IJ||AB>|^2 / D (no block split)."""
+def u_mp2_energy_so(bfac, ca, cb, ea, eb, na, nb, fc=0):
+    """Brute-force spin-orbital MP2, 1/4 sum |<IJ||AB>|^2 / D (no block split),
+    over the active occupied spin orbitals (the lowest fc of each spin frozen)."""
     n = NBF
     cso = np.hstack([ca, cb])
     spin = np.array([0] * n + [1] * n)
     eso = np.concatenate([ea, eb])
-    occ = list(range(na)) + [n + k for k in range(nb)]
+    occ = list(range(fc, na)) + [n + k for k in range(fc, nb)]
     vir = list(range(na, n)) + [n + k for k in range(nb, n)]
     bso = np.einsum("Pmn,mp,nq->Ppq", bfac, cso, cso)
     chem = np.einsum("Ppq,Prs->pqrs", bso, bso)
@@ -433,19 +449,22 @@ def u_mp2_energy_so(bfac, ca, cb, ea, eb, na, nb):
     return 0.25 * np.sum(asym**2 / dd)
 
 
-def u_functional(h, eri, bfac, ca, cb, na, nb):
-    """E_UHF + E_MP2 in each spin's semicanonical frame (numpy eigh, not the transcription)."""
+def u_functional(h, eri, bfac, ca, cb, na, nb, fc=0):
+    """E_UHF + E_MP2 in each spin's semicanonical frame (numpy eigh, not the
+    transcription); the core block (the lowest fc) is left as it is."""
     e_hf, fa, fb = compute_uhf_energy(eri, ca, cb, na, nb, h)
     out = []
     for c, f, no in ((ca, fa, na), (cb, fb, nb)):
         fm = c.T @ f @ c
-        wo, vo = np.linalg.eigh(fm[:no, :no])
+        wo, vo = np.linalg.eigh(fm[fc:no, fc:no])
         wv, vv = np.linalg.eigh(fm[no:, no:])
-        u = np.zeros_like(fm)
-        u[:no, :no], u[no:, no:] = vo, vv
-        out.append((c @ u, np.concatenate([wo, wv])))
+        u = np.eye(NBF)
+        u[fc:no, fc:no], u[no:, no:] = vo, vv
+        eps = np.diag(fm).copy()
+        eps[fc:no], eps[no:] = wo, wv
+        out.append((c @ u, eps))
     (sa, ea), (sb, eb) = out
-    return e_hf + u_mp2_energy_so(bfac, sa, sb, ea, eb, na, nb)
+    return e_hf + u_mp2_energy_so(bfac, sa, sb, ea, eb, na, nb, fc)
 
 
 def derivation_blocks(bfac, ca, cb, ea, eb, na, nb):
@@ -639,23 +658,30 @@ def check_kernel():
 
 def check_assembled():
     ca, cb = random_orbitals(0.15), random_orbitals(0.15)
-    ga, gb = u_gradient_solver_frame(H, ERI, BFAC, ca, cb, NA, NB)
-    worst, gmax = 0.0, 0.0
-    for spin, g, no in (("a", ga, NA), ("b", gb, NB)):
-        fd = np.zeros_like(g)
-        for c, k in itertools.product(range(NBF - no), range(no)):
+    for fc, name in ((0, "assembled-vs-fd"), (1, "assembled-vs-fd-frozen-core")):
+        ga, gb = u_gradient_solver_frame(H, ERI, BFAC, ca, cb, NA, NB, fc)
+        worst, gmax = 0.0, 0.0
+        for spin, g, no in (("a", ga, NA), ("b", gb, NB)):
+            fd = np.zeros_like(g)
+            for c, k in itertools.product(range(NBF - no), range(no - fc)):
 
-            def e_of(s, c=c, k=k, spin=spin):
-                if spin == "a":
+                def e_of(s, c=c, k=k, spin=spin, fc=fc):
+                    if spin == "a":
+                        return u_functional(
+                            H, ERI, BFAC, rotated(ca, NA, c, fc + k, s), cb, NA, NB, fc
+                        )
                     return u_functional(
-                        H, ERI, BFAC, rotated(ca, NA, c, k, s), cb, NA, NB
+                        H, ERI, BFAC, ca, rotated(cb, NB, c, fc + k, s), NA, NB, fc
                     )
-                return u_functional(H, ERI, BFAC, ca, rotated(cb, NB, c, k, s), NA, NB)
 
-            fd[c, k] = richardson(e_of, 1e-3)
-        worst = max(worst, rel_err(g, fd))
-        gmax = max(gmax, np.max(np.abs(fd)))
-    check("assembled-vs-fd", worst < 1e-9, f"max rel {worst:.1e} (max|g| {gmax:.2e})")
+                fd[c, k] = richardson(e_of, 1e-3)
+            worst = max(worst, rel_err(g, fd))
+            gmax = max(gmax, np.max(np.abs(fd)))
+        check(
+            name,
+            worst < 1e-9,
+            f"max rel {worst:.1e} (max|g| {gmax:.2e}, frozen core {fc})",
+        )
 
 
 check_symbolic()

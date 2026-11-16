@@ -11,6 +11,11 @@
 //! is the full-Fock one, evaluated in each spin's semicanonical frame, the
 //! same construction as closed-shell `oo_rimp2` (defect F2, 2026-09-24).
 //!
+//! Frozen core: the lowest `frozen_core` orbitals of each spin are excluded
+//! from the MP2 sum and are not rotated. The step and the gradient cover
+//! active-occupied/virtual pairs only, the convention of the closed-shell
+//! driver.
+//!
 //! J/K route: the reference SCF's, as in the closed-shell driver. When the
 //! UHF/ROHF reference fitted J and K on one auxiliary basis (`scf_jk =
 //! "rijk"`), every J/K here (UHF energy, both Fock matrices, the Fock
@@ -61,6 +66,8 @@ pub struct UOoRiMp2Config {
     /// described on `grad_conv`.
     pub energy_conv: f64,
     /// Number of lowest occupied orbitals per spin excluded from correlation.
+    /// These orbitals are also kept fixed: only active-occupied/virtual
+    /// rotations are optimized, as in the closed-shell `oo_rimp2`.
     pub frozen_core: usize,
     /// Level shift on the approximate diagonal Hessian (Ha).
     pub level_shift: f64,
@@ -377,21 +384,6 @@ fn check_u_oo_reference(uhf: &ScfResult) -> Result<(), FerricError> {
     Ok(())
 }
 
-/// Unrestricted OO-RI-MP2 correlates every occupied orbital. The orbital
-/// gradient assembly sizes its occupied block by the total occupied count
-/// while the response kernel returns only the active orbitals, so a frozen
-/// core would mismatch the two (OH/6-31G doublet, frozen_core = 1: 5 columns
-/// against 4). The frozen-core case is refused until that indexing is built.
-pub fn refuse_u_oo_frozen_core(frozen_core: usize) -> Result<(), FerricError> {
-    if frozen_core > 0 {
-        return Err(FerricError::General(format!(
-            "u_oo_ri_mp2: frozen_core = {frozen_core} is not supported for the unrestricted \
-             orbital-optimized RI-MP2; set frozen_core = 0 (correlate every occupied orbital)"
-        )));
-    }
-    Ok(())
-}
-
 /// MO-basis orbital energies from diagonal of F_mo = C^T F C.
 fn orbital_energies_mo(c: &Array2<f64>, f: &Array2<f64>) -> Vec<f64> {
     let f_mo = c.t().dot(f).dot(c);
@@ -455,6 +447,20 @@ fn check_u_bfull_alloc(
         peak,
         budget_bytes,
     )
+}
+
+/// Place the kernel's active-occupied columns (`g_act`, shape
+/// `(nvir, nocc_active)`) at MO columns `first_occ..first_occ + nocc_active`
+/// of a `(nvir, nocc_total)` matrix. The frozen-core columns stay zero: the
+/// U-MP2 energy has no integral term in a frozen orbital, and those columns
+/// are dropped again before the step (the core orbitals are not rotated).
+fn embed_active_columns(g_act: &Array2<f64>, first_occ: usize, nocc_total: usize) -> Array2<f64> {
+    let (nvir, nocc) = g_act.dim();
+    assert_eq!(first_occ + nocc, nocc_total);
+    let mut g = Array2::<f64>::zeros((nvir, nocc_total));
+    g.slice_mut(ndarray::s![.., first_occ..nocc_total])
+        .assign(g_act);
+    g
 }
 
 /// Apply Brillouin HF gradient term `+2·F^σ_{ai}` (MO basis) to the existing
@@ -680,11 +686,15 @@ fn u_gradient_solver_frame(
     };
     let f_mo_a = p.c_a_sc.t().dot(&p.f_a).dot(&p.c_a_sc);
     let f_mo_b = p.c_b_sc.t().dot(&p.f_b).dot(&p.c_b_sc);
+    // The kernel returns the active columns; the assembly below indexes the
+    // occupied columns as MO indices `0..nocc_total`.
+    let g_mp2_a = embed_active_columns(&g_mp2_a, first_occ, nocc_total_a);
     let mut g_a = add_hf_gradient(&g_mp2_a, &f_mo_a, nocc_total_a);
     let mut g_b = if nocc_b == 0 {
-        // No β occupied orbitals — zero β gradient (β is closed-shell vacuum).
+        // No active β occupied orbitals: no β rotation is taken.
         Array2::<f64>::zeros((nvir_b, nocc_total_b))
     } else {
+        let g_mp2_b = embed_active_columns(&g_mp2_b, first_occ, nocc_total_b);
         add_hf_gradient(&g_mp2_b, &f_mo_b, nocc_total_b)
     };
 
@@ -803,7 +813,6 @@ pub fn u_oo_ri_mp2(
     ext: Option<&ExternalPotential>,
 ) -> Result<UOoRiMp2Result, FerricError> {
     check_u_oo_reference(uhf)?;
-    refuse_u_oo_frozen_core(config.frozen_core)?;
     let ctx = ParallelContext::default();
     let nbas = obs.nbasis();
     let nelec_total = mol.nelec();

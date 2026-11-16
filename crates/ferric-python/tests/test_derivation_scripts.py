@@ -208,6 +208,11 @@ CASES = [
                 "FAIL [assembled-vs-fd]",
             ),
             (
+                "g[:, first_occ:nocc_total] = g_act",
+                "g[:, 0 : nocc_total - first_occ] = g_act",
+                "FAIL [assembled-vs-fd-frozen-core]",
+            ),
+            (
                 "return p * a - q * a.T + p * b.T - q * b",
                 "return p * a - q * a.T + p * b.T + q * b",
                 "FAIL [pair-combination]",
