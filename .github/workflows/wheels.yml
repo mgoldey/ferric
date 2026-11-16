@@ -1760,7 +1760,22 @@ jobs:
           # mpi.h, and bindgen needs libclang at build time. Without it the
           # build fails inside the `mpi` crate before any ferric code
           # compiles.
-          dnf install -y openmpi-devel clang llvm-devel
+          #
+          # clang is pinned to 21.1.8, the last release that works. The
+          # AlmaLinux 8 appstream repo is rolling: between the 2026-11-13 and
+          # 2026-11-14 scheduled runs (same ferric sha, same Cargo.lock, same
+          # rustc 1.100.0, same OpenMPI 4.1.1-5) it moved clang/llvm-devel from
+          # 21.1.8 to 22.1.8, and bindgen 0.69.5 (locked via mpi-sys 0.2.3)
+          # then emitted ompi_status_public_t as an opaque blob with only an
+          # `_address` field, so mpi 0.7.0 failed with E0609 "no field
+          # `MPI_SOURCE`". Older builds stay installable by full version-release,
+          # so an exact pin is reproducible. Moving to clang 22 needs
+          # mpi >= 0.8.2 (mpi-sys 0.2.4, bindgen 0.72).
+          CLANG_NEVRA="21.1.8-1.module_el8.10.0+4172+b6b13d75"
+          dnf install -y openmpi-devel \
+            "clang-${CLANG_NEVRA}" "clang-libs-${CLANG_NEVRA}" \
+            "llvm-devel-${CLANG_NEVRA}" "llvm-libs-${CLANG_NEVRA}" \
+            "llvm-${CLANG_NEVRA}"
           test -x /usr/lib64/openmpi/bin/mpicc || {
             echo "::error::openmpi-devel installed but /usr/lib64/openmpi/bin/mpicc is missing"
             exit 1
