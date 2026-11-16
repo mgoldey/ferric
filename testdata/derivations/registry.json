@@ -313,7 +313,8 @@
     ],
     "py:run_pdep_rpa": [
       "pdep-rpa",
-      "u-pdep-rpa"
+      "u-pdep-rpa",
+      "rpa-gradient"
     ],
     "py:run_qmmm": [
       "qmmm"

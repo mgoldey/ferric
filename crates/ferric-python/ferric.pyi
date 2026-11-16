@@ -2414,6 +2414,12 @@ class PdepRpaResult:
     def n_eigenpotentials(self) -> int: ...
     @property
     def e_rpa_dft_diag(self) -> float | None: ...
+    def gradient(self) -> NDArray[np.float64] | None:
+        """Analytic nuclear gradient of total_energy (natoms, 3; Hartree/Bohr;
+        the Molecule's atom order) if run_pdep_rpa had with_gradient=True, else
+        None."""
+        ...
+
     @property
     def eigensolver_converged(self) -> bool:
         """Whether the static-dielectric eigensolve met its convergence tolerance."""
@@ -6068,6 +6074,7 @@ def run_pdep_rpa(
     export_eigpot_count: int | None = None,
     cube_spacing: float | None = None,
     cube_margin: float | None = None,
+    with_gradient: bool = False,
 ) -> PdepRpaResult:
     """PDEP-RPA (dielectric eigendecomposition RPA).
 
@@ -6098,6 +6105,18 @@ def run_pdep_rpa(
     export_eigpot_count (default 10) eigenpotential densities as
     ``P_eigpot_NNN.cube`` on a grid of cube_spacing (0.2) / cube_margin (4.0)
     Bohr. Closed-shell only (the property bundle shares the CLI's code).
+
+    GRADIENT. with_gradient=True also computes the analytic nuclear gradient of
+    ``total_energy`` (the Z-vector relaxed RHF + RI-dRPA gradient the CLI's
+    ``task = "optimize"`` uses), read with ``result.gradient()``: (natoms, 3),
+    Hartree/Bohr, the Molecule's atom order, the same layout as
+    ``RiMp2Result.gradient()``. It differentiates the full-rank dense Coulomb
+    RPA on an exact four-centre closed-shell RHF reference, so an unset
+    trunc_thresh is 0 (instead of 1e-4) and an unset scf_density_conv is 1e-9.
+    These raise ValueError before any integral is computed: multiplicity > 1,
+    a nonzero trunc_thresh, chi0_sparsity other than "dense", k_builder="cosx",
+    df_j_aux / df_k_aux, point_charges / external_field / solvent, properties /
+    export_npz / compute_* / export_eigpot_*, and run_diagnostics.
     """
     ...
 

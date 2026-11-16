@@ -91,6 +91,109 @@ impl PyRsMp2RpaResult {
 /// be ignored with a warning). The mode actually used is echoed as
 /// `result.scf_jk` / `result.jk_auxbasis`.
 ///
+/// The analytic gradient of `E_RHF + E_c^RPA` on the run's own converged RHF
+/// (full rank, dense, Coulomb: `refuse_pdep_rpa_gradient` has screened the
+/// settings), the function behind the CLI's pdep-rpa `task = "optimize"`.
+fn pdep_rpa_total_gradient(
+    mol: &ferric_core::mol::Molecule,
+    prep: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    rhf: &ferric_scf::result::ScfResult,
+    cfg: &ferric_rpa::PdepRpaConfig,
+) -> Result<Array2<f64>, ferric_core::FerricError> {
+    ferric_rpa::gradient_analytic::rpa_analytic_gradient_on(
+        mol,
+        prep,
+        dfbs,
+        op,
+        bounds,
+        rhf,
+        cfg,
+        ferric_rpa::gradient_analytic::RingOrder::Full,
+    )
+    .map(|g| g.gradient)
+}
+
+/// What `run_pdep_rpa(with_gradient=True)` must refuse: every setting that
+/// makes the reported energy something other than the full-rank dense
+/// Coulomb RI-dRPA on an exact closed-shell RHF reference, the one
+/// `ferric_rpa::gradient_analytic` differentiates.
+struct GradientScope<'a> {
+    multiplicity: usize,
+    trunc_thresh: Option<f64>,
+    chi0_sparsity: Option<&'a str>,
+    k_builder: Option<&'a str>,
+    /// `df_j_aux` / `df_k_aux` given (an RI-JK reference).
+    df_aux: bool,
+    /// Point charges, an external field or a solvent in the reference SCF.
+    environment: bool,
+    /// A property bundle, an NPZ export or eigenpotential cubes.
+    properties: bool,
+    run_diagnostics: bool,
+}
+
+/// Raise `ValueError` for any setting the analytic RPA gradient does not
+/// differentiate, before any integral is computed. The list is
+/// `gradient_analytic::check_analytic_scope` (full rank, dense chi0, dense
+/// sparsity, Coulomb) plus the reference-SCF settings the gradient does not
+/// see (it takes none of the external potential, PCM or COSX terms).
+fn refuse_pdep_rpa_gradient(s: &GradientScope<'_>) -> PyResult<()> {
+    let refuse = |what: String| {
+        Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "run_pdep_rpa: with_gradient=True {what}"
+        )))
+    };
+    if s.multiplicity > 1 {
+        return refuse(format!(
+            "is closed-shell only (there is no open-shell RPA gradient), but the molecule has \
+             multiplicity {}",
+            s.multiplicity
+        ));
+    }
+    if let Some(t) = s.trunc_thresh {
+        if t != 0.0 {
+            return refuse(format!(
+                "differentiates the full-rank energy, but trunc_thresh={t} truncates the PDEP \
+                 basis: omit trunc_thresh (it is 0 with with_gradient) or pass 0"
+            ));
+        }
+    }
+    if !matches!(
+        ferric_rpa::config::Chi0Sparsity::parse_config_str(s.chi0_sparsity),
+        Ok(ferric_rpa::config::Chi0Sparsity::Dense)
+    ) {
+        return refuse("differentiates dense chi0 only: omit chi0_sparsity".into());
+    }
+    if s.k_builder == Some("cosx") {
+        return refuse("has no COSX exchange response: use an exact k_builder or omit it".into());
+    }
+    if s.df_aux {
+        return refuse(
+            "differentiates the exact four-centre J/K reference: omit df_j_aux and df_k_aux".into(),
+        );
+    }
+    if s.environment {
+        return refuse(
+            "does not differentiate the point-charge / field / solvent terms of the reference: \
+             remove point_charges, external_field and solvent"
+                .into(),
+        );
+    }
+    if s.properties {
+        return refuse(
+            "returns the gradient only: remove properties, export_npz, compute_* and \
+             export_eigpot_*"
+                .into(),
+        );
+    }
+    if s.run_diagnostics {
+        return refuse("does not run the diagnostics pass: remove run_diagnostics".into());
+    }
+    Ok(())
+}
+
 /// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
 /// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
 #[pyfunction]
@@ -337,6 +440,8 @@ pub(crate) struct PyPdepRpaResult {
     pub(crate) density_matrix: Option<Array2<f64>>,
     pub(crate) mo_coeffs: Option<Array2<f64>>,
     pub(crate) orbital_energies: Option<Vec<f64>>,
+    /// `dE_total/dR` (natoms x 3, Hartree/Bohr) when solved with `with_gradient=True`.
+    pub(crate) gradient_data: Option<Array2<f64>>,
 }
 
 /// Getter body: `Some(array)` from an optional property, else `None`.
@@ -351,6 +456,14 @@ macro_rules! prop_array {
 
 #[pymethods]
 impl PyPdepRpaResult {
+    /// Analytic nuclear gradient of `total_energy` (RHF + RI-dRPA) as an
+    /// (natoms, 3) array in Hartree/Bohr, rows in the Molecule's atom order;
+    /// `None` unless the result came from `run_pdep_rpa(..., with_gradient=True)`.
+    fn gradient<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyArray2<f64>>> {
+        self.gradient_data
+            .as_ref()
+            .map(|g| PyArray2::from_array(py, g))
+    }
     /// Validation certificate of this result (see `RhfResult.certificate`):
     /// the method's grade from the validation page capped by the reference
     /// SCF's, its settings as `approximations`, the reference's as
@@ -703,7 +816,7 @@ impl PyPdepRpaResult {
     compute_resp_charges=None, compute_c6=None, c6_source=None,
     c6_partition=None, df_j_aux=None, df_k_aux=None,
     export_eigpot_prefix=None, export_eigpot_count=None,
-    cube_spacing=None, cube_margin=None,
+    cube_spacing=None, cube_margin=None, with_gradient=false,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_pdep_rpa(
@@ -754,6 +867,7 @@ pub(crate) fn run_pdep_rpa(
     export_eigpot_count: Option<usize>,
     cube_spacing: Option<f64>,
     cube_margin: Option<f64>,
+    with_gradient: bool,
 ) -> PyResult<PyPdepRpaResult> {
     use ferric_rpa::config::{QuadratureConfig, QuadratureScheme, SternheimerConfig};
     let prop_kwargs = PropertyKwargs {
@@ -786,6 +900,18 @@ pub(crate) fn run_pdep_rpa(
         cube_spacing,
         cube_margin,
     )?;
+    if with_gradient {
+        refuse_pdep_rpa_gradient(&GradientScope {
+            multiplicity: mol.inner.multiplicity,
+            trunc_thresh,
+            chi0_sparsity,
+            k_builder,
+            df_aux: df_j_aux.is_some() || df_k_aux.is_some(),
+            environment: point_charges.is_some() || external_field.is_some() || solvent.is_some(),
+            properties: prop_request.is_some() || cubes.is_some(),
+            run_diagnostics,
+        })?;
+    }
 
     use ferric_rpa::{run_pdep_rpa as run_pdep_rpa_inner, PdepRpaConfig};
 
@@ -803,6 +929,12 @@ pub(crate) fn run_pdep_rpa(
         budget_bytes_from_gb(memory_budget_gb),
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
     );
+    if with_gradient && scf_density_conv.is_none() {
+        // The analytic gradient's reference setting (`rpa_analytic_gradient`,
+        // the CLI optimize path): an energy-grade density threshold leaves
+        // an SCF residual that the Z-vector does not remove.
+        scf_config.density_conv = 1e-9;
+    }
     // Same opt-out spellings as run_rhf; unset keeps the exact four-centre J/K
     // (the CLI's pdep-rpa reference defaults to RI-JK on def2-universal-jkfit).
     scf_config.df_j_aux = df_j_aux.map(ferric_scf::rhf::normalize_df_aux);
@@ -829,7 +961,8 @@ pub(crate) fn run_pdep_rpa(
     }
     let cfg = PdepRpaConfig {
         frozen_core: frozen_core.unwrap_or(0),
-        trunc_thresh: trunc_thresh.unwrap_or(1e-4),
+        // The analytic gradient differentiates the full-rank energy.
+        trunc_thresh: trunc_thresh.unwrap_or(if with_gradient { 0.0 } else { 1e-4 }),
         eigensolver_max_vecs: 0,
         eigensolver_conv_thresh: lanczos_conv_thresh_or(eigensolver_conv_thresh, 1e-6),
         quadrature: QuadratureConfig {
@@ -857,6 +990,16 @@ pub(crate) fn run_pdep_rpa(
              eigenvalues_static/eigenpotentials are not verified to residual tolerance)"
         );
     }
+    let gradient_data = if with_gradient {
+        Some(
+            py.allow_threads(|| {
+                pdep_rpa_total_gradient(&mol.inner, &prep, &dfbs, op, &bounds, &rhf, &cfg)
+            })
+            .map_err(make_err)?,
+        )
+    } else {
+        None
+    };
     let certificate_data = ferric_mp2::certificate::with_anchor_envelope(
         ferric_rpa::certificate::pdep_rpa_certificate(
             &reference_certificate(&mol.inner, &rhf, &scf_config, &basis_set.inner),
@@ -899,6 +1042,7 @@ pub(crate) fn run_pdep_rpa(
         density_matrix: out.density_matrix,
         mo_coeffs: out.mo_coeffs,
         orbital_energies: out.orbital_energies,
+        gradient_data,
         rhf_energy: rhf.energy,
         e_rpa: r.e_rpa,
         total_energy: rhf.energy + r.e_rpa,
