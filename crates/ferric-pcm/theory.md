@@ -62,7 +62,7 @@ $$ S_{ij} = \frac{\operatorname{erf}(\xi_{ij} r_{ij})}{r_{ij}}, \qquad
    \quad (i\ne j), $$
 
 $$ S_{ii} = \frac{\xi_i\sqrt{2/\pi}}{\mathrm{swf}_i}, \qquad
-   D_{ii} = -\frac{\xi_i\sqrt{2/\pi}}{2R_i} \quad (`build_s_d_kind`). $$
+   D_{ii} = -\frac{\xi_i\sqrt{2/\pi}}{2R_i} $$ (`build_s_d_kind`).
 
 ### 2.2 `SdKind::PointCharge`
 
@@ -98,7 +98,7 @@ $$ \left[ 2\pi\frac{\varepsilon+1}{\varepsilon-1} I - DA \right] S\,q = -\left( 
 
 is multiplied through by $f/2\pi$ with
 
-$$ f(\varepsilon) = \frac{\varepsilon-1}{\varepsilon+1} \quad (`build_k_r`) , $$
+$$ f(\varepsilon) = \frac{\varepsilon-1}{\varepsilon+1} $$ (`build_k_r`),
 
 giving (`matrices.rs` `build_k_r`)
 
@@ -115,11 +115,11 @@ $K$, $R$ depend on geometry and $\varepsilon$ only and are built once per SCF
 $Q = K^{-1}R$ is not symmetric (because $D$ is not). The code applies its
 symmetric part (`solver.rs` `solve_pcm_charges`):
 
-$$ q = \tfrac12\left[ K^{-1} R v + R^{\mathsf T} (K^{\mathsf T})^{-1} v \right] = \tfrac12 (Q + Q^{\mathsf T})\, v \qquad (`solve_pcm_charges`), $$
+$$ q = \tfrac12\left[ K^{-1} R v + R^{\mathsf T} (K^{\mathsf T})^{-1} v \right] = \tfrac12 (Q + Q^{\mathsf T})\, v $$ (`solve_pcm_charges`),
 
 two LU solves ($Kx = Rv$ and $K^{\mathsf T}y = v$). The energy is
 
-$$ E_{\mathrm{pcm}} = \tfrac12\, q\cdot v = \tfrac12\, v^{\mathsf T} Q v \qquad (`solve_pcm_charges`), $$
+$$ E_{\mathrm{pcm}} = \tfrac12\, q\cdot v = \tfrac12\, v^{\mathsf T} Q v $$ (`solve_pcm_charges`),
 
 identical to the unsymmetrized quadratic form **[sympy 5]**. The order of
 the second term matters: $(K^{\mathsf T})^{-1}R^{\mathsf T}v = (RK^{-1})^{\mathsf T}v$
@@ -237,7 +237,7 @@ Fock matrix) plus the derivative of $E_{\mathrm{pcm}}$ at fixed AO density $P$
 `restricted_scf_gradient`, `unrestricted_scf_gradient` and
 `restricted_open_scf_gradient`). With
 
-$$ x = K^{-1}Rv, \qquad y = K^{-\mathsf T}v, \qquad q = \tfrac12\left(x + R^{\mathsf T}y\right) \quad (`pcm_gradient_parts`), $$
+$$ x = K^{-1}Rv, \qquad y = K^{-\mathsf T}v, \qquad q = \tfrac12\left(x + R^{\mathsf T}y\right) $$ (`pcm_gradient_parts`),
 
 $$ \frac{\partial E_{\mathrm{pcm}}}{\partial R_{A\alpha}} = q^{\mathsf T}\frac{\partial v}{\partial R_{A\alpha}} + \tfrac12\, v^{\mathsf T}\frac{\partial (K^{-1}R)}{\partial R_{A\alpha}}\, v . $$
 

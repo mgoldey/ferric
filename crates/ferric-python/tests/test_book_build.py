@@ -251,6 +251,26 @@ MUTATIONS = {
         "# Toy chapter",
     ),
     "stale summary": ("book/src/SUMMARY.md", "Toy section", "Renamed section"),
+    "control character from a lost backslash": (
+        SEC,
+        "Inline math",
+        "Inline\x08eta math",
+    ),
+    "code span inside inline math": (
+        SEC,
+        "$E_{ij} = |a|^2$",
+        "$E_{ij} = x \\quad (`build_s_d`)$",
+    ),
+    "code span inside display math": (
+        SEC,
+        "Inline math",
+        "$$ f = \\frac{a}{b} \\quad (`build_k_r`) $$\n\nInline math",
+    ),
+    "code span inside math from an included theory section": (
+        "crates/ferric-toy/theory.md",
+        "Body $x_1$.",
+        "Body $x_1 (`a_b`)$.",
+    ),
     "unknown registry file": (
         "testdata/derivations/registry.json",
         '"toy": {}',
@@ -662,3 +682,30 @@ def test_the_real_books_appendices_and_plan_are_current():
     bb.check_appendices(root, rep)
     bb.check_plan(root, rep)
     assert rep.errors == []
+
+
+def test_code_span_with_a_dollar_is_not_math(tree):
+    sub(tree, SEC, "Inline math", "Set `$HOME` and `$PATH`, then $x_1$. Inline math")
+    assert check(tree).errors == []
+
+
+def test_code_span_after_math_is_accepted(tree):
+    sub(
+        tree, SEC, "Inline math", "$$ f = \\frac{a}{b} $$ (`build_k_r`).\n\nInline math"
+    )
+    assert check(tree).errors == []
+
+
+def test_concat_names_figures_from_book_src(tree):
+    # Pandoc resolves an image against its resource path, not the page directory.
+    sub(tree, SEC, "Inline math", "![plot](../figures/10-mp2/a.svg)\n\nInline math")
+    text = bb.concat(tree, {})
+    assert "](figures/10-mp2/a.svg)" in text
+    assert "](../figures" not in text
+
+
+def test_pdf_job_has_what_the_figures_and_a_dry_run_need():
+    wf = (SCRIPT.parents[1] / ".github/workflows/book.yml").read_text(encoding="utf-8")
+    assert "--resource-path=.:book/src" in wf
+    assert "librsvg2-bin" in wf, "pandoc converts SVG for xelatex with rsvg-convert"
+    assert "github.event_name == 'workflow_dispatch'" in wf

@@ -387,11 +387,35 @@ def check_control_chars(p: Path, where: str, rep: Report) -> None:
         rep.err(where, f"line {line}: control character 0x{byte:02x}{cause}")
 
 
+# A code span inside math: pandoc hands the backticks and underscores to LaTeX
+# ("! Double subscript" on `build_s_d_kind`), and MathJax shows the backticks.
+# A formula does not span a blank line or a table cell. Put the span after it: $$ ... $$ (`name`).
+MATH_RE = re.compile(
+    r"\$\$(?P<disp>(?:(?!\n[ \t]*\n).)+?)\$\$"
+    r"|(?<![\\$])\$(?=\S)(?P<inl>(?:(?!\n[ \t]*\n)[^\n|])+?)(?<=\S)\$(?![\d$])",
+    re.S,
+)
+
+
+def check_math_code_spans(text: str, where: str, rep: Report) -> None:
+    # A code span that holds a dollar sign (`$HOME`) is code, not math: blank it
+    # first so its dollar does not pair with one further down the page.
+    text = re.sub(r"`[^`\n]*\$[^`\n]*`", lambda m: " " * len(m.group()), text)
+    for m in MATH_RE.finditer(text):
+        body = m.group("disp") or m.group("inl")
+        if "`" in body:
+            snippet = " ".join(body[body.index("`") :].split())[:40]
+            rep.err(where, f"code span inside math, move it outside the $: {snippet}")
+
+
 def check_page(root: Path, p: Path, rep: Report, ctx: dict, release: bool) -> None:
     where = rel(root, p)
     check_control_chars(p, where, rep)
     text = p.read_text()
     prose = strip_fences(text)
+    # Included theory sections are part of the page; line numbers are of the
+    # expanded text.
+    check_math_code_spans(strip_fences(expand_includes(root, text)), where, rep)
 
     for kind, body in BOX_RE.findall(prose):
         if check_box(
@@ -1166,7 +1190,11 @@ def concat(root: Path, ctx: dict) -> str:
         parts.append(p.read_text())
     for p in appendix_files(root):
         parts.append(p.read_text())
-    return expand_includes(root, "\n\n".join(parts))
+    text = expand_includes(root, "\n\n".join(parts))
+    # Pages link figures as ../figures/<chapter>/<name>.svg, relative to the page.
+    # The concatenation has no page directory: pandoc resolves paths against its
+    # resource path, so name them from book/src (pass --resource-path=.:book/src).
+    return text.replace("](../figures/", "](figures/")
 
 
 # ------------------------------------------------------------------------ cli

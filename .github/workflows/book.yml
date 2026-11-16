@@ -2,7 +2,8 @@ name: book
 
 # The ferric book (book/). On pull requests: run every derivation proof, check
 # the book against the code, build the HTML with mdBook. On v* tags: the same
-# checks in --release mode, then a PDF through pandoc and LaTeX.
+# checks in --release mode, then a PDF through pandoc and LaTeX. The PDF job also
+# runs from workflow_dispatch, so it can be tried before a tag.
 #
 # Builds no Rust. The proof runners import only pytest, sympy and the standard
 # library, so they run with --noconftest (conftest.py would skip every file when
@@ -101,7 +102,7 @@ jobs:
 
   pdf:
     name: book (PDF, release tags)
-    if: github.ref_type == 'tag'
+    if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
     needs: html
     runs-on: ubuntu-22.04
     timeout-minutes: 30
@@ -115,21 +116,24 @@ jobs:
       - name: Install pandoc and LaTeX
         run: |
           sudo apt-get update
-          sudo apt-get install -y pandoc texlive-xetex texlive-latex-extra texlive-fonts-recommended fonts-dejavu
+          sudo apt-get install -y pandoc texlive-xetex texlive-latex-extra texlive-fonts-recommended fonts-dejavu librsvg2-bin
 
       - name: Concatenate (release-strict check first)
         run: python3 scripts/book_build.py --release --concat "$RUNNER_TEMP/ferric-book.md"
 
       - name: Build the PDF
         run: |
+          # A dispatch runs on a branch name, which may hold a slash.
+          NAME="${GITHUB_REF_NAME//\//-}"
           pandoc "$RUNNER_TEMP/ferric-book.md" \
             --from markdown+tex_math_dollars --pdf-engine=xelatex \
+            --resource-path=.:book/src \
             --toc --number-sections -V mainfont="DejaVu Serif" \
             -V monofont="DejaVu Sans Mono" -V geometry:margin=2.5cm \
             -M title="ferric: theory and implementation" \
             -M author="Matthew Goldey, with ferric contributors" \
-            -M date="${GITHUB_REF_NAME}" \
-            -o "ferric-book-${GITHUB_REF_NAME}.pdf"
+            -M date="${NAME}" \
+            -o "ferric-book-${NAME}.pdf"
 
       - uses: actions/upload-artifact@v4
         with:
