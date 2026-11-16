@@ -20,8 +20,17 @@
 //!
 //! The scaling `s` enters as the spin scaling `c_os = c_ss = s`
 //! ([`SpinScaling`](crate::rimp2::SpinScaling)). The QQR-3 screened energy (`screen_thresh`) is not
-//! differentiated and is refused, as is the terfc operator (it has no
-//! derivative engine).
+//! differentiated and is refused.
+//!
+//! The terfc-attenuated energy `E_HF[1/r] + E_c[terfc(r; r0, ω)/r]` (no
+//! scaling; the `att_operator = "terfc"` energy of the CLI) has the same
+//! gradient with terfc in place of erfc (theory.md §9.5):
+//! [`terfc_rimp2_gradient_analytical`](crate::att_rimp2_gradient::terfc_rimp2_gradient_analytical),
+//! [`total_terfc_rimp2_gradient_on`](crate::att_rimp2_gradient::total_terfc_rimp2_gradient_on).
+//! The 3c/2c derivative integrals come from the terf table engine
+//! (`crates/ferric-integrals/theory.md`, "Derivative integrals of terf and
+//! terfc"). Closed shell only: the open-shell terfc gradient is refused by
+//! its callers.
 //!
 //! On a UHF reference ([`u_att_rimp2_gradient_analytical`](crate::att_rimp2_gradient::u_att_rimp2_gradient_analytical),
 //! [`total_u_att_rimp2_gradient_on`](crate::att_rimp2_gradient::total_u_att_rimp2_gradient_on)) the energy is
@@ -158,6 +167,105 @@ pub fn total_att_rimp2_gradient_on(
         op,
         &ri,
         scaling,
+        ext,
+        scf_jk,
+        warm,
+    )
+}
+
+/// An error unless `op` is a terfc operator ([`Operator::terfc`] or
+/// [`Operator::terfc_with_omega`]) with finite, positive `r0` and `ω`, and
+/// `ri` is plain RI-MP2 (no decoupled metric, no κ regularization).
+fn require_terfc(op: Operator, ri: &RiMp2Config) -> Result<(), FerricError> {
+    if op.is_composite() || op.kind != OperatorKind::Terfc {
+        return Err(FerricError::General(format!(
+            "terfc RI-MP2 gradient: the correlation operator must be terfc (got {:?})",
+            op.kind
+        )));
+    }
+    if !(op.distance.is_finite() && op.distance > 0.0 && op.omega.is_finite() && op.omega > 0.0) {
+        return Err(FerricError::General(format!(
+            "terfc RI-MP2 gradient: r0 and omega must be finite and > 0 (got r0 = {} Bohr, \
+             omega = {} Bohr⁻¹)",
+            op.distance, op.omega
+        )));
+    }
+    if ri.metric_op.is_some() || ri.kappa.is_some() {
+        return Err(FerricError::General(
+            "terfc RI-MP2 gradient: a decoupled metric_op or kappa regularization is not \
+             differentiated; leave both unset"
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
+/// `dE/dR`, `(natoms, 3)`, of `rhf.energy + E_c[terfc]` (the total the
+/// `att_operator = "terfc"` energy reports: RI-MP2 with `op` in both the
+/// `(P|ia)` integrals and the metric) on the converged Coulomb RHF `rhf`,
+/// whose J/K route `bounds` describes. `op` is [`Operator::terfc`] or
+/// [`Operator::terfc_with_omega`]; `ri` carries the frozen core and memory
+/// budget. `ext` as in [`att_rimp2_gradient_analytical`].
+///
+/// # Errors
+///
+/// A non-Coulomb reference, a non-terfc `op`, a `metric_op` or `kappa` in
+/// `ri`, and the errors of the RI-MP2 gradient (unconverged reference or
+/// Z-vector, X2C).
+#[allow(clippy::too_many_arguments)]
+pub fn terfc_rimp2_gradient_analytical(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    bounds: &SchwarzBounds,
+    rhf: &ScfResult,
+    op: Operator,
+    ri: &RiMp2Config,
+    ext: Option<&ExternalPotential>,
+) -> Result<Array2<f64>, FerricError> {
+    ferric_scf::x2c::refuse_relativistic(rhf.relativistic, "terfc RI-MP2 analytic gradient")?;
+    require_coulomb_reference(bounds.op)?;
+    require_terfc(op, ri)?;
+    let mut acc = PhaseAccumulator::new().report_on_drop("terfc-RI-MP2 gradient");
+    rimp2_gradient_analytical_timed(
+        mol,
+        obs,
+        dfbs,
+        op,
+        bounds,
+        rhf,
+        ri,
+        SpinScaling::MP2,
+        ext,
+        ZvectorControls::DEFAULT,
+        &mut acc,
+    )
+}
+
+/// The total terfc RI-MP2 energy (`E_HF + E_c[terfc]`, Coulomb RHF solved
+/// here at `density_conv = 1e-9`) and its analytic gradient at one geometry,
+/// the reference on `scf_jk` (`"exact"` or `"rijk"`) and warm-started
+/// through `warm`. `op` and `ri` as in [`terfc_rimp2_gradient_analytical`].
+#[allow(clippy::too_many_arguments)]
+pub fn total_terfc_rimp2_gradient_on(
+    mol: &Molecule,
+    obs_basis: &BasisSet,
+    aux_basis: &BasisSet,
+    op: Operator,
+    ri: &RiMp2Config,
+    ext: Option<&ExternalPotential>,
+    scf_jk: &ScfJk,
+    warm: &mut ScfWarmStart,
+) -> Result<(f64, Array2<f64>), FerricError> {
+    require_terfc(op, ri)?;
+    total_mp2_gradient_scaled_on(
+        mol,
+        obs_basis,
+        aux_basis,
+        Operator::coulomb(),
+        op,
+        ri,
+        SpinScaling::MP2,
         ext,
         scf_jk,
         warm,
