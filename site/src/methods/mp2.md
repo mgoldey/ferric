@@ -70,7 +70,9 @@ differences of the gradient) at `multiplicity > 1`, and Python
 `run_optimize(method="att-rimp2")` with `reference="uhf"` (the default for an
 open shell). It is the U-RI-MP2 gradient with erfc in the correlation pieces
 and Coulomb in the reference's terms (`crates/ferric-mp2/theory.md` §15.1).
-The other open-shell kinds above stay energy only, and so does open-shell terfc.
+Open-shell terfc (`att_operator = "terfc"`) and `scs-mp2-2terfc` have the same
+analytic gradient on a UHF (`crates/ferric-mp2/theory.md` §15.2). The other
+open-shell kinds above stay energy only.
 The gradient matches finite differences of ferric's own energy on OH and NH2
 and of PySCF's UHF + DF-UMP2 energy on an erfc fit (see the
 [anchors](../reference/validation.md#anchors)).
@@ -261,13 +263,16 @@ defaults are Grimme's c<sub>OS</sub> = 1.2, c<sub>SS</sub> = 0.333.
 **Gradients.** `att-rimp2` has an analytic gradient with both operators, so
 `task = "optimize"` and `"frequencies"` work, as do Python
 `run_optimize(method="att-rimp2")` and `run_frequencies(method="att-rimp2")`.
-erfc runs on an RHF or a UHF reference. terfc (`[mp2] att_operator =
-"terfc"`, Python `att_operator="terfc"` with `r0=` in Å) is closed shell only:
-an open shell is an error. The terf and terfc derivative integrals come from the
-interpolation tables, so a terfc gradient needs `FERRIC_TERF_TABLE_DIR` too.
-`scs-mp2-2terfc` and `mp2-v` have no gradient. Derivations:
-`crates/ferric-mp2/theory.md` §9.4 (erfc), §9.5 (terfc), §15.1 (open-shell
-erfc).
+Both run on an RHF or a UHF reference. terfc is `[mp2] att_operator =
+"terfc"` (Python `att_operator="terfc"` with `r0=` in Å).
+`scs-mp2-2terfc` has an analytic gradient too, on an RHF or a UHF: the two
+terfc terms share one Z-vector. Python takes `method="scs-mp2-2terfc"` with
+`r0_bonded=`, `r0_nonbonded=` (Å), `c_os=` and `c_ss=`. The terf and terfc
+derivative integrals come from the interpolation tables, so a terfc gradient
+needs `FERRIC_TERF_TABLE_DIR` too. `mp2-v` has no gradient. Derivations:
+`crates/ferric-mp2/theory.md` §9.4 (erfc), §9.5 (terfc), §9.6
+(SCS-MP2(2terfc)), §15.1 (open-shell erfc), §15.2 (open-shell terfc and
+SCS-MP2(2terfc)).
 
 **Accuracy.** `att-rimp2`, `scs-mp2` and `scs-mp2-2terfc` are Proven (the erfc
 energy is pinned against PySCF/libcint in

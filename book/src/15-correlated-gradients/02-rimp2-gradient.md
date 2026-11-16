@@ -1,7 +1,7 @@
 # 15.2 RI-MP2 gradient with exact and RI-JK references; SCS-MP2
 
-<!-- section: 15.2; status: ready; registry: ri-mp2-gradient, scs-mp2-gradient, att-rimp2-gradient, terfc-rimp2-gradient;
-     theory: crates/ferric-mp2/theory.md#"9. Analytic RI-MP2 gradient and Z-vector", "9.1 Fitted (RI-JK) reference", "9.2 Spin-component-scaled (SCS-MP2) gradient", "9.4 Attenuated (erfc) RI-MP2 gradient", "9.5 terfc-attenuated RI-MP2 gradient" -->
+<!-- section: 15.2; status: ready; registry: ri-mp2-gradient, scs-mp2-gradient, att-rimp2-gradient, terfc-rimp2-gradient, scs-2terfc-gradient;
+     theory: crates/ferric-mp2/theory.md#"9. Analytic RI-MP2 gradient and Z-vector", "9.1 Fitted (RI-JK) reference", "9.2 Spin-component-scaled (SCS-MP2) gradient", "9.4 Attenuated (erfc) RI-MP2 gradient", "9.5 terfc-attenuated RI-MP2 gradient", "9.6 SCS-MP2(2terfc) gradient" -->
 
 The closed-shell RI-MP2 gradient is the Lagrangian of section 15.1 with the
 MP2 right-hand side, assembled as one-electron, overlap, two-electron and
@@ -27,6 +27,7 @@ is negative; the book's positive-gap convention is the negative of it.
 |---|---|
 | Rust | `ferric-mp2/src/gradient.rs::{rimp2_gradient_analytical,relaxed_ri_gradient,scs_mp2_gradient_analytical,total_rimp2_gradient}` |
 | Rust (attenuated) | `ferric-mp2/src/att_rimp2_gradient.rs::{att_rimp2_gradient_analytical,total_att_rimp2_gradient_on,terfc_rimp2_gradient_analytical,total_terfc_rimp2_gradient_on}` |
+| Rust (SCS-MP2(2terfc)) | `ferric-mp2/src/scs_2terfc_gradient.rs::{scs_mp2_2terfc_gradient_analytical,total_scs_mp2_2terfc_gradient_on}` |
 | CLI | `method.kind = "rimp2"`, `"scs-mp2"` or `"att-rimp2"` with `task = "optimize"` |
 | Python | `run_rimp2(with_gradient=True)`, `run_optimize(method="rimp2")`, `run_optimize(method="scs-mp2")`, `run_optimize(method="att-rimp2")` |
 
@@ -199,9 +200,8 @@ Coulomb minus terf in $R$, and the third centre by translational invariance
 (`crates/ferric-integrals/theory.md`, "Derivative integrals of terf and
 terfc"). At $r_0 \to 0$ terfc becomes erfc: at $r_0 = 10^{-6}$ Bohr the two
 gradients agree to $1.2\times10^{-14}$ Ha/Bohr
-(`terfc_gradient_matches_erfc_in_the_r0_to_zero_limit`). The terfc gradient
-is closed shell only; open-shell terfc and `scs-mp2-2terfc` are refused for
-gradient tasks.
+(`terfc_gradient_matches_erfc_in_the_r0_to_zero_limit`). The open-shell
+terfc gradient is section 15.7.7.
 
 > **Verified equation 15.8b** · the terfc RI-MP2 gradient
 >
@@ -221,6 +221,41 @@ gradient tasks.
 >
 > <!-- verified: id=mp2.grad.terfc; script=scripts/terfc_rimp2_gradient_sympy.py; claim=L; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/att_rimp2_gradient.rs::terfc_rimp2_gradient_analytical; rust_test=ferric-mp2/tests/terfc_rimp2_gradient_fd.rs::terfc_gradient_matches_fd_water; registry=terfc-rimp2-gradient -->
 
+**SCS-MP2(2terfc).** The energy is
+$E_{\mathrm{HF}} + c_{\mathrm{OS}} E_{\mathrm{OS}}[\tau_1] + c_{\mathrm{SS}}\,(E_{\mathrm{SS}}[\tau_2] - E_{\mathrm{SS}}[\tau_1])$,
+with $\tau_k = \operatorname{terfc}(r; r_0^{(k)})/r$ and $r_0^{(1)} < r_0^{(2)}$.
+It is the sum of two spin-scaled terfc RI-MP2 terms: $\tau_1$ with weights
+$(c_{\mathrm{OS}}, -c_{\mathrm{SS}})$ and $\tau_2$ with $(0, c_{\mathrm{SS}})$.
+Each term builds its amplitudes, $x$, unrelaxed density and RI response on its
+own operator, exactly as the single-operator gradient does. The Lagrangian is
+linear in each term's $I$ and $P$, so the code sums them and solves one
+Coulomb Z-vector for both (`theory.md` section 9.6). Two anchors check the
+assembly. With $r_0^{(1)} = r_0^{(2)}$ the same-spin terms cancel and the
+gradient is the scaled-opposite-spin terfc gradient (equal to
+$1.3\times10^{-15}$ Ha/Bohr; the gap at the published cutoffs is
+$1.4\times10^{-3}$). One Z-vector on the sums equals the sum of the two
+single-term gradients, each with its own Z-vector, to $1.3\times10^{-13}$
+(`scs_2terfc_one_zvector_is_the_sum_of_its_terms`). Neither anchor can see a
+term on the wrong cutoff or a weight on the wrong spin block. Finite
+differences can.
+
+> **Verified equation 15.8c** · the SCS-MP2(2terfc) gradient
+>
+> On the one-dimensional model of 15.8b with two terfc cutoffs, the
+> Lagrangian with summed $I$, $P$ and one Z-vector equals a Richardson
+> difference of the re-solved SCS-MP2(2terfc) energy, with and without a
+> frozen core.
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/scs_2terfc_gradient_sympy.py`, part C (and part L for the $r_0^{(1)} = r_0^{(2)}$ limit) |
+> | Negative control | the runner's mutations (term 2 on $r_0^{(1)}$, the Z-vector coupling on the RI kernel, one term's $I$ dropped from the sum) each turn C red |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-mp2/src/scs_2terfc_gradient.rs::scs_mp2_2terfc_gradient_analytical` |
+> | Code test | `scs_2terfc_gradient_matches_fd_water` in `crates/ferric-mp2/tests/scs_2terfc_gradient_fd.rs` |
+>
+> <!-- verified: id=mp2.grad.scs-2terfc; script=scripts/scs_2terfc_gradient_sympy.py; claim=C; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/scs_2terfc_gradient.rs::scs_mp2_2terfc_gradient_analytical; rust_test=ferric-mp2/tests/scs_2terfc_gradient_fd.rs::scs_2terfc_gradient_matches_fd_water; registry=scs-2terfc-gradient -->
+
 ## 15.2.6 Reproducibility and memory
 
 The Z-vector assumes a stationary RHF, so the gradient error follows the
@@ -237,8 +272,9 @@ reason the CLI keeps the four-center reference for geometry tasks.
 | `[mp2] frozen_core`, `frozen_core=` | integer | 0 | adds the core-active block |
 | `[mp2] c_os`, `c_ss` (`scs-mp2`) | floats | 6/5, 1/3 (`ScsMp2Config` default) | the weights of (15.8) |
 | `[mp2] omega`, `omega=` (`att-rimp2`) | float, Å⁻¹ | 0.420 | the erfc range parameter |
-| `[mp2] att_operator`, `att_operator=` (`att-rimp2`) | `"erfc"`, `"terfc"` | `"erfc"` | the correlation kernel; terfc is closed shell only |
+| `[mp2] att_operator`, `att_operator=` (`att-rimp2`) | `"erfc"`, `"terfc"` | `"erfc"` | the correlation kernel |
 | `[mp2] att_r0`, `r0=` (`att-rimp2`, terfc) | float, Å | the basis default (`terfc_r0.rs`) | the terfc cutoff |
+| `[mp2] r0_bonded`, `r0_nonbonded`, `c_os`, `c_ss` (`scs-mp2-2terfc`) | floats, Å | 0.75, 1.05, 1.27, 4.05 | $r_0^{(1)}$, $r_0^{(2)}$ and the weights of the SCS-MP2(2terfc) energy |
 
 `scf_jk="rijcosx"`, `k_builder="cosx"`, `local=`, the attenuation keys,
 `kappa` and an open-shell molecule are refused with `with_gradient=True`.
@@ -257,6 +293,7 @@ From `site/src/reference/validation.md` and the tests named.
 | att-RI-MP2 gradient vs Richardson FD of `attenuated_ri_mp2` | H2O, CH3F (frozen core 0 and 2) / cc-pVDZ, CH3CHO / 6-31G\*, H2O on RI-JK; $\omega = 0.420$ and 1.0 Å⁻¹ | $\le 2.5\times10^{-9}$ Ha/Bohr (bar about $2\times10^{-7}$) | `crates/ferric-mp2/tests/att_rimp2_gradient_fd.rs` |
 | terfc RI-MP2 gradient vs Richardson FD of `ri_mp2` under terfc | H2O / cc-pVDZ ($\omega r_0 = 1/\sqrt2$ and 4), H2O on RI-JK with frozen core 1, CH3F (frozen core 2) / cc-pVDZ, CH3CHO / 6-31G\*; $r_0 = 1.05$ Å | $\le 1.8\times10^{-9}$ Ha/Bohr (bar about $2\times10^{-7}$) | `crates/ferric-mp2/tests/terfc_rimp2_gradient_fd.rs` |
 | terf/terfc derivative integrals vs libint2 (Coulomb through the same kernel), FD and C − terf | water / cc-pVTZ and cc-pVDZ, every shell class | $3.8\times10^{-14}$, $2.6\times10^{-11}$, $2.1\times10^{-14}$ | `crates/ferric-integrals/tests/terfc_deriv_integrals.rs` |
+| SCS-MP2(2terfc) gradient vs Richardson FD of `scs_mp2_2terfc` | H2O / cc-pVDZ, H2O on RI-JK with frozen core 1, CH3F (frozen core 2) / cc-pVDZ; published parameters | $\le 1.6\times10^{-9}$ Ha/Bohr (bar about $2\times10^{-7}$) | `crates/ferric-mp2/tests/scs_2terfc_gradient_fd.rs` |
 | SCS-MP2 gradient vs central FD of `scs_mp2` | H2O / STO-3G and cc-pVDZ, NH3 / 6-31G; $(6/5, 1/3)$ and $(1, 0)$; frozen core; exact and RI-JK | $\le 5.7\times10^{-8}$ Ha/Bohr (bar $2\times10^{-7}$) | `crates/ferric-mp2/tests/scs_mp2_gradient.rs` |
 
 ## 15.2.9 Sources

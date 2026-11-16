@@ -4321,9 +4321,9 @@ impl Config {
     /// What the reference SCF takes when `[scf] jk` is omitted
     /// ([`ScfCfg::scf_jk_choice`]): RI-JK for `rs-mp2-rpa` (on the shared
     /// default JK-fit set); four-centre for an open shell (no fitted
-    /// default has been measured there) except the open-shell `rimp2` and
-    /// `att-rimp2` gradient tasks, which take the matched RI-JK set like the
-    /// closed shell, and for an input that sets a key
+    /// default has been measured there) except the open-shell `rimp2`,
+    /// `att-rimp2` and `scs-mp2-2terfc` gradient tasks, which take the matched
+    /// RI-JK set like the closed shell, and for an input that sets a key
     /// only the four-centre route reads; otherwise RI-JK on the JK-fit set
     /// matched to the orbital basis (`ferric_scf::scf_jk::matched_jk_aux`),
     /// for an energy and for the MP2 optimizations alike (the fitted

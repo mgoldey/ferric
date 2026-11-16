@@ -25,12 +25,12 @@ Mutations measured to fail (each on an assertion, then restored):
   `test_frequencies_equal_the_cli_bit_for_bit`;
 - `att_terfc_operator` ignoring `r0` (the basis default in its place) fails
   `test_r0_reaches_the_gradient`;
-- `scs_2terfc_gradient_config` ignoring `r0_nonbonded` (1.05 Å in its place)
-  fails `test_scs_2terfc_optimize_equals_the_cli` and
-  `test_scs_2terfc_frequencies_equal_the_cli_bit_for_bit`;
+- `run_optimize` passing 1.05 Å in place of `r0_nonbonded` fails
+  `test_scs_2terfc_optimize_equals_the_cli`;
+- the CLI taking `c_os` for `c_ss` fails both scs-mp2-2terfc CLI tests;
 - the open-shell terfc optimize calling the closed-shell driver fails
-  `test_open_shell_terfc_optimize_equals_the_cli` (the closed driver raises
-  on a doublet).
+  `test_open_shell_terfc_optimize_equals_the_cli`, on an error rather than
+  an assertion (the closed driver raises on a doublet).
 """
 
 from __future__ import annotations
@@ -251,12 +251,15 @@ def test_scs_2terfc_optimize_equals_the_cli(tmp_path):
 
 
 def test_scs_2terfc_frequencies_equal_the_cli_bit_for_bit(tmp_path):
-    """OH doublet (UHF), one frozen core, four-centre reference."""
+    """OH doublet (UHF) / 6-31G, one frozen core, four-centre reference.
+
+    6-31G, not STO-3G: OH / STO-3G has E_SS = 0, so it cannot see c_ss.
+    """
     oh = "2\nOH\nO 0 0 0\nH 0 0 0.97\n"
     _, log = _run_cli(
         tmp_path,
         oh,
-        "sto-3g",
+        "6-31g",
         '[method]\nkind = "scs-mp2-2terfc"\ntask = "frequencies"\n\n'
         + SCS2_TOML
         + 'frozen_core = 1\n\n[frequencies]\ndelta = 5e-3\n\n[scf]\njk = "exact"\n',
@@ -266,7 +269,7 @@ def test_scs_2terfc_frequencies_equal_the_cli_bit_for_bit(tmp_path):
     (rec,) = [r for r in recs if r.get("record") == "frequencies"]
     py = ferric.run_frequencies(
         ferric.Molecule.from_xyz_string(oh, 0, 2),
-        "sto-3g",
+        "6-31g",
         method="scs-mp2-2terfc",
         auxbasis=AUX,
         scf_jk="exact",

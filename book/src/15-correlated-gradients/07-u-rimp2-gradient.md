@@ -1,7 +1,7 @@
 # 15.7 Unrestricted RI-MP2 gradient
 
-<!-- section: 15.7; status: ready; registry: u-ri-mp2-gradient, u-att-rimp2-gradient;
-     theory: crates/ferric-mp2/theory.md#"15. Unrestricted RI-MP2 nuclear gradient", "15.1 Open-shell attenuated (erfc) RI-MP2 gradient" -->
+<!-- section: 15.7; status: ready; registry: u-ri-mp2-gradient, u-att-rimp2-gradient, scs-2terfc-gradient;
+     theory: crates/ferric-mp2/theory.md#"15. Unrestricted RI-MP2 nuclear gradient", "15.1 Open-shell attenuated (erfc) RI-MP2 gradient", "15.2 Open-shell terfc and SCS-MP2(2terfc) gradients" -->
 
 The unrestricted RI-MP2 gradient is the closed-shell Lagrangian of section
 15.2 written once per spin. Two things are new. The opposite-spin amplitudes
@@ -66,7 +66,7 @@ virtual blocks and, on a frozen core, $P^\sigma_{kI} = I^\sigma_{kI}/(\varepsilo
 The closed-shell builder `build_imat_ri` carries a factor $-2$ that is the
 weight of both spins; one spin's weight is half of it:
 
-<!-- excerpt: ferric-mp2/src/u_rimp2_gradient.rs::u_correlated_gradient_timed -->
+<!-- excerpt: ferric-mp2/src/u_rimp2_gradient.rs::u_term_parts -->
 ```rust
 out.push(0.5 * crate::zvector::build_imat_ri(x, &b_full, &spins[s].orb));
 ```
@@ -83,7 +83,7 @@ Before each $J/K$ build the pair is scaled by the power of two that brings
 $\max|z|$ into $(\tfrac12, 1]$, so the screening sees a unit-scale density;
 the scale is exact.
 
-<!-- excerpt: ferric-mp2/src/u_rimp2_gradient.rs::u_correlated_gradient_timed -->
+<!-- excerpt: ferric-mp2/src/u_rimp2_gradient.rs::u_terms_gradient_timed -->
 ```rust
 -(v[s][(a, i)] + imat[s][(i, a_mo)] - imat[s][(a_mo, i)])
 ```
@@ -182,15 +182,52 @@ the scaling enters by multiplying those by $s$. The derivation is
 | closed-shell limit vs the restricted attenuated gradient | H2O / 6-31G, both routes, frozen core | ≤ 2.2e-15 Ha/Bohr | 1e-10 Ha/Bohr | `crates/ferric-mp2/src/att_rimp2_gradient.rs` |
 | ω → 0 vs the Coulomb U-RI-MP2 gradient | OH, ω = 1e-7 | 1.7e-13 Ha/Bohr | 1e-10 Ha/Bohr | `crates/ferric-mp2/src/att_rimp2_gradient.rs` |
 
-## Known limits (2026-11-15)
+## 15.7.7 terfc and SCS-MP2(2terfc)
+
+The open-shell terfc gradient (`att-rimp2` with `att_operator = "terfc"` at
+multiplicity > 1) is the 15.7.6 Lagrangian with terfc in place of erfc and no
+scaling. The open-shell SCS-MP2(2terfc) gradient (`scs-mp2-2terfc` at
+multiplicity > 1) sums two such terms, as in section 15.2. The weights are
+spin-resolved. In $x^\sigma$ and $P^\sigma$, the same-spin products carry
+$c_{\mathrm{SS}}$ and the opposite-spin products carry $c_{\mathrm{OS}}$. Each
+term runs its RI response on its own cutoff. One spin-coupled Coulomb
+Z-vector closes the summed $I^\sigma$ and $P^\sigma$ (`theory.md` §15.2).
+
+> **Verified equation 15.15b** · the open-shell SCS-MP2(2terfc) gradient
+>
+> On the one-dimensional model of 15.8b with a UHF reference (three
+> $\alpha$, two $\beta$ electrons), the Lagrangian with spin-resolved
+> weights and one coupled Z-vector equals a Richardson difference of the
+> re-solved unrestricted SCS-MP2(2terfc) energy. At $\alpha = \beta$ it
+> reduces to the closed-shell Lagrangian of 15.8c.
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/scs_2terfc_gradient_sympy.py`, parts U and L (part S proves the spin-resolved weights) |
+> | Negative control | the runner's mutations (same-spin and opposite-spin weights swapped in $x^\sigma$ or in the densities, the $\beta$ Z-vector dropped) each turn U or S red |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-mp2/src/scs_2terfc_gradient.rs::u_scs_mp2_2terfc_gradient_analytical` |
+> | Code test | `u_scs_2terfc_oh_doublet_matches_fd_frozen_core` in `crates/ferric-mp2/tests/u_terfc_gradient_fd.rs` |
+>
+> <!-- verified: id=mp2.u.grad.scs-2terfc; script=scripts/scs_2terfc_gradient_sympy.py; claim=U; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/scs_2terfc_gradient.rs::u_scs_mp2_2terfc_gradient_analytical; rust_test=ferric-mp2/tests/u_terfc_gradient_fd.rs::u_scs_2terfc_oh_doublet_matches_fd_frozen_core; registry=scs-2terfc-gradient -->
+
+| Check | System | Measured | Bar | Test |
+|---|---|---|---|---|
+| terfc: analytic vs Richardson FD of ferric's own energy | OH / cc-pVDZ (four-centre); NH2 on RI-JK, frozen core 1 | ≤ 3.9e-9 Ha/Bohr | about 2.1e-7 Ha/Bohr | `crates/ferric-mp2/tests/u_terfc_gradient_fd.rs` |
+| SCS-MP2(2terfc): analytic vs Richardson FD | OH frozen core 1; NH2 four-centre and RI-JK | ≤ 1.2e-9 Ha/Bohr | about 2.1e-7 Ha/Bohr | `crates/ferric-mp2/tests/u_terfc_gradient_fd.rs` |
+| closed-shell limit vs the restricted gradient (terfc and SCS-MP2(2terfc)) | H2O, both routes, frozen core | ≤ 3.1e-15 Ha/Bohr | 1e-10 Ha/Bohr | `crates/ferric-mp2/src/scs_2terfc_gradient.rs` |
+| one Z-vector vs the sum of single-term gradients | OH | 7.6e-14 Ha/Bohr | 1e-10 Ha/Bohr | `crates/ferric-mp2/src/scs_2terfc_gradient.rs` |
+
+## Known limits (2026-11-16)
 
 - UHF reference only. A ROHF reference is refused (`ROHF_REFUSAL`): it is not
   stationary under independent $\alpha$/$\beta$ rotations and its MP2 runs on
   semicanonical orbitals, so it needs the ROHF Z-vector and the
   semicanonicalization response, neither of which is built.
-- No COSX reference, no X2C, Coulomb or erfc operator only, at least one $\beta$
-  electron.
-- No SCS or OO variant of the unrestricted gradient.
+- No COSX reference, no X2C, at least one $\beta$ electron. The operators are
+  Coulomb, erfc and terfc.
+- SCS-MP2(2terfc) is the only spin-scaled unrestricted gradient. There is no
+  open-shell `scs-mp2` or OO-RI-MP2 gradient.
 
 ## Sources
 
@@ -200,4 +237,5 @@ the scaling enters by multiplying those by $s$. The derivation is
 | `crates/ferric-mp2/src/u_rimp2_gradient.rs` | implementation |
 | `scripts/u_rimp2_gradient_sympy.py` | proofs |
 | `crates/ferric-mp2/theory.md`, "15.1 Open-shell attenuated (erfc) RI-MP2 gradient"; `scripts/u_att_rimp2_gradient_sympy.py` | section 15.7.6 |
+| `crates/ferric-mp2/theory.md`, "15.2 Open-shell terfc and SCS-MP2(2terfc) gradients"; `scripts/scs_2terfc_gradient_sympy.py` | section 15.7.7 |
 | `site/src/reference/validation.md`, `crates/ferric-mp2/tests/u_rimp2_gradient_fd.rs` | anchors |
