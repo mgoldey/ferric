@@ -4060,37 +4060,9 @@ fn run_scs_mp2_2terfc(
         eprintln!("error: {e}");
         std::process::exit(1);
     });
-    // r0(1)/r0(2) are given in Å in the TOML (matching the Python
-    // binding's convention); the library config wants Bohr.
-    const ANG2BOHR: f64 = ferric_core::units::ANGSTROM_TO_BOHR;
-    let params = ferric_mp2::terfc_r0::resolve_scs_2terfc(
-        &bs.name,
-        cfg.mp2.r0_bonded,
-        cfg.mp2.r0_nonbonded,
-        cfg.mp2.c_os,
-        cfg.mp2.c_ss,
-    )
-    .unwrap_or_else(|e| {
-        eprintln!("config error: [mp2] {e}");
-        std::process::exit(1);
-    });
-    if let Some(note) = &params.note {
-        println!("{note}");
-    }
-    let r0_bonded_ang = params.r0_bonded_angstrom;
-    let r0_nonbonded_ang = params.r0_nonbonded_angstrom;
-    let scs_config = ScsMp2TerfcConfig {
-        r0_bonded: r0_bonded_ang * ANG2BOHR,
-        r0_nonbonded: r0_nonbonded_ang * ANG2BOHR,
-        c_os: params.c_os,
-        c_ss: params.c_ss,
-        frozen_core: cfg.mp2.frozen_core.resolve(mol),
-        memory_budget_bytes: budget_bytes,
-    };
-    if scs_config.r0_nonbonded <= scs_config.r0_bonded {
-        eprintln!("error: [mp2] r0_nonbonded must be > r0_bonded");
-        std::process::exit(1);
-    }
+    let scs_config = scs_2terfc_config(cfg, mol, bs, budget_bytes);
+    let r0_bonded_ang = scs_config.r0_bonded * ferric_core::units::BOHR_TO_ANGSTROM;
+    let r0_nonbonded_ang = scs_config.r0_nonbonded * ferric_core::units::BOHR_TO_ANGSTROM;
     let scs_result = scs_mp2_2terfc(mol, prep, &dfbs, result, &scs_config).unwrap_or_else(|e| {
         eprintln!("error: {e}");
         std::process::exit(1);
@@ -6894,8 +6866,14 @@ fn run_rohf(
 
 /// `method.kind`s with a correlated analytic nuclear gradient: the surfaces
 /// `task = "optimize"` and `task = "frequencies"` both differentiate.
-const CORRELATED_GRADIENT_KINDS: &[&str] =
-    &["pdep-rpa", "rimp2", "scs-mp2", "oo-rimp2", "att-rimp2"];
+const CORRELATED_GRADIENT_KINDS: &[&str] = &[
+    "pdep-rpa",
+    "rimp2",
+    "scs-mp2",
+    "oo-rimp2",
+    "att-rimp2",
+    "scs-mp2-2terfc",
+];
 /// Every `method.kind` the `optimize` and `frequencies` tasks accept: the SCF
 /// kinds plus [`CORRELATED_GRADIENT_KINDS`].
 const GRADIENT_KINDS: &[&str] = &[
@@ -6908,6 +6886,7 @@ const GRADIENT_KINDS: &[&str] = &[
     "scs-mp2",
     "oo-rimp2",
     "att-rimp2",
+    "scs-mp2-2terfc",
 ];
 
 /// `task = "frequencies"` for a correlated `method.kind`
@@ -7051,10 +7030,15 @@ fn run_frequencies_correlated(
             });
             let label = ferric_mp2::optimize::rimp2_gradient_label(&scf_jk);
             if let Some((terfc_op, ri)) = att_rimp2_terfc_gradient(cfg, mol, bs, budget_bytes) {
-                // terfc: closed shell only (an open shell is refused by
-                // `Config::validate_task_compat`).
+                // terfc: an open shell runs on a UHF reference with the
+                // unrestricted gradient, as in `run_optimize_att_rimp2`.
+                let gradient_on = if mol.multiplicity > 1 {
+                    ferric_mp2::att_rimp2_gradient::total_u_terfc_rimp2_gradient_on
+                } else {
+                    ferric_mp2::att_rimp2_gradient::total_terfc_rimp2_gradient_on
+                };
                 let surface: Surface<'_> = Box::new(move |m, warm| {
-                    ferric_mp2::att_rimp2_gradient::total_terfc_rimp2_gradient_on(
+                    gradient_on(
                         m,
                         bs,
                         &aux_bs,
@@ -7089,6 +7073,36 @@ fn run_frequencies_correlated(
                     label,
                 )
             }
+        }
+        "scs-mp2-2terfc" => {
+            let aux_bs = aux_of(cfg.mp2.auxbasis.as_deref());
+            let scs_config = scs_2terfc_config(cfg, mol, bs, budget_bytes);
+            let scf_jk = rimp2_gradient_scf_jk("scs-mp2-2terfc", rhf_config).unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            });
+            let label = ferric_mp2::optimize::rimp2_gradient_label(&scf_jk);
+            // An open shell runs on a UHF reference with the unrestricted
+            // gradient, as in `run_optimize_scs_mp2_2terfc`.
+            let gradient_on = if mol.multiplicity > 1 {
+                ferric_mp2::scs_2terfc_gradient::total_u_scs_mp2_2terfc_gradient_on
+            } else {
+                ferric_mp2::scs_2terfc_gradient::total_scs_mp2_2terfc_gradient_on
+            };
+            (
+                Box::new(move |m, warm| {
+                    gradient_on(
+                        m,
+                        bs,
+                        &aux_bs,
+                        &scs_config,
+                        rhf_config.external_potential.as_ref(),
+                        &scf_jk,
+                        warm,
+                    )
+                }),
+                label,
+            )
         }
         "oo-rimp2" => {
             let aux_bs = aux_of(cfg.mp2.auxbasis.as_deref());
@@ -8118,6 +8132,17 @@ fn run_optimize(
             &opt_config,
             budget_bytes,
         ),
+        "scs-mp2-2terfc" => run_optimize_scs_mp2_2terfc(
+            method,
+            cfg,
+            ctx,
+            mol,
+            bs,
+            op,
+            rhf_config,
+            &opt_config,
+            budget_bytes,
+        ),
         _ => {
             eprintln!(
                 "error: geometry optimization is currently only supported for method.kind = {}",
@@ -8334,6 +8359,11 @@ fn run_optimize_att_rimp2(
     let open_shell = mol.multiplicity > 1;
     let ext = rhf_config.external_potential.as_ref();
     let opt_result = match terfc {
+        Some((terfc_op, ref ri)) if open_shell => {
+            ferric_mp2::optimize::optimize_geometry_u_terfc_rimp2_on(
+                mol, bs, &aux_bs, terfc_op, ri, opt_config, ext, &scf_jk,
+            )
+        }
         Some((terfc_op, ref ri)) => ferric_mp2::optimize::optimize_geometry_terfc_rimp2_on(
             mol, bs, &aux_bs, terfc_op, ri, opt_config, ext, &scf_jk,
         ),
@@ -8405,11 +8435,96 @@ fn run_optimize_att_rimp2(
     );
 }
 
+/// `method.kind = "scs-mp2-2terfc"`, `task = "optimize"`: SCS-MP2(2terfc)
+/// through [`ferric_mp2::optimize::optimize_geometry_scs_mp2_2terfc_on`] (the
+/// driver the Python `run_optimize(method="scs-mp2-2terfc")` calls), on an
+/// RHF reference or, for an open-shell molecule, a UHF reference, with the
+/// `[mp2]` r0/c_os/c_ss/frozen core of the energy run and the Coulomb
+/// reference on `[scf] jk` (`"exact"` or `"rijk"`).
+#[allow(clippy::too_many_arguments)]
+fn run_optimize_scs_mp2_2terfc(
+    method: &str,
+    cfg: &Config,
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    bs: &BasisSet,
+    op: Operator,
+    rhf_config: &RhfConfig,
+    opt_config: &OptimizeConfig,
+    budget_bytes: Option<usize>,
+) {
+    let aux_name = cfg
+        .mp2
+        .auxbasis
+        .as_deref()
+        .unwrap_or(config::DEFAULT_CORRELATION_AUX);
+    let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    let scs_config = scs_2terfc_config(cfg, mol, bs, budget_bytes);
+    let scf_jk = rimp2_gradient_scf_jk("scs-mp2-2terfc", rhf_config).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    let opt_result = ferric_mp2::optimize::optimize_geometry_scs_mp2_2terfc_on(
+        mol,
+        bs,
+        &aux_bs,
+        &scs_config,
+        opt_config,
+        rhf_config.external_potential.as_ref(),
+        &scf_jk,
+    )
+    .unwrap_or_else(|e| {
+        eprintln!("error during SCS-MP2(2terfc) optimization: {e}");
+        std::process::exit(1);
+    });
+    println!("\nFinal Optimized Geometry (Bohr):");
+    for (i, atom) in opt_result.mol.atoms.iter().enumerate() {
+        println!(
+            "  {:2} {:2} {:12.8} {:12.8} {:12.8}",
+            i, atom.symbol, atom.x, atom.y, atom.zpos
+        );
+    }
+    println!(
+        "\nSCS-MP2(2terfc) Optimization Result (r0(1)={:.3} Å, r0(2)={:.3} Å, c_OS={:.3}, c_SS={:.3}):",
+        scs_config.r0_bonded * ferric_core::units::BOHR_TO_ANGSTROM,
+        scs_config.r0_nonbonded * ferric_core::units::BOHR_TO_ANGSTROM,
+        scs_config.c_os,
+        scs_config.c_ss
+    );
+    println!("  converged  = {}", opt_result.converged);
+    println!("  steps      = {}", opt_result.steps);
+    println!(
+        "  final E    = {:.10} Hartree ({})",
+        opt_result.energy,
+        if mol.multiplicity > 1 {
+            "UHF + SCS-UMP2(2terfc)"
+        } else {
+            "RHF + SCS-MP2(2terfc)"
+        }
+    );
+    certify_optimization(
+        method,
+        cfg,
+        ctx,
+        bs,
+        op,
+        rhf_config,
+        opt_config,
+        &opt_result.mol,
+        None,
+        (opt_result.converged, opt_result.steps, opt_result.energy),
+        opt_result.search,
+        &ferric_mp2::optimize::rimp2_gradient_label(&scf_jk),
+    );
+}
+
 /// The terfc operator and RI-MP2 configuration of an att-rimp2 optimize or
 /// frequency run with `att_operator = "terfc"` (the operator of the energy
 /// run, `r0` from `[mp2] att_r0` or the basis default, `att_omega` when
-/// decoupled), or `None` for the default erfc operator. The open-shell terfc
-/// gradient is refused before this by `Config::validate_task_compat`.
+/// decoupled), or `None` for the default erfc operator.
 fn att_rimp2_terfc_gradient(
     cfg: &Config,
     mol: &Molecule,
@@ -8467,6 +8582,48 @@ fn att_rimp2_gradient_config(
         screen_thresh: None,
         memory_budget_bytes: budget_bytes,
     }
+}
+
+/// The `[mp2]` SCS-MP2(2terfc) configuration of the energy, optimize and
+/// frequency runs: r0(1)/r0(2) in Å in the TOML (the Python convention),
+/// Bohr in the library, resolved for the basis by
+/// `ferric_mp2::terfc_r0::resolve_scs_2terfc` (its note, if any, is printed),
+/// with `c_os`/`c_ss`, the frozen core and the memory budget. Exits 1 on a
+/// bad value or `r0_nonbonded <= r0_bonded`.
+fn scs_2terfc_config(
+    cfg: &Config,
+    mol: &Molecule,
+    bs: &BasisSet,
+    budget_bytes: Option<usize>,
+) -> ScsMp2TerfcConfig {
+    const ANG2BOHR: f64 = ferric_core::units::ANGSTROM_TO_BOHR;
+    let params = ferric_mp2::terfc_r0::resolve_scs_2terfc(
+        &bs.name,
+        cfg.mp2.r0_bonded,
+        cfg.mp2.r0_nonbonded,
+        cfg.mp2.c_os,
+        cfg.mp2.c_ss,
+    )
+    .unwrap_or_else(|e| {
+        eprintln!("config error: [mp2] {e}");
+        std::process::exit(1);
+    });
+    if let Some(note) = &params.note {
+        println!("{note}");
+    }
+    let scs_config = ScsMp2TerfcConfig {
+        r0_bonded: params.r0_bonded_angstrom * ANG2BOHR,
+        r0_nonbonded: params.r0_nonbonded_angstrom * ANG2BOHR,
+        c_os: params.c_os,
+        c_ss: params.c_ss,
+        frozen_core: cfg.mp2.frozen_core.resolve(mol),
+        memory_budget_bytes: budget_bytes,
+    };
+    if scs_config.r0_nonbonded <= scs_config.r0_bonded {
+        eprintln!("error: [mp2] r0_nonbonded must be > r0_bonded");
+        std::process::exit(1);
+    }
+    scs_config
 }
 
 /// The `[mp2]` SCS-MP2 configuration of the energy and optimize runs.

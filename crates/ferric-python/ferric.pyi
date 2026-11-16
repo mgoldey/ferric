@@ -4602,6 +4602,8 @@ def run_optimize(
     trust_update: Literal["fixed", "ratio"] | None = None,
     att_operator: Literal["erfc", "terfc"] | None = None,
     r0: float | None = None,
+    r0_bonded: float | None = None,
+    r0_nonbonded: float | None = None,
 ) -> OptimizeResult:
     """Geometry optimization on any surface with an analytic or finite-difference gradient.
 
@@ -4641,10 +4643,16 @@ def run_optimize(
       reference="rohf" raises as for "rimp2"), with the analytic Z-vector gradient of
       the `run_attenuated_rimp2` energy. `omega` in Å⁻¹ (default 0.420; it raises for
       every other method); the other kwargs as for "rimp2". `att_operator="terfc"`
-      replaces erfc with terfc(r; r0)/r, the `run_terfc_rimp2` energy: `r0` in Å
-      (default: the basis default of `run_terfc_rimp2`), closed shell only (an open
-      shell raises), and `omega` raises. `att_operator` and `r0` raise for every other
-      method.
+      replaces erfc with terfc(r; r0)/r, the `run_terfc_rimp2` energy on an RHF or UHF:
+      `r0` in Å (default: the basis default of `run_terfc_rimp2`), and `omega` raises.
+      `att_operator` and `r0` raise for every other method.
+    - "scs-mp2-2terfc": SCS-MP2(2terfc), the `run_scs_mp2_2terfc` energy
+      E_HF + c_os E_OS[terfc r0(1)] + c_ss (E_SS[terfc r0(2)] - E_SS[terfc r0(1)]), on a
+      Coulomb RHF for a singlet or a Coulomb UHF for an open shell (the reference follows
+      the multiplicity; reference="uhf" on a singlet and "rohf" raise). `r0_bonded` /
+      `r0_nonbonded` in Å and `c_os` / `c_ss` with the defaults and basis rules of
+      `run_scs_mp2_2terfc`; the other kwargs as for "rimp2". `r0_bonded` and
+      `r0_nonbonded` raise for every other method.
     - "pdep-rpa": closed-shell RHF + RI-dRPA (Coulomb), the CLI's `[rpa]` optimize
       route. Needs `auxbasis`; `frozen_core`, `memory_budget_gb`, `n_quad` (default 16),
       `quadrature` (default "gauss-legendre") as in `run_pdep_rpa`. The reference RHF is
@@ -4658,7 +4666,8 @@ def run_optimize(
       analytic gradient and 1e-4 for an explicit "fd". `rpa_gradient`, `n_quad`,
       `quadrature` and `trunc_thresh` raise for every other method.
 
-    The correlated methods are closed-shell only and take no `xc`, `dispersion` or
+    "rimp2", "att-rimp2" and "scs-mp2-2terfc" also run open shells; the other
+    correlated methods are closed-shell only. None takes `xc`, `dispersion` or
     `solvent`; any kwarg a method does not read raises ValueError.
 
     `solvent`, `pcm_lebedev_order` ("scf" only): IEF-PCM implicit solvation, as in
@@ -4806,7 +4815,7 @@ def run_frequencies(
     scf_eri: Literal["auto", "direct", "incore"] | None = None,
     scf_relativistic: Literal["x2c1e"] | None = None,
     method: Literal[
-        "scf", "pdep-rpa", "att-rimp2", "rimp2", "scs-mp2", "oo-rimp2"
+        "scf", "pdep-rpa", "att-rimp2", "rimp2", "scs-mp2", "oo-rimp2", "scs-mp2-2terfc"
     ] = "scf",
     auxbasis: str | None = None,
     frozen_core: int | None = None,
@@ -4824,6 +4833,8 @@ def run_frequencies(
     c_ss: float | None = None,
     att_operator: Literal["erfc", "terfc"] | None = None,
     r0: float | None = None,
+    r0_bonded: float | None = None,
+    r0_nonbonded: float | None = None,
 ) -> FrequencyResult:
     """Harmonic vibrational frequencies.
 
@@ -4843,21 +4854,24 @@ def run_frequencies(
     (inverse Angstrom, default 0.420), `scf_jk` ("exact" or "rijk"; unset is RI-JK
     on the matched JK-fit basis, or four-centre with `scf_eri`), `jk_auxbasis` and
     `memory_budget_gb` are as in `run_optimize(method="att-rimp2")`, and so are
-    `att_operator` / `r0` (`"terfc"`: closed shell only). The SCF-route
+    `att_operator` / `r0` (`"terfc"` on an RHF or UHF). The SCF-route
     kwargs raise, `omega`, `att_operator`, `r0`, `scf_jk`, `jk_auxbasis` and
     `memory_budget_gb` raise for the other methods; `reference="rohf"` raises. No IR
     intensities.
 
-    `method="rimp2"`, `"scs-mp2"`, `"oo-rimp2"`: central differences of the analytic
-    nuclear gradient of RHF + RI-MP2, SCS-MP2 and orbital-optimized RI-MP2, as the CLI's
+    `method="rimp2"`, `"scs-mp2"`, `"oo-rimp2"`, `"scs-mp2-2terfc"`: central differences
+    of the analytic nuclear gradient of RHF + RI-MP2, SCS-MP2, orbital-optimized RI-MP2
+    and SCS-MP2(2terfc), as the CLI's
     `task = "frequencies"` for those kinds (`ferric_mp2::gradient`,
     `ferric_mp2::optimize::oo_rimp2_energy_gradient`). Need `auxbasis`; `frozen_core`
     (default 0; must be 0 for `"oo-rimp2"`), `scf_jk`, `jk_auxbasis` and
     `memory_budget_gb` are as in `run_optimize` for the same method, `c_os` / `c_ss`
-    (defaults 6/5 and 1/3) read by `"scs-mp2"` only, `oo_max_iter` / `oo_grad_conv` by
-    `"oo-rimp2"` only. `"rimp2"` on an open-shell molecule runs a UHF reference with the
-    unrestricted gradient (the molecule's multiplicity picks it; `reference="rohf"`
-    raises); `"scs-mp2"` and `"oo-rimp2"` are closed shell only. The SCF-route kwargs
+    (defaults 6/5 and 1/3) read by `"scs-mp2"` and `"scs-mp2-2terfc"` (whose defaults and
+    `r0_bonded` / `r0_nonbonded` are those of `run_scs_mp2_2terfc`), `oo_max_iter` /
+    `oo_grad_conv` by `"oo-rimp2"` only. `"rimp2"` and `"scs-mp2-2terfc"` on an
+    open-shell molecule run a UHF reference with the unrestricted gradient (the
+    molecule's multiplicity picks it; `reference="rohf"` raises); `"scs-mp2"` and
+    `"oo-rimp2"` are closed shell only. The SCF-route kwargs
     (`xc`, `hessian`, `dispersion`, `multiplicity`, `point_charges`, `external_field`,
     the SCF controls, `scf_eri` and the density-fitting kwargs) and the other methods'
     kwargs raise. No IR intensities.

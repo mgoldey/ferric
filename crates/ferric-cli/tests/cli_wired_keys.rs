@@ -856,6 +856,145 @@ fn gw_reference_is_refused_on_a_closed_shell() {
     );
 }
 
+// ─── terfc gradients: scs-mp2-2terfc and open-shell att-rimp2 frequencies ───
+
+/// A CLI `task = "frequencies"` run (`[scf] jk = "exact"`, `delta = 5e-3`)
+/// against central differences of the library gradient driver it calls:
+/// the reference energy to 1e-9 Ha and every printed frequency to its two
+/// decimals.
+fn freq_matches_library(
+    tag: &str,
+    xyz: &str,
+    mult: usize,
+    kind: &str,
+    mp2: &str,
+    surface: impl Fn(
+        &Molecule,
+        &mut ferric_scf::warm_start::ScfWarmStart,
+    ) -> Result<(f64, ndarray::Array2<f64>), ferric_core::FerricError>,
+) -> (f64, Vec<f64>) {
+    let out = run_ok(
+        tag,
+        &body(
+            xyz,
+            mult,
+            "sto-3g",
+            kind,
+            &format!("[scf]\njk = \"exact\"\n{mp2}"),
+        )
+        .replace("task = \"energy\"", "task = \"frequencies\"")
+        .replace("[scf]\njk", "[frequencies]\ndelta = 5e-3\n\n[scf]\njk"),
+    );
+    let l = lib(xyz, mult, "sto-3g");
+    let mut warm = ferric_scf::warm_start::ScfWarmStart::anchored(false);
+    let (e, _) = surface(&l.mol, &mut warm).unwrap();
+    let res = ferric_scf::frequencies::harmonic_frequencies_from_gradient(&l.mol, 5e-3, e, |m| {
+        surface(m, &mut warm).map(|(_, g)| g)
+    })
+    .unwrap();
+    assert_close(&format!("{tag} energy"), value(&out, "energy"), e, 1e-9);
+    let printed: Vec<f64> = out
+        .split("frequency (cm^-1)")
+        .nth(1)
+        .unwrap_or_else(|| panic!("{tag}: no frequency table:\n{out}"))
+        .lines()
+        .skip(1)
+        .take_while(|l| !l.trim().is_empty())
+        .map(|l| l.split_whitespace().nth(1).unwrap().parse().unwrap())
+        .collect();
+    assert_eq!(printed.len(), res.frequencies.len(), "{tag}:\n{out}");
+    for (p, w) in printed.iter().zip(&res.frequencies) {
+        assert!(
+            (p - w).abs() <= 0.0051,
+            "{tag}: CLI {p} vs library {w:.4} cm^-1"
+        );
+    }
+    (e, res.frequencies)
+}
+
+/// `scs-mp2-2terfc` frequencies (closed shell on H2, open shell on OH with
+/// one frozen core) are central differences of
+/// `total_scs_mp2_2terfc_gradient_on` / `total_u_scs_mp2_2terfc_gradient_on`,
+/// and open-shell `att-rimp2` terfc frequencies of
+/// `total_u_terfc_rimp2_gradient_on`. Negative control: on OH the two
+/// surfaces differ.
+#[test]
+fn terfc_gradient_frequencies_match_the_library() {
+    if terf_dir().is_none() {
+        eprintln!("skipping: terf interpolation tables not found");
+        return;
+    }
+    use ferric_mp2::scs::ScsMp2TerfcConfig;
+    let a2b = ferric_core::units::ANGSTROM_TO_BOHR;
+    let aux = basis::bundled("cc-pvdz-ri").unwrap();
+    let obs = basis::bundled("sto-3g").unwrap();
+    let jk = ferric_mp2::gradient::exact_scf_jk();
+    let scs = |fc: usize| ScsMp2TerfcConfig {
+        r0_bonded: 0.75 * a2b,
+        r0_nonbonded: 1.05 * a2b,
+        c_os: 1.27,
+        c_ss: 4.05,
+        frozen_core: fc,
+        memory_budget_bytes: None,
+    };
+    let scs_mp2 = "[mp2]\nauxbasis = \"cc-pvdz-ri\"\nr0_bonded = 0.75\nr0_nonbonded = 1.05\n\
+                   c_os = 1.27\nc_ss = 4.05\n";
+    let c0 = scs(0);
+    freq_matches_library(
+        "scs2terfc_freq_h2",
+        "h2.xyz",
+        1,
+        "scs-mp2-2terfc",
+        &format!("{scs_mp2}frozen_core = 0\n"),
+        |m, w| {
+            ferric_mp2::scs_2terfc_gradient::total_scs_mp2_2terfc_gradient_on(
+                m, &obs, &aux, &c0, None, &jk, w,
+            )
+        },
+    );
+    let c1 = scs(1);
+    let (e_scs, _) = freq_matches_library(
+        "scs2terfc_freq_oh",
+        "oh.xyz",
+        2,
+        "scs-mp2-2terfc",
+        &format!("{scs_mp2}frozen_core = 1\n"),
+        |m, w| {
+            ferric_mp2::scs_2terfc_gradient::total_u_scs_mp2_2terfc_gradient_on(
+                m, &obs, &aux, &c1, None, &jk, w,
+            )
+        },
+    );
+    let ri = ferric_mp2::rimp2::RiMp2Config {
+        frozen_core: 1,
+        ..Default::default()
+    };
+    let (e_att, _) = freq_matches_library(
+        "att_terfc_freq_oh",
+        "oh.xyz",
+        2,
+        "att-rimp2",
+        "[mp2]\nauxbasis = \"cc-pvdz-ri\"\natt_operator = \"terfc\"\natt_r0 = 1.05\n\
+         frozen_core = 1\n",
+        |m, w| {
+            ferric_mp2::att_rimp2_gradient::total_u_terfc_rimp2_gradient_on(
+                m,
+                &obs,
+                &aux,
+                Operator::terfc(1.05 * a2b),
+                &ri,
+                None,
+                &jk,
+                w,
+            )
+        },
+    );
+    assert!(
+        (e_scs - e_att).abs() > 1e-4,
+        "the two OH surfaces must differ: {e_scs:.10} vs {e_att:.10}"
+    );
+}
+
 // ─── [mp2] att_operator = "terfc" on att-rimp2, [mp2] terf_omega ────────────
 
 /// `att-rimp2` with `att_operator = "terfc"`, `att_r0 = 1.05` Å is the Python
