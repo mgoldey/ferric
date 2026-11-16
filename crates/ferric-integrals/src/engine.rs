@@ -1737,35 +1737,53 @@ impl Engine {
         let max_l = obs.max_l().max(dfbs.max_l());
         let max_fn_obs = obs.shell_dims().iter().copied().max().unwrap_or(1);
         let max_fn_df = dfbs.shell_dims().iter().copied().max().unwrap_or(1);
-        let mut handles = Vec::new();
+        Self::libint_deriv_engine(
+            &op,
+            9 * max_fn_df * max_fn_obs * max_fn_obs,
+            "3-center",
+            |op_kind, omega| {
+                // SAFETY: FFI call with valid metadata; the caller null-checks.
+                unsafe {
+                    ffi::scf_engine_create_3center_deriv(
+                        op_kind, omega, max_nprim, max_l, precision,
+                    )
+                }
+            },
+        )
+    }
 
+    /// One libint2 derivative engine per component of `op` (one for a plain
+    /// operator), each weighted by its coefficient, with a `buf_len` buffer.
+    fn libint_deriv_engine(
+        op: &Operator,
+        buf_len: usize,
+        what: &str,
+        create: impl Fn(c_int, f64) -> *mut c_void,
+    ) -> Result<Self, FerricError> {
         let n_comp = if op.is_composite {
             op.num_components
         } else {
             1
         };
+        let mut handles = Vec::with_capacity(n_comp);
         for i in 0..n_comp {
             let (coeff, kind, omega) = if op.is_composite {
                 (op.c_coeffs[i], op.c_kinds[i], op.c_omegas[i])
             } else {
                 (1.0, op.kind, op.omega)
             };
-            let op_kind = operator_kind_to_ffi(kind)?;
-            // SAFETY: FFI call with valid metadata. Null-checked below.
-            let h = unsafe {
-                ffi::scf_engine_create_3center_deriv(op_kind, omega, max_nprim, max_l, precision)
-            };
+            let h = create(operator_kind_to_ffi(kind)?, omega);
             if h.is_null() {
-                return Err(FerricError::Libint(
-                    "3-center derivative engine not available".into(),
-                ));
+                return Err(FerricError::Libint(format!(
+                    "{what} derivative engine not available"
+                )));
             }
             handles.push((coeff, h));
         }
         Ok(Engine {
             handles,
-            buf: vec![0.0; 9 * max_fn_df * max_fn_obs * max_fn_obs],
-            scratch: vec![0.0; 9 * max_fn_df * max_fn_obs * max_fn_obs],
+            buf: vec![0.0; buf_len],
+            scratch: vec![0.0; buf_len],
             is_terfc: false,
             is_terf: false,
             libint2_terf: false,
@@ -1792,44 +1810,12 @@ impl Engine {
         }
         require_libint_class(LibintClass::TwoCentre, 1, dfbs.max_l(), dfbs.max_l())?;
         let max_fn = dfbs.shell_dims().iter().copied().max().unwrap_or(1);
-        let mut handles = Vec::new();
-
-        let n_comp = if op.is_composite {
-            op.num_components
-        } else {
-            1
-        };
-        for i in 0..n_comp {
-            let (coeff, kind, omega) = if op.is_composite {
-                (op.c_coeffs[i], op.c_kinds[i], op.c_omegas[i])
-            } else {
-                (1.0, op.kind, op.omega)
-            };
-            let op_kind = operator_kind_to_ffi(kind)?;
-            // SAFETY: FFI call with valid metadata. Null-checked below.
-            let h = unsafe {
-                ffi::scf_engine_create_2center_deriv(
-                    op_kind,
-                    omega,
-                    dfbs.max_nprim(),
-                    dfbs.max_l(),
-                    precision,
-                )
-            };
-            if h.is_null() {
-                return Err(FerricError::Libint(
-                    "2-center derivative engine not available".into(),
-                ));
+        let (max_nprim, max_l) = (dfbs.max_nprim(), dfbs.max_l());
+        Self::libint_deriv_engine(&op, 6 * max_fn * max_fn, "2-center", |op_kind, omega| {
+            // SAFETY: FFI call with valid metadata; the caller null-checks.
+            unsafe {
+                ffi::scf_engine_create_2center_deriv(op_kind, omega, max_nprim, max_l, precision)
             }
-            handles.push((coeff, h));
-        }
-        Ok(Engine {
-            handles,
-            buf: vec![0.0; 6 * max_fn * max_fn],
-            scratch: vec![0.0; 6 * max_fn * max_fn],
-            is_terfc: false,
-            is_terf: false,
-            libint2_terf: false,
         })
     }
 
