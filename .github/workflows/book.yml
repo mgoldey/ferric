@@ -24,7 +24,12 @@ on:
       - '.github/workflows/book.yml'
   push:
     tags: ['v*']
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      label:
+        description: "Title-page label and file name for the PDF (default: the branch name), e.g. v0.1.0rc12 when rebuilding a release's book"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -122,13 +127,20 @@ jobs:
         run: python3 scripts/book_build.py --release --concat "$RUNNER_TEMP/ferric-book.md"
 
       - name: Build the PDF
+        env:
+          LABEL: ${{ github.event.inputs.label }}
         run: |
-          # A dispatch runs on a branch name, which may hold a slash.
-          NAME="${GITHUB_REF_NAME//\//-}"
+          # A dispatch runs on a branch name, which may hold a slash; its
+          # optional `label` input names the build instead (a release rebuilt
+          # from a fix branch).
+          NAME="${LABEL:-$GITHUB_REF_NAME}"
+          NAME="${NAME//\//-}"
+          # No --number-sections: every title already carries its chapter or
+          # section number, and pandoc's own would print each one twice.
           pandoc "$RUNNER_TEMP/ferric-book.md" \
             --from markdown+tex_math_dollars --pdf-engine=xelatex \
             --resource-path=.:book/src \
-            --toc --number-sections -V mainfont="DejaVu Serif" \
+            --toc -V mainfont="DejaVu Serif" \
             -V monofont="DejaVu Sans Mono" -V geometry:margin=2.5cm \
             -M title="ferric: theory and implementation" \
             -M author="Matthew Goldey, with ferric contributors" \

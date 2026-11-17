@@ -709,3 +709,12 @@ def test_pdf_job_has_what_the_figures_and_a_dry_run_need():
     assert "--resource-path=.:book/src" in wf
     assert "librsvg2-bin" in wf, "pandoc converts SVG for xelatex with rsvg-convert"
     assert "github.event_name == 'workflow_dispatch'" in wf
+
+
+def test_pdf_job_does_not_number_sections_twice():
+    # Titles carry their own numbers ("3.2 Two-, three- and four-center
+    # integrals"); pandoc's --number-sections printed "11 3.2 ..." in rc12's PDF.
+    wf = (SCRIPT.parents[1] / ".github/workflows/book.yml").read_text(encoding="utf-8")
+    pandoc = wf[wf.index('pandoc "$RUNNER_TEMP/ferric-book.md"') :]
+    pandoc = pandoc[: pandoc.index('-o "ferric-book-')]
+    assert "--number-sections" not in pandoc
