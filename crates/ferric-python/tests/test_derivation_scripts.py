@@ -1064,6 +1064,42 @@ CASES = [
         ],
     ),
     (
+        "lmp2_combined_sympy.py",
+        20,
+        [
+            (
+                "schur_a = A_DD - A[np.ix_(D, K)]",
+                "schur_a = A_DD + 0 * A[np.ix_(D, K)]",
+                "P1: residual identity",
+            ),
+            (
+                "g -= sum(fo[i, k] * T(k, j, a, b_) for k in range(no_s) if k != i)",
+                "g -= 0",
+                "P2: Jacobi",
+            ),
+            (
+                "rhs = self.J[K] + self.B[np.ix_(K, D)] @ tau[D]",
+                "rhs = self.J[K] - self.B[np.ix_(K, D)] @ tau[D]",
+                "P3: exact when f_oo diagonal",
+            ),
+            (
+                "                for X, w in [(X, 1.0) for X in R] + [(F, lam)]:",
+                "                for X, w in [(X, 1.0) for X in R] + [(F, 0.0)]:",
+                "P4: stationarity",
+            ),
+            (
+                "4 * X3[p, q] * (X3[q, q] - X3[p, p])",
+                "X3[p, q] * (X3[q, q] - X3[p, p])",
+                "P4: gradient",
+            ),
+            (
+                "md.J4, Uo, Uo, Uv, Uv",
+                "md.J4, Uo, np.eye(md.no), Uv, Uv",
+                "P6: rotational invariance",
+            ),
+        ],
+    ),
+    (
         "casci_slater_condon_phases_sympy.py",
         300,
         [
