@@ -44,7 +44,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import book_build as bb  # noqa: E402
 
 BASE = "22770952b"  # full theory.md files
-COVERAGE = "bbdb4132a"  # book/theory-coverage.md, the heading -> book map
+COVERAGE = "cf74ebe09"  # book/theory-coverage.md, the heading -> book map
 
 # (crate, heading text) -> book label, where the coverage map's first entry is
 # not the best home (absent headings, content moved by the gap-filling commit).
