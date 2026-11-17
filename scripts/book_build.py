@@ -372,7 +372,9 @@ def check_theory(root: Path, where: str, spec: str, rep: Report) -> None:
 # backspace and "eta", "\frac" a form feed and "rac", "\rm" a carriage return.
 # HTML renders the damage silently; xelatex rejects the file ("Text line
 # contains an invalid character"), which first showed on the v0.1.0rc12 PDF.
-CONTROL_RE = re.compile(rb"[\x00-\x09\x0b-\x1f\x7f]")
+# A carriage return before a newline is a CRLF line ending (a Windows checkout
+# or a file written in text mode there), not damage; a lone one is.
+CONTROL_RE = re.compile(rb"[\x00-\x09\x0b\x0c\x0e-\x1f\x7f]|\r(?!\n)")
 CONTROL_NAMES = {7: r"\a", 8: r"\b", 9: r"\t", 11: r"\v", 12: r"\f", 13: r"\r"}
 
 

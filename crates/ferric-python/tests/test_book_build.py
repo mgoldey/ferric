@@ -256,6 +256,11 @@ MUTATIONS = {
         "Inline math",
         "Inline\x08eta math",
     ),
+    "lone carriage return from a lost \\rm": (
+        SEC,
+        "Inline math",
+        "Inline $E_{\rm OS}$ math",
+    ),
     "code span inside inline math": (
         SEC,
         "$E_{ij} = |a|^2$",
@@ -277,6 +282,15 @@ MUTATIONS = {
         '"toyx": {}',
     ),
 }
+
+
+def test_crlf_line_endings_are_not_control_characters(tree):
+    # A Windows checkout, or a page written in text mode there, ends lines
+    # with CRLF; only a lone carriage return is a lost "\r".
+    p = tree / SEC
+    p.write_bytes(p.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n"))
+    assert b"\r\n" in p.read_bytes()
+    assert check(tree).errors == []
 
 
 @pytest.mark.parametrize("name", sorted(MUTATIONS))
