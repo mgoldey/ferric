@@ -55,8 +55,9 @@ Not every section needs every part. The order is fixed.
    without this method, or what it computes, in terms a chemist would use
    (electrons avoiding each other, an orbital sitting on a bond, an integral
    that is nearly zero). No equations yet.
-2. **The plan.** A sentence or a short numbered list if the section has
-   several steps.
+2. **The plan.** Only for a section with three or more subsections: one
+   sentence or a short numbered list. Shorter sections go straight on.
+   Keep the motivation to one paragraph of at most five sentences.
 3. **Notation and entry points.** The existing tables stay; trim the prose
    around them.
 4. **Derivation.** Every step written out. After each key result, check a

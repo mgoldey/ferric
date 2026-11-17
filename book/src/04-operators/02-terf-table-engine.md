@@ -112,7 +112,7 @@ OperatorKind::Terf => {
 >
 > <!-- verified: id=operators.terf.fourier; script=scripts/screening_bounds_sympy.py; claim=fourier; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-integrals/src/schwarz.rs::check_operator_supported -->
 
-Proof: `scripts/screening_bounds_sympy.py` [fourier], [sign], [indefinite].
+The same script also proves the sign change of the terf transform and the indefiniteness of its metric (claims sign and indefinite of `scripts/screening_bounds_sympy.py`).
 
 ## 4.2.2 The two-center integral and the auxiliary function
 
