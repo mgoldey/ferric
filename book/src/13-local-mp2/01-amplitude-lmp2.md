@@ -1,6 +1,6 @@
 # 13.1 Amplitude-threshold local MP2
 
-<!-- section: 13.1; status: edit; registry: local-mp2;
+<!-- section: 13.1; status: ready; registry: local-mp2;
      theory: crates/ferric-mp2/theory.md#"12.1 Amplitude equations in localized orbitals" -->
 
 The MP2 amplitude $t_{ij}^{ab}$ measures how much two electrons in orbitals

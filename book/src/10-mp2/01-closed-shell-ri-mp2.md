@@ -1,6 +1,6 @@
 # 10.1 Closed-shell RI-MP2 energy
 
-<!-- section: 10.1; status: edit; registry: ri-mp2;
+<!-- section: 10.1; status: ready; registry: ri-mp2;
      theory: crates/ferric-mp2/theory.md#"1. Density fitting", "2. Closed-shell RI-MP2" -->
 
 Hartree–Fock gives each electron the *average* field of all the others.
