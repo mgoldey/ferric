@@ -11,14 +11,32 @@ Standard library only, so it runs without building any Rust.
     book_build.py --concat FILE.md   # one Markdown file for pandoc (PDF)
 
 Chapters are discovered by glob (book/src/NN-slug/MM-section.md); nothing is
-listed here. Checks:
+listed here.
+
+Numbering. No number is written in the source; the preprocessor derives every
+one from position. A heading carries a label, ``## Title {#name}``, and is
+numbered by its place (chapter = position among the chapter directories, then
+section, then subsection); an unlabelled heading is not numbered. An equation
+carries ``\label{eq:name}`` inside ``$$...$$``, and a box that states its own
+equation puts ``{#eq:name}`` in its title; both share one series per chapter in
+page order. ``@sec:name`` and ``@eq:name`` (or ``{@eq:name}`` before a letter)
+are references: the build writes the bare number as a link, ``--concat`` as plain
+text. Equations become ``\tag{N.M}`` with an HTML anchor in front.
+
+Checks:
+
+  * labels are unique, references are defined and of the right kind, no source
+    writes ``\tag{``, a numbered heading, a ``section:`` header field, or a
+    hard-coded section/chapter/equation number (a clause naming its source, such
+    as the dissertation or a paper, is exempt; book/number-allowlist.txt lists
+    the rest);
 
   * every ``verified`` box names an existing script, a claim the script defines,
     a runner that names the script, and code references that resolve;
   * ``unverified`` boxes are counted against book/unverified-ceiling.txt (an error
     under --release, and against --ceiling-base REF the ceiling may only go down);
   * ``file.rs::item`` code references resolve to a declaration under crates/;
-  * a section header lists registry ids that exist; a ``ready`` section may not
+  * a page header lists registry ids that exist; a ``ready`` section may not
     cover a registry gap (under --release every registry id must be covered);
   * ``theory:`` headers and ``<!-- include: file.md#"Heading" -->`` resolve by
     heading text, never by number;
@@ -27,7 +45,8 @@ listed here. Checks:
     dissertation or wiki; SUMMARY.md matches the chapter glob;
   * appendices A (verified equations), B (functions cited) and C (validation grades)
     are generated, committed, and must equal what ``--write-appendices`` writes;
-  * the status of each section in book/PLAN.md section 3 equals its header's status,
+  * the status of each page in book/PLAN.md section 3 (rows keyed by label)
+    equals its header's status,
     and the counts in section 4 are the recount (``--write-plan`` rewrites both).
 """
 
@@ -35,6 +54,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -45,7 +65,9 @@ STATUSES = {"ready", "edit", "gap", "verify"}
 ROOTS = ("crates/", "scripts/", "site/", "testdata/", "examples/", "book/", ".github/")
 LOCAL_ONLY = re.compile(r"(wiki/|papers/|dissertation)", re.I)
 BOX_RE = re.compile(r"<!--\s*(verified|unverified):(.*?)-->", re.S)
-HEADER_RE = re.compile(r"\A\s*(?:#[^\n]*\n\s*)?<!--\s*(section:.*?)-->", re.S)
+HEADER_RE = re.compile(
+    r"\A\s*(?:#[^\n]*\n\s*)?<!--\s*((?:section|status):.*?)-->", re.S
+)
 INCLUDE_RE = re.compile(r"<!--\s*include:\s*(.*?)\s*-->")
 EXCERPT_RE = re.compile(
     r"<!--\s*excerpt:\s*(\S+?)\s*-->\s*\n```[^\n]*\n(.*?)\n```", re.S
@@ -166,6 +188,395 @@ def parse_fields(body: str) -> dict[str, str]:
                 if re.fullmatch(r"[\w-]+", k.strip()):
                     out[k.strip()] = v.strip()
                     break
+    return out
+
+
+# ----------------------------------------------------------------- numbering
+# Numbers are never written in the source. A heading carries a label,
+# `## The energy {#mp2-energy-split}`; an equation carries `\label{eq:name}` inside
+# its display math, and a numbered item without display math (a verified box that
+# states its own equation) carries `{#eq:name}` where its number goes. The build
+# numbers them from position and resolves `@sec:name` and `@eq:name` (or the
+# braced `{@eq:name}` when a letter follows) to the bare number, linked.
+LABEL = r"[a-z0-9]+(?:-[a-z0-9]+)*"
+HEAD_ATTR_RE = re.compile(rf"\s*\{{#({LABEL})\}}\s*$")
+EQ_LABEL_RE = re.compile(rf"\\label\{{eq:({LABEL})\}}")
+EQ_ITEM_RE = re.compile(rf"\{{#eq:({LABEL})\}}")
+REF_RE = re.compile(rf"\{{@(eq|sec):({LABEL})\}}|(?<![\w@{{])@(eq|sec):({LABEL})")
+DISPLAY_RE = re.compile(r"\$\$(?:(?!\n[ \t>]*\n).)+?\$\$", re.S)
+# A heading that writes its own number: "## 10.1.2 Title", "# 10. Title", "## D.3 Title".
+NUMBERED_HEADING_RE = re.compile(
+    r"^#{1,6}[ \t]+(?:\d+(?:\.\d+)*\.?|[A-Z]\.\d+(?:\.\d+)*)[ \t]"
+)
+# A reference written as a number. A literature reference (the dissertation, a
+# paper, a theory.md file, a table or figure of either) is exempt when its clause,
+# or its table cell and that column's header, names the source;
+# book/number-allowlist.txt lists the remaining genuine non-references.
+# A book equation number has two parts; a paper's "Eq. 14" has one and is not matched.
+HARD_REF_RE = re.compile(
+    r"(?:\b(?:[Ss]ections?|[Cc]hapters?)|§)[ \t]*\n?[ \t>]*\(?\d+(?:\.\d+)*"
+    r"|\b(?:[Ee]quations?|[Ee]qs?\.|[Bb]ox(?:es)?)[ \t]*\n?[ \t>]*\(?\d+\.\d+"
+    r"|\((?!0\.)\d+\.\d+(?:\.\d+)*[a-z]?\)"  # "(0.3)" is a value
+    r"|\[\d+\.\d+(?:\.\d+)*[ \t][^\]\n]*\]\("
+)
+LITERATURE_CUE = re.compile(
+    r"dissertation|thesis|theory\.md|et al\.|\bpapers?\b|\bpaper's\b|WSHG|Goldey|Wiley"
+    r"|\b(?:Figure|Fig\.|Tables?)[ \t]+\d",
+    re.I,
+)
+CLAUSE_END = re.compile(
+    r"(?<!\bEq)(?<!\bEqs)(?<!\bFig)(?<!\bal)(?<!\be\.g)(?<!\bi\.e)(?<!\bvs)\.(?=\s)"
+    r"|;|\n[ \t>]*\n"
+)
+
+
+def literature_context(text: str, start: int, end: int) -> str:
+    """The text that decides whether text[start:end] cites the literature: its
+    table cell and that column's header, or else its clause."""
+    ls = text.rfind("\n", 0, start) + 1
+    le = text.find("\n", end)
+    le = len(text) if le < 0 else le
+    line = text[ls:le]
+    if re.match(r"^[ \t]*(?:>[ \t]*)*\|", line):
+        seps = [m.start() for m in re.finditer(r"(?<!\\)\|", line)]
+        col = sum(1 for s in seps if s < start - ls)
+        bounds = seps + [len(line)]
+        cell = (
+            line[bounds[col - 1] + 1 : bounds[col]] if 0 < col < len(bounds) else line
+        )
+        # The header is the first row of this table.
+        lines = text[:ls].split("\n")[:-1]
+        head = line
+        for prev in reversed(lines):
+            if not re.match(r"^[ \t]*(?:>[ \t]*)*\|", prev):
+                break
+            head = prev
+        hcells = re.split(r"(?<!\\)\|", head)
+        return cell + " | " + (hcells[col] if col < len(hcells) else "")
+    a = start
+    window = text[max(0, start - 600) : start]
+    ends = list(CLAUSE_END.finditer(window))
+    a = max(0, start - 600) + ends[-1].end() if ends else max(0, start - 600)
+    m = CLAUSE_END.search(text, end, min(len(text), end + 600))
+    b = m.start() if m else min(len(text), end + 600)
+    return text[a:b]
+
+
+def blank_spans(text: str, comments: bool = True) -> str:
+    """``text`` with fenced blocks, code spans and (optionally) HTML comments
+    replaced by spaces; newlines and offsets are kept."""
+
+    def blank(m: re.Match) -> str:
+        return re.sub(r"[^\n]", " ", m.group())
+
+    out, fenced = [], False
+    for line in text.split("\n"):
+        if FENCE_RE.match(line.lstrip()):
+            fenced = not fenced
+            out.append(" " * len(line))
+        else:
+            out.append(" " * len(line) if fenced else line)
+    text = "\n".join(out)
+    if comments:
+        text = re.sub(r"<!--.*?-->", blank, text, flags=re.S)
+    return re.sub(r"(?<!`)(`+)(?!`)[^\n]*?(?<!`)\1(?!`)", blank, text)
+
+
+class Target:
+    """A numbered (or titled) thing a reference can point at."""
+
+    def __init__(self, kind, label, number, page, title="", shown=True):
+        self.kind, self.label, self.number = kind, label, number
+        self.page, self.title, self.shown = page, title, shown
+
+    @property
+    def anchor(self) -> str:
+        return f"eq:{self.label}" if self.kind == "eq" else self.label
+
+    @property
+    def text(self) -> str:
+        return self.number if self.number is not None else self.title
+
+
+def fmt_number(number: str, title: str) -> str:
+    """'10. MP2' for a one-part number, '10.1.2 Title' otherwise."""
+    return f"{number}{'' if '.' in number else '.'} {title}"
+
+
+class Numbering:
+    def __init__(self) -> None:
+        self.targets: dict[tuple[str, str], Target] = {}
+        self.page_key: dict[Path, str] = {}  # page -> its H1 label
+        self.page_number: dict[Path, str | None] = {}
+        self.page_shown: dict[Path, bool] = {}
+        self.errors: list[tuple[Path, str]] = []
+
+    def add(self, t: Target, where: Path) -> None:
+        key = (t.kind, t.label)
+        if key in self.targets:
+            first = self.targets[key].page
+            self.errors.append(
+                (where, f"duplicate label {t.kind}:{t.label} (first in {first})")
+            )
+            return
+        self.targets[key] = t
+
+
+def book_pages(root: Path) -> list[tuple[Path, str, str | None, int | None]]:
+    """(page, kind, page number, chapter index) in book order. Kinds: front,
+    chapter, section, notation, root (other unnumbered top-level pages),
+    appendix. Chapter and section numbers come from position."""
+    src = book_src(root)
+    out = []
+    numbered = 0
+    for chapter in chapter_dirs(root):
+        if chapter.name.startswith("00-"):
+            for k, s in enumerate(chapter_sections(chapter), 1):
+                out.append((s, "front", f"0.{k}", 0))
+            continue
+        numbered += 1
+        intro = chapter_intro(chapter)
+        if intro is not None:
+            out.append((intro, "chapter", str(numbered), numbered))
+        for k, s in enumerate(chapter_sections(chapter), 1):
+            out.append((s, "section", f"{numbered}.{k}", numbered))
+    for p in sorted(src.glob("*.md")):
+        if p.name == "00-notation.md":
+            # "Chapter 0": its sections are numbered 1, 2, ... without the prefix.
+            out.append((p, "notation", "0", None))
+        elif p.name != "SUMMARY.md" and not p.name.startswith("appendix-"):
+            out.append((p, "root", None, None))
+    for p in appendix_files(root):
+        out.append(
+            (
+                p,
+                "appendix",
+                re.match(r"appendix-([a-z])-", p.name).group(1).upper(),
+                None,
+            )
+        )
+    return out
+
+
+def label_headings(text: str) -> list[tuple[int, int, str, str | None]]:
+    """(line index, level, title, label) for each heading outside code."""
+    res = []
+    fenced = False
+    for i, line in enumerate(text.split("\n")):
+        if FENCE_RE.match(line.lstrip()):
+            fenced = not fenced
+            continue
+        if fenced:
+            continue
+        m = re.match(r"^(#{1,6})\s+(.*?)\s*$", line)
+        if not m:
+            continue
+        title, label = m.group(2), None
+        a = HEAD_ATTR_RE.search(title)
+        if a:
+            title, label = title[: a.start()].rstrip(), a.group(1)
+        res.append((i, len(m.group(1)), title, label))
+    return res
+
+
+def eq_defs(text: str) -> list[tuple[int, str]]:
+    """(offset, label) of each equation label and numbered item, in order."""
+    scrub = blank_spans(text)
+    out = [(m.start(), m.group(1)) for m in EQ_LABEL_RE.finditer(scrub)]
+    out += [(m.start(), m.group(1)) for m in EQ_ITEM_RE.finditer(scrub)]
+    return sorted(out)
+
+
+def compute_numbering(root: Path) -> Numbering:
+    nb = Numbering()
+    src = book_src(root)
+    eq_count: dict[int, int] = {}
+    for p, kind, pnum, ci in book_pages(root):
+        page = p.relative_to(src)
+        text = p.read_text(encoding="utf-8")
+        nb.page_number[page] = pnum
+        nb.page_shown[page] = kind in ("chapter", "section")
+        counters = [0] * 7
+        numbered = [False] * 7
+        numbered[1] = True
+        for _, lvl, title, label in label_headings(text):
+            if lvl == 1:
+                if label:
+                    nb.page_key.setdefault(page, label)
+                    nb.add(
+                        Target("sec", label, pnum, page, title, nb.page_shown[page]),
+                        page,
+                    )
+                continue
+            for d in range(lvl + 1, 7):
+                counters[d], numbered[d] = 0, False
+            if label is None:
+                numbered[lvl] = False
+                continue
+            if not all(numbered[1:lvl]):
+                nb.errors.append(
+                    (page, f"numbered heading {{#{label}}} under an unnumbered one")
+                )
+                continue
+            counters[lvl] += 1
+            numbered[lvl] = True
+            base = [pnum] if pnum and kind != "notation" else []
+            parts = base + [str(c) for c in counters[2 : lvl + 1]]
+            nb.add(Target("sec", label, ".".join(parts), page, title), page)
+        scrub = blank_spans(text)
+        displays = [m.span() for m in DISPLAY_RE.finditer(scrub)]
+        for off, label in eq_defs(text):
+            if scrub.startswith("\\label", off) and not any(
+                a < off < b for a, b in displays
+            ):
+                nb.errors.append((page, f"\\label{{eq:{label}}} outside display math"))
+            if ci is None:
+                nb.errors.append((page, f"equation eq:{label} outside a chapter"))
+                continue
+            eq_count[ci] = eq_count.get(ci, 0) + 1
+            nb.add(Target("eq", label, f"{ci}.{eq_count[ci]}", page), page)
+    return nb
+
+
+def numbering(root: Path) -> Numbering:
+    return compute_numbering(root)
+
+
+def link_text_spans(text: str) -> list[tuple[int, int]]:
+    return [m.span(1) for m in re.finditer(r"\[((?:[^\[\]\n]|\n(?!\s*\n))*)\]\(", text)]
+
+
+def number_page(text: str, page: Path, nb: Numbering, link: bool = True) -> str:
+    """Write the numbers into one page: headings, equation tags and references.
+    ``page`` is relative to book/src. With ``link`` (the HTML build) each number
+    gets an anchor and each reference a link; without (pandoc) plain numbers."""
+    lines = text.split("\n")
+    for i, lvl, title, label in label_headings(text):
+        if label is None:
+            continue
+        t = nb.targets.get(("sec", label))
+        shown = t is not None and t.number and (lvl > 1 or nb.page_shown.get(page))
+        head = fmt_number(t.number, title) if shown else title
+        lines[i] = f"{'#' * lvl} {head} {{#{label}}}"
+    text = "\n".join(lines)
+
+    def eqnum(label: str) -> str:
+        t = nb.targets.get(("eq", label))
+        return t.number if t else "??"
+
+    def anchor(label: str) -> str:
+        return f'<span id="eq:{label}"></span>' if link else ""
+
+    # Display math: \label -> \tag, and the anchor goes in front of the $$.
+    scrub = blank_spans(text)
+    out, last = [], 0
+    for m in DISPLAY_RE.finditer(scrub):
+        body = text[m.start() : m.end()]
+        labels = EQ_LABEL_RE.findall(body)
+        if not labels:
+            continue
+        out.append(text[last : m.start()])
+        out.append("".join(anchor(lb) for lb in labels))
+        out.append(EQ_LABEL_RE.sub(lambda e: f"\\tag{{{eqnum(e.group(1))}}}", body))
+        last = m.end()
+    text = "".join(out) + text[last:]
+
+    scrub = blank_spans(text)
+    links = link_text_spans(scrub)
+    edits = []
+    for m in EQ_ITEM_RE.finditer(scrub):
+        edits.append((m.start(), m.end(), anchor(m.group(1)) + eqnum(m.group(1))))
+    for m in REF_RE.finditer(scrub):
+        kind, label = (
+            (m.group(1), m.group(2)) if m.group(1) else (m.group(3), m.group(4))
+        )
+        t = nb.targets.get((kind, label))
+        if t is None:
+            edits.append((m.start(), m.end(), f"??{kind}:{label}??"))
+            continue
+        inside = any(a <= m.start() < b for a, b in links)
+        if not link or inside:
+            edits.append((m.start(), m.end(), t.text))
+            continue
+        target = (
+            ""
+            if t.page == page
+            else os.path.relpath(t.page, page.parent).replace(os.sep, "/")
+        )
+        edits.append((m.start(), m.end(), f"[{t.text}]({target}#{t.anchor})"))
+    for a, b, new in sorted(edits, reverse=True):
+        text = text[:a] + new + text[b:]
+    return text
+
+
+def check_numbering(root: Path, rep: Report) -> None:
+    """Labels unique, references defined, and no number written by hand."""
+    nb = numbering(root)
+    src = book_src(root)
+    for page, msg in nb.errors:
+        rep.err(rel(root, src / page), msg)
+    allow = allowlist(root)
+    gen = set(GENERATED.values())
+    for p, kind, _, _ in book_pages(root):
+        where = rel(root, p)
+        text = p.read_text(encoding="utf-8")
+        scrub = blank_spans(text)
+        for m in REF_RE.finditer(scrub):
+            k, label = (
+                (m.group(1), m.group(2)) if m.group(1) else (m.group(3), m.group(4))
+            )
+            if (k, label) not in nb.targets:
+                rep.err(where, f"undefined reference @{k}:{label}")
+        if p.name in gen:
+            continue
+        for i, line in enumerate(scrub.split("\n")):
+            if NUMBERED_HEADING_RE.match(line):
+                rep.err(
+                    where,
+                    f"line {i + 1}: heading writes its own number; label it {{#name}}",
+                )
+        for m in re.finditer(r"\\tag\{", scrub):
+            line = scrub.count("\n", 0, m.start()) + 1
+            rep.err(where, f"line {line}: hard-coded \\tag; write \\label{{eq:name}}")
+        if (
+            kind in ("chapter", "section", "front", "notation", "appendix")
+            and p.relative_to(src) not in nb.page_key
+        ):
+            rep.err(
+                where,
+                "the title has no label ({#name}); PLAN.md and the appendices key on it",
+            )
+        # Math is blanked too: a number inside a formula is not a reference.
+        prose = DISPLAY_RE.sub(lambda m: re.sub(r"[^\n]", " ", m.group()), scrub)
+        prose = re.sub(
+            r"(?<![\\$])\$(?=\S)[^\n$]+?(?<=\S)\$(?![\d$])",
+            lambda m: " " * len(m.group()),
+            prose,
+        )
+        nocomment = re.sub(
+            r"<!--.*?-->", lambda m: re.sub(r"[^\n]", " ", m.group()), text, flags=re.S
+        )
+        for m in HARD_REF_RE.finditer(prose):
+            ln = prose.count("\n", 0, m.start())
+            context = literature_context(nocomment, m.start(), m.end())
+            snippet = " ".join(m.group().split())
+            if LITERATURE_CUE.search(context) or (where, snippet) in allow:
+                continue
+            rep.err(
+                where,
+                f"line {ln + 1}: hard-coded reference {snippet!r}; use @sec:name or @eq:name",
+            )
+
+
+def allowlist(root: Path) -> set[tuple[str, str]]:
+    """book/number-allowlist.txt: 'path<TAB>matched text' per line, # comments."""
+    f = root / "book" / "number-allowlist.txt"
+    out = set()
+    if f.is_file():
+        for line in f.read_text(encoding="utf-8").split("\n"):
+            if line.strip() and not line.startswith("#") and "\t" in line:
+                a, b = line.split("\t", 1)
+                out.add((a.strip(), " ".join(b.split())))
     return out
 
 
@@ -481,30 +892,22 @@ def check_page(root: Path, p: Path, rep: Report, ctx: dict, release: bool) -> No
             rep.err(where, f"path does not exist: {tok}")
 
 
-def section_label(p: Path) -> str | None:
-    """'10.1' for book/src/10-mp2/01-x.md, 'D' for appendix-d-x.md."""
-    a = re.match(r"appendix-([a-z])-", p.name)
-    if a:
-        return a.group(1).upper()
-    num = re.match(r"(\d\d)-.*/(\d\d)-", f"{p.parent.name}/{p.name}")
-    return f"{int(num.group(1))}.{int(num.group(2))}" if num else None
-
-
 def check_section_header(root: Path, p: Path, rep: Report, ctx: dict) -> None:
     where = rel(root, p)
     m = HEADER_RE.match(p.read_text())
     if not m:
         rep.err(
             where,
-            "no section header comment (<!-- section: N.M; status: ...; registry: ...; theory: ... -->)",
+            "no section header comment (<!-- status: ...; registry: ...; theory: ... -->)",
         )
         return
     f = parse_fields(m.group(1))
-    want = section_label(p)
-    ctx["headers"][want] = f
-    if f.get("section") != want:
+    key = ctx["page_key"].get(p.relative_to(book_src(root)), where)
+    ctx["headers"][key] = f
+    if "section" in f:
         rep.err(
-            where, f"header section {f.get('section')!r} does not match path ({want})"
+            where,
+            "header carries a section number; numbers come from position, drop `section:`",
         )
     status = f.get("status", "")
     if status not in STATUSES:
@@ -545,14 +948,19 @@ def chapter_sections(chapter: Path) -> list[Path]:
 
 def build_summary(root: Path) -> str:
     """Front matter and notation are unnumbered prefix chapters; every other chapter
-    is a numbered part whose page and section titles carry their own number in the
-    H1 (book.toml turns mdBook's automatic section labels off)."""
+    is a numbered part. The titles carry the numbers the build gives them
+    (book.toml turns mdBook's automatic section labels off)."""
     src = book_src(root)
+    nb = numbering(root)
 
     def h1(p: Path, default: str) -> str:
-        for lvl, h in headings(p.read_text(encoding="utf-8")):
+        page = p.relative_to(src)
+        for _, lvl, title, label in label_headings(p.read_text(encoding="utf-8")):
             if lvl == 1:
-                return h
+                num = nb.page_number.get(page)
+                return (
+                    fmt_number(num, title) if num and nb.page_shown.get(page) else title
+                )
         return default
 
     out = ["# Summary", ""]
@@ -584,18 +992,16 @@ def build_summary(root: Path) -> str:
 
 
 def first_h1(text: str) -> str | None:
-    for lvl, h in headings(text):
+    for _, lvl, title, _ in label_headings(text):
         if lvl == 1:
-            return h
+            return title
     return None
 
 
 def check_chapter_titles(root: Path, rep: Report) -> None:
-    """One number per title, and it is the right one.
-
-    A chapter page is titled 'N. Title'; a section page 'N.M Title' with N.M equal
-    to its `section:` marker and N equal to its chapter's number. Front matter and
-    the notation page are unnumbered. Appendices are titled 'Appendix X'."""
+    """Every chapter has an intro page, and no title writes its own number: the
+    build numbers chapter and section titles from position. Appendices are titled
+    'Appendix X' by hand."""
     for chapter in chapter_dirs(root):
         n = int(chapter.name[:2])
         where = rel(root, chapter)
@@ -607,19 +1013,11 @@ def check_chapter_titles(root: Path, rep: Report) -> None:
             h = first_h1(p.read_text(encoding="utf-8"))
             if h is None:
                 rep.err(w, "no H1 title")
-                continue
-            if n == 0:
-                if re.match(r"\d", h):
-                    rep.err(w, f"front matter is unnumbered, title is {h!r}")
-                continue
-            if p == intro:
-                if not re.match(rf"{n}\. \S", h):
-                    rep.err(w, f"chapter title must start '{n}. ', got {h!r}")
-                continue
-            # The path fixes the number; check_section_header ties it to the marker.
-            want = section_label(p)
-            if not re.match(rf"{re.escape(str(want))} \S", h):
-                rep.err(w, f"section title must start '{want} ', got {h!r}")
+            elif re.match(r"\d", h):
+                rep.err(
+                    w,
+                    f"title must not start with a number (the build numbers it): {h!r}",
+                )
     for p in appendix_files(root):
         h = first_h1(p.read_text(encoding="utf-8")) or ""
         if re.match(r"\d", h):
@@ -645,16 +1043,19 @@ GEN_NOTE = (
 )
 
 
-def page_label(root: Path, p: Path) -> str:
+def page_label(root: Path, p: Path, nb: Numbering | None = None) -> str:
     """'10.1' for a section, 'ch. 10' for a chapter index, 'Notation', 'App. D'."""
-    lab = section_label(p)
-    if lab and p.name.startswith("appendix-"):
-        return f"App. {lab}"
-    if lab:
-        return lab
-    m = re.match(r"(\d\d)-", p.parent.name)
-    if p.name == "index.md" and m:
-        return f"ch. {int(m.group(1))}"
+    nb = nb or numbering(root)
+    page = p.relative_to(book_src(root))
+    num = nb.page_number.get(page)
+    if p.name.startswith("appendix-") and num:
+        return f"App. {num}"
+    if p.name == "00-notation.md":
+        return "Notation"
+    if num and "." not in num:
+        return f"ch. {num}"
+    if num:
+        return num
     if p.name.startswith("00-"):
         return "Notation"
     return p.stem
@@ -686,8 +1087,9 @@ def source_pages(root: Path) -> list[Path]:
 def scan_boxes(root: Path) -> list[tuple[str, str, dict]]:
     """(kind, page label, fields) for every box, in book order."""
     out = []
+    nb = numbering(root)
     for p in source_pages(root):
-        lab = page_label(root, p)
+        lab = page_label(root, p, nb)
         for kind, body in BOX_RE.findall(strip_fences(p.read_text())):
             out.append((kind, lab, parse_fields(body)))
     out.sort(key=lambda b: (label_key(b[1]), b[2].get("id", "")))
@@ -697,8 +1099,9 @@ def scan_boxes(root: Path) -> list[tuple[str, str, dict]]:
 def scan_code_refs(root: Path) -> dict[tuple[str, str], set[str]]:
     """{(path under crates/, item): page labels} over every ``file.rs::item`` reference."""
     refs: dict[tuple[str, str], set[str]] = {}
+    nb = numbering(root)
     for p in source_pages(root):
-        lab = page_label(root, p)
+        lab = page_label(root, p, nb)
         text = re.sub(
             r"<!--\s*unverified:.*?-->", "", strip_fences(p.read_text()), flags=re.S
         )
@@ -719,9 +1122,9 @@ def appendix_a(root: Path) -> str:
     unverified = [b for b in boxes if b[0] == "unverified"]
     reg = load_registry(root)
     out = [
-        "# Appendix A: Verified equations and proof scripts",
+        "# Appendix A: Verified equations and proof scripts {#appendix-a}",
         "",
-        "<!-- section: A; status: ready; registry: none; theory: none -->",
+        "<!-- status: ready; registry: none; theory: none -->",
         "",
         GEN_NOTE,
         "",
@@ -730,7 +1133,7 @@ def appendix_a(root: Path) -> str:
         "that runs the script, and the code it describes; the checker resolves every "
         "one of them.",
         "",
-        "## A.1 Verified equations",
+        "## Verified equations {#appendix-a-verified}",
         "",
         "| Box | Section | Proof script | Claim | Registry |",
         "|---|---|---|---|---|",
@@ -745,7 +1148,7 @@ def appendix_a(root: Path) -> str:
         by_script.setdefault(f.get("script", ""), []).append((lab, f.get("id", "")))
     out += [
         "",
-        "## A.2 Proof scripts",
+        "## Proof scripts {#appendix-a-scripts}",
         "",
         "| Script | Boxes | Sections |",
         "|---|---|---|",
@@ -756,14 +1159,15 @@ def appendix_a(root: Path) -> str:
             f"| `{cell(script)}` | {len(by_script[script])} | {', '.join(labs)} |"
         )
     covered: dict[str, set[str]] = {}
+    nb = numbering(root)
     for p in section_files(root):
         m = HEADER_RE.match(p.read_text())
         if m:
             for rid in split_ids(parse_fields(m.group(1)).get("registry", "")):
-                covered.setdefault(rid, set()).add(page_label(root, p))
+                covered.setdefault(rid, set()).add(page_label(root, p, nb))
     out += [
         "",
-        "## A.3 Registry methods",
+        "## Registry methods {#appendix-a-registry}",
         "",
         "`testdata/derivations/registry.json` is the coverage ledger: every method "
         "with a derivation and a proof, and every recorded gap.",
@@ -783,7 +1187,7 @@ def appendix_a(root: Path) -> str:
         out.append(f"| {gid} | {cell(reg['gaps'][gid].get('reason', ''))} |")
     out += [
         "",
-        "## A.4 Unverified equations",
+        "## Unverified equations {#appendix-a-unverified}",
         "",
         "Equations stated with no machine check yet.",
         "",
@@ -801,9 +1205,9 @@ def appendix_b(root: Path) -> str:
     for path, item in refs:
         crates.setdefault(path.split("/")[0], []).append((path, item))
     out = [
-        "# Appendix B: Functions cited",
+        "# Appendix B: Functions cited {#appendix-b}",
         "",
-        "<!-- section: B; status: ready; registry: none; theory: none -->",
+        "<!-- status: ready; registry: none; theory: none -->",
         "",
         GEN_NOTE,
         "",
@@ -855,9 +1259,9 @@ def appendix_c(root: Path) -> str:
     grades = md_table(text, "Grade")
     matrix = md_table(text, "`method.kind`")
     out = [
-        "# Appendix C: Validation grades",
+        "# Appendix C: Validation grades {#appendix-c}",
         "",
-        "<!-- section: C; status: ready; registry: none; theory: none -->",
+        "<!-- status: ready; registry: none; theory: none -->",
         "",
         GEN_NOTE,
         "",
@@ -867,7 +1271,7 @@ def appendix_c(root: Path) -> str:
         "page says what each grade does and does not cover, and the Anchors table "
         "there holds the numbers.",
         "",
-        "## C.1 The grades",
+        "## The grades {#appendix-c-grades}",
         "",
         "| Grade | Meaning |",
         "|---|---|",
@@ -875,7 +1279,7 @@ def appendix_c(root: Path) -> str:
     for r in grades[1:]:
         if len(r) >= 2:
             out.append(f"| {cell(plain(r[0]))} | {cell(plain(r[1]))} |")
-    out += ["", "## C.2 Grade of each CLI method kind", ""]
+    out += ["", "## Grade of each CLI method kind {#appendix-c-kinds}", ""]
     if matrix:
         head = matrix[0]
         want = {
@@ -933,7 +1337,8 @@ def check_appendices(root: Path, rep: Report) -> None:
 
 
 # ------------------------------------------------------------------ PLAN.md
-PLAN_ROW_RE = re.compile(r"^\|\s*(\d+\.\d+|[A-Z])\s*\|")
+# A section row starts with the label of the section's title, in backticks.
+PLAN_ROW_RE = re.compile(rf"^\|\s*`({LABEL})`\s*\|")
 PLAN_BEGIN = "<!-- status-table:begin -->"
 PLAN_END = "<!-- status-table:end -->"
 
@@ -959,10 +1364,13 @@ def plan_rows(text: str) -> list[tuple[int, str, str, str]]:
 def section_status(root: Path) -> dict[str, str]:
     """Header status of every written section and appendix, by label."""
     out = {}
+    nb = numbering(root)
+    src = book_src(root)
     for p in section_files(root) + appendix_files(root):
         m = HEADER_RE.match(p.read_text())
         if m:
-            out[section_label(p)] = parse_fields(m.group(1)).get("status", "")
+            key = nb.page_key.get(p.relative_to(src), rel(root, p))
+            out[key] = parse_fields(m.group(1)).get("status", "")
     return out
 
 
@@ -1062,6 +1470,7 @@ def run_check(
         "status": {},
         "registry": registry,
         "headers": {},
+        "page_key": numbering(root).page_key,
     }
 
     sections = section_files(root)
@@ -1080,6 +1489,7 @@ def run_check(
         )
 
     check_chapter_titles(root, rep)
+    check_numbering(root, rep)
     check_appendices(root, rep)
     check_plan(root, rep)
 
@@ -1187,10 +1597,16 @@ def build_tree(root: Path, ctx: dict, out: Path) -> None:
     if src.exists():
         shutil.rmtree(src)
     stamp = f"\n\n---\n*Built from commit {commit_of(root)}.*\n"
+    nb = numbering(root)
+    # mdBook copies the first page to index.html at the root, where its relative
+    # links would point outside the book: that page gets plain numbers.
+    first = book_pages(root)[0][0] if book_pages(root) else None
     for p in all_pages(root):
-        dest = src / p.relative_to(book_src(root))
+        page = p.relative_to(book_src(root))
+        dest = src / page
         dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_text(rewrite_math(expand_includes(root, p.read_text())) + stamp)
+        text = number_page(p.read_text(), page, nb, link=p != first)
+        dest.write_text(rewrite_math(expand_includes(root, text)) + stamp)
     (src / "SUMMARY.md").write_text(build_summary(root))
     # Figures (book/src/figures/<NN-slug>/: the generating script and its SVG) are
     # copied verbatim; mdBook serves them next to the preprocessed pages.
@@ -1201,13 +1617,16 @@ def build_tree(root: Path, ctx: dict, out: Path) -> None:
 
 def concat(root: Path, ctx: dict) -> str:
     parts = []
-    for p in sorted(book_src(root).glob("*.md")):
-        if p.name != "SUMMARY.md" and not p.name.startswith("appendix-"):
-            parts.append(p.read_text())
-    for p in section_files(root):
-        parts.append(p.read_text())
-    for p in appendix_files(root):
-        parts.append(p.read_text())
+    nb = numbering(root)
+    src = book_src(root)
+    pages = [
+        p
+        for p in sorted(src.glob("*.md"))
+        if p.name != "SUMMARY.md" and not p.name.startswith("appendix-")
+    ]
+    pages += section_files(root) + appendix_files(root)
+    for p in pages:
+        parts.append(number_page(p.read_text(), p.relative_to(src), nb, link=False))
     text = expand_includes(root, "\n\n".join(parts))
     # Pages link figures as ../figures/<chapter>/<name>.svg, relative to the page.
     # The concatenation has no page directory: pandoc resolves paths against its
