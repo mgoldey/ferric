@@ -250,7 +250,7 @@ $|f| < 0.5$ on both sides (a sign change with large $|f|$ is a pole of $C_N$,
 not a root), refines each root by bisection, and returns the one of largest
 weight $Z \in (0, 1]$: the quasiparticle, by definition. The example is the
 $\alpha$ HOMO of NH2/cc-pVDZ in U-G0W0@UKS. Newton fails there at every
-$n_{\rm quad}$. On the exact real axis the equation has roots at −11.80 eV
+$n_{\rm quad}$. On the exact real axis the equation has roots at −11.81 eV
 ($Z$ 0.62) and −10.09 eV ($Z$ 0.24), and the fallback gives −11.802 eV at
 every $n_{\rm quad} \ge 30$. A state with no root of weight in $(0, 1]$ is
 left unsolved: `GwResult.qp_converged` records it, and `run_gw` warns
