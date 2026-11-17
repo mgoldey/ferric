@@ -75,6 +75,19 @@ CASES = [
         ],
     ),
     (
+        "rpa_terf_signed_fit_sympy.py",
+        15,
+        [
+            ("SIGMA_SR = -1.0", "SIGMA_SR = 1.0", "FAIL [signed-factor]"),
+            (
+                "keep = np.abs(w) > 1e-10 if signed else w > 1e-10",
+                "keep = w > 1e-10 if signed else w > 1e-10",
+                "FAIL [signed-is-exact]",
+            ),
+            ("SCALE_CS = 4.0", "SCALE_CS = 2.0", "FAIL [logdet-vs-plasmon]"),
+        ],
+    ),
+    (
         "u_attenuated_sympy.py",
         15,
         [

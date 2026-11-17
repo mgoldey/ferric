@@ -898,7 +898,8 @@
         "book/src/26-rs-mp2-rpa/01-cross-term.md#cross-term-split-energy"
       ],
       "scripts": [
-        "scripts/rpa_rs_mp2_rpa_sympy.py"
+        "scripts/rpa_rs_mp2_rpa_sympy.py",
+        "scripts/rpa_terf_signed_fit_sympy.py"
       ]
     },
     "scs-mp2": {
@@ -1194,7 +1195,8 @@
         "book/src/26-rs-mp2-rpa/04-two-formulations.md#two-formulations"
       ],
       "scripts": [
-        "scripts/u_attenuated_sympy.py"
+        "scripts/u_attenuated_sympy.py",
+        "scripts/rpa_terf_signed_fit_sympy.py"
       ]
     },
     "scs-2terfc-gradient": {

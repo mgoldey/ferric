@@ -43,7 +43,8 @@
 //!   intermediates with `compute_rpa_intermediates(op_lr)` and
 //!   `metric_inverse_sqrt` sends `Terf` to `eigh_inverse_sqrt`, which drops
 //!   `evals[k] < LINDEP_THRESH`): the dimer `e_dmp2_lr` identity assertion
-//!   fails (−4489.9 vs −8085.0 µHa).
+//!   fails at r0·ω = 2 (−1013.0 vs −4352.7 µHa; run on 0fe427de1, which is
+//!   this state).
 //! * Flip the signature to `+` (`K = B_Cᵀ B_C + B_sᵀ B_s`) in
 //!   `ferric_mp2::rimp2::signed_pair_block`: the same assertion fails.
 //!
@@ -442,7 +443,18 @@ fn paths_without_a_terf_fit_are_unchanged() {
 }
 
 // Recorded on 22770952b (before the signed fit), OPENBLAS_NUM_THREADS=1.
-const PIN_ERF: [f64; 4] = [0.0, 0.0, 0.0, 0.0];
-const PIN_ERF_LR_MP2: f64 = 0.0;
-const PIN_TERFC_MP2: f64 = 0.0;
-const PIN_TERF_T: [f64; 4] = [0.0, 0.0, 0.0, 0.0];
+// Recorded on 0fe427de1 (before the signed fit), as bit patterns.
+const PIN_ERF: [f64; 4] = [
+    f64::from_bits(0xbfca1db018451b41), // -2.04031001902160752e-1
+    f64::from_bits(0xbfc9d746f4871f86), // -2.01882237814285215e-1
+    f64::from_bits(0xbfca0ece275f8b86), // -2.03576821541983033e-1
+    f64::from_bits(0xbfc7865e0fc3bb29), // -1.83788068482919870e-1
+];
+const PIN_ERF_LR_MP2: f64 = f64::from_bits(0xbf2332b60d0a4bd5); // -1.46469805731712588e-4
+const PIN_TERFC_MP2: f64 = f64::from_bits(0xbfca07d3bd890585); // -2.03363864466194283e-1
+const PIN_TERF_T: [f64; 4] = [
+    f64::from_bits(0xbfca2057c7b54dfe), // -2.04112026704578342e-1
+    f64::from_bits(0xbfca1f26936e14af), // -2.04075643527322964e-1
+    f64::from_bits(0x3fb2db37151e6678), // 7.36574579772425464e-2
+    f64::from_bits(0x3fb2e05d43314824), // 7.37360276264387715e-2
+];
