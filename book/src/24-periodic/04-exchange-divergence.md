@@ -1,7 +1,6 @@
 # The exchange divergence {#exchange-divergence}
 
-<!-- status: ready; registry: pbc-hf;
-     theory: crates/ferric-pbc/theory.md#"4. Exchange divergence (`exxdiv`)" -->
+<!-- status: ready; registry: pbc-hf -->
 
 Dropping $\mathbf G = 0$ is exact for the Coulomb energy of a neutral cell:
 the electronic and nuclear divergences cancel. Exchange has no such partner,

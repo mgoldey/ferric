@@ -1,7 +1,6 @@
 # Periodic MP2 and dRPA {#mp2-drpa}
 
-<!-- status: ready; registry: pbc-mp2, pbc-drpa;
-     theory: crates/ferric-pbc/theory.md#"9. Periodic MP2 and dRPA" -->
+<!-- status: ready; registry: pbc-mp2, pbc-drpa -->
 
 Periodic MP2 and direct RPA reuse the molecular kernels of chapters @sec:mp2, @sec:rimp2-algorithms
 and 18. At the Gamma point the orbitals are real, and the only new

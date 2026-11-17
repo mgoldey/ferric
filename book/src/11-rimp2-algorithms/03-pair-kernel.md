@@ -1,5 +1,4 @@
-<!-- status: ready; registry: ri-mp2;
-     theory: crates/ferric-mp2/theory.md#"2. Closed-shell RI-MP2" -->
+<!-- status: ready; registry: ri-mp2 -->
 
 # The pair-energy kernel {#pair-kernel}
 

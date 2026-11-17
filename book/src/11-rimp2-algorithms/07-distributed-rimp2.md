@@ -1,5 +1,4 @@
-<!-- status: verify; registry: ri-mp2;
-     theory: none -->
+<!-- status: verify; registry: ri-mp2 -->
 
 # Distributed RI-MP2 by auxiliary bands {#distributed-rimp2}
 

@@ -1,7 +1,6 @@
 # MP2 static polarizability {#mp2-polarizability}
 
-<!-- status: ready; registry: mp2-polarizability;
-     theory: crates/ferric-mp2/theory.md#"10. Static polarizability" -->
+<!-- status: ready; registry: mp2-polarizability -->
 
 Put a molecule in a uniform electric field and its electrons shift: the
 dipole changes in proportion to the field, and the proportionality constant

@@ -1,7 +1,6 @@
 # Atomic partitions: Becke, Hirshfeld, Löwdin, ESP fits {#atomic-partitions}
 
-<!-- status: edit; registry: atomic-charges;
-     theory: crates/ferric-dft/theory.md#"Becke partition and its nuclear derivative"; crates/ferric-scf/theory.md#"Atomic charges" -->
+<!-- status: edit; registry: atomic-charges -->
 
 A molecule has one electron density and no atoms. Chemists still want
 per-atom numbers: a partial charge on the carbonyl oxygen, a polarizability

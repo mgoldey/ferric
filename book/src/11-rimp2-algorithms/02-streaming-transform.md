@@ -1,5 +1,4 @@
-<!-- status: ready; registry: ri-mp2;
-     theory: crates/ferric-mp2/theory.md#"1. Density fitting" -->
+<!-- status: ready; registry: ri-mp2 -->
 
 # Streaming the MO transform and the dressing {#streaming-transform}
 

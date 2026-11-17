@@ -1,7 +1,6 @@
 # Two-, three- and four-center integrals {#two-electron}
 
-<!-- status: edit; registry: none;
-     theory: crates/ferric-integrals/theory.md#"Two-, three- and four-center integrals" -->
+<!-- status: edit; registry: none -->
 
 Two electrons repel. In a basis, the repulsion between the charge cloud
 $\chi_\mu\chi_\nu$ of one electron and the cloud $\chi_\lambda\chi_\sigma$ of

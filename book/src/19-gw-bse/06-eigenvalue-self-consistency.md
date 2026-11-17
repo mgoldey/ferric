@@ -1,7 +1,6 @@
 # Eigenvalue self-consistency {#eigenvalue-self-consistency}
 
-<!-- status: ready; registry: gw;
-     theory: crates/ferric-gw/theory.md#"8. Eigenvalue self-consistency" -->
+<!-- status: ready; registry: gw -->
 
 G0W0 builds $G$ and $W$ from the mean-field spectrum, so its answer depends
 on the reference. A Hartree–Fock gap is too large, a semilocal Kohn–Sham gap

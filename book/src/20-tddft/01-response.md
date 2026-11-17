@@ -1,7 +1,6 @@
 # Response matrices, TDA and the Casida equations {#response}
 
-<!-- status: ready; registry: tddft;
-     theory: crates/ferric-tddft/theory.md#"1. Response matrices" -->
+<!-- status: ready; registry: tddft -->
 
 An excited state of a closed-shell molecule is, to first approximation, an
 electron moved from an occupied orbital $i$ to a virtual orbital $a$. The

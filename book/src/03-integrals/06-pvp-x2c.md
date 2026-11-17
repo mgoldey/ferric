@@ -1,7 +1,6 @@
 # The pVp integral and spin-free X2C-1e {#pvp-x2c}
 
-<!-- status: edit; registry: pvp-integrals;
-     theory: crates/ferric-integrals/theory.md#"The pVp integral" -->
+<!-- status: edit; registry: pvp-integrals -->
 
 Electrons near a heavy nucleus move fast. In a heavy atom the inner
 electrons reach a sizeable fraction of the speed of light, and a

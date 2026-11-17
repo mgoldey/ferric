@@ -1,7 +1,6 @@
 # EOM-CCSD singlet excitation energies {#eom-ccsd}
 
-<!-- status: ready; registry: eom-ccsd;
-     theory: crates/ferric-cc/theory.md#"EE-EOM-CCSD singlets, closed shell" -->
+<!-- status: ready; registry: eom-ccsd -->
 
 An excited state differs from the ground state mostly by one electron
 promoted, but the other electrons stay correlated around it. Equation-of-motion

@@ -1,7 +1,6 @@
 # The molecular-mechanics force field {#molecular-mechanics}
 
-<!-- status: ready; registry: mm;
-     theory: crates/ferric-mm/theory.md#"1. Bonds", "2. Angles", "3. Periodic torsions: proper and improper", "4. The dihedral angle $\phi$ and its gradient (Bekker form)", "5. Nonbonded: Lennard-Jones and Coulomb", "6. Exclusions and 1-4 scaling", "7. QM-MM Lennard-Jones", "8. Opt-in nonbonded cutoff (OpenMM `CutoffNonPeriodic`)" -->
+<!-- status: ready; registry: mm -->
 
 Point charges give the QM region the electrostatics of its surroundings and
 nothing else. They do not hold the MM atoms together, they do not keep atoms

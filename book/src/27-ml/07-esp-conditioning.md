@@ -1,6 +1,6 @@
 # A worked consumer: esp-conditioning {#esp-conditioning}
 
-<!-- status: edit; registry: pdep-rpa; theory: none -->
+<!-- status: edit; registry: pdep-rpa -->
 
 The earlier sections describe the interface from ferric's side. This one
 reads it from the other side, through one real consumer. esp-conditioning is

@@ -1,7 +1,6 @@
 # Spin adaptation: from spin orbitals to spatial orbitals {#spin-adaptation}
 
-<!-- status: edit; registry: ;
-     theory: crates/ferric-mp2/theory.md#"Conventions" -->
+<!-- status: edit; registry: -->
 
 In a closed-shell molecule every occupied spatial orbital holds one
 $\alpha$ and one $\beta$ electron, and the $\alpha$ and $\beta$ orbitals are

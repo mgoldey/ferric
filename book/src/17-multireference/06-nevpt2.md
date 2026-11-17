@@ -1,7 +1,6 @@
 # SC-NEVPT2 {#nevpt2}
 
-<!-- status: ready; registry: nevpt2;
-     theory: crates/ferric-ci/theory.md#"SC-NEVPT2 (`src/nevpt2.rs`)" -->
+<!-- status: ready; registry: nevpt2 -->
 
 A CASSCF wavefunction gets the near-degenerate configurations right, but
 every electron outside the active space stays in a fixed core or virtual

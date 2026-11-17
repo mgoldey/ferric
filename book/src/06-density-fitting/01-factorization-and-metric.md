@@ -1,7 +1,6 @@
 # The factorization, the metric, Cholesky and eigendecomposition factors {#factorization-and-metric}
 
-<!-- status: edit; registry: none;
-     theory: crates/ferric-mp2/theory.md#"1. Density fitting" -->
+<!-- status: edit; registry: none -->
 
 A two-electron integral $(pq|rs)$ is the Coulomb energy between two charge
 distributions, the orbital products $\rho_{pq} = \phi_p\phi_q$ and

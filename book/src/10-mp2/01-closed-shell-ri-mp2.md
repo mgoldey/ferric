@@ -1,7 +1,6 @@
 # Closed-shell RI-MP2 energy {#closed-shell-ri-mp2}
 
-<!-- status: ready; registry: ri-mp2;
-     theory: crates/ferric-mp2/theory.md#"1. Density fitting", "2. Closed-shell RI-MP2" -->
+<!-- status: ready; registry: ri-mp2 -->
 
 Hartree–Fock gives each electron the *average* field of all the others.
 Real electrons do better than that: they see each other coming and step

@@ -1,7 +1,6 @@
 # Geometry optimization, saddle points and reaction paths {#geometry-search}
 
-<!-- status: edit; registry: geometry-search;
-     theory: crates/ferric-scf/theory.md#"Harmonic frequencies"; crates/ferric-scf/theory.md#"Geometry searches" -->
+<!-- status: edit; registry: geometry-search -->
 
 A chemist asks three questions of a potential energy surface. Where are the
 stable structures, the minima, where every small displacement raises the

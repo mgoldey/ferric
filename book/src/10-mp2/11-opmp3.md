@@ -1,7 +1,6 @@
 # Orbital-partitioned Padé MP3 {#opmp3}
 
-<!-- status: ready; registry: opmp3;
-     theory: crates/ferric-mp2/theory.md#"6.2 Orbital-partitioned Padé MP3 (OP-MP3)" -->
+<!-- status: ready; registry: opmp3 -->
 
 The Møller–Plesset series can oscillate or diverge, and MP3 overshoots
 where MP2 already overshoots. The scalar Padé $E_2^2/(E_2 - E_3)$ tames it

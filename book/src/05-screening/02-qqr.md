@@ -1,7 +1,6 @@
 # Distance-dependent bounds (QQR) {#qqr}
 
-<!-- status: edit; registry: none;
-     theory: crates/ferric-integrals/theory.md#"Distance-dependent bounds (QQR)" -->
+<!-- status: edit; registry: none -->
 
 Two charge clouds far apart repel like two point charges: the product of
 their charges over the distance between them. A Coulomb integral between

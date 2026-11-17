@@ -1,7 +1,6 @@
 # The kernel and the functional gate {#kernel}
 
-<!-- status: ready; registry: tddft;
-     theory: crates/ferric-tddft/theory.md#"5. Functional gate and kernel" -->
+<!-- status: ready; registry: tddft -->
 
 When an electron moves from $i$ to $a$, the density changes, and so does
 the exchange-correlation potential every other electron feels. That

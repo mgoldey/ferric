@@ -1,7 +1,6 @@
 # The stress tensor {#stress}
 
-<!-- status: ready; registry: pbc-ewald-pairft-stress;
-     theory: crates/ferric-pbc/theory.md#"5. Stress tensor (strain derivative)" -->
+<!-- status: ready; registry: pbc-ewald-pairft-stress -->
 
 The force asks how the energy changes when one atom moves. The stress asks
 how it changes when the whole cell is deformed: the lattice vectors and the

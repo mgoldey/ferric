@@ -1,7 +1,6 @@
 # LinK, seminumerical exchange (COSX) and CFMM {#link-cosx-cfmm}
 
-<!-- status: ready; registry: rhf, uhf, rohf;
-     theory: crates/ferric-scf/theory.md#"LinK and COSX exchange", "CFMM: the near and far fields as coded" -->
+<!-- status: ready; registry: rhf, uhf, rohf -->
 
 In a large molecule most four-centre contributions to $J$ and $K$ are
 negligible, and each builder of this section uses a different reason. In a

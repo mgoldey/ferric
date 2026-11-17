@@ -1,7 +1,6 @@
 # RHF, UHF and ROHF energy functionals {#energy-functionals}
 
-<!-- status: ready; registry: rhf, uhf, rohf;
-     theory: crates/ferric-scf/theory.md#"Hartree-Fock energy functionals (RHF, UHF, ROHF)" -->
+<!-- status: ready; registry: rhf, uhf, rohf -->
 
 Hartree–Fock replaces the many-electron problem by one electron at a time in
 the averaged field of the rest. Each electron is repelled by the total charge

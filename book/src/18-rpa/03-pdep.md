@@ -1,7 +1,6 @@
 # Projective dielectric eigenpotentials {#pdep}
 
-<!-- status: ready; registry: pdep-rpa;
-     theory: crates/ferric-rpa/theory.md#"The PDEP Eigenpotential Approach" -->
+<!-- status: ready; registry: pdep-rpa -->
 
 Apply a small external potential to a molecule and its electrons
 rearrange to screen it. Some potentials, shaped like the molecule's

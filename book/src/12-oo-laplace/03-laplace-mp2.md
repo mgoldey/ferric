@@ -1,7 +1,6 @@
 # Laplace RI-MP2 and Laplace SOS-MP2 {#laplace-mp2}
 
-<!-- status: ready; registry: laplace-mp2, laplace-sos-mp2;
-     theory: crates/ferric-mp2/theory.md#"8. Laplace-transform MP2"; crates/ferric-quadrature/theory.md#"1. Minimax Laplace Quadrature" -->
+<!-- status: ready; registry: laplace-mp2, laplace-sos-mp2 -->
 
 *Notation follows `book/notation.md`. $t$ is the Laplace variable (section @sec:oo-laplace
 introduction).*

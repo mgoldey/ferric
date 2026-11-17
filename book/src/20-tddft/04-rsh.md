@@ -1,7 +1,6 @@
 # Range-separated hybrids {#rsh}
 
-<!-- status: ready; registry: tddft;
-     theory: crates/ferric-tddft/theory.md#"8. Range-separated hybrids" -->
+<!-- status: ready; registry: tddft -->
 
 Consider an excitation that moves an electron from a donor at one end of a
 molecule to an acceptor at the other. The transition density

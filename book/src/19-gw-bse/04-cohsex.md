@@ -1,7 +1,6 @@
 # COHSEX {#cohsex}
 
-<!-- status: ready; registry: gw;
-     theory: crates/ferric-gw/theory.md#"5. COHSEX: the static limit" -->
+<!-- status: ready; registry: gw -->
 
 Suppose the electrons respond instantly to an added or removed charge. Then
 $W$ does not depend on frequency, the integral of section @sec:correlation-self-energy is

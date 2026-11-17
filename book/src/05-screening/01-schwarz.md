@@ -1,7 +1,6 @@
 # Schwarz bounds, and why they do not see attenuation {#schwarz}
 
-<!-- status: edit; registry: none;
-     theory: crates/ferric-integrals/theory.md#"The Schwarz bound", "The combined Schwarz bound (CSB)" -->
+<!-- status: edit; registry: none -->
 
 Take the integral $(\mu\nu|\lambda\sigma)$ and ask how large it can be
 without computing it. Each side is a charge cloud. The cloud

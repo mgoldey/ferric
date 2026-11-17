@@ -1,7 +1,6 @@
 # Open-shell GW {#open-shell-gw}
 
-<!-- status: ready; registry: u-gw, gw;
-     theory: crates/ferric-gw/theory.md#"9. Open shell" -->
+<!-- status: ready; registry: u-gw, gw -->
 
 In a radical the $\alpha$ and $\beta$ electrons occupy different orbitals with
 different energies, so each spin has its own ionization energies and its own

@@ -1,7 +1,6 @@
 # Lagrangians and the Z-vector equation {#lagrangian-zvector}
 
-<!-- status: ready; registry: ri-mp2-gradient;
-     theory: crates/ferric-mp2/theory.md#"9. Analytic RI-MP2 gradient and Z-vector" -->
+<!-- status: ready; registry: ri-mp2-gradient -->
 
 Move a nucleus and the Hartree–Fock orbitals change shape: they follow the
 basis functions and re-mix to stay self-consistent. The Hartree–Fock energy

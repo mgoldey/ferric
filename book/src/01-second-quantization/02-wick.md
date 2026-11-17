@@ -1,7 +1,6 @@
 # Wick contractions as the proof scripts run them {#wick}
 
-<!-- status: edit; registry: ;
-     theory: -->
+<!-- status: edit; registry: -->
 
 Deriving a correlation energy by hand means expanding products of operator
 strings, pairing creators with annihilators in every allowed way, and

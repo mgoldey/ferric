@@ -1,7 +1,6 @@
 # The ωB97X-L-V double hybrid {#wb97x-l-v}
 
-<!-- status: ready; registry: double-hybrid;
-     theory: crates/ferric-cc/theory.md#"ωB97X-L-V correlation" -->
+<!-- status: ready; registry: double-hybrid -->
 
 A double hybrid adds a fraction of wavefunction correlation to a hybrid
 density functional, usually MP2, and inherits MP2's divergence as the

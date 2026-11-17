@@ -1,7 +1,6 @@
 # Export schemas {#export-schemas}
 
-<!-- status: edit; registry: none;
-     theory: crates/ferric-export/theory.md#"Enabling keys", "2. Gaussian Cube Real-Space Grid Exporter" -->
+<!-- status: edit; registry: none -->
 
 Sections @sec:polarizabilities-from-dielectric-modes and @sec:atomic-partitions define quantities. A model that learns from them sees
 none of the derivations, only arrays in a file. It needs four things from that

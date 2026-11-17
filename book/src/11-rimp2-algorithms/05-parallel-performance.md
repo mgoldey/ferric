@@ -1,5 +1,4 @@
-<!-- status: verify; registry: ri-mp2;
-     theory: none -->
+<!-- status: verify; registry: ri-mp2 -->
 
 # Parallel performance, then and now {#parallel-performance}
 

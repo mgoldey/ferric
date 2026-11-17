@@ -1,7 +1,6 @@
 # OO-RI-MP2 gradient {#oo-rimp2-gradient}
 
-<!-- status: ready; registry: oo-rimp2-gradient;
-     theory: crates/ferric-mp2/theory.md#"9.3 OO-RI-MP2 nuclear gradient" -->
+<!-- status: ready; registry: oo-rimp2-gradient -->
 
 Orbital-optimized RI-MP2 (section @sec:oo-rimp2) rotates the orbitals until the MP2
 energy itself is stationary. That removes the reason the Z-vector exists.

@@ -1,7 +1,6 @@
 # Unrestricted references and $\langle S^2\rangle$ {#unrestricted}
 
-<!-- status: ready; registry: tddft;
-     theory: crates/ferric-tddft/theory.md#"10. Unrestricted (UHF / UKS) references" -->
+<!-- status: ready; registry: tddft -->
 
 A radical such as NH2 has one more $\alpha$ electron than $\beta$. In a UHF
 or UKS reference the extra $\alpha$ electron pulls the $\alpha$ orbitals

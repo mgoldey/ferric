@@ -1,7 +1,6 @@
 # Slater–Condon rules as implemented {#slater-condon}
 
-<!-- status: ready; registry: casci;
-     theory: crates/ferric-ci/theory.md#"Slater–Condon rules as implemented" -->
+<!-- status: ready; registry: casci -->
 
 $H$ moves at most two electrons, so two determinants that differ in more
 than two spin orbitals do not interact, and the matrix element of the rest

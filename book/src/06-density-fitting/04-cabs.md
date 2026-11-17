@@ -1,7 +1,6 @@
 # Complementary auxiliary basis (CABS) {#cabs}
 
-<!-- status: edit; registry: none;
-     theory: crates/ferric-mp2/theory.md#"11. CABS for F12" -->
+<!-- status: edit; registry: none -->
 
 Two electrons repel as $1/r_{12}$, so the exact wavefunction has a cusp where
 they meet. A product of smooth orbitals cannot form a cusp, and the

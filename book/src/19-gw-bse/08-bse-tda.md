@@ -1,7 +1,6 @@
 # The Bethe–Salpeter equation in the Tamm–Dancoff approximation {#bse-tda}
 
-<!-- status: ready; registry: bse-tda;
-     theory: crates/ferric-gw/theory.md#"11. BSE-TDA" -->
+<!-- status: ready; registry: bse-tda -->
 
 A quasiparticle gap $\epsilon^{\rm QP}_a - \epsilon^{\rm QP}_i$ is the cost of
 removing an electron from $i$ and, separately, adding one to $a$. An optical

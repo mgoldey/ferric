@@ -19,13 +19,12 @@ spec.loader.exec_module(bb)
 
 SECTION = """# Toy section {#toy}
 
-<!-- status: ready; registry: toy;
-     theory: crates/ferric-toy/theory.md#"1. Toy theory" -->
+<!-- status: ready; registry: toy -->
 
 Entry point `ferric-toy/src/lib.rs::pair_energy`, also
 `ferric-toy/src/lib.rs::{pair_energy, other_fn}` and `scripts/toy_sympy.py`.
 
-<!-- include: crates/ferric-toy/theory.md#"1. Toy theory" -->
+<!-- include: crates/ferric-toy/notes.md#"1. Toy theory" -->
 
 > **Verified equation {#eq:toy-a}** . toy identity
 >
@@ -74,7 +73,7 @@ FILES = {
     ),
     "scripts/toy_sympy.py": '"""Claims:\n  1  toy identity\n"""\n',
     "crates/ferric-python/tests/test_derivation_scripts.py": 'CASES = ["toy_sympy.py"]\n',
-    "crates/ferric-toy/theory.md": "# Toy\n\n## 1. Toy theory\n\nBody $x_1$.\n\n## 2. Next\n\nOther.\n",
+    "crates/ferric-toy/notes.md": "# Toy\n\n## 1. Toy theory\n\nBody $x_1$.\n\n## 2. Next\n\nOther.\n",
     "crates/ferric-toy/src/lib.rs": (
         "pub fn pair_energy(a: f64, b: f64) -> f64 {\n    let e = a * b;\n    e\n}\n"
         "fn other_fn() {}\n#[test]\nfn toy_test() {}\n"
@@ -100,17 +99,20 @@ def tree(tmp_path):
     write(tmp_path, FILES)
     (tmp_path / "crates/ferric-toy/src/sub.rs").write_text("")
     bb.write_appendices(tmp_path)
+    (tmp_path / "crates/ferric-toy/theory.md").write_text("stub\n")
+    bb.write_theory_index(tmp_path)
     (tmp_path / "book/src/SUMMARY.md").write_text(bb.build_summary(tmp_path))
     return tmp_path
 
 
 def check(root, regen=True, **kw):
-    """Run the checker. The generated appendices are rewritten first so a mutation
-    is judged by the check it targets and not by the appendices going stale; the
-    appendix tests pass regen=False."""
+    """Run the checker. The generated appendices and theory indexes are rewritten
+    first so a mutation is judged by the check it targets and not by them going
+    stale; the appendix and index tests pass regen=False."""
     bb._src_cache.clear()
     if regen:
         bb.write_appendices(root)
+        bb.write_theory_index(root)
     return bb.run_check(root, **kw)[0]
 
 
@@ -212,33 +214,29 @@ MUTATIONS = {
     ),
     "duplicate box id": (SEC, "id=toy.b", "id=toy.a"),
     "unverified without todo": (SEC, "; todo=add a claim", ""),
-    "header registry unknown": (SEC, "registry: toy;", "registry: nonesuch;"),
-    "ready covers gap": (SEC, "registry: toy;", "registry: holey;"),
+    "header registry unknown": (SEC, "registry: toy -->", "registry: nonesuch -->"),
+    "ready covers gap": (SEC, "registry: toy -->", "registry: holey -->"),
     "bad status": (SEC, "status: ready", "status: done"),
     "header keeps a section field": (
         SEC,
         "<!-- status: ready;",
         "<!-- section: 10.1; status: ready;",
     ),
-    "missing header": (
+    "missing header": (SEC, "<!-- status: ready; registry: toy -->", ""),
+    "header keeps a theory field": (
         SEC,
-        '<!-- status: ready; registry: toy;\n     theory: crates/ferric-toy/theory.md#"1. Toy theory" -->',
-        "",
-    ),
-    "theory heading missing": (
-        SEC,
-        'theory.md#"1. Toy theory" -->\n\nEntry',
-        'theory.md#"9. Nonexistent" -->\n\nEntry',
+        "registry: toy -->",
+        'registry: toy; theory: crates/ferric-toy/notes.md#"1. Toy theory" -->',
     ),
     "include heading missing": (
         SEC,
-        '<!-- include: crates/ferric-toy/theory.md#"1. Toy theory" -->',
-        '<!-- include: crates/ferric-toy/theory.md#"No such heading" -->',
+        '<!-- include: crates/ferric-toy/notes.md#"1. Toy theory" -->',
+        '<!-- include: crates/ferric-toy/notes.md#"No such heading" -->',
     ),
-    "theory file missing": (
+    "include file missing": (
         SEC,
-        'crates/ferric-toy/theory.md#"1. Toy theory" -->\n\nEntry',
-        'crates/ferric-gone/theory.md#"1. Toy theory" -->\n\nEntry',
+        '<!-- include: crates/ferric-toy/notes.md#"1. Toy theory" -->',
+        '<!-- include: crates/ferric-gone/notes.md#"1. Toy theory" -->',
     ),
     "excerpt differs": (SEC, "let e = a * b;", "let e = a + b;"),
     "path does not exist": (SEC, "`scripts/toy_sympy.py`", "`scripts/nope_sympy.py`"),
@@ -300,8 +298,8 @@ MUTATIONS = {
         "Inline math",
         "Use `foo` with $x (`a_b`)$. Inline math",
     ),
-    "control character in an included theory section": (
-        "crates/ferric-toy/theory.md",
+    "control character in an included section": (
+        "crates/ferric-toy/notes.md",
         "Body $x_1$.",
         "Body\x08eta $x_1$.",
     ),
@@ -315,8 +313,8 @@ MUTATIONS = {
         "Inline math",
         "$$ f = \\frac{a}{b} \\quad (`build_k_r`) $$\n\nInline math",
     ),
-    "code span inside math from an included theory section": (
-        "crates/ferric-toy/theory.md",
+    "code span inside math from an included section": (
+        "crates/ferric-toy/notes.md",
         "Body $x_1$.",
         "Body $x_1 (`a_b`)$.",
     ),
@@ -356,7 +354,7 @@ def test_release_ceiling_and_coverage(tree):
     rep = check(tree, release=True)
     assert any("covered by no section" in e for e in rep.errors)  # toy2 uncovered
     assert not any("covered by no section" in w for w in check(tree).errors)
-    sub(tree, SEC, "registry: toy;", "registry: toy, toy2;")
+    sub(tree, SEC, "registry: toy -->", "registry: toy, toy2 -->")
     assert check(tree, release=True).errors == []
     (tree / "book/unverified-ceiling.txt").write_text("0\n")
     assert any("ceiling" in e for e in check(tree, release=True).errors)
@@ -371,7 +369,7 @@ def test_release_refuses_pending_merge_runner(tree):
         "runner=crates/ferric-python/tests/test_derivation_scripts.py",
         "runner=crates/ferric-python/tests/test_unmerged.py",
     )
-    sub(tree, SEC, "registry: toy;", "registry: toy, toy2;")
+    sub(tree, SEC, "registry: toy -->", "registry: toy, toy2 -->")
     assert check(tree).errors == []
     assert any("pending-merge" in e for e in check(tree, release=True).errors)
 
@@ -514,7 +512,7 @@ APP = {n: f"book/src/{f}" for n, f in bb.GENERATED.items()}
 
 APPENDIX_D = """# Appendix D: Toy interface {#appendix-d}
 
-<!-- status: gap; registry: none; theory: none -->
+<!-- status: gap; registry: none -->
 
 Entry `ferric-toy/src/lib.rs::other_fn`.
 """
@@ -882,3 +880,44 @@ def test_allowlist_admits_a_listed_number_on_its_page_only(tree):
     assert any("section 4.4" in e for e in check(tree).errors)
     (tree / "book/number-allowlist.txt").write_text(f"{SEC}\tsection 4.4\n")
     assert check(tree).errors == []
+
+
+# ------------------------------------------------------------ theory indexes
+THEORY = "crates/ferric-toy/theory.md"
+
+
+def test_theory_index_lists_the_citing_page_with_scripts_and_boxes(tree):
+    text = (tree / THEORY).read_text()
+    assert bb.THEORY_NOTE in text
+    row = (
+        "| Toy section | `toy` | [`book/src/10-mp2/01-toy.md`](../../book/src/10-mp2/01-toy.md)"
+        " | `scripts/toy_sympy.py` | `toy.a` |"
+    )
+    assert row in text
+    assert check(tree, regen=False).errors == []
+
+
+def test_hand_edited_theory_index_is_stale(tree):
+    """Mutation: a hand edit of a generated theory.md must fail --check."""
+    p = tree / THEORY
+    p.write_text(p.read_text() + "\n## A hand-written derivation\n\n$E = 0$\n")
+    errs = check(tree, regen=False).errors
+    assert any(THEORY in e and "stale" in e for e in errs)
+    bb.write_theory_index(tree)
+    assert check(tree, regen=False).errors == []
+
+
+def test_book_change_makes_the_theory_index_stale(tree):
+    """Renaming the citing section must show up in the crate's index."""
+    sub(tree, SEC, "# Toy section {#toy}", "# Toy section renamed {#toy}")
+    resummarize(tree)
+    bb.write_appendices(tree)
+    errs = check(tree, regen=False).errors
+    assert any(THEORY in e and "stale" in e for e in errs)
+
+
+def test_crate_cited_by_no_page_is_an_error(tree):
+    write(tree, {"crates/ferric-lonely/theory.md": "stub\n"})
+    errs = check(tree).errors
+    assert any("ferric-lonely/theory.md" in e and "no book section" in e for e in errs)
+

@@ -1,7 +1,6 @@
 # Fourier transform of lattice-summed Gaussian pairs {#pair-ft}
 
-<!-- status: ready; registry: pbc-ewald-pairft-stress;
-     theory: crates/ferric-pbc/theory.md#"2. Fourier transform of lattice-summed Gaussian pairs" -->
+<!-- status: ready; registry: pbc-ewald-pairft-stress -->
 
 In a crystal, a basis function in the home cell overlaps every periodic copy
 of its partner, so the charge density of an AO pair is a sum over lattice

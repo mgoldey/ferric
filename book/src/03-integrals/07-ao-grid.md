@@ -1,7 +1,6 @@
 # Basis functions and their derivatives on a grid {#ao-grid}
 
-<!-- status: edit; registry: none;
-     theory: crates/ferric-integrals/theory.md#"Basis functions on a grid" -->
+<!-- status: edit; registry: none -->
 
 Some quantities have no closed-form integral over Gaussians. An
 exchange-correlation functional is a nonlinear function of the density, so

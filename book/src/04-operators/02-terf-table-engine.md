@@ -1,7 +1,6 @@
 # The terf table engine and its far-field fallback {#terf-table-engine}
 
-<!-- status: edit; registry: none;
-     theory: crates/ferric-integrals/theory.md#"Kernels in Fourier space", "Two-center integrals over the terf kernel" -->
+<!-- status: edit; registry: none -->
 
 Every Gaussian integral code reduces a two-electron integral over the
 Coulomb kernel to one special function, the Boys function $F_m(T)$. erf and

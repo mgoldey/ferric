@@ -1,7 +1,6 @@
 # Harmonic frequencies {#frequencies}
 
-<!-- status: ready; registry: harmonic-frequencies, rrho-thermo, ir-intensities;
-     theory: crates/ferric-scf/theory.md#"Harmonic frequencies"; crates/ferric-scf/theory.md#"RRHO thermochemistry"; crates/ferric-scf/theory.md#"Infrared intensities" -->
+<!-- status: ready; registry: harmonic-frequencies, rrho-thermo, ir-intensities -->
 
 Near a minimum the energy surface is a bowl, and the nuclei sit at its
 bottom. Push them a little and they oscillate. The curvature of the bowl is

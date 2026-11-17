@@ -1,7 +1,6 @@
 # A McMurchie–Davidson engine for three-center one-electron integrals {#md-three-center}
 
-<!-- status: edit; registry: none;
-     theory: crates/ferric-integrals/theory.md#"McMurchie-Davidson three-center one-electron integrals" -->
+<!-- status: edit; registry: none -->
 
 Seminumerical exchange (COSX) computes the exchange matrix by putting one of
 the two electrons on a grid. At each grid point $\mathbf r_g$ it needs the

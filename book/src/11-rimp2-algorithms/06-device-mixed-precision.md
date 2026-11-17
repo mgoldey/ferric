@@ -1,5 +1,4 @@
-<!-- status: ready; registry: ri-mp2;
-     theory: none -->
+<!-- status: ready; registry: ri-mp2 -->
 
 # Device and mixed-precision kernels {#device-mixed-precision}
 

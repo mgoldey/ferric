@@ -1,7 +1,6 @@
 # The Kohn–Sham equations and functional families {#ks-equations}
 
-<!-- status: ready; registry: ks-semilocal, ks-mgga;
-     theory: crates/ferric-dft/theory.md#"Kohn-Sham Equations" "Functionals" -->
+<!-- status: ready; registry: ks-semilocal, ks-mgga -->
 
 Kohn and Sham replace the interacting electrons by non-interacting ones that
 move in one effective potential, chosen so that the two systems have the

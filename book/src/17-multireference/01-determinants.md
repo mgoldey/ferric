@@ -1,7 +1,6 @@
 # Determinants, strings and the phase convention {#determinants}
 
-<!-- status: ready; registry: casci;
-     theory: crates/ferric-ci/theory.md#"Determinants and the phase convention", "Hamiltonian" -->
+<!-- status: ready; registry: casci -->
 
 Stretch the bond of H2 and the bonding orbital $\sigma_g$ and the
 antibonding orbital $\sigma_u$ approach the same energy. The ground state

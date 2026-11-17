@@ -1,7 +1,6 @@
 # The correlation self-energy {#correlation-self-energy}
 
-<!-- status: ready; registry: gw;
-     theory: crates/ferric-gw/theory.md#"4. Correlation self-energy on the imaginary axis" -->
+<!-- status: ready; registry: gw -->
 
 An electron added to state $p$ polarizes the molecule, and the polarization
 acts back on it. Because the polarization takes time to build, the energy

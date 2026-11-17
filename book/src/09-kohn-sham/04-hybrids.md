@@ -1,7 +1,6 @@
 # Global and range-separated hybrids; tuning $\omega$ {#hybrids}
 
-<!-- status: ready; registry: ks-hybrid-rsh;
-     theory: crates/ferric-dft/theory.md#"Exact exchange in hybrid and range-separated hybrid functionals" -->
+<!-- status: ready; registry: ks-hybrid-rsh -->
 
 Exact exchange is the Hartree–Fock exchange energy evaluated with the
 Kohn–Sham orbitals. It is not a function of the density at one point: it

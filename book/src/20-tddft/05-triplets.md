@@ -1,7 +1,6 @@
 # Triplets {#triplets}
 
-<!-- status: ready; registry: tddft;
-     theory: crates/ferric-tddft/theory.md#"9. Triplets" -->
+<!-- status: ready; registry: tddft -->
 
 Excite one electron of a closed shell and the two now-unpaired electrons
 can pair their spins to a singlet or a triplet. The two states share an

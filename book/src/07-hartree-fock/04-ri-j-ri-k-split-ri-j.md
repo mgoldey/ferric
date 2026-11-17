@@ -1,7 +1,6 @@
 # RI-J, RI-K and Split-RI-J {#ri-j-ri-k-split-ri-j}
 
-<!-- status: ready; registry: rhf, uhf, rohf;
-     theory: crates/ferric-scf/theory.md#"Density-fitted Coulomb and exchange (RI-J, RI-K, Split-RI-J)" -->
+<!-- status: ready; registry: rhf, uhf, rohf -->
 
 Density fitting (chapter @sec:density-fitting) expands each orbital product
 $\chi_\mu\chi_\nu$ in an auxiliary basis, so the four-centre integrals of

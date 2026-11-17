@@ -1,7 +1,6 @@
 # Attenuation and the basis-set limit {#attenuation-basis-limit}
 
-<!-- status: edit; registry: attenuated-mp2;
-     theory: crates/ferric-mp2/theory.md#"5. Attenuated MP2" -->
+<!-- status: edit; registry: attenuated-mp2 -->
 
 Attenuated MP2 cancels two overbinding errors at once: MP2's overestimate of
 dispersion and basis set superposition error (section @sec:attenuated-mp2). The first does

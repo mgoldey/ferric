@@ -1,7 +1,6 @@
 # Significant pair lists {#pair-lists}
 
-<!-- status: edit; registry: none;
-     theory: crates/ferric-integrals/theory.md#"Significant pair lists" -->
+<!-- status: edit; registry: none -->
 
 Exchange couples two charge clouds through the density matrix. The element
 $K_{\mu\lambda}$ collects $(\mu\nu|\lambda\sigma)\,D_{\nu\sigma}$ over $\nu$

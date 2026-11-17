@@ -1,7 +1,6 @@
 # Point charges, smeared charges and uniform fields {#external-potentials}
 
-<!-- status: edit; registry: none;
-     theory: crates/ferric-scf/theory.md#"External point charges and fields" -->
+<!-- status: edit; registry: none -->
 
 A molecule in a crystal, a protein or a solvent shell feels the charges
 around it. The simplest model of that environment is a set of fixed

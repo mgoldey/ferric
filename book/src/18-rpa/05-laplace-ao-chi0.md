@@ -1,7 +1,6 @@
 # Imaginary-time and AO forms of $\chi_0$ {#laplace-ao-chi0}
 
-<!-- status: ready; registry: pdep-rpa;
-     theory: crates/ferric-rpa/theory.md#"Laplace-transformed chi0"; crates/ferric-quadrature/theory.md#"1. Minimax Laplace Quadrature" -->
+<!-- status: ready; registry: pdep-rpa -->
 
 The response kernel $\Delta/(u^2 + \Delta^2)$ in (@eq:pdep-1) couples every
 occupied-virtual pair to the frequency through the gap

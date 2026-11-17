@@ -1,7 +1,6 @@
 # CCD and CCSD in spin orbitals {#ccd-ccsd-spin-orbital}
 
-<!-- status: ready; registry: ccd, ccsd;
-     theory: crates/ferric-cc/theory.md#"CCD", "CCSD in spin orbitals" -->
+<!-- status: ready; registry: ccd, ccsd -->
 
 MP2 lets each electron pair correlate once, in the field of a frozen
 Hartree–Fock background. In a real molecule the pairs also push on each

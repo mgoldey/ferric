@@ -1,7 +1,6 @@
 # The two formulations in the code {#two-formulations}
 
-<!-- status: ready; registry: rs-mp2-rpa, u-rs-mp2-rpa;
-     theory: crates/ferric-rpa/theory.md#"Range-separated MP2 + RPA", "Open-shell SR-MP2 + LR-RPA" -->
+<!-- status: ready; registry: rs-mp2-rpa, u-rs-mp2-rpa -->
 
 `rs_mp2_lr_rpa` evaluates one of two energies. Both keep full-Coulomb MP2
 and add dRPA brackets that start at third order (section @sec:cross-term-rule). They differ

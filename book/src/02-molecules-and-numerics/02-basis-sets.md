@@ -1,7 +1,6 @@
 # Contracted Gaussians, normalization and parsers {#basis-sets}
 
-<!-- status: edit; registry: ;
-     theory: crates/ferric-integrals/theory.md#"Conventions" -->
+<!-- status: edit; registry: -->
 
 Molecular orbitals are expanded in functions centered on the atoms. The
 physically natural choice would be Slater functions, $e^{-\zeta r}$, which

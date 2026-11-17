@@ -1,7 +1,6 @@
 # Unrestricted CCSD and CCSD(T) {#uccsd}
 
-<!-- status: ready; registry: u-ccsd, u-ccsd-t;
-     theory: crates/ferric-cc/theory.md#"Unrestricted CCSD and CCSD(T)" -->
+<!-- status: ready; registry: u-ccsd, u-ccsd-t -->
 
 In an open-shell molecule the α and β electrons feel different exchange
 fields, and a UHF reference gives them different orbitals, so the

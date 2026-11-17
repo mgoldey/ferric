@@ -1,8 +1,7 @@
 # Energies, gradients, Hessians and response as labels {#training-labels}
 
 <!-- status: edit;
-     registry: hf-gradient, ks-gradient, ri-mp2-gradient, rpa-gradient, hf-hessian, ks-hessian, harmonic-frequencies;
-     theory: none -->
+     registry: hf-gradient, ks-gradient, ri-mp2-gradient, rpa-gradient, hf-hessian, ks-hessian, harmonic-frequencies -->
 
 A machine-learned potential trains on energies and forces, sometimes on
 Hessians, and a property model trains on dipoles and polarizabilities. The

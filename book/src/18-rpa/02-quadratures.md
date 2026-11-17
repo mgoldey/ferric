@@ -1,7 +1,6 @@
 # Imaginary-frequency quadratures {#quadratures}
 
-<!-- status: ready; registry: pdep-rpa;
-     theory: crates/ferric-rpa/theory.md#"Imaginary-frequency quadratures"; crates/ferric-quadrature/theory.md#"2. Imaginary-Frequency Grids for RPA" -->
+<!-- status: ready; registry: pdep-rpa -->
 
 The frequency form of the RPA energy (@eq:drpa-three-ways-4) is an integral over the whole
 half-line $u \in [0, \infty)$. The integrand is smooth, largest near

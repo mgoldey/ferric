@@ -1,7 +1,6 @@
 # Many-body dispersion {#mbd}
 
-<!-- status: edit; registry: mbd;
-     theory: crates/ferric-rpa/theory.md#"Many-body dispersion (MBD@rsSCS)", "Dispersion: Casimir-Polder C6" -->
+<!-- status: edit; registry: mbd -->
 
 A pairwise $C_6$ sum gives each atom a fixed polarizability and lets each
 pair interact as if the other atoms were absent. In a molecule they are not

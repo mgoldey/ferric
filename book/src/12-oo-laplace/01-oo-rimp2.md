@@ -1,7 +1,6 @@
 # Closed-shell orbital-optimized RI-MP2 {#oo-rimp2}
 
-<!-- status: ready; registry: oo-rimp2;
-     theory: crates/ferric-mp2/theory.md#"7. Orbital-optimized RI-MP2" -->
+<!-- status: ready; registry: oo-rimp2 -->
 
 *Notation follows `book/notation.md`. Line numbers are left out because they
 drift; each code reference names a function.*

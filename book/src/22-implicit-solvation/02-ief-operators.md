@@ -1,7 +1,6 @@
 # The IEF-PCM operators, the symmetrized solve and the sphere limits {#ief-operators}
 
-<!-- status: ready; registry: pcm;
-     theory: crates/ferric-pcm/theory.md#"3. The IEF-PCM operators $K$ and $R$", "4. Symmetrized charge solve and energy", "5. Sphere limits: Born, Kirkwood, Gauss" -->
+<!-- status: ready; registry: pcm -->
 
 Given the electrostatic potential $v_k$ of the solute at every tessera, which
 surface charges $q_k$ reproduce the polarized dielectric? The isotropic

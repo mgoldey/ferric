@@ -1,7 +1,6 @@
 # Spin-component scaling and κ-regularization {#scs-and-kappa}
 
-<!-- status: ready; registry: scs-mp2;
-     theory: crates/ferric-mp2/theory.md#"4. Spin-component scaling" -->
+<!-- status: ready; registry: scs-mp2 -->
 
 MP2 has two systematic errors that a cheap change to the pair loop can
 address. The first is an imbalance between the spin components: for bond

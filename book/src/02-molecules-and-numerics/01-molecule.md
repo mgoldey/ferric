@@ -1,7 +1,6 @@
 # Molecule, charge, multiplicity and units {#molecule}
 
-<!-- status: edit; registry: ;
-     theory: crates/ferric-core/theory.md#"1. Molecular Representation & Coordinate Conventions" -->
+<!-- status: edit; registry: -->
 
 A calculation starts from a list of nuclei, a net charge and a spin
 multiplicity. Everything else about the electrons follows from those three

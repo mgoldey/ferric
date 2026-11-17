@@ -1,7 +1,6 @@
 # Localized Laplace SOS-MP2 {#local-laplace-sos}
 
-<!-- status: gap; registry: laplace-sos-mp2;
-     theory: crates/ferric-mp2/theory.md#"8. Laplace-transform MP2" -->
+<!-- status: gap; registry: laplace-sos-mp2 -->
 
 *Notation follows `book/notation.md`. $t$ is the Laplace variable. The
 pseudo-densities are underlined as in section @sec:laplace-mp2.*

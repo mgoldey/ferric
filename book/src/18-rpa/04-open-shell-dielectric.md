@@ -1,7 +1,6 @@
 # Open-shell dielectric {#open-shell-dielectric}
 
-<!-- status: ready; registry: u-pdep-rpa;
-     theory: crates/ferric-rpa/theory.md#"Open-Shell (Spin-Summed) Dielectric" -->
+<!-- status: ready; registry: u-pdep-rpa -->
 
 In a radical or a triplet the $\alpha$ and $\beta$ electrons have different
 orbitals, orbital energies and occupations, so they respond differently to

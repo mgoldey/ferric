@@ -1,7 +1,6 @@
 # Range-separated Gaussian density fitting for J and K {#rsgdf}
 
-<!-- status: ready; registry: pbc-hf;
-     theory: crates/ferric-pbc/theory.md#"7. Range-separated Gaussian density fitting (RS-GDF)" -->
+<!-- status: ready; registry: pbc-hf -->
 
 The dense builder of section @sec:exchange-divergence stores $n_\text{ao}^4$ Coulomb integrals and
 sums a $\mathbf G$ sphere that grows with the cell volume and the steepest

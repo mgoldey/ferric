@@ -1,6 +1,6 @@
 # Electrostatic features and atomic charges {#electrostatics-and-charges}
 
-<!-- status: gap; registry: none; theory: none -->
+<!-- status: gap; registry: none -->
 
 What does a neighbouring molecule, or a model of one, need to know about this
 molecule's electrons? At long range, mostly the electrostatics: the potential

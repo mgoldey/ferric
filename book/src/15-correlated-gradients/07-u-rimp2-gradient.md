@@ -1,7 +1,6 @@
 # Unrestricted RI-MP2 gradient {#u-rimp2-gradient}
 
-<!-- status: ready; registry: u-ri-mp2-gradient, u-att-rimp2-gradient, scs-2terfc-gradient;
-     theory: crates/ferric-mp2/theory.md#"15. Unrestricted RI-MP2 nuclear gradient", "15.1 Open-shell attenuated (erfc) RI-MP2 gradient", "15.2 Open-shell terfc and SCS-MP2(2terfc) gradients" -->
+<!-- status: ready; registry: u-ri-mp2-gradient, u-att-rimp2-gradient, scs-2terfc-gradient -->
 
 A radical or a triplet has different numbers of $\alpha$ and $\beta$
 electrons, and on a UHF reference the two spins get different orbitals. When

@@ -1,7 +1,6 @@
 # Orthogonalization and starting guesses {#orthogonalization-and-guesses}
 
-<!-- status: edit; registry: ;
-     theory: crates/ferric-scf/theory.md#"Orthogonalization and starting guesses" -->
+<!-- status: edit; registry: -->
 
 Atomic orbitals on neighbouring atoms overlap, so the Roothaan equations
 $FC = SC\varepsilon$ carry the overlap $S$, and a standard eigensolver wants

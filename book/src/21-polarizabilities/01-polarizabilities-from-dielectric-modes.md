@@ -1,7 +1,6 @@
 # Static and dynamic polarizabilities from the dielectric modes {#polarizabilities-from-dielectric-modes}
 
-<!-- status: ready; registry: rpa-polarizability-c6;
-     theory: crates/ferric-rpa/theory.md#"Dispersion: Casimir-Polder C6" -->
+<!-- status: ready; registry: rpa-polarizability-c6 -->
 
 Put a molecule in a weak uniform field and its electron cloud shifts against
 the field. The induced dipole is proportional to the field, and the

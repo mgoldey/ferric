@@ -1,7 +1,6 @@
 # Level shift, MOM and smearing {#level-shift-mom-smearing}
 
-<!-- status: ready; registry: rhf, uhf, rohf;
-     theory: crates/ferric-scf/theory.md#"Level shift, MOM and Fermi smearing" -->
+<!-- status: ready; registry: rhf, uhf, rohf -->
 
 Some molecules defeat DIIS in one of three ways. With a small HOMO–LUMO gap
 each diagonalization rotates the orbitals too far, and the iteration

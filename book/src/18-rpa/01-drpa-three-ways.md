@@ -1,7 +1,6 @@
 # dRPA three ways: frequency integral, plasmon formula, ring amplitudes {#drpa-three-ways}
 
-<!-- status: ready; registry: drpa;
-     theory: crates/ferric-rpa/theory.md#"RPA Correlation Energy" -->
+<!-- status: ready; registry: drpa -->
 
 MP2 lets two electrons interact through the bare Coulomb interaction, as if
 nothing else in the molecule moved. The other electrons do move: they

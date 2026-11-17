@@ -1,7 +1,6 @@
 # Pair natural orbitals and DLPNO-MP2 {#pno-dlpno}
 
-<!-- status: ready; registry: local-mp2;
-     theory: crates/ferric-mp2/theory.md#"12.5 DLPNO-MP2" -->
+<!-- status: ready; registry: local-mp2 -->
 
 A pair of occupied orbitals $(i,j)$ correlates by exciting into pairs of
 virtuals, but it does not use the virtual space evenly. Two electrons in a

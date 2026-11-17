@@ -1,7 +1,6 @@
 # Three-index sources: in core, packed, spilled, recomputed {#three-index-sources}
 
-<!-- status: edit; registry: none;
-     theory: crates/ferric-integrals/theory.md#"Three-index storage" -->
+<!-- status: edit; registry: none -->
 
 The raw tensor $(P|\mu\nu)$ is the largest object most density-fitted methods
 hold: $N_{\mathrm{aux}}N^2$ doubles. With $N = 500$ basis functions and

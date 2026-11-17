@@ -1,7 +1,6 @@
 # Kohn–Sham Hessian on a fixed and a moving grid {#ks-hessian}
 
-<!-- status: ready; registry: ks-hessian;
-     theory: crates/ferric-scf/theory.md#"Kohn-Sham XC Hessian terms (fixed and moving grid)", "Hartree-Fock nuclear Hessian" -->
+<!-- status: ready; registry: ks-hessian -->
 
 Move a nucleus and the density at every grid point changes twice: the basis
 functions on that nucleus move with it, and then the orbitals relax to the

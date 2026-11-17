@@ -1,7 +1,6 @@
 # Unrestricted RI-MP2 {#unrestricted-ri-mp2}
 
-<!-- status: ready; registry: u-ri-mp2;
-     theory: crates/ferric-mp2/theory.md#"3. Unrestricted RI-MP2" -->
+<!-- status: ready; registry: u-ri-mp2 -->
 
 A radical such as OH has one more $\alpha$ electron than $\beta$. Exchange
 acts only between electrons of the same spin, so an $\alpha$ electron and a

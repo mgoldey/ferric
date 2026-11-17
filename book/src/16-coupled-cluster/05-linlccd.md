@@ -1,7 +1,6 @@
 # LinLCCD and LinLCCD(hh) {#linlccd}
 
-<!-- status: ready; registry: linlccd;
-     theory: crates/ferric-cc/theory.md#"LinLCCD and LinLCCD(hh)" -->
+<!-- status: ready; registry: linlccd -->
 
 MP2 divides each pair's driving integral by the orbital-energy gap, so it
 diverges as the gap closes. Coupled cluster at first order in $\hat T_2$

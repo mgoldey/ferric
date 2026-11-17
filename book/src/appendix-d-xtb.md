@@ -1,6 +1,6 @@
 # Appendix D: The semiempirical interface (xTB) {#appendix-d}
 
-<!-- status: gap; registry: none; theory: none -->
+<!-- status: gap; registry: none -->
 
 ferric can call the GFN family of semiempirical methods through the `xtb`
 library, for conformer screening and for relaxing a structure before a

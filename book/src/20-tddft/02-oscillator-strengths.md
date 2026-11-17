@@ -1,7 +1,6 @@
 # Transition dipoles and oscillator strengths {#oscillator-strengths}
 
-<!-- status: ready; registry: tddft;
-     theory: crates/ferric-tddft/theory.md#"4. Transition dipoles and oscillator strengths" -->
+<!-- status: ready; registry: tddft -->
 
 An excitation energy says where a molecule absorbs. The oscillator strength
 says how much. Light couples to the electrons through the dipole operator,

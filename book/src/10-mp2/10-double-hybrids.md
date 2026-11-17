@@ -1,7 +1,6 @@
 # MP2-based double hybrids {#double-hybrids}
 
-<!-- status: ready; registry: double-hybrid;
-     theory: crates/ferric-mp2/theory.md#"16. Double hybrids" -->
+<!-- status: ready; registry: double-hybrid -->
 
 A semilocal correlation functional sees the density and its gradient at
 one point at a time, so it has no term for two electrons correlating

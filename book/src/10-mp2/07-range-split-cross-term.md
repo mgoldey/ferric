@@ -1,7 +1,6 @@
 # The range-split cross term {#range-split-cross-term}
 
-<!-- status: ready; registry: attenuated-mp2;
-     theory: crates/ferric-mp2/theory.md#"5. Attenuated MP2" -->
+<!-- status: ready; registry: attenuated-mp2 -->
 
 MP2 correlates two electrons through two interactions: one excites the
 pair, the other returns it to the ground state. Split the Coulomb operator

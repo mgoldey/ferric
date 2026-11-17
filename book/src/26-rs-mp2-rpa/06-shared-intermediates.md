@@ -1,7 +1,6 @@
 # Shared intermediates across the two kernels {#shared-intermediates}
 
-<!-- status: edit; registry: rs-mp2-rpa;
-     theory: crates/ferric-rpa/theory.md#"Range-separated MP2 + RPA" -->
+<!-- status: edit; registry: rs-mp2-rpa -->
 
 The MP2 components and the dRPA energy of one operator need the same
 three-index tensor. The driver builds it once per operator and hands it

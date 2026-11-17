@@ -1,7 +1,6 @@
 # Local coupled cluster: amplitude threshold and DLPNO {#local-cc}
 
-<!-- status: edit; registry: linlccd, ccsd-t;
-     theory: crates/ferric-cc/theory.md#"Amplitude-threshold LinLCCD", "DLPNO-LinLCCD(hh)", "DLPNO-CCSD: pair screen and PNO substrate", "DLPNO-CCSD(T): triple screen and TNOs" -->
+<!-- status: edit; registry: linlccd, ccsd-t -->
 
 In a localized basis most coupled-cluster amplitudes of a large molecule
 connect orbitals that are far apart, and their driving integrals are close

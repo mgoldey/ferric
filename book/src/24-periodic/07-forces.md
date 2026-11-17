@@ -1,7 +1,6 @@
 # Nuclear forces {#forces}
 
-<!-- status: edit; registry: pbc-hf, pbc-ks;
-     theory: crates/ferric-pbc/theory.md#"6. Refusal gates and tolerances of the open-shell force and stress paths" -->
+<!-- status: edit; registry: pbc-hf, pbc-ks -->
 
 Moving atom $A$ in a periodic cell moves its nucleus, every basis function
 centred on it and, for Kohn–Sham, every grid point homed on it, in every

@@ -1,7 +1,6 @@
 # One-electron integrals and multipoles {#one-electron}
 
-<!-- status: edit; registry: none;
-     theory: crates/ferric-integrals/theory.md#"Conventions", "One-electron integrals" -->
+<!-- status: edit; registry: none -->
 
 An electron in a molecule has kinetic energy, and it is attracted to every
 nucleus. In a finite basis those two facts become two matrices, $T$ and $V$.

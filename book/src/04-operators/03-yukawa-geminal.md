@@ -1,7 +1,6 @@
 # Yukawa, Slater geminal and fitted geminal kernels {#yukawa-geminal}
 
-<!-- status: gap; registry: none;
-     theory: crates/ferric-integrals/theory.md#"Yukawa and Slater-geminal kernels" -->
+<!-- status: gap; registry: none -->
 
 The kernels of 4.1 split $1/r$ with an error function. The kernels here cut
 it off with an exponential. Two physical situations call for that. A charge

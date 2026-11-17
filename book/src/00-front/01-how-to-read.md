@@ -1,7 +1,6 @@
 # How to read this book {#how-to-read}
 
-<!-- status: edit; registry: ;
-     theory: -->
+<!-- status: edit; registry: -->
 
 This book explains how each equation in ferric becomes code. Pick any
 equation and the book takes you to the function that contracts it, then to
@@ -234,14 +233,13 @@ explains.
 
 ## Where the equations live
 
-Each crate keeps its derivations in `theory.md`. The header comment of a
-book section names the `theory.md` heading it covers. Each section writes
-the derivation in its own prose and keeps every fact of that heading.
-`theory.md` stays the terse reference, and the verified boxes tie both to
-the proof scripts and the code.
+The derivations live in this book. Each crate's `theory.md` is a short
+generated index that lists the book sections citing that crate's code, with
+their proof scripts and verified boxes. The verified boxes tie each
+derivation to its proof script and to the code.
 
 The Notation chapter fixes one notation for the whole book. Where it differs
-from a `theory.md` file or from the literature, the Notation chapter says so.
+from the literature, the Notation chapter says so.
 
 ## Scope
 

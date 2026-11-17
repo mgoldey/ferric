@@ -1,7 +1,6 @@
 # Second order in a split interaction {#cross-term}
 
-<!-- status: edit; registry: rs-mp2-rpa;
-     theory: crates/ferric-rpa/theory.md#"Range-separated MP2 + RPA" -->
+<!-- status: edit; registry: rs-mp2-rpa -->
 
 Section @sec:range-split-cross-term showed that splitting the operator does not split the MP2
 energy. This section states what that means for a method that uses MP2 at

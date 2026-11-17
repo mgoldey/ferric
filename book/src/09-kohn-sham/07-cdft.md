@@ -1,7 +1,6 @@
 # Constrained DFT and the electron-transfer coupling {#cdft}
 
-<!-- status: ready; registry: cdft;
-     theory: crates/ferric-dft/theory.md#"Constrained DFT and the diabatic coupling" -->
+<!-- status: ready; registry: cdft -->
 
 An electron moving from a donor to an acceptor passes between two states:
 one with the charge on the donor, one with it on the acceptor. An unconstrained

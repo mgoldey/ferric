@@ -1,7 +1,6 @@
 # Analytic continuation and the quasiparticle equation {#continuation-and-qp-equation}
 
-<!-- status: ready; registry: gw;
-     theory: crates/ferric-gw/theory.md#"6. Analytic continuation" -->
+<!-- status: ready; registry: gw -->
 
 A quasiparticle energy is a real number: the energy $E$ at which an added or
 removed electron, dressed by the response of the others, propagates without

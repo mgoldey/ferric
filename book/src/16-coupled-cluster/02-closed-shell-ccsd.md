@@ -1,7 +1,6 @@
 # Closed-shell CCSD and the particle-particle ladder {#closed-shell-ccsd}
 
-<!-- status: ready; registry: ccsd;
-     theory: crates/ferric-cc/theory.md#"CCSD, closed shell" -->
+<!-- status: ready; registry: ccsd -->
 
 In a closed-shell molecule every spatial orbital holds an α and a β
 electron, and the two spins are excited in mirror-image ways. The

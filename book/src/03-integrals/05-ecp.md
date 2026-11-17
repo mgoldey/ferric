@@ -1,7 +1,6 @@
 # Effective core potentials {#ecp}
 
-<!-- status: edit; registry: none;
-     theory: crates/ferric-integrals/theory.md#"Effective core potentials" -->
+<!-- status: edit; registry: none -->
 
 The core electrons of a heavy atom take no part in bonding, but they are
 expensive. They need tight basis functions, and in an atom like iodine they

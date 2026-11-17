@@ -1,7 +1,6 @@
 # Hartree–Fock nuclear gradient {#hf-gradient}
 
-<!-- status: ready; registry: hf-gradient;
-     theory: crates/ferric-scf/theory.md#"Hartree-Fock nuclear gradient" -->
+<!-- status: ready; registry: hf-gradient -->
 
 Move one nucleus a little and the SCF energy changes. The slope of that
 change is the gradient, and minus the gradient is the force on the nucleus.

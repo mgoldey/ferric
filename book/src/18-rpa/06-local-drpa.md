@@ -1,7 +1,6 @@
 # Ring amplitudes with a threshold: local dRPA {#local-drpa}
 
-<!-- status: verify; registry: drpa;
-     theory: crates/ferric-rpa/theory.md#"RPA Correlation Energy" -->
+<!-- status: verify; registry: drpa -->
 
 In Boys-localized orbitals each occupied orbital sits on a bond or a lone
 pair, and each local virtual sits near some atom. Two particle-hole

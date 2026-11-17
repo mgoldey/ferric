@@ -1,7 +1,6 @@
 # Polarizable embedding {#polarizable-embedding}
 
-<!-- status: edit; registry: qmmm;
-     theory: crates/ferric-scf/theory.md#"Thole polarizable embedding" -->
+<!-- status: edit; registry: qmmm -->
 
 Fixed charges cannot respond to the QM region, and a real environment does.
 The electron density of a ligand polarizes the protein around it, and that

@@ -1,7 +1,6 @@
 # DIIS and its variants {#diis}
 
-<!-- status: ready; registry: rhf, uhf, rohf;
-     theory: crates/ferric-scf/theory.md#"DIIS: the error vector and the extrapolation" -->
+<!-- status: ready; registry: rhf, uhf, rohf -->
 
 Plain Roothaan iteration builds $F$ from the current density, diagonalizes
 it, and occupies the lowest orbitals. The new orbitals are the best ones for

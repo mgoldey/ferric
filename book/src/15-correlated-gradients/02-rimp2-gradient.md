@@ -1,7 +1,6 @@
 # RI-MP2 gradient with exact and RI-JK references; SCS-MP2 {#rimp2-gradient}
 
-<!-- status: ready; registry: ri-mp2-gradient, scs-mp2-gradient, att-rimp2-gradient, terfc-rimp2-gradient, scs-2terfc-gradient;
-     theory: crates/ferric-mp2/theory.md#"9. Analytic RI-MP2 gradient and Z-vector", "9.1 Fitted (RI-JK) reference", "9.2 Spin-component-scaled (SCS-MP2) gradient", "9.4 Attenuated (erfc) RI-MP2 gradient", "9.5 terfc-attenuated RI-MP2 gradient", "9.6 SCS-MP2(2terfc) gradient" -->
+<!-- status: ready; registry: ri-mp2-gradient, scs-mp2-gradient, att-rimp2-gradient, terfc-rimp2-gradient, scs-2terfc-gradient -->
 
 The RI-MP2 energy depends on the nuclear positions in three ways. The basis
 functions and auxiliary functions sit on the nuclei and move with them. The

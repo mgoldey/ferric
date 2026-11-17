@@ -1,7 +1,6 @@
 # $V_{xc}$ matrix elements: LDA, GGA, meta-GGA {#vxc}
 
-<!-- status: ready; registry: ks-semilocal, ks-mgga;
-     theory: crates/ferric-dft/theory.md#"Numerical Integration" "Semilocal $V_{xc}$ matrix elements" -->
+<!-- status: ready; registry: ks-semilocal, ks-mgga -->
 
 A semilocal functional looks at the electrons one point at a time. An LDA
 sees only the density there. A GGA also sees how fast the density changes,

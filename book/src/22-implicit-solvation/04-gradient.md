@@ -1,7 +1,6 @@
 # The nuclear gradient of the PCM energy {#gradient}
 
-<!-- status: ready; registry: pcm-gradient;
-     theory: crates/ferric-pcm/theory.md#"8. Nuclear gradient" -->
+<!-- status: ready; registry: pcm-gradient -->
 
 A geometry optimization in a continuum needs the force on every nucleus,
 including the part that comes from the cavity moving with the atoms. The

@@ -1,7 +1,6 @@
 # Fock-hook gradients {#fock-hook-gradient}
 
-<!-- status: edit; registry: none;
-     theory: crates/ferric-scf/theory.md#"Fock hooks and their nuclear gradient" -->
+<!-- status: edit; registry: none -->
 
 A Fock hook adds your own term to the SCF energy: at every iteration the SCF
 calls your function with the current density matrix, and you return an

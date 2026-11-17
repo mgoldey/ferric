@@ -1,6 +1,6 @@
 # Reproducibility and validation grades {#reproducibility-and-grades}
 
-<!-- status: edit; registry: none; theory: none -->
+<!-- status: edit; registry: none -->
 
 A dataset needs two guarantees from the code that produced it. The first is
 that the same input gives the same numbers, so that a regenerated sample, or

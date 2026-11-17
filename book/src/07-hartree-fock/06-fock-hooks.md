@@ -1,7 +1,6 @@
 # Fock hooks {#fock-hooks}
 
-<!-- status: edit; registry: ;
-     theory: crates/ferric-scf/theory.md#"Fock hooks and their nuclear gradient" -->
+<!-- status: edit; registry: -->
 
 A new one-body or density-functional term (an embedding potential, a
 penalty, a relativistic correction) changes the energy and therefore the

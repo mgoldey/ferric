@@ -1,7 +1,6 @@
 # Two-step CASSCF {#casscf}
 
-<!-- status: ready; registry: casscf;
-     theory: crates/ferric-ci/theory.md#"The two-step method", "Second-order check" -->
+<!-- status: ready; registry: casscf -->
 
 A CAS-CI on RHF orbitals uses orbitals shaped for one determinant. The RHF
 virtuals describe an added electron in the field of $N$ others, not the

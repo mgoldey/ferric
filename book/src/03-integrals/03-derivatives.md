@@ -1,7 +1,6 @@
 # Derivative integrals and buffer sizing {#integrals-derivatives}
 
-<!-- status: edit; registry: none;
-     theory: crates/ferric-integrals/theory.md#"Derivative integrals and buffer sizing" -->
+<!-- status: edit; registry: none -->
 
 A force on a nucleus is the derivative of the energy with respect to that
 nucleus's position. The basis functions sit on the nuclei and move with them,

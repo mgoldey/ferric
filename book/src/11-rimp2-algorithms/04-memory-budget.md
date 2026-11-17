@@ -1,5 +1,4 @@
-<!-- status: verify; registry: ri-mp2;
-     theory: crates/ferric-mp2/theory.md#"2. Closed-shell RI-MP2" -->
+<!-- status: verify; registry: ri-mp2 -->
 
 # The memory budget, the admission checks and the shared pool {#memory-budget}
 

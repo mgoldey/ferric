@@ -1,7 +1,6 @@
 # Casimir–Polder $C_6$ from dynamic polarizabilities {#casimir-polder-c6}
 
-<!-- status: ready; registry: rpa-polarizability-c6;
-     theory: crates/ferric-rpa/theory.md#"Dispersion: Casimir-Polder C6" -->
+<!-- status: ready; registry: rpa-polarizability-c6 -->
 
 D3 reads its $C_6$ from a table. Where does a $C_6$ come from in the first
 place? Two neutral fragments $A$ and $B$ far apart attract as

@@ -1,7 +1,6 @@
 # Kohn–Sham Z-vector for post-SCF corrections {#ks-zvector}
 
-<!-- status: ready; registry: ks-zvector;
-     theory: crates/ferric-scf/theory.md#"Kohn-Sham Z-vector for post-SCF corrections" -->
+<!-- status: ready; registry: ks-zvector -->
 
 A many-body dispersion energy evaluated from a converged Kohn–Sham density
 has the same problem as MP2 on Hartree–Fock orbitals. It depends on the

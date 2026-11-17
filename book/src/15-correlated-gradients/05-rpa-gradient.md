@@ -1,7 +1,6 @@
 # RI-dRPA gradient {#rpa-gradient}
 
-<!-- status: ready; registry: rpa-gradient;
-     theory: crates/ferric-rpa/theory.md#"Analytic nuclear gradient (closed-shell RI-dRPA, HF reference)", "Lagrangian and Z-vector", "Gradient", "Frozen core" -->
+<!-- status: ready; registry: rpa-gradient -->
 
 The direct RPA correlation energy sums ring diagrams to all orders: an
 electron–hole pair is created, propagates, and creates the next pair through

@@ -1,7 +1,6 @@
 # k-point Hartree-Fock and Kohn-Sham {#kpoint-scf}
 
-<!-- status: edit; registry: pbc-hf, pbc-ks;
-     theory: crates/ferric-pbc/theory.md#"8. k-point Hartree-Fock and Kohn-Sham" -->
+<!-- status: edit; registry: pbc-hf, pbc-ks -->
 
 A Gamma-point calculation treats the cell as if every copy of every orbital
 had the same sign in every cell. That is exact only when the cell is large

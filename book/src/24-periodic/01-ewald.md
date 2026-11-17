@@ -1,7 +1,6 @@
 # Lattices, Ewald summation and the Madelung constant {#ewald}
 
-<!-- status: ready; registry: pbc-ewald-pairft-stress;
-     theory: crates/ferric-pbc/theory.md#"1. Ewald nuclear repulsion and the Madelung constant" -->
+<!-- status: ready; registry: pbc-ewald-pairft-stress -->
 
 Put one nucleus in every cell of a crystal and ask for its electrostatic
 energy. A shell of cells at distance $R$ holds about $R^2$ copies, each

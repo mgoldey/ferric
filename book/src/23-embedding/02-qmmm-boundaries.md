@@ -1,7 +1,6 @@
 # QM/MM boundaries, link atoms and the full gradient {#qmmm-boundaries}
 
-<!-- status: edit; registry: qmmm;
-     theory: crates/ferric-scf/theory.md#"QM/MM boundary and the full gradient" -->
+<!-- status: edit; registry: qmmm -->
 
 A ligand in a protein pocket, the reacting site of an enzyme, or a solute in
 explicit solvent is too large to treat quantum mechanically in full. The

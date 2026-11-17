@@ -1,7 +1,6 @@
 # The screened interaction on the imaginary axis; PDEP as $W$ {#screened-interaction}
 
-<!-- status: ready; registry: gw;
-     theory: crates/ferric-gw/theory.md#"2. Screened interaction on the imaginary axis" -->
+<!-- status: ready; registry: gw -->
 
 Put a test charge into a molecule. The electrons polarize around it, and the
 induced charge partly cancels the field of the test charge far away. The

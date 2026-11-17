@@ -1,7 +1,6 @@
 # Hartree–Fock Hessian and coupled-perturbed equations {#hf-hessian}
 
-<!-- status: ready; registry: hf-hessian;
-     theory: crates/ferric-scf/theory.md#"Hartree-Fock nuclear Hessian" -->
+<!-- status: ready; registry: hf-hessian -->
 
 The Hessian is the curvature of the energy surface: how the force on one
 nucleus changes when another moves. It is the derivative of the gradient of

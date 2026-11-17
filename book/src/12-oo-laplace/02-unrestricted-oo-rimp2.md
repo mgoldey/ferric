@@ -1,7 +1,6 @@
 # Unrestricted orbital-optimized RI-MP2 {#unrestricted-oo-rimp2}
 
-<!-- status: verify; registry: u-oo-rimp2;
-     theory: crates/ferric-mp2/theory.md#"14. Unrestricted OO-RI-MP2 orbital gradient", "14.1 The integral-response loop", "7. Orbital-optimized RI-MP2" -->
+<!-- status: verify; registry: u-oo-rimp2 -->
 
 *Notation follows `book/notation.md`: $\beta$ orbitals carry an overbar
 ($\bar\imath, \bar a$), and $\sigma$ stands for either spin. `theory.md`

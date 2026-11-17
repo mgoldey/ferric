@@ -1,7 +1,6 @@
 # Second-order steps: Newton, augmented Hessian, trust region {#second-order}
 
-<!-- status: ready; registry: rhf, uhf, rohf;
-     theory: crates/ferric-scf/theory.md#"Orbital Hessians: Newton, augmented Hessian, trust region" -->
+<!-- status: ready; registry: rhf, uhf, rohf -->
 
 DIIS sees only errors, which are first derivatives of the energy. Near a
 point where the energy is flat along some rotation, or curves downward

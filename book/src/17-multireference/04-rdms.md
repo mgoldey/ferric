@@ -1,7 +1,6 @@
 # Reduced density matrices {#rdms}
 
-<!-- status: ready; registry: casci;
-     theory: crates/ferric-ci/theory.md#"Reduced density matrices (`src/rdm.rs`)", "NEVPT RDMs (`src/rdm3.rs`)" -->
+<!-- status: ready; registry: casci -->
 
 The CI vector has $N_\text{det}$ coefficients, but $H$ has only one- and
 two-electron terms, so its expectation value needs only the one- and

@@ -1,7 +1,6 @@
 # The statically screened TDHF polarizability {#rpax-static-polarizability}
 
-<!-- status: ready; registry: tdhf-static-polarizability;
-     theory: crates/ferric-gw/theory.md#"12. TDHF/RPAx polarizability" -->
+<!-- status: ready; registry: tdhf-static-polarizability -->
 
 A static electric field pushes the electrons one way and the nuclei the
 other. The induced dipole per unit field is the polarizability, and in

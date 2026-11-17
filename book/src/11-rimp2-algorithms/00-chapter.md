@@ -1,5 +1,4 @@
-<!-- status: ready; registry: ri-mp2;
-     theory: crates/ferric-mp2/theory.md#"1. Density fitting", "2. Closed-shell RI-MP2" -->
+<!-- status: ready; registry: ri-mp2 -->
 
 # RI-MP2 algorithms and memory {#rimp2-algorithms}
 

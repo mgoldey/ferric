@@ -1,7 +1,6 @@
 # erf and erfc; terf and terfc; the curvature constraint {#erf-terf}
 
-<!-- status: edit; registry: none;
-     theory: crates/ferric-mp2/theory.md#"4. Spin-component scaling", "5. Attenuated MP2" -->
+<!-- status: edit; registry: none -->
 
 The Coulomb kernel $1/r$ does two different jobs in a correlation
 calculation. At short range it is large and singular: two electrons close

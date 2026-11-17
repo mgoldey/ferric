@@ -1,7 +1,6 @@
 # Direct sigma and the Davidson solver {#direct-sigma-davidson}
 
-<!-- status: ready; registry: casci;
-     theory: crates/ferric-ci/theory.md#"Direct sigma (`src/sigma.rs`)" -->
+<!-- status: ready; registry: casci -->
 
 A CAS(14,14) singlet has about $1.2\times10^7$ determinants, and its
 Hamiltonian stored as a dense matrix would take $8N_\text{det}^2 \approx

@@ -1,7 +1,6 @@
 # The conductor limit and COSMO {#conductor-limit-and-cosmo}
 
-<!-- status: edit; registry: cosmo;
-     theory: crates/ferric-pcm/theory.md#"6. Conductor limit and COSMO"; crates/ferric-scf/theory.md#"COSMO reaction field" -->
+<!-- status: edit; registry: cosmo -->
 
 A perfect conductor screens a charge completely: the potential on its
 surface is constant, and with the right reference, zero. Replacing the

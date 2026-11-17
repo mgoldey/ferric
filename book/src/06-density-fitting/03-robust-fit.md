@@ -1,7 +1,6 @@
 # Mixed metrics and robust (Dunlap) fitting {#robust-fit}
 
-<!-- status: ready; registry: none;
-     theory: crates/ferric-integrals/theory.md#"Density fitting: the fit and its error", "Robust fitting with a mismatched metric" -->
+<!-- status: ready; registry: none -->
 
 Section @sec:factorization-and-metric fits each product density under the same kernel that the
 integrals use. The fit then minimizes exactly the energy error we care about,

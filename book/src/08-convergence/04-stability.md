@@ -1,7 +1,6 @@
 # Stability analysis {#stability}
 
-<!-- status: ready; registry: rhf, uhf, rohf;
-     theory: crates/ferric-scf/theory.md#"SCF stability analysis" -->
+<!-- status: ready; registry: rhf, uhf, rohf -->
 
 A converged SCF is a stationary point of the energy, not necessarily a
 minimum. Stretch the O–H bonds of water to 2.0 Å and the RHF solution still

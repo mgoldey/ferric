@@ -1,7 +1,6 @@
 # $f_{xc}$ response kernels {#fxc}
 
-<!-- status: ready; registry: ks-hessian, tddft;
-     theory: crates/ferric-dft/theory.md#"$f_{xc}$ response kernels" -->
+<!-- status: ready; registry: ks-hessian, tddft -->
 
 Perturb the density a little, by an electric field, by an orbital rotation
 or by an excitation, and the exchange-correlation potential changes with

@@ -1,7 +1,6 @@
 # Polarizabilities, PDEP modes and $C_6$ {#polarizability-pdep-c6}
 
-<!-- status: ready; registry: rpa-polarizability-c6, pdep-rpa;
-     theory: crates/ferric-rpa/theory.md#"Dispersion: Casimir-Polder C6" -->
+<!-- status: ready; registry: rpa-polarizability-c6, pdep-rpa -->
 
 A polarizability says how far the density moves when a field is switched on.
 That cannot be read off the ground-state density, so a model that predicts it

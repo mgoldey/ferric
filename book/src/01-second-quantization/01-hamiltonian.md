@@ -1,7 +1,6 @@
 # Hamiltonian, spin orbitals and normal ordering {#hamiltonian}
 
-<!-- status: edit; registry: ;
-     theory: -->
+<!-- status: edit; registry: -->
 
 Electrons are identical fermions. A many-electron wavefunction has to change
 sign when you swap any two of them, and a Slater determinant is the simplest

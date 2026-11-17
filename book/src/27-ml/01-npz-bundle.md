@@ -1,7 +1,6 @@
 # The NPZ feature bundle {#npz-bundle}
 
-<!-- status: edit; registry: pdep-rpa;
-     theory: crates/ferric-export/theory.md#"1. Machine Learning Dataset Schema (`.npz`)" -->
+<!-- status: edit; registry: pdep-rpa -->
 
 A model that learns from a quantum-chemistry run never sees the run. It sees
 arrays. For those arrays to be usable as features, every sample has to give

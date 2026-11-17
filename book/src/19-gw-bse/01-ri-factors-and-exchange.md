@@ -1,7 +1,6 @@
 # RI factors and the exchange self-energy {#ri-factors-and-exchange}
 
-<!-- status: ready; registry: gw, u-gw;
-     theory: crates/ferric-gw/theory.md#"1. RI factorization and exchange" -->
+<!-- status: ready; registry: gw, u-gw -->
 
 Take an electron out of orbital $p$. In Hartree–Fock its energy has two
 interaction parts: the Coulomb repulsion from the average density, and the

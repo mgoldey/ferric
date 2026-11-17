@@ -1,7 +1,6 @@
 # The cavity and the boundary-element matrices {#cavity-and-bem}
 
-<!-- status: ready; registry: pcm;
-     theory: crates/ferric-pcm/theory.md#"1. Cavity", "2. Boundary-element matrices $S$ and $D$" -->
+<!-- status: ready; registry: pcm -->
 
 A polarizable continuum model replaces the solvent by a dielectric outside a
 surface that wraps the solute. When the solute's field polarizes the

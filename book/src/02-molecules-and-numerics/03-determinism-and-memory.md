@@ -1,7 +1,6 @@
 # Determinism, threads and the memory budget {#determinism-and-memory}
 
-<!-- status: edit; registry: ;
-     theory: -->
+<!-- status: edit; registry: -->
 
 Run the same input twice, once on 4 threads and once on 12. Should the
 energies agree? To the last bit, if the code is careful about the order in

@@ -1,7 +1,6 @@
 # Attenuated MP2: erfc and terfc {#attenuated-mp2}
 
-<!-- status: edit; registry: attenuated-mp2, u-attenuated-mp2;
-     theory: crates/ferric-mp2/theory.md#"5. Attenuated MP2", "4. Spin-component scaling", "5.1 Open-shell attenuated and spin-scaled MP2" -->
+<!-- status: edit; registry: attenuated-mp2, u-attenuated-mp2 -->
 
 Take two molecules a few ångström apart and compute their MP2 interaction
 energy in a small basis. Two errors push it the same way. First, MP2

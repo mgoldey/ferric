@@ -1,7 +1,6 @@
 # Direct and incremental J/K builds {#direct-and-incremental}
 
-<!-- status: ready; registry: rhf, uhf, rohf;
-     theory: crates/ferric-scf/theory.md#"Direct and incremental J/K builds" -->
+<!-- status: ready; registry: rhf, uhf, rohf -->
 
 $J$ and $K$ need the four-centre integrals $(\mu\nu|\lambda\sigma)$, about
 $N^4/8$ distinct ones, which for a few hundred basis functions is already too

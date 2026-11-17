@@ -1,7 +1,6 @@
 # XC gradient: AO-derivative and grid-response terms {#xc-gradient}
 
-<!-- status: ready; registry: ks-gradient;
-     theory: crates/ferric-dft/theory.md#"XC nuclear gradient: AO-derivative and grid-response terms", "Becke partition and its nuclear derivative" -->
+<!-- status: ready; registry: ks-gradient -->
 
 The Kohn–Sham gradient is the Hartree–Fock gradient of section @sec:hf-gradient with the
 exact-exchange term scaled by the hybrid fraction and one new piece, the

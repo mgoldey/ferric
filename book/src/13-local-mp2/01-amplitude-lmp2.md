@@ -1,7 +1,6 @@
 # Amplitude-threshold local MP2 {#amplitude-lmp2}
 
-<!-- status: ready; registry: local-mp2;
-     theory: crates/ferric-mp2/theory.md#"12.1 Amplitude equations in localized orbitals" -->
+<!-- status: ready; registry: local-mp2 -->
 
 The MP2 amplitude $t_{ij}^{ab}$ measures how much two electrons in orbitals
 $i$ and $j$ correlate by jumping together into $a$ and $b$. What drives the

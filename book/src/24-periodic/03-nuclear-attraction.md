@@ -1,7 +1,6 @@
 # Ewald-split nuclear attraction {#nuclear-attraction}
 
-<!-- status: ready; registry: pbc-ewald-pairft-stress;
-     theory: crates/ferric-pbc/theory.md#"3. Ewald-split nuclear attraction (`hcore`)" -->
+<!-- status: ready; registry: pbc-ewald-pairft-stress -->
 
 An electron in a crystal is attracted by every nucleus in every cell, and
 that sum has the problem of section @sec:ewald: it diverges, here with the

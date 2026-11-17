@@ -1,7 +1,6 @@
 # The integral-direct path {#integral-direct}
 
-<!-- status: ready; registry: local-mp2;
-     theory: crates/ferric-mp2/theory.md#"12.4 The integral-direct domain-local fit" -->
+<!-- status: ready; registry: local-mp2 -->
 
 The method of section @sec:amplitude-lmp2 builds the global three-index tensor, of shape
 $(N_{\mathrm{aux}}, n_on_v)$, before it truncates anything. That tensor is

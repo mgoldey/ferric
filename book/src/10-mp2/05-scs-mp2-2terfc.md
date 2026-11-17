@@ -1,7 +1,6 @@
 # SCS-MP2(2terfc) {#scs-mp2-2terfc}
 
-<!-- status: ready; registry: scs-mp2-2terfc;
-     theory: crates/ferric-mp2/theory.md#"4. Spin-component scaling" -->
+<!-- status: ready; registry: scs-mp2-2terfc -->
 
 SCS-MP2 (section @sec:scs-and-kappa) needs one pair of coefficients for reaction energies
 and a nearly reversed pair for intermolecular interactions. Attenuated MP2

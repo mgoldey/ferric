@@ -1,7 +1,6 @@
 # Dense tensors and the einsum macro {#tensors}
 
-<!-- status: edit; registry: ;
-     theory: crates/ferric-tensors/theory.md#"Tensor Operations and Sparsity" -->
+<!-- status: edit; registry: -->
 
 Correlation methods are written as sums over products of tensors with up to
 four indices: amplitudes $t_{ij}^{ab}$, integrals $(ia|jb)$, fitted factors

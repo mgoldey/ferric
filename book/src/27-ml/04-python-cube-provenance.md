@@ -1,7 +1,6 @@
 # The Python surface, cube files and provenance {#python-cube-provenance}
 
-<!-- status: edit; registry: none;
-     theory: crates/ferric-export/theory.md#"2. Gaussian Cube Real-Space Grid Exporter" -->
+<!-- status: edit; registry: none -->
 
 The NPZ file is one way to get features out of ferric. A dataset builder
 written in Python usually calls the bindings instead, either for a whole

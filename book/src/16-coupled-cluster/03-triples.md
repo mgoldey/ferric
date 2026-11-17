@@ -1,7 +1,6 @@
 # (T) in spin orbitals and in closed-shell form {#triples}
 
-<!-- status: ready; registry: ccsd-t;
-     theory: crates/ferric-cc/theory.md#"CCSD(T), spin-orbital", "CCSD(T), closed shell" -->
+<!-- status: ready; registry: ccsd-t -->
 
 CCSD lets electrons correlate in pairs and through orbital relaxation, but
 it has no amplitude for three electrons moving together. Iterating triples amplitudes (CCSDT) costs $O(N^8)$ per iteration. The

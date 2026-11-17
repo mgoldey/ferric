@@ -1,7 +1,6 @@
 # The reaction field in the Fock matrix {#reaction-field}
 
-<!-- status: ready; registry: pcm;
-     theory: crates/ferric-pcm/theory.md#"7. Solute potential, Fock contribution, total energy" -->
+<!-- status: ready; registry: pcm -->
 
 The apparent charges of section @sec:ief-operators act back on the solute as a set of
 classical charges outside the molecule. An electron feels them as one more

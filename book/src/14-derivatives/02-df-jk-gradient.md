@@ -1,7 +1,6 @@
 # Gradients of density-fitted J and K {#df-jk-gradient}
 
-<!-- status: edit; registry: hf-gradient;
-     theory: crates/ferric-scf/theory.md#"Density-fitted Coulomb and exchange (RI-J, RI-K, Split-RI-J)"; crates/ferric-scf/theory.md#"Density-fitted J/K nuclear gradient" -->
+<!-- status: edit; registry: hf-gradient -->
 
 A density-fitted SCF reports a different energy from the four-centre one,
 so it has a different gradient. The fitted energy depends on the raw

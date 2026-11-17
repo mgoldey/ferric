@@ -1,7 +1,6 @@
 # Radial and angular grids, the Becke partition, pruning {#grids}
 
-<!-- status: ready; registry: ks-grid;
-     theory: crates/ferric-dft/theory.md#"Integration Grid" "Becke partition and its nuclear derivative" -->
+<!-- status: ready; registry: ks-grid -->
 
 The XC energy is an integral over all space of a function of the density,
 and for a functional like PBE there is no closed form for it. So it is done
