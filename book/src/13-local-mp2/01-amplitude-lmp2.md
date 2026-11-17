@@ -1,63 +1,151 @@
 # 13.1 Amplitude-threshold local MP2
 
-<!-- section: 13.1; status: ready; registry: local-mp2;
+<!-- section: 13.1; status: edit; registry: local-mp2;
      theory: crates/ferric-mp2/theory.md#"12.1 Amplitude equations in localized orbitals" -->
 
-Canonical RI-MP2 sums over every $(i,j,a,b)$. In a localized basis most of
-those amplitudes are small, because an occupied orbital $i$ only interacts
-strongly with virtuals near it. The amplitude-threshold scheme of Wang,
-Aldossary, Shi, Liu, Li and Head-Gordon (J. Chem. Theory Comput. 19, 7577,
-2023) keeps an amplitude only when the integral that drives it exceeds a
-single threshold $\varepsilon$, and solves the MP2 amplitude equations on the
-retained set. The error is one-sided and shrinks to zero with $\varepsilon$.
+The MP2 amplitude $t_{ij}^{ab}$ measures how much two electrons in orbitals
+$i$ and $j$ correlate by jumping together into $a$ and $b$. What drives the
+jump is the integral $(ia|jb)$, the Coulomb interaction of the charge
+distributions $\phi_i\phi_a$ and $\phi_j\phi_b$. In canonical orbitals
+every orbital spreads over the whole molecule, so almost every $(ia|jb)$ is
+nonzero and canonical MP2 has to sum all of them.
 
-| Index | Range | Code name |
+Localize the orbitals and that changes. Each $\phi_i$ now sits on a bond or
+a lone pair, and so does each local virtual $\phi_a$. If $a$ is far from
+$i$, the product $\phi_i\phi_a$ is close to zero everywhere, so $(ia|jb)$ is
+too. In a long molecule most $(i,a)$ combinations are far apart, and most
+amplitudes are negligible.
+
+The amplitude-threshold scheme of Wang, Aldossary, Shi, Liu, Li and
+Head-Gordon (J. Chem. Theory Comput. 19, 7577, 2023) acts on this directly.
+It keeps an amplitude only when the integral that drives it exceeds one
+threshold $\varepsilon$, and solves the MP2 equations for the kept set only.
+Three facts frame the rest of the section:
+
+- $\varepsilon = 0$ keeps everything and gives canonical RI-MP2 exactly.
+- The energy error has one sign: the truncated energy is never below the
+  canonical one (§13.1.1 shows why).
+- `eps` has no default. It is part of the model, like the basis set.
+
+Notation:
+
+| Symbol | Meaning | In the code |
 |---|---|---|
-| $i, j$ | active occupied orbitals, Boys-localized | `no` of them; `LocalizedSpaces::c_locc` |
+| $i, j, k$ | active occupied orbitals, Boys-localized | `no` of them; `LocalizedSpaces::c_locc` |
 | $a, b$ | virtual orbitals of the VV-HV localized space | `nv` of them; `VvHv::c_vloc` |
 | $t_{ij}^{ab}$ | first-order amplitudes | one `Array2` block per ordered pair, `PairBlock` |
 | $J_{ia,jb}$ | $(ia\vert jb)$ in the localized basis | `PairBlock::j_blk` |
-| $f_{ik}$, $F_{ab}$ | occupied and virtual blocks of the SCF Fock matrix in the localized bases, not diagonal | `f_oo`, `f_vv` |
+| $f_{ik}$, $F_{ab}$ | occupied and virtual blocks of the Fock matrix in the localized bases; **not diagonal** | `f_oo`, `f_vv` |
 | $\Delta_{ij}^{ab}$ | $F_{aa}+F_{bb}-f_{ii}-f_{jj}$, positive | `PairBlock::denom` |
 | $\varepsilon$ | the threshold | `AmplitudeLmp2Config::eps` |
 
-| Entry point | Location |
-|---|---|
-| Rust | `ferric-mp2/src/lmp2_amplitude.rs::amplitude_lmp2`, with `ferric-mp2/src/lmp2_amplitude.rs::amplitude_lmp2_with_virtuals` as the entry that takes a caller-supplied virtual space |
-| CLI | `method.kind = "rimp2"` with `[local] scheme = "amplitude-threshold"`, `eps = ...` (`examples/water-rimp2-local.toml`) |
-| Python | `run_rimp2(..., local="amplitude-threshold", eps=...)` |
+Entry points:
+- Rust: `ferric-mp2/src/lmp2_amplitude.rs::amplitude_lmp2`. Use
+  `ferric-mp2/src/lmp2_amplitude.rs::amplitude_lmp2_with_virtuals` when you
+  supply your own virtual space.
+- CLI: `method.kind = "rimp2"` with `[local] scheme = "amplitude-threshold"`
+  and `eps = ...` (`examples/water-rimp2-local.toml`).
+- Python: `run_rimp2(..., local="amplitude-threshold", eps=...)`.
 
-The method is closed shell and energy only. `eps` has no default: it is part
-of the model. `eps = 0` keeps every amplitude and reproduces canonical RI-MP2.
+The method is closed shell and computes energies only.
 
 ## 13.1.1 The amplitude equations and the energy
 
-For canonical orbitals the MP2 amplitudes are $t_{ij}^{ab} = -J_{ia,jb}/\Delta_{ij}^{ab}$.
-In a localized basis the Fock blocks are not diagonal, and the amplitudes
-solve a linear system. With the Fock superoperator $\mathcal A$ and the
-exchange swap $\mathcal S: t^{ab}_{ij}\mapsto t^{ba}_{ij}$,
+In canonical orbitals MP2 needs no equations: $t_{ij}^{ab} = -J_{ia,jb}/\Delta_{ij}^{ab}$,
+one division per amplitude. Localized orbitals are not eigenfunctions of the
+Fock operator, so this shortcut fails. The Fock matrix in the local basis
+has off-diagonal elements, and they couple amplitudes to each other.
+
+To see the coupling, write the first-order condition for pair $(i,j)$ as a
+matrix in $a,b$. The Fock operator acts on each of the four orbital labels:
+
+- on the particle $a$: $F_{ac}$ moves amplitude from $c$ to $a$, giving
+  $F\,t_{ij}$;
+- on the particle $b$: likewise, giving $t_{ij}\,F$;
+- on the hole $i$: $f_{ik}$ moves the hole from $k$ to $i$, so pair
+  $(i,j)$ receives amplitude from pair $(k,j)$;
+- on the hole $j$: likewise, from $(i,k)$.
+
+Holes enter with the opposite sign to particles. The residual is
 
 $$ (\mathcal A\,t)_{ij} = F\,t_{ij} + t_{ij}\,F - \sum_k\big(f_{ik}\,t_{kj} + f_{kj}\,t_{ik}\big), \qquad
 R = J + \mathcal A\,t = 0, \qquad t^{*} = -\mathcal A^{-1}J . \tag{13.1} $$
 
-The code's matrix-vector product (`ferric-mp2/src/ragged.rs::matvec_indexed`)
-is exactly this: for each pair block, the two virtual-Fock products, then the two
-occupied-coupling sums over the pairs that share $j$ and $i$, then projection
-onto the retained pattern. For canonical orbitals $\mathcal A$ is diagonal with
-entries $\Delta_{ij}^{ab}$, which gives $t = -J/\Delta$ and the energy of
-equation (10.3).
+Check the canonical limit. With $F$ and $f$ diagonal, $\mathcal A$
+multiplies each amplitude by
+$F_{aa} + F_{bb} - f_{ii} - f_{jj} = \Delta_{ij}^{ab}$, and $R = 0$ gives back
+$t = -J/\Delta$ and the energy of equation (10.3).
 
-The energy has two forms that agree at the solution. With
-$\tilde t = (2-\mathcal S)\,t$ and the sums running over the retained pattern:
+The code applies $\mathcal A$ without ever forming it. This is the body of
+`ferric-mp2/src/ragged.rs::matvec_indexed`, run in parallel over output
+pairs; only the flop counter has been removed:
+
+```rust
+let mut r = pb.fvv_aa.dot(&t[p_idx]);        // F t_ij     (particle a)
+r += &t[p_idx].dot(&pb.fvv_bb);              //   + t_ij F (particle b)
+for &q in &rg.by_j[&pb.j] {                  // pairs (k, j): same j
+    let f = f_oo[(pb.i, rg.pairs[q].i)];     //   f_ik
+    if f == 0.0 { continue; }
+    gather_into(&mut r, &rg.pairs[q], pb, -f, &t[q], ..);   // - f_ik t_kj
+}
+for &q in &rg.by_i[&pb.i] {                  // pairs (i, k): same i
+    let f = f_oo[(rg.pairs[q].j, pb.j)];     //   f_kj
+    if f == 0.0 { continue; }
+    gather_into(&mut r, &rg.pairs[q], pb, -f, &t[q], ..);   // - f_kj t_ik
+}
+apply_pattern(&mut r, &pb.pat, nb);          // zero the dropped amplitudes
+```
+
+The four lines of (13.1) map onto these lines one for one. Two details are
+not in the equation:
+
+- **Pair blocks have different shapes.** Pair $(i,j)$ only stores the
+  virtuals in its own domain, `da` × `db`. `gather_into` moves amplitudes
+  between two blocks whose virtual lists overlap only in part, matching
+  them by index. "Ragged" in the file name refers to these unequal blocks.
+- **`apply_pattern` makes the truncation exact.** The operator is projected
+  onto the kept amplitudes. Dropped amplitudes are not approximated; they
+  are zero, and the equations hold exactly on what remains.
+
+### Two energy formulas, and why the code uses the longer one
+
+With $\tilde t = (2-\mathcal S)\,t$, where $\mathcal S$ swaps
+$t^{ab}_{ij} \leftrightarrow t^{ba}_{ij}$ (the same $2(ia|jb) - (ib|ja)$
+combination as in equation 10.3), there are two ways to write the energy:
 
 $$ E_{\mathrm{lin}}(t) = \langle\tilde t,\,J\rangle = \sum_{ijab}\big(2t_{ij}^{ab} - t_{ij}^{ba}\big)J_{ia,jb}, \qquad
 E_H(t) = \langle\tilde t,\;2J + \mathcal A\,t\rangle . \tag{13.2} $$
 
-$E_H$ is the Hylleraas functional with the residual folded in:
-$E_H = E_{\mathrm{lin}} + \langle\tilde t, R\rangle$. The code evaluates $E_H$ and
-treats $E_{\mathrm{lin}}$ as an oracle. The reason is the error order. At a
-residual $R$ the linear form errs at first order in $\lVert R\rVert$, and
-$E_H$ at second.
+At the exact solution they agree, since $\mathcal A t^* = -J$ turns
+$2J + \mathcal A t^*$ into $J$. They differ in how they respond to an
+amplitude that is slightly wrong, and an iterative solver only ever returns
+slightly wrong amplitudes.
+
+Put $t = t^* + d$, where $d$ is the solver's error, and expand. For
+$E_{\mathrm{lin}}$ this is one line:
+
+$$ E_{\mathrm{lin}}(t^*+d) = E^* + \langle (2-\mathcal S)\,d,\; J\rangle . $$
+
+The error is linear in $d$. For $E_H$, expand the product. Two cross terms
+appear: $\langle (2-\mathcal S)t^*, \mathcal A d\rangle$ and
+$\langle (2-\mathcal S)d, J\rangle$. Move $\mathcal A$ to the left,
+which needs $\mathcal A$ symmetric and commuting with $\mathcal S$, and use
+$\mathcal A t^* = -J$. The first cross term becomes
+$-\langle (2-\mathcal S) J, d\rangle$, which cancels the second. What is
+left is
+
+$$ E_H(t^*+d) = E^* + \langle (2-\mathcal S)\,d,\; \mathcal A\,d\rangle . $$
+
+The error is quadratic in $d$. An amplitude error of order $\delta$ gives
+an $E_H$ error of order $\delta^2$ and an $E_{\mathrm{lin}}$ error of order
+$\delta$. That is why the code reports $E_H$. It keeps $E_{\mathrm{lin}}$ as an independent check of the
+same solution.
+
+The same expansion gives the sign of the truncation error. $(2-\mathcal S)\mathcal A$
+is positive definite, so $E_H$ is a convex quadratic whose minimum over all
+amplitudes is the canonical energy $E^*$. Truncation minimizes $E_H$ over a
+subset of the amplitudes, and a minimum over fewer variables cannot be
+lower. So $E_{\varepsilon} \ge E^*$ for every $\varepsilon$.
 
 > **Verified equation 13.2** · the two energy forms and the stationarity of $E_H$
 >
@@ -81,31 +169,53 @@ $E_H$ at second.
 >
 > <!-- verified: id=lmp2.hylleraas; script=scripts/lmp2_hylleraas_vs_wshg23_sympy.py; claim=1; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/lmp2_amplitude.rs::{hylleraas_energy,hylleraas_energy_and_residual,linear_energy},ferric-mp2/src/ragged.rs::check_swap_closed; rust_test=ferric-mp2/tests/lmp2_direct.rs::hylleraas_is_stationary -->
 
-**Why the pattern must be swap-closed.** The energy couples $t^{ab}_{ij}$ with
-$t^{ba}_{ij}$, so the retained pattern must contain an element's swap partner,
-or the stationarity of $E_H$ is lost and the energy error becomes first order.
-The test that decides retention is symmetric by construction (section 13.1.3),
-and `check_swap_closed` asserts it. `hylleraas_energy` calls it and errors
-instead of returning a non-stationary number
+### The kept set must be closed under the swap
+
+The cancellation above assumed that
+$\mathcal S$ commutes with the projection onto the kept amplitudes. Suppose
+the mask keeps $t^{ab}_{ij}$ but drops its partner $t^{ba}_{ij}$. Then
+$\mathcal S$ maps a kept amplitude to a dropped one, the two cross terms no
+longer cancel, and a term linear in $d$ comes back. The energy error goes
+from second order to first. Claim 5 of the proof script builds exactly this
+case and shows the linear term.
+
+So the retention test has to be symmetric. The test in §13.1.3 is symmetric
+by construction, and the code does not rely on that alone:
+`check_swap_closed` asserts the property, and `hylleraas_energy` calls it.
+On a one-sided pattern it returns an error, never a number
 (`hylleraas_energy_rejects_a_one_sided_pattern` in
 `crates/ferric-mp2/tests/lmp2_direct.rs`).
 
-## 13.1.2 The solver error is bounded
+## 13.1.2 How accurate is the solve?
 
-The solution is found by preconditioned conjugate gradients on $\mathcal At = -J$,
-with the diagonal $\Delta_{ij}^{ab}$ as preconditioner. With
-$\mathcal A$ symmetric positive definite on the retained pattern and
-$\mathcal S$ commuting with it, the error of $E_H$ at a residual $R$ is
+The amplitudes come from preconditioned conjugate gradients on
+$\mathcal A t = -J$, with the diagonal $\Delta_{ij}^{ab}$ as preconditioner.
+CG stops at some residual $R = J + \mathcal A t$. The question is how much
+energy error that leaves. The expansion above already answers it.
+
+Since $R = J + \mathcal A(t^* + d) = \mathcal A d$, the error is
+$d = \mathcal A^{-1}R$. Substitute into the $E_H$ expansion:
 
 $$ E_H(t) - E^{*} = \langle(2-\mathcal S)\,\mathcal A^{-1}R,\;R\rangle \;\le\; \frac{3\,\lVert R\rVert^2}{\lambda_{\min}(\mathcal A)}, \qquad
-\lambda_{\min}(\mathcal A) \ge 2\,(\epsilon_{\mathrm{LUMO}} - \epsilon_{\mathrm{HOMO}}) , \tag{13.3} $$
+\lambda_{\min}(\mathcal A) \ge 2\,(\epsilon_{\mathrm{LUMO}} - \epsilon_{\mathrm{HOMO}}) . \tag{13.3} $$
 
-since $\lVert 2-\mathcal S\rVert = 3$ ($\mathcal S^2 = 1$). The second inequality is a
-Cauchy interlacing bound: the unprojected operator has eigenvalues
-$\epsilon_a+\epsilon_b-\epsilon_i-\epsilon_j$, the pattern projection is a
-compression, and the extreme eigenvalues are read from the eigenvalues of
-`f_oo` and `f_vv`. The Lanczos Ritz values from the CG are not used, because
-the smallest Ritz value is an upper bound on $\lambda_{\min}$.
+There are three steps from the identity to the bound:
+
+1. $\lVert 2-\mathcal S\rVert = 3$: $\mathcal S$ is a swap, so its
+   eigenvalues are $\pm 1$, and $2-\mathcal S$ has eigenvalues 1 and 3.
+2. $\lVert \mathcal A^{-1}\rVert = 1/\lambda_{\min}(\mathcal A)$.
+3. Bound $\lambda_{\min}$ without computing it. Before projection,
+   $\mathcal A$ is a sum of Fock operators acting on separate indices, so
+   its eigenvalues are $\epsilon_a+\epsilon_b-\epsilon_i-\epsilon_j$, with
+   the $\epsilon$ taken from diagonalizing `f_vv` and `f_oo`. The smallest is
+   $2(\epsilon_{\mathrm{LUMO}} - \epsilon_{\mathrm{HOMO}})$. Projecting onto
+   the kept amplitudes compresses the operator, and by Cauchy interlacing a
+   compression's smallest eigenvalue can only be larger.
+
+The bound needs only the orbital gap, which is cheap and guaranteed. The CG
+iteration also produces Lanczos estimates of $\lambda_{\min}$ for free, but
+they converge to it from above. Dividing by an overestimate would make the
+"bound" too small, so the code does not use them.
 
 > **Verified equation 13.3** · the solver-error bound
 >
@@ -126,21 +236,33 @@ the smallest Ritz value is an upper bound on $\lambda_{\min}$.
 >
 > <!-- verified: id=lmp2.cg-bound; script=scripts/lmp2_hylleraas_vs_wshg23_sympy.py; claim=6; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/lmp2_amplitude.rs::{cg_energy_error_bound,operator_lambda_min_lower_bound}; rust_test=ferric-mp2/tests/lmp2_direct.rs::default_rtol_energy_is_within_its_bound -->
 
-The script proves the bound on a model; it does not prove the interlacing step
-for the production operator. The code applies it with $\lambda_{\min}$ from
-$\epsilon_{\mathrm{LUMO}} - \epsilon_{\mathrm{HOMO}}$ of the localized-space Fock blocks, and the
-test above checks the reported bound against a dense solve.
+What is proven and what is not: the script proves the identity and the bound
+on a small model. It does not prove the interlacing step for the production
+operator. The code applies that step with the gap of the localized-space
+Fock blocks, and the code test checks the reported bound against a dense
+solve.
 
-**The default policy.** The solve stops at a relative residual of $10^{-6}$
-(`LMP2_CG_RTOL_DEFAULT`). It then evaluates (13.3) at the achieved residual, and
-if the bound exceeds $10^{-10}$ Ha (`LMP2_CG_ENERGY_ERROR_TARGET`) it continues,
-on the same Krylov sequence, to the residual that puts the bound at a
-quarter of the target, never below $10^{-11}$ (`LMP2_CG_RTOL_STRICT`). With no
-positive orbital gap the bound is undefined and the solve runs at
-$10^{-11}$. The bound is evaluated on the true residual $\lVert J+\mathcal At\rVert$ from the
-energy's own matrix-vector product, not on the solver's recursive residual,
-and running out of iterations at either stage is an error. The bound limits
-the solver error only, not the truncation error of $\varepsilon$.
+**How the code uses the bound.**
+
+1. The solve first stops at a relative residual of $10^{-6}$
+   (`LMP2_CG_RTOL_DEFAULT`) and evaluates (13.3).
+2. If the bound is above $10^{-10}$ Ha (`LMP2_CG_ENERGY_ERROR_TARGET`), CG
+   continues on the same Krylov sequence, without restarting. It stops at
+   the residual that puts the bound at a quarter of the target, but never
+   goes below $10^{-11}$ (`LMP2_CG_RTOL_STRICT`).
+3. With no positive gap the bound is undefined, and the solve runs at
+   $10^{-11}$.
+
+Two details make the bound reliable:
+
+- $R$ is the true residual $\lVert J+\mathcal At\rVert$, taken from the
+  energy's own matrix-vector product. It is not the residual CG updates
+  recursively, which can drift from the true one.
+- Running out of iterations at either stage is an error, not a warning.
+
+The bound covers the solver only. It says nothing about the error from
+dropping amplitudes with $\varepsilon$, which is the subject of the rest of
+this chapter.
 
 ## 13.1.3 The algorithm
 
