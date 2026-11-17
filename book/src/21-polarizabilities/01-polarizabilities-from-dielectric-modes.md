@@ -3,19 +3,29 @@
 <!-- section: 21.1; status: ready; registry: rpa-polarizability-c6;
      theory: crates/ferric-rpa/theory.md#"Dispersion: Casimir-Polder C6" -->
 
-A uniform field $F$ along $x$ perturbs every orbital pair $i\to a$ by
-$-F\,\mu_{x,ia}$. In direct RPA the electrons respond to the field and to each
-other's induced Coulomb potential, with no exchange kernel, so the response
-is the same dielectric matrix that chapter 18 builds for the correlation
-energy. The molecular polarizability, static or at an imaginary frequency
-$iu$, is therefore a by-product of that matrix: one linear solve against
-$\tilde{\boldsymbol\varepsilon}(iu)$ per axis, in the auxiliary basis, never in
-the $n_on_v$ space.
+Put a molecule in a weak uniform field and its electron cloud shifts against
+the field. The induced dipole is proportional to the field, and the
+proportionality constant is the polarizability tensor $\alpha$: three by
+three, because a field along $x$ can push charge along $y$ in a molecule
+without that symmetry. A field that oscillates at an imaginary frequency
+$iu$ gives $\alpha(iu)$. No laboratory field does that, but the diagonal
+elements of $\alpha(iu)$ are positive and fall smoothly with $u$
+(21.1.1 shows why), and the Casimir–Polder integral of chapter 25 turns
+$\alpha(iu)$ into the $C_6$ coefficient of the dispersion energy. The static
+value is the $u = 0$ point of the same function.
 
-This is not the response of section 19.9. That section screens an exchange-type
-kernel and is Smoke grade; this one is direct RPA, whose polarizability is
-the static limit of the same $\alpha(iu)$ that section 25.2 integrates into
-$C_6$.
+In direct RPA the electrons respond to the field and to the Coulomb potential
+of each other's induced density, with no exchange kernel. That is the same
+screening that chapter 18 builds into the dielectric matrix for the
+correlation energy, so the polarizability comes out of that matrix. Each
+frequency costs one linear solve against $\tilde{\boldsymbol\varepsilon}(iu)$
+per field direction, in the auxiliary basis. Nothing is solved in the
+$n_on_v$ space.
+
+Section 19.9 also computes a static polarizability, from a statically
+screened exchange-type kernel, and that route is graded Smoke. This section
+is the direct-RPA response. Its static tensor is the $u = 0$ value of the same
+$\alpha(iu)$ that section 25.2 integrates into $C_6$.
 
 | Symbol | Meaning | Code name |
 |---|---|---|
@@ -38,20 +48,53 @@ $C_6$.
 
 ## 21.1.1 The dielectric form
 
-In singlet direct RPA, $\mathbf A - \mathbf B = \Delta$ and
-$\mathbf A + \mathbf B = \Delta + 4\mathbf K$ with $K_{ia,jb} = (ia|jb) =
-\sum_PB^P_{ia}B^P_{jb}$, so the response formula of section 19.9 gives
+Start from one orbital pair. A field along $d$ couples occupied $i$ to
+virtual $a$ through $\mu_{d,ia}$, and an independent pair answers at two
+poles, $\Delta_i^a$ and $-\Delta_i^a$. At imaginary frequency the two poles
+add to a real number:
+
+$$ \frac{1}{\Delta_i^a - iu} + \frac{1}{\Delta_i^a + iu} = \frac{2\Delta_i^a}{(\Delta_i^a)^2 + u^2} = 2\,g_{ia}(u) . $$
+
+So $g_{ia}(u)$ is half the pair's response. It equals $1/\Delta_i^a$ at
+$u = 0$, falls as $\Delta_i^a/u^2$ at large $u$, and is positive everywhere.
+
+Now couple the pairs. In singlet direct RPA the orbital Hessian blocks are
+$\mathbf A - \mathbf B = \Delta$ and $\mathbf A + \mathbf B = \Delta + 4\mathbf K$,
+with $K_{ia,jb} = (ia|jb) = \sum_PB^P_{ia}B^P_{jb}$, so $\mathbf K = B^{\mathsf T}B$.
+The response formula of section 19.9 with these blocks gives
 
 $$ \alpha_{de}(iu) = 4\,\mu_d^{\mathsf T}\big[\Delta(\Delta + 4\mathbf K) + u^2\big]^{-1}\Delta\,\mu_e . \tag{21.1} $$
 
-The Woodbury identity turns the $n_on_v$-sized inverse into one of size
-$N_{\rm aux}$:
+The prefactor 4 is 2 for spin and 2 for the pair of poles. Two steps take
+(21.1) to the form the code solves. First, factor $\Delta$ out of the bracket
+on the left, $\Delta(\Delta + 4\mathbf K) + u^2 = \Delta\big[\Delta + u^2\Delta^{-1} + 4\mathbf K\big]$,
+and cancel it against the trailing $\Delta$. Since
+$\Delta + u^2\Delta^{-1} = \mathrm{diag}(g)^{-1}$,
+
+$$ \alpha_{de}(iu) = 4\,\mu_d^{\mathsf T}\big[\mathrm{diag}(g)^{-1} + 4B^{\mathsf T}B\big]^{-1}\mu_e . $$
+
+Second, apply the Woodbury identity to the inverse, with $G = \mathrm{diag}(g)$:
+
+$$ \big[G^{-1} + 4B^{\mathsf T}B\big]^{-1} = G - 4\,GB^{\mathsf T}\big[\mathbf 1 + 4BGB^{\mathsf T}\big]^{-1}BG . $$
+
+The bracket on the right is $\tilde{\boldsymbol\varepsilon}(iu)$. Sandwich
+between $\mu_d$ and $\mu_e$ and collect $BG\mu_d = w_d$:
 
 $$ \alpha_{de}(iu) = 4\,\mu_d^{\mathsf T}\mathrm{diag}(g)\,\mu_e - 16\,w_d^{\mathsf T}\,\tilde{\boldsymbol\varepsilon}(iu)^{-1}\,w_e , \qquad w_d = B\,(g\circ\mu_d) . \tag{21.2} $$
 
-The first term is the polarizability of independent particles, and the
-second is the screening by the induced density. At $u = 0$ every $g_{ia}$ is
-$1/\Delta_i^a$ and (21.2) is the static polarizability.
+The $n_on_v$-sized inverse has become an $N_{\rm aux}$-sized one. The first
+term is the polarizability of independent particles. The second is the
+screening: the induced density makes a Coulomb potential that pushes back on
+the electrons. $\tilde{\boldsymbol\varepsilon}$ is positive definite, so the
+term is nonnegative on the diagonal and lowers each $\alpha_{dd}$.
+
+Check two limits. At $u = 0$ every $g_{ia}$ is $1/\Delta_i^a$ and (21.2) is
+the static polarizability. As $u \to \infty$, $g_{ia} \to \Delta_i^a/u^2$, so
+$w_d$ falls as $1/u^2$ and the screening term as $1/u^4$; the tensor tends to
+$4\,\mu_d^{\mathsf T}\Delta\,\mu_e/u^2$, and the coupling $\mathbf K$ drops
+out. The source comment above the loop below writes out the same two steps; they
+and the large-$u$ limit were also checked on a random numpy model
+for this section. The verified boxes cover (21.2) itself.
 
 <!-- excerpt: ferric-rpa/src/properties.rs::pdep_polarizability_static -->
 ```rust
@@ -71,9 +114,40 @@ $1/\Delta_i^a$ and (21.2) is the static polarizability.
 | $w_d^{\mathsf T}\tilde{\boldsymbol\varepsilon}^{-1}w_e$ | `coupled`, with `y_vec` $= \tilde{\boldsymbol\varepsilon}^{-1}w$ from `solve_dielectric_3` |
 | 4, 16 | the prefactor of the independent-particle term (2 for spin, 2 for the pair of poles), and 16 = 4 (that prefactor) $\times$ 4 (the dielectric's $4BD^{-1}B^{\mathsf T}$) |
 
-The tensor is then symmetrized and its principal values taken. The molecular
-dipole is the whole-molecule lab-frame dipole on both sides, so the tensor is
-origin-independent.
+Three points about this loop:
+
+- **One factorization, three right-hand sides.** `solve_dielectric_3`
+  Cholesky-factors $\tilde{\boldsymbol\varepsilon}$ once (it is symmetric
+  positive definite) and back-solves for $w_x$, $w_y$, $w_z$.
+- **The static driver precomputes $D^{-1}\mu$.** `mu_flat_inv` holds
+  $\mu_d/\Delta$, so `bare` is the $u = 0$ independent-particle term.
+- **The tensor is then symmetrized.** The result also carries the
+  isotropic average $\tfrac13\operatorname{Tr}\alpha$ and the principal values,
+  the eigenvalues of the symmetrized tensor sorted ascending.
+
+The dipole on both sides is the whole-molecule lab-frame dipole about
+$\mathbf 0$. Moving the origin by $\mathbf c$ adds $c_d\langle i|a\rangle$ to
+$\mu_{d,ia}$, which is zero because occupied and virtual orbitals are
+orthogonal, so the tensor does not depend on the origin.
+
+The dynamic driver evaluates the same expression with $g_{ia}(u)$ in place of
+$1/\Delta_i^a$. Its per-frequency closure in
+`ferric-rpa/src/properties.rs::molecular_dynamic_polarizability` starts by
+building $g$:
+
+<!-- excerpt: ferric-rpa/src/properties.rs::molecular_dynamic_polarizability -->
+```rust
+                    let omega2 = omega * omega;
+                    let mut g = ndarray::Array1::<f64>::zeros(nov);
+                    for ia in 0..nov {
+                        let e = e_ia[ia];
+                        g[ia] = e / (omega2 + e * e);
+                    }
+```
+
+At $u = 0$ this gives $\Delta/\Delta^2$, which can differ from the static
+driver's $1/\Delta$ in the last bit. The two drivers therefore agree to
+rounding at $u = 0$, not bit for bit.
 
 > **Verified equation 21.1** · the dielectric form equals the direct response solve
 >
@@ -90,11 +164,17 @@ origin-independent.
 >
 > <!-- verified: id=pol.dielectric-form; script=scripts/rpa_response_modes_sympy.py; claim=M1; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-rpa/src/properties.rs::pdep_polarizability_static; rust_test=ferric-rpa/tests/validation_static_alpha.rs::alpha_row; registry=rpa-polarizability-c6 -->
 
-The same response is the sum over the direct-RPA (Casida) excitations,
-$\alpha(iu) = \sum_nf_n/(\Omega_n^2 + u^2)$, with $\Omega_n^2$ the eigenvalues of
-$\Delta^{1/2}(\Delta+4\mathbf K)\Delta^{1/2}$ and $f_n$ the oscillator weights
-of the transition dipole. It is the independent route of the validation
-below.
+A second, independent route to the same response is the sum over the
+direct-RPA (Casida) excitations. Diagonalize
+$\Delta^{1/2}(\Delta+4\mathbf K)\Delta^{1/2}\mathbf Z_n = \Omega_n^2\mathbf Z_n$;
+then
+
+$$ \alpha(iu) = \sum_n\frac{f_n}{\Omega_n^2 + u^2}, \qquad f_n = 4\,(m^{\mathsf T}\Delta^{1/2}\mathbf Z_n)(\mathbf Z_n^{\mathsf T}\Delta^{1/2}\mu) , $$
+
+with $m$ the bra and $\mu$ the ket. For a diagonal molecular element the bra
+is $\mu_d$ too, every $f_n$ is a square, and $\alpha_{dd}(iu)$ is a sum of
+positive Lorentzians: positive and decreasing in $u$. The validation below
+compares against this route.
 
 > **Verified equation 21.2** · the kernel against the sum over excitations
 >
@@ -112,20 +192,44 @@ below.
 >
 > <!-- verified: id=pol.kernel-vs-casida; script=scripts/rpa_c6_polarizability_sympy.py; claim=kernel-vs-casida; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-rpa/src/properties/per_atom.rs::closed_per_atom_alpha; registry=rpa-polarizability-c6 -->
 
+The same script checks that the static form $g = 1/\Delta$ equals the
+$u \to 0$ limit of the dynamic one (check `static-limit`), and
+`scripts/rpa_response_modes_sympy.py` claim M3 checks the same limit for the
+molecular form.
+
 ## 21.1.2 The mode form
 
-Diagonalize $\tilde{\boldsymbol\varepsilon}(iu) = \sum_\xi\lambda_\xi U_\xi U_\xi^{\mathsf T}$. Then
-$\tilde{\boldsymbol\varepsilon}^{-1} = \sum_\xi U_\xi U_\xi^{\mathsf T}/\lambda_\xi$ and (21.2) becomes
+The dielectric matrix is symmetric, so it has an eigendecomposition,
+$\tilde{\boldsymbol\varepsilon}(iu) = \sum_\xi\lambda_\xi U_\xi U_\xi^{\mathsf T}$,
+and its inverse is $\sum_\xi U_\xi U_\xi^{\mathsf T}/\lambda_\xi$. Substitute
+the inverse into (21.2) and write $16\,w_d^{\mathsf T}U_\xi U_\xi^{\mathsf T}w_e = s_{\xi,d}s_{\xi,e}$:
 
 $$ \alpha(iu) = \alpha_{\rm bare}(iu) - \sum_\xi\frac{s_\xi s_\xi^{\mathsf T}}{\lambda_\xi},\qquad s_{\xi,d} = 4\,U_\xi\cdot w_d,\quad \alpha_{\rm bare} = 4\,\mu^{\mathsf T}\mathrm{diag}(g)\,\mu . \tag{21.3} $$
 
-Each mode is a charge density in the auxiliary basis; $s_\xi$ is its Coulomb
+Each mode is a charge density in the auxiliary basis. $s_\xi$ is its Coulomb
 overlap with the density that a unit field induces in independent particles,
-and $s_\xi s_\xi^{\mathsf T}/\lambda_\xi$ is how much that mode screens
-the field. This is the form `ResponseModes::polarizability_from_modes`
-evaluates. It is exact when every mode is kept, and a truncation to the
-leading modes otherwise, because the modes are ordered by $\lambda_\xi$, the
-strength of the screening.
+and $s_\xi s_\xi^{\mathsf T}/\lambda_\xi$ is how much that mode screens the
+field. Every $\lambda_\xi \ge 1$ (section 18.3.1), so mode $\xi$ removes at
+most $s_{\xi,d}^2$ from $\alpha_{dd}$. With every mode kept, (21.3) is (21.2). Keeping
+only the leading modes truncates the screening sum, and the modes are
+ordered by $\lambda_\xi$, the strength of the screening.
+`ferric-rpa/src/response_modes.rs::polarizability_from_modes` evaluates it:
+
+<!-- excerpt: ferric-rpa/src/response_modes.rs::polarizability_from_modes -->
+```rust
+        let mut a = self.alpha_bare;
+        for (k, &lam) in self.eigenvalues.iter().enumerate() {
+            for d in 0..3 {
+                for e in 0..3 {
+                    a[d][e] -= self.field_couplings[(k, d)] * self.field_couplings[(k, e)] / lam;
+                }
+            }
+        }
+        a
+```
+
+`field_couplings` is stored as an $M\times3$ array, row $k$ holding
+$s_{k,x}, s_{k,y}, s_{k,z}$ for the $k$-th kept mode.
 
 > **Verified equation 21.3** · the mode expansion
 >
@@ -143,25 +247,30 @@ strength of the screening.
 > <!-- verified: id=pol.mode-expansion; script=scripts/rpa_response_modes_sympy.py; claim=M2; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-rpa/src/response_modes.rs::polarizability_from_modes; rust_test=ferric-rpa/tests/response_modes.rs::full_rank_modes_reconstruct_the_static_polarizability; registry=rpa-polarizability-c6 -->
 
 At $u=0$ the modes are the PDEP eigenpotentials of section 18.3 (test
-`leading_static_modes_are_the_pdep_eigenpotentials`). The physical coefficients
-$c_\xi = M^{\mathsf T}U_\xi$ obey $(V + \Pi(iu))c_\xi = \lambda_\xi Vc_\xi$ with
-$c_\xi^{\mathsf T}Vc_\eta = \delta_{\xi\eta}$, and an added density
-$\rho_\xi$ is screened self-consistently to $\rho_\xi/\lambda_\xi$. A mode is
-a charge density $\sum_Pc_P\chi_P(\mathbf r)$, and its potential is the
-Coulomb potential of that density: reading the coefficients as a potential
-is wrong.
+`leading_static_modes_are_the_pdep_eigenpotentials`). The physical
+coefficients $c_\xi = M^{\mathsf T}U_\xi$ obey
+$(V + \Pi(iu))c_\xi = \lambda_\xi Vc_\xi$ with
+$c_\xi^{\mathsf T}Vc_\eta = \delta_{\xi\eta}$. Read that equation physically:
+add the density $\rho_\xi$ to the molecule and the electrons rearrange until
+the net density is $\rho_\xi/\lambda_\xi$. A mode is the charge density
+$\sum_Pc_P\chi_P(\mathbf r)$, and its potential is the Coulomb potential of
+that density. Reading the coefficients as a potential is wrong.
 
 ## 21.1.3 Open shell
 
-With different $\alpha$ and $\beta$ orbitals the screening is shared and the
-bare terms are per spin:
+With different $\alpha$ and $\beta$ orbitals each spin has its own pairs,
+gaps and dipole block, but both spins see the same induced Coulomb potential.
+So the screening is shared and the bare terms are per spin. With one spin per
+pair the spin factor 2 is gone from each prefactor:
 
-$$ \tilde{\boldsymbol\varepsilon}_U = \mathbf 1 + 2\sum_\sigma B_\sigma\,\mathrm{diag}(g_\sigma)B_\sigma^{\mathsf T},\qquad \alpha_{de} = \sum_\sigma 2\,\mu_{\sigma,d}^{\mathsf T}\mathrm{diag}(g_\sigma)\mu_{\sigma,e} - 4\,w_d^{\mathsf T}\tilde{\boldsymbol\varepsilon}_U^{-1}w_e,\quad w_d = \sum_\sigma B_\sigma(g_\sigma\circ\mu_{\sigma,d}) , \tag{21.4} $$
+$$ \tilde{\boldsymbol\varepsilon}_U = \mathbf 1 + 2\sum_\sigma B_\sigma\,\mathrm{diag}(g_\sigma)B_\sigma^{\mathsf T},\qquad \alpha_{de} = \sum_\sigma 2\,\mu_{\sigma,d}^{\mathsf T}\mathrm{diag}(g_\sigma)\mu_{\sigma,e} - 4\,w_d^{\mathsf T}\tilde{\boldsymbol\varepsilon}_U^{-1}w_e,\quad w_d = \sum_\sigma B_\sigma(g_\sigma\circ\mu_{\sigma,d}) . \tag{21.4} $$
 
-which is (21.2) when the spins coincide: $w$ doubles, so the screening term
+Check the closed-shell limit. When the spins coincide the two terms of
+$\tilde{\boldsymbol\varepsilon}_U$ add to $4BGB^{\mathsf T}$, the bare terms
+add to $2 + 2 = 4$, and $w$ doubles, so the screening term becomes
 $4\,(2w_\sigma)^{\mathsf T}\tilde{\boldsymbol\varepsilon}^{-1}(2w_\sigma) = 16\,w_\sigma^{\mathsf T}\cdots$.
-ROHF and ROKS references are semi-canonicalized per spin first, as in
-section 19.7.
+That is (21.2). ROHF and ROKS references are semi-canonicalized per spin
+first, as in section 19.7.
 
 > **Verified equation 21.4** · the open-shell form against the spin-orbital response
 >
@@ -192,13 +301,15 @@ section 19.7.
 | 6 | the tensor, symmetrized; principal values by a $3\times3$ eigensolve | $O(1)$ | `eig3_sym` |
 | 6' | the mode form: a dense eigensolve of $\tilde{\boldsymbol\varepsilon}$, the leading $M$ modes and their couplings | $N_{\rm aux}^3$ | `response_modes` |
 
-The dynamic driver loops over the imaginary-frequency nodes in parallel with
-one BLAS thread per worker; the memory pre-flight charges `b_ov`, the scaled
-copy `b_scaled` and `eps_mat` per spin, and the open-shell branch also charges
-the second $N_{\rm aux}^2$ buffer that the sum of the two spins' products
-needs. A solve of a non-positive-definite $\tilde{\boldsymbol\varepsilon}$
-(a NaN dielectric) returns an error; it never panics inside the parallel
-region.
+Frequencies are independent, so the dynamic driver loops over the
+imaginary-frequency nodes in parallel with one BLAS thread per worker. Its
+memory pre-flight charges `b_ov`, the scaled copy `b_scaled` and `eps_mat`
+per spin. The open-shell branch also charges the second $N_{\rm aux}^2$
+buffer that the sum of the two spins' products needs. A solve of a
+non-positive-definite $\tilde{\boldsymbol\varepsilon}$ (a NaN dielectric)
+returns an error. It never panics inside the parallel region.
+
+`response_modes` clamps `n_modes` to the dressed auxiliary dimension.
 
 ## 21.1.5 Options and limits
 
@@ -208,9 +319,10 @@ region.
 | `memory_budget_gb` | the pre-flight ceiling |
 | `n_modes`, `omega` (`response_modes`) | how many leading modes, and the imaginary frequency |
 
-**Known limits (2026-11-15).** Direct RPA: the kernel has no exchange, so the
-static tensor is not the CPHF polarizability. `response_modes` is closed shell
-only, and refuses a negative or non-finite $u$ and `n_modes = 0`.
+**Known limits (2026-11-15).** The response is direct RPA: the kernel has no
+exchange, so the static tensor is not the CPHF polarizability.
+`response_modes` is closed shell only, and refuses a negative or non-finite
+$u$ and `n_modes = 0`.
 
 ## 21.1.6 Numerical anchors
 

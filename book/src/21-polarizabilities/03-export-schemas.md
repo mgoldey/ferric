@@ -3,12 +3,19 @@
 <!-- section: 21.3; status: edit; registry: none;
      theory: crates/ferric-export/theory.md#"Enabling keys", "2. Gaussian Cube Real-Space Grid Exporter" -->
 
-Sections 21.1 and 21.2 define quantities. This section says how they leave the
-program: which array each quantity becomes, what the writer refuses to write,
-and the grid format for volumetric fields. The per-array tables, with shapes
-and units, are the schema of record in `crates/ferric-export/theory.md`; the
-consumer's reading of each array, including its behaviour under rotation, is
-in sections 27.1 to 27.4. This section does not repeat them.
+Sections 21.1 and 21.2 define quantities. A model that learns from them sees
+none of the derivations, only arrays in a file. It needs four things from that
+file: the arrays indexed consistently (row $A$ of every per-atom array is atom
+$A$ of `coords`), fixed units and shapes, a tag for every convention that
+changes the numbers (which partition, which $\alpha(iu)$ source), and a way to
+tell a missing array from a zero one. This section says how ferric's writers
+provide each: which array each quantity becomes, what the writer refuses to
+write, and the grid format for volumetric fields.
+
+The per-array tables, with shapes and units, are the schema of record in
+`crates/ferric-export/theory.md`. The consumer's reading of each array,
+including its behaviour under rotation, is in sections 27.1 to 27.4. This
+section does not repeat them.
 
 | Entry point | Location |
 |---|---|
@@ -19,11 +26,11 @@ in sections 27.1 to 27.4. This section does not repeat them.
 
 ## 21.3.1 From quantity to key
 
-The writer is a plain serializer. It computes nothing: every array is built by
-the caller, in `ferric-rpa/src/property_bundle.rs::compute_pdep_properties`,
-and `export_npz` only checks that groups of arrays are consistent before
-writing them. The keys fall into the groups below, by the derivation behind
-each.
+The writer is a plain serializer. It computes nothing: the caller,
+`ferric-rpa/src/property_bundle.rs::compute_pdep_properties`, builds every
+array, and `export_npz` only checks that groups of arrays are consistent
+before writing them. The keys fall into the groups below, by the derivation
+behind each.
 
 | Group | Keys | Defined in |
 |---|---|---|
@@ -36,15 +43,48 @@ each.
 | Dispersion | `c6_partition`, `c6_source`, `c6_freqs`, `c6_weights`, `c6_iso`, `c6_aniso`, `c6_molecular_iso` | chapter 25 and section 27.3 |
 | Provenance | `certificate` | section 27.4.3 |
 
-Which keys a run contains depends on the `compute_*` knobs. The next block
-is the theory file's table of knobs and conditions.
+**Units and shapes.** Every number is in atomic units: coordinates, centroids
+and spreads in Bohr, orbital energies in Hartree, charges in $e$, the dipole
+in $e\,a_0$, the density second moment in Bohr², potentials in Hartree per $e$, polarizabilities in Bohr³,
+frequencies, quadrature weights and $C_6$ in a.u. The shapes follow one
+pattern. A per-atom array has the atom index first, in the order of `coords`:
+$(N_{\rm atoms},)$ for a charge, $(N_{\rm atoms},3)$ for a field,
+$(N_{\rm atoms},3,3)$ for `alpha_atomic`. A frequency-resolved array puts the
+frequency index next, in the order of `c6_freqs`:
+`alpha_atomic_dynamic` is $(N_{\rm atoms},N_u,3,3)$ and `alpha_ct_dynamic`
+is $(N_u,3,3)$. A pair array has two atom indices: `c6_iso` is
+$(N_{\rm atoms},N_{\rm atoms})$ and `c6_aniso` is
+$(N_{\rm atoms},N_{\rm atoms},3,3)$. Cartesian $3\times3$ blocks are always
+the last two axes.
 
-<!-- include: crates/ferric-export/theory.md#"Enabling keys" -->
+**Which keys are present.** Every key is optional; an absent array means the
+property was not requested or not computed. The CLI
+(`kind = "pdep-rpa"`, `[rpa] export_npz = "<path>"`) turns the `compute_*`
+knobs on by default. Each key is written under the knob or condition in this
+table.
+
+| Keys | TOML knob / condition |
+| :--- | :--- |
+| `coords`, `atomic_numbers`, `pdep_eigenvectors`, `certificate` | always (`certificate` is the PDEP-RPA certificate the CLI prints) |
+| `mo_coeffs`, `orbital_energies`, `orbital_centers`, `orbital_spreads` | restricted reference only |
+| `density_matrix`, `density_second_moment` | `compute_density_matrix` |
+| `dipole` | `compute_dipole` |
+| `esp_atoms` | `compute_esp` |
+| `esp_surface`, `esp_points` | `compute_esp_surface` (default `false`); `esp_surface_vdw_scale`, `esp_surface_n_angular` |
+| `electric_field` | `compute_electric_field` |
+| `alpha_tensor` | `compute_polarizability` |
+| `alpha_atomic` | `compute_alpha_atomic` |
+| `alpha_ct` | `compute_polarizability` and `compute_alpha_atomic` |
+| `hirshfeld_charges`, `lowdin_charges`, `mulliken_charges`, `chelpg_charges`, `resp_charges` | `compute_hirshfeld_charges`, `compute_lowdin_charges`, `compute_mulliken_charges`, `compute_chelpg_charges`, `compute_resp_charges` |
+| `c6_partition`, `c6_source`, `c6_freqs`, `c6_weights`, `alpha_atomic_dynamic`, `c6_iso`, `c6_aniso`, `c6_molecular_iso` | `compute_c6`; all of them are written, or none. `c6_source` defaults to `ts`; `c6_partition` defaults to `hirshfeld` for `pdep`, `becke` for `ts`/`mbd` |
+| `alpha_ct_dynamic` | `compute_c6` with `c6_source = "pdep"` |
+| `boys_coeffs` | library only: the CLI never writes it |
 
 ## 21.3.2 What the writer enforces
 
 `export_npz` refuses some combinations and encodes some types in a fixed way.
-These are properties of the file format, not of the physics.
+These rules come from the file format and from what a consumer can
+interpret, not from the physics.
 
 | Rule | Behaviour | Why |
 |---|---|---|
@@ -55,31 +95,74 @@ These are properties of the file format, not of the physics.
 | The molecular $C_6$ is a length-1 array | read `c6_molecular_iso[0]` | the format has no scalar |
 | Remainder identity | `alpha_ct + alpha_atomic.sum(0) == alpha_tensor`; the caller supplies `alpha_ct` exactly when it supplies both operands, and the writer does not check the sum | the remainder is computed from the same response as both |
 
-Two of these carry a warning that is easy to miss.
+The dispersion rule is enforced by the type, not by a runtime test. The
+per-atom $C_6$ arrays and their provenance (`C6Provenance`: partition and
+source) sit in one struct, `C6Export`, behind one `Option` in
+`DispersionBundle`. A caller cannot supply the arrays and leave the tag out,
+so no file can hold an untagged per-atom $C_6$. The strings are bytes because
+`ndarray-npy` writes only numeric and `bool` elements; an integer enum code
+would have made the consumer carry ferric's discriminant table separately.
+
+Two of these rules carry a warning that is easy to miss.
 
 - **`c6_iso.sum()` is not the molecular $C_6$.** The per-atom pair tensors use
   atom-centred operators and exclude inter-atomic charge transfer, which the
-  molecular response includes. The code comment on `C6Export` records
-  differences of tens of percent on water, with a bounded regression test
-  (`ferric-rpa/tests/s9_per_atom_c6_consistency.rs`). The observable is
-  `c6_molecular_iso`.
+  molecular response includes (the $\alpha_{\rm CT}$ of 21.2.3). The code
+  comment on `C6Export` records differences of tens of percent on water
+  (water/aug-cc-pVDZ/HF: $-19.5\%$ Hirshfeld, $-46.7\%$ Becke), with a
+  bounded regression test (`ferric-rpa/tests/s9_per_atom_c6_consistency.rs`).
+  The observable is `c6_molecular_iso`.
 - **`esp_surface` is not `esp_atoms` at the nuclei.** The surface values keep
   every nucleus' $Z_A/r$ term and so diverge at a nucleus. `esp_atoms` leaves
   out the nucleus it is evaluated at (section 27.2.1).
 
 The charge arrays carry no partition tag, unlike the per-atom polarizability
-arrays; the scheme is the key name, and the lattice parameters of CHELPG and
+arrays: the scheme is the key name, and the lattice parameters of CHELPG and
 RESP are not recorded (section 21.2.5).
 
 ## 21.3.3 The Gaussian cube grid
 
-Volumetric fields (the density, one molecular orbital, the PDEP eigenpotential
-charge densities) are written as Gaussian cube files by
-`ferric-export/src/cube.rs::export_cube`. The grid is an axis-aligned lattice
-described by `GridSpec`. The text below is the theory file's description of
-the grid and the value at each point.
+Volumetric fields (the density, one molecular orbital, the PDEP mode charge
+densities) are written as Gaussian cube files by
+`ferric-export/src/cube.rs::export_cube`. A cube file is a regular lattice of
+values plus a header that places it in space, which every molecular viewer
+reads.
 
-<!-- include: crates/ferric-export/theory.md#"2. Gaussian Cube Real-Space Grid Exporter" -->
+**The grid.** `GridSpec` (`ferric-integrals/src/ao_grid.rs::GridSpec`) is an
+axis-aligned uniform lattice stored as:
+
+- `origin`: the coordinate $[x_0, y_0, z_0]$ (Bohr) of grid point $(0,0,0)$;
+- `n_x`, `n_y`, `n_z`: the number of points along each axis;
+- `step_x`, `step_y`, `step_z`: the step vectors (Bohr). The evaluators read
+  only their diagonal entries, so the steps must be axis-aligned.
+
+`GridSpec::bounding_box(mol, margin, spacing)` builds one from the atoms. The
+origin is the lower corner of the atoms' bounding box moved out by `margin`.
+Each axis length is the bounding-box extent plus twice `margin`, and each
+count is that length divided by `spacing`, rounded up. The callers choose the
+numbers, so there is no single default: `write_cube` takes a spacing of 0.3
+Bohr and a padding of 4.0 Bohr, and the PDEP eigenpotential export takes 0.2
+and 4.0 (`[rpa] cube_spacing`, `cube_margin`).
+
+**The file.** `export_cube` writes two comment lines (the first is
+`Ferric generated cube file`, the second the caller's comment), then the atom
+count and the origin, then one line per axis with its point count and step
+vector, then one line per atom (atomic number, the same number as a float,
+and the position in Bohr). The values follow with the $x$ index outermost and
+the $z$ index innermost, six per line, starting a new line after each
+$(x, y)$ row.
+
+**The value at a voxel.** A field expanded in a basis is evaluated at each
+lattice point $\mathbf r = [x_0 + i h_x, y_0 + j h_y, z_0 + k h_z]$ by
+summing the basis functions there. For a PDEP mode with auxiliary
+coefficients $c_\xi^P$ the value is
+
+$$ \rho_\xi(\mathbf r) = \sum_P c_\xi^P \chi_P(\mathbf r), $$
+
+with $\chi_P$ the auxiliary basis function. As section 21.1.2 says, this is
+the mode's charge density; the eigenpotential is its Coulomb potential, and
+the cube holds the density (`[rpa] export_eigpot_prefix` writes
+`<prefix>_eigpot_NNN.cube`, `export_eigpot_count` of them, default 10).
 
 `export_mo_cubes` evaluates the atomic orbitals on the grid once and reuses
 them for every requested orbital, so the cost is one
@@ -124,9 +207,3 @@ rather than assuming a layout.
 | `crates/ferric-export/src/ml.rs` | the writer, its refusals and its dtypes |
 | `crates/ferric-export/src/cube.rs` | the cube layout |
 | `crates/ferric-integrals/src/ao_grid.rs::GridSpec` | the grid struct and `bounding_box` |
-
-Changes to `theory.md` made with this section: the `GridSpec` fields are the
-origin, the counts and the step vectors (the old text listed `spacing` and
-`margin` as fields); the per-entry-point spacing and padding defaults; the
-cube file layout; and the `esp_surface` row now says it includes every
-nucleus' $Z_A/r$ term.
