@@ -3,10 +3,23 @@
 <!-- section: 18.3; status: ready; registry: pdep-rpa;
      theory: crates/ferric-rpa/theory.md#"The PDEP Eigenpotential Approach" -->
 
+Apply a small external potential to a molecule and its electrons
+rearrange to screen it. Some potentials, shaped like the molecule's
+polarizable bonds and lone pairs, are screened strongly. Most of the
+$N_{\mathrm{aux}}$ directions in the auxiliary basis are potentials the
+electrons barely respond to, and they add almost nothing to the RPA energy.
+Projective dielectric eigenpotentials (PDEP) find the strongly screened
+potentials once, from the static response, and run the frequency loop in
+that smaller basis.
+
+The plan: the dielectric matrix and its static modes (18.3.1), the
+frequency loop in the kept modes (18.3.2), the algorithm and its code
+(18.3.3), then reproducibility, options and anchors.
+
 PDEP evaluates the frequency form of the RPA energy (section 18.1, equation
 18.4) in a basis taken from the static dielectric matrix instead of the full
-auxiliary basis. The static matrix is diagonalized once; the modes that
-differ from the identity by more than a threshold are kept; and at every
+auxiliary basis. The static matrix is diagonalized once. The modes that
+differ from the identity by more than a threshold are kept. At every
 frequency the dielectric matrix is projected onto the kept modes and
 diagonalized there. With every mode kept the result is the auxiliary-basis
 energy exactly. With truncation it is the energy of the projected dielectric
@@ -40,17 +53,31 @@ matrix is
 
 $$ \tilde{\boldsymbol\varepsilon}(iu) = \mathbf 1 + \boldsymbol\Pi(iu), \qquad \Pi_{PQ}(iu) = 4\sum_{ia} B^P_{ia}\,\frac{\Delta_i^a}{u^2 + (\Delta_i^a)^2}\,B^Q_{ia} . \tag{18.7} $$
 
-$\boldsymbol\Pi(iu)$ is positive semidefinite, so every eigenvalue of
-$\tilde{\boldsymbol\varepsilon}(iu)$ is at least 1. The static modes solve
+$\boldsymbol\Pi(iu)$ is positive semidefinite. For any vector $\mathbf v$,
+$\mathbf v^{\mathsf T}\boldsymbol\Pi\mathbf v = \sum_{ia} g_{ia}\big(\sum_P v_PB^P_{ia}\big)^2$
+with $g_{ia} = 4\Delta_i^a/(u^2 + (\Delta_i^a)^2) > 0$, a sum of
+non-negative terms. So every eigenvalue of $\tilde{\boldsymbol\varepsilon}(iu)$
+is at least 1. The static modes solve
 
 $$ \tilde{\boldsymbol\varepsilon}(0)\,\mathbf v_\xi = \lambda_\xi(0)\,\mathbf v_\xi, \qquad \lambda_\xi(0) \ge 1 . \tag{18.8} $$
 
-A mode with $\lambda_\xi(0)$ close to 1 is a potential the molecule barely
-screens. The kept set is
+$\lambda_\xi(0) - 1$ measures how strongly the molecule screens the
+potential $\mathbf v_\xi$. A mode with $\lambda_\xi(0)$ close to 1 is a
+potential the molecule barely screens. The kept set is
 
 $$ \mathcal K = \{\xi : |\lambda_\xi(0) - 1| > \tau\}, \qquad \tau = \texttt{trunc\_thresh}, \tag{18.9} $$
 
 with $\tau \le 0$ keeping every mode, and at least one mode always kept.
+
+How much does a dropped mode cost? At $u = 0$ the static modes diagonalize
+$\tilde{\boldsymbol\varepsilon}(0)$, so the summand of (18.4) there is
+$\sum_\xi s(\lambda_\xi(0))$ with $s(\lambda) = \ln\lambda + 1 - \lambda$, and
+dropping a mode removes its term. For $x = \lambda - 1 \ge 0$,
+$\ln(1 + x) \ge x - x^2/2$, so $|s(\lambda)| \le x^2/2$. A dropped mode
+therefore changes the $u = 0$ summand by at most $\tau^2/2$, which is
+$5\times10^{-9}$ at the default $\tau = 10^{-4}$. This bounds the static
+summand only. At $u > 0$ the static modes no longer diagonalize the matrix
+(18.3.2), and nothing here bounds the energy.
 
 ![Left: the 84 static eigenvalues of water / cc-pVDZ (cc-pvdz-ri), as $|\lambda_\xi(0) - 1|$ sorted, with the default threshold. Right: the error of the truncated energy against the full-rank one, against the number of modes kept. Script: `book/src/figures/18-rpa/pdep_spectrum.py`.](../figures/18-rpa/pdep_spectrum.svg)
 
@@ -62,7 +89,11 @@ the steep tail of the spectrum.
 ## 18.3.2 The frequency loop
 
 Let $\mathbf U$ be the $N_{\mathrm{aux}} \times N_{\mathrm{pdep}}$ matrix of
-kept static modes. At each node the projected dielectric matrix is
+kept static modes. Project (18.7) onto them: $\mathbf U^{\mathsf T}\mathbf 1\mathbf U = \mathbf 1$
+because the modes are orthonormal, and $\mathbf U^{\mathsf T}\boldsymbol\Pi\mathbf U$
+needs only the projected factor $\mathbf Y = \mathbf U^{\mathsf T}\mathbf B$,
+which does not depend on $u$. At each node the projected dielectric matrix
+is
 
 $$ \tilde{\boldsymbol\varepsilon}_U(iu_k) = \mathbf U^{\mathsf T}\tilde{\boldsymbol\varepsilon}(iu_k)\,\mathbf U = \mathbf 1 + \mathbf Y\,\mathbf G(u_k)\,\mathbf Y^{\mathsf T}, \qquad \mathbf Y = \mathbf U^{\mathsf T}\mathbf B, \qquad G_{ia}(u) = \frac{4\Delta_i^a}{u^2 + (\Delta_i^a)^2} , \tag{18.10} $$
 
@@ -71,17 +102,23 @@ and the energy is
 $$ E_c = \frac{1}{2\pi}\sum_k w_k \sum_{\eta} s\big(\lambda_\eta(iu_k)\big), \qquad s(\lambda) = \ln\lambda + 1 - \lambda , \tag{18.11} $$
 
 where $\lambda_\eta(iu_k)$ are the eigenvalues of
-$\tilde{\boldsymbol\varepsilon}_U(iu_k)$. The static modes do not diagonalize
-$\tilde{\boldsymbol\varepsilon}(iu)$ at $u > 0$, so the eigenvalues are not the
+$\tilde{\boldsymbol\varepsilon}_U(iu_k)$.
+
+Why diagonalize at every node? The static modes do not diagonalize
+$\tilde{\boldsymbol\varepsilon}(iu)$ at $u > 0$, because $G_{ia}(u)$ falls
+off at a different rate for each gap. So the eigenvalues are not the
 diagonal elements $\mathbf v_\xi^{\mathsf T}\tilde{\boldsymbol\varepsilon}(iu_k)\mathbf v_\xi$.
-Using the diagonal would drop the coupling between modes.
+Using the diagonal would drop the coupling between modes: 2.8e-2 Ha on the
+model of the proof script.
 
 The sum in (18.11) is a trace of a matrix function, so it equals
 $\ln\det\tilde{\boldsymbol\varepsilon}_U + \operatorname{tr}(\mathbf 1 - \tilde{\boldsymbol\varepsilon}_U)$,
 and the code takes that route when nothing downstream needs the eigenvalues.
-With every mode kept, $\mathbf U$ is orthogonal and (18.11) is the
-auxiliary-basis energy of section 18.1; that is why the full-rank energy-only
-configuration skips the static solve altogether.
+Check the full-rank limit. With every mode kept, $\mathbf U$ is orthogonal,
+and both the determinant and the trace are unchanged by
+$\tilde{\boldsymbol\varepsilon} \to \mathbf U^{\mathsf T}\tilde{\boldsymbol\varepsilon}\mathbf U$.
+So (18.11) is the auxiliary-basis energy of section 18.1. That is why the
+full-rank energy-only configuration skips the static solve altogether.
 
 > **Verified equation 18.11** · projection, diagonalization and truncation
 >
@@ -101,6 +138,8 @@ configuration skips the static solve altogether.
 >
 > <!-- verified: id=rpa.pdep.projection; script=scripts/rpa_drpa_pdep_sympy.py; claim=pdep-full-rank; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-rpa/src/energy.rs::eval_eigenvalues_at_frequencies_budgeted; rust_test=ferric-rpa/tests/rpa_energy_route.rs::water_ccpvdz_aux_route_matches_the_eigensolve_route; registry=pdep-rpa -->
 
+The proof does not cover the static-summand bound of 18.3.1.
+
 ## 18.3.3 The algorithm
 
 | Step | Quantity | Cost | Function |
@@ -114,22 +153,23 @@ configuration skips the static solve altogether.
 | 7 | per node: eigenvalues of $\tilde{\boldsymbol\varepsilon}_U$ and (18.11), or LU and the log-det | $N_{\mathrm{pdep}}^3$ | `eval_eigenvalues_at_frequencies_budgeted`, `eval_trace_log_summands_budgeted` |
 
 **Step 2 is not iterative by default.** The default eigensolver is called
-`Lanczos`, and with the dense $\chi_0$ it seeds a block Krylov space with the
+`Lanczos`. With the dense $\chi_0$ it seeds a block Krylov space with the
 whole identity, which collapses to one dense diagonalization. The code
 assembles $\tilde{\boldsymbol\varepsilon}(0)$ by applying it to panels of
 identity columns (`dielectric_apply` at $u = 0$), so the memory per panel
-follows the budget. The comment beside that arm records why the targeted
-solve lost: RI auxiliary sets have 20 to 30 functions per atom, so a physical
-threshold keeps most modes, and a dense diagonalization beats a narrow
-Krylov iteration at that fraction. The savings of truncation are in steps 5
-to 7, not in step 2.
+follows the budget. The comment beside that arm in
+`crates/ferric-rpa/src/lib.rs` records why the targeted solve lost. RI
+auxiliary sets have 20 to 30 functions per atom, so a physical threshold
+keeps most modes (58 to 86% in the comment's measurements), and a dense
+diagonalization beats a narrow Krylov iteration at that fraction. The
+savings of truncation are in steps 5 to 7, not in step 2.
 
 The other static solvers are library options (`PdepRpaConfig::eigensolver`,
-not exposed in the CLI or Python): Davidson, seeded
-with four vectors per atom when $\tau > 0$ and $N_{\mathrm{aux}} > 4N_{\mathrm{at}}$,
-and a seeded block Lanczos on the Boys-screened $\chi_0$, which
-`chi0_sparsity = "boys"` selects from the CLI and Python. The Davidson eigenvalues are also returned in
-descending order, so step 3 is the same for every solver.
+not exposed in the CLI or Python). Davidson is seeded with four vectors per
+atom when $\tau > 0$ and $N_{\mathrm{aux}} > 4N_{\mathrm{at}}$. A seeded block
+Lanczos runs on the Boys-screened $\chi_0$, which `chi0_sparsity = "boys"`
+selects from the CLI and Python. The Davidson eigenvalues are also returned
+in descending order, so step 3 is the same for every solver.
 
 **Step 4 needs the transpose.** A dressed vector $\mathbf v$ corresponds to
 the auxiliary function $\sum_P (M^{\mathsf T}\mathbf v)_P\,\chi_P$. On the
@@ -139,7 +179,8 @@ nor eigenvectors of $V + \Pi$ (section 6.1). The energy does not use
 $\mathbf c_\xi$; the cube and NPZ exports and the polarizability paths do.
 
 **Step 6, the kernel.** The scale factor per pair is the square root of
-$G_{ia}(u)$:
+$G_{ia}(u)$. From `ferric-rpa/src/sternheimer.rs::build_scale_factors_with_prefactor`,
+the body of the double loop over $i$ and $a$:
 
 <!-- excerpt: ferric-rpa/src/sternheimer.rs::build_scale_factors_with_prefactor -->
 ```rust
@@ -153,6 +194,36 @@ s[i * nvir + a] = (prefactor * e_ia / (omega2 + e_ia * e_ia)).sqrt();
 | $u^2$ | `omega2` |
 | 4 (closed shell) | `prefactor` |
 | $\sqrt{G_{ia}(u)}$ | `s[i * nvir + a]` |
+
+The square root lets the code scale the columns of $\mathbf Y$ once and form
+$\mathbf Y\mathbf G\mathbf Y^{\mathsf T}$ as $(\mathbf Y\mathbf G^{1/2})(\mathbf Y\mathbf G^{1/2})^{\mathsf T}$,
+a symmetric rank-$k$ update. `ferric-rpa/src/sternheimer.rs::dielectric_matrix_from_projection_into`,
+from the line after its shape assertions to the end:
+
+<!-- excerpt: ferric-rpa/src/sternheimer.rs::dielectric_matrix_from_projection_into -->
+```rust
+rhs_scaled.assign(y);
+let scale_row = scale.view().insert_axis(Axis(0));
+Zip::from(&mut *rhs_scaled)
+    .and_broadcast(scale_row)
+    .for_each(|x, &s| *x *= s);
+
+syrk_aat_into(rhs_scaled, out);
+for alpha in 0..m {
+    out[(alpha, alpha)] += 1.0;
+}
+```
+
+| Code | Equation |
+|---|---|
+| `y` | $\mathbf Y = \mathbf U^{\mathsf T}\mathbf B$ |
+| `rhs_scaled` after the `Zip` | $\mathbf Y\mathbf G^{1/2}$ |
+| `syrk_aat_into` | $\mathbf Y\mathbf G\mathbf Y^{\mathsf T}$ |
+| the diagonal loop | $\mathbf 1 + \mathbf Y\mathbf G\mathbf Y^{\mathsf T}$, (18.10) |
+
+`rhs_scaled` and `out` are scratch buffers owned by each worker thread and
+reused across the frequencies it handles, so the scratch held at once is
+one pair per thread, not one per frequency.
 
 **Step 3, the truncation**, is (18.9) as written:
 
@@ -170,20 +241,20 @@ n.max(1)
 ```
 
 It counts the modes above the threshold and keeps that many from the front of
-the ordered list, which is the kept set because the list is ordered by
+the ordered list. That is the kept set because the list is ordered by
 $|\lambda - 1|$.
 
 **Step 7, which route.** The Python `run_pdep_rpa` asks for the eigenvalues
-at each node (`need_eigenvalues_freq = true`). The CLI energy run does not, and
-takes the LU log-det of $\tilde{\boldsymbol\varepsilon}_U$. Both give (18.11).
-With $\tau = 0$ and no export requested, the CLI goes through
+at each node (`need_eigenvalues_freq = true`). The CLI energy run does not,
+and takes the LU log-det of $\tilde{\boldsymbol\varepsilon}_U$. Both give
+(18.11). With $\tau = 0$ and no export requested, the CLI goes through
 `run_pdep_rpa_energy`, which skips steps 2 to 5 and evaluates the log-det in
 the full dressed auxiliary basis (section 18.1).
 
 ## 18.3.4 Reproducibility and memory
 
-The eigenvector signs and the order within degenerate blocks are arbitrary;
-the energy is a trace and does not depend on them. Exported eigenpotentials
+The eigenvector signs and the order within degenerate blocks are arbitrary.
+The energy is a trace and does not depend on them. Exported eigenpotentials
 can change sign between builds.
 
 The preflight estimate charges the panel-assembled $N_{\mathrm{aux}}^2$
@@ -222,10 +293,6 @@ the test's own assertion.
 
 **Known limits (2026-11-15).**
 
-- In `crates/ferric-rpa/src/energy.rs` an orphaned doc block written for
-  `eval_eigenvalues_at_frequencies` sits on top of
-  `eval_eigenvalues_at_frequencies_laplace` and says it "uses the diagonal of
-  the projected dielectric matrix". Both functions diagonalize it.
 - The analytic RPA gradient (section 15.5) requires $\tau = 0$.
 - Python `run_pdep_rpa` is closed shell only; the open-shell path is CLI-only
   (section 18.4).

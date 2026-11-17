@@ -3,12 +3,16 @@
 <!-- section: 18.4; status: ready; registry: u-pdep-rpa;
      theory: crates/ferric-rpa/theory.md#"Open-Shell (Spin-Summed) Dielectric" -->
 
-For an open-shell reference the $\alpha$ and $\beta$ electrons have different
-orbitals, orbital energies and occupations, but direct RPA has no exchange,
+In a radical or a triplet the $\alpha$ and $\beta$ electrons have different
+orbitals, orbital energies and occupations, so they respond differently to
+a potential. Both still feel the same potential. Direct RPA has no exchange,
 so the two spins couple only through the Coulomb interaction of their
 density responses. The dielectric matrix is then a sum of one response per
 spin in one shared auxiliary basis, and everything in section 18.3 carries
 over with the per-spin prefactor 2 in place of the closed-shell 4.
+
+The plan: the spin-summed matrix and why its prefactor is 2 (18.4.1), what
+changes in the algorithm (18.4.2), then options and anchors.
 
 | Index | Range | Code name |
 |---|---|---|
@@ -28,21 +32,39 @@ over with the per-spin prefactor 2 in place of the closed-shell 4.
 
 ## 18.4.1 The spin-summed dielectric
 
+Start from spin orbitals. Each excitation $i_\sigma \to a_\sigma$ responds
+to a frequency $iu$ with the factor $\Delta/(u^2 + \Delta^2)$, times 2 for
+the pair of poles at $\pm\Delta$. Its coupling to every other excitation,
+of either spin, is $(i_\sigma a_\sigma|j_\tau b_\tau)$, which factors through
+the one auxiliary basis as $\sum_P B^P_{i_\sigma a_\sigma}B^P_{j_\tau b_\tau}$.
+Sum the response over the excitations of each spin:
+
 $$ \tilde{\boldsymbol\varepsilon}_U(iu) = \mathbf 1 + \boldsymbol\Pi_\alpha(iu) + \boldsymbol\Pi_\beta(iu), \qquad \Pi^\alpha_{PQ}(iu) = 2\sum_{ia}B^P_{ia}\,\frac{\Delta_i^a}{u^2 + (\Delta_i^a)^2}\,B^Q_{ia}, \tag{18.12} $$
 
 and $\boldsymbol\Pi_\beta$ the same over $\bar\imath\bar a$ with the $\beta$
-factor $B^P_{\bar\imath\bar a}$ and gaps $\Delta_{\bar\imath}^{\bar a}$. The
-prefactor 2 is the pair of poles at $\pm\Delta$ alone; the closed-shell 4 of
-(18.7) is this 2 times the spin sum. With identical $\alpha$ and $\beta$
-channels $\boldsymbol\Pi_\alpha + \boldsymbol\Pi_\beta$ is the closed-shell
-$\boldsymbol\Pi$, so a UHF singlet reproduces section 18.3.
+factor $B^P_{\bar\imath\bar a}$ and gaps $\Delta_{\bar\imath}^{\bar a}$. Both
+factors are built with one dressing $M$. The prefactor 2 is the pair of
+poles at $\pm\Delta$ alone; the closed-shell 4 of (18.7) is this 2 times the
+spin sum.
+
+Check the closed-shell limit. With identical $\alpha$ and $\beta$ channels,
+$\boldsymbol\Pi_\alpha + \boldsymbol\Pi_\beta = 2\boldsymbol\Pi_\alpha$, which
+is the closed-shell $\boldsymbol\Pi$ with its 4. So a UHF singlet reproduces
+section 18.3.
+
+The energy is the frequency integral of section 18.1 with the spin-summed
+matrix:
 
 $$ E_c = \frac{1}{2\pi}\int_0^\infty\Big[\ln\det\tilde{\boldsymbol\varepsilon}_U(iu) - \operatorname{tr}\big(\boldsymbol\Pi_\alpha + \boldsymbol\Pi_\beta\big)\Big]\,du \tag{18.13} $$
 
-equals the spin-orbital plasmon definition
+It equals the spin-orbital plasmon definition
 $\tfrac12\sum_n(\Omega_n - A_{nn})$ with $\mathbf A = \boldsymbol\Delta + \mathbf K$,
 $\mathbf B = \mathbf K$ over both spin blocks and
 $K_{i_\sigma a_\sigma, j_\tau b_\tau} = (i_\sigma a_\sigma|j_\tau b_\tau)$.
+The four steps of 18.1.3 go through with spin-orbital indices, the per-spin
+prefactor 2 in $g$, and the spin-orbital $\mathbf K$ in place of
+$\tfrac12\mathbf K$. The open-shell matrix has no
+singlet/triplet split, because the $\alpha$ and $\beta$ blocks differ.
 
 > **Verified equation 18.13** · the spin-summed dielectric
 >
@@ -60,6 +82,51 @@ $K_{i_\sigma a_\sigma, j_\tau b_\tau} = (i_\sigma a_\sigma|j_\tau b_\tau)$.
 >
 > <!-- verified: id=rpa.updep.spin-summed; script=scripts/rpa_drpa_pdep_sympy.py; claim=u-freq-vs-definition; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-rpa/src/sternheimer.rs::{dielectric_apply_unrestricted,build_scale_factors_with_prefactor}; rust_test=ferric-rpa/tests/validation_urpa.rs::urpa_oh_vs_pyscf_urpa; registry=u-pdep-rpa -->
 
+The code applies (18.12) to a block of vectors $\mathbf V$ one spin at a
+time. The loop of `ferric-rpa/src/sternheimer.rs::dielectric_apply_unrestricted`,
+unchanged:
+
+<!-- excerpt: ferric-rpa/src/sternheimer.rs::dielectric_apply_unrestricted -->
+```rust
+let mut out: Array2<f64> = v_mat.to_owned();
+
+for chan in [chan_a, chan_b] {
+    let RpaChannel {
+        b_ov,
+        eps_occ,
+        eps_vir,
+    } = *chan;
+    let scale = build_scale_factors_with_prefactor(eps_occ, eps_vir, omega, 2.0);
+    let nov = scale.len();
+    assert_eq!(b_ov.shape()[1], nov);
+
+    let mut y: Array2<f64> = v_mat.t().dot(b_ov);
+    let scale_row = scale.view().insert_axis(Axis(0));
+    Zip::from(&mut y)
+        .and_broadcast(scale_row)
+        .for_each(|x, &s| *x *= s * s);
+
+    // out += B_ov · y^T
+    general_mat_mul(1.0, b_ov, &y.t(), 1.0, &mut out);
+}
+```
+
+| Code | Equation |
+|---|---|
+| `out` before the loop | $\mathbf 1\,\mathbf V$ |
+| `chan_a`, `chan_b` | $\sigma = \alpha, \beta$ |
+| `scale` | $\sqrt{2\Delta/(u^2 + \Delta^2)}$ per pair of spin $\sigma$ |
+| `y` after the `Zip` | $\mathbf V^{\mathsf T}B_\sigma$ times $2\Delta/(u^2 + \Delta^2)$ |
+| `general_mat_mul` | $+\boldsymbol\Pi_\sigma\mathbf V$ |
+
+- **The 2.0 is the per-spin prefactor.** The closed-shell path passes 4.
+  The proof script's mutation $2 \to 4$ makes the open-shell energy wrong,
+  so the constant is pinned.
+- **The two spins may have different lengths.** `b_ov` is
+  $N_{\mathrm{aux}} \times n_o^\sigma n_v^\sigma$, and the occupied and
+  virtual counts differ between spins. Only the auxiliary dimension is
+  shared, and that is the dimension of `out`.
+
 ## 18.4.2 The algorithm
 
 | Step | Quantity | Difference from section 18.3 |
@@ -70,15 +137,21 @@ $K_{i_\sigma a_\sigma, j_\tau b_\tau} = (i_\sigma a_\sigma|j_\tau b_\tau)$.
 | 4 | truncation | the same rule (18.9) |
 | 5 | frequency loop | always the eigenvalue route: per node, the eigenvalues of $\mathbf U^{\mathsf T}\tilde{\boldsymbol\varepsilon}_U\mathbf U$ and (18.11); no log-det branch |
 
+Step 1 semicanonicalizes the ROHF orbitals because the kernel uses one gap
+$\Delta_i^a = \varepsilon_a - \varepsilon_i$ per pair, and that scalar is
+the right denominator only in a basis where the Fock blocks are diagonal.
+
 The Laplace $\chi_0$ backend (section 18.5) builds one Laplace quadrature per
 spin on that spin's gap range. `run_diagnostics` assembles
 $\tilde{\boldsymbol\varepsilon}_U(iu_k)$ densely at every node as a check.
 
-**Refused inputs.** A restricted (closed-shell) result passed to the
-unrestricted driver; a spin whose highest occupied orbital is not below its
-lowest virtual (the frequency integral is undefined); and the Boys-screened
-$\chi_0$ (`chi0_sparsity = "boys"`, or `"auto"` when it resolves to Boys),
-whose screened tiles are built from restricted orbitals.
+**Refused inputs.**
+
+- A restricted (closed-shell) result passed to the unrestricted driver.
+- A spin whose highest occupied orbital is not below its lowest virtual.
+  Some $\Delta_i^a \le 0$ then, and the frequency integral is undefined.
+- The Boys-screened $\chi_0$ (`chi0_sparsity = "boys"`, or `"auto"` when it
+  resolves to Boys), whose screened tiles are built from restricted orbitals.
 
 ## 18.4.3 Options
 
@@ -95,6 +168,8 @@ From `site/src/reference/validation.md` (open-shell PDEP-RPA row):
 | $E_c$ vs PySCF `gw.urpa.URPA`, same UHF, aux basis and 40-node grid | OH, CH3, NH2 (doublets), O2 (triplet) / cc-pVDZ; OH / aug-cc-pVDZ | $\le 9.2\times10^{-11}$ Ha | `crates/ferric-rpa/tests/validation_urpa.rs` |
 | Truncated, against a numpy emulation | OH | $6.4\times10^{-11}$ Ha | `urpa_truncation_control_oh` |
 | Unrestricted vs restricted path at the closed-shell limit | H2O / cc-pVDZ | $3.2\times10^{-12}$ Ha | `urpa_closed_shell_limit_h2o_vs_pyscf_rpa` |
+
+The last row is the closed-shell limit of 18.4.1 run through the real code.
 
 ## 18.4.5 Sources
 

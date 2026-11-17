@@ -3,11 +3,17 @@
 <!-- section: 18.2; status: ready; registry: pdep-rpa;
      theory: crates/ferric-rpa/theory.md#"Imaginary-frequency quadratures"; crates/ferric-quadrature/theory.md#"2. Imaginary-Frequency Grids for RPA" -->
 
-Every frequency-route RPA energy in ferric (sections 18.1, 18.3, 18.4), the
-GW self-energy and the dynamic polarizabilities integrate a function of the
-imaginary frequency $u$ over $[0, \infty)$. This section describes the three
-grids, their defaults, and how the default order of the exact dRPA route was
-chosen.
+The frequency form of the RPA energy (18.4) is an integral over the whole
+half-line $u \in [0, \infty)$. The integrand is smooth, largest near
+$u = 0$, changes on the scale of the orbital-energy gaps, and falls as
+$u^{-4}$ at large $u$ (section 18.1.3). Each node costs one dielectric
+matrix and one factorization, so the grid has to capture the integral with
+a few dozen points. Every frequency-route RPA energy in ferric (sections
+18.1, 18.3, 18.4), the GW self-energy and the dynamic polarizabilities use
+the grids of this section.
+
+The plan: the three grids (18.2.1), their defaults and how the order of the
+exact dRPA route was chosen (18.2.2), then anchors and sources.
 
 | Symbol | Meaning | Code name |
 |---|---|---|
@@ -29,8 +35,10 @@ $\omega$ stays the range-separation parameter (chapter 0, section 8).
 
 $$ \int_0^\infty f(u)\,du \approx \sum_{k=1}^{n} w_k\,f(u_k), \qquad E_c = \frac{1}{2\pi}\sum_k w_k\,S(u_k) . \tag{18.6} $$
 
-All three grids map a rule on a finite interval to $[0, \infty)$, and the
-weights returned by `build_quadrature` already carry the Jacobian.
+A Gaussian rule lives on a finite interval. All three grids map a rule on
+$x \in (-1, 1)$ to $u \in (0, \infty)$ and multiply each weight by the
+Jacobian $du/dx$ at its node. The weights returned by `build_quadrature`
+already carry that Jacobian.
 
 | Scheme (`[rpa] quadrature`) | Nodes | Weights | Function |
 |---|---|---|---|
@@ -38,18 +46,43 @@ weights returned by `build_quadrature` already carry the Jacobian.
 | MiniMax (`minimax`, `mm`) | Gauss–Legendre map with $u_0 = 0.3$ ($n \le 8$), 0.4 ($n \le 16$), 0.5 (above); the user $u_0$ is ignored | as Gauss–Legendre | `build_quadrature` |
 | Chebyshev–Tan (`chebyshev-tan`, `chebyshev`, `ct`) | $u_k = u_0\tan\big(\pi(1 + x_k)/4\big)$, $x_k = \cos\theta_k$, $\theta_k = \pi k/(n+1)$ | $\dfrac{\pi}{n+1}\sin\theta_k\,\dfrac{u_0\pi}{4}\sec^2\!\Big(\dfrac{\pi(1 + x_k)}{4}\Big)$ | `chebyshev_tan_nodes` |
 
-The scheme named MiniMax is not a minimax grid. It is the Gauss–Legendre map
-with $u_0$ taken from a three-entry table (Furche 2005), and the name is kept
-because it is the configuration string.
+**The Gauss–Legendre map.** Differentiate $u = u_0(1 + x)/(1 - x)$ by the
+quotient rule: $du/dx = u_0\big[(1 - x) + (1 + x)\big]/(1 - x)^2 = 2u_0/(1 - x)^2$.
+The midpoint $x = 0$ maps to $u = u_0$. The Gauss–Legendre nodes are
+symmetric about $x = 0$, so half of the nodes lie below $u_0$ and half
+above. $u_0$ is the frequency that splits the grid in two.
 
-Chebyshev–Tan (Eshuis, Yarkony and Furche 2010) is the trapezoid rule in
-$\theta$, so its error on a smooth integrand falls as $n^{-2}$. Its largest
-node is $u_0\cot\big(\tfrac\pi2\sin^2\tfrac{\pi}{2(n+1)}\big)$, about 0.4 of the
-Gauss–Legendre map's largest node at the same $(n, u_0)$: 57 against 145
-Hartree at $n = 20$, $u_0 = 0.5$. Both grow as $n^2$.
+The mapped rule integrates exactly every $f$ whose pull-back
+$f(u(x))\,du/dx$ is a polynomial in $x$ of degree $\le 2n - 1$. Check the
+tail. Near $x = 1$, $u \approx 2u_0/(1 - x)$, and the pull-back of an
+integrand falling as $u^{-4}$ is proportional to $(1 - x)^2$. It goes to
+zero smoothly at the end of the interval, so the mapped rule meets no
+singularity at $x = 1$.
+
+**MiniMax** is not a minimax grid. It is the Gauss–Legendre map with $u_0$
+taken from a three-entry table (Furche 2005). The name is kept because it is
+the configuration string.
+
+**Chebyshev–Tan** (Eshuis, Yarkony and Furche 2010) starts from Chebyshev
+nodes of the second kind. Its weight is the Chebyshev-2 weight
+$\frac{\pi}{n+1}\sin^2\theta_k$, times $1/\sqrt{1 - x_k^2} = 1/\sin\theta_k$,
+times the Jacobian $\frac{u_0\pi}{4}\sec^2\frac{\pi(1 + x_k)}{4}$.
+Substitute $x = \cos\theta$ and the rule is the trapezoid rule in $\theta$
+with step $\pi/(n + 1)$; the endpoints carry zero weight. So its error on a
+smooth integrand falls as $n^{-2}$. For the Lorentzian $u_0/(u_0^2 + u^2)$ the
+Jacobian cancels $f$ exactly, which gives the closed form the tests use.
+
+Its largest node is at $k = 1$. Rewrite the tangent as a cotangent of the
+complementary angle,
+$\tan\frac{\pi(1 + \cos\theta)}{4} = \cot\frac{\pi(1 - \cos\theta)}{4} = \cot\big(\tfrac\pi2\sin^2\tfrac\theta2\big)$,
+which gives $u_0\cot\big(\tfrac\pi2\sin^2\tfrac{\pi}{2(n+1)}\big)$. That is
+about 0.4 of the Gauss–Legendre map's largest node at the same $(n, u_0)$: 57
+against 145 Hartree at $n = 20$, $u_0 = 0.5$. Both grow as $n^2$.
 
 The grid depends only on $(n, u_0)$ and the scheme, not on the molecule's
 orbital energies.
+
+The Gauss–Legendre map in the code, unchanged:
 
 <!-- excerpt: ferric-rpa/src/quadrature.rs::gauss_legendre_nodes -->
 ```rust
@@ -66,7 +99,7 @@ let weights: Vec<f64> = x
 |---|---|
 | $x_k, w_k^{\mathrm{GL}}$ | `x`, `w` |
 | $u_k$ | `freqs` |
-| $w_k$ | `weights` |
+| $w_k = w_k^{\mathrm{GL}}\,du/dx$ | `weights` |
 
 > **Verified equation 18.6** · the mapped weights
 >
@@ -86,6 +119,10 @@ let weights: Vec<f64> = x
 >
 > <!-- verified: id=rpa.quad.mapped-weights; script=scripts/rpa_quadrature_sympy.py; claim=Q3; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-rpa/src/quadrature.rs::{gauss_legendre_nodes,chebyshev_tan_nodes,build_quadrature}; rust_test=ferric-rpa/src/quadrature.rs::chebyshev_tan_lorentzian_at_a_equals_u0_matches_closed_form; registry=pdep-rpa -->
 
+The proof does not cover the half-below-$u_0$ split, the tail pull-back or
+the largest-node formula written out above; the last is pinned by the test
+`chebyshev_tan_largest_node_matches_closed_form`.
+
 ## 18.2.2 Defaults
 
 | Entry point | Scheme | $n$ | $u_0$ |
@@ -103,16 +140,16 @@ independent plasmon references, Gauss–Legendre at $u_0 = 0.5$ with 24 to 200
 nodes (`drpa_frequency_quadrature_convergence_table` in
 `crates/ferric-rpa/tests/validation_drpa_frequency.rs`). With every orbital
 correlated, 32 nodes miss by up to $1.3\times10^{-8}$ Ha (water / cc-pVDZ) and
-40 by up to $9.4\times10^{-10}$; at 48 every row is within
-$2.7\times10^{-10}$; from 64 on, rounding grows past the quadrature error.
-The test asserts the chosen order.
+40 by up to $9.4\times10^{-10}$. At 48 every row is within
+$2.7\times10^{-10}$. From 64 on, rounding grows past the quadrature error, so
+more nodes stop helping. The test asserts the chosen order.
 
 **$u_0$.** Only $u_0 = 0.5$ has been calibrated on the production (dense
 $\chi_0$) path; there the scheme changes only the quadrature error. The
 Laplace $\chi_0$ backend (section 18.5) falls back to the dense kernel at any
-node with $u\,t_{\max} > \pi/2$, so a smaller $u_0$ keeps more nodes on the
-Laplace path; `CHEBYSHEV_TAN_RECOMMENDED_U0 = 0.2` is calibrated for that
-backend only.
+node with $u\,t_{\max} > \pi/2$. A smaller $u_0$ moves nodes to smaller $u$,
+so it keeps more of them on the Laplace path.
+`CHEBYSHEV_TAN_RECOMMENDED_U0 = 0.2` is calibrated for that backend only.
 
 ## 18.2.3 Numerical anchors
 
@@ -121,6 +158,8 @@ backend only.
 | Chebyshev–Tan Lorentzian closed form | $10^{-13}$ | `chebyshev_tan_lorentzian_at_a_equals_u0_matches_closed_form` in `crates/ferric-rpa/src/quadrature.rs` |
 | Chebyshev–Tan error per doubling of $n$ | ratio 3.5 to 4.5 | `chebyshev_tan_lorentzian_error_falls_as_n_to_the_minus_two` |
 | Exact dRPA, 48 Gauss–Legendre nodes | $\le 2.7\times10^{-10}$ Ha | `crates/ferric-rpa/tests/validation_drpa_frequency.rs` |
+
+A ratio of 4 per doubling is the $n^{-2}$ law; the test allows 3.5 to 4.5.
 
 ## 18.2.4 Sources
 

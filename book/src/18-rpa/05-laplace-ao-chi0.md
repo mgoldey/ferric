@@ -4,12 +4,18 @@
      theory: crates/ferric-rpa/theory.md#"Laplace-transformed chi0"; crates/ferric-quadrature/theory.md#"1. Minimax Laplace Quadrature" -->
 
 The response kernel $\Delta/(u^2 + \Delta^2)$ in (18.7) couples every
-occupied-virtual pair to the frequency. Writing it as an integral over
-imaginary time separates the occupied and virtual indices, which is the
-first step towards an atomic-orbital, reduced-scaling $\chi_0$. ferric has
-the molecular-orbital half of that construction, as library code. The AO
-half, where the scaling would change, is not built. This section states what
-exists and what does not; the derivation is `crates/ferric-rpa/theory.md`,
+occupied-virtual pair to the frequency through the gap
+$\Delta_i^a = \varepsilon_a - \varepsilon_i$, which depends on $i$ and $a$
+together. Written as an integral over imaginary time, the kernel factors
+into a piece for $i$ times a piece for $a$. That separation is the first step
+towards an atomic-orbital, reduced-scaling $\chi_0$, the same step Laplace
+MP2 takes for its denominator (section 12.3). ferric has the
+molecular-orbital half of that construction, as library code. The AO half,
+where the scaling would change, is not built.
+
+The plan: the Laplace form of the kernel and the dielectric built from it
+(18.5.1), the requirements the code enforces (18.5.2), then anchors and
+sources. The derivation is `crates/ferric-rpa/theory.md`,
 "Laplace-transformed chi0".
 
 | Symbol | Meaning | Code name |
@@ -26,33 +32,80 @@ exists and what does not; the derivation is `crates/ferric-rpa/theory.md`,
 
 ## 18.5.1 The Laplace form of the kernel
 
-For $\Delta > 0$,
+For $\Delta > 0$, integrate $e^{-(\Delta + iu)t}$ over $t \in [0, \infty)$:
+the result is $1/(\Delta + iu)$. Its real part is
+$\Delta/(u^2 + \Delta^2)$, and the real part of $e^{-iut}$ is $\cos(ut)$. So
 
-$$ \frac{\Delta}{u^2 + \Delta^2} = \int_0^\infty e^{-\Delta t}\cos(ut)\,dt \approx \sum_l w_l\cos(ut_l)\,e^{-t_l\Delta}, \tag{18.14} $$
+$$ \frac{\Delta}{u^2 + \Delta^2} = \int_0^\infty e^{-\Delta t}\cos(ut)\,dt \approx \sum_l w_l\cos(ut_l)\,e^{-t_l\Delta} . \tag{18.14} $$
 
-so the projected dielectric matrix of (18.10) becomes
+Split each exponential in half, $e^{-t\Delta} = (e^{-t\Delta/2})^2$, and give
+one half to each side of the product. The projected dielectric matrix of
+(18.10) becomes a sum of symmetric terms, one per Laplace node:
 
 $$ \tilde{\boldsymbol\varepsilon}_U(iu) - \mathbf 1 \approx \sum_l 4w_l\cos(ut_l)\;\mathbf X^{(l)}\mathbf X^{(l)\mathsf T}, \qquad X^{(l)}_{\xi,ia} = Y_{\xi,ia}\,e^{-t_l\Delta_i^a/2} . \tag{18.15} $$
 
-The nodes are the minimax-Laplace nodes for $1/x$ on
+**The nodes.** They are the minimax-Laplace nodes for $1/x$ on
 $[\Delta_{\min}, \Delta_{\max}]$, the same tables as Laplace MP2 scaled by
-$1/\Delta_{\min}$, with $n \in \{3, 5, 7\}$. The coded sum is
+$1/\Delta_{\min}$, with $n \in \{3, 5, 7\}$. Why the scaling works: the table
+gives $r^{\mathrm{tab}}(y) \approx 1/y$ on $[1, R]$. Put
+$r(x) = r^{\mathrm{tab}}(x/\Delta_{\min})/\Delta_{\min}$, which is the table
+with $t_l = t_l^{\mathrm{tab}}/\Delta_{\min}$ and
+$w_l = w_l^{\mathrm{tab}}/\Delta_{\min}$. Then
+$r(x) \approx (\Delta_{\min}/x)/\Delta_{\min} = 1/x$ on
+$[\Delta_{\min}, R\,\Delta_{\min}]$, with the table's relative error. Here
+$R = \Delta_{\max}/\Delta_{\min}$ and there is one gap per pair, so no
+factor 2 as in Laplace MP2.
+
+**What the code computes.** The coded sum is
 $\operatorname{Re}r(\Delta + iu)$ with $r(x) = \sum_lw_le^{-t_lx} \approx 1/x$:
 the $1/x$ approximant at a complex argument, not a quadrature of the cosine
-integral. It is the minimax approximant at $u = 0$ and is not controlled at
-large $u\,t_l$, so the code uses the dense kernel at any frequency node with
-$u\,t_{\max} > \pi/2$, which keeps every $\cos(ut_l) \ge 0$ on the Laplace
-side. Each term is accumulated as a general matrix product, not a symmetric
-rank update; the coefficient $4w_l\cos(ut_l)$ is never negative there.
+integral. Expand $e^{-t_l(\Delta + iu)} = e^{-t_l\Delta}\big(\cos(ut_l) - i\sin(ut_l)\big)$
+and take the real part: the result is the sum in (18.14). It is the
+minimax approximant at $u = 0$ and is not controlled at large $u\,t_l$, where
+the cosine oscillates across the nodes. So the code uses the dense kernel at
+any frequency node with $u\,t_{\max} > \pi/2$. On the Laplace side every
+$u\,t_l \le \pi/2$, so every $\cos(ut_l) \ge 0$. Each term is accumulated as a
+general matrix product, not a symmetric rank update; the coefficient
+$4w_l\cos(ut_l)$ is never negative there.
 
-In this molecular-orbital form the cost equals the dense path's. The point
-of the form is that $e^{-t\Delta_i^a} = e^{t\varepsilon_i}e^{-t\varepsilon_a}$
-factorizes, so a sum over $ia$ can be carried as two pseudo-densities
+The core of `ferric-rpa/src/laplace_chi0.rs::dielectric_matrix_laplace_into`,
+with the shape assertions and the code's comments removed, and the setup of
+$\mathbf Y$, the gaps and the zeroed output replaced by `// ...`:
+
+```rust
+let t_max = laplace.points.iter().cloned().fold(0.0_f64, f64::max);
+if omega * t_max > std::f64::consts::FRAC_PI_2 {             // u t_max > π/2
+    let dense = crate::sternheimer::dielectric_matrix(v_mat, b_ov, eps_occ, eps_vir, omega);
+    out.assign(&dense);                                      // exact Δ/(u² + Δ²)
+    return;
+}
+// ...
+for (&t_l, &w_l) in laplace.points.iter().zip(laplace.weights.iter()) {
+    rhs_scaled.assign(&y_base);                              // Y
+    let factor: Array1<f64> = e_ia.iter().map(|&e| (-0.5 * t_l * e).exp()).collect(); // e^{−t_l Δ/2}
+    let factor_row = factor.view().insert_axis(Axis(0));
+    Zip::from(&mut *rhs_scaled)
+        .and_broadcast(factor_row)
+        .for_each(|x, &f| *x *= f);                          // X^(l)
+    let coeff = 4.0 * w_l * (omega * t_l).cos();             // 4 w_l cos(u t_l)
+    let x_view = rhs_scaled.view();
+    let xt = rhs_scaled.t();
+    general_mat_mul(coeff, &x_view, &xt, 1.0, out);          // += coeff X Xᵀ
+}
+```
+
+The identity matrix of (18.15) is added after the loop.
+
+**Where the factorization leads.** In this molecular-orbital form nothing is
+saved: each frequency node does $n$ products of the size the dense path does
+once. The point of the form is
+that $e^{-t\Delta_i^a} = e^{t\varepsilon_i}e^{-t\varepsilon_a}$ factorizes, so
+a sum over $ia$ can be carried as two pseudo-densities
 $\underline P_{\mu\nu}(t) = \sum_i C_{\mu i}e^{t\varepsilon_i}C_{\nu i}$ and
 $\overline P_{\mu\nu}(t) = \sum_a C_{\mu a}e^{-t\varepsilon_a}C_{\nu a}$, which
 are sparse for large molecules. `ao_rpa.rs` builds those pseudo-densities and
 an imaginary-time $\chi_0$ from them (after Kaltak, Klimeš and Kresse 2014),
-but evaluates the contraction densely; the sparse AO contraction is not
+but evaluates the contraction densely. The sparse AO contraction is not
 implemented.
 
 > **Verified equation 18.15** · the Laplace dielectric
