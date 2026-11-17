@@ -342,7 +342,7 @@ McMurchie-Davidson pass so the two share ordering and normalization. The
 $R^n_{tuv}$ recursion is linear in its seeds and does not contain the exponent,
 so the 3-centre values and derivatives form the difference on the seeds,
 
-$$ R^n_{000} = (-2	heta^2)^n F_n(	heta^2 R^2) - (-2\phi^2)^n rac{\phi}{	heta} G_n(S, s) , $$
+$$ R^n_{000} = (-2\theta^2)^n F_n(\theta^2 R^2) - (-2\phi^2)^n \frac{\phi}{\theta} G_n(S, s) , $$
 
 and run one recursion and one contraction (`md_terms` in the shim). The
 2-centre values subtract two passes.
