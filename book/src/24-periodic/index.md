@@ -1,8 +1,16 @@
 # 24. Gaussian-basis periodic calculations
 
-Three-dimensional periodic Hartree–Fock, Kohn–Sham, MP2 and dRPA on Gaussian
-basis functions, in the conventions of PySCF `pyscf.pbc`. Energies are per
-cell, in Hartree; lengths are in Bohr.
+A crystal is one cell repeated without end, and every energy of a molecular
+code becomes a sum over that repetition. The sums do not all behave.
+The Coulomb energy of an infinite neutral lattice converges only
+conditionally, so its value depends on the order of summation until a
+convention fixes it. The exchange kernel $4\pi/G^2$ is infinite at
+$\mathbf G = 0$, and dropping that point leaves an error that falls only as
+the inverse edge of the cell, or of the supercell a $k$ mesh represents. And Bloch's theorem turns one infinite
+problem into one finite problem per crystal momentum $k$. This chapter
+builds three-dimensional periodic Hartree–Fock, Kohn–Sham, MP2 and dRPA on
+Gaussian basis functions around those three facts, in the conventions of
+PySCF `pyscf.pbc`. Energies are per cell, in Hartree; lengths are in Bohr.
 
 The chapter follows the data. Section 24.1 sums the nuclear repulsion and
 defines the Madelung constant. Section 24.2 gives the Fourier transform of a
@@ -22,9 +30,11 @@ $\eta$; the code and the input call it `omega` (`[cell] omega`,
 chapter 4. The imaginary frequency is $u$. The densities follow chapter 0:
 $D = 2C_oC_o^{\mathsf H}$ and $F = h + J - \tfrac12K$.
 
-Every derivation lives in `crates/ferric-pbc/theory.md`; each section
-includes its part and adds the algorithm, the code and the anchors. The user
-guide is `site/src/methods/pbc.md`.
+Each section derives its equations, checks them in a limit (independence of
+the Ewald split, the Gamma point, the large cell that approaches the
+molecule) and then shows the code and the tests. The equations are also
+collected in `crates/ferric-pbc/theory.md`. The user guide is
+`site/src/methods/pbc.md`.
 
 **Known limits (2026-11-15).** Three-dimensional periodicity only: no slabs,
 wires or two-dimensional Coulomb truncation. A charged cell is an error. The

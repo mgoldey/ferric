@@ -4,25 +4,24 @@
      theory: crates/ferric-pbc/theory.md#"9. Periodic MP2 and dRPA" -->
 
 Periodic MP2 and direct RPA reuse the molecular kernels of chapters 10, 11
-and 18. At the Gamma point the orbitals are real, and the only new ingredients
-are the integrals and the orbital energies. On a mesh the integrals carry
-crystal momentum: an excitation $i \to a$ moves momentum $k_a - k_i$, and
-only pairs of excitations with opposite momenta couple.
+and 18. At the Gamma point the orbitals are real, and the only new
+ingredients are the integrals and the orbital energies. On a mesh the
+integrals carry crystal momentum: an excitation $i \to a$ moves momentum
+$k_a - k_i$, and only pairs of excitations with opposite momenta couple. Two questions
+carry over from the SCF: does the dropped $\mathbf G = 0$ term need a
+correction in correlation, and what does `exxdiv` do to the denominators?
 
-Two periodic facts carry the section:
-
-1. An occupied-virtual pair density has no $\mathbf G = 0$ component.
-   The dropped-$\mathbf G = 0$ kernel of the SCF therefore needs no
-   correction in correlation.
-2. The exchange divergence reaches correlation only through the occupied
-   orbital energies. The caller chooses the denominators, and the
-   conversion between the two choices is exact.
+Section 24.9.1 answers both; 24.9.2 derives the $k$-point energies and their
+supercell identity, 24.9.3 the real form of the complex response and the
+link between dRPA and MP2, and 24.9.4 the large-cell limit. The algorithm,
+options, anchors, limits and sources follow.
 
 | Symbol | Meaning | Code name |
 |---|---|---|
 | $B_{k,ia}$ | fitted integrals in the occupied-virtual block | `b_ov_from_ao_b` |
 | $\Pi(q, iu)$ | density response at momentum $q$ | |
 | $V^{k_ik_jk_a}_{iajb}$ | $(ik_i\,ak_a|jk_j\,bk_b)$, $k_b = k_i + k_j - k_a$ | |
+| $\Delta_{ia} = \varepsilon_a - \varepsilon_i$ | excitation energy | |
 | $u_0$ | quadrature scale, 0.5 | |
 
 | Entry point | Location |
@@ -33,9 +32,33 @@ Two periodic facts carry the section:
 | CLI | `[cell]` with `method.kind = "rimp2"` or `"pdep-rpa"` |
 | Python | `run_mp2_gamma`, `run_drpa_gamma`, `run_mp2_kpts`, `run_drpa_kpts` |
 
-<!-- include: crates/ferric-pbc/theory.md#"9. Periodic MP2 and dRPA" -->
+## 24.9.1 What carries over from the SCF
 
-## 24.9.1 Verified equations
+**The energies at Gamma.** The orbitals are real, and the molecular
+closed-shell formulas apply unchanged (`mp2.rs`, `drpa.rs`):
+
+$$
+E_\text{MP2} = \sum_{ijab}\frac{(ia|jb)\big[2(ia|jb) - (ib|ja)\big]}{\varepsilon_i + \varepsilon_j - \varepsilon_a - \varepsilon_b},\qquad
+E_c^\text{dRPA} = \frac{1}{2\pi}\int_0^\infty\Big[\ln\det\big(1 + \Pi(iu)\big) - \operatorname{tr}\Pi(iu)\Big]du,
+$$
+
+$$
+\Pi_{PQ}(iu) = 4\sum_{ia}B^P_{ia}\frac{\Delta_{ia}}{u^2 + \Delta_{ia}^2}B^Q_{ia} .
+$$
+
+The integrals $(ia|jb)$ are in the SCF's $\mathbf G = 0$-dropped kernel.
+
+**No charge, no divergence.** The SCF needed the Madelung term because the
+exchange pair density $\phi_i\phi_i$ carries one electron's charge, and its
+$\mathbf G = 0$ term diverges (section 24.4). An occupied-virtual pair
+density carries none. Its $\mathbf G = 0$ component is
+$\int\phi_i^*\phi_a = C_i^{\mathsf H}SC_a$, and the orbitals are
+$S$-orthonormal, so it is zero at every $k$. There is no divergent term to
+correct, and the SCF's kernel is used as is. What the dropped point does
+leave out is finite: $P_{ia}(\mathbf K)$ vanishes at $\mathbf K = 0$ and grows
+linearly for small $|\mathbf K|$, so $v(\mathbf K)|P_{ia}|^2$ has a finite,
+direction-dependent limit. Adding that limit is the $q = 0$ head correction,
+which is not implemented (24.9.8).
 
 > **Verified equation 24.18** · occupied-virtual pair densities are neutral
 >
@@ -52,6 +75,75 @@ Two periodic facts carry the section:
 > | Code test | `mp2_from_rsgdf_matches_dense_aft_in_the_trivial_aux_limit` in `crates/ferric-pbc/tests/pbc_mp2.rs` |
 >
 > <!-- verified: id=pbc.corr.ov; script=scripts/pbc_kpoint_corr_sympy.py; claim=ov-neutral; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-pbc/src/mp2.rs::b_ov_from_ao_b; rust_test=ferric-pbc/tests/pbc_mp2.rs::mp2_from_rsgdf_matches_dense_aft_in_the_trivial_aux_limit; registry=pbc-mp2 -->
+
+**The integrals.** Production runs take the SCF's own RS-GDF factor $B$ of
+section 24.5 and transform it to $B_{k,ia}$ (`b_ov_from_ao_b`). It goes to
+the molecular kernels: `ferric_mp2::rimp2::spin_components_from_b_ov` for
+MP2, and `ferric_rpa::run_pdep_rpa_from_parts` at full rank with the log-det
+summand for dRPA. $B$ is already multiplied by the inverse square root of the
+metric, so no further $V^{-1/2}$ is applied.
+
+**The denominators.** The exchange divergence reaches correlation only
+through the occupied orbital energies. Box 24.7 of section 24.4 showed that
+`ewald` lowers every occupied level by $v_M$ and leaves the orbitals as they
+are. So two conventions exist (`Mp2Denominators`): `MadelungShifted` uses the
+occupied $\varepsilon$ of the `ewald` Fock matrix, `Unshifted` those of the
+`none` Fock matrix. The SCF result does not record which `exxdiv` produced
+it, so the caller states it, and `occupied_shift` adds the difference: $0$
+when the reference already has the requested convention, $-v_M$ to go from
+`none` to `MadelungShifted`, $+v_M$ to go from `ewald` to `Unshifted`. The
+conversion is exact because the orbitals are the same under both. Section
+24.9.4 shows which convention approaches the molecule.
+
+## 24.9.2 The k-point energies
+
+**Momentum conservation.** With per-cell normalized $C(k)$ (`kcorr.rs`), the
+pair density $\phi^*_{ik_i}\phi_{ak_a}$ lives on $\mathbf K \in \mathbf G + q$,
+$q = k_a - k_i$ (section 24.6), and $\phi^*_{jk_j}\phi_{bk_b}$ carries
+$k_b - k_j$. The Coulomb integral of the two is invariant under a common
+lattice translation, so it vanishes unless the momenta add to zero modulo
+the reciprocal lattice: $k_a - k_i + k_b - k_j \equiv 0$, which is
+$k_b = k_i + k_j - k_a$. The second leg, written as $P^{vo}_{bj}$, then
+carries $k_j - k_b = q$ as well. Then
+
+$$
+V^{k_ik_jk_a}_{iajb} = (ik_i\,ak_a|jk_j\,bk_b) = \frac{1}{\Omega}\sum_{\mathbf K\in\mathbf G+q}v(\mathbf K)\,
+ P^{ov}_{ia}(\mathbf K)\,P^{vo}_{bj}(\mathbf K)^* ,
+$$
+
+and both legs lie in the class $q$ and share its auxiliary set. There are
+$N_k^3$ independent momentum triples, not $N_k^4$.
+
+**MP2.** Summing over the triples with a $1/N_k^3$ average:
+
+$$
+E_\text{MP2}/\text{cell} = \frac{1}{N_k^3}\sum_{k_ik_jk_a}\sum_{ijab}
+ \frac{V_{iajb}^*\big[2V_{iajb} - V_{ibja}\big]}{\varepsilon_i + \varepsilon_j - \varepsilon_a - \varepsilon_b},
+$$
+
+where $V_{ibja}$ is the element of $V^{k_ik_jk_b}$. The second leg $B^{vo}$ is
+transformed from $B(k_b, k_j)$ itself. It is not obtained by conjugating the
+$-q$ class, which would require the orbitals at $-k$ to be the conjugates of
+those at $k$, a time-reversal gauge that a caller-built SCF result need not
+have.
+
+**dRPA.** Each class $q$ has its own response, with $1/N_k$ averaging the
+excitations that carry momentum $q$:
+
+$$
+\begin{aligned}
+\Pi(q, iu) &= \frac{4}{N_k}\sum_{k'}\sum_{ia}B_{ia}(k' - q, k')\,B_{ia}(k' - q, k')^{\mathsf H}
+ \frac{\Delta}{u^2 + \Delta^2},\qquad \Delta = \varepsilon_a(k') - \varepsilon_i(k' - q), \\
+E_c^\text{dRPA}/\text{cell} &= \frac{1}{N_k}\sum_q\frac{1}{2\pi}\int_0^\infty
+ \Big[\ln\det\big(1 + \Pi(q, iu)\big) - \operatorname{tr}\Pi(q, iu)\Big]du .
+\end{aligned}
+$$
+
+**Check: the supercell.** With these normalizations, a Gamma-centred mesh
+gives, term by term, the Gamma MP2 and dRPA of the $\operatorname{diag}(N)$
+supercell per cell, the same identity as for the SCF (section 24.6). The
+code test compares a $1\times1\times3$ mesh with the tripled cell to
+$10^{-11}$ Ha.
 
 > **Verified equation 24.19** · k-point MP2 is the supercell MP2
 >
@@ -86,6 +178,23 @@ Two periodic facts carry the section:
 >
 > <!-- verified: id=pbc.corr.kdrpa; script=scripts/pbc_kpoint_corr_sympy.py; claim=kdrpa-supercell; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-pbc/src/kcorr.rs::kpoint_drpa; rust_test=ferric-pbc/tests/pbc_kcorr.rs::h2_1x1x3_mesh_is_the_gamma_supercell; registry=pbc-drpa -->
 
+## 24.9.3 A complex response through a real pipeline
+
+**Realification.** $\Pi(q)$ is complex Hermitian, and the Gamma dRPA
+pipeline is real. Write $B_q = X + iY$ and $F$ for the diagonal of
+excitation factors. Then
+$\Pi = BFB^{\mathsf H} = (XFX^{\mathsf T} + YFY^{\mathsf T}) + i(YFX^{\mathsf T} - XFY^{\mathsf T})$.
+Build the real matrix with every excitation duplicated,
+
+$$ B_R = \begin{pmatrix}X & -Y\\ Y & X\end{pmatrix},\qquad
+B_R\begin{pmatrix}F & 0\\ 0 & F\end{pmatrix}B_R^{\mathsf T}
+ = \begin{pmatrix}\operatorname{Re}\Pi & -\operatorname{Im}\Pi\\ \operatorname{Im}\Pi & \operatorname{Re}\Pi\end{pmatrix} . $$
+
+That block matrix is the standard real form of a Hermitian matrix: it has
+the eigenvalues of $\Pi$, each twice. The log-det and the trace both double,
+so $E_q = \tfrac12E[\Pi_R]$, and the complex class goes through the unchanged
+real Gamma pipeline.
+
 > **Verified equation 24.21** · realification
 >
 > For $B_q = X + iY$, the real
@@ -103,6 +212,63 @@ Two periodic facts carry the section:
 >
 > <!-- verified: id=pbc.corr.realify; script=scripts/pbc_kpoint_corr_sympy.py; claim=realify; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-pbc/src/kcorr.rs::drpa_q_realified; rust_test=ferric-pbc/tests/pbc_kcorr.rs::h2_1x1x3_mesh_is_the_gamma_supercell; registry=pbc-drpa -->
 
+The construction is this part of `ferric-pbc/src/kcorr.rs::drpa_q_realified`:
+
+<!-- excerpt: ferric-pbc/src/kcorr.rs::drpa_q_realified -->
+```rust
+    let mut br = Array2::<f64>::zeros((2 * nr, 2 * nc));
+    let mut ed = vec![0.0; 2 * nc];
+    for (j, &c) in order.iter().enumerate() {
+        // Each energy appears twice (Re and Im halves); interleave them so
+        // the doubled list stays ascending too.
+        ed[2 * j] = e[c];
+        ed[2 * j + 1] = e[c];
+        for p in 0..nr {
+            let z = bq[(p, c)];
+            br[(p, 2 * j)] = z.re;
+            br[(p, 2 * j + 1)] = -z.im;
+            br[(nr + p, 2 * j)] = z.im;
+            br[(nr + p, 2 * j + 1)] = z.re;
+        }
+    }
+    let res = drpa_from_b_ov(br, None, &[0.0], &ed, quad_points, Some(budget))?;
+    if !res.eigensolver_converged {
+        return Err(FerricError::General(
+            "kpoint_drpa: static dielectric eigensolve reported non-convergence".into(),
+        ));
+    }
+    Ok(0.5 * res.e_rpa)
+```
+
+| Code | Equation |
+|---|---|
+| `bq` | $B_q$, rows auxiliary, columns excitations |
+| `br` | $B_R$, columns interleaved: $(X; Y)$ then $(-Y; X)$ per excitation |
+| `ed` | the duplicated excitation energies |
+| `0.5 * res.e_rpa` | $E_q = \tfrac12E[\Pi_R]$ |
+
+The columns are interleaved rather than stacked as two blocks; that is a
+column permutation, under which $B_RFB_R^{\mathsf T}$ is unchanged. The
+columns are also sorted by excitation energy before this loop: the energy
+does not depend on the order, but the RPA library's guard reads an
+out-of-order list as a non-canonical basis.
+
+**The second-order term is direct MP2.** Expand
+$\ln\det(1 + \Pi) - \operatorname{tr}\Pi = -\tfrac12\operatorname{tr}\Pi^2 + O(\Pi^3)$.
+With $(ia|jb) = \sum_PB^P_{ia}B^P_{jb}$,
+
+$$ \operatorname{tr}\Pi^2 = 16\sum_{ia,jb}(ia|jb)^2\frac{\Delta_{ia}\Delta_{jb}}{(u^2 + \Delta_{ia}^2)(u^2 + \Delta_{jb}^2)} . $$
+
+The frequency integral is
+$\int_0^\infty e_1e_2/((u^2 + e_1^2)(u^2 + e_2^2))\,du = \pi/(2(e_1 + e_2))$.
+Multiply by $-\tfrac12\cdot\tfrac{1}{2\pi}$:
+
+$$ E^{(2)} = -2\sum_{ia,jb}\frac{(ia|jb)^2}{\Delta_{ia} + \Delta_{jb}}
+ = \sum_{ijab}\frac{2(ia|jb)^2}{\varepsilon_i + \varepsilon_j - \varepsilon_a - \varepsilon_b}, $$
+
+the direct (Coulomb) part of MP2, without the exchange term $-(ib|ja)$. The
+code test computes it with the Gamma MP2 code and compares.
+
 > **Verified equation 24.22** · the second-order dRPA term is direct MP2
 >
 > $\int_0^\infty e_1e_2/((u^2 + e_1^2)(u^2 + e_2^2))\,du = \pi/(2(e_1 + e_2))$,
@@ -119,10 +285,41 @@ Two periodic facts carry the section:
 >
 > <!-- verified: id=pbc.corr.second; script=scripts/pbc_kpoint_corr_sympy.py; claim=drpa-second-order; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-pbc/src/drpa.rs::gamma_drpa; rust_test=ferric-pbc/tests/pbc_drpa.rs::drpa_second_order_term_is_direct_mp2_from_gamma_mp2; registry=pbc-drpa -->
 
-The denominator conversion rests on box 24.7 (section 24.4): `ewald`
-lowers every occupied level by $v_M$ at fixed orbitals.
+**The frequency grid.** The Gamma dRPA integral uses Gauss–Legendre points
+$x \in (-1, 1)$ mapped by $u = u_0(1 + x)/(1 - x)$, $u_0 = 0.5$, which sends
+$x \to 1$ to $u \to \infty$. The default is 40 points
+(`DEFAULT_GAMMA_DRPA_QUAD_POINTS`).
 
-## 24.9.2 The algorithm
+## 24.9.4 The large-cell limit
+
+As the cell grows around one molecule, the periodic MP2 energy should
+approach the molecular one. Which denominators make that happen? The test
+`box_limit_shifted_is_a3_with_the_predicted_coefficient_unshifted_is_1_over_a`
+in `crates/ferric-pbc/tests/pbc_mp2.rs` measures it for H2/STO-3G in cubic
+boxes, against ferric's own canonical molecular MP2, with the dense AFT
+integrals on the periodic side so that the difference is finite-size error
+only:
+
+| box edge $a$ (Bohr) | $E^\text{shifted} - E^\text{mol}$ (Ha) | $E^\text{unshifted} - E^\text{mol}$ (Ha) |
+|---|---|---|
+| 16 | $+1.646\times10^{-4}$ | $-1.980\times10^{-3}$ |
+| 20 | $+8.419\times10^{-5}$ | $-1.589\times10^{-3}$ |
+| 24 | $+4.868\times10^{-5}$ | $-1.321\times10^{-3}$ |
+
+The Madelung-shifted difference falls as $a^{-3}$: the test requires a local
+exponent between 2.8 and 3.3, and the fitted $a^{-3}$ coefficient agrees
+within 1% with a prediction built from molecular quantities only (the
+transition dipole, the occupied orbital's spread and $(ia|ia)$; 0.671). The
+unshifted difference falls as $a^{-1}$. That is the size of $v_M$: the
+`none` occupied levels sit $v_M$ above the `ewald` ones (box 24.7), so each
+denominator $\varepsilon_i + \varepsilon_j - \varepsilon_a - \varepsilon_b$
+is less negative by $2v_M$, and the correlation energy is too negative by an
+amount that falls as $v_M$ does (the test requires a local exponent between
+0.6 and 1.4). The
+Madelung-shifted denominators are the ones that approach the molecule at
+the rate of the integrals.
+
+## 24.9.5 The algorithm
 
 | Step | Gamma | $k$-points |
 |---|---|---|
@@ -149,16 +346,16 @@ The denominator conversion is one match:
 | the requested convention | `denominators` |
 | $v_M$ | `madelung` |
 
-## 24.9.3 Options
+## 24.9.6 Options
 
 | Option | Values | Default | Effect |
 |---|---|---|---|
-| `[cell] denominators`, `denominators=` | `"madelung-shifted"`, `"unshifted"` | none (required) | the occupied orbital energies in the denominators |
+| `[cell] denominators`, `denominators=` | `"shifted"` (`MadelungShifted`), `"unshifted"` | none (required) | the occupied orbital energies in the denominators |
 | `frozen_core` | integer | 0 | core orbitals excluded from correlation |
 | `[cell] quad_points` | positive integer | 40 | dRPA Gauss-Legendre points |
 | `[cell] drpa_energy` | `"quadrature"`, `"plasmon"`, `"second-order"` | `"quadrature"` | the dRPA energy route |
 
-## 24.9.4 Numerical anchors
+## 24.9.7 Numerical anchors
 
 | Quantity | Bar | Test |
 |---|---|---|
@@ -166,8 +363,9 @@ The denominator conversion is one match:
 | momentum, conjugation, Madelung, occupied-$k$ and normalization mutants | each detected | `supercell_anchor_catches_momentum_conj_madelung_occupied_k_and_normalisation_mutants` |
 | Gamma MP2 against PySCF | | `crates/ferric-pbc/tests/pbc_mp2.rs` `h2_sto3g_a4_matches_pinned_pyscf_rmp2` |
 | $k$-point MP2 against PySCF `KMP2`, both `exxdiv` | | `kmp2_h2_1x1x2_matches_pinned_pyscf_kmp2_both_exxdiv` |
+| large-cell limit: shifted $\propto a^{-3}$ with the predicted coefficient, unshifted $\propto a^{-1}$ | coefficient within 1% | `box_limit_shifted_is_a3_with_the_predicted_coefficient_unshifted_is_1_over_a` |
 
-## 24.9.5 Limits
+## 24.9.8 Limits
 
 - Closed shell only on these routes. Open-shell UMP2 and URPA at Gamma are
   library-only.
@@ -176,7 +374,7 @@ The denominator conversion is one match:
 - The $q = 0$ head correction is not implemented, so the energy converges
   with the mesh at the rate of the uncorrected sum.
 
-## 24.9.6 Sources
+## 24.9.9 Sources
 
 | Source | What it gives |
 |---|---|
