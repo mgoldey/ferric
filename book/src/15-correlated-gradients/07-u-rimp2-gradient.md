@@ -3,11 +3,20 @@
 <!-- section: 15.7; status: ready; registry: u-ri-mp2-gradient, u-att-rimp2-gradient, scs-2terfc-gradient;
      theory: crates/ferric-mp2/theory.md#"15. Unrestricted RI-MP2 nuclear gradient", "15.1 Open-shell attenuated (erfc) RI-MP2 gradient", "15.2 Open-shell terfc and SCS-MP2(2terfc) gradients" -->
 
+A radical or a triplet has different numbers of $\alpha$ and $\beta$
+electrons, and on a UHF reference the two spins get different orbitals. When
+a nucleus moves, both sets relax, and they relax together: the $\alpha$
+electrons feel the Coulomb field of the $\beta$ density and the reverse.
 The unrestricted RI-MP2 gradient is the closed-shell Lagrangian of section
 15.2 written once per spin. Two things are new. The opposite-spin amplitudes
 enter both spins' energy weights, and the UHF orbital Hessian couples the two
 spins' Z-vectors through the Coulomb term. Everything else is the closed-shell
 piece built from one spin, with the factor that counted both spins halved.
+
+The section derives the energy weights (15.7.1), the per-spin Lagrangian and
+the coupled Z-vector (15.7.2) and the assembly (15.7.3), checks the
+closed-shell limit (15.7.4), and then extends the result to the attenuated
+kernels (15.7.6–15.7.7).
 
 | Symbol | Meaning | Code name |
 |---|---|---|
@@ -34,8 +43,21 @@ $t^{\alpha\beta}_{iJaB} = -(ia|JB)/\Delta_{iJ}^{aB}$, at fixed orbital energies
 
 $$ x^\alpha_{P,ia} = \sum_{jb}t^{\alpha\alpha}_{ijab}B^\alpha_{P,jb} + \sum_{JB}t^{\alpha\beta}_{iJaB}B^\beta_{P,JB}, \qquad x^\beta_{P,JB} = \sum_{KC}t^{\beta\beta}_{JKBC}B^\beta_{P,KC} + \sum_{ia}t^{\alpha\beta}_{iJaB}B^\alpha_{P,ia} . \tag{15.12} $$
 
-The $\alpha\beta$ block appears in both weights. $E^{(2)}$ is homogeneous of
-degree 4 in $B$, so $\sum_\sigma B^\sigma\cdot x^\sigma = 2E^{(2)}$.
+The $\alpha\beta$ block appears in both weights: an opposite-spin pair
+$(i\alpha, J\beta)$ depends on $B^\alpha$ through the $ia$ half of $(ia|JB)$
+and on $B^\beta$ through the $JB$ half, so differentiating it gives one term in each spin's weight.
+Same-spin pairs contribute only to their own spin.
+
+A consistency check follows from the degree. $E^{(2)}$ is homogeneous of
+degree 4 in $B$: each term is an integral times an amplitude, each amplitude
+is linear in the integrals, and each integral is quadratic in $B$. Euler's
+theorem gives
+$\sum_\sigma B^\sigma\cdot\partial E^{(2)}/\partial B^\sigma = 4E^{(2)}$, and
+with $\partial E^{(2)}/\partial B^\sigma = 2x^\sigma$,
+$\sum_\sigma B^\sigma\cdot x^\sigma = 2E^{(2)}$. In the closed-shell limit
+$B^\sigma = B$ and $x^\sigma = x$, and the identity becomes
+$B\cdot x = E^{(2)}$, the relation section 15.5.2 uses.
+
 `u_energy_weights` builds $x^\alpha$ one occupied $i$ at a time from
 $t^{\alpha\alpha}_{i\cdot\cdot\cdot}$ and $t^{\alpha\beta}_{i\cdot\cdot\cdot}$, and
 $x^\beta$ one $J$ at a time from $t^{\beta\beta}_{J\cdot\cdot\cdot}$ and the
@@ -71,13 +93,18 @@ weight of both spins; one spin's weight is half of it:
 out.push(0.5 * crate::zvector::build_imat_ri(x, &b_full, &spins[s].orb));
 ```
 
-The Z-vector couples the spins through Coulomb only:
+Why one half? In the closed-shell $I$ of (15.6) the factor 2 counts the two
+spins of a doubly occupied orbital; a spin orbital is singly occupied.
+
+The Z-vector couples the spins through Coulomb only. A rotation in spin
+$\sigma$ changes $D^\sigma$; the Coulomb potential of that change acts on
+both spins, while exchange acts only between electrons of the same spin:
 
 $$ (\varepsilon^\sigma_a - \varepsilon^\sigma_i)\,z^\sigma_{ai} + \big[C_\sigma^{\mathsf T}\big(J[D^{z,\alpha} + D^{z,\beta}] - K[D^{z,\sigma}]\big)C_\sigma\big]_{ai} = -X^\sigma_{ai}, \qquad D^{z,\sigma} = C_{v\sigma}z^\sigma C_{o\sigma}^{\mathsf T} + \text{h.c.} \tag{15.14} $$
 
 $i$ runs over every occupied orbital, frozen or not. `solve_u_zvector`
 starts from $z^\sigma = -X^\sigma/(\varepsilon_a - \varepsilon_i)$, iterates the
-pair with one DIIS, and stops at $\max|r| < 10^{-8}$; 50 iterations without
+pair with one DIIS of eight vectors, and stops at $\max|r| < 10^{-8}$; 50 iterations without
 convergence, or a gap $\varepsilon_a - \varepsilon_i \le 10^{-12}$, is an error.
 Before each $J/K$ build the pair is scaled by the power of two that brings
 $\max|z|$ into $(\tfrac12, 1]$, so the screening sees a unit-scale density;
@@ -142,11 +169,15 @@ The model covers the RI terms at the MO level; the AO bookkeeping of
 
 ## 15.7.4 The closed-shell limit
 
-For $\alpha \equiv \beta$: $t^{\alpha\alpha} = t - \bar t$ and
+Set the two spins' orbitals equal and every piece must reduce to the
+restricted one. For $\alpha \equiv \beta$: $t^{\alpha\alpha} = t - \bar t$ and
 $t^{\alpha\beta} = t$, so $x^\sigma$ is the closed-shell $x$; $I^\sigma = I/2$,
 $P^\alpha + P^\beta = P + P^{\mathsf T}$, $X^\sigma = X/2$, $z^\sigma = z/2$,
 $U$ is the closed-shell bilinear form, and the two weight-1 RI channels sum to
-the closed-shell weight-2 channel. A closed-shell RHF written as a UHF gives
+the closed-shell weight-2 channel. In the coupled Z-vector equation the opposite-spin Coulomb term
+$J[D^{z,\alpha} + D^{z,\beta}]$ with $z^\sigma = z/2$ is $J$ of the closed-shell
+$D^z$, so dropping it would break this limit; the runner's mutation that
+drops it turns part G red. A closed-shell RHF written as a UHF gives
 the restricted gradient on both $J/K$ routes
 (`closed_shell_limit_matches_restricted_four_centre`,
 `closed_shell_limit_matches_restricted_rijk`, and the frozen-core variant).

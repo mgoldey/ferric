@@ -3,11 +3,17 @@
 <!-- section: 15.4; status: ready; registry: ks-zvector;
      theory: crates/ferric-scf/theory.md#"Kohn-Sham Z-vector for post-SCF corrections" -->
 
-A correction computed after a Kohn–Sham SCF, such as a many-body dispersion
-energy evaluated from the converged density, depends on the orbitals and
-needs the same orbital relaxation term as a correlated method. ferric
-provides it as one module, `ferric_scf::zvector_ks`, for RKS, UKS and ROKS
-references. Its only production caller is the MBD@rsSCS gradient. The
+A many-body dispersion energy evaluated from a converged Kohn–Sham density
+has the same problem as MP2 on Hartree–Fock orbitals. It depends on the
+orbitals through the density, but the orbitals were chosen to minimize the
+Kohn–Sham energy, not the dispersion energy. When a nucleus moves, the
+orbitals relax, the density changes, and the dispersion energy changes with
+it at first order. Its gradient needs the same orbital relaxation term as a
+correlated method, with the Kohn–Sham orbital Hessian in place of the
+Hartree–Fock one.
+
+ferric provides it as one module, `ferric_scf::zvector_ks`, for RKS, UKS and
+ROKS references. Its only production caller is the MBD@rsSCS gradient. The
 derivation is `crates/ferric-scf/theory.md`, "Kohn-Sham Z-vector for post-SCF
 corrections", and the proof is `scripts/ks_zvector_sympy.py`.
 
@@ -27,29 +33,78 @@ corrections", and the proof is `scripts/ks_zvector_sympy.py`.
 
 ## 15.4.1 The equations
 
+### The split
+
 The total derivative splits into a fixed-orbital part, which the caller
 supplies, and the relaxation:
 
 $$ \frac{dQ}{dR} = \frac{\partial Q}{\partial R}\bigg|_{\text{occupied orbitals fixed}} + \sum_{ai}Z_{ai}\frac{\partial F_{ai}}{\partial R}, \qquad H Z = -4V_{vo}, \quad V_{vo} = \mathbf C_v^{\mathsf T}V\mathbf C_o . \tag{15.10} $$
 
 "Fixed" means the occupied orbitals follow their basis functions and stay
-orthonormal, $\delta\mathbf C_o = -\tfrac12\mathbf C_o S^x_{oo}$. The factor 4
-is the closed-shell convention: a rotation $\kappa$ changes the density by
-$2\mathbf C(\kappa + \kappa^{\mathsf T})\mathbf C^{\mathsf T}$, so
-$dQ = 4\sum\kappa_{ai}V_{ai}$.
+orthonormal, $\delta\mathbf C_o = -\tfrac12\mathbf C_o S^x_{oo}$, and the
+virtual space follows as the orthogonal complement. Along that path the
+Brillouin condition is not kept, so the orbitals must also rotate by some
+$\kappa^x$, and that rotation is what the relaxation term accounts for.
 
-**The contraction without new derivative integrals.** Because
-$F_{ai} = \tfrac14\partial E/\partial\kappa_{ai}$,
+Where does the factor 4 come from? It is the closed-shell occupation. A
+rotation $\kappa$ changes the density $D = 2\mathbf C_o\mathbf C_o^{\mathsf T}$
+by $2\mathbf C(\kappa + \kappa^{\mathsf T})\mathbf C^{\mathsf T}$, where
+$\kappa + \kappa^{\mathsf T}$ has $\kappa_{ai}$ in both off-diagonal corners.
+Contract with the symmetric $V$: $dQ = \operatorname{Tr}[V\,\delta D] = 4\sum\kappa_{ai}V_{ai}$.
+The same count gives $dE = 4\sum\kappa_{ai}F_{ai}$. Then the argument of
+15.1.1, with $\partial Q/\partial\kappa = 4V_{vo}$ and $H$ symmetric, gives
+$HZ = -4V_{vo}$.
+
+### The Hessian and $f_{xc}$
+
+The Hessian product applied to a trial $x$ is
+
+$$ (Hx)_{ai} = (F_{vv}x - xF_{oo})_{ai} + \big(\mathbf C_v^{\mathsf T}\,\delta F[\delta D(x)]\,\mathbf C_o\big)_{ai}, \qquad \delta F[\delta D] = \delta J - \tfrac12\big(c_{\mathrm{sr}}\delta K_{\mathrm{sr}} + c_{\mathrm{lr}}\delta K_{\mathrm{lr}}\big) + \delta V_{xc} . $$
+
+The first term is the orbital-energy difference in a non-canonical
+representation. The second is the response of the Kohn–Sham Fock matrix to
+the density change: the Coulomb response, the exact-exchange response scaled
+by the functional's short- and long-range fractions, and the XC response
+$\delta V_{xc}$. For a closed shell $\delta V_{xc}$ is the spin kernel
+$f_{xc}$ applied to $\delta D_\alpha = \delta D_\beta = \tfrac12\delta D$. The
+$f_{xc}$ term is what distinguishes this Hessian from the Hartree–Fock one of
+section 15.1. It carries the second derivative of the XC functional, so the
+kernel for a GGA includes the $\sigma = |\nabla\rho|^2$ couplings and the
+kernel for a τ-only meta-GGA the $\tau$ couplings.
+
+### The contraction without new derivative integrals
+
+The relaxation term needs $\partial F_{ai}/\partial R$, which would normally
+need new derivative integrals. The code avoids them. Since
+$F_{ai} = \tfrac14\partial E/\partial\kappa_{ai}$, contract with $Z$ and
+exchange the order of the two derivatives. The derivative along $Z$ is a
+derivative in $t$ at orbitals rotated by $tZ$, and the nuclear derivative of
+$E$ along the fixed path is the ordinary SCF gradient expression $g(D, W)$:
 
 $$ \sum_{ai}Z_{ai}\frac{\partial F_{ai}}{\partial R} = \frac14\,\frac{d}{dt}\,g\big(D(t),\; W + t\,\dot W\big)\Big|_{t=0}, \qquad \delta D_Z = 2(\mathbf C_vZ\mathbf C_o^{\mathsf T} + \mathbf C_oZ^{\mathsf T}\mathbf C_v^{\mathsf T}), \tag{15.11} $$
 
 with $\dot D(0) = \delta D_Z$, $\dot W = \tfrac12(\delta D_ZFD + DF\delta D_Z + D\,\delta F\,D)$ and
-$\delta F$ the response Fock matrix of $\delta D_Z$. The code takes a central
-difference in $t$ of the SCF gradient routine itself, with $D(t)$ built from
-occupied orbitals rotated by $tZ$ and re-orthonormalized (an exact
-projector). That projector has an odd $t^3$ term, so the central difference
-carries an $O(t^2)$ error in every part of $g$, not only the XC part; at the
-chosen step, $t\max|\delta D_Z| = 10^{-4}$, it is about $10^{-8}$ relative.
+$\delta F$ the response Fock matrix of $\delta D_Z$. $\dot W$ is the
+derivative of $W = \tfrac12DFD$ by the product rule. $g$ is linear in $W$, so
+$W + t\dot W$ is exact to the order needed.
+
+The code takes a central difference in $t$ of the SCF gradient routine
+itself, with $D(t)$ built from occupied orbitals rotated by $tZ$ and
+re-orthonormalized:
+
+$$ D(t) = 2\,\mathbf C_o(t)\mathbf C_o(t)^{\mathsf T}, \qquad \mathbf C_o(t) = (\mathbf C_o + t\,\mathbf C_vZ)\,(\mathbf 1 + t^2Z^{\mathsf T}Z)^{-1/2} . $$
+
+That is an exact projector, positive semidefinite, which the fitted-exchange
+gradient needs; $D \pm t\,\delta D_Z$ is not. The projector has an odd $t^3$
+term, $-t^3(\mathbf C_vZZ^{\mathsf T}Z\mathbf C_o^{\mathsf T} + \text{h.c.})$, from
+the $(\mathbf 1 + t^2Z^{\mathsf T}Z)^{-1/2}$ factor, and its even $t^2$ term
+enters the bilinear two-electron part. So the central difference carries an
+$O(t^2)$ error in every part of $g$, not only the XC part. At the chosen
+step, $t\max|\delta D_Z| = 10^{-4}$ (`T_SCALE`), it is about $10^{-8}$
+relative.
+
+The contraction uses the same routine, $J/K$ route and XC grid response as
+the SCF gradient, so it differentiates exactly the energy the SCF converged.
 
 <!-- excerpt: ferric-scf/src/zvector_ks.rs::relaxation_gradient_closed -->
 ```rust
@@ -62,8 +117,19 @@ let rhs = -4.0 * cv.t().dot(v_ao).dot(&co);
 | $V$ | `v_ao` |
 | $\mathbf C_v, \mathbf C_o$ | `cv`, `co` |
 
-The contraction (15.11) is returned as `0.25 * (&gp - &gm) / (2.0 * t)`,
-with `gp` and `gm` the SCF gradient expression at $\pm t$.
+After the solve, the contraction is three lines of the same function:
+
+<!-- excerpt: ferric-scf/src/zvector_ks.rs::relaxation_gradient_closed -->
+```rust
+let gp = g_at(1.0)?;
+let gm = g_at(-1.0)?;
+0.25 * (&gp - &gm) / (2.0 * t)
+```
+
+| Code | Equation |
+|---|---|
+| `g_at(±1.0)` | $g\big(D(\pm t), W \pm t\dot W\big)$ from `ks_gradient_closed_for_density` |
+| `0.25 * (&gp - &gm) / (2.0 * t)` | $\tfrac14$ times the central difference of (15.11) |
 
 > **Verified equation 15.10** · the Z-vector relaxation term
 >
@@ -83,6 +149,10 @@ with `gp` and `gm` the SCF gradient expression at $\pm t$.
 >
 > <!-- verified: id=ks.zvector; script=scripts/ks_zvector_sympy.py; claim=Z1; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/zvector_ks.rs::relaxation_gradient_closed; rust_test=ferric-rpa/tests/mbd_scf_gradient.rs::mbd_exact_gradient_matches_fd_of_full_scf_pipeline; registry=ks-zvector -->
 
+The limit in the box's last sentence is the exactness anchor: with
+$Q = E_{\mathrm{SCF}}$, $V_{vo} = F_{vo} = 0$ at convergence, so $Z = 0$ and
+the caller's part alone is the SCF gradient.
+
 > **Verified equation 15.11** · the contraction by a central difference
 >
 > $\tfrac14[g(+t) - g(-t)]/(2t)$ at the rotated projector and $W + t\dot W$
@@ -97,6 +167,27 @@ with `gp` and `gm` the SCF gradient expression at $\pm t$.
 > | Code | `ferric-scf/src/zvector_ks.rs::relaxation_gradient_closed` |
 >
 > <!-- verified: id=ks.zvector.contraction; script=scripts/ks_zvector_sympy.py; claim=Z2; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/zvector_ks.rs::relaxation_gradient_closed; rust_test=ferric-rpa/tests/mbd_scf_gradient.rs::mbd_exact_gradient_matches_fd_of_full_scf_pipeline; registry=ks-zvector -->
+
+### Open shells
+
+The occupation factor changes with the reference. UKS has unit occupations,
+so a rotation in spin $\sigma$ changes $D_\sigma$ by
+$\mathbf C_{\sigma v}x^\sigma\mathbf C_{\sigma o}^{\mathsf T} + \text{h.c.}$ and
+$dE = 2\sum_\sigma\kappa^\sigma\cdot F^\sigma_{vo}$. The right-hand side is
+$-2V^\sigma_{vo}$ per spin and the contraction factor is $\tfrac12$. The two
+spins couple through $\delta J$ of the total density change; $\delta K$ and
+$f_{xc}$ are spin-resolved. For $\alpha = \beta$ each spin block is half the
+closed-shell $Z$ and the relaxation is the RKS one.
+
+ROKS has one set of orbitals split into closed, open and virtual blocks.
+Three rotation blocks change the densities: $\kappa_{vc}$ moves both spins,
+$\kappa_{vo}$ only $\alpha$, $\kappa_{oc}$ only $\beta$. Since $\kappa_{vc}$
+moves both spins of $D_{\mathrm{total}}$, its block of the right-hand side
+carries the closed-shell factor 4 and the other two carry 2. The fixed path
+re-orthonormalizes closed and open orbitals as one set, which gives the
+caller's part a closed–open cross term,
+$\delta D^{\mathrm{fix}}_\beta = -P_cS^xP_c - \tfrac12(P_oS^xP_c + P_cS^xP_o)$.
+That cross term is part of the derivative because $V_{co} \ne 0$.
 
 > **Verified equations 15.10 and 15.11, open shell** · the UKS and ROKS blocks
 >
@@ -118,13 +209,20 @@ with `gp` and `gm` the SCF gradient expression at $\pm t$.
 ## 15.4.2 The solver
 
 Preconditioned conjugate gradient with the orbital-energy gap as
-preconditioner, converged when $\max|r| \le 10^{-10}\max|\mathrm{rhs}|$,
-with an error after 200 iterations. When the curvature along a search
-direction is numerically zero, the solve is accepted only if the residual is
-already below $10^{-8}\max|\mathrm{rhs}|$, and is an error otherwise. The
-Hessian product uses the same $J$, $K$ and XC kernel routes as the SCF (RI-J,
-fitted or COSX exchange, LDA, GGA, hybrid, range-separated hybrid and τ-only
-meta-GGA kernels).
+preconditioner, started from $\mathrm{rhs}/\mathrm{gap}$, converged when
+$\max|r| \le 10^{-10}\max|\mathrm{rhs}|$, with an error after 200
+iterations. A non-positive gap is refused: the reference is then not an
+aufbau minimum. When the curvature along a search direction is numerically
+zero, the solve is accepted only if the residual is already below
+$10^{-8}\max|\mathrm{rhs}|$, and is an error otherwise.
+
+The Hessian product uses exact four-center $J$ and $K$ even when the SCF
+fitted them, with the XC kernel $f_{xc}$ for LDA, GGA, hybrid,
+range-separated hybrid and τ-only meta-GGA functionals. The contraction
+(15.11) uses the SCF's own route (RI-J, fitted or COSX exchange). The
+response operator is linear, so it is applied to $\delta D/\max|\delta D|$
+and rescaled: the $J/K$ builders screen against an absolute threshold, and
+the trial densities are small.
 
 | Reference | Rotations | Right-hand side | Contraction factor |
 |---|---|---|---|
@@ -132,9 +230,11 @@ meta-GGA kernels).
 | UKS | $vo$ per spin, coupled through $\delta J$ of the total density | $-2V_{vo}$ per spin | $\tfrac12$ |
 | ROKS | $vc$, $vo$, $oc$ | $-(4V_{vc}, 2V_{vo}, 2V_{oc})$ | $\tfrac12$ |
 
-For a linear ²Π radical the Hessian has a null mode (rotation about the
-molecular axis mixes the degenerate orbitals); the open-shell solvers detect
-it and project it out.
+For a linear ²Π radical the Hessian has a null mode: rotation about the
+molecular axis mixes the degenerate orbitals without changing the energy.
+The open-shell solvers detect it and project it out. The closed-shell solve
+has no such projection, so a closed-shell reference with a near-null mode
+ends in the curvature error.
 
 ## 15.4.3 Refused inputs
 
@@ -168,9 +268,10 @@ pipeline.
 
 The relaxation term alone (of size $10^{-6}$ to $10^{-5}$ Ha/Bohr on these
 systems) agrees with the difference of the relaxed and unrelaxed finite
-differences to $\le 3.5\times10^{-9}$ (RKS). Run through the UKS or ROKS
-path, a closed shell reproduces the RKS gradient to $3.0\times10^{-14}$ and
-$2.7\times10^{-14}$.
+differences to $\le 3.5\times10^{-9}$ (RKS). The relaxation is two to
+three orders of magnitude larger than that agreement, so the tests resolve
+it. Run through the UKS or ROKS path, a closed shell reproduces
+the RKS gradient to $3.0\times10^{-14}$ and $2.7\times10^{-14}$.
 
 ## 15.4.5 Sources
 
