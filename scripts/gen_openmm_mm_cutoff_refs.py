@@ -16,7 +16,7 @@ same explicit-parameter OpenMM `System` with `NonbondedForce` set to
               (several 1-4 pairs lie beyond the cutoff)
 
 Before writing, every case is re-evaluated by an independent numpy model of
-the form ferric implements (theory.md section 8): non-exception pairs with
+the form ferric implements (`book/src/23-embedding/04-molecular-mechanics.md#molecular-mechanics-opt-nonbonded-cutoff`): non-exception pairs with
 r < r_c get reaction-field Coulomb q_i q_j (1/r + k_rf r^2 - c_rf) and LJ
 times the switching function; 1-2/1-3 exceptions contribute nothing; 1-4
 exceptions are plain scaled Coulomb + LJ at every distance (no cutoff, no

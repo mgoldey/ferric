@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Sympy/numpy checks of the analytic RI-dRPA gradient (gradient_analytic.rs).
 
-Theory and notation: crates/ferric-rpa/theory.md, section "Analytic nuclear
-gradient (closed-shell RI-dRPA, HF reference)" and its subsections. Every
+Theory and notation: `book/src/15-correlated-gradients/05-rpa-gradient.md#rpa-gradient` and its subsections. Every
 check prints "FAIL [<name>]" when it fails, and the script exits nonzero if
 any did.
 

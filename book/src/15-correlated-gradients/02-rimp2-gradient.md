@@ -22,16 +22,15 @@ the attenuated kernels (@sec:rimp2-gradient-attenuated-erfc-ri-mp2).
 
 | Symbol | Meaning | Code name |
 |---|---|---|
-| $t_{ij}^{ab}$ | $(ia\vert jb)/\Delta_{ij}^{ab}$, with $\Delta_{ij}^{ab} = \varepsilon_i + \varepsilon_j - \varepsilon_a - \varepsilon_b$ as written in `theory.md` | `t2` |
+| $t_{ij}^{ab}$ | $(ia\vert jb)/\Delta_{ij}^{ab}$, with $\Delta_{ij}^{ab} = \varepsilon_i + \varepsilon_j - \varepsilon_a - \varepsilon_b$ | `t2` |
 | $\tilde T$ | amplitude weight, $2t - \bar t$ for MP2 | |
 | $x^P_{ia}$ | $\sum_{jb}\tilde T_{ij}^{ab}B^P_{jb}$ | `x_ov` |
 | $P_{ij}, P_{ab}$ | unrelaxed occupied and virtual densities | `p_oo`, `p_vv` |
 | $I$ | Lagrangian matrix | `imat` |
 | $G[D]$ | $J[D] - \tfrac12K[D]$, four-center or fitted | |
 
-The denominator sign follows `crates/ferric-mp2/theory.md`, where $\Delta$
-is negative; the book's positive-gap convention (chapter @sec:mp2) is the negative
-of it. With this sign $t$ is positive where $(ia|jb)$ is negative, and
+In this section $\Delta$ is negative; the book's positive-gap convention
+(chapter @sec:mp2) is the negative of it. With this sign $t$ is positive where $(ia|jb)$ is negative, and
 $E^{(2)} = \sum K\tilde T$ with $K_{ij}^{ab} = (ia|jb)$ is negative.
 
 | Entry point | Location |
@@ -727,11 +726,11 @@ checked only by the Rust tests above and those of section
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-mp2/theory.md`, sections 9, 9.1, 9.2, 9.4, 9.5 | the derivation, the fitted-term table, the RI-JK shift measurements |
+| section @sec:lagrangian-zvector-z-vector-equation-ferric | the Z-vector equation the derivation starts from |
 | `scripts/mp2_gradient_sympy.py`, parts G and S | the proofs |
 | `scripts/att_rimp2_gradient_sympy.py` | the erfc chain rule, the $\omega \to 0$ limit, the operator split |
 | `scripts/terfc_rimp2_gradient_sympy.py` | the terfc closed forms and derivatives vs $k$-space quadrature, the Hermite derivative, the operator split, the $r_0 \to 0$ limit |
-| PySCF `grad/mp2.py` | the convention the right-hand side follows (cited in `theory.md`) |
+| PySCF `grad/mp2.py` | the convention the right-hand side follows |
 | F. Weigend, M. Kattannek and R. Ahlrichs, *J. Chem. Phys.* **130**, 164106 (2009) | the RI-K gradient of the fitted separable term |
 
 **Known limits (2026-11-16).** The functions of this section are closed

@@ -524,7 +524,6 @@ options and always use the all-pairs sum.
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-mm/theory.md` | all of @sec:molecular-mechanics-bonds-angles-torsions to @sec:molecular-mechanics-opt-nonbonded-cutoff |
 | `scripts/mm_dihedral_gradient_sympy.py`, `scripts/mm_cutoff_sympy.py` | the dihedral and angle gradients, the cutoff identities |
 | `crates/ferric-mm/tests/vs_openmm.rs`, `crates/ferric-mm/tests/validation_mm.rs`, `crates/ferric-mm/tests/cutoff.rs`, `crates/ferric-mm/tests/terms_fd.rs`, `crates/ferric-mm/tests/ring_exclusions.rs` | OpenMM comparisons, FD, and the ring rule |
 

@@ -209,9 +209,7 @@ $u_0$ is configured.
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-rpa/theory.md`, "Imaginary-frequency quadratures" | the maps, their Jacobians, the exactness statements |
 | `scripts/rpa_quadrature_sympy.py`, claims Q1 to Q6 | the proof |
-| `crates/ferric-quadrature/theory.md`, "2. Imaginary-Frequency Grids for RPA" | the three maps, the largest-node formula, the Laplace fallback counts |
 | `crates/ferric-rpa/src/config.rs` | the defaults table |
 
 **Known limits (2026-11-15).** No grid adapts to the orbital-energy range of

@@ -36,6 +36,5 @@ parameter $\omega$ does not appear. PDEP modes are $\xi, \eta$. Orbital
 energies on the mean-field reference are $\epsilon_p$, and quasiparticle
 energies are $\epsilon_p^{\rm QP}$. Units are Hartree atomic units.
 
-The terse reference for every equation is `crates/ferric-gw/theory.md`. The
-sections here derive the same equations step by step, and the
-verified-equation boxes tie both to the sympy proofs and the code.
+The sections of this chapter derive the equations step by step, and the
+verified-equation boxes tie them to the sympy proofs and the code.

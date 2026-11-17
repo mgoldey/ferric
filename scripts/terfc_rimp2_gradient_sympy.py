@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Proofs of the terfc-attenuated RI-MP2 nuclear-gradient identities ferric codes.
 
-Theory: crates/ferric-mp2/theory.md, "9.5 terfc-attenuated RI-MP2 gradient";
-crates/ferric-integrals/theory.md, "Derivative integrals of terf and terfc".
+Theory: `book/src/15-correlated-gradients/02-rimp2-gradient.md#rimp2-gradient`;
+`book/src/04-operators/02-terf-table-engine.md#terf-table-engine-derivative-integrals`.
 Code: crates/ferric-integrals/shim/shim.cc (compute_cart_eri3_deriv,
 compute_cart_eri2_deriv, hermite_deriv_first, md_kernel_R);
 crates/ferric-integrals/src/engine.rs (Engine::new_3center_deriv /

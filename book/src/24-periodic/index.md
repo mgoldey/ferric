@@ -32,8 +32,7 @@ $D = 2C_oC_o^{\mathsf H}$ and $F = h + J - \tfrac12K$.
 
 Each section derives its equations, checks them in a limit (independence of
 the Ewald split, the Gamma point, the large cell that approaches the
-molecule) and then shows the code and the tests. The equations are also
-collected in `crates/ferric-pbc/theory.md`. The user guide is
+molecule) and then shows the code and the tests. The user guide is
 `site/src/methods/pbc.md`.
 
 **Known limits (2026-11-15).** Three-dimensional periodicity only: no slabs,

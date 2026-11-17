@@ -299,7 +299,6 @@ allocated.
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-ci/theory.md`, "Direct sigma" | the split, the tables, the three contractions, cost and memory |
 | Knowles and Handy, CPL 111, 315 (1984); Olsen, Roos, Jørgensen and Jensen, JCP 89, 2185 (1988) | the string-driven direct CI |
 | `scripts/ci_rdm_casscf_gradient_sympy.py` | `sigma-split` |
 

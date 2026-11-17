@@ -290,7 +290,7 @@ The reciprocal sum and the two constants, from
 
 ## Numerical anchors {#ewald-numerical-anchors}
 
-From the tests named in `crates/ferric-pbc/theory.md` §1.
+From the tests named in section @sec:ewald-ewald-sum-independence.
 
 | Quantity | Reference | Bar | Test |
 |---|---|---|---|
@@ -303,7 +303,6 @@ From the tests named in `crates/ferric-pbc/theory.md` §1.
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-pbc/theory.md`, §1 | the sum, its $\eta$-independence, the gradient |
 | `scripts/pbc_ewald_pairft_stress_sympy.py`, part S1 | the proof |
 | P. P. Ewald, *Ann. Phys.* **369**, 253 (1921) | the method |
 | `site/src/methods/pbc.md` | the user guide |

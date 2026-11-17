@@ -546,8 +546,7 @@ fixed-lattice term to every atom (lattice). The density itself relaxes
 solve the Kohn–Sham Z-vector with $\mathbf V$ as the right-hand side. The
 first four terms, without the relaxation, are returned as the result field
 `gradient_unrelaxed`. MBD depends on the total density, so both spins see the same
-$\mathbf V$. The Z-vector derivation is in `crates/ferric-scf/theory.md`,
-"Kohn-Sham Z-vector for post-SCF corrections". A reference the Z-vector does
+$\mathbf V$. The Z-vector derivation is section @sec:ks-zvector. A reference the Z-vector does
 not support is an error; no unrelaxed gradient is returned as the exact
 one.
 
@@ -658,7 +657,6 @@ nuclear gradient" and "TS C6 and MBD@TS"):
 
 | Source | Used for |
 |---|---|
-| `crates/ferric-rpa/theory.md`, "Many-body dispersion (MBD@rsSCS)" | (@eq:mbd-1)–(@eq:mbd-10), the SCF gradient terms |
 | `crates/ferric-rpa/src/dispersion/mbd_rsscs.rs` (module doc and loops) | (@eq:mbd-1)–(@eq:disp-mbd-adjoint-seed) |
 | `crates/ferric-rpa/src/dispersion/mbd_scf.rs` (module doc) | the SCF gradient terms |
 | `crates/ferric-rpa/src/dispersion/mbd.rs` | (@eq:mbd-10) |
@@ -666,8 +664,7 @@ nuclear gradient" and "TS C6 and MBD@TS"):
 | `site/src/reference/validation.md` | anchors |
 
 Changes from the sources: the code and its docs write the imaginary frequency
-as $u$ (MBD) and $\omega$ (`mbd.rs`); this section writes $u$ throughout.
-theory.md marks the screened quantities with a tilde; this section writes
-the superscript rsSCS. The doc comment of `dipole_coupling_tensor` states
+as $u$ (MBD) and $\omega$ (`mbd.rs`); this section writes $u$ throughout,
+and marks the screened quantities with the superscript rsSCS. The doc comment of `dipole_coupling_tensor` states
 the tensor with the opposite overall sign to the loop; (@eq:disp-mbd-dipole-tensor) follows the
 loop, which agrees with `t_gg`.

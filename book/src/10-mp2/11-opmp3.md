@@ -295,7 +295,6 @@ pins an end-to-end OP-MP3 total against an independent code.
 
 | Source | Used for |
 |---|---|
-| `crates/ferric-mp2/theory.md`, "6.2 Orbital-partitioned Padé MP3 (OP-MP3)" | equations @eq:opmp3-w-trace–@eq:opmp3-5 |
 | Bystrom, Berkelbach and Hait, arXiv:2609.25330 | the method, Eqs. 11a, 13, 14, 18–22, the $x_{ss}$ table |
 | `crates/ferric-mp2/src/opmp3.rs`, `opmp3_reference.rs`, `opmp3_driver.rs` | implementation |
 | `scripts/opmp3_identities_sympy.py` | proofs |

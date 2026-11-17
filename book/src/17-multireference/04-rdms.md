@@ -314,7 +314,6 @@ at $3.9\times10^{-2}$).
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-ci/theory.md`, "Reduced density matrices", "NEVPT RDMs" | definitions, construction, cost and memory |
 | PySCF `fci.direct_spin1.make_rdm12`, `fci.rdm.make_dm1234`, `mrpt.nevpt2` | the conventions matched |
 | `scripts/ci_rdm_casscf_gradient_sympy.py` | `rdm-energy`, `rdm-identities` |
 

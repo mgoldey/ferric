@@ -24,8 +24,7 @@ The transform to $\tilde{\mathbf B}$ is the expensive step of both kernels.
 The driver (`rs_mp2_lr_rpa_scan`; `rs_mp2_lr_rpa` is its one-point case)
 builds each operator's tensor once and hands it to every kernel that needs
 that operator. Every term of (B) and (T) is a functional of one kernel
-(theory: `crates/ferric-rpa/theory.md`, "Range-separated MP2 + RPA: which
-terms depend on $\omega$"), so the Coulomb tensor does not depend on
+(section @sec:shared-intermediates-transform-per-operator-omega), so the Coulomb tensor does not depend on
 $\omega$ and is built once per run, not once per point.
 
 | Stage | Tensor | Used for | Built |

@@ -17,7 +17,7 @@ The section derives the local fit (@sec:integral-direct-domain-local-fit), walks
 the truncation each locality map makes (@sec:integral-direct-algorithm-each-map-truncates), and then states the
 exactness anchor, the cost of the stages and what is measured.
 
-The derivation is `crates/ferric-mp2/theory.md` §12.4. The construction is
+The construction is
 also documented in the module header of `crates/ferric-mp2/src/lmp2_direct.rs`
 and in the user guide. The fit identities are machine-checked below. The
 locality maps are definitions, not equations, and the trivial-limit tests

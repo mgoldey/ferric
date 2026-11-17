@@ -252,5 +252,4 @@ the `dftd3` package's rows equal the cited parameters.
 |---|---|
 | `crates/ferric-mp2/src/double_hybrid.rs` | parameters, reference check, the RKS and UKS drivers |
 | `site/src/reference/validation.md`, rows `b2plyp` and `dsd-pbep86` and the UKS / D3(BJ) row | grades, anchors |
-| `crates/ferric-mp2/theory.md`, "16. Double hybrids" | the energy, the parameter tables, the D3(BJ) term, the unrestricted assembly, the plain-MP2 limit |
 | `scripts/double_hybrid_sympy.py` | claims P, E, U and D |

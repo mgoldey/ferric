@@ -192,7 +192,6 @@ Unlike `ccd`, whose stopping threshold is fixed, `linlccd` reads
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-cc/theory.md`, "LinLCCD and LinLCCD(hh)" | the equations and both solvers |
 | Carter-Fenk, JPCA 129, 7251 (2025), eqs. 7 and 14 | the method and the hh truncation |
 | `scripts/cc_triples_weights_and_linlccd_spin_adaptation_sympy.py` | claim 6 |
 

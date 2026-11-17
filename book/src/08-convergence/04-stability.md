@@ -235,6 +235,5 @@ the external channel, which would need the triplet XC kernel.
 
 | Source | Used for |
 |---|---|
-| `crates/ferric-scf/theory.md`, "SCF stability analysis" | the operators |
 | `scripts/scf_orbital_hessian_sympy.py` | verified equation @eq:scf-stability-channels |
 | `site/src/reference/validation.md` | the anchors |

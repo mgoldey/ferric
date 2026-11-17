@@ -333,8 +333,8 @@ is $1/(\sqrt2 \times 1.05)$.
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-mp2/theory.md`, "4. Spin-component scaling" | the terfc kernel, (@eq:op-terf-curvature-constraint) and its root |
-| `crates/ferric-mp2/theory.md`, "5. Attenuated MP2" | units, the range-split cross term |
+| section @sec:scs-and-kappa-scs-mp2 | the terfc kernel, (@eq:op-terf-curvature-constraint) and its root |
+| section @sec:attenuated-mp2-energy | units, the range-split cross term |
 | `scripts/mp2_family_sympy.py`, part D | the proof of (@eq:op-terf-curvature-constraint) |
 | `crates/ferric-integrals/tests/operator_positivity_gate.rs` | the Fourier-transform table and its measurement |
 | Dissertation, chapters 2–5 | the terf pair, the constraint, the fitted parameters |

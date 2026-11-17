@@ -191,7 +191,7 @@ accumulate nothing, so only the dressing constrains $k$. Three rules follow.
 |---|---|
 | `crates/ferric-mp2/src/rimp2.rs`, doc comments of `mo_stream_chunk_for`, `MO_STREAM_CHUNK`, `MO_STREAM_CHUNK_MIN` and `stream_dressed_mo_band_budgeted`, and the loop body | equations @eq:streaming-transform-1 to @eq:streaming-transform-3, the excerpts and the rules in @sec:streaming-transform-reproducibility |
 | `crates/ferric-mp2/tests/mwe_mo_stream_chunk_budget.rs` | the property table |
-| `crates/ferric-mp2/theory.md`, "1. Density fitting" | the definition of $B$ |
+| section @sec:closed-shell-ri-mp2-density-fitting-making-affordable | the definition of $B$ |
 
 Changes from the sources: the code's `v_inv_sqrt` is written $M$; the code's
 `c_left`, `c_right` are $C_o$, $C_v$ for RI-MP2. The quarter-transform

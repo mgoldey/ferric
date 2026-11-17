@@ -266,7 +266,6 @@ the kernels above.
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-cc/theory.md`, the four local sections | the masks, the PNO and TNO constructions |
 | `site/src/methods/cc.md`, "Local LinLCCD" | the user guide of the `[local]` path |
 | `scripts/cc_triples_weights_and_linlccd_spin_adaptation_sympy.py` | claims 2, 3, 6 and 7 |
 

@@ -329,6 +329,5 @@ From `site/src/reference/validation.md`, "Meta-GGA (τ-only) $f_{xc}$ response".
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-dft/theory.md`, "$f_{xc}$ response kernels" | the reference statement of the equations and the libxc packing |
-| `crates/ferric-scf/theory.md`, "Kohn-Sham XC Hessian terms (fixed and moving grid)" | the nuclear-Hessian use of the same kernel |
-| `crates/ferric-tddft/theory.md`, "1. Response matrices" | the TDDFT use |
+| section @sec:ks-hessian-xc-terms | the nuclear-Hessian use of the same kernel |
+| section @sec:response-matrices | the TDDFT use |

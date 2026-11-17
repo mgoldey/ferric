@@ -22,7 +22,6 @@ Every method here starts from a closed-shell RHF with exact $J$ and $K$, and
 uses one restricted orbital set: $n_c$ doubly occupied core orbitals
 $i, j$, $n_a$ active orbitals $t, u, v, w$ and virtual orbitals $a$, with
 $p, q, r, s$ over all of them. Determinants put every α spin orbital before
-every β one, and that order fixes every phase below. The terse reference
-for the equations is `crates/ferric-ci/theory.md`. The second-quantized
+every β one, and that order fixes every phase below. The second-quantized
 operators are those of chapter @sec:second-quantization, and the orbital-rotation machinery of
 CASSCF is the one chapter @sec:convergence builds for SCF.

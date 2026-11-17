@@ -254,15 +254,15 @@ hook must give the same number. It does, to rounding for RHF and RKS.
 
 The first three rows are recorded in the header of
 `crates/ferric-scf/tests/fock_hook_gradient.rs`; the hook is not graded on the
-validation page. The status of this section is `edit`: the derivation in
-`theory.md` is tested and has `scripts/fock_hook_gradient_sympy.py`, but the
-script is not yet named in `theory.md` or the registry.
+validation page. The status of this section is `edit`: the derivation is
+tested and proved by `scripts/fock_hook_gradient_sympy.py`, but the registry
+has no entry for it.
 
 ## Sources
 
 | Source | Used for |
 |---|---|
-| `crates/ferric-scf/theory.md`, "Fock hooks and their nuclear gradient" | the derivation and the rules for the explicit term |
+| section @sec:fock-hooks-equations | the derivation and the rules for the explicit term |
 | `scripts/fock_hook_gradient_sympy.py`, claims K1 to K3 | verified equation @eq:scf-hook-gradient |
 | `crates/ferric-scf/tests/fock_hook_gradient.rs` | the point-charge anchor and its mutations |
 | `crates/ferric-python/tests/test_fock_hook_gradient.py` | the exactness anchor and the error cases |

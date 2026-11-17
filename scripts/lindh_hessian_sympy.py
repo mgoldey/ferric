@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Lindh (1995) model Hessian: force constants, Wilson vectors, Cartesian sum.
 
-Derivation: crates/ferric-scf/theory.md, "Lindh model Hessian". Code:
+Derivation: `book/src/14-derivatives/08-geometry-search.md#geometry-search-lindh-model-hessian`. Code:
 crates/ferric-core/src/model_hessian.rs (lindh_rho, lindh_force_constant,
 lindh_cartesian_hessian) and crates/ferric-core/src/internal_coords.rs
 (primitive_derivatives, the Wilson vectors b_q = dq/dx the sum uses).

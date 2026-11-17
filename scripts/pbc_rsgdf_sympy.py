@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Checks of the range-separated Gaussian density fitting (RS-GDF) behind
-ferric-pbc's periodic J and K. Theory: crates/ferric-pbc/theory.md,
-section "7. Range-separated Gaussian density fitting (RS-GDF)".
+ferric-pbc's periodic J and K. Theory: the RS-GDF section of the book (`book/src/24-periodic/05-rsgdf.md`).
 
 Claims (each prints "(claim X)" and exits nonzero on a mismatch):
 

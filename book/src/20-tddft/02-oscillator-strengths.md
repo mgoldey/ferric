@@ -134,5 +134,4 @@ block and the formula has no $\sqrt2$ (section @sec:unrestricted).
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-tddft/theory.md`, section 4 | the formula and the sum rule |
-| `crates/ferric-tddft/theory.md`, section 10 | the unrestricted form, without the $\sqrt2$ (section @sec:unrestricted) |
+| section @sec:unrestricted-spin-problem | the unrestricted form, without the $\sqrt2$ (section @sec:unrestricted) |

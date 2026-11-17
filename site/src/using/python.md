@@ -685,7 +685,7 @@ the constant `λN`, so the hooked gradient equals the plain one.
 hooked surface; because the geometry moves, both callables there receive the
 step's `Molecule` as their last argument (`hook(D, mol)`, `grad(D, mol)`),
 and each step's SCF starts from the default guess. The derivation is in
-`crates/ferric-scf/theory.md` ("Fock hooks and their nuclear gradient"); the
+`book/src/07-hartree-fock/06-fock-hooks.md#fock-hooks-equations`; the
 checks (finite differences of the hooked energy for RHF, UHF, ROHF and LDA,
 and a point charge entered as a hook against `point_charges`) are in
 `crates/ferric-python/tests/test_fock_hook_gradient.py` and

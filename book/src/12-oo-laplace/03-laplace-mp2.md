@@ -407,8 +407,6 @@ formulations only. Frozen core is not covered by the PySCF reference.
 
 | Source | Used for |
 |---|---|
-| `crates/ferric-mp2/theory.md`, section 8 | equations @eq:laplace-identity to @eq:laplace-mp2-5 |
-| `crates/ferric-quadrature/theory.md`, section 1; `crates/ferric-quadrature/src/minimax.rs` | the grid and its rescaling (@eq:laplace-mp2-2) |
 | `scripts/mp2_family_sympy.py`, part F; `scripts/mp2_variant_identities.py`, claim 3 | verified equations @eq:laplace-identity, @eq:laplace-factorization, @eq:laplace-ao-trace |
 | M. Häser and J. Almlöf, J. Chem. Phys. 96, 489 (1992) (as listed in `site/src/reference/references.md`) | the Laplace-transformed denominator |
 | A. Takatsuka, S. Ten-no and W. Hackbusch, J. Chem. Phys. 129, 044112 (2008) | the minimax tables |
@@ -419,9 +417,8 @@ Changes from the sources:
 
 - The pseudo-densities are underlined.
 - The quadrature range is stated with the frozen-core caveat and the 1%
-  table slack, as in `theory.md` section 8.
+  table slack.
 - The minimax error statements (equioscillation, $\delta/y_{\min}$, the
-  energy bound) and the per-point operation counts of @sec:laplace-mp2-sos-mp2 are not in
-  `theory.md`; they were checked numerically for this section.
-- `theory.md` section 8's formulation table lists `local`; its full
-  treatment is section @sec:local-laplace-sos.
+  energy bound) and the per-point operation counts of @sec:laplace-mp2-sos-mp2
+  were checked numerically for this section.
+- The `local` formulation is treated in full in section @sec:local-laplace-sos.

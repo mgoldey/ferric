@@ -25,7 +25,7 @@ energy exactly. With truncation it is the energy of the projected dielectric
 matrix.
 
 This section describes the loop the code runs, as does
-`crates/ferric-rpa/theory.md`, "The PDEP Eigenpotential Approach": the
+section @sec:pdep-dielectric-matrix-static-modes: the
 default static solve is one dense diagonalization, not an iterative one, and
 the frequency loop diagonalizes the projected matrix.
 
@@ -326,7 +326,6 @@ the test's own assertion.
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-rpa/theory.md`, "The PDEP Eigenpotential Approach" | (@eq:pdep-1)–(@eq:rpa-pdep-projection) |
 | `scripts/rpa_drpa_pdep_sympy.py`, check group 7 | projection and truncation |
 | `crates/ferric-rpa/tests/pdep_eigenpotentials_are_physical.rs` | the back-transform of step 4 |
 | Gygi and Galli, Phys. Rev. B 65, 220102(R) (2002) | dielectric eigenpotentials as a basis for the response |

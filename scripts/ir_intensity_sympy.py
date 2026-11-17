@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Harmonic IR intensities as ferric computes them.
 
-Derivation: crates/ferric-scf/theory.md, "Infrared intensities".
+Derivation: `book/src/14-derivatives/06-frequencies.md#frequencies-thermochemistry-ir-intensities`.
 Code: crates/ferric-scf/src/infrared.rs (AU_TO_KM_PER_MOL, ir_intensities,
 the field route dipole_derivatives_field) and the normal-mode back-transform
 x = M^(-1/2) u of crates/ferric-scf/src/frequencies.rs, transcribed below.

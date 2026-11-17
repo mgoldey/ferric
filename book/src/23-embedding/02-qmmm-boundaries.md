@@ -448,7 +448,6 @@ charge-bookkeeping assertions and scheme-swap controls.
 | Source | What it gives |
 |---|---|
 | `site/src/using/qmmm.md` | the user-facing description and the CLI section |
-| `crates/ferric-scf/theory.md`, "QM/MM boundary and the full gradient" | link atoms, boundary schemes and the chain rules |
 | `scripts/qmmm_boundary_sympy.py`, claims Q1 to Q4 | the proof |
 | `crates/ferric-scf/src/qmmm.rs` | the module |
 | `crates/ferric-scf/tests/qmmm.rs`, `crates/ferric-scf/tests/qmmm_mm.rs` | partition, boundary, gradient tests |

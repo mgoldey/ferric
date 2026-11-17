@@ -16,7 +16,7 @@ perturbation is the energy derivative.
 ferric computes it two ways, both library only: by finite field with the SCF
 re-converged at each field, and by a central difference of the relaxed
 density along an analytic first-order reference. The derivation is
-`crates/ferric-mp2/theory.md` section 10; `scripts/mp2_polarizability_sympy.py`
+section @sec:mp2-polarizability-relaxed-dipole; `scripts/mp2_polarizability_sympy.py`
 proves the relaxed dipole, the analytic polarizability and the
 frozen-amplitude C6 on a model with the SCF re-solved at every field.
 
@@ -335,7 +335,6 @@ the Rust tests of the anchors table do.
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-mp2/theory.md`, "10. Static polarizability" | (@eq:mp2-polar-relaxed-dipole) to (@eq:mp2-polar-c6-frozen), the response matrices |
 | `scripts/mp2_polarizability_sympy.py`, claims P0 to P5 | the proofs |
 | `scripts/cpks/ff_dfmp2_dipole_alpha.py` | the PySCF finite-field reference |
 

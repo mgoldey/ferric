@@ -370,7 +370,6 @@ by `expand_amplitudes_to_spin_orbital`).
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-cc/theory.md`, the two (T) sections | the definitions, pair invariance and the banding |
 | Rendell, Lee and Komornicki, CPL 178, 462 (1991); PySCF `cc/ccsd_t_slow.py` | the closed-shell algorithm and its index convention |
 | `scripts/cc_triples_weights_and_linlccd_spin_adaptation_sympy.py` | claims 1–5 and 4b |
 

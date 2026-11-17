@@ -121,4 +121,3 @@ COHSEX, evGW$_0$ and evGW on water at cc-pVDZ.
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-gw/theory.md`, "Eigenvalue self-consistency" | the update rules |

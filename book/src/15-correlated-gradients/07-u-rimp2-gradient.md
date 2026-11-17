@@ -26,8 +26,8 @@ kernels (@sec:u-rimp2-gradient-attenuated-erfc-variant–@sec:u-rimp2-gradient-t
 | $P^\sigma$, $z^\sigma$ | unrelaxed density and Z-vector of spin $\sigma$ | `p_mo[s]`, `zv.z[s]` |
 | $v^\sigma[X]$ | $J[X^\alpha + X^\beta] - K[X^\sigma]$ | `veff_vo` |
 
-The denominators follow `crates/ferric-mp2/theory.md`: $\Delta$ positive with
-the minus sign written into the amplitudes.
+This section writes $\Delta$ positive, with the minus sign written into the
+amplitudes.
 
 | Entry point | Location |
 |---|---|
@@ -379,9 +379,6 @@ Check S3 of part S proves the spin-resolved weights that
 
 | Source | Used for |
 |---|---|
-| `crates/ferric-mp2/theory.md`, "15. Unrestricted RI-MP2 nuclear gradient" | equations @eq:mp2-u-grad-weights–@eq:mp2-u-grad-assembly |
 | `crates/ferric-mp2/src/u_rimp2_gradient.rs` | implementation |
 | `scripts/u_rimp2_gradient_sympy.py` | proofs |
-| `crates/ferric-mp2/theory.md`, "15.1 Open-shell attenuated (erfc) RI-MP2 gradient"; `scripts/u_att_rimp2_gradient_sympy.py` | section @sec:u-rimp2-gradient-attenuated-erfc-variant |
-| `crates/ferric-mp2/theory.md`, "15.2 Open-shell terfc and SCS-MP2(2terfc) gradients"; `scripts/scs_2terfc_gradient_sympy.py` | section @sec:u-rimp2-gradient-terfc-scs-mp2-2terfc |
 | `site/src/reference/validation.md`, `crates/ferric-mp2/tests/u_rimp2_gradient_fd.rs` | anchors |

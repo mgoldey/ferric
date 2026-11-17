@@ -151,7 +151,6 @@ must lie in $[0, 1]$ and ω must be positive.
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-cc/theory.md`, "ωB97X-L-V correlation" | the λ placement, the KS half, the override semantics |
 | `scripts/double_hybrid_sympy.py` | claims L and P |
 | Ransford and Carter-Fenk, PCCP 28, 14428 (2026), eqns 22 and 27, Tables 2 and 4 | the functional, parameters and the Be₂ reference |
 | `ferric-cc/src/double_hybrid.rs`, module documentation | the post-SCF argument and the λ subtlety |

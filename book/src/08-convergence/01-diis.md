@@ -326,13 +326,11 @@ that the stability descent of section @sec:stability then reaches.
 | Text | Code |
 |---|---|
 | `[scf] diis` reads as an option of every SCF | only the RHF solver reads `RhfConfig::diis_flavor`; UHF and ROHF always run Pulay |
-| `crates/ferric-scf/theory.md` writes $(fn - nf)_{ai} = -2f_{ai}$, $(fn - nf)_{ia} = 2f_{ia}$ | the signs are the other way round: $(fn - nf)_{ai} = 2f_{ai}$, which claims S2 and N1 of `scripts/scf_diis_sympy.py` check |
 
 ## Sources
 
 | Source | Used for |
 |---|---|
-| `crates/ferric-scf/theory.md`, "DIIS: the error vector and the extrapolation" | the equations |
 | `scripts/scf_diis_sympy.py` | verified equations @eq:scf-diis-error and @eq:scf-diis-system |
 | `crates/ferric-scf/src/diis.rs` | the system and its shrink rule |
 | `site/src/reference/validation.md` | the ladder anchor |

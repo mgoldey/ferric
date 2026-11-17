@@ -338,7 +338,6 @@ largest residual against PySCF.
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-scf/theory.md`, "External point charges and fields" | the operators, the smeared limit, the origin shift and the gradient terms |
 | `scripts/external_potential_sympy.py`, claims E1 to E5 | the proof |
 | `crates/ferric-core/src/external_potential.rs` | the struct, the classical energy, gradient and Hessian |
 | `crates/ferric-integrals/src/oneelectron.rs` | the one-electron terms |

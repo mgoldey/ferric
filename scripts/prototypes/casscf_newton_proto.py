@@ -32,10 +32,11 @@ Optimizers compared (all two-step: one CAS-CI per macro iteration):
   ``m`` steps (unstable for ``m >= 3``).
 * ``scale``: ``ah`` with each unclipped step lengthened by the previous
   actual/predicted ratio clamped to ``[1, 2]`` (the Rust step measures the
-  curvature ratio along the step instead; see theory.md);
+  curvature ratio along the step instead; see
+  ``book/src/17-multireference/05-casscf.md#casscf-energy-gradient-step``);
   ``-eta.x`` variants stop the Davidson at a constant relative residual.
 
-Measured counts and the choice: ``crates/ferric-ci/theory.md``.
+Measured counts and the choice: ``book/src/17-multireference/05-casscf.md#casscf-proven-optimizers``.
 
 Usage (one heavy op at a time):
   box-lease exec -- env OPENBLAS_NUM_THREADS=1 PYTHONPATH=<shim> \\

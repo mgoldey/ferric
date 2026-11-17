@@ -12,10 +12,10 @@ potential.
 Section @sec:cavity-and-bem builds the cavity and the boundary-element matrices. Section
 @sec:ief-operators solves the integral equation for the apparent surface charges
 (IEF-PCM) and checks it against the analytic sphere. Section @sec:reaction-field puts the
-charges into the Fock matrix, 22.4 differentiates the energy with respect to
-the nuclei, and 22.5 covers the conductor limit that COSMO uses.
+charges into the Fock matrix, section @sec:gradient differentiates the energy
+with respect to the nuclei, and section @sec:conductor-limit-and-cosmo covers
+the conductor limit that COSMO uses.
 
-Sections @sec:cavity-and-bem to @sec:gradient are the `ferric-pcm` crate. Its terse reference is
-`crates/ferric-pcm/theory.md`, which each section header names. COSMO (@sec:conductor-limit-and-cosmo)
+Sections @sec:cavity-and-bem to @sec:gradient are the `ferric-pcm` crate. COSMO (@sec:conductor-limit-and-cosmo)
 lives in `ferric-scf` and shares the cavity switching function and the
 Gaussian-width table with `ferric-pcm`.

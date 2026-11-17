@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """RRHO thermochemistry as ferric computes it.
 
-Derivation: crates/ferric-scf/theory.md, "RRHO thermochemistry".
+Derivation: `book/src/14-derivatives/06-frequencies.md#frequencies-thermochemistry-ir-intensities`.
 Code: crates/ferric-scf/src/thermo.rs (translational, rotational, vibrational,
 rrho_thermochemistry_with_masses and the CODATA constants), transcribed below.
 

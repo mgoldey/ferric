@@ -20,8 +20,7 @@ The chapter covers:
 Every solver reads canonical HF orbitals and RI integrals
 $(pq|rs) = \sum_P B^P_{pq}B^P_{rs}$ (section @sec:factorization-and-metric). The solvers read
 restricted orbitals, except spin-blocked UCCSD and UCCSD(T) (section @sec:uccsd,
-UHF) and the library-only open-shell LinLCCD. The reference equations are in
-`crates/ferric-cc/theory.md`; each section names the headings it follows.
+UHF) and the library-only open-shell LinLCCD.
 
 The solvers fall into three index conventions:
 

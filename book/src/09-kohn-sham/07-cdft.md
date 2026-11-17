@@ -381,7 +381,6 @@ From `site/src/reference/validation.md`, the constrained-DFT rows.
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-dft/theory.md`, "Constrained DFT and the diabatic coupling" | the reference statement of the equations |
 | module documentation of `crates/ferric-scf/src/cdft_driver.rs` and `crates/ferric-scf/src/cdft_coupling.rs` | the outer-loop measurements; the derivation of the invariant form |
 | `site/src/methods/cdft.md` | how to run it, accuracy, tolerances |
 | Wu and Van Voorhis, J. Chem. Phys. 125, 164105 (2006); Kaduk, Kowalczyk and Van Voorhis, Chem. Rev. 112, 321 (2012) | the method and the coupling |

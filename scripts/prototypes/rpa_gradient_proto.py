@@ -2,8 +2,9 @@
 """Analytic RI-dRPA nuclear gradient prototype in numpy on ferric's blocks.
 
 Correctness reference for ``crates/ferric-rpa/src/gradient_analytic.rs``.
-The equations are section "Analytic nuclear gradient" of
-``crates/ferric-rpa/theory.md``; this file follows its notation. The energy
+The equations are in
+``book/src/15-correlated-gradients/05-rpa-gradient.md#rpa-gradient``; this file
+follows its notation. The energy
 differentiated is the QUADRATURE SUM ferric evaluates at full rank,
 
     E_c = (1/2pi) sum_k w_k [ln det(1 + Pi_k) - tr Pi_k],
@@ -301,7 +302,7 @@ class GradientParts:
 def correlation_gradient(
     ref: Reference, dens: CorrDensities, frozen_core=0, drop_orbital_energy=False
 ):
-    """Total gradient E_HF + E_c from the correlation densities (theory.md)."""
+    """Total gradient E_HF + E_c from the correlation densities (book, rpa-gradient-assembly)."""
     c, eps, no = ref.c, ref.eps, ref.nocc
     nmo = c.shape[1]
     fc = frozen_core
@@ -320,7 +321,7 @@ def correlation_gradient(
     y[:, no:] = np.einsum("Pia,Pip->pa", gamma, bf[:, fc:no, :])
     if fc:
         # Core-active rotations are not a symmetry of E_c: the canonical
-        # condition F_Ij = 0 fixes them (theory.md, frozen core). The pair
+        # condition F_Ij = 0 fixes them (book, rpa-gradient-frozen-core). The pair
         # term is split over P_Ij and P_jI, which sum dF over both orders.
         for i_core in range(fc):
             for j in range(fc, no):

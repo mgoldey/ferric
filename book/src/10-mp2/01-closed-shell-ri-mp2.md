@@ -452,7 +452,7 @@ defaults to 0 in `[mp2]`; `"auto"` selects the standard small core.
 
 | Source | Used for |
 |---|---|
-| `crates/ferric-mp2/theory.md`, "Conventions", "1. Density fitting", "2. Closed-shell RI-MP2" | equations @eq:mp2-cs-spin-adaptation to @eq:closed-shell-ri-mp2-4, function names |
+| sections @sec:spin-adaptation, @sec:closed-shell-ri-mp2-density-fitting-making-affordable and @sec:closed-shell-ri-mp2-energy-splits | equations @eq:mp2-cs-spin-adaptation to @eq:closed-shell-ri-mp2-4, function names |
 | Dissertation, chapter 4, sections 4.1 and 4.2 (Eqs. 4.3 to 4.5, Table 4.1, Functions 1 to 4) | the four-step algorithm, the choice of batch index, the scaling statement |
 | `scripts/mp2_variant_identities.py`, claim 1 | verified equations @eq:mp2-cs-spin-adaptation and @eq:mp2-cs-unique-pairs |
 | `crates/ferric-mp2/src/rimp2.rs` | the pair kernel, the unique-pair loop, the reproducibility and memory rules |

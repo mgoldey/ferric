@@ -222,7 +222,6 @@ its own slice of the result, so nothing is reduced across threads.
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-cc/theory.md`, "CCSD, closed shell" | the spin adaptation and the energy |
 | Hirata, Podeszwa, Tobita and Bartlett, JCP 120, 2581 (2004), Eqs. 35–45 | the factorization the code transcribes |
 | `site/src/methods/cc.md`, "Particle-particle ladder: dense or RI" | measured memory and time of the two routes |
 

@@ -376,7 +376,6 @@ $10^3$ times larger.
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-dft/theory.md`, "Integration Grid", "Becke partition and its nuclear derivative" | the reference statement of the equations |
 | `crates/ferric-dft/src/prune.rs` module documentation | the measurements behind the region table (why the outermost region rounds up) |
 | Treutler and Ahlrichs, J. Chem. Phys. 102, 346 (1995) | the M4 map and $\xi$ |
 | Becke, J. Chem. Phys. 88, 2547 (1988) | the partition |

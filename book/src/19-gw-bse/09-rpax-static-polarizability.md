@@ -277,6 +277,5 @@ Further tests are in `crates/ferric-gw/tests/rpax_*.rs`.
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-gw/theory.md`, "TDHF/RPAx polarizability" | the matrices and the response |
 | `scripts/gw_bse_rpax_sympy.py`, claims S1, S3, R1 to R3 | the proofs |
 | `scripts/gw_self_energy_sympy.py`, claim 7 | the sum-over-states form |

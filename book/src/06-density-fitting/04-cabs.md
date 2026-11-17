@@ -152,8 +152,8 @@ Points about it:
 - **The order does not matter for the result.** A permutation of the union
   functions permutes the rows of $c$ and the rows and columns of $S_{RR}$
   together, so it leaves both properties unchanged,
-  $c^{\mathsf T}S_{RR}\,c = I$ and $S_{O,R}\,c = 0$ (`crates/ferric-mp2/theory.md`,
-  check 7).
+  $c^{\mathsf T}S_{RR}\,c = I$ and $S_{O,R}\,c = 0$ (claim 7 of
+  `scripts/mp2_variant_identities.py`).
 
 ## Numerical anchors {#cabs-numerical-anchors}
 

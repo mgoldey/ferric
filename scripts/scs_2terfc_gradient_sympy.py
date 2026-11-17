@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Proofs of the SCS-MP2(2terfc) and open-shell terfc RI-MP2 gradient identities ferric codes.
 
-Theory: crates/ferric-mp2/theory.md, "9.6 SCS-MP2(2terfc) gradient" and "15.2
-Open-shell terfc and SCS-MP2(2terfc) gradients".
+Theory: `book/src/15-correlated-gradients/02-rimp2-gradient.md#rimp2-gradient` and
+`book/src/15-correlated-gradients/07-u-rimp2-gradient.md#u-rimp2-gradient-terfc-scs-mp2-2terfc`.
 Code: crates/ferric-mp2/src/scs_2terfc_gradient.rs (scs_2terfc_terms,
 scs_mp2_2terfc_gradient_analytical, u_scs_mp2_2terfc_gradient_analytical);
 crates/ferric-mp2/src/gradient.rs (rimp2_terms_gradient_timed);
@@ -20,7 +20,8 @@ on a Coulomb RHF or UHF; each E_c[tk] has its (P|mn) and (P|Q) under tk.
      S1 the two terms (t1, (c_os, -c_ss)) and (t2, (0, c_ss)), each a spin
         scaling E[t; (a, b)] = a E_OS[t] + b E_SS[t], sum to Eq. 12;
      S2 closed shell: sum K ((a + b) t - b tbar) = a E_OS + b E_SS with
-        E_OS = sum K t, E_SS = sum K (t - tbar) (the T~ of theory.md 9.2);
+        E_OS = sum K t, E_SS = sum K (t - tbar) (the T~ of
+        `book/src/15-correlated-gradients/02-rimp2-gradient.md#rimp2-gradient-scs-mp2`);
      S3 open shell: for E_w = w_ss (E_aa + E_bb) + w_os E_ab on symbolic
         integrals B (one aux function), the denominator derivative
         dE_w/deps^s_p is the diagonal of the weighted Gram densities
@@ -36,7 +37,8 @@ on a Coulomb RHF or UHF; each E_c[tk] has its (P|mn) and (P|Q) under tk.
      summed Imat and P) equals the Richardson derivative of the re-solved
      Eq. 12 energy, frozen core 0 and 1.
   U  Open shell (UHF, n_a = 3, n_b = 2): the same with the unrestricted
-     Lagrangian (theory.md 15.1) and the spin-weighted x^s and P^s of S3;
+     Lagrangian
+     (`book/src/15-correlated-gradients/07-u-rimp2-gradient.md#u-rimp2-gradient-attenuated-erfc-variant`) and the spin-weighted x^s and P^s of S3;
      plus the open-shell terfc RI-MP2 gradient (one term, (1, 1)); frozen
      core 0 and 1.
   L  Limits: the open-shell assembly at n_a = n_b equals the closed-shell

@@ -921,3 +921,20 @@ def test_crate_cited_by_no_page_is_an_error(tree):
     errs = check(tree).errors
     assert any("ferric-lonely/theory.md" in e and "no book section" in e for e in errs)
 
+
+
+# ------------------------------------------------------- links into the book
+def test_link_into_the_book_resolves(tree):
+    write(tree, {"scripts/toy_doc.py": '"""See book/src/10-mp2/01-toy.md#toy."""\n'})
+    assert check(tree).errors == []
+
+
+@pytest.mark.parametrize(
+    "link",
+    ["book/src/10-mp2/01-toy.md#nonesuch", "book/src/10-mp2/09-gone.md#toy"],
+)
+def test_dangling_link_into_the_book_is_an_error(tree, link):
+    """Mutation: a relinked reference whose label or page no longer exists."""
+    write(tree, {"crates/ferric-toy/src/doc.rs": f"//! See `{link}`.\n"})
+    errs = check(tree).errors
+    assert any("ferric-toy/src/doc.rs:1" in e for e in errs)

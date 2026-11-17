@@ -213,7 +213,7 @@ NUMBERED_HEADING_RE = re.compile(
     r"^#{1,6}[ \t]+(?:\d+(?:\.\d+)*\.?|[A-Z]\.\d+(?:\.\d+)*)[ \t]"
 )
 # A reference written as a number. A literature reference (the dissertation, a
-# paper, a theory.md file, a table or figure of either) is exempt when its clause,
+# paper, a table or figure of either) is exempt when its clause,
 # or its table cell and that column's header, names the source;
 # book/number-allowlist.txt lists the remaining genuine non-references.
 # A book equation number has two parts; a paper's "Eq. 14" has one and is not matched.
@@ -224,7 +224,7 @@ HARD_REF_RE = re.compile(
     r"|\[\d+\.\d+(?:\.\d+)*[ \t][^\]\n]*\]\("
 )
 LITERATURE_CUE = re.compile(
-    r"dissertation|thesis|theory\.md|et al\.|\bpapers?\b|\bpaper's\b|WSHG|Goldey|Wiley"
+    r"dissertation|thesis|et al\.|\bpapers?\b|\bpaper's\b|WSHG|Goldey|Wiley"
     r"|\b(?:Figure|Fig\.|Tables?)[ \t]+\d",
     re.I,
 )
@@ -1344,6 +1344,54 @@ def check_appendices(root: Path, rep: Report) -> None:
             rep.err(where, "stale; run scripts/book_build.py --write-appendices")
 
 
+# --------------------------------------------------------- links into the book
+# Code comments, proof scripts, the user guide and the registry point into the
+# book as ``book/src/<page>.md#<label>``. Each must name a page that exists and
+# a heading label on that page.
+BOOK_LINK_RE = re.compile(r"book/src/((?:[\w.-]+/)*[\w.-]+\.md)#([a-z0-9][\w:-]*)")
+BOOK_LINK_GLOBS = (
+    "crates/*/src/**/*.rs",
+    "crates/*/tests/**/*.rs",
+    "crates/*/benches/**/*.rs",
+    "crates/*/shim/*.cc",
+    "crates/*/shim/*.h",
+    "crates/*/*.md",
+    "crates/*/*.pyi",
+    "scripts/**/*.py",
+    "site/src/**/*.md",
+    "testdata/derivations/*.json",
+    "testdata/reference/validation/**/*.json",
+    "CONTRIBUTING.md",
+    "README.md",
+    ".github/**/*.yml",
+)
+
+
+def check_book_links(root: Path, rep: Report) -> None:
+    nb = numbering(root)
+    labels: dict[str, set[str]] = {}
+    for (kind, lab), t in nb.targets.items():
+        if kind == "sec":
+            labels.setdefault(t.page.as_posix(), set()).add(lab)
+    seen: set[Path] = set()
+    for pat in BOOK_LINK_GLOBS:
+        for f in sorted(root.glob(pat)):
+            if f in seen or not f.is_file():
+                continue
+            seen.add(f)
+            text = f.read_text(errors="replace")
+            if "book/src/" not in text:
+                continue
+            for m in BOOK_LINK_RE.finditer(text):
+                page, lab = m.group(1), m.group(2)
+                line = text.count("\n", 0, m.start()) + 1
+                where = f"{rel(root, f)}:{line}"
+                if not (book_src(root) / page).is_file():
+                    rep.err(where, f"book page not found: book/src/{page}")
+                elif lab not in labels.get(page, set()):
+                    rep.err(where, f"label {lab!r} is not a heading of book/src/{page}")
+
+
 # ------------------------------------------------------------ theory indexes
 # Each crates/<crate>/theory.md is a generated index into the book: the book
 # owns the derivations. A page covers a crate when it cites code of that crate
@@ -1591,6 +1639,7 @@ def run_check(
     check_numbering(root, rep)
     check_appendices(root, rep)
     check_theory_index(root, rep)
+    check_book_links(root, rep)
     check_plan(root, rep)
 
     uncovered = sorted(set(registry.get("methods", {})) - ctx["covered"])

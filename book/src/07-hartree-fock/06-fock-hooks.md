@@ -207,6 +207,5 @@ random model for this section.
 
 | Source | Used for |
 |---|---|
-| `crates/ferric-scf/theory.md`, "Fock hooks and their nuclear gradient" | the equations |
 | `crates/ferric-scf/src/rhf.rs` | the entry point and the refusal list |
 | `crates/ferric-python/ferric.pyi` | the Python signatures |

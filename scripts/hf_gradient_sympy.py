@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Hartree-Fock nuclear gradient as ferric assembles it (RHF, UHF, ROHF).
 
-Derivation: crates/ferric-scf/theory.md, "Hartree-Fock nuclear gradient".
+Derivation: `book/src/14-derivatives/01-hf-gradient.md#hf-gradient-gradient`.
 Code: crates/ferric-scf/src/gradient.rs (rhf_gradient,
 build_energy_weighted_density; uhf_gradient,
 build_energy_weighted_density_uhf; rohf_gradient,

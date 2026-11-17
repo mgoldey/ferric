@@ -307,4 +307,3 @@ $\langle S^2\rangle$ 0 or 2, for HF, PBE, B3LYP, CAM-B3LYP and r2SCAN.
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-tddft/theory.md`, sections 10 and 11 | the two-spin matrices, the kernel, the refusals, the $\langle S^2\rangle$ derivation |

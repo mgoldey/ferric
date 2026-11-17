@@ -909,7 +909,6 @@ negative mode.
 
 | Source | Used for |
 |---|---|
-| `crates/ferric-scf/theory.md`, "Geometry searches" and "Lindh model Hessian" | the derivations, the measured step counts and the choice of default coordinates |
 | `crates/ferric-scf/src/optimize.rs`, `saddle.rs`, `irc.rs` module documentation and loops | every formula and refusal in this section |
 | `scripts/geometry_search_steps_sympy.py` | verified equations @eq:geom-bfgs to @eq:geom-irc-step |
 | `scripts/lindh_hessian_sympy.py` | the Lindh model box |

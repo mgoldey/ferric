@@ -262,7 +262,7 @@ here. The validation page caps both formulations to not graded.
 | `crates/ferric-mp2/src/laplace.rs`, tests listed above | the anchors |
 | `site/src/methods/mp2.md`, "Laplace formulations" | where the measurements live |
 
-Changes from the sources: `crates/ferric-mp2/theory.md` section 8 lists
+Changes from the sources: section @sec:laplace-mp2 lists
 `Mo`, `Ao` and `AoSparse` only. This section adds `Local` from the code. The
 module documentation writes the energy as
 $\lVert L_V^{-1}\tilde Z L_V^{-\mathsf T}\rVert_F^2$ with unwhitened

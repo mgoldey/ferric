@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Identities ferric-cc relies on: closed-shell (T) banding and LinLCCD spin adaptation.
 
-Theory and notation: crates/ferric-cc/theory.md. Every claim asserts; the
+Theory and notation: the coupled-cluster chapter, book/src/16-coupled-cluster/. Every claim asserts; the
 script exits nonzero on any mismatch. Negative controls (deliberately wrong
 variants that must NOT pass) guard against a vacuous pass.
 

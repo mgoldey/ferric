@@ -516,8 +516,8 @@ the three components.
 
 **The dipole derivative.** In a uniform field $\mathbf F$ ferric's energy is
 $E(\mathbf F) = E(0) - \boldsymbol\mu\cdot\mathbf F - \tfrac12\mathbf F\alpha\mathbf F + \dots$
-(a charge $q$ at $\mathbf R$ gains $-q\mathbf F\cdot\mathbf R$, see "External
-point charges and fields" in `crates/ferric-scf/theory.md`), so
+(a charge $q$ at $\mathbf R$ gains $-q\mathbf F\cdot\mathbf R$, see section
+@sec:external-potentials-operator-classical-energy), so
 $\boldsymbol\mu = -\partial E/\partial\mathbf F$. Differentiate once more,
 by $R_i$, and swap the order:
 
@@ -582,9 +582,7 @@ estimates and measured SCF-noise bounds.
 
 | Source | Used for |
 |---|---|
-| `crates/ferric-scf/theory.md`, "Harmonic frequencies" | the equations and the constants |
 | `scripts/hf_frequencies_sympy.py`, claims C1, C2, S1, D1, P1 to P4 | verified equations @eq:freq-units-diatomic and @eq:freq-projector |
 | `crates/ferric-scf/src/frequencies.rs` module documentation and `detect_linear` | the pipeline, the Hessian options and the linearity test |
 | `site/src/reference/validation.md` | the anchor rows |
-| `crates/ferric-scf/theory.md`, "RRHO thermochemistry" and "Infrared intensities" | section @sec:frequencies-thermochemistry-ir-intensities |
 | `scripts/rrho_thermo_sympy.py`, `scripts/ir_intensity_sympy.py` | verified equations @eq:freq-rrho-thermo and @eq:freq-ir-intensity |

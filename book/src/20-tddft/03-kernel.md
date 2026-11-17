@@ -161,5 +161,4 @@ TDDFT excitation energies".
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-tddft/theory.md`, section 5 | the gate |
-| `crates/ferric-dft/theory.md`, "$f_{xc}$ response kernels" | the kernel and its libxc packing |
+| section @sec:fxc-linearized-potential | the kernel and its libxc packing |

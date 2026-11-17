@@ -270,11 +270,11 @@ two-electron interaction stays nonrelativistic.
 | ECP atoms are refused | the ECP already carries the scalar relativistic effect of its core |
 | energies only | gradients, Hessians, Z-vector response and post-SCF paths that rebuild $h$ refuse a relativistic reference (`ferric-scf/src/x2c.rs::refuse_relativistic`) |
 
-The X2C-1e equations have no derivation in a committed `theory.md` and no
-proof script. The numpy reference is `scripts/prototypes/x2c_proto.py`, and
-its equations are written out in `scripts/prototypes/x2c_derivation.md`. The
-derivation belongs in `crates/ferric-scf/theory.md`. Until it is there, this
-subsection is the derivation of record and the section stays at `edit`.
+This subsection is the book's only derivation of the X2C-1e equations, and
+no proof script covers them. The numpy reference is
+`scripts/prototypes/x2c_proto.py`, and its equations are written out in
+`scripts/prototypes/x2c_derivation.md`. That is why this section's status is
+`edit`.
 
 ## Numerical anchors {#pvp-x2c-numerical-anchors}
 

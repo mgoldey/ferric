@@ -306,6 +306,5 @@ number.
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-pbc/theory.md`, §8 | the equations and the supercell identity |
 | `scripts/pbc_kpoint_corr_sympy.py` | the proof |
 | PySCF `pyscf.pbc.scf.khf` | the conventions (`get_occ`, `_ewald_exxdiv_for_G0`) |

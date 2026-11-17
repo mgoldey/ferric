@@ -267,6 +267,5 @@ From `site/src/reference/validation.md`, rows "KS-DFT energies" and
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-dft/theory.md`, "Kohn-Sham Equations", "Functionals" | the reference statement of the equations above |
 | `site/src/methods/scf.md` | how to run KS, the J and K choices, measured costs |
 | Kohn and Sham, Phys. Rev. 140, A1133 (1965) | the equations |

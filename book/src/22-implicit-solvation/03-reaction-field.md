@@ -203,7 +203,6 @@ block is independent of the others. A tessera that coincides with a nucleus
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-pcm/theory.md`, section 7 | the potential, the operator and the energy bookkeeping |
 | `scripts/pcm_ief_sympy.py`, claim 6 | $V^{\mathrm{pcm}} = \partial E_{\mathrm{pcm}}/\partial P$ |
 | `crates/ferric-scf/tests/validation_pcm.rs` | the converged SCF against PySCF |
 

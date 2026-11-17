@@ -1171,7 +1171,6 @@ then restored):
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-ci/theory.md`, "Two-step CASSCF" | the method and the measurement records of section @sec:casscf-proven |
 | Chaban, Schmidt and Gordon, TCA 97, 88 (1997) | the approximate diagonal Hessian |
 | `scripts/prototypes/casscf_proto.py`, `casscf_derivation.md` | the reference implementation |
 | `scripts/ci_rdm_casscf_gradient_sympy.py` | `casscf-gradient`, `redundant-residual` |

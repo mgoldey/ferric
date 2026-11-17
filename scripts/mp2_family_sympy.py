@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Sympy and numpy proofs of the MP2-family energy identities ferric-mp2 codes.
 
-Theory: crates/ferric-mp2/theory.md, sections 2-5, 8 and 13. Each part checks
+Theory: `book/src/10-mp2/01-closed-shell-ri-mp2.md#closed-shell-ri-mp2-energy-splits`, `book/src/10-mp2/04-attenuated-mp2.md#attenuated-mp2-energy`, 8 and 13. Each part checks
 an identity symbolically (sympy) or on a small random model against an
 independent route (brute-force spin-orbital MP2, adaptive quadrature, mpmath),
 prints its residual, and records a failure. The script runs every part and

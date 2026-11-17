@@ -195,6 +195,5 @@ $P^{k'}(\mathbf G + q)$ for every $k'$ by a phase sum (section @sec:kpoint-scf).
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-pbc/theory.md`, §2 | the transform and its coefficients |
 | `scripts/pbc_ewald_pairft_stress_sympy.py`, part S2 | the proof |
 | L. E. McMurchie and E. R. Davidson, *J. Comput. Phys.* **26**, 218 (1978) | the Hermite expansion |

@@ -166,8 +166,7 @@ and CI timing).
 
 ### Writing documentation
 
-Pages under `site/src`, the READMEs and the crate `theory.md` files are
-reference documents. State current facts in declarative present tense; use the
+Pages under `site/src` and the READMEs are reference documents. State current facts in declarative present tense; use the
 imperative for instructions. Lead with a one-line summary. Keep sentences under
 about 25 words and paragraphs under about five sentences; put parameters,
 limits and grades in lists or tables. A measured claim gives the value, unit,
@@ -218,7 +217,7 @@ a comparison ("just above") and "note" used as a noun ("a note that"). Each hit 
 correct in context.
 
 ```bash
-python3 scripts/check_doc_style.py            # site/src, READMEs, theory.md
+python3 scripts/check_doc_style.py            # site/src and the READMEs
 python3 scripts/check_doc_style.py --verbose site/src/using/python.md
 ```
 
@@ -333,22 +332,30 @@ A method is a CLI `method.kind`, a Python `run_*` entry point, or a derivative o
 one, such as a gradient, Hessian or response property. Each method ships with
 two committed pieces:
 
-1. **A LaTeX derivation** in its crate's `theory.md`, in `$...$` / `$$...$$`
-   math. It runs from the definition of the energy, or of the property, to the
-   working equations the code contracts. It states the conventions: index
-   ranges, spin blocks, signs and prefactors. It names the function that
-   implements each equation.
+1. **A book section** under `book/src`, in `$...$` / `$$...$$` math, written
+   to `book/STYLE.md`. It runs from the definition of the energy, or of the
+   property, to the working equations the code contracts, with every step
+   shown. It states the conventions: index ranges, spin blocks, signs and
+   prefactors. It names the function that implements each equation in the
+   checked form `crate/src/file.rs::item`, and it carries a verified-equation
+   box for each identity the proof checks. `python3 scripts/book_build.py
+   --check` must pass. The crate's `theory.md` is a generated index of the
+   book (`--write-theory-index`); never write a derivation into it.
 2. **A sympy proof** in `scripts/<topic>_sympy.py`. It derives or checks the
    load-bearing identities symbolically: prefactors, spin adaptation, signs,
    derivative terms and limits. It also evaluates them on a small numerical case
    against an independent route, such as a finite difference, brute force in a
    tiny space, or a reference code. It exits nonzero when any identity fails, and
-   a test under `crates/ferric-python/tests/` runs it. Its header lists at least
-   one mutation that turns it red.
+   a test under `crates/ferric-python/tests/` (the pytest runner
+   `test_derivation_scripts.py`) runs it. Its header records at least one
+   mutation that turns it red.
 
-A new method lands with both pieces in the same PR. A change to a method's
-working equations updates both. The `wiki/` notes are working notes, not the
-record: a derivation lives in the repo.
+`testdata/derivations/registry.json` maps the method to both pieces
+(`book/src/<page>.md#<label>` and the script); `test_derivation_registry.py`
+checks that each exists and that the script has a runner. A new method lands
+with both pieces in the same PR. A change to a method's working equations
+updates both. The `wiki/` notes are working notes, not the record: a
+derivation counts only once it is in a committed book section.
 
 The crate layout and cross-cutting conventions (threading, determinism,
 memory, errors) are described in the book's

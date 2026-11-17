@@ -105,8 +105,7 @@ is not diagonal between core and active orbitals when `frozen_core > 0`.
 >
 > <!-- verified: id=mp2.grad.oo-zero-response; script=scripts/mp2_gradient_sympy.py; claim=O; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/oo_rimp2_gradient.rs::{oo_ri_mp2_gradient,energy_weighted_density,vhf_s1occ}; rust_test=ferric-mp2/tests/validation_oo_rimp2.rs::oo_rimp2_h2o_ccpvdz_gradient_self_fd; registry=oo-rimp2-gradient -->
 
-The model agrees with the finite difference to $8\times10^{-12}$ relative
-(`theory.md` section 9.3).
+The model agrees with the finite difference to $8\times10^{-12}$ relative.
 
 ## The algorithm {#oo-rimp2-gradient-algorithm}
 
@@ -161,7 +160,6 @@ The energy is Proven (narrow).
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-mp2/theory.md`, section 9.3 | (@eq:mp2-grad-oo-zero-response) and $v^{\mathrm{s1occ}}$ |
 | module documentation of `crates/ferric-mp2/src/oo_rimp2_gradient.rs` | the no-Z-vector argument |
 | `scripts/mp2_gradient_sympy.py`, part O | the proof |
 

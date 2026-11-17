@@ -378,6 +378,5 @@ The denominator conversion is one match:
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-pbc/theory.md`, §9 | the equations |
 | `scripts/pbc_kpoint_corr_sympy.py` | the proof |
 | PySCF `pyscf.pbc.mp.kmp2` | the $k$-point MP2 conventions |

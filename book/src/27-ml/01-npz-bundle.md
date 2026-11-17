@@ -196,7 +196,6 @@ assert np.allclose(f["alpha_ct"] + f["alpha_atomic"].sum(0), f["alpha_tensor"])
 |---|---|
 | `crates/ferric-export/src/ml.rs` | key names, dtypes, layout, the `esp_surface`/`esp_points` pairing |
 | `crates/ferric-rpa/src/property_bundle.rs` | what each key is computed from, `coords`, defaults |
-| `crates/ferric-export/theory.md`, "1. Machine Learning Dataset Schema (`.npz`)" | the key table this section extends |
 | `crates/ferric-python/ferric.pyi`, `run_pdep_rpa` and `PdepRpaResult` | the Python defaults and the reference J/K difference |
 | `site/src/reference/validation.md`, rows "NPZ export" and "NPZ export against PySCF" | the layout and knob checks |
 | `crates/ferric-scf/src/properties.rs` | the effective nuclear charge in the ESP, field, dipole and charges |

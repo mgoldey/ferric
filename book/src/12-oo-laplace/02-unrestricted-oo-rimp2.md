@@ -3,8 +3,7 @@
 <!-- status: verify; registry: u-oo-rimp2 -->
 
 *Notation follows `book/notation.md`: $\beta$ orbitals carry an overbar
-($\bar\imath, \bar a$), and $\sigma$ stands for either spin. `theory.md`
-section 14 writes $\beta$ indices as capitals instead.*
+($\bar\imath, \bar a$), and $\sigma$ stands for either spin.*
 
 In an open-shell molecule the $\alpha$ and $\beta$ electrons feel different
 exchange fields, so a UHF reference gives each spin its own orbitals. When
@@ -361,7 +360,7 @@ the `oo-rimp2` row as energy only.
 
 | Source | Used for |
 |---|---|
-| `crates/ferric-mp2/theory.md`, sections 7 and 14 | equations @eq:unrestricted-oo-rimp2-1 and @eq:oo-u-gradient, the frozen-core embedding |
+| sections @sec:oo-rimp2-functional and @sec:unrestricted-oo-rimp2-orbital-gradient | equations @eq:unrestricted-oo-rimp2-1 and @eq:oo-u-gradient, the frozen-core embedding |
 | `crates/ferric-mp2/src/u_oo_rimp2.rs`, `crates/ferric-mp2/src/u_rimp2.rs` | the loop rules, the densities (@eq:unrestricted-oo-rimp2-3), the kernel |
 | `scripts/u_oo_rimp2_response_sympy.py`; `scripts/mp2_gradient_sympy.py`, part U | the proofs cited in the box |
 | U. Bozkaya, J. Chem. Phys. 139, 154105 (2013) | the unrestricted functional, as cited in the code |
@@ -372,4 +371,4 @@ Changes from the sources:
 - $\beta$ indices are written with overbars, not capitals.
 - The $\mu$ doubling with its three-strike exit, and the unrestricted
   energy-change stop that skips the gradient recompute, are stated from the
-  loop, as in `theory.md` section 7.
+  loop.

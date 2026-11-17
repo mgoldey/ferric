@@ -218,7 +218,7 @@ for (p, pb) in rg.pairs.iter().enumerate() {
   so the code forms $\mathbf K\mathbf T$ once and reuses it inside the
   second product, one ring product fewer per iteration.
 - **The code calls $\mathbf K$ `b_blocks`.** The module writes
-  $B_{iajb} = 2(ia|jb)$, the theory.md name for the same matrix.
+  $B_{iajb} = 2(ia|jb)$ for the same matrix.
 - **`apply_pattern` is a no-op at $\varepsilon = 0$.** The same loop runs
   the local approximation of section @sec:local-drpa, where it zeroes the dropped
   amplitudes.
@@ -422,7 +422,6 @@ route has no quadrature.
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-rpa/theory.md`, "RPA Correlation Energy" | (@eq:rpa-drpa-three-routes)–(@eq:drpa-three-ways-4) with their derivation |
 | `scripts/rpa_drpa_pdep_sympy.py` | the equivalence of the three forms |
 | `site/src/methods/rpa-gw.md`, "Exact and local dRPA" | the user guide |
 | Eshuis, Bates and Furche, Theor. Chem. Acc. 131, 1084 (2012) | review of RI-RPA: the frequency form in the auxiliary basis |

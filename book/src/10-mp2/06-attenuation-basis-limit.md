@@ -132,7 +132,7 @@ integrals and energies ferric computes are anchored in section @sec:scs-mp2-2ter
 |---|---|
 | Goldey and Head-Gordon, Chem. Phys. Lett. 608, 249 (2014) | the S66-trained optimal $r_0$ per basis, source of `TERFC_R0_TABLE` |
 | Goldey dissertation, chapter 6 (§6.1, §6.2, Eq. 6.1, Tables 6.2–6.4) | setup, equation @eq:attenuation-basis-limit-1, the counterpoise remark, the table, the conclusions |
-| `crates/ferric-mp2/theory.md`, "5. Attenuated MP2"; `crates/ferric-mp2/src/terfc_r0.rs` | the per-basis default $r_0$ |
+| section @sec:attenuated-mp2-energy; `crates/ferric-mp2/src/terfc_r0.rs` | the per-basis default $r_0$ |
 | `crates/ferric-core/src/basis/bundled` | which bases ship |
 
 The derivation of (@eq:attenuation-basis-limit-1) from the $X^{-3}$ model and the $X = 3$, $Y = 4$

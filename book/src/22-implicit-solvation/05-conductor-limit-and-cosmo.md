@@ -13,8 +13,7 @@ then the COSMO driver of `ferric-scf` (@sec:conductor-limit-and-cosmo-cosmo-driv
 its options (@sec:conductor-limit-and-cosmo-options).
 
 The limit is proved in `ferric-pcm` by `scripts/pcm_ief_sympy.py`. The COSMO
-driver's equations are in `crates/ferric-scf/theory.md` ("COSMO reaction
-field") and are proved in `scripts/cosmo_sympy.py`.
+driver's equations are in section @sec:conductor-limit-and-cosmo-cosmo-driver and are proved in `scripts/cosmo_sympy.py`.
 
 | Symbol | Meaning | Code name |
 |---|---|---|
@@ -301,9 +300,7 @@ Gaussian-smeared solvation energy.
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-pcm/theory.md`, section 6 | the conductor limit and the finite-$\varepsilon$ factors |
 | `scripts/pcm_ief_sympy.py`, claims 3 and 4 | the limit and the Kirkwood comparison |
-| `crates/ferric-scf/theory.md`, "COSMO reaction field" | the driver's equations, the $S$ matrices and why there is no gradient |
 | `scripts/cosmo_sympy.py`, claims C1 to C4 | the Fock term, $f(\varepsilon)$ and the Gaussian $S$ |
 | `crates/ferric-scf/src/cosmo.rs` | the driver |
 | `crates/ferric-scf/tests/validation_cosmo.rs`, `crates/ferric-scf/tests/cosmo_gradient_refusal.rs` | the PySCF comparison and the gradient refusal |

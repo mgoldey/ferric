@@ -185,9 +185,9 @@ The Ewald nuclear gradient is part of section @sec:ewald's
 `ferric-pbc/src/ewald.rs::ewald_nuclear_gradient_parts`, checked against
 PySCF and finite differences in `ewald_gradient_matches_pyscf_grad_nuc_and_fd`.
 
-There is no committed derivation of the full electronic force (the
-two-electron, nuclear-attraction and XC terms above) in `theory.md` and no
-proof script for it. The forces are anchored by finite differences of
+The book states the full electronic force (the two-electron,
+nuclear-attraction and XC terms above) without deriving it, and no proof
+script covers it. The forces are anchored by finite differences of
 ferric's own energy instead (@sec:forces-numerical-anchors). That is why this section's status is
 `edit`.
 
@@ -281,5 +281,5 @@ a NaN is refused.
 | Source | What it gives |
 |---|---|
 | `crates/ferric-pbc/src/grad.rs`, module documentation | the force terms |
-| `crates/ferric-pbc/theory.md`, §1 (Gradient), §6 | the Ewald gradient, the refusal gates |
+| section @sec:ewald-ewald-sum-independence | the Ewald gradient |
 | `scripts/pbc_kpoint_corr_sympy.py` | the Madelung cancellation |

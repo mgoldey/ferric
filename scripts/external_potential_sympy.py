@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """External potential: point and smeared charges, a uniform field, gradients.
 
-Derivation: crates/ferric-scf/theory.md, "External point charges and fields".
+Derivation: `book/src/23-embedding/01-external-potentials.md#external-potentials-operator-classical-energy`.
 Code: crates/ferric-core/src/external_potential.rs (charge_nuclear_energy,
 field_nuclear_energy, charge_nuclear_gradient, charge_nuclear_hessian,
 smeared_radial_derivs, smeared_charge_nuclear_site_gradient,

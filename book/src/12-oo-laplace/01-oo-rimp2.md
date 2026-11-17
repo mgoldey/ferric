@@ -395,7 +395,6 @@ and RI-JK J/K routes (section @sec:oo-rimp2-gradient).
 
 | Source | Used for |
 |---|---|
-| `crates/ferric-mp2/theory.md`, section 7 | equations @eq:oo-rimp2-1 to @eq:oo-rimp2-4, the rotation derivative of $(ia\vert jb)$, the step |
 | `crates/ferric-mp2/src/oo_rimp2.rs`, `orbital_rotation.rs` | every rule in the algorithm table, read from the loop |
 | `scripts/oomp2_mp3_identities_sympy.py`, part B; `scripts/mp2_variant_identities.py`, claim 6 | verified equations @eq:oo-cayley and @eq:oo-cs-gradient; the fixed-amplitude derivative |
 | U. Bozkaya and C. D. Sherrill, J. Chem. Phys. 135, 104103 (2011) | the functional and the level-shifted step, as cited in the code |
@@ -403,11 +402,9 @@ and RI-JK J/K routes (section @sec:oo-rimp2-gradient).
 
 Changes from the sources:
 
-- The amplitudes are written $t = -(ia|jb)/\Delta$, with a positive $\Delta$,
-  as in `theory.md`.
+- The amplitudes are written $t = -(ia|jb)/\Delta$, with a positive $\Delta$.
 - The DIIS error uses the rotated coefficients $C_{\mathrm{new}}$, and the
   convergence recheck and the "last halved step" rule are stated from the
-  loop; `theory.md` section 7 states them the same way.
+  loop.
 - The Hessian diagonal quoted under "The step length" comes from section
-  @sec:second-order-orbital-gradient-hessian and was checked by a finite difference on a model RHF energy; it is
-  not in `theory.md` section 7.
+  @sec:second-order-orbital-gradient-hessian and was checked by a finite difference on a model RHF energy.

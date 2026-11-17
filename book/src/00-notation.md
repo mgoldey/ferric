@@ -4,18 +4,18 @@ This chapter fixes one notation for the whole book. You can read it once
 straight through, or come back to a single section when a symbol in a
 chapter looks unfamiliar. Each section states the convention, lists where
 the sources disagree, and names the choice the book makes. The sources are
-the code, the per-crate `theory.md` files, the site pages, the
-dissertation, and the SR-MP2 + LR-RPA derivation notes.
+the code, the site pages, the dissertation, and the SR-MP2 + LR-RPA
+derivation notes.
 
 File and line references are to commit `81486b984`. Paths starting with
 `crates/` or `site/` are in the repository. `dissertation.txt` and
 `wiki/papers/…` are local files outside the repository; they are cited by line
-so a claim can be checked, and are never copied whole.
+so a claim can be checked, and are never copied whole. Line references drift
+with every edit to a source file. The other chapters cite functions by name
+and resolve the line at build time; see `book/BUILD.md`.
 
 When a source disagrees with the book, the code is the authority for what is
-computed and the book is the authority for how it is written down. A
-disagreement between a `theory.md` file and the code is a defect in the
-`theory.md` file; section @sec:notation-disagreements-between-files-code lists them.
+computed and the book is the authority for how it is written down.
 
 ## Index letters {#notation-index-letters}
 
@@ -41,23 +41,14 @@ occupied orbitals comes from `active_occ` (`crates/ferric-mp2/src/rimp2.rs:98`),
 which returns an error when the freeze covers every occupied orbital.
 
 In a CAS chapter, $i, j$ index the doubly occupied core orbitals and
-$t, u, v, w$ the active orbitals (`crates/ferric-ci/theory.md:315-316`).
+$t, u, v, w$ the active orbitals (chapter @sec:multireference).
 
 A $\beta$-spin spatial orbital carries an overbar: $\bar\imath, \bar a$.
 
 **Disagreements.**
 
-- `crates/ferric-mp2/theory.md` sections 6.1, 14 and 15 write $\beta$
-  orbitals as capitals ($J, B$). Capitals collide with atoms ($A, B$) and auxiliary functions
-  ($P, Q$). The book uses overbars.
-- `crates/ferric-gw/theory.md:16` uses $\alpha, \beta$ for PDEP modes. Both
-  letters also label spin, and $\alpha$ is the
-  polarizability. The book uses $\xi, \eta$ for PDEP modes.
-- `crates/ferric-gw/theory.md:16` uses $m, n, p, q$ for any active MO. The book
-  uses $p, q, r, s$ only.
-- `crates/ferric-pcm/theory.md:13-14` uses $i, j, k$ for tesserae. The PCM
-  chapter keeps those letters and declares them in its header, because no
-  occupied-orbital index appears in its equations.
+- The PCM chapter uses $i, j, k$ for tesserae and declares them in its
+  header, because no occupied-orbital index appears in its equations.
 - The dissertation uses $O, V, N, X$ for the numbers of occupied, virtual,
   AO and auxiliary functions (`dissertation.txt:2867-2868`, Table 4.1 at
   `dissertation.txt:2871-2895`). The book uses $n_o, n_v, N, N_{\mathrm{aux}}$,
@@ -82,11 +73,11 @@ Two spin-orbital orderings exist in the code.
 
 | Ordering | Rule | Used by |
 |---|---|---|
-| Interleaved | spin orbital $2p + s$, $s = 0$ for $\alpha$ and $1$ for $\beta$ | `crates/ferric-mp2/src/spinorbital.rs:22`, `crates/ferric-mp2/src/mp3.rs:246-253`, the spin-orbital coupled-cluster codes (`crates/ferric-cc/theory.md:6-8`) |
-| Blocked | mode $p$ is $p\alpha$, mode $n + p$ is $p\beta$ | CAS-CI determinants (`crates/ferric-ci/theory.md:11-14`) |
+| Interleaved | spin orbital $2p + s$, $s = 0$ for $\alpha$ and $1$ for $\beta$ | `crates/ferric-mp2/src/spinorbital.rs:22`, `crates/ferric-mp2/src/mp3.rs:246-253`, the spin-orbital coupled-cluster codes (section @sec:ccd-ccsd-spin-orbital) |
+| Blocked | mode $p$ is $p\alpha$, mode $n + p$ is $p\beta$ | CAS-CI determinants (section @sec:determinants-convention) |
 
 The ordering does not change any energy. It changes determinant phases, so
-the CAS-CI phase convention in `crates/ferric-ci/theory.md:16-21` holds only
+the CAS-CI phase convention of section @sec:determinants-convention holds only
 for the blocked ordering. The book states the ordering in the header of each
 chapter that writes spin-orbital tensors or determinant phases.
 
@@ -121,7 +112,7 @@ $(ia|jb) = \langle ij|ab\rangle$, and its exchange partner $(ib|ja)$ is
 $\langle ij|ba\rangle$.
 
 The spin-orbital coupled-cluster code uses this convention
-(`crates/ferric-cc/theory.md:9`), and so do the derivation notes
+(section @sec:ccd-ccsd-spin-orbital), and so do the derivation notes
 (`wiki/papers/sr-mp2-lr-rpa-derivation.tex:125-131`). The spin integration in
 $(pr|qs)$ is implied: the integral vanishes unless $p, r$ share a spin and
 $q, s$ share a spin.
@@ -130,12 +121,8 @@ The exchange partner of an $ov$-$ov$ integral is written out, $(ib|ja)$.
 
 **Disagreements.**
 
-- `crates/ferric-tddft/theory.md:22-24` writes the same integral as $(ia|jb)$
-  in $A$ and $(ia|bj)$ in $B$. The two are equal for real orbitals. The book
-  writes $(ia|jb)$ in both and states the reality assumption once.
-- `crates/ferric-integrals/theory.md:16` and `:20` write the integrals with
-  complex conjugates and the three-center integral as $(P|\mu\nu)$. The
-  dissertation writes it as $(ia|P)$ (`dissertation.txt:2871-2876`). The code
+- The dissertation writes the three-center integral as $(ia|P)$
+  (`dissertation.txt:2871-2876`). The code
   stores the auxiliary index first, shape `(naux, nocc*nvir)`
   (`crates/ferric-mp2/src/rimp2.rs:682`). The book writes $(P|\mu\nu)$ and
   $(P|ia)$, auxiliary index first, without conjugates.
@@ -151,15 +138,12 @@ positive $\Delta$. The closed-shell MP2 energy is
 
 $$ E^{(2)} = -\sum_{ijab} \frac{(ia|jb)\,\big[\,2(ia|jb) - (ib|ja)\,\big]}{\Delta_{ij}^{ab}} . $$
 
-**Disagreements.** The same letter $D$ carries opposite signs in two sources.
+**Disagreements.** The sources differ in the sign of the denominator.
 
 | Source | Definition | Sign |
 |---|---|---|
-| `crates/ferric-mp2/theory.md`, Conventions | $\Delta_{ij}^{ab} = \varepsilon_a + \varepsilon_b - \varepsilon_i - \varepsilon_j$ | positive |
-| `crates/ferric-cc/theory.md:16-17` | same | negative |
 | `wiki/papers/sr-mp2-lr-rpa-derivation.tex:207` | $D_{ij}^{ab} = \varepsilon_a + \varepsilon_b - \varepsilon_i - \varepsilon_j$ | positive |
 | `dissertation.txt:2852-2857` (Eq. 4.3) | $\varepsilon_a + \varepsilon_b - \varepsilon_i - \varepsilon_j$, unnamed | positive |
-| `crates/ferric-quadrature/theory.md:9` | $x = \varepsilon_a + \varepsilon_b - \varepsilon_i - \varepsilon_j$ | positive |
 | Code, `crates/ferric-mp2/src/rimp2.rs:1332` | `denom = e_ij - eps[a] - eps[b]` | negative |
 | Code doc, `crates/ferric-mp2/src/rimp2.rs:52-53` | $\Delta = \varepsilon_a + \varepsilon_b - \varepsilon_i - \varepsilon_j$ | positive |
 
@@ -187,13 +171,7 @@ between electrons of the same spin, and each spin carries half the closed-shell
 density, $D^\alpha = D^\beta = D/2$. So the exchange term is
 $K[D^\alpha] = \tfrac12 K[D]$, while the Coulomb term sees the whole density.
 
-**Disagreement.** `crates/ferric-scf/theory.md:11-12` defines
-$D_{\lambda\sigma} = \sum_i C_{\lambda i} C_{\sigma i}$ without the factor 2
-and writes $F = H + D[2J - K]$. The two forms give the same Fock matrix. The
-book uses the total density because the code does.
-
-Reduced density matrices of a CAS wavefunction follow
-`crates/ferric-ci/theory.md` ("Reduced density matrices"):
+Reduced density matrices of a CAS wavefunction follow section @sec:rdms-1-2-rdm:
 $\gamma_{pq} = \langle E_{pq}\rangle$ and
 $\Gamma_{pqrs} = \sum_{\sigma\tau}\langle a^\dagger_{p\sigma} a^\dagger_{r\tau} a_{s\tau} a_{q\sigma}\rangle$.
 
@@ -230,12 +208,11 @@ The index placement is the same in every caller: `kappa[(a, i)] = v`,
 `crates/ferric-scf/src/rohf_newton.rs:219-236`,
 `crates/ferric-scf/src/cdft_driver.rs:1371-1380`). CASSCF uses
 $C' = C\,e^{K}$ with $K_{pq} = \kappa_{pq} = -K_{qp}$ for $p > q$
-(`crates/ferric-ci/src/casscf.rs:21`, `crates/ferric-ci/theory.md:365`).
+(`crates/ferric-ci/src/casscf.rs:21`).
 
 **Disagreements.**
 
-- The code and the `theory.md` files agree today
-  (`crates/ferric-mp2/theory.md` section 7). The module documentation of
+- The module documentation of
   `crates/ferric-mp2/src/orbital_rotation.rs:5-13` records that the closed-shell
   driver once used the reversed Cayley form. Any derivation older than that
   module is suspect for the sign of $\kappa$ and of the gradient.
@@ -244,7 +221,7 @@ $C' = C\,e^{K}$ with $K_{pq} = \kappa_{pq} = -K_{qp}$ for $p > q$
   matches the matrix convention above.
 - The letter $\kappa$ has two other meanings in the sources. It is the
   regularization strength of $\kappa$-MP2, in Ha$^{-1}$
-  (`crates/ferric-mp2/src/rimp2.rs:50-56`, `crates/ferric-mp2/theory.md` section 2),
+  (`crates/ferric-mp2/src/rimp2.rs:50-56`),
   and it is the particle-hole kernel in the derivation notes
   (`wiki/papers/sr-mp2-lr-rpa-derivation.tex:417`). The book keeps $\kappa$ for
   orbital rotations, writes the regularization strength as
@@ -280,21 +257,14 @@ $$ V_{PQ} = (P|\hat w|Q), \qquad B^P_{pq} = \sum_Q M_{PQ}\,(Q|\hat w|pq), \qquad
   auxiliary index last: $B^Q_{ia} = \sum_P (ia|P)(P|Q)^{-1/2}$
   (`dissertation.txt:2871-2876`, Eq. 4.5 at `dissertation.txt:2909-2925`). The
   code's default is the Cholesky factor
-  (`crates/ferric-mp2/theory.md` section 1). The energies are identical. The book
+  (section @sec:factorization-and-metric). The energies are identical. The book
   writes $M$ and names the factor used where it matters (conditioning, rank
   loss).
-- `crates/ferric-gw/theory.md:21-25` writes the dressed factor as $\tilde B$
-  and calls the dressing matrix $F$. $F$ is the Fock matrix in the book; the
-  dressing matrix is $M$ and the dressed factor is $B$.
 - `crates/ferric-scf/src/df_j.rs:9` calls the **raw** tensor
   $B_{P,\mu\nu} = (P|\mu\nu)$, while `crates/ferric-scf/src/df_k.rs:27` calls
   the **dressed** tensor $B[P,\mu,\nu]$. The book writes the raw tensor as
   $(P|\mu\nu)$ and the RI-J fit coefficients as
   $c_P = \sum_Q V^{-1}_{PQ}\,(Q|\mu\nu)D_{\mu\nu}$.
-- `crates/ferric-tddft/theory.md:22-24` uses $A$ and $B$ for the response
-  matrices and `:36`, `:44` use $B_{ov}$ for the RI factor. The book writes the
-  response matrices in bold, $\mathbf A$ and $\mathbf B$, and keeps the italic
-  $B^P_{ia}$ for the RI factor.
 
 ## Attenuated Coulomb operators {#notation-attenuated-coulomb-operators}
 
@@ -321,8 +291,7 @@ $\operatorname{terfc}(r; r_0)$ for the constrained form and
 $\operatorname{terfc}(r; r_0, \omega)$ for the free form.
 
 **Short and long range.** $s$ and $l$ denote the short- and long-range parts of
-an integral, $(ia|jb) = s + l$, as in `crates/ferric-mp2/theory.md` section 5 and
-`dissertation.txt:2826-2839`. Energies of a method evaluated with one part
+an integral, $(ia|jb) = s + l$, as in `dissertation.txt:2826-2839`. Energies of a method evaluated with one part
 carry the operator in brackets: $E_{\mathrm{OS}}[\operatorname{erfc}]$.
 
 **Units of $\omega$ and $r_0$.** Inside the Rust API both are atomic units:
@@ -352,9 +321,8 @@ it, followed by the atomic-unit value in parentheses: "$\omega = 0.420$
 Å$^{-1}$ ($0.2223$ Bohr$^{-1}$)". Equations never contain a unit conversion.
 
 **The letter $\omega$** has three meanings in the sources: the range-separation
-parameter, the frequency of a response function
-(`crates/ferric-rpa/theory.md:9`), and the Ewald splitting parameter
-(`crates/ferric-pbc/theory.md:22-23`). The derivation notes use it for the
+parameter, the frequency of a response function, and the Ewald splitting
+parameter (the `[cell] omega` key). The derivation notes use it for the
 first two in the same chapter
 (`wiki/papers/sr-mp2-lr-rpa-derivation.tex:359`, `:410`). The book assigns:
 
@@ -408,28 +376,13 @@ there.
   the difference. The book repeats the warning wherever both keys appear in
   one example.
 
-## Disagreements between `theory.md` files and the code {#notation-disagreements-between-files-code}
-
-These are defects in a `theory.md` file or a doc comment, found while writing
-this chapter. The book does not repeat them. They are listed for the
-derivation backfill (branch `docs/derivations-backfill`), which owns those
-files.
-
-| File | Statement | Code |
-|---|---|---|
-| `crates/ferric-scf/theory.md:11-12` | $D = \sum_i C C^{\mathsf T}$, no factor 2 | `crates/ferric-scf/src/rhf.rs:3738` builds $2 C C^{\mathsf T}$ |
-
-Line references drift with every edit to a source file. The book cites
-functions by name and resolves the line at build time; see `book/BUILD.md`.
-
 ## Typography {#notation-typography}
 
 - Matrices and tensors over compound indices are bold when the indices are
   suppressed: $\mathbf A$, $\mathbf B$, $\mathbf K$, $\boldsymbol\chi_0$.
 - Operators carry a hat: $\hat w$, $\hat T_2$.
 - Amplitudes are $t_{ij}^{ab}$ with occupied indices below. The closed-shell
-  antisymmetrized combination is $\tilde t_{ij}^{ab} = 2t_{ij}^{ab} - t_{ij}^{ba}$
-  (written $\tilde T = 2t - t^{\mathrm{swap}}$ in `crates/ferric-mp2/theory.md` section 7).
+  antisymmetrized combination is $\tilde t_{ij}^{ab} = 2t_{ij}^{ab} - t_{ij}^{ba}$.
 - Spin components: $E_{\mathrm{OS}}$ and $E_{\mathrm{SS}}$, with scaling
   coefficients $c_{\mathrm{OS}}$ and $c_{\mathrm{SS}}$.
 - Code names are in monospace and are never translated: `b_ov`, `nocc`,

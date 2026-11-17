@@ -337,7 +337,6 @@ $\alpha(iu)$ rows of the properties table):
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-rpa/theory.md`, "Dispersion: Casimir-Polder C6" | (@eq:pol-dielectric-form) to (@eq:pol-open-shell), the per-atom kernel |
 | `crates/ferric-rpa/src/response_modes.rs`, module documentation | the mode form (@eq:pol-mode-expansion) and the meaning of a mode |
 | `scripts/rpa_response_modes_sympy.py`, claims M1 to M4 | (@eq:pol-kernel-vs-casida) to (@eq:pol-open-shell) |
 | `scripts/rpa_c6_polarizability_sympy.py`, check `kernel-vs-casida` | the sum-over-excitations route |

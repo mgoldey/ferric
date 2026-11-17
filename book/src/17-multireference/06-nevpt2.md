@@ -395,7 +395,6 @@ and `Sr` gated on the core space (caught by the zeros anchor).
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-ci/theory.md`, "SC-NEVPT2" | definitions, orbitals, the classes and intermediates as coded, cost |
 | `scripts/nevpt2_sympy.py` | claims D, R, T and C |
 | Angeli, Cimiraglia and Malrieu, JCP 117, 9138 (2002) | the method |
 | `scripts/prototypes/nevpt2_derivation.md`, `nevpt2_proto.py` | the derivation note and the Wick-construction reference |

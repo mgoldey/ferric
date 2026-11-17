@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Proofs for strongly contracted NEVPT2 as ferric-ci codes it.
 
-Theory: crates/ferric-ci/theory.md, "SC-NEVPT2 (`src/nevpt2.rs`)" and "NEVPT
+Theory: `book/src/17-multireference/06-nevpt2.md#nevpt2-method` and "NEVPT
 RDMs (`src/rdm3.rs`)".
 Code: crates/ferric-ci/src/nevpt2.rs (norm_to_energy, the make_a* and make_k27
 intermediates, the eight class functions sr ... sir, the Blocks built in

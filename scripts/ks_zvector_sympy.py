@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Kohn-Sham Z-vector: the orbital-relaxation term of a post-SCF quantity.
 
-Derivation: crates/ferric-scf/theory.md, "Kohn-Sham Z-vector for post-SCF
-corrections". Code: crates/ferric-scf/src/zvector_ks.rs
+Derivation: `book/src/15-correlated-gradients/04-ks-zvector.md#ks-zvector-equations`. Code: crates/ferric-scf/src/zvector_ks.rs
 (relaxation_gradient_closed, relaxation_gradient_unrestricted,
 relaxation_gradient_roks, rotated_projector, RoksBlocks::product,
 roks_energy_weighted_density{,_derivative}).

@@ -310,6 +310,5 @@ of the screen.
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-dft/theory.md`, "Numerical Integration", "Semilocal $V_{xc}$ matrix elements" | the reference statement of the equations |
 | `crates/ferric-dft/src/xc_batch.rs` module documentation | the batched design, its measurements and the determinism rules |
 | Pople, Gill and Johnson, Chem. Phys. Lett. 199, 557 (1992) | the matrix-element form of the GGA potential |

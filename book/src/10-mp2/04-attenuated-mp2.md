@@ -321,7 +321,7 @@ closed-shell kernel.
 
 | Source | Used for |
 |---|---|
-| `crates/ferric-mp2/theory.md`, "4. Spin-component scaling" (terfc kernel), "5. Attenuated MP2", "5.1 Open-shell attenuated and spin-scaled MP2" | equations @eq:attenuated-mp2-1–@eq:attenuated-mp2-5, units, the per-basis $r_0$ table, open shell |
+| section @sec:scs-and-kappa-scs-mp2 (terfc kernel) | equations @eq:attenuated-mp2-1–@eq:attenuated-mp2-5, units, the per-basis $r_0$ table, open shell |
 | `crates/ferric-mp2/src/attenuated.rs`, `crates/ferric-mp2/src/terfc_r0.rs`, `crates/ferric-integrals/src/operator.rs`, `crates/ferric-integrals/src/qqr3.rs`, `crates/ferric-cli/src/config.rs` | defaults, keys, metric, screening |
 | Goldey and Head-Gordon, Chem. Phys. Lett. 608, 249 (2014) | the per-basis terfc $r_0$ table (`ferric-mp2/src/terfc_r0.rs::TERFC_R0_TABLE`) |
 | Goldey dissertation, chapter 2 (Table 2.1), chapter 3 (Eqs. 3.1–3.2, Table 3.1), chapter 5 (section 5.1), chapter 6 (Eq. 6.3) | definitions, the two same-sign errors, the scaling factor, parameters, summary table |

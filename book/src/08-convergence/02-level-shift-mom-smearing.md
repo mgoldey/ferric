@@ -303,6 +303,5 @@ do not take them.
 
 | Source | Used for |
 |---|---|
-| `crates/ferric-scf/theory.md`, "Level shift, MOM and Fermi smearing" | the equations |
 | `scripts/scf_diis_sympy.py` | verified equations @eq:scf-level-shift and @eq:scf-fermi-level |
 | `crates/ferric-scf/src/mom.rs`, `crates/ferric-scf/src/smearing.rs` | MOM and the Fermi level |

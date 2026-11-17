@@ -10,8 +10,8 @@ ferric exports that still carry information about the density, and they are
 the inputs of ESP-conditioned models such as the one in section @sec:esp-conditioning.
 
 All of them are functions of the reference density $D = 2C_oC_o^{\mathsf T}$
-and of nothing else. No crate `theory.md` covers them yet, so this section is
-the reference, read from the loops in `crates/ferric-scf/src/properties.rs`.
+and of nothing else. This section states them as read from the loops in
+`crates/ferric-scf/src/properties.rs`; no proof script covers them.
 Section @sec:atomic-partitions derives the charge schemes; this section states what each
 exported number is and how far it is checked.
 
@@ -191,7 +191,7 @@ unchanged under translation, to below $10^{-3}\,e$
 
 ![Charges by scheme and the polarizability split for water/cc-pVDZ](../figures/27-ml/charges_and_alpha.svg)
 
-*Figure 27.1. Water/cc-pVDZ: (a) O and H charges in the five schemes;
+*Water/cc-pVDZ: (a) O and H charges in the five schemes;
 (b) the isotropic static α as $\sum_A\alpha^A$ plus $\alpha_{\mathrm{CT}}$
 (section @sec:polarizability-pdep-c6). Made by `book/src/figures/27-ml/charges_and_alpha.py`.*
 

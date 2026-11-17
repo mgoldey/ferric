@@ -328,7 +328,6 @@ the $\mathbf G = 0$-dropped kernel, and the build stops with that message.
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-pbc/theory.md`, §7 | the fit, the split, the $k$-point form |
 | `scripts/pbc_rsgdf_sympy.py` | the proof |
 | H. Ye and T. C. Berkelbach, *J. Chem. Phys.* **154**, 131104 (2021) | range-separated GDF |
 | B. I. Dunlap, *J. Mol. Struct. THEOCHEM* **529**, 37 (2000) | the robust fit |

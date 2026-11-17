@@ -314,7 +314,6 @@ the PDEP truncation when it is enabled.
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-gw/theory.md`, "Analytic continuation" and "Quasiparticle equation, Newton solve, renormalization" | the derivations |
 | `scripts/gw_self_energy_sympy.py`, claims 4, 5, 6 | the proofs |
 | Vidberg and Serene, *J. Low Temp. Phys.* **29**, 179 (1977) | Thiele–Padé continuation |
 | Zhu and Chan, *J. Chem. Theory Comput.* **17**, 727 (2021) | the `gw_ac` conventions matched here |

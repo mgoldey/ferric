@@ -516,7 +516,8 @@ spherical-harmonic shells (section @sec:electrostatics-and-charges-five-charge-s
 | A partition of a molecular response | the same weights as the bra: Becke by default for TS and MBD, Hirshfeld for PDEP | partition of unity gives (@eq:part-ct-sum-rule) |
 
 The five charge rules are five definitions of an atomic charge, and they
-disagree by design (Figure 27.1 shows water). Choose one for a dataset and
+disagree by design (the figure in section
+@sec:electrostatics-and-charges-five-charge-schemes shows water). Choose one for a dataset and
 record it with the arrays. `c6_partition` is written into the file for the
 per-atom polarizability arrays; no equivalent tag exists for the charges.
 
@@ -555,9 +556,8 @@ sum rule (@eq:part-ct-sum-rule) the proof above.
 
 | Source | Used for |
 |---|---|
-| `crates/ferric-dft/theory.md`, "Becke partition and its nuclear derivative" | the Becke weight and its proof |
-| `crates/ferric-rpa/theory.md`, "Dispersion: Casimir-Polder C6" | the per-atom bra and equation (@eq:part-ct-sum-rule) |
-| `crates/ferric-scf/theory.md`, "Atomic charges" | the derivation of the charge rules and the ESP fits |
+| section @sec:grids-becke-partition | the Becke weight and its proof |
+| section @sec:polarizabilities-from-dielectric-modes-dielectric-form | the per-atom bra and equation (@eq:part-ct-sum-rule) |
 | `scripts/atomic_charges_sympy.py` | the proofs, claims A1 to A4 |
 | `crates/ferric-scf/src/properties.rs` | (@eq:atomic-partitions-1), (@eq:charges-population-sums), (@eq:charges-chelpg-bordered), (@eq:charges-resp-fixed-point), the lattice and restraint parameters |
 | `crates/ferric-scf/src/properties/hirshfeld_grid.rs` | (@eq:atomic-partitions-3), the proatom and the grid |

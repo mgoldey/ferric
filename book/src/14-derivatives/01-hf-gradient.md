@@ -309,7 +309,6 @@ integrals.
 
 | Source | Used for |
 |---|---|
-| `crates/ferric-scf/theory.md`, "Hartree-Fock nuclear gradient" | the derivation, the $\Gamma$ and $W$ table, the toy-system check |
 | `scripts/hf_gradient_sympy.py`, claims G1, G2, G3, G5, S1 | verified equations @eq:scf-grad-hf and @eq:scf-grad-pulay |
 | `crates/ferric-scf/src/gradient.rs` | the algorithm, refusals and options |
 | `site/src/reference/validation.md` | the anchor rows |

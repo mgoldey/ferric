@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """CCD, CCSD and EOM-CCSD working equations against a brute-force e^{-T} H e^{T}.
 
-Theory: crates/ferric-cc/theory.md, sections "CCD", "CCSD" and
-"EE-EOM-CCSD singlets, closed shell". Every check asserts; the script exits
+Theory: `book/src/16-coupled-cluster/01-ccd-ccsd-spin-orbital.md#ccd-ccsd-spin-orbital-equations`, `book/src/16-coupled-cluster/04-eom-ccsd.md#eom-ccsd-equations`. Every check asserts; the script exits
 nonzero on any failure and prints "FAIL [label]".
 
 Model. Five spatial orbitals (two occupied, three virtual), ten spin orbitals

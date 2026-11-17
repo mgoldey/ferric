@@ -425,7 +425,7 @@ Recorded gaps (no proof yet):
 | Gap | Reason |
 |---|---|
 | pbc-ks | the energy functional, Fock convention, exxdiv and RS-GDF J/K are proven with pbc-hf (theory sections 7 and 8); the periodic XC grid quadrature and the XC force and stress terms have no sympy proof |
-| xtb | no theory.md derivation of what ferric adds over the tblite reference |
+| xtb | no book derivation of what ferric adds over the tblite reference |
 
 ## Unverified equations {#appendix-a-unverified}
 

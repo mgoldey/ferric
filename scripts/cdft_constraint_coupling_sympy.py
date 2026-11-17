@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Proofs: the cDFT constraint (Fock shift, envelope theorem) and the Wu-Van Voorhis coupling.
 
-Derivation: crates/ferric-dft/theory.md, section "Constrained DFT and the
-diabatic coupling". The code transcribed here:
+Derivation: `book/src/09-kohn-sham/07-cdft.md#cdft-equations`. The code transcribed here:
 
   * ferric-scf/src/cdft_driver.rs, the Fock modifier of the inner UHF solve:
       Total:    F_a += lam W,  F_b += lam W,  N = Tr[W (D_a + D_b)]

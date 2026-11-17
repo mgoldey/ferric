@@ -11,8 +11,8 @@ tell a missing array from a zero one. This section says how ferric's writers
 provide each: which array each quantity becomes, what the writer refuses to
 write, and the grid format for volumetric fields.
 
-The per-array tables, with shapes and units, are the schema of record in
-`crates/ferric-export/theory.md`. The consumer's reading of each array,
+The per-array tables, with shapes and units, are in section @sec:npz-bundle-keys.
+The consumer's reading of each array,
 including its behaviour under rotation, is in sections @sec:npz-bundle to @sec:python-cube-provenance. This
 section does not repeat them.
 
@@ -202,7 +202,7 @@ rather than assuming a layout.
 
 | Source | Used for |
 |---|---|
-| `crates/ferric-export/theory.md` | the key tables, the enabling knobs and the cube grid |
+| section @sec:npz-bundle-keys | the key tables |
 | `crates/ferric-export/src/ml.rs` | the writer, its refusals and its dtypes |
 | `crates/ferric-export/src/cube.rs` | the cube layout |
 | `crates/ferric-integrals/src/ao_grid.rs::GridSpec` | the grid struct and `bounding_box` |

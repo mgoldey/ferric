@@ -147,10 +147,7 @@ smoke check that the three energies are wired, not a measurement of $X$.
 
 | Source | Used for |
 |---|---|
-| `crates/ferric-mp2/theory.md`, "5. Attenuated MP2" ("Range split") | equation @eq:mp2-rs-cross-term |
+| section @sec:attenuated-mp2-energy ("Range split") | equation @eq:mp2-rs-cross-term |
 | `crates/ferric-mp2/src/attenuated.rs` | the decomposition, the test |
 | `scripts/mp2_variant_identities.py`, claim 4 | verified box |
 | Goldey, Belzunces and Head-Gordon, JCTC 11, 4159 (2015), Fig. 1 and section 2 | the S66 sizes of the long-range and mixed terms; the reason they are replaced together |
-
-Changes from the sources: none; theory.md and (@eq:mp2-rs-cross-term) both use the positive
-$\Delta$ with an explicit minus sign.

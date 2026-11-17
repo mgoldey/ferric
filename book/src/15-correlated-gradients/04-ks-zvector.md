@@ -13,8 +13,7 @@ Hartree–Fock one.
 
 ferric provides it as one module, `ferric_scf::zvector_ks`, for RKS, UKS and
 ROKS references. Its only production caller is the MBD@rsSCS gradient. The
-derivation is `crates/ferric-scf/theory.md`, "Kohn-Sham Z-vector for post-SCF
-corrections", and the proof is `scripts/ks_zvector_sympy.py`.
+derivation is section @sec:ks-zvector-equations, and the proof is `scripts/ks_zvector_sympy.py`.
 
 | Symbol | Meaning | Code name |
 |---|---|---|
@@ -432,7 +431,6 @@ ignored test `measure_open_shell_hessian_null_mode`.
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-scf/theory.md`, "Kohn-Sham Z-vector for post-SCF corrections" | (@eq:ks-zvector-1), (@eq:ks-zvector-contraction), the open-shell blocks, the solve |
 | `scripts/ks_zvector_sympy.py`, claims Z0 to Z4 | the proofs |
 | module documentation of `crates/ferric-scf/src/zvector_ks.rs` | the scope and refusals |
 | section @sec:lagrangian-zvector | the Lagrangian argument |

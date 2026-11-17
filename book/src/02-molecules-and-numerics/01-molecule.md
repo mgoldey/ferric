@@ -268,9 +268,4 @@ underflow when the freeze covers every occupied orbital.
 
 | Source | Used for |
 |---|---|
-| `crates/ferric-core/theory.md`, "1. Molecular Representation & Coordinate Conventions" | the $E_{\mathrm{nn}}$ formula and the charge and multiplicity definitions |
 | `crates/ferric-core/src/mol.rs`, `crates/ferric-core/src/units.rs` | everything above, read against the code |
-
-Changes from the sources: ghosts, effective charges, the
-$N_\alpha$ rule and the frozen-core table are in the code and not in
-`theory.md`.

@@ -299,7 +299,6 @@ passes the spin-orbital comparison; only the PySCF test catches it
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-cc/theory.md`, "Unrestricted CCSD and CCSD(T)" | the spin blocks, the $t_2$ sign table, the energy split and the class weights |
 | PySCF `cc/uccsd.py::update_amps`, `cc/uccsd_t_slow.py` | the residual factorization and the per-class (T) reference |
 | `scripts/cc_uccsd_spin_blocks_sympy.py` | claims 1–5 |
 | `scripts/validation/gen_uccsd.py` | the PySCF DF-UCCSD and UCCSD(T) references |

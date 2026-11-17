@@ -2,7 +2,7 @@
 """Sympy proofs of the identities ferric-gw's self-energy code relies on.
 
 Each claim names the Rust function it checks. Theory and notation:
-crates/ferric-gw/theory.md. Every claim asserts; the script exits nonzero on
+the GW chapter, book/src/19-gw-bse/. Every claim asserts; the script exits nonzero on
 any mismatch. Negative controls (a deliberately wrong variant that must
 NOT satisfy the identity) are included where a pass could otherwise be vacuous.
 
@@ -55,7 +55,7 @@ Independent routes: claim 2 integrates the definition by 40-digit quadrature
 at complex z; claim 2b compares the product rule with the residue closed form;
 claim 4 runs Newton to the exact root; claims 6-8 use exact rationals.
 
-Open shell (theory.md section 9): only the spin-summed dielectric (claim 1,
+Open shell (`book/src/19-gw-bse/07-open-shell-gw.md#open-shell-gw-spin-summed-screening-per`): only the spin-summed dielectric (claim 1,
 prefactor 2 per spin) is open-shell specific. The per-spin Sigma_c is the same
 integral over that spin's MOs, so claims 2-4 cover it; the per-spin mid-gap
 eps_F and the U-COHSEX drivers are not checked separately.

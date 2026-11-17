@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Sympy/numpy checks of the RPA polarizability and Casimir-Polder C6 code.
 
-Theory and notation: crates/ferric-rpa/theory.md, section "Dispersion:
-Casimir-Polder C6" and its "Per-atom polarizability" part. Every check prints
+Theory and notation: `book/src/21-polarizabilities/01-polarizabilities-from-dielectric-modes.md#polarizabilities-from-dielectric-modes-dielectric-form` and its "Per-atom polarizability" part. Every check prints
 "FAIL [<name>]" when it fails, and the script exits nonzero if any did.
 
   1  Single pole (sympy, dispersion/mbd.rs ts_atom_params): with

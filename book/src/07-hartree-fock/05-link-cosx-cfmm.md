@@ -318,7 +318,6 @@ same page records the LinK timings as being re-measured.
 
 | Source | Used for |
 |---|---|
-| `crates/ferric-scf/theory.md`, "LinK and COSX exchange", "CFMM: the near and far fields as coded" | the equations |
 | `scripts/scf_jk_builders_sympy.py` | verified equation @eq:scf-cosx-overlap-fit |
 | `site/src/methods/scf.md`, "Choosing how exchange is built" | the measured errors and times |
 | `site/src/reference/validation.md` | the COSX anchor |

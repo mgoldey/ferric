@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Sympy/numpy checks of the many-body dispersion (MBD) code.
 
-Theory: crates/ferric-rpa/theory.md, "Many-body dispersion (MBD@rsSCS)".
+Theory: `book/src/25-dispersion/03-mbd.md#mbd`.
 Code: crates/ferric-rpa/src/dispersion/mbd_rsscs.rs (MBD@rsSCS: t_bare, t_gg,
 rsscs_screen, rsscs_forward, rsscs_backward, t_bare_vjp, t_gg_vjp,
 fermi_partials, mbd_rsscs_gradient), dispersion/mbd_scf.rs

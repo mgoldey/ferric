@@ -357,6 +357,5 @@ tensor) and `crates/ferric-scf/tests/dfj_f32_storage.rs` (f32 storage).
 
 | Source | Used for |
 |---|---|
-| `crates/ferric-scf/theory.md`, "Density-fitted Coulomb and exchange (RI-J, RI-K, Split-RI-J)" | the equations |
 | `scripts/scf_jk_builders_sympy.py` | verified equations @eq:scf-rij-packed to @eq:scf-rik-routes |
 | `site/src/methods/scf.md`, "Choosing how exchange is built" | routes and the f32 statement |

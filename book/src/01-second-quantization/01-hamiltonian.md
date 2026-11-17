@@ -95,8 +95,7 @@ pair of electrons twice.
 The CAS-CI code builds this form, and its density matrices follow
 the same pairing of spin labels: $\gamma_{pq} = \langle E_{pq}\rangle$ and
 $\Gamma_{pqrs} = \sum_{\sigma\tau}\langle a^\dagger_{p\sigma} a^\dagger_{r\tau}
-a_{s\tau} a_{q\sigma}\rangle$ (`crates/ferric-ci/theory.md`, "Reduced density
-matrices").
+a_{s\tau} a_{q\sigma}\rangle$ (section @sec:rdms-1-2-rdm).
 
 ### From spatial to spin-orbital form
 
@@ -415,15 +414,14 @@ It counts only within one spin's string. For an $\alpha$ operator that is
 the full sign. A $\beta$ operator would also cross all $N_\alpha$ $\alpha$
 creators, but $\beta$ operators come in creator–annihilator pairs in every
 term of $\hat H$, so that factor appears an even number of times and
-cancels (`crates/ferric-ci/theory.md`, "Determinants and the phase
-convention").
+cancels (section @sec:determinants-convention).
 
 ## Sources
 
 | Source | Used for |
 |---|---|
 | Dissertation, chapter 1, section 1.1, Eqs. 1.3–1.7 and 1.10 | the Born–Oppenheimer separation, the determinant and the Hartree–Fock energy |
-| `crates/ferric-ci/theory.md`, "Determinants and the phase convention", "Reduced density matrices" | form (@eq:hamiltonian-1) and its density matrices |
+| sections @sec:determinants-convention and @sec:rdms-1-2-rdm | form (@eq:hamiltonian-1) and its density matrices |
 | `crates/ferric-mp2/src/spinorbital.rs` | the construction (@eq:hamiltonian-3) |
 | `scripts/oomp2_mp3_identities_sympy.py` | verified equation @eq:so-ref-energy |
 

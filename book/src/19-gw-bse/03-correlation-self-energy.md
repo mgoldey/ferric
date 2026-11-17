@@ -266,6 +266,5 @@ than the matched settings, within 10 meV for HOMO and LUMO.
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-gw/theory.md`, "Correlation self-energy on the imaginary axis" | the integral, the closed form, the product rule |
 | `scripts/gw_self_energy_sympy.py`, claims 2 and 2b | the proofs |
 | Ren, Rinke, Blum *et al.*, *New J. Phys.* **14**, 053020 (2012) | RI GW on the imaginary axis |

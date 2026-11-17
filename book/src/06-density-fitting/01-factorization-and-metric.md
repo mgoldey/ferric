@@ -276,7 +276,7 @@ eigendecomposition: $\le 5.8\times10^{-11}$ Ha (erf) and $3.5\times10^{-11}$ Ha
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-mp2/theory.md`, "1. Density fitting" | (@eq:factorization-and-metric-1), the Cholesky default |
+| section @sec:closed-shell-ri-mp2-density-fitting-making-affordable | (@eq:factorization-and-metric-1), the Cholesky default |
 | `scripts/rpa_drpa_pdep_sympy.py` | factor freedom (checks `ri-factor-freedom`, `sylvester`) |
 | Dissertation, chapter 1 (section 1.4.1) and chapter 4 (Eq. 4.5) | the RI approximation with $V^{-1/2}$ |
 

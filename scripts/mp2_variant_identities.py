@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Numpy checks of the algebraic identities ferric-mp2's MP2 variants rely on.
 
-Theory and notation: crates/ferric-mp2/theory.md. Every claim builds random
+Theory and notation: the MP2 chapter, book/src/10-mp2/. Every claim builds random
 inputs with the symmetry the code assumes (real orbitals, density-fitted
 (pq|rs) = sum_P B^P_pq B^P_rs), checks the identity to 1e-10 relative, and
 carries a negative control: a plausible wrong variant that must NOT satisfy

@@ -22,6 +22,5 @@ over space, evaluated on a grid.
   computes the electron-transfer coupling between two constrained states.
 
 The XC nuclear gradient is section @sec:xc-gradient, the KS Z-vector section @sec:ks-zvector and
-TDDFT chapter @sec:tddft. Each section derives its equations in full;
-`crates/ferric-dft/theory.md` keeps the terse reference version, and the
-verified-equation boxes tie both to the sympy proofs and the code.
+TDDFT chapter @sec:tddft. Each section derives its equations in full, and
+the verified-equation boxes tie them to the sympy proofs and the code.

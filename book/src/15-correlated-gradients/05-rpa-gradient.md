@@ -421,9 +421,8 @@ above, not by the script.
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-rpa/theory.md`, "Analytic nuclear gradient (closed-shell RI-dRPA, HF reference)" and its subsections | (@eq:rpa-grad-densities)–(@eq:rpa-gradient-3), $W$, the frozen-core block |
 | `scripts/rpa_gradient_sympy.py` | the proofs |
-| Burow, Bates, Furche and Eshuis, JCTC 10, 180 (2014) | the frequency-integrated relaxed-density route (cited in `theory.md`) |
+| Burow, Bates, Furche and Eshuis, JCTC 10, 180 (2014) | the frequency-integrated relaxed-density route |
 | Rekkedal et al., JCP 139, 081101 (2013) | the ring-CCD Lagrangian, which gives the same gradient for the direct-ring energy; not used |
 
 **Known limits (2026-11-15).** Closed-shell RHF reference, full rank, dense

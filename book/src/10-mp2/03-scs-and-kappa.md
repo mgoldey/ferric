@@ -67,9 +67,7 @@ spin adaptation of section @sec:closed-shell-ri-mp2.
 
 SCS-MP2 has an analytic gradient (`run_optimize(method="scs-mp2")`): the
 relaxed density weights the opposite-spin part by $c_{\mathrm{OS}}$ and the
-rest by $c_{\mathrm{SS}}$. Its derivation is chapter 9's gradient section
-(`crates/ferric-mp2/theory.md`, "9.2 Spin-component-scaled (SCS-MP2)
-gradient").
+rest by $c_{\mathrm{SS}}$. Its derivation is section @sec:rimp2-gradient-scs-mp2.
 
 ## κ-regularized MP2 {#scs-and-kappa-kappa-regularized-mp2}
 
@@ -183,7 +181,7 @@ Figures from `site/src/reference/validation.md`.
 
 | Source | Used for |
 |---|---|
-| `crates/ferric-mp2/theory.md`, "2. Closed-shell RI-MP2" (κ), "4. Spin-component scaling" | equations @eq:scs-and-kappa-1 and @eq:mp2-kappa-factor, the κ limits |
+| section @sec:closed-shell-ri-mp2-energy-splits (κ) | equations @eq:scs-and-kappa-1 and @eq:mp2-kappa-factor, the κ limits |
 | `crates/ferric-mp2/src/scs.rs`, `crates/ferric-mp2/src/rimp2.rs` | defaults, the κ factor and its validation |
 | Goldey dissertation, chapter 5, section 5.1, Eqs. 5.1–5.3 | SCS and SCS(MI) coefficients, the quoted imbalance |
 | `site/src/reference/validation.md` | anchors |

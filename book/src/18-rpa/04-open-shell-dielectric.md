@@ -187,8 +187,7 @@ The last row is the closed-shell limit of @sec:open-shell-dielectric-spin-summed
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-rpa/theory.md`, "Open-Shell (Spin-Summed) Dielectric" | (@eq:open-shell-dielectric-1), (@eq:rpa-updep-spin-summed) |
 | `scripts/rpa_drpa_pdep_sympy.py`, check group 8 | the proof |
 
 **Known limits (2026-11-15).** Energy only; no gradient. CLI only. The
-open-shell driver never takes a log-det branch (`theory.md` states this).
+open-shell driver never takes a log-det branch.

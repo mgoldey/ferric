@@ -170,6 +170,5 @@ From `site/src/reference/validation.md` (the COHSEX row):
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-gw/theory.md`, "COHSEX: the static limit" | the derivation |
 | `scripts/gw_self_energy_sympy.py`, claim 3 | the proof |
 | Hedin, *Phys. Rev.* **139**, A796 (1965) | GW and COHSEX |

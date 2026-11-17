@@ -188,7 +188,7 @@ with no external anchor for the counterpoise path. Figures from
 
 | Source | Used for |
 |---|---|
-| `crates/ferric-mp2/theory.md`, "4. Spin-component scaling", "5. Attenuated MP2", "5.1 Open-shell attenuated and spin-scaled MP2" | equation @eq:mp2-scs2terfc-limits, limits, the one-row table, open shell |
+| sections @sec:scs-and-kappa-scs-mp2, @sec:attenuated-mp2-energy and @sec:attenuated-mp2 | equation @eq:mp2-scs2terfc-limits, limits, the one-row table, open shell |
 | `crates/ferric-mp2/src/scs.rs`, `crates/ferric-mp2/src/terfc_r0.rs` | defaults, validation of the lengths, assembly, the basis rules |
 | Goldey dissertation, chapter 5 (sections 5.1, 5.2, Eqs. 5.6, 5.7, Tables 5.1, 5.2) | motivation, definition, fit, summary table |
 | `scripts/mp2_family_sympy.py`, parts C and D | verified box |

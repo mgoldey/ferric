@@ -310,6 +310,5 @@ files of `crates/ferric-pbc/tests/`.
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-pbc/theory.md`, §5 | the strain derivatives |
 | `scripts/pbc_ewald_pairft_stress_sympy.py` | the proof (S5) |
 | O. H. Nielsen and R. M. Martin, *Phys. Rev. B* **32**, 3780 (1985) | the stress theorem |

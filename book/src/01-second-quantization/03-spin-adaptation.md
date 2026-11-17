@@ -429,13 +429,10 @@ $S_{AB}$ above.
 
 | Source | Used for |
 |---|---|
-| `crates/ferric-mp2/theory.md`, "Conventions" and "2. Closed-shell RI-MP2" | the interleaved ordering and the closed-shell pair sums |
-| `crates/ferric-cc/theory.md`, header and "CCD" | the spatial and spin-orbital conventions; Eq. (@eq:so-cc-amplitude-expansion) in the CCD section |
+| chapter @sec:coupled-cluster and section @sec:ccd-ccsd-spin-orbital-equations | the spatial and spin-orbital conventions; Eq. (@eq:so-cc-amplitude-expansion) in the CCD equations |
 | `scripts/mp2_variant_identities.py`, `scripts/mp2_family_sympy.py` | verified equations @eq:so-mp2-spin-adaptation and @eq:so-ump2-blocks |
 | `scripts/cc_triples_weights_and_linlccd_spin_adaptation_sympy.py` | verified equation @eq:so-cc-amplitude-expansion |
 | `scripts/casci_slater_condon_phases_sympy.py` | verified equation @eq:so-ordering-similarity |
 
 Changes from the sources: denominators are the positive $\Delta$ with an
 explicit minus sign, and the exchange partner is written $(ib|ja)$.
-`crates/ferric-mp2/theory.md` writes the negative $D$ and the shorthand
-$(ia|jb)^\times$.

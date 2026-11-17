@@ -311,12 +311,10 @@ the references in this table, not by a proof script.
 
 | Source | Used for |
 |---|---|
-| `crates/ferric-rpa/theory.md`, "Dispersion: Casimir-Polder C6" | (@eq:casimir-polder-c6-1)–(@eq:disp-c6-kernel-vs-casida) |
+| section @sec:polarizabilities-from-dielectric-modes-dielectric-form | (@eq:casimir-polder-c6-1)–(@eq:disp-c6-kernel-vs-casida) |
 | `crates/ferric-rpa/src/dispersion.rs`, `crates/ferric-rpa/src/properties/per_atom.rs`, `crates/ferric-rpa/src/dispersion/free_atom_ref.rs`, `crates/ferric-rpa/src/property_bundle.rs` | the loops, the free-atom data, the TS volume ratios |
 | `scripts/rpa_c6_polarizability_sympy.py` | verified boxes |
 | book section @sec:polarizability-pdep-c6 | the exported arrays and their conventions |
 
-Changes from the sources: none to notation; theory.md and this section both
-write the imaginary frequency $u$ and the orbital-energy gap $\Delta_i^a$.
-theory.md writes the TS frequency as $u_A$; this section writes $\omega_A$,
-as the code does.
+This section writes the imaginary frequency $u$, the orbital-energy gap
+$\Delta_i^a$ and the TS frequency $\omega_A$, as the code does.

@@ -232,7 +232,6 @@ eigenvalue error would be second order in $\|r\|$.
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-cc/theory.md`, "EE-EOM-CCSD singlets, closed shell" | the operator, the norm and the solver |
 | Stanton and Bartlett, JCP 98, 7029 (1993); PySCF `cc/eom_rccsd.py` | the method and the closed-shell intermediates |
 | `scripts/cc_ccsd_eom_brute_force_sympy.py` | the Jacobian, CIS and norm checks |
 

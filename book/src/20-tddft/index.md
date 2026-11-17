@@ -19,6 +19,4 @@ solves the spin-conserving problem of UHF and UKS references and gives
 $\langle S^2\rangle$ for each root.
 
 The kernel itself is derived in section @sec:fxc, and the matrix
-$\mathbf A + \mathbf B$ is the orbital Hessian of sections @sec:second-order and @sec:stability. Every equation of
-the chapter is also written, in terse form, in
-`crates/ferric-tddft/theory.md`.
+$\mathbf A + \mathbf B$ is the orbital Hessian of sections @sec:second-order and @sec:stability.

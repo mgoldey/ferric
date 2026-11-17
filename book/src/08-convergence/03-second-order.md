@@ -416,12 +416,10 @@ is the anchor that a scale or sign error in the product would fail.
 | the RHF Newton product is documented as exact and FD-validated | it is exact at canonical orbitals only; off them it needs `offdiag_gap_correction` |
 | the Davidson `converged` flag and the `newton_trigger` docs | state the condition the code tests |
 | stale text in `crates/ferric-scf/src/rohf.rs` describing the Newton route | update to the current PCG route |
-| `crates/ferric-scf/theory.md` says Newton runs PCG on $(\mathbf H + \mu)\kappa = -g$ | the PCG residual is $-g - \mathbf H\kappa$; $\mu$ enters only the preconditioner and $\kappa^0$ |
 
 ## Sources
 
 | Source | Used for |
 |---|---|
-| `crates/ferric-scf/theory.md`, "Orbital Hessians: Newton, augmented Hessian, trust region" | the equations |
 | `scripts/scf_orbital_hessian_sympy.py` | verified equations @eq:scf-orbital-hessian and @eq:scf-ah-step |
 | `crates/ferric-scf/src/trah.rs` | the radius table and the $\alpha$ search |

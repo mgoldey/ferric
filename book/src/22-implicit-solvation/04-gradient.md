@@ -323,7 +323,6 @@ tessera-site and nuclear-tessera terms) each fail the FD tests.
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-pcm/theory.md`, section 8 | the three parts of the derivative and their kernels |
 | `scripts/pcm_ief_sympy.py`, claim 8 | the response formula on a model |
 | `crates/ferric-pcm/tests/pcm_gradient.rs`, `crates/ferric-scf/tests/pcm_gradient.rs` | FD at fixed density and at SCF level |
 
@@ -335,4 +334,4 @@ tessera-site and nuclear-tessera terms) each fail the FD tests.
   the default. On C1 methanol at Lebedev 50 (fixed model density) gradient
   components reach about 10 Ha/Bohr, and central differences are not yet
   in their $O(h^2)$ regime at $h = 2.5\times10^{-4}$
-  (`crates/ferric-pcm/theory.md`, section 8.3).
+  (section @sec:gradient-numerical-anchors).

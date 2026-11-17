@@ -320,7 +320,6 @@ build with itself. They need the store disabled to test what their names say.
 
 | Source | Used for |
 |---|---|
-| `crates/ferric-scf/theory.md`, "Direct and incremental J/K builds" | the equations |
 | `scripts/scf_jk_builders_sympy.py` | verified equation @eq:scf-incremental-jk |
 | `crates/ferric-scf/src/quartet_scatter.rs` | the loop, the screen, the scatter |
 | `crates/ferric-scf/src/direct_jk.rs` | the incremental gates and the open-shell measurement note |

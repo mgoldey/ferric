@@ -495,7 +495,6 @@ of the reference model, not an analytic reference.
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-scf/theory.md`, "Thole polarizable embedding" | the derivation |
 | `scripts/thole_polarizable_sympy.py` | the proofs, claims T1 to T6 |
 | `crates/ferric-scf/src/polarizable.rs` | the model, the integrals, the gradients |
 | `crates/ferric-scf/tests/validation_thole.rs`, `crates/ferric-scf/tests/qmmm_polarizable.rs` | the PySCF-prototype comparison and the FD checks |
@@ -522,5 +521,5 @@ of the reference model, not an analytic reference.
   finite-difference cross-check.
 - $\partial\mathsf T/\partial\mathbf R$ is a central difference of the closed-form tensor
   with $h = 10^{-6}$ Bohr, whose rounding error is about $\epsilon\lvert\mathsf T\rvert/h$;
-  the analytic form $\partial_a\partial_b\partial_k\phi$ is in `theory.md` and not
-  in the code.
+  the analytic form $\partial_a\partial_b\partial_k\phi$ is stated in section
+  @sec:polarizable-embedding-gradient and not implemented.

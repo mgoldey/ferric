@@ -184,5 +184,4 @@ long-range term moves the roots by 2.9 to 6.0 eV.
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-tddft/theory.md`, section 8 | the split, the erf-metric fit, the exact limits and the matrix-free products |
-| `crates/ferric-dft/theory.md`, "Exact exchange in hybrid and range-separated hybrid functionals" | the SCF exchange (section @sec:hybrids) |
+| section @sec:hybrids-exact-exchange | the SCF exchange (section @sec:hybrids) |

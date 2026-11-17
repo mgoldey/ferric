@@ -124,6 +124,6 @@ reveal.
 | `crates/ferric-core/src/certificate.rs` | the certificate fields and grade rules |
 | `site/src/reference/validation.md`, "Certificates" | the anchor scope of `pdep-rpa` |
 
-Changes from the sources: `crates/ferric-export/theory.md` §2 calls the
+Changes from the sources: section @sec:export-schemas-gaussian-cube-grid calls the
 eigenpotential cube the potential $V_\alpha$; the cube holds the mode's
 charge density (@sec:python-cube-provenance-cube-files).

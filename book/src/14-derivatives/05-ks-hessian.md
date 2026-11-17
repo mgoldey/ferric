@@ -58,8 +58,8 @@ the message "tau-dependent XC nuclear derivatives" from
 the case $f_\sigma = 0$: then $\mathbf G = 0$ and every $\mathbf g_x$ term
 drops out. The first-order identities used here, $V_{xc} = \partial
 E_{xc}/\partial D$, the per-point linearization of $f_{xc}$ and the Becke
-weight derivatives, are proved in the scripts listed in
-`crates/ferric-dft/theory.md`.
+weight derivatives, are proved in the scripts cited by the verified boxes of
+chapter @sec:kohn-sham and section @sec:xc-gradient.
 
 ### How the density moves with a nucleus
 
@@ -513,7 +513,6 @@ is not isolated, so the fixed-grid agreement is stated at the FD level.
 
 | Source | Used for |
 |---|---|
-| `crates/ferric-scf/theory.md`, "Kohn-Sham XC Hessian terms (fixed and moving grid)" | equations, the test table |
 | `scripts/ks_fixed_grid_hessian_sympy.py`, `scripts/uks_xc_hessian_sympy.py` | verified equations @eq:ks-hess-fixed-grid to @eq:ks-hess-polarized |
 | `scripts/dft_becke_weight_hessian_sympy.py`, claims W1 and W2; `crates/ferric-dft/src/becke_hessian.rs` module documentation | verified equation @eq:ks-hess-becke-second-derivative |
 | `crates/ferric-scf/src/hessian/ks.rs` module and `embedding_refusal` documentation | the ECP, external-potential and grid rows of @sec:ks-hessian-options-change-equation |

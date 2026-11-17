@@ -284,6 +284,5 @@ Further tests: `crates/ferric-gw/tests/bse_oscillator_strength.rs` and
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-gw/theory.md`, "BSE-TDA" | the definition, the singlet reduction, the oscillator strength |
 | `scripts/gw_bse_rpax_sympy.py`, claims S1, S2, B1 to B4 | the proofs |
 | Blase, Duchemin and Jacquemin, *Chem. Soc. Rev.* **47**, 1022 (2018) | BSE for molecules |

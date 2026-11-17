@@ -373,7 +373,6 @@ cannot be analysed (no VV10 response kernel), and the result says so.
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-dft/theory.md`, "Exact exchange in hybrid and range-separated hybrid functionals" | the reference statement of the equations and the libxc table |
 | `crates/ferric-scf/src/omega_tuning.rs` module documentation | the cation-branch problem and the measurements behind the defaults |
 | Yanai, Tew and Handy, Chem. Phys. Lett. 393, 51 (2004) | the CAM form |
 | Stein, Kronik and Baer, J. Am. Chem. Soc. 131, 2818 (2009) | the tuning condition |

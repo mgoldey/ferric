@@ -38,9 +38,8 @@ boxes and the code references.
 
 **Math delimiters.** The existing site uses mdBook's built-in MathJax, which
 needs `\\(` and `\\[` in the source (`site/book.toml:22-25`,
-`site/src/methods/dft-derivations.md:13`). The `theory.md` files use `$` and
-`$$`, which GitHub renders and pandoc reads. The book source uses `$` and
-`$$`. For the mdBook output the preprocessor rewrites them to the escaped
+`site/src/methods/dft-derivations.md:13`). The book source uses `$` and
+`$$`, which GitHub renders and pandoc reads. For the mdBook output the preprocessor rewrites them to the escaped
 MathJax delimiters and protects underscores and backslashes inside math from
 the Markdown parser. This keeps the site's reason for avoiding the KaTeX
 preprocessor: no extra `cargo install` in CI.
@@ -288,6 +287,6 @@ equation or a box). `--check` fails on a duplicate label, an undefined reference
 wrong kind, a `\tag{`, a heading that writes its own number, a `section:` header field, and a
 hard-coded section, chapter or equation number in prose. A number that belongs to another work is
 not a reference: a clause (or table cell and its column header) that names the dissertation, a
-paper, a `theory.md` file, or a table or figure of one is exempt, and `book/number-allowlist.txt`
+paper, or a table or figure of one is exempt, and `book/number-allowlist.txt`
 lists the few remaining exceptions by page. `scripts/book_autonumber_migrate.py` is the one-shot
 migration that derived the labels (2026-11-17); it is not part of the build.

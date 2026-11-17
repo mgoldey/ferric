@@ -229,6 +229,5 @@ walks. A run that sets its own `gdf_omega` caps with that value instead.
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-pbc/theory.md`, §3 | the split and its constant |
 | `scripts/pbc_ewald_pairft_stress_sympy.py`, part S3 | the proof |
 | Q. Sun *et al.*, *J. Chem. Phys.* **153**, 024109 (2020) | PySCF's periodic conventions |

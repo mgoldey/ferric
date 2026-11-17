@@ -224,6 +224,6 @@ the occupied orbital energies differ by $v_M$ between the two (section @sec:mp2-
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-pbc/theory.md`, §4 and §8 | the correction and its per-spin and per-$k$ forms |
+| sections @sec:exchange-divergence-exchange-diverges and @sec:kpoint-scf | the correction and its per-spin and per-$k$ forms |
 | `scripts/pbc_ewald_pairft_stress_sympy.py` part S4, `scripts/pbc_kpoint_corr_sympy.py` | the proofs |
 | J. Paier, R. Hirschl, M. Marsman, G. Kresse, *J. Chem. Phys.* **122**, 234102 (2005) | the probe-charge correction |

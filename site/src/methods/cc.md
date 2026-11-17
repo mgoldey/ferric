@@ -36,7 +36,7 @@ implementations:
   abb, bbb) and prints each class. `[mp2] frozen_core` (Python
   `frozen_core`) drops the lowest orbitals of each spin. The three VVVV
   blocks are held dense; `[cc] ladder` does not apply. Equations:
-  `crates/ferric-cc/theory.md`, "Unrestricted CCSD and CCSD(T)".
+  `book/src/16-coupled-cluster/08-uccsd.md#uccsd-equations`.
 
 There is no open-shell CCD or EOM-CCSD, and no ROHF-reference CCSD. The
 open-shell LinLCCD(hh) is library-only (`ferric_cc::linlccd_u::u_linlccd`).
@@ -263,8 +263,9 @@ run carries no anchor.
 
 ## Implementation
 
-The equations each solver implements, with file and line, are in
-[`crates/ferric-cc/theory.md`](https://github.com/mgoldey/ferric/blob/main/crates/ferric-cc/theory.md).
+The equations each solver implements, with the function behind each, are in
+the coupled-cluster chapter of the ferric book,
+[`book/src/16-coupled-cluster/`](https://github.com/mgoldey/ferric/tree/main/book/src/16-coupled-cluster).
 
 All contractions go through `einsum!`, a macro that maps tensor
 contractions onto BLAS3 GEMMs. The permutation copies that feed those GEMMs are

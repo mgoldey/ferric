@@ -184,10 +184,9 @@ validation row.
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-rpa/theory.md`, "Laplace-transformed chi0" | (@eq:laplace-ao-chi0-1), (@eq:rpa-chi0-laplace), the scaling, fallback and open-shell rules |
 | `scripts/rpa_laplace_chi0_sympy.py`, claims L0 to L6 | the proof |
-| `crates/ferric-quadrature/theory.md`, "1. Minimax Laplace Quadrature" | the node tables |
-| `crates/ferric-quadrature/theory.md`, "2. Imaginary-Frequency Grids for RPA" | the fallback counts for Gauss–Legendre and Chebyshev–Tan |
+| section @sec:laplace-mp2-quadrature | the node tables |
+| section @sec:quadratures-rule | the fallback counts for Gauss–Legendre and Chebyshev–Tan |
 | module documentation of `crates/ferric-rpa/src/laplace_chi0.rs` and `crates/ferric-rpa/src/ao_rpa.rs` | the two forms and their scope |
 
 **Known limits (2026-11-15).** Library only. No reduced-scaling claim: both

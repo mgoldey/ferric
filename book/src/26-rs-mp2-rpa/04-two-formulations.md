@@ -250,12 +250,11 @@ is closed shell only.
 
 | Source | Used for |
 |---|---|
-| `crates/ferric-rpa/theory.md`, "Range-separated MP2 + RPA" | (@eq:two-formulations-1)–(@eq:rsrpa-forms-one-mode), the limits |
-| `crates/ferric-rpa/theory.md`, "Open-shell SR-MP2 + LR-RPA" | the open-shell $d$ |
+| section @sec:cross-term-split-energy | (@eq:two-formulations-1)–(@eq:rsrpa-forms-one-mode), the limits |
 | `crates/ferric-rpa/src/rs_mp2_rpa.rs` (the `match` arms, `RsMp2RpaConfig`, `RsMp2RpaResult`) | @sec:two-formulations-code, @sec:two-formulations-options |
 | `crates/ferric-mp2/src/rimp2.rs::metric_inverse_sqrt` | the RI paragraph |
 | `scripts/rpa_rs_mp2_rpa_sympy.py` | the verified boxes |
 | `site/src/reference/validation.md` | @sec:two-formulations-anchors |
 
-Changes from the sources: `theory.md` writes the denominator as the negative
-$D$; this section uses $\Delta$ (section @sec:cross-term).
+The script writes the denominator as the negative $D$; this section uses
+$\Delta$ (section @sec:cross-term).

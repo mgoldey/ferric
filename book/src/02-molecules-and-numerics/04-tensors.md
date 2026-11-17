@@ -157,7 +157,6 @@ and the width may depend on the worker count without changing any result.
 
 | Source | Used for |
 |---|---|
-| `crates/ferric-tensors/theory.md` | storage and the matrix form of a contraction |
 | `site/src/reference/einsum.md` | the grammar and classes |
 | `crates/ferric-tensors/src/einsum.rs`, module documentation | the engine steps |
 

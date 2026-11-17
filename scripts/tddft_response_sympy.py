@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Proofs: ferric-tddft's spin-adapted response matrices, Casida reduction and oscillator strengths.
 
-Derivation: crates/ferric-tddft/theory.md (sections 1-4, 8-11). The code
+Derivation: (`book/src/20-tddft/01-response.md#response-matrices`, `book/src/20-tddft/02-oscillator-strengths.md#oscillator-strengths-length-gauge-formula`, 8-11). The code
 transcribed here (index ia = i * nvir + a, chemist integrals, real orbitals):
 
   * tddft.rs build_a_matrix / build_b_matrix with coulomb_factor (c_J = 2
@@ -31,7 +31,7 @@ Checked:
       +-sqrt((a-b)(a+b)), and X+Y = W^{-1/2} sqrt(a-b) z with unit z gives
       X^2 - Y^2 = 1.
   A4  (symbolic) the range-separated exchange c_sr erfc + c_lr erf =
-      c_sr * 1 + (c_lr - c_sr) erf (theory.md section 8).
+      c_sr * 1 + (c_lr - c_sr) erf (`book/src/20-tddft/04-rsh.md#rsh-split`).
   B   Numerical, random closed-shell model (2 occ, 3 vir, RI tensors for
       Coulomb and erf, a random grid kernel f_aa, f_ab):
       B1  the spin-orbital A and B built directly from the textbook
@@ -56,7 +56,7 @@ Checked:
           body term making both Fock matrices diagonal) equals A elementwise;
           for C_a = C_b the unrestricted roots are the restricted singlet union
           triplet and the transition moment reduces to the sqrt2 form.
-  D   <S^2> of an unrestricted root (theory.md section 11), against an
+  D   <S^2> of an unrestricted root (`book/src/20-tddft/06-unrestricted.md#unrestricted-each-root`), against an
       independent Fock-space construction <Psi|S^2|Psi> = M^2 + M +
       |S_+ Psi|^2 with S_+ = sum O_pq a+_{p alpha} a_{q beta} and Jordan-Wigner
       signs, 4 spatial orbitals per spin, (n_alpha, n_beta) = (2,1), (3,1),

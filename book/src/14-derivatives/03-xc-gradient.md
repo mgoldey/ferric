@@ -353,7 +353,7 @@ costs, and it is at least 2000 times the finite-difference agreement of
 
 | Source | Used for |
 |---|---|
-| `crates/ferric-dft/theory.md`, "XC nuclear gradient: AO-derivative and grid-response terms", "Becke partition and its nuclear derivative" | equations, tests |
+| sections @sec:xc-gradient-terms and @sec:grids-becke-partition | equations, tests |
 | `scripts/dft_mgga_tau_gradient_sympy.py`, `scripts/dft_becke_weight_grad_sympy.py` | verified equations @eq:ks-grad-ao-derivative to @eq:ks-grad-becke-weights |
 | `crates/ferric-dft/src/gradient.rs`, `crates/ferric-dft/src/gradient/screened.rs` | the algorithm and reproducibility rules |
 | `crates/ferric-scf/tests/ks_gradient_scf_grid.rs` | what the custom-grid row tests |

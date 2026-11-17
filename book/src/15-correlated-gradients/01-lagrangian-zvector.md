@@ -241,7 +241,6 @@ frozen core–active block.
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-mp2/theory.md`, "9. Analytic RI-MP2 gradient and Z-vector" | (@eq:zvec-hessian-product), the right-hand side, the relaxed density |
 | `scripts/mp2_variant_identities.py`, claim 5 | the Hessian factor |
 | `scripts/mp2_gradient_sympy.py`, part G | the relaxed density and the assembled gradient |
 

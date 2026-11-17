@@ -300,7 +300,7 @@ experiment.
 
 | Source | Used for |
 |---|---|
-| `crates/ferric-rpa/theory.md`, "Dispersion: Casimir-Polder C6" | the notation of (@eq:polarizability-pdep-c6-1)–(@eq:ml-c6-cp-quadrature) |
+| section @sec:polarizabilities-from-dielectric-modes-dielectric-form | the notation of (@eq:polarizability-pdep-c6-1)–(@eq:ml-c6-cp-quadrature) |
 | `scripts/rpa_c6_polarizability_sympy.py`, claims 1, 2, 3, 5 | verified equations @eq:ml-alpha-per-atom-kernel–@eq:ml-c6-cp-quadrature |
 | `crates/ferric-rpa/src/properties/per_atom.rs`, `crates/ferric-rpa/src/dispersion.rs`, `crates/ferric-rpa/src/property_bundle.rs` | grids, defaults, fallbacks, the quadrature source |
 | `crates/ferric-cli/tests/validation_npz.rs` | the PDEP eigenvector conditions |

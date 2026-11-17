@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Hartree-Fock energy functionals and Fock matrices as ferric codes them.
 
-Derivation: crates/ferric-scf/theory.md, "Hartree-Fock energy functionals
-(RHF, UHF, ROHF)". Code: crates/ferric-scf/src/rhf.rs (solve_rhf),
+Derivation: `book/src/07-hartree-fock/01-energy-functionals.md#energy-functionals-functionals`. Code: crates/ferric-scf/src/rhf.rs (solve_rhf),
 uhf.rs (solve_uhf), rohf.rs (solve_rohf, roothaan_fock_inner,
 rohf_gradient_mo).
 
@@ -43,12 +42,12 @@ orthonormal AO basis, n = 7):
   N8  (claim N8) <0|H|0> of the spin-orbital determinant energy, expanded
       from SPATIAL integrals with the spin selection rule (spin-orbital
       h_PQ = h_[P][Q] delta_sigma and <PQ||PQ> = (pp|qq) - (pq|qp) delta_sigma(P)sigma(Q),
-      the book's (1.3)), equals 2 sum_i h_ii + sum_ij [2 (ii|jj) - (ij|ij)].
+      the book's `eq:hamiltonian-3`), equals 2 sum_i h_ii + sum_ij [2 (ii|jj) - (ij|ij)].
       Symbolic (3 occupied orbitals, canonical 8-fold-symmetric integral
       symbols, so (pq|qp) = (pq|pq) is exercised), then numerical on random
       orthonormal orbitals against the AO route tr[D (h + F)]/2 with
       D = 2 C_o C_o^T. Negative control: dropping the spin delta of the
-      exchange term must differ. Book: verified equation 1.10.
+      exchange term must differ. Book: verified equation `eq:so-closed-shell-energy`.
 
 Mutations (each turns the script red; the runner applies them as exact
 one-occurrence substitutions):
@@ -581,7 +580,7 @@ def spin_sum_energy(hh, gg, occ_spatial):
     """<0|H|0> = sum_P h_PP + 1/2 sum_PQ <PQ||PQ> over spin orbitals P = (p, sigma).
 
     hh(p, q) and gg(p, q, r, s) = (pq|rs) are SPATIAL; the spin orbitals enter
-    only through the deltas of (1.3): <PQ||PQ> = (pp|qq) - (pq|qp) delta(P, Q).
+    only through the deltas of eq:hamiltonian-3: <PQ||PQ> = (pp|qq) - (pq|qp) delta(P, Q).
     """
     spin_orbitals = [(i, s_) for i in occ_spatial for s_ in (0, 1)]
     e = 0

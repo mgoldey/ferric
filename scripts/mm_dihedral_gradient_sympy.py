@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Sympy checks of the dihedral and bond-angle gradients in ferric-mm.
 
-Theory and notation: crates/ferric-mm/theory.md (sections 3 and 4). Checks
+Theory and notation: `book/src/23-embedding/04-molecular-mechanics.md#molecular-mechanics-bonds-angles-torsions`, `book/src/23-embedding/04-molecular-mechanics.md#molecular-mechanics-dihedral-angle-gradient`. Checks
 `dihedral_and_gradient` (crates/ferric-mm/src/energy.rs) and the angle block of
 `gradient` (energy.rs). Each claim asserts and carries a negative control (a
 deliberately wrong variant that must NOT satisfy the identity). Exits nonzero on

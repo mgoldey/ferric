@@ -198,6 +198,5 @@ Further tests: `crates/ferric-gw/tests/u_cohsex_evgw_closed_shell_limit.rs`
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-gw/theory.md`, "Open shell" | the per-spin construction (boxes @eq:gw-u-spin-summed-dielectric to @eq:gw-u-fermi-level) |
 | `scripts/gw_ucohsex_sympy.py`, claims U1, U1b, U2 | the proofs |
 | `scripts/gw_self_energy_sympy.py`, claim 1 | the closed-shell limit of the dielectric |

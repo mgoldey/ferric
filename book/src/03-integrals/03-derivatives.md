@@ -128,7 +128,7 @@ one must not assume a smaller buffer.
 | four-center derivatives at shifted centres | `crates/ferric-integrals/tests/eri_deriv_shifted.rs` | per test |
 
 No committed proof script covers this section. The Gaussian derivative
-formula is the one in `crates/ferric-integrals/theory.md`; the pair order is
+formula is derived at the top of this section; the pair order is
 libint2's, and the doc comment of `deriv2_pair_index` cites the libint2
 headers it was read from. The engines' derivatives are tested against finite
 differences in the files above.

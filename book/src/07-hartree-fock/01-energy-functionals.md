@@ -382,7 +382,6 @@ carries them as its measured error.
 
 | Source | Used for |
 |---|---|
-| `crates/ferric-scf/theory.md`, "Hartree-Fock energy functionals (RHF, UHF, ROHF)" | the functionals, Fock matrices, ROHF gradient and effective Fock |
 | `scripts/hf_energy_sympy.py` | verified equations @eq:scf-fock-is-de-dd and @eq:scf-rohf-gradient |
 | `site/src/reference/validation.md` | the anchors |
 

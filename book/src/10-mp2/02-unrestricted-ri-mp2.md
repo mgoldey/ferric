@@ -207,7 +207,7 @@ Figures from `site/src/reference/validation.md`.
 
 | Source | Used for |
 |---|---|
-| `crates/ferric-mp2/theory.md`, "3. Unrestricted RI-MP2", "5.1 Open-shell attenuated and spin-scaled MP2" | equations @eq:unrestricted-ri-mp2-1, @eq:mp2-u-spin-blocks, the spin-block derivation |
+| sections @sec:unrestricted-ri-mp2-energy and @sec:attenuated-mp2 | equations @eq:unrestricted-ri-mp2-1, @eq:mp2-u-spin-blocks, the spin-block derivation |
 | `crates/ferric-mp2/src/u_rimp2.rs` | kernels, reference handling, frozen core |
 | `scripts/mp2_variant_identities.py` claim 2, `scripts/mp2_family_sympy.py` part B | verified boxes |
 | Goldey dissertation, chapter 5, section 5.1 | the spin-contamination caveat |

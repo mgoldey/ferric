@@ -172,5 +172,4 @@ From the table in the module header of `crates/ferric-gw/tests/validation_gw.rs`
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-gw/theory.md`, "RI factorization and exchange" | the factorization and $\Sigma^x$ |
 | `scripts/gw_ucohsex_sympy.py`, claim U1 | the proof of the per-spin exchange sum |

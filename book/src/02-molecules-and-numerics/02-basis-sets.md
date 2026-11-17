@@ -148,7 +148,7 @@ of zero norm alone instead of dividing by zero.
 libint2 renormalizes contracted shells internally, so its integrals give the
 same answer with or without the rescaling. The grid code that evaluates
 basis functions for DFT does not. It applies only the per-primitive factor
-$N_p$ (`ferric-integrals/theory.md`, "Basis functions on a grid"). Without
+$N_p$ (section @sec:ao-grid). Without
 the rescaling a def2 shell would be right in every analytic integral and
 wrong on the DFT grid. After the rescaling libint2's own renormalization changes
 nothing, since $S$ is already 1.
@@ -280,11 +280,9 @@ shared by all threads, since nothing in it changes after construction.
 
 | Source | Used for |
 |---|---|
-| `crates/ferric-core/theory.md`, section 3, and `crates/ferric-integrals/theory.md`, "Basis Sets" | the shell data layout and the contraction form |
 | `crates/ferric-core/src/basis.rs` (the renormalizer and its comment) | equation (@eq:basis-unit-self-overlap) and the file conventions |
 | `crates/ferric-integrals/src/basis_bridge.rs` | section @sec:basis-sets-basis-set-engine |
 | Dissertation, chapter 1, section 1.2.1 | the motivation for Gaussian over Slater functions |
 
-Changes from the sources: `theory.md` writes a contracted function without the
-spherical-harmonic factor and with conjugates. The book uses real functions
-and states the normalization the code applies.
+This section uses real functions and states the normalization the code
+applies.

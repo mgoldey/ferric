@@ -3,8 +3,7 @@
 solvers and of stability analysis, checked against finite differences of the
 energy.
 
-Derivation: crates/ferric-scf/theory.md, "Orbital Hessians: Newton, augmented
-Hessian, trust region" and "SCF stability analysis". Code:
+Derivation: `book/src/08-convergence/03-second-order.md#second-order-orbital-gradient-hessian` and "SCF stability analysis". Code:
 crates/ferric-scf/src/rhf_newton.rs (hessian_matvec_jk,
 triplet_hessian_matvec_jk), uhf_newton.rs (hessian_matvec), rohf_trah.rs
 (rohf_exact_gradient, rohf_exact_hessian_matvec), trah.rs

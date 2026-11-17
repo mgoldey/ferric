@@ -46,7 +46,7 @@ pair in B excited", with coefficients that are products of doubles
 amplitudes. A linear doubles expansion (CID) has no such term, so its energy
 for A + B is not the sum of the two. Energies that add for non-interacting
 fragments are called size-consistent. This is why coupled cluster
-parametrizes the wavefunction through $\hat T$ (`theory.md`, "Exponential ansatz"):
+parametrizes the wavefunction through $\hat T$:
 
 $$|\Psi_{CC}\rangle = e^{\hat{T}} |\Phi_0\rangle,\qquad \hat{T} = \hat{T}_1 + \hat{T}_2 + \dots$$
 
@@ -328,7 +328,6 @@ From `site/src/reference/validation.md` and the tests it names.
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-cc/theory.md`, "CCD", "CCSD in spin orbitals" | the working equations above |
 | `scripts/cc_ccsd_eom_brute_force_sympy.py` | the brute-force check of both residuals |
 | `site/src/methods/cc.md`, "CCSD and CCSD(T)" | the user guide |
 

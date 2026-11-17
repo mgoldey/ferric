@@ -259,7 +259,6 @@ test. The section stays `edit` until the doc fixes below land.
 
 | Source | Used for |
 |---|---|
-| `crates/ferric-scf/theory.md`, "Orthogonalization and starting guesses" | the equations |
 | `crates/ferric-scf/src/guess.rs` | the atomic blocks and the GWH constant |
 | `crates/ferric-scf/tests/basis2_guess.rs` | the secondary-basis projection |
 | `crates/ferric-scf/src/rhf.rs` (`canonical_orthogonalizer`, `lindep_thresh`) | the selection loop and the reason the threshold is per process |

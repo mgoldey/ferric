@@ -256,9 +256,7 @@ random asymmetric integrals, are what pin the convention.
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-ci/theory.md`, "Slater–Condon rules as implemented" | the four classes and their phases |
 | `scripts/casci_slater_condon_phases_sympy.py` | claims 1–4 |
-| `crates/ferric-ci/theory.md`, "Checks" | what each test constrains |
 
 **Known limits (2026-11-15).** `dense_hamiltonian` and `sigma_naive` visit
 every determinant pair and are test and benchmark oracles; `run_cas_ci`

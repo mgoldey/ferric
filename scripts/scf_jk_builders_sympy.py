@@ -2,8 +2,7 @@
 """Fock-builder algebra as the SCF codes it: RI-J, RI-K, the incremental
 build and the COSX quadrature, checked against exact J/K.
 
-Derivation: crates/ferric-scf/theory.md, "Direct and incremental J/K builds",
-"Density-fitted Coulomb and exchange (RI-J, RI-K, Split-RI-J)" and
+Derivation: `book/src/07-hartree-fock/03-direct-and-incremental.md#direct-and-incremental-equations`, `book/src/07-hartree-fock/04-ri-j-ri-k-split-ri-j.md#ri-j-ri-k-split-ri-j-equations` and
 "LinK and COSX exchange". Code: crates/ferric-scf/src/df_j.rs (DfJ),
 df_k.rs (DfK), split_rij.rs (SplitRiJ), direct_jk.rs (DirectJK),
 cosx_k.rs (CosxK).

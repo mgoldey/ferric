@@ -333,8 +333,7 @@ because a negative weight would give a tessera of negative area.
 | Quantity | System | Result | Source |
 |---|---|---|---|
 | ferric's own cavity against PySCF's, solvation energy | water, NH3 / STO-3G, cc-pVDZ; $\varepsilon = 78.4, 4.7$ | 0.07 to 0.61 % apart | `site/src/reference/validation.md`, IEF-PCM row |
-| the 302-point cavity against PySCF's `gen_surface` | water, methanol / STO-3G | tessera count, total area and area centroid equal to $10^{-10}$ | `crates/ferric-pcm/theory.md`, section 8.3 |
-| one isolated sphere | any | total area exactly $4\pi R_A^2$ | `crates/ferric-pcm/theory.md`, section 1 |
+| the 302-point cavity against PySCF's `gen_surface` | water, methanol / STO-3G | tessera count, total area and area centroid equal to $10^{-10}$ | section @sec:gradient-numerical-anchors |
 
 The first row is a measured difference between two models, not a bound on
 an error. The radii (modified Bondi), the default Lebedev order (110 against
@@ -347,7 +346,6 @@ elements all differ. At order 302 ferric's cavity reproduces PySCF's
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-pcm/theory.md`, sections 1 and 2 | the cavity and the $S$, $D$ formulas |
 | `scripts/pcm_ief_sympy.py`, claims 1 and 2 | the diagonal identity and the sphere spectra |
 | `crates/ferric-pcm/tests/ief_limits.rs` | the sphere limits of section @sec:ief-operators |
 
@@ -357,8 +355,7 @@ elements all differ. At order 302 ferric's cavity reproduces PySCF's
   the atomic spheres only.
 - No cavitation, dispersion or repulsion terms.
 - The Lebedev grid of every sphere is fixed in the lab frame, so the torque on
-  a rigid rotation is not zero in general (`crates/ferric-pcm/theory.md`,
-  section 8.3).
+  a rigid rotation is not zero in general (section @sec:gradient-numerical-anchors).
 - `PcmContext::from_tesserae` rejects a tessera with a non-finite position, a
   normal that is not unit length to $10^{-8}$, or a non-positive area, radius,
   width or switching value, because each would give a NaN in $S$ or $D$.

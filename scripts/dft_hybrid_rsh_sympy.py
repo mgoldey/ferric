@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Proofs: exact exchange of global and range-separated (CAM) hybrids in ferric's KS SCF.
 
-Derivation: crates/ferric-dft/theory.md, "Exact exchange in hybrid and
-range-separated hybrid functionals". The code transcribed here:
+Derivation: `book/src/09-kohn-sham/04-hybrids.md#hybrids-exact-exchange`. The code transcribed here:
 
   * ferric_dft::libxc::XcFunctional::cam_coefficients
       c_sr = cam_alpha + cam_beta,  c_lr = cam_alpha  (libxc xc_hyb_cam_coef)

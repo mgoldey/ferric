@@ -1,5 +1,5 @@
 {
-  "_doc": "Derivations registry (CONTRIBUTING.md, 'Every method has a derivation and a sympy proof'). routes: every derived CLI kind, analytic optimize/frequencies arm and Python entry point -> method ids. methods: theory.md anchors plus sympy scripts, each run by a test under crates/ferric-python/tests. gaps: methods missing a piece, with the reason. Checked by crates/ferric-python/tests/test_derivation_registry.py.",
+  "_doc": "Derivations registry (CONTRIBUTING.md, 'Every method has a derivation and a sympy proof'). routes: every derived CLI kind, analytic optimize/frequencies arm and Python entry point -> method ids. methods: book sections (book/src/<page>.md#<label>) plus sympy scripts, each run by a test under crates/ferric-python/tests. gaps: methods missing a piece, with the reason. Checked by crates/ferric-python/tests/test_derivation_registry.py.",
   "routes": {
     "cli:att-rimp2": [
       "attenuated-mp2",
@@ -450,26 +450,26 @@
   },
   "methods": {
     "att-rimp2-gradient": {
-      "theory": [
-        "crates/ferric-mp2/theory.md#94-attenuated-erfc-ri-mp2-gradient"
+      "book": [
+        "book/src/15-correlated-gradients/02-rimp2-gradient.md#rimp2-gradient-attenuated-erfc-ri-mp2"
       ],
       "scripts": [
         "scripts/att_rimp2_gradient_sympy.py"
       ]
     },
     "terfc-rimp2-gradient": {
-      "theory": [
-        "crates/ferric-mp2/theory.md#95-terfc-attenuated-ri-mp2-gradient",
-        "crates/ferric-integrals/theory.md#derivative-integrals-of-terf-and-terfc"
+      "book": [
+        "book/src/15-correlated-gradients/02-rimp2-gradient.md#rimp2-gradient",
+        "book/src/04-operators/02-terf-table-engine.md#terf-table-engine-derivative-integrals"
       ],
       "scripts": [
         "scripts/terfc_rimp2_gradient_sympy.py"
       ]
     },
     "attenuated-mp2": {
-      "theory": [
-        "crates/ferric-mp2/theory.md#5-attenuated-mp2",
-        "crates/ferric-mp2/theory.md#4-spin-component-scaling"
+      "book": [
+        "book/src/10-mp2/04-attenuated-mp2.md#attenuated-mp2-energy",
+        "book/src/10-mp2/03-scs-and-kappa.md#scs-and-kappa-scs-mp2"
       ],
       "scripts": [
         "scripts/mp2_variant_identities.py",
@@ -477,49 +477,49 @@
       ]
     },
     "casci": {
-      "theory": [
-        "crates/ferric-ci/theory.md#slatercondon-rules-as-implemented"
+      "book": [
+        "book/src/17-multireference/02-slater-condon.md#slater-condon-rules"
       ],
       "scripts": [
         "scripts/casci_slater_condon_phases_sympy.py"
       ]
     },
     "ccsd-t": {
-      "theory": [
-        "crates/ferric-cc/theory.md#ccsdt-closed-shell"
+      "book": [
+        "book/src/16-coupled-cluster/03-triples.md#triples-closed-shell-t"
       ],
       "scripts": [
         "scripts/cc_triples_weights_and_linlccd_spin_adaptation_sympy.py"
       ]
     },
     "u-ccsd": {
-      "theory": [
-        "crates/ferric-cc/theory.md#unrestricted-ccsd-and-ccsdt"
+      "book": [
+        "book/src/16-coupled-cluster/08-uccsd.md#uccsd-equations"
       ],
       "scripts": [
         "scripts/cc_uccsd_spin_blocks_sympy.py"
       ]
     },
     "u-ccsd-t": {
-      "theory": [
-        "crates/ferric-cc/theory.md#unrestricted-ccsd-and-ccsdt"
+      "book": [
+        "book/src/16-coupled-cluster/08-uccsd.md#uccsd-equations"
       ],
       "scripts": [
         "scripts/cc_uccsd_spin_blocks_sympy.py"
       ]
     },
     "cdft": {
-      "theory": [
-        "crates/ferric-dft/theory.md#constrained-dft-and-the-diabatic-coupling"
+      "book": [
+        "book/src/09-kohn-sham/07-cdft.md#cdft-equations"
       ],
       "scripts": [
         "scripts/cdft_constraint_coupling_sympy.py"
       ]
     },
     "d3": {
-      "theory": [
-        "crates/ferric-d3/theory.md#gradient",
-        "crates/ferric-d3/theory.md#three-body-term-atm"
+      "book": [
+        "book/src/25-dispersion/01-d3bj.md#d3bj-gradient",
+        "book/src/25-dispersion/01-d3bj.md#d3bj-three-body-term"
       ],
       "scripts": [
         "scripts/d3_cn_chain_rule_gradient_sympy.py",
@@ -527,17 +527,17 @@
       ]
     },
     "d3-hessian": {
-      "theory": [
-        "crates/ferric-d3/theory.md#hessian"
+      "book": [
+        "book/src/25-dispersion/01-d3bj.md#d3bj-hessian"
       ],
       "scripts": [
         "scripts/d3_hessian_sympy.py"
       ]
     },
     "drpa": {
-      "theory": [
-        "crates/ferric-rpa/theory.md#rpa-correlation-energy",
-        "crates/ferric-rpa/theory.md#imaginary-frequency-quadratures"
+      "book": [
+        "book/src/18-rpa/01-drpa-three-ways.md#drpa-three-ways-plasmon-formula",
+        "book/src/18-rpa/02-quadratures.md#quadratures-rule"
       ],
       "scripts": [
         "scripts/rpa_drpa_pdep_sympy.py",
@@ -545,9 +545,9 @@
       ]
     },
     "gw": {
-      "theory": [
-        "crates/ferric-gw/theory.md#4-correlation-self-energy-on-the-imaginary-axis",
-        "crates/ferric-rpa/theory.md#imaginary-frequency-quadratures"
+      "book": [
+        "book/src/19-gw-bse/03-correlation-self-energy.md#correlation-self-energy-frequency-integral",
+        "book/src/18-rpa/02-quadratures.md#quadratures-rule"
       ],
       "scripts": [
         "scripts/gw_self_energy_sympy.py",
@@ -555,17 +555,17 @@
       ]
     },
     "harmonic-frequencies": {
-      "theory": [
-        "crates/ferric-scf/theory.md#harmonic-frequencies"
+      "book": [
+        "book/src/14-derivatives/06-frequencies.md#frequencies-hessian-wavenumbers"
       ],
       "scripts": [
         "scripts/hf_frequencies_sympy.py"
       ]
     },
     "hf-gradient": {
-      "theory": [
-        "crates/ferric-scf/theory.md#hartree-fock-nuclear-gradient",
-        "crates/ferric-scf/theory.md#density-fitted-jk-nuclear-gradient"
+      "book": [
+        "book/src/14-derivatives/01-hf-gradient.md#hf-gradient-gradient",
+        "book/src/14-derivatives/02-df-jk-gradient.md#df-jk-gradient-energies-differentiated"
       ],
       "scripts": [
         "scripts/hf_gradient_sympy.py",
@@ -573,9 +573,9 @@
       ]
     },
     "hf-hessian": {
-      "theory": [
-        "crates/ferric-scf/theory.md#hartree-fock-nuclear-hessian",
-        "crates/ferric-scf/theory.md#factored-ri-k-in-the-open-shell-cphf"
+      "book": [
+        "book/src/14-derivatives/04-hf-hessian.md#hf-hessian-equations",
+        "book/src/14-derivatives/04-hf-hessian.md#hf-hessian-factored-ri-k"
       ],
       "scripts": [
         "scripts/hf_hessian_sympy.py",
@@ -583,10 +583,10 @@
       ]
     },
     "ks-gradient": {
-      "theory": [
-        "crates/ferric-dft/theory.md#xc-nuclear-gradient-ao-derivative-and-grid-response-terms",
-        "crates/ferric-dft/theory.md#becke-partition-and-its-nuclear-derivative",
-        "crates/ferric-scf/theory.md#hartree-fock-nuclear-gradient"
+      "book": [
+        "book/src/14-derivatives/03-xc-gradient.md#xc-gradient-terms",
+        "book/src/09-kohn-sham/02-grids.md#grids-becke-partition",
+        "book/src/14-derivatives/01-hf-gradient.md#hf-gradient-gradient"
       ],
       "scripts": [
         "scripts/dft_mgga_tau_gradient_sympy.py",
@@ -595,20 +595,20 @@
       ]
     },
     "ks-grid": {
-      "theory": [
-        "crates/ferric-dft/theory.md#becke-partition-and-its-nuclear-derivative",
-        "crates/ferric-dft/theory.md#integration-grid"
+      "book": [
+        "book/src/09-kohn-sham/02-grids.md#grids-becke-partition",
+        "book/src/09-kohn-sham/02-grids.md#grids-atomic-grid"
       ],
       "scripts": [
         "scripts/dft_becke_weight_grad_sympy.py"
       ]
     },
     "ks-hessian": {
-      "theory": [
-        "crates/ferric-scf/theory.md#kohn-sham-xc-hessian-terms-fixed-and-moving-grid",
-        "crates/ferric-scf/theory.md#hartree-fock-nuclear-hessian",
-        "crates/ferric-dft/theory.md#f_xc-response-kernels",
-        "crates/ferric-scf/theory.md#factored-ri-k-in-the-open-shell-cphf"
+      "book": [
+        "book/src/14-derivatives/05-ks-hessian.md#ks-hessian-xc-terms",
+        "book/src/14-derivatives/04-hf-hessian.md#hf-hessian-equations",
+        "book/src/09-kohn-sham/06-fxc.md#fxc-linearized-potential",
+        "book/src/14-derivatives/04-hf-hessian.md#hf-hessian-factored-ri-k"
       ],
       "scripts": [
         "scripts/ks_fixed_grid_hessian_sympy.py",
@@ -619,16 +619,16 @@
       ]
     },
     "ks-hybrid-rsh": {
-      "theory": [
-        "crates/ferric-dft/theory.md#exact-exchange-in-hybrid-and-range-separated-hybrid-functionals"
+      "book": [
+        "book/src/09-kohn-sham/04-hybrids.md#hybrids-exact-exchange"
       ],
       "scripts": [
         "scripts/dft_hybrid_rsh_sympy.py"
       ]
     },
     "ks-mgga": {
-      "theory": [
-        "crates/ferric-dft/theory.md#semilocal-v_xc-matrix-elements"
+      "book": [
+        "book/src/09-kohn-sham/03-vxc.md#vxc-matrix-elements"
       ],
       "scripts": [
         "scripts/dft_vxc_matrix_elements_sympy.py",
@@ -636,25 +636,25 @@
       ]
     },
     "ks-semilocal": {
-      "theory": [
-        "crates/ferric-dft/theory.md#semilocal-v_xc-matrix-elements",
-        "crates/ferric-dft/theory.md#kohn-sham-equations"
+      "book": [
+        "book/src/09-kohn-sham/03-vxc.md#vxc-matrix-elements",
+        "book/src/09-kohn-sham/01-ks-equations.md#ks-equations-energy-fock-matrix"
       ],
       "scripts": [
         "scripts/dft_vxc_matrix_elements_sympy.py"
       ]
     },
     "ks-vv10": {
-      "theory": [
-        "crates/ferric-dft/theory.md#vv10-nonlocal-correlation"
+      "book": [
+        "book/src/09-kohn-sham/05-vv10.md#vv10-energy-potentials"
       ],
       "scripts": [
         "scripts/dft_vv10_potential_sympy.py"
       ]
     },
     "laplace-mp2": {
-      "theory": [
-        "crates/ferric-mp2/theory.md#8-laplace-transform-mp2"
+      "book": [
+        "book/src/12-oo-laplace/03-laplace-mp2.md#laplace-mp2"
       ],
       "scripts": [
         "scripts/mp2_variant_identities.py",
@@ -662,33 +662,33 @@
       ]
     },
     "laplace-sos-mp2": {
-      "theory": [
-        "crates/ferric-mp2/theory.md#8-laplace-transform-mp2"
+      "book": [
+        "book/src/12-oo-laplace/03-laplace-mp2.md#laplace-mp2"
       ],
       "scripts": [
         "scripts/mp2_family_sympy.py"
       ]
     },
     "linlccd": {
-      "theory": [
-        "crates/ferric-cc/theory.md#linlccd-and-linlccdhh"
+      "book": [
+        "book/src/16-coupled-cluster/05-linlccd.md#linlccd-equations"
       ],
       "scripts": [
         "scripts/cc_triples_weights_and_linlccd_spin_adaptation_sympy.py"
       ]
     },
     "mbd": {
-      "theory": [
-        "crates/ferric-rpa/theory.md#many-body-dispersion-mbdrsscs"
+      "book": [
+        "book/src/25-dispersion/03-mbd.md#mbd"
       ],
       "scripts": [
         "scripts/mbd_coupled_dipole_sympy.py"
       ]
     },
     "mm": {
-      "theory": [
-        "crates/ferric-mm/theory.md#4-the-dihedral-angle-phi-and-its-gradient-bekker-form",
-        "crates/ferric-mm/theory.md#8-opt-in-nonbonded-cutoff-openmm-cutoffnonperiodic"
+      "book": [
+        "book/src/23-embedding/04-molecular-mechanics.md#molecular-mechanics-dihedral-angle-gradient",
+        "book/src/23-embedding/04-molecular-mechanics.md#molecular-mechanics-opt-nonbonded-cutoff"
       ],
       "scripts": [
         "scripts/mm_dihedral_gradient_sympy.py",
@@ -696,9 +696,9 @@
       ]
     },
     "mp2-v": {
-      "theory": [
-        "crates/ferric-mp2/theory.md#13-mp2-v",
-        "crates/ferric-dft/theory.md#vv10-nonlocal-correlation"
+      "book": [
+        "book/src/10-mp2/08-mp2-v.md#mp2-v",
+        "book/src/09-kohn-sham/05-vv10.md#vv10-energy-potentials"
       ],
       "scripts": [
         "scripts/mp2_family_sympy.py",
@@ -706,8 +706,8 @@
       ]
     },
     "mp3": {
-      "theory": [
-        "crates/ferric-mp2/theory.md#6-mp3"
+      "book": [
+        "book/src/10-mp2/09-mp3.md#mp3-energy"
       ],
       "scripts": [
         "scripts/oomp2_mp3_identities_sympy.py",
@@ -715,35 +715,35 @@
       ]
     },
     "oo-rimp2": {
-      "theory": [
-        "crates/ferric-mp2/theory.md#7-orbital-optimized-ri-mp2"
+      "book": [
+        "book/src/12-oo-laplace/01-oo-rimp2.md#oo-rimp2-functional"
       ],
       "scripts": [
         "scripts/oomp2_mp3_identities_sympy.py"
       ]
     },
     "oo-rimp2-gradient": {
-      "theory": [
-        "crates/ferric-mp2/theory.md#93-oo-ri-mp2-nuclear-gradient"
+      "book": [
+        "book/src/15-correlated-gradients/03-oo-rimp2-gradient.md#oo-rimp2-gradient-zero-response-gradient"
       ],
       "scripts": [
         "scripts/mp2_gradient_sympy.py"
       ]
     },
     "pbc-ewald-pairft-stress": {
-      "theory": [
-        "crates/ferric-pbc/theory.md#1-ewald-nuclear-repulsion-and-the-madelung-constant",
-        "crates/ferric-pbc/theory.md#2-fourier-transform-of-lattice-summed-gaussian-pairs",
-        "crates/ferric-pbc/theory.md#5-stress-tensor-strain-derivative"
+      "book": [
+        "book/src/24-periodic/01-ewald.md#ewald-ewald-sum-independence",
+        "book/src/24-periodic/02-pair-ft.md#pair-ft-transform-closed-form",
+        "book/src/24-periodic/08-stress.md#stress-strain-moves"
       ],
       "scripts": [
         "scripts/pbc_ewald_pairft_stress_sympy.py"
       ]
     },
     "pbc-drpa": {
-      "theory": [
-        "crates/ferric-pbc/theory.md#9-periodic-mp2-and-drpa",
-        "crates/ferric-pbc/theory.md#7-range-separated-gaussian-density-fitting-rs-gdf"
+      "book": [
+        "book/src/24-periodic/09-mp2-drpa.md#mp2-drpa",
+        "book/src/24-periodic/05-rsgdf.md#rsgdf-fitted-integrals"
       ],
       "scripts": [
         "scripts/pbc_kpoint_corr_sympy.py",
@@ -752,11 +752,11 @@
       ]
     },
     "pbc-hf": {
-      "theory": [
-        "crates/ferric-pbc/theory.md#4-exchange-divergence-exxdiv",
-        "crates/ferric-pbc/theory.md#7-range-separated-gaussian-density-fitting-rs-gdf",
-        "crates/ferric-pbc/theory.md#8-k-point-hartree-fock-and-kohn-sham",
-        "crates/ferric-scf/theory.md#hartree-fock-energy-functionals-rhf-uhf-rohf"
+      "book": [
+        "book/src/24-periodic/04-exchange-divergence.md#exchange-divergence-exchange-diverges",
+        "book/src/24-periodic/05-rsgdf.md#rsgdf-fitted-integrals",
+        "book/src/24-periodic/06-kpoint-scf.md#kpoint-scf",
+        "book/src/07-hartree-fock/01-energy-functionals.md#energy-functionals-functionals"
       ],
       "scripts": [
         "scripts/pbc_kpoint_corr_sympy.py",
@@ -766,9 +766,9 @@
       ]
     },
     "pbc-mp2": {
-      "theory": [
-        "crates/ferric-pbc/theory.md#9-periodic-mp2-and-drpa",
-        "crates/ferric-pbc/theory.md#7-range-separated-gaussian-density-fitting-rs-gdf"
+      "book": [
+        "book/src/24-periodic/09-mp2-drpa.md#mp2-drpa",
+        "book/src/24-periodic/05-rsgdf.md#rsgdf-fitted-integrals"
       ],
       "scripts": [
         "scripts/pbc_kpoint_corr_sympy.py",
@@ -776,27 +776,27 @@
       ]
     },
     "pcm": {
-      "theory": [
-        "crates/ferric-pcm/theory.md#4-symmetrized-charge-solve-and-energy"
+      "book": [
+        "book/src/22-implicit-solvation/02-ief-operators.md#ief-operators-symmetrized-solve"
       ],
       "scripts": [
         "scripts/pcm_ief_sympy.py"
       ]
     },
     "pcm-gradient": {
-      "theory": [
-        "crates/ferric-pcm/theory.md#8-nuclear-gradient"
+      "book": [
+        "book/src/22-implicit-solvation/04-gradient.md#gradient-derivative"
       ],
       "scripts": [
         "scripts/pcm_ief_sympy.py"
       ]
     },
     "pdep-rpa": {
-      "theory": [
-        "crates/ferric-rpa/theory.md#the-pdep-eigenpotential-approach",
-        "crates/ferric-rpa/theory.md#rpa-correlation-energy",
-        "crates/ferric-rpa/theory.md#imaginary-frequency-quadratures",
-        "crates/ferric-rpa/theory.md#laplace-transformed-chi0"
+      "book": [
+        "book/src/18-rpa/03-pdep.md#pdep-dielectric-matrix-static-modes",
+        "book/src/18-rpa/01-drpa-three-ways.md#drpa-three-ways-plasmon-formula",
+        "book/src/18-rpa/02-quadratures.md#quadratures-rule",
+        "book/src/18-rpa/05-laplace-ao-chi0.md#laplace-ao-chi0-laplace-form-kernel"
       ],
       "scripts": [
         "scripts/rpa_drpa_pdep_sympy.py",
@@ -805,24 +805,24 @@
       ]
     },
     "pvp-integrals": {
-      "theory": [
-        "crates/ferric-integrals/theory.md#the-pvp-integral"
+      "book": [
+        "book/src/03-integrals/06-pvp-x2c.md#pvp-x2c-pvp-integral"
       ],
       "scripts": [
         "scripts/pvp_ss_sympy.py"
       ]
     },
     "rhf": {
-      "theory": [
-        "crates/ferric-scf/theory.md#hartree-fock-energy-functionals-rhf-uhf-rohf",
-        "crates/ferric-scf/theory.md#orthogonalization-and-starting-guesses",
-        "crates/ferric-scf/theory.md#direct-and-incremental-jk-builds",
-        "crates/ferric-scf/theory.md#density-fitted-coulomb-and-exchange-ri-j-ri-k-split-ri-j",
-        "crates/ferric-scf/theory.md#link-and-cosx-exchange",
-        "crates/ferric-scf/theory.md#diis-the-error-vector-and-the-extrapolation",
-        "crates/ferric-scf/theory.md#level-shift-mom-and-fermi-smearing",
-        "crates/ferric-scf/theory.md#orbital-hessians-newton-augmented-hessian-trust-region",
-        "crates/ferric-scf/theory.md#scf-stability-analysis"
+      "book": [
+        "book/src/07-hartree-fock/01-energy-functionals.md#energy-functionals-functionals",
+        "book/src/07-hartree-fock/02-orthogonalization-and-guesses.md#orthogonalization-and-guesses-equations",
+        "book/src/07-hartree-fock/03-direct-and-incremental.md#direct-and-incremental-equations",
+        "book/src/07-hartree-fock/04-ri-j-ri-k-split-ri-j.md#ri-j-ri-k-split-ri-j-equations",
+        "book/src/07-hartree-fock/05-link-cosx-cfmm.md#link-cosx-cfmm-link-cosx",
+        "book/src/08-convergence/01-diis.md#diis-error-vector-extrapolation",
+        "book/src/08-convergence/02-level-shift-mom-smearing.md#level-shift-mom-smearing-level-shift-damps-step",
+        "book/src/08-convergence/03-second-order.md#second-order-orbital-gradient-hessian",
+        "book/src/08-convergence/04-stability.md#stability-stability-operators"
       ],
       "scripts": [
         "scripts/hf_energy_sympy.py",
@@ -832,8 +832,8 @@
       ]
     },
     "ri-mp2": {
-      "theory": [
-        "crates/ferric-mp2/theory.md#2-closed-shell-ri-mp2"
+      "book": [
+        "book/src/10-mp2/01-closed-shell-ri-mp2.md#closed-shell-ri-mp2-energy-splits"
       ],
       "scripts": [
         "scripts/mp2_variant_identities.py",
@@ -841,8 +841,8 @@
       ]
     },
     "ri-mp2-gradient": {
-      "theory": [
-        "crates/ferric-mp2/theory.md#9-analytic-ri-mp2-gradient-and-z-vector"
+      "book": [
+        "book/src/15-correlated-gradients/01-lagrangian-zvector.md#lagrangian-zvector-z-vector-equation-ferric"
       ],
       "scripts": [
         "scripts/mp2_gradient_sympy.py",
@@ -850,16 +850,16 @@
       ]
     },
     "rohf": {
-      "theory": [
-        "crates/ferric-scf/theory.md#hartree-fock-energy-functionals-rhf-uhf-rohf",
-        "crates/ferric-scf/theory.md#orthogonalization-and-starting-guesses",
-        "crates/ferric-scf/theory.md#direct-and-incremental-jk-builds",
-        "crates/ferric-scf/theory.md#density-fitted-coulomb-and-exchange-ri-j-ri-k-split-ri-j",
-        "crates/ferric-scf/theory.md#link-and-cosx-exchange",
-        "crates/ferric-scf/theory.md#diis-the-error-vector-and-the-extrapolation",
-        "crates/ferric-scf/theory.md#level-shift-mom-and-fermi-smearing",
-        "crates/ferric-scf/theory.md#orbital-hessians-newton-augmented-hessian-trust-region",
-        "crates/ferric-scf/theory.md#scf-stability-analysis"
+      "book": [
+        "book/src/07-hartree-fock/01-energy-functionals.md#energy-functionals-functionals",
+        "book/src/07-hartree-fock/02-orthogonalization-and-guesses.md#orthogonalization-and-guesses-equations",
+        "book/src/07-hartree-fock/03-direct-and-incremental.md#direct-and-incremental-equations",
+        "book/src/07-hartree-fock/04-ri-j-ri-k-split-ri-j.md#ri-j-ri-k-split-ri-j-equations",
+        "book/src/07-hartree-fock/05-link-cosx-cfmm.md#link-cosx-cfmm-link-cosx",
+        "book/src/08-convergence/01-diis.md#diis-error-vector-extrapolation",
+        "book/src/08-convergence/02-level-shift-mom-smearing.md#level-shift-mom-smearing-level-shift-damps-step",
+        "book/src/08-convergence/03-second-order.md#second-order-orbital-gradient-hessian",
+        "book/src/08-convergence/04-stability.md#stability-stability-operators"
       ],
       "scripts": [
         "scripts/hf_energy_sympy.py",
@@ -869,11 +869,11 @@
       ]
     },
     "rpa-gradient": {
-      "theory": [
-        "crates/ferric-rpa/theory.md#analytic-nuclear-gradient-closed-shell-ri-drpa-hf-reference",
-        "crates/ferric-rpa/theory.md#lagrangian-and-z-vector",
-        "crates/ferric-rpa/theory.md#gradient",
-        "crates/ferric-rpa/theory.md#imaginary-frequency-quadratures"
+      "book": [
+        "book/src/15-correlated-gradients/05-rpa-gradient.md#rpa-gradient",
+        "book/src/15-correlated-gradients/05-rpa-gradient.md#rpa-gradient-orbital-response",
+        "book/src/15-correlated-gradients/05-rpa-gradient.md#rpa-gradient-assembly",
+        "book/src/18-rpa/02-quadratures.md#quadratures-rule"
       ],
       "scripts": [
         "scripts/rpa_gradient_sympy.py",
@@ -881,9 +881,9 @@
       ]
     },
     "rpa-polarizability-c6": {
-      "theory": [
-        "crates/ferric-rpa/theory.md#dispersion-casimir-polder-c6",
-        "crates/ferric-rpa/theory.md#imaginary-frequency-quadratures"
+      "book": [
+        "book/src/21-polarizabilities/01-polarizabilities-from-dielectric-modes.md#polarizabilities-from-dielectric-modes-dielectric-form",
+        "book/src/18-rpa/02-quadratures.md#quadratures-rule"
       ],
       "scripts": [
         "scripts/rpa_c6_polarizability_sympy.py",
@@ -892,49 +892,49 @@
       ]
     },
     "rs-mp2-rpa": {
-      "theory": [
-        "crates/ferric-rpa/theory.md#range-separated-mp2--rpa"
+      "book": [
+        "book/src/26-rs-mp2-rpa/01-cross-term.md#cross-term-split-energy"
       ],
       "scripts": [
         "scripts/rpa_rs_mp2_rpa_sympy.py"
       ]
     },
     "scs-mp2": {
-      "theory": [
-        "crates/ferric-mp2/theory.md#4-spin-component-scaling"
+      "book": [
+        "book/src/10-mp2/03-scs-and-kappa.md#scs-and-kappa-scs-mp2"
       ],
       "scripts": [
         "scripts/mp2_family_sympy.py"
       ]
     },
     "scs-mp2-2terfc": {
-      "theory": [
-        "crates/ferric-mp2/theory.md#4-spin-component-scaling"
+      "book": [
+        "book/src/10-mp2/03-scs-and-kappa.md#scs-and-kappa-scs-mp2"
       ],
       "scripts": [
         "scripts/mp2_family_sympy.py"
       ]
     },
     "scs-mp2-gradient": {
-      "theory": [
-        "crates/ferric-mp2/theory.md#92-spin-component-scaled-scs-mp2-gradient"
+      "book": [
+        "book/src/15-correlated-gradients/02-rimp2-gradient.md#rimp2-gradient-scs-mp2"
       ],
       "scripts": [
         "scripts/mp2_gradient_sympy.py"
       ]
     },
     "tddft": {
-      "theory": [
-        "crates/ferric-tddft/theory.md#1-response-matrices",
-        "crates/ferric-tddft/theory.md#2-tamm-dancoff-approximation",
-        "crates/ferric-tddft/theory.md#3-casida-equations",
-        "crates/ferric-tddft/theory.md#4-transition-dipoles-and-oscillator-strengths",
-        "crates/ferric-tddft/theory.md#5-functional-gate-and-kernel",
-        "crates/ferric-tddft/theory.md#8-range-separated-hybrids",
-        "crates/ferric-tddft/theory.md#9-triplets",
-        "crates/ferric-tddft/theory.md#10-unrestricted-uhf--uks-references",
-        "crates/ferric-tddft/theory.md#11-s²-of-each-root",
-        "crates/ferric-tddft/theory.md#12-matrix-free-davidson-solvers"
+      "book": [
+        "book/src/20-tddft/01-response.md#response-matrices",
+        "book/src/20-tddft/01-response.md#response-tda-casida-reduction",
+        "book/src/20-tddft/01-response.md#response-tda-casida-reduction",
+        "book/src/20-tddft/02-oscillator-strengths.md#oscillator-strengths-length-gauge-formula",
+        "book/src/20-tddft/03-kernel.md#kernel-gate",
+        "book/src/20-tddft/04-rsh.md#rsh-split",
+        "book/src/20-tddft/05-triplets.md#triplets-spin-blocks",
+        "book/src/20-tddft/06-unrestricted.md#unrestricted-spin-problem",
+        "book/src/20-tddft/06-unrestricted.md#unrestricted-each-root",
+        "book/src/20-tddft/01-response.md#response-matrix-free-solvers"
       ],
       "scripts": [
         "scripts/tddft_response_sympy.py",
@@ -942,9 +942,9 @@
       ]
     },
     "u-oo-rimp2": {
-      "theory": [
-        "crates/ferric-mp2/theory.md#14-unrestricted-oo-ri-mp2-orbital-gradient",
-        "crates/ferric-mp2/theory.md#141-the-integral-response-loop"
+      "book": [
+        "book/src/12-oo-laplace/02-unrestricted-oo-rimp2.md#unrestricted-oo-rimp2-orbital-gradient",
+        "book/src/12-oo-laplace/02-unrestricted-oo-rimp2.md#unrestricted-oo-rimp2-integral-response-loop"
       ],
       "scripts": [
         "scripts/u_oo_rimp2_response_sympy.py",
@@ -952,10 +952,10 @@
       ]
     },
     "u-pdep-rpa": {
-      "theory": [
-        "crates/ferric-rpa/theory.md#open-shell-spin-summed-dielectric",
-        "crates/ferric-rpa/theory.md#imaginary-frequency-quadratures",
-        "crates/ferric-rpa/theory.md#laplace-transformed-chi0"
+      "book": [
+        "book/src/18-rpa/04-open-shell-dielectric.md#open-shell-dielectric-spin-summed-dielectric",
+        "book/src/18-rpa/02-quadratures.md#quadratures-rule",
+        "book/src/18-rpa/05-laplace-ao-chi0.md#laplace-ao-chi0-laplace-form-kernel"
       ],
       "scripts": [
         "scripts/rpa_drpa_pdep_sympy.py",
@@ -964,8 +964,8 @@
       ]
     },
     "u-ri-mp2": {
-      "theory": [
-        "crates/ferric-mp2/theory.md#3-unrestricted-ri-mp2"
+      "book": [
+        "book/src/10-mp2/02-unrestricted-ri-mp2.md#unrestricted-ri-mp2-energy"
       ],
       "scripts": [
         "scripts/mp2_variant_identities.py",
@@ -973,16 +973,16 @@
       ]
     },
     "uhf": {
-      "theory": [
-        "crates/ferric-scf/theory.md#hartree-fock-energy-functionals-rhf-uhf-rohf",
-        "crates/ferric-scf/theory.md#orthogonalization-and-starting-guesses",
-        "crates/ferric-scf/theory.md#direct-and-incremental-jk-builds",
-        "crates/ferric-scf/theory.md#density-fitted-coulomb-and-exchange-ri-j-ri-k-split-ri-j",
-        "crates/ferric-scf/theory.md#link-and-cosx-exchange",
-        "crates/ferric-scf/theory.md#diis-the-error-vector-and-the-extrapolation",
-        "crates/ferric-scf/theory.md#level-shift-mom-and-fermi-smearing",
-        "crates/ferric-scf/theory.md#orbital-hessians-newton-augmented-hessian-trust-region",
-        "crates/ferric-scf/theory.md#scf-stability-analysis"
+      "book": [
+        "book/src/07-hartree-fock/01-energy-functionals.md#energy-functionals-functionals",
+        "book/src/07-hartree-fock/02-orthogonalization-and-guesses.md#orthogonalization-and-guesses-equations",
+        "book/src/07-hartree-fock/03-direct-and-incremental.md#direct-and-incremental-equations",
+        "book/src/07-hartree-fock/04-ri-j-ri-k-split-ri-j.md#ri-j-ri-k-split-ri-j-equations",
+        "book/src/07-hartree-fock/05-link-cosx-cfmm.md#link-cosx-cfmm-link-cosx",
+        "book/src/08-convergence/01-diis.md#diis-error-vector-extrapolation",
+        "book/src/08-convergence/02-level-shift-mom-smearing.md#level-shift-mom-smearing-level-shift-damps-step",
+        "book/src/08-convergence/03-second-order.md#second-order-orbital-gradient-hessian",
+        "book/src/08-convergence/04-stability.md#stability-stability-operators"
       ],
       "scripts": [
         "scripts/hf_energy_sympy.py",
@@ -992,80 +992,80 @@
       ]
     },
     "bse-tda": {
-      "theory": [
-        "crates/ferric-gw/theory.md#11-bse-tda"
+      "book": [
+        "book/src/19-gw-bse/08-bse-tda.md#bse-tda-matrix"
       ],
       "scripts": [
         "scripts/gw_bse_rpax_sympy.py"
       ]
     },
     "tdhf-static-polarizability": {
-      "theory": [
-        "crates/ferric-gw/theory.md#12-tdhfrpax-polarizability"
+      "book": [
+        "book/src/19-gw-bse/09-rpax-static-polarizability.md#rpax-static-polarizability-response-matrices"
       ],
       "scripts": [
         "scripts/gw_bse_rpax_sympy.py"
       ]
     },
     "u-gw": {
-      "theory": [
-        "crates/ferric-gw/theory.md#9-open-shell"
+      "book": [
+        "book/src/19-gw-bse/07-open-shell-gw.md#open-shell-gw-spin-summed-screening-per"
       ],
       "scripts": [
         "scripts/gw_ucohsex_sympy.py"
       ]
     },
     "ccd": {
-      "theory": [
-        "crates/ferric-cc/theory.md#ccd"
+      "book": [
+        "book/src/16-coupled-cluster/01-ccd-ccsd-spin-orbital.md#ccd-ccsd-spin-orbital-equations"
       ],
       "scripts": [
         "scripts/cc_ccsd_eom_brute_force_sympy.py"
       ]
     },
     "casscf": {
-      "theory": [
-        "crates/ferric-ci/theory.md#two-step-casscf-srccasscfrs"
+      "book": [
+        "book/src/17-multireference/05-casscf.md#casscf"
       ],
       "scripts": [
         "scripts/ci_rdm_casscf_gradient_sympy.py"
       ]
     },
     "ccsd": {
-      "theory": [
-        "crates/ferric-cc/theory.md#ccsd"
+      "book": [
+        "book/src/16-coupled-cluster/01-ccd-ccsd-spin-orbital.md#ccd-ccsd-spin-orbital-equations"
       ],
       "scripts": [
         "scripts/cc_ccsd_eom_brute_force_sympy.py"
       ]
     },
     "eom-ccsd": {
-      "theory": [
-        "crates/ferric-cc/theory.md#ee-eom-ccsd-singlets-closed-shell"
+      "book": [
+        "book/src/16-coupled-cluster/04-eom-ccsd.md#eom-ccsd-equations"
       ],
       "scripts": [
         "scripts/cc_ccsd_eom_brute_force_sympy.py"
       ]
     },
     "u-ri-mp2-gradient": {
-      "theory": [
-        "crates/ferric-mp2/theory.md#15-unrestricted-ri-mp2-nuclear-gradient"
+      "book": [
+        "book/src/15-correlated-gradients/07-u-rimp2-gradient.md#u-rimp2-gradient-energy-weights"
       ],
       "scripts": [
         "scripts/u_rimp2_gradient_sympy.py"
       ]
     },
     "u-att-rimp2-gradient": {
-      "theory": [
-        "crates/ferric-mp2/theory.md#151-open-shell-attenuated-erfc-ri-mp2-gradient"
+      "book": [
+        "book/src/15-correlated-gradients/07-u-rimp2-gradient.md#u-rimp2-gradient-attenuated-erfc-variant"
       ],
       "scripts": [
         "scripts/u_att_rimp2_gradient_sympy.py"
       ]
     },
     "opmp3": {
-      "theory": [
-        "crates/ferric-mp2/theory.md#62-orbital-partitioned-padé-mp3-op-mp3"
+      "book": [
+        "book/src/10-mp2/11-opmp3.md#opmp3"
       ],
       "scripts": [
         "scripts/opmp3_identities_sympy.py",
@@ -1073,18 +1073,18 @@
       ]
     },
     "cosmo": {
-      "theory": [
-        "crates/ferric-scf/theory.md#cosmo-reaction-field"
+      "book": [
+        "book/src/22-implicit-solvation/05-conductor-limit-and-cosmo.md#conductor-limit-and-cosmo-cosmo-driver"
       ],
       "scripts": [
         "scripts/cosmo_sympy.py"
       ]
     },
     "qmmm": {
-      "theory": [
-        "crates/ferric-scf/theory.md#external-point-charges-and-fields",
-        "crates/ferric-scf/theory.md#qmmm-boundary-and-the-full-gradient",
-        "crates/ferric-scf/theory.md#thole-polarizable-embedding"
+      "book": [
+        "book/src/23-embedding/01-external-potentials.md#external-potentials-operator-classical-energy",
+        "book/src/23-embedding/02-qmmm-boundaries.md#qmmm-boundaries-cutting-covalent-bond",
+        "book/src/23-embedding/03-polarizable-embedding.md#polarizable-embedding-induction-model"
       ],
       "scripts": [
         "scripts/external_potential_sympy.py",
@@ -1093,17 +1093,17 @@
       ]
     },
     "atomic-charges": {
-      "theory": [
-        "crates/ferric-scf/theory.md#atomic-charges"
+      "book": [
+        "book/src/21-polarizabilities/02-atomic-partitions.md#atomic-partitions-partition-must-do"
       ],
       "scripts": [
         "scripts/atomic_charges_sympy.py"
       ]
     },
     "geometry-search": {
-      "theory": [
-        "crates/ferric-scf/theory.md#geometry-searches",
-        "crates/ferric-scf/theory.md#lindh-model-hessian"
+      "book": [
+        "book/src/14-derivatives/08-geometry-search.md#geometry-search",
+        "book/src/14-derivatives/08-geometry-search.md#geometry-search-lindh-model-hessian"
       ],
       "scripts": [
         "scripts/geometry_search_steps_sympy.py",
@@ -1111,8 +1111,8 @@
       ]
     },
     "local-mp2": {
-      "theory": [
-        "crates/ferric-mp2/theory.md#12-local-mp2"
+      "book": [
+        "book/src/13-local-mp2/index.md#local-mp2"
       ],
       "scripts": [
         "scripts/lmp2_hylleraas_vs_wshg23_sympy.py",
@@ -1121,16 +1121,16 @@
       ]
     },
     "ks-zvector": {
-      "theory": [
-        "crates/ferric-scf/theory.md#kohn-sham-z-vector-for-post-scf-corrections"
+      "book": [
+        "book/src/15-correlated-gradients/04-ks-zvector.md#ks-zvector-equations"
       ],
       "scripts": [
         "scripts/ks_zvector_sympy.py"
       ]
     },
     "mp2-polarizability": {
-      "theory": [
-        "crates/ferric-mp2/theory.md#10-static-polarizability"
+      "book": [
+        "book/src/15-correlated-gradients/06-mp2-polarizability.md#mp2-polarizability-relaxed-dipole"
       ],
       "scripts": [
         "scripts/mp2_polarizability_sympy.py",
@@ -1138,59 +1138,59 @@
       ]
     },
     "double-hybrid": {
-      "theory": [
-        "crates/ferric-mp2/theory.md#16-double-hybrids",
-        "crates/ferric-cc/theory.md#ωb97x-l-v-correlation"
+      "book": [
+        "book/src/10-mp2/10-double-hybrids.md#double-hybrids-energy",
+        "book/src/16-coupled-cluster/06-wb97x-l-v.md#wb97x-l-v-goes"
       ],
       "scripts": [
         "scripts/double_hybrid_sympy.py"
       ]
     },
     "nevpt2": {
-      "theory": [
-        "crates/ferric-ci/theory.md#sc-nevpt2-srcnevpt2rs",
-        "crates/ferric-ci/theory.md#nevpt-rdms-srcrdm3rs"
+      "book": [
+        "book/src/17-multireference/06-nevpt2.md#nevpt2-method",
+        "book/src/17-multireference/04-rdms.md#rdms-nevpt-rdms"
       ],
       "scripts": [
         "scripts/nevpt2_sympy.py"
       ]
     },
     "rrho-thermo": {
-      "theory": [
-        "crates/ferric-scf/theory.md#rrho-thermochemistry"
+      "book": [
+        "book/src/14-derivatives/06-frequencies.md#frequencies-thermochemistry-ir-intensities"
       ],
       "scripts": [
         "scripts/rrho_thermo_sympy.py"
       ]
     },
     "ir-intensities": {
-      "theory": [
-        "crates/ferric-scf/theory.md#infrared-intensities"
+      "book": [
+        "book/src/14-derivatives/06-frequencies.md#frequencies-thermochemistry-ir-intensities"
       ],
       "scripts": [
         "scripts/ir_intensity_sympy.py"
       ]
     },
     "u-attenuated-mp2": {
-      "theory": [
-        "crates/ferric-mp2/theory.md#51-open-shell-attenuated-and-spin-scaled-mp2"
+      "book": [
+        "book/src/10-mp2/04-attenuated-mp2.md#attenuated-mp2"
       ],
       "scripts": [
         "scripts/u_attenuated_sympy.py"
       ]
     },
     "u-rs-mp2-rpa": {
-      "theory": [
-        "crates/ferric-rpa/theory.md#open-shell-sr-mp2--lr-rpa"
+      "book": [
+        "book/src/26-rs-mp2-rpa/04-two-formulations.md#two-formulations"
       ],
       "scripts": [
         "scripts/u_attenuated_sympy.py"
       ]
     },
     "scs-2terfc-gradient": {
-      "theory": [
-        "crates/ferric-mp2/theory.md#96-scs-mp22terfc-gradient",
-        "crates/ferric-mp2/theory.md#152-open-shell-terfc-and-scs-mp22terfc-gradients"
+      "book": [
+        "book/src/15-correlated-gradients/02-rimp2-gradient.md#rimp2-gradient",
+        "book/src/15-correlated-gradients/07-u-rimp2-gradient.md#u-rimp2-gradient-terfc-scs-mp2-2terfc"
       ],
       "scripts": [
         "scripts/scs_2terfc_gradient_sympy.py"
@@ -1200,13 +1200,13 @@
   "gaps": {
     "pbc-ks": {
       "reason": "the energy functional, Fock convention, exxdiv and RS-GDF J/K are proven with pbc-hf (theory sections 7 and 8); the periodic XC grid quadrature and the XC force and stress terms have no sympy proof",
-      "theory": [
-        "crates/ferric-pbc/theory.md#5-stress-tensor-strain-derivative",
-        "crates/ferric-pbc/theory.md#8-k-point-hartree-fock-and-kohn-sham"
+      "book": [
+        "book/src/24-periodic/08-stress.md#stress-strain-moves",
+        "book/src/24-periodic/06-kpoint-scf.md#kpoint-scf"
       ]
     },
     "xtb": {
-      "reason": "no theory.md derivation of what ferric adds over the tblite reference"
+      "reason": "no book derivation of what ferric adds over the tblite reference"
     }
   }
 }

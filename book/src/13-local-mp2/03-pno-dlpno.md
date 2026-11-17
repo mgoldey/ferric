@@ -21,7 +21,7 @@ The section covers the pair screen (@sec:pno-dlpno-pair-screening), the PNOs (@s
 in the PNO basis (@sec:pno-dlpno-energy-pno-basis), the two entry points (@sec:pno-dlpno-algorithm-entry-points), and then the
 exactness contracts and the measured numbers.
 
-The derivation is `crates/ferric-mp2/theory.md` §12.5, read from
+The derivation below is read from
 `crates/ferric-mp2/src/dlpno_mp2.rs`, `local_pno.rs`,
 `pair_energy_screen.rs` and `dlpno_localized.rs`. The pair-energy sum, the
 PNO energy and the pair density are machine-checked below. The

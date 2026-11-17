@@ -439,7 +439,6 @@ not negligible cannot pass silently.
 
 | Source | Used for |
 |---|---|
-| `crates/ferric-scf/theory.md`, "Density-fitted J/K nuclear gradient" | the energies, the weights, the truncated-metric derivative and the noise floor |
 | `crates/ferric-scf/src/df_gradient.rs`, module documentation and `df_jk_gradient_core` | the stage list, the erf-metric mode count and the prototype measurements |
 | `crates/ferric-scf/src/df_gradient/deriv3c.rs` | the three-centre contraction layout |
 | `scripts/df_jk_gradient_sympy.py`, claims D1 to D3 | verified equation @eq:df-grad-jk |

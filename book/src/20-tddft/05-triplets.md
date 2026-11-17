@@ -221,4 +221,3 @@ combination of PySCF's `tdscf.uhf.get_ab` spin blocks on the same orbitals.
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-tddft/theory.md`, section 9 | the spin blocks, the matrix-free kernel, the instability |

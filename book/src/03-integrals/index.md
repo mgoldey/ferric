@@ -32,5 +32,4 @@ effective charges.
 Most integral classes go through libint2 behind a C shim
 (`crates/ferric-integrals/shim/shim.cc`). The terf and terfc kernels, the
 three-center one-electron batch kernel of section @sec:md-three-center and the ECPs have their
-own implementations. The derivations live in
-`crates/ferric-integrals/theory.md`; each section derives the part it needs.
+own implementations. Each section derives the part it needs.

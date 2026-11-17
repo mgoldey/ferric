@@ -343,7 +343,6 @@ construction.
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-pcm/theory.md`, sections 3 to 5 | $K$, $R$, the symmetrized solve, the sphere limits |
 | `scripts/pcm_ief_sympy.py`, claims 3, 5 and 7 | channel factors, symmetrization, the discrete sphere |
 | `crates/ferric-pcm/tests/ief_limits.rs` | the Rust twin of claim 7, and the conductor limit |
 | `crates/ferric-scf/tests/validation_pcm.rs` | the PySCF comparison |
@@ -353,7 +352,7 @@ construction.
 - The integral equation is isotropic: no anisotropic or ionic-strength
   variants.
 - `PointCharge` $S$ and $D$ converge far more slowly than the default on the
-  sphere tests (`crates/ferric-pcm/theory.md`, section 5): the central-charge
+  sphere tests (section @sec:ief-operators-sphere-limits): the central-charge
   error stays at the $10^{-3}$ level at 302 points, from the self-term on a
   grid with unequal weights.
 - The sphere tests cannot see a swap of the source and field normals,

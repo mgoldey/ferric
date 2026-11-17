@@ -1,7 +1,7 @@
 # Numbers in book/src that look like references to the book but are not.
 # `scripts/book_build.py --check` fails on a hard-coded section, chapter or
 # equation number unless its clause names the source (the dissertation, a paper,
-# a theory.md file, a table or figure of one) or it is listed here.
+# a table or figure of one) or it is listed here.
 # Format: page<TAB>matched text (whitespace collapsed). Keep this list short.
 book/src/00-notation.md	Eq. 1.23
 book/src/01-second-quantization/02-wick.md	Eq. 1.23

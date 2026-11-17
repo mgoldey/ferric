@@ -116,11 +116,10 @@ never the returned energy.
 | Source | Used for |
 |---|---|
 | book section @sec:range-split-cross-term | (@eq:cross-term-2) |
-| `crates/ferric-rpa/theory.md`, "Range-separated MP2 + RPA" | (@eq:cross-term-1), (@eq:rsrpa-ring2-2eos), the rule |
 | `scripts/rpa_rs_mp2_rpa_sympy.py` | (@eq:cross-term-3), (@eq:rsrpa-one-mode-series), the verified boxes |
 | `crates/ferric-rpa/src/rs_mp2_rpa.rs`, `RsMp2RpaResult` | formulation A |
 
-Changes from the sources: `theory.md` and the script write the denominator
+Changes from the sources: the script writes the denominator
 $D = \varepsilon_i + \varepsilon_j - \varepsilon_a - \varepsilon_b = -\Delta$
 with positive-signed energies over $D$; this section uses $\Delta$. The
 script's `b2 = 2.0 * k`, with `k` the $(ia|jb)$ matrix, is this book's

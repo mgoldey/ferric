@@ -428,7 +428,6 @@ embedding.
 
 | Source | Used for |
 |---|---|
-| `crates/ferric-scf/theory.md`, "Hartree-Fock nuclear Hessian" | equations and the toy-system check |
 | `scripts/hf_hessian_sympy.py`, claims H1 to H4, S1, S2 | verified equations @eq:scf-hess-assembled and @eq:scf-hess-occ-occ-rotation |
 | `scripts/hessian_factored_k_sympy.py`, claims F1 to F5 and its mutation list | the factored RI-K of section @sec:hf-hessian-factored-ri-k |
 | `crates/ferric-scf/src/hessian.rs` module documentation | the term table, the solver, the refusals |

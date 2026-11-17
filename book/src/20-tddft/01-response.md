@@ -477,5 +477,4 @@ PySCF; without that variable this part is skipped with a message.
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-tddft/theory.md`, sections 1–3, 6 and 12 | the matrices, the reductions, the cost and the Davidson solvers |
-| `crates/ferric-dft/theory.md`, "$f_{xc}$ response kernels" | the kernel block $K$ (section @sec:fxc) |
+| section @sec:fxc-linearized-potential | the kernel block $K$ (section @sec:fxc) |

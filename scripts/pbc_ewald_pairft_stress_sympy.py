@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Sympy/mpmath checks of the identities behind ferric-pbc's Ewald sums, pair
 Fourier transform, Ewald-split nuclear attraction, exxdiv correction and
-strain derivatives. Theory: crates/ferric-pbc/theory.md (section numbers below
-match its sections).
+strain derivatives. Theory: the periodic chapter of the book, `book/src/24-periodic/`.
 
 Each claim is checked; the script exits nonzero on any mismatch.
 

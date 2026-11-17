@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Sympy/numpy checks of the identities ferric-pcm's IEF-PCM code relies on.
 
-Theory and notation: crates/ferric-pcm/theory.md. Each claim names the Rust
+Theory and notation: book/src/22-implicit-solvation/. Each claim names the Rust
 function it checks, asserts, and carries a negative control (a deliberately
 wrong variant that must NOT satisfy the identity). Exits nonzero on any
 mismatch.

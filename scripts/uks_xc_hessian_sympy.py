@@ -37,7 +37,7 @@ sympy, so what this script proves is the SPIN ALGEBRA built on them:
   7. closed-shell limit: at D^a = D^b = D/2, D1^a = D1^b = D1/2 and
      f_closed(rho, sigma) = f(rho/2, rho/2, sigma/4, sigma/4, sigma/4) the
      polarized skeleton, first-order Fock (spin a) and V1^a equal the
-     closed-shell ones (theory.md "Kohn-Sham XC Hessian terms") exactly
+     closed-shell ones (`book/src/14-derivatives/05-ks-hessian.md#ks-hessian-xc-terms`) exactly
 
 Negative controls (each must miss item 3 or 5 with unequal spins):
   * the alpha-beta cross kernel dropped (f_{ra rb}, f_{ra sbb}, f_{rb saa},

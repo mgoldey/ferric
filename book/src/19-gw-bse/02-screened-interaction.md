@@ -242,6 +242,5 @@ and LUMO stay within 10 meV of the matched settings.
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-gw/theory.md`, sections "Screened interaction on the imaginary axis", "Single-pole structure", "PDEP as W" | boxes @eq:gw-single-pole-w and @eq:gw-pdep-complete and the text |
 | `scripts/gw_self_energy_sympy.py`, claims 1 and 8 | the proofs |
 | Wilson, Gygi and Galli, *Phys. Rev. B* **78**, 113303 (2008) | PDEP |
