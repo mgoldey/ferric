@@ -1,9 +1,11 @@
 # Notation and conventions
 
-This chapter fixes one notation for the whole book. Each section states the
-convention, lists where the sources disagree, and names the choice the book
-makes. The sources are the code, the per-crate `theory.md` files, the site
-pages, the dissertation, and the SR-MP2 + LR-RPA derivation notes.
+This chapter fixes one notation for the whole book. You can read it once
+straight through, or come back to a single section when a symbol in a
+chapter looks unfamiliar. Each section states the convention, lists where
+the sources disagree, and names the choice the book makes. The sources are
+the code, the per-crate `theory.md` files, the site pages, the
+dissertation, and the SR-MP2 + LR-RPA derivation notes.
 
 File and line references are to commit `81486b984`. Paths starting with
 `crates/` or `site/` are in the repository. `dissertation.txt` and
@@ -13,7 +15,7 @@ so a claim can be checked, and are never copied whole.
 When a source disagrees with the book, the code is the authority for what is
 computed and the book is the authority for how it is written down. A
 disagreement between a `theory.md` file and the code is a defect in the
-`theory.md` file; section 9 lists them.
+`theory.md` file; section 10 lists them.
 
 ## 1. Index letters
 
@@ -69,6 +71,10 @@ range.
 
 Formal derivations are written in spin orbitals. Working equations are written
 in spatial orbitals, with the spin sum carried out and the spin factor shown.
+The same letter $i$ means a different range in the two: in a spin-orbital sum
+it runs over $2n_o$ spin orbitals, in a spatial sum over $n_o$ orbitals, and the
+prefactors change with it (the MP2 energy has $\tfrac14$ in spin orbitals and
+no prefactor in spatial orbitals, section 10.1).
 Every spin-adapted working equation has a verified-equation box that proves it
 equal to the spin-orbital form.
 
@@ -106,6 +112,13 @@ shown: $(ia|\hat w|jb)$.
 **Physicist notation appears only antisymmetrized, in spin orbitals.**
 
 $$ \langle pq\|rs\rangle = \langle pq|rs\rangle - \langle pq|sr\rangle = (pr|qs) - (ps|qr) . $$
+
+The two notations group the orbitals differently. Chemists' notation puts
+the two orbitals of electron 1 together on the left, $(pq|\,\cdot\,)$.
+Physicists' notation puts the orbitals of electrons 1 and 2 side by side in
+the bra, $\langle pq|$, so $\langle pq|rs\rangle = (pr|qs)$. For example,
+$(ia|jb) = \langle ij|ab\rangle$, and its exchange partner $(ib|ja)$ is
+$\langle ij|ba\rangle$.
 
 The spin-orbital coupled-cluster code uses this convention
 (`crates/ferric-cc/theory.md:9`), and so do the derivation notes
@@ -168,6 +181,11 @@ This is what the code builds (`crates/ferric-scf/src/rhf.rs:3738`,
 `D = 2·C_occ·C_occᵀ`), what the Python surface documents
 (`crates/ferric-python/ferric.pyi:567`), and what the DFT pages assume
 (`site/src/methods/dft-derivations.md:13-15`).
+
+The factor $\tfrac12$ on $K$ comes from the factor 2 in $D$. Exchange acts only
+between electrons of the same spin, and each spin carries half the closed-shell
+density, $D^\alpha = D^\beta = D/2$. So the exchange term is
+$K[D^\alpha] = \tfrac12 K[D]$, while the Coulomb term sees the whole density.
 
 **Disagreement.** `crates/ferric-scf/theory.md:11-12` defines
 $D_{\lambda\sigma} = \sum_i C_{\lambda i} C_{\sigma i}$ without the factor 2
@@ -353,7 +371,16 @@ keyword and the dissertation all use it.
 ## 9. Units
 
 Equations are in Hartree atomic units: energies in Hartree, lengths in Bohr,
-gradients in Hartree/Bohr. Real orbitals throughout.
+gradients in Hartree/Bohr. Real orbitals throughout. One Hartree is about
+27.211 eV and 627.509 kcal/mol (`crates/ferric-cli/src/thermo_ir.rs` and
+`crates/ferric-mm/src/units.rs` carry the kcal/mol factor).
+
+Lengths change unit at the API boundary. You give a geometry in Å, in an XYZ
+file or a Python constructor, and the code stores and computes in Bohr.
+`Molecule.coords()` returns Å and `Molecule.coords_bohr()` returns the
+internal Bohr values (`crates/ferric-python/ferric.pyi`). A length or inverse
+length passed through a TOML key or Python keyword is in the unit the table
+below gives for that surface.
 
 | Quantity | Internal | At the TOML and Python surface | Reference |
 |---|---|---|---|
