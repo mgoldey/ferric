@@ -1,16 +1,20 @@
 # 14. SCF gradients, Hessians and geometry
 
-Nuclear derivatives of the self-consistent-field energy and what is built on
-them: the Hartree–Fock gradient, the gradient of density-fitted Coulomb and
-exchange, the exchange-correlation gradient, the Hartree–Fock and
-Kohn–Sham Hessians with their coupled-perturbed equations, harmonic
-frequencies, the gradient of an SCF that carries a caller-supplied energy
-term, and the searches that use the gradient (minimum, saddle point,
-reaction path).
+A force on a nucleus is the slope of the energy along that nucleus's
+coordinate, with the sign flipped. A geometry optimization follows the
+forces downhill, and a frequency calculation reads the curvature at the
+bottom. This chapter computes both for a self-consistent-field energy: the
+Hartree–Fock gradient, the gradient of density-fitted Coulomb and exchange,
+the exchange-correlation gradient, the Hartree–Fock and Kohn–Sham Hessians
+with their coupled-perturbed equations, harmonic frequencies, the gradient
+of an SCF that carries a caller-supplied energy term, and the searches that
+use the gradient (minimum, saddle point, reaction path).
 
-Correlated gradients (MP2, OO-MP2, dRPA) and the Z-vector are chapter 15.
-They reuse the energy-weighted density and the integral-derivative loops
-described here.
+The first sections build on chapter 3 (derivative integrals, section 3.3),
+chapter 7 (the Hartree–Fock energy and its fitted J and K) and chapter 9
+(the XC energy on a Becke grid). Correlated gradients (MP2, OO-MP2, dRPA)
+and the Z-vector are chapter 15. They reuse the energy-weighted density and
+the integral-derivative loops described here.
 
 | Section | Topic | Registry id | Status |
 |---|---|---|---|

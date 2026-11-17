@@ -3,13 +3,18 @@
 <!-- section: 14.4; status: ready; registry: hf-hessian;
      theory: crates/ferric-scf/theory.md#"Hartree-Fock nuclear Hessian" -->
 
-The Hessian is the derivative of the gradient of section 14.1, and the
-gradient depends on the orbitals through $D$ and $W$. Differentiating it has
-two parts. The skeleton is the second derivative of the energy at fixed $D$
-and $W$, built from second derivatives of the integrals. The response is how
-$D$ and $W$ move when a nucleus does, which needs the first-order change of
-the orbitals. That change solves a linear system, the coupled-perturbed
-Hartree–Fock (CPHF) equations, once per nuclear coordinate.
+The Hessian is the curvature of the energy surface: how the force on one
+nucleus changes when another moves. It is the derivative of the gradient of
+section 14.1, and that gradient contains the converged density $D$ and the
+energy-weighted density $W$ explicitly. The gradient needed no orbital
+derivative because the energy is stationary in the orbitals; $D$ and $W$
+are not, so the Hessian needs to know how the orbitals relax when a nucleus
+moves. That relaxation is the solution of a linear system, the
+coupled-perturbed Hartree–Fock (CPHF) equations, one per nuclear coordinate.
+
+The plan: split the Hessian into a skeleton at fixed $D$ and $W$ and a
+response through the orbitals, derive the CPHF equations that give the
+response, then follow the solver.
 
 | Symbol | Meaning | Code name |
 |---|---|---|
@@ -32,7 +37,96 @@ Frequencies from the Hessian are section 14.6.
 
 ## 14.4.1 The equations
 
-<!-- include: crates/ferric-scf/theory.md#"Hartree-Fock nuclear Hessian" -->
+**The skeleton.** Differentiate the gradient of section 14.1 once more along
+$y$, holding $D$, $W$ and $\Gamma$ fixed. Every integral gets a second
+derivative (section 3.3 gives their layout):
+
+$$H^{\mathrm{skel}}_{xy} = E_{nn}^{xy} + \sum D h^{xy} + \sum \Gamma\,(\mu\nu|\lambda\sigma)^{xy} - \sum W S^{xy},$$
+
+with the $D$, $\Gamma$ and $W$ of the gradient table; ROHF uses its own $W$.
+
+**The orbital rotation.** What remains is the change of $D$ and $W$. Write
+the first-order orbitals as a rotation of the converged ones,
+$C^y = C\,U^y$. The orbitals stay orthonormal in the moving basis:
+differentiate $C^{\mathsf T}SC = 1$ along $y$ and substitute $C^y = CU$:
+
+$$ U + U^{\mathsf T} + S^y_{\mathrm{MO}} = 0, \qquad S^y_{\mathrm{MO}} = C^{\mathsf T} S^y C . $$
+
+The symmetric part of $U$ is fixed by the overlap; only the antisymmetric
+part is free. A rotation among occupied orbitals does not change $D$, so the
+code fixes the occupied-occupied block to its symmetric part,
+$U^y_{ij} = -\tfrac12 S^y_{ij}$. The unknowns are the virtual-occupied
+rotations $U_{ai}$. With $\mathrm{occ} = 2$ (RHF) or $1$ (each UHF spin), the
+first-order density splits into the part they generate and the part the
+overlap forces:
+
+$$D_1(U) = \mathrm{occ}\,(C_v U C_o^{\mathsf T} + C_o U^{\mathsf T} C_v^{\mathsf T}),\qquad
+D^y_{oo} = -\mathrm{occ}\;C_o S^y_{oo} C_o^{\mathsf T}, \qquad D^y = D_1(U^y) + D^y_{oo} . $$
+
+**The CPHF equations.** The SCF condition at every geometry is that the
+virtual-occupied block of the Fock matrix vanishes, $F_{ai} = 0$, with
+$F_{\mathrm{MO}} = \mathrm{diag}(\varepsilon)$ at canonical orbitals.
+Differentiate $(C^{\mathsf T}FC)_{ai}$ along $y$. The rotation hits both $C$
+factors, giving $U_{ia}\varepsilon_i + \varepsilon_aU_{ai}$. The AO Fock matrix
+changes through the integrals at fixed density, $F^y$, and through the
+density, $G(D^y)$. Use the orthonormality condition to replace $U_{ia}$ by
+$-U_{ai} - S^y_{ai}$, and set the derivative to zero:
+
+$$(\varepsilon_a - \varepsilon_i)\,U^y_{ai} + G(D_1(U^y))_{ai}
+= -\big(F^y_{ai} - \varepsilon_i S^y_{ai} + G(D^y_{oo})_{ai}\big) .$$
+
+`ferric-scf/src/hessian.rs::solve_cphf_block` solves this system, with
+right-hand side `ferric-scf/src/hessian.rs::cphf_rhs`. For RHF
+$G = J - \tfrac12 K$. For UHF it is spin-coupled,
+$G_\sigma(D_\alpha, D_\beta) = J(D_\alpha + D_\beta) - K(D_\sigma)$, and
+$(U_\alpha, U_\beta)$ form one linear system.
+
+Check the uncoupled limit. Drop the two-electron response $G$ on both sides
+and the solution is
+$U_{ai} = -(F^y_{ai} - \varepsilon_iS^y_{ai})/(\varepsilon_a - \varepsilon_i)$:
+first-order perturbation theory, a coupling divided by an orbital-energy
+gap. The $G$ terms add the self-consistency: the relaxed density changes
+the Fock matrix, which changes the relaxation. A small HOMO-LUMO gap makes
+the response large, as it makes the MP2 amplitudes large (section 10.1).
+
+The operator on the left is the real singlet orbital Hessian of section
+8.4.1 with $c_x = 1$. Expand $C_v^{\mathsf T}G(D_1(U))C_o$ in MO integrals: the
+Coulomb part gives $4(ai|bj)U_{bj}$ and the exchange part
+$-\big[(ab|ij) + (aj|bi)\big]U_{bj}$, the RHF internal stability operator. It
+is symmetric, and positive definite exactly when the RHF solution is
+internally stable.
+
+**The occupied multiplier.** The response of $W$ needs the first-order
+multiplier $\varepsilon^y_{ij}$ (`ferric-scf/src/hessian.rs::finish_cphf`):
+
+$$\varepsilon^y_{ij} = F^y_{ij} + [C_o^{\mathsf T} G(D^y_{oo} + D_1(U^y)) C_o]_{ij} - \tfrac12 S^y_{ij}(\varepsilon_i + \varepsilon_j).$$
+
+**The response term.** $R_{xy}$ is $\mathrm d/\mathrm dy$ of
+$\sum D F^x - \sum W S^x$, with $D^y$ and $W^y$ written through $U^y$ and
+$\varepsilon^y$ (`ferric-scf/src/hessian.rs::assemble_response`, PySCF
+`hess_elec`):
+
+$$R_{xy} = \sum_\sigma \Big[ 2\,\mathrm{occ} \sum_{p,i} (F^x - S^x\varepsilon)_{pi}\,U^y_{pi}
+- \mathrm{occ} \sum_{ij} S^x_{ij}\,\varepsilon^y_{ij} \Big],$$
+
+with $p$ over all orbitals; the $oo$ rows carry $U_{oo} = -\tfrac12 S_{oo}$.
+For RHF this is
+$4\sum (F^x - S^x\varepsilon) U^y - 2\sum S^x_{oo}\varepsilon^y$. The total is
+$H_{xy} = H^{\mathrm{skel}}_{xy} + R_{xy}$, and a closed-shell UHF reproduces
+the RHF Hessian term by term.
+
+How much does the response matter? For the ROHF test systems of section
+14.4.5 (NH2, CH2, HO2 / cc-pVDZ), the Hessian without it misses PySCF's
+finite differences by 0.35 to 0.83 Ha/Bohr², and its frequencies by
+1.3e3 to 2.5e3 cm⁻¹. With the response the miss is $1.0\times10^{-6}$ or less.
+
+**Two checks you can do in your head.** The Hessian is symmetric,
+$H_{xy} = H_{yx}$, because mixed partial derivatives commute; the response
+term is the only one the code computes in non-symmetric form, which is why
+step 7 below symmetrizes it and the frequency result reports the asymmetry.
+And it is translationally invariant: the gradient does not change when the
+whole molecule moves, so for every row $(A,\alpha)$ and axis $\beta$,
+$\sum_B H_{(A,\alpha),(B,\beta)} = 0$.
 
 > **Verified equation 14.9** · the assembled Hessian equals the difference of the gradient
 >
@@ -71,13 +165,52 @@ Frequencies from the Hessian are section 14.6.
 >
 > <!-- verified: id=scf.hess.occ-occ-rotation; script=scripts/hf_hessian_sympy.py; claim=S1; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/hessian.rs::finish_cphf; rust_test=ferric-scf/tests/uhf_hessian_fd.rs::closed_shell_uhf_equals_rhf_term_by_term; registry=hf-hessian -->
 
-**Why the ROHF response keeps a commutator.** ROHF has one orbital set and two
-Fock matrices, and its orbitals are not eigenvectors of either. Differentiating
-the stationarity condition $g = 0$ along $y$ therefore brings in
-$[f_\sigma,\kappa]$ with the full, non-diagonal $f_\sigma$. A truncation to the
-diagonal gap is wrong, and the runner's mutation checks that the proof sees
-it. ROHF uses its own $W$ (section 14.1), not the UHF eigenvalue form, so the
-skeleton's $W$ term differs from UHF's at ROHF orbitals.
+On the gradient's toy system the analytic Hessian matches a fourth-order
+difference of the analytic gradient, with the SCF re-solved, to
+$3\times10^{-11}$ (RHF), $1\times10^{-9}$ (UHF) and $1\times10^{-9}$ (ROHF). The
+closed-shell UHF Hessian equals the RHF one to $4\times10^{-16}$.
+
+### ROHF: why the response keeps a commutator
+
+ROHF has one orbital set and two Fock matrices, and its orbitals are
+eigenvectors of neither. The derivation above used
+$F_{\mathrm{MO}} = \mathrm{diag}(\varepsilon)$, so it does not carry over.
+`ferric-scf/src/hessian/rohf.rs` keeps the rotation $\kappa$ (blocks $vc$, $vo$,
+$oc$) separate from the overlap part, $U = \kappa - \tfrac12 S^y_{\mathrm{MO}}$,
+and splits the first-order spin densities in the MO basis:
+
+$$(D^y_\sigma)_{\mathrm{MO}} = U n_\sigma + n_\sigma U^{\mathsf T},\quad
+(D^S_\sigma)_{pq} = -\tfrac12 S^y_{pq}(n_{\sigma p} + n_{\sigma q}),\quad
+(D^\kappa_\sigma)_{pq} = (n_{\sigma q} - n_{\sigma p})\kappa_{pq}.$$
+
+The spin Fock matrix in the MO basis, $f_\sigma$, changes along $y$ by the
+overlap, by the rotation, and by the AO Fock derivative:
+
+$$ \frac{\mathrm d f_\sigma}{\mathrm dy} = -\tfrac12(S f_\sigma + f_\sigma S) + [f_\sigma, \kappa] + C^{\mathsf T}(F^y_\sigma + G_\sigma(D^y))C . $$
+
+Differentiate the ROHF stationarity condition $g = 0$ with it
+(`Response::apply`, `Response::rhs`):
+
+$$\Phi_\sigma = C^{\mathsf T}F^y_\sigma C + C^{\mathsf T}G_\sigma(D^S)C - \tfrac12(S f_\sigma + f_\sigma S)
++ C^{\mathsf T}G_\sigma(D^\kappa)C + [f_\sigma, \kappa],$$
+
+$$(\Phi_\alpha + \Phi_\beta)_{vc} = 0,\qquad (\Phi_\alpha)_{vo} = 0,\qquad (\Phi_\beta)_{oc} = 0 .$$
+
+This is a linear system $A\kappa = -B$. Its operator keeps the full
+commutator $[f_\sigma, \kappa]$, because the $f_\sigma$ are not diagonal. A
+truncation to the diagonal gap, which is exact for RHF and UHF, is wrong
+here, and the runner's mutation checks that the proof sees it. The response
+column (`Response::column`, `w_response`) is
+
+$$R_{xy} = \sum_\sigma \mathrm{tr}[D^y_\sigma F^x_\sigma] - \mathrm{tr}[W^y S^x],$$
+
+$$W^y = D^y_\alpha F_\alpha D_\alpha + D_\alpha F^y_\alpha D_\alpha + D_\alpha F_\alpha D^y_\alpha
++ D^y_\alpha F_\beta D_\beta + D_\alpha F^y_\beta D_\beta + D_\alpha F_\beta D^y_\beta,$$
+
+the product-rule derivative of the ROHF $W$ of section 14.1, with
+$F^y_\sigma$ the total derivative $h^y + G^y_\sigma(D) + G_\sigma(D^y)$. The
+skeleton also uses that ROHF $W$, so its $W$ term differs from UHF's at ROHF
+orbitals.
 
 ## 14.4.2 The algorithm
 
@@ -94,14 +227,76 @@ returns the five terms separately for tests.
 | 6 | CPHF for every coordinate by preconditioned conjugate gradient | `ferric-scf/src/hessian.rs::solve_cphf_block` |
 | 7 | $\varepsilon^y$, then the response $R_{xy}$, symmetrized | `ferric-scf/src/hessian.rs::finish_cphf`, `assemble_response` |
 
+The CPHF right-hand side is the bracket of the CPHF equation with its sign
+moved, $S^y_{ai}\varepsilon_i - F^y_{ai} - G(D^y_{oo})_{ai}$:
+
+<!-- excerpt: ferric-scf/src/hessian.rs::cphf_rhs -->
+```rust
+let mut rhs = &s1.slice(s![nocc.., ..]) * &frame.eps_occ - h1.slice(s![nocc.., ..]);
+rhs -= &frame.vo(g_oo);
+rhs
+```
+
+| Code | Equation |
+|---|---|
+| `s1.slice(s![nocc.., ..]) * &frame.eps_occ` | $S^y_{ai}\varepsilon_i$, each column scaled by its occupied energy |
+| `h1.slice(s![nocc.., ..])` | $F^y_{ai}$ |
+| `frame.vo(g_oo)` | $G(D^y_{oo})_{ai}$, the $vo$ block of the overlap-forced response |
+
+The operator is applied without forming it. Inside the block solver each
+trial rotation $u$ is mapped to
+
+<!-- excerpt: ferric-scf/src/hessian.rs::solve_cphf_blocks_of -->
+```rust
+.map(|(gu, u)| &frame.denom * *u + frame.vo(gu))
+```
+
+where `frame.denom` holds $\varepsilon_a - \varepsilon_i$ and `gu` is
+$G(D_1(u))$, built for all coordinates of the block in one pass. The same
+`frame.denom` is the preconditioner: conjugate gradient is preconditioned by
+the orbital-energy gap, the uncoupled part of the operator, not by the full
+diagonal.
+
 The CPHF operator is symmetric positive definite at a stable RHF minimum, so
-the solver is conjugate gradient, preconditioned by the diagonal of the
-operator (`pcg_to` in `ferric-scf/src/hessian.rs`). The coordinates run in lockstep blocks: each iteration builds
-$G$ for every still-running coordinate in one four-centre quartet pass. The
-block length is a function of the basis size, not the thread count
+the solver is conjugate gradient
+(`ferric-scf/src/hessian.rs::pcg_to`), to a max-abs residual of
+`ferric-scf/src/hessian.rs::CPHF_TOL` ($10^{-10}$) within
+`CPHF_MAX_ITER` (200) iterations. A non-positive curvature $p^{\mathsf T}Ap$ is
+a typed error that says the SCF reference is not a stable minimum: that is
+the stability analysis of section 8.4 surfacing inside the Hessian.
+
+The coordinates run in lockstep blocks: each iteration builds $G$ for every
+still-running coordinate in one four-centre quartet pass. The block length
+is a function of the basis size alone
 (`ferric-scf/src/hessian.rs::cphf_block_len`, a 32 MiB budget of stacked
-response matrices). For UHF the $\alpha$ and $\beta$ rotations are one
-coupled system, because the Coulomb term of $G_\sigma$ carries both spins.
+response matrices), so the blocking is the same for every thread count. For UHF the $\alpha$ and $\beta$ rotations are one coupled
+system, because the Coulomb term of $G_\sigma$ carries both spins; the solver
+stacks the two blocks into one vector.
+
+Step 7 assembles $R$ from the solutions, one row per perturbation $x$:
+
+<!-- excerpt: ferric-scf/src/hessian.rs::assemble_response -->
+```rust
+for x in 0..n3 {
+    let hs = (2.0 * frame.occ) * (&h1_mo[x] - &(&s1_mo[x] * &frame.eps_occ));
+    let s1_oo = s1_mo[x].slice(s![..nocc, ..]);
+    for (y, sol) in sols.iter().enumerate() {
+        r[(x, y)] = (&hs * &sol.u).sum() - frame.occ * (&s1_oo * &sol.e1).sum();
+    }
+}
+```
+
+| Code | Equation |
+|---|---|
+| `hs` | $2\,\mathrm{occ}\,(F^x - S^x\varepsilon)_{pi}$ over all $p$ and occupied $i$ |
+| `(&hs * &sol.u).sum()` | $\sum_{pi}2\,\mathrm{occ}\,(F^x - S^x\varepsilon)_{pi}U^y_{pi}$ |
+| `frame.occ * (&s1_oo * &sol.e1).sum()` | $\mathrm{occ}\sum_{ij}S^x_{ij}\varepsilon^y_{ij}$ |
+
+The loop computes $R_{xy}$ from $U^y$ and $R_{yx}$ from $U^x$ separately.
+They are equal only in exact arithmetic with a converged CPHF, so their
+largest difference is the analytic Hessian's internal consistency probe:
+`RhfHessianParts::response_asymmetry`, which the frequency result reports
+as `asymmetry`. The Hessian uses the symmetrized $R$.
 
 ## 14.4.3 Reproducibility and refusals
 
