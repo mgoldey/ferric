@@ -3,12 +3,24 @@
 <!-- section: 14.6; status: ready; registry: harmonic-frequencies, rrho-thermo, ir-intensities;
      theory: crates/ferric-scf/theory.md#"Harmonic frequencies"; crates/ferric-scf/theory.md#"RRHO thermochemistry"; crates/ferric-scf/theory.md#"Infrared intensities" -->
 
-Harmonic frequencies need only the Cartesian Hessian and the masses. Whether
-the Hessian came from section 14.4, from section 14.5 or from differences of
-analytic gradients does not matter to what follows: one linear-algebra
-routine turns it into wavenumbers. The only subtle step is removing the six
-translations and rotations, which must be done in mass-weighted coordinates and
-must not misclassify a small imaginary mode at a saddle point.
+Near a minimum the energy surface is a bowl, and the nuclei sit at its
+bottom. Push them a little and they oscillate. The curvature of the bowl is
+the Hessian, and it sets how stiff each motion is. Stiffness alone does not
+fix the frequency: a hydrogen on the same spring as a carbon vibrates
+faster, because it is lighter. So the vibrational frequencies are the
+curvature measured per unit mass.
+
+The plan: the harmonic eigenproblem and its units (14.6.1), the code
+(14.6.2), refusals (14.6.3), options (14.6.4), anchors (14.6.5), and the two
+quantities built on the modes, thermochemistry and IR intensities (14.6.6).
+
+Given the Hessian and the masses, nothing else enters. Whether the Hessian
+came from section 14.4, from section 14.5 or from differences of analytic
+gradients does not matter to what follows: one linear-algebra routine turns
+it into wavenumbers. The one delicate step is
+removing the six motions that are not vibrations, three translations and
+three rotations. That has to happen in mass-weighted coordinates, and it
+must not mistake a small imaginary mode at a saddle point for one of them.
 
 | Symbol | Meaning | Code name |
 |---|---|---|
@@ -28,7 +40,49 @@ must not misclassify a small imaginary mode at a saddle point.
 
 ## 14.6.1 From Hessian to wavenumbers
 
-<!-- include: crates/ferric-scf/theory.md#"Harmonic frequencies" -->
+### The harmonic eigenproblem
+
+$H$ is in Hartree/Bohr². It is the analytic Hessian of section 14.4 or 14.5,
+or the central difference of the analytic gradient (default step
+$\delta = 5\times10^{-3}$ Bohr), symmetrized as $(H + H^{\mathsf T})/2$.
+
+Expand the energy to second order about the minimum. The gradient is zero
+there, so with $\Delta x$ the displacement,
+
+$$ V \approx \tfrac12\,\Delta x^{\mathsf T} H\,\Delta x, \qquad T = \tfrac12\,\dot x^{\mathsf T} M\,\dot x . $$
+
+The masses make $T$ awkward: each coordinate has its own. Substitute the
+mass-weighted coordinate $q = M^{1/2}\Delta x$. Then $T = \tfrac12\dot
+q^{\mathsf T}\dot q$, every coordinate has unit mass, and the potential
+becomes $V = \tfrac12 q^{\mathsf T}\tilde Hq$ with
+
+$$ \tilde H = M^{-1/2} H M^{-1/2} . $$
+
+The equations of motion are $\ddot q = -\tilde Hq$. Expand $q$ in the
+orthonormal eigenvectors of the symmetric matrix $\tilde H$. The equations
+decouple, one per eigenvector, each a harmonic oscillator:
+
+$$ \tilde H u_k = \omega_k^2 u_k . $$
+
+The eigenvalue is the squared angular frequency of mode $k$. In
+`ferric-scf/src/frequencies.rs` the masses are converted from u to electron
+masses before the weighting, with `AMU_TO_ELECTRON_MASS`
+$= 1/5.48579909065\times10^{-4}$ (CODATA 2018). Then everything is in atomic
+units and $\omega_k$ comes out in $E_h/\hbar$.
+
+**Units.** A wavenumber is $\tilde\nu = \omega/(2\pi c)$ for $\omega$ in
+rad/s. Convert $\omega$ from $E_h/\hbar$ to rad/s and divide:
+$\tilde\nu = \omega E_h/(2\pi\hbar c) = \omega\,E_h/(hc)$. The constant
+$E_h/(hc)$ in cm⁻¹ is `AU_FREQ_TO_CM` $= 219474.6313632$ cm⁻¹.
+
+**Check the diatomic.** Take two atoms on a spring of force constant $k$,
+along one axis. The Cartesian Hessian is
+$k\left[\begin{smallmatrix}1&-1\\-1&1\end{smallmatrix}\right]$. Mass weighting
+gives
+$\left[\begin{smallmatrix}k/m_1&-k/\sqrt{m_1m_2}\\-k/\sqrt{m_1m_2}&k/m_2\end{smallmatrix}\right]$.
+Its determinant is zero, so one eigenvalue is 0: the two atoms moving
+together. The other equals the trace, $k(1/m_1 + 1/m_2) = k/\mu$ with $\mu$
+the reduced mass. So $\omega = \sqrt{k/\mu}$, the textbook result.
 
 > **Verified equation 14.15** · units and the diatomic limit
 >
@@ -47,6 +101,54 @@ must not misclassify a small imaginary mode at a saddle point.
 > | Code test | `anchor_postprocessing_matches_pyscf` in `crates/ferric-scf/tests/validation_frequencies.rs` |
 >
 > <!-- verified: id=freq.units-diatomic; script=scripts/hf_frequencies_sympy.py; claim=D1; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/frequencies.rs::frequencies_from_cartesian_hessian; rust_test=ferric-scf/tests/validation_frequencies.rs::anchor_postprocessing_matches_pyscf; registry=harmonic-frequencies -->
+
+### Removing translations and rotations
+
+In three dimensions a molecule of $N$ atoms has $3N$ coordinates. Moving it
+as a whole, or rotating it as a rigid body, does not change the energy, so
+those directions have zero curvature at a minimum. A nonlinear molecule has
+three translations and three rotations, six zero frequencies. A linear
+molecule has five: a rotation about the molecular axis moves no atom.
+
+Numerically these zeros are not clean. A finite-difference Hessian carries
+noise, and away from a stationary point the rotations carry real curvature
+through the gradient term. So the code removes them explicitly.
+
+`ferric-scf/src/frequencies.rs::translation_rotation_basis` builds them in
+mass-weighted coordinates. A translation along axis $k$ displaces every atom
+by the same unit vector $e_k$, which in $q = \sqrt m\,\Delta x$ is
+
+$$ t_k[3A + i] = \sqrt{m_A}\,\delta_{ik} . $$
+
+An infinitesimal rotation about axis $k$ through the centre of mass moves
+atom $A$ by $e_k \times (R_A - R_{\rm com})$, so
+
+$$ r_k[3A + \cdot\,] = \sqrt{m_A}\,\big(e_k \times (R_A - R_{\rm com})\big) . $$
+
+The six vectors are orthonormalized by modified Gram–Schmidt. A vector that
+vanishes is dropped; that is the axial rotation of a linear molecule. The
+rank is 6, or 5 if linear, and it is cross-checked against
+`ferric-scf/src/frequencies.rs::detect_linear`.
+
+Does the centre of rotation matter? No. Replace $R_{\rm com}$ by any point
+$c$. Then $e_k\times(R_A - c) = e_k\times(R_A - R_{\rm com}) + e_k\times(R_{\rm com} - c)$,
+and the second term is the same vector for every atom, a translation. The
+span of the six vectors does not change.
+
+The projector is $P = 1 - \sum_k t_kt_k^{\mathsf T}$ over the orthonormal set,
+and the projected Hessian is $P\tilde HP$. The code applies it as one rank-one
+sweep per vector $t$:
+
+$$ \tilde H \leftarrow \tilde H - t(t^{\mathsf T}\tilde H) - (\tilde Ht)t^{\mathsf T} + t\,t^{\mathsf T}(t^{\mathsf T}\tilde Ht) . $$
+
+One sweep is $(1 - tt^{\mathsf T})\tilde H(1 - tt^{\mathsf T})$ multiplied
+out. The $t_k$ are orthonormal, so the product of the single-vector
+projectors is $P$, and the sweeps together give $P\tilde HP$.
+
+What does the projection do to the vibrations? At a minimum it leaves them
+alone: the vibrations are already orthogonal to the rigid motions. Away
+from a stationary point the rotations carry curvature (the gradient term),
+and the projection sets those eigenvalues to zero.
 
 > **Verified equation 14.16** · the projector
 >
@@ -68,12 +170,26 @@ must not misclassify a small imaginary mode at a saddle point.
 >
 > <!-- verified: id=freq.projector; script=scripts/hf_frequencies_sympy.py; claim=P1; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/frequencies.rs::{translation_rotation_basis,detect_linear}; rust_test=ferric-scf/tests/validation_frequencies.rs::anchor_postprocessing_matches_pyscf; registry=harmonic-frequencies -->
 
-**A negative eigenvalue is an imaginary frequency.** It is reported as a
-negative wavenumber, $-\sqrt{\lvert\lambda\rvert}\,\mathtt{AU\_FREQ\_TO\_CM}$.
-Eigenvectors are classified as rigid motion by their overlap with the
-translation and rotation subspace (above $0.5$), not by the size of their
-eigenvalue, because at a transition state a genuine imaginary mode can be
-smaller in magnitude than the numerical zeros.
+**A negative eigenvalue is an imaginary frequency.** Its $\omega$ is
+$i\sqrt{\lvert\lambda\rvert}$, and the code reports it as a negative
+wavenumber, $-\sqrt{\lvert\lambda\rvert}\,\mathtt{AU\_FREQ\_TO\_CM}$.
+
+Which eigenvectors are the rigid motions after projection? The code decides
+by overlap with the translation and rotation subspace: above $0.5$ means
+rigid. It does not take the six eigenvalues closest to zero. At a
+transition state a genuine imaginary mode can be smaller in magnitude than
+the numerical zeros, and a magnitude rule would discard it.
+
+Normal modes are returned as Cartesian displacements $x = M^{-1/2}u$, not
+renormalized.
+
+The script `scripts/hf_frequencies_sympy.py` checks both constants against
+CODATA 2018, the diatomic wavenumber against the SI route
+$(2\pi c)^{-1}\sqrt{k/\mu}$ (relative $<10^{-9}$), the projector (rank,
+orthonormality, idempotence, annihilation of the rigid modes,
+distance-preserving rotations, rank 5 for a linear triatomic), and that the
+projection leaves the vibrations of a pair-spring model unchanged at its
+minimum and zeroes six modes away from it.
 
 ## 14.6.2 The algorithm
 
@@ -85,22 +201,37 @@ smaller in magnitude than the numerical zeros.
 | 4 | $P\tilde HP$ by rank-one sweeps, one per rigid-body vector | same |
 | 5 | `eigh_dc`, classify rigid modes by overlap, convert $\omega$ to cm⁻¹, back-transform modes $x = M^{-1/2}u$ | same |
 
-The finite-difference route is general. It needs only an analytic gradient,
-and there is deliberately no fallback that differences energies twice: a
-method without an analytic gradient is an error naming the method. Differencing a
-gradient once leaves $O(\delta^2)$ truncation plus $O(\epsilon_{\mathrm{SCF}}/\delta)$
-noise, against $O(\epsilon_{\mathrm{SCF}}/\delta^2)$ for energies.
+Why difference the gradient and not the energy? Differencing a gradient once
+leaves $O(\delta^2)$ truncation plus $O(\epsilon_{\mathrm{SCF}}/\delta)$ noise,
+where $\epsilon_{\mathrm{SCF}}$ is the gradient's convergence error.
+Differencing energies twice divides that error by $\delta^2$:
+$O(\epsilon_{\mathrm{SCF}}/\delta^2)$. So the finite-difference route needs
+only an analytic gradient, and there is no fallback that differences
+energies twice: a method without an analytic gradient is an error naming
+the method.
 
-Steps 3 to 5 are the whole kernel. Mass weighting and one rank-one projection sweep:
+Steps 3 to 5 are the kernel. The mass weighting is one line:
 
 <!-- excerpt: ferric-scf/src/frequencies.rs::frequencies_from_cartesian_hessian -->
 ```rust
 mw[(i, j)] = cartesian_hessian[(i, j)] * inv_sqrt_m[i] * inv_sqrt_m[j];
 ```
 
+The projection is the loop of rank-one sweeps:
+
 <!-- excerpt: ferric-scf/src/frequencies.rs::frequencies_from_cartesian_hessian -->
 ```rust
-proj[(i, j)] -= t[i] * ht[j] + ht[i] * t[j] - t[i] * t[j] * tht;
+let mut proj = mw.clone();
+for t in &tr_basis {
+    // H <- H - t (t^T H) - (H t) t^T + t (t^T H t) t^T
+    let ht: Array1<f64> = proj.dot(t);
+    let tht: f64 = t.dot(&ht);
+    for i in 0..n_coord {
+        for j in 0..n_coord {
+            proj[(i, j)] -= t[i] * ht[j] + ht[i] * t[j] - t[i] * t[j] * tht;
+        }
+    }
+}
 ```
 
 | Code | Equation |
@@ -108,12 +239,36 @@ proj[(i, j)] -= t[i] * ht[j] + ht[i] * t[j] - t[i] * t[j] * tht;
 | `inv_sqrt_m[i]` | $m_i^{-1/2}$ for Cartesian coordinate $i$, atom $i/3$ |
 | `mw` | $\tilde H$ |
 | `t` | one orthonormal rigid-motion vector $t_k$ |
-| `ht` | $\tilde H\,t_k$ |
+| `ht` | $\tilde H\,t_k$, with $\tilde H$ already swept by the earlier vectors |
 | `tht` | $t_k^{\mathsf T}\tilde Ht_k$ |
 | the update | $\tilde H\leftarrow\tilde H - t(t^{\mathsf T}\tilde H) - (\tilde Ht)t^{\mathsf T} + t\,(t^{\mathsf T}\tilde Ht)\,t^{\mathsf T}$ |
 
-The sweeps equal $P\tilde HP$ because the $t_k$ are orthonormal; the matrix is
-re-symmetrized afterwards to remove accumulated round-off.
+`ht` is computed from `proj`, the matrix already projected by the earlier
+vectors. That is the product of single-vector projectors from 14.6.1, so the
+loop needs no stored $P$. Each sweep costs $O(n^2)$ for $n = 3N$, against
+$O(n^3)$ for forming $P$ and multiplying. The matrix is re-symmetrized
+afterwards to remove accumulated round-off.
+
+The rigid-mode test after `eigh_dc` sums the squared overlaps of each
+eigenvector with the basis:
+
+<!-- excerpt: ferric-scf/src/frequencies.rs::frequencies_from_cartesian_hessian -->
+```rust
+for k in 0..n_coord {
+    let col = evecs.column(k);
+    let overlap: f64 = tr_basis
+        .iter()
+        .map(|t| {
+            let d: f64 = t.iter().zip(col.iter()).map(|(a, b)| a * b).sum();
+            d * d
+        })
+        .sum();
+```
+
+A vector inside the rigid subspace has overlap 1, a vibration has overlap
+near 0, and the code sets `is_tr[k] = overlap > 0.5`. If the count of rigid
+vectors found differs from the rank of the basis, the projection is called
+inconsistent and the run is an error.
 
 ## 14.6.3 Reproducibility and refusals
 
@@ -122,8 +277,9 @@ re-symmetrized afterwards to remove accumulated round-off.
   (coincident atoms) and is an error.
 - Masses are isotope averages (`ferric-scf/src/frequencies.rs::atom_masses`)
   for $Z = 1$ to $54$; a heavier element is an error naming it.
-- Moments of inertia below `LINEARITY_THRESH` ($10^{-6}$ Bohr) classify a
-  molecule as linear.
+- A molecule is linear when the smallest principal moment of inertia is
+  below `LINEARITY_THRESH` ($10^{-6}$) times the largest. The test is a
+  ratio, so it has no unit. Any two-atom system is linear.
 - With `scf_warm_start` off (the default), each displaced SCF starts cold. A
   warm start from the undisplaced orbitals is measurably noisier at equal
   density convergence, so it is opt-in.
@@ -149,9 +305,16 @@ re-symmetrized afterwards to remove accumulated round-off.
 
 <!-- figures: site/src/reference/validation.md "Harmonic frequencies (FD of analytic gradients; Cartesian Hessian and cm⁻¹)"; site/src/reference/validation.md "Analytic RHF Hessian (skeleton one- and two-electron, overlap/W and CPHF response terms) and its harmonic frequencies" -->
 
-**Known limits.** The analytic Hessians cover the references and options listed in
-sections 14.4 and 14.5. UHF states are not checked for internal stability, so
-an unstable UHF solution gets the frequencies of that solution.
+The two HF rows measure different things. Against PySCF with the same step,
+the finite-difference route agrees to 7.5e-4 cm⁻¹: the two codes make the
+same truncation error. Against the analytic Hessian the same route is off
+by 0.10 cm⁻¹, and that is the $O(\delta^2)$ truncation of the 5e-3 Bohr
+step.
+
+**Known limits.** The analytic Hessians cover the references and options
+listed in sections 14.4 and 14.5. UHF states are not checked for internal
+stability, so an unstable UHF solution gets the frequencies of that
+solution.
 
 ## 14.6.6 Thermochemistry and IR intensities
 
@@ -165,7 +328,121 @@ intensity of each mode.
 | CLI | `task = "frequencies"`, keys `temperature`, `pressure`, `symmetry_number`, `ir_intensities` |
 | Python | `FrequencyResult.thermo`, `FrequencyResult.ir_intensities` |
 
-<!-- include: crates/ferric-scf/theory.md#"RRHO thermochemistry" -->
+### RRHO thermochemistry
+
+A frequency calculation gives one molecule at 0 K, frozen at the bottom of
+its well. A measured enthalpy or free energy is for a mole of gas at a
+temperature, where molecules fly, tumble and vibrate in excited levels.
+The rigid-rotor, harmonic-oscillator (RRHO) model adds those motions
+independently, each from its partition function.
+`ferric-scf/src/thermo.rs::rrho_thermochemistry` (also
+`FrequencyResult::thermochemistry`, CLI `task = "frequencies"`, Python
+`FrequencyResult.thermo`) evaluates it at temperature $T$ and pressure $P$.
+The proof is `scripts/rrho_thermo_sympy.py`, and the conventions are those
+of PySCF `pyscf.hessian.thermo`.
+
+Everything is per molecule, with $k = k_B$. Each energy follows from its
+partition function $q$ as $E = kT^2\,\partial\ln q/\partial T$, and each
+entropy as $S = k\ln q + E/T$. The indistinguishability term $k(1 - \ln N)$
+(Stirling) is carried by the translations.
+
+**Translation.** With $q_V = (2\pi M kT/h^2)^{3/2} V$ and the ideal-gas
+volume per molecule $V/N = kT/P$,
+
+$$ q_{\rm tr} = \left(\frac{2\pi M k T}{h^2}\right)^{3/2}\frac{kT}{P},\qquad
+E_{\rm tr} = \tfrac32 kT,\quad H_{\rm tr} = \tfrac52 kT,\quad
+S_{\rm tr} = k\left(\tfrac52 + \ln q_{\rm tr}\right) . $$
+
+That entropy is the Sackur–Tetrode entropy. The heat capacities are
+$C_V = \tfrac32 k$ and $C_P = \tfrac52 k$.
+
+**Rotation.** The principal moments $I_a$ of the inertia tensor about the
+centre of mass give rotational constants $B_a = h/(8\pi^2 I_a)$ in Hz. With
+the rotational symmetry number $\sigma$,
+
+$$ q_{\rm rot}^{\rm lin} = \frac{kT}{\sigma h B},\quad
+E = H = kT,\quad S = k(1 + \ln q);\qquad
+q_{\rm rot}^{\rm nonlin} = \frac{\sqrt\pi}{\sigma}\left(\frac{kT}{h}\right)^{3/2}
+\frac{1}{\sqrt{B_A B_B B_C}},\quad E = H = \tfrac32 kT,\quad S = k(\tfrac32 + \ln q) . $$
+
+These are the high-temperature (classical) limits of the rigid-rotor level
+sums. For a linear rotor the level sum is
+$kT/(\sigma hB)\,[1 + y/3 + y^2/15 + \dots]$ with $y = hB/kT$, so the
+classical form is the first term. A single atom has no rotational part.
+Linearity is `detect_linear`, the same test the frequency projection uses.
+
+**Vibration.** Each real mode of wavenumber $\tilde\nu$ has a vibrational
+temperature $\theta = hc\tilde\nu/k$ (the code's `C2` $= 100\,hc/k$, in K per
+cm⁻¹) and $x = \theta/T$. Measure the energy from the bottom of the well, so
+the levels are $(n+\tfrac12)k\theta$ and the sum is geometric:
+$q = e^{-x/2}/(1 - e^{-x})$. Then
+$\ln q = -\theta/(2T) - \ln(1 - e^{-\theta/T})$. Differentiate with respect
+to $T$ and multiply by $kT^2$:
+
+$$ E_{\rm vib} = \tfrac12 k\theta + \frac{k\theta\,e^{-x}}{1 - e^{-x}} = \tfrac12 k\theta + kT\,\frac{x}{e^x - 1} . $$
+
+Add $E/T$ to $k\ln q$; the $\pm kx/2$ cancel. Summed over modes:
+
+$$ E_{\rm vib} = H_{\rm vib} = \sum\left[\tfrac12 k\theta + kT\,\frac{x}{e^x - 1}\right],\quad
+S_{\rm vib} = k\sum\left[\frac{x}{e^x - 1} - \ln(1 - e^{-x})\right],\quad
+C_V = k\sum\frac{x^2 e^x}{(e^x - 1)^2} . $$
+
+The first sum is the zero-point energy. Check both limits. For a soft mode,
+$x \to 0$: $E - E_{\rm ZPE} \to kT$, $C_V \to k$ and $S \to k(1 - \ln x)$,
+the classical oscillator. For a stiff mode, $x \to \infty$: $E \to E_{\rm ZPE}$
+and $S \to 0$. Imaginary modes (negative wavenumbers) are left out, with a
+warning.
+
+Both limits are where floating point can fail, so the loop in
+`ferric-scf/src/thermo.rs::vibrational` writes each expression in a form
+that stays accurate there:
+
+<!-- excerpt: ferric-scf/src/thermo.rs::vibrational -->
+```rust
+let theta = c2 * nu;
+let x = theta / t;
+// exp_m1 keeps x/(e^x - 1) accurate for soft modes (x -> 0).
+let bose = 1.0 / x.exp_m1();
+zpe += 0.5 * R_EH * theta;
+s += x * bose - (-(-x).exp_m1()).ln();
+e_th += x * bose;
+// x^2 e^-x / (1 - e^-x)^2: no overflow for stiff modes at low T.
+let em1 = (-x).exp_m1();
+cv += x * x * (-x).exp() / (em1 * em1);
+```
+
+| Code | Equation |
+|---|---|
+| `theta`, `x` | $\theta = hc\tilde\nu/k$, $x = \theta/T$ |
+| `bose` | $1/(e^x - 1)$ |
+| `zpe` | $\sum\tfrac12 k\theta$ (`R_EH` is $k$ in Hartree/K) |
+| `s` | $\sum[x/(e^x-1) - \ln(1-e^{-x})]$, since `-(-x).exp_m1()` is $1 - e^{-x}$ |
+| `e_th` | $\sum x/(e^x - 1)$, multiplied by $kT$ after the loop |
+| `cv` | $\sum x^2e^{-x}/(1-e^{-x})^2$, the same as $x^2e^x/(e^x-1)^2$ |
+
+`exp_m1` evaluates $e^x - 1$ without the cancellation of `exp(x) - 1` at
+small $x$. Multiplying the $C_V$ fraction by $e^{-2x}/e^{-2x}$ keeps $e^x$
+from overflowing for a stiff mode at low $T$.
+
+**Electronic.** $E = H = E_0$, the SCF energy with any dispersion
+correction, and $S = k\ln(2S+1)$ from the spin multiplicity alone.
+
+**Totals.** The totals are sums of the four parts, and $G = H - TS$ for
+each. Energies are in Hartree and entropies in Hartree/K, so $k$ is used as
+$k_B/E_h = 3.166811563\times10^{-6}$ Hartree/K. Constants are CODATA 2018.
+Lengths go to metres with ferric's own Bohr radius
+(`units::BOHR_RADIUS_ANGSTROM`, the value that read the Ångström input), and
+masses are the isotope-averaged standard atomic weights of the frequency
+calculation.
+
+The script derives each closed form from its partition function in sympy,
+takes the high- and low-temperature limits, checks the transcribed formulas
+for water against $\ln Q(T)$ summed over the vibrational levels and
+differentiated numerically (relative $10^{-10}$), the rigid-rotor level sum
+against its Euler–Maclaurin series, and the argon entropy against
+NIST-JANAF (154.845 J/(mol K) at 298.15 K and 1 bar). The Python test
+`test_thermo_ir.py` compares the full result with PySCF's `thermo` on the
+same frequencies, geometry, masses and constants.
 
 > **Verified equation 14.17** · RRHO partition functions
 >
@@ -184,7 +461,104 @@ intensity of each mode.
 >
 > <!-- verified: id=freq.rrho-thermo; script=scripts/rrho_thermo_sympy.py; claim=N1; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/thermo.rs::rrho_thermochemistry_with_masses; rust_test=ferric-scf/src/thermo.rs::thermo_matches_exact_in_the_trivial_limit; registry=rrho-thermo -->
 
-<!-- include: crates/ferric-scf/theory.md#"Infrared intensities" -->
+**The symmetry number is an input.** The default is $\sigma = 1$. ferric
+detects Abelian point groups only, so it cannot count the proper rotations
+of NH3 or CH4. With $\sigma = 1$ for a molecule whose true value is
+$\sigma$, $S_{\rm rot}$ is too large by $k\ln\sigma$ and $G$ too low by
+$kT\ln\sigma$.
+
+### Infrared intensities
+
+A mode absorbs infrared light only if the dipole moment changes as the atoms
+move along it. The symmetric stretch of CO2 leaves the dipole at zero and is
+dark; the asymmetric stretch creates one and absorbs strongly. The
+intensity is the squared derivative of the dipole along the mode.
+`ferric-scf/src/infrared.rs::ir_spectrum` and `ir_intensities` (CLI
+`task = "frequencies"`; Python `FrequencyResult.ir_intensities`) give it for
+every normal mode. The proof is `scripts/ir_intensity_sympy.py`.
+
+**Intensity.** Take the $0 \to 1$ band of a harmonic mode with normal
+coordinate $Q$, mass weighted: $Q = \sum_i \sqrt{m_i}\,\Delta x_i\,u_i$. The
+integrated cross section is
+$\int\sigma\,d\omega = \pi\omega|\langle0|\mu|1\rangle|^2/(3\varepsilon_0\hbar c)$,
+with the isotropic average included. Expand $\mu$ to first order in $Q$, so
+$\langle0|\mu|1\rangle = (\partial\mu/\partial Q)\langle0|Q|1\rangle$, and use
+the harmonic matrix element $|\langle 0|Q|1\rangle|^2 = \hbar/(2\omega)$.
+Integrate over wavenumber ($d\omega = 2\pi c\,d\tilde\nu$) and take it per
+mole:
+
+$$ A_k = \frac{N_A}{12\,\varepsilon_0 c^2}\left|\frac{\partial\boldsymbol\mu}{\partial Q_k}\right|^2 . $$
+
+$A_k$ is the Napierian integrated absorption coefficient in m/mol. $\hbar$ and
+$\omega$ cancel, so the result is the classical one. It is also independent
+of $T$: the $n \to n+1$ band is $n+1$ times stronger, and the
+Boltzmann-weighted net absorption is $\sum_n (p_n - p_{n+1})(n+1) = 1$.
+
+**Units.** With $\partial\mu/\partial Q$ in atomic units, $e/\sqrt{m_e}$,
+
+$$ A_k\,[\text{km/mol}] = C\,\left|\frac{\partial\boldsymbol\mu}{\partial Q_k}\right|^2_{\rm a.u.},\qquad
+C = \frac{N_A e^2}{12\,\varepsilon_0 c^2 m_e}\times10^{-3} = 1\,777\,097.7313 $$
+
+(`AU_TO_KM_PER_MOL`, CODATA 2018). In other units that is 974.880 km/mol
+per $e^2/u$ and 42.2561 km/mol per (D/Å)$^2$/u.
+
+**Normal modes.** `FrequencyResult::normal_modes` stores $x_k = M^{-1/2}u_k$,
+with $u_k$ the unit eigenvectors of the mass-weighted Hessian in electron
+masses. So $\sum_i m_i x_{k,i}^2 = 1$ and $x_k = \partial R/\partial Q_k$. The
+chain rule then gives the dipole derivative along the mode,
+
+$$ \frac{\partial\mu_a}{\partial Q_k} = \sum_i P_{ai}\,x_{k,i},\qquad P_{ai} = \frac{\partial\mu_a}{\partial R_i} , $$
+
+with no further mass factor. $P$ is the atomic polar tensor
+($3\times3N$, in $e$). In `ir_intensities` this is one matrix product,
+`apt.dot(&normal_modes.t())`, followed by $C$ times the sum of squares over
+the three components.
+
+**The dipole derivative.** In a uniform field $\mathbf F$ ferric's energy is
+$E(\mathbf F) = E(0) - \boldsymbol\mu\cdot\mathbf F - \tfrac12\mathbf F\alpha\mathbf F + \dots$
+(a charge $q$ at $\mathbf R$ gains $-q\mathbf F\cdot\mathbf R$, see "External
+point charges and fields" in `crates/ferric-scf/theory.md`), so
+$\boldsymbol\mu = -\partial E/\partial\mathbf F$. Differentiate once more,
+by $R_i$, and swap the order:
+
+$$ P_{ai} = -\frac{\partial^2 E}{\partial F_a\,\partial R_i}
+\approx -\frac{g_i(+h\mathbf e_a) - g_i(-h\mathbf e_a)}{2h} . $$
+
+That is the production route, `dipole_derivatives_field`: six SCF plus
+analytic gradient evaluations in fields $\pm h$ ($h = 10^{-3}$ a.u.),
+independent of the molecule size. The gradient of an SCF converged in the
+field carries the orbital relaxation, so the result is the relaxed (response)
+dipole derivative of the SCF energy. The truncation is
+$h^2/6\,|\partial^4E/\partial F^3\partial R|$. SCF noise is at most
+$K n\,\delta_D/h$, with $K$ the gradient's density sensitivity, $n$ the basis
+size and $\delta_D$ the density threshold, so the field SCFs run at
+$\delta_D \le 10^{-9}$ (`IR_DENSITY_CONV`).
+
+The validation route, `dipole_derivatives_dipole_fd`, differences the SCF
+dipole $\mu_a = \sum_A Z_A R_{A,a} - \mathrm{tr}(D\,r_a)$ along each Cartesian
+displacement ($6N$ SCFs). Both routes satisfy the translational sum rule
+$\sum_A P_{a,(A,b)} = Q\,\delta_{ab}$ for molecular charge $Q$ without
+external point charges: moving every atom by the same amount moves the
+charge $Q$. `IrSpectrum::sum_rule_residual` records the deviation. The dipole
+origin is fixed at 0; the intensities do not depend on it because
+vibrations conserve the centre of mass.
+
+**Scope.** The SCF references: RHF, UHF, ROHF and their Kohn–Sham variants.
+Correlated kinds are refused: their dipole derivative would be the field
+derivative of the correlated gradient, which is not validated. With
+`[dft] dispersion` the modes come from the corrected Hessian and the dipole
+derivative from the SCF alone. D3 does not depend on the field, and MBD's
+density dependence is not included in $P$.
+
+The script derives $C$ from CODATA, the $0\to1$ band strength from the
+matrix element (classical limit), the temperature independence, and the
+field-route identity on a model $E(R,F)$. It checks the transcribed
+contraction against differencing $\mu$ along each mode of a bent triatomic
+model, the closed form $A = C q^2/\mu_{\rm red}$ for point charges on a
+diatomic, and the field route's $O(h^2)$ truncation. The Rust test
+`crates/ferric-scf/tests/ir_intensity_routes.rs` compares the two routes for
+RHF, RKS, UHF, UKS and ROHF against a bar built from Richardson truncation
+estimates and measured SCF-noise bounds.
 
 > **Verified equation 14.18** · the intensity and its units
 >
@@ -204,17 +578,13 @@ intensity of each mode.
 >
 > <!-- verified: id=freq.ir-intensity; script=scripts/ir_intensity_sympy.py; claim=N1; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/infrared.rs::ir_intensities; rust_test=ferric-scf/src/infrared.rs::ir_intensity_matches_exact_in_the_trivial_limit; registry=ir-intensities -->
 
-**The symmetry number is an input.** ferric detects Abelian point groups
-only, so it cannot count the proper rotations of NH3 or CH4; the default
-$\sigma = 1$ overstates the entropy by $k\ln\sigma$.
-
 ## Sources
 
 | Source | Used for |
 |---|---|
 | `crates/ferric-scf/theory.md`, "Harmonic frequencies" | the equations and the constants |
 | `scripts/hf_frequencies_sympy.py`, claims C1, C2, S1, D1, P1 to P4 | verified equations 14.15 and 14.16 |
-| `crates/ferric-scf/src/frequencies.rs` module documentation | the pipeline and the Hessian options |
+| `crates/ferric-scf/src/frequencies.rs` module documentation and `detect_linear` | the pipeline, the Hessian options and the linearity test |
 | `site/src/reference/validation.md` | the anchor rows |
 | `crates/ferric-scf/theory.md`, "RRHO thermochemistry" and "Infrared intensities" | section 14.6.6 |
 | `scripts/rrho_thermo_sympy.py`, `scripts/ir_intensity_sympy.py` | verified equations 14.17 and 14.18 |
