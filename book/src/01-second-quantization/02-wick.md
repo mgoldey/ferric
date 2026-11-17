@@ -3,11 +3,21 @@
 <!-- section: 1.2; status: edit; registry: ;
      theory: -->
 
-Many derivation proofs in `scripts/` have the same shape: build the operators
-of a method with `sympy.physics.secondquant`, let Wick's theorem produce the
-amplitude equation or the energy, and compare the result with an independent
-route. This section describes that recipe, so that a reader can read those
-scripts, and writes down the three prefactors that it has settled.
+Deriving a correlation energy by hand means expanding products of operator
+strings, pairing creators with annihilators in every allowed way, and
+tracking a sign for each pairing. The result is a handful of tensor
+contractions with prefactors such as $\tfrac14$, $\tfrac18$ or 1. A wrong
+prefactor still gives a finite, plausible energy, so nothing downstream
+flags it. The MP3 ring term in this code base is an example: a single
+ordering of its vertex gives $\tfrac14$ of the right value (section 1.2.4).
+
+Many derivation proofs in `scripts/` therefore hand the bookkeeping to
+sympy. They build the operators of a method with
+`sympy.physics.secondquant`, let Wick's theorem produce the amplitude
+equation or the energy, and compare the result with an independent route.
+This section describes that recipe, so that you can read those scripts,
+works the second-order energy through it, and writes down the three
+prefactors it has settled.
 
 | Index | Range | Meaning |
 |---|---|---|
@@ -24,29 +34,81 @@ scripts, and writes down the three prefactors that it has settled.
 
 For a product of creation and annihilation operators, Wick's theorem writes
 the product as a sum of normal-ordered terms with every possible set of
-contractions. The only nonzero contractions relative to $|0\rangle$ are
+contractions. A contraction of two operators is their expectation value in
+$|0\rangle$. The only nonzero contractions relative to $|0\rangle$ are
 
 $$ \langle a^\dagger_i a_j\rangle = \delta_{ij}\ (i, j \text{ occupied}), \qquad \langle a_a a^\dagger_b\rangle = \delta_{ab}\ (a, b \text{ virtual}). $$
 
+The first removes an electron from an occupied orbital and puts it back.
+The second adds an electron to an empty orbital and takes it out again.
+Every other order gives zero: you cannot remove an electron from an empty
+orbital, or add one to a full orbital.
+
 A vacuum expectation value keeps only the fully contracted terms, because
-every normal-ordered remainder has zero expectation value. Each contraction
-sets two orbital labels equal and removes one sum. A sign comes from the
-number of operator crossings.
+every normal-ordered remainder has zero expectation value (section 1.1.3).
+Each contraction sets two orbital labels equal and removes one sum. A sign
+comes from the number of operator crossings: draw a line between each
+contracted pair, and the term carries $(-1)$ for every crossing of two
+lines.
+
+You have already seen the theorem at work. The two expectation values that
+gave $E_{\mathrm{ref}}$ in (1.4) are the full contractions of
+$a^\dagger_p a_q$ and of $a^\dagger_p a^\dagger_q a_s a_r$. In the second,
+pairing $p$ with $r$ and $q$ with $s$ draws two nested lines, which do not
+cross ($+$), and pairing $p$ with $s$ and $q$ with $r$ draws two lines that
+cross ($-$).
 
 ## 1.2.2 The recipe
 
 | Step | What the script does | Why |
 |---|---|---|
 | 1 | Build each vertex as a sum of antisymmetrized tensors times a string of operators, for example $\tfrac14 t^{ab}_{ij}\,a^\dagger_a a^\dagger_b a_j a_i$ for the doubles operator $\hat T_2$ | The tensors keep their symmetry, so a result is a sum of tensor products |
-| 2 | Give the bra, each vertex and the ket **distinct dummy indices** | Sharing a symbol between two factors merges terms that are different. It produced a spurious factor of $\tfrac14$ on the MP3 ring term in an earlier wiki derivation |
+| 2 | Give the bra, each vertex and the ket **distinct dummy indices** | Sharing a symbol between two factors merges terms that are different. On the MP3 ring term it produces a spurious factor of $\tfrac14$ |
 | 3 | Call `wicks(..., keep_only_fully_contracted=True)` and collect terms with `substitute_dummies` | One canonical representative of each term |
 | 4 | Evaluate each term as a sum over a random antisymmetrized model with the same tensor shapes the code uses | The coefficient of a given contraction pattern is then a number |
 | 5 | Compare with a route that uses no Wick algebra: finite differences of an energy, or Rayleigh–Schrödinger perturbation theory in the full determinant space of a few spin orbitals | A bug in step 1 to 3 shows as a mismatch |
 
+Here are steps 1 to 3 as `scripts/oomp2_mp3_identities_sympy.py` writes
+them for the MP3 hole–hole ladder, in `part_a`, with the particle–particle
+vertex and the dummy-index declarations removed:
+
+```python
+    q = Rational(1, 4)
+    t_bra = q * AntiSymmetricTensor("t", (a, b), (i, j)) * Fd(i) * Fd(j) * F(b) * F(a)
+    t_ket = (                                 # same operator, fresh labels (step 2)
+        q
+        * AntiSymmetricTensor("t", (a2, b2), (i2, j2))
+        * Fd(a2)
+        * Fd(b2)
+        * F(j2)
+        * F(i2)
+    )
+    v_hh = (                                  # hole-hole block of V_N, labels o1..o4
+        q
+        * AntiSymmetricTensor("g", (o1, o2), (o3, o4))
+        * NO(Fd(o1) * Fd(o2) * F(o4) * F(o3))
+    )
+    hh = wick_expect(t_bra * v_hh * t_ket)  # step 3
+```
+
+`wick_expect` is the script's three-line wrapper:
+`wicks(op, keep_only_fully_contracted=True)`, then `evaluate_deltas` to
+remove the summed Kronecker deltas, then `substitute_dummies`.
+
+`AntiSymmetricTensor` is sympy's tensor that changes sign under a swap of
+its two upper or two lower indices, the symmetry of
+$\langle pq\|rs\rangle$ and $t^{ab}_{ij}$. `NO(...)` marks a normal-ordered
+string, so contractions inside the vertex are excluded, as in (1.6). The
+bra is $\hat T_2^\dagger$: the same tensor with the operator string
+reversed and daggered.
+
 The independent route in step 5 is what makes the proof more than a
 transcription. For MP3 the script runs second- and third-order
 perturbation theory in the 35 determinants of 7 spin orbitals and 3
-electrons, and compares with the formulas the code contracts.
+electrons, and compares with the formulas the code contracts. That route
+uses only the Jordan–Wigner matrices of the creators and annihilators and
+the textbook perturbation formulas, so an error in steps 1 to 3 cannot
+repeat itself there.
 
 ## 1.2.3 The second-order energy
 
@@ -59,9 +121,77 @@ $\hat T_2$:
 
 $$ E^{(2)} = \langle 0|\hat V_{\mathrm N}\hat T_2|0\rangle = \frac14\sum_{ijab}\langle ij\|ab\rangle\,t_{ij}^{ab} = -\frac14\sum_{ijab}\frac{|\langle ij\|ab\rangle|^2}{\Delta_{ij}^{ab}} . \tag{1.8} $$
 
+Physically, $\hat T_2$ lifts two electrons from $i, j$ into $a, b$, and
+$\hat V_{\mathrm N}$ drops them back. The amplitude is how much of that
+double excitation the perturbation mixes in: the coupling divided by the
+energy cost $\Delta_{ij}^{ab} = \varepsilon_a + \varepsilon_b -
+\varepsilon_i - \varepsilon_j$.
+
+### Where the $\tfrac14$ comes from
+
+Only one block of $\hat V_{\mathrm N}$ can give a nonzero result: the one
+that returns two electrons from virtuals to holes,
+$\tfrac14\sum\langle kl\|cd\rangle\{a^\dagger_k a^\dagger_l a_d a_c\}$.
+Fully contract it with $\hat T_2$. The holes $k, l$ pair with $i, j$ in two
+ways, and the particles $c, d$ pair with $a, b$ in two ways, so there are
+four full contractions. In each, a swap of two labels relative to the first
+pairing costs one crossing sign and one antisymmetry sign of a tensor, and
+the two cancel. All four equal
+$\tfrac14\cdot\tfrac14\sum\langle ij\|ab\rangle t^{ab}_{ij}$, and together
+they give the $\tfrac14$ of (1.8). `wicks` returns exactly this one term.
+
+Check one pair. With one occupied pair and one virtual pair the sum
+over $ijab$ has four terms, $(ij,ab)$, $(ji,ab)$, $(ij,ba)$ and $(ji,ba)$.
+They are equal by antisymmetry, so the $\tfrac14$ cancels and
+$E^{(2)} = -|\langle ij\|ab\rangle|^2/\Delta$: second-order perturbation
+theory for two levels coupled by $\langle ij\|ab\rangle$ and separated by
+$\Delta$.
+
+### Why the amplitudes are (1.7)
+
+The scripts do not assume (1.7). They build the Hylleraas functional, also
+by Wick contraction,
+
+$$ J(t) = \langle 0|\hat T_2^\dagger\hat V_{\mathrm N}|0\rangle + \langle 0|\hat V_{\mathrm N}\hat T_2|0\rangle + \langle 0|\hat T_2^\dagger\hat F_{\mathrm N}\hat T_2|0\rangle , $$
+
+and check that it is stationary at the amplitudes the code uses. In
+canonical orbitals the three terms evaluate to
+
+$$ J(t) = \frac12\sum_{ijab}\langle ij\|ab\rangle\,t_{ij}^{ab} + \frac14\sum_{ijab}\Delta_{ij}^{ab}\,\big(t_{ij}^{ab}\big)^2 . $$
+
+The first term is the two equal $\hat V_{\mathrm N}$ contractions of (1.8)
+added together. The second is the Fock operator measuring the excitation
+energy of each doubly excited determinant. Each unique amplitude
+($i<j$, $a<b$) appears four times in each sum, so
+
+$$ \frac{\partial J}{\partial t_{ij}^{ab}} = 2\langle ij\|ab\rangle + 2\Delta_{ij}^{ab}\,t_{ij}^{ab} = 0 \quad\Longrightarrow\quad t_{ij}^{ab} = -\frac{\langle ij\|ab\rangle}{\Delta_{ij}^{ab}} . $$
+
+Substitute back:
+$J = \tfrac12\sum\langle ij\|ab\rangle t + \tfrac14\sum\Delta t^2 = -\tfrac12\sum|\langle ij\|ab\rangle|^2/\Delta + \tfrac14\sum|\langle ij\|ab\rangle|^2/\Delta$,
+which is $E^{(2)}$ of (1.8). The stationary point is a minimum, because
+$\Delta > 0$ makes the quadratic term positive. Chapter 13 uses the same
+functional when the Fock matrix is not diagonal.
+
+### Signs in the code
+
 The scripts write the amplitude with the code's negative denominator,
 $t = \langle ab\|ij\rangle/D$ and $D = -\Delta$. The two forms are the same
-number.
+number, because for real orbitals $\langle ab\|ij\rangle = \langle
+ij\|ab\rangle$. The amplitude and energy are three lines of
+`ferric-mp2/src/mp3.rs::mp3_energy_from_spin_orbital_blocks`, the
+spin-orbital back end of `mp3_energy`, shown here with the memory-management
+comments removed:
+
+```rust
+let d = eo[i] + eo[j] - ev[a] - ev[b];          // D = -Delta < 0
+t[[i, j, a, b]] = asym_oovv_t[[i, j, a, b]] / d; // t = <ij||ab> / D, Eq. (1.7)
+// ...
+let v = 0.25 * einsum!("ijab,ijab->", &t_t, &oovv_t);  // E2 = 1/4 sum t <ij||ab>, Eq. (1.8)
+```
+
+There is no leading minus anywhere, because the sign sits in `d`. A port
+that writes $\Delta$ with the textbook sign has to add the minus sign to
+both lines.
 
 > **Verified equation 1.8** · the second-order energy from Wick
 >
@@ -79,14 +209,20 @@ number.
 >
 > <!-- verified: id=so.e2-wick; script=scripts/oomp2_mp3_identities_sympy.py; claim=A3; runner=crates/ferric-python/tests/test_oomp2_mp3_identities_sympy.py; code=ferric-mp2/src/mp3.rs::mp3_energy -->
 
+The script asserts stationarity and the value at the stationary point.
+It does not assert the explicit canonical form of $J(t)$ written above.
+
 The closed-shell form of (1.8), the one RI-MP2 evaluates, follows in
 section 1.3.
 
 ## 1.2.4 Three prefactors the recipe settled
 
 The third-order energy $E^{(3)} = \langle \hat T_2^\dagger \hat V_{\mathrm N}\hat T_2\rangle$
-has three connected parts. The script finds, on the full unrestricted
-sums over spin orbitals:
+has three connected parts. In each, $\hat T_2$ excites a pair,
+$\hat V_{\mathrm N}$ scatters it once, and $\hat T_2^\dagger$ returns it.
+The particle–particle ladder scatters the two particles, the hole–hole
+ladder the two holes, and the ring scatters one hole and one particle. The
+script finds, on the full unrestricted sums over spin orbitals:
 
 | Part | Coefficient on the full sum | Where it matters |
 |---|---|---|
@@ -100,6 +236,36 @@ annihilators. They are equal by antisymmetry, and each carries $\tfrac14$,
 so the vertex is $4\cdot\tfrac14 = 1$. A derivation that keeps a single
 ordering gets $\tfrac14$ of the right value. The script keeps that variant
 as a negative control and asserts that it differs.
+
+The ladders count the same way as (1.8). The bra, the vertex and the ket
+each carry $\tfrac14$, so $\tfrac1{64}$ in all. For the particle–particle
+ladder, the two holes of $\hat T_2$ pair with the two holes of
+$\hat T_2^\dagger$ in 2 ways, its two particles pair with the vertex
+annihilators in 2 ways, and the vertex creators pair with the particles of
+$\hat T_2^\dagger$ in 2 ways. That makes $2^3 = 8$ equal contractions and
+a coefficient of $8/64 = \tfrac18$. The hole–hole ladder is the same with
+holes and particles exchanged.
+
+The code applies the three coefficients as literals. With the scoping
+blocks and tensor wrapping removed:
+
+```rust
+let x: ArrayD<f64> = einsum!("ijab,abcd->ijcd", &t_t, &vvvv_t);  // sum_ab t_ij^ab <ab||cd>
+0.125 * einsum!("ijcd,ijcd->", &x_t, &t_t)                         // e_pp: 1/8
+// ...
+let y: ArrayD<f64> = einsum!("klij,ijab->klab", &oooo_t, &t_t);  // sum_ij <kl||ij> t_ij^ab
+0.125 * einsum!("klab,klab->", &y_t, &t_t)                         // e_hh: 1/8
+// ...
+let z: ArrayD<f64> = einsum!("ijab,kbcj->iakc", &t_t, &ovvo_t);  // sum_jb t_ij^ab <kb||cj>
+einsum!("iakc,iakc->", &z_t, &t_iakc_t)                            // e_ph: coefficient 1
+```
+
+Each term is two contractions: a vertex applied to one amplitude tensor,
+then a full contraction with the other. The first step of the
+particle–particle ladder costs $O(n_o^2 n_v^4)$ in spin orbitals; the ring's
+costs $O(n_o^3 n_v^3)$. `t_iakc_t` is the amplitude tensor
+with its middle two axes permuted, so that the ring's final contraction is
+a plain elementwise sum.
 
 > **Verified equation 1.9** · MP3 prefactors
 >
