@@ -3,21 +3,32 @@
 <!-- section: 23.4; status: ready; registry: mm;
      theory: crates/ferric-mm/theory.md#"1. Bonds", "2. Angles", "3. Periodic torsions: proper and improper", "4. The dihedral angle $\phi$ and its gradient (Bekker form)", "5. Nonbonded: Lennard-Jones and Coulomb", "6. Exclusions and 1-4 scaling", "7. QM-MM Lennard-Jones", "8. Opt-in nonbonded cutoff (OpenMM `CutoffNonPeriodic`)" -->
 
-`ferric-mm` is arithmetic only. It takes a topology, supplied entirely by the
-caller, and returns an AMBER-form energy and its analytic gradient: harmonic
-bonds and angles, periodic torsions, Lennard-Jones and Coulomb. It assigns no
-parameters. Turning a protein into a force field is a separate step; the
-repository's way of doing it is
-`scripts/validation/mm_topology.py` (the function `topology_from_openmm`), which
-reads the numbers out of a real OpenMM system.
+Point charges give the QM region the electrostatics of its surroundings and
+nothing else. They do not hold the MM atoms together, they do not keep atoms
+from overlapping, and they carry no dispersion. A force field supplies those
+terms with simple functions of the geometry: springs for bonds and angles, a
+periodic potential for rotation about bonds, and a pairwise Lennard-Jones and
+Coulomb sum between atoms that are not bonded to each other.
 
-In QM/MM the force field supplies the terms the wavefunction does not
+`ferric-mm` is arithmetic only. It takes a topology supplied entirely by the
+caller and returns an AMBER-form energy and its analytic gradient. It assigns
+no parameters. Turning a protein into a force field is a separate step; the
+repository's way of doing it is `scripts/validation/mm_topology.py` (the
+function `topology_from_openmm`), which reads the numbers out of a real OpenMM
+system. In QM/MM the force field supplies the terms the wavefunction does not
 describe: the MM–MM energy and the Lennard-Jones between the QM and MM atoms
 (section 23.2.5).
+
+The section goes term by term: bonds, angles and torsions (23.4.1), the
+dihedral gradient (23.4.2), the nonbonded sum and its exclusions (23.4.3),
+the QM–MM Lennard-Jones (23.4.4) and the optional cutoff (23.4.5). The
+proofs are in `scripts/mm_dihedral_gradient_sympy.py` (60-digit arithmetic,
+a negative control per claim) and `scripts/mm_cutoff_sympy.py`.
 
 | Symbol | Meaning | Code name |
 |---|---|---|
 | $\mathbf R_a$ | position of atom $a$, Bohr | rows of `coords` |
+| $\mathbf r_{ab}$ | $\mathbf R_a - \mathbf R_b$ | `diff(coords, a, b)` |
 | $k$, $r_0$ | bond constant and length | `Bond::{k,r0}` |
 | $k_\theta$, $\theta_0$ | angle constant and equilibrium angle | `Angle::{k_theta,theta0}` |
 | $k_\phi$, $n$, $\delta$ | torsion constant, periodicity, phase | `Torsion` |
@@ -32,30 +43,60 @@ describe: the MM–MM energy and the Lennard-Jones between the QM and MM atoms
 | CLI | none |
 | Python | `MmTopology.from_amber_units`, used through `run_qmmm(mm_topology=)` and `run_optimize_qmmm(mm_topology=)`; `QmmmResult.mm_energy()` |
 
-Units are Hartree atomic units. `MmTopology::from_amber_units` converts once
-from kcal/mol, Å and degrees. Gradients are $\partial E/\partial\mathbf R$,
-not forces.
+Units are Hartree atomic units: Hartree, Bohr, radians, charge in $e$.
+`MmTopology::from_amber_units` converts once from kcal/mol, Å and degrees.
+Gradients are $\partial E/\partial\mathbf R$, not forces. The total energy is
+the sum of five terms, the fields of `MmEnergy`:
+
+$$ E = E_{\mathrm{bond}} + E_{\mathrm{angle}} + E_{\mathrm{torsion}} + E_{\mathrm{LJ}} + E_{\mathrm{Coul}} . $$
 
 ## 23.4.1 Bonds, angles and torsions
 
-<!-- include: crates/ferric-mm/theory.md#"1. Bonds", "2. Angles", "3. Periodic torsions: proper and improper" -->
+**Bonds.** A bond is a harmonic spring about its equilibrium length:
 
-The bond and angle terms carry no leading $\tfrac12$, the AMBER convention, so
-the constants are half of those a $\tfrac12k(r-r_0)^2$ code (OpenMM) uses. The angle gradient is
-the closed form of the table; its kernel in `bonded_terms` is
+$$ E_{\mathrm{bond}} = \sum_{\text{bonds}} k\,(r - r_0)^2, \qquad r = |\mathbf r_{ij}| . $$
+
+There is no leading $\tfrac12$. That is the AMBER convention, and it means
+the constants are half of those a $\tfrac12k(r-r_0)^2$ code uses: OpenMM's
+`HarmonicBondForce` has $k_{\mathrm{omm}} = 2k$. For the gradient,
+differentiate $(r-r_0)^2$ to $2(r-r_0)$ and use $\partial r/\partial\mathbf R_i = \mathbf r_{ij}/r$:
+
+$$ \frac{\partial E}{\partial\mathbf R_i} = 2k(r-r_0)\,\frac{\mathbf r_{ij}}{r} = -\frac{\partial E}{\partial\mathbf R_j} . $$
+
+**Angles.** The valence angle $\theta\in[0,\pi]$ at the central atom $j$ is
+also harmonic, again with no leading $\tfrac12$:
+
+$$ E_{\mathrm{angle}} = \sum_{\text{angles}} k_\theta\,(\theta - \theta_0)^2, \qquad \cos\theta = \frac{\mathbf r_{ij}\cdot\mathbf r_{kj}}{|\mathbf r_{ij}|\,|\mathbf r_{kj}|} . $$
+
+Write $\mathbf a = \mathbf r_{ij}$ and $\mathbf b = \mathbf r_{kj}$. The chain
+rule gives $\partial E/\partial\theta = 2k_\theta(\theta-\theta_0)$ times
+$\partial\theta/\partial\mathbf R$. To get the angle derivative, differentiate
+$\cos\theta$ with respect to $\mathbf a$,
+$\partial\cos\theta/\partial\mathbf a = \mathbf b/(|\mathbf a||\mathbf b|) - \cos\theta\,\mathbf a/|\mathbf a|^2$,
+and divide by $d\cos\theta/d\theta = -\sin\theta$. Atom $k$ follows by
+swapping $\mathbf a$ and $\mathbf b$, and atom $j$ by translation invariance:
+
+$$ \frac{\partial\theta}{\partial\mathbf R_i} = -\frac{1}{\sin\theta}\Big(\frac{\mathbf b}{|\mathbf a||\mathbf b|} - \cos\theta\,\frac{\mathbf a}{|\mathbf a|^2}\Big),\qquad \frac{\partial\theta}{\partial\mathbf R_k} = -\frac{1}{\sin\theta}\Big(\frac{\mathbf a}{|\mathbf a||\mathbf b|} - \cos\theta\,\frac{\mathbf b}{|\mathbf b|^2}\Big),\qquad \frac{\partial\theta}{\partial\mathbf R_j} = -\frac{\partial\theta}{\partial\mathbf R_i}-\frac{\partial\theta}{\partial\mathbf R_k} . $$
+
+The kernel in `ferric-mm/src/energy.rs::bonded_terms` computes the first two
+for each Cartesian component; `rji` is $\mathbf R_i - \mathbf R_j = \mathbf a$:
 
 <!-- excerpt: ferric-mm/src/energy.rs::bonded_terms -->
 ```rust
-dti[c] = -inv_sin * (rjk[c] / (rji_n * rjk_n) - cos_t * rji[c] / (rji_n * rji_n));
+for c in 0..3 {
+    dti[c] = -inv_sin * (rjk[c] / (rji_n * rjk_n) - cos_t * rji[c] / (rji_n * rji_n));
+    dtk[c] = -inv_sin * (rji[c] / (rji_n * rjk_n) - cos_t * rjk[c] / (rjk_n * rjk_n));
+}
+let dtj = [-(dti[0] + dtk[0]), -(dti[1] + dtk[1]), -(dti[2] + dtk[2])];
 ```
 
 | Symbol | Code |
 |---|---|
 | $-1/\sin\theta$ | `-inv_sin` |
 | $\mathbf b/(\lvert\mathbf a\rvert\lvert\mathbf b\rvert)$ | `rjk[c] / (rji_n * rjk_n)` |
-| $\cos\theta$ | `cos_t` |
+| $\cos\theta$ | `cos_t`, clamped to $[-1, 1]$ before `acos` |
 | $\mathbf a/\lvert\mathbf a\rvert^2$ | `rji[c] / (rji_n * rji_n)` |
-| $\partial\theta/\partial\mathbf R_i$ | `dti[c]` |
+| $\partial\theta/\partial\mathbf R_i$, $\partial\theta/\partial\mathbf R_k$, $\partial\theta/\partial\mathbf R_j$ | `dti`, `dtk`, `dtj` |
 
 > **Verified equation 23.6** · the bond-angle gradient
 >
@@ -74,30 +115,100 @@ dti[c] = -inv_sin * (rjk[c] / (rji_n * rjk_n) - cos_t * rji[c] / (rji_n * rji_n)
 >
 > <!-- verified: id=mm.angle.gradient; script=scripts/mm_dihedral_gradient_sympy.py; claim=4; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mm/src/energy.rs::bonded_terms; rust_test=ferric-mm/tests/terms_fd.rs::angle_energy_hand_computed_and_gradient_vs_fd; registry=mm -->
 
-At exactly linear $\theta = 0$ or $\pi$ the factor $1/\sin\theta$ is a true
-singularity and the direction of the force is undefined. The code keeps the
-finite energy and adds no gradient for that angle, the same convention as the
-degenerate torsion below.
+What happens at a linear angle? At $\theta = 0$ or $\pi$ the factor
+$1/\sin\theta$ is a coordinate singularity, and the direction of the force is
+undefined. For $\theta_0\ne\pi$ the energy is a cone in the perpendicular
+displacement, not differentiable at its tip. When
+$|\mathbf a\times\mathbf b|^2\le10^{-20}$ the code keeps the finite energy and
+adds no gradient for that angle, the same convention as the degenerate
+torsion of 23.4.2. This zero is the symmetric subgradient. It is ferric's
+convention, and no claim is made that other codes match it.
+`exactly_linear_valence_angle_gradient_is_finite_and_zero` in
+`crates/ferric-mm/tests/terms_fd.rs` pins it. Angles near linear but not
+exactly linear (0.6° from linear) still match central differences
+(`torsion_gradient_vs_fd_near_phi_0_pi_and_near_linear_angle`).
+
+**Torsions.** Rotation about a bond has a periodic barrier, modelled as a
+cosine series in the dihedral angle $\phi$:
+
+$$ E_{\mathrm{torsion}} = \sum_{\text{torsions}} k_\phi\,\big[1 + \cos(n\phi - \delta)\big], \qquad n\in\mathbb Z_{\ge1}, $$
+
+with $\delta$ in radians. `MmTopology::new` enforces $n\ge1$. An improper
+torsion is a torsion with a caller-chosen atom order; nothing distinguishes
+the two in the energy. Several terms on one $i$-$j$-$k$-$l$ quartet are
+separate list entries. By the chain rule,
+
+$$ \frac{\partial E}{\partial\mathbf R_a} = -k_\phi\,n\sin(n\phi-\delta)\;\frac{\partial\phi}{\partial\mathbf R_a}\qquad (a=i,j,k,l) . $$
+
+$n$ is an integer, so $E$ is $2\pi$-periodic in $\phi$, and the $\pm\pi$
+branch cut of $\phi$ is invisible to the energy and the gradient. All that
+remains is $\partial\phi/\partial\mathbf R$.
 
 ## 23.4.2 The dihedral angle and its gradient
 
-<!-- include: crates/ferric-mm/theory.md#"4. The dihedral angle $\phi$ and its gradient (Bekker form)" -->
+For the quartet $i$-$j$-$k$-$l$ take the three bond vectors and the normals
+to the planes $ijk$ and $jkl$:
 
-The twelve components are `ferric-mm/src/energy.rs::dihedral_and_gradient`. The
-two end atoms are read off the plane normals, and the two middle atoms are
-fixed by translation invariance and the two projections $p$ and $q$:
+$$ \mathbf r_{ij}=\mathbf R_i-\mathbf R_j,\quad \mathbf r_{kj}=\mathbf R_k-\mathbf R_j,\quad \mathbf r_{kl}=\mathbf R_k-\mathbf R_l,\qquad \mathbf m = \mathbf r_{ij}\times\mathbf r_{kj},\quad \mathbf n = \mathbf r_{kj}\times\mathbf r_{kl} . $$
+
+The dihedral is the angle between the normals, with a sign:
+
+$$ \cos\phi = \frac{\mathbf m\cdot\mathbf n}{|\mathbf m||\mathbf n|},\qquad \operatorname{sign}\phi = \operatorname{sign}(\mathbf r_{ij}\cdot\mathbf n),\qquad \phi\in(-\pi,\pi] . $$
+
+$\phi = 0$ is the cis (eclipsed) arrangement and $\phi = \pm\pi$ is trans. The
+code evaluates $\cos\phi$, clamps it to $[-1, 1]$, takes `acos`, and flips
+the sign when $\mathbf r_{ij}\cdot\mathbf n<0$.
+
+An equivalent form is easier to differentiate. The vector identity
+$\mathbf m\times\mathbf n = \mathbf r_{kj}\,(\mathbf r_{ij}\cdot\mathbf n)$ holds
+exactly (claim 1). Take its magnitude:
+$|\mathbf m||\mathbf n|\sin\phi = |\mathbf r_{kj}|\,(\mathbf r_{ij}\cdot\mathbf n)$.
+Together with the cosine this gives
+
+$$ \phi = \operatorname{atan2}\big(|\mathbf r_{kj}|\,(\mathbf r_{ij}\cdot\mathbf n),\ \mathbf m\cdot\mathbf n\big), $$
+
+and the gradient below is the exact derivative of this function. With
+$s = |\mathbf r_{kj}|$, the two end atoms move only their own plane, so their
+derivatives point along the normals:
+
+$$ \frac{\partial\phi}{\partial\mathbf R_i} = \frac{s}{|\mathbf m|^2}\,\mathbf m,\qquad \frac{\partial\phi}{\partial\mathbf R_l} = -\frac{s}{|\mathbf n|^2}\,\mathbf n . $$
+
+The two middle atoms follow from translation invariance and from the
+projections of the outer bonds onto the central one,
+
+$$ p = \frac{\mathbf r_{ij}\cdot\mathbf r_{kj}}{s^2},\quad q = \frac{\mathbf r_{kl}\cdot\mathbf r_{kj}}{s^2},\qquad \frac{\partial\phi}{\partial\mathbf R_j} = -\frac{\partial\phi}{\partial\mathbf R_i} + p\,\frac{\partial\phi}{\partial\mathbf R_i} - q\,\frac{\partial\phi}{\partial\mathbf R_l},\qquad \frac{\partial\phi}{\partial\mathbf R_k} = -\frac{\partial\phi}{\partial\mathbf R_l} - p\,\frac{\partial\phi}{\partial\mathbf R_i} + q\,\frac{\partial\phi}{\partial\mathbf R_l} . $$
+
+These are the Bekker formulas (Blondel and Karplus, J. Comput. Chem. 17, 1132
+(1996), as in GROMACS), written here as $\partial\phi/\partial\mathbf R$, the
+negative of the published force direction. Check translation invariance in
+your head: add the four rows, and the $p$ and $q$ terms cancel pairwise,
+leaving $\partial\phi/\partial\mathbf R_i - \partial\phi/\partial\mathbf R_i + \partial\phi/\partial\mathbf R_l - \partial\phi/\partial\mathbf R_l = 0$
+for any $p$ and $q$ (claim 3).
+
+The twelve components are `ferric-mm/src/energy.rs::dihedral_and_gradient`:
 
 <!-- excerpt: ferric-mm/src/energy.rs::dihedral_and_gradient -->
 ```rust
-grad_j[c] = -grad_i[c] + p * grad_i[c] - q * grad_l[c];
-grad_k[c] = -grad_l[c] - p * grad_i[c] + q * grad_l[c];
+if m_sq > 1e-20 && n_sq > 1e-20 && kj_norm > 1e-20 {
+    for c in 0..3 {
+        grad_i[c] = (kj_norm / m_sq) * m[c];
+        grad_l[c] = -(kj_norm / n_sq) * n[c];
+    }
+    let p = dot(r_ij, r_kj) / (kj_norm * kj_norm);
+    let q = dot(r_kl, r_kj) / (kj_norm * kj_norm);
+    for c in 0..3 {
+        grad_j[c] = -grad_i[c] + p * grad_i[c] - q * grad_l[c];
+        grad_k[c] = -grad_l[c] - p * grad_i[c] + q * grad_l[c];
+    }
+}
 ```
 
 | Symbol | Code |
 |---|---|
+| $s = \lvert\mathbf r_{kj}\rvert$ | `kj_norm` |
+| $\lvert\mathbf m\rvert^2$, $\lvert\mathbf n\rvert^2$ | `m_sq`, `n_sq` |
 | $\partial\phi/\partial\mathbf R_i$, $\partial\phi/\partial\mathbf R_l$ | `grad_i`, `grad_l` |
-| $p = \mathbf r_{ij}\cdot\mathbf r_{kj}/s^2$ | `p` |
-| $q = \mathbf r_{kl}\cdot\mathbf r_{kj}/s^2$ | `q` |
+| $p$, $q$ | `p`, `q` |
 | $\partial\phi/\partial\mathbf R_j$, $\partial\phi/\partial\mathbf R_k$ | `grad_j`, `grad_k` |
 
 > **Verified equation 23.7** · the dihedral gradient
@@ -122,68 +233,178 @@ grad_k[c] = -grad_l[c] - p * grad_i[c] + q * grad_l[c];
 >
 > <!-- verified: id=mm.dihedral.gradient; script=scripts/mm_dihedral_gradient_sympy.py; claim=2; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mm/src/energy.rs::dihedral_and_gradient; rust_test=ferric-mm/tests/terms_fd.rs::torsion_gradient_vs_fd_near_phi_0_pi_and_near_linear_angle; registry=mm -->
 
-When $\mathbf m$ or $\mathbf n$ vanishes (a linear $i$-$j$-$k$ or $j$-$k$-$l$) the plane is
-undefined. The code takes $\phi = 0$, a finite energy and a zero gradient for
-that torsion; `collinear_valence_angle_torsion_gradient_is_finite_and_zero` in
+**Near cis and trans.** $\mathbf m$ and $\mathbf n$ are nonzero at
+$\phi = 0, \pi$; they vanish only for linear valence angles. So the gradient
+is smooth there. Only the value of $\phi$ loses accuracy: $\arccos$ near
+$\cos\phi = \pm1$ has absolute error about $\epsilon/\sin\phi$. For a phase
+$\delta\in\{0,\pi\}$ that error does not show in $E$ or $\partial E/\partial\phi$,
+because $E$ is flat in $\phi$ there. For $\delta = \pi/2$ it enters the
+energy linearly. The gradient uses the value of $\phi$ only through
+$\sin(n\phi-\delta)$. `torsion_gradient_vs_fd_near_phi_0_pi_and_near_linear_angle`
+checks $\phi\in\{10^{-3},10^{-6},\pi-10^{-3},\pi-10^{-6}\}$ and a valence angle
+0.6° from linear, at $n = 1, 3$ with $\delta = \pi/2$, against central
+differences with a tolerance derived from the step.
+
+**Degenerate geometry.** When $|\mathbf m|^2$ or $|\mathbf n|^2$ is at most
+$10^{-20}$ (a linear $i$-$j$-$k$ or $j$-$k$-$l$) the plane is undefined and
+$\partial\phi/\partial\mathbf R$ is singular. The code takes $\phi = 0$, a finite
+energy and a zero gradient for that torsion (the guard at the top of the
+excerpt); `collinear_valence_angle_torsion_gradient_is_finite_and_zero` in
 `crates/ferric-mm/tests/terms_fd.rs` pins it.
 
 ## 23.4.3 Nonbonded terms, exclusions and 1–4 scaling
 
-<!-- include: crates/ferric-mm/theory.md#"5. Nonbonded: Lennard-Jones and Coulomb", "6. Exclusions and 1-4 scaling" -->
+Atoms that are not bonded to each other interact through two pair terms. The
+Lennard-Jones term is repulsive at short range, where electron clouds
+overlap, and attractive as $-r^{-6}$ at long range, the dispersion
+interaction. The Coulomb term is the interaction of the partial charges. For
+every pair $i<j$ that is not excluded:
 
-The pair term is shared by the all-pairs sum and by the 1–4 pairs of the cutoff
-path, so both evaluate the same operations (`plain_pair`):
+$$ E_{\mathrm{LJ}} = \sum_{i<j} c^{\mathrm{LJ}}_{ij}\;4\varepsilon_{ij}\Big[\Big(\frac{\sigma_{ij}}{r_{ij}}\Big)^{12}-\Big(\frac{\sigma_{ij}}{r_{ij}}\Big)^{6}\Big],\qquad E_{\mathrm{Coul}} = \sum_{i<j} c^{\mathrm{Coul}}_{ij}\,\frac{q_iq_j}{r_{ij}} . $$
+
+Set the derivative of the bracket to zero and the minimum is at
+$r = 2^{1/6}\sigma_{ij}$, with energy $-\varepsilon_{ij}$: $\sigma$ sets the
+size and $\varepsilon$ the depth. The pair parameters come from
+Lorentz–Berthelot mixing (`mix`), $\sigma_{ij}=\tfrac12(\sigma_i+\sigma_j)$ and
+$\varepsilon_{ij}=\sqrt{\varepsilon_i\varepsilon_j}$. A pair with
+$\varepsilon_{ij}=0$, $q_iq_j=0$ or a zero scale is skipped. Coulomb is in
+atomic units, with no $1/4\pi\epsilon_0$. By default
+(`NonbondedMethod::NoCutoff`) all pairs are summed directly: no cutoff, no
+periodic images, no long-range correction. The opt-in cutoff is section
+23.4.5.
+
+With $x=(\sigma_{ij}/r)^6$ and $\hat{\mathbf r}=\mathbf r_{ij}/r$, differentiate
+each term in $r$ and multiply by $\partial r/\partial\mathbf R_i = \hat{\mathbf r}$:
+
+$$ \frac{\partial E_{\mathrm{LJ}}}{\partial\mathbf R_i}=c^{\mathrm{LJ}}\,\frac{4\varepsilon}{r}\,(6x-12x^2)\,\hat{\mathbf r},\qquad \frac{\partial E_{\mathrm{Coul}}}{\partial\mathbf R_i}=-c^{\mathrm{Coul}}\,\frac{q_iq_j}{r^2}\,\hat{\mathbf r}, $$
+
+with the opposite sign on atom $j$. One function evaluates the pair, and the
+all-pairs sum and the 1–4 pairs of the cutoff path both call it
+(`plain_pair`):
 
 <!-- excerpt: ferric-mm/src/energy.rs::plain_pair -->
 ```rust
-let sr6 = (mixed.sigma / r).powi(6);
-let sr12 = sr6 * sr6;
-let e_lj = scale_lj * 4.0 * mixed.epsilon * (sr12 - sr6);
+let mixed = mix(top.lj[i], top.lj[j]);
+if mixed.epsilon != 0.0 && scale_lj != 0.0 {
+    let sr6 = (mixed.sigma / r).powi(6);
+    let sr12 = sr6 * sr6;
+    let e_lj = scale_lj * 4.0 * mixed.epsilon * (sr12 - sr6);
+    e.lj += e_lj;
+    let dedr = scale_lj * 4.0 * mixed.epsilon * (-12.0 * sr12 + 6.0 * sr6) / r;
 ```
 
 | Symbol | Code |
 |---|---|
-| $(\sigma_{ij}/r)^6$ | `sr6` |
-| $(\sigma_{ij}/r)^{12}$ | `sr12` |
 | $\sigma_{ij}$, $\varepsilon_{ij}$ (Lorentz–Berthelot) | `mixed.sigma`, `mixed.epsilon`, from `mix` |
+| $x = (\sigma_{ij}/r)^6$ | `sr6` |
+| $x^2 = (\sigma_{ij}/r)^{12}$ | `sr12` |
 | $c^{\mathrm{LJ}}_{ij}$ | `scale_lj` |
 | $E_{\mathrm{LJ}}$ of the pair | `e_lj` |
+| $\partial E_{\mathrm{LJ}}/\partial r$ | `dedr`, then times $\pm\hat{\mathbf r}$ on the two atoms |
 
-The pair sets come from the bond graph once, in `MmTopology::new`, by a
-breadth-first search to depth 3 that records each atom's shortest bond path.
-Because the path is the shortest one, the two sets never overlap: a pair that is
-both 1–3 and 1–4 (the meta carbons of a six-membered ring, any pair in a ring of
-three to five) is excluded, never scaled. Editing `bonds` after construction
-does not update the sets.
+### Which pairs count
+
+Atoms one or two bonds apart already interact through the bond and angle
+terms, so their nonbonded terms would double-count. Atoms three bonds apart,
+the ends of a torsion, get a reduced nonbonded term. `MmTopology::new` finds
+both sets once, from the bond graph, by a breadth-first search to depth 3
+that records each atom's shortest bond-path length $d$ from the start atom:
+
+| $d$ | class | $c^{\mathrm{LJ}}_{ij}$ | $c^{\mathrm{Coul}}_{ij}$ |
+|---|---|---|---|
+| 1, 2 (1–2, 1–3) | excluded | 0 | 0 |
+| 3 (1–4) | scaled | `scale_lj_14` | `scale_coul_14` |
+| other | normal | 1 | 1 |
+
+The defaults are the AMBER values $c^{\mathrm{LJ}}_{14}=0.5$ and
+$c^{\mathrm{Coul}}_{14}=1/1.2$ (`DEFAULT_SCALE_LJ_14`, `DEFAULT_SCALE_COUL_14`);
+`MmTopology::with_scales` overrides them. The skip applies to LJ and Coulomb
+alike (`nonbonded_all_pairs`).
+
+Because $d$ is the shortest path, the two sets never overlap. A pair reachable
+both by a path of length at most 2 and by a path of length 3 is excluded,
+never scaled. That covers the meta carbons of a six-membered ring and any pair
+in a ring of three to five atoms (`crates/ferric-mm/tests/ring_exclusions.rs`).
+Editing `bonds` after construction does not update the sets.
 
 ## 23.4.4 The QM–MM Lennard-Jones term
 
-<!-- include: crates/ferric-mm/theory.md#"7. QM-MM Lennard-Jones" -->
+The QM atoms have no MM charges in QM/MM (the wavefunction carries their
+electrostatics), but the wavefunction has no dispersion or overlap repulsion
+toward the MM atoms. The QM–MM Lennard-Jones term supplies it.
+`qm_mm_lj_energy_gradient_scaled` sums the LJ term of 23.4.3 over every pair
+of a QM atom $a$ and an MM atom $b$, with the same mixing rule and a
+caller-supplied factor $c_{ab}$ per pair. $c_{ab} = 0$ skips the pair, and
+$c_{ab} = 1$ everywhere is bit-identical to the unscaled
+`qm_mm_lj_energy_gradient`. There are no exclusions unless the caller encodes
+them in $c_{ab}$.
 
-The all-pairs and scaled QM–MM forms are `qm_mm_lj_energy_gradient` and
-`qm_mm_lj_energy_gradient_scaled`. `qmmm_mm_terms` (section 23.2.5) supplies the
-per-pair factor from the topology's own exclusions, so a QM–MM pair that is 1–2
-or 1–3 through the bond graph, the cut bond included, contributes nothing.
+`qmmm_mm_terms` (section 23.2.5) does encode them. It takes the factor from the
+topology's own exclusions, so a QM–MM pair that is 1–2 or 1–3 through the
+bond graph, the cut bond included, contributes nothing, and a 1–4 pair is
+scaled by `scale_lj_14`.
 
 ## 23.4.5 The opt-in nonbonded cutoff
 
-<!-- include: crates/ferric-mm/theory.md#"8. Opt-in nonbonded cutoff (OpenMM `CutoffNonPeriodic`)" -->
+The all-pairs sum costs $N^2$. `gradient_with(top, coords, &NonbondedMethod::CutoffNonPeriodic(p))`
+(`ferric-mm/src/cutoff.rs`) replaces it with the form of OpenMM's
+`NonbondedForce` method `CutoffNonPeriodic`. The bonded terms are unchanged.
+The parameters (`CutoffParams`) are a cutoff $r_c>0$, a reaction-field
+dielectric $\varepsilon_{\mathrm{rf}}>0$ (default 78.3, OpenMM's), and an
+optional switching distance $0\le r_{\mathrm{sw}}<r_c$. Invalid values are
+errors.
 
-The Coulomb part of the cutoff path adds the shifted reaction-field energy and
-accumulates the constant $c_{\mathrm{rf}}\sum q_iq_j$ to subtract once at the end
+The three pair classes of section 23.4.3 are treated differently
 (`nonbonded_cutoff`):
+
+| class | range | Coulomb | LJ |
+|---|---|---|---|
+| 1–2, 1–3 | any | 0 | 0 |
+| 1–4 | every $r$ | $c^{\mathrm{Coul}}_{14}\,q_iq_j/r$ | $c^{\mathrm{LJ}}_{14}\,E_{\mathrm{LJ}}(r)$ |
+| ordinary | $r<r_c$ | $E_{\mathrm{rf}}(r)$ | $S(r)\,E_{\mathrm{LJ}}(r)$ |
+
+The 1–4 pairs reuse `plain_pair`, because OpenMM evaluates these exceptions
+with no cutoff and no reaction field. Excluded pairs get no reaction-field
+correction. Ordinary pairs at $r\ge r_c$ contribute nothing.
+
+### Reaction-field Coulomb
+
+Truncating $1/r$ at $r_c$ would make the energy jump. The reaction-field form
+treats everything beyond $r_c$ as a dielectric continuum of permittivity
+$\varepsilon_{\mathrm{rf}}$, which adds a term in $r^2$, and shifts the pair
+energy so that it reaches zero at the cutoff:
+
+$$ E_{\mathrm{rf}}(r) = q_iq_j\Big(\frac1r + k_{\mathrm{rf}}\,r^2 - c_{\mathrm{rf}}\Big),\qquad k_{\mathrm{rf}} = \frac{\varepsilon_{\mathrm{rf}}-1}{(2\varepsilon_{\mathrm{rf}}+1)\,r_c^3} . $$
+
+Require $E_{\mathrm{rf}}(r_c) = 0$ and solve for the shift:
+
+$$ c_{\mathrm{rf}} = \frac1{r_c} + k_{\mathrm{rf}}r_c^2 = \frac{3\varepsilon_{\mathrm{rf}}}{(2\varepsilon_{\mathrm{rf}}+1)\,r_c} $$
+
+(`CutoffParams::reaction_field_constants`). The energy is continuous at the
+cutoff; the force is not. Differentiate:
+
+$$ \frac{\partial E_{\mathrm{rf}}}{\partial r} = q_iq_j\Big(-\frac1{r^2} + 2k_{\mathrm{rf}}\,r\Big),\qquad \frac{\partial E_{\mathrm{rf}}}{\partial r}\Big|_{r_c} = -\frac{3\,q_iq_j}{(2\varepsilon_{\mathrm{rf}}+1)\,r_c^2} . $$
+
+Check $\varepsilon_{\mathrm{rf}} = 1$: then $k_{\mathrm{rf}} = 0$, and
+$E_{\mathrm{rf}}$ is plain Coulomb shifted by $-q_iq_j/r_c$.
+
+The Coulomb part of the cutoff loop adds the unshifted part and accumulates
+$\sum q_iq_j$ over ordinary pairs, to multiply by $c_{\mathrm{rf}}$ and
+subtract once after the loop:
 
 <!-- excerpt: ferric-mm/src/cutoff.rs::nonbonded_cutoff -->
 ```rust
 e.coulomb += qq / r + qq * k_rf * r * r;
 qq_shift += qq;
+let dedr = -qq / (r * r) + 2.0 * qq * k_rf * r;
 ```
 
 | Symbol | Code |
 |---|---|
 | $q_iq_j$ | `qq` |
-| $1/r + k_{\mathrm{rf}}r^2$ | `qq / r + qq * k_rf * r * r`, with the factor $q_iq_j$ outside |
+| $q_iq_j(1/r + k_{\mathrm{rf}}r^2)$ | `qq / r + qq * k_rf * r * r` |
 | $\sum q_iq_j$ over ordinary pairs | `qq_shift`, multiplied by $c_{\mathrm{rf}}$ after the loop |
+| $\partial E_{\mathrm{rf}}/\partial r$ | `dedr` |
 
 > **Verified equation 23.8** · the reaction-field constants and force
 >
@@ -205,20 +426,37 @@ qq_shift += qq;
 >
 > <!-- verified: id=mm.cutoff.reaction-field; script=scripts/mm_cutoff_sympy.py; claim=2; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mm/src/cutoff.rs::nonbonded_cutoff; rust_test=ferric-mm/tests/cutoff.rs::reaction_field_and_switched_lj_vanish_continuously_at_the_cutoff; registry=mm -->
 
-The Lennard-Jones switch is a quintic polynomial in Horner form:
+### Lennard-Jones truncation and switching
+
+Without $r_{\mathrm{sw}}$, $S=1$ for $r<r_c$: LJ is truncated, not shifted, and
+jumps by $E_{\mathrm{LJ}}(r_c)$ at the cutoff. That is OpenMM's convention.
+With $r_{\mathrm{sw}}$, a polynomial switch takes LJ smoothly to zero over the
+window $r_{\mathrm{sw}}<r<r_c$. Put $x=(r-r_{\mathrm{sw}})/(r_c-r_{\mathrm{sw}})$:
+
+$$ S = 1 - 10x^3 + 15x^4 - 6x^5,\qquad \frac{dS}{dr} = \frac{-30x^2 + 60x^3 - 30x^4}{r_c-r_{\mathrm{sw}}},\qquad \frac{\partial (S E_{\mathrm{LJ}})}{\partial r} = S\,\frac{\partial E_{\mathrm{LJ}}}{\partial r} + E_{\mathrm{LJ}}\,\frac{dS}{dr} . $$
+
+Check the ends. $S(0)=1$ and $S(1)=0$, and $S'$ and $S''$ vanish at both ends,
+so the switched LJ energy and force are continuous. The switch applies to LJ
+only. The code evaluates $S$ in Horner form:
 
 <!-- excerpt: ferric-mm/src/cutoff.rs::nonbonded_cutoff -->
 ```rust
+let w = rc - rsw;
+let x = (r - rsw) / w;
+let x2 = x * x;
 let s = 1.0 + x2 * x * (-10.0 + x * (15.0 - 6.0 * x));
 let ds = x2 * (-30.0 + x * (60.0 - 30.0 * x)) / w;
+dedr = dedr * s + e_lj * ds;
+e_lj *= s;
 ```
 
 | Symbol | Code |
 |---|---|
-| $x = (r-r_{\mathrm{sw}})/(r_c-r_{\mathrm{sw}})$ | `x`, with `x2 = x * x` |
 | $r_c - r_{\mathrm{sw}}$ | `w` |
+| $x = (r-r_{\mathrm{sw}})/(r_c-r_{\mathrm{sw}})$ | `x`, with `x2 = x * x` |
 | $S$ | `s` |
 | $dS/dr$ | `ds` |
+| $\partial(SE_{\mathrm{LJ}})/\partial r$ | `dedr * s + e_lj * ds`, formed before `e_lj` is scaled |
 
 > **Verified equation 23.9** · the switch and the switched derivative
 >
@@ -240,6 +478,18 @@ let ds = x2 * (-30.0 + x * (60.0 - 30.0 * x)) / w;
 >
 > <!-- verified: id=mm.cutoff.switch; script=scripts/mm_cutoff_sympy.py; claim=4; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mm/src/cutoff.rs::nonbonded_cutoff; rust_test=ferric-mm/tests/cutoff.rs::gradient_matches_fd_with_pairs_straddling_cutoff_and_switch; registry=mm -->
 
+### Finding the pairs
+
+`neighbor_pairs` bins the atoms into cubic cells of edge $r_c$, hashed so that
+empty space costs nothing, and compares each atom with the 27 cells around it,
+keeping pairs with $|\mathbf r_{ij}|^2<r_c^2$. The ordinary candidates and all
+1–4 pairs are merged and visited in lexicographic $(i,j)$ order, the order of
+the all-pairs loop. That ordering gives an exact limit. With $r_c$ beyond the
+system diameter, $\varepsilon_{\mathrm{rf}}=1$ and no active switching, the LJ
+energy and the full gradient are bit-identical to `gradient`, and the Coulomb
+energy differs by exactly $-c_{\mathrm{rf}}\sum q_iq_j$, the constant shift
+(`crates/ferric-mm/tests/cutoff.rs`).
+
 ## 23.4.6 The algorithm
 
 | Step | Quantity | Cost | Function |
@@ -249,11 +499,6 @@ let ds = x2 * (-30.0 + x * (60.0 - 30.0 * x)) / w;
 | 3 | nonbonded sum: all non-excluded pairs, or the cutoff form | $N^2$, or $N$ with the cell list | `nonbonded_all_pairs`, `nonbonded_cutoff` |
 | 4 | with a cutoff: cell list of edge $r_c$, 27 neighbour cells, hashed | $N$ | `neighbor_pairs` |
 | 5 | QM–MM Lennard-Jones across the cut, with the topology's pair scales | $N_{\mathrm{QM}}N_{\mathrm{MM}}$ | `qm_mm_lj_energy_gradient_scaled` |
-
-With the cutoff beyond the system diameter, $\varepsilon_{\mathrm{rf}} = 1$ and no
-switch, the LJ energy and the whole gradient are bit-identical to the all-pairs
-path, because the cell list visits pairs in the same lexicographic order; the
-Coulomb energy then differs by exactly $-c_{\mathrm{rf}}\sum q_iq_j$.
 
 ## 23.4.7 Options
 
@@ -273,7 +518,7 @@ options and always use the all-pairs sum.
 | Quantity | System | Result | Source |
 |---|---|---|---|
 | bond, angle, torsion, Coulomb and LJ energies and gradients against OpenMM (Reference platform, ff14SB, flexible TIP3P, no cutoff) | ALA-ALA, ACE-PHE-NME, TRP-PRO-ASP (charge $-1$), ACE-PHE-NME + 3 TIP3P waters; relaxed and two displaced geometries; one case with every torsion phase shifted by 37° | energies $\le 1.75\times10^{-12}$ relative; gradients $\le 8.5\times10^{-11}$ relative (after OpenMM's Coulomb constant, which differs by $6.6\times10^{-11}$ relative); pair sets identical | `site/src/reference/validation.md`, MM force field row |
-| the cutoff form against OpenMM `CutoffNonPeriodic` | ethanol + 12 TIP3P-charged waters, 45 atoms, diameter 14.2 Å; $r_c$ 5 Å with $\varepsilon_{\mathrm{rf}}$ 78.3, with a 4 Å switch, and with 1; $r_c$ 2.9 Å with a 2.2 Å switch | energy $\le 2.4\times10^{-14}$, gradient $\le 2.4\times10^{-15}$ relative; FD with pairs inside, in the switching region and beyond the cutoff $\le 1.8\times10^{-11}$ Ha/Bohr | same, MM nonbonded cutoff row |
+| the cutoff form against OpenMM 8.6 `CutoffNonPeriodic` (Reference platform, `scripts/gen_openmm_mm_cutoff_refs.py`, charges rescaled to OpenMM's Coulomb constant) | ethanol + 12 TIP3P-charged waters, 45 atoms, diameter 14.2 Å; $r_c$ 5 Å with $\varepsilon_{\mathrm{rf}}$ 78.3, with a 4 Å switch, and with 1; $r_c$ 2.9 Å with a 2.2 Å switch (two 1–4 pairs beyond $r_c$) | energy $\le 2.4\times10^{-14}$, gradient $\le 2.4\times10^{-15}$ relative; FD with pairs inside, in the switching region and beyond the cutoff $\le 1.8\times10^{-11}$ Ha/Bohr | same, MM nonbonded cutoff row |
 | QM–MM LJ across a cut against OpenMM's exclusions and exceptions | ethanol cut at C–C | energy $\le 8.7\times10^{-19}$ Ha; gradient $\le 2.0\times10^{-18}$ Ha/Bohr | same, QM–MM LJ row |
 
 ## 23.4.9 Sources

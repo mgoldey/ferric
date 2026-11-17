@@ -3,20 +3,22 @@
 <!-- section: 23.2; status: edit; registry: qmmm;
      theory: crates/ferric-scf/theory.md#"QM/MM boundary and the full gradient" -->
 
-A ligand in a protein pocket, a reacting site in an enzyme, or a solute in
-explicit solvent is too large to treat quantum mechanically in full. QM/MM
-splits the structure in two. The QM region is solved as a molecule. The MM
-region becomes fixed point charges that polarize it (the operator of section
-23.1), and an optional force field supplies the MM terms (section 23.4).
+A ligand in a protein pocket, the reacting site of an enzyme, or a solute in
+explicit solvent is too large to treat quantum mechanically in full. The
+chemistry happens in a small region: bonds break there and the density
+rearranges there. The rest of the structure matters mainly through its
+electrostatics, so QM/MM solves the small region as a molecule and lets the
+rest act on it as fixed point charges (the operator of section 23.1), with an
+optional force field for the classical terms (section 23.4).
 
-`ferric-scf/src/qmmm.rs` is a bookkeeping layer. It adds no new quantum
-mechanics: it decides which atoms are quantum, caps the covalent bonds the
-split cuts, treats the charge next to the cut, and maps the gradient of the
-embedded SCF back onto the atoms of the full structure.
-
-The boundary bookkeeping and the chain rules are derived in
-`crates/ferric-scf/theory.md` ("QM/MM boundary and the full gradient") and
-proved in `scripts/qmmm_boundary_sympy.py`.
+`ferric-scf/src/qmmm.rs` is a bookkeeping layer around that idea. It adds no
+new quantum mechanics. It decides which atoms are quantum, caps the covalent
+bonds the split cuts, treats the charge next to the cut, and maps the
+gradient of the embedded SCF back onto the atoms of the full structure. In
+order: the partition (23.2.1), the cut bond (23.2.2), energies and forces
+(23.2.3), the full gradient (23.2.4), the force-field terms (23.2.5), and
+optimization (23.2.6), then the algorithm, options, anchors and sources. The
+proofs are in `scripts/qmmm_boundary_sympy.py`, claims Q1 to Q4.
 
 | Symbol | Meaning | Code name |
 |---|---|---|
@@ -43,18 +45,24 @@ proved in `scripts/qmmm_boundary_sympy.py`.
 | `WithinRadius` | the seed atoms plus every atom within a radius (Bohr) of any seed, by atom | `qm_seeds=`, `qm_radius_angstrom=` |
 | `WithinRadiusWholeResidues` | as above, then every residue with at least one QM atom joins whole | the same, plus `residue_ids=` |
 
-A residue-by-residue selection avoids slicing a residue mid-chain, which a
-radius alone would do. The MM charge of an atom selected into the QM region is
-ignored: the wavefunction already describes it, and keeping it would count it
-twice. A MM atom with exactly zero charge is recorded as MM but adds nothing to
-the potential, and a partition with no MM atoms, or only zero charges, gives
-`to_external_potential() == None`, the literal gas-phase path.
+A radius alone selects atom by atom and can slice a residue mid-chain. The
+whole-residue variant avoids that.
+
+What happens to the MM charge of an atom selected into the QM region? It is
+ignored. The wavefunction already describes that atom's electrons and
+nucleus, and keeping its charge would count it twice. A MM atom with exactly
+zero charge is recorded as MM but adds nothing to the potential. A partition
+with no MM atoms, or only zero charges, gives
+`to_external_potential() == None`, which is the literal gas-phase code path.
+That makes the empty-environment limit exact, bit for bit, and not merely
+small.
 
 ## 23.2.2 Cutting a covalent bond
 
-A bond with one end in each region leaves the QM atom with a dangling
-valence. The scaled-position link atom caps it with a hydrogen on the bond
-vector:
+Cut a C–C bond and the QM carbon is left with an unpaired valence electron.
+The QM region would then be a radical that does not exist in the real
+molecule. The scaled-position link atom caps the dangling valence with a
+hydrogen on the bond vector:
 
 <!-- excerpt: ferric-scf/src/qmmm.rs::with_link_atoms -->
 ```rust
@@ -68,25 +76,64 @@ position: [p.x + scale * dx, p.y + scale * dy, p.z_pos + scale * dz],
 | $g$ | `scale` |
 | $\mathbf R_M - \mathbf R_Q$ | `(dx, dy, dz)` |
 
-so $\mathbf R_L = \mathbf R_Q + g(\mathbf R_M - \mathbf R_Q) = (1-g)\mathbf R_Q + g\mathbf R_M$, with
-$0 < g < 1$. The default $g = 1.09/1.53$ places the cap at a typical C–H
-distance along a typical C–C bond; it is the right choice only for a cut
-nonpolar single bond. The link hydrogens follow the real QM atoms in the QM
-molecule (`to_qm_molecule`).
+So
 
-The link hydrogen sits about half a bond length from the MM host, whose point
-charge then over-polarizes the QM density. `with_boundary_charges` acts on
-that host (M1) and the atoms bonded to it (M2). Nomenclature follows Lin and
-Truhlar, J. Phys. Chem. A 109, 3991 (2005).
+$$ \mathbf R_L = \mathbf R_Q + g(\mathbf R_M - \mathbf R_Q) = (1-g)\mathbf R_Q + g\mathbf R_M, \qquad 0 < g < 1 . $$
 
-| `BoundaryChargeScheme` | Effect | Conserves |
-|---|---|---|
-| `Keep` | nothing | everything (the untreated boundary) |
-| `DeleteHost` (Z1) | $q_{\mathrm{M1}} \to 0$ | nothing: the total MM charge changes by $-q_{\mathrm{M1}}$ |
-| `RedistributedCharge` (RC) | $q_{\mathrm{M1}} \to 0$; $q_0$ on the midpoint of each M1–M2 bond | total charge |
-| `RedistributedChargeDipole` (RCD) | $q_{\mathrm{M1}} \to 0$; $2q_0$ on each midpoint; $-q_0$ on each M2 | total charge and the dipole of {M1, M2} |
+The default $g = 1.09/1.53$ (`DEFAULT_LINK_SCALE`) puts the cap at a typical
+C–H distance along a typical C–C bond. It is the right choice only for a cut
+nonpolar single bond. A scale outside $(0, 1)$ is an error, and so is a cut
+bond whose two atoms coincide (there is no bond vector). The link hydrogen
+is a real QM atom: it has $Z = 1$ and basis functions, it enters the SCF and
+the classical charge–nuclear energy, and it follows the real QM atoms in the
+QM molecule (`to_qm_molecule`).
 
-<!-- include: crates/ferric-scf/theory.md#"QM/MM boundary and the full gradient" -->
+$\mathbf R_L$ is not a free coordinate. It moves with its two hosts, and
+that fixes how its gradient row is shared out (section 23.2.4).
+
+### The charge next to the cut
+
+The cap creates a second problem. The link hydrogen sits $(1-g)$ of the bond
+length from the MM host, $1.53 - 1.09 = 0.44$ Å for the default scale on a
+C–C bond. The host's point charge at that distance pulls the QM density
+toward it far more than the real, bonded atom would. `with_boundary_charges`
+acts on that host (M1) and the atoms bonded to it (M2), following the
+nomenclature of Lin and Truhlar, J. Phys. Chem. A 109, 3991 (2005):
+
+| `BoundaryChargeScheme` | $q(\mathrm{M1})$ | $q(\mathrm{M2})$ | added at each M1–M2 midpoint | Conserves |
+|---|---|---|---|---|
+| `Keep` | $q$ | unchanged | nothing | everything (the untreated boundary) |
+| `DeleteHost` (Z1) | $0$ | unchanged | nothing | nothing: the total MM charge changes by $-q_{\mathrm{M1}}$ |
+| `RedistributedCharge` (RC) | $0$ | unchanged | $q_0$ | total charge |
+| `RedistributedChargeDipole` (RCD) | $0$ | $q_{\mathrm{M2}} - q_0$ | $2q_0$ | total charge and the dipole of {M1, M2} |
+
+Deleting the host is the bluntest fix. RC and RCD move the host charge
+instead of discarding it. Do they keep the electrostatics of the group? Put
+M1 at $\mathbf R_1$ with charge $q_1$, and its $n$ M2
+neighbours at $\mathbf R_{2,m}$ with charges $q_{2,m}$. Set $q_0 = q_1/n$
+and the midpoints at $\mathbf M_m = (\mathbf R_1+\mathbf R_{2,m})/2$.
+
+**RC.** The new charges are $q_0$ at each $\mathbf M_m$ and $q_{2,m}$
+unchanged. Sum them: $nq_0 + \sum_mq_{2,m} = q_1 + \sum_mq_{2,m}$, the
+original total. Now the dipole. Subtract the original dipole and substitute
+$\mathbf M_m$:
+
+$$ \Delta\mathbf d_{\mathrm{RC}} = \sum_m q_0\mathbf M_m - q_1\mathbf R_1 = \frac{q_0}{2}\sum_m(\mathbf R_{2,m}-\mathbf R_1) = \frac{q_1}{2}\Big(\frac1n\sum_m\mathbf R_{2,m} - \mathbf R_1\Big) . $$
+
+This is zero only when M1 sits at the centroid of its neighbours, so RC
+moves the dipole in general.
+
+**RCD.** Put $2q_0$ at each $\mathbf M_m$ and subtract $q_0$ from each M2.
+The total is again $2nq_0 - nq_0 + \sum_mq_{2,m} = q_1 + \sum_mq_{2,m}$.
+For the dipole, substitute $\mathbf M_m$ and collect: the $\mathbf R_{2,m}$
+terms cancel,
+
+$$ \sum_m 2q_0\mathbf M_m + \sum_m(q_{2,m}-q_0)\mathbf R_{2,m} = nq_0\mathbf R_1 + \sum_mq_{2,m}\mathbf R_{2,m} = q_1\mathbf R_1 + \sum_mq_{2,m}\mathbf R_{2,m} , $$
+
+which is the original dipole of {M1, M2}, exactly, for any $n$ and about any
+origin. Check $n = 1$ in your head: M1 and one M2 with charges $q_1$, $q_2$
+become $2q_1$ at the midpoint and $q_2 - q_1$ on M2, whose dipole is
+$q_1(\mathbf R_1 + \mathbf R_2) + (q_2 - q_1)\mathbf R_2 = q_1\mathbf R_1 + q_2\mathbf R_2$.
 
 > **Verified equation 23.2** · what Z1, RC and RCD conserve
 >
@@ -106,39 +153,55 @@ Truhlar, J. Phys. Chem. A 109, 3991 (2005).
 >
 > <!-- verified: id=qmmm.boundary.rcd; script=scripts/qmmm_boundary_sympy.py; claim=Q2; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/qmmm.rs::with_boundary_charges; rust_test=ferric-scf/tests/qmmm.rs::redistributed_charge_dipole_conserves_charge_and_dipole; registry=qmmm -->
 
-For M1 at $\mathbf R_1$ with charge $q_1$ and $n$ M2 atoms at $\mathbf R_{2,m}$
-with charges $q_{2,m}$, put $q_0 = q_1/n$ and the midpoints at
-$\mathbf M_m = (\mathbf R_1+\mathbf R_{2,m})/2$.
-
-RC: the new charges are $q_0$ at each $\mathbf M_m$ and $q_{2,m}$ unchanged.
-The total charge is $nq_0 + \sum_mq_{2,m} = q_1 + \sum_mq_{2,m}$. The dipole
-changes by $(q_0/2)\sum_m(\mathbf R_{2,m}-\mathbf R_1)$.
-
-RCD: $2q_0$ at each $\mathbf M_m$ and $q_{2,m} - q_0$ on each M2. The total
-charge is again $q_1 + \sum_mq_{2,m}$, and the dipole is
-$\sum_m2q_0\mathbf M_m + \sum_m(q_{2,m}-q_0)\mathbf R_{2,m} = nq_0\mathbf R_1 + \sum_mq_{2,m}\mathbf R_{2,m} = q_1\mathbf R_1 + \sum_mq_{2,m}\mathbf R_{2,m}$,
-the original dipole of {M1, M2}, exactly and for any $n$.
-
-The RCD branch is two lines in `with_boundary_charges`:
+The RC/RCD branch of `with_boundary_charges` runs from the split of
+$q_{\mathrm{M1}}$ to the choice of the midpoint charge:
 
 <!-- excerpt: ferric-scf/src/qmmm.rs::with_boundary_charges -->
 ```rust
-self.effective_charges[m2] -= q0;
-2.0 * q0
+let q0 = q_m1 / m2s.len() as f64;
+self.effective_charges[m1] = 0.0;
+let p1 = &self.atoms[m1];
+for &m2 in &m2s {
+    let p2 = &self.atoms[m2];
+    let position = [
+        0.5 * (p1.x + p2.x),
+        0.5 * (p1.y + p2.y),
+        0.5 * (p1.z_pos + p2.z_pos),
+    ];
+    let q = if scheme == BoundaryChargeScheme::RedistributedChargeDipole {
+        // The M2 charge moves toward M1 by q0 to keep the
+        // M1–M2 bond dipole: 2q0 at the midpoint, −q0 on M2.
+        self.effective_charges[m2] -= q0;
+        2.0 * q0
+    } else {
+        q0
+    };
 ```
 
 | Symbol | Code |
 |---|---|
-| $q_{2,m} - q_0$ | `effective_charges[m2] -= q0` |
-| $2q_0$ | the value returned as the midpoint charge |
-| M1 charge | `effective_charges[m1] = 0.0`, set before the loop |
+| $q_0 = q_1/n$ | `q0` |
+| M1 charge set to 0 | `effective_charges[m1] = 0.0` |
+| $\mathbf M_m$ | `position` |
+| $q_{2,m} - q_0$ (RCD) | `effective_charges[m2] -= q0` |
+| midpoint charge, $2q_0$ (RCD) or $q_0$ (RC) | `q` |
 
-The midpoint charges are point charges, never smeared. Each lies on the
-midpoint of two real atoms, which is why the force on it is split between them
-in section 23.2.4. RC and RCD refuse an M1 with no MM neighbour in the bond
-list (the charge would have nowhere to go, and a silent fall back to deletion
-would change the total charge), and refuse two cut-bond hosts bonded to each
-other.
+Four points about this code:
+
+- **The M2 shell.** `m2s` holds the MM neighbours of M1 in the bond list
+  that are not hosts themselves. RC and RCD refuse an M1 with no MM
+  neighbour: the charge would have nowhere to go, and a silent fall back to
+  deletion would change the total charge. They also refuse two cut-bond
+  hosts bonded to each other, because the two redistributions would
+  interfere.
+- **Idempotence.** Each call starts again from the raw charges, so calling
+  `with_boundary_charges` twice replaces the first scheme. With no cut bond
+  every scheme is an exact no-op.
+- **Midpoints are point charges.** They are never smeared, since there is no
+  smearing model for them. Each lies on the midpoint of two real atoms, which
+  is why its force is split between them in section 23.2.4.
+- **Only positions move.** The charges are constants; only the midpoint
+  positions depend on the geometry.
 
 `min_link_to_charge_distance` reports the shortest distance from a link
 hydrogen to a nonzero MM charge. It is a diagnostic and acts on nothing.
@@ -146,44 +209,69 @@ hydrogen to a nonzero MM charge. It is a diagnostic and acts on nothing.
 ## 23.2.3 Energies and forces
 
 The embedded SCF is the vacuum solver with `RhfConfig::external_potential`
-set to `QmmmSystem::to_external_potential` (section 23.1): the QM molecule is
-the QM atoms plus the link hydrogens, and the MM charges, point or smeared, are
-the effective charges after the boundary scheme, in one fixed order, the
-atom-centred charges in ascending atom index and then the RC/RCD midpoints
-(`mm_charge_positions`). The result is $E_{\mathrm{QM}}$ in the field of the
-charges. There is no QM–MM Coulomb term beyond this: adding the force field's
-charges for the QM atoms would count the interaction twice.
+set to `QmmmSystem::to_external_potential` (section 23.1). The QM molecule is
+the QM atoms plus the link hydrogens. The MM charges, point or smeared, are
+the effective charges after the boundary scheme, in one fixed order: the
+atom-centred charges with nonzero effective charge in ascending atom index,
+then the RC/RCD midpoints (`mm_charge_positions`, from `active_charges`).
+The result is $E_{\mathrm{QM}}$ in the field of the charges. There is no QM–MM
+Coulomb term beyond this, and adding the force field's charges for the QM
+atoms would count the interaction twice.
 
-The force on an embedding charge is the charge times the field of the QM
-nuclei and electron density at the charge. It is a force, $-\partial E/\partial\mathbf R$,
-and the other gradient routines return $\partial E/\partial\mathbf R$.
+The force on an embedding point charge is the charge times the field of the
+QM nuclei and electron density at the charge, the Hellmann–Feynman result of
+section 23.1.3. It is a force, $-\partial E/\partial\mathbf R$; the other
+gradient routines return $\partial E/\partial\mathbf R$.
 
 <!-- excerpt: ferric-scf/src/qmmm.rs::mm_forces -->
 ```rust
 .map(|(e, &q)| [q * e[0], q * e[1], q * e[2]])
 ```
 
-`electric_field_at_points` evaluates $\mathbf E$ with the same nuclear-attraction
-derivative blocks that the atomic field uses, with the nuclear sum over all QM
-atoms (the probe is not one of them). It needs the total spin-summed density. A
-Gaussian-smeared charge is not $q\mathbf E(\mathbf R)$: its force is the
-derivative of the three-index integral against its own exponent
-(`smeared_site_forces`), and `mm_forces` merges the two in the canonical order.
+| Symbol | Code |
+|---|---|
+| $\mathbf E^{\mathrm{QM}}(\mathbf R_i)$ | `e`, one row of `electric_field_at_points` |
+| $q_i$ | `q` |
+| $\mathbf F_i = q_i\mathbf E^{\mathrm{QM}}(\mathbf R_i)$ | the mapped row |
+
+`electric_field_at_points` evaluates $\mathbf E$ with the same
+nuclear-attraction derivative blocks that the field at an atom uses, with a
+unit positive probe at the point and the nuclear sum over all QM atoms (the
+probe is not one of them, so there is no self-term to skip). It needs the
+total spin-summed density, and it errors if a point coincides with a QM
+nucleus. A Gaussian-smeared charge uses its own formula,
+`smeared_site_forces` (section 23.1.3), and `mm_forces` merges the two kinds
+back into the canonical order.
 
 ## 23.2.4 The gradient over the full structure
 
-The SCF gradient lives on the QM molecule, link hydrogens included. The full
-gradient is on the real atoms of the whole structure. Three chain rules map one
-to the other.
+The SCF gradient lives on the QM molecule, link hydrogens included. What a
+geometry optimizer needs is the gradient on the real atoms of the whole
+structure. Which atoms does each row belong to? Three chain rules answer
+that.
 
-$$ \frac{\partial E}{\partial\mathbf R_Q} \mathrel{+}= (1-g)\frac{\partial E}{\partial\mathbf R_L}, \qquad \frac{\partial E}{\partial\mathbf R_M} \mathrel{+}= g\,\frac{\partial E}{\partial\mathbf R_L}, \qquad \frac{\partial E}{\partial\mathbf R_i} \mathrel{+}= -\mathbf F_i , $$
+**Link rows.** $\mathbf R_L = (1-g)\mathbf R_Q + g\mathbf R_M$, so
+$\partial\mathbf R_L/\partial\mathbf R_Q = (1-g)\mathbf 1$ and
+$\partial\mathbf R_L/\partial\mathbf R_M = g\mathbf 1$. Apply the chain rule to
+any energy that depends on $\mathbf R_L$:
 
-and for a midpoint charge at $(\mathbf R_{M1}+\mathbf R_{M2})/2$ the force is
-split in halves, $\partial E/\partial\mathbf R_{M1}$ and $\partial E/\partial\mathbf R_{M2}$ each
-$\mathrel{+}= -\tfrac12\mathbf F$. The first pair is the chain rule through
-$\mathbf R_L = (1-g)\mathbf R_Q + g\mathbf R_M$. The sum of each column over
-atoms is unchanged by the fold, because a rigid translation moves the cap
-rigidly.
+$$ \frac{\partial E}{\partial\mathbf R_Q} \mathrel{+}= (1-g)\frac{\partial E}{\partial\mathbf R_L}, \qquad \frac{\partial E}{\partial\mathbf R_M} \mathrel{+}= g\,\frac{\partial E}{\partial\mathbf R_L} . $$
+
+The two shares add up to $\partial E/\partial\mathbf R_L$, so moving the whole
+structure rigidly still gives a zero net gradient: a rigid translation moves
+the cap rigidly.
+
+**Atom-centred charges.** $\partial E/\partial\mathbf R_i \mathrel{+}= -\mathbf F_i$
+on that MM atom.
+
+**Midpoint charges.** A midpoint at $\mathbf m = (\mathbf R_{M1}+\mathbf R_{M2})/2$
+has $\partial\mathbf m/\partial\mathbf R_{M1} = \partial\mathbf m/\partial\mathbf R_{M2} = \tfrac12\mathbf 1$,
+so each host gets $-\tfrac12\mathbf F$.
+
+An MM atom whose charge is zero and that hosts nothing has a zero row. The
+result is $dE/d\mathbf R$ of the embedded SCF energy with the partition
+rebuilt at each geometry, and its rows sum to zero for an energy that
+depends only on relative positions.
 
 > **Verified equation 23.3** · the full gradient across the cut
 >
@@ -204,12 +292,28 @@ rigidly.
 >
 > <!-- verified: id=qmmm.full.gradient; script=scripts/qmmm_boundary_sympy.py; claim=Q3; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/qmmm.rs::full_gradient; rust_test=ferric-scf/tests/qmmm.rs::full_gradient_matches_finite_difference_across_the_boundary; registry=qmmm -->
 
-The link fold is two lines of `ferric-scf/src/qmmm.rs::full_gradient`:
+The model in claim Q3 is a smooth, translation-invariant function standing
+in for the SCF, so the check is about the bookkeeping, not the quantum
+mechanics. The central differences use an outer step $h = 10^{-4}$ and an
+inner step $h = 10^{-5}$; their $O(h^2)$ truncation on derivatives of order
+one is about $10^{-8}$, and the bar is $10^{-7}$. The Rust test does the same
+with the real SCF on the RCD-treated ethane cut.
+
+The link fold in `ferric-scf/src/qmmm.rs::full_gradient` is a loop over the
+link atoms:
 
 <!-- excerpt: ferric-scf/src/qmmm.rs::full_gradient -->
 ```rust
-full[(q_full, k)] += (1.0 - g) * d;
-full[(link.mm_atom_full_index, k)] += g * d;
+for (l, link) in system.link_atoms.iter().enumerate() {
+    let row = n_qm + l;
+    let q_full = system.qm_indices[link.qm_atom];
+    let g = link.scale;
+    for k in 0..3 {
+        let d = qm_gradient[(row, k)];
+        full[(q_full, k)] += (1.0 - g) * d;
+        full[(link.mm_atom_full_index, k)] += g * d;
+    }
+}
 ```
 
 | Symbol | Code |
@@ -219,8 +323,23 @@ full[(link.mm_atom_full_index, k)] += g * d;
 | $\partial E/\partial\mathbf R_Q$ | `full[(q_full, k)]` |
 | $\partial E/\partial\mathbf R_M$ | `full[(link.mm_atom_full_index, k)]` |
 
-`full_gradient` carries no MM force-field term and does not know that the MM
-charges are constants. `full_gradient_with_mm` adds the force-field gradient of
+The link rows sit after the real QM rows (`row = n_qm + l`), the order
+`to_qm_molecule` builds. The midpoint split follows the atom-centred charges,
+again in the order of `active_charges`:
+
+<!-- excerpt: ferric-scf/src/qmmm.rs::full_gradient -->
+```rust
+for (b, f) in boundary_rows.zip(mm_forces[n_atom_centred..].iter()) {
+    let (m1, m2) = b.hosts;
+    for k in 0..3 {
+        full[(m1, k)] -= 0.5 * f[k];
+        full[(m2, k)] -= 0.5 * f[k];
+    }
+}
+```
+
+`full_gradient` carries no MM force-field term and treats the MM charges as
+constants. `full_gradient_with_mm` adds the force-field gradient of
 `qmmm_mm_terms` (section 23.4) row by row. The polarizable terms of section
 23.3 have their own variant, `full_gradient_with_polarizable`, because the
 induced dipoles exert an extra force on every site and charge.
@@ -228,23 +347,37 @@ induced dipoles exert an extra force on every site and charge.
 ## 23.2.5 The additive MM terms
 
 With a force field, `qmmm_mm_terms` adds the MM energy under the additive
-convention. A bond, angle or torsion that touches at least one MM atom is kept
-in full, including those that straddle the cut; a term whose atoms are all QM is
-dropped, because the wavefunction already describes it. Nonbonded terms are
-summed over MM–MM pairs only, with the topology's own exclusions and 1–4
-scaling, derived from the full bond graph. Lennard-Jones between every QM real
-atom and every MM atom is added with the same exclusions applied across the cut:
-1–2 and 1–3 pairs through the topology's bond list (the cut bond included) are
-skipped, and 1–4 pairs are scaled by the topology's `scale_lj_14`. There is no
-QM–MM Coulomb term. Link atoms and midpoint charges carry no MM terms.
+convention. The rule is to count each interaction once, either in the
+wavefunction or in the force field:
+
+- A bond, angle or torsion that touches at least one MM atom is kept in
+  full, including those that straddle the cut. A term whose atoms are all QM
+  is dropped, because the wavefunction already describes it.
+- Nonbonded terms are summed over MM–MM pairs only, with the topology's own
+  exclusions and 1–4 scaling, derived from the full bond graph.
+- Lennard-Jones between every QM real atom and every MM atom is added, with
+  the same exclusions applied across the cut: 1–2 and 1–3 pairs through the
+  topology's bond list (the cut bond included) are skipped, and 1–4 pairs are
+  scaled by the topology's `scale_lj_14`. The wavefunction has no dispersion
+  or Pauli repulsion toward the point charges, so this term supplies them.
+- There is no QM–MM Coulomb term; the embedding already holds it. Link atoms
+  and midpoint charges carry no MM terms.
+
+The MM–MM pass zeroes the charges and Lennard-Jones parameters of the QM
+atoms but keeps the full bond graph for the exclusions. An MM–MM pair that is
+1–2, 1–3 or 1–4 through a path crossing the QM region is still bonded in the
+topology, and is excluded or scaled the same way.
 
 ## 23.2.6 Geometry optimization
 
 `optimize_qmmm` runs the BFGS driver
-`ferric-scf/src/optimize.rs::optimize_coordinates` over the free atoms. At every step it calls `QmmmSystem::with_coordinates` to rebuild the
-link atoms and boundary charges at the new geometry, so the gradient is the
-exact derivative of the energy evaluated. Only the free atoms' gradient rows
-reach the optimizer.
+`ferric-scf/src/optimize.rs::optimize_coordinates` over the free atoms. At
+every step it calls `QmmmSystem::with_coordinates` to rebuild the link atoms
+and boundary charges at the new geometry. Reusing the old link and midpoint
+positions would make the analytic gradient wrong at any step that moved a
+frontier or boundary atom; with the rebuild, the gradient is the exact
+derivative of the energy evaluated. Only the free atoms' gradient rows reach
+the optimizer.
 
 | `MoveMm` | MM atoms that move |
 |---|---|
@@ -253,12 +386,15 @@ reach the optimizer.
 | `Residues(ids)` | the listed residues; needs the whole-residue selection |
 | `All` | every MM atom |
 
-Any value other than `None` needs an `mm_topology`: moving MM atoms with no
-force field to hold their geometry is meaningless. `QmmmMethod` selects RHF,
-UHF, or RKS/UKS with a named functional (those two set RI-J and RI-K with
-`def2-universal-jkfit`). `optimize_qmmm` refuses a COSMO SCF (section 22.5),
-a relativistic SCF, and a polarizable embedding (section 23.3). It accepts
-IEF-PCM, because that gradient exists.
+Any value other than `None` needs an `mm_topology`. Without a force field
+nothing holds the MM geometry together, so moving MM atoms would be
+meaningless. `QmmmMethod` selects RHF, UHF, or RKS/UKS with a named functional
+(those two set RI-J and RI-K with `def2-universal-jkfit`). `optimize_qmmm`
+refuses a COSMO SCF (section 22.5), a relativistic SCF, and a polarizable
+embedding (section 23.3): the polarizable sites would be copied unchanged
+from step to step and go stale, and the step gradient would also need the
+polarizable site and charge rows. It accepts IEF-PCM, because that gradient
+exists.
 
 ## 23.2.7 The algorithm
 
@@ -283,10 +419,11 @@ IEF-PCM, because that gradient exists.
 | Python `with_link_atoms(bonds, scale=None)` | $0 < g < 1$ | $1.09/1.53$ | the cap position |
 | Python `run_optimize_qmmm(move_mm=...)` | `"none"`, `("within", r)`, `("residues", ids)`, `"all"` | `"none"` | the free MM atoms |
 
-The CLI default is `delete-host` because a bare `keep` puts the host charge
-inside the link bond length (0.443 Å measured on an ethane C–C cut), and an
-optimization in that field diverges. Python's default is `keep`, the untreated
-boundary, because `with_boundary_charges` is a separate call.
+Why do the two defaults differ? A bare `keep` leaves the host charge inside
+the link bond length (0.443 Å measured on an ethane C–C cut), and an
+optimization in that field diverges, so the CLI defaults to `delete-host`. In
+Python, `with_boundary_charges` is a separate call, and a system that never
+makes it has the untreated boundary, `keep`.
 
 ## 23.2.9 Numerical anchors
 
@@ -297,11 +434,14 @@ boundary, because `with_boundary_charges` is a separate call.
 | QM–MM Lennard-Jones across a cut against OpenMM | ethanol cut at C–C, 1-2 to 1-5 pairs | energy $\le 8.7\times10^{-19}$ Ha; gradient $\le 2.0\times10^{-18}$ Ha/Bohr; the every-pair sum misses by 6839 kcal/mol | same, QM–MM LJ row |
 | optimization gradient against FD of the minimized energy, partition rebuilt at each displacement | capped ethane (Z1, RC, Keep, RCD), ethyl radical, RKS/UKS PBE, residue selection | $\le 1.8\times10^{-8}$ Ha/Bohr at the minimum, $\le 5.8\times10^{-7}$ relative off it; a gradient of the wrong scheme, or with the MM-row fold broken, misses by $\ge 3.5\times10^{-3}$ relative | same, QM/MM optimization row |
 
-The optimization row has no external reference: no other code defines this
+The Lennard-Jones row shows why the exclusions across the cut matter: summing
+every QM–MM pair, bonded neighbours included, misses by 6839 kcal/mol.
+
+The optimization row has no external reference. No other code defines this
 energy surface, because the partition, link scale and boundary scheme are not
-standardized. The check is internal, a central difference of the energy
-the optimizer minimizes against its analytic gradient, so both paths share the
-SCF and the integrals; partition-construction errors are covered by
+standardized. The check is internal: a central difference of the energy the
+optimizer minimizes, against its analytic gradient, so both paths share the
+SCF and the integrals. Partition-construction errors are covered by
 charge-bookkeeping assertions and scheme-swap controls.
 
 ## 23.2.10 Sources

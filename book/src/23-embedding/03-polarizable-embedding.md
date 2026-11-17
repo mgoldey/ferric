@@ -3,19 +3,23 @@
 <!-- section: 23.3; status: edit; registry: qmmm;
      theory: crates/ferric-scf/theory.md#"Thole polarizable embedding" -->
 
-Fixed charges cannot respond to the QM region. A real environment does: the
-electron density of a ligand polarizes the protein around it, and the induced
-polarization acts back on the ligand. Polarizable embedding puts an
-isotropic polarizability on selected MM sites and lets an induced point dipole
-at each site respond to the total field, including the field of the other
-dipoles. The dipoles are re-solved from the current QM density in every SCF
-iteration, the same pattern as the reaction field of section 22.3.
+Fixed charges cannot respond to the QM region, and a real environment does.
+The electron density of a ligand polarizes the protein around it, and that
+induced polarization acts back on the ligand. Polarizable embedding puts an
+isotropic polarizability $\alpha_i$ on selected MM sites and lets an induced
+point dipole at each site respond to the total field there, including the
+field of the other dipoles (the Applequist model, with Thole damping). The
+dipoles depend on the density, so they are re-solved from the current density
+every SCF iteration, the same pattern as the reaction field of section 22.3.
 
-The derivation is in `crates/ferric-scf/theory.md` and the proofs in
-`scripts/thole_polarizable_sympy.py`. The gradient of the site positions has a
-subtlety: it is the derivative of a functional that is stationary in the
-dipoles, not of the polarization energy at fixed dipoles, and that is why the
-code looks the way it does.
+The plan: the induction equations and the damping that keeps them finite
+(23.3.1), the integrals that put the dipoles into the Fock matrix (23.3.2),
+and the gradient (23.3.3), then the algorithm, exclusions, options and
+anchors. One idea runs through all of it. The polarization energy is the
+value of a functional that is stationary in the dipoles, and every
+derivative, the Fock term and the gradient alike, must come from that
+functional. The proofs are in `scripts/thole_polarizable_sympy.py`, claims
+T1 to T6.
 
 | Symbol | Meaning | Code name |
 |---|---|---|
@@ -27,6 +31,7 @@ code looks the way it does.
 | $\mathbf E_i^{\mathrm{ext}}$ | $\mathbf E_i^{\mathrm{QM}} + \mathbf E_i^{\mathrm{perm}}$ | `e_total` |
 | $\mathsf T_{ij}$ | Thole-damped dipole field tensor | `thole_tensor` |
 | $a$ | Thole damping parameter | `PolarizableSites::thole_a`, `DEFAULT_THOLE_A` |
+| $s$ | $(\alpha_i\alpha_j)^{1/6}$, the length that scales the damping | `s` in `thole_tensor` |
 | $\zeta_p$ | exponent of the point-dipole p shell | `dipole_zeta`, `DEFAULT_DIPOLE_ZETA` |
 
 | Entry point | Location |
@@ -37,26 +42,63 @@ code looks the way it does.
 
 ## 23.3.1 The induction model
 
-Each site's dipole responds to the field there. The field has three parts: the
-QM region, the permanent MM charges, and the other induced dipoles, through the
-tensor $\mathsf T_{ij}$.
+Each site's dipole is its polarizability times the field it feels. That
+field has three parts: the QM nuclei and total density
+(`ferric-scf/src/qmmm.rs::electric_field_at_points`, the point-charge
+nuclear-attraction derivative blocks of section 23.2.3), the permanent MM
+charges, and the other induced dipoles, through the tensor $\mathsf T_{ij}$:
 
-$$ \boldsymbol\mu_i = \alpha_i\Big[\mathbf E_i^{\mathrm{QM}}(D) + \mathbf E_i^{\mathrm{perm}} + \sum_{j\neq i}\mathsf T_{ij}\boldsymbol\mu_j\Big] . $$
+$$ \boldsymbol\mu_i = \alpha_i\Big[\mathbf E_i^{\mathrm{QM}}(P) + \mathbf E_i^{\mathrm{perm}} + \sum_{j\neq i}\mathsf T_{ij}\boldsymbol\mu_j\Big] . $$
 
-A bare point dipole has $\mathsf T_{ij} = (3\hat{\mathbf r}\hat{\mathbf r}^{\mathsf T} - I)/r^3$,
-which diverges at short range and lets two close sites polarize each other
-without bound (the polarization catastrophe). Thole's remedy smears each
-dipole as an exponential density $\rho(u)\sim e^{-au}$, with
-$u = r/(\alpha_i\alpha_j)^{1/6}$, which damps the tensor at short range:
+$\mathsf T_{ij}\boldsymbol\mu_j$ is the field at $i$ of a dipole at $j$, with
+$\mathbf r = \mathbf R_i - \mathbf R_j$. For a bare point dipole,
+$\mathsf T_{ij} = (3\hat{\mathbf r}\hat{\mathbf r}^{\mathsf T} - \mathbf 1)/r^3$.
+Head-to-tail dipoles reinforce each other, and at short range they do so
+without bound.
 
-$$ \mathsf T_{ij} = \frac{3\lambda_5\,\hat{\mathbf r}\hat{\mathbf r}^{\mathsf T} - \lambda_3 I}{r^3}, \qquad \lambda_3 = 1 - \big(1 + v + \tfrac{v^2}{2}\big)e^{-v}, \qquad \lambda_5 = \lambda_3 - \tfrac{v^3}{6}e^{-v}, \qquad v = a u . $$
+### Why the bare tensor fails at short range
 
-$\mathsf T_{ij}\boldsymbol\mu_j$ is the field at $i$ of a dipole at $j$. Any spherically
-smeared dipole has $\lambda_5 = \lambda_3 - \tfrac{u}{3}\,d\lambda_3/du$, and the
-pair above satisfies it, because $d\lambda_3/dv = \tfrac{v^2}{2}e^{-v}$. The
-default is $a = 2.1304$ (Thole 1981; van Duijnen and Swart 1998), which belongs
-to this exponential form and not to the cubic $e^{-au^3}$ form. `thole_a = None`
-(Python `thole_a=0.0`) switches the damping off.
+Take two sites on the $z$ axis. Along the axis the bare tensor is $2/r^3$, so
+the $z$ components of the two dipoles obey a $2\times2$ system with matrix
+$\begin{pmatrix}1/\alpha_i & -2/r^3\\ -2/r^3 & 1/\alpha_j\end{pmatrix}$. Its
+determinant $1/(\alpha_i\alpha_j) - 4/r^6$ vanishes at
+$r = (4\alpha_i\alpha_j)^{1/6} = 2^{1/3}s$. Closer than that the matrix is
+no longer positive definite, and a finite field induces an unbounded, or
+sign-flipped, response: the polarization catastrophe. It is an
+artifact of treating the dipoles as points: two real charge clouds at that
+distance overlap.
+
+Thole's remedy smears each dipole as an exponential density
+$\rho(u)\sim e^{-au}$, with $u = r/s$. This multiplies the two parts of the
+tensor by screening functions:
+
+$$ \mathsf T_{ij} = \frac{3\lambda_5\,\hat{\mathbf r}\hat{\mathbf r}^{\mathsf T} - \lambda_3 \mathbf 1}{r^3}, \qquad \lambda_3 = 1 - \big(1 + v + \tfrac{v^2}{2}\big)e^{-v}, \qquad \lambda_5 = \lambda_3 - \tfrac{v^3}{6}e^{-v}, \qquad v = a u . $$
+
+Two limits check it. At long range, $v\to\infty$, $\lambda_3$ and $\lambda_5$
+tend to 1 and the bare tensor returns; so does $a\to\infty$. At short range
+expand in $v$: $\lambda_3 = v^3/6 - v^4/8 + \ldots$ and
+$\lambda_5 = v^4/24 + \ldots$, so the $1/r^3$ cancels and $\mathsf T_{ij}$
+tends to the finite matrix $-(a^3/6s^3)\,\mathbf 1$. For a pair, the matrix
+stays positive definite as long as each eigenvalue of $s^3\mathsf T_{ij}$
+has magnitude below 1, since $\sqrt{\alpha_i\alpha_j} = s^3$. With the
+default $a$ this holds for $u > 0.304$ (the mode across the axis fails first;
+the mode along it fails at $u = 0.142$), against $u < 1.26$ for the bare
+tensor. These pair thresholds come from evaluating the formulas above
+numerically; the proof script does not assert them. Pairs closer than that
+can be removed from the coupling with exclusions (section 23.3.5).
+
+Any spherically smeared dipole satisfies $\lambda_5 = \lambda_3 - \tfrac{u}{3}\,d\lambda_3/du$.
+The pair above does, because $d\lambda_3/dv = \tfrac{v^2}{2}e^{-v}$. The
+identity has a consequence the gradient needs: it makes
+$\mathsf T_{ab} = \partial_a\partial_b\phi(r)$ for the radial function with
+$\phi'(r) = -\lambda_3/r^2$ (claim T1). The damped tensor is the Hessian of a
+radial function, so it is symmetric in $a, b$ and even in $\mathbf r$, and
+$\mathsf T_{ij} = \mathsf T_{ji}$.
+
+The default is $a = 2.1304$ (Thole 1981; van Duijnen and Swart, J. Phys.
+Chem. A 102, 2399, 1998). That value belongs to this exponential form and
+not to the cubic $e^{-au^3}$ form. `thole_a = None` (Python `thole_a=0.0`)
+switches the damping off and gives $\lambda_3 = \lambda_5 = 1$.
 
 <!-- excerpt: ferric-scf/src/polarizable.rs::thole_screening -->
 ```rust
@@ -78,27 +120,52 @@ t[a][b] = (3.0 * lam5 * rhat[a] * rhat[b] - lam3 * eye) * inv_r3;
 | $\delta_{ab}$ | `eye` |
 | $1/r^3$ | `inv_r3` |
 
-Collecting the unknown dipoles on the left gives one dense linear system:
+### The linear system and the energy
+
+Move the unknown dipoles to the left. The induction equations become one
+dense linear system:
 
 **Equation 23.4, the induction system, the energy and the Fock term.**
 
 $$ \big[\operatorname{diag}(\alpha^{-1}) - \mathsf T\big]\,\boldsymbol\mu = \mathbf E^{\mathrm{ext}}, \qquad E_{\mathrm{pol}} = -\tfrac12\sum_i\boldsymbol\mu_i\cdot\mathbf E_i^{\mathrm{ext}}, \qquad V^{\mathrm{ind}}_{\mu\nu} = -\sum_i\boldsymbol\mu_i\cdot\mathbf F_i^{\mu\nu}, $$
 
-where $\mathsf T$ is the $3N\times3N$ block matrix of the $\mathsf T_{ij}$ with
-zero diagonal blocks, and $\mathbf F_i^{\mu\nu}$ is the field integral at site
-$i$, defined by $\mathbf E_i^{\mathrm{QM,el}} = \sum_{\mu\nu}D_{\mu\nu}\mathbf F_i^{\mu\nu}$.
+where $\mathsf T$ is the $3N\times3N$ block matrix of the $\mathsf T_{ij}$,
+with $\mathsf T_{ii} = 0$ and $\mathsf T_{ij} = 0$ for excluded pairs, and
+$\mathbf F_i^{\mu\nu}$ is the field integral at site $i$, defined by
+$\mathbf E_i^{\mathrm{QM,el}} = \sum_{\mu\nu}P_{\mu\nu}\mathbf F_i^{\mu\nu}$.
+The matrix is symmetric because $\mathsf T$ is.
 
-The Fock term has no factor of $\tfrac12$. Define the functional
+Where does $E_{\mathrm{pol}}$ come from, and why is there no $\tfrac12$ in the
+Fock term? Both follow from one functional of the dipoles:
+
 $$ W[\boldsymbol\mu] = -\boldsymbol\mu\cdot\mathbf E^{\mathrm{ext}} + \tfrac12\boldsymbol\mu\cdot\operatorname{diag}(\alpha^{-1})\boldsymbol\mu - \tfrac12\boldsymbol\mu\cdot\mathsf T\boldsymbol\mu . $$
-Its stationary point in $\boldsymbol\mu$ is the induction system, and there
-$W = -\tfrac12\boldsymbol\mu\cdot\mathbf E^{\mathrm{ext}} = E_{\mathrm{pol}}$. Because
-$\partial W/\partial\boldsymbol\mu = 0$ at the solution, the derivative of
-$E_{\mathrm{pol}}$ with respect to the density is the explicit one at fixed
-$\boldsymbol\mu$: $-\boldsymbol\mu\cdot\partial\mathbf E^{\mathrm{ext}}/\partial D$,
-with a factor of 1, not $\tfrac12$. That is the same variational structure as
-the COSMO functional of section 22.5.
 
-<!-- include: crates/ferric-scf/theory.md#"Thole polarizable embedding" -->
+The first term is the energy of the dipoles in the external field, the second
+is the cost of polarizing each site, and the third is the dipole–dipole
+interaction. Set $\partial W/\partial\boldsymbol\mu = 0$, using the symmetry
+of $\mathsf T$: that is the induction system. At its solution
+$\boldsymbol\mu^*$, substitute $\big[\operatorname{diag}(\alpha^{-1}) - \mathsf T\big]\boldsymbol\mu^* = \mathbf E^{\mathrm{ext}}$
+into the two quadratic terms:
+
+$$ W[\boldsymbol\mu^*] = -\boldsymbol\mu^*\cdot\mathbf E^{\mathrm{ext}} + \tfrac12\boldsymbol\mu^*\cdot\mathbf E^{\mathrm{ext}} = -\tfrac12\boldsymbol\mu^*\cdot\mathbf E^{\mathrm{ext}} = E_{\mathrm{pol}} $$
+
+(claim T2). Check one site: $\mu = \alpha E$ and
+$E_{\mathrm{pol}} = -\tfrac12\alpha|E|^2$, the classical energy of a
+polarizable particle in a field.
+
+Now differentiate with respect to the density. $W$ depends on $P$ directly,
+through $\mathbf E^{\mathrm{QM}}$, and through $\boldsymbol\mu^*$. The second
+route contributes $(\partial W/\partial\boldsymbol\mu)(\partial\boldsymbol\mu^*/\partial P)$,
+and that is zero, because $W$ is stationary. Only the explicit dependence is
+left. $\mathbf E^{\mathrm{QM}}_i$ is linear in $P$,
+$\mathbf E^{\mathrm{QM}}_i = \mathbf E^{\mathrm{nuc}}_i + \sum_{\mu\nu}P_{\mu\nu}\mathbf F_i^{\mu\nu}$, so
+
+$$ V^{\mathrm{ind}}_{\mu\nu} = \frac{\partial W}{\partial P_{\mu\nu}}\Big|_{\boldsymbol\mu^*} = -\sum_i\boldsymbol\mu_i\cdot\mathbf F_i^{\mu\nu} , $$
+
+with a factor of 1, not $\tfrac12$. The same variational structure gives the
+COSMO Fock term of section 22.5. $V^{\mathrm{ind}}$ is added to every spin Fock
+matrix, and $E_{\mathrm{pol}}$ is added outside the
+$\tfrac12\mathrm{Tr}[P(h+F)]$ trace, the PCM convention of section 22.3.
 
 > **Verified equation 23.4** · stationarity and the Fock term
 >
@@ -120,8 +187,11 @@ the COSMO functional of section 22.5.
 >
 > <!-- verified: id=thole.fock.term; script=scripts/thole_polarizable_sympy.py; claim=T4; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/polarizable.rs::build_v_induced; rust_test=ferric-scf/tests/qmmm_polarizable.rs::matches_pyscf_prototype_three_sites; registry=qmmm -->
 
-The system is assembled in `solve_induction`, with the diagonal blocks
-$1/\alpha_i$ and the off-diagonal blocks $-\mathsf T_{ij}$:
+Claim T4 checks the Fock term by central difference. $E_{\mathrm{pol}}$ is
+quadratic in the density, so that difference is exact up to rounding.
+
+`solve_induction` assembles the matrix with the diagonal blocks $1/\alpha_i$
+and the off-diagonal blocks $-\mathsf T_{ij}$:
 
 <!-- excerpt: ferric-scf/src/polarizable.rs::solve_induction -->
 ```rust
@@ -150,36 +220,48 @@ e_pol -= 0.5
 | $\mathbf E^{\mathrm{ext}}$ | `e_total`, the right-hand side |
 | $E_{\mathrm{pol}}$ | `e_pol` |
 
-`E_pol` includes the self-polarization of the MM region by its own permanent
-charges. `mm_only_polarization_energy` returns that constant (the dipoles
-induced by the permanent charges alone, with the QM region ignored), to
-subtract when an interaction energy is wanted.
+The system is solved densely (`solve_into`). A site with non-positive or
+non-finite $\alpha$ is an error, raised while the diagonal is filled.
+
+$E_{\mathrm{pol}}$ includes the self-polarization of the MM region by its own
+permanent charges. `mm_only_polarization_energy` returns that constant (the
+dipoles induced by the permanent charges alone, with the QM region ignored),
+to subtract when an interaction energy is wanted.
 
 ## 23.3.2 The integrals
 
 $\mathbf F_i^{\mu\nu}$ is the integral of the field of a point dipole at the
-site, which a p-shell Gaussian at the site delivers through the same
+site. A p-shell Gaussian at the site delivers it through the same
 three-index machinery as the smeared charges of section 23.1
-(`SiteBasis::new(sites, 1)`). The exponent `dipole_zeta` is $10^4$ Bohr$^{-2}$ by
-default, a width of 0.01 Bohr, so the shell is numerically a point dipole and
-not an exact one.
+(`SiteBasis::new(sites, 1)`). The exponent `dipole_zeta` is $10^4$
+Bohr$^{-2}$ by default, a width $\zeta_p^{-1/2}$ of 0.01 Bohr, so the shell is
+numerically a point dipole but not an exact one.
 
 Two facts fix the map from the shell to the field axes, and both follow from
-the shell's definition (claim T6). The site shell is a pure $l = 1$ shell
-(`SiteBasis` is built with `pure: true`), whose real solid harmonics are ordered
-$m = -1, 0, +1$, that is $(y, z, x)$: the function that carries field axis $c$
-is $(c+2) \bmod 3$ (`p_axis_for_field_axis`). And
-`norm_int_p_shell` $= 2^{1/4}\zeta_p^{5/4}/(2\pi^{3/4})$ is the reciprocal of the
-dipole moment $\int x\,p_x$ of the unit-normalized $p_x$, so the raw
-three-index integral is multiplied by it to give the potential integral of a
-unit point dipole as $\zeta_p\to\infty$. Both are pinned against
+the shell's definition (claim T6):
+
+- **Axis order.** The site shell is a pure $l = 1$ shell (`SiteBasis` is
+  built with `pure: true`). Its real solid harmonics are ordered
+  $m = -1, 0, +1$, that is $(y, z, x)$, so the function that carries field
+  axis $c$ is $(c+2) \bmod 3$ (`p_axis_for_field_axis`).
+- **Normalization.** `norm_int_p_shell` $= 2^{1/4}\zeta_p^{5/4}/(2\pi^{3/4})$
+  is the reciprocal of the dipole moment $\int x\,p_x$ of the unit-normalized
+  $p_x = \mathcal N x\,e^{-\zeta_p r^2}$. Multiplying the raw three-index
+  integral by it gives the potential integral of a unit point dipole as
+  $\zeta_p\to\infty$.
+
+So $F_{i,c}^{\mu\nu} = \mathcal N_p(\zeta_p)\,(\mu\nu|p_{(c+2)\bmod3})$, with
+the overall sign carried by `build_v_induced`. Both facts are pinned against
 nuclear-attraction derivative blocks by
 `p_shell_dipole_potential_matches_charge_derivative_block` in
 `crates/ferric-scf/tests/qmmm_polarizable.rs`.
 
-A second sign convention bit a first implementation. The raw derivative
-convention and the physical field convention of `electric_field_at_points`
-differ by one sign, and the Fock term must use the physical one:
+A sign convention sits between the integral and the Fock term. The raw
+derivative convention of that pin test,
+$\partial\langle\mu|1/|\mathbf r-\mathbf R|\,|\nu\rangle/\partial R_c = -\mathcal N_p(\mu\nu|p)$,
+and the physical field convention of `electric_field_at_points`, which
+accumulates minus the contraction, differ by one sign. The Fock term must use
+the physical one:
 
 <!-- excerpt: ferric-scf/src/polarizable.rs::build_v_induced -->
 ```rust
@@ -193,40 +275,72 @@ let coeff = -mu[c] * norm_p;
 | $(\mu\nu\vert p_{(c+2)\bmod3})$ | `block[(p_fn * n1 + a) * n2 + bb]` with `p_fn = p_axis_for_field_axis(c)` |
 
 A wrong-sign Fock term still converges, to a self-consistent but wrong fixed
-point; it was caught only by comparing against an independent PySCF prototype,
-not by the p-shell pin test, which does not exercise that sign.
+point: about $10^{-5}$ absolute error in the dipoles and $1.5\times10^{-4}$ Ha
+in the energy on the multi-site cases. The p-shell pin test does not exercise
+that sign. The comparison with an independent PySCF prototype
+(`matches_pyscf_prototype_three_sites` and its siblings) does. The scaling
+uses `norm_int_p_shell` and not `SiteBasis::norm_int`, which is the $l = 0$
+charge normalization of section 23.1.
+
+At finite $\zeta_p$ the Fock and gradient integrals are those of a Gaussian
+dipole of width $\zeta_p^{-1/2} \approx 0.01$ Bohr, while
+$\mathbf E^{\mathrm{QM}}$ in the induction uses the point field. So
+$V^{\mathrm{ind}}$ equals $\partial W/\partial P$ up to that finite-width
+error.
 
 ## 23.3.3 The gradient
 
-Two different formulas are needed. Getting them mixed up is the classic error
-in this model, and the code records that a naive version was wrong.
+Two different formulas are needed, one for the QM atoms and one for the
+sites, and the second is where a naive derivation goes wrong.
 
-**QM-atom rows** (`qm_gradient_contribution`). Hold $\boldsymbol\mu$ fixed. There are two pieces. The
-Hellmann–Feynman contraction $\sum_{\mu\nu}D_{\mu\nu}\,\partial V^{\mathrm{ind}}_{\mu\nu}/\partial\mathbf R_A$,
-and the nuclear part of the field, since a QM nucleus is a point charge from a
-site's point of view: $-\boldsymbol\mu_i\cdot\partial\mathbf E_i^{\mathrm{QM,nuc}}/\partial\mathbf R_A$.
-Omitting the second left a residual of $2.6\times10^{-5}$ in the finite-difference test
-while the first piece alone matched an isolated fixed-density check.
+**QM-atom rows** (`qm_gradient_contribution`). Hold $\boldsymbol\mu$ fixed;
+the stationarity of $W$ allows it. There are two pieces. The first is the
+Hellmann–Feynman contraction
+$\sum_{\mu\nu}P_{\mu\nu}\,\partial V^{\mathrm{ind}}_{\mu\nu}/\partial\mathbf R_A$,
+from the three-index derivative blocks 1 and 2 (the two basis-function
+centres). The second is the nuclear part of the field. A QM nucleus is a
+point charge from a site's point of view, so moving it changes
+$\mathbf E_i^{\mathrm{QM,nuc}} = \sum_AZ_A(\mathbf R_i-\mathbf R_A)/|\mathbf R_i-\mathbf R_A|^3$,
+and the term is $-\boldsymbol\mu_i\cdot\partial\mathbf E_i^{\mathrm{QM,nuc}}/\partial\mathbf R_A$
+in closed form. Without the nuclear piece,
+`qm_gradient_with_polarizable_sites_matches_finite_difference` shows a
+residual of $2.6\times10^{-5}$. The first piece alone matches an isolated
+fixed-density, fixed-$\boldsymbol\mu$ check to 6 significant figures; that
+check holds the nuclei still, so it cannot see the nuclear term.
 
-**Site rows** (`site_gradient`). Here the naive route fails. Differentiating
-$E_{\mathrm{pol}} = -\tfrac12\boldsymbol\mu\cdot\mathbf E^{\mathrm{ext}}$ at fixed $\boldsymbol\mu$
-is wrong: it misses the dependence of $\mathsf T$ on the site, and it has the
-wrong coefficient on the field term. The correct derivative is that of $W$, which is
-stationary in $\boldsymbol\mu$, at fixed $\boldsymbol\mu$:
+**Site rows** (`site_gradient`). Why not
+differentiate $E_{\mathrm{pol}} = -\tfrac12\boldsymbol\mu\cdot\mathbf E^{\mathrm{ext}}$
+at fixed $\boldsymbol\mu$? Because that expression is not stationary in
+$\boldsymbol\mu$, so holding $\boldsymbol\mu$ fixed drops a real term. Its
+full derivative is
+$-\tfrac12\boldsymbol\mu\cdot\partial\mathbf E/\partial\mathbf R - \tfrac12(d\boldsymbol\mu/d\mathbf R)\cdot\mathbf E$,
+and the second half is not zero. The one-site case shows the size of the
+error. With $\mu = \alpha E(R)$ and $E_{\mathrm{pol}} = -\tfrac12\alpha E^2$,
+the true derivative is $-\alpha E\,\partial E/\partial R = -\mu\,\partial E/\partial R$,
+and the naive one is half of that. With two or more sites the naive form also
+misses the dependence of $\mathsf T$ on the site positions entirely.
+
+$W$ is stationary, so its derivative at fixed $\boldsymbol\mu$ is the total
+derivative of $E_{\mathrm{pol}}$. Differentiate each term of $W$ with respect
+to $\mathbf R_i$. The field term gives
+$-\boldsymbol\mu_i\cdot\partial\mathbf E_i^{\mathrm{ext}}/\partial\mathbf R_i$. The
+$\alpha$ term does not depend on positions. The $\mathsf T$ term contains, for
+each $j$, both $-\tfrac12\boldsymbol\mu_i\cdot\mathsf T_{ij}\boldsymbol\mu_j$ and
+$-\tfrac12\boldsymbol\mu_j\cdot\mathsf T_{ji}\boldsymbol\mu_i$. The symmetry
+$\mathsf T_{ji}(\mathbf R_j,\mathbf R_i) = \mathsf T_{ij}(\mathbf R_i,\mathbf R_j)^{\mathsf T}$
+makes the two equal, so together they give coefficient 1:
 
 **Equation 23.5, the site gradient of the polarization energy.**
 
 $$ \frac{\partial E_{\mathrm{pol}}}{\partial\mathbf R_i} = -\boldsymbol\mu_i\cdot\frac{\partial\mathbf E_i^{\mathrm{ext}}}{\partial\mathbf R_i} - \sum_{j\neq i}\boldsymbol\mu_i\cdot\frac{\partial\mathsf T_{ij}}{\partial\mathbf R_i}\cdot\boldsymbol\mu_j , $$
 
-where $\partial\mathbf E_i^{\mathrm{ext}}/\partial\mathbf R_i$ is the explicit dependence
-of the field at site $i$ on its own position, at fixed $\boldsymbol\mu$. The first term has
-coefficient 1 (not the $\tfrac12$ of $E_{\mathrm{pol}}$ itself), and the second is the
-whole $\mathsf T$ term. Its coefficient is 1 and not
-$\tfrac12$: $W$ contains $-\tfrac12\boldsymbol\mu_i\cdot\mathsf T_{ij}\boldsymbol\mu_j$ and
-$-\tfrac12\boldsymbol\mu_j\cdot\mathsf T_{ji}\boldsymbol\mu_i$, and
-$\mathsf T_{ji}(\mathbf R_j,\mathbf R_i) = \mathsf T_{ij}(\mathbf R_i,\mathbf R_j)^{\mathsf T}$ makes the two
-equal, so differentiating both with respect to $\mathbf R_i$ gives $-\boldsymbol\mu_i\cdot\partial\mathsf T_{ij}/\partial\mathbf R_i\cdot\boldsymbol\mu_j$. The loop in
-`site_gradient` visits each $j$ once per $i$, so its coefficient is 1.
+where $\partial\mathbf E_i^{\mathrm{ext}}/\partial\mathbf R_i$ is the explicit
+dependence of the field at site $i$ on its own position. Both terms have
+coefficient 1, not the $\tfrac12$ of $E_{\mathrm{pol}}$ itself. The loop in
+`site_gradient` visits each $j$ once per $i$, so its coefficient is 1 too.
+The field term has three parts in the code: the electronic part by
+translational invariance of the p-shell integral, $-(\text{block 1} + \text{block 2})$,
+and the QM-nuclear and permanent-charge parts in closed form.
 
 > **Verified equation 23.5** · the site and charge gradients
 >
@@ -249,46 +363,78 @@ equal, so differentiating both with respect to $\mathbf R_i$ gives $-\boldsymbol
 >
 > <!-- verified: id=thole.site.gradient; script=scripts/thole_polarizable_sympy.py; claim=T3; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/polarizable.rs::site_gradient; rust_test=ferric-scf/tests/qmmm_polarizable.rs::site_force_with_polarizable_sites_matches_finite_difference; registry=qmmm -->
 
-On a classical two-site Thole system with no QM region, the formula of equation
-23.5 reproduced central-difference gradients on every component, magnitude and
-sign, while the naive $-\tfrac12\boldsymbol\mu\cdot\partial\mathbf E/\partial\mathbf R$ was off by
-a factor of roughly 2 to 20 and the wrong sign on some components (the code's
-own comment on the measurement). A first implementation with coefficient
-$\tfrac12$ in the $\mathsf T$ loop was off by exactly 2.
+The code records a measurement on a classical two-site Thole system with no
+QM region. Equation 23.5 reproduced central-difference gradients to
+$10^{-8}$ absolute on every component, magnitude and sign. The naive
+$-\tfrac12\boldsymbol\mu\cdot\partial\mathbf E/\partial\mathbf R$ was off by a
+factor of roughly 2 to 20 and had the wrong sign on 2 of the 6 components.
+Coefficient $\tfrac12$ in the $\mathsf T$ loop is off by exactly a factor of 2,
+which `site_force_with_polarizable_sites_matches_finite_difference` detects.
 
 The code takes $\partial\mathsf T_{ij}/\partial\mathbf R_i$ by central difference
-($h = 10^{-6}$ Bohr) of the closed-form `thole_tensor`, not by hand-derived analytic
-derivative, because the rank-3 tensor derivative carries real sign risk and the
-tensor costs nanoseconds to evaluate. It is a finite difference of the tensor
-function, not of any SCF energy.
+of the closed-form `thole_tensor`, step $h = 10^{-6}$ Bohr, in a loop over
+the three Cartesian directions:
 
 <!-- excerpt: ferric-scf/src/polarizable.rs::site_gradient -->
 ```rust
-g[k] += -1.0 * d_dot_dr;
+let h = 1e-6;
+for k in 0..3 {
+    let mut ri_p = ri;
+    let mut ri_m = ri;
+    ri_p[k] += h;
+    ri_m[k] -= h;
+    let t_p = thole_tensor(ri_p, rj, ai, aj, sites.thole_a);
+    let t_m = thole_tensor(ri_m, rj, ai, aj, sites.thole_a);
+    // mu_i . dT_ij/dR_i[k] . mu_j
+    let mut dot_p = 0.0_f64;
+    let mut dot_m = 0.0_f64;
+    for a in 0..3 {
+        for b in 0..3 {
+            dot_p += mu_i[a] * t_p[a][b] * mu_j[b];
+            dot_m += mu_i[a] * t_m[a][b] * mu_j[b];
+        }
+    }
+    let d_dot_dr = (dot_p - dot_m) / (2.0 * h);
+    g[k] += -1.0 * d_dot_dr;
+}
 ```
 
 | Symbol | Code |
 |---|---|
-| $\boldsymbol\mu_i\cdot\mathsf T_{ij}\cdot\boldsymbol\mu_j$ displaced by $\pm h$ along $k$ | `dot_p`, `dot_m` |
-| $\partial(\boldsymbol\mu_i\mathsf T\boldsymbol\mu_j)/\partial R_{i,k}$ | `d_dot_dr`, $(\mathtt{dot\_p}-\mathtt{dot\_m})/2h$ |
-| coefficient $-1$ | `-1.0` |
+| $\mathsf T_{ij}$ at $\mathbf R_i \pm h\hat{\mathbf e}_k$ | `t_p`, `t_m` |
+| $\boldsymbol\mu_i\cdot\mathsf T_{ij}\cdot\boldsymbol\mu_j$ at the two points | `dot_p`, `dot_m` |
+| $\partial(\boldsymbol\mu_i\cdot\mathsf T_{ij}\cdot\boldsymbol\mu_j)/\partial R_{i,k}$ | `d_dot_dr`, $(\mathtt{dot\_p}-\mathtt{dot\_m})/2h$ |
+| coefficient $-1$ of equation 23.5 | `-1.0` |
 
-**Rows of the permanent charges** (`charge_gradient_contribution`). $\mathbf E_i^{\mathrm{perm}}$ depends
-on the charges' positions, so by the same envelope argument
-$\partial E_{\mathrm{pol}}/\partial\mathbf R_c = -\sum_i\boldsymbol\mu_i\cdot\partial\mathbf E_i^{\mathrm{perm}}/\partial\mathbf R_c$
-for every site $i$ that sees charge $c$ (not colocated with it). This is
-the other half of the site term's point-charge field derivative, which
-`site_gradient` computes and discards, and it is separate from the classical
-charge–nucleus energy. `mm_forces` (section 23.2) does not include it. Use
-`full_gradient_with_polarizable`, which adds the QM rows, the site rows and
-the charge rows.
+Why a finite difference? The analytic form is
+$\partial_k\mathsf T_{ab} = \partial_a\partial_b\partial_k\phi$, with the $\phi$
+of claim T1, but the rank-3 derivative written out by hand carries sign risk,
+and the tensor costs nanoseconds to evaluate. It is a difference of the tensor
+function, not of any SCF energy. Its rounding error is about
+$\epsilon|\mathsf T|/h$, roughly $10^{-10}$ relative, and its $O(h^2)$
+truncation error is far below that.
+
+**Rows of the permanent charges** (`charge_gradient_contribution`).
+$\mathbf E_i^{\mathrm{perm}}$ depends on the charges' positions as well. By the
+same stationarity argument,
+$\partial E_{\mathrm{pol}}/\partial\mathbf R_c = -\sum_i\boldsymbol\mu_i\cdot\partial\mathbf E_i^{\mathrm{perm}}/\partial\mathbf R_c$,
+summed over every site $i$ that sees charge $c$ (not colocated with it or
+excluded from it). It is the other half of the point-charge field
+derivative that `site_gradient` computes and discards. It is separate from
+the classical charge–nucleus energy of section 23.1, and `mm_forces`
+(section 23.2) does not include it. Use `full_gradient_with_polarizable`,
+which adds the QM rows, the site rows and the charge rows to
+`full_gradient`.
+
+Check the trivial limit. With every $\alpha_i\to0$ the dipoles vanish and
+every term of this section is zero (claim T5).
 
 ## 23.3.4 The algorithm
 
 | Step | Quantity | Cost | Function |
 |---|---|---|---|
 | 1 | site basis (p shells), once per geometry | $N_s$ | `SiteBasis::new(sites, 1)` |
-| 2 | $\mathbf E^{\mathrm{QM}}$ at the sites from $D$, per iteration | $N_s\,N^2_{\mathrm{bf}}$ | `electric_field_at_points` |
+| 2 | $\mathbf E^{\mathrm{QM}}$ at the sites from $P$, per iteration | $N_s\,N^2_{\mathrm{bf}}$ | `electric_field_at_points` |
 | 3 | $\mathbf E^{\mathrm{perm}}$ at the sites | $N_sN_c$ | `permanent_field_at_sites` |
 | 4 | dense $3N_s\times3N_s$ solve for $\boldsymbol\mu$ | $(3N_s)^3$ | `solve_induction` |
 | 5 | $E_{\mathrm{pol}}$ and $V^{\mathrm{ind}}$ | $N_s\,N^2_{\mathrm{bf}}$ | `induce`, `build_v_induced` |
@@ -296,22 +442,32 @@ the charge rows.
 | 7 | gradient: QM rows, site rows, charge rows | | `qm_gradient_contribution`, `site_gradient`, `charge_gradient_contribution` |
 
 Steps 2 to 6 run every SCF iteration, in the same place as the COSMO and PCM
-terms (`solvent_terms`). An empty site list returns before any solve and the
-energy is bit-identical to a run with `polarizable = None`
+terms (`solvent_terms`). The site basis depends only on the geometry, so it is
+built once per SCF, outside the loop, like the COSMO cavity and the PCM
+context. An empty site list returns before any solve, without building a
+$0\times0$ system or touching the density, and the energy is bit-identical to a
+run with `polarizable = None`
 (`polarizable_none_is_bit_identical_to_plain_scf` and
 `polarizable_empty_sites_is_bit_identical_to_plain_scf` in
 `crates/ferric-scf/tests/qmmm_polarizable.rs`).
 
 ## 23.3.5 Exclusions
 
-`PolarizableSites::exclusions` is a set of site-index pairs with two effects:
-$\mathsf T_{ij}$ is zero for the pair (neither polarizes the other), and the
-permanent charge of an excluded partner's colocated MM atom is dropped from
-that site's permanent field. The second is by position: a permanent charge
-within $10^{-8}$ Bohr of an excluded partner site is dropped, which matches the
-usual case where a polarizable site is also a permanently charged MM atom (one
-`QmmmAtom` with both `charge` and `alpha`). With no exclusions, every site
-sees every other site's permanent charge and induced dipole.
+`PolarizableSites::exclusions` is a set of site-index pairs with two
+effects. $\mathsf T_{ij}$ is zero for the pair, so neither polarizes the
+other. And the permanent charge colocated with an excluded partner is dropped
+from the site's permanent field. The second is by position: a permanent
+charge within $10^{-8}$ Bohr of site $i$ itself, or of a site excluded from
+$i$, is skipped. That matches the usual case, where a polarizable site is also
+a permanently charged MM atom (one `QmmmAtom` with both `charge` and
+`alpha`): a site never feels its own charge, and an excluded neighbour's
+charge goes with the neighbour. With no exclusions, every site sees every
+other site's permanent charge and induced dipole.
+
+A Gaussian-smeared permanent charge enters $\mathbf E^{\mathrm{perm}}$ with
+the point-charge field $q\,\mathbf r/r^3$, not the field of the Gaussian
+(`permanent_field_at_sites`). The gradients use the same point form, so the
+gradient is that of the energy computed.
 
 ## 23.3.6 Options
 
@@ -331,8 +487,10 @@ sees every other site's permanent charge and induced dipole.
 | one site 30 Å away | same | $E_{\mathrm{pol}}$ within $7.7\times10^{-8}$ relative of the classical limit $-\tfrac12\alpha\lvert E_0\rvert^2$ | same |
 | $\alpha\to0$ | same | PySCF `qmmm.mm_charge` | same |
 
-The gradients in this row are 5-point finite differences of the reference
-model, not an analytic reference.
+The second row is the one-site check of section 23.3.1 measured at the far
+limit: one distant site sees an almost uniform field $\mathbf E_0$ and no
+other dipole. The gradients in the first row are 5-point finite differences
+of the reference model, not an analytic reference.
 
 ## 23.3.8 Sources
 
