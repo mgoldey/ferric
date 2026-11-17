@@ -3,11 +3,20 @@
 <!-- section: 19.1; status: ready; registry: gw, u-gw;
      theory: crates/ferric-gw/theory.md#"1. RI factorization and exchange" -->
 
+Take an electron out of orbital $p$. In Hartree–Fock its energy has two
+interaction parts: the Coulomb repulsion from the average density, and the
+exchange interaction with the electrons of the same spin. GW splits the
+self-energy the same way. The bare exchange part, $\Sigma^x$, is the
+Hartree–Fock exchange of state $p$ with every occupied orbital. The
+correlation part, $\Sigma^c$ (sections 19.3 to 19.5), is what screening
+adds on top.
+
 Every GW quantity is a contraction of one object: the Coulomb integrals
-$(pq|rs)$ over all pairs of active orbitals, held in the resolution-of-identity
-form of chapter 6. Unlike RI-MP2, which needs only the occupied–virtual block,
-GW needs every pair $pq$, because the self-energy of a state $p$ sums over all
-states $q$. The exchange self-energy is the first use.
+$(pq|rs)$ over all pairs of active orbitals, held in the
+resolution-of-identity form of chapter 6. RI-MP2 needs only the
+occupied–virtual block $(ia|jb)$. GW needs every pair $pq$, because the
+self-energy of a state $p$ sums over all states $q$. The exchange
+self-energy is the first use.
 
 | Symbol | Meaning | Code name |
 |---|---|---|
@@ -17,7 +26,7 @@ states $q$. The exchange self-energy is the first use.
 | $B^P_{pq}$ | dressed three-index tensor over the active square | `MoB::b_full`, shape `(naux, n_act, n_act)` |
 | $\Sigma^x_p$ | exchange self-energy diagonal | `sigma_x_diag` |
 
-"Active" means MO indices `frozen_core..nmo`; a frozen core orbital is absent
+"Active" means MO indices `frozen_core..nmo`. A frozen core orbital is absent
 from the sums on both sides of the self-energy.
 
 | Entry point | Location |
@@ -30,16 +39,69 @@ from the sums on both sides of the self-energy.
 
 ## 19.1.1 The factorization
 
-<!-- include: crates/ferric-gw/theory.md#"1. RI factorization and exchange" -->
+**The tensor.** Start from the Coulomb metric $V_{PQ} = (P|Q)$ of the
+auxiliary basis and any factor $M$ with $M^{\mathsf T}M = V^{-1}$. Section
+6.1 shows that the choice of $M$ does not change any contraction of two $B$
+factors. Fit each orbital-pair density $\phi_p\phi_q$ and dress it with $M$:
 
-**Where the factor comes from.** `build_full_b` takes the metric from the
-Coulomb operator by Cholesky and applies $M = L^{-1}$ to the three-index
-integrals in one pass over the active square; the attenuated operators of
-chapter 4 use the symmetric $V^{-1/2}$ instead, and the GW drivers carry the
-factor with the tensor (`MoB::v_inv_sqrt`) because section 19.2 needs it to
-undress the dielectric eigenvectors. The tensor is a hard memory charge,
-$N_{\rm aux}\,n_{\rm act}^2$ doubles, accounted in the pool before it is built
-(`guard_b_full`).
+$$ B^P_{pq} = \sum_Q M_{PQ}\,(Q|pq), \qquad (pq|rs) \approx \sum_P B^P_{pq} B^P_{rs} . $$
+
+The code holds $B$ over the full active square, shape
+`(naux, n_act, n_act)`. `ferric-gw/src/mo_b.rs::build_full_b` builds it for a
+closed-shell reference, and `build_full_b_spin` and
+`build_full_b_both_spins` build one per spin.
+
+**The exchange self-energy.** The exchange energy of state $p$ with the
+occupied orbitals of its spin is the diagonal of the Hartree–Fock exchange
+operator, $\Sigma^x_p = -\sum_i (pi|ip)$. Substitute the factorization. The
+orbitals are real, so $B^P_{ip} = B^P_{pi}$, and the product of the two
+factors is a square:
+
+$$ \Sigma^x_p = -\sum_i \sum_P B^P_{pi}B^P_{ip} = -\sum_i \sum_P \left(B^P_{pi}\right)^2 . $$
+
+The result is the closed-shell Hartree–Fock exchange diagonal in the RI basis. For
+an open-shell reference the same formula runs on each spin's $B_\sigma$,
+with $i$ over that spin's occupied orbitals.
+
+**Check the Hartree–Fock limit.** The closed-shell Fock diagonal is
+$F_{pp} = h_{pp} + \sum_i\big[2(pp|ii) - (pi|ip)\big]$. Its exchange part is
+$\Sigma^x_p$. So on a Hartree–Fock reference, $\epsilon_p$ already contains
+$\Sigma^x_p$, and the quasiparticle correction is $\Sigma^c$ alone. If the
+screening vanishes ($W \to v$, section 19.2), $\Sigma^c = 0$ and the
+quasiparticle energies are the Koopmans orbital energies. Section 19.1.3
+gives the Kohn–Sham case.
+
+$\Sigma^x$ is computed from the full $B$, never from the PDEP projection of
+section 19.2. PDEP rank truncation therefore changes only the correlation
+part.
+
+The heart of `ferric-gw/src/cohsex.rs::sigma_x_diag` is one closure per
+state $p$ (`m` in the code), mapped in parallel over states:
+
+<!-- excerpt: ferric-gw/src/cohsex.rs::sigma_x_diag -->
+```rust
+    let compute_one = |m: usize| -> f64 {
+        let mut acc = 0.0;
+        for i in 0..n_occ {
+            for p in 0..naux {
+                let b = mo_b.b_full[(p, m, i)];
+                acc += b * b;
+            }
+        }
+        -acc
+    };
+```
+
+| Code | Equation |
+|---|---|
+| `m` | the state $p$ of $\Sigma^x_p$ |
+| `p` | the auxiliary index $P$ |
+| `b * b` | $(B^P_{pi})^2$ |
+| `-acc` | the minus sign of exchange |
+
+Each `sx[m]` is written by one closure, so the parallel map over states has
+no reduction and gives the same bits as the serial loop. Below eight states
+the code runs it serially.
 
 > **Verified equation 19.1** · the exchange self-energy is the closed-shell Fock exchange in the RI basis
 >
@@ -58,6 +120,16 @@ $N_{\rm aux}\,n_{\rm act}^2$ doubles, accounted in the pool before it is built
 >
 > <!-- verified: id=gw.sigma-x; script=scripts/gw_ucohsex_sympy.py; claim=U1; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-gw/src/cohsex.rs::sigma_x_diag; rust_test=ferric-gw/tests/validation_gw.rs::g0w0_hf_h2o_vs_pyscf_gw_ac; registry=u-gw -->
 
+**Where the factor comes from.** `build_full_b` takes the metric from the
+Coulomb operator by Cholesky, $V = LL^{\mathsf T}$, and applies $M = L^{-1}$
+to the three-index integrals in one pass over the active square. The
+attenuated operators of chapter 4 use the symmetric eigendecomposition
+factor $V^{-1/2}$ instead. The GW drivers carry the factor with the tensor
+(`MoB::v_inv_sqrt`), because section 19.2 needs it to undress the dielectric
+eigenvectors. The tensor is a hard memory charge of
+$N_{\rm aux}\,n_{\rm act}^2$ doubles, accounted in the pool before it is
+built (`guard_b_full`).
+
 ## 19.1.2 The algorithm
 
 | Step | Quantity | Cost | Function |
@@ -68,18 +140,26 @@ $N_{\rm aux}\,n_{\rm act}^2$ doubles, accounted in the pool before it is built
 | 4 | the PDEP-RPA run that supplies $W$ (section 19.2) | chapter 18 | `ferric_rpa::run_pdep_rpa` |
 
 `run_gw` forces the inverse-dielectric stack on in the RPA configuration
-(`with_inv_dielectric`), because the correlation self-energy reads it;
-an energy-only RPA run leaves it off to save memory. It rejects a
+(`with_inv_dielectric`), because the correlation self-energy reads it. An
+energy-only RPA run leaves it off to save memory. `run_gw` rejects a
 `qp_mos` range past the number of orbitals before any expensive step.
 
 ## 19.1.3 What a KS reference changes
 
-On an HF reference $\epsilon_p$ already contains $\Sigma^x_p$. On a KS
-reference the mean-field energy contains $v^{xc}_p$ instead, so the
+On a Hartree–Fock reference $\epsilon_p$ already contains $\Sigma^x_p$
+(section 19.1.1). A Kohn–Sham orbital energy contains the
+exchange-correlation potential $v^{xc}_p$ in its place. GW removes
+$v^{xc}_p$ and puts in the exchange and correlation self-energy, so the
 quasiparticle equation of section 19.5 carries the static shift
-$\delta_p = \Sigma^x_p - v^{xc}_p$, with $v^{xc}_p$ the diagonal of the XC
-potential in the MO basis (`ferric-gw/src/vxc_mo.rs::vxc_diagonal_mo`, the same XC code as
-the SCF's Fock build). The shift is computed once from the starting orbitals.
+
+$$ \delta_p = \Sigma^x_p - v^{xc}_p , $$
+
+with $v^{xc}_p$ the diagonal of the XC potential in the MO basis
+(`ferric-gw/src/vxc_mo.rs::vxc_diagonal_mo`, the same XC code as the SCF's
+Fock build). For a semilocal functional the Kohn–Sham Fock diagonal is
+$h_{pp} + J_{pp} + v^{xc}_p$, so with $\Sigma^c = 0$ the corrected energy
+$\epsilon_p + \delta_p$ is the Hartree–Fock Fock diagonal evaluated in the
+Kohn–Sham orbitals. The shift is computed once, from the starting orbitals.
 
 ## 19.1.4 Numerical anchors
 

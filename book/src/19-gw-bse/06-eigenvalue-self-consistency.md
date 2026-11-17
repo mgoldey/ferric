@@ -3,9 +3,11 @@
 <!-- section: 19.6; status: ready; registry: gw;
      theory: crates/ferric-gw/theory.md#"8. Eigenvalue self-consistency" -->
 
-G0W0 builds $G$ and $W$ from the mean-field spectrum, so its answer depends on
-the reference. The eigenvalue self-consistent variants feed the quasiparticle
-energies back into the propagator, and in the full variant into $W$ too,
+G0W0 builds $G$ and $W$ from the mean-field spectrum, so its answer depends
+on the reference. A Hartree–Fock gap is too large, a semilocal Kohn–Sham gap
+too small, and the energy denominators of $\Sigma^c$ and of $\Pi$ inherit the
+error. The eigenvalue self-consistent variants feed the quasiparticle
+energies back into the propagator, and in the full variant into $W$ as well,
 until the energies stop moving. The orbitals never change; only the energies
 in the denominators do.
 
@@ -28,21 +30,48 @@ in the denominators do.
 
 ## 19.6.1 The update
 
-<!-- include: crates/ferric-gw/theory.md#"8. Eigenvalue self-consistency" -->
+**What changes.** The propagator energies $\epsilon_q$ in the kernel
+$(z - \epsilon_q)/[(z-\epsilon_q)^2 + u'^2]$ of section 19.3 are the only
+input the loop updates. Sweep $k$ uses
 
-The iteration is a Jacobi update: within one sweep every state in the QP
-window is solved against the same frozen snapshot of the propagator energies,
-so the per-state solves are independent and run in parallel. The first sweep
-is G0W0, because the starting QP energies are the mean-field ones. In evGW$_0$
-the quasiparticle root $E$ still solves
-$E = \epsilon^{\rm MF}_p + \delta_p + \Sigma^c_p(E;\,\epsilon^{\rm prop})$:
-the left-hand $\epsilon_p$, the static shift $\delta_p$ and the Fermi level of
-the continuation line stay at their mean-field values for the whole run.
+$$ \epsilon_q^{\rm prop} = \begin{cases} \epsilon^{\rm QP,(k-1)}_q & q \text{ in the QP window} \\ \epsilon_q & \text{otherwise} \end{cases} $$
 
-In evGW the second and later sweeps copy the reference, overwrite the orbital
-energies of the QP window with the current QP energies, rerun the PDEP-RPA
-step on that copy, redress the new eigenpotentials into the unchanged $B$
-basis, and project $B$ again. This is the cost driver: the projection of
+and solves, for every state $p$ in the window,
+
+$$ E = \epsilon_p + \delta_p + \Sigma^c_p\big(E;\,\epsilon^{\rm prop}\big) $$
+
+by the continuation and Newton solve of section 19.5. The left-hand
+$\epsilon_p$, the static shift $\delta_p$ and the Fermi level $\epsilon_F$ of
+the continuation line stay at their mean-field values for the whole run, and
+so do the energies of states outside the window.
+
+**Check the first sweep.** The starting QP energies are the mean-field ones,
+so sweep 0 is G0W0.
+
+**Jacobi, not Gauss–Seidel.** Within one sweep every state in the window is
+solved against the same frozen snapshot of the propagator energies. The
+per-state solves are therefore independent and run in parallel. The loop in
+`ferric-gw/src/sigma.rs::run_evgw0` first copies the last sweep's energies
+into the snapshot:
+
+<!-- excerpt: ferric-gw/src/sigma.rs::run_evgw0 -->
+```rust
+        for (idx, &mo_abs) in mo_indices.iter().enumerate() {
+            let m_loc = mo_abs - first_act;
+            eps_prop[m_loc] = eps_qp[idx];
+        }
+```
+
+then maps `solve_qp_for_mo` over the window with `eps_prop` as the
+propagator energies, records $\max_p|\Delta\epsilon^{\rm QP}_p|$, and stops
+when it falls below `ev_conv_thresh`.
+
+**evGW: rebuild $W$ too.** In `ferric-gw/src/sigma.rs::run_evgw` the second and
+later sweeps copy the reference, overwrite the orbital energies of the QP
+window with the current QP energies, rerun the PDEP-RPA step on that copy
+(the $\Delta_i^a$ of $\Pi$ in section 19.2.1 change), redress the new
+eigenpotentials into the unchanged $B$ basis, and project $B$ again. The
+orbitals and $B$ are unchanged. The rebuild drives the cost: the projection of
 section 19.2 (the largest GEMM in the GW code) and the whole frequency stack
 are rebuilt each sweep. Convergence is declared only after at least one
 rebuilt $W$ (`it > 0`).
@@ -65,11 +94,13 @@ evidence is the validation below.
 | `max_ev_iter` | 20 | outer iteration cap |
 | `ev_conv_thresh` | $10^{-4}$ Ha | convergence on $\max_p\lvert\Delta\epsilon^{\rm QP}_p\rvert$ |
 
-`GwResult.outer_converged` is false when the cap is hit, and `run_gw` warns;
-the returned energies (and, for evGW, $W$) are then the last iterate. For a KS
+`GwResult.outer_converged` is false when the cap is hit, and `run_gw` warns.
+The returned energies (and, for evGW, $W$) are then the last iterate. For a KS
 reference the shift $\Sigma^x - v^{xc}$ is computed once from the starting
-orbitals and held fixed across the loop. States outside the window, the Fermi
-level and $\epsilon_p$ in the QP equation are never updated.
+orbitals and held fixed across the loop: $v^{xc}$ is a property of the
+starting orbitals, which the loop does not change. States outside the
+window, the Fermi level and $\epsilon_p$ in the QP equation are never
+updated.
 
 **Known limits (2026-11-15).** No external reference exists for evGW@KS, so
 `crates/ferric-gw/tests/evgw_pbe_h2o.rs` checks convergence and the KS shift
@@ -83,6 +114,9 @@ From `site/src/reference/validation.md` (the COHSEX, evGW$_0$, evGW row):
 |---|---|---|---|
 | evGW$_0$, evGW at HF, H2O / cc-pVDZ | PySCF `get_sigma` iterated with ferric's update rule | $5.7\times10^{-7}$ Ha | `evgw0_evgw_hf_h2o_vs_iterated_pyscf` in `crates/ferric-gw/tests/validation_gw.rs` |
 | HOMO and LUMO, defaults against matched settings (`ev_conv_thresh` $10^{-4}$ against $10^{-7}$) | ferric at matched settings | $\le 0.11$ meV per knob | `crates/ferric-gw/tests/validation_gw_defaults.rs` |
+
+`crates/ferric-gw/tests/h2o_g0w0_cohsex.rs` holds smoke tests of G0W0,
+COHSEX, evGW$_0$ and evGW on water at cc-pVDZ.
 
 ## 19.6.4 Sources
 
