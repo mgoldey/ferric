@@ -729,6 +729,11 @@ def test_math_in_table_cells_beside_a_code_span_is_accepted(tree):
     assert check(tree).errors == []
 
 
+def test_double_backtick_code_span_with_a_dollar_is_not_math(tree):
+    sub(tree, SEC, "Inline math", "Use ``$HOME`` then $x$. Inline math")
+    assert check(tree).errors == []
+
+
 def test_code_span_after_math_is_accepted(tree):
     sub(
         tree, SEC, "Inline math", "$$ f = \\frac{a}{b} $$ (`build_k_r`).\n\nInline math"
