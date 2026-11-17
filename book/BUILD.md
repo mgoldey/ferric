@@ -57,7 +57,7 @@ is what a reader sees, on GitHub and in both outputs. The comment is what the
 checker reads.
 
 ```markdown
-> **Verified equation 10.2** · spin adaptation of the MP2 energy
+> **Verified equation @eq:mp2-cs-spin-adaptation** · spin adaptation of the MP2 energy
 >
 > The spatial sums ... equal the opposite-spin and same-spin parts ...
 >
@@ -216,7 +216,7 @@ scripts/
 Each section file starts with a header comment:
 
 ```markdown
-<!-- section: 10.1; status: ready; registry: ri-mp2;
+<!-- status: ready; registry: ri-mp2;
      theory: crates/ferric-mp2/theory.md#"2. Closed-shell RI-MP2" -->
 ```
 
@@ -258,6 +258,36 @@ the quoted-number check (rule 5) and the `check_doc_style.py` report.
 
 Appendices live beside `SUMMARY.md` as `book/src/appendix-X-name.md`. A (verified equations and
 proof scripts), B (functions cited) and C (validation grades) are generated and committed; D is
-written by hand. Each carries a `<!-- section: X; status: ... -->` header, checked like a section's.
-The status of every section in `book/PLAN.md` section 3 must equal its header's status, and the
-table in section 4 is the recount between its `status-table` markers.
+written by hand. Each carries a `<!-- status: ... -->` header and a labelled title
+(`# Appendix D: ... {#appendix-d}`), checked like a section's. The status of every page in
+`book/PLAN.md` section 3, whose rows are keyed by the page's title label (`` `closed-shell-ri-mp2` ``),
+must equal its header's status, and the table in section 4 is the recount between its
+`status-table` markers.
+
+### Numbers: label, reference by label, never write a number
+
+No chapter, section or equation number is written in `book/src`. The preprocessor derives each
+one from position, so inserting, moving or deleting a section or an equation renumbers everything
+after it, and every reference follows.
+
+| Thing | Source | Rendered |
+|---|---|---|
+| Chapter, section, subsection | `## The energy, and why it splits in two {#closed-shell-ri-mp2-energy-splits}` | `## 10.1.1 The energy, ...` |
+| An unnumbered heading | `## Sources` (no label) | as written; it does not advance the count |
+| Display equation | `$$ ... \label{eq:closed-shell-ri-mp2-3} $$` | `\tag{10.3}`, with an anchor in front |
+| A box that states its own equation | `> **Verified equation {#eq:scf-rij-packed}** · ...` | `Verified equation 7.4` |
+| A box that certifies a labelled equation | `> **Verified equation @eq:mp2-cs-spin-adaptation** · ...` | that equation's number |
+| Reference | `(@eq:closed-shell-ri-mp2-3)`, `section @sec:fxc`, `chapter @sec:rpa` | the bare number, linked (plain in `--concat`) |
+| Reference before a letter or digit | `{@eq:mp2-u-grad-assembly}b` | `15.21b` |
+
+Chapters are numbered by the position of their directory among `book/src/NN-*` (the `NN` prefix
+orders them; its value is not the number), sections by their place in the chapter, and equations
+and numbered boxes share one series per chapter in page order. A label is lowercase kebab-case,
+unique across the book; a reference names its kind (`@sec:` for any heading, `@eq:` for an
+equation or a box). `--check` fails on a duplicate label, an undefined reference or one of the
+wrong kind, a `\tag{`, a heading that writes its own number, a `section:` header field, and a
+hard-coded section, chapter or equation number in prose. A number that belongs to another work is
+not a reference: a clause (or table cell and its column header) that names the dissertation, a
+paper, a `theory.md` file, or a table or figure of one is exempt, and `book/number-allowlist.txt`
+lists the few remaining exceptions by page. `scripts/book_autonumber_migrate.py` is the one-shot
+migration that derived the labels (2026-11-17); it is not part of the build.

@@ -1,7 +1,9 @@
 # Book style guide
 
-This guide covers the prose of `book/src`. The model sections are 10.1
-(closed-shell RI-MP2) and 13.1.1–13.1.2 (amplitude-threshold local MP2).
+This guide covers the prose of `book/src`. The model sections are
+closed-shell RI-MP2 (`10-mp2/01-closed-shell-ri-mp2.md`) and the first two
+subsections of amplitude-threshold local MP2
+(`13-local-mp2/01-amplitude-lmp2.md`).
 Read one of them before you edit a chapter.
 
 The target reader knows quantum chemistry at the level of a first graduate
@@ -33,7 +35,7 @@ These read as filler. Do not use them or close variants.
 
 | Pattern | Examples | Write instead |
 |---|---|---|
-| Idioms and aphorisms | "the exception proves the rule", "X or not at all", "pays off many times", "the whole reason", "keep that in mind" | the concrete fact: "diverges as $1/\Delta$, see 10.3" |
+| Idioms and aphorisms | "the exception proves the rule", "X or not at all", "pays off many times", "the whole reason", "keep that in mind" | the concrete fact: "diverges as $1/\Delta$, see (@eq:closed-shell-ri-mp2-3)" |
 | Setup and punchline | "There's a bonus.", "Here's the trick.", "Be honest about what this buys." | state the point: "Cholesky also checks the input" |
 | Reassurance and teasers | "That isn't a workaround.", "it comes back later", "the cheapest honest account" | cut, or give the cross-reference |
 | Rhetorical colour | "the one thing computers are reliably fast at", "to the last digit you'd trust" | "near peak FLOP rate", "up to rounding" |
@@ -84,11 +86,15 @@ A rewrite changes the explanation, never the facts.
 - **Verified-equation boxes stay byte-identical**, including the
   `<!-- verified: ... -->` comment. Unverified-equation boxes stay as they
   are. You may move a box to sit after the derivation it certifies.
-- **Tagged equations keep their numbers** (`\tag{13.2}`), and cross-references
-  to them stay valid. Do not add new tagged equations; new algebra is
-  untagged.
-- **Section numbers and headings keep their numbers** (`## 13.1.3`). You may
-  reword the title text.
+- **Label equations, reference by label; never write a number.** A display
+  equation that anything refers to carries `\label{eq:name}`; a reference is
+  `(@eq:name)`, `section @sec:name` or `chapter @sec:name`. The build writes
+  the numbers, so moving or adding an equation or a section is safe. Keep
+  existing labels; do not label new algebra that nothing refers to. See
+  `book/BUILD.md`, "Numbers: label, reference by label, never write a number".
+- **Headings keep their labels** (`## Title {#name}`). You may reword the
+  title text; the label stays, because references and `book/PLAN.md` use it.
+  A heading without a label is not numbered.
 - **Code references stay in the checked form** `crate/src/file.rs::item`.
   A bare function name is not checked by `book_build.py`. The first mention
   of an item in a section uses the checked form.
