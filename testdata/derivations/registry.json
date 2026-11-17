@@ -547,11 +547,13 @@
     "gw": {
       "book": [
         "book/src/19-gw-bse/03-correlation-self-energy.md#correlation-self-energy-frequency-integral",
-        "book/src/18-rpa/02-quadratures.md#quadratures-rule"
+        "book/src/18-rpa/02-quadratures.md#quadratures-rule",
+        "book/src/19-gw-bse/05-continuation-and-qp-equation.md#continuation-and-qp-equation-hybrid-references"
       ],
       "scripts": [
         "scripts/gw_self_energy_sympy.py",
-        "scripts/rpa_quadrature_sympy.py"
+        "scripts/rpa_quadrature_sympy.py",
+        "scripts/gw_hybrid_vmf_sympy.py"
       ]
     },
     "harmonic-frequencies": {
@@ -1009,10 +1011,12 @@
     },
     "u-gw": {
       "book": [
-        "book/src/19-gw-bse/07-open-shell-gw.md#open-shell-gw-spin-summed-screening-per"
+        "book/src/19-gw-bse/07-open-shell-gw.md#open-shell-gw-spin-summed-screening-per",
+        "book/src/19-gw-bse/05-continuation-and-qp-equation.md#continuation-and-qp-equation-hybrid-references"
       ],
       "scripts": [
-        "scripts/gw_ucohsex_sympy.py"
+        "scripts/gw_ucohsex_sympy.py",
+        "scripts/gw_hybrid_vmf_sympy.py"
       ]
     },
     "ccd": {

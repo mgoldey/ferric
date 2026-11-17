@@ -159,6 +159,8 @@ Fock build). For a semilocal functional the Kohn–Sham Fock diagonal is
 $h_{pp} + J_{pp} + v^{xc}_p$, so with $\Sigma^c = 0$ the corrected energy
 $\epsilon_p + \delta_p$ is the Hartree–Fock Fock diagonal evaluated in the
 Kohn–Sham orbitals. The shift is computed once, from the starting orbitals.
+A hybrid's Fock matrix also holds a fraction of exact exchange, which
+$v^{xc}_p$ then includes (section @sec:continuation-and-qp-equation-hybrid-references).
 
 ## Numerical anchors {#ri-factors-and-exchange-numerical-anchors}
 

@@ -19,6 +19,7 @@ The derivations, proofs and measurements for `ferric-dft` are in the ferric book
 | XC gradient: AO-derivative and grid-response terms | `xc-gradient` | [`book/src/14-derivatives/03-xc-gradient.md`](../../book/src/14-derivatives/03-xc-gradient.md) | `scripts/dft_becke_weight_grad_sympy.py`, `scripts/dft_mgga_tau_gradient_sympy.py` | `ks.grad.ao-derivative`, `ks.grad.becke-weights`, `ks.grad.grid-response` |
 | Kohn–Sham Hessian on a fixed and a moving grid | `ks-hessian` | [`book/src/14-derivatives/05-ks-hessian.md`](../../book/src/14-derivatives/05-ks-hessian.md) | `scripts/dft_becke_weight_hessian_sympy.py` | `ks.hess.becke-second-derivative` |
 | The ωB97X-L-V double hybrid | `wb97x-l-v` | [`book/src/16-coupled-cluster/06-wb97x-l-v.md`](../../book/src/16-coupled-cluster/06-wb97x-l-v.md) | — | — |
+| Analytic continuation and the quasiparticle equation | `continuation-and-qp-equation` | [`book/src/19-gw-bse/05-continuation-and-qp-equation.md`](../../book/src/19-gw-bse/05-continuation-and-qp-equation.md) | — | — |
 | The kernel and the functional gate | `kernel` | [`book/src/20-tddft/03-kernel.md`](../../book/src/20-tddft/03-kernel.md) | `scripts/tddft_response_sympy.py` | `td.kernel.singlet-normalization` |
 | Range-separated hybrids | `rsh` | [`book/src/20-tddft/04-rsh.md`](../../book/src/20-tddft/04-rsh.md) | — | — |
 | Triplets | `triplets` | [`book/src/20-tddft/05-triplets.md`](../../book/src/20-tddft/05-triplets.md) | — | — |

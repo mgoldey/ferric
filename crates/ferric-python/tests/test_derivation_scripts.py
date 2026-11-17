@@ -1170,6 +1170,18 @@ CASES = [
         ],
     ),
     (
+        "gw_hybrid_vmf_sympy.py",
+        15,
+        [
+            (
+                "- 0.5 * c_x * k_of(eri, D)",
+                "- c_x * k_of(eri, D)",
+                "FAIL [H1]",
+            ),
+            ("shift = Sx - v_mf", "shift = Sx - vsl", "FAIL [H2]"),
+        ],
+    ),
+    (
         "gw_bse_rpax_sympy.py",
         30,
         [

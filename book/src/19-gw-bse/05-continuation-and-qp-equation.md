@@ -25,6 +25,7 @@ The plan:
 | $z_k$ | continuation nodes, 18 by default | `pade_support_omegas` |
 | $C_N(z)$ | the Thiele continued fraction | `PadeCF` |
 | $\delta_p$ | static shift, $0$ (HF) or $\Sigma^x_p - v^{xc}_p$ (KS) | `static_shift` |
+| $c_{\rm sr}, c_{\rm lr}, \omega$ | exact-exchange fractions and range-separation parameter of a hybrid | `KMix { sr, lr, omega }` |
 | $Z_p$ | renormalization factor | `z_renorm` |
 
 | Entry point | Location |
@@ -151,6 +152,8 @@ $$ f(E) = E - \epsilon_p - \delta_p - \mathrm{Re}\,C_N(E) = 0, \qquad \delta_p =
 
 with $v^{xc}_p$ from `ferric-gw/src/vxc_mo.rs::vxc_diagonal_mo`, the same
 `add_xc` path as the SCF's KS Fock (section @sec:ri-factors-and-exchange-ks-reference-changes).
+For a hybrid functional $v^{xc}_p$ also carries the exact exchange of that
+Fock matrix (section @sec:continuation-and-qp-equation-hybrid-references).
 
 **The static shift belongs inside.** $\delta_p$ is part of $f$, so $\Sigma^c$
 is evaluated at the shifted root. Adding $\delta_p$ after an unshifted solve
@@ -254,6 +257,101 @@ $n_{\rm quad}$. On the exact real axis the equation has roots at −11.81 eV
 every $n_{\rm quad} \ge 30$. A state with no root of weight in $(0, 1]$ is
 left unsolved: `GwResult.qp_converged` records it, and `run_gw` warns
 (`warn_gw_unconverged`).
+
+## Hybrid references {#continuation-and-qp-equation-hybrid-references}
+
+What does $v^{xc}_p$ mean when the reference is PBE0 or CAM-B3LYP? The shift
+$\delta_p$ removes from $\epsilon_p$ everything the Kohn–Sham Fock matrix holds
+besides $h + J$, and puts $\Sigma^x_p$ in its place. A hybrid's Fock matrix
+holds a fraction of exact exchange next to the semilocal potential. $\Sigma^x_p$
+is the full exchange, so a $v^{xc}_p$ without that fraction counts it twice.
+
+**The Fock matrix.** Closed shell, with $D = 2D^\alpha$, the SCF assembles
+(`ferric-scf/src/rhf.rs`, "F = H + J − ½ K_total")
+
+$$ F = h + J[D] + V^{\rm sl} - \tfrac12\big(c_{\rm sr} K^{\rm erfc}_\omega[D] + c_{\rm lr} K^{\rm erf}_\omega[D]\big), \qquad K[D]_{\mu\nu} = \sum_{\lambda\sigma} (\mu\lambda|\nu\sigma) D_{\lambda\sigma} . $$
+
+$V^{\rm sl}$ is the semilocal potential with VV10, and
+$(c_{\rm sr}, c_{\rm lr}, \omega)$ is the functional's `KMix`
+(`ferric-dft/src/ks.rs::KsXc`, method `k_mix`). A global hybrid has
+$\omega = 0$ and $c_{\rm sr} = c_{\rm lr} = c_x$ on one Coulomb $K$; a pure
+functional has all three zero. $K$ is linear in $D$, so
+$\tfrac12 K[D] = K[D^\alpha]$. Subtract $h + J$ and write the result per spin:
+
+$$ v^{\rm mf}_\sigma = V^{\rm sl}_\sigma - c_{\rm sr} K^{\rm erfc}_\omega[D^\sigma] - c_{\rm lr} K^{\rm erf}_\omega[D^\sigma], \qquad \delta_p = \Sigma^x_p - \big(C^{\sigma T} v^{\rm mf}_\sigma C^\sigma\big)_{pp} . \label{eq:gw-hybrid-vmf} $$
+
+The unrestricted Fock matrix has $-K[D^\sigma]$ in $F^\sigma$
+(`ferric-scf/src/uhf.rs`), so (@eq:gw-hybrid-vmf) is also the UKS and ROKS
+form.
+
+**The global hybrid.** Transform $K[D^\sigma]$ to the MO basis. With
+$D^\sigma = \sum_i C_{\mu i}C_{\nu i}$ over occupied $i$,
+$(K[D^\sigma])_{pp} = \sum_i (pi|ip) = -\Sigma^x_p$. Substitute into
+(@eq:gw-hybrid-vmf) with $\omega = 0$:
+
+$$ \delta_p = (1 - c_x)\,\Sigma^x_p - V^{\rm sl}_{pp} . \label{eq:gw-hybrid-shift} $$
+
+Check the limits. At $c_x = 0$ the shift reduces to the semilocal one of
+section @sec:ri-factors-and-exchange-ks-reference-changes. At $c_x = 1$ and
+$V^{\rm sl} = 0$, Hartree–Fock, it is zero, which is the shift an HF
+reference gets. For a range-separated hybrid, $\mathrm{erf} + \mathrm{erfc} = 1$
+splits $\Sigma^x$ into short- and long-range parts, and
+$c_{\rm sr} = c_{\rm lr}$ collapses the result to (@eq:gw-hybrid-shift).
+
+**The size of the double count.** Leave the $K$ term out and $\delta_p$ is
+too large by $c_x \Sigma^x_p$. $\Sigma^x_p \le 0$, so every quasiparticle
+energy moves down by $c_x\lvert\Sigma^x_p\rvert$. For an occupied valence
+state $\lvert\Sigma^x_p\rvert$ is of order an hartree, so at $c_x = 1/4$ the
+error is several eV.
+
+> **Verified equation @eq:gw-hybrid-shift** · the static shift on a hybrid reference
+>
+> The RKS Fock matrix's exchange term $-\tfrac12 c K[D]$ is $-cK[D^\alpha]$,
+> whose MO diagonal is $c\,\Sigma^x_p$; hence
+> $\Sigma^x_p - v^{\rm mf}_p = (1-c)\Sigma^x_p - V^{\rm sl}_{pp}$, equal to the
+> semilocal shift at $c = 0$ and to zero for Hartree–Fock; the erf/erfc split
+> reduces to it when $c_{\rm sr} = c_{\rm lr}$; and PySCF's
+> `get_veff − get_j` minus its semilocal potential equals $-\tfrac12 cK$
+> built separately (H2O/cc-pVDZ, PBE0 and CAM-B3LYP).
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/gw_hybrid_vmf_sympy.py`, claims H1 to H5 |
+> | Negative control | the Fock exchange without the $\tfrac12$, and a shift that subtracts $V^{\rm sl}$ alone, must fail |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-gw/src/vxc_mo.rs::{vxc_diagonal_mo_on_grids,add_exact_exchange}` |
+> | Code test | `g0w0_pbe0_h2o_vs_pyscf` in `crates/ferric-gw/tests/gw_hybrid_reference.rs` |
+>
+> <!-- verified: id=gw.hybrid-shift; script=scripts/gw_hybrid_vmf_sympy.py; claim=H2; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-gw/src/vxc_mo.rs::{vxc_diagonal_mo_on_grids,add_exact_exchange}; rust_test=crates/ferric-gw/tests/gw_hybrid_reference.rs::g0w0_pbe0_h2o_vs_pyscf; registry=gw -->
+
+**The code.** `ferric-gw/src/vxc_mo.rs::add_exact_exchange` adds the $K$ term
+of (@eq:gw-hybrid-vmf) to the AO potential that `add_xc` built, before the MO
+transform. The excerpt is the operator choice. Each term's $K[D^\sigma]$ comes
+from `ferric-scf/src/rhf.rs::build_jk` and is subtracted with its coefficient:
+
+<!-- excerpt: ferric-gw/src/vxc_mo.rs::add_exact_exchange -->
+```rust
+    let terms: Vec<(Operator, f64)> = if k_mix.omega > 0.0 {
+        vec![
+            (Operator::erfc(k_mix.omega), k_mix.sr), // c_sr K^erfc_ω
+            (Operator::erf(k_mix.omega), k_mix.lr),  // c_lr K^erf_ω
+        ]
+    } else {
+        vec![(Operator::coulomb(), k_mix.sr)] // c_x K
+    };
+```
+
+- The closed-shell call passes $D^\alpha$ (`density_alpha`), which is
+  $\tfrac12 D$; the factor $\tfrac12$ of the Fock matrix is in that choice.
+- A term with a zero coefficient is dropped before any integral is computed.
+  A pure functional therefore builds nothing, and its $v^{\rm mf}$ is the
+  semilocal potential bit for bit (`pure_functional_has_no_k_term`).
+- The $K$ term uses exact four-centre integrals on the operator the SCF's
+  `k_mix` names. A reference SCF with RI-K, the default for a functional and
+  the only route ferric has for $\omega > 0$, holds $K^{\rm RI}$ in its Fock
+  matrix, so $\delta_p$ then carries $c\,(K^{\rm RI} - K)_{pp}$, the fitting
+  error. $\Sigma^x$ is the GW auxiliary basis's RI exchange in every case,
+  Hartree–Fock included.
 
 ## The algorithm {#continuation-and-qp-equation-algorithm}
 
