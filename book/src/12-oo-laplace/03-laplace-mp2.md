@@ -6,19 +6,33 @@
 *Notation follows `book/notation.md`. $t$ is the Laplace variable (section 12
 introduction).*
 
-The denominator $\Delta_{ij}^{ab}$ couples the two orbital pairs of an MP2
-term. Writing $1/\Delta$ as a sum of exponentials splits every term into a
-product of an $(i,a)$ factor and a $(j,b)$ factor. The energy then becomes a
-short sum over quadrature points. Each point has the form of an RI-MP2
-energy with weighted factors.
+Every MP2 term divides by $\Delta_{ij}^{ab} = (\varepsilon_a - \varepsilon_i) + (\varepsilon_b - \varepsilon_j)$,
+a sum of two pair energies, while the fitted numerator is a product of an
+$(i,a)$ factor and a $(j,b)$ factor (section 10.1.2). The sum ties the two
+pairs together, which is why RI-MP2 visits every $(ia,jb)$ combination. An
+exponential turns the sum into a product,
+$e^{-t\Delta} = e^{-t(\varepsilon_a - \varepsilon_i)}\,e^{-t(\varepsilon_b - \varepsilon_j)}$,
+so writing $1/\Delta$ as an integral of $e^{-t\Delta}$ over $t$ splits every
+term at each $t$. A quadrature of three to seven points then turns the
+energy into a few RI-MP2-like contractions with weighted factors, and the
+opposite-spin energy no longer needs any object that carries both pairs.
+The price is a quadrature error, and one pass over the factors per point.
 
-The code uses this rewrite two ways:
+The code uses the rewrite in two ways:
 
 - **Exactly**, in the MO and AO bases (this section). It is the graded
   method.
 - **Truncated**, with localized orbitals (section 12.4).
 
 Both kinds are closed shell (RHF) and energy only.
+
+The plan:
+
+1. Build the quadrature for $1/x$ and bound its error (12.3.1).
+2. Factorize the energy at fixed $t$, in the MO basis (12.3.2) and in the
+   AO basis (12.3.3).
+3. Drop the same-spin term and see what that saves (12.3.4).
+4. Read the algorithm, the kernel, the memory rules and the anchors.
 
 | Index | Range | Code name |
 |---|---|---|
@@ -34,31 +48,72 @@ Both kinds are closed shell (RHF) and energy only.
 
 ## 12.3.1 The quadrature
 
-For $x > 0$,
+For $x > 0$, integrate the exponential: $\int_0^\infty e^{-tx}\,dt = \big[-e^{-tx}/x\big]_0^\infty = 1/x$.
+Replace the integral by a sum over $n_q$ points:
 
 $$ \frac1x = \int_0^\infty e^{-tx}\,dt \;\approx\; \sum_{k=1}^{n_q} w_k\,e^{-t_kx}, \qquad x \in [y_{\min}, y_{\max}] . \tag{12.8} $$
 
-$t_k$ and $w_k$ come from the minimax tables of Takatsuka, Ten-no and
-Hackbusch for $1/y$ on $[1, R]$ (`ferric-quadrature/src/minimax.rs::select_minimax_points`).
-Those tables give exponents $\tau_k$ and weights $\omega_k$.
-`LaplaceQuadrature::new` rescales them to the actual range:
+The rule has to serve every denominator at once, and the denominators
+fill a whole interval. The **minimax** rule chooses the $n_q$ nodes and
+$n_q$ weights to minimize the largest error over that interval.
+
+**The tables.** The nodes and weights come from the tables of Takatsuka,
+Ten-no and Hackbusch, for $1/y$ on $[1, R]$
+(`ferric-quadrature/src/minimax.rs::select_minimax_points`). Each entry gives
+exponents $\tau_k$ and weights $\omega_k$ that minimize
+
+$$ \delta(R) = \max_{y\in[1,R]}\Big|\frac1y - \sum_k\omega_ke^{-\tau_ky}\Big| . $$
+
+The error curve of a minimax fit alternates in sign, with $2n_q + 1$ extrema
+of equal size $\delta(R)$. The shipped tables show this for every entry of
+$n_q$ = 3 and 5 and for the $n_q = 7$ entries from $R = 20$ up. The two
+smallest-$R$ entries of $n_q = 7$, where $\delta$ is below $10^{-7}$, show
+extra extrema in the computed error curve. For example, the $n_q = 7$ entry with $R = 50$ has
+$\delta = 3.1\times10^{-6}$.
+
+**The rescaling.** The tables cover $[1, R]$, and the problem needs
+$[y_{\min}, y_{\max}]$. Substitute $x = y_{\min}\,y$:
+
+$$ \frac1x = \frac1{y_{\min}}\cdot\frac1y \approx \sum_k\frac{\omega_k}{y_{\min}}\,e^{-\tau_k x/y_{\min}} . $$
+
+So `LaplaceQuadrature::new` sets
 
 $$ R = \frac{y_{\max}}{y_{\min}}, \qquad t_k = \frac{\tau_k}{y_{\min}}, \qquad w_k = \frac{\omega_k}{y_{\min}} . \tag{12.9} $$
 
-The range is set in every driver as
+The same substitution scales the error: the largest absolute error of the
+rescaled rule on $[y_{\min}, R\,y_{\min}]$ is $\delta(R)/y_{\min}$. The
+relative error $x\,\lvert 1/x - \sum_kw_ke^{-t_kx}\rvert$ is largest at the
+top of the interval, where it reaches $R\,\delta(R)$. Only the ratio $R$
+decides which table entry is needed.
+
+**The range.** Every driver sets
 
 $$ y_{\min} = 2(\varepsilon_{\mathrm{LUMO}} - \varepsilon_{\mathrm{HOMO}}), \qquad y_{\max} = 2(\varepsilon_{n_{\mathrm{mo}}} - \varepsilon_1) . $$
 
-$\varepsilon_1$ is the lowest orbital energy, a frozen-core orbital when
-`frozen_core > 0`. The range is therefore wider than the active
-$\Delta_{ij}^{ab}$ need, which is safe.
+The smallest denominator excites two electrons from the HOMO into the
+LUMO, which gives $y_{\min}$. No denominator exceeds twice the full orbital
+energy spread, which gives $y_{\max}$. $\varepsilon_1$ is the lowest orbital
+energy, a frozen-core orbital when `frozen_core > 0`. The range is then
+wider than the active $\Delta_{ij}^{ab}$ need, which is safe.
+
+**The error in the energy.** Take $E_{\mathrm{OS}} = -\sum(ia|jb)^2/\Delta$.
+Every numerator is non-negative, so the triangle inequality bounds the
+quadrature error of $E_{\mathrm{OS}}$ by
+
+$$ \big|E_{\mathrm{OS}}^{\mathrm{quad}} - E_{\mathrm{OS}}\big| \le \frac{\delta(R_{\mathrm{tab}})}{y_{\min}}\sum_{ijab}(ia|jb)^2 , $$
+
+provided every $\Delta_{ij}^{ab}$ lies in the fitted range
+$[y_{\min}, R_{\mathrm{tab}}\,y_{\min}]$ of the chosen table entry. A small gap
+makes $y_{\min}$ small and loosens the bound. A wide orbital spectrum makes
+$R$ large and forces a table entry with a larger $\delta$.
 
 The rules for the table:
 
 - `n_quad` must be 3, 5 or 7. Any other value is an error, not a rounding.
 - The table entry used is the first with
   $R_{\mathrm{tab}} \ge 0.99\,R$. An entry up to 1% short of the true range
-  is accepted, to absorb round-off.
+  is accepted, to absorb round-off. Denominators in that last 1% lie outside
+  the fitted range, and the bound above does not cover them.
 - $R$ beyond the largest entry is an error. The largest entry is 100 for
   `n_quad` = 3 and 1000 for 5 and 7.
 - The CLI default is `n_quad` = 7.
@@ -80,21 +135,44 @@ The rules for the table:
 > <!-- verified: id=laplace.identity; script=scripts/mp2_family_sympy.py; claim=F; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/laplace.rs::weighted_b_mo -->
 
 The proof covers the exact integral. The minimax weights are tabulated data
-and nothing proves them. Their error is measured instead (section 12.3.6).
+and no committed script proves them. Their error in the energy is measured
+instead (section 12.3.8). The equioscillation, the $\delta = 3.1\times10^{-6}$
+figure and the rescaled error $\delta/y_{\min}$ above were checked
+numerically on the tables in `minimax.rs` for this section.
 
 ## 12.3.2 The factorized energy
 
-Since $x = (\varepsilon_a - \varepsilon_i) + (\varepsilon_b - \varepsilon_j)$,
-the exponential splits. With the dressed factors $B^P_{ia}$ of (10.4):
+At a fixed $t$, split the exponential:
+$e^{-t\Delta_{ij}^{ab}} = e^{-t(\varepsilon_a - \varepsilon_i)}\,e^{-t(\varepsilon_b - \varepsilon_j)}$.
+Give half of each pair's factor to each fitted factor $B^P_{ia}$ of (10.4).
+Then a product $B^P_{ia}(t)B^P_{ia}(t)$ carries the whole factor
+$e^{-t(\varepsilon_a - \varepsilon_i)}$:
 
-$$ B^P_{ia}(t) = B^P_{ia}\,e^{-t(\varepsilon_a - \varepsilon_i)/2}, \qquad J_{PQ}(t) = \sum_{ia} B^P_{ia}(t)B^Q_{ia}(t), \qquad G_{PQ}[i,j]{}(t) = \sum_a B^P_{ia}(t)\,B^Q_{ja}(t), $$
+$$ B^P_{ia}(t) = B^P_{ia}\,e^{-t(\varepsilon_a - \varepsilon_i)/2}, \qquad J_{PQ}(t) = \sum_{ia} B^P_{ia}(t)B^Q_{ia}(t), \qquad G_{PQ}[i,j]{}(t) = \sum_a B^P_{ia}(t)\,B^Q_{ja}(t). $$
+
+Now expand the two sums of (10.3) at fixed $t$.
+
+- **The Coulomb term.** Write $(ia|jb)^2 = \sum_{PQ}B^P_{ia}B^P_{jb}B^Q_{ia}B^Q_{jb}$
+  and attach the exponentials. The $(i,a)$ factors collect into $J_{PQ}(t)$
+  and the $(j,b)$ factors into a second copy of it:
+  $\sum_{ijab}(ia|jb)^2e^{-t\Delta} = \sum_{PQ}J_{PQ}(t)^2$.
+- **The exchange term.** In $(ia|jb)(ib|ja)$ the occupied index $i$ meets
+  $a$ in the first integral and $b$ in the second. Collect the sum over $a$
+  first: it pairs $i$ with $j$ through $a$, which is $G_{PQ}[i,j]$. The sum
+  over $b$ gives $G_{PQ}[j,i]$. So
+  $\sum_{ijab}(ia|jb)(ib|ja)e^{-t\Delta} = \sum_{PQ}\sum_{ij}G_{PQ}[i,j]\,G_{PQ}[j,i]$.
+
+Integrate over $t$ with the rule (12.8):
 
 $$ E^{(2)} \approx -\sum_k w_k\Big[\,2\sum_{PQ}J_{PQ}(t_k)^2 - \sum_{PQ}\sum_{ij} G_{PQ}[i,j]{}(t_k)\,G_{PQ}[j,i]{}(t_k)\Big], \qquad E_{\mathrm{OS}} \approx -\sum_k w_k\sum_{PQ}J_{PQ}(t_k)^2 . \tag{12.10} $$
 
-The first sum is the Coulomb-like term $\sum (ia|jb)^2 e^{-tx}$. The second
-is the exchange term $\sum (ia|jb)(ib|ja)\,e^{-tx}$. In the split of (10.2),
-$E_{\mathrm{OS}}$ is the $J^2$ term and $E_{\mathrm{SS}}$ is $J^2$ minus the
-$G\cdot G$ term.
+In the split of (10.2), $E_{\mathrm{OS}}$ is the $J^2$ term and
+$E_{\mathrm{SS}}$ is $J^2$ minus the $G\cdot G$ term.
+
+Check the limit $t = 0$. All exponentials are 1, $B(0) = B$, and
+$\sum_{PQ}J_{PQ}(0)^2 = \sum_{ijab}(ia|jb)^2$: the numerator of
+$E_{\mathrm{OS}}$ summed without its denominator. The Laplace weights then
+supply $1/\Delta$ point by point.
 
 > **Verified equation 12.10** · factorization at fixed $t$
 >
@@ -113,20 +191,32 @@ $G\cdot G$ term.
 
 ## 12.3.3 The AO form of the Coulomb term
 
-Define the occupied and virtual pseudo-densities
+$J_{PQ}(t)$ can be computed without MO factors at all. Expand
+$B^P_{ia} = \sum_{\mu\nu}C_{\mu i}B^P_{\mu\nu}C_{\nu a}$ in
+$J_{PQ}(t) = \sum_{ia}B^P_{ia}B^Q_{ia}e^{t\varepsilon_i}e^{-t\varepsilon_a}$.
+The sum over $i$ now meets only two coefficients and one exponential, and so
+does the sum over $a$. Do those sums first. They define the occupied and
+virtual **pseudo-densities**:
 
 $$ \underline P(t) = \sum_i C_{\cdot i}\,e^{+t\varepsilon_i}\,C_{\cdot i}^{\mathsf T}, \qquad \underline Q(t) = \sum_a C_{\cdot a}\,e^{-t\varepsilon_a}\,C_{\cdot a}^{\mathsf T}, \qquad J_{PQ}(t) = \operatorname{Tr}\big[B^P\,\underline P(t)\,B^Q\,\underline Q(t)\big], \tag{12.11} $$
 
 with $B^P_{\mu\nu}$ the dressed AO factor. They are underlined here to keep
 them apart from the auxiliary index $P$ and the MP2 density.
-`build_pseudo_density_occ` and `build_pseudo_density_vir` form them, and
-`laplace_ao_coulomb_energy` forms the trace in panels of $\mu$ rows.
+
+At $t = 0$ and with no frozen core, $\underline P(0) = C_oC_o^{\mathsf T}$ is
+half the Hartree–Fock density, hence the name. At $t > 0$ each orbital is
+weighted by its own exponential. The AO form is the one a reduced-scaling
+method would sparsify (section 12.4); as written here it is dense.
+
+`build_pseudo_density_occ` and `build_pseudo_density_vir` form the
+pseudo-densities, and `laplace_ao_coulomb_energy` forms the trace in panels
+of $\mu$ rows.
 
 The exchange term has no AO trace of this shape. The script's negative
 control shows that the natural candidate
 $\sum_{PQ}\operatorname{Tr}(B^P\underline P B^Q\underline Q B^Q\underline P B^P\underline Q)$
-is not it. The AO path therefore still forms the exchange term from the MO
-factors $B(t)$.
+is not it: it contracts the wrong index pairs. The AO path therefore still
+forms the exchange term from the MO factors $B(t)$.
 
 > **Verified equation 12.11** · AO trace of the Coulomb term
 >
@@ -144,19 +234,38 @@ factors $B(t)$.
 
 ## 12.3.4 SOS-MP2
 
-Laplace SOS-MP2 keeps only the opposite-spin part:
+Section 10.1.1 showed that about three quarters of the MP2 correlation
+energy of water is opposite-spin. Scaled opposite-spin MP2 keeps only that
+part and scales it:
 
 $$ E_{\mathrm{SOS}} = c_{\mathrm{OS}}\,E_{\mathrm{OS}}, \qquad c_{\mathrm{OS}} = 1.3 \text{ by default (Jung, Lochan, Dutoi, Head-Gordon)}. \tag{12.12} $$
 
 There is no $c_{\mathrm{SS}}$, by design. Dropping the same-spin term is what
-lets the denominator factorize.
+lets the denominator factorize into independent $(i,a)$ and $(j,b)$
+contractions. Compare the two intermediates of 12.3.2:
 
 - In the opposite-spin numerator $(ia|jb)^2$, the $(i,a)$ and $(j,b)$
-  pairings match the split of $e^{-tx}$.
-- In the same-spin exchange product $(ia|jb)(ib|ja)$ the pairings cross, and
-  no change to the denominator undoes that.
+  pairings match the split of $e^{-t\Delta}$. The intermediate $J_{PQ}(t)$
+  carries no orbital index at all. Forming it from $B(t)$, an
+  $N_{\mathrm{aux}}\times n_on_v$ matrix, takes of order
+  $N_{\mathrm{aux}}^2n_on_v$ multiply-adds per point: fourth order.
+- In the same-spin exchange product $(ia|jb)(ib|ja)$ the pairings cross.
+  $i$ shares $a$ with $j$, so the intermediate $G_{PQ}[i,j]$ keeps both
+  occupied indices. Forming it takes of order $N_{\mathrm{aux}}^2n_o^2n_v$
+  multiply-adds per point:
+  fifth order, like RI-MP2 itself. No change to the denominator undoes the
+  crossing, because it is in the numerator.
+
+So the SOS energy is the part of MP2 whose Laplace form costs less than the
+canonical sum. Two input rules follow:
+
 - The CLI warns if `[mp2] c_ss` is set.
 - A non-finite $c_{\mathrm{OS}}$ is an error.
+
+Check the limit $c_{\mathrm{OS}} = 1$. Then $E_{\mathrm{SOS}} = E_{\mathrm{OS}}$,
+and the Laplace result must reproduce the opposite-spin energy of
+`scs_mp2` to within the quadrature error. Section 12.3.8 gives the measured
+agreement.
 
 ## 12.3.5 The algorithm
 
@@ -179,16 +288,25 @@ Which path each entry point takes:
 | `laplace-sos-mp2`, `ao` | AO trace (`compute_sos_ao(.., None)`) | none |
 | `LaplaceMp2::compute_mo` | MO | MO; library and tests only, the MO side of the MO ≡ AO checks |
 
+Only the scaling depends on $t$. $B^P_{ia}$ is built once (step 3); each
+point rescales a copy by a diagonal factor, which takes $n_o + n_v$
+exponentials and one pass over the tensor, before the contractions of
+step 4.
+
 ## 12.3.6 The kernel
 
-The per-point MO energy in `ferric-mp2/src/laplace.rs::LaplaceMp2::compute_mo`:
+The per-point MO energy is the `map` closure of the quadrature loop in
+`ferric-mp2/src/laplace.rs::LaplaceMp2::compute_mo`, with the code's
+comments replaced by the equation terms:
 
-Abridged from `ferric-mp2/src/laplace.rs::LaplaceMp2::compute_mo` (not a verbatim excerpt):
 ```rust
-let b_t = weighted_b_mo(&b_flat, &occ_scale, &vir_scale, nocc, nvir, t);
-let e_coul = sos_j_square_trace(&b_t);
-let e_exch = laplace_exchange_energy(&b_t, naux, nocc, nvir, k_budget);
--w * (2.0 * e_coul - e_exch)
+.map(|(&t, &w)| {
+    let b_t = weighted_b_mo(&b_flat, &occ_scale, &vir_scale, nocc, nvir, t); // B^P_ia(t_k)
+    let e_coul = sos_j_square_trace(&b_t);                                   // sum_PQ J_PQ(t_k)^2
+    let e_exch = laplace_exchange_energy(&b_t, naux, nocc, nvir, k_budget); // sum G[i,j] G[j,i]
+    -w * (2.0 * e_coul - e_exch)                                             // -w_k [2 J^2 - G.G]
+})
+.sum();
 ```
 
 | Code | Equation |
@@ -198,10 +316,19 @@ let e_exch = laplace_exchange_energy(&b_t, naux, nocc, nvir, k_budget);
 | `e_coul` | $\sum_{PQ}J_{PQ}(t_k)^2$ |
 | `e_exch` | $\sum_{PQ}\sum_{ij}G_{PQ}[i,j]G_{PQ}[j,i]$ |
 
-`laplace_exchange_energy` reads `b_t` as an $(N_{\mathrm{aux}}n_o)\times n_v$
-matrix $X$. It forms $Y = X_{\mathrm{blk}}X^{\mathsf T}$ in blocks of whole
-auxiliary indices $P$, so that each $n_o\times n_o$ block $G_{PQ}$ lies
-inside one $Y$ block.
+Three points about it:
+
+- **The half exponent.** `weighted_b_mo` multiplies by
+  $e^{t\varepsilon_i/2}e^{-t\varepsilon_a/2}$, the outer product of a per-occupied
+  and a per-virtual vector. Each $J$ element is a product of two $B(t)$, so
+  the halves recombine into $e^{-t(\varepsilon_a - \varepsilon_i)}$. The
+  negative control of verified equation 12.8 changes this $\tfrac12$ to 1.
+- **The symmetric $J$.** `sos_j_square_trace` forms only the lower triangle
+  of $J = B(t)B(t)^{\mathsf T}$ and counts each off-diagonal square twice.
+- **The exchange blocks.** `laplace_exchange_energy` reads `b_t` as an
+  $(N_{\mathrm{aux}}n_o)\times n_v$ matrix $X$. It forms
+  $Y = X_{\mathrm{blk}}X^{\mathsf T}$ in blocks of whole auxiliary indices $P$,
+  so that each $n_o\times n_o$ block $G_{PQ}$ lies inside one $Y$ block.
 
 ## 12.3.7 Reproducibility and memory
 
@@ -238,9 +365,14 @@ inside one $Y$ block.
 
 <!-- figures: site/src/reference/validation.md rows "laplace-mp2", "laplace-sos-mp2"; crates/ferric-mp2/tests/validation_laplace_mp2.rs module doc table (MEASURED 2026-10-03); crates/ferric-mp2/tests/validation_sos_mp2.rs module doc -->
 
-`validation_laplace_mp2.rs` asserts the second row so that a disagreement
-with DF-MP2 can be attributed. Its "vs exact DF-MP2" column reproduces each
-system's independently computed quadrature error to the last printed digit.
+The rows separate two sources of error. The first row compares with exact
+DF-MP2, so it measures the quadrature error and any implementation error
+together. The second row uses the same quadrature in an independent numpy
+code, so it isolates the implementation. `validation_laplace_mp2.rs`
+asserts the second row so that a disagreement with DF-MP2 can be
+attributed. Its "vs exact DF-MP2" column reproduces each system's
+independently computed quadrature error to the last printed digit. The MO
+and AO rows compare two independent constructions of the same number.
 
 The test's negative controls are recorded mutations:
 
@@ -282,5 +414,8 @@ Changes from the sources:
 - The pseudo-densities are underlined.
 - The quadrature range is stated with the frozen-core caveat and the 1%
   table slack, as in `theory.md` section 8.
+- The minimax error statements (equioscillation, $\delta/y_{\min}$, the
+  energy bound) and the per-point operation counts of 12.3.4 are not in
+  `theory.md`; they were checked numerically for this section.
 - `theory.md` section 8's formulation table lists `local`; its full
   treatment is section 12.4.

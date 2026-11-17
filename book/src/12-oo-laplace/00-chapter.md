@@ -3,16 +3,24 @@
 <!-- section: 12.0; status: verify; registry: oo-rimp2, u-oo-rimp2, laplace-mp2, laplace-sos-mp2;
      theory: crates/ferric-mp2/theory.md#"7. Orbital-optimized RI-MP2", "8. Laplace-transform MP2", "14. Unrestricted OO-RI-MP2 orbital gradient" -->
 
-This chapter covers two changes to the RI-MP2 energy of chapter 10. Neither
-change alters the pair loop.
+Chapter 10 computed the MP2 energy with the Hartree–Fock orbitals held
+fixed and the energy denominator $1/\Delta_{ij}^{ab}$ evaluated term by
+term. This chapter changes each of those two choices in turn. The pair loop
+of chapter 10 stays the same in both.
 
-- Orbital optimization (sections 12.1 and 12.2) varies the orbitals to make
-  the Hartree–Fock plus MP2 energy stationary. After that, the MP2 energy is
-  taken in a frame that is no longer canonical.
-- The Laplace forms (sections 12.3 and 12.4) replace the energy denominator
-  by a short sum of exponentials. This removes the coupling between the
-  $(i,a)$ and $(j,b)$ halves of every term. One factorization is exact in the
-  MO and AO bases; the other, with localized orbitals, is truncated.
+- **Orbital optimization** (sections 12.1 and 12.2). Hartree–Fock orbitals
+  are the best orbitals for a single determinant. Once MP2 correlation is
+  added, they are no longer the best orbitals for the total energy. OO-MP2
+  lets the orbitals relax in the field of the correlation energy, until the
+  Hartree–Fock plus MP2 energy is stationary under orbital rotations. The
+  MP2 energy is then taken in orbitals that are no longer canonical.
+- **The Laplace forms** (sections 12.3 and 12.4). The denominator
+  $\Delta_{ij}^{ab}$ ties the occupied–virtual pair $(i,a)$ to the pair
+  $(j,b)$. Writing $1/\Delta$ as a short sum of exponentials separates the
+  two pairs in every term. The energy becomes a few RI-MP2-like
+  contractions, one per quadrature point. Two factorizations are exact,
+  one in the MO basis and one in the AO basis. The third uses localized
+  orbitals and truncates.
 
 | Section | Method | Registry id | Status |
 |---|---|---|---|
@@ -23,8 +31,8 @@ change alters the pair loop.
 
 **Symbols used throughout.**
 
-- $t \ge 0$ is the **Laplace variable**. It is a real parameter of the
-  transform $1/x = \int_0^\infty e^{-tx}\,dt$. It is not a time or an
+- $t \ge 0$ is the **Laplace variable**, the real parameter of the
+  transform $1/x = \int_0^\infty e^{-tx}\,dt$. It is not a time and not an
   imaginary frequency; the imaginary frequency is $u$ (notation, section 8).
 - $\kappa$ is an orbital rotation generator (notation, section 6).
 - $\mu$ is the level shift of a rotation step.
