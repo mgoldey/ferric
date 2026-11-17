@@ -5,14 +5,13 @@
 
 Hartree–Fock gives each electron the *average* field of all the others.
 Real electrons do better than that: they see each other coming and step
-aside. MP2 is the cheapest honest account of that sidestep. It is
+aside. MP2 is the lowest-order correction that captures this. It is
 second-order perturbation theory, with Hartree–Fock as the starting point.
 
 This section builds closed-shell RI-MP2 from the textbook formula to the
 loop that actually runs. Almost everything later in Part III starts here:
 spin-component scaling, attenuation, orbital optimization, the Laplace
 forms and local MP2 all reuse this pair loop and these fitted integrals.
-Getting this one right pays off many times.
 
 The plan has three steps:
 
@@ -21,7 +20,7 @@ The plan has three steps:
 3. Make the integrals cheap with density fitting, and look at the code that
    does it.
 
-Here is the notation, once:
+Notation:
 
 | Symbol | Meaning | In the code |
 |---|---|---|
@@ -43,8 +42,9 @@ state, square it, and divide by what the excitation costs:
 $$ E^{(2)} = -\frac14 \sum_{ijab} \frac{|\langle ij\|ab\rangle|^2}{\Delta_{ij}^{ab}}, \qquad \Delta_{ij}^{ab} = \varepsilon_a + \varepsilon_b - \varepsilon_i - \varepsilon_j . \tag{10.1} $$
 
 Every term is negative, because $\Delta > 0$ for a ground state with a gap.
-So MP2 always lowers the energy, and small gaps make it lower *fast*. Keep
-that in mind; it comes back when the method misbehaves.
+So MP2 always lowers the energy, and a small gap makes the correction
+diverge as $1/\Delta$. That is why MP2 fails for stretched bonds and small-gap
+systems (section 10.3 regularizes it).
 
 The $\tfrac14$ is bookkeeping. The antisymmetrized integral
 $\langle ij\|ab\rangle = \langle ij|ab\rangle - \langle ij|ba\rangle$ is the
@@ -91,10 +91,9 @@ print(r.e_os, r.e_ss, r.e_os + r.e_ss)
 # -0.15244  -0.05159  -0.20403   (Hartree)
 ```
 
-About three quarters of the correlation energy is opposite-spin. That
-imbalance is the whole reason SCS-MP2 exists. If one piece is
-systematically over- or under-counted relative to the other, scale them
-separately: $c_{\mathrm{OS}}E_{\mathrm{OS}} + c_{\mathrm{SS}}E_{\mathrm{SS}}$
+About three quarters of the correlation energy is opposite-spin. SCS-MP2
+is built on this split: MP2 overestimates one component relative to the
+other, so it scales them separately: $c_{\mathrm{OS}}E_{\mathrm{OS}} + c_{\mathrm{SS}}E_{\mathrm{SS}}$
 (section 10.3); the code returns both in `ferric-mp2/src/rimp2.rs::SpinComponents`. It also explains why SOS-MP2 (§12.3) can drop
 $E_{\mathrm{SS}}$ altogether and buy a cheaper algorithm with it.
 
@@ -132,13 +131,13 @@ for a in 0..nvir {
 }
 ```
 
-Three things are worth noticing.
+Three points about this loop:
 
 - **The sign is hiding in `denom`.** The code computes
   $\varepsilon_i + \varepsilon_j - \varepsilon_a - \varepsilon_b = -\Delta$,
   which is negative, and has no leading minus. The two minus signs cancel.
-  It's the same number as (10.2), but if you port this loop, port the pair of
-  signs together or not at all.
+  It's the same number as (10.2). A port that changes one sign must change
+  the other.
 - **The exchange integral costs nothing.** $(ib|ja)$ sits in the same block
   as $(ia|jb)$, transposed in $a,b$. One block of integrals per pair feeds
   both spin cases.
@@ -162,26 +161,25 @@ four-index object factors into two three-index ones:
 
 $$ (ia|jb) \approx \sum_P B^P_{ia} B^P_{jb}, \qquad B^P_{ia} = \sum_Q M_{PQ}\,(Q|ia), \qquad M^{\mathsf T}M = V^{-1}, \qquad V_{PQ} = (P|Q) . \tag{10.4} $$
 
-Read it right to left:
+Term by term:
 - $(Q|ia)$ is how much $\rho_{ia}$ "looks like" $\chi_Q$, measured with the
   Coulomb operator;
 - $V^{-1}$ undoes the double counting from the $\chi$'s overlapping each
   other;
 - $B$ is the result, a "dressed" factor that you contract like a matrix.
 
-Be honest about what this buys. It does not change the scaling. Matt's
-dissertation puts it plainly: "the fundamental fifth-order scaling is not
+Density fitting does not change the scaling. In Matt's dissertation: "the fundamental fifth-order scaling is not
 ameliorated" (ch. 4, after Eq. 4.5). The last contraction is still
 $O(n_o^2 n_v^2 N_{\mathrm{aux}})$. What changes is the prefactor and the
 storage: no $N^4$ integrals, and the expensive step becomes a large matrix
-multiply, which is the one thing computers are reliably fast at.
+multiply (BLAS3), which runs near peak FLOP rate.
 
 ### Why the code uses Cholesky and not $V^{-1/2}$
 
 Most papers write $M = V^{-1/2}$, the symmetric inverse square root. But look
 at where $M$ enters: only through $B^{\mathsf T}B = (ia|P)\,M^{\mathsf T}M\,(Q|jb)$.
-*Any* $M$ with $M^{\mathsf T}M = V^{-1}$ gives the same energy, to the last
-digit you'd trust. So pick the cheapest one.
+*Any* $M$ with $M^{\mathsf T}M = V^{-1}$ gives the same energy, up to rounding.
+So the code uses the cheapest one.
 
 That's a Cholesky factor. Write $V = LL^{\mathsf T}$ and take $M = L^{-1}$:
 
@@ -198,18 +196,17 @@ let l = v.cholesky(UPLO::Lower)?;        // V = L L^T
 Ok(l_inv)
 ```
 
-There's a bonus. Cholesky is also a *test*: it fails if $V$ is not
+Cholesky also checks the input: it fails if $V$ is not
 positive definite. For the Coulomb operator that can't happen with a sound
 basis and correct integrals. So when it does fail, ferric stops instead of
 quietly fitting with a broken metric.
 
-The exception proves the rule. The long-range operators erf and terf
+The long-range operators erf and terf
 (Chapter 4) give metrics that genuinely lose rank in a Coulomb-fitted
 auxiliary basis. For those, `ferric-mp2/src/rimp2.rs::metric_inverse_sqrt` switches to an
 eigendecomposition that drops the tiny eigenvalues
-(`ferric-mp2/src/rimp2.rs::eigh_inverse_sqrt`).
-That isn't a workaround. It's the right tool when the matrix really is
-singular, and the wrong one when it shouldn't be.
+(`ferric-mp2/src/rimp2.rs::eigh_inverse_sqrt`). Using that path for the
+Coulomb metric would hide exactly the errors the Cholesky check catches.
 
 > **Unverified equation 10.5** · the fitting error is quadratic
 >
