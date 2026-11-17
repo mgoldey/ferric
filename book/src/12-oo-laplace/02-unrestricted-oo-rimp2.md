@@ -76,12 +76,31 @@ $\delta C^\sigma_c = -C^\sigma_k$, and touches only spin $\sigma$.
 - **The integral response** comes from the rotation derivative of the
   integrals, now in three spin blocks.
 
+Write the rotation of spin $\tau$ as $\delta C^\tau = C^\tau X$, with
+$X_{ck} = 1 = -X_{kc}$ and every other element zero. The MO Fock matrix of
+spin $\sigma$ moves by
+
+$$ \delta F^\sigma_{\mathrm{MO}} = F^\sigma X - XF^\sigma + C^{\sigma\mathsf T}\big(J[\delta D^\tau] - \delta_{\sigma\tau}K[\delta D^\tau]\big)C^\sigma . $$
+
+The first two terms come from rotating the orbitals of spin $\sigma$
+itself, using $X^{\mathsf T} = -X$; they are present only for
+$\sigma = \tau$. The bracket is the change of the AO Fock matrix: $J$ for
+either spin, $K$ only for the rotated one. At fixed integrals the U-MP2
+energy depends on $F^\sigma$ through $W^\sigma = \partial E/\partial F^\sigma$,
+the unrelaxed density of the full-Fock functional. Contract $W^\sigma$ with
+$\delta F^\sigma_{\mathrm{MO}}$, use the symmetry identity above with
+$P^\sigma = C^\sigma W^\sigma C^{\sigma\mathsf T}$, and use the
+antisymmetry of $WF - FW$ to move $X$ out: the last two terms of
+(@eq:oo-u-gradient) follow.
+
 The result:
 
 $$ g^\sigma_{ai} = g^\sigma_{\mathrm{MP2},ai} + 2F^\sigma_{ai} + 2\big[C^{\sigma\mathsf T}\big(J[P^\alpha + P^\beta] - K[P^\sigma]\big)C^\sigma\big]_{ai} + 2\big(F^\sigma W^\sigma - W^\sigma F^\sigma\big)_{ai}, \qquad P^\sigma = C^\sigma W^\sigma C^{\sigma\mathsf T}. \label{eq:oo-u-gradient} $$
 
-All quantities are in the semicanonical frame of spin $\sigma$. The result is
-rotated back as in section @sec:oo-rimp2.
+All quantities are in the semicanonical frame $C^\sigma u^\sigma$ of spin
+$\sigma$. The result is rotated back as in section @sec:oo-rimp2, by the
+occupied and virtual blocks of $u^\sigma$:
+$g^\sigma = u^\sigma_v\,g^\sigma_{\mathrm{sc}}\,u^{\sigma\mathsf T}_o$.
 
 **The density $W^\sigma$.** It is the symmetrized unrelaxed U-MP2 density
 $\tfrac12(P^\sigma_{\mathrm{MO}} + P^{\sigma\mathsf T}_{\mathrm{MO}})$ on the
@@ -119,7 +138,7 @@ Where the two factors of 2 come from:
   pair combination.
 - In $g^{\alpha\bar\beta}$, the opposite-spin energy is
   $\sum(ia|\bar\jmath\bar b)^2/D$, and differentiating the square gives the
-  factor 2 (the chain-rule factor of `theory.md` section 14.1). In the code
+  factor 2 (the `chain-rule-factors` check of the script). In the code
   it is the explicit factor 2 on the cross columns.
 
 Check the closed-shell limit. With $C^\alpha = C^\beta$ and
@@ -156,12 +175,92 @@ gradient is the derivative of the code's energy. The script shows that the
 code's loop computes (@eq:oo-u-gradient) term by term and that (@eq:oo-u-gradient) is the derivative
 of (@eq:unrestricted-oo-rimp2-1).
 
+Two parts of `scripts/mp2_gradient_sympy.py` check the equation from the
+other side. Part U evaluates (@eq:oo-u-gradient) at non-stationary,
+non-semicanonical orbitals of a 3$\alpha$/2$\beta$ model with separate
+four-centre and RI factors, carries it back with $u_v g u_o^{\mathsf T}$,
+and compares it with Richardson differences of the brute-force
+spin-orbital energy: they agree to $5\times10^{-12}$ for both spins (bar
+$10^{-8}$). Its mutations, $J[P^\alpha + P^\beta] \to J[P^\alpha]$ and
+$2(FW - WF) \to 2(WF - FW)$, turn it red. Part O is the closed-shell
+restriction: with $C^\alpha = C^\beta$ the gradient is
+$g = g^\alpha + g^\beta$, and that gradient drives the optimizer that
+converges OO-MP2 at every geometry of the model to $\max|g| < 10^{-11}$.
+`scripts/u_oo_rimp2_response_sympy.py` also has the frozen-core check
+`assembled-vs-fd-frozen-core`: with one frozen orbital per spin, the
+transcribed assembly equals a Richardson difference of $E_{\mathrm{UHF}}$
+plus the active-space spin-orbital MP2 energy, with the core block of the
+semicanonical frame left alone. Its mutation places the kernel columns at
+column 0 instead of `first_occ`.
+
 **Frozen core.** The kernel returns only the active columns.
 `embed_active_columns` places them at MO columns $n_c$ to $n_{\mathrm{occ}}$
 and leaves the core columns zero before `add_hf_gradient` adds the HF term.
 The Fock response needs no change, because $W^\sigma$ is zero on the core
 rows and columns. The back-rotation and the step use the active columns
 only.
+
+### The integral-response loop {#unrestricted-oo-rimp2-integral-response-loop}
+
+`ferric-mp2/src/u_rimp2.rs::compute_u_mp2_orbital_gradient` evaluates
+$g^\sigma_{\mathrm{MP2}}$ through the RI factors $B^{\sigma P}_{pq}$ of each
+spin's semicanonical orbitals, the $V^{-1/2}$-dressed tensor of
+`ferric-mp2/src/oo_rimp2.rs::compute_b_full_mo_with`, so that
+$(pq|rs) = \sum_P B^{\sigma P}_{pq}B^{\tau P}_{rs}$. Indices $i, j, k$ run
+over the active occupied orbitals (`first_occ..nocc_total`), $a, b, c, x, y$
+over the virtuals. The amplitudes are those of
+`ferric-mp2/src/u_rimp2.rs::UMp2Amplitudes`,
+
+$$ t^{ab}_{ij} = \frac{(ia|jb) - (ib|ja)}{D_{ijab}}, \qquad t^{a\bar b}_{i\bar\jmath} = \frac{(ia|\bar\jmath\bar b)}{D_{i\bar\jmath a\bar b}}, \qquad D_{ijab} = \varepsilon_i + \varepsilon_j - \varepsilon_a - \varepsilon_b , $$
+
+which is $-K/\Delta$ with the code's negative denominator. $A_{ij}$ is one
+$n_v \times n_v$ block $t^{\cdot\,\cdot}_{ij}$.
+`ferric-mp2/src/orbital_gradient_gemm.rs::extract` (a method of `GradientB`)
+copies the blocks $B_{ov}$, $B_{oo}$ and $B_{vv}$ of each spin, and the
+kernel forms four occupied–occupied integral blocks by GEMM: $(ik|jb)$,
+$(\bar\imath\bar k|\bar\jmath\bar b)$, $(ik|\bar\jmath\bar b)$ and
+$(ia|\bar\jmath\bar k)$.
+
+**Pair combination.** `ferric-mp2/src/orbital_gradient_gemm.rs::pair_combination`
+builds $M(X, Y) = X - X^{\mathsf T} + Y^{\mathsf T} - Y$. For amplitudes
+antisymmetric in $(i, j)$ and in $(a, b)$, $A_{jk} = -A_{kj}$ and
+$A_{kj}^{\mathsf T} = -A_{kj}$, so each of the four terms is $A_{kj}$:
+
+$$ M(A_{kj}, A_{jk}) = 4A_{kj} . $$
+
+**Virtual–virtual part.** `ferric-mp2/src/orbital_gradient_gemm.rs::pair_gamma_rows`,
+with weight $\tfrac12$, and
+`ferric-mp2/src/orbital_gradient_gemm.rs::cross_gamma_rows` fill, per
+occupied $k$, an $(N_{\mathrm{aux}}, n_v)$ row:
+
+$$ \Gamma^{\alpha}_k[P,x] = \tfrac12\sum_{jy}B^{\alpha P}_{jy}M(A_{kj},A_{jk})_{xy} = 2\sum_{jy}B^{\alpha P}_{jy}t^{xy}_{kj}, \qquad
+\Gamma^{\alpha\times}_k[P,x] = \sum_{\bar\jmath\bar y}B^{\beta P}_{\bar\jmath\bar y}t^{x\bar y}_{k\bar\jmath}, $$
+
+$$ \Gamma^{\beta\times}_{\bar k}[P,\bar x] = \sum_{iy}B^{\alpha P}_{iy}t^{y\bar x}_{i\bar k}, $$
+
+and $\Gamma^\beta_{\bar k}$ as $\Gamma^\alpha_k$ with the $\beta$
+amplitudes. `ferric-mp2/src/orbital_gradient_gemm.rs::contract_vv_gamma`
+contracts each row with $B_{vv}$,
+$G^\sigma[c, r] = \sum_{Px}B^{\sigma P}_{cx}\Gamma_r[P,x]$, in slabs of 32
+auxiliary functions (`VV_CONTRACT_AUX_SLAB`), added in slab order. The rows
+are the same-spin $k$ first, then the cross $k$.
+
+**Occupied–occupied part.** `ferric-mp2/src/orbital_gradient_gemm.rs::pair_ooov_term`,
+with weight $-\tfrac12$, and two explicit cross loops subtract
+
+$$ \tfrac12\sum_{ij}\sum_y M(A_{ij},A_{ji})_{cy}(ik|jy) = 2\sum_{ijy}t^{cy}_{ij}(ik|jy) \quad\text{from } G^\sigma[c,k], $$
+
+$$ \sum_{i\bar\jmath\bar y}t^{c\bar y}_{i\bar\jmath}(ik|\bar\jmath\bar y) \quad\text{from } G^{\alpha\times}[c,k], \qquad \sum_{i\bar\jmath a}t^{a\bar c}_{i\bar\jmath}(ia|\bar\jmath\bar k) \quad\text{from } G^{\beta\times}[\bar c,\bar k] . $$
+
+**Output.** `same_σ` is the same-spin columns of $G^\sigma$, and `ab_σ` is
+twice the cross columns. `same_α` and `ab_α` are the two terms of
+(@eq:unrestricted-oo-rimp2-4); `same_β` is `same_α` with $\beta$ amplitudes
+and integrals, and
+
+$$ \texttt{ab\_}\beta[\bar c,\bar k] = 2\sum_{ia\bar b}t^{a\bar b}_{i\bar k}(ia|\bar c\bar b) - 2\sum_{i\bar\jmath a}t^{a\bar c}_{i\bar\jmath}(ia|\bar\jmath\bar k) . $$
+
+The $\beta$ cross block keeps the $\alpha$ pair first, because the
+$\alpha\beta$ amplitudes are stored $\alpha$ first.
 
 ## The algorithm {#unrestricted-oo-rimp2-algorithm}
 

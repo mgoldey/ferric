@@ -151,8 +151,8 @@ and the width may depend on the worker count without changing any result.
 ## Known limits
 
 - Single-operand sums, traces and diagonals are errors by design.
-- `crates/ferric-tensors/theory.md` states that the AO-Laplace code is dense,
-  and that no $O(N)$ scaling is implemented or measured.
+- The AO-Laplace code is dense, and no $O(N)$ scaling is implemented or
+  measured for it (section @sec:laplace-mp2-anchors, "Known limits").
 
 ## Sources
 

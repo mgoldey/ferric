@@ -363,6 +363,7 @@ The denominator conversion is one match:
 | momentum, conjugation, Madelung, occupied-$k$ and normalization mutants | each detected | `supercell_anchor_catches_momentum_conj_madelung_occupied_k_and_normalisation_mutants` |
 | Gamma MP2 against PySCF | | `crates/ferric-pbc/tests/pbc_mp2.rs` `h2_sto3g_a4_matches_pinned_pyscf_rmp2` |
 | $k$-point MP2 against PySCF `KMP2`, both `exxdiv` | | `kmp2_h2_1x1x2_matches_pinned_pyscf_kmp2_both_exxdiv` |
+| Gamma dRPA from RS-GDF with a complete auxiliary basis (frequency quadrature, 80 points) against dense AFT with the plasmon formula, shifted and unshifted denominators, same and own SCF orbitals; the default 40-point grid; $\tilde\epsilon(0)$ eigenvalues $\ge 1$; dRPA differs from direct MP2 by more than $10^{-4}$ | $10^{-11}$ Ha; $10^{-10}$ Ha (40 points) | `crates/ferric-pbc/tests/pbc_drpa.rs` `drpa_from_rsgdf_matches_dense_plasmon_in_the_trivial_aux_limit` |
 | large-cell limit: shifted $\propto a^{-3}$ with the predicted coefficient, unshifted $\propto a^{-1}$ | coefficient within 1% | `box_limit_shifted_is_a3_with_the_predicted_coefficient_unshifted_is_1_over_a` |
 
 ## Limits {#mp2-drpa-limits}

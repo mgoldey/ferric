@@ -366,6 +366,89 @@ ratios through (@eq:mbd-1):
 $\partial E/\partial r_A = \alpha^{\mathrm{free}}_A\bar\alpha_A + 2r_AC^{\mathrm{free}}_{6,A}\bar C_{6,A} + \tfrac13r_A^{-2/3}R^{\mathrm{free}}_A\bar R_A$,
 with $\bar x = \partial E/\partial x$.
 
+### The adjoint steps {#mbd-gradient-adjoint-steps}
+
+`mbd_rsscs_gradient_from_params` runs the forward pass once, keeping
+$\mathbf B(u_k) = \mathbf C(u_k)^{-1}$ for every node and the eigenpairs
+$(\lambda_p, \mathbf v_p)$ of $\mathbf H$, then one reverse pass,
+`rsscs_backward`. In this subsection $\tilde x$ is the screened
+$x^{\mathrm{rsSCS}}$ of (@eq:mbd-6), $\tilde f_{AB}$ the Fermi function on
+the screened radii, $\tilde S_{AB} = \beta(\tilde R_A + \tilde R_B)$, and
+$\mathbf G = \tfrac14\mathbf V\operatorname{diag}(\lambda^{-1/2})\mathbf V^{\mathsf T}$
+the seed (@eq:disp-mbd-adjoint-seed). Each step applies the chain rule to
+one formula of the forward pass, in reverse order.
+
+1. **Seed.** $\bar{\mathbf H} = \mathbf G$ and $\bar{\tilde\omega}_A = -\tfrac32$.
+2. **Through $\mathbf H$** (@eq:mbd-7). The diagonal block
+   $\tilde\omega_A^2\mathbf 1$ gives
+   $\bar{\tilde\omega}_A \mathrel{+}= 2\tilde\omega_A\sum_i G_{(A,i)(A,i)}$.
+   A pair $A > B$ puts $P\,T^{\mathrm{bare}}_{ij}$ at $(A,i),(B,j)$ and its
+   transpose, with $P = \tilde\omega_A\tilde\omega_B\sqrt{\tilde\alpha_A\tilde\alpha_B}\tilde f_{AB}$.
+   Its adjoints are $\bar v_{ij} = G_{(A,i)(B,j)} + G_{(B,j)(A,i)}$ and
+   $\bar P = \sum_{ij}\bar v_{ij}T^{\mathrm{bare}}_{ij}$. Differentiate the
+   product $P$:
+   $\bar{\tilde\omega}_A \mathrel{+}= \bar PP/\tilde\omega_A$,
+   $\bar{\tilde\alpha}_A \mathrel{+}= \tfrac12\bar PP/\tilde\alpha_A$,
+   $\bar{\tilde f} = \bar PP/\tilde f$. The Fermi function passes this on to
+   both screened radii, $\bar{\tilde R}_A, \bar{\tilde R}_B \mathrel{+}= \beta\bar{\tilde f}\,\partial f/\partial S$,
+   and to the positions through
+   $\nabla_{\mathbf R}\sum_{ij}P\bar v_{ij}T^{\mathrm{bare}}_{ij} + \bar{\tilde f}\,(\partial f/\partial R)\,\mathbf R/R$.
+3. **Through $\tilde\omega$ and $\tilde R$** (@eq:mbd-6). From
+   $\tilde\omega_A = 4\tilde C_{6,A}/(3\tilde\alpha_A^2)$:
+   $\bar{\tilde C}_{6,A} = \bar{\tilde\omega}_A\cdot4/(3\tilde\alpha_A^2)$ and
+   $\bar{\tilde\alpha}_A \mathrel{-}= 2\bar{\tilde\omega}_A\tilde\omega_A/\tilde\alpha_A$.
+   From $\tilde R_A = R_A(\tilde\alpha_A/\alpha_A)^{1/3}$:
+   $\bar{\tilde\alpha}_A \mathrel{+}= \bar{\tilde R}_A\tilde R_A/(3\tilde\alpha_A)$,
+   $\bar R_A \mathrel{+}= \bar{\tilde R}_A\tilde R_A/R_A$,
+   $\bar\alpha_A \mathrel{-}= \bar{\tilde R}_A\tilde R_A/(3\alpha_A)$.
+4. **Per node $k$** (@eq:disp-mbd-rsscs-screening). The $C_6$ sum of
+   (@eq:mbd-6) gives $\bar{\tilde\alpha}_A(iu_k) = \bar{\tilde C}_{6,A}\,(6/\pi)\,w_k\,\tilde\alpha_A(iu_k)$,
+   plus $\bar{\tilde\alpha}_A$ at the $u = 0$ node. The contraction
+   $\tilde\alpha_A = \tfrac13\sum_{B,i}B_{(A,i)(B,i)}$ has the adjoint
+   $\bar B_{(A,i)(B,j)} = \delta_{ij}\bar{\tilde\alpha}_A/3$, and
+   $\bar{\mathbf C} = -\mathbf B^{\mathsf T}\bar{\mathbf B}\mathbf B^{\mathsf T}$
+   factors through rank 3, one rank per Cartesian direction $i$:
+   $$ \bar C_{mn} = -\sum_i X_{mi}Y_{ni}, \qquad X_{mi} = \sum_AB_{(A,i)m}\,\bar{\tilde\alpha}_A/3, \qquad Y_{ni} = \sum_BB_{n(B,i)} . $$
+   The diagonal $1/\alpha_A(iu_k)$ gives
+   $\bar\alpha_A(iu_k) \mathrel{-}= \sum_i\bar C_{(A,i)(A,i)}/\alpha_A(iu_k)^2$.
+   A pair block $v = (1 - f)\mathbf T^{\mathrm{GG}}(\mathbf R, \sigma_{AB})$
+   gives $\bar f = -\sum\bar v\cdot\mathbf T^{\mathrm{GG}}$ and, through
+   `t_gg_vjp` with $M = (1 - f)\bar v$, the position term and
+   $\bar\sigma_{AB}$. The widths (@eq:mbd-2) and the TS form (@eq:mbd-1) then
+   give $\bar\sigma_A \mathrel{+}= \bar\sigma_{AB}\sigma_A/\sigma_{AB}$,
+   $\bar\alpha_A(iu_k) \mathrel{+}= \bar\sigma_A\sigma_A/(3\alpha_A(iu_k))$,
+   $\bar\alpha_A \mathrel{+}= \bar\alpha_A(iu_k)\,\alpha_A(iu_k)/\alpha_A$ and
+   $\bar\omega_A \mathrel{+}= \bar\alpha_A(iu_k)\,2\alpha_A(iu_k)^2u_k^2/(\alpha_A\omega_A^3)$.
+   The radius partial of $f$ goes to $\bar R_A, \bar R_B \mathrel{+}= \beta\bar f\,\partial f/\partial S$.
+5. **Through $\omega$.** $\bar C_{6,A} \mathrel{+}= \bar\omega_A\cdot4/(3\alpha_A^2)$,
+   $\bar\alpha_A \mathrel{-}= 2\bar\omega_A\omega_A/\alpha_A$.
+
+The Fermi partials (`ferric-rpa/src/dispersion/mbd_rsscs.rs::fermi_partials`)
+follow from $f = 1/(1 + e^{-s})$, $s = a(R/S - 1)$:
+
+$$ \frac{\partial f}{\partial R} = \frac{f'a}{S}, \qquad \frac{\partial f}{\partial S} = -\frac{f'aR}{S^2}, \qquad f' = \frac{e^{-s}}{(1 + e^{-s})^2} , $$
+
+and $f' = 0$ when $e^{-s}$ overflows ($R \ll S$, where $f = 0$ in double
+precision). The vector-Jacobian products of the dipole tensors
+(`t_bare_vjp`, `t_gg_vjp`) take an adjoint block $M$, symmetrized first,
+$q = \mathbf R^{\mathsf T}M\mathbf R$ and $L_b = \sum_{ij}M_{ij}T^{\mathrm{bare}}_{ij}$:
+
+$$ \frac{\partial L_b}{\partial\mathbf R} = -\frac{3\operatorname{tr}M\,\mathbf R}{R^5} - \frac{6M\mathbf R}{R^5} + \frac{15q\,\mathbf R}{R^7} . $$
+
+For the Gaussian tensor write (@eq:disp-mbd-dipole-tensor) as
+$\mathbf T^{\mathrm{GG}} = g_1\mathbf T^{\mathrm{bare}} + g_2\mathbf R\mathbf R^{\mathsf T}$,
+$g_1 = \operatorname{erf}z - \theta$, $g_2 = 2z^2\theta/R^5$, $z = R/\sigma$.
+Differentiating $g_1$ and $g_2$ with $\partial\theta/\partial z = 2(1 - 2z^2)e^{-z^2}/\sqrt\pi$:
+
+$$ \frac{\partial g_1}{\partial R} = \frac{2z^2\theta}{R}, \quad \frac{\partial g_1}{\partial\sigma} = -\frac{2z^2\theta}{\sigma}, \quad \frac{\partial g_2}{\partial R} = -\frac{4z^2\theta(1 + z^2)}{R^6}, \quad \frac{\partial g_2}{\partial\sigma} = -\frac{2z^2\theta(3 - 2z^2)}{\sigma R^5}, $$
+
+and with $L = \sum_{ij}M_{ij}T^{\mathrm{GG}}_{ij} = g_1L_b + g_2q$,
+
+$$ \frac{\partial L}{\partial\mathbf R} = g_1\frac{\partial L_b}{\partial\mathbf R} + 2g_2M\mathbf R + \Big(L_b\frac{\partial g_1}{\partial R} + q\frac{\partial g_2}{\partial R}\Big)\frac{\mathbf R}{R}, \qquad \frac{\partial L}{\partial\sigma} = L_b\frac{\partial g_1}{\partial\sigma} + q\frac{\partial g_2}{\partial\sigma} . $$
+
+The second box below checks these against sympy and the whole pass against
+finite differences.
+
 > **Verified equation @eq:disp-mbd-adjoint-seed** · the adjoint seed
 >
 > $\langle\tfrac14\mathbf H^{-1/2}, \delta\mathbf H\rangle$ equals a central
@@ -406,6 +489,8 @@ with $\bar x = \partial E/\partial x$.
 >
 > <!-- verified: id=disp.mbd.backward-pass; script=scripts/mbd_coupled_dipole_sympy.py; claim=gradient-vs-fd; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-rpa/src/dispersion/mbd_rsscs.rs::{mbd_rsscs_gradient_from_params,mbd_rsscs_gradient}; rust_test=ferric-rpa/tests/validation_mbd_rsscs.rs::mbd_rsscs_gradient_matches_libmbd; registry=mbd -->
 
+### On an SCF density {#mbd-gradient-scf-density}
+
 On an SCF density the volume ratios move with the nuclei too. The volumes
 $v_A = \sum_g\Delta V\,w_A(\mathbf r_g)\rho(\mathbf r_g)|\mathbf r_g - \mathbf R_A|^3$,
 with Hirshfeld weights $w_A = \rho^0_A/(\sum_C\rho^0_C + 10^{-12})$, are
@@ -416,6 +501,10 @@ makes the lattice term below a single translation identity. With
 $c_A = (\partial E/\partial r_A)/v_A^{\mathrm{free}}$,
 `mbd_rsscs_for_scf` assembles
 
+$$ \frac{dE}{d\mathbf R_B} = \frac{\partial E}{\partial\mathbf R_B}\Big|_r + \sum_Ac_A\frac{\partial v_A}{\partial\mathbf R_B}\Big|_{D,\ \text{lattice}} + \mathcal O_B - \frac1N\sum_C\sum_Ac_A\frac{\partial v_A}{\partial\mathbf R_C}\Big|_{D,\ \text{lattice}} + \sum_{ai}Z_{ai}\frac{\partial F_{ai}}{\partial\mathbf R_B} , $$
+
+term by term:
+
 | Term | What it carries | Function |
 |---|---|---|
 | explicit | $\partial E/\partial\mathbf R_B$ at fixed volume ratios | `mbd_rsscs_gradient` |
@@ -424,16 +513,40 @@ $c_A = (\partial E/\partial r_A)/v_A^{\mathrm{free}}$,
 | lattice | the volume lattice (`ferric-scf/src/properties/hirshfeld_grid.rs::mbd_volume_grid`, centred on the atom centroid) moves by $1/N$ of each displacement; translation invariance turns this into minus $1/N$ of the summed fixed-lattice term | `mbd_rsscs_for_scf` |
 | relaxation | $\sum_{ai}Z_{ai}\,\partial F_{ai}/\partial\mathbf R_B$ with the Kohn–Sham Z-vector driven by $\mathbf V$ | `ferric_scf::zvector_ks` |
 
+The free-atom volumes use the same lattice
+(`FreeAtomVolumeQuadrature::Lattice`), so a lattice error in the free-atom
+denominator cancels against the same error in the molecular volumes. The
+density derivative is
+`ferric-scf/src/properties/hirshfeld_grid.rs::hirshfeld_volume_density_derivative`:
+
+$$ \mathbf V = \frac{\partial\big(\sum_Ac_Av_A\big)}{\partial\mathbf D} = \sum_g\Delta V\,q(\mathbf r_g)\,\chi_\mu(\mathbf r_g)\chi_\nu(\mathbf r_g), \qquad q(\mathbf r) = \sum_Ac_Aw_A(\mathbf r)\,|\mathbf r - \mathbf R_A|^3 . $$
+
 Each term answers one way the volumes can move. The AOs and proatoms move
-with their atoms (volumes). The occupied orbitals follow their basis
+with their atoms (volumes). Differentiating $v_A$ at a fixed lattice point
+gives three terms per point, with $\mathbf d_B = \mathbf r - \mathbf R_B$,
+$r_B = |\mathbf d_B|$ and $\mathbf g_B = \partial\rho^0_B/\partial\mathbf R_B$:
+the density term $-2\Delta V\,q\sum_{\mu\in B}\nabla\chi_\mu(\mathbf D\chi)_\mu$,
+the weight term $\Delta V\rho\,(c_Br_B^3 - q)\,\mathbf g_B/(\sum_C\rho^0_C + 10^{-12})$,
+and the radial term $-3\Delta V\rho\,c_Bw_Br_B\,\mathbf d_B$. The occupied orbitals follow their basis
 functions and are Löwdin re-orthonormalized, $\delta C_o = -\tfrac12C_oS^x_{oo}$
-(orthonormality); the code first checks $\mathbf D\mathbf S\mathbf D = 2\mathbf D$
+(orthonormality). For a closed shell, $\mathbf D = 2C_oC_o^{\mathsf T}$,
+$\delta\mathbf D = -\tfrac12\mathbf D\mathbf S^x\mathbf D$ and
+$\mathcal O = -\tfrac12\operatorname{tr}[\mathbf V\mathbf D\mathbf S^x\mathbf D]$.
+For UKS each spin separately,
+$\mathcal O = -\sum_\sigma\operatorname{tr}[\mathbf V\mathbf D_\sigma\mathbf S^x\mathbf D_\sigma]$.
+For ROKS, with $\mathbf D_\alpha = \mathbf P_c + \mathbf P_o$ and
+$\mathbf D_\beta = \mathbf P_c$, the closed and open orbitals are
+orthonormalized as one set, $\mathcal O = -\operatorname{tr}[\mathbf S^x\mathbf W_Q]$
+with $\mathbf W_Q$ of the box below. The code first checks $\mathbf D\mathbf S\mathbf D = 2\mathbf D$
 for a closed shell, $\mathbf D_\sigma\mathbf S\mathbf D_\sigma = \mathbf D_\sigma$
 per spin, and $\mathbf D_\alpha\mathbf S\mathbf D_\beta = \mathbf D_\beta$ for
 ROKS. Moving all atoms and the lattice together leaves $v_A$ unchanged at
 fixed density, so the lattice shift contributes minus $1/N$ of the summed
 fixed-lattice term to every atom (lattice). The density itself relaxes
-(relaxation). MBD depends on the total density, so both spins see the same
+(relaxation): `ferric-scf/src/zvector_ks.rs::{relaxation_gradient_closed,relaxation_gradient_unrestricted,relaxation_gradient_roks}`
+solve the Kohn–Sham Z-vector with $\mathbf V$ as the right-hand side. The
+first four terms, without the relaxation, are returned as the result field
+`gradient_unrelaxed`. MBD depends on the total density, so both spins see the same
 $\mathbf V$. The Z-vector derivation is in `crates/ferric-scf/theory.md`,
 "Kohn-Sham Z-vector for post-SCF corrections". A reference the Z-vector does
 not support is an error; no unrelaxed gradient is returned as the exact
@@ -468,7 +581,11 @@ proved on their own:
 
 The Hirshfeld volume term and the Z-vector are not transcribed by the
 script; they rest on `hirshfeld_volume_gradient_matches_fd_slater_proatom`
-and the full-pipeline difference test.
+and the full-pipeline difference tests: central differences of the full
+SCF + MBD energy in `crates/ferric-rpa/tests/mbd_scf_gradient.rs` (RKS,
+$\le 3.5\times10^{-9}$ Ha/Bohr at 6-31G),
+`crates/ferric-rpa/tests/mbd_scf_gradient_uks.rs` (UKS) and
+`crates/ferric-rpa/tests/mbd_scf_gradient_roks.rs` (ROKS).
 
 ## Full-range screening for $C_6$ {#mbd-full-range-screening}
 
@@ -514,7 +631,7 @@ screening.
 
 | Option | Values | Effect |
 |---|---|---|
-| `[dft] dispersion` | `"mbd"` (the running functional's $\beta$), `"mbd(<name>)"` | $\beta$ = 0.83 (PBE), 0.85 (PBE0, HSE06); any other functional is refused |
+| `[dft] dispersion` | `"mbd"` (the running functional's $\beta$), `"mbd(<name>)"` | $\beta$ = 0.83 (PBE), 0.85 (PBE0, HSE06), from `ferric-rpa/src/dispersion/mbd_rsscs.rs::mbd_rsscs_beta_for_functional`; any other functional is refused and needs an explicit $\beta$ |
 | `mbd_rsscs_energy(beta=)` | positive float | an explicit $\beta$ for the standalone energy |
 | $a$, $n_u$ | 6, 15 | libMBD defaults (`MBD_FERMI_A_DEFAULT`, `MBD_N_FREQ_DEFAULT`); not exposed in the CLI |
 

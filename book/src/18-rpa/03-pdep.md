@@ -40,7 +40,7 @@ the frequency loop diagonalizes the projected matrix.
 | Entry point | Location |
 |---|---|
 | Rust | `ferric-rpa/src/lib.rs::{run_pdep_rpa,run_pdep_rpa_from_intermediates}`, `ferric-rpa/src/energy_route.rs::run_pdep_rpa_energy` |
-| Static solve | `ferric-rpa/src/lanczos.rs::run_lanczos_full_rank_budgeted` (default), `ferric-rpa/src/davidson.rs::{run_davidson_static,run_davidson_seeded}`, `ferric-rpa/src/lanczos.rs::run_lanczos_seeded` |
+| Static solve | `ferric-rpa/src/lib.rs::run_pdep_rpa_eigensolve` (dispatch), `ferric-rpa/src/lanczos.rs::run_lanczos_full_rank_budgeted` (default), `ferric-rpa/src/davidson.rs::{run_davidson_static,run_davidson_seeded}`, `ferric-rpa/src/lanczos.rs::run_lanczos_seeded` |
 | Truncation | `ferric-rpa/src/config.rs::n_kept_modes` |
 | Frequency loop | `ferric-rpa/src/energy.rs::{eval_eigenvalues_at_frequencies_budgeted,eval_trace_log_summands_budgeted}`, `ferric-rpa/src/sternheimer.rs::{dielectric_apply,dielectric_matrix_from_projection_into}` |
 | CLI | `method.kind = "pdep-rpa"`, section `[rpa]` (`examples/water-pdep-rpa.toml`) |
@@ -57,7 +57,24 @@ $\boldsymbol\Pi(iu)$ is positive semidefinite. For any vector $\mathbf v$,
 $\mathbf v^{\mathsf T}\boldsymbol\Pi\mathbf v = \sum_{ia} g_{ia}\big(\sum_P v_PB^P_{ia}\big)^2$
 with $g_{ia} = 4\Delta_i^a/(u^2 + (\Delta_i^a)^2) > 0$, a sum of
 non-negative terms. So every eigenvalue of $\tilde{\boldsymbol\varepsilon}(iu)$
-is at least 1. The static modes solve
+is at least 1. The textbook way to apply $\boldsymbol\Pi$ to a trial potential $\hat V$ is
+the Sternheimer equation, a linear solve per occupied orbital for the
+first-order change of that orbital,
+
+$$ (\hat H_0 - \epsilon_i + iu)\,|\Delta\Psi_i\rangle = -P_{\mathrm{virt}}\hat V|\Psi_i\rangle , $$
+
+with $P_{\mathrm{virt}}$ the projector onto the virtual space. ferric's RI-MO
+implementation does not solve it. With every virtual orbital in hand it sums
+over the occupied-virtual pairs instead, which is (@eq:pdep-1) applied to a
+vector. The test helper `ferric-rpa/src/sternheimer.rs::chi_from_trial_potential`
+returns the single-spin value
+
+$$ -2\sum_{ia}\frac{\Delta_i^a}{u^2 + (\Delta_i^a)^2}\Big(\sum_P V_PB^P_{ia}\Big)^2 , $$
+
+half the closed-shell $\langle V|\tilde\chi_0|V\rangle = -\mathbf V^{\mathsf T}\boldsymbol\Pi\mathbf V$
+(the prefactor 2 against the 4 of (@eq:pdep-1)).
+
+The static modes solve
 
 $$ \tilde{\boldsymbol\varepsilon}(0)\,\mathbf v_\xi = \lambda_\xi(0)\,\mathbf v_\xi, \qquad \lambda_\xi(0) \ge 1 . \label{eq:pdep-2} $$
 
@@ -165,14 +182,24 @@ diagonalization beats a narrow Krylov iteration at that fraction. The
 savings of truncation are in steps 5 to 7, not in step 2.
 
 The other static solvers are library options (`PdepRpaConfig::eigensolver`,
-not exposed in the CLI or Python). Davidson is seeded with four vectors per
-atom when $\tau > 0$ and $N_{\mathrm{aux}} > 4N_{\mathrm{at}}$. A seeded block
-Lanczos runs on the Boys-screened $\chi_0$, which `chi0_sparsity = "boys"`
-selects from the CLI and Python. The Davidson eigenvalues are also returned
+not exposed in the CLI or Python); `run_pdep_rpa_eigensolve` dispatches
+between them. Davidson is seeded with four vectors per atom (an
+atom-localized seed) when $\tau > 0$ and $N_{\mathrm{aux}} > 4N_{\mathrm{at}}$,
+and from the identity otherwise. It is the only solver that reads
+`eigensolver_conv_thresh` and `eigensolver_max_vecs`. A block Lanczos
+iteration (`run_lanczos_seeded`) runs only on the Boys-screened $\chi_0$,
+which `chi0_sparsity = "boys"` selects from the CLI and Python, started from
+a Boys-orbital seed. With the Boys-screened $\chi_0$ only the static
+eigensolve uses the screened tiles; the frequency loop uses the dense $B$.
+The Davidson eigenvalues are also returned
 in descending order, so step 3 is the same for every solver.
 
 **Step 4 needs the transpose.** A dressed vector $\mathbf v$ corresponds to
-the auxiliary function $\sum_P (M^{\mathsf T}\mathbf v)_P\,\chi_P$. On the
+the auxiliary function $\sum_P (M^{\mathsf T}\mathbf v)_P\,\chi_P$. With
+$M^{\mathsf T}M = V^{-1}$ and orthonormal $\mathbf v_\xi$, the coefficients
+are $V$-orthonormal:
+$\mathbf c_\xi^{\mathsf T}V\mathbf c_\eta = \mathbf v_\xi^{\mathsf T}MVM^{\mathsf T}\mathbf v_\eta = \delta_{\xi\eta}$,
+because $MVM^{\mathsf T} = \mathbf 1$ ($V = LL^{\mathsf T}$, $M = L^{-1}$). On the
 Coulomb path $M = L^{-1}$ is lower triangular, and $M\mathbf v$ in place of
 $M^{\mathsf T}\mathbf v$ gives potentials that are neither $V$-orthonormal
 nor eigenvectors of $V + \Pi$ (section @sec:factorization-and-metric). The energy does not use
@@ -249,7 +276,20 @@ at each node (`need_eigenvalues_freq = true`). The CLI energy run does not,
 and takes the LU log-det of $\tilde{\boldsymbol\varepsilon}_U$. Both give
 (@eq:rpa-pdep-projection). With $\tau = 0$ and no export requested, the CLI goes through
 `run_pdep_rpa_energy`, which skips steps 2 to 5 and evaluates the log-det in
-the full dressed auxiliary basis (section @sec:drpa-three-ways).
+the full dressed auxiliary basis (section @sec:drpa-three-ways,
+`RpaEnergyRoute::AuxBasisLogDet`). It takes `run_pdep_rpa`
+(`RpaEnergyRoute::StaticEigenbasis`) instead when
+`ferric-rpa/src/energy_route.rs::static_route_required` returns a reason, and
+prints that reason. The reasons, checked in this order:
+
+1. the caller asked for the per-frequency eigenvalues (`need_eigenvalues_freq`);
+2. the caller asked for the inverse-dielectric stack (`need_inv_dielectric_freq`);
+3. the $\chi_0$ backend is not `Chi0Backend::Dense` (the Laplace backend has no aux-basis evaluator);
+4. `chi0_sparsity` resolves to anything but dense (the Boys-screened eigensolve);
+5. `trunc_thresh` $> 0$.
+
+The CLI `drpa` kind takes the aux-basis route; a `pdep-rpa` run with the
+default `trunc_thresh` takes the static route.
 
 ## Reproducibility and memory {#pdep-reproducibility-memory}
 
@@ -290,6 +330,8 @@ the test's own assertion.
 | `crates/ferric-rpa/theory.md`, "The PDEP Eigenpotential Approach" | (@eq:pdep-1)–(@eq:rpa-pdep-projection) |
 | `scripts/rpa_drpa_pdep_sympy.py`, check group 7 | projection and truncation |
 | `crates/ferric-rpa/tests/pdep_eigenpotentials_are_physical.rs` | the back-transform of step 4 |
+| Gygi and Galli, Phys. Rev. B 65, 220102(R) (2002) | dielectric eigenpotentials as a basis for the response |
+| Rocca, Lu and Galli, J. Chem. Phys. 133, 164109 (2010) | the PDEP formulation of the RPA correlation energy |
 
 **Known limits (2026-11-15).**
 

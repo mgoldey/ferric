@@ -63,6 +63,12 @@ For $r \ge 0$ the second error function is already near 1 when $r_0 \gg
 The mirror term at $-r_0$ makes terf an odd function of $r$, which @sec:erf-terf-curvature-constraint
 uses.
 
+For $r \ge 0$ terf lies in $[0, 1)$. The argument $r + r_0$ is at least
+$|r - r_0|$, and erf is odd and increasing, so the second error function of
+(@eq:erf-terf-2) is at least the magnitude of the first and the sum is not
+negative. Each error function is below 1, so the average is too. terfc
+therefore lies in $(0, 1]$ on the same range.
+
 In each pair the "c" member is the short-range part: erfc and terfc go to 1
 at $r = 0$, so the short-range kernel keeps the full Coulomb singularity, and
 to 0 as $r \to \infty$. erf and terf carry the long range. The limits match
@@ -130,6 +136,11 @@ $$ \frac{\operatorname{terf}(r; r_0, \omega)}{r} = \tau_1 + \tau_3 r^2 + O(r^4),
 with $\tau_1 = g'(0)$. Check the limit $r_0 = 0$: $\tau_3 \to
 -2\omega^3/(3\sqrt\pi)$, the erf coefficient above.
 
+`scripts/terf_identities_sympy.py` writes the same expansion as
+$c_0 + c_2 r^2 + O(r^4)$, with $c_0 = \tau_1$ and
+$c_2 = 2\omega^3(2\omega^2 r_0^2 - 1)\,e^{-\omega^2 r_0^2}/(3\sqrt\pi)$,
+which is $\tau_3$ with the factor 2 taken out of the bracket.
+
 $\tau_3$ has one positive root, $\omega = 1/(\sqrt2\,r_0)$. At that $\omega$
 the long-range kernel is flat to fourth order at the origin, so the
 short-range kernel $\operatorname{terfc}/r = 1/r - \tau_1 - O(r^4)$ has the
@@ -190,6 +201,21 @@ Two points about these two lines:
 $\omega$ independently. The sum rule terf + terfc = 1 holds for every
 $(r_0, \omega)$, so either form splits $1/r$ exactly.
 
+The integrals over these operators come from the C++ shim,
+`crates/ferric-integrals/shim/shim.cc`. One table set serves both members:
+the terfc engine returns the Coulomb integral minus the terf integral, and
+an engine flagged `is_terf_complement` returns the terf piece itself.
+
+`ferric-dft` evaluates the same real-space function pointwise, for the terfc
+damping of the VV10 tail in MP2-V (section @sec:mp2-v), without depending on
+the integrals crate. `ferric-dft/src/vv10.rs::terfc_scalar` applies the
+curvature link, writing the arguments as $(r \mp r_0)/(r_0\sqrt2)$, and
+`ferric-dft/src/vv10.rs::terfc_scalar_decoupled` takes a free $\omega$, as
+`Operator::terfc_with_omega` does. At the linked $\omega = 1/(r_0\sqrt2)$
+the two agree to the last ulp or two: one divides by $r_0\sqrt2$ and the
+other multiplies by $\omega$. That rounding difference is why the linked
+path keeps its own arithmetic.
+
 ## Two properties that decide how the integrals are used {#erf-terf-properties-decide-integrals-used}
 
 **Splitting is not additive in the energy.** MP2 is quadratic in the
@@ -233,7 +259,7 @@ A kernel that is not positive definite has no Cauchy–Schwarz bound and can
 give a fitting metric with negative eigenvalues. Two consequences follow in
 the code. Schwarz screening is refused for terf. The fitting metric of the erf
 and terf operators goes through the eigendecomposition branch of
-`ferric-mp2/src/rimp2.rs::metric_inverse_sqrt`, which drops small and negative
+`ferric-mp2/src/rimp2.rs::metric_inverse_sqrt`, which drops small and negative <!-- pending: terf-fit fix -->
 eigenvalues instead of failing a Cholesky factorization (section @sec:factorization-and-metric). The
 erf metric is positive definite in exact arithmetic; it takes the same branch
 because it loses rank numerically in a Coulomb-fitted auxiliary basis. The
@@ -252,7 +278,7 @@ if matches!(op.kind, OperatorKind::ErfCoulomb | OperatorKind::Terf) {
 }
 ```
 
-This is the body of `metric_inverse_sqrt` with only the comments added.
+This is the body of `metric_inverse_sqrt` with only the comments added. <!-- pending: terf-fit fix -->
 terfc takes the Cholesky branch, as Coulomb and erfc do: its transform is
 positive, and a Cholesky failure on it would point at a real defect in the
 integrals.
@@ -301,6 +327,8 @@ is $1/(\sqrt2 \times 1.05)$.
 | terf + terfc against the Coulomb quartet | machine precision | `crates/ferric-integrals/tests/eri4_terfc_split.rs` (`terf4_plus_terfc4_reconstructs_the_coulomb_quartet`) |
 | terf + terfc with a free $\omega$ | machine precision | `crates/ferric-integrals/tests/terfc_base_validation.rs` (`free_omega_terf_plus_terfc_is_coulomb`) |
 | erf + erfc against Coulomb | machine precision | `test_erf_plus_erfc_equals_coulomb` in `crates/ferric-integrals/src/engine.rs` |
+| terf + terfc = 1; terf odd; terf $\to$ erf$(\omega r)$ as $r_0 \to 0$ and $\to 0$ as $r_0 \to \infty$ at fixed $\omega$ | sympy, exact | `scripts/terf_identities_sympy.py`, claim [complement] |
+| $c_2 \propto 2\omega^2r_0^2 - 1$, flat at $r = 0$ exactly when $r_0\omega = 1/\sqrt2$ | sympy series, exact | `scripts/terf_identities_sympy.py`, claim [curvature]; the mutation $1/\sqrt2 \to 1/2$ turns it red |
 
 ## Sources {#erf-terf-sources}
 

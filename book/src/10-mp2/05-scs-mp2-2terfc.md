@@ -91,7 +91,8 @@ $E_{\mathrm{HF}}$) is what the rows list.
 | $c_{\mathrm{OS}}$ | 1.27 | `c_os` | `c_os` |
 | $c_{\mathrm{SS}}$ | 4.05 | `c_ss` | `c_ss` |
 
-Fitted at aug-cc-pVTZ with frozen core and no counterpoise correction,
+These are the non-VV10 fit, the parameters for the method without a VV10
+dispersion tail. Fitted at aug-cc-pVTZ with frozen core and no counterpoise correction,
 against a weighted objective over S66 (intermolecular) and W4-11
 (thermochemistry) (dissertation Eq. 5.7). $r_0^{(2)} \le r_0^{(1)}$, or
 either length non-finite or not positive, is an error: the window would be
@@ -138,7 +139,7 @@ let sc1 = ri_mp2_spin_components_any(mol, obs, dfbs, Operator::terfc(config.r0_b
 // E_x[r0(2)]
 let sc2 = ri_mp2_spin_components_any(mol, obs, dfbs, Operator::terfc(config.r0_nonbonded), rhf, &ri_config)?;
 let e_ss = sc2.e_ss - sc1.e_ss;                              // the same-spin window
-let scs_corr = config.c_os * sc1.e_os + config.c_ss * e_ss; // (10.16) without E_HF
+let scs_corr = config.c_os * sc1.e_os + config.c_ss * e_ss; // the energy above without E_HF
 Ok(ScsMp2Result {
     total_energy: rhf.energy + scs_corr,
     scs_corr,
@@ -178,8 +179,8 @@ with no external anchor for the counterpoise path. Figures from
 - This section covers the energy. Open shells run on a UHF reference (see
   "Open shell" in section @sec:attenuated-mp2). The analytic nuclear gradient, closed shell
   and UHF (`run_optimize(method="scs-mp2-2terfc")`, CLI
-  `task = "optimize"`), is derived in `crates/ferric-mp2/theory.md`, "9.6
-  SCS-MP2(2terfc) gradient" and section 15.2, and graded on the validation
+  `task = "optimize"`), is derived in sections
+  @sec:rimp2-gradient and @sec:u-rimp2-gradient-terfc-scs-mp2-2terfc, and graded on the validation
   page.
 - The parameters are aug-cc-pVTZ, no-counterpoise values; other bases are
   unparameterized.

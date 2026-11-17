@@ -251,7 +251,7 @@ random asymmetric integrals, are what pin the convention.
 
 | Quantity | Systems | Error | Test |
 |---|---|---|---|
-| `general_element`, `sigma` and the diagonal vs an independent bit-loop $H$ on random asymmetric integrals | CAS(4,4) to CAS(6,6), odd and even $N_\alpha$ | $\le 8.9\times10^{-15}$ | `crates/ferric-ci/tests/slater_condon_brute_force.rs` |
+| `general_element`, `sigma` (direct) and `hamiltonian_diagonal` vs an independent bit-loop second-quantized $H$ on random asymmetric integrals, element-wise, every excitation class exercised | CAS(4,4) to CAS(6,6), odd and even $N_\alpha$ | $\le 8.9\times10^{-15}$ measured, bar $10^{-12}$ | `crates/ferric-ci/tests/slater_condon_brute_force.rs` |
 
 ## Sources {#slater-condon-sources}
 

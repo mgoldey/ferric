@@ -269,6 +269,129 @@ products (`ferric-scf/src/df_gradient/deriv3c.rs::three_center_deriv_pass`).
 The nine are three Cartesian directions for each of the three centres
 (section @sec:integrals-derivatives counts them).
 
+## RI-J on a pair-screened tensor {#df-jk-gradient-pair-screened-ri-j}
+
+A J-only SCF (a pure functional with RI-J and no exact exchange) can store
+its raw tensor compressed: most AO pairs on a large molecule are two
+functions on distant atoms whose product is numerically zero, and their
+rows are left out (section @sec:three-index-sources). The SCF energy is then the energy of
+the kept pairs only. Its gradient has to be the derivative of that energy,
+or a search walks one surface while reporting another.
+
+**The screen.** Cauchy–Schwarz bounds every element of a pair's row,
+$\lvert(P\vert\mu\nu)\rvert \le Q_{\mu\nu}Q_P$ with
+$Q_{\mu\nu} = \sqrt{(\mu\nu\vert\mu\nu)}$ and $Q_P = \sqrt{(P\vert P)}$.
+`ferric-integrals/src/three_index_source/pair_screen.rs::PairScreen` keeps a
+shell pair $(s_1, s_2)$ when $Q_{s_1s_2}\,q_{\max} > \tau$, where
+$Q_{s_1s_2}$ is the operator's shell-pair Schwarz value (the largest
+$Q_{\mu\nu}$ in the pair), $q_{\max} = \max_P\sqrt{(P\vert P)}$ of the same
+operator's auxiliary metric, and $\tau$ is `integral_thresh`. Write $K$ for
+the set of function pairs it keeps. On danuglipron (71 atoms, def2-SVP,
+def2-universal-jkfit, 724 basis functions, 3635 auxiliary functions) at
+$\tau = 10^{-12}$, 56.0% of the 56,616 shell pairs and 52.0% of the 262,450
+packed function pairs survive, and the stored tensor drops from 7.63 GB to
+3.97 GB (module documentation of `pair_screen.rs`).
+
+**The energy.** RI-J is $E_J = \tfrac12 d^{\mathsf T}V^{-1}d$ with
+$d_P = \sum_{\mu\nu}(P\vert\mu\nu)D_{\mu\nu}$ (@eq:df-jk-gradient-1). The screened SCF forms $d$
+from the kept pairs only:
+
+$$ \tilde E_J = \tfrac12\,\tilde d^{\mathsf T}V^{-1}\tilde d, \qquad
+\tilde d_P = \sum_{(\mu\nu)\in K}(P\vert\mu\nu)\,D_{\mu\nu} = d_P(\tilde D), $$
+
+with $\tilde D_{\mu\nu} = D_{\mu\nu}$ for $(\mu\nu)\in K$ and $0$ otherwise,
+in both triangles. The last equality is what the gradient uses: $\tilde d$
+is the unscreened $d$ evaluated at the masked density $\tilde D$.
+
+**The gradient.** Hold $K$ fixed. It is a step function of the geometry,
+constant almost everywhere. Write $\tilde c = V^{-1}\tilde d$. The SCF is
+variational, so at fixed $D$ the orbital response goes into the
+energy-weighted overlap term, which does not involve this tensor. Repeat the
+steps that gave (@eq:df-jk-gradient-1), with $\tilde d$ in place of $d$:
+
+$$ \frac{\partial\tilde E_J}{\partial x}
+= \sum_P\tilde c_P\sum_{(\mu\nu)\in K}\frac{\partial(P\vert\mu\nu)}{\partial x}D_{\mu\nu}
+- \tfrac12\,\tilde c^{\mathsf T}\frac{\partial V}{\partial x}\tilde c . $$
+
+The first sum runs over $K$ only. The three-centre derivative pass is linear
+in the density it contracts, so restricting its pair sum to $K$ is the same
+as contracting $\tilde D$ over all pairs. Hence
+
+$$ \nabla\tilde E_J = g_J(\tilde D), $$
+
+where $g_J(\cdot)$ is the ordinary RI-J gradient as a function of the
+density it is handed, with $d$, $c$ and the derivative contraction all formed
+from $\tilde D$. The metric term uses $V$ and $\tilde c$ only, so nothing
+else changes.
+
+**The code.** `ferric-scf/src/df_gradient.rs::df_jk_gradient_core` does two
+things when the kept tensor it was handed is pair-screened. It forms
+$\tilde d$ from the stored columns
+(`ferric-scf/src/df_gradient.rs::screened_d_p`). A stored column is one
+function pair $(\mu, \nu)$ with $\nu \le \mu$, so an off-diagonal column
+stands for $(\mu\nu)$ and $(\nu\mu)$ and carries the weight
+$D_{\mu\nu} + D_{\nu\mu}$:
+
+<!-- excerpt: ferric-scf/src/df_gradient.rs::screened_d_p -->
+```rust
+.map(|&(mu, nu)| {
+    let (mu, nu) = (mu as usize, nu as usize);
+    if mu == nu {
+        d[(mu, mu)]
+    } else {
+        d[(mu, nu)] + d[(nu, mu)]
+    }
+})
+```
+
+And it hands the derivative pass $\tilde D$
+(`ferric-scf/src/df_gradient.rs::density_on_kept_pairs`), which copies
+$D_{\mu\nu}$ and $D_{\nu\mu}$ for every kept column into a zero matrix. A
+dropped pair contributes zero to both, as it did to the SCF energy.
+
+Only an f64 RI-J pass with no exchange channel reads a pair-screened
+tensor. Any other pass drops it and recomputes the integrals, with the note
+`kept pair-screened tensor not used (not a J-only f64 pass): recomputing`.
+Inside the three-centre pass the same two conditions are hard errors:
+"DF gradient: a pair-screened kept tensor serves an f64 J-only pass" and
+"DF gradient: a pair-screened kept tensor cannot feed an exchange pass".
+
+**How far it moves from the unscreened gradient.** $g_J$ is a quadratic form
+$G(D, D)$ in the density. Put $D_{\mathrm{drop}} = D - \tilde D$ and expand
+$G(D - D_{\mathrm{drop}}, D - D_{\mathrm{drop}})$:
+
+$$ g_J(\tilde D) - g_J(D) = -G(D_{\mathrm{drop}}, D) - G(D, D_{\mathrm{drop}}) + G(D_{\mathrm{drop}}, D_{\mathrm{drop}}), $$
+
+which is $O(\lVert D_{\mathrm{drop}}\rVert/\lVert D\rVert)\,\lVert g_J\rVert$.
+On the fitted density the Schwarz bound gives, for every $P$, since a dropped
+pair has $Q_{\mu\nu} \le \tau/q_{\max}$,
+
+$$ \lvert d_P - \tilde d_P\rvert \le \sum_{\text{dropped}}\lvert(P\vert\mu\nu)\rvert\,\lvert D_{\mu\nu}\rvert
+\le \tau\sum_{\text{dropped}}\lvert D_{\mu\nu}\rvert\,\frac{Q_P}{q_{\max}} \le \tau\sum_{\text{dropped}}\lvert D_{\mu\nu}\rvert, $$
+
+and the coefficients move by $\tilde c - c = -V^{-1}(d - \tilde d)$. At
+$\tau \le 0$ nothing is dropped, $\tilde D = D$, and the two gradients are
+the same bits.
+
+### What is proven and what is not {#df-jk-gradient-proven}
+
+The tests in `crates/ferric-scf/tests/df_gradient_screened_j_handoff.rs` run
+PBE with RI-J only (def2-SVP, def2-universal-jkfit, `energy_conv` $10^{-11}$,
+`density_conv` $10^{-9}$) and are independent of the derivation above:
+
+| Test | Check | Bar |
+|---|---|---|
+| `without_screening_reuse_is_bitwise_the_recompute` | butane at $\tau = 0$: reading the kept tensor and recomputing give the same bits | bitwise; the gradient is not near zero ($> 10^{-3}$) |
+| `screened_reuse_matches_the_density_masked_recompute_on_water`, `..._on_butane` | $g_{\text{reuse}} - g_{\text{recompute}} = g_J(\tilde D) - g_J(D)$, the right side from the public recomputing `df_jk_gradient` and an independently built pair screen (`ri_j_pair_screen_for_test`). Water uses the first threshold of the ladder $10^{-3}, 3\times10^{-3}, \ldots, 3\times10^{-1}$ at which a pair drops; butane uses $10^{-5}$ | identity residual $< 10^{-11}$ Ha/Bohr; the difference itself above $10^{-10}$ (not vacuous) and below $4\cdot2\,r\max\lvert g_J(D)\rvert$, $r = \lVert D - \tilde D\rVert_F/\lVert D\rVert_F$ (a scaling bar with a safety factor of 4, not a theorem) |
+| `dropped_pairs_move_d_p_by_less_than_thresh_times_their_weight` | butane, $\tau = 10^{-5}$: $\max_P\lvert d_P - \tilde d_P\rvert$ from the full tensor against $\tau\sum_{\text{dropped}}\lvert D_{\mu\nu}\rvert$ | the Schwarz bound, rigorous |
+| `screened_gradient_is_the_derivative_of_the_screened_energy` | water: central difference ($h = 2\times10^{-3}$ Bohr, three coordinates) of the SCF energy run with the same screening | the screened route's error at most the recompute route's error plus twice the FD step floor $\lvert\mathrm{fd}(h)-\mathrm{fd}(h/2)\rvert$ plus $10^{-7}$ |
+
+The test file records its artifact hypothesis: a stale or unscreened tensor
+would make reuse equal recompute, which the identity test rules out because
+the difference is nonzero by construction when pairs drop; zeroing the wrong
+pairs would miss the identity by $O(r)$. The gradient bound of the expansion
+above is a scaling statement; only the bound on $d_P$ is proved.
+
 ## Reproducibility and memory {#df-jk-gradient-reproducibility-memory}
 
 - Both derivative passes map over auxiliary shells, collect in shell order and
@@ -322,4 +445,5 @@ not negligible cannot pass silently.
 | `crates/ferric-scf/src/df_gradient/deriv3c.rs` | the three-centre contraction layout |
 | `scripts/df_jk_gradient_sympy.py`, claims D1 to D3 | verified equation @eq:df-grad-jk |
 | `crates/ferric-scf/tests/df_jk_gradient.rs` | thresholds and the negative controls |
+| `crates/ferric-integrals/src/three_index_source/pair_screen.rs`, module documentation; `crates/ferric-scf/tests/df_gradient_screened_j_handoff.rs` | the pair screen, its danuglipron numbers, and the checks of section @sec:df-jk-gradient-pair-screened-ri-j |
 | `site/src/reference/validation.md` | the gradient row |

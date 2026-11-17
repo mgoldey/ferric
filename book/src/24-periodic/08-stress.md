@@ -290,6 +290,15 @@ finite-difference anchors clean: they strain a frozen cell.
 | `ewald` minus `none` stress equals the Madelung strain term | $10^{-9}$ | `h2_rhf_ewald_minus_none_is_the_madelung_strain` |
 | pressure against finite differences of an isotropic scaling (a consistency check, not independent of the nine-component anchor) | $10^{-9}$ | `h2_rhf_pressure_matches_isotropic_scaling` |
 | one-point mesh stress against the Gamma stress | | `crates/ferric-pbc/tests/pbc_kstress.rs` `one_point_mesh_rhf_stress_is_the_gamma_stress` |
+| each stress mutant (`NoPulay`, `FtNoCentres`, `GUnstrained`, `NoVolume`, `NoEwaldLr`, `NoEwaldBg`, `NoC0Volume`, `NoSrImages` with `exxdiv = none`; `NoMadelung`, `MadelungS` with `exxdiv = ewald`; the variants of `ferric-pbc/src/stress.rs::StressMutation`) misses finite differences on at least one component; the volume-only mutants are diagonal by construction | the FD anchor of the row above | `crates/ferric-pbc/tests/pbc_stress.rs` `h2_fd_anchor_catches_each_mutant` |
+
+The scripted proof of the Ewald strain (part S5 of
+`scripts/pbc_ewald_pairft_stress_sympy.py`) agrees with central finite
+differences of a pure-Python Ewald sum at frozen index sets to
+$1.5\times10^{-10}$, and with the Euler identity to $10^{-12}$. The
+$k$-point, open-shell, hybrid and meta-GGA stresses are tested in
+`crates/ferric-pbc/tests/pbc_kstress.rs` and the `validation_*stress*.rs`
+files of `crates/ferric-pbc/tests/`.
 
 ## Limits {#stress-limits}
 

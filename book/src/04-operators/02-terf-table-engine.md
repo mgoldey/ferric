@@ -457,12 +457,114 @@ pair with $S > 50$ already has $\sqrt S - \sqrt s > 6.36$, and the branch is
 the same as with the first test alone. The 6.36 is
 $\sqrt{50} - \sqrt{1/2}$, the smallest gap the constraint allows.
 
+## Derivative integrals {#terf-table-engine-derivative-integrals}
+
+A terfc-attenuated RI-MP2 gradient (section
+@sec:rimp2-gradient-attenuated-erfc-ri-mp2) needs the first nuclear
+derivatives of $(P|\mu\nu)$ and $(P|Q)$ under terf and terfc. libint2 has no
+terf kernel, so the shim computes them with its own McMurchie–Davidson pass.
+`ferric-integrals/src/engine.rs::Engine::new_3center_deriv` and
+`new_2center_deriv` with `Operator::terf` or `Operator::terfc` return them in
+libint2's block order, 9 blocks for three centres and 6 for two (section
+@sec:integrals-derivatives). The shim functions are `md_terms::eri3_derivs`
+(three centres) and `compute_cart_eri2_deriv` (two).
+
+**The Hermite derivative.** A Cartesian Gaussian on $\mathbf A$
+differentiates as
+
+$$ \frac{\partial}{\partial A_x}\big(x_A^{i} e^{-a x_A^2}\big) = 2a\, x_A^{i+1} e^{-a x_A^2} - i\, x_A^{i-1} e^{-a x_A^2} . $$
+
+The product $x_A^ix_B^je^{-ax_A^2 - bx_B^2}$ expands in Hermite Gaussians
+$\Lambda_t(x; P)$ with coefficients $E^{ij}_t$. Apply the rule above to the
+$x_A^i$ factor and expand each of the two products again: the derivative is
+the same expansion over the same $\Lambda_t$, with
+
+$$ \frac{\partial E^{ij}_t}{\partial A_x} \to 2a\,E^{i+1,j}_t - i\,E^{i-1,j}_t, \qquad t \le i + j + 1 . $$
+
+The ket side is unchanged, so the contraction with $R_{tuv}$ needs $R$ one
+order higher: total order $L = l_P + l_A + l_B + 1$. An auxiliary function on
+$\mathbf P$ alone has no partner, and its derivative uses $E^{i\pm1,0}$ the
+same way. In the shim this is `hermite_deriv_first`, which reads an $E$ table
+built one step deeper in $i$:
+
+```cpp
+// d/d(first centre) of an E table built to (li+1, lj): 2a E^{i+1,j} - i E^{i-1,j}.
+void hermite_deriv_first(const HermiteE &H, double a, int li, int lj, HermiteTab &T) {
+    T.init(li, lj, 1);
+    for (int i = 0; i <= li; ++i)
+        for (int j = 0; j <= lj; ++j)
+            for (int t = 0; t <= i + j + 1; ++t) {      // one more Hermite order
+                double x = 2.0 * a * H.at(i + 1, j, t);  // 2a E^{i+1,j}_t
+                if (i > 0) x -= i * H.at(i - 1, j, t);   // - i E^{i-1,j}_t
+                T.set(i, j, t, x);
+            }
+}
+```
+
+**The third centre.** A rigid translation leaves every integral unchanged,
+so the derivatives with respect to all centres sum to zero. The shim
+computes $\partial_P$ and $\partial_A$ and sets
+$\partial_B = -(\partial_P + \partial_A)$. In the two-centre case
+$\partial_Q = -\partial_P$.
+
+**The kernel.** The kernel enters only through $R^n_{000}$. For terf it is
+$(-2\phi^2)^n(\phi/\theta)G_n(S, s)$, the seed of
+@sec:terf-table-engine-center-integral-auxiliary-function, read from the
+tables at $n \le L$. For terfc the shim forms
+$R_{\mathrm{terfc}} = R_{\mathrm{Coulomb}} - R_{\mathrm{terf}}$ before the
+contraction, from the combined seeds in three centres and from two $R$ tables
+in two (`md_kernel_R`), so both parts share the $E$ coefficients and the
+prefactor. The derivative reads $G$ one order higher than the value. The
+tables hold $m < 24$, so the engine refuses $L + 1 \ge 24$; with s..g
+auxiliaries and s..f orbitals, $L \le 11$.
+
+**Term lists.** The three-centre kernels, for values and derivatives, write
+each Cartesian component as a list of Hermite terms $(c, t, u, v)$ and store
+$(t, u, v)$ as its flat index $(tS + u)S + v$ in an $R$ cube of side
+$S = L + 1$. The index is linear, so $R_{t'+t,\,u'+u,\,v'+v}$ is the cube
+entry at the sum of the two indices, and an integral is a double sum over the
+auxiliary list and the orbital-pair list. Pair lists are built once per
+primitive pair, auxiliary lists once per shell triple. The kernels they
+replaced, `compute_cart_eri3` and `compute_cart_eri3_deriv`, stay in the shim
+as the reference the tests compare against.
+
+**Screening.** The derivative loop of the RI-MP2 gradient screens nothing:
+every $(P|\mu\nu)$ shell triple is evaluated. The terfc energy is also
+unscreened (it has no `eri3_screen_thresh`), so the gradient differentiates
+the same sum. Schwarz bounds are not used for terfc derivatives.
+
+### What is proven and what is not {#terf-table-engine-proven}
+
+`crates/ferric-integrals/tests/terfc_deriv_integrals.rs`:
+
+| Check | Systems | Measured | Bar |
+|---|---|---|---|
+| Coulomb kernel through the same MD derivative vs libint2 | water, cc-pVTZ + cc-pVTZ-RI, every class to $(g\vert ff)$ and $(g\vert g)$ | $3.8\times10^{-14}$ | $10^{-10}$ |
+| terf and terfc derivatives vs five-point FD of the engine's values ($\omega r_0 = 1/\sqrt2$ and 4) | water, cc-pVDZ + cc-pVDZ-RI, every class | $2.6\times10^{-11}$ | 10 times the Coulomb FD floor ($3.9\times10^{-11}$) |
+| terfc derivative = libint2 Coulomb − table terf | the same | $2.1\times10^{-14}$ | $10^{-10}$ |
+
+Dropping the $-i\,E^{i-1,j}$ term fails all three checks. Writing
+$R_{\mathrm{Coulomb}} + R_{\mathrm{terf}}$ fails the second and third.
+
+`crates/ferric-integrals/tests/terfc_md_terms_vs_reference.rs` compares the
+term-list kernels with the reference kernels on every class of water /
+cc-pVTZ + cc-pVTZ-RI. terf values are bit-identical; terfc values and all
+derivatives agree to $5.1\times10^{-15}$, against a bar of $10^{-13}$ times
+the largest element. Flipping the sign of the terf seed, swapping $u$ and $v$
+in the pair index, or dropping $-i\,E^{i-1,j}$ each fails it.
+
+`scripts/terfc_rimp2_gradient_sympy.py` proves the $s$-type closed forms and
+their derivatives against a $k$-space quadrature (part K) and the Hermite
+identity for $i, j \le 3$ (part H). The general-$l$ shim code is covered only
+by the Rust tests above.
+
 ## Refusals {#terf-table-engine-refusals}
 
 | Condition | Result |
 |---|---|
 | tables not found | engine construction errors; nothing falls back to Coulomb |
 | total angular momentum reaches the table depth (24) | the `_checked` calls return the refusal |
+| a derivative integral with $L + 1 \ge 24$ ($L = l_P + l_A + l_B + 1$) | refused (@sec:terf-table-engine-derivative-integrals) |
 | terf in a Schwarz or CSB table | refused (section @sec:schwarz) |
 
 Why no fallback to Coulomb? A Coulomb integral in place of a terfc one is

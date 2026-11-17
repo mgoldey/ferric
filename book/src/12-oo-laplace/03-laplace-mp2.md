@@ -59,7 +59,9 @@ $n_q$ weights to minimize the largest error over that interval.
 
 **The tables.** The nodes and weights come from the tables of Takatsuka,
 Ten-no and Hackbusch, for $1/y$ on $[1, R]$
-(`ferric-quadrature/src/minimax.rs::select_minimax_points`). Each entry gives
+(`ferric-quadrature/src/minimax.rs::select_minimax_points`). ferric
+fits no minimax rule itself: it selects a precomputed entry at run time.
+Each entry gives
 exponents $\tau_k$ and weights $\omega_k$ that minimize
 
 $$ \delta(R) = \max_{y\in[1,R]}\Big|\frac1y - \sum_k\omega_ke^{-\tau_ky}\Big| . $$
@@ -207,6 +209,11 @@ At $t = 0$ and with no frozen core, $\underline P(0) = C_oC_o^{\mathsf T}$ is
 half the Hartree–Fock density, hence the name. At $t > 0$ each orbital is
 weighted by its own exponential. The AO form is the one a reduced-scaling
 method would sparsify (section @sec:local-laplace-sos); as written here it is dense.
+The same factorization at imaginary time splits the independent-particle
+polarizability $\chi_0(iu)$ of RPA into occupied and virtual products
+(section @sec:laplace-ao-chi0). That formulation reaches $\mathcal O(N^3)$
+only with AO sparsity; `crates/ferric-rpa/src/ao_rpa.rs` implements the
+MO-basis version, which keeps the dense $\mathcal O(N^4)$ scaling.
 
 `build_pseudo_density_occ` and `build_pseudo_density_vir` form the
 pseudo-densities, and `laplace_ao_coulomb_energy` forms the trace in panels

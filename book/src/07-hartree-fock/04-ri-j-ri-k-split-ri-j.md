@@ -177,6 +177,10 @@ other:
 
 $$ K = G + G^{\mathsf T}, \qquad G = \sum_P(B^PX)(B^PC_o)^{\mathsf T} . $$
 
+The CPHF kernel of the Hessian uses this form for every spin and every
+coordinate; section @sec:hf-hessian-factored-ri-k gives $X$ and $C_o$ for UHF, UKS and ROHF
+and the cost against the density route.
+
 A range-separated hybrid contracts two fitters,
 $K = c_{\rm SR}K[\mathrm{erfc}(\omega)] + c_{\rm LR}K[\mathrm{erf}(\omega)]$,
 each with its own metric and dressing on one auxiliary basis.
@@ -220,8 +224,9 @@ is a Coulomb-metric projection, the energy error is the residual self-energy,
 RI-J and RI-K are exact for a complete auxiliary set, $M = L^{-1}$ and
 $M = V^{-1/2}$ agree, the occupied and signed-factor routes equal the density
 route, the cut metric fits the kept span, and the packed weights are exact.
-The robust-form stationarity and the response form $G + G^{\mathsf T}$ were
-checked numerically for this section.
+The robust-form stationarity was checked numerically for this section. The
+response form $G + G^{\mathsf T}$ is claim F1 of
+`scripts/hessian_factored_k_sympy.py` (section @sec:hf-hessian-factored-ri-k).
 
 ## The algorithm {#ri-j-ri-k-split-ri-j-algorithm}
 

@@ -446,6 +446,34 @@ $K = 0$ and $c_{\rm HF} = 1$ it reduces to CIS. The prototype
 `scripts/proto_tddft.py` builds the TDA and Casida matrices by hand from
 PySCF integrals and compares them with PySCF `tdscf` on water/cc-pVDZ.
 
+### What is proven and what is not {#response-proven}
+
+The chapter's tests and their reference data:
+
+| Check | Where | Reference |
+|---|---|---|
+| TDA and Casida roots against PySCF `TDA`/`TDDFT` | `crates/ferric-tddft/tests/validation_tddft.rs` | generator `scripts/validation/gen_tddft_refs.py`; grades in `site/src/reference/validation.md`, rows `tda` and `tddft` |
+| range-separated hybrids and triplets against PySCF `get_ab` | `crates/ferric-tddft/tests/validation_tddft_rsh.rs` | generator `scripts/validation/gen_tddft_rsh_refs.py`; RHF blocks for singlets, the UKS spin blocks for triplets; the response integrals, the SCF fit and the grid are matched to PySCF |
+| the exact limits of section @sec:rsh and the singlet + triplet identity of section @sec:triplets | unit tests in `crates/ferric-tddft/src` | exact identities |
+| refusals | `crates/ferric-tddft/tests/refusals.rs` | |
+| memory plan | `crates/ferric-tddft/tests/memory_budget.rs` | |
+
+`scripts/tddft_response_sympy.py` proves, symbolically: the singlet and
+triplet spin adaptation of $\mathbf A$ and $\mathbf B$, the kernel factor 2,
+the scalar Casida reduction and its normalization, and the range-separated
+exchange split. Numerically, on random models with RI tensors and a grid
+kernel, it checks the spin-orbital $\mathbf A$ and $\mathbf B$ against the
+code's singlet and triplet blocks; CIS by brute force over determinants
+(Jordan–Wigner) against $\mathbf A$, closed and open shell; the Casida roots
+and $X+Y$ against the full non-Hermitian problem; the oscillator-strength sum
+rule; the unrestricted blocks and their closed-shell limit; the
+$\langle S^2\rangle$ formula against a Fock-space $\lVert S_+\Psi\rVert^2$;
+and the Casida $X$ extraction against the full eigenvector. With
+`DERIV_CROSSCHECK=1` and PySCF importable, it also compares
+H$_2$O/STO-3G RHF (TDA and TDHF, singlet and triplet) and
+H$_2$O$^+$/STO-3G UHF (TDA and TDHF) energies and oscillator strengths with
+PySCF; without that variable this part is skipped with a message.
+
 ## Sources {#response-sources}
 
 | Source | What it gives |

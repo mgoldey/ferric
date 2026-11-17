@@ -398,9 +398,6 @@ there.
 
 **Disagreements.**
 
-- `crates/ferric-core/theory.md:13` gives the Bohr radius as
-  $0.5291772109$ Å. The code constant is $0.52917721092$ Å. The book
-  quotes the code constant.
 - The Hartree-to-eV factor is written as the literal `27.211_386_245_988`
   (CODATA 2018) in `crates/ferric-gw/src/bse.rs:102`, while the length and
   energy constants in `crates/ferric-core/src/units.rs:17` and `:27` are
@@ -421,7 +418,6 @@ files.
 | File | Statement | Code |
 |---|---|---|
 | `crates/ferric-scf/theory.md:11-12` | $D = \sum_i C C^{\mathsf T}$, no factor 2 | `crates/ferric-scf/src/rhf.rs:3738` builds $2 C C^{\mathsf T}$ |
-| `crates/ferric-core/theory.md:13` | Bohr radius to 10 digits | `crates/ferric-core/src/units.rs:17` has 11 |
 
 Line references drift with every edit to a source file. The book cites
 functions by name and resolves the line at build time; see `book/BUILD.md`.

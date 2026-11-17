@@ -23,9 +23,32 @@ restricted orbitals, except spin-blocked UCCSD and UCCSD(T) (section @sec:uccsd,
 UHF) and the library-only open-shell LinLCCD. The reference equations are in
 `crates/ferric-cc/theory.md`; each section names the headings it follows.
 
-Two conventions hold throughout. Spin-orbital solvers use interleaved spin
-orbitals (even index α, odd index β) and
-$\langle pq\|rs\rangle = (pr|qs) - (ps|qr)$. The code stores the negative
-denominator $-\Delta$ and divides by it. Chapter @sec:second-quantization sets up the second
+The solvers fall into three index conventions:
+
+- **Spin orbital** (`ccd`, `ccsd`, `ccsd_t`, `linlccd`, `linlccd_u`,
+  `linlccd_exact`, `dlpno_linlccd`): indices run over $2n_o$ occupied and
+  $2n_v$ virtual spin orbitals, interleaved (even index α, odd index β), with
+  $\langle pq\|rs\rangle = (pr|qs) - (ps|qr)$ built from the dressed RI
+  factors (`ferric_mp2::spinorbital::asym_*`).
+- **Spin blocks on a UHF reference** (`u_ccsd`, `u_ccsd_t`): separate α and β
+  occupied and virtual spaces (section @sec:uccsd).
+- **Spatial, closed shell** (`ccsd_closed_shell`, `ccsd_t_closed_shell`,
+  `linlccd_amplitude`, `dlpno_ccsd*`): indices run over $n_o$ and $n_v$
+  spatial orbitals, and the amplitudes satisfy $t_{ij}^{ab} = t_{ji}^{ba}$.
+
+Denominators are positive for a gapped reference,
+
+$$
+\Delta_{ij}^{ab} = \varepsilon_a + \varepsilon_b - \varepsilon_i - \varepsilon_j,
+\qquad
+\Delta_{ijk}^{abc} = \varepsilon_a + \varepsilon_b + \varepsilon_c
+ - \varepsilon_i - \varepsilon_j - \varepsilon_k,
+$$
+
+and every energy expression carries its minus sign explicitly. The code
+stores the negative $-\Delta$ (the `d` arrays and `pno_denominators`) and
+divides by it, so an update reads $t \leftarrow r/(-\Delta)$. Canonical HF
+orbitals are assumed: $f_{ia} = 0$ and the occupied and virtual Fock blocks
+are diagonal. Chapter @sec:second-quantization sets up the second
 quantization (@sec:hamiltonian), the Wick contractions the proof scripts use (@sec:wick) and the
 spin adaptation of amplitudes (@sec:spin-adaptation) that this chapter relies on.

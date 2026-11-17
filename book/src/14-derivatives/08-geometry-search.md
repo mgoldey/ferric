@@ -392,6 +392,30 @@ C–C–N–S torsion from 13° to −64° (internals and geomeTRIC stop at +59�
 it ends in a rotamer 3.3 mHa lower. Both end points are minima: re-optimizing
 either one with the other search moves the energy by less than 0.02 mHa.
 
+The same molecule at PBE/def2-SVP (RI-J/RI-K, f64), from the same start,
+shows how far apart two converged searches can end. Cartesian old does not
+converge in 150 steps. Cartesian new converges in 47 steps, internal new in
+36 (1 rejected), internal old in 35. The new searches end within 1e-3 mHa of
+each other. With the per-block clip in place of the one-factor clip
+(section @sec:geometry-search-lindh-model-hessian) the internal search takes 37 steps and ends 0.04 mHa above
+the Cartesian one. From those
+two end points a further 150 internal steps at `g_max` 1.5e-5 (none reaches
+that threshold) move them by less than 0.05 mHa, and they stay 0.02 mHa
+apart. The analytic Hessian at the internal end point has one mode at
+22.7i cm⁻¹ (NH2 and methyl hydrogens). Re-optimizing from ±0.15 Å along it
+lowers the energy by at most 0.05 mHa, so it is a soft region of the same
+basin at the loose default thresholds, not a saddle above a lower one.
+
+The unconverged old search ends 1.39 mHa lower, and the same
+re-optimization takes it further, to 1.50 mHa below the new end points: its
+150 short steps carry it out of the starting basin into a lower one.
+geomeTRIC on the same surface takes 53 steps and ends 2.3 mHa below the new
+end points, in a third basin; its calculator and `run_optimize` agree to
+0.01 mHa at one geometry. At this level the molecule has several rotamers
+within a few mHa, and which one a local search reaches depends on its early
+steps. An end-point gap of this size between the old Cartesian and the
+internal searches is a different basin, not a convergence criterion.
+
 ### Redundant internal coordinates
 
 `coordinates = "internal"` (opt-in, `CoordSystem::Internal`) runs the same
@@ -550,6 +574,27 @@ not inspected.
 
 The default therefore stays Cartesian. `coordinates = "internal"` is the
 choice for an isolated molecule where a soft torsion near a barrier matters.
+
+### What is proven and what is not {#geometry-search-proven}
+
+Beyond the boxes above (B1 to B3, L1 to L4) and below (P1, P2, F1, F2, I1),
+`scripts/geometry_search_steps_sympy.py` checks the trust rule and the
+internal step:
+
+| Claim | What it checks |
+|---|---|
+| T1 | the Cartesian predicted change: for $s = \alpha p$, $p = -Hg$, $B = H^{-1}$, $g^{\mathsf T}s + \tfrac12 s^{\mathsf T}Bs = \alpha\,g^{\mathsf T}p\,(1-\alpha/2)$, negative for positive definite $H$ and $0 < \alpha \le 1$ (symbols) |
+| T2 | `ratio_trust_update` transcribed: shrink to $\lVert s\rVert/4$ when $r < \tfrac14$, double only when $r > \tfrac34$ and the step reached the boundary, keep the radius in between and inside the noise band, clamp to $[r_{\min}, r_{\max}]$, reject exactly the steps that raised the energy by $10^{-8}$ Ha or more; the transcribed constants are read back from `optimize.rs`. Driven on the Rosenbrock function from $(-1.2, 1)$, the ratio search keeps no uphill step and reaches the minimum to $10^{-6}$, while the fixed-radius search at the same radius keeps uphill steps |
+| T3 | the radius never grows on a rejected step or on a step with $\Delta E_{\rm pred} \ge 0$, over a grid that reaches every branch; the Rust source has the same shrink condition |
+| C1 | the one-factor clip gives $g^{\mathsf T}\Delta q = -\alpha\,g^{\mathsf T}Hg$ (symbols); the per-block ratio $a/b$ does not depend on $f$ (symbols); on 2000 random positive definite $H$ (8 coordinates, inverse-Hessian spectrum over three decades) the one-factor clip always descends, while the per-block clip is uphill in more than 20 cases and stays uphill when the radius shrinks a hundredfold; a model direction that does not descend falls back to $-H_0g$ |
+| C2 | $g_q^{\mathsf T}P\Delta q = g_q^{\mathsf T}\Delta q = g_x^{\mathsf T}\Delta x$ to first order, for random rank-deficient $B$ (12 internals, 9 Cartesians, rank 6) |
+
+The script's mutations each turn it red: the ratio-rule thresholds inverted
+(shrink above $\tfrac34$) fails T2; a shrink only on $r < \tfrac14$, without
+the rejection guard, fails T3; a per-block internal clip in place of the one
+factor fails C1. The claims are about the step rules. That a search reaches
+the same basin as another optimizer is the measurement of the tables above,
+not a proof.
 
 ## Saddle points: P-RFO {#geometry-search-saddle-points-p-rfo}
 
@@ -832,7 +877,7 @@ reports the first point as converged), so they are refused at the boundary.
 | Option | Effect |
 |---|---|
 | `coordinates` | `cartesian` (default) or `internal`; strict parse, no silent default |
-| `initial_hessian` | `lindh` (default) or `simple`; strict parse. The coordinate-only search (periodic cells, QM/MM) has no model, starts from the identity and refuses `lindh` |
+| `initial_hessian` | `lindh` (default) or `simple`; strict parse. The coordinate-only search `ferric-scf/src/optimize.rs::optimize_coordinates` (periodic cells) has no molecule to build the model from, starts from the identity and refuses `lindh`. The QM/MM search seeds from the free-atom block of the whole-structure Lindh model (`ferric-scf/src/optimize.rs::lindh_inverse_hessian_free`, section @sec:geometry-search-lindh-model-hessian); `simple` gives the identity there too |
 | `trust_update` | `ratio` (default) or `fixed`; strict parse. `simple` with `fixed` reproduces the earlier search bit for bit (`simple_hessian_and_fixed_trust_reproduce_the_recorded_trajectories`) |
 | energy correction (dispersion) | added to energy and gradient at every step by a caller closure. With the default no-correction closure the path is byte-identical (`a_zero_correction_is_byte_identical_to_no_correction`) |
 | `follow_mode` | which projected mode to climb, by ascending eigenvalue; 0 follows the lowest |

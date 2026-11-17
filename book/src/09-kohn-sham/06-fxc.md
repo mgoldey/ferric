@@ -131,6 +131,15 @@ The per-point Hessian `h` is a dense symmetric $7\times7$ array, so one loop
 serves LDA, GGA and meta-GGA: the rows and columns a family does not have
 are zero.
 
+`ferric-dft/src/fxc.rs::MggaFxcKernel::backproject` then turns the
+per-point $(u, \mathbf w, t)$ into the AO matrix
+$\delta V^\sigma_{\mu\nu} = \sum_g w_g\big[u^\sigma\chi_\mu\chi_\nu
++ \mathbf w^\sigma\cdot\nabla(\chi_\mu\chi_\nu)
++ \tfrac12 t^\sigma\nabla\chi_\mu\cdot\nabla\chi_\nu\big]$ with one GEMM per
+term: the $u$ term against $\chi$, per axis the $\mathbf w$ term (added with
+its transpose) and the $\tfrac12 t$ term against $\partial_b\chi$, and a
+final symmetrization $\tfrac12(V + V^T)$.
+
 **libxc's packing.** libxc returns the second derivatives packed, and the
 code reads them in this order:
 

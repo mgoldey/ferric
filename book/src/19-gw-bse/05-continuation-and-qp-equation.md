@@ -300,6 +300,16 @@ From `site/src/reference/validation.md` (`gw` row and G0W0 anchors), at
 | G0W0@HF QP energies, HOMO−2 … LUMO+2 | PySCF `gw_ac` | $\le 1.6\times10^{-7}$ Ha | `g0w0_hf_{h2o,nh3,n2}_vs_pyscf_gw_ac` in `crates/ferric-gw/tests/validation_gw.rs` |
 | G0W0@HF with ECPs | grid-free dRPA pole sum | $\le 8.0\times10^{-10}$ Ha | `g0w0_hf_ecp_{i2,xe,ag2}_vs_pyscf_gw_ac` |
 | G0W0@PBE | grid-free dRPA pole sum | $\le 1.8\times10^{-8}$ Ha | `g0w0_pbe_{h2o,n2}_vs_pyscf_gw_ac` |
+| G0W0@HF with ECPs | PySCF `gw_ac` | $\le 2.5\times10^{-6}$ Ha | the site's `gw` row |
+
+A benchmark against experiment measures the method, not the
+implementation, so it carries no pinned tolerance. For GW100, G0W0@HF gives
+a mean absolute error of 0.353 eV at aug-cc-pVDZ and 0.491 eV at
+aug-cc-pVTZ; these numbers are kept in the working notes, not in a test.
+The algebra of this chapter is exact. The numerical error budget is the
+$W$ quadrature, the 18-node Padé extrapolation (largest for KS references,
+whose $\epsilon_{\rm HOMO}$ lies far from $\epsilon_F$), the RI basis, and
+the PDEP truncation when it is enabled.
 
 ## Sources {#continuation-and-qp-equation-sources}
 
@@ -309,3 +319,5 @@ From `site/src/reference/validation.md` (`gw` row and G0W0 anchors), at
 | `scripts/gw_self_energy_sympy.py`, claims 4, 5, 6 | the proofs |
 | Vidberg and Serene, *J. Low Temp. Phys.* **29**, 179 (1977) | Thiele–Padé continuation |
 | Zhu and Chan, *J. Chem. Theory Comput.* **17**, 727 (2021) | the `gw_ac` conventions matched here |
+| J. Wilhelm, D. Golze, L. Talirz, J. Hutter, C. A. Pignedoli, *J. Phys. Chem. Lett.* **9**, 306 (2018) | analytic-continuation G0W0 for molecules |
+| M. J. van Setten *et al.*, *J. Chem. Theory Comput.* **11**, 5665 (2015) | the GW100 benchmark set |

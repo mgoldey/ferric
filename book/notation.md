@@ -373,10 +373,6 @@ there.
 
 **Disagreements.**
 
-- `crates/ferric-core/theory.md:13` gives the Bohr radius as
-  $0.5291772109$ Å, and `crates/ferric-mp2/theory.md:129` rounds the
-  conversion to $0.529177$. The code constant is $0.52917721092$ Å. The book
-  quotes the code constant.
 - The Hartree-to-eV factor is written as the literal `27.211_386_245_988`
   (CODATA 2018) in `crates/ferric-gw/src/bse.rs:102`, while the length and
   energy constants in `crates/ferric-core/src/units.rs:17` and `:27` are
@@ -400,7 +396,6 @@ files.
 | `crates/ferric-mp2/theory.md:38`, `:43`, `:56`, `:65` | line references `rimp2.rs:997`, `:1975`, `:1291`, `:1417` | the functions are at `:1007`, `:2219`, `:1312`, `:1438` |
 | `crates/ferric-mp2/theory.md:108-110` | the "thesis Eq 5.6" label is not checked against the dissertation | Eq. 5.6 (`dissertation.txt:3697-3703`) is $E = c_{\mathrm{OS}}E_{\mathrm{OS}}(r_0^{(1)}) + c_{\mathrm{SS}}[E_{\mathrm{SS}}(r_0^{(2)}) - E_{\mathrm{SS}}(r_0^{(1)})]$, which is the expression at `crates/ferric-mp2/theory.md:103` |
 | `scripts/mp2_variant_identities.py:10-12` | line references `:960`, `:1291`, `:1417` | same drift as above |
-| `crates/ferric-core/theory.md:13` | Bohr radius to 10 digits | `crates/ferric-core/src/units.rs:17` has 11 |
 
 Line references drift with every edit to a source file. The book cites
 functions by name and resolves the line at build time; see `book/BUILD.md`.

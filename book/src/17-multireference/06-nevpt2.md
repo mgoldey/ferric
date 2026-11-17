@@ -375,6 +375,23 @@ energies; inside a degenerate group of core or virtual orbitals the pair
 classes depend on the eigenvectors chosen, which moves N2's `Srs` by up to
 $1.7\times10^{-7}$ Ha between codes.
 
+### What is proven and what is not {#nevpt2-proven}
+
+The details of `crates/ferric-ci/tests/nevpt2.rs`:
+
+| Check | Systems | Measured | Bar |
+|---|---|---|---|
+| exact zeros of every class whose external space is empty, the non-empty classes nonzero | H2 CAS(2,4) and CAS(2,2); LiH with 1 core orbital, CAS(2,5) | exactly 0 | |
+| one-orbital closed-shell active space on RHF orbitals vs the MP2 pair sums and the closed-form `Srs` | H2O / 6-31G | $8.1\times10^{-15}$ Ha | $10^{-10}$ |
+| the numpy prototype's Wick construction on the same ferric CASSCF orbitals and CI vector | H2O CAS(4,4); N2 CAS(6,6) at 1.0977 and 2.2 Å / 6-31G | $6.2\times10^{-14}$ Ha | $2.3\times10^{-10}$, $4.6\times10^{-9}$ |
+| `pyscf.mrpt.NEVPT` on PySCF's own CASSCF | H2O, N2, stretched N2 | $1.3\times10^{-8}$, $3.2\times10^{-8}$, $2.1\times10^{-8}$ Ha | the propagated CASSCF-convergence bar of each class; largest ratio 0.88 (stretched N2 `Sr`, where PySCF's gradient is $9.8\times10^{-7}$) |
+
+Five mutations fail it: a sign flip in `make_a12` (caught through `Sir`); a
+$p\leftrightarrow q$ swap in one `make_a12` RDM index; the dropped `f3ca`
+term of `make_a16` (caught through `Sr`); $F^I$ in place of $F^I + F^A$ for
+the orbital energies (caught by the MP2 anchor, the prototype and PySCF);
+and `Sr` gated on the core space (caught by the zeros anchor).
+
 ## Sources {#nevpt2-sources}
 
 | Source | What it gives |

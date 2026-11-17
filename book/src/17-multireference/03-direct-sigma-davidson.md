@@ -293,7 +293,8 @@ allocated.
 |---|---|---|---|
 | $E_\text{CASCI}$ vs PySCF `mcscf.CASCI` | N2 CAS(6,6) / cc-pVDZ at 1.10 and 2.20 Å; H2O CAS(4,4) / 6-31G; each also with the window moved down one orbital | $\le 1.4\times10^{-11}$ Ha | `crates/ferric-ci/tests/validation_casci.rs` |
 | $E_\text{core}$ and the active-space energy | same | $\le 2.6\times10^{-10}$ Ha | `crates/ferric-ci/tests/validation_casci.rs` |
-| direct sigma vs the pair loop, random and real integrals | ten sectors, H2O / STO-3G | element-wise to $10^{-12}$ | `crates/ferric-ci/tests/direct_sigma_vs_naive.rs` |
+| direct `sigma` vs `sigma_naive` (the `general_element` pair loop) on random vectors | random 8-fold-symmetric integrals in ten sectors with $N_\alpha \ne N_\beta$, including empty and full channels; real H2O/STO-3G integrals for full CI (441 determinants), 8 electrons in 6 orbitals above a frozen O 1s (225 determinants) and four unequal-spin sectors | element-wise to $10^{-12}$ | `crates/ferric-ci/tests/direct_sigma_vs_naive.rs` |
+| `hamiltonian_diagonal` vs the diagonal of the dense $H$; $\sigma$ of unit vectors vs the dense columns | same | element-wise to $10^{-12}$ | `crates/ferric-ci/tests/direct_sigma_vs_naive.rs` |
 
 ## Sources {#direct-sigma-davidson-sources}
 

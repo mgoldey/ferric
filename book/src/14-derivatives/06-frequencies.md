@@ -35,6 +35,7 @@ must not mistake a small imaginary mode at a saddle point for one of them.
 |---|---|
 | Rust, Hessian to frequencies | `ferric-scf/src/frequencies.rs::frequencies_from_cartesian_hessian` |
 | Rust, drivers | `ferric-scf/src/frequencies.rs::{harmonic_frequencies,harmonic_frequencies_analytic,harmonic_frequencies_from_gradient}` |
+| Rust, analytic Hessian at a converged SCF | `ferric-scf/src/hessian.rs::{analytic_frequencies,analytic_frequencies_uhf,analytic_frequencies_rohf,analytic_frequencies_ks_moving_grid}`, `ferric-scf/src/hessian/uks.rs::analytic_frequencies_uks_moving_grid`; each builds the Hessian parts and hands them to the same projection and diagonalization as the finite-difference route |
 | CLI | `task = "frequencies"`, section `[frequencies]` |
 | Python | `run_frequencies` |
 

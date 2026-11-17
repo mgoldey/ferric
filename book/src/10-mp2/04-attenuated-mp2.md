@@ -140,7 +140,9 @@ curvature link; the tables cover $r_0\omega$ up to about 8.9.
 
 **Runtime tables.** terfc and terf integrals come from the Dutoi–Goldey
 two-dimensional interpolation tables, located by `FERRIC_TERF_TABLE_DIR`.
-erfc needs no tables.
+The terfc kernel is evaluated in the C++ shim,
+`crates/ferric-integrals/shim/shim.cc`, as the Coulomb integral minus the
+terf integral (section @sec:erf-terf-curvature-constraint). erfc needs no tables.
 
 ## Published parameterizations {#attenuated-mp2-published-parameterizations}
 
@@ -189,12 +191,12 @@ let sc = if let Some(thresh) = config.screen_thresh {
         memory_budget_bytes: config.memory_budget_bytes,
         ..Default::default()
     };
-    ri_mp2_spin_components_any(mol, obs, dfbs, op, rhf, &ri_config)?   // (10.14), (10.2)
+    ri_mp2_spin_components_any(mol, obs, dfbs, op, rhf, &ri_config)?   // fitted integrals, then the RI-MP2 energy
 };
 let scaled_corr = config.scaling * sc.e_total;      // s E^(2)[w]
 Ok(AttenuatedMp2Result {
     mp2_corr: scaled_corr,
-    total_energy: rhf.energy + scaled_corr,         // (10.15): HF unattenuated
+    total_energy: rhf.energy + scaled_corr,         // E_HF + s E^(2)[w]: HF unattenuated
     spin_components: sc,
 })
 ```
@@ -252,10 +254,11 @@ terfc energy of this section is their sum. Figures from
   section @sec:scs-mp2-2terfc tests, not by its certificate.
 - This section covers the energy. The analytic nuclear gradient (erfc and
   terfc, RHF and UHF; `task = "optimize"` with `att-rimp2`,
-  `run_optimize(method="att-rimp2")`) is derived in
-  `crates/ferric-mp2/theory.md`, "9.4 Attenuated (erfc) RI-MP2 gradient",
-  "9.5 terfc-attenuated RI-MP2 gradient" and sections 15.1–15.2, and graded
-  on the validation page.
+  `run_optimize(method="att-rimp2")`) is derived in sections
+  @sec:rimp2-gradient-attenuated-erfc-ri-mp2,
+  @sec:u-rimp2-gradient-attenuated-erfc-variant and
+  @sec:u-rimp2-gradient-terfc-scs-mp2-2terfc, and graded on the validation
+  page.
 - The terfc default $r_0$ exists only for the 13 tabulated bases; the erfc
   default $\omega$ is the aug-cc-pVDZ value for every basis.
 - Parameters were fitted without counterpoise; applying them to
@@ -266,11 +269,30 @@ terfc energy of this section is their sum. Figures from
 With `multiplicity > 1` the CLI kinds `att-rimp2`, `scs-mp2` and
 `scs-mp2-2terfc`, and the Python drivers `run_attenuated_rimp2`,
 `run_terfc_rimp2`, `run_scs_mp2` and `run_scs_mp2_2terfc`, take a UHF
-reference. The spin components are the blocks of unrestricted RI-MP2
-(section @sec:unrestricted-ri-mp2) under the same operator:
+reference. All of them, and `attenuated_ri_mp2_long_range`, read their spin
+components from one function,
+`ferric-mp2/src/u_rimp2.rs::ri_mp2_spin_components_any`. On a restricted
+reference it runs the closed-shell components unchanged. On a UHF reference,
+or a ROHF one, it runs `ferric-mp2/src/u_rimp2.rs::u_ri_mp2`, which
+semicanonicalizes a ROHF reference per spin first. The spin components are
+then the blocks of unrestricted RI-MP2 (section @sec:unrestricted-ri-mp2)
+under the same operator:
 $E_{\rm OS} = E_{\alpha\beta}$ and $E_{\rm SS} = E_{\alpha\alpha} + E_{\beta\beta}$.
+A `kappa` regularization on an open-shell reference is an error: the
+$\kappa$ kernel is closed shell only.
 
-Why does the 10.2 derivation carry over? It used one property of $1/r$: it
+The spin-scaled energies of sections @sec:scs-and-kappa and @sec:scs-mp2-2terfc
+keep their form, with the blocks in place of the components:
+
+$$ E_{\rm SCS} = c_{\rm OS}E_{\alpha\beta}[1/r] + c_{\rm SS}\big(E_{\alpha\alpha} + E_{\beta\beta}\big)[1/r], $$
+
+$$ E_{\rm SCS(2terfc)} = c_{\rm OS}E_{\alpha\beta}\big[r_0^{(1)}\big] + c_{\rm SS}\Big(\big(E_{\alpha\alpha}+E_{\beta\beta}\big)\big[r_0^{(2)}\big] - \big(E_{\alpha\alpha}+E_{\beta\beta}\big)\big[r_0^{(1)}\big]\Big), $$
+
+each without $E_{\rm HF}$, and attenuated MP2 is
+$E_{\alpha\alpha} + E_{\beta\beta} + E_{\alpha\beta}$ under erfc, erf or
+terfc.
+
+Why does the derivation of section @sec:unrestricted-ri-mp2 carry over? It used one property of $1/r$: it
 does not act on spin, so an integral is nonzero only when each electron
 keeps its spin. erfc$(\omega r)/r$ and terfc$(r)/r$ are spin-free too. The
 exchange integral needs both electrons in one spin, so it appears only in
@@ -283,7 +305,18 @@ components (@sec:unrestricted-ri-mp2-energy), and a closed-shell molecule run th
 gives the restricted energies to rounding (≤ 6e-17 Ha on water/cc-pVDZ for
 erfc, erf, terfc, SCS and SCS(2terfc)). On OH, NH2 and O2 at cc-pVDZ the erfc
 energy and the SCS energy match PySCF `DFUMP2` on the same fits to ≤ 4e-15 Ha.
-The QQR-3 screened build (`screen_thresh`) is closed shell only.
+The QQR-3 screened build (`screen_thresh`) is closed shell only and refuses
+an open-shell reference.
+
+`scripts/u_attenuated_sympy.py` checks the block split. On an open-shell
+model with different $\alpha$ and $\beta$ orbitals and different
+occupation counts, $E_{\alpha\alpha} + E_{\beta\beta} + E_{\alpha\beta}$
+equals the spin-orbital sum $\tfrac14\sum|\langle ij\|ab\rangle|^2/D$,
+which uses no spin blocks; the pairs with $\sigma_i \ne \sigma_j$ give
+$E_{\alpha\beta}$ and those with $\sigma_i = \sigma_j$ give
+$E_{\alpha\alpha} + E_{\beta\beta}$. The singlet check sets
+$\alpha = \beta$ and recovers $E_{\rm OS}$ and $E_{\rm SS}$ of the
+closed-shell kernel.
 
 ## Sources
 
@@ -291,6 +324,7 @@ The QQR-3 screened build (`screen_thresh`) is closed shell only.
 |---|---|
 | `crates/ferric-mp2/theory.md`, "4. Spin-component scaling" (terfc kernel), "5. Attenuated MP2", "5.1 Open-shell attenuated and spin-scaled MP2" | equations @eq:attenuated-mp2-1–@eq:attenuated-mp2-5, units, the per-basis $r_0$ table, open shell |
 | `crates/ferric-mp2/src/attenuated.rs`, `crates/ferric-mp2/src/terfc_r0.rs`, `crates/ferric-integrals/src/operator.rs`, `crates/ferric-integrals/src/qqr3.rs`, `crates/ferric-cli/src/config.rs` | defaults, keys, metric, screening |
+| Goldey and Head-Gordon, Chem. Phys. Lett. 608, 249 (2014) | the per-basis terfc $r_0$ table (`ferric-mp2/src/terfc_r0.rs::TERFC_R0_TABLE`) |
 | Goldey dissertation, chapter 2 (Table 2.1), chapter 3 (Eqs. 3.1–3.2, Table 3.1), chapter 5 (section 5.1), chapter 6 (Eq. 6.3) | definitions, the two same-sign errors, the scaling factor, parameters, summary table |
 | `scripts/mp2_family_sympy.py`, part D | verified box |
 | `site/src/reference/validation.md` | anchors, gradient grade |

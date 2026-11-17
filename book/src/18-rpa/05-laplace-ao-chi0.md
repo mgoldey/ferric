@@ -15,8 +15,7 @@ where the scaling would change, is not built.
 
 The plan: the Laplace form of the kernel and the dielectric built from it
 (@sec:laplace-ao-chi0-laplace-form-kernel), the requirements the code enforces (@sec:laplace-ao-chi0-requirements-code-enforces), then anchors and
-sources. The derivation is `crates/ferric-rpa/theory.md`,
-"Laplace-transformed chi0".
+sources.
 
 | Symbol | Meaning | Code name |
 |---|---|---|
@@ -55,6 +54,16 @@ $r(x) \approx (\Delta_{\min}/x)/\Delta_{\min} = 1/x$ on
 $[\Delta_{\min}, R\,\Delta_{\min}]$, with the table's relative error. Here
 $R = \Delta_{\max}/\Delta_{\min}$ and there is one gap per pair, so no
 factor 2 as in Laplace MP2.
+
+`build_laplace_for_gaps` takes the gap range from the orbital energies,
+
+$$ \Delta_{\min} = \varepsilon_{\mathrm{LUMO}} - \varepsilon_{\mathrm{HOMO}}, \qquad \Delta_{\max} = \max_a\varepsilon_a - \min_i\varepsilon_i , $$
+
+and `LaplaceQuadrature::new` picks the table entry with
+`ferric-quadrature/src/minimax.rs::select_minimax_points`: the first entry
+whose range satisfies $R_{\mathrm{tab}} \ge 0.99R$, a 1% slack. An $R$
+beyond the last entry of the table is an error, as is an untabulated
+$n$.
 
 **What the code computes.** The coded sum is
 $\operatorname{Re}r(\Delta + iu)$ with $r(x) = \sum_lw_le^{-t_lx} \approx 1/x$:
@@ -96,6 +105,28 @@ for (&t_l, &w_l) in laplace.points.iter().zip(laplace.weights.iter()) {
 
 The identity matrix of (@eq:rpa-chi0-laplace) is added after the loop.
 
+**Open shell** (`dielectric_matrix_laplace_unrestricted_into`, its per-spin
+helper `accumulate_one_spin`). Each spin gets its own Laplace quadrature on
+its own gap range, built in the open-shell driver `u_pdep_rpa_core`. The per-spin coefficient is
+$2w_l\cos(ut_l)$, the pole pair alone, as in (@eq:open-shell-dielectric-1):
+
+$$ \mathbf V^{\mathsf T}\tilde{\boldsymbol\varepsilon}_U(iu)\mathbf V = \mathbf 1 + \sum_\sigma\sum_{l\in\sigma}2w_l\cos(ut_l)\,\mathbf X^{\sigma}_l\mathbf X^{\sigma\mathsf T}_l . $$
+
+An empty $\beta$ channel (no $\beta$ occupied orbital) reuses the
+$\alpha$ quadrature and contributes nothing. The fallback threshold uses the
+larger $t_{\max}$ of the two spins, and both spins fall back to the dense
+kernel together. With identical channels the two prefactors 2 sum to the
+closed-shell 4.
+
+**Where it is used.** In `run_pdep_rpa` the Laplace kernel enters the
+frequency loop (`ferric-rpa/src/energy.rs::eval_eigenvalues_at_frequencies_laplace`,
+the eigenvalues of the projected matrix at each node) and the Davidson
+matrix-vector product of the static eigensolve. The default Lanczos static
+eigensolve and the Boys-screened arms build $\tilde{\boldsymbol\varepsilon}(0)$
+with the dense kernel. In `run_u_pdep_rpa` the Laplace kernel enters both the
+static eigensolve and the frequency loop. The closed-shell inverse-dielectric
+stack is built only on the dense backend.
+
 **Where the factorization leads.** In this molecular-orbital form nothing is
 saved: each frequency node does $n$ products of the size the dense path does
 once. The point of the form is
@@ -106,7 +137,11 @@ $\overline P_{\mu\nu}(t) = \sum_a C_{\mu a}e^{-t\varepsilon_a}C_{\nu a}$, which
 are sparse for large molecules. `ao_rpa.rs` builds those pseudo-densities and
 an imaginary-time $\chi_0$ from them (after Kaltak, Klimeš and Kresse 2014),
 but evaluates the contraction densely. The sparse AO contraction is not
-implemented.
+implemented. The module is the MO-basis version of the imaginary-time
+formulation, with the dense $\mathcal O(N^4)$ scaling per frequency of MO-basis
+RPA. The formulation reaches $\mathcal O(N^3)$ only with AO sparsity (atom-pair
+cutoffs on the orbital coefficients through local orbitals), which is the
+part not built.
 
 > **Verified equation @eq:rpa-chi0-laplace** · the Laplace dielectric
 >

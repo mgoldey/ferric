@@ -86,6 +86,16 @@ formulations, since they share one shape.
 | `ample_budget_is_bitwise_the_in_core_path` (same file) | at an ample budget both formulations equal the public pieces called at the full budget, bit for bit |
 | `packed_and_spilled_match_in_core_within_the_reduction_order_bar` (same file) | both formulations at two $\omega$ agree with the in-core run within a bar derived from the summation order of the $\tilde{\mathbf B}$ stream |
 
+Only the summation order of $\tilde{\mathbf B} = \mathbf F\,(Q|ia)$ depends
+on the tier. Two orders of a floating-point sum of $n$ terms $x_k$ differ by
+at most $2\gamma_n\sum_k|x_k|$, with $\gamma_n = n\mathbf u/(1 - n\mathbf u)$
+and $\mathbf u$ the unit round-off, so elementwise
+
+$$ |\delta\tilde{\mathbf B}| \le 2\gamma_{N_{\mathrm{aux}}}\,|\mathbf F|\,|(Q|ia)| . $$
+
+The energy bar of `packed_and_spilled_match_in_core_within_the_reduction_order_bar`,
+for both formulations, is derived from this bound.
+
 The check runs before any large allocation, so a job whose budget does not
 fit even a spilled tensor is refused at the start rather than killed part
 way.

@@ -122,7 +122,10 @@ Two points about it:
 
 **The angular rule.** On each radial shell, `ferric-quadrature/src/lebedev.rs::lebedev`
 supplies a Lebedev–Laikov rule, with the weights normalized to
-$\sum_j w^\Omega_j = 1$. The $4\pi$ of the sphere already sits in the radial
+$\sum_j w^\Omega_j = 1$. The rules live in `ferric_quadrature::lebedev`, which
+the PCM cavity spheres (section @sec:cavity-and-bem) also use; `ferric_dft::lebedev`
+(`crates/ferric-dft/src/lebedev.rs`) re-exports it, so code that names
+the `ferric_dft` path gets the same tables. The $4\pi$ of the sphere already sits in the radial
 weight. A point's weight is therefore
 $w_g = w^{\rm rad}_k\,w^\Omega_j\,w^A(\mathbf r_g)$, and
 $\sum_g w_gf(\mathbf r_g) \approx \int f\,d\mathbf r$.

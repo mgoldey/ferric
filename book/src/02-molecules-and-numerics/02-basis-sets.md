@@ -188,8 +188,15 @@ and p functions of a valence shell, with a separate coefficient column for
 each. Ferric's `Shell` has one $l$, so the parser emits two shells with the
 same exponents, and each column is renormalized with its own $l$ in (@eq:basis-unit-self-overlap).
 
-The bundled sets are compiled into the binary as one blob that is inflated
-once per process. Which sets exist, with their provenance, is in the user
+The bundled sets are stored in BSE-JSON under
+`crates/ferric-core/src/basis/bundled/`. The build script
+`crates/ferric-core/build.rs` packs them into one blob: each set is reduced
+to its shells (function type, angular momenta, and the exponent and
+coefficient digit strings as the BSE wrote them) and ECPs, every distinct
+shell and ECP is stored once in a shared pool, and the pooled JSON is
+deflated (level 9). `def2-ecp.json` is left out; `ecp.rs` embeds it on its
+own. The blob is compiled into the binary with `include_bytes!` and inflated
+once per process by `crates/ferric-core/src/basis/packed.rs`. Which sets exist, with their provenance, is in the user
 guide and the validation page. Three conventions matter to a result:
 
 - The Pople 6-31G family is Cartesian (6D), as the Basis Set Exchange types it.

@@ -248,7 +248,7 @@ The shift keeps the step finite when a gap is small. One iteration of
 | 6 | DIIS on $C_{\mathrm{new}}$ with error $C_{\mathrm{new}}\,G\,C_{\mathrm{new}}^{\mathsf T}$, $G$ the antisymmetric embedding of $g$; then $C \leftarrow C(C^{\mathsf T}SC)^{-1/2}$ | `lowdin_orthonormalize` |
 | 7 | Evaluate the trial point | `evaluate_point` |
 | 8 | If $E_{\mathrm{trial}} > E + 10^{-4}$: halve $\kappa$ up to ten times without DIIS, stopping at the first trial with $E \le E + 10^{-12}$; reset DIIS | main loop |
-| 9 | If $\lvert E_{\mathrm{trial}} - E\rvert <$ `energy_conv` and the iteration is past the first: recompute the gradient at the accepted point and stop if $\lVert g\rVert_2 < 10\,$`grad_conv` | main loop |
+| 9 | If $\lvert E_{\mathrm{trial}} - E\rvert <$ `energy_conv` and the iteration is past the first: recompute the gradient at the accepted point and stop if $\lVert g\rVert_2 < 10\,$`grad_conv`; otherwise that gradient is reused at the next iteration. The energy change is the one measured before any halving | main loop |
 
 Notes on the table:
 
@@ -284,7 +284,10 @@ route (`OoJk`).
   `oo_hf_energy_on_an_rijk_reference_is_the_scf_energy` checks that it equals
   the SCF energy at the reference orbitals. The derivation of (@eq:oo-cs-gradient) used
   only that $\mathcal G$ is linear and symmetric, which the Coulomb-metric
-  fit satisfies, so (@eq:oo-cs-gradient) holds on this route unchanged.
+  fit satisfies, so (@eq:oo-cs-gradient) holds on this route unchanged. The
+  nuclear gradient follows the same fitted route, through
+  `ferric-scf/src/response_jk.rs::ResponseJk` (the fitted bilinear
+  two-electron derivative of section @sec:rimp2-gradient).
 - Otherwise the loop builds exact four-centre $J$ and $K$ at a $10^{-12}$
   threshold. `difference_jk` optionally builds them from the density change
   since the previous point; `oo_rimp2_difference_jk_matches_plain_builds`

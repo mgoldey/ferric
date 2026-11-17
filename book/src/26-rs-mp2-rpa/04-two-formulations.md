@@ -175,7 +175,8 @@ The terf split is checked by its limits only.
 
 ## Known limits (2026-11-15)
 
-- Closed-shell RHF reference only; energy only, no gradient.
+- Energy only, no gradient. The closed-shell RHF path is the one the
+  sections above derive; the open-shell path is below.
 - No benchmark selects $\omega$ or $r_0$; the terf arm has no reference
   beyond its limits.
 - The fusion test of section @sec:shared-intermediates covers `coupled-rings` only.
@@ -183,7 +184,8 @@ The terf split is checked by its limits only.
 ## Open shell
 
 With `multiplicity > 1`, `kind = "rs-mp2-rpa"` and `run_rs_mp2_rpa` take a
-UHF reference (energies only). Each operator builds one pair of spin
+UHF reference (energies only), or a ROHF one semi-canonicalized per spin.
+`rs_mp2_lr_rpa` then takes `scan_impl_unrestricted`. Each operator builds one pair of spin
 intermediates in one aux basis. The pair feeds the unrestricted MP2 blocks
 and the spin-summed dRPA, $\boldsymbol\epsilon = \mathbf 1 + \boldsymbol\Pi_\alpha + \boldsymbol\Pi_\beta$.
 The subtracted second-order term is not $2E_{\rm OS}$. It is
@@ -192,7 +194,53 @@ $$ d = E_{\alpha\beta} + \tfrac12\big(D_{\alpha\alpha} + D_{\beta\beta}\big), \q
 
 the direct part of spin-orbital MP2. It equals $2E_{\rm OS}$ only when the two
 spins have the same orbitals. With $d$ in place of $2E_{\rm OS}$, both forms
-again equal $E_{\rm MP2}[\mathrm C]$ through second order. On OH, NH2 and O2
+again equal $E_{\rm MP2}[\mathrm C]$ through second order.
+
+The code names: per operator $v$, `ferric-mp2/src/u_rimp2.rs::u_ri_mp2_from_parts`
+gives the U-MP2 blocks $E_{\alpha\alpha}$, $E_{\beta\beta}$, $E_{\alpha\beta}$
+from the spin pair $B_\sigma[v]$, and `ferric-rpa/src/lib.rs::u_pdep_rpa_from_intermediates`
+gives the spin-summed dRPA of section @sec:open-shell-dielectric.
+$D_{\sigma\sigma}$ is the $E_{\rm OS}$ of the closed-shell kernel
+`ferric-mp2/src/rimp2.rs::spin_components_from_b_ov` run on spin $\sigma$'s
+$B$ and orbital energies. Here $D_{ij}^{ab} = -\Delta_{ij}^{ab}$ is negative.
+The two energies are the closed-shell ones with $2E_{\rm OS}$ replaced by $d$:
+
+$$ E^{\rm B}_c = E_{\rm MP2}[\mathrm C] + E_{\rm dRPA}[\mathrm{lr}] - d[\mathrm{lr}], \qquad
+E^{\rm T}_c = E_{\rm MP2}[\mathrm C] + \big(E_{\rm dRPA}[\mathrm C] - d[\mathrm C]\big) - \big(E_{\rm dRPA}[\mathrm{sr}] - d[\mathrm{sr}]\big), $$
+
+with $d[v] = E_{\alpha\beta}[v] + \tfrac12\big(D_{\alpha\alpha}[v] + D_{\beta\beta}[v]\big)$.
+
+Why $d$? Expand the dRPA integrand to second order in the integrals:
+$\ln(1 + x) - x = -x^2/2 + O(x^3)$, so
+$E^{(2)} = -\frac{1}{4\pi}\int_0^\infty\operatorname{tr}\boldsymbol\Pi^2\,du$.
+With $\boldsymbol\Pi = \boldsymbol\Pi_\alpha + \boldsymbol\Pi_\beta$ and the
+prefactor 2 per spin,
+
+$$ \operatorname{tr}\boldsymbol\Pi^2 = \sum_{\sigma\tau}\sum_{ia\in\sigma}\sum_{jb\in\tau}\frac{4\,\Delta_{ia}\Delta_{jb}\,(ia|jb)^2}{(u^2 + \Delta_{ia}^2)(u^2 + \Delta_{jb}^2)}, \qquad \int_0^\infty\frac{\Delta_1\Delta_2\,du}{(u^2 + \Delta_1^2)(u^2 + \Delta_2^2)} = \frac{\pi}{2(\Delta_1 + \Delta_2)} . $$
+
+So $E^{(2)} = \tfrac12\sum_{\sigma\tau}\sum(ia|jb)^2/D$ with
+$D = -(\Delta_{ia} + \Delta_{jb})$. The $\alpha\alpha$ and $\beta\beta$ terms
+give $\tfrac12D_{\alpha\alpha} + \tfrac12D_{\beta\beta}$; the $\alpha\beta$ and
+$\beta\alpha$ terms together give $E_{\alpha\beta}$. That sum is $d$, the
+direct (no-exchange) part of the spin-orbital MP2 energy,
+$\tfrac12\sum_{ijab}\langle ij|ab\rangle^2/D$.
+
+$2E_{\alpha\beta}$ equals $d$ only when
+$D_{\alpha\alpha} = D_{\beta\beta} = E_{\alpha\beta}$, which holds when the
+two spins have the same orbitals. Check the singlet limit: run through the
+UHF path, $d = 2E_{\rm OS}$, the U-dRPA equals the closed-shell dRPA
+(prefactors $2 + 2 = 4$), and every open-shell result equals the restricted
+one. Every bracket again starts at third order, so both forms equal the
+open-shell $E_{\rm MP2}[\mathrm C] = E_{\alpha\alpha} + E_{\beta\beta} + E_{\alpha\beta}$
+through second order, and the limits are the closed-shell ones:
+$v_{\rm lr} = 0$ gives $E_{\rm MP2}[\mathrm C]$, and $v_{\rm sr} = 0$ gives
+$E_{\rm MP2}[\mathrm C] + E_{\rm dRPA}[\mathrm C] - d[\mathrm C]$.
+
+The two spin sets of one operator are co-resident, so the pre-flight charges
+both (`ferric-rpa/src/budget.rs::scan_charge_unrestricted`).
+`scripts/u_attenuated_sympy.py` checks $d$ symbolically and against the
+Cauchy-integral $\lambda^2$ coefficient of the spin-orbital plasmon energy,
+the second-order and limit statements, and the singlet limit. On OH, NH2 and O2
 at cc-pVDZ the T form matches PySCF (`DFUMP2` + `URPA`) to ≤ 1.5e-13 Ha.
 Using $2E_{\alpha\beta}$ instead moves T by 1.9e-4 to 3.4e-3 Ha. The B form
 needs the erf fit, whose metric PySCF factors differently, so it is checked

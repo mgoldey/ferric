@@ -168,11 +168,33 @@ energy $-\sum 2(ia|jb)^2/\Delta_{ij}^{ab} = 2E_{\mathrm{OS}}$. Compare (@eq:clos
 delete the exchange integral $(ib|ja)$ there and the result is
 $2E_{\mathrm{OS}}$. Second-order dRPA is MP2 without exchange, with the
 same-spin pairs counted as if they were opposite-spin pairs.
+The MP2 code reaches the same number with the opposite sign convention:
+`ferric-mp2/src/rimp2.rs::pair_energy` divides $(ia|jb)^2$ by the negative
+`denom` $= \varepsilon_i + \varepsilon_j - \varepsilon_a - \varepsilon_b$, so
+$E_{\mathrm{OS}} = -\sum(ia|jb)^2/\Delta_{ij}^{ab}$ comes out negative
+without a minus sign in the loop.
+
+Check the Riccati equation on one mode, $\mathbf A = \Delta + b$,
+$\mathbf B = b$, $\Delta > 0$. Then $\mathcal F(T) = 2\Delta t$ and
+$\mathbf R = 0$ is the quadratic
+
+$$ b + 2(\Delta + b)t + bt^2 = 0 . $$
+
+Of its two roots, take the one that stays finite as $b \to 0$:
+$t = \big(\sqrt{\Delta(\Delta + 2b)} - \Delta - b\big)/b$, which goes to 0
+with $b$. Then $\tfrac12 bt = \tfrac12\big(\sqrt{\Delta(\Delta + 2b)} - \Delta - b\big)$,
+the plasmon value of @sec:drpa-three-ways-plasmon-formula.
 
 The code (`fock_super`, `riccati_masked_solve`) iterates the damped fixed
-point $\mathbf T \leftarrow \mathbf T - \mathbf R(\mathbf T)/\mathbf D$, where
-$\mathbf D$ is built from the diagonals of the localized occupied and virtual
-Fock blocks, optionally with DIIS on the increment. One iteration of
+point $\mathbf T \leftarrow \mathbf T - \mathbf R(\mathbf T)/\bar{\mathbf D}$, where
+$\bar{\mathbf D}$ is built from the diagonals of the localized occupied and virtual
+Fock blocks,
+
+$$ \bar D_{ia,jb} = F_{aa} + F_{bb} - F_{ii} - F_{jj}, $$
+
+optionally with DIIS on the increment. In canonical orbitals $\bar D$ is
+$\Delta_{ij}^{ab}$. `amplitude_drpa_dense` stops with "non-positive
+denominator (not a gapped system?)" if any $\bar D_{ia,jb} \le 0$. One iteration of
 `ferric-mp2/src/drpa_amplitude.rs::riccati_masked_solve`, with the DIIS step,
 the declarations of `r2` and `new_t` and the code's own comments removed:
 
@@ -259,8 +281,8 @@ The summand $S$ is evaluated in one of two ways, which agree per frequency:
 
 | Route | $S(u_k)$ | Used by |
 |---|---|---|
-| Log-determinant | $\ln\det(\mathbf 1 + \boldsymbol\Pi) - \operatorname{tr}\boldsymbol\Pi$ by an LU factorization | the aux-basis route (`RpaEnergyRoute::AuxBasisLogDet`): CLI `drpa`, and PDEP with every mode kept and no eigenvalues requested |
-| Eigenvalues | $\sum_\xi s(\lambda_\xi)$, $s(\lambda) = \ln\lambda + 1 - \lambda$ | PDEP with truncation, U-PDEP, and any caller that asks for eigenvalues |
+| Log-determinant (`ferric-rpa/src/energy.rs::trace_log_summands_of_projection`) | $\ln\det\tilde{\boldsymbol\varepsilon} + \operatorname{tr}(\mathbf 1 - \tilde{\boldsymbol\varepsilon})$, $\tilde{\boldsymbol\varepsilon} = \mathbf 1 + \boldsymbol\Pi$, by an LU factorization | the aux-basis route (`RpaEnergyRoute::AuxBasisLogDet`): CLI `drpa`, and PDEP with every mode kept and no eigenvalues requested |
+| Eigenvalues (`ferric-rpa/src/energy.rs::{rpa_correlation_energy,trace_log_sum}`) | $\sum_\xi s(\lambda_\xi)$, $s(\lambda) = \ln\lambda + 1 - \lambda$ | PDEP with truncation, U-PDEP, and any caller that asks for eigenvalues |
 
 $s(\lambda)$ is a difference of nearly equal numbers when $\lambda$ is close
 to 1. $\ln\lambda$ and $x = \lambda - 1$ agree to first order, and their
@@ -404,6 +426,7 @@ route has no quadrature.
 | `crates/ferric-rpa/theory.md`, "RPA Correlation Energy" | (@eq:rpa-drpa-three-routes)–(@eq:drpa-three-ways-4) with their derivation |
 | `scripts/rpa_drpa_pdep_sympy.py` | the equivalence of the three forms |
 | `site/src/methods/rpa-gw.md`, "Exact and local dRPA" | the user guide |
+| Eshuis, Bates and Furche, Theor. Chem. Acc. 131, 1084 (2012) | review of RI-RPA: the frequency form in the auxiliary basis |
 
 **Known limits (2026-11-15).** Closed shell and HF reference only for `drpa`.
 The plasmon route is $O((n_on_v)^3)$ and exists as a reference. The Riccati

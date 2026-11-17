@@ -195,7 +195,15 @@ This subsection states what `CfmmJ` (`crates/ferric-scf/src/cfmm.rs`,
 feature `cfmm-incomplete`) computes.
 
 **The idea.** Two charge clouds far apart interact through their multipoles.
-A hierarchical FMM (M2M/L2L translations) uses that to make the far-field
+The direct build costs $O(N^4)$ in the basis size; the far field is where a
+multipole method saves. The textbook form is the spherical multipole
+expansion of a cloud's potential,
+$J(\mathbf r) \approx \sum_{l,m} M_{lm}\,Y_{lm}(\theta,\phi)/r^{l+1}$.
+`cfmm.rs` does not use spherical harmonics: it expands in primitive
+Cartesian multipoles (below). The two carry the same terms order by order,
+because the degree-$n$ part of the Taylor expansion of
+$1/\lvert\mathbf R-\mathbf r'\rvert$ in $\mathbf r'$ is
+$r'^{\,n}P_n(\cos\gamma)/R^{n+1}$, the $l=n$ spherical term. A hierarchical FMM (M2M/L2L translations) uses that to make the far-field
 Coulomb build $O(N)$. ferric's module is behind the off-by-default
 `cfmm-incomplete` feature: its far field is a flat leaf-to-leaf M2L with no
 M2M/L2L pass, so it does not have that asymptotic scaling, and it is slower

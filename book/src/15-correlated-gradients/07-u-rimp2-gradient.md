@@ -33,8 +33,9 @@ the minus sign written into the amplitudes.
 | Entry point | Location |
 |---|---|
 | Rust | `ferric-mp2/src/u_rimp2_gradient.rs::{u_rimp2_gradient_analytical,total_u_rimp2_gradient_on}` |
-| CLI | `method.kind = "rimp2"` with `multiplicity > 1` and `task = "optimize"` (UHF reference; with `[scf] jk` omitted the reference is RI-JK on the matched JK-fit set) |
-| Python | `run_optimize(method="rimp2")` on a UHF reference |
+| Rust (attenuated) | `ferric-mp2/src/att_rimp2_gradient.rs::{u_att_rimp2_gradient_analytical,total_u_att_rimp2_gradient_on,u_terfc_rimp2_gradient_analytical,total_u_terfc_rimp2_gradient_on}`, `ferric-mp2/src/scs_2terfc_gradient.rs::{u_scs_mp2_2terfc_gradient_analytical,total_u_scs_mp2_2terfc_gradient_on}` |
+| CLI | `method.kind = "rimp2"`, `"att-rimp2"` (erfc or terfc) or `"scs-mp2-2terfc"` with `multiplicity > 1` and `task = "optimize"` or `"frequencies"` (UHF reference; with `[scf] jk` omitted the reference is RI-JK on the matched JK-fit set) |
+| Python | `run_optimize` or `run_frequencies` with `method="rimp2"`, `"att-rimp2"` or `"scs-mp2-2terfc"` on a UHF reference |
 
 ## Energy weights {#u-rimp2-gradient-energy-weights}
 
@@ -138,7 +139,7 @@ differentiated through the integrals only. In the code:
 | $\zeta^\sigma$ | $\tfrac12(\varepsilon_p + \varepsilon_q)P^\sigma_{\mathrm{rel},pq}$ on the oo and vv blocks, $\varepsilon_iP^\sigma_{\mathrm{rel},ai}$ on both ov blocks |
 | $W^\sigma_{\mathrm{HF}}$ | `build_energy_weighted_density_uhf` (unit occupation) |
 | $P^\sigma_{\mathrm{occ}}v^\sigma[P_{\mathrm{rel}}]P^\sigma_{\mathrm{occ}}$ | `vhf_s1occ`, with $J/K$ of $P_{\mathrm{rel}}$ by linearity (unrelaxed plus $D^z$) |
-| $\partial_xU$ | `two_electron_gradient_bilinear_open` (four-centre or fitted route of the reference) |
+| $\partial_xU$ | `two_electron_gradient_bilinear_open`, which dispatches on the reference's route: `ferric-scf/src/gradient.rs::twoelectron_gradient_bilinear_uhf` (four-centre) or `ferric-scf/src/response_jk.rs::fitted_bilinear_gradient_open` (RI-JK, the $Q(u) - Q(v)$ split of section @sec:rimp2-gradient-fitted-ri-jk-reference per spin) |
 | $R^\sigma_{\mathrm{RI}}$ | `ri_response_gradient_channels`, one channel per spin with $y^\sigma = V^{-1/2}x^\sigma$ and weight 1 |
 
 The closed-shell RI response has weight 2 against this weight 1 per spin.
@@ -167,6 +168,20 @@ The closed-shell RI response has weight 2 against this weight 1 per spin.
 The model covers the RI terms at the MO level; the AO bookkeeping of
 `ri_response_gradient_channels` is checked only by the Rust tests.
 
+### Memory {#u-rimp2-gradient-memory}
+
+On the RI-JK route the peak is declared by
+`ferric-mp2/src/gradient_memory.rs::fitted_gradient_plan_unrestricted` and
+checked before the UHF, as for the closed shell (section
+@sec:rimp2-gradient-fitted-peak-memory). Its terms are the closed-shell ones
+resolved by spin: the three amplitude blocks $t^{\alpha\alpha}$,
+$t^{\beta\beta}$, $t^{\alpha\beta}$, two $B^\sigma$ and two $x^\sigma$, one
+full-MO $b^\sigma(P|pq)$ at a time for $I^\sigma$, and four exchange-channel
+densities $u^\alpha$, $u^\beta$, $v^\alpha$, $v^\beta$ in the two-electron
+derivative. Each indefinite density costs at most $2n_{\mathrm{ao}}^2$ in
+$\sum_sm_s^2$, so the bound is $8\,n_{\mathrm{ao}}^2$ in place of the closed
+shell's $4\,n_{\mathrm{ao}}^2$ (`OPEN_EXCHANGE_CHANNEL_RANK2_BOUND`).
+
 ## The closed-shell limit {#u-rimp2-gradient-closed-shell-limit}
 
 Set the two spins' orbitals equal and every piece must reduce to the
@@ -184,6 +199,14 @@ the restricted gradient on both $J/K$ routes
 
 ## What is anchored {#u-rimp2-gradient-anchored}
 
+The proof scripts first. In part G of `scripts/u_rimp2_gradient_sympy.py`
+the assembled gradient matches the Richardson derivative of the re-solved
+$E_{\mathrm{UHF}} + E^{(2)}$ ($n_\alpha = 3$, $n_\beta = 2$) to
+$1.5\times10^{-11}$ relative, with and without a frozen core, and
+$\operatorname{Tr}[(D + P_{\mathrm{rel}})_{\mathrm T}R]$ matches
+$dE/d\lambda$ for $h \to h + \lambda R$ to $10^{-11}$. In part C the model
+reproduces the closed-shell assembly to $2\times10^{-16}$.
+
 | Quantity | Systems | Agreement | Bar | Test |
 |---|---|---|---|---|
 | analytic vs Richardson FD of ferric's own U-RI-MP2 energy, four-centre and RI-JK | OH, NH2 doublets, O2 triplet / 6-31G; OH frozen core 1 | ≤ 3.1e-9 Ha/Bohr (O2), 1.8e-9 (NH2), 8e-10 (OH); frozen core 2.5e-10 | 2.1e-7 to 2.3e-7 Ha/Bohr, derived in the test header | `crates/ferric-mp2/tests/u_rimp2_gradient_fd.rs` |
@@ -194,35 +217,120 @@ integrals, not density fitting. Figures from `site/src/reference/validation.md`.
 
 ## The attenuated (erfc) variant {#u-rimp2-gradient-attenuated-erfc-variant}
 
-The open-shell attenuated gradient (`att-rimp2` at multiplicity > 1) is this
-Lagrangian with the correlation energy evaluated on
-$\hat w = \operatorname{erfc}(\omega r)/r$ and scaled by $s$. As in the
-closed-shell case of section @sec:rimp2-gradient, each term takes the operator of what it
-differentiates. The amplitudes, $b^\sigma(P|pq)$ and the RI response use erfc,
-both the 3-index integrals and the metric. The UHF reference, its Fock
-stationarity and the Z-vector coupling stay Coulomb. Every first variation of
-the correlation energy is linear in $x^\sigma$ and the unrelaxed densities, so
-the scaling enters by multiplying those by $s$. The derivation is
-`crates/ferric-mp2/theory.md` §15.1, and its proof is
-`scripts/u_att_rimp2_gradient_sympy.py`.
+The open-shell attenuated gradient (`att-rimp2` at multiplicity > 1, with
+`task = "optimize"` or `"frequencies"`) is
+`ferric-mp2/src/att_rimp2_gradient.rs::u_att_rimp2_gradient_analytical`, with
+`total_u_att_rimp2_gradient_on` adding the UHF part. Both run over
+`ferric-mp2/src/u_rimp2_gradient.rs::u_correlated_gradient_timed`.
+
+On a Coulomb UHF with orbitals $C_\sigma$ and energies $\varepsilon^\sigma$
+the energy is
+
+$$ E = E_{\mathrm{UHF}}[1/r] + s\,\big(E_{\alpha\alpha} + E_{\beta\beta} + E_{\alpha\beta}\big)[\hat w], \qquad \hat w = \frac{\operatorname{erfc}(\omega r)}{r}, $$
+
+with the spin blocks of @sec:u-rimp2-gradient-energy-weights built from
+$B^\sigma_{P,ia} = \sum_Q[V_{\hat w}^{-1/2}]_{PQ}(Q|ia)_{\hat w}$: both the
+3-index integrals and the metric are under erfc. The Lagrangian is the
+unrestricted one with $E^{(2)} \to s\,E_c[\hat w]$:
+
+$$ \mathcal L = E_{\mathrm{UHF}}[1/r] + s\,E_c[\hat w;\,C_\alpha, C_\beta, \varepsilon] + \sum_\sigma\sum_{ai} z^\sigma_{ai}F^\sigma_{ai}[1/r] - \sum_\sigma\operatorname{Tr}\big[W^\sigma(C_\sigma^{\mathsf T}SC_\sigma - 1)\big] . $$
+
+As in the closed-shell case of section @sec:rimp2-gradient, each term takes the
+operator of what it differentiates:
+
+| Term | Differentiates | Operator |
+|---|---|---|
+| $t^{\sigma\sigma'}$, $P^\sigma$, $x^\sigma$, $I^\sigma$ (through $b^\sigma(P\vert pq)$) | $s\,E_c$ | erfc |
+| $v^\sigma[P]$ in $X^\sigma$ | $\varepsilon^\sigma$ in $E_c$, through $F^\sigma[1/r]$ | Coulomb |
+| the Z-vector coupling $J[D^{z,\alpha} + D^{z,\beta}] - K[D^{z,\sigma}]$ | the stationarity $F^\sigma_{ai}[1/r]$ | Coulomb |
+| $P_{\mathrm{occ}}v^\sigma[P_{\mathrm{rel}}]P_{\mathrm{occ}}$, $\partial_xU$ | $E_{\mathrm{UHF}}$ and $F^\sigma[1/r]$ | Coulomb |
+| $R^\sigma_{\mathrm{RI}}$ | $E_c$ at fixed $C$ | erfc |
+
+The scaling enters only through $E_c$. Every first variation of $E_c$ is
+linear in $x^\sigma$ and in the unrelaxed $P^\sigma_{oo}$, $P^\sigma_{vv}$:
+$I^\sigma$, the frozen-core block $I^\sigma_{kI}/(\varepsilon_k - \varepsilon_I)$,
+$X^\sigma$, $z^\sigma$ and the RI response are all built from them. So the
+code multiplies $x^\sigma$ and the unrelaxed densities by $s$ and leaves the
+rest of the assembly unchanged. The correlation operator is `UCorrelation::op`
+(`ferric-mp2/src/u_rimp2_gradient.rs::UCorrelation`): the amplitudes, the
+$b^\sigma$ of $I^\sigma$ and the 3c/2c response. The Coulomb terms run on the
+reference's $J/K$ route and on `bounds.op` (the two-electron derivative).
+Both $J/K$ routes are supported.
+
+**Two limits.** For $\alpha \equiv \beta$ the reduction of
+@sec:u-rimp2-gradient-closed-shell-limit ($x^\sigma = x$, $I^\sigma = I/2$,
+$z^\sigma = z/2$) holds for any operator and scaling, so the open-shell
+gradient equals the closed-shell attenuated gradient. As $\omega \to 0$ the
+erfc integrals tend to the Coulomb ones with a first-order constant-kernel
+shift that vanishes in $(P|ia)$ (section
+@sec:rimp2-gradient-attenuated-erfc-ri-mp2), so the gradient tends to the
+U-RI-MP2 gradient.
+
+`scripts/u_att_rimp2_gradient_sympy.py` proves both. Part C is the
+closed-shell limit and part Z the $\omega \to 0$ limit. In part U, on a 1-D
+model with real $s$-Gaussian Coulomb and erfc integrals ($n_\alpha = 3$,
+$n_\beta = 2$), the analytic gradient equals Richardson differences of the
+re-solved $E_{\mathrm{UHF}} + s\,E_c[\hat w]$ for $s = 1$ and 1.2, with and
+without a frozen core. Part K checks the model's closed forms against a
+$t$-quadrature of the erfc kernel and their derivatives against differences.
+
+ROHF is refused for the reason given under Known limits. Open-shell
+`scs-mp2` (Coulomb) has no gradient: the CLI refuses it for `optimize` and
+`frequencies`.
 
 | Check | System | Measured | Bar | Test |
 |---|---|---|---|---|
-| analytic vs Richardson FD of PySCF's UHF + `DFUMP2` energy on an erfc fit | OH, NH2 doublets / cc-pVDZ, ω = 0.420 Å⁻¹ | ≤ 4.0e-10 Ha/Bohr (OH), 1.7e-10 (NH2) | about 2.8e-7 Ha/Bohr | `crates/ferric-mp2/tests/validation_u_att_rimp2_gradient_pyscf.rs` |
-| analytic vs FD of ferric's own energy | OH, NH2 / 6-31G; OH at ω = 1.0 Å⁻¹, s = 1.2, frozen core 1; OH on RI-JK | ≤ 4.8e-9 Ha/Bohr | 2.1e-7 Ha/Bohr | `crates/ferric-mp2/tests/u_att_rimp2_gradient_fd.rs` |
-| closed-shell limit vs the restricted attenuated gradient | H2O / 6-31G, both routes, frozen core | ≤ 2.2e-15 Ha/Bohr | 1e-10 Ha/Bohr | `crates/ferric-mp2/src/att_rimp2_gradient.rs` |
-| ω → 0 vs the Coulomb U-RI-MP2 gradient | OH, ω = 1e-7 | 1.7e-13 Ha/Bohr | 1e-10 Ha/Bohr | `crates/ferric-mp2/src/att_rimp2_gradient.rs` |
+| analytic vs Richardson FD of PySCF's UHF + `DFUMP2` energy on an erfc fit (`scripts/validation/gen_u_att_rimp2_gradient_pyscf.py`) | OH, NH2 doublets / cc-pVDZ + cc-pVDZ-RI, ω = 0.420 Å⁻¹ | ≤ 4.0e-10 Ha/Bohr (OH), 1.7e-10 (NH2) | about 2.8e-7 Ha/Bohr | `crates/ferric-mp2/tests/validation_u_att_rimp2_gradient_pyscf.rs` |
+| analytic vs FD of ferric's own `attenuated_ri_mp2` on a UHF | OH, NH2 / 6-31G + cc-pVDZ-RI; OH at ω = 1.0 Å⁻¹, s = 1.2, frozen core 1; OH on RI-JK | ≤ 4.8e-9 Ha/Bohr | 2.1e-7 Ha/Bohr | `crates/ferric-mp2/tests/u_att_rimp2_gradient_fd.rs` |
+| closed-shell limit vs the restricted attenuated gradient (`open_shell_att_gradient_matches_closed_in_the_trivial_limit*`) | H2O / 6-31G, both routes, frozen core; ω = 1 Å⁻¹, s = 1.2 | ≤ 2.2e-15 Ha/Bohr | 1e-10 Ha/Bohr, from the two Z-vector residuals | `crates/ferric-mp2/src/att_rimp2_gradient.rs` |
+| ω → 0 vs the Coulomb U-RI-MP2 gradient on the same UHF (`open_shell_att_gradient_is_u_rimp2_as_omega_goes_to_zero`) | OH, ω = 1e-7 Bohr⁻¹ | 1.7e-13 Ha/Bohr | 1e-10 Ha/Bohr | `crates/ferric-mp2/src/att_rimp2_gradient.rs` |
 
 ## terfc and SCS-MP2(2terfc) {#u-rimp2-gradient-terfc-scs-mp2-2terfc}
 
 The open-shell terfc gradient (`att-rimp2` with `att_operator = "terfc"` at
-multiplicity > 1) is the @sec:u-rimp2-gradient-attenuated-erfc-variant Lagrangian with terfc in place of erfc and no
-scaling. The open-shell SCS-MP2(2terfc) gradient (`scs-mp2-2terfc` at
-multiplicity > 1) sums two such terms, as in section @sec:rimp2-gradient. The weights are
-spin-resolved. In $x^\sigma$ and $P^\sigma$, the same-spin products carry
-$c_{\mathrm{SS}}$ and the opposite-spin products carry $c_{\mathrm{OS}}$. Each
-term runs its RI response on its own cutoff. One spin-coupled Coulomb
-Z-vector closes the summed $I^\sigma$ and $P^\sigma$ (`theory.md` §15.2).
+multiplicity > 1) is the @sec:u-rimp2-gradient-attenuated-erfc-variant Lagrangian with
+$\hat w = \tau$, the terfc kernel of section
+@sec:rimp2-gradient-attenuated-erfc-ri-mp2, and $s = 1$; the operator table
+holds row by row with terfc in place of erfc. The open-shell SCS-MP2(2terfc)
+gradient (`scs-mp2-2terfc` at multiplicity > 1) sums two such terms, as in
+section @sec:rimp2-gradient. The code is
+`ferric-mp2/src/att_rimp2_gradient.rs::u_terfc_rimp2_gradient_analytical`
+(with `total_u_terfc_rimp2_gradient_on`) and
+`ferric-mp2/src/scs_2terfc_gradient.rs::u_scs_mp2_2terfc_gradient_analytical`
+(with `total_u_scs_mp2_2terfc_gradient_on`), both over
+`ferric-mp2/src/u_rimp2_gradient.rs::u_terms_gradient_timed`. Both run with
+`task = "optimize"` or `"frequencies"` in the CLI and through `run_optimize` or
+`run_frequencies` in Python.
+
+**Spin-component weights.** On a UHF the opposite-spin energy is
+$E_{\alpha\beta}$ and the same-spin energy is
+$E_{\alpha\alpha} + E_{\beta\beta}$. A term
+$E_c[\tau; a, b] = a\,E_{\alpha\beta} + b\,(E_{\alpha\alpha} + E_{\beta\beta})$
+has, at fixed orbital energies, $\partial E_c/\partial B^\sigma = 2x^\sigma$
+with
+
+$$ x^{\alpha}_{P,ia} = b\sum_{jb} t^{\alpha\alpha}_{ijab}B^{\alpha}_{P,jb} + a\sum_{JB} t^{\alpha\beta}_{iJaB}B^{\beta}_{P,JB}, $$
+
+and $x^\beta$ likewise: (@eq:mp2-u-grad-weights) with $b$ on the same-spin
+sum and $a$ on the opposite-spin sum. The denominator derivatives are the
+unrelaxed densities with $b$ on the same-spin Gram products and $a$ on the
+opposite-spin ones:
+
+$$ P^{\alpha}_{ij} = -\tfrac12 b\sum t^{\alpha\alpha}_{ikab}t^{\alpha\alpha}_{jkab} - a\sum t^{\alpha\beta}_{iKaB}t^{\alpha\beta}_{jKaB}, \qquad P^{\alpha}_{ab} = \tfrac12 b\sum t^{\alpha\alpha}_{ijac}t^{\alpha\alpha}_{ijbc} + a\sum t^{\alpha\beta}_{iJaC}t^{\alpha\beta}_{iJbC} . $$
+
+The spin blocks carry no cross terms, so the weights split cleanly
+(`ferric-mp2/src/u_rimp2_gradient.rs::u_energy_weights_scaled`,
+`ferric-mp2/src/u_rimp2.rs::build_u_mp2_density_scaled`). At $a = b$ the code
+keeps the uniform-scale path of @sec:u-rimp2-gradient-attenuated-erfc-variant,
+unchanged bit for bit. For SCS-MP2(2terfc) the same-spin products carry
+$c_{\mathrm{SS}}$ and the opposite-spin products carry $c_{\mathrm{OS}}$, each
+term runs its RI response on its own cutoff, and one spin-coupled Coulomb
+Z-vector closes the summed $I^\sigma$ and $P^\sigma$.
+
+**Closed-shell limit.** For $\alpha \equiv \beta$,
+$E_{\alpha\beta} = E_{\mathrm{OS}}$ and
+$E_{\alpha\alpha} + E_{\beta\beta} = E_{\mathrm{SS}}$, and the reduction of
+@sec:u-rimp2-gradient-closed-shell-limit holds term by term.
 
 > **Verified equation {@eq:mp2-u-grad-assembly}b** · the open-shell SCS-MP2(2terfc) gradient
 >
@@ -244,10 +352,18 @@ Z-vector closes the summed $I^\sigma$ and $P^\sigma$ (`theory.md` §15.2).
 
 | Check | System | Measured | Bar | Test |
 |---|---|---|---|---|
-| terfc: analytic vs Richardson FD of ferric's own energy | OH / cc-pVDZ (four-centre); NH2 on RI-JK, frozen core 1 | ≤ 3.9e-9 Ha/Bohr | about 2.1e-7 Ha/Bohr | `crates/ferric-mp2/tests/u_terfc_gradient_fd.rs` |
-| SCS-MP2(2terfc): analytic vs Richardson FD | OH frozen core 1; NH2 four-centre and RI-JK | ≤ 1.2e-9 Ha/Bohr | about 2.1e-7 Ha/Bohr | `crates/ferric-mp2/tests/u_terfc_gradient_fd.rs` |
-| closed-shell limit vs the restricted gradient (terfc and SCS-MP2(2terfc)) | H2O, both routes, frozen core | ≤ 3.1e-15 Ha/Bohr | 1e-10 Ha/Bohr | `crates/ferric-mp2/src/scs_2terfc_gradient.rs` |
-| one Z-vector vs the sum of single-term gradients | OH | 7.6e-14 Ha/Bohr | 1e-10 Ha/Bohr | `crates/ferric-mp2/src/scs_2terfc_gradient.rs` |
+| terfc: analytic vs Richardson FD of ferric's own `u_ri_mp2` (terfc) on a UHF | OH / 6-31G + cc-pVDZ-RI (four-centre); NH2 on RI-JK, frozen core 1 | ≤ 3.9e-9 Ha/Bohr (NH2, RI-JK) | at least 2.1e-7 Ha/Bohr | `crates/ferric-mp2/tests/u_terfc_gradient_fd.rs` |
+| SCS-MP2(2terfc): analytic vs Richardson FD of `scs_mp2_2terfc` on a UHF | OH frozen core 1; NH2 four-centre and RI-JK; 6-31G + cc-pVDZ-RI | ≤ 1.2e-9 Ha/Bohr (NH2, RI-JK) | at least 2.1e-7 Ha/Bohr | `crates/ferric-mp2/tests/u_terfc_gradient_fd.rs` |
+| closed-shell limit vs the restricted gradient (`open_shell_terfc_gradients_match_closed_in_the_trivial_limit*`) | H2O, both routes, frozen core | terfc 8.9e-16, SCS-MP2(2terfc) 2.6e-15 Ha/Bohr (four-centre); 3.0e-15 and 3.1e-15 (RI-JK, frozen core) | 1e-10 Ha/Bohr | `crates/ferric-mp2/src/scs_2terfc_gradient.rs` |
+| one Z-vector vs the sum of single-term gradients (`open_shell_scs_2terfc_one_zvector_is_the_sum_of_its_terms`) | OH | 7.6e-14 Ha/Bohr, correlation part 2.0e-2 | 1e-10 Ha/Bohr | `crates/ferric-mp2/src/scs_2terfc_gradient.rs` |
+
+On the 1-D model of `scripts/scs_2terfc_gradient_sympy.py`, the open-shell
+assembly at $n_\alpha = n_\beta$ equals the closed one to $6.6\times10^{-15}$
+(part L). At $n_\alpha = 3$, $n_\beta = 2$ the analytic gradients of
+SCS-MP2(2terfc) (frozen core 0 and 1) and terfc RI-MP2 equal Richardson
+differences of the re-solved energy to $1.4\times10^{-10}$ relative (part U).
+Check S3 of part S proves the spin-resolved weights that
+`u_energy_weights_scaled` and `build_u_mp2_density_scaled` build.
 
 ## Known limits (2026-11-16)
 

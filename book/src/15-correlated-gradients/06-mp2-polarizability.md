@@ -54,6 +54,33 @@ gradient path's, and $\mu_d(0) = -\partial E/\partial F_d$. The nuclear term
 does not depend on the field, so only the electronic part contributes to
 $\alpha$.
 
+`ferric-mp2/src/cpks_polar.rs::static_relaxed_density_ao` builds the MO
+density with $2\delta_{ij} + P_{ij} + P_{ji}$ on the occupied block,
+$P_{ab} + P_{ba}$ on the virtual block and $z_{ai}$ on both off-diagonal
+blocks, and returns $\mathbf CP^{\mathrm{rel}}\mathbf C^{\mathsf T}$. Its
+Z-vector equation is
+
+$$ \big(\Delta_i^a + \tfrac12\mathcal A\big)\,z = -X, \qquad X_{ai} = L_{ai} + \Big[\mathbf C^{\mathsf T}(2J - K)\big[\mathbf C(P + P^{\mathsf T})\mathbf C^{\mathsf T}\big]\mathbf C\Big]_{ai}, $$
+
+with $\tfrac12\mathcal A$ one half of `ferric-mp2/src/zvector.rs::compute_az_product`,
+the $(A + B) - \Delta$ coupling. `ferric-mp2/src/cpks_polar.rs::solve_cphf_cg`
+applies it by conjugate gradient with the Jacobi (orbital-energy-gap)
+preconditioner, started from the preconditioned right-hand side, to
+$\max|r| < 10^{-10}$ in at most 200 iterations. The dipole of
+(@eq:mp2-polar-relaxed-dipole) is `ferric-mp2/src/ff_polar.rs::mp2_dipole`, which subtracts
+$\operatorname{Tr}[P^{\mathrm{rel}}_{\mathrm{AO}}r_d]$ from the nuclear term.
+
+The gradient path's `ferric-mp2/src/zvector.rs::build_relaxed_density_ao`
+takes $P$ one-sided: it adds $P_{ij}$, not $P_{ij} + P_{ji}$. It gives this
+density only when it is passed $P + P^{\mathsf T}$. The finite-field driver
+has a second density mode, `ferric-mp2/src/ff_polar.rs::DensityMode`:
+`Relaxed` (the default) is the density above, and `Unrelaxed` passes
+$z = 0$. The unrelaxed density has no Z-vector, so it has none of the
+near-singular response of a symmetric molecule under a field along a
+symmetry axis (NH3, CO2, N2), where the smallest response eigenvalue is
+proportional to the field and $z \sim 1/F$. Its $\alpha$ differs from the
+relaxed one by a few percent, the usual relaxed/unrelaxed MP2 difference.
+
 > **Verified equation @eq:mp2-polar-relaxed-dipole** · the relaxed dipole is the field derivative
 >
 > For $h \to h + \lambda R$, $dE/d\lambda = \operatorname{Tr}[(D^{\mathrm{HF}} + D^{\mathrm{corr}}_{\mathrm{rel}})R]$ for the `solve_zvector` relaxed density (part G1).
@@ -171,7 +198,10 @@ substituting $U^x = -(A + B)^{-1}r^x_{vo}$ gives
 
 $$ \alpha^{\mathrm{HF}}_{xy} = 4\,\mu_x^{\mathsf T}(A + B)^{-1}\mu_y, \qquad \mu_{d,ai} = (\mathbf C_v^{\mathsf T}r_d\mathbf C_o)_{ai} . $$
 
-With no correlation ($t = 0$) the MP2 tensor equals it exactly.
+With no correlation ($t = 0$) the MP2 tensor equals it exactly. The CPHF
+value itself, $-4\sum_{ai}(r_y)_{ai}U^x_{ai}$, is
+`ferric-mp2/src/cpks_polar.rs::mp2_polarizability_analytic_hf`, the HF-level
+rung whose orbital response the MP2 path reuses.
 
 > **Verified equation @eq:mp2-polar-analytic** · the analytic polarizability
 >
@@ -199,7 +229,22 @@ term.
 
 A $C_6$ dispersion coefficient needs the polarizability at imaginary
 frequency, $\alpha(iu)$, not only at $u = 0$ (section @sec:casimir-polder-c6).
-`dynamic_cphf_alpha_iw` returns
+`ferric-mp2/src/cpks_polar.rs::dynamic_cphf_alpha_iw` works with explicit
+response matrices. `ferric-mp2/src/cpks_polar.rs::build_apb_amb` builds them
+from the dense MO integrals of the RI factor
+(`ferric-mp2/src/oo_rimp2.rs::compute_b_full_mo` on the operator passed in):
+
+$$ (A+B)_{ai,bj} = \Delta_i^a\delta_{ai,bj} + 4(ai|bj) - (ab|ij) - (aj|bi), \qquad (A-B)_{ai,bj} = \Delta_i^a\delta_{ai,bj} + (aj|bi) - (ab|ij) . $$
+
+These are the singlet $A = \Delta + 2(ai|bj) - (ab|ij)$ and
+$B = 2(ai|bj) - (aj|bi)$ added and subtracted. $\Delta + \tfrac12\mathcal A$
+of the Z-vector is the same $(A + B)$, applied through $J/K$. For each axis
+$y$ the code solves
+
+$$ \big[(A-B)(A+B) + u^2\big]\,t_y = (A-B)\,\mu_y $$
+
+by a dense LU solve, and returns the symmetrized
+$\alpha_{xy}(iu) = 4\mu_x^{\mathsf T}t_y$, that is
 $\alpha(iu) = 4\mu^{\mathsf T}[(A-B)(A+B) + u^2]^{-1}(A-B)\mu$, the TDHF
 response at imaginary frequency. Diagonalize
 $\boldsymbol\Omega^2 = (A-B)^{1/2}(A+B)(A-B)^{1/2}$ and it becomes a sum over
@@ -207,6 +252,9 @@ excitation energies $\Omega_n$ with oscillator strengths $f_n$,
 $\alpha^{\mathrm{HF}}_{\mathrm{iso}}(iu) = \sum_nf_n/(\Omega_n^2 + u^2)$. At
 $u = 0$ the matrix product collapses to $(A + B)^{-1}$, the static CPHF
 $\alpha$ of the anchor above.
+`ferric-mp2/src/cpks_polar.rs::cphf_c6_molecular` integrates the HF response
+itself, $C_6 = \tfrac3\pi\sum_kw_k\,\alpha_{\mathrm{iso}}(iu_k)^2$, on the
+caller's grid.
 
 This path has no MP2 $\alpha(iu)$. `frozen_mp2_c6_molecular` borrows the
 HF frequency shape and rescales its isotropic part to the static MP2
@@ -261,6 +309,28 @@ From `site/src/reference/validation.md` (the RI-MP2 polarizability rows).
 | HF anchor: difference of the SCF density vs CPHF | the same | $4\times10^{-9}$ relative | the same file |
 | relaxed $\mu_z$ vs PySCF finite field | water / STO-3G, cc-pVDZ | $3\times10^{-8}$, $2\times10^{-8}$ a.u. | `crates/ferric-mp2/tests/cpks_polar.rs` |
 | finite-field relaxed $\alpha$ | water / STO-3G (diagonal), cc-pVDZ ($\alpha_{zz}$) | $3\times10^{-6}$, $1.4\times10^{-5}$ a.u. | `crates/ferric-mp2/tests/ff_polar.rs` |
+
+### What is proven and what is not {#mp2-polarizability-proven}
+
+`scripts/mp2_polarizability_sympy.py` checks claims P0 to P5 on a toy closed
+shell (6 basis functions, 2 occupied): a non-orthogonal overlap $S$, factorized four-center integrals
+$(\mu\nu|\lambda\sigma) = \sum_KL^K_{\mu\nu}L^K_{\lambda\sigma}$ for the
+reference SCF's $J/K$ (the code's `bounds.op` route), an independent RI
+factorization for MP2 dressed with the Cholesky $M = L_V^{-1}$ of its
+metric, and two dipole matrices. The RHF is re-solved at every field.
+
+| Claim | Agreement |
+|---|---|
+| P0, no correlation: MP2 $\alpha$ = HF $\alpha$ | exact |
+| P1, the two right-hand sides and the two $z$ | $10^{-14}$ |
+| P2, $-\operatorname{Tr}[P^{\mathrm{rel}}r]$ against $-dE/dF$ | $10^{-9}$ relative |
+| P3, the analytic $\alpha$ against the finite-field energy Hessian | $6\times10^{-9}$ in the $h \to 0$ limit; the $h = 10^{-4}$ value off by its own $6\times10^{-7}$ $O(h^2)$ term |
+| P4, the $(A + B)$ operator, the HF anchor and $\alpha(iu)$ against a complex TDHF solve | $10^{-14}$ |
+| P5, the frozen-amplitude C6 against the pole sum | $9\times10^{-15}$ on a 60-point mapped Gauss-Legendre grid (bar $10^{-9}$) |
+
+The script works with dense matrices, so it does not cover the
+conjugate-gradient solve of `solve_cphf_cg` or its $10^{-10}$ stopping rule;
+the Rust tests of the anchors table do.
 
 ## Sources {#mp2-polarizability-sources}
 

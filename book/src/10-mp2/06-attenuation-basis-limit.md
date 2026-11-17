@@ -109,7 +109,9 @@ the aug- sets.
 | calendar sets (jun-, jul-, may-, apr-) | no; load one from a Basis Set Exchange JSON file (`BasisSet.from_bse_json` in Python) |
 
 The 13 bundled bases of the table are also the rows of
-`ferric-mp2/src/terfc_r0.rs::TERFC_R0_TABLE`. A terfc run (`method.kind =
+`ferric-mp2/src/terfc_r0.rs::TERFC_R0_TABLE`, the S66-trained optimal $r_0$
+without counterpoise of Goldey and Head-Gordon, Chem. Phys. Lett. 608, 249
+(2014), and dissertation Tables 6.2 (Dunning) and 6.4 (Pople, Karlsruhe). A terfc run (`method.kind =
 "att-rimp2"`, `[mp2] att_operator = "terfc"`) in one of them takes $r_0$
 from that table when `att_r0` is omitted, and prints the value and its
 source. For a calendar set, or any other basis, set `att_r0` to the table's
@@ -129,6 +131,7 @@ integrals and energies ferric computes are anchored in section @sec:scs-mp2-2ter
 
 | Source | Used for |
 |---|---|
+| Goldey and Head-Gordon, Chem. Phys. Lett. 608, 249 (2014) | the S66-trained optimal $r_0$ per basis, source of `TERFC_R0_TABLE` |
 | Goldey dissertation, chapter 6 (§6.1, §6.2, Eq. 6.1, Tables 6.2–6.4) | setup, equation @eq:attenuation-basis-limit-1, the counterpoise remark, the table, the conclusions |
 | `crates/ferric-mp2/theory.md`, "5. Attenuated MP2"; `crates/ferric-mp2/src/terfc_r0.rs` | the per-basis default $r_0$ |
 | `crates/ferric-core/src/basis/bundled` | which bases ship |

@@ -249,9 +249,25 @@ solve.
 2. If the bound is above $10^{-10}$ Ha (`LMP2_CG_ENERGY_ERROR_TARGET`), CG
    continues on the same Krylov sequence, without restarting. It stops at
    the residual that puts the bound at a quarter of the target, but never
-   goes below $10^{-11}$ (`LMP2_CG_RTOL_STRICT`).
-3. With no positive gap the bound is undefined, and the solve runs at
-   $10^{-11}$.
+   goes below $10^{-11}$ (`LMP2_CG_RTOL_STRICT`, the floor). That residual is
+   `ferric-mp2/src/lmp2_amplitude.rs::tightened_cg_rtol`:
+
+   $$ r_{\mathrm{rel}} = \max\Big(\tfrac12\sqrt{\lambda_{\min}\,10^{-10}/3}\;\big/\;\lVert J\rVert,\ 10^{-11}\Big), $$
+
+   with the factor $\tfrac12$ the constant `CG_TIGHTEN_SAFETY`. The bound
+   the code evaluates is
+   `ferric-mp2/src/lmp2_amplitude.rs::cg_energy_error_bound`,
+   $3(\lVert J\rVert\,r_{\mathrm{rel}})^2/\lambda_{\min}$, which is
+   (@eq:lmp2-cg-bound) with $\lVert R\rVert = \lVert J\rVert\,r_{\mathrm{rel}}$.
+   Substitute the residual above: the bound is
+   $3 \cdot \tfrac14 \cdot \lambda_{\min}10^{-10}/3 \,/\, \lambda_{\min} = \tfrac14\,10^{-10}$ Ha,
+   a quarter of the target. The policy is
+   `ferric-mp2/src/lmp2_amplitude.rs::solve_under_rtol_policy`.
+3. `ferric-mp2/src/lmp2_amplitude.rs::operator_lambda_min_lower_bound`
+   returns `NaN` when the gap $2(\epsilon_{\mathrm{LUMO}} - \epsilon_{\mathrm{HOMO}})$
+   from the eigenvalues of `f_oo` and `f_vv` is not positive. The bound is
+   then undefined, and the solve runs at $10^{-11}$.
+4. An explicit `cg_rtol` disables the tightening: CG stops at that value.
 
 Two details make the bound reliable:
 

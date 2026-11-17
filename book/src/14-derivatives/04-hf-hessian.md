@@ -212,6 +212,85 @@ $F^y_\sigma$ the total derivative $h^y + G^y_\sigma(D) + G_\sigma(D^y)$. The
 skeleton also uses that ROHF $W$, so its $W$ term differs from UHF's at ROHF
 orbitals.
 
+### Fitted exchange in the open-shell response {#hf-hessian-factored-ri-k}
+
+With RI-K, every CPHF iteration needs $K[D] = \sum_P B^PDB^P$ for each
+coordinate's response density, and each $B^P$ is symmetric (section
+@sec:ri-j-ri-k-split-ri-j). The response densities are indefinite, so the occupied route
+does not apply, and the density route costs two $n\times n$ products per
+auxiliary function. The open-shell kernel
+(`ferric-scf/src/hessian.rs::uhf_fitted_exchanges`, which calls
+`ferric-scf/src/df_k/response.rs::build_factored_many`) uses the form of
+the density instead. Every density it sees is
+
+$$ D = XC_o^{\mathsf T} + C_oX^{\mathsf T} $$
+
+for some $n\times o$ matrix $X$ and occupied block $C_o$. Substitute the
+first half into $B^PDB^P$ and regroup:
+$B^PXC_o^{\mathsf T}B^P = (B^PX)(B^PC_o)^{\mathsf T}$, using
+$B^{P\,\mathsf T} = B^P$. The second half is the transpose of the first.
+Sum over $P$:
+
+$$ K[D] = G + G^{\mathsf T}, \qquad G = \sum_P (B^PX)(B^PC_o)^{\mathsf T} . $$
+
+$L^P = B^PC_o$ is built once per $C_o$ and reused for every $X$. Each
+density then costs $B^PX$ and one product with $L^{P\,\mathsf T}$, about
+$4\,n_{\rm aux}n^2o$ flops, against $4\,n_{\rm aux}n^3$ for the density
+route. $D$ need not be definite or idempotent; only its form matters.
+
+**UHF and UKS.** Each spin's CPHF density has this form with that spin's
+occupied block, $C_o = C_{\sigma,o}$. The rotation response
+$D_1(U_\sigma) = C_{\sigma,v}U_\sigma C_{\sigma,o}^{\mathsf T} + \text{h.c.}$
+has $X_\sigma = C_{\sigma,v}U_\sigma$. The occupied block
+$D^y_{\sigma,oo} = -C_{\sigma,o}S^y_{\sigma,oo}C_{\sigma,o}^{\mathsf T}$ has
+$X_\sigma = -\tfrac12 C_{\sigma,o}S^y_{\sigma,oo}$, because $S_{oo}$ is
+symmetric and the two halves add. The kernel
+$v_\sigma = J(D_{1\alpha} + D_{1\beta}) - a\,K(D_{1\sigma})$, with $a$ the
+exact-exchange fraction, never couples the spins in $K$. So the factored
+pass runs once per spin, with $L^P_\sigma = B^PC_{\sigma,o}$, over every
+coordinate of a lockstep block.
+
+**ROHF.** There is one orbital set $C$ (closed | open | virtual) and an
+occupation vector $n_\sigma$ per spin whose first $n_\sigma$ entries are one.
+Every density change of the ROHF response is
+$C(Un_\sigma + n_\sigma U^{\mathsf T})C^{\mathsf T}$ for a generator $U$:
+the rotation part $(n_{\sigma q} - n_{\sigma p})\kappa_{pq}$ is $U = \kappa$
+($\kappa$ antisymmetric), the overlap part
+$-\tfrac12 S^y_{pq}(n_{\sigma p} + n_{\sigma q})$ is $U = -\tfrac12 S^y_{\rm MO}$
+(symmetric), and the total $D^y_\sigma$ is $U = \kappa - \tfrac12 S^y_{\rm MO}$.
+$(Un_\sigma)_{pq} = U_{pq}$ for $q < n_\sigma$ and zero otherwise, so
+
+$$ C\,U n_\sigma\,C^{\mathsf T} = (CU)_{:,\,<n_\sigma}\,C_{:,\,<n_\sigma}^{\mathsf T}, $$
+
+which is the required form with $C_{\sigma,o} = C_{:,\,<n_\sigma}$ and
+$X_\sigma = (CU)_{:,\,<n_\sigma}$
+(`ferric-scf/src/hessian/rohf.rs::spin_factors`). The ROHF response solves one
+coordinate at a time, so each factored pass carries one density per spin.
+
+**Closed-shell limit.** Set $C_\alpha = C_\beta$ and $U_\alpha = U_\beta$.
+The RHF factor is $X_{\rm RHF} = 2X_\sigma$, so $K_{\rm RHF} = 2K(D_{1\sigma})$
+and
+
+$$ v_\sigma = J(2D_{1\sigma}) - K(D_{1\sigma}) = J(D_{\rm RHF}) - \tfrac12K(D_{\rm RHF}), $$
+
+the RHF $G$ of the closed-shell factored route.
+
+`scripts/hessian_factored_k_sympy.py` proves these statements. F1 checks
+$K[XC_o^{\mathsf T} + C_oX^{\mathsf T}] = G + G^{\mathsf T}$ in symbols
+(symmetric $B^P$, $n = 3$, $o = 2$, two auxiliary functions). F3 checks the
+ROHF identity above for a symbolic generator $U$, with $U = \kappa$ and
+$U = -S/2$ as the two cases. F2 (UHF and UKS: rotation and occupied-block
+densities, $n_\alpha \ne n_\beta$, non-orthonormal orbitals), F4 (ROHF:
+$\kappa$, overlap and total densities for both spins) and F5 (the
+closed-shell limit, occupation 2, $X = 2C_vU$) compare the factored $K$
+with the exchange contracted from the explicit four-index tensor
+$(\mu\lambda\vert\nu\sigma) = \sum_PB^P_{\mu\lambda}B^P_{\nu\sigma}$, which
+never goes through $B^PDB^P$. The script's three mutations each turn it
+red: dropping the h.c. term ($G$ in place of $G + G^{\mathsf T}$; F1, F2, F4,
+F5 fail), building the $\beta$ exchange from the $\alpha$ occupied block (F2
+fails), and the ROHF factor from $U^{\mathsf T}$ instead of $U$ (F3, F4
+fail). It runs under `crates/ferric-python/tests/test_derivation_scripts.py`.
+
 ## The algorithm {#hf-hessian-algorithm}
 
 The driver is `ferric-scf/src/hessian.rs::rhf_hessian_parts_with`, which
@@ -352,5 +431,6 @@ embedding.
 |---|---|
 | `crates/ferric-scf/theory.md`, "Hartree-Fock nuclear Hessian" | equations and the toy-system check |
 | `scripts/hf_hessian_sympy.py`, claims H1 to H4, S1, S2 | verified equations @eq:scf-hess-assembled and @eq:scf-hess-occ-occ-rotation |
+| `scripts/hessian_factored_k_sympy.py`, claims F1 to F5 and its mutation list | the factored RI-K of section @sec:hf-hessian-factored-ri-k |
 | `crates/ferric-scf/src/hessian.rs` module documentation | the term table, the solver, the refusals |
 | `site/src/reference/validation.md` | the anchor rows and the known limits |

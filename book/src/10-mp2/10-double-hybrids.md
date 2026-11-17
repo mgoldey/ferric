@@ -94,7 +94,9 @@ with a set of functional coefficients and travels with it:
 B2PLYP-D3(BJ) keeps the B2PLYP coefficients unchanged. DSD-PBEP86 was
 refitted with its dispersion term, so `dispersion = "d3bj"` on
 `dsd-pbep86` selects the refit set as a whole; adding the D3(BJ) row to
-the no-dispersion coefficients would mix two fits. With $a_1 = 0$ and
+the no-dispersion coefficients would mix two fits. The refit Kohn–Sham half
+is its own `XcDef`, `ferric-dft/src/libxc.rs::dsd_pbep86_d3bj_def`, beside
+`b2plyp_def` and `dsd_pbep86_def`. With $a_1 = 0$ and
 $s_8 = 0$ each DSD-PBEP86 pair term is $-s_6 C_6/(R^6 + a_2^6)$. The rows
 are in `ferric-d3/src/params.rs` (`b2plyp`, `dsdpbep86`) and equal
 simple-dftd3's rational-damping rows (`crates/ferric-d3/testdata/d3bj_params_snapshot.json`).
@@ -239,7 +241,10 @@ the `dftd3` package's rows equal the cited parameters.
 - No gradient or Hessian: the MP2 term is not differentiated (the KS
   Hessian refuses double hybrids with a typed error).
 - A ROKS reference is not routed: the CLI and Python run a UKS for an open
-  shell.
+  shell. A ROKS reference handed to
+  `ferric-mp2/src/double_hybrid.rs::u_mp2_double_hybrid` would be
+  semicanonicalized per spin by `ferric-mp2/src/u_rimp2.rs::u_ri_mp2`, as a
+  ROHF reference is.
 - The 2011 DSD-PBEP86-D2 set is not offered.
 
 ## Sources

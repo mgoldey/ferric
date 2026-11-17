@@ -186,6 +186,7 @@ From `site/src/reference/validation.md` (the U-G0W0, U-COHSEX and ROHF rows):
 |---|---|---|---|
 | U-G0W0@UHF against the grid-free U-dRPA pole sum at the same 18 nodes | OH, CH3, NH2 / cc-pVDZ and aug-cc-pVDZ; O2, CH2 triplets | $\le 3.8\times10^{-8}$ Ha; OH/cc-pVDZ $\beta$ LUMO+2 $1.2\times10^{-5}$ Ha | `u_g0w0_{oh,ch3,nh2}_vs_pyscf_ugw_ac`, `u_g0w0_triplets_o2_ch2_vs_pyscf_ugw_ac` in `crates/ferric-gw/tests/validation_gw.rs` |
 | U-G0W0@UKS/PBE, product-rule $\Sigma^c$ against the pole sum | OH, CH3, NH2 / cc-pVDZ | $\le 5.2\times10^{-10}$ Ha | `u_g0w0_uks_pbe_*` in `crates/ferric-gw/tests/validation_gw.rs` |
+| U-G0W0@UKS/PBE quasiparticle energies against the pole sum, every orbital | OH, CH3, NH2 / cc-pVDZ | $\le 2.7\times10^{-8}$ Ha | the same |
 | U-COHSEX@UHF against numpy on PySCF density-fitted integrals | OH, CH3, NH2 / cc-pVDZ and aug-cc-pVDZ | $\varepsilon^{\rm QP}$ $\le 3.3\times10^{-9}$ Ha | `crates/ferric-gw/tests/validation_u_cohsex.rs` |
 | singlet H2O UHF through `run_u_gw` against closed-shell COHSEX | H2O / cc-pVDZ | $8.1\times10^{-10}$ Ha | `u_cohsex_singlet_h2o_equals_closed_shell_cohsex` |
 | U-G0W0 on a ROHF reference, semi-canonicalized | OH, CH3 / cc-pVDZ | $\le 1.5\times10^{-5}$ Ha (OH $\beta$), $\le 1.3\times10^{-6}$ Ha (CH3) | `crates/ferric-gw/tests/validation_rohf_reference.rs` |

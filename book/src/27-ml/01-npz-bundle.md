@@ -98,10 +98,10 @@ rigid rotation or translation of the input geometry.
 | `atomic_numbers` | $(N,)$ | — | bare $Z$ (not the ECP-reduced charge) | invariant |
 | `mo_coeffs` | $(n, n_{\mathrm{MO}})$ | — | reference MOs $C$ | column signs and degenerate subspaces arbitrary; AO components mix under rotation |
 | `orbital_energies` | $(n_{\mathrm{MO}},)$ | Hartree | reference $\varepsilon_p$ | invariant |
-| `density_matrix` | $(n,n)$ | — | $D = 2C_oC_o^{\mathsf T}$ | no sign ambiguity; AO components mix under rotation |
+| `density_matrix` | $(n,n)$ | — | $D = 2C_oC_o^{\mathsf T}$, the density the charges and other density-based properties are derived from | no sign ambiguity; AO components mix under rotation |
 | `orbital_centers` | $(n_{\mathrm{MO}},3)$ | Bohr | $\langle\phi_p\lvert\mathbf r\rvert\phi_p\rangle$ | vectors; translate with the molecule |
 | `orbital_spreads` | $(n_{\mathrm{MO}},)$ | Bohr | $\sqrt{\max(0,\langle r^2\rangle_p - \lvert\langle\mathbf r\rangle_p\rvert^2)}$ | invariant |
-| `density_second_moment` | $(3,3)$ | Bohr² | $M_{cd} = \sum_{\mu\nu} D_{\mu\nu}\langle\mu\lvert r_c r_d\rvert\nu\rangle$ about the origin, electronic only | rank-2 tensor about the origin; changes under translation |
+| `density_second_moment` | $(3,3)$ | Bohr² | $M_{cd} = \sum_{\mu\nu} D_{\mu\nu}\langle\mu\lvert r_c r_d\rvert\nu\rangle$ about the origin, electronic only; its trace is $\langle r^2\rangle$ of the density | rank-2 tensor about the origin; changes under translation |
 | `dipole` | $(3,)$ | $e\,a_0$ | $\sum_A Z^{\mathrm{eff}}_A\mathbf R_A - \sum D_{\mu\nu}\langle\mu\lvert\mathbf r\rvert\nu\rangle$, origin at 0 | vector; origin-dependent for ions |
 | `pdep_eigenvectors` | $(N_{\mathrm{aux}},M)$ | — | aux coefficients of the PDEP mode densities, $c^{\mathsf T}Vc = I$ (section @sec:polarizability-pdep-c6-pdep-eigenvectors) | signs and degenerate subspaces arbitrary |
 | `esp_atoms` | $(N,)$ | Hartree/$e$ | eq. @eq:electrostatics-and-charges-1, own nucleus excluded | invariant |
@@ -118,12 +118,13 @@ rigid rotation or translation of the input geometry.
 | `alpha_ct_dynamic` | $(N_u,3,3)$ | Bohr³ | dynamic CT remainder; `c6_source = "pdep"` only | as `alpha_ct` |
 | `c6_iso` | $(N,N)$ | Hartree Bohr⁶ | pair $C_6^{AB}$, eq. @eq:ml-c6-cp-quadrature | invariant; a partition convention |
 | `c6_aniso` | $(N,N,3,3)$ | Hartree Bohr⁶ | element-wise $\alpha^A_{ij}\alpha^B_{ij}$ quadrature | **not** a tensor (section @sec:polarizability-pdep-c6-casimir-polder) |
-| `c6_molecular_iso` | $(1,)$ | Hartree Bohr⁶ | molecular $C_6$ from the molecular $\alpha(iu)$ | invariant |
+| `c6_molecular_iso` | $(1,)$ | Hartree Bohr⁶ | molecular $C_6$ from the molecular $\alpha(iu)$, the DOSD-comparable value | invariant |
 | `c6_source`, `c6_partition` | bytes | — | `ts`, `pdep` or `mbd`; `becke` or `hirshfeld` | labels |
 | `certificate` | bytes | — | result certificate as JSON (section @sec:python-cube-provenance-certificate-provenance-label) | label |
 
-`boys_coeffs` is defined by the writer, but neither the CLI nor Python ever
-fills it.
+`boys_coeffs`, shape $(n, n_{\mathrm{occ}})$, holds the coefficients of the
+Boys-localized occupied MOs. It is defined by the writer, but neither the CLI
+nor Python ever fills it.
 
 Why does the dipole depend on the origin for an ion? Move the origin to
 $\mathbf o$. Each nucleus contributes $Z^{\mathrm{eff}}_A(\mathbf R_A -

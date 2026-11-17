@@ -223,7 +223,7 @@ walks. A run that sets its own `gdf_omega` caps with that value instead.
 |---|---|---|
 | $V(\eta)$ at three $\eta$ | the pure-AFT oracle `pure_aft_nuclear` | `crates/ferric-pbc/tests/pbc_hcore.rs` `periodic_hcore_is_omega_independent_triclinic_sp` |
 | one s primitive | the closed form $V_\text{erf} = -(2/\sqrt\pi)(1/\eta^2 + 1/p + 1/\zeta)^{-1/2}$ | `single_s_primitive_matches_closed_form` |
-| erf + erfc on a Gaussian nucleus | the point nucleus | `gaussian_nucleus_erf_plus_erfc_is_point_nuclear` |
+| erf + erfc on a Gaussian nucleus (`ferric-pbc/src/hcore.rs::gaussian_nucleus_attraction`) | the point nucleus | `gaussian_nucleus_erf_plus_erfc_is_point_nuclear` |
 | H$_2$/STO-3G at $a = 4$ | the Python prototype | `periodic_hcore_matches_prototype_h2_sto3g_a4` |
 
 ## Sources {#nuclear-attraction-sources}

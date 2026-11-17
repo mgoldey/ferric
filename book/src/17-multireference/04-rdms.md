@@ -278,6 +278,39 @@ each input by two routes on a model CI vector.
 | `dm1`, `dm2` vs PySCF `make_rdm12` on its own ground state, rotated into ferric's orbitals | same | `crates/ferric-ci/tests/casci_rdms.rs` |
 | 3-RDM, $f^\text{ca}$, $f^\text{ac}$ and hole RDMs vs PySCF on the same CI vector; partial traces; single determinants | H2O CAS(4,4), N2 CAS(6,6) at 1.10 and 2.20 Å | `crates/ferric-ci/tests/casci_rdm3.rs` |
 
+### What is proven and what is not {#rdms-proven}
+
+`crates/ferric-ci/tests/casci_rdms.rs` fails under each of three
+mutations: a dropped β phase, the missing αβ cross terms, and a doubled
+diagonal.
+
+`crates/ferric-ci/tests/casci_rdm3.rs` runs on ferric's CI vectors for
+H2O/6-31G CAS(4,4) and N2/cc-pVDZ CAS(6,6) at 1.10 and 2.20 Å. The
+references come from `scripts/gen_casci_rdm3_refs.py`, which applies PySCF's
+`make_dm1234` with `reorder_dm1234`, `_contract4pdm` and `make_hdm*` to the
+same vector. The test runs its anchors first:
+
+| Check | Measured | Bar |
+|---|---|---|
+| partial trace dm3 → dm2 | $\le 8.9\times10^{-15}$ | |
+| partial trace hdm3 → hdm2 | $\le 1.7\times10^{-14}$ | |
+| single determinants | exactly zero difference | |
+| dm1 to dm3 and hdm1 to hdm3 vs PySCF, element-wise | $\le 6\times10^{-15}$ | $100N_\text{det}\varepsilon\max\lvert\cdot\rvert$, $1.3\times10^{-12}$ to $6.8\times10^{-11}$ |
+| $f^\text{ca}$, $f^\text{ac}$ vs PySCF, element-wise (H2O) | $7.1\times10^{-15}$ | $1.8\times10^{-11}$ |
+| $f^\text{ca}$, $f^\text{ac}$ through 32 random $\pm1$ projections | $\le 2.8\times10^{-12}$ | $7\times10^{-8}$ to $10^{-5}$ |
+| an independent dense Fock-space construction (H2O): dm3, hdm3 | $5\times10^{-16}$, $3.5\times10^{-15}$ | |
+| the same: $f^\text{ca}$, $f^\text{ac}$ as explicit contractions of a stored E-product 4-RDM | $1.1\times10^{-14}$ | |
+| dense fallback: Davidson stopped at `max_iter` 1 (residual $3.9\times10^{-2}$), then `conv_thresh` $10^{-13}$ met at residual $6.1\times10^{-14}$ | | |
+| dense vs Davidson root, N2 1.10 Å | $\lvert\Delta E\rvert = 1.4\times10^{-13}$ | $4.5\times10^{-10}$ |
+
+Seven mutations fail it: the β Jordan–Wigner phase forced to $+1$ (dm3 off
+by 2.32 on N2 at 2.20 Å); one index swap in the reorder (off by 0.82); the
+same-spin block omitted (off by 2.84); a swapped destination index of $R'$
+($f^\text{ac}$ projections off by $1.7\times10^{2}$ on N2 at 2.20 Å); the
+hdm3 coefficient 2 changed to 1; an uncommitted `MemoryPlan` (a starved
+budget is not refused); and the dense fallback disabled (the residual stays
+at $3.9\times10^{-2}$).
+
 ## Sources {#rdms-sources}
 
 | Source | What it gives |
