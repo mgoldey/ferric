@@ -3,12 +3,20 @@
 <!-- section: 27.1; status: edit; registry: pdep-rpa;
      theory: crates/ferric-export/theory.md#"1. Machine Learning Dataset Schema (`.npz`)" -->
 
-ferric writes one NumPy `.npz` file per molecule with the reference
+A model that learns from a quantum-chemistry run never sees the run. It sees
+arrays. For those arrays to be usable as features, every sample has to give
+the same quantity under the same name, in the same units and shape, with the
+atoms in the same order, and the model has to know how each array changes
+when the molecule is moved. An invariant model can take a scalar per atom as
+is; a dipole or a 3×3 tensor rotates with the molecule and needs an
+equivariant model or a molecule-fixed frame.
+
+ferric writes one NumPy `.npz` file per molecule. It holds the reference
 wavefunction, the electrostatic and response properties and the run's
-certificate. This section lists what is in the file, how each array is
-defined in the code, and how it behaves when the molecule is moved or rotated.
-That last point decides whether an array can be fed to an invariant or
-equivariant model as is.
+certificate. This section says what the bundle is computed from (27.1.1), how
+the file is laid out (27.1.2), what every key means and how it behaves under
+a rotation or translation (27.1.3), and how to switch keys on and off
+(27.1.4). Section 21.3 covers the writer itself: what it refuses and why.
 
 | Entry point | Location |
 |---|---|
@@ -23,22 +31,23 @@ after the PDEP-RPA correlation energy.
 ## 27.1.1 What every array is computed from
 
 Every property in the file is a property of the **reference SCF density**,
-$D = 2\,C_o C_o^{\mathsf T}$, the matrix in `density_matrix`. None of them is
-an RPA-relaxed density property. The polarizabilities are a response of that
-same reference (section 27.3). A model trained on these arrays learns
-Hartree–Fock electrostatics plus a direct-RPA response, not correlated
-densities.
+$D = 2\,C_o C_o^{\mathsf T}$, the matrix in `density_matrix`. None of them
+uses an RPA-relaxed density. The polarizabilities are the response of that
+same reference (section 27.3). A model trained on these arrays therefore
+learns Hartree–Fock electrostatics plus a direct-RPA response. It does not
+learn correlated densities.
 
-Two defaults differ between the CLI and Python:
+The CLI and Python reach the bundle with two different defaults:
 
 | Setting | CLI `pdep-rpa` | Python `run_pdep_rpa` |
 |---|---|---|
 | Reference J/K | RI-JK on `def2-universal-jkfit` | exact four-centre J and K, unless `df_j_aux` / `df_k_aux` are set |
 | `compute_*` knobs | on, except `compute_esp_surface` | the same, once `properties=True` or `export_npz=` is passed |
 
-So the same molecule, basis and auxiliary basis give arrays that differ by the
-density-fitting error of the reference, depending on the front end. Pin one
-front end, or pin `df_j_aux` / `df_k_aux`, for a whole dataset.
+The first row matters for a dataset. The same molecule, basis and auxiliary
+basis give arrays that differ by the density-fitting error of the reference,
+depending on which front end produced them. Pin one front end for the whole
+dataset, or pin `df_j_aux` / `df_k_aux`.
 
 ## 27.1.2 Layout
 
@@ -50,33 +59,37 @@ Every array is `float64` in C order, except:
 - `c6_molecular_iso` is a length-1 array, not a scalar.
 
 An absent key means the property was not requested or failed. A failed
-property does not stop the file being written. The CLI then exits nonzero and
-Python raises `RuntimeError` after writing, unless `allow_partial_npz` is set;
-Python also lists the failures in `PdepRpaResult.property_gaps`. A dataset
-builder should check the exit status, not only that the file exists.
+property does not stop the file being written. The CLI then exits nonzero,
+and Python raises `RuntimeError` after writing unless `allow_partial_npz` is
+set; Python also lists the failures in `PdepRpaResult.property_gaps`. A
+dataset builder should therefore check the exit status, and not only that
+the file exists.
 
-**AO order.** `mo_coeffs` and `density_matrix` use ferric's shell order with
-libint2's component order inside each shell. The file does not carry the basis
-definition or the overlap matrix. Rebuild them with ferric for the same basis
-name (`AoIntegrals`, section 27.4). The validation suite matched the order to
-PySCF through the overlap matrix; do not assume another code's order.
+**AO order.** `mo_coeffs` and `density_matrix` use ferric's shell order, with
+libint2's component order inside each shell. The file carries neither the
+basis definition nor the overlap matrix. To use these arrays you rebuild both
+with ferric for the same basis name (`AoIntegrals`, section 27.4). The
+validation suite matched the order to PySCF through the overlap matrix. Do
+not assume another code's order.
 
-**Not in the file.** The total energy is not in the NPZ. Python returns it as
-`PdepRpaResult.total_energy`. The CLI prints it, but its JSON run log
-(`site/src/using/run-logs.md`) does not yet hold it for `pdep-rpa`: the
-`run_end` record carries the SCF reference energy with
-`energy_is = "scf_reference_only"`, and `pdep-rpa` writes a `result_unlogged`
-record instead of a `result` record. The PDEP
-eigenvalues are not in the NPZ either; Python returns them as
-`PdepRpaResult.eigenvalues_static`, sorted descending. Neither the overlap matrix nor the basis is stored.
+**What the file leaves out.** The total energy is not in the NPZ. Python
+returns it as `PdepRpaResult.total_energy`. The CLI prints it, but its JSON
+run log (`site/src/using/run-logs.md`) does not yet hold it for `pdep-rpa`:
+the `run_end` record carries the SCF reference energy with
+`energy_is = "scf_reference_only"`, and `pdep-rpa` writes a
+`result_unlogged` record in place of a `result` record. The PDEP eigenvalues
+are not in the NPZ either; Python returns them as
+`PdepRpaResult.eigenvalues_static`, sorted descending. Neither the overlap
+matrix nor the basis is stored.
 
 ## 27.1.3 Keys
 
-$N$ is the number of atoms, $n$ the number of AOs, $n_{\mathrm{MO}} \le n$
-the number of retained MOs (the orthogonalizer drops near-linear-dependent
-combinations), $N_{\mathrm{aux}}$ the auxiliary-basis size, $M$ the number of
-PDEP modes kept, $N_u$ the number of $C_6$ quadrature nodes and $N_p$ the
-number of surface points. "Frame" says what happens to the array under a
+The table uses these sizes. $N$ is the number of atoms, $n$ the number of
+AOs, and $n_{\mathrm{MO}} \le n$ the number of retained MOs (the
+orthogonalizer drops near-linearly-dependent combinations).
+$N_{\mathrm{aux}}$ is the auxiliary-basis size, $M$ the number of PDEP modes
+kept, $N_u$ the number of $C_6$ quadrature nodes and $N_p$ the number of
+surface points. The "Frame" column says what happens to the array under a
 rigid rotation or translation of the input geometry.
 
 | Key | Shape | Units | Definition (from the code) | Frame |
@@ -109,21 +122,36 @@ rigid rotation or translation of the input geometry.
 | `c6_source`, `c6_partition` | bytes | — | `ts`, `pdep` or `mbd`; `becke` or `hirshfeld` | labels |
 | `certificate` | bytes | — | result certificate as JSON (section 27.4.3) | label |
 
-`boys_coeffs` is defined by the writer but the CLI and Python never fill it.
+`boys_coeffs` is defined by the writer, but neither the CLI nor Python ever
+fills it.
 
-**Practical rule.** Use the scalars (`esp_atoms`, charges, spreads, orbital
-energies, `c6_iso`, isotropic parts of α) directly in an invariant model. Use
-`electric_field`, `dipole` and the 3×3 tensors only in an equivariant model,
-or after projecting them onto a molecule-fixed frame. Treat `mo_coeffs`,
-`pdep_eigenvectors` and `density_matrix` as gauge-dependent: they need
-sign-, degeneracy- and rotation-aware handling before they can be features.
+Why does the dipole depend on the origin for an ion? Move the origin to
+$\mathbf o$. Each nucleus contributes $Z^{\mathrm{eff}}_A(\mathbf R_A -
+\mathbf o)$ and each electron $-(\mathbf r - \mathbf o)$, so the dipole
+becomes $\boldsymbol\mu - Q\,\mathbf o$, with $Q$ the molecular charge. For
+a neutral molecule $Q = 0$ and the origin drops out. The file puts the origin
+at $(0,0,0)$ of the input coordinates.
+
+The Frame column sorts the keys into three groups, and each group goes into a
+model differently.
+
+- **Scalars.** `esp_atoms`, the charges, `orbital_spreads`,
+  `orbital_energies`, `c6_iso` and the isotropic parts of α are invariant.
+  An invariant model can use them directly.
+- **Vectors and tensors.** `electric_field`, `dipole` and the 3×3 tensors
+  rotate with the molecule. Use them in an equivariant model, or project them
+  onto a molecule-fixed frame first.
+- **Gauge-dependent arrays.** `mo_coeffs`, `pdep_eigenvectors` and
+  `density_matrix` carry arbitrary signs, arbitrary bases inside degenerate
+  subspaces, or AO components that mix under rotation. They need sign-,
+  degeneracy- and rotation-aware handling before they can be features.
 
 ## 27.1.4 Turning keys on and off
 
-The CLI knobs live under `[rpa]` and are named `compute_<key>`. The table in
-`crates/ferric-export/theory.md` "Enabling keys" maps each key to its knob.
-The validation suite checks that turning each knob off removes exactly its
-keys (`crates/ferric-cli/tests/validation_npz.rs`).
+The CLI knobs live under `[rpa]` and are named `compute_<key>`. Section
+21.3.1 maps each key to its knob. The validation suite checks that turning
+each knob off removes exactly its keys
+(`crates/ferric-cli/tests/validation_npz.rs`).
 
 ```toml
 [method]
@@ -135,6 +163,9 @@ export_npz = "water.npz"
 compute_esp_surface = true     # the only knob that defaults to off
 compute_c6 = false             # skip the dispersion block
 ```
+
+Reading the file back needs only numpy. The last line checks the
+charge-transfer identity of section 27.3.2 on the arrays themselves:
 
 ```python
 import json, numpy as np
@@ -154,7 +185,10 @@ assert np.allclose(f["alpha_ct"] + f["alpha_atomic"].sum(0), f["alpha_tensor"])
   falls back to the Becke partition, but `c6_partition` still reads
   `hirshfeld`. The NPZ path itself is closed-shell only, so this reaches only
   library callers today.
-- The ESP, field and charge functions use the bare $Z$ (section 27.2.6).
+- `atomic_numbers` holds the bare $Z$, while the ESP, field, dipole and
+  charge functions pair the density with the ECP-reduced $Z^{\mathrm{eff}}$
+  (section 27.2.6). On an ECP atom the two differ by the number of core
+  electrons the ECP replaces.
 
 ## Sources
 
@@ -165,7 +199,9 @@ assert np.allclose(f["alpha_ct"] + f["alpha_atomic"].sum(0), f["alpha_tensor"])
 | `crates/ferric-export/theory.md`, "1. Machine Learning Dataset Schema (`.npz`)" | the key table this section extends |
 | `crates/ferric-python/ferric.pyi`, `run_pdep_rpa` and `PdepRpaResult` | the Python defaults and the reference J/K difference |
 | `site/src/reference/validation.md`, rows "NPZ export" and "NPZ export against PySCF" | the layout and knob checks |
+| `crates/ferric-scf/src/properties.rs` | the effective nuclear charge in the ESP, field, dipole and charges |
 
-Changes from the sources: the frame column is new. The theory table writes
-the per-atom α with $w_A$ on the bra and the eigenpotential column index as
-$\alpha$; this section uses $\xi$ for PDEP modes (notation).
+Changes from the sources: the frame column and the origin shift of the
+dipole are new. The theory table writes the per-atom α with $w_A$ on the bra
+and the eigenpotential column index as $\alpha$; this section uses $\xi$ for
+PDEP modes (notation).

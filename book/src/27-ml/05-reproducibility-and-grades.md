@@ -2,14 +2,22 @@
 
 <!-- section: 27.5; status: edit; registry: none; theory: none -->
 
-A dataset needs two guarantees from the code that produced it: that the same
-input gives the same numbers, and that the numbers mean what their names say.
-This section covers the first through ferric's threading and precision
-defaults, and the second through the validation grades.
+A dataset needs two guarantees from the code that produced it. The first is
+that the same input gives the same numbers, so that a regenerated sample, or
+one computed on another machine, can be compared with the original. The
+second is that each number means what its name says, to a stated accuracy.
+Without the first, noise from the run enters the labels. Without the second,
+a model can fit a quantity that was never computed correctly. This section
+covers the first through ferric's threading and precision defaults (27.5.1,
+27.5.2), and the second through the validation grades (27.5.3).
 
 ## 27.5.1 Bitwise reproducibility
 
-ferric runs OpenBLAS at two thread counts.
+Where does run-to-run variation come from? Floating-point addition is not
+associative, so a sum computed in a different order can differ in the last
+bits. A parallel reduction that splits its work by thread count changes that
+order when the thread count changes. ferric runs OpenBLAS at two thread
+counts, and the two behave differently.
 
 | Region | BLAS threads | Set by |
 |---|---|---|
@@ -28,16 +36,20 @@ BLAS counts differ by about 1e-13 Ha (`site/src/using/sharp-bits.md`).
 | many molecules at once | many single-threaded processes (`RAYON_NUM_THREADS=1`) |
 | several jobs from Python threads in one process | `ferric.set_blas_threads(1)` first; the BLAS count is process-wide |
 
-The per-property tests that pin this for the features of this chapter are
+Two per-property tests pin this for the features of this chapter:
 `ferric-rpa/tests/p5_parallel_determinism.rs::esp_at_atoms_bit_identical_across_thread_counts`
 and
 `ferric-rpa/tests/p5_parallel_determinism.rs::becke_dynamic_polarizability_bit_identical_across_thread_counts`.
 
 Bit-identical across thread counts is not bit-identical across builds or
-CPUs. Record `certificate.build.commit` with each sample, and expect
-last-digit differences between OpenBLAS builds.
+CPUs. A different compiler, OpenBLAS build or instruction set changes the
+kernels themselves. Record `certificate.build.commit` with each sample, and
+expect last-digit differences between OpenBLAS builds.
 
 ## 27.5.2 Precision and convergence defaults that move labels
+
+A few defaults are chosen for single-point speed. They change labels by more
+than rounding, so a dataset should set them on purpose.
 
 | Default | Value | Effect on a dataset |
 |---|---|---|
@@ -47,16 +59,19 @@ last-digit differences between OpenBLAS builds.
 | Python `run_rhf` `energy_conv` | 1e-3 | a sanity bound, not the convergence target |
 | CLI `pdep-rpa` reference | RI-JK (`def2-universal-jkfit`) | differs from Python's exact-J/K default by the fitting error (section 27.1.1) |
 
-For energy and force labels on a grid of geometries (a scan, an MD
-trajectory, a conformer set) set `ri_j_precision = "f64"` explicitly. The f32
-default is chosen for single points, and its jitter is the size of the
-differences such a dataset is meant to resolve.
+For energy and force labels on a set of nearby geometries (a scan, an MD
+trajectory, a conformer set), set `ri_j_precision = "f64"` explicitly. The
+f32 default is chosen for single points, and its jitter is the size of the
+energy differences such a dataset is meant to resolve.
 
 ## 27.5.3 Which quantity carries which grade
 
-The certificate grades the capability's energy (section 27.4.3). For the
-features of this chapter, the evidence is the anchor row on the validation
-page, summarized here:
+A label without a grade is unsafe to train on. A model cannot tell a value
+that agrees with an independent code to $10^{-13}$ from one that has only
+been checked for internal consistency, and it will fit both with the same
+confidence. The certificate grades the capability's energy (section 27.4.3).
+For the features of this chapter, the evidence is the anchor row on the
+validation page, summarized here.
 
 | Quantity | Evidence | Agreement | Kind of check |
 |---|---|---|---|
@@ -72,9 +87,15 @@ page, summarized here:
 | BSE-TDA, statically screened TDHF α | `bse-tda`, `tdhf-static-polarizability` | — | Smoke |
 
 All figures are from `site/src/reference/validation.md`, "Anchors" and
-"CLI `method.kind` matrix". "Same density" isolates ferric's integrals and
-contractions; the "own SCF" figures quoted in 27.2 and 27.3 add ferric's SCF
-convergence.
+"CLI `method.kind` matrix". As in 27.2.5, "same density" isolates ferric's
+integrals and contractions, and the "own SCF" figures quoted in 27.2 and
+27.3 add ferric's SCF convergence.
+
+The last column says how much a row proves. An independent reference
+computes the same definition by another route, so it catches a wrong
+formula. An invariant or a consistency check catches only errors that break
+the invariant; a CHELPG fit with a wrong lattice would still sum to the
+molecular charge.
 
 These grades say ferric computes the stated definition. They do not say the
 definition is a good label. A direct-RPA polarizability on an RHF reference,

@@ -2,77 +2,139 @@
 
 <!-- section: 27.2; status: gap; registry: none; theory: none -->
 
-The electrostatic features are the cheapest outputs that still carry real
-information about the density: the potential and field at each nucleus, the
-potential on a molecular surface, the low multipoles and five kinds of atomic
-charge. All of them are functions of the reference density
-$D = 2C_oC_o^{\mathsf T}$ and nothing else. No crate `theory.md` covers them
-yet, so this section is the reference, read from the loops in
-`crates/ferric-scf/src/properties.rs`.
+What does a neighbouring molecule, or a model of one, need to know about this
+molecule's electrons? At long range, mostly the electrostatics: the potential
+the density makes, the field it exerts at each nucleus, and some way of
+summing the density into a number per atom. These are the cheapest features
+ferric exports that still carry information about the density, and they are
+the inputs of ESP-conditioned models such as the one in section 27.7.
+
+All of them are functions of the reference density $D = 2C_oC_o^{\mathsf T}$
+and of nothing else. No crate `theory.md` covers them yet, so this section is
+the reference, read from the loops in `crates/ferric-scf/src/properties.rs`.
+Section 21.2 derives the charge schemes; this section states what each
+exported number is and how far it is checked.
+
+The plan: the potential and field at the nuclei (27.2.1), the potential at
+other points (27.2.2), multipoles (27.2.3), the five charge schemes (27.2.4),
+the checks (27.2.5) and the limits (27.2.6).
 
 | Quantity | Rust | Python |
 |---|---|---|
-| ESP at nuclei | `ferric-scf/src/properties.rs::esp_at_atoms` | `esp_at_atoms(result)` |
-| ESP at points | `ferric-scf/src/properties.rs::esp_at_points` | `esp_at_points(result, points_bohr)` |
-| Surface ESP | `ferric-scf/src/properties.rs::esp_on_surface` | NPZ `esp_surface` |
+| ESP at nuclei | `ferric-scf/src/properties.rs::esp_at_atoms` | `esp_at_atoms(mol, basis_set, result)` |
+| ESP at points | `ferric-scf/src/properties.rs::esp_at_points` | `esp_at_points(mol, basis_set, result, points)`, points in Bohr |
+| Surface ESP | `ferric-scf/src/properties.rs::esp_on_surface` | `esp_on_surface(mol, basis_set, result, vdw_scale=1.4, n_angular=110)`; NPZ `esp_surface` |
 | Field at nuclei | `ferric-scf/src/properties.rs::electric_field_at_atoms` | NPZ `electric_field` |
 | Dipole | `ferric-scf/src/properties.rs::dipole_moment` | NPZ `dipole` |
 | Löwdin, Mulliken | `ferric-scf/src/properties.rs::{lowdin_charges,mulliken_charges}` | `lowdin_charges`, `mulliken_charges` |
-| Hirshfeld | `ferric-scf/src/properties/hirshfeld_grid.rs::hirshfeld_charges` | `hirshfeld_charges` |
+| Hirshfeld | `ferric-scf/src/properties/hirshfeld_grid.rs::hirshfeld_charges` | `hirshfeld_charges(..., proatom="scf")` |
 | CHELPG, RESP | `ferric-scf/src/properties.rs::{chelpg_charges,resp_charges,chelpg_and_resp_charges}` | `chelpg_charges`, `resp_charges` |
 
-The Python functions take an `RhfResult` or `DftResult`. Mulliken, Löwdin,
+The Python functions take the molecule, the basis and an `RhfResult` or
+`DftResult`, so they work on a Kohn–Sham density as well. Mulliken, Löwdin,
 CHELPG and RESP are documented as closed-shell only.
+
+Throughout this section $Z_A$ in the nuclear terms is the effective charge
+$Z^{\mathrm{eff}}_A$ of equation 2.1: the valence charge on an ECP atom, zero
+on a ghost, and the bare $Z_A$ otherwise (section 27.2.6).
 
 ## 27.2.1 Potential and field at the nuclei
 
-The ESP at nucleus $A$ leaves out $A$'s own nuclear term, which is infinite:
+What potential does nucleus $A$ feel from the rest of the molecule? Every
+other nucleus contributes $Z_B/r$, and the electrons contribute minus the
+Coulomb integral of the density. $A$'s own nuclear term is infinite at
+$\mathbf R_A$, so it is left out:
 
 $$ V(\mathbf R_A) = \sum_{B\neq A}\frac{Z_B}{\lvert\mathbf R_A-\mathbf R_B\rvert} - \sum_{\mu\nu} D_{\mu\nu}\,\Big\langle\mu\Big\lvert\frac{1}{\lvert\mathbf r-\mathbf R_A\rvert}\Big\rvert\nu\Big\rangle . \tag{27.1} $$
 
 The electronic integral is libint2's nuclear-attraction operator with a unit
-probe charge at $\mathbf R_A$. The field is the negative gradient of the same
-potential, also without the self term:
+probe charge at $\mathbf R_A$. The field is minus the gradient of the same
+potential with respect to the probe position, again without the self term:
 
 $$ \mathbf E(\mathbf R_A) = \sum_{B\neq A} Z_B\frac{\mathbf R_A-\mathbf R_B}{\lvert\mathbf R_A-\mathbf R_B\rvert^3} - \sum_{\mu\nu} D_{\mu\nu}\,\Big\langle\mu\Big\lvert\frac{\mathbf R_A-\mathbf r}{\lvert\mathbf r-\mathbf R_A\rvert^3}\Big\rvert\nu\Big\rangle . \tag{27.2} $$
 
+Check the sign with one other nucleus $B$ and no electrons: (27.2) reduces
+to $Z_B(\mathbf R_A-\mathbf R_B)/\lvert\mathbf R_A-\mathbf R_B\rvert^3$,
+which points from $B$ toward $A$, as the field of a positive charge should.
+
 Both are exact functions of $D$: no grid and no fit. $V(\mathbf R_A)$ is a
 rotation- and translation-invariant scalar per atom, and $\mathbf E$ is a
-vector per atom. Two coincident atoms are an error, not an infinity.
+vector per atom. Two coincident atoms are an error, not an infinity. The
+nuclear half of `esp_at_atoms` shows both points, with the distance setup
+trimmed:
+
+```rust
+// Nuclear sum: Σ_{B ≠ A} Z_B / |R_A − R_B|
+let mut v_nuc = 0.0_f64;
+for b in 0..natoms {
+    if b == a {
+        continue;                                   // drop A's own Z_A / 0
+    }
+    // ...
+    if r < 1e-12 {
+        return Err(FerricError::General(format!(
+            "esp_at_atoms: atoms {a} and {b} coincide"
+        )));
+    }
+    v_nuc += atom_b.effective_z() as f64 / r;      // Z^eff_B / |R_A − R_B|
+}
+Ok(v_nuc + v_elec)                                  // v_elec: −Σ D_{μν}⟨μ|1/|r−R_A||ν⟩
+```
+
+- The electronic part `v_elec` is accumulated before this loop over shell
+  pairs $s_1 \ge s_2$, with off-diagonal pairs counted twice. The sign of the
+  electron term comes from libint2's nuclear-attraction operator, which
+  already carries the minus.
+- The charge is `effective_z()`, not `z`. On an ECP atom the density holds
+  only valence electrons, so pairing it with the bare $Z$ would leave the
+  core charge unscreened.
 
 ## 27.2.2 Potential at arbitrary points and on a surface
 
-At a point $\mathbf r_g$ that is not a nucleus, the full potential is
+At a point $\mathbf r_g$ that is not a nucleus, every nucleus is included:
 
-$$ V(\mathbf r_g) = \sum_{A}\frac{Z_A}{\lvert\mathbf r_g-\mathbf R_A\rvert} - \sum_{\mu\nu} D_{\mu\nu}\,\Big\langle\mu\Big\lvert\frac{1}{\lvert\mathbf r-\mathbf r_g\rvert}\Big\rvert\nu\Big\rangle , \tag{27.3} $$
+$$ V(\mathbf r_g) = \sum_{A}\frac{Z_A}{\lvert\mathbf r_g-\mathbf R_A\rvert} - \sum_{\mu\nu} D_{\mu\nu}\,\Big\langle\mu\Big\lvert\frac{1}{\lvert\mathbf r-\mathbf r_g\rvert}\Big\rvert\nu\Big\rangle . \tag{27.3} $$
 
-with every nucleus included. `esp_at_points` takes the points in **Bohr**.
+`esp_at_points` takes the points in **Bohr**. Because the self term is kept,
+$V(\mathbf r_g)$ diverges as $\mathbf r_g$ approaches a nucleus; it does not
+tend to `esp_atoms` there.
 
-The NPZ surface (`compute_esp_surface = true`) puts a Lebedev sphere on each
-atom at `esp_surface_vdw_scale` × the Bondi radius
-(`ferric-pcm/src/radii.rs::bondi_radius_bohr`) and drops the points that fall
-inside another atom's scaled sphere. The defaults are a scale of 1.4 and 110
-angular points.
+The NPZ surface (`compute_esp_surface = true`) and the Python
+`esp_on_surface` sample (27.3) on the outside of the molecule. Each atom gets
+a Lebedev sphere at `esp_surface_vdw_scale` × its Bondi radius
+(`ferric-pcm/src/radii.rs::bondi_radius_bohr`), and points that fall inside
+another atom's scaled sphere are dropped. The defaults are a scale of 1.4 and
+110 angular points. The Python function also returns how many points were
+dropped as buried.
 
 The Lebedev spheres have a fixed orientation in the lab frame. Rotating the
-molecule therefore changes the point set, not just its coordinates: the values
-at corresponding points are not available after a rotation. Store
-`esp_points` with `esp_surface` (the writer refuses one without the other) and
-treat the pair as a point cloud, not as a fixed-length vector.
+molecule therefore changes the point set, not only its coordinates, and the
+values at corresponding points are not available after a rotation. Store
+`esp_points` with `esp_surface` (the writer refuses one without the other)
+and treat the pair as a point cloud, not as a fixed-length vector.
 
 ## 27.2.3 Multipoles and orbital moments
 
 | Key | Definition | Note |
 |---|---|---|
-| `dipole` | $\boldsymbol\mu = \sum_A Z^{\mathrm{eff}}_A\mathbf R_A - \sum D_{\mu\nu}\langle\mu\lvert\mathbf r\rvert\nu\rangle$ | origin $(0,0,0)$; origin-dependent when the molecule is charged |
+| `dipole` | $\boldsymbol\mu = \sum_A Z^{\mathrm{eff}}_A\mathbf R_A - \sum D_{\mu\nu}\langle\mu\lvert\mathbf r\rvert\nu\rangle$ | origin $(0,0,0)$; origin-dependent when the molecule is charged (27.1.3) |
 | `density_second_moment` | $M_{cd} = \sum D_{\mu\nu}\langle\mu\lvert r_c r_d\rvert\nu\rangle$ | electronic only, about the origin; translation changes it |
 | `orbital_centers` | $\langle\phi_p\lvert\mathbf r\rvert\phi_p\rangle$ | every retained MO, restricted references only |
 | `orbital_spreads` | $\sqrt{\max(0,\langle r^2\rangle_p-\lvert\langle\mathbf r\rangle_p\rvert^2)}$ | canonical MOs, so delocalized; restricted only |
 
-The dipole is the only property in this section that uses the ECP-reduced
-nuclear charge $Z^{\mathrm{eff}}_A = Z_A - n^{\mathrm{core}}_A$.
+The dipole, like the ESP, field and charges, uses the ECP-reduced nuclear
+charge $Z^{\mathrm{eff}}_A = Z_A - n^{\mathrm{core}}_A$. The spreads are the
+root-mean-square radius of each orbital about its own centroid. The
+$\max(0,\cdot)$ guards against a small negative variance from rounding.
+Because the MOs are canonical, a valence orbital spread over the whole
+molecule has a large spread; these are not localized-orbital sizes.
 
 ## 27.2.4 Five charge schemes
+
+A charge per atom is a common model feature, and there is no unique
+one: the density is a property of the whole molecule. Each scheme below is
+a rule for dividing it, and section 21.2 derives what each rule conserves.
+This table is the consumer's summary.
 
 | Scheme | Definition | Depends on |
 |---|---|---|
@@ -87,41 +149,43 @@ eigenvalue is not positive.
 
 **Hirshfeld** integrates on the flat 75 × 110 Becke–Lebedev grid
 (`AtomicGridConfig::default()`). The proatom densities $\rho^0_A$ come from a
-neutral free-atom SCF in the same basis, the default of both the CLI and
-Python; `proatom="slater"` selects a single-Slater model instead, and the code
-also falls back to it, with a warning, when the free-atom SCF fails. The
+neutral free-atom SCF in the same basis, which is the default of both the CLI
+and Python. `proatom="slater"` selects a single-Slater model instead, and the
+code falls back to it, with a warning, when the free-atom SCF fails. The
 factor $s = N_e/\sum_A\!\int w_A\rho$ rescales the integrated populations to
-the exact electron count, so $\sum_A q_A$ equals the molecular charge by
-construction and the grid error goes into the individual charges only.
+the exact electron count. So $\sum_A q_A$ equals the molecular charge by
+construction, and the grid error goes into the individual charges only.
 
-**CHELPG** builds a cubic lattice in the lab frame, spacing 0.3 Bohr, extending
-2.8 Bohr beyond the molecule. It keeps a point if it lies outside every atom's
-Bondi radius and within 2.8 Bohr of some atom's radius. The charges solve the
-bordered normal equations
+**CHELPG** fits charges to the potential instead of dividing the density.
+It builds a cubic lattice in the lab frame with spacing 0.3 Bohr, extending
+2.8 Bohr beyond the molecule. A point is kept if it lies outside every
+atom's Bondi radius and within 2.8 Bohr of some atom's radius. Minimizing the
+squared misfit to $V(\mathbf r_g)$ with the total charge held fixed by a
+multiplier $\lambda$ gives the bordered normal equations (derived in section
+21.2.5 as equation 21.9):
 
 $$ \begin{pmatrix} A & \mathbf 1\\ \mathbf 1^{\mathsf T} & 0\end{pmatrix}\begin{pmatrix}\mathbf q\\ \lambda\end{pmatrix} = \begin{pmatrix}\mathbf b\\ Q\end{pmatrix}, \qquad A_{AB} = \sum_g \frac{1}{r_{gA}r_{gB}},\quad b_A = \sum_g \frac{V(\mathbf r_g)}{r_{gA}} , \tag{27.7} $$
 
 with $Q$ the molecular charge. The environment variables
 `FERRIC_CHELPG_SPACING`, `FERRIC_CHELPG_MARGIN`, `FERRIC_CHELPG_VDW_SCALE` and
 `FERRIC_CHELPG_OUTER_CUTOFF` override the four lattice parameters. A dataset
-must record them if it sets them; the certificate does not.
+that sets them must record them, because the certificate does not.
 
 **RESP** adds the single-stage hyperbolic restraint
 $a\sum_{A\notin\mathrm H}(\sqrt{q_A^2+b^2}-b)$ with $a = 0.0005$ and
-$b = 0.1\,e$ (`FERRIC_RESP_RESTRAINT_WEIGHT`, `FERRIC_RESP_RESTRAINT_B`)
-and solves by fixed-point iteration: each pass adds
-$a/\sqrt{q_A^2+b^2}$ to the diagonal of the bordered matrix of (27.7) at
-the previous charges. It is not two-stage or
-multi-conformer RESP. When both are requested, CHELPG and RESP share one
-lattice and one set of ESP values.
+$b = 0.1\,e$ (`FERRIC_RESP_RESTRAINT_WEIGHT`, `FERRIC_RESP_RESTRAINT_B`).
+It solves by fixed-point iteration: each pass adds $a/\sqrt{q_A^2+b^2}$ to
+the diagonal of the bordered matrix of (27.7), evaluated at the previous
+charges. It is not two-stage or multi-conformer RESP. When both are
+requested, CHELPG and RESP share one lattice and one set of ESP values.
 
-Because the lattice is fixed in the lab frame, CHELPG and RESP charges move
-slightly when the molecule is rotated. Mulliken is invariant under rotation.
-Löwdin is invariant for spherical-harmonic (`pure`) shells; Cartesian
-d shells transform non-orthogonally and need not leave it unchanged.
-Hirshfeld is invariant up to the error of its atom-centred grid; a committed
-test holds symmetry-equivalent atoms equal, and the charges unchanged under
-translation, to below $10^{-3}\,e$
+**Rotation.** Because the lattice is fixed in the lab frame, CHELPG and RESP
+charges move slightly when the molecule is rotated. Mulliken is invariant
+under rotation. Löwdin is invariant for spherical-harmonic (`pure`) shells;
+Cartesian d shells transform non-orthogonally and need not leave it
+unchanged. Hirshfeld is invariant up to the error of its atom-centred grid. A
+committed test holds symmetry-equivalent atoms equal, and the charges
+unchanged under translation, to below $10^{-3}\,e$
 (`ferric-rpa/tests/hirshfeld_symmetry.rs::equivalent_atoms_are_equal_in_a_rotated_frame`,
 `ferric-rpa/tests/hirshfeld_symmetry.rs::charges_are_invariant_to_translation`).
 
@@ -131,9 +195,10 @@ translation, to below $10^{-3}\,e$
 (b) the isotropic static α as $\sum_A\alpha^A$ plus $\alpha_{\mathrm{CT}}$
 (section 27.3). Made by `book/src/figures/27-ml/charges_and_alpha.py`.*
 
-The spread in panel (a) is the point: the five numbers are different
-definitions, not five estimates of one quantity. Pick one scheme for a
-dataset and record which.
+Panel (a) shows five different numbers for the same oxygen. They are five
+definitions, not five estimates of one quantity, so a model trained on a mix
+of them fits the difference between definitions. Pick one scheme for a
+dataset and record which; the NPZ key name is the only tag the charges carry.
 
 ## 27.2.5 How well these are checked
 
@@ -144,11 +209,16 @@ dataset and record which.
 | Hirshfeld charges | numpy on ferric's grid with PySCF density and proatoms | 1.9e-13 $e$ same density; 2.6e-9 $e$ own SCF; default grid within 2.0e-4 $e$ of a dense grid | `crates/ferric-rpa/tests/validation_hirshfeld.rs` |
 | All NPZ keys | PySCF integrals contracted with the exported density | integral level ≤ 2.8e-14; property chain ≤ 5.9e-10 | `crates/ferric-cli/tests/validation_npz.rs` |
 
-The figures are from `site/src/reference/validation.md`, "Anchors". The
-CHELPG and RESP checks in `validation_npz.rs` are invariants only: the charges
-sum to the molecular charge, respect the mirror symmetry of water, and
-reproduce the surface ESP they were fitted to. No external code supplies a
-reference value for them.
+The figures are from `site/src/reference/validation.md`, "Anchors". Two
+columns of agreement separate two error sources. "Same density" feeds
+ferric the reference code's density, so it measures ferric's integrals and
+contractions alone. "Own SCF" lets ferric converge its own density, so it
+adds the SCF convergence error.
+
+The CHELPG and RESP checks in `validation_npz.rs` are invariants only: the
+charges sum to the molecular charge, respect the mirror symmetry of water,
+and reproduce the surface ESP they were fitted to. No external code supplies
+a reference value for them.
 
 ## 27.2.6 Known limits (2026-11-15)
 
@@ -168,10 +238,10 @@ reference value for them.
 
 | Source | Used for |
 |---|---|
-| `crates/ferric-scf/src/properties.rs` | eqs. 27.1–27.5, 27.7, the lattice and restraint parameters, the effective-$Z$ pairing |
+| `crates/ferric-scf/src/properties.rs` | eqs. 27.1–27.5, 27.7, the lattice and restraint parameters, the effective-$Z$ pairing, the excerpt in 27.2.1 |
 | `crates/ferric-scf/src/properties/hirshfeld_grid.rs` | eq. 27.6, the grid, the proatoms and the rescaling |
 | `crates/ferric-pcm/src/radii.rs` | the Bondi radii |
-| `crates/ferric-python/ferric.pyi` | the Python names and argument units |
+| `crates/ferric-python/ferric.pyi` | the Python names, `esp_on_surface` and argument units |
 | `site/src/reference/validation.md` | the agreement figures in 27.2.5 |
 
 Changes from the sources: none; there is no theory text to change.

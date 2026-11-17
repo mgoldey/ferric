@@ -2,10 +2,13 @@
 
 <!-- section: 27.7; status: edit; registry: pdep-rpa; theory: none -->
 
-esp-conditioning is a separate project that builds training data for
-ESP-conditioned molecular models from ferric's NPZ bundle. It is described
-here as an example of the interface, read from its code. Its results are not
-part of this book.
+The earlier sections describe the interface from ferric's side. This one
+reads it from the other side, through one real consumer. esp-conditioning is
+a separate project that builds training data for ESP-conditioned molecular
+models from ferric's NPZ bundle: the model is given the electrostatic
+potential at the nuclei, charges and per-atom polarizabilities as
+conditioning inputs. It is described here as an example of the interface,
+read from its code. Its results are not part of this book.
 
 ## 27.7.1 The pipeline
 
@@ -19,19 +22,32 @@ part of this book.
 | 6 | computes CM5 charges from the **Löwdin** charges, with $\alpha = 2.474$ Å⁻¹, Cordero radii and the standard $D_Z$ and $D_{ZZ'}$ tables | `lowdin_charges` |
 | 7 | writes HDF5 shards, one group `sample_<id>` per molecule | — |
 
+Step 6 is a choice between baselines. CM5 adds a pairwise correction
+$\sum_{B\ne A}D_{Z_AZ_B}\exp\!\big(-\alpha(r_{AB}-R_{Z_A}-R_{Z_B})\big)$ to a
+population-analysis charge. CM5 was parameterized on Hirshfeld charges, but
+the builder's docstring gives three reasons for Löwdin instead. Löwdin needs
+no proatom shape, and the single-exponential Slater proatoms (ferric's
+fallback Hirshfeld model, section 27.2.4) misallocate density in C–O bonds
+and similar heteropolar pairs. Löwdin conserves the electron count exactly,
+$\mathrm{Tr}(S^{1/2}DS^{1/2}) = N_e$. And it is more stable under a change of
+basis than Mulliken.
+
 ## 27.7.2 What the example shows about the interface
 
 **The energy is scraped from text.** Step 5 exists because the NPZ carries no
 energy, and for `pdep-rpa` the CLI's JSON run log has no `result` record
 either: its `run_end` holds the SCF reference energy only
 (`site/src/using/run-logs.md`). Scraping stdout is therefore the only CLI
-route today. Calling `run_pdep_rpa` from Python instead returns the energy and
-the arrays together.
+route today. Calling `run_pdep_rpa` from Python instead returns the energy
+and the arrays together.
 
-**The certificate is dropped.** The HDF5 schema keeps no certificate, so a
-shard cannot say which build, which reference J/K route or which
-approximations produced it. Keeping the `certificate` bytes per sample costs
-little (section 27.4.3).
+**The certificate is dropped.** The HDF5 schema keeps no certificate. The
+shard-level provenance records a ferric git hash, but it is the `HEAD` of the
+checkout that holds the binary at packing time, with no dirty flag, so it
+need not be the commit the binary was built from. No sample records the
+reference J/K route or the approximations that produced it. Keeping the
+`certificate` bytes per sample costs little, and its `build` field is the
+commit baked in at compile time (section 27.4.3).
 
 **Settings outside the anchor.** `trunc_thresh = 1e-4` and the 20-point grid
 put these runs outside the `pdep-rpa` anchor scope, so their certificates
@@ -50,15 +66,16 @@ consumer's choice, not ferric's.
 
 **Geometry.** The builder recentres the conformer before ferric sees it, and
 ferric does not reorient (27.1.3). The stored geometry is therefore
-centre-of-mass-centred in RDKit's arbitrary orientation, which is what the
-lab-frame vectors and tensors (`electric_field`, α) refer to. An equivariant
-model can use them as is; an invariant one needs only the scalars.
+centre-of-mass-centred in RDKit's arbitrary orientation, which is the frame
+the lab-frame vectors and tensors (`electric_field`, α) refer to. An
+equivariant model can use them as is; an invariant one needs only the
+scalars.
 
 ## Sources
 
 | Source | Used for |
 |---|---|
-| the esp-conditioning builder code (TOML generation, NPZ loading, CM5 post-processing, HDF5 schema) | every step in 27.7.1 |
+| the esp-conditioning builder code (TOML generation, NPZ loading, CM5 post-processing, HDF5 schema, shard provenance) | every step in 27.7.1 and the provenance hash |
 | `crates/ferric-export/src/ml.rs`, `crates/ferric-rpa/src/property_bundle.rs` | the ferric side of each step |
 | `site/src/using/run-logs.md`, `crates/ferric-cli/src/lib.rs` | why step 5 has no structured alternative in the CLI |
 
