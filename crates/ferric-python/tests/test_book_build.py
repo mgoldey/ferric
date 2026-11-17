@@ -266,6 +266,21 @@ MUTATIONS = {
         "$E_{ij} = |a|^2$",
         "$E_{ij} = x \\quad (`build_s_d`)$",
     ),
+    "code span inside inline math with a vertical bar": (
+        SEC,
+        "$E_{ij} = |a|^2$",
+        "$E_{ij} = |a|^2 \\quad (`a_b`)$",
+    ),
+    "code span inside math after another code span": (
+        SEC,
+        "Inline math",
+        "Use `foo` with $x (`a_b`)$. Inline math",
+    ),
+    "control character in an included theory section": (
+        "crates/ferric-toy/theory.md",
+        "Body $x_1$.",
+        "Body\x08eta $x_1$.",
+    ),
     "code span inside display math": (
         SEC,
         "Inline math",
@@ -700,6 +715,17 @@ def test_the_real_books_appendices_and_plan_are_current():
 
 def test_code_span_with_a_dollar_is_not_math(tree):
     sub(tree, SEC, "Inline math", "Set `$HOME` and `$PATH`, then $x_1$. Inline math")
+    assert check(tree).errors == []
+
+
+def test_math_in_table_cells_beside_a_code_span_is_accepted(tree):
+    # Each cell is its own formula scope: the bars between cells end a formula.
+    sub(
+        tree,
+        SEC,
+        "Inline math",
+        "| a | b | c |\n|---|---|---|\n| p$q | `a_b` | r$s |\n\nInline math",
+    )
     assert check(tree).errors == []
 
 

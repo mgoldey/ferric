@@ -361,6 +361,9 @@ def check_theory(root: Path, where: str, spec: str, rep: Report) -> None:
         if not fp.is_file():
             rep.err(where, f"theory file not found: {path}")
             continue
+        # The include is expanded from text read in text mode, which turns a lone
+        # carriage return into a newline: only the byte check sees it.
+        check_control_chars(fp, f"{where} {path}", rep)
         for a in re.findall(r'"([^"]*)"|([^\s,"]+)', anchors or ""):
             want = a[0] or a[1]
             if not find_heading(read(fp), want):
@@ -392,17 +395,28 @@ def check_control_chars(p: Path, where: str, rep: Report) -> None:
 # A code span inside math: pandoc hands the backticks and underscores to LaTeX
 # ("! Double subscript" on `build_s_d_kind`), and MathJax shows the backticks.
 # A formula does not span a blank line or a table cell. Put the span after it: $$ ... $$ (`name`).
+# An inline formula stays on one line; it may hold a vertical bar (|a|^2).
 MATH_RE = re.compile(
     r"\$\$(?P<disp>(?:(?!\n[ \t]*\n).)+?)\$\$"
-    r"|(?<![\\$])\$(?=\S)(?P<inl>(?:(?!\n[ \t]*\n)[^\n|])+?)(?<=\S)\$(?![\d$])",
+    r"|(?<![\\$])\$(?=\S)(?P<inl>[^\n]+?)(?<=\S)\$(?![\d$])",
     re.S,
 )
+# A table row, possibly quoted. Its unescaped bars separate cells.
+TABLE_ROW_RE = re.compile(r"^(?:[ \t]*>)*[ \t]*\|.*$", re.M)
 
 
 def check_math_code_spans(text: str, where: str, rep: Report) -> None:
     # A code span that holds a dollar sign (`$HOME`) is code, not math: blank it
     # first so its dollar does not pair with one further down the page.
-    text = re.sub(r"`[^`\n]*\$[^`\n]*`", lambda m: " " * len(m.group()), text)
+    # Match whole spans left to right, so the closing backtick of one span never
+    # pairs with the opening backtick of the next.
+    text = re.sub(
+        r"`[^`\n]*`",
+        lambda m: " " * len(m.group()) if "$" in m.group() else m.group(),
+        text,
+    )
+    # A table cell ends a formula: turn each row's cell separators into blank lines.
+    text = TABLE_ROW_RE.sub(lambda m: re.sub(r"(?<!\\)\|", "\n\n", m.group()), text)
     for m in MATH_RE.finditer(text):
         body = m.group("disp") or m.group("inl")
         if "`" in body:
