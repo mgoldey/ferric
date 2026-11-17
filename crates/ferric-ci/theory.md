@@ -1276,8 +1276,8 @@ $-\,G_3$ with axes $(0,1,3,2,4,5)$; $G^h_2 = 2\,\gamma\otimes\delta - G_2$ with
 axes $(0,1,3,2)$; $\gamma^h = 2\delta - \gamma^{\sf T}$.
 
 `Sijr` and `Srsi` are pair-symmetrized: with $M$ the active matrix,
-$t = 2\,$`s1`$(V,V,M) - $`s2`$(V,V,M)$ and $T = t + t^{\sf T}$ over the pair
-axes. `Sijr`: `s1` = `rpji,raji,pa->rji`, `s2` = `rpji,raij,pa->rji`, pair
+$t = 2\,s_1(V,V,M) - s_2(V,V,M)$ and $T = t + t^{\sf T}$ over the pair
+axes, with $s_1$ and $s_2$ the contractions `s1` and `s2`. `Sijr`: `s1` = `rpji,raji,pa->rji`, `s2` = `rpji,raij,pa->rji`, pair
 axes $(i, j)$; `Srsi`: `s1` = `rsip,rsia,pa->rsi`, `s2` = `rsip,sria,pa->rsi`,
 pair axes $(r, s)$. The pair-diagonal label carries $\tfrac12$ of both $N$ and
 $K$; `Srs` and `Sij` sum every ordered pair with $\tfrac12$ instead, which is
