@@ -3,15 +3,18 @@
 <!-- section: 10.11; status: ready; registry: opmp3;
      theory: crates/ferric-mp2/theory.md#"6.2 Orbital-partitioned Padé MP3 (OP-MP3)" -->
 
-MP3 overshoots where MP2 already overshoots, and the scalar Padé
-$E_2^2/(E_2 - E_3)$ that tames it is not size-consistent. OP-MP3 (Bystrom,
+The Møller–Plesset series can oscillate or diverge, and MP3 overshoots
+where MP2 already overshoots. The scalar Padé $E_2^2/(E_2 - E_3)$ tames it
+by treating the series as geometric, but it is not size-consistent: two
+molecules far apart do not get the sum of their energies. OP-MP3 (Bystrom,
 Berkelbach and Hait, arXiv:2609.25330) applies the Padé to matrices instead:
 the second- and third-order energies are written as traces of symmetric
 matrices over occupied spin orbitals, and the resummation is a matrix
-function of those. A matrix function of a block-diagonal pair is
-block-diagonal, so the energy of two non-interacting fragments is the sum
-of their energies. The amplitudes are the spin-blocked ones of section
-10.9.3; this section adds the matrices, the Padé and the reference.
+function of those, which keeps two non-interacting fragments separate.
+
+The amplitudes are the spin-blocked ones of section 10.9.3; this section
+adds the matrices (10.11.1), the Padé and the models (10.11.2), the
+reference (10.11.3), and what is anchored (10.11.4).
 
 | Symbol | Meaning | Code name |
 |---|---|---|
@@ -30,10 +33,19 @@ of their energies. The amplitudes are the spin-blocked ones of section
 
 ## 10.11.1 The occupied-space matrices
 
-In spin orbitals, with the amplitudes $t^{(1)} = c^{(1)}$ and
-$t^{(2)} = c^{(2)}$,
+The energy $E^{(n)} = \tfrac14\sum t^{(n-1)}_{ijab}\langle ij\Vert ab\rangle$
+is a sum over occupied pairs. Leave one occupied index of each pair open
+and the energy becomes a matrix over occupied orbitals, whose trace gives
+back $E^{(n)}$. In spin orbitals, with the amplitudes $t^{(1)} = c^{(1)}$
+and $t^{(2)} = c^{(2)}$,
 
 $$ W^{(n)}_{ij} = \tfrac18\sum_{kab}\Big(t^{(n-1)}_{ikab}\langle jk\Vert ab\rangle + t^{(n-1)}_{jkab}\langle ik\Vert ab\rangle\Big), \qquad \operatorname{Tr}W^{(n)} = E^{(n)} . \tag{10.26} $$
+
+The trace follows by setting $i = j$: both halves become
+$\tfrac18\sum_{ikab}t_{ikab}\langle ik\Vert ab\rangle$, and together they
+are $\tfrac14\sum t\,\langle\cdot\Vert\cdot\rangle = E^{(n)}$. The
+symmetrization $(i \leftrightarrow j)$ makes $W$ symmetric, which the Padé
+of 10.11.2 needs.
 
 Spin is conserved along the pair, so $W$ has no $\alpha\beta$ block. Each
 spin block splits by the spin of the summed $k$ into a same-spin (SS) and
@@ -45,10 +57,14 @@ $$ W^{OS}_{\alpha,ij} = \tfrac14\sum_{KaB}c^{\alpha\beta}_{iKaB}K^{\alpha\beta}_
 
 The OS prefactor is $\tfrac14$ because, with $k$ of the other spin, the two
 orderings $(a\bar B)$ and $(\bar B a)$ of the virtual pair map onto the one
-stored $\alpha\beta$ block with the same sign. The traces are the channel
+stored $\alpha\beta$ block with the same sign, which doubles the
+$\tfrac18$. The traces are the channel
 energies of (10.24): $\operatorname{Tr}W^{SS} = E_{\alpha\alpha} + E_{\beta\beta}$
 and $\operatorname{Tr}W^{OS} = E_{\alpha\beta}$, half of it in each spin's OS
 block.
+
+The code builds the four blocks in one expression of
+`ferric-mp2/src/opmp3.rs::w_channels`:
 
 <!-- excerpt: ferric-mp2/src/opmp3.rs::w_channels -->
 ```rust
@@ -112,15 +128,42 @@ to rounding.
 
 ## 10.11.2 The matrix Padé and the models
 
-For symmetric $A = W^{(2)}$ and $B = xW^{(3)}$,
+Start from the scalar Padé. Write the series with a counting parameter
+$t$, $E_2 + tE_3 + \dots$, and expand the Padé in $t$:
+
+$$ \frac{E_2^2}{E_2 - tE_3} = \frac{E_2}{1 - tE_3/E_2} = E_2 + tE_3 + t^2\frac{E_3^2}{E_2} + t^3\frac{E_3^3}{E_2^2} + \dots $$
+
+It reproduces the first two orders and continues them as a geometric series
+with ratio $E_3/E_2$. The matrix version replaces $E_2$ and $E_3$ by the
+matrices whose traces they are. For symmetric $A = W^{(2)}$ and
+$B = xW^{(3)}$,
 
 $$ P(A,B) = A\,(A-B)^{-1}A, \qquad \operatorname{Tr}P(A,tB) = \operatorname{Tr}A + t\operatorname{Tr}B + t^2\operatorname{Tr}\big[BA^{-1}B\big] + O(t^3) . \tag{10.28} $$
 
-The first two Taylor coefficients are $E^{(2)}$ and $E^{(3)}$, so the series
-limit of every model is MP3. For a $1\times 1$ block $P$ is the scalar Padé
-$a^2/(a-b)$; for commuting $A$ and $B$ each common eigenvector gets it. The
-code diagonalizes the symmetrized $A - B = V\Lambda V^{\mathsf T}$ and forms
-$P = (AV)\Lambda^{-1}(AV)^{\mathsf T}$:
+To get the expansion, factor $A - tB = A(1 - tA^{-1}B)$, invert as a
+Neumann series, $(A - tB)^{-1} = A^{-1} + tA^{-1}BA^{-1} + t^2A^{-1}BA^{-1}BA^{-1} + \dots$,
+and multiply by $A$ on both sides. The first two Taylor coefficients of the
+trace are $E^{(2)}$ and $E^{(3)}$, so the series limit of every model is
+MP3.
+
+Check the limits. At $B = 0$, $P(A, 0) = AA^{-1}A = A$: the resummation
+with no third-order term is MP2. For a $1\times 1$ block $P$ is the scalar
+Padé $a^2/(a-b)$; for commuting $A$ and $B$ each common eigenvector gets it.
+
+Why does the matrix form fix size consistency? For two fragments far apart
+every occupied orbital sits on one of them, and $W$ has no elements
+between orbitals on different fragments: $A$ and $B$ are block diagonal.
+Inverses and products of block-diagonal matrices are block diagonal, so
+$P$ is the block-diagonal
+matrix of each fragment's own $P$, and its trace is the sum of the
+fragments' traces. The scalar Padé of the summed traces is not, since
+$(a_1+a_2)^2/(a_1+a_2-b_1-b_2) \ne a_1^2/(a_1-b_1)+a_2^2/(a_2-b_2)$ in
+general. ferric keeps it (P-MP3) as the negative control.
+
+The code diagonalizes the symmetrized $A - B = V\Lambda V^{\mathsf T}$, so
+$(A-B)^{-1} = V\Lambda^{-1}V^{\mathsf T}$, and forms
+$P = (AV)\Lambda^{-1}(AV)^{\mathsf T}$ from
+`ferric-mp2/src/opmp3.rs::pade`:
 
 <!-- excerpt: ferric-mp2/src/opmp3.rs::pade -->
 ```rust
@@ -142,7 +185,10 @@ Rows on which $A$ is identically zero (a channel with no pairs) are left
 out, so $P(0,0) = 0$. An eigenvalue of $A - B$ below $10^{-12}\max|\lambda|$
 is a singular denominator and returns an error.
 
-The models are traces over both spins:
+The models are traces over both spins. OP-MP3 resums each spin's full
+$W$; SOP-MP3 resums the same-spin and opposite-spin channels separately,
+each with its own scale on $W^{(3)}$; SSD-OPMP3 damps only the same-spin
+third order:
 
 $$ E_c^{\text{OP-MP3}(x)} = \sum_\sigma\operatorname{Tr}P\big(W^{(2)}_\sigma,\;xW^{(3)}_\sigma\big), \qquad W_\sigma = W^{SS}_\sigma + W^{OS}_\sigma , $$
 $$ E_c^{\text{SOP-MP3}(x_{ss},x_{os})} = \sum_\sigma\Big[\operatorname{Tr}P\big(W^{(2),SS}_\sigma, x_{ss}W^{(3),SS}_\sigma\big) + \operatorname{Tr}P\big(W^{(2),OS}_\sigma, x_{os}W^{(3),OS}_\sigma\big)\Big], \qquad E_c^{\text{SSD-OPMP3}(x_{ss})} = E_c^{\text{SOP-MP3}(x_{ss},1)} . \tag{10.29} $$
@@ -182,14 +228,17 @@ A reference with no printed value and no explicit `x_ss` is an error.
 
 ## 10.11.3 The reference
 
-The perturbation theory is built on the Hartree–Fock Fock operator of the
-reference density, also for a Kohn–Sham reference. From the converged spin
-densities $D_\sigma$,
+The reference may be Hartree–Fock or Kohn–Sham, but the perturbation
+theory is always built on the Hartree–Fock Fock operator of the reference
+density. The SCF supplies the orbitals and the density; the Fock operator
+of the denominators and of $E_{\mathrm{NBS}}$ is the Hartree–Fock one built
+from that density. From the converged spin densities $D_\sigma$,
 
 $$ F_\sigma = h + J[D_\alpha + D_\beta] - K[D_\sigma], \qquad E_{\mathrm{HF}}[\rho] = E_{nn} + \tfrac12\sum_\sigma\operatorname{Tr}\big[D_\sigma(h + F_\sigma)\big], $$
 $$ E_{\mathrm{NBS}} = \sum_\sigma\sum_{i\,\text{active},\,a}\frac{(F^\sigma_{ia})^2}{\varepsilon_{i\sigma} - \varepsilon_{a\sigma}}, \qquad E = E_{\mathrm{HF}}[\rho] + E_{\mathrm{NBS}} + E_c . \tag{10.30} $$
 
-$h$ is the SCF's own one-electron operator. The occupied and virtual blocks
+$h$ is the SCF's own one-electron operator, including ECP and X2C terms
+when the SCF used them. The occupied and virtual blocks
 of each $F_\sigma$ are diagonalized separately in the SCF orbitals
 (semicanonicalization), which leaves the density and $E_{\mathrm{HF}}[\rho]$
 unchanged and gives the orbital energies of the denominators of (10.24);
@@ -199,6 +248,12 @@ $J$ and $K$ and an unconverged SCF as an error; `opmp3_on_reference` also
 takes a converged UHF, for which $F^\sigma_{ia} = 0$ and $E_{\mathrm{NBS}} = 0$.
 The amplitude stage uses exact four-centre integrals by default, or RI when
 an auxiliary basis is given.
+
+$E_{\mathrm{NBS}}$ is second-order perturbation theory for the single
+excitations: $\langle\Phi_i^a|H|0\rangle = F^\sigma_{ia}$ in the
+semicanonical basis, squared and divided by the orbital-energy gap, which
+is negative. Frozen-core orbitals are left out. The loop of
+`SemicanonicalSpin::singles_energy` starts at the first active orbital:
 
 <!-- excerpt: ferric-mp2/src/opmp3_reference.rs::singles_energy -->
 ```rust
