@@ -67,7 +67,7 @@ use ferric_integrals::oneelectron::{dipole, overlap, r2_moment};
 use ferric_integrals::operator::Operator;
 use ferric_scf::result::ScfResult;
 
-use crate::boys::boys_localize;
+use crate::boys::boys_localize_checked;
 use crate::ragged::{
     check_swap_closed, lanczos_kappa, matvec_indexed, matvec_planned, pair_block_from_g_cand,
     solve_ragged_budgeted_steered, BudgetedSolve, MatvecPath, PairBlock, Ragged, SolvePlan,
@@ -769,7 +769,9 @@ fn build_vvhv_traced(
     let dip = dipole(obs, [0.0, 0.0, 0.0])?;
     let c_l = if n_l > 0 {
         let cl = canonical_orth(&tv, &s, n_l)?;
-        boys_localize(&cl, &dip, 200).c_loc
+        boys_localize_checked(&cl, &dip, LMP2_BOYS_MAX_SWEEPS)
+            .map_err(|e| boys_error("valence virtuals", e))?
+            .c_loc
     } else {
         Array2::<f64>::zeros((nao, 0))
     };
@@ -1249,12 +1251,39 @@ pub fn localized_spaces(
     frozen_core: usize,
     vvhv: &VvHv,
 ) -> Result<LocalizedSpaces, FerricError> {
+    localized_spaces_capped(mol, obs, rhf, frozen_core, vvhv, LMP2_BOYS_MAX_SWEEPS)
+}
+
+/// Jacobi-sweep cap of the Boys localizations behind the amplitude LMP2
+/// family (occupieds and valence virtuals).
+pub(crate) const LMP2_BOYS_MAX_SWEEPS: usize = 200;
+
+/// An unconverged Boys localization is refused (solver honesty): the
+/// orbitals still span the right space, so the ε = 0 energy would be
+/// unchanged, but every locality map (pair gate, aux/virtual domains, AO
+/// supports, integral batches) is built from their centroids and supports,
+/// so a localization stopped short silently changes the truncation.
+fn boys_error(what: &str, e: FerricError) -> FerricError {
+    FerricError::Convergence(format!("amplitude LMP2 ({what}): {e}"))
+}
+
+/// [`localized_spaces`] with an explicit Boys sweep cap (the test hook for
+/// the non-convergence error).
+pub(crate) fn localized_spaces_capped(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    rhf: &ScfResult,
+    frozen_core: usize,
+    vvhv: &VvHv,
+    boys_max_sweeps: usize,
+) -> Result<LocalizedSpaces, FerricError> {
     let nocc_total = (mol.nelec() as usize) / 2;
     let no = active_occ(nocc_total, frozen_core)?;
     let first_occ = frozen_core;
     let c_occ_can = rhf.mos_r().slice(s![.., first_occ..nocc_total]).to_owned();
     let dip = dipole(obs, [0.0, 0.0, 0.0])?;
-    let boys = boys_localize(&c_occ_can, &dip, 200);
+    let boys = boys_localize_checked(&c_occ_can, &dip, boys_max_sweeps)
+        .map_err(|e| boys_error("occupieds", e))?;
     let c_locc = boys.c_loc;
     let occ_centers = boys.centers;
     // ⟨i|r²|i⟩ and the virtual dipole centroids: one GEMM per operator
@@ -2489,6 +2518,25 @@ mod tests {
         rhf_631g("alkane_4.xyz")
     }
 
+    /// Solver honesty: an occupied Boys localization that hits its sweep cap
+    /// is an error, not a silently used half-localized basis. C4/6-31G with a
+    /// one-sweep cap must refuse (the occupieds need many sweeps from the
+    /// canonical start); the production cap must succeed on the same system,
+    /// so the refusal is the cap and not something else.
+    #[test]
+    fn unconverged_occupied_boys_is_an_error() {
+        let (mol, obs, bs, rhf) = c4_631g();
+        let vvhv = build_vvhv(&mol, &obs, &bs, &rhf).unwrap();
+        let err = localized_spaces_capped(&mol, &obs, &rhf, 4, &vvhv, 1)
+            .expect_err("a one-sweep Boys localization must be refused");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("occupieds") && msg.contains("Boys localization did not converge"),
+            "{msg}"
+        );
+        assert!(localized_spaces_capped(&mol, &obs, &rhf, 4, &vvhv, LMP2_BOYS_MAX_SWEEPS).is_ok());
+    }
+
     /// B1 anchor: the one-Cholesky multi-RHS `solve_spd` reproduces the
     /// frozen per-column-LU oracle on C4/6-31G's projected-minimal system
     /// (≤ 1e-10 relative), and the VV-HV space built on it matches the
@@ -2959,7 +3007,7 @@ mod tests {
         let occ = rhf.mos_r().slice(s![.., ..nocc]).to_owned();
         let virt = rhf.mos_r().slice(s![.., nocc..nocc + 24]).to_owned();
         for c in [occ, virt] {
-            let a = boys_localize(&c, &dip, 200);
+            let a = crate::boys::boys_localize(&c, &dip, 200);
             let b = boys_column_oracle(&c, &dip, 200);
             assert!(a.iterations > 1, "no rotation happened: vacuous");
             assert_eq!(a.iterations, b.iterations);
