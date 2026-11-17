@@ -3,10 +3,16 @@
 <!-- section: 10.2; status: ready; registry: u-ri-mp2;
      theory: crates/ferric-mp2/theory.md#"3. Unrestricted RI-MP2" -->
 
-Unrestricted RI-MP2 (UMP2) is the open-shell form of section 10.1. The
-$\alpha$ and $\beta$ orbitals differ, so the energy splits into three spin
-blocks instead of two spatial sums. The factors $B^P_{ia}$ of (10.4) are
-built once per spin.
+A radical such as OH has one more $\alpha$ electron than $\beta$. Exchange
+acts only between electrons of the same spin, so an $\alpha$ electron and a
+$\beta$ electron feel different Fock operators, and UHF gives them
+different spatial orbitals. Section 10.1 relied on one set of spatial
+orbitals for both spins, so it does not apply. Unrestricted RI-MP2 (UMP2)
+keeps the two sets apart and sums the correlation energy in three spin
+blocks. The UHF determinant need not be an eigenfunction of $\hat S^2$,
+and UMP2 inherits that spin contamination: MP2 "cannot be recommended for
+open shell systems when there is significant spin contamination"
+(dissertation, chapter 5, section 5.1).
 
 | Entry point | Location |
 |---|---|
@@ -16,24 +22,66 @@ built once per spin.
 
 Index convention: $i, j, a, b$ are $\alpha$ orbitals and
 $\bar\imath, \bar\jmath, \bar a, \bar b$ are $\beta$ orbitals. The code names
-the $\beta$ indices with capitals (`I`, `J`, `A`, `B`).
+the $\beta$ indices with capitals (`I`, `J`, `A`, `B`). The factors
+$B^P_{ia}$ of (10.4) are built once per spin, each from its own orbitals,
+with one shared auxiliary metric.
 
 ## 10.2.1 The energy
 
-With per-spin canonical orbitals,
+Start again from the spin-orbital energy (10.1), now with per-spin
+canonical orbitals. The operator $1/r_{12}$ does not act on spin, so
+$\langle ij|ab\rangle = (ia|jb)$ is nonzero only when $i$ and $a$ have the
+same spin, and $j$ and $b$ have the same spin. Split the sum by the spins of
+the two occupied orbitals.
+
+**Both $\alpha$.** Both virtuals must be $\alpha$ too, and both the direct
+and the exchange integral survive. The antisymmetrized integral is
+
+$$ K_{iajb} = (ia|jb) - (ib|ja) , $$
+
+and the block keeps the $\tfrac14$ of (10.1). The $\beta\beta$ block is the
+same with every index barred.
+
+**One $\alpha$, one $\beta$.** Take $i$ to be $\alpha$ and $\bar\jmath$ to
+be $\beta$. The exchange integral $(i\bar b|\bar\jmath a)$ would need $i$
+and $\bar b$ to share a spin, so it vanishes. The direct term survives when
+the virtuals are $(a, \bar b)$. When they are $(\bar b, a)$, only the
+exchange term survives, and it squares to the same number. So this ordering
+of the occupied pair gives $\tfrac14 \cdot 2 \sum (ia|\bar\jmath\bar b)^2/\Delta$.
+The ordering with the $\beta$ orbital first gives the same again, which
+cancels the $\tfrac14$.
+
+Collect the blocks:
 
 $$ E^{(2)} = E_{\alpha\alpha} + E_{\beta\beta} + E_{\alpha\beta}, \tag{10.7} $$
 
 $$ E_{\alpha\alpha} = -\frac14 \sum_{ijab} \frac{\big[(ia|jb) - (ib|ja)\big]^2}{\Delta_{ij}^{ab}}, \qquad E_{\alpha\beta} = -\sum_{i\bar\jmath a\bar b} \frac{(ia|\bar\jmath\bar b)^2}{\Delta_{i\bar\jmath}^{a\bar b}} , \tag{10.8} $$
 
-and $E_{\beta\beta}$ is $E_{\alpha\alpha}$ with every index barred. The
-same-spin part is $E_{\mathrm{SS}} = E_{\alpha\alpha} + E_{\beta\beta}$ and the
-opposite-spin part is $E_{\mathrm{OS}} = E_{\alpha\beta}$, so SCS weights
-(section 10.3) apply to UMP2 unchanged.
+and $E_{\beta\beta}$ is $E_{\alpha\alpha}$ with every index barred. Each
+denominator uses the orbital energies of the spins it names:
+$\Delta_{i\bar\jmath}^{a\bar b} = \varepsilon_a + \varepsilon_{\bar b} - \varepsilon_i - \varepsilon_{\bar\jmath}$.
 
-The factor $\tfrac14$ in $E_{\alpha\alpha}$ counts each antisymmetrized pair
-four times: once per ordering of $(i,j)$ and once per ordering of $(a,b)$.
-The opposite-spin block has no exchange integral and no double counting.
+The factor $\tfrac14$ in $E_{\alpha\alpha}$ counts each antisymmetrized
+pair four times: once per ordering of $(i,j)$ and once per ordering of
+$(a,b)$. The sum over $i<j$, $a<b$ without the $\tfrac14$ is the same
+number. The opposite-spin block has no exchange integral and no double
+counting.
+
+Check the closed-shell limit. Give both spins the same orbitals. The
+opposite-spin block is then $E_{\mathrm{OS}}$ of (10.2) term by term. The
+two same-spin blocks add to
+
+$$ E_{\alpha\alpha} + E_{\beta\beta} = -\frac12 \sum_{ijab} \frac{(ia|jb)^2 - 2(ia|jb)(ib|ja) + (ib|ja)^2}{\Delta_{ij}^{ab}} . $$
+
+Relabel $a \leftrightarrow b$ in the last term. The denominator does not
+change, and $(ib|ja)^2$ becomes $(ia|jb)^2$. The bracket becomes
+$2(ia|jb)^2 - 2(ia|jb)(ib|ja)$, and the sum is $E_{\mathrm{SS}}$ of (10.2).
+So the grouping
+
+$$ E_{\mathrm{SS}} = E_{\alpha\alpha} + E_{\beta\beta}, \qquad E_{\mathrm{OS}} = E_{\alpha\beta} $$
+
+carries over to open shells, and the SCS weights of section 10.3 apply to
+UMP2 unchanged.
 
 > **Verified equation 10.8** · unrestricted MP2 spin blocks
 >
@@ -67,10 +115,52 @@ The opposite-spin block has no exchange integral and no double counting.
 ## 10.2.2 How the code evaluates it
 
 The same-spin kernel uses the symmetry of $K$ under the joint swap
-$(i,a) \leftrightarrow (j,b)$: $K_{jbia} = K_{iajb}$. It loops over $j \ge i$
-and weights the off-diagonal pairs by 2, which halves the work. The
-opposite-spin kernel has no such symmetry and runs over every
-$(i, \bar\jmath)$.
+$(i,a) \leftrightarrow (j,b)$:
+
+$$ K_{jbia} = (jb|ia) - (ja|ib) = (ia|jb) - (ib|ja) = K_{iajb} , $$
+
+using $(pq|rs) = (rs|pq)$ for real orbitals. The denominator is symmetric
+under the same swap. So the $(j,i)$ block equals the $(i,j)$ block, as in
+equation (10.6). The kernel loops over $j \ge i$ and weights the
+off-diagonal pairs by 2, which halves the work. This is
+`ferric-mp2/src/u_rimp2.rs::same_spin_block_energy` with the destructuring
+of the spin channel removed and the comments replaced:
+
+```rust
+let eps_i = eps[first_occ + i];
+let mut energy_i = 0.0;
+for j in i..nocc {                                   // unique pairs j >= i
+    let fac = if i == j { 1.0 } else { 2.0 };        // (j,i) block equals (i,j)
+    let jcol = (j - i) * nvir;
+    let eps_j = eps[first_occ + j];
+    let mut energy_ij = 0.0;
+    for a in 0..nvir {
+        let eps_a = eps[nocc_total + a];
+        for b_idx in 0..nvir {
+            let eps_b = eps[nocc_total + b_idx];
+            let g_ab = g_i[(a, jcol + b_idx)]; // (ia|jb)
+            let g_ba = g_i[(b_idx, jcol + a)]; // (ib|ja)
+            let k = g_ab - g_ba;                         // K_iajb
+            let denom = eps_i + eps_j - eps_a - eps_b;   // -Delta
+            let t_val = k / denom;                       // -K/Delta
+            energy_ij += t_val * k;                      // -K^2/Delta
+        }
+    }
+    energy_i += fac * energy_ij;
+}
+0.25 * energy_i                                      // the 1/4 of (10.8)
+```
+
+The block `g_i` is built exactly as in 10.1.3, one wide product per $i$.
+The sign convention is the one of 10.1: `denom` is $-\Delta$, and the
+explicit minus of (10.8) is absent.
+
+`ferric-mp2/src/u_rimp2.rs::opposite_spin_block_energy` has no such
+symmetry. Its two indices belong to different spins, $(i, \bar\jmath)$ and
+$(\bar\jmath, i)$ are not the same pair, and the loop runs over every
+$i$ and every $\bar\jmath$. Its block is
+$G^{(i)}_{a,\bar\jmath\bar b} = \sum_P B^P_{ia} B^P_{\bar\jmath\bar b}$, a
+product of an $\alpha$ factor and a $\beta$ factor.
 
 | Step | What happens |
 |---|---|
@@ -80,13 +170,22 @@ $(i, \bar\jmath)$.
 | Memory | one admission check on the MO-side tensors of both spins before the intermediates are built |
 | Output | `URiMp2Components` with the $\alpha\alpha$, $\beta\beta$ and $\alpha\beta$ energies |
 
-On an ROHF reference the energy is the doubles part only. The singles term
+Why semicanonicalize? The energy (10.8) assumes that the occupied and the
+virtual blocks of each spin's Fock matrix are diagonal, so that every
+denominator is a difference of orbital energies. ROHF orbitals diagonalize
+one effective Fock operator, not the separate $\alpha$ and $\beta$ Fock
+matrices. Rotating within the occupied and within the
+virtual space of each spin makes the two blocks diagonal and leaves the
+reference determinant unchanged.
+
+The rotation does not remove the occupied–virtual block. On an ROHF
+reference the energy is the doubles part only. The singles term
 $\sum_{ia} |f_{ia}|^2/(\varepsilon_i - \varepsilon_a)$, which is nonzero
 for semicanonical ROHF orbitals, is not added. The CLI runs UMP2 on a UHF
 reference; the ROHF route is reached from Rust.
 
-A frozen-core count larger than $n_o^\beta$ is an error even when it fits
-in $n_o^\alpha$.
+The frozen-core count applies to both spins, so a count larger than
+$n_o^\beta$ is an error even when it fits in $n_o^\alpha$.
 
 ## 10.2.3 What is anchored
 
@@ -109,9 +208,10 @@ Figures from `site/src/reference/validation.md`.
 
 | Source | Used for |
 |---|---|
-| `crates/ferric-mp2/theory.md`, "3. Unrestricted RI-MP2" | equations 10.7, 10.8 |
+| `crates/ferric-mp2/theory.md`, "3. Unrestricted RI-MP2", "5.1 Open-shell attenuated and spin-scaled MP2" | equations 10.7, 10.8, the spin-block derivation |
 | `crates/ferric-mp2/src/u_rimp2.rs` | kernels, reference handling, frozen core |
 | `scripts/mp2_variant_identities.py` claim 2, `scripts/mp2_family_sympy.py` part B | verified boxes |
+| Goldey dissertation, chapter 5, section 5.1 | the spin-contamination caveat |
 | `site/src/reference/validation.md` | anchors |
 
 Changes from the sources: barred $\beta$ indices instead of capitals; positive

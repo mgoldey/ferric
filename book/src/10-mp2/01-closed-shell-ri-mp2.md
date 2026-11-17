@@ -231,10 +231,12 @@ error first order; the code keeps it as a measurement option, not a default.
 
 ## 10.1.3 The algorithm
 
-The dissertation's shared-memory algorithm (chapter 4, Table 4.1) has four
+Equations (10.2) and (10.4) say what to compute. The order of the
+contractions decides what it costs and how much memory it takes. The
+dissertation's shared-memory algorithm (chapter 4, Table 4.1) has four
 steps. The code keeps the four steps and changes where each intermediate
-lives. $n_o$, $n_v$, $N$, $N_{\mathrm{aux}}$ are $O$, $V$, $N$, $X$ in the
-dissertation's table.
+lives. In the dissertation's table $n_o$, $n_v$, $N$ and $N_{\mathrm{aux}}$
+are called $O$, $V$, $N$ and $X$.
 
 | Step | Quantity | Cost | Function |
 |---|---|---|---|
@@ -246,36 +248,86 @@ dissertation's table.
 The driver that calls them in order is
 `ferric-mp2/src/rimp2.rs::ri_mp2_spin_components`.
 
-**Steps 2 and 3 are one pass.** The raw AO integrals $(P|\mu\nu)$ arrive in
-blocks of auxiliary functions from a
-`ferric-integrals/src/three_index_source.rs::ThreeIndexSource`. For each chunk
-of auxiliary rows the code does two matrix products per row, $C_o^{\mathsf T}
-(P|\mu\nu)$ and then $\cdot\,C_v$, and adds the chunk's contribution to every
-row of $B$ with one matrix product against the matching columns of $M$:
+Read the cost column from the top. Step 1 is cubic in the auxiliary basis
+and independent of the orbitals. Step 2 is the usual two-index transform,
+done once per auxiliary function. Step 4 is the $O(N^5)$ step of 10.1.2:
+one product over $P$ for every unique pair $(i,j)$ and every $(a,b)$.
+
+### Steps 2 and 3 are one pass
+
+The raw AO integrals $(P|\mu\nu)$ arrive in blocks of auxiliary functions
+from a `ferric-integrals/src/three_index_source.rs::ThreeIndexSource`. For
+each chunk of auxiliary rows the code does two matrix products per row,
+$C_o^{\mathsf T}(P|\mu\nu)$ and then $\cdot\,C_v$. It then adds the chunk's
+contribution to every row of $B$ with one matrix product against the
+matching columns of $M$:
 
 $$ B \mathrel{+}= M_{[:,\,\text{chunk}]}\;(\text{chunk}|ia) . $$
 
-Only the output $B$, of $N_{\mathrm{aux}} n_o n_v$ doubles, and one chunk are
-held. The undressed $(P|ia)$ tensor is never stored whole. The dissertation's
-algorithm wrote $(ia|P)$ and then $B$ to disk in separate functions (its
-Functions 2 and 3); here $B$ stays in memory and the raw AO tensor is the
-quantity that goes to disk when it does not fit the memory budget.
+Why is this a sum over chunks? Write (10.4) as
+$B^P_{ia} = \sum_Q M_{PQ}(Q|ia)$ and split the sum over $Q$ into the
+chunks. Each chunk adds its own partial sum to every $P$.
 
-**Step 4 is batched over $i$.** For each occupied $i$, one matrix product
-forms every integral that $i$ needs:
+Only the output $B$, of $N_{\mathrm{aux}} n_o n_v$ doubles, and one chunk
+are held. The undressed $(P|ia)$ tensor is never stored whole. The
+dissertation's algorithm wrote $(ia|P)$ and then $B$ to disk in separate
+functions (its Functions 2 and 3). Here $B$ stays in memory, and the raw AO
+tensor is the quantity that goes to disk when it does not fit the memory
+budget.
+
+### Step 4 is batched over $i$
+
+For each occupied $i$, one matrix product forms every integral that $i$
+needs:
 
 $$ G^{(i)}_{a,\,jb} = \sum_P B^P_{ia} B^P_{jb}, \qquad j \ge i . $$
 
-In the code `b_i` is the $n_v$ columns of `b_ov` belonging to $i$, `b_tail`
-is every column from $i$ onward, and `g_i = b_i.t().dot(&b_tail)`. Batching
-over the occupied index makes each product $n_v \times N_{\mathrm{aux}}$ times
-$N_{\mathrm{aux}} \times (n_o - i)n_v$, which is the shape the dissertation
-chose for the same reason: "the number of virtual orbitals, $V$, is
-significantly larger than that of the occupied orbitals, $O$" (chapter 4,
-section 4.2). The occupied index is also the parallel index. Each $i$ is one
-task; BLAS runs single-threaded inside it.
+This is the loop in
+`ferric-mp2/src/rimp2.rs::spin_components_from_b_ov_kappa_cpu`, with the
+comments replaced and the final serial sum shortened to one line:
 
-**Only pairs $j \ge i$ are visited.** Off-diagonal pairs are weighted by 2.
+```rust
+let partials: Vec<(f64, f64)> = (0..nocc)
+    .into_par_iter()                                // one task per occupied i
+    .map(|i| {
+        let b_i = b_ov.slice(ndarray::s![.., i * nvir..(i + 1) * nvir]);  // B^P_{ia}
+        let b_tail = b_ov.slice(ndarray::s![.., i * nvir..]);             // B^P_{jb}, j >= i
+        let g_i = b_i.t().dot(&b_tail);             // G^(i)_{a,jb} = (ia|jb)
+        let (mut e_os_i, mut e_ss_i) = (0.0, 0.0);
+        for j in i..nocc {
+            let fac = if i == j { 1.0 } else { 2.0 };   // weight of (10.6)
+            let (e_os_ij, e_ss_ij) =
+                pair_energy(&g_i.view(), i, j, nvir, eps, first_occ, nocc_total, kappa);
+            e_os_i += fac * e_os_ij;
+            e_ss_i += fac * e_ss_ij;
+        }
+        (e_os_i, e_ss_i)
+    })
+    .collect();
+// ... e_os, e_ss = sums of the partials in order of i ...
+```
+
+Three points about this loop:
+
+- **The product has a wide shape on purpose.** Each `g_i` is
+  $n_v \times N_{\mathrm{aux}}$ times $N_{\mathrm{aux}} \times (n_o - i)n_v$.
+  The dissertation batched over the occupied index for the same reason:
+  "the number of virtual orbitals, $V$, is significantly larger than that of
+  the occupied orbitals, $O$" (chapter 4, section 4.2). A batch over a
+  virtual index would give many narrow products instead.
+- **The occupied index is also the parallel index.** Each $i$ is one task,
+  and BLAS runs single-threaded inside it.
+- **Only pairs $j \ge i$ are visited.** `b_tail` starts at column $i n_v$,
+  so the block for $j < i$ is never computed. The off-diagonal pairs carry
+  weight 2, which is equation (10.6) below.
+
+Why is the weight 2 correct? Swap $(i,a) \leftrightarrow (j,b)$ in one
+summand of (10.3). The integral $(ia|jb)$ becomes $(jb|ia)$, which is the
+same number for real orbitals. The exchange partner $(ib|ja)$ becomes
+$(ja|ib)$, also the same number. The denominator
+$\varepsilon_a + \varepsilon_b - \varepsilon_i - \varepsilon_j$ is
+symmetric. So the $(j,i)$ block sums to the same value as the $(i,j)$
+block.
 
 > **Verified equation 10.6** · unique-pair sum
 >
@@ -294,8 +346,10 @@ task; BLAS runs single-threaded inside it.
 >
 > <!-- verified: id=mp2.cs.unique-pairs; script=scripts/mp2_variant_identities.py; claim=1; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/rimp2.rs::spin_components_from_b_ov_kappa_cpu; rust_test=ferric-mp2/src/rimp2.rs::spin_components_symmetry_matches_naive_double_loop -->
 
-**The pair kernel.** `ferric-mp2/src/rimp2.rs::pair_energy` is equation (10.2)
-for one pair, read from the block $G^{(i)}$:
+### The pair kernel
+
+`ferric-mp2/src/rimp2.rs::pair_energy` is equation (10.2) for one pair,
+read from the block $G^{(i)}$:
 
 <!-- excerpt: ferric-mp2/src/rimp2.rs::pair_energy -->
 ```rust
@@ -317,7 +371,8 @@ e_ss_ij += g_ab * (g_ab - g_ba) / denom;
 
 ## 10.1.4 Reproducibility
 
-Two choices make the energy independent of the thread count.
+Floating-point addition is not associative, so the order of a sum sets its
+last digits. Two choices make the energy independent of the thread count.
 
 - Each $i$ task returns its partial sums, and the partials are added in
   order of $i$ on one thread. A parallel reduction would combine them in a
@@ -327,8 +382,10 @@ Two choices make the energy independent of the thread count.
   (`ferric-mp2/src/rimp2.rs::mo_stream_chunk_for`). The dressing step
   accumulates into $B$ chunk by chunk, so the width sets the order of a
   floating-point sum. At an ample budget the width is the constant
-  `MO_STREAM_CHUNK`. Two runs at different `[memory] budget_gb` can differ in
-  the last digits; two runs at the same budget are bit-identical.
+  `MO_STREAM_CHUNK`.
+
+So two runs at different `[memory] budget_gb` can differ in the last
+digits, and two runs at the same budget are bit-identical.
 
 ## 10.1.5 Memory
 
@@ -339,10 +396,11 @@ Two choices make the energy independent of the thread count.
 | $G^{(i)}$ | at most $n_o n_v^2$ per worker thread | one $i$ task |
 | $M$, $V$ | $N_{\mathrm{aux}}^2$ each | whole energy evaluation |
 
-The budget is resolved once by `ferric-mp2/src/rimp2.rs::eri3_budget_bytes`.
+The raw AO tensor is the largest entry: $n_o + n_v \le N$, so
+$n_o n_v \le N^2/4$. The budget is resolved once by `ferric-mp2/src/rimp2.rs::eri3_budget_bytes`.
 `ferric-mp2/src/rimp2.rs::check_mo_side_alloc` refuses a run whose $B_{ov}$
-cannot fit, before the AO tensor and $B_{ov}$ are allocated. The four-index integrals are never
-stored.
+cannot fit, before the AO tensor and $B_{ov}$ are allocated. The
+four-index integrals are never stored.
 
 ## 10.1.6 Options that change the equation
 
@@ -365,8 +423,8 @@ stored.
 <!-- figures: site/src/reference/validation.md "Bundled basis sets"; testdata/reference/h2o_cc-pvdz_rimp2.json -->
 
 The second row is the method's registered energy anchor
-(`crates/ferric-core/src/certificate/anchors.rs`, method `"RI-MP2"`). A run's
-certificate carries that figure as its measured error.
+(`crates/ferric-core/src/certificate/anchors.rs`, method `"RI-MP2"`). A
+run's certificate carries that figure as its measured error.
 
 ## 10.1.8 Running it
 
@@ -388,9 +446,8 @@ auxbasis = "cc-pvdz-ri"
 cargo run --release -- examples/water-rimp2.toml
 ```
 
-The auxiliary basis should be the `-RI` set matched to the orbital basis.
-`frozen_core` defaults to 0 in `[mp2]`; `"auto"` selects the standard small
-core.
+Use the `-RI` auxiliary set matched to the orbital basis. `frozen_core`
+defaults to 0 in `[mp2]`; `"auto"` selects the standard small core.
 
 ## Sources
 
@@ -399,7 +456,7 @@ core.
 | `crates/ferric-mp2/theory.md`, "Conventions", "1. Density fitting", "2. Closed-shell RI-MP2" | equations 10.2 to 10.4, function names |
 | Dissertation, chapter 4, sections 4.1 and 4.2 (Eqs. 4.3 to 4.5, Table 4.1, Functions 1 to 4) | the four-step algorithm, the choice of batch index, the scaling statement |
 | `scripts/mp2_variant_identities.py`, claim 1 | verified equations 10.2 and 10.6 |
-| `crates/ferric-mp2/src/rimp2.rs` | the pair kernel, the reproducibility and memory rules |
+| `crates/ferric-mp2/src/rimp2.rs` | the pair kernel, the unique-pair loop, the reproducibility and memory rules |
 | `site/src/reference/validation.md` | the anchor figure |
 
 Changes from the sources: the denominator is written as the positive

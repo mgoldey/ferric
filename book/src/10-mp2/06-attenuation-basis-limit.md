@@ -3,12 +3,15 @@
 <!-- section: 10.6; status: edit; registry: attenuated-mp2;
      theory: crates/ferric-mp2/theory.md#"5. Attenuated MP2" -->
 
-Attenuated MP2 works partly by cancelling basis-set superposition error,
-so its one parameter, $r_0$, belongs to a basis. This section records how
-the optimal $r_0$ moves as the basis grows toward the complete-basis-set
-(CBS) limit. It is a summary of the Goldey dissertation, chapter 6. No new
-code is involved: every row below is a terfc run of section 10.4 at a
-different `att_r0`.
+Attenuated MP2 cancels two overbinding errors at once: MP2's overestimate of
+dispersion and basis set superposition error (section 10.4). The first does
+not depend on the basis. The second shrinks as the basis grows, so the
+amount of long-range correlation worth cutting shrinks with it, and the
+optimal attenuation length $r_0$ belongs to a basis. This section records
+how $r_0$ moves as the basis grows toward the complete-basis-set (CBS)
+limit. It is a summary of the Goldey dissertation, chapter 6. No new code
+is involved: every row below is a terfc run of section 10.4 at a different
+`att_r0`.
 
 ## 10.6.1 Setup
 
@@ -21,9 +24,27 @@ different `att_r0`.
 | Quadruple zeta | dual-basis SCF |
 | CBS estimate | correlation energy extrapolated from cardinal numbers $X < Y$, HF at the larger basis |
 
-The two-point extrapolation (dissertation Eq. 6.1) is
+The counterpoise choice matters for more than transferability. BSSE is
+part of what attenuation cancels, and the dissertation notes that
+"attenuated MP2 works far less well when counterpoise corrections to remove
+BSSE are performed than when they are not" (chapter 6, section 6.1).
+
+The two-point extrapolation (dissertation Eq. 6.1) assumes that the
+correlation energy approaches its limit as $X^{-3}$ in the cardinal number:
+$E^{\mathrm{corr}}_X = E^{\mathrm{corr}}_{\infty} + A X^{-3}$. Write this
+for $X$ and $Y$, multiply the two equations by $X^3$ and $Y^3$, and subtract
+to eliminate $A$:
+
+$$ X^3 E^{\mathrm{corr}}_X - Y^3 E^{\mathrm{corr}}_Y = (X^3 - Y^3)\,E^{\mathrm{corr}}_{\infty} . $$
+
+Divide by $X^3 - Y^3$:
 
 $$ E^{\mathrm{corr}}_{XY} = \frac{E^{\mathrm{corr}}_X X^3 - E^{\mathrm{corr}}_Y Y^3}{X^3 - Y^3} . \tag{10.17} $$
+
+Check it: if the two correlation energies are equal, (10.17) returns that
+value. For $X = 3$, $Y = 4$ the weights are $-27/37$ on the triple-zeta
+energy and $64/37$ on the quadruple-zeta energy, so the estimate lies
+beyond the quadruple-zeta value.
 
 ferric has no built-in extrapolation; (10.17) is applied to two runs by
 hand.
@@ -71,7 +92,7 @@ the aug- sets.
 - **It does not go to infinity.** At aTQZ attenuated MP2 (0.304 kcal/mol)
   still beats MP2/CBS (0.73 kcal/mol, dissertation Table 2.1): part of what
   attenuation removes is MP2's intrinsic overestimate of dispersion, which
-  no basis fixes.
+  no basis fixes. An infinite $r_0$ would be plain MP2 (section 10.4.2).
 - **Augmentation matters more than cardinal number.** aug-cc-pVTZ at
   0.251 kcal/mol is the best entry in the table, better than aug-cc-pVQZ
   and the extrapolations. The dissertation recommends MP2(terfc, aTZ).
@@ -87,9 +108,13 @@ the aug- sets.
 | def2-SVPD, def2-TZVPD, def2-TZVPPD | yes, with matching `-RIFIT` sets |
 | calendar sets (jun-, jul-, may-, apr-) | no; load one from a Basis Set Exchange JSON file (`BasisSet.from_bse_json` in Python) |
 
-To use a row: `method.kind = "att-rimp2"`, `[mp2] att_operator = "terfc"`,
-`att_r0` = the table's value in Å. The 1.05 Å default is right only for
-aug-cc-pVDZ.
+The 13 bundled bases of the table are also the rows of
+`ferric-mp2/src/terfc_r0.rs::TERFC_R0_TABLE`. A terfc run (`method.kind =
+"att-rimp2"`, `[mp2] att_operator = "terfc"`) in one of them takes $r_0$
+from that table when `att_r0` is omitted, and prints the value and its
+source. For a calendar set, or any other basis, set `att_r0` to the table's
+value in Å; without it the run is an error. The two extrapolated rows have
+no basis of their own and are not in the code table.
 
 These are dissertation numbers, run in Q-Chem. ferric has not re-run the
 S66 fits, and none of the figures above is a ferric anchor. The terfc
@@ -104,5 +129,9 @@ integrals and energies ferric computes are anchored in section 10.5.
 
 | Source | Used for |
 |---|---|
-| Goldey dissertation, chapter 6 (§6.2, Eq. 6.1, Tables 6.2–6.4) | setup, equation 10.17, the table, the conclusions |
+| Goldey dissertation, chapter 6 (§6.1, §6.2, Eq. 6.1, Tables 6.2–6.4) | setup, equation 10.17, the counterpoise remark, the table, the conclusions |
+| `crates/ferric-mp2/theory.md`, "5. Attenuated MP2"; `crates/ferric-mp2/src/terfc_r0.rs` | the per-basis default $r_0$ |
 | `crates/ferric-core/src/basis/bundled` | which bases ship |
+
+The derivation of (10.17) from the $X^{-3}$ model and the $X = 3$, $Y = 4$
+weights were checked with sympy for this section.

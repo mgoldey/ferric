@@ -3,16 +3,21 @@
 <!-- section: 10.4; status: edit; registry: attenuated-mp2, u-attenuated-mp2;
      theory: crates/ferric-mp2/theory.md#"5. Attenuated MP2", "4. Spin-component scaling", "5.1 Open-shell attenuated and spin-scaled MP2" -->
 
-Attenuated MP2 keeps the Hartree–Fock energy and replaces $1/r_{12}$ in the
-MP2 correlation integrals with a short-range kernel. The long-range
-correlation it removes is, in a finite basis, mostly error: MP2 overbinds
-dispersion-dominated complexes (uncoupled Hartree–Fock polarizabilities),
-and basis-set superposition error (BSSE) overbinds them further. Both
-errors grow with distance and have the same sign, so cutting the
-correlation off at a fitted length removes much of both (Goldey and
-Head-Gordon, J. Phys. Chem. Lett. 3, 3592 (2012); Goldey, Dutoi and
-Head-Gordon, Phys. Chem. Chem. Phys. 15, 15869 (2013); Goldey dissertation,
-chapters 2 and 3).
+Take two molecules a few ångström apart and compute their MP2 interaction
+energy in a small basis. Two errors push it the same way. First, MP2
+describes dispersion with uncoupled Hartree–Fock polarizabilities and
+overbinds many dispersion-dominated complexes, π-stacked ones most of all.
+Second, each monomer borrows basis functions from its partner, which lowers
+the dimer energy artificially: basis set superposition error (BSSE). Both
+errors come from correlation at long range, and both overbind. Attenuated
+MP2 keeps the Hartree–Fock energy and replaces $1/r$ in the correlation
+integrals by a short-range kernel, so correlation is cut off beyond a
+fitted length. In the dissertation's words, the role of attenuation is "to
+remove part of the over-binding associated with BSSE in small basis sets,
+as well as part of the over-binding associated with MP2 itself for some
+types of dispersion interactions" (chapter 2). (Goldey and Head-Gordon,
+J. Phys. Chem. Lett. 3, 3592 (2012); Goldey, Dutoi and Head-Gordon, Phys.
+Chem. Chem. Phys. 15, 15869 (2013); Goldey dissertation, chapters 2 and 3.)
 
 The price: attenuated MP2 has no long-range dispersion at all. Its $C_6$
 coefficients are zero. Section 10.8 adds a model tail back.
@@ -22,11 +27,13 @@ coefficients are zero. Section 10.8 adds a model tail back.
 | Rust (erfc) | `ferric-mp2/src/attenuated.rs::attenuated_ri_mp2` |
 | Rust (terfc) | `ferric-mp2/src/rimp2.rs::ri_mp2` with `Operator::terfc` (`ferric-integrals/src/operator.rs`) |
 | CLI | `method.kind = "att-rimp2"`, `[mp2] att_operator = "erfc"` (default) or `"terfc"` |
-| Python | `run_attenuated_rimp2(omega=)` (erfc); `run_terfc_rimp2(r0=)` (terfc); `run_rimp2(att_operator=, omega=, att_r0=, att_omega=)` |
+| Python | `run_attenuated_rimp2(omega=)` (erfc); `run_terfc_rimp2(r0=)` (terfc); `run_rimp2(att_operator=, omega=, att_r0=, att_omega=)` for the local MP2 of chapter 13 only (a `ValueError` on the exact method) |
 
 ## 10.4.1 The two kernels
 
-The erfc kernel is the short-range half of the usual range split:
+Chapter 4 defines both kernels and derives their properties; this section
+uses the results. The erfc kernel is the short-range half of the usual
+range split:
 
 $$ \frac{1}{r} = \frac{\operatorname{erfc}(\omega r)}{r} + \frac{\operatorname{erf}(\omega r)}{r} . \tag{10.11} $$
 
@@ -47,7 +54,9 @@ $$ \tau_3 = \frac{\omega^3}{3\sqrt\pi}\big(4\omega^2 r_0^2 - 2\big)\,e^{-\omega^
 whose only positive root is $\omega = 1/(\sqrt2\,r_0)$. At that $\omega$ the
 long-range part terf$(r)/r$ is constant near the origin up to an $r^4$ term, so terfc
 reproduces the short-range Coulomb shape as closely as one parameter
-allows. With the link, terfc has one parameter, $r_0$.
+allows. With the link, terfc has one parameter, $r_0$. Section 4.1.2
+derives (10.13) step by step from the Taylor series of the odd part of
+$\operatorname{erf}\big(\omega(r + r_0)\big)$.
 
 > **Verified equation 10.12** · the terfc kernel and its curvature constraint
 >
@@ -71,6 +80,12 @@ $\omega = 0.420$ Å⁻¹ and $r_0 = 1.05$ Å they nearly coincide below about 1.
 Beyond that terfc falls faster: its tail is Gaussian in $r - r_0$ rather
 than in $r$.
 
+Why are the $C_6$ coefficients zero? Both kernels decay like a Gaussian at
+large $r$. An integral $(ia|jb)$ with $\phi_i\phi_a$ on one molecule and
+$\phi_j\phi_b$ on another therefore falls off faster than any power of the
+separation $R$, and the $R^{-6}$ term that MP2 dispersion comes from never
+appears.
+
 ## 10.4.2 The energy
 
 Attenuated RI-MP2 is section 10.1 with $\hat w(r)$ (either kernel divided
@@ -79,18 +94,37 @@ metric:
 
 $$ (ia|jb)_{\hat w} \approx \sum_P B^P_{ia} B^P_{jb}, \qquad B^P_{ia} = \sum_Q M_{PQ}\,(Q|\hat w|ia), \qquad M^{\mathsf T} M = V_{\hat w}^{-1}, \quad (V_{\hat w})_{PQ} = (P|\hat w|Q) . \tag{10.14} $$
 
-Fitting in the attenuated metric keeps the fit variational for the
-attenuated integrals. The energy is (10.3) on these integrals:
+Why the attenuated metric as well? Section 10.1.2 showed that the fitting
+error is quadratic in the fitting residual (equation 10.5) when the metric
+and the 3-index integrals share one operator. Fitting in the attenuated
+metric keeps the fit variational for the attenuated integrals. The energy is
+(10.3) on these integrals:
 
 $$ E = E_{\mathrm{HF}} + s\,E^{(2)}\big[\hat w\big] . \tag{10.15} $$
 
 The Hartree–Fock part is never attenuated. $s$ scales the correlation
-energy only.
+energy only; the dissertation introduced it to absorb "systematic errors in
+the correlation energy due to severe truncation in the strong attenuation
+limit and BSSE in the weak attenuation limit" (chapter 2).
+
+Check the limits of (10.15) at $s = 1$.
+
+- $\omega \to 0$ for erfc, or $r_0 \to \infty$ for terfc: the kernel goes
+  to 1 at every $r$ (chapter 4, 4.1.1), every integral is the Coulomb one,
+  and (10.15) is RI-MP2.
+- $\omega \to \infty$ for erfc, or $r_0 \to 0$ for terfc: the kernel goes to
+  0 at every $r > 0$, the correlation energy vanishes, and (10.15) is
+  Hartree–Fock.
+
+The dissertation fitted between these two ends. At aug-cc-pVDZ on S66 the
+Hartree–Fock end has an RMSD of 4.0 kcal/mol and the MP2 end 2.67 kcal/mol
+(chapter 2, Table 2.1); the fitted lengths of 10.4.3 sit in between and do
+better than either.
 
 | Parameter | Rust | CLI `[mp2]` | Python | Default |
 |---|---|---|---|---|
 | erfc $\omega$ | `AttenuatedMp2Config::omega`, Bohr⁻¹ | `omega`, Å⁻¹ | `omega`, Å⁻¹ | 0.420 Å⁻¹ (0.2223 Bohr⁻¹) |
-| terfc $r_0$ | `Operator::terfc(r0)`, Bohr | `att_r0`, Å | `r0` / `att_r0`, Å | 1.05 Å (1.984 Bohr) |
+| terfc $r_0$ | `Operator::terfc(r0)`, Bohr | `att_r0`, Å | `r0` / `att_r0`, Å | per basis from `ferric-mp2/src/terfc_r0.rs::TERFC_R0_TABLE` (1.05 Å, 1.984 Bohr, at aug-cc-pVDZ); an untabulated basis needs an explicit value |
 | terfc free $\omega$ | `Operator::terfc_with_omega(r0, omega)` | `att_omega`, Å⁻¹ | `att_omega`, Å⁻¹ | unset: the curvature link |
 | scaling $s$ | `AttenuatedMp2Config::scaling` | not exposed (1) | not exposed (1) | 1.0 |
 
@@ -125,26 +159,77 @@ correction, and they belong to the basis they were fitted in.
 | MP2(terfc, aTZ) | terfc | $r_0$ = 1.35 Å | 1 | aug-cc-pVTZ | 0.25 | dissertation ch. 3, Table 3.1 |
 
 Two readings of the table. First, at aug-cc-pVDZ, erfc and terfc perform
-alike; the attenuation length matters more than the kernel shape. Second,
-the optimal $r_0$ grows with the basis: a larger basis has less BSSE to
+alike: the attenuation length matters more than the kernel shape. Second,
+the optimal $r_0$ grows with the basis. A larger basis has less BSSE to
 cancel, so less correlation is cut. The aug-cc-pVTZ value is 1.35 Å, not
-the 1.05 Å default. Section 10.6 tabulates $r_0$ across 24 basis sets.
+the aug-cc-pVDZ 1.05 Å. Section 10.6 tabulates $r_0$ across 24 basis sets.
 
-The CLI and Python default, $r_0 = 1.05$ Å, is the aug-cc-pVDZ value; it
-is used whatever the basis. Set `att_r0 = 1.35` for aug-cc-pVTZ.
+Because $r_0$ belongs to a basis, the CLI and Python read the terfc default
+from a per-basis table, `ferric-mp2/src/terfc_r0.rs::resolve_terfc_r0`: the
+13 bundled sets of section 10.6 (1.05 Å at aug-cc-pVDZ, 1.35 Å at
+aug-cc-pVTZ). An explicit `att_r0` always wins, a run that used the table
+prints the value and its source, and a basis with no row is an error that
+asks for `att_r0`. The erfc default, 0.420 Å⁻¹, is the aug-cc-pVDZ value and
+is used whatever the basis.
 
 ## 10.4.4 How the code evaluates it
 
-The erfc path (`attenuated_ri_mp2`) builds the erfc 3-index integrals and
-metric, then runs the RI-MP2 pair loop of section 10.1. A screened variant
-skips shell triples by the QQR-3 bound, which takes the attenuation into
-account; Schwarz bounds alone do not see it. The terfc path is `ri_mp2`
-with the operator swapped; its metric is positive definite and takes the
-Cholesky route.
+The erfc path builds the erfc 3-index integrals and metric, then runs the
+RI-MP2 pair loop of section 10.1. This is the body of
+`ferric-mp2/src/attenuated.rs::attenuated_ri_mp2`, with the comments
+replaced:
+
+```rust
+let op = Operator::erfc(config.omega);               // w = erfc(omega r)/r
+let sc = if let Some(thresh) = config.screen_thresh {
+    attenuated_spin_components_screened(mol, obs, dfbs, op, rhf, config.frozen_core, thresh)?
+} else {
+    let ri_config = RiMp2Config {
+        frozen_core: config.frozen_core,
+        memory_budget_bytes: config.memory_budget_bytes,
+        ..Default::default()
+    };
+    ri_mp2_spin_components_any(mol, obs, dfbs, op, rhf, &ri_config)?   // (10.14), (10.2)
+};
+let scaled_corr = config.scaling * sc.e_total;      // s E^(2)[w]
+Ok(AttenuatedMp2Result {
+    mp2_corr: scaled_corr,
+    total_energy: rhf.energy + scaled_corr,         // (10.15): HF unattenuated
+    spin_components: sc,
+})
+```
+
+Three points about it:
+
+- **The operator is the only change.** `op` goes into the same
+  `ri_mp2_spin_components_any` that plain RI-MP2 uses, and that function
+  builds both the metric and the 3-index integrals with it. So (10.14) holds
+  by construction.
+- **The metric takes the Cholesky route.** The erfc and terfc kernels have
+  positive Fourier transforms (section 4.1.3), so their metrics are positive
+  definite and `ferric-mp2/src/rimp2.rs::metric_inverse_sqrt` factorizes
+  them by Cholesky, as for Coulomb. The terfc path is `ri_mp2` with the
+  operator swapped and goes the same way.
+- **`spin_components` stays unscaled.** Only `mp2_corr` and
+  `total_energy` carry $s$, so the reported $E_{\mathrm{OS}}$ and
+  $E_{\mathrm{SS}}$ are the attenuated components themselves.
+
+The screened variant skips shell triples by the QQR-3 bound
+(`ferric-integrals/src/qqr3.rs::QqrBounds3`). That bound multiplies the
+Schwarz product by a distance envelope, and the envelope is the Coulomb one
+for every operator. The attenuation enters only through the Schwarz
+factors, which are computed with the erfc kernel. Those factors are
+self-interactions, $(P|P)$ and $(\mu\nu|\mu\nu)$, in which both electrons
+sit in the same charge cloud, so they shrink little. Measured on decane /
+cc-pVDZ at a threshold of 1e-8, the screen keeps 79.1% of the shell triples
+for Coulomb and 78.5% for erfc at $\omega = 0.222$ Bohr⁻¹ (module
+documentation of `attenuated.rs`).
 
 `attenuated_ri_mp2_long_range` evaluates the erf (long-range) half, and
 `rs_mp2_decomposition` returns the short-range, long-range and full
-Coulomb energies together (section 10.7).
+Coulomb energies together (section 10.7). The two halves do not add up to
+the Coulomb energy, because MP2 is quadratic in the integrals (section
+4.1.3).
 
 ## 10.4.5 What is anchored
 
@@ -165,8 +250,14 @@ terfc energy of this section is their sum. Figures from
   $\omega$ at the default, 0.2, 0.42 or 1.0 Bohr⁻¹ as listed in
   `site/src/reference/validation.md`); a terfc run is anchored by the
   section 10.5 tests, not by its certificate.
-- No gradient for either kernel.
-- The CLI terfc default is the aug-cc-pVDZ $r_0$ for every basis.
+- This section covers the energy. The analytic nuclear gradient (erfc and
+  terfc, RHF and UHF; `task = "optimize"` with `att-rimp2`,
+  `run_optimize(method="att-rimp2")`) is derived in
+  `crates/ferric-mp2/theory.md`, "9.4 Attenuated (erfc) RI-MP2 gradient",
+  "9.5 terfc-attenuated RI-MP2 gradient" and sections 15.1–15.2, and graded
+  on the validation page.
+- The terfc default $r_0$ exists only for the 13 tabulated bases; the erfc
+  default $\omega$ is the aug-cc-pVDZ value for every basis.
 - Parameters were fitted without counterpoise; applying them to
   counterpoise-corrected interaction energies is a different method.
 
@@ -175,12 +266,20 @@ terfc energy of this section is their sum. Figures from
 With `multiplicity > 1` the CLI kinds `att-rimp2`, `scs-mp2` and
 `scs-mp2-2terfc`, and the Python drivers `run_attenuated_rimp2`,
 `run_terfc_rimp2`, `run_scs_mp2` and `run_scs_mp2_2terfc`, take a UHF
-reference (energies only). The spin components are the blocks of
-unrestricted RI-MP2 under the same operator:
+reference. The spin components are the blocks of unrestricted RI-MP2
+(section 10.2) under the same operator:
 $E_{\rm OS} = E_{\alpha\beta}$ and $E_{\rm SS} = E_{\alpha\alpha} + E_{\beta\beta}$.
-The exchange integral needs both electrons in one spin, so it appears only in
-the same-spin blocks. With $\alpha = \beta$ orbitals the blocks reduce to the
-closed-shell components, and a closed-shell molecule run through the UHF path
+
+Why does the 10.2 derivation carry over? It used one property of $1/r$: it
+does not act on spin, so an integral is nonzero only when each electron
+keeps its spin. erfc$(\omega r)/r$ and terfc$(r)/r$ are spin-free too. The
+exchange integral needs both electrons in one spin, so it appears only in
+the same-spin blocks, and no new kernel is needed. The operator limits hold
+block by block: $\omega \to 0$ gives U-RI-MP2 and $\omega \to \infty$ sends
+every block to zero.
+
+With $\alpha = \beta$ orbitals the blocks reduce to the closed-shell
+components (10.2.1), and a closed-shell molecule run through the UHF path
 gives the restricted energies to rounding (≤ 6e-17 Ha on water/cc-pVDZ for
 erfc, erf, terfc, SCS and SCS(2terfc)). On OH, NH2 and O2 at cc-pVDZ the erfc
 energy and the SCS energy match PySCF `DFUMP2` on the same fits to ≤ 4e-15 Ha.
@@ -190,11 +289,11 @@ The QQR-3 screened build (`screen_thresh`) is closed shell only.
 
 | Source | Used for |
 |---|---|
-| `crates/ferric-mp2/theory.md`, "4. Spin-component scaling" (terfc kernel), "5. Attenuated MP2", "5.1 Open-shell attenuated and spin-scaled MP2" | equations 10.11–10.15, units, open shell |
-| `crates/ferric-mp2/src/attenuated.rs`, `crates/ferric-integrals/src/operator.rs`, `crates/ferric-cli/src/config.rs` | defaults, keys, metric, screening |
-| Goldey dissertation, chapter 2 (Table 2.1), chapter 3 (Eqs. 3.1–3.2, Table 3.1), chapter 6 (Eq. 6.3) | definitions, parameters, summary table |
+| `crates/ferric-mp2/theory.md`, "4. Spin-component scaling" (terfc kernel), "5. Attenuated MP2", "5.1 Open-shell attenuated and spin-scaled MP2" | equations 10.11–10.15, units, the per-basis $r_0$ table, open shell |
+| `crates/ferric-mp2/src/attenuated.rs`, `crates/ferric-mp2/src/terfc_r0.rs`, `crates/ferric-integrals/src/operator.rs`, `crates/ferric-integrals/src/qqr3.rs`, `crates/ferric-cli/src/config.rs` | defaults, keys, metric, screening |
+| Goldey dissertation, chapter 2 (Table 2.1), chapter 3 (Eqs. 3.1–3.2, Table 3.1), chapter 5 (section 5.1), chapter 6 (Eq. 6.3) | definitions, the two same-sign errors, the scaling factor, parameters, summary table |
 | `scripts/mp2_family_sympy.py`, part D | verified box |
-| `site/src/reference/validation.md` | anchors |
+| `site/src/reference/validation.md` | anchors, gradient grade |
 
 Changes from the sources: the dissertation writes terfc with
 $(r \mp r_0)/(r_0\sqrt2)$; (10.12) writes the same thing with

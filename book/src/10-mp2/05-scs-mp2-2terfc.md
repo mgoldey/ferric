@@ -4,11 +4,13 @@
      theory: crates/ferric-mp2/theory.md#"4. Spin-component scaling" -->
 
 SCS-MP2 (section 10.3) needs one pair of coefficients for reaction energies
-and a different pair for intermolecular interactions. Attenuated MP2
+and a nearly reversed pair for intermolecular interactions. Attenuated MP2
 (section 10.4) is good for intermolecular interactions and poor for bonded
-ones. SCS-MP2(2terfc) combines the two so that one parameter set serves
-both (Goldey and Head-Gordon, J. Phys. Chem. B 118, 6519 (2014); Goldey
-dissertation, chapter 5).
+ones: in a finite basis thermochemistry needs more correlation than MP2
+gives, not less, which is why scaling-all-correlation (SAC) methods use factors
+above 1 (dissertation, chapter 5, section 5.1). SCS-MP2(2terfc) gives each spin component its own attenuation
+length, so that one parameter set serves both (Goldey and Head-Gordon,
+J. Phys. Chem. B 118, 6519 (2014); Goldey dissertation, chapter 5).
 
 | Entry point | Location |
 |---|---|
@@ -18,8 +20,22 @@ dissertation, chapter 5).
 
 ## 10.5.1 The energy
 
-The spin components are evaluated twice, with the terfc kernel (10.12) at
-two lengths $r_0^{(1)} < r_0^{(2)}$:
+The dissertation (chapter 5, section 5.2) builds the method from three
+observations.
+
+1. Bonded interactions act on a shorter length scale than non-bonded ones,
+   so they get a shorter attenuation length, $r_0^{(1)} < r_0^{(2)}$.
+2. SOS-MP2, which drops the same-spin part, does about as well as SCS-MP2
+   for thermochemistry. So the opposite-spin part can carry the bonded
+   correlation, attenuated at $r_0^{(1)}$.
+3. SCS(MI)-MP2 weights the same-spin part more heavily, and a same-spin-only
+   variant does about as well for non-bonded interactions. So the
+   same-spin part carries the non-bonded correlation, attenuated at
+   $r_0^{(2)}$. The same-spin correlation already present at $r_0^{(1)}$ is
+   subtracted, so that the bonded length scale is not counted twice.
+
+Write $E_x[r_0]$ for the spin component $x$ of (10.2), evaluated with the
+terfc kernel (10.12) at length $r_0$. The three observations give
 
 $$ E = E_{\mathrm{HF}} + c_{\mathrm{OS}}\,E_{\mathrm{OS}}\big[r_0^{(1)}\big] + c_{\mathrm{SS}}\Big(E_{\mathrm{SS}}\big[r_0^{(2)}\big] - E_{\mathrm{SS}}\big[r_0^{(1)}\big]\Big) . \tag{10.16} $$
 
@@ -27,6 +43,13 @@ This is dissertation Eq. 5.6 and the code's assembly. The opposite-spin
 part is short-range MP2 at the shorter length. The same-spin part is a
 window: the same-spin correlation between $r_0^{(1)}$ and $r_0^{(2)}$, with
 the shortest-range same-spin correlation removed.
+
+The window is a difference of two energies, not the energy of a difference
+kernel. $E_{\mathrm{SS}}$ is quadratic in the integrals. Write the
+$r_0^{(2)}$ integrals as $g_1 + d$, with $g_1$ the $r_0^{(1)}$ integrals and
+$d$ the integrals of $\operatorname{terfc}(r; r_0^{(2)}) - \operatorname{terfc}(r; r_0^{(1)})$.
+Expand $E_{\mathrm{SS}}[g_1 + d]$ as in section 4.1.3. The window is
+$E_{\mathrm{SS}}[d]$ plus a cross term between $g_1$ and $d$.
 
 The limits make the construction clear. terfc$(r; r_0) \to 0$ for $r > 0$
 as $r_0 \to 0$ and $\to 1$ as $r_0 \to \infty$, and each spin component is
@@ -36,6 +59,13 @@ quadratic in the integrals, so
 |---|---|
 | $r_0^{(1)} \to 0$, $r_0^{(2)} \to \infty$ | $c_{\mathrm{SS}}\,E_{\mathrm{SS}}[1/r]$ |
 | $r_0^{(1)},\ r_0^{(2)} \to \infty$ | $c_{\mathrm{OS}}\,E_{\mathrm{OS}}[1/r]$ |
+
+Read the rows one at a time. In the first, the opposite-spin part is
+attenuated away completely and the window opens to the whole Coulomb
+same-spin energy. In the second, the window closes, because both same-spin
+terms are the same Coulomb energy, and what is left is SOS-MP2 with
+coefficient $c_{\mathrm{OS}}$. The correlation energy (without
+$E_{\mathrm{HF}}$) is what the rows list.
 
 > **Verified equation 10.16** · the operator limits of SCS-MP2(2terfc)
 >
@@ -67,11 +97,19 @@ against a weighted objective over S66 (intermolecular) and W4-11
 either length non-finite or not positive, is an error: the window would be
 empty or inverted.
 
+The values are the defaults of `ScsMp2TerfcConfig` in Rust. The CLI and
+Python resolve them through
+`ferric-mp2/src/terfc_r0.rs::resolve_scs_2terfc`, which has one row,
+aug-cc-pVTZ. In that basis an omitted value comes from the row. In any
+other basis both lengths must be given (an error otherwise), an omitted
+$c_{\mathrm{OS}}$ or $c_{\mathrm{SS}}$ takes the aug-cc-pVTZ value, and the
+run prints a note saying so.
+
 Each length uses the curvature link (10.12); there is no free-$\omega$
 option here.
 
-The large $c_{\mathrm{SS}}$ is not a typo. The same-spin window is small:
-it carries only the same-spin correlation between the two lengths.
+$c_{\mathrm{SS}} = 4.05$ is large because the same-spin window is small: it
+carries only the same-spin correlation between the two lengths.
 
 ## 10.5.3 Summary from the dissertation
 
@@ -90,13 +128,37 @@ attenuated MP2 for intermolecular interactions.
 
 ## 10.5.4 How the code evaluates it
 
-Two calls to `ri_mp2_spin_components` with `Operator::terfc` at the two
-lengths, each with its own terfc metric. The cost is twice an RI-MP2. The
-reported $E_{\mathrm{SS}}$ is the window difference, so the reported
-components combine with $c_{\mathrm{OS}}$, $c_{\mathrm{SS}}$ directly.
+This is `ferric-mp2/src/scs.rs::scs_mp2_2terfc` after the length check and
+the `ri_config` setup, with each call joined onto one line and the comments
+replaced:
+
+```rust
+// E_x[r0(1)], x = OS, SS
+let sc1 = ri_mp2_spin_components_any(mol, obs, dfbs, Operator::terfc(config.r0_bonded), rhf, &ri_config)?;
+// E_x[r0(2)]
+let sc2 = ri_mp2_spin_components_any(mol, obs, dfbs, Operator::terfc(config.r0_nonbonded), rhf, &ri_config)?;
+let e_ss = sc2.e_ss - sc1.e_ss;                              // the same-spin window
+let scs_corr = config.c_os * sc1.e_os + config.c_ss * e_ss; // (10.16) without E_HF
+Ok(ScsMp2Result {
+    total_energy: rhf.energy + scs_corr,
+    scs_corr,
+    e_os: sc1.e_os,
+    e_ss,
+})
+```
+
+Two calls, each with its own terfc metric, so the cost is twice an RI-MP2.
+`sc2.e_os` is computed and not used. The reported $E_{\mathrm{SS}}$ is the
+window difference, so the reported components combine with
+$c_{\mathrm{OS}}$, $c_{\mathrm{SS}}$ directly. `Operator::terfc` applies the
+curvature link of (10.12). On a UHF reference
+`ferric-mp2/src/u_rimp2.rs::ri_mp2_spin_components_any` returns the blocks
+of section 10.2 at both lengths, so the same lines assemble the open-shell
+energy.
 
 A one-pair molecule (H2, one occupied orbital) has $E_{\mathrm{SS}} = 0$ at
-every length; tests of the window use water.
+every length: with $i = j$ the bracket $(ia|ib) - (ib|ia)$ of (10.2) is
+zero. Tests of the window use water.
 
 ## 10.5.5 What is anchored
 
@@ -113,7 +175,12 @@ with no external anchor for the counterpoise path. Figures from
 
 ## Known limits (2026-11-15)
 
-- Closed-shell only; no gradient.
+- This section covers the energy. Open shells run on a UHF reference (see
+  "Open shell" in section 10.4). The analytic nuclear gradient, closed shell
+  and UHF (`run_optimize(method="scs-mp2-2terfc")`, CLI
+  `task = "optimize"`), is derived in `crates/ferric-mp2/theory.md`, "9.6
+  SCS-MP2(2terfc) gradient" and section 15.2, and graded on the validation
+  page.
 - The parameters are aug-cc-pVTZ, no-counterpoise values; other bases are
   unparameterized.
 
@@ -121,8 +188,13 @@ with no external anchor for the counterpoise path. Figures from
 
 | Source | Used for |
 |---|---|
-| `crates/ferric-mp2/theory.md`, "4. Spin-component scaling" | equation 10.16, limits |
-| `crates/ferric-mp2/src/scs.rs` | defaults, validation of the lengths, assembly |
-| Goldey dissertation, chapter 5 (Eqs. 5.6, 5.7, Tables 5.1, 5.2) | definition, fit, summary table |
+| `crates/ferric-mp2/theory.md`, "4. Spin-component scaling", "5. Attenuated MP2", "5.1 Open-shell attenuated and spin-scaled MP2" | equation 10.16, limits, the one-row table, open shell |
+| `crates/ferric-mp2/src/scs.rs`, `crates/ferric-mp2/src/terfc_r0.rs` | defaults, validation of the lengths, assembly, the basis rules |
+| Goldey dissertation, chapter 5 (sections 5.1, 5.2, Eqs. 5.6, 5.7, Tables 5.1, 5.2) | motivation, definition, fit, summary table |
 | `scripts/mp2_family_sympy.py`, parts C and D | verified box |
-| `site/src/reference/validation.md` | anchors |
+| `site/src/reference/validation.md` | anchors, gradient grade |
+
+The statement that the window equals $E_{\mathrm{SS}}[d]$ plus a cross term
+was checked numerically on a random model for this section; it is the
+identity of section 4.1.3 with $g_1$ and $d$ in place of the short- and
+long-range integrals.

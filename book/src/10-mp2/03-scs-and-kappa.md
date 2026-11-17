@@ -3,10 +3,14 @@
 <!-- section: 10.3; status: ready; registry: scs-mp2;
      theory: crates/ferric-mp2/theory.md#"4. Spin-component scaling" -->
 
-Two one-line changes to the MP2 energy reuse the pair loop of section 10.1
-unchanged. Spin-component scaling (SCS) reweights the opposite- and
-same-spin parts. κ-regularization damps each amplitude by a factor that
-depends on its denominator. Both cost the same as RI-MP2.
+MP2 has two systematic errors that a cheap change to the pair loop can
+address. The first is an imbalance between the spin components: for bond
+energies MP2 gets too little opposite-spin correlation and too much
+same-spin correlation. Spin-component scaling (SCS) reweights the two parts
+of (10.2). The second is the $1/\Delta$ in every term: when a gap closes,
+as in a stretched bond, the energy diverges. κ-regularization damps each
+term by a factor that depends on its denominator. Both reuse the pair loop
+of section 10.1 and cost the same as RI-MP2.
 
 | Entry point | Location |
 |---|---|
@@ -16,23 +20,51 @@ depends on its denominator. Both cost the same as RI-MP2.
 
 ## 10.3.1 SCS-MP2
 
+Section 10.1 showed that the MP2 energy is the sum of two physically
+different pieces. Opposite-spin pairs get no help from Hartree–Fock in
+avoiding each other, and carry about three quarters of the correlation
+energy of water. Same-spin pairs already sit in an exchange hole. MP2
+makes different errors in the two parts, so SCS scales them separately:
+
 $$ E_{\mathrm{SCS}} = c_{\mathrm{OS}}\,E_{\mathrm{OS}} + c_{\mathrm{SS}}\,E_{\mathrm{SS}} , \tag{10.9} $$
 
 with $E_{\mathrm{OS}}$ and $E_{\mathrm{SS}}$ from (10.2) in a closed shell or
 (10.8) in an open shell. The defaults are Grimme's $c_{\mathrm{OS}} = 6/5$
 and $c_{\mathrm{SS}} = 1/3$ (Grimme, J. Chem. Phys. 118, 9095 (2003)).
 
-The coefficients correct a known imbalance. MP2 overestimates same-spin
-correlation and underestimates opposite-spin correlation. Raising
-$c_{\mathrm{OS}}$ and lowering $c_{\mathrm{SS}}$ improves reaction energies.
-For intermolecular interactions the best coefficients go the other way;
-SCS-MP2(MI) uses $c_{\mathrm{OS}} = 0.40$, $c_{\mathrm{SS}} = 1.29$
-(Goldey dissertation, chapter 5). No single pair serves both, which is the
+Check the limits. With $c_{\mathrm{OS}} = c_{\mathrm{SS}} = 1$, (10.9) is
+(10.3), plain RI-MP2; the anchor below checks that. With
+$c_{\mathrm{SS}} = 0$ only the opposite-spin part is left. That is SOS-MP2,
+whose energy contains no exchange product $(ia|jb)(ib|ja)$; §12.3 shows why
+that admits a cheaper algorithm.
+
+Which way should the coefficients go? It depends on the property. The
+dissertation (chapter 5, section 5.1) quotes the SCS(MI) work: "the MP2
+description of bond energies contains a systematically underestimated
+opposite spin-component and a simultaneously overestimated same
+spin-component, while the reverse appears generally true for
+intermolecular interactions." Grimme's values raise $c_{\mathrm{OS}}$ and
+lower $c_{\mathrm{SS}}$, which improves reaction energies. For
+intermolecular interactions the best coefficients go the other way:
+SCS-MP2(MI) uses $c_{\mathrm{OS}} = 0.40$, $c_{\mathrm{SS}} = 1.29$ (Goldey
+dissertation, chapter 5). No single pair serves both, which is the
 motivation for section 10.5.
 
+`ferric-mp2/src/scs.rs::scs_mp2` evaluates (10.9) in two lines, copied
+here with a comment added:
+
+```rust
+let sc = ri_mp2_spin_components_any(mol, obs, dfbs, Operator::coulomb(), rhf, &ri_config)?;
+let scs_corr = config.c_os * sc.e_os + config.c_ss * sc.e_ss;    // (10.9)
+```
+
+`ferric-mp2/src/u_rimp2.rs::ri_mp2_spin_components_any` returns (10.2) on a
+restricted reference and the grouping $E_{\mathrm{OS}} = E_{\alpha\beta}$,
+$E_{\mathrm{SS}} = E_{\alpha\alpha} + E_{\beta\beta}$ of section 10.2 on an
+unrestricted one. So one line serves both.
+
 (10.9) is linear in the two components, so it needs no new proof beyond the
-spin adaptation of section 10.1. With $c_{\mathrm{OS}} = c_{\mathrm{SS}} = 1$
-it equals RI-MP2 exactly; the anchor below checks that.
+spin adaptation of section 10.1.
 
 SCS-MP2 has an analytic gradient (`run_optimize(method="scs-mp2")`): the
 relaxed density weights the opposite-spin part by $c_{\mathrm{OS}}$ and the
@@ -42,11 +74,33 @@ gradient").
 
 ## 10.3.2 κ-regularized MP2
 
-κ-MP2 (Lee and Head-Gordon, J. Chem. Theory Comput. 14, 5203 (2018)) damps
-every pair term of (10.3) by a factor that removes small-denominator
-divergence:
+Every term of (10.3) has $\Delta_{ij}^{ab}$ in the denominator. When the
+HOMO–LUMO gap closes, the smallest $\Delta$ goes to zero and the energy
+diverges. κ-MP2 (Lee
+and Head-Gordon, J. Chem. Theory Comput. 14, 5203 (2018)) multiplies every
+pair term by a factor that vanishes with $\Delta$:
 
 $$ E_{\kappa_{\mathrm{reg}}} = -\sum_{ijab} \frac{(ia|jb)\,\big[\,2(ia|jb) - (ib|ja)\,\big]}{\Delta_{ij}^{ab}}\,\Big(1 - e^{-\kappa_{\mathrm{reg}}\Delta_{ij}^{ab}}\Big)^2 . \tag{10.10} $$
+
+Take the three limits of the factor $(1 - e^{-\kappa_{\mathrm{reg}}\Delta})^2$
+in turn.
+
+- $\kappa_{\mathrm{reg}} \to \infty$ at fixed $\Delta > 0$:
+  $e^{-\kappa_{\mathrm{reg}}\Delta} \to 0$, the factor is 1, and (10.10) is
+  RI-MP2.
+- $\kappa_{\mathrm{reg}} \to 0$: expand
+  $1 - e^{-x} = x - x^2/2 + \dots$ with $x = \kappa_{\mathrm{reg}}\Delta$.
+  The factor is $\kappa_{\mathrm{reg}}^2\Delta^2$ to leading order, and the
+  energy goes to zero.
+- $\Delta \to 0$ at fixed $\kappa_{\mathrm{reg}}$: use $1 - e^{-x} \le x$
+  for $x \ge 0$. (The difference $x - 1 + e^{-x}$ is 0 at $x = 0$ and its
+  derivative $1 - e^{-x}$ is not negative.) Square it and divide by $\Delta$:
+
+  $$ \frac{\big(1 - e^{-\kappa_{\mathrm{reg}}\Delta}\big)^2}{\Delta} \le \kappa_{\mathrm{reg}}^2\,\Delta . $$
+
+  So the magnitude of each term of (10.10) is at most
+  $\kappa_{\mathrm{reg}}^2\Delta\,|(ia|jb)[\ldots]|$, which goes to zero
+  with $\Delta$. A near-degenerate pair cannot diverge.
 
 | $\kappa_{\mathrm{reg}}$ | Behaviour |
 |---|---|
@@ -54,10 +108,53 @@ $$ E_{\kappa_{\mathrm{reg}}} = -\sum_{ijab} \frac{(ia|jb)\,\big[\,2(ia|jb) - (ib
 | $\kappa_{\mathrm{reg}} \to 0$ | the factor is $\kappa_{\mathrm{reg}}^2\Delta^2$; the energy goes to zero |
 | finite | each term is bounded by $\kappa_{\mathrm{reg}}^2\Delta\,(ia|jb)[\ldots]$ as $\Delta \to 0$, so a near-degenerate pair cannot diverge |
 
-$\kappa_{\mathrm{reg}}$ (`kappa` in the code and on every surface; $\kappa$ alone is reserved for orbital rotations) is in inverse Hartree, must be finite and positive, and has no default:
-leaving the key out runs plain RI-MP2 on the unmodified code path. The
-paper recommends a value near 1.45 Eh⁻¹. The same factor multiplies the
-opposite- and same-spin parts, so `E_OS` and `E_SS` are reported regularized.
+What does a finite $\kappa_{\mathrm{reg}}$ do? It sets an energy scale
+$1/\kappa_{\mathrm{reg}}$. Excitations with $\Delta \gg 1/\kappa_{\mathrm{reg}}$
+keep their full MP2 weight; excitations with $\Delta \ll 1/\kappa_{\mathrm{reg}}$
+are suppressed as $\kappa_{\mathrm{reg}}^2\Delta^2$. The switch is gradual.
+At $\kappa_{\mathrm{reg}} = 1.45$ Eh⁻¹ the factor is
+
+| $\Delta$ (Eh) | 0.1 | 0.5 | 1 | 2 | 5 |
+|---|---|---|---|---|---|
+| $(1 - e^{-1.45\Delta})^2$ | 0.018 | 0.266 | 0.586 | 0.893 | 0.9986 |
+
+so a pair with a denominator of 1 Eh keeps 59% of its MP2 weight.
+
+$\kappa_{\mathrm{reg}}$ (`kappa` in the code and on every surface; $\kappa$
+alone is reserved for orbital rotations) is in inverse Hartree, must be
+finite and positive, and has no default: leaving the key out runs plain
+RI-MP2 on the unmodified code path. The paper recommends a value near
+1.45 Eh⁻¹. The same factor multiplies the opposite- and same-spin parts, so
+`E_OS` and `E_SS` are reported regularized.
+
+The code is the κ branch of `ferric-mp2/src/rimp2.rs::pair_energy`, next
+to the plain loop of 10.1.3; only the comments are changed:
+
+```rust
+Some(k) => {
+    for a in 0..nvir {
+        for b in 0..nvir {
+            let g_ab = g_i[(a, jcol + b)]; // (ia|jb)
+            let g_ba = g_i[(b, jcol + a)]; // (ib|ja)
+            let denom = e_ij - eps[nocc_total + a] - eps[nocc_total + b];   // -Delta
+            let d1 = 1.0 - (k * denom).exp();         // 1 - e^{-kappa Delta}
+            let damp = d1 * d1;                       // the factor of (10.10)
+            e_os_ij += damp * g_ab * g_ab / denom;
+            e_ss_ij += damp * g_ab * (g_ab - g_ba) / denom;
+        }
+    }
+}
+```
+
+Two points about it:
+
+- **The sign is in `denom` again.** `denom` is $-\Delta$, so
+  `(k * denom).exp()` is $e^{-\kappa_{\mathrm{reg}}\Delta}$. A port that
+  stores $+\Delta$ has to flip the sign inside the exponential as well as in
+  the division.
+- **The branch is separate on purpose.** With `kappa` unset the `None` arm
+  runs: the loop of 10.1.3 with no factor, so no multiplication by a number
+  close to 1 enters the plain RI-MP2 energy.
 
 > **Unverified equation 10.10** · κ-regularized pair factor
 >
@@ -87,7 +184,11 @@ Figures from `site/src/reference/validation.md`.
 
 | Source | Used for |
 |---|---|
-| `crates/ferric-mp2/theory.md`, "4. Spin-component scaling" | equation 10.9 |
+| `crates/ferric-mp2/theory.md`, "2. Closed-shell RI-MP2" (κ), "4. Spin-component scaling" | equations 10.9 and 10.10, the κ limits |
 | `crates/ferric-mp2/src/scs.rs`, `crates/ferric-mp2/src/rimp2.rs` | defaults, the κ factor and its validation |
-| Goldey dissertation, chapter 5, Eqs. 5.1–5.3 | SCS and SCS(MI) coefficients |
+| Goldey dissertation, chapter 5, section 5.1, Eqs. 5.1–5.3 | SCS and SCS(MI) coefficients, the quoted imbalance |
 | `site/src/reference/validation.md` | anchors |
+
+The bound $(1 - e^{-\kappa_{\mathrm{reg}}\Delta})^2/\Delta \le \kappa_{\mathrm{reg}}^2\Delta$
+and the table of factors at $\kappa_{\mathrm{reg}} = 1.45$ Eh⁻¹ were checked
+with sympy and numpy for this section; they are not in a committed script.
