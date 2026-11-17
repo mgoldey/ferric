@@ -5,7 +5,8 @@
 
 This section has no equations. It records what the 2014 algorithm measured,
 which design changes answer those measurements, and what the code has not
-yet measured.
+yet measured. The operation counts of sections 11.1 to 11.3 say where the
+work is; only a timing says where the wall time goes.
 
 ## 11.5.1 What the dissertation measured
 
@@ -22,7 +23,10 @@ redrawn here).
 | Recommendation: use whole nodes for large molecules, to minimize disk reads | conclusion 1 |
 | On the application systems, RI-MP2/aug-cc-pVDZ cost less than 40% of the SCF, and RI-MP2/aug-cc-pVTZ on the tetrapeptides less than 10% | section 4.4 and conclusion 2 |
 
-The per-system timings and energies of section 4.4 are not carried here.
+The first finding is the ratio of section 11.1.2 seen in wall time: step 4
+over the dressing grows as $(n_o+1)n_v/(2N_{\mathrm{aux}})$, linearly in
+the size. The per-system timings and energies of section 4.4 are not carried
+here.
 
 ## 11.5.2 How the code answers each finding
 
@@ -35,8 +39,10 @@ The per-system timings and energies of section 4.4 are not carried here.
 | One node only | auxiliary bands across MPI ranks (library only) | 11.7 |
 
 The first and third rows remove the reason the 2014 efficiency fell at small
-sizes. Whether the small systems now scale well is a question for a
-measurement, below.
+sizes. Section 11.3.4 derives a limit of the current design: with one task per
+$i$, the pair stage cannot speed up by more than $(n_o+1)/2$, so a small
+molecule on a wide node leaves workers idle in that stage. Whether the small
+systems now scale well is a question for a measurement, below.
 
 ## 11.5.3 What has not been measured
 
@@ -51,17 +57,17 @@ A measurement that could support a statement in this section needs:
 
 | Requirement | Reason |
 |---|---|
-| A series of sizes past the point where the pair stage dominates, with the tail fitted rather than the whole series | the dissertation's own finding is that efficiency is size dependent |
+| A series of sizes past the point where the pair stage dominates, with the tail fitted, not the whole series | the dissertation's own finding is that efficiency is size dependent |
 | The transform and the pair stage timed separately | they have different parallel structure (11.2, 11.3) |
 | Fixed `[memory] budget_gb` and `OPENBLAS_NUM_THREADS=1` | the budget changes the chunk and the tier; BLAS threads inside rayon oversubscribe |
-| The bits of the energy compared across thread counts | it doubles as the missing reproducibility test of section 11.3.4 |
+| The bits of the energy compared across thread counts | the committed bit-identity test (section 11.3.4) runs water/cc-pVDZ only; a timing series would extend it to the measured sizes |
 | Runs on a quiet machine (`box-lease`, `scripts/README.md`) | timings taken beside other jobs are biased |
 
 ## 11.5.4 Known limits (2026-11-15)
 
 - No committed timing of RI-MP2 parallel scaling.
-- No committed test that the CPU energy is bit-identical across
-  `RAYON_NUM_THREADS`.
+- The committed test that the CPU energy is bit-identical across rayon pool
+  sizes covers one small system (H2O/cc-pVDZ, pools of 1, 2 and 6).
 
 ## Sources
 
@@ -69,6 +75,7 @@ A measurement that could support a statement in this section needs:
 |---|---|
 | Dissertation, chapter 4, sections 4.3 to 4.5 (Figure 4.1, Table 4.2, conclusions 1 and 2) | section 11.5.1 |
 | `crates/ferric-mp2/src/rimp2.rs` | section 11.5.2 |
+| `crates/ferric-mp2/tests/mo_stream_dressing_threads.rs` | the bit-identity test |
 | `site/src/reference/validation.md` | the absence of a graded timing |
 
 Changes from the sources: none to equations; the dissertation's findings are

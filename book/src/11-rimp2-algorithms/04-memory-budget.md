@@ -12,9 +12,13 @@
 | CLI | `[memory] budget_gb` (`site/src/reference/input.md`) |
 | Trace | `FERRIC_OOC_TRACE=1` logs the raw-tensor tier |
 
-The budget bounds the ledgered allocations of a run, not the total process
-memory. RI-MP2 uses it three ways: to choose where the raw AO tensor lives,
-to refuse a run whose MO-side tensors cannot fit, and to size the transform
+A job that allocates past the memory of the node does not fail cleanly: it
+swaps, or the kernel kills it, sometimes with an unrelated job beside it.
+RI-MP2 knows its large tensors before it allocates them, so it can decide
+up front where each one lives and refuse a run that cannot fit. The budget
+bounds the ledgered allocations of a run, not the total process memory.
+RI-MP2 uses it three ways: to choose where the raw AO tensor lives, to
+refuse a run whose MO-side tensors cannot fit, and to size the transform
 chunk (section 11.2.3).
 
 ## 11.4.1 The budget
@@ -45,6 +49,9 @@ last digits matter should set `budget_gb` (section 11.2.4).
 | $B_{ov}$ | $8 N_{\mathrm{aux}} n_o n_v$ | the transform and the pair loop |
 | $G^{(i)}$ | at most $8 n_o n_v^2$ per active worker | one task |
 
+The packed tier stores only $\mu \le \nu$, since $(P|\mu\nu) = (P|\nu\mu)$.
+That is $N(N+1)/2$ of the $N^2$ elements per row, a little over half.
+
 The raw tensor takes the first tier that fits
 (`ferric-integrals/src/three_index_source/jk_storage.rs::memory_tier`):
 
@@ -56,6 +63,16 @@ The raw tensor takes the first tier that fits
 
 The recompute tier exists for the SCF but is an error on this path.
 
+A concrete case, benzene in cc-pVDZ ($N = 114$, $N_{\mathrm{aux}} = 420$,
+$n_o = 21$, $n_v = 93$):
+
+| Quantity | Bytes |
+|---|---|
+| raw tensor, in core | $8 \cdot 420 \cdot 114^2 = 43.67$ MB |
+| raw tensor, packed | 22.02 MB, plus scratch |
+| $B_{ov}$ | $8 \cdot 420 \cdot 21 \cdot 93 = 6.56$ MB |
+| $G^{(0)}$ per worker | $8 \cdot 21 \cdot 93^2 = 1.45$ MB |
+
 ## 11.4.3 The admission check
 
 Before any three-index work, the driver calls `check_mo_side_alloc`. It adds
@@ -64,11 +81,28 @@ $$ \underbrace{8 N_{\mathrm{aux}} n_o n_v}_{B_{ov}} \;+\; \underbrace{8\, n_o n_
 
 and passes the sum to `check_alloc`, which returns an error naming the size,
 the budget and the `[memory] budget_gb` / `FERRIC_MEM_BUDGET_GB` knobs when
-the sum exceeds the budget. The $B_{vv}$ term is included only by the paths
-that build it (`compute_mp2_intermediates_impl`, used by the gradient and polarizability
-paths);
-the energy passes `false`.
-$n_w$ is `rayon::current_num_threads()`.
+the sum exceeds the budget. Here is the sum in the code, with the
+saturating arithmetic written as plain products and the error label
+shortened:
+
+```rust
+let n_workers = rayon::current_num_threads().max(1); // n_w
+let b_flat = naux * nocc * nvir * 8;                 // B_ov
+let g_i = nocc * nvir * nvir * 8 * n_workers;        // G^(0) per worker, n_w of them
+let b_vv = if include_b_vv { naux * nvir * nvir * 8 } else { 0 }; // B_vv
+ferric_core::memory::check_alloc(&format!(/* ... */), b_flat + g_i + b_vv, budget_bytes)
+```
+
+$G^{(i)}$ is allocated inside the parallel loop, so each active worker holds
+one. The widest is $G^{(0)}$, so the check charges $n_o n_v^2$ doubles per
+worker. For benzene in cc-pVDZ the sum is $6.56 + 12 \cdot 1.45 = 24.0$ MB
+on 12 workers and $8.0$ MB on one.
+
+The $B_{vv}$ term is included only by the paths that build it
+(`compute_mp2_intermediates_impl`, used by the gradient and polarizability
+paths); the energy passes `false`. $B_{vv}$ is $n_v/n_o$ times $B_{ov}$,
+so on any basis with more virtuals than occupied orbitals it is the largest
+MO-side term. $n_w$ is `rayon::current_num_threads()`.
 
 `mo_side_alloc_bytes` is the same sum without the $G^{(i)}$ term. It is pure,
 so callers can report a size without running the check.
@@ -90,6 +124,10 @@ bit-identical to a run that never touches the pool
 `installing_an_ample_pool_does_not_move_rimp2_one_bit` in
 `crates/ferric-mp2/tests/mwe_mp2_pool_is_inert_without_a_pool.rs`).
 
+The admission check compares the MO side with the whole budget. The pool
+sees what is resident at the same time: the raw tensor, charged by the
+source while it lives, and $B_{ov}$ charged on top of it.
+
 | Charge | Kind | Why |
 |---|---|---|
 | raw tensor | taken by `ThreeIndexSource` | held while the value lives; released at `drop(src)` |
@@ -104,10 +142,23 @@ inert guard. A hard charge refuses with an occupancy breakdown.
 **Why $B_{ov}$ is soft.** The comment in the driver records a budget sweep on
 benzene/cc-pVDZ ($N = 114$, $N_{\mathrm{aux}} = 420$, $n_o = 21$,
 $n_v = 93$). A hard charge refused the run for budgets in
-$[\,8N_{\mathrm{aux}}N^2,\ 8N_{\mathrm{aux}}N^2 + 8N_{\mathrm{aux}}n_on_v\,)$,
-where the raw tensor is just small enough to be held in core and leaves the
-pool nothing for $B_{ov}$. Below that band the raw tensor spills and the run
-fits; above it both fit. The proper fix is to let the tier decision see the
+
+$$ \big[\,8N_{\mathrm{aux}}N^2,\ 8N_{\mathrm{aux}}N^2 + 8N_{\mathrm{aux}}n_on_v\,\big) = [\,43.67,\ 50.23\,)\ \text{MB} . $$
+
+The left end is the unpacked raw tensor, the width of the band is
+$B_{ov}$. At or above 43.67 MB the raw tensor is held in core unpacked and
+the source charges all 43.67 MB. Below 50.23 MB the pool then has less than
+the 6.56 MB of $B_{ov}$ left, and a hard charge refuses. The recorded sweep,
+with the same binary, no pool against a pool of the same size:
+
+| Budget | No pool | Hard charge |
+|---|---|---|
+| 30 MB | completes | completes (raw tensor spills; the sum fits) |
+| 40 MB | completes | completes (raw tensor spills; the sum fits) |
+| 44 MB | completes | refused: $B_{ov}$ needs 0.007 GB, 0.000 GB free |
+| 48 MB | completes | refused: $B_{ov}$ needs 0.007 GB, 0.002 GB free |
+| 51 MB | completes | completes |
+| 120 MB | completes | completes | The proper fix is to let the tier decision see the
 MO side, which is a change in `ferric-integrals`.
 `crates/ferric-mp2/tests/mwe_mp2_soft_planes_do_not_refuse.rs` pins that a
 budget inside the band completes
@@ -118,7 +169,9 @@ budget inside the band completes
 - `check_mo_side_alloc` is a hard check that includes $n_w \cdot G^{(i)}$
   (equation 11.9). Admission of the closed-shell energy therefore depends on
   the rayon worker count, which the doc comment of `charge_mo_side_soft`
-  rules out for the pool charge of the same quantity.
+  rules out for the pool charge of the same quantity. For benzene in
+  cc-pVDZ, a budget of 20 MB is admitted on one worker (8.0 MB) and refused
+  on 12 (24.0 MB).
 - The packed-in-core test reads the shared pool's free bytes when a pool is
   installed. The tier sets the block structure of the transform, so with a
   pool installed and a budget between the packed and unpacked sizes, the
@@ -133,10 +186,11 @@ budget inside the band completes
 | Source | Used for |
 |---|---|
 | `crates/ferric-core/src/memory.rs`, `resolve_budget_with` and module doc | the precedence table |
-| `crates/ferric-mp2/src/rimp2.rs`, `check_mo_side_alloc`, `mo_side_alloc_bytes`, `charge_mo_side`, `charge_mo_side_soft` and the driver comments | equation 11.9, the charge table, the benzene band |
+| `crates/ferric-mp2/src/rimp2.rs`, `check_mo_side_alloc`, `mo_side_alloc_bytes`, `charge_mo_side`, `charge_mo_side_soft` and the driver comments | equation 11.9, the excerpt, the charge table, the benzene band |
 | `crates/ferric-integrals/src/three_index_source.rs`, `crates/ferric-integrals/src/three_index_source/jk_storage.rs` | the tier table |
 | `site/src/reference/input.md`, `[memory]` | the user-facing key |
 | the tests named above | the pinned behaviour |
 
 Changes from the sources: sizes are written in bytes with the factor 8
-explicit; $n_w$ names the worker count.
+explicit; $n_w$ names the worker count. The benzene sizes, the packed size
+and the 20 MB example are computed for this section.
