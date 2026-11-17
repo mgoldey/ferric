@@ -1,6 +1,6 @@
-# 24.4 The exchange divergence
+# The exchange divergence {#exchange-divergence}
 
-<!-- section: 24.4; status: ready; registry: pbc-hf;
+<!-- status: ready; registry: pbc-hf;
      theory: crates/ferric-pbc/theory.md#"4. Exchange divergence (`exxdiv`)" -->
 
 Dropping $\mathbf G = 0$ is exact for the Coulomb energy of a neutral cell:
@@ -12,8 +12,8 @@ or a mesh) misses a finite piece that vanishes only as $1/L$ in the cell or
 supercell size. The Madelung correction adds that piece back for a probe
 charge in a uniform background, and the error then falls as $L^{-3}$.
 
-Section 24.4.1 shows where the missing piece comes from, 24.4.2 derives what
-the correction does to the energy and the orbitals, and 24.4.3 to 24.4.5
+Section @sec:exchange-divergence-exchange-diverges shows where the missing piece comes from, @sec:exchange-divergence-term-does derives what
+the correction does to the energy and the orbitals, and @sec:exchange-divergence-options to @sec:exchange-divergence-sources
 give the options, anchors and sources.
 
 | Symbol | Meaning | Code name |
@@ -29,11 +29,11 @@ give the options, anchors and sources.
 | CLI | `[cell] exxdiv = "ewald"` (default) or `"none"` |
 | Python | `exxdiv=` on every periodic SCF entry point |
 
-## 24.4.1 Why exchange diverges
+## Why exchange diverges {#exchange-divergence-exchange-diverges}
 
 **The dense integrals.** The simplest periodic electron repulsion puts all of
 the Coulomb operator in reciprocal space, with the pair transforms of section
-24.2 and $\mathbf G = 0$ dropped:
+@sec:pair-ft and $\mathbf G = 0$ dropped:
 
 $$
 (\mu\nu|\lambda\sigma) = \frac{1}{\Omega}\sum_{\mathbf G\neq 0}\frac{4\pi}{G^2}
@@ -50,7 +50,7 @@ tensor over the cap is an error, not a warning.
 **Coulomb.** $J$ contracts the pair $\lambda\sigma$ with the total density.
 The $\mathbf G = 0$ component of $\sum_{\lambda\sigma}D_{\lambda\sigma}P_{\lambda\sigma}(0)$
 is $\operatorname{tr}(DS)$, the number of electrons per cell. The nuclear
-attraction of section 24.3 drops the matching $\mathbf G = 0$ term of the
+attraction of section @sec:nuclear-attraction drops the matching $\mathbf G = 0$ term of the
 nuclei, and in a neutral cell the two are equal and opposite. Dropping both
 is exact.
 
@@ -62,7 +62,7 @@ other term of the energy has the opposite $\mathbf G = 0$ charge. Dropping
 it is not exact.
 
 **Why the missing piece is finite and shrinks as $1/L$.** In the infinite
-crystal, the exchange pair densities of section 24.6 carry crystal momentum
+crystal, the exchange pair densities of section @sec:kpoint-scf carry crystal momentum
 $q$, and the kernel near the singularity is $4\pi/q^2$. Averaged over the
 Brillouin zone this is finite, because in three dimensions
 
@@ -82,11 +82,11 @@ the exchange builder,
 
 $$ K \mathrel{+}= v_M\,SDS , $$
 
-with $v_M$ the Madelung constant of section 24.1. The point-charge part of
+with $v_M$ the Madelung constant of section @sec:ewald. The point-charge part of
 the missing piece is then restored; what remains depends on the shape of the
 hole and falls as $L^{-3}$.
 
-## 24.4.2 What the term does
+## What the term does {#exchange-divergence-term-does}
 
 **The energy shift.** The energy is $\tfrac12\operatorname{tr}[(h + F)D]$, so
 the $-\tfrac12K$ in $F$ contributes $-\tfrac14\operatorname{tr}(KD)$. Insert the
@@ -104,10 +104,10 @@ $$
 $$
 
 Read it per electron: $-v_M/2$ is the Ewald energy of one unit charge with
-its images and background (the definition of $v_M$ in section 24.1). Each
+its images and background (the definition of $v_M$ in section @sec:ewald). Each
 electron's exchange hole receives that energy once.
 
-> **Verified equation 24.6** · the closed-shell energy shift
+> **Verified equation {#eq:pbc-exxdiv-energy-shift}** · the closed-shell energy shift
 >
 > For an idempotent closed-shell density, $DSD = 2D$, so
 > $\Delta E = -\tfrac14v_M\operatorname{tr}(DSDS) = -\tfrac12Nv_M$ and
@@ -134,7 +134,7 @@ It is diagonal: every occupied level moves down by $v_M$, every virtual
 level stays, and the eigenvectors do not change. The energy per cell moves
 by $-v_MN_e/2$.
 
-> **Verified equation 24.7** · the occupied levels move, the orbitals do not
+> **Verified equation {#eq:pbc-exxdiv-level-shift}** · the occupied levels move, the orbitals do not
 >
 > For S-orthonormal orbitals at any $k$,
 > $C^{\mathsf H}(-\tfrac12v_MSDS)C = -v_M\operatorname{diag}(1_\text{occ}, 0_\text{virt})$,
@@ -157,18 +157,18 @@ with $\alpha$ the exact-exchange fraction (1 for HF). The occupied levels of
 each spin move by $-v_M$ (times $\alpha$ in Kohn–Sham), and the energy by
 $-\alpha v_M(N_\alpha + N_\beta)/2$. Writing the term on the total density
 instead, $-\tfrac{\alpha v_M}{2}DSD$, agrees only for a closed shell; section
-24.7 shows where the difference would show up. The RS-GDF builders of
-section 24.5 use the same constant. A range-separated hybrid on a mesh uses
+@sec:forces shows where the difference would show up. The RS-GDF builders of
+section @sec:rsgdf use the same constant. A range-separated hybrid on a mesh uses
 the mixed supercell constant $c_\text{sr}v_M^\text{full} + (c_\text{lr} - c_\text{sr})v_M^\text{LR}(\omega)$
 (`ferric-pbc/src/rsh.rs::kpoint_madelung`).
 
-The consequences, each proven here or in section 24.6:
+The consequences, each proven here or in section @sec:kpoint-scf:
 
 | Consequence | Where |
 |---|---|
-| At fixed orbitals every occupied level moves by $-v_M$ (times $\alpha$ in Kohn–Sham), virtual levels and orbitals do not move; $\Delta E = -\alpha v_MN_e/2$ per cell | Verified equations 24.6 and 24.7 |
-| On a mesh, the constant is the supercell's and is added at every $k$ with no $1/N_k$ | Verified equation 24.12 |
-| Per spin it is $v_MSD_\sigma S$ with coefficient 1; the total-density form is wrong for open shells | Verified equations 24.13 and 24.14 |
+| At fixed orbitals every occupied level moves by $-v_M$ (times $\alpha$ in Kohn–Sham), virtual levels and orbitals do not move; $\Delta E = -\alpha v_MN_e/2$ per cell | Verified equations @eq:pbc-exxdiv-energy-shift and @eq:pbc-exxdiv-level-shift |
+| On a mesh, the constant is the supercell's and is added at every $k$ with no $1/N_k$ | Verified equation @eq:pbc-kscf-supercell |
+| Per spin it is $v_MSD_\sigma S$ with coefficient 1; the total-density form is wrong for open shells | Verified equations @eq:pbc-kscf-uhf and @eq:pbc-grad-madelung |
 
 **Why open shells start without the term.** Because the orbitals do not
 move, `none` and `ewald` share their stationary densities. But the shift
@@ -197,13 +197,13 @@ check and the return value removed:
 ```
 
 `exchange_aux_grouped` forms the fitted $\sum_kB_kDB_k^{\mathsf T}$ of section
-24.5, and `madelung` is $v_M$ for `ewald` and 0 for `none`. The builder
+@sec:rsgdf, and `madelung` is $v_M$ for `ewald` and 0 for `none`. The builder
 does not override the trait's occupied-orbital path, which rebuilds
 $D = CC^{\mathsf T}$ and calls this function, so the term is kept there
 too; a test guards that (`k_builders_keep_madelung_on_the_occupied_path` in
 `crates/ferric-pbc/tests/pbc_uhf.rs`).
 
-## 24.4.3 Options
+## Options {#exchange-divergence-options}
 
 | Option | Values | Default | Effect |
 |---|---|---|---|
@@ -211,9 +211,9 @@ too; a test guards that (`k_builders_keep_madelung_on_the_occupied_path` in
 | `ewald_start=` (open-shell Python drivers) | `"staged"`, `"direct"` | `"staged"` | converge with `none` first, then `ewald` |
 
 Correlation methods read the reference's `exxdiv` as a stated input, because
-the occupied orbital energies differ by $v_M$ between the two (section 24.9).
+the occupied orbital energies differ by $v_M$ between the two (section @sec:mp2-drpa).
 
-## 24.4.4 Numerical anchors
+## Numerical anchors {#exchange-divergence-numerical-anchors}
 
 | Quantity | Test |
 |---|---|
@@ -221,7 +221,7 @@ the occupied orbital energies differ by $v_M$ between the two (section 24.9).
 | PySCF energies with both `exxdiv` values | `crates/ferric-pbc/tests/pbc_dense_aft_scf.rs` |
 | `ewald` minus `none` stress equals the Madelung strain term | `crates/ferric-pbc/tests/pbc_stress.rs` `h2_rhf_ewald_minus_none_is_the_madelung_strain` |
 
-## 24.4.5 Sources
+## Sources {#exchange-divergence-sources}
 
 | Source | What it gives |
 |---|---|

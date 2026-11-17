@@ -1,11 +1,11 @@
-# 16.2 Closed-shell CCSD and the particle-particle ladder
+# Closed-shell CCSD and the particle-particle ladder {#closed-shell-ccsd}
 
-<!-- section: 16.2; status: ready; registry: ccsd;
+<!-- status: ready; registry: ccsd;
      theory: crates/ferric-cc/theory.md#"CCSD, closed shell" -->
 
 In a closed-shell molecule every spatial orbital holds an α and a β
 electron, and the two spins are excited in mirror-image ways. The
-spin-orbital amplitudes of section 16.1 therefore repeat themselves: all of
+spin-orbital amplitudes of section @sec:ccd-ccsd-spin-orbital therefore repeat themselves: all of
 them follow from $n_o n_v$ singles and $n_o^2n_v^2$ doubles over spatial
 orbitals. The spin-adapted solver iterates only those, which makes every
 rank-4 tensor 16 times smaller than its spin-orbital counterpart, and it is
@@ -23,11 +23,11 @@ what `ccsd`, `ccsd(t)` and `eom-ccsd` run.
 | CLI | `method.kind = "ccsd"` (`examples/water-ccsd.toml`), `[cc] ladder` |
 | Python | `run_ccsd(ladder=)` |
 
-## 16.2.1 Spin adaptation
+## Spin adaptation {#closed-shell-ccsd-spin-adaptation}
 
 **The map.** For an RHF reference the spin-orbital amplitudes are fixed by
 spatial ones. `expand_amplitudes_to_spin_orbital` writes them out, the
-expansion (1.14) of section 1.3.5:
+expansion (@eq:spin-adaptation-4) of section @sec:spin-adaptation-closed-shell-amplitudes:
 
 $$ t_{i\sigma}^{a\tau} = \delta_{\sigma\tau}t_i^a,\qquad
 t_{i\sigma j\tau}^{a\sigma' b\tau'} = \delta_{\sigma\sigma'}\delta_{\tau\tau'}t_{ij}^{ab} - \delta_{\sigma\tau'}\delta_{\tau\sigma'}t_{ij}^{ba},\qquad
@@ -44,7 +44,7 @@ guess is $(ia|jb)/(-\Delta)$, and the opposite-spin amplitude with $a$ on
 the α electron is $+t_{ij}^{ab}$.
 
 **The residual keeps the pattern.** Feed amplitudes of this form into the
-spin-orbital residual of section 16.1. The result has the same structure:
+spin-orbital residual of section @sec:ccd-ccsd-spin-orbital. The result has the same structure:
 the α and β singles are equal, the opposite-spin block
 $R_{ij}^{ab} = R_{i\alpha j\beta}^{a\alpha b\beta}$ has
 $R_{ij}^{ab} = R_{ji}^{ba}$, and the same-spin block is
@@ -52,7 +52,7 @@ $R_{ij}^{ab} - R_{ij}^{ba}$. So one spatial singles residual $R_i^a$ and one
 spatial doubles residual $R_{ij}^{ab}$ carry all of it, and solving
 $R_i^a = 0$, $R_{ij}^{ab} = 0$ is solving CCSD.
 
-**The energy.** Combine the singles into the doubles as in section 16.1:
+**The energy.** Combine the singles into the doubles as in section @sec:ccd-ccsd-spin-orbital:
 the spin-orbital energy is $\tfrac14\sum\langle ij\|ab\rangle\tau_{ij}^{ab}$.
 On the spatial map the opposite-spin $\tau$ is
 $t_{ij}^{ab} + t_i^at_j^b$ (the spin-flip singles that would subtract are
@@ -60,7 +60,7 @@ zero), and the same-spin one is
 $(t_{ij}^{ab} - t_{ij}^{ba}) + t_i^at_j^b - t_i^bt_j^a$. Write
 $\tau_{ij}^{ab} = t_{ij}^{ab} + t_i^at_j^b$ for the spatial quantity. Then
 the same-spin block is $\tau_{ij}^{ab} - \tau_{ij}^{ba}$, so the spatial
-$\tau$ expands by the same map as $t$. The count of section 1.3.5 then
+$\tau$ expands by the same map as $t$. The count of section @sec:spin-adaptation-closed-shell-amplitudes then
 applies with $\tau$ in place of $t$:
 
 - the four opposite-spin patterns give $\sum(ia|jb)\,\tau_{ij}^{ab}$;
@@ -71,10 +71,10 @@ and their sum is
 $$E_c = \sum_{ijab}\big(2(ia|jb) - (ib|ja)\big)\big(t_{ij}^{ab} + t_i^at_j^b\big).$$
 
 At $t_1 = 0$ and $t_{ij}^{ab} = (ia|jb)/(-\Delta_{ij}^{ab})$ the energy
-reduces to the closed-shell MP2 energy (10.3), with the opposite-spin and same-spin pieces
-of (10.2) as the two bullets.
+reduces to the closed-shell MP2 energy (@eq:closed-shell-ri-mp2-3), with the opposite-spin and same-spin pieces
+of (@eq:mp2-cs-spin-adaptation) as the two bullets.
 
-> **Verified equation 16.3** · the closed-shell residual is the opposite-spin block
+> **Verified equation {#eq:cc-ccsd-spin-adaptation}** · the closed-shell residual is the opposite-spin block
 >
 > For random spatial $t_1$ and $t_2 = t_2^{(ij)(ab)}$, expanded to spin
 > orbitals by the map of `expand_amplitudes_to_spin_orbital`, the brute-force
@@ -117,7 +117,7 @@ transcription of PySCF `rccsd`, and its evidence is the Rust comparison with
 the spin-orbital `ccsd` on the same integrals and with PySCF `cc.CCSD`
 (`tests/validation_cc.rs`).
 
-## 16.2.2 The algorithm
+## The algorithm {#closed-shell-ccsd-algorithm}
 
 | Step | Quantity | Cost | Function |
 |---|---|---|---|
@@ -204,7 +204,7 @@ does not. Set `ladder` or the budget for reproducible timings. The RI ladder
 is bit-identical at any thread count: each job owns its own panel rows and
 its own slice of the result, so nothing is reduced across threads.
 
-## 16.2.3 Options
+## Options {#closed-shell-ccsd-options}
 
 | Option | Values | Default | Effect |
 |---|---|---|---|
@@ -212,14 +212,14 @@ its own slice of the result, so nothing is reduced across threads.
 | `[mp2] frozen_core`, `frozen_core=` | integer | 0 | frozen occupied orbitals |
 | `[memory] budget_gb`, `memory_budget_gb=` | GB | auto | preflight and the `auto` decision |
 
-## 16.2.4 Numerical anchors
+## Numerical anchors {#closed-shell-ccsd-numerical-anchors}
 
 | Quantity | Systems | Error | Test |
 |---|---|---|---|
 | RI-CCSD vs PySCF `CCSD` on the same DF integrals (both solvers) | H2O, NH3, CH4, HF / cc-pVDZ, def2-SVP; HCN / cc-pVDZ; H2O / aug-cc-pVDZ; C2H6 / cc-pVDZ | $\le 4.7\times10^{-11}$ Ha | `crates/ferric-cc/tests/validation_cc.rs` |
 | the same, anions whose RHF HOMO lies above zero | CH3⁻, Te²⁻ / def2-SVP | $\le 6.0\times10^{-12}$ Ha | `crates/ferric-cc/tests/cc_anion_occupied_count.rs` |
 
-## 16.2.5 Sources
+## Sources {#closed-shell-ccsd-sources}
 
 | Source | What it gives |
 |---|---|

@@ -1,9 +1,9 @@
-# 14.3 XC gradient: AO-derivative and grid-response terms
+# XC gradient: AO-derivative and grid-response terms {#xc-gradient}
 
-<!-- section: 14.3; status: ready; registry: ks-gradient;
+<!-- status: ready; registry: ks-gradient;
      theory: crates/ferric-dft/theory.md#"XC nuclear gradient: AO-derivative and grid-response terms", "Becke partition and its nuclear derivative" -->
 
-The Kohn–Sham gradient is the Hartree–Fock gradient of section 14.1 with the
+The Kohn–Sham gradient is the Hartree–Fock gradient of section @sec:hf-gradient with the
 exact-exchange term scaled by the hybrid fraction and one new piece, the
 derivative of the XC energy. That energy is a weighted sum over grid
 points, and the grid is built around the nuclei: when an atom moves, its
@@ -33,13 +33,13 @@ check that the three together give forces that sum to zero.
 | CLI | `task = "optimize"` with `method.kind = "ksdft"`, or `rhf`/`uhf`/`rohf` with `[dft] functional` |
 | Python | `run_dft(..., with_gradient=True)`, `run_optimize(..., xc=...)` |
 
-## 14.3.1 The two terms
+## The two terms {#xc-gradient-terms}
 
-Section 9.3 writes the XC energy on the grid as
+Section @sec:vxc writes the XC energy on the grid as
 $E_{xc} = \sum_g w_g\,e(\rho_g, \sigma_g, \tau_g)$ with $e = \rho\epsilon$,
 $\rho = \sum D_{\mu\nu}\chi_\mu\chi_\nu$, $\sigma = \lvert\nabla\rho\rvert^2$ and
 $\tau = \tfrac12\sum_b\sum D_{\mu\nu}\partial_b\chi_\mu\partial_b\chi_\nu$. The
-SCF is stationary, so as in section 14.1 we differentiate at fixed $D$. Three
+SCF is stationary, so as in section @sec:hf-gradient we differentiate at fixed $D$. Three
 things depend on a nuclear coordinate $R_{C,\alpha}$:
 
 - the AOs on atom $C$, at a fixed point $\mathbf r$;
@@ -60,7 +60,7 @@ response.
 **The AO-derivative term.** A basis function on atom $A$ depends on
 $\mathbf R_A$ only through $\mathbf r - \mathbf R_A$, so
 $\partial\chi_\mu/\partial R_{A,\alpha} = -\partial_\alpha\chi_\mu$ for $\mu\in A$
-(section 3.3). Differentiate $\rho$. Each of the two $\chi$ factors gives a
+(section @sec:integrals-derivatives). Differentiate $\rho$. Each of the two $\chi$ factors gives a
 term, and they are equal because $D$ is symmetric:
 
 $$ \frac{\partial\rho}{\partial R_{A,\alpha}} = -2\sum_{\mu\in A}\partial_\alpha\chi_\mu\,m_\mu . $$
@@ -90,7 +90,7 @@ of this formula and the LDA path (`xc_gradient_closed_lda_from_density`) the
 $v_\sigma = v_\tau = 0$ case; the meta-GGA path is
 `xc_gradient_closed_mgga_from_density` with batch body `mgga_closed_batch`.
 
-> **Verified equation 14.6** · the AO-derivative terms, with the $\tfrac12$ of $\tau$
+> **Verified equation {#eq:ks-grad-ao-derivative}** · the AO-derivative terms, with the $\tfrac12$ of $\tau$
 >
 > On two real Gaussians (a $p_x$ on one nucleus, an $s$ on another) at an
 > exact rational point, with a symmetric density matrix: $\partial\tau/\partial R_{A,\alpha}$
@@ -112,7 +112,7 @@ $v_\sigma = v_\tau = 0$ case; the meta-GGA path is
 
 **The grid-response terms.** The first is the weight term,
 $\sum_g(\partial w_g/\partial\mathbf R_b)\,\rho_g\epsilon_g$, with the "weight1"
-derivative of section 14.3.2. The second is the home-atom translation of the
+derivative of section @sec:xc-gradient-becke-weight-derivative. The second is the home-atom translation of the
 integrand,
 
 $$ \sum_{g:\,\mathrm{home}=A} w_g\big[v_\rho\,\partial_\alpha\rho + v_\sigma\,\partial_\alpha\sigma + v_\tau\,\partial_\alpha\tau\big], $$
@@ -136,7 +136,7 @@ term $\nabla_{\mathbf r}q$ is that change.
 
 **Check translational invariance.** Sum the XC gradient over all atoms $C$.
 The weight term vanishes, because the weight1 rows sum to zero for every
-point (section 9.2.2). At each point the AO-derivative term contributes
+point (section @sec:grids-becke-partition). At each point the AO-derivative term contributes
 $w_g\sum_q v_q\sum_C\partial q/\partial\mathbf R_C$ and the home term
 $w_g\sum_q v_q\nabla_{\mathbf r}q$; by the identity above they cancel. The XC
 forces sum to zero exactly on the grid. Drop the home term and the sum
@@ -145,7 +145,7 @@ $-\int\nabla e\,\mathrm d\mathbf r$, which is zero in exact integration but not
 on a finite grid. That residual is a net force on the molecule from the
 quadrature error, and it is what the grid response removes.
 
-> **Verified equation 14.7** · the grid-response term
+> **Verified equation {#eq:ks-grad-grid-response}** · the grid-response term
 >
 > The home-atom translation column of the integrand, $\partial_\alpha(\partial_b\rho)$
 > (`hess_col`) and $\partial_\alpha\tau$ (`tau_spatial_grad`), equals the exact
@@ -178,11 +178,11 @@ finite differences), and
 `ferric-python/tests/test_xc_blocks.py::test_xc_grad_matches_finite_difference_at_fixed_density`
 (PBE and SCAN, finite differences at fixed $D$, closed and polarized).
 
-## 14.3.2 The Becke weight derivative
+## The Becke weight derivative {#xc-gradient-becke-weight-derivative}
 
 The weight of grid point $g$ is $w_g = w_rw_l\,w^A(\mathbf r_g)$: radial and
 angular quadrature weights times the Becke partition weight of its home
-atom $A$. Section 9.2.2 builds $w^A$ in four steps and differentiates it by
+atom $A$. Section @sec:grids-becke-partition builds $w^A$ in four steps and differentiates it by
 the chain rule through the same steps
 (`ferric-dft/src/becke.rs::becke_weights_and_grad`). The pieces, with
 $r_X = |\mathbf r-\mathbf R_X|$ and $R_{AB} = |\mathbf R_A-\mathbf R_B|$:
@@ -218,10 +218,10 @@ PySCF's "weight1" derivative, in which each point rides its home atom:
 $$ \frac{\partial w_g}{\partial \mathbf{R}_b} = w_rw_l\Big[\frac{\partial w^{A}}{\partial\mathbf{R}_b} + \delta_{b,A}\nabla_{\mathbf{r}}w^{A}\Big], \qquad \sum_b \frac{\partial w_g}{\partial\mathbf{R}_b} = 0 . $$
 
 The $\delta_{b,A}$ term is the weight's version of the home translation of
-14.3.1, and the sum rule is the reason the weight term drops out of the
+@sec:xc-gradient-terms, and the sum rule is the reason the weight term drops out of the
 translational-invariance check there.
 
-> **Verified equation 14.8** · the weight derivative and its translation invariance
+> **Verified equation {#eq:ks-grad-becke-weights}** · the weight derivative and its translation invariance
 >
 > The assembled $\partial w^A/\partial\mathbf R_C$ of a three-atom,
 > unequal-radius cluster equals the exact sympy derivative; the weights form
@@ -246,7 +246,7 @@ $<10^{-7}$), `becke::tests::becke_weights_grad_sums_to_zero_h2` and
 `becke::tests::partition_weight_derivative_matches_fd` (the neighbour-list
 kernel); the KS gradients below test the chain end to end.
 
-## 14.3.3 The algorithm
+## The algorithm {#xc-gradient-algorithm}
 
 The production path is the batched, shell-screened gradient of
 `ferric-dft/src/gradient/screened.rs`, behind every `xc_gradient_*_from_density`
@@ -262,7 +262,7 @@ evaluate the same expressions.
 | 4 | AO-derivative partials per basis function, scattered to atoms | `gga_ao_partials`, `mgga_tau_partials`, `scatter_partials` |
 | 5 | weight response $\sum_g(\partial w_g/\partial\mathbf R_b)\,\rho_g\epsilon_g$ | `weight1` |
 | 6 | home-translation of the integrand, added to the point's home atom | `hess_col`, `tau_spatial_grad` |
-| 7 | add the exact-exchange, Coulomb, one-electron, ECP and Pulay terms of section 14.1 | `ferric-scf/src/ks_gradient.rs::ks_gradient_closed_for_density` |
+| 7 | add the exact-exchange, Coulomb, one-electron, ECP and Pulay terms of section @sec:hf-gradient | `ferric-scf/src/ks_gradient.rs::ks_gradient_closed_for_density` |
 
 Step 2 screens on second derivatives as well as values, because the
 AO-derivative and home terms contain $\partial^2_{\alpha b}\chi_\mu$. The
@@ -307,7 +307,7 @@ Together they reproduce the $\tfrac12 w v_\tau$ term of the formula. A reader
 who re-adds the $\tfrac12$ of $\tau$ halves the $\tau$ term; the proof
 script's control is exactly that mistake.
 
-## 14.3.4 Reproducibility and memory
+## Reproducibility and memory {#xc-gradient-reproducibility-memory}
 
 - The result is bit-identical across rayon thread counts: the reduction groups
   and their order do not depend on the thread count.
@@ -319,21 +319,21 @@ script's control is exactly that mistake.
   committed before the batches run; the AO planes of one batch are $(n_{\mathrm{act}}, n_b)$,
   not whole-grid.
 
-## 14.3.5 Options that change the equation
+## Options that change the equation {#xc-gradient-options-change-equation}
 
 | Option | Effect |
 |---|---|
 | LDA, GGA, meta-GGA | $v_\sigma = v_\tau = 0$ for LDA, $v_\tau = 0$ for GGA; one code path with fewer terms |
 | UKS, ROKS | the same per spin with $D\to D^\sigma$ and $\mathbf G^\sigma$ in place of $2v_\sigma\nabla\rho$ |
-| hybrid, range-separated hybrid | exact exchange scaled by $c_K$, or split into erfc and erf pieces, through the routes of section 14.2 |
+| hybrid, range-separated hybrid | exact exchange scaled by $c_K$, or split into erfc and erf pieces, through the routes of section @sec:df-jk-gradient |
 | VV10 | `ferric-dft/src/gradient.rs::vv10_gradient_from_density` has no Becke-weight response by design, and is not finite-difference validated |
 | grid | the gradient differentiates the grid the SCF ran on: `ferric-scf/src/ks_gradient.rs::KsGradGrids` carries it. A default-grid gradient paired with an SCF on another grid misses |
 | meta-GGAs that need the density Laplacian (for example `MGGA_X_SCANL`, `MGGA_X_BR89`) | refused in `ferric-dft/src/libxc.rs::xc_def_from_name` (test `laplacian_metagga_rejected_by_flag`); the $\tau$-only functionals run |
 
 The Hessian of the same energy, with the same two kinds of term, is
-section 14.5.
+section @sec:ks-hessian.
 
-## 14.3.6 Numerical anchors
+## Numerical anchors {#xc-gradient-numerical-anchors}
 
 | Check | Reference | Agreement | Test |
 |---|---|---|---|
@@ -355,7 +355,7 @@ costs, and it is at least 2000 times the finite-difference agreement of
 | Source | Used for |
 |---|---|
 | `crates/ferric-dft/theory.md`, "XC nuclear gradient: AO-derivative and grid-response terms", "Becke partition and its nuclear derivative" | equations, tests |
-| `scripts/dft_mgga_tau_gradient_sympy.py`, `scripts/dft_becke_weight_grad_sympy.py` | verified equations 14.6 to 14.8 |
+| `scripts/dft_mgga_tau_gradient_sympy.py`, `scripts/dft_becke_weight_grad_sympy.py` | verified equations @eq:ks-grad-ao-derivative to @eq:ks-grad-becke-weights |
 | `crates/ferric-dft/src/gradient.rs`, `crates/ferric-dft/src/gradient/screened.rs` | the algorithm and reproducibility rules |
 | `crates/ferric-scf/tests/ks_gradient_scf_grid.rs` | what the custom-grid row tests |
 | `site/src/reference/validation.md` | the anchor rows |

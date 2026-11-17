@@ -1,6 +1,6 @@
-# 12.2 Unrestricted orbital-optimized RI-MP2
+# Unrestricted orbital-optimized RI-MP2 {#unrestricted-oo-rimp2}
 
-<!-- section: 12.2; status: verify; registry: u-oo-rimp2;
+<!-- status: verify; registry: u-oo-rimp2;
      theory: crates/ferric-mp2/theory.md#"14. Unrestricted OO-RI-MP2 orbital gradient", "14.1 The integral-response loop", "7. Orbital-optimized RI-MP2" -->
 
 *Notation follows `book/notation.md`: $\beta$ orbitals carry an overbar
@@ -15,9 +15,9 @@ rotations, one per spin. The two sets still interact: the Coulomb repulsion
 sees the total density, so a rotation of the $\alpha$ orbitals changes the
 field the $\beta$ electrons move in.
 
-The loop has the shape of section 12.1. It differs in four places:
+The loop has the shape of section @sec:oo-rimp2. It differs in four places:
 
-- the gradient has a Coulomb coupling between the spins (12.6);
+- the gradient has a Coulomb coupling between the spins (@eq:oo-u-gradient);
 - J and K are built per spin (`UOoJk`);
 - the safeguard against a failed backtrack is different;
 - the convergence test is different.
@@ -30,25 +30,25 @@ The loop has the shape of section 12.1. It differs in four places:
 | Entry point | Location |
 |---|---|
 | Rust | `ferric-mp2/src/u_oo_rimp2.rs::u_oo_ri_mp2`; configuration `UOoRiMp2Config` |
-| CLI | `method.kind = "oo-rimp2"` on an open-shell molecule, which arrives with a UHF reference (`solve_open_shell_reference`); same `[mp2]` keys as section 12.1 (`run_oo_rimp2` in `crates/ferric-cli/src/lib.rs` dispatches) |
+| CLI | `method.kind = "oo-rimp2"` on an open-shell molecule, which arrives with a UHF reference (`solve_open_shell_reference`); same `[mp2]` keys as section @sec:oo-rimp2 (`run_oo_rimp2` in `crates/ferric-cli/src/lib.rs` dispatches) |
 | Python | none: `run_oo_rimp2` is closed shell only |
 
 The reference must be UHF or ROHF; a restricted reference is refused
 (`check_u_oo_reference`). Energy only: there is no unrestricted OO nuclear
 gradient.
 
-## 12.2.1 The functional and the rotation
+## The functional and the rotation {#unrestricted-oo-rimp2-functional-rotation}
 
 Each spin has its own density $D^\sigma = C^\sigma_o C^{\sigma\mathsf T}_o$,
 with no factor 2 because each orbital holds one electron. Its Fock matrix
 $F^\sigma = h + J[D^\alpha + D^\beta] - K[D^\sigma]$ has Coulomb from both
 spins and exchange from its own spin only. The functional is
 
-$$ E(C^\alpha, C^\beta) = \tfrac12\sum_\sigma \operatorname{Tr}\big[D^\sigma(h + F^\sigma)\big] + V_{nn} + E_{\alpha\alpha} + E_{\beta\beta} + E_{\alpha\beta}, \tag{12.5} $$
+$$ E(C^\alpha, C^\beta) = \tfrac12\sum_\sigma \operatorname{Tr}\big[D^\sigma(h + F^\sigma)\big] + V_{nn} + E_{\alpha\alpha} + E_{\beta\beta} + E_{\alpha\beta}, \label{eq:unrestricted-oo-rimp2-1} $$
 
-with the three U-RI-MP2 terms of section 10.2 evaluated in each spin's
-semicanonical frame. The argument of section 12.1.1 applies to each spin
-separately, so (12.5) is invariant to occupied–occupied and
+with the three U-RI-MP2 terms of section @sec:unrestricted-ri-mp2 evaluated in each spin's
+semicanonical frame. The argument of section @sec:oo-rimp2-functional applies to each spin
+separately, so (@eq:unrestricted-oo-rimp2-1) is invariant to occupied–occupied and
 virtual–virtual rotations within either spin.
 
 The code builds both $D^\sigma$ and the energy in
@@ -56,12 +56,12 @@ The code builds both $D^\sigma$ and the energy in
 reference's route: four-centre `DirectJ` and `DirectK` at a $10^{-12}$
 threshold, or the reference's RI-JK fit when it fitted J and K on one
 auxiliary basis (`UOoJk::for_reference`). Each spin rotates as
-$C^\sigma \leftarrow C^\sigma U(\kappa^\sigma)$ with the Cayley form (12.2).
+$C^\sigma \leftarrow C^\sigma U(\kappa^\sigma)$ with the Cayley form (@eq:oo-cayley).
 $\kappa^\alpha$ and $\kappa^\beta$ are independent.
 
-## 12.2.2 The orbital gradient
+## The orbital gradient {#unrestricted-oo-rimp2-orbital-gradient}
 
-The derivation follows section 12.1.3 term by term. A rotation
+The derivation follows section @sec:oo-rimp2-orbital-gradient term by term. A rotation
 $\kappa^\sigma_{ck}$ moves $\delta C^\sigma_k = C^\sigma_c$ and
 $\delta C^\sigma_c = -C^\sigma_k$, and touches only spin $\sigma$.
 
@@ -78,10 +78,10 @@ $\delta C^\sigma_c = -C^\sigma_k$, and touches only spin $\sigma$.
 
 The result:
 
-$$ g^\sigma_{ai} = g^\sigma_{\mathrm{MP2},ai} + 2F^\sigma_{ai} + 2\big[C^{\sigma\mathsf T}\big(J[P^\alpha + P^\beta] - K[P^\sigma]\big)C^\sigma\big]_{ai} + 2\big(F^\sigma W^\sigma - W^\sigma F^\sigma\big)_{ai}, \qquad P^\sigma = C^\sigma W^\sigma C^{\sigma\mathsf T}. \tag{12.6} $$
+$$ g^\sigma_{ai} = g^\sigma_{\mathrm{MP2},ai} + 2F^\sigma_{ai} + 2\big[C^{\sigma\mathsf T}\big(J[P^\alpha + P^\beta] - K[P^\sigma]\big)C^\sigma\big]_{ai} + 2\big(F^\sigma W^\sigma - W^\sigma F^\sigma\big)_{ai}, \qquad P^\sigma = C^\sigma W^\sigma C^{\sigma\mathsf T}. \label{eq:oo-u-gradient} $$
 
 All quantities are in the semicanonical frame of spin $\sigma$. The result is
-rotated back as in section 12.1.
+rotated back as in section @sec:oo-rimp2.
 
 **The density $W^\sigma$.** It is the symmetrized unrelaxed U-MP2 density
 $\tfrac12(P^\sigma_{\mathrm{MO}} + P^{\sigma\mathsf T}_{\mathrm{MO}})$ on the
@@ -89,7 +89,7 @@ occupied and virtual blocks
 (`ferric-mp2/src/u_rimp2.rs::build_u_mp2_density`, embedded by
 `embed_u_density`). In $\alpha$:
 
-$$ P_{ij} = -\tfrac12\sum_{kab} t^{ab}_{ik}t^{ab}_{jk} - \sum_{\bar k a\bar b} t^{a\bar b}_{i\bar k}t^{a\bar b}_{j\bar k}, \qquad P_{ab} = \tfrac12\sum_{ijc} t^{ac}_{ij}t^{bc}_{ij} + \sum_{i\bar\jmath\bar c} t^{a\bar c}_{i\bar\jmath}t^{b\bar c}_{i\bar\jmath}, \tag{12.7} $$
+$$ P_{ij} = -\tfrac12\sum_{kab} t^{ab}_{ik}t^{ab}_{jk} - \sum_{\bar k a\bar b} t^{a\bar b}_{i\bar k}t^{a\bar b}_{j\bar k}, \qquad P_{ab} = \tfrac12\sum_{ijc} t^{ac}_{ij}t^{bc}_{ij} + \sum_{i\bar\jmath\bar c} t^{a\bar c}_{i\bar\jmath}t^{b\bar c}_{i\bar\jmath}, \label{eq:unrestricted-oo-rimp2-3} $$
 
 with antisymmetric same-spin amplitudes. The $\tfrac12$ on the same-spin
 sums corrects for counting each antisymmetric pair twice; the
@@ -97,7 +97,7 @@ opposite-spin sums have distinguishable partners and no $\tfrac12$. The
 $\beta$ blocks follow by exchanging the spins.
 
 **The Coulomb coupling.** $J$ is built once from $P^\alpha + P^\beta$, and
-$K$ separately for each spin. Nowhere else in (12.6) does one
+$K$ separately for each spin. Nowhere else in (@eq:oo-u-gradient) does one
 spin's correlation density enter the other spin's gradient directly.
 
 **The integral response.** $g^\sigma_{\mathrm{MP2}}$ is
@@ -108,7 +108,7 @@ combination is $N_{ij} = 4t_{ij}$ and $\Gamma_k = 2\sum_jB_jt_{kj}^{\mathsf T}$.
 Written out for $\alpha$:
 
 $$ g^{\alpha\alpha}_{ck} = 2\sum_{jab}t^{ab}_{kj}(ca|jb) - 2\sum_{ijb}t^{cb}_{ij}(ik|jb), \qquad
-g^{\alpha\bar\beta}_{ck} = 2\sum_{\bar\jmath a\bar b}t^{a\bar b}_{k\bar\jmath}(ca|\bar\jmath\bar b) - 2\sum_{i\bar\jmath\bar b}t^{c\bar b}_{i\bar\jmath}(ik|\bar\jmath\bar b). \tag{12.8} $$
+g^{\alpha\bar\beta}_{ck} = 2\sum_{\bar\jmath a\bar b}t^{a\bar b}_{k\bar\jmath}(ca|\bar\jmath\bar b) - 2\sum_{i\bar\jmath\bar b}t^{c\bar b}_{i\bar\jmath}(ik|\bar\jmath\bar b). \label{eq:unrestricted-oo-rimp2-4} $$
 
 Where the two factors of 2 come from:
 
@@ -128,15 +128,15 @@ blocks, and the closed-shell gradient is $g = g^\alpha + g^\beta$. With
 $B = 0$ the kernel returns zero. Both are checked in the script's
 `closed-shell-anchor`.
 
-> **Verified equation 12.6** · unrestricted OO-MP2 orbital gradient
+> **Verified equation @eq:oo-u-gradient** · unrestricted OO-MP2 orbital gradient
 >
 > The integral-response kernel and `u_gradient_solver_frame` are transcribed
-> loop by loop. The kernel equals (12.8) and the section-14 derivation to
+> loop by loop. The kernel equals (@eq:unrestricted-oo-rimp2-4) and the section-14 derivation to
 > $6\times10^{-17}$ relative (bar $10^{-13}$), and each block equals a
 > Richardson difference of its block energy at fixed denominators to
 > $7\times10^{-13}$ relative (bar $10^{-9}$), with and without one frozen
-> core orbital. The assembled gradient (12.6) equals a Richardson difference
-> of the spin-orbital energy (12.5) at non-stationary, non-semicanonical
+> core orbital. The assembled gradient (@eq:oo-u-gradient) equals a Richardson difference
+> of the spin-orbital energy (@eq:unrestricted-oo-rimp2-1) at non-stationary, non-semicanonical
 > orbitals of a 3$\alpha$/2$\beta$ model to $1.4\times10^{-11}$ relative (bar
 > $10^{-9}$). `scripts/mp2_gradient_sympy.py`, part U, checks the derived
 > form of the same equation independently.
@@ -153,8 +153,8 @@ $B = 0$ the kernel returns zero. Both are checked in the script's
 
 The two checks cover different things. The Rust test shows that the code's
 gradient is the derivative of the code's energy. The script shows that the
-code's loop computes (12.6) term by term and that (12.6) is the derivative
-of (12.5).
+code's loop computes (@eq:oo-u-gradient) term by term and that (@eq:oo-u-gradient) is the derivative
+of (@eq:unrestricted-oo-rimp2-1).
 
 **Frozen core.** The kernel returns only the active columns.
 `embed_active_columns` places them at MO columns $n_c$ to $n_{\mathrm{occ}}$
@@ -163,12 +163,12 @@ The Fock response needs no change, because $W^\sigma$ is zero on the core
 rows and columns. The back-rotation and the step use the active columns
 only.
 
-## 12.2.3 The algorithm
+## The algorithm {#unrestricted-oo-rimp2-algorithm}
 
-The loop follows the table in section 12.1.4. The differences, read from
+The loop follows the table in section @sec:oo-rimp2-algorithm. The differences, read from
 `u_oo_ri_mp2`:
 
-| Rule | Closed shell (12.1) | Unrestricted |
+| Rule | Closed shell (@eq:oo-rimp2-1) | Unrestricted |
 |---|---|---|
 | Step | one $\kappa$ | $\kappa^\sigma_{ai} = -g^\sigma_{ai}/(\varepsilon^\sigma_a - \varepsilon^\sigma_i + \mu)$, one $\mu$ shared by both spins |
 | Cap | 0.3 rad | `max_kappa` (default 0.3 rad), applied to each spin separately |
@@ -188,9 +188,9 @@ accepted step resets the strike count.
 A system with no $\beta$ electrons ($n_{\bar o} = 0$) has a zero $\beta$
 gradient and skips the $\beta$ exchange build.
 
-## 12.2.4 The kernel
+## The kernel {#unrestricted-oo-rimp2-kernel}
 
-The Fock response is the third and fourth terms of (12.6). Below is the
+The Fock response is the third and fourth terms of (@eq:oo-u-gradient). Below is the
 closure `add_response` inside
 `ferric-mp2/src/u_oo_rimp2.rs::u_gradient_solver_frame`, with the closure
 parameters dropped and the comments added. It runs once per spin, with that
@@ -217,12 +217,12 @@ for a in 0..nvir {
 | `f_mo` | $F^\sigma$ in the semicanonical frame of $\sigma$ |
 | `g` on entry | $g^\sigma_{\mathrm{MP2}} + 2F^\sigma$ from `add_hf_gradient` |
 
-Compare with the closed-shell kernel in 12.1.5. The exchange weight is $1$
+Compare with the closed-shell kernel in @sec:oo-rimp2-kernel. The exchange weight is $1$
 here against $\tfrac12$ there, because each spin's exchange acts only within
 that spin. The column index `i` starts at 0, not at `first_occ`, because
 the kernel's output has already been placed in MO columns.
 
-## 12.2.5 Memory
+## Memory {#unrestricted-oo-rimp2-memory}
 
 - The three amplitude blocks $t^{\alpha\alpha}$, $t^{\beta\beta}$ and
   $t^{\alpha\bar\beta}$ stay resident for the whole loop.
@@ -232,14 +232,14 @@ the kernel's output has already been placed in MO columns.
 - Tests on both guards: `check_u_amplitude_alloc_rejects_realistic_large_scale`
   and `check_u_bfull_alloc_rejects_large_and_accepts_small_scale`.
 
-## 12.2.6 Options
+## Options {#unrestricted-oo-rimp2-options}
 
-`UOoRiMp2Config` has the fields and defaults of section 12.1.7, plus
+`UOoRiMp2Config` has the fields and defaults of section @sec:oo-rimp2-options, plus
 `max_kappa` (0.3) and `memory_budget_bytes`. `frozen_core` applies to both
 spins (`active_occ` per spin). An external potential and ECPs are folded into
 $h$ by `hcore_ecp_with_external`. A relativistic reference is refused.
 
-## 12.2.7 Anchors
+## Anchors {#unrestricted-oo-rimp2-anchors}
 
 | Check | Reference | Agreement | Test |
 |---|---|---|---|
@@ -249,7 +249,7 @@ $h$ by `hcore_ecp_with_external`. A relativistic reference is refused.
 
 <!-- figures: site/src/reference/validation.md row "oo-rimp2" -->
 
-The H2 row is the closed-shell limit of 12.2.2 run through the production
+The H2 row is the closed-shell limit of @sec:unrestricted-oo-rimp2-orbital-gradient run through the production
 code: a singlet through the unrestricted driver must land on the
 closed-shell minimum. The validation page lists the unrestricted path under
 the `oo-rimp2` row as energy only.
@@ -263,8 +263,8 @@ the `oo-rimp2` row as energy only.
 
 | Source | Used for |
 |---|---|
-| `crates/ferric-mp2/theory.md`, sections 7 and 14 | equations 12.5 and 12.6, the frozen-core embedding |
-| `crates/ferric-mp2/src/u_oo_rimp2.rs`, `crates/ferric-mp2/src/u_rimp2.rs` | the loop rules, the densities (12.7), the kernel |
+| `crates/ferric-mp2/theory.md`, sections 7 and 14 | equations @eq:unrestricted-oo-rimp2-1 and @eq:oo-u-gradient, the frozen-core embedding |
+| `crates/ferric-mp2/src/u_oo_rimp2.rs`, `crates/ferric-mp2/src/u_rimp2.rs` | the loop rules, the densities (@eq:unrestricted-oo-rimp2-3), the kernel |
 | `scripts/u_oo_rimp2_response_sympy.py`; `scripts/mp2_gradient_sympy.py`, part U | the proofs cited in the box |
 | U. Bozkaya, J. Chem. Phys. 139, 154105 (2013) | the unrestricted functional, as cited in the code |
 | `site/src/reference/validation.md` | the anchor figures |

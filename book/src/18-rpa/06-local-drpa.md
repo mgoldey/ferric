@@ -1,20 +1,20 @@
-# 18.6 Ring amplitudes with a threshold: local dRPA
+# Ring amplitudes with a threshold: local dRPA {#local-drpa}
 
-<!-- section: 18.6; status: verify; registry: drpa;
+<!-- status: verify; registry: drpa;
      theory: crates/ferric-rpa/theory.md#"RPA Correlation Energy" -->
 
 In Boys-localized orbitals each occupied orbital sits on a bond or a lone
 pair, and each local virtual sits near some atom. Two particle-hole
 fluctuations far apart interact weakly, so most elements of the ring
-coupling $K_{ia,jb} = 2(ia|jb)$ are small, as in local MP2 (section 13.1).
+coupling $K_{ia,jb} = 2(ia|jb)$ are small, as in local MP2 (section @sec:amplitude-lmp2).
 The local approximation drops the amplitudes whose coupling element is below
-a threshold $\varepsilon$ and solves the Riccati equation (18.2) on the
+a threshold $\varepsilon$ and solves the Riccati equation (@eq:drpa-three-ways-2) on the
 pattern that is left. At $\varepsilon = 0$ nothing is dropped and the energy
 is exact dRPA. At finite $\varepsilon$ it is an approximation with a
 measured, not a validated, error.
 
-The plan: the masked equation and why its error is first order (18.6.1), the
-algorithm (18.6.2), then options and the measured error map.
+The plan: the masked equation and why its error is first order (@sec:local-drpa-masked-riccati-equation), the
+algorithm (@sec:local-drpa-algorithm), then options and the measured error map.
 
 | Index | Range | Code name |
 |---|---|---|
@@ -28,7 +28,7 @@ algorithm (18.6.2), then options and the measured error map.
 | CLI | `method.kind = "drpa"` with `[local] scheme = "amplitude-threshold"` and `eps` or `eps_sweep` (`examples/water-drpa-local.toml`) |
 | Python | `run_drpa(local="amplitude-threshold", eps=...)`, `run_drpa_scan(eps_list=...)` |
 
-## 18.6.1 The masked Riccati equation
+## The masked Riccati equation {#local-drpa-masked-riccati-equation}
 
 In the localized basis $K_{ia,jb} = 2(ia|jb)$ is symmetric under
 $(ia) \leftrightarrow (jb)$. The kept pattern is
@@ -36,12 +36,12 @@ $(ia) \leftrightarrow (jb)$. The kept pattern is
 $$ \mathcal M = \{(ia, jb) : |K_{ia,jb}| > \varepsilon\}, $$
 
 closed under the swap because $\mathbf K$ is symmetric. The amplitudes are
-restricted to $\mathcal M$, and the damped fixed point of section 18.1 is
+restricted to $\mathcal M$, and the damped fixed point of section @sec:drpa-three-ways is
 projected onto $\mathcal M$ after each step:
 
-$$ \mathbf T \leftarrow P_{\mathcal M}\Big[\mathbf T - \mathbf R(\mathbf T)/\mathbf D\Big], \qquad E_c(\varepsilon) = \tfrac12\sum_{(ia,jb)\in\mathcal M}K_{ia,jb}T_{ia,jb} . \tag{18.16} $$
+$$ \mathbf T \leftarrow P_{\mathcal M}\Big[\mathbf T - \mathbf R(\mathbf T)/\mathbf D\Big], \qquad E_c(\varepsilon) = \tfrac12\sum_{(ia,jb)\in\mathcal M}K_{ia,jb}T_{ia,jb} . \label{eq:rpa-drpa-local-mask} $$
 
-$P_{\mathcal M}$ is the `apply_pattern` call in the loop of 18.1.2. It
+$P_{\mathcal M}$ is the `apply_pattern` call in the loop of @sec:drpa-three-ways-ring-amplitudes. It
 zeroes both the residual and the update outside the pattern, so the dropped
 amplitudes are exactly zero and the Riccati equation holds exactly on the
 kept ones. The ring products $\mathbf K\mathbf T$, $\mathbf T\mathbf K$ and
@@ -51,7 +51,7 @@ before assembly (`pair_gate_cal`).
 
 Check the trivial limit. At $\varepsilon = 0$ the code keeps every element,
 zeros included (it tests `cfg.eps == 0.0 || x.abs() > cfg.eps`), so $P_{\mathcal M}$
-does nothing and (18.16) is the unmasked iteration of (18.2).
+does nothing and (@eq:rpa-drpa-local-mask) is the unmasked iteration of (@eq:drpa-three-ways-2).
 
 **Why the error is first order.** dRPA is not variational in the amplitudes.
 The energy $\tfrac12\sum K\circ T$ is linear in $\mathbf T$ and has no
@@ -61,7 +61,7 @@ into the kept and the dropped part:
 
 $$ E_c(\varepsilon) - E_c(0) = \tfrac12\sum_{\mathcal M}K\,(T_\varepsilon - T_0) - \tfrac12\sum_{\notin\mathcal M}K\,T_0 . $$
 
-Both terms are linear in an amplitude difference. Compare local MP2 (13.1.1),
+Both terms are linear in an amplitude difference. Compare local MP2 (@sec:amplitude-lmp2-amplitude-equations-energy),
 where the Hylleraas energy is stationary at the solution, the term linear in
 the amplitude error cancels, and the truncation error is second order with a
 proven sign. dRPA has no such cancellation, so the error is first order in
@@ -92,11 +92,11 @@ for (p, pb) in rg.pairs.iter().enumerate() {
 | `pb.pat[r * nbb + c]` | $(ia, jb) \in \mathcal M$ |
 | `b_blocks[p]`, `t[p]` | $K_{ia,jb}$, $T_{ia,jb}$ |
 
-> **Unverified equation 18.16** · the masked Riccati energy
+> **Unverified equation @eq:rpa-drpa-local-mask** · the masked Riccati energy
 >
 > The exact limit is covered: at $\varepsilon = 0$ the mask is vacuous and
-> (18.16) is (18.2), whose rotation invariance and equality with the plasmon
-> formula are verified in section 18.1. Nothing proves a bound on
+> (@eq:rpa-drpa-local-mask) is (@eq:drpa-three-ways-2), whose rotation invariance and equality with the plasmon
+> formula are verified in section @sec:drpa-three-ways. Nothing proves a bound on
 > $E_c(\varepsilon) - E_c(0)$ at finite $\varepsilon$.
 >
 > | | |
@@ -106,7 +106,7 @@ for (p, pb) in rg.pairs.iter().enumerate() {
 >
 > <!-- unverified: id=rpa.drpa.local-mask; todo=state and test an error model for E(eps)-E(0) on more than one molecule; no proof exists -->
 
-## 18.6.2 The algorithm
+## The algorithm {#local-drpa-algorithm}
 
 | Step | Quantity | Function |
 |---|---|---|
@@ -125,7 +125,7 @@ With DIIS on, the solver checks the residual a second time on the
 extrapolated amplitudes it returns, and stops with an error if they fail the
 tolerance that the pre-extrapolation iterate passed.
 
-## 18.6.3 Options
+## Options {#local-drpa-options}
 
 | Option | Values | Default | Effect |
 |---|---|---|---|
@@ -139,7 +139,7 @@ tolerance that the pre-extrapolation iterate passed.
 is an error. `eps` has no default because it is part of the model, like the
 basis set.
 
-## 18.6.4 Numerical anchors
+## Numerical anchors {#local-drpa-numerical-anchors}
 
 From `site/src/reference/validation.md` (the `drpa` row and its anchors) and
 `crates/ferric-mp2/tests/validation_drpa_amplitude.rs`.
@@ -166,9 +166,9 @@ step in $\varepsilon$ multiplies it by 14 to 58. The kept fraction falls
 quickly over the same range, so each step drops more amplitudes as well as
 larger ones. That is one molecule in one basis; the test asserts only the
 sign and the monotonic growth. The positive sign is a measurement, not a
-consequence of 18.6.1, which allows either sign.
+consequence of @sec:local-drpa-masked-riccati-equation, which allows either sign.
 
-## 18.6.5 Sources
+## Sources {#local-drpa-sources}
 
 | Source | What it gives |
 |---|---|

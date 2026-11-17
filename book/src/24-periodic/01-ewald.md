@@ -1,6 +1,6 @@
-# 24.1 Lattices, Ewald summation and the Madelung constant
+# Lattices, Ewald summation and the Madelung constant {#ewald}
 
-<!-- section: 24.1; status: ready; registry: pbc-ewald-pairft-stress;
+<!-- status: ready; registry: pbc-ewald-pairft-stress;
      theory: crates/ferric-pbc/theory.md#"1. Ewald nuclear repulsion and the Madelung constant" -->
 
 Put one nucleus in every cell of a crystal and ask for its electrostatic
@@ -15,8 +15,8 @@ uniform background, account for what the split moves between the two sums.
 The total does not depend on where you put the split, and the code is tested
 on that independence and against PySCF.
 
-Section 24.1.1 derives the sum, its independence of the split, the Madelung
-constant and the nuclear gradient; 24.1.2 shows the code and 24.1.3 the
+Section @sec:ewald-ewald-sum-independence derives the sum, its independence of the split, the Madelung
+constant and the nuclear gradient; @sec:ewald-algorithm shows the code and @sec:ewald-numerical-anchors the
 anchors.
 
 | Symbol | Meaning | Code name |
@@ -36,7 +36,7 @@ anchors.
 | Mesh constant | `ferric-pbc/src/kpts.rs::madelung` |
 | Python | every periodic result exposes `e_nuc` and `madelung` |
 
-## 24.1.1 The Ewald sum and its independence of $\eta$
+## The Ewald sum and its independence of $\eta$ {#ewald-ewald-sum-independence}
 
 **The split.** For any $\eta > 0$,
 
@@ -47,7 +47,7 @@ The second is the potential of a unit Gaussian charge
 $\rho_\eta(r) = (\eta^2/\pi)^{3/2}e^{-\eta^2r^2}$: it is finite at $r = 0$,
 where it equals $2\eta/\sqrt\pi$, and smooth everywhere. A smooth function has
 Fourier coefficients that fall fast. Subtract the transform of the erfc part
-(verified equation 24.4 in section 24.3) from the bare $4\pi/G^2$:
+(verified equation @eq:pbc-hcore-split in section @sec:nuclear-attraction) from the bare $4\pi/G^2$:
 
 $$ \int\frac{\operatorname{erf}(\eta r)}{r}\,e^{-i\mathbf G\cdot\mathbf r}\,d^3r = \frac{4\pi}{G^2}\,e^{-G^2/4\eta^2} . $$
 
@@ -87,14 +87,14 @@ component, so it cancels the $\mathbf G = 0$ charge of the long-range sum,
 and the reciprocal sum runs over $\mathbf G \neq 0$ only. What remains are the
 background's short-range interactions, through
 $\int\operatorname{erfc}(\eta r)/r\,d^3r = \pi/\eta^2$ (verified equation
-24.5). The charges with the background give
+@eq:pbc-hcore-g0). The charges with the background give
 $\sum_iZ_i(-Q/\Omega)\,\pi/\eta^2 = -\pi Q^2/(\Omega\eta^2)$. The background
 with itself gives half of $(Q/\Omega)^2\,\Omega\,\pi/\eta^2$. Add them:
 
 $$ E_\text{bg} = -\frac{\pi Q^2}{2\Omega\eta^2} . $$
 
 It vanishes for a neutral set. With $c_0 = \pi/(\eta^2\Omega)$, the constant
-that sections 24.3 and 24.5 use, it is $-\tfrac12c_0Q^2$.
+that sections @sec:nuclear-attraction and @sec:rsgdf use, it is $-\tfrac12c_0Q^2$.
 
 **The total.** For point charges $Z_j$ at $\mathbf R_j$ and any $\eta > 0$:
 
@@ -142,7 +142,7 @@ Hence $dE/d\eta = 0$ exactly. Truncating the sums is the only source of
 $\eta$-dependence. The background term is needed for this on a charged set:
 without it the $\mathbf G = 0$ derivative is left over.
 
-> **Verified equation 24.1** · the Ewald sum is independent of $\eta$
+> **Verified equation {#eq:pbc-ewald-omega-independence}** · the Ewald sum is independent of $\eta$
 >
 > The $\eta$-derivatives of the short-range, long-range, self and background
 > terms cancel per $\mathbf G \neq 0$ and at $\mathbf G = 0$; a transcribed
@@ -189,7 +189,7 @@ signs is the textbook rock-salt case: the eight ions of the conventional cell
 give $E = -8M/a$ with $M = 1.747564594633182$.
 
 Check the large-cell limit. $v_M$ is homogeneous of degree $-1$ in lengths
-(verified equation 24.17), so $v_M \propto 1/L$ for a cell of edge $L$. The
+(verified equation @eq:pbc-stress-madelung), so $v_M \propto 1/L$ for a cell of edge $L$. The
 energy $-v_M/2$ of one charge with its images and background goes to zero as
 the cell grows, as it must for an isolated charge.
 
@@ -197,9 +197,9 @@ the cell grows, as it must for an isolated charge.
 $\eta = \sqrt\pi/\Omega^{1/3}$. A $k$-point mesh $N_1\times N_2\times N_3$ uses
 the Gamma constant of the $\operatorname{diag}(N)$ supercell
 (`ferric-pbc/src/kpts.rs::madelung`, PySCF `tools.pbc.madelung(cell, kpts)`).
-Sections 24.4 and 24.6 explain why exchange needs it.
+Sections @sec:exchange-divergence and @sec:kpoint-scf explain why exchange needs it.
 
-> **Verified equation 24.2** · the Madelung constant
+> **Verified equation {#eq:pbc-ewald-madelung}** · the Madelung constant
 >
 > $v_M = -2E$ for one unit charge per cell with its background reproduces the
 > rock-salt constant $1.747564594633182$ and the simple-cubic
@@ -215,7 +215,7 @@ Sections 24.4 and 24.6 explain why exchange needs it.
 >
 > <!-- verified: id=pbc.ewald.madelung; script=scripts/pbc_ewald_pairft_stress_sympy.py; claim=madelung; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-pbc/src/ewald.rs::madelung_constant; rust_test=ferric-pbc/tests/pbc_stage0.rs::madelung_matches_pyscf; registry=pbc-ewald-pairft-stress -->
 
-**The gradient.** The forces of section 24.7 need $\partial E/\partial\mathbf R_i$.
+**The gradient.** The forces of section @sec:forces need $\partial E/\partial\mathbf R_i$.
 The self and background terms do not depend on positions and contribute
 nothing. The short-range term differentiates through its radial function:
 
@@ -229,7 +229,7 @@ can drop one, and are checked against PySCF `grad_nuc` and finite
 differences in `ewald_gradient_matches_pyscf_grad_nuc_and_fd`
 (`crates/ferric-pbc/tests/pbc_grad.rs`).
 
-## 24.1.2 The algorithm
+## The algorithm {#ewald-algorithm}
 
 | Step | Quantity | Cost |
 |---|---|---|
@@ -289,7 +289,7 @@ The reciprocal sum and the two constants, from
   error naming them. A zero charge (a ghost atom) is skipped, so it may sit
   on a real nucleus.
 
-## 24.1.3 Numerical anchors
+## Numerical anchors {#ewald-numerical-anchors}
 
 From the tests named in `crates/ferric-pbc/theory.md` §1.
 
@@ -300,7 +300,7 @@ From the tests named in `crates/ferric-pbc/theory.md` §1.
 | rock-salt $E = -8M/a$ | $M = 1.747564594633182$ | $\eta$-spread $< 10^{-12}$ | `ewald_rock_salt_madelung_is_textbook_and_omega_independent` |
 | Ewald gradient | PySCF `grad_nuc` and finite differences | | `crates/ferric-pbc/tests/pbc_grad.rs` `ewald_gradient_matches_pyscf_grad_nuc_and_fd` |
 
-## 24.1.4 Sources
+## Sources {#ewald-sources}
 
 | Source | What it gives |
 |---|---|

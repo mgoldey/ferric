@@ -1,6 +1,6 @@
-# 14.6 Harmonic frequencies
+# Harmonic frequencies {#frequencies}
 
-<!-- section: 14.6; status: ready; registry: harmonic-frequencies, rrho-thermo, ir-intensities;
+<!-- status: ready; registry: harmonic-frequencies, rrho-thermo, ir-intensities;
      theory: crates/ferric-scf/theory.md#"Harmonic frequencies"; crates/ferric-scf/theory.md#"RRHO thermochemistry"; crates/ferric-scf/theory.md#"Infrared intensities" -->
 
 Near a minimum the energy surface is a bowl, and the nuclei sit at its
@@ -10,12 +10,12 @@ fix the frequency: a hydrogen on the same spring as a carbon vibrates
 faster, because it is lighter. So the vibrational frequencies are the
 curvature measured per unit mass.
 
-The plan: the harmonic eigenproblem and its units (14.6.1), the code
-(14.6.2), refusals (14.6.3), options (14.6.4), anchors (14.6.5), and the two
-quantities built on the modes, thermochemistry and IR intensities (14.6.6).
+The plan: the harmonic eigenproblem and its units (@sec:frequencies-hessian-wavenumbers), the code
+(@sec:frequencies-algorithm), refusals (@sec:frequencies-reproducibility-refusals), options (@sec:frequencies-options-change-equation), anchors (@sec:frequencies-numerical-anchors), and the two
+quantities built on the modes, thermochemistry and IR intensities (@sec:frequencies-thermochemistry-ir-intensities).
 
 Given the Hessian and the masses, nothing else enters. Whether the Hessian
-came from section 14.4, from section 14.5 or from differences of analytic
+came from section @sec:hf-hessian, from section @sec:ks-hessian or from differences of analytic
 gradients does not matter to what follows: one linear-algebra routine turns
 it into wavenumbers. The one delicate step is
 removing the six motions that are not vibrations, three translations and
@@ -38,11 +38,11 @@ must not mistake a small imaginary mode at a saddle point for one of them.
 | CLI | `task = "frequencies"`, section `[frequencies]` |
 | Python | `run_frequencies` |
 
-## 14.6.1 From Hessian to wavenumbers
+## From Hessian to wavenumbers {#frequencies-hessian-wavenumbers}
 
 ### The harmonic eigenproblem
 
-$H$ is in Hartree/Bohr². It is the analytic Hessian of section 14.4 or 14.5,
+$H$ is in Hartree/Bohr². It is the analytic Hessian of section @sec:hf-hessian or @sec:ks-hessian,
 or the central difference of the analytic gradient (default step
 $\delta = 5\times10^{-3}$ Bohr), symmetrized as $(H + H^{\mathsf T})/2$.
 
@@ -84,7 +84,7 @@ Its determinant is zero, so one eigenvalue is 0: the two atoms moving
 together. The other equals the trace, $k(1/m_1 + 1/m_2) = k/\mu$ with $\mu$
 the reduced mass. So $\omega = \sqrt{k/\mu}$, the textbook result.
 
-> **Verified equation 14.15** · units and the diatomic limit
+> **Verified equation {#eq:freq-units-diatomic}** · units and the diatomic limit
 >
 > The two conversion constants equal their CODATA 2018 forms
 > ($\texttt{AU\_FREQ\_TO\_CM} = E_h/(hc)$ and the u-to-electron-mass ratio) to
@@ -150,7 +150,7 @@ alone: the vibrations are already orthogonal to the rigid motions. Away
 from a stationary point the rotations carry curvature (the gradient term),
 and the projection sets those eigenvalues to zero.
 
-> **Verified equation 14.16** · the projector
+> **Verified equation {#eq:freq-projector}** · the projector
 >
 > For a nonlinear molecule the translation and rotation basis has rank 6, is
 > orthonormal, and $P$ is idempotent and annihilates every rigid mode, which
@@ -191,11 +191,11 @@ distance-preserving rotations, rank 5 for a linear triatomic), and that the
 projection leaves the vibrations of a pair-spring model unchanged at its
 minimum and zeroes six modes away from it.
 
-## 14.6.2 The algorithm
+## The algorithm {#frequencies-algorithm}
 
 | Step | Quantity | Function |
 |---|---|---|
-| 1 | $H$: analytic (14.4, 14.5) or central differences of the analytic gradient, $H_{ab} = [g_a(x_b+\delta)-g_a(x_b-\delta)]/2\delta$, $\delta = 5\times10^{-3}$ Bohr, $6N$ gradients | `ferric-scf/src/frequencies.rs::fd_hessian_frequencies` |
+| 1 | $H$: analytic (@eq:df-jk-gradient-2, @eq:df-grad-jk) or central differences of the analytic gradient, $H_{ab} = [g_a(x_b+\delta)-g_a(x_b-\delta)]/2\delta$, $\delta = 5\times10^{-3}$ Bohr, $6N$ gradients | `ferric-scf/src/frequencies.rs::fd_hessian_frequencies` |
 | 2 | $H\leftarrow\tfrac12(H+H^{\mathsf T})$; the largest asymmetry is reported as a noise probe, `FrequencyResult::asymmetry` | same |
 | 3 | $\tilde H_{ij} = H_{ij}/\sqrt{m_im_j}$ | `frequencies_from_cartesian_hessian` |
 | 4 | $P\tilde HP$ by rank-one sweeps, one per rigid-body vector | same |
@@ -244,7 +244,7 @@ for t in &tr_basis {
 | the update | $\tilde H\leftarrow\tilde H - t(t^{\mathsf T}\tilde H) - (\tilde Ht)t^{\mathsf T} + t\,(t^{\mathsf T}\tilde Ht)\,t^{\mathsf T}$ |
 
 `ht` is computed from `proj`, the matrix already projected by the earlier
-vectors. That is the product of single-vector projectors from 14.6.1, so the
+vectors. That is the product of single-vector projectors from @sec:frequencies-hessian-wavenumbers, so the
 loop needs no stored $P$. Each sweep costs $O(n^2)$ for $n = 3N$, against
 $O(n^3)$ for forming $P$ and multiplying. The matrix is re-symmetrized
 afterwards to remove accumulated round-off.
@@ -270,7 +270,7 @@ near 0, and the code sets `is_tr[k] = overlap > 0.5`. If the count of rigid
 vectors found differs from the rank of the basis, the projection is called
 inconsistent and the run is an error.
 
-## 14.6.3 Reproducibility and refusals
+## Reproducibility and refusals {#frequencies-reproducibility-refusals}
 
 - The rank check is a refusal: a translation and rotation subspace of rank
   other than 6, or 5 for a linear molecule, means a degenerate geometry
@@ -284,7 +284,7 @@ inconsistent and the run is an error.
   warm start from the undisplaced orbitals is measurably noisier at equal
   density convergence, so it is opt-in.
 
-## 14.6.4 Options that change the equation
+## Options that change the equation {#frequencies-options-change-equation}
 
 | Option | Effect |
 |---|---|
@@ -296,7 +296,7 @@ inconsistent and the run is an error.
 | dispersion D3(BJ) | the route the run without dispersion takes, plus the analytic D3(BJ) Hessian (`harmonic_frequencies_with_geometric_correction`); on the finite-difference route, differences of the corrected gradient |
 | dispersion MBD@rsSCS | finite differences of the gradient on the corrected surface (`harmonic_frequencies_with_scf_correction`); the MBD energy follows the density, so `analytic` and `analytic-moving-grid` are refused |
 
-## 14.6.5 Numerical anchors
+## Numerical anchors {#frequencies-numerical-anchors}
 
 | Check | Reference | Agreement | Test |
 |---|---|---|---|
@@ -312,11 +312,11 @@ by 0.10 cm⁻¹, and that is the $O(\delta^2)$ truncation of the 5e-3 Bohr
 step.
 
 **Known limits.** The analytic Hessians cover the references and options
-listed in sections 14.4 and 14.5. UHF states are not checked for internal
+listed in sections @sec:hf-hessian and @sec:ks-hessian. UHF states are not checked for internal
 stability, so an unstable UHF solution gets the frequencies of that
 solution.
 
-## 14.6.6 Thermochemistry and IR intensities
+## Thermochemistry and IR intensities {#frequencies-thermochemistry-ir-intensities}
 
 A frequency run ends with two quantities built on the modes: the ideal-gas
 thermochemistry of the rigid rotor and harmonic oscillator, and the IR
@@ -444,7 +444,7 @@ NIST-JANAF (154.845 J/(mol K) at 298.15 K and 1 bar). The Python test
 `test_thermo_ir.py` compares the full result with PySCF's `thermo` on the
 same frequencies, geometry, masses and constants.
 
-> **Verified equation 14.17** · RRHO partition functions
+> **Verified equation {#eq:freq-rrho-thermo}** · RRHO partition functions
 >
 > Each closed form follows from its partition function in symbols, with the
 > classical and low-temperature limits of the oscillator; for water the
@@ -560,7 +560,7 @@ diatomic, and the field route's $O(h^2)$ truncation. The Rust test
 RHF, RKS, UHF, UKS and ROHF against a bar built from Richardson truncation
 estimates and measured SCF-noise bounds.
 
-> **Verified equation 14.18** · the intensity and its units
+> **Verified equation {#eq:freq-ir-intensity}** · the intensity and its units
 >
 > The constant equals $N_Ae^2/(12\varepsilon_0c^2m_e)\times10^{-3}$ (km/mol) from CODATA 2018;
 > the $0\to1$ band strength from the harmonic matrix element is the classical
@@ -583,8 +583,8 @@ estimates and measured SCF-noise bounds.
 | Source | Used for |
 |---|---|
 | `crates/ferric-scf/theory.md`, "Harmonic frequencies" | the equations and the constants |
-| `scripts/hf_frequencies_sympy.py`, claims C1, C2, S1, D1, P1 to P4 | verified equations 14.15 and 14.16 |
+| `scripts/hf_frequencies_sympy.py`, claims C1, C2, S1, D1, P1 to P4 | verified equations @eq:freq-units-diatomic and @eq:freq-projector |
 | `crates/ferric-scf/src/frequencies.rs` module documentation and `detect_linear` | the pipeline, the Hessian options and the linearity test |
 | `site/src/reference/validation.md` | the anchor rows |
-| `crates/ferric-scf/theory.md`, "RRHO thermochemistry" and "Infrared intensities" | section 14.6.6 |
-| `scripts/rrho_thermo_sympy.py`, `scripts/ir_intensity_sympy.py` | verified equations 14.17 and 14.18 |
+| `crates/ferric-scf/theory.md`, "RRHO thermochemistry" and "Infrared intensities" | section @sec:frequencies-thermochemistry-ir-intensities |
+| `scripts/rrho_thermo_sympy.py`, `scripts/ir_intensity_sympy.py` | verified equations @eq:freq-rrho-thermo and @eq:freq-ir-intensity |

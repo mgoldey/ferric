@@ -1,6 +1,6 @@
-# 21.2 Atomic partitions: Becke, Hirshfeld, Löwdin, ESP fits
+# Atomic partitions: Becke, Hirshfeld, Löwdin, ESP fits {#atomic-partitions}
 
-<!-- section: 21.2; status: edit; registry: atomic-charges;
+<!-- status: edit; registry: atomic-charges;
      theory: crates/ferric-dft/theory.md#"Becke partition and its nuclear derivative"; crates/ferric-scf/theory.md#"Atomic charges" -->
 
 A molecule has one electron density and no atoms. Chemists still want
@@ -13,8 +13,8 @@ numbers for the same density, and none of them is the true atomic charge,
 because there is none.
 
 This section states four rules, derives what each conserves, and says which
-exported array uses which. The polarizability split of 21.2.3 is where the
-choice of rule meets the response of section 21.1. Section 27.2 is the
+exported array uses which. The polarizability split of @sec:atomic-partitions-partition-unity-buys-polarizability is where the
+choice of rule meets the response of section @sec:polarizabilities-from-dielectric-modes. Section @sec:electrostatics-and-charges is the
 consumer's view of the same charges, with the agreement figures.
 
 | Rule | Splits | Weight | Used for |
@@ -32,13 +32,13 @@ consumer's view of the same charges, with the agreement figures.
 | CLI | `compute_hirshfeld_charges`, `compute_lowdin_charges`, `compute_mulliken_charges`, `compute_chelpg_charges`, `compute_resp_charges`, `c6_partition` under `[rpa]` |
 | Python | `hirshfeld_charges`, `lowdin_charges`, `mulliken_charges`, `chelpg_charges`, `resp_charges` (`crates/ferric-python/ferric.pyi`) |
 
-## 21.2.1 What a partition must do
+## What a partition must do {#atomic-partitions-partition-must-do}
 
 `properties.rs` and `properties/hirshfeld_grid.rs` compute six charge
 models: Becke, Hirshfeld, Löwdin, Mulliken, CHELPG and RESP. Write the
 electron count of atom $A$ as $N_A$ and its charge as
 $q_A = Z^{\rm eff}_A - N_A$. Here $Z^{\rm eff}_A$ is `Atom::effective_z`,
-the valence charge on an ECP atom (equation 2.1). The density is always the
+the valence charge on an ECP atom (equation @eq:molecule-1). The density is always the
 total spin-summed one, $\mathbf P$. The electron count
 $N = \sum_AZ^{\rm eff}_A - Q$, with $Q$ the molecular charge, is what
 `Molecule::nelec` returns.
@@ -51,17 +51,17 @@ Two requirements fix the algebra, and the code enforces both.
    identity. A fit gets it from a constraint.
 2. **The parts do not depend on where the molecule sits.** This holds for the
    Becke, Hirshfeld and Löwdin rules by construction. It holds for the fits
-   only up to the lattice they sample (section 21.2.5).
+   only up to the lattice they sample (section @sec:atomic-partitions-esp-fitted-charges).
 
 A space partition integrated on a grid satisfies requirement 1 only up to the
 quadrature error. The code rescales the Becke and Hirshfeld populations so
 that it holds exactly; the grid error then shows up only in the individual
 charges. Löwdin and Mulliken satisfy it without rescaling.
 
-## 21.2.2 The Becke partition
+## The Becke partition {#atomic-partitions-becke-partition}
 
 Becke's partition gives every point of space a set of weights, one per atom,
-that sum to one. Section 9.2.2 builds it in four steps, and
+that sum to one. Section @sec:grids-becke-partition builds it in four steps, and
 `ferric-dft/src/becke.rs::becke_weights_and_grad` codes it. With
 $r_X = |\mathbf r-\mathbf R_X|$ and $R_{AB} = |\mathbf R_A-\mathbf R_B|$:
 
@@ -92,7 +92,7 @@ PySCF's "weight1" derivative, in which each point rides its home atom $A$:
 $\partial w_g/\partial \mathbf{R}_b = w_r w_l[\partial w^{A}/\partial\mathbf{R}_b + \delta_{b,A}\nabla_{\mathbf{r}}w^{A}]$,
 so $\sum_b \partial w_g/\partial\mathbf{R}_b = 0$.
 
-The proof is section 9.2.2, verified equation 9.3.
+The proof is section @sec:grids-becke-partition, verified equation @eq:ks-grid-becke.
 `scripts/dft_becke_weight_grad_sympy.py` checks each derivative
 symbolically, the assembled gradient of a three-atom cluster with unequal
 radii against sympy to $10^{-61}$, the partition of unity, and
@@ -105,20 +105,20 @@ is the machine check of the weights. Nothing in it concerns the charge.
 
 **Becke charges.** `becke_charges` integrates the density inside each cell:
 
-$$ N_A = \int w^A(\mathbf r)\,\rho(\mathbf r)\,d\mathbf r \approx \sum_{g:\,\mathrm{home}(g)=A} w_g\,\rho(\mathbf r_g), \qquad q_A = Z^{\rm eff}_A - s\,N_A, \qquad s = \frac{N}{\sum_BN_B}, \tag{21.5} $$
+$$ N_A = \int w^A(\mathbf r)\,\rho(\mathbf r)\,d\mathbf r \approx \sum_{g:\,\mathrm{home}(g)=A} w_g\,\rho(\mathbf r_g), \qquad q_A = Z^{\rm eff}_A - s\,N_A, \qquad s = \frac{N}{\sum_BN_B}, \label{eq:atomic-partitions-1} $$
 
 with $\rho_g = \sum_{\mu\nu}P_{\mu\nu}\chi_\mu(\mathbf r_g)\chi_\nu(\mathbf r_g)$,
 on the default flat 75 × 110 Becke–Lebedev grid (`build_atomic_grid` with
 the default configuration). Why is the sum only over the home atom's points?
 The weight $w^A$ is already inside the point weight
 $w_g = w^{\rm rad}w^\Omega w^A(\mathbf r_g)$ of the grid built around $A$
-(section 9.2.3), so each point carries exactly its home atom's share. The
+(section @sec:grids-building-molecular-grid), so each point carries exactly its home atom's share. The
 rescale $s$ removes the quadrature error of the electron count; the doc
 comment puts that error at about 0.003 e on water. The Becke partition has no
 proatom model: the cells depend on the geometry and the Bragg–Slater radii
 alone.
 
-**Becke bra for the polarizability.** The per-atom polarizability of 21.2.3
+**Becke bra for the polarizability.** The per-atom polarizability of @sec:atomic-partitions-partition-unity-buys-polarizability
 needs the atomic dipole matrix elements
 
 $$ m^A_{d,ia}=\int w^A(\mathbf r)\,(\mathbf r-\mathbf R_A)_d\,\phi_i(\mathbf r)\phi_a(\mathbf r)\,d\mathbf r , $$
@@ -129,21 +129,21 @@ transforms to the occupied–virtual block. The operator is
 $(\mathbf r-\mathbf R_A)$, not $\mathbf r$, so that $\alpha^A$ does not depend
 on the origin.
 
-## 21.2.3 What the partition of unity buys the polarizability
+## What the partition of unity buys the polarizability {#atomic-partitions-partition-unity-buys-polarizability}
 
 What should "the polarizability of atom $A$" mean? The field acts on the
 whole molecule, so the perturbation is still the molecular dipole. What
 belongs to atom $A$ is the part of the induced dipole that sits in $A$'s
 cell, measured from $A$'s nucleus. Krishtal, Senet and Van Alsenoy (J. Chem.
 Phys. 125, 034312 (2006)) define the intrinsic atomic polarizability that
-way. Write the response of section 21.1 as an operator $R(iu)$, so that
+way. Write the response of section @sec:polarizabilities-from-dielectric-modes as an operator $R(iu)$, so that
 $\alpha_{\rm mol} = \langle\mu|R|\mu\rangle$. Then
 
 $$ \alpha^A_{dj}(iu) = \langle m^A_d|R(iu)|\mu_j\rangle , $$
 
 with the atom-centred dipole $m^A_d = w_A(\mathbf r)(r-R_A)_d$ on the bra and
 the molecular dipole on the field-side ket. In the auxiliary basis this is
-(21.2) with the bra $\mu_d$ replaced by $m^A_d$:
+(@eq:pol-kernel-vs-casida) with the bra $\mu_d$ replaced by $m^A_d$:
 
 $$ \alpha^A_{dj}(iu) = 4\,m^A_d\cdot(g\circ\mu_j) - 16\,\big(B(g\circ m^A_d)\big)^{\mathsf T}\tilde{\boldsymbol\varepsilon}^{-1}\big(B(g\circ\mu_j)\big). $$
 
@@ -181,7 +181,7 @@ atoms; only the bra changes. The loop over atoms in
 
 The same function serves the static drivers, with $g = 1/\Delta$, and the
 dynamic ones, with $g_{ia}(u)$. It also serves both partitions: the Becke
-bra of 21.2.2 and the Hirshfeld bra of 21.2.4.
+bra of @sec:atomic-partitions-becke-partition and the Hirshfeld bra of @sec:atomic-partitions-hirshfeld-l-wdin-mulliken.
 
 **The sum over atoms.** Add the bras. Because $\sum_Aw_A = 1$,
 
@@ -192,12 +192,12 @@ the bra, so $\sum_A\alpha^A = \alpha_{\rm mol} - \langle\sum_AR_Aw_A|R|\mu\rangl
 After symmetrization this gives the charge-transfer remainder in terms of the
 weights alone:
 
-$$ \alpha_{\rm CT} = \alpha_{\rm mol}-\sum_A\operatorname{sym}\alpha^A = \operatorname{sym}\,\Big\langle \sum_A \mathbf R_A\,w_A\Big|R\Big|\mu\Big\rangle . \tag{21.6} $$
+$$ \alpha_{\rm CT} = \alpha_{\rm mol}-\sum_A\operatorname{sym}\alpha^A = \operatorname{sym}\,\Big\langle \sum_A \mathbf R_A\,w_A\Big|R\Big|\mu\Big\rangle . \label{eq:part-ct-sum-rule} $$
 
-The first term is the molecular tensor of section 21.1. The atoms do not add
+The first term is the molecular tensor of section @sec:polarizabilities-from-dielectric-modes. The atoms do not add
 up to it because a field moves charge between atoms, and an atom-centred
 dipole cannot see that. $\langle w_A|R|\mu\rangle$ is the electron population
-that the field moves into or out of cell $A$, so the right side of (21.6) is
+that the field moves into or out of cell $A$, so the right side of (@eq:part-ct-sum-rule) is
 the dipole of those population changes placed at the nuclei.
 
 Check the limits. For one atom, $w_A = 1$ everywhere and
@@ -210,7 +210,7 @@ charge can flow only along the bond: the test
 $\alpha_{{\rm CT},zz}$ exceeds 5% of $\alpha_{zz}$ and that
 $\alpha_{{\rm CT},xx}$ is below $10^{-3}\alpha_{xx}$. For water and N2 at
 aug-cc-pVDZ the isotropic $\alpha_{\rm CT}(0)$ is 27.0% and 22.7% of
-$\alpha_{\rm iso}$ (section 27.3.2).
+$\alpha_{\rm iso}$ (section @sec:polarizability-pdep-c6-per-atom-split-charge).
 
 The code computes the remainder as the difference, accumulated in atom order
 from 0.0:
@@ -234,7 +234,7 @@ frequencies. `charge_transfer_remainder_dynamic` applies it frequency by
 frequency and returns an error if an atom's frequency count differs from the
 molecule's.
 
-> **Verified equation 21.6** · the charge-transfer remainder follows from the partition of unity
+> **Verified equation @eq:part-ct-sum-rule** · the charge-transfer remainder follows from the partition of unity
 >
 > For weights with $\sum_Aw_A=1$ and bras $m^A=\langle i|(\mathbf r-\mathbf R_A)w_A|a\rangle$,
 > $\alpha_{\rm mol}-\sum_A\operatorname{sym}\alpha^A=\operatorname{sym}\langle\sum_A\mathbf R_Aw_A|R|\mu\rangle$,
@@ -249,7 +249,7 @@ molecule's.
 >
 > <!-- verified: id=part.ct-sum-rule; script=scripts/rpa_c6_polarizability_sympy.py; claim=ct-sum-rule; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-rpa/src/properties/per_atom.rs::charge_transfer_remainder; registry=rpa-polarizability-c6 -->
 
-Section 27.3 cites the same proof for the exported array. The
+Section @sec:polarizability-pdep-c6 cites the same proof for the exported array. The
 identity holds for any partition of unity, so it holds for the Hirshfeld
 weights as well as the Becke ones.
 
@@ -264,13 +264,13 @@ $\sum_A\alpha^A + \alpha_{\rm CT} = \alpha_{\rm mol}$ to $10^{-13}\alpha_{zz}$) 
 below $10^{-10}$, and the exported `alpha_atomic` equal bit for bit to the
 static Becke call).
 
-## 21.2.4 Hirshfeld, Löwdin and Mulliken
+## Hirshfeld, Löwdin and Mulliken {#atomic-partitions-hirshfeld-l-wdin-mulliken}
 
 **Hirshfeld.** Place a free, spherical atom at each nucleus, and give each
 point of the molecule's density to the atoms in proportion to how much
 density each free atom would have there:
 
-$$ w^A(\mathbf r)=\frac{\rho^0_A(\mathbf r-\mathbf R_A)}{\sum_B\rho^0_B(\mathbf r-\mathbf R_B)+\varepsilon},\qquad N_A=\int w^A\rho,\qquad q_A=Z^{\rm eff}_A-s\,N_A, \tag{21.7} $$
+$$ w^A(\mathbf r)=\frac{\rho^0_A(\mathbf r-\mathbf R_A)}{\sum_B\rho^0_B(\mathbf r-\mathbf R_B)+\varepsilon},\qquad N_A=\int w^A\rho,\qquad q_A=Z^{\rm eff}_A-s\,N_A, \label{eq:atomic-partitions-3} $$
 
 with $\varepsilon=10^{-12}$ guarding the far tail, where every proatom
 density underflows. Without $\varepsilon$ the weights sum to one. With it
@@ -326,7 +326,7 @@ molecules with equivalent atoms differing by more than 0.05 e.
 
 The polarizability bra for `c6_partition = "hirshfeld"` is different. It is
 the dipole integral $\int\chi_\mu\chi_\nu\,w^A(\mathbf r-\mathbf R_A)_d$ with
-the weights of (21.7), by quadrature on a bounding-box lattice of 0.20 Bohr
+the weights of (@eq:atomic-partitions-3), by quadrature on a bounding-box lattice of 0.20 Bohr
 spacing and 6 Bohr margin (`FERRIC_HIRSHFELD_SPACING`,
 `FERRIC_HIRSHFELD_MARGIN`; `ferric-rpa/src/properties/per_atom.rs::hirshfeld_bra`).
 No renormalization to the lab-frame dipole is applied, because that would
@@ -340,7 +340,7 @@ $\chi'=S^{-1/2}\chi$ is orthonormal. The density matrix in that basis is
 $D'=S^{1/2}\mathbf PS^{1/2}$, and the population of an atom is the diagonal of
 $D'$ over its functions:
 
-$$ q_A=Z^{\rm eff}_A-\sum_{\mu\in A}\big(S^{1/2}\mathbf PS^{1/2}\big)_{\mu\mu}, \qquad \sum_\mu D'_{\mu\mu}=\operatorname{Tr}(S^{1/2}\mathbf PS^{1/2})=\operatorname{Tr}(\mathbf PS)=N . \tag{21.8} $$
+$$ q_A=Z^{\rm eff}_A-\sum_{\mu\in A}\big(S^{1/2}\mathbf PS^{1/2}\big)_{\mu\mu}, \qquad \sum_\mu D'_{\mu\mu}=\operatorname{Tr}(S^{1/2}\mathbf PS^{1/2})=\operatorname{Tr}(\mathbf PS)=N . \label{eq:charges-population-sums} $$
 
 The middle step is the cyclic property of the trace. The charges therefore
 sum to $\sum_AZ^{\rm eff}_A - \operatorname{Tr}[\mathbf P S]$, which is $Q$ for
@@ -356,12 +356,12 @@ again with trace $N$. Löwdin and Mulliken partition the basis, not space, so
 they change with the basis set and, for Löwdin, with the function-ordering
 convention of the basis.
 
-> **Verified equation 21.8** · the population sums and the grid rescale
+> **Verified equation @eq:charges-population-sums** · the population sums and the grid rescale
 >
 > For an idempotent density with $\operatorname{Tr}(DS) = N_e$ on a random overlap,
 > the transcribed Mulliken and Löwdin charges sum to $Q$ exactly and the Löwdin
 > populations are nonnegative (claim A1). The Becke and Hirshfeld charges of
-> (21.5) and (21.7) sum to $Q$ exactly after the rescale $s$, whatever the
+> (@eq:atomic-partitions-1) and (@eq:atomic-partitions-3) sum to $Q$ exactly after the rescale $s$, whatever the
 > quadrature error and the $\varepsilon$ floor (claim A2).
 >
 > | | |
@@ -373,7 +373,7 @@ convention of the basis.
 >
 > <!-- verified: id=charges.population.sums; script=scripts/atomic_charges_sympy.py; claim=A1; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/properties.rs::lowdin_charges; registry=atomic-charges -->
 
-## 21.2.5 ESP-fitted charges
+## ESP-fitted charges {#atomic-partitions-esp-fitted-charges}
 
 CHELPG and RESP do not partition the density. They answer a different
 question: which point charges at the nuclei reproduce the electrostatic
@@ -384,7 +384,7 @@ The potential of the reference density at a point $\mathbf r_g$ is
 
 $$ V_g = \sum_BZ^{\rm eff}_B/|\mathbf{r}_g-\mathbf{R}_B| - \sum_{\mu\nu}P_{\mu\nu}\langle\mu|1/|\mathbf{r}-\mathbf{r}_g||\nu\rangle $$
 
-(section 27.2.2). Choose the charges to minimize
+(section @sec:electrostatics-and-charges-potential-arbitrary-points-surface). Choose the charges to minimize
 $\tfrac12\chi^2(\mathbf q)=\tfrac12\sum_g\big(V_g-\sum_Aq_A/r_{gA}\big)^2$ over the
 points $g$, with the total fixed, $\sum_Aq_A=Q$, through a multiplier
 $\lambda$. Differentiate $\tfrac12\chi^2 + \lambda(\sum_Aq_A - Q)$ with respect
@@ -392,12 +392,12 @@ to $q_A$ and set it to zero:
 $\sum_B\big(\sum_g 1/(r_{gA}r_{gB})\big)q_B + \lambda = \sum_g V_g/r_{gA}$.
 Together with the constraint, these are the bordered normal equations
 
-$$ \begin{pmatrix} A & \mathbf 1\\ \mathbf 1^{\mathsf T} & 0\end{pmatrix}\begin{pmatrix}\mathbf q\\ \lambda\end{pmatrix} = \begin{pmatrix}\mathbf b\\ Q\end{pmatrix}, \qquad A_{AB}=\sum_g\frac1{r_{gA}r_{gB}},\quad b_A=\sum_g\frac{V_g}{r_{gA}} . \tag{21.9} $$
+$$ \begin{pmatrix} A & \mathbf 1\\ \mathbf 1^{\mathsf T} & 0\end{pmatrix}\begin{pmatrix}\mathbf q\\ \lambda\end{pmatrix} = \begin{pmatrix}\mathbf b\\ Q\end{pmatrix}, \qquad A_{AB}=\sum_g\frac1{r_{gA}r_{gB}},\quad b_A=\sum_g\frac{V_g}{r_{gA}} . \label{eq:charges-chelpg-bordered} $$
 
 `ferric-scf/src/properties.rs::solve_chelpg_normal_equations` assembles
 this system and solves it once by LU. The points carry no weights.
 
-> **Verified equation 21.9** · the CHELPG bordered system
+> **Verified equation @eq:charges-chelpg-bordered** · the CHELPG bordered system
 >
 > The transcribed bordered normal equations give the same charges as an
 > independent null-space solve of the constrained least-squares problem, and
@@ -438,7 +438,7 @@ distances for both $A$ and $\mathbf b$:
 | $Q$ | `q_total`, from `mol.charge` |
 
 After the loop, row and column `natoms` are set to ones and the right-hand
-side's last entry to `q_total`: that is the border of (21.9).
+side's last entry to `q_total`: that is the border of (@eq:charges-chelpg-bordered).
 
 **The points.** A cubic lattice of spacing 0.3 Bohr in the lab frame,
 extending 2.8 Bohr beyond the atoms. `chelpg_in_shell` keeps a point if it
@@ -448,7 +448,7 @@ molecule are dropped because there the potential is not what a neighbour
 feels, and far points because there every charge set looks like the total
 charge. The four numbers are read from `FERRIC_CHELPG_SPACING`,
 `FERRIC_CHELPG_MARGIN`, `FERRIC_CHELPG_VDW_SCALE` (default 1.0) and
-`FERRIC_CHELPG_OUTER_CUTOFF`; section 27.2.4 lists the defaults and why a
+`FERRIC_CHELPG_OUTER_CUTOFF`; section @sec:electrostatics-and-charges-five-charge-schemes lists the defaults and why a
 dataset must record them.
 
 **RESP.** The points see a buried atom mostly through its neighbours, so
@@ -458,7 +458,7 @@ $a\sum_{A\notin\mathrm H}\big(\sqrt{q_A^2+b^2}-b\big)$, with $a=0.0005$ and
 $b=0.1\,e$ (`FERRIC_RESP_RESTRAINT_WEIGHT`, `FERRIC_RESP_RESTRAINT_B`). Its
 derivative with respect to $q_A$ is $a\,q_A/\sqrt{q_A^2+b^2}$. Write that as
 $[a/\sqrt{q_A^2+b^2}]\,q_A$ and freeze the bracket at the previous iterate.
-Then each step is a linear system of the form (21.9) with a heavier diagonal,
+Then each step is a linear system of the form (@eq:charges-chelpg-bordered) with a heavier diagonal,
 which `solve_resp_restrained` iterates:
 
 $$ \Big(\mathbf{A} + \mathrm{diag}_{A\,\in\,\rm heavy}\frac{a}{\sqrt{(q^{(k)}_A)^2 + b^2}}\Big)\mathbf{q}^{(k+1)} + \lambda\mathbf{1} = \mathbf{b},\qquad \sum_Aq^{(k+1)}_A = Q . $$
@@ -472,18 +472,18 @@ not Newton's method. At its fixed point,
 $(\mathbf{A}\mathbf{q} - \mathbf{b})_A + a\,q_A/\sqrt{q_A^2+b^2} + \lambda = 0$,
 which is the stationarity condition of
 
-$$ \tfrac12\chi^2(\mathbf q) + a\sum_{A\notin\mathrm H}\Big(\sqrt{q_A^2+b^2}-b\Big), \qquad \sum_Aq_A=Q . \tag{21.10} $$
+$$ \tfrac12\chi^2(\mathbf q) + a\sum_{A\notin\mathrm H}\Big(\sqrt{q_A^2+b^2}-b\Big), \qquad \sum_Aq_A=Q . \label{eq:charges-resp-fixed-point} $$
 
 The $\tfrac12$ on $\chi^2$ sets the meaning of $a$: the normal equations
-(21.9) are those of $\tfrac12\chi^2$, so the restraint enters with weight $a$
+(@eq:charges-chelpg-bordered) are those of $\tfrac12\chi^2$, so the restraint enters with weight $a$
 relative to that. The functional without the $\tfrac12$ has a different
 minimizer, that of the code with $a/2$. As $a\to0$ the restraint vanishes and
 RESP becomes CHELPG.
 
-> **Verified equation 21.10** · the RESP fixed point
+> **Verified equation @eq:charges-resp-fixed-point** · the RESP fixed point
 >
 > The transcribed `solve_resp_restrained` iteration converges to the
-> minimizer of (21.10), found independently by a constrained quasi-Newton
+> minimizer of (@eq:charges-resp-fixed-point), found independently by a constrained quasi-Newton
 > minimization; its projected gradient vanishes within the stopping bound,
 > while that of the functional without the $\tfrac12$ does not; and $a\to0$
 > gives the CHELPG charges (claim A4).
@@ -505,42 +505,42 @@ two fits differ only in the solve.
 The lattice is fixed in the lab frame, so the fitted charges change a little
 when the molecule is rotated. The Löwdin, Mulliken, Becke and Hirshfeld
 charges do not depend on a lattice, though Löwdin is invariant only for
-spherical-harmonic shells (section 27.2.4).
+spherical-harmonic shells (section @sec:electrostatics-and-charges-five-charge-schemes).
 
-## 21.2.6 Which rule for which job
+## Which rule for which job {#atomic-partitions-rule-job}
 
 | Need | Use | Why |
 |---|---|---|
 | A charge that tracks the electron density's own geometry and is stable under a change of basis | Hirshfeld, or Becke | integrals over space of the density, not a property of the basis |
 | A cheap baseline with no grid | Löwdin | a trace identity, no quadrature |
 | Charges that reproduce the electrostatics outside the molecule | CHELPG or RESP | the only rules fitted to the potential |
-| A partition of a molecular response | the same weights as the bra: Becke by default for TS and MBD, Hirshfeld for PDEP | partition of unity gives (21.6) |
+| A partition of a molecular response | the same weights as the bra: Becke by default for TS and MBD, Hirshfeld for PDEP | partition of unity gives (@eq:part-ct-sum-rule) |
 
 The five charge rules are five definitions of an atomic charge, and they
 disagree by design (Figure 27.1 shows water). Choose one for a dataset and
 record it with the arrays. `c6_partition` is written into the file for the
 per-atom polarizability arrays; no equivalent tag exists for the charges.
 
-## 21.2.7 How well these are checked
+## How well these are checked {#atomic-partitions-well-these-checked}
 
-The figures are in section 27.2.5. In summary: the potential and field at
+The figures are in section @sec:electrostatics-and-charges-well-these-checked. In summary: the potential and field at
 nuclei and the Hirshfeld charges are compared with numpy and PySCF
 contractions of a shared density; Mulliken and Löwdin are part of the
 all-keys NPZ comparison; the CHELPG and RESP checks are invariants only
 (total charge, mirror symmetry of water, reproduction of the fitted surface
 ESP), and no external code supplies a reference value for them. The Becke
-weights have the machine-checked proof of section 9.2.2, and the partition
-sum rule (21.6) the proof above.
+weights have the machine-checked proof of section @sec:grids-becke-partition, and the partition
+sum rule (@eq:part-ct-sum-rule) the proof above.
 
 **Known limits (2026-11-15).**
 
 - **What the proofs cover.** The verified boxes check the algebra of the
   charge rules on transcriptions of the code: the sum rules, the bordered
   system and the RESP fixed point. They do not check the ESP on the points or
-  the Hirshfeld proatoms; those are the comparisons of section 27.2.5.
+  the Hirshfeld proatoms; those are the comparisons of section @sec:electrostatics-and-charges-well-these-checked.
 - **Effective nuclear charges.** The charge rules use $Z^{\mathrm{eff}}_A$
-  (2.1): the valence charge on an ECP atom and zero on a ghost (checked
-  against PySCF on HI and CH3I, section 27.2.6). Hirshfeld on an ECP atom
+  (@eq:molecule-1): the valence charge on an ECP atom and zero on a ghost (checked
+  against PySCF on HI and CH3I, section @sec:electrostatics-and-charges-known-limits-2026-11). Hirshfeld on an ECP atom
   still divides by a proatom built for the full $Z$; that pairing is
   unchecked.
 - **Spin.** Every rule takes the total spin-summed density. The Mulliken and
@@ -552,15 +552,15 @@ sum rule (21.6) the proof above.
   ordering convention, so values from two codes are not comparable even on the
   same density.
 
-## 21.2.8 Sources
+## Sources {#atomic-partitions-sources}
 
 | Source | Used for |
 |---|---|
 | `crates/ferric-dft/theory.md`, "Becke partition and its nuclear derivative" | the Becke weight and its proof |
-| `crates/ferric-rpa/theory.md`, "Dispersion: Casimir-Polder C6" | the per-atom bra and equation (21.6) |
+| `crates/ferric-rpa/theory.md`, "Dispersion: Casimir-Polder C6" | the per-atom bra and equation (@eq:part-ct-sum-rule) |
 | `crates/ferric-scf/theory.md`, "Atomic charges" | the derivation of the charge rules and the ESP fits |
 | `scripts/atomic_charges_sympy.py` | the proofs, claims A1 to A4 |
-| `crates/ferric-scf/src/properties.rs` | (21.5), (21.8), (21.9), (21.10), the lattice and restraint parameters |
-| `crates/ferric-scf/src/properties/hirshfeld_grid.rs` | (21.7), the proatom and the grid |
+| `crates/ferric-scf/src/properties.rs` | (@eq:atomic-partitions-1), (@eq:charges-population-sums), (@eq:charges-chelpg-bordered), (@eq:charges-resp-fixed-point), the lattice and restraint parameters |
+| `crates/ferric-scf/src/properties/hirshfeld_grid.rs` | (@eq:atomic-partitions-3), the proatom and the grid |
 | `crates/ferric-rpa/src/properties/per_atom.rs` | the Becke and Hirshfeld bras |
-| `site/src/reference/validation.md`, "Anchors" | the agreement figures, through section 27.2.5 |
+| `site/src/reference/validation.md`, "Anchors" | the agreement figures, through section @sec:electrostatics-and-charges-well-these-checked |

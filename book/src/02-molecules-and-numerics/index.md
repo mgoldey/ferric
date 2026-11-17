@@ -1,4 +1,4 @@
-# 2. Molecules and numerics
+# Molecules and numerics {#molecules-and-numerics}
 
 Every method in this book takes the same two inputs: a molecule and a basis
 set. This chapter describes both, and the numerical rules the later chapters
@@ -8,7 +8,7 @@ a matrix product.
 
 Sections:
 
-- [2.1 Molecule, charge, multiplicity and units](01-molecule.md)
-- [2.2 Contracted Gaussians, normalization and parsers](02-basis-sets.md)
-- [2.3 Determinism, threads and the memory budget](03-determinism-and-memory.md)
-- [2.4 Dense tensors and the einsum macro](04-tensors.md)
+- [@sec:molecule Molecule, charge, multiplicity and units](01-molecule.md)
+- [@sec:basis-sets Contracted Gaussians, normalization and parsers](02-basis-sets.md)
+- [@sec:determinism-and-memory Determinism, threads and the memory budget](03-determinism-and-memory.md)
+- [@sec:tensors Dense tensors and the einsum macro](04-tensors.md)

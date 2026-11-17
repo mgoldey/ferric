@@ -1,6 +1,6 @@
-# 23.1 Point charges, smeared charges and uniform fields
+# Point charges, smeared charges and uniform fields {#external-potentials}
 
-<!-- section: 23.1; status: edit; registry: none;
+<!-- status: edit; registry: none;
      theory: crates/ferric-scf/theory.md#"External point charges and fields" -->
 
 A molecule in a crystal, a protein or a solvent shell feels the charges
@@ -12,11 +12,11 @@ the electrons through one extra one-electron potential and on the nuclei
 through one extra classical energy.
 
 Everything else in this chapter is built on this operator. The QM/MM charges
-of section 23.2 are an `ExternalPotential`, and the polarizable sites of
-section 23.3 add a density-dependent term on top of it. The section derives
-the operator and the classical energy (23.1.1), shows where they enter the
-SCF (23.1.2), derives the gradient (23.1.3), and lists the options and
-anchors (23.1.4 to 23.1.6). The proofs are in
+of section @sec:qmmm-boundaries are an `ExternalPotential`, and the polarizable sites of
+section @sec:polarizable-embedding add a density-dependent term on top of it. The section derives
+the operator and the classical energy (@sec:external-potentials-operator-classical-energy), shows where they enter the
+SCF (@sec:external-potentials-terms-enter-scf), derives the gradient (@sec:external-potentials-gradient), and lists the options and
+anchors (@sec:external-potentials-options to @sec:external-potentials-sources). The proofs are in
 `scripts/external_potential_sympy.py`, claims E1 to E5.
 
 | Symbol | Meaning | Code name |
@@ -35,7 +35,7 @@ anchors (23.1.4 to 23.1.6). The proofs are in
 | CLI | `[external_potential]` with `[[external_potential.point_charges]]` (`q`, `x`, `y`, `z`, optional `width`) and `field` (`examples/water-rhf-smeared-charge.toml`) |
 | Python | `point_charges=`, `smeared_charges=`, `external_field=` on `run_rhf`, `run_uhf`, `run_rohf`, `run_dft` and the geometry drivers |
 
-## 23.1.1 The operator and the classical energy
+## The operator and the classical energy {#external-potentials-operator-classical-energy}
 
 Start with one fixed point charge $q_i$ at $\mathbf R_i$. Its electrostatic
 potential at $\mathbf r$ is $q_i/|\mathbf r-\mathbf R_i|$. An electron has
@@ -83,7 +83,7 @@ the density. Differentiating the energy with respect to $P$ gives the Fock
 matrix $F = h + H^{\mathrm{ext}} + G(P)$, so the environment reaches $F$
 through $h$ alone and needs no update inside the iterations. The interaction
 of the external charges with each other is left out. It is a constant of the
-electronic problem; section 23.4 supplies it from a force field.
+electronic problem; section @sec:molecular-mechanics supplies it from a force field.
 
 For the gradient and Hessian we need the radial derivatives of the smeared
 potential. Write $f(R) = \operatorname{erf}(R/w)/R$ and $g = \operatorname{erf}(R/w)$.
@@ -106,7 +106,7 @@ $Z_Aq_i(3\mathbf d\mathbf d^{\mathsf T}/R^5 - \mathbf 1/R^3)$. The charges do no
 with the atoms, so the classical Hessian is block diagonal. The field term is
 linear in $\mathbf R_A$ and contributes nothing to it.
 
-> **Verified equation 23.1** · the smeared charge and the classical terms
+> **Verified equation {#eq:ext-smeared-classical}** · the smeared charge and the classical terms
 >
 > $\operatorname{erf}(r/w)/r$ solves Poisson's equation for the unit Gaussian
 > $(\zeta/\pi)^{3/2}e^{-\zeta r^2}$, $\zeta = 1/w^2$, and tends to $1/r$ as
@@ -144,11 +144,11 @@ which moves every orbital energy by the same amount, so neither the orbitals
 nor the gradient change (claim E4). The code's $\mathbf O = 0$ fixes the
 constant.
 
-## 23.1.2 Where the terms enter the SCF
+## Where the terms enter the SCF {#external-potentials-terms-enter-scf}
 
 The charges and the field go into the core Hamiltonian once, before the
 iteration loop, and the classical energy goes into $V_{nn}$ once. Neither is
-recomputed. The density-dependent terms of sections 22.3 and 23.3 differ:
+recomputed. The density-dependent terms of sections @sec:reaction-field and @sec:polarizable-embedding differ:
 they are rebuilt every iteration.
 
 | Term | Where | Function |
@@ -253,7 +253,7 @@ $E^{\mathrm{ext}}_{\mathrm{nuc}}$, with `sqrt_zeta` $= 1/w_j$:
 e += za * sc.q * erf(sqrt_zeta * r) / r;
 ```
 
-## 23.1.3 The gradient
+## The gradient {#external-potentials-gradient}
 
 The charges are fixed in space. The gradient is taken over the QM atoms
 only, and `ferric-scf/src/gradient.rs::oneelectron_gradient` adds five
@@ -282,7 +282,7 @@ force from a uniform field, as it should (claim E5).
 ### The force on a charge
 
 The force on a charge itself is not part of this gradient, but QM/MM needs
-it (section 23.2). The basis functions do not
+it (section @sec:qmmm-boundaries). The basis functions do not
 move with a point charge, so there is no Pulay term, and the SCF density is
 stationary, so only the explicit dependence of the energy on $\mathbf R_i$
 counts. That dependence is $q_i$ times the potential of the QM region at
@@ -299,16 +299,16 @@ the QM field varies. The site derivative of the electronic term comes from
 the three-index derivative blocks: the integral $(\mu\nu|g_j)$ is unchanged
 when all three centres move together, so the site block is
 $-(\text{block 1} + \text{block 2})$, contracted with $P$. Add the classical
-site term of 23.1.1, and the force is minus the sum. That is
+site term of @sec:external-potentials-operator-classical-energy, and the force is minus the sum. That is
 `ferric-scf/src/gradient.rs::smeared_site_forces`, and it is not
 $q_j\mathbf E(\mathbf R_j)$. `ferric-scf/src/qmmm.rs::mm_forces` (section
-23.2) merges the two kinds of charge.
+@sec:qmmm-boundaries) merges the two kinds of charge.
 
 The analytic Hessian with external charges (QM–QM block, charges fixed) and
 the smeared-charge version are validated on the page named in the anchors
 table.
 
-## 23.1.4 Options
+## Options {#external-potentials-options}
 
 | Option | Values | Default | Effect |
 |---|---|---|---|
@@ -322,7 +322,7 @@ vacuum path. The MP2 and coupled-cluster Python drivers take no
 external-potential arguments; the RI-MP2 gradient in Rust threads one through
 (third row of the anchors).
 
-## 23.1.5 Numerical anchors
+## Numerical anchors {#external-potentials-numerical-anchors}
 
 | Quantity | System | Result | Source |
 |---|---|---|---|
@@ -335,7 +335,7 @@ The Hessian row also gives the size of the effect. The charges change the
 Hessian by at least $7.7\times10^{-3}$ Ha/Bohr$^2$, about $10^4$ times the
 largest residual against PySCF.
 
-## 23.1.6 Sources
+## Sources {#external-potentials-sources}
 
 | Source | What it gives |
 |---|---|
@@ -348,7 +348,7 @@ largest residual against PySCF.
 **Known limits (2026-11-15).**
 
 - The field–electron gradient term is a finite difference, not analytic.
-- No force on the charges appears in `oneelectron_gradient`; use section 23.2.
+- No force on the charges appears in `oneelectron_gradient`; use section @sec:qmmm-boundaries.
 - The MP2 and coupled-cluster Python drivers take no external potential, and
   analytic Hessians exclude some reference and functional combinations
   (see the validation matrix on `site/src/reference/validation.md`).

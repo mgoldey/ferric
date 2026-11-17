@@ -1,6 +1,6 @@
-# 14.7 Fock-hook gradients
+# Fock-hook gradients {#fock-hook-gradient}
 
-<!-- section: 14.7; status: edit; registry: none;
+<!-- status: edit; registry: none;
      theory: crates/ferric-scf/theory.md#"Fock hooks and their nuclear gradient" -->
 
 A Fock hook adds your own term to the SCF energy: at every iteration the SCF
@@ -8,7 +8,7 @@ calls your function with the current density matrix, and you return an
 energy $E_h[D;\mathbf R]$ and its density derivative
 $V = \partial E_h/\partial D$, which ferric adds to the Fock matrix. To
 optimize a geometry with the hook you need its nuclear gradient, and most of
-it ferric already has. The built-in gradient of section 14.1 is built from
+it ferric already has. The built-in gradient of section @sec:hf-gradient is built from
 the converged orbitals and eigenvalues of the hooked Fock matrix, so
 everything the hook does through the density is already in it. What ferric
 cannot know is how your $E_h$ depends on the nuclei when the density is held
@@ -19,7 +19,7 @@ classical terms. You supply that one term.
 |---|---|---|
 | $E_h$, $V$ | the hook's energy and its density derivative | the hook callback |
 | $\partial E_h/\partial\mathbf R\vert_D$ | explicit term at fixed AO density | `explicit`, `fock_hook_grad=` |
-| $W$ | energy-weighted density of the hooked orbitals | as in section 14.1 |
+| $W$ | energy-weighted density of the hooked orbitals | as in section @sec:hf-gradient |
 
 | Entry point | Location |
 |---|---|
@@ -34,7 +34,7 @@ expect `(E, V)`; `run_uhf` and `run_rohf` call `hook(D_a, D_b)` and expect
 E_h/\partial\mathbf R|_D$ as an array of shape `(natoms, 3)` in
 Hartree/Bohr.
 
-## 14.7.1 The gradient
+## The gradient {#fock-hook-gradient-gradient}
 
 ### The Lagrangian
 
@@ -131,7 +131,7 @@ $E_h = \lambda \sum_{\mu\nu} D_{\mu\nu}^2$, has an explicit term of zero.
 A hook built from the overlap or another geometry-dependent AO matrix
 depends on $\mathbf R$ through that matrix. That case is the test below.
 
-> **Verified equation 14.19** · the hooked gradient
+> **Verified equation {#eq:scf-hook-gradient}** · the hooked gradient
 >
 > On a three-function closed-shell model whose $h$, $S$ and $(\mu\nu\vert\lambda\sigma)$ depend on a
 > parameter, with the hook $E_h = \kappa\,\mathrm{tr}[DB] + \lambda\,\mathrm{tr}[DS] + \tfrac\gamma2\sum D^2_{\mu\nu}$,
@@ -191,7 +191,7 @@ $\mathbf{V}$ is not the derivative of its $E_h$ converges to a point where
 $E$ is not stationary, and no gradient of the reported energy follows from
 this formula.
 
-## 14.7.2 The algorithm
+## The algorithm {#fock-hook-gradient-algorithm}
 
 | Step | Work | Function |
 |---|---|---|
@@ -222,7 +222,7 @@ this one and the shape check above it, turn a mis-shaped or non-finite
 explicit term into an error instead of a wrong optimization that runs to
 completion.
 
-## 14.7.3 Reproducibility and refusals
+## Reproducibility and refusals {#fock-hook-gradient-reproducibility-refusals}
 
 - A hooked gradient request without `fock_hook_grad` is an error naming the
   keyword (`test_a_hooked_gradient_without_fock_hook_grad_names_the_kwarg`);
@@ -230,7 +230,7 @@ completion.
 - A hook whose explicit term raises, has the wrong shape or is not finite is an
   error that reaches the caller.
 
-## 14.7.4 Options that change the equation
+## Options that change the equation {#fock-hook-gradient-options-change-equation}
 
 | Option | Effect |
 |---|---|
@@ -238,9 +238,9 @@ completion.
 | UHF, ROHF | $V_\sigma = \partial E_h/\partial D_\sigma$ per spin |
 | Kohn–Sham | the hook adds to the KS Fock matrix. The tests cover RKS with an LDA functional and, in Python, `run_dft` |
 | optimization | `run_optimize(..., fock_hook=, fock_hook_grad=)`; with a geometry-dependent hook the optimum is stationary on the hooked surface (`test_optimize_with_a_geometry_dependent_hook_reaches_a_stationary_point`) |
-| relativistic X2C | the gradient of an X2C SCF is refused (section 14.1), whether or not a hook is present |
+| relativistic X2C | the gradient of an X2C SCF is refused (section @sec:hf-gradient), whether or not a hook is present |
 
-## 14.7.5 Numerical anchors
+## Numerical anchors {#fock-hook-gradient-numerical-anchors}
 
 | Check | Reference | Agreement | Test |
 |---|---|---|---|
@@ -264,7 +264,7 @@ script is not yet named in `theory.md` or the registry.
 | Source | Used for |
 |---|---|
 | `crates/ferric-scf/theory.md`, "Fock hooks and their nuclear gradient" | the derivation and the rules for the explicit term |
-| `scripts/fock_hook_gradient_sympy.py`, claims K1 to K3 | verified equation 14.19 |
+| `scripts/fock_hook_gradient_sympy.py`, claims K1 to K3 | verified equation @eq:scf-hook-gradient |
 | `crates/ferric-scf/tests/fock_hook_gradient.rs` | the point-charge anchor and its mutations |
 | `crates/ferric-python/tests/test_fock_hook_gradient.py` | the exactness anchor and the error cases |
 | `crates/ferric-python/ferric.pyi`, the `FockHook` and `FockHookGrad` aliases | the Python call signatures |

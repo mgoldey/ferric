@@ -1,6 +1,6 @@
-# 7.2 Orthogonalization and starting guesses
+# Orthogonalization and starting guesses {#orthogonalization-and-guesses}
 
-<!-- section: 7.2; status: edit; registry: ;
+<!-- status: edit; registry: ;
      theory: crates/ferric-scf/theory.md#"Orthogonalization and starting guesses" -->
 
 Atomic orbitals on neighbouring atoms overlap, so the Roothaan equations
@@ -14,9 +14,9 @@ combinations out. Every SCF also starts from a density it did not compute,
 because the first Fock matrix needs one; a better start means fewer
 iterations and less risk of converging to the wrong state.
 
-This section derives the orthogonalizer (7.2.1), states what it drops
-(7.2.2), and describes the default guess and the options that replace it
-(7.2.3, 7.2.4).
+This section derives the orthogonalizer (@sec:orthogonalization-and-guesses-equations), states what it drops
+(@sec:orthogonalization-and-guesses-dropped), and describes the default guess and the options that replace it
+(@sec:orthogonalization-and-guesses-default-guess, @sec:orthogonalization-and-guesses-options-change-start).
 
 | Symbol | Meaning | Code name |
 |---|---|---|
@@ -31,7 +31,7 @@ This section derives the orthogonalizer (7.2.1), states what it drops
 | CLI | `[scf] guess = "minao"` (default; alias `"sad"`) or `"hcore"`; `[scf] guess_basis` |
 | Python | `run_rhf(guess=..., guess_basis=..., dm0=...)` and the open-shell analogues (`crates/ferric-python/ferric.pyi`) |
 
-## 7.2.1 The equations
+## The equations {#orthogonalization-and-guesses-equations}
 
 ### Canonical orthogonalization
 
@@ -136,7 +136,7 @@ $n_\alpha = n_\beta$ mixes the $\beta$ HOMO and LUMO by 0.1 rad
 (`uhf_guess_mos`, `mix_beta_homo_lumo`). Without the mixing the two spins
 would start equal and stay equal, and a broken-symmetry solution could not
 be reached. ROHF scales $D^\sigma = D\,n_\sigma/N_{\mathrm{el}}$ and
-diagonalizes the Roothaan effective Fock matrix of section 7.1
+diagonalizes the Roothaan effective Fock matrix of section @sec:energy-functionals
 (`rohf_guess_mos`).
 
 ### The secondary basis
@@ -153,7 +153,7 @@ $C(C^{\mathsf T}S_{bb}C)^{-1/2}$. It is refused when the smallest eigenvalue
 of $C^{\mathsf T}S_{bb}C$ is below $10^{-8}$, because the projected orbitals
 are then nearly dependent.
 
-## 7.2.2 What is dropped
+## What is dropped {#orthogonalization-and-guesses-dropped}
 
 The threshold is absolute, not relative to the largest eigenvalue. A column
 with $\lambda_i < 10^{-6}$ is removed, so a basis with near-dependent diffuse
@@ -194,7 +194,7 @@ for (col, &i) in kept.iter().enumerate() {
   $[10^{-6}, 10^{-4})$ that its SCF handles and a larger $\tau$ would drop.
   The override is per process for that reason.
 
-## 7.2.3 The default guess
+## The default guess {#orthogonalization-and-guesses-default-guess}
 
 The default is a block-diagonal atomic density, built atom by atom in the
 target basis. The GWH branch, used for $Z \ge 21$ or any atom with a $g$ or
@@ -231,21 +231,21 @@ Three facts about the default that its name and docs do not convey:
 | The atoms are neutral | $\operatorname{tr}(DS) = N_{\mathrm{el}}$ only for a neutral molecule; for an ion the first aufbau step fixes the count |
 | Inter-atomic blocks are zero | the first Fock matrix has no bonding density; DIIS starts from it at iteration 1 |
 
-## 7.2.4 Options that change the start
+## Options that change the start {#orthogonalization-and-guesses-options-change-start}
 
 | Option | Effect |
 |---|---|
 | `guess = "hcore"` | diagonalize $X^{\mathsf T}hX$ and occupy the lowest orbitals |
 | `guess_basis = "<name>"` | converge in a smaller basis, then project (`ferric-scf/src/basis2.rs`) |
 | `dm0=` (Python) | start from a supplied density, checked for finiteness and electron count |
-| `mom_after_iter` | applies from the guess onward; see section 8.2 |
+| `mom_after_iter` | applies from the guess onward; see section @sec:level-shift-mom-smearing |
 
-## 7.2.5 Status
+## Status {#orthogonalization-and-guesses-status}
 
 No proof script covers this section. The canonical orthogonalizer identity
-$X^{\mathsf T}SX = 1_m$ is elementary (7.2.1 writes it out). The guesses are
+$X^{\mathsf T}SX = 1_m$ is elementary (@sec:orthogonalization-and-guesses-equations writes it out). The guesses are
 heuristics, not derivations, so their correctness is a matter of the SCF
-converging to the same state from them, which the anchors of section 7.1
+converging to the same state from them, which the anchors of section @sec:energy-functionals
 test. The section stays `edit` until the doc fixes below land.
 
 | Doc fix needed | Where |

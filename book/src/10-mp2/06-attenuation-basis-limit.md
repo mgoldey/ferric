@@ -1,23 +1,23 @@
-# 10.6 Attenuation and the basis-set limit
+# Attenuation and the basis-set limit {#attenuation-basis-limit}
 
-<!-- section: 10.6; status: edit; registry: attenuated-mp2;
+<!-- status: edit; registry: attenuated-mp2;
      theory: crates/ferric-mp2/theory.md#"5. Attenuated MP2" -->
 
 Attenuated MP2 cancels two overbinding errors at once: MP2's overestimate of
-dispersion and basis set superposition error (section 10.4). The first does
+dispersion and basis set superposition error (section @sec:attenuated-mp2). The first does
 not depend on the basis. The second shrinks as the basis grows, so the
 amount of long-range correlation worth cutting shrinks with it, and the
 optimal attenuation length $r_0$ belongs to a basis. This section records
 how $r_0$ moves as the basis grows toward the complete-basis-set (CBS)
 limit. It is a summary of the Goldey dissertation, chapter 6. No new code
-is involved: every row below is a terfc run of section 10.4 at a different
+is involved: every row below is a terfc run of section @sec:attenuated-mp2 at a different
 `att_r0`.
 
-## 10.6.1 Setup
+## Setup {#attenuation-basis-limit-setup}
 
 | Choice | Value (dissertation §6.2) |
 |---|---|
-| Kernel | terfc (10.12), one parameter $r_0$ |
+| Kernel | terfc (@eq:mp2-att-terfc-kernel), one parameter $r_0$ |
 | Training set | S66 interaction energies, CCSD(T)/CBS reference |
 | Counterpoise | none, so the result transfers to intramolecular interactions, where counterpoise is not defined |
 | MP2 | RI, frozen core |
@@ -39,20 +39,20 @@ $$ X^3 E^{\mathrm{corr}}_X - Y^3 E^{\mathrm{corr}}_Y = (X^3 - Y^3)\,E^{\mathrm{c
 
 Divide by $X^3 - Y^3$:
 
-$$ E^{\mathrm{corr}}_{XY} = \frac{E^{\mathrm{corr}}_X X^3 - E^{\mathrm{corr}}_Y Y^3}{X^3 - Y^3} . \tag{10.17} $$
+$$ E^{\mathrm{corr}}_{XY} = \frac{E^{\mathrm{corr}}_X X^3 - E^{\mathrm{corr}}_Y Y^3}{X^3 - Y^3} . \label{eq:attenuation-basis-limit-1} $$
 
-Check it: if the two correlation energies are equal, (10.17) returns that
+Check it: if the two correlation energies are equal, (@eq:attenuation-basis-limit-1) returns that
 value. For $X = 3$, $Y = 4$ the weights are $-27/37$ on the triple-zeta
 energy and $64/37$ on the quadruple-zeta energy, so the estimate lies
 beyond the quadruple-zeta value.
 
-ferric has no built-in extrapolation; (10.17) is applied to two runs by
+ferric has no built-in extrapolation; (@eq:attenuation-basis-limit-1) is applied to two runs by
 hand.
 
-## 10.6.2 Optimal $r_0$ by basis
+## Optimal $r_0$ by basis {#attenuation-basis-limit-optimal-basis}
 
 S66 RMSD in kcal/mol at the optimal $r_0$, no counterpoise (dissertation
-Tables 6.2–6.4). TQZ and aTQZ are (10.17) applied to the triple- and
+Tables 6.2–6.4). TQZ and aTQZ are (@eq:attenuation-basis-limit-1) applied to the triple- and
 quadruple-zeta correlation energies. "jun-", "jul-", "may-" and "apr-" are
 the calendar bases of Papajak et al., with diffuse functions removed from
 the aug- sets.
@@ -84,7 +84,7 @@ the aug- sets.
 | | def2-TZVPD | 1.30 | 0.439 |
 | | def2-TZVPPD | 1.35 | 0.375 |
 
-## 10.6.3 What the table says
+## What the table says {#attenuation-basis-limit-table-says}
 
 - **$r_0$ grows toward the CBS limit.** In the fully augmented series it
   goes 1.05 → 1.35 → 1.50 → 1.65 Å (aDZ, aTZ, aQZ, aTQZ). A larger basis
@@ -92,14 +92,14 @@ the aug- sets.
 - **It does not go to infinity.** At aTQZ attenuated MP2 (0.304 kcal/mol)
   still beats MP2/CBS (0.73 kcal/mol, dissertation Table 2.1): part of what
   attenuation removes is MP2's intrinsic overestimate of dispersion, which
-  no basis fixes. An infinite $r_0$ would be plain MP2 (section 10.4.2).
+  no basis fixes. An infinite $r_0$ would be plain MP2 (section @sec:attenuated-mp2-energy).
 - **Augmentation matters more than cardinal number.** aug-cc-pVTZ at
   0.251 kcal/mol is the best entry in the table, better than aug-cc-pVQZ
   and the extrapolations. The dissertation recommends MP2(terfc, aTZ).
 - **Without diffuse functions the fit is poor at double zeta** (cc-pVDZ,
   1.283 kcal/mol).
 
-## 10.6.4 Running these in ferric
+## Running these in ferric {#attenuation-basis-limit-running-these-ferric}
 
 | Basis in the table | Bundled in ferric |
 |---|---|
@@ -118,7 +118,7 @@ no basis of their own and are not in the code table.
 
 These are dissertation numbers, run in Q-Chem. ferric has not re-run the
 S66 fits, and none of the figures above is a ferric anchor. The terfc
-integrals and energies ferric computes are anchored in section 10.5.
+integrals and energies ferric computes are anchored in section @sec:scs-mp2-2terfc.
 
 ## Known limits (2026-11-15)
 
@@ -129,9 +129,9 @@ integrals and energies ferric computes are anchored in section 10.5.
 
 | Source | Used for |
 |---|---|
-| Goldey dissertation, chapter 6 (§6.1, §6.2, Eq. 6.1, Tables 6.2–6.4) | setup, equation 10.17, the counterpoise remark, the table, the conclusions |
+| Goldey dissertation, chapter 6 (§6.1, §6.2, Eq. 6.1, Tables 6.2–6.4) | setup, equation @eq:attenuation-basis-limit-1, the counterpoise remark, the table, the conclusions |
 | `crates/ferric-mp2/theory.md`, "5. Attenuated MP2"; `crates/ferric-mp2/src/terfc_r0.rs` | the per-basis default $r_0$ |
 | `crates/ferric-core/src/basis/bundled` | which bases ship |
 
-The derivation of (10.17) from the $X^{-3}$ model and the $X = 3$, $Y = 4$
+The derivation of (@eq:attenuation-basis-limit-1) from the $X^{-3}$ model and the $X = 3$, $Y = 4$
 weights were checked with sympy for this section.

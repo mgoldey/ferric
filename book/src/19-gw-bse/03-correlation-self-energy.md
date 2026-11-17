@@ -1,6 +1,6 @@
-# 19.3 The correlation self-energy
+# The correlation self-energy {#correlation-self-energy}
 
-<!-- section: 19.3; status: ready; registry: gw;
+<!-- status: ready; registry: gw;
      theory: crates/ferric-gw/theory.md#"4. Correlation self-energy on the imaginary axis" -->
 
 An electron added to state $p$ polarizes the molecule, and the polarization
@@ -8,19 +8,19 @@ acts back on it. Because the polarization takes time to build, the energy
 of the added electron depends on how fast the response is compared with the
 energy available: the correction is a function of energy, $\Sigma^c_p(E)$.
 In GW it is the frequency convolution of the propagator $G$ with the dynamic
-part of $W$ from section 19.2.
+part of $W$ from section @sec:screened-interaction.
 
 On the real axis that convolution runs over the poles of $G$ and $W$ and is
 hard to integrate. Evaluated at a complex energy $z$ off the real axis, it
 becomes a smooth integral over the imaginary-frequency grid on which $W$ is
 stored. That is why GW here works on the imaginary axis and continues to the
-real one afterwards (section 19.5).
+real one afterwards (section @sec:continuation-and-qp-equation).
 
 | Symbol | Meaning | Code name |
 |---|---|---|
 | $z$ | complex energy, absolute (not measured from $\epsilon_F$) | `z` |
 | $u_k$, $w_k$ | quadrature node and weight of the $W$ grid | `quad_freqs`, `quad_weights` |
-| $W_{pq}(iu_k)$ | screened matrix element, section 19.2 | `w_nk` |
+| $W_{pq}(iu_k)$ | screened matrix element, section @sec:screened-interaction | `w_nk` |
 | $\epsilon_q$ | propagator energy of state $q$ | `eps_act` (a separate argument, so evGW can replace it) |
 | $\Sigma^c_p(z)$ | correlation self-energy | the return of `sigma_c_at_z` |
 
@@ -30,7 +30,7 @@ real one afterwards (section 19.5).
 | CLI | `method.kind = "gw"`, `[gw] method = "g0w0"` |
 | Python | `run_gw(method="g0w0")` |
 
-## 19.3.1 The frequency integral
+## The frequency integral {#correlation-self-energy-frequency-integral}
 
 **The integral.** For any complex $z$ off the real axis the code evaluates
 
@@ -51,13 +51,13 @@ $a \neq 0$,
 $$ \int_0^\infty \frac{a}{a^2+u'^2}\,du' = \frac{\pi}{2}\,\mathrm{sgn}(a) , $$
 
 so the kernel changes sign with $\mathrm{Re}(z - \epsilon_q)$. A state below
-$z$ (occupied, on the continuation line of section 19.5) enters with one sign
+$z$ (occupied, on the continuation line of section @sec:continuation-and-qp-equation) enters with one sign
 and a state above it with the other. $z$ is an absolute energy, and the
 propagator energies `eps_act` are a separate argument so that evGW can
-replace them (section 19.6).
+replace them (section @sec:eigenvalue-self-consistency).
 
 **Check the single-pole model.** Feed in the $W$ of one particle–hole pair,
-$W_{pq}(iu) = -2\Omega s_{pq}/(u^2+\Omega^2)$ (section 19.2.1). The integral
+$W_{pq}(iu) = -2\Omega s_{pq}/(u^2+\Omega^2)$ (section @sec:screened-interaction-dielectric-matrix-single-pole). The integral
 can be done by residues, and gives
 
 $$ \Sigma^c_p(z) = \sum_{q:\,\mathrm{Re}(z-\epsilon_q)>0} \frac{s_{pq}}{z - \epsilon_q + \Omega} \;+\; \sum_{q:\,\mathrm{Re}(z-\epsilon_q)<0} \frac{s_{pq}}{z - \epsilon_q - \Omega} . $$
@@ -74,7 +74,7 @@ feeds this $W$ through `sigma_c_at_z` on the 100-point grid and asserts the
 closed form to $10^{-8}$ Ha at $z = \epsilon_F + i\{0, 0.1, 0.6, 2\}$. The
 measured error, $2.3\times10^{-9}$ Ha, is the quadrature error of that grid.
 
-> **Verified equation 19.4** · the frequency integral against the closed-form residue result
+> **Verified equation {#eq:gw-sigma-c-closed-form}** · the frequency integral against the closed-form residue result
 >
 > For a single-pole $W(iu) = -2\Omega s/(u^2+\Omega^2)$,
 > $\Sigma^c_p(z) = \sum_{q:\,\mathrm{Re}(z-\epsilon_q)>0}\frac{s_{pq}}{z-\epsilon_q+\Omega} + \sum_{q:\,\mathrm{Re}(z-\epsilon_q)<0}\frac{s_{pq}}{z-\epsilon_q-\Omega}$:
@@ -94,7 +94,7 @@ measured error, $2.3\times10^{-9}$ Ha, is the quadrature error of that grid.
 
 **The plain rule.** Replace the integral by the quadrature sum. This is the
 loop of `ferric-gw/src/sigma.rs::sigma_c_at_z`, one per state $p$, after the
-screened elements have been formed by `screened_elements` (section 19.2.2):
+screened elements have been formed by `screened_elements` (section @sec:screened-interaction-pdep-basis):
 
 <!-- excerpt: ferric-gw/src/sigma.rs::sigma_c_at_z -->
 ```rust
@@ -126,7 +126,7 @@ in once per $q$, outside the frequency loop. A unit test
 (`sigma::tests::sigma_c_blas3_matches_scalar_reference`) checks the GEMM
 form of the screened elements against a scalar loop.
 
-## 19.3.2 Product integration
+## Product integration {#correlation-self-energy-product-integration}
 
 **What goes wrong with the plain rule.** On the continuation line
 $z = \epsilon_F + iu$ the kernel $a/(a^2+u'^2)$, $a = z - \epsilon_q$, peaks at
@@ -168,7 +168,7 @@ error left is $W$'s interpolation error.
 
 **Check the static limit.** A frequency-independent $W$ is its own
 interpolant, so the rule returns $\tfrac{\pi}{2}\,\mathrm{sgn}(\mathrm{Re}\,a)$
-times $W$ exactly, at any grid. That is the COHSEX limit of section 19.4.
+times $W$ exactly, at any grid. That is the COHSEX limit of section @sec:cohsex.
 
 **The far field.** When $x_0$ is far from $[-1, 1]$, the barycentric
 interpolant loses accuracy to cancellation, while the plain Gauss–Legendre sum
@@ -214,11 +214,11 @@ sum. The tests are `sigma::tests::product_rule_*`, `u_g0w0_uks_pbe_*` in
 `crates/ferric-gw/tests/validation_gw.rs`, and `u_g0w0_uks_*` in
 `crates/ferric-gw/tests/validation_gw_defaults.rs`.
 
-> **Verified equation 19.5** · the kernel identity and the product rule
+> **Verified equation {#eq:gw-sigma-c-product-rule}** · the kernel identity and the product rule
 >
 > The kernel identity $a/(a^2+u'^2)\,du' = \tfrac i2[1/(x-x_1)-1/(x-x_2)]\,dx$
 > holds for $u' = u_0(1+x)/(1-x)$, and a port of the product rule with its
-> Cauchy integral reproduces the closed form of box 19.4 for a single-pole $W$
+> Cauchy integral reproduces the closed form of box @eq:gw-sigma-c-closed-form for a single-pole $W$
 > at 40 nodes, including a state 0.015 Ha from $\epsilon_F$.
 >
 > | | |
@@ -231,22 +231,22 @@ sum. The tests are `sigma::tests::product_rule_*`, `u_g0w0_uks_pbe_*` in
 >
 > <!-- verified: id=gw.sigma-c.product-rule; script=scripts/gw_self_energy_sympy.py; claim=2b; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-gw/src/sigma.rs::sigma_c_at_z_product; rust_test=ferric-gw/src/sigma.rs::product_rule_converges_where_the_plain_quadrature_cannot; registry=gw -->
 
-## 19.3.3 The algorithm
+## The algorithm {#correlation-self-energy-algorithm}
 
 | Step | Quantity | Cost | Function |
 |---|---|---|---|
-| 1 | $B$, $\Sigma^x$, $B^\xi$, $\tilde W_d(iu_k)$ | sections 19.1 and 19.2 | `run_gw` |
+| 1 | $B$, $\Sigma^x$, $B^\xi$, $\tilde W_d(iu_k)$ | sections @sec:ri-factors-and-exchange and @sec:screened-interaction | `run_gw` |
 | 2 | the Fermi level, the mid-gap $\epsilon_F$ of the active spectrum | $O(1)$ | `fermi_level` |
 | 3 | per state $p$ (independent, parallel over states): $W_{pq}(iu_k)$ for all $q$, $k$ | $n_{\rm quad}$ GEMMs | `screened_elements` |
-| 4 | $\Sigma^c_p$ at each continuation node $z = \epsilon_F + iu$ (section 19.5) | $n_{\rm nodes}\,n_{\rm act}\,n_{\rm quad}$ | `sigma_c_at_z_product` |
-| 5 | continuation and the quasiparticle root (section 19.5) | $O(n_{\rm nodes})$ per Newton step | `solve_qp_for_mo` |
+| 4 | $\Sigma^c_p$ at each continuation node $z = \epsilon_F + iu$ (section @sec:continuation-and-qp-equation) | $n_{\rm nodes}\,n_{\rm act}\,n_{\rm quad}$ | `sigma_c_at_z_product` |
+| 5 | continuation and the quasiparticle root (section @sec:continuation-and-qp-equation) | $O(n_{\rm nodes})$ per Newton step | `solve_qp_for_mo` |
 
 The per-state sweep takes a soft scratch charge from the memory pool
 (`charge_qp_sweep_scratch`). When the pool refuses it, the sweep runs
 serially instead. GEMM and the Newton work are scalar-sized, so the sweep is
 deterministic in the thread count up to the last bits of BLAS summation order.
 
-## 19.3.4 Numerical anchors
+## Numerical anchors {#correlation-self-energy-numerical-anchors}
 
 From `site/src/reference/validation.md` (the `gw` row and the G0W0 rows of its
 anchors table), at matched settings `n_quad = 100` and `trunc_thresh = 0`:
@@ -260,10 +260,10 @@ anchors table), at matched settings `n_quad = 100` and `trunc_thresh = 0`:
 
 The grade is Proven (narrow). Narrow means: states far from $\epsilon_F$ with
 split spectral weight are limited by the analytic continuation (section
-19.5), and the defaults (`n_quad = 40`, `trunc_thresh = 1e-4`) are coarser
+@sec:continuation-and-qp-equation), and the defaults (`n_quad = 40`, `trunc_thresh = 1e-4`) are coarser
 than the matched settings, within 10 meV for HOMO and LUMO.
 
-## 19.3.5 Sources
+## Sources {#correlation-self-energy-sources}
 
 | Source | What it gives |
 |---|---|

@@ -1,12 +1,12 @@
-# 16.4 EOM-CCSD singlet excitation energies
+# EOM-CCSD singlet excitation energies {#eom-ccsd}
 
-<!-- section: 16.4; status: ready; registry: eom-ccsd;
+<!-- status: ready; registry: eom-ccsd;
      theory: crates/ferric-cc/theory.md#"EE-EOM-CCSD singlets, closed shell" -->
 
 An excited state differs from the ground state mostly by one electron
 promoted, but the other electrons stay correlated around it. Equation-of-motion
 CCSD keeps the converged ground-state correlation $e^{\hat T}$ of section
-16.2 and applies a linear excitation operator on top, so the excitation
+@sec:closed-shell-ccsd and applies a linear excitation operator on top, so the excitation
 energies are eigenvalues of the similarity-transformed Hamiltonian
 $\bar H = e^{-\hat T}\hat He^{\hat T}$ in the space of singles and doubles.
 That matrix is also the derivative of the CC residual, so EOM-CCSD is the
@@ -15,7 +15,7 @@ eigensolver is a non-symmetric Davidson, and ferric computes singlet roots
 of a closed-shell reference, right eigenvectors only.
 
 The section has three parts: the eigenvalue problem and its two limits
-(16.4.1), the solver (16.4.2) and its options (16.4.3).
+(@sec:eom-ccsd-equations), the solver (@sec:eom-ccsd-algorithm) and its options (@sec:eom-ccsd-options).
 
 | Index | Range | Code name |
 |---|---|---|
@@ -29,7 +29,7 @@ The section has three parts: the eigenvalue problem and its two limits
 | CLI | `method.kind = "eom-ccsd"` with `[eom]` (`examples/water-eom-ccsd.toml`) |
 | Python | `run_eom_ccsd` |
 
-## 16.4.1 The equations
+## The equations {#eom-ccsd-equations}
 
 **The eigenvalue problem.** Write the excited state as
 $|\Psi_k\rangle = \hat R_k e^{\hat T}|\Phi_0\rangle$, with $\hat R_k$ a
@@ -69,10 +69,10 @@ identity makes the method checkable without diagrams. The prototype
 Jacobian by a 5-point central difference, which is exact for the quartic
 $\Omega$.
 
-> **Verified equation 16.6** · $\bar H - E_{CC}$ is the CC Jacobian
+> **Verified equation {#eq:cc-eom-jacobian}** · $\bar H - E_{CC}$ is the CC Jacobian
 >
 > On a ten-spin-orbital model, CCSD is converged with the residual of
-> section 16.1, $e^{-\hat T}\hat He^{\hat T}$ is built as a $1024\times1024$
+> section @sec:ccd-ccsd-spin-orbital, $e^{-\hat T}\hat He^{\hat T}$ is built as a $1024\times1024$
 > matrix from Jordan–Wigner operators, and its block on the singles and
 > doubles determinants minus $E_{CC}$ equals the 5-point central-difference
 > Jacobian of the residual. The stencil is exact for a quartic residual, so
@@ -150,7 +150,7 @@ with $r_2^{(ab)}$ the vector with $a,b$ swapped.
 The function returns the singles weight $2\|r_1\|^2/\|R\|^2$ and the factor
 that scales $R$ to unit norm.
 
-> **Verified equation 16.7** · the CIS limit and the spin-summed norm
+> **Verified equation {#eq:cc-eom-cis-limit}** · the CIS limit and the spin-summed norm
 >
 > At $t = 0$ the singlet singles block of the brute-force $\bar H$ is
 > $\delta_{ij}\delta_{ab}(\varepsilon_a - \varepsilon_i) + 2(ia|jb) - (ij|ab)$.
@@ -174,11 +174,11 @@ transcription of PySCF `eom_rccsd`; the comparison with PySCF in the anchors
 below (`tests/validation_eom_ccsd.rs`) and the CIS block at $t=0$
 (`tests/eom_ccsd_anchors.rs`) are their evidence.
 
-## 16.4.2 The algorithm
+## The algorithm {#eom-ccsd-algorithm}
 
 | Step | Quantity | Cost | Function |
 |---|---|---|---|
-| 1 | converged spin-adapted CCSD (section 16.2) | | `ccsd_closed_shell` |
+| 1 | converged spin-adapted CCSD (section @sec:closed-shell-ccsd) | | `ccsd_closed_shell` |
 | 2 | dressed intermediates $F$, $W$ from $t_1, t_2$, once | $n_o^2n_v^4$ (ladder) | `intermediates` |
 | 3 | memory plan for the subspace and the ladder route | | `eom_memory_plan` |
 | 4 | per product: $\sigma = (\bar H - E_{CC})R$, doubles symmetrized | $n_o^2n_v^4$ | `sigma` |
@@ -206,7 +206,7 @@ The particle–particle ladder of the product takes the same dense or RI route
 as the CCSD ladder (`EomCcsdResult::ladder_route`). Each returned vector is
 scaled to unit spin-summed norm, and `singles_weight` is $2\|r_1\|^2/\|R\|^2$.
 
-## 16.4.3 Options
+## Options {#eom-ccsd-options}
 
 | Option | Values | Default | Effect |
 |---|---|---|---|
@@ -220,7 +220,7 @@ The residual threshold bounds the eigenvalue error only to first order in
 the residual, since $\bar H$ is not symmetric. For a symmetric matrix the
 eigenvalue error would be second order in $\|r\|$.
 
-## 16.4.4 Numerical anchors
+## Numerical anchors {#eom-ccsd-numerical-anchors}
 
 | Quantity | Systems | Error | Test |
 |---|---|---|---|
@@ -229,7 +229,7 @@ eigenvalue error would be second order in $\|r\|$.
 | $t = 0$ singles block vs CIS | | $3.6\times10^{-14}$ Ha | `crates/ferric-cc/tests/eom_ccsd_anchors.rs` |
 | dense $\bar H$ vs Davidson | | $\le 1.0\times10^{-12}$ Ha | `crates/ferric-cc/tests/eom_ccsd_anchors.rs` |
 
-## 16.4.5 Sources
+## Sources {#eom-ccsd-sources}
 
 | Source | What it gives |
 |---|---|

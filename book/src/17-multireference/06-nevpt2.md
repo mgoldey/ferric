@@ -1,12 +1,12 @@
-# 17.6 SC-NEVPT2
+# SC-NEVPT2 {#nevpt2}
 
-<!-- section: 17.6; status: ready; registry: nevpt2;
+<!-- status: ready; registry: nevpt2;
      theory: crates/ferric-ci/theory.md#"SC-NEVPT2 (`src/nevpt2.rs`)" -->
 
 A CASSCF wavefunction gets the near-degenerate configurations right, but
 every electron outside the active space stays in a fixed core or virtual
 orbital, so the short-range avoidance that MP2 describes for a single
-determinant (chapter 10) is missing. Strongly contracted NEVPT2 adds it by
+determinant (chapter @sec:mp2) is missing. Strongly contracted NEVPT2 adds it by
 second-order perturbation theory on top of the CAS root. Its zeroth-order
 Hamiltonian is Dyall's, which treats the core and virtual electrons with
 orbital energies but keeps the full two-electron interaction inside the
@@ -28,7 +28,7 @@ denominator.
 | CLI | `method.kind = "nevpt2"` with `[cas]` (`examples/n2-nevpt2.toml`); `[cas] reference = "casscf"` (default) or `"casci"` |
 | Python | `run_nevpt2(reference=)` |
 
-## 17.6.1 The method
+## The method {#nevpt2-method}
 
 This is strongly contracted NEVPT2 of Angeli, Cimiraglia and Malrieu, JCP
 117, 9138 (2002), on one CAS root. The definitions, conventions and the
@@ -49,8 +49,8 @@ $$
 
 An electron in a core or virtual orbital contributes its orbital energy and
 nothing else. $H_\text{act}$ is the active-space Hamiltonian of section
-17.1.2, with $F^I$ as the one-electron part and the two-electron term in
-the form of section 17.3.1. So $H_D$ acting on $\Psi_0$, whose core is
+@sec:determinants-hamiltonian, with $F^I$ as the one-electron part and the two-electron term in
+the form of section @sec:direct-sigma-davidson-split. So $H_D$ acting on $\Psi_0$, whose core is
 full and virtuals empty, gives the CAS-CI problem back: $\Psi_0$ is an
 eigenfunction with eigenvalue $E_0$ in the active part. This holds only if
 $\Psi_0$ is an exact CI root, which is why the residual is checked below.
@@ -115,7 +115,7 @@ one, `Sij` adds two, `Srsi`, `Sr` remove one and `Srs` removes two.
 
 $F^I = h + J[D^c] - \tfrac12 K[D^c]$ with $D^c = 2C_cC_c^\mathsf{T}$, and
 $F = F^I + F^A$ with $F^A$ from $D^a = C_a\gamma C_a^\mathsf{T}$, as in
-section 17.5. The core and virtual orbitals are the eigenvectors of the core
+section @sec:casscf. The core and virtual orbitals are the eigenvectors of the core
 and virtual blocks of $F$, and $\varepsilon$ their eigenvalues. This is
 PySCF `mcscf.CASCI.canonicalize`, which `mrpt.NEVPT` calls (derivation,
 "Orbitals"). The active orbitals are used as given: every active index is
@@ -141,7 +141,7 @@ $(aa|aa)$. The module evaluates them with the factorization of PySCF
 `make_a9`, `make_a12`, `make_a13`), transcribed spec for spec into an
 `einsum` over owned arrays.
 
-The RDM inputs are PySCF's (section 17.4.2): the E-product
+The RDM inputs are PySCF's (section @sec:rdms-nevpt-rdms): the E-product
 $\langle E_{pq}E_{rs}\rangle$ and $\langle E_{pq}E_{rs}E_{tu}\rangle$ (from
 the normal-ordered ones by `rdm3::e_product_rdms`, the inverse of the
 reordering there), the hole RDMs, and $f^\text{ca}$, $f^\text{ac}$. In
@@ -174,7 +174,7 @@ The notation below is the code's: $\gamma$ = `dm1`; $G_2$, $G_3$ = `dm2`,
 `dm3` of `Inputs`, the E-product RDMs $\langle E_{pq}E_{rs}\rangle$ and
 $\langle E_{pq}E_{rs}E_{tu}\rangle$; $\bar\gamma$, $\bar G_2$, $\bar G_3$
 the hole RDMs; $f^{ca}$, $f^{ac}$ the $(aa|aa)$-contracted 4-RDMs of section
-17.4.2; $h$ = `h1e` $= F^I_{\rm act}$ and $g_{pqrs}$ = `h2e` $= (pr|qs)$
+@sec:rdms-nevpt-rdms; $h$ = `h1e` $= F^I_{\rm act}$ and $g_{pqrs}$ = `h2e` $= (pr|qs)$
 over active orbitals; $i, j$ core, $r, s$ virtual, every other index
 active. Specs are `einsum` strings over the named operands; a sum without a
 repeated label is a product.
@@ -205,7 +205,7 @@ $V^1_{rpiq} = (ri|pq)$, $V^2_{rqpi} = (rp|iq)$, $h^{\rm ir}_{ri} = F^I_{ri}$.
 the active part of each label is $\Psi_0$ itself, so $K_l = 0$. The class
 is the direct sum
 $\sum_{irjs} v\theta/(\varepsilon_i + \varepsilon_j - \varepsilon_r - \varepsilon_s)$,
-with no $|N_l|$ test, which is equation (10.3) restricted to core-to-virtual
+with no $|N_l|$ test, which is equation (@eq:closed-shell-ri-mp2-3) restricted to core-to-virtual
 excitations. `ferric-ci/src/nevpt2.rs::sijrs` is that loop:
 
 ```rust
@@ -215,7 +215,7 @@ norm += v * theta;                                                      // Σ N_
 e += v * theta / (x.eps_c[i] + x.eps_c[j] - x.eps_v[a] - x.eps_v[bb]); // vθ/(ε_i + ε_j − ε_r − ε_s)
 ```
 
-Here `a` and `bb` are the virtual indices $r$ and $s$. As in section 10.1,
+Here `a` and `bb` are the virtual indices $r$ and $s$. As in section @sec:closed-shell-ri-mp2,
 the denominator is negative and carries the sign.
 
 **Hole-type inputs of `Si`.** $G^h_3 = 2\,G_2\otimes\delta$
@@ -287,7 +287,7 @@ $\langle\Psi_0|H|\Psi_0\rangle = E_{\rm core} + E_0$ and
 $\sum_l N_l = |QH\Psi_0|^2$ as anchors. Its recorded mutations are in
 `crates/ferric-python/tests/test_derivation_scripts.py`.
 
-> **Verified equation 17.6** · the eight class energies
+> **Verified equation {#eq:ci-nevpt2-classes}** · the eight class energies
 >
 > On a CAS(4,4) model (two core, four active, two virtual orbitals, random
 > positive semidefinite $(pq|rs)$, core and virtual orbitals canonical in
@@ -313,7 +313,7 @@ $\sum_l N_l = |QH\Psi_0|^2$ as anchors. Its recorded mutations are in
 >
 > <!-- verified: id=ci.nevpt2.classes; script=scripts/nevpt2_sympy.py; claim=C; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-ci/src/nevpt2.rs::{sr,si,sijrs,sijr,srsi,srs,sij,sir,norm_to_energy}; rust_test=ferric-ci/tests/nevpt2.rs::matches_prototype_h2o_cas44; registry=nevpt2 -->
 
-> **Verified equation 17.7** · the RDM inputs
+> **Verified equation {#eq:ci-nevpt2-rdms}** · the RDM inputs
 >
 > On the same model's CI vector, each input of the class formulas by two
 > routes: the normal-ordered 1- to 3-RDMs (Gram matrices of annihilated
@@ -339,7 +339,7 @@ The proof checks the factorization against the definition on a model; the
 Rust tests below check the Rust code against the numpy prototype's Wick
 construction and against PySCF on molecules.
 
-## 17.6.2 The algorithm
+## The algorithm {#nevpt2-algorithm}
 
 | Step | Quantity | Function |
 |---|---|---|
@@ -353,7 +353,7 @@ The memory of the AO block, the MO blocks, twelve $n_a^6$ intermediates and
 the per-label tensors is reserved through one memory plan before the AO
 block is built.
 
-## 17.6.3 Numerical anchors
+## Numerical anchors {#nevpt2-numerical-anchors}
 
 | Quantity | Systems | Error | Test |
 |---|---|---|---|
@@ -375,7 +375,7 @@ energies; inside a degenerate group of core or virtual orbitals the pair
 classes depend on the eigenvectors chosen, which moves N2's `Srs` by up to
 $1.7\times10^{-7}$ Ha between codes.
 
-## 17.6.4 Sources
+## Sources {#nevpt2-sources}
 
 | Source | What it gives |
 |---|---|

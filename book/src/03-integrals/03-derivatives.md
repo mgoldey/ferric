@@ -1,6 +1,6 @@
-# 3.3 Derivative integrals and buffer sizing
+# Derivative integrals and buffer sizing {#integrals-derivatives}
 
-<!-- section: 3.3; status: edit; registry: none;
+<!-- status: edit; registry: none;
      theory: crates/ferric-integrals/theory.md#"Derivative integrals and buffer sizing" -->
 
 A force on a nucleus is the derivative of the energy with respect to that
@@ -39,7 +39,7 @@ functions of $l + 1$ and $l - 1$ with the same exponent. So a derivative
 integral costs one higher angular momentum, and an engine that can do the
 integral at $l+1$ can do its derivative. For an $s$ function ($l = 0$) only
 the raised term survives: the derivative of a $1s$ function is a $p$
-function. Section 3.5 uses this formula directly for the ECP derivatives.
+function. Section @sec:ecp uses this formula directly for the ECP derivatives.
 
 ### Counting the blocks
 
@@ -109,18 +109,18 @@ $$ \text{index}(i, j) = in - \frac{i(i-1)}{2} + (j - i) = \frac{i(2n - i - 1)}{2
 Check it on $n = 6$ (one-electron overlap, two centres): $(0,0) \to 0$, $(0,5) \to 5$,
 $(1,1) \to 6$, $(2,4) \to 13$, $(5,5) \to 20$, the last of the 21 pairs.
 `deriv2_pair_index` sorts its arguments, so $(j, i)$ gives the same index.
-Section 3.6 uses it to pick the bra–ket blocks $(a, 3 + a)$ of the nuclear
+Section @sec:pvp-x2c uses it to pick the bra–ket blocks $(a, 3 + a)$ of the nuclear
 second derivative.
 
-## 3.3.1 Translational invariance in practice
+## Translational invariance in practice {#integrals-derivatives-translational-invariance-practice}
 
 The derivatives with respect to all centres of one integral sum to zero. A
 gradient code can use that to skip one centre's block and recover it as minus
 the sum of the others, and the ECP derivative does this
-(section 3.5). The engines still return every centre, and a code that skips
+(section @sec:ecp). The engines still return every centre, and a code that skips
 one must not assume a smaller buffer.
 
-## 3.3.2 Numerical anchors
+## Numerical anchors {#integrals-derivatives-numerical-anchors}
 
 | What | Test | Bar |
 |---|---|---|
@@ -137,4 +137,4 @@ differences in the files above.
 ## Sources
 
 - T. Helgaker and P. R. Taylor, in *Modern Electronic Structure Theory*,
-  edited by D. R. Yarkony (World Scientific, 1995), part II, chapter 12.
+  edited by D. R. Yarkony (World Scientific, 1995), part II, chapter @sec:oo-laplace.

@@ -1,10 +1,10 @@
-# 26.4 The two formulations in the code
+# The two formulations in the code {#two-formulations}
 
-<!-- section: 26.4; status: ready; registry: rs-mp2-rpa, u-rs-mp2-rpa;
+<!-- status: ready; registry: rs-mp2-rpa, u-rs-mp2-rpa;
      theory: crates/ferric-rpa/theory.md#"Range-separated MP2 + RPA", "Open-shell SR-MP2 + LR-RPA" -->
 
 `rs_mp2_lr_rpa` evaluates one of two energies. Both keep full-Coulomb MP2
-and add dRPA brackets that start at third order (section 26.1.3). They differ
+and add dRPA brackets that start at third order (section @sec:cross-term-rule). They differ
 in which ring diagrams beyond second order they keep.
 
 | Entry point | Location |
@@ -13,42 +13,42 @@ in which ring diagrams beyond second order they keep.
 | CLI | `method.kind = "rs-mp2-rpa"` with `[mp2] formulation`, `omega`, `attenuator`, `r0`, `terf_omega`, `frozen_core`, `auxbasis` (`examples/water-rs-mp2-rpa.toml`) |
 | Python | `run_rs_mp2_rpa(mol, basis_set, auxbasis, omega=, formulation=, attenuator=, r0=, terf_omega=, frozen_core=)` |
 
-## 26.4.1 The energies
+## The energies {#two-formulations-energies}
 
-With the components (26.1) and $\Delta E_{\mathrm{dRPA}}[v] = E_{\mathrm{dRPA}}[v] - 2E_{\mathrm{OS}}[v]$,
+With the components (@eq:cross-term-1) and $\Delta E_{\mathrm{dRPA}}[v] = E_{\mathrm{dRPA}}[v] - 2E_{\mathrm{OS}}[v]$,
 
-$$ E^{\mathrm B}_c = E_{\mathrm{MP2}}[\mathrm C] + \Delta E_{\mathrm{dRPA}}[\mathrm{lr}] \qquad (\texttt{delta-lr}, \text{ default}), \tag{26.7} $$
+$$ E^{\mathrm B}_c = E_{\mathrm{MP2}}[\mathrm C] + \Delta E_{\mathrm{dRPA}}[\mathrm{lr}] \qquad (\texttt{delta-lr}, \text{ default}), \label{eq:two-formulations-1} $$
 
-$$ E^{\mathrm T}_c = E_{\mathrm{MP2}}[\mathrm C] + \Delta E_{\mathrm{dRPA}}[\mathrm C] - \Delta E_{\mathrm{dRPA}}[\mathrm{sr}] \qquad (\texttt{coupled-rings}). \tag{26.8} $$
+$$ E^{\mathrm T}_c = E_{\mathrm{MP2}}[\mathrm C] + \Delta E_{\mathrm{dRPA}}[\mathrm C] - \Delta E_{\mathrm{dRPA}}[\mathrm{sr}] \qquad (\texttt{coupled-rings}). \label{eq:two-formulations-2} $$
 
 B replaces the long-range direct rings of MP2 with their dRPA resummation.
 T screens every ring with the full operator and then removes the screening
 from the purely short-range rings. Each $E_{\mathrm{dRPA}}$ is a full-rank
-PDEP evaluation (section 18.3, `trunc_thresh` 0 by default) on the same
+PDEP evaluation (section @sec:pdep, `trunc_thresh` @sec:notation by default) on the same
 fitted integrals as the MP2 components of the same operator.
 
 Scaling every integral by $\lambda$, both energies have second-order term
 $E_{\mathrm{MP2}}[\mathrm C]$ (exchange and the cross term $X$ included). At
-third order, from (26.3),
+third order, from (@eq:cross-term-3),
 
-$$ E^{\mathrm B\,(3)}_c = E^{(3)}_{\mathrm{dRPA}}[\mathrm{lr}], \qquad E^{\mathrm T\,(3)}_c = E^{(3)}_{\mathrm{dRPA}}[\mathrm C] - E^{(3)}_{\mathrm{dRPA}}[\mathrm{sr}] . \tag{26.9} $$
+$$ E^{\mathrm B\,(3)}_c = E^{(3)}_{\mathrm{dRPA}}[\mathrm{lr}], \qquad E^{\mathrm T\,(3)}_c = E^{(3)}_{\mathrm{dRPA}}[\mathrm C] - E^{(3)}_{\mathrm{dRPA}}[\mathrm{sr}] . \label{eq:rsrpa-forms-orders} $$
 
-In one mode, $k = k_s + k_l$ and (26.5),
+In one mode, $k = k_s + k_l$ and (@eq:rsrpa-one-mode-series),
 
-$$ E^{\mathrm T\,(3)}_c - E^{\mathrm B\,(3)}_c = \frac{(k_s + k_l)^3 - k_s^3 - k_l^3}{4\Delta^2} = \frac{3k_sk_l(k_s + k_l)}{4\Delta^2} : \tag{26.10} $$
+$$ E^{\mathrm T\,(3)}_c - E^{\mathrm B\,(3)}_c = \frac{(k_s + k_l)^3 - k_s^3 - k_l^3}{4\Delta^2} = \frac{3k_sk_l(k_s + k_l)}{4\Delta^2} : \label{eq:rsrpa-forms-one-mode} $$
 
 the third-order rings with both short- and long-range interactions, which T
 keeps and B drops. Neither formulation keeps the purely short-range rings
 beyond second order.
 
-> **Verified equation 26.9** · second order is full MP2; the third-order rings of each formulation
+> **Verified equation @eq:rsrpa-forms-orders** · second order is full MP2; the third-order rings of each formulation
 >
-> On the many-mode model of section 26.1 with $\mathbf K_{\mathrm C} = \mathbf K_{\mathrm{sr}} + \mathbf K_{\mathrm{lr}}$,
-> the $\lambda^2$ Taylor coefficients of the transcribed (26.7) and (26.8),
+> On the many-mode model of section @sec:cross-term with $\mathbf K_{\mathrm C} = \mathbf K_{\mathrm{sr}} + \mathbf K_{\mathrm{lr}}$,
+> the $\lambda^2$ Taylor coefficients of the transcribed (@eq:two-formulations-1) and (@eq:two-formulations-2),
 > taken by a Cauchy integral of the plasmon energy, equal
 > $E_{\mathrm{MP2}}[\mathrm C]$ to $10^{-12}$ relative; the $\lambda^3$
 > coefficients equal $E^{(3)}[\mathrm{lr}]$ and $E^{(3)}[\mathrm C] - E^{(3)}[\mathrm{sr}]$
-> from the ring recursion (26.3) to $10^{-11}$, and their difference is not
+> from the ring recursion (@eq:cross-term-3) to $10^{-11}$, and their difference is not
 > zero.
 >
 > | | |
@@ -61,9 +61,9 @@ beyond second order.
 >
 > <!-- verified: id=rsrpa.forms.orders; script=scripts/rpa_rs_mp2_rpa_sympy.py; claim=b-form-second-order; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-rpa/src/rs_mp2_rpa.rs::rs_mp2_lr_rpa; rust_test=ferric-rpa/tests/validation_rs_mp2_rpa_pyscf.rs::rs_mp2_rpa_h2o_cc_pvdz_vs_pyscf; registry=rs-mp2-rpa -->
 
-> **Verified equation 26.10** · the mixed rings in one mode
+> **Verified equation @eq:rsrpa-forms-one-mode** · the mixed rings in one mode
 >
-> With $E_{\mathrm{dRPA}}(k)$ of (26.5), the $\lambda^3$ term of B is
+> With $E_{\mathrm{dRPA}}(k)$ of (@eq:rsrpa-one-mode-series), the $\lambda^3$ term of B is
 > $k_l^3/(4\Delta^2)$, that of T is $\big((k_s + k_l)^3 - k_s^3\big)/(4\Delta^2)$,
 > and T − B is $3k_sk_l(k_s + k_l)/(4\Delta^2)$, symbolically.
 >
@@ -75,7 +75,7 @@ beyond second order.
 >
 > <!-- verified: id=rsrpa.forms.one-mode; script=scripts/rpa_rs_mp2_rpa_sympy.py; claim=one-mode-t-minus-b; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-rpa/src/rs_mp2_rpa.rs::RsMp2RpaFormulation; registry=rs-mp2-rpa -->
 
-## 26.4.2 The limits
+## The limits {#two-formulations-limits}
 
 As $\omega \to 0$ the erf operator vanishes: $v_{\mathrm{lr}} = 0$ and
 $v_{\mathrm{sr}} = 1/r$. Then $\Delta E_{\mathrm{dRPA}}[\mathrm{lr}] = 0$ in
@@ -104,7 +104,7 @@ $r_0$ gives MP2 and a small $r_0$ gives MP2 + ΔdRPA.
 >
 > <!-- verified: id=rsrpa.forms.limits; script=scripts/rpa_rs_mp2_rpa_sympy.py; claim=omega-to-infinity; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-rpa/src/rs_mp2_rpa.rs::rs_mp2_lr_rpa; rust_test=ferric-rpa/src/rs_mp2_rpa.rs::omega_to_infinity_is_mp2_plus_delta_drpa; registry=rs-mp2-rpa -->
 
-## 26.4.3 In the code
+## In the code {#two-formulations-code}
 
 The `match cfg.formulation` of `rs_mp2_lr_rpa`, from the
 `coupled-rings` arm (quoted, not a checked excerpt):
@@ -131,7 +131,7 @@ let e_corr = sc_full.e_total + drpa_lr.e_rpa - e_dmp2_lr;
 Every call computes the MP2 components of all three operators, so the
 result always carries `e_mp2_full`, `e_sr_mp2`, `e_lr_mp2` and
 `e_dmp2_lr` $= 2E_{\mathrm{OS}}[\mathrm{lr}]$. B adds `e_drpa_lr` and the
-diagnostic `e_corr_naive` (26.6); T adds `e_delta_drpa_full` and
+diagnostic `e_corr_naive` (@eq:cross-term-6); T adds `e_delta_drpa_full` and
 `e_delta_drpa_sr`. B makes one dRPA evaluation, T two.
 
 **RI.** Each operator is fitted in its own metric: Cholesky for Coulomb and
@@ -139,26 +139,26 @@ erfc (and terfc), a symmetric $V^{-1/2}$ by eigendecomposition with modes
 below $10^{-10}$ dropped for erf and terf (`ferric-mp2/src/rimp2.rs::metric_inverse_sqrt`).
 The fitted $(ia|jb)_{\mathrm C}$ is therefore not exactly
 $(ia|jb)_{\mathrm{sr}} + (ia|jb)_{\mathrm{lr}}$. Second order is unaffected:
-each bracket of (26.7) and (26.8) uses one operator's integrals, so it
-starts at third order for any fit. The decomposition (26.9)–(26.10), which
+each bracket of (@eq:two-formulations-1) and (@eq:two-formulations-2) uses one operator's integrals, so it
+starts at third order for any fit. The decomposition (@eq:rsrpa-forms-orders)–(@eq:rsrpa-forms-one-mode), which
 compares operators, holds up to the fitting differences.
 
-## 26.4.4 Options
+## Options {#two-formulations-options}
 
 | Option | Values | Default | Effect |
 |---|---|---|---|
-| `formulation` | `"delta-lr"`, `"coupled-rings"` | `"delta-lr"` | (26.7) or (26.8) |
+| `formulation` | `"delta-lr"`, `"coupled-rings"` | `"delta-lr"` | (@eq:two-formulations-1) or (@eq:two-formulations-2) |
 | `omega` | positive, Å⁻¹ at the CLI and Python (Bohr⁻¹ in Rust) | 0.420 Å⁻¹ = 0.222 Bohr⁻¹ | erf/erfc split; ignored with terf |
 | `attenuator` | `"erf"`, `"terf"` | `"erf"` | operator shape; terf needs the interpolation tables (`FERRIC_TERF_TABLE_DIR`) |
 | `r0` | positive, Å (Bohr in Rust) | 3.18 Bohr, so that $1/(r_0\sqrt2) \approx 0.222$ Bohr⁻¹ | terf length |
 | `terf_omega` | positive, Å⁻¹ | unset: $\omega = 1/(r_0\sqrt2)$ | terf sharpness decoupled from $r_0$ |
 | `frozen_core` | integer | 0 | applied to every MP2 and dRPA call |
 
-The dRPA solver and quadrature knobs are those of `pdep-rpa` (section 18.3);
+The dRPA solver and quadrature knobs are those of `pdep-rpa` (section @sec:pdep);
 the default here is full rank. The choice of $\omega$ is not benchmarked, and
 the CLI prints a notice saying so.
 
-## 26.4.5 Anchors
+## Anchors {#two-formulations-anchors}
 
 From `site/src/reference/validation.md` (rs-mp2-rpa is graded Proven):
 
@@ -178,7 +178,7 @@ The terf split is checked by its limits only.
 - Closed-shell RHF reference only; energy only, no gradient.
 - No benchmark selects $\omega$ or $r_0$; the terf arm has no reference
   beyond its limits.
-- The fusion test of section 26.6 covers `coupled-rings` only.
+- The fusion test of section @sec:shared-intermediates covers `coupled-rings` only.
 
 ## Open shell
 
@@ -203,12 +203,12 @@ is closed shell only.
 
 | Source | Used for |
 |---|---|
-| `crates/ferric-rpa/theory.md`, "Range-separated MP2 + RPA" | (26.7)–(26.10), the limits |
+| `crates/ferric-rpa/theory.md`, "Range-separated MP2 + RPA" | (@eq:two-formulations-1)–(@eq:rsrpa-forms-one-mode), the limits |
 | `crates/ferric-rpa/theory.md`, "Open-shell SR-MP2 + LR-RPA" | the open-shell $d$ |
-| `crates/ferric-rpa/src/rs_mp2_rpa.rs` (the `match` arms, `RsMp2RpaConfig`, `RsMp2RpaResult`) | 26.4.3, 26.4.4 |
+| `crates/ferric-rpa/src/rs_mp2_rpa.rs` (the `match` arms, `RsMp2RpaConfig`, `RsMp2RpaResult`) | @sec:two-formulations-code, @sec:two-formulations-options |
 | `crates/ferric-mp2/src/rimp2.rs::metric_inverse_sqrt` | the RI paragraph |
 | `scripts/rpa_rs_mp2_rpa_sympy.py` | the verified boxes |
-| `site/src/reference/validation.md` | 26.4.5 |
+| `site/src/reference/validation.md` | @sec:two-formulations-anchors |
 
 Changes from the sources: `theory.md` writes the denominator as the negative
-$D$; this section uses $\Delta$ (section 26.1).
+$D$; this section uses $\Delta$ (section @sec:cross-term).

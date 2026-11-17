@@ -1,6 +1,6 @@
-# 9.2 Radial and angular grids, the Becke partition, pruning
+# Radial and angular grids, the Becke partition, pruning {#grids}
 
-<!-- section: 9.2; status: ready; registry: ks-grid;
+<!-- status: ready; registry: ks-grid;
      theory: crates/ferric-dft/theory.md#"Integration Grid" "Becke partition and its nuclear derivative" -->
 
 The XC energy is an integral over all space of a function of the density,
@@ -14,11 +14,11 @@ integrates each piece on a spherical grid around that atom.
 The plan:
 
 1. Build one atom's grid: a radial rule times a Lebedev sphere, with the
-   angular order pruned by radius (9.2.1).
+   angular order pruned by radius (@sec:grids-atomic-grid).
 2. Glue the atomic grids together with Becke's fuzzy partition of space
-   (9.2.2).
+   (@sec:grids-becke-partition).
 3. Assemble the molecular grid and drop the points that carry no weight
-   (9.2.3).
+   (@sec:grids-building-molecular-grid).
 
 | Symbol | Meaning | Code name |
 |---|---|---|
@@ -35,11 +35,11 @@ The plan:
 | CLI | `[dft] grid_radial`, `grid_angular`, `grid_prune`, `grid_weight_cut` |
 | Python | the same keywords on `run_dft`, `run_ksdft`, `run_tddft`; `dft_grid_point_count` |
 
-## 9.2.1 The atomic grid
+## The atomic grid {#grids-atomic-grid}
 
 Each atom carries a Treutler–Ahlrichs radial grid times a Lebedev angular
 grid. The atomic grids are combined with the Becke partition weights
-$w^A(\mathbf r)$ of section 9.2.2, so a point on atom $A$ has weight
+$w^A(\mathbf r)$ of section @sec:grids-becke-partition, so a point on atom $A$ has weight
 $w^{\rm rad}_k\,w^\Omega_j\,w^A(\mathbf r)$.
 
 **The radial rule.** We need $\int_0^\infty 4\pi r^2f(r)\,dr$ for an $f$
@@ -75,7 +75,7 @@ The weight is $\sin\theta_k$, not $\sin^2\theta_k$. The $\sin^2\theta_k$
 weight belongs to the Chebyshev rule for $\int f(x)\sqrt{1-x^2}\,dx$, a
 different integral. The verified box below uses it as the negative control.
 
-> **Verified equation 9.2** · the Treutler–Ahlrichs M4 radial rule
+> **Verified equation {#eq:ks-grid-radial}** · the Treutler–Ahlrichs M4 radial rule
 >
 > The loop's $dr/dx$ is the derivative of the M4 map, and the 75-point rule
 > with weight $\tfrac{\pi}{n+1}\sin\theta_k\,|dr/dx|\,4\pi r^2$ integrates
@@ -200,7 +200,7 @@ in `grid::tests::response_default_grid_is_finer_for_meta_gga_only`.
 
 ![The default grid of water's atoms: the radius of each Treutler–Ahlrichs shell and its Lebedev order after pruning, for O (66 shells) and H (50 shells), with the region boundaries in units of the Bragg–Slater radius. Water's pruned grid has 14,060 points against 24,750 flat (weight cut off), 43% fewer; the script checks its transcription of the grid against `ferric.dft_grid_point_count`. Script: `book/src/figures/09-kohn-sham/atomic_grid.py`.](../figures/09-kohn-sham/atomic_grid.svg)
 
-## 9.2.2 The Becke partition
+## The Becke partition {#grids-becke-partition}
 
 A point $\mathbf r$ on atom $A$'s grid also lies near atom $B$. If both
 atomic grids integrated the full integrand, the overlap region would be
@@ -295,7 +295,7 @@ $$ \frac{\partial w_g}{\partial \mathbf{R}_b} = w_rw_l\Bigl[\frac{\partial w^{A}
 The sum rule follows from the invariance above: summing the bracket over
 $b$ gives $\sum_b\partial w^A/\partial\mathbf R_b + \nabla_{\mathbf r}w^A = 0$.
 
-> **Verified equation 9.3** · Becke weights: partition of unity and their nuclear derivative
+> **Verified equation {#eq:ks-grid-becke}** · Becke weights: partition of unity and their nuclear derivative
 >
 > For a three-atom cluster with unequal radii at a generic point, the
 > loop's quotient-rule assembly of $\partial w^A/\partial\mathbf R_C$ equals
@@ -322,7 +322,7 @@ kernel); the KS gradients test the whole chain end to end. The sum rule
 $\sum_b\partial w_g/\partial\mathbf R_b = 0$ for the assembled weight1 rows
 has no direct Rust test; only the KS gradients cover it.
 
-## 9.2.3 Building a molecular grid
+## Building a molecular grid {#grids-building-molecular-grid}
 
 | Step | What | Function |
 |---|---|---|
@@ -342,11 +342,11 @@ negative, so a product that reached $+0.0$ cannot turn into $-0.0$.
 **Reproducibility.** The weight cut is part of the grid: gradients and
 Hessians differentiate the energy on exactly the points the SCF used. The
 Bragg–Slater radii of He, Ne and Ar are ferric's own (0.30, 0.45, 0.71 Å),
-not PySCF's, because the cDFT populations of section 9.7 are defined on them.
+not PySCF's, because the cDFT populations of section @sec:cdft are defined on them.
 A KS energy with those atoms therefore agrees with PySCF only to the grid
 error.
 
-## 9.2.4 Options
+## Options {#grids-options}
 
 | Option | Values | Default |
 |---|---|---|
@@ -357,7 +357,7 @@ error.
 
 The value tables are in `site/src/reference/input.md`.
 
-## 9.2.5 Numerical anchors
+## Numerical anchors {#grids-numerical-anchors}
 
 | Quantity | Value | Source |
 |---|---|---|
@@ -370,7 +370,7 @@ grid the analytic gradient matches finite differences to about $10^{-7}$
 Ha/Bohr. Against another grid the mismatch is the grid error, more than
 $10^3$ times larger.
 
-## 9.2.6 Sources
+## Sources {#grids-sources}
 
 | Source | What it gives |
 |---|---|

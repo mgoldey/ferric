@@ -1,6 +1,6 @@
-# 27.6 Energies, gradients, Hessians and response as labels
+# Energies, gradients, Hessians and response as labels {#training-labels}
 
-<!-- section: 27.6; status: edit;
+<!-- status: edit;
      registry: hf-gradient, ks-gradient, ri-mp2-gradient, rpa-gradient, hf-hessian, ks-hessian, harmonic-frequencies;
      theory: none -->
 
@@ -13,11 +13,11 @@ storage format jitters between nearby geometries. So for each label a
 dataset builder needs to know how ferric computes it, analytically or by
 finite differences, and how much numerical noise it carries.
 
-This section collects that, method by method: energies (27.6.1), forces
-(27.6.2), Hessians (27.6.3) and response properties (27.6.4). Part VI derives
+This section collects that, method by method: energies (@sec:training-labels-energies), forces
+(@sec:training-labels-nuclear-gradients-forces), Hessians (@sec:training-labels-hessians-frequencies) and response properties (@sec:training-labels-response-properties). Part VI derives
 the analytic derivatives; here only their scope and accuracy matter.
 
-## 27.6.1 Energies
+## Energies {#training-labels-energies}
 
 In Python the energy label is the result's energy attribute: `energy` on SCF
 results, `total_energy` on `PdepRpaResult`. In the CLI's JSON run log the
@@ -26,7 +26,7 @@ it holds the SCF reference (`extra.energy_is` says which), and the method's
 total is in a separate `result` record. `pdep-rpa` and some other kinds do
 not write that record yet (`result_unlogged`), so their total is only on
 stdout. It is not in the NPZ. Its trust level is the grade on the
-certificate (section 27.4.3); the grades per `method.kind` are in
+certificate (section @sec:python-cube-provenance-certificate-provenance-label); the grades per `method.kind` are in
 `site/src/reference/validation.md`, "CLI `method.kind` matrix".
 
 How precise is an SCF energy to begin with? ferric estimates its rounding
@@ -39,9 +39,9 @@ energy, and not a gradient floor.
 
 Two defaults move energy labels between nearby geometries by more than that
 floor: f32 RI-J storage on single points (up to about 1e-6 Ha) and the CLI's
-RI-JK reference (section 27.5.2). Fix both for a dataset of geometries.
+RI-JK reference (section @sec:reproducibility-and-grades-precision-convergence-defaults-move). Fix both for a dataset of geometries.
 
-## 27.6.2 Nuclear gradients (forces)
+## Nuclear gradients (forces) {#training-labels-nuclear-gradients-forces}
 
 | Method | Gradient | Agreement | Grade of the gradient |
 |---|---|---|---|
@@ -72,7 +72,7 @@ Two cautions:
   error (`ferric-scf/src/gradient.rs::rhf_gradient`). Counterpoise-style
   datasets get energies only.
 
-## 27.6.3 Hessians and frequencies
+## Hessians and frequencies {#training-labels-hessians-frequencies}
 
 `run_frequencies` (and the CLI `task = "frequencies"`) chooses the Hessian
 construction under `hessian = "auto"`. An analytic Hessian is preferred where
@@ -112,13 +112,13 @@ difference the f32 jitter. With `scf_warm_start=True` the FD Hessian is
 noisier at equal `scf_density_conv`; the docstring asks for a roughly 100×
 tighter density threshold.
 
-## 27.6.4 Response properties
+## Response properties {#training-labels-response-properties}
 
 | Label | Source | Analytic or FD | Status |
 |---|---|---|---|
 | dipole | reference density (`dipole`) | analytic expectation value | exact function of $D$ |
-| static and dynamic α | dRPA on the RHF reference, eq. 27.8 | analytic linear response | `rpa-polarizability-c6` |
-| per-atom α, $\alpha_{\mathrm{CT}}$, $C_6$ | eqs. 27.9–27.12 | analytic | `rpa-polarizability-c6` |
+| static and dynamic α | dRPA on the RHF reference, eq. @eq:polarizability-pdep-c6-1 | analytic linear response | `rpa-polarizability-c6` |
+| per-atom α, $\alpha_{\mathrm{CT}}$, $C_6$ | eqs. @eq:ml-alpha-per-atom-kernel–@eq:ml-c6-cp-quadrature | analytic | `rpa-polarizability-c6` |
 | relaxed RI-MP2 α | `ferric-mp2/src/cpks_polar.rs::mp2_polarizability_analytic`; finite-field `ferric-mp2/src/ff_polar.rs::mp2_polarizability_static` | both, library only | registry gap `mp2-polarizability` |
 | statically screened TDHF α | `run_tdhf_static_polarizability` | analytic | Smoke; statically screened RPAx on an RKS reference, 46% below DOSD for water/cc-pVDZ at a 0.36 Ha scissor (`site/src/reference/validation.md`, "Known limits") |
 

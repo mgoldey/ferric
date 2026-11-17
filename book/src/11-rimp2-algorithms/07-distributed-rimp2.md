@@ -1,7 +1,7 @@
-<!-- section: 11.7; status: verify; registry: ri-mp2;
+<!-- status: verify; registry: ri-mp2;
      theory: none -->
 
-# 11.7 Distributed RI-MP2 by auxiliary bands
+# Distributed RI-MP2 by auxiliary bands {#distributed-rimp2}
 
 | Entry point | Location |
 |---|---|
@@ -16,10 +16,10 @@ dissertation chose shared memory over MPI because the MPI algorithms of
 the time distributed the $B$ matrices "either through duplicated
 computational effort or significant internode communication costs"
 (chapter 4, section 4.1). The code splits the auxiliary index, which is the
-contracted index of equation 11.3: each rank holds a band of $B$, and the
+contracted index of equation @eq:four-step-algorithm-3: each rank holds a band of $B$, and the
 ranks sum partial integrals.
 
-## 11.7.1 The decomposition
+## The decomposition {#distributed-rimp2-decomposition}
 
 `aux_band` splits $[0, N_{\mathrm{aux}})$ into contiguous bands
 $\mathcal{P}_r$, one per rank. With $N_{\mathrm{aux}} = q\,n_r + s$,
@@ -29,15 +29,15 @@ band is empty when there are more ranks than auxiliary functions (tests
 `aux_bands_partition_disjointly_and_cover`, `aux_bands_balanced_within_one`,
 `aux_bands_more_ranks_than_items` in `crates/ferric-core/src/parallel.rs`).
 
-Each rank $r$ builds its band of $B$ with the streamed pass of section 11.2,
+Each rank $r$ builds its band of $B$ with the streamed pass of section @sec:streaming-transform,
 restricted to the output rows $\mathcal{P}_r$. Then for every $i$:
 
-$$ G^{(i,r)}_{a,\,jn_v+b} = \sum_{P \in \mathcal{P}_r} B^P_{ia}\,B^P_{jb}, \qquad G^{(i)} = \sum_r G^{(i,r)}, \tag{11.12} $$
+$$ G^{(i,r)}_{a,\,jn_v+b} = \sum_{P \in \mathcal{P}_r} B^P_{ia}\,B^P_{jb}, \qquad G^{(i)} = \sum_r G^{(i,r)}, \label{eq:rimp2alg-aux-band-decomposition} $$
 
-$$ E_{\mathrm{OS}} = \sum_r \sum_{i \,:\, i \bmod n_r = r}\; \sum_{j} e^{\mathrm{OS}}_{ij}\big[G^{(i)}\big], \tag{11.13} $$
+$$ E_{\mathrm{OS}} = \sum_r \sum_{i \,:\, i \bmod n_r = r}\; \sum_{j} e^{\mathrm{OS}}_{ij}\big[G^{(i)}\big], \label{eq:distributed-rimp2-2} $$
 
 and the same for $E_{\mathrm{SS}}$. $n_r$ is the number of ranks. The sum over
-$r$ in (11.12) is an `MPI_Allreduce` of the whole block, so every rank holds
+$r$ in (@eq:rimp2alg-aux-band-decomposition) is an `MPI_Allreduce` of the whole block, so every rank holds
 the complete $G^{(i)}$. Only the rank with $i \bmod n_r = r$ then evaluates
 the pair energies for that $i$; a final Allreduce adds the per-rank
 $(E_{\mathrm{OS}}, E_{\mathrm{SS}})$.
@@ -51,16 +51,16 @@ and the cross terms are missing from $\sum_r G_r^2$. The band partials must
 be summed before the square. A linear quantity, such as the exchange matrix
 of DF-K, can be reduced after each rank's contraction; this one cannot.
 
-> **Unverified equation 11.12** · the band decomposition
+> **Unverified equation @eq:rimp2alg-aux-band-decomposition** · the band decomposition
 >
 > For a partition of the auxiliary index into bands, the band partials of
-> (11.12) sum to the full-width form of $G^{(i)}$ (equation 11.7 with all $j$), and (11.13) with the complete
+> (@eq:rimp2alg-aux-band-decomposition) sum to the full-width form of $G^{(i)}$ (equation @eq:pair-kernel-1 with all $j$), and (@eq:distributed-rimp2-2) with the complete
 > $G^{(i)}$ equals the serial energy; squaring the partials before the sum
 > does not.
 >
 > | | |
 > |---|---|
-> | Proof | none committed. To add: a claim in `scripts/mp2_variant_identities.py` that splits a random $B$ into bands, checks (11.12) and (11.13) against claim 1's energy, with the square-before-sum negative control. |
+> | Proof | none committed. To add: a claim in `scripts/mp2_variant_identities.py` that splits a random $B$ into bands, checks (@eq:rimp2alg-aux-band-decomposition) and (@eq:distributed-rimp2-2) against claim 1's energy, with the square-before-sum negative control. |
 > | Code tests | `mpi_rimp2_np1_matches_serial_water` in `crates/ferric-mp2/tests/mpi_rimp2_banding.rs`: one rank against `ri_mp2_spin_components`, $E_{\mathrm{corr}}$, $E_{\mathrm{OS}}$ and $E_{\mathrm{SS}}$ each within $10^{-11}$ Ha; `mpi_rimp2_cross_rank_agreement_water` (within $10^{-12}$ Ha across ranks) and its benzene sibling ($10^{-9}$ Ha) under `mpirun` |
 >
 > <!-- unverified: id=rimp2alg.aux-band-decomposition; todo=add band-split claim to scripts/mp2_variant_identities.py -->
@@ -89,7 +89,7 @@ for i in 0..nocc {
 }
 ```
 
-## 11.7.2 Cost and memory per rank
+## Cost and memory per rank {#distributed-rimp2-cost-memory-per-rank}
 
 | Quantity | Per rank |
 |---|---|
@@ -108,7 +108,7 @@ contributes to every band through $M_{PQ}$.
 **GEMM work.** Sum the per-rank GEMM over $i$ and over ranks:
 $\sum_r \sum_i 2 n_o n_v^2 |\mathcal{P}_r| = 2 n_o^2 n_v^2 N_{\mathrm{aux}}$
 flops. The serial kernel does $n_o(n_o+1)\,n_v^2 N_{\mathrm{aux}}$
-(section 11.3.1). The distributed path therefore does $2n_o/(n_o+1)$ times
+(section @sec:pair-kernel-batching-over-occupied-index). The distributed path therefore does $2n_o/(n_o+1)$ times
 the serial GEMM work in total, close to twice, because it forms every $j$,
 not the tail. In exchange every owned $i$ costs the same in the pair loop
 ($n_o n_v^2$ terms), so round-robin ownership is balanced to within one
@@ -131,11 +131,11 @@ physical_cores)` threads, $\max(1, \lfloor \text{physical cores} /
 \text{local ranks}\rfloor)$. The floor keeps ranks times threads at or below
 the physical cores of the node. The band of $B$ is built with
 `stream_dressed_mo_band`, without a budget, so its chunk width is the fixed
-256 of section 11.2.3.
+256 of section @sec:streaming-transform-chunk-width.
 
-## 11.7.3 How it differs from the serial kernel
+## How it differs from the serial kernel {#distributed-rimp2-differs-serial-kernel}
 
-| | Serial (section 11.3) | Distributed |
+| | Serial (section @sec:pair-kernel) | Distributed |
 |---|---|---|
 | $G^{(i)}$ | $j \ge i$ tail | full width, all $j$ |
 | Pair weights | $j \ge i$, off-diagonal weight 2 | all $(i, j)$, weight 1 |
@@ -149,7 +149,7 @@ five shapes ($N_{\mathrm{aux}}$ 40 to 912, $n_o$ 3 to 15, $n_v$ 1 to 393)
 as at most $4.3 \times 10^{-16}$ relative. The test bar of $10^{-11}$ Ha is
 far above that rounding.
 
-## 11.7.4 Known limits (2026-11-15)
+## Known limits (2026-11-15) {#distributed-rimp2-known-limits-2026-11}
 
 - No CLI kind or Python function calls `run_mpi_ri_mp2`; it is reachable from
   Rust with the `mpi` feature only.
@@ -166,7 +166,7 @@ far above that rounding.
 | Source | Used for |
 |---|---|
 | Dissertation, chapter 4, section 4.1 | the 2014 reason for shared memory |
-| `crates/ferric-mp2/src/mpi_rimp2.rs`, module doc, `refuse_unsupported_mpi_config` and `run_mpi_ri_mp2_inner` | equations 11.12 and 11.13, the excerpt, the cost table, the comparison table |
+| `crates/ferric-mp2/src/mpi_rimp2.rs`, module doc, `refuse_unsupported_mpi_config` and `run_mpi_ri_mp2_inner` | equations @eq:rimp2alg-aux-band-decomposition and @eq:distributed-rimp2-2, the excerpt, the cost table, the comparison table |
 | `crates/ferric-core/src/parallel.rs` | the band rule and the threads per rank |
 | `crates/ferric-mp2/tests/mpi_rimp2_banding.rs` | the agreement bars |
 

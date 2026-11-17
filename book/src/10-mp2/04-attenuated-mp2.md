@@ -1,6 +1,6 @@
-# 10.4 Attenuated MP2: erfc and terfc
+# Attenuated MP2: erfc and terfc {#attenuated-mp2}
 
-<!-- section: 10.4; status: edit; registry: attenuated-mp2, u-attenuated-mp2;
+<!-- status: edit; registry: attenuated-mp2, u-attenuated-mp2;
      theory: crates/ferric-mp2/theory.md#"5. Attenuated MP2", "4. Spin-component scaling", "5.1 Open-shell attenuated and spin-scaled MP2" -->
 
 Take two molecules a few ångström apart and compute their MP2 interaction
@@ -20,28 +20,28 @@ J. Phys. Chem. Lett. 3, 3592 (2012); Goldey, Dutoi and Head-Gordon, Phys.
 Chem. Chem. Phys. 15, 15869 (2013); Goldey dissertation, chapters 2 and 3.)
 
 The price: attenuated MP2 has no long-range dispersion at all. Its $C_6$
-coefficients are zero. Section 10.8 adds a model tail back.
+coefficients are zero. Section @sec:mp2-v adds a model tail back.
 
 | Entry point | Location |
 |---|---|
 | Rust (erfc) | `ferric-mp2/src/attenuated.rs::attenuated_ri_mp2` |
 | Rust (terfc) | `ferric-mp2/src/rimp2.rs::ri_mp2` with `Operator::terfc` (`ferric-integrals/src/operator.rs`) |
 | CLI | `method.kind = "att-rimp2"`, `[mp2] att_operator = "erfc"` (default) or `"terfc"` |
-| Python | `run_attenuated_rimp2(omega=)` (erfc); `run_terfc_rimp2(r0=)` (terfc); `run_rimp2(att_operator=, omega=, att_r0=, att_omega=)` for the local MP2 of chapter 13 only (a `ValueError` on the exact method) |
+| Python | `run_attenuated_rimp2(omega=)` (erfc); `run_terfc_rimp2(r0=)` (terfc); `run_rimp2(att_operator=, omega=, att_r0=, att_omega=)` for the local MP2 of chapter @sec:local-mp2 only (a `ValueError` on the exact method) |
 
-## 10.4.1 The two kernels
+## The two kernels {#attenuated-mp2-kernels}
 
-Chapter 4 defines both kernels and derives their properties; this section
+Chapter @sec:operators defines both kernels and derives their properties; this section
 uses the results. The erfc kernel is the short-range half of the usual
 range split:
 
-$$ \frac{1}{r} = \frac{\operatorname{erfc}(\omega r)}{r} + \frac{\operatorname{erf}(\omega r)}{r} . \tag{10.11} $$
+$$ \frac{1}{r} = \frac{\operatorname{erfc}(\omega r)}{r} + \frac{\operatorname{erf}(\omega r)}{r} . \label{eq:attenuated-mp2-1} $$
 
 The tempered kernel terfc is built from two error functions centred at
 $\pm r_0$ (Dutoi and Head-Gordon, J. Phys. Chem. A 112, 2110 (2008);
 dissertation Eq. 6.3):
 
-$$ \operatorname{terfc}(r; r_0) = \tfrac12\Big[\operatorname{erfc}\big(\omega(r - r_0)\big) + \operatorname{erfc}\big(\omega(r + r_0)\big)\Big], \qquad \omega = \frac{1}{\sqrt2\,r_0} , \tag{10.12} $$
+$$ \operatorname{terfc}(r; r_0) = \tfrac12\Big[\operatorname{erfc}\big(\omega(r - r_0)\big) + \operatorname{erfc}\big(\omega(r + r_0)\big)\Big], \qquad \omega = \frac{1}{\sqrt2\,r_0} , \label{eq:mp2-att-terfc-kernel} $$
 
 and $\operatorname{terf} = 1 - \operatorname{terfc}$. terfc$(0) = 1$, so
 terfc$(r)/r$ keeps the full Coulomb singularity at the origin.
@@ -49,16 +49,16 @@ terfc$(r)/r$ keeps the full Coulomb singularity at the origin.
 The link $\omega = 1/(\sqrt2\,r_0)$ is the curvature constraint. terf is odd
 in $r$, so $\operatorname{terf}(r)/r = \tau_1 + \tau_3 r^2 + O(r^4)$ with
 
-$$ \tau_3 = \frac{\omega^3}{3\sqrt\pi}\big(4\omega^2 r_0^2 - 2\big)\,e^{-\omega^2 r_0^2} , \tag{10.13} $$
+$$ \tau_3 = \frac{\omega^3}{3\sqrt\pi}\big(4\omega^2 r_0^2 - 2\big)\,e^{-\omega^2 r_0^2} , \label{eq:attenuated-mp2-3} $$
 
 whose only positive root is $\omega = 1/(\sqrt2\,r_0)$. At that $\omega$ the
 long-range part terf$(r)/r$ is constant near the origin up to an $r^4$ term, so terfc
 reproduces the short-range Coulomb shape as closely as one parameter
-allows. With the link, terfc has one parameter, $r_0$. Section 4.1.2
-derives (10.13) step by step from the Taylor series of the odd part of
+allows. With the link, terfc has one parameter, $r_0$. Section @sec:erf-terf-curvature-constraint
+derives (@eq:attenuated-mp2-3) step by step from the Taylor series of the odd part of
 $\operatorname{erf}\big(\omega(r + r_0)\big)$.
 
-> **Verified equation 10.12** · the terfc kernel and its curvature constraint
+> **Verified equation @eq:mp2-att-terfc-kernel** · the terfc kernel and its curvature constraint
 >
 > terf + terfc = 1; terfc$(0) = 1$; terf is odd; the $r^2$ coefficient of
 > terf$(r)/r$ vanishes at, and only at, $\omega = 1/(\sqrt2\,r_0)$;
@@ -73,7 +73,7 @@ $\operatorname{erf}\big(\omega(r + r_0)\big)$.
 >
 > <!-- verified: id=mp2.att.terfc-kernel; script=scripts/mp2_family_sympy.py; claim=D; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-integrals/src/operator.rs::terfc -->
 
-![Short-range multipliers of 1/r used in chapter 10, and the MP2-V VV10 damping. Script: `book/src/figures/10-mp2/attenuators.py`.](../figures/10-mp2/attenuators.svg)
+![Short-range multipliers of 1/r used in chapter @sec:mp2, and the MP2-V VV10 damping. Script: `book/src/figures/10-mp2/attenuators.py`.](../figures/10-mp2/attenuators.svg)
 
 The figure shows the two kernels at their default parameters. At
 $\omega = 0.420$ Å⁻¹ and $r_0 = 1.05$ Å they nearly coincide below about 1.5 Å.
@@ -86,39 +86,39 @@ $\phi_j\phi_b$ on another therefore falls off faster than any power of the
 separation $R$, and the $R^{-6}$ term that MP2 dispersion comes from never
 appears.
 
-## 10.4.2 The energy
+## The energy {#attenuated-mp2-energy}
 
-Attenuated RI-MP2 is section 10.1 with $\hat w(r)$ (either kernel divided
+Attenuated RI-MP2 is section @sec:closed-shell-ri-mp2 with $\hat w(r)$ (either kernel divided
 by $r$) in place of $1/r$, in both the 3-index integrals and the fitting
 metric:
 
-$$ (ia|jb)_{\hat w} \approx \sum_P B^P_{ia} B^P_{jb}, \qquad B^P_{ia} = \sum_Q M_{PQ}\,(Q|\hat w|ia), \qquad M^{\mathsf T} M = V_{\hat w}^{-1}, \quad (V_{\hat w})_{PQ} = (P|\hat w|Q) . \tag{10.14} $$
+$$ (ia|jb)_{\hat w} \approx \sum_P B^P_{ia} B^P_{jb}, \qquad B^P_{ia} = \sum_Q M_{PQ}\,(Q|\hat w|ia), \qquad M^{\mathsf T} M = V_{\hat w}^{-1}, \quad (V_{\hat w})_{PQ} = (P|\hat w|Q) . \label{eq:attenuated-mp2-4} $$
 
-Why the attenuated metric as well? Section 10.1.2 showed that the fitting
-error is quadratic in the fitting residual (equation 10.5) when the metric
+Why the attenuated metric as well? Section @sec:closed-shell-ri-mp2-density-fitting-making-affordable showed that the fitting
+error is quadratic in the fitting residual (equation @eq:df-quadratic-error) when the metric
 and the 3-index integrals share one operator. Fitting in the attenuated
 metric keeps the fit variational for the attenuated integrals. The energy is
-(10.3) on these integrals:
+(@eq:closed-shell-ri-mp2-3) on these integrals:
 
-$$ E = E_{\mathrm{HF}} + s\,E^{(2)}\big[\hat w\big] . \tag{10.15} $$
+$$ E = E_{\mathrm{HF}} + s\,E^{(2)}\big[\hat w\big] . \label{eq:attenuated-mp2-5} $$
 
 The Hartree–Fock part is never attenuated. $s$ scales the correlation
 energy only; the dissertation introduced it to absorb "systematic errors in
 the correlation energy due to severe truncation in the strong attenuation
 limit and BSSE in the weak attenuation limit" (chapter 2).
 
-Check the limits of (10.15) at $s = 1$.
+Check the limits of (@eq:attenuated-mp2-5) at $s = 1$.
 
 - $\omega \to 0$ for erfc, or $r_0 \to \infty$ for terfc: the kernel goes
-  to 1 at every $r$ (chapter 4, 4.1.1), every integral is the Coulomb one,
-  and (10.15) is RI-MP2.
+  to 1 at every $r$ (chapter @sec:operators, @sec:erf-terf-pairs), every integral is the Coulomb one,
+  and (@eq:attenuated-mp2-5) is RI-MP2.
 - $\omega \to \infty$ for erfc, or $r_0 \to 0$ for terfc: the kernel goes to
-  0 at every $r > 0$, the correlation energy vanishes, and (10.15) is
+  0 at every $r > 0$, the correlation energy vanishes, and (@eq:attenuated-mp2-5) is
   Hartree–Fock.
 
 The dissertation fitted between these two ends. At aug-cc-pVDZ on S66 the
 Hartree–Fock end has an RMSD of 4.0 kcal/mol and the MP2 end 2.67 kcal/mol
-(chapter 2, Table 2.1); the fitted lengths of 10.4.3 sit in between and do
+(chapter 2, Table 2.1); the fitted lengths of @sec:attenuated-mp2-published-parameterizations sit in between and do
 better than either.
 
 | Parameter | Rust | CLI `[mp2]` | Python | Default |
@@ -142,7 +142,7 @@ curvature link; the tables cover $r_0\omega$ up to about 8.9.
 two-dimensional interpolation tables, located by `FERRIC_TERF_TABLE_DIR`.
 erfc needs no tables.
 
-## 10.4.3 Published parameterizations
+## Published parameterizations {#attenuated-mp2-published-parameterizations}
 
 The parameters are fitted to S66 interaction energies without counterpoise
 correction, and they belong to the basis they were fitted in.
@@ -162,20 +162,20 @@ Two readings of the table. First, at aug-cc-pVDZ, erfc and terfc perform
 alike: the attenuation length matters more than the kernel shape. Second,
 the optimal $r_0$ grows with the basis. A larger basis has less BSSE to
 cancel, so less correlation is cut. The aug-cc-pVTZ value is 1.35 Å, not
-the aug-cc-pVDZ 1.05 Å. Section 10.6 tabulates $r_0$ across 24 basis sets.
+the aug-cc-pVDZ 1.05 Å. Section @sec:attenuation-basis-limit tabulates $r_0$ across 24 basis sets.
 
 Because $r_0$ belongs to a basis, the CLI and Python read the terfc default
 from a per-basis table, `ferric-mp2/src/terfc_r0.rs::resolve_terfc_r0`: the
-13 bundled sets of section 10.6 (1.05 Å at aug-cc-pVDZ, 1.35 Å at
+13 bundled sets of section @sec:attenuation-basis-limit (1.05 Å at aug-cc-pVDZ, 1.35 Å at
 aug-cc-pVTZ). An explicit `att_r0` always wins, a run that used the table
 prints the value and its source, and a basis with no row is an error that
 asks for `att_r0`. The erfc default, 0.420 Å⁻¹, is the aug-cc-pVDZ value and
 is used whatever the basis.
 
-## 10.4.4 How the code evaluates it
+## How the code evaluates it {#attenuated-mp2-code-evaluates}
 
 The erfc path builds the erfc 3-index integrals and metric, then runs the
-RI-MP2 pair loop of section 10.1. This is the body of
+RI-MP2 pair loop of section @sec:closed-shell-ri-mp2. This is the body of
 `ferric-mp2/src/attenuated.rs::attenuated_ri_mp2`, with the comments
 replaced:
 
@@ -203,10 +203,10 @@ Three points about it:
 
 - **The operator is the only change.** `op` goes into the same
   `ri_mp2_spin_components_any` that plain RI-MP2 uses, and that function
-  builds both the metric and the 3-index integrals with it. So (10.14) holds
+  builds both the metric and the 3-index integrals with it. So (@eq:attenuated-mp2-4) holds
   by construction.
 - **The metric takes the Cholesky route.** The erfc and terfc kernels have
-  positive Fourier transforms (section 4.1.3), so their metrics are positive
+  positive Fourier transforms (section @sec:erf-terf-properties-decide-integrals-used), so their metrics are positive
   definite and `ferric-mp2/src/rimp2.rs::metric_inverse_sqrt` factorizes
   them by Cholesky, as for Coulomb. The terfc path is `ri_mp2` with the
   operator swapped and goes the same way.
@@ -227,11 +227,11 @@ documentation of `attenuated.rs`).
 
 `attenuated_ri_mp2_long_range` evaluates the erf (long-range) half, and
 `rs_mp2_decomposition` returns the short-range, long-range and full
-Coulomb energies together (section 10.7). The two halves do not add up to
+Coulomb energies together (section @sec:range-split-cross-term). The two halves do not add up to
 the Coulomb energy, because MP2 is quadratic in the integrals (section
-4.1.3).
+@sec:erf-terf-properties-decide-integrals-used).
 
-## 10.4.5 What is anchored
+## What is anchored {#attenuated-mp2-anchored}
 
 | Quantity | Systems | Agreement | Bar | Test |
 |---|---|---|---|---|
@@ -239,7 +239,7 @@ the Coulomb energy, because MP2 is quadratic in the integrals (section
 | terfc $E_{\mathrm{OS}}$, $E_{\mathrm{SS}}$ at $r_0$ = 0.75, 1.00, 1.05 Å vs numpy RI-MP2 on Fourier-space terfc integrals | H2O, NH3 / cc-pVDZ; H2O / aug-cc-pVDZ | ≤ 3.3e-12 Ha | 5e-11 Ha | `crates/ferric-mp2/tests/validation_scs_mp2_2terfc.rs` |
 | terfc 3-index and 2-index integrals, every shell class s–f | as above | ≤ 1.4e-13 (3-index), ≤ 2.6e-12 (2-index) | 2e-12, 3e-11 | `crates/ferric-integrals/tests/validation_terfc_integrals.rs` |
 
-The terfc energies are the spin components of section 10.5's anchor; the
+The terfc energies are the spin components of section @sec:scs-mp2-2terfc's anchor; the
 terfc energy of this section is their sum. Figures from
 `site/src/reference/validation.md`.
 
@@ -249,7 +249,7 @@ terfc energy of this section is their sum. Figures from
 - The run certificate anchors the erfc operator only (frozen core 0, $s = 1$,
   $\omega$ at the default, 0.2, 0.42 or 1.0 Bohr⁻¹ as listed in
   `site/src/reference/validation.md`); a terfc run is anchored by the
-  section 10.5 tests, not by its certificate.
+  section @sec:scs-mp2-2terfc tests, not by its certificate.
 - This section covers the energy. The analytic nuclear gradient (erfc and
   terfc, RHF and UHF; `task = "optimize"` with `att-rimp2`,
   `run_optimize(method="att-rimp2")`) is derived in
@@ -267,7 +267,7 @@ With `multiplicity > 1` the CLI kinds `att-rimp2`, `scs-mp2` and
 `scs-mp2-2terfc`, and the Python drivers `run_attenuated_rimp2`,
 `run_terfc_rimp2`, `run_scs_mp2` and `run_scs_mp2_2terfc`, take a UHF
 reference. The spin components are the blocks of unrestricted RI-MP2
-(section 10.2) under the same operator:
+(section @sec:unrestricted-ri-mp2) under the same operator:
 $E_{\rm OS} = E_{\alpha\beta}$ and $E_{\rm SS} = E_{\alpha\alpha} + E_{\beta\beta}$.
 
 Why does the 10.2 derivation carry over? It used one property of $1/r$: it
@@ -279,7 +279,7 @@ block by block: $\omega \to 0$ gives U-RI-MP2 and $\omega \to \infty$ sends
 every block to zero.
 
 With $\alpha = \beta$ orbitals the blocks reduce to the closed-shell
-components (10.2.1), and a closed-shell molecule run through the UHF path
+components (@sec:unrestricted-ri-mp2-energy), and a closed-shell molecule run through the UHF path
 gives the restricted energies to rounding (≤ 6e-17 Ha on water/cc-pVDZ for
 erfc, erf, terfc, SCS and SCS(2terfc)). On OH, NH2 and O2 at cc-pVDZ the erfc
 energy and the SCS energy match PySCF `DFUMP2` on the same fits to ≤ 4e-15 Ha.
@@ -289,12 +289,12 @@ The QQR-3 screened build (`screen_thresh`) is closed shell only.
 
 | Source | Used for |
 |---|---|
-| `crates/ferric-mp2/theory.md`, "4. Spin-component scaling" (terfc kernel), "5. Attenuated MP2", "5.1 Open-shell attenuated and spin-scaled MP2" | equations 10.11–10.15, units, the per-basis $r_0$ table, open shell |
+| `crates/ferric-mp2/theory.md`, "4. Spin-component scaling" (terfc kernel), "5. Attenuated MP2", "5.1 Open-shell attenuated and spin-scaled MP2" | equations @eq:attenuated-mp2-1–@eq:attenuated-mp2-5, units, the per-basis $r_0$ table, open shell |
 | `crates/ferric-mp2/src/attenuated.rs`, `crates/ferric-mp2/src/terfc_r0.rs`, `crates/ferric-integrals/src/operator.rs`, `crates/ferric-integrals/src/qqr3.rs`, `crates/ferric-cli/src/config.rs` | defaults, keys, metric, screening |
 | Goldey dissertation, chapter 2 (Table 2.1), chapter 3 (Eqs. 3.1–3.2, Table 3.1), chapter 5 (section 5.1), chapter 6 (Eq. 6.3) | definitions, the two same-sign errors, the scaling factor, parameters, summary table |
 | `scripts/mp2_family_sympy.py`, part D | verified box |
 | `site/src/reference/validation.md` | anchors, gradient grade |
 
 Changes from the sources: the dissertation writes terfc with
-$(r \mp r_0)/(r_0\sqrt2)$; (10.12) writes the same thing with
+$(r \mp r_0)/(r_0\sqrt2)$; (@eq:mp2-att-terfc-kernel) writes the same thing with
 $\omega = 1/(\sqrt2\,r_0)$ to match the code.

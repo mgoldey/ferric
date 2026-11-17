@@ -1,6 +1,6 @@
-# 12.1 Closed-shell orbital-optimized RI-MP2
+# Closed-shell orbital-optimized RI-MP2 {#oo-rimp2}
 
-<!-- section: 12.1; status: ready; registry: oo-rimp2;
+<!-- status: ready; registry: oo-rimp2;
      theory: crates/ferric-mp2/theory.md#"7. Orbital-optimized RI-MP2" -->
 
 *Notation follows `book/notation.md`. Line numbers are left out because they
@@ -13,18 +13,18 @@ correlated energy differ slightly from the Hartree–Fock ones.
 Orbital-optimized MP2 treats the orbitals as variational parameters of the
 Hartree–Fock plus second-order energy and rotates them until the total is
 stationary. At a stationary point the nuclear gradient needs no orbital
-response (the Z-vector solve of section 15.1), so it takes the form of a
+response (the Z-vector solve of section @sec:lagrangian-zvector), so it takes the form of a
 variational SCF gradient. The relaxation also lowers the energy: for H2O and
 NH3 in cc-pVDZ, plain RI-MP2 lies $9.2\times10^{-4}$ Ha and
-$8.7\times10^{-4}$ Ha above the OO-RI-MP2 minimum (section 12.1.8).
+$8.7\times10^{-4}$ Ha above the OO-RI-MP2 minimum (section @sec:oo-rimp2-anchors).
 
 The plan:
 
 1. Write the functional, and show why it is invariant to rotations within
-   the occupied and within the virtual space (12.1.1).
-2. Parametrize the rotation (12.1.2) and differentiate the functional
-   (12.1.3).
-3. Read the optimization loop and its kernel (12.1.4 to 12.1.5), then the
+   the occupied and within the virtual space (@sec:oo-rimp2-functional).
+2. Parametrize the rotation (@sec:oo-rimp2-rotation) and differentiate the functional
+   (@sec:oo-rimp2-orbital-gradient).
+3. Read the optimization loop and its kernel (@sec:oo-rimp2-algorithm to @sec:oo-rimp2-kernel), then the
    memory rules, options and anchors.
 
 | Index | Range | Code name |
@@ -42,35 +42,35 @@ The plan:
 | Python | `run_oo_rimp2` (`crates/ferric-python/ferric.pyi`); `run_optimize(method="oo-rimp2")` |
 
 The CLI hands an open-shell reference under the same kind to the unrestricted
-driver (section 12.2). The Python entry point runs closed shell only.
+driver (section @sec:unrestricted-oo-rimp2). The Python entry point runs closed shell only.
 
-## 12.1.1 The functional
+## The functional {#oo-rimp2-functional}
 
 Take a coefficient matrix $C$ with $n_{\mathrm{occ}}$ doubly occupied
 columns. Build the density over all occupied orbitals, frozen core
 included, $D = 2C_oC_o^{\mathsf T}$, and its Fock matrix
 $F = h + J[D] - \tfrac12 K[D]$. The functional is
 
-$$ E(C) = \tfrac12\operatorname{Tr}\big[D\,(h + F)\big] + V_{nn} + E^{(2)}_{\mathrm{RI}}(\tilde C), \qquad \tilde C = C\begin{pmatrix} U_o & \\ & U_v\end{pmatrix}. \tag{12.1} $$
+$$ E(C) = \tfrac12\operatorname{Tr}\big[D\,(h + F)\big] + V_{nn} + E^{(2)}_{\mathrm{RI}}(\tilde C), \qquad \tilde C = C\begin{pmatrix} U_o & \\ & U_v\end{pmatrix}. \label{eq:oo-rimp2-1} $$
 
 The first two terms are the Hartree–Fock energy of the determinant built
-from $C$. The last term is RI-MP2, equation (10.3), evaluated in rotated
+from $C$. The last term is RI-MP2, equation (@eq:closed-shell-ri-mp2-3), evaluated in rotated
 orbitals $\tilde C$:
 
 - $U_o$ diagonalizes the active occupied block of $C^{\mathsf T}FC$, and
   $U_v$ the virtual block. The frozen-core block is not touched
   (`ferric-mp2/src/oo_rimp2.rs::semicanonical_rotation`).
-- The denominators of (10.3) use the diagonal elements of
+- The denominators of (@eq:closed-shell-ri-mp2-3) use the diagonal elements of
   $\tilde C^{\mathsf T}F\tilde C$.
 
 $\tilde C$ is the **semicanonical** frame. Away from the Hartree–Fock
 solution, $C^{\mathsf T}FC$ has a non-zero occupied–virtual block, so no
 rotation of $C$ makes $F$ diagonal. The semicanonical frame makes the two
 diagonal blocks diagonal and leaves the off-diagonal block alone. That is
-enough for the MP2 formula of chapter 10, which only reads the
+enough for the MP2 formula of chapter @sec:mp2, which only reads the
 occupied–occupied and virtual–virtual blocks through the orbital energies.
 
-The code evaluates (12.1) in `ferric-mp2/src/oo_rimp2.rs::evaluate_point`:
+The code evaluates (@eq:oo-rimp2-1) in `ferric-mp2/src/oo_rimp2.rs::evaluate_point`:
 first `compute_hf_energy`, then the rotation, then
 `compute_rimp2_with_orbitals`.
 
@@ -85,36 +85,36 @@ rotations makes it stationary under all of them.
 `test_oo_energy_is_invariant_to_occ_occ_and_vir_vir_rotations` in
 `crates/ferric-mp2/src/oo_rimp2.rs` tests the invariance directly.
 
-(12.1) is the full-Fock Hylleraas functional of Bozkaya and Sherrill (OMP2).
+(@eq:oo-rimp2-1) is the full-Fock Hylleraas functional of Bozkaya and Sherrill (OMP2).
 The off-diagonal occupied–virtual Fock block enters only through the orbital
-gradient (12.3); the amplitudes ignore it.
+gradient (@eq:oo-cs-gradient); the amplitudes ignore it.
 
 **Frozen core.** Only active-occupied/virtual rotations are optimized.
 Frozen-core orbitals are not rotated into the virtuals, so
 `frozen_core > 0` gives a constrained minimum: stationary in the
 active–virtual rotations, not in the core–active or core–virtual ones.
 
-## 12.1.2 The rotation
+## The rotation {#oo-rimp2-rotation}
 
-The rotation follows notation section 6. $\kappa$ is antisymmetric, with
+The rotation follows notation section @sec:notation-orbital-rotations. $\kappa$ is antisymmetric, with
 $\kappa_{ai}$ stored and $\kappa_{ia} = -\kappa_{ai}$. The update is
 $C \leftarrow C\,U(\kappa)$ with the Cayley form
 
-$$ U(\kappa) = \big(1 - \tfrac12\kappa\big)^{-1}\big(1 + \tfrac12\kappa\big). \tag{12.2} $$
+$$ U(\kappa) = \big(1 - \tfrac12\kappa\big)^{-1}\big(1 + \tfrac12\kappa\big). \label{eq:oo-cayley} $$
 
-Section 8.3.1 derives the two properties that make (12.2) a valid
+Section @sec:second-order-orbital-gradient-hessian derives the two properties that make (@eq:oo-cayley) a valid
 parametrization: $U$ is exactly orthogonal for antisymmetric $\kappa$, and
 its expansion agrees with $e^{\kappa}$ through $\kappa^2$. The first and
 second derivatives of $E(CU(t\kappa))$ at $t = 0$ are therefore those of the
-exponential map. Section 8.3.2 shows why one inverse is enough to form it.
+exponential map. Section @sec:second-order-rotation shows why one inverse is enough to form it.
 
 To first order $U \approx 1 + \kappa$, so $C \leftarrow C(1 + \kappa)$ and
 the generator is $+\kappa$. With the gradient $g = +\partial E/\partial\kappa$
-the descent step is $\kappa = -g/(\text{gap} + \mu)$ (section 12.1.4).
+the descent step is $\kappa = -g/(\text{gap} + \mu)$ (section @sec:oo-rimp2-algorithm).
 `crates/ferric-mp2/src/orbital_rotation.rs` fixes this convention for both
 OO drivers.
 
-> **Verified equation 12.2** · Cayley rotation
+> **Verified equation @eq:oo-cayley** · Cayley rotation
 >
 > For antisymmetric $\kappa$, $U(\kappa)$ is orthogonal and
 > $U(\kappa) - e^{\kappa} = O(\kappa^3)$.
@@ -132,7 +132,7 @@ OO drivers.
 `cayley_rotation` factors $1 - \tfrac12\kappa$ once (LU) and solves for every
 column against that factor.
 
-## 12.1.3 The orbital gradient
+## The orbital gradient {#oo-rimp2-orbital-gradient}
 
 The gradient is $g_{ai} = +\partial E/\partial\kappa_{ai}$. Start with what a
 single rotation $\kappa_{ck}$ does to the orbitals. With $U \approx 1 + \kappa$
@@ -164,7 +164,7 @@ becomes $c$; a virtual index equal to $c$ becomes $-k$:
 $$ \frac{\partial (ia|jb)}{\partial\kappa_{ck}} = \delta_{ik}(ca|jb) + \delta_{jk}(ia|cb) - \delta_{ac}(ik|jb) - \delta_{bc}(ia|jk) . $$
 
 Contracted with the amplitude combination $\tilde T = 2t - t^{\mathrm{swap}}$
-of (10.3), these four terms give the integral response $G_V + G_O$: the
+of (@eq:closed-shell-ri-mp2-3), these four terms give the integral response $G_V + G_O$: the
 two occupied terms contract the amplitudes with $B^P_{ca}$, and the two
 virtual terms with the $(ik|jb)$ block.
 
@@ -180,11 +180,11 @@ two-outer-product count as in term 1 gives the factor 4.
 
 Assembled in the semicanonical frame:
 
-$$ g_{ck} = 4F_{ck} + 2\big(G_V + G_O\big)_{ck} + 4\big[C^{\mathsf T}\,\mathcal G[CWC^{\mathsf T}]\,C\big]_{ck} + 2\big(FW - WF\big)_{ck}, \qquad \mathcal G[X] = J[X] - \tfrac12K[X]. \tag{12.3} $$
+$$ g_{ck} = 4F_{ck} + 2\big(G_V + G_O\big)_{ck} + 4\big[C^{\mathsf T}\,\mathcal G[CWC^{\mathsf T}]\,C\big]_{ck} + 2\big(FW - WF\big)_{ck}, \qquad \mathcal G[X] = J[X] - \tfrac12K[X]. \label{eq:oo-cs-gradient} $$
 
 The code computes this in the semicanonical frame and rotates it back to
 the frame of $C$, $g = U_v\,g_{\mathrm{sc}}\,U_o^{\mathsf T}$. The invariance
-of 12.1.1 is what makes the back-rotation valid:
+of @sec:oo-rimp2-functional is what makes the back-rotation valid:
 $E(CU(\kappa)) = E(\tilde CU(U^{\mathsf T}\kappa U))$. The solver keeps its own
 frame because the semicanonical frame jumps between iterations (eigenvector
 signs and order are arbitrary), and DIIS needs one continuous frame.
@@ -199,7 +199,7 @@ The pieces in the code:
 
 The two blocks of $P$ are
 
-$$ P_{ij} = -\sum_{kab} t_{ik}^{ab}\big(2t_{jk}^{ab} - t_{jk}^{ba}\big), \qquad P_{ab} = \sum_{ijc} t_{ij}^{ac}\big(2t_{ij}^{bc} - t_{ij}^{cb}\big), \qquad t_{ij}^{ab} = -\frac{(ia|jb)}{\Delta_{ij}^{ab}} . \tag{12.4} $$
+$$ P_{ij} = -\sum_{kab} t_{ik}^{ab}\big(2t_{jk}^{ab} - t_{jk}^{ba}\big), \qquad P_{ab} = \sum_{ijc} t_{ij}^{ac}\big(2t_{ij}^{bc} - t_{ij}^{cb}\big), \qquad t_{ij}^{ab} = -\frac{(ia|jb)}{\Delta_{ij}^{ab}} . \label{eq:oo-rimp2-4} $$
 
 Read the signs physically. $P_{ab}$ is positive on the diagonal: correlation
 puts electron density into the virtuals. $P_{ij}$ is negative: it takes the
@@ -211,10 +211,10 @@ Check the Hartree–Fock limit. Without correlation, $t = 0$, so $G_V$, $G_O$,
 $P$ and $W$ vanish, and $g_{ck} = 4F_{ck}$: the orbital gradient of
 Hartree–Fock, zero at the SCF solution.
 
-> **Verified equation 12.3** · closed-shell OO-MP2 orbital gradient
+> **Verified equation @eq:oo-cs-gradient** · closed-shell OO-MP2 orbital gradient
 >
 > On a random closed-shell model in the semicanonical frame with
-> $F_{ov} \ne 0$, the gradient (12.3), with $W$ from (12.4), equals
+> $F_{ov} \ne 0$, the gradient (@eq:oo-cs-gradient), with $W$ from (@eq:oo-rimp2-4), equals
 > $\partial E/\partial\kappa_{ck}$ of the spin-orbital energy, with the spatial
 > $\kappa$ applied to both spins. The script transcribes the code's scalar
 > reference loop (`orbital_gradient_scalar_reference`) and
@@ -227,11 +227,11 @@ Hartree–Fock, zero at the SCF solution.
 > | Negative control | mutations `kappa_sign` (generator $C(1-\kappa)$) and `drop_two_particle` (no correlation two-particle density) turn B2 and B3 red (`OOMP2_MP3_MUTATION`) |
 > | Runner | `crates/ferric-python/tests/test_oomp2_mp3_identities_sympy.py` |
 > | Code | `ferric-mp2/src/oo_rimp2.rs::fock_response_gradient`, `ferric-mp2/src/oo_rimp2.rs::hf_and_integral_response_gradient_timed` |
-> | Code test | `test_oo_rimp2_gradient_fd_off_reference_h2o_sto3g` and `test_oo_rimp2_gradient_fd_off_reference_nh3_631g` in `crates/ferric-mp2/src/oo_rimp2.rs`: the production gradient against a finite difference of (12.1), away from the HF point |
+> | Code test | `test_oo_rimp2_gradient_fd_off_reference_h2o_sto3g` and `test_oo_rimp2_gradient_fd_off_reference_nh3_631g` in `crates/ferric-mp2/src/oo_rimp2.rs`: the production gradient against a finite difference of (@eq:oo-rimp2-1), away from the HF point |
 >
 > <!-- verified: id=oo.cs.gradient; script=scripts/oomp2_mp3_identities_sympy.py; claim=B3; runner=crates/ferric-python/tests/test_oomp2_mp3_identities_sympy.py; code=ferric-mp2/src/oo_rimp2.rs::fock_response_gradient; rust_test=ferric-mp2/src/oo_rimp2.rs::test_oo_rimp2_gradient_fd_off_reference_h2o_sto3g -->
 
-## 12.1.4 The algorithm
+## The algorithm {#oo-rimp2-algorithm}
 
 The solver takes a level-shifted diagonal step, as in Bozkaya and Sherrill:
 divide each gradient element by its orbital-energy gap plus a shift $\mu$.
@@ -240,8 +240,8 @@ The shift keeps the step finite when a gap is small. One iteration of
 
 | Step | Operation | Function |
 |---|---|---|
-| 1 | Evaluate (12.1) at $C$: $J$, $K$, $F$, $E_{\mathrm{HF}}$, semicanonical rotation, $B$, $t$, $E^{(2)}$ | `evaluate_point` |
-| 2 | Gradient (12.3), back-rotated; stop if $\lVert g\rVert_2 <$ `grad_conv` | `compute_orbital_gradient` |
+| 1 | Evaluate (@eq:oo-rimp2-1) at $C$: $J$, $K$, $F$, $E_{\mathrm{HF}}$, semicanonical rotation, $B$, $t$, $E^{(2)}$ | `evaluate_point` |
+| 2 | Gradient (@eq:oo-cs-gradient), back-rotated; stop if $\lVert g\rVert_2 <$ `grad_conv` | `compute_orbital_gradient` |
 | 3 | Step $\kappa_{ai} = -g_{ai}/(\varepsilon_a - \varepsilon_i + \mu)$, $\varepsilon = \operatorname{diag}(C^{\mathsf T}FC)$ in the frame of $C$ | main loop |
 | 4 | If $\max\lvert\kappa_{ai}\rvert > 0.3$, scale $\kappa$ uniformly to 0.3 rad | main loop |
 | 5 | $C_{\mathrm{new}} = C\,U(\kappa)$ | `cayley_rotation` |
@@ -258,18 +258,18 @@ Notes on the table:
   the Hartree–Fock point the diagonal of the Hartree–Fock part of
   $\partial^2E/\partial\kappa_{ai}^2$ is
   $4\big[(\varepsilon_a - \varepsilon_i) + 3(ai|ai) - (aa|ii)\big]$ (section
-  8.3.1, which stores a quarter of it). The step's denominator has no
+  @sec:second-order-orbital-gradient-hessian, which stores a quarter of it). The step's denominator has no
   factor 4 and no two-electron terms, so it is not the diagonal Newton step;
   it is longer than that step by roughly a factor 4. The 0.3 rad cap of step
   4 and the backtracking of step 8 bound it.
 - **Step 6.** DIIS returns a linear combination of coefficient matrices,
   which is not orthonormal. The energy of a non-orthonormal $C$ is not a
-  determinant energy, and (12.3) assumes orthonormality, so Löwdin
+  determinant energy, and (@eq:oo-cs-gradient) assumes orthonormality, so Löwdin
   orthonormalization follows every extrapolation. It raises an error if
   $C^{\mathsf T}SC$ is not positive definite.
 - **Step 8.** If none of the ten halvings is accepted, the closed-shell
   driver takes the last halved step anyway. The unrestricted driver
-  (section 12.2) keeps the old point instead.
+  (section @sec:unrestricted-oo-rimp2) keeps the old point instead.
 - **Step 9.** The energy change is measured on the trial of step 7, before
   any backtracking.
 - **The norm.** The stopping test uses the Euclidean norm over the active
@@ -280,11 +280,11 @@ route (`OoJk`).
 
 - When the reference ran RI-J plus RI-K with one auxiliary basis and no COSX
   or range-separated exchange, the OO loop uses that fitted route. The HF
-  part of (12.1) is then the fitted HF energy. The test
+  part of (@eq:oo-rimp2-1) is then the fitted HF energy. The test
   `oo_hf_energy_on_an_rijk_reference_is_the_scf_energy` checks that it equals
-  the SCF energy at the reference orbitals. The derivation of (12.3) used
+  the SCF energy at the reference orbitals. The derivation of (@eq:oo-cs-gradient) used
   only that $\mathcal G$ is linear and symmetric, which the Coulomb-metric
-  fit satisfies, so (12.3) holds on this route unchanged.
+  fit satisfies, so (@eq:oo-cs-gradient) holds on this route unchanged.
 - Otherwise the loop builds exact four-centre $J$ and $K$ at a $10^{-12}$
   threshold. `difference_jk` optionally builds them from the density change
   since the previous point; `oo_rimp2_difference_jk_matches_plain_builds`
@@ -292,11 +292,11 @@ route (`OoJk`).
 - COSX has no OO route. The Python entry point raises `ValueError` for
   `scf_jk="rijcosx"`.
 
-## 12.1.5 The kernel
+## The kernel {#oo-rimp2-kernel}
 
-The denominator response is the last two terms of (12.3). Below is the end of
+The denominator response is the last two terms of (@eq:oo-cs-gradient). Below is the end of
 `ferric-mp2/src/oo_rimp2.rs::fock_response_gradient`, after $W$ has been
-assembled from (12.4) and $W_{\mathrm{AO}} = CWC^{\mathsf T}$ passed through
+assembled from (@eq:oo-rimp2-4) and $W_{\mathrm{AO}} = CWC^{\mathsf T}$ passed through
 the J/K route; the timing calls and the `OrbitalSpace` destructuring are
 removed, and the comments are added:
 
@@ -321,10 +321,10 @@ Three points about it:
   on $CWC^{\mathsf T}$, the same cost as one SCF Fock build.
 - **The indices.** `i` runs over the active occupied orbitals only, so the
   frozen-core columns of $g$ never appear and the core is never rotated.
-- **The rest of (12.3).** The first two terms are added in
+- **The rest of (@eq:oo-cs-gradient).** The first two terms are added in
   `hf_and_integral_response_gradient_timed`.
 
-## 12.1.6 Reproducibility and memory
+## Reproducibility and memory {#oo-rimp2-reproducibility-memory}
 
 - The gradient GEMMs run in fixed blocks with one-thread BLAS per block, so
   the result does not depend on the thread count. The test
@@ -341,7 +341,7 @@ Three points about it:
 - The spilled and in-core paths agree; `test_spill_budget_paths_match_incore`
   checks this.
 
-## 12.1.7 Options
+## Options {#oo-rimp2-options}
 
 | Option | Default | Effect |
 |---|---|---|
@@ -359,10 +359,10 @@ Three points about it:
 - The analytic nuclear gradient (Python `with_gradient=True`,
   `task = "optimize"`) requires `frozen_core = 0`. It is valid only at a
   converged point; an unconverged loop raises an error. Both rules follow
-  from 12.1.1: the gradient assumes zero orbital response, which holds only
+  from @sec:oo-rimp2-functional: the gradient assumes zero orbital response, which holds only
   where every rotation the energy depends on is stationary.
 
-## 12.1.8 Anchors
+## Anchors {#oo-rimp2-anchors}
 
 | Check | Reference | Agreement | Test |
 |---|---|---|---|
@@ -380,7 +380,7 @@ also miss the gradient by more than $10^{-5}$ Ha/Bohr.
 
 The validation page grades the method Proven (narrow). The analytic gradient
 is also Proven (narrow), for a closed shell with frozen core 0 on the exact
-and RI-JK J/K routes (section 15.3).
+and RI-JK J/K routes (section @sec:oo-rimp2-gradient).
 
 **Known limits (2026-11-15).**
 
@@ -393,9 +393,9 @@ and RI-JK J/K routes (section 15.3).
 
 | Source | Used for |
 |---|---|
-| `crates/ferric-mp2/theory.md`, section 7 | equations 12.1 to 12.4, the rotation derivative of $(ia\vert jb)$, the step |
+| `crates/ferric-mp2/theory.md`, section 7 | equations @eq:oo-rimp2-1 to @eq:oo-rimp2-4, the rotation derivative of $(ia\vert jb)$, the step |
 | `crates/ferric-mp2/src/oo_rimp2.rs`, `orbital_rotation.rs` | every rule in the algorithm table, read from the loop |
-| `scripts/oomp2_mp3_identities_sympy.py`, part B; `scripts/mp2_variant_identities.py`, claim 6 | verified equations 12.2 and 12.3; the fixed-amplitude derivative |
+| `scripts/oomp2_mp3_identities_sympy.py`, part B; `scripts/mp2_variant_identities.py`, claim 6 | verified equations @eq:oo-cayley and @eq:oo-cs-gradient; the fixed-amplitude derivative |
 | U. Bozkaya and C. D. Sherrill, J. Chem. Phys. 135, 104103 (2011) | the functional and the level-shifted step, as cited in the code |
 | `site/src/reference/validation.md`; `crates/ferric-mp2/tests/validation_oo_rimp2.rs` | the anchor figures |
 
@@ -407,5 +407,5 @@ Changes from the sources:
   convergence recheck and the "last halved step" rule are stated from the
   loop; `theory.md` section 7 states them the same way.
 - The Hessian diagonal quoted under "The step length" comes from section
-  8.3.1 and was checked by a finite difference on a model RHF energy; it is
+  @sec:second-order-orbital-gradient-hessian and was checked by a finite difference on a model RHF energy; it is
   not in `theory.md` section 7.

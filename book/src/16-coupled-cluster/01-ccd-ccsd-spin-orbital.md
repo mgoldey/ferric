@@ -1,6 +1,6 @@
-# 16.1 CCD and CCSD in spin orbitals
+# CCD and CCSD in spin orbitals {#ccd-ccsd-spin-orbital}
 
-<!-- section: 16.1; status: ready; registry: ccd, ccsd;
+<!-- status: ready; registry: ccd, ccsd;
      theory: crates/ferric-cc/theory.md#"CCD", "CCSD in spin orbitals" -->
 
 MP2 lets each electron pair correlate once, in the field of a frozen
@@ -12,11 +12,11 @@ wavefunction as $e^{\hat T}|\Phi_0\rangle$, whose powers of $\hat T$ supply
 the simultaneous excitations, and fixes the amplitudes by projection. The
 spin-orbital solvers of this section transcribe the textbook equations with
 antisymmetrized integrals; `ccd` is the production CCD, and the spin-orbital
-`ccsd` is the cross-check of the closed-shell CCSD of section 16.2.
+`ccsd` is the cross-check of the closed-shell CCSD of section @sec:closed-shell-ccsd.
 
-The plan: 16.1.1 motivates the exponential, derives the projected
+The plan: @sec:ccd-ccsd-spin-orbital-equations motivates the exponential, derives the projected
 equations, reads the CCD residual term by term and checks three limits (MP2,
-CCD inside CCSD, two-electron full CI); 16.1.2 shows the loop that solves
+CCD inside CCSD, two-electron full CI); @sec:ccd-ccsd-spin-orbital-algorithm shows the loop that solves
 them.
 
 | Index | Range | Code name |
@@ -31,7 +31,7 @@ them.
 | CLI | `method.kind = "ccd"` (`examples/water-ccd.toml`); the spin-orbital CCSD has no CLI kind |
 | Python | `run_ccd` |
 
-## 16.1.1 The equations
+## The equations {#ccd-ccsd-spin-orbital-equations}
 
 **Why an exponential.** Take two molecules A and B far apart. Each has its
 own doubles operator, $\hat T_2^A$ and $\hat T_2^B$. The excitation
@@ -62,7 +62,7 @@ determinant $\langle\Phi_\mu|$ in the space of $\hat T$ for the amplitude
 equations. The right-hand side has no component on $\Phi_\mu$, so
 
 $$ R_\mu = \langle\Phi_\mu|e^{-\hat T}\hat He^{\hat T}|\Phi_0\rangle = 0,\qquad
-E_c = \langle\Phi_0|e^{-\hat T}\hat He^{\hat T}|\Phi_0\rangle - E_{\rm HF} . \tag{16.1} $$
+E_c = \langle\Phi_0|e^{-\hat T}\hat He^{\hat T}|\Phi_0\rangle - E_{\rm HF} . \label{eq:cc-ccd-residual} $$
 
 **Why the transform terminates.** Expand by the Baker–Campbell–Hausdorff
 series:
@@ -121,18 +121,18 @@ de-excite at most a double:
 $$E_c = \tfrac14 \sum_{ijab} \langle ij\|ab\rangle\, t_{ij}^{ab}.$$
 
 Its closed-shell spatial form is
-$E_c = \sum_{ijab} (ia|jb)\,(2 t_{ij}^{ab} - t_{ij}^{ba})$, equation (1.15).
+$E_c = \sum_{ijab} (ia|jb)\,(2 t_{ij}^{ab} - t_{ij}^{ba})$, equation (@eq:so-cc-amplitude-expansion).
 
 **The MP2 limit.** Start from $t = 0$. Every term of $r$ except the driver
 vanishes, so one Jacobi step gives
 $t_{ij}^{ab} = \langle ij\|ab\rangle/(-\Delta_{ij}^{ab})$, the first-order
 amplitude. Put it in the energy:
 $\tfrac14\sum\langle ij\|ab\rangle^2/(-\Delta) = -\tfrac14\sum|\langle ij\|ab\rangle|^2/\Delta$,
-which is the MP2 energy (10.1). The code starts from this guess, so the
+which is the MP2 energy (@eq:closed-shell-ri-mp2-1). The code starts from this guess, so the
 energy it computes at iteration 0 is MP2. It then stops when the energy
 changes by less than $10^{-10}$, with DIIS on the increment.
 
-> **Verified equation 16.1** · the CCD residual and energy
+> **Verified equation @eq:cc-ccd-residual** · the CCD residual and energy
 >
 > On a ten-spin-orbital model with a diagonal Fock matrix by construction,
 > the eight-term $r + \Delta t$ of `ccd_spinorbital` at random antisymmetric
@@ -233,7 +233,7 @@ integral turns the two $t_1t_1$ terms of $\tau$ into twice one of them.
   eigenvalue equations. CCSD for a two-electron system is therefore full CI.
   CCD lacks $\hat T_1$ and is not exact here.
 
-> **Verified equation 16.2** · the CCSD residuals and energy
+> **Verified equation {#eq:cc-ccsd-spin-orbital}** · the CCSD residuals and energy
 >
 > At random $t_1$ and $t_2$ on the same model, the Stanton–Gauss singles and
 > doubles residuals of `ccsd` (intermediates $F_{ae}$, $F_{mi}$, $F_{me}$,
@@ -241,7 +241,7 @@ integral turns the two $t_1t_1$ terms of $\tau$ into twice one of them.
 > equal the brute-force projections; the energy
 > $\tfrac14\langle ij\|ab\rangle t_{ij}^{ab} + \tfrac12\langle ij\|ab\rangle t_i^at_j^b$
 > equals the projected energy; and the doubles residual at $t_1 = 0$ is the
-> CCD residual of (16.1).
+> CCD residual of (@eq:cc-ccd-residual).
 >
 > | | |
 > |---|---|
@@ -259,13 +259,13 @@ with the projections. It checks the equations the code evaluates; it does
 not check that a converged solution exists. The termination of the BCH
 series and the two-electron limit are not claims of the script.
 
-## 16.1.2 The algorithm
+## The algorithm {#ccd-ccsd-spin-orbital-algorithm}
 
 Both solvers share one setup and one loop shape.
 
 | Step | Quantity | Cost | Function |
 |---|---|---|---|
-| 1 | RHF; $B^P_{ov}, B^P_{oo}, B^P_{vv}$ (section 6.1) | $N_{\rm aux}N^2n$ | `transform_3center_*`, `build_b` |
+| 1 | RHF; $B^P_{ov}, B^P_{oo}, B^P_{vv}$ (section @sec:factorization-and-metric) | $N_{\rm aux}N^2n$ | `transform_3center_*`, `build_b` |
 | 2 | spatial chemist blocks, then antisymmetrized spin-orbital blocks $\langle pq\|rs\rangle$ | $N_{\rm aux}n_v^4$ for VVVV | `asym_oovv`, `asym_same`, `asym_ovvo` (CCD); `asym_phys`, 11 blocks (CCSD) |
 | 3 | MP2 guess $t_2 = \langle ij\|ab\rangle/(-\Delta)$, $t_1 = 0$ | | |
 | 4 | residual $r$ by `einsum!` GEMMs; the pp ladder dominates | $(2n_o)^2(2n_v)^4$ per iteration | |
@@ -305,9 +305,9 @@ counterpart, and the $(2n_v)^4$ VVVV block is held in core (CCSD holds it
 twice: the block and the per-iteration $W_{abef}$). Both drivers commit a
 `MemoryPlan` before the first allocation and refuse a job that cannot fit,
 naming the dominant term. This factor of 16 is why the production CCSD is
-the spin-adapted one of section 16.2.
+the spin-adapted one of section @sec:closed-shell-ccsd.
 
-## 16.1.3 Options
+## Options {#ccd-ccsd-spin-orbital-options}
 
 | Option | Values | Default | Effect |
 |---|---|---|---|
@@ -316,7 +316,7 @@ the spin-adapted one of section 16.2.
 | `CcConfig::diis_subspace` | integer | 6 | DIIS history length (library field) |
 | `[memory] budget_gb` | GB | auto | preflight of the plan |
 
-## 16.1.4 Numerical anchors
+## Numerical anchors {#ccd-ccsd-spin-orbital-numerical-anchors}
 
 From `site/src/reference/validation.md` and the tests it names.
 
@@ -325,7 +325,7 @@ From `site/src/reference/validation.md` and the tests it names.
 | RI-CCD vs PySCF `CCD` on the same DF integrals | H2O, NH3 / cc-pVDZ, def2-SVP | $\le 1.9\times10^{-11}$ Ha | `crates/ferric-cc/tests/validation_cc.rs` |
 | RI-CCSD, spin-orbital and spin-adapted, vs PySCF `CCSD` | H2O, NH3, CH4, HF / cc-pVDZ, def2-SVP and others | $\le 4.7\times10^{-11}$ Ha | `crates/ferric-cc/tests/validation_cc.rs` |
 
-## 16.1.5 Sources
+## Sources {#ccd-ccsd-spin-orbital-sources}
 
 | Source | What it gives |
 |---|---|
@@ -335,7 +335,7 @@ From `site/src/reference/validation.md` and the tests it names.
 
 **Known limits (2026-11-15).** The solvers of this section read restricted
 orbitals only (`mos_r` and `eps_r` assert a restricted result); an
-unrestricted reference goes to the spin-blocked solver of section 16.8 or its
+unrestricted reference goes to the spin-blocked solver of section @sec:uccsd or its
 cross-check `ccsd_uhf_spin_orbital`. Canonical HF orbitals are assumed
 ($f_{ia} = 0$, diagonal $f_{oo}$ and $f_{vv}$). The spin-orbital CCSD is a
 library cross-check with no CLI kind.

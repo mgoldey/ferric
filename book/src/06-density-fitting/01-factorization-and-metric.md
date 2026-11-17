@@ -1,6 +1,6 @@
-# 6.1 The factorization, the metric, Cholesky and eigendecomposition factors
+# The factorization, the metric, Cholesky and eigendecomposition factors {#factorization-and-metric}
 
-<!-- section: 6.1; status: edit; registry: none;
+<!-- status: edit; registry: none;
      theory: crates/ferric-mp2/theory.md#"1. Density fitting" -->
 
 A two-electron integral $(pq|rs)$ is the Coulomb energy between two charge
@@ -17,14 +17,14 @@ Every correlated method in ferric and most of its SCF builders use this
 factorization. This section fixes it once: how the fit is defined, why the
 metric carries the same operator as the integrals, the two ways the code
 takes the metric's inverse square root, and why that choice does not change
-an energy but does change what can go wrong. Section 10.1 uses the result
-for RI-MP2; chapter 18 uses it for RPA.
+an energy but does change what can go wrong. Section @sec:closed-shell-ri-mp2 uses the result
+for RI-MP2; chapter @sec:rpa uses it for RPA.
 
 The plan:
 
-1. Define the fit and derive the factorized integral (6.1.1).
-2. Show that any factor of $V^{-1}$ gives the same energy (6.1.2).
-3. Read the two factors the code uses and the rule that picks one (6.1.3).
+1. Define the fit and derive the factorized integral (@sec:factorization-and-metric-factorization).
+2. Show that any factor of $V^{-1}$ gives the same energy (@sec:factorization-and-metric-any-factor-gives-same).
+3. Read the two factors the code uses and the rule that picks one (@sec:factorization-and-metric-factors).
 
 | Index | Range | Code name |
 |---|---|---|
@@ -38,7 +38,7 @@ The plan:
 | Factors | `ferric-mp2/src/rimp2.rs::{cholesky_inverse_sqrt,eigh_inverse_sqrt,metric_inverse_sqrt}` |
 | CLI, Python | the auxiliary basis: `[mp2] auxbasis`, `[rpa] auxbasis`; the `auxbasis` argument of the `run_*` functions |
 
-## 6.1.1 The factorization
+## The factorization {#factorization-and-metric-factorization}
 
 Take one product density $\rho_x$, where $x$ stands for an orbital pair $pq$
 or an AO pair $\mu\nu$. We want coefficients $c_{Px}$ so that
@@ -74,20 +74,20 @@ $$ A_x^{\mathsf T}M^{\mathsf T}MA_y = (MA_x)^{\mathsf T}(MA_y) = \sum_P B^P_xB^P
 With $x = pq$ and $y = rs$ that is the factorization used everywhere in the
 book:
 
-$$ V_{PQ} = (P|\hat w|Q), \qquad B^P_{pq} = \sum_Q M_{PQ}\,(Q|\hat w|pq), \qquad M^{\mathsf T}M = V^{-1}, \qquad (pq|\hat w|rs) \approx \sum_P B^P_{pq}B^P_{rs} . \tag{6.1} $$
+$$ V_{PQ} = (P|\hat w|Q), \qquad B^P_{pq} = \sum_Q M_{PQ}\,(Q|\hat w|pq), \qquad M^{\mathsf T}M = V^{-1}, \qquad (pq|\hat w|rs) \approx \sum_P B^P_{pq}B^P_{rs} . \label{eq:factorization-and-metric-1} $$
 
 $V$ is the metric, $(Q|pq)$ the raw three-index integral and $B$ the dressed
-factor (chapter 0, section 7).
+factor (chapter @sec:notation, section @sec:notation-density-fitting).
 
 Check the complete-basis limit. If $\rho_x$ lies in the span of the
 $\chi_P$, say $\rho_x = \sum_P d_P\chi_P$, then $A_x = Vd$, the fit returns
-$c_x = d$, the residual is zero, and (6.1) is exact.
+$c_x = d$, the residual is zero, and (@eq:factorization-and-metric-1) is exact.
 
 **Why the metric carries $\hat w$.** The metric and the three-index integrals
 use the same operator. With that choice the residual is $\hat w$-orthogonal
-to the auxiliary space, and the error in (6.1) is the interaction of two
-residuals, second order in the fitting residual (section 10.1, equation 10.5;
-section 6.3 derives it and shows what happens when the kernels differ).
+to the auxiliary space, and the error in (@eq:factorization-and-metric-1) is the interaction of two
+residuals, second order in the fitting residual (section @sec:closed-shell-ri-mp2, equation @eq:df-quadratic-error;
+section @sec:robust-fit derives it and shows what happens when the kernels differ).
 A fit under any other kernel loses the orthogonality and leaves a
 first-order error. In the code the default is
 `RiMp2Config::metric_op = None`, which means the metric uses the integral
@@ -119,7 +119,7 @@ The operator lives in the engine, so the same loop builds the Coulomb, erf,
 erfc, terf, terfc and Yukawa metrics. Each unique shell pair $P \ge Q$ is
 computed once and written into both triangles.
 
-## 6.1.2 Any factor gives the same energy
+## Any factor gives the same energy {#factorization-and-metric-any-factor-gives-same}
 
 $M$ appears in the derivation above only through $M^{\mathsf T}M$. So
 $B^{\mathsf T}B = (pq|P)\,V^{-1}\,(Q|rs)$, the four-index approximation, is
@@ -132,7 +132,7 @@ that are not a polynomial in them. The dRPA energy depends on $B$ only
 through $B^{\mathsf T}B$, because $\det(1 + B G B^{\mathsf T}) =
 \det(1 + G B^{\mathsf T}B)$ for any diagonal $G$ (Sylvester's identity).
 
-> **Verified equation 6.2** · the energy depends only on $B^{\mathsf T}B$
+> **Verified equation {#eq:df-factor-freedom}** · the energy depends only on $B^{\mathsf T}B$
 >
 > The closed-shell dRPA energy computed from $B = L^{-1}(Q|ia)$ and from
 > $B = V^{-1/2}(Q|ia)$ is the same, and the log-determinant is invariant under
@@ -151,7 +151,7 @@ The dissertation and most of the literature write $M = V^{-1/2}$, the
 symmetric inverse square root (dissertation chapter 1, section 1.4.1, and
 chapter 4, Eq. 4.5). The code uses two factors and picks one by operator.
 
-## 6.1.3 The two factors
+## The two factors {#factorization-and-metric-factors}
 
 | Factor | $M$ | $M^{\mathsf T}M$ | Cost | Function |
 |---|---|---|---|---|
@@ -170,9 +170,9 @@ if matches!(op.kind, OperatorKind::ErfCoulomb | OperatorKind::Terf) {
 }
 ```
 
-**Cholesky is the default.** Section 10.1.2 shows why $M = L^{-1}$ satisfies
+**Cholesky is the default.** Section @sec:closed-shell-ri-mp2-density-fitting-making-affordable shows why $M = L^{-1}$ satisfies
 $M^{\mathsf T}M = V^{-1}$ and why the code prefers it to $V^{-1/2}$. Coulomb,
-erfc, terfc and Yukawa have positive definite kernels (section 4.1), so their
+erfc, terfc and Yukawa have positive definite kernels (section @sec:erf-terf), so their
 metric is positive definite and the factorization exists. A Cholesky failure
 on one of them is an error, and the run stops: it means an integral or
 auxiliary-basis defect, not near-dependence to be regularized away.
@@ -242,42 +242,42 @@ and dropped like the others.
 used on the other side of a product has to be transposed. Where a code path
 maps a vector $u$ in the dressed space back to auxiliary-function
 coefficients, it forms $c = M^{\mathsf T}u$. The PDEP eigenpotentials are the
-example (section 18.3): with the symmetric factor the transpose is invisible,
+example (section @sec:pdep): with the symmetric factor the transpose is invisible,
 and with $L^{-1}$ it is the difference between a right and a wrong
 eigenpotential.
 
-## 6.1.4 Algorithm
+## Algorithm {#factorization-and-metric-algorithm}
 
 | Step | Quantity | Cost | Function |
 |---|---|---|---|
 | 1 | $V_{PQ} = (P\vert\hat w\vert Q)$ | $N_{\mathrm{aux}}^2$ integrals | `coulomb_metric_2c` |
 | 2 | $M$: Cholesky or eigendecomposition by operator | $N_{\mathrm{aux}}^3$ | `metric_inverse_sqrt` |
-| 3 | $B = M\,(Q\vert pq)$ for the orbital blocks a method needs | $N_{\mathrm{aux}}^2\,n_pn_q$ | per method (section 10.1 for $B_{ov}$) |
+| 3 | $B = M\,(Q\vert pq)$ for the orbital blocks a method needs | $N_{\mathrm{aux}}^2\,n_pn_q$ | per method (section @sec:closed-shell-ri-mp2 for $B_{ov}$) |
 
 Step 2 runs once per intermediates build, outside any parallel region. Both
 factorizations may use threaded BLAS there.
 
-## 6.1.5 Options
+## Options {#factorization-and-metric-options}
 
 | Option | Effect |
 |---|---|
 | Auxiliary basis | the fitting space; the RI sets bundled with ferric are listed in `crates/ferric-core/src/basis/bundled` |
 | Operator | chooses the metric operator and, through it, the factor |
-| `RiMp2Config::metric_op` (library) | a metric operator different from the integral operator; a measurement option that makes the fitting error first order (section 6.3) |
+| `RiMp2Config::metric_op` (library) | a metric operator different from the integral operator; a measurement option that makes the fitting error first order (section @sec:robust-fit) |
 
-## 6.1.6 Numerical anchors
+## Numerical anchors {#factorization-and-metric-numerical-anchors}
 
 The factor choice has no anchor of its own; every RI anchor in the book
-exercises it. The RI-MP2 energy anchors (section 10.1) use the Cholesky
+exercises it. The RI-MP2 energy anchors (section @sec:closed-shell-ri-mp2) use the Cholesky
 factor. The attenuated PDEP anchors with an erf operator use the
 eigendecomposition: $\le 5.8\times10^{-11}$ Ha (erf) and $3.5\times10^{-11}$ Ha
 (erfc) against an independent reference (`site/src/reference/validation.md`).
 
-## 6.1.7 Sources
+## Sources {#factorization-and-metric-sources}
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-mp2/theory.md`, "1. Density fitting" | (6.1), the Cholesky default |
+| `crates/ferric-mp2/theory.md`, "1. Density fitting" | (@eq:factorization-and-metric-1), the Cholesky default |
 | `scripts/rpa_drpa_pdep_sympy.py` | factor freedom (checks `ri-factor-freedom`, `sylvester`) |
 | Dissertation, chapter 1 (section 1.4.1) and chapter 4 (Eq. 4.5) | the RI approximation with $V^{-1/2}$ |
 

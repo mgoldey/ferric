@@ -1,10 +1,10 @@
-# 19.4 COHSEX
+# COHSEX {#cohsex}
 
-<!-- section: 19.4; status: ready; registry: gw;
+<!-- status: ready; registry: gw;
      theory: crates/ferric-gw/theory.md#"5. COHSEX: the static limit" -->
 
 Suppose the electrons respond instantly to an added or removed charge. Then
-$W$ does not depend on frequency, the integral of section 19.3 is
+$W$ does not depend on frequency, the integral of section @sec:correlation-self-energy is
 elementary, and the self-energy splits into two pieces with a plain physical
 meaning. The screened exchange (SEX) is Hartree–Fock exchange with $v$
 replaced by $W$. The Coulomb hole (COH) is the energy of the electron in the
@@ -24,10 +24,10 @@ cost of treating the screening as instantaneous.
 | CLI | `method.kind = "gw"`, `[gw] method = "cohsex"` |
 | Python | `run_gw(method="cohsex")` |
 
-## 19.4.1 The static limit
+## The static limit {#cohsex-static-limit}
 
 **Do the integral.** Put a frequency-independent $W_{pq}$ into the integral
-of section 19.3. $W$ comes out of the integral, and the kernel integral is the
+of section @sec:correlation-self-energy. $W$ comes out of the integral, and the kernel integral is the
 one evaluated there, $\int_0^\infty a/(a^2+u^2)\,du = \tfrac\pi2\,\mathrm{sgn}(a)$:
 
 $$ -\frac1\pi\int_0^\infty W\,\frac{a}{a^2+u^2}\,du = -\tfrac12\, W\,\mathrm{sgn}(a), \qquad a = z - \epsilon_q . $$
@@ -46,7 +46,7 @@ The first term has the form of exchange: a sum over occupied orbitals with a
 minus sign. The second sums over the complete set of states, occupied and
 virtual.
 
-**Check the plasmon limit.** Section 19.3 gives the single-pole
+**Check the plasmon limit.** Section @sec:correlation-self-energy gives the single-pole
 self-energy in closed form. Hold the static value $W(0) = -2s/\Omega$ fixed and
 let $\Omega \to \infty$, so that $s = -W(0)\,\Omega/2$. An occupied term
 $s/(z-\epsilon_i+\Omega)$ tends to $s/\Omega = -\tfrac12W(0)$, and a virtual
@@ -54,12 +54,12 @@ term $s/(z-\epsilon_a-\Omega)$ tends to $-s/\Omega = +\tfrac12W(0)$. These are
 the two terms above: a response infinitely fast compared with the electronic
 energies is a static one.
 
-> **Verified equation 19.6** · the static-$W$ limit of the integral is COHSEX
+> **Verified equation {#eq:gw-cohsex-static-limit}** · the static-$W$ limit of the integral is COHSEX
 >
-> A frequency-independent $W_{pq}$ in the integral of box 19.4 gives
+> A frequency-independent $W_{pq}$ in the integral of box @eq:gw-sigma-c-closed-form gives
 > $-\tfrac12W\,\mathrm{sgn}(\mathrm{Re}(z-\epsilon_q))$, which at $z$ in the
 > gap is $-\sum_iW_{pi} + \tfrac12\sum_qW_{pq}$. The plasmon model of
-> section 19.2 reaches the same limit as $\Omega\to\infty$ at fixed $W(0)$.
+> section @sec:screened-interaction reaches the same limit as $\Omega\to\infty$ at fixed $W(0)$.
 >
 > | | |
 > |---|---|
@@ -72,13 +72,13 @@ energies is a static one.
 > <!-- verified: id=gw.cohsex.static-limit; script=scripts/gw_self_energy_sympy.py; claim=3; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-gw/src/cohsex.rs::cohsex_pieces; rust_test=ferric-gw/src/sigma.rs::sigma_c_static_w_in_gap_equals_cohsex_pieces; registry=gw -->
 
 **In the PDEP basis.** At $u = 0$ the dynamic matrix is diagonal with weights
-$w_\xi$ (section 19.2.2), so $W_{pq}(0) = \sum_\xi w_\xi (B^\xi_{pq})^2$.
+$w_\xi$ (section @sec:screened-interaction-pdep-basis), so $W_{pq}(0) = \sum_\xi w_\xi (B^\xi_{pq})^2$.
 Substitute:
 
 $$ \Delta\Sigma^{\rm SEX}_p = -\sum_i\sum_\xi w_\xi (B^\xi_{pi})^2, \qquad \Sigma^{\rm COH}_p = \tfrac12\sum_q\sum_\xi w_\xi (B^\xi_{pq})^2, \qquad w_\xi = \frac1{\lambda_\xi(0)} - 1 . $$
 
-Add the bare exchange of section 19.1. For a complete PDEP basis
-$\sum_\xi(B^\xi_{pi})^2 = (pi|ip)$ (box 19.3), and $1 + w_\xi = \lambda_\xi(0)^{-1}$,
+Add the bare exchange of section @sec:ri-factors-and-exchange. For a complete PDEP basis
+$\sum_\xi(B^\xi_{pi})^2 = (pi|ip)$ (box @eq:gw-pdep-complete), and $1 + w_\xi = \lambda_\xi(0)^{-1}$,
 so the full screened exchange is
 
 $$ \Sigma^x_p + \Delta\Sigma^{\rm SEX}_p = -\sum_i\sum_\xi \lambda_\xi(0)^{-1}\,(B^\xi_{pi})^2 . $$
@@ -138,11 +138,11 @@ puts a constant $W$ through the frequency integral `sigma_c_at_z` at
 $z = \epsilon_F$ and asserts `cohsex_pieces` to $10^{-9}$ Ha. The KS shift
 has its own test, `crates/ferric-gw/tests/cohsex_ks_shift.rs`.
 
-## 19.4.2 The algorithm
+## The algorithm {#cohsex-algorithm}
 
 | Step | Quantity | Cost | Function |
 |---|---|---|---|
-| 1 | $B$, $\Sigma^x$ | section 19.1 | `build_full_b`, `sigma_x_diag` |
+| 1 | $B$, $\Sigma^x$ | section @sec:ri-factors-and-exchange | `build_full_b`, `sigma_x_diag` |
 | 2 | $w_\xi$ from the static PDEP eigenvalues, $B^\xi$ | $N_{\rm pdep}N_{\rm aux}n_{\rm act}^2$ | `static_weights`, `project_b_into_pdep` |
 | 3 | $\Delta\Sigma^{\rm SEX}_p$, $\Sigma^{\rm COH}_p$ for every state, parallel over $p$ | $N_{\rm pdep}n_{\rm act}^2$ per state | `cohsex_pieces` |
 | 4 | $\epsilon^{\rm QP}_p$, KS shift if any | $O(n_{\rm act})$ | `run_cohsex` |
@@ -150,15 +150,15 @@ has its own test, `crates/ferric-gw/tests/cohsex_ks_shift.rs`.
 The two sums are independent per state: each $(\Delta\Sigma^{\rm SEX}_p, \Sigma^{\rm COH}_p)$
 pair is written once, so the parallel loop is bit-identical to the serial one.
 
-## 19.4.3 Options and limits
+## Options and limits {#cohsex-options-limits}
 
 The static $W$ of this section is also the kernel of the Bethe–Salpeter
-equation in section 19.8 and of the polarizability in section 19.9.
+equation in section @sec:bse-tda and of the polarizability in section @sec:rpax-static-polarizability.
 
 `sc-COHSEX`, the self-consistent variant, is not implemented: `GwMethod::ScCohsex`
 returns an error from both `run_gw` and the open-shell driver.
 
-## 19.4.4 Numerical anchors
+## Numerical anchors {#cohsex-numerical-anchors}
 
 From `site/src/reference/validation.md` (the COHSEX row):
 
@@ -167,7 +167,7 @@ From `site/src/reference/validation.md` (the COHSEX row):
 | COHSEX@HF against numpy on PySCF density-fitted integrals | H2O, N2 / cc-pVDZ | $9.4\times10^{-10}$ Ha | `cohsex_hf_h2o_n2_vs_numpy` in `crates/ferric-gw/tests/validation_gw.rs` |
 | COHSEX@PBE, same, with the static $\Sigma^x - v^{xc}$ | H2O, N2 / cc-pVDZ | $1.2\times10^{-9}$ Ha | `cohsex_pbe_h2o_n2_vs_numpy` in `crates/ferric-gw/tests/validation_gw.rs` |
 
-## 19.4.5 Sources
+## Sources {#cohsex-sources}
 
 | Source | What it gives |
 |---|---|

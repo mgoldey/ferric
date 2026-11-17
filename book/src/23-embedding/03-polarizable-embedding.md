@@ -1,6 +1,6 @@
-# 23.3 Polarizable embedding
+# Polarizable embedding {#polarizable-embedding}
 
-<!-- section: 23.3; status: edit; registry: qmmm;
+<!-- status: edit; registry: qmmm;
      theory: crates/ferric-scf/theory.md#"Thole polarizable embedding" -->
 
 Fixed charges cannot respond to the QM region, and a real environment does.
@@ -10,11 +10,11 @@ isotropic polarizability $\alpha_i$ on selected MM sites and lets an induced
 point dipole at each site respond to the total field there, including the
 field of the other dipoles (the Applequist model, with Thole damping). The
 dipoles depend on the density, so they are re-solved from the current density
-every SCF iteration, the same pattern as the reaction field of section 22.3.
+every SCF iteration, the same pattern as the reaction field of section @sec:reaction-field.
 
 The plan: the induction equations and the damping that keeps them finite
-(23.3.1), the integrals that put the dipoles into the Fock matrix (23.3.2),
-and the gradient (23.3.3), then the algorithm, exclusions, options and
+(@sec:polarizable-embedding-induction-model), the integrals that put the dipoles into the Fock matrix (@sec:polarizable-embedding-integrals),
+and the gradient (@sec:polarizable-embedding-gradient), then the algorithm, exclusions, options and
 anchors. One idea runs through all of it. The polarization energy is the
 value of a functional that is stationary in the dipoles, and every
 derivative, the Fock term and the gradient alike, must come from that
@@ -40,12 +40,12 @@ T1 to T6.
 | CLI | `[qmmm] polarizabilities_angstrom3` and `thole_a`, for `task = "energy"` on `rhf`, `uhf`, `ksdft` only (`examples/water-qmmm-thole.toml`) |
 | Python | `QmmmSystem(polarizabilities_angstrom3=...)` with `run_qmmm(thole_a=...)`; `QmmmResult.e_pol`, `induced_dipoles()` |
 
-## 23.3.1 The induction model
+## The induction model {#polarizable-embedding-induction-model}
 
 Each site's dipole is its polarizability times the field it feels. That
 field has three parts: the QM nuclei and total density
 (`ferric-scf/src/qmmm.rs::electric_field_at_points`, the point-charge
-nuclear-attraction derivative blocks of section 23.2.3), the permanent MM
+nuclear-attraction derivative blocks of section @sec:qmmm-boundaries-energies-forces), the permanent MM
 charges, and the other induced dipoles, through the tensor $\mathsf T_{ij}$:
 
 $$ \boldsymbol\mu_i = \alpha_i\Big[\mathbf E_i^{\mathrm{QM}}(P) + \mathbf E_i^{\mathrm{perm}} + \sum_{j\neq i}\mathsf T_{ij}\boldsymbol\mu_j\Big] . $$
@@ -85,7 +85,7 @@ default $a$ this holds for $u > 0.304$ (the mode across the axis fails first;
 the mode along it fails at $u = 0.142$), against $u < 1.26$ for the bare
 tensor. These pair thresholds come from evaluating the formulas above
 numerically; the proof script does not assert them. Pairs closer than that
-can be removed from the coupling with exclusions (section 23.3.5).
+can be removed from the coupling with exclusions (section @sec:polarizable-embedding-exclusions).
 
 Any spherically smeared dipole satisfies $\lambda_5 = \lambda_3 - \tfrac{u}{3}\,d\lambda_3/du$.
 The pair above does, because $d\lambda_3/dv = \tfrac{v^2}{2}e^{-v}$. The
@@ -125,7 +125,7 @@ t[a][b] = (3.0 * lam5 * rhat[a] * rhat[b] - lam3 * eye) * inv_r3;
 Move the unknown dipoles to the left. The induction equations become one
 dense linear system:
 
-**Equation 23.4, the induction system, the energy and the Fock term.**
+**Equation @eq:thole-fock-term, the induction system, the energy and the Fock term.**
 
 $$ \big[\operatorname{diag}(\alpha^{-1}) - \mathsf T\big]\,\boldsymbol\mu = \mathbf E^{\mathrm{ext}}, \qquad E_{\mathrm{pol}} = -\tfrac12\sum_i\boldsymbol\mu_i\cdot\mathbf E_i^{\mathrm{ext}}, \qquad V^{\mathrm{ind}}_{\mu\nu} = -\sum_i\boldsymbol\mu_i\cdot\mathbf F_i^{\mu\nu}, $$
 
@@ -163,11 +163,11 @@ $\mathbf E^{\mathrm{QM}}_i = \mathbf E^{\mathrm{nuc}}_i + \sum_{\mu\nu}P_{\mu\nu
 $$ V^{\mathrm{ind}}_{\mu\nu} = \frac{\partial W}{\partial P_{\mu\nu}}\Big|_{\boldsymbol\mu^*} = -\sum_i\boldsymbol\mu_i\cdot\mathbf F_i^{\mu\nu} , $$
 
 with a factor of 1, not $\tfrac12$. The same variational structure gives the
-COSMO Fock term of section 22.5. $V^{\mathrm{ind}}$ is added to every spin Fock
+COSMO Fock term of section @sec:conductor-limit-and-cosmo. $V^{\mathrm{ind}}$ is added to every spin Fock
 matrix, and $E_{\mathrm{pol}}$ is added outside the
-$\tfrac12\mathrm{Tr}[P(h+F)]$ trace, the PCM convention of section 22.3.
+$\tfrac12\mathrm{Tr}[P(h+F)]$ trace, the PCM convention of section @sec:reaction-field.
 
-> **Verified equation 23.4** · stationarity and the Fock term
+> **Verified equation {#eq:thole-fock-term}** · stationarity and the Fock term
 >
 > $\boldsymbol\alpha^{-1} - \mathsf T$ is symmetric because $\mathsf T_{ab} = \partial_a\partial_b\phi$
 > with $\phi' = -\lambda_3/r^2$, which holds because $\lambda_5 = \lambda_3 - (u/3)\,d\lambda_3/du$
@@ -228,11 +228,11 @@ permanent charges. `mm_only_polarization_energy` returns that constant (the
 dipoles induced by the permanent charges alone, with the QM region ignored),
 to subtract when an interaction energy is wanted.
 
-## 23.3.2 The integrals
+## The integrals {#polarizable-embedding-integrals}
 
 $\mathbf F_i^{\mu\nu}$ is the integral of the field of a point dipole at the
 site. A p-shell Gaussian at the site delivers it through the same
-three-index machinery as the smeared charges of section 23.1
+three-index machinery as the smeared charges of section @sec:external-potentials
 (`SiteBasis::new(sites, 1)`). The exponent `dipole_zeta` is $10^4$
 Bohr$^{-2}$ by default, a width $\zeta_p^{-1/2}$ of 0.01 Bohr, so the shell is
 numerically a point dipole but not an exact one.
@@ -280,7 +280,7 @@ in the energy on the multi-site cases. The p-shell pin test does not exercise
 that sign. The comparison with an independent PySCF prototype
 (`matches_pyscf_prototype_three_sites` and its siblings) does. The scaling
 uses `norm_int_p_shell` and not `SiteBasis::norm_int`, which is the $l = 0$
-charge normalization of section 23.1.
+charge normalization of section @sec:external-potentials.
 
 At finite $\zeta_p$ the Fock and gradient integrals are those of a Gaussian
 dipole of width $\zeta_p^{-1/2} \approx 0.01$ Bohr, while
@@ -288,7 +288,7 @@ $\mathbf E^{\mathrm{QM}}$ in the induction uses the point field. So
 $V^{\mathrm{ind}}$ equals $\partial W/\partial P$ up to that finite-width
 error.
 
-## 23.3.3 The gradient
+## The gradient {#polarizable-embedding-gradient}
 
 Two different formulas are needed, one for the QM atoms and one for the
 sites, and the second is where a naive derivation goes wrong.
@@ -330,7 +330,7 @@ $-\tfrac12\boldsymbol\mu_j\cdot\mathsf T_{ji}\boldsymbol\mu_i$. The symmetry
 $\mathsf T_{ji}(\mathbf R_j,\mathbf R_i) = \mathsf T_{ij}(\mathbf R_i,\mathbf R_j)^{\mathsf T}$
 makes the two equal, so together they give coefficient 1:
 
-**Equation 23.5, the site gradient of the polarization energy.**
+**Equation @eq:thole-site-gradient, the site gradient of the polarization energy.**
 
 $$ \frac{\partial E_{\mathrm{pol}}}{\partial\mathbf R_i} = -\boldsymbol\mu_i\cdot\frac{\partial\mathbf E_i^{\mathrm{ext}}}{\partial\mathbf R_i} - \sum_{j\neq i}\boldsymbol\mu_i\cdot\frac{\partial\mathsf T_{ij}}{\partial\mathbf R_i}\cdot\boldsymbol\mu_j , $$
 
@@ -342,7 +342,7 @@ The field term has three parts in the code: the electronic part by
 translational invariance of the p-shell integral, $-(\text{block 1} + \text{block 2})$,
 and the QM-nuclear and permanent-charge parts in closed form.
 
-> **Verified equation 23.5** · the site and charge gradients
+> **Verified equation {#eq:thole-site-gradient}** · the site and charge gradients
 >
 > On a classical three-site model with fixed point charges standing in for the
 > QM field, the transcribed site and charge gradients, with $\boldsymbol\mu$ held
@@ -364,7 +364,7 @@ and the QM-nuclear and permanent-charge parts in closed form.
 > <!-- verified: id=thole.site.gradient; script=scripts/thole_polarizable_sympy.py; claim=T3; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/polarizable.rs::site_gradient; rust_test=ferric-scf/tests/qmmm_polarizable.rs::site_force_with_polarizable_sites_matches_finite_difference; registry=qmmm -->
 
 The code records a measurement on a classical two-site Thole system with no
-QM region. Equation 23.5 reproduced central-difference gradients to
+QM region. Equation @eq:thole-site-gradient reproduced central-difference gradients to
 $10^{-8}$ absolute on every component, magnitude and sign. The naive
 $-\tfrac12\boldsymbol\mu\cdot\partial\mathbf E/\partial\mathbf R$ was off by a
 factor of roughly 2 to 20 and had the wrong sign on 2 of the 6 components.
@@ -404,7 +404,7 @@ for k in 0..3 {
 | $\mathsf T_{ij}$ at $\mathbf R_i \pm h\hat{\mathbf e}_k$ | `t_p`, `t_m` |
 | $\boldsymbol\mu_i\cdot\mathsf T_{ij}\cdot\boldsymbol\mu_j$ at the two points | `dot_p`, `dot_m` |
 | $\partial(\boldsymbol\mu_i\cdot\mathsf T_{ij}\cdot\boldsymbol\mu_j)/\partial R_{i,k}$ | `d_dot_dr`, $(\mathtt{dot\_p}-\mathtt{dot\_m})/2h$ |
-| coefficient $-1$ of equation 23.5 | `-1.0` |
+| coefficient $-1$ of equation @eq:thole-site-gradient | `-1.0` |
 
 Why a finite difference? The analytic form is
 $\partial_k\mathsf T_{ab} = \partial_a\partial_b\partial_k\phi$, with the $\phi$
@@ -421,15 +421,15 @@ $\partial E_{\mathrm{pol}}/\partial\mathbf R_c = -\sum_i\boldsymbol\mu_i\cdot\pa
 summed over every site $i$ that sees charge $c$ (not colocated with it or
 excluded from it). It is the other half of the point-charge field
 derivative that `site_gradient` computes and discards. It is separate from
-the classical charge–nucleus energy of section 23.1, and `mm_forces`
-(section 23.2) does not include it. Use `full_gradient_with_polarizable`,
+the classical charge–nucleus energy of section @sec:external-potentials, and `mm_forces`
+(section @sec:qmmm-boundaries) does not include it. Use `full_gradient_with_polarizable`,
 which adds the QM rows, the site rows and the charge rows to
 `full_gradient`.
 
 Check the trivial limit. With every $\alpha_i\to0$ the dipoles vanish and
 every term of this section is zero (claim T5).
 
-## 23.3.4 The algorithm
+## The algorithm {#polarizable-embedding-algorithm}
 
 | Step | Quantity | Cost | Function |
 |---|---|---|---|
@@ -451,7 +451,7 @@ run with `polarizable = None`
 `polarizable_empty_sites_is_bit_identical_to_plain_scf` in
 `crates/ferric-scf/tests/qmmm_polarizable.rs`).
 
-## 23.3.5 Exclusions
+## Exclusions {#polarizable-embedding-exclusions}
 
 `PolarizableSites::exclusions` is a set of site-index pairs with two
 effects. $\mathsf T_{ij}$ is zero for the pair, so neither polarizes the
@@ -469,7 +469,7 @@ the point-charge field $q\,\mathbf r/r^3$, not the field of the Gaussian
 (`permanent_field_at_sites`). The gradients use the same point form, so the
 gradient is that of the energy computed.
 
-## 23.3.6 Options
+## Options {#polarizable-embedding-options}
 
 | Option | Values | Default | Effect |
 |---|---|---|---|
@@ -479,7 +479,7 @@ gradient is that of the energy computed.
 | `PolarizableSites::max_sites_dense` | integer | 4000 | the dense-solve ceiling; more sites is a typed error |
 | a site with non-positive or non-finite $\alpha$ | | | an error |
 
-## 23.3.7 Numerical anchors
+## Numerical anchors {#polarizable-embedding-numerical-anchors}
 
 | Quantity | System | Result | Source |
 |---|---|---|---|
@@ -487,12 +487,12 @@ gradient is that of the energy computed.
 | one site 30 Å away | same | $E_{\mathrm{pol}}$ within $7.7\times10^{-8}$ relative of the classical limit $-\tfrac12\alpha\lvert E_0\rvert^2$ | same |
 | $\alpha\to0$ | same | PySCF `qmmm.mm_charge` | same |
 
-The second row is the one-site check of section 23.3.1 measured at the far
+The second row is the one-site check of section @sec:polarizable-embedding-induction-model measured at the far
 limit: one distant site sees an almost uniform field $\mathbf E_0$ and no
 other dipole. The gradients in the first row are 5-point finite differences
 of the reference model, not an analytic reference.
 
-## 23.3.8 Sources
+## Sources {#polarizable-embedding-sources}
 
 | Source | What it gives |
 |---|---|

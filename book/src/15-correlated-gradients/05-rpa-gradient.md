@@ -1,6 +1,6 @@
-# 15.5 RI-dRPA gradient
+# RI-dRPA gradient {#rpa-gradient}
 
-<!-- section: 15.5; status: ready; registry: rpa-gradient;
+<!-- status: ready; registry: rpa-gradient;
      theory: crates/ferric-rpa/theory.md#"Analytic nuclear gradient (closed-shell RI-dRPA, HF reference)", "Lagrangian and Z-vector", "Gradient", "Frozen core" -->
 
 The direct RPA correlation energy sums ring diagrams to all orders: an
@@ -11,13 +11,13 @@ same orbital response. Unlike MP2 it is an integral over imaginary frequency
 of a log-determinant, so the densities that feed the response have to be
 collected frequency by frequency.
 
-The analytic dRPA gradient differentiates the energy of section 18.3 at full
+The analytic dRPA gradient differentiates the energy of section @sec:pdep at full
 rank on a fixed $n$-point imaginary-frequency grid. The nodes and weights
 depend only on $(n, u_0)$, so the grid has no geometry derivative, and the
 result is the exact derivative of the $n$-point sum, not of the converged
 integral. The frequency loop produces a three-index density $\Gamma$ and
 occupied and virtual densities $P$; from there the RI-MP2 machinery of
-section 15.2 is reused unchanged.
+section @sec:rimp2-gradient is reused unchanged.
 
 | Symbol | Meaning | Code name |
 |---|---|---|
@@ -35,7 +35,7 @@ section 15.2 is reused unchanged.
 | CLI | `method.kind = "pdep-rpa"`, `task = "optimize"`, `[rpa] gradient = "analytic"` |
 | Python | `run_optimize(..., method="pdep-rpa", rpa_gradient="analytic")`; `run_frequencies(..., method="pdep-rpa")` |
 
-## 15.5.1 The densities
+## The densities {#rpa-gradient-densities}
 
 The energy on the grid is
 
@@ -61,11 +61,11 @@ $Q$ is symmetric, so both terms give the same trace, and
 $\partial S/\partial B^P_{ia} = 2\,g(e_{ia})\,(QB)^P_{ia}$. Multiply by the
 prefactor $w_k/2\pi$ and sum over nodes:
 
-$$ \Gamma^P_{ia} = \frac{\partial E_c}{\partial B^P_{ia}} = \frac1\pi\sum_kw_k\,g_k(e_{ia})\,(Q_kB)^P_{ia} . \tag{15.12} $$
+$$ \Gamma^P_{ia} = \frac{\partial E_c}{\partial B^P_{ia}} = \frac1\pi\sum_kw_k\,g_k(e_{ia})\,(Q_kB)^P_{ia} . \label{eq:rpa-grad-densities} $$
 
 **Through the orbital energies.** With $M_k = B^{\mathsf T}Q_kB$:
 
-$$ P_{ab} = \frac{1}{2\pi}\sum_kw_k\sum_i(M_k)_{ia,ib}\,g_k^{[1]}(e_{ia}, e_{ib}), \qquad P_{ij} = -\frac{1}{2\pi}\sum_kw_k\sum_a(M_k)_{ia,ja}\,g_k^{[1]}(e_{ia}, e_{ja}), \tag{15.13} $$
+$$ P_{ab} = \frac{1}{2\pi}\sum_kw_k\sum_i(M_k)_{ia,ib}\,g_k^{[1]}(e_{ia}, e_{ib}), \qquad P_{ij} = -\frac{1}{2\pi}\sum_kw_k\sum_a(M_k)_{ia,ja}\,g_k^{[1]}(e_{ia}, e_{ja}), \label{eq:rpa-gradient-2} $$
 
 $$ g^{[1]}(x, y) = \frac{g(x) - g(y)}{x - y} = \frac{4(u^2 - xy)}{(u^2 + x^2)(u^2 + y^2)} . $$
 
@@ -90,7 +90,7 @@ $\ln(1 + \lambda) - \lambda = -\tfrac12\lambda^2 + O(\lambda^3)$. Replacing $S$
 by $-\tfrac12\operatorname{tr}\Pi^2$ makes $Q_k = -\Pi_k$. As $n \to \infty$
 this gives twice the opposite-spin MP2 energy, which is SCS-MP2 at
 $(c_{\mathrm{OS}}, c_{\mathrm{SS}}) = (2, 0)$. The densities then become the
-SCS-MP2 densities of section 15.2 with $\Gamma = 4x$ and
+SCS-MP2 densities of section @sec:rimp2-gradient with $\Gamma = 4x$ and
 $P = P^{\mathrm{MP2}} + P^{\mathrm{MP2}\,\mathsf T}$. That limit is the
 exactness anchor against independent code.
 
@@ -131,7 +131,7 @@ accumulate_p_vv(&mut out.p_vv, b_ov.view(), q_b.view(), &gaps, omega, ps, no, nv
 // ... (accumulate_p_oo with -ps)
 ```
 
-> **Verified equations 15.12 and 15.13** · the densities and the gradient
+> **Verified equations @eq:rpa-grad-densities and @eq:rpa-gradient-2** · the densities and the gradient
 >
 > On a toy closed-shell system with $x$-dependent $S$, $h$ and exactly
 > factorized integrals, $\Gamma$ and $P$ are the derivatives of
@@ -151,17 +151,17 @@ accumulate_p_vv(&mut out.p_vv, b_ov.view(), q_b.view(), &gaps, omega, ps, no, nv
 >
 > <!-- verified: id=rpa.grad.densities; script=scripts/rpa_gradient_sympy.py; claim=gradient-vs-fd; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-rpa/src/gradient_analytic.rs::{rpa_ri_densities,frequency_response,g_divided_difference}; rust_test=ferric-rpa/tests/rpa_analytic_gradient.rs::h2o_matches_fd5_of_the_same_quadrature; registry=rpa-gradient -->
 
-## 15.5.2 Lagrangian, Z-vector and frozen core
+## Lagrangian, Z-vector and frozen core {#rpa-gradient-lagrangian-z-vector-frozen}
 
 The orbital derivative of $E_c$ is collected as $\sum_{pq}Y_{pq}U_{pq}$ with
 $Y_{pi} = \sum_{Pa}\Gamma^P_{ia}B^P_{pa}$, $Y_{pa} = \sum_{Pi}\Gamma^P_{ia}B^P_{ip}$
 and $2P_{pq}\varepsilon_p$ on the $oo$ and $vv$ blocks. These are the
-RPA counterparts of the Lagrangian matrix $I$ of (15.6). The Z-vector
-right-hand side has the same shape as (15.7):
+RPA counterparts of the Lagrangian matrix $I$ of (@eq:rimp2-gradient-2). The Z-vector
+right-hand side has the same shape as (@eq:mp2-grad-assembly):
 
-$$ L_{ai} = Y_{ai} - Y_{ia} + 4\big(\mathbf C_v^{\mathsf T}G[P^{\mathrm{AO}}]\mathbf C_o\big)_{ai}, \tag{15.14} $$
+$$ L_{ai} = Y_{ai} - Y_{ia} + 4\big(\mathbf C_v^{\mathsf T}G[P^{\mathrm{AO}}]\mathbf C_o\big)_{ai}, \label{eq:rpa-gradient-3} $$
 
-and the solve is the closed-shell equation (15.3). With core orbitals $I$
+and the solve is the closed-shell equation (@eq:zvec-hessian-product). With core orbitals $I$
 frozen, $\Gamma$ and $P_{ij}$ run over the active occupied orbitals and the
 canonical condition $F_{Ij} = 0$ adds the core-active block
 $P_{Ij} = -Y_{Ij}/\big(2(\varepsilon_I - \varepsilon_j)\big)$ to $P_{oo}$.
@@ -170,42 +170,42 @@ Why can the RI-MP2 code take over from here? It reads the amplitudes only
 through $x$ and the unrelaxed densities $p$, and it treats them as the
 derivatives of the energy: $\partial E/\partial B = 4x$ (consistent with
 Euler's theorem, since $E^{(2)} = \sum B\cdot x$ is of degree 4 in $B$) and
-$\partial E/\partial\varepsilon_k = 2p_{kk}$ (section 15.2.1). Give it
+$\partial E/\partial\varepsilon_k = 2p_{kk}$ (section @sec:rimp2-gradient-densities-right-hand-side). Give it
 $x = \Gamma/4$ and $p = P/2$ and every later step differentiates $E_c$
 instead of $E^{(2)}$. So the Lagrangian matrix, the frozen-core block, the
 Z-vector, the relaxed and energy-weighted densities and the RI response are
 the RI-MP2 functions; the RPA intermediates enter through
 `Mp2Intermediates::from_ri_densities`.
 
-## 15.5.3 The algorithm
+## The algorithm {#rpa-gradient-algorithm}
 
 | Step | Quantity | Function |
 |---|---|---|
 | 1 | RHF, density convergence $10^{-9}$ | `solve_rhf_warm` |
 | 2 | scope check | `check_analytic_scope` |
 | 3 | per node: $\Pi_k$, its eigendecomposition, $S$, $Q_kB$; accumulate $E_c$, $x$, $P_{oo}$, $P_{vv}$ | `rpa_ri_densities`, `frequency_response`, `accumulate_p_vv`, `accumulate_p_oo` |
-| 4 | Lagrangian matrix, Z-vector, assembly, RI response | the RI-MP2 functions of section 15.2 |
+| 4 | Lagrangian matrix, Z-vector, assembly, RI response | the RI-MP2 functions of section @sec:rimp2-gradient |
 
 Per node the cost is one $n_{\mathrm{aux}} \times n_{\mathrm{aux}}$
 eigendecomposition, $Q_kB$ ($n_{\mathrm{aux}}^2 n_on_v$), and the RI-MP2
 density cost for the $P$ blocks.
 
-## 15.5.4 Options and scope
+## Options and scope {#rpa-gradient-options-scope}
 
 | Option | Values | Default | Effect |
 |---|---|---|---|
 | `[rpa] gradient` (Python `rpa_gradient`) | `"fd"`, `"analytic"` | this one where `check_analytic_scope` accepts the configuration, else `"fd"` | the finite-difference gradient (3-point, $6N_{\mathrm{at}}$ energies) or this one |
-| `[rpa] n_quad`, `u0`, `quadrature` | | as in section 18.2 | the grid that is differentiated |
+| `[rpa] n_quad`, `u0`, `quadrature` | | as in section @sec:quadratures | the grid that is differentiated |
 | `[rpa] frozen_core` | integer | as for the energy | the core-active block |
 
 An explicit `"analytic"` raises, and an unset gradient falls back to `"fd"`
 and records the reason in the certificate, when `check_analytic_scope`
 refuses: `trunc_thresh` $\ne 0$, the Laplace $\chi_0$ backend, a non-dense
 `chi0_sparsity`, and a non-Coulomb operator. Each of these changes the
-energy away from the full-rank dense sum that (15.12)–(15.13) differentiate.
+energy away from the full-rank dense sum that (@eq:rpa-grad-densities)–(@eq:rpa-gradient-2) differentiate.
 `[rpa] xc` (a KS reference) is refused for any pdep-rpa gradient.
 
-## 15.5.5 Numerical anchors
+## Numerical anchors {#rpa-gradient-numerical-anchors}
 
 From `crates/ferric-rpa/tests/rpa_analytic_gradient.rs` (distorted H2O and
 NH3 / cc-pVDZ, cc-pvdz-ri, every Cartesian component nonzero). The FD
@@ -231,11 +231,11 @@ $2.25\times10^{-8}$ Ha/Bohr (one run each, one BLAS thread, loaded box).
 The finite-difference gradient needs $6N_{\mathrm{at}}$ energies; the
 analytic one needs one energy pass and one Z-vector.
 
-## 15.5.6 Sources
+## Sources {#rpa-gradient-sources}
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-rpa/theory.md`, "Analytic nuclear gradient (closed-shell RI-dRPA, HF reference)" and its subsections | (15.12)–(15.14), $W$, the frozen-core block |
+| `crates/ferric-rpa/theory.md`, "Analytic nuclear gradient (closed-shell RI-dRPA, HF reference)" and its subsections | (@eq:rpa-grad-densities)–(@eq:rpa-gradient-3), $W$, the frozen-core block |
 | `scripts/rpa_gradient_sympy.py` | the proofs |
 | Burow, Bates, Furche and Eshuis, JCTC 10, 180 (2014) | the frequency-integrated relaxed-density route (cited in `theory.md`) |
 

@@ -1,6 +1,6 @@
-# 3.7 Basis functions and their derivatives on a grid
+# Basis functions and their derivatives on a grid {#ao-grid}
 
-<!-- section: 3.7; status: edit; registry: none;
+<!-- status: edit; registry: none;
      theory: crates/ferric-integrals/theory.md#"Basis functions on a grid" -->
 
 Some quantities have no closed-form integral over Gaussians. An
@@ -30,7 +30,7 @@ factors into an angular polynomial and a radial function of $r^2$,
 $$ \chi(\mathbf r) = A(x, y, z)\, \mathcal R(r^2), \qquad \mathcal R(r^2) = \sum_k d_k N(\alpha_k, l)\, e^{-\alpha_k r^2}, $$
 
 with $A$ a Cartesian monomial or a solid harmonic. All components of a shell
-share $\mathcal R$ (section 3.1 fixed one normalization per shell), so the
+share $\mathcal R$ (section @sec:one-electron fixed one normalization per shell), so the
 radial sum is done once per shell and point, and only the cheap polynomial
 $A$ changes from component to component.
 
@@ -89,7 +89,7 @@ Cartesian shells in CCA order. The evaluators support $l \le 4$ and return
 `UnsupportedL` above (`eval_basis_on_points`, `eval_basis_and_grad_on_points`,
 `eval_basis_grad_hess_on_points`).
 
-## 3.7.1 Memory
+## Memory {#ao-grid-memory}
 
 | Evaluation | Planes of $N \times N_g$ doubles |
 |---|---|
@@ -110,7 +110,7 @@ batch. For scale: 500 basis functions on $10^5$ points with Hessians is
 $13 \times 8 \times 500 \times 10^5$ bytes, 5.2 GB, which is why grid code
 works in batches.
 
-## 3.7.2 Numerical anchors
+## Numerical anchors {#ao-grid-numerical-anchors}
 
 | What | Test | Bar |
 |---|---|---|

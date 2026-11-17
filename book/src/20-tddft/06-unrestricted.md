@@ -1,11 +1,11 @@
-# 20.6 Unrestricted references and $\langle S^2\rangle$
+# Unrestricted references and $\langle S^2\rangle$ {#unrestricted}
 
-<!-- section: 20.6; status: ready; registry: tddft;
+<!-- status: ready; registry: tddft;
      theory: crates/ferric-tddft/theory.md#"10. Unrestricted (UHF / UKS) references" -->
 
 A radical such as NH2 has one more $\alpha$ electron than $\beta$. In a UHF
 or UKS reference the extra $\alpha$ electron pulls the $\alpha$ orbitals
-into a different shape from the $\beta$ ones. Section 20.5 split the
+into a different shape from the $\beta$ ones. Section @sec:triplets split the
 response on $X_\alpha \pm X_\beta$, and that needed identical spatial
 orbitals for both spins, so the split is gone here. ferric solves the
 spin-conserving problem over both spins at once. Its roots are not spin
@@ -27,33 +27,33 @@ state.
 | CLI | `method.kind = "tda"` or `"tddft"` with multiplicity > 1 |
 | Python | `run_tddft(...)` on a UHF or UKS reference; the result carries `s2` per root |
 
-## 20.6.1 The two-spin problem
+## The two-spin problem {#unrestricted-spin-problem}
 
 The space is every spin-conserving single excitation: the compound indices
 $ia\alpha$ ($d_\alpha = n^\alpha_on^\alpha_v$) followed by $ia\beta$
 ($d_\beta$), of dimension $d_\alpha + d_\beta$. Each orbital belongs to its
-own spin, and the matrices are the spin-orbital ones of section 20.5 with
+own spin, and the matrices are the spin-orbital ones of section @sec:triplets with
 that one change:
 
 $$ A_{ia\sigma,jb\tau} = \delta_{\sigma\tau}\delta_{ij}\delta_{ab}(\varepsilon^\sigma_a - \varepsilon^\sigma_i)
 + (i_\sigma a_\sigma|j_\tau b_\tau) + (i_\sigma a_\sigma|f_{\sigma\tau}|j_\tau b_\tau)
-- \delta_{\sigma\tau}\,c\,(i_\sigma j_\sigma|a_\sigma b_\sigma), \tag{20.10} $$
+- \delta_{\sigma\tau}\,c\,(i_\sigma j_\sigma|a_\sigma b_\sigma), \label{eq:td-unrestricted-matrices} $$
 
 $$ B_{ia\sigma,jb\tau} = (i_\sigma a_\sigma|j_\tau b_\tau) + (i_\sigma a_\sigma|f_{\sigma\tau}|j_\tau b_\tau)
 - \delta_{\sigma\tau}\,c\,(i_\sigma b_\sigma|j_\sigma a_\sigma) , $$
 
-with $c(pq|rs)$ the exchange combination of section 20.4 (global, HF or
+with $c(pq|rs)$ the exchange combination of section @sec:rsh (global, HF or
 range-separated). These are the blocks of PySCF's `tdscf.uhf.get_ab`:
 $\mathbf A_{\alpha\alpha}$, $\mathbf A_{\alpha\beta}$ and
 $\mathbf A_{\beta\beta}$, with
 $\mathbf A_{\beta\alpha} = \mathbf A_{\alpha\beta}^{\mathsf T}$. TDA, the
-Casida reduction and the Davidson solvers of section 20.1 apply unchanged to
+Casida reduction and the Davidson solvers of section @sec:response apply unchanged to
 the $(d_\alpha + d_\beta)$-dimensional matrices.
 
 ### Assembly
 
-Equation 20.10 reuses the restricted builders. Each same-spin block is the
-restricted $\mathbf A$ or $\mathbf B$ of section 20.1.1 over that spin's
+Equation @eq:td-unrestricted-matrices reuses the restricted builders. Each same-spin block is the
+restricted $\mathbf A$ or $\mathbf B$ of section @sec:response-matrices over that spin's
 orbitals and RI tensors, with that spin's exchange and Coulomb coefficient
 1 in place of 2: there is one $(ia|jb)$ per spin pair and no spin
 adaptation. The cross-spin block is the Coulomb term alone,
@@ -100,7 +100,7 @@ A unit vector of spin $\tau$ gives column $jb\tau$ of both spin blocks,
 $(ia\sigma|f_{\sigma\tau}|jb\tau)$, with the normalization of the
 restricted block. At a restricted point
 $K_{\alpha\alpha} \pm K_{\alpha\beta}$ is the singlet or triplet block of
-section 20.5. The dense path applies the operator to the identity, checks
+section @sec:triplets. The dense path applies the operator to the identity, checks
 the asymmetry against `FXC_BLOCK_ASYMMETRY_TOL` and symmetrizes.
 
 Every functional the restricted path accepts is accepted here, $\tau$-only
@@ -117,14 +117,14 @@ and the occupied orbitals are the lowest $n_\sigma$ of each spin.
 - **A triplet request** is refused, since the roots are not spin-adapted.
 - **An ROHF or ROKS reference** is refused. ROHF orbitals diagonalize one
   Roothaan-coupled Fock operator, not separate $\alpha$ and $\beta$ Fock
-  operators, so equation 20.10, with orbital-energy differences on its
+  operators, so equation @eq:td-unrestricted-matrices, with orbital-energy differences on its
   diagonal, is not the response of that reference. The ROKS response needs
   the ROHF orbital-rotation Hessian.
 
 ### The closed-shell limit
 
 For a closed-shell molecule $C_\alpha = C_\beta$, and the problem splits on
-$X_\alpha \pm X_\beta$ as in section 20.5. The unrestricted roots are the
+$X_\alpha \pm X_\beta$ as in section @sec:triplets. The unrestricted roots are the
 union of the restricted singlets and triplets, with $\langle S^2\rangle = 0$
 and 2. Only two things differ from the restricted run: rounding, since the
 Coulomb term is summed as $B^{\mathsf T}B + B^{\mathsf T}B$ in place of
@@ -140,9 +140,9 @@ $$ \langle 0|\mathbf r|n\rangle = \sum_\sigma\sum_{ia}(X+Y)_{ia\sigma,n}\langle 
 f_n = \tfrac23\,\Omega_n\,|\langle 0|\mathbf r|n\rangle|^2 , $$
 
 as in PySCF `tdscf.uhf`. For a closed shell, $X_\alpha = X_\beta = X/\sqrt2$
-turns the spin sum into equation 20.6.
+turns the spin sum into equation @eq:td-osc-sum-rule.
 
-> **Verified equation 20.10** · the unrestricted matrices
+> **Verified equation @eq:td-unrestricted-matrices** · the unrestricted matrices
 >
 > For a random model with 2 $\alpha$ and 1 $\beta$ occupied orbitals,
 > different $\alpha$ and $\beta$ orbitals and a spin-dependent kernel, the
@@ -162,7 +162,7 @@ turns the spin sum into equation 20.6.
 >
 > <!-- verified: id=td.unrestricted.matrices; script=scripts/tddft_response_sympy.py; claim=B5; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-tddft/src/unrestricted.rs::run_unrestricted; registry=tddft -->
 
-## 20.6.2 $\langle S^2\rangle$ of each root
+## $\langle S^2\rangle$ of each root {#unrestricted-each-root}
 
 ### Which wavefunction
 
@@ -174,7 +174,7 @@ $$ |\Psi\rangle = \sum_{ia\sigma}X_{ia\sigma}\,a^\dagger_{a\sigma}a_{i\sigma}|\P
 with unit-normalized $X$. For TDA that is the eigenvector. For Casida it is
 the $X$ part, renormalized: $X = \tfrac12\big((X+Y) + (X-Y)\big)$, with
 $X - Y = (\mathbf A+\mathbf B)(X+Y)/\Omega$ from the first row-sum equation
-of section 20.1.2. Casida response defines no excited-state wavefunction;
+of section @sec:response-tda-casida-reduction. Casida response defines no excited-state wavefunction;
 $X$ is the particle–hole part of the root.
 `ferric-tddft/src/unrestricted.rs::casida_x` computes the unnormalized $X$:
 
@@ -227,7 +227,7 @@ the particle part minus the hole part. Then
 $$ \langle S_-S_+\rangle = \sum_{\bar\jmath}P_{\bar\jmath\bar\jmath} + \pi(X_\beta,P)
 - \big[w_\alpha\mathrm{tr}\,Q_{oo} + \pi(X_\alpha,Q)\big]
 - \big[w_\beta\mathrm{tr}\,R_{oo} + \pi(X_\beta,R)\big]
-- 2\,\mathrm{tr}\big(X_\alpha^{\mathsf T}O_{oo}X_\beta O_{vv}^{\mathsf T}\big) , \tag{20.11} $$
+- 2\,\mathrm{tr}\big(X_\alpha^{\mathsf T}O_{oo}X_\beta O_{vv}^{\mathsf T}\big) , \label{eq:td-s2-per-root} $$
 
 where $O_{oo}$ is the $\alpha$-occupied × $\beta$-occupied block and
 $O_{vv}$ the $\alpha$-virtual × $\beta$-virtual block.
@@ -239,7 +239,7 @@ PySCF's `UHF.spin_square`. For a closed shell, $O = 1$: singlets
 The cross-spin term is what tells them apart; it is the only term that
 depends on the relative sign of $X_\alpha$ and $X_\beta$.
 
-`ferric-tddft/src/unrestricted.rs::excited` evaluates equation 20.11
+`ferric-tddft/src/unrestricted.rs::excited` evaluates equation @eq:td-s2-per-root
 term by term:
 
 <!-- excerpt: ferric-tddft/src/unrestricted.rs::excited -->
@@ -249,7 +249,7 @@ let two_alpha = wa * trace(q.slice(s![..na, ..na])) + ph(&xa, &q, na);
 let two_beta = wb * trace(r.slice(s![..nb, ..nb])) + ph(&xb, &r, nb);
 ```
 
-| Term of equation 20.11 | Code |
+| Term of equation @eq:td-s2-per-root | Code |
 |---|---|
 | $\sum_{\bar\jmath}P_{\bar\jmath\bar\jmath}$ | `beta_occ_weight` ($w_\alpha + w_\beta = 1$) |
 | $\pi(X, N)$ | `ph` |
@@ -261,7 +261,7 @@ $\sum_{\bar\jmath}P_{\bar\jmath\bar\jmath}$, which equals $n_\beta$ when the
 $\alpha$ MOs span the $\beta$ ones; its factor $w_\alpha + w_\beta$ is 1
 after the normalization.
 
-> **Verified equation 20.11** · $\langle S^2\rangle$ of a single-excitation state
+> **Verified equation @eq:td-s2-per-root** · $\langle S^2\rangle$ of a single-excitation state
 >
 > The transcribed `SpinOverlap::reference` and `SpinOverlap::excited` equal
 > $M^2 + M + \lVert S_+\Psi\rVert^2$ evaluated by Jordan–Wigner on the
@@ -270,7 +270,7 @@ after the normalization.
 > general $O$ (the $\alpha$ and $\beta$ MOs span different AO subspaces, so
 > $P \ne 1$) and an orthogonal one; for $O = 1$, $X_\alpha = \pm X_\beta$
 > gives 0 and 2; `casida_x` equals the $X$ block of the eigenvector of
-> equation 20.2 normalized to $X\cdot X - Y\cdot Y = 1$.
+> equation @eq:response-2 normalized to $X\cdot X - Y\cdot Y = 1$.
 >
 > | | |
 > |---|---|
@@ -283,13 +283,13 @@ after the normalization.
 > <!-- verified: id=td.s2.per-root; script=scripts/tddft_response_sympy.py; claim=s2; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-tddft/src/unrestricted.rs::excited; registry=tddft -->
 
 The generator `scripts/validation/gen_tddft_open_shell_refs.py` evaluates
-equation 20.11 in numpy. For OH and NH2 it also expands the same $X$ into a
+equation @eq:td-s2-per-root in numpy. For OH and NH2 it also expands the same $X$ into a
 full determinant vector over the UHF orbitals and takes $\langle S^2\rangle$
 with `pyscf.fci.spin_op.spin_square`, which builds it from the 2-RDMs, an
 independent construction. It asserts agreement to $10^{-10}$ on every root,
 and the Rust test compares ferric's values with the recorded ones.
 
-## 20.6.3 Numerical anchors
+## Numerical anchors {#unrestricted-numerical-anchors}
 
 From `site/src/reference/validation.md`, "Spin-conserving TDA and Casida
 excitation energies and `<S^2>` on UHF and UKS references".
@@ -304,7 +304,7 @@ The exactness anchor is water through the unrestricted route, which equals
 the restricted singlets and triplets elementwise, all roots, with
 $\langle S^2\rangle$ 0 or 2, for HF, PBE, B3LYP, CAM-B3LYP and r2SCAN.
 
-## 20.6.4 Sources
+## Sources {#unrestricted-sources}
 
 | Source | What it gives |
 |---|---|

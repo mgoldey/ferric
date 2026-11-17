@@ -1,4 +1,4 @@
-# 27. ML integration touchpoints
+# ML integration touchpoints {#ml}
 
 A model trained on quantum-chemical labels inherits every convention the
 labels were computed with. If one sample's charges are Löwdin and the next
@@ -11,7 +11,7 @@ This chapter supplies those for ferric's outputs, read from the code. It is
 for someone wiring ferric into a machine-learning model as input features,
 as training labels, or as the provenance record of a dataset. It does not
 describe models. The derivations behind the polarizabilities and charges are
-in chapter 21, and those behind $C_6$ in chapter 25. Here the subject is the
+in chapter @sec:polarizabilities, and those behind $C_6$ in chapter @sec:dispersion. Here the subject is the
 arrays a consumer receives.
 
 | § | Read it when you need |

@@ -1,23 +1,23 @@
-# 27.2 Electrostatic features and atomic charges
+# Electrostatic features and atomic charges {#electrostatics-and-charges}
 
-<!-- section: 27.2; status: gap; registry: none; theory: none -->
+<!-- status: gap; registry: none; theory: none -->
 
 What does a neighbouring molecule, or a model of one, need to know about this
 molecule's electrons? At long range, mostly the electrostatics: the potential
 the density makes, the field it exerts at each nucleus, and some way of
 summing the density into a number per atom. These are the cheapest features
 ferric exports that still carry information about the density, and they are
-the inputs of ESP-conditioned models such as the one in section 27.7.
+the inputs of ESP-conditioned models such as the one in section @sec:esp-conditioning.
 
 All of them are functions of the reference density $D = 2C_oC_o^{\mathsf T}$
 and of nothing else. No crate `theory.md` covers them yet, so this section is
 the reference, read from the loops in `crates/ferric-scf/src/properties.rs`.
-Section 21.2 derives the charge schemes; this section states what each
+Section @sec:atomic-partitions derives the charge schemes; this section states what each
 exported number is and how far it is checked.
 
-The plan: the potential and field at the nuclei (27.2.1), the potential at
-other points (27.2.2), multipoles (27.2.3), the five charge schemes (27.2.4),
-the checks (27.2.5) and the limits (27.2.6).
+The plan: the potential and field at the nuclei (@sec:electrostatics-and-charges-potential-field-nuclei), the potential at
+other points (@sec:electrostatics-and-charges-potential-arbitrary-points-surface), multipoles (@sec:electrostatics-and-charges-multipoles-orbital-moments), the five charge schemes (@sec:electrostatics-and-charges-five-charge-schemes),
+the checks (@sec:electrostatics-and-charges-well-these-checked) and the limits (@sec:electrostatics-and-charges-known-limits-2026-11).
 
 | Quantity | Rust | Python |
 |---|---|---|
@@ -35,25 +35,25 @@ The Python functions take the molecule, the basis and an `RhfResult` or
 CHELPG and RESP are documented as closed-shell only.
 
 Throughout this section $Z_A$ in the nuclear terms is the effective charge
-$Z^{\mathrm{eff}}_A$ of equation 2.1: the valence charge on an ECP atom, zero
-on a ghost, and the bare $Z_A$ otherwise (section 27.2.6).
+$Z^{\mathrm{eff}}_A$ of equation @eq:molecule-1: the valence charge on an ECP atom, zero
+on a ghost, and the bare $Z_A$ otherwise (section @sec:electrostatics-and-charges-known-limits-2026-11).
 
-## 27.2.1 Potential and field at the nuclei
+## Potential and field at the nuclei {#electrostatics-and-charges-potential-field-nuclei}
 
 What potential does nucleus $A$ feel from the rest of the molecule? Every
 other nucleus contributes $Z_B/r$, and the electrons contribute minus the
 Coulomb integral of the density. $A$'s own nuclear term is infinite at
 $\mathbf R_A$, so it is left out:
 
-$$ V(\mathbf R_A) = \sum_{B\neq A}\frac{Z_B}{\lvert\mathbf R_A-\mathbf R_B\rvert} - \sum_{\mu\nu} D_{\mu\nu}\,\Big\langle\mu\Big\lvert\frac{1}{\lvert\mathbf r-\mathbf R_A\rvert}\Big\rvert\nu\Big\rangle . \tag{27.1} $$
+$$ V(\mathbf R_A) = \sum_{B\neq A}\frac{Z_B}{\lvert\mathbf R_A-\mathbf R_B\rvert} - \sum_{\mu\nu} D_{\mu\nu}\,\Big\langle\mu\Big\lvert\frac{1}{\lvert\mathbf r-\mathbf R_A\rvert}\Big\rvert\nu\Big\rangle . \label{eq:electrostatics-and-charges-1} $$
 
 The electronic integral is libint2's nuclear-attraction operator with a unit
 probe charge at $\mathbf R_A$. The field is minus the gradient of the same
 potential with respect to the probe position, again without the self term:
 
-$$ \mathbf E(\mathbf R_A) = \sum_{B\neq A} Z_B\frac{\mathbf R_A-\mathbf R_B}{\lvert\mathbf R_A-\mathbf R_B\rvert^3} - \sum_{\mu\nu} D_{\mu\nu}\,\Big\langle\mu\Big\lvert\frac{\mathbf R_A-\mathbf r}{\lvert\mathbf r-\mathbf R_A\rvert^3}\Big\rvert\nu\Big\rangle . \tag{27.2} $$
+$$ \mathbf E(\mathbf R_A) = \sum_{B\neq A} Z_B\frac{\mathbf R_A-\mathbf R_B}{\lvert\mathbf R_A-\mathbf R_B\rvert^3} - \sum_{\mu\nu} D_{\mu\nu}\,\Big\langle\mu\Big\lvert\frac{\mathbf R_A-\mathbf r}{\lvert\mathbf r-\mathbf R_A\rvert^3}\Big\rvert\nu\Big\rangle . \label{eq:electrostatics-and-charges-2} $$
 
-Check the sign with one other nucleus $B$ and no electrons: (27.2) reduces
+Check the sign with one other nucleus $B$ and no electrons: (@eq:electrostatics-and-charges-2) reduces
 to $Z_B(\mathbf R_A-\mathbf R_B)/\lvert\mathbf R_A-\mathbf R_B\rvert^3$,
 which points from $B$ toward $A$, as the field of a positive charge should.
 
@@ -89,18 +89,18 @@ Ok(v_nuc + v_elec)                                  // v_elec: −Σ D_{μν}⟨
   only valence electrons, so pairing it with the bare $Z$ would leave the
   core charge unscreened.
 
-## 27.2.2 Potential at arbitrary points and on a surface
+## Potential at arbitrary points and on a surface {#electrostatics-and-charges-potential-arbitrary-points-surface}
 
 At a point $\mathbf r_g$ that is not a nucleus, every nucleus is included:
 
-$$ V(\mathbf r_g) = \sum_{A}\frac{Z_A}{\lvert\mathbf r_g-\mathbf R_A\rvert} - \sum_{\mu\nu} D_{\mu\nu}\,\Big\langle\mu\Big\lvert\frac{1}{\lvert\mathbf r-\mathbf r_g\rvert}\Big\rvert\nu\Big\rangle . \tag{27.3} $$
+$$ V(\mathbf r_g) = \sum_{A}\frac{Z_A}{\lvert\mathbf r_g-\mathbf R_A\rvert} - \sum_{\mu\nu} D_{\mu\nu}\,\Big\langle\mu\Big\lvert\frac{1}{\lvert\mathbf r-\mathbf r_g\rvert}\Big\rvert\nu\Big\rangle . \label{eq:electrostatics-and-charges-3} $$
 
 `esp_at_points` takes the points in **Bohr**. Because the self term is kept,
 $V(\mathbf r_g)$ diverges as $\mathbf r_g$ approaches a nucleus; it does not
 tend to `esp_atoms` there.
 
 The NPZ surface (`compute_esp_surface = true`) and the Python
-`esp_on_surface` sample (27.3) on the outside of the molecule. Each atom gets
+`esp_on_surface` sample (@eq:electrostatics-and-charges-3) on the outside of the molecule. Each atom gets
 a Lebedev sphere at `esp_surface_vdw_scale` × its Bondi radius
 (`ferric-pcm/src/radii.rs::bondi_radius_bohr`), and points that fall inside
 another atom's scaled sphere are dropped. The defaults are a scale of 1.4 and
@@ -113,11 +113,11 @@ values at corresponding points are not available after a rotation. Store
 `esp_points` with `esp_surface` (the writer refuses one without the other)
 and treat the pair as a point cloud, not as a fixed-length vector.
 
-## 27.2.3 Multipoles and orbital moments
+## Multipoles and orbital moments {#electrostatics-and-charges-multipoles-orbital-moments}
 
 | Key | Definition | Note |
 |---|---|---|
-| `dipole` | $\boldsymbol\mu = \sum_A Z^{\mathrm{eff}}_A\mathbf R_A - \sum D_{\mu\nu}\langle\mu\lvert\mathbf r\rvert\nu\rangle$ | origin $(0,0,0)$; origin-dependent when the molecule is charged (27.1.3) |
+| `dipole` | $\boldsymbol\mu = \sum_A Z^{\mathrm{eff}}_A\mathbf R_A - \sum D_{\mu\nu}\langle\mu\lvert\mathbf r\rvert\nu\rangle$ | origin $(0,0,0)$; origin-dependent when the molecule is charged (@sec:npz-bundle-keys) |
 | `density_second_moment` | $M_{cd} = \sum D_{\mu\nu}\langle\mu\lvert r_c r_d\rvert\nu\rangle$ | electronic only, about the origin; translation changes it |
 | `orbital_centers` | $\langle\phi_p\lvert\mathbf r\rvert\phi_p\rangle$ | every retained MO, restricted references only |
 | `orbital_spreads` | $\sqrt{\max(0,\langle r^2\rangle_p-\lvert\langle\mathbf r\rangle_p\rvert^2)}$ | canonical MOs, so delocalized; restricted only |
@@ -129,19 +129,19 @@ $\max(0,\cdot)$ guards against a small negative variance from rounding.
 Because the MOs are canonical, a valence orbital spread over the whole
 molecule has a large spread; these are not localized-orbital sizes.
 
-## 27.2.4 Five charge schemes
+## Five charge schemes {#electrostatics-and-charges-five-charge-schemes}
 
 A charge per atom is a common model feature, and there is no unique
 one: the density is a property of the whole molecule. Each scheme below is
-a rule for dividing it, and section 21.2 derives what each rule conserves.
+a rule for dividing it, and section @sec:atomic-partitions derives what each rule conserves.
 This table is the consumer's summary.
 
 | Scheme | Definition | Depends on |
 |---|---|---|
-| Mulliken | $q_A = Z_A - \sum_{\mu\in A}(DS)_{\mu\mu}$ (27.5) | basis; unstable with diffuse functions |
-| Löwdin | $q_A = Z_A - \sum_{\mu\in A}(S^{1/2}DS^{1/2})_{\mu\mu}$ (27.4) | basis, less strongly |
-| Hirshfeld | $q_A = Z_A - s\!\int w_A\rho$, $w_A = \rho^0_A/(\sum_B\rho^0_B + 10^{-12})$ (27.6) | proatoms, grid |
-| CHELPG | least-squares fit of point charges to $V(\mathbf r_g)$, $\sum_A q_A = $ molecular charge (27.7) | point lattice |
+| Mulliken | $q_A = Z_A - \sum_{\mu\in A}(DS)_{\mu\mu}$ ({#eq:electrostatics-and-charges-mulliken}) | basis; unstable with diffuse functions |
+| Löwdin | $q_A = Z_A - \sum_{\mu\in A}(S^{1/2}DS^{1/2})_{\mu\mu}$ ({#eq:electrostatics-and-charges-l-wdin}) | basis, less strongly |
+| Hirshfeld | $q_A = Z_A - s\!\int w_A\rho$, $w_A = \rho^0_A/(\sum_B\rho^0_B + 10^{-12})$ ({#eq:electrostatics-and-charges-hirshfeld}) | proatoms, grid |
+| CHELPG | least-squares fit of point charges to $V(\mathbf r_g)$, $\sum_A q_A = $ molecular charge (@eq:electrostatics-and-charges-4) | point lattice |
 | RESP | CHELPG plus a hyperbolic restraint on non-H charges | point lattice, restraint |
 
 **Löwdin** forms $S^{1/2}$ from the eigendecomposition of $S$ and errors if an
@@ -162,9 +162,9 @@ It builds a cubic lattice in the lab frame with spacing 0.3 Bohr, extending
 atom's Bondi radius and within 2.8 Bohr of some atom's radius. Minimizing the
 squared misfit to $V(\mathbf r_g)$ with the total charge held fixed by a
 multiplier $\lambda$ gives the bordered normal equations (derived in section
-21.2.5 as equation 21.9):
+@sec:atomic-partitions-esp-fitted-charges as equation @eq:charges-chelpg-bordered):
 
-$$ \begin{pmatrix} A & \mathbf 1\\ \mathbf 1^{\mathsf T} & 0\end{pmatrix}\begin{pmatrix}\mathbf q\\ \lambda\end{pmatrix} = \begin{pmatrix}\mathbf b\\ Q\end{pmatrix}, \qquad A_{AB} = \sum_g \frac{1}{r_{gA}r_{gB}},\quad b_A = \sum_g \frac{V(\mathbf r_g)}{r_{gA}} , \tag{27.7} $$
+$$ \begin{pmatrix} A & \mathbf 1\\ \mathbf 1^{\mathsf T} & 0\end{pmatrix}\begin{pmatrix}\mathbf q\\ \lambda\end{pmatrix} = \begin{pmatrix}\mathbf b\\ Q\end{pmatrix}, \qquad A_{AB} = \sum_g \frac{1}{r_{gA}r_{gB}},\quad b_A = \sum_g \frac{V(\mathbf r_g)}{r_{gA}} , \label{eq:electrostatics-and-charges-4} $$
 
 with $Q$ the molecular charge. The environment variables
 `FERRIC_CHELPG_SPACING`, `FERRIC_CHELPG_MARGIN`, `FERRIC_CHELPG_VDW_SCALE` and
@@ -175,7 +175,7 @@ that sets them must record them, because the certificate does not.
 $a\sum_{A\notin\mathrm H}(\sqrt{q_A^2+b^2}-b)$ with $a = 0.0005$ and
 $b = 0.1\,e$ (`FERRIC_RESP_RESTRAINT_WEIGHT`, `FERRIC_RESP_RESTRAINT_B`).
 It solves by fixed-point iteration: each pass adds $a/\sqrt{q_A^2+b^2}$ to
-the diagonal of the bordered matrix of (27.7), evaluated at the previous
+the diagonal of the bordered matrix of (@eq:electrostatics-and-charges-4), evaluated at the previous
 charges. It is not two-stage or multi-conformer RESP. When both are
 requested, CHELPG and RESP share one lattice and one set of ESP values.
 
@@ -193,14 +193,14 @@ unchanged under translation, to below $10^{-3}\,e$
 
 *Figure 27.1. Water/cc-pVDZ: (a) O and H charges in the five schemes;
 (b) the isotropic static α as $\sum_A\alpha^A$ plus $\alpha_{\mathrm{CT}}$
-(section 27.3). Made by `book/src/figures/27-ml/charges_and_alpha.py`.*
+(section @sec:polarizability-pdep-c6). Made by `book/src/figures/27-ml/charges_and_alpha.py`.*
 
 Panel (a) shows five different numbers for the same oxygen. They are five
 definitions, not five estimates of one quantity, so a model trained on a mix
 of them fits the difference between definitions. Pick one scheme for a
 dataset and record which; the NPZ key name is the only tag the charges carry.
 
-## 27.2.5 How well these are checked
+## How well these are checked {#electrostatics-and-charges-well-these-checked}
 
 | Quantity | Check | Agreement | Test |
 |---|---|---|---|
@@ -220,28 +220,28 @@ charges sum to the molecular charge, respect the mirror symmetry of water,
 and reproduce the surface ESP they were fitted to. No external code supplies
 a reference value for them.
 
-## 27.2.6 Known limits (2026-11-15)
+## Known limits (2026-11-15) {#electrostatics-and-charges-known-limits-2026-11}
 
 - **Effective nuclear charges.** `esp_at_atoms`, `electric_field_at_atoms`,
   `esp_at_points`, `becke_charges`, `lowdin_charges`, `mulliken_charges`,
   `hirshfeld_charges` and `hirshfeld_i_charges` pair the density with
-  $Z^{\mathrm{eff}}_A$ (2.1): the valence charge on an ECP atom and zero on a
-  ghost, so $Z_A$ in (27.3)–(27.6) reads as $Z^{\mathrm{eff}}_A$. Checked
+  $Z^{\mathrm{eff}}_A$ (@eq:molecule-1): the valence charge on an ECP atom and zero on a
+  ghost, so $Z_A$ in (@eq:electrostatics-and-charges-3)–(@eq:electrostatics-and-charges-hirshfeld) reads as $Z^{\mathrm{eff}}_A$. Checked
   against PySCF RHF with ECPs on HI and CH3I / def2-SVP (max |d| 1.8e-9;
   `crates/ferric-scf/tests/properties_effective_z.rs`, and through the Python
   bindings, which apply the basis's ECP first). Hirshfeld on an ECP atom still
   divides by a proatom built for the full $Z$; that pairing is unchecked.
-- CHELPG and RESP charges depend on molecular orientation (27.2.4).
-- The surface-ESP point set depends on orientation (27.2.2).
+- CHELPG and RESP charges depend on molecular orientation (@sec:electrostatics-and-charges-five-charge-schemes).
+- The surface-ESP point set depends on orientation (@sec:electrostatics-and-charges-potential-arbitrary-points-surface).
 
 ## Sources
 
 | Source | Used for |
 |---|---|
-| `crates/ferric-scf/src/properties.rs` | eqs. 27.1–27.5, 27.7, the lattice and restraint parameters, the effective-$Z$ pairing, the excerpt in 27.2.1 |
-| `crates/ferric-scf/src/properties/hirshfeld_grid.rs` | eq. 27.6, the grid, the proatoms and the rescaling |
+| `crates/ferric-scf/src/properties.rs` | eqs. @eq:electrostatics-and-charges-1–@eq:electrostatics-and-charges-mulliken, @eq:electrostatics-and-charges-4, the lattice and restraint parameters, the effective-$Z$ pairing, the excerpt in @sec:electrostatics-and-charges-potential-field-nuclei |
+| `crates/ferric-scf/src/properties/hirshfeld_grid.rs` | eq. @eq:electrostatics-and-charges-hirshfeld, the grid, the proatoms and the rescaling |
 | `crates/ferric-pcm/src/radii.rs` | the Bondi radii |
 | `crates/ferric-python/ferric.pyi` | the Python names, `esp_on_surface` and argument units |
-| `site/src/reference/validation.md` | the agreement figures in 27.2.5 |
+| `site/src/reference/validation.md` | the agreement figures in @sec:electrostatics-and-charges-well-these-checked |
 
 Changes from the sources: none; there is no theory text to change.

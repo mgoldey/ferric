@@ -1,6 +1,6 @@
-# 22.2 The IEF-PCM operators, the symmetrized solve and the sphere limits
+# The IEF-PCM operators, the symmetrized solve and the sphere limits {#ief-operators}
 
-<!-- section: 22.2; status: ready; registry: pcm;
+<!-- status: ready; registry: pcm;
      theory: crates/ferric-pcm/theory.md#"3. The IEF-PCM operators $K$ and $R$", "4. Symmetrized charge solve and energy", "5. Sphere limits: Born, Kirkwood, Gauss" -->
 
 Given the electrostatic potential $v_k$ of the solute at every tessera, which
@@ -8,9 +8,9 @@ surface charges $q_k$ reproduce the polarized dielectric? The isotropic
 integral equation formalism (IEF-PCM) answers with one linear system over
 the tesserae, solved directly with no iteration. The self-consistency
 between the charges and the solute density belongs to the SCF loop
-(section 22.3). The plan: build the operators $K$ and $R$ (22.2.1), solve
-for a symmetrized charge vector (22.2.2), and check the result against the
-exact solution for a sphere (22.2.3).
+(section @sec:reaction-field). The plan: build the operators $K$ and $R$ (@sec:ief-operators-operators), solve
+for a symmetrized charge vector (@sec:ief-operators-symmetrized-solve), and check the result against the
+exact solution for a sphere (@sec:ief-operators-sphere-limits).
 
 | Symbol | Meaning | Code name |
 |---|---|---|
@@ -28,11 +28,11 @@ exact solution for a sphere (22.2.3).
 | CLI | `[pcm]`; the charges and energy are inside every SCF iteration |
 | Python | `solvent=` on the SCF drivers |
 
-## 22.2.1 The operators
+## The operators {#ief-operators-operators}
 
 Start from the isotropic IEF equation of Cancès, Mennucci and Tomasi
 (JCP 107, 3032 (1997)), written on the tesserae with the matrices of
-section 22.1:
+section @sec:cavity-and-bem:
 
 $$ \left[ 2\pi\frac{\varepsilon+1}{\varepsilon-1} I - DA \right] S\,q = -\left( 2\pi I - DA\right) v . $$
 
@@ -51,8 +51,8 @@ $DA$ is $D$ with column $j$ scaled by $a_j$.
 
 Check the two ends of the dielectric scale. In vacuum, $\varepsilon = 1$,
 $f = 0$ and $R = 0$, so $q = 0$: no reaction field. `build_k_r` rejects
-$\varepsilon \le 1$ and a non-finite $\varepsilon$ (22.2.5). As $\varepsilon\to\infty$,
-$f\to 1$, and section 22.5 shows that the system becomes the conductor
+$\varepsilon \le 1$ and a non-finite $\varepsilon$ (@sec:ief-operators-reproducibility-failures). As $\varepsilon\to\infty$,
+$f\to 1$, and section @sec:conductor-limit-and-cosmo shows that the system becomes the conductor
 equation $Sq = -v$.
 
 $K$ and $R$ depend on the geometry and $\varepsilon$ only. They are built
@@ -89,7 +89,7 @@ let r = -f_eps * (&eye - &(&da / two_pi));
 | $K$ | `k` |
 | $R$ | `r` |
 
-## 22.2.2 The symmetrized solve
+## The symmetrized solve {#ief-operators-symmetrized-solve}
 
 The response $Q = K^{-1}R$ is not symmetric, because $D$ is not. The code
 applies its symmetric part:
@@ -130,7 +130,7 @@ Why symmetrize at all, when the energy is the same? The charges also set the
 reaction-field operator. The SCF needs $V^{\mathrm{pcm}} = \partial
 E_{\mathrm{pcm}}/\partial P$ for the energy and the Fock matrix to describe
 one functional. That holds for the symmetric response and not for the raw
-$Qv$ (section 22.3, equation 22.6).
+$Qv$ (section @sec:reaction-field, equation @eq:pcm-fock-reaction-field).
 
 The body of `solve_pcm_charges` after its shape check, unchanged:
 
@@ -164,7 +164,7 @@ let e_pcm = 0.5 * q.dot(v);
 | $q$ | `q` |
 | $E_{\mathrm{pcm}}$ | `e_pcm` |
 
-> **Verified equation 22.3** · the symmetrized charges keep the energy
+> **Verified equation {#eq:pcm-solve-symmetrized}** · the symmetrized charges keep the energy
 >
 > With $Q = K^{-1}R$ and a generic non-symmetric $D$, the energy of
 > $q_{\mathrm{sym}} = \tfrac12[K^{-1}Rv + R^{\mathsf T}(K^{\mathsf T})^{-1}v]$
@@ -183,13 +183,13 @@ let e_pcm = 0.5 * q.dot(v);
 
 On PySCF's own cavity these charges match PySCF's `pcm.py` to $10^{-17}$ and
 the SCF energy to $5\times10^{-12}$ Ha (`ferric-scf/tests/validation_pcm.rs`;
-the exact figures are in 22.2.6).
+the exact figures are in @sec:ief-operators-numerical-anchors).
 
-## 22.2.3 The sphere limits
+## The sphere limits {#ief-operators-sphere-limits}
 
 A single sphere has an exact solution, so it tests the operators without
 any other code. On a sphere the continuum operators are diagonal in the
-spherical harmonics (box 22.2): $SA \to S_l = 4\pi R/(2l+1)$ and
+spherical harmonics (box @eq:pcm-bem-funk-hecke): $SA \to S_l = 4\pi R/(2l+1)$ and
 $DA \to D_l = -2\pi/(2l+1)$ in channel $l$. Substitute into $K$ and $R$.
 Since $-\tfrac{f}{2\pi}D_l = \tfrac{f}{2l+1}$,
 
@@ -224,9 +224,9 @@ total induced charge is $4\pi R^2$ times the $l = 0$ density,
 $-k_0 = -(\varepsilon-1)/\varepsilon$, for any position inside the sphere.
 That is Gauss's law: the dielectric screens the charge down to
 $1/\varepsilon$ of its value. Replacing $f$ by $(\varepsilon-1)/\varepsilon$
-breaks every channel (the control of box 22.4).
+breaks every channel (the control of box @eq:pcm-sphere-kirkwood).
 
-> **Verified equation 22.4** · IEF-PCM is Kirkwood's solution on a sphere
+> **Verified equation {#eq:pcm-sphere-kirkwood}** · IEF-PCM is Kirkwood's solution on a sphere
 >
 > With $S_l = 4\pi R/(2l+1)$ and $D_l = -2\pi/(2l+1)$ the channel factor of
 > $K$ and $R$ is $k_l = (\varepsilon-1)(l+1)/((l+1)\varepsilon+l)$ for every
@@ -240,7 +240,7 @@ breaks every channel (the control of box 22.4).
 > | Negative control | $f = (\varepsilon-1)/\varepsilon$ is not Kirkwood; the C-PCM factor $(\varepsilon-1)/\varepsilon$ and the COSMO factor $(\varepsilon-1)/(\varepsilon+\tfrac12)$ each match at one $l$ only |
 > | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
 > | Code | `ferric-pcm/src/matrices.rs::build_k_r` |
-> | Code test | `point_charge_in_sphere_matches_born_kirkwood_and_gauss_law` in `crates/ferric-pcm/tests/ief_limits.rs`, the discrete counterpart (equation 22.5) |
+> | Code test | `point_charge_in_sphere_matches_born_kirkwood_and_gauss_law` in `crates/ferric-pcm/tests/ief_limits.rs`, the discrete counterpart (equation @eq:pcm-sphere-discrete) |
 >
 > <!-- verified: id=pcm.sphere.kirkwood; script=scripts/pcm_ief_sympy.py; claim=3; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-pcm/src/matrices.rs::build_k_r; rust_test=ferric-pcm/tests/ief_limits.rs::point_charge_in_sphere_matches_born_kirkwood_and_gauss_law; registry=pcm -->
 
@@ -271,7 +271,7 @@ Gauss's $-(\varepsilon-1)/\varepsilon$. The test derives all its
 tolerances from these discretization estimates. `scripts/pcm_ief_sympy.py`
 claim 7 does the same in numpy on a scipy Lebedev sphere.
 
-> **Verified equation 22.5** · the discrete sphere converges to Born, Kirkwood and Gauss
+> **Verified equation {#eq:pcm-sphere-discrete}** · the discrete sphere converges to Born, Kirkwood and Gauss
 >
 > A unit charge at $d/R = 0, \tfrac14, \tfrac12$ inside a Lebedev sphere of
 > 50, 110 and 302 points gives an energy that converges toward the Kirkwood
@@ -301,11 +301,11 @@ $3.2\times10^{-3}$ and $2.0\times10^{-3}$ at 50, 110 and 302 points. The
 cause is the self-term $1.0694\sqrt{4\pi/a_i}$ on a grid with unequal
 weights. This is why `GaussianSmeared` is the default.
 
-## 22.2.4 The algorithm
+## The algorithm {#ief-operators-algorithm}
 
 | Step | Quantity | Cost | Function |
 |---|---|---|---|
-| 1 | $S$, $D$ (section 22.1) | $N^2$ | `build_s_d_kind` |
+| 1 | $S$, $D$ (section @sec:cavity-and-bem) | $N^2$ | `build_s_d_kind` |
 | 2 | $DA$, $DAS$, $K$, $R$ | $N^3$ (one GEMM) | `build_k_r` |
 | 3 | $Rv$ | $N^2$ | `solve_pcm_charges` |
 | 4 | LU solve of $Kx = Rv$ and of $K^{\mathsf T}y = v$ | $N^3$ per SCF iteration | `solve_pcm_charges`, `ndarray_linalg::Solve` |
@@ -316,7 +316,7 @@ run every iteration. `solve_pcm_charges` factorizes $K$ and $K^{\mathsf T}$ on
 each call and keeps no factorization between iterations, so the
 per-iteration cost is two dense $N^3$ factorizations.
 
-## 22.2.5 Reproducibility and failures
+## Reproducibility and failures {#ief-operators-reproducibility-failures}
 
 The solve is LAPACK with no iteration, so it carries no convergence
 threshold. A singular $K$ (two coincident tesserae, a degenerate cavity)
@@ -324,7 +324,7 @@ returns an error from the solve, never a NaN charge vector. `build_k_r`
 rejects $\varepsilon \le 1$ and a non-finite $\varepsilon$: vacuum has no
 reaction field, and a run with no solvent omits `[pcm]` entirely.
 
-## 22.2.6 Numerical anchors
+## Numerical anchors {#ief-operators-numerical-anchors}
 
 | Quantity | System | Result | Source |
 |---|---|---|---|
@@ -340,7 +340,7 @@ The solver comparison feeds PySCF's own cavity to ferric's solver, so the
 first three rows isolate $K$, $R$ and the solve from the cavity
 construction.
 
-## 22.2.7 Sources
+## Sources {#ief-operators-sources}
 
 | Source | What it gives |
 |---|---|

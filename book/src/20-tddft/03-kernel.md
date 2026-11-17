@@ -1,11 +1,11 @@
-# 20.3 The kernel and the functional gate
+# The kernel and the functional gate {#kernel}
 
-<!-- section: 20.3; status: ready; registry: tddft;
+<!-- status: ready; registry: tddft;
      theory: crates/ferric-tddft/theory.md#"5. Functional gate and kernel" -->
 
 When an electron moves from $i$ to $a$, the density changes, and so does
 the exchange-correlation potential every other electron feels. That
-feedback is the kernel block $K$ of equation 20.1. The reference functional
+feedback is the kernel block $K$ of equation @eq:td-matrices-spin-adaptation. The reference functional
 fixes it, and it fixes the exact-exchange coefficients on the exchange
 terms. If either piece is missing, the excitation energies are wrong by an
 amount nothing in the output reveals. So `run_tddft` resolves both before
@@ -23,7 +23,7 @@ incomplete. A refused functional costs only the error message.
 | Rust | `ferric-tddft/src/tddft.rs::resolve_response_xc`, `ferric-dft/src/lr_kernel.rs::resolve_response_xc`, `ferric-dft/src/grid.rs::response_default_grid` |
 | CLI | `[tddft] xc`, `c_hf` |
 
-## 20.3.1 The gate
+## The gate {#kernel-gate}
 
 `run_tddft` calls `ferric-tddft/src/tddft.rs::resolve_response_xc`. With
 no functional the reference is HF and the coefficients are $c = 1$. For a
@@ -34,7 +34,7 @@ $c_{\rm sr} = c_{\rm lr} = c_{\rm HF}$ and $\omega = 0$.
 
 The library function reads the functional at `nspin = 2`, because the
 kernel is spin-resolved: the singlet and triplet blocks come from feeding
-it $\delta D^\beta = \pm\delta D^\alpha$ (section 9.6.2). It refuses a
+it $\delta D^\beta = \pm\delta D^\alpha$ (section @sec:fxc-singlet-triplet-block). It refuses a
 functional that carries VV10 and a meta-GGA with no libxc second
 derivative, then reads the coefficients:
 
@@ -54,7 +54,7 @@ let (c_sr, c_lr, omega) = match probe.cam {
 The three arms:
 
 - **A CAM functional with $\omega \ne 0$** keeps both fractions and the
-  range parameter (section 20.4).
+  range parameter (section @sec:rsh).
 - **A CAM functional with $\omega = 0$** has $\mathrm{erf}(0) = 0$, so the
   long-range operator vanishes and the short-range one is the full
   Coulomb operator. One fraction, $c_{\rm sr}$, remains.
@@ -69,7 +69,7 @@ full-Coulomb exchange, not `run_tddft`.
 | HF (no functional) | $c = 1$ | none | CIS or TDHF; a `c_hf` other than 1 is refused |
 | LDA, GGA, global hybrid | $c_{\rm HF}$ from libxc | `GgaFxcKernel` | accepted; `c_hf` replaces the fraction |
 | $\tau$-only meta-GGA, hybrid meta-GGA | from libxc | `MggaFxcKernel` | accepted |
-| range-separated hybrid | $c_{\rm sr}, c_{\rm lr}, \omega$ | `GgaFxcKernel` | accepted (section 20.4); any `c_hf` is refused |
+| range-separated hybrid | $c_{\rm sr}, c_{\rm lr}, \omega$ | `GgaFxcKernel` | accepted (section @sec:rsh); any `c_hf` is refused |
 | meta-GGA with no libxc second derivative | | | refused |
 | VV10 | | | refused: its response is not in the kernel |
 
@@ -81,8 +81,8 @@ not say which range it replaces. On a global functional it replaces
 $c_{\rm HF}$.
 
 Singlet and $M_S = 0$ triplet excitations of a closed-shell reference are
-both available (section 20.5). UHF and UKS references take the
-spin-conserving problem of section 20.6 through the same gate; ROHF and
+both available (section @sec:triplets). UHF and UKS references take the
+spin-conserving problem of section @sec:unrestricted through the same gate; ROHF and
 ROKS references are refused there.
 
 The kernel is evaluated on `TddftConfig.grid`, the grid of the reference
@@ -91,9 +91,9 @@ SCF. For a meta-GGA the default is 150 × 434 with NWChem radial pruning
 `AtomicGridConfig::meta_gga_response`), because the $\tau$ kernel is more
 grid-sensitive than the LDA and GGA ones. An explicit grid key wins.
 
-## 20.3.2 The kernel block
+## The kernel block {#kernel-kernel-block}
 
-The block is section 9.6.2's $K_{ia,jb}$ for the singlet, added to both
+The block is section @sec:fxc-singlet-triplet-block's $K_{ia,jb}$ for the singlet, added to both
 $\mathbf A$ and $\mathbf B$. How does it relate to the closed-shell kernel
 other codes use? Take a spin-symmetric energy density
 $e(\rho_\alpha, \rho_\beta)$ and evaluate it at
@@ -109,7 +109,7 @@ unpolarized second derivative. That factor 2 is the 2 on `frr` in PySCF's
 `tdscf.rhf.get_ab`, and the reason ferric's block matches PySCF's `iajb`
 without rescaling.
 
-> **Verified equation 20.7** · the singlet kernel is twice the unpolarized second derivative
+> **Verified equation {#eq:td-kernel-singlet-normalization}** · the singlet kernel is twice the unpolarized second derivative
 >
 > For a spin-symmetric $e(\rho_\alpha, \rho_\beta)$,
 > $2\,\partial^2 e(\rho/2, \rho/2)/\partial\rho^2 = f_{\alpha\alpha} + f_{\alpha\beta}$,
@@ -131,7 +131,7 @@ $= 10^{-8}$; a
 larger one means the AO-to-$(ia)$ adapter is inconsistent, and
 symmetrizing would hide it, so the run stops.
 
-## 20.3.3 Grid sensitivity
+## Grid sensitivity {#kernel-grid-sensitivity}
 
 The kernel is evaluated point by point on the grid, so the roots inherit
 the grid's quadrature error. For B3LYP, ferric's pruned default grid and
@@ -145,7 +145,7 @@ defect of the kernel. PySCF run on ferric's own pruned
 coordinates and weights agrees with ferric to $6\times10^{-8}$ eV (the
 comment on `kernel_grid` in `crates/ferric-tddft/tests/validation_tddft.rs`;
 `site/src/methods/rpa-gw.md`, "Meta-GGA response needs a finer grid"). The
-finer meta-GGA default of section 20.3.1 is the fix, and the table below
+finer meta-GGA default of section @sec:kernel-gate is the fix, and the table below
 measures it.
 
 From `site/src/reference/validation.md`, rows `tda` and "TDA and Casida
@@ -158,7 +158,7 @@ TDDFT excitation energies".
 | r2SCAN water roots, 150 × 434 default vs flat 150 × 590 | $9.2\times10^{-5}$ eV (6-31G), $5.5\times10^{-6}$ eV (aug-cc-pVDZ) | `water_631g_r2scan_default_grid_matches_fine_flat_grid` in the same file |
 | r2SCAN on 75 × 110 vs flat 150 × 590 | $2.1\times10^{-3}$ eV | the same |
 
-## 20.3.4 Sources
+## Sources {#kernel-sources}
 
 | Source | What it gives |
 |---|---|

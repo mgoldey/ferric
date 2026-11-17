@@ -1,6 +1,6 @@
-# 2.2 Contracted Gaussians, normalization and parsers
+# Contracted Gaussians, normalization and parsers {#basis-sets}
 
-<!-- section: 2.2; status: edit; registry: ;
+<!-- status: edit; registry: ;
      theory: crates/ferric-integrals/theory.md#"Conventions" -->
 
 Molecular orbitals are expanded in functions centered on the atoms. The
@@ -9,7 +9,7 @@ have the cusp at the nucleus and the exponential tail of a real atomic
 orbital. Their multi-center two-electron integrals have no closed form. Gaussians,
 $e^{-\alpha r^2}$, have neither the cusp nor the right tail, but the product
 of two Gaussians on different centers is a Gaussian on a third center, and
-the integral algorithms of Chapter 3 build on that. Ferric uses Gaussians and
+the integral algorithms of Chapter @sec:integrals build on that. Ferric uses Gaussians and
 fixes their shape by summing several of them with fixed coefficients: a
 contracted shell.
 
@@ -32,12 +32,12 @@ the handle the integral engine uses.
 | CLI | `[basis]` section, key `name` (a bundled name), `examples/water-rhf.toml` |
 | Python | `ferric.BasisSet.bundled`, `ferric.BasisSet.from_bse_json` |
 
-## 2.2.1 A contracted shell
+## A contracted shell {#basis-sets-contracted-shell}
 
 A shell on atom $A$ with angular momentum $l$ and $K$ primitives is a set of
 functions that share exponents and coefficients and differ in the angular part:
 
-$$ \chi_{\mu}(\mathbf r) = Y_{lm}(\mathbf r - \mathbf A)\sum_{p=1}^{K} c_p\,N_p\,|\mathbf r - \mathbf A|^{l} e^{-\alpha_p|\mathbf r - \mathbf A|^{2}} . \tag{2.4} $$
+$$ \chi_{\mu}(\mathbf r) = Y_{lm}(\mathbf r - \mathbf A)\sum_{p=1}^{K} c_p\,N_p\,|\mathbf r - \mathbf A|^{l} e^{-\alpha_p|\mathbf r - \mathbf A|^{2}} . \label{eq:basis-sets-1} $$
 
 Read it from the right. Each primitive is a Gaussian of width set by
 $\alpha_p$: a large $\alpha_p$ is tight around the nucleus, a small one is
@@ -77,7 +77,7 @@ contracted one.
 
 ![STO-3G hydrogen 1s: the three primitives, their contraction and the exact hydrogen 1s function. Produced by `book/src/figures/02-molecules-and-numerics/contracted_s_shell.py` from the bundled `sto-3g.json`.](../figures/02-molecules-and-numerics/contracted_s_shell.svg)
 
-## 2.2.2 Normalization
+## Normalization {#basis-sets-normalization}
 
 Basis-set files do not agree on what their coefficients mean. Gaussian-style
 files ship coefficients that already give the contracted function unit
@@ -114,13 +114,13 @@ normalized Gaussians overlap by less than one.
 $\sum_p c_p N_p r^l e^{-\alpha_p r^2}$. Its self-overlap is the double sum over
 primitive pairs, and the code divides every $c_p$ by $\sqrt{S}$ with
 
-$$ S = \sum_{p,q} c_p c_q\,S_{pq} . \tag{2.5} $$
+$$ S = \sum_{p,q} c_p c_q\,S_{pq} . \label{eq:basis-unit-self-overlap} $$
 
 After the division the self-overlap is
 $\sum_{pq} (c_p/\sqrt S)(c_q/\sqrt S)\,S_{pq} = S/S = 1$. For a single
 primitive $S = c_1^2$, and the rescaled coefficient is $c_1/|c_1| = \pm 1$.
 
-The code is (2.5) as a double loop, in
+The code is (@eq:basis-unit-self-overlap) as a double loop, in
 `ferric-core/src/basis.rs::renormalize_contraction`:
 
 ```rust
@@ -154,7 +154,7 @@ the rescaling a def2 shell would be right in every analytic integral and
 wrong on the DFT grid. After the rescaling libint2's own renormalization changes
 nothing, since $S$ is already 1.
 
-> **Verified equation 2.5** · unit self-overlap
+> **Verified equation @eq:basis-unit-self-overlap** · unit self-overlap
 >
 > The overlap of two normalized radial Gaussians $r^l e^{-ar^2}$ is
 > $\big(2\sqrt{ab}/(a+b)\big)^{l+3/2}$, and a contraction renormalized with
@@ -175,7 +175,7 @@ The proof covers the radial normalization. The angular factor of a Cartesian
 $l \ge 2$ function is libint2's convention and is not part of it (see Known
 limits).
 
-## 2.2.3 Parsers and the bundled library
+## Parsers and the bundled library {#basis-sets-parsers-bundled-library}
 
 | Source | Function | Notes |
 |---|---|---|
@@ -186,7 +186,7 @@ limits).
 Why split an `SP` shell? Pople sets share one set of exponents between the s
 and p functions of a valence shell, with a separate coefficient column for
 each. Ferric's `Shell` has one $l$, so the parser emits two shells with the
-same exponents, and each column is renormalized with its own $l$ in (2.5).
+same exponents, and each column is renormalized with its own $l$ in (@eq:basis-unit-self-overlap).
 
 The bundled sets are compiled into the binary as one blob that is inflated
 once per process. Which sets exist, with their provenance, is in the user
@@ -206,9 +206,9 @@ guide and the validation page. Three conventions matter to a result:
   the basis and the range it covers
   (`ferric-core/src/basis.rs::BasisSet::missing_element_error`).
 - A basis set that carries an ECP changes the molecule through
-  `Molecule::apply_ecp` (section 2.1) and the integral code (chapter 3).
+  `Molecule::apply_ecp` (section @sec:molecule) and the integral code (chapter @sec:integrals).
 
-## 2.2.4 From a basis set to the engine
+## From a basis set to the engine {#basis-sets-basis-set-engine}
 
 A `BasisSet` is per element: it lists the shells an oxygen gets and holds no
 positions. The integral engine needs a flat list of shells with centers and
@@ -275,8 +275,8 @@ shared by all threads, since nothing in it changes after construction.
 | Source | Used for |
 |---|---|
 | `crates/ferric-core/theory.md`, section 3, and `crates/ferric-integrals/theory.md`, "Basis Sets" | the shell data layout and the contraction form |
-| `crates/ferric-core/src/basis.rs` (the renormalizer and its comment) | equation (2.5) and the file conventions |
-| `crates/ferric-integrals/src/basis_bridge.rs` | section 2.2.4 |
+| `crates/ferric-core/src/basis.rs` (the renormalizer and its comment) | equation (@eq:basis-unit-self-overlap) and the file conventions |
+| `crates/ferric-integrals/src/basis_bridge.rs` | section @sec:basis-sets-basis-set-engine |
 | Dissertation, chapter 1, section 1.2.1 | the motivation for Gaussian over Slater functions |
 
 Changes from the sources: `theory.md` writes a contracted function without the

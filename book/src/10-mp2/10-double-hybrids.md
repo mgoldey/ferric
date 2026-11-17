@@ -1,6 +1,6 @@
-# 10.10 MP2-based double hybrids
+# MP2-based double hybrids {#double-hybrids}
 
-<!-- section: 10.10; status: ready; registry: double-hybrid;
+<!-- status: ready; registry: double-hybrid;
      theory: crates/ferric-mp2/theory.md#"16. Double hybrids" -->
 
 A semilocal correlation functional sees the density and its gradient at
@@ -9,12 +9,12 @@ across a gap, which is what dispersion is. MP2 has such a term: its pair
 amplitudes couple any two occupied orbitals through the virtual space. A
 double hybrid is a hybrid density functional with a scaled MP2 term
 evaluated on its own Kohn–Sham orbitals, and it turns down the semilocal
-correlation to make room for it. The MP2 part is section 10.3's
+correlation to make room for it. The MP2 part is section @sec:scs-and-kappa's
 spin-component sum; what is new is the reference.
 
-The plan: the energy and its parameters (10.10.1), what is anchored
-(10.10.2), and the derivation of the two MP2 terms on a Kohn–Sham
-determinant (10.10.3).
+The plan: the energy and its parameters (@sec:double-hybrids-energy), what is anchored
+(@sec:double-hybrids-anchored), and the derivation of the two MP2 terms on a Kohn–Sham
+determinant (@sec:double-hybrids-derivation).
 
 | Entry point | Location |
 |---|---|
@@ -22,9 +22,9 @@ determinant (10.10.3).
 | CLI | `method.kind = "b2plyp"` (`examples/water-b2plyp.toml`, `examples/nh2-b2plyp.toml`), `method.kind = "dsd-pbep86"` (`examples/water-dsd-pbep86.toml`, `examples/nh2-dsd-pbep86-d3bj.toml`); `[dft] dispersion = "d3bj"` |
 | Python | `run_double_hybrid(kind="b2plyp")`, `run_double_hybrid(kind="dsd-pbep86")`, with `dispersion="d3bj"` and `unrestricted=` |
 
-## 10.10.1 The energy
+## The energy {#double-hybrids-energy}
 
-$$ E_{\mathrm{DH}} = E_{\mathrm{KS}}\big[a_x E_x^{\mathrm{HF}} + (1 - a_x) E_x^{\mathrm{DFA}} + a_c\,E_c^{\mathrm{DFA}}\big] + c_{\mathrm{OS}}\,E_{\mathrm{OS}} + c_{\mathrm{SS}}\,E_{\mathrm{SS}} . \tag{10.25} $$
+$$ E_{\mathrm{DH}} = E_{\mathrm{KS}}\big[a_x E_x^{\mathrm{HF}} + (1 - a_x) E_x^{\mathrm{DFA}} + a_c\,E_c^{\mathrm{DFA}}\big] + c_{\mathrm{OS}}\,E_{\mathrm{OS}} + c_{\mathrm{SS}}\,E_{\mathrm{SS}} . \label{eq:dh-assembly} $$
 
 Read it in two parts. $E_{\mathrm{KS}}$ is the converged energy of a hybrid
 functional with exact-exchange fraction $a_x$, semilocal exchange fraction
@@ -33,9 +33,9 @@ a closed-shell density $D$,
 
 $$ E_{\mathrm{KS}} = E_{nn} + \operatorname{Tr}[Dh] + \tfrac12\operatorname{Tr}\big[DJ[D]\big] - \tfrac{a_x}{4}\operatorname{Tr}\big[DK[D]\big] + b_x E_x^{\mathrm{DFA}}[\rho] + a_c E_c^{\mathrm{DFA}}[\rho] . $$
 
-$E_{\mathrm{OS}}$ and $E_{\mathrm{SS}}$ are the RI-MP2 components (10.2)
+$E_{\mathrm{OS}}$ and $E_{\mathrm{SS}}$ are the RI-MP2 components (@eq:mp2-cs-spin-adaptation)
 computed with the Kohn–Sham orbitals and orbital energies in place of
-Hartree–Fock ones, with the RI integrals of section 10.1 and the frozen
+Hartree–Fock ones, with the RI integrals of section @sec:closed-shell-ri-mp2 and the frozen
 core of the input. The SCF never sees the MP2 term: the orbitals are those
 of $E_{\mathrm{KS}}$ alone, and the MP2 term is added afterwards.
 
@@ -121,7 +121,7 @@ let e_corr_scaled = cfg.c_os * sc.e_os + cfg.c_ss * sc.e_ss; // c_OS E_OS + c_SS
 ```
 
 - **Nothing in the MP2 code knows about DFT.** `ri_mp2_spin_components` is
-  the routine of section 10.1, handed a Kohn–Sham `ScfResult`. Its orbital
+  the routine of section @sec:closed-shell-ri-mp2, handed a Kohn–Sham `ScfResult`. Its orbital
   energies are the Kohn–Sham eigenvalues.
 - **`ks.energy` already is $E_{\mathrm{KS}}$.** The semilocal and exact
   exchange fractions were applied inside the SCF; the driver adds only the
@@ -140,9 +140,9 @@ def2-universal-jkfit unless the input names another fit.
 
 The KS orbitals are not Hartree–Fock orbitals, so the Brillouin condition
 fails and the singles term of MP2 is not zero. Standard double hybrids,
-B2PLYP included, drop it; so does ferric (10.10.3).
+B2PLYP included, drop it; so does ferric (@sec:double-hybrids-derivation).
 
-## 10.10.2 What is anchored
+## What is anchored {#double-hybrids-anchored}
 
 | Kind | Grade | Evidence |
 |---|---|---|
@@ -158,7 +158,7 @@ no-dispersion DSD-PBEP86 set and the D3(BJ) sets above are checked; no
 comparison of B2PLYP with experiment is claimed. Figures from
 `site/src/reference/validation.md`.
 
-## 10.10.3 Derivation
+## Derivation {#double-hybrids-derivation}
 
 Which two sums are $E_{\mathrm{OS}}$ and $E_{\mathrm{SS}}$ on a Kohn–Sham
 determinant, and what is left out?
@@ -185,7 +185,7 @@ $\sum_{D\neq0}|\langle D|H|0\rangle|^2/(E^{(0)}_0 - E^{(0)}_D)$ over singly
 and doubly excited determinants. Split the doubles by the spins of the two
 holes: the $\alpha\beta$ doubles sum to $E_{\mathrm{OS}}$ and the
 $\alpha\alpha$ and $\beta\beta$ doubles to $E_{\mathrm{SS}}$, as in
-section 10.1.
+section @sec:closed-shell-ri-mp2.
 
 The singles $\langle\Phi_i^a|H|0\rangle$ do not vanish on KS orbitals,
 because the KS orbitals do not diagonalize the Hartree–Fock Fock operator.
@@ -194,7 +194,7 @@ The code, like the published functionals, keeps only the doubles.
 Check the plain-MP2 limit
 $(a_x, b_x, a_c, c_{\mathrm{OS}}, c_{\mathrm{SS}}) = (1, 0, 0, 1, 1)$. The
 Fock matrix becomes $h + J - \tfrac12 K$, so the SCF is RHF; Brillouin's
-theorem removes the singles, and (10.25) is
+theorem removes the singles, and (@eq:dh-assembly) is
 $E_{\mathrm{HF}} + E_{\mathrm{MP2}}$.
 
 For a UKS reference with spin densities $D^\sigma$ and
@@ -212,11 +212,11 @@ through the UKS route equals the RKS route. And the plain-MP2 limit is UHF,
 where $E_{\mathrm{DH}} = E_{\mathrm{UHF}} + E_{\mathrm{UMP2}}$. Singles stay
 out, as in the closed-shell definition.
 
-> **Verified equation 10.25** · double-hybrid assembly
+> **Verified equation @eq:dh-assembly** · double-hybrid assembly
 >
 > | | |
 > |---|---|
-> | Claim | on a model with a semilocal functional on a grid, the plain-MP2 limit of (10.25) equals $\langle0|H|0\rangle + E^{(2)}$ with every singles element zero; with the B2PLYP and DSD-PBEP86 fractions, $E_{\mathrm{OS}}$ and $E_{\mathrm{SS}}$ on the KS orbitals equal the αβ and same-spin doubles sums of a determinant-space route (second quantization on bit strings), and the singles are not zero |
+> | Claim | on a model with a semilocal functional on a grid, the plain-MP2 limit of (@eq:dh-assembly) equals $\langle0|H|0\rangle + E^{(2)}$ with every singles element zero; with the B2PLYP and DSD-PBEP86 fractions, $E_{\mathrm{OS}}$ and $E_{\mathrm{SS}}$ on the KS orbitals equal the αβ and same-spin doubles sums of a determinant-space route (second quantization on bit strings), and the singles are not zero |
 > | Proof | claim E of `scripts/double_hybrid_sympy.py` |
 > | Code | `ferric-mp2/src/double_hybrid.rs::mp2_double_hybrid` |
 > | Code test | `b2plyp_h2o_cc_pvdz_vs_pyscf` in `crates/ferric-mp2/tests/validation_b2plyp_pyscf.rs` |

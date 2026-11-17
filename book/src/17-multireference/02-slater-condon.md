@@ -1,15 +1,15 @@
-# 17.2 Slater–Condon rules as implemented
+# Slater–Condon rules as implemented {#slater-condon}
 
-<!-- section: 17.2; status: ready; registry: casci;
+<!-- status: ready; registry: casci;
      theory: crates/ferric-ci/theory.md#"Slater–Condon rules as implemented" -->
 
 $H$ moves at most two electrons, so two determinants that differ in more
 than two spin orbitals do not interact, and the matrix element of the rest
 depends only on which orbitals differ. The textbook Slater–Condon rules give
 the integrals for each case. The sign in front of them comes from
-reordering operators, depends on the convention of section 17.1, and is
+reordering operators, depends on the convention of section @sec:determinants, and is
 what the code has to get right. ferric's production CI never visits a
-determinant pair (section 17.3), so `general_element` serves as the
+determinant pair (section @sec:direct-sigma-davidson), so `general_element` serves as the
 reference that the direct sigma is tested against.
 
 | Class | Condition | Function |
@@ -23,7 +23,7 @@ reference that the direct sigma is tested against.
 |---|---|
 | Rust | `ferric-ci/src/hamiltonian.rs::{general_element,diagonal_element,dense_hamiltonian,sigma_naive}` |
 
-## 17.2.1 The rules
+## The rules {#slater-condon-rules}
 
 `ferric-ci/src/hamiltonian.rs::general_element` takes the bra strings
 $(A', B')$ and the ket strings $(A, B)$ and returns
@@ -219,7 +219,7 @@ of a minimal basis the two diagonal elements become equal, and then
 $|c_1| = |c_2| = 1/\sqrt2$. The element $K$ and its sign
 were checked on Jordan–Wigner matrices in scratch.
 
-> **Verified equation 17.2** · every element against the Jordan–Wigner $H$
+> **Verified equation {#eq:ci-slater-condon-elements}** · every element against the Jordan–Wigner $H$
 >
 > For every bra–ket pair in the sectors $(n, N_\alpha, N_\beta) =$
 > (4,2,2), (5,3,2), (5,2,3) and (5,3,3), a line-for-line port of
@@ -239,7 +239,7 @@ were checked on Jordan–Wigner matrices in scratch.
 >
 > <!-- verified: id=ci.slater-condon.elements; script=scripts/casci_slater_condon_phases_sympy.py; claim=3; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-ci/src/hamiltonian.rs::{general_element,diagonal_element,double_opposite_spin}; rust_test=ferric-ci/tests/slater_condon_brute_force.rs::general_element_matches_second_quantization_on_random_integrals; registry=casci -->
 
-## 17.2.2 Why an energy test is not enough
+## Why an energy test is not enough {#slater-condon-energy-test-enough}
 
 An FCI energy against PySCF checks the spectrum only. A $\pm1$ similarity
 inserted into `general_element` passes every energy test, and H2 in a
@@ -247,13 +247,13 @@ minimal basis has no nontrivial sign at all. The element-wise checks above,
 and the Rust test against an independent bit-loop second-quantized $H$ on
 random asymmetric integrals, are what pin the convention.
 
-## 17.2.3 Numerical anchors
+## Numerical anchors {#slater-condon-numerical-anchors}
 
 | Quantity | Systems | Error | Test |
 |---|---|---|---|
 | `general_element`, `sigma` and the diagonal vs an independent bit-loop $H$ on random asymmetric integrals | CAS(4,4) to CAS(6,6), odd and even $N_\alpha$ | $\le 8.9\times10^{-15}$ | `crates/ferric-ci/tests/slater_condon_brute_force.rs` |
 
-## 17.2.4 Sources
+## Sources {#slater-condon-sources}
 
 | Source | What it gives |
 |---|---|

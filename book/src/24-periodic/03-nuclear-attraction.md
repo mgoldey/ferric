@@ -1,20 +1,20 @@
-# 24.3 Ewald-split nuclear attraction
+# Ewald-split nuclear attraction {#nuclear-attraction}
 
-<!-- section: 24.3; status: ready; registry: pbc-ewald-pairft-stress;
+<!-- status: ready; registry: pbc-ewald-pairft-stress;
      theory: crates/ferric-pbc/theory.md#"3. Ewald-split nuclear attraction (`hcore`)" -->
 
 An electron in a crystal is attracted by every nucleus in every cell, and
-that sum has the problem of section 24.1: it diverges, here with the
+that sum has the problem of section @sec:ewald: it diverges, here with the
 opposite sign to the electron repulsion. In a neutral cell the two
 divergences are the same $\mathbf G = 0$ term with opposite signs, so ferric
 drops $\mathbf G = 0$ from both. What is left is evaluated with the same
 Ewald split as the nuclear repulsion: a short-range erfc part in real space
 through the three-centre integral engine, a long-range part in reciprocal
-space through the pair transform of section 24.2, and one constant that
+space through the pair transform of section @sec:pair-ft, and one constant that
 removes the $\mathbf G = 0$ average the real-space part carries.
 
-Section 24.3.1 derives the three parts and shows that their sum does not
-depend on the split; 24.3.2 gives the algorithm and the code, 24.3.3 the
+Section @sec:nuclear-attraction-three-parts-matrix derives the three parts and shows that their sum does not
+depend on the split; @sec:nuclear-attraction-algorithm gives the algorithm and the code, @sec:nuclear-attraction-numerical-anchors the
 anchors.
 
 | Symbol | Meaning | Code name |
@@ -31,13 +31,13 @@ anchors.
 | Oracle | `ferric-pbc/src/hcore.rs::pure_aft_nuclear` ($\eta \to \infty$) |
 | $k$-points | `crates/ferric-pbc/src/hcore/kpoint.rs` |
 
-## 24.3.1 Three parts, one matrix
+## Three parts, one matrix {#nuclear-attraction-three-parts-matrix}
 
 The nuclear attraction of the AO pair $\mu\nu$ is
 
 $$ V = V_\text{SR}(\eta) + V_\text{LR}(\eta) + V_\text{G0}(\eta) . $$
 
-**The short-range part.** Split each nucleus's $1/r$ as in section 24.1 and
+**The short-range part.** Split each nucleus's $1/r$ as in section @sec:ewald and
 keep the erfc piece in real space:
 
 $$ V_\text{SR} = -\sum_{\mathbf L}\sum_{C,\mathbf M} Z_C \Big\langle \mu_0 \Big| \frac{\operatorname{erfc}(\eta|\mathbf r - \mathbf R_C - \mathbf M|)} {|\mathbf r - \mathbf R_C - \mathbf M|}\Big| \nu_{\mathbf L}\Big\rangle . $$
@@ -48,7 +48,7 @@ because erfc decays as a Gaussian.
 
 **The long-range part.** The erf piece of all the nuclei is a smooth
 periodic potential. Poisson summation over $\mathbf M$, with the transform of
-section 24.1, writes it as a Fourier series:
+section @sec:ewald, writes it as a Fourier series:
 
 $$ \phi_\text{LR}(\mathbf r) = \frac{1}{\Omega}\sum_{\mathbf G}\frac{4\pi}{G^2}e^{-G^2/4\eta^2}\,S(\mathbf G)\,e^{i\mathbf G\cdot\mathbf r}, \qquad S(\mathbf G) = \sum_CZ_Ce^{-i\mathbf G\cdot\mathbf R_C} . $$
 
@@ -74,7 +74,7 @@ cancel and the sum is the bare $4\pi/G^2$. So per $\mathbf G \neq 0$,
 $V_\text{SR} + V_\text{LR}$ is the bare $-4\pi Z/(\Omega G^2)$ kernel, for
 every $\eta$.
 
-> **Verified equation 24.4** · the erfc and erf parts add to the bare kernel
+> **Verified equation {#eq:pbc-hcore-split}** · the erfc and erf parts add to the bare kernel
 >
 > $\operatorname{FT}[\operatorname{erfc}(\eta r)/r] = (4\pi/G^2)(1 - e^{-G^2/4\eta^2})$,
 > so per $\mathbf G \neq 0$ the short- and long-range parts are the bare
@@ -105,9 +105,9 @@ $$ V_\text{G0} = +\frac{\pi Z_\text{tot}}{\eta^2\Omega}\,S^\text{latt}_{\mu\nu} 
 With it, $V$ is independent of $\eta$ and equals the pure reciprocal-space
 attraction with $\mathbf G = 0$ dropped. That is the convention that cancels
 against the same term of $J$ in a neutral cell. It is the same constant
-$c_0$ as the background of section 24.1 and the subtraction of section 24.5.
+$c_0$ as the background of section @sec:ewald and the subtraction of section @sec:rsgdf.
 
-> **Verified equation 24.5** · the $\mathbf G = 0$ constant
+> **Verified equation {#eq:pbc-hcore-g0}** · the $\mathbf G = 0$ constant
 >
 > $\int\operatorname{erfc}(\eta r)/r\,d^3r = \pi/\eta^2$, so the real-space
 > erfc sum carries the average $-\pi Z_\text{tot}/(\eta^2\Omega)$ times the
@@ -150,7 +150,7 @@ by the same integral as above with $\eta = \sqrt\zeta$. The module
 documentation evaluates it for an O 1s AO ($\rho(0) \approx Z^3/\pi \approx 163$):
 $4\times10^3/\zeta$, which is $4\times10^{-13}$ Ha at $\zeta = 10^{16}$.
 
-## 24.3.2 The algorithm
+## The algorithm {#nuclear-attraction-algorithm}
 
 | Step | Quantity | Cost |
 |---|---|---|
@@ -191,7 +191,7 @@ hands to the chunked pair transform, once per $\mathbf G$ of a chunk:
 | `kern` | $v_\eta(G) = (4\pi/G^2)e^{-G^2/4\eta^2}$; `omega = None` gives the undamped oracle kernel |
 | `sre`, `sim` | $\operatorname{Re}S(\mathbf G)$, $\operatorname{Im}S(\mathbf G)$ |
 | `f` | $-2/\Omega$ times the kernel: the half-sphere weight 2 and the attraction sign |
-| `pz` | $P_{\mu\nu}(\mathbf G)$ from section 24.2 |
+| `pz` | $P_{\mu\nu}(\mathbf G)$ from section @sec:pair-ft |
 
 Step 4 is two lines of `ferric-pbc/src/hcore.rs::periodic_hcore_impl`:
 
@@ -214,10 +214,10 @@ between the real-space triplets and the $\mathbf G$ sphere. The cap
 $\eta_\text{cap} = \eta_\text{gdf}\sqrt{\ln(1/p_\text{gdf})/\ln(1/\epsilon)}$,
 with the RS-GDF defaults $\eta_\text{gdf} = 1$ and $p_\text{gdf} = 10^{-13}$,
 is 0.9636 at $\epsilon = 10^{-14}$. It keeps every nuclear-attraction
-$\mathbf G$ inside the sphere that the density fit of section 24.5 already
+$\mathbf G$ inside the sphere that the density fit of section @sec:rsgdf already
 walks. A run that sets its own `gdf_omega` caps with that value instead.
 
-## 24.3.3 Numerical anchors
+## Numerical anchors {#nuclear-attraction-numerical-anchors}
 
 | Quantity | Reference | Test |
 |---|---|---|
@@ -226,7 +226,7 @@ walks. A run that sets its own `gdf_omega` caps with that value instead.
 | erf + erfc on a Gaussian nucleus | the point nucleus | `gaussian_nucleus_erf_plus_erfc_is_point_nuclear` |
 | H$_2$/STO-3G at $a = 4$ | the Python prototype | `periodic_hcore_matches_prototype_h2_sto3g_a4` |
 
-## 24.3.4 Sources
+## Sources {#nuclear-attraction-sources}
 
 | Source | What it gives |
 |---|---|

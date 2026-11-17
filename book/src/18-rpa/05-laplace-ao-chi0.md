@@ -1,20 +1,20 @@
-# 18.5 Imaginary-time and AO forms of $\chi_0$
+# Imaginary-time and AO forms of $\chi_0$ {#laplace-ao-chi0}
 
-<!-- section: 18.5; status: ready; registry: pdep-rpa;
+<!-- status: ready; registry: pdep-rpa;
      theory: crates/ferric-rpa/theory.md#"Laplace-transformed chi0"; crates/ferric-quadrature/theory.md#"1. Minimax Laplace Quadrature" -->
 
-The response kernel $\Delta/(u^2 + \Delta^2)$ in (18.7) couples every
+The response kernel $\Delta/(u^2 + \Delta^2)$ in (@eq:pdep-1) couples every
 occupied-virtual pair to the frequency through the gap
 $\Delta_i^a = \varepsilon_a - \varepsilon_i$, which depends on $i$ and $a$
 together. Written as an integral over imaginary time, the kernel factors
 into a piece for $i$ times a piece for $a$. That separation is the first step
 towards an atomic-orbital, reduced-scaling $\chi_0$, the same step Laplace
-MP2 takes for its denominator (section 12.3). ferric has the
+MP2 takes for its denominator (section @sec:laplace-mp2). ferric has the
 molecular-orbital half of that construction, as library code. The AO half,
 where the scaling would change, is not built.
 
 The plan: the Laplace form of the kernel and the dielectric built from it
-(18.5.1), the requirements the code enforces (18.5.2), then anchors and
+(@sec:laplace-ao-chi0-laplace-form-kernel), the requirements the code enforces (@sec:laplace-ao-chi0-requirements-code-enforces), then anchors and
 sources. The derivation is `crates/ferric-rpa/theory.md`,
 "Laplace-transformed chi0".
 
@@ -30,19 +30,19 @@ sources. The derivation is `crates/ferric-rpa/theory.md`,
 | Rust, imaginary time | `ferric-rpa/src/ao_rpa.rs::{ao_rpa_correlation_energy,build_tau_quadrature,pseudo_density_occ,pseudo_density_vir}` |
 | CLI, Python | none; both always use the dense $\chi_0$ |
 
-## 18.5.1 The Laplace form of the kernel
+## The Laplace form of the kernel {#laplace-ao-chi0-laplace-form-kernel}
 
 For $\Delta > 0$, integrate $e^{-(\Delta + iu)t}$ over $t \in [0, \infty)$:
 the result is $1/(\Delta + iu)$. Its real part is
 $\Delta/(u^2 + \Delta^2)$, and the real part of $e^{-iut}$ is $\cos(ut)$. So
 
-$$ \frac{\Delta}{u^2 + \Delta^2} = \int_0^\infty e^{-\Delta t}\cos(ut)\,dt \approx \sum_l w_l\cos(ut_l)\,e^{-t_l\Delta} . \tag{18.14} $$
+$$ \frac{\Delta}{u^2 + \Delta^2} = \int_0^\infty e^{-\Delta t}\cos(ut)\,dt \approx \sum_l w_l\cos(ut_l)\,e^{-t_l\Delta} . \label{eq:laplace-ao-chi0-1} $$
 
 Split each exponential in half, $e^{-t\Delta} = (e^{-t\Delta/2})^2$, and give
 one half to each side of the product. The projected dielectric matrix of
-(18.10) becomes a sum of symmetric terms, one per Laplace node:
+(@eq:pdep-4) becomes a sum of symmetric terms, one per Laplace node:
 
-$$ \tilde{\boldsymbol\varepsilon}_U(iu) - \mathbf 1 \approx \sum_l 4w_l\cos(ut_l)\;\mathbf X^{(l)}\mathbf X^{(l)\mathsf T}, \qquad X^{(l)}_{\xi,ia} = Y_{\xi,ia}\,e^{-t_l\Delta_i^a/2} . \tag{18.15} $$
+$$ \tilde{\boldsymbol\varepsilon}_U(iu) - \mathbf 1 \approx \sum_l 4w_l\cos(ut_l)\;\mathbf X^{(l)}\mathbf X^{(l)\mathsf T}, \qquad X^{(l)}_{\xi,ia} = Y_{\xi,ia}\,e^{-t_l\Delta_i^a/2} . \label{eq:rpa-chi0-laplace} $$
 
 **The nodes.** They are the minimax-Laplace nodes for $1/x$ on
 $[\Delta_{\min}, \Delta_{\max}]$, the same tables as Laplace MP2 scaled by
@@ -60,7 +60,7 @@ factor 2 as in Laplace MP2.
 $\operatorname{Re}r(\Delta + iu)$ with $r(x) = \sum_lw_le^{-t_lx} \approx 1/x$:
 the $1/x$ approximant at a complex argument, not a quadrature of the cosine
 integral. Expand $e^{-t_l(\Delta + iu)} = e^{-t_l\Delta}\big(\cos(ut_l) - i\sin(ut_l)\big)$
-and take the real part: the result is the sum in (18.14). It is the
+and take the real part: the result is the sum in (@eq:laplace-ao-chi0-1). It is the
 minimax approximant at $u = 0$ and is not controlled at large $u\,t_l$, where
 the cosine oscillates across the nodes. So the code uses the dense kernel at
 any frequency node with $u\,t_{\max} > \pi/2$. On the Laplace side every
@@ -94,7 +94,7 @@ for (&t_l, &w_l) in laplace.points.iter().zip(laplace.weights.iter()) {
 }
 ```
 
-The identity matrix of (18.15) is added after the loop.
+The identity matrix of (@eq:rpa-chi0-laplace) is added after the loop.
 
 **Where the factorization leads.** In this molecular-orbital form nothing is
 saved: each frequency node does $n$ products of the size the dense path does
@@ -108,9 +108,9 @@ an imaginary-time $\chi_0$ from them (after Kaltak, Klimeš and Kresse 2014),
 but evaluates the contraction densely. The sparse AO contraction is not
 implemented.
 
-> **Verified equation 18.15** · the Laplace dielectric
+> **Verified equation @eq:rpa-chi0-laplace** · the Laplace dielectric
 >
-> (18.14) symbolically; the coded dielectric equals
+> (@eq:laplace-ao-chi0-1) symbolically; the coded dielectric equals
 > $\mathbf 1 + 4Y\operatorname{diag}(\operatorname{Re}r(\Delta + iu))Y^{\mathsf T}$
 > to rounding, and at $u = 0$ it differs from the dense dielectric by exactly
 > $4Y\operatorname{diag}(r(\Delta) - 1/\Delta)Y^{\mathsf T}$; the kernel error is
@@ -128,15 +128,15 @@ implemented.
 >
 > <!-- verified: id=rpa.chi0.laplace; script=scripts/rpa_laplace_chi0_sympy.py; claim=L3; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-rpa/src/laplace_chi0.rs::{dielectric_matrix_laplace_into,dielectric_matrix_laplace_unrestricted_into,build_laplace_for_gaps}; rust_test=ferric-rpa/tests/laplace_chi0.rs::h2o_ccpvdz_laplace_matches_dense_at_static; registry=pdep-rpa -->
 
-## 18.5.2 Requirements the code enforces
+## Requirements the code enforces {#laplace-ao-chi0-requirements-code-enforces}
 
 | Requirement | Why | Where |
 |---|---|---|
 | canonical orbital energies | $\Delta_i^a = \varepsilon_a - \varepsilon_i$ is a per-pair scalar only in a Fock-diagonal basis | debug assertion in `build_e_ia` (`crates/ferric-rpa/src/laplace_chi0.rs`) |
 | $n \in \{3, 5, 7\}$ | only those minimax tables exist; other sizes are an error, not a silent fallback | `LaplaceQuadrature::new` |
-| no aux-basis route | the energy-only route of section 18.1 has no Laplace evaluator, so the Laplace backend always runs the static solve | `static_route_required` |
+| no aux-basis route | the energy-only route of section @sec:drpa-three-ways has no Laplace evaluator, so the Laplace backend always runs the static solve | `static_route_required` |
 
-## 18.5.3 Numerical anchors
+## Numerical anchors {#laplace-ao-chi0-numerical-anchors}
 
 | Quantity | Value | Source |
 |---|---|---|
@@ -146,11 +146,11 @@ implemented.
 These are tolerances of tests, not graded accuracy; the backend has no
 validation row.
 
-## 18.5.4 Sources
+## Sources {#laplace-ao-chi0-sources}
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-rpa/theory.md`, "Laplace-transformed chi0" | (18.14), (18.15), the scaling, fallback and open-shell rules |
+| `crates/ferric-rpa/theory.md`, "Laplace-transformed chi0" | (@eq:laplace-ao-chi0-1), (@eq:rpa-chi0-laplace), the scaling, fallback and open-shell rules |
 | `scripts/rpa_laplace_chi0_sympy.py`, claims L0 to L6 | the proof |
 | `crates/ferric-quadrature/theory.md`, "1. Minimax Laplace Quadrature" | the node tables |
 | `crates/ferric-quadrature/theory.md`, "2. Imaginary-Frequency Grids for RPA" | the fallback counts for Gauss–Legendre and Chebyshev–Tan |

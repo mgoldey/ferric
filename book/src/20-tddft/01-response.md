@@ -1,6 +1,6 @@
-# 20.1 Response matrices, TDA and the Casida equations
+# Response matrices, TDA and the Casida equations {#response}
 
-<!-- section: 20.1; status: ready; registry: tddft;
+<!-- status: ready; registry: tddft;
      theory: crates/ferric-tddft/theory.md#"1. Response matrices" -->
 
 An excited state of a closed-shell molecule is, to first approximation, an
@@ -16,11 +16,11 @@ can also take an electron from $a$ back to $i$.
 
 The plan:
 
-1. Write $\mathbf A$ and $\mathbf B$ in spatial orbitals (20.1.1).
+1. Write $\mathbf A$ and $\mathbf B$ in spatial orbitals (@sec:response-matrices).
 2. Derive the Casida eigenproblem from the response equations, reduce it to
    a symmetric one, and drop $\mathbf B$ to get the Tamm–Dancoff
-   approximation (20.1.2).
-3. Solve it without forming the matrices (20.1.3).
+   approximation (@sec:response-tda-casida-reduction).
+3. Solve it without forming the matrices (@sec:response-matrix-free-solvers).
 
 The Tamm–Dancoff approximation (TDA) solves with $\mathbf A$ alone; full
 response (Casida) keeps $\mathbf B$. On an HF reference the two are CIS and
@@ -42,7 +42,7 @@ TDHF.
 | CLI | `method.kind = "tda"` or `"tddft"`, `[tddft]` section |
 | Python | `run_tddft(method="tda" \| "casida")` |
 
-## 20.1.1 The matrices
+## The matrices {#response-matrices}
 
 Indices $i, j$ run over the doubly occupied and $a, b$ over the virtual
 spatial orbitals of a restricted reference. The orbitals are real, so the
@@ -50,7 +50,7 @@ chemists'-notation integrals carry no complex conjugates and
 $(pq|rs) = (qp|rs)$. For a singlet excitation the matrices are
 
 $$ A_{ia,jb} = \delta_{ij}\delta_{ab}\Delta_i^a + 2(ia|jb) - c_{\rm HF}(ij|ab) + K_{ia,jb},\qquad
-B_{ia,jb} = 2(ia|jb) - c_{\rm HF}(ib|ja) + K_{ia,jb}. \tag{20.1} $$
+B_{ia,jb} = 2(ia|jb) - c_{\rm HF}(ib|ja) + K_{ia,jb}. \label{eq:td-matrices-spin-adaptation} $$
 
 Read the terms of $\mathbf A$ one at a time.
 
@@ -64,7 +64,7 @@ Read the terms of $\mathbf A$ one at a time.
   global fraction for a hybrid, 0 for LDA, GGA and meta-GGA.
 - $K_{ia,jb} = (ia|f_{\alpha\alpha}+f_{\alpha\beta}|jb)$ is the response of
   the exchange-correlation potential, the singlet kernel block of section
-  9.6.2. It is zero for an HF reference.
+  @sec:fxc-singlet-triplet-block. It is zero for an HF reference.
 
 Where does the 2 come from? In spin orbitals each excitation carries a spin
 label, $ia\alpha$ or $ia\beta$. The Coulomb integral couples $ia\alpha$ to
@@ -72,7 +72,7 @@ $jb\alpha$ and to $jb\beta$ alike, since the Coulomb operator sees the total
 density. Exchange couples only equal spins. A singlet has
 $X_{ia\alpha} = X_{ia\beta}$, so its matrix is the sum of the $\alpha\alpha$
 and $\alpha\beta$ blocks: the Coulomb term appears twice and the exchange
-once. Section 20.5 does this in full and gets the triplet from the
+once. Section @sec:triplets does this in full and gets the triplet from the
 difference.
 
 $\mathbf B$ has the same Coulomb and kernel terms; only the exchange
@@ -119,12 +119,12 @@ if let (Some(lr), Some(dc)) = (ri.lr.as_deref(), mix.long_range()) {
 }
 ```
 
-| Lines | Term of equation 20.1 |
+| Lines | Term of equation @eq:td-matrices-spin-adaptation |
 |---|---|
 | the double loop | $\delta_{ij}\delta_{ab}\Delta_i^a$; `eps` holds occupied then virtual energies |
 | `c_j * B_ovᵀ B_ov` | $2(ia|jb)$ |
 | `subtract_exchange_a(.., mix.c_sr)` | $-c_{\rm HF}(ij|ab)$; for a global hybrid $c_{\rm sr} = c_{\rm HF}$ |
-| the `lr` branch | the long-range exchange of a range-separated hybrid (section 20.4); absent otherwise |
+| the `lr` branch | the long-range exchange of a range-separated hybrid (section @sec:rsh); absent otherwise |
 
 The kernel is not here. `ferric-tddft/src/tddft.rs::add_fxc_block` adds the
 one block $K$ to $\mathbf A$ and, for Casida, to $\mathbf B$ after both are
@@ -141,7 +141,7 @@ b[(ia, jb)] -= coef * k_ov[(ib, ja)];
 Here `k_ov` is $B_{ov}^{\mathsf T}B_{ov}$, so `k_ov[(ib, ja)]` is
 $(ib|ja)$. No second integral set is needed for $\mathbf B$.
 
-> **Verified equation 20.1** · the singlet matrices are the spin adaptation of the spin-orbital ones
+> **Verified equation @eq:td-matrices-spin-adaptation** · the singlet matrices are the spin adaptation of the spin-orbital ones
 >
 > Symbolically, $U = \tfrac1{\sqrt2}\begin{pmatrix}1&1\\1&-1\end{pmatrix}$ on
 > the spin index block-diagonalizes the closed-shell spin-orbital $\mathbf A$
@@ -164,7 +164,7 @@ $(ib|ja)$. No second integral set is needed for $\mathbf B$.
 >
 > <!-- verified: id=td.matrices.spin-adaptation; script=scripts/tddft_response_sympy.py; claim=B1; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-tddft/src/tddft.rs::build_a_matrix; rust_test=ferric-tddft/tests/validation_tddft.rs::tda_matches_the_validated_library_tda_path; registry=tddft -->
 
-## 20.1.2 TDA and the Casida reduction
+## TDA and the Casida reduction {#response-tda-casida-reduction}
 
 ### From the response to an eigenproblem
 
@@ -183,12 +183,12 @@ matrix on the left is singular, and there the response diverges. Setting
 $v = 0$ and asking for a nonzero solution gives those frequencies:
 
 $$ \begin{pmatrix}\mathbf A & \mathbf B\\ \mathbf B & \mathbf A\end{pmatrix}\begin{pmatrix}X\\ Y\end{pmatrix}
-= \Omega\begin{pmatrix}1 & 0\\ 0 & -1\end{pmatrix}\begin{pmatrix}X\\ Y\end{pmatrix} \tag{20.2} $$
+= \Omega\begin{pmatrix}1 & 0\\ 0 & -1\end{pmatrix}\begin{pmatrix}X\\ Y\end{pmatrix} \label{eq:response-2} $$
 
-Equation 20.2 is the Casida equation. Its positive roots $\Omega_n$ are the
+Equation @eq:response-2 is the Casida equation. Its positive roots $\Omega_n$ are the
 excitation energies.
 
-The matrix on the right is not the identity, so equation 20.2 is not a
+The matrix on the right is not the identity, so equation @eq:response-2 is not a
 symmetric eigenproblem. Add and subtract its two block rows:
 
 $$ (\mathbf A+\mathbf B)(X+Y) = \Omega(X-Y),\qquad (\mathbf A-\mathbf B)(X-Y) = \Omega(X+Y). $$
@@ -204,7 +204,7 @@ $T = (\mathbf A-\mathbf B)^{1/2}$. Write $X+Y = c\,TZ$, multiply on the
 left by $T^{-1}$, and the problem becomes symmetric:
 
 $$ T(\mathbf A+\mathbf B)T\,Z = \Omega^2 Z,\qquad T = (\mathbf A-\mathbf B)^{1/2},\qquad
-(X+Y)_n = \Omega_n^{-1/2}\,TZ_n . \tag{20.3} $$
+(X+Y)_n = \Omega_n^{-1/2}\,TZ_n . \label{eq:td-casida-reduction} $$
 
 The factor $c = \Omega_n^{-1/2}$ comes from the normalization. Excited states
 in response theory are normalized to $|X|^2 - |Y|^2 = 1$. Expand it with the
@@ -216,7 +216,7 @@ $$ |X|^2-|Y|^2 = (X+Y)^{\mathsf T}(X-Y) = \frac{(X+Y)^{\mathsf T}(\mathbf A+\mat
 for unit $Z$. So $c^2 = 1/\Omega$.
 
 Check the scalar case, one excitation with $\mathbf A = a$ and
-$\mathbf B = b$. The roots of equation 20.2 are
+$\mathbf B = b$. The roots of equation @eq:response-2 are
 $\pm\sqrt{(a-b)(a+b)} = \pm\sqrt{a^2 - b^2}$. With $b = 0$ the root is $a$,
 the TDA value. For small $b$ it is $a - b^2/(2a)$ to second order, below
 the TDA root: coupling to the de-excitation lowers the excitation energy.
@@ -234,7 +234,7 @@ let m = amb_sqrt.dot(&a_plus_b).dot(&amb_sqrt);
 The columns it returns are $(X+Y)_n$: `amb_sqrt.dot(&z)` scaled column by
 column by $1/\sqrt{\Omega_n}$.
 
-> **Verified equation 20.3** · the Casida reduction and its normalization
+> **Verified equation @eq:td-casida-reduction** · the Casida reduction and its normalization
 >
 > Symbolically, for the scalar case the eigenvalues of
 > $\begin{pmatrix}a&b\\-b&-a\end{pmatrix}$ are $\pm\sqrt{(a-b)(a+b)}$ and
@@ -263,7 +263,7 @@ $$ \big[(\mathbf A+\mathbf B) - \omega^2(\mathbf A-\mathbf B)^{-1}\big](X+Y) = -
 
 Put $X+Y = Tz$ and multiply on the left by $T$; this gives
 $(M - \omega^2)z = -2Tv$. Expand $z$ in the eigenvectors $Z_n$ of $M$, and
-use $TZ_n = \Omega_n^{1/2}(X+Y)_n$ from equation 20.3:
+use $TZ_n = \Omega_n^{1/2}(X+Y)_n$ from equation @eq:td-casida-reduction:
 
 $$ v\cdot(X+Y) = \sum_n \frac{2\,\Omega_n\,\big(v\cdot(X+Y)_n\big)^2}{\omega^2 - \Omega_n^2} . $$
 
@@ -272,9 +272,9 @@ value of the perturbation, and the right side writes it as a sum over
 states. Each root contributes a pole at $\omega = \pm\Omega_n$, with a
 weight set by how strongly the perturbation couples to $(X+Y)_n$. When $v$
 is a dipole operator, the weight is set by the transition dipole of
-section 20.2. At $\omega = 0$ the sum is
+section @sec:oscillator-strengths. At $\omega = 0$ the sum is
 $-2\,v^{\mathsf T}(\mathbf A+\mathbf B)^{-1}v$, the static response, and
-$\mathbf A + \mathbf B$ is the orbital Hessian of section 8.3.1 at canonical
+$\mathbf A + \mathbf B$ is the orbital Hessian of section @sec:second-order-orbital-gradient-hessian at canonical
 orbitals.
 
 The positive-definiteness conditions have a meaning too. $T$ is symmetric
@@ -282,7 +282,7 @@ and invertible, so $M = T(\mathbf A+\mathbf B)T$ is congruent to
 $\mathbf A+\mathbf B$, and by Sylvester's law of inertia the two have the
 same number of negative eigenvalues. A negative $\Omega^2$ therefore means
 $\mathbf A+\mathbf B$ has a negative eigenvalue: the reference is a saddle
-point of the energy, the instability that section 8.4 detects. ferric
+point of the energy, the instability that section @sec:stability detects. ferric
 treats both cases as errors. A negative eigenvalue of
 $\mathbf A-\mathbf B$, or an $\Omega^2$ below $-10^{-10}$ Ha$^2$, is an
 instability of the reference, and the run stops; the root is not clamped
@@ -292,7 +292,7 @@ $10^{-10}$ Ha, in ascending order
 
 ### The Tamm–Dancoff approximation
 
-Set $\mathbf B = 0$. Equation 20.2 splits into $\mathbf AX = \Omega X$ and
+Set $\mathbf B = 0$. Equation @eq:response-2 splits into $\mathbf AX = \Omega X$ and
 $\mathbf AY = -\Omega Y$, and the excitation block is the Hermitian
 eigenproblem
 
@@ -307,7 +307,7 @@ diagonalization in place of two, and it never needs $\mathbf A-\mathbf B$ to
 be positive definite, so it runs on references where Casida fails. The
 cost is the $\mathbf B$ shift of each root, $-b^2/(2a)$ in the scalar case.
 
-## 20.1.3 The matrix-free solvers
+## The matrix-free solvers {#response-matrix-free-solvers}
 
 The dense path holds $\mathbf A$, $\mathbf B$, $\mathbf A\pm\mathbf B$, $T$
 and $M$, all $d\times d$ with $d = n_on_v$. Memory grows as $N^4$ and each
@@ -318,7 +318,7 @@ budget is an error.
 The Davidson solvers in `ferric-tddft/src/davidson.rs` hold only a
 subspace. They need products by $\mathbf A$ (TDA) or by
 $\mathbf A\pm\mathbf B$ (Casida), which `matvec.rs` supplies for a closed
-shell and the unrestricted operator for an open shell (section 20.6). The
+shell and the unrestricted operator for an open shell (section @sec:unrestricted). The
 preconditioner is the diagonal $D_{ia} = \Delta_i^a$.
 
 `TddftSolver::Auto` keeps the dense path when $d \le 200$
@@ -332,7 +332,7 @@ $H = V^{\mathsf T}\mathbf AV$ and gives Ritz pairs $(\theta, x = Vy)$ with
 residual $r = \mathbf Ax - \theta x$. The correction added to the subspace
 is Olsen's,
 
-$$ t = Pr - \epsilon Px,\qquad P = (\theta - D)^{-1},\qquad \epsilon = \frac{x^{\mathsf T}Pr}{x^{\mathsf T}Px}, \tag{20.4} $$
+$$ t = Pr - \epsilon Px,\qquad P = (\theta - D)^{-1},\qquad \epsilon = \frac{x^{\mathsf T}Pr}{x^{\mathsf T}Px}, \label{eq:response-4} $$
 
 with $\epsilon$ chosen so that
 $x^{\mathsf T}t = x^{\mathsf T}Pr - \epsilon\,x^{\mathsf T}Px = 0$.
@@ -363,15 +363,15 @@ $\epsilon$ is skipped when $x^{\mathsf T}Px$ is not finite or vanishes.
 One subspace $V$ carries both $X+Y$ and $X-Y$. Project the two products,
 $M_\pm = V^{\mathsf T}(\mathbf A\pm\mathbf B)V$, and write the subspace
 coefficients of $X+Y$ and $X-Y$ as $u$ and $v$. The Galerkin conditions are
-the two row-sum equations of section 20.1.2 in the subspace,
+the two row-sum equations of section @sec:response-tda-casida-reduction in the subspace,
 $M_+u = \Omega v$ and $M_-v = \Omega u$, so $M_-M_+u = \Omega^2u$. Put
-$L = M_-^{1/2}$ and $u = Lz$ to get the subspace image of equation 20.3,
+$L = M_-^{1/2}$ and $u = Lz$ to get the subspace image of equation @eq:td-casida-reduction,
 
-$$ LM_+L\,z = \Omega^2z,\qquad u = \Omega^{-1/2}Lz,\qquad v = M_+u/\Omega . \tag{20.5} $$
+$$ LM_+L\,z = \Omega^2z,\qquad u = \Omega^{-1/2}Lz,\qquad v = M_+u/\Omega . \label{eq:response-5} $$
 
 For unit $z$,
 $u^{\mathsf T}v = z^{\mathsf T}LM_+Lz/\Omega^2 = 1$, which is the
-normalization $(X+Y)\cdot(X-Y) = 1$ of section 20.1.2. In
+normalization $(X+Y)\cdot(X-Y) = 1$ of section @sec:response-tda-casida-reduction. In
 `ferric-tddft/src/davidson.rs::casida_ritz`:
 
 <!-- excerpt: ferric-tddft/src/davidson.rs::casida_ritz -->
@@ -392,7 +392,7 @@ r_- = (\mathbf A-\mathbf B)(X-Y) - \Omega(X+Y), $$
 
 and the reported residual is
 $\sqrt{(\lVert r_+\rVert^2 + \lVert r_-\rVert^2)/2}$. That is the residual of
-equation 20.2 itself: its $X$ and $Y$ rows are $r_X = (r_+ + r_-)/2$ and
+equation @eq:response-2 itself: its $X$ and $Y$ rows are $r_X = (r_+ + r_-)/2$ and
 $r_Y = (r_+ - r_-)/2$, and
 $\lVert r_X\rVert^2 + \lVert r_Y\rVert^2 = (\lVert r_+\rVert^2 + \lVert r_-\rVert^2)/2$.
 The corrections solve the per-element model
@@ -426,7 +426,7 @@ These solvers have no proof script. The unit tests `tda_matches_dense_eigh`,
 and the range-separated, triplet and open-shell validation tests run both
 solvers against PySCF.
 
-## 20.1.4 Numerical anchors
+## Numerical anchors {#response-numerical-anchors}
 
 From `site/src/reference/validation.md`, "TDA and Casida TDDFT excitation energies".
 
@@ -438,7 +438,7 @@ From `site/src/reference/validation.md`, "TDA and Casida TDDFT excitation energi
 | B3LYP, the reference's flat grid | $\le 2.8\times10^{-6}$ eV | the same |
 | r2SCAN, water/6-31G, flat 75 × 110 grid | $2.1\times10^{-6}$ eV | the same |
 
-The B3LYP rows differ by grid alone; section 20.3.3 explains why.
+The B3LYP rows differ by grid alone; section @sec:kernel-grid-sensitivity explains why.
 
 Two more anchors sit inside the library. TDA equals
 `ferric-gw/src/tddft.rs::run_tda_dft`, which shares the kernel block, and with
@@ -446,9 +446,9 @@ $K = 0$ and $c_{\rm HF} = 1$ it reduces to CIS. The prototype
 `scripts/proto_tddft.py` builds the TDA and Casida matrices by hand from
 PySCF integrals and compares them with PySCF `tdscf` on water/cc-pVDZ.
 
-## 20.1.5 Sources
+## Sources {#response-sources}
 
 | Source | What it gives |
 |---|---|
 | `crates/ferric-tddft/theory.md`, sections 1–3, 6 and 12 | the matrices, the reductions, the cost and the Davidson solvers |
-| `crates/ferric-dft/theory.md`, "$f_{xc}$ response kernels" | the kernel block $K$ (section 9.6) |
+| `crates/ferric-dft/theory.md`, "$f_{xc}$ response kernels" | the kernel block $K$ (section @sec:fxc) |

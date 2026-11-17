@@ -82,317 +82,317 @@ Code references are `crate/src/file.rs::item` under `crates/`.
 
 ### Part 0. Front matter
 
-| § | Section | Sources | Code | Status |
+| Label | Section | Sources | Code | Status |
 |---|---|---|---|---|
-| 0.1 | How to read this book: boxes, code references, grades | `book/BUILD.md`; `site/src/reference/validation.md` | none | edit |
-| 0.2 | Notation and conventions | `book/notation.md` | see that file | ready |
+| `how-to-read` | How to read this book: boxes, code references, grades | `book/BUILD.md`; `site/src/reference/validation.md` | none | edit |
+| `notation` | Notation and conventions | `book/notation.md` | see that file | ready |
 
 ### Part I. Foundations
 
 **Chapter 1. Second quantization and the reference state**
 
-| § | Section | Sources | Code | Status |
+| Label | Section | Sources | Code | Status |
 |---|---|---|---|---|
-| 1.1 | Hamiltonian, spin orbitals, normal ordering | P derivation §1–3; W §1; D 1.1 | none | edit |
-| 1.2 | Wick contractions as the proof scripts run them | S `oomp2_mp3_identities_sympy.py`; W §1–2 | none | edit |
-| 1.3 | Spin adaptation: from spin orbitals to spatial orbitals | T mp2 "Conventions", §2; T cc header; S `mp2_variant_identities.py` claims 1–2 | `ferric-mp2/src/spinorbital.rs::{spin,spat,asym_oovv,asym_phys}`, `ferric-cc/src/ccsd_closed_shell.rs::expand_amplitudes_to_spin_orbital` | edit |
+| `hamiltonian` | Hamiltonian, spin orbitals, normal ordering | P derivation §1–3; W §1; D 1.1 | none | edit |
+| `wick` | Wick contractions as the proof scripts run them | S `oomp2_mp3_identities_sympy.py`; W §1–2 | none | edit |
+| `spin-adaptation` | Spin adaptation: from spin orbitals to spatial orbitals | T mp2 "Conventions", §2; T cc header; S `mp2_variant_identities.py` claims 1–2 | `ferric-mp2/src/spinorbital.rs::{spin,spat,asym_oovv,asym_phys}`, `ferric-cc/src/ccsd_closed_shell.rs::expand_amplitudes_to_spin_orbital` | edit |
 
 **Chapter 2. Molecules, basis sets and numerical ground rules**
 
-| § | Section | Sources | Code | Status |
+| Label | Section | Sources | Code | Status |
 |---|---|---|---|---|
-| 2.1 | Molecule, charge, multiplicity, units | T core §1 | `ferric-core/src/mol.rs::{Molecule,parse_xyz,nelec,nuclear_repulsion,apply_ecp}` | edit |
-| 2.2 | Contracted Gaussians, normalization, parsers | T core §3; T integrals "Basis Sets" | `ferric-core/src/basis.rs::{BasisSet,Shell,load_bse_json,load_g94}`, `ferric-integrals/src/basis_bridge.rs::PreparedBasis` | edit |
-| 2.3 | Determinism, threads and the memory budget | `site/src/reference/architecture.md`; code comments | `ferric-core/src/blas_threads.rs::{init_threading,with_blas_threads}`, `ferric-core/src/memory.rs::resolve_budget_bytes` | edit |
-| 2.4 | Dense tensors and the einsum macro | T tensors; `site/src/reference/einsum.md` | `ferric-tensors/src/tensor.rs::Tensor` | edit |
+| `molecule` | Molecule, charge, multiplicity, units | T core §1 | `ferric-core/src/mol.rs::{Molecule,parse_xyz,nelec,nuclear_repulsion,apply_ecp}` | edit |
+| `basis-sets` | Contracted Gaussians, normalization, parsers | T core §3; T integrals "Basis Sets" | `ferric-core/src/basis.rs::{BasisSet,Shell,load_bse_json,load_g94}`, `ferric-integrals/src/basis_bridge.rs::PreparedBasis` | edit |
+| `determinism-and-memory` | Determinism, threads and the memory budget | `site/src/reference/architecture.md`; code comments | `ferric-core/src/blas_threads.rs::{init_threading,with_blas_threads}`, `ferric-core/src/memory.rs::resolve_budget_bytes` | edit |
+| `tensors` | Dense tensors and the einsum macro | T tensors; `site/src/reference/einsum.md` | `ferric-tensors/src/tensor.rs::Tensor` | edit |
 
 ### Part II. Integrals, screening and density fitting
 
 **Chapter 3. Gaussian integrals**
 
-| § | Section | Sources | Code | Status |
+| Label | Section | Sources | Code | Status |
 |---|---|---|---|---|
-| 3.1 | One-electron integrals and multipoles | T integrals "One-Electron Integrals" | `ferric-integrals/src/oneelectron.rs::{overlap,kinetic,nuclear,hcore,dipole,second_moment}` | edit |
-| 3.2 | Two-, three- and four-center integrals through libint2 and the C shim | T integrals "ERI", "Three-Center", "Two-Center" | `ferric-integrals/src/engine.rs::{new_2e,compute_quartet,new_3center,compute_eri3,new_2center,compute_eri2}` | edit |
-| 3.3 | Derivative integrals and buffer sizing | none | `ferric-integrals/src/engine.rs::{new_1e_deriv,compute_1e_deriv_block_n,new_2e_deriv,compute_eri_deriv_quartet,new_3center_deriv}` | edit |
-| 3.4 | A McMurchie–Davidson engine for three-center one-electron integrals | none | `ferric-integrals/src/md3c1e.rs::{e_table,boys,pair_block,a_matrix_at_point}` | edit |
-| 3.5 | Effective core potentials | T integrals "Effective Core Potentials" | `ferric-integrals/src/ecp.rs::{ecp_matrix_spherical,ecp_matrix_deriv_spherical}`, `ferric-integrals/src/oneelectron.rs::hcore_ecp` | edit |
-| 3.6 | The pVp integral and spin-free X2C-1e | S `pvp_ss_sympy.py`; R pvp-integrals *gap*; M scf "Scalar relativity" | `ferric-integrals/src/pvp.rs::pvp_nuclear`, `ferric-scf/src/x2c.rs::{x2c1e_transform,x2c1e_hcore}` | edit |
-| 3.7 | Basis functions and their derivatives on a grid | none | `ferric-integrals/src/ao_grid.rs::{eval_basis_on_points,eval_basis_and_grad_on_points,eval_basis_grad_hess_on_points}` | edit |
+| `one-electron` | One-electron integrals and multipoles | T integrals "One-Electron Integrals" | `ferric-integrals/src/oneelectron.rs::{overlap,kinetic,nuclear,hcore,dipole,second_moment}` | edit |
+| `two-electron` | Two-, three- and four-center integrals through libint2 and the C shim | T integrals "ERI", "Three-Center", "Two-Center" | `ferric-integrals/src/engine.rs::{new_2e,compute_quartet,new_3center,compute_eri3,new_2center,compute_eri2}` | edit |
+| `integrals-derivatives` | Derivative integrals and buffer sizing | none | `ferric-integrals/src/engine.rs::{new_1e_deriv,compute_1e_deriv_block_n,new_2e_deriv,compute_eri_deriv_quartet,new_3center_deriv}` | edit |
+| `md-three-center` | A McMurchie–Davidson engine for three-center one-electron integrals | none | `ferric-integrals/src/md3c1e.rs::{e_table,boys,pair_block,a_matrix_at_point}` | edit |
+| `ecp` | Effective core potentials | T integrals "Effective Core Potentials" | `ferric-integrals/src/ecp.rs::{ecp_matrix_spherical,ecp_matrix_deriv_spherical}`, `ferric-integrals/src/oneelectron.rs::hcore_ecp` | edit |
+| `pvp-x2c` | The pVp integral and spin-free X2C-1e | S `pvp_ss_sympy.py`; R pvp-integrals *gap*; M scf "Scalar relativity" | `ferric-integrals/src/pvp.rs::pvp_nuclear`, `ferric-scf/src/x2c.rs::{x2c1e_transform,x2c1e_hcore}` | edit |
+| `ao-grid` | Basis functions and their derivatives on a grid | none | `ferric-integrals/src/ao_grid.rs::{eval_basis_on_points,eval_basis_and_grad_on_points,eval_basis_grad_hess_on_points}` | edit |
 
 **Chapter 4. Range-separated and attenuated operators**
 
-| § | Section | Sources | Code | Status |
+| Label | Section | Sources | Code | Status |
 |---|---|---|---|---|
-| 4.1 | erf and erfc; terf and terfc; the curvature constraint | D 2 (introduction), D 4.1 Eqs. 4.1–4.2; T mp2 §4 (kernel); S `mp2_family_sympy.py`† part D | `ferric-integrals/src/operator.rs::{Operator,erf,erfc,terf,terfc,terfc_with_omega,terf_with_omega}` | edit |
-| 4.2 | The terf table engine and its far-field fallback | none committed; code comments in `crates/ferric-integrals/shim/shim.cc` | `ferric-integrals/src/engine.rs::{new_terf_libint2,is_table_engine}` | edit |
-| 4.3 | Yukawa, Slater geminal and fitted geminal kernels | none | `ferric-integrals/src/operator.rs::{yukawa,slater_geminal,stg}`, `ferric-integrals/src/engine.rs::new_2e_geminal` | gap |
+| `erf-terf` | erf and erfc; terf and terfc; the curvature constraint | D 2 (introduction), D 4.1 Eqs. 4.1–4.2; T mp2 §4 (kernel); S `mp2_family_sympy.py`† part D | `ferric-integrals/src/operator.rs::{Operator,erf,erfc,terf,terfc,terfc_with_omega,terf_with_omega}` | edit |
+| `terf-table-engine` | The terf table engine and its far-field fallback | none committed; code comments in `crates/ferric-integrals/shim/shim.cc` | `ferric-integrals/src/engine.rs::{new_terf_libint2,is_table_engine}` | edit |
+| `yukawa-geminal` | Yukawa, Slater geminal and fitted geminal kernels | none | `ferric-integrals/src/operator.rs::{yukawa,slater_geminal,stg}`, `ferric-integrals/src/engine.rs::new_2e_geminal` | gap |
 
 **Chapter 5. Screening**
 
-| § | Section | Sources | Code | Status |
+| Label | Section | Sources | Code | Status |
 |---|---|---|---|---|
-| 5.1 | Schwarz bounds, and why they do not see attenuation | none | `ferric-integrals/src/schwarz.rs::{schwarz,bound_inflation}`, `ferric-scf/src/screening.rs::{Bound,SchwarzBounds}` | edit |
-| 5.2 | Distance-dependent bounds (QQR) for four- and three-index integrals | none | `ferric-scf/src/qqr.rs::QqrBounds`, `ferric-integrals/src/qqr3.rs::{QqrBounds3,estimate3}` | edit |
-| 5.3 | Significant pair lists | none | `ferric-scf/src/pairs.rs::{SignificantPairs,DensityPairs,intersect_sorted}` | edit |
+| `schwarz` | Schwarz bounds, and why they do not see attenuation | none | `ferric-integrals/src/schwarz.rs::{schwarz,bound_inflation}`, `ferric-scf/src/screening.rs::{Bound,SchwarzBounds}` | edit |
+| `qqr` | Distance-dependent bounds (QQR) for four- and three-index integrals | none | `ferric-scf/src/qqr.rs::QqrBounds`, `ferric-integrals/src/qqr3.rs::{QqrBounds3,estimate3}` | edit |
+| `pair-lists` | Significant pair lists | none | `ferric-scf/src/pairs.rs::{SignificantPairs,DensityPairs,intersect_sorted}` | edit |
 
 **Chapter 6. Density fitting**
 
-| § | Section | Sources | Code | Status |
+| Label | Section | Sources | Code | Status |
 |---|---|---|---|---|
-| 6.1 | The factorization, the metric, Cholesky and eigendecomposition factors | T mp2 §1; T gw §1; D 1.4.1, D 4.1 Eq. 4.5 | `ferric-integrals/src/threeindex.rs::coulomb_metric_2c`, `ferric-mp2/src/rimp2.rs::{cholesky_inverse_sqrt,eigh_inverse_sqrt,metric_inverse_sqrt}` | edit |
-| 6.2 | Three-index sources: in core, packed, spilled, recomputed | none; `site/src/reference/input.md` (`jk_storage`) | `ferric-integrals/src/three_index_source.rs::{ThreeIndexSource,build_band_screened,build_dressed,for_each_block}` | edit |
-| 6.3 | Mixed metrics and robust (Dunlap) fitting | T mp2 §1 (last paragraph) | `ferric-mp2/src/rimp2.rs::{ri_mp2_robust_attenuated_metric,robust_fit_coulomb_parts}` | ready |
-| 6.4 | Complementary auxiliary basis (CABS) | T mp2 §11; S `mp2_variant_identities.py` claim 7 | `ferric-mp2/src/f12.rs::build_cabs`, `ferric-integrals/src/cabs.rs::cross_overlap` | edit |
+| `factorization-and-metric` | The factorization, the metric, Cholesky and eigendecomposition factors | T mp2 §1; T gw §1; D 1.4.1, D 4.1 Eq. 4.5 | `ferric-integrals/src/threeindex.rs::coulomb_metric_2c`, `ferric-mp2/src/rimp2.rs::{cholesky_inverse_sqrt,eigh_inverse_sqrt,metric_inverse_sqrt}` | edit |
+| `three-index-sources` | Three-index sources: in core, packed, spilled, recomputed | none; `site/src/reference/input.md` (`jk_storage`) | `ferric-integrals/src/three_index_source.rs::{ThreeIndexSource,build_band_screened,build_dressed,for_each_block}` | edit |
+| `robust-fit` | Mixed metrics and robust (Dunlap) fitting | T mp2 §1 (last paragraph) | `ferric-mp2/src/rimp2.rs::{ri_mp2_robust_attenuated_metric,robust_fit_coulomb_parts}` | ready |
+| `cabs` | Complementary auxiliary basis (CABS) | T mp2 §11; S `mp2_variant_identities.py` claim 7 | `ferric-mp2/src/f12.rs::build_cabs`, `ferric-integrals/src/cabs.rs::cross_overlap` | edit |
 
 ### Part III. Self-consistent field
 
 **Chapter 7. Hartree–Fock**
 
-| § | Section | Sources | Code | Status |
+| Label | Section | Sources | Code | Status |
 |---|---|---|---|---|
-| 7.1 | RHF, UHF and ROHF energy functionals | T scf "Hartree-Fock energy functionals"†; S `hf_energy_sympy.py`†; R rhf, uhf, rohf; D 1.1.2 | `ferric-scf/src/rhf.rs::solve_rhf`, `ferric-scf/src/uhf.rs::solve_uhf`, `ferric-scf/src/rohf.rs::solve_rohf` | ready |
-| 7.2 | Orthogonalization and starting guesses | none | `ferric-scf/src/rhf.rs::canonical_orthogonalizer`, `ferric-scf/src/guess.rs::{hcore_guess,sad_guess,minao_projection_guess}` | edit |
-| 7.3 | Direct and incremental J/K builds | none | `ferric-scf/src/rhf.rs::build_jk`, `ferric-scf/src/fock.rs::{JBuilder,KBuilder}`, `ferric-scf/src/direct_jk.rs::build_incremental` | ready |
-| 7.4 | RI-J, RI-K and Split-RI-J | M scf "Choosing how exchange is built"; module docs of `df_j.rs`, `df_k.rs` | `ferric-scf/src/df_j.rs::DfJ`, `ferric-scf/src/df_k.rs::DfK`, `ferric-scf/src/split_rij.rs::SplitRiJ` | ready |
-| 7.5 | LinK, seminumerical exchange (COSX) and CFMM | T scf "CFMM" (10 lines); M scf | `ferric-scf/src/link_k.rs::LinkK`, `ferric-scf/src/cosx_k.rs::CosxK`, `ferric-scf/src/cfmm.rs::CfmmJ` | ready |
-| 7.6 | Fock hooks | T scf "Fock hooks and their nuclear gradient" | `ferric-scf/src/rhf.rs::{solve_rhf_with_hook,validate_fock_hook}` | edit |
+| `energy-functionals` | RHF, UHF and ROHF energy functionals | T scf "Hartree-Fock energy functionals"†; S `hf_energy_sympy.py`†; R rhf, uhf, rohf; D 1.1.2 | `ferric-scf/src/rhf.rs::solve_rhf`, `ferric-scf/src/uhf.rs::solve_uhf`, `ferric-scf/src/rohf.rs::solve_rohf` | ready |
+| `orthogonalization-and-guesses` | Orthogonalization and starting guesses | none | `ferric-scf/src/rhf.rs::canonical_orthogonalizer`, `ferric-scf/src/guess.rs::{hcore_guess,sad_guess,minao_projection_guess}` | edit |
+| `direct-and-incremental` | Direct and incremental J/K builds | none | `ferric-scf/src/rhf.rs::build_jk`, `ferric-scf/src/fock.rs::{JBuilder,KBuilder}`, `ferric-scf/src/direct_jk.rs::build_incremental` | ready |
+| `ri-j-ri-k-split-ri-j` | RI-J, RI-K and Split-RI-J | M scf "Choosing how exchange is built"; module docs of `df_j.rs`, `df_k.rs` | `ferric-scf/src/df_j.rs::DfJ`, `ferric-scf/src/df_k.rs::DfK`, `ferric-scf/src/split_rij.rs::SplitRiJ` | ready |
+| `link-cosx-cfmm` | LinK, seminumerical exchange (COSX) and CFMM | T scf "CFMM" (10 lines); M scf | `ferric-scf/src/link_k.rs::LinkK`, `ferric-scf/src/cosx_k.rs::CosxK`, `ferric-scf/src/cfmm.rs::CfmmJ` | ready |
+| `fock-hooks` | Fock hooks | T scf "Fock hooks and their nuclear gradient" | `ferric-scf/src/rhf.rs::{solve_rhf_with_hook,validate_fock_hook}` | edit |
 
 **Chapter 8. Convergence**
 
-| § | Section | Sources | Code | Status |
+| Label | Section | Sources | Code | Status |
 |---|---|---|---|---|
-| 8.1 | DIIS and its variants | T scf "DIIS" (6 lines) | `ferric-scf/src/diis.rs::{Diis,DiisFlavor}` | ready |
-| 8.2 | Level shift, MOM and smearing | none | `ferric-scf/src/mom.rs::mom_reorder`, `ferric-scf/src/smearing.rs::{fermi_dirac,solve_fermi_level}` | ready |
-| 8.3 | Second-order steps: Newton, augmented Hessian, trust region | none | `ferric-scf/src/rhf_newton.rs::{rhf_newton_step,hessian_matvec}`, `ferric-scf/src/uhf_newton.rs::uhf_newton_step`, `ferric-scf/src/rohf_newton.rs::rohf_newton_step`, `ferric-scf/src/rohf_ah.rs::rohf_ah_step`, `ferric-scf/src/trah.rs::{solve_trust_region,rhf_trah_step}`, `ferric-scf/src/cayley.rs::cayley_unitary` | ready |
-| 8.4 | Stability analysis | none | `ferric-scf/src/stability.rs::{rhf_internal_stability,rhf_external_stability,uhf_internal_stability}` | ready |
+| `diis` | DIIS and its variants | T scf "DIIS" (6 lines) | `ferric-scf/src/diis.rs::{Diis,DiisFlavor}` | ready |
+| `level-shift-mom-smearing` | Level shift, MOM and smearing | none | `ferric-scf/src/mom.rs::mom_reorder`, `ferric-scf/src/smearing.rs::{fermi_dirac,solve_fermi_level}` | ready |
+| `second-order` | Second-order steps: Newton, augmented Hessian, trust region | none | `ferric-scf/src/rhf_newton.rs::{rhf_newton_step,hessian_matvec}`, `ferric-scf/src/uhf_newton.rs::uhf_newton_step`, `ferric-scf/src/rohf_newton.rs::rohf_newton_step`, `ferric-scf/src/rohf_ah.rs::rohf_ah_step`, `ferric-scf/src/trah.rs::{solve_trust_region,rhf_trah_step}`, `ferric-scf/src/cayley.rs::cayley_unitary` | ready |
+| `stability` | Stability analysis | none | `ferric-scf/src/stability.rs::{rhf_internal_stability,rhf_external_stability,uhf_internal_stability}` | ready |
 
 ### Part IV. Density functional theory
 
 **Chapter 9. Kohn–Sham**
 
-| § | Section | Sources | Code | Status |
+| Label | Section | Sources | Code | Status |
 |---|---|---|---|---|
-| 9.1 | Kohn–Sham equations and functional families | T dft "Kohn-Sham Equations", "Functionals"; R ks-semilocal | `ferric-scf/src/rhf.rs::ks_vxc_closed`, `ferric-dft/src/ks.rs::KsXc` | ready |
-| 9.2 | Radial and angular grids, the Becke partition, pruning | T dft "Integration Grid", "Becke partition"; T quadrature §3; S `dft_becke_weight_grad_sympy.py`; R ks-grid | `ferric-dft/src/becke.rs::{becke_weights_all,becke_weights_and_grad}`, `ferric-dft/src/grid.rs::build_atomic_grid`, `ferric-dft/src/prune.rs::angular_orders_for_atom`, `ferric-dft/src/radial.rs::treutler_ahlrichs_m4`, `ferric-quadrature/src/lebedev.rs::lebedev` | ready |
-| 9.3 | $V_{xc}$ matrix elements: LDA, GGA, meta-GGA | T dft "Semilocal $V_{xc}$ matrix elements"; S `dft_vxc_matrix_elements_sympy.py`; R ks-semilocal, ks-mgga | `ferric-dft/src/vxc.rs::{semilocal_vxc_closed,semilocal_vxc_polarized}`, `ferric-dft/src/density_on_grid.rs::{eval_density_closed,eval_tau_closed}` | ready |
-| 9.4 | Global and range-separated hybrids; tuning $\omega$ | R ks-hybrid-rsh *gap* (a proof script is in progress on `docs/derivations-backfill`); D 1.3.2 | `ferric-scf/src/rsh_response.rs::exchange_response`, `ferric-scf/src/omega_tuning.rs::tune_omega` | ready |
-| 9.5 | VV10 nonlocal correlation | T dft "VV10 nonlocal correlation"; S `dft_vv10_potential_sympy.py`; R ks-vv10 | `ferric-dft/src/vv10.rs::{compute_vv10_energy_and_potentials,add_vv10_scratch}` | ready |
-| 9.6 | $f_{xc}$ response kernels | T dft "$f_{xc}$ response kernels"; S `dft_fxc_kernel_sympy.py` | `ferric-dft/src/fxc.rs::{LdaFxcKernel,GgaFxcKernel,MggaFxcKernel}`, `ferric-dft/src/lr_kernel.rs::{fxc_ov_block,singlet_fxc_ov_block}` | ready |
-| 9.7 | Constrained DFT and electron-transfer coupling | M cdft; R cdft *gap* | `ferric-dft/src/cdft.rs::build_weight_matrix`, `ferric-scf/src/cdft_driver.rs::solve_cdft_uhf`, `ferric-scf/src/cdft_coupling.rs::coupling_hab` | ready |
+| `ks-equations` | Kohn–Sham equations and functional families | T dft "Kohn-Sham Equations", "Functionals"; R ks-semilocal | `ferric-scf/src/rhf.rs::ks_vxc_closed`, `ferric-dft/src/ks.rs::KsXc` | ready |
+| `grids` | Radial and angular grids, the Becke partition, pruning | T dft "Integration Grid", "Becke partition"; T quadrature §3; S `dft_becke_weight_grad_sympy.py`; R ks-grid | `ferric-dft/src/becke.rs::{becke_weights_all,becke_weights_and_grad}`, `ferric-dft/src/grid.rs::build_atomic_grid`, `ferric-dft/src/prune.rs::angular_orders_for_atom`, `ferric-dft/src/radial.rs::treutler_ahlrichs_m4`, `ferric-quadrature/src/lebedev.rs::lebedev` | ready |
+| `vxc` | $V_{xc}$ matrix elements: LDA, GGA, meta-GGA | T dft "Semilocal $V_{xc}$ matrix elements"; S `dft_vxc_matrix_elements_sympy.py`; R ks-semilocal, ks-mgga | `ferric-dft/src/vxc.rs::{semilocal_vxc_closed,semilocal_vxc_polarized}`, `ferric-dft/src/density_on_grid.rs::{eval_density_closed,eval_tau_closed}` | ready |
+| `hybrids` | Global and range-separated hybrids; tuning $\omega$ | R ks-hybrid-rsh *gap* (a proof script is in progress on `docs/derivations-backfill`); D 1.3.2 | `ferric-scf/src/rsh_response.rs::exchange_response`, `ferric-scf/src/omega_tuning.rs::tune_omega` | ready |
+| `vv10` | VV10 nonlocal correlation | T dft "VV10 nonlocal correlation"; S `dft_vv10_potential_sympy.py`; R ks-vv10 | `ferric-dft/src/vv10.rs::{compute_vv10_energy_and_potentials,add_vv10_scratch}` | ready |
+| `fxc` | $f_{xc}$ response kernels | T dft "$f_{xc}$ response kernels"; S `dft_fxc_kernel_sympy.py` | `ferric-dft/src/fxc.rs::{LdaFxcKernel,GgaFxcKernel,MggaFxcKernel}`, `ferric-dft/src/lr_kernel.rs::{fxc_ov_block,singlet_fxc_ov_block}` | ready |
+| `cdft` | Constrained DFT and electron-transfer coupling | M cdft; R cdft *gap* | `ferric-dft/src/cdft.rs::build_weight_matrix`, `ferric-scf/src/cdft_driver.rs::solve_cdft_uhf`, `ferric-scf/src/cdft_coupling.rs::coupling_hab` | ready |
 
 ### Part V. The MP2 family
 
 **Chapter 10. MP2 and its variants** (dissertation chapters 2, 3, 5 and 6)
 
-| § | Section | Sources | Code | Status |
+| Label | Section | Sources | Code | Status |
 |---|---|---|---|---|
-| 10.1 | Closed-shell RI-MP2 energy | `book/sample-ri-mp2.md`; T mp2 §1–2; D 4.1–4.2; S `mp2_variant_identities.py` claim 1; R ri-mp2 | `ferric-mp2/src/rimp2.rs::{ri_mp2,ri_mp2_spin_components,pair_energy,spin_components_from_b_ov_kappa_cpu}` | ready |
-| 10.2 | Unrestricted RI-MP2 | T mp2 §3; S `mp2_variant_identities.py` claim 2; R u-ri-mp2 | `ferric-mp2/src/u_rimp2.rs::{u_ri_mp2,same_spin_pair_kernel,opposite_spin_pair_kernel}` | ready |
-| 10.3 | Spin-component scaling and $\kappa$-regularization | T mp2 §2 (last paragraph), §4; S `mp2_family_sympy.py`† part C; R scs-mp2 | `ferric-mp2/src/scs.rs::scs_mp2`, `ferric-mp2/src/rimp2.rs::spin_components_from_b_ov_kappa` | ready |
-| 10.4 | Attenuated MP2 with erfc and terfc | T mp2 §5; D 2, D 3; R attenuated-mp2 | `ferric-mp2/src/attenuated.rs::{attenuated_ri_mp2,attenuated_ri_mp2_long_range}` | edit |
-| 10.5 | SCS-MP2(2terfc): two attenuation lengths | T mp2 §4; D 5.2 Eq. 5.6, D 5.3; R scs-mp2-2terfc | `ferric-mp2/src/scs.rs::scs_mp2_2terfc` | ready |
-| 10.6 | Attenuation and the basis-set limit | D 6 | none | edit |
-| 10.7 | The range split is not additive: the cross term | T mp2 §5 "Range split"; S `mp2_variant_identities.py` claim 4 | `ferric-mp2/src/attenuated.rs::rs_mp2_decomposition` | ready |
-| 10.8 | MP2-V: attenuated MP2 with damped VV10 | T mp2 "13. MP2-V"†; S `mp2_family_sympy.py`† part E; R mp2-v | `ferric-mp2/src/att_vv10.rs::{att_mp2_vv10,u_att_mp2_vv10}`, `ferric-dft/src/vv10.rs::compute_vv10_damped_energy_and_potentials` | edit |
-| 10.9 | MP3, restricted and spin-blocked unrestricted | T mp2 §6, §6.1; S `oomp2_mp3_identities_sympy.py`, `ump3_spin_blocks_sympy.py`; R mp3. W §2b is superseded by the scripts: its ring prefactor was wrong. | `ferric-mp2/src/mp3.rs::{mp3_energy,mp3_energy_from_spin_orbital_blocks}`, `ferric-mp2/src/u_mp3.rs::u_mp3` | ready |
-| 10.10 | MP2-based double hybrids | R double-hybrid *gap* (owned by another branch); M cc "MP2-based double hybrids" | `ferric-mp2/src/double_hybrid.rs::mp2_double_hybrid` | ready |
-| 10.11 | Orbital-partitioned Padé MP3 | T mp2 §6.2; S `opmp3_identities_sympy.py`; R opmp3 | `ferric-mp2/src/opmp3.rs::{w_channels,pade,op_mp3,sop_mp3,ssd_opmp3}`, `ferric-mp2/src/opmp3_driver.rs::run_opmp3` | ready |
+| `closed-shell-ri-mp2` | Closed-shell RI-MP2 energy | `book/sample-ri-mp2.md`; T mp2 §1–2; D 4.1–4.2; S `mp2_variant_identities.py` claim 1; R ri-mp2 | `ferric-mp2/src/rimp2.rs::{ri_mp2,ri_mp2_spin_components,pair_energy,spin_components_from_b_ov_kappa_cpu}` | ready |
+| `unrestricted-ri-mp2` | Unrestricted RI-MP2 | T mp2 §3; S `mp2_variant_identities.py` claim 2; R u-ri-mp2 | `ferric-mp2/src/u_rimp2.rs::{u_ri_mp2,same_spin_pair_kernel,opposite_spin_pair_kernel}` | ready |
+| `scs-and-kappa` | Spin-component scaling and $\kappa$-regularization | T mp2 §2 (last paragraph), §4; S `mp2_family_sympy.py`† part C; R scs-mp2 | `ferric-mp2/src/scs.rs::scs_mp2`, `ferric-mp2/src/rimp2.rs::spin_components_from_b_ov_kappa` | ready |
+| `attenuated-mp2` | Attenuated MP2 with erfc and terfc | T mp2 §5; D 2, D 3; R attenuated-mp2 | `ferric-mp2/src/attenuated.rs::{attenuated_ri_mp2,attenuated_ri_mp2_long_range}` | edit |
+| `scs-mp2-2terfc` | SCS-MP2(2terfc): two attenuation lengths | T mp2 §4; D 5.2 Eq. 5.6, D 5.3; R scs-mp2-2terfc | `ferric-mp2/src/scs.rs::scs_mp2_2terfc` | ready |
+| `attenuation-basis-limit` | Attenuation and the basis-set limit | D 6 | none | edit |
+| `range-split-cross-term` | The range split is not additive: the cross term | T mp2 §5 "Range split"; S `mp2_variant_identities.py` claim 4 | `ferric-mp2/src/attenuated.rs::rs_mp2_decomposition` | ready |
+| `mp2-v` | MP2-V: attenuated MP2 with damped VV10 | T mp2 "13. MP2-V"†; S `mp2_family_sympy.py`† part E; R mp2-v | `ferric-mp2/src/att_vv10.rs::{att_mp2_vv10,u_att_mp2_vv10}`, `ferric-dft/src/vv10.rs::compute_vv10_damped_energy_and_potentials` | edit |
+| `mp3` | MP3, restricted and spin-blocked unrestricted | T mp2 §6, §6.1; S `oomp2_mp3_identities_sympy.py`, `ump3_spin_blocks_sympy.py`; R mp3. W §2b is superseded by the scripts: its ring prefactor was wrong. | `ferric-mp2/src/mp3.rs::{mp3_energy,mp3_energy_from_spin_orbital_blocks}`, `ferric-mp2/src/u_mp3.rs::u_mp3` | ready |
+| `double-hybrids` | MP2-based double hybrids | R double-hybrid *gap* (owned by another branch); M cc "MP2-based double hybrids" | `ferric-mp2/src/double_hybrid.rs::mp2_double_hybrid` | ready |
+| `opmp3` | Orbital-partitioned Padé MP3 | T mp2 §6.2; S `opmp3_identities_sympy.py`; R opmp3 | `ferric-mp2/src/opmp3.rs::{w_channels,pade,op_mp3,sop_mp3,ssd_opmp3}`, `ferric-mp2/src/opmp3_driver.rs::run_opmp3` | ready |
 
 **Chapter 11. RI-MP2 algorithms and memory** (dissertation chapter 4)
 
-| § | Section | Sources | Code | Status |
+| Label | Section | Sources | Code | Status |
 |---|---|---|---|---|
-| 11.0 | Chapter overview: the RI-MP2 pipeline and where each piece lives | `book/sample-ri-mp2.md`; T mp2 §1–2 | none | ready |
-| 11.1 | The four-step algorithm, 2014 and now | D 4.2 Table 4.1, Functions 1–4; `book/sample-ri-mp2.md` §10.1.3 | `ferric-mp2/src/rimp2.rs::ri_mp2_spin_components` | ready |
-| 11.2 | Streaming the MO transform and the dressing | code comments in `rimp2.rs` | `ferric-mp2/src/rimp2.rs::{stream_dressed_mo_band,stream_dressed_mo_band_budgeted,mo_stream_chunk_for}` | ready |
-| 11.3 | The pair-energy kernel: batching, symmetry, fixed summation order | code comments in `rimp2.rs`; D 4.2 | `ferric-mp2/src/rimp2.rs::{spin_components_from_b_ov_kappa_cpu,pair_energy}` | ready |
-| 11.4 | Memory budget, admission checks and the shared pool | code comments; `site/src/reference/input.md` `[memory]` | `ferric-mp2/src/rimp2.rs::{eri3_budget_bytes,mo_side_alloc_bytes,check_mo_side_alloc}` | verify |
-| 11.5 | Parallel performance then and now | D 4.3; `site/src/reference/validation.md` | none | verify |
-| 11.6 | Device and mixed-precision kernels | `site/src/reference/validation.md` "Mixed-precision GPU kernels" | `ferric-mp2/src/rimp2_gpu.rs::try_spin_components_on_device`, `ferric-mp2/src/rimp2.rs::mixed_energy_operator` | ready |
-| 11.7 | Distributed RI-MP2 by auxiliary bands | none | `ferric-mp2/src/mpi_rimp2.rs::run_mpi_ri_mp2` | verify |
+| `rimp2-algorithms` | Chapter overview: the RI-MP2 pipeline and where each piece lives | `book/sample-ri-mp2.md`; T mp2 §1–2 | none | ready |
+| `four-step-algorithm` | The four-step algorithm, 2014 and now | D 4.2 Table 4.1, Functions 1–4; `book/sample-ri-mp2.md` §10.1.3 | `ferric-mp2/src/rimp2.rs::ri_mp2_spin_components` | ready |
+| `streaming-transform` | Streaming the MO transform and the dressing | code comments in `rimp2.rs` | `ferric-mp2/src/rimp2.rs::{stream_dressed_mo_band,stream_dressed_mo_band_budgeted,mo_stream_chunk_for}` | ready |
+| `pair-kernel` | The pair-energy kernel: batching, symmetry, fixed summation order | code comments in `rimp2.rs`; D 4.2 | `ferric-mp2/src/rimp2.rs::{spin_components_from_b_ov_kappa_cpu,pair_energy}` | ready |
+| `memory-budget` | Memory budget, admission checks and the shared pool | code comments; `site/src/reference/input.md` `[memory]` | `ferric-mp2/src/rimp2.rs::{eri3_budget_bytes,mo_side_alloc_bytes,check_mo_side_alloc}` | verify |
+| `parallel-performance` | Parallel performance then and now | D 4.3; `site/src/reference/validation.md` | none | verify |
+| `device-mixed-precision` | Device and mixed-precision kernels | `site/src/reference/validation.md` "Mixed-precision GPU kernels" | `ferric-mp2/src/rimp2_gpu.rs::try_spin_components_on_device`, `ferric-mp2/src/rimp2.rs::mixed_energy_operator` | ready |
+| `distributed-rimp2` | Distributed RI-MP2 by auxiliary bands | none | `ferric-mp2/src/mpi_rimp2.rs::run_mpi_ri_mp2` | verify |
 
 **Chapter 12. Orbital optimization and Laplace forms**
 
-| § | Section | Sources | Code | Status |
+| Label | Section | Sources | Code | Status |
 |---|---|---|---|---|
-| 12.0 | Chapter overview: orbital optimization and Laplace forms | T mp2 §7, §8, §14 | none | verify |
-| 12.1 | Orbital-optimized RI-MP2 | T mp2 §7; S `oomp2_mp3_identities_sympy.py`; S `mp2_variant_identities.py` claim 6; R oo-rimp2 | `ferric-mp2/src/oo_rimp2.rs::{oo_ri_mp2,build_oo_mp2_relaxed_density}`, `ferric-mp2/src/orbital_rotation.rs::cayley_rotation` | ready |
-| 12.2 | Unrestricted OO-RI-MP2 | T mp2 "14. Unrestricted OO-RI-MP2 orbital gradient"†; R u-oo-rimp2 *gap* | `ferric-mp2/src/u_oo_rimp2.rs::u_oo_ri_mp2`, `ferric-mp2/src/u_rimp2.rs::compute_u_mp2_orbital_gradient` | verify |
-| 12.3 | Laplace-transform MP2 and SOS-MP2 | T mp2 §8; T quadrature §1; S `mp2_variant_identities.py` claim 3; R laplace-mp2, laplace-sos-mp2; W §11 | `ferric-mp2/src/laplace.rs::{laplace_ri_mp2,laplace_sos_mp2,build_pseudo_density_occ,build_pseudo_density_vir}`, `ferric-quadrature/src/minimax.rs::select_minimax_points` | ready |
-| 12.4 | Local Laplace SOS-MP2 | M mp2 "Laplace formulations" | `ferric-mp2/src/laplace_local.rs::sos_local_energy`, `ferric-mp2/src/boys.rs::boys_localize` | gap |
+| `oo-laplace` | Chapter overview: orbital optimization and Laplace forms | T mp2 §7, §8, §14 | none | verify |
+| `oo-rimp2` | Orbital-optimized RI-MP2 | T mp2 §7; S `oomp2_mp3_identities_sympy.py`; S `mp2_variant_identities.py` claim 6; R oo-rimp2 | `ferric-mp2/src/oo_rimp2.rs::{oo_ri_mp2,build_oo_mp2_relaxed_density}`, `ferric-mp2/src/orbital_rotation.rs::cayley_rotation` | ready |
+| `unrestricted-oo-rimp2` | Unrestricted OO-RI-MP2 | T mp2 "14. Unrestricted OO-RI-MP2 orbital gradient"†; R u-oo-rimp2 *gap* | `ferric-mp2/src/u_oo_rimp2.rs::u_oo_ri_mp2`, `ferric-mp2/src/u_rimp2.rs::compute_u_mp2_orbital_gradient` | verify |
+| `laplace-mp2` | Laplace-transform MP2 and SOS-MP2 | T mp2 §8; T quadrature §1; S `mp2_variant_identities.py` claim 3; R laplace-mp2, laplace-sos-mp2; W §11 | `ferric-mp2/src/laplace.rs::{laplace_ri_mp2,laplace_sos_mp2,build_pseudo_density_occ,build_pseudo_density_vir}`, `ferric-quadrature/src/minimax.rs::select_minimax_points` | ready |
+| `local-laplace-sos` | Local Laplace SOS-MP2 | M mp2 "Laplace formulations" | `ferric-mp2/src/laplace_local.rs::sos_local_energy`, `ferric-mp2/src/boys.rs::boys_localize` | gap |
 
 **Chapter 13. Local MP2**
 
-| § | Section | Sources | Code | Status |
+| Label | Section | Sources | Code | Status |
 |---|---|---|---|---|
-| 13.1 | Amplitude-threshold local MP2 | T mp2 §12 (a pointer); S `lmp2_hylleraas_vs_wshg23_sympy.py`; W §14; R local-mp2 *gap* | `ferric-mp2/src/lmp2_amplitude.rs::{amplitude_lmp2,build_vvhv,hylleraas_energy}`, `ferric-mp2/src/ragged.rs::solve_ragged` | ready |
-| 13.2 | The integral-direct path | M mp2 "Exact and local MP2" | `ferric-mp2/src/lmp2_direct.rs::amplitude_lmp2_direct` | ready |
-| 13.3 | Pair natural orbitals and DLPNO-MP2 | W §10 | `ferric-mp2/src/dlpno_mp2.rs::dlpno_mp2_from_b_ov`, `ferric-mp2/src/local_pno.rs::build_pno_transforms` | ready |
+| `amplitude-lmp2` | Amplitude-threshold local MP2 | T mp2 §12 (a pointer); S `lmp2_hylleraas_vs_wshg23_sympy.py`; W §14; R local-mp2 *gap* | `ferric-mp2/src/lmp2_amplitude.rs::{amplitude_lmp2,build_vvhv,hylleraas_energy}`, `ferric-mp2/src/ragged.rs::solve_ragged` | ready |
+| `integral-direct` | The integral-direct path | M mp2 "Exact and local MP2" | `ferric-mp2/src/lmp2_direct.rs::amplitude_lmp2_direct` | ready |
+| `pno-dlpno` | Pair natural orbitals and DLPNO-MP2 | W §10 | `ferric-mp2/src/dlpno_mp2.rs::dlpno_mp2_from_b_ov`, `ferric-mp2/src/local_pno.rs::build_pno_transforms` | ready |
 
 ### Part VI. Derivatives
 
 **Chapter 14. SCF gradients, Hessians and geometry**
 
-| § | Section | Sources | Code | Status |
+| Label | Section | Sources | Code | Status |
 |---|---|---|---|---|
-| 14.1 | Hartree–Fock nuclear gradient | T scf "Hartree-Fock nuclear gradient"†; S `hf_gradient_sympy.py`†; R hf-gradient | `ferric-scf/src/gradient.rs::{rhf_gradient,uhf_gradient,rohf_gradient,build_energy_weighted_density}` | ready |
-| 14.2 | Gradients of density-fitted J and K | T scf "Density-fitted J/K nuclear gradient"; S `df_jk_gradient_sympy.py`; R hf-gradient | `ferric-scf/src/df_gradient.rs::df_jk_gradient` | edit |
-| 14.3 | XC gradient: AO-derivative and grid-response terms | T dft "XC nuclear gradient"; S `dft_mgga_tau_gradient_sympy.py`; R ks-gradient | `ferric-dft/src/gradient.rs::{xc_gradient_closed_gga_from_density,xc_gradient_closed_mgga_from_density}`, `ferric-scf/src/ks_gradient.rs::ks_gradient_closed` | ready |
-| 14.4 | Hartree–Fock Hessian and coupled-perturbed equations | T scf "Hartree-Fock nuclear Hessian"†; S `hf_hessian_sympy.py`†; R hf-hessian | `ferric-scf/src/hessian.rs::{rhf_hessian,uhf_hessian}` | ready |
-| 14.5 | Kohn–Sham Hessian on a fixed and a moving grid | T scf "Kohn-Sham XC Hessian terms"; S `ks_fixed_grid_hessian_sympy.py`, `uks_xc_hessian_sympy.py`; R ks-hessian | `ferric-scf/src/ks_fixed_grid.rs::{skeleton_hessian,first_order_fock,skeleton_hessian_moving}`, `ferric-dft/src/becke_hessian.rs::becke_home_weight_hess` | ready |
-| 14.6 | Harmonic frequencies | T scf "Harmonic frequencies"†; S `hf_frequencies_sympy.py`†; R harmonic-frequencies | `ferric-scf/src/frequencies.rs::{frequencies_from_cartesian_hessian,harmonic_frequencies_analytic}` | ready |
-| 14.7 | Fock-hook gradients | T scf "Fock hooks and their nuclear gradient" | `ferric-scf/src/gradient.rs::with_fock_hook_gradient` | edit |
-| 14.8 | Geometry optimization, saddle points and reaction paths | T scf "Geometry searches"; S `geometry_search_steps_sympy.py`; R geometry-search; M scf "Gradients, optimization, frequencies, transition states" | `ferric-scf/src/optimize.rs::optimize_geometry`, `ferric-scf/src/saddle.rs::find_saddle`, `ferric-scf/src/irc.rs::follow_irc` | edit |
+| `hf-gradient` | Hartree–Fock nuclear gradient | T scf "Hartree-Fock nuclear gradient"†; S `hf_gradient_sympy.py`†; R hf-gradient | `ferric-scf/src/gradient.rs::{rhf_gradient,uhf_gradient,rohf_gradient,build_energy_weighted_density}` | ready |
+| `df-jk-gradient` | Gradients of density-fitted J and K | T scf "Density-fitted J/K nuclear gradient"; S `df_jk_gradient_sympy.py`; R hf-gradient | `ferric-scf/src/df_gradient.rs::df_jk_gradient` | edit |
+| `xc-gradient` | XC gradient: AO-derivative and grid-response terms | T dft "XC nuclear gradient"; S `dft_mgga_tau_gradient_sympy.py`; R ks-gradient | `ferric-dft/src/gradient.rs::{xc_gradient_closed_gga_from_density,xc_gradient_closed_mgga_from_density}`, `ferric-scf/src/ks_gradient.rs::ks_gradient_closed` | ready |
+| `hf-hessian` | Hartree–Fock Hessian and coupled-perturbed equations | T scf "Hartree-Fock nuclear Hessian"†; S `hf_hessian_sympy.py`†; R hf-hessian | `ferric-scf/src/hessian.rs::{rhf_hessian,uhf_hessian}` | ready |
+| `ks-hessian` | Kohn–Sham Hessian on a fixed and a moving grid | T scf "Kohn-Sham XC Hessian terms"; S `ks_fixed_grid_hessian_sympy.py`, `uks_xc_hessian_sympy.py`; R ks-hessian | `ferric-scf/src/ks_fixed_grid.rs::{skeleton_hessian,first_order_fock,skeleton_hessian_moving}`, `ferric-dft/src/becke_hessian.rs::becke_home_weight_hess` | ready |
+| `frequencies` | Harmonic frequencies | T scf "Harmonic frequencies"†; S `hf_frequencies_sympy.py`†; R harmonic-frequencies | `ferric-scf/src/frequencies.rs::{frequencies_from_cartesian_hessian,harmonic_frequencies_analytic}` | ready |
+| `fock-hook-gradient` | Fock-hook gradients | T scf "Fock hooks and their nuclear gradient" | `ferric-scf/src/gradient.rs::with_fock_hook_gradient` | edit |
+| `geometry-search` | Geometry optimization, saddle points and reaction paths | T scf "Geometry searches"; S `geometry_search_steps_sympy.py`; R geometry-search; M scf "Gradients, optimization, frequencies, transition states" | `ferric-scf/src/optimize.rs::optimize_geometry`, `ferric-scf/src/saddle.rs::find_saddle`, `ferric-scf/src/irc.rs::follow_irc` | edit |
 
 **Chapter 15. Correlated gradients and the Z-vector**
 
-| § | Section | Sources | Code | Status |
+| Label | Section | Sources | Code | Status |
 |---|---|---|---|---|
-| 15.1 | Lagrangians and the Z-vector equation | T mp2 §9; S `mp2_variant_identities.py` claim 5 | `ferric-mp2/src/zvector.rs::{solve_zvector,build_relaxed_density_ao}` | ready |
-| 15.2 | RI-MP2 gradient with exact and RI-JK references; SCS-MP2 | T mp2 §9, §9.1, §9.2; S `mp2_gradient_sympy.py`†; R ri-mp2-gradient, scs-mp2-gradient | `ferric-mp2/src/gradient.rs::{rimp2_gradient_analytical,scs_mp2_gradient_analytical,total_rimp2_gradient}` | ready |
-| 15.3 | OO-RI-MP2 gradient | T mp2 "9.3 OO-RI-MP2 nuclear gradient"†; R oo-rimp2-gradient | `ferric-mp2/src/oo_rimp2_gradient.rs::oo_ri_mp2_gradient` | ready |
-| 15.4 | Kohn–Sham Z-vector for post-SCF corrections | none | `ferric-scf/src/zvector_ks.rs::relaxation_gradient_closed` | ready |
-| 15.5 | RI-dRPA gradient | T rpa "Analytic nuclear gradient"; S `rpa_gradient_sympy.py`†; R rpa-gradient | `ferric-rpa/src/gradient_analytic.rs::{rpa_analytic_gradient,rpa_ri_densities}` | ready |
-| 15.6 | MP2 static polarizability | T mp2 §10; R mp2-polarizability *gap* | `ferric-mp2/src/cpks_polar.rs::{mp2_polarizability_analytic,static_relaxed_density_ao}`, `ferric-mp2/src/ff_polar.rs::mp2_polarizability_static` | ready |
-| 15.7 | Unrestricted RI-MP2 gradient | T mp2 §15; S `u_rimp2_gradient_sympy.py`; R u-ri-mp2-gradient | `ferric-mp2/src/u_rimp2_gradient.rs::{u_rimp2_gradient_analytical,u_energy_weights,solve_u_zvector}` | ready |
+| `lagrangian-zvector` | Lagrangians and the Z-vector equation | T mp2 §9; S `mp2_variant_identities.py` claim 5 | `ferric-mp2/src/zvector.rs::{solve_zvector,build_relaxed_density_ao}` | ready |
+| `rimp2-gradient` | RI-MP2 gradient with exact and RI-JK references; SCS-MP2 | T mp2 §9, §9.1, §9.2; S `mp2_gradient_sympy.py`†; R ri-mp2-gradient, scs-mp2-gradient | `ferric-mp2/src/gradient.rs::{rimp2_gradient_analytical,scs_mp2_gradient_analytical,total_rimp2_gradient}` | ready |
+| `oo-rimp2-gradient` | OO-RI-MP2 gradient | T mp2 "9.3 OO-RI-MP2 nuclear gradient"†; R oo-rimp2-gradient | `ferric-mp2/src/oo_rimp2_gradient.rs::oo_ri_mp2_gradient` | ready |
+| `ks-zvector` | Kohn–Sham Z-vector for post-SCF corrections | none | `ferric-scf/src/zvector_ks.rs::relaxation_gradient_closed` | ready |
+| `rpa-gradient` | RI-dRPA gradient | T rpa "Analytic nuclear gradient"; S `rpa_gradient_sympy.py`†; R rpa-gradient | `ferric-rpa/src/gradient_analytic.rs::{rpa_analytic_gradient,rpa_ri_densities}` | ready |
+| `mp2-polarizability` | MP2 static polarizability | T mp2 §10; R mp2-polarizability *gap* | `ferric-mp2/src/cpks_polar.rs::{mp2_polarizability_analytic,static_relaxed_density_ao}`, `ferric-mp2/src/ff_polar.rs::mp2_polarizability_static` | ready |
+| `u-rimp2-gradient` | Unrestricted RI-MP2 gradient | T mp2 §15; S `u_rimp2_gradient_sympy.py`; R u-ri-mp2-gradient | `ferric-mp2/src/u_rimp2_gradient.rs::{u_rimp2_gradient_analytical,u_energy_weights,solve_u_zvector}` | ready |
 
 ### Part VII. Coupled cluster
 
 **Chapter 16. Coupled cluster**
 
-| § | Section | Sources | Code | Status |
+| Label | Section | Sources | Code | Status |
 |---|---|---|---|---|
-| 16.1 | CCD and CCSD in spin orbitals | T cc "CCD", "CCSD"; W §5; R ccd *gap*, ccsd *gap* | `ferric-cc/src/ccd.rs::ccd`, `ferric-cc/src/ccsd.rs::ccsd` | ready |
-| 16.2 | Closed-shell CCSD and the particle-particle ladder | T cc "CCSD"; M cc "Particle-particle ladder"; R ccsd *gap* | `ferric-cc/src/ccsd_closed_shell.rs::ccsd_closed_shell`, `ferric-cc/src/ri_ladder.rs::ri_ladder_contract` | ready |
-| 16.3 | (T) in spin orbitals and in closed-shell form | T cc "CCSD(T), spin-orbital", "CCSD(T), closed shell"; S `cc_triples_weights_and_linlccd_spin_adaptation_sympy.py`; R ccsd-t *gap* (the closed-shell text describes a removed kernel) | `ferric-cc/src/ccsd_t.rs::ccsd_t`, `ferric-cc/src/ccsd_t_closed_shell.rs::ccsd_t_closed_shell` | ready |
-| 16.4 | EOM-CCSD singlets | T cc "EE-EOM-CCSD singlets"; R eom-ccsd *gap* | `ferric-cc/src/eom_ccsd.rs::eom_ccsd_singlets`, `ferric-cc/src/eom_davidson.rs::davidson_nonsymmetric` | ready |
-| 16.5 | LinLCCD and LinLCCD(hh) | T cc "LinLCCD and LinLCCD(hh)"; S `cc_triples_weights_and_linlccd_spin_adaptation_sympy.py`; R linlccd; W §9 | `ferric-cc/src/linlccd.rs::linlccd`, `ferric-cc/src/linlccd_u.rs::u_linlccd`, `ferric-cc/src/helpers.rs::contract_hh_ladder` | ready |
-| 16.6 | The ωB97X-L-V double hybrid | T cc "ωB97X-L-V correlation"; R double-hybrid *gap* | `ferric-cc/src/double_hybrid.rs::run_wb97x_l_v` | ready |
-| 16.7 | Local coupled cluster: amplitude threshold and DLPNO | T cc "Amplitude-threshold LinLCCD", "DLPNO-…" (three sections); W §10, §13 | `ferric-cc/src/linlccd_amplitude.rs::amplitude_linlccd`, `ferric-cc/src/dlpno_linlccd.rs::dlpno_linlccd_hh`, `ferric-cc/src/dlpno_ccsd_virtual.rs::pno_ccsd_energy`, `ferric-cc/src/dlpno_ccsd_t.rs::screened_triple_energy` | edit |
-| 16.8 | Unrestricted CCSD and CCSD(T) | T cc "Unrestricted CCSD and CCSD(T)"; S `cc_uccsd_spin_blocks_sympy.py`; R u-ccsd, u-ccsd-t | `ferric-cc/src/u_ccsd.rs::u_ccsd`, `ferric-cc/src/u_ccsd_t.rs::u_ccsd_t` | ready |
+| `ccd-ccsd-spin-orbital` | CCD and CCSD in spin orbitals | T cc "CCD", "CCSD"; W §5; R ccd *gap*, ccsd *gap* | `ferric-cc/src/ccd.rs::ccd`, `ferric-cc/src/ccsd.rs::ccsd` | ready |
+| `closed-shell-ccsd` | Closed-shell CCSD and the particle-particle ladder | T cc "CCSD"; M cc "Particle-particle ladder"; R ccsd *gap* | `ferric-cc/src/ccsd_closed_shell.rs::ccsd_closed_shell`, `ferric-cc/src/ri_ladder.rs::ri_ladder_contract` | ready |
+| `triples` | (T) in spin orbitals and in closed-shell form | T cc "CCSD(T), spin-orbital", "CCSD(T), closed shell"; S `cc_triples_weights_and_linlccd_spin_adaptation_sympy.py`; R ccsd-t *gap* (the closed-shell text describes a removed kernel) | `ferric-cc/src/ccsd_t.rs::ccsd_t`, `ferric-cc/src/ccsd_t_closed_shell.rs::ccsd_t_closed_shell` | ready |
+| `eom-ccsd` | EOM-CCSD singlets | T cc "EE-EOM-CCSD singlets"; R eom-ccsd *gap* | `ferric-cc/src/eom_ccsd.rs::eom_ccsd_singlets`, `ferric-cc/src/eom_davidson.rs::davidson_nonsymmetric` | ready |
+| `linlccd` | LinLCCD and LinLCCD(hh) | T cc "LinLCCD and LinLCCD(hh)"; S `cc_triples_weights_and_linlccd_spin_adaptation_sympy.py`; R linlccd; W §9 | `ferric-cc/src/linlccd.rs::linlccd`, `ferric-cc/src/linlccd_u.rs::u_linlccd`, `ferric-cc/src/helpers.rs::contract_hh_ladder` | ready |
+| `wb97x-l-v` | The ωB97X-L-V double hybrid | T cc "ωB97X-L-V correlation"; R double-hybrid *gap* | `ferric-cc/src/double_hybrid.rs::run_wb97x_l_v` | ready |
+| `local-cc` | Local coupled cluster: amplitude threshold and DLPNO | T cc "Amplitude-threshold LinLCCD", "DLPNO-…" (three sections); W §10, §13 | `ferric-cc/src/linlccd_amplitude.rs::amplitude_linlccd`, `ferric-cc/src/dlpno_linlccd.rs::dlpno_linlccd_hh`, `ferric-cc/src/dlpno_ccsd_virtual.rs::pno_ccsd_energy`, `ferric-cc/src/dlpno_ccsd_t.rs::screened_triple_energy` | edit |
+| `uccsd` | Unrestricted CCSD and CCSD(T) | T cc "Unrestricted CCSD and CCSD(T)"; S `cc_uccsd_spin_blocks_sympy.py`; R u-ccsd, u-ccsd-t | `ferric-cc/src/u_ccsd.rs::u_ccsd`, `ferric-cc/src/u_ccsd_t.rs::u_ccsd_t` | ready |
 
 ### Part VIII. Multireference
 
 **Chapter 17. CAS-CI, CASSCF and NEVPT2**
 
-| § | Section | Sources | Code | Status |
+| Label | Section | Sources | Code | Status |
 |---|---|---|---|---|
-| 17.1 | Determinants, strings and the phase convention | T ci "Determinants and the phase convention", "Hamiltonian" | `ferric-ci/src/strings.rs::{enumerate_strings,phase_below}` | ready |
-| 17.2 | Slater–Condon rules as implemented | T ci "Slater–Condon rules as implemented"; S `casci_slater_condon_phases_sympy.py`; R casci | `ferric-ci/src/hamiltonian.rs::{general_element,diagonal_element}` | ready |
-| 17.3 | Direct sigma and the Davidson solver | T ci "Direct sigma" | `ferric-ci/src/sigma.rs::DirectSigma`, `ferric-ci/src/davidson.rs::davidson_lowest`, `ferric-ci/src/lib.rs::run_cas_ci` | ready |
-| 17.4 | Reduced density matrices | T ci "Reduced density matrices", "NEVPT RDMs" | `ferric-ci/src/rdm.rs::{spin_summed_rdms,rdm_energy}`, `ferric-ci/src/rdm3.rs::nevpt_rdms` | ready |
-| 17.5 | Two-step CASSCF | T ci "Two-step CASSCF" (835 lines, mostly measurement records to be cut); R casscf *gap* | `ferric-ci/src/casscf.rs::{run_casscf,optimize,expm_antisymmetric}`, `ferric-ci/src/casscf_newton.rs::{orbital_hessian,ah_davidson}`, `ferric-ci/src/casscf_stability.rs::stability` | ready |
-| 17.6 | SC-NEVPT2 | T ci "SC-NEVPT2"; R nevpt2 *gap* | `ferric-ci/src/nevpt2.rs::sc_nevpt2` | ready |
+| `determinants` | Determinants, strings and the phase convention | T ci "Determinants and the phase convention", "Hamiltonian" | `ferric-ci/src/strings.rs::{enumerate_strings,phase_below}` | ready |
+| `slater-condon` | Slater–Condon rules as implemented | T ci "Slater–Condon rules as implemented"; S `casci_slater_condon_phases_sympy.py`; R casci | `ferric-ci/src/hamiltonian.rs::{general_element,diagonal_element}` | ready |
+| `direct-sigma-davidson` | Direct sigma and the Davidson solver | T ci "Direct sigma" | `ferric-ci/src/sigma.rs::DirectSigma`, `ferric-ci/src/davidson.rs::davidson_lowest`, `ferric-ci/src/lib.rs::run_cas_ci` | ready |
+| `rdms` | Reduced density matrices | T ci "Reduced density matrices", "NEVPT RDMs" | `ferric-ci/src/rdm.rs::{spin_summed_rdms,rdm_energy}`, `ferric-ci/src/rdm3.rs::nevpt_rdms` | ready |
+| `casscf` | Two-step CASSCF | T ci "Two-step CASSCF" (835 lines, mostly measurement records to be cut); R casscf *gap* | `ferric-ci/src/casscf.rs::{run_casscf,optimize,expm_antisymmetric}`, `ferric-ci/src/casscf_newton.rs::{orbital_hessian,ah_davidson}`, `ferric-ci/src/casscf_stability.rs::stability` | ready |
+| `nevpt2` | SC-NEVPT2 | T ci "SC-NEVPT2"; R nevpt2 *gap* | `ferric-ci/src/nevpt2.rs::sc_nevpt2` | ready |
 
 ### Part IX. RPA, PDEP and GW
 
 **Chapter 18. The random phase approximation**
 
-| § | Section | Sources | Code | Status |
+| Label | Section | Sources | Code | Status |
 |---|---|---|---|---|
-| 18.1 | dRPA three ways: frequency integral, plasmon formula, ring amplitudes | T rpa "RPA Correlation Energy" (extended†); S `rpa_drpa_pdep_sympy.py`†; R drpa; P derivation §7–9 | `ferric-rpa/src/energy.rs::rpa_correlation_energy`, `ferric-rpa/src/diagnostics.rs::ri_drpa_energy`, `ferric-mp2/src/drpa_amplitude.rs::canonical_plasmon_drpa` | ready |
-| 18.2 | Imaginary-frequency quadratures | T quadrature §2 | `ferric-rpa/src/quadrature.rs::{build_quadrature,chebyshev_tan_nodes,gauss_legendre_nodes}` | ready |
-| 18.3 | Projective dielectric eigenpotentials | T rpa "The PDEP Eigenpotential Approach"; S `rpa_drpa_pdep_sympy.py`†; R pdep-rpa; W §7 | `ferric-rpa/src/lib.rs::run_pdep_rpa`, `ferric-rpa/src/sternheimer.rs::{dielectric_matrix,dielectric_apply}`, `ferric-rpa/src/lanczos.rs::run_lanczos_seeded` | ready |
-| 18.4 | Open-shell dielectric | T rpa "Open-Shell (Spin-Summed) Dielectric"; R u-pdep-rpa | `ferric-rpa/src/lib.rs::run_u_pdep_rpa`, `ferric-rpa/src/sternheimer.rs::dielectric_matrix_unrestricted` | ready |
-| 18.5 | Imaginary-time and AO forms of $\chi_0$ | T quadrature §1 | `ferric-rpa/src/laplace_chi0.rs::dielectric_matrix_laplace`, `ferric-rpa/src/ao_rpa.rs::ao_rpa_correlation_energy` | ready |
-| 18.6 | Ring amplitudes with a threshold: local dRPA | W §12; M rpa-gw "Exact and local dRPA" | `ferric-mp2/src/drpa_amplitude.rs::{amplitude_drpa,amplitude_drpa_direct}`, `ferric-mp2/src/rccd_family.rs::{rccd,sosex}` | verify |
+| `drpa-three-ways` | dRPA three ways: frequency integral, plasmon formula, ring amplitudes | T rpa "RPA Correlation Energy" (extended†); S `rpa_drpa_pdep_sympy.py`†; R drpa; P derivation §7–9 | `ferric-rpa/src/energy.rs::rpa_correlation_energy`, `ferric-rpa/src/diagnostics.rs::ri_drpa_energy`, `ferric-mp2/src/drpa_amplitude.rs::canonical_plasmon_drpa` | ready |
+| `quadratures` | Imaginary-frequency quadratures | T quadrature §2 | `ferric-rpa/src/quadrature.rs::{build_quadrature,chebyshev_tan_nodes,gauss_legendre_nodes}` | ready |
+| `pdep` | Projective dielectric eigenpotentials | T rpa "The PDEP Eigenpotential Approach"; S `rpa_drpa_pdep_sympy.py`†; R pdep-rpa; W §7 | `ferric-rpa/src/lib.rs::run_pdep_rpa`, `ferric-rpa/src/sternheimer.rs::{dielectric_matrix,dielectric_apply}`, `ferric-rpa/src/lanczos.rs::run_lanczos_seeded` | ready |
+| `open-shell-dielectric` | Open-shell dielectric | T rpa "Open-Shell (Spin-Summed) Dielectric"; R u-pdep-rpa | `ferric-rpa/src/lib.rs::run_u_pdep_rpa`, `ferric-rpa/src/sternheimer.rs::dielectric_matrix_unrestricted` | ready |
+| `laplace-ao-chi0` | Imaginary-time and AO forms of $\chi_0$ | T quadrature §1 | `ferric-rpa/src/laplace_chi0.rs::dielectric_matrix_laplace`, `ferric-rpa/src/ao_rpa.rs::ao_rpa_correlation_energy` | ready |
+| `local-drpa` | Ring amplitudes with a threshold: local dRPA | W §12; M rpa-gw "Exact and local dRPA" | `ferric-mp2/src/drpa_amplitude.rs::{amplitude_drpa,amplitude_drpa_direct}`, `ferric-mp2/src/rccd_family.rs::{rccd,sosex}` | verify |
 
 **Chapter 19. GW and the Bethe–Salpeter equation**
 
-| § | Section | Sources | Code | Status |
+| Label | Section | Sources | Code | Status |
 |---|---|---|---|---|
-| 19.1 | RI factors and the exchange self-energy | T gw §1 | `ferric-gw/src/mo_b.rs::build_full_b`, `ferric-gw/src/cohsex.rs::sigma_x_diag` | ready |
-| 19.2 | The screened interaction on the imaginary axis; PDEP as $W$ | T gw §2, §3, §10; S `gw_self_energy_sympy.py` | `ferric-gw/src/w_pdep.rs::static_weights`, `ferric-gw/src/cohsex.rs::project_b_into_pdep` | ready |
-| 19.3 | Correlation self-energy | T gw §4; S `gw_self_energy_sympy.py`; R gw | `ferric-gw/src/sigma.rs::{sigma_c_at_z,run_g0w0}` | ready |
-| 19.4 | COHSEX | T gw §5 | `ferric-gw/src/cohsex.rs::run_cohsex` | ready |
-| 19.5 | Analytic continuation and the quasiparticle equation | T gw §6, §7 | `ferric-gw/src/pade.rs::{fit,eval}`, `ferric-gw/src/sigma.rs::solve_qp_for_mo` | ready |
-| 19.6 | Eigenvalue self-consistency | T gw §8 | `ferric-gw/src/sigma.rs::{run_evgw0,run_evgw}` | ready |
-| 19.7 | Open-shell GW | T gw §9; R u-gw *gap* | `ferric-gw/src/u_sigma.rs::run_u_g0w0`, `ferric-gw/src/u_cohsex.rs::run_u_cohsex` | ready |
-| 19.8 | BSE in the Tamm–Dancoff approximation | T gw §11; R bse-tda *gap* | `ferric-gw/src/bse.rs::run_bse_tda` | ready |
-| 19.9 | Statically screened TDHF polarizability | T gw §12; R tdhf-static-polarizability *gap* | `ferric-gw/src/bse.rs::run_rpax_static_polarizability` | ready |
+| `ri-factors-and-exchange` | RI factors and the exchange self-energy | T gw §1 | `ferric-gw/src/mo_b.rs::build_full_b`, `ferric-gw/src/cohsex.rs::sigma_x_diag` | ready |
+| `screened-interaction` | The screened interaction on the imaginary axis; PDEP as $W$ | T gw §2, §3, §10; S `gw_self_energy_sympy.py` | `ferric-gw/src/w_pdep.rs::static_weights`, `ferric-gw/src/cohsex.rs::project_b_into_pdep` | ready |
+| `correlation-self-energy` | Correlation self-energy | T gw §4; S `gw_self_energy_sympy.py`; R gw | `ferric-gw/src/sigma.rs::{sigma_c_at_z,run_g0w0}` | ready |
+| `cohsex` | COHSEX | T gw §5 | `ferric-gw/src/cohsex.rs::run_cohsex` | ready |
+| `continuation-and-qp-equation` | Analytic continuation and the quasiparticle equation | T gw §6, §7 | `ferric-gw/src/pade.rs::{fit,eval}`, `ferric-gw/src/sigma.rs::solve_qp_for_mo` | ready |
+| `eigenvalue-self-consistency` | Eigenvalue self-consistency | T gw §8 | `ferric-gw/src/sigma.rs::{run_evgw0,run_evgw}` | ready |
+| `open-shell-gw` | Open-shell GW | T gw §9; R u-gw *gap* | `ferric-gw/src/u_sigma.rs::run_u_g0w0`, `ferric-gw/src/u_cohsex.rs::run_u_cohsex` | ready |
+| `bse-tda` | BSE in the Tamm–Dancoff approximation | T gw §11; R bse-tda *gap* | `ferric-gw/src/bse.rs::run_bse_tda` | ready |
+| `rpax-static-polarizability` | Statically screened TDHF polarizability | T gw §12; R tdhf-static-polarizability *gap* | `ferric-gw/src/bse.rs::run_rpax_static_polarizability` | ready |
 
 ### Part X. Response and excited states
 
 **Chapter 20. TDDFT**
 
-| § | Section | Sources | Code | Status |
+| Label | Section | Sources | Code | Status |
 |---|---|---|---|---|
-| 20.1 | Response matrices, TDA and the Casida equations | T tddft §1–3, §6; R tddft *gap* (text exists, no proof; a script is in progress on `docs/derivations-backfill`) | `ferric-tddft/src/tddft.rs::run_tddft`, `ferric-tddft/src/davidson.rs::{davidson_tda,davidson_casida}` | ready |
-| 20.2 | Transition dipoles and oscillator strengths | T tddft §4 | `ferric-tddft/src/tddft.rs::run_tddft` | ready |
-| 20.3 | The kernel and the functional gate | T tddft §5; T dft "$f_{xc}$ response kernels" | `ferric-dft/src/lr_kernel.rs::resolve_response_xc` | ready |
-| 20.4 | Range-separated hybrids | T tddft §8 | `ferric-scf/src/rsh_response.rs::exchange_response` | ready |
-| 20.5 | Triplets | T tddft §9 | `ferric-scf/src/rhf_newton.rs::triplet_hessian_matvec` | ready |
-| 20.6 | Unrestricted references and $\langle S^2\rangle$ | T tddft §10, §11 | `ferric-tddft/src/tddft.rs::run_tddft` | ready |
+| `response` | Response matrices, TDA and the Casida equations | T tddft §1–3, §6; R tddft *gap* (text exists, no proof; a script is in progress on `docs/derivations-backfill`) | `ferric-tddft/src/tddft.rs::run_tddft`, `ferric-tddft/src/davidson.rs::{davidson_tda,davidson_casida}` | ready |
+| `oscillator-strengths` | Transition dipoles and oscillator strengths | T tddft §4 | `ferric-tddft/src/tddft.rs::run_tddft` | ready |
+| `kernel` | The kernel and the functional gate | T tddft §5; T dft "$f_{xc}$ response kernels" | `ferric-dft/src/lr_kernel.rs::resolve_response_xc` | ready |
+| `rsh` | Range-separated hybrids | T tddft §8 | `ferric-scf/src/rsh_response.rs::exchange_response` | ready |
+| `triplets` | Triplets | T tddft §9 | `ferric-scf/src/rhf_newton.rs::triplet_hessian_matvec` | ready |
+| `unrestricted` | Unrestricted references and $\langle S^2\rangle$ | T tddft §10, §11 | `ferric-tddft/src/tddft.rs::run_tddft` | ready |
 
 **Chapter 21. Polarizabilities, charges and export**
 
-| § | Section | Sources | Code | Status |
+| Label | Section | Sources | Code | Status |
 |---|---|---|---|---|
-| 21.1 | Static and dynamic polarizabilities from the dielectric modes | T rpa "Dispersion" (first part); S `rpa_c6_polarizability_sympy.py`†; R rpa-polarizability-c6 | `ferric-rpa/src/properties.rs::{pdep_polarizability_static,molecular_dynamic_polarizability}`, `ferric-rpa/src/response_modes.rs::polarizability_from_modes` | ready |
-| 21.2 | Atomic partitions: Becke, Hirshfeld, Löwdin, ESP fits | T scf "Atomic charges"; S `atomic_charges_sympy.py`; R atomic-charges | `ferric-scf/src/properties.rs::{lowdin_charges,becke_charges,chelpg_charges,resp_charges,esp_at_atoms}` | edit |
-| 21.3 | Export schemas | T export §1–2 | `ferric-export/src/ml.rs::export_npz`, `ferric-export/src/cube.rs::export_cube` | edit |
+| `polarizabilities-from-dielectric-modes` | Static and dynamic polarizabilities from the dielectric modes | T rpa "Dispersion" (first part); S `rpa_c6_polarizability_sympy.py`†; R rpa-polarizability-c6 | `ferric-rpa/src/properties.rs::{pdep_polarizability_static,molecular_dynamic_polarizability}`, `ferric-rpa/src/response_modes.rs::polarizability_from_modes` | ready |
+| `atomic-partitions` | Atomic partitions: Becke, Hirshfeld, Löwdin, ESP fits | T scf "Atomic charges"; S `atomic_charges_sympy.py`; R atomic-charges | `ferric-scf/src/properties.rs::{lowdin_charges,becke_charges,chelpg_charges,resp_charges,esp_at_atoms}` | edit |
+| `export-schemas` | Export schemas | T export §1–2 | `ferric-export/src/ml.rs::export_npz`, `ferric-export/src/cube.rs::export_cube` | edit |
 
 ### Part XI. Environment
 
 **Chapter 22. Implicit solvation**
 
-| § | Section | Sources | Code | Status |
+| Label | Section | Sources | Code | Status |
 |---|---|---|---|---|
-| 22.1 | Cavity and boundary-element matrices | T pcm §1–2 | `ferric-pcm/src/cavity.rs::build_cavity`, `ferric-pcm/src/matrices.rs::{build_s_d,build_k_r}` | ready |
-| 22.2 | The IEF-PCM operators, the symmetrized solve and the sphere limits | T pcm §3–5; S `pcm_ief_sympy.py`; R pcm | `ferric-pcm/src/solver.rs::solve_pcm_charges` | ready |
-| 22.3 | The reaction field in the Fock matrix | T pcm §7 | `ferric-pcm/src/potential.rs::{solute_potential_at_tesserae,build_reaction_field_operator}` | ready |
-| 22.4 | Nuclear gradient | T pcm §8; S `pcm_ief_sympy.py`; R pcm-gradient | `ferric-pcm/src/gradient.rs::pcm_gradient` | ready |
-| 22.5 | The conductor limit and COSMO | T pcm §6, T scf "COSMO reaction field"; S `cosmo_sympy.py`; R cosmo | `ferric-scf/src/cosmo.rs::{cosmo_reaction_field,f_epsilon}` | edit |
+| `cavity-and-bem` | Cavity and boundary-element matrices | T pcm §1–2 | `ferric-pcm/src/cavity.rs::build_cavity`, `ferric-pcm/src/matrices.rs::{build_s_d,build_k_r}` | ready |
+| `ief-operators` | The IEF-PCM operators, the symmetrized solve and the sphere limits | T pcm §3–5; S `pcm_ief_sympy.py`; R pcm | `ferric-pcm/src/solver.rs::solve_pcm_charges` | ready |
+| `reaction-field` | The reaction field in the Fock matrix | T pcm §7 | `ferric-pcm/src/potential.rs::{solute_potential_at_tesserae,build_reaction_field_operator}` | ready |
+| `gradient` | Nuclear gradient | T pcm §8; S `pcm_ief_sympy.py`; R pcm-gradient | `ferric-pcm/src/gradient.rs::pcm_gradient` | ready |
+| `conductor-limit-and-cosmo` | The conductor limit and COSMO | T pcm §6, T scf "COSMO reaction field"; S `cosmo_sympy.py`; R cosmo | `ferric-scf/src/cosmo.rs::{cosmo_reaction_field,f_epsilon}` | edit |
 
 **Chapter 23. Embedding and QM/MM**
 
-| § | Section | Sources | Code | Status |
+| Label | Section | Sources | Code | Status |
 |---|---|---|---|---|
-| 23.1 | Point charges, smeared charges and uniform fields | T scf "External point charges and fields"; S `external_potential_sympy.py` | `ferric-core/src/external_potential.rs::ExternalPotential`, `ferric-integrals/src/oneelectron.rs::hcore_with_external` | edit |
-| 23.2 | QM/MM boundaries, link atoms and the full gradient | T scf "QM/MM boundary and the full gradient"; S `qmmm_boundary_sympy.py`; M `site/src/using/qmmm.md`; R qmmm | `ferric-scf/src/qmmm.rs::{mm_forces,full_gradient,optimize_qmmm}` | edit |
-| 23.3 | Polarizable embedding | T scf "Thole polarizable embedding"; S `thole_polarizable_sympy.py`; R qmmm | `ferric-scf/src/polarizable.rs::{induce,site_gradient}` | edit |
-| 23.4 | The molecular-mechanics force field | T mm §1–8; S `mm_dihedral_gradient_sympy.py`, `mm_cutoff_sympy.py`; R mm | `ferric-mm/src/energy.rs::{energy,gradient}`, `ferric-mm/src/cutoff.rs::{energy_with,gradient_with}` | ready |
+| `external-potentials` | Point charges, smeared charges and uniform fields | T scf "External point charges and fields"; S `external_potential_sympy.py` | `ferric-core/src/external_potential.rs::ExternalPotential`, `ferric-integrals/src/oneelectron.rs::hcore_with_external` | edit |
+| `qmmm-boundaries` | QM/MM boundaries, link atoms and the full gradient | T scf "QM/MM boundary and the full gradient"; S `qmmm_boundary_sympy.py`; M `site/src/using/qmmm.md`; R qmmm | `ferric-scf/src/qmmm.rs::{mm_forces,full_gradient,optimize_qmmm}` | edit |
+| `polarizable-embedding` | Polarizable embedding | T scf "Thole polarizable embedding"; S `thole_polarizable_sympy.py`; R qmmm | `ferric-scf/src/polarizable.rs::{induce,site_gradient}` | edit |
+| `molecular-mechanics` | The molecular-mechanics force field | T mm §1–8; S `mm_dihedral_gradient_sympy.py`, `mm_cutoff_sympy.py`; R mm | `ferric-mm/src/energy.rs::{energy,gradient}`, `ferric-mm/src/cutoff.rs::{energy_with,gradient_with}` | ready |
 
 ### Part XII. Periodic systems
 
 **Chapter 24. Gaussian-basis periodic calculations**
 
-| § | Section | Sources | Code | Status |
+| Label | Section | Sources | Code | Status |
 |---|---|---|---|---|
-| 24.1 | Lattices, Ewald summation and the Madelung constant | T pbc §1; S `pbc_ewald_pairft_stress_sympy.py`; R pbc-ewald-pairft-stress | `ferric-pbc/src/ewald.rs::{ewald_nuclear_repulsion,madelung_constant}` | ready |
-| 24.2 | Fourier transform of lattice-summed Gaussian pairs | T pbc §2 | `ferric-pbc/src/pair_ft.rs::pair_ft` | ready |
-| 24.3 | Ewald-split nuclear attraction | T pbc §3 | `ferric-pbc/src/hcore.rs::periodic_hcore` | ready |
-| 24.4 | The exchange divergence | T pbc §4; R pbc-hf *gap* | `ferric-pbc/src/kpts.rs::madelung` | ready |
-| 24.5 | Range-separated Gaussian density fitting for J and K | none; R pbc-hf *gap* | `ferric-pbc/src/rsgdf.rs::{j_builder,k_builder}` | ready |
-| 24.6 | k-point Hartree–Fock and Kohn–Sham | none; R pbc-hf *gap*, pbc-ks *gap* | `ferric-pbc/src/kpts.rs::monkhorst_pack`, `ferric-pbc/src/kscf.rs::solve_krhf`, `ferric-pbc/src/kuscf.rs::solve_kuhf`, `ferric-pbc/src/kdft.rs::solve_krks` | edit |
-| 24.7 | Forces | T pbc §1 "Gradient", §6; R pbc-ks *gap* | `ferric-pbc/src/grad.rs::gamma_rhf_gradient`, `ferric-pbc/src/kgrad.rs::kpoint_rhf_gradient` | edit |
-| 24.8 | Stress | T pbc §5; S `pbc_ewald_pairft_stress_sympy.py` | `ferric-pbc/src/stress.rs::gamma_rhf_stress`, `ferric-pbc/src/ewald.rs::ewald_nuclear_strain`, `ferric-pbc/src/pair_ft.rs::pair_ft_strain_chunked` | ready |
-| 24.9 | Periodic MP2 and dRPA | none; R pbc-mp2 *gap*, pbc-drpa *gap* | `ferric-pbc/src/mp2.rs::gamma_mp2`, `ferric-pbc/src/drpa.rs::gamma_drpa`, `ferric-pbc/src/kcorr.rs::{kpoint_mp2,kpoint_drpa}` | ready |
+| `ewald` | Lattices, Ewald summation and the Madelung constant | T pbc §1; S `pbc_ewald_pairft_stress_sympy.py`; R pbc-ewald-pairft-stress | `ferric-pbc/src/ewald.rs::{ewald_nuclear_repulsion,madelung_constant}` | ready |
+| `pair-ft` | Fourier transform of lattice-summed Gaussian pairs | T pbc §2 | `ferric-pbc/src/pair_ft.rs::pair_ft` | ready |
+| `nuclear-attraction` | Ewald-split nuclear attraction | T pbc §3 | `ferric-pbc/src/hcore.rs::periodic_hcore` | ready |
+| `exchange-divergence` | The exchange divergence | T pbc §4; R pbc-hf *gap* | `ferric-pbc/src/kpts.rs::madelung` | ready |
+| `rsgdf` | Range-separated Gaussian density fitting for J and K | none; R pbc-hf *gap* | `ferric-pbc/src/rsgdf.rs::{j_builder,k_builder}` | ready |
+| `kpoint-scf` | k-point Hartree–Fock and Kohn–Sham | none; R pbc-hf *gap*, pbc-ks *gap* | `ferric-pbc/src/kpts.rs::monkhorst_pack`, `ferric-pbc/src/kscf.rs::solve_krhf`, `ferric-pbc/src/kuscf.rs::solve_kuhf`, `ferric-pbc/src/kdft.rs::solve_krks` | edit |
+| `forces` | Forces | T pbc §1 "Gradient", §6; R pbc-ks *gap* | `ferric-pbc/src/grad.rs::gamma_rhf_gradient`, `ferric-pbc/src/kgrad.rs::kpoint_rhf_gradient` | edit |
+| `stress` | Stress | T pbc §5; S `pbc_ewald_pairft_stress_sympy.py` | `ferric-pbc/src/stress.rs::gamma_rhf_stress`, `ferric-pbc/src/ewald.rs::ewald_nuclear_strain`, `ferric-pbc/src/pair_ft.rs::pair_ft_strain_chunked` | ready |
+| `mp2-drpa` | Periodic MP2 and dRPA | none; R pbc-mp2 *gap*, pbc-drpa *gap* | `ferric-pbc/src/mp2.rs::gamma_mp2`, `ferric-pbc/src/drpa.rs::gamma_drpa`, `ferric-pbc/src/kcorr.rs::{kpoint_mp2,kpoint_drpa}` | ready |
 
 ### Part XIII. Dispersion
 
 **Chapter 25. Dispersion**
 
-| § | Section | Sources | Code | Status |
+| Label | Section | Sources | Code | Status |
 |---|---|---|---|---|
-| 25.1 | D3(BJ): energy, coordination numbers, gradient, three-body term | T d3 (all); S `d3_cn_chain_rule_gradient_sympy.py`, `d3_atm_gradient_sympy.py`; R d3 | `ferric-d3/src/lib.rs::{d3bj_energy,d3bj_gradient}` | ready |
-| 25.2 | Casimir–Polder $C_6$ from dynamic polarizabilities | T rpa "Dispersion: Casimir-Polder C6"; S `rpa_c6_polarizability_sympy.py`†; D 1.4.3 Eqs. 1.49–1.51 | `ferric-rpa/src/dispersion.rs::{casimir_polder_c6,ts_dynamic_polarizability,pdep_dynamic_polarizability}` | ready |
-| 25.3 | Many-body dispersion | M scf "Dispersion correction: MBD@rsSCS"; R mbd *gap* | `ferric-rpa/src/dispersion/mbd.rs::{mbd_screen,mbd_dynamic_polarizability,dipole_coupling_tensor}` | edit |
+| `d3bj` | D3(BJ): energy, coordination numbers, gradient, three-body term | T d3 (all); S `d3_cn_chain_rule_gradient_sympy.py`, `d3_atm_gradient_sympy.py`; R d3 | `ferric-d3/src/lib.rs::{d3bj_energy,d3bj_gradient}` | ready |
+| `casimir-polder-c6` | Casimir–Polder $C_6$ from dynamic polarizabilities | T rpa "Dispersion: Casimir-Polder C6"; S `rpa_c6_polarizability_sympy.py`†; D 1.4.3 Eqs. 1.49–1.51 | `ferric-rpa/src/dispersion.rs::{casimir_polder_c6,ts_dynamic_polarizability,pdep_dynamic_polarizability}` | ready |
+| `mbd` | Many-body dispersion | M scf "Dispersion correction: MBD@rsSCS"; R mbd *gap* | `ferric-rpa/src/dispersion/mbd.rs::{mbd_screen,mbd_dynamic_polarizability,dipole_coupling_tensor}` | edit |
 
 ### Part XIV. Capstone
 
 **Chapter 26. Short-range MP2 with long-range RPA**
 
-| § | Section | Sources | Code | Status |
+| Label | Section | Sources | Code | Status |
 |---|---|---|---|---|
-| 26.1 | Second order in a split interaction: the cross term again | §10.7; P derivation §5–6; P paper "Second order and the cross term" | `ferric-mp2/src/attenuated.rs::rs_mp2_decomposition` | edit |
-| 26.2 | The ring series by three routes | §18.1; P derivation §7–9 | `ferric-rpa/src/energy.rs::rpa_correlation_energy` | gap |
-| 26.3 | Coloring the rings: which diagrams each scheme keeps | P derivation §10–16; P paper "range-coloring classification", Appendix A | none | gap |
-| 26.4 | The two formulations in the code | T rpa "Range-separated MP2 + RPA"†; S `rpa_rs_mp2_rpa_sympy.py`†; R rs-mp2-rpa | `ferric-rpa/src/rs_mp2_rpa.rs::{rs_mp2_lr_rpa,RsMp2RpaFormulation}` | ready |
-| 26.5 | The $\omega$-scale law | P derivation §17; P paper "The $\omega$-scale law" | none | gap |
-| 26.6 | Shared intermediates across the two kernels | P derivation §19; code comments | `ferric-mp2/src/rimp2.rs::{compute_rpa_intermediates,spin_components_from_b_ov}`, `ferric-rpa/src/rs_mp2_rpa.rs::second_intermediate_bov_bytes` | edit |
-| 26.7 | What was measured, and what does not work | P paper "Results", P derivation §18, §20; D 7.2 | none | gap |
+| `cross-term` | Second order in a split interaction: the cross term again | §10.7; P derivation §5–6; P paper "Second order and the cross term" | `ferric-mp2/src/attenuated.rs::rs_mp2_decomposition` | edit |
+| `ring-series` | The ring series by three routes | §18.1; P derivation §7–9 | `ferric-rpa/src/energy.rs::rpa_correlation_energy` | gap |
+| `coloring-the-rings` | Coloring the rings: which diagrams each scheme keeps | P derivation §10–16; P paper "range-coloring classification", Appendix A | none | gap |
+| `two-formulations` | The two formulations in the code | T rpa "Range-separated MP2 + RPA"†; S `rpa_rs_mp2_rpa_sympy.py`†; R rs-mp2-rpa | `ferric-rpa/src/rs_mp2_rpa.rs::{rs_mp2_lr_rpa,RsMp2RpaFormulation}` | ready |
+| `omega-scale-law` | The $\omega$-scale law | P derivation §17; P paper "The $\omega$-scale law" | none | gap |
+| `shared-intermediates` | Shared intermediates across the two kernels | P derivation §19; code comments | `ferric-mp2/src/rimp2.rs::{compute_rpa_intermediates,spin_components_from_b_ov}`, `ferric-rpa/src/rs_mp2_rpa.rs::second_intermediate_bov_bytes` | edit |
+| `measurements` | What was measured, and what does not work | P paper "Results", P derivation §18, §20; D 7.2 | none | gap |
 
 ### Part XV. Interfaces
 
@@ -402,24 +402,24 @@ For an implementer wiring ferric outputs into ML models. Chapter 21 derives the
 properties; this chapter states what each exported array is, its frame behaviour,
 its evidence and its use as a feature or label.
 
-| § | Section | Sources | Code | Status |
+| Label | Section | Sources | Code | Status |
 |---|---|---|---|---|
-| 27.1 | The NPZ feature bundle | T export §1; R pdep-rpa; `site/src/reference/validation.md` NPZ rows | `ferric-export/src/ml.rs::export_npz`, `ferric-rpa/src/property_bundle.rs::{compute_pdep_properties,write_pdep_npz}` | edit |
-| 27.2 | Electrostatic features and atomic charges | none (no theory text); validation anchors | `ferric-scf/src/properties.rs::{esp_at_atoms,electric_field_at_atoms,esp_at_points,lowdin_charges,mulliken_charges,chelpg_charges,resp_charges}`, `ferric-scf/src/properties/hirshfeld_grid.rs::hirshfeld_charges` | gap |
-| 27.3 | Polarizabilities, PDEP modes and $C_6$ | T rpa "Dispersion: Casimir-Polder C6"; S `rpa_c6_polarizability_sympy.py` claims 1, 2, 3, 5; R rpa-polarizability-c6 | `ferric-rpa/src/properties/per_atom.rs::{closed_per_atom_alpha,charge_transfer_remainder}`, `ferric-rpa/src/dispersion.rs::{casimir_polder_c6,ts_dynamic_polarizability,pdep_dynamic_polarizability}` | ready |
-| 27.4 | The Python surface, cube files and provenance | T export §2; `ferric.pyi`; M `site/src/using/{ase,qcschema,export}.md` | `ferric-export/src/cube.rs::export_cube`, `ferric-core/src/certificate.rs::Certificate` | edit |
-| 27.5 | Reproducibility and validation grades | `site/src/reference/{architecture,validation,input}.md`; `site/src/using/sharp-bits.md` | `ferric-core/src/blas_threads.rs::{with_blas_threads,opt_in_blas_threads}` | edit |
-| 27.6 | Energies, gradients, Hessians and response as labels | validation matrix and anchors; R hf-gradient, ks-gradient, ri-mp2-gradient, rpa-gradient, hf-hessian, ks-hessian, harmonic-frequencies | `ferric-rpa/src/gradient.rs::total_rpa_gradient`, `ferric-scf/src/noise_floor.rs::de_noise_floor` | edit |
-| 27.7 | A worked consumer: esp-conditioning | the esp-conditioning builder code (interface only) | none | edit |
+| `npz-bundle` | The NPZ feature bundle | T export §1; R pdep-rpa; `site/src/reference/validation.md` NPZ rows | `ferric-export/src/ml.rs::export_npz`, `ferric-rpa/src/property_bundle.rs::{compute_pdep_properties,write_pdep_npz}` | edit |
+| `electrostatics-and-charges` | Electrostatic features and atomic charges | none (no theory text); validation anchors | `ferric-scf/src/properties.rs::{esp_at_atoms,electric_field_at_atoms,esp_at_points,lowdin_charges,mulliken_charges,chelpg_charges,resp_charges}`, `ferric-scf/src/properties/hirshfeld_grid.rs::hirshfeld_charges` | gap |
+| `polarizability-pdep-c6` | Polarizabilities, PDEP modes and $C_6$ | T rpa "Dispersion: Casimir-Polder C6"; S `rpa_c6_polarizability_sympy.py` claims 1, 2, 3, 5; R rpa-polarizability-c6 | `ferric-rpa/src/properties/per_atom.rs::{closed_per_atom_alpha,charge_transfer_remainder}`, `ferric-rpa/src/dispersion.rs::{casimir_polder_c6,ts_dynamic_polarizability,pdep_dynamic_polarizability}` | ready |
+| `python-cube-provenance` | The Python surface, cube files and provenance | T export §2; `ferric.pyi`; M `site/src/using/{ase,qcschema,export}.md` | `ferric-export/src/cube.rs::export_cube`, `ferric-core/src/certificate.rs::Certificate` | edit |
+| `reproducibility-and-grades` | Reproducibility and validation grades | `site/src/reference/{architecture,validation,input}.md`; `site/src/using/sharp-bits.md` | `ferric-core/src/blas_threads.rs::{with_blas_threads,opt_in_blas_threads}` | edit |
+| `training-labels` | Energies, gradients, Hessians and response as labels | validation matrix and anchors; R hf-gradient, ks-gradient, ri-mp2-gradient, rpa-gradient, hf-hessian, ks-hessian, harmonic-frequencies | `ferric-rpa/src/gradient.rs::total_rpa_gradient`, `ferric-scf/src/noise_floor.rs::de_noise_floor` | edit |
+| `esp-conditioning` | A worked consumer: esp-conditioning | the esp-conditioning builder code (interface only) | none | edit |
 
 ### Appendices
 
-| § | Section | Sources | Code | Status |
+| Label | Section | Sources | Code | Status |
 |---|---|---|---|---|
-| A | Index of verified equations and proof scripts (generated) | registry; box metadata | none | ready |
-| B | Index of functions cited (generated) | code-reference metadata | none | ready |
-| C | Validation grades (generated from the validation page) | `site/src/reference/validation.md` | `ferric-core/src/certificate/anchors.rs::EnergyAnchor` | ready |
-| D | The semiempirical interface (xTB) | R xtb *gap* | `ferric-xtb/src/calculator.rs::XtbCalculator` | gap |
+| `appendix-a` | Index of verified equations and proof scripts (generated) | registry; box metadata | none | ready |
+| `appendix-b` | Index of functions cited (generated) | code-reference metadata | none | ready |
+| `appendix-c` | Validation grades (generated from the validation page) | `site/src/reference/validation.md` | `ferric-core/src/certificate/anchors.rs::EnergyAnchor` | ready |
+| `appendix-d` | The semiempirical interface (xTB) | R xtb *gap* | `ferric-xtb/src/calculator.rs::XtbCalculator` | gap |
 
 ## 4. Coverage
 

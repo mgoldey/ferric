@@ -1,6 +1,6 @@
-# 19.7 Open-shell GW
+# Open-shell GW {#open-shell-gw}
 
-<!-- section: 19.7; status: ready; registry: u-gw, gw;
+<!-- status: ready; registry: u-gw, gw;
      theory: crates/ferric-gw/theory.md#"9. Open shell" -->
 
 In a radical the $\alpha$ and $\beta$ electrons occupy different orbitals with
@@ -24,7 +24,7 @@ continuation line, and its own static shift.
 | CLI | `method.kind = "gw"` with multiplicity > 1; `[gw] reference = "uhf" \| "rohf"` |
 | Python | `run_u_gw(reference=)` |
 
-## 19.7.1 The spin-summed screening and the per-spin self-energy
+## The spin-summed screening and the per-spin self-energy {#open-shell-gw-spin-summed-screening-per}
 
 **The reference.** `run_u_gw` accepts a UHF or UKS reference as it is. A ROHF
 or ROKS reference is first semi-canonicalized per spin
@@ -37,8 +37,8 @@ pairs to the response:
 
 $$ \tilde{\boldsymbol\varepsilon}_U(iu) = \mathbf 1 + \Pi_\alpha(iu) + \Pi_\beta(iu), \qquad \Pi_\sigma = 2\sum_{i_\sigma a_\sigma} B_\sigma B_\sigma^{\mathsf T}\frac{\Delta_{i\sigma}^{a}}{u^2+(\Delta_{i\sigma}^{a})^2} $$
 
-(`ferric-rpa/src/energy.rs`; section 18.4). Where does the prefactor come
-from? The closed-shell 4 of section 19.2.1 is 2 for spin times 2 for the
+(`ferric-rpa/src/energy.rs`; section @sec:open-shell-dielectric). Where does the prefactor come
+from? The closed-shell 4 of section @sec:screened-interaction-dielectric-matrix-single-pole is 2 for spin times 2 for the
 resonant and antiresonant terms. Here the spin sum is explicit, so each spin
 keeps only the 2.
 
@@ -46,7 +46,7 @@ keeps only the 2.
 the same orbitals and energies, $\Pi_\alpha = \Pi_\beta$, and their sum has
 the prefactor 4 of the closed-shell $\Pi$. One spin alone has half of it.
 
-> **Verified equation 19.10** · the spin-summed dielectric with prefactor 2 per spin
+> **Verified equation {#eq:gw-u-spin-summed-dielectric}** · the spin-summed dielectric with prefactor 2 per spin
 >
 > $\tilde\varepsilon_U(iu) = \mathbf 1 + \Pi_\alpha(iu) + \Pi_\beta(iu)$ with
 > $\Pi_\sigma = 2\sum_{i_\sigma a_\sigma}B_\sigma B_\sigma^{\mathsf T}\Delta/(u^2+\Delta^2)$
@@ -68,7 +68,7 @@ and $W$ does not depend on spin. A state of spin $\sigma$ therefore sums the
 exchange and screened-exchange terms over the occupied orbitals of its own
 spin only. Each spin has its own projection
 $B^\xi_\sigma = \hat U^{\mathsf T}B_\sigma$ on the shared modes, and the
-static pieces of section 19.4 become
+static pieces of section @sec:cohsex become
 
 $$ \Sigma^x_{\sigma p} = -\sum_{i\in\sigma}\sum_P (B^P_{\sigma,pi})^2, \qquad \Delta\Sigma^{\rm SEX}_{\sigma p} = -\sum_{i\in\sigma}\sum_\xi w_\xi (B^\xi_{\sigma,pi})^2, \qquad \Sigma^{\rm COH}_{\sigma p} = \tfrac12\sum_{q\in\sigma}\sum_\xi w_\xi (B^\xi_{\sigma,pq})^2, $$
 
@@ -77,7 +77,7 @@ $\tilde{\boldsymbol\varepsilon}_U(0)$. `ferric-gw/src/u_cohsex.rs::run_u_cohsex`
 calls the closed-shell `cohsex_pieces` once per spin with the shared
 weights. The Coulomb-hole sum runs over the complete set of that spin, and
 its closure turns it into the local $\tfrac12 W_d(\mathbf r,\mathbf r)$, as
-in section 19.4. The dynamic $\Sigma^c_\sigma$ sums over that spin's MOs in
+in section @sec:cohsex. The dynamic $\Sigma^c_\sigma$ sums over that spin's MOs in
 the same way, and the static shift is per spin,
 $\delta_{\sigma p} = \Sigma^x_{\sigma p} - v^{xc}_{\sigma p}$
 (`ferric-gw/src/u_sigma.rs::static_shifts`).
@@ -92,7 +92,7 @@ spin's $\Pi$ alone, are the negative controls. Claim U1b shows that with
 identical channels the two spins' self-energies coincide with the closed-shell
 ones.
 
-> **Verified equation 19.11** · the per-spin static self-energy
+> **Verified equation {#eq:gw-u-cohsex-per-spin}** · the per-spin static self-energy
 >
 > On a lattice model with different $\alpha$ and $\beta$ orbitals (2 $\alpha$
 > and 1 $\beta$ electron), the code's $\Sigma^x_\sigma$,
@@ -113,18 +113,18 @@ ones.
 
 **The per-spin Fermi level.** The continuation line $z = \epsilon_{F,\sigma} + iu$
 assigns each state to the occupied or the virtual side by the sign of
-$\mathrm{Re}(z - \epsilon_q)$ (section 19.3.1). So it has to pass through the
+$\mathrm{Re}(z - \epsilon_q)$ (section @sec:correlation-self-energy-frequency-integral). So it has to pass through the
 gap of the spin whose self-energy it samples. Any $\epsilon_{F,\sigma}$
 inside that gap gives the same continued function of $E$. The mid-gap is a
 numerical choice: it keeps the nodes far from both edges. A radical's
 $\alpha$ and $\beta$ gaps can sit at different energies, and a line
 through the other spin's mid-gap can lie outside this spin's gap, mis-assign
 a state, and continue to a different function. Claim U2 shows both
-statements on the single-pole $\Sigma^c$ of section 19.3 with Thiele
+statements on the single-pole $\Sigma^c$ of section @sec:correlation-self-energy with Thiele
 continuation in 80-digit arithmetic. The code takes a mid-gap per spin in
 `ferric-gw/src/u_sigma.rs::qp_per_spin_g0w0`.
 
-> **Verified equation 19.12** · the per-spin Fermi level
+> **Verified equation {#eq:gw-u-fermi-level}** · the per-spin Fermi level
 >
 > The Thiele continuation of a single-pole $\Sigma^c$ sampled on
 > $z = \epsilon_{F,\sigma} + iu$ is the same function of $E$ for every
@@ -141,16 +141,16 @@ continuation in 80-digit arithmetic. The code takes a mid-gap per spin in
 >
 > <!-- verified: id=gw.u.fermi-level; script=scripts/gw_ucohsex_sympy.py; claim=U2; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-gw/src/u_sigma.rs::qp_per_spin_g0w0; rust_test=ferric-gw/tests/validation_gw.rs::u_g0w0_oh_vs_pyscf_ugw_ac; registry=u-gw -->
 
-## 19.7.2 The algorithm
+## The algorithm {#open-shell-gw-algorithm}
 
 | Step | Quantity | Function |
 |---|---|---|
 | 1 | reference: UHF/UKS as is; ROHF/ROKS semi-canonicalized per spin (each spin's Fock diagonalized in its occupied and virtual blocks) | `ferric_scf::semicanonical::unrestricted_reference` |
-| 2 | spin-summed U-PDEP-RPA (section 18.4): modes of $\tilde\varepsilon_U(0)$, the $\tilde W_d(iu_k)$ stack | `ferric_rpa::run_u_pdep_rpa` |
+| 2 | spin-summed U-PDEP-RPA (section @sec:open-shell-dielectric): modes of $\tilde\varepsilon_U(0)$, the $\tilde W_d(iu_k)$ stack | `ferric_rpa::run_u_pdep_rpa` |
 | 3 | $B_\alpha$, $B_\beta$ in one auxiliary basis | `build_full_b_both_spins` |
 | 4 | redress the shared eigenpotentials once | `redress_with_check` |
 | 5 | per spin: $B^\xi_\sigma = \hat U^{\mathsf T}B_\sigma$, $\Sigma^x_\sigma$ | `project_b_into_pdep`, `sigma_x_diag` |
-| 6 | per spin, per state: the continuation and the root of sections 19.3 and 19.5, with $\epsilon_{F,\sigma}$ and $\delta_{\sigma p}$ | `qp_per_spin_g0w0` |
+| 6 | per spin, per state: the continuation and the root of sections @sec:correlation-self-energy and @sec:continuation-and-qp-equation, with $\epsilon_{F,\sigma}$ and $\delta_{\sigma p}$ | `qp_per_spin_g0w0` |
 | 7 | COHSEX instead of 6 for the static method | `run_u_cohsex` |
 
 The drivers are `run_u_g0w0`, `run_u_evgw0` and `run_u_evgw`, and
@@ -159,7 +159,7 @@ together, so the pool check sums them before either is built
 (`guard_m_proj_both_spins`).
 
 **Why the product rule matters most here.** The product-integration rule of
-section 19.3.2 is built once and used by both spins. The plain quadrature at
+section @sec:correlation-self-energy-product-integration is built once and used by both spins. The plain quadrature at
 the same points misses the open-shell $\Sigma^c$ at the continuation nodes by
 0.11 Ha at 100 points for OH/cc-pVDZ at PBE, because the $\beta$ HOMO and LUMO
 lie 0.015 Ha either side of $\epsilon_{F,\beta}$.
@@ -168,7 +168,7 @@ The default QP window is HOMO−2 … LUMO+2 around $\max(n_\alpha, n_\beta)$
 (`default_u_qp_range`). A closed-shell result passed to `run_u_gw` is an
 error. U-sc-COHSEX is not implemented and returns an error.
 
-## 19.7.3 Options and limits
+## Options and limits {#open-shell-gw-options-limits}
 
 `[gw] reference = "rohf"` selects ROHF (ROKS with `[rpa] xc`); the default is
 UHF (UKS). The CLI solves UHF with maximum overlap after five DIIS iterations
@@ -178,7 +178,7 @@ when the multiplicity is above 1, for `task = "energy"` only.
 ROHF or ROKS run is the semi-canonical per-spin view, and the validation
 compares at that convention.
 
-## 19.7.4 Numerical anchors
+## Numerical anchors {#open-shell-gw-numerical-anchors}
 
 From `site/src/reference/validation.md` (the U-G0W0, U-COHSEX and ROHF rows):
 
@@ -194,10 +194,10 @@ Further tests: `crates/ferric-gw/tests/u_cohsex_evgw_closed_shell_limit.rs`
 (the closed-shell limit of U-COHSEX and U-evGW) and
 `crates/ferric-gw/tests/u_gw_ks_shift.rs` (the per-spin KS shift).
 
-## 19.7.5 Sources
+## Sources {#open-shell-gw-sources}
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-gw/theory.md`, "Open shell" | the per-spin construction (boxes 19.10 to 19.12) |
+| `crates/ferric-gw/theory.md`, "Open shell" | the per-spin construction (boxes @eq:gw-u-spin-summed-dielectric to @eq:gw-u-fermi-level) |
 | `scripts/gw_ucohsex_sympy.py`, claims U1, U1b, U2 | the proofs |
 | `scripts/gw_self_energy_sympy.py`, claim 1 | the closed-shell limit of the dielectric |

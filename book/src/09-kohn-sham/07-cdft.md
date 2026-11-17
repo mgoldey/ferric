@@ -1,6 +1,6 @@
-# 9.7 Constrained DFT and the electron-transfer coupling
+# Constrained DFT and the electron-transfer coupling {#cdft}
 
-<!-- section: 9.7; status: ready; registry: cdft;
+<!-- status: ready; registry: cdft;
      theory: crates/ferric-dft/theory.md#"Constrained DFT and the diabatic coupling" -->
 
 An electron moving from a donor to an acceptor passes between two states:
@@ -10,10 +10,10 @@ the two. Constrained DFT finds each one directly: the lowest state whose
 population on a chosen group of atoms equals a target. The Wu–Van Voorhis
 coupling between two such states is the electron-transfer matrix element.
 
-The plan: in 9.7.1, write the population of a group of atoms as a matrix
+The plan: in @sec:cdft-equations, write the population of a group of atoms as a matrix
 trace, add it to the energy with a Lagrange multiplier, derive the shifted
 Fock matrix and the two derivatives the solver relies on, and compute the
-coupling between two constrained determinants; in 9.7.2, solve for the
+coupling between two constrained determinants; in @sec:cdft-outer-loop, solve for the
 multiplier in an outer loop.
 
 | Symbol | Meaning | Code name |
@@ -37,11 +37,11 @@ The code lives in `ferric-dft/src/cdft.rs`, `ferric-scf/src/cdft_driver.rs`
 and `ferric-scf/src/cdft_coupling.rs`; the proof script is
 `scripts/cdft_constraint_coupling_sympy.py`.
 
-## 9.7.1 Equations
+## Equations {#cdft-equations}
 
 **The population as a trace.** "How many electrons are on fragment $C$"
 needs a rule for dividing space. ferric uses the Becke partition of section
-9.2.2: $w_C(\mathbf r) = \sum_{A\in C}w^A(\mathbf r)$, the share of each point
+@sec:grids-becke-partition: $w_C(\mathbf r) = \sum_{A\in C}w^A(\mathbf r)$, the share of each point
 that belongs to the atoms of $C$. Integrate it against the density on a grid
 of its own (default $99\times302$). The density is
 $\sum_{\mu\nu}D_{\mu\nu}\chi_\mu\chi_\nu$, so the integral is a trace:
@@ -50,7 +50,7 @@ $$ W^C_{\mu\nu} = \sum_g w_g\,w_C(\mathbf r_g)\,\chi_\mu(\mathbf r_g)\chi_\nu(\m
 
 with $+$ for a charge constraint (`SpinChannel::Total`) and $-$ for a spin
 constraint (`SpinChannel::SpinDiff`). `ferric-dft/src/cdft.rs::build_weight_matrix`
-builds $W^C$ the way section 9.3 builds the LDA part of $V_{xc}$: scale the AO
+builds $W^C$ the way section @sec:vxc builds the LDA part of $V_{xc}$: scale the AO
 columns by $w_gw_C(\mathbf r_g)$, then one GEMM.
 `ferric-dft/src/cdft.rs::population` is the trace:
 
@@ -121,7 +121,7 @@ of functions linear in $\lambda$, so it is concave. Its derivative $c$ can
 only decrease: $dc/d\lambda \le 0$. The reported energy is $E$ at the
 constrained density, without $\lambda c$.
 
-> **Verified equation 9.11** · the Fock shift and $dE/dN = -\lambda$
+> **Verified equation {#eq:ks-cdft-envelope}** · the Fock shift and $dE/dN = -\lambda$
 >
 > For a model UHF energy (random $h$, a small 8-fold-symmetric two-electron
 > tensor) solved self-consistently with the code's shift
@@ -206,7 +206,7 @@ The rotated determinants differ from the original ones by the phase
 $\det U_\sigma\det V_\sigma$ per spin, so $S_{ab}$ and $H_{ab}$ carry that sign
 convention. $\lvert H_{ab}\rvert$ does not depend on it.
 
-> **Verified equation 9.12** · the one-body element between non-orthogonal determinants
+> **Verified equation {#eq:ks-cdft-cofactor}** · the one-body element between non-orthogonal determinants
 >
 > `cross_one_body` (SVD pairing, cofactor sum by prefix and suffix
 > products, the other spin's determinant) equals the Fock-space matrix
@@ -264,7 +264,7 @@ $E_X$ in place of $F_X$ the $N_XS_{ab}$ term is missing and the coupling is
 not invariant. The coupling takes charge constraints only, where the same
 $\hat w$ acts on both spins.
 
-> **Verified equation 9.13** · the coupling: orthogonalization and offset invariance
+> **Verified equation {#eq:ks-cdft-coupling}** · the coupling: orthogonalization and offset invariance
 >
 > Symbolically, the off-diagonal element of $S^{-1/2}HS^{-1/2}$ for the
 > $2\times2$ problem is $(H_{\rm raw} - \tfrac12(E_a + E_b)S_{ab})/(1 - S_{ab}^2)$.
@@ -304,7 +304,7 @@ HeNe$^+$ outer loop), `crates/ferric-scf/tests/cdft_uhf.rs`, and
 `validation_cdft_et.rs`, which compares the He$_2^+$ coupling with NWChem's
 direct $\langle A|\hat H|B\rangle$.
 
-## 9.7.2 The outer loop
+## The outer loop {#cdft-outer-loop}
 
 | Step | What | Function |
 |---|---|---|
@@ -317,7 +317,7 @@ direct $\langle A|\hat H|B\rangle$.
 | 7 | several constraints: a plain $k\times k$ finite-difference Newton step | `solve_cdft_uhf` |
 | 8 | optional stability descent from a constrained saddle (default on in Python, skipped for UKS) | |
 
-Step 5 uses the first derivative of 9.7.1. On one smooth SCF branch,
+Step 5 uses the first derivative of @sec:cdft-equations. On one smooth SCF branch,
 $dV/d\lambda = c$, so $V(\lambda + h) - V(\lambda) = \int c\,d\lambda$, which the
 trapezoid rule approximates to $O(h^3)$. If the inner SCF at $\lambda + h$ fell
 into a different basin, $V$ jumps by the energy gap between the two
@@ -347,11 +347,11 @@ documentation of `cdft_driver.rs` records the measurements.
 
 **Reproducibility.** The constrained populations are defined by the Becke
 partition with ferric's Bragg–Slater radii, including its own He, Ne and Ar
-values (section 9.2); a population from another code's partition differs.
+values (section @sec:grids); a population from another code's partition differs.
 The sign of $S_{ab}$ and $H_{ab}$ follows the SVD phase convention;
 $\lvert H_{ab}\rvert$ does not depend on it.
 
-## 9.7.3 Options
+## Options {#cdft-options}
 
 | Option (Python `run_cdft`) | Effect | Default |
 |---|---|---|
@@ -366,7 +366,7 @@ same geometry, basis and Hamiltonian; spin constraints are not supported
 there. A loose `lambda_tol` passes its error into $H_{ab}$
 (`site/src/methods/cdft.md`, "Tolerance and coupling error").
 
-## 9.7.4 Numerical anchors
+## Numerical anchors {#cdft-numerical-anchors}
 
 From `site/src/reference/validation.md`, the constrained-DFT rows.
 
@@ -378,7 +378,7 @@ From `site/src/reference/validation.md`, the constrained-DFT rows.
 | coupling kernel vs NWChem `et` ingredients | He$_2^+$ / def2-SVP, aug-cc-pVDZ | $\le 5.9\times10^{-11}$ Ha | `crates/ferric-scf/tests/validation_cdft_et.rs` |
 | $\lvert V\rvert$ end to end, KS-PBE diabats | the same, 2.5 to 3.5 Å | $\le 8.3\times10^{-4}$ relative | the same |
 
-## 9.7.5 Sources
+## Sources {#cdft-sources}
 
 | Source | What it gives |
 |---|---|

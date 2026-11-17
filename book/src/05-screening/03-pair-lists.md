@@ -1,6 +1,6 @@
-# 5.3 Significant pair lists
+# Significant pair lists {#pair-lists}
 
-<!-- section: 5.3; status: edit; registry: none;
+<!-- status: edit; registry: none;
      theory: crates/ferric-integrals/theory.md#"Significant pair lists" -->
 
 Exchange couples two charge clouds through the density matrix. The element
@@ -41,7 +41,7 @@ $D_{\max} \le 1$. Where density elements exceed 1 in magnitude, which a
 non-orthogonal basis allows, the list is stricter than necessary by the factor
 $D_{\max}$: a pair with $\tau/D_{\max} < Q_{ij}Q_{\max} \le \tau$ is dropped
 although a quartet through it can pass the per-quartet screen. How often that
-happens has not been measured (section 5.3.2).
+happens has not been measured (section @sec:pair-lists-open-point-geometry-list).
 
 The pair factor is read back from the bound as
 $Q_{ij} = \texttt{estimate}(i, j, i, j)^{1/2}$, so the list works with any
@@ -99,7 +99,7 @@ Both lists are sorted ascending. `pairs.rs` also provides `intersect_sorted`,
 a linear merge intersection of two sorted slices. The ket loop of `LinkK`
 merges the density lists inline (below) and does not call it.
 
-## 5.3.1 How LinK uses the lists
+## How LinK uses the lists {#pair-lists-link-uses-lists}
 
 | Step | List | Bound |
 |---|---|---|
@@ -155,7 +155,7 @@ cost and not the result. At threshold $0$ every pair with a positive bound is
 kept, which is the trivial limit
 (`crates/ferric-scf/tests/screening_exactness.rs`).
 
-## 5.3.2 An open point in the geometry list
+## An open point in the geometry list {#pair-lists-open-point-geometry-list}
 
 The geometry list drops the density factor, which is the necessary condition
 only when every density element satisfies $|D| \le 1$ (see "Geometry pairs"
@@ -163,7 +163,7 @@ above). The book records this as derived, not measured: no committed test
 sweeps a basis with density elements above 1 against the direct exchange. The
 LinK anchors below pass on the systems they run.
 
-## 5.3.3 Numerical anchors
+## Numerical anchors {#pair-lists-numerical-anchors}
 
 | What | Test | Bar |
 |---|---|---|

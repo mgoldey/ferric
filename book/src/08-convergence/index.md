@@ -1,4 +1,4 @@
-# 8. Convergence
+# Convergence {#convergence}
 
 The SCF equations have no closed-form solution. You guess orbitals, build the
 Fock matrix from their density, diagonalize it, and repeat until the density
@@ -9,13 +9,13 @@ the density stopped moving while the orbitals are still not stationary. This
 chapter covers the tools that drive the loop to a stationary point and the
 analysis that checks which kind of stationary point it found.
 
-- [8.1 DIIS and its variants](01-diis.md): the error vector, why it is the
+- [@sec:diis DIIS and its variants](01-diis.md): the error vector, why it is the
   orbital gradient, and the constrained least-squares problem that
   extrapolates the Fock matrix.
-- [8.2 Level shift, MOM and smearing](02-level-shift-mom-smearing.md): a
+- [@sec:level-shift-mom-smearing Level shift, MOM and smearing](02-level-shift-mom-smearing.md): a
   shift that damps the step, a rule that keeps the occupied set continuous,
   and fractional occupations for a degenerate frontier.
-- [8.3 Second-order steps: Newton, augmented Hessian, trust region](03-second-order.md):
+- [@sec:second-order Second-order steps: Newton, augmented Hessian, trust region](03-second-order.md):
   steps from the orbital Hessian, and the shift that keeps them downhill.
-- [8.4 Stability analysis](04-stability.md): the lowest eigenvalue of the
+- [@sec:stability Stability analysis](04-stability.md): the lowest eigenvalue of the
   orbital Hessian at the converged orbitals, and the descent off a saddle.

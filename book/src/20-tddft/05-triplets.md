@@ -1,6 +1,6 @@
-# 20.5 Triplets
+# Triplets {#triplets}
 
-<!-- section: 20.5; status: ready; registry: tddft;
+<!-- status: ready; registry: tddft;
      theory: crates/ferric-tddft/theory.md#"9. Triplets" -->
 
 Excite one electron of a closed shell and the two now-unpaired electrons
@@ -25,11 +25,11 @@ term and the opposite sign on the $\alpha\beta$ kernel.
 | CLI | `[tddft] spin = "triplet"` |
 | Related | `ferric-scf/src/rhf_newton.rs::triplet_hessian_matvec` (the RHF→UHF stability Hessian, the same spin channel at the orbital-rotation level) |
 
-## 20.5.1 The spin blocks
+## The spin blocks {#triplets-spin-blocks}
 
 Start in spin orbitals, with $\sigma, \tau \in \{\alpha, \beta\}$ and the
 same spatial orbitals for both spins. Write $c(pq|rs)$ for the exchange
-combination of section 20.4 (global, HF or range-separated). Then
+combination of section @sec:rsh (global, HF or range-separated). Then
 
 $$ A_{ia\sigma,jb\tau} = \delta_{ij}\delta_{ab}\delta_{\sigma\tau}\,\Delta_i^a
 + (ia|jb) + (ia|f_{\sigma\tau}|jb) - \delta_{\sigma\tau}\,c\,(ij|ab), $$
@@ -53,12 +53,12 @@ $$ \mathbf A^S = \mathbf A_{\alpha\alpha} + \mathbf A_{\alpha\beta},\qquad
 
 and the same for $\mathbf B$. Substitute the spin-orbital elements. In the
 sum, the Coulomb term appears twice and gives the $2(ia|jb)$ of equation
-20.1. In the difference it cancels, and so do the parts of the kernel that
+@eq:td-matrices-spin-adaptation. In the difference it cancels, and so do the parts of the kernel that
 do not depend on spin:
 
 $$ \mathbf A^{S,T} = \mathbf A_{\alpha\alpha} \pm \mathbf A_{\alpha\beta},\qquad
 A^T_{ia,jb} = \delta_{ij}\delta_{ab}\Delta_i^a - c\,(ij|ab) + K^T_{ia,jb},\qquad
-B^T_{ia,jb} = -c\,(ib|ja) + K^T_{ia,jb} , \tag{20.9} $$
+B^T_{ia,jb} = -c\,(ib|ja) + K^T_{ia,jb} , \label{eq:td-triplet-blocks} $$
 
 with $K^T_{ia,jb} = (ia|f_{\alpha\alpha}-f_{\alpha\beta}|jb)$.
 
@@ -67,7 +67,7 @@ orbital gap minus exchange. A single excitation $i\to a$ then has diagonal
 elements that differ by $A^S_{ia,ia} - A^T_{ia,ia} = 2(ia|ia)$, the Coulomb
 self-repulsion of the transition density, which is never negative: the
 triplet pays none of it. For LDA exchange alone,
-$f_{\alpha\beta} = 0$ (section 9.6.2), so singlet and triplet differ only
+$f_{\alpha\beta} = 0$ (section @sec:fxc-singlet-triplet-block), so singlet and triplet differ only
 by the Coulomb term; with correlation the kernel differs as well.
 
 $\mathbf A - \mathbf B$ is the same matrix for both spins. In
@@ -96,7 +96,7 @@ $(\delta D^\alpha, \delta D^\beta) = (\delta D, s\,\delta D)$, with $s = +1$
 for the singlet and $s = -1$ for the triplet, and keeps
 $\delta V_\alpha = \int(f_{\alpha\alpha} + s f_{\alpha\beta})\,\delta\rho$.
 So $K^T$ comes from the same adapter as the singlet block with the sign of
-the $\beta$ perturbation flipped (section 9.6.2), and it carries the
+the $\beta$ perturbation flipped (section @sec:fxc-singlet-triplet-block), and it carries the
 singlet block's normalization.
 
 The matrix-free kernel needs the same sign one level down, in the
@@ -171,7 +171,7 @@ element with $X^T$ is
 $\sum_{ia}(X_\alpha - X_\beta)/\sqrt2\cdot\langle i|\mathbf r|a\rangle$, a sum
 of equal and opposite spin amplitudes.
 
-> **Verified equation 20.9** · the triplet block and its kernel sign
+> **Verified equation @eq:td-triplet-blocks** · the triplet block and its kernel sign
 >
 > Symbolically, the spin rotation $U$ block-diagonalizes the spin-orbital
 > $\mathbf A$ and $\mathbf B$ with the triplet block at $c_J = 0$ and
@@ -190,13 +190,13 @@ of equal and opposite spin amplitudes.
 >
 > <!-- verified: id=td.triplet.blocks; script=scripts/tddft_response_sympy.py; claim=A1; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-tddft/src/tddft.rs::coulomb_factor; registry=tddft -->
 
-## 20.5.2 Triplet instability
+## Triplet instability {#triplets-triplet-instability}
 
 $\mathbf A^T + \mathbf B^T = \Delta - c(K_A + K_B) + 2K^T$, with $K_A$ and
 $K_B$ the exchange integrals of $\mathbf A$ and $\mathbf B$. For an HF
 reference this is
 $(\varepsilon_a - \varepsilon_i)\delta - [(ab|ij) + (aj|bi)]$, the RHF
-external (RHF → UHF) stability operator of section 8.4.1. Section 20.1.2
+external (RHF → UHF) stability operator of section @sec:stability-stability-operators. Section @sec:response-tda-casida-reduction
 showed that, with $\mathbf A - \mathbf B$ positive definite, the Casida
 problem has $\Omega^2 < 0$ exactly when $\mathbf A + \mathbf B$ has a
 negative eigenvalue. So a triplet Casida run fails when the reference is
@@ -208,7 +208,7 @@ $\Omega^2_{\min}$ ($-3.171\times10^{-3}$ Ha$^2$ for C2H4, from the
 validation table's `tddft` row). TDA uses $\mathbf A^T$ alone and has no
 such failure.
 
-## 20.5.3 Numerical anchors
+## Numerical anchors {#triplets-numerical-anchors}
 
 From `site/src/reference/validation.md`, "Range-separated hybrid and triplet
 TDA and Casida excitation energies": singlets and triplets alike match
@@ -218,7 +218,7 @@ PBE, B3LYP, r2SCAN, CAM-B3LYP and ωB97X on water, C2H4 and benzene / 6-31G
 the triplets is the $\mathbf A_{\alpha\alpha} - \mathbf A_{\alpha\beta}$
 combination of PySCF's `tdscf.uhf.get_ab` spin blocks on the same orbitals.
 
-## 20.5.4 Sources
+## Sources {#triplets-sources}
 
 | Source | What it gives |
 |---|---|

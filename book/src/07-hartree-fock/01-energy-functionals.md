@@ -1,6 +1,6 @@
-# 7.1 RHF, UHF and ROHF energy functionals
+# RHF, UHF and ROHF energy functionals {#energy-functionals}
 
-<!-- section: 7.1; status: ready; registry: rhf, uhf, rohf;
+<!-- status: ready; registry: rhf, uhf, rohf;
      theory: crates/ferric-scf/theory.md#"Hartree-Fock energy functionals (RHF, UHF, ROHF)" -->
 
 Hartree–Fock replaces the many-electron problem by one electron at a time in
@@ -17,7 +17,7 @@ builder in this chapter computes.
 
 This section writes the three energy functionals, derives the Fock matrices
 as their derivatives, and states the stationarity conditions the convergence
-tests of chapter 8 check.
+tests of chapter @sec:convergence check.
 
 | Index | Range | Code name |
 |---|---|---|
@@ -35,7 +35,7 @@ tests of chapter 8 check.
 Spin and charge belong to the molecule, not to the solver call. A
 multiplicity above one under `kind = "rhf"` is refused.
 
-## 7.1.1 The functionals
+## The functionals {#energy-functionals-functionals}
 
 ### Conventions
 
@@ -123,7 +123,7 @@ The right-hand sides are equal, so at convergence
 
 $$ FDS - SDF = 0 , $$
 
-which is the DIIS error vector of section 8.1. In the MO basis the energy is
+which is the DIIS error vector of section @sec:diis. In the MO basis the energy is
 $2\sum_i h_{ii} + \sum_{ij}[2(ii|jj) - (ij|ij)] + E_{nn}$, the closed-shell
 Slater–Condon expression.
 
@@ -155,7 +155,7 @@ $\operatorname{tr}[D_\alpha K(D_\alpha)]$ equal $(\phi\phi|\phi\phi)$, and
 $E - E_{nn} = h_{\phi\phi}$. A hydrogen atom has no self-repulsion in
 Hartree–Fock.
 
-> **Verified equation 7.1** · the Fock matrix is the density derivative of the energy
+> **Verified equation {#eq:scf-fock-is-de-dd}** · the Fock matrix is the density derivative of the energy
 >
 > $F = \partial E/\partial D$ for the RHF functional and
 > $F^\sigma = \partial E/\partial D^\sigma$ for both UHF spins, symbolically on
@@ -195,7 +195,7 @@ let e_elec_no_xc: f64 = 0.5 * (d * &(&env.h + &*f)).sum();   // 1/2 tr[D(h + F)]
   $\sum_{\mu\nu}D_{\mu\nu}(h+F)_{\mu\nu} = \operatorname{tr}[D(h+F)]$ for
   symmetric matrices.
 - `k_mix.sr` is the exact-exchange fraction. It is 1 for Hartree–Fock and
-  $c_x$ for a hybrid functional (chapter 9); a pure functional skips the
+  $c_x$ for a hybrid functional (chapter @sec:kohn-sham); a pure functional skips the
   line.
 - The UHF and ROHF loops evaluate the same trace per spin,
   $\tfrac12\sum_\sigma\operatorname{tr}[D_\sigma(h + F_\sigma)]$:
@@ -303,7 +303,7 @@ symmetrization: a diagonal block appears in both $M$ and $M^{\mathsf T}$,
 while an off-diagonal block of $M$ lands in the opposite triangle of
 $M^{\mathsf T}$.
 
-> **Verified equation 7.2** · the ROHF orbital gradient and the effective Fock matrix
+> **Verified equation {#eq:scf-rohf-gradient}** · the ROHF orbital gradient and the effective Fock matrix
 >
 > $\partial E/\partial\kappa_{pq} = 2g_{pq}$ with the three blocks
 > $g_{vc} = (f^\alpha + f^\beta)_{vc}$, $g_{vo} = f^\alpha_{vo}$,
@@ -334,10 +334,10 @@ holds because ROHF is UHF with a constraint on the orbitals.
 | UHF $F_\sigma$, $E$ | `solve_uhf` |
 | ROHF $E$, $R$, $g$ | `solve_rohf`, `roothaan_fock_inner`, `rohf_gradient_mo` |
 
-## 7.1.2 One iteration
+## One iteration {#energy-functionals-iteration}
 
 Each solver repeats the same five steps. The rest of this chapter is about
-step 2, and chapter 8 about steps 3 and 4.
+step 2, and chapter @sec:convergence about steps 3 and 4.
 
 | Step | Quantity | Section |
 |---|---|---|
@@ -353,20 +353,20 @@ J/K route decision with the closed-shell solver
 (`ferric-scf/src/fock_assembly.rs::resolve_jk_route`).
 
 Step 2 dominates the cost. $J$ and $K$ each contract $N^4$ integrals with
-the density, against $N^3$ for the diagonalization of step 5. Sections 7.3 to
+the density, against $N^3$ for the diagonalization of step 5. Sections @sec:direct-and-incremental to
 7.5 are different ways of doing that contraction.
 
-## 7.1.3 Options that change the equation
+## Options that change the equation {#energy-functionals-options-change-equation}
 
 | Option | Effect | Where |
 |---|---|---|
-| `[dft] functional` | replaces $-\tfrac12 K$ by $-\tfrac12 c_x K + V_{xc}$ (RKS, UKS, ROKS) | chapter 9 |
-| `[external_potential]`, `[qmmm]` | adds the point-charge and field terms to $h$ once, before the loop | chapter 22 |
-| `[cosmo]`, `[pcm]` | adds a reaction-field term to $F$ every iteration | chapter 23 |
-| `fock_hook` (Python) | adds $V = \partial E_h/\partial D$ to $F$ every iteration | section 7.6 |
+| `[dft] functional` | replaces $-\tfrac12 K$ by $-\tfrac12 c_x K + V_{xc}$ (RKS, UKS, ROKS) | chapter @sec:kohn-sham |
+| `[external_potential]`, `[qmmm]` | adds the point-charge and field terms to $h$ once, before the loop | chapter @sec:implicit-solvation |
+| `[cosmo]`, `[pcm]` | adds a reaction-field term to $F$ every iteration | chapter @sec:embedding |
+| `fock_hook` (Python) | adds $V = \partial E_h/\partial D$ to $F$ every iteration | section @sec:fock-hooks |
 | `relativistic = "x2c1e"` | replaces $T + V$ in $h$ by the spin-free X2C-1e Hamiltonian | the user guide |
 
-## 7.1.4 Numerical anchors
+## Numerical anchors {#energy-functionals-numerical-anchors}
 
 | Check | Reference | Agreement | Test |
 |---|---|---|---|
@@ -384,10 +384,10 @@ carries them as its measured error.
 | Source | Used for |
 |---|---|
 | `crates/ferric-scf/theory.md`, "Hartree-Fock energy functionals (RHF, UHF, ROHF)" | the functionals, Fock matrices, ROHF gradient and effective Fock |
-| `scripts/hf_energy_sympy.py` | verified equations 7.1 and 7.2 |
+| `scripts/hf_energy_sympy.py` | verified equations @eq:scf-fock-is-de-dd and @eq:scf-rohf-gradient |
 | `site/src/reference/validation.md` | the anchors |
 
-The intermediate steps of 7.1.1 that are not in the theory section (the
+The intermediate steps of @sec:energy-functionals-functionals that are not in the theory section (the
 expansion of the Coulomb term, the one-orbital and one-electron limits, the
 $FDS = SDF$ step, the $\delta D_\sigma$ element bookkeeping and the
 projector argument) were checked numerically on a random seven-function

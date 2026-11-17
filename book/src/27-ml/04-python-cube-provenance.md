@@ -1,6 +1,6 @@
-# 27.4 The Python surface, cube files and provenance
+# The Python surface, cube files and provenance {#python-cube-provenance}
 
-<!-- section: 27.4; status: edit; registry: none;
+<!-- status: edit; registry: none;
      theory: crates/ferric-export/theory.md#"2. Gaussian Cube Real-Space Grid Exporter" -->
 
 The NPZ file is one way to get features out of ferric. A dataset builder
@@ -9,11 +9,11 @@ result or for the building blocks, and keeps the arrays in memory. Whatever
 the route, each sample needs a record of what produced it: two samples with
 the same keys can come from different builds, references or grids, and the
 arrays do not show it. This section maps the Python entry points onto the
-quantities of 27.1–27.3 (27.4.1), covers cube files (27.4.2), and then the
+quantities of 27.1–27.3 (@sec:python-cube-provenance-results-property-functions-building), covers cube files (@sec:python-cube-provenance-cube-files), and then the
 certificate, which is the provenance record a dataset should keep with every
-sample (27.4.3).
+sample (@sec:python-cube-provenance-certificate-provenance-label).
 
-## 27.4.1 Results, property functions and building blocks
+## Results, property functions and building blocks {#python-cube-provenance-results-property-functions-building}
 
 The bindings come in layers, from a finished result down to the integrals.
 Pick the highest layer that computes what you need; the lower ones exist for
@@ -43,10 +43,10 @@ pass the certificate through, as `calc.results["certificate"]` and
 `extras["ferric"]["certificate"]`. Their options are in
 `site/src/using/ase.md` and `site/src/using/qcschema.md`.
 
-## 27.4.2 Cube files
+## Cube files {#python-cube-provenance-cube-files}
 
 A voxel model, such as a 3-D convolutional network, wants a field on a
-regular grid. Cube files supply that. Section 21.3.3 describes the grid and
+regular grid. Cube files supply that. Section @sec:export-schemas-gaussian-cube-grid describes the grid and
 the file layout; this table gives the writers a consumer calls.
 
 | Writer | Contents | Defaults |
@@ -66,7 +66,7 @@ $\rho_\xi(\mathbf r) = \sum_P c_{P\xi}\chi_P(\mathbf r)$ of each mode, not
 the potential it generates; the eigenpotential is its Coulomb potential. A
 model trained on these files is trained on densities.
 
-## 27.4.3 The certificate as a provenance label
+## The certificate as a provenance label {#python-cube-provenance-certificate-provenance-label}
 
 Why keep provenance per sample at all? A label is safe to train on only if
 you know what it is: which code version computed it, with which
@@ -82,7 +82,7 @@ from `crates/ferric-core/src/certificate.rs`:
 |---|---|---|
 | `capability` | the CLI `method.kind` or library capability | method label |
 | `build` | `version`, `commit`, `dirty` | which code produced the sample |
-| `grade`, `grade_source` | the validation grade of the capability's energy and where it came from | trust filter (section 27.5) |
+| `grade`, `grade_source` | the validation grade of the capability's energy and where it came from | trust filter (section @sec:reproducibility-and-grades) |
 | `measured_error` | `quantity`, `value`, `units`, `reference`, `evidence`, present only when the run is inside its anchor's tested settings | error bar, when present |
 | `approximations` | `(name, detail)` pairs in effect: RI and its auxiliary basis, frozen core, local cutoffs, grids, Hessian construction, inherited SCF ones prefixed `scf ` | to split or filter a dataset by setting |
 | `precision` | `F64`, or `Mixed` with one record per kernel allowed to run mixed, when attached | to keep mixed-precision samples apart |
@@ -98,7 +98,7 @@ Three cautions apply when you use the certificate as a trust label.
 1. **The grade is the energy's.** A `pdep-rpa` certificate grades the
    PDEP-RPA energy. It says nothing about `hirshfeld_charges` or `c6_iso`.
    The trust level of an exported property is that of its own validation row
-   (section 27.5).
+   (section @sec:reproducibility-and-grades).
 2. **`measured_error` is often absent.** The `pdep-rpa` anchor covers frozen
    core 0, `trunc_thresh` 0 or below, and Gauss–Legendre with 6 or 40 points
    at $u_0 = 0.5$ (`site/src/reference/validation.md`, "Certificates"). The
@@ -127,4 +127,4 @@ reveal.
 
 Changes from the sources: `crates/ferric-export/theory.md` §2 calls the
 eigenpotential cube the potential $V_\alpha$; the cube holds the mode's
-charge density (27.4.2).
+charge density (@sec:python-cube-provenance-cube-files).

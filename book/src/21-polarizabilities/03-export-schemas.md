@@ -1,9 +1,9 @@
-# 21.3 Export schemas
+# Export schemas {#export-schemas}
 
-<!-- section: 21.3; status: edit; registry: none;
+<!-- status: edit; registry: none;
      theory: crates/ferric-export/theory.md#"Enabling keys", "2. Gaussian Cube Real-Space Grid Exporter" -->
 
-Sections 21.1 and 21.2 define quantities. A model that learns from them sees
+Sections @sec:polarizabilities-from-dielectric-modes and @sec:atomic-partitions define quantities. A model that learns from them sees
 none of the derivations, only arrays in a file. It needs four things from that
 file: the arrays indexed consistently (row $A$ of every per-atom array is atom
 $A$ of `coords`), fixed units and shapes, a tag for every convention that
@@ -14,7 +14,7 @@ write, and the grid format for volumetric fields.
 
 The per-array tables, with shapes and units, are the schema of record in
 `crates/ferric-export/theory.md`. The consumer's reading of each array,
-including its behaviour under rotation, is in sections 27.1 to 27.4. This
+including its behaviour under rotation, is in sections @sec:npz-bundle to @sec:python-cube-provenance. This
 section does not repeat them.
 
 | Entry point | Location |
@@ -24,7 +24,7 @@ section does not repeat them.
 | CLI | `method.kind = "pdep-rpa"`, `[rpa] export_npz = "<path>"`, `[rpa] export_eigpot_prefix` |
 | Python | `run_pdep_rpa(..., properties=True)` or `export_npz=`; `write_cube` (`crates/ferric-python/ferric.pyi`) |
 
-## 21.3.1 From quantity to key
+## From quantity to key {#export-schemas-quantity-key}
 
 The writer is a plain serializer. It computes nothing: the caller,
 `ferric-rpa/src/property_bundle.rs::compute_pdep_properties`, builds every
@@ -34,14 +34,14 @@ behind each.
 
 | Group | Keys | Defined in |
 |---|---|---|
-| Geometry and wavefunction | `coords`, `atomic_numbers`, `mo_coeffs`, `orbital_energies`, `density_matrix`, `boys_coeffs` | the SCF reference (chapter 7) |
-| Orbital moments | `orbital_centers`, `orbital_spreads`, `density_second_moment`, `dipole` | section 27.2.3 |
-| Electrostatics | `esp_atoms`, `esp_surface` with `esp_points`, `electric_field` | section 27.2.1 and 27.2.2 |
-| Atomic charges | `hirshfeld_charges`, `lowdin_charges`, `mulliken_charges`, `chelpg_charges`, `resp_charges` | section 21.2 |
-| Molecular response | `pdep_eigenvectors`, `alpha_tensor` | section 21.1 |
-| Per-atom response | `alpha_atomic`, `alpha_ct`, `alpha_atomic_dynamic`, `alpha_ct_dynamic` | sections 21.1, 21.2.3 and 27.3 |
-| Dispersion | `c6_partition`, `c6_source`, `c6_freqs`, `c6_weights`, `c6_iso`, `c6_aniso`, `c6_molecular_iso` | chapter 25 and section 27.3 |
-| Provenance | `certificate` | section 27.4.3 |
+| Geometry and wavefunction | `coords`, `atomic_numbers`, `mo_coeffs`, `orbital_energies`, `density_matrix`, `boys_coeffs` | the SCF reference (chapter @sec:hartree-fock) |
+| Orbital moments | `orbital_centers`, `orbital_spreads`, `density_second_moment`, `dipole` | section @sec:electrostatics-and-charges-multipoles-orbital-moments |
+| Electrostatics | `esp_atoms`, `esp_surface` with `esp_points`, `electric_field` | section @sec:electrostatics-and-charges-potential-field-nuclei and @sec:electrostatics-and-charges-potential-arbitrary-points-surface |
+| Atomic charges | `hirshfeld_charges`, `lowdin_charges`, `mulliken_charges`, `chelpg_charges`, `resp_charges` | section @sec:atomic-partitions |
+| Molecular response | `pdep_eigenvectors`, `alpha_tensor` | section @sec:polarizabilities-from-dielectric-modes |
+| Per-atom response | `alpha_atomic`, `alpha_ct`, `alpha_atomic_dynamic`, `alpha_ct_dynamic` | sections @sec:polarizabilities-from-dielectric-modes, @sec:atomic-partitions-partition-unity-buys-polarizability and @sec:polarizability-pdep-c6 |
+| Dispersion | `c6_partition`, `c6_source`, `c6_freqs`, `c6_weights`, `c6_iso`, `c6_aniso`, `c6_molecular_iso` | chapter @sec:dispersion and section @sec:polarizability-pdep-c6 |
+| Provenance | `certificate` | section @sec:python-cube-provenance-certificate-provenance-label |
 
 **Units and shapes.** Every number is in atomic units: coordinates, centroids
 and spreads in Bohr, orbital energies in Hartree, charges in $e$, the dipole
@@ -80,7 +80,7 @@ table.
 | `alpha_ct_dynamic` | `compute_c6` with `c6_source = "pdep"` |
 | `boys_coeffs` | library only: the CLI never writes it |
 
-## 21.3.2 What the writer enforces
+## What the writer enforces {#export-schemas-writer-enforces}
 
 `export_npz` refuses some combinations and encodes some types in a fixed way.
 These rules come from the file format and from what a consumer can
@@ -107,20 +107,20 @@ Two of these rules carry a warning that is easy to miss.
 
 - **`c6_iso.sum()` is not the molecular $C_6$.** The per-atom pair tensors use
   atom-centred operators and exclude inter-atomic charge transfer, which the
-  molecular response includes (the $\alpha_{\rm CT}$ of 21.2.3). The code
+  molecular response includes (the $\alpha_{\rm CT}$ of @sec:atomic-partitions-partition-unity-buys-polarizability). The code
   comment on `C6Export` records differences of tens of percent on water
   (water/aug-cc-pVDZ/HF: $-19.5\%$ Hirshfeld, $-46.7\%$ Becke), with a
   bounded regression test (`ferric-rpa/tests/s9_per_atom_c6_consistency.rs`).
   The observable is `c6_molecular_iso`.
 - **`esp_surface` is not `esp_atoms` at the nuclei.** The surface values keep
   every nucleus' $Z_A/r$ term and so diverge at a nucleus. `esp_atoms` leaves
-  out the nucleus it is evaluated at (section 27.2.1).
+  out the nucleus it is evaluated at (section @sec:electrostatics-and-charges-potential-field-nuclei).
 
 The charge arrays carry no partition tag, unlike the per-atom polarizability
 arrays: the scheme is the key name, and the lattice parameters of CHELPG and
-RESP are not recorded (section 21.2.5).
+RESP are not recorded (section @sec:atomic-partitions-esp-fitted-charges).
 
-## 21.3.3 The Gaussian cube grid
+## The Gaussian cube grid {#export-schemas-gaussian-cube-grid}
 
 Volumetric fields (the density, one molecular orbital, the PDEP mode charge
 densities) are written as Gaussian cube files by
@@ -159,7 +159,7 @@ coefficients $c_\xi^P$ the value is
 
 $$ \rho_\xi(\mathbf r) = \sum_P c_\xi^P \chi_P(\mathbf r), $$
 
-with $\chi_P$ the auxiliary basis function. As section 21.1.2 says, this is
+with $\chi_P$ the auxiliary basis function. As section @sec:polarizabilities-from-dielectric-modes-mode-form says, this is
 the mode's charge density; the eigenpotential is its Coulomb potential, and
 the cube holds the density (`[rpa] export_eigpot_prefix` writes
 `<prefix>_eigpot_NNN.cube`, `export_eigpot_count` of them, default 10).
@@ -169,9 +169,9 @@ them for every requested orbital, so the cost is one
 $O(N_{\rm bf}N_{\rm pts})$ evaluation plus one matrix-vector product per
 orbital. Files are named `{prefix}_mo{i:03}.cube`. The Python writer, its
 defaults and the use of a shared origin and shape across a dataset are in
-section 27.4.2.
+section @sec:python-cube-provenance-cube-files.
 
-## 21.3.4 Reading a file back
+## Reading a file back {#export-schemas-reading-file-back}
 
 A minimal reader needs only numpy.
 
@@ -190,16 +190,16 @@ with np.load("water.npz") as f:
 Every key is optional, so a consumer tests membership (`"alpha_ct" in f`)
 rather than assuming a layout.
 
-## 21.3.5 Known limits (2026-11-15)
+## Known limits (2026-11-15) {#export-schemas-known-limits-2026-11}
 
-- The bundle is built from a closed-shell RHF reference only (section 27.1).
+- The bundle is built from a closed-shell RHF reference only (section @sec:npz-bundle).
 - `boys_coeffs` is a library key: the CLI never writes it.
 - The writer does not check that the arrays of a bundle belong to the same
-  molecule or the same run. Only the pairs named in 21.3.2 are cross-checked.
+  molecule or the same run. Only the pairs named in @sec:export-schemas-writer-enforces are cross-checked.
 - The schema has no version field. The certificate records the build, and
   that is the only provenance in the file.
 
-## 21.3.6 Sources
+## Sources {#export-schemas-sources}
 
 | Source | Used for |
 |---|---|

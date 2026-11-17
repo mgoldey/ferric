@@ -1,7 +1,7 @@
-<!-- section: 11.6; status: ready; registry: ri-mp2;
+<!-- status: ready; registry: ri-mp2;
      theory: none -->
 
-# 11.6 Device and mixed-precision kernels
+# Device and mixed-precision kernels {#device-mixed-precision}
 
 | Entry point | Location |
 |---|---|
@@ -10,7 +10,7 @@
 | CLI | `[gpu] mode` or `preset`; `[precision] mode = "mixed"` with `rimp2-energy` in `mixed_kernels` (`site/src/reference/input.md`) |
 | Grade | f64 device: within a summation-order bound of the CPU. Mixed: a measured error map, not Proven (`site/src/reference/validation.md`, "Mixed-precision GPU kernels") |
 
-Section 11.3 put the $O(N^5)$ work into one GEMM per occupied orbital. A GPU
+Section @sec:pair-kernel put the $O(N^5)$ work into one GEMM per occupied orbital. A GPU
 does large GEMMs faster than the CPU, and in single precision faster still.
 The device path replaces exactly that GEMM and nothing else, so the
 question for each variant is how far its $G^{(i)}$ can move from the CPU's.
@@ -18,12 +18,12 @@ The plan: when the device runs, the f64 path and its summation-order bound,
 the mixed path and its element bound, then the measured errors.
 
 The device replaces one operation: the GEMM that forms $G^{(i)}$
-(equation 11.7). Everything else is shared with the CPU path of section 11.3:
+(equation @eq:pair-kernel-1). Everything else is shared with the CPU path of section @sec:pair-kernel:
 the pair arithmetic is `pair_energy`, the $j$ fold is in ascending order, and
 the $i$ fold is in ascending order. The device and CPU energies therefore
 differ only by the rounding of the GEMM.
 
-## 11.6.1 When the device runs
+## When the device runs {#device-mixed-precision-device-runs}
 
 `ri_mp2_spin_components` calls the dispatcher first. It returns `None`, and
 the CPU path runs, when any of these holds:
@@ -58,20 +58,20 @@ $n_o = 15$, $n_v = 393$) that is 43.0 MB of $B_{ov}$ in f64 or 21.5 MB in
 f32, beside 18.5 MB of $G^{(i)}$ scratch. The scratch is reserved first, so
 a pool too small for it refuses before the larger upload.
 
-## 11.6.2 The f64 device path
+## The f64 device path {#device-mixed-precision-f64-device-path}
 
 The device and the CPU compute the same sums $\sum_P B^P_{ia}B^P_{jb}$ in a
 different order. With $S_{ab} = \sum_P |B^P_{ia}|\,|B^P_{jb}|$, the
 difference of two summation orders of $N_{\mathrm{aux}}$ terms is bounded per
 element by
 
-$$ \big| G^{\mathrm{dev}}_{ab} - G^{\mathrm{cpu}}_{ab} \big| \le 2\,\gamma_{N_{\mathrm{aux}}}(u_{64})\, S_{ab}, \qquad \gamma_n(u) = \frac{n u}{1 - n u}, \qquad u_{64} = 2^{-53} . \tag{11.10} $$
+$$ \big| G^{\mathrm{dev}}_{ab} - G^{\mathrm{cpu}}_{ab} \big| \le 2\,\gamma_{N_{\mathrm{aux}}}(u_{64})\, S_{ab}, \qquad \gamma_n(u) = \frac{n u}{1 - n u}, \qquad u_{64} = 2^{-53} . \label{eq:rimp2alg-device-f64-bound} $$
 
-> **Unverified equation 11.10** · the summation-order bound
+> **Unverified equation @eq:rimp2alg-device-f64-bound** · the summation-order bound
 >
 > Each of the two dot products is within $\gamma_{N_{\mathrm{aux}}}S_{ab}$ of
 > the exact sum (Higham, *Accuracy and Stability of Numerical Algorithms*,
-> section 3.1), so their difference is within twice that.
+> section @sec:one-electron), so their difference is within twice that.
 >
 > | | |
 > |---|---|
@@ -89,7 +89,7 @@ $G_{ab}$ can be much smaller than its terms when they cancel.
 `kappa_path_takes_the_device_within_its_derived_bound` in the same file pins
 that a $\kappa$-regularized run also takes the f64 device path.
 
-## 11.6.3 The mixed-precision path
+## The mixed-precision path {#device-mixed-precision-mixed-precision-path}
 
 The mixed path runs only when all of these hold:
 
@@ -114,18 +114,18 @@ accumulate over $b$ terms at most; the panels are added in f64.
 
 The per-element bound, from the validation page:
 
-$$ \big| G^{\mathrm{mix}}_{ab} - G_{ab} \big| \le \varepsilon_G\, S_{ab} + \eta, \qquad \varepsilon_G = (1+u_{32})^2\big(1+\gamma_b(u_{32})\big)\big(1+\gamma_{\lceil N_{\mathrm{aux}}/b\rceil}(u_{64})\big) - 1 + \gamma_{N_{\mathrm{aux}}}(u_{64}), \tag{11.11} $$
+$$ \big| G^{\mathrm{mix}}_{ab} - G_{ab} \big| \le \varepsilon_G\, S_{ab} + \eta, \qquad \varepsilon_G = (1+u_{32})^2\big(1+\gamma_b(u_{32})\big)\big(1+\gamma_{\lceil N_{\mathrm{aux}}/b\rceil}(u_{64})\big) - 1 + \gamma_{N_{\mathrm{aux}}}(u_{64}), \label{eq:rimp2alg-mixed-element-bound} $$
 
 with $u_{32} = 2^{-24}$ and $\eta$ the f32 underflow term. The factor
 $(1+u_{32})^2$ is the rounding of the two operands, $\gamma_b(u_{32})$ the f32
 panel sum, $\gamma_{\lceil N_{\mathrm{aux}}/b\rceil}(u_{64})$ the f64 sum over
 panels, and the last term the rounding of the f64 reference itself.
 
-> **Unverified equation 11.11** · the mixed-precision element bound
+> **Unverified equation @eq:rimp2alg-mixed-element-bound** · the mixed-precision element bound
 >
 > | | |
 > |---|---|
-> | Proof | none committed; the derivation is in the text of `site/src/reference/validation.md`, "Mixed-precision GPU kernels". To add: a numpy claim that emulates f32 panels and f64 panel sums and checks (11.11), with a negative control that accumulates across panels in f32. |
+> | Proof | none committed; the derivation is in the text of `site/src/reference/validation.md`, "Mixed-precision GPU kernels". To add: a numpy claim that emulates f32 panels and f64 panel sums and checks (@eq:rimp2alg-mixed-element-bound), with a negative control that accumulates across panels in f32. |
 > | Code tests | `the_shipped_kernel_is_pinned_by_a_two_sided_per_element_measurement` and `the_f32_upload_is_round_to_nearest_even_bit_for_bit` in `crates/ferric-mp2/tests/gpu_rimp2_mixed.rs` |
 >
 > <!-- unverified: id=rimp2alg.mixed-element-bound; todo=add f32-panel emulation claim to a scripts/ proof file -->
@@ -175,7 +175,7 @@ counted (`mixed_fallback_f64`) and traced. The filter skips non-finite
 values, so a NaN in $B_{ov}$ passes through to a NaN energy, as on the CPU.
 A device pool too small for the f32 tensor runs the CPU path.
 
-## 11.6.4 Measured error of the mixed path
+## Measured error of the mixed path {#device-mixed-precision-measured-error-mixed-path}
 
 The validation page measures the mixed energy against the f64 CPU energy of
 the same $B_{ov}$, at $b = 64$, frozen core, on an RI-JK RHF reference. Two
@@ -214,9 +214,9 @@ of the spread between systems and is not a guarantee on another device.
 
 | Source | Used for |
 |---|---|
-| `crates/ferric-mp2/src/rimp2_gpu.rs`, module doc, dispatcher, `Stage::new` and `check_f32_arithmetic_range` | sections 11.6.1 to 11.6.3 |
+| `crates/ferric-mp2/src/rimp2_gpu.rs`, module doc, dispatcher, `Stage::new` and `check_f32_arithmetic_range` | sections @sec:device-mixed-precision-device-runs to @sec:device-mixed-precision-mixed-precision-path |
 | `crates/ferric-core/src/gpu/mixed.rs`, module doc and `MIXED_K_PANEL_DEFAULT` | the panel scheme |
-| `site/src/reference/validation.md`, the `rimp2` row and "Mixed-precision GPU kernels" | equation 11.11, the scheme, the error table |
+| `site/src/reference/validation.md`, the `rimp2` row and "Mixed-precision GPU kernels" | equation @eq:rimp2alg-mixed-element-bound, the scheme, the error table |
 | `crates/ferric-mp2/tests/gpu_rimp2_resident.rs`, `crates/ferric-mp2/tests/gpu_rimp2_mixed.rs` | the pinned bounds and the measured ratios |
 
 Changes from the sources: $\varepsilon_G$ and $\eta$ are as on the validation

@@ -1,4 +1,4 @@
-# 24. Gaussian-basis periodic calculations
+# Gaussian-basis periodic calculations {#periodic}
 
 A crystal is one cell repeated without end, and every energy of a molecular
 code becomes a sum over that repetition. The sums do not all behave.
@@ -12,13 +12,13 @@ builds three-dimensional periodic Hartree–Fock, Kohn–Sham, MP2 and dRPA on
 Gaussian basis functions around those three facts, in the conventions of
 PySCF `pyscf.pbc`. Energies are per cell, in Hartree; lengths are in Bohr.
 
-The chapter follows the data. Section 24.1 sums the nuclear repulsion and
-defines the Madelung constant. Section 24.2 gives the Fourier transform of a
+The chapter follows the data. Section @sec:ewald sums the nuclear repulsion and
+defines the Madelung constant. Section @sec:pair-ft gives the Fourier transform of a
 lattice-summed Gaussian pair, which every reciprocal-space term uses.
-Section 24.3 builds the nuclear attraction from it, and 24.4 treats the
+Section @sec:nuclear-attraction builds the nuclear attraction from it, and 24.4 treats the
 divergence that the exchange energy inherits from the dropped $\mathbf G = 0$
-term. Section 24.5 replaces the dense Coulomb tensor by a range-separated
-density fit, and 24.6 runs the SCF on a $k$-point mesh. Sections 24.7 and
+term. Section @sec:rsgdf replaces the dense Coulomb tensor by a range-separated
+density fit, and 24.6 runs the SCF on a $k$-point mesh. Sections @sec:forces and
 24.8 differentiate the energy with respect to atoms and to strain, and 24.9
 adds MP2 and dRPA on the periodic reference.
 
@@ -27,7 +27,7 @@ $\mathbf L$ and $\mathbf T$, reciprocal vectors $\mathbf G$, mesh points
 $k$, momentum transfer $q = k' - k$. The Ewald splitting parameter is
 $\eta$; the code and the input call it `omega` (`[cell] omega`,
 `gdf_omega`), and it is not the range-separation parameter $\omega$ of
-chapter 4. The imaginary frequency is $u$. The densities follow chapter 0:
+chapter @sec:operators. The imaginary frequency is $u$. The densities follow chapter @sec:notation:
 $D = 2C_oC_o^{\mathsf H}$ and $F = h + J - \tfrac12K$.
 
 Each section derives its equations, checks them in a limit (independence of

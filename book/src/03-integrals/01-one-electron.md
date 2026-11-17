@@ -1,6 +1,6 @@
-# 3.1 One-electron integrals and multipoles
+# One-electron integrals and multipoles {#one-electron}
 
-<!-- section: 3.1; status: edit; registry: none;
+<!-- status: edit; registry: none;
      theory: crates/ferric-integrals/theory.md#"Conventions", "One-electron integrals" -->
 
 An electron in a molecule has kinetic energy, and it is attracted to every
@@ -30,7 +30,7 @@ The plan:
 | Rust | `ferric-integrals/src/oneelectron.rs::{overlap,kinetic,nuclear,hcore,hcore_ecp,dipole,second_moment,r2_moment}` |
 | Python | `AoIntegrals` (`crates/ferric-python/ferric.pyi`) |
 
-## 3.1.1 Basis functions and the integrals
+## Basis functions and the integrals {#one-electron-basis-functions-integrals}
 
 A contracted Cartesian Gaussian on centre $\mathbf A$ is a polynomial times a
 fixed linear combination of Gaussians of different widths:
@@ -71,7 +71,7 @@ descending): a Cartesian $d$ shell is $xx, xy, xz, yy, yz, zz$.
 
 $$ S_{\mu\nu} = \int \chi_\mu\chi_\nu, \qquad T_{\mu\nu} = -\tfrac12\int \chi_\mu \nabla^2 \chi_\nu, \qquad V_{\mu\nu} = -\sum_C Z_C \int \frac{\chi_\mu(\mathbf r)\chi_\nu(\mathbf r)}{|\mathbf r - \mathbf C|}\,d\mathbf r, $$
 
-and the two-electron integrals over a kernel $\hat w$ (section 3.2) are
+and the two-electron integrals over a kernel $\hat w$ (section @sec:two-electron) are
 
 $$ (\mu\nu|\hat w|\lambda\sigma) = \iint \chi_\mu(1)\chi_\nu(1)\, w(r_{12})\, \chi_\lambda(2)\chi_\sigma(2), \qquad (P|\hat w|\mu\nu), \qquad V_{PQ} = (P|\hat w|Q) . $$
 
@@ -96,18 +96,18 @@ Check the limits. With $A = B$ the prefactor is 1 and $\mathbf P = \mathbf A$:
 two Gaussians on one centre multiply to one Gaussian of exponent $a + b$. With
 the centres far apart the prefactor goes to zero, so the overlap of distant
 functions vanishes. That prefactor is the source of the sparsity that the
-screening of chapter 5 exploits. A three- or four-center integral therefore
+screening of chapter @sec:screening exploits. A three- or four-center integral therefore
 reduces to integrals over one or two Gaussians, and those have closed forms.
-Section 3.4 carries this through for the Coulomb kernel.
+Section @sec:md-three-center carries this through for the Coulomb kernel.
 
-## 3.1.2 The one-electron matrices
+## The one-electron matrices {#one-electron-electron-matrices}
 
 `ferric-integrals/src/oneelectron.rs::overlap`,
 `ferric-integrals/src/oneelectron.rs::kinetic` and
 `ferric-integrals/src/oneelectron.rs::nuclear` build $S$, $T$ and $V$ from
 libint2 shell-pair blocks. `ferric-integrals/src/oneelectron.rs::hcore` adds
 $h = T + V$. `hcore` does not contain the ECP operator;
-`ferric-integrals/src/oneelectron.rs::hcore_ecp` adds it (section 3.5).
+`ferric-integrals/src/oneelectron.rs::hcore_ecp` adds it (section @sec:ecp).
 
 All three matrices are symmetric, so each unordered shell pair is computed
 once and the block is mirrored. Here is the serial branch of
@@ -172,15 +172,15 @@ connects three engines (overlap, dipole, second moment), so a test that
 shifts the origin and compares pins every second-moment component against
 the other two. The crate's tests do this.
 
-## 3.1.3 Options that change the matrices
+## Options that change the matrices {#one-electron-options-change-matrices}
 
 | Option | Effect |
 |---|---|
-| ECP atoms (`mol.apply_ecp`) | $Z_C \to Z_C - n_{\mathrm{core}}$ in $V$; $\hat U_{\mathrm{ECP}}$ added by `hcore_ecp` (section 3.5) |
+| ECP atoms (`mol.apply_ecp`) | $Z_C \to Z_C - n_{\mathrm{core}}$ in $V$; $\hat U_{\mathrm{ECP}}$ added by `hcore_ecp` (section @sec:ecp) |
 | ghost atoms | $Z_C = 0$; the basis functions stay |
 | external point charges and field | folded into $h$ once before the SCF (`ferric-integrals/src/oneelectron.rs::hcore_with_external`); `None` leaves $h$ bit-identical |
 
-## 3.1.4 Numerical anchors
+## Numerical anchors {#one-electron-numerical-anchors}
 
 | What | Test | Bar |
 |---|---|---|

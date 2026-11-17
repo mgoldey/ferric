@@ -1,5 +1,5 @@
-# 26.2 The ring series by three routes
+# The ring series by three routes {#ring-series}
 
-<!-- section: 26.2; status: gap; registry: rs-mp2-rpa -->
+<!-- status: gap; registry: rs-mp2-rpa -->
 
 Deferred until publication.

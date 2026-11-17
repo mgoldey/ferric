@@ -1,6 +1,6 @@
-# 19.6 Eigenvalue self-consistency
+# Eigenvalue self-consistency {#eigenvalue-self-consistency}
 
-<!-- section: 19.6; status: ready; registry: gw;
+<!-- status: ready; registry: gw;
      theory: crates/ferric-gw/theory.md#"8. Eigenvalue self-consistency" -->
 
 G0W0 builds $G$ and $W$ from the mean-field spectrum, so its answer depends
@@ -20,7 +20,7 @@ in the denominators do.
 | Symbol | Meaning | Code name |
 |---|---|---|
 | $\epsilon^{\rm QP,(k)}_p$ | QP energy after sweep $k$ | `eps_qp` |
-| $\epsilon_q^{\rm prop}$ | propagator energies in the kernel of section 19.3 | `eps_prop` |
+| $\epsilon_q^{\rm prop}$ | propagator energies in the kernel of section @sec:correlation-self-energy | `eps_prop` |
 
 | Entry point | Location |
 |---|---|
@@ -28,10 +28,10 @@ in the denominators do.
 | CLI | `[gw] method = "evgw0"` or `"evgw"`, with `max_ev_iter` and `ev_conv_thresh` |
 | Python | `run_gw(method="evgw0" \| "evgw", max_ev_iter=, ev_conv_thresh=)` |
 
-## 19.6.1 The update
+## The update {#eigenvalue-self-consistency-update}
 
 **What changes.** The propagator energies $\epsilon_q$ in the kernel
-$(z - \epsilon_q)/[(z-\epsilon_q)^2 + u'^2]$ of section 19.3 are the only
+$(z - \epsilon_q)/[(z-\epsilon_q)^2 + u'^2]$ of section @sec:correlation-self-energy are the only
 input the loop updates. Sweep $k$ uses
 
 $$ \epsilon_q^{\rm prop} = \begin{cases} \epsilon^{\rm QP,(k-1)}_q & q \text{ in the QP window} \\ \epsilon_q & \text{otherwise} \end{cases} $$
@@ -40,7 +40,7 @@ and solves, for every state $p$ in the window,
 
 $$ E = \epsilon_p + \delta_p + \Sigma^c_p\big(E;\,\epsilon^{\rm prop}\big) $$
 
-by the continuation and Newton solve of section 19.5. The left-hand
+by the continuation and Newton solve of section @sec:continuation-and-qp-equation. The left-hand
 $\epsilon_p$, the static shift $\delta_p$ and the Fermi level $\epsilon_F$ of
 the continuation line stay at their mean-field values for the whole run, and
 so do the energies of states outside the window.
@@ -69,25 +69,25 @@ when it falls below `ev_conv_thresh`.
 **evGW: rebuild $W$ too.** In `ferric-gw/src/sigma.rs::run_evgw` the second and
 later sweeps copy the reference, overwrite the orbital energies of the QP
 window with the current QP energies, rerun the PDEP-RPA step on that copy
-(the $\Delta_i^a$ of $\Pi$ in section 19.2.1 change), redress the new
+(the $\Delta_i^a$ of $\Pi$ in section @sec:screened-interaction-dielectric-matrix-single-pole change), redress the new
 eigenpotentials into the unchanged $B$ basis, and project $B$ again. The
 orbitals and $B$ are unchanged. The rebuild drives the cost: the projection of
-section 19.2 (the largest GEMM in the GW code) and the whole frequency stack
+section @sec:screened-interaction (the largest GEMM in the GW code) and the whole frequency stack
 are rebuilt each sweep. Convergence is declared only after at least one
 rebuilt $W$ (`it > 0`).
 
 | Step | Work per sweep | Function |
 |---|---|---|
 | set propagator energies to the last QP energies | $O(n_{\rm act})$ | `run_evgw0`, `run_evgw` |
-| evGW only, after sweep 0: PDEP-RPA on the shifted reference | chapter 18 | `ferric_rpa::run_pdep_rpa` |
-| evGW only: redress and project $B$ | section 19.2 | `redress_eigenpotentials`, `project_b_into_pdep` |
-| per-state QP solve against the snapshot | section 19.5 | `solve_qp_for_mo` |
+| evGW only, after sweep 0: PDEP-RPA on the shifted reference | chapter @sec:rpa | `ferric_rpa::run_pdep_rpa` |
+| evGW only: redress and project $B$ | section @sec:screened-interaction | `redress_eigenpotentials`, `project_b_into_pdep` |
+| per-state QP solve against the snapshot | section @sec:continuation-and-qp-equation | `solve_qp_for_mo` |
 | $\max_p\lvert\Delta\epsilon^{\rm QP}_p\rvert <$ `ev_conv_thresh` | $O(n_{\rm win})$ | the loop test |
 
 There is no identity to prove here: the update rule is a definition. The
 evidence is the validation below.
 
-## 19.6.2 Options and limits
+## Options and limits {#eigenvalue-self-consistency-options-limits}
 
 | Option | Default | Effect |
 |---|---|---|
@@ -106,7 +106,7 @@ updated.
 `crates/ferric-gw/tests/evgw_pbe_h2o.rs` checks convergence and the KS shift
 only.
 
-## 19.6.3 Numerical anchors
+## Numerical anchors {#eigenvalue-self-consistency-numerical-anchors}
 
 From `site/src/reference/validation.md` (the COHSEX, evGW$_0$, evGW row):
 
@@ -118,7 +118,7 @@ From `site/src/reference/validation.md` (the COHSEX, evGW$_0$, evGW row):
 `crates/ferric-gw/tests/h2o_g0w0_cohsex.rs` holds smoke tests of G0W0,
 COHSEX, evGW$_0$ and evGW on water at cc-pVDZ.
 
-## 19.6.4 Sources
+## Sources {#eigenvalue-self-consistency-sources}
 
 | Source | What it gives |
 |---|---|

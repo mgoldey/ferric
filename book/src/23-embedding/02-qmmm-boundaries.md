@@ -1,6 +1,6 @@
-# 23.2 QM/MM boundaries, link atoms and the full gradient
+# QM/MM boundaries, link atoms and the full gradient {#qmmm-boundaries}
 
-<!-- section: 23.2; status: edit; registry: qmmm;
+<!-- status: edit; registry: qmmm;
      theory: crates/ferric-scf/theory.md#"QM/MM boundary and the full gradient" -->
 
 A ligand in a protein pocket, the reacting site of an enzyme, or a solute in
@@ -8,16 +8,16 @@ explicit solvent is too large to treat quantum mechanically in full. The
 chemistry happens in a small region: bonds break there and the density
 rearranges there. The rest of the structure matters mainly through its
 electrostatics, so QM/MM solves the small region as a molecule and lets the
-rest act on it as fixed point charges (the operator of section 23.1), with an
-optional force field for the classical terms (section 23.4).
+rest act on it as fixed point charges (the operator of section @sec:external-potentials), with an
+optional force field for the classical terms (section @sec:molecular-mechanics).
 
 `ferric-scf/src/qmmm.rs` is a bookkeeping layer around that idea. It adds no
 new quantum mechanics. It decides which atoms are quantum, caps the covalent
 bonds the split cuts, treats the charge next to the cut, and maps the
 gradient of the embedded SCF back onto the atoms of the full structure. In
-order: the partition (23.2.1), the cut bond (23.2.2), energies and forces
-(23.2.3), the full gradient (23.2.4), the force-field terms (23.2.5), and
-optimization (23.2.6), then the algorithm, options, anchors and sources. The
+order: the partition (@sec:qmmm-boundaries-partition), the cut bond (@sec:qmmm-boundaries-cutting-covalent-bond), energies and forces
+(@sec:qmmm-boundaries-energies-forces), the full gradient (@sec:qmmm-boundaries-gradient-over-full-structure), the force-field terms (@sec:qmmm-boundaries-additive-mm-terms), and
+optimization (@sec:qmmm-boundaries-geometry-optimization), then the algorithm, options, anchors and sources. The
 proofs are in `scripts/qmmm_boundary_sympy.py`, claims Q1 to Q4.
 
 | Symbol | Meaning | Code name |
@@ -35,7 +35,7 @@ proofs are in `scripts/qmmm_boundary_sympy.py`, claims Q1 to Q4.
 | CLI | `[qmmm]`, reading a PQR (`examples/water-qmmm.toml`); fixed point charges and, for the energy task, polarizable sites |
 | Python | `QmmmSystem`, `run_qmmm`, `run_optimize_qmmm`; see `site/src/using/qmmm.md` |
 
-## 23.2.1 The partition
+## The partition {#qmmm-boundaries-partition}
 
 `QmmmSystem::new` takes the full structure and a rule for the QM region.
 
@@ -57,7 +57,7 @@ with no MM atoms, or only zero charges, gives
 That makes the empty-environment limit exact, bit for bit, and not merely
 small.
 
-## 23.2.2 Cutting a covalent bond
+## Cutting a covalent bond {#qmmm-boundaries-cutting-covalent-bond}
 
 Cut a C–C bond and the QM carbon is left with an unpaired valence electron.
 The QM region would then be a radical that does not exist in the real
@@ -89,7 +89,7 @@ the classical charge–nuclear energy, and it follows the real QM atoms in the
 QM molecule (`to_qm_molecule`).
 
 $\mathbf R_L$ is not a free coordinate. It moves with its two hosts, and
-that fixes how its gradient row is shared out (section 23.2.4).
+that fixes how its gradient row is shared out (section @sec:qmmm-boundaries-gradient-over-full-structure).
 
 ### The charge next to the cut
 
@@ -135,7 +135,7 @@ origin. Check $n = 1$ in your head: M1 and one M2 with charges $q_1$, $q_2$
 become $2q_1$ at the midpoint and $q_2 - q_1$ on M2, whose dipole is
 $q_1(\mathbf R_1 + \mathbf R_2) + (q_2 - q_1)\mathbf R_2 = q_1\mathbf R_1 + q_2\mathbf R_2$.
 
-> **Verified equation 23.2** · what Z1, RC and RCD conserve
+> **Verified equation {#eq:qmmm-boundary-rcd}** · what Z1, RC and RCD conserve
 >
 > For an M1 of charge $q$ with $n = 1, \ldots, 5$ M2 neighbours at symbolic
 > positions, the transcribed `with_boundary_charges` gives: RCD conserves the
@@ -199,17 +199,17 @@ Four points about this code:
   every scheme is an exact no-op.
 - **Midpoints are point charges.** They are never smeared, since there is no
   smearing model for them. Each lies on the midpoint of two real atoms, which
-  is why its force is split between them in section 23.2.4.
+  is why its force is split between them in section @sec:qmmm-boundaries-gradient-over-full-structure.
 - **Only positions move.** The charges are constants; only the midpoint
   positions depend on the geometry.
 
 `min_link_to_charge_distance` reports the shortest distance from a link
 hydrogen to a nonzero MM charge. It is a diagnostic and acts on nothing.
 
-## 23.2.3 Energies and forces
+## Energies and forces {#qmmm-boundaries-energies-forces}
 
 The embedded SCF is the vacuum solver with `RhfConfig::external_potential`
-set to `QmmmSystem::to_external_potential` (section 23.1). The QM molecule is
+set to `QmmmSystem::to_external_potential` (section @sec:external-potentials). The QM molecule is
 the QM atoms plus the link hydrogens. The MM charges, point or smeared, are
 the effective charges after the boundary scheme, in one fixed order: the
 atom-centred charges with nonzero effective charge in ascending atom index,
@@ -220,7 +220,7 @@ atoms would count the interaction twice.
 
 The force on an embedding point charge is the charge times the field of the
 QM nuclei and electron density at the charge, the Hellmann–Feynman result of
-section 23.1.3. It is a force, $-\partial E/\partial\mathbf R$; the other
+section @sec:external-potentials-gradient. It is a force, $-\partial E/\partial\mathbf R$; the other
 gradient routines return $\partial E/\partial\mathbf R$.
 
 <!-- excerpt: ferric-scf/src/qmmm.rs::mm_forces -->
@@ -240,10 +240,10 @@ unit positive probe at the point and the nuclear sum over all QM atoms (the
 probe is not one of them, so there is no self-term to skip). It needs the
 total spin-summed density, and it errors if a point coincides with a QM
 nucleus. A Gaussian-smeared charge uses its own formula,
-`smeared_site_forces` (section 23.1.3), and `mm_forces` merges the two kinds
+`smeared_site_forces` (section @sec:external-potentials-gradient), and `mm_forces` merges the two kinds
 back into the canonical order.
 
-## 23.2.4 The gradient over the full structure
+## The gradient over the full structure {#qmmm-boundaries-gradient-over-full-structure}
 
 The SCF gradient lives on the QM molecule, link hydrogens included. What a
 geometry optimizer needs is the gradient on the real atoms of the whole
@@ -273,7 +273,7 @@ result is $dE/d\mathbf R$ of the embedded SCF energy with the partition
 rebuilt at each geometry, and its rows sum to zero for an energy that
 depends only on relative positions.
 
-> **Verified equation 23.3** · the full gradient across the cut
+> **Verified equation {#eq:qmmm-full-gradient}** · the full gradient across the cut
 >
 > The link chain rule $(1-g, g)$ follows from $\mathbf R_L = (1-g)\mathbf R_Q + g\mathbf R_M$
 > for any energy of $\mathbf R_L$ (claim Q1). The transcribed `full_gradient`
@@ -340,11 +340,11 @@ for (b, f) in boundary_rows.zip(mm_forces[n_atom_centred..].iter()) {
 
 `full_gradient` carries no MM force-field term and treats the MM charges as
 constants. `full_gradient_with_mm` adds the force-field gradient of
-`qmmm_mm_terms` (section 23.4) row by row. The polarizable terms of section
-23.3 have their own variant, `full_gradient_with_polarizable`, because the
+`qmmm_mm_terms` (section @sec:molecular-mechanics) row by row. The polarizable terms of section
+@sec:polarizable-embedding have their own variant, `full_gradient_with_polarizable`, because the
 induced dipoles exert an extra force on every site and charge.
 
-## 23.2.5 The additive MM terms
+## The additive MM terms {#qmmm-boundaries-additive-mm-terms}
 
 With a force field, `qmmm_mm_terms` adds the MM energy under the additive
 convention. The rule is to count each interaction once, either in the
@@ -368,7 +368,7 @@ atoms but keeps the full bond graph for the exclusions. An MM–MM pair that is
 1–2, 1–3 or 1–4 through a path crossing the QM region is still bonded in the
 topology, and is excluded or scaled the same way.
 
-## 23.2.6 Geometry optimization
+## Geometry optimization {#qmmm-boundaries-geometry-optimization}
 
 `optimize_qmmm` runs the BFGS driver
 `ferric-scf/src/optimize.rs::optimize_coordinates` over the free atoms. At
@@ -390,13 +390,13 @@ Any value other than `None` needs an `mm_topology`. Without a force field
 nothing holds the MM geometry together, so moving MM atoms would be
 meaningless. `QmmmMethod` selects RHF, UHF, or RKS/UKS with a named functional
 (those two set RI-J and RI-K with `def2-universal-jkfit`). `optimize_qmmm`
-refuses a COSMO SCF (section 22.5), a relativistic SCF, and a polarizable
-embedding (section 23.3): the polarizable sites would be copied unchanged
+refuses a COSMO SCF (section @sec:conductor-limit-and-cosmo), a relativistic SCF, and a polarizable
+embedding (section @sec:polarizable-embedding): the polarizable sites would be copied unchanged
 from step to step and go stale, and the step gradient would also need the
 polarizable site and charge rows. It accepts IEF-PCM, because that gradient
 exists.
 
-## 23.2.7 The algorithm
+## The algorithm {#qmmm-boundaries-algorithm}
 
 | Step | Quantity | Function |
 |---|---|---|
@@ -407,7 +407,7 @@ exists.
 | 5 | MM terms, if a topology is given | `qmmm_mm_terms` |
 | 6 | fold onto the full structure | `full_gradient`, `full_gradient_with_mm` |
 
-## 23.2.8 Options
+## Options {#qmmm-boundaries-options}
 
 | Option | Values | Default | Effect |
 |---|---|---|---|
@@ -425,7 +425,7 @@ optimization in that field diverges, so the CLI defaults to `delete-host`. In
 Python, `with_boundary_charges` is a separate call, and a system that never
 makes it has the untreated boundary, `keep`.
 
-## 23.2.9 Numerical anchors
+## Numerical anchors {#qmmm-boundaries-numerical-anchors}
 
 | Quantity | System | Result | Source |
 |---|---|---|---|
@@ -444,7 +444,7 @@ optimizer minimizes, against its analytic gradient, so both paths share the
 SCF and the integrals. Partition-construction errors are covered by
 charge-bookkeeping assertions and scheme-swap controls.
 
-## 23.2.10 Sources
+## Sources {#qmmm-boundaries-sources}
 
 | Source | What it gives |
 |---|---|
@@ -457,7 +457,7 @@ charge-bookkeeping assertions and scheme-swap controls.
 
 **Known limits (2026-11-15).**
 
-- The additive rule of section 23.2.5 (which MM terms are kept across the
+- The additive rule of section @sec:qmmm-boundaries-additive-mm-terms (which MM terms are kept across the
   cut) is described from `qmmm_mm_terms` and has no derivation.
 - Link atoms are an approximation with known artifacts. Cut only nonpolar
   single bonds (C–C, never a C=O, an amide C–N, or anything conjugated or
@@ -471,6 +471,6 @@ charge-bookkeeping assertions and scheme-swap controls.
   but not the selection, so it cannot change which atoms are quantum.
 - The CLI `[qmmm]` section reads a PQR only. Smeared charges, the MM force
   field and MM relaxation are Python and Rust only.
-- Combining a boundary scheme with a polarizable site (section 23.3) has no
+- Combining a boundary scheme with a polarizable site (section @sec:polarizable-embedding) has no
   finite-difference cross-check yet (`crates/ferric-python/ferric.pyi`,
   `run_qmmm`).

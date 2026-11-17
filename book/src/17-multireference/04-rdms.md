@@ -1,6 +1,6 @@
-# 17.4 Reduced density matrices
+# Reduced density matrices {#rdms}
 
-<!-- section: 17.4; status: ready; registry: casci;
+<!-- status: ready; registry: casci;
      theory: crates/ferric-ci/theory.md#"Reduced density matrices (`src/rdm.rs`)", "NEVPT RDMs (`src/rdm3.rs`)" -->
 
 The CI vector has $N_\text{det}$ coefficients, but $H$ has only one- and
@@ -8,7 +8,7 @@ two-electron terms, so its expectation value needs only the one- and
 two-electron reduced density matrices $\gamma$ ($n^2$ numbers) and
 $\Gamma$ ($n^4$). Everything after the CI solve reads the wavefunction
 through them: the CAS-CI energy can be rebuilt from $\gamma$ and $\Gamma$,
-the CASSCF gradient (section 17.5) needs both, and SC-NEVPT2 (section 17.6)
+the CASSCF gradient (section @sec:casscf) needs both, and SC-NEVPT2 (section @sec:nevpt2)
 needs the 3-RDM, two contractions of the 4-RDM and the hole RDMs. ferric
 uses PySCF's index conventions throughout, so that PySCF formulas port
 without reindexing.
@@ -24,7 +24,7 @@ without reindexing.
 | Rust | `ferric-ci/src/rdm.rs::{spin_summed_rdms,rdm_energy,spin_summed_transition_rdms}`, `ferric-ci/src/rdm3.rs::{nevpt_rdms,hole_rdms,e_product_rdms}` |
 | Python | `run_casci(compute_rdms=True)` returns `dm1`, `dm2` |
 
-## 17.4.1 The 1- and 2-RDM
+## The 1- and 2-RDM {#rdms-1-2-rdm}
 
 ### Definitions and the energy
 
@@ -39,14 +39,14 @@ $$
               = \langle C|E_{pq}E_{rs}|C\rangle - \delta_{qr}\gamma_{ps}.
 $$
 
-The second form of $\Gamma$ is the operator identity of section 17.3.1,
+The second form of $\Gamma$ is the operator identity of section @sec:direct-sigma-davidson-split,
 $E^\sigma_{pq}E^\tau_{rs} = \delta_{qr}\delta_{\sigma\tau}E^\sigma_{ps} + a^\dagger_{p\sigma}a^\dagger_{r\tau}a_{s\tau}a_{q\sigma}$,
 summed over $\sigma\tau$ and taken as an expectation value. In the code,
 `dm1[p,q]` $=\gamma_{pq}$ and `dm2[p,q,r,s]` $=\Gamma_{pqrs}$.
 
 The index order of $\Gamma$ follows the integral: $(p, q)$ belong to
 electron 1 and $(r, s)$ to electron 2, as in $(pq|rs)$. Take the
-expectation value of $H$ of section 17.1.2 term by term and the energy is
+expectation value of $H$ of section @sec:determinants-hamiltonian term by term and the energy is
 
 $$
 E = E_\text{core} + \sum_{pq} h_{pq}\gamma_{pq}
@@ -64,9 +64,9 @@ eigenvalues of $\gamma$ lie in $[0, 2]$.
 **One doubly occupied orbital.** $\gamma_{00} = 2$. In $\Gamma_{0000}$ the
 terms with $\sigma = \tau$ try to annihilate the same spin orbital twice and
 vanish; the two with $\sigma \ne \tau$ give 1 each, so $\Gamma_{0000} = 2 =
-N(N-1)$. The energy is $2h_{00} + (00|00)$, as in section 17.3.1.
+N(N-1)$. The energy is $2h_{00} + (00|00)$, as in section @sec:direct-sigma-davidson-split.
 
-**The (2,2) wavefunction of section 17.2.** For
+**The (2,2) wavefunction of section @sec:slater-condon.** For
 $C = c_1|0\alpha\,0\beta\rangle + c_2|1\alpha\,1\beta\rangle$ the nonzero
 elements are
 
@@ -82,13 +82,13 @@ to orbital 0, so it connects the two configurations and is proportional to
 the product of their coefficients. The energy
 formula gives
 $2c_1^2h_{00} + 2c_2^2h_{11} + c_1^2(00|00) + c_2^2(11|11) + 2c_1c_2(01|01)$,
-the expectation value of the $2\times2$ matrix of section 17.2. The
+the expectation value of the $2\times2$ matrix of section @sec:slater-condon. The
 eigenvalues of $\gamma$, $2c_1^2$ and $2c_2^2$, are the natural orbital
 occupations. Their distance from 2 and 0 measures the static correlation,
 and at dissociation both approach 1. These elements and the energy were
 checked on Jordan–Wigner matrices in scratch.
 
-> **Verified equation 17.4** · the RDM energy and the identities
+> **Verified equation {#eq:ci-rdm-energy}** · the RDM energy and the identities
 >
 > On Jordan–Wigner matrices of a three-orbital active space and random CI
 > vectors in the (2,2) and (2,1) sectors, with $\gamma$ and $\Gamma$ taken
@@ -162,7 +162,7 @@ for $D$. The scratch is one $n^2\times$block $D$ per worker and
 `BATCH_CHUNKS` = 64 block results of $n^4+n^2$ doubles, charged to the
 CAS-CI memory plan when `compute_rdms` is set.
 
-## 17.4.2 The NEVPT RDMs
+## The NEVPT RDMs {#rdms-nevpt-rdms}
 
 ### What NEVPT2 needs
 
@@ -212,7 +212,7 @@ against dense Fock-space expectation values.
 ### Construction
 
 Everything is built from CI-sized vectors, as for the 2-RDM. Start from
-$X_{rs} = E_{rs}C$, the $D$ of the 2-RDM build. As in 17.4.1,
+$X_{rs} = E_{rs}C$, the $D$ of the 2-RDM build. As in @sec:rdms-1-2-rdm,
 $\langle C|E_{ab}E_{cd} = (E_{dc}E_{ba}C)^\mathsf{T} = (E_{dc}X_{ba})^\mathsf{T}$,
 so
 
@@ -266,10 +266,10 @@ and is summed away by a trace.
 
 These definitions were fixed against PySCF by exhaustive index permutation
 on dense Fock-space expectation values, and the Rust tests compare them with
-PySCF on ferric's CI vectors. Verified equation 17.7 in section 17.6 checks
+PySCF on ferric's CI vectors. Verified equation @eq:ci-nevpt2-rdms in section @sec:nevpt2 checks
 each input by two routes on a model CI vector.
 
-## 17.4.3 Checks
+## Checks {#rdms-checks}
 
 | What | Systems | Test |
 |---|---|---|
@@ -278,7 +278,7 @@ each input by two routes on a model CI vector.
 | `dm1`, `dm2` vs PySCF `make_rdm12` on its own ground state, rotated into ferric's orbitals | same | `crates/ferric-ci/tests/casci_rdms.rs` |
 | 3-RDM, $f^\text{ca}$, $f^\text{ac}$ and hole RDMs vs PySCF on the same CI vector; partial traces; single determinants | H2O CAS(4,4), N2 CAS(6,6) at 1.10 and 2.20 Å | `crates/ferric-ci/tests/casci_rdm3.rs` |
 
-## 17.4.4 Sources
+## Sources {#rdms-sources}
 
 | Source | What it gives |
 |---|---|

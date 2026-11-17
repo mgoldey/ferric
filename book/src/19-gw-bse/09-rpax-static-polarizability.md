@@ -1,6 +1,6 @@
-# 19.9 The statically screened TDHF polarizability
+# The statically screened TDHF polarizability {#rpax-static-polarizability}
 
-<!-- section: 19.9; status: ready; registry: tdhf-static-polarizability;
+<!-- status: ready; registry: tdhf-static-polarizability;
      theory: crates/ferric-gw/theory.md#"12. TDHF/RPAx polarizability" -->
 
 A static electric field pushes the electrons one way and the nuclei the
@@ -8,7 +8,7 @@ other. The induced dipole per unit field is the polarizability, and in
 linear response it comes from the same particle–hole matrices as the
 excitation energies: a field mixes the excited states into the ground state,
 each weighted by its transition dipole and its energy. This section takes
-the static screened interaction of section 19.8 and uses it in the full
+the static screened interaction of section @sec:bse-tda and uses it in the full
 response problem instead of the Tamm–Dancoff one. Both the excitation block
 $\mathbf A$ and the de-excitation block $\mathbf B$ then carry a screened
 exchange-type term. With $W$ replaced by $v$ at a Hartree–Fock reference the
@@ -34,15 +34,15 @@ oscillator strength distribution (DOSD) reference on water.
 | CLI | `method.kind = "tdhf-static-polarizability"`; `[rpa] xc` is required; `[gw] scissor`; example `examples/water-tdhf-static-alpha.toml` |
 | Python | `run_tdhf_static_polarizability(xc=, scissor=)` |
 
-## 19.9.1 The response matrices
+## The response matrices {#rpax-static-polarizability-response-matrices}
 
-**In spin orbitals.** The construction is the one of section 19.8, now with
+**In spin orbitals.** The construction is the one of section @sec:bse-tda, now with
 the de-excitation block. The Hartree term $(ia|jb)$ couples every spin pair,
 and the screened terms couple equal spins only:
 
 $$ A_{i_\sigma a_\sigma,j_\tau b_\tau} = \Delta_i^a\delta + (ia|jb) - \delta_{\sigma\tau}(ab|W|ij), \qquad B_{i_\sigma a_\sigma,j_\tau b_\tau} = (ia|jb) - \delta_{\sigma\tau}(ib|W|ja) . $$
 
-**Spin-adapt.** The spin rotation of section 19.8 adds the $\alpha\alpha$ and
+**Spin-adapt.** The spin rotation of section @sec:bse-tda adds the $\alpha\alpha$ and
 $\alpha\beta$ blocks for the singlet. In $\mathbf A$ and in $\mathbf B$ the
 Hartree term appears in both blocks, so the singlet carries $2(ia|jb)$ in
 each, and $4(ia|jb)$ in their sum. The singlet block is
@@ -80,7 +80,7 @@ The diagonal $\Delta_i^a$ is added to both rows after the loop. `scissor`
 adds a constant to every virtual energy before the assembly
 (`eps[p] += scissor`).
 
-> **Verified equation 19.16** · the response matrices are the spin adaptation of the spin-orbital RPAx matrices
+> **Verified equation {#eq:rpax-matrices}** · the response matrices are the spin adaptation of the spin-orbital RPAx matrices
 >
 > With the Hartree term $(ia|jb)$ between every spin pair and the screened
 > terms $(ab|W|ij)$ and $(ib|W|ja)$ between equal spins only, rotating the
@@ -100,7 +100,7 @@ adds a constant to every virtual energy before the assembly
 >
 > <!-- verified: id=rpax.matrices; script=scripts/gw_bse_rpax_sympy.py; claim=R1; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-gw/src/bse.rs::rpax_static_polarizability_with_screening; rust_test=ferric-gw/tests/validation_rpax_alpha.rs::rpax_alpha_h2o_aug_cc_pvdz_rhf_vs_numpy_and_cphf; registry=tdhf-static-polarizability -->
 
-## 19.9.2 The response
+## The response {#rpax-static-polarizability-response}
 
 **The equations.** Apply a perturbation $-\mathbf F\cdot\hat{\boldsymbol\mu}$ at
 imaginary frequency $\omega = iu$. The first-order amplitudes solve
@@ -174,7 +174,7 @@ number. Claim S3 is the scalar algebra of the reduction, and claim R2 solves
 the full $2N\times2N$ spin-orbital system at $u = 0$ and $u = 0.7$ and gets
 the code's number.
 
-> **Verified equation 19.17** · the response solve against the full spin-orbital response equation
+> **Verified equation {#eq:rpax-response}** · the response solve against the full spin-orbital response equation
 >
 > Solving $\begin{pmatrix}\mathbf A-iu&\mathbf B\\\mathbf B&\mathbf A+iu\end{pmatrix}\binom XY = \binom{\mu}{\mu}$
 > in the full spin-orbital space, with $\alpha = \mu\cdot(X+Y)$, gives the
@@ -200,7 +200,7 @@ $h = h_0 - F\,r$ and $F[D] = h + J - \tfrac12K$, differentiated by a central
 finite field. The two agree to the finite-difference error (a relative
 $10^{-6}$ bar in the script).
 
-> **Verified equation 19.18** · the bare-exchange limit is the coupled-perturbed HF polarizability
+> **Verified equation {#eq:rpax-cphf-limit}** · the bare-exchange limit is the coupled-perturbed HF polarizability
 >
 > With $W\to v$ at an HF reference, the static $\alpha$ equals the central
 > finite-field derivative of the dipole of a self-consistent RHF in the same
@@ -219,15 +219,15 @@ $10^{-6}$ bar in the script).
 > <!-- verified: id=rpax.cphf-limit; script=scripts/gw_bse_rpax_sympy.py; claim=R3; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-gw/src/bse.rs::rpax_static_polarizability_with_screening; rust_test=ferric-gw/tests/validation_rpax_alpha.rs::rpax_alpha_nh3_aug_cc_pvdz_rhf_vs_numpy_and_cphf; registry=tdhf-static-polarizability -->
 
 A negative $\alpha$ diagonal is refused
-(`ferric-gw/src/bse.rs::check_alpha_diagonal_positive`, section 19.9.4).
+(`ferric-gw/src/bse.rs::check_alpha_diagonal_positive`, section @sec:rpax-static-polarizability-options-limits).
 
-## 19.9.3 The algorithm
+## The algorithm {#rpax-static-polarizability-algorithm}
 
 | Step | Quantity | Cost | Function |
 |---|---|---|---|
 | 1 | KS reference; `scissor` added to every virtual energy | | the caller; `eps[p] += scissor` |
-| 2 | PDEP-RPA on the same reference (skipped for `RpaxScreening::Bare`) | chapter 18 | `run_pdep_rpa` |
-| 3 | $B$, redressed modes, $B^\xi$ | section 19.2 | `build_full_b`, `project_b_into_pdep` |
+| 2 | PDEP-RPA on the same reference (skipped for `RpaxScreening::Bare`) | chapter @sec:rpa | `run_pdep_rpa` |
+| 3 | $B$, redressed modes, $B^\xi$ | section @sec:screened-interaction | `build_full_b`, `project_b_into_pdep` |
 | 4 | dense $\mathbf A+\mathbf B$ and $\mathbf A-\mathbf B$, $n = n_on_v$ | $n^2$ entries | `rpax_static_polarizability_with_screening` |
 | 5 | $\mu$ from the AO dipole, one $n\times n$ solve per axis | $n^3$ | the same function |
 | 6 | refuse a non-positive $\alpha$ diagonal | $O(1)$ | `check_alpha_diagonal_positive` |
@@ -236,7 +236,7 @@ Three $n\times n$ buffers are live at the peak (`apb`, `amb` and the product).
 The matrices are a hard pool charge, and a pre-flight refuses a system that
 does not fit.
 
-## 19.9.4 Options and limits
+## Options and limits {#rpax-static-polarizability-options-limits}
 
 | Option | Effect |
 |---|---|
@@ -258,9 +258,9 @@ scissor, or a diagonal from G0W0 energies, removes it.
 **Known limits (2026-11-15).** Static $\alpha$ only. The dynamic drivers
 `run_bse_c6` and `run_bse_c6_ks` are deliberately library-only: $C_6$ from this
 kernel stays about 63% low regardless of the HOMO–LUMO gap, worse than the
-PDEP-RPA route of section 21.1. Closed shell only. The grade is Smoke.
+PDEP-RPA route of section @sec:polarizabilities-from-dielectric-modes. Closed shell only. The grade is Smoke.
 
-## 19.9.5 Numerical anchors
+## Numerical anchors {#rpax-static-polarizability-numerical-anchors}
 
 From `site/src/reference/validation.md` (the RPAx row of the anchors table and
 the `tdhf-static-polarizability` row of the capability table):
@@ -274,7 +274,7 @@ the `tdhf-static-polarizability` row of the capability table):
 
 Further tests are in `crates/ferric-gw/tests/rpax_*.rs`.
 
-## 19.9.6 Sources
+## Sources {#rpax-static-polarizability-sources}
 
 | Source | What it gives |
 |---|---|

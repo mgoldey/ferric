@@ -1,6 +1,6 @@
-# 1.2 Wick contractions as the proof scripts run them
+# Wick contractions as the proof scripts run them {#wick}
 
-<!-- section: 1.2; status: edit; registry: ;
+<!-- status: edit; registry: ;
      theory: -->
 
 Deriving a correlation energy by hand means expanding products of operator
@@ -9,7 +9,7 @@ tracking a sign for each pairing. The result is a handful of tensor
 contractions with prefactors such as $\tfrac14$, $\tfrac18$ or 1. A wrong
 prefactor still gives a finite, plausible energy, so nothing downstream
 flags it. The MP3 ring term in this code base is an example: a single
-ordering of its vertex gives $\tfrac14$ of the right value (section 1.2.4).
+ordering of its vertex gives $\tfrac14$ of the right value (section @sec:wick-three-prefactors-recipe-settled).
 
 Many derivation proofs in `scripts/` therefore hand the bookkeeping to
 sympy. They build the operators of a method with
@@ -30,7 +30,7 @@ prefactors it has settled.
 | Scripts | `scripts/oomp2_mp3_identities_sympy.py` (parts A and B), `scripts/ump3_spin_blocks_sympy.py` |
 | Code the results are checked against | `ferric-mp2/src/mp3.rs::mp3_energy`, `ferric-mp2/src/u_mp3.rs::u_mp3` |
 
-## 1.2.1 Wick's theorem for an expectation value
+## Wick's theorem for an expectation value {#wick-wick-s-theorem-expectation}
 
 For a product of creation and annihilation operators, Wick's theorem writes
 the product as a sum of normal-ordered terms with every possible set of
@@ -45,20 +45,20 @@ Every other order gives zero: you cannot remove an electron from an empty
 orbital, or add one to a full orbital.
 
 A vacuum expectation value keeps only the fully contracted terms, because
-every normal-ordered remainder has zero expectation value (section 1.1.3).
+every normal-ordered remainder has zero expectation value (section @sec:hamiltonian-reference-determinant-normal-ordering).
 Each contraction sets two orbital labels equal and removes one sum. A sign
 comes from the number of operator crossings: draw a line between each
 contracted pair, and the term carries $(-1)$ for every crossing of two
 lines.
 
 You have already seen the theorem at work. The two expectation values that
-gave $E_{\mathrm{ref}}$ in (1.4) are the full contractions of
+gave $E_{\mathrm{ref}}$ in (@eq:so-ref-energy) are the full contractions of
 $a^\dagger_p a_q$ and of $a^\dagger_p a^\dagger_q a_s a_r$. In the second,
 pairing $p$ with $r$ and $q$ with $s$ draws two nested lines, which do not
 cross ($+$), and pairing $p$ with $s$ and $q$ with $r$ draws two lines that
 cross ($-$).
 
-## 1.2.2 The recipe
+## The recipe {#wick-recipe}
 
 | Step | What the script does | Why |
 |---|---|---|
@@ -98,7 +98,7 @@ remove the summed Kronecker deltas, then `substitute_dummies`.
 `AntiSymmetricTensor` is sympy's tensor that changes sign under a swap of
 its two upper or two lower indices, the symmetry of
 $\langle pq\|rs\rangle$ and $t^{ab}_{ij}$. `NO(...)` marks a normal-ordered
-string, so contractions inside the vertex are excluded, as in (1.6). The
+string, so contractions inside the vertex are excluded, as in (@eq:so-normal-order-split). The
 bra is $\hat T_2^\dagger$: the same tensor with the operator string
 reversed and daggered.
 
@@ -110,16 +110,16 @@ uses only the Jordan–Wigner matrices of the creators and annihilators and
 the textbook perturbation formulas, so an error in steps 1 to 3 cannot
 repeat itself there.
 
-## 1.2.3 The second-order energy
+## The second-order energy {#wick-second-order-energy}
 
 The first-order doubles amplitudes of canonical Hartree–Fock orbitals are
 
-$$ t_{ij}^{ab} = -\,\frac{\langle ij\|ab\rangle}{\Delta_{ij}^{ab}}, \qquad \hat T_2 = \frac14\sum_{ijab} t_{ij}^{ab}\, a^\dagger_a a^\dagger_b a_j a_i , \tag{1.7} $$
+$$ t_{ij}^{ab} = -\,\frac{\langle ij\|ab\rangle}{\Delta_{ij}^{ab}}, \qquad \hat T_2 = \frac14\sum_{ijab} t_{ij}^{ab}\, a^\dagger_a a^\dagger_b a_j a_i , \label{eq:wick-1} $$
 
 and the second-order energy is the contraction of $\hat V_{\mathrm N}$ with
 $\hat T_2$:
 
-$$ E^{(2)} = \langle 0|\hat V_{\mathrm N}\hat T_2|0\rangle = \frac14\sum_{ijab}\langle ij\|ab\rangle\,t_{ij}^{ab} = -\frac14\sum_{ijab}\frac{|\langle ij\|ab\rangle|^2}{\Delta_{ij}^{ab}} . \tag{1.8} $$
+$$ E^{(2)} = \langle 0|\hat V_{\mathrm N}\hat T_2|0\rangle = \frac14\sum_{ijab}\langle ij\|ab\rangle\,t_{ij}^{ab} = -\frac14\sum_{ijab}\frac{|\langle ij\|ab\rangle|^2}{\Delta_{ij}^{ab}} . \label{eq:so-e2-wick} $$
 
 Physically, $\hat T_2$ lifts two electrons from $i, j$ into $a, b$, and
 $\hat V_{\mathrm N}$ drops them back. The amplitude is how much of that
@@ -138,7 +138,7 @@ four full contractions. In each, a swap of two labels relative to the first
 pairing costs one crossing sign and one antisymmetry sign of a tensor, and
 the two cancel. All four equal
 $\tfrac14\cdot\tfrac14\sum\langle ij\|ab\rangle t^{ab}_{ij}$, and together
-they give the $\tfrac14$ of (1.8). `wicks` returns exactly this one term.
+they give the $\tfrac14$ of (@eq:so-e2-wick). `wicks` returns exactly this one term.
 
 Check one pair. With one occupied pair and one virtual pair the sum
 over $ijab$ has four terms, $(ij,ab)$, $(ji,ab)$, $(ij,ba)$ and $(ji,ba)$.
@@ -147,9 +147,9 @@ $E^{(2)} = -|\langle ij\|ab\rangle|^2/\Delta$: second-order perturbation
 theory for two levels coupled by $\langle ij\|ab\rangle$ and separated by
 $\Delta$.
 
-### Why the amplitudes are (1.7)
+### Why the amplitudes are (@eq:wick-1)
 
-The scripts do not assume (1.7). They build the Hylleraas functional, also
+The scripts do not assume (@eq:wick-1). They build the Hylleraas functional, also
 by Wick contraction,
 
 $$ J(t) = \langle 0|\hat T_2^\dagger\hat V_{\mathrm N}|0\rangle + \langle 0|\hat V_{\mathrm N}\hat T_2|0\rangle + \langle 0|\hat T_2^\dagger\hat F_{\mathrm N}\hat T_2|0\rangle , $$
@@ -159,7 +159,7 @@ canonical orbitals the three terms evaluate to
 
 $$ J(t) = \frac12\sum_{ijab}\langle ij\|ab\rangle\,t_{ij}^{ab} + \frac14\sum_{ijab}\Delta_{ij}^{ab}\,\big(t_{ij}^{ab}\big)^2 . $$
 
-The first term is the two equal $\hat V_{\mathrm N}$ contractions of (1.8)
+The first term is the two equal $\hat V_{\mathrm N}$ contractions of (@eq:so-e2-wick)
 added together. The second is the Fock operator measuring the excitation
 energy of each doubly excited determinant. Each unique amplitude
 ($i<j$, $a<b$) appears four times in each sum, so
@@ -168,8 +168,8 @@ $$ \frac{\partial J}{\partial t_{ij}^{ab}} = 2\langle ij\|ab\rangle + 2\Delta_{i
 
 Substitute back:
 $J = \tfrac12\sum\langle ij\|ab\rangle t + \tfrac14\sum\Delta t^2 = -\tfrac12\sum|\langle ij\|ab\rangle|^2/\Delta + \tfrac14\sum|\langle ij\|ab\rangle|^2/\Delta$,
-which is $E^{(2)}$ of (1.8). The stationary point is a minimum, because
-$\Delta > 0$ makes the quadratic term positive. Chapter 13 uses the same
+which is $E^{(2)}$ of (@eq:so-e2-wick). The stationary point is a minimum, because
+$\Delta > 0$ makes the quadratic term positive. Chapter @sec:local-mp2 uses the same
 functional when the Fock matrix is not diagonal.
 
 ### Signs in the code
@@ -193,10 +193,10 @@ There is no leading minus anywhere, because the sign sits in `d`. A port
 that writes $\Delta$ with the textbook sign has to add the minus sign to
 both lines.
 
-> **Verified equation 1.8** · the second-order energy from Wick
+> **Verified equation @eq:so-e2-wick** · the second-order energy from Wick
 >
 > The Hylleraas functional built by Wick contraction is stationary at the
-> amplitudes of (1.7), and its value there is $\tfrac14\sum\langle ij\|ab\rangle t$. An
+> amplitudes of (@eq:wick-1), and its value there is $\tfrac14\sum\langle ij\|ab\rangle t$. An
 > independent Rayleigh–Schrödinger calculation in the determinant space gives
 > the same second-order energy.
 >
@@ -212,10 +212,10 @@ both lines.
 The script asserts stationarity and the value at the stationary point.
 It does not assert the explicit canonical form of $J(t)$ written above.
 
-The closed-shell form of (1.8), the one RI-MP2 evaluates, follows in
-section 1.3.
+The closed-shell form of (@eq:so-e2-wick), the one RI-MP2 evaluates, follows in
+section @sec:spin-adaptation.
 
-## 1.2.4 Three prefactors the recipe settled
+## Three prefactors the recipe settled {#wick-three-prefactors-recipe-settled}
 
 The third-order energy $E^{(3)} = \langle \hat T_2^\dagger \hat V_{\mathrm N}\hat T_2\rangle$
 has three connected parts. In each, $\hat T_2$ excites a pair,
@@ -237,7 +237,7 @@ so the vertex is $4\cdot\tfrac14 = 1$. A derivation that keeps a single
 ordering gets $\tfrac14$ of the right value. The script keeps that variant
 as a negative control and asserts that it differs.
 
-The ladders count the same way as (1.8). The bra, the vertex and the ket
+The ladders count the same way as (@eq:so-e2-wick). The bra, the vertex and the ket
 each carry $\tfrac14$, so $\tfrac1{64}$ in all. For the particle–particle
 ladder, the two holes of $\hat T_2$ pair with the two holes of
 $\hat T_2^\dagger$ in 2 ways, its two particles pair with the vertex
@@ -267,7 +267,7 @@ costs $O(n_o^3 n_v^3)$. `t_iakc_t` is the amplitude tensor
 with its middle two axes permuted, so that the ring's final contraction is
 a plain elementwise sum.
 
-> **Verified equation 1.9** · MP3 prefactors
+> **Verified equation {#eq:so-mp3-prefactors}** · MP3 prefactors
 >
 > | | |
 > |---|---|
@@ -281,7 +281,7 @@ a plain elementwise sum.
 The unrestricted code works in spin blocks, not in spin orbitals. Its
 equivalence to the spin-orbital form is the subject of
 `scripts/ump3_spin_blocks_sympy.py`, which treats every spatial integral as an
-independent symbol, and chapter 10.9 covers it.
+independent symbol, and chapter @sec:mp3 covers it.
 
 ## Known limits
 
@@ -289,7 +289,7 @@ independent symbol, and chapter 10.9 covers it.
   Rust loop contracts the expression. That is the job of the Rust tests and
   the numerical anchors named in each chapter.
 - Wick's theorem as used here assumes one reference determinant with
-  integer occupations. Multireference methods (chapter 17) use density
+  integer occupations. Multireference methods (chapter @sec:multireference) use density
   matrices instead.
 
 ## Sources

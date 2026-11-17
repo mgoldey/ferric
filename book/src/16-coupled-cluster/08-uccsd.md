@@ -1,21 +1,21 @@
-# 16.8 Unrestricted CCSD and CCSD(T)
+# Unrestricted CCSD and CCSD(T) {#uccsd}
 
-<!-- section: 16.8; status: ready; registry: u-ccsd, u-ccsd-t;
+<!-- status: ready; registry: u-ccsd, u-ccsd-t;
      theory: crates/ferric-cc/theory.md#"Unrestricted CCSD and CCSD(T)" -->
 
 In an open-shell molecule the α and β electrons feel different exchange
 fields, and a UHF reference gives them different orbitals, so the
-closed-shell spin adaptation of sections 16.2 and 16.3 does not apply. Spin
+closed-shell spin adaptation of sections @sec:closed-shell-ccsd and @sec:triples does not apply. Spin
 is still conserved: a spin-orbital amplitude vanishes unless each
 electron keeps its spin. The spin-blocked solver keeps only the five nonzero
 amplitude blocks and the integral blocks they touch. The CLI kinds `ccsd`
 and `ccsd(t)`, and Python `run_ccsd` and `run_ccsd_t`, take this route for a
 molecule with multiplicity > 1.
 
-The spin-orbital solver of sections 16.1 and 16.3 is the cross-check. Fed
+The spin-orbital solver of sections @sec:ccd-ccsd-spin-orbital and @sec:triples is the cross-check. Fed
 the same UHF orbitals as one α-then-β spin-orbital space, it has no spin
-bookkeeping at all. The section derives the blocks (16.8.1), lays out the
-loop (16.8.2) and lists what is anchored (16.8.3).
+bookkeeping at all. The section derives the blocks (@sec:uccsd-equations), lays out the
+loop (@sec:uccsd-algorithm) and lists what is anchored (@sec:uccsd-numerical-anchors).
 
 | Symbol | Meaning | Code name |
 |---|---|---|
@@ -35,7 +35,7 @@ loop (16.8.2) and lists what is anchored (16.8.3).
 | CLI | `method.kind = "ccsd"` or `"ccsd(t)"` with `multiplicity > 1`, `task = "energy"` |
 | Python | `run_ccsd`, `run_ccsd_t` (open-shell molecule) |
 
-## 16.8.1 The equations
+## The equations {#uccsd-equations}
 
 **The amplitude blocks.** With lower-case indices α and upper-case β, the
 nonzero amplitudes are
@@ -71,7 +71,7 @@ three `vvvv` blocks dense. The Fock matrix is taken as diagonal (canonical
 UHF orbital energies), as on the restricted route.
 
 **Amplitude equations.** The residuals are the spin-orbital CCSD residuals
-of section 16.1 with every index restricted to the spin-allowed blocks.
+of section @sec:ccd-ccsd-spin-orbital with every index restricted to the spin-allowed blocks.
 `update_amps` evaluates them in the factorization of PySCF
 `uccsd.update_amps` (with $f_{ia}=0$), line for line:
 
@@ -124,7 +124,7 @@ already counts both $(i\alpha,J\beta)$ and $(J\beta,i\alpha)$ orderings.
   block as $(ib|ja)$ without a transpose.
 - `ov_ov` is the mixed block $(ia|JB)$, $\sum_P B^P_{ia,\alpha}B^P_{JB,\beta}$.
 
-> **Verified equation 16.14** · the CCSD energy split
+> **Verified equation {#eq:cc-u-energy-split}** · the CCSD energy split
 >
 > $E_{\alpha\alpha} + E_{\alpha\beta} + E_{\beta\beta}$, with the
 > $\alpha\beta$ term counting both spin orderings once, equals the dense
@@ -143,7 +143,7 @@ already counts both $(i\alpha,J\beta)$ and $(J\beta,i\alpha)$ orderings.
 >
 > <!-- verified: id=cc.u.energy-split; script=scripts/cc_uccsd_spin_blocks_sympy.py; claim=3; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-cc/src/u_ccsd.rs::{energy,update_amps,u_ccsd}; rust_test=ferric-cc/tests/uccsd_anchors.rs::closed_shell_through_uhf_matches_closed_shell; registry=u-ccsd -->
 
-**(T).** `u_ccsd_t` evaluates the spin-orbital formula of section 16.3.1 on
+**(T).** `u_ccsd_t` evaluates the spin-orbital formula of section @sec:triples-spin-orbital-t on
 the spin blocks. The summand $f = (W+V)W/\Delta$ is invariant under any
 permutation of $(i,j,k)$ and, separately, any permutation of $(a,b,c)$. It
 vanishes unless the occupied and virtual triples carry the same spins, and
@@ -189,7 +189,7 @@ and on the three virtual positions with their spins. The loop runs over
 canonical triples of all four classes in parallel and folds them serially in
 a fixed order. The class energies are reported.
 
-> **Verified equation 16.12** · the (T) class weights
+> **Verified equation {#eq:cc-ut-class-weights}** · the (T) class weights
 >
 > $w(n_\beta) = 3!\binom{3}{n_\beta}/36$ is $1/6, 1/2, 1/2, 1/6$. A
 > brute-force count of ordered spin-orbital triples equals the sum over
@@ -205,7 +205,7 @@ a fixed order. The class energies are reported.
 >
 > <!-- verified: id=cc.ut.class-weights; script=scripts/cc_uccsd_spin_blocks_sympy.py; claim=1; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-cc/src/u_ccsd_t.rs::{CLASS_WEIGHTS,u_ccsd_t}; rust_test=ferric-cc/tests/uccsd_anchors.rs::oh_spin_blocked_matches_spin_orbital; registry=u-ccsd-t -->
 
-> **Verified equation 16.13** · spin-blocked (T) per class
+> **Verified equation {#eq:cc-ut-classes}** · spin-blocked (T) per class
 >
 > On random spin-blocked amplitudes and per-spin RI factors with unequal α
 > and β spaces ($n_o = 4, 3$; $n_v = 3, 4$), the spin-blocked (T) of each
@@ -230,7 +230,7 @@ each spin, as `rimp2::active_occ` does for U-RI-MP2.
 
 - Closed-shell molecule, RHF orbitals given to both spins: $t_{ij}^{ab}$
   (`t2aa`) $= t_{iJ}^{aB} - t_{iJ}^{bA}$, the same-spin block of section
-  16.2. Then $E_{\alpha\alpha} = E_{\beta\beta}$, aaa $=$ bbb and
+  @sec:closed-shell-ccsd. Then $E_{\alpha\alpha} = E_{\beta\beta}$, aaa $=$ bbb and
   aab $=$ abb, and the CCSD energy, $t_{iJ}^{aB}$ and $E_{(T)}$ equal those
   of `ccsd_closed_shell` and `ccsd_t_closed_shell`.
 - On the same UHF orbitals, the spin-orbital solver of `ccsd.rs` and
@@ -253,7 +253,7 @@ DF-UCCSD and UCCSD(T). The two Rust solvers share the per-spin RI factors
 and orbital energies, so a fault in those inputs is caught only by the PySCF
 comparison.
 
-## 16.8.2 The algorithm
+## The algorithm {#uccsd-algorithm}
 
 | Step | Quantity | Cost | Function |
 |---|---|---|---|
@@ -269,7 +269,7 @@ The memory pre-flight (`u_ccsd_memory_plan`) sizes the dense `vvvv`
 blocks; there is no integral-direct ladder on this route. Frozen core drops
 the lowest `frozen_core` orbitals of each spin (`active_occ`).
 
-## 16.8.3 Numerical anchors
+## Numerical anchors {#uccsd-numerical-anchors}
 
 | Quantity | Systems | Error | Bar | Test |
 |---|---|---|---|---|
@@ -296,7 +296,7 @@ orbital energies. So giving the α virtual block the β orbital energies
 passes the spin-orbital comparison; only the PySCF test catches it
 ($2.3\times10^{-3}$ Ha).
 
-## 16.8.4 Sources
+## Sources {#uccsd-sources}
 
 | Source | What it gives |
 |---|---|
@@ -308,7 +308,7 @@ passes the spin-orbital comparison; only the PySCF test catches it
 **Known limits (2026-11-16).** UHF reference only: no ROHF-based CC. Energy
 only: there is no UCCSD nuclear gradient, so `optimize` and `frequencies`
 refuse an open-shell `ccsd` or `ccsd(t)`. The three `vvvv` blocks are held
-dense and the `[cc] ladder` choice of section 16.2 does not apply (the CLI
+dense and the `[cc] ladder` choice of section @sec:closed-shell-ccsd does not apply (the CLI
 warns; Python refuses a ladder other than `"auto"`). `ccd` and `eom-ccsd`
 have no open-shell route. The PySCF comparison is an ignored test and runs
 only on request.

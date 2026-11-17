@@ -1,6 +1,6 @@
-# 13.3 Pair natural orbitals and DLPNO-MP2
+# Pair natural orbitals and DLPNO-MP2 {#pno-dlpno}
 
-<!-- section: 13.3; status: ready; registry: local-mp2;
+<!-- status: ready; registry: local-mp2;
      theory: crates/ferric-mp2/theory.md#"12.5 DLPNO-MP2" -->
 
 A pair of occupied orbitals $(i,j)$ correlates by exciting into pairs of
@@ -15,11 +15,11 @@ The domain-based local pair natural orbital (DLPNO) idea truncates MP2 in
 two places. Pairs whose estimated correlation energy is small are dropped.
 Within each retained pair, the virtual space is compressed to its PNOs.
 ferric's version is a library path. It is separate from the
-amplitude-threshold method of sections 13.1 and 13.2, with a different
+amplitude-threshold method of sections @sec:amplitude-lmp2 and @sec:integral-direct, with a different
 truncation, and the two are not compared like for like.
 
-The section covers the pair screen (13.3.1), the PNOs (13.3.2), the energy
-in the PNO basis (13.3.3), the two entry points (13.3.4), and then the
+The section covers the pair screen (@sec:pno-dlpno-pair-screening), the PNOs (@sec:pno-dlpno-pair-natural-orbitals), the energy
+in the PNO basis (@sec:pno-dlpno-energy-pno-basis), the two entry points (@sec:pno-dlpno-algorithm-entry-points), and then the
 exactness contracts and the measured numbers.
 
 The derivation is `crates/ferric-mp2/theory.md` §12.5, read from
@@ -51,13 +51,13 @@ $T^{ij}_{ab} = G^{ij}_{ab}/(\epsilon_i+\epsilon_j-\epsilon_a-\epsilon_b)$ are
 exactly what PNOs are built from, so the pair density needs no earlier
 correlated calculation.
 
-## 13.3.1 Pair screening
+## Pair screening {#pno-dlpno-pair-screening}
 
 Which pairs can be dropped? The screen estimates each pair's energy and
 drops the small ones. The estimator is the MP2 pair energy itself, with
 $\Delta^{ab}_{ij}>0$ and the mirror weight $\mathrm{fac}$:
 
-$$ e_{ij} = -\,\mathrm{fac}\sum_{ab}\frac{(ia\vert jb)\,\big[\,2(ia\vert jb) - (ib\vert ja)\,\big]}{\Delta^{ab}_{ij}}, \qquad \sum_{i\le j}e_{ij} = E^{(2)} . \tag{13.6} $$
+$$ e_{ij} = -\,\mathrm{fac}\sum_{ab}\frac{(ia\vert jb)\,\big[\,2(ia\vert jb) - (ib\vert ja)\,\big]}{\Delta^{ab}_{ij}}, \qquad \sum_{i\le j}e_{ij} = E^{(2)} . \label{eq:dlpno-pair-weight} $$
 
 The sum rule follows from the symmetry of the full sum over ordered pairs:
 the $(j,i)$ term equals the $(i,j)$ term, so
@@ -79,12 +79,12 @@ Diagonal pairs are always retained: they carry the bulk of the
 correlation, and dropping one has nothing to do with distance. Because the
 criterion is an energy, the threshold means the same thing on water as on
 a protein. In canonical orbitals $e_{ij}$ is the pair's exact contribution
-to (13.6), so dropping pairs raises the energy by exactly the sum of their
+to (@eq:dlpno-pair-weight), so dropping pairs raises the energy by exactly the sum of their
 $\lvert e_{ij}\rvert$. That is at most the number of dropped pairs times
 the threshold. A distance cutoff in Bohr (`pair_cutoff`) is the
 alternative; when both are set, the energy criterion wins.
 
-> **Verified equation 13.6** · the unique-pair sum and its weight
+> **Verified equation @eq:dlpno-pair-weight** · the unique-pair sum and its weight
 >
 > $\sum_{ij}e_{ij} = \sum_ie_{ii} + 2\sum_{i<j}e_{ij}$, so the pair energies with
 > the mirror factor applied sum to the full correlation energy. The same holds for
@@ -93,7 +93,7 @@ alternative; when both are set, the energy criterion wins.
 > | | |
 > |---|---|
 > | Proof | `scripts/mp2_variant_identities.py`, claim 1 (unique-pair checks) |
-> | Negative control | an off-diagonal weight of 1 must differ (as for equation 10.6) |
+> | Negative control | an off-diagonal weight of 1 must differ (as for equation @eq:mp2-cs-unique-pairs) |
 > | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
 > | Code | `ferric-mp2/src/dlpno_mp2.rs::{pair_energy_in_pno_basis,estimate_pair_energies_from_b_ov}` |
 > | Code test | `off_diagonal_pairs_carry_the_mirror_weight_of_two` in `crates/ferric-mp2/src/dlpno_mp2.rs` |
@@ -113,15 +113,15 @@ the same as canonical RI-MP2. Screening reduces what is solved afterwards,
 not what the screen costs. With canonical occupieds the estimated energies
 of distant pairs are not small, because canonical orbitals spread over the
 whole molecule. On the alkane series the screen
-retains essentially every pair. The localized path of section 13.3.4 exists
+retains essentially every pair. The localized path of section @sec:pno-dlpno-algorithm-entry-points exists
 for that reason.
 
-## 13.3.2 Pair natural orbitals
+## Pair natural orbitals {#pno-dlpno-pair-natural-orbitals}
 
 For each retained pair, build a density from its first-order amplitudes and
 diagonalize it:
 
-$$ \mathcal D^{ij} = T^{ij}\,(T^{ij})^{\mathsf T} + (T^{ij})^{\mathsf T}T^{ij}, \qquad \mathcal D^{ij}\,q_k = n_k\,q_k, \qquad Q = [\,q_k : n_k \ge t_{\mathrm{cut,PNO}}\,] . \tag{13.7} $$
+$$ \mathcal D^{ij} = T^{ij}\,(T^{ij})^{\mathsf T} + (T^{ij})^{\mathsf T}T^{ij}, \qquad \mathcal D^{ij}\,q_k = n_k\,q_k, \qquad Q = [\,q_k : n_k \ge t_{\mathrm{cut,PNO}}\,] . \label{eq:dlpno-pair-density} $$
 
 Why both terms? The row index of $T^{ij}$ is the virtual of electron $i$
 and the column index that of electron $j$. $TT^{\mathsf T}$ measures how
@@ -153,7 +153,7 @@ as `PnoPair::discarded_weight`.
 Check the limit. At $t_{\mathrm{cut,PNO}} = 0$ every vector is kept, $Q$ is
 a square orthogonal matrix, and nothing is lost.
 
-> **Verified equation 13.7** · the pair density
+> **Verified equation @eq:dlpno-pair-density** · the pair density
 >
 > $\mathcal D^{ij}$ is symmetric and positive semidefinite, and its trace is
 > $2\lVert T\rVert_F^2$ (claim L4).
@@ -215,7 +215,7 @@ virtuals: one set per occupied orbital, from the diagonal pair density
 $\mathcal D^{ii}$. PNOs diagonalize $\mathcal D^{ij}$ for each retained
 pair, one virtual set per pair, which adapts to what each pair uses.
 
-## 13.3.3 The energy in the PNO basis
+## The energy in the PNO basis {#pno-dlpno-energy-pno-basis}
 
 The canonical denominator $\epsilon_a+\epsilon_b-\epsilon_i-\epsilon_j$
 assumes the virtuals diagonalize the Fock matrix. PNOs do not. The kernel
@@ -224,7 +224,7 @@ blocks into the PNOs, build the virtual Fock matrix in the pair's PNO basis
 and diagonalize it, and carry the integrals into that eigenbasis:
 
 $$ f^{\mathrm{PNO}} = Q^{\mathsf T}\mathrm{diag}(\epsilon_v)\,Q = U\,\mathrm{diag}(\tilde\epsilon)\,U^{\mathsf T}, \qquad
-\tilde G = U^{\mathsf T}Q^{\mathsf T}\,G^{ij}\,QU, \qquad \tilde G^{\mathrm x} = U^{\mathsf T}Q^{\mathsf T}\,(G^{ij})^{\mathsf T}\,QU , \tag{13.8} $$
+\tilde G = U^{\mathsf T}Q^{\mathsf T}\,G^{ij}\,QU, \qquad \tilde G^{\mathrm x} = U^{\mathsf T}Q^{\mathsf T}\,(G^{ij})^{\mathsf T}\,QU , \label{eq:dlpno-pno-energy} $$
 
 $$ E^{ij}_{\mathrm{OS}} = -\,\mathrm{fac}\sum_{ab}\frac{\tilde G_{ab}^{\,2}}{\tilde\Delta_{ab}}, \qquad
 E^{ij}_{\mathrm{SS}} = -\,\mathrm{fac}\sum_{ab}\frac{\tilde G_{ab}\,\big(\tilde G_{ab}-\tilde G^{\mathrm x}_{ab}\big)}{\tilde\Delta_{ab}}, \qquad
@@ -233,7 +233,7 @@ E^{ij}_{\mathrm{SS}} = -\,\mathrm{fac}\sum_{ab}\frac{\tilde G_{ab}\,\big(\tilde 
 $\tilde G^{\mathrm x}$ is the rotated $(ib\vert ja)$, which is the transpose
 of the block $(ia\vert jb)$. In the new basis the virtual Fock matrix is
 diagonal again, so the pair energy has the canonical form of equation
-(10.2), with $\tilde\epsilon$ in place of the virtual orbital energies.
+(@eq:mp2-cs-spin-adaptation), with $\tilde\epsilon$ in place of the virtual orbital energies.
 
 Check the limit. With every PNO kept, $Q$ is square and orthogonal, and
 $QU$ is orthogonal too. Then $f^{\mathrm{PNO}}$ has the same eigenvalues as
@@ -246,7 +246,7 @@ square orthogonal rotation, and a rotated diagonal matrix is not diagonal,
 so the diagonal alone gives wrong denominators even when nothing is
 truncated.
 
-> **Verified equation 13.8** · the full-rank PNO energy is the canonical energy
+> **Verified equation @eq:dlpno-pno-energy** · the full-rank PNO energy is the canonical energy
 >
 > With all $n_v$ PNOs kept and the semicanonicalization of the code, the pair
 > energy equals the canonical pair energy (claim L3). With only the diagonal of
@@ -285,7 +285,7 @@ for a in 0..npno {
 }
 ```
 
-As in the RI-MP2 pair kernel of section 10.1, `d` is $-\tilde\Delta$ and
+As in the RI-MP2 pair kernel of section @sec:closed-shell-ri-mp2, `d` is $-\tilde\Delta$ and
 the sums carry no leading minus; the two signs cancel.
 
 This is the energy of the truncated problem evaluated with the
@@ -293,14 +293,14 @@ PNO-projected integrals. It is not a Hylleraas functional. There is no
 iteration and no amplitude solve inside a pair, because the canonical
 occupied Fock matrix is diagonal.
 
-## 13.3.4 The algorithm and its two entry points
+## The algorithm and its two entry points {#pno-dlpno-algorithm-entry-points}
 
 | Step | Quantity | Function |
 |---|---|---|
 | 1 | $e_{ij}$ for every pair from $B$, one $n_v\times n_v$ block at a time | `ferric-mp2/src/dlpno_mp2.rs::estimate_pair_energies_from_b_ov` |
 | 2 | domains: keep pairs with $\lvert e_{ij}\rvert\ge t_{\mathrm{cut,pairs}}$; diagonals always | `ferric-mp2/src/pair_energy_screen.rs::build_pair_domains_by_energy` |
 | 3 | per retained pair: $T$, then the PNOs, built and dropped inside the loop | `ferric-mp2/src/local_pno.rs::pno_for_pair` |
-| 4 | per retained pair: $G^{ij} = B_i^{\mathsf T}B_j$, the energy (13.8). The same-spin partner $(ib\vert ja)$ is this block's transpose, so no second contraction | `ferric-mp2/src/dlpno_mp2.rs::pair_energy_in_pno_basis` |
+| 4 | per retained pair: $G^{ij} = B_i^{\mathsf T}B_j$, the energy (@eq:dlpno-pno-energy). The same-spin partner $(ib\vert ja)$ is this block's transpose, so no second contraction | `ferric-mp2/src/dlpno_mp2.rs::pair_energy_in_pno_basis` |
 | 5 | sum, and report pair retention, virtual retention and the largest discarded weight | `ferric-mp2/src/dlpno_mp2.rs::DlpnoDiagnostics` |
 
 Build on `dlpno_mp2_from_b_ov`. The older `dlpno_mp2_spin_components`
@@ -324,12 +324,12 @@ would give a wrong same-spin energy with no error, so the restriction is
 stated here and not left implicit.
 
 **Localized occupieds.** `ferric-mp2/src/dlpno_localized.rs::dlpno_mp2_localized_from_b_ov`
-addresses the weak canonical screen of 13.3.1:
+addresses the weak canonical screen of @sec:pno-dlpno-pair-screening:
 
 1. Rotate the occupieds to Boys-localized orbitals. This rotates $B$
    exactly and makes the occupied Fock block non-diagonal.
 2. Screen pairs with the diagonal-$f$ pair energy.
-3. Solve the coupled amplitude equations of equation 13.1, with canonical
+3. Solve the coupled amplitude equations of equation @eq:amplitude-lmp2-1, with canonical
    virtuals, by Jacobi iteration over the retained pairs only.
 
 This path screens pairs only. It has no PNO or PAO truncation, because the
@@ -339,7 +339,7 @@ $O(n_o^2n_v^2N_{\mathrm{aux}})$. An opt-in add-back
 (`add_back_truncation`) adds the screened pairs' estimated energy to the
 result. The estimate is not a bound, so it can over-correct.
 
-## 13.3.5 Exactness and determinism
+## Exactness and determinism {#pno-dlpno-exactness-determinism}
 
 - With `DlpnoConfig::exact()` (`t_cut_pairs = 0`, `t_cut_pno = 0`, no
   distance cutoff), the pair-driven path reproduces the dense-$g$ path bit
@@ -354,7 +354,7 @@ result. The estimate is not a bound, so it can over-correct.
   cutoff off. The pair screen is a measured small effect at that
   threshold, and virtual truncation has a measured dead zone and cliff.
 
-## 13.3.6 Numerical anchors
+## Numerical anchors {#pno-dlpno-numerical-anchors}
 
 | Check | Reference | Agreement | Test |
 |---|---|---|---|
@@ -386,5 +386,5 @@ unmeasured. The module documentation of `dlpno_mp2.rs` states the same.
 | Source | Used for |
 |---|---|
 | `crates/ferric-mp2/src/dlpno_mp2.rs`, `local_pno.rs`, `pair_energy_screen.rs`, `dlpno_localized.rs` module documentation and kernels | every definition, the exactness contracts and the scope |
-| `scripts/mp2_variant_identities.py`, claim 1; `scripts/local_mp2_fit_pno_sympy.py`, claims L3 and L4 | verified equations 13.6 to 13.8 |
+| `scripts/mp2_variant_identities.py`, claim 1; `scripts/local_mp2_fit_pno_sympy.py`, claims L3 and L4 | verified equations @eq:dlpno-pair-weight to @eq:dlpno-pno-energy |
 | `site/src/reference/validation.md` | the anchor rows and the known limits |

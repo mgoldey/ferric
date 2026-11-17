@@ -1,6 +1,6 @@
-# 7.3 Direct and incremental J/K builds
+# Direct and incremental J/K builds {#direct-and-incremental}
 
-<!-- section: 7.3; status: ready; registry: rhf, uhf, rohf;
+<!-- status: ready; registry: rhf, uhf, rohf;
      theory: crates/ferric-scf/theory.md#"Direct and incremental J/K builds" -->
 
 $J$ and $K$ need the four-centre integrals $(\mu\nu|\lambda\sigma)$, about
@@ -15,8 +15,8 @@ the change of the density lets the screen drop most quartets; that is the
 incremental build.
 
 This section states the contraction, its 8-fold symmetry and the screen
-(7.3.1, 7.3.2), when the incremental build runs and what it costs in
-reproducibility (7.3.3, 7.3.4), and the anchors and options.
+(@sec:direct-and-incremental-equations, @sec:direct-and-incremental-algorithm), when the incremental build runs and what it costs in
+reproducibility (@sec:direct-and-incremental-incremental-build-runs, @sec:direct-and-incremental-reproducibility), and the anchors and options.
 
 | Symbol | Meaning | Code name |
 |---|---|---|
@@ -32,7 +32,7 @@ reproducibility (7.3.3, 7.3.4), and the anchors and options.
 | CLI | the default when `df_j_aux`, `df_k_aux` and `k_builder` are unset under `kind = "rhf"`, `"uhf"`, `"rohf"` |
 | Python | `run_rhf`, `run_uhf`, `run_rohf` with no `df_*_aux` |
 
-## 7.3.1 The equations
+## The equations {#direct-and-incremental-equations}
 
 ### Unique quartets
 
@@ -90,7 +90,7 @@ Take the largest value over each shell pair,
 $$ Q_{PQ} = \max_{a\in P,\,b\in Q}\sqrt{|(ab|ab)|}, $$
 
 so that every integral of a quartet is at most $Q_{s_1s_2}Q_{s_3s_4}$. The
-table $Q$ costs $O(N^2)$ diagonal integrals once per geometry (section 5.1).
+table $Q$ costs $O(N^2)$ diagonal integrals once per geometry (section @sec:schwarz).
 
 Each add above is an integral times a density element. Let $d_{\max}$ be the
 largest shell-block maximum $\max|D_{\mu\nu}|$ over the six pairings of the
@@ -113,7 +113,7 @@ the Schwarz product; `"csam"` is not a rigorous bound.
 
 $F = h + J - \tfrac12 c_xK$ ($c_x = 1$ for Hartree–Fock),
 $F^\sigma = h + J[D^\alpha + D^\beta] - c_xK[D^\sigma]$ for UHF, and
-$E = \tfrac12\operatorname{tr}[D(h+F)] + E_{nn}$ (section 7.1).
+$E = \tfrac12\operatorname{tr}[D(h+F)] + E_{nn}$ (section @sec:energy-functionals).
 
 ### Incremental builds
 
@@ -126,7 +126,7 @@ The closed-shell loop of `solve_rhf` keeps $J$ and $K$ (not $F$) in buffers
 and adds $J[\Delta D]$, $K[\Delta D]$ built by `DirectJK::build_incremental`.
 $F$ itself cannot be updated this way in a Kohn–Sham run, because the
 exchange–correlation potential it carries is not linear in $D$; $F$ is
-assembled from the buffers each iteration (section 7.1).
+assembled from the buffers each iteration (section @sec:energy-functionals).
 
 The screen is the same absolute test with $d_{\max}$ taken from $\Delta D$.
 As the SCF converges $\Delta D$ shrinks, $d_{\max}$ with it, and more
@@ -168,7 +168,7 @@ quarter of the memory budget and both $J$ and $K$ are four-centre. The
 incremental build is off with the store: a stored-integral build costs the
 same for $\Delta D$ as for $D$, so there is nothing to save.
 
-> **Verified equation 7.3** · incremental builds
+> **Verified equation {#eq:scf-incremental-jk}** · incremental builds
 >
 > $J[D_n] = J[D_{n-1}] + J[\Delta D_n]$ and the same for $K$; accumulating
 > increments with a full rebuild every 8 iterations reproduces $J[D]$ and
@@ -183,7 +183,7 @@ same for $\Delta D$ as for $D$, so there is nothing to save.
 >
 > <!-- verified: id=scf.incremental-jk; script=scripts/scf_jk_builders_sympy.py; claim=N9; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/direct_jk.rs::DirectJK; registry=rhf -->
 
-## 7.3.2 The algorithm
+## The algorithm {#direct-and-incremental-algorithm}
 
 | Step | Quantity | Function |
 |---|---|---|
@@ -258,7 +258,7 @@ if sym1234 {                              // δbk: (μν) ↔ (λσ)
 - Blocks of 16 or more integrals go through the blocked `digest_j` and
   `digest_k`, which apply the same images as matrix operations.
 
-## 7.3.3 When the incremental build runs
+## When the incremental build runs {#direct-and-incremental-incremental-build-runs}
 
 The incremental build is closed-shell, direct-only and conditional:
 
@@ -283,20 +283,20 @@ shell the same comment records the incremental build computing 0.73 to 0.86
 times the quartets of the full one on alkane chains at STO-3G and 6-31G, and
 no change on water and methane in cc-pVDZ.
 
-## 7.3.4 Reproducibility
+## Reproducibility {#direct-and-incremental-reproducibility}
 
 The incremental build changes the floating-point order of the sum relative to
 a full build: $J[D_{n-1}] + J[\Delta D_n]$ is not bitwise $J[D_n]$, and the
 screen drops a different set of quartets on $\Delta D$ than on $D$. The two
 agree to the screening threshold, and the rebuild every 8 iterations keeps the
 screened increments from accumulating without bound (the error expression in
-7.3.1 has at most eight screened builds in it).
+@sec:direct-and-incremental-equations has at most eight screened builds in it).
 
-## 7.3.5 Numerical anchors
+## Numerical anchors {#direct-and-incremental-numerical-anchors}
 
 The direct builder is the exact reference against which every other route in
 this chapter is measured. Its own anchors are the energy anchors of section
-7.1 (1.8e-12 Ha RHF, 4.0e-12 Ha UHF and ROHF against PySCF).
+@sec:energy-functionals (1.8e-12 Ha RHF, 4.0e-12 Ha UHF and ROHF against PySCF).
 
 <!-- figures: site/src/reference/validation.md "UHF and ROHF energies, stability-checked" -->
 
@@ -308,7 +308,7 @@ the in-core store became the default for small bases, `incremental_pays()`
 is false for water and methane in cc-pVDZ, so both tests compare the full
 build with itself. They need the store disabled to test what their names say.
 
-## 7.3.6 Options that change the equation
+## Options that change the equation {#direct-and-incremental-options-change-equation}
 
 | Option | Effect |
 |---|---|
@@ -322,6 +322,6 @@ build with itself. They need the store disabled to test what their names say.
 | Source | Used for |
 |---|---|
 | `crates/ferric-scf/theory.md`, "Direct and incremental J/K builds" | the equations |
-| `scripts/scf_jk_builders_sympy.py` | verified equation 7.3 |
+| `scripts/scf_jk_builders_sympy.py` | verified equation @eq:scf-incremental-jk |
 | `crates/ferric-scf/src/quartet_scatter.rs` | the loop, the screen, the scatter |
 | `crates/ferric-scf/src/direct_jk.rs` | the incremental gates and the open-shell measurement note |

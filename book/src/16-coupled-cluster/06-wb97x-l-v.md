@@ -1,12 +1,12 @@
-# 16.6 The ωB97X-L-V double hybrid
+# The ωB97X-L-V double hybrid {#wb97x-l-v}
 
-<!-- section: 16.6; status: ready; registry: double-hybrid;
+<!-- status: ready; registry: double-hybrid;
      theory: crates/ferric-cc/theory.md#"ωB97X-L-V correlation" -->
 
 A double hybrid adds a fraction of wavefunction correlation to a hybrid
 density functional, usually MP2, and inherits MP2's divergence as the
 HOMO–LUMO gap closes. ωB97X-L-V uses the short-range LinLCCD(hh)
-correlation of section 16.5 instead, whose hole–hole ladder keeps the
+correlation of section @sec:linlccd instead, whose hole–hole ladder keeps the
 effective gap open. Long-range correlation is left to the VV10 term of the
 density functional, so the wavefunction part sees only
 $\mathrm{erfc}(\omega r)/r$ (`DoubleHybridConfig::omega`). The functional is
@@ -15,7 +15,7 @@ first, and the correlation is computed once on its orbitals.
 
 $$E = E_{\rm KS}[\omega{\rm B97X\text{-}L}] + E_{c,{\rm VV10}}
 + \lambda\,E_{c,{\rm LinLCCD(hh)}}^{sr,\omega,\lambda} ,\qquad
-\lambda = 0.6,\ \omega = 0.1\ {\rm Bohr}^{-1}. \tag{16.9}$$
+\lambda = 0.6,\ \omega = 0.1\ {\rm Bohr}^{-1}. \label{eq:wb97xlv-lambda}$$
 
 This is eqn 27 of Ransford and Carter-Fenk, Phys. Chem. Chem. Phys. 28,
 14428 (2026).
@@ -33,7 +33,7 @@ This is eqn 27 of Ransford and Carter-Fenk, Phys. Chem. Chem. Phys. 28,
 | CLI | `method.kind = "wb97x-l-v"` (`examples/water-wb97xlv.toml`) |
 | Python | none |
 
-## 16.6.1 Where λ goes
+## Where λ goes {#wb97x-l-v-goes}
 
 **The amplitude equations.** Eqn 22 of the paper puts $\lambda$ on both the
 driver and the hole–hole ladder of the LinLCCD(hh) equations, and leaves the
@@ -41,7 +41,7 @@ Fock terms unscaled:
 
 $$ \Delta_{ij}^{ab}\,t_{ij}^{ab} = -\lambda\Big(\langle ij\|ab\rangle^{sr} + \tfrac12\sum_{kl}\langle kl\|ij\rangle^{sr}\,t_{kl}^{ab}\Big) . $$
 
-These are the LinLCCD(hh) equations of section 16.5 for the operator
+These are the LinLCCD(hh) equations of section @sec:linlccd for the operator
 $\lambda\,\mathrm{erfc}(\omega r)/r$. The added energy is
 
 $$ \lambda E_c^{sr,\omega,\lambda} = \tfrac14\sum_{ijab}\big(\lambda\langle ij\|ab\rangle^{sr}\big)\,t_{ij}^{ab} . $$
@@ -63,12 +63,12 @@ the composite operator $\lambda\,\mathrm{erfc}(\omega r)/r$:
     .then(|| Operator::composite(&[(cfg.lambda, OperatorKind::ErfcCoulomb, cfg.omega)]))
 ```
 
-Follow the scaling through the RI construction of section 6.1. The
+Follow the scaling through the RI construction of section @sec:factorization-and-metric. The
 three-centre integrals $(P|pq)$ and the metric $V_{PQ}$ are both integrals
 of the operator, so both scale by $\lambda$. The factor
 $B = V^{-1/2}(P|pq)$ then scales by $\lambda^{-1/2}\cdot\lambda = \sqrt\lambda$,
 and every four-index integral $\sum_P B^P_{pq}B^P_{rs}$ by $\lambda$. The
-LinLCCD(hh) solver of section 16.5, unchanged, therefore solves the eqn 22
+LinLCCD(hh) solver of section @sec:linlccd, unchanged, therefore solves the eqn 22
 amplitudes, and the energy it returns,
 $\tfrac14\sum(\lambda\langle ij\Vert ab\rangle^{sr})\,t$, is already
 $\lambda E_c^{sr,\omega,\lambda}$. `assemble` recovers $E_c^{sr,\omega,\lambda}$
@@ -77,7 +77,7 @@ $\lambda E_c^{sr,\omega,\lambda}$. `assemble` recovers $E_c^{sr,\omega,\lambda}$
 At $\lambda = 0$ the operator vanishes and its RI metric is singular, so no
 correlation is computed (`None` above).
 
-> **Verified equation 16.9** · λ placement and parameters
+> **Verified equation @eq:wb97xlv-lambda** · λ placement and parameters
 >
 > | | |
 > |---|---|
@@ -113,13 +113,13 @@ Claim P of `scripts/double_hybrid_sympy.py` proves that the Rust tables
 equal Table 2 and the constraints above, and that `wb97x_l_v_def` takes only
 `nspin`.
 
-## 16.6.2 The algorithm
+## The algorithm {#wb97x-l-v-algorithm}
 
 | Step | Quantity | Function |
 |---|---|---|
 | 1 | ωB97X-L KS SCF with VV10 (libxc ωB97X-V form, the paper's parameters), through the KS convergence ladder; an error if every rung fails | `run_wb97x_l_v` |
 | 2 | operator $\lambda\,{\rm erfc}(\omega r)/r$; $B^P_{pq}$ on the KS orbitals | `lambda_scaled_sr_operator` |
-| 3 | LinLCCD(hh) (section 16.5) under that operator | `solve_wb97x_l_v` (`u_solve_wb97x_l_v` for UKS / semicanonical ROKS) |
+| 3 | LinLCCD(hh) (section @sec:linlccd) under that operator | `solve_wb97x_l_v` (`u_solve_wb97x_l_v` for UKS / semicanonical ROKS) |
 | 4 | $E = E_{\rm KS} + \lambda E_c$, components kept separate | `assemble` |
 
 The SCF converges the KS half alone, with RI-J and RI-K on
@@ -139,7 +139,7 @@ override. An override therefore changes the correlation term on the
 published KS reference; it does not change the functional as a whole. λ
 must lie in $[0, 1]$ and ω must be positive.
 
-## 16.6.3 Numerical anchors
+## Numerical anchors {#wb97x-l-v-numerical-anchors}
 
 | Quantity | Systems | Error | Test |
 |---|---|---|---|
@@ -148,7 +148,7 @@ must lie in $[0, 1]$ and ω must be positive.
 | total on ferric's orbitals | same | $1.1\times10^{-7}$ Ha | `crates/ferric-cc/tests/validation_wb97xlv.rs` |
 | Be₂ bond energy vs the paper's Table 4 (2.3 kcal/mol) | Be₂ / def2-QZVPPD | 2.299 kcal/mol | `crates/ferric-cc/tests/wb97x_l_v_be2_bde.rs` |
 
-## 16.6.4 Sources
+## Sources {#wb97x-l-v-sources}
 
 | Source | What it gives |
 |---|---|

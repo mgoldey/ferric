@@ -1,6 +1,6 @@
-# 24.2 Fourier transform of lattice-summed Gaussian pairs
+# Fourier transform of lattice-summed Gaussian pairs {#pair-ft}
 
-<!-- section: 24.2; status: ready; registry: pbc-ewald-pairft-stress;
+<!-- status: ready; registry: pbc-ewald-pairft-stress;
      theory: crates/ferric-pbc/theory.md#"2. Fourier transform of lattice-summed Gaussian pairs" -->
 
 In a crystal, a basis function in the home cell overlaps every periodic copy
@@ -13,8 +13,8 @@ polynomial. The Coulomb tensor of the dense builder, the long-range nuclear
 attraction, the long-range part of the density fit, the $k$-point kernels and
 the strain derivative all read this one object.
 
-Section 24.2.1 derives the transform, 24.2.2 shows the kernel that evaluates
-it, and 24.2.3 lists the anchors.
+Section @sec:pair-ft-transform-closed-form derives the transform, @sec:pair-ft-algorithm shows the kernel that evaluates
+it, and @sec:pair-ft-numerical-anchors lists the anchors.
 
 | Symbol | Meaning | Code name |
 |---|---|---|
@@ -29,7 +29,7 @@ it, and 24.2.3 lists the anchors.
 | Plan and kernels | `crates/ferric-pbc/src/pair_ft/plan.rs` (`walk`, `site_terms`, `f_rows`) |
 | $k$-point residues | `crates/ferric-pbc/src/pair_ft/residues.rs` |
 
-## 24.2.1 The transform in closed form
+## The transform in closed form {#pair-ft-transform-closed-form}
 
 **The definition.** Sum the partner over all translations and transform:
 
@@ -45,7 +45,7 @@ so the code sums over half of the $\mathbf G$ sphere with weight 2. Swap the
 indices and shift $\mathbf r \to \mathbf r + \mathbf L$: the phase picks up
 $e^{-i\mathbf G\cdot\mathbf L}$, which is 1 for a reciprocal-lattice vector,
 so $P_{\nu\mu}(\mathbf G) = P_{\mu\nu}(\mathbf G)$ there. Off the lattice, at
-the $\mathbf G + q$ of a $k$-point mesh (section 24.6), the second symmetry
+the $\mathbf G + q$ of a $k$-point mesh (section @sec:kpoint-scf), the second symmetry
 does not hold.
 
 **One primitive pair.** Take primitives of exponent $\alpha$ at $\mathbf A$
@@ -110,7 +110,7 @@ $c_ac_b(\pi/p)^{3/2}e^{-\alpha\beta|\mathbf A - \mathbf B'|^2/p}$, the
 textbook s–s overlap. The test below compares every element of $P(0)$ with
 an independent libint2 lattice overlap.
 
-> **Verified equation 24.3** · the McMurchie–Davidson pair transform
+> **Verified equation {#eq:pbc-pairft-md-expansion}** · the McMurchie–Davidson pair transform
 >
 > The Gaussian product theorem holds as an exact exponent identity, and the
 > expansion $\prod_d\sum_tE_t^{i_dj_d}(-iG_d)^t$ for
@@ -127,7 +127,7 @@ an independent libint2 lattice overlap.
 >
 > <!-- verified: id=pbc.pairft.md-expansion; script=scripts/pbc_ewald_pairft_stress_sympy.py; claim=pairft-md; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-pbc/src/pair_ft.rs::pair_ft; rust_test=ferric-pbc/tests/pbc_stage0.rs::pair_ft_at_nonzero_g_matches_pyscf_ft_aopair; registry=pbc-ewald-pairft-stress -->
 
-## 24.2.2 The algorithm
+## The algorithm {#pair-ft-algorithm}
 
 | Step | Quantity | Cost |
 |---|---|---|
@@ -183,16 +183,16 @@ its loop over dimensions:
 
 At a $k$-point mesh the images are binned by residue $\mathbf L \bmod N$,
 and one residue-resolved transform per momentum-transfer class gives
-$P^{k'}(\mathbf G + q)$ for every $k'$ by a phase sum (section 24.6).
+$P^{k'}(\mathbf G + q)$ for every $k'$ by a phase sum (section @sec:kpoint-scf).
 
-## 24.2.3 Numerical anchors
+## Numerical anchors {#pair-ft-numerical-anchors}
 
 | Quantity | Reference | Bar | Test |
 |---|---|---|---|
 | $P_{\mu\nu}(0)$, every element | an independent libint2 lattice overlap | $10^{-10}$ | `crates/ferric-pbc/tests/pbc_stage0.rs` `pair_ft_at_g0_equals_independent_libint_lattice_overlap` |
 | $P_{\mu\nu}(\mathbf G)$ for s, p, pure d at lattice and off-lattice $\mathbf G$ | PySCF `ft_aopair` | $10^{-10}$; the test asserts the imaginary part is exercised | `pair_ft_at_nonzero_g_matches_pyscf_ft_aopair` |
 
-## 24.2.4 Sources
+## Sources {#pair-ft-sources}
 
 | Source | What it gives |
 |---|---|

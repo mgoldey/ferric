@@ -1,6 +1,6 @@
-# 7.6 Fock hooks
+# Fock hooks {#fock-hooks}
 
-<!-- section: 7.6; status: edit; registry: ;
+<!-- status: edit; registry: ;
      theory: crates/ferric-scf/theory.md#"Fock hooks and their nuclear gradient" -->
 
 A new one-body or density-functional term (an embedding potential, a
@@ -10,7 +10,7 @@ caller-supplied term to the energy functional without changing the solver.
 It is how Python prototypes a new term before it has a Rust implementation.
 
 This section derives what the hook must return and what its nuclear gradient
-needs (7.6.1), then where it enters the loop, what it refuses and how it is
+needs (@sec:fock-hooks-equations), then where it enters the loop, what it refuses and how it is
 tested.
 
 | Symbol | Meaning | Code name |
@@ -30,7 +30,7 @@ tested.
 | RHF, RKS | `hook(D_total) -> (E, V)` |
 | UHF, ROHF | `hook(D_a, D_b) -> (E, V_a, V_b)` |
 
-## 7.6.1 The equations
+## The equations {#fock-hooks-equations}
 
 ### The hooked functional
 
@@ -42,7 +42,7 @@ $$ E(\mathbf R) = E_0[\mathbf D;\mathbf R] + E_h[\mathbf D;\mathbf R], \qquad \m
 
 $E_0$ is the built-in HF or KS energy. $\mathbf V$ is added to the Fock
 matrix every iteration, with $\mathbf V_\sigma = \partial E_h/\partial\mathbf D_\sigma$
-per spin for UHF and ROHF. Why the derivative? Section 7.1 showed that the
+per spin for UHF and ROHF. Why the derivative? Section @sec:energy-functionals showed that the
 Fock matrix is $\partial E/\partial D$; differentiating the sum gives
 $F = F_0 + \mathbf V$, so the SCF that diagonalizes the hooked $F$ makes the
 hooked $E$ stationary.
@@ -134,7 +134,7 @@ $\partial E_h/\partial\mathbf D$. A hook whose $\mathbf V$ is not the
 derivative of its $E_h$ converges to a non-stationary point of $E$, and no
 gradient of the reported energy follows from this formula.
 
-## 7.6.2 Where the hook enters the iteration
+## Where the hook enters the iteration {#fock-hooks-hook-enters-iteration}
 
 $V$ is added to the Fock matrix before DIIS sees it, and $E_h$ is added
 outside the $\tfrac12\operatorname{tr}[D(h+F)]$ trace, as $E_{xc}$ is. The
@@ -145,7 +145,7 @@ is not variational, and its gradient is wrong.
 
 Why outside the trace? $\tfrac12\operatorname{tr}[D(h+F)]$ counts $h$ at
 full weight and every other term of $F$ at half weight. That is right for $J$
-and $K$, whose energies are quadratic in $D$ (section 7.1). A hook energy can
+and $K$, whose energies are quadratic in $D$ (section @sec:energy-functionals). A hook energy can
 have any form, so its energy is taken as returned and its potential only
 enters $F$.
 
@@ -166,7 +166,7 @@ if v.dim() != f.dim() || !e.is_finite() {    // wrong shape or non-finite E_h
 Ok(e)                                        // E_h, added to the energy outside the trace
 ```
 
-## 7.6.3 What is refused
+## What is refused {#fock-hooks-refused}
 
 Every setting that builds an orbital Hessian or a blocked solve would not see
 the hook, so `validate_fock_hook` refuses it, naming the field:
@@ -187,19 +187,19 @@ In Python, a gradient run (`with_gradient=True`) with a `fock_hook` but no
 `fock_hook_grad` is a `ValueError` before the SCF. A hooked run records a `fock-hook` approximation in its
 certificate.
 
-## 7.6.4 Numerical anchors
+## Numerical anchors {#fock-hooks-numerical-anchors}
 
 `crates/ferric-scf/tests/fock_hook_gradient.rs` checks the three-term gradient
-of 7.6.1 with a point-charge hook: the hooked gradient must equal the gradient
+of @sec:fock-hooks-equations with a point-charge hook: the hooked gradient must equal the gradient
 of the same point charge supplied as an external potential, for RHF and RKS.
 That is an independent construction of the same functional.
 
-## 7.6.5 Status
+## Status {#fock-hooks-status}
 
 The section stays `edit`. The hook's gradient has a committed derivation and
 an independent-construction test, but no sympy proof script: the identity
 that a hook depending on $D$ alone has a zero explicit term, and the
-$\lambda\operatorname{tr}[DS]$ cancellation of 7.6.1, are the natural claims
+$\lambda\operatorname{tr}[DS]$ cancellation of @sec:fock-hooks-equations, are the natural claims
 for one. The steps $\mathbf W = \tfrac12\mathbf D\mathbf F\mathbf D$ and
 $\mathbf D\mathbf S\mathbf D = 2\mathbf D$ were checked numerically on a
 random model for this section.

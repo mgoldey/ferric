@@ -1,6 +1,6 @@
-# 9.3 $V_{xc}$ matrix elements: LDA, GGA, meta-GGA
+# $V_{xc}$ matrix elements: LDA, GGA, meta-GGA {#vxc}
 
-<!-- section: 9.3; status: ready; registry: ks-semilocal, ks-mgga;
+<!-- status: ready; registry: ks-semilocal, ks-mgga;
      theory: crates/ferric-dft/theory.md#"Numerical Integration" "Semilocal $V_{xc}$ matrix elements" -->
 
 A semilocal functional looks at the electrons one point at a time. An LDA
@@ -12,9 +12,9 @@ directly from the grid energy, so the Fock matrix is the exact derivative of
 the energy the SCF reports, whatever the grid. The derivation needs the
 density and its first derivatives on the grid, and no second derivatives.
 
-The plan: put the density and its derivatives on the grid (9.3.1),
-differentiate the grid energy with respect to $D$ (9.3.2), then read the
-batched loop that builds the result (9.3.3).
+The plan: put the density and its derivatives on the grid (@sec:vxc-grid-quantities),
+differentiate the grid energy with respect to $D$ (@sec:vxc-matrix-elements), then read the
+batched loop that builds the result (@sec:vxc-batched-algorithm).
 
 | Symbol | Meaning | Code name |
 |---|---|---|
@@ -30,10 +30,10 @@ batched loop that builds the result (9.3.3).
 | Rust, dense reference | `ferric-dft/src/vxc.rs::{semilocal_vxc_closed,semilocal_vxc_polarized}`, `ferric-dft/src/density_on_grid.rs::{eval_density_closed,eval_tau_closed}` |
 | Python | `AoIntegrals.veff`, the XC blocks tested in `crates/ferric-python/tests/test_xc_blocks.py` |
 
-## 9.3.1 Grid quantities
+## Grid quantities {#vxc-grid-quantities}
 
 The XC energy is a quadrature over the grid points $\{\mathbf r_g, w_g\}$ of
-section 9.2:
+section @sec:grids:
 
 $$ E_{xc} = \int \rho\,\epsilon_{xc}(\rho, \sigma, \tau)\,d\mathbf{r} \approx \sum_g w_g\,\rho_g\,\epsilon_{xc}(\rho_g, \sigma_g, \tau_g) . $$
 
@@ -78,7 +78,7 @@ $v_\tau = \partial(\rho\epsilon)/\partial\tau$. $v_\sigma$ is the derivative
 with respect to $\sigma$, not $2\times$ it; the factor 2 in the GGA term
 below comes from the chain rule.
 
-## 9.3.2 The matrix elements
+## The matrix elements {#vxc-matrix-elements}
 
 Write $e = \rho\epsilon$ so that $E_{xc} = \sum_g w_g\,e(\rho_g, \sigma_g, \tau_g)$.
 The grid weights do not depend on $D$, so the derivative is the chain rule
@@ -107,7 +107,7 @@ $v_\tau = 0$. In a uniform density $\nabla\rho = 0$, so the GGA term
 vanishes and a GGA's matrix has the LDA form.
 
 Where does the $\tfrac12$ of $\tau$ go? In $V_{xc}$ it stays: each matrix
-element carries $\tfrac12v_\tau$. In the nuclear gradient (section 14.3) it
+element carries $\tfrac12v_\tau$. In the nuclear gradient (section @sec:xc-gradient) it
 cancels: moving a nucleus differentiates both $\partial_b\chi_\mu$ and
 $\partial_b\chi_\nu$, which for symmetric $D$ gives two equal terms, and the
 2 cancels the $\tfrac12$.
@@ -119,7 +119,7 @@ $\sum D_{\mu\nu}\tfrac12\nabla\chi_\mu\cdot\nabla\chi_\nu = \tau$, so
 
 $$ \mathrm{Tr}[DV_{xc}] = \sum_g w_g\,(\rho v_\rho + 2\sigma v_\sigma + \tau v_\tau) . $$
 
-This is the identity behind section 9.1.2's statement that
+This is the identity behind section @sec:ks-equations-scf-iteration's statement that
 $\mathrm{Tr}[DV_{xc}] \ne E_{xc}$ in general.
 
 **Spin-polarized.** The energy is a function of seven variables. The same
@@ -157,7 +157,7 @@ $$ v_\rho\chi_\mu\chi_\nu + 2v_\sigma\nabla\rho\cdot\nabla(\chi_\mu\chi_\nu) - v
 which integrates to zero for decaying AOs. So both define the same Fock
 matrix, and the code uses the left form.
 
-> **Verified equation 9.4** · $V_{xc} = \partial E_{xc}/\partial D$, closed shell and polarized
+> **Verified equation {#eq:ks-vxc-matrix-elements}** · $V_{xc} = \partial E_{xc}/\partial D$, closed shell and polarized
 >
 > For a generic $e(\rho, \sigma, \tau)$ (closed shell) and a generic
 > seven-variable polarized $e$, the code's matrix elements, with the GGA
@@ -226,7 +226,7 @@ meta-GGA. The polarized function,
 `ferric-dft/src/vxc.rs::semilocal_vxc_polarized_scratch`, floors each spin
 block on its own $\rho_\sigma$.
 
-## 9.3.3 The batched algorithm
+## The batched algorithm {#vxc-batched-algorithm}
 
 The dense functions above hold $\chi$ and $\nabla\chi$ over the whole grid.
 The SCF uses `xc_batch.rs`, which computes the same matrix in spatial
@@ -291,15 +291,15 @@ count. The result is bit-identical across thread counts. Setting the
 screening threshold to zero keeps every shell and is the exactness anchor
 of the screen.
 
-## 9.3.4 Options
+## Options {#vxc-options}
 
 | Option | Effect |
 |---|---|
-| the functional family (section 9.1) | which of $v_\sigma$, $v_\tau$ are nonzero |
+| the functional family (section @sec:ks-equations) | which of $v_\sigma$, $v_\tau$ are nonzero |
 | `DensityFloor::for_xc` | $10^{-14}$, or $10^{-10}$ with a meta-GGA component; not user-set |
 | resident or recompute AO batches | chosen from the memory budget; the same bits |
 
-## 9.3.5 Numerical anchors
+## Numerical anchors {#vxc-numerical-anchors}
 
 | Quantity | Value | Source |
 |---|---|---|
@@ -307,7 +307,7 @@ of the screen.
 | polarized evaluation vs PySCF `eval_xc`, packing | bit-for-bit | `crates/ferric-dft/tests/mgga_polarized_packing.rs` |
 | SCAN, r2SCAN energies vs PySCF | $\le 4.0\times10^{-12}$ Ha (RKS) | `crates/ferric-scf/tests/validation_mgga_energies.rs` |
 
-## 9.3.6 Sources
+## Sources {#vxc-sources}
 
 | Source | What it gives |
 |---|---|

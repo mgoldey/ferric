@@ -1,6 +1,6 @@
-# 14.2 Gradients of density-fitted J and K
+# Gradients of density-fitted J and K {#df-jk-gradient}
 
-<!-- section: 14.2; status: edit; registry: hf-gradient;
+<!-- status: edit; registry: hf-gradient;
      theory: crates/ferric-scf/theory.md#"Density-fitted Coulomb and exchange (RI-J, RI-K, Split-RI-J)"; crates/ferric-scf/theory.md#"Density-fitted J/K nuclear gradient" -->
 
 A density-fitted SCF reports a different energy from the four-centre one,
@@ -33,12 +33,12 @@ derivative integrals.
 | Routing | `ferric-scf/src/df_gradient.rs::routed_two_electron_gradient` reads the builders the SCF recorded in `ScfResult::df_jk` and sends each fitted term here and each exact term to the four-centre loops |
 | CLI, Python | no separate entry: every `task = "optimize"` and `with_gradient=True` run of a fitted SCF uses it |
 
-## 14.2.1 The energies that are differentiated
+## The energies that are differentiated {#df-jk-gradient-energies-differentiated}
 
 The SCF made the fitted energy stationary in the orbitals, so the argument
-of section 14.1 goes through unchanged: the orbital response is carried by
+of section @sec:hf-gradient goes through unchanged: the orbital response is carried by
 the energy-weighted density $W$ in the Pulay term. What remains is the
-derivative of the fitted two-electron energy at fixed density. Section 7.4
+derivative of the fitted two-electron energy at fixed density. Section @sec:ri-j-ri-k-split-ri-j
 defines the fitted J and K; here we differentiate them.
 
 **RI-J.** The Coulomb builder `DfJ` solves with the Cholesky factor of the
@@ -56,10 +56,10 @@ Differentiate $VV^{-1} = 1$ to get $\partial V^{-1} = -V^{-1}(\partial V)V^{-1}$
 substitute, and write $c = V^{-1}d$:
 
 $$ E_J = \tfrac12\, d^{\mathsf T}V^{-1}d, \qquad c = V^{-1}d, \qquad
-\partial E_J = \sum_P c_P \sum_{\mu\nu} D_{\mu\nu}\,\partial(P\vert\mu\nu) \;-\; \tfrac12\, c^{\mathsf T}(\partial V)\,c . \tag{14.3} $$
+\partial E_J = \sum_P c_P \sum_{\mu\nu} D_{\mu\nu}\,\partial(P\vert\mu\nu) \;-\; \tfrac12\, c^{\mathsf T}(\partial V)\,c . \label{eq:df-jk-gradient-1} $$
 
 Check it with one auxiliary function: $E_J = d^2/(2V)$, and the quotient rule
-gives $(d/V)\,\partial d - \tfrac12 (d/V)^2\,\partial V$, which is (14.3) with
+gives $(d/V)\,\partial d - \tfrac12 (d/V)^2\,\partial V$, which is (@eq:df-jk-gradient-1) with
 $c = d/V$.
 
 **RI-K.** Exchange is fitted one channel at a time. Factor each density as
@@ -67,7 +67,7 @@ $D_s = X_sX_s^{\mathsf T}$ and give it a weight $\alpha_s$. The weight is
 $-c_K/4$ for a closed-shell total density and $-c_K/2$ per spin for UHF and
 ROHF, where $c_K$ is the exact-exchange fraction
 (`ferric-scf/src/df_gradient.rs::exchange_channels`). These are the exchange
-weights of the four-centre $\Gamma$ in section 14.1, $-\tfrac14 D_{\mu\lambda}D_{\nu\sigma}$
+weights of the four-centre $\Gamma$ in section @sec:hf-gradient, $-\tfrac14 D_{\mu\lambda}D_{\nu\sigma}$
 and $-\tfrac12 D^\tau_{\mu\lambda}D^\tau_{\nu\sigma}$, scaled by $c_K$. The fitted energy is a
 sum of quadratic forms in the fitted integrals
 $L^s_{P,ij} = \sum_{\mu\nu}X^s_{\mu i}(P\vert\mu\nu)X^s_{\nu j}$. Differentiate
@@ -75,7 +75,7 @@ it with the product rule. The two $L$ factors give equal terms because
 $V^{+}$ is symmetric, which is the factor 2; the metric gives the rest:
 
 $$ E_K = \sum_s \alpha_s \sum_{ij} L^{s\,\mathsf T}_{ij}\,V^{+}\,L^s_{ij}, \qquad
-\partial E_K = \sum_s 2\alpha_s \sum_{P,ij}\Gamma^s_{P,ij}\,\partial L^s_{P,ij} \;+\; \sum_{PQ} Y_{PQ}\,\partial V^{+}_{PQ}, \tag{14.4} $$
+\partial E_K = \sum_s 2\alpha_s \sum_{P,ij}\Gamma^s_{P,ij}\,\partial L^s_{P,ij} \;+\; \sum_{PQ} Y_{PQ}\,\partial V^{+}_{PQ}, \label{eq:df-jk-gradient-2} $$
 
 with $\Gamma^s = V^{+}L^s$, $Y = \sum_s\alpha_s\sum_{ij}L^s_{ij}L^{s\,\mathsf T}_{ij}$, and
 $\partial L^s_{P,ij} = \sum X_{\mu i}\,\partial(P\vert\mu\nu)\,X_{\nu j}$ at fixed
@@ -86,16 +86,16 @@ derivative integrals. Move the $X$ factors of $\partial L^s$ onto $\Gamma^s$,
 $\sum_{ij}\Gamma^s_{P,ij}X^s_{\mu i}X^s_{\nu j} = (X^s\Gamma^s_PX^{s\,\mathsf T})_{\mu\nu}$,
 and collect:
 
-$$ \partial E_{\mathrm{DF}} = \sum_{P,\mu\nu} G_{P,\mu\nu}\,\partial(P\vert\mu\nu) + \sum_{PQ} H_{PQ}\,\partial V_{PQ}, \tag{14.5} $$
+$$ \partial E_{\mathrm{DF}} = \sum_{P,\mu\nu} G_{P,\mu\nu}\,\partial(P\vert\mu\nu) + \sum_{PQ} H_{PQ}\,\partial V_{PQ}, \label{eq:df-grad-jk} $$
 
 $$ G_{P,\mu\nu} = c_P D_{\mu\nu} + \sum_s 2\alpha_s \sum_{ij} X^s_{\mu i}\,\Gamma^s_{P,ij}\,X^s_{\nu j}, \qquad
 H = -\tfrac12\,c\,c^{\mathsf T} + H_K . $$
 
-$H_K$ is $Y$ pushed through the derivative of $V^{+}$; section 14.2.2 builds
+$H_K$ is $Y$ pushed through the derivative of $V^{+}$; section @sec:df-jk-gradient-truncated-exchange-metric builds
 it. The weights are built once, before any derivative integral is
 computed.
 
-What makes (14.5) more than the four-centre gradient in new notation is
+What makes (@eq:df-grad-jk) more than the four-centre gradient in new notation is
 where the derivatives act. $\partial(P\vert\mu\nu)$ acts on all three
 centres, including the auxiliary function's, and $\partial V_{PQ}$ on both
 auxiliary centres. The auxiliary functions sit on atoms, so they exert
@@ -103,20 +103,20 @@ forces of their own, in the same way the orbital basis gives the Pulay
 term. These are the standard DF-SCF gradient expressions (Weigend, Häser, Patzelt and
 Ahlrichs, 1998, for RI-J; Weigend, Kattannek and Ahlrichs, 2009, for RI-K).
 
-How large is the difference? On the cc-pVDZ test systems of section 14.2.6,
+How large is the difference? On the cc-pVDZ test systems of section @sec:df-jk-gradient-numerical-anchors,
 ferric's fitted gradient agrees with PySCF `df.grad` to about $10^{-10}$ Ha/Bohr, while the
 four-centre derivative paired with the fitted energy differs from PySCF by
-more than $5\times10^{-6}$ Ha/Bohr (section 14.2.6). An optimizer with a
+more than $5\times10^{-6}$ Ha/Bohr (section @sec:df-jk-gradient-numerical-anchors). An optimizer with a
 $10^{-6}$ Ha/Bohr convergence bar would stop at the wrong place.
 
-> **Verified equation 14.5** · the fitted J and K gradient
+> **Verified equation @eq:df-grad-jk** · the fitted J and K gradient
 >
 > On a model whose three-index integrals and metric depend on one parameter, at a
-> fixed density: the RI-J gradient of (14.3) equals the exact sympy derivative of
+> fixed density: the RI-J gradient of (@eq:df-jk-gradient-1) equals the exact sympy derivative of
 > $\tfrac12d^{\mathsf T}V^{-1}d$ in rational arithmetic (claim D1); the RI-K
-> gradient of (14.4), with the weights $G$ and $H$ of (14.5) and every metric mode
+> gradient of (@eq:df-jk-gradient-2), with the weights $G$ and $H$ of (@eq:df-grad-jk) and every metric mode
 > kept, equals the exact derivative of $E_K$ (claim D2); and with a dropped mode
-> the kernel of equation 14.6, case by case as the code writes it, equals a
+> the kernel of equation @eq:df-jk-gradient-4, case by case as the code writes it, equals a
 > fourth-order finite difference of $E_K(x)$ with the spectral cut in a gap, while
 > the plain $-V^{+}(\partial V)V^{+}$ misses (claim D3).
 >
@@ -130,7 +130,7 @@ $10^{-6}$ Ha/Bohr convergence bar would stop at the wrong place.
 >
 > <!-- verified: id=df.grad.jk; script=scripts/df_jk_gradient_sympy.py; claim=D1; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/df_gradient.rs::{df_jk_gradient_core,truncated_inverse_divided_difference}; rust_test=ferric-scf/tests/df_jk_gradient.rs::hf_ri_jk_gradient_matches_fd_of_ri_energy; registry=hf-gradient -->
 
-## 14.2.2 The truncated exchange metric
+## The truncated exchange metric {#df-jk-gradient-truncated-exchange-metric}
 
 If $V^{+}$ were $V^{-1}$, $H_K$ would follow from the same identity as RI-J.
 It is not. The exchange builder `DfK` forms $V^{+}$ from an
@@ -147,7 +147,7 @@ Daleckii–Krein formula. Rotate $\partial V$ into the eigenbasis, multiply
 element by element with the divided differences of $f$, and rotate back:
 
 $$ \partial V^{+} = U\big(\mathsf F \circ U^{\mathsf T}\,\partial V\,U\big)U^{\mathsf T}, \qquad
-\mathsf F_{kl} = \frac{f(\lambda_k)-f(\lambda_l)}{\lambda_k-\lambda_l},\quad \mathsf F_{kk} = f'(\lambda_k). \tag{14.6} $$
+\mathsf F_{kl} = \frac{f(\lambda_k)-f(\lambda_l)}{\lambda_k-\lambda_l},\quad \mathsf F_{kk} = f'(\lambda_k). \label{eq:df-jk-gradient-4} $$
 
 Put the two values of $f$ into the divided difference and you get the four
 cases the code writes
@@ -175,13 +175,13 @@ match (kk, kl) {
 ```
 
 Check the limit with nothing dropped: every entry is $-1/(\lambda_k\lambda_l)$,
-and (14.6) becomes the familiar $\partial V^{+} = -V^{+}(\partial V)V^{+}$.
+and (@eq:df-jk-gradient-4) becomes the familiar $\partial V^{+} = -V^{+}(\partial V)V^{+}$.
 The kept-dropped entries are the rotation of kept modes into dropped ones:
 as the nuclei move, the eigenvectors turn, and a kept direction picks up a
 component along a direction the energy ignores. The familiar formula misses
-that. Contracting (14.6) with $Y$ gives
+that. Contracting (@eq:df-jk-gradient-4) with $Y$ gives
 $H_K = U\big(\mathsf F\circ\tilde Y\big)U^{\mathsf T}$, $\tilde Y = U^{\mathsf T}YU$,
-the two-centre weight of (14.5). The test
+the two-centre weight of (@eq:df-grad-jk). The test
 `divided_difference_reduces_to_minus_m_dv_m_when_nothing_dropped` in
 `crates/ferric-scf/src/df_gradient.rs` pins the kept-kept and kept-dropped
 entries.
@@ -236,9 +236,9 @@ After the loop, every element of `y_t` is multiplied by
 `truncated_inverse_divided_difference` of its two modes and rotated back,
 which is $H_K = U(\mathsf F\circ\tilde Y)U^{\mathsf T}$. The RI-J part of $H$ is
 one line before it, `h2[(p, q)] -= 0.5 * c[p] * c[q]`, the
-$-\tfrac12cc^{\mathsf T}$ of (14.5).
+$-\tfrac12cc^{\mathsf T}$ of (@eq:df-grad-jk).
 
-## 14.2.3 The algorithm
+## The algorithm {#df-jk-gradient-algorithm}
 
 The driver is `ferric-scf/src/df_gradient.rs::df_jk_gradient_core`. Its stages carry timer labels
 that `FERRIC_TIMING` prints.
@@ -267,9 +267,9 @@ $s_1=s_2$, once per block in the order libint returns its nine components
 $[\partial_P,\partial_1,\partial_2]$, and contracts them with nine dot
 products (`ferric-scf/src/df_gradient/deriv3c.rs::three_center_deriv_pass`).
 The nine are three Cartesian directions for each of the three centres
-(section 3.3 counts them).
+(section @sec:integrals-derivatives counts them).
 
-## 14.2.4 Reproducibility and memory
+## Reproducibility and memory {#df-jk-gradient-reproducibility-memory}
 
 - Both derivative passes map over auxiliary shells, collect in shell order and
   fold serially, so the gradient is bit-identical across thread counts.
@@ -284,7 +284,7 @@ The nine are three Cartesian directions for each of the three centres
   gradient does not: every rank computes the same full gradient, so it is
   correct and its memory does not shrink with rank count.
 
-## 14.2.5 Options that change the equation
+## Options that change the equation {#df-jk-gradient-options-change-equation}
 
 | Option | Effect |
 |---|---|
@@ -294,7 +294,7 @@ The nine are three Cartesian directions for each of the three centres
 | range-separated exchange | two fitted channels with $\mathrm{erfc}(\omega r)$ and $\mathrm{erf}(\omega r)$ in both integrals and metric, weights $c_{\mathrm{SR}}$ and $c_{\mathrm{LR}}$, with the SCF's own auxiliary basis and $\omega$ |
 | exact J or K | an exact term goes through the four-centre loops, so mixed routes (RI-J with exact K, the reverse) are differentiated term by term |
 
-## 14.2.6 Numerical anchors
+## Numerical anchors {#df-jk-gradient-numerical-anchors}
 
 | Check | Reference | Agreement | Test |
 |---|---|---|---|
@@ -309,7 +309,7 @@ must equal the residual of the same functional run with exact J/K. The grid
 residual cancels; the density-fitting defect does not.
 
 **Known limit.** The gradient is validated on small molecules in the bases
-above. The noise-floor treatment of section 14.2.2 is a measured choice on
+above. The noise-floor treatment of section @sec:df-jk-gradient-truncated-exchange-metric is a measured choice on
 water, not a proven bound; the warning exists so a system where the band is
 not negligible cannot pass silently.
 
@@ -320,6 +320,6 @@ not negligible cannot pass silently.
 | `crates/ferric-scf/theory.md`, "Density-fitted J/K nuclear gradient" | the energies, the weights, the truncated-metric derivative and the noise floor |
 | `crates/ferric-scf/src/df_gradient.rs`, module documentation and `df_jk_gradient_core` | the stage list, the erf-metric mode count and the prototype measurements |
 | `crates/ferric-scf/src/df_gradient/deriv3c.rs` | the three-centre contraction layout |
-| `scripts/df_jk_gradient_sympy.py`, claims D1 to D3 | verified equation 14.5 |
+| `scripts/df_jk_gradient_sympy.py`, claims D1 to D3 | verified equation @eq:df-grad-jk |
 | `crates/ferric-scf/tests/df_jk_gradient.rs` | thresholds and the negative controls |
 | `site/src/reference/validation.md` | the gradient row |

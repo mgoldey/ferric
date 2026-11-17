@@ -1,4 +1,4 @@
-# 5. Screening
+# Screening {#screening}
 
 A molecule with $N$ basis functions has $O(N^4)$ two-electron integrals, but
 in a large molecule most of them are negligible. An integral

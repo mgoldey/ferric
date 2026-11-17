@@ -1,6 +1,6 @@
-# 16.3 (T) in spin orbitals and in closed-shell form
+# (T) in spin orbitals and in closed-shell form {#triples}
 
-<!-- section: 16.3; status: ready; registry: ccsd-t;
+<!-- status: ready; registry: ccsd-t;
      theory: crates/ferric-cc/theory.md#"CCSD(T), spin-orbital", "CCSD(T), closed shell" -->
 
 CCSD lets electrons correlate in pairs and through orbital relaxation, but
@@ -13,16 +13,16 @@ spin-adapted closed-shell form that bands over virtual triples as PySCF's
 spin-orbital one is its cross-check.
 
 The two forms band differently, and copying one banding into the other gives
-a wrong energy (the negative control of equation 16.4). In spin orbitals an
+a wrong energy (the negative control of equation @eq:cc-t-band-weights). In spin orbitals an
 antisymmetrized amplitude with a repeated index vanishes, so the loop can
 visit $i<j<k$ once with weight 6. In spatial orbitals each orbital holds two
 electrons, $i = j$ and $a = b$ are physical, and the band $a\le b\le c$
 needs multiplicity weights $1, 3, 6$ with divisor 3. The section derives
 both rules:
 
-1. the spin-orbital energy and its divisor 6 (16.3.1);
-2. the closed-shell energy, its pair invariance and the banding (16.3.2);
-3. the two loops (16.3.3).
+1. the spin-orbital energy and its divisor 6 (@sec:triples-spin-orbital-t);
+2. the closed-shell energy, its pair invariance and the banding (@sec:triples-closed-shell-t);
+3. the two loops (@sec:triples-algorithms).
 
 | Index | Range | Code name |
 |---|---|---|
@@ -37,7 +37,7 @@ both rules:
 | CLI | `method.kind = "ccsd(t)"` (`examples/water-ccsd-t.toml`) |
 | Python | `run_ccsd_t` |
 
-## 16.3.1 Spin-orbital (T)
+## Spin-orbital (T) {#triples-spin-orbital-t}
 
 **Where the triples come from.** Take a converged doubles amplitude
 $t_{jk}^{ae}$ and let one integral act on it. $\langle bc\|ei\rangle$ moves
@@ -78,7 +78,7 @@ So the loop visits each $i<j<k$ once, lets $a,b,c$ run over the full axis
 (six orderings of each virtual triple), and divides by 6 instead of 36.
 A two-electron system has $2n_o = 2$ and no triple $i<j<k$ at all, so its
 (T) is zero (`test_ccsd_t_h2_sto3g_is_zero`), as it must be when CCSD is
-already exact (section 16.1).
+already exact (section @sec:ccd-ccsd-spin-orbital).
 
 **Streaming.** For each $i<j<k$ the loop forms only the
 $[2n_v,2n_v,2n_v]$ blocks of $W$, $V$ and $\Delta$: two GEMMs per raw block
@@ -100,7 +100,7 @@ in `ccsd_t` (the comment above the return removed):
 followed by `Ok(et / 6.0)`. Each `partial` is one $i<j<k$ triple summed over
 all $a,b,c$.
 
-## 16.3.2 Closed-shell (T)
+## Closed-shell (T) {#triples-closed-shell-t}
 
 `ferric-cc/src/ccsd_t_closed_shell.rs` computes the same correction for a
 closed-shell RHF-reference CCSD in spatial orbitals (Rendell, Lee and
@@ -140,7 +140,7 @@ f_{ijk}^{abc} = -\frac{\tilde W_{ijk}^{abc}\,V_{ijk}^{abc}}{\Delta_{ijk}^{abc}} 
 The divisor is 3, not $1/36$ or $1/6$: the spin summation behind the
 $4,1,1,-2,-2,-2$ coefficients has already absorbed most of the
 spin-orbital antisymmetrizer's redundancy. This sum equals the spin-orbital
-$(T)$ of section 16.3.1 on the spin-orbital expansion of the same amplitudes
+$(T)$ of section @sec:triples-spin-orbital-t on the spin-orbital expansion of the same amplitudes
 and integrals (claim 4 of the box below).
 
 **Pair invariance.** Let $\sigma\in S_3$ act on both triples at once.
@@ -220,7 +220,7 @@ if a == c {
 `a == c` with $a\le b\le c$ forces all three equal; the band order makes the
 two-equal test two comparisons.
 
-> **Verified equation 16.4** · the band weights and the divisor 3
+> **Verified equation {#eq:cc-t-band-weights}** · the band weights and the divisor 3
 >
 > Symbolically, $\sum_{a\le b\le c<n} m(a,b,c) = n^3$. On random
 > closed-shell amplitudes and 8-fold-symmetric RI integrals, the per-triple
@@ -289,7 +289,7 @@ partial += wt * v / (k.eijk[n] - e_abc);                                   // W~
 - `kk` is the occupied index $k$, renamed because `k` holds the kernel
   inputs.
 
-> **Verified equation 16.5** · the production kernel
+> **Verified equation {#eq:cc-t-kernel}** · the production kernel
 >
 > A port of the virtual-banded kernel (raw blocks per pair permutation,
 > $W$ accumulated with its occupied axes permuted back, $V$ and the
@@ -315,7 +315,7 @@ in $(i,j,k)$ by the same argument, and `screened_triple_energy` forms
 $\frac13\sum_{i\le j\le k} m(i,j,k)\,h(i,j,k)$ over the retained triples,
 with `occ_triple_multiplicity` giving the same $1,3,6$ weights. The screen
 retains or drops whole multisets $\{i,j,k\}$ and always keeps the
-repeated-index classes, so the weights stay exact (section 16.7.4).
+repeated-index classes, so the weights stay exact (section @sec:local-cc-dlpno-t-triple-screen).
 
 **What the proofs cover.** The script proves $\sum_{a\le b\le c} m = n^3$
 symbolically (claim 1). On random closed-shell amplitudes and
@@ -331,13 +331,13 @@ spin-orbital divisor 6 has no sympy claim of its own; its evidence is the
 streaming-versus-dense regression `streaming_matches_dense_h2o_ccpvdz` and
 the PySCF comparisons below.
 
-## 16.3.3 The algorithms
+## The algorithms {#triples-algorithms}
 
 **Closed shell** (`ccsd_t_closed_shell`).
 
 | Step | Quantity | Cost | Function |
 |---|---|---|---|
-| 1 | spin-adapted CCSD (section 16.2); spin-orbital amplitudes are refused with a typed error | | `ccsd_closed_shell` |
+| 1 | spin-adapted CCSD (section @sec:closed-shell-ccsd); spin-orbital amplitudes are refused with a typed error | | `ccsd_closed_shell` |
 | 2 | `ovvv`, `vooo`, `ovov`, `t2x`, `t1t` built once | $N_{\rm aux}n_on_v^3$ | `TripleIntegrals` |
 | 3 | per job $(a,b)$, $a \le b$, for $c = b..n_v$: two stacked GEMMs per permutation pair | $n_o^3n_v$ per triple | `raw_w_pair` |
 | 4 | one fused pass over $(i,j,k)$: $W$, $V$, $\tilde W$, $-\tilde WV/\Delta$; $g(a,b,c)$ | $n_o^3$ | `triple_energy` |
@@ -356,10 +356,10 @@ applied in passes over it. Banding over occupied triples would carry an
 $[n_v,n_v,n_v]$ block instead, which is what the spin-orbital loop does.
 
 **Spin orbitals** (`ccsd_t`): the same shape over $i<j<k$ with divisor 6,
-from spin-orbital amplitudes (section 16.1, or the closed-shell ones expanded
+from spin-orbital amplitudes (section @sec:ccd-ccsd-spin-orbital, or the closed-shell ones expanded
 by `expand_amplitudes_to_spin_orbital`).
 
-## 16.3.4 Numerical anchors
+## Numerical anchors {#triples-numerical-anchors}
 
 | Quantity | Systems | Error | Test |
 |---|---|---|---|
@@ -367,7 +367,7 @@ by `expand_amplitudes_to_spin_orbital`).
 | the two (T) codes against each other | same | $8.9\times10^{-12}$ Ha | `crates/ferric-cc/tests/validation_cc.rs` |
 | anions, all-electron and frozen core | CH3⁻, Te²⁻ / def2-SVP | $\le 2.7\times10^{-12}$ Ha | `crates/ferric-cc/tests/cc_anion_occupied_count.rs` |
 
-## 16.3.5 Sources
+## Sources {#triples-sources}
 
 | Source | What it gives |
 |---|---|
@@ -376,6 +376,6 @@ by `expand_amplitudes_to_spin_orbital`).
 | `scripts/cc_triples_weights_and_linlccd_spin_adaptation_sympy.py` | claims 1–5 and 4b |
 
 **Known limits (2026-11-15).** Closed shell only; the open-shell (T) on a
-UHF reference is section 16.8. The
-DLPNO-(T) screen of section 16.7 keeps the occupied banding of the same
+UHF reference is section @sec:uccsd. The
+DLPNO-(T) screen of section @sec:local-cc keeps the occupied banding of the same
 identity.

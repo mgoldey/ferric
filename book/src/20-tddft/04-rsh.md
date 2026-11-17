@@ -1,6 +1,6 @@
-# 20.4 Range-separated hybrids
+# Range-separated hybrids {#rsh}
 
-<!-- section: 20.4; status: ready; registry: tddft;
+<!-- status: ready; registry: tddft;
      theory: crates/ferric-tddft/theory.md#"8. Range-separated hybrids" -->
 
 Consider an excitation that moves an electron from a donor at one end of a
@@ -12,7 +12,7 @@ the hole it left. At long range that attraction is weighted by whatever
 exact-exchange fraction the functional uses there. A range-separated hybrid
 chooses that fraction separately: $c_{\rm sr}$ on
 $\mathrm{erfc}(\omega r)/r$ and $c_{\rm lr}$ on $\mathrm{erf}(\omega r)/r$
-(section 9.4). The response inherits the split. ferric writes it as a
+(section @sec:hybrids). The response inherits the split. ferric writes it as a
 full-Coulomb term plus a long-range correction, so only one extra set of
 fitted integrals is needed.
 
@@ -27,7 +27,7 @@ fitted integrals is needed.
 | Rust | `ferric-tddft/src/tddft.rs::{build_a_matrix,build_b_matrix,build_lr_tensors,ExchangeMix}`; the SCF-side analogue is `ferric-scf/src/rsh_response.rs::exchange_response` |
 | CLI | `[tddft] xc = "cam-b3lyp"` (or any CAM functional) |
 
-## 20.4.1 The split
+## The split {#rsh-split}
 
 Split the Coulomb operator at $\omega$,
 $1/r = \mathrm{erfc}(\omega r)/r + \mathrm{erf}(\omega r)/r$, and put exact
@@ -41,12 +41,12 @@ $$ E_x^{\rm HF} = -\tfrac12\sum_{\sigma}\sum_{ij\in\sigma}
 
 The energy is a weighted sum of two exchange energies, one per operator,
 so its second derivative is the same weighted sum of exchange terms: the
-exchange of equation 20.1 with $c_{\rm HF}(pq|rs)$ replaced by
+exchange of equation @eq:td-matrices-spin-adaptation with $c_{\rm HF}(pq|rs)$ replaced by
 $c_{\rm sr}(pq|{\rm erfc}|rs) + c_{\rm lr}(pq|{\rm erf}|rs)$. Substitute
 $\mathrm{erfc} = 1 - \mathrm{erf}$ and collect the erf terms:
 
 $$ c_{\rm sr}(pq|\mathrm{erfc}|rs) + c_{\rm lr}(pq|\mathrm{erf}|rs)
-= c_{\rm sr}(pq|rs) + \Delta c\,(pq|rs)_\omega , \tag{20.8} $$
+= c_{\rm sr}(pq|rs) + \Delta c\,(pq|rs)_\omega , \label{eq:td-rsh-split} $$
 
 with $(pq|rs)_\omega$ the erf-attenuated integral. So, for both spins,
 
@@ -87,7 +87,7 @@ $B^{\omega\mathsf T}_{ov}B^\omega_{ov}$.
 ### Which integrals are fitted, and in which metric
 
 The full-Coulomb exchange reuses the Coulomb-metric tensors
-$B_{ov}, B_{oo}, B_{vv}$ of section 20.1.1, which the Coulomb term needs
+$B_{ov}, B_{oo}, B_{vv}$ of section @sec:response-matrices, which the Coulomb term needs
 anyway. The long-range term takes a second set over the same auxiliary
 basis,
 
@@ -150,7 +150,7 @@ The second tensor set adds $N_{\rm aux}(n_o^2+n_v^2)$ resident doubles, and
 $N_{\rm aux}n_on_v$ more for Casida; the memory plan declares them before
 the erf tensors are built.
 
-> **Verified equation 20.8** · the range-separated exchange split
+> **Verified equation @eq:td-rsh-split** · the range-separated exchange split
 >
 > $c_{\rm sr}\,\mathrm{erfc} + c_{\rm lr}\,\mathrm{erf} = c_{\rm sr} + (c_{\rm lr} - c_{\rm sr})\,\mathrm{erf}$,
 > symbolically; numerically, the code's singlet and triplet blocks with RI
@@ -167,7 +167,7 @@ the erf tensors are built.
 >
 > <!-- verified: id=td.rsh.split; script=scripts/tddft_response_sympy.py; claim=A4; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-tddft/src/tddft.rs::build_b_matrix; registry=tddft -->
 
-## 20.4.2 Numerical anchors
+## Numerical anchors {#rsh-numerical-anchors}
 
 From `site/src/reference/validation.md`, "Range-separated hybrid and triplet
 TDA and Casida excitation energies".
@@ -181,9 +181,9 @@ TDA and Casida excitation energies".
 The negative control in the box puts these numbers in scale: dropping the
 long-range term moves the roots by 2.9 to 6.0 eV.
 
-## 20.4.3 Sources
+## Sources {#rsh-sources}
 
 | Source | What it gives |
 |---|---|
 | `crates/ferric-tddft/theory.md`, section 8 | the split, the erf-metric fit, the exact limits and the matrix-free products |
-| `crates/ferric-dft/theory.md`, "Exact exchange in hybrid and range-separated hybrid functionals" | the SCF exchange (section 9.4) |
+| `crates/ferric-dft/theory.md`, "Exact exchange in hybrid and range-separated hybrid functionals" | the SCF exchange (section @sec:hybrids) |

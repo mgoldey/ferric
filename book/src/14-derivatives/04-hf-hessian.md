@@ -1,11 +1,11 @@
-# 14.4 Hartree–Fock Hessian and coupled-perturbed equations
+# Hartree–Fock Hessian and coupled-perturbed equations {#hf-hessian}
 
-<!-- section: 14.4; status: ready; registry: hf-hessian;
+<!-- status: ready; registry: hf-hessian;
      theory: crates/ferric-scf/theory.md#"Hartree-Fock nuclear Hessian" -->
 
 The Hessian is the curvature of the energy surface: how the force on one
 nucleus changes when another moves. It is the derivative of the gradient of
-section 14.1, and that gradient contains the converged density $D$ and the
+section @sec:hf-gradient, and that gradient contains the converged density $D$ and the
 energy-weighted density $W$ explicitly. The gradient needed no orbital
 derivative because the energy is stationary in the orbitals; $D$ and $W$
 are not, so the Hessian needs to know how the orbitals relax when a nucleus
@@ -32,14 +32,14 @@ response, then follow the solver.
 | CLI | `task = "frequencies"` with `[frequencies] hessian = "analytic"` or `"auto"` |
 | Python | `run_frequencies(...)`; the Hessian is `FrequencyResult.cartesian_hessian` |
 
-Kohn–Sham references add exchange-correlation terms (section 14.5).
-Frequencies from the Hessian are section 14.6.
+Kohn–Sham references add exchange-correlation terms (section @sec:ks-hessian).
+Frequencies from the Hessian are section @sec:frequencies.
 
-## 14.4.1 The equations
+## The equations {#hf-hessian-equations}
 
-**The skeleton.** Differentiate the gradient of section 14.1 once more along
+**The skeleton.** Differentiate the gradient of section @sec:hf-gradient once more along
 $y$, holding $D$, $W$ and $\Gamma$ fixed. Every integral gets a second
-derivative (section 3.3 gives their layout):
+derivative (section @sec:integrals-derivatives gives their layout):
 
 $$H^{\mathrm{skel}}_{xy} = E_{nn}^{xy} + \sum D h^{xy} + \sum \Gamma\,(\mu\nu|\lambda\sigma)^{xy} - \sum W S^{xy},$$
 
@@ -87,10 +87,10 @@ $U_{ai} = -(F^y_{ai} - \varepsilon_iS^y_{ai})/(\varepsilon_a - \varepsilon_i)$:
 first-order perturbation theory, a coupling divided by an orbital-energy
 gap. The $G$ terms add the self-consistency: the relaxed density changes
 the Fock matrix, which changes the relaxation. A small HOMO-LUMO gap makes
-the response large, as it makes the MP2 amplitudes large (section 10.1).
+the response large, as it makes the MP2 amplitudes large (section @sec:closed-shell-ri-mp2).
 
 The operator on the left is the real singlet orbital Hessian of section
-8.4.1 with $c_x = 1$. Expand $C_v^{\mathsf T}G(D_1(U))C_o$ in MO integrals: the
+@sec:stability-stability-operators with $c_x = 1$. Expand $C_v^{\mathsf T}G(D_1(U))C_o$ in MO integrals: the
 Coulomb part gives $4(ai|bj)U_{bj}$ and the exchange part
 $-\big[(ab|ij) + (aj|bi)\big]U_{bj}$, the RHF internal stability operator. It
 is symmetric, and positive definite exactly when the RHF solution is
@@ -116,7 +116,7 @@ $H_{xy} = H^{\mathrm{skel}}_{xy} + R_{xy}$, and a closed-shell UHF reproduces
 the RHF Hessian term by term.
 
 How much does the response matter? For the ROHF test systems of section
-14.4.5 (NH2, CH2, HO2 / cc-pVDZ), the Hessian without it misses PySCF's
+@sec:hf-hessian-numerical-anchors (NH2, CH2, HO2 / cc-pVDZ), the Hessian without it misses PySCF's
 finite differences by 0.35 to 0.83 Ha/Bohr², and its frequencies by
 1.3e3 to 2.5e3 cm⁻¹. With the response the miss is $1.0\times10^{-6}$ or less.
 
@@ -128,9 +128,9 @@ And it is translationally invariant: the gradient does not change when the
 whole molecule moves, so for every row $(A,\alpha)$ and axis $\beta$,
 $\sum_B H_{(A,\alpha),(B,\beta)} = 0$.
 
-> **Verified equation 14.9** · the assembled Hessian equals the difference of the gradient
+> **Verified equation {#eq:scf-hess-assembled}** · the assembled Hessian equals the difference of the gradient
 >
-> On the toy system of section 14.1 (integrals quadratic in two parameters,
+> On the toy system of section @sec:hf-gradient (integrals quadratic in two parameters,
 > non-orthogonal $S$): the analytic Hessian, skeleton plus CPHF response as
 > coded, equals the fourth-order central difference of the analytic
 > gradient with the SCF re-solved at every displaced point. RHF (claim H1),
@@ -147,7 +147,7 @@ $\sum_B H_{(A,\alpha),(B,\beta)} = 0$.
 >
 > <!-- verified: id=scf.hess.assembled; script=scripts/hf_hessian_sympy.py; claim=H1; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/hessian.rs::{rhf_hessian,uhf_hessian,assemble_response},ferric-scf/src/hessian/rohf.rs::rohf_hessian; rust_test=ferric-scf/tests/validation_rhf_hessian.rs::h2o_ccpvdz; registry=hf-hessian -->
 
-> **Verified equation 14.10** · the occupied-occupied rotation and the closed-shell limit
+> **Verified equation {#eq:scf-hess-occ-occ-rotation}** · the occupied-occupied rotation and the closed-shell limit
 >
 > $U = -\tfrac12S^y_{\mathrm{MO}} + \kappa$ satisfies the differentiated
 > orthonormality $U + U^{\mathsf T} + S^y_{\mathrm{MO}} = 0$ for any
@@ -158,7 +158,7 @@ $\sum_B H_{(A,\alpha),(B,\beta)} = 0$.
 > | | |
 > |---|---|
 > | Proof | `scripts/hf_hessian_sympy.py`, claims S1, S2 and H2 |
-> | Negative control | $U_{oo} = -S_{oo}$ breaks H1 and H3 (see equation 14.9) |
+> | Negative control | $U_{oo} = -S_{oo}$ breaks H1 and H3 (see equation @eq:scf-hess-assembled) |
 > | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
 > | Code | `ferric-scf/src/hessian.rs::finish_cphf` |
 > | Code test | `closed_shell_uhf_equals_rhf_term_by_term` in `crates/ferric-scf/tests/uhf_hessian_fd.rs` |
@@ -207,12 +207,12 @@ $$R_{xy} = \sum_\sigma \mathrm{tr}[D^y_\sigma F^x_\sigma] - \mathrm{tr}[W^y S^x]
 $$W^y = D^y_\alpha F_\alpha D_\alpha + D_\alpha F^y_\alpha D_\alpha + D_\alpha F_\alpha D^y_\alpha
 + D^y_\alpha F_\beta D_\beta + D_\alpha F^y_\beta D_\beta + D_\alpha F_\beta D^y_\beta,$$
 
-the product-rule derivative of the ROHF $W$ of section 14.1, with
+the product-rule derivative of the ROHF $W$ of section @sec:hf-gradient, with
 $F^y_\sigma$ the total derivative $h^y + G^y_\sigma(D) + G_\sigma(D^y)$. The
 skeleton also uses that ROHF $W$, so its $W$ term differs from UHF's at ROHF
 orbitals.
 
-## 14.4.2 The algorithm
+## The algorithm {#hf-hessian-algorithm}
 
 The driver is `ferric-scf/src/hessian.rs::rhf_hessian_parts_with`, which
 returns the five terms separately for tests.
@@ -263,7 +263,7 @@ the solver is conjugate gradient
 `ferric-scf/src/hessian.rs::CPHF_TOL` ($10^{-10}$) within
 `CPHF_MAX_ITER` (200) iterations. A non-positive curvature $p^{\mathsf T}Ap$ is
 a typed error that says the SCF reference is not a stable minimum: that is
-the stability analysis of section 8.4 surfacing inside the Hessian.
+the stability analysis of section @sec:stability surfacing inside the Hessian.
 
 The coordinates run in lockstep blocks: each iteration builds $G$ for every
 still-running coordinate in one four-centre quartet pass. The block length
@@ -298,7 +298,7 @@ largest difference is the analytic Hessian's internal consistency probe:
 `RhfHessianParts::response_asymmetry`, which the frequency result reports
 as `asymmetry`. The Hessian uses the symmetrized $R$.
 
-## 14.4.3 Reproducibility and refusals
+## Reproducibility and refusals {#hf-hessian-reproducibility-refusals}
 
 - The pre-SCF probes `analytic_hessian_available` and the `*_preflight`
   functions refuse what the analytic Hessian does not cover before any SCF
@@ -317,7 +317,7 @@ as `asymmetry`. The Hessian uses the symmetrized $R$.
 - UHF is not checked for internal stability or for being the lowest state. An
   excited or unstable UHF solution gets the Hessian of that solution.
 
-## 14.4.4 Options that change the equation
+## Options that change the equation {#hf-hessian-options-change-equation}
 
 | Option | Effect | Where |
 |---|---|---|
@@ -325,9 +325,9 @@ as `asymmetry`. The Hessian uses the symmetrized $R$.
 | ECPs | skeleton $\sum D\,\partial^2V_{\mathrm{ECP}}$ by a masked fourth-order stencil of first-derivative ECP blocks, and $\partial V_{\mathrm{ECP}}/\partial x$ in $F^y$ | `ferric-scf/src/hessian_ecp.rs` |
 | external point charges, smeared charges | QM-QM block, charges fixed | `ferric-scf/src/hessian_smeared.rs` |
 | uniform field | the field-nuclear energy is linear in $\mathbf R$, so only the electronic term enters; dipole integrals differentiated by a stencil | `ferric-scf/src/hessian_field.rs` |
-| Kohn–Sham | XC skeleton, XC first-order Fock matrix and $f_{xc}$ kernel in the CPHF | section 14.5 |
+| Kohn–Sham | XC skeleton, XC first-order Fock matrix and $f_{xc}$ kernel in the CPHF | section @sec:ks-hessian |
 
-## 14.4.5 Numerical anchors
+## Numerical anchors {#hf-hessian-numerical-anchors}
 
 | Check | Reference | Agreement | Test |
 |---|---|---|---|
@@ -351,6 +351,6 @@ embedding.
 | Source | Used for |
 |---|---|
 | `crates/ferric-scf/theory.md`, "Hartree-Fock nuclear Hessian" | equations and the toy-system check |
-| `scripts/hf_hessian_sympy.py`, claims H1 to H4, S1, S2 | verified equations 14.9 and 14.10 |
+| `scripts/hf_hessian_sympy.py`, claims H1 to H4, S1, S2 | verified equations @eq:scf-hess-assembled and @eq:scf-hess-occ-occ-rotation |
 | `crates/ferric-scf/src/hessian.rs` module documentation | the term table, the solver, the refusals |
 | `site/src/reference/validation.md` | the anchor rows and the known limits |

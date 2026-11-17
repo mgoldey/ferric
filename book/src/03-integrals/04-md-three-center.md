@@ -1,6 +1,6 @@
-# 3.4 A McMurchie–Davidson engine for three-center one-electron integrals
+# A McMurchie–Davidson engine for three-center one-electron integrals {#md-three-center}
 
-<!-- section: 3.4; status: edit; registry: none;
+<!-- status: edit; registry: none;
      theory: crates/ferric-integrals/theory.md#"McMurchie-Davidson three-center one-electron integrals" -->
 
 Seminumerical exchange (COSX) computes the exchange matrix by putting one of
@@ -30,13 +30,13 @@ a time.
 | COSX caller | `ferric-integrals/src/cosx_a.rs::a_matrix_at_point` |
 | single precision | `ferric-integrals/src/md3c1e/f32_block.rs::pair_block_f32` |
 
-## 3.4.1 The algorithm
+## The algorithm {#md-three-center-algorithm}
 
 ### The product as Hermite Gaussians
 
 Take two primitives of exponents $a$, $b$ on centres $A$, $B$, with
 $p = a + b$ and $\mathbf P = (a\mathbf A + b\mathbf B)/p$. The Gaussian product
-theorem (section 3.1) turns the two Gaussians into one on $\mathbf P$, but the
+theorem (section @sec:one-electron) turns the two Gaussians into one on $\mathbf P$, but the
 polynomial factors $x_A^i x_B^j$ are still centred on $A$ and $B$. McMurchie
 and Davidson expand the whole product, one Cartesian direction at a time, in
 Hermite Gaussians on $\mathbf P$:
@@ -75,7 +75,7 @@ The potential of a spherical Gaussian at a point $\mathbf C$ is
 
 $$ \int \frac{e^{-p|\mathbf r - \mathbf P|^2}}{|\mathbf r - \mathbf C|}\,d\mathbf r = \frac{2\pi}{p}\,F_0\big(p|\mathbf P - \mathbf C|^2\big), $$
 
-the $q \to \infty$ limit of the $(ss|ss)$ formula of section 3.2. A Hermite
+the $q \to \infty$ limit of the $(ss|ss)$ formula of section @sec:two-electron. A Hermite
 Gaussian is a $\mathbf P$-derivative of the spherical one, and $\mathbf P$
 does not appear in $1/|\mathbf r - \mathbf C|$, so the derivatives move
 outside the integral. Every Hermite term becomes a derivative of the
@@ -188,7 +188,7 @@ Three points about it:
   instructions, and an AVX2+FMA variant is selected at run time.
 - **FMA changes only the rounding.** `fma::<true>` computes
   $c\cdot a_2 + x$ with one rounding, `fma::<false>` with two. The tests hold
-  the two within $10^{-13}$ (3.4.2).
+  the two within $10^{-13}$ (@sec:md-three-center-numerical-anchors).
 
 | Step | Depends on the point | Function |
 |---|---|---|
@@ -214,7 +214,7 @@ Cartesian component pair and keeps only
 the nonzero products, with the index of the $R$ they multiply. Step 5 is then
 one multiply-add per stored coefficient, per point.
 
-## 3.4.2 Numerical anchors
+## Numerical anchors {#md-three-center-numerical-anchors}
 
 | What | Test | Bar |
 |---|---|---|

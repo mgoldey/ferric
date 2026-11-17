@@ -1,6 +1,6 @@
-# How to read this book
+# How to read this book {#how-to-read}
 
-<!-- section: 0.1; status: edit; registry: ;
+<!-- status: edit; registry: ;
      theory: -->
 
 This book explains how each equation in ferric becomes code. Pick any
@@ -62,7 +62,7 @@ The reference part follows:
 | Sources | Where each equation came from, and what the section changed |
 | Known limits | The current limits, dated |
 
-Section 10.1 (closed-shell RI-MP2) and section 13.1 (amplitude-threshold
+Section @sec:closed-shell-ri-mp2 (closed-shell RI-MP2) and section @sec:amplitude-lmp2 (amplitude-threshold
 local MP2) show the whole shape. Read one of them first if you want to see
 how the parts fit.
 
@@ -71,7 +71,7 @@ how the parts fit.
 A working equation sits in a box. The box says what checks it. A verified
 box looks like this:
 
-> **Verified equation 0.1** · what a verified box looks like
+> **Verified equation {#eq:how-to-read-box}** · what a verified box looks like
 >
 > The statement of the identity, in the notation of the Notation chapter.
 >
@@ -182,36 +182,36 @@ supported.
 
 ## How the chapters depend on each other
 
-Chapters 1 to 6 are the foundations: second quantization and spin
-adaptation (1), molecules, basis sets and the numerical rules (2), integrals
-(3), attenuated operators (4), screening (5) and density fitting (6). Every
-later chapter uses them. Read chapter 1 and section 6.1 before anything that
+Chapters @sec:second-quantization to @sec:density-fitting are the foundations: second quantization and spin
+adaptation (@sec:second-quantization), molecules, basis sets and the numerical rules (@sec:molecules-and-numerics), integrals
+(@sec:integrals), attenuated operators (@sec:operators), screening (@sec:screening) and density fitting (@sec:density-fitting). Every
+later chapter uses them. Read chapter @sec:second-quantization and section @sec:factorization-and-metric before anything that
 writes a working equation; the rest you can look up when a section points
 to it.
 
-Most of the book is reached through the self-consistent field, chapters 7
-and 8. Three paths through it:
+Most of the book is reached through the self-consistent field, chapters @sec:hartree-fock
+and @sec:convergence. Three paths through it:
 
-- **Correlation and local correlation.** 7 → 10 → 11 → 12 → 13. Chapter 10
-  derives MP2 and its variants on top of Hartree–Fock, chapter 11 builds the
-  RI-MP2 algorithm and its memory model, chapter 12 adds orbital
-  optimization and the Laplace forms, and chapter 13 truncates the
-  canonical calculation of chapter 10 to local pairs.
-- **Density functional theory and excited states.** 7 → 9 → 20. Chapter 9
-  adds the exchange-correlation functional to the SCF of chapter 7, and
-  chapter 20 builds linear response on the converged reference, using the
-  $f_{xc}$ kernel of section 9.6.
-- **Forces.** 7 → 14 → 15. Chapter 14 differentiates the SCF energy;
-  chapter 15 adds the Z-vector that correlated gradients need.
+- **Correlation and local correlation.** @sec:hartree-fock → @sec:mp2 → @sec:rimp2-algorithms → @sec:oo-laplace → @sec:local-mp2. Chapter @sec:mp2
+  derives MP2 and its variants on top of Hartree–Fock, chapter @sec:rimp2-algorithms builds the
+  RI-MP2 algorithm and its memory model, chapter @sec:oo-laplace adds orbital
+  optimization and the Laplace forms, and chapter @sec:local-mp2 truncates the
+  canonical calculation of chapter @sec:mp2 to local pairs.
+- **Density functional theory and excited states.** @sec:hartree-fock → @sec:kohn-sham → @sec:tddft. Chapter @sec:kohn-sham
+  adds the exchange-correlation functional to the SCF of chapter @sec:hartree-fock, and
+  chapter @sec:tddft builds linear response on the converged reference, using the
+  $f_{xc}$ kernel of section @sec:fxc.
+- **Forces.** @sec:hartree-fock → @sec:derivatives → @sec:correlated-gradients. Chapter @sec:derivatives differentiates the SCF energy;
+  chapter @sec:correlated-gradients adds the Z-vector that correlated gradients need.
 
-Beyond these: coupled cluster (16) builds on chapter 10, the multireference
-chapter (17) on chapters 1 and 8, and RPA (18) on MP2, whose ring
+Beyond these: coupled cluster (@sec:coupled-cluster) builds on chapter @sec:mp2, the multireference
+chapter (@sec:multireference) on chapters @sec:second-quantization and @sec:convergence, and RPA (@sec:rpa) on MP2, whose ring
 diagrams it sums to infinite order. GW and the
-Bethe–Salpeter equation (19) and the polarizabilities (21) build on
-chapter 18. Chapters 22 to 25 cover solvation, embedding, periodic systems
-and dispersion. Chapter 26 combines short-range MP2 (chapter 10 and
-the range-split cross term of section 10.7) with long-range dRPA
-(chapter 18). Chapter 27 lists where the computed
+Bethe–Salpeter equation (@sec:gw-bse) and the polarizabilities (@sec:polarizabilities) build on
+chapter @sec:rpa. Chapters @sec:implicit-solvation to @sec:dispersion cover solvation, embedding, periodic systems
+and dispersion. Chapter @sec:rs-mp2-rpa combines short-range MP2 (chapter @sec:mp2 and
+the range-split cross term of section @sec:range-split-cross-term) with long-range dRPA
+(chapter @sec:rpa). Chapter @sec:ml lists where the computed
 quantities feed machine-learning work.
 
 ## Running the examples
@@ -229,7 +229,7 @@ A snippet that prints numbers names the build that produced them, for
 example "from the `a410529d0` build". Check `ferric.__build__` or
 `ferric.build_info()` to see which commit your installed package was built
 from. The printed values were run with `OPENBLAS_NUM_THREADS=1`; other
-thread counts can change the last bits of a result, as section 2.3
+thread counts can change the last bits of a result, as section @sec:determinism-and-memory
 explains.
 
 ## Where the equations live

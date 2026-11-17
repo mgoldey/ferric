@@ -1,6 +1,6 @@
-# 2.1 Molecule, charge, multiplicity and units
+# Molecule, charge, multiplicity and units {#molecule}
 
-<!-- section: 2.1; status: edit; registry: ;
+<!-- status: edit; registry: ;
      theory: crates/ferric-core/theory.md#"1. Molecular Representation & Coordinate Conventions" -->
 
 A calculation starts from a list of nuclei, a net charge and a spin
@@ -34,12 +34,12 @@ The plan:
 | CLI | `[molecule]` section, keys `xyz`, `charge`, `multiplicity` (`examples/water-rhf.toml`) |
 | Python | `ferric.Molecule.from_xyz` (`crates/ferric-python/ferric.pyi`) |
 
-## 2.1.1 Coordinates and units
+## Coordinates and units {#molecule-coordinates-units}
 
 Inside the code every length is in Bohr and every energy in Hartree. In
 these units the electron mass, the elementary charge, $\hbar$ and
 $4\pi\varepsilon_0$ are 1, so the Coulomb energy of two unit charges a distance $r$ apart is $1/r$ with no
-prefactor. Every integral in Chapter 3 is written this way.
+prefactor. Every integral in Chapter @sec:integrals is written this way.
 
 Input geometries are in Ångström, so one conversion sits at the boundary.
 The XYZ parser multiplies by one constant,
@@ -64,14 +64,14 @@ Every crate converts through this constant, and a test fails on any other
 The same constant converts an inverse length. A range-separation parameter
 $\omega$ given in Å$^{-1}$ times `BOHR_TO_ANGSTROM` is in Bohr$^{-1}$, since
 $\omega\,[\text{Å}^{-1}] \times a_0\,[\text{Å/Bohr}] = \omega\,[\text{Bohr}^{-1}]$.
-The notation chapter, sections 8 and 9, lists which surface takes which unit.
+The notation chapter, sections @sec:notation-attenuated-coulomb-operators and @sec:notation-units, lists which surface takes which unit.
 
 An XYZ file has an atom count, one comment line and one line per atom with
 four fields: a symbol and three coordinates. The parser errors on a short
 line, an unknown symbol or a non-numeric coordinate. The element table covers
 $Z = 1$ to $54$ (H to Xe).
 
-## 2.1.2 Ghost atoms and effective charge
+## Ghost atoms and effective charge {#molecule-ghost-atoms-effective-charge}
 
 A counterpoise correction asks how much a fragment's energy drops when it
 can borrow its partner's basis functions. To compute that, you place the
@@ -83,7 +83,7 @@ full basis of its element and no nuclear charge and no electrons. Its atomic
 number stays the physical one, so the basis lookup by element works
 unchanged. Only the charge the electrons see changes:
 
-$$ Z^{\mathrm{eff}}_A = \begin{cases} 0 & \text{ghost} \\ Z_A - n^{\mathrm{ECP}}_A & \text{otherwise} \end{cases} \tag{2.1} $$
+$$ Z^{\mathrm{eff}}_A = \begin{cases} 0 & \text{ghost} \\ Z_A - n^{\mathrm{ECP}}_A & \text{otherwise} \end{cases} \label{eq:molecule-1} $$
 
 The second case covers effective core potentials. An ECP replaces the
 $n^{\mathrm{ECP}}_A$ innermost electrons of a heavy atom by a potential, so
@@ -91,7 +91,7 @@ the valence electrons see the nucleus screened by those core electrons:
 charge $Z_A - n^{\mathrm{ECP}}_A$. For an all-electron atom
 $n^{\mathrm{ECP}}_A = 0$ and $Z^{\mathrm{eff}}_A = Z_A$.
 
-The code is (2.1) line for line, in
+The code is (@eq:molecule-1) line for line, in
 `ferric-core/src/mol.rs::Atom::effective_z`:
 
 ```rust
@@ -109,7 +109,7 @@ set, and skips ghosts. It is the single point where an ECP enters the
 molecule. `nelec()` and `nuclear_repulsion()` both read `effective_z`, so
 both see the ECP once `apply_ecp` has run.
 
-## 2.1.3 Electrons and spin
+## Electrons and spin {#molecule-electrons-spin}
 
 Each real atom brings $Z^{\mathrm{eff}}_A$ electrons, and a net charge $q$
 removes $q$ of them. Split the total into $N_\alpha$ spin-up and $N_\beta$
@@ -122,14 +122,14 @@ $$ N_\alpha + N_\beta = N, \qquad N_\alpha - N_\beta = M - 1 . $$
 Add the two equations and divide by 2 to get $N_\alpha$. Subtract the second
 from the first to get $N_\beta$:
 
-$$ N = \sum_A Z^{\mathrm{eff}}_A - q, \qquad N_\alpha = \frac{N + M - 1}{2}, \qquad N_\beta = N - N_\alpha . \tag{2.2} $$
+$$ N = \sum_A Z^{\mathrm{eff}}_A - q, \qquad N_\alpha = \frac{N + M - 1}{2}, \qquad N_\beta = N - N_\alpha . \label{eq:molecule-2} $$
 
 Check it on water: $N = 8 + 1 + 1 = 10$ and $M = 1$ give
 $N_\alpha = N_\beta = 5$. The cation $\mathrm{H_2O^+}$ has $N = 9$, and $M = 1$
 gives $N_\alpha = 9/2$, which is not an electron count. A doublet, $M = 2$,
 gives $N_\alpha = 5$ and $N_\beta = 4$.
 
-So (2.2) has an integer solution only when $N + M - 1$ is even, which means an
+So (@eq:molecule-2) has an integer solution only when $N + M - 1$ is even, which means an
 odd electron count needs an even multiplicity and the reverse. It also needs
 $N_\beta \ge 0$, so $M - 1$ may not exceed $N$. The construction `from_atoms`
 checks both conditions in
@@ -155,15 +155,15 @@ A restricted Hartree–Fock reference needs an even $N$ and $M = 1$. The CLI
 kind `rhf` refuses $M > 1$ and points to `uhf` or `rohf` (validation page,
 "Open shells in the CLI").
 
-## 2.1.4 Nuclear repulsion
+## Nuclear repulsion {#molecule-nuclear-repulsion}
 
 The Born–Oppenheimer energy includes the Coulomb repulsion of the fixed
 nuclei. It does not depend on the electrons, so the code computes it once per
 geometry:
 
-$$ E_{\mathrm{nn}} = \sum_{A<B} \frac{Z^{\mathrm{eff}}_A Z^{\mathrm{eff}}_B}{|\mathbf R_A - \mathbf R_B|} . \tag{2.3} $$
+$$ E_{\mathrm{nn}} = \sum_{A<B} \frac{Z^{\mathrm{eff}}_A Z^{\mathrm{eff}}_B}{|\mathbf R_A - \mathbf R_B|} . \label{eq:molecule-3} $$
 
-The restriction $A<B$ counts each pair once. Two limits follow from (2.1).
+The restriction $A<B$ counts each pair once. Two limits follow from (@eq:molecule-1).
 A ghost has $Z^{\mathrm{eff}} = 0$, so every term that contains it vanishes and
 adding a ghost does not change $E_{\mathrm{nn}}$. For an ECP atom the charge is
 that of the screened core, which is the charge the valence electrons see in
@@ -171,7 +171,7 @@ the one-electron Hamiltonian, so the electronic and nuclear terms use the same
 picture of the atom.
 
 `ferric-core/src/mol.rs::Molecule::nuclear_repulsion` is the double loop of
-(2.3):
+(@eq:molecule-3):
 
 ```rust
 for i in 0..self.atoms.len() {
@@ -197,7 +197,7 @@ Only the accumulator's declaration and the return have been removed.
 Skipping ghosts gives the same sum as multiplying by $Z^{\mathrm{eff}} = 0$, and
 avoids a division by zero when a ghost sits on top of a real atom.
 
-## 2.1.5 Frozen core
+## Frozen core {#molecule-frozen-core}
 
 Core electrons sit close to the nucleus and barely change when bonds form.
 Their correlation energy is large but nearly the same in a molecule and in
@@ -254,7 +254,7 @@ that are not in the calculation. Ghosts contribute zero: a ghost has no
 electrons, and counting its element's core would freeze valence orbitals of
 the real atoms.
 
-Where the count enters an energy, chapters 10 and 16 use
+Where the count enters an energy, chapters @sec:mp2 and @sec:coupled-cluster use
 `ferric-mp2/src/rimp2.rs::active_occ`, which returns an error rather than
 underflow when the freeze covers every occupied orbital.
 

@@ -1,6 +1,6 @@
-# 6.2 Three-index sources: in core, packed, spilled, recomputed
+# Three-index sources: in core, packed, spilled, recomputed {#three-index-sources}
 
-<!-- section: 6.2; status: edit; registry: none;
+<!-- status: edit; registry: none;
      theory: crates/ferric-integrals/theory.md#"Three-index storage" -->
 
 The raw tensor $(P|\mu\nu)$ is the largest object most density-fitted methods
@@ -14,7 +14,7 @@ machine.
 ferric keeps that decision in one place. Every consumer reads the tensor
 through one type, which decides at build time where the tensor lives and
 serves it in blocks of auxiliary rows. Consumers apply their own metric
-(section 6.1), so the same source serves RI-J, RI-K, RI-MP2 and RPA. This
+(section @sec:factorization-and-metric), so the same source serves RI-J, RI-K, RI-MP2 and RPA. This
 section lists the storage tiers, how one is chosen, and what each tier does
 and does not change in the numbers.
 
@@ -42,7 +42,7 @@ The packed tier uses the symmetry $(P|\mu\nu) = (P|\nu\mu)$: it stores the
 lower $\mu\nu$ triangle, about half the footprint, and unpacks one block at a
 time when a consumer streams it. In the example above that is 1.5 GB instead
 of 3.0 GB. The pair-screened tier keeps only the $\mu\nu$ pairs that survive a
-Schwarz screen (chapter 5). The single-precision tier rounds each f64 integral
+Schwarz screen (chapter @sec:screening). The single-precision tier rounds each f64 integral
 once to f32 and accumulates in f64. Both of those are RI-J only, because RI-J
 reads them directly and never needs the full unpacked $\mu\nu$ block.
 
@@ -96,11 +96,11 @@ Distributed runs use this: each rank holds its own band.
 
 **A fixed screen.** A source may carry a QQR-3 screen
 (`ferric-integrals/src/three_index_source.rs::ThreeIndexSource::build_band_screened`,
-section 5.2). The screen must stay fixed for the lifetime of the source. A
+section @sec:qqr). The screen must stay fixed for the lifetime of the source. A
 recomputed block then skips exactly the triples the first build skipped, so a
 recomputed block equals the stored one.
 
-## 6.2.1 The options
+## The options {#three-index-sources-options}
 
 `[scf] jk_storage` selects the RI-J/K policy: `auto`, `memory`, `disk`,
 `direct` or `split`. The `FERRIC_JK_STORAGE` environment variable sets the
@@ -122,7 +122,7 @@ a converging SCF typically takes. `site/src/reference/input.md` is the
 authority for these rules, including the shared-memory pool and the
 multi-rank cases.
 
-## 6.2.2 Reproducibility
+## Reproducibility {#three-index-sources-reproducibility}
 
 The tiers hold the same numbers. What can differ is the order in which a
 consumer sums them.
@@ -136,7 +136,7 @@ consumer sums them.
 
 **The dressed tensor.**
 `ferric-integrals/src/three_index_source.rs::ThreeIndexSource::build_dressed`
-forms $\sum_Q M_{PQ}(Q|\mu\nu)$, the $B$ of (6.1) in the AO basis, by
+forms $\sum_Q M_{PQ}(Q|\mu\nu)$, the $B$ of (@eq:factorization-and-metric-1) in the AO basis, by
 streaming the raw source. Two constants keep that sum independent of the
 thread count and of the backend.
 
@@ -171,7 +171,7 @@ the budget can move them, so neither can move a bit of $B$.
 the shared pool, so the same input can choose differently on a busier
 machine. Pinning `jk_storage` removes that dependence.
 
-## 6.2.3 Numerical anchors
+## Numerical anchors {#three-index-sources-numerical-anchors}
 
 | What | Test | Bar |
 |---|---|---|

@@ -1,12 +1,12 @@
-<!-- section: 11.0; status: ready; registry: ri-mp2;
+<!-- status: ready; registry: ri-mp2;
      theory: crates/ferric-mp2/theory.md#"1. Density fitting", "2. Closed-shell RI-MP2" -->
 
-# 11. RI-MP2 algorithms and memory
+# RI-MP2 algorithms and memory {#rimp2-algorithms}
 
 *Notation follows `book/notation.md`. Code references are to commit
 `4eca3fd47`.*
 
-Chapter 10 gives the RI-MP2 energy and its variants. This chapter is about
+Chapter @sec:mp2 gives the RI-MP2 energy and its variants. This chapter is about
 how the code computes it. The equations change little. What changes is the
 order of the steps, where each intermediate lives, how many bytes are
 resident at the peak, and how the work is split across threads, a GPU and
@@ -22,7 +22,7 @@ order of every floating-point sum, so that a run repeated at the same memory
 budget gives the same bits.
 
 The algorithm started as the shared-memory Q-Chem implementation in the
-dissertation (chapter 4). Section 11.1 sets the two side by side.
+dissertation (chapter 4). Section @sec:four-step-algorithm sets the two side by side.
 
 | Symbol | Meaning | Code name | Dissertation |
 |---|---|---|---|

@@ -1,6 +1,6 @@
-# 14.8 Geometry optimization, saddle points and reaction paths
+# Geometry optimization, saddle points and reaction paths {#geometry-search}
 
-<!-- section: 14.8; status: edit; registry: geometry-search;
+<!-- status: edit; registry: geometry-search;
      theory: crates/ferric-scf/theory.md#"Harmonic frequencies"; crates/ferric-scf/theory.md#"Geometry searches" -->
 
 A chemist asks three questions of a potential energy surface. Where are the
@@ -9,10 +9,10 @@ energy? Where is the transition state, the first-order saddle point that is
 the highest point on the lowest path between two minima? Which two minima
 does a given saddle connect, found by walking downhill from it both ways
 along the intrinsic reaction coordinate? Each question is a search driven by
-the gradient of section 14.1 and, for saddles, the Hessian of section 14.4.
+the gradient of section @sec:hf-gradient and, for saddles, the Hessian of section @sec:hf-hessian.
 
-The plan: minimization (14.8.1), its starting Hessian and internal
-coordinates (14.8.2), saddles (14.8.3), reaction paths (14.8.4), then
+The plan: minimization (@sec:geometry-search-minimization), its starting Hessian and internal
+coordinates (@sec:geometry-search-lindh-model-hessian), saddles (@sec:geometry-search-saddle-points-p-rfo), reaction paths (@sec:geometry-search-reaction-paths-mass-weighted), then
 reproducibility, options and anchors.
 
 A saddle is a maximum along the reaction direction and a minimum along
@@ -42,7 +42,7 @@ the runner.
 | CLI | `task = "optimize"`, section `[optimize]` (`max_steps`, `g_max_thresh`, `g_rms_thresh`, `e_conv`, `trust_radius`, `coordinates`, `initial_hessian`, `trust_update`, `scf_warm_start`) |
 | Python | `run_optimize`, `run_saddle`, `run_irc` |
 
-## 14.8.1 Minimization
+## Minimization {#geometry-search-minimization}
 
 ### The quasi-Newton step
 
@@ -58,7 +58,7 @@ secant condition $B's = y$, or, for the inverse $H = B^{-1}$, $H'y = s$.
 
 ferric runs BFGS on the inverse Hessian $H$, so that each step is a matrix
 product and never a linear solve. The default starts from the inverse of
-the Lindh model Hessian (`initial_hessian = "lindh"`, section 14.8.2).
+the Lindh model Hessian (`initial_hessian = "lindh"`, section @sec:geometry-search-lindh-model-hessian).
 `"simple"` starts from the identity. There is no line search. Each step is
 $p = -Hg$, scaled uniformly onto the trust radius $\Delta$ when it is longer:
 
@@ -102,7 +102,7 @@ $\Delta E_{\rm pred} \ge 0$.
 A rise predicted as a rise has $r > 0$ and would otherwise double the radius
 on a rejected step. In Cartesians $\Delta E_{\rm pred} < 0$ always (above), so
 the $\Delta E_{\rm pred} \ge 0$ clause can only fire in internal coordinates
-(14.8.2).
+(@sec:geometry-search-lindh-model-hessian).
 
 <!-- excerpt: ferric-scf/src/optimize.rs::ratio_trust_update -->
 ```rust
@@ -133,7 +133,7 @@ let next = if !accept || predicted >= 0.0 || ratio < TRUST_SHRINK_RATIO {
 With $\rho = 1/(y^{\mathsf T}s)$ the inverse update is
 
 $$ p = -H g, \qquad s = p\,\min\!\Big(1, \frac{r_{\mathrm{trust}}}{\lVert p\rVert}\Big), \qquad
-H' = H + \frac{y^{\mathsf T}s + y^{\mathsf T}Hy}{(y^{\mathsf T}s)^2}\,s\,s^{\mathsf T} - \frac{H y\,s^{\mathsf T} + s\,y^{\mathsf T}H}{y^{\mathsf T}s} . \tag{14.20} $$
+H' = H + \frac{y^{\mathsf T}s + y^{\mathsf T}Hy}{(y^{\mathsf T}s)^2}\,s\,s^{\mathsf T} - \frac{H y\,s^{\mathsf T} + s\,y^{\mathsf T}H}{y^{\mathsf T}s} . \label{eq:geom-bfgs} $$
 
 It is the inverse of the direct BFGS update of $B = H^{-1}$,
 
@@ -174,7 +174,7 @@ $0.2\,s^{\mathsf T}Bs$. On the triplet-water optimizations where
 $y^{\mathsf T}s < 0$ occurs, damping converged in the same or slightly more
 steps (58 vs 58 UMP2, 91 vs 88 UHF/STO-3G). It also needs $Bs = H^{-1}s$, a
 linear solve with the carried inverse. The saddle search does not use this
-update: it carries an indefinite $B$ with the Bofill update of 14.8.3. The
+update: it carries an indefinite $B$ with the Bofill update of @sec:geometry-search-saddle-points-p-rfo. The
 IRC walk carries no Hessian.
 
 The guard and the update are the body of `guarded_inverse_bfgs_update`:
@@ -208,7 +208,7 @@ for i in 0..n {
 | `term1` | $(y^{\mathsf T}s + y^{\mathsf T}Hy)\rho^2$, the weight of $ss^{\mathsf T}$ |
 | `hy[i] * s[j] + s[i] * hy[j]` | $Hys^{\mathsf T} + sy^{\mathsf T}H$, using $H$ symmetric so $(Hy)^{\mathsf T} = y^{\mathsf T}H$ |
 
-> **Verified equation 14.20** · the BFGS inverse update
+> **Verified equation @eq:geom-bfgs** · the BFGS inverse update
 >
 > The update satisfies the secant condition $H'y = s$ in symbols for a generic
 > symmetric $H$, equals the inverse of the direct BFGS update of $B = H^{-1}$,
@@ -235,7 +235,7 @@ and $\mathrm{rms}(g) < g_{\mathrm{rms}}$ together. The defaults are
 $10^{-6}$ Ha, $4.5\times10^{-4}$ and $3.0\times10^{-4}$ Ha/Bohr, a trust
 radius of 0.1 Bohr and 100 steps.
 
-## 14.8.2 Lindh model Hessian
+## Lindh model Hessian {#geometry-search-lindh-model-hessian}
 
 BFGS learns the curvature one step at a time. Started from the identity, it
 treats a stiff C–H stretch and a soft torsion alike, and the first steps
@@ -551,7 +551,7 @@ not inspected.
 The default therefore stays Cartesian. `coordinates = "internal"` is the
 choice for an isolated molecule where a soft torsion near a barrier matters.
 
-## 14.8.3 Saddle points: P-RFO
+## Saddle points: P-RFO {#geometry-search-saddle-points-p-rfo}
 
 ### Why the minimizer cannot find a saddle
 
@@ -564,7 +564,7 @@ works in mass-weighted Cartesians, in the eigenbasis of the Hessian, which
 is why it is called eigenvector following.
 
 1. Mass weight, $\tilde B_{ij} = B_{ij}/\sqrt{m_im_j}$, symmetrize, and project
-   out translations and rotations with the projector of section 14.6. The six
+   out translations and rotations with the projector of section @sec:frequencies. The six
    rigid modes are then shifted to $+10^{3}$, not removed, so indices stay
    aligned and a rigid mode that comes out slightly negative can never be
    followed.
@@ -613,7 +613,7 @@ secular equation, the lowest eigenvalue of their augmented Hessian, below
 $\min_{i\ne k}b_i$, and every one of those steps is downhill:
 
 $$ \lambda_p = \tfrac12\big(b_k + \sqrt{b_k^2 + 4g_k^2}\big), \quad \Delta q_k = -\frac{g_k}{b_k - \lambda_p}; \qquad
-\lambda_n = \sum_{i\ne k}\frac{g_i^2}{\lambda_n - b_i}\ \ (\lambda_n < \min_{i\neq k}b_i), \quad \Delta q_i = -\frac{g_i}{b_i - \lambda_n} . \tag{14.21} $$
+\lambda_n = \sum_{i\ne k}\frac{g_i^2}{\lambda_n - b_i}\ \ (\lambda_n < \min_{i\neq k}b_i), \quad \Delta q_i = -\frac{g_i}{b_i - \lambda_n} . \label{eq:geom-prfo} $$
 
 Check the trivial limit. At a stationary point every $g_i = 0$, so
 $\Delta q = 0$ in both partitions and the search takes no step
@@ -637,7 +637,7 @@ let den_p = b_p - lambda_p;
 $b_k \ge 0$, and the code then sets the step on that mode to zero instead of
 dividing.
 
-> **Verified equation 14.21** · the P-RFO step
+> **Verified equation @eq:geom-prfo** · the P-RFO step
 >
 > The followed-mode shift is the largest root of
 > $\lambda^2 - b\lambda - g^2 = 0$, which is the characteristic equation of the
@@ -674,7 +674,7 @@ Powell symmetric-Broyden corrections. With $e = \Delta g - B\Delta x$, the
 part of the gradient change the current $B$ did not predict, and
 $\varphi = (e\!\cdot\!\Delta x)^2/(e\!\cdot\! e\;\Delta x\!\cdot\!\Delta x)$:
 
-$$ B' = B + \varphi\,\frac{e\,e^{\mathsf T}}{e\cdot\Delta x} + (1-\varphi)\Big[\frac{e\,\Delta x^{\mathsf T} + \Delta x\,e^{\mathsf T}}{\Delta x\cdot\Delta x} - \frac{(e\cdot\Delta x)\,\Delta x\,\Delta x^{\mathsf T}}{(\Delta x\cdot\Delta x)^2}\Big] . \tag{14.22} $$
+$$ B' = B + \varphi\,\frac{e\,e^{\mathsf T}}{e\cdot\Delta x} + (1-\varphi)\Big[\frac{e\,\Delta x^{\mathsf T} + \Delta x\,e^{\mathsf T}}{\Delta x\cdot\Delta x} - \frac{(e\cdot\Delta x)\,\Delta x\,\Delta x^{\mathsf T}}{(\Delta x\cdot\Delta x)^2}\Big] . \label{eq:geom-bofill} $$
 
 Both corrections satisfy $\Delta B\,\Delta x = e$. For Murtagh–Sargent,
 $ee^{\mathsf T}\Delta x/(e\cdot\Delta x) = e$. For Powell, multiply out:
@@ -685,7 +685,7 @@ $\Delta x$, where Murtagh–Sargent is exact, and 0 when they are orthogonal,
 where Murtagh–Sargent divides by zero and Powell does not
 (`ferric-scf/src/saddle.rs::bofill_update`).
 
-> **Verified equation 14.22** · the Bofill update
+> **Verified equation @eq:geom-bofill** · the Bofill update
 >
 > Each of the two corrections satisfies the secant condition
 > $\Delta B\,\Delta x = e$ in symbols, so every mixture $\varphi$ does. The code's
@@ -718,7 +718,7 @@ where Murtagh–Sargent divides by zero and Powell does not
 
 Masses in this module are in u, so Hessian eigenvalues are in Ha/Bohr²/u and
 the $10^{3}$ shift and $10^{-6}$ tolerance are in those units, unlike the
-electron-mass units of section 14.6. The variable is named `mass_au` in the
+electron-mass units of section @sec:frequencies. The variable is named `mass_au` in the
 code.
 
 **Cost.** A finite-difference Hessian costs $6N+1$ gradients
@@ -726,11 +726,11 @@ code.
 `crates/ferric-scf/tests/saddle_cost.rs`), and the default builds two
 Hessians: one at the start and one for the final character check. The
 Python default is `hessian = "fd"`; `"analytic"` and `"auto"` use section
-14.4, with zero displaced gradients, for closed-shell references that the
+@sec:hf-hessian, with zero displaced gradients, for closed-shell references that the
 analytic Hessian accepts. Recomputing every step is available and, on the
 system tested, did not reduce the step count.
 
-## 14.8.4 Reaction paths: mass-weighted descent
+## Reaction paths: mass-weighted descent {#geometry-search-reaction-paths-mass-weighted}
 
 `ferric-scf/src/irc.rs::follow_irc` displaces the saddle along the imaginary
 mode in each direction and follows the mass-weighted gradient downhill. The
@@ -746,7 +746,7 @@ $\partial E/\partial q_i = g_i/\sqrt{m_i}$. Each step moves a length $\ell$
 down that gradient, and $\Delta x_i = \Delta q_i/\sqrt{m_i}$ converts it back:
 
 $$ \Delta q = -\ell\,\frac{g_q}{\lVert g_q\rVert}, \qquad \ell = \min(\ell_0,\,2\lVert g_q\rVert), \qquad
-\Delta x_i = -\,\ell\,\frac{g_i}{m_i\,\lVert g_q\rVert}, \tag{14.23} $$
+\Delta x_i = -\,\ell\,\frac{g_i}{m_i\,\lVert g_q\rVert}, \label{eq:geom-irc-step} $$
 
 with $\ell_0 = 0.1$ $\sqrt{\mathrm u}$ Bohr. The walk starts from
 $q_{\mathrm{saddle}} \pm 0.2\,\hat q$, where $\hat q$ is the mass-weighted,
@@ -773,12 +773,12 @@ for i in 0..n3 {
 Here `gq` is $g_q$ (the Cartesian gradient divided by `sm`, which holds
 $\sqrt{m_i}$), `gn` is $\lVert g_q\rVert$, `DAMPING` is 2 and `config.step`
 is $\ell_0$. The geometry is set from $q$ at the top of the next iteration
-by dividing by $\sqrt{m_i}$, which completes the two-stage form of (14.23).
+by dividing by $\sqrt{m_i}$, which completes the two-stage form of (@eq:geom-irc-step).
 
-> **Verified equation 14.23** · the mass-weighted step
+> **Verified equation @eq:geom-irc-step** · the mass-weighted step
 >
 > $\partial E/\partial q_i = (\partial E/\partial x_i)/\sqrt{m_i}$ by the chain rule
-> (symbols), the Cartesian step of (14.23) equals the code's two-stage form
+> (symbols), the Cartesian step of (@eq:geom-irc-step) equals the code's two-stage form
 > through $q$, and it differs from unweighted steepest descent unless all masses
 > are equal.
 >
@@ -811,7 +811,7 @@ reaction. The step, initial displacement and threshold must be finite and
 positive. Infinities would fail without an error (an infinite threshold
 reports the first point as converged), so they are refused at the boundary.
 
-## 14.8.5 Reproducibility
+## Reproducibility {#geometry-search-reproducibility}
 
 - The Cartesian minimizer path is pinned bit for bit by
   `cartesian_path_is_reproducible_and_matches_the_recorded_path`, and
@@ -827,7 +827,7 @@ reports the first point as converged), so they are refused at the boundary.
 - An energy correction without a gradient is a hard error, so a search never
   walks one surface while reporting another.
 
-## 14.8.6 Options
+## Options {#geometry-search-options}
 
 | Option | Effect |
 |---|---|
@@ -838,9 +838,9 @@ reports the first point as converged), so they are refused at the boundary.
 | `follow_mode` | which projected mode to climb, by ascending eigenvalue; 0 follows the lowest |
 | `hessian_recalc_every` | rebuild the exact Hessian every $N$ steps instead of carrying the Bofill update |
 | open shell | `run_optimize` covers UHF and ROHF; `run_saddle` and `run_irc` are closed shell only |
-| QM/MM | `run_optimize_qmmm` has its own boundary handling; see chapter 23 |
+| QM/MM | `run_optimize_qmmm` has its own boundary handling; see chapter @sec:embedding |
 
-## 14.8.7 Numerical anchors
+## Numerical anchors {#geometry-search-numerical-anchors}
 
 | Check | Reference | Agreement | Test |
 |---|---|---|---|
@@ -854,7 +854,7 @@ reports the first point as converged), so they are refused at the boundary.
 
 The first two rows compare end points with an independent optimizer on an
 independent gradient, so they test the search and the gradient of section
-14.1 together. The NH3 row needs no outside code: the finite-difference and
+@sec:hf-gradient together. The NH3 row needs no outside code: the finite-difference and
 analytic Hessians must lead the same search to the same saddle.
 
 On the validation page, `run_saddle` is stated to cost $2(6N+1) + (\mathrm{steps}+1)$
@@ -867,7 +867,7 @@ negative mode.
 |---|---|
 | `crates/ferric-scf/theory.md`, "Geometry searches" and "Lindh model Hessian" | the derivations, the measured step counts and the choice of default coordinates |
 | `crates/ferric-scf/src/optimize.rs`, `saddle.rs`, `irc.rs` module documentation and loops | every formula and refusal in this section |
-| `scripts/geometry_search_steps_sympy.py` | verified equations 14.20 to 14.23 |
+| `scripts/geometry_search_steps_sympy.py` | verified equations @eq:geom-bfgs to @eq:geom-irc-step |
 | `scripts/lindh_hessian_sympy.py` | the Lindh model box |
 | Banerjee, Adams, Simons and Shepard, J. Phys. Chem. 89, 52 (1985); Bofill, J. Comput. Chem. 15, 1 (1994) | P-RFO and the Hessian update, as cited in `saddle.rs` |
 | Pulay and Fogarasi, J. Chem. Phys. 96, 2856 (1992); Schlegel, Theor. Chim. Acta 66, 333 (1984) | redundant internals and the initial Hessian, as cited in `ferric-core/src/internal_coords.rs` |

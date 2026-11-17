@@ -1,9 +1,9 @@
-# 6.3 Mixed metrics and robust (Dunlap) fitting
+# Mixed metrics and robust (Dunlap) fitting {#robust-fit}
 
-<!-- section: 6.3; status: ready; registry: none;
+<!-- status: ready; registry: none;
      theory: crates/ferric-integrals/theory.md#"Density fitting: the fit and its error", "Robust fitting with a mismatched metric" -->
 
-Section 6.1 fits each product density under the same kernel that the
+Section @sec:factorization-and-metric fits each product density under the same kernel that the
 integrals use. The fit then minimizes exactly the energy error we care about,
 and that error comes out second order in the part of the density the
 auxiliary basis misses. Attenuated MP2 and its relatives sometimes want to fit
@@ -17,10 +17,10 @@ the fit.
 
 The plan:
 
-1. Derive the error of the same-kernel fit and show it is stationary (6.3.1).
+1. Derive the error of the same-kernel fit and show it is stationary (@sec:robust-fit-fit-error).
 2. Derive the robust form for a mismatched kernel and show why the obvious
-   substitution fails (6.3.2).
-3. Read the code that evaluates the robust form (6.3.3).
+   substitution fails (@sec:robust-fit-robust-form).
+3. Read the code that evaluates the robust form (@sec:robust-fit-algorithm).
 
 | Entry point | Location |
 |---|---|
@@ -39,9 +39,9 @@ AO pairs).
 | $c_x$ | fit coefficients, $\tilde\rho_x = \sum_P c_{Px}\chi_P$ |
 | $\delta_x$ | the residual density $\rho_x - \tilde\rho_x$ |
 
-## 6.3.1 The fit and its error
+## The fit and its error {#robust-fit-fit-error}
 
-The fit of section 6.1.1 minimizes
+The fit of section @sec:factorization-and-metric-factorization minimizes
 $(\rho_x - \tilde\rho_x|\hat w|\rho_x - \tilde\rho_x)$ over the coefficients,
 which gives
 
@@ -83,12 +83,12 @@ $\delta_x = 0$ and the fit is exact.
 
 **Standard RI is this formula factored.** Standard RI writes
 $A_x^{\mathsf T}V^{-1}A_y$ as $B^{\mathsf T}B$ with $B = MA$ and any $M$
-satisfying $M^{\mathsf T}M = V^{-1}$ (section 6.1.2). ferric's $M = L^{-1}$
+satisfying $M^{\mathsf T}M = V^{-1}$ (section @sec:factorization-and-metric-any-factor-gives-same). ferric's $M = L^{-1}$
 from $V = LL^{\mathsf T}$ is not symmetric, so $MM \ne V^{-1}$. A formula that
 is not a Gram product $B^{\mathsf T}B$ must therefore solve with $V$ instead
 of applying $M$ twice. The robust form below is such a formula.
 
-> **Verified equation 6.1** · with $\hat w = \hat C$ the robust form is standard RI
+> **Verified equation {#eq:df-robust-collapse}** · with $\hat w = \hat C$ the robust form is standard RI
 >
 > $G = J^{\mathsf T}V_C^{-1}J = B^{\mathsf T}B$ with $B = L^{-1}J$, and the
 > Cholesky factor satisfies $M^{\mathsf T}M = V^{-1}$ but $MM \ne V^{-1}$.
@@ -102,7 +102,7 @@ of applying $M$ twice. The robust form below is such a formula.
 >
 > <!-- verified: id=df.robust.collapse; script=scripts/robust_fit_sympy.py; claim=collapse; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/rimp2.rs::solve_metric_system -->
 
-> **Verified equation 6.2** · the same-kernel fitting error is quadratic and stationary
+> **Verified equation {#eq:df-robust-stationary}** · the same-kernel fitting error is quadratic and stationary
 >
 > With $\hat w = \hat C$ the diagonal error $(\delta_x|\hat C|\delta_x)$ has zero
 > first derivative in the coefficients; with $\hat w \ne \hat C$ it does not.
@@ -115,17 +115,17 @@ of applying $M$ twice. The robust form below is such a formula.
 >
 > <!-- verified: id=df.robust.stationary; script=scripts/robust_fit_sympy.py; claim=stationary; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/rimp2.rs::solve_metric_system -->
 
-Section 10.1 states the error identity as the unverified box
-`df.quadratic-error`. Verified equation 6.2 is that statement: the error
-identity of 6.3.2 with $\hat w = \hat C$ is the same equation, and claim
-residual (Verified equation 6.3) proves it for any coefficients.
+Section @sec:closed-shell-ri-mp2 states the error identity as the unverified box
+`df.quadratic-error`. Verified equation @eq:df-robust-stationary is that statement: the error
+identity of @sec:robust-fit-robust-form with $\hat w = \hat C$ is the same equation, and claim
+residual (Verified equation @eq:df-robust-residual) proves it for any coefficients.
 
-## 6.3.2 The robust form
+## The robust form {#robust-fit-robust-form}
 
 Now let the fitting kernel $\hat w$ differ from the physical kernel $\hat C$.
 The coefficients are still $c_x = V_w^{-1}A_x$, and the residual is
 $\hat w$-orthogonal to the auxiliary functions. It is not $\hat C$-orthogonal,
-so the cross terms of the expansion in 6.3.1 no longer vanish.
+so the cross terms of the expansion in @sec:robust-fit-fit-error no longer vanish.
 
 **The naive substitution.** Replace $V^{-1}$ in the standard formula by
 $V_w^{-1}$ and keep the physical three-index integrals:
@@ -157,10 +157,10 @@ Check the limits.
 
 - **Same kernel.** With $\hat w = \hat C$, $c_x = V_C^{-1}J_x$. Substitute:
   $G = J^{\mathsf T}V_C^{-1}J + J^{\mathsf T}V_C^{-1}J - J^{\mathsf T}V_C^{-1}J = J^{\mathsf T}V_C^{-1}J$,
-  which is standard RI (Verified equation 6.1).
+  which is standard RI (Verified equation @eq:df-robust-collapse).
 - **Complete auxiliary basis.** The residuals are zero for any $\hat w$, and
   $G$ is exact.
-- **Coefficient error.** Apply the quadratic expansion of 6.3.1 to the
+- **Coefficient error.** Apply the quadratic expansion of @sec:robust-fit-fit-error to the
   physical kernel. The diagonal error is $D_x(c)$ with $\hat C$ in place of
   $\hat w$, minimized at the $\hat C$-optimal coefficients $c^C_x$. At the
   $\hat w$ fit,
@@ -187,7 +187,7 @@ $2.19\times10^{-3}$):
 The naive error passes 100% of the integral by $\omega_m = 0.5$. The robust
 error stays within 3% of the standard-RI error over the whole range.
 
-> **Verified equation 6.3** · the robust error is the residual self-interaction
+> **Verified equation {#eq:df-robust-residual}** · the robust error is the residual self-interaction
 >
 > $(x|\hat C|y) - G_{xy} = (\delta_x|\hat C|\delta_y)$ for any coefficients:
 > symbolically for a generic bilinear form, and on a model of $s$ Gaussians on
@@ -203,7 +203,7 @@ error stays within 3% of the standard-RI error over the whole range.
 >
 > <!-- verified: id=df.robust.residual; script=scripts/robust_fit_sympy.py; claim=model; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/rimp2.rs::ri_mp2_robust_attenuated_metric -->
 
-> **Verified equation 6.4** · the naive form diverges, the robust one does not
+> **Verified equation {#eq:df-robust-diverges}** · the naive form diverges, the robust one does not
 >
 > On the model, as the erfc fitting kernel's $\omega_m$ grows, the naive
 > $J^{\mathsf T}V_w^{-1}J$ error grows without bound while the robust error
@@ -221,7 +221,7 @@ error stays within 3% of the standard-RI error over the whole range.
 The script's full claim list is residual, collapse, cholesky, stationary,
 model, diverges and psd-diag.
 
-## 6.3.3 The algorithm
+## The algorithm {#robust-fit-algorithm}
 
 | Step | Quantity | Kernel | Function |
 |---|---|---|---|
@@ -264,7 +264,7 @@ Points about it:
   so the energy cannot come from a $B$ tensor.
   `ferric-mp2/src/rimp2.rs::spin_components_from_g` reads $(ia|jb)$ and
   $(ib|ja)$ straight from $G$, with the same energy expressions and the same
-  $i \le j$ pair weighting as the standard path (equation 10.2).
+  $i \le j$ pair weighting as the standard path (equation @eq:mp2-cs-spin-adaptation).
 
 **Why solve, and not apply the metric factor.**
 `ferric-mp2/src/rimp2.rs::solve_metric_system` factors $V_w = LL^{\mathsf T}$
@@ -285,7 +285,7 @@ l.t()
 The BLAS-thread wrapper and the body of the first error message are removed.
 The code solves instead of applying a factor for two reasons. First,
 `metric_inverse_sqrt` returns $L^{-1}$ for positive definite kernels, and $G$ needs $V_w^{-1}$ itself; applying $L^{-1}$ twice gives
-$MM \ne V^{-1}$ (Verified equation 6.1). Second, an explicit inverse is
+$MM \ne V^{-1}$ (Verified equation @eq:df-robust-collapse). Second, an explicit inverse is
 inaccurate here. RI and JK-fit metrics are ill-conditioned (condition number
 $3\times10^{7}$ to $7\times10^{8}$ on benzene/def2-universal-jkfit for
 Coulomb and erfc). `inv()` followed by a matrix product has a forward error of

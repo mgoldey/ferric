@@ -1,6 +1,6 @@
-# 3.5 Effective core potentials
+# Effective core potentials {#ecp}
 
-<!-- section: 3.5; status: edit; registry: none;
+<!-- status: edit; registry: none;
      theory: crates/ferric-integrals/theory.md#"Effective core potentials" -->
 
 The core electrons of a heavy atom take no part in bonding, but they are
@@ -155,7 +155,7 @@ Three points about it:
 
 ### Derivatives
 
-Shell derivatives use raised and lowered shells, the formula of section 3.3:
+Shell derivatives use raised and lowered shells, the formula of section @sec:integrals-derivatives:
 
 $$ \frac{\partial\chi}{\partial A_x} = 2\alpha\,\chi(i+1) - i\,\chi(i-1), $$
 
@@ -163,12 +163,12 @@ where $\chi(i\pm1)$ is the function with the $x$ exponent raised or lowered by
 one. The code builds the raised companion of a shell with coefficients
 $2\alpha c$ and the lowered one with coefficients $c$, evaluates the ordinary
 ECP block for each, and combines them. The ECP-centre derivative follows from
-translation invariance (section 3.3) as $-(\partial_A + \partial_B)$; in
+translation invariance (section @sec:integrals-derivatives) as $-(\partial_A + \partial_B)$; in
 `ferric-integrals/src/ecp_quad/mod.rs::block_deriv_cart` that is the line
 `cen[k].1[x][i] -= da[x][i] + db[x][i]`. No separate derivative of the
 projector is needed.
 
-## 3.5.1 The order of operations
+## The order of operations {#ecp-order-operations}
 
 | Step | What happens | Where |
 |---|---|---|
@@ -189,7 +189,7 @@ accurate to $5.2 \times 10^{-14}$ per window, and its angular factors are
 analytic. libecpint stays in the build as an independent implementation that the
 quadrature is tested against.
 
-## 3.5.2 Numerical anchors
+## Numerical anchors {#ecp-numerical-anchors}
 
 | What | Test | Bar |
 |---|---|---|

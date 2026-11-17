@@ -1,18 +1,18 @@
-# 24.5 Range-separated Gaussian density fitting for J and K
+# Range-separated Gaussian density fitting for J and K {#rsgdf}
 
-<!-- section: 24.5; status: ready; registry: pbc-hf;
+<!-- status: ready; registry: pbc-hf;
      theory: crates/ferric-pbc/theory.md#"7. Range-separated Gaussian density fitting (RS-GDF)" -->
 
-The dense builder of section 24.4 stores $n_\text{ao}^4$ Coulomb integrals and
+The dense builder of section @sec:exchange-divergence stores $n_\text{ao}^4$ Coulomb integrals and
 sums a $\mathbf G$ sphere that grows with the cell volume and the steepest
 exponent, so it is a correctness oracle for toy cells. Production cells use
-`jk = "rsgdf"`: the density fitting of chapter 6, with every pair density
-expanded in an auxiliary Gaussian basis, and the Ewald split of section 24.1
+`jk = "rsgdf"`: the density fitting of chapter @sec:density-fitting, with every pair density
+expanded in an auxiliary Gaussian basis, and the Ewald split of section @sec:ewald
 applied to the two- and three-index integrals. The fit keeps the convention
 that drops $\mathbf G = 0$, so it fits the same kernel the energy uses.
 
-Section 24.5.1 derives the integrals, the fit and the two builders;
-24.5.2 gives the algorithm and the code; 24.5.3 to 24.5.6 cover
+Section @sec:rsgdf-fitted-integrals derives the integrals, the fit and the two builders;
+@sec:rsgdf-algorithm gives the algorithm and the code; @sec:rsgdf-reproducibility-memory to @sec:rsgdf-sources cover
 reproducibility, options, anchors and sources.
 
 | Symbol | Meaning | Code name |
@@ -33,14 +33,14 @@ reproducibility, options, anchors and sources.
 | CLI | `[cell] jk = "rsgdf"` with `auxbasis` |
 | Python | `jk="rsgdf", auxbasis=...` on every periodic entry point |
 
-## 24.5.1 The fitted integrals
+## The fitted integrals {#rsgdf-fitted-integrals}
 
 **What is fitted.** The goal is
 $I_{\mu\nu,\lambda\sigma} \approx \sum_kB_{k,\mu\nu}B_{k,\lambda\sigma}$, in
 the PySCF RSGDF conventions (`crates/ferric-pbc/src/rsgdf.rs`). Every fitted
 quantity uses the energy's kernel, $v(\mathbf G) = 4\pi/G^2$ with
 $\mathbf G = 0$ dropped. With $X_P$ the transform of $\chi_P$ and $P_{\mu\nu}$
-the pair transform of section 24.2, the metric and the three-index integrals
+the pair transform of section @sec:pair-ft, the metric and the three-index integrals
 are
 
 $$
@@ -67,7 +67,7 @@ $$
 
 with $c_0 = \pi/(\eta^2\Omega)$, $q_P = \int\chi_P = X_P(0)$ and
 $S_{\mu\nu} = P_{\mu\nu}(0)$ the lattice overlap. The last terms come from
-the same argument as $V_\text{G0}$ in section 24.3. The real-space erfc sums
+the same argument as $V_\text{G0}$ in section @sec:nuclear-attraction. The real-space erfc sums
 (libint2 erfc integrals on translated shells,
 `Engine::compute_eri2_shifted` and `compute_eri3_shifted`) are full lattice
 sums, so they contain the $\mathbf G = 0$ term of the erfc kernel,
@@ -75,7 +75,7 @@ $\int\operatorname{erfc}(\eta r)/r\,d^3r = \pi/\eta^2$, times the two charges.
 For $J2$ the charges are $q_P$ and $q_Q$. For $J3$ they are $q_P$ and the
 charge of the lattice-summed pair, $S_{\mu\nu}$. `subtract_g0` removes both,
 and it is the one place the convention lives. Per $\mathbf G \neq 0$ the erfc
-and erf pieces add to the bare kernel (verified equation 24.4), so $J2$ and
+and erf pieces add to the bare kernel (verified equation @eq:pbc-hcore-split), so $J2$ and
 $J3$ do not depend on $\eta$ up to truncation.
 
 **The erfc integral of two Gaussian charges.** The screen of the real-space
@@ -96,7 +96,7 @@ At $\eta \to \infty$, $\gamma_\eta \to \gamma$ and it vanishes: all of the
 interaction has moved to reciprocal space. The per-triplet screen of
 `rsgdf.rs` is built on a bound of this Gaussian form.
 
-> **Verified equation 24.8** · the Ewald-split fit integrals
+> **Verified equation {#eq:pbc-rsgdf-split}** · the Ewald-split fit integrals
 >
 > On s Gaussians in a triclinic cell, $J2$ and $J3$ assembled as erfc
 > real-space sums plus the long-range reciprocal sums minus $c_0q_Pq_Q$ and
@@ -130,7 +130,7 @@ the pseudo-inverse $J2^{+}$ over the kept space. So
 
 $$ B^{\mathsf T}B = J3\,J2^{+}J3^{\mathsf T} , $$
 
-the same-kernel fit of section 6.1, here in the periodic kernel.
+the same-kernel fit of section @sec:factorization-and-metric, here in the periodic kernel.
 
 **Why the fit is variational.** $I$, $J2$ and $J3$ are Gram matrices of one
 positive kernel (pair densities with pair densities, auxiliaries with
@@ -146,9 +146,9 @@ term, $\mathbf G = 0$, is absent from $I$, $J2$ and $J3$ alike.
 **Check the trivial limit.** When the auxiliary functions span the pair
 densities, $J3$ and $J2$ describe the same space as $I$ and the fit is exact,
 $B^{\mathsf T}B = I$. The code test compares the fitted ERI with the dense
-tensor of section 24.4 in that limit.
+tensor of section @sec:exchange-divergence in that limit.
 
-> **Verified equation 24.9** · the robust fit is variational and exact in the trivial limit
+> **Verified equation {#eq:pbc-rsgdf-fit}** · the robust fit is variational and exact in the trivial limit
 >
 > $B = (J3\,U_\text{kept}s_\text{kept}^{-1/2})^{\mathsf T}$ gives
 > $B^{\mathsf T}B = J3\,J2^{+}J3^{\mathsf T}$; the fitting error
@@ -174,7 +174,7 @@ J_{\mu\nu} = \sum_k B_{k,\mu\nu}\sum_{\lambda\sigma}B_{k,\lambda\sigma}D_{\lambd
 K = \sum_k B_k\,D\,B_k^{\mathsf T} + v_M\,SDS ,
 $$
 
-with the Madelung term of section 24.4 for `exxdiv = ewald`. $J$ is two
+with the Madelung term of section @sec:exchange-divergence for `exxdiv = ewald`. $J$ is two
 matrix–vector products, $B^{\mathsf T}(Bd)$. $K$ is a sum over $k$ of
 $n_\text{ao}$-square matrix products. One $B$ serves both builders (`RsGdfJ`,
 `RsGdfK`), so the fitted ERI stays a single positive semidefinite
@@ -182,7 +182,7 @@ $B^{\mathsf T}B$. The exchange sum runs over 24 fixed auxiliary groups
 (`EXCHANGE_AUX_GROUPS`), so every bit of $K$ depends on $n_\text{aux}$ alone,
 not on the thread count.
 
-> **Verified equation 24.10** · J and K from one factor
+> **Verified equation {#eq:pbc-rsgdf-jk}** · J and K from one factor
 >
 > $J = B^{\mathsf T}(Bd)$ and $K = \sum_kB_kDB_k^{\mathsf T}$ are the
 > Coulomb and exchange contractions of the fitted ERI $\sum_kB_kB_k^{\mathsf T}$.
@@ -199,7 +199,7 @@ not on the thread count.
 
 **At a $k$-point mesh.** `rsgdf/kpoint.rs` fits each momentum-transfer class
 $q = k' - k$ separately. The Bloch pair density $P^{k'}_{\mu\nu}(\mathbf K)$ at
-$\mathbf K = \mathbf G + q$ (section 24.6) is fitted in the $q$-Bloch
+$\mathbf K = \mathbf G + q$ (section @sec:kpoint-scf) is fitted in the $q$-Bloch
 auxiliary set $X^q_P = \sum_{\mathbf T}e^{iq\cdot\mathbf T}\chi_P(\mathbf r - \mathbf T)$,
 with a Hermitian metric $J2(q) = UsU^{\mathsf H}$ cut per $q$. The
 real-space erfc integrals do not depend on $q$ or $k$: the Gamma walk is
@@ -210,7 +210,7 @@ $J2(-q) = J2(q)^*$, and only one of each $(q, -q)$ is built. The mesh fit is
 the Gamma fit of the $\operatorname{diag}(N)$ supercell, block-diagonal in
 $q$; `crates/ferric-pbc/tests/pbc_krsgdf.rs` tests it.
 
-## 24.5.2 The algorithm
+## The algorithm {#rsgdf-algorithm}
 
 | Step | Quantity | Cost | Function |
 |---|---|---|---|
@@ -250,7 +250,7 @@ The $\mathbf G = 0$ bookkeeping is one function:
 
 `do_metric` and `do_three` are both true in production.
 `G0Handling::MetricOnlyMutant` skips the three-index subtraction and
-`G0Handling::NeitherMutant` skips both; the anchors of 24.5.5 detect each.
+`G0Handling::NeitherMutant` skips both; the anchors of @sec:rsgdf-numerical-anchors detect each.
 
 The fit is this part of `ferric-pbc/src/rsgdf.rs::fit_with_metric`:
 
@@ -284,7 +284,7 @@ The fit is this part of `ferric-pbc/src/rsgdf.rs::fit_with_metric`:
 An auxiliary basis with no eigenvalue above `lindep` has no fitting power in
 the $\mathbf G = 0$-dropped kernel, and the build stops with that message.
 
-## 24.5.3 Reproducibility and memory
+## Reproducibility and memory {#rsgdf-reproducibility-memory}
 
 - The SR three-index walk evaluates each unordered shell pair once and copies
   the block into both orderings, so $J3_\text{SR}$ is exactly symmetric and
@@ -306,7 +306,7 @@ the $\mathbf G = 0$-dropped kernel, and the build stops with that message.
   libint2's two- and three-centre integrals abort on a Cartesian one, so the
   build refuses such a basis with a typed error first.
 
-## 24.5.4 Options
+## Options {#rsgdf-options}
 
 | Option | Values | Default | Effect |
 |---|---|---|---|
@@ -317,7 +317,7 @@ the $\mathbf G = 0$-dropped kernel, and the build stops with that message.
 | `[cell] sr_column_rotation` | `true`, `false` | on with `rsgdf` | evaluates the SR walk on column-rotated general contractions, back-transformed exactly |
 | `[memory] budget_gb`, `memory_budget_gb=` | GB | auto | the ledger |
 
-## 24.5.5 Numerical anchors
+## Numerical anchors {#rsgdf-numerical-anchors}
 
 | Quantity | Bar | Test |
 |---|---|---|
@@ -325,7 +325,7 @@ the $\mathbf G = 0$-dropped kernel, and the build stops with that message.
 | the two $\mathbf G = 0$ mutants are detected | above $10^{-2}$ and $10^{-3}$ | `g0_mutants_and_incomplete_aux_fail_the_anchor` |
 | fitted ERI at different $\eta$ | $10^{-9}$ | `fitted_eri_is_omega_independent` |
 
-## 24.5.6 Sources
+## Sources {#rsgdf-sources}
 
 | Source | What it gives |
 |---|---|

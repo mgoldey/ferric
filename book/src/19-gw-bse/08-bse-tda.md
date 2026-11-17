@@ -1,6 +1,6 @@
-# 19.8 The Bethe–Salpeter equation in the Tamm–Dancoff approximation
+# The Bethe–Salpeter equation in the Tamm–Dancoff approximation {#bse-tda}
 
-<!-- section: 19.8; status: ready; registry: bse-tda;
+<!-- status: ready; registry: bse-tda;
      theory: crates/ferric-gw/theory.md#"11. BSE-TDA" -->
 
 A quasiparticle gap $\epsilon^{\rm QP}_a - \epsilon^{\rm QP}_i$ is the cost of
@@ -11,7 +11,7 @@ screened by the other electrons, so it is $W$. The Bethe–Salpeter equation
 adds this electron–hole interaction, plus a bare exchange term, to the
 quasiparticle gaps. With a static $W$ and without the de-excitation block
 (Tamm–Dancoff), it is a symmetric eigenproblem in the space of single
-excitations, the same shape as CIS or TDA-TDDFT (section 20.1) with a
+excitations, the same shape as CIS or TDA-TDDFT (section @sec:response) with a
 different kernel.
 
 | Symbol | Meaning | Code name |
@@ -29,7 +29,7 @@ different kernel.
 | CLI | `method.kind = "bse-tda"`, `[rpa]` and `[gw] frozen_core`; example `examples/water-bse-tda.toml` |
 | Python | `run_bse_tda` |
 
-## 19.8.1 The matrix
+## The matrix {#bse-tda-matrix}
 
 **In spin orbitals.** The Bethe–Salpeter kernel for a particle–hole pair has
 two terms. In the Hartree-type term the pair annihilates into the bare
@@ -70,7 +70,7 @@ $-(aa|ii)$; BSE uses the interaction screened by the other electrons.
 
 **The screened kernel.** The bare part of $(pq|W(0)|rs)$ comes from $B$, and
 the dynamic part from the PDEP modes. For a complete basis the kernel equals
-$\sum_\xi \lambda_\xi(0)^{-1} B^\xi B^\xi$ (section 19.2.2), and the split form
+$\sum_\xi \lambda_\xi(0)^{-1} B^\xi B^\xi$ (section @sec:screened-interaction-pdep-basis), and the split form
 stays correct when modes are truncated. The Hartree term uses bare $v$; the
 direct term uses the static full $W$. This is static-screening BSE-TDA as
 defined here: ferric does not add a dynamical correction to $W$.
@@ -85,7 +85,7 @@ matrix and checks that the same matrix equals
 $\langle\Phi_i^a|H - E_0|\Phi_j^b\rangle$ over Jordan–Wigner determinants of
 an 8-spin-orbital Fock space, and that the Brillouin condition holds.
 
-> **Verified equation 19.13** · the singlet BSE-TDA matrix is the spin adaptation of the spin-orbital one
+> **Verified equation {#eq:bse-tda-box}** · the singlet BSE-TDA matrix is the spin adaptation of the spin-orbital one
 >
 > On a random closed-shell model with a complete auxiliary basis, the code's
 > matrix equals the singlet block of the spin-orbital matrix
@@ -106,7 +106,7 @@ an 8-spin-orbital Fock space, and that the Brillouin condition holds.
 >
 > <!-- verified: id=bse.tda.matrix; script=scripts/gw_bse_rpax_sympy.py; claim=B1; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-gw/src/bse.rs::run_bse_tda; rust_test=ferric-gw/tests/validation_bse.rs::cis_tda_anchor_vs_numpy_and_pyscf_tda; registry=bse-tda -->
 
-> **Verified equation 19.14** · the screened kernel from the complete PDEP basis
+> **Verified equation {#eq:bse-tda-kernel}** · the screened kernel from the complete PDEP basis
 >
 > For a complete orthonormal basis, $v + \sum_\xi w_\xi B^\xi B^\xi = \sum_\xi\lambda_\xi(0)^{-1}B^\xi B^\xi$.
 > The code uses the left side, which stays correct when modes are dropped.
@@ -159,7 +159,7 @@ Each closure call contracts over $N_{\rm aux}$ (and $N_{\rm pdep}$ for
 `screened`) on the fly. The matrix is then diagonalized densely; LAPACK
 returns the eigenvalues ascending with matching eigenvector columns.
 
-## 19.8.2 Oscillator strengths
+## Oscillator strengths {#bse-tda-oscillator-strengths}
 
 **The transition moment.** A singlet root with amplitudes $X$ is the
 spin-adapted combination of the $\alpha$ and $\beta$ excitations:
@@ -203,7 +203,7 @@ Claim B4 checks the sum rule
 $\sum_n f_n = \tfrac43\sum_x \mathbf r_x^{\mathsf T}\mathbf A\,\mathbf r_x$ over
 all roots, which fixes both the $\sqrt2$ and the factor $\Omega$.
 
-> **Verified equation 19.15** · the transition moment and the sum rule
+> **Verified equation {#eq:bse-tda-osc}** · the transition moment and the sum rule
 >
 > $\langle\Phi_0|\mathbf r|\Psi_n\rangle$ over Jordan–Wigner determinants,
 > with $\Psi_n$ the spin-adapted singlet of the CIS roots, equals
@@ -221,13 +221,13 @@ all roots, which fixes both the $\sqrt2$ and the factor $\Omega$.
 >
 > <!-- verified: id=bse.tda.osc; script=scripts/gw_bse_rpax_sympy.py; claim=B3; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-gw/src/bse.rs::tda_oscillator_strengths; rust_test=ferric-gw/tests/bse_oscillator_strength.rs::cis_tda_oscillator_strengths_match_pyscf_df_kernel; registry=bse-tda -->
 
-## 19.8.3 The algorithm
+## The algorithm {#bse-tda-algorithm}
 
 | Step | Quantity | Cost | Function |
 |---|---|---|---|
-| 1 | G0W0@HF for **all** active MOs (`qp_mos = 0..nmo`) | section 19.3 for every state | `run_gw` |
+| 1 | G0W0@HF for **all** active MOs (`qp_mos = 0..nmo`) | section @sec:correlation-self-energy for every state | `run_gw` |
 | 2 | flag the states whose QP solve is poorly determined, among those on the diagonal | $O(n_{\rm act})$ | `flag_suspect_qp` |
-| 3 | $B$, redressed PDEP modes, $B^\xi$ | section 19.2 | `build_full_b`, `redress_with_check`, `project_b_into_pdep` |
+| 3 | $B$, redressed PDEP modes, $B^\xi$ | section @sec:screened-interaction | `build_full_b`, `redress_with_check`, `project_b_into_pdep` |
 | 4 | the dense matrix $\mathbf A$, $n = n_on_v$ | $n^2$ entries, each a contraction over $N_{\rm aux}$ and $N_{\rm pdep}$ | `run_bse_tda` |
 | 5 | dense `eigh` | $n^3$ | `run_bse_tda` |
 | 6 | $f_n$ from the dipole blocks | $O(n^2)$ | `tda_oscillator_strengths` |
@@ -249,7 +249,7 @@ in `BseResult::qp_suspect_mos`, with a warning, instead of replacing them.
 refuses a system whose $(n_on_v)^2$ does not fit. There is no iterative
 solver to fall back to.
 
-## 19.8.4 Options and limits
+## Options and limits {#bse-tda-options-limits}
 
 | Option | Effect |
 |---|---|
@@ -267,7 +267,7 @@ are coarser. The grade is Smoke: the lowest five singlets match an
 independent numpy BSE-TDA given the same QP energies, and the physics is not
 benchmarked against experiment here.
 
-## 19.8.5 Numerical anchors
+## Numerical anchors {#bse-tda-numerical-anchors}
 
 From `site/src/reference/validation.md` (BSE-TDA row of the anchors table):
 
@@ -281,7 +281,7 @@ From `site/src/reference/validation.md` (BSE-TDA row of the anchors table):
 Further tests: `crates/ferric-gw/tests/bse_oscillator_strength.rs` and
 `crates/ferric-gw/tests/h2o_bse_tda.rs`.
 
-## 19.8.6 Sources
+## Sources {#bse-tda-sources}
 
 | Source | What it gives |
 |---|---|

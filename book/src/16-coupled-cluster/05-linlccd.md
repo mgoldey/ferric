@@ -1,6 +1,6 @@
-# 16.5 LinLCCD and LinLCCD(hh)
+# LinLCCD and LinLCCD(hh) {#linlccd}
 
-<!-- section: 16.5; status: ready; registry: linlccd;
+<!-- status: ready; registry: linlccd;
      theory: crates/ferric-cc/theory.md#"LinLCCD and LinLCCD(hh)" -->
 
 MP2 divides each pair's driving integral by the orbital-energy gap, so it
@@ -9,10 +9,10 @@ diverges as the gap closes. Coupled cluster at first order in $\hat T_2$
 exchange part of the ring and crossed-ring terms, not to small denominators
 as such (module documentation of `linlccd.rs`). Linearized ladder CCD keeps
 only the driver, the Fock term and the ladders of the CCD residual of
-section 16.1, so the amplitude equations are linear, and LinLCCD(hh) keeps
+section @sec:ccd-ccsd-spin-orbital, so the amplitude equations are linear, and LinLCCD(hh) keeps
 only the hole–hole ladder, which costs $O(n_o^4n_v^2)$ and never forms the
 $n_v^4$ block. It is the correlation half of the ωB97X-L-V double hybrid
-(section 16.6) and a CLI kind of its own.
+(section @sec:wb97x-l-v) and a CLI kind of its own.
 
 | Index | Range | Code name |
 |---|---|---|
@@ -25,9 +25,9 @@ $n_v^4$ block. It is the correlation half of the ωB97X-L-V double hybrid
 | CLI | `method.kind = "linlccd"`, `[mp2] linlccd_variant` (`examples/water-linlccd.toml`) |
 | Python | `run_linlccd(variant=)` |
 
-## 16.5.1 The equations
+## The equations {#linlccd-equations}
 
-**From CCD to LinLCCD.** Start from the CCD residual of section 16.1 and
+**From CCD to LinLCCD.** Start from the CCD residual of section @sec:ccd-ccsd-spin-orbital and
 delete the ring term (in spin orbitals it holds the rings and crossed rings
 together) and the four quadratic terms (the products of two pair
 excitations). What is left is the driver, the Fock part $\Delta t$ and the two ladders,
@@ -64,7 +64,7 @@ size-consistent, size-extensive and orbital-invariant.
 
 - `DriversOnly` is the MP2 amplitude equation, so it reproduces RI-MP2. The
   solver starts from the MP2 guess, which is already its answer.
-- `Full` is not exact for two electrons, unlike CCSD (section 16.1): it
+- `Full` is not exact for two electrons, unlike CCSD (section @sec:ccd-ccsd-spin-orbital): it
   drops the ring terms, and on H2/cc-pVDZ it recovers about half of the CCD
   correlation energy (`scripts/validation/gen_linlccd.py`, quoted in the
   documentation of `LadderVariant::Full`).
@@ -120,7 +120,7 @@ has two spin orderings. With $k$ α and $l$ β the integral is $(ki|lj)$ and
 the amplitude $T_{kalb}$. With $k$ β and $l$ α the integral is
 $-(kj|li)$ and the amplitude $-T_{lakb}$; relabel $k\leftrightarrow l$ and
 it equals the first. The two orderings cancel the $\tfrac12$, and the pp
-ladder goes the same way. The result, with the energy in the form (1.15):
+ladder goes the same way. The result, with the energy in the form (@eq:so-cc-amplitude-expansion):
 
 $$0 = (ia|jb) + \Delta_{ij}^{ab} T_{iajb} + \sum_{kl}(ik|jl)\, T_{kalb} + \sum_{cd}(ac|bd)\, T_{icjd},\qquad
 E_c = \sum_{iajb}(ia|jb)\,(2T_{iajb} - T_{ibja}).$$
@@ -129,9 +129,9 @@ It gives the same $E_c$ and amplitudes as the spin-orbital equations for all
 three variants (`scripts/cc_triples_weights_and_linlccd_spin_adaptation_sympy.py`,
 claim 6). The hole–hole coefficient is $(ik|jl)$: hole $i$ pairs with $k$
 and $j$ with $l$. Writing $(ij|kl)$ instead is the negative control of claim
-7 (section 16.7).
+7 (section @sec:local-cc).
 
-> **Verified equation 16.8** · the spatial form is the spin-orbital form
+> **Verified equation {#eq:cc-linlccd-spin-adaptation}** · the spatial form is the spin-orbital form
 >
 > On random 8-fold-symmetric RI integrals, the spin-orbital LinLCCD of
 > `linlccd.rs` is solved as one dense linear system in $(2n_o)^2(2n_v)^2$
@@ -153,9 +153,9 @@ and $j$ with $l$. Writing $(ij|kl)$ instead is the negative control of claim
 The box covers the two forms against each other. The Rust tests compare both
 with an independent numpy linear solve on PySCF density-fitted integrals,
 and with the ladder off with PySCF `DFMP2`. The ωB97X-L-V scaling of the same
-equations is section 16.6.
+equations is section @sec:wb97x-l-v.
 
-## 16.5.2 The algorithm
+## The algorithm {#linlccd-algorithm}
 
 | Step | Quantity | Cost | Function |
 |---|---|---|---|
@@ -169,18 +169,18 @@ equations is section 16.6.
 Unlike `ccd`, whose stopping threshold is fixed, `linlccd` reads
 `CcConfig::energy_conv`.
 
-## 16.5.3 Options
+## Options {#linlccd-options}
 
 | Option | Values | Default | Effect |
 |---|---|---|---|
 | `[mp2] linlccd_variant`, `variant=` | `hh`, `drivers-only`, `full` | `hh` | ladder terms kept; unknown spellings are errors |
 | `[mp2] auxbasis`, `auxbasis` | basis name | | RI basis of the integrals |
 | `[mp2] frozen_core`, `frozen_core=` | integer | 0 | frozen occupied orbitals |
-| `[local]` section, `local=`, `eps=` | see section 16.7 | exact | amplitude-threshold approximation |
+| `[local]` section, `local=`, `eps=` | see section @sec:local-cc | exact | amplitude-threshold approximation |
 
 `drivers-only` is the MP2 amplitude equation, so it reproduces RI-MP2.
 
-## 16.5.4 Numerical anchors
+## Numerical anchors {#linlccd-numerical-anchors}
 
 | Quantity | Systems | Error | Test |
 |---|---|---|---|
@@ -189,7 +189,7 @@ Unlike `ccd`, whose stopping threshold is fixed, `linlccd` reads
 | ladder off vs RI-MP2 | same | $1.1\times10^{-16}$ | `crates/ferric-cc/tests/validation_linlccd.rs` |
 | exact canonical LinLCCD, every variant | H2O, NH3 / 6-31G, cc-pVDZ | $\le 4.4\times10^{-13}$ Ha | `crates/ferric-cc/tests/validation_linlccd_amplitude.rs` |
 
-## 16.5.5 Sources
+## Sources {#linlccd-sources}
 
 | Source | What it gives |
 |---|---|

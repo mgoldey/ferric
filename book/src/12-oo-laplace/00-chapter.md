@@ -1,20 +1,20 @@
-# 12. Orbital optimization and Laplace forms
+# Orbital optimization and Laplace forms {#oo-laplace}
 
-<!-- section: 12.0; status: verify; registry: oo-rimp2, u-oo-rimp2, laplace-mp2, laplace-sos-mp2;
+<!-- status: verify; registry: oo-rimp2, u-oo-rimp2, laplace-mp2, laplace-sos-mp2;
      theory: crates/ferric-mp2/theory.md#"7. Orbital-optimized RI-MP2", "8. Laplace-transform MP2", "14. Unrestricted OO-RI-MP2 orbital gradient" -->
 
-Chapter 10 computed the MP2 energy with the Hartree–Fock orbitals held
+Chapter @sec:mp2 computed the MP2 energy with the Hartree–Fock orbitals held
 fixed and the energy denominator $1/\Delta_{ij}^{ab}$ evaluated term by
 term. This chapter changes each of those two choices in turn. The pair loop
-of chapter 10 stays the same in both.
+of chapter @sec:mp2 stays the same in both.
 
-- **Orbital optimization** (sections 12.1 and 12.2). Hartree–Fock orbitals
+- **Orbital optimization** (sections @sec:oo-rimp2 and @sec:unrestricted-oo-rimp2). Hartree–Fock orbitals
   are the best orbitals for a single determinant. Once MP2 correlation is
   added, they are no longer the best orbitals for the total energy. OO-MP2
   lets the orbitals relax in the field of the correlation energy, until the
   Hartree–Fock plus MP2 energy is stationary under orbital rotations. The
   MP2 energy is then taken in orbitals that are no longer canonical.
-- **The Laplace forms** (sections 12.3 and 12.4). The denominator
+- **The Laplace forms** (sections @sec:laplace-mp2 and @sec:local-laplace-sos). The denominator
   $\Delta_{ij}^{ab}$ ties the occupied–virtual pair $(i,a)$ to the pair
   $(j,b)$. Writing $1/\Delta$ as a short sum of exponentials separates the
   two pairs in every term. The energy becomes a few RI-MP2-like
@@ -33,13 +33,13 @@ of chapter 10 stays the same in both.
 
 - $t \ge 0$ is the **Laplace variable**, the real parameter of the
   transform $1/x = \int_0^\infty e^{-tx}\,dt$. It is not a time and not an
-  imaginary frequency; the imaginary frequency is $u$ (notation, section 8).
-- $\kappa$ is an orbital rotation generator (notation, section 6).
+  imaginary frequency; the imaginary frequency is $u$ (notation, section @sec:notation-attenuated-coulomb-operators).
+- $\kappa$ is an orbital rotation generator (notation, section @sec:notation-orbital-rotations).
 - $\mu$ is the level shift of a rotation step.
 - $M$ is the dressing matrix with $M^{\mathsf T}M = V^{-1}$, as in
-  section 10.1.
+  section @sec:closed-shell-ri-mp2.
 - $\Delta_{ij}^{ab} = \varepsilon_a + \varepsilon_b - \varepsilon_i - \varepsilon_j > 0$.
   A minus sign in an energy expression is always written out.
-- Section 12.2 marks $\beta$ orbitals with an overbar.
+- Section @sec:unrestricted-oo-rimp2 marks $\beta$ orbitals with an overbar.
 
-Equations are numbered (12.1) and up across the chapter.
+Equations are numbered (@eq:oo-rimp2-1) and up across the chapter.

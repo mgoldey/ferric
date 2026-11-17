@@ -1,9 +1,9 @@
-# 13.2 The integral-direct path
+# The integral-direct path {#integral-direct}
 
-<!-- section: 13.2; status: ready; registry: local-mp2;
+<!-- status: ready; registry: local-mp2;
      theory: crates/ferric-mp2/theory.md#"12.4 The integral-direct domain-local fit" -->
 
-The method of section 13.1 builds the global three-index tensor, of shape
+The method of section @sec:amplitude-lmp2 builds the global three-index tensor, of shape
 $(N_{\mathrm{aux}}, n_on_v)$, before it truncates anything. That tensor is
 $O(N^3)$ in memory, and the whitening product behind it is $O(N^5)$ in
 time. Dropping amplitudes afterwards cannot reduce a cost that has already
@@ -14,8 +14,8 @@ integrals that the retained pairs need, half-transforms them into one small
 strip per occupied orbital, and fits each pair in a local auxiliary basis.
 The solve and the energy are the unchanged ragged machinery of 13.1.
 
-The section derives the local fit (13.2.1), walks through the stages and
-the truncation each locality map makes (13.2.2), and then states the
+The section derives the local fit (@sec:integral-direct-domain-local-fit), walks through the stages and
+the truncation each locality map makes (@sec:integral-direct-algorithm-each-map-truncates), and then states the
 exactness anchor, the cost of the stages and what is measured.
 
 The derivation is `crates/ferric-mp2/theory.md` §12.4. The construction is
@@ -41,35 +41,35 @@ check them.
 | CLI | `[local] scheme = "amplitude-threshold"`, `eps`, `integral_direct = true`, with `aux_radius`, `virt_radius`, `ao_tail`, `schwarz_skip`, `batch_merge`, `gate_cal`, `virt_schwarz_kappa` (`examples/alkane8-rimp2-local-direct.toml`) |
 | Python | `run_rimp2(..., local="amplitude-threshold", eps=..., integral_direct=True)` |
 
-## 13.2.1 The domain-local fit
+## The domain-local fit {#integral-direct-domain-local-fit}
 
-Density fitting (section 10.1) expands $\phi_i\phi_a$ in the auxiliary
+Density fitting (section @sec:closed-shell-ri-mp2) expands $\phi_i\phi_a$ in the auxiliary
 functions. The best coefficients in the Coulomb metric are
 $c = V^{-1}A$, where $A_{P,a} = (P\vert ia)$ and $V_{PQ} = (P\vert Q)$.
 For pair $(i,j)$, restrict that fit to the functions in $D_{ij}$, the
 auxiliary shells near either orbital. Substitute the restricted
 coefficients into the Coulomb product of the two fitted densities:
 
-$$ J_{ia,jb} = \sum_{P,Q\in D_{ij}} (P\vert ia)\,[V_{DD}^{-1}]_{PQ}\,(Q\vert jb) = (W_i^{\mathsf T}W_j)_{ab}, \qquad V_{DD} = LL^{\mathsf T},\quad W_k = L^{-1}A_k . \tag{13.5} $$
+$$ J_{ia,jb} = \sum_{P,Q\in D_{ij}} (P\vert ia)\,[V_{DD}^{-1}]_{PQ}\,(Q\vert jb) = (W_i^{\mathsf T}W_j)_{ab}, \qquad V_{DD} = LL^{\mathsf T},\quad W_k = L^{-1}A_k . \label{eq:lmp2-domain-fit} $$
 
 The right-hand form follows in one line. Factor $V_{DD} = LL^{\mathsf T}$,
 so $V_{DD}^{-1} = L^{-\mathsf T}L^{-1}$, and group each $L^{-1}$ with its
 strip: $A_i^{\mathsf T}L^{-\mathsf T}L^{-1}A_j = (L^{-1}A_i)^{\mathsf T}(L^{-1}A_j)$.
-That is the same Cholesky whitening as section 10.1, applied to one domain.
+That is the same Cholesky whitening as section @sec:closed-shell-ri-mp2, applied to one domain.
 
 Check the limit. When $D_{ij}$ holds every auxiliary function, $V_{DD} = V$
-and (13.5) is the global RI integral of equation (10.4).
+and (@eq:lmp2-domain-fit) is the global RI integral of equation (@eq:closed-shell-ri-mp2-4).
 
 Why one domain for the whole pair, rather than one per orbital? Dunlap's
 robust form, $A_i^{\mathsf T}c_j + c_i^{\mathsf T}A_j - c_i^{\mathsf T}V_{DD}c_j$
 with $c = V_{DD}^{-1}A$, is the fit whose error is quadratic in the error of
 the fitted densities. When one domain and one kernel serve both orbitals,
 substitute $c$: each of the three terms equals $A_i^{\mathsf T}V_{DD}^{-1}A_j$,
-so the sum is the Gram form (13.5). The metric and the three-index
+so the sum is the Gram form (@eq:lmp2-domain-fit). The metric and the three-index
 integrals use the same operator, which is why the two forms coincide and
-why the fit error is quadratic, as in section 10.1.
+why the fit error is quadratic, as in section @sec:closed-shell-ri-mp2.
 
-> **Verified equation 13.5** · the whitened Gram product and the robust form
+> **Verified equation @eq:lmp2-domain-fit** · the whitened Gram product and the robust form
 >
 > With $V = LL^{\mathsf T}$ for a generic lower-triangular $3\times3$ factor,
 > $W_i^{\mathsf T}W_j = A_i^{\mathsf T}V^{-1}A_j$ in symbols (claim L1), and
@@ -98,7 +98,7 @@ $$ A^{\mathsf T}V^{-1}A - A_D^{\mathsf T}V_{DD}^{-1}A_D = y^{\mathsf T}S^{-1}y \
 because $S$ is positive definite. So each fitted $(ia\vert ia)$ can only
 fall when the domain shrinks. Off-diagonal elements have no such sign, and
 neither has the energy error. The fit radius changes $J$ values, so the
-one-sided argument of 13.1.1 does not cover it.
+one-sided argument of @sec:amplitude-lmp2-amplitude-equations-energy does not cover it.
 
 **The code.** `ferric-mp2/src/lmp2_direct.rs::fit_domain_group` handles all
 pairs that share one domain $D_{ij}$. It factors $V_{DD}$ once, whitens
@@ -119,13 +119,13 @@ let g = if i == j {
 |---|---|
 | `w_i` | $W_i$ restricted to the candidate columns $C_{ij}$ |
 | `ws[&j].select(cij)` | $W_j$ on the same columns |
-| `g` | $J_{ia,jb}$ over $a,b\in C_{ij}$, passed to the $\varepsilon$ mask of section 13.1 (`mask_pair`) |
+| `g` | $J_{ia,jb}$ over $a,b\in C_{ij}$, passed to the $\varepsilon$ mask of section @sec:amplitude-lmp2 (`mask_pair`) |
 
 Grouping by domain pays because pairs repeat domains: on the C20–C48 maps
 there are 6–9 times more surviving pairs than distinct pair domains, so one
 Cholesky factor serves several pairs (`fit_pairs`).
 
-## 13.2.2 The algorithm and what each map truncates
+## The algorithm and what each map truncates {#integral-direct-algorithm-each-map-truncates}
 
 | Stage | Work | Function |
 |---|---|---|
@@ -134,7 +134,7 @@ Cholesky factor serves several pairs (`fit_pairs`).
 | 3 | occupieds grouped by nearest atom to their Boys centroid; per batch, evaluate only the $(\mu\nu\vert P)$ shell triples needed and half-transform into per-occupied strips $A_i$ over $\tilde D_i\times\tilde V_i$ | `ferric-mp2/src/lmp2_direct.rs::collect_strips`, `ferric-mp2/src/lmp2_direct.rs::eval_batch` |
 | 4 | the metric, only for $(P\vert Q)$ shell pairs inside some $\tilde D_i^2$. This is exact for the domain-local fit, which never reads a metric element outside a pair domain | `ferric-mp2/src/lmp2_direct.rs::strips_and_metric` |
 | 5 | per pair-domain group: Cholesky once, whiten each distinct occupied once, $J_{ij} = W_i^{\mathsf T}W_j$, the Eq-8 mask, the `PairBlock` | `ferric-mp2/src/lmp2_direct.rs::fit_pairs` |
-| 6 | PCG, tolerance policy and Hylleraas energy, unchanged | section 13.1 |
+| 6 | PCG, tolerance policy and Hylleraas energy, unchanged | section @sec:amplitude-lmp2 |
 
 **Strips.** A pair $(i,j)$ reads rows $D_i\cup D_j$ and columns
 $V_i\cup V_j$ from the two strips $A_i$ and $A_j$. So a strip must cover
@@ -144,11 +144,11 @@ unwhitened: they hold the same raw values as the global tensor, only for
 the rows and columns that survive. Whitening happens per group in stage 5,
 because $L$ depends on the pair domain.
 
-**Two kinds of map.** As in 13.1.5, a map either removes amplitudes and
+**Two kinds of map.** As in @sec:amplitude-lmp2-options-change-equation, a map either removes amplitudes and
 leaves every kept $J$ value alone, or it changes the $J$ values.
 
 - *Pattern maps* can only raise the energy relative to the same run without
-  them, up to the solver error of 13.1.2, because $E_H$ is then minimized
+  them, up to the solver error of @sec:amplitude-lmp2-accurate-solve, because $E_H$ is then minimized
   over fewer amplitudes on a swap-closed pattern.
   - The pair gate (`gate_cal`), as in 13.1.
   - The virtual domains (`virt_radius`). The candidate set
@@ -160,13 +160,13 @@ leaves every kept $J$ value alone, or it changes the $J$ values.
     or $q_{ja}q^{\max}_i \ge \kappa\varepsilon$, where
     $q_{ia} = \sqrt{A_{ia}^{\mathsf T}V_{D_iD_i}^{-1}A_{ia}}$ is the fitted
     diagonal in $i$'s own domain. On a global Gram fit this is the exact
-    Cauchy–Schwarz screen of 13.1.3 for $\kappa \le 1$. On the domain-local fit
+    Cauchy–Schwarz screen of @sec:amplitude-lmp2-algorithm for $\kappa \le 1$. On the domain-local fit
     it is not a proven bound; the `DirectConfig` documentation records it as
     measured escape-free at $\kappa \le 1$, both operators, on C8. A
     $\kappa$ above 1 drops elements that would pass the Eq-8 test.
 - *Value maps* change the integrals, and their energy error has no proven
   sign.
-  - The auxiliary domains (`aux_radius`), 13.2.1.
+  - The auxiliary domains (`aux_radius`), @sec:integral-direct-domain-local-fit.
   - The AO support (`ao_tail`). An AO shell enters an orbital's support
     when its largest $\lvert C\rvert$ is at least the threshold. Leaving a
     shell out is the same as setting those coefficients to zero in the half
@@ -212,7 +212,7 @@ runs over a larger batch union. An alternative pass
 the supports that need it, so each needed triple is evaluated once. Both
 build the same strips to round-off.
 
-## 13.2.3 The exactness anchor and the artifact hypothesis
+## The exactness anchor and the artifact hypothesis {#integral-direct-exactness-anchor-artifact-hypothesis}
 
 The repository's experimental protocol requires both of these to be stated
 before any sweep is run, and the module documentation of `lmp2_direct.rs`
@@ -234,11 +234,11 @@ advance:
 - If a map is mis-constructed by mixing two orbital index sets, exactness
   will instead demand radii that track the molecular diameter. A domain
   mask that mixed two index sets did this in an AO-sparse Laplace
-  implementation (section 12.4).
+  implementation (section @sec:local-laplace-sos).
 
 The two predictions differ, so the sweep can tell them apart.
 
-## 13.2.4 Memory and determinism
+## Memory and determinism {#integral-direct-memory-determinism}
 
 - The peak three-index working set is the strips. It is reported as
   `DirectStats::strip_bytes_total`, with mean and maximum strip rows and
@@ -253,7 +253,7 @@ The two predictions differ, so the sweep can tell them apart.
 - The opt-in exact reference still forms the global tensor. Only the
   reference makes a run not reduced-cost.
 
-## 13.2.5 Options that change the equation
+## Options that change the equation {#integral-direct-options-change-equation}
 
 | Option | Trivial limit | CLI default | Effect |
 |---|---|---|---|
@@ -261,7 +261,7 @@ The two predictions differ, so the sweep can tell them apart.
 | `virt_radius` | all virtuals | 12.0 Bohr | virtual domain on dipole centroids |
 | `ao_tail` | 0.0 keeps every shell | 1e-3 | AO-shell support threshold |
 | `schwarz_skip` | 0.0 evaluates every triple (bit-identical to a run without the cut) | 1e-5 | Cauchy–Schwarz cut on batch triples, $\sqrt{\max(P\vert P)}\,Q(\mu\nu) <$ the threshold, with both factors from the run's operator |
-| `gate_cal` | none (gate off) | none | the pair gate of equation 13.4 |
+| `gate_cal` | none (gate off) | none | the pair gate of equation @eq:amplitude-lmp2-4 |
 | `virt_schwarz_kappa` | none (off) | none | $\varepsilon$-linked virtual-candidate screen: keep $a$ if $q_{ia}q^{\max}_j \ge \kappa\varepsilon$ or the mirror |
 | `batch_merge` | 1 | 4 | batches merged per integral pass |
 
@@ -271,7 +271,7 @@ CLI. They differ from the CLI defaults for `virt_radius`, `ao_tail`,
 `schwarz_skip` and `batch_merge`. The CLI defaults are in
 `site/src/reference/input.md`, section `[local]`.
 
-## 13.2.6 What is measured
+## What is measured {#integral-direct-measured}
 
 | Check | Reference | Agreement | Test |
 |---|---|---|---|
@@ -309,7 +309,7 @@ makes no scaling claim. The measurement is `bench_direct_alkane_series` in
 | Source | Used for |
 |---|---|
 | `crates/ferric-mp2/src/lmp2_direct.rs` module documentation, `fit_domain_group`, `DirectConfig` | the pipeline, the maps, the exactness anchor and the artifact hypothesis |
-| `scripts/local_mp2_fit_pno_sympy.py`, claims L1, L2 | verified equation 13.5 |
+| `scripts/local_mp2_fit_pno_sympy.py`, claims L1, L2 | verified equation @eq:lmp2-domain-fit |
 | `site/src/methods/mp2.md`, "Exact and local MP2" | the user-facing description and the measured scaling |
 | `site/src/reference/input.md`, `[local]` | the CLI defaults |
 | `site/src/reference/validation.md` | the anchor row and the known limits |

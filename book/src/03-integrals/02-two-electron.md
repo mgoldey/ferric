@@ -1,6 +1,6 @@
-# 3.2 Two-, three- and four-center integrals
+# Two-, three- and four-center integrals {#two-electron}
 
-<!-- section: 3.2; status: edit; registry: none;
+<!-- status: edit; registry: none;
      theory: crates/ferric-integrals/theory.md#"Two-, three- and four-center integrals" -->
 
 Two electrons repel. In a basis, the repulsion between the charge cloud
@@ -10,7 +10,7 @@ and exchange matrices (J and K) contract these with the density. There are
 $O(N^4)$ of them, which is why so much of this book is about not computing
 most of them.
 
-Density fitting (chapter 6) replaces each cloud $\chi_\mu\chi_\nu$ by a sum of
+Density fitting (chapter @sec:density-fitting) replaces each cloud $\chi_\mu\chi_\nu$ by a sum of
 auxiliary functions $\chi_P$. It then needs only the three-center integrals
 $(P|\mu\nu)$, the repulsion between one auxiliary function and one orbital
 product, and the two-center metric $(P|Q)$. Many methods also replace
@@ -28,13 +28,13 @@ engine returns a block and what the caller must check.
 | Rust, whole tensors | `ferric-integrals/src/threeindex.rs::{eri3_tensor,coulomb_metric_2c}` |
 | Python | `compute_eri3`, `compute_metric_2c` (`crates/ferric-python/ferric.pyi`) |
 
-## 3.2.1 What an engine computes, and which engine serves which kernel
+## What an engine computes, and which engine serves which kernel {#two-electron-engine-computes-engine-serves}
 
 ### What a four-center integral is
 
 Take four unnormalized $s$ primitives with exponents $a, b$ on $\mathbf A,
 \mathbf B$ and $c, d$ on $\mathbf C, \mathbf D$. Apply the Gaussian product
-theorem (section 3.1) to each electron's pair. Electron 1 sees one Gaussian
+theorem (section @sec:one-electron) to each electron's pair. Electron 1 sees one Gaussian
 of exponent $p = a + b$ on $\mathbf P$, scaled by
 $K_{AB} = e^{-ab|\mathbf A - \mathbf B|^2/p}$; electron 2 sees one of exponent
 $q = c + d$ on $\mathbf Q$, scaled by $K_{CD}$. The Coulomb repulsion of two
@@ -42,7 +42,7 @@ spherical Gaussians is a closed form:
 
 $$ (ab|cd) = \frac{2\pi^{5/2}}{pq\sqrt{p+q}}\, K_{AB}K_{CD}\, F_0\!\Big(\frac{pq}{p+q}\,|\mathbf P - \mathbf Q|^2\Big), \qquad F_0(T) = \int_0^1 e^{-Tt^2}\,dt . $$
 
-$F_0$ is the zeroth Boys function (section 3.4 evaluates it). Check two
+$F_0$ is the zeroth Boys function (section @sec:md-three-center evaluates it). Check two
 limits. When $\mathbf P = \mathbf Q$ the argument is zero and $F_0(0) = 1$:
 two concentric clouds repel by a finite amount. When the clouds are far apart,
 $F_0(T) \to \tfrac12\sqrt{\pi/T}$, and the integral becomes
@@ -50,7 +50,7 @@ $(\pi/p)^{3/2}(\pi/q)^{3/2}K_{AB}K_{CD}/|\mathbf P - \mathbf Q|$: the
 charges of the two clouds, divided by their distance. That is Coulomb's law
 for two point charges.
 
-A third limit connects this to section 3.4. Normalize the second cloud by
+A third limit connects this to section @sec:md-three-center. Normalize the second cloud by
 $(q/\pi)^{3/2}$ and let $q \to \infty$: it becomes a unit point charge at
 $\mathbf Q$, and the formula goes to $(2\pi/p)\,K_{AB}\,F_0(p|\mathbf P - \mathbf Q|^2)$,
 the potential of the first cloud at $\mathbf Q$. Higher angular momentum
@@ -73,15 +73,15 @@ integral class: `Engine::new_2e` (four-center), `Engine::new_3center` with
 Yukawa and Slater-geminal kernels. The terf and terfc kernels go to the table
 engine of this crate (two-, three- and four-center: `scf_compute_terfc_eri2`,
 `_eri3`, `_eri4` in the shim). A libint2-native terf route exists behind the
-`libint2_terf` feature and a patched libint2 (section 4.2).
+`libint2_terf` feature and a patched libint2 (section @sec:terf-table-engine).
 
 | Kernel | `OperatorKind` | Engine |
 |---|---|---|
 | $1/r$ | `Coulomb` | libint2 |
 | $\operatorname{erf}(\omega r)/r$, $\operatorname{erfc}(\omega r)/r$ | `ErfCoulomb`, `ErfcCoulomb` | libint2 |
-| $e^{-\zeta r}/r$, $e^{-\zeta r}$ | `Yukawa`, `SlaterGeminal` | libint2 (section 4.3) |
+| $e^{-\zeta r}/r$, $e^{-\zeta r}$ | `Yukawa`, `SlaterGeminal` | libint2 (section @sec:yukawa-geminal) |
 | fitted geminals | `Cgtg`, `CgtgCoulomb`, `Delcgtg2` | libint2, `Engine::new_2e_geminal` |
-| $\operatorname{terf}/r$, $\operatorname{terfc}/r$ | `Terf`, `Terfc` | the table engine (section 4.2) |
+| $\operatorname{terf}/r$, $\operatorname{terfc}/r$ | `Terf`, `Terfc` | the table engine (section @sec:terf-table-engine) |
 
 A linear combination of kernels
 (`ferric-integrals/src/operator.rs::Operator::composite`) is a sum of engines,
@@ -128,12 +128,12 @@ Three points about it:
   refusal and comes back as `Err`. A negative status from libint2 is a caught
   C++ exception, which means a bug, and the code asserts.
 
-## 3.2.2 What a caller must respect
+## What a caller must respect {#two-electron-caller-must-respect}
 
 An engine is constructed with a precision. Libint2 skips a shell quartet
 whose estimated magnitude is below it, and the engine returns no block
 (`None`). Most callers pass $10^{-14}$; the Schwarz table builder passes $0$,
-which disables that skip (section 5.1).
+which disables that skip (section @sec:schwarz).
 
 A block for shells $(s_1 s_2|s_3 s_4)$ is row-major over the shells'
 functions, $n_1 n_2 n_3 n_4$ doubles. A table engine can refuse a quartet
@@ -145,11 +145,11 @@ return that refusal as an error, distinct from a screened block.
 |---|---|
 | A `None` block means screened, not zero by symmetry | libint2 skips a quartet below the engine precision |
 | Use the `_checked` calls on a table engine | a refusal (angular momentum past the table depth) is an error, not a zero block |
-| Build bound tables with precision $0$ | a skipped diagonal would make a bound lower than its integral (section 5.1) |
+| Build bound tables with precision $0$ | a skipped diagonal would make a bound lower than its integral (section @sec:schwarz) |
 | One engine per thread | libint2 engines hold scratch; the code builds a pool (`crates/ferric-integrals/src/engine_pool.rs`) |
 | Exceptions never cross the C ABI | every `scf_compute_*` in `crates/ferric-integrals/shim/shim.cc` catches and returns a negative status; the Rust side asserts it |
 
-Why does a refusal have to be an error? The Schwarz bound (section 5.1)
+Why does a refusal have to be an error? The Schwarz bound (section @sec:schwarz)
 uses the diagonal integrals $(\mu\nu|\mu\nu)$ to decide what to skip. If a
 refused quartet were read as zero, its bound would be zero, and every
 integral it bounds would be dropped without anyone being told.
@@ -184,7 +184,7 @@ The return value carries three cases in one integer: $n > 0$ doubles
 written, 0 for screened, and `SCF_EINTERNAL` ($-3$) for a caught exception.
 The Rust wrapper above maps them to `Some`, `None` and an assertion.
 
-## 3.2.3 Numerical anchors
+## Numerical anchors {#two-electron-numerical-anchors}
 
 | What | Test | Bar |
 |---|---|---|
@@ -193,8 +193,8 @@ The Rust wrapper above maps them to `Some`, `None` and an assertion.
 | permutational symmetry of the quartets | `crates/ferric-integrals/tests/eri_permutational_symmetry.rs` | rounding |
 | a C++ throw returns a status, not undefined behaviour | `crates/ferric-integrals/tests/ffi_exception_safety.rs` | — |
 
-The $(ss|ss)$ closed form of 3.2.1 is a textbook result (Helgaker,
-Jørgensen and Olsen, chapter 9). No committed script covers it, and ferric does
+The $(ss|ss)$ closed form of @sec:two-electron-engine-computes-engine-serves is a textbook result (Helgaker,
+Jørgensen and Olsen, chapter @sec:kohn-sham). No committed script covers it, and ferric does
 not evaluate it itself; libint2 does. The closed form was checked against a
 direct radial quadrature of the Coulomb integral for this section.
 

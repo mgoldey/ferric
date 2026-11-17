@@ -1,6 +1,6 @@
-# 2.3 Determinism, threads and the memory budget
+# Determinism, threads and the memory budget {#determinism-and-memory}
 
-<!-- section: 2.3; status: edit; registry: ;
+<!-- status: edit; registry: ;
      theory: -->
 
 Run the same input twice, once on 4 threads and once on 12. Should the
@@ -27,7 +27,7 @@ back here.
 | Threads | `ferric-core/src/blas_threads.rs::{init_threading,with_blas_threads,opt_in_blas_threads}` |
 | Budget | `ferric-core/src/memory.rs::{resolve_budget_bytes,check_alloc}`, `ferric-core/src/memory/pool.rs::MemoryPool` |
 
-## 2.3.1 Two BLAS thread counts
+## Two BLAS thread counts {#determinism-and-memory-blas-thread-counts}
 
 Two libraries can start threads in ferric. rayon runs the parallel loops
 that ferric writes itself. OpenBLAS runs the matrix products and
@@ -120,7 +120,7 @@ thread is spawned, and the CLI `main` and the Python module call it first.
 Stack memory is reserved, not committed, until a thread touches it, so an
 idle worker costs address space only.
 
-## 2.3.2 Bit-identical sums
+## Bit-identical sums {#determinism-and-memory-bit-identical-sums}
 
 Floating-point addition is not associative. In double precision,
 $(10^{16} + 1) - 10^{16} = 0$ while $(10^{16} - 10^{16}) + 1 = 1$, because
@@ -134,7 +134,7 @@ that depends on the worker count. Its result can therefore change with
 that does not depend on the thread count, so results are bit-identical across
 `RAYON_NUM_THREADS`.
 
-The RI-MP2 energy (section 10.1) shows the pattern. Each occupied orbital
+The RI-MP2 energy (section @sec:closed-shell-ri-mp2) shows the pattern. Each occupied orbital
 $i$ gets its own partial sums on some worker, the partials are collected
 into a vector indexed by $i$, and one thread adds them in order. From
 `ferric-mp2/src/rimp2.rs::spin_components_from_b_ov_kappa_cpu`, with the
@@ -163,13 +163,13 @@ fixed order is one vector of `nocc` pairs and a serial loop over it.
 The contraction engine's row-banded matrix product gives the same bits for
 every worker count because every even band width rounds identically
 (`ferric-tensors/src/einsum.rs`, test `row_banded_gemm_is_thread_count_independent`).
-Section 2.4.3 explains why the width has to be even.
+Section @sec:tensors-reproducibility explains why the width has to be even.
 
 The serial BLAS thread count is the one exception. With
 `blas_threads = 1` results are bit-identical across thread counts. Any other
 value lets OpenBLAS split reductions by thread count, which moves energies at
 the last bit; the user guide puts the size at about $10^{-13}$ Ha. Since the
-default serial count is the rayon pool size (2.3.1), changing
+default serial count is the rayon pool size (@sec:determinism-and-memory-blas-thread-counts), changing
 `RAYON_NUM_THREADS` alone also changes the serial count. For two runs that
 must agree bit for bit at different `RAYON_NUM_THREADS`, set
 `blas_threads = 1`.
@@ -178,7 +178,7 @@ What "the same" means across machines is weaker. A different BLAS or CPU can
 round differently, so a test that compares to a stored golden energy uses a
 tolerance, and a committed value never depends on the machine that produced it.
 
-## 2.3.3 The memory budget
+## The memory budget {#determinism-and-memory-memory-budget}
 
 A large calculation is limited by memory as often as by time. The worst
 outcome is a job that starts, does part of its work, and is then killed by
@@ -259,7 +259,7 @@ and per-thread scratch are not charged, so the resident size can exceed
 budget, the width can set the order of a floating-point sum. At an ample
 budget the width is a constant. Two runs at different budgets can then differ
 in the last digits, and two runs at one budget are bit-identical (section
-10.1 gives the RI-MP2 case).
+@sec:closed-shell-ri-mp2 gives the RI-MP2 case).
 
 ## Known limits
 
@@ -271,8 +271,8 @@ in the last digits, and two runs at one budget are bit-identical (section
 
 | Source | Used for |
 |---|---|
-| `crates/ferric-core/src/blas_threads.rs` module documentation and code | sections 2.3.1 and the stack size |
-| `crates/ferric-core/src/memory.rs`, `crates/ferric-core/src/memory/pool.rs` | section 2.3.3 |
+| `crates/ferric-core/src/blas_threads.rs` module documentation and code | sections @sec:determinism-and-memory-blas-thread-counts and the stack size |
+| `crates/ferric-core/src/memory.rs`, `crates/ferric-core/src/memory/pool.rs` | section @sec:determinism-and-memory-memory-budget |
 | `site/src/reference/architecture.md`, "Cross-cutting conventions" | the statements on determinism and the pool |
 | `site/src/reference/input.md`, `[memory]` and `[parallel]` | the precedence tables |
 | `site/src/using/sharp-bits.md` | what the budget does not cap |

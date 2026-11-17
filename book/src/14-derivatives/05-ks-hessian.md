@@ -1,22 +1,22 @@
-# 14.5 Kohn–Sham Hessian on a fixed and a moving grid
+# Kohn–Sham Hessian on a fixed and a moving grid {#ks-hessian}
 
-<!-- section: 14.5; status: ready; registry: ks-hessian;
+<!-- status: ready; registry: ks-hessian;
      theory: crates/ferric-scf/theory.md#"Kohn-Sham XC Hessian terms (fixed and moving grid)", "Hartree-Fock nuclear Hessian" -->
 
 Move a nucleus and the density at every grid point changes twice: the basis
 functions on that nucleus move with it, and then the orbitals relax to the
 new geometry. Each change alters the XC potential, and how the XC potential
 responds to a change of density is the kernel
-$f_{xc} = \delta^2E_{xc}/\delta\rho^2$ of section 9.6. The KS Hessian
+$f_{xc} = \delta^2E_{xc}/\delta\rho^2$ of section @sec:fxc. The KS Hessian
 therefore needs $f_{xc}$ twice: once at fixed orbitals, once in the
 coupled-perturbed equations. On the production grid a third change appears,
 because the grid points and their weights move with the nuclei.
 
-The plan: the density derivatives and the fixed-grid terms (14.5.1), the
-moving grid and the open shell, then the algorithm (14.5.2), the refusals
-(14.5.3), the options (14.5.4) and the anchors (14.5.5).
+The plan: the density derivatives and the fixed-grid terms (@sec:ks-hessian-xc-terms), the
+moving grid and the open shell, then the algorithm (@sec:ks-hessian-algorithm), the refusals
+(@sec:ks-hessian-reproducibility-refusals), the options (@sec:ks-hessian-options-change-equation) and the anchors (@sec:ks-hessian-numerical-anchors).
 
-Everything else is the Hartree–Fock Hessian of section 14.4, with the
+Everything else is the Hartree–Fock Hessian of section @sec:hf-hessian, with the
 exact-exchange terms scaled by the hybrid fraction. The XC energy adds three
 pieces: a skeleton at fixed density, a first-order XC Fock matrix, and the
 kernel $f_{xc}$ in the CPHF operator. One more choice decides what those
@@ -45,10 +45,10 @@ The fixed-grid Hessian differentiates a frozen-grid energy (PySCF
 `grid_response=False`). The production SCF does not minimize that energy,
 so the fixed-grid Hessian is a library entry that `hessian = "auto"` never
 selects. The moving-grid Hessian differentiates the energy that the
-production KS SCF minimizes and that the KS gradient of section 14.3
+production KS SCF minimizes and that the KS gradient of section @sec:xc-gradient
 differentiates.
 
-## 14.5.1 The XC terms
+## The XC terms {#ks-hessian-xc-terms}
 
 The code is `ferric-scf/src/ks_fixed_grid.rs`, for closed-shell LDA, GGA and
 global hybrids. The exchange and Coulomb Hessian terms are in
@@ -109,7 +109,7 @@ $\sigma_x = 2\,\mathbf g\cdot\mathbf g_x$:
 $$ \frac{\partial E}{\partial x} = \sum_g W\big(f_\rho\rho_x + 2f_\sigma\,\mathbf g\cdot\mathbf g_x\big) = \sum_g F\rho_x + \mathbf G\cdot\mathbf g_x, \qquad F = Wf_\rho, \quad G_\gamma = 2Wf_\sigma g_\gamma . $$
 
 $F$ and $\mathbf G$ are the per-point weights of the XC potential, the same
-ones the SCF builds $V_{xc}$ from (section 9.3). For an LDA, $G = 0$.
+ones the SCF builds $V_{xc}$ from (section @sec:vxc). For an LDA, $G = 0$.
 
 Now differentiate the gradient with respect to $y$, still at fixed $D$. The
 product rule gives two kinds of term. Differentiating $\rho_x$ and
@@ -134,7 +134,7 @@ second derivative of $W f(\rho)$ by the chain rule, term for term.
 
 ### The first-order Fock matrix and the CPHF kernel
 
-The CPHF equations of section 14.4 need two more XC objects. Both are built
+The CPHF equations of section @sec:hf-hessian need two more XC objects. Both are built
 with one matrix-valued map from per-point weights to an AO matrix:
 
 $$ V_{\mu\nu}[F,G] = \sum_g F\chi_\mu\chi_\nu + G_\gamma(\partial_\gamma\chi_\mu\chi_\nu + \chi_\mu\partial_\gamma\chi_\nu) . $$
@@ -157,12 +157,12 @@ change:
 
 $$ V^{(1)}[D_1] = V\big[\delta F[\rho_1,\mathbf g_1],\,\delta G[\rho_1,\mathbf g_1]\big], \qquad \rho_1 = \sum D_{1,\mu\nu}\chi_\mu\chi_\nu, \quad \mathbf g_1 = 2\sum D_{1,\mu\nu}\nabla\chi_\mu\chi_\nu . $$
 
-$V^{(1)}$ is the closed-shell form of the linearized potential of section 9.6.1.
-It is the XC part of the KS orbital Hessian; section 8.3 derives the
+$V^{(1)}$ is the closed-shell form of the linearized potential of section @sec:fxc-linearized-potential.
+It is the XC part of the KS orbital Hessian; section @sec:second-order derives the
 Hartree–Fock part. All three objects here are the derivatives of
 PySCF's `grid_response=False` surface.
 
-> **Verified equation 14.11** · the fixed-grid skeleton, first-order Fock matrix and kernel
+> **Verified equation {#eq:ks-hess-fixed-grid}** · the fixed-grid skeleton, first-order Fock matrix and kernel
 >
 > On a three-atom model with $s$, $p$ and $d_{xy}$ Gaussians, a symmetric
 > density matrix and a GGA-like $f(\rho,\sigma)$ with nonzero $f_{\rho\sigma}$
@@ -189,9 +189,9 @@ PySCF's `grid_response=False` surface.
 On the production grid each point rides its home atom $h$:
 $\mathbf r_g = \mathbf R_h + \mathbf u_g$, with $\mathbf u_g$ fixed. The
 weight is $W_g = s_g\,w^h(\mathbf r_g;\mathbf R)$, the radial and angular
-quadrature weight $s_g$ times the Becke cell weight of section 9.2.2. Moving
+quadrature weight $s_g$ times the Becke cell weight of section @sec:grids-becke-partition. Moving
 atom $h$ now moves the point. Moving any other atom changes $w^h$ through
-the Becke partition, which is the derivative $W'$ of section 14.3.2.
+the Becke partition, which is the derivative $W'$ of section @sec:xc-gradient-becke-weight-derivative.
 
 Differentiating with respect to $\mathbf R_h$ directly would mean following
 the point. Translation invariance avoids that. Move every nucleus and every
@@ -223,7 +223,7 @@ $x \notin h$ it is the point-fixed derivative, which now includes the weight
 term $V[W'_x f_\rho,\,2W'_x f_\sigma\mathbf g]$. The home rows come from
 translation invariance: $V^{(h,\alpha)} = -\sum_{B\neq h}V^{(B,\alpha)}$.
 
-> **Verified equation 14.12** · the moving-grid skeleton and first-order Fock matrix
+> **Verified equation {#eq:ks-hess-moving-grid}** · the moving-grid skeleton and first-order Fock matrix
 >
 > For points $\mathbf r_g = \mathbf R_h + \mathbf u_g$ riding home atom $h$ and
 > a generic translation-invariant weight $W(\mathbf r;\mathbf R)$,
@@ -246,12 +246,12 @@ translation invariance: $V^{(h,\alpha)} = -\sum_{B\neq h}V^{(B,\alpha)}$.
 > <!-- verified: id=ks.hess.moving-grid; script=scripts/ks_fixed_grid_hessian_sympy.py; claim=11; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/ks_fixed_grid.rs::FixedGridKs::{skeleton_hessian_moving,first_order_fock_moving},ferric-scf/src/ks_fixed_grid.rs::translation_fill; rust_test=ferric-scf/tests/ks_moving_grid_hessian.rs::moving_grid_mutants_each_fail_a_frozen_density_anchor; registry=ks-hessian -->
 
 $W'$ and $W''$ are the nuclear derivatives of the Becke weight at a fixed
-point. The first derivative is section 14.3's equation 14.8. The second
+point. The first derivative is section @sec:xc-gradient's equation @eq:ks-grad-becke-weights. The second
 follows from the same chain, differentiated once more: the pair coordinate
 $\mu$, the step function $s(\mu)$, the cell product $P_A$ and the quotient
 $w^h = P_h/T$.
 
-> **Verified equation 14.14** · the Becke weight second derivative
+> **Verified equation {#eq:ks-hess-becke-second-derivative}** · the Becke weight second derivative
 >
 > The pair quantities $\mu_x = N_x/R - \mu R_x/R$ and
 > $\mu_{xy} = N_{xy}/R - (N_xR_y+N_yR_x)/R^2 - \mu R_{xy}/R + 2\mu R_xR_y/R^2$,
@@ -265,7 +265,7 @@ $w^h = P_h/T$.
 >
 > | | |
 > |---|---|
-> | Proof | `scripts/dft_becke_weight_hessian_sympy.py`, claims W1 and W2. The first derivative is `scripts/dft_becke_weight_grad_sympy.py`, which is section 14.3's equation 14.8 |
+> | Proof | `scripts/dft_becke_weight_hessian_sympy.py`, claims W1 and W2. The first derivative is `scripts/dft_becke_weight_grad_sympy.py`, which is section @sec:xc-gradient's equation @eq:ks-grad-becke-weights |
 > | Negative control | the runner drops the $2\mu R_xR_y/R^2$ term (claim W1 fails) and the $2P_hT'T'^{\mathsf T}/T^3$ term (claim W2 fails). The script also requires the quantities it compares to be of order one, because a point deep inside one cell makes every derivative zero to 40 digits and every formula pass |
 > | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
 > | Code | `ferric-dft/src/becke_hessian.rs::becke_home_weight_hess` |
@@ -337,7 +337,7 @@ Each array runs over the points of one batch, so the formula is evaluated
 for every point at once. The factor 2 in `df` is the $\delta\sigma =
 2\,\mathbf g\cdot\mathbf g_1$ of the chain rule; dropping the factor 2 of
 the $f_{\sigma\sigma}$ coefficient is one of the runner's mutations of box
-14.11.
+@eq:ks-hess-fixed-grid.
 
 ### Open shell (UKS)
 
@@ -399,7 +399,7 @@ cannot see. A "total-density" kernel, which replaces each spin's
 perturbation by the spin average, reproduces the closed-shell limit exactly
 and misses the polarized response.
 
-> **Verified equation 14.13** · the spin-polarized algebra
+> **Verified equation {#eq:ks-hess-polarized}** · the spin-polarized algebra
 >
 > With two different density matrices $D^\alpha\neq D^\beta$ and two different
 > response densities, on an $f$ that is not spin-blind: the per-spin weights
@@ -445,10 +445,10 @@ above do not change.
 | $T G_h T^{\mathsf T}$, moving $\partial V/\partial x$ | `skeleton_hessian_moving`, `translation_fill`, `first_order_fock_moving`, `weight_terms` | `ferric-scf/tests/ks_moving_grid_hessian.rs::moving_xc_pieces_match_frozen_density_differences`, `moving_grid_mutants_each_fail_a_frozen_density_anchor` |
 | ECP skeleton and $\partial V^{\rm ECP}/\partial x$ in the KS Hessian | `extra_skeleton`, `add_extra_first_order` (`hessian.rs`), called from `hessian/ks.rs` and `hessian/uks.rs` | `crates/ferric-scf/tests/ks_ecp_hessian.rs` (RKS HI, UKS H-I-H vs FD of the production gradient, both terms as negative controls); `ferric-scf/tests/validation_ks_fixed_grid_hessian.rs::fixed_grid_pbe_hessian_with_an_ecp_matches_pyscf_on_the_same_grid` |
 
-## 14.5.2 The algorithm
+## The algorithm {#ks-hessian-algorithm}
 
 The Coulomb, exchange, overlap and one-electron terms and the CPHF solver are
-those of section 14.4. The XC pieces are added at three places.
+those of section @sec:hf-hessian. The XC pieces are added at three places.
 
 | Step | XC piece | Function |
 |---|---|---|
@@ -466,7 +466,7 @@ translation fill is a dense $(3N)^3$ product per batch, so the cost ratio
 against the fixed grid grows with $N$. The validation page records 1.07 to
 1.10 on three atoms and no measurement above that.
 
-## 14.5.3 Reproducibility and refusals
+## Reproducibility and refusals {#ks-hessian-reproducibility-refusals}
 
 - The moving-grid route needs a grid with home atoms. A grid built from
   explicit points is refused (`a_grid_without_home_atoms_is_refused` in
@@ -478,19 +478,19 @@ against the fixed grid grows with $N$. The validation page records 1.07 to
 - A failed UKS response solve under `"auto"` runs finite differences with a
   warning. The recorded case is the OH $^2\Pi$ exact $\pi$-hole zero mode.
 
-## 14.5.4 Options that change the equation
+## Options that change the equation {#ks-hessian-options-change-equation}
 
 | Option | Effect |
 |---|---|
 | LDA, GGA, global hybrids | covered. $f_\sigma = 0$ for LDA |
 | meta-GGA | refused before the SCF: no $\tau$ terms appear above |
 | VV10, range-separated hybrids, ROKS | finite differences of the analytic gradient |
-| RI-J, RI-K | the RHF fitted Hessians of section 14.4 supply the Coulomb and exchange parts |
+| RI-J, RI-K | the RHF fitted Hessians of section @sec:hf-hessian supply the Coulomb and exchange parts |
 | ECP | supported on the RKS and UKS routes: the skeleton and $\partial V^{\rm ECP}/\partial x$ terms above |
 | external potential (point charges, a field, smeared charges) | refused on the KS routes |
 | grid | every atom-centred grid is supported, pruned or flat, with or without a weight cutoff: each point still rides its home atom |
 
-## 14.5.5 Numerical anchors
+## Numerical anchors {#ks-hessian-numerical-anchors}
 
 | Check | Reference | Agreement | Test |
 |---|---|---|---|
@@ -515,7 +515,7 @@ is not isolated, so the fixed-grid agreement is stated at the FD level.
 | Source | Used for |
 |---|---|
 | `crates/ferric-scf/theory.md`, "Kohn-Sham XC Hessian terms (fixed and moving grid)" | equations, the test table |
-| `scripts/ks_fixed_grid_hessian_sympy.py`, `scripts/uks_xc_hessian_sympy.py` | verified equations 14.11 to 14.13 |
-| `scripts/dft_becke_weight_hessian_sympy.py`, claims W1 and W2; `crates/ferric-dft/src/becke_hessian.rs` module documentation | verified equation 14.14 |
-| `crates/ferric-scf/src/hessian/ks.rs` module and `embedding_refusal` documentation | the ECP, external-potential and grid rows of 14.5.4 |
+| `scripts/ks_fixed_grid_hessian_sympy.py`, `scripts/uks_xc_hessian_sympy.py` | verified equations @eq:ks-hess-fixed-grid to @eq:ks-hess-polarized |
+| `scripts/dft_becke_weight_hessian_sympy.py`, claims W1 and W2; `crates/ferric-dft/src/becke_hessian.rs` module documentation | verified equation @eq:ks-hess-becke-second-derivative |
+| `crates/ferric-scf/src/hessian/ks.rs` module and `embedding_refusal` documentation | the ECP, external-potential and grid rows of @sec:ks-hessian-options-change-equation |
 | `site/src/reference/validation.md` | the anchor rows |

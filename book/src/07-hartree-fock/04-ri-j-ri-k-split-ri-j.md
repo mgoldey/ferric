@@ -1,11 +1,11 @@
-# 7.4 RI-J, RI-K and Split-RI-J
+# RI-J, RI-K and Split-RI-J {#ri-j-ri-k-split-ri-j}
 
-<!-- section: 7.4; status: ready; registry: rhf, uhf, rohf;
+<!-- status: ready; registry: rhf, uhf, rohf;
      theory: crates/ferric-scf/theory.md#"Density-fitted Coulomb and exchange (RI-J, RI-K, Split-RI-J)" -->
 
-Density fitting (chapter 6) expands each orbital product
+Density fitting (chapter @sec:density-fitting) expands each orbital product
 $\chi_\mu\chi_\nu$ in an auxiliary basis, so the four-centre integrals of
-section 7.3 factor into three-centre ones that are computed once per geometry
+section @sec:direct-and-incremental factor into three-centre ones that are computed once per geometry
 and stored. It is the default for Kohn–Sham runs and opt-in for
 Hartree–Fock. Coulomb and exchange use the fit differently. The Coulomb matrix
 is the potential of one charge cloud, the density, so one fit per iteration
@@ -34,13 +34,13 @@ Which route runs for which functional and spin is the table in
 `site/src/methods/scf.md`, "Choosing how exchange is built"; this section is
 about what each route computes.
 
-## 7.4.1 The equations
+## The equations {#ri-j-ri-k-split-ri-j-equations}
 
 ### RI-J
 
 Take the density $\rho = \sum_{\lambda\sigma}D_{\lambda\sigma}\chi_\lambda\chi_\sigma$
 and fit it, $\tilde\rho = \sum_Pc_P\chi_P$, by minimizing the Coulomb
-self-energy of the residual $\rho - \tilde\rho$. Section 6.1.1 does this
+self-energy of the residual $\rho - \tilde\rho$. Section @sec:factorization-and-metric-factorization does this
 minimization for one product; for the density it is the same with $D$
 contracted in. Setting the derivative with respect to $c$ to zero gives
 
@@ -54,7 +54,7 @@ $N_{\rm aux}\times N_{\rm aux}$ metric, so a build costs
 $O(N_{\rm aux}N^2)$ instead of the $O(N^4)$ of the direct contraction.
 
 Check the complete-basis limit. If $\rho$ lies in the span of the $\chi_P$,
-the fit reproduces it and $J$ is exact (section 6.1.1).
+the fit reproduces it and $J$ is exact (section @sec:factorization-and-metric-factorization).
 
 **Packed storage.** The code stores $(P|\mu\nu)$ undressed, as the packed
 lower triangle, since $(P|\mu\nu) = (P|\nu\mu)$. Split the sum for $\gamma$
@@ -66,7 +66,7 @@ with $w_{\mu\mu} = D_{\mu\mu}$ and $w_{\mu\nu} = D_{\mu\nu} + D_{\nu\mu}$
 ($\nu < \mu$) (`packed_density_weights`). Only the symmetric part of $D$
 enters.
 
-> **Verified equation 7.6** · packed weights
+> **Verified equation {#eq:scf-rij-packed}** · packed weights
 >
 > $\sum_{\mu\nu}(P|\mu\nu)D_{\mu\nu} = \sum_{\mu\ge\nu}(P|\mu\nu)w_{\mu\nu}$ for
 > any $D$.
@@ -82,7 +82,7 @@ enters.
 
 **The solve.** $Vc = \gamma$ is solved with the Cholesky factor
 $V = LL^{\mathsf T}$ computed once: no explicit inverse, no eigenvalue cut. A
-metric that is not positive definite is an error. Section 6.1.3 explains why
+metric that is not positive definite is an error. Section @sec:factorization-and-metric-factors explains why
 a failed Cholesky factorization is treated as a defect of the input.
 
 **The error.** How wrong is the fitted Coulomb energy? Expand the residual
@@ -99,12 +99,12 @@ second order in the residual. The Coulomb self-energy of any charge
 distribution is non-negative, so the fitted energy errs low.
 
 The robust (Dunlap) form $2\gamma^{\mathsf T}c' - c'^{\mathsf T}Vc'$
-(section 6.3) has the same value at $c' = c$, namely
+(section @sec:robust-fit) has the same value at $c' = c$, namely
 $2\gamma^{\mathsf T}V^{-1}\gamma - \gamma^{\mathsf T}V^{-1}\gamma$, and its
 derivative $2\gamma - 2Vc'$ vanishes there. That is why the plain and robust
 energies coincide for RI-J with one density.
 
-> **Verified equation 7.4** · the Coulomb fit and its error
+> **Verified equation {#eq:scf-rij-fit}** · the Coulomb fit and its error
 >
 > The fit $Vc = \gamma$ is the Coulomb-metric projection of $\rho$, and
 > $(\rho|\rho) - \gamma^{\mathsf T}V^{-1}\gamma = (\rho - \tilde\rho|\rho - \tilde\rho) \ge 0$:
@@ -123,7 +123,7 @@ energies coincide for RI-J with one density.
 **f32 storage** (`ri_j_precision = "f32"`, the single-point default). Each
 $(P|\mu\nu)$ is rounded to f32 once; $w$, $\gamma$, $c$, the solve and $J$
 are f64. This halves the stored tensor, the largest object of an RI-J run
-(section 6.2). The SCF converges on the operator of the rounded tensor, so the
+(section @sec:three-index-sources). The SCF converges on the operator of the rounded tensor, so the
 energy carries an error first order in the rounding. Geometry and frequency
 tasks default to f64.
 
@@ -132,7 +132,7 @@ tasks default to f64.
 Exchange pairs the two electrons differently:
 $K_{\mu\nu} = \sum_{\lambda\sigma}(\mu\lambda|\nu\sigma)D_{\lambda\sigma}$, so
 the products to fit are $\chi_\mu\chi_\lambda$ and $\chi_\nu\chi_\sigma$, and
-$D$ sits between them. Fit each product with the factorization (6.1),
+$D$ sits between them. Fit each product with the factorization (@eq:factorization-and-metric-1),
 $(\mu\lambda|\nu\sigma) \approx \sum_PB^P_{\mu\lambda}B^P_{\nu\sigma}$, and
 use $B^P_{\nu\sigma} = B^P_{\sigma\nu}$:
 
@@ -181,7 +181,7 @@ A range-separated hybrid contracts two fitters,
 $K = c_{\rm SR}K[\mathrm{erfc}(\omega)] + c_{\rm LR}K[\mathrm{erf}(\omega)]$,
 each with its own metric and dressing on one auxiliary basis.
 
-> **Verified equation 7.5** · three contractions of one RI-K
+> **Verified equation {#eq:scf-rik-routes}** · three contractions of one RI-K
 >
 > With any $M$ satisfying $M^{\mathsf T}M = V^{-1}$, the density route
 > $\sum_P B^PDB^P$, the occupied route $2\sum_P(B^PC_o)(B^PC_o)^{\mathsf T}$
@@ -223,7 +223,7 @@ route, the cut metric fits the kept span, and the packed weights are exact.
 The robust-form stationarity and the response form $G + G^{\mathsf T}$ were
 checked numerically for this section.
 
-## 7.4.2 The algorithm
+## The algorithm {#ri-j-ri-k-split-ri-j-algorithm}
 
 | Step | RI-J | RI-K | Split-RI-J |
 |---|---|---|---|
@@ -232,7 +232,7 @@ checked numerically for this section.
 | storage | $N_{\rm aux}N(N+1)/2$, f32 by default | $N_{\rm aux}N^2$ f64, in core or spilled | none |
 
 Where the tensor lives (in core, packed, spilled to disk) is the subject of
-section 6.2.
+section @sec:three-index-sources.
 
 The packed weights carry the factor 2 of the off-diagonal pairs:
 
@@ -293,7 +293,7 @@ A density with no negative eigenvalues skips the second build. When
 `density_factor` returns `None` (a non-symmetric $D$, or too many columns),
 the `None` arm runs the density route.
 
-## 7.4.3 Precision
+## Precision {#ri-j-ri-k-split-ri-j-precision}
 
 RI-J stores the tensor in f32 for single points by default. Every other
 quantity is f64. The SCF then converges on the operator of the rounded tensor,
@@ -308,7 +308,7 @@ production path calls it, while the module doc of `crates/ferric-scf/src/df_j.rs
 describes the f64 exit as if the SCF energy used it. Either the exit is wired
 in or the module doc says it is unused.
 
-## 7.4.4 Split-RI-J
+## Split-RI-J {#ri-j-ri-k-split-ri-j-split-ri-j}
 
 Split-RI-J solves the same $Vc = \gamma$ with the same Cholesky factor. The
 difference is that $(P|\mu\nu)$ is recomputed each build in a
@@ -322,7 +322,7 @@ three-index tensor does not fit the budget
 stores nothing of size $N_{\rm aux}N^2$, and pays one three-index integral
 evaluation per build.
 
-## 7.4.5 Numerical anchors
+## Numerical anchors {#ri-j-ri-k-split-ri-j-numerical-anchors}
 
 The fitting error is a property of the auxiliary basis and grows with system
 size; `site/src/methods/scf.md` records that RI-JK has not been measured
@@ -331,7 +331,7 @@ this section are checked by the proofs above and by
 `crates/ferric-scf/tests/split_rij.rs` (Split-RI-J against a reference
 tensor) and `crates/ferric-scf/tests/dfj_f32_storage.rs` (f32 storage).
 
-## 7.4.6 Options that change the equation
+## Options that change the equation {#ri-j-ri-k-split-ri-j-options-change-equation}
 
 | Option | Effect |
 |---|---|
@@ -340,7 +340,7 @@ tensor) and `crates/ferric-scf/tests/dfj_f32_storage.rs` (f32 storage).
 | `jk_storage = "auto"`, `"memory"`, `"disk"`, `"direct"`, `"split"` | where the tensor lives, or Split-RI-J |
 | a range-separated hybrid | two RI-K fitters, $\mathrm{erfc}(\omega r)/r$ and $\mathrm{erf}(\omega r)/r$, on one auxiliary basis |
 
-## 7.4.7 Doc fixes needed
+## Doc fixes needed {#ri-j-ri-k-split-ri-j-doc-fixes-needed}
 
 | Text | Code |
 |---|---|
@@ -354,5 +354,5 @@ tensor) and `crates/ferric-scf/tests/dfj_f32_storage.rs` (f32 storage).
 | Source | Used for |
 |---|---|
 | `crates/ferric-scf/theory.md`, "Density-fitted Coulomb and exchange (RI-J, RI-K, Split-RI-J)" | the equations |
-| `scripts/scf_jk_builders_sympy.py` | verified equations 7.4 to 7.6 |
+| `scripts/scf_jk_builders_sympy.py` | verified equations @eq:scf-rij-packed to @eq:scf-rik-routes |
 | `site/src/methods/scf.md`, "Choosing how exchange is built" | routes and the f32 statement |

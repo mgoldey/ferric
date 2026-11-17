@@ -1,4 +1,4 @@
-# 14. SCF gradients, Hessians and geometry
+# SCF gradients, Hessians and geometry {#derivatives}
 
 A force on a nucleus is the slope of the energy along that nucleus's
 coordinate, with the sign flipped. A geometry optimization follows the
@@ -10,10 +10,10 @@ with their coupled-perturbed equations, harmonic frequencies, the gradient
 of an SCF that carries a caller-supplied energy term, and the searches that
 use the gradient (minimum, saddle point, reaction path).
 
-The first sections build on chapter 3 (derivative integrals, section 3.3),
-chapter 7 (the Hartree–Fock energy and its fitted J and K) and chapter 9
+The first sections build on chapter @sec:integrals (derivative integrals, section @sec:integrals-derivatives),
+chapter @sec:hartree-fock (the Hartree–Fock energy and its fitted J and K) and chapter @sec:kohn-sham
 (the XC energy on a Becke grid). Correlated gradients (MP2, OO-MP2, dRPA)
-and the Z-vector are chapter 15. They reuse the energy-weighted density and
+and the Z-vector are chapter @sec:correlated-gradients. They reuse the energy-weighted density and
 the integral-derivative loops described here.
 
 | Section | Topic | Registry id | Status |

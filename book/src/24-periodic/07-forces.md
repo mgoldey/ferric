@@ -1,20 +1,20 @@
-# 24.7 Nuclear forces
+# Nuclear forces {#forces}
 
-<!-- section: 24.7; status: edit; registry: pbc-hf, pbc-ks;
+<!-- status: edit; registry: pbc-hf, pbc-ks;
      theory: crates/ferric-pbc/theory.md#"6. Refusal gates and tolerances of the open-shell force and stress paths" -->
 
 Moving atom $A$ in a periodic cell moves its nucleus, every basis function
 centred on it and, for Kohn–Sham, every grid point homed on it, in every
 lattice image at once. The force is the derivative of the energy of sections
-24.1 to 24.6 at the converged density, and each term of the energy gives one
+@sec:ewald to @sec:kpoint-scf at the converged density, and each term of the energy gives one
 term of the force. The Ewald and $\mathbf G = 0$ bookkeeping carries over
 unchanged; the new feature is that two of its constants enter through the
 overlap matrix. The forces drive `task = "optimize"`: atoms move, the lattice
 is fixed.
 
-Section 24.7.1 derives the force term by term, 24.7.2 shows why the
-Madelung term drops out of it, and 24.7.3 lists the gates that refuse a state
-the force formula does not apply to; 24.7.4 to 24.7.6 give anchors, limits
+Section @sec:forces-force-term-term derives the force term by term, @sec:forces-madelung-term-cancels shows why the
+Madelung term drops out of it, and @sec:forces-refusal-gates lists the gates that refuse a state
+the force formula does not apply to; @sec:forces-numerical-anchors to @sec:forces-sources give anchors, limits
 and sources.
 
 | Symbol | Meaning | Code name |
@@ -33,7 +33,7 @@ and sources.
 | CLI | `task = "optimize"` with a `[cell]` section |
 | Python | `with_gradient=True` on the SCF entry points; `gradient()` in Hartree/Bohr per cell |
 
-## 24.7.1 The force, term by term
+## The force, term by term {#forces-force-term-term}
 
 **The energy being differentiated.** At the Gamma point, with $\mathbf G = 0$
 dropped everywhere (`grad.rs` module documentation):
@@ -41,8 +41,8 @@ dropped everywhere (`grad.rs` module documentation):
 $$ E = \sum D\,h + \sum\Gamma_{\mu\nu\lambda\sigma}I_{\mu\nu\lambda\sigma} - \frac{\alpha v_M}{2}\sum_\sigma\operatorname{tr}(D_\sigma SD_\sigma S) + E_{xc} + E_{nn}, $$
 
 with $\Gamma = \tfrac12D_{\mu\nu}D_{\lambda\sigma} - \tfrac\alpha2\sum_\sigma D^\sigma_{\mu\lambda}D^\sigma_{\nu\sigma}$,
-$h = T + V_\text{SR} + V_\text{LR} + c_0Z_\text{tot}S$ (section 24.3) and $I$
-the dense AFT tensor of section 24.4. For RHF, $D_\sigma = D/2$ and
+$h = T + V_\text{SR} + V_\text{LR} + c_0Z_\text{tot}S$ (section @sec:nuclear-attraction) and $I$
+the dense AFT tensor of section @sec:exchange-divergence. For RHF, $D_\sigma = D/2$ and
 $\Gamma = \tfrac12DD - \tfrac14DD$.
 
 **Fixed density, moving basis.** Differentiate at fixed converged $D_\sigma$.
@@ -50,7 +50,7 @@ The energy is stationary with respect to orbital rotations, so the only
 orbital response that survives is the one forced by the orthonormality
 constraint $C_\sigma^{\mathsf H}SC_\sigma = 1$. It gives the Pulay term
 $-\sum W\,\partial S/\partial R_A$ with $W = \sum_\sigma D_\sigma F_\sigma D_\sigma$,
-as in the molecular gradient of section 14.1. For RHF,
+as in the molecular gradient of section @sec:hf-gradient. For RHF,
 $\sum_\sigma D_\sigma FD_\sigma = 2(D/2)F(D/2) = \tfrac12DFD$.
 
 **Each energy term, differentiated.**
@@ -62,14 +62,14 @@ $\sum_\sigma D_\sigma FD_\sigma = 2(D/2)F(D/2) = \tfrac12DFD$.
 | LR nuclear attraction | basis: $-(2/\Omega)\sum_{\mathbf G}v_\eta\operatorname{Re}[\rho_A'^*S(\mathbf G)]$ with $\rho'_A = 2\sum_{\mu\in A,\nu}D_{\mu\nu}Q_{\mu\nu}$; nucleus: the structure-factor derivative |
 | two-electron (pure AFT) | $(8/\Omega)\sum_{\mathbf G}(4\pi/G^2)\operatorname{Re}\sum_{\mu\in A,\nu}Q^*_{\mu\nu}Z_{\mu\nu}$, $Z = \tfrac12D\rho(\mathbf G) - \tfrac\alpha2\sum_\sigma D_\sigma P(\mathbf G)D_\sigma$ |
 | overlap coupling | $\sum M\,\partial S/\partial R_A$, $M = -W + c_0Z_\text{tot}D - \alpha v_M\sum_\sigma D_\sigma SD_\sigma$ |
-| Ewald $E_{nn}$ | SR erfc plus LR structure factor (section 24.1) |
+| Ewald $E_{nn}$ | SR erfc plus LR structure factor (section @sec:ewald) |
 | XC | AO term, grid-point motion and the partition-weight derivative |
 
 The $\mathbf G$ sums run over the half sphere. $Q_{\mu\nu} = \partial P_{\mu\nu}/\partial A$
 is the bra-centre derivative of the pair transform
 (`ferric-pbc/src/pair_ft.rs::pair_ft_deriv_chunked`). The ket derivative is
 $Q_{\nu\mu}$, because $P_{\mu\nu} = P_{\nu\mu}$ at reciprocal-lattice
-$\mathbf G$ (section 24.2). $Q$ is three times the size of the pair
+$\mathbf G$ (section @sec:pair-ft). $Q$ is three times the size of the pair
 transform, so it is streamed per $\mathbf G$ chunk together with $P$ and
 contracted at once.
 
@@ -78,14 +78,14 @@ depends on the bra, ket and nuclear centres only through their differences,
 so its three derivatives sum to zero. The code computes the bra and ket
 derivatives and takes the nuclear one as minus their sum. It does not use
 libint2's `erf_nuclear`/`erfc_nuclear` derivative operators, for the same
-reason as the energy (section 24.3).
+reason as the energy (section @sec:nuclear-attraction).
 
 **The overlap-coupled matrix.** Every term whose geometry dependence is only
 through $S$ goes into one matrix $M$:
 
 - $-W$ is the Pulay term above.
 - $c_0Z_\text{tot}D$: the $\mathbf G = 0$ term of the nuclear attraction,
-  $c_0Z_\text{tot}S$ (section 24.3), depends on the geometry only through
+  $c_0Z_\text{tot}S$ (section @sec:nuclear-attraction), depends on the geometry only through
   $S$. Its energy is $c_0Z_\text{tot}\operatorname{tr}(DS)$, and its derivative
   is $c_0Z_\text{tot}\sum D\,\partial S$.
 - $-\alpha v_M\sum_\sigma D_\sigma SD_\sigma$: the explicit $S$ dependence of
@@ -106,17 +106,17 @@ the geometry. The force is therefore the derivative of the truncated energy
 up to the primitive screens ($\le$ precision) and the AO extent threshold, and the finite-difference
 anchors below test it to $10^{-7}$ Ha/Bohr.
 
-## 24.7.2 The Madelung term cancels
+## The Madelung term cancels {#forces-madelung-term-cancels}
 
 Look at what `exxdiv = ewald` does to $M$. The Fock matrix of spin $\sigma$
-contains $-\alpha v_MSD_\sigma S$ (section 24.4), so $W$ contains
+contains $-\alpha v_MSD_\sigma S$ (section @sec:exchange-divergence), so $W$ contains
 
 $$ D_\sigma\big(-\alpha v_MSD_\sigma S\big)D_\sigma = -\alpha v_M\,D_\sigma SD_\sigma SD_\sigma = -\alpha v_MD_\sigma , $$
 
 using $D_\sigma SD_\sigma = D_\sigma$ twice. In $M$ this appears as $+\alpha v_MD_\sigma$.
 The explicit term is $-\alpha v_MD_\sigma SD_\sigma = -\alpha v_MD_\sigma$. They
 cancel, spin by spin. Forces for `ewald` and `none` therefore agree, for any
-$\alpha$ and any spin state. This is consistent with section 24.4: the
+$\alpha$ and any spin state. This is consistent with section @sec:exchange-divergence: the
 correction moves occupied levels but not orbitals, so it cannot move atoms.
 
 Why per spin? The total-density form $-\tfrac{\alpha v_M}2DSD$ is the same
@@ -128,7 +128,7 @@ prototype: $1.7\times10^{-2}$ to $1.5\times10^{-1}$ Ha/Bohr on open shells with
 $\alpha > 0$. Closed shells, `exxdiv = none` and the sum of forces do not see
 that error.
 
-> **Verified equation 24.14** · the Madelung terms cancel in the force
+> **Verified equation {#eq:pbc-grad-madelung}** · the Madelung terms cancel in the force
 >
 > With the per-spin overlap term $-\alpha v_M\sum_\sigma D_\sigma SD_\sigma$,
 > the overlap-coupled force is the same for `exxdiv = ewald` and `none`, for
@@ -174,7 +174,7 @@ The matrix is built in `ferric-pbc/src/grad.rs::assemble`:
 | Code | Equation |
 |---|---|
 | `-&w` | $-W$ |
-| `c0 * ztot`, `d` | $c_0Z_\text{tot}D$, with `omega` the nuclear split of section 24.3 |
+| `c0 * ztot`, `d` | $c_0Z_\text{tot}D$, with `omega` the nuclear split of section @sec:nuclear-attraction |
 | `spins.sandwich(s_mat)` | $\sum_\sigma D_\sigma SD_\sigma$ |
 | `-alpha * vm` | $-\alpha v_M$ |
 
@@ -182,17 +182,17 @@ The three `GradMutation` arms are the test mutants: the wrong sign of $W$,
 the Madelung $S$ term left out, and the total-density form. Each is detected
 by `h2_fd_anchor_catches_each_mutant`.
 
-The Ewald nuclear gradient is part of section 24.1's
+The Ewald nuclear gradient is part of section @sec:ewald's
 `ferric-pbc/src/ewald.rs::ewald_nuclear_gradient_parts`, checked against
 PySCF and finite differences in `ewald_gradient_matches_pyscf_grad_nuc_and_fd`.
 
 There is no committed derivation of the full electronic force (the
 two-electron, nuclear-attraction and XC terms above) in `theory.md` and no
 proof script for it. The forces are anchored by finite differences of
-ferric's own energy instead (24.7.4). That is why this section's status is
+ferric's own energy instead (@sec:forces-numerical-anchors). That is why this section's status is
 `edit`.
 
-## 24.7.3 Refusal gates
+## Refusal gates {#forces-refusal-gates}
 
 A force or stress is first order in the departure of the SCF state from
 stationarity. The derivation above assumed a stationary state, so the
@@ -260,7 +260,7 @@ stress triple-count mismatch). Every max-reduction feeding a refusal
 propagates NaN (`grad::max_nan`), and every gate is written `!(x <= bar)`, so
 a NaN is refused.
 
-## 24.7.4 Numerical anchors
+## Numerical anchors {#forces-numerical-anchors}
 
 | Quantity | Bar | Test |
 |---|---|---|
@@ -270,14 +270,14 @@ a NaN is refused.
 | triclinic s/p cell against finite differences | $1.5\times10^{-8}$ Ha/Bohr | `triclinic_sp_force_matches_fd_of_own_energy` |
 | $1\times1\times3$ mesh force against the supercell force on one copy | | `crates/ferric-pbc/tests/pbc_kgrad.rs` `h2_1x1x3_force_is_the_supercell_force_on_one_copy` |
 
-## 24.7.5 Limits
+## Limits {#forces-limits}
 
 - The lattice is fixed; there is no lattice-vector relaxation.
   `task = "frequencies"` is an error for a cell.
 - VV10 is refused on every periodic derivative path.
 - `range_split` is refused with `task = "optimize"`.
 
-## 24.7.6 Sources
+## Sources {#forces-sources}
 
 | Source | What it gives |
 |---|---|

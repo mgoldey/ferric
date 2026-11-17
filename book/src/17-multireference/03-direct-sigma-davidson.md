@@ -1,6 +1,6 @@
-# 17.3 Direct sigma and the Davidson solver
+# Direct sigma and the Davidson solver {#direct-sigma-davidson}
 
-<!-- section: 17.3; status: ready; registry: casci;
+<!-- status: ready; registry: casci;
      theory: crates/ferric-ci/theory.md#"Direct sigma (`src/sigma.rs`)" -->
 
 A CAS(14,14) singlet has about $1.2\times10^7$ determinants, and its
@@ -24,7 +24,7 @@ by $N_\text{det}^2$.
 | Rust | `ferric-ci/src/sigma.rs::DirectSigma`, `ferric-ci/src/davidson.rs::davidson_lowest`, `ferric-ci/src/lib.rs::{run_cas_ci,run_cas_ci_on_integrals,dense_lowest}` |
 | Python | `run_casci` |
 
-## 17.3.1 The split of $H$
+## The split of $H$ {#direct-sigma-davidson-split}
 
 ### Rewriting $H$ with one-body operators
 
@@ -42,7 +42,7 @@ $$
 
 where the last step swapped $a_{q\sigma}$ and $a_{s\tau}$ (one sign).
 Solve for the two-electron string and substitute it into $H$ of section
-17.1.2. The $\delta$ term gives $-\tfrac12\sum_{pqs,\sigma}(pq|qs)E^\sigma_{ps}$,
+@sec:determinants-hamiltonian. The $\delta$ term gives $-\tfrac12\sum_{pqs,\sigma}(pq|qs)E^\sigma_{ps}$,
 a one-electron operator. Rename its indices and add it to $h$:
 
 $$
@@ -89,9 +89,9 @@ matrix multiplied from one side. $\sigma_3$ needs the factorization
 $\langle I_\alpha I_\beta|E^\alpha_{pq}E^\beta_{rs}|J_\alpha J_\beta\rangle
 = \langle I_\alpha|E_{pq}|J_\alpha\rangle\langle I_\beta|E_{rs}|J_\beta\rangle$.
 It holds in the α-before-β order because $E^\beta_{rs}$ carries
-$(-1)^{N_\alpha}$ twice (section 17.1.1).
+$(-1)^{N_\alpha}$ twice (section @sec:determinants-convention).
 
-> **Verified equation 17.3** · the three-part split of $H$
+> **Verified equation {#eq:ci-sigma-split}** · the three-part split of $H$
 >
 > As $64\times64$ Jordan–Wigner matrices on three active orbitals with
 > random symmetric $h$ and 8-fold-symmetric $(pq|rs)$,
@@ -109,7 +109,7 @@ $(-1)^{N_\alpha}$ twice (section 17.1.1).
 > <!-- verified: id=ci.sigma.split; script=scripts/ci_rdm_casscf_gradient_sympy.py; claim=sigma-split; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-ci/src/sigma.rs::{one_body_g,DirectSigma}; rust_test=ferric-ci/tests/direct_sigma_vs_naive.rs::direct_sigma_matches_naive_on_random_integrals; registry=casci -->
 
 The box proves the operator identity. The phases of the excitation tables
-are those of section 17.2, and the Rust test compares the whole product
+are those of section @sec:slater-condon, and the Rust test compares the whole product
 element-wise with the `general_element` pair loop.
 
 ### The excitation tables
@@ -124,7 +124,7 @@ E_{pq}|S\rangle = \epsilon\,|T\rangle,\qquad
 T = (S\setminus q)\cup p .
 $$
 
-The phase is $\epsilon_1$ of section 17.2. A string with $k$ electrons
+The phase is $\epsilon_1$ of section @sec:slater-condon. A string with $k$ electrons
 has $k(n-k)$ entries with $p \ne q$ and $k$ with $p = q$, so $k(n-k)+k$ in
 all: 12 per string for $k = 3$, $n = 6$. `DirectSigma::new` builds the
 tables once per CAS-CI solve with this loop of
@@ -207,7 +207,7 @@ $16(n_\text{str}^\alpha n^\alpha_\text{exc} + 2 n_\text{str}^\beta n^\beta_\text
 bytes. Each table entry is 16 bytes, and the β table is stored twice: per
 string and grouped by pair $rs$ for $\sigma_3$.
 
-## 17.3.2 The Davidson solver
+## The Davidson solver {#direct-sigma-davidson-davidson-solver}
 
 `davidson_lowest` is a block-size-1 Davidson for the lowest root.
 
@@ -276,7 +276,7 @@ for a CAS(14,14) singlet it is 9.4 GB. The CAS-CI memory plan charges it,
 and the RDM scratch when `compute_rdms` is set, before anything is
 allocated.
 
-## 17.3.3 Options
+## Options {#direct-sigma-davidson-options}
 
 | Option | Values | Default (Python) | Effect |
 |---|---|---|---|
@@ -287,7 +287,7 @@ allocated.
 | `max_iter` | integer | 200 | Davidson iteration cap |
 | `memory_budget_gb` | GB | auto | the CAS-CI memory plan |
 
-## 17.3.4 Numerical anchors
+## Numerical anchors {#direct-sigma-davidson-numerical-anchors}
 
 | Quantity | Systems | Error | Test |
 |---|---|---|---|
@@ -295,7 +295,7 @@ allocated.
 | $E_\text{core}$ and the active-space energy | same | $\le 2.6\times10^{-10}$ Ha | `crates/ferric-ci/tests/validation_casci.rs` |
 | direct sigma vs the pair loop, random and real integrals | ten sectors, H2O / STO-3G | element-wise to $10^{-12}$ | `crates/ferric-ci/tests/direct_sigma_vs_naive.rs` |
 
-## 17.3.5 Sources
+## Sources {#direct-sigma-davidson-sources}
 
 | Source | What it gives |
 |---|---|

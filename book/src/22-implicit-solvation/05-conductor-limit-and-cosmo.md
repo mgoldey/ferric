@@ -1,6 +1,6 @@
-# 22.5 The conductor limit and COSMO
+# The conductor limit and COSMO {#conductor-limit-and-cosmo}
 
-<!-- section: 22.5; status: edit; registry: cosmo;
+<!-- status: edit; registry: cosmo;
      theory: crates/ferric-pcm/theory.md#"6. Conductor limit and COSMO"; crates/ferric-scf/theory.md#"COSMO reaction field" -->
 
 A perfect conductor screens a charge completely: the potential on its
@@ -9,9 +9,9 @@ dielectric by a conductor removes the double-layer operator from the
 problem and leaves one symmetric linear system for the surface charges.
 COSMO, the conductor-like screening model, solves that system and rescales
 the answer by a function of $\varepsilon$ to account for a real, finite
-dielectric. The plan: derive the limit from the IEF-PCM operators (22.5.1),
-then the COSMO driver of `ferric-scf` (22.5.2), its algorithm (22.5.3) and
-its options (22.5.4).
+dielectric. The plan: derive the limit from the IEF-PCM operators (@sec:conductor-limit-and-cosmo-limit-ief-pcm),
+then the COSMO driver of `ferric-scf` (@sec:conductor-limit-and-cosmo-cosmo-driver), its algorithm (@sec:conductor-limit-and-cosmo-algorithm) and
+its options (@sec:conductor-limit-and-cosmo-options).
 
 The limit is proved in `ferric-pcm` by `scripts/pcm_ief_sympy.py`. The COSMO
 driver's equations are in `crates/ferric-scf/theory.md` ("COSMO reaction
@@ -31,10 +31,10 @@ field") and are proved in `scripts/cosmo_sympy.py`.
 | CLI | `[cosmo]` with `epsilon`, `radius_scale`, `lebedev_order`, `s_matrix_kind`, for `task = "energy"` only |
 | Python | none |
 
-## 22.5.1 The limit of IEF-PCM
+## The limit of IEF-PCM {#conductor-limit-and-cosmo-limit-ief-pcm}
 
 Take $\varepsilon\to\infty$, so $f = (\varepsilon-1)/(\varepsilon+1)\to 1$.
-Set $f = 1$ in the operators of section 22.2:
+Set $f = 1$ in the operators of section @sec:ief-operators:
 
 $$ K = \left(I - \tfrac{1}{2\pi}DA\right)S, \qquad R = -\left(I - \tfrac{1}{2\pi}DA\right) . $$
 
@@ -46,7 +46,7 @@ $$ K^{-1}R = -S^{-1}, \qquad S q = -v . $$
 This holds on any discretization, for any $S$, $D$ and $A$. The double
 layer has dropped out, and what is left is the conductor-like (C-PCM or
 COSMO) equation. $S$ is symmetric, so $-S^{-1}$ is too, and the
-symmetrization of section 22.2 changes nothing there.
+symmetrization of section @sec:ief-operators changes nothing there.
 
 How fast does IEF-PCM approach this? $K^{-1}R$ is smooth in $f$, so the gap
 is first order in $1 - f = 2/(\varepsilon+1)$. The test
@@ -56,7 +56,7 @@ and conductor charges is $1.649\times10^{-6}$ at $\varepsilon = 10^6$ and
 $1.649\times10^{-8}$ at $\varepsilon = 10^8$, a ratio of 100.000, and
 $2.1\times10^{-2}$ at $\varepsilon = 78.4$.
 
-> **Verified equation 22.8** · IEF-PCM at $f = 1$ is the conductor equation
+> **Verified equation {#eq:pcm-conductor-limit}** · IEF-PCM at $f = 1$ is the conductor equation
 >
 > At $f = 1$, $K = (I - DA/2\pi)S$ and $R = -(I - DA/2\pi)$ for any $S$, $D$
 > and $A$, so $K^{-1}R = -S^{-1}$ exactly and $Kq = Rv$ becomes $Sq = -v$.
@@ -75,28 +75,28 @@ $2.1\times10^{-2}$ at $\varepsilon = 78.4$.
 
 At finite $\varepsilon$ the conductor-like models scale $Sq = -v$ by one
 factor, and this is where they differ from IEF-PCM. C-PCM uses
-$(\varepsilon-1)/\varepsilon$, which is Kirkwood's $k_0$ of section 22.2:
+$(\varepsilon-1)/\varepsilon$, which is Kirkwood's $k_0$ of section @sec:ief-operators:
 exact for a central charge. COSMO uses $(\varepsilon-1)/(\varepsilon+\tfrac12)$,
 which is Kirkwood's $k_1 = 2(\varepsilon-1)/(2\varepsilon+1)$ with the 2
 cancelled: exact for a central dipole. Each is exact in one channel and
 approximate in the others, and IEF-PCM is exact in all of them (the control
-rows of box 22.4). For water, $\varepsilon = 78.4$, the three factors
+rows of box @eq:pcm-sphere-kirkwood). For water, $\varepsilon = 78.4$, the three factors
 $f = 0.9748$, $k_0 = 0.9872$ and $k_1 = 0.9810$ differ in the second or
 third digit.
 
-## 22.5.2 The COSMO driver
+## The COSMO driver {#conductor-limit-and-cosmo-cosmo-driver}
 
 `ferric-scf/src/cosmo.rs` implements the conductor-like screening model of
 Klamt and Schüürmann (J. Chem. Soc. Perkin Trans. 2, 799 (1993)) as a
 density-dependent term folded into the Fock matrix every iteration, as
-`solvent_terms` does for PCM (section 22.3). It uses the IEF-PCM
+`solvent_terms` does for PCM (section @sec:reaction-field). It uses the IEF-PCM
 machinery's conventions where it can. Per SCF iteration it computes the
 segment potential, solves the symmetric system, and returns the operator
 and energy.
 
 **Segment potential.** For segments at $\mathbf s_k$ and the total AO
 density $P = \sum_\sigma D_\sigma$, the potential is the point-probe one of
-section 22.3:
+section @sec:reaction-field:
 
 $$ v_k = \sum_{A} \frac{Z^{\mathrm{eff}}_A}{|\mathbf{s}_k - \mathbf{R}_A|} + \sum_{\mu\nu} P_{\mu\nu} M_{k,\mu\nu},
 \qquad
@@ -115,7 +115,7 @@ $$ f_{1/2}(\varepsilon) = \frac{\varepsilon - 1}{\varepsilon + \tfrac12} = \frac
 the code solves $Sq = -f_{1/2}\,v$ by one LU solve
 (`CosmoConfig::f_epsilon`). Check the limits: $f_{1/2}(1) = 0$, so vacuum
 gives no charge, and $f_{1/2}\to 1$ as $\varepsilon\to\infty$, which is the
-conductor condition $Sq = -v$ of 22.5.1. C-PCM's $(\varepsilon-1)/\varepsilon$
+conductor condition $Sq = -v$ of @sec:conductor-limit-and-cosmo-limit-ief-pcm. C-PCM's $(\varepsilon-1)/\varepsilon$
 is not used.
 
 **Energy and Fock term.** With $Q = -f_{1/2}S^{-1}$ the energy is
@@ -141,9 +141,9 @@ the spins only through $P$, so the same $V^{\mathrm{cosmo}}$ is added to
 every spin Fock matrix. $E_{\mathrm{cosmo}}$ is added to the SCF energy
 outside the $\tfrac12\operatorname{Tr}[P(h+F)]$ trace, which is taken before
 $V^{\mathrm{cosmo}}$ enters $F$, for the reasons given for PCM in
-section 22.3.
+section @sec:reaction-field.
 
-> **Verified equation 22.9** · the COSMO charges, energy and operator
+> **Verified equation {#eq:cosmo-reaction-field}** · the COSMO charges, energy and operator
 >
 > $$ S\,q = -f_{1/2}(\varepsilon)\,v, \qquad f_{1/2}(\varepsilon) = \frac{\varepsilon-1}{\varepsilon+\tfrac12}, \qquad E_{\mathrm{cosmo}} = \tfrac12\,q\cdot v, \qquad V^{\mathrm{cosmo}}_{\mu\nu} = \sum_k q_k M_{k,\mu\nu} = \frac{\partial E_{\mathrm{cosmo}}}{\partial P_{\mu\nu}} . $$
 >
@@ -213,7 +213,7 @@ $w_k$ the ferric Lebedev weight, which sums to 1):
 
 $$ S_{kl} = \frac{\operatorname{erf}(\xi_{kl} r_{kl})}{r_{kl}}, \quad \xi_{kl} = \frac{\xi_k\xi_l}{\sqrt{\xi_k^2+\xi_l^2}}, \qquad S_{kk} = \frac{\xi_k\sqrt{2/\pi}}{\mathrm{swf}_k} . $$
 
-These are the formulas of section 22.1.2. The off-diagonal element is the
+These are the formulas of section @sec:cavity-and-bem-matrices. The off-diagonal element is the
 Coulomb energy of two Gaussians ($1/\xi_{kl}^2 = 1/\xi_k^2 + 1/\xi_l^2$), and
 $\xi_k\sqrt{2/\pi}$ is a Gaussian's self-energy, the $r\to 0$ limit of
 $\operatorname{erf}(\xi_k r/\sqrt2)/r$. The self-term is divided by the
@@ -231,7 +231,7 @@ not derived here.
 ### The cavity
 
 `CosmoCavity::build` is a second implementation of the cavity of section
-22.1. It shares `ferric_pcm::cavity::switch_h` and
+@sec:cavity-and-bem. It shares `ferric_pcm::cavity::switch_h` and
 `ferric_pcm::matrices::gaussian_xi_table` and differs in what it feeds them.
 Segments with $w_k\,\mathrm{swf}_k \le 10^{-16}$ are dropped, as for PCM.
 
@@ -254,10 +254,10 @@ of $E_{\mathrm{cosmo}}$ with respect to the nuclei would need
 $\partial S/\partial\mathbf R$ (segments move with their atoms, and
 $\mathrm{swf}_k$ changes), the derivative of $M_k$ with respect to both the
 basis centres and the segment positions, and the derivative of the nuclear
-part of $v$. None of it is implemented. Section 22.4 has all of these terms
+part of $v$. None of it is implemented. Section @sec:gradient has all of these terms
 for IEF-PCM, which is the model to use for a geometry.
 
-## 22.5.3 The algorithm
+## The algorithm {#conductor-limit-and-cosmo-algorithm}
 
 | Step | Quantity | Cost | Function |
 |---|---|---|---|
@@ -270,10 +270,10 @@ for IEF-PCM, which is the model to use for a geometry.
 The two passes recompute the integrals rather than cache one
 $N_{\mathrm{bf}}^2$ matrix per segment, which would cost $N\,N^2_{\mathrm{bf}}$
 memory. The loops in `cosmo_reaction_field` are serial, with none of the
-thread parallelism of the PCM operator in section 22.3, and $S$ is rebuilt
+thread parallelism of the PCM operator in section @sec:reaction-field, and $S$ is rebuilt
 every iteration.
 
-## 22.5.4 Options
+## Options {#conductor-limit-and-cosmo-options}
 
 | Option | Values | Default | Effect |
 |---|---|---|---|
@@ -284,7 +284,7 @@ every iteration.
 | `[cosmo]` with `[pcm]` | | | refused: two models of one solvent would be added |
 | `[cosmo]` with a task other than `energy` | | | refused: there is no gradient |
 
-## 22.5.5 Numerical anchors
+## Numerical anchors {#conductor-limit-and-cosmo-numerical-anchors}
 
 | Quantity | Systems | Result | Source |
 |---|---|---|---|
@@ -298,7 +298,7 @@ third shows how much the $S$ formulation matters: the point-charge $S$,
 with the Klamt–Schüürmann diagonal, gives about 57 % of the
 Gaussian-smeared solvation energy.
 
-## 22.5.6 Sources
+## Sources {#conductor-limit-and-cosmo-sources}
 
 | Source | What it gives |
 |---|---|

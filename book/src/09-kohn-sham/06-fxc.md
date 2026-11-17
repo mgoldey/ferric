@@ -1,19 +1,19 @@
-# 9.6 $f_{xc}$ response kernels
+# $f_{xc}$ response kernels {#fxc}
 
-<!-- section: 9.6; status: ready; registry: ks-hessian, tddft;
+<!-- status: ready; registry: ks-hessian, tddft;
      theory: crates/ferric-dft/theory.md#"$f_{xc}$ response kernels" -->
 
 Perturb the density a little, by an electric field, by an orbital rotation
 or by an excitation, and the exchange-correlation potential changes with
 it. Every second-order KS method needs that change: the Newton and
-stability orbital Hessians, the Z-vector of section 15.4, the CPKS
+stability orbital Hessians, the Z-vector of section @sec:ks-zvector, the CPKS
 polarizability, the analytic Hessian and TDDFT. The change of $V_{xc}$ is
 the second derivative of $E_{xc}$, and its pointwise ingredients are libxc's
 second derivatives, collectively $f_{xc}$.
 
-The plan: linearize the matrix of section 9.3 (9.6.1), contract it with
-occupied–virtual products for TDDFT (9.6.2), then list which family has a
-kernel and which methods use it (9.6.3).
+The plan: linearize the matrix of section @sec:vxc (@sec:fxc-linearized-potential), contract it with
+occupied–virtual products for TDDFT (@sec:fxc-singlet-triplet-block), then list which family has a
+kernel and which methods use it (@sec:fxc-coverage).
 
 ferric has one kernel object per family. Each returns $\delta V^\sigma$ for a
 pair of AO perturbations $(\delta D^\alpha, \delta D^\beta)$ by the same
@@ -30,11 +30,11 @@ place of $v_\rho$ and $\mathbf G^\sigma$.
 | Entry point | Location |
 |---|---|
 | Rust | `ferric-dft/src/fxc.rs::{LdaFxcKernel,GgaFxcKernel,MggaFxcKernel}`, `ferric-dft/src/lr_kernel.rs::{SingletKernel,fxc_ov_block,singlet_fxc_ov_block,SingletOvFxc}` |
-| Consumers | `ferric-scf/src/rohf.rs::FxcKernelStore` (Newton, stability, Z-vector), `ferric-tddft/src/tddft.rs::run_tddft` (chapter 20) |
+| Consumers | `ferric-scf/src/rohf.rs::FxcKernelStore` (Newton, stability, Z-vector), `ferric-tddft/src/tddft.rs::run_tddft` (chapter @sec:tddft) |
 
-## 9.6.1 The linearized potential
+## The linearized potential {#fxc-linearized-potential}
 
-Start from the polarized matrix of section 9.3.2:
+Start from the polarized matrix of section @sec:vxc-matrix-elements:
 
 $$ V^\sigma_{\mu\nu} = \sum_g w_g\Bigl[v_{\rho_\sigma}\chi_\mu\chi_\nu + \mathbf G^\sigma\cdot\nabla(\chi_\mu\chi_\nu) + \tfrac12v_{\tau_\sigma}\nabla\chi_\mu\cdot\nabla\chi_\nu\Bigr] . $$
 
@@ -171,7 +171,7 @@ $(\rho_s, \tau_t)$ sits at $2s + t$ and the entry for $(\sigma_c, \tau_t)$ at
 $2c + t$. `add_sym` fills both $(i, j)$ and $(j, i)$. A wrong packing is the
 first negative control of the box below.
 
-> **Verified equation 9.9** · the GGA and meta-GGA kernels are the linearization of $V_{xc}$
+> **Verified equation {#eq:ks-fxc-linearization}** · the GGA and meta-GGA kernels are the linearization of $V_{xc}$
 >
 > For a generic cubic $e(\rho_\alpha, \rho_\beta, \sigma_{\alpha\alpha}, \sigma_{\alpha\beta}, \sigma_{\beta\beta})$
 > whose first and second derivatives are independent symbols, the code's
@@ -202,11 +202,11 @@ runs the kernel end to end: UKS/PBE Newton reaches the DIIS energy.
 
 **The density floor.** The kernels zero every term at points where the
 reference $\rho_\sigma$ is at or below the functional's `DensityFloor`, as
-$V^\sigma$ does (section 9.1.2). The linearization is therefore of the
+$V^\sigma$ does (section @sec:ks-equations-scf-iteration). The linearization is therefore of the
 matrix the SCF used. None of these kernels contains the VV10 response; that
 is `ferric-dft/src/vv10.rs::vv10_potential_tangent`.
 
-## 9.6.2 The singlet and triplet $ov$ block
+## The singlet and triplet $ov$ block {#fxc-singlet-triplet-block}
 
 TDDFT needs the kernel contracted with occupied–virtual products. For one
 column $jb$, `ferric-dft/src/lr_kernel.rs::fxc_ov_block` forms the symmetric
@@ -215,7 +215,7 @@ $\delta D = \tfrac12(\mathbf c_j\mathbf c_b^{\mathsf T} + \mathbf c_b\mathbf c_j
 applies the kernel with $\delta D^\beta = +\delta D$ (singlet) or
 $-\delta D$ (triplet), and projects the $\alpha$ response:
 
-$$ K_{ia,jb} = \mathbf c_i^{\mathsf T}\,\delta V^\alpha[\delta D, \pm\delta D]\,\mathbf c_a = (ia\vert f_{\alpha\alpha} \pm f_{\alpha\beta}\vert jb) . \tag{9.10} $$
+$$ K_{ia,jb} = \mathbf c_i^{\mathsf T}\,\delta V^\alpha[\delta D, \pm\delta D]\,\mathbf c_a = (ia\vert f_{\alpha\alpha} \pm f_{\alpha\beta}\vert jb) . \label{eq:ks-fxc-ov-block} $$
 
 The second form follows from Step 2 for an LDA. With
 $\delta\rho_\alpha = \phi_j\phi_b$ and $\delta\rho_\beta = \pm\delta\rho_\alpha$,
@@ -252,7 +252,7 @@ Two points about the function:
   the adapter, not the grid, is wrong. `SingletOvFxc` applies the same
   kernel matrix-free for the Davidson solver.
 
-> **Verified equation 9.10** · singlet kernel normalization and spin adaptation
+> **Verified equation @eq:ks-fxc-ov-block** · singlet kernel normalization and spin adaptation
 >
 > For a spin-symmetric $e(\rho_\alpha, \rho_\beta)$,
 > $2\,\partial^2e(\rho/2, \rho/2)/\partial\rho^2 = f_{\alpha\alpha} + f_{\alpha\beta}$:
@@ -271,7 +271,7 @@ Two points about the function:
 >
 > <!-- verified: id=ks.fxc.ov-block; script=scripts/tddft_response_sympy.py; claim=A2; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-dft/src/lr_kernel.rs::fxc_ov_block; registry=tddft -->
 
-## 9.6.3 Coverage
+## Coverage {#fxc-coverage}
 
 | Family | Kernel | Consumers | Refused |
 |---|---|---|---|
@@ -306,7 +306,7 @@ and `gen_tddft_refs.py`:
 - `crates/ferric-tddft/tests/validation_tddft.rs`, case `water_631g_r2scan`: TDA and
   Casida against PySCF's `get_ab`.
 
-## 9.6.4 Numerical anchors
+## Numerical anchors {#fxc-numerical-anchors}
 
 From `site/src/reference/validation.md`, "Meta-GGA (τ-only) $f_{xc}$ response".
 
@@ -317,7 +317,7 @@ From `site/src/reference/validation.md`, "Meta-GGA (τ-only) $f_{xc}$ response".
 | Newton vs DIIS energy | $\le 1.4\times10^{-14}$ Ha | the same |
 | Z-vector exact gradient vs FD (MBD@rsSCS) | $8.0\times10^{-10}$ (RKS), $1.1\times10^{-11}$ (UKS), $2.0\times10^{-11}$ (ROKS) Ha/Bohr | `crates/ferric-rpa/tests/mbd_scf_gradient.rs` and its UKS and ROKS siblings |
 
-## 9.6.5 Sources
+## Sources {#fxc-sources}
 
 | Source | What it gives |
 |---|---|

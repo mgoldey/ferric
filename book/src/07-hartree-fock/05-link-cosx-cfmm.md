@@ -1,6 +1,6 @@
-# 7.5 LinK, seminumerical exchange (COSX) and CFMM
+# LinK, seminumerical exchange (COSX) and CFMM {#link-cosx-cfmm}
 
-<!-- section: 7.5; status: ready; registry: rhf, uhf, rohf;
+<!-- status: ready; registry: rhf, uhf, rohf;
      theory: crates/ferric-scf/theory.md#"LinK and COSX exchange", "CFMM: the near and far fields as coded" -->
 
 In a large molecule most four-centre contributions to $J$ and $K$ are
@@ -14,8 +14,8 @@ Two distant charge clouds interact through their multipoles, so CFMM splits
 the Coulomb matrix into a near field computed exactly and a far field from
 multipoles.
 
-This section derives LinK's pair lists and COSX's overlap fit (7.5.1), states
-what CFMM computes (7.5.2), and then gives the measured errors and costs. The
+This section derives LinK's pair lists and COSX's overlap fit (@sec:link-cosx-cfmm-link-cosx), states
+what CFMM computes (@sec:link-cosx-cfmm-cfmm), and then gives the measured errors and costs. The
 three builders differ in what they give up:
 
 | Builder | Replaces | Exact? | `[scf]` setting |
@@ -30,7 +30,7 @@ three builders differ in what they give up:
 | CLI | `[scf] k_builder = "link"` or `"cosx"`, `cosx_grid`, `cosx_final_pass`, `cosx_final_grid` |
 | Python | `k_builder=` and the `cosx_*` keywords on the SCF entry points (`crates/ferric-python/ferric.pyi`) |
 
-## 7.5.1 LinK and COSX
+## LinK and COSX {#link-cosx-cfmm-link-cosx}
 
 ### LinK
 
@@ -81,7 +81,7 @@ $$ X_{\mu g} = \sqrt{w_g}\,\chi_\mu(\mathbf r_g), \quad F_{\lambda g} = \sum_\si
 Read it right to left. $F_{\lambda g}$ contracts the density with the
 electron-1 function $\chi_\sigma$ at the point. $A(g)$ is the potential at
 $\mathbf r_g$ of the electron-2 product $\chi_\nu\chi_\lambda$, a
-three-centre one-electron integral (section 3.4). $G$ applies that potential,
+three-centre one-electron integral (section @sec:md-three-center). $G$ applies that potential,
 and the outer sum over points finishes the electron-1 integral. The weight is
 split as $\sqrt{w_g}$ on each side because $F$ contains one factor of $X$.
 
@@ -109,7 +109,7 @@ exact on any grid: the fit removes the error of the grid's overlap. As the
 grid becomes exact $S_{\rm num}\to S$, $Q \to 1$, and both forms tend to the
 exact $K$.
 
-> **Verified equation 7.7** · the COSX overlap fit
+> **Verified equation {#eq:scf-cosx-overlap-fit}** · the COSX overlap fit
 >
 > For a potential constant over the molecule, $A_{\nu\lambda}(g) = cS_{\nu\lambda}$,
 > the fitted $K = \operatorname{sym}(SS_{\rm num}^{-1}\tilde K)$ equals the exact
@@ -143,7 +143,7 @@ once, non-self-consistently, on a larger grid:
 $$ E = E_{\rm SCF} + \sum_sc_s\big(\operatorname{tr}[D_sK_{\rm final}(D_s)] - \operatorname{tr}[D_sK_{\rm SCF}(D_s)]\big), $$
 
 with $c = -c_x/4$ for the closed shell and $-c_x/2$ per spin. These are the
-exchange weights of the energy functionals of section 7.1, so the correction
+exchange weights of the energy functionals of section @sec:energy-functionals, so the correction
 replaces the exchange energy of the SCF grid by that of the final grid at the
 same density. The SCF iterates on the cheaper grid, and the reported energy
 uses the larger one.
@@ -189,7 +189,7 @@ need. `scatter_bra_pair_probed` debug-asserts that `FourPairK` is never paired
 with a mode that accumulates $J$, since it omits the two pairings the
 Coulomb contraction reads.
 
-## 7.5.2 CFMM
+## CFMM {#link-cosx-cfmm-cfmm}
 
 This subsection states what `CfmmJ` (`crates/ferric-scf/src/cfmm.rs`,
 feature `cfmm-incomplete`) computes.
@@ -264,7 +264,7 @@ CFMM is not reachable from the CLI or Python. It has its exactness anchor
 (`cfmm_matches_direct_j_in_the_trivial_limit` in `crates/ferric-scf/src/cfmm.rs`)
 and one far-field test, and no production caller.
 
-## 7.5.3 Numerical anchors
+## Numerical anchors {#link-cosx-cfmm-numerical-anchors}
 
 | Check | Reference | Agreement | Test |
 |---|---|---|---|
@@ -289,7 +289,7 @@ takes 358 s at def2-TZVP against 98 s for the direct SCF. COSX pays only where
 its per-build saving outweighs its larger iteration count and grid cost; the
 same page records the LinK timings as being re-measured.
 
-## 7.5.4 Options that change the equation
+## Options that change the equation {#link-cosx-cfmm-options-change-equation}
 
 | Option | Effect |
 |---|---|
@@ -298,7 +298,7 @@ same page records the LinK timings as being re-measured.
 | `cosx_final_pass`, `cosx_final_grid` | one non-self-consistent energy correction on a larger grid |
 | `cosx_overlap_fit` | the $S S_{\rm num}^{-1}$ fit, on by default |
 
-## 7.5.5 Doc fixes needed
+## Doc fixes needed {#link-cosx-cfmm-doc-fixes-needed}
 
 | Text | Code |
 |---|---|
@@ -312,7 +312,7 @@ same page records the LinK timings as being re-measured.
 | Source | Used for |
 |---|---|
 | `crates/ferric-scf/theory.md`, "LinK and COSX exchange", "CFMM: the near and far fields as coded" | the equations |
-| `scripts/scf_jk_builders_sympy.py` | verified equation 7.7 |
+| `scripts/scf_jk_builders_sympy.py` | verified equation @eq:scf-cosx-overlap-fit |
 | `site/src/methods/scf.md`, "Choosing how exchange is built" | the measured errors and times |
 | `site/src/reference/validation.md` | the COSX anchor |
 

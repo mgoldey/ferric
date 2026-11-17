@@ -1,6 +1,6 @@
-# 9.4 Global and range-separated hybrids; tuning $\omega$
+# Global and range-separated hybrids; tuning $\omega$ {#hybrids}
 
-<!-- section: 9.4; status: ready; registry: ks-hybrid-rsh;
+<!-- status: ready; registry: ks-hybrid-rsh;
      theory: crates/ferric-dft/theory.md#"Exact exchange in hybrid and range-separated hybrid functionals" -->
 
 Exact exchange is the Hartree–Fock exchange energy evaluated with the
@@ -11,9 +11,9 @@ range-separated hybrid (RSH) uses one fraction when two electrons are close
 and another when they are far apart, with the switch set by a parameter
 $\omega$.
 
-The plan: in 9.4.1, split the Coulomb operator by distance, map libxc's
+The plan: in @sec:hybrids-exact-exchange, split the Coulomb operator by distance, map libxc's
 parameters onto ferric's two fractions, and show that the exchange part of
-the Fock matrix is the derivative of the exchange energy; in 9.4.2, choose
+the Fock matrix is the derivative of the exchange energy; in @sec:hybrids-tuning, choose
 $\omega$ per molecule by the ionization-potential condition. libxc
 supplies the semilocal part and the fractions; the SCF builds the exact
 exchange itself.
@@ -31,7 +31,7 @@ exchange itself.
 | CLI | `[dft] functional`, `xc_omega` |
 | Python | `run_dft(xc=..., xc_omega=...)`, `tune_omega` |
 
-## 9.4.1 Exact exchange
+## Exact exchange {#hybrids-exact-exchange}
 
 **Splitting the operator.** Write the Coulomb operator as a Gaussian
 integral,
@@ -110,7 +110,7 @@ the complementary semilocal exchange, scaled, and for an RSH attenuated by
 the matching short- or long-range factor. So ferric adds only the exact
 exchange.
 
-> **Verified equation 9.5** · the libxc map and the operator split
+> **Verified equation {#eq:ks-rsh-libxc-map}** · the libxc map and the operator split
 >
 > The CAM split sums to $1/r$; libxc's $(\alpha, \beta)$ give
 > $c_{\rm sr} = \alpha + \beta$, $c_{\rm lr} = \alpha$, and Yanai's $(a, b)$
@@ -213,7 +213,7 @@ ROHF assembles the same $F_\alpha$ and $F_\beta$ and then couples them into its
 Roothaan operator. With $D^\alpha = D^\beta = D/2$, both the energy and
 $F_\sigma$ equal the closed-shell ones.
 
-> **Verified equation 9.6** · the exchange part of $F$ is the derivative of $E_x$
+> **Verified equation {#eq:ks-rsh-exchange-derivative}** · the exchange part of $F$ is the derivative of $E_x$
 >
 > $\mathrm dE_x/\mathrm dD = -\tfrac12K_{\rm tot}(D)$ (closed shell) and
 > $-K_{\rm tot}(D^\sigma)$ per spin (open shell), symbolically with generic
@@ -231,7 +231,7 @@ $F_\sigma$ equal the closed-shell ones.
 >
 > <!-- verified: id=ks.rsh.exchange-derivative; script=scripts/dft_hybrid_rsh_sympy.py; claim=A3; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/fock_assembly.rs::subtract_rsh_exchange; registry=ks-hybrid-rsh -->
 
-The total energy follows section 9.1.2: one- and two-electron energy from
+The total energy follows section @sec:ks-equations-scf-iteration: one- and two-electron energy from
 the Fock matrix before $V_{xc}$ is added, then $E_{xc}$ from the grid,
 
 $$ E = \tfrac12\mathrm{Tr}[D(h + F_{\rm no\,xc})] + E_{xc} + E_{nn} = \mathrm{Tr}[Dh] + \tfrac12\mathrm{Tr}[DJ] - \tfrac14\mathrm{Tr}[D K_{\rm tot}] + E_{xc} + E_{nn}, $$
@@ -276,7 +276,7 @@ also checks PySCF's `rsh_coeff`, ferric's `XcFunctional.exchange_mix`, and
 ferric's `AoIntegrals.veff` energy against its potential by central
 differences (ωB97X-V, CAM-B3LYP, HSE06 on H$_2$/STO-3G).
 
-## 9.4.2 Tuning $\omega$
+## Tuning $\omega$ {#hybrids-tuning}
 
 A range-separated functional ships with one published $\omega$. Tuning
 picks $\omega$ per molecule instead, by asking that Koopmans' theorem hold
@@ -284,13 +284,13 @@ for the HOMO: the HOMO energy should equal minus the ionization potential
 computed from two total energies. For a closed-shell neutral molecule and
 its doublet cation at the same geometry, basis and grid,
 
-$$ J(\omega) = \varepsilon_{\rm HOMO}(N;\omega) + E(N-1;\omega) - E(N;\omega), \tag{9.7} $$
+$$ J(\omega) = \varepsilon_{\rm HOMO}(N;\omega) + E(N-1;\omega) - E(N;\omega), \label{eq:hybrids-1} $$
 
 and `ferric-scf/src/omega_tuning.rs::tune_omega` minimizes $\lvert J\rvert$
 by golden-section search. $E(N-1) - E(N)$ is the ΔSCF ionization potential,
 so $J = 0$ means $\varepsilon_{\rm HOMO} = -\mathrm{IP}$.
 
-Equation (9.7) is the ionization-potential condition of Stein, Kronik and
+Equation (@eq:hybrids-1) is the ionization-potential condition of Stein, Kronik and
 Baer. It is a definition, not an identity, so it has no proof script; the
 evidence is the comparison of $J$, its parts and $\omega^*$ with PySCF in
 the anchors below.
@@ -344,7 +344,7 @@ localized on one of them. Which one an independent SCF reaches depends on
 its guess, and golden section visits $\omega$ out of order, so independent
 solves can assemble $J$ from two branches. Step 5 flags a jump in the
 spin-population asymmetry. Step 4 runs the UKS orbital Hessian on every
-cation (section 8.4), because a cation that is an internal saddle can have a
+cation (section @sec:stability), because a cation that is an internal saddle can have a
 smooth $J$ and $\langle S^2\rangle$; only the Hessian's lowest eigenvalue
 changes sign.
 
@@ -353,7 +353,7 @@ off by default: it leaves $\omega^*$ bit-identical on H2O and NH3, and moves
 $J$ only by SCF stopping noise. For a VV10 functional the cation stability
 cannot be analysed (no VV10 response kernel), and the result says so.
 
-## 9.4.3 Options
+## Options {#hybrids-options}
 
 | Option | Effect |
 |---|---|
@@ -361,7 +361,7 @@ cannot be analysed (no VV10 response kernel), and the result says so.
 | `[scf] k_builder` | for $\omega > 0$ the two K matrices come from DF-K over `df_k_aux` (default `def2-universal-jkfit`) |
 | `tune_omega(continuation=, branch_tol=, check_cation_stability=)` | as above |
 
-## 9.4.4 Numerical anchors
+## Numerical anchors {#hybrids-numerical-anchors}
 
 | Quantity | Value | Source |
 |---|---|---|
@@ -370,7 +370,7 @@ cannot be analysed (no VV10 response kernel), and the result says so.
 | tuning, H2O and NH3 / def2-SVP, ωB97X-V: $\varepsilon_{\rm HOMO}$, IP, $J$, $\omega^*$ vs PySCF | $\le 6.7\times10^{-6}$ Ha, $\le 8.8\times10^{-7}$ Ha, $\le 6.3\times10^{-6}$ Ha, $\le 2.8\times10^{-5}$ Bohr$^{-1}$ | `crates/ferric-scf/tests/validation_rsh_omega.rs` |
 | cation $\lambda_{\min}$ vs PySCF | $\le 2.3\times10^{-8}$ Ha/rad², sign matches at all 13 points | `crates/ferric-scf/tests/validation_rsh_cation_stability.rs` |
 
-## 9.4.5 Sources
+## Sources {#hybrids-sources}
 
 | Source | What it gives |
 |---|---|

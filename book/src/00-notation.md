@@ -1,4 +1,4 @@
-# Notation and conventions
+# Notation and conventions {#notation}
 
 This chapter fixes one notation for the whole book. You can read it once
 straight through, or come back to a single section when a symbol in a
@@ -15,9 +15,9 @@ so a claim can be checked, and are never copied whole.
 When a source disagrees with the book, the code is the authority for what is
 computed and the book is the authority for how it is written down. A
 disagreement between a `theory.md` file and the code is a defect in the
-`theory.md` file; section 10 lists them.
+`theory.md` file; section @sec:notation-disagreements-between-files-code lists them.
 
-## 1. Index letters
+## Index letters {#notation-index-letters}
 
 | Range | Letters | Count symbol |
 |---|---|---|
@@ -67,14 +67,14 @@ Each chapter opens with a table of the index sets it uses. A chapter may add
 local letters; it may not reuse a letter from the table above for a different
 range.
 
-## 2. Spin orbitals and spatial orbitals
+## Spin orbitals and spatial orbitals {#notation-spin-orbitals-spatial-orbitals}
 
 Formal derivations are written in spin orbitals. Working equations are written
 in spatial orbitals, with the spin sum carried out and the spin factor shown.
 The same letter $i$ means a different range in the two: in a spin-orbital sum
 it runs over $2n_o$ spin orbitals, in a spatial sum over $n_o$ orbitals, and the
 prefactors change with it (the MP2 energy has $\tfrac14$ in spin orbitals and
-no prefactor in spatial orbitals, section 10.1).
+no prefactor in spatial orbitals, section @sec:closed-shell-ri-mp2).
 Every spin-adapted working equation has a verified-equation box that proves it
 equal to the spin-orbital form.
 
@@ -97,9 +97,9 @@ chapter that writes spin-orbital tensors or determinant phases.
   prefactor of $\tfrac12$. Its Eq. 1.23 (`dissertation.txt:780-792`) writes the
   same energy with antisymmetrized integrals and a prefactor of $\tfrac14$.
   Both are spin-orbital sums. The book uses the Eq. 1.23 form for spin-orbital
-  expressions and the spatial form of section 4 for working equations.
+  expressions and the spatial form of section @sec:notation-orbital-energy-denominators for working equations.
 
-## 3. Two-electron integrals
+## Two-electron integrals {#notation-electron-integrals}
 
 **Chemist (Mulliken) notation is the default.**
 
@@ -140,7 +140,7 @@ The exchange partner of an $ov$-$ov$ integral is written out, $(ib|ja)$.
   (`crates/ferric-mp2/src/rimp2.rs:682`). The book writes $(P|\mu\nu)$ and
   $(P|ia)$, auxiliary index first, without conjugates.
 
-## 4. Orbital-energy denominators
+## Orbital-energy denominators {#notation-orbital-energy-denominators}
 
 The book uses one symbol with one sign:
 
@@ -168,7 +168,7 @@ reserved for the density matrix. Where the code divides by the negative
 `denom`, the chapter says so next to the code reference, as in the sample
 section.
 
-## 5. Density matrices and the Fock matrix
+## Density matrices and the Fock matrix {#notation-density-matrices-fock-matrix}
 
 The closed-shell AO density is the total density,
 
@@ -197,7 +197,7 @@ Reduced density matrices of a CAS wavefunction follow
 $\gamma_{pq} = \langle E_{pq}\rangle$ and
 $\Gamma_{pqrs} = \sum_{\sigma\tau}\langle a^\dagger_{p\sigma} a^\dagger_{r\tau} a_{s\tau} a_{q\sigma}\rangle$.
 
-## 6. Orbital rotations
+## Orbital rotations {#notation-orbital-rotations}
 
 One convention holds for every orbital-rotation method in the code.
 
@@ -251,7 +251,7 @@ $C' = C\,e^{K}$ with $K_{pq} = \kappa_{pq} = -K_{qp}$ for $p > q$
   $\kappa_{\mathrm{reg}}$, and writes the particle-hole kernel as
   $\mathbf K$ with $K_{ia,jb} = 2(ia|jb)$.
 
-## 7. Density fitting
+## Density fitting {#notation-density-fitting}
 
 $$ V_{PQ} = (P|\hat w|Q), \qquad B^P_{pq} = \sum_Q M_{PQ}\,(Q|\hat w|pq), \qquad M^{\mathsf T} M = V^{-1}, \qquad (pq|\hat w|rs) \approx \sum_P B^P_{pq} B^P_{rs} . $$
 
@@ -296,7 +296,7 @@ $$ V_{PQ} = (P|\hat w|Q), \qquad B^P_{pq} = \sum_Q M_{PQ}\,(Q|\hat w|pq), \qquad
   response matrices in bold, $\mathbf A$ and $\mathbf B$, and keeps the italic
   $B^P_{ia}$ for the RI factor.
 
-## 8. Attenuated Coulomb operators
+## Attenuated Coulomb operators {#notation-attenuated-coulomb-operators}
 
 | Name | Kernel $\hat w(r)$ | Constructor (`crates/ferric-integrals/src/operator.rs`) |
 |---|---|---|
@@ -368,7 +368,7 @@ first two in the same chapter
 The range-separation parameter keeps $\omega$ because the CLI key, the Python
 keyword and the dissertation all use it.
 
-## 9. Units
+## Units {#notation-units}
 
 Equations are in Hartree atomic units: energies in Hartree, lengths in Bohr,
 gradients in Hartree/Bohr. Real orbitals throughout. One Hartree is about
@@ -386,7 +386,7 @@ below gives for that surface.
 |---|---|---|---|
 | Coordinates | Bohr | Å in XYZ files and Python constructors | `crates/ferric-core/src/mol.rs:196-198`, `crates/ferric-python/ferric.pyi:180` |
 | Bohr radius | 0.52917721092 Å (CODATA 2010) | | `crates/ferric-core/src/units.rs:17` |
-| Attenuation $\omega$, $r_0$ | Bohr$^{-1}$, Bohr | see section 8 | |
+| Attenuation $\omega$, $r_0$ | Bohr$^{-1}$, Bohr | see section @sec:notation-attenuated-coulomb-operators | |
 | $\kappa_{\mathrm{reg}}$ | Ha$^{-1}$ | Ha$^{-1}$ | `crates/ferric-mp2/src/rimp2.rs:56` |
 | Lattice vectors, k-points | Bohr, Bohr$^{-1}$ | Å, Å$^{-1}$ (or `unit = "bohr"`) | `site/src/reference/input.md:632` |
 | Force-field parameters | atomic units | kcal/mol, Å, degrees | `crates/ferric-mm/src/topology.rs:302-318` |
@@ -411,7 +411,7 @@ there.
   the difference. The book repeats the warning wherever both keys appear in
   one example.
 
-## 10. Disagreements between `theory.md` files and the code
+## Disagreements between `theory.md` files and the code {#notation-disagreements-between-files-code}
 
 These are defects in a `theory.md` file or a doc comment, found while writing
 this chapter. The book does not repeat them. They are listed for the
@@ -426,7 +426,7 @@ files.
 Line references drift with every edit to a source file. The book cites
 functions by name and resolves the line at build time; see `book/BUILD.md`.
 
-## 11. Typography
+## Typography {#notation-typography}
 
 - Matrices and tensors over compound indices are bold when the indices are
   suppressed: $\mathbf A$, $\mathbf B$, $\mathbf K$, $\boldsymbol\chi_0$.

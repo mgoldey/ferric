@@ -1,6 +1,6 @@
-# 13.1 Amplitude-threshold local MP2
+# Amplitude-threshold local MP2 {#amplitude-lmp2}
 
-<!-- section: 13.1; status: ready; registry: local-mp2;
+<!-- status: ready; registry: local-mp2;
      theory: crates/ferric-mp2/theory.md#"12.1 Amplitude equations in localized orbitals" -->
 
 The MP2 amplitude $t_{ij}^{ab}$ measures how much two electrons in orbitals
@@ -24,7 +24,7 @@ Three facts frame the rest of the section:
 
 - $\varepsilon = 0$ keeps everything and gives canonical RI-MP2 exactly.
 - The energy error has one sign: the truncated energy is never below the
-  canonical one (§13.1.1 shows why).
+  canonical one (§@sec:amplitude-lmp2-amplitude-equations-energy shows why).
 - `eps` has no default. It is part of the model, like the basis set.
 
 Notation:
@@ -49,7 +49,7 @@ Entry points:
 
 The method is closed shell and computes energies only.
 
-## 13.1.1 The amplitude equations and the energy
+## The amplitude equations and the energy {#amplitude-lmp2-amplitude-equations-energy}
 
 In canonical orbitals MP2 needs no equations: $t_{ij}^{ab} = -J_{ia,jb}/\Delta_{ij}^{ab}$,
 one division per amplitude. Localized orbitals are not eigenfunctions of the
@@ -69,12 +69,12 @@ matrix in $a,b$. The Fock operator acts on each of the four orbital labels:
 Holes enter with the opposite sign to particles. The residual is
 
 $$ (\mathcal A\,t)_{ij} = F\,t_{ij} + t_{ij}\,F - \sum_k\big(f_{ik}\,t_{kj} + f_{kj}\,t_{ik}\big), \qquad
-R = J + \mathcal A\,t = 0, \qquad t^{*} = -\mathcal A^{-1}J . \tag{13.1} $$
+R = J + \mathcal A\,t = 0, \qquad t^{*} = -\mathcal A^{-1}J . \label{eq:amplitude-lmp2-1} $$
 
 Check the canonical limit. With $F$ and $f$ diagonal, $\mathcal A$
 multiplies each amplitude by
 $F_{aa} + F_{bb} - f_{ii} - f_{jj} = \Delta_{ij}^{ab}$, and $R = 0$ gives back
-$t = -J/\Delta$ and the energy of equation (10.3).
+$t = -J/\Delta$ and the energy of equation (@eq:closed-shell-ri-mp2-3).
 
 The code applies $\mathcal A$ without ever forming it. This is the body of
 `ferric-mp2/src/ragged.rs::matvec_indexed`, run in parallel over output
@@ -96,7 +96,7 @@ for &q in &rg.by_i[&pb.i] {                  // pairs (i, k): same i
 apply_pattern(&mut r, &pb.pat, nb);          // zero the dropped amplitudes
 ```
 
-The four lines of (13.1) map onto these lines one for one. Two details are
+The four lines of (@eq:amplitude-lmp2-1) map onto these lines one for one. Two details are
 not in the equation:
 
 - **Pair blocks have different shapes.** Pair $(i,j)$ only stores the
@@ -111,10 +111,10 @@ not in the equation:
 
 With $\tilde t = (2-\mathcal S)\,t$, where $\mathcal S$ swaps
 $t^{ab}_{ij} \leftrightarrow t^{ba}_{ij}$ (the same $2(ia|jb) - (ib|ja)$
-combination as in equation 10.3), there are two ways to write the energy:
+combination as in equation @eq:closed-shell-ri-mp2-3), there are two ways to write the energy:
 
 $$ E_{\mathrm{lin}}(t) = \langle\tilde t,\,J\rangle = \sum_{ijab}\big(2t_{ij}^{ab} - t_{ij}^{ba}\big)J_{ia,jb}, \qquad
-E_H(t) = \langle\tilde t,\;2J + \mathcal A\,t\rangle . \tag{13.2} $$
+E_H(t) = \langle\tilde t,\;2J + \mathcal A\,t\rangle . \label{eq:lmp2-hylleraas} $$
 
 At the exact solution they agree, since $\mathcal A t^* = -J$ turns
 $2J + \mathcal A t^*$ into $J$. They differ in how they respond to an
@@ -147,7 +147,7 @@ amplitudes is the canonical energy $E^*$. Truncation minimizes $E_H$ over a
 subset of the amplitudes, and a minimum over fewer variables cannot be
 lower. So $E_{\varepsilon} \ge E^*$ for every $\varepsilon$.
 
-> **Verified equation 13.2** · the two energy forms and the stationarity of $E_H$
+> **Verified equation @eq:lmp2-hylleraas** · the two energy forms and the stationarity of $E_H$
 >
 > Along a line $t = t^* + s\,d$ through the solution, $E_H$ has no term linear in
 > $s$ while $E_{\mathrm{lin}}$ does, and $E_H(t^*) = E_{\mathrm{lin}}(t^*)$ (claim 1).
@@ -179,14 +179,14 @@ longer cancel, and a term linear in $d$ comes back. The energy error goes
 from second order to first. Claim 5 of the proof script builds exactly this
 case and shows the linear term.
 
-So the retention test has to be symmetric. The test in §13.1.3 is symmetric
+So the retention test has to be symmetric. The test in §@sec:amplitude-lmp2-algorithm is symmetric
 by construction, and the code does not rely on that alone:
 `check_swap_closed` asserts the property, and `hylleraas_energy` calls it.
 On a one-sided pattern it returns an error, never a number
 (`hylleraas_energy_rejects_a_one_sided_pattern` in
 `crates/ferric-mp2/tests/lmp2_direct.rs`).
 
-## 13.1.2 How accurate is the solve?
+## How accurate is the solve? {#amplitude-lmp2-accurate-solve}
 
 The amplitudes come from preconditioned conjugate gradients on
 $\mathcal A t = -J$, with the diagonal $\Delta_{ij}^{ab}$ as preconditioner.
@@ -197,7 +197,7 @@ Since $R = J + \mathcal A(t^* + d) = \mathcal A d$, the error is
 $d = \mathcal A^{-1}R$. Substitute into the $E_H$ expansion:
 
 $$ E_H(t) - E^{*} = \langle(2-\mathcal S)\,\mathcal A^{-1}R,\;R\rangle \;\le\; \frac{3\,\lVert R\rVert^2}{\lambda_{\min}(\mathcal A)}, \qquad
-\lambda_{\min}(\mathcal A) \ge 2\,(\epsilon_{\mathrm{LUMO}} - \epsilon_{\mathrm{HOMO}}) . \tag{13.3} $$
+\lambda_{\min}(\mathcal A) \ge 2\,(\epsilon_{\mathrm{LUMO}} - \epsilon_{\mathrm{HOMO}}) . \label{eq:lmp2-cg-bound} $$
 
 There are three steps from the identity to the bound:
 
@@ -217,7 +217,7 @@ iteration also produces Lanczos estimates of $\lambda_{\min}$ for free, but
 they converge to it from above. Dividing by an overestimate would make the
 "bound" too small, so the code does not use them.
 
-> **Verified equation 13.3** · the solver-error bound
+> **Verified equation @eq:lmp2-cg-bound** · the solver-error bound
 >
 > For a one-pair, two-virtual model with $\mathcal A$ symmetric positive
 > definite, $\mathcal S$ commuting with $\mathcal A$ and $(2-\mathcal S)\mathcal A$ symmetric:
@@ -229,7 +229,7 @@ they converge to it from above. Dividing by an overestimate would make the
 > | | |
 > |---|---|
 > | Proof | `scripts/lmp2_hylleraas_vs_wshg23_sympy.py`, claim 6 |
-> | Negative control | none for this claim; the claim-4 structure checks it relies on carry the controls of equation 13.2 |
+> | Negative control | none for this claim; the claim-4 structure checks it relies on carry the controls of equation @eq:lmp2-hylleraas |
 > | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
 > | Code | `ferric-mp2/src/lmp2_amplitude.rs::{cg_energy_error_bound,operator_lambda_min_lower_bound}` |
 > | Code test | `default_rtol_energy_is_within_its_bound` in `crates/ferric-mp2/tests/lmp2_direct.rs` |
@@ -245,7 +245,7 @@ solve.
 **How the code uses the bound.**
 
 1. The solve first stops at a relative residual of $10^{-6}$
-   (`LMP2_CG_RTOL_DEFAULT`) and evaluates (13.3).
+   (`LMP2_CG_RTOL_DEFAULT`) and evaluates (@eq:lmp2-cg-bound).
 2. If the bound is above $10^{-10}$ Ha (`LMP2_CG_ENERGY_ERROR_TARGET`), CG
    continues on the same Krylov sequence, without restarting. It stops at
    the residual that puts the bound at a quarter of the target, but never
@@ -264,9 +264,9 @@ The bound covers the solver only. It says nothing about the error from
 dropping amplitudes with $\varepsilon$, which is the subject of the rest of
 this chapter.
 
-## 13.1.3 The algorithm
+## The algorithm {#amplitude-lmp2-algorithm}
 
-Sections 13.1.1 and 13.1.2 solved the equations for a given set of kept
+Sections @sec:amplitude-lmp2-amplitude-equations-energy and @sec:amplitude-lmp2-accurate-solve solved the equations for a given set of kept
 amplitudes. This section builds that set. Three things have to exist first:
 occupied and virtual orbitals that are each confined to a small region,
 the Fock matrix in those orbitals, and the integrals $J_{ia,jb}$. Then the
@@ -346,7 +346,7 @@ the occupied space and $n_{\mathrm{AO}} - n_{\mathrm{occ}}$ in number, so
 they span the whole virtual space whichever candidates are chosen. The
 $\varepsilon = 0$ energy is therefore invariant to the selection, and only
 the compactness of the pair domains depends on it. The anchor test of
-13.1.6 checks the spanning: dropping one hard virtual breaks the
+@sec:amplitude-lmp2-numerical-anchors checks the spanning: dropping one hard virtual breaks the
 $\varepsilon = 0$ agreement (`mutated_virtual_space_fails_the_anchor`).
 
 ### Step 3: localized occupieds and their sizes
@@ -354,7 +354,7 @@ $\varepsilon = 0$ agreement (`mutated_virtual_space_fails_the_anchor`).
 `localized_spaces` Boys-localizes the active occupied orbitals and records,
 for each, its centroid $\langle\mathbf r\rangle_i$ and spread
 $\sigma_i = \sqrt{\langle r^2\rangle_i - \lvert\langle\mathbf r\rangle_i\rvert^2}$.
-It also forms the two Fock blocks of 13.1.1, $f = C_{\mathrm{locc}}^{\mathsf T}FC_{\mathrm{locc}}$
+It also forms the two Fock blocks of @sec:amplitude-lmp2-amplitude-equations-energy, $f = C_{\mathrm{locc}}^{\mathsf T}FC_{\mathrm{locc}}$
 and $F = C_{\mathrm{vloc}}^{\mathsf T}FC_{\mathrm{vloc}}$, and the dipole
 centroids of the virtuals, which only the integral-direct path of 13.2
 uses. No RI work happens here.
@@ -367,7 +367,7 @@ prefactor that grows with the orbitals' volumes, for which
 $\sigma_i^3\sigma_j^3$ stands in. That estimate costs nothing: it needs only
 centroids and spreads. An off-diagonal pair $(i,j)$ is skipped when
 
-$$ \mathrm{cal}\,\frac{(\sigma_i\sigma_j)^3}{R_{ij}^6} < 10^{-2}\,\varepsilon , \tag{13.4} $$
+$$ \mathrm{cal}\,\frac{(\sigma_i\sigma_j)^3}{R_{ij}^6} < 10^{-2}\,\varepsilon , \label{eq:amplitude-lmp2-4} $$
 
 with $R_{ij}$ the distance between Boys centroids. The code guards the
 denominator as $\max(R_{ij}^6, 10^{-12})$. The constant `cal` is
@@ -404,7 +404,7 @@ Check the limits:
   any positive threshold. The CLI accepts only `gate_cal > 0`.
 
 The gate only removes amplitudes. It never changes a kept $J$ value. By the
-argument at the end of 13.1.1, minimizing $E_H$ over fewer amplitudes
+argument at the end of @sec:amplitude-lmp2-amplitude-equations-energy, minimizing $E_H$ over fewer amplitudes
 cannot give a lower energy, so the gate can only raise the energy. The
 estimate itself is calibrated, not a bound: nothing ties the size of the
 gated energy to $\varepsilon$.
@@ -413,7 +413,7 @@ gated energy to $\varepsilon$.
 
 For each pair that survives the gate, the code needs the block
 $J_{ij} = [(ia\vert jb)]_{ab}$. On the default path it is a Gram product of
-the whitened three-index factors of section 10.1,
+the whitened three-index factors of section @sec:closed-shell-ri-mp2,
 $J_{ia,jb} = \sum_P\tilde B_{P,ia}\tilde B_{P,jb}$ with
 $\tilde B = V^{-1/2}B$.
 
@@ -434,14 +434,14 @@ and $q_{jb}q^{\max}_i \ge q_{ia}q_{jb} > \varepsilon$, so $b$ is one too.
 The case $\lvert J_{ib,ja}\rvert > \varepsilon$ follows with $a$ and $b$
 exchanged. The pair's integrals are then formed over the candidate square
 only. The screen runs only on the global-fit path with $\varepsilon > 0$;
-the domain-local fit (`fit_radius_bohr`, section 13.2) forms every column.
+the domain-local fit (`fit_radius_bohr`, section @sec:integral-direct) forms every column.
 
 **The Eq-8 mask.** Element $(a,b)$ of pair $(i,j)$ is kept when
 $\lvert J_{ia,jb}\rvert > \varepsilon$ or $\lvert J_{ib,ja}\rvert > \varepsilon$,
 or when $\varepsilon = 0$. The second integral is the exchange partner of
 the first, the one the same-spin energy pairs it with. Testing both makes
 the rule symmetric in $(a,b)$, so the kept set is closed under the swap
-$\mathcal S$ by construction, which is what the stationarity of 13.1.1
+$\mathcal S$ by construction, which is what the stationarity of @sec:amplitude-lmp2-amplitude-equations-energy
 requires. A pair block holds the rows and columns that have any kept
 element. Those are the pair domain, the same for rows and columns on a
 swap-closed pattern, and `check_swap_closed` requires it. The kept values
@@ -475,9 +475,9 @@ Points about the construction:
 - **The Fock blocks follow the domain.** The block also stores the
   restrictions of $F$ to its row and column domains (`fvv_aa`, `fvv_bb`)
   and the diagonal denominators $F_{aa}+F_{bb}-f_{ii}-f_{jj}$ that
-  precondition the solve of 13.1.2.
+  precondition the solve of @sec:amplitude-lmp2-accurate-solve.
 - **An empty pattern returns no block.** A pair with no kept element
-  disappears from the ragged list, and the occupied coupling of 13.1.1
+  disappears from the ragged list, and the occupied coupling of @sec:amplitude-lmp2-amplitude-equations-energy
   never visits it.
 
 **Per-pair auxiliary truncation (opt-in).** With `aux_tail_frac` $= f$ and
@@ -493,7 +493,7 @@ $$ \Big\lvert\sum_{P\ \mathrm{dropped}}\tilde B_{P,ia}\tilde B_{P,jb}\Big\rvert
 a rigorous elementwise bound. It is inactive at $\varepsilon = 0$ and on
 the domain-fit path, which has its own auxiliary domains.
 
-## 13.1.4 Reproducibility and memory
+## Reproducibility and memory {#amplitude-lmp2-reproducibility-memory}
 
 - The ragged matrix-vector product runs in parallel over output pairs with
   rayon. Each block is computed in the same arithmetic order whatever the
@@ -502,23 +502,23 @@ the domain-fit path, which has its own auxiliary domains.
   $(N_{\mathrm{aux}}, n_on_v)$ once (`ferric-mp2/src/rimp2.rs::eri3_mo_ov_blocked`).
   So amplitude-threshold LMP2 without `integral_direct` is not
   integral-direct and carries no scaling claim. The integral-direct path of
-  section 13.2 removes that tensor.
+  section @sec:integral-direct removes that tensor.
 - The exact reference that measures the truncation error is opt-in
   (`compute_reference`, CLI `[local] reference = true`). It is a full
   canonical RI-MP2 that forms the same global tensor, so a run with it on
   is not reduced-cost. Without it the printout says the canonical energy
   was not computed.
 
-## 13.1.5 Options that change the equation
+## Options that change the equation {#amplitude-lmp2-options-change-equation}
 
 The options split into two kinds, and the kind decides the sign of the
 error.
 
 - **Pattern options** remove amplitudes and leave every kept $J$ value
   unchanged: `eps` itself and `pair_gate_cal`. On a swap-closed pattern,
-  the energy is the minimum of $E_H$ over the kept amplitudes (13.1.1), so
+  the energy is the minimum of $E_H$ over the kept amplitudes (@sec:amplitude-lmp2-amplitude-equations-energy), so
   removing amplitudes can only raise it, up to the solver error bounded in
-  13.1.2.
+  @sec:amplitude-lmp2-accurate-solve.
 - **Value options** change the $J$ values themselves: `fit_radius_bohr` and
   `aux_tail_frac`. The minimum argument does not cover a changed $J$, and
   their error has no proven sign.
@@ -526,14 +526,14 @@ error.
 | Option | Effect | Where |
 |---|---|---|
 | `eps` | the threshold; no default in the CLI or Python, where it is required (the Rust `AmplitudeLmp2Config::default()` sets $10^{-4}$) | this section |
-| `frozen_core` | removes the lowest occupied orbitals from $i,j$ through `active_occ` | section 10.1 |
-| `pair_gate_cal` | enables the gate (13.4); off by default | this section |
-| `fit_radius_bohr` | per-pair domain-local RI fit in place of the global-metric fit | section 13.2 |
+| `frozen_core` | removes the lowest occupied orbitals from $i,j$ through `active_occ` | section @sec:closed-shell-ri-mp2 |
+| `pair_gate_cal` | enables the gate (@eq:amplitude-lmp2-4); off by default | this section |
+| `fit_radius_bohr` | per-pair domain-local RI fit in place of the global-metric fit | section @sec:integral-direct |
 | `aux_tail_frac` | per-pair auxiliary truncation, rigorously bounded per element by $f\varepsilon$; inactive at $\varepsilon = 0$ | `ferric-mp2/src/lmp2_amplitude.rs::AmplitudeLmp2Config` |
 | `cg_rtol`, `cg_max_iter` | Rust only: an explicit tolerance disables the tightening; neither is a CLI or Python option | this section |
-| operator | Coulomb or erfc, in the metric and the three-index integrals | chapter 4 |
+| operator | Coulomb or erfc, in the metric and the three-index integrals | chapter @sec:operators |
 
-## 13.1.6 Numerical anchors
+## Numerical anchors {#amplitude-lmp2-numerical-anchors}
 
 The exactness anchor comes first, and it is the only check with a
 tolerance. At $\varepsilon = 0$ the localized-orbital ragged solve must
@@ -565,7 +565,7 @@ a series of $\varepsilon$ values and choose from it.
 | Source | Used for |
 |---|---|
 | `crates/ferric-mp2/src/lmp2_amplitude.rs`, `crates/ferric-mp2/src/ragged.rs` | the algorithm, the policy and the mask |
-| `scripts/lmp2_hylleraas_vs_wshg23_sympy.py`, claims 1, 2, 4, 5, 6 | verified equations 13.2 and 13.3 |
+| `scripts/lmp2_hylleraas_vs_wshg23_sympy.py`, claims 1, 2, 4, 5, 6 | verified equations @eq:lmp2-hylleraas and @eq:lmp2-cg-bound |
 | Wang, Aldossary, Shi, Liu, Li and Head-Gordon, J. Chem. Theory Comput. 19, 7577 (2023) | the single-threshold scheme and the Hylleraas stopping rule, as cited in the module documentation |
 | `site/src/methods/mp2.md`, "Exact and local MP2" | the user-facing description and the certificate fields |
 | `site/src/reference/validation.md` | the anchor row |

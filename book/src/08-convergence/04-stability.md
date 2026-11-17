@@ -1,12 +1,12 @@
-# 8.4 Stability analysis
+# Stability analysis {#stability}
 
-<!-- section: 8.4; status: ready; registry: rhf, uhf, rohf;
+<!-- status: ready; registry: rhf, uhf, rohf;
      theory: crates/ferric-scf/theory.md#"SCF stability analysis" -->
 
 A converged SCF is a stationary point of the energy, not necessarily a
 minimum. Stretch the O–H bonds of water to 2.0 Å and the RHF solution still
 converges, but a spin-broken UHF solution lies lower; on N2 at 1.60 Å plain DIIS converges to an RHF saddle
-1.906e-2 Ha above the RHF minimum (section 8.4.4). Stability analysis
+1.906e-2 Ha above the RHF minimum (section @sec:stability-numerical-anchors). Stability analysis
 computes the lowest eigenvalues of the orbital Hessian at the converged
 orbitals. A negative one means a lower solution exists along its
 eigenvector: of the same kind (internal) or with broken spin symmetry
@@ -28,12 +28,12 @@ and describe the descent.
 | CLI | `[scf] check_stability`, `stability_descent` |
 | Python | `stability_descent=` on the SCF entry points |
 
-## 8.4.1 The stability operators
+## The stability operators {#stability-stability-operators}
 
 ### Why the lowest eigenvalue decides
 
 At a converged solution the gradient is zero, so the quadratic model of
-section 8.3.1 has no linear term. For RHF, rotate along a unit vector $v$:
+section @sec:second-order-orbital-gradient-hessian has no linear term. For RHF, rotate along a unit vector $v$:
 
 $$ E(tv) = E(0) + \frac{t^2}{2}\cdot 4\,v\cdot(\mathbf Hv) + O(t^3) . $$
 
@@ -45,7 +45,7 @@ analysed. If $\lambda_{\min} < 0$, the energy falls along $v$ and the solution
 is a saddle point. The eigenvalues carry the code's scale: the true RHF
 curvature along a unit vector is $4\lambda$, the UHF one $2\lambda$.
 
-The stability operators are the Newton products of section 8.3 at the
+The stability operators are the Newton products of section @sec:second-order at the
 converged orbitals (`crates/ferric-scf/src/stability.rs`):
 
 | Analysis | Operator | Function |
@@ -62,7 +62,7 @@ term is exact, so the operators are the full Hessians in their spaces.
 The external operator comes from the UHF Hessian evaluated at the RHF
 solution. There both spins have the same orbitals, so
 $f^\alpha = f^\beta = f$ and the two-electron integrals are the same for both
-spins. Take the UHF product of section 8.3.1 and split the rotation into two
+spins. Take the UHF product of section @sec:second-order-orbital-gradient-hessian and split the rotation into two
 directions.
 
 In the direction $\kappa^\alpha = \kappa^\beta = \kappa$ the Coulomb sum over
@@ -87,7 +87,7 @@ $$ \frac{d^2E}{dt^2} = 2\big(v\cdot\lambda_Tv + (-v)\cdot(-\lambda_Tv)\big) = 4\
 
 So $\lambda_T < 0$ means a UHF solution lower than the RHF one.
 
-> **Verified equation 8.7** · the singlet and triplet channels
+> **Verified equation {#eq:scf-stability-channels}** · the singlet and triplet channels
 >
 > At an RHF point the UHF Hessian product in the direction
 > $\kappa^\alpha = \kappa^\beta$ is the RHF singlet operator and in the
@@ -148,7 +148,7 @@ of that block and miss a lower root elsewhere. Tracking several roots and
 requiring the whole block to converge leaves at least one residual large
 when a root lies below the block.
 
-## 8.4.2 The verdict
+## The verdict {#stability-verdict}
 
 The verdict is four-way and is what callers branch on.
 `ferric-scf/src/stability.rs::verdict`, shown whole:
@@ -181,7 +181,7 @@ The eigenvalues carry the code's Hessian scale (a quarter of the RHF energy
 curvature, half of the UHF one), so a threshold on $\lambda$ is not a
 threshold in Hartree per radian squared.
 
-## 8.4.3 The descent
+## The descent {#stability-descent}
 
 | Step | What |
 |---|---|
@@ -193,7 +193,7 @@ threshold in Hartree per radian squared.
 The quadratic model says which way is downhill. It does not say how far the
 next minimum is, so the descent tries three step lengths
 (`DESCENT_STEPS`) and lets a full SCF from each find its own basin. The
-rotation is the Cayley map of section 8.3.2. A candidate is kept only if its
+rotation is the Cayley map of section @sec:second-order-rotation. A candidate is kept only if its
 SCF converged and its energy is below both the incumbent and every earlier
 candidate of the round (`accepts_candidate`). If no step goes lower, the
 saddle is returned with a message that it is not established as the lowest
@@ -207,7 +207,7 @@ fractional occupations), and when no stability verdict was computed.
 
 Real-to-complex, UHF-to-GHF and ROHF stability are not implemented.
 
-## 8.4.4 Numerical anchors
+## Numerical anchors {#stability-numerical-anchors}
 
 | Check | Reference | Agreement | Test |
 |---|---|---|---|
@@ -225,7 +225,7 @@ mode; ferric reports it MARGINAL where PySCF reports stable, which is the
 intended reading of the noise floor. Kohn–Sham references are refused for
 the external channel, which would need the triplet XC kernel.
 
-## 8.4.5 Doc fixes needed
+## Doc fixes needed {#stability-doc-fixes-needed}
 
 | Text | Code |
 |---|---|
@@ -237,5 +237,5 @@ the external channel, which would need the triplet XC kernel.
 | Source | Used for |
 |---|---|
 | `crates/ferric-scf/theory.md`, "SCF stability analysis" | the operators |
-| `scripts/scf_orbital_hessian_sympy.py` | verified equation 8.7 |
+| `scripts/scf_orbital_hessian_sympy.py` | verified equation @eq:scf-stability-channels |
 | `site/src/reference/validation.md` | the anchors |

@@ -1,20 +1,20 @@
-# 22.3 The reaction field in the Fock matrix
+# The reaction field in the Fock matrix {#reaction-field}
 
-<!-- section: 22.3; status: ready; registry: pcm;
+<!-- status: ready; registry: pcm;
      theory: crates/ferric-pcm/theory.md#"7. Solute potential, Fock contribution, total energy" -->
 
-The apparent charges of section 22.2 act back on the solute as a set of
+The apparent charges of section @sec:ief-operators act back on the solute as a set of
 classical charges outside the molecule. An electron feels them as one more
 one-electron potential, and that potential depends on the density through
 the charges. So the SCF re-evaluates the tessera potential, re-solves the
 charges and rebuilds the potential every iteration, and the outer SCF and
-DIIS loop carries the fixed point. An external point charge (section 23.1)
+DIIS loop carries the fixed point. An external point charge (section @sec:external-potentials)
 is different: its potential is folded into the core Hamiltonian once,
 before the loop.
 
 The plan: write the potential at the tesserae and the operator, show that
-the operator is the density derivative of the energy (22.3.1), then the two
-probe conventions (22.3.2) and the per-iteration algorithm (22.3.3).
+the operator is the density derivative of the energy (@sec:reaction-field-potential-operator-energy), then the two
+probe conventions (@sec:reaction-field-probe-conventions) and the per-iteration algorithm (@sec:reaction-field-algorithm).
 
 | Symbol | Meaning | Code name |
 |---|---|---|
@@ -30,7 +30,7 @@ probe conventions (22.3.2) and the per-iteration algorithm (22.3.3).
 | CLI | `[pcm]` with `kind` = `rhf`, `uhf`, `rohf`, `ksdft` or `pdep-rpa` for `task = "energy"`, and the first four for `task = "optimize"` |
 | Python | `solvent=` |
 
-## 22.3.1 The potential, the operator and the energy
+## The potential, the operator and the energy {#reaction-field-potential-operator-energy}
 
 The potential at tessera $k$ has a nuclear and an electronic part. The
 nuclei are point charges $Z_A$. The electrons are a charge density
@@ -55,7 +55,7 @@ $$ V^{\mathrm{pcm}}_{\mu\nu} = \sum_k q_k\, B^k_{\mu\nu} . $$
 Is this the right Fock contribution? The Fock matrix must be the derivative
 of the energy with respect to the density, so check that
 $\partial E_{\mathrm{pcm}}/\partial P_{\mu\nu} = V^{\mathrm{pcm}}_{\mu\nu}$.
-Write the energy with the symmetrized response of section 22.2,
+Write the energy with the symmetrized response of section @sec:ief-operators,
 $Q_{\mathrm{sym}} = \tfrac12(Q + Q^{\mathsf T})$:
 
 $$ E_{\mathrm{pcm}}(P) = \tfrac12\, v(P)^{\mathsf T} Q_{\mathrm{sym}}\, v(P) . $$
@@ -69,13 +69,13 @@ With $q = Q_{\mathrm{sym}}v$,
 $$ \frac{\partial E_{\mathrm{pcm}}}{\partial P_{\mu\nu}} = \sum_k q_k B^k_{\mu\nu} = V^{\mathrm{pcm}}_{\mu\nu} . $$
 
 Now try the raw charges $Qv$. The energy is the same function of $P$
-(section 22.2), so its derivative is still $\sum_k (Q_{\mathrm{sym}}v)_kB^k$.
+(section @sec:ief-operators), so its derivative is still $\sum_k (Q_{\mathrm{sym}}v)_kB^k$.
 A Fock matrix built from $\sum_k (Qv)_kB^k$ would not be that derivative,
 and the converged SCF density would not be a stationary point of its own
-energy. Section 22.4 relies on that stationarity, and section 22.2
+energy. Section @sec:gradient relies on that stationarity, and section @sec:ief-operators
 symmetrizes the charges to keep it.
 
-> **Verified equation 22.6** · the reaction-field operator is the density derivative of the PCM energy
+> **Verified equation {#eq:pcm-fock-reaction-field}** · the reaction-field operator is the density derivative of the PCM energy
 >
 > With $v_k(P) = v^{\mathrm{nuc}}_k + \sum_{\mu\nu}P_{\mu\nu}B^k_{\mu\nu}$ and
 > $E_{\mathrm{pcm}}(P) = \tfrac12 v^{\mathsf T}Q_{\mathrm{sym}}v$, the
@@ -99,7 +99,7 @@ $\varepsilon\to 1$, the charges vanish and so does $V^{\mathrm{pcm}}$: the
 SCF is the gas-phase one.
 
 One PCM step, as the SCF calls it, is `pcm_step`. It evaluates $v$, solves
-for $q$ (section 22.2) and builds the operator. The function body,
+for $q$ (section @sec:ief-operators) and builds the operator. The function body,
 unchanged:
 
 <!-- excerpt: ferric-pcm/src/lib.rs::pcm_step -->
@@ -141,11 +141,11 @@ Ok(e_elec_no_xc + e_xc + e_hook + e_cosmo + e_pcm + e_pol + env.vnn)
 | $\tfrac12\operatorname{Tr}[P(h+F)]$, before any solvent or XC term is in $F$ | `e_elec_no_xc` |
 | $E_{xc}$ | `e_xc` |
 | $E_{\mathrm{pcm}}$ | `e_pcm` |
-| $E_{\mathrm{cosmo}}$, $E_{\mathrm{pol}}$ | `e_cosmo`, `e_pol` (sections 22.5 and 23.3) |
+| $E_{\mathrm{cosmo}}$, $E_{\mathrm{pol}}$ | `e_cosmo`, `e_pol` (sections @sec:conductor-limit-and-cosmo and @sec:polarizable-embedding) |
 | $V_{nn}$ plus any external-charge nuclear energy | `env.vnn` |
 
 Why is $E_{\mathrm{pcm}}$ a separate term and not part of the trace
-(section 7.1)? `e_elec_no_xc` is formed before `solvent_terms` adds
+(section @sec:energy-functionals)? `e_elec_no_xc` is formed before `solvent_terms` adds
 $V^{\mathrm{pcm}}$ to $F$, so $E_{\mathrm{pcm}}$ is not counted twice. It
 also cannot be folded into the trace. Contract the operator with the
 density: $\tfrac12\operatorname{Tr}[PV^{\mathrm{pcm}}] = \tfrac12\sum_kq_k\sum_{\mu\nu}P_{\mu\nu}B^k_{\mu\nu} = \tfrac12 q\cdot v^{\mathrm{el}}$.
@@ -157,7 +157,7 @@ convention (`solve_rhf` in `ferric-scf/src/rhf.rs`).
 The charge solve itself is direct. The self-consistency between $q$ and $P$
 is carried by the outer SCF and DIIS loop.
 
-## 22.3.2 The two probe conventions
+## The two probe conventions {#reaction-field-probe-conventions}
 
 | `ProbeKind` | $v_k$ electronic kernel | $V^{\mathrm{pcm}}$ kernel | Integrals |
 |---|---|---|---|
@@ -170,16 +170,16 @@ Gaussian in $S$ and $D$. `GaussianSmeared`
 uses the Gaussian everywhere: it replaces every $1/r$ by
 $\operatorname{erf}(\xi_kr)/r$, which is PySCF's `pcm.py` convention. The
 classical nuclear term of $v_k$ takes the same erf form under the smeared
-probe. Section 22.4 compares against PySCF with Gaussian probes for this
+probe. Section @sec:gradient compares against PySCF with Gaussian probes for this
 reason.
 
-## 22.3.3 The algorithm
+## The algorithm {#reaction-field-algorithm}
 
 | Step | Quantity | Cost | Function |
 |---|---|---|---|
 | 1 | $v^{\mathrm{nuc}}_k = \sum_B Z_B/\lvert\mathbf r_k-\mathbf R_B\rvert$ | $N N_{\mathrm{at}}$ | `ferric-pcm/src/potential.rs::nuclear_potential_at` |
 | 2 | $v_k = v^{\mathrm{nuc}}_k + \sum_{\mu\nu}P_{\mu\nu}B^k_{\mu\nu}$, batched over tesserae, parallel over batches | $N\,N^2_{\mathrm{bf}}$ | `solute_potential_at_tesserae` |
-| 3 | $q$, $E_{\mathrm{pcm}}$ (section 22.2) | $N^3$ | `solve_pcm_charges` |
+| 3 | $q$, $E_{\mathrm{pcm}}$ (section @sec:ief-operators) | $N^3$ | `solve_pcm_charges` |
 | 4 | $V^{\mathrm{pcm}} = \sum_kq_kB^k$, parallel over shell pairs | $N\,N^2_{\mathrm{bf}}$ | `build_reaction_field_operator` |
 | 5 | $V^{\mathrm{pcm}}$ added to every spin Fock matrix; $E_{\mathrm{pcm}}$ to the energy | $N^2_{\mathrm{bf}}$ | `solvent_terms` |
 
@@ -187,20 +187,20 @@ Steps 2 and 4 are bit-identical for every thread-pool size: each output
 block is independent of the others. A tessera that coincides with a nucleus
 (a degenerate cavity) is an error in step 1.
 
-## 22.3.4 Options
+## Options {#reaction-field-options}
 
 | Option | Values | Default | Effect |
 |---|---|---|---|
 | `PcmConfig::probe` | `Point`, `GaussianSmeared` | `Point` | the probe of the table above; library only |
 | `[pcm]` absent | | | a vacuum run, byte-identical to a build with no solvent code (`pcm_none_matches_vacuum_exactly` in `ferric-scf/src/rhf.rs`) |
 
-## 22.3.5 Numerical anchors
+## Numerical anchors {#reaction-field-numerical-anchors}
 
 | Quantity | System | Error | Source |
 |---|---|---|---|
 | total SCF energy on PySCF's injected cavity | water, NH3 / STO-3G, cc-pVDZ | $4.8\times10^{-12}$ Ha | `site/src/reference/validation.md`, IEF-PCM row |
 
-## 22.3.6 Sources
+## Sources {#reaction-field-sources}
 
 | Source | What it gives |
 |---|---|

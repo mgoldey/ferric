@@ -1,7 +1,7 @@
-<!-- section: 11.3; status: ready; registry: ri-mp2;
+<!-- status: ready; registry: ri-mp2;
      theory: crates/ferric-mp2/theory.md#"2. Closed-shell RI-MP2" -->
 
-# 11.3 The pair-energy kernel
+# The pair-energy kernel {#pair-kernel}
 
 | Entry point | Location |
 |---|---|
@@ -9,8 +9,8 @@
 | f64-only wrapper | `ferric-mp2/src/rimp2.rs::spin_components_from_b_ov` (RS-MP2+RPA, OO-RI-MP2) |
 | Dispatcher | `dispatch_spin_components` in `crates/ferric-mp2/src/rimp2.rs` (private): device first, then CPU |
 
-Step 4 of section 11.1 is the only $O(N^5)$ step. It forms every $(ia|jb)$ by
-equation 11.3 and contracts it into the two spin components of equation 10.2.
+Step 4 of section @sec:four-step-algorithm is the only $O(N^5)$ step. It forms every $(ia|jb)$ by
+equation @eq:four-step-algorithm-3 and contracts it into the two spin components of equation @eq:mp2-cs-spin-adaptation.
 There are $n_o^2 n_v^2$ integrals, and each is a sum of $N_{\mathrm{aux}}$
 products. The kernel has to do that work as matrix products, visit each
 pair once, hold no more than one block of integrals per worker, and add the
@@ -18,11 +18,11 @@ results in an order that does not depend on the thread count. The plan:
 the block per $i$, the pair symmetry, the inner kernel, then the parallel
 loop.
 
-## 11.3.1 Batching over the occupied index
+## Batching over the occupied index {#pair-kernel-batching-over-occupied-index}
 
 For each $i$ the code forms one block:
 
-$$ G^{(i)}_{a,\,(j-i)n_v + b} = \sum_P B^P_{ia}\,B^P_{jb}, \qquad j = i, \dots, n_o - 1 . \tag{11.7} $$
+$$ G^{(i)}_{a,\,(j-i)n_v + b} = \sum_P B^P_{ia}\,B^P_{jb}, \qquad j = i, \dots, n_o - 1 . \label{eq:pair-kernel-1} $$
 
 In the code `b_i` is columns $[i n_v, (i+1) n_v)$ of `b_ov`, `b_tail` is
 columns $[i n_v, n_o n_v)$, and `g_i = b_i.t().dot(&b_tail)`. The product is
@@ -43,7 +43,7 @@ The fraction the tail saves is
 $$ 1 - \frac{n_o(n_o+1)}{2 n_o^2} = \frac{n_o - 1}{2 n_o} , $$
 
 47% at $n_o = 15$. The $j < i$ blocks would be mirror images of blocks
-another task already uses (section 11.3.2), so they are not formed. Check
+another task already uses (section @sec:pair-kernel-symmetry-only), so they are not formed. Check
 the limit: at $n_o = 1$ the tail is the whole block and the saving is zero.
 
 **Why a GEMM and not dot products.** Each $(ia|jb)$ is a dot product of
@@ -71,22 +71,22 @@ The largest block is $8 n_o n_v^2$ bytes, 18.5 MB for benzene in
 aug-cc-pVTZ. Holding every block at once would take $8 n_o^2 n_v^2$ bytes,
 0.28 GB there, and it grows as the fourth power of the size.
 
-## 11.3.2 Symmetry: only $j \ge i$
+## Symmetry: only $j \ge i$ {#pair-kernel-symmetry-only}
 
 Both spin components are invariant under the joint swap
 $(i,a) \leftrightarrow (j,b)$: the swap maps $(ia|jb)$ to itself and
 $\Delta_{ij}^{ab}$ to itself, and relabelling $a \leftrightarrow b$ maps the
 exchange partner $(ib|ja)$ back to itself. So each off-diagonal pair stands
-in for its mirror with weight 2. Verified equation 10.6 states this and its
+in for its mirror with weight 2. Verified equation @eq:mp2-cs-unique-pairs states this and its
 proof (`scripts/mp2_variant_identities.py`, claim 1, with the weight-1
 negative control).
 
-$$ E_{\mathrm{OS}} = \sum_i \sum_{j \ge i} f_{ij}\, e^{\mathrm{OS}}_{ij}, \qquad E_{\mathrm{SS}} = \sum_i \sum_{j \ge i} f_{ij}\, e^{\mathrm{SS}}_{ij}, \qquad f_{ij} = \begin{cases} 1 & i = j \\ 2 & i < j \end{cases} \tag{11.8} $$
+$$ E_{\mathrm{OS}} = \sum_i \sum_{j \ge i} f_{ij}\, e^{\mathrm{OS}}_{ij}, \qquad E_{\mathrm{SS}} = \sum_i \sum_{j \ge i} f_{ij}\, e^{\mathrm{SS}}_{ij}, \qquad f_{ij} = \begin{cases} 1 & i = j \\ 2 & i < j \end{cases} \label{eq:rimp2alg-tail-block-pairs} $$
 
-> **Verified equation 11.8** · the unique-pair loop of the production kernel
+> **Verified equation @eq:rimp2alg-tail-block-pairs** · the unique-pair loop of the production kernel
 >
 > The loop over $j \ge i$ with weights $f_{ij}$, reading $(ia|jb)$ and
-> $(ib|ja)$ from the tail block (11.7), reproduces the full $(i,j)$ sum.
+> $(ib|ja)$ from the tail block (@eq:pair-kernel-1), reproduces the full $(i,j)$ sum.
 >
 > | | |
 > |---|---|
@@ -98,7 +98,7 @@ $$ E_{\mathrm{OS}} = \sum_i \sum_{j \ge i} f_{ij}\, e^{\mathrm{OS}}_{ij}, \qquad
 >
 > <!-- verified: id=rimp2alg.tail-block-pairs; script=scripts/mp2_variant_identities.py; claim=1; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/rimp2.rs::spin_components_from_b_ov_kappa_cpu; rust_test=ferric-mp2/src/rimp2.rs::spin_components_symmetry_matches_naive_double_loop -->
 
-## 11.3.3 The kernel
+## The kernel {#pair-kernel-kernel}
 
 `pair_energy` reads one $j$ from the tail block. The column offset of $j$ is
 `jcol` $= (j - i)\,n_v$.
@@ -113,15 +113,15 @@ e_ss_ij += g_ab * (g_ab - g_ba) / denom;
 ```
 
 `denom` is $-\Delta_{ij}^{ab}$, so the kernel has no leading minus sign
-(section 10.1.1). With `kappa` set, each term is multiplied by
+(section @sec:closed-shell-ri-mp2-energy-splits). With `kappa` set, each term is multiplied by
 `(1 - (k * denom).exp())^2` $= (1 - e^{-\kappa\Delta_{ij}^{ab}})^2$
-(section 10.3).
+(section @sec:scs-and-kappa).
 
 The exchange partner $(ib|ja)$ is in the same block as $(ia|jb)$, with $a$
 and $b$ exchanged. So one block per $i$ holds every integral the pair needs.
-Section 10.1.1 reads this loop line by line.
+Section @sec:closed-shell-ri-mp2-energy-splits reads this loop line by line.
 
-## 11.3.4 The parallel loop and its fixed summation order
+## The parallel loop and its fixed summation order {#pair-kernel-parallel-loop-fixed-summation}
 
 Here is the parallel loop of `spin_components_from_b_ov_kappa_cpu` with the
 source comments replaced by the term each line computes:
@@ -152,7 +152,7 @@ After the loop, a serial `for` adds the partials in order of $i$.
 | Choice | Effect |
 |---|---|
 | One rayon task per $i$, with its GEMM inside the task | the GEMMs, which carry most of the work, run in parallel |
-| BLAS at one thread inside each task | no nested threading (section 2.3) |
+| BLAS at one thread inside each task | no nested threading (section @sec:determinism-and-memory) |
 | Partials collected in $i$ order, summed on one thread | the total does not depend on the worker count; a rayon `reduce` would combine in a tree whose shape does |
 | $j, a, b$ loops serial inside a task | the per-$i$ partial is fixed |
 
@@ -173,7 +173,7 @@ an even share $1/n_w$, and the first tasks set the wall time.
 `crates/ferric-mp2/tests/mo_stream_dressing_threads.rs` runs
 `ri_mp2_spin_components` on H2O/cc-pVDZ in rayon pools of 1, 2 and 6 threads
 and asserts the same bits for $E_{\mathrm{OS}}$, $E_{\mathrm{SS}}$ and $B$.
-The device pair fold has its own test (section 11.6). The related test
+The device pair fold has its own test (section @sec:device-mixed-precision). The related test
 `ri_mp2_spin_components_consistent_across_blas_thread_counts` in
 `crates/ferric-mp2/tests/blas_raise_identity.rs` varies
 `FERRIC_BLAS_THREADS` and asserts agreement near $10^{-13}$, not bit
@@ -184,8 +184,8 @@ identity.
 | Source | Used for |
 |---|---|
 | Dissertation, chapter 4, section 4.2, Function 4 | the batch index |
-| `crates/ferric-mp2/src/rimp2.rs`, the loop body and comments of `spin_components_from_b_ov_kappa_cpu` | equations 11.7 and 11.8, the order rules, the excerpt |
-| `scripts/mp2_variant_identities.py`, claim 1 | verified equation 11.8 |
+| `crates/ferric-mp2/src/rimp2.rs`, the loop body and comments of `spin_components_from_b_ov_kappa_cpu` | equations @eq:pair-kernel-1 and @eq:rimp2alg-tail-block-pairs, the order rules, the excerpt |
+| `scripts/mp2_variant_identities.py`, claim 1 | verified equation @eq:rimp2alg-tail-block-pairs |
 | `crates/ferric-mp2/tests/mo_stream_dressing_threads.rs` | the thread-count test |
 | `book/sample-ri-mp2.md`, sections 10.1.3 and 10.1.4 | the kernel excerpt, extended here |
 

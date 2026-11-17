@@ -1,10 +1,10 @@
-# 12.4 Localized Laplace SOS-MP2
+# Localized Laplace SOS-MP2 {#local-laplace-sos}
 
-<!-- section: 12.4; status: gap; registry: laplace-sos-mp2;
+<!-- status: gap; registry: laplace-sos-mp2;
      theory: crates/ferric-mp2/theory.md#"8. Laplace-transform MP2" -->
 
 *Notation follows `book/notation.md`. $t$ is the Laplace variable. The
-pseudo-densities are underlined as in section 12.3.*
+pseudo-densities are underlined as in section @sec:laplace-mp2.*
 
 Dynamic correlation is short-ranged. Two electrons on opposite ends of a
 long alkane barely correlate, and an occupied orbital on one bond barely
@@ -15,7 +15,7 @@ and a distant virtual $a$ is small, and so is its contribution to
 $E_{\mathrm{OS}}$. A method that drops those contributions does less work
 for the same answer, up to a controlled error.
 
-The SOS energy of section 12.3 is invariant to orthogonal rotations among
+The SOS energy of section @sec:laplace-mp2 is invariant to orthogonal rotations among
 the occupied orbitals and among the virtual orbitals. Writing it in
 localized orbitals therefore changes nothing until terms are dropped. Two
 formulations drop terms by distance:
@@ -53,7 +53,7 @@ The formulation string is parsed strictly by `SosFormulation::parse_config_str`:
 - `local` also needs the orbital `BasisSet`, to build the localized
   virtuals; `laplace_sos_mp2` without it refuses `local`.
 
-## 12.4.1 The rotated energy
+## The rotated energy {#local-laplace-sos-rotated-energy}
 
 Let $L = C_oU$ be the Boys orbitals, with $U = C_o^{\mathsf T}SL$, and let
 $C_{vl} = C_vR$ be the VV-HV virtuals, with $R = C_v^{\mathsf T}SC_{vl}$.
@@ -61,7 +61,7 @@ Both $U$ and $R$ are orthogonal: the localized orbitals span exactly the
 canonical occupied and virtual spaces.
 
 Start from $J_{PQ}(t) = \sum_{ia}B^P_{ia}e^{t\varepsilon_i}e^{-t\varepsilon_a}B^Q_{ia}$
-of section 12.3.2. Invert the two rotations: $C_o = LU^{\mathsf T}$ and
+of section @sec:laplace-mp2-factorized-energy. Invert the two rotations: $C_o = LU^{\mathsf T}$ and
 $C_v = C_{vl}R^{\mathsf T}$, so a canonical factor is a rotated localized
 one, $B^P_{ia} = \sum_{i'a'}U_{ii'}R_{aa'}\hat H^P_{i'a'}$. Substitute and
 move the sums over the canonical $i$ and $a$ inside. Each meets only its
@@ -70,14 +70,14 @@ localized indices:
 
 $$ E(t) = U^{\mathsf T}\operatorname{diag}(e^{+t\varepsilon_o})\,U, \qquad Q(t) = R^{\mathsf T}\operatorname{diag}(e^{-t\varepsilon_v})\,R . $$
 
-These are the pseudo-densities of 12.3.3 written in the localized bases.
+These are the pseudo-densities of @sec:laplace-mp2-ao-form-coulomb-term written in the localized bases.
 With $\hat H^P_{ia}$ the metric-whitened integral $(P|ia)$ in the localized
 orbitals,
 
-$$ Z_{PQ}(t) = \sum_{ij}\sum_{ab} E_{ij}(t)\,\hat H^P_{ia}\,Q_{ab}(t)\,\hat H^Q_{jb}, \qquad E_{\mathrm{OS}} \approx -\sum_k w_k\,\lVert Z(t_k)\rVert_F^2 . \tag{12.13} $$
+$$ Z_{PQ}(t) = \sum_{ij}\sum_{ab} E_{ij}(t)\,\hat H^P_{ia}\,Q_{ab}(t)\,\hat H^Q_{jb}, \qquad E_{\mathrm{OS}} \approx -\sum_k w_k\,\lVert Z(t_k)\rVert_F^2 . \label{eq:laplace-local-rotated} $$
 
-$Z$ is the $J$ of (12.10) written in the rotated bases, element by element,
-so (12.13) is exact before any truncation. `rotated_exp` forms $E(t)$ and
+$Z$ is the $J$ of (@eq:laplace-factorization) written in the rotated bases, element by element,
+so (@eq:laplace-local-rotated) is exact before any truncation. `rotated_exp` forms $E(t)$ and
 $Q(t)$, and `point_energy` forms $\lVert Z\rVert_F^2$.
 
 What changed is the shape. In canonical orbitals the exponential weight is
@@ -88,10 +88,10 @@ has no single energy to put in the exponential. Pairing a scalar
 $e^{t\varepsilon_i}$ with a localized orbital is therefore wrong, and the
 box below names it as the negative control.
 
-> **Unverified equation 12.13** · the SOS energy in localized orbitals
+> **Unverified equation @eq:laplace-local-rotated** · the SOS energy in localized orbitals
 >
-> For orthogonal $U$, $R$ and no truncation, (12.13) equals the
-> opposite-spin term of (12.10).
+> For orthogonal $U$, $R$ and no truncation, (@eq:laplace-local-rotated) equals the
+> opposite-spin term of (@eq:laplace-factorization).
 >
 > | | |
 > |---|---|
@@ -107,7 +107,7 @@ rounding), and the scalar-weight control differs. That check is not
 committed, so the box stays unverified. The Rust test is the exactness
 anchor: with vacuous radii the production code must give the `mo` energy.
 
-## 12.4.2 The truncations of `local`
+## The truncations of `local` {#local-laplace-sos-truncations}
 
 Each truncation is exact as its threshold goes to its vacuous value.
 
@@ -119,7 +119,7 @@ Each truncation is exact as its threshold goes to its vacuous value.
 | T3 | $E_{ij}$ when $V_i$ and $V_j$ share an LVO | follows from T2 | — |
 | TE `energy_tau` | $(i,a)$ with $(ia\vert ia)/(f_{aa} - f_{ii}) \ge$ `energy_tau` | 0 (off); library only | $\lvert T\rvert$ |
 
-Why T3 follows from T2: in (12.13), $E_{ij}$ multiplies
+Why T3 follows from T2: in (@eq:laplace-local-rotated), $E_{ij}$ multiplies
 $\hat H_{ia}Q_{ab}\hat H_{jb}$ with $a \in V_i$ and $b \in V_j$. The code
 keeps $E_{ij}$ for the pairs whose domains overlap, the neighbour lists
 `dom.nbrs[i]`.
@@ -145,7 +145,7 @@ Two notes on the table:
   $N_{\mathrm{aux}}^2$ factor dense, so the cost stays cubic. Boys and VV-HV
   are dense $N^3$-class steps.
 
-## 12.4.3 The `ao-sparse` formulation
+## The `ao-sparse` formulation {#local-laplace-sos-formulation}
 
 `ao-sparse` (`compute_sos_ao` with a cutoff) works as follows:
 
@@ -153,7 +153,7 @@ Two notes on the table:
   domain: the AO shells whose atom lies within $r$ of its centroid
   (`ferric-mp2/src/boys.rs::build_domains`).
 - **The occupied pseudo-density.** In localized orbitals the exponential
-  weight is the matrix of 12.4.1. The code builds it as the matrix
+  weight is the matrix of @sec:local-laplace-sos-rotated-energy. The code builds it as the matrix
   exponential of the localized occupied Fock block,
   $\underline P(t) = L\,e^{+tF_{\mathrm{loc}}}L^{\mathsf T}$. An element
   $\underline P_{\mu\nu}$ is kept only when $\mu$ and $\nu$ share a domain
@@ -172,7 +172,7 @@ exactness required every domain to cover the molecule.
 `crates/ferric-mp2/src/boys.rs` asserts that full domains reproduce the
 canonical $\underline P(t)$.
 
-## 12.4.4 The kernel
+## The kernel {#local-laplace-sos-kernel}
 
 `ferric-mp2/src/laplace_local.rs::point_energy`, shown whole, with comments
 added. The double loop assembles $W = \hat H\,(E\otimes Q)^{\mathsf T}$ one
@@ -204,7 +204,7 @@ fn point_energy(h_hat: &Array2<f64>, dom: &LocalDomains, e: &Array2<f64>, q: &Ar
 | `h_hat` | $\hat H$, columns ordered by $T$ |
 | `vi`, `vj` | $V_i$, $V_j$ |
 | `dom.nbrs[i]` | the $j$ kept by T3 |
-| `z` | $Z(t)$ of (12.13) |
+| `z` | $Z(t)$ of (@eq:laplace-local-rotated) |
 
 Three points about it:
 
@@ -214,11 +214,11 @@ Three points about it:
 - **The truncation is the loop bounds.** Dropped pairs never appear as
   columns of `h_hat`; nothing is computed and then zeroed.
 - **The final GEMM** is the $N_{\mathrm{aux}}\times\lvert T\rvert\times N_{\mathrm{aux}}$
-  product of 12.4.2, and it sets the per-point cost.
+  product of @sec:local-laplace-sos-truncations, and it sets the per-point cost.
 
 The caller multiplies by $-w_k$ and sums over points in parallel.
 
-## 12.4.5 Anchors and measurements
+## Anchors and measurements {#local-laplace-sos-anchors-measurements}
 
 | Check | Result | Test |
 |---|---|---|
@@ -242,7 +242,7 @@ here. The validation page caps both formulations to not graded.
 
 **Known limits (2026-11-15).**
 
-- No derivation or sympy claim covers (12.13) or the truncation rules. This
+- No derivation or sympy claim covers (@eq:laplace-local-rotated) or the truncation rules. This
   section's status is gap for that reason.
 - The global Coulomb metric keeps the cost cubic; there are no local fits
   and no local metric.
@@ -258,7 +258,7 @@ here. The validation page caps both formulations to not graded.
 
 | Source | Used for |
 |---|---|
-| `crates/ferric-mp2/src/laplace_local.rs`, module documentation and `LocalRadii` | equation 12.13, the truncation table, the failed constructions |
+| `crates/ferric-mp2/src/laplace_local.rs`, module documentation and `LocalRadii` | equation @eq:laplace-local-rotated, the truncation table, the failed constructions |
 | `crates/ferric-mp2/src/boys.rs`, `build_pseudo_density_occ_sparse` | the `ao-sparse` construction and its fixed defect |
 | `crates/ferric-mp2/src/laplace.rs`, tests listed above | the anchors |
 | `site/src/methods/mp2.md`, "Laplace formulations" | where the measurements live |
@@ -268,5 +268,5 @@ Changes from the sources: `crates/ferric-mp2/theory.md` section 8 lists
 module documentation writes the energy as
 $\lVert L_V^{-1}\tilde Z L_V^{-\mathsf T}\rVert_F^2$ with unwhitened
 integrals; the code whitens the integrals first. The two are the same
-number. The substitution that derives (12.13) in 12.4.1 is written out here
+number. The substitution that derives (@eq:laplace-local-rotated) in @sec:local-laplace-sos-rotated-energy is written out here
 and was checked numerically; it is not in a committed script.

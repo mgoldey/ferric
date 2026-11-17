@@ -1,6 +1,6 @@
-# 17.1 Determinants, strings and the phase convention
+# Determinants, strings and the phase convention {#determinants}
 
-<!-- section: 17.1; status: ready; registry: casci;
+<!-- status: ready; registry: casci;
      theory: crates/ferric-ci/theory.md#"Determinants and the phase convention", "Hamiltonian" -->
 
 Stretch the bond of H2 and the bonding orbital $\sigma_g$ and the
@@ -40,7 +40,7 @@ symmetric test molecules.
 | CLI | used by `method.kind = "casscf"` and `"nevpt2"` |
 | Python | `run_casci`, `run_casscf`, `run_nevpt2` |
 
-## 17.1.1 The convention
+## The convention {#determinants-convention}
 
 A determinant is a pair of `u64` strings $(A, B)$ over $n$ active spatial
 orbitals. Bit $p$ of $A$ set means $p\alpha$ is occupied; bit $p$ of $B$
@@ -74,7 +74,7 @@ orbitals 0, 1 and 3 occupied. Removing orbital 1 crosses orbital 0, sign
 $-1$. Removing orbital 3 crosses orbitals 0 and 1, sign $+1$.
 
 `ferric-ci/src/strings.rs::phase_below` evaluates
-$(-1)^{\#\{q<p\,:\,q\in s\}}$ on one spin channel's string; section 1.1.4
+$(-1)^{\#\{q<p\,:\,q\in s\}}$ on one spin channel's string; section @sec:hamiltonian-determinant-code
 shows its body. For an α operator that is the full Jordan–Wigner sign. A β
 operator also has to cross all $N_\alpha$ α creators, which multiplies the
 full sign by $(-1)^{N_\alpha}$. Every term of $H$ contains β operators in
@@ -85,9 +85,9 @@ Other phase conventions are possible. An interleaved order
 ($p\alpha, p\beta, (p{+}1)\alpha, \dots$) assigns each determinant a sign
 $S_I = \pm1$ relative to this one, and changes $H_{IJ}$ to $S_IS_JH_{IJ}$.
 That is a diagonal similarity: the same spectrum, different matrix
-elements. Sections 17.2 to 17.4 all assume α before β.
+elements. Sections @sec:slater-condon to @sec:rdms all assume α before β.
 
-> **Verified equation 17.1** · bit strings are determinants with sign $+1$
+> **Verified equation {#eq:ci-strings-convention}** · bit strings are determinants with sign $+1$
 >
 > On Jordan–Wigner matrices for eight spin orbitals: the annihilators obey
 > the canonical anticommutation relations; the ascending product of
@@ -107,7 +107,7 @@ elements. Sections 17.2 to 17.4 all assume α before β.
 >
 > <!-- verified: id=ci.strings.convention; script=scripts/casci_slater_condon_phases_sympy.py; claim=2; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-ci/src/strings.rs::{phase_below,enumerate_strings}; rust_test=ferric-ci/tests/slater_condon_brute_force.rs::brute_force_reference_is_hermitian_and_number_conserving; registry=casci -->
 
-## 17.1.2 The Hamiltonian
+## The Hamiltonian {#determinants-hamiltonian}
 
 Over the active orbitals the Hamiltonian is
 
@@ -129,11 +129,11 @@ The core electrons are frozen in doubly occupied orbitals. Their Coulomb
 and exchange interaction with an active electron depends only on where that
 one electron is, so it is a one-electron operator and is folded into $h$.
 $E_\text{core}$ is the core's own energy plus the nuclear repulsion.
-Section 17.5 gives both for a CASSCF orbital set. With no core orbitals,
+Section @sec:casscf gives both for a CASSCF orbital set. With no core orbitals,
 $h$ is the bare one-electron operator and $E_\text{core}$ the nuclear
 repulsion.
 
-## 17.1.3 Strings in the code
+## Strings in the code {#determinants-strings-code}
 
 `ferric-ci/src/strings.rs::enumerate_strings` lists all $k$-electron
 strings of $n$ orbitals in ascending numeric order with Gosper's hack. The
@@ -162,7 +162,7 @@ The `u64` holds at most `MAX_ACTIVE_ORBITALS` = 63 active orbitals. CAS-CI
 and CASSCF refuse a larger space before any integral work. The real limit
 is memory. The Davidson subspace grows with $N_\text{det}$, which is
 combinatorial in $n_a$, and the CAS-CI memory plan refuses a space that
-does not fit (section 17.3). A CAS(14,14) singlet has
+does not fit (section @sec:direct-sigma-davidson). A CAS(14,14) singlet has
 $3432^2 = 11\,778\,624$ determinants, and a 50-vector Davidson subspace
 for it takes 9.4 GB.
 

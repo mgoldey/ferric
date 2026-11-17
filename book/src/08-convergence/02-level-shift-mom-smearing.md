@@ -1,6 +1,6 @@
-# 8.2 Level shift, MOM and smearing
+# Level shift, MOM and smearing {#level-shift-mom-smearing}
 
-<!-- section: 8.2; status: ready; registry: rhf, uhf, rohf;
+<!-- status: ready; registry: rhf, uhf, rohf;
      theory: crates/ferric-scf/theory.md#"Level shift, MOM and Fermi smearing" -->
 
 Some molecules defeat DIIS in one of three ways. With a small HOMO–LUMO gap
@@ -28,7 +28,7 @@ code that applies it, then define MOM and smearing.
 | CLI | the options above |
 | Python | `level_shift=`, `mom_after_iter=`, `smearing_sigma=` on the SCF entry points |
 
-## 8.2.1 The level shift damps the step
+## The level shift damps the step {#level-shift-mom-smearing-level-shift-damps-step}
 
 ### What one Roothaan step does
 
@@ -41,7 +41,7 @@ occupied orbital is
 $$ \phi_i' = \phi_i + \kappa_{ai}\phi_a, \qquad \kappa_{ai} = -\frac{f_{ai}}{\varepsilon_a - \varepsilon_i} . $$
 
 That is a step $\kappa = -g/\Delta$ with gradient $g = f_{ai}$ and
-denominator $\Delta = \varepsilon_a - \varepsilon_i$, the gap. Section 8.3
+denominator $\Delta = \varepsilon_a - \varepsilon_i$, the gap. Section @sec:second-order
 writes the orbital Hessian in the same scale: its diagonal is $\Delta$ plus
 two-electron terms. A Roothaan step is therefore a Newton step with a
 diagonal Hessian that keeps only the orbital-energy gaps and leaves out the
@@ -84,13 +84,13 @@ $$ \kappa_{ai} = -\frac{f_{ai}}{\varepsilon_a - \varepsilon_i + \mu_{\rm eff}}, 
 For $H > 0$ any shift with $\Delta + \mu_{\rm eff} \ge H$ makes the factor lie
 in $[0, 1)$, so the error shrinks without oscillating. The shifted step is
 a Newton step with the diagonal Hessian $\Delta + \mu_{\rm eff}$, the same quantity
-$\kappa^0 = -g/(\Delta + \mu)$ that the Newton solvers of section 8.3 start
+$\kappa^0 = -g/(\Delta + \mu)$ that the Newton solvers of section @sec:second-order start
 from.
 
 Check the limits. At $\mu_{\rm eff} = 0$ the step is Roothaan's. As
 $\mu_{\rm eff} \to \infty$ the step goes to zero and the orbitals freeze. A
 large shift therefore converges slowly, with a factor close to 1, which is
-why the code ramps the shift down as the error falls (section 8.2.2).
+why the code ramps the shift down as the error falls (section @sec:level-shift-mom-smearing-shift-applied).
 
 Does the shift change the answer? At self-consistency every $f_{ai}$ is
 zero, so the shifted matrix is block diagonal in the same orbitals. Its
@@ -98,7 +98,7 @@ eigenvectors and its density are those of the unshifted $F$, with the
 virtual energies raised by $\mu_{\rm eff}$. The energy and the convergence
 test use the unshifted $F$.
 
-> **Verified equation 8.3** · the level shift acts on the virtual block only
+> **Verified equation {#eq:scf-level-shift}** · the level shift acts on the virtual block only
 >
 > $\bar F + \mu SC_vC_v^{\mathsf T}S$ in the MO basis of $C$ is
 > $\bar f + \mu\,\mathrm{diag}(0_o, 1_v)$: the occupied–virtual block is
@@ -118,7 +118,7 @@ The box proves the block structure and the unchanged density. The
 first-order step and the one-rotation model above are a perturbation
 argument, checked numerically for this section and not part of the proof.
 
-## 8.2.2 The shift that is applied
+## The shift that is applied {#level-shift-mom-smearing-shift-applied}
 
 The value used is not always the option's value:
 
@@ -178,7 +178,7 @@ Three points about it:
 - **$SC_v$ is formed once.** The projector is $(SC_v)(SC_v)^{\mathsf T}$, one
   $n_{\rm bas}\times n_v$ product and one rank-$n_v$ update.
 
-## 8.2.3 MOM and Fermi smearing
+## MOM and Fermi smearing {#level-shift-mom-smearing-mom-fermi-smearing}
 
 ### The maximum-overlap method
 
@@ -263,7 +263,7 @@ doubles near 1.
 Check the limit: as $\sigma \to 0$ every orbital below $\mu_F$ gets $f_p \to 1$
 and every orbital above gets $f_p \to 0$, which is aufbau.
 
-> **Verified equation 8.4** · the Fermi level
+> **Verified equation {#eq:scf-fermi-level}** · the Fermi level
 >
 > The bisection finds $\mu_F$ with $\sum_pf_p = N_{\rm el}/2$, and as
 > $\sigma \to 0$ the occupations become aufbau.
@@ -284,7 +284,7 @@ smeared run is $E[D]$ at the fractional density, not the Mermin free energy
 $E - \sigma S$; the entropy is reported only in the trace output. A smeared
 energy is therefore not variational in the occupations. In Python, a
 gradient run with `smearing_sigma` is a `ValueError` before the SCF
-(`crates/ferric-python/ferric.pyi`). The stability descent of section 8.4
+(`crates/ferric-python/ferric.pyi`). The stability descent of section @sec:stability
 skips a smeared run, because its integer-occupation Hessian does not
 describe fractional occupations.
 
@@ -293,7 +293,7 @@ an open-shell run (`Config::validate_open_shell_scf_keys` in
 `crates/ferric-cli/src/config.rs`), and the Python open-shell entry points
 do not take them.
 
-## 8.2.4 Doc fixes needed
+## Doc fixes needed {#level-shift-mom-smearing-doc-fixes-needed}
 
 | Text | Code |
 |---|---|
@@ -305,5 +305,5 @@ do not take them.
 | Source | Used for |
 |---|---|
 | `crates/ferric-scf/theory.md`, "Level shift, MOM and Fermi smearing" | the equations |
-| `scripts/scf_diis_sympy.py` | verified equations 8.3 and 8.4 |
+| `scripts/scf_diis_sympy.py` | verified equations @eq:scf-level-shift and @eq:scf-fermi-level |
 | `crates/ferric-scf/src/mom.rs`, `crates/ferric-scf/src/smearing.rs` | MOM and the Fermi level |

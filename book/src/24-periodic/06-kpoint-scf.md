@@ -1,6 +1,6 @@
-# 24.6 k-point Hartree-Fock and Kohn-Sham
+# k-point Hartree-Fock and Kohn-Sham {#kpoint-scf}
 
-<!-- section: 24.6; status: edit; registry: pbc-hf, pbc-ks;
+<!-- status: edit; registry: pbc-hf, pbc-ks;
      theory: crates/ferric-pbc/theory.md#"8. k-point Hartree-Fock and Kohn-Sham" -->
 
 A Gamma-point calculation treats the cell as if every copy of every orbital
@@ -12,10 +12,10 @@ problem becomes one finite problem at each $k$. A $k$-point mesh samples
 $N_k$ of them, each with its own complex Fock matrix, coupled to the others
 through the Coulomb and exchange terms.
 
-Section 24.6.1 derives the mesh, the matrices and the identity that tests
+Section @sec:kpoint-scf-bloch-functions-mesh-supercell derives the mesh, the matrices and the identity that tests
 the $k$-point code: a Gamma-centred mesh is the Gamma calculation of the
-$\operatorname{diag}(N)$ supercell, term by term, per primitive cell. 24.6.2
-gives the SCF, 24.6.3 to 24.6.6 the options, anchors, limits and sources.
+$\operatorname{diag}(N)$ supercell, term by term, per primitive cell. @sec:kpoint-scf-algorithm
+gives the SCF, @sec:kpoint-scf-options to @sec:kpoint-scf-sources the options, anchors, limits and sources.
 
 | Symbol | Meaning | Code name |
 |---|---|---|
@@ -36,7 +36,7 @@ gives the SCF, 24.6.3 to 24.6.6 the options, anchors, limits and sources.
 | CLI | `[cell] kmesh = [n1, n2, n3]` with `method.kind` `rhf`, `uhf`, `rohf` or `ksdft` |
 | Python | `run_rhf_kpts`, `run_uhf_kpts`, `run_rohf_kpts`, `run_rks_kpts`, `run_uks_kpts`, `run_roks_kpts` |
 
-## 24.6.1 Bloch functions, the mesh and the supercell
+## Bloch functions, the mesh and the supercell {#kpoint-scf-bloch-functions-mesh-supercell}
 
 **The mesh.** A mesh $N_1\times N_2\times N_3$ (`ferric-pbc/src/kpts.rs::monkhorst_pack`,
 PySCF `cell.make_kpts`) has fractional points $f_i = \mathrm{num}_i/(2N_i)$
@@ -75,7 +75,7 @@ phase from the integer $\sum_i\mathrm{num}_in_iD/(2N_i) \bmod D$,
 $D = \prod_i 2N_i$, because $k\cdot\mathbf L = 2\pi$ times that integer over
 $D$. The reduction is exact, so $X(-k) = X(k)^*$ holds bit for bit.
 
-> **Verified equation 24.11** · the mesh and its phases
+> **Verified equation {#eq:pbc-kscf-mesh}** · the mesh and its phases
 >
 > The Gamma-centred and Monkhorst-Pack numerators give the PySCF fractional
 > points; for odd $N$ the two meshes are the same set modulo the reciprocal
@@ -99,7 +99,7 @@ nonzero only on $\mathbf K = \mathbf G + q$, $q = k' - k$:
 
 $$ P^{k'}_{\mu\nu}(\mathbf K) = \sum_{\mathbf L}e^{ik'\cdot\mathbf L}\int\phi_\mu\,\phi_\nu(\cdot - \mathbf L)\,e^{-i\mathbf K\cdot\mathbf r} , $$
 
-the transform of section 24.2 with a phase in the image sum
+the transform of section @sec:pair-ft with a phase in the image sum
 (`crates/ferric-pbc/src/kdense_aft.rs`). Coulomb pairs a function with its
 own $k$, so $q = 0$ and the kernel is taken at $\mathbf G$. Exchange pairs
 $k$ with every $k'$, so the kernel is taken at $\mathbf G + q$. The only term
@@ -126,7 +126,7 @@ mesh average of the per-$k$ traces. The Madelung term is the exception. $v_M$
 is the constant of the $\operatorname{diag}(N)$ supercell
 (`ferric-pbc/src/kpts.rs::madelung`), added at every $k$ with no $1/N_k$
 (PySCF `_ewald_exxdiv_for_G0`). The supercell is the cell whose $\Gamma$
-calculation the mesh reproduces, so the probe charge of section 24.4 has the
+calculation the mesh reproduces, so the probe charge of section @sec:exchange-divergence has the
 supercell's images.
 
 **The mesh is the supercell.** For a Gamma-centred mesh, $\{\mathbf G + q\}$ is
@@ -143,10 +143,10 @@ twisted-boundary supercell and has no such anchor.
 
 **Check the Gamma limit.** With $N_k = 1$ the only point is $k = 0$, every
 phase is 1, $q = 0$, $v_M$ is the cell's own constant, and the formulas are
-those of sections 24.4 and 24.5. The force and stress tests in sections 24.7
+those of sections @sec:exchange-divergence and @sec:rsgdf. The force and stress tests in sections @sec:forces
 and 24.8 use this: a one-point mesh must give the Gamma numbers.
 
-> **Verified equation 24.12** · the closed-shell k-mesh is the Gamma supercell
+> **Verified equation {#eq:pbc-kscf-supercell}** · the closed-shell k-mesh is the Gamma supercell
 >
 > $J(k)$ with the kernel at $\mathbf G$, $K(k)$ with the kernel at
 > $\mathbf G + q$ and the factor $1/N_k$, the Madelung term
@@ -187,7 +187,7 @@ per-spin Fock matrices into the Guest–Saunders (Roothaan) effective Fock on
 one orbital set: at Gamma through `ferric_scf::rohf`, on a mesh per $k$ in
 `crates/ferric-pbc/src/kroks.rs` (PySCF `get_roothaan_fock`).
 
-> **Verified equation 24.13** · the open-shell k-mesh is the Gamma supercell
+> **Verified equation {#eq:pbc-kscf-uhf}** · the open-shell k-mesh is the Gamma supercell
 >
 > Per spin, $F_\sigma(k) = h + J[D_\alpha + D_\beta] - K[D_\sigma]$ with the
 > Madelung term at coefficient 1 inside $K[D_\sigma]$, and the per-spin
@@ -204,7 +204,7 @@ one orbital set: at Gamma through `ferric_scf::rohf`, on a mesh per $k$ in
 > <!-- verified: id=pbc.kscf.uhf; script=scripts/pbc_kpoint_corr_sympy.py; claim=kuhf-supercell; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-pbc/src/kuscf.rs::solve_kuhf; registry=pbc-hf -->
 
 The Madelung shift of the occupied levels, which explains why `none` and
-`ewald` share their densities, is box 24.7 in section 24.4. Per spin the
+`ewald` share their densities, is box @eq:pbc-exxdiv-level-shift in section @sec:exchange-divergence. Per spin the
 energy moves by $-v_M(N_\alpha + N_\beta)/2$.
 
 **Kohn–Sham.** With an exact-exchange fraction $a$ (`crates/ferric-pbc/src/kdft.rs`,
@@ -228,7 +228,7 @@ on atom-centred grids weighted by an SSF partition of the infinite crystal
 has no proof script, and neither do the XC force and stress terms. That is
 why `pbc-ks` stays a registry gap and this section's status is `edit`.
 
-## 24.6.2 The algorithm
+## The algorithm {#kpoint-scf-algorithm}
 
 | Step | What | Function |
 |---|---|---|
@@ -242,7 +242,7 @@ why `pbc-ks` stays a registry gap and this section's status is `edit`.
 Step 4 halves the diagonalizations: $F(-k) = F(k)^*$, so the eigenvectors at
 $-k$ are the conjugates of those at $k$. Step 5 fills levels over the whole
 mesh, not per $k$, so two points can hold different numbers of occupied
-levels; the correlation methods of section 24.9 refuse such a reference.
+levels; the correlation methods of section @sec:mp2-drpa refuse such a reference.
 
 The energy is assembled in one loop of
 `ferric-pbc/src/kscf.rs::solve_k_closed_shell`:
@@ -277,17 +277,17 @@ $\tfrac12\operatorname{tr}[(h + F_\text{no xc})D]$ is the
 $h + \tfrac12J - \tfrac a4K$ part of the energy, and $E_{xc}$ is added as a
 number.
 
-## 24.6.3 Options
+## Options {#kpoint-scf-options}
 
 | Option | Values | Default | Effect |
 |---|---|---|---|
 | `[cell] kmesh`, `kmesh=` | three positive integers | none (Gamma point) | the mesh |
 | `[cell] centring` | `"gamma"`, `"mp"` | `"gamma"` | Gamma-centred or Monkhorst-Pack; only the Gamma-centred mesh has the supercell anchor |
-| `[cell] exxdiv` | `"ewald"`, `"none"` | `"ewald"` | the Madelung term of section 24.4 |
+| `[cell] exxdiv` | `"ewald"`, `"none"` | `"ewald"` | the Madelung term of section @sec:exchange-divergence |
 | `[cell] ewald_start` | `"staged"`, `"direct"` | `"staged"` | open shells: converge with `none`, then restart with `ewald` |
-| `[cell] jk` | `"dense"`, `"rsgdf"` | `"dense"` | section 24.5 |
+| `[cell] jk` | `"dense"`, `"rsgdf"` | `"dense"` | section @sec:rsgdf |
 
-## 24.6.4 Numerical anchors
+## Numerical anchors {#kpoint-scf-numerical-anchors}
 
 | Quantity | Bar | Test |
 |---|---|---|
@@ -296,14 +296,14 @@ number.
 | exchange kernel without the $q$ shift, a phase sign flip, the primitive-cell Madelung constant | each detected | `mutant_kernel_without_q_shift_is_caught`, `mutant_phase_sign_in_pair_ft_is_caught`, `mutant_primitive_madelung_is_caught_and_leaves_exxdiv_none_exact` |
 | time reversal and Hermiticity of the Bloch matrices | | `bloch_convention_time_reversal_and_hermiticity` |
 
-## 24.6.5 Limits
+## Limits {#kpoint-scf-limits}
 
 - Insulators only: the global aufbau refuses a converged gap below
   `min_gap`. There is no smearing.
 - A shifted (Monkhorst-Pack, even $N$) mesh is a twisted-boundary supercell
   and has no supercell anchor; it is pinned to PySCF instead.
 
-## 24.6.6 Sources
+## Sources {#kpoint-scf-sources}
 
 | Source | What it gives |
 |---|---|

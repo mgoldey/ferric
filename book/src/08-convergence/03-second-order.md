@@ -1,6 +1,6 @@
-# 8.3 Second-order steps: Newton, augmented Hessian, trust region
+# Second-order steps: Newton, augmented Hessian, trust region {#second-order}
 
-<!-- section: 8.3; status: ready; registry: rhf, uhf, rohf;
+<!-- status: ready; registry: rhf, uhf, rohf;
      theory: crates/ferric-scf/theory.md#"Orbital Hessians: Newton, augmented Hessian, trust region" -->
 
 DIIS sees only errors, which are first derivatives of the energy. Near a
@@ -31,7 +31,7 @@ quadratic model of the energy.
 | Python | `soscf=`, `trah_trigger=` on the SCF entry points |
 | Rust only | `RhfConfig::newton_trigger` at other values, `RhfConfig::ah_trigger` (ROHF) |
 
-## 8.3.1 The orbital gradient and Hessian
+## The orbital gradient and Hessian {#second-order-orbital-gradient-hessian}
 
 ### The quadratic model
 
@@ -48,7 +48,7 @@ The code stores a fixed fraction of the true derivatives: a quarter for
 RHF, a half for UHF. Scaling $g$ and $\mathbf H$ by the same factor leaves
 $\kappa = -\mathbf H^{-1}g$ unchanged, so the Newton step does not see it. A
 predicted energy change does, and so does a threshold on an eigenvalue
-(section 8.4).
+(section @sec:stability).
 
 ### The rotation
 
@@ -76,7 +76,7 @@ Newton iteration does not depend on which map is used.
 
 $D = 2C_oC_o^{\mathsf T}$ moves by $\delta D = 2C(\kappa + \kappa^{\mathsf T})C^{\mathsf T}$
 at first order, where $\kappa + \kappa^{\mathsf T}$ here means the symmetric
-matrix with $\kappa_{ai}$ in both corners (section 8.1.1 derives this). The
+matrix with $\kappa_{ai}$ in both corners (section @sec:diis-error-vector-extrapolation derives this). The
 derivatives of $E(CU(t\kappa))$ are
 
 $$\frac{dE}{dt} = 4\sum_{ai}f_{ai}\kappa_{ai},\qquad
@@ -142,7 +142,7 @@ gradient is $2g$ with the blocks of the ROHF energy functional,
 `rohf_exact_gradient`). The molecular Newton and AH product in
 `crates/ferric-scf/src/rohf_newton.rs` is half of it.
 
-> **Verified equation 8.5** · orbital gradients and Hessian products
+> **Verified equation {#eq:scf-orbital-hessian}** · orbital gradients and Hessian products
 >
 > For RHF, UHF and ROHF the code's gradient and Hessian product equal
 > fourth-order central differences of the energy $E(CU(t\kappa))$, at the
@@ -197,7 +197,7 @@ Three points about it:
 - **The gap is diagonal.** The last loop is the canonical-orbital form of
   the one-electron part, as discussed above.
 
-## 8.3.2 The rotation
+## The rotation {#second-order-rotation}
 
 The Cayley unitary needs one matrix inverse. The body of
 `ferric-scf/src/cayley.rs::cayley_unitary`, shown whole:
@@ -221,7 +221,7 @@ $\kappa$ are imaginary, so those of $1 - \kappa/2$ have real part 1. The
 exponential map would need an eigendecomposition; the Cayley map needs one
 matrix inverse and is exactly orthogonal.
 
-## 8.3.3 The three steps
+## The three steps {#second-order-three-steps}
 
 ### Newton
 
@@ -232,7 +232,7 @@ products $\mathbf H\kappa$; forming $\mathbf H$ itself would cost one $J$/$K$
 build per rotation. The diagonal
 gap plus a shift $\mu$, $\Delta + \mu$, is the preconditioner, and the start
 is the diagonal solve $\kappa^0 = -g/(\Delta + \mu)$, the level-shifted
-Roothaan step of section 8.2.1. The core of
+Roothaan step of section @sec:level-shift-mom-smearing-level-shift-damps-step. The core of
 `ferric-scf/src/rhf_newton.rs::rhf_newton_step`, with the engine-pool setup
 removed:
 
@@ -315,7 +315,7 @@ is second order in $g$ (to leading order $\mu = -\alpha^2g^{\mathsf T}\mathbf H^
 and $\kappa$ tends to the Newton step $-\mathbf H^{-1}g$. Near a minimum the
 augmented Hessian becomes Newton.
 
-> **Verified equation 8.6** · the augmented-Hessian step
+> **Verified equation {#eq:scf-ah-step}** · the augmented-Hessian step
 >
 > The lowest eigenpair of the augmented matrix gives
 > $(\mathbf H - \mu)\kappa = -g$ and the predicted change
@@ -400,7 +400,7 @@ the boundary.
 
 TRAH takes precedence over `newton_trigger` where both would fire.
 
-## 8.3.4 Numerical anchors
+## Numerical anchors {#second-order-numerical-anchors}
 
 The second-order solvers are tested by the energies they converge to and by
 their smoke and anchor tests in `crates/ferric-scf/tests/`
@@ -409,7 +409,7 @@ their smoke and anchor tests in `crates/ferric-scf/tests/`
 checked against finite differences of the energy by the proof above, which
 is the anchor that a scale or sign error in the product would fail.
 
-## 8.3.5 Doc fixes needed
+## Doc fixes needed {#second-order-doc-fixes-needed}
 
 | Text | Code |
 |---|---|
@@ -424,5 +424,5 @@ is the anchor that a scale or sign error in the product would fail.
 | Source | Used for |
 |---|---|
 | `crates/ferric-scf/theory.md`, "Orbital Hessians: Newton, augmented Hessian, trust region" | the equations |
-| `scripts/scf_orbital_hessian_sympy.py` | verified equations 8.5 and 8.6 |
+| `scripts/scf_orbital_hessian_sympy.py` | verified equations @eq:scf-orbital-hessian and @eq:scf-ah-step |
 | `crates/ferric-scf/src/trah.rs` | the radius table and the $\alpha$ search |

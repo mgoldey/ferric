@@ -1,6 +1,6 @@
-# 5.1 Schwarz bounds, and why they do not see attenuation
+# Schwarz bounds, and why they do not see attenuation {#schwarz}
 
-<!-- section: 5.1; status: edit; registry: none;
+<!-- status: edit; registry: none;
      theory: crates/ferric-integrals/theory.md#"The Schwarz bound", "The combined Schwarz bound (CSB)" -->
 
 Take the integral $(\mu\nu|\lambda\sigma)$ and ask how large it can be
@@ -28,7 +28,7 @@ The plan:
 | Rust, CSB | `ferric-integrals/src/csb.rs::csb_m_table` |
 | terfc validity box | `ferric-integrals/src/schwarz.rs::check_terfc_parameters_validated` |
 
-## 5.1.1 The bound and the admitted kernels
+## The bound and the admitted kernels {#schwarz-bound-admitted-kernels}
 
 ### Cauchy–Schwarz on the two-electron form
 
@@ -72,7 +72,7 @@ form $2\theta/\sqrt\pi$ with $\theta^2 = a/2$ used below.
 If $\hat K(k) > 0$ for every $k > 0$, the integrand is non-negative and the
 self-interaction of a nonzero $\rho$ is positive. Bochner's theorem gives the
 converse: a kernel is positive definite exactly when $\hat K(k) > 0$ for
-$k > 0$. Section 4.1.3 tabulates the transforms. Coulomb, erf, erfc and terfc
+$k > 0$. Section @sec:erf-terf-properties-decide-integrals-used tabulates the transforms. Coulomb, erf, erfc and terfc
 qualify. terf does not: its transform is
 $(4\pi/k^2)\cos(kr_0)\,e^{-k^2/4\omega^2}$, which is negative for
 $kr_0 \in (\pi/2, 3\pi/2)$ and periodically beyond, with its first zero at
@@ -114,7 +114,7 @@ itself fails. The full message names the alternative: RI/DF for the
 long-range piece. terf integrals do not decay with separation, so a distance
 screen would find little to discard in any case.
 
-> **Verified equation 5.1** · terf is not positive definite
+> **Verified equation {#eq:screening-terf-indefinite}** · terf is not positive definite
 >
 > $\hat K_{\mathrm{terf}}$ is negative on $kr_0 \in (\pi/2, 3\pi/2)$, with its first
 > zero at $kr_0 = \pi/2$. On $s$ Gaussians on one centre the terf Gram matrix has
@@ -190,7 +190,7 @@ $10^{-12}$ of its Schwarz bound. The attenuation reaches the bound only
 through the per-pair factors, so erfc and terfc screen almost the same set of
 quartets as Coulomb.
 
-> **Verified equation 5.2** · Schwarz holds for erf, erfc and terfc, and does not see attenuation
+> **Verified equation {#eq:screening-schwarz-blind}** · Schwarz holds for erf, erfc and terfc, and does not see attenuation
 >
 > On random $s$ quartets $|(ab|cd)| \le Q_{ab}Q_{cd}$ for erf, erfc and terfc.
 > $Q^2_{\mathrm{erfc}}/Q^2_{\mathrm{Coulomb}} = 1 - \phi/\theta \to 1$ for compact
@@ -214,12 +214,12 @@ orders.
 
 ![Two s pair densities: the true Coulomb and erfc integrals against their Schwarz and QQR bounds as a function of distance. The erfc Schwarz bound is flat while the integral falls by many orders. Script: book/src/figures/05-screening/schwarz_vs_true.py](../figures/05-screening/schwarz_vs_true.svg)
 
-## 5.1.2 Building a table that never undershoots
+## Building a table that never undershoots {#schwarz-building-table-never-undershoots}
 
 A Schwarz table is only safe if every entry is at least the true diagonal.
 Two things in an integral engine can break that. Libint2 skips a quartet whose
 estimated magnitude is below the engine precision and returns no block
-(section 3.2.2); a skipped diagonal would be stored as $Q = 0$. And the terfc
+(section @sec:two-electron-caller-must-respect); a skipped diagonal would be stored as $Q = 0$. And the terfc
 engine interpolates tables, so a diagonal can come out slightly low. The
 table builder guards against both. This is
 `ferric-integrals/src/schwarz.rs::schwarz_pair`, with the error message
@@ -285,7 +285,7 @@ documents the measurement), and `check_terfc_parameters_validated` refuses
 any $(r_0, \omega)$ outside the box it was measured in, with a message that
 names `schwarz_skip = 0.0` as the way to run without the bound.
 
-## 5.1.3 The combined Schwarz bound
+## The combined Schwarz bound {#schwarz-combined-schwarz-bound}
 
 Schwarz pairs the bra with the ket: $\chi_\mu\chi_\nu$ against
 $\chi_\lambda\chi_\sigma$. If the kernel is positive pointwise,
@@ -327,7 +327,7 @@ is invalid for terf.
 | terfc | valid | valid | refused: no interpolation-error budget yet |
 | terf | invalid | valid | refused |
 
-> **Verified equation 5.3** · the $MM$ terms need only $w \ge 0$
+> **Verified equation {#eq:screening-csb-pointwise}** · the $MM$ terms need only $w \ge 0$
 >
 > $\operatorname{terf}(r) \ge 0$ for $r \ge 0$, and
 > $|(ab|cd)| \le \min(M_{ac}M_{bd}, M_{ad}M_{bc})$ holds on random terf and terfc
@@ -373,7 +373,7 @@ Two points about it:
   therefore cannot loosen the bound. It can still make the bound too small,
   through a spuriously small $M$; `csb_is_a_valid_upper_bound` in
   `crates/ferric-scf/tests/csb_screening.rs` tests that direction.
-- **CSB cannot shrink a pair list.** Section 5.3's pair lists are built from
+- **CSB cannot shrink a pair list.** Section @sec:pair-lists's pair lists are built from
   diagonal estimates $(ij|ij)$. There the Schwarz term $Q(i,j)^2$ equals the
   largest $|(ab|ab)|$ in the block, and each $M$ term is a valid bound on
   every element of the block, so neither is smaller. The minimum returns the
@@ -385,7 +385,7 @@ through the $(\mu\mu|\lambda\lambda)$ integrals themselves, as it enters $Q$
 through $(\mu\nu|\mu\nu)$. There is no separate geometric factor that could
 count it twice.
 
-## 5.1.4 Numerical anchors
+## Numerical anchors {#schwarz-numerical-anchors}
 
 | What | Test | Bar |
 |---|---|---|
@@ -396,7 +396,7 @@ count it twice.
 | CSB valid, never looser than Schwarz, equal to it in the trivial limit, RHF energy unchanged | `crates/ferric-scf/tests/csb_screening.rs` | per test |
 
 The Cauchy–Schwarz derivation, the Fourier form of the self-interaction and
-the diffuse-pair limit $x/4$ in 5.1.1 are not claims of the verification
+the diffuse-pair limit $x/4$ in @sec:schwarz-bound-admitted-kernels are not claims of the verification
 script; they were checked with sympy for this section. The function-to-shell
 step is the definition of a maximum.
 

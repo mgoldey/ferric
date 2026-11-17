@@ -1,6 +1,6 @@
-# 27.1 The NPZ feature bundle
+# The NPZ feature bundle {#npz-bundle}
 
-<!-- section: 27.1; status: edit; registry: pdep-rpa;
+<!-- status: edit; registry: pdep-rpa;
      theory: crates/ferric-export/theory.md#"1. Machine Learning Dataset Schema (`.npz`)" -->
 
 A model that learns from a quantum-chemistry run never sees the run. It sees
@@ -13,10 +13,10 @@ equivariant model or a molecule-fixed frame.
 
 ferric writes one NumPy `.npz` file per molecule. It holds the reference
 wavefunction, the electrostatic and response properties and the run's
-certificate. This section says what the bundle is computed from (27.1.1), how
-the file is laid out (27.1.2), what every key means and how it behaves under
-a rotation or translation (27.1.3), and how to switch keys on and off
-(27.1.4). Section 21.3 covers the writer itself: what it refuses and why.
+certificate. This section says what the bundle is computed from (@sec:npz-bundle-every-array-computed), how
+the file is laid out (@sec:npz-bundle-layout), what every key means and how it behaves under
+a rotation or translation (@sec:npz-bundle-keys), and how to switch keys on and off
+(@sec:npz-bundle-turning-keys-off). Section @sec:export-schemas covers the writer itself: what it refuses and why.
 
 | Entry point | Location |
 |---|---|
@@ -28,12 +28,12 @@ a rotation or translation (27.1.3), and how to switch keys on and off
 The bundle is closed-shell only. It is built from a converged RHF reference,
 after the PDEP-RPA correlation energy.
 
-## 27.1.1 What every array is computed from
+## What every array is computed from {#npz-bundle-every-array-computed}
 
 Every property in the file is a property of the **reference SCF density**,
 $D = 2\,C_o C_o^{\mathsf T}$, the matrix in `density_matrix`. None of them
 uses an RPA-relaxed density. The polarizabilities are the response of that
-same reference (section 27.3). A model trained on these arrays therefore
+same reference (section @sec:polarizability-pdep-c6). A model trained on these arrays therefore
 learns Hartree–Fock electrostatics plus a direct-RPA response. It does not
 learn correlated densities.
 
@@ -49,7 +49,7 @@ basis give arrays that differ by the density-fitting error of the reference,
 depending on which front end produced them. Pin one front end for the whole
 dataset, or pin `df_j_aux` / `df_k_aux`.
 
-## 27.1.2 Layout
+## Layout {#npz-bundle-layout}
 
 Every array is `float64` in C order, except:
 
@@ -68,7 +68,7 @@ the file exists.
 **AO order.** `mo_coeffs` and `density_matrix` use ferric's shell order, with
 libint2's component order inside each shell. The file carries neither the
 basis definition nor the overlap matrix. To use these arrays you rebuild both
-with ferric for the same basis name (`AoIntegrals`, section 27.4). The
+with ferric for the same basis name (`AoIntegrals`, section @sec:python-cube-provenance). The
 validation suite matched the order to PySCF through the overlap matrix. Do
 not assume another code's order.
 
@@ -82,7 +82,7 @@ are not in the NPZ either; Python returns them as
 `PdepRpaResult.eigenvalues_static`, sorted descending. Neither the overlap
 matrix nor the basis is stored.
 
-## 27.1.3 Keys
+## Keys {#npz-bundle-keys}
 
 The table uses these sizes. $N$ is the number of atoms, $n$ the number of
 AOs, and $n_{\mathrm{MO}} \le n$ the number of retained MOs (the
@@ -103,24 +103,24 @@ rigid rotation or translation of the input geometry.
 | `orbital_spreads` | $(n_{\mathrm{MO}},)$ | Bohr | $\sqrt{\max(0,\langle r^2\rangle_p - \lvert\langle\mathbf r\rangle_p\rvert^2)}$ | invariant |
 | `density_second_moment` | $(3,3)$ | Bohr² | $M_{cd} = \sum_{\mu\nu} D_{\mu\nu}\langle\mu\lvert r_c r_d\rvert\nu\rangle$ about the origin, electronic only | rank-2 tensor about the origin; changes under translation |
 | `dipole` | $(3,)$ | $e\,a_0$ | $\sum_A Z^{\mathrm{eff}}_A\mathbf R_A - \sum D_{\mu\nu}\langle\mu\lvert\mathbf r\rvert\nu\rangle$, origin at 0 | vector; origin-dependent for ions |
-| `pdep_eigenvectors` | $(N_{\mathrm{aux}},M)$ | — | aux coefficients of the PDEP mode densities, $c^{\mathsf T}Vc = I$ (section 27.3.5) | signs and degenerate subspaces arbitrary |
-| `esp_atoms` | $(N,)$ | Hartree/$e$ | eq. 27.1, own nucleus excluded | invariant |
-| `esp_surface`, `esp_points` | $(N_p,)$, $(N_p,3)$ | Hartree/$e$, Bohr | eq. 27.3 on Lebedev spheres (section 27.2.2) | the point set is fixed in the lab frame, so it changes under rotation |
+| `pdep_eigenvectors` | $(N_{\mathrm{aux}},M)$ | — | aux coefficients of the PDEP mode densities, $c^{\mathsf T}Vc = I$ (section @sec:polarizability-pdep-c6-pdep-eigenvectors) | signs and degenerate subspaces arbitrary |
+| `esp_atoms` | $(N,)$ | Hartree/$e$ | eq. @eq:electrostatics-and-charges-1, own nucleus excluded | invariant |
+| `esp_surface`, `esp_points` | $(N_p,)$, $(N_p,3)$ | Hartree/$e$, Bohr | eq. @eq:electrostatics-and-charges-3 on Lebedev spheres (section @sec:electrostatics-and-charges-potential-arbitrary-points-surface) | the point set is fixed in the lab frame, so it changes under rotation |
 | `electric_field` | $(N,3)$ | Hartree/($e$ Bohr) | $-\nabla V$ at each nucleus, own nucleus excluded | vectors |
-| `alpha_tensor` | $(3,3)$ | Bohr³ | static dRPA polarizability, eq. 27.8 | rank-2 tensor; origin-independent |
-| `alpha_atomic` | $(N,3,3)$ | Bohr³ | Krishtal intrinsic per-atom α, eq. 27.9 | rank-2 tensors, up to the Becke grid's lab-frame orientation |
+| `alpha_tensor` | $(3,3)$ | Bohr³ | static dRPA polarizability, eq. @eq:polarizability-pdep-c6-1 | rank-2 tensor; origin-independent |
+| `alpha_atomic` | $(N,3,3)$ | Bohr³ | Krishtal intrinsic per-atom α, eq. @eq:ml-alpha-per-atom-kernel | rank-2 tensors, up to the Becke grid's lab-frame orientation |
 | `alpha_ct` | $(3,3)$ | Bohr³ | `alpha_tensor - alpha_atomic.sum(0)` | as `alpha_atomic` |
-| `lowdin_charges`, `mulliken_charges` | $(N,)$ | $e$ | eqs. 27.4, 27.5 | invariant |
-| `hirshfeld_charges` | $(N,)$ | $e$ | eq. 27.6 on an atom-centred grid | invariant to grid error |
-| `chelpg_charges`, `resp_charges` | $(N,)$ | $e$ | ESP fits on a lab-frame lattice | orientation-dependent (section 27.2.4) |
+| `lowdin_charges`, `mulliken_charges` | $(N,)$ | $e$ | eqs. @eq:electrostatics-and-charges-l-wdin, @eq:electrostatics-and-charges-mulliken | invariant |
+| `hirshfeld_charges` | $(N,)$ | $e$ | eq. @eq:electrostatics-and-charges-hirshfeld on an atom-centred grid | invariant to grid error |
+| `chelpg_charges`, `resp_charges` | $(N,)$ | $e$ | ESP fits on a lab-frame lattice | orientation-dependent (section @sec:electrostatics-and-charges-five-charge-schemes) |
 | `c6_freqs`, `c6_weights` | $(N_u,)$ | a.u. | Gauss–Legendre nodes $u_k$ and weights $w_k$ | constants |
 | `alpha_atomic_dynamic` | $(N,N_u,3,3)$ | Bohr³ | per-atom $\alpha^A(iu_k)$ from the `c6_source` model | as `alpha_atomic` |
 | `alpha_ct_dynamic` | $(N_u,3,3)$ | Bohr³ | dynamic CT remainder; `c6_source = "pdep"` only | as `alpha_ct` |
-| `c6_iso` | $(N,N)$ | Hartree Bohr⁶ | pair $C_6^{AB}$, eq. 27.12 | invariant; a partition convention |
-| `c6_aniso` | $(N,N,3,3)$ | Hartree Bohr⁶ | element-wise $\alpha^A_{ij}\alpha^B_{ij}$ quadrature | **not** a tensor (section 27.3.4) |
+| `c6_iso` | $(N,N)$ | Hartree Bohr⁶ | pair $C_6^{AB}$, eq. @eq:ml-c6-cp-quadrature | invariant; a partition convention |
+| `c6_aniso` | $(N,N,3,3)$ | Hartree Bohr⁶ | element-wise $\alpha^A_{ij}\alpha^B_{ij}$ quadrature | **not** a tensor (section @sec:polarizability-pdep-c6-casimir-polder) |
 | `c6_molecular_iso` | $(1,)$ | Hartree Bohr⁶ | molecular $C_6$ from the molecular $\alpha(iu)$ | invariant |
 | `c6_source`, `c6_partition` | bytes | — | `ts`, `pdep` or `mbd`; `becke` or `hirshfeld` | labels |
-| `certificate` | bytes | — | result certificate as JSON (section 27.4.3) | label |
+| `certificate` | bytes | — | result certificate as JSON (section @sec:python-cube-provenance-certificate-provenance-label) | label |
 
 `boys_coeffs` is defined by the writer, but neither the CLI nor Python ever
 fills it.
@@ -146,10 +146,10 @@ model differently.
   subspaces, or AO components that mix under rotation. They need sign-,
   degeneracy- and rotation-aware handling before they can be features.
 
-## 27.1.4 Turning keys on and off
+## Turning keys on and off {#npz-bundle-turning-keys-off}
 
 The CLI knobs live under `[rpa]` and are named `compute_<key>`. Section
-21.3.1 maps each key to its knob. The validation suite checks that turning
+@sec:export-schemas-quantity-key maps each key to its knob. The validation suite checks that turning
 each knob off removes exactly its keys
 (`crates/ferric-cli/tests/validation_npz.rs`).
 
@@ -165,7 +165,7 @@ compute_c6 = false             # skip the dispersion block
 ```
 
 Reading the file back needs only numpy. The last line checks the
-charge-transfer identity of section 27.3.2 on the arrays themselves:
+charge-transfer identity of section @sec:polarizability-pdep-c6-per-atom-split-charge on the arrays themselves:
 
 ```python
 import json, numpy as np
@@ -178,7 +178,7 @@ assert np.allclose(f["alpha_ct"] + f["alpha_atomic"].sum(0), f["alpha_tensor"])
 ## Known limits (2026-11-15)
 
 - The NPZ carries no energy, no overlap matrix, no basis definition and no
-  PDEP eigenvalues (section 27.1.2), and the CLI run log has no PDEP-RPA total
+  PDEP eigenvalues (section @sec:npz-bundle-layout), and the CLI run log has no PDEP-RPA total
   energy, so a CLI pipeline must take the total from stdout.
 - With `c6_source = "pdep"` and `c6_partition = "hirshfeld"` on an open-shell
   reference, `ferric-rpa/src/dispersion.rs::pdep_dynamic_polarizability`
@@ -187,7 +187,7 @@ assert np.allclose(f["alpha_ct"] + f["alpha_atomic"].sum(0), f["alpha_tensor"])
   library callers today.
 - `atomic_numbers` holds the bare $Z$, while the ESP, field, dipole and
   charge functions pair the density with the ECP-reduced $Z^{\mathrm{eff}}$
-  (section 27.2.6). On an ECP atom the two differ by the number of core
+  (section @sec:electrostatics-and-charges-known-limits-2026-11). On an ECP atom the two differ by the number of core
   electrons the ECP replaces.
 
 ## Sources

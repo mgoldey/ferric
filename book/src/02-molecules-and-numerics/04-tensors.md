@@ -1,6 +1,6 @@
-# 2.4 Dense tensors and the einsum macro
+# Dense tensors and the einsum macro {#tensors}
 
-<!-- section: 2.4; status: edit; registry: ;
+<!-- status: edit; registry: ;
      theory: crates/ferric-tensors/theory.md#"Tensor Operations and Sparsity" -->
 
 Correlation methods are written as sums over products of tensors with up to
@@ -16,7 +16,7 @@ an index string, and turns it into matrix products.
 | Contraction | `ferric-tensors/src/einsum.rs::{einsum_binary,einsum_binary_batched,einsum_dyn}`, `ferric-tensors/src/einsum_chain.rs::einsum_chain_dyn` |
 | Python | `ferric.einsum` |
 
-## 2.4.1 Storage
+## Storage {#tensors-storage}
 
 `Tensor<N>` wraps a dense `f64` array of $N$ axes and adds one label per axis:
 `Ao`, `O`, `V`, `Aux` or `Any`. The label checks run in debug builds only.
@@ -31,7 +31,7 @@ release build they compile out and cost nothing. `Tensor` dereferences to the
 inner `ndarray` array, so all ndarray code works on it unchanged. The crate
 has no sparse format.
 
-## 2.4.2 The contraction
+## The contraction {#tensors-contraction}
 
 A contraction spec such as `ijab,iajb->` names the index of each operand. The
 grammar is stricter than numpy's. Every index falls in one class:
@@ -128,10 +128,10 @@ $\log(k/128)$ instead of $k$. The function's documentation measures it at
 reference. Blocking does not by itself make the product independent of the
 OpenBLAS thread count, since OpenBLAS also splits work inside a block.
 
-## 2.4.3 Reproducibility
+## Reproducibility {#tensors-reproducibility}
 
 The result is a deterministic function of the spec and the operands, and does
-not depend on the worker count (section 2.3). The batched path rounds each
+not depend on the worker count (section @sec:determinism-and-memory). The batched path rounds each
 slice exactly as an unbatched call would, which a test pins
 (`batched_is_bit_identical_to_loop_of_unbatched` in
 `crates/ferric-tensors/tests/batched_parity.rs`).

@@ -1,6 +1,6 @@
-# 4.3 Yukawa, Slater geminal and fitted geminal kernels
+# Yukawa, Slater geminal and fitted geminal kernels {#yukawa-geminal}
 
-<!-- section: 4.3; status: gap; registry: none;
+<!-- status: gap; registry: none;
      theory: crates/ferric-integrals/theory.md#"Yukawa and Slater-geminal kernels" -->
 
 The kernels of 4.1 split $1/r$ with an error function. The kernels here cut
@@ -25,7 +25,7 @@ then state the parameter limits a caller has to respect.
 | Entry point | Location |
 |---|---|
 | Rust | `ferric-integrals/src/operator.rs::{yukawa,slater_geminal,stg}`, `ferric-integrals/src/engine.rs::new_2e_geminal` |
-| Consumer | `crates/ferric-mp2/src/f12.rs` (CABS construction; section 6.4) |
+| Consumer | `crates/ferric-mp2/src/f12.rs` (CABS construction; section @sec:cabs) |
 
 ## The three kernels
 
@@ -65,7 +65,7 @@ libint2 evaluates the two exact kernels through its `TennoGmEval` core,
 which replaces the Boys function by a two-variable function of
 $T = \rho R^2$ and $U = \zeta^2/4\rho$, with $\rho$ the reduced exponent of
 the bra and ket. The two variables come out of the Fourier-space form of
-the integral, as in 4.2.2. The Yukawa kernel transforms to
+the integral, as in @sec:terf-table-engine-center-integral-auxiliary-function. The Yukawa kernel transforms to
 
 $$ \widehat{\Big(\frac{e^{-\zeta r}}{r}\Big)}(k) = \frac{4\pi}{k^2 + \zeta^2}, $$
 
@@ -82,7 +82,7 @@ $(4\pi/k)\int_0^\infty e^{-\zeta r}\sin(kr)\,dr$.
 
 Its interpolation covers $U \in [10^{-7}, 10^{3}]$; outside that range the
 result depends on the libint2 build, which `Operator::yukawa` documents
-case by case. 4.3.1 lists the cases.
+case by case. @sec:yukawa-geminal-limits-caller-must-respect lists the cases.
 
 ### The fitted geminal
 
@@ -127,7 +127,7 @@ pins them.
 
 None of the three is admitted by the Schwarz table builder.
 
-## 4.3.1 Limits a caller must respect
+## Limits a caller must respect {#yukawa-geminal-limits-caller-must-respect}
 
 | Region | Stock libint2 | With ferric's `boys.h` overrides |
 |---|---|---|
@@ -151,7 +151,7 @@ build prints a warning. Ferric builds no Schwarz table for these kernels
 (`ferric-integrals/src/schwarz.rs::check_operator_supported` errors), so no
 screen hides a bad value.
 
-## 4.3.2 Numerical anchors
+## Numerical anchors {#yukawa-geminal-numerical-anchors}
 
 | What | Test | Bar |
 |---|---|---|

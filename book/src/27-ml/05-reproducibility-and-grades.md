@@ -1,6 +1,6 @@
-# 27.5 Reproducibility and validation grades
+# Reproducibility and validation grades {#reproducibility-and-grades}
 
-<!-- section: 27.5; status: edit; registry: none; theory: none -->
+<!-- status: edit; registry: none; theory: none -->
 
 A dataset needs two guarantees from the code that produced it. The first is
 that the same input gives the same numbers, so that a regenerated sample, or
@@ -8,10 +8,10 @@ one computed on another machine, can be compared with the original. The
 second is that each number means what its name says, to a stated accuracy.
 Without the first, noise from the run enters the labels. Without the second,
 a model can fit a quantity that was never computed correctly. This section
-covers the first through ferric's threading and precision defaults (27.5.1,
-27.5.2), and the second through the validation grades (27.5.3).
+covers the first through ferric's threading and precision defaults (@sec:reproducibility-and-grades-bitwise-reproducibility,
+@sec:reproducibility-and-grades-precision-convergence-defaults-move), and the second through the validation grades (@sec:reproducibility-and-grades-quantity-carries-grade).
 
-## 27.5.1 Bitwise reproducibility
+## Bitwise reproducibility {#reproducibility-and-grades-bitwise-reproducibility}
 
 Where does run-to-run variation come from? Floating-point addition is not
 associative, so a sum computed in a different order can differ in the last
@@ -46,7 +46,7 @@ CPUs. A different compiler, OpenBLAS build or instruction set changes the
 kernels themselves. Record `certificate.build.commit` with each sample, and
 expect last-digit differences between OpenBLAS builds.
 
-## 27.5.2 Precision and convergence defaults that move labels
+## Precision and convergence defaults that move labels {#reproducibility-and-grades-precision-convergence-defaults-move}
 
 A few defaults are chosen for single-point speed. They change labels by more
 than rounding, so a dataset should set them on purpose.
@@ -57,19 +57,19 @@ than rounding, so a dataset should set them on purpose.
 | RI-J tensor storage, `optimize` / `frequencies` tasks | f64 | smooth surface |
 | Python `run_rhf` `density_conv` | 1e-6, with the largest element gated at 10× | sets the density, hence every property's, convergence |
 | Python `run_rhf` `energy_conv` | 1e-3 | a sanity bound, not the convergence target |
-| CLI `pdep-rpa` reference | RI-JK (`def2-universal-jkfit`) | differs from Python's exact-J/K default by the fitting error (section 27.1.1) |
+| CLI `pdep-rpa` reference | RI-JK (`def2-universal-jkfit`) | differs from Python's exact-J/K default by the fitting error (section @sec:npz-bundle-every-array-computed) |
 
 For energy and force labels on a set of nearby geometries (a scan, an MD
 trajectory, a conformer set), set `ri_j_precision = "f64"` explicitly. The
 f32 default is chosen for single points, and its jitter is the size of the
 energy differences such a dataset is meant to resolve.
 
-## 27.5.3 Which quantity carries which grade
+## Which quantity carries which grade {#reproducibility-and-grades-quantity-carries-grade}
 
 A label without a grade is unsafe to train on. A model cannot tell a value
 that agrees with an independent code to $10^{-13}$ from one that has only
 been checked for internal consistency, and it will fit both with the same
-confidence. The certificate grades the capability's energy (section 27.4.3).
+confidence. The certificate grades the capability's energy (section @sec:python-cube-provenance-certificate-provenance-label).
 For the features of this chapter, the evidence is the anchor row on the
 validation page, summarized here.
 
@@ -87,7 +87,7 @@ validation page, summarized here.
 | BSE-TDA, statically screened TDHF α | `bse-tda`, `tdhf-static-polarizability` | — | Smoke |
 
 All figures are from `site/src/reference/validation.md`, "Anchors" and
-"CLI `method.kind` matrix". As in 27.2.5, "same density" isolates ferric's
+"CLI `method.kind` matrix". As in @sec:electrostatics-and-charges-well-these-checked, "same density" isolates ferric's
 integrals and contractions, and the "own SCF" figures quoted in 27.2 and
 27.3 add ferric's SCF convergence.
 
@@ -111,6 +111,6 @@ still be a poor target. That choice belongs to the model builder.
 | `crates/ferric-core/src/blas_threads.rs` | the setters and their precedence |
 | `site/src/reference/input.md`, `[scf] ri_j_precision` | the f32/f64 defaults and the jitter figure |
 | `crates/ferric-python/ferric.pyi`, `run_rhf` | the Python SCF thresholds |
-| `site/src/reference/validation.md` | every figure in 27.5.3 |
+| `site/src/reference/validation.md` | every figure in @sec:reproducibility-and-grades-quantity-carries-grade |
 
 Changes from the sources: none.

@@ -1,19 +1,19 @@
-# 18.2 Imaginary-frequency quadratures
+# Imaginary-frequency quadratures {#quadratures}
 
-<!-- section: 18.2; status: ready; registry: pdep-rpa;
+<!-- status: ready; registry: pdep-rpa;
      theory: crates/ferric-rpa/theory.md#"Imaginary-frequency quadratures"; crates/ferric-quadrature/theory.md#"2. Imaginary-Frequency Grids for RPA" -->
 
-The frequency form of the RPA energy (18.4) is an integral over the whole
+The frequency form of the RPA energy (@eq:drpa-three-ways-4) is an integral over the whole
 half-line $u \in [0, \infty)$. The integrand is smooth, largest near
 $u = 0$, changes on the scale of the orbital-energy gaps, and falls as
-$u^{-4}$ at large $u$ (section 18.1.3). Each node costs one dielectric
+$u^{-4}$ at large $u$ (section @sec:drpa-three-ways-imaginary-frequency). Each node costs one dielectric
 matrix and one factorization, so the grid has to capture the integral with
 a few dozen points. Every frequency-route RPA energy in ferric (sections
-18.1, 18.3, 18.4), the GW self-energy and the dynamic polarizabilities use
+@sec:drpa-three-ways, @sec:pdep, @sec:open-shell-dielectric), the GW self-energy and the dynamic polarizabilities use
 the grids of this section.
 
-The plan: the three grids (18.2.1), their defaults and how the order of the
-exact dRPA route was chosen (18.2.2), then anchors and sources.
+The plan: the three grids (@sec:quadratures-rule), their defaults and how the order of the
+exact dRPA route was chosen (@sec:quadratures-defaults), then anchors and sources.
 
 | Symbol | Meaning | Code name |
 |---|---|---|
@@ -23,7 +23,7 @@ exact dRPA route was chosen (18.2.2), then anchors and sources.
 | $n$ | number of nodes | `n_points` |
 
 The code names the imaginary frequency `omega`. The book writes $u$, so that
-$\omega$ stays the range-separation parameter (chapter 0, section 8).
+$\omega$ stays the range-separation parameter (chapter @sec:notation, section @sec:notation-attenuated-coulomb-operators).
 
 | Entry point | Location |
 |---|---|
@@ -31,9 +31,9 @@ $\omega$ stays the range-separation parameter (chapter 0, section 8).
 | CLI | `[rpa] quadrature`, `n_quad`, `u0` |
 | Python | `quadrature=`, `n_quad=`, `u0=` of `run_pdep_rpa`, `run_gw` and the other frequency-route functions |
 
-## 18.2.1 The rule
+## The rule {#quadratures-rule}
 
-$$ \int_0^\infty f(u)\,du \approx \sum_{k=1}^{n} w_k\,f(u_k), \qquad E_c = \frac{1}{2\pi}\sum_k w_k\,S(u_k) . \tag{18.6} $$
+$$ \int_0^\infty f(u)\,du \approx \sum_{k=1}^{n} w_k\,f(u_k), \qquad E_c = \frac{1}{2\pi}\sum_k w_k\,S(u_k) . \label{eq:rpa-quad-mapped-weights} $$
 
 A Gaussian rule lives on a finite interval. All three grids map a rule on
 $x \in (-1, 1)$ to $u \in (0, \infty)$ and multiply each weight by the
@@ -101,7 +101,7 @@ let weights: Vec<f64> = x
 | $u_k$ | `freqs` |
 | $w_k = w_k^{\mathrm{GL}}\,du/dx$ | `weights` |
 
-> **Verified equation 18.6** · the mapped weights
+> **Verified equation @eq:rpa-quad-mapped-weights** · the mapped weights
 >
 > The Gauss–Legendre and Chebyshev–Tan weights are the rule's weights times
 > the Jacobian $du/dx$ of the map; Chebyshev–Tan is the trapezoid rule in
@@ -123,7 +123,7 @@ The proof does not cover the half-below-$u_0$ split, the tail pull-back or
 the largest-node formula written out above; the last is pinned by the test
 `chebyshev_tan_largest_node_matches_closed_form`.
 
-## 18.2.2 Defaults
+## Defaults {#quadratures-defaults}
 
 | Entry point | Scheme | $n$ | $u_0$ |
 |---|---|---|---|
@@ -146,12 +146,12 @@ more nodes stop helping. The test asserts the chosen order.
 
 **$u_0$.** Only $u_0 = 0.5$ has been calibrated on the production (dense
 $\chi_0$) path; there the scheme changes only the quadrature error. The
-Laplace $\chi_0$ backend (section 18.5) falls back to the dense kernel at any
+Laplace $\chi_0$ backend (section @sec:laplace-ao-chi0) falls back to the dense kernel at any
 node with $u\,t_{\max} > \pi/2$. A smaller $u_0$ moves nodes to smaller $u$,
 so it keeps more of them on the Laplace path.
 `CHEBYSHEV_TAN_RECOMMENDED_U0 = 0.2` is calibrated for that backend only.
 
-## 18.2.3 Numerical anchors
+## Numerical anchors {#quadratures-numerical-anchors}
 
 | Quantity | Value | Source |
 |---|---|---|
@@ -161,7 +161,7 @@ so it keeps more of them on the Laplace path.
 
 A ratio of 4 per doubling is the $n^{-2}$ law; the test allows 3.5 to 4.5.
 
-## 18.2.4 Sources
+## Sources {#quadratures-sources}
 
 | Source | What it gives |
 |---|---|

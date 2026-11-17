@@ -1,6 +1,6 @@
-# 9.1 The Kohn–Sham equations and functional families
+# The Kohn–Sham equations and functional families {#ks-equations}
 
-<!-- section: 9.1; status: ready; registry: ks-semilocal, ks-mgga;
+<!-- status: ready; registry: ks-semilocal, ks-mgga;
      theory: crates/ferric-dft/theory.md#"Kohn-Sham Equations" "Functionals" -->
 
 Kohn and Sham replace the interacting electrons by non-interacting ones that
@@ -13,9 +13,9 @@ exchange-correlation energy $E_{xc}$, a functional of the density. The
 approximate functionals for $E_{xc}$ are what the rest of this chapter
 evaluates.
 
-The plan: derive the Fock matrix from the energy (9.1.1), follow one SCF
-iteration through the code (9.1.2), and list the functional families
-(9.1.3).
+The plan: derive the Fock matrix from the energy (@sec:ks-equations-energy-fock-matrix), follow one SCF
+iteration through the code (@sec:ks-equations-scf-iteration), and list the functional families
+(@sec:ks-equations-functional-families).
 
 For the code, Kohn–Sham is Hartree–Fock with one extra term. ferric has no
 separate Kohn–Sham solver. The RHF, UHF and ROHF drivers run RKS, UKS and
@@ -38,7 +38,7 @@ exact-exchange matrix is scaled by the functional's fractions.
 | CLI | `method.kind = "ksdft"` (RKS, UKS above multiplicity 1), or `rhf` / `uhf` / `rohf` with `[dft] functional` |
 | Python | `run_dft`, `run_ksdft`; `run_rhf`, `run_uhf`, `run_rohf` with `xc=` |
 
-## 9.1.1 Energy and Fock matrix
+## Energy and Fock matrix {#ks-equations-energy-fock-matrix}
 
 Take a closed shell with total density matrix
 $D = 2\mathbf C_o\mathbf C_o^{\mathsf T}$. The Kohn–Sham energy is
@@ -53,9 +53,9 @@ Term by term:
   is the Coulomb matrix, so $\tfrac12\mathrm{Tr}[DJ]$ is the classical
   repulsion of the density with itself.
 - $K_{\rm tot}$ is the exact-exchange matrix of a hybrid or range-separated
-  hybrid, with the functional's fractions built in (section 9.4). It is zero
+  hybrid, with the functional's fractions built in (section @sec:hybrids). It is zero
   for a pure functional.
-- $E_{xc}$ is the grid quadrature of section 9.3, a function of $D$ through
+- $E_{xc}$ is the grid quadrature of section @sec:vxc, a function of $D$ through
   the density $\rho_D$ and its derivatives on the grid.
 
 The Fock matrix is the derivative of this energy with respect to $D$.
@@ -68,9 +68,9 @@ Differentiate term by term:
   The $\tfrac12$ cancels and the result is $J(D)_{\mu\nu}$.
 - The exchange term is quadratic in the same way, so its $\tfrac14$ becomes
   $\tfrac12$: the derivative is $-\tfrac12K_{\rm tot}(D)$ (verified equation
-  9.6 proves it for both range-separated kernels).
+  @eq:ks-rsh-exchange-derivative proves it for both range-separated kernels).
 - The derivative of $E_{xc}$ defines the XC matrix,
-  $(V_{xc})_{\mu\nu} = \partial E_{xc}/\partial D_{\mu\nu}$. Section 9.3
+  $(V_{xc})_{\mu\nu} = \partial E_{xc}/\partial D_{\mu\nu}$. Section @sec:vxc
   computes it.
 
 So
@@ -83,14 +83,14 @@ symmetric matrix of Lagrange multipliers for the constraint and set the
 derivative with respect to $\mathbf C_o$ to zero. Because
 $\mathrm dE_{\rm KS} = \mathrm{Tr}[F\,\mathrm dD]$, the result is
 $F\mathbf C_o = S\mathbf C_o\boldsymbol\varepsilon_o$, the same condition as
-for Hartree–Fock (section 7.1) with this $F$. The occupied rotation that
+for Hartree–Fock (section @sec:energy-functionals) with this $F$. The occupied rotation that
 diagonalizes $\boldsymbol\varepsilon_o$ gives the canonical Kohn–Sham
 equations, written for all orbitals as
 
 $$ F\mathbf C = S\mathbf C\boldsymbol\varepsilon . $$
 
 Check the two ends. With no functional, $E_{xc} = 0$ and $K_{\rm tot}$ is the
-full exchange matrix (section 9.4 gives it the fractions $(1, 1, 0)$), so
+full exchange matrix (section @sec:hybrids gives it the fractions $(1, 1, 0)$), so
 $F$ is the Hartree–Fock Fock matrix. With a pure functional,
 $K_{\rm tot} = 0$, and all of exchange comes from $V_{xc}$.
 
@@ -111,7 +111,7 @@ At $D^\alpha = D^\beta = D/2$ this is the closed-shell result:
 $-K_{\rm tot}(D/2) = -\tfrac12K_{\rm tot}(D)$, and the exchange energy
 $-\tfrac12\cdot 2\cdot\mathrm{Tr}[\tfrac D2K_{\rm tot}(\tfrac D2)] = -\tfrac14\mathrm{Tr}[DK_{\rm tot}(D)]$.
 
-> **Verified equation 9.1** · the Fock matrix is the derivative of the energy
+> **Verified equation {#eq:ks-fock-is-de-dd}** · the Fock matrix is the derivative of the energy
 >
 > $F = h + J(D) - \tfrac12K_{\rm tot}(D) + V_{xc}$ with
 > $V_{xc} = \partial E_{xc}/\partial D$ is $\partial E_{\rm KS}/\partial D$:
@@ -119,7 +119,7 @@ $-\tfrac12\cdot 2\cdot\mathrm{Tr}[\tfrac D2K_{\rm tot}(\tfrac D2)] = -\tfrac14\m
 > range-separated kernels, symbolically (closed and open shell), and
 > numerically by central differences of the total electronic energy against
 > $\mathrm{Tr}[F\,\delta D]$ for RHF with a range-separated hybrid, a global
-> hybrid and HF; for the XC part on a meta-GGA-like model (section 9.3).
+> hybrid and HF; for the XC part on a meta-GGA-like model (section @sec:vxc).
 >
 > | | |
 > |---|---|
@@ -135,19 +135,19 @@ In the code, `solve_rhf`, `solve_uhf` and `solve_rohf` run Kohn–Sham when
 `RhfConfig.xc` names a functional. They add $(E_{xc}, V_{xc})$ once per
 iteration through `ferric-dft/src/ks.rs::KsXc` (closed shell, `add_xc`) or
 `KsXcUks` (`add_xc_uks`). Both route to the batched path,
-`ferric-dft/src/xc_batch.rs` (section 9.3.3).
+`ferric-dft/src/xc_batch.rs` (section @sec:vxc-batched-algorithm).
 `ferric-scf/src/rhf.rs::ks_vxc_closed` returns the same closed-shell pair
 outside the loop. The test `ks_vxc_tests` pins it against the SCF's own Fock
 matrix.
 
-## 9.1.2 One SCF iteration
+## One SCF iteration {#ks-equations-scf-iteration}
 
 | Step | What | Function |
 |---|---|---|
 | 1 | $J(D)$ and, for a hybrid, $K$ (or the short- and long-range pair) | the run's J and K builders; `subtract_rsh_exchange` |
 | 2 | $F_{\rm no\,xc} = h + J - \tfrac12K_{\rm tot}$ | `RhfJk::build_fock` |
 | 3 | $e_{\rm no\,xc} = \tfrac12\mathrm{Tr}[D(h + F_{\rm no\,xc})]$ | `RhfState::energy` |
-| 4 | $(E_{xc}, V_{xc})$ on the grid, $F \mathrel{+}= V_{xc}$ | `KsXc::add_xc` (section 9.3) |
+| 4 | $(E_{xc}, V_{xc})$ on the grid, $F \mathrel{+}= V_{xc}$ | `KsXc::add_xc` (section @sec:vxc) |
 | 5 | $E = e_{\rm no\,xc} + E_{xc} + E_{nn}$ (+ solvation, embedding, hook) | `RhfState::energy` |
 | 6 | DIIS, diagonalize, new $D$ | as for HF |
 
@@ -178,7 +178,7 @@ Ok(e_elec_no_xc + e_xc + e_hook + e_cosmo + e_pcm + e_pol + env.vnn)
 trace would contribute $\tfrac12\mathrm{Tr}[DV_{xc}]$ in place of
 $E_{xc}$. The two are different numbers. On a grid,
 $\mathrm{Tr}[DV_{xc}] = \sum_g w_g\,\rho_g v_{\rho,g}$ for an LDA (section
-9.3), and that equals $E_{xc} = \sum_g w_g f(\rho_g)$ only when
+@sec:vxc), and that equals $E_{xc} = \sum_g w_g f(\rho_g)$ only when
 $\rho\,\partial f/\partial\rho = f$, that is, when $f$ is homogeneous of
 degree one in $\rho$. Slater exchange, $f = -C_x\rho^{4/3}$, is homogeneous
 of degree $\tfrac43$, so $\mathrm{Tr}[DV_x] = \tfrac43E_x$. The energy
@@ -195,14 +195,14 @@ whose $\rho$ (per spin, $\rho_\sigma$) is at or below
 $10^{-10}$ when any component is a meta-GGA. The energy and the matrix
 therefore differ by at most the floored points' contribution. The tests
 bound that difference through $\mathrm{Tr}[V_{xc}X] = \mathrm dE_{xc}/\mathrm dt$
-at $10^{-9}$ relative (section 9.3.2).
+at $10^{-9}$ relative (section @sec:vxc-matrix-elements).
 
 **Reproducibility.** $E_{xc}$ is a grouped, fixed-order sum over points
 (`deterministic_point_sum`), so it is bit-identical across thread counts. A
 meta-GGA SCF gets a default virtual-block level shift of 0.5 when none is
 set, ramped to zero at convergence.
 
-## 9.1.3 Functional families
+## Functional families {#ks-equations-functional-families}
 
 ferric evaluates every functional through libxc: LDA $\epsilon(\rho)$, GGA
 $\epsilon(\rho, \sigma)$, hybrids and range-separated hybrids (the SCF builds
@@ -210,7 +210,7 @@ the exact-exchange part), $\tau$-only meta-GGAs (SCAN, r2SCAN, TPSS) and VV10
 nonlocal correlation. Each family adds one ingredient to the one before.
 LDA sees only the density at a point. GGA adds the gradient through
 $\sigma = \lvert\nabla\rho\rvert^2$. A meta-GGA adds the kinetic-energy
-density $\tau$ (section 9.3.1). A hybrid mixes in exact exchange, which is
+density $\tau$ (section @sec:vxc-grid-quantities). A hybrid mixes in exact exchange, which is
 not a local function of the density at all.
 
 A definition, `ferric-dft/src/libxc.rs::XcDef`, is one or more libxc
@@ -237,21 +237,21 @@ in place of a silent approximation:
 - a range-separated component combined with a separate global
   exact-exchange fraction.
 
-The family fixes what the grid evaluates (section 9.3) and which response
-kernel exists (section 9.6). The exact-exchange fractions are read from
-libxc and turned into the SCF's mixing coefficients in section 9.4.
+The family fixes what the grid evaluates (section @sec:vxc) and which response
+kernel exists (section @sec:fxc). The exact-exchange fractions are read from
+libxc and turned into the SCF's mixing coefficients in section @sec:hybrids.
 
-## 9.1.4 Options
+## Options {#ks-equations-options}
 
 | Option (CLI `[dft]`, Python) | Effect |
 |---|---|
 | `functional` / `xc=` | a friendly name from the table or any libxc name |
-| `xc_omega` | overrides $\omega$ of a range-separated functional (section 9.4) |
-| `grid_radial`, `grid_angular`, `grid_prune`, `grid_weight_cut` | the XC grid (section 9.2) |
-| `nlc_grid` | the VV10 grid (section 9.5) |
+| `xc_omega` | overrides $\omega$ of a range-separated functional (section @sec:hybrids) |
+| `grid_radial`, `grid_angular`, `grid_prune`, `grid_weight_cut` | the XC grid (section @sec:grids) |
+| `nlc_grid` | the VV10 grid (section @sec:vv10) |
 | `[scf] jk`, `k_builder` | how $J$ and $K$ are built; KS defaults to RI-J |
 
-## 9.1.5 Numerical anchors
+## Numerical anchors {#ks-equations-numerical-anchors}
 
 From `site/src/reference/validation.md`, rows "KS-DFT energies" and
 "Meta-GGA energies".
@@ -264,7 +264,7 @@ From `site/src/reference/validation.md`, rows "KS-DFT energies" and
 | ROKS energy | NH2, CH3, HO2, OH × PBE, B3LYP | $8.0\times10^{-13}$ Ha; OH $8.0\times10^{-7}$ Ha | `crates/ferric-scf/tests/validation_roks_energies.rs` |
 | SCAN, r2SCAN energy | H2O, NH3, H2S, CH4 (RKS), NH2 (UKS) / def2-SVP, def2-TZVP | RKS $\le 4.0\times10^{-12}$, UKS $\le 2.4\times10^{-13}$ Ha | `crates/ferric-scf/tests/validation_mgga_energies.rs` |
 
-## 9.1.6 Sources
+## Sources {#ks-equations-sources}
 
 | Source | What it gives |
 |---|---|

@@ -1,13 +1,13 @@
-# 8.1 DIIS and its variants
+# DIIS and its variants {#diis}
 
-<!-- section: 8.1; status: ready; registry: rhf, uhf, rohf;
+<!-- status: ready; registry: rhf, uhf, rohf;
      theory: crates/ferric-scf/theory.md#"DIIS: the error vector and the extrapolation" -->
 
 Plain Roothaan iteration builds $F$ from the current density, diagonalizes
 it, and occupies the lowest orbitals. The new orbitals are the best ones for
 the old field, but their density makes a different field, and on many
 molecules the next step overshoots: the density swings back and forth
-between two shapes or runs away (section 8.2.1 works this out for one
+between two shapes or runs away (section @sec:level-shift-mom-smearing-level-shift-damps-step works this out for one
 rotation). DIIS keeps the last few Fock matrices together with a measure of
 how far each is from self-consistency, and takes the combination whose
 error is smallest. Every SCF solver in ferric extrapolates this way.
@@ -29,7 +29,7 @@ code that solves it, and then state when the loop stops.
 | CLI | `[scf] diis_size`, `diis` (`"pulay"`, `"adiis"`, `"ediis"`), `diis_switch_thresh`, `density_conv`, `energy_conv` |
 | Python | the same names as keyword arguments of the SCF entry points |
 
-## 8.1.1 The error vector and the extrapolation
+## The error vector and the extrapolation {#diis-error-vector-extrapolation}
 
 ### The commutator is the orbital gradient
 
@@ -78,7 +78,7 @@ singly occupied). ROHF uses the gradient of its energy functional mapped to
 the AO basis, $e = SC(g - g^{\mathsf T})C^{\mathsf T}S$, and extrapolates the
 Roothaan effective Fock matrix.
 
-> **Verified equation 8.1** · the error vector is the orbital gradient
+> **Verified equation {#eq:scf-diis-error}** · the error vector is the orbital gradient
 >
 > $e = FDS - SDF$ is antisymmetric; in the MO basis its occupied–virtual block
 > is $2f_{ia}$, half of $\partial E/\partial\kappa_{ai} = 4f_{ai}$, so $e = 0$
@@ -149,7 +149,7 @@ $$ c_1 = -\frac{r}{1 - r}, \qquad c_2 = \frac{1}{1 - r}, $$
 and the extrapolated error is exactly zero. The bordered matrix of this case
 (Gram block before scaling, $e_1$ of unit norm) has determinant $-(1 - r)^2$, so it is
 singular only when the two errors are equal, $r = 1$. Then the history holds
-no new direction, and the code drops the older vector (section 8.1.2).
+no new direction, and the code drops the older vector (section @sec:diis-algorithm).
 
 What does this mean for the SCF? DIIS uses the stored iterations as a basis
 and picks, inside their span, the Fock matrix whose predicted error, and so
@@ -157,7 +157,7 @@ whose orbital gradient, is smallest. It needs no Hessian: the history of
 errors supplies the information about how the gradient responds to a change
 in $F$.
 
-> **Verified equation 8.2** · the bordered DIIS system
+> **Verified equation {#eq:scf-diis-system}** · the bordered DIIS system
 >
 > The stationarity conditions of $|\sum_ic_ie_i|^2 - 2\lambda(\sum_ic_i - 1)$
 > are the bordered system with the $+1$ border; its solution is
@@ -174,15 +174,15 @@ in $F$.
 >
 > <!-- verified: id=scf.diis-system; script=scripts/scf_diis_sympy.py; claim=N3; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/diis.rs::solve_diis_coeffs; registry=rhf -->
 
-## 8.1.2 The algorithm
+## The algorithm {#diis-algorithm}
 
 | Step | Quantity | Where |
 |---|---|---|
-| 1 | $F$ from the current $D$ (chapter 7) | the SCF loop |
+| 1 | $F$ from the current $D$ (chapter @sec:hartree-fock) | the SCF loop |
 | 2 | $e = FDS - SDF$ (RHF, per spin for UHF); for ROHF $SC(g - g^{\mathsf T})C^{\mathsf T}S$ | the SCF loop |
 | 3 | store $(F, e)$, dropping the oldest beyond `diis_size` | `ferric-scf/src/diis.rs::Diis` |
 | 4 | solve the bordered system, shrinking from the oldest end on a singular pivot | `ferric-scf/src/diis.rs::solve_diis_coeffs` |
-| 5 | $\bar F = \sum_ic_iF_i$, then an optional level shift (section 8.2) | the SCF loop |
+| 5 | $\bar F = \sum_ic_iF_i$, then an optional level shift (section @sec:level-shift-mom-smearing) | the SCF loop |
 
 The solve is `ferric-scf/src/diis.rs::solve_diis_coeffs`. Here it is with its
 comments replaced by the equation terms and the scaling loops collapsed:
@@ -231,7 +231,7 @@ Four points about it:
   history and recomputes only the row and column of the new error: $m$
   Frobenius products of $n_{\rm bas}\times n_{\rm bas}$ matrices per step.
 
-## 8.1.3 Variants
+## Variants {#diis-variants}
 
 | Flavor | What it minimizes | Who reads it |
 |---|---|---|
@@ -239,7 +239,7 @@ Four points about it:
 | `"ediis"`: EDIIS, then Pulay | an energy model on the simplex while $\max\lvert e\rvert \ge$ `diis_switch_thresh` (0.1), Pulay below | RHF only |
 | `"adiis"`: ADIIS, then Pulay | the ADIIS model on the simplex, same switch | RHF only |
 
-Far from convergence the linear error model of section 8.1.1 does not hold.
+Far from convergence the linear error model of section @sec:diis-error-vector-extrapolation does not hold.
 EDIIS and ADIIS
 (`ferric-scf/src/diis.rs::EnergyDiis`) instead minimize a quadratic model of the
 energy, $g^{\mathsf T}c + \tfrac12c^{\mathsf T}Hc$, over the simplex
@@ -270,7 +270,7 @@ and applies the same coefficients to $F^\alpha$ and $F^\beta$, so the two
 spins stay synchronized (`Diis::step_pair`). `diis_size = 1` leaves fewer
 than two vectors, so the step is plain Roothaan iteration.
 
-## 8.1.4 When the SCF stops
+## When the SCF stops {#diis-scf-stops}
 
 The exit test is `ferric-scf/src/rhf.rs::scf_converged`, shown whole:
 
@@ -312,17 +312,17 @@ $C^{\mathsf T}eC$ and the same $2f_{ai}$ block (claim N6 of
 `scripts/scf_diis_sympy.py`). At the default `density_conv` the bound is
 $\max(10^{-3}, 10^{-3}) = 10^{-3}$. A refused exit clears the DIIS history.
 
-## 8.1.5 Numerical anchors
+## Numerical anchors {#diis-numerical-anchors}
 
 The convergence machinery is tested by the energies it converges to (the
-anchors of section 7.1) and by the convergence-ladder row of
+anchors of section @sec:energy-functionals) and by the convergence-ladder row of
 `site/src/reference/validation.md`: on N2 at 1.60 Å / def2-SVP the plain-DIIS
 rung of `solve_rhf_ladder` lands on a saddle 1.906e-2 Ha above the minimum
-that the stability descent of section 8.4 then reaches.
+that the stability descent of section @sec:stability then reaches.
 
 <!-- figures: site/src/reference/validation.md "SCF convergence ladder with RHF internal stability descent" -->
 
-## 8.1.6 Doc fixes needed
+## Doc fixes needed {#diis-doc-fixes-needed}
 
 | Text | Code |
 |---|---|
@@ -334,6 +334,6 @@ that the stability descent of section 8.4 then reaches.
 | Source | Used for |
 |---|---|
 | `crates/ferric-scf/theory.md`, "DIIS: the error vector and the extrapolation" | the equations |
-| `scripts/scf_diis_sympy.py` | verified equations 8.1 and 8.2 |
+| `scripts/scf_diis_sympy.py` | verified equations @eq:scf-diis-error and @eq:scf-diis-system |
 | `crates/ferric-scf/src/diis.rs` | the system and its shrink rule |
 | `site/src/reference/validation.md` | the ladder anchor |

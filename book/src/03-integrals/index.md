@@ -1,4 +1,4 @@
-# 3. Molecular integrals
+# Molecular integrals {#integrals}
 
 A Hartree–Fock or correlated calculation never touches a wavefunction on a
 grid of points in space. It works with matrices: how much two basis functions
@@ -11,8 +11,8 @@ evaluated on a grid.
 
 Gaussians are used because these integrals have closed forms. The product
 of two Gaussians on different atoms is one Gaussian on a point between them
-(section 3.1 derives it), and the Coulomb potential of a Gaussian reduces to
-one special function, the Boys function (section 3.4). Higher angular
+(section @sec:one-electron derives it), and the Coulomb potential of a Gaussian reduces to
+one special function, the Boys function (section @sec:md-three-center). Higher angular
 momentum follows from recurrence relations.
 
 This chapter states what each integral is, which engine computes it, and the
@@ -31,6 +31,6 @@ effective charges.
 
 Most integral classes go through libint2 behind a C shim
 (`crates/ferric-integrals/shim/shim.cc`). The terf and terfc kernels, the
-three-center one-electron batch kernel of section 3.4 and the ECPs have their
+three-center one-electron batch kernel of section @sec:md-three-center and the ECPs have their
 own implementations. The derivations live in
 `crates/ferric-integrals/theory.md`; each section derives the part it needs.

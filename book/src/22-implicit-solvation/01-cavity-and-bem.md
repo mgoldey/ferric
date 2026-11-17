@@ -1,6 +1,6 @@
-# 22.1 The cavity and the boundary-element matrices
+# The cavity and the boundary-element matrices {#cavity-and-bem}
 
-<!-- section: 22.1; status: ready; registry: pcm;
+<!-- status: ready; registry: pcm;
      theory: crates/ferric-pcm/theory.md#"1. Cavity", "2. Boundary-element matrices $S$ and $D$" -->
 
 A polarizable continuum model replaces the solvent by a dielectric outside a
@@ -10,8 +10,8 @@ on the surface, and that density is the unknown of a boundary integral
 equation. To put the equation on a computer the surface is cut into small
 elements, tesserae, each carrying one unknown charge, and the integral
 operators become dense matrices over the tesserae. This section builds the
-tesserae (22.1.1) and two of those matrices, $S$ and $D$ (22.1.2); section
-22.2 combines them into the solver.
+tesserae (@sec:cavity-and-bem-cavity) and two of those matrices, $S$ and $D$ (@sec:cavity-and-bem-matrices); section
+@sec:ief-operators combines them into the solver.
 
 | Symbol | Meaning | Code name |
 |---|---|---|
@@ -33,7 +33,7 @@ tesserae (22.1.1) and two of those matrices, $S$ and $D$ (22.1.2); section
 Units are Hartree atomic units throughout the chapter: Bohr, Hartree, and
 charge in units of $e$. $N$ is the number of tesserae.
 
-## 22.1.1 The cavity
+## The cavity {#cavity-and-bem-cavity}
 
 The cavity is a union of spheres, one per atom that is not a ghost. Atom $A$
 gets the radius
@@ -70,7 +70,7 @@ smoothstep of Lange and Herbert (JCP 133, 244111 (2010), eq. 3.19;
 `ferric-pcm/src/cavity.rs::switch_h`). Its derivative is
 $h'(x) = 30x^2(1-x)^2$ (`ferric-pcm/src/cavity.rs::switch_h_deriv`), and
 both $h'$ and $h''$ vanish at $x = 0$ and $x = 1$. So the switch joins the
-constant pieces with a continuous second derivative, and section 22.4 can
+constant pieces with a continuous second derivative, and section @sec:gradient can
 differentiate it. The band width scales with the grid spacing,
 
 $$ R^{\mathrm{sw}}_B = R_B\sqrt{14/N_{\mathrm{Leb}}} , $$
@@ -79,14 +79,14 @@ and the inner radius is $R^{\mathrm{in}}_B = R_B - \alpha R^{\mathrm{sw}}_B$
 with $\alpha = \tfrac12 + R_B/R^{\mathrm{sw}}_B - \sqrt{(R_B/R^{\mathrm{sw}}_B)^2 - 1/28}$
 (Lange and Herbert, eqs. 3.19 to 3.21; PySCF `gen_surface`). Both come from
 `SphereGeometry::new` in `ferric-pcm/src/cavity.rs`, which `build_cavity` and
-the gradient of section 22.4 share.
+the gradient of section @sec:gradient share.
 
 A tessera with $w_g\,\mathrm{swf}_k \le 10^{-16}$ is dropped: it would add a
 negligible area and one more unknown. The cavity has no interstitial spheres
 (GEPOL "added spheres"), so the surface is the union of the atomic spheres
 only.
 
-Each tessera also carries a Gaussian width, used by the matrices of 22.1.2:
+Each tessera also carries a Gaussian width, used by the matrices of @sec:cavity-and-bem-matrices:
 
 $$ \xi_k = \frac{\Xi(N_{\mathrm{Leb}})}{R_A\sqrt{4\pi w_g}} . $$
 
@@ -138,7 +138,7 @@ whole construction with an explicit tessera list.
 `crates/ferric-scf/tests/validation_pcm.rs` uses it to feed PySCF's cavity
 through ferric's solver.
 
-## 22.1.2 The matrices $S$ and $D$
+## The matrices $S$ and $D$ {#cavity-and-bem-matrices}
 
 $S_{ij}$ is the Coulomb potential at tessera $i$ of a unit charge spread
 over tessera $j$. $D_{ij}$ is the potential at $i$ of a unit dipole layer at
@@ -202,7 +202,7 @@ The self-term of a tessera is an integral over a small patch of its own
 sphere, so the double-layer self-term is $-1/(2R_i)$ times the single-layer
 one.
 
-> **Verified equation 22.1** · the double-layer diagonal on a sphere
+> **Verified equation {#eq:pcm-bem-diagonal}** · the double-layer diagonal on a sphere
 >
 > On a sphere of radius $R$ the double-layer kernel with the source normal
 > equals $-1/(2R)$ times the single-layer kernel,
@@ -221,7 +221,7 @@ one.
 > <!-- verified: id=pcm.bem.diagonal; script=scripts/pcm_ief_sympy.py; claim=1; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-pcm/src/matrices.rs::build_s_d_kind; rust_test=ferric-pcm/tests/ief_limits.rs::point_charge_in_sphere_matches_born_kirkwood_and_gauss_law; registry=pcm -->
 
 The same proportionality makes $D$ symmetric on a sphere:
-$\nu_{ij} = \nu_{ji} = -R(1-\hat n_i\cdot\hat n_j)$. Section 22.2 uses this
+$\nu_{ij} = \nu_{ji} = -R(1-\hat n_i\cdot\hat n_j)$. Section @sec:ief-operators uses this
 when it checks the operators on a sphere.
 
 The matrices are discrete forms of two integral operators,
@@ -231,15 +231,15 @@ becomes a sum over tesserae weighted by area, so
 $\hat S \leftrightarrow SA$ and $\hat D \leftrightarrow DA$ with
 $A = \operatorname{diag}(a_k)$. On a sphere both operators are diagonal in
 the spherical harmonics (the Funk–Hecke theorem), with the eigenvalues of
-box 22.2. At $l = 0$ the $\hat D$ eigenvalue is $-2\pi$, the sum rule
+box @eq:pcm-bem-funk-hecke. At $l = 0$ the $\hat D$ eigenvalue is $-2\pi$, the sum rule
 $\sum_j D_{ij}a_j \to -2\pi$ above.
 
-> **Verified equation 22.2** · the continuum spectra the discretization must reproduce
+> **Verified equation {#eq:pcm-bem-funk-hecke}** · the continuum spectra the discretization must reproduce
 >
 > On a sphere the continuum operators are diagonal in the spherical
 > harmonics: $\hat S Y_{lm} = \tfrac{4\pi R}{2l+1}Y_{lm}$ and
 > $\hat D Y_{lm} = -\tfrac{2\pi}{2l+1}Y_{lm}$. These are the channel scalars
-> section 22.2 inserts into $K$ and $R$.
+> section @sec:ief-operators inserts into $K$ and $R$.
 >
 > | | |
 > |---|---|
@@ -297,10 +297,10 @@ d[(j, i)] = s_ij * dot_i / r2 - gauss_term * dot_i;
 
 `d[(i, j)]` uses `tj.normal` and `d[(j, i)]` uses `ti.normal`. If you port
 this loop, keep the source normal: swapping it for the field normal gives
-$D^{\mathsf T}$, and section 22.2 shows that the order of $D$ and its
+$D^{\mathsf T}$, and section @sec:ief-operators shows that the order of $D$ and its
 transpose changes the energy.
 
-## 22.1.3 The algorithm
+## The algorithm {#cavity-and-bem-algorithm}
 
 | Step | Quantity | Cost | Function |
 |---|---|---|---|
@@ -308,13 +308,13 @@ transpose changes the energy.
 | 2 | Lebedev rule of order $N_{\mathrm{Leb}}$, width constant $\Xi$ | table lookup | `ferric_quadrature::lebedev`, `gaussian_xi_table` |
 | 3 | tesserae: position, normal, area, $\xi_k$, $\mathrm{swf}_k$; drop $w_g\,\mathrm{swf}_k \le 10^{-16}$ | $N_{\mathrm{at}}^2N_{\mathrm{Leb}}$ | `build_cavity` |
 | 4 | $S$ and $D$ over all tessera pairs | $N^2$ | `build_s_d_kind` |
-| 5 | $K$ and $R$ (section 22.2) | $N^3$ | `ferric-pcm/src/matrices.rs::build_k_r` |
+| 5 | $K$ and $R$ (section @sec:ief-operators) | $N^3$ | `ferric-pcm/src/matrices.rs::build_k_r` |
 
 The cavity, $S$, $D$, $K$ and $R$ depend only on the geometry and the
 dielectric constant. `PcmContext` builds them once before the SCF loop, and
 the loop re-solves only the charges.
 
-## 22.1.4 Options
+## Options {#cavity-and-bem-options}
 
 | Option | Values | Default | Effect |
 |---|---|---|---|
@@ -323,13 +323,13 @@ the loop re-solves only the charges.
 | `[pcm] lebedev_order`, `pcm_lebedev_order=` | a positive-weight Lebedev order (`SUPPORTED_LEBEDEV_ORDERS`) | 110 | tesserae per sphere |
 | `PcmConfig::vdw_scale` | float | 1.2 | scale on the modified Bondi radii; library only |
 | `PcmConfig::sd_kind` | `GaussianSmeared`, `PointCharge` | `GaussianSmeared` | the $S$ and $D$ formulation; library only |
-| `PcmConfig::probe` | `Point`, `GaussianSmeared` | `Point` | section 22.3; library only |
+| `PcmConfig::probe` | `Point`, `GaussianSmeared` | `Point` | section @sec:reaction-field; library only |
 | `PcmConfig::cavity` | an explicit tessera list | none | replaces the construction; no gradient, not settable from TOML |
 
 The Lebedev orders with negative weights (74, 230, 266) are excluded,
 because a negative weight would give a tessera of negative area.
 
-## 22.1.5 Numerical anchors
+## Numerical anchors {#cavity-and-bem-numerical-anchors}
 
 | Quantity | System | Result | Source |
 |---|---|---|---|
@@ -342,15 +342,15 @@ an error. The radii (modified Bondi), the default Lebedev order (110 against
 PySCF's 302), the probe and the fallback radius of 2.0 Å for untabulated
 elements all differ. At order 302 ferric's cavity reproduces PySCF's
 (second row), which is the setting of the gradient comparison in section
-22.4.
+@sec:gradient.
 
-## 22.1.6 Sources
+## Sources {#cavity-and-bem-sources}
 
 | Source | What it gives |
 |---|---|
 | `crates/ferric-pcm/theory.md`, sections 1 and 2 | the cavity and the $S$, $D$ formulas |
 | `scripts/pcm_ief_sympy.py`, claims 1 and 2 | the diagonal identity and the sphere spectra |
-| `crates/ferric-pcm/tests/ief_limits.rs` | the sphere limits of section 22.2 |
+| `crates/ferric-pcm/tests/ief_limits.rs` | the sphere limits of section @sec:ief-operators |
 
 **Known limits (2026-11-15).**
 

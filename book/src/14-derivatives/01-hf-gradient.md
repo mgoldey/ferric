@@ -1,6 +1,6 @@
-# 14.1 Hartree–Fock nuclear gradient
+# Hartree–Fock nuclear gradient {#hf-gradient}
 
-<!-- section: 14.1; status: ready; registry: hf-gradient;
+<!-- status: ready; registry: hf-gradient;
      theory: crates/ferric-scf/theory.md#"Hartree-Fock nuclear gradient" -->
 
 Move one nucleus a little and the SCF energy changes. The slope of that
@@ -26,20 +26,20 @@ contract it.
 
 | Entry point | Location |
 |---|---|
-| Rust | `ferric-scf/src/gradient.rs::{rhf_gradient,uhf_gradient,rohf_gradient}`; the Kohn–Sham routes of section 14.3 call the same pieces |
+| Rust | `ferric-scf/src/gradient.rs::{rhf_gradient,uhf_gradient,rohf_gradient}`; the Kohn–Sham routes of section @sec:xc-gradient call the same pieces |
 | CLI | `task = "optimize"` for `rhf`, `uhf`, `rohf`, `ksdft` (`examples/h2-lda-opt.toml`) |
 | Python | `run_rhf(..., with_gradient=True)`, `run_optimize`, `run_frequencies` |
 
 This section covers the exact four-centre route. When the SCF density-fitted
 J or K, the two-electron term differentiates the fitted energy instead
-(section 14.2). COSX exchange has its own gradient
+(section @sec:df-jk-gradient). COSX exchange has its own gradient
 (`ferric-scf/src/gradient.rs::rhf_gradient_cosx`) and is not derived here.
 
-## 14.1.1 The gradient
+## The gradient {#hf-gradient-gradient}
 
 The energy depends on $x$ in two ways. The integrals $h(x)$,
 $(\mu\nu|\lambda\sigma)(x)$, $S(x)$ and $E_{nn}(x)$ change because the basis
-functions sit on the nuclei (section 3.3 differentiates them). The MO
+functions sit on the nuclei (section @sec:integrals-derivatives differentiates them). The MO
 coefficients $C(x)$ change because the SCF re-solves at the new geometry.
 The second dependence is the expensive one: $\mathrm dC/\mathrm dx$ would need
 a linear solve per coordinate. The SCF conditions remove it.
@@ -88,7 +88,7 @@ multiplier in the AO basis. Each reference has its own pair:
 For RHF and UHF the canonical orbitals diagonalize the multiplier, so $W$ is
 the occupation-weighted sum over eigenvalues. The UHF $f_\sigma$ are the
 occupations recovered from the stored density: 1 for aufbau, fractions under
-`fractional_occ` (section 14.1.3 says how they are recovered). For open
+`fractional_occ` (section @sec:hf-gradient-reproducibility-refusals says how they are recovered). For open
 shells $D = D_\alpha + D_\beta$ in the one-electron term.
 
 **Check a limit: a basis that does not move.** If the basis functions stayed
@@ -102,7 +102,7 @@ because the basis functions are centred on the nuclei.
 
 **Check translational invariance.** Move every nucleus by the same vector.
 Each integral is unchanged, so the derivatives of one integral with respect
-to all its centres sum to zero (section 3.3), and $E_{nn}^x$ sums to zero
+to all its centres sum to zero (section @sec:integrals-derivatives), and $E_{nn}^x$ sums to zero
 pair by pair. Summing $E^x$ over all atoms along one axis sums each
 integral's derivative over all its centres, at fixed $D$, $W$ and $\Gamma$.
 Every term vanishes, and the forces on all atoms add to zero. This holds
@@ -110,7 +110,7 @@ without external point charges or a field, which stay fixed while the
 molecule moves. A gradient of an isolated molecule whose rows do not sum to
 zero, up to the integral screening, has a contraction error.
 
-> **Verified equation 14.1** · RHF, UHF and ROHF gradients equal finite differences
+> **Verified equation {#eq:scf-grad-hf}** · RHF, UHF and ROHF gradients equal finite differences
 >
 > On a toy system whose integrals are smooth functions of two parameters,
 > with a non-orthogonal overlap, the gradient assembled from the code's
@@ -133,7 +133,7 @@ fourth-order stencil. The analytic formula with the code's $W$ and $\Gamma$
 matches to $3\times10^{-11}$ (RHF), $2\times10^{-11}$ (UHF) and
 $2\times10^{-11}$ (ROHF).
 
-> **Verified equation 14.2** · the Pulay term is $-\mathrm{tr}[W\,S^x]$
+> **Verified equation {#eq:scf-grad-pulay}** · the Pulay term is $-\mathrm{tr}[W\,S^x]$
 >
 > For one doubly occupied orbital in a two-function basis, at fixed
 > normalized direction, $\mathrm dE/\mathrm dx$ equals the skeleton term
@@ -182,7 +182,7 @@ $5\times10^{-2}$. It agrees only when symmetry decouples the open shell from
 the closed shells, as it does for the $\pi$ SOMO of OH, so an OH-only test
 cannot tell the two apart.
 
-## 14.1.2 The algorithm
+## The algorithm {#hf-gradient-algorithm}
 
 | Step | Quantity | Function |
 |---|---|---|
@@ -262,7 +262,7 @@ With `d` the total density $D$, the two products are the Coulomb weight
 $\tfrac12 D_{\mu\nu}D_{\lambda\sigma}$ and the exchange weight
 $-\tfrac14 D_{\mu\lambda}D_{\nu\sigma}$ of the table.
 
-## 14.1.3 Reproducibility and refusals
+## Reproducibility and refusals {#hf-gradient-reproducibility-refusals}
 
 - The gradient is bit-identical across rayon thread counts
   (`rhf_gradient_bit_identical_across_thread_counts` in
@@ -281,18 +281,18 @@ $-\tfrac14 D_{\mu\lambda}D_{\nu\sigma}$ of the table.
   `ferric-scf/src/x2c.rs::refuse_relativistic`; its gradient is not
   implemented.
 
-## 14.1.4 Options that change the equation
+## Options that change the equation {#hf-gradient-options-change-equation}
 
 | Option | Effect | Where |
 |---|---|---|
 | ECPs | adds $\sum D V^x_{\mathrm{ECP}}$ and uses $Z_{\mathrm{eff}}$ in $E_{nn}^x$ | this section |
 | external point charges and field | folded into the one-electron term; the field-density term is a finite difference | `ferric-scf/src/gradient.rs::oneelectron_gradient` |
-| density-fitted J and K | the two-electron term differentiates the fitted energy | section 14.2 |
+| density-fitted J and K | the two-electron term differentiates the fitted energy | section @sec:df-jk-gradient |
 | COSX exchange | exchange differentiated on the COSX grid | `ferric-scf/src/gradient.rs::rhf_gradient_cosx` |
-| Kohn–Sham | adds the XC gradient and scales exchange by the hybrid fraction | section 14.3 |
-| solvent (PCM) | adds the analytic IEF-PCM nuclear gradient | chapter 22 |
+| Kohn–Sham | adds the XC gradient and scales exchange by the hybrid fraction | section @sec:xc-gradient |
+| solvent (PCM) | adds the analytic IEF-PCM nuclear gradient | chapter @sec:implicit-solvation |
 
-## 14.1.5 Numerical anchors
+## Numerical anchors {#hf-gradient-numerical-anchors}
 
 | Check | Reference | Agreement | Test |
 |---|---|---|---|
@@ -311,6 +311,6 @@ integrals.
 | Source | Used for |
 |---|---|
 | `crates/ferric-scf/theory.md`, "Hartree-Fock nuclear gradient" | the derivation, the $\Gamma$ and $W$ table, the toy-system check |
-| `scripts/hf_gradient_sympy.py`, claims G1, G2, G3, G5, S1 | verified equations 14.1 and 14.2 |
+| `scripts/hf_gradient_sympy.py`, claims G1, G2, G3, G5, S1 | verified equations @eq:scf-grad-hf and @eq:scf-grad-pulay |
 | `crates/ferric-scf/src/gradient.rs` | the algorithm, refusals and options |
 | `site/src/reference/validation.md` | the anchor rows |

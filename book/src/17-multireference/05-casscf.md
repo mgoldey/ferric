@@ -1,6 +1,6 @@
-# 17.5 Two-step CASSCF
+# Two-step CASSCF {#casscf}
 
-<!-- section: 17.5; status: ready; registry: casscf;
+<!-- status: ready; registry: casscf;
      theory: crates/ferric-ci/theory.md#"The two-step method", "Second-order check" -->
 
 A CAS-CI on RHF orbitals uses orbitals shaped for one determinant. The RHF
@@ -9,7 +9,7 @@ antibonding partner a stretched bond needs, so the active space can hold the
 right configurations in the wrong orbitals. CASSCF minimizes the CAS-CI
 energy over the orbitals as well as the CI vector, so the core, active and virtual orbitals become the ones the correlated
 wavefunction prefers. ferric does it in two steps per macro iteration: a
-CAS-CI in the current orbitals (sections 17.1–17.4), then an orbital step
+CAS-CI in the current orbitals (sections @sec:determinants–@sec:rdms), then an orbital step
 $C \leftarrow C\exp(K)$ from the gradient at those fixed RDMs.
 
 The orbital gradient is a generalized Fock matrix built from $\gamma$,
@@ -32,12 +32,12 @@ that runs after convergence.
 | CLI | `method.kind = "casscf"` with `[cas]`, `[cas.ci]` (`examples/water-casscf.toml`, `examples/o2-casscf-triplet.toml`) |
 | Python | `run_casscf` |
 
-## 17.5.1 Energy, gradient and step
+## Energy, gradient and step {#casscf-energy-gradient-step}
 
 The orbitals are $C = [C_c\,|\,C_a\,|\,C_v]$: $n_c$ doubly occupied core
 orbitals $i,j$, $n_a$ active $t,u,v,w$, virtual $a$, and $p,q,r,s$ over
 all MOs. The orbitals are real, there is a single root, and the RDMs are
-the spin-summed ones of section 17.4. The reference implementation is
+the spin-summed ones of section @sec:rdms. The reference implementation is
 `scripts/prototypes/casscf_proto.py` with
 `scripts/prototypes/casscf_derivation.md`.
 
@@ -55,9 +55,9 @@ $$
 
 $F^I$ is what an electron feels from the nuclei and the core electrons, and
 $E_\text{core}$ is the closed-shell Hartree–Fock energy expression of
-chapter 7 applied to the core alone. The CAS-CI runs on
+chapter @sec:hartree-fock applied to the core alone. The CAS-CI runs on
 $h_\text{eff} = C_a^\mathsf{T}F^IC_a$, $(tu|vw)$ and $E_\text{core}$
-(`run_cas_ci_on_integrals`), the folding of section 17.1.2. With no
+(`run_cas_ci_on_integrals`), the folding of section @sec:determinants-hamiltonian. With no
 core, $F^I = h$ and $E_\text{core} = E_\text{nuc}$. In
 `ferric-ci/src/casscf.rs::inactive`, with the $n_c = 0$ branch and the
 factored $J/K$ call elided:
@@ -97,7 +97,7 @@ symmetric.
   $(\mu\nu|\lambda\sigma) \approx \sum_P B^P_{\mu\nu}B^P_{\lambda\sigma}$
   with $B^P_{\mu\nu} = \sum_Q M_{PQ}(Q|\mu\nu)$, $M = L^{-1}$ and $L$ the
   Cholesky factor of the Coulomb metric $V_{PQ} = (P|Q)$, so
-  $M^\mathsf{T}M = V^{-1}$ (the construction of section 10.1.2). It holds
+  $M^\mathsf{T}M = V^{-1}$ (the construction of section @sec:closed-shell-ri-mp2-density-fitting-making-affordable). It holds
   $B$, $N_\text{aux}n_\text{bas}^2$ doubles, and nothing of size
   $n_\text{bas}^4$.
 
@@ -203,7 +203,7 @@ central difference of $E(C\exp K)$ at fixed RDMs against $2(F_{pq}-F_{qp})$
 for every pair and the two non-redundant reductions; `redundant-residual`,
 the active-active identity.
 
-> **Verified equation 17.5** · the orbital gradient is $2(F - F^\mathsf{T})$
+> **Verified equation {#eq:ci-casscf-gradient}** · the orbital gradient is $2(F - F^\mathsf{T})$
 >
 > On a six-orbital model (one core, three active, two virtual orbitals) with
 > random N-representable RDMs from a random CI vector, the central
@@ -268,7 +268,7 @@ warning.
 ### The augmented-Hessian step
 
 `optimizer = "ah"` (`src/casscf_newton.rs`, the default) uses the exact
-orbital Hessian at fixed RDMs, applied as a product. Chapter 8.3 describes
+orbital Hessian at fixed RDMs, applied as a product. Chapter @sec:second-order describes
 the augmented-Hessian and trust-region machinery for SCF; here are the
 CASSCF ingredients.
 
@@ -347,7 +347,7 @@ boundary. The predicted change is $g\cdot s + \tfrac12 s\cdot Hs/\beta$,
 with $\beta$ from the next paragraph.
 
 **Curvature stretch.** The Hessian lacks the CI response, which lowers the
-curvature (section 17.5.3 shows why it can only lower it). Near
+curvature (section @sec:casscf-second-order-check shows why it can only lower it). Near
 convergence the plain AH step undershoots by a factor of about 1.6, which
 makes convergence linear, and on N2 CAS(10,10) it stalls by orders of
 magnitude along one direction. Each accepted step therefore measures the
@@ -396,7 +396,7 @@ $J/K[D^a]$. The start is a restricted RHF, so the electron count must be
 even. There is no orbital-CI coupling: both optimizers are two-step, and
 the augmented-Hessian step uses the orbital Hessian at fixed RDMs.
 
-## 17.5.2 The macro iteration
+## The macro iteration {#casscf-macro-iteration}
 
 | Step | Quantity | Function |
 |---|---|---|
@@ -408,14 +408,14 @@ the augmented-Hessian step uses the orbital Hessian at fixed RDMs.
 | 6 | $C \leftarrow C\exp(K(s))$ | `rotate`, `expm_antisymmetric` |
 | 7 | after convergence, optional canonicalization and second-order check | `canonicalize`, `stability` |
 
-## 17.5.3 The second-order check
+## The second-order check {#casscf-second-order-check}
 
 Both optimizers stop at a point where the gradient vanishes. That can be a
 minimum or a saddle. The sign of the lowest eigenvalue of the orbital
 Hessian decides, but it has to be the Hessian of the energy with the CI
 vector relaxed at every orbital set, because that is the function CASSCF
 minimizes. `src/casscf_stability.rs` (`[cas] stability`, 2026-11-14)
-computes it after convergence; chapter 8.4 does the same for SCF.
+computes it after convergence; chapter @sec:stability does the same for SCF.
 
 **The coupled Hessian.** Write the CI vector as
 $c(z) = (c+z)/\lVert c+z\rVert$ with $z\perp c$, about the CI root $c$
@@ -460,7 +460,7 @@ root), the correction is negative semidefinite. The relaxed Hessian is
 therefore never stiffer than $H_{oo}$. This is why the CI response matters
 for the sign: without it the check reads the fixed-RDM Hessian, which is
 stiffer, and can call a saddle a minimum. It is also the curvature the AH
-step misses (section 17.5.1).
+step misses (section @sec:casscf-energy-gradient-step).
 
 **The solve.** Each product is one CI linear solve: conjugate gradients on
 the complement of $c$, preconditioner $P(\operatorname{diag}H - \theta)^{-1}P$,
@@ -489,7 +489,7 @@ SC-NEVPT2 certificate carries its reference's.
 The check costs about as much as the CASSCF itself, so it is off by
 default.
 
-## 17.5.4 Options
+## Options {#casscf-options}
 
 | Option (`[cas]`; Python) | Values | Default | Effect |
 |---|---|---|---|
@@ -507,7 +507,7 @@ default.
 | `[cas.ci] conv_thresh`; `ci_conv_thresh` | residual | $10^{-10}$ | CI root acceptance |
 | `[cas.ci] max_subspace`, `max_iter` | integer | 50, 200 | CI Davidson |
 
-## 17.5.5 Numerical anchors
+## Numerical anchors {#casscf-numerical-anchors}
 
 | Quantity | Systems | Error | Test |
 |---|---|---|---|
@@ -522,10 +522,10 @@ default.
 When every orbital is active there is no core, no virtual space and no
 nonredundant rotation, so CASSCF is full CI. The two full-space rows check
 that limit: the energy equals `run_cas_ci`, and $2(F - F^\mathsf{T})$ is
-zero to the CI residual, as the redundant-block identity of 17.5.1
+zero to the CI residual, as the redundant-block identity of @sec:casscf-energy-gradient-step
 requires.
 
-## 17.5.6 Sources
+## Sources {#casscf-sources}
 
 | Source | What it gives |
 |---|---|

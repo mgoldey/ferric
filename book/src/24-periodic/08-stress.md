@@ -1,6 +1,6 @@
-# 24.8 The stress tensor
+# The stress tensor {#stress}
 
-<!-- section: 24.8; status: ready; registry: pbc-ewald-pairft-stress;
+<!-- status: ready; registry: pbc-ewald-pairft-stress;
      theory: crates/ferric-pbc/theory.md#"5. Stress tensor (strain derivative)" -->
 
 The force asks how the energy changes when one atom moves. The stress asks
@@ -12,11 +12,11 @@ relaxation driver: the stress is reported, not used.
 
 A strain touches every term of the periodic energy in one of three ways:
 through the volume $\Omega$, through $G^2$ in a reciprocal kernel, or through
-a real-space distance or pair separation. Section 24.8.1 derives how those
-three quantities move; 24.8.2 applies it to the Ewald energy and the
-Madelung constant, 24.8.3 to the pair transform, and 24.8.4 assembles the
+a real-space distance or pair separation. Section @sec:stress-strain-moves derives how those
+three quantities move; @sec:stress-ewald-energy-madelung-constant applies it to the Ewald energy and the
+Madelung constant, @sec:stress-pair-transform-under-strain to the pair transform, and @sec:stress-assembling-electronic-stress assembles the
 electronic stress. The overlap-coupled terms reuse the force machinery of
-section 24.7.
+section @sec:forces.
 
 | Symbol | Meaning | Code name |
 |---|---|---|
@@ -34,7 +34,7 @@ section 24.7.
 | Python | `with_stress=True` on the SCF entry points |
 | CLI | `[cell] stress = true`, which requires `kmesh` |
 
-## 24.8.1 What a strain moves
+## What a strain moves {#stress-strain-moves}
 
 Strain every lattice row and every atom, $\mathbf r \to (1 + \varepsilon)\mathbf r$.
 Three consequences follow to first order in $\varepsilon$.
@@ -73,9 +73,9 @@ $$
 The first term is the $1/\Omega$; it puts $-E$ on the diagonal. Every
 periodic stress term below has this shape.
 
-## 24.8.2 The Ewald energy and the Madelung constant
+## The Ewald energy and the Madelung constant {#stress-ewald-energy-madelung-constant}
 
-Apply the three rules to the four Ewald parts of section 24.1.
+Apply the three rules to the four Ewald parts of section @sec:ewald.
 
 **Short range.** $E_\text{SR} = \tfrac12\sum'Z_iZ_jf(d)$ with
 $f(d) = \operatorname{erfc}(\eta d)/d$. The chain rule and the distance
@@ -109,7 +109,7 @@ test evaluates the total at $\eta = 1$ and $2.3$ and requires agreement to
 $10^{-10}$.
 
 **The Madelung constant.** $v_M = -2E$ of one unit charge in its neutralizing
-background (section 24.1), so $dv_M/d\varepsilon = -2$ times the strain of
+background (section @sec:ewald), so $dv_M/d\varepsilon = -2$ times the strain of
 that one-charge Ewald sum (`madelung_strain`). There is an independent check.
 $v_M$ has units of inverse length and depends on nothing but the lattice, so
 it is homogeneous of degree $-1$: scaling every length by $\lambda$ gives
@@ -121,9 +121,9 @@ $$ \operatorname{tr}\frac{dv_M}{d\varepsilon} = -v_M . $$
 
 **What `exxdiv` does to the pressure.** With `exxdiv = ewald` the energy has
 the Madelung term $-\tfrac\alpha2v_M\sum_\sigma\operatorname{tr}(D_\sigma SD_\sigma S)$.
-The densities are the same as with `none` (section 24.4), and the part of its
+The densities are the same as with `none` (section @sec:exchange-divergence), and the part of its
 strain derivative that goes through $S$ cancels against the shift inside $W$
-exactly as in the force (section 24.7.2). What remains is the derivative of
+exactly as in the force (section @sec:forces-madelung-term-cancels). What remains is the derivative of
 $v_M$ at $\operatorname{tr}(D_\sigma SD_\sigma S) = N_\sigma$:
 
 $$ \sigma^\text{ewald} - \sigma^\text{none} = -\frac{\alpha N}{2\Omega}\frac{dv_M}{d\varepsilon},\qquad
@@ -133,7 +133,7 @@ the second from the Euler identity. The test
 `h2_rhf_ewald_minus_none_is_the_madelung_strain` checks the stress
 difference against the Madelung strain term to $10^{-9}$.
 
-> **Verified equation 24.15** · the Ewald strain
+> **Verified equation {#eq:pbc-stress-ewald}** · the Ewald strain
 >
 > The SR virial, the LR term $-\delta_{ab}E_\text{LR}$ plus the $G^2$
 > derivative of the kernel, and $-\delta_{ab}E_\text{bg}$ equal central
@@ -149,7 +149,7 @@ difference against the Madelung strain term to $10^{-9}$.
 >
 > <!-- verified: id=pbc.stress.ewald; script=scripts/pbc_ewald_pairft_stress_sympy.py; claim=ewald-strain; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-pbc/src/ewald.rs::ewald_nuclear_strain; rust_test=ferric-pbc/tests/pbc_stress.rs::ewald_strain_matches_fd_is_omega_independent_and_madelung_is_homogeneous; registry=pbc-ewald-pairft-stress -->
 
-> **Verified equation 24.17** · the Madelung constant is homogeneous
+> **Verified equation {#eq:pbc-stress-madelung}** · the Madelung constant is homogeneous
 >
 > $v_M$ is homogeneous of degree $-1$ in lengths, so
 > $\operatorname{tr}\,dv_M/d\varepsilon = -v_M$.
@@ -203,16 +203,16 @@ The energy and its strain are accumulated in the same pass, so the
 $-\delta_{ab}E_\text{LR}$ term uses exactly the energy that was summed. Both
 go through Neumaier sums, as the energy does.
 
-## 24.8.3 The pair transform under strain
+## The pair transform under strain {#stress-pair-transform-under-strain}
 
-For one primitive pair, the transform of section 24.2 is a product of three
+For one primitive pair, the transform of section @sec:pair-ft is a product of three
 factors: the Hermite polynomial $\prod_d\sum_tE_t(-iG_d)^t$, whose $E$
 coefficients depend on the separation $\mathbf A - \mathbf B'$ (with
 $\mathbf B'$ the image centre) and on the exponents; the Gaussian
 $e^{-G^2/4p}$; and the phase $e^{-i\mathbf G\cdot\mathbf P_c}$. Differentiate
 each:
 
-- The phase is invariant (24.8.1).
+- The phase is invariant (@sec:stress-strain-moves).
 - The Gaussian: $\frac{d}{d\varepsilon_{ab}}e^{-G^2/4p} = -\frac{1}{4p}(-2G_aG_b)e^{-G^2/4p}$,
   which gives $\frac{G_aG_b}{2p}P$.
 - The polynomial through $\mathbf G$: $dG_c/d\varepsilon_{ab} = -\delta_{cb}G_a$,
@@ -231,7 +231,7 @@ $$
  + \frac{G_aG_b}{2p}P - G_aP^g_b .
 $$
 
-> **Verified equation 24.16** · the strain derivative of a pair transform
+> **Verified equation {#eq:pbc-stress-pairft}** · the strain derivative of a pair transform
 >
 > $dP/d\varepsilon_{ab} = [Q_a + iG_a(\alpha/p)P](\mathbf A - \mathbf B')_b
 > + G_aG_bP/(2p) - G_aP^g_b$ equals the direct derivative of the strained
@@ -247,7 +247,7 @@ $$
 >
 > <!-- verified: id=pbc.stress.pairft; script=scripts/pbc_ewald_pairft_stress_sympy.py; claim=pairft-strain; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-pbc/src/pair_ft.rs::pair_ft_strain_chunked; rust_test=ferric-pbc/tests/pbc_stress.rs::pair_ft_strain_matches_fd_at_fixed_miller_index; registry=pbc-ewald-pairft-stress -->
 
-## 24.8.4 Assembling the electronic stress
+## Assembling the electronic stress {#stress-assembling-electronic-stress}
 
 | Step | Term | Function |
 |---|---|---|
@@ -274,14 +274,14 @@ derivative describes. With the sets frozen, the stress is the exact
 derivative of the energy that was computed. The same reasoning makes the
 finite-difference anchors clean: they strain a frozen cell.
 
-## 24.8.5 Options
+## Options {#stress-options}
 
 | Option | Values | Default | Effect |
 |---|---|---|---|
 | `with_stress=` (Python) | `True`, `False` | `False` | Gamma point or mesh |
 | `[cell] stress` (CLI) | `true`, `false` | `false` | prints the stress; requires `kmesh` |
 
-## 24.8.6 Numerical anchors
+## Numerical anchors {#stress-numerical-anchors}
 
 | Quantity | Bar | Test |
 |---|---|---|
@@ -291,14 +291,14 @@ finite-difference anchors clean: they strain a frozen cell.
 | pressure against finite differences of an isotropic scaling (a consistency check, not independent of the nine-component anchor) | $10^{-9}$ | `h2_rhf_pressure_matches_isotropic_scaling` |
 | one-point mesh stress against the Gamma stress | | `crates/ferric-pbc/tests/pbc_kstress.rs` `one_point_mesh_rhf_stress_is_the_gamma_stress` |
 
-## 24.8.7 Limits
+## Limits {#stress-limits}
 
 - No lattice-vector relaxation.
 - Gamma-point stress is Python-only; the CLI `stress = true` requires
   `kmesh`.
 - VV10 is refused. Per-functional support is listed in the input reference.
 
-## 24.8.8 Sources
+## Sources {#stress-sources}
 
 | Source | What it gives |
 |---|---|

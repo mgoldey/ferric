@@ -1,6 +1,6 @@
-# 6.4 Complementary auxiliary basis (CABS)
+# Complementary auxiliary basis (CABS) {#cabs}
 
-<!-- section: 6.4; status: edit; registry: none;
+<!-- status: edit; registry: none;
      theory: crates/ferric-mp2/theory.md#"11. CABS for F12" -->
 
 Two electrons repel as $1/r_{12}$, so the exact wavefunction has a cusp where
@@ -78,7 +78,7 @@ eigenvalue is dropped, and CABS is empty. In general the number of kept
 functions is the dimension of the complement, about $n_{\mathrm{aux}}$ when
 the auxiliary set adds directions the orbital basis lacks.
 
-> **Verified equation 6.5** · CABS from the Schur complement
+> **Verified equation {#eq:df-cabs-schur}** · CABS from the Schur complement
 >
 > With $Q = S_{aa} - S_{aO}S_{OO}^{-1}S_{Oa} = VwV^{\mathsf T}$ and
 > $c_k = w_k^{-1/2}[-S_{OO}^{-1}S_{Oa}v_k;\ v_k]$ for $w_k > 10^{-8}$,
@@ -94,7 +94,7 @@ the auxiliary set adds directions the orbital basis lacks.
 >
 > <!-- verified: id=df.cabs.schur; script=scripts/mp2_variant_identities.py; claim=7; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/f12.rs::build_cabs; rust_test=ferric-mp2/src/f12.rs::cabs_is_orthonormal_and_complementary -->
 
-## 6.4.1 The construction in the code
+## The construction in the code {#cabs-construction-code}
 
 `ferric-mp2/src/f12.rs::build_cabs` forms the union with `union_basis_sets`:
 per element, the orbital shells and then the auxiliary shells. The union
@@ -156,7 +156,7 @@ Points about it:
   $c^{\mathsf T}S_{RR}\,c = I$ and $S_{O,R}\,c = 0$ (`crates/ferric-mp2/theory.md`,
   check 7).
 
-## 6.4.2 Numerical anchors
+## Numerical anchors {#cabs-numerical-anchors}
 
 | What | Test | Bar |
 |---|---|---|

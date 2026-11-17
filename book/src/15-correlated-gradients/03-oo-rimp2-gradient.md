@@ -1,14 +1,14 @@
-# 15.3 OO-RI-MP2 gradient
+# OO-RI-MP2 gradient {#oo-rimp2-gradient}
 
-<!-- section: 15.3; status: ready; registry: oo-rimp2-gradient;
+<!-- status: ready; registry: oo-rimp2-gradient;
      theory: crates/ferric-mp2/theory.md#"9.3 OO-RI-MP2 nuclear gradient" -->
 
-Orbital-optimized RI-MP2 (section 12.1) rotates the orbitals until the MP2
+Orbital-optimized RI-MP2 (section @sec:oo-rimp2) rotates the orbitals until the MP2
 energy itself is stationary. That removes the reason the Z-vector exists.
-Section 15.1 introduced $z$ to account for the first-order change of the
+Section @sec:lagrangian-zvector introduced $z$ to account for the first-order change of the
 energy when the orbitals relax; at converged OO orbitals that change is zero
 in every direction. So $z = 0$ and no response equation is solved. The rest
-of the RI-MP2 assembly of section 15.2 carries over, with two changes that
+of the RI-MP2 assembly of section @sec:rimp2-gradient carries over, with two changes that
 come from the orbitals being non-canonical.
 
 | Symbol | Meaning | Code name |
@@ -24,28 +24,28 @@ come from the orbitals being non-canonical.
 | CLI | `method.kind = "oo-rimp2"` with `task = "optimize"` |
 | Python | `run_oo_rimp2(with_gradient=True)`, `run_optimize(method="oo-rimp2")` |
 
-## 15.3.1 The zero-response gradient
+## The zero-response gradient {#oo-rimp2-gradient-zero-response-gradient}
 
 Why is the OO point stationary in *every* rotation, and not only in the
 occupied–virtual ones the optimizer moves? Two facts combine. The optimizer
 drives the occupied–virtual orbital gradient to zero. And the functional of
-section 12.1.1 evaluates the MP2 part in the semicanonical frame, so it is
+section @sec:oo-rimp2-functional evaluates the MP2 part in the semicanonical frame, so it is
 invariant to occupied–occupied and virtual–virtual rotations: its gradient in
 those directions is zero identically. With $\partial E/\partial\kappa = 0$ in
-all directions, the right-hand side of 15.1.1 vanishes and the Lagrangian
+all directions, the right-hand side of @sec:lagrangian-zvector-lagrangian vanishes and the Lagrangian
 needs no $z$. The functional's invariance matters here. A functional that is
 not invariant in the occupied–occupied and virtual–virtual blocks would leave
 a non-zero gradient there at its converged point, and a $z = 0$ gradient
 would then be wrong.
 
-The gradient is the assembly of section 15.2 with $z = 0$,
+The gradient is the assembly of section @sec:rimp2-gradient with $z = 0$,
 $D^{\mathrm{corr}} = \mathbf CW\mathbf C^{\mathsf T}$, and
 
-$$ \zeta^{\mathrm{MO}} = \tfrac12\big(FW + (FW)^{\mathsf T}\big), \qquad \zeta^{\mathrm{MO}}_{ia} = \zeta^{\mathrm{MO}}_{ai} = (FW)_{ia}, \qquad \zeta = \mathbf C\zeta^{\mathrm{MO}}\mathbf C^{\mathsf T} + 2\,\mathbf C_oF_{oo}\mathbf C_o^{\mathsf T} . \tag{15.9} $$
+$$ \zeta^{\mathrm{MO}} = \tfrac12\big(FW + (FW)^{\mathsf T}\big), \qquad \zeta^{\mathrm{MO}}_{ia} = \zeta^{\mathrm{MO}}_{ai} = (FW)_{ia}, \qquad \zeta = \mathbf C\zeta^{\mathrm{MO}}\mathbf C^{\mathsf T} + 2\,\mathbf C_oF_{oo}\mathbf C_o^{\mathsf T} . \label{eq:mp2-grad-oo-zero-response} $$
 
 Check the canonical limit. With $F$ diagonal, $(FW)_{pq} = \varepsilon_pW_{pq}$,
 and the symmetric part is $\tfrac12(\varepsilon_p + \varepsilon_q)W_{pq}$, the
-$\zeta$ weight of RI-MP2 in section 15.2. The second term becomes
+$\zeta$ weight of RI-MP2 in section @sec:rimp2-gradient. The second term becomes
 $2\sum_i\varepsilon_i\mathbf C_i\mathbf C_i^{\mathsf T}$, the Hartree–Fock
 energy-weighted density.
 
@@ -90,10 +90,10 @@ The function then transforms to the AO basis and adds
 $2\mathbf C_oF_{oo}\mathbf C_o^{\mathsf T}$ over the full occupied block, which
 is not diagonal between core and active orbitals when `frozen_core > 0`.
 
-> **Verified equation 15.9** · the $z = 0$ gradient
+> **Verified equation @eq:mp2-grad-oo-zero-response** · the $z = 0$ gradient
 >
-> On the model of section 15.2, with OO-MP2 re-converged to
-> $\max|g| < 10^{-11}$ at every displacement, the $z = 0$ gradient with (15.9)
+> On the model of section @sec:rimp2-gradient, with OO-MP2 re-converged to
+> $\max|g| < 10^{-11}$ at every displacement, the $z = 0$ gradient with (@eq:mp2-grad-oo-zero-response)
 > and $v^{\mathrm{s1occ}}$ equals the finite difference of the OO-MP2 energy.
 >
 > | | |
@@ -109,7 +109,7 @@ is not diagonal between core and active orbitals when `frozen_core > 0`.
 The model agrees with the finite difference to $8\times10^{-12}$ relative
 (`theory.md` section 9.3).
 
-## 15.3.2 The algorithm
+## The algorithm {#oo-rimp2-gradient-algorithm}
 
 | Step | Quantity | Function |
 |---|---|---|
@@ -117,7 +117,7 @@ The model agrees with the finite difference to $8\times10^{-12}$ relative
 | 2 | semicanonical frame: diagonalize $F_{oo}$ and $F_{vv}$ separately | `semicanonical_frame` |
 | 3 | $B$, $t$, $P$ in that frame | `compute_b_full_mo`, `build_mp2_density` |
 | 4 | $\zeta$, $v^{\mathrm{s1occ}}$ | `energy_weighted_density`, `vhf_s1occ` |
-| 5 | one-electron, overlap, two-electron and RI-response terms | as in section 15.2 |
+| 5 | one-electron, overlap, two-electron and RI-response terms | as in section @sec:rimp2-gradient |
 
 The amplitudes must be built in the semicanonical frame: there $t$ has the
 diagonal denominator of the energy expression the OO solver made
@@ -127,7 +127,7 @@ agree. The two-electron derivative and the RI 3c/2c terms are the plain
 RI-MP2 ones, because the OO energy depends on the integrals and on $B$
 exactly as plain RI-MP2 does.
 
-## 15.3.3 Options and refusals
+## Options and refusals {#oo-rimp2-gradient-options-refusals}
 
 | Option | Effect |
 |---|---|
@@ -138,7 +138,7 @@ The frozen core is refused because core rotations are not optimized: the
 point is not stationary in the core–active and core–virtual directions, so
 $z = 0$ is not exact there. The unrestricted OO-RI-MP2 is energy only.
 
-## 15.3.4 Numerical anchors
+## Numerical anchors {#oo-rimp2-gradient-numerical-anchors}
 
 From the `oo-rimp2` row of `site/src/reference/validation.md`.
 
@@ -158,11 +158,11 @@ independent code has an orbital-optimized MP2 gradient to compare with
 (loose, $3\times10^{-5}$) and the finite differences of ferric's own energy.
 The energy is Proven (narrow).
 
-## 15.3.5 Sources
+## Sources {#oo-rimp2-gradient-sources}
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-mp2/theory.md`, section 9.3 | (15.9) and $v^{\mathrm{s1occ}}$ |
+| `crates/ferric-mp2/theory.md`, section 9.3 | (@eq:mp2-grad-oo-zero-response) and $v^{\mathrm{s1occ}}$ |
 | module documentation of `crates/ferric-mp2/src/oo_rimp2_gradient.rs` | the no-Z-vector argument |
 | `scripts/mp2_gradient_sympy.py`, part O | the proof |
 

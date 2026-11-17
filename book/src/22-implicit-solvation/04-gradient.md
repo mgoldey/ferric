@@ -1,20 +1,20 @@
-# 22.4 The nuclear gradient of the PCM energy
+# The nuclear gradient of the PCM energy {#gradient}
 
-<!-- section: 22.4; status: ready; registry: pcm-gradient;
+<!-- status: ready; registry: pcm-gradient;
      theory: crates/ferric-pcm/theory.md#"8. Nuclear gradient" -->
 
 A geometry optimization in a continuum needs the force on every nucleus,
 including the part that comes from the cavity moving with the atoms. The
 SCF energy is variational in the density, so the solvated gradient is the
-vacuum SCF gradient of section 14.1, evaluated with the solvated orbitals
+vacuum SCF gradient of section @sec:hf-gradient, evaluated with the solvated orbitals
 and energy-weighted density, plus one term: the derivative of
 $E_{\mathrm{pcm}}$ at fixed AO density $P$. The solvated orbitals already
 carry $V^{\mathrm{pcm}}$ through the Fock matrix, so nothing else changes.
 This section is that one term.
 
 The plan: split the derivative into a potential part and a response part
-(22.4.1), derive each, then the algorithm (22.4.2), the refusals (22.4.3)
-and the anchors (22.4.4).
+(@sec:gradient-derivative), derive each, then the algorithm (@sec:gradient-algorithm), the refusals (@sec:gradient-options-refusals)
+and the anchors (@sec:gradient-numerical-anchors).
 
 | Symbol | Meaning | Code name |
 |---|---|---|
@@ -23,7 +23,7 @@ and the anchors (22.4.4).
 | $w$, $u$, $z$ | $Sx+v$, $Aw$, $y - \tfrac{f}{2\pi}AD^{\mathsf T}y$ | `w`, `u`, `z` |
 | $p$ | $f/2\pi$ | `pref` |
 | $A(k)$ | atom that carries tessera $k$ | `Tessera::atom_index` |
-| $h_{\mathrm{sw}}$ | the quintic switch of section 22.1 | `switch_h`, `switch_h_deriv` |
+| $h_{\mathrm{sw}}$ | the quintic switch of section @sec:cavity-and-bem | `switch_h`, `switch_h_deriv` |
 
 | Entry point | Location |
 |---|---|
@@ -31,16 +31,16 @@ and the anchors (22.4.4).
 | CLI | `[pcm]` with `task = "optimize"` on `rhf`, `uhf`, `rohf` and `ksdft` |
 | Python | `run_optimize(solvent=...)` |
 
-## 22.4.1 The derivative
+## The derivative {#gradient-derivative}
 
 Write the PCM energy as a function of a nuclear coordinate $R_{A\alpha}$ at
 fixed $P$: $E_{\mathrm{pcm}} = \tfrac12 v^{\mathsf T}Q_{\mathrm{sym}}v$, with
 both $v$ and $Q_{\mathrm{sym}}$ depending on the geometry. Differentiate
 with the product rule. The $v$ factors give $(Q_{\mathrm{sym}}v)\cdot\partial v = q\cdot\partial v$,
-as in section 22.3. The middle factor gives
+as in section @sec:reaction-field. The middle factor gives
 $\tfrac12 v^{\mathsf T}\partial Q_{\mathrm{sym}}v$, which equals
 $\tfrac12 v^{\mathsf T}\partial Q\,v$ for the same reason the energies of
-section 22.2 agree. With $x = K^{-1}Rv$, $y = K^{-\mathsf T}v$ and
+section @sec:ief-operators agree. With $x = K^{-1}Rv$, $y = K^{-\mathsf T}v$ and
 $q = \tfrac12(x + R^{\mathsf T}y)$ (`pcm_gradient_parts`):
 
 $$ \frac{\partial E_{\mathrm{pcm}}}{\partial R_{A\alpha}} = q^{\mathsf T}\frac{\partial v}{\partial R_{A\alpha}} + \tfrac12\, v^{\mathsf T}\frac{\partial (K^{-1}R)}{\partial R_{A\alpha}}\, v . $$
@@ -102,9 +102,9 @@ where $z^{\mathsf T} = y^{\mathsf T}(I - pDA)$, the result is
 
 $$ \tfrac12 v^{\mathsf T}\partial(K^{-1}R)v = \tfrac12\Big[ -z^{\mathsf T}(\partial S)\,x + p\, y^{\mathsf T}(\partial D)\,u + p\sum_j (D^{\mathsf T}y)_j\, w_j\, \partial a_j \Big] . $$
 
-Box 22.7 certifies this formula.
+Box @eq:pcm-gradient-response certifies this formula.
 
-> **Verified equation 22.7** · the response derivative of $\tfrac12v^{\mathsf T}K^{-1}Rv$
+> **Verified equation {#eq:pcm-gradient-response}** · the response derivative of $\tfrac12v^{\mathsf T}K^{-1}Rv$
 >
 > For $S(t)$, $D(t)$ and $A(t)$ depending on a nuclear coordinate $t$ at
 > fixed $v$, $E = \tfrac12v^{\mathsf T}K^{-1}Rv$ has derivative
@@ -124,13 +124,13 @@ Box 22.7 certifies this formula.
 
 Check the vacuum limit: at $\varepsilon\to 1$, $f\to 0$, so $R = 0$, $x = 0$,
 $q = 0$ and $p = 0$. Both terms vanish and the solvated gradient becomes the
-vacuum one. The anchor at $\varepsilon = 1 + 2\times10^{-9}$ in 22.4.4 tests
+vacuum one. The anchor at $\varepsilon = 1 + 2\times10^{-9}$ in @sec:gradient-numerical-anchors tests
 exactly this.
 
 What is left is the derivative of each matrix element. The off-diagonal
 elements depend on $\mathbf r_{ij}$ alone. Write $S_{ij} = S(r_{ij})$ and
 $D_{ij} = h(r_{ij})\,\nu_{ij}$ with $h(r) = -S'(r)/r$, the source-normal
-derivative of section 22.1 (`sd_kernel`). The gradients with respect to the
+derivative of section @sec:cavity-and-bem (`sd_kernel`). The gradients with respect to the
 field point follow from $\nabla_{\mathbf r_i}r_{ij} = \hat{\mathbf r}_{ij}$
 and $\nabla_{\mathbf r_i}\nu_{ij} = \hat{\mathbf n}_j$:
 
@@ -165,7 +165,7 @@ with $h_{\mathrm{sw}}'(t) = 30t^2(1-t)^2$ (`switch_h_deriv`). Atom $A(j)$
 receives $+$ and atom $B$ receives $-$. $R^{\mathrm{sw}}$ and $R^{\mathrm{in}}$
 come from the same `SphereGeometry::new` that `build_cavity` uses, so the
 cavity and its derivative cannot disagree about the band. The switch plays
-the role of the Becke weight of section 14.3.2: a smooth partition function
+the role of the Becke weight of section @sec:xc-gradient-becke-weight-derivative: a smooth partition function
 whose derivative moves two atoms in opposite directions.
 
 ### The code
@@ -250,14 +250,14 @@ orbitals by `with_pcm_gradient`, which `restricted_scf_gradient`,
 grad += &ferric_pcm::pcm_gradient(mol, prep, result.density_total(), pcm)?;
 ```
 
-Box 22.7 proves the response formula on a model with $S$, $D$ and $A$ as
+Box @eq:pcm-gradient-response proves the response formula on a model with $S$, $D$ and $A$ as
 functions of one coordinate. It does not prove the kernel derivatives
 $S'(r)$, $h(r)$, $h'(r)$ or the switching derivative, which are transcribed
 from the code. Those are covered by the finite-difference tests in the
 anchors table, and by nine single-term mutants of the Rust code that each
-fail them (section 22.4.4).
+fail them (section @sec:gradient-numerical-anchors).
 
-## 22.4.2 The algorithm
+## The algorithm {#gradient-algorithm}
 
 | Step | Quantity | Cost | Function |
 |---|---|---|---|
@@ -272,17 +272,17 @@ fail them (section 22.4.4).
 `PcmContext::new` does, and re-solves the charges at the converged density.
 It does not reuse the SCF's factorization.
 
-## 22.4.3 Options and refusals
+## Options and refusals {#gradient-options-refusals}
 
 | Case | Behaviour |
 |---|---|
 | `PcmConfig::cavity` set (an injected tessera list) | error: the list carries no record of how it moves |
 | `sd_kind`, `probe` | both `PointCharge` and `GaussianSmeared` $S$/$D$, both point and Gaussian probes |
 | restricted, unrestricted and restricted-open SCF, and KS | the same term is added by `restricted_scf_gradient`, `unrestricted_scf_gradient` and `restricted_open_scf_gradient` |
-| COSMO | `ferric-scf/src/gradient.rs::refuse_cosmo_gradient` refuses (section 22.5) |
+| COSMO | `ferric-scf/src/gradient.rs::refuse_cosmo_gradient` refuses (section @sec:conductor-limit-and-cosmo) |
 | frequencies with `[pcm]` | refused by the CLI; there is no analytic Hessian |
 
-## 22.4.4 Numerical anchors
+## Numerical anchors {#gradient-numerical-anchors}
 
 The finite-difference tests are `crates/ferric-pcm/tests/pcm_gradient.rs`
 (fixed $P$, central differences of `pcm_step`'s energy) and
@@ -316,11 +316,11 @@ included. The torque is not zero, because the Lebedev frame is fixed in the
 lab; the test checks that it equals the finite-difference derivative under
 a rigid rotation. The PySCF comparison runs on ferric's own cavity at
 Lebedev order 302, which reproduces PySCF's `gen_surface` (tessera count,
-total area and area centroid to $10^{-10}$, section 22.1). Nine single-term
+total area and area centroid to $10^{-10}$, section @sec:cavity-and-bem). Nine single-term
 mutants (the switching, area, $S$ and $D$ diagonal and off-diagonal,
 tessera-site and nuclear-tessera terms) each fail the FD tests.
 
-## 22.4.5 Sources
+## Sources {#gradient-sources}
 
 | Source | What it gives |
 |---|---|

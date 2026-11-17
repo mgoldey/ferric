@@ -1,7 +1,7 @@
-<!-- section: 11.4; status: verify; registry: ri-mp2;
+<!-- status: verify; registry: ri-mp2;
      theory: crates/ferric-mp2/theory.md#"2. Closed-shell RI-MP2" -->
 
-# 11.4 The memory budget, the admission checks and the shared pool
+# The memory budget, the admission checks and the shared pool {#memory-budget}
 
 | Entry point | Location |
 |---|---|
@@ -19,9 +19,9 @@ up front where each one lives and refuse a run that cannot fit. The budget
 bounds the ledgered allocations of a run, not the total process memory.
 RI-MP2 uses it three ways: to choose where the raw AO tensor lives, to
 refuse a run whose MO-side tensors cannot fit, and to size the transform
-chunk (section 11.2.3).
+chunk (section @sec:streaming-transform-chunk-width).
 
-## 11.4.1 The budget
+## The budget {#memory-budget-budget}
 
 The budget is resolved once at the start of the energy and passed down. The
 first source that is set wins:
@@ -36,9 +36,9 @@ first source that is set wins:
 
 Source 4 reads the available memory at the time of the call, so the same
 input can resolve to a different budget on a busier machine. A run whose
-last digits matter should set `budget_gb` (section 11.2.4).
+last digits matter should set `budget_gb` (section @sec:streaming-transform-reproducibility).
 
-## 11.4.2 What the run holds
+## What the run holds {#memory-budget-run-holds}
 
 | Quantity | Bytes | Held during |
 |---|---|---|
@@ -73,11 +73,11 @@ $n_o = 21$, $n_v = 93$):
 | $B_{ov}$ | $8 \cdot 420 \cdot 21 \cdot 93 = 6.56$ MB |
 | $G^{(0)}$ per worker | $8 \cdot 21 \cdot 93^2 = 1.45$ MB |
 
-## 11.4.3 The admission check
+## The admission check {#memory-budget-admission-check}
 
 Before any three-index work, the driver calls `check_mo_side_alloc`. It adds
 
-$$ \underbrace{8 N_{\mathrm{aux}} n_o n_v}_{B_{ov}} \;+\; \underbrace{8\, n_o n_v^2 \cdot n_w}_{G^{(i)},\ n_w \text{ workers}} \;\big[\, +\ 8 N_{\mathrm{aux}} n_v^2 \ (B_{vv}) \,\big] \tag{11.9} $$
+$$ \underbrace{8 N_{\mathrm{aux}} n_o n_v}_{B_{ov}} \;+\; \underbrace{8\, n_o n_v^2 \cdot n_w}_{G^{(i)},\ n_w \text{ workers}} \;\big[\, +\ 8 N_{\mathrm{aux}} n_v^2 \ (B_{vv}) \,\big] \label{eq:memory-budget-1} $$
 
 and passes the sum to `check_alloc`, which returns an error naming the size,
 the budget and the `[memory] budget_gb` / `FERRIC_MEM_BUDGET_GB` knobs when
@@ -114,7 +114,7 @@ so callers can report a size without running the check.
 | `an_honest_floor_exceeds_every_single_buffer` | the sum exceeds each part |
 | `ao_side_can_fit_while_the_mo_side_blows_the_budget` | the AO tensor fitting does not admit the MO side |
 
-## 11.4.4 The shared pool
+## The shared pool {#memory-budget-shared-pool}
 
 The pool (`ferric-core/src/memory/pool.rs`) is one process-wide ledger of
 bytes. An allocation takes a reservation, which is returned when the guard is
@@ -164,10 +164,10 @@ MO side, which is a change in `ferric-integrals`.
 budget inside the band completes
 (`a_budget_inside_the_refusal_window_still_completes`).
 
-## 11.4.5 Known limits (2026-11-15)
+## Known limits (2026-11-15) {#memory-budget-known-limits-2026-11}
 
 - `check_mo_side_alloc` is a hard check that includes $n_w \cdot G^{(i)}$
-  (equation 11.9). Admission of the closed-shell energy therefore depends on
+  (equation @eq:memory-budget-1). Admission of the closed-shell energy therefore depends on
   the rayon worker count, which the doc comment of `charge_mo_side_soft`
   rules out for the pool charge of the same quantity. For benzene in
   cc-pVDZ, a budget of 20 MB is admitted on one worker (8.0 MB) and refused
@@ -186,7 +186,7 @@ budget inside the band completes
 | Source | Used for |
 |---|---|
 | `crates/ferric-core/src/memory.rs`, `resolve_budget_with` and module doc | the precedence table |
-| `crates/ferric-mp2/src/rimp2.rs`, `check_mo_side_alloc`, `mo_side_alloc_bytes`, `charge_mo_side`, `charge_mo_side_soft` and the driver comments | equation 11.9, the excerpt, the charge table, the benzene band |
+| `crates/ferric-mp2/src/rimp2.rs`, `check_mo_side_alloc`, `mo_side_alloc_bytes`, `charge_mo_side`, `charge_mo_side_soft` and the driver comments | equation @eq:memory-budget-1, the excerpt, the charge table, the benzene band |
 | `crates/ferric-integrals/src/three_index_source.rs`, `crates/ferric-integrals/src/three_index_source/jk_storage.rs` | the tier table |
 | `site/src/reference/input.md`, `[memory]` | the user-facing key |
 | the tests named above | the pinned behaviour |

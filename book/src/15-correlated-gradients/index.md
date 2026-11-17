@@ -1,4 +1,4 @@
-# 15. Correlated gradients and the Z-vector
+# Correlated gradients and the Z-vector {#correlated-gradients}
 
 A Hartree–Fock gradient needs no orbital response, because the energy is
 stationary in the orbitals. A correlation energy computed on top of those

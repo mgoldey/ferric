@@ -1,6 +1,6 @@
-# 16.7 Local coupled cluster: amplitude threshold and DLPNO
+# Local coupled cluster: amplitude threshold and DLPNO {#local-cc}
 
-<!-- section: 16.7; status: edit; registry: linlccd, ccsd-t;
+<!-- status: edit; registry: linlccd, ccsd-t;
      theory: crates/ferric-cc/theory.md#"Amplitude-threshold LinLCCD", "DLPNO-LinLCCD(hh)", "DLPNO-CCSD: pair screen and PNO substrate", "DLPNO-CCSD(T): triple screen and TNOs" -->
 
 In a localized basis most coupled-cluster amplitudes of a large molecule
@@ -8,7 +8,7 @@ connect orbitals that are far apart, and their driving integrals are close
 to zero. Two local approximations sit on top of the canonical solvers of
 this chapter to exploit that. The amplitude threshold, the `[local]` section
 of `linlccd`, keeps the amplitudes whose driving integral exceeds $\epsilon$
-and solves the spatial LinLCCD equations of section 16.5 on that pattern.
+and solves the spatial LinLCCD equations of section @sec:linlccd on that pattern.
 The DLPNO pieces, all library-only, compress the virtual space per pair
 instead: a LinLCCD(hh) iteration closed in pair natural orbitals, a pair
 screen with a PNO energy for CCSD, and a triple screen with triple natural
@@ -18,10 +18,10 @@ Each approximation has a trivial limit in which it reproduces the canonical
 method, and that limit is how each is anchored. The section takes them in
 order:
 
-1. the amplitude threshold (16.7.1);
-2. DLPNO-LinLCCD(hh) (16.7.2), the CCSD pair screen (16.7.3) and the (T)
-   triple screen (16.7.4);
-3. the trivial limits and the measured errors (16.7.5, 16.7.6).
+1. the amplitude threshold (@sec:local-cc-amplitude-threshold-linlccd);
+2. DLPNO-LinLCCD(hh) (@sec:local-cc-dlpno-linlccd-hh), the CCSD pair screen (@sec:local-cc-dlpno-ccsd-pair-screen) and the (T)
+   triple screen (@sec:local-cc-dlpno-t-triple-screen);
+3. the trivial limits and the measured errors (@sec:local-cc-trivial-limits, @sec:local-cc-numerical-anchors).
 
 | Entry point | Location |
 |---|---|
@@ -29,18 +29,18 @@ order:
 | CLI | `method.kind = "linlccd"` with `[local] scheme = "amplitude-threshold"`, `eps` (`examples/water-linlccd-local.toml`); the DLPNO pieces have no CLI kind |
 | Python | `run_linlccd(local="amplitude-threshold", eps=)` |
 
-## 16.7.1 Amplitude-threshold LinLCCD
+## Amplitude-threshold LinLCCD {#local-cc-amplitude-threshold-linlccd}
 
 `linlccd_amplitude.rs` works closed shell, in Boys-localized occupied
 orbitals and VV-HV localized virtuals (`ferric_mp2::lmp2_amplitude`, section
-13.1). The amplitude pattern keeps $(i,a,j,b)$ if and only if
+@sec:amplitude-lmp2). The amplitude pattern keeps $(i,a,j,b)$ if and only if
 
 $$|(ia|jb)| > \epsilon \quad\text{or}\quad |(ib|ja)| > \epsilon .$$
 
 The test is the swap-closed one of `ferric_mp2::lmp2_amplitude`: the energy
 pairs $T_{iajb}$ with $T_{ibja}$, so the pattern keeps both or neither.
 
-**The masked solve.** The spatial equations of section 16.5 are solved on
+**The masked solve.** The spatial equations of section @sec:linlccd are solved on
 the pattern by pattern-projected conjugate gradient on the ragged per-pair
 blocks (`ferric-cc/src/linlccd_amplitude.rs::linlccd_masked_solve`):
 
@@ -68,7 +68,7 @@ with $s$ the orbital spreads and $R_{ij}$ the distance between the orbital
 centres. The $R^{-6}$ is the decay of the dispersion interaction between two
 distant localized pairs.
 
-> **Verified equation 16.10** · the spatial equations the masked solve uses
+> **Verified equation {#eq:cc-local-amplitude-spatial}** · the spatial equations the masked solve uses
 >
 > The spatial closed-shell LinLCCD equations, with hole–hole coefficient
 > $(ik|jl)$ and energy $\sum(ia|jb)(2T_{iajb} - T_{ibja})$, give the
@@ -90,7 +90,7 @@ What the box does not cover is the truncation itself: which amplitudes the
 mask drops and how the error grows with $\epsilon$. That is measured, not
 derived (anchors below).
 
-## 16.7.2 DLPNO-LinLCCD(hh)
+## DLPNO-LinLCCD(hh) {#local-cc-dlpno-linlccd-hh}
 
 `ferric-cc/src/dlpno_linlccd.rs::dlpno_linlccd_hh` closes the LinLCCD(hh)
 iteration in per-pair PNO bases. The pair natural orbitals of pair $(i,j)$
@@ -143,7 +143,7 @@ the other orientation inside the ladder.
 is square and orthogonal, so every $S^{ij,kl}$ is orthogonal, the projection
 loses nothing, and the iteration reproduces `linlccd(.., Hh)`.
 
-## 16.7.3 DLPNO-CCSD pair screen and PNO energy
+## DLPNO-CCSD pair screen and PNO energy {#local-cc-dlpno-ccsd-pair-screen}
 
 **Pair lists** (`ferric_mp2`). Two criteria build the retained pairs
 $i\le j$; diagonal pairs are always kept:
@@ -155,7 +155,7 @@ $i\le j$; diagonal pairs are always kept:
   $|e_{ij}| \ge T_{\mathrm{cut,pairs}}$, with
   $e_{ij} = -(2-\delta_{ij})\sum_{ab} (2(ia|jb) - (ib|ja))(ia|jb)/\Delta_{ij}^{ab}$.
 
-$e_{ij}$ is the pair's share of the closed-shell MP2 energy (10.3), with the
+$e_{ij}$ is the pair's share of the closed-shell MP2 energy (@eq:closed-shell-ri-mp2-3), with the
 factor $2-\delta_{ij}$ counting the $(i,j)$ and $(j,i)$ terms of an
 off-diagonal pair together.
 
@@ -170,24 +170,24 @@ semicanonicalization, and the closed-shell energy
 $$ E = \sum_{ij}\sum_{\tilde a\tilde b}\tilde\tau^{ij}_{\tilde a\tilde b}\big(2\tilde g^{ij}_{\tilde a\tilde b} - \tilde x^{ij}_{\tilde a\tilde b}\big), $$
 
 with $g_{ab} = (ia|jb)$ and $x_{ab} = (ib|ja)$ rotated by $\tilde Q_{ij}$.
-It is the energy of section 16.2 with each pair's virtual indices in its own
+It is the energy of section @sec:closed-shell-ccsd with each pair's virtual indices in its own
 basis. `dlpno_ccsd_kernel.rs` evaluates individual residual contractions in
 PNO bases with $S$ inserted; a closed PNO-basis CCSD iteration does not
 exist.
 
-## 16.7.4 DLPNO-(T) triple screen and TNOs
+## DLPNO-(T) triple screen and TNOs {#local-cc-dlpno-t-triple-screen}
 
 **Triple list** (`dlpno_ccsd_t.rs`). A banded triple $i\le j\le k$ is kept
 if any two indices coincide, or else if all three pairwise Boys distances
 are $\le R_{\mathrm{triple}}$ (`triple_is_retained`). The predicate depends
 only on the multiset $\{i,j,k\}$, so the retained triples keep the dense
-weights $m\in\{1,3,6\}$ of section 16.3.2, and
+weights $m\in\{1,3,6\}$ of section @sec:triples-closed-shell-t, and
 
 $$E_{(T)} = \tfrac13\sum_{\text{kept}} m\, f(i,j,k)$$
 
 (`screened_triple_energy`). Only $m=6$ triples can be screened.
 
-> **Verified equation 16.11** · the occupied banding of the triple screen
+> **Verified equation {#eq:cc-local-triple-banding}** · the occupied banding of the triple screen
 >
 > On random closed-shell amplitudes and integrals, the per-triple sum
 > $f(i,j,k)$ is invariant over the six orderings of its labels, and the
@@ -231,7 +231,7 @@ returns the unweighted $f(i,j,k)$; $m$ and the divisor 3 are applied only in
 square and orthogonal, $M^{ijk}$ is a multiple of the identity, every
 transform is square orthogonal, and the dense $f$ is recovered.
 
-## 16.7.5 Trivial limits
+## Trivial limits {#local-cc-trivial-limits}
 
 Each approximation is checked first where it does nothing.
 
@@ -247,7 +247,7 @@ cutoff (`stage1_truncation_changes_the_ladder`, `screening_is_not_inert`,
 `screening_changes_the_energy`). A limit test alone would pass for an
 approximation that was never applied; the pair of tests rules that out.
 
-## 16.7.6 Numerical anchors
+## Numerical anchors {#local-cc-numerical-anchors}
 
 | Quantity | Systems | Error | Test |
 |---|---|---|---|
@@ -263,7 +263,7 @@ The DLPNO pieces carry no row in the validation page: there is no
 DLPNO-CCSD or DLPNO-(T) energy driver, only the screens, the PNO energy and
 the kernels above.
 
-## 16.7.7 Sources
+## Sources {#local-cc-sources}
 
 | Source | What it gives |
 |---|---|

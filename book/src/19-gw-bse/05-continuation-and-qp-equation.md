@@ -1,11 +1,11 @@
-# 19.5 Analytic continuation and the quasiparticle equation
+# Analytic continuation and the quasiparticle equation {#continuation-and-qp-equation}
 
-<!-- section: 19.5; status: ready; registry: gw;
+<!-- status: ready; registry: gw;
      theory: crates/ferric-gw/theory.md#"6. Analytic continuation" -->
 
 A quasiparticle energy is a real number: the energy $E$ at which an added or
 removed electron, dressed by the response of the others, propagates without
-decaying. Section 19.3 evaluates $\Sigma^c$ only at complex energies. The
+decaying. Section @sec:correlation-self-energy evaluates $\Sigma^c$ only at complex energies. The
 bridge is analytic continuation: sample $\Sigma^c$ on the imaginary line
 $z_k = \epsilon_F + iu_k$, fit a rational function through the samples, and
 evaluate that function and its slope at real energies. A Newton iteration on
@@ -14,11 +14,11 @@ it then finds the root of the quasiparticle equation.
 The plan:
 
 1. Choose the line and the nodes, and fit a Thiele continued fraction
-   (19.5.1).
+   (@sec:continuation-and-qp-equation-continuation).
 2. Write the quasiparticle equation, linearize it to get $Z$, and solve it by
-   Newton with a fallback (19.5.2).
+   Newton with a fallback (@sec:continuation-and-qp-equation-quasiparticle-equation).
 3. Look at the options and limits, of which the continuation is the largest
-   (19.5.4).
+   (@sec:continuation-and-qp-equation-options-limits).
 
 | Symbol | Meaning | Code name |
 |---|---|---|
@@ -33,7 +33,7 @@ The plan:
 | Rust | `ferric-gw/src/pade.rs::{fit,eval,deriv_real}`, `ferric-gw/src/sigma.rs::{solve_qp_for_mo,solve_qp_for_mo_with,qp_root_by_weight}` |
 | Options | `[gw] pade_npts`, `qp_newton_damp`, `qp_mos` |
 
-## 19.5.1 The continuation
+## The continuation {#continuation-and-qp-equation-continuation}
 
 **The line.** $\Sigma^c_p$ is sampled on the Fermi-shifted imaginary axis
 $z_k = \epsilon_F + iu_k$, with
@@ -41,7 +41,7 @@ $\epsilon_F = \tfrac12(\epsilon_{\rm HOMO} + \epsilon_{\rm LUMO})$ of the
 active mean-field spectrum (`ferric-gw/src/sigma.rs::fermi_level`). The line
 has to cross the real axis inside the gap, because the sign of
 $\mathrm{Re}(z - \epsilon_q)$ decides which states count as occupied
-(section 19.3.1).
+(section @sec:correlation-self-energy-frequency-integral).
 
 **The nodes.** The default is 18 nodes (`GwConfig.pade_npts`), chosen by
 `ferric-gw/src/sigma.rs::pade_node_indices`, a port of PySCF's `_get_ac_idx`,
@@ -52,7 +52,7 @@ nodes are independent of the grid on which $W$ was integrated: $\Sigma^c(z)$ is
 a closed-form function of $z$ once $W$ is fixed, and the nodes are where it
 is sampled.
 
-**Why a rational function.** Section 19.3 shows that $\Sigma^c$ is a sum of
+**Why a rational function.** Section @sec:correlation-self-energy shows that $\Sigma^c$ is a sum of
 simple poles, $s/(z - \text{pole})$. A sum of poles is a rational function,
 so a rational interpolant can reproduce it.
 
@@ -93,7 +93,7 @@ which `fit` refuses with an `Err` instead of emitting NaN
 are `pade::tests::interpolation_identity`, `shifted_nodes_far_eval_matches_exact`
 and `pole_reproduction`.
 
-> **Verified equation 19.7** · the Thiele continued fraction, in exact arithmetic
+> **Verified equation {#eq:gw-pade-thiele}** · the Thiele continued fraction, in exact arithmetic
 >
 > A line-for-line port of `PadeCF::fit` and `eval` in exact rationals
 > interpolates its nodes; it reproduces a rational function of type $[L/M]$
@@ -127,7 +127,7 @@ $$ C'(E) \approx \frac{-C(E+2h) + 8C(E+h) - 8C(E-h) + C(E-2h)}{12h} . $$
 It is exact for polynomials through degree 4, and its error is
 $-h^4C^{(5)}/30$.
 
-> **Verified equation 19.8** · the four-point derivative stencil
+> **Verified equation {#eq:gw-pade-stencil}** · the four-point derivative stencil
 >
 > The central stencil of `deriv_real` with $h = 0.05$ Ha is exact through
 > degree 4 and has error $-h^4f^{(5)}/30$.
@@ -141,7 +141,7 @@ $-h^4C^{(5)}/30$.
 >
 > <!-- verified: id=gw.pade.stencil; script=scripts/gw_self_energy_sympy.py; claim=5; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-gw/src/pade.rs::deriv_real; registry=gw -->
 
-## 19.5.2 The quasiparticle equation
+## The quasiparticle equation {#continuation-and-qp-equation-quasiparticle-equation}
 
 **The equation.** The quasiparticle Green's function of state $p$ is
 $G(E) = [E - \epsilon_p - \delta_p - \Sigma^c_p(E)]^{-1}$. Its poles are the
@@ -151,7 +151,7 @@ inverse:
 $$ f(E) = E - \epsilon_p - \delta_p - \mathrm{Re}\,C_N(E) = 0, \qquad \delta_p = \begin{cases} 0 & \text{HF reference} \\ \Sigma^x_p - v^{xc}_p & \text{KS reference} \end{cases} $$
 
 with $v^{xc}_p$ from `ferric-gw/src/vxc_mo.rs::vxc_diagonal_mo`, the same
-`add_xc` path as the SCF's KS Fock (section 19.1.3).
+`add_xc` path as the SCF's KS Fock (section @sec:ri-factors-and-exchange-ks-reference-changes).
 
 **The static shift belongs inside.** $\delta_p$ is part of $f$, so $\Sigma^c$
 is evaluated at the shifted root. Adding $\delta_p$ after an unshifted solve
@@ -171,12 +171,12 @@ on $f$ from $\epsilon_p$.
 **Check the limits.** With no correlation, $\Sigma^c = 0$, $Z = 1$ and
 $E = \epsilon_p + \delta_p$: the Koopmans energy on a Hartree–Fock reference.
 For the exact $\Sigma^c$, a sum of poles with nonnegative weights $s$
-(section 19.3.1), each term has slope $-s/(E - \text{pole})^2 \le 0$ on the
+(section @sec:correlation-self-energy-frequency-integral), each term has slope $-s/(E - \text{pole})^2 \le 0$ on the
 real axis. So $1 - \Sigma^{c\prime} \ge 1$ and $0 < Z \le 1$. $Z$ is the
 fraction of the spectral weight the quasiparticle peak keeps; the rest goes
 to satellites. The code clamps $Z_p$ to $[0, 1.5]$. A value pinned at 0 or
 1.5 means the unclamped $Z$ of the Padé model was outside the physical range,
-a near-pole or a wrong-sign slope at $\epsilon_p$, and section 19.8 uses that
+a near-pole or a wrong-sign slope at $\epsilon_p$, and section @sec:bse-tda uses that
 as a flag.
 
 **$Z$ is evaluated at the mean-field energy.** `GwResult.z_factor` is
@@ -224,7 +224,7 @@ The Newton loop, from `ferric-gw/src/sigma.rs::solve_qp_for_mo_with`:
 | $f(E_k)$, $f'(E_k)$ | `f`, `fprime` |
 | $d$ | `damp`, from `qp_newton_damp` clamped to $[0.1, 1]$ |
 
-> **Verified equation 19.9** · the linearized start and the Newton iteration
+> **Verified equation {#eq:gw-qp-equation}** · the linearized start and the Newton iteration
 >
 > The linearized quasiparticle energy $\epsilon + Z(\Sigma(\epsilon)+\delta)$,
 > with $Z = 1/(1-\Sigma'(\epsilon))$, is exactly one undamped Newton step of
@@ -256,12 +256,12 @@ every $n_{\rm quad} \ge 30$. A state with no root of weight in $(0, 1]$ is
 left unsolved: `GwResult.qp_converged` records it, and `run_gw` warns
 (`warn_gw_unconverged`).
 
-## 19.5.3 The algorithm
+## The algorithm {#continuation-and-qp-equation-algorithm}
 
 | Step | Quantity | Cost | Function |
 |---|---|---|---|
 | 1 | $\epsilon_F$ and the 18 node frequencies | $O(1)$ | `fermi_level`, `pade_support_omegas` |
-| 2 | $\Sigma^c(\epsilon_F + iu_k)$ at the nodes, product-integrated | section 19.3 | `sigma_c_at_z_product` |
+| 2 | $\Sigma^c(\epsilon_F + iu_k)$ at the nodes, product-integrated | section @sec:correlation-self-energy | `sigma_c_at_z_product` |
 | 3 | Thiele fit | $O(N^2)$, $N$ = nodes | `PadeCF::fit` |
 | 4 | $Z_p$ at $\epsilon_p$, clamped to $[0, 1.5]$; linearized start | $O(N)$ | `solve_qp_for_mo_with` |
 | 5 | Newton, at most 30 steps, stops on $\lvert\text{step}\rvert < 10^{-7}$ Ha or $\lvert f'\rvert < 10^{-3}$ | $O(N)$ per step | `solve_qp_for_mo_with` |
@@ -274,7 +274,7 @@ The tests of the solve are `sigma::tests::qp_newton_converges_for_a_mild_self_en
 and `g0w0_hf_ecp_{i2,xe,ag2}_vs_pyscf_gw_ac`; and
 `crates/ferric-gw/tests/g0w0_pbe_h2o.rs`.
 
-## 19.5.4 Options and limits
+## Options and limits {#continuation-and-qp-equation-options-limits}
 
 | Option | Effect |
 |---|---|
@@ -290,7 +290,7 @@ extrapolates further, and for states far from $\epsilon_F$ with split
 spectral weight. This is what "narrow" means in the grade. The
 unconverged-state warning is the signal to look at.
 
-## 19.5.5 Numerical anchors
+## Numerical anchors {#continuation-and-qp-equation-numerical-anchors}
 
 From `site/src/reference/validation.md` (`gw` row and G0W0 anchors), at
 `n_quad = 100`, `trunc_thresh = 0`:
@@ -301,7 +301,7 @@ From `site/src/reference/validation.md` (`gw` row and G0W0 anchors), at
 | G0W0@HF with ECPs | grid-free dRPA pole sum | $\le 8.0\times10^{-10}$ Ha | `g0w0_hf_ecp_{i2,xe,ag2}_vs_pyscf_gw_ac` |
 | G0W0@PBE | grid-free dRPA pole sum | $\le 1.8\times10^{-8}$ Ha | `g0w0_pbe_{h2o,n2}_vs_pyscf_gw_ac` |
 
-## 19.5.6 Sources
+## Sources {#continuation-and-qp-equation-sources}
 
 | Source | What it gives |
 |---|---|

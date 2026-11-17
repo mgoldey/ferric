@@ -1,6 +1,6 @@
-# 4.2 The terf table engine and its far-field fallback
+# The terf table engine and its far-field fallback {#terf-table-engine}
 
-<!-- section: 4.2; status: edit; registry: none;
+<!-- status: edit; registry: none;
      theory: crates/ferric-integrals/theory.md#"Kernels in Fourier space", "Two-center integrals over the terf kernel" -->
 
 Every Gaussian integral code reduces a two-electron integral over the
@@ -17,19 +17,19 @@ its own McMurchie–Davidson driver. The driver is the Coulomb one with the Boys
 function replaced by a two-variable auxiliary function $G_m(S, s)$, read from
 tables, a series or a tail form depending on where $(S, s)$ falls. This
 section derives $G_m$ from the kernel, shows that the code's series is that
-function, and states when each evaluation route is taken. Section 4.1 defines
+function, and states when each evaluation route is taken. Section @sec:erf-terf defines
 the kernels and the curvature constraint.
 
 The plan:
 
 1. Transform the kernels to Fourier space, where terf becomes erf times
-   $\cos(kr_0)$ (4.2.1).
+   $\cos(kr_0)$ (@sec:terf-table-engine-kernels-fourier-space).
 2. Do the $s$-type two-center integral in Fourier space and recognize the
-   result as the kernel at a new sharpness $\phi$; define $G_0$ (4.2.2).
+   result as the kernel at a new sharpness $\phi$; define $G_0$ (@sec:terf-table-engine-center-integral-auxiliary-function).
 3. Differentiate to get $G_m$, show that the Poisson series in the shim is
-   $G_m$, and split it into $F_m$ minus a short tail (4.2.2).
+   $G_m$, and split it into $F_m$ minus a short tail (@sec:terf-table-engine-center-integral-auxiliary-function).
 4. Route each $(S, s)$ to a table, the tail form or the far-field shortcut
-   (4.2.3).
+   (@sec:terf-table-engine-evaluation-routes).
 
 | Entry point | Location |
 |---|---|
@@ -38,7 +38,7 @@ The plan:
 | Tables | `terf-tables/*.bin`, located by `FERRIC_TERF_TABLE_DIR` |
 | Optional | a libint2-native terf route behind the `libint2_terf` feature (`ferric-integrals/src/engine.rs::new_terf_libint2`) |
 
-## 4.2.1 The kernels in Fourier space
+## The kernels in Fourier space {#terf-table-engine-kernels-fourier-space}
 
 For a radial kernel $K(r)$ the three-dimensional transform is a sine
 transform of $rK(r)$. Do the angular integral of
@@ -50,7 +50,7 @@ The erf transform is standard. For terf, use its structure. In one
 dimension, $\operatorname{terf}(r)$ is the odd function
 $\operatorname{erf}(\omega r)$ convolved with
 $\tfrac12[\delta(r - r_0) + \delta(r + r_0)]$: the convolution shifts erf by
-$\pm r_0$ and averages, which is (4.2). The sine transform of a convolution
+$\pm r_0$ and averages, which is (@eq:erf-terf-2). The sine transform of a convolution
 with that pair of deltas multiplies by $\cos(kr_0)$. So every terf
 transform is the erf transform times $\cos(kr_0)$, and terfc follows from
 terf + terfc = 1:
@@ -97,7 +97,7 @@ OperatorKind::Terf => {
 
 ![The four kernels in r (left) and in k relative to the Coulomb transform (right); terf's transform crosses zero at k r0 = pi/2. Script: book/src/figures/04-operators/kernels_rk.py](../figures/04-operators/kernels_rk.svg)
 
-> **Verified equation 4.1** · Fourier transforms of the short-range kernels
+> **Verified equation {#eq:operators-terf-fourier}** · Fourier transforms of the short-range kernels
 >
 > $\hat K_{\mathrm{terfc}}(k) = (4\pi/k^2)\,(1 - \cos(kr_0)e^{-k^2/4\omega^2})$, and
 > the erfc row of the table, agree with a direct radial quadrature of
@@ -114,7 +114,7 @@ OperatorKind::Terf => {
 
 The same script also proves the sign change of the terf transform and the indefiniteness of its metric (claims sign and indefinite of `scripts/screening_bounds_sympy.py`).
 
-## 4.2.2 The two-center integral and the auxiliary function
+## The two-center integral and the auxiliary function {#terf-table-engine-center-integral-auxiliary-function}
 
 Take $s$ Gaussians $e^{-p|\mathbf r - \mathbf A|^2}$ and
 $e^{-q|\mathbf r - \mathbf B|^2}$ at distance $R$. We want
@@ -176,7 +176,7 @@ checked numerically (the $k$ integral of step 4 against
 $\operatorname{terf}(R; r_0, \phi)/R$, the prefactor identity, and the two
 limits) with mpmath and sympy.
 
-> **Verified equation 4.2** · the $s$-$s$ terf integral is the kernel at sharpness $\phi$
+> **Verified equation {#eq:operators-terf-two-center}** · the $s$-$s$ terf integral is the kernel at sharpness $\phi$
 >
 > For $s$ Gaussians of exponents $p$, $q$ at distance $R$,
 > $(a|\operatorname{terf}|b) = \frac{2\pi^{5/2}}{pq\sqrt{p+q}}\frac{\phi}{\theta}G_0(S, s)$
@@ -339,7 +339,7 @@ mpmath reference needs $I \ge 32$ at $s = 0.5$ and $I \ge 172$ at $s = 80$
 to reach $10^{-14}$, and $1.80s + 40$ sits above those values over
 $s \in [0.01, 80]$.
 
-> **Verified equation 4.3** · the code's Poisson series is $(-\partial_S)^m G_0$
+> **Verified equation {#eq:operators-terf-series}** · the code's Poisson series is $(-\partial_S)^m G_0$
 >
 > The series of `terf_G_series` equals the $m$-th $S$-derivative of the
 > closed form, its derivative in $R$ has the Boys shape, it reduces to $F_m$
@@ -376,7 +376,7 @@ inline bool terf_far_field(double S, double s) {
 $\phi \le \omega$ and $s \le (\omega r_0)^2$; under the curvature
 constraint $s < 1/2$ for every pair.
 
-> **Verified equation 4.4** · far field and the range of $s$
+> **Verified equation {#eq:operators-terf-far-field}** · far field and the range of $s$
 >
 > $G_m = F_m(S)$ to $10^{-12}$ relative where the shim takes the far-field
 > branch ($S > 50$ and $\sqrt S - \sqrt s > 6$), and not at points that pass
@@ -436,7 +436,7 @@ Two points:
   $s$-derivative slots. The shim comment states that $n$ is 0 at every
   call site.
 
-## 4.2.3 Evaluation routes
+## Evaluation routes {#terf-table-engine-evaluation-routes}
 
 | Region | Route | Shim function |
 |---|---|---|
@@ -457,19 +457,19 @@ pair with $S > 50$ already has $\sqrt S - \sqrt s > 6.36$, and the branch is
 the same as with the first test alone. The 6.36 is
 $\sqrt{50} - \sqrt{1/2}$, the smallest gap the constraint allows.
 
-## 4.2.4 Refusals
+## Refusals {#terf-table-engine-refusals}
 
 | Condition | Result |
 |---|---|
 | tables not found | engine construction errors; nothing falls back to Coulomb |
 | total angular momentum reaches the table depth (24) | the `_checked` calls return the refusal |
-| terf in a Schwarz or CSB table | refused (section 5.1) |
+| terf in a Schwarz or CSB table | refused (section @sec:schwarz) |
 
 Why no fallback to Coulomb? A Coulomb integral in place of a terfc one is
 wrong by the whole terf part, the long range that the operator exists to
 remove. Construction fails instead, before any integral is computed.
 
-## 4.2.5 Numerical anchors
+## Numerical anchors {#terf-table-engine-numerical-anchors}
 
 | What | Test | Bar |
 |---|---|---|

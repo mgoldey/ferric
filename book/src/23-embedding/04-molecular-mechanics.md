@@ -1,6 +1,6 @@
-# 23.4 The molecular-mechanics force field
+# The molecular-mechanics force field {#molecular-mechanics}
 
-<!-- section: 23.4; status: ready; registry: mm;
+<!-- status: ready; registry: mm;
      theory: crates/ferric-mm/theory.md#"1. Bonds", "2. Angles", "3. Periodic torsions: proper and improper", "4. The dihedral angle $\phi$ and its gradient (Bekker form)", "5. Nonbonded: Lennard-Jones and Coulomb", "6. Exclusions and 1-4 scaling", "7. QM-MM Lennard-Jones", "8. Opt-in nonbonded cutoff (OpenMM `CutoffNonPeriodic`)" -->
 
 Point charges give the QM region the electrostatics of its surroundings and
@@ -17,11 +17,11 @@ repository's way of doing it is `scripts/validation/mm_topology.py` (the
 function `topology_from_openmm`), which reads the numbers out of a real OpenMM
 system. In QM/MM the force field supplies the terms the wavefunction does not
 describe: the MM–MM energy and the Lennard-Jones between the QM and MM atoms
-(section 23.2.5).
+(section @sec:qmmm-boundaries-additive-mm-terms).
 
-The section goes term by term: bonds, angles and torsions (23.4.1), the
-dihedral gradient (23.4.2), the nonbonded sum and its exclusions (23.4.3),
-the QM–MM Lennard-Jones (23.4.4) and the optional cutoff (23.4.5). The
+The section goes term by term: bonds, angles and torsions (@sec:molecular-mechanics-bonds-angles-torsions), the
+dihedral gradient (@sec:molecular-mechanics-dihedral-angle-gradient), the nonbonded sum and its exclusions (@sec:molecular-mechanics-nonbonded-terms-exclusions-1),
+the QM–MM Lennard-Jones (@sec:molecular-mechanics-qm-mm-lennard-jones) and the optional cutoff (@sec:molecular-mechanics-opt-nonbonded-cutoff). The
 proofs are in `scripts/mm_dihedral_gradient_sympy.py` (60-digit arithmetic,
 a negative control per claim) and `scripts/mm_cutoff_sympy.py`.
 
@@ -50,7 +50,7 @@ the sum of five terms, the fields of `MmEnergy`:
 
 $$ E = E_{\mathrm{bond}} + E_{\mathrm{angle}} + E_{\mathrm{torsion}} + E_{\mathrm{LJ}} + E_{\mathrm{Coul}} . $$
 
-## 23.4.1 Bonds, angles and torsions
+## Bonds, angles and torsions {#molecular-mechanics-bonds-angles-torsions}
 
 **Bonds.** A bond is a harmonic spring about its equilibrium length:
 
@@ -98,7 +98,7 @@ let dtj = [-(dti[0] + dtk[0]), -(dti[1] + dtk[1]), -(dti[2] + dtk[2])];
 | $\mathbf a/\lvert\mathbf a\rvert^2$ | `rji[c] / (rji_n * rji_n)` |
 | $\partial\theta/\partial\mathbf R_i$, $\partial\theta/\partial\mathbf R_k$, $\partial\theta/\partial\mathbf R_j$ | `dti`, `dtk`, `dtj` |
 
-> **Verified equation 23.6** · the bond-angle gradient
+> **Verified equation {#eq:mm-angle-gradient}** · the bond-angle gradient
 >
 > The closed form above equals the exact derivative of
 > $\theta = \arccos\big(\mathbf r_{ji}\cdot\mathbf r_{jk}/(|\mathbf r_{ji}||\mathbf r_{jk}|)\big)$
@@ -121,7 +121,7 @@ undefined. For $\theta_0\ne\pi$ the energy is a cone in the perpendicular
 displacement, not differentiable at its tip. When
 $|\mathbf a\times\mathbf b|^2\le10^{-20}$ the code keeps the finite energy and
 adds no gradient for that angle, the same convention as the degenerate
-torsion of 23.4.2. This zero is the symmetric subgradient. It is ferric's
+torsion of @sec:molecular-mechanics-dihedral-angle-gradient. This zero is the symmetric subgradient. It is ferric's
 convention, and no claim is made that other codes match it.
 `exactly_linear_valence_angle_gradient_is_finite_and_zero` in
 `crates/ferric-mm/tests/terms_fd.rs` pins it. Angles near linear but not
@@ -144,7 +144,7 @@ $n$ is an integer, so $E$ is $2\pi$-periodic in $\phi$, and the $\pm\pi$
 branch cut of $\phi$ is invisible to the energy and the gradient. All that
 remains is $\partial\phi/\partial\mathbf R$.
 
-## 23.4.2 The dihedral angle and its gradient
+## The dihedral angle and its gradient {#molecular-mechanics-dihedral-angle-gradient}
 
 For the quartet $i$-$j$-$k$-$l$ take the three bond vectors and the normals
 to the planes $ijk$ and $jkl$:
@@ -211,7 +211,7 @@ if m_sq > 1e-20 && n_sq > 1e-20 && kj_norm > 1e-20 {
 | $p$, $q$ | `p`, `q` |
 | $\partial\phi/\partial\mathbf R_j$, $\partial\phi/\partial\mathbf R_k$ | `grad_j`, `grad_k` |
 
-> **Verified equation 23.7** · the dihedral gradient
+> **Verified equation {#eq:mm-dihedral-gradient}** · the dihedral gradient
 >
 > The code computes $\phi$ by $\arccos$ with the sign of
 > $\mathbf r_{ij}\cdot\mathbf n$. The identity
@@ -252,7 +252,7 @@ energy and a zero gradient for that torsion (the guard at the top of the
 excerpt); `collinear_valence_angle_torsion_gradient_is_finite_and_zero` in
 `crates/ferric-mm/tests/terms_fd.rs` pins it.
 
-## 23.4.3 Nonbonded terms, exclusions and 1–4 scaling
+## Nonbonded terms, exclusions and 1–4 scaling {#molecular-mechanics-nonbonded-terms-exclusions-1}
 
 Atoms that are not bonded to each other interact through two pair terms. The
 Lennard-Jones term is repulsive at short range, where electron clouds
@@ -271,7 +271,7 @@ $\varepsilon_{ij}=0$, $q_iq_j=0$ or a zero scale is skipped. Coulomb is in
 atomic units, with no $1/4\pi\epsilon_0$. By default
 (`NonbondedMethod::NoCutoff`) all pairs are summed directly: no cutoff, no
 periodic images, no long-range correction. The opt-in cutoff is section
-23.4.5.
+@sec:molecular-mechanics-opt-nonbonded-cutoff.
 
 With $x=(\sigma_{ij}/r)^6$ and $\hat{\mathbf r}=\mathbf r_{ij}/r$, differentiate
 each term in $r$ and multiply by $\partial r/\partial\mathbf R_i = \hat{\mathbf r}$:
@@ -327,24 +327,24 @@ never scaled. That covers the meta carbons of a six-membered ring and any pair
 in a ring of three to five atoms (`crates/ferric-mm/tests/ring_exclusions.rs`).
 Editing `bonds` after construction does not update the sets.
 
-## 23.4.4 The QM–MM Lennard-Jones term
+## The QM–MM Lennard-Jones term {#molecular-mechanics-qm-mm-lennard-jones}
 
 The QM atoms have no MM charges in QM/MM (the wavefunction carries their
 electrostatics), but the wavefunction has no dispersion or overlap repulsion
 toward the MM atoms. The QM–MM Lennard-Jones term supplies it.
-`qm_mm_lj_energy_gradient_scaled` sums the LJ term of 23.4.3 over every pair
+`qm_mm_lj_energy_gradient_scaled` sums the LJ term of @sec:molecular-mechanics-nonbonded-terms-exclusions-1 over every pair
 of a QM atom $a$ and an MM atom $b$, with the same mixing rule and a
 caller-supplied factor $c_{ab}$ per pair. $c_{ab} = 0$ skips the pair, and
 $c_{ab} = 1$ everywhere is bit-identical to the unscaled
 `qm_mm_lj_energy_gradient`. There are no exclusions unless the caller encodes
 them in $c_{ab}$.
 
-`qmmm_mm_terms` (section 23.2.5) does encode them. It takes the factor from the
+`qmmm_mm_terms` (section @sec:qmmm-boundaries-additive-mm-terms) does encode them. It takes the factor from the
 topology's own exclusions, so a QM–MM pair that is 1–2 or 1–3 through the
 bond graph, the cut bond included, contributes nothing, and a 1–4 pair is
 scaled by `scale_lj_14`.
 
-## 23.4.5 The opt-in nonbonded cutoff
+## The opt-in nonbonded cutoff {#molecular-mechanics-opt-nonbonded-cutoff}
 
 The all-pairs sum costs $N^2$. `gradient_with(top, coords, &NonbondedMethod::CutoffNonPeriodic(p))`
 (`ferric-mm/src/cutoff.rs`) replaces it with the form of OpenMM's
@@ -354,7 +354,7 @@ dielectric $\varepsilon_{\mathrm{rf}}>0$ (default 78.3, OpenMM's), and an
 optional switching distance $0\le r_{\mathrm{sw}}<r_c$. Invalid values are
 errors.
 
-The three pair classes of section 23.4.3 are treated differently
+The three pair classes of section @sec:molecular-mechanics-nonbonded-terms-exclusions-1 are treated differently
 (`nonbonded_cutoff`):
 
 | class | range | Coulomb | LJ |
@@ -406,7 +406,7 @@ let dedr = -qq / (r * r) + 2.0 * qq * k_rf * r;
 | $\sum q_iq_j$ over ordinary pairs | `qq_shift`, multiplied by $c_{\mathrm{rf}}$ after the loop |
 | $\partial E_{\mathrm{rf}}/\partial r$ | `dedr` |
 
-> **Verified equation 23.8** · the reaction-field constants and force
+> **Verified equation {#eq:mm-cutoff-reaction-field}** · the reaction-field constants and force
 >
 > $c_{\mathrm{rf}} = 3\varepsilon_{\mathrm{rf}}/((2\varepsilon_{\mathrm{rf}}+1)r_c)$ equals
 > $1/r_c + k_{\mathrm{rf}}r_c^2$ with
@@ -458,7 +458,7 @@ e_lj *= s;
 | $dS/dr$ | `ds` |
 | $\partial(SE_{\mathrm{LJ}})/\partial r$ | `dedr * s + e_lj * ds`, formed before `e_lj` is scaled |
 
-> **Verified equation 23.9** · the switch and the switched derivative
+> **Verified equation {#eq:mm-cutoff-switch}** · the switch and the switched derivative
 >
 > The Horner form equals $1 - 10x^3 + 15x^4 - 6x^5$, with $S(0) = 1$,
 > $S(1) = 0$ and $S'$, $S''$ zero at both ends (claim 3). The code's
@@ -490,7 +490,7 @@ energy and the full gradient are bit-identical to `gradient`, and the Coulomb
 energy differs by exactly $-c_{\mathrm{rf}}\sum q_iq_j$, the constant shift
 (`crates/ferric-mm/tests/cutoff.rs`).
 
-## 23.4.6 The algorithm
+## The algorithm {#molecular-mechanics-algorithm}
 
 | Step | Quantity | Cost | Function |
 |---|---|---|---|
@@ -500,7 +500,7 @@ energy differs by exactly $-c_{\mathrm{rf}}\sum q_iq_j$, the constant shift
 | 4 | with a cutoff: cell list of edge $r_c$, 27 neighbour cells, hashed | $N$ | `neighbor_pairs` |
 | 5 | QM–MM Lennard-Jones across the cut, with the topology's pair scales | $N_{\mathrm{QM}}N_{\mathrm{MM}}$ | `qm_mm_lj_energy_gradient_scaled` |
 
-## 23.4.7 Options
+## Options {#molecular-mechanics-options}
 
 | Option | Values | Default | Effect |
 |---|---|---|---|
@@ -513,7 +513,7 @@ energy differs by exactly $-c_{\mathrm{rf}}\sum q_iq_j$, the constant shift
 The QM/MM paths (`qmmm_mm_terms`, Python `run_qmmm(mm_topology=)`) take no MM
 options and always use the all-pairs sum.
 
-## 23.4.8 Numerical anchors
+## Numerical anchors {#molecular-mechanics-numerical-anchors}
 
 | Quantity | System | Result | Source |
 |---|---|---|---|
@@ -521,11 +521,11 @@ options and always use the all-pairs sum.
 | the cutoff form against OpenMM 8.6 `CutoffNonPeriodic` (Reference platform, `scripts/gen_openmm_mm_cutoff_refs.py`, charges rescaled to OpenMM's Coulomb constant) | ethanol + 12 TIP3P-charged waters, 45 atoms, diameter 14.2 Å; $r_c$ 5 Å with $\varepsilon_{\mathrm{rf}}$ 78.3, with a 4 Å switch, and with 1; $r_c$ 2.9 Å with a 2.2 Å switch (two 1–4 pairs beyond $r_c$) | energy $\le 2.4\times10^{-14}$, gradient $\le 2.4\times10^{-15}$ relative; FD with pairs inside, in the switching region and beyond the cutoff $\le 1.8\times10^{-11}$ Ha/Bohr | same, MM nonbonded cutoff row |
 | QM–MM LJ across a cut against OpenMM's exclusions and exceptions | ethanol cut at C–C | energy $\le 8.7\times10^{-19}$ Ha; gradient $\le 2.0\times10^{-18}$ Ha/Bohr | same, QM–MM LJ row |
 
-## 23.4.9 Sources
+## Sources {#molecular-mechanics-sources}
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-mm/theory.md` | all of 23.4.1 to 23.4.5 |
+| `crates/ferric-mm/theory.md` | all of @sec:molecular-mechanics-bonds-angles-torsions to @sec:molecular-mechanics-opt-nonbonded-cutoff |
 | `scripts/mm_dihedral_gradient_sympy.py`, `scripts/mm_cutoff_sympy.py` | the dihedral and angle gradients, the cutoff identities |
 | `crates/ferric-mm/tests/vs_openmm.rs`, `crates/ferric-mm/tests/validation_mm.rs`, `crates/ferric-mm/tests/cutoff.rs`, `crates/ferric-mm/tests/terms_fd.rs`, `crates/ferric-mm/tests/ring_exclusions.rs` | OpenMM comparisons, FD, and the ring rule |
 

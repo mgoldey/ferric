@@ -1,6 +1,6 @@
-# 3.6 The pVp integral and spin-free X2C-1e
+# The pVp integral and spin-free X2C-1e {#pvp-x2c}
 
-<!-- section: 3.6; status: edit; registry: pvp-integrals;
+<!-- status: edit; registry: pvp-integrals;
      theory: crates/ferric-integrals/theory.md#"The pVp integral" -->
 
 Electrons near a heavy nucleus move fast. In a heavy atom the inner
@@ -24,7 +24,7 @@ transformation that consumes it.
 | CLI | `[scf] relativistic = "x2c1e"` |
 | Python | `AoIntegrals.pvp()`, `AoIntegrals.hcore_x2c(c=None)`, `relativistic=` on the SCF drivers |
 
-## 3.6.1 The pVp integral
+## The pVp integral {#pvp-x2c-pvp-integral}
 
 ### What $W$ is
 
@@ -46,7 +46,7 @@ the relativistic correction lives.
 
 libint2 has no pVp operator, but it has second derivatives of the nuclear
 attraction integral. With $\chi_\mu$ on centre $\mathbf A$ and $\chi_\nu$ on
-centre $\mathbf B$, section 3.3 gives
+centre $\mathbf B$, section @sec:integrals-derivatives gives
 $\partial\chi_\mu/\partial A_a = -\partial_a\chi_\mu$. Differentiate
 $V_{\mu\nu} = \langle\chi_\mu|V|\chi_\nu\rangle$ once with respect to
 $A_a$ and once with respect to $B_a$. Each derivative lands on one function
@@ -94,7 +94,7 @@ Two points about it:
   $O(n_c^2)$ blocks. Chunking keeps that at $O(8^2)$ instead of
   $O(n_{\mathrm{atoms}}^2)$.
 - **Only three of the blocks are used.** The pair indices are those of
-  section 3.3: for $n_c = 1$, `ncoord` is 9 and the blocks $(0,3)$, $(1,4)$,
+  section @sec:integrals-derivatives: for $n_c = 1$, `ncoord` is 9 and the blocks $(0,3)$, $(1,4)$,
   $(2,5)$ sit at indices 3, 12 and 20 of 45. Everything else libint2
   computes, including all charge derivatives, is discarded.
 
@@ -130,7 +130,7 @@ of the definition and checks the $p$-shell trace;
 `crates/ferric-integrals/tests/pvp.rs` checks the code against these closed
 forms.
 
-> **Verified equation 3.1** · the same-centre $s$ closed form of $W$
+> **Verified equation {#eq:integrals-pvp-ss-closed-form}** · the same-centre $s$ closed form of $W$
 >
 > For primitive $s$ functions on one centre and a charge $Z$ at distance $D$,
 > $W = -4abZN_aN_bI_2$ with $I_2$ as above, including the limit
@@ -146,7 +146,7 @@ forms.
 >
 > <!-- verified: id=integrals.pvp.ss-closed-form; script=scripts/pvp_ss_sympy.py; claim=1; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-integrals/src/pvp.rs::pvp; rust_test=ferric-integrals/tests/pvp.rs::same_centre_s_and_p_match_the_closed_forms; registry=pvp-integrals -->
 
-> **Verified equation 3.2** · the $p$-shell trace of $W$
+> **Verified equation {#eq:integrals-pvp-p-trace}** · the $p$-shell trace of $W$
 >
 > For $p$ shells on one centre with the charge on the centre,
 > $\operatorname{tr} W = -ZN_aN_b\,4\pi\,[3/(2p) - 1/p + 4ab/p^3]$, the same in
@@ -166,7 +166,7 @@ is checked numerically in `crates/ferric-integrals/tests/pvp.rs`
 difference of $V$, with a bar derived from the step and the rounding of a
 second difference.
 
-## 3.6.2 Spin-free X2C-1e
+## Spin-free X2C-1e {#pvp-x2c-spin-free-x2c-1e}
 
 ### The modified Dirac equation
 
@@ -277,7 +277,7 @@ its equations are written out in `scripts/prototypes/x2c_derivation.md`. The
 derivation belongs in `crates/ferric-scf/theory.md`. Until it is there, this
 subsection is the derivation of record and the section stays at `edit`.
 
-## 3.6.3 Numerical anchors
+## Numerical anchors {#pvp-x2c-numerical-anchors}
 
 From the X2C-1e row of `site/src/reference/validation.md`:
 
