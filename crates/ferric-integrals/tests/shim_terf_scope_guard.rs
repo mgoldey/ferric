@@ -29,6 +29,9 @@ const EXEMPT: &[&str] = &[
     "scf_compute_terfc_eri4",
     "scf_compute_terf_eri2",
     "scf_compute_terf_eri4",
+    // Derivatives on the same standalone table engine.
+    "scf_compute_terf_table_eri3_deriv",
+    "scf_compute_terf_table_eri2_deriv",
 ];
 
 /// Replace `//` and `/* */` comments with spaces, keeping newlines.
