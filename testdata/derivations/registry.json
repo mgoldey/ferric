@@ -180,6 +180,10 @@
       "scs-mp2-gradient",
       "geometry-search"
     ],
+    "optimize:scs-mp2-2terfc": [
+      "scs-2terfc-gradient",
+      "geometry-search"
+    ],
     "optimize:uhf": [
       "hf-gradient",
       "geometry-search"
