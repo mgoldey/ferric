@@ -62,7 +62,8 @@ pub enum CasScfIntegrals {
     /// [`DEFAULT_INTEGRAL_THRESH`]. The dense route re-reads one block per
     /// iteration where the direct one recomputes every shell quartet three
     /// times (benzene/cc-pVDZ CAS(6,6): 4.1 s per macro iteration direct,
-    /// 0.29 s dense, `crates/ferric-ci/theory.md`), so the direct route is
+    /// 0.29 s dense, `book/src/17-multireference/05-casscf.md#casscf-proven-routes`), so the direct
+    /// route is
     /// for the bases whose block does not fit.
     Auto,
     /// Density-fitted integrals in the bundled auxiliary basis `aux` (the

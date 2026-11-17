@@ -3,7 +3,7 @@
 //! Single root, spin-summed RDMs, real orbitals, chemist notation. The start
 //! is a closed-shell RHF reference; the active space is the `n_active`
 //! orbitals above the `n_core` doubly occupied ones. Equations and the
-//! validation record: `crates/ferric-ci/theory.md` ("Two-step CASSCF").
+//! validation record: `book/src/17-multireference/05-casscf.md#casscf`.
 //!
 //! One macro iteration at orbitals `C = [C_c | C_a | C_v]`:
 //!

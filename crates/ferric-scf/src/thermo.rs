@@ -20,7 +20,7 @@
 //!
 //! Every energy is per molecule in Hartree and every entropy and heat
 //! capacity in Hartree/K, so `R` here is `k_B / E_h`. Derivation:
-//! `crates/ferric-scf/theory.md`, "RRHO thermochemistry"; proof:
+//! `book/src/14-derivatives/06-frequencies.md#frequencies-thermochemistry-ir-intensities`; proof:
 //! `scripts/rrho_thermo_sympy.py`.
 //!
 //! Imaginary modes (negative wavenumbers) are left out of the vibrational

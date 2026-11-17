@@ -295,8 +295,8 @@ where
 /// energy-weighted density comes from the converged orbitals and eigenvalues
 /// of the hooked Fock matrix (or, for ROHF, from the hooked spin Fock
 /// matrices). Only the explicit term is the caller's; what it must and must
-/// not contain is derived in this crate's `theory.md` ("Fock hooks and their
-/// nuclear gradient"). A mis-shaped or non-finite `explicit` is an error.
+/// not contain is derived in `book/src/07-hartree-fock/06-fock-hooks.md#fock-hooks-equations`. A
+/// mis-shaped or non-finite `explicit` is an error.
 pub fn with_fock_hook_gradient(
     grad: Array2<f64>,
     explicit: &Array2<f64>,

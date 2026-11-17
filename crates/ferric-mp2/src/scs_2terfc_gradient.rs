@@ -14,14 +14,20 @@
 //! ```
 //!
 //! Each term builds its amplitudes, scaled unrelaxed density, `Imat` and
-//! 3c/2c RI response on its own terfc kernel (the WD-1 terfc pieces, theory.md
-//! §9.5, with the spin-component split of §9.2). The reference, its Fock
+//! 3c/2c RI response on its own terfc kernel (the WD-1 terfc pieces,
+//! `book/src/15-correlated-gradients/02-rimp2-gradient.md#rimp2-gradient-attenuated-erfc-ri-mp2`,
+//! with the spin-component split of
+//! `book/src/15-correlated-gradients/02-rimp2-gradient.md#rimp2-gradient-scs-mp2`). The reference,
+//! its Fock
 //! stationarity and the Z-vector stay Coulomb, and since every first
 //! variation of the energy is linear in `(Imat, P)`, the two terms close ONE
-//! Z-vector on the summed right-hand side (theory.md §9.6). On a UHF
+//! Z-vector on the summed right-hand side
+//! (`book/src/15-correlated-gradients/02-rimp2-gradient.md#rimp2-gradient`). On a UHF
 //! reference the same two terms run through the unrestricted gradient, with
 //! the same-spin (`αα`, `ββ`) and opposite-spin (`αβ`) products weighted
-//! separately (theory.md §15.2). A ROHF reference is refused, as for every
+//! separately
+//! (`book/src/15-correlated-gradients/07-u-rimp2-gradient.md#u-rimp2-gradient-terfc-scs-mp2-2terfc`).
+//! A ROHF reference is refused, as for every
 //! unrestricted RI-MP2 gradient
 //! ([`crate::u_rimp2_gradient::ROHF_REFUSAL`]).
 

@@ -1753,7 +1753,8 @@ impl Mp2Intermediates {
 ///
 /// The Z-vector right-hand side, the frozen core–active block, the relaxed
 /// density and the energy-weighted density are built from `Imat` and `P`,
-/// so they need no change of their own. `crates/ferric-mp2/theory.md` has
+/// so they need no change of their own.
+/// `book/src/15-correlated-gradients/02-rimp2-gradient.md#rimp2-gradient` has
 /// the same derivation.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SpinScaling {

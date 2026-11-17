@@ -6,7 +6,7 @@
 //!
 //! The Hessian has four parts: the direct pair block at fixed `C6`, the mixed
 //! `r`/`CN` term, the `CN`-`CN` term (`∂²C6/∂CN²` and `∂²C6/∂CN_i∂CN_j`) and
-//! the `e_a ∂²CN_a` term (`theory.md`, "Hessian").
+//! the `e_a ∂²CN_a` term (`book/src/25-dispersion/01-d3bj.md#d3bj-hessian`).
 //!
 //! * All four right: the FD error falls as `h²` (ratio ~4 per halving) down to
 //!   the derived truncation bar, on every system.

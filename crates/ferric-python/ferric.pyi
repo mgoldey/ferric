@@ -4155,8 +4155,7 @@ def run_rhf(
     positions at fixed D: integrals over AOs centred on the atoms (for
     V = lam * hcore, lam * AoIntegrals.grad_hcore(D)), operator centres on
     atoms, classical terms. A hook that depends on D only has grad = zeros.
-    Derivation: crates/ferric-scf/theory.md, "Fock hooks and their nuclear
-    gradient".
+    Derivation: `book/src/07-hartree-fock/06-fock-hooks.md#fock-hooks-equations`.
 
     symmetry=True (default False; False is byte-identical to before): detect
     the highest Abelian point group, symmetrize and reorient the geometry, and

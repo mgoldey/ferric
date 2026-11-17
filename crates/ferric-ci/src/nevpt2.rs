@@ -13,7 +13,7 @@
 //! skipping labels with `|N_l| <= 1e-14`
 //! ([`NORM_ZERO`](crate::nevpt2::NORM_ZERO)). Definitions, conventions and
 //! the derivation: `scripts/prototypes/nevpt2_derivation.md`
-//! and `crates/ferric-ci/theory.md` ("SC-NEVPT2").
+//! and `book/src/17-multireference/06-nevpt2.md#nevpt2-method`.
 //!
 //! # Orbitals
 //!

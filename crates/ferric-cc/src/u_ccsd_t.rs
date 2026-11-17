@@ -27,7 +27,7 @@
 //! orderings times 3 positions of the beta virtual, over 36, is 1/2 (the
 //! canonical loop visits each unordered alpha pair once and all alpha virtual
 //! orderings). Derivation and the counting proof:
-//! `crates/ferric-cc/theory.md` ("Unrestricted CCSD and CCSD(T)") and
+//! `book/src/16-coupled-cluster/08-uccsd.md#uccsd-equations` and
 //! `scripts/cc_uccsd_spin_blocks_sympy.py`.
 //!
 //! `X` and `Y` for a fixed occupied triple are built block by block from the

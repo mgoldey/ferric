@@ -1,7 +1,7 @@
 //! A pure functional's DF gradient reads the SCF's PAIR-SCREENED RI-J tensor
 //! (`ferric_scf::raw_handoff`), with pairs the screen dropped contributing
-//! zero, as in the SCF energy. Derivation: `crates/ferric-scf/theory.md`,
-//! "RI-J gradient on a pair-screened tensor".
+//! zero, as in the SCF energy. Derivation:
+//! `book/src/14-derivatives/02-df-jk-gradient.md#df-jk-gradient-pair-screened-ri-j`.
 //!
 //! Anchors and bars
 //!

@@ -1,6 +1,7 @@
 //! IEF-PCM analytic nuclear gradient threaded through the SCF gradient
 //! dispatchers (`restricted_scf_gradient`, `unrestricted_scf_gradient`,
-//! `restricted_open_scf_gradient`; `crates/ferric-pcm/theory.md` §8).
+//! `restricted_open_scf_gradient`;
+//! `book/src/22-implicit-solvation/04-gradient.md#gradient-derivative`).
 //!
 //! * Central finite differences of ferric's own solvated SCF energy
 //!   (RHF water, RHF C1 methanol, RKS-LDA water, UHF and ROHF NH2).
@@ -390,5 +391,6 @@ fn rhf_pcm_gradient_matches_pyscf() {
 }
 
 /// ferric vs PySCF PCM gradient bar (Ha/Bohr). Set from the measured
-/// agreement (see the test's eprintln output and theory.md §8).
+/// agreement (see the test's eprintln output and
+/// `book/src/22-implicit-solvation/04-gradient.md#gradient-derivative`).
 const PYSCF_GRAD_TOL: f64 = 1e-6;

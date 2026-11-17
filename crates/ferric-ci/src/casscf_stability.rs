@@ -48,7 +48,7 @@
 //! [`CasScfStabilityMode::Follow`] rotates the orbitals by [`FOLLOW_STEP`](crate::casscf_stability::FOLLOW_STEP)
 //! along the eigenvector (the sign with the lower energy, halving the step
 //! when neither lowers it) and converges again, at most [`MAX_FOLLOW`](crate::casscf_stability::MAX_FOLLOW) times.
-//! Equations and measurements: `crates/ferric-ci/theory.md`.
+//! Equations and measurements: `book/src/17-multireference/05-casscf.md#casscf-second-order-check`.
 
 use crate::casscf::{CasScfPoint, CasScfProblem};
 use crate::casscf_newton::OrbitalHessian;
@@ -87,7 +87,8 @@ const CI_PRECOND_FLOOR: f64 = 1e-4;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CasScfStabilityMode {
     /// No second-order check (the default: the check costs 0.5 to 3 times
-    /// the CASSCF it checks, `crates/ferric-ci/theory.md`).
+    /// the CASSCF it checks,
+    /// `book/src/17-multireference/05-casscf.md#casscf-proven-second-order`).
     #[default]
     Off,
     /// The lowest eigenvalue is computed and reported
@@ -390,8 +391,8 @@ impl CasScfProblem<'_> {
     }
 
     /// [`Self::stability`] with the CI response (`with_ci`), or the same
-    /// eigensolve on the fixed-RDM Hessian `H_oo` (the comparison of
-    /// `theory.md`).
+    /// eigensolve on the fixed-RDM Hessian `H_oo` (the comparison in
+    /// `book/src/17-multireference/05-casscf.md#casscf-proven-second-order`).
     pub fn stability_with(
         &self,
         c: &Array2<f64>,

@@ -15,8 +15,8 @@
 //! is allocated: the terms resident from the J/K route set-up to the end of
 //! the gradient, plus the largest stage transient. [`preflight_fitted_gradient`](crate::gradient_memory::preflight_fitted_gradient)
 //! checks it against the budget and errors with the breakdown when it does
-//! not fit. The model is in `crates/ferric-scf/theory.md`, "Peak memory of the
-//! fitted MP2 gradient".
+//! not fit. The model is in
+//! `book/src/15-correlated-gradients/02-rimp2-gradient.md#rimp2-gradient-fitted-peak-memory`.
 
 use ferric_core::memory::plan::{Lifetime, MemoryPlan};
 use ferric_core::mol::Molecule;

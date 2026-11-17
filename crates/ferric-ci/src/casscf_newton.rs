@@ -57,8 +57,8 @@
 //! each accepted step measures the curvature ratio `β` along itself
 //! (`curvature_stretch`) and the next AH step is multiplied by `β`,
 //! clamped to `[1, AH_MAX_STRETCH]`; the predicted change uses the same
-//! `β`. Equations
-//! and measurements: `crates/ferric-ci/theory.md`; prototype
+//! `β`. Equations and measurements:
+//! `book/src/17-multireference/05-casscf.md#casscf-proven-optimizers`; prototype
 //! `scripts/prototypes/casscf_newton_proto.py`.
 
 use crate::casscf::{CasScfConfig, CasScfPoint, CasScfProblem};

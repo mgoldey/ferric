@@ -125,8 +125,7 @@
 //!   response densities `C (U n_σ + n_σ Uᵀ) Cᵀ` have the same form with
 //!   `C_σ,o = C[:, ..n_σ]`, `X_σ = (C U)[:, ..n_σ]` (`crate::hessian::rohf`).
 //!   The α and β rotations stay ONE coupled system through the Coulomb term.
-//!   Derivation: `crates/ferric-scf/theory.md`, "Factored RI-K in the
-//!   open-shell CPHF".
+//!   Derivation: `book/src/14-derivatives/04-hf-hessian.md#hf-hessian-factored-ri-k`.
 //! * **Closed-shell limit.** `D_α = D_β = D/2`: `X_σ = X/√2`, `L^σ = L/2`, so
 //!   `Σ_σ α_σ L^σ·M L^σ = 2(−½)(¼) L·M L = −¼ L·M L`, the closed-shell
 //!   energy; every piece above reduces to the closed-shell piece, which is the

@@ -7,8 +7,9 @@
 //! The derivative kernel is the McMurchie-Davidson kernel of the values with
 //! every Hermite E table replaced by its centre derivative,
 //! `dE^{i,j}_t/dA = 2a E^{i+1,j}_t − i E^{i−1,j}_t`, and the R table built one
-//! order higher (`crates/ferric-integrals/theory.md`, "Derivative integrals of
-//! terf and terfc"). That machinery is the same for every kernel, so:
+//! order higher
+//! (`book/src/04-operators/02-terf-table-engine.md#terf-table-engine-derivative-integrals`). That
+//! machinery is the same for every kernel, so:
 //!
 //! 1. **Coulomb through the same kernel vs libint2** (anchor, no tables):
 //!    `scf_debug_md_coulomb_eri{3,2}_deriv` against libint2's own derivative

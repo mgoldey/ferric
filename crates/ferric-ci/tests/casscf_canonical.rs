@@ -55,7 +55,7 @@
 //!
 //! # Measured (2026-11-11) and mutations
 //!
-//! Tables in `crates/ferric-ci/theory.md` ("Two-step CASSCF").
+//! Tables in `book/src/17-multireference/05-casscf.md#casscf`.
 
 mod casscf_common;
 

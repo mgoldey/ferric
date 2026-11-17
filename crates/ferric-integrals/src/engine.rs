@@ -1710,8 +1710,8 @@ impl Engine {
     /// For [`OperatorKind::Terfc`] and [`OperatorKind::Terf`] this is the
     /// shim's table engine: the McMurchie-Davidson kernel of the values,
     /// differentiated through `d/dA x_A^i e^{-a x_A^2} = 2a x_A^{i+1} e - i x_A^{i-1} e`
-    /// (`crates/ferric-integrals/theory.md`, "Derivative integrals of terf and
-    /// terfc"). It never screens, and it errors when the largest
+    /// (`book/src/04-operators/02-terf-table-engine.md#terf-table-engine-derivative-integrals`). It
+    /// never screens, and it errors when the largest
     /// `l_P + l_mu + l_nu + 1` reaches the table depth.
     pub fn new_3center_deriv(
         op: Operator,

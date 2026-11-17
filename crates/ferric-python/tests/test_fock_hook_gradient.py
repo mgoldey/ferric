@@ -4,7 +4,7 @@ The gradient of a hooked SCF is the built-in analytic gradient of the hooked
 result (its energy-weighted density comes from the hooked orbitals, so it
 carries the hook's Pulay term) plus the hook's EXPLICIT term dE_hook/dR at
 fixed AO density, which the caller supplies (derivation:
-crates/ferric-scf/theory.md, "Fock hooks and their nuclear gradient").
+`book/src/07-hartree-fock/06-fock-hooks.md#fock-hooks-equations`).
 
 Hooks used (each a function of the AO density and the geometry):
 

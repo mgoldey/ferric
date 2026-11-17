@@ -9,7 +9,7 @@
 //! `(P|ia)` integrals AND the RI metric `(P|Q)` (the energy builds both with
 //! the same operator, see `ri_mp2_spin_components`). So the gradient is the
 //! relaxed RI-MP2 gradient with the operators split
-//! (`crates/ferric-mp2/theory.md`, section "Attenuated RI-MP2 gradient"):
+//! (`book/src/15-correlated-gradients/02-rimp2-gradient.md#rimp2-gradient-attenuated-erfc-ri-mp2`):
 //!
 //! * erfc: the amplitudes and unrelaxed densities, `b_full` and the
 //!   Lagrangian `Imat` of the Z-vector right-hand side, and the 3c/2c
@@ -24,22 +24,27 @@
 //!
 //! The terfc-attenuated energy `E_HF[1/r] + E_c[terfc(r; r0, ω)/r]` (no
 //! scaling; the `att_operator = "terfc"` energy of the CLI) has the same
-//! gradient with terfc in place of erfc (theory.md §9.5):
+//! gradient with terfc in place of erfc
+//! (`book/src/15-correlated-gradients/02-rimp2-gradient.md#rimp2-gradient-attenuated-erfc-ri-mp2`):
 //! [`terfc_rimp2_gradient_analytical`](crate::att_rimp2_gradient::terfc_rimp2_gradient_analytical),
 //! [`total_terfc_rimp2_gradient_on`](crate::att_rimp2_gradient::total_terfc_rimp2_gradient_on).
 //! The 3c/2c derivative integrals come from the terf table engine
-//! (`crates/ferric-integrals/theory.md`, "Derivative integrals of terf and
-//! terfc"). On a UHF reference the terfc energy `E_UHF + E_c[terfc]`
+//! (`book/src/04-operators/02-terf-table-engine.md#terf-table-engine-derivative-integrals`). On a
+//! UHF reference the terfc energy `E_UHF + E_c[terfc]`
 //! ([`crate::u_rimp2::u_ri_mp2`] on terfc) has the unrestricted gradient
-//! with the same split (theory.md §15.1):
+//! with the same split
+//! (`book/src/15-correlated-gradients/07-u-rimp2-gradient.md#u-rimp2-gradient-attenuated-erfc-variant`):
 //! [`u_terfc_rimp2_gradient_analytical`](crate::att_rimp2_gradient::u_terfc_rimp2_gradient_analytical),
 //! [`total_u_terfc_rimp2_gradient_on`](crate::att_rimp2_gradient::total_u_terfc_rimp2_gradient_on).
 //!
 //! On a UHF reference ([`u_att_rimp2_gradient_analytical`](crate::att_rimp2_gradient::u_att_rimp2_gradient_analytical),
 //! [`total_u_att_rimp2_gradient_on`](crate::att_rimp2_gradient::total_u_att_rimp2_gradient_on)) the energy is
-//! `E_UHF[1/r] + s · (E_αα + E_ββ + E_αβ)[erfc]` (theory.md §5.1) and the
+//! `E_UHF[1/r] + s · (E_αα + E_ββ + E_αβ)[erfc]`
+//! (`book/src/10-mp2/04-attenuated-mp2.md#attenuated-mp2`) and the
 //! gradient is the unrestricted RI-MP2 gradient of
-//! [`crate::u_rimp2_gradient`] with the same split (theory.md §15.1): erfc in
+//! [`crate::u_rimp2_gradient`] with the same split
+//! (`book/src/15-correlated-gradients/07-u-rimp2-gradient.md#u-rimp2-gradient-attenuated-erfc-variant`):
+//! erfc in
 //! the per-spin amplitudes, `x^σ`, `Imat^σ` and the 3c/2c response; Coulomb
 //! in the coupled UHF Z-vector, the `veff^σ` of the correlation densities and
 //! the two-electron derivative. A ROHF reference is refused
@@ -578,7 +583,8 @@ mod tests {
     /// For the ω → 0 anchor the operator itself differs by
     /// `erfc(ωr)/r − 1/r = −2ω/√π + O(ω³r²)`: at `ω = 1e-7` Bohr⁻¹ the shift
     /// of the fitted `(ia|jb)` is `(2ω/√π) q_ia q_jb ≲ 1.1e-7 · 1e-4`, and of
-    /// the gradient the same order, `≲ 1e-11` (theory.md §9.4).
+    /// the gradient the same order, `≲ 1e-11`
+    /// (`book/src/15-correlated-gradients/02-rimp2-gradient.md#rimp2-gradient-attenuated-erfc-ri-mp2`).
     const ANCHOR_BAR: f64 = 1e-10;
 
     fn att(omega_bohr_inv: f64, scaling: f64, frozen_core: usize) -> AttenuatedMp2Config {

@@ -1,6 +1,6 @@
 //! Nuclear gradient of a Fock-hooked SCF
 //! (`gradient::with_fock_hook_gradient`; derivation in this crate's
-//! `theory.md`, "Fock hooks and their nuclear gradient").
+//! `book/src/07-hartree-fock/06-fock-hooks.md#fock-hooks-equations`).
 //!
 //! The hook reproduces a built-in feature: one fixed point charge, entered as
 //! the hook `V = h_ext - h` (its nuclear-attraction matrix) with

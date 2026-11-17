@@ -17,7 +17,7 @@
 //! A Kohn–Sham orbital energy never enters. For a HF reference at
 //! convergence the rotation only resolves degeneracies and `E_NBS` vanishes
 //! with the orbital gradient (UHF, RHF); ROHF keeps a non-zero `F_ia`.
-//! Equations: `crates/ferric-mp2/theory.md` §6.2.
+//! Equations: `book/src/10-mp2/11-opmp3.md#opmp3`.
 
 use crate::rimp2::active_occ;
 use ferric_core::mol::Molecule;

@@ -19,8 +19,9 @@
 //! paper, rows H-He, Li-Ne, Na and heavier). Each term is a rank-one positive
 //! semi-definite matrix built from a translation- and rotation-invariant
 //! primitive, so `H_cart` is symmetric, positive semi-definite, and has the
-//! rigid-body motions in its null space. Equations: `crates/ferric-scf/theory.md`,
-//! "Lindh model Hessian"; proof `scripts/lindh_hessian_sympy.py`.
+//! rigid-body motions in its null space. Equations:
+//! `book/src/14-derivatives/08-geometry-search.md#geometry-search-lindh-model-hessian`; proof
+//! `scripts/lindh_hessian_sympy.py`.
 //!
 //! # Terms that are dropped
 //!

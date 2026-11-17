@@ -2,7 +2,7 @@
 //! paths that no SCF-level test reaches. Pure-function inputs (S = 1, C = 1):
 //! each pair of cases brackets the gate's tolerance, so loosening or removing
 //! the gate flips an assertion. The tolerances are tabulated in
-//! `crates/ferric-pbc/theory.md` ("Refusal gates and tolerances").
+//! `book/src/24-periodic/07-forces.md#forces-refusal-gates`.
 
 use ferric_pbc::grad::rohf_orbital_gradient;
 use ndarray::Array2;

@@ -7,8 +7,9 @@
 //! two spins coupled only through the Coulomb part of the orbital Hessian and
 //! of the two-electron derivative. The derivation, and the closed-shell
 //! reduction (`P^α = P^β = P/2`, `Imat^α = Imat^β = Imat/2`, `z^α = z^β =
-//! z/2`), is `crates/ferric-mp2/theory.md`, "Unrestricted RI-MP2 nuclear
-//! gradient"; the scalar identities are checked by
+//! z/2`), is
+//! `book/src/15-correlated-gradients/07-u-rimp2-gradient.md#u-rimp2-gradient-energy-weights`; the
+//! scalar identities are checked by
 //! `scripts/u_rimp2_gradient_sympy.py`.
 //!
 //! Per spin σ (`i, j` occupied, `a, b` virtual, `p, q` any MO, all of spin σ):
@@ -568,7 +569,9 @@ fn u_rimp2_gradient_timed(
 
 /// `d(E_UHF + E_c[corr])/dR` on the converged Coulomb UHF `uhf`: the
 /// U-RI-MP2 Lagrangian with the operators split as in the closed-shell
-/// attenuated gradient (`theory.md` §15.1). `corr.op` builds the amplitudes,
+/// attenuated gradient
+/// (`book/src/15-correlated-gradients/07-u-rimp2-gradient.md#u-rimp2-gradient-attenuated-erfc-variant`).
+/// `corr.op` builds the amplitudes,
 /// `b_full` of `Imat^σ` and the 3c/2c RI response; `bounds.op` (Coulomb) the
 /// Z-vector Hessian, the `veff` of the correlation density and the
 /// two-electron derivative.
@@ -626,7 +629,9 @@ impl UTermParts {
 /// `d(E_UHF + Σ_k E_c[corr_k])/dR`: each term builds its own amplitudes,
 /// `Imat^σ`, unrelaxed densities and RI response on its operator and with
 /// its spin scaling, one term resident at a time; the sums close ONE coupled
-/// Z-vector and one relaxed Lagrangian (theory.md §15.2). Every first
+/// Z-vector and one relaxed Lagrangian
+/// (`book/src/15-correlated-gradients/07-u-rimp2-gradient.md#u-rimp2-gradient-terfc-scs-mp2-2terfc`).
+/// Every first
 /// variation of `E_c` is linear in `x^σ` and the unrelaxed densities, so
 /// the sums are exact.
 #[allow(clippy::too_many_arguments)]
@@ -838,7 +843,8 @@ fn u_term_parts(
     } else {
         // `c_ss (E_αα + E_ββ) + c_os E_αβ`: x^σ and the densities split into
         // same-spin and opposite-spin products with no cross term, each
-        // carrying its own coefficient (theory.md §15.2).
+        // carrying its own coefficient
+        // (`book/src/15-correlated-gradients/07-u-rimp2-gradient.md#u-rimp2-gradient-terfc-scs-mp2-2terfc`).
         let dens = acc.time("unrelaxed densities", || {
             build_u_mp2_density_scaled(&amps, c_ss, c_os)
         });
@@ -850,7 +856,8 @@ fn u_term_parts(
 
     // Imat^σ = ½ build_imat_ri(x^σ, b^σ_full): the closed-shell builder's
     // factor −2 is the 2-PDM weight 2·(2t − t̄) of both spins; one spin with
-    // its energy weight carries half of it (theory.md).
+    // its energy weight carries half of it
+    // (`book/src/15-correlated-gradients/07-u-rimp2-gradient.md#u-rimp2-gradient-energy-weights`).
     let imat = {
         let tok = acc.begin("Imat^σ (b_full per spin)");
         let ao = crate::oo_rimp2::OoRiMp2AoTensors::build_with_budget(
@@ -1082,8 +1089,9 @@ mod tests {
 
     /// EXACTNESS ANCHOR. A closed-shell reference written as a UHF (α ≡ β)
     /// has `P^α = P^β = P/2`, `Imat^σ = Imat/2`, `z^σ = z/2`, and every term
-    /// of the unrestricted Lagrangian sums to the restricted one (theory.md,
-    /// "closed-shell limit"). Same orbitals on both sides, so the only
+    /// of the unrestricted Lagrangian sums to the restricted one
+    /// (`book/src/15-correlated-gradients/07-u-rimp2-gradient.md#u-rimp2-gradient-closed-shell-limit`).
+    /// Same orbitals on both sides, so the only
     /// differences are (i) operation order, and (ii) the two Z-vector
     /// residuals, each `< 1e-12`. The gradient error from a residual `r` is
     /// `≤ max|∂_R Xvo| · ‖A⁻¹‖ · r ≲ 10 · (1/Δε_min ≈ 2) · 1e-12 = 2e-11`;

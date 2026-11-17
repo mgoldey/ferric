@@ -3306,7 +3306,7 @@ bool compute_cart_eri2(const Shell &shP, const Shell &shQ,
 //
 //  The derivative of a primitive Cartesian Gaussian with respect to its own
 //  centre is a combination of the same Gaussian one angular-momentum unit up
-//  and down (crates/ferric-integrals/theory.md, "Derivative integrals"):
+//  and down (`book/src/03-integrals/03-derivatives.md#integrals-derivatives`):
 //
 //      d/dA_x [ x_A^i e^{-a x_A^2} ] = 2a x_A^{i+1} e^{-a x_A^2} - i x_A^{i-1} e^{-a x_A^2}.
 //

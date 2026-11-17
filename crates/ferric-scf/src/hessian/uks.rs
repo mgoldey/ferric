@@ -24,7 +24,7 @@
 //!   ([`crate::ks_fixed_grid::PolarizedXcResponse`]: the αα, αβ and ββ blocks
 //!   of `f_xc`, `σ` couplings included for a GGA).
 //!
-//! Equations: `crates/ferric-scf/theory.md` ("Open shell"); the spin algebra
+//! Equations: `book/src/14-derivatives/05-ks-hessian.md#ks-hessian-xc-terms`; the spin algebra
 //! is proved in `scripts/uks_xc_hessian_sympy.py`. An ECP adds its skeleton
 //! (total density) and `∂V_ECP/∂x` to both spins' `F^{s,x}`, as in the UHF
 //! Hessian. Refused with a typed error: meta-GGA, VV10, range-separated and

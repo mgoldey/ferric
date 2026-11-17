@@ -349,7 +349,7 @@ fn signed_channels(d: &Array2<f64>, weight: f64) -> Result<Vec<(Array2<f64>, f64
 /// ([`df_jk_gradient_at_precision`], the route's RI-J precision). The
 /// exchange channels of `u` and `v` share one three-centre pass; the Coulomb
 /// part of `v` is a second, J-only pass. Derivation:
-/// `crates/ferric-mp2/theory.md` §9.1.
+/// `book/src/15-correlated-gradients/02-rimp2-gradient.md#rimp2-gradient-fitted-ri-jk-reference`.
 pub fn fitted_bilinear_gradient(
     mol: &Molecule,
     prep: &PreparedBasis,
@@ -421,8 +421,8 @@ fn rijk_aux<'r>(route: &'r DfJkRoute, who: &str) -> Result<&'r String, FerricErr
 /// `+½`) share one three-centre pass with the Coulomb part of `u_T`; the
 /// Coulomb part of `v_T` is a second, J-only pass. The closed-shell
 /// [`fitted_bilinear_gradient`] is the case `X_α = X_β`, `Y_α = Y_β`
-/// (`2 · Q_K(D/2) · ½ = ¼ Q_K(D)`). Derivation: `crates/ferric-mp2/theory.md`,
-/// "Unrestricted RI-MP2 nuclear gradient".
+/// (`2 · Q_K(D/2) · ½ = ¼ Q_K(D)`). Derivation:
+/// `book/src/15-correlated-gradients/07-u-rimp2-gradient.md#u-rimp2-gradient-energy-weights`.
 pub fn fitted_bilinear_gradient_open(
     mol: &Molecule,
     prep: &PreparedBasis,

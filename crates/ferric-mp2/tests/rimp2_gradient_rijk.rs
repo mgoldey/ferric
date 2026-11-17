@@ -5,7 +5,9 @@
 //!
 //! [`total_rimp2_gradient_on`] with `scf_jk = "rijk"` (RI-J + RI-K on
 //! def2-universal-jkfit; SCF, Z-vector, correlation-density potential and the
-//! separable two-electron derivative all fitted, `theory.md` §9.1) against a
+//! separable two-electron derivative all fitted,
+//! `book/src/15-correlated-gradients/02-rimp2-gradient.md#rimp2-gradient-fitted-ri-jk-reference`)
+//! against a
 //! central finite difference of the SAME fitted total energy, `E_HF[RI-JK] +
 //! E_MP2[RI]`, on distorted water and methane (cc-pVDZ / cc-pvdz-ri) and on
 //! water with one frozen core orbital.

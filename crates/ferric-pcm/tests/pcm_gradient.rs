@@ -1,5 +1,6 @@
 //! Analytic `∂E_pcm/∂R` at a FIXED AO density against central finite
-//! differences of `pcm_step`'s energy (`crates/ferric-pcm/theory.md` §8).
+//! differences of `pcm_step`'s energy
+//! (`book/src/22-implicit-solvation/04-gradient.md#gradient-derivative`).
 //!
 //! The AO density `P` is held fixed in the AO basis while the atoms (and
 //! with them the basis functions and the cavity) move, so `E_pcm(R; P)` is a

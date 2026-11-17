@@ -320,8 +320,7 @@ impl URiMp2Components {
     /// The opposite-spin / same-spin split the SCS and attenuated drivers
     /// read: `e_os = e_ab`, `e_ss = e_aa + e_bb`. On a closed-shell reference
     /// written as a UHF (α ≡ β) these equal the restricted
-    /// [`crate::rimp2::SpinComponents`] (theory.md, "Open-shell attenuated
-    /// and spin-scaled MP2").
+    /// [`crate::rimp2::SpinComponents`] (`book/src/10-mp2/04-attenuated-mp2.md#attenuated-mp2`).
     pub fn spin_components(&self) -> crate::rimp2::SpinComponents {
         crate::rimp2::SpinComponents {
             e_os: self.e_ab,

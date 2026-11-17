@@ -1,4 +1,6 @@
-//! Exactness anchors of the unrestricted response (theory.md §10, §11).
+//! Exactness anchors of the unrestricted response
+//! (`book/src/20-tddft/06-unrestricted.md#unrestricted-spin-problem`,
+//! `book/src/20-tddft/06-unrestricted.md#unrestricted-each-root`).
 
 use super::*;
 use crate::tddft::{add_fxc_block, build_kernel, coulomb_factor};
@@ -272,7 +274,8 @@ const CLOSED_CASES: [Option<&str>; 5] = [
     Some("r2SCAN"),
 ];
 
-/// The exactness anchor (theory.md §10): water/6-31G, the RHF/RKS reference
+/// The exactness anchor (`book/src/20-tddft/06-unrestricted.md#unrestricted-spin-problem`):
+/// water/6-31G, the RHF/RKS reference
 /// written as an unrestricted one (`C_α = C_β`), HF, PBE, B3LYP, CAM-B3LYP
 /// and r2SCAN.
 ///

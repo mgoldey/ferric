@@ -1,7 +1,7 @@
 //! Analytic closed-shell RI-dRPA nuclear gradient on a Hartree-Fock reference.
 //!
 //! Differentiates the full-rank `n`-point quadrature sum `run_pdep_rpa`
-//! evaluates (theory.md, "Analytic nuclear gradient"):
+//! evaluates (`book/src/15-correlated-gradients/05-rpa-gradient.md#rpa-gradient`):
 //! `E_c = (1/2π) Σ_k w_k [ln det(1 + Π_k) − tr Π_k]`, `Π_k = B g_k(Δ) Bᵀ`,
 //! `g_k(e) = 4e / (u_k² + e²)` (`u_k` the imaginary frequency). The frequency loop here builds the three-index
 //! density `Γ` and the orbital-energy densities `P_oo`, `P_vv` (Daleckii-Krein
@@ -13,7 +13,9 @@
 //! Scope: closed shell, RHF reference on the reference SCF's J/K route,
 //! Coulomb operator, dense full-rank χ₀ (`trunc_thresh = 0`, `Chi0Backend::Dense`,
 //! `Chi0Sparsity::Dense`). Frozen core is supported (the core-active block of
-//! the RI-MP2 gradient, theory.md "Frozen core"). The finite-difference route
+//! the RI-MP2 gradient,
+//! `book/src/15-correlated-gradients/05-rpa-gradient.md#rpa-gradient-frozen-core`). The
+//! finite-difference route
 //! ([`crate::gradient`]) stays the oracle and the `[rpa] gradient = "fd"` path.
 
 use ferric_core::basis::BasisSet;
@@ -72,7 +74,7 @@ pub fn g_divided_difference(x: f64, y: f64, omega: f64) -> f64 {
 
 /// `Γ`, `P_oo`, `P_vv` and `E_c` of the quadrature sum over `(freqs, weights)`
 /// for `b_ov = B^P_ia` (`(naux, nocc·nvir)`, `ia = i·nvir + a`) and canonical
-/// orbital energies (theory.md, "First variation").
+/// orbital energies (`book/src/15-correlated-gradients/05-rpa-gradient.md#rpa-gradient-densities`).
 pub fn rpa_ri_densities(
     b_ov: &Array2<f64>,
     eps_occ: &[f64],

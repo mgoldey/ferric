@@ -4329,7 +4329,8 @@ impl Config {
     /// for an energy and for the MP2 optimizations alike (the fitted
     /// gradient checks its peak memory against `[memory] budget_gb` before
     /// it allocates, `ferric_mp2::gradient_memory`). The evidence for the
-    /// fitted default is `crates/ferric-mp2/theory.md` §9.1.
+    /// fitted default is
+    /// `book/src/15-correlated-gradients/02-rimp2-gradient.md#rimp2-gradient-fitted-ri-jk-reference`.
     pub fn omitted_scf_jk(&self) -> OmittedJk {
         use ferric_scf::scf_jk::{matched_jk_aux, ScfJkMode};
         let kind = self.method.kind.as_str();

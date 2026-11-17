@@ -566,7 +566,7 @@ fn scan_impl(
 /// Closed shell `dMP2 = 2·E_OS`. Open shell
 /// `dMP2 = E_αβ + ½(D_αα + D_ββ)` with `D_σσ = Σ_{ijab∈σ} (ia|jb)²/Δ` (the
 /// same-spin direct sum, no exchange); `2·E_αβ` would be wrong whenever the
-/// two spins differ (theory.md, "Open-shell SR-MP2 + LR-RPA").
+/// two spins differ (`book/src/26-rs-mp2-rpa/04-two-formulations.md#two-formulations`).
 #[derive(Debug, Clone, Copy)]
 struct OpParts {
     e_total: f64,

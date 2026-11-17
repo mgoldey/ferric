@@ -3,7 +3,7 @@
 //! The energy is `E = Σ_{P=(i,j)} -C6_P(CN_i, CN_j) G_P(r_P)` with
 //! `G = s6/(r^6+f^6) + 3 q s8/(r^8+f^8)` (`C8 = 3 C6 q` is folded into `G`),
 //! and every `CN_a = Σ_b c_ab(r_ab)`. Its second derivative has four parts
-//! (`theory.md`, "Hessian"):
+//! (`book/src/25-dispersion/01-d3bj.md#d3bj-hessian`):
 //!
 //! ```text
 //! H = Σ_P  pair block of φ_P = -C6_P G_P at fixed C6       (direct)

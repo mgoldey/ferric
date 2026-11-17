@@ -4,7 +4,7 @@
 //! density, the total-energy gradient is the solvent-free SCF gradient
 //! evaluated with the solvated orbitals plus `∂E_pcm/∂R` at fixed AO density
 //! `P` ([`pcm_gradient`]). That derivative has two parts
-//! (`crates/ferric-pcm/theory.md` §8):
+//! (`book/src/22-implicit-solvation/04-gradient.md#gradient-derivative`):
 //!
 //! * the potential term `qᵀ ∂v/∂R` ([`PcmGradient::potential`]): the
 //!   symmetrized charges `q` held fixed as classical charges on the

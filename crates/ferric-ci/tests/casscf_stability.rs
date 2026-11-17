@@ -41,7 +41,7 @@
 //!
 //! # Measured (2026-11-14)
 //!
-//! Tables in `crates/ferric-ci/theory.md` ("Second-order check").
+//! Tables in `book/src/17-multireference/05-casscf.md#casscf-second-order-check`.
 
 mod casscf_common;
 

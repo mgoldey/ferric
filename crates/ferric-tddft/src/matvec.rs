@@ -14,7 +14,8 @@
 //! ```
 //!
 //! with `Δ_ia = ε_a − ε_i`, `c_J = 2` (singlet) or `0` (triplet) and
-//! `Δc = c_lr − c_sr` (`crates/ferric-tddft/theory.md` §8, §9) — term for
+//! `Δc = c_lr − c_sr` (`book/src/20-tddft/04-rsh.md#rsh-split`,
+//! `book/src/20-tddft/05-triplets.md#triplets-spin-blocks`) — term for
 //! term the dense `A` and `B` of [`crate::tddft`]. `A − B` needs neither J
 //! nor F.
 //!

@@ -15,7 +15,7 @@
 //! omission of it (it cancels pairwise) is actually tested.
 //!
 //! Exact derivation of the same convention: `scripts/casci_slater_condon_phases_sympy.py`;
-//! equations: `crates/ferric-ci/theory.md`.
+//! equations: `book/src/17-multireference/02-slater-condon.md#slater-condon-rules`.
 
 use ferric_ci::hamiltonian::{general_element, hamiltonian_diagonal, sigma, DeterminantSpace};
 use ferric_ci::integrals::ActiveSpaceIntegrals;
