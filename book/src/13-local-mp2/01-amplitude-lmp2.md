@@ -266,6 +266,14 @@ this chapter.
 
 ## 13.1.3 The algorithm
 
+Sections 13.1.1 and 13.1.2 solved the equations for a given set of kept
+amplitudes. This section builds that set. Three things have to exist first:
+occupied and virtual orbitals that are each confined to a small region,
+the Fock matrix in those orbitals, and the integrals $J_{ia,jb}$. Then the
+code decides which amplitudes to keep, in two stages: a cheap test on whole
+pairs before any integral is formed, and the $\varepsilon$ test on each
+element.
+
 | Step | Quantity | Function |
 |---|---|---|
 | 1 | RHF reference: canonical orbitals and Fock matrix | `ferric-scf/src/rhf.rs::solve_rhf` |
@@ -277,40 +285,171 @@ this chapter.
 | 7 | PCG on the ragged blocks under the tolerance policy | `ferric-mp2/src/lmp2_amplitude.rs::solve_under_rtol_policy` |
 | 8 | $E_H$ and the true residual | `ferric-mp2/src/lmp2_amplitude.rs::hylleraas_energy_and_residual` |
 
-**Step 2, the virtual space (VV-HV).** Valence virtuals are the minimal-basis
-(STO-3G) functions projected into the working basis and orthogonalized to the
-occupied space, $n_{\mathrm{val}} = n_{\mathrm{min}} - n_{\mathrm{occ}}$ of them, Boys-localized. The remaining
-$n_{\mathrm{AO}} - n_{\mathrm{occ}} - n_{\mathrm{val}}$ hard virtuals come from the unit AO vectors with
-the occupied and valence parts projected out. Candidates are chosen by
-pivoted Cholesky on their overlap, weighted by the inverse spread so compact
-ones are taken first, then Löwdin orthonormalized, then
-pseudo-canonicalized within each atom's block of the Fock matrix, which cannot
-delocalize them. This selection differs from the paper's weighted symmetric
-orthogonalization of the full redundant set. The selected set spans the same
-space, so energy anchors are invariant to it, and only the compactness of the
-domains depends on it.
+### Step 2: why the virtuals must be localized too
 
-**Step 5, the gate.** An off-diagonal pair $(i,j)$ is skipped before any
-integral work when a London-type estimate falls below a threshold linked to
-$\varepsilon$:
+Localizing the occupied orbitals alone does not make $J$ sparse. The
+product $\phi_i\phi_a$ is small only when $i$ and $a$ sit far apart, and a
+canonical virtual sits everywhere. With canonical virtuals, a pair $(i,j)$
+couples to every $a$ and $b$, and the pair block stays full. So the
+virtuals also have to be built as functions on bonds and atoms. That is
+the VV-HV space: valence virtuals (VV) and hard virtuals (HV), the
+construction of Wang et al.
+
+**Valence virtuals.** A minimal basis has one function per core and
+valence atomic orbital. Its span holds the occupied space plus the
+antibonding partners of the bonds, so $n_{\mathrm{val}} = n_{\mathrm{min}} - n_{\mathrm{occ}}$
+of its directions are virtual. The code builds them in four operations:
+
+1. Project the STO-3G functions into the working basis. With $S$ the
+   working-basis overlap and $S_x$ the cross overlap between the two
+   bases (taken from one combined basis set), the projected functions are
+   the columns of $T = S^{-1}S_x$.
+2. Remove the occupied part, with the projector
+   $P_{\mathrm{occ}} = C_{\mathrm{occ}}C_{\mathrm{occ}}^{\mathsf T}S$ over
+   all $n_{\mathrm{occ}}$ occupied orbitals: $T_v = (1 - P_{\mathrm{occ}})\,T$.
+3. Orthonormalize $T_v$ canonically, keeping $n_{\mathrm{val}}$ columns.
+4. Boys-localize them.
+
+The count $n_{\mathrm{min}} - n_{\mathrm{occ}}$ uses an all-electron
+minimal basis, so it is wrong on an atom whose core is an ECP. The code
+refuses such a molecule (`refuse_ecp_atoms`) instead of counting core
+functions as valence virtuals.
+
+**Hard virtuals.** The remaining
+$n_{\mathrm{AO}} - n_{\mathrm{occ}} - n_{\mathrm{val}}$ virtuals carry
+polarization and diffuse character. Each one is grown from one atomic
+orbital, so it starts on one atom:
+
+1. Take every unit AO vector and project out the occupied and valence
+   parts, $X = 1 - P_{\mathrm{occ+val}}$. Drop the columns whose squared
+   norm in the $S$ metric is at most $10^{-8}$, and normalize the rest.
+2. Weight each candidate $k$ by $w_k = 1/\sigma_k^2$, where
+   $\sigma_k^2 = \langle r^2\rangle_k - \lvert\langle\mathbf r\rangle_k\rvert^2$
+   is its spatial variance (floored at $10^{-6}$), and form the weighted
+   overlap $w_rw_c\,S^X_{rc}/w_{\max}^2$.
+3. Choose $n_{\mathrm{h}}$ candidates by pivoted Cholesky on that matrix.
+   The first pivot is the largest diagonal, which is the most compact
+   candidate. Each later pivot is the candidate with the largest weighted
+   norm left after the chosen ones are projected out, so the selection
+   favours compact functions that add a new direction.
+4. Löwdin-orthonormalize the chosen candidates.
+5. Pseudo-canonicalize per atom: for each atom $A$, diagonalize the Fock
+   block $C_{h,A}^{\mathsf T}FC_{h,A}$ of the hard virtuals grown from $A$'s
+   AOs and rotate them among themselves. A rotation inside one atom's set
+   cannot move a function onto another atom, which a full
+   semicanonicalization would do.
+
+This selection differs from the paper, which orthogonalizes the full
+redundant candidate set with a weighted symmetric orthogonalization. The
+$n_{\mathrm{val}} + n_{\mathrm{h}}$ functions are orthonormal, orthogonal to
+the occupied space and $n_{\mathrm{AO}} - n_{\mathrm{occ}}$ in number, so
+they span the whole virtual space whichever candidates are chosen. The
+$\varepsilon = 0$ energy is therefore invariant to the selection, and only
+the compactness of the pair domains depends on it. The anchor test of
+13.1.6 checks the spanning: dropping one hard virtual breaks the
+$\varepsilon = 0$ agreement (`mutated_virtual_space_fails_the_anchor`).
+
+### Step 3: localized occupieds and their sizes
+
+`localized_spaces` Boys-localizes the active occupied orbitals and records,
+for each, its centroid $\langle\mathbf r\rangle_i$ and spread
+$\sigma_i = \sqrt{\langle r^2\rangle_i - \lvert\langle\mathbf r\rangle_i\rvert^2}$.
+It also forms the two Fock blocks of 13.1.1, $f = C_{\mathrm{locc}}^{\mathsf T}FC_{\mathrm{locc}}$
+and $F = C_{\mathrm{vloc}}^{\mathsf T}FC_{\mathrm{vloc}}$, and the dipole
+centroids of the virtuals, which only the integral-direct path of 13.2
+uses. No RI work happens here.
+
+### Step 5: skipping whole pairs before any integral
+
+The correlation energy of two well-separated localized orbitals behaves
+like a London dispersion energy. It decays as $R_{ij}^{-6}$, with a
+prefactor that grows with the orbitals' volumes, for which
+$\sigma_i^3\sigma_j^3$ stands in. That estimate costs nothing: it needs only
+centroids and spreads. An off-diagonal pair $(i,j)$ is skipped when
 
 $$ \mathrm{cal}\,\frac{(\sigma_i\sigma_j)^3}{R_{ij}^6} < 10^{-2}\,\varepsilon , \tag{13.4} $$
 
-with $R_{ij}$ the distance between Boys centroids and $\sigma_i$ the orbital
-spread. Diagonal pairs are never gated, and $\varepsilon = 0$ makes the gate
-inert. The constant `cal` is `pair_gate_cal`, off by default; the calibrated
-values from the alkane series are about 0.7 for the Coulomb operator and about
-0.02 for erfc at $\omega = 1$.
+with $R_{ij}$ the distance between Boys centroids. The code guards the
+denominator as $\max(R_{ij}^6, 10^{-12})$. The constant `cal` is
+`pair_gate_cal`. The calibrated values from the alkane series are about
+0.7 for the Coulomb operator and about 0.02 for erfc at $\omega = 1$.
 
-**Step 6, the Eq-8 mask.** Element $(a,b)$ of pair $(i,j)$ is retained when
-$\lvert J_{ia,jb}\rvert > \varepsilon$ or $\lvert J_{ib,ja}\rvert > \varepsilon$ (or $\varepsilon = 0$). The test
-is symmetric in $(a,b)$, so the pattern is swap-closed by construction. A pair block
-holds the rows and columns that have any retained element: those are the pair
-domains, equal for rows and columns on a swap-closed pattern, and
-`check_swap_closed` requires it. The retained values are the exact $J$ values,
-so there is no second approximation inside the block.
+This is the body of `ferric-mp2/src/lmp2_amplitude.rs::pair_gate_keep_with`,
+with the declarations and the gated-pair counter removed:
 
-The pair kernel is the construction of the block from a candidate square.
+```rust
+let theta = 1e-2 * eps;                      // threshold 10^-2 ε
+for i in 0..no {
+    for j in 0..no {
+        if i == j {
+            continue;                        // diagonal pairs are never gated
+        }
+        let rij2: f64 = rij2(i, j);          // R_ij^2
+        let est = cal * (occ_spreads[i] * occ_spreads[j]).powi(3) / rij2.powi(3).max(1e-12);
+        if est < theta {                     // cal (σ_i σ_j)^3 / R_ij^6 < 10^-2 ε
+            keep[i * no + j] = false;
+        }
+    }
+}
+```
+
+Check the limits:
+
+- At $\varepsilon = 0$ the threshold is 0, and the estimate is never
+  negative, so no pair is gated.
+- The estimate is symmetric in $i$ and $j$, so $(i,j)$ and $(j,i)$ are kept
+  or dropped together.
+- The gate is off when `pair_gate_cal` is `None`, the default. A
+  calibration of 0 would make every off-diagonal estimate 0, which is below
+  any positive threshold. The CLI accepts only `gate_cal > 0`.
+
+The gate only removes amplitudes. It never changes a kept $J$ value. By the
+argument at the end of 13.1.1, minimizing $E_H$ over fewer amplitudes
+cannot give a lower energy, so the gate can only raise the energy. The
+estimate itself is calibrated, not a bound: nothing ties the size of the
+gated energy to $\varepsilon$.
+
+### Step 6: the integrals and the Eq-8 mask
+
+For each pair that survives the gate, the code needs the block
+$J_{ij} = [(ia\vert jb)]_{ab}$. On the default path it is a Gram product of
+the whitened three-index factors of section 10.1,
+$J_{ia,jb} = \sum_P\tilde B_{P,ia}\tilde B_{P,jb}$ with
+$\tilde B = V^{-1/2}B$.
+
+**Schwarz candidates.** Most rows of that block will be dropped by the
+$\varepsilon$ test, so the code first finds the virtuals that can appear at
+all. Let $q_{ia} = \lVert\tilde B_{:,ia}\rVert$ and
+$q^{\max}_j = \max_b q_{jb}$. The Cauchy–Schwarz inequality on the sum over
+$P$ gives
+
+$$ \lvert J_{ia,jb}\rvert \le q_{ia}\,q_{jb} \le q_{ia}\,q^{\max}_j . $$
+
+The code keeps virtual $a$ as a candidate when
+$q_{ia}q^{\max}_j \ge \varepsilon$ or $q_{ja}q^{\max}_i \ge \varepsilon$.
+This loses no retained element. Suppose element $(a,b)$ passes the test
+below through $\lvert J_{ia,jb}\rvert > \varepsilon$. Then
+$q_{ia}q^{\max}_j \ge q_{ia}q_{jb} > \varepsilon$, so $a$ is a candidate,
+and $q_{jb}q^{\max}_i \ge q_{ia}q_{jb} > \varepsilon$, so $b$ is one too.
+The case $\lvert J_{ib,ja}\rvert > \varepsilon$ follows with $a$ and $b$
+exchanged. The pair's integrals are then formed over the candidate square
+only. The screen runs only on the global-fit path with $\varepsilon > 0$;
+the domain-local fit (`fit_radius_bohr`, section 13.2) forms every column.
+
+**The Eq-8 mask.** Element $(a,b)$ of pair $(i,j)$ is kept when
+$\lvert J_{ia,jb}\rvert > \varepsilon$ or $\lvert J_{ib,ja}\rvert > \varepsilon$,
+or when $\varepsilon = 0$. The second integral is the exchange partner of
+the first, the one the same-spin energy pairs it with. Testing both makes
+the rule symmetric in $(a,b)$, so the kept set is closed under the swap
+$\mathcal S$ by construction, which is what the stationarity of 13.1.1
+requires. A pair block holds the rows and columns that have any kept
+element. Those are the pair domain, the same for rows and columns on a
+swap-closed pattern, and `check_swap_closed` requires it. The kept values
+are the exact $J$ values, so there is no second approximation inside the
+block.
+
+The mask is the first loop of the block construction. The excerpt is
+copied unchanged:
 
 <!-- excerpt: ferric-mp2/src/ragged.rs::pair_block_from_g_cand_gated -->
 ```rust
@@ -328,26 +467,65 @@ if eps == 0.0 || jd > eps || kd > eps {
 | `eps` | $\varepsilon$ |
 | `any_a`, `any_b` | rows and columns that enter the pair domain |
 
+Points about the construction:
+
+- **One integral block serves two pairs.** $J_{ji} = J_{ij}^{\mathsf T}$,
+  so the code computes each unique pair $i \le j$ once and builds the
+  $(j,i)$ block from the transpose.
+- **The Fock blocks follow the domain.** The block also stores the
+  restrictions of $F$ to its row and column domains (`fvv_aa`, `fvv_bb`)
+  and the diagonal denominators $F_{aa}+F_{bb}-f_{ii}-f_{jj}$ that
+  precondition the solve of 13.1.2.
+- **An empty pattern returns no block.** A pair with no kept element
+  disappears from the ragged list, and the occupied coupling of 13.1.1
+  never visits it.
+
+**Per-pair auxiliary truncation (opt-in).** With `aux_tail_frac` $= f$ and
+$\varepsilon > 0$, the Gram product for pair $(i,j)$ may skip auxiliary
+functions. Score each $P$ by $n_{Pi}n_{Pj}$, with
+$n_{Pi} = \max_a\lvert\tilde B_{P,ia}\rvert$, and drop the lowest-scoring
+functions while their summed score stays at most $f\varepsilon$. Each
+element then moves by at most
+
+$$ \Big\lvert\sum_{P\ \mathrm{dropped}}\tilde B_{P,ia}\tilde B_{P,jb}\Big\rvert
+\le \sum_{P\ \mathrm{dropped}} n_{Pi}\,n_{Pj} \le f\varepsilon , $$
+
+a rigorous elementwise bound. It is inactive at $\varepsilon = 0$ and on
+the domain-fit path, which has its own auxiliary domains.
+
 ## 13.1.4 Reproducibility and memory
 
-- The ragged matrix-vector product is rayon-parallel over output pairs, with the
-  same arithmetic order per block in every schedule, so it is bit-identical.
+- The ragged matrix-vector product runs in parallel over output pairs with
+  rayon. Each block is computed in the same arithmetic order whatever the
+  schedule, so the product is bit-identical across thread counts.
 - The default assembly builds the global three-index tensor
-  $(N_{\mathrm{aux}}, n_on_v)$ once (`ferric-mp2/src/rimp2.rs::eri3_mo_ov_blocked`). So
-  amplitude-threshold LMP2 without `integral_direct` is not integral-direct and
-  carries no scaling claim. The integral-direct path of section 13.2 removes that
-  tensor.
+  $(N_{\mathrm{aux}}, n_on_v)$ once (`ferric-mp2/src/rimp2.rs::eri3_mo_ov_blocked`).
+  So amplitude-threshold LMP2 without `integral_direct` is not
+  integral-direct and carries no scaling claim. The integral-direct path of
+  section 13.2 removes that tensor.
 - The exact reference that measures the truncation error is opt-in
-  (`compute_reference`, CLI `[local] reference = true`). It is a full canonical
-  RI-MP2 that forms the same global tensor, so a run with it on is not
-  reduced-cost. Without it the printout says the canonical energy was not
-  computed.
+  (`compute_reference`, CLI `[local] reference = true`). It is a full
+  canonical RI-MP2 that forms the same global tensor, so a run with it on
+  is not reduced-cost. Without it the printout says the canonical energy
+  was not computed.
 
 ## 13.1.5 Options that change the equation
 
+The options split into two kinds, and the kind decides the sign of the
+error.
+
+- **Pattern options** remove amplitudes and leave every kept $J$ value
+  unchanged: `eps` itself and `pair_gate_cal`. On a swap-closed pattern,
+  the energy is the minimum of $E_H$ over the kept amplitudes (13.1.1), so
+  removing amplitudes can only raise it, up to the solver error bounded in
+  13.1.2.
+- **Value options** change the $J$ values themselves: `fit_radius_bohr` and
+  `aux_tail_frac`. The minimum argument does not cover a changed $J$, and
+  their error has no proven sign.
+
 | Option | Effect | Where |
 |---|---|---|
-| `eps` | the threshold; no default | this section |
+| `eps` | the threshold; no default in the CLI or Python, where it is required (the Rust `AmplitudeLmp2Config::default()` sets $10^{-4}$) | this section |
 | `frozen_core` | removes the lowest occupied orbitals from $i,j$ through `active_occ` | section 10.1 |
 | `pair_gate_cal` | enables the gate (13.4); off by default | this section |
 | `fit_radius_bohr` | per-pair domain-local RI fit in place of the global-metric fit | section 13.2 |
@@ -357,10 +535,12 @@ if eps == 0.0 || jd > eps || kd > eps {
 
 ## 13.1.6 Numerical anchors
 
-The exactness anchor is the first check and the only one with a tolerance. At
-$\varepsilon = 0$ the localized-orbital ragged solve reproduces canonical
-RI-MP2, which is an independent construction that shares only the RI
-integrals, and a construction mutation (dropping one hard virtual) breaks it
+The exactness anchor comes first, and it is the only check with a
+tolerance. At $\varepsilon = 0$ the localized-orbital ragged solve must
+reproduce canonical RI-MP2. The two are independent constructions: one
+uses canonical orbitals and closed-form denominators, the other localized
+orbitals and a CG solve. They share only the RI integrals. A construction
+mutation, dropping one hard virtual, breaks the agreement
 (`mutated_virtual_space_fails_the_anchor`).
 
 | Check | Reference | Agreement | Test |
@@ -370,15 +550,15 @@ integrals, and a construction mutation (dropping one hard virtual) breaks it
 
 <!-- figures: site/src/reference/validation.md "Local RI-MP2 (`rimp2` with `[local] scheme = \"amplitude-threshold\"`)" -->
 
-ORCA DLPNO-MP2 on the same molecules is recorded on the validation page as a
-ballpark only. It truncates by pair-natural-orbital occupation, not by an
+ORCA DLPNO-MP2 on the same molecules is recorded on the validation page as
+a ballpark only. It truncates by pair-natural-orbital occupation, not by an
 amplitude threshold, so the two recoveries are not compared.
 
-**The error is superlinear in $\varepsilon$.** The recoveries above fall from
-99.98% to 99.67% to 95.0% as $\varepsilon$ grows by factors of ten, so the
-missing correlation energy grows faster than linearly in $\varepsilon$. There
-is no tolerance on it, and users who need a target accuracy choose $\varepsilon$
-by running a series.
+**The error is superlinear in $\varepsilon$.** As $\varepsilon$ grows by
+factors of ten, the recovery falls from 99.98% to 99.67% to 95.0%. The
+missing correlation energy therefore grows faster than linearly in
+$\varepsilon$. There is no tolerance on it. To reach a target accuracy, run
+a series of $\varepsilon$ values and choose from it.
 
 ## Sources
 

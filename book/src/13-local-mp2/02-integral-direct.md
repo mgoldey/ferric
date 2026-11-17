@@ -3,19 +3,26 @@
 <!-- section: 13.2; status: ready; registry: local-mp2;
      theory: crates/ferric-mp2/theory.md#"12.4 The integral-direct domain-local fit" -->
 
-The amplitude-threshold method of section 13.1 builds the global
-three-index tensor of shape $(N_{\mathrm{aux}}, n_on_v)$ before it truncates
-anything. That tensor is $O(N^3)$ in memory and the whitening product behind it is
-$O(N^5)$, so the truncation cannot reduce what has already been paid. The
-integral-direct path never forms either. It evaluates only the three-index
+The method of section 13.1 builds the global three-index tensor, of shape
+$(N_{\mathrm{aux}}, n_on_v)$, before it truncates anything. That tensor is
+$O(N^3)$ in memory, and the whitening product behind it is $O(N^5)$ in
+time. Dropping amplitudes afterwards cannot reduce a cost that has already
+been paid. Yet a charge distribution $\phi_i\phi_a$ from a localized pair
+lives near $i$ and $a$, and only auxiliary functions nearby can describe
+it. The integral-direct path uses this. It evaluates only the three-index
 integrals that the retained pairs need, half-transforms them into one small
-strip per occupied orbital, and fits each pair in a domain-local auxiliary
-basis. Solve and energy are the unchanged ragged machinery of 13.1.
+strip per occupied orbital, and fits each pair in a local auxiliary basis.
+The solve and the energy are the unchanged ragged machinery of 13.1.
 
-The derivation is `crates/ferric-mp2/theory.md` §12.4; the construction is
+The section derives the local fit (13.2.1), walks through the stages and
+the truncation each locality map makes (13.2.2), and then states the
+exactness anchor, the cost of the stages and what is measured.
+
+The derivation is `crates/ferric-mp2/theory.md` §12.4. The construction is
 also documented in the module header of `crates/ferric-mp2/src/lmp2_direct.rs`
-and the user guide. The fit identities are machine-checked below. The locality maps are definitions, not
-equations, and are checked by the trivial-limit tests.
+and in the user guide. The fit identities are machine-checked below. The
+locality maps are definitions, not equations, and the trivial-limit tests
+check them.
 
 | Symbol | Meaning | Code name |
 |---|---|---|
@@ -36,17 +43,31 @@ equations, and are checked by the trivial-limit tests.
 
 ## 13.2.1 The domain-local fit
 
-For a pair $(i,j)$ the fitted integral over its domain is the RI product of
-section 10.1 restricted to $D_{ij}$:
+Density fitting (section 10.1) expands $\phi_i\phi_a$ in the auxiliary
+functions. The best coefficients in the Coulomb metric are
+$c = V^{-1}A$, where $A_{P,a} = (P\vert ia)$ and $V_{PQ} = (P\vert Q)$.
+For pair $(i,j)$, restrict that fit to the functions in $D_{ij}$, the
+auxiliary shells near either orbital. Substitute the restricted
+coefficients into the Coulomb product of the two fitted densities:
 
 $$ J_{ia,jb} = \sum_{P,Q\in D_{ij}} (P\vert ia)\,[V_{DD}^{-1}]_{PQ}\,(Q\vert jb) = (W_i^{\mathsf T}W_j)_{ab}, \qquad V_{DD} = LL^{\mathsf T},\quad W_k = L^{-1}A_k . \tag{13.5} $$
 
-The right-hand form is how the code evaluates it: one Cholesky factor per pair
-domain, one triangular solve per distinct occupied in the group, and one
-product per pair, with no explicit inverse. The same value follows from the
-Dunlap robust form when one domain and one kernel serve the whole pair. The
-metric and the three-index integrals use the same operator, which is why the
-two forms coincide and why the fit error is quadratic, as in section 10.1.
+The right-hand form follows in one line. Factor $V_{DD} = LL^{\mathsf T}$,
+so $V_{DD}^{-1} = L^{-\mathsf T}L^{-1}$, and group each $L^{-1}$ with its
+strip: $A_i^{\mathsf T}L^{-\mathsf T}L^{-1}A_j = (L^{-1}A_i)^{\mathsf T}(L^{-1}A_j)$.
+That is the same Cholesky whitening as section 10.1, applied to one domain.
+
+Check the limit. When $D_{ij}$ holds every auxiliary function, $V_{DD} = V$
+and (13.5) is the global RI integral of equation (10.4).
+
+Why one domain for the whole pair, rather than one per orbital? Dunlap's
+robust form, $A_i^{\mathsf T}c_j + c_i^{\mathsf T}A_j - c_i^{\mathsf T}V_{DD}c_j$
+with $c = V_{DD}^{-1}A$, is the fit whose error is quadratic in the error of
+the fitted densities. When one domain and one kernel serve both orbitals,
+substitute $c$: each of the three terms equals $A_i^{\mathsf T}V_{DD}^{-1}A_j$,
+so the sum is the Gram form (13.5). The metric and the three-index
+integrals use the same operator, which is why the two forms coincide and
+why the fit error is quadratic, as in section 10.1.
 
 > **Verified equation 13.5** · the whitened Gram product and the robust form
 >
@@ -66,7 +87,24 @@ two forms coincide and why the fit error is quadratic, as in section 10.1.
 >
 > <!-- verified: id=lmp2.domain-fit; script=scripts/local_mp2_fit_pno_sympy.py; claim=L1; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/lmp2_direct.rs::{fit_domain_group,whiten,chol_lower}; rust_test=ferric-mp2/tests/lmp2_direct.rs::trivial_limit_matches_global_domain_fit_and_canonical -->
 
-The product is the whole of the pair step.
+**What the restriction does to the values.** A fit in fewer functions
+describes each density less completely. For a diagonal element this has a
+sign. Write $\bar D$ for the auxiliary functions outside $D$, $S$ for the
+Schur complement $V_{\bar D\bar D} - V_{\bar DD}V_{DD}^{-1}V_{D\bar D}$ and
+$y = A_{\bar D} - V_{\bar DD}V_{DD}^{-1}A_D$. Block elimination of $V$ gives
+
+$$ A^{\mathsf T}V^{-1}A - A_D^{\mathsf T}V_{DD}^{-1}A_D = y^{\mathsf T}S^{-1}y \ \ge\ 0 , $$
+
+because $S$ is positive definite. So each fitted $(ia\vert ia)$ can only
+fall when the domain shrinks. Off-diagonal elements have no such sign, and
+neither has the energy error. The fit radius changes $J$ values, so the
+one-sided argument of 13.1.1 does not cover it.
+
+**The code.** `ferric-mp2/src/lmp2_direct.rs::fit_domain_group` handles all
+pairs that share one domain $D_{ij}$. It factors $V_{DD}$ once, whitens
+each distinct occupied of the group once with a triangular solve, and then
+forms one product per pair, with no explicit inverse. The product is the
+whole of the pair step. The excerpt is copied unchanged:
 
 <!-- excerpt: ferric-mp2/src/lmp2_direct.rs::fit_domain_group -->
 ```rust
@@ -83,7 +121,11 @@ let g = if i == j {
 | `ws[&j].select(cij)` | $W_j$ on the same columns |
 | `g` | $J_{ia,jb}$ over $a,b\in C_{ij}$, passed to the $\varepsilon$ mask of section 13.1 (`mask_pair`) |
 
-## 13.2.2 The algorithm
+Grouping by domain pays because pairs repeat domains: on the C20–C48 maps
+there are 6–9 times more surviving pairs than distinct pair domains, so one
+Cholesky factor serves several pairs (`fit_pairs`).
+
+## 13.2.2 The algorithm and what each map truncates
 
 | Stage | Work | Function |
 |---|---|---|
@@ -94,50 +136,121 @@ let g = if i == j {
 | 5 | per pair-domain group: Cholesky once, whiten each distinct occupied once, $J_{ij} = W_i^{\mathsf T}W_j$, the Eq-8 mask, the `PairBlock` | `ferric-mp2/src/lmp2_direct.rs::fit_pairs` |
 | 6 | PCG, tolerance policy and Hylleraas energy, unchanged | section 13.1 |
 
-Every pair $(i,j)$ reads its $D_i\cup D_j$ rows and $V_i\cup V_j$ columns from
-the two strips, so a strip is shared by all of an orbital's partners. The strips
-are unwhitened: they hold the same raw values as the global tensor, only for
-the rows and columns that survive.
+**Strips.** A pair $(i,j)$ reads rows $D_i\cup D_j$ and columns
+$V_i\cup V_j$ from the two strips $A_i$ and $A_j$. So a strip must cover
+the union over all of an orbital's partners, $\tilde D_i\times\tilde V_i$,
+and then one strip serves every pair that $i$ belongs to. The strips are
+unwhitened: they hold the same raw values as the global tensor, only for
+the rows and columns that survive. Whitening happens per group in stage 5,
+because $L$ depends on the pair domain.
 
-**Variants of stage 3.** Per-atom batches re-evaluate shared shell
-triples. `batch_merge` merges several nearest-atom batches along the long axis,
-which evaluates fewer triples at the cost of larger scratch slabs, and agrees with
-$k=1$ to the float-reassociation floor, not bitwise. An alternative pass
-(`Eri3Pass::AuxMajor`) takes one task per auxiliary shell over the union of the
-supports that need it, so each needed triple is evaluated once. Both build the
-same strips to round-off.
+**Two kinds of map.** As in 13.1.5, a map either removes amplitudes and
+leaves every kept $J$ value alone, or it changes the $J$ values.
+
+- *Pattern maps* can only raise the energy relative to the same run without
+  them, up to the solver error of 13.1.2, because $E_H$ is then minimized
+  over fewer amplitudes on a swap-closed pattern.
+  - The pair gate (`gate_cal`), as in 13.1.
+  - The virtual domains (`virt_radius`). The candidate set
+    $C_{ij} = V_i\cup V_j$ restricts rows and columns of pair $(i,j)$ alike,
+    so the pattern stays swap-closed, and selecting columns of $W_i$ and
+    $W_j$ leaves each kept product unchanged.
+  - The candidate screen (`virt_schwarz_kappa` $=\kappa$). With $\varepsilon > 0$
+    it removes $a$ from $C_{ij}$ unless $q_{ia}q^{\max}_j \ge \kappa\varepsilon$
+    or $q_{ja}q^{\max}_i \ge \kappa\varepsilon$, where
+    $q_{ia} = \sqrt{A_{ia}^{\mathsf T}V_{D_iD_i}^{-1}A_{ia}}$ is the fitted
+    diagonal in $i$'s own domain. On a global Gram fit this is the exact
+    Cauchy–Schwarz screen of 13.1.3 for $\kappa \le 1$. On the domain-local fit
+    it is not a proven bound; the `DirectConfig` documentation records it as
+    measured escape-free at $\kappa \le 1$, both operators, on C8. A
+    $\kappa$ above 1 drops elements that would pass the Eq-8 test.
+- *Value maps* change the integrals, and their energy error has no proven
+  sign.
+  - The auxiliary domains (`aux_radius`), 13.2.1.
+  - The AO support (`ao_tail`). An AO shell enters an orbital's support
+    when its largest $\lvert C\rvert$ is at least the threshold. Leaving a
+    shell out is the same as setting those coefficients to zero in the half
+    transform, applied alike to both strips of a pair. The Fock blocks are
+    untouched.
+  - The triple cut (`schwarz_skip`). A batch triple is skipped when its
+    Cauchy–Schwarz bound $\sqrt{\max(P\vert P)}\,Q(\mu\nu)$ falls below the
+    threshold, with $Q(\mu\nu) = \sqrt{(\mu\nu\vert\mu\nu)}$ and both
+    factors from the run's operator. The bound is rigorous for each skipped
+    raw integral $(\mu\nu\vert P)$; the aux factor is the maximum over the
+    shell, so the cut stays conservative at shell granularity.
+
+The pair candidates of stage 5 come from `ferric-mp2/src/lmp2_direct.rs::pair_candidates`.
+This is the body of its per-pair closure, unchanged except for the
+comments:
+
+```rust
+let cij = sorted_union([virt_dom[i].iter().copied(), virt_dom[j].iter().copied()]); // C_ij = V_i ∪ V_j
+match (qvirt, kappa_eps) {
+    (Some((q, qmax)), Some(th)) => cij                         // κ screen on, th = κ ε
+        .into_iter()
+        .filter(|&a| {
+            let qia = q[i][strips[i].col_pos[a]];               // q_ia
+            let qja = q[j][strips[j].col_pos[a]];               // q_ja
+            qia * qmax[j] >= th || qja * qmax[i] >= th          // keep a if either bound reaches κ ε
+        })
+        .collect(),
+    _ => cij,                                                   // screen off or ε = 0
+}
+```
+
+The screen only ever shrinks $V_i\cup V_j$. So every candidate still lies
+in both strips' columns, and a missing column position is a construction
+error that panics.
+
+**Variants of stage 3.** Per-atom batches re-evaluate shell triples that
+neighbouring batches also need. `batch_merge` merges several nearest-atom
+batches along the molecule's long axis, which evaluates fewer triples at
+the cost of larger scratch slabs. It agrees with $k=1$ to the
+float-reassociation floor, not bitwise, because the per-occupied transform
+runs over a larger batch union. An alternative pass
+(`Eri3Pass::AuxMajor`) takes one task per auxiliary shell over the union of
+the supports that need it, so each needed triple is evaluated once. Both
+build the same strips to round-off.
 
 ## 13.2.3 The exactness anchor and the artifact hypothesis
 
-These were written before any sweep was run, following the experimental protocol
-of the repository.
+The repository's experimental protocol requires both of these to be stated
+before any sweep is run, and the module documentation of `lmp2_direct.rs`
+records them that way.
 
-**Trivial limit.** With every map a no-op (`virt_radius = None`, `ao_tail = 0`,
-`aux_radius` at least $10^5$ Bohr, no gate, `schwarz_skip = 0`, $\varepsilon = 0$)
-the energy must reproduce the global-tensor domain-fit path of the same radius
-and canonical RI-MP2, to the CG tolerance. The test has one mutation arm per
-map.
+**Trivial limit.** Set every map to a no-op: `virt_radius = None`,
+`ao_tail = 0`, `aux_radius` at least $10^5$ Bohr, no gate,
+`schwarz_skip = 0`, and $\varepsilon = 0$. Then the energy must reproduce
+the global-tensor domain-fit path of the same radius, and canonical RI-MP2,
+to the CG tolerance. The test has one mutation arm per map, so each map is
+shown to change the energy when it is broken.
 
-**Artifact hypothesis.** If the locality is real, then at fixed radii and
-thresholds the extra error against the $\varepsilon$-only path stays flat as an
-alkane grows, and strip sizes saturate past the onset. If a map is mis-constructed,
-by mixing two orbital index sets, exactness will instead demand radii that track the
-molecular diameter, as a domain mask that mixed two index sets did in an earlier
-AO-sparse Laplace implementation (section 12.4). The two
-predictions differ, so a size sweep can tell them apart.
+**Artifact hypothesis.** The two outcomes of a size sweep are predicted in
+advance:
+
+- If the locality is real, then at fixed radii and thresholds the extra
+  error against the $\varepsilon$-only path stays flat as an alkane grows,
+  and the strip sizes saturate past the onset.
+- If a map is mis-constructed by mixing two orbital index sets, exactness
+  will instead demand radii that track the molecular diameter. A domain
+  mask that mixed two index sets did this in an AO-sparse Laplace
+  implementation (section 12.4).
+
+The two predictions differ, so the sweep can tell them apart.
 
 ## 13.2.4 Memory and determinism
 
-- The peak three-index working set is the strips, reported as
-  `DirectStats::strip_bytes_total`, with mean and maximum strip rows and columns
-  (`strip_rows_mean`, `strip_cols_max`). The strip sizes are the locality claim,
-  so they are reported rather than inferred.
-- The stage-3 integral-slab scratch is capped globally
-  (`DirectConfig::scratch_budget_bytes`, 2 GiB by default), shared across the batch
-  workers: each worker slabs under budget over the number of workers, so the
-  co-resident scratch never exceeds the cap. A per-worker budget would be a budget
-  on nothing.
-- The opt-in exact reference still forms the global tensor, so only the
+- The peak three-index working set is the strips. It is reported as
+  `DirectStats::strip_bytes_total`, with mean and maximum strip rows and
+  columns (`strip_rows_mean`, `strip_cols_max`). The strip sizes are the
+  locality claim, so the code reports them rather than leaving them to be
+  inferred.
+- The stage-3 integral-slab scratch has one global cap
+  (`DirectConfig::scratch_budget_bytes`, 2 GiB by default), shared by the
+  batch workers. Each worker slabs under the budget divided by the number
+  of workers, so the co-resident scratch never exceeds the cap. A
+  per-worker budget would not bound the total.
+- The opt-in exact reference still forms the global tensor. Only the
   reference makes a run not reduced-cost.
 
 ## 13.2.5 Options that change the equation
@@ -152,8 +265,10 @@ predictions differ, so a size sweep can tell them apart.
 | `virt_schwarz_kappa` | none (off) | none | $\varepsilon$-linked virtual-candidate screen: keep $a$ if $q_{ia}q^{\max}_j \ge \kappa\varepsilon$ or the mirror |
 | `batch_merge` | 1 | 4 | batches merged per integral pass |
 
-The Rust `DirectConfig` defaults are the trivial ones where the table lists a
-trivial limit, and differ from the CLI defaults. The CLI defaults are in
+The Rust `DirectConfig` defaults are the trivial limits for every option in
+the table except `aux_radius_bohr`, which defaults to 10.0 Bohr as in the
+CLI. They differ from the CLI defaults for `virt_radius`, `ao_tail`,
+`schwarz_skip` and `batch_merge`. The CLI defaults are in
 `site/src/reference/input.md`, section `[local]`.
 
 ## 13.2.6 What is measured
@@ -165,18 +280,29 @@ trivial limit, and differ from the CLI defaults. The CLI defaults are in
 
 <!-- figures: site/src/reference/validation.md "Local RI-MP2 (`rimp2` with `[local] scheme = \"amplitude-threshold\"`)" -->
 
+On this molecule the integral-direct maps change the recovery by 0.02
+percentage points at $\varepsilon = 10^{-4}$, and not at the reported
+precision at the other two thresholds.
+
 **Cost and scaling (provisional).** On n-alkanes C20 to C48 (6-31G with
-cc-pVDZ-RI, $\varepsilon = 10^{-4}$, frozen carbon cores, a calibrated pair gate),
-the correlation stage grew as about $N^{1.24}$ with the erfc kernel and $N^{1.4}$
-with the Coulomb kernel, fitted to the last three sizes. The integral-direct path
-was about at parity with canonical RI-MP2 at C20 (about 1.1 times slower) and about
-6 times faster at C32 (5.7 to 6.3 times). This is a fit to **three points** on **one
-family of molecules in one basis**. It is not shown to be linear, and it is not
-measured on three-dimensional or diffuse systems. It also excludes the dense
-$O(N^3)$ VV-HV virtual-space build (`t_spaces_s`), whose cost the fitted exponents
-do not cover. Local MP2 without `integral_direct` still builds the global
-tensor and makes no scaling claim. The measurement is `bench_direct_alkane_series`
-in `crates/ferric-mp2/tests/lmp2_direct.rs`.
+cc-pVDZ-RI, $\varepsilon = 10^{-4}$, frozen carbon cores, a calibrated pair
+gate), the correlation stage grew as about $N^{1.24}$ with the erfc kernel
+and $N^{1.4}$ with the Coulomb kernel, fitted to the last three sizes. The
+integral-direct path was about at parity with canonical RI-MP2 at C20
+(about 1.1 times slower) and about 6 times faster at C32 (5.7 to 6.3
+times).
+
+The limits of that measurement:
+
+- It is a fit to **three points** on **one family of molecules in one
+  basis**. It is not shown to be linear.
+- It is not measured on three-dimensional or diffuse systems.
+- It excludes the dense $O(N^3)$ VV-HV virtual-space build (`t_spaces_s`),
+  whose cost the fitted exponents do not cover.
+
+Local MP2 without `integral_direct` still builds the global tensor and
+makes no scaling claim. The measurement is `bench_direct_alkane_series` in
+`crates/ferric-mp2/tests/lmp2_direct.rs`.
 
 ## Sources
 
