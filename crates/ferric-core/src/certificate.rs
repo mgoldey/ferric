@@ -219,6 +219,7 @@ pub const TASK_KIND_ROWS: &[(&str, &str)] = &[
     ("optimize", "rimp2"),
     ("optimize", "scs-mp2"),
     ("optimize", "att-rimp2"),
+    ("optimize", "scs-mp2-2terfc"),
     ("optimize", "oo-rimp2"),
     ("optimize", "pdep-rpa"),
     ("frequencies", "rhf"),
