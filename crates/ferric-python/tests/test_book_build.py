@@ -281,6 +281,11 @@ MUTATIONS = {
         "Body $x_1$.",
         "Body\x08eta $x_1$.",
     ),
+    "dollar-bearing code span inside display math": (
+        SEC,
+        "Inline math",
+        "$$ f = ``cost_$`` $$\n\nInline math",
+    ),
     "code span inside display math": (
         SEC,
         "Inline math",

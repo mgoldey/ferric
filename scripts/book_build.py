@@ -406,14 +406,15 @@ TABLE_ROW_RE = re.compile(r"^(?:[ \t]*>)*[ \t]*\|.*$", re.M)
 
 
 def check_math_code_spans(text: str, where: str, rep: Report) -> None:
-    # A code span that holds a dollar sign (`$HOME`) is code, not math: blank it
-    # first so its dollar does not pair with one further down the page.
-    # Match whole spans left to right, so the closing backtick of one span never
-    # pairs with the opening backtick of the next. A span opens and closes with
-    # backtick runs of the same length (``a`b``), as in CommonMark.
+    # A dollar inside a code span (`$HOME`) is code, not math: replace it first so
+    # it does not pair with one further down the page. The span itself stays, so
+    # a span inside a formula is still seen. Match whole spans left to right, so
+    # the closing backtick of one span never pairs with the opening backtick of
+    # the next. A span opens and closes with backtick runs of the same length
+    # (``a`b``), as in CommonMark.
     text = re.sub(
         r"(?<!`)(`+)(?!`)[^\n]*?(?<!`)\1(?!`)",
-        lambda m: " " * len(m.group()) if "$" in m.group() else m.group(),
+        lambda m: m.group().replace("$", "S"),
         text,
     )
     # A table cell ends a formula: turn each row's cell separators into blank lines.
