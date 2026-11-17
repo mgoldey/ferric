@@ -166,8 +166,9 @@ Check the limits.
   $\hat w$ fit,
   $D_x(c^w_x) = D_x(c^C_x) + (c^w_x - c^C_x)^{\mathsf T}V_C\,(c^w_x - c^C_x)$.
   With $\hat w \ne \hat C$ the coefficients are no longer the $\hat C$-optimal
-  ones, the error is not stationary in $c$, and it grows with the mismatch
-  while staying bounded. It is never below the standard-RI error.
+  ones, and the error is not stationary in $c$: it grows quadratically with
+  the coefficient mismatch. So each diagonal element of the robust error is
+  at least the standard-RI one, and equal to it only when $\hat w = \hat C$.
 
 What does this buy on a model? `scripts/robust_fit_sympy.py` builds $s$
 Gaussians on three centres with twelve auxiliary functions, fits under
