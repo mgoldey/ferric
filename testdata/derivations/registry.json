@@ -1112,9 +1112,11 @@
     },
     "local-mp2": {
       "book": [
-        "book/src/13-local-mp2/index.md#local-mp2"
+        "book/src/13-local-mp2/index.md#local-mp2",
+        "book/src/13-local-mp2/02-integral-direct.md#integral-direct-map-errors-eps0"
       ],
       "scripts": [
+        "scripts/lmp2_direct_maps_sympy.py",
         "scripts/lmp2_hylleraas_vs_wshg23_sympy.py",
         "scripts/local_mp2_fit_pno_sympy.py",
         "scripts/mp2_variant_identities.py"

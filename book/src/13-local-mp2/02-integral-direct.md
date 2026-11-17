@@ -211,6 +211,83 @@ runs over a larger batch union. An alternative pass
 the supports that need it, so each needed triple is evaluated once. Both
 build the same strips to round-off.
 
+## How the two kinds of map combine at ε = 0 {#integral-direct-map-errors-eps0}
+
+At $\varepsilon = 0$ the Eq-8 mask keeps every amplitude. Any difference
+from canonical RI-MP2 then comes from the maps. A pattern map and a value map
+leave different fingerprints on the energy, and with both on, the two errors
+do not add.
+
+Write the Hylleraas functional as $E(t) = 2\langle t, J\rangle + \langle t, \mathcal A t\rangle$,
+with $\mathcal A$ the positive definite Fock superoperator of @sec:amplitude-lmp2
+and $J$ the fitted pair integrals. Its minimum is $E^\star = -\langle J, \mathcal A^{-1}J\rangle$
+at $t^\star = -\mathcal A^{-1}J$.
+
+**A pattern map.** Split the amplitudes into a kept block $K$ and a dropped
+block $D$, solve on $K$ only, $t_K = -\mathcal A_{KK}^{-1}J_K$, and eliminate
+the $D$ block of $\mathcal A$. With
+$S = \mathcal A_{DD} - \mathcal A_{DK}\mathcal A_{KK}^{-1}\mathcal A_{KD}$,
+
+$$ E_K - E^\star = t^{\star\mathsf T}_D\, S\, t^\star_D \ \ge\ 0 . \label{eq:lmp2-map-pattern} $$
+
+$S$ is positive definite because $\mathcal A$ is, so the error of
+`virt_radius` is never negative. It is second order in the dropped exact
+amplitudes. Check the limit: with nothing dropped, $D$ is empty and the error
+is zero.
+
+**A value map.** `aux_radius`, `ao_tail` and `schwarz_skip` replace $J$ by
+$J + \delta J$ and leave the pattern and $\mathcal A$ alone. `ao_tail` zeroes
+coefficients only inside the strip transform; the Fock blocks use the full
+orbitals. Expand $E^\star(J+\delta J) = -\langle J+\delta J, \mathcal A^{-1}(J+\delta J)\rangle$
+and use $t^\star = -\mathcal A^{-1}J$:
+
+$$ E^\star(J + \delta J) - E^\star(J) = 2\langle t^\star, \delta J\rangle - \langle \delta J, \mathcal A^{-1}\delta J\rangle . \label{eq:lmp2-map-value} $$
+
+The leading term is linear in $\delta J$ and has the sign of
+$\langle t^\star, \delta J\rangle$, which no map controls. A negative
+$\varepsilon = 0$ error therefore comes from a value map. Truncating an
+orbital's AO expansion also leaves the occupied and virtual spaces of the
+strips no longer orthogonal.
+
+**Both on.** Solve the restricted problem with the perturbed integrals and
+subtract $E^\star$. Adding and subtracting $E_K(J)$ splits the result into
+(@eq:lmp2-map-pattern) and (@eq:lmp2-map-value) restricted to $K$:
+
+$$ E_K(J + \delta J) - E^\star = t^{\star\mathsf T}_D S\, t^\star_D + 2\langle t_K, \delta J_K\rangle - \langle \delta J_K, \mathcal A_{KK}^{-1}\delta J_K\rangle . \label{eq:lmp2-map-both} $$
+
+The value map is charged only on the kept block, and against $t_K$, not
+$t^\star_K$. So the error with both maps on is not the sum of the two errors
+measured one map at a time. A small combined error can be a positive pattern
+error cancelling a value error of the other sign. Such a cancellation depends
+on the geometry, so it does not carry over from one conformer to the next.
+To attribute an error, switch one map on at a time from the trivial limit,
+and also switch one map off at a time from the production setting. The
+ignored probe `probe_map_ablation` in `crates/ferric-mp2/tests/lmp2_map_ablation.rs`
+does both, and `probe_tail_mass` reports the coefficient mass `ao_tail` drops
+per orbital.
+
+> **Verified equations @eq:lmp2-map-pattern, @eq:lmp2-map-value and @eq:lmp2-map-both** · how pattern and value maps enter the energy
+>
+> On a generic symmetric $2+1$ block, $E_K - E^\star$ equals the Schur form
+> (claim 1). On a generic $3\times3$ model the value-map expansion is exact
+> through both orders (claim 2). On the $2+1$ block, both maps together give
+> the kept-block form (claim 3). A random rational positive definite model
+> checks all three by brute-force solves. It finds value-map errors of both
+> signs and a combined error that differs from the one-at-a-time sum.
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/lmp2_direct_maps_sympy.py`, claims 1, 2 and 3 |
+> | Negative control | the runner flips the sign of the Schur coupling term (claim 1 fails), drops the quadratic term (claim 2 fails), and charges the value map on $t^\star_K$ (claim 3 fails) |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-mp2/src/lmp2_direct.rs::{build_locality_maps,pair_candidates}` |
+> | Code test | `trivial_maps_match_canonical_aconf20_sto3g` in `crates/ferric-mp2/tests/lmp2_map_ablation.rs` |
+>
+> <!-- verified: id=lmp2.direct-maps; script=scripts/lmp2_direct_maps_sympy.py; claim=1; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/lmp2_direct.rs::{build_locality_maps,pair_candidates}; rust_test=ferric-mp2/tests/lmp2_map_ablation.rs::trivial_maps_match_canonical_aconf20_sto3g -->
+
+The proof covers the algebra of a fixed $\mathcal A$ and $J$. It does not
+bound the size of $\delta J$ for any map. The sizes come from measurement.
+
 ## The exactness anchor and the artifact hypothesis {#integral-direct-exactness-anchor-artifact-hypothesis}
 
 The repository's experimental protocol requires both of these to be stated
@@ -309,6 +386,8 @@ makes no scaling claim. The measurement is `bench_direct_alkane_series` in
 |---|---|
 | `crates/ferric-mp2/src/lmp2_direct.rs` module documentation, `fit_domain_group`, `DirectConfig` | the pipeline, the maps, the exactness anchor and the artifact hypothesis |
 | `scripts/local_mp2_fit_pno_sympy.py`, claims L1, L2 | verified equation @eq:lmp2-domain-fit |
+| `scripts/lmp2_direct_maps_sympy.py`, claims 1 to 3 | verified equations @eq:lmp2-map-pattern, @eq:lmp2-map-value, @eq:lmp2-map-both |
+| `crates/ferric-mp2/tests/lmp2_map_ablation.rs` | the $\varepsilon = 0$ anchors at octane and C$_{20}$H$_{42}$ size, and the ablation probes |
 | `site/src/methods/mp2.md`, "Exact and local MP2" | the user-facing description and the measured scaling |
 | `site/src/reference/input.md`, `[local]` | the CLI defaults |
 | `site/src/reference/validation.md` | the anchor row and the known limits |

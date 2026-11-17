@@ -1006,6 +1006,27 @@ CASES = [
         ],
     ),
     (
+        "lmp2_direct_maps_sympy.py",
+        10,
+        [
+            (
+                "schur = A[nk:, nk:] - A[nk:, :nk] * A[:nk, :nk].inv() * A[:nk, nk:]",
+                "schur = A[nk:, nk:] + A[nk:, :nk] * A[:nk, :nk].inv() * A[:nk, nk:]",
+                "claim 1: Schur",
+            ),
+            (
+                "rhs = 2 * (t3.T * dJ)[0, 0] - (dJ.T * A3.inv() * dJ)[0, 0]",
+                "rhs = 2 * (t3.T * dJ)[0, 0]",
+                "claim 2: expansion",
+            ),
+            (
+                "+ 2 * (tk.T * dJk)[0, 0]",
+                "+ 2 * (t_star[:nk, 0].T * dJk)[0, 0]",
+                "claim 3: kept-block",
+            ),
+        ],
+    ),
+    (
         "lmp2_hylleraas_vs_wshg23_sympy.py",
         10,
         [
