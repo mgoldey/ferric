@@ -624,7 +624,7 @@ pub(crate) fn mo_stream_chunk_for(width: usize, budget_bytes: usize) -> usize {
 ///
 /// Streams raw AO aux-blocks from `src` (which may itself be budget-bounded /
 /// disk-spilled), MO-transforms each in chunks of at most `MO_STREAM_CHUNK`
-/// aux rows (BLAS3: `half = (B^Q_AO)·c_right`, then `c_left^T·half`, rayon-
+/// aux rows (BLAS3: `half = c_left^T·(B^Q_AO)`, then `half·c_right`, rayon-
 /// parallel across chunk rows above `PAR_MO_TRANSFORM_WORK_THRESHOLD`), and
 /// dresses each chunk into the output with `V^{-1/2}` on the fly (in place,
 /// `beta=1` — no second full-size copy). Exactness: the same contraction as
@@ -1375,10 +1375,11 @@ pub fn spin_components_from_b_ov_kappa_cpu(
     nocc_total: usize,
     kappa: Option<f64>,
 ) -> SpinComponents {
-    // (ia|jb) comes from i-blocked wide GEMMs G_i = B_i^T·B (nvir x nocc*nvir)
-    // instead of per-element strided dots over P: same FLOPs at BLAS3
-    // throughput. G_i is computed ONCE per i (against the FULL b_ov, so it
-    // already carries every j), and reused across all j>=i for that i.
+    // (ia|jb) comes from i-blocked wide GEMMs instead of per-element strided
+    // dots over P: same FLOPs at BLAS3 throughput. For each i,
+    // G_i = B_i^T · B_{j>=i} is (nvir, (nocc-i)*nvir): it is formed against the
+    // j >= i tail of b_ov only, because the pair loop consumes nothing else,
+    // and is reused across every j >= i for that i.
     //
     // MP2 SYMMETRY: both spin-component sums are invariant under i<->j. For OS,
     //   sum_ab (ia|jb)^2/D_ij^ab -> sum_ab (jb|ia)^2/D_ji^ba
@@ -1390,43 +1391,17 @@ pub fn spin_components_from_b_ov_kappa_cpu(
     // off-diagonal j>i pairs by 2 (they stand in for their j<i mirror) and the
     // diagonal j==i by 1 — exactly PySCF's fac=2/fac=1 MP2_contract_d convention.
     // This halves the accumulation work (nocc*(nocc+1)/2 pairs vs nocc^2).
-    //
-    // Parallelism is over the FLATTENED list of unique (i,j) pairs rather than
-    // the coarse 0..nocc outer loop: at nocc=15 that is 120 fine-grained tasks
-    // vs 15 coarse ones, so rayon load-balances across cores without the old
-    // tail latency where the last few i-tasks left cores idle. Each i's wide
-    // GEMM G_i is still done once (memoized below) and shared read-only across
-    // that i's pairs. BLAS stays serial inside each closure via
-    // OPENBLAS_NUM_THREADS=1 — nested BLAS threads under rayon is the documented
-    // dgetrf-crash footgun.
     use rayon::prelude::*;
 
-    // Parallelism is over i, with each i's wide GEMM done INSIDE its own task.
-    // Two things follow from that, and both were previously wrong:
-    //
-    //   1. The GEMM half used to be a serial `(0..nocc).map(...).collect()`
-    //      running ahead of the parallel pair loop. Measured on
-    //      benzene/aug-cc-pVTZ (naux=912, nocc=15, nvir=393) it was 1.400 s of
-    //      the 1.425 s stage — 98% — and identical at 1 and 12 threads, so the
-    //      pair loop's parallelism was very nearly decorative. The GEMMs are
-    //      mutually independent, so they belong in the parallel region.
-    //
-    //   2. G_i only ever needs its j >= i columns. The old full-width
-    //      `b_i.t().dot(b_ov)` also produced every j < i block, which no pair
-    //      consumes — the strictly-lower triangle, i.e. (nocc-1)/(2*nocc) of the
-    //      GEMM flops (47% at nocc=15). Slicing b_ov to the j >= i tail removes
-    //      that work outright rather than computing and discarding it.
-    //
-    // Memory drops with it: the old `g_all` held all nocc matrices live at once
-    // (nocc*nvir*nocc*nvir*8 bytes = 0.28 GB here, but it grows as nocc^2*nvir^2
-    // — 4.6 GB at nocc=30/nvir=800). Now at most one (nvir, (nocc-i)*nvir) block
-    // is live per worker.
+    // Parallelism is over i (one rayon task per occupied orbital), with each
+    // i's wide GEMM done INSIDE its own task, so the GEMMs run in the parallel
+    // region (on benzene/aug-cc-pVTZ, naux=912, nocc=15, nvir=393, they are
+    // ~98% of this stage). At most one (nvir, (nocc-i)*nvir) block is live per
+    // worker, rather than all nocc blocks (nocc^2*nvir^2*8 bytes, 4.6 GB at
+    // nocc=30/nvir=800).
     //
     // BLAS stays serial inside each closure via OPENBLAS_NUM_THREADS=1 — nested
-    // BLAS threads under rayon is the documented dgetrf-crash footgun.
-    //
-    // MP2 SYMMETRY (unchanged): visit only unique pairs j >= i, weighting the
-    // strictly off-diagonal ones by 2 — PySCF's fac=2/fac=1 convention.
+    // BLAS threads under rayon oversubscribe the cores.
     //
     // Per-i (e_os, e_ss) partials are collected into an i-ordered Vec and summed
     // SEQUENTIALLY. A rayon `reduce` combines partials in a tree whose shape

@@ -92,10 +92,12 @@ use ndarray::{s, Array2};
 /// Tolerance on the union-projector eigenvalues that decides which directions are in
 /// the span of a per-orbital union of PNO subspaces.
 ///
-/// `M^i = Σ_j P^{ij} (P^{ij})ᵀ` is a sum of orthogonal projectors, so every nonzero
-/// eigenvalue is ≥ 1 for a direction lying in at least one `P^{ij}` and exactly 0 for a
-/// direction orthogonal to all of them. The gap is therefore O(1), not O(ε) — this
-/// threshold sits deep inside it and is not a tunable knob.
+/// `M^i = Σ_j P^{ij} (P^{ij})ᵀ` is a sum of orthogonal projectors, so a direction
+/// orthogonal to all of them has eigenvalue exactly 0 (rounding noise in practice).
+/// The span's eigenvalues are not bounded below by 1: two nearly parallel subspace
+/// directions at angle θ give `1 ± cos θ` (≈ 5e-5 at θ = 0.01). The tolerance drops
+/// the rounding-noise directions outside the span and any direction so nearly
+/// dependent (θ ≲ 1.4e-4, `1 − cos θ < 1e-8`) that it would be ill-conditioned.
 const UNION_RANK_TOL: f64 = 1e-8;
 
 /// Shared reduced virtual basis built from TRUE per-pair PNOs.
@@ -198,9 +200,9 @@ pub fn build_pair_pnos(
 ///
 /// Returns an orthonormal `(nvir × k_i)` basis whose range is
 /// `span{ range(P^{ij}) : (i,j) or (j,i) retained }`. Obtained by eigendecomposing
-/// `M^i = Σ_j P^{ij} (P^{ij})ᵀ`, a sum of orthogonal projectors whose nonzero
-/// eigenvalues are ≥ 1 — so the rank test against [`UNION_RANK_TOL`] sits in an O(1)
-/// gap rather than resolving a fuzzy singular-value tail.
+/// `M^i = Σ_j P^{ij} (P^{ij})ᵀ`, a sum of orthogonal projectors whose out-of-span
+/// eigenvalues are exactly 0; the rank test against [`UNION_RANK_TOL`] removes those
+/// and any nearly dependent direction (see that constant).
 ///
 /// An occupied orbital appearing in no retained pair cannot happen through
 /// [`build_pair_domains`][ferric_mp2::pair_domains::build_pair_domains] (diagonal

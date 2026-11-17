@@ -14,7 +14,7 @@
 //! This is opt-in: `RhfConfig` gains no new field for it, and the only entry
 //! point is [`solve_rhf_with_df_increments`], called explicitly. It touches
 //! no existing code path — `solve_rhf`'s own exact incremental-Fock mechanism
-//! (`INCREMENTAL_FULL_REBUILD_EVERY`, `d_last_fock`) is completely untouched,
+//! (`driver::INCREMENTAL_FULL_REBUILD_EVERY`, `d_last_fock`) is completely untouched,
 //! and `solve_rhf_with_df_guess` is reused only via its pre-stage helper
 //! (`ladder::run_df_guess_pre_stage`), never mutated.
 //!
@@ -50,8 +50,10 @@
 //! # Literature
 //!
 //! This is not a novel scheme. It is structurally identical to the exact
-//! incremental-Fock mechanism already in `rhf.rs`
-//! (`DirectJK::build_incremental`, `F(D) = F(D_last) + ΔF(ΔD)`), with the
+//! incremental-Fock mechanism the SCF drivers already use
+//! (`DirectJK::build_incremental` in `direct_jk.rs`, rebuilt in full every
+//! `driver::INCREMENTAL_FULL_REBUILD_EVERY` iterations,
+//! `F(D) = F(D_last) + ΔF(ΔD)`), with the
 //! delta-Fock kernel swapped from the exact 4-index builder to a cheap DF/RI
 //! builder — i.e. "incremental Fock, but the increment uses an approximate
 //! kernel instead of the exact one." That "freeze an expensive reference

@@ -70,16 +70,16 @@ const PAR_MIN_PTS: usize = 128;
 //
 // The bracket S = Σ_g w_g ρ_g^(1/4) is an O(molecular-volume) quantity: for
 // water S ≈ 10, and it grows only linearly with system size (per-atom
-// contributions are bounded). Even a very large molecule with S ≈ 200 needs
-// only R_cut ≈ 84 Bohr to hold |ΔE_nl| < 1e-8 Ha; the R⁻⁶ decay means the
-// cutoff barely moves with S (S×2 ⇒ R_cut×2^(1/3) ≈ 1.26).
+// contributions are bounded). The R⁻⁶ decay means the cutoff the bound needs
+// grows slowly with S (S×2 ⇒ R_cut×2^(1/3) ≈ 1.26); a molecule with S ≈ 200
+// would need R_cut ≈ 84 Bohr to hold |ΔE_nl| < 1e-8 Ha.
 //
-// We therefore fix a single conservative constant well beyond that horizon.
-// NLC_CUTOFF_BOHR = 40 Bohr (≈ 21 Å) bounds |ΔE_nl| < 1e-8 Ha for any molecule
-// with S ≲ 60 (a ~200-atom-scale system) and, being R⁻⁶, buys a >4000× margin
-// versus the water bound. The bound is *proven empirically* in the tests
-// (`cutoff_energy_bounded_*`), which assert |E_nl(cutoff) − E_nl(exact)| < 1e-8
-// on both water (fallback path) and a 20-atom alkane (cutoff active). This is a
+// NLC_CUTOFF_BOHR = 40 Bohr (≈ 21 Å). There the prefactor
+// (3/4)·a^(-3/2)·R_cut⁻⁶ is 2.1e-11 Ha, so the bound is 2.1e-9 Ha for water
+// (a ~5× margin) and stays below 1e-8 Ha only for S ≲ 21. Larger systems are
+// not covered by this bound. The tests (`cutoff_energy_bounded_*`) measure
+// |E_nl(cutoff) − E_nl(exact)| directly and assert it is < 1e-8 on both water
+// (fallback path) and a 20-atom alkane (cutoff active). This is a
 // screening approximation with a documented error bound, NOT a re-derivation.
 //
 // Hard-coded on purpose: this is a numerical accuracy floor, not a user knob —
@@ -1885,10 +1885,12 @@ mod cutoff_tests {
         };
         let grid = crate::grid::build_atomic_grid(mol, &nlc_cfg);
         let npts = grid.len();
-        const ALPHA: f64 = 2.0; // Bohr^-2, a valence-like decay (density falls
-                                // off fast enough that S = Σ w ρ^(1/4) stays
-                                // within NLC_CUTOFF_BOHR's documented S ≲ 60
-                                // validity range even for a 48-atom chain).
+        const ALPHA: f64 = 2.0; // Bohr^-2, a valence-like decay. The tests
+                                // that use this density measure the cutoff
+                                // error directly; they do not rely on
+                                // S = Σ w ρ^(1/4) staying inside the S ≲ 21
+                                // range the analytic bound at
+                                // NLC_CUTOFF_BOHR covers.
 
         let mut rho = Array1::<f64>::zeros(npts);
         let mut grad = Array2::<f64>::zeros((3, npts));

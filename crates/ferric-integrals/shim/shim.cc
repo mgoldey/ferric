@@ -2129,10 +2129,12 @@ void boys_upto(int mmax, double T, double *F) {
 //   df(2i)   = (2i)!! / (2i+1)!!
 //   G_{m,0}(S,s) = sum_i df(2i) * gS[m+1][i] * cdf_s[i]
 //
-// Used when (S,s) lies outside every interpolation table. The only reachable
-// out-of-table region is S > 20 with s < 1/2: the curvature constraint
-// r0*omega = 1/sqrt2 gives s = phi^2 r0^2 <= omega^2 r0^2 = 1/2, so s is always
-// deep inside every table's s-range and coverage reduces to S <= 20.
+// Used when (S,s) lies outside every interpolation table. Every table stops at
+// S = 20, so the series serves all S > 20. Under the curvature constraint
+// r0*omega = 1/sqrt2, s = phi^2 r0^2 <= omega^2 r0^2 = 1/2; with decoupled
+// omega (Operator::terfc_with_omega) s reaches ~80, the s-range of the
+// 2_20_80 table. So the out-of-table region is S > 20 at any s up to ~80
+// (plus s > 80, which only a decoupled omega past that range can produce).
 //
 // float64 series validated against the 256-bit mpmath reference: <= 6e-12
 // relative for S in [20.25, 200], s in [0, 0.5], m <= 16 (worst 5e-5 at m=16,
@@ -2697,7 +2699,8 @@ inline bool terf_aux(const TerfcTableSet &set, double S, double s,
             return true;
         }
     }
-    // Outside all tables: exact series (reachable only for S > 20, s < 1/2).
+    // Outside all tables: exact series (S > 20 at any s; s > 80 only with a
+    // decoupled omega beyond the last table's range).
     __atomic_fetch_add(&g_terf_ser, 1, __ATOMIC_RELAXED);
     double gser[TERFC_DIMM];
     // ROUTE to the tail form. Identical semantics to terf_G_series (verified:

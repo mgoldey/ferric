@@ -530,8 +530,9 @@ impl<'a> CasScfProblem<'a> {
         };
         let ci = run_cas_ci_on_integrals_timed(ints, &cfg, acc)?;
         // The CI flag is the residual criterion ‖Hc − Ec‖ < ci_conv_thresh
-        // (Davidson relaxes it to 10x when its correction vector vanishes;
-        // the dense fallback sets it from the residual alone). The
+        // (when Davidson's correction vector vanishes it stops and reports
+        // unconverged; the dense fallback sets the flag from the residual
+        // alone). The
         // gradient error is first order in the residual, so the returned
         // root must itself meet ci_conv_thresh.
         if !ci_root_accepted(ci.converged, ci.residual_norm, self.ci_config.conv_thresh) {

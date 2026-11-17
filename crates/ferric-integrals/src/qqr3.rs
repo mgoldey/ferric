@@ -17,10 +17,10 @@
 //! leading multipole term decays as 1/R, so the distance factor must scale as
 //! 1/R_eff — NOT `ext·ext/R` (which under-states the cloud charges and
 //! collapses far too fast, ratio 14.8) nor `ext·ext/R²` (wrong power, 1/R² is
-//! the FIELD not the potential). The numerator is `ext_sum` so the factor is
-//! continuous and equals 1 at contact (R = ext_sum), reducing smoothly to the
-//! Schwarz bound for overlapping/penetrating clouds where the multipole
-//! expansion is invalid. Validated against the true dense integral on water +
+//! the FIELD not the potential). The factor is clamped to 1 (the Schwarz
+//! bound) for overlapping/penetrating clouds, where the multipole expansion is
+//! invalid; with the 1.10 safety multiplier it stays at 1 out to
+//! R = 2.10·ext_sum and decays continuously as 1/R_eff beyond. Validated against the true dense integral on water +
 //! alkane_6: worst |true|/bound = 0.9999 ≤ 1 (see `tests` + `examples/`).
 //!
 //! ## erfc attenuation is carried by the Schwarz factors, not a distance factor
@@ -242,10 +242,10 @@ impl QqrBounds3 {
         // QQR multipole distance envelope. `(P|μν)` is the Coulomb interaction
         // of two Gaussian charge clouds; its leading (monopole) term decays as
         // 1/R, so the distance factor scales as 1/R_eff. The numerator is the
-        // sum of cloud extents so the factor is continuous and equals 1 at
-        // contact (R = ext_sum), reducing to the Schwarz bound for
-        // overlapping/penetrating clouds where the multipole expansion breaks
-        // down. The earlier `ext·ext/R_eff` (and `/R_eff²`) forms under-stated
+        // sum of cloud extents; with the min(1) clamp below the factor is 1
+        // (the Schwarz bound) for overlapping/penetrating clouds, where the
+        // multipole expansion breaks down, and stays 1 out to
+        // R = 2.10·ext_sum (r_eff = SAFETY_FACTOR·ext_sum). The earlier `ext·ext/R_eff` (and `/R_eff²`) forms under-stated
         // the cloud charges and collapsed far too fast — invalid bounds that
         // silently dropped real integrals (worst |true|/bound 3.8–14.8).
         let ext_obs_e = self.obs_pair_extents[idx_obs];

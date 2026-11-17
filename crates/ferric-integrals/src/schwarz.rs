@@ -294,7 +294,7 @@ fn check_operator_supported(op: Operator, prep: &PreparedBasis) -> Result<(), Fe
 ///
 /// Q(i,j) * Q(k,l) provides an upper bound on |(ij|kl)|, enabling integral screening.
 ///
-/// Parallelized over upper-triangle shell pairs once `nsh` clears
+/// Parallelized over the shell pairs `j ≤ i` (lower triangle) once `nsh` clears
 /// `PAR_SCHWARZ_SHELL_THRESHOLD` — the historical `scf_compute_schwarz` FFI
 /// call ran the whole O(nsh²) diagonal-quartet loop serially on one engine,
 /// which dominated setup on large direct jobs. Each rayon worker builds its own
