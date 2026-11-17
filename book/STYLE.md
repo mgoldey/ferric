@@ -91,6 +91,11 @@ A rewrite changes the explanation, never the facts.
 - **Code references stay in the checked form** `crate/src/file.rs::item`.
   A bare function name is not checked by `book_build.py`. The first mention
   of an item in a section uses the checked form.
+- **The book owns its text.** Replace each `<!-- include: crates/x/theory.md#"..." -->`
+  with prose in this voice that keeps every fact of the included section.
+  The `theory:` field of the header comment keeps pointing at the source.
+  `theory.md` stays the terse reference; the verified boxes tie both to the
+  sympy proofs and the code.
 - **The section header comment stays**, including `status:`. Do not change
   the status. Reviewers set it.
 - **Every new claim is either in the cited theory.md / sympy script or

@@ -168,7 +168,7 @@ is already visible in the repository.
    `ready` section covers an id that the registry lists under `gaps`, when a
    registry id is covered by no section, and when the status table in
    `book/PLAN.md` differs from the count of section statuses.
-4. **Included derivations are addressed by heading.** Where a chapter
+4. **Included derivations are addressed by heading.** (Decided 2026-11-17: the book owns its text and `book/STYLE.md` replaces includes with prose, so this rule covers only includes that remain.) Where a chapter
    includes a `theory.md` section, the include names the file and the heading
    text. A missing heading fails the build. Section numbers are not used: the
    same file has different numbering on two branches today.
@@ -222,9 +222,6 @@ Each section file starts with a header comment:
 
 ## 7. What this proposal does not settle
 
-- Whether the book includes derivations from `theory.md` or owns its text
-  (`book/PLAN.md`, section 8, question 1). Rule 4 applies only in the first
-  case.
 - The PDF page design: fonts, table style, box style.
 - Where the published HTML lives relative to the user guide, and whether the
   book is public before a first complete release.
