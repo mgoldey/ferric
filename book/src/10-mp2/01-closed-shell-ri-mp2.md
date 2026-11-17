@@ -9,7 +9,7 @@ aside. MP2 is the lowest-order correction that captures this. It is
 second-order perturbation theory, with Hartree–Fock as the starting point.
 
 This section builds closed-shell RI-MP2 from the textbook formula to the
-loop that actually runs. Almost everything later in Part III starts here:
+loop that actually runs. Almost everything later in Part V starts here:
 spin-component scaling, attenuation, orbital optimization, the Laplace
 forms and local MP2 all reuse this pair loop and these fitted integrals.
 

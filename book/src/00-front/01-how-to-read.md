@@ -235,10 +235,8 @@ explains.
 ## Where the equations live
 
 Each crate keeps its derivations in `theory.md`. The header comment of a
-book section names the `theory.md` heading it covers. Chapters 1 to 21
-write the derivation in their own prose and keep every fact of that
-heading. Chapters 22 to 24 still take the derivation from `theory.md` by
-heading, so a change to `theory.md` changes those sections directly.
+book section names the `theory.md` heading it covers. Each section writes
+the derivation in its own prose and keeps every fact of that heading.
 `theory.md` stays the terse reference, and the verified boxes tie both to
 the proof scripts and the code.
 
