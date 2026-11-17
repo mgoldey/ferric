@@ -1,53 +1,102 @@
 # 10.1 Closed-shell RI-MP2 energy
 
-<!-- section: 10.1; status: ready; registry: ri-mp2;
+<!-- section: 10.1; status: edit; registry: ri-mp2;
      theory: crates/ferric-mp2/theory.md#"1. Density fitting", "2. Closed-shell RI-MP2" -->
 
-*Sample section, drafted to the proposed house style. Notation follows
-`book/notation.md`. Code references are to commit `81486b984`.*
+Hartree–Fock gives each electron the *average* field of all the others.
+Real electrons do better than that: they see each other coming and step
+aside. MP2 is the cheapest honest account of that sidestep. It is
+second-order perturbation theory, with Hartree–Fock as the starting point.
 
-RI-MP2 is second-order Møller–Plesset perturbation theory with the
-four-index integrals factorized through an auxiliary basis. It is the entry
-point to every method in this part of the book: spin-component scaling,
-attenuation, orbital optimization and the Laplace forms all reuse the
-factors and the pair loop described here.
+This section builds closed-shell RI-MP2 from the textbook formula to the
+loop that actually runs. Almost everything later in Part III starts here:
+spin-component scaling, attenuation, orbital optimization, the Laplace
+forms and local MP2 all reuse this pair loop and these fitted integrals.
+Getting this one right pays off many times.
 
-| Index | Range | Code name |
+The plan has three steps:
+
+1. Write the energy in spin orbitals, where it is short and obviously right.
+2. Sum out spin, which leaves two physically different pieces.
+3. Make the integrals cheap with density fitting, and look at the code that
+   does it.
+
+Here is the notation, once:
+
+| Symbol | Meaning | In the code |
 |---|---|---|
-| $i, j$ | active occupied spatial orbitals | `0..nocc`, offset by `first_occ` in `eps` |
-| $a, b$ | virtual spatial orbitals | `0..nvir`, offset by `nocc_total` in `eps` |
-| $\mu, \nu$ | AO functions | `0..nbas` |
-| $P, Q$ | auxiliary functions | `0..naux` |
+| $i, j$ | occupied spatial orbitals (active, i.e. after frozen core) | `0..nocc`, shifted by `first_occ` into `eps` |
+| $a, b$ | virtual spatial orbitals | `0..nvir`, shifted by `nocc_total` into `eps` |
+| $\mu, \nu$ | atomic orbitals | `0..nbas` |
+| $P, Q$ | auxiliary (fitting) functions | `0..naux` |
 
-| Entry point | Location |
-|---|---|
-| Rust | `ferric-mp2/src/rimp2.rs::ri_mp2`, `ferric-mp2/src/rimp2.rs::ri_mp2_spin_components` |
-| CLI | `method.kind = "rimp2"`, section `[mp2]` (`examples/water-rimp2.toml`) |
-| Python | `run_rimp2` (`crates/ferric-python/ferric.pyi`) |
+Entry points: Rust `ferric_mp2::rimp2::ri_mp2`, CLI `method.kind = "rimp2"`,
+Python `ferric.run_rimp2`.
 
-This section covers a closed-shell RHF reference with canonical orbitals. An
-open-shell molecule under the same CLI kind runs unrestricted RI-MP2
-(section 10.2).
+## 10.1.1 The energy, and why it splits in two
 
-## 10.1.1 The energy
-
-In spin orbitals, with canonical Hartree–Fock orbitals, the second-order
-energy is
+Start with spin orbitals and canonical Hartree–Fock orbitals. Second-order
+perturbation theory says to promote two electrons, $ij \to ab$, ask how
+strongly the Hamiltonian connects that double excitation to the ground
+state, square it, and divide by what the excitation costs:
 
 $$ E^{(2)} = -\frac14 \sum_{ijab} \frac{|\langle ij\|ab\rangle|^2}{\Delta_{ij}^{ab}}, \qquad \Delta_{ij}^{ab} = \varepsilon_a + \varepsilon_b - \varepsilon_i - \varepsilon_j . \tag{10.1} $$
 
-For a closed-shell reference each spatial orbital holds an $\alpha$ and a
-$\beta$ electron with the same spatial function. Summing (10.1) over spin
-splits the pairs into two classes. Opposite-spin pairs have no exchange
-integral. Same-spin pairs have one.
+Every term is negative, because $\Delta > 0$ for a ground state with a gap.
+So MP2 always lowers the energy, and small gaps make it lower *fast*. Keep
+that in mind; it comes back when the method misbehaves.
+
+The $\tfrac14$ is bookkeeping. The antisymmetrized integral
+$\langle ij\|ab\rangle = \langle ij|ab\rangle - \langle ij|ba\rangle$ is the
+same term counted four ways ($i \leftrightarrow j$, $a \leftrightarrow b$).
+
+A closed-shell reference has every spatial orbital doubly occupied, so we
+should not pay for spin. Give each of the four electrons a spin label and
+see what survives.
+
+**Opposite spins** ($i\alpha, j\beta \to a\alpha, b\beta$). Spin has to be
+conserved electron by electron, so the exchange half
+$\langle ij|ba\rangle$ would need $i\alpha \to b\beta$, which is zero. Only
+the direct integral is left. In chemists' notation that is $(ia|jb)$.
+
+**Same spins** ($i\alpha, j\alpha \to a\alpha, b\alpha$). Both halves
+survive, so the integral is $(ia|jb) - (ib|ja)$.
+
+Add up the spin cases. The $\tfrac14$ is cancelled by the ways of choosing
+which electron is which. The result:
 
 $$ E_{\mathrm{OS}} = -\sum_{ijab} \frac{(ia|jb)^2}{\Delta_{ij}^{ab}}, \qquad E_{\mathrm{SS}} = -\sum_{ijab} \frac{(ia|jb)\,\big[(ia|jb) - (ib|ja)\big]}{\Delta_{ij}^{ab}} . \tag{10.2} $$
 
 $$ E^{(2)} = E_{\mathrm{OS}} + E_{\mathrm{SS}} = -\sum_{ijab} \frac{(ia|jb)\,\big[\,2(ia|jb) - (ib|ja)\,\big]}{\Delta_{ij}^{ab}} . \tag{10.3} $$
 
-The sums in (10.2) and (10.3) run over spatial orbitals. $E_{\mathrm{OS}}$ is
-the $\alpha\beta + \beta\alpha$ part of (10.1) and $E_{\mathrm{SS}}$ is the
-$\alpha\alpha + \beta\beta$ part.
+Why is $E_{\mathrm{SS}}$ smaller? The minus sign in
+$(ia|jb) - (ib|ja)$ is the Pauli principle at work. Two same-spin electrons
+already avoid each other in Hartree–Fock: that is the exchange hole. So
+there is less left for correlation to fix. Opposite-spin electrons get no
+such help from Hartree–Fock, so they carry most of the correlation energy.
+
+Here is water in cc-pVDZ (cc-pVDZ-RI fitting basis, from the
+`a410529d0` build):
+
+```python
+import ferric
+
+mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
+bs = ferric.BasisSet.bundled("cc-pvdz")
+aux = ferric.BasisSet.bundled("cc-pvdz-ri")
+
+# c_os = c_ss = 1 is plain MP2, split into its two pieces
+r = ferric.run_scs_mp2(mol, bs, aux, c_os=1.0, c_ss=1.0)
+print(r.e_os, r.e_ss, r.e_os + r.e_ss)
+# -0.15244  -0.05159  -0.20403   (Hartree)
+```
+
+About three quarters of the correlation energy is opposite-spin. That
+imbalance is the whole reason SCS-MP2 exists. If one piece is
+systematically over- or under-counted relative to the other, scale them
+separately: $c_{\mathrm{OS}}E_{\mathrm{OS}} + c_{\mathrm{SS}}E_{\mathrm{SS}}$
+(section 10.3); the code returns both in `ferric-mp2/src/rimp2.rs::SpinComponents`. It also explains why SOS-MP2 (§12.3) can drop
+$E_{\mathrm{SS}}$ altogether and buy a cheaper algorithm with it.
 
 > **Verified equation 10.2** · spin adaptation of the MP2 energy
 >
@@ -59,53 +108,108 @@ $\alpha\alpha + \beta\beta$ part.
 > |---|---|
 > | Proof | `scripts/mp2_variant_identities.py`, claim 1 |
 > | Negative control | $E_{\mathrm{SS}}$ without the exchange term must differ |
-> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` (on branch `docs/derivations-backfill`; no runner on this commit) |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
 > | Code | `ferric-mp2/src/rimp2.rs::pair_energy` |
 >
 > <!-- verified: id=mp2.cs.spin-adaptation; script=scripts/mp2_variant_identities.py; claim=1; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/rimp2.rs::pair_energy -->
 
-Keeping the two parts separate costs nothing and is what the scaled variants
-need: SCS-MP2 is $c_{\mathrm{OS}}E_{\mathrm{OS}} + c_{\mathrm{SS}}E_{\mathrm{SS}}$
-(section 10.3). The code returns both in
-`ferric-mp2/src/rimp2.rs::SpinComponents`.
+### Reading the inner loop
 
-**The sign in the code.** The code divides by the negative quantity
-`denom = e_i + e_j - e_a - e_b` $= -\Delta_{ij}^{ab}$ and has no leading minus
-sign. Each summand is `g_ab * g_ab / denom`, which is the summand of (10.2).
-`crates/ferric-mp2/theory.md` writes it the book's way, with $\Delta$ and an
-explicit minus sign.
+Equation (10.2) is the code almost word for word. This is the heart of
+`ferric-mp2/src/rimp2.rs::pair_energy` with the κ-regularization branch removed:
 
-## 10.1.2 Density fitting
+```rust
+let jcol = (j - i) * nvir;              // where pair (i,j) starts in the block
+let e_ij = eps[first_occ + i] + eps[first_occ + j];
+for a in 0..nvir {
+    for b in 0..nvir {
+        let g_ab = g_i[(a, jcol + b)];  // (ia|jb)
+        let g_ba = g_i[(b, jcol + a)];  // (ib|ja): same block, transposed
+        let denom = e_ij - eps[nocc_total + a] - eps[nocc_total + b];
+        e_os_ij += g_ab * g_ab / denom;
+        e_ss_ij += g_ab * (g_ab - g_ba) / denom;
+    }
+}
+```
 
-Forming $(ia|jb)$ from four-center AO integrals costs $O(N^5)$ in the
-transformation and needs the $N^4$ AO integrals. The resolution of the
-identity replaces each orbital product by an expansion in an auxiliary basis:
+Three things are worth noticing.
+
+- **The sign is hiding in `denom`.** The code computes
+  $\varepsilon_i + \varepsilon_j - \varepsilon_a - \varepsilon_b = -\Delta$,
+  which is negative, and has no leading minus. The two minus signs cancel.
+  It's the same number as (10.2), but if you port this loop, port the pair of
+  signs together or not at all.
+- **The exchange integral costs nothing.** $(ib|ja)$ sits in the same block
+  as $(ia|jb)$, transposed in $a,b$. One block of integrals per pair feeds
+  both spin cases.
+- **The loop is per pair on purpose.** For a fixed $(i,j)$ everything is a
+  dense $n_v \times n_v$ block. That is the unit later chapters parallelize,
+  ship to a GPU (`rimp2_gpu` calls this same function, so the two paths
+  differ only in how `g_i` was built), and in local MP2 *throw away* (§13).
+
+## 10.1.2 Density fitting: making $(ia|jb)$ affordable
+
+The loop above needs $(ia|jb)$ for every $i, j, a, b$. Building those from
+four-center AO integrals means storing $N^4$ numbers and running an $O(N^5)$
+transformation. For anything bigger than a small molecule, that is where
+the time and memory go.
+
+The fix rests on one observation. $(ia|jb)$ is the Coulomb interaction of
+two *charge distributions*, $\rho_{ia} = \phi_i\phi_a$ and
+$\rho_{jb} = \phi_j\phi_b$. Expand each distribution in an auxiliary basis
+of atom-centered functions $\chi_P$, built for exactly this job, and the
+four-index object factors into two three-index ones:
 
 $$ (ia|jb) \approx \sum_P B^P_{ia} B^P_{jb}, \qquad B^P_{ia} = \sum_Q M_{PQ}\,(Q|ia), \qquad M^{\mathsf T}M = V^{-1}, \qquad V_{PQ} = (P|Q) . \tag{10.4} $$
 
-$(Q|ia)$ is the raw three-index integral and $V$ is the two-index metric, both
-over the same operator $\hat w$ (Coulomb here). $B$ is the dressed factor.
+Read it right to left:
+- $(Q|ia)$ is how much $\rho_{ia}$ "looks like" $\chi_Q$, measured with the
+  Coulomb operator;
+- $V^{-1}$ undoes the double counting from the $\chi$'s overlapping each
+  other;
+- $B$ is the result, a "dressed" factor that you contract like a matrix.
 
-The approximation changes the prefactor of the expensive step and the storage,
-not the scaling. As the dissertation puts it, with the auxiliary basis "the
-fundamental fifth-order scaling is not ameliorated" (chapter 4, after Eq. 4.5):
-the final contraction in (10.4) for all $i, j, a, b$ is $O(n_o^2 n_v^2 N_{\mathrm{aux}})$.
+Be honest about what this buys. It does not change the scaling. Matt's
+dissertation puts it plainly: "the fundamental fifth-order scaling is not
+ameliorated" (ch. 4, after Eq. 4.5). The last contraction is still
+$O(n_o^2 n_v^2 N_{\mathrm{aux}})$. What changes is the prefactor and the
+storage: no $N^4$ integrals, and the expensive step becomes a large matrix
+multiply, which is the one thing computers are reliably fast at.
 
-**Choice of $M$.** Only $B^{\mathsf T}B = (ia|P)\,V^{-1}\,(Q|jb)$ enters the
-energy, so any $M$ with $M^{\mathsf T}M = V^{-1}$ gives the same number. The
-dissertation and most of the literature write $M = V^{-1/2}$, the symmetric
-inverse square root. The code uses $M = L^{-1}$, the inverse of the Cholesky
-factor $V = LL^{\mathsf T}$, which needs one $N_{\mathrm{aux}}^3/3$
-factorization and no eigendecomposition
-(`ferric-mp2/src/rimp2.rs::cholesky_inverse_sqrt`). A Cholesky failure means
-the metric is not positive definite, which for the Coulomb operator is an
-error in the auxiliary basis or the integrals, and the run stops. The
-long-range operators erf and terf give a metric that loses rank in a
-Coulomb-fitted auxiliary basis; for those two
-`ferric-mp2/src/rimp2.rs::metric_inverse_sqrt` switches to a symmetric
-eigendecomposition that drops small eigenvalues
-(`ferric-mp2/src/rimp2.rs::eigh_inverse_sqrt`). Chapter 4 covers the
-operators.
+### Why the code uses Cholesky and not $V^{-1/2}$
+
+Most papers write $M = V^{-1/2}$, the symmetric inverse square root. But look
+at where $M$ enters: only through $B^{\mathsf T}B = (ia|P)\,M^{\mathsf T}M\,(Q|jb)$.
+*Any* $M$ with $M^{\mathsf T}M = V^{-1}$ gives the same energy, to the last
+digit you'd trust. So pick the cheapest one.
+
+That's a Cholesky factor. Write $V = LL^{\mathsf T}$ and take $M = L^{-1}$:
+
+$$ M^{\mathsf T}M = L^{-\mathsf T}L^{-1} = (LL^{\mathsf T})^{-1} = V^{-1}. \checkmark $$
+
+One factorization ($N_{\mathrm{aux}}^3/3$ flops) replaces an
+eigendecomposition. In the code it's `ferric-mp2/src/rimp2.rs::cholesky_inverse_sqrt`, and the comment
+at the end says exactly this:
+
+```rust
+let l = v.cholesky(UPLO::Lower)?;        // V = L L^T
+// ... forward substitution builds l_inv = L^{-1} ...
+// V^{-1/2} = L^{-1} (so that B = L^{-1} (Q|ia) and B^T B = (ia|P) V^{-1} (Q|jb))
+Ok(l_inv)
+```
+
+There's a bonus. Cholesky is also a *test*: it fails if $V$ is not
+positive definite. For the Coulomb operator that can't happen with a sound
+basis and correct integrals. So when it does fail, ferric stops instead of
+quietly fitting with a broken metric.
+
+The exception proves the rule. The long-range operators erf and terf
+(Chapter 4) give metrics that genuinely lose rank in a Coulomb-fitted
+auxiliary basis. For those, `ferric-mp2/src/rimp2.rs::metric_inverse_sqrt` switches to an
+eigendecomposition that drops the tiny eigenvalues
+(`ferric-mp2/src/rimp2.rs::eigh_inverse_sqrt`).
+That isn't a workaround. It's the right tool when the matrix really is
+singular, and the wrong one when it shouldn't be.
 
 > **Unverified equation 10.5** · the fitting error is quadratic
 >

@@ -187,7 +187,7 @@ Code references are `crate/src/file.rs::item` under `crates/`.
 
 | § | Section | Sources | Code | Status |
 |---|---|---|---|---|
-| 10.1 | Closed-shell RI-MP2 energy | `book/sample-ri-mp2.md`; T mp2 §1–2; D 4.1–4.2; S `mp2_variant_identities.py` claim 1; R ri-mp2 | `ferric-mp2/src/rimp2.rs::{ri_mp2,ri_mp2_spin_components,pair_energy,spin_components_from_b_ov_kappa_cpu}` | ready |
+| 10.1 | Closed-shell RI-MP2 energy | `book/sample-ri-mp2.md`; T mp2 §1–2; D 4.1–4.2; S `mp2_variant_identities.py` claim 1; R ri-mp2 | `ferric-mp2/src/rimp2.rs::{ri_mp2,ri_mp2_spin_components,pair_energy,spin_components_from_b_ov_kappa_cpu}` | edit |
 | 10.2 | Unrestricted RI-MP2 | T mp2 §3; S `mp2_variant_identities.py` claim 2; R u-ri-mp2 | `ferric-mp2/src/u_rimp2.rs::{u_ri_mp2,same_spin_pair_kernel,opposite_spin_pair_kernel}` | ready |
 | 10.3 | Spin-component scaling and $\kappa$-regularization | T mp2 §2 (last paragraph), §4; S `mp2_family_sympy.py`† part C; R scs-mp2 | `ferric-mp2/src/scs.rs::scs_mp2`, `ferric-mp2/src/rimp2.rs::spin_components_from_b_ov_kappa` | ready |
 | 10.4 | Attenuated MP2 with erfc and terfc | T mp2 §5; D 2, D 3; R attenuated-mp2 | `ferric-mp2/src/attenuated.rs::{attenuated_ri_mp2,attenuated_ri_mp2_long_range}` | edit |
@@ -449,7 +449,7 @@ registry row and are the largest block of `gap` sections.
 | II. Integrals, screening and density fitting | 1 | 15 | 1 | 0 | 17 |
 | III. Self-consistent field | 8 | 2 | 0 | 0 | 10 |
 | IV. Density functional theory | 7 | 0 | 0 | 0 | 7 |
-| V. The MP2 family | 18 | 3 | 1 | 5 | 27 |
+| V. The MP2 family | 17 | 4 | 1 | 5 | 27 |
 | VI. Derivatives | 12 | 3 | 0 | 0 | 15 |
 | VII. Coupled cluster | 7 | 1 | 0 | 0 | 8 |
 | VIII. Multireference | 6 | 0 | 0 | 0 | 6 |
@@ -461,9 +461,9 @@ registry row and are the largest block of `gap` sections.
 | XIV. Capstone | 1 | 2 | 4 | 0 | 7 |
 | XV. Interfaces | 1 | 5 | 1 | 0 | 7 |
 | Appendices | 3 | 0 | 1 | 0 | 4 |
-| **Total** | **100** | **48** | **8** | **6** | **162** |
+| **Total** | **99** | **49** | **8** | **6** | **162** |
 
-162 sections: 62% `ready`, 30% `edit`, 5% `gap` and 4% `verify`.
+162 sections: 61% `ready`, 30% `edit`, 5% `gap` and 4% `verify`.
 <!-- status-table:end -->
 
 ## 5. Gaps, ranked by how much rests on them
