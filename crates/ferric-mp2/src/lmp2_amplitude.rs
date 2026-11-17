@@ -69,7 +69,7 @@ use ferric_scf::result::ScfResult;
 
 use crate::boys::boys_localize_checked;
 use crate::ragged::{
-    check_swap_closed, lanczos_kappa, matvec_indexed, matvec_planned, pair_block_from_g_cand,
+    check_swap_closed, lanczos_kappa, matvec_indexed, matvec_planned, pair_blocks_screened,
     solve_ragged_budgeted_steered, BudgetedSolve, MatvecPath, PairBlock, Ragged, SolvePlan,
 };
 use crate::rimp2::{
@@ -153,6 +153,14 @@ pub struct AmplitudeLmp2Config {
     /// ([`crate::vvhv_local::VirtualSpace`]): the dense default, or the
     /// opt-in local build. Ignored by the `*_with_virtuals` entry points.
     pub virtual_space: crate::vvhv_local::VirtualSpace,
+    /// Fock-propagated widening of the Eq-8 mask
+    /// ([`crate::ragged::fock_dressed_gate`], theory.md §12.6): `Some(κ)`
+    /// also keeps element (a,b) of pair (i,j) when its one-step
+    /// virtual-Fock-dressed integral `|g̃_ab|` (or `|g̃_ba|`) exceeds κ·ε —
+    /// the amplitudes the integral-size mask misses because they are driven
+    /// through the off-diagonal VV-HV Fock coupling, not by their own
+    /// integral. `None` is the plain WSHG23 mask, bitwise. Inert at ε = 0.
+    pub fock_screen: Option<f64>,
 }
 
 impl Default for AmplitudeLmp2Config {
@@ -169,6 +177,7 @@ impl Default for AmplitudeLmp2Config {
             fit_radius_bohr: None,
             fvv_sparse_rho: 0.0,
             virtual_space: crate::vvhv_local::VirtualSpace::Dense,
+            fock_screen: None,
         }
     }
 }
@@ -1937,12 +1946,14 @@ pub fn assemble_ragged_direct(
         pair_gate_cal,
         fit_radius_bohr,
         None,
+        None,
     )
     .map(|(rg, g, _, _)| (rg, g))
 }
 
 /// [`assemble_ragged_direct`] with the ε-linked per-pair AUX truncation
-/// (see `AmplitudeLmp2Config::aux_tail_frac`). Returns
+/// (see `AmplitudeLmp2Config::aux_tail_frac`) and the optional
+/// Fock-propagated gate (`AmplitudeLmp2Config::fock_screen`). Returns
 /// `(ragged, gated_pairs, aux_dom_mean, aux_dom_max)` — the last two are
 /// (naux, naux) when truncation is off.
 #[allow(clippy::too_many_arguments)]
@@ -1956,6 +1967,7 @@ pub fn assemble_ragged_direct_aux(
     pair_gate_cal: Option<f64>,
     fit_radius_bohr: Option<f64>,
     aux_tail_frac: Option<f64>,
+    fock_screen: Option<f64>,
 ) -> Result<(Ragged, usize, f64, usize), FerricError> {
     let (no, nv) = (lb.no, lb.nv);
     let (f_oo, f_vv) = (&lb.f_oo, &lb.f_vv);
@@ -2121,19 +2133,8 @@ pub fn assemble_ragged_direct_aux(
             } else {
                 cand.clone()
             };
-            let mut out = Vec::with_capacity(2);
-            if let Some(pb) = pair_block_from_g_cand(i, j, &g, &cand_used, nv, f_vv, &fo, &fv, eps)
-            {
-                out.push(pb);
-            }
-            if i != j {
-                let gt = g.t().to_owned();
-                if let Some(pb) =
-                    pair_block_from_g_cand(j, i, &gt, &cand_used, nv, f_vv, &fo, &fv, eps)
-                {
-                    out.push(pb);
-                }
-            }
+            let out =
+                pair_blocks_screened(i, j, &g, &cand_used, nv, f_vv, &fo, &fv, eps, fock_screen);
             Ok((out, aux_used))
         })
         .collect();
@@ -2200,6 +2201,7 @@ pub fn amplitude_lmp2_with_virtuals(
         cfg.pair_gate_cal,
         cfg.fit_radius_bohr,
         cfg.aux_tail_frac,
+        cfg.fock_screen,
     )?;
     let t_assembly_s = t0.elapsed().as_secs_f64();
 

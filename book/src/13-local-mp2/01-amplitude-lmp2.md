@@ -545,6 +545,7 @@ error.
 | `pair_gate_cal` | enables the gate (@eq:amplitude-lmp2-4); off by default | this section |
 | `fit_radius_bohr` | per-pair domain-local RI fit in place of the global-metric fit | section @sec:integral-direct |
 | `aux_tail_frac` | per-pair auxiliary truncation, rigorously bounded per element by $f\varepsilon$; inactive at $\varepsilon = 0$ | `ferric-mp2/src/lmp2_amplitude.rs::AmplitudeLmp2Config` |
+| `fock_screen` | Rust only, off by default: also keeps elements whose one-step Fock-propagated integral clears $\kappa\varepsilon$ (section 13.1.3); inert at $\varepsilon = 0$ | `ferric-mp2/src/ragged.rs::pair_blocks_screened` |
 | `cg_rtol`, `cg_max_iter` | Rust only: an explicit tolerance disables the tightening; neither is a CLI or Python option | this section |
 | operator | Coulomb or erfc, in the metric and the three-index integrals | chapter @sec:operators |
 

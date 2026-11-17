@@ -251,6 +251,99 @@ pub fn pair_block_from_g_cand_gated(
     })
 }
 
+/// The Fock-propagated gate of one pair block (the `fock_screen` option of
+/// the amplitude-threshold LMP2): over the candidate square of `g = J_ij`,
+///
+/// `g̃ = g + F' t⁰ + t⁰ F'`,  `t⁰ = −g/Δ`,  `F' = F_vv[cand, cand]` with its
+/// diagonal removed, `Δ_ab = f_aa + f_bb − f_ii − f_jj`,
+///
+/// so `−g̃/Δ` is one Jacobi step of the pair's amplitude equation from the
+/// diagonal estimate with the VIRTUAL off-diagonal Fock coupling switched on
+/// (crates/ferric-mp2/theory.md §12.6). The returned gate is
+/// `max(|g|, |g̃|/κ)` elementwise, for [`pair_block_from_g_cand_gated`] at
+/// the same ε: an element is kept when Eq 8 keeps it OR its dressed integral
+/// clears κε. The union never drops an Eq-8 element, the gate is symmetric
+/// under the pair transpose (`gate(gᵀ) = gate(g)ᵀ`, since `Δ` and the two
+/// Fock products swap), and the retained values still come from `g`.
+///
+/// Pair-local by construction: it reads only this pair's candidate square
+/// and the virtual Fock block on it (two `|C|³` GEMMs); the occupied
+/// off-diagonal coupling, which would need other pairs' integrals, is left
+/// out (measured to be the minor driver, theory.md §12.6).
+pub fn fock_dressed_gate(
+    g: &Array2<f64>,
+    cand: &[usize],
+    f_vv: &Array2<f64>,
+    fo_i: f64,
+    fo_j: f64,
+    fv: &[f64],
+    kappa: f64,
+) -> Array2<f64> {
+    let nc = cand.len();
+    assert_eq!(g.dim(), (nc, nc), "fock_dressed_gate: g is not |cand|²");
+    assert!(kappa > 0.0, "fock_dressed_gate: kappa must be positive");
+    let mut fsub = Array2::<f64>::zeros((nc, nc));
+    for (r, &a) in cand.iter().enumerate() {
+        for (c, &b) in cand.iter().enumerate() {
+            if r != c {
+                fsub[(r, c)] = f_vv[(a, b)];
+            }
+        }
+    }
+    let t0 = Array2::from_shape_fn((nc, nc), |(r, c)| {
+        -g[(r, c)] / (fv[cand[r]] + fv[cand[c]] - fo_i - fo_j)
+    });
+    let mut gt = fsub.dot(&t0);
+    gt += &t0.dot(&fsub);
+    gt += g;
+    let inv = 1.0 / kappa;
+    Array2::from_shape_fn((nc, nc), |(r, c)| {
+        g[(r, c)].abs().max(gt[(r, c)].abs() * inv)
+    })
+}
+
+/// [`pair_block_from_g_cand`] for pair (i, j) AND, when `i ≠ j`, its mirror
+/// (j, i) from `gᵀ`, with the optional Fock-propagated gate
+/// ([`fock_dressed_gate`], `fock_screen = Some(κ)`). `None` is exactly the
+/// two plain calls (the production default). Inert at `eps == 0`, where the
+/// mask already keeps everything.
+#[allow(clippy::too_many_arguments)]
+pub fn pair_blocks_screened(
+    i: usize,
+    j: usize,
+    g: &Array2<f64>,
+    cand: &[usize],
+    nv_full: usize,
+    f_vv: &Array2<f64>,
+    fo: &[f64],
+    fv: &[f64],
+    eps: f64,
+    fock_screen: Option<f64>,
+) -> Vec<PairBlock> {
+    let mut out = Vec::with_capacity(2);
+    let gate = match fock_screen {
+        Some(kappa) if eps > 0.0 => Some(fock_dressed_gate(g, cand, f_vv, fo[i], fo[j], fv, kappa)),
+        _ => None,
+    };
+    let gate_ij = gate.as_ref().unwrap_or(g);
+    if let Some(pb) =
+        pair_block_from_g_cand_gated(i, j, g, gate_ij, cand, nv_full, f_vv, fo, fv, eps)
+    {
+        out.push(pb);
+    }
+    if i != j {
+        let gt = g.t().to_owned();
+        let gate_t = gate.as_ref().map(|x| x.t().to_owned());
+        let gate_ji = gate_t.as_ref().unwrap_or(&gt);
+        if let Some(pb) =
+            pair_block_from_g_cand_gated(j, i, &gt, gate_ji, cand, nv_full, f_vv, fo, fv, eps)
+        {
+            out.push(pb);
+        }
+    }
+    out
+}
+
 /// Zero out elements of `x` that lie outside the sparsity pattern `pat`.
 pub fn apply_pattern(x: &mut Array2<f64>, pat: &[bool], nb: usize) {
     for (r, mut row) in x.rows_mut().into_iter().enumerate() {
@@ -1533,5 +1626,149 @@ mod tests {
             pair_block_from_g_cand_gated(0, 1, &g, &zero, &cand, nv, &f_vv, &fo, &fv, 1e-4)
                 .is_none()
         );
+    }
+
+    /// Random pair data for the Fock-gate tests: (g, f_vv, fo, fv, cand) on
+    /// a 7-virtual space with a 5-element candidate subset.
+    #[allow(clippy::type_complexity)]
+    fn fock_gate_data() -> (Array2<f64>, Array2<f64>, Vec<f64>, Vec<f64>, Vec<usize>) {
+        let nv = 7;
+        let mut seed = 7u64;
+        let mut rnd = || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((seed >> 11) as f64 / (1u64 << 53) as f64) - 0.5
+        };
+        let cand = vec![0usize, 2, 3, 5, 6];
+        let nc = cand.len();
+        // candidate 0 has ZERO integrals with everything (the symmetry-zero
+        // case): Eq 8 can never keep it, its dressed integral is not zero
+        let g = Array2::from_shape_fn((nc, nc), |(a, b)| {
+            let x = 1e-3 * rnd();
+            if a == 0 || b == 0 {
+                0.0
+            } else {
+                x
+            }
+        });
+        let mut f_vv = Array2::from_shape_fn((nv, nv), |_| 0.2 * rnd());
+        f_vv = &f_vv + &f_vv.t();
+        let fv: Vec<f64> = (0..nv).map(|a| 0.5 + 0.3 * a as f64).collect();
+        for a in 0..nv {
+            f_vv[(a, a)] = fv[a];
+        }
+        (g, f_vv, vec![-0.9, -0.6, -0.4], fv, cand)
+    }
+
+    /// The gate against an independent elementwise transcription of
+    /// g̃_ab = g_ab − Σ_{c≠a} F_ac g_cb/Δ_cb − Σ_{c≠b} g_ac F_cb/Δ_ac, and its
+    /// pair-transpose covariance gate(gᵀ, i↔j) = gate(g)ᵀ. Mutation seen to
+    /// fail (2026-11-16): dropping either Fock product breaks both checks.
+    #[test]
+    fn fock_dressed_gate_matches_elementwise_formula_and_is_transpose_covariant() {
+        let (g, f_vv, fo, fv, cand) = fock_gate_data();
+        let nc = cand.len();
+        let (i, j) = (0usize, 2usize);
+        let kappa = 0.3;
+        let gate = fock_dressed_gate(&g, &cand, &f_vv, fo[i], fo[j], &fv, kappa);
+        let d = |r: usize, c: usize| fv[cand[r]] + fv[cand[c]] - fo[i] - fo[j];
+        let mut worst = 0.0f64;
+        for a in 0..nc {
+            for b in 0..nc {
+                let mut gt = g[(a, b)];
+                for c in 0..nc {
+                    if c != a {
+                        gt -= f_vv[(cand[a], cand[c])] * g[(c, b)] / d(c, b);
+                    }
+                    if c != b {
+                        gt -= g[(a, c)] * f_vv[(cand[c], cand[b])] / d(a, c);
+                    }
+                }
+                let want = g[(a, b)].abs().max(gt.abs() / kappa);
+                worst = worst.max((gate[(a, b)] - want).abs());
+                assert!(gate[(a, b)] >= g[(a, b)].abs(), "union never drops Eq 8");
+            }
+        }
+        assert!(worst < 1e-18, "gate vs elementwise formula: {worst:.2e}");
+        let gt = g.t().to_owned();
+        let gate_t = fock_dressed_gate(&gt, &cand, &f_vv, fo[j], fo[i], &fv, kappa);
+        let dev = (&gate_t - &gate.t())
+            .iter()
+            .fold(0.0f64, |m, x| m.max(x.abs()));
+        assert!(dev < 1e-18, "transpose covariance: {dev:.2e}");
+    }
+
+    /// `fock_screen = None` is the two plain builder calls, bitwise; `Some`
+    /// keeps a superset of the Eq-8 pattern, keeps the retained values from
+    /// `g`, stays swap-closed, and is inert at eps = 0. A vacuous κ keeps the
+    /// whole candidate square.
+    #[test]
+    fn screened_blocks_none_is_bitwise_plain_and_some_is_a_superset() {
+        let (g, f_vv, fo, fv, cand) = fock_gate_data();
+        let nv = f_vv.nrows();
+        let (i, j) = (0usize, 1usize);
+        let eps = 5e-6;
+        let plain_ij = pair_block_from_g_cand(i, j, &g, &cand, nv, &f_vv, &fo, &fv, eps).unwrap();
+        let gt = g.t().to_owned();
+        let plain_ji = pair_block_from_g_cand(j, i, &gt, &cand, nv, &f_vv, &fo, &fv, eps).unwrap();
+        let none = pair_blocks_screened(i, j, &g, &cand, nv, &f_vv, &fo, &fv, eps, None);
+        assert_eq!(none.len(), 2);
+        for (x, y) in none.iter().zip([&plain_ij, &plain_ji]) {
+            assert_eq!(
+                (x.i, x.j, &x.da, &x.db, &x.pat),
+                (y.i, y.j, &y.da, &y.db, &y.pat)
+            );
+            assert!(x
+                .j_blk
+                .iter()
+                .zip(y.j_blk.iter())
+                .all(|(p, q)| p.to_bits() == q.to_bits()));
+        }
+        let some = pair_blocks_screened(i, j, &g, &cand, nv, &f_vv, &fo, &fv, eps, Some(1.0));
+        let count = |pb: &PairBlock| pb.pat.iter().filter(|&&k| k).count();
+        let mut grew = false;
+        for (x, y) in some.iter().zip([&plain_ij, &plain_ji]) {
+            let nb = x.db.len();
+            let ynb = y.db.len();
+            for (r, &a) in y.da.iter().enumerate() {
+                for (c, &b) in y.db.iter().enumerate() {
+                    if y.pat[r * ynb + c] {
+                        let (xr, xc) = (x.pos_da[a], x.pos_db[b]);
+                        assert!(x.pat[xr * nb + xc], "Eq-8 element dropped by the screen");
+                        assert_eq!(x.j_blk[(xr, xc)].to_bits(), y.j_blk[(r, c)].to_bits());
+                    }
+                }
+            }
+            grew |= count(x) > count(y);
+        }
+        assert!(
+            grew,
+            "test data must exercise the screen (no element added)"
+        );
+        let rg = Ragged {
+            pairs: some,
+            by_i: HashMap::from([(0, vec![0]), (1, vec![1])]),
+            by_j: HashMap::from([(1, vec![0]), (0, vec![1])]),
+        };
+        check_swap_closed(&rg).unwrap();
+        // vacuous κ: every element with a nonzero dressed integral is kept
+        // (shifted g so that no element is an exact structural zero)
+        let g_nz = g.mapv(|x| x + 1e-9);
+        let vac = pair_blocks_screened(i, j, &g_nz, &cand, nv, &f_vv, &fo, &fv, eps, Some(1e-300));
+        assert!(vac
+            .iter()
+            .all(|pb| pb.pat.iter().all(|&k| k) && pb.da == cand));
+        let at0 = pair_blocks_screened(i, j, &g, &cand, nv, &f_vv, &fo, &fv, 0.0, Some(1.0));
+        let plain0 = pair_block_from_g_cand(i, j, &g, &cand, nv, &f_vv, &fo, &fv, 0.0).unwrap();
+        assert_eq!(at0[0].pat, plain0.pat);
+        // a huge κ silences the dressed term: the union must then be exactly
+        // the plain pattern (mutation seen to fail 2026-11-16: a gate of
+        // |g~|/κ alone, without the |g| arm, drops the plain elements)
+        let big = pair_blocks_screened(i, j, &g, &cand, nv, &f_vv, &fo, &fv, eps, Some(1e12));
+        assert_eq!(big.len(), 2, "the union must keep the plain blocks");
+        for (x, y) in big.iter().zip([&plain_ij, &plain_ji]) {
+            assert_eq!((&x.da, &x.db, &x.pat), (&y.da, &y.db, &y.pat));
+        }
     }
 }

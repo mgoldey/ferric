@@ -1121,6 +1121,7 @@
       ],
       "scripts": [
         "scripts/lmp2_direct_maps_sympy.py",
+        "scripts/lmp2_fock_screen_sympy.py",
         "scripts/lmp2_hylleraas_vs_wshg23_sympy.py",
         "scripts/local_mp2_fit_pno_sympy.py",
         "scripts/mp2_variant_identities.py"

@@ -462,7 +462,13 @@ single-threshold local MP2 of Wang, Aldossary, Shi, Liu, Li & Head-Gordon
 (2023), with localized virtuals and per-pair domain-local RI fits. `eps` has
 no default: it is part of the model. `eps = 0` reproduces RI-MP2 exactly; a
 finite `eps` carries a one-sided truncation error that grows faster than
-linearly in `eps`.
+linearly in `eps`. That error need not reach zero as `eps` shrinks: the
+retention test reads integrals only, and an amplitude driven by the Fock
+coupling to kept ones but sitting on a zero integral is never kept. On
+adamantane/6-31G the error stays at 2.4e-7 Ha at `eps = 1e-8` with 99.998% of
+amplitudes kept. The Rust library has an opt-in Fock-propagated screen
+(`AmplitudeLmp2Config::fock_screen`) that removes this floor; it is not a CLI
+or Python option yet (`crates/ferric-mp2/theory.md` §12.6).
 Every printout and run-log record of a local run states `eps` and the
 fraction of amplitudes kept.
 

@@ -63,7 +63,7 @@ use crate::lmp2_amplitude::{
     checked_vvhv_with, localized_spaces, pair_gate_keep, solve_and_count, AmplitudeLmp2Config,
     AmplitudeLmp2Result, LocalizedSpaces, StageTimings, VvHv,
 };
-use crate::ragged::{pair_block_from_g_cand, PairBlock, Ragged};
+use crate::ragged::{pair_blocks_screened, PairBlock, Ragged};
 use crate::rimp2::{ri_mp2, RiMp2Config};
 
 /// Locality knobs of the integral-direct path. Every knob has a trivial
@@ -887,6 +887,8 @@ struct PairFitCtx<'a> {
     fv: &'a [f64],
     eps: f64,
     scale: f64,
+    /// The optional Fock-propagated gate (`AmplitudeLmp2Config::fock_screen`).
+    fock_screen: Option<f64>,
     nv: usize,
     aux_radius_bohr: f64,
     dfbs: &'a PreparedBasis,
@@ -936,21 +938,18 @@ fn mask_pair(
     if ctx.scale != 1.0 {
         g.mapv_inplace(|x| ctx.scale * x);
     }
-    let mut out = Vec::with_capacity(2);
-    if let Some(pb) =
-        pair_block_from_g_cand(i, j, &g, cij, ctx.nv, ctx.f_vv, ctx.fo, ctx.fv, ctx.eps)
-    {
-        out.push(pb);
-    }
-    if i != j {
-        let gt = g.t().to_owned();
-        if let Some(pb) =
-            pair_block_from_g_cand(j, i, &gt, cij, ctx.nv, ctx.f_vv, ctx.fo, ctx.fv, ctx.eps)
-        {
-            out.push(pb);
-        }
-    }
-    out
+    pair_blocks_screened(
+        i,
+        j,
+        &g,
+        cij,
+        ctx.nv,
+        ctx.f_vv,
+        ctx.fo,
+        ctx.fv,
+        ctx.eps,
+        ctx.fock_screen,
+    )
 }
 
 /// Whitened strips `W_k = L⁻¹ A_k[D, C_k]` for every distinct occupied `k`
@@ -2102,11 +2101,46 @@ pub fn assemble_ragged_direct_local(
         pair_gate_cal,
         dcfg,
         None,
+        None,
     )
 }
 
-/// [`assemble_ragged_direct_local`] gated against the memory budget of the
-/// LMP2 solve it feeds (`None`: ungated, the historical behaviour).
+/// [`assemble_ragged_direct_local`] with the optional Fock-propagated gate
+/// on every pair's candidate square (`AmplitudeLmp2Config::fock_screen`,
+/// [`crate::ragged::fock_dressed_gate`]). `None` is
+/// [`assemble_ragged_direct_local`] exactly. Ungated against the memory
+/// budget, like [`assemble_ragged_direct_local`].
+#[allow(clippy::too_many_arguments)]
+pub fn assemble_ragged_direct_local_screened(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    spaces: &LocalizedSpaces,
+    eps: f64,
+    scale: f64,
+    pair_gate_cal: Option<f64>,
+    dcfg: &DirectConfig,
+    fock_screen: Option<f64>,
+) -> Result<(Ragged, usize, DirectStats), FerricError> {
+    assemble_gated(
+        mol,
+        obs,
+        dfbs,
+        op,
+        spaces,
+        eps,
+        scale,
+        pair_gate_cal,
+        dcfg,
+        None,
+        fock_screen,
+    )
+}
+
+/// [`assemble_ragged_direct_local_screened`] gated against the memory
+/// budget of the LMP2 solve it feeds (`gate = None`: ungated, the
+/// historical behaviour; `fock_screen = None`: the plain Eq-8 mask).
 #[allow(clippy::too_many_arguments)]
 fn assemble_gated(
     mol: &Molecule,
@@ -2119,6 +2153,7 @@ fn assemble_gated(
     pair_gate_cal: Option<f64>,
     dcfg: &DirectConfig,
     gate: Option<SolveGate>,
+    fock_screen: Option<f64>,
 ) -> Result<(Ragged, usize, DirectStats), FerricError> {
     let mut stats = DirectStats::default();
     let pre = strips_and_metric(
@@ -2142,6 +2177,7 @@ fn assemble_gated(
         dcfg,
         FitPath::Cholesky,
         gate,
+        fock_screen,
         &mut stats,
     )?;
     Ok((ragged, pre.n_gated, stats))
@@ -2457,12 +2493,18 @@ fn pair_candidates(
 /// `V_DD` and its Cholesky factor (`2d²`), one whitened `W_k` per distinct
 /// occupied over its candidate union (`Σ_k d·|C_k|`), and the widest pair's
 /// two column selections, `J_ij` and its transpose (`2·d·n + 2·n²`).
+/// With the Fock-propagated screen on (`screen_on`), the widest pair's
+/// gate scratch in [`crate::ragged::pair_blocks_screened`] is added:
+/// `F'`, `t⁰`, `F't⁰`, the `t⁰F'` temporary, the gate and its transpose,
+/// [`FOCK_SCREEN_SCRATCH_MATRICES`]` · n²` (all six counted, although at
+/// most four are live at once). Off, the bound is unchanged.
 fn group_scratch_bound(
     dfbs: &PreparedBasis,
     dsh: &[usize],
     pxs: &[usize],
     unique: &[(usize, usize)],
     pair_cands: &[Vec<usize>],
+    screen_on: bool,
 ) -> usize {
     let dims = dfbs.shell_dims();
     let d: usize = dsh.iter().map(|&sh| dims[sh]).sum();
@@ -2481,8 +2523,17 @@ fn group_scratch_bound(
         }
     }
     let w: usize = want.values().map(|c| d * c.len()).sum();
-    8 * (2 * d * d + w + 2 * d * n_max + 2 * n_max * n_max)
+    let screen = if screen_on {
+        FOCK_SCREEN_SCRATCH_MATRICES * n_max * n_max
+    } else {
+        0
+    };
+    8 * (2 * d * d + w + 2 * d * n_max + 2 * n_max * n_max + screen)
 }
+
+/// Candidate-square matrices the Fock-propagated gate holds per pair
+/// (see [`group_scratch_bound`]).
+const FOCK_SCREEN_SCRATCH_MATRICES: usize = 6;
 
 /// Stage-5 charge-as-built gate: every group's blocks are charged at their
 /// EXACT bytes (pair block + PCG vectors) the moment they exist, so at ε > 0,
@@ -2563,6 +2614,7 @@ fn fit_pairs(
     dcfg: &DirectConfig,
     path: FitPath,
     gate: Option<SolveGate>,
+    fock_screen: Option<f64>,
     stats: &mut DirectStats,
 ) -> Result<Ragged, FerricError> {
     use rayon::prelude::*;
@@ -2637,6 +2689,7 @@ fn fit_pairs(
         fv: &fv,
         eps,
         scale,
+        fock_screen,
         nv,
         aux_radius_bohr: dcfg.aux_radius_bohr,
         dfbs,
@@ -2649,10 +2702,12 @@ fn fit_pairs(
         },
     };
     let base_bytes = stats.memory.strips_bytes + stats.memory.metric_bytes + stats.own_w_bytes_held;
+    // The screen is inert at ε = 0 (`pair_blocks_screened` skips it there).
+    let screen_on = fock_screen.is_some() && eps > 0.0;
     let workers = rayon::current_num_threads().max(1);
     let g_max = group_list
         .iter()
-        .map(|(dsh, pxs)| group_scratch_bound(dfbs, dsh, pxs, &unique, &pair_cands))
+        .map(|(dsh, pxs)| group_scratch_bound(dfbs, dsh, pxs, &unique, &pair_cands, screen_on))
         .max()
         .unwrap_or(0);
     // Groups in flight at once: each holds one group's scratch, so a budget
@@ -3312,6 +3367,7 @@ pub fn amplitude_lmp2_direct_with_virtuals(
         cfg.pair_gate_cal,
         dcfg,
         Some(SolveGate { budget_bytes }),
+        cfg.fock_screen,
     )?;
     // The exact solve footprint, now that the blocks exist (the charge gate
     // already bounded it; this is the authority the solve runs under).
@@ -3960,6 +4016,7 @@ mod stage_b_tests {
 #[cfg(test)]
 mod inverse_oracle {
     use super::*;
+    use crate::ragged::pair_block_from_g_cand;
 
     /// Frozen `schwarz_virtual_q` (pre-Stage-C).
     #[allow(clippy::too_many_arguments)]
@@ -4213,7 +4270,7 @@ mod stage_c_tests {
     ) -> (Ragged, DirectStats) {
         let mut st = DirectStats::default();
         let r = fit_pairs(
-            pre, &su.dfbs, &su.spaces, eps, 1.0, dcfg, path, None, &mut st,
+            pre, &su.dfbs, &su.spaces, eps, 1.0, dcfg, path, None, None, &mut st,
         )
         .unwrap();
         (r, st)

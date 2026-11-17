@@ -1043,6 +1043,27 @@ CASES = [
         ],
     ),
     (
+        "lmp2_fock_screen_sympy.py",
+        10,
+        [
+            (
+                "schur = A_DD - A_DK * A_KK.inv() * A_KD",
+                "schur = A_DD + A_DK * A_KK.inv() * A_KD",
+                "claim 1: Schur",
+            ),
+            (
+                "t_est = -Delta.inv() * (Jm + lam * Ap * t0)",
+                "t_est = -Delta.inv() * Jm",
+                "claim 2: first order",
+            ),
+            (
+                "return g + Fo * t + t * Fo",
+                "return g + Fo * t + t",
+                "claim 3: transpose",
+            ),
+        ],
+    ),
+    (
         "casci_slater_condon_phases_sympy.py",
         300,
         [
