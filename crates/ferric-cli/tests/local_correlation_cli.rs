@@ -309,8 +309,19 @@ const DIRECT_KEYS: &[&str] = &[
     "own_w_bytes",
     "own_w_bytes_held",
     "group_scratch_bytes_max",
+    "group_scratch_bound_bytes",
+    "group_concurrency",
+    "memory_exact",
+    "memory_metric_bytes",
+    "memory_pair_block_bytes",
+    "memory_pcg_vector_bytes",
+    "memory_resident_peak_bytes",
+    "memory_stage3_scratch_bytes",
+    "memory_strips_bytes",
     "t_loc_s",
 ];
+/// Keys whose value is a JSON boolean rather than a number.
+const BOOL_KEYS: &[&str] = &["memory_exact"];
 /// The eval/scatter split of the eri3 fill is only measured with
 /// `DirectConfig::split_eri3_timers`, which the CLI leaves off: NaN in the
 /// library, `null` in the log.
@@ -326,6 +337,10 @@ fn assert_timing_keys(obj: &serde_json::Value, keys: &[&str], extra: &[&str]) {
     for k in keys {
         let v = o.get(*k).unwrap_or_else(|| panic!("missing {k}: {obj}"));
         if SPLIT_ONLY.contains(k) && v.is_null() {
+            continue;
+        }
+        if BOOL_KEYS.contains(k) {
+            assert!(v.is_boolean(), "{k} is not a bool: {obj}");
             continue;
         }
         let x = v
