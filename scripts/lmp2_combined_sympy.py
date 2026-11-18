@@ -594,8 +594,17 @@ def lb_jacobi(R, F, lam, tol=1e-12, max_sweep=500):
                 F = rot.T @ F @ rot
                 U = U @ rot
                 G_new = lb_G(R, F, lam)
-                assert G_new >= G_prev - 1e-12, (
-                    "P4: stationarity FAILED (a Jacobi step decreased G)"
+                # Each step re-forms 1 + 3 rotated n x n matrices and re-sums
+                # their squared diagonals, so G carries a rounding error of a
+                # few n * eps * G per evaluation; a true decrease from a wrong
+                # angle is O(|grad|^2), far above that until convergence.
+                # 1e3 * eps * G (~2e-11 here) clears the rounding on every
+                # BLAS (the fixed 1e-12 failed on macOS arm64) and stays far
+                # below a real decrease.
+                slack = 1e3 * np.finfo(float).eps * max(1.0, abs(G_prev))
+                assert G_new >= G_prev - slack, (
+                    "P4: stationarity FAILED (a Jacobi step decreased G by "
+                    f"{G_prev - G_new:.2e}, slack {slack:.2e})"
                 )
                 G_prev = G_new
         if np.abs(lb_grad(R, F, lam)).max() < tol:
