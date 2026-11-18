@@ -111,6 +111,42 @@ option here.
 $c_{\mathrm{SS}} = 4.05$ is large because the same-spin window is small: it
 carries only the same-spin correlation between the two lengths.
 
+How small? For water in cc-pVDZ, from the `589b50832` build (cc-pVDZ is not
+the fitted basis, so both lengths are passed; `FERRIC_TERF_TABLE_DIR` points at
+the repository's `terf-tables/`), the window is 3% of the Coulomb $E_{\mathrm{SS}}$,
+and $c_{\mathrm{SS}}$ times the window is under 7 mEh:
+
+```python
+# cc-pVDZ is not the fitted basis, so both r0 are given explicitly
+import os
+
+os.environ.setdefault("FERRIC_TERF_TABLE_DIR", "terf-tables")  # the terfc interpolation tables
+import ferric
+
+mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
+bs = ferric.BasisSet.bundled("cc-pvdz")
+aux = ferric.BasisSet.bundled("cc-pvdz-ri")
+
+coul = ferric.run_scs_mp2(mol, bs, aux, c_os=1.0, c_ss=1.0)
+r = ferric.run_scs_mp2_2terfc(mol, bs, aux, r0_bonded=0.75, r0_nonbonded=1.05,
+                              c_os=1.27, c_ss=4.05)
+print("Coulomb E_OS = %.6f  E_SS = %.6f" % (coul.e_os, coul.e_ss))
+print("E_OS[0.75 A]              = %.6f" % r.e_os)
+print("E_SS[1.05 A] - E_SS[0.75 A] = %.6f  (the window)" % r.e_ss)
+print("window / Coulomb E_SS     = %.4f" % (r.e_ss / coul.e_ss))
+print("c_SS * window             = %.6f" % (4.05 * r.e_ss))
+print("SCS-MP2(2terfc) E_c       = %.6f" % r.scs_corr)
+```
+
+```text
+Coulomb E_OS = -0.152440  E_SS = -0.051593
+E_OS[0.75 A]              = -0.148281
+E_SS[1.05 A] - E_SS[0.75 A] = -0.001669  (the window)
+window / Coulomb E_SS     = 0.0324
+c_SS * window             = -0.006760
+SCS-MP2(2terfc) E_c       = -0.195076
+```
+
 ## Summary from the dissertation {#scs-mp2-2terfc-summary-dissertation}
 
 RMSD in kcal/mol, aug-cc-pVTZ, no counterpoise (dissertation Tables 5.1,

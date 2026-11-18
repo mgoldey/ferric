@@ -115,6 +115,52 @@ Check the limits of (@eq:attenuated-mp2-5) at $s = 1$.
   0 at every $r > 0$, the correlation energy vanishes, and (@eq:attenuated-mp2-5) is
   Hartree–Fock.
 
+Both limits on water in aug-cc-pVDZ, from the `589b50832` build. The
+`os.environ` line points `FERRIC_TERF_TABLE_DIR` at the repository's
+`terf-tables/`, which terfc needs (see "Runtime tables" below). erfc runs from
+$\omega = 10^{-4}$ Å⁻¹, where it is RI-MP2, to 5 Å⁻¹, where 2% of the
+correlation is left; terfc does the same as $r_0$ shrinks from 10 Å to 0.5 Å:
+
+```python
+import os
+
+os.environ.setdefault("FERRIC_TERF_TABLE_DIR", "terf-tables")  # the terfc interpolation tables
+import ferric
+
+mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
+bs = ferric.BasisSet.bundled("aug-cc-pvdz")
+aux = ferric.BasisSet.bundled("aug-cc-pvdz-ri")
+
+mp2 = ferric.run_rimp2(mol, bs, aux)
+print("RI-MP2                E_c = %.8f" % mp2.mp2_corr)
+for omega in (1e-4, 0.1, 0.420, 1.0, 5.0):          # Angstrom^-1
+    r = ferric.run_attenuated_rimp2(mol, bs, aux, omega=omega)
+    print("erfc  omega = %6.4f  E_c = %.8f  fraction of MP2 = %.4f"
+          % (omega, r.mp2_corr, r.mp2_corr / mp2.mp2_corr))
+# terfc needs FERRIC_TERF_TABLE_DIR
+t = ferric.run_terfc_rimp2(mol, bs, aux)           # r0 from the basis table: 1.05 A at aug-cc-pVDZ
+print("terfc r0 = table      E_c = %.8f  fraction of MP2 = %.4f"
+      % (t.mp2_corr, t.mp2_corr / mp2.mp2_corr))
+for r0 in (0.5, 2.0, 10.0):                         # Angstrom
+    t = ferric.run_terfc_rimp2(mol, bs, aux, r0=r0)
+    print("terfc r0 = %5.2f      E_c = %.8f  fraction of MP2 = %.4f"
+          % (r0, t.mp2_corr, t.mp2_corr / mp2.mp2_corr))
+```
+
+```text
+terfc r0 = 1.05 Å (default for aug-cc-pvdz; Goldey & Head-Gordon, J. Phys. Chem. B 2014; dissertation Table 6.2)
+RI-MP2                E_c = -0.22190484
+erfc  omega = 0.0001  E_c = -0.22190484  fraction of MP2 = 1.0000
+erfc  omega = 0.1000  E_c = -0.22180076  fraction of MP2 = 0.9995
+erfc  omega = 0.4200  E_c = -0.21461209  fraction of MP2 = 0.9671
+erfc  omega = 1.0000  E_c = -0.15913105  fraction of MP2 = 0.7171
+erfc  omega = 5.0000  E_c = -0.00494427  fraction of MP2 = 0.0223
+terfc r0 = table      E_c = -0.21998892  fraction of MP2 = 0.9914
+terfc r0 =  0.50      E_c = -0.18057945  fraction of MP2 = 0.8138
+terfc r0 =  2.00      E_c = -0.22187158  fraction of MP2 = 0.9999
+terfc r0 = 10.00      E_c = -0.22190485  fraction of MP2 = 1.0000
+```
+
 The dissertation fitted between these two ends. At aug-cc-pVDZ on S66 the
 Hartree–Fock end has an RMSD of 4.0 kcal/mol and the MP2 end 2.67 kcal/mol
 (chapter 2, Table 2.1); the fitted lengths of @sec:attenuated-mp2-published-parameterizations sit in between and do

@@ -163,6 +163,47 @@ quadrature error, and it is what the grid response removes.
 >
 > <!-- verified: id=ks.grad.grid-response; script=scripts/dft_mgga_tau_gradient_sympy.py; claim=5; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-dft/src/gradient.rs::{tau_spatial_grad,mgga_closed_batch}; rust_test=ferric-scf/tests/dft_gradient_mgga.rs::scan_gradient_h2o_sto3g_vs_fd; registry=ks-gradient -->
 
+PBE on a distorted water in 6-31G, from the `589b50832` build, on the
+default grid. The forces sum to zero to $10^{-14}$. The central differences
+($h = 10^{-3}$ Bohr) miss the analytic gradient by 1.1e-5 and 1.3e-5 Ha/Bohr.
+That is well above the 1e-7 Ha/Bohr of the custom-grid test in the anchors
+table below, and this run does not show where the difference comes from:
+
+```python
+import numpy as np
+import ferric
+
+sym = ["O", "H", "H"]
+x0 = np.array([[0.0, 0.0, 0.25], [0.0, 1.50, -0.85], [0.0, -1.35, -0.95]])
+bs = ferric.BasisSet.bundled("6-31g")
+
+
+def run(x, grad=False):
+    mol = ferric.Molecule.from_arrays(sym, x, units="bohr")
+    return ferric.run_dft(mol, bs, functional="PBE", energy_conv=1e-11, density_conv=1e-9, with_gradient=grad)
+
+
+g = np.asarray(run(x0, grad=True).gradient())
+print("PBE gradient (Ha/Bohr):\n", g)
+print("sum over atoms:", g.sum(axis=0))
+h = 1e-3
+for atom, axis in ((0, 2), (2, 1)):
+    xp = x0.copy(); xp[atom, axis] += h
+    xm = x0.copy(); xm[atom, axis] -= h
+    fd = (run(xp).total_energy - run(xm).total_energy) / (2 * h)
+    print(f"atom {atom} axis {axis}: analytic {g[atom, axis]:.10f}  FD {fd:.10f}  diff {abs(fd - g[atom, axis]):.1e}")
+```
+
+```text
+PBE gradient (Ha/Bohr):
+ [[ 1.37693045e-15 -2.16676274e-02 -9.43187459e-03]
+ [-3.07145125e-16 -9.23329778e-03 -5.06382056e-03]
+ [-8.07734602e-16  3.09009252e-02  1.44956952e-02]]
+sum over atoms: [2.62050719e-16 1.28647093e-14 6.80011603e-15]
+atom 0 axis 2: analytic -0.0094318746  FD -0.0094212034  diff 1.1e-05
+atom 2 axis 1: analytic 0.0309009252  FD 0.0308877585  diff 1.3e-05
+```
+
 The proof script uses $p$- and $s$-Gaussians on two centres at an exact
 rational point; its controls (the $\tfrac12$ of $\tau$ kept, a halved spatial
 gradient) fail. The open-shell path (`xc_gradient_uks_mgga_from_density`;

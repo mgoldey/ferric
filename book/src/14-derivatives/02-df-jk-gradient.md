@@ -129,6 +129,50 @@ $10^{-6}$ Ha/Bohr convergence bar would stop at the wrong place.
 >
 > <!-- verified: id=df.grad.jk; script=scripts/df_jk_gradient_sympy.py; claim=D1; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/df_gradient.rs::{df_jk_gradient_core,truncated_inverse_divided_difference}; rust_test=ferric-scf/tests/df_jk_gradient.rs::hf_ri_jk_gradient_matches_fd_of_ri_energy; registry=hf-gradient -->
 
+The check on water in cc-pVDZ with def2-universal-jkfit, from the `589b50832`
+build. Every fitted run stores the RI-J tensor in f64; energy-only runs
+default to f32 (section @sec:ri-j-ri-k-split-ri-j), and an f32 energy in the
+finite difference would put the rounding error into the comparison. The fitted
+gradient matches the central difference of the fitted energy to 1.3e-7
+Ha/Bohr; the four-centre gradient misses it by 2.5e-6:
+
+```python
+import numpy as np
+import ferric
+
+sym = ["O", "H", "H"]
+x0 = np.array([[0.0, 0.0, 0.25], [0.0, 1.50, -0.85], [0.0, -1.35, -0.95]])
+bs = ferric.BasisSet.bundled("cc-pvdz")
+aux = "def2-universal-jkfit"
+
+
+def run(x, grad=False, fitted=True):
+    mol = ferric.Molecule.from_arrays(sym, x, units="bohr")
+    # f64 RI-J storage on every run: energy-only runs default to f32
+    kw = dict(df_j_aux=aux, df_k_aux=aux, ri_j_precision="f64") if fitted else {}
+    return ferric.run_rhf(mol, bs, energy_conv=1e-11, density_conv=1e-9, with_gradient=grad, **kw)
+
+
+g_fit = np.asarray(run(x0, grad=True).gradient())
+g_exact = np.asarray(run(x0, grad=True, fitted=False).gradient())
+print("max |g_fit - g_exact| (fitting defect):", np.abs(g_fit - g_exact).max())
+print("sum over atoms of g_fit:", g_fit.sum(axis=0))
+h = 1e-3
+atom, axis = 1, 1
+xp = x0.copy(); xp[atom, axis] += h
+xm = x0.copy(); xm[atom, axis] -= h
+fd = (run(xp).energy - run(xm).energy) / (2 * h)
+print(f"fitted: analytic {g_fit[atom, axis]:.10f}  FD of fitted energy {fd:.10f}  diff {abs(fd - g_fit[atom, axis]):.1e}")
+print(f"exact four-centre gradient at the same coordinate {g_exact[atom, axis]:.10f}  miss vs FD {abs(fd - g_exact[atom, axis]):.1e}")
+```
+
+```text
+max |g_fit - g_exact| (fitting defect): 1.7993087324086332e-05
+sum over atoms of g_fit: [ 1.61085397e-27 -3.35842465e-15 -1.28785871e-14]
+fitted: analytic 0.0289765390  FD of fitted energy 0.0289764043  diff 1.3e-07
+exact four-centre gradient at the same coordinate 0.0289788597  miss vs FD 2.5e-06
+```
+
 ## The truncated exchange metric {#df-jk-gradient-truncated-exchange-metric}
 
 If $V^{+}$ were $V^{-1}$, $H_K$ would follow from the same identity as RI-J.
