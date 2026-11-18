@@ -115,7 +115,7 @@ Check the limits of (@eq:attenuated-mp2-5) at $s = 1$.
   0 at every $r > 0$, the correlation energy vanishes, and (@eq:attenuated-mp2-5) is
   Hartree–Fock.
 
-Both limits on water in aug-cc-pVDZ, from the `589b50832` build. The
+Both limits on water in aug-cc-pVDZ, from the `18375bead` build. The
 `os.environ` line points `FERRIC_TERF_TABLE_DIR` at the repository's
 `terf-tables/`, which terfc needs (see "Runtime tables" below). erfc runs from
 $\omega = 10^{-4}$ Å⁻¹, where it is RI-MP2, to 5 Å⁻¹, where 2% of the

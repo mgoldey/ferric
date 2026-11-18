@@ -111,7 +111,7 @@ option here.
 $c_{\mathrm{SS}} = 4.05$ is large because the same-spin window is small: it
 carries only the same-spin correlation between the two lengths.
 
-How small? For water in cc-pVDZ, from the `589b50832` build (cc-pVDZ is not
+How small? For water in cc-pVDZ, from the `18375bead` build (cc-pVDZ is not
 the fitted basis, so both lengths are passed; `FERRIC_TERF_TABLE_DIR` points at
 the repository's `terf-tables/`), the window is 3% of the Coulomb $E_{\mathrm{SS}}$,
 and $c_{\mathrm{SS}}$ times the window is under 7 mEh:
