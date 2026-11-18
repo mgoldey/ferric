@@ -520,21 +520,34 @@ domains (`aux_radius`, `virt_radius`), and truncation of each orbital's AO
 support (`ao_tail`). With every map at its trivial setting it reproduces the
 global 3-index path and canonical RI-MP2 (`tests/lmp2_direct.rs`).
 
-<!-- pending: re-measure at virt_radius=20/ao_tail=1e-4 --> **What is measured for the integral-direct local MP2** (n-alkanes C20 → C48, 6-31G with
-cc-pVDZ-RI, a quiet machine, 2026-09-07; benchmark
-`bench_direct_alkane_series` in `crates/ferric-mp2/tests/lmp2_direct.rs`).
-The run froze the carbon cores (`frozen_core` = number of carbons) and
-calibrated the pair gate (0.7 Coulomb, 0.02 erfc with ω = 1.0) at
-`eps = 1e-4`; the defaults are all-electron with no pair gate. Timings are the correlation
-stage (assembly + solve) and exclude the canonical reference. They also
-exclude the VV-HV virtual-space build (`t_spaces_s` in the JSON log and the
-Python `local` dict), a dense O(N³) step whose cost the fitted exponents
-below do not cover:
+**What is measured for the integral-direct local MP2** (n-alkanes C20,
+C32 and C48, 6-31G with cc-pVDZ-RI, 2026-11-18, CLI `rimp2` and
+`att-rimp2` with `[local] integral_direct = true`). The runs froze the
+carbon cores (`frozen_core` = number of carbons) and calibrated the pair
+gate (0.7 Coulomb, 0.02 erfc with ω = 1.0); every other map was at its
+default (`virt_radius` 20, `ao_tail` 1e-4, Fock screen κ = 1, λ-Boys
+λ = 10). The defaults are all-electron with no pair gate. Timings are the
+correlation stage (assembly + solve) and exclude the canonical reference.
+They also exclude the VV-HV virtual-space build (`t_spaces_s` in the JSON
+log and the Python `local` dict), a dense O(N³) step whose cost the fitted
+exponents below do not cover:
 
-- Correlation-stage cost grows as about N<sup>1.24</sup> with the erfc
-  kernel and N<sup>1.4</sup> with Coulomb, fitted to the last three sizes.
-- It is at about parity with canonical RI-MP2 at C20 (about 1.1× slower)
-  and about 6× faster at C32 (5.7–6.3×). <!-- pending: re-measure at virt_radius=20/ao_tail=1e-4 -->
+- Correlation-stage cost grows as about N<sup>1.45</sup> with Coulomb and
+  N<sup>1.35</sup> with erfc at `eps = 1e-4`, and N<sup>1.61</sup> and
+  N<sup>1.55</sup> at `eps = 1e-3`, fitted to the three sizes.
+- The slope falls from C20→C32 to C32→C48 (Coulomb, `eps = 1e-4`: 1.56 then
+  1.31), so the large-N exponent is not settled.
+- The Fock screen and λ-Boys together cost 0–10% of the correlation stage
+  at each size, with no trend in N. One repeat per point resolves the
+  exponent to about ±0.1, and the exponents with and without them do not
+  differ by more than that.
+
+On the previous maps (`virt_radius` 12, `ao_tail` 1e-3, Fock screen off;
+2026-09-07, `bench_direct_alkane_series` in
+`crates/ferric-mp2/tests/lmp2_direct.rs`) the same series gave
+N<sup>1.24</sup> (erfc) and N<sup>1.4</sup> (Coulomb) and was at about
+parity with canonical RI-MP2 at C20 and about 6× faster at C32. That
+comparison with canonical RI-MP2 has not been repeated at the current maps.
 
 **How to read it (provisional):** sub-quadratic on this series, but the fit
 has three points on one family of molecules in one basis. It is not shown

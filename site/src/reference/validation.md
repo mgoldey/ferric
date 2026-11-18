@@ -839,11 +839,14 @@ the laddered SCF energy against a bar derived from the f64 floor by
   ROHF reference is a finite difference of PySCF's analytic gradient. ROKS and
   every other method's frequencies take central finite differences of the
   analytic gradient.
-<!-- pending: re-measure at virt_radius=20/ao_tail=1e-4 --> - **Local MP2**: the integral-direct local MP2 (`rimp2` with `[local]
+- **Local MP2**: the integral-direct local MP2 (`rimp2` with `[local]
   integral_direct = true`) has its correlation stage measured at about
-  N<sup>1.24</sup> (erfc) and N<sup>1.4</sup> (Coulomb) on n-alkanes C20–C48
-  (6-31G / cc-pVDZ-RI, ε = 1e-4, frozen carbon cores, a calibrated pair gate;
-  fitted to three points; the fit excludes the dense O(N³) VV-HV
+  N<sup>1.35</sup> (erfc) and N<sup>1.45</sup> (Coulomb) on n-alkanes C20–C48
+  (6-31G / cc-pVDZ-RI, ε = 1e-4, frozen carbon cores, a calibrated pair gate,
+  other maps at the current defaults including the Fock screen and λ-Boys,
+  which cost 0–10% with no trend in N; fitted to three points, slope still
+  falling; on the previous maps, `virt_radius` 12 and `ao_tail` 1e-3, the
+  fit was N<sup>1.24</sup> and N<sup>1.4</sup>; the fit excludes the dense O(N³) VV-HV
   virtual-space build, `t_spaces_s`). That is one family of molecules in one basis: not
   shown to be linear, and not measured on 3-D or diffuse systems. Local MP2
   without `integral_direct` still builds the global 3-index tensor and makes

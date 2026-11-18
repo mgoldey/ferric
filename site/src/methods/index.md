@@ -98,10 +98,11 @@ so a correction has one row to change. Two matter when picking a method:
 - **TDHF/RPAx \\( C_6 \\)** stays about 63% low regardless of gap. Use that
   kernel for static polarizabilities only.
 - **Local MP2**: the integral-direct local MP2 (`rimp2` with `[local]
-  integral_direct = true`) is measured sub-quadratic (about N<sup>1.24</sup>
-  erfc, N<sup>1.4</sup> Coulomb, excluding the O(N³) VV-HV virtual-space
-  build) on alkanes C20–C48; it is at about parity with
-  exact RI-MP2 at C20 and about 6× faster at C32. Local MP2 without
+  integral_direct = true`) is measured sub-quadratic (about N<sup>1.35</sup>
+  erfc, N<sup>1.45</sup> Coulomb at `eps = 1e-4`, excluding the O(N³) VV-HV
+  virtual-space build) on alkanes C20–C48 at the current maps, a provisional
+  three-point fit whose slope is still falling. The comparison with exact
+  RI-MP2 was last measured on the previous maps. Local MP2 without
   `integral_direct` makes no scaling claim. See
   [The MP2 family](./mp2.md#exact-and-local-mp2).
 

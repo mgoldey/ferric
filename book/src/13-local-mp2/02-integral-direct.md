@@ -400,13 +400,25 @@ in-core by 0.007, 0.16 and 1.38 percentage points at $\varepsilon =
 from the Fock screen, which the in-core path does not run. At the old maps,
 with the screen off, the difference was 0.01 to 0.02 points.
 
-**Cost and scaling (provisional).** <!-- pending: re-measure at virt_radius=20/ao_tail=1e-4 --> On n-alkanes C20 to C48 (6-31G with
-cc-pVDZ-RI, $\varepsilon = 10^{-4}$, frozen carbon cores, a calibrated pair
-gate), the correlation stage grew as about $N^{1.24}$ with the erfc kernel
-and $N^{1.4}$ with the Coulomb kernel, fitted to the last three sizes. The
-integral-direct path was about at parity with canonical RI-MP2 at C20
-(about 1.1 times slower) and about 6 times faster at C32 (5.7 to 6.3
-times).
+**Cost and scaling (provisional).** On n-alkanes C20, C32 and C48 (6-31G
+with cc-pVDZ-RI, frozen carbon cores, a calibrated pair gate of 0.7 for
+Coulomb and 0.02 for erfc with $\omega = 1.0$, every other map at its
+default, Fock screen $\kappa = 1$ and λ-Boys $\lambda = 10$; 2026-11-18),
+the correlation stage (assembly and solve) grew as about $N^{1.45}$ with
+the Coulomb kernel and $N^{1.35}$ with the erfc kernel at $\varepsilon =
+10^{-4}$, and as $N^{1.61}$ and $N^{1.55}$ at $\varepsilon = 10^{-3}$,
+fitted to the three sizes. The slope falls from the first size interval to
+the second (Coulomb at $10^{-4}$: 1.56 from C20 to C32, 1.31 from C32 to
+C48), so the large-$N$ exponent is not settled. With the Fock screen and
+λ-Boys both off, the time is 0 to 10% lower at each size, with no trend in
+$N$; one repeat per point resolves the exponent to about $\pm 0.1$, and
+the two settings do not differ by more than that.
+
+On the previous maps (virtual radius 12 Bohr, AO tail 1e-3, Fock screen
+off) the same series gave $N^{1.24}$ (erfc) and $N^{1.4}$ (Coulomb), and the
+integral-direct path was about at parity with canonical RI-MP2 at C20 and
+about 6 times faster at C32. The comparison with canonical RI-MP2 has not
+been repeated at the current maps.
 
 The limits of that measurement:
 
@@ -417,8 +429,9 @@ The limits of that measurement:
   whose cost the fitted exponents do not cover.
 
 Local MP2 without `integral_direct` still builds the global tensor and
-makes no scaling claim. The measurement is `bench_direct_alkane_series` in
-`crates/ferric-mp2/tests/lmp2_direct.rs`.
+makes no scaling claim. The current-map measurement runs the CLI (`rimp2`
+and `att-rimp2` with `[local] integral_direct = true`); the previous-map one
+is `bench_direct_alkane_series` in `crates/ferric-mp2/tests/lmp2_direct.rs`.
 
 ## Sources
 
