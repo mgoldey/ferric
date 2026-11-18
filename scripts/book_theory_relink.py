@@ -49,19 +49,34 @@ COVERAGE = "cf74ebe09"  # book/theory-coverage.md, the heading -> book map
 # (crate, heading text) -> book label, where the coverage map's first entry is
 # not the best home (absent headings, content moved by the gap-filling commit).
 OVERRIDES = {
-    ("ferric-mp2", "9.5 terfc-attenuated RI-MP2 gradient"): "rimp2-gradient-attenuated-erfc-ri-mp2",
+    (
+        "ferric-mp2",
+        "9.5 terfc-attenuated RI-MP2 gradient",
+    ): "rimp2-gradient-attenuated-erfc-ri-mp2",
     (
         "ferric-scf",
         "Density-fitted gradient (RI-J) on a pair-screened tensor",
     ): "df-jk-gradient-pair-screened-ri-j",
-    ("ferric-scf", "Peak memory of the fitted MP2 gradient"): "rimp2-gradient-fitted-peak-memory",
+    (
+        "ferric-scf",
+        "Peak memory of the fitted MP2 gradient",
+    ): "rimp2-gradient-fitted-peak-memory",
     ("ferric-scf", "Factored RI-K in the open-shell CPHF"): "hf-hessian-factored-ri-k",
     ("ferric-scf", "Geometry searches"): "geometry-search",
     ("ferric-scf", "Self-Consistent Field (SCF) Theory"): "hartree-fock",
     ("ferric-mp2", "MP2 Family Theory"): "mp2",
-    ("ferric-mp2", "6.1 Spin-blocked unrestricted MP3"): "mp3-spin-blocked-unrestricted-mp3",
-    ("ferric-mp2", "14.1 The integral-response loop"): "unrestricted-oo-rimp2-integral-response-loop",
-    ("ferric-integrals", "Derivative integrals of terf and terfc"): "terf-table-engine-derivative-integrals",
+    (
+        "ferric-mp2",
+        "6.1 Spin-blocked unrestricted MP3",
+    ): "mp3-spin-blocked-unrestricted-mp3",
+    (
+        "ferric-mp2",
+        "14.1 The integral-response loop",
+    ): "unrestricted-oo-rimp2-integral-response-loop",
+    (
+        "ferric-integrals",
+        "Derivative integrals of terf and terfc",
+    ): "terf-table-engine-derivative-integrals",
     ("ferric-rpa", "The energy as a function of B and F"): "rpa-gradient-energy-b-f",
     ("ferric-rpa", "Frozen core"): "rpa-gradient-frozen-core",
     ("ferric-rpa", "What is reused from ferric-mp2"): "rpa-gradient-reuse",
@@ -72,13 +87,19 @@ OVERRIDES = {
 # (crate, quoted text) -> the heading the quote abbreviates, where the quote is
 # ambiguous or names no heading.
 TEXT_ALIASES = {
-    ("ferric-integrals", "Derivative integrals"): "Derivative integrals and buffer sizing",
+    (
+        "ferric-integrals",
+        "Derivative integrals",
+    ): "Derivative integrals and buffer sizing",
     ("ferric-scf", "Open shell"): "Kohn-Sham XC Hessian terms (fixed and moving grid)",
     (
         "ferric-scf",
         "RI-J gradient on a pair-screened tensor",
     ): "Density-fitted gradient (RI-J) on a pair-screened tensor",
-    ("ferric-mp2", "Attenuated RI-MP2 gradient"): "9.4 Attenuated (erfc) RI-MP2 gradient",
+    (
+        "ferric-mp2",
+        "Attenuated RI-MP2 gradient",
+    ): "9.4 Attenuated (erfc) RI-MP2 gradient",
 }
 
 # The crate prefix is optional: inside crates/<crate>/ a bare ``theory.md``
@@ -87,19 +108,30 @@ CRATE = r"(?:(?:crates/)?(?P<crate>ferric-[\w-]+)/)?theory\.md"
 QUOTED = r'"[^"]+"(?:\s*(?:,\s*and|,|and)\s*(?:#\s*|//[/!]?\s*)?"[^"]+")*'
 NUM = r"\d+(?:\.\d+)*[a-z]?"
 REF_RE = re.compile(
-    r"(?P<open>`?)" + CRATE
-    + r"(?:#(?P<anchor>" + QUOTED + r"|[\w.-]+)|:(?P<line>\d+)(?:-(?P<line2>\d+))?)?"
+    r"(?P<open>`?)"
+    + CRATE
+    + r"(?:#(?P<anchor>"
+    + QUOTED
+    + r"|[\w.-]+)|:(?P<line>\d+)(?:-(?P<line2>\d+))?)?"
     + r"(?P<close>`?)"
-    + r"(?:(?P<hsep>,?[ \t]*(?:sections?|headings?)?[ \t]*\n?[ \t]*(?:#|//[/!]?)?[ \t]*|[ \t]*\([ \t]*(?:sections?[ \t]+)?)(?P<heads>" + QUOTED + r")(?P<hclose>\))?"
-    + r"|(?P<nsep>,?[ \t]*\(?)(?:§|sections?|Section|(?=\d))[ \t]*(?P<num>" + NUM + r")"
-    + r"(?:[ \t]*(?:–|-|to|and|,)[ \t]*§?(?P<num2>" + NUM + r"))?(?P<nclose>\))?)?"
+    + r"(?:(?P<hsep>,?[ \t]*(?:sections?|headings?)?[ \t]*\n?[ \t]*(?:#|//[/!]?)?[ \t]*|[ \t]*\([ \t]*(?:sections?[ \t]+)?)(?P<heads>"
+    + QUOTED
+    + r")(?P<hclose>\))?"
+    + r"|(?P<nsep>,?[ \t]*\(?)(?:§|sections?|Section|(?=\d))[ \t]*(?P<num>"
+    + NUM
+    + r")"
+    + r"(?:[ \t]*(?:–|-|to|and|,)[ \t]*§?(?P<num2>"
+    + NUM
+    + r"))?(?P<nclose>\))?)?"
 )
 
 
 def git_show(ref: str, path: str) -> str:
     return subprocess.run(
         ["git", "-C", str(ROOT), "show", f"{ref}:{path}"],
-        capture_output=True, text=True, check=True,
+        capture_output=True,
+        text=True,
+        check=True,
     ).stdout
 
 
@@ -110,7 +142,9 @@ def norm(s: str) -> str:
 def old_headings(crate: str) -> list[tuple[int, int, str]]:
     """(1-based line, level, text) of the BASE theory.md, outside code fences."""
     out, fenced = [], False
-    for i, line in enumerate(git_show(BASE, f"crates/{crate}/theory.md").split("\n"), 1):
+    for i, line in enumerate(
+        git_show(BASE, f"crates/{crate}/theory.md").split("\n"), 1
+    ):
         if bb.FENCE_RE.match(line.lstrip()):
             fenced = not fenced
             continue
@@ -166,14 +200,23 @@ class Resolver:
             # Exact text, then without a leading number ("3. "), then a unique
             # heading that starts with the quoted words ("Two-step CASSCF
             # (`src/casscf.rs`)").
-            bare = [(ln, lvl, h, re.sub(rf"^{NUM}\.?\s+", "", norm(h)).lower()) for ln, lvl, h in hs]
+            bare = [
+                (ln, lvl, h, re.sub(rf"^{NUM}\.?\s+", "", norm(h)).lower())
+                for ln, lvl, h in hs
+            ]
             for ln, lvl, h, b in bare:
                 if norm(h).lower() == want or b == want:
                     return ln, lvl, h
-            pre = [(ln, lvl, h) for ln, lvl, h, b in bare if b.startswith(want) or norm(h).lower().startswith(want)]
+            pre = [
+                (ln, lvl, h)
+                for ln, lvl, h, b in bare
+                if b.startswith(want) or norm(h).lower().startswith(want)
+            ]
             return pre[0] if len(pre) == 1 else None
         for ln, lvl, h in hs:
-            if anchor is not None and (bb.slug(h) == anchor or bb.slug(norm(h)) == anchor):
+            if anchor is not None and (
+                bb.slug(h) == anchor or bb.slug(norm(h)) == anchor
+            ):
                 return ln, lvl, h
             if num is not None and re.match(rf"{re.escape(num)}\.?\s", h):
                 return ln, lvl, h
@@ -210,7 +253,9 @@ def targets_of(res: Resolver, m: re.Match, crate: str) -> list[tuple[str, str]] 
     elif m.group("line"):
         heads = [res.find(crate, line=int(m.group("line2") or m.group("line")))]
     elif m.group("heads"):
-        heads = [res.find(crate, text=t) for t in re.findall(r'"([^"]+)"', m.group("heads"))]
+        heads = [
+            res.find(crate, text=t) for t in re.findall(r'"([^"]+)"', m.group("heads"))
+        ]
     elif m.group("num"):
         heads = [res.find(crate, num=m.group("num"))]
         if m.group("num2"):
@@ -233,7 +278,9 @@ def render(file: str, tgts: list[tuple[str, str]]) -> str:
     if file.startswith("book/src/"):
         refs = [f"@sec:{lab}" for lab, _ in tgts]
         word = "section" if len(refs) == 1 else "sections"
-        return f"{word} " + (", ".join(refs[:-1]) + " and " + refs[-1] if len(refs) > 1 else refs[0])
+        return f"{word} " + (
+            ", ".join(refs[:-1]) + " and " + refs[-1] if len(refs) > 1 else refs[0]
+        )
     if file.endswith(".json"):
         return ", ".join(f"book/src/{p}#{lab}" for lab, p in tgts)
     return ", ".join(f"`book/src/{p}#{lab}`" for lab, p in tgts)
@@ -259,8 +306,10 @@ def rewrite(res: Resolver, file: str, text: str, log: list[str]) -> str:
         line_start = text.rfind("\n", 0, m.start()) + 1
         line_end = text.find("\n", m.end())
         row = text[line_start : line_end if line_end >= 0 else len(text)]
-        if file.startswith("book/src/") and row.lstrip().startswith("|") and all(
-            p == page for _, p in tg
+        if (
+            file.startswith("book/src/")
+            and row.lstrip().startswith("|")
+            and all(p == page for _, p in tg)
         ):
             drop_rows.add(line_start)
             log.append(f"DROP-ROW {file}:{lineno}: {norm(row)[:120]}")
@@ -298,7 +347,8 @@ def rewrite(res: Resolver, file: str, text: str, log: list[str]) -> str:
 def candidate_files(only: list[str], skip: list[str]) -> list[str]:
     files = subprocess.run(
         ["git", "-C", str(ROOT), "grep", "-l", "theory\\.md"],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     ).stdout.split()
     out = []
     for f in files:
@@ -326,7 +376,9 @@ def candidate_files(only: list[str], skip: list[str]) -> list[str]:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("--write", action="store_true")
     ap.add_argument("--only", nargs="*", default=[])
     ap.add_argument("--skip", nargs="*", default=[])

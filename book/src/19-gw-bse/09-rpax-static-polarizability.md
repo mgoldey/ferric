@@ -118,7 +118,7 @@ $$ (\mathbf A+\mathbf B)(X+Y) - \omega(X-Y) = 2\boldsymbol\mu F . $$
 
 Substitute $X - Y$ from the first result:
 
-$$ \big[(\mathbf A+\mathbf B) - \omega^2(\mathbf A-\mathbf B)^{-1}\big](X+Y) = 2\boldsymbol\mu F . $$
+$$ \big[(\mathbf A+\mathbf B) - \omega^2(\mathbf A-\mathbf B)^{-1}\big]{(X+Y)} = 2\boldsymbol\mu F . $$
 
 **Go to the singlet space.** At $\omega = iu$, $-\omega^2 = u^2$. In the
 rotated spin basis the spin-orbital dipole is $\boldsymbol\mu_{\rm so} = \sqrt2\,\boldsymbol\mu$,

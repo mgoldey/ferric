@@ -99,7 +99,9 @@ def two_charge():
     for c in (1, 2, 4):
         try:
             peaks.append(
-                mp.findroot(lambda x, c=c: mp.diff(lambda y: terf_over_r(y, c, 1), x), 1.3)
+                mp.findroot(
+                    lambda x, c=c: mp.diff(lambda y: terf_over_r(y, c, 1), x), 1.3
+                )
             )
         except ValueError:  # no stationary point near 1.3 r0: the kernel is not terf
             peaks.append(mp.nan)
@@ -172,7 +174,9 @@ def one_mode_sign():
     ok_sign = sp.simplify(d * (s**2 - 1) / 2 - d * (s - 1) * (s + 1) / 2) == 0
     # Scan -D/2 < k <= 5 D at D = 1.3.
     dd = 1.3
-    ks = np.concatenate([np.linspace(-0.4999 * dd, -1e-3, 2000), np.linspace(1e-3, 5 * dd, 2000)])
+    ks = np.concatenate(
+        [np.linspace(-0.4999 * dd, -1e-3, 2000), np.linspace(1e-3, 5 * dd, 2000)]
+    )
     vals = np.array([float(bracket(sp.Float(x), sp.Float(dd))) for x in ks[::40]])
     ok_scan = bool(np.all(np.sign(vals) == np.sign(ks[::40])))
     check(
@@ -194,7 +198,9 @@ def one_mode_integral():
 
         e_int = mp.quad(f, [0, 1, 10, mp.inf]) / (2 * mp.pi)
         br_int = e_int + kk**2 / (BRACKET_DIV * dd)
-        br_closed = (mp.sqrt(dd * (dd + 2 * kk)) - dd - kk) / 2 + kk**2 / (BRACKET_DIV * dd)
+        br_closed = (mp.sqrt(dd * (dd + 2 * kk)) - dd - kk) / 2 + kk**2 / (
+            BRACKET_DIV * dd
+        )
         errs.append(abs(br_int - br_closed))
         if mp.sign(br_int) != mp.sign(kk):
             errs.append(mp.mpf(1))

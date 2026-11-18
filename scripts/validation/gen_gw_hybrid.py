@@ -88,7 +88,8 @@ def hybrid_block(mol, aux, orbs, xc):
         vk = -0.5 * c_sr * mks.get_k(dm=dm)
     else:
         vk = -0.5 * (
-            c_sr * (mks.get_k(dm=dm, omega=-omega)) + c_lr * mks.get_k(dm=dm, omega=omega)
+            c_sr * (mks.get_k(dm=dm, omega=-omega))
+            + c_lr * mks.get_k(dm=dm, omega=omega)
         )
     vk_mo = np.einsum("mp,mn,np->p", c, vk, c)
     split = float(np.max(np.abs(vmf_full - (vsl + vk_mo))))
@@ -157,7 +158,12 @@ def main():
             flush=True,
         )
     prov = G.provenance(
-        xyz, BASIS, symbols, coords, aux_name, None,
+        xyz,
+        BASIS,
+        symbols,
+        coords,
+        aux_name,
+        None,
         {"blocks": list(FUNCTIONALS), "functionals": FUNCTIONALS},
     )
     prov["generator"] = "scripts/validation/gen_gw_hybrid.py"

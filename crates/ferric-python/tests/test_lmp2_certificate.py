@@ -161,13 +161,20 @@ def test_fock_screen_kwarg_off_and_strict(water):
     integral-direct path (it only adds amplitudes, so keep can only drop);
     without `integral_direct=True` the kwarg is a ValueError, as in the CLI."""
     mol, obs, aux = water
-    kw = dict(frozen_core=1, local="amplitude-threshold", eps=1e-4, integral_direct=True)
+    kw = dict(
+        frozen_core=1, local="amplitude-threshold", eps=1e-4, integral_direct=True
+    )
     on = ferric.run_rimp2(mol, obs, aux, **kw).local
     off = ferric.run_rimp2(mol, obs, aux, fock_screen=False, **kw).local
     assert on["fock_screen"] == 1.0 and off["fock_screen"] is None
     assert off["keep_fraction"] <= on["keep_fraction"]
     with pytest.raises(ValueError, match="integral_direct"):
         ferric.run_rimp2(
-            mol, obs, aux, frozen_core=1, local="amplitude-threshold", eps=1e-4,
+            mol,
+            obs,
+            aux,
+            frozen_core=1,
+            local="amplitude-threshold",
+            eps=1e-4,
             fock_screen=False,
         )

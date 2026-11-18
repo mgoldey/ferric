@@ -147,8 +147,11 @@ def main():
                 e_int = (dd["drpa"] - dd["dmp2"]) - 2.0 * (mm["drpa"] - mm["dmp2"])
                 row.append(f"{name} {e_int * 1e6:9.3f}")
             dm = dim[aux][key]["c_minus_sr"]["dmp2"] * 1e6
-            print(f"{aux} r0*w={cval:.4f}: E_int[dRPA-dMP2](lr) uHa: " + "  ".join(row)
-                  + f" | dimer dMP2[lr] c_minus_sr {dm:.2f}")
+            print(
+                f"{aux} r0*w={cval:.4f}: E_int[dRPA-dMP2](lr) uHa: "
+                + "  ".join(row)
+                + f" | dimer dMP2[lr] c_minus_sr {dm:.2f}"
+            )
 
 
 if __name__ == "__main__":

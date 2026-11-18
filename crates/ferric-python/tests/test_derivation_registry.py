@@ -77,7 +77,9 @@ def _book_ok(ref):
         path.startswith("book/src/")
         and md.is_file()
         and bool(label)
-        and re.search(rf"^#{{1,6}} .*\{{#{re.escape(label)}\}}\s*$", md.read_text(), re.M)
+        and re.search(
+            rf"^#{{1,6}} .*\{{#{re.escape(label)}\}}\s*$", md.read_text(), re.M
+        )
         is not None
     )
 
@@ -168,5 +170,6 @@ def test_book_ref_check_rejects_a_dangling_label():
     assert _book_ok(good)
     page = good.partition("#")[0]
     assert not _book_ok(page + "#no-such-label")
-    assert not _book_ok("crates/ferric-scf/theory.md#hartree-fock-energy-functionals-rhf-uhf-rohf")
-
+    assert not _book_ok(
+        "crates/ferric-scf/theory.md#hartree-fock-energy-functionals-rhf-uhf-rohf"
+    )

@@ -61,8 +61,8 @@ def random_eri(n, rng):
     eri = np.zeros((n, n, n, n))
     for a, (i, j) in enumerate(pairs):
         for b, (k, l) in enumerate(pairs):
-            for (p, q) in ((i, j), (j, i)):
-                for (r, s) in ((k, l), (l, k)):
+            for p, q in ((i, j), (j, i)):
+                for r, s in ((k, l), (l, k)):
                     eri[p, q, r, s] = g[a, b]
     return eri
 
@@ -92,23 +92,43 @@ vsl_ao = vsl_ao + vsl_ao.T
 F = h + j_of(eri, D) - 0.5 * c_x * k_of(eri, D) + vsl_ao
 v_mf_def = C.T @ (F - h - j_of(eri, D)) @ C  # the definition of v_mf
 v_mf_code = C.T @ (vsl_ao - c_x * k_of(eri, Da)) @ C  # vxc_mo.rs
-check(np.allclose(v_mf_def, v_mf_code, atol=1e-13, rtol=0), "H1", "v_mf = v_sl - c K[D_a]")
+check(
+    np.allclose(v_mf_def, v_mf_code, atol=1e-13, rtol=0), "H1", "v_mf = v_sl - c K[D_a]"
+)
 eri_mo = np.einsum("mnls,mp,nq,lr,st->pqrt", eri, C, C, C, C)
 sx = np.array([-sum(eri_mo[p, i, i, p] for i in range(nocc)) for p in range(n)])
 kd = np.diag(C.T @ k_of(eri, Da) @ C)
-check(np.allclose(kd, -sx, atol=1e-13, rtol=0), "H1", "(K[D_a])_pp = sum_i (pi|ip) = -Sigma_x,pp")
+check(
+    np.allclose(kd, -sx, atol=1e-13, rtol=0),
+    "H1",
+    "(K[D_a])_pp = sum_i (pi|ip) = -Sigma_x,pp",
+)
 
 # ---------------------------------------------------------------------------
 print("\n=== H2  the static shift for a global hybrid")
 Sx, vsl, c = sp.symbols("Sigma_x v_sl c", real=True)
 v_mf = vsl + c * Sx  # H1: -c K_pp = c Sigma_x,pp
 shift = Sx - v_mf
-check(sp.simplify(shift - ((1 - c) * Sx - vsl)) == 0, "H2", "Sigma_x - v_mf = (1-c) Sigma_x - v_sl")
-check(sp.simplify(shift.subs(c, 0) - (Sx - vsl)) == 0, "H2", "c = 0: pure functional unchanged")
-check(sp.simplify(shift.subs({c: 1, vsl: 0})) == 0, "H2", "c = 1, v_sl = 0: the HF shift is 0")
+check(
+    sp.simplify(shift - ((1 - c) * Sx - vsl)) == 0,
+    "H2",
+    "Sigma_x - v_mf = (1-c) Sigma_x - v_sl",
+)
+check(
+    sp.simplify(shift.subs(c, 0) - (Sx - vsl)) == 0,
+    "H2",
+    "c = 0: pure functional unchanged",
+)
+check(
+    sp.simplify(shift.subs({c: 1, vsl: 0})) == 0,
+    "H2",
+    "c = 1, v_sl = 0: the HF shift is 0",
+)
 shift_num = sx - np.diag(v_mf_code)
 check(
-    np.allclose(shift_num, (1 - c_x) * sx - np.diag(C.T @ vsl_ao @ C), atol=1e-13, rtol=0),
+    np.allclose(
+        shift_num, (1 - c_x) * sx - np.diag(C.T @ vsl_ao @ C), atol=1e-13, rtol=0
+    ),
     "H2",
     "brute force: Sigma_x - v_mf = (1-c) Sigma_x - v_sl",
 )
@@ -116,7 +136,11 @@ check(
 # ---------------------------------------------------------------------------
 print("\n=== H3  range separation")
 r, w = sp.symbols("r omega", positive=True)
-check(sp.simplify((sp.erf(w * r) + sp.erfc(w * r)).rewrite(sp.erf) - 1) == 0, "H3", "erf + erfc = 1")
+check(
+    sp.simplify((sp.erf(w * r) + sp.erfc(w * r)).rewrite(sp.erf) - 1) == 0,
+    "H3",
+    "erf + erfc = 1",
+)
 Ssr, Slr, csr, clr = sp.symbols("Sigma_x_SR Sigma_x_LR c_sr c_lr", real=True)
 shift_rsh = (Ssr + Slr) - (vsl + csr * Ssr + clr * Slr)
 check(
@@ -128,10 +152,16 @@ check(
 eri_lr = random_eri(n, np.random.default_rng(11)) * 0.3
 eri_sr = eri - eri_lr
 c_sr, c_lr = 0.19, 0.65
-F_rsh = h + j_of(eri, D) - 0.5 * (c_sr * k_of(eri_sr, D) + c_lr * k_of(eri_lr, D)) + vsl_ao
+F_rsh = (
+    h + j_of(eri, D) - 0.5 * (c_sr * k_of(eri_sr, D) + c_lr * k_of(eri_lr, D)) + vsl_ao
+)
 v_rsh_def = np.diag(C.T @ (F_rsh - h - j_of(eri, D)) @ C)
-v_rsh_code = np.diag(C.T @ (vsl_ao - c_sr * k_of(eri_sr, Da) - c_lr * k_of(eri_lr, Da)) @ C)
-check(np.allclose(v_rsh_def, v_rsh_code, atol=1e-13, rtol=0), "H3", "RSH v_mf brute force")
+v_rsh_code = np.diag(
+    C.T @ (vsl_ao - c_sr * k_of(eri_sr, Da) - c_lr * k_of(eri_lr, Da)) @ C
+)
+check(
+    np.allclose(v_rsh_def, v_rsh_code, atol=1e-13, rtol=0), "H3", "RSH v_mf brute force"
+)
 
 # ---------------------------------------------------------------------------
 print("\n=== H4  size and sign of the double counting")
@@ -158,7 +188,9 @@ if ref is not None:
     R = json.loads(ref.read_text())
     for blk in ("g0w0_pbe0", "g0w0_cam_b3lyp"):
         b = R[blk]
-        vmf, vsl_r, vk = (np.array(b[k]) for k in ("v_mf", "v_xc_semilocal", "v_k_hybrid"))
+        vmf, vsl_r, vk = (
+            np.array(b[k]) for k in ("v_mf", "v_xc_semilocal", "v_k_hybrid")
+        )
         check(
             np.max(np.abs(vmf - vsl_r - vk)) < 1e-10,
             "H5",

@@ -114,9 +114,9 @@ def one_mode_logdet():
     # d/dk of the integrand: 4D/(D^2 + w^2 + 4Dk) - 4D/(D^2 + w^2).
     # int_0^inf 1/(a^2 + w^2) dw = pi/(2a).
     base = sp.integrate(1 / (a**2 + w**2), (w, 0, sp.oo))
-    lhs = (4 * d * base.subs(a, sp.sqrt(d**2 + 4 * d * k)) - 4 * d * base.subs(a, d)) / (
-        2 * sp.pi
-    )
+    lhs = (
+        4 * d * base.subs(a, sp.sqrt(d**2 + 4 * d * k)) - 4 * d * base.subs(a, d)
+    ) / (2 * sp.pi)
     plasmon = sp.Rational(1, 2) * (sp.sqrt(d * (d + 4 * k)) - d - 2 * k)
     rhs = sp.diff(plasmon, k)
     ok_sym = sp.simplify(sp.simplify(lhs - rhs).subs(k, -d / 8)) == 0 and (
@@ -258,7 +258,9 @@ def gram(f, e1, c1, e2=None, c2=None):
     for i, (a, ra) in enumerate(zip(e1, c1)):
         for j, (b, rb) in enumerate(zip(e2, c2)):
             s = np.sinc(k * abs(ra - rb) / np.pi)
-            v[i, j] = (2 / np.pi) * np.sum(wk * fk * np.exp(-k * k * (0.25 / a + 0.25 / b)) * s)
+            v[i, j] = (2 / np.pi) * np.sum(
+                wk * fk * np.exp(-k * k * (0.25 / a + 0.25 / b)) * s
+            )
     return v
 
 

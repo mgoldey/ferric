@@ -922,7 +922,6 @@ def test_crate_cited_by_no_page_is_an_error(tree):
     assert any("ferric-lonely/theory.md" in e and "no book section" in e for e in errs)
 
 
-
 # ------------------------------------------------------- links into the book
 def test_link_into_the_book_resolves(tree):
     write(tree, {"scripts/toy_doc.py": '"""See book/src/10-mp2/01-toy.md#toy."""\n'})

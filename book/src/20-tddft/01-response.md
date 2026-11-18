@@ -258,7 +258,7 @@ column by $1/\sqrt{\Omega_n}$.
 The same reduction solves the driven problem. Add and subtract its rows
 and eliminate $X-Y$:
 
-$$ \big[(\mathbf A+\mathbf B) - \omega^2(\mathbf A-\mathbf B)^{-1}\big](X+Y) = -2v . $$
+$$ \big[(\mathbf A+\mathbf B) - \omega^2(\mathbf A-\mathbf B)^{-1}\big]{(X+Y)} = -2v . $$
 
 Put $X+Y = Tz$ and multiply on the left by $T$; this gives
 $(M - \omega^2)z = -2Tv$. Expand $z$ in the eigenvectors $Z_n$ of $M$, and

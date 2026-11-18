@@ -65,7 +65,9 @@ lam = sp.symbols("lambda", nonnegative=True)
 
 
 def sym3(prefix):
-    e = sp.symbols(f"{prefix}00 {prefix}01 {prefix}02 {prefix}11 {prefix}12 {prefix}22", real=True)
+    e = sp.symbols(
+        f"{prefix}00 {prefix}01 {prefix}02 {prefix}11 {prefix}12 {prefix}22", real=True
+    )
     return sp.Matrix([[e[0], e[1], e[2]], [e[1], e[3], e[4]], [e[2], e[4], e[5]]])
 
 
@@ -84,7 +86,9 @@ for X, X2 in zip(Xs, Xr):
 print("dG/dtheta|_0 = 4 sum_X w_X (X_pp - X_qq) X_pq ; bystander diagonal unchanged")
 
 # ---------------------------------------------------------------------------
-section("S2 (symbolic): G(theta) = const + a cos4theta + b sin4theta, maximum at atan2(b, a)/4")
+section(
+    "S2 (symbolic): G(theta) = const + a cos4theta + b sin4theta, maximum at atan2(b, a)/4"
+)
 dd = [(X[p, p] - X[q, q]) / 2 for X in Xs]
 cc = [X[p, q] for X in Xs]
 a_s = sum(w * (d * d - c * c) for w, d, c in zip(ws, dd, cc))
@@ -104,11 +108,12 @@ ths = pair_angle(A, B)
 # Write the angle through r = sqrt(a^2+b^2): cos 4theta* = a/r, sin 4theta* = b/r
 rr = sp.sqrt(A**2 + B**2)
 c4, s4 = sp.cos(4 * ths), sp.sin(4 * ths)
-for (av, bv) in [(2, 1), (-3, 2), (-1, -4), (5, -1), (sp.Rational(1, 3), 7)]:
+for av, bv in [(2, 1), (-3, 2), (-1, -4), (5, -1), (sp.Rational(1, 3), 7)]:
     sub = {A: av, B: bv}
-    assert sp.simplify((c4 - A / rr).subs(sub)) == 0 and sp.simplify((s4 - B / rr).subs(sub)) == 0, (
-        "S2: maximum FAILED (angle)"
-    )
+    assert (
+        sp.simplify((c4 - A / rr).subs(sub)) == 0
+        and sp.simplify((s4 - B / rr).subs(sub)) == 0
+    ), "S2: maximum FAILED (angle)"
     d1 = sp.diff(Gp, th).subs(th, ths).subs(sub)
     d2 = sp.diff(Gp, th, 2).subs(th, ths).subs(sub)
     assert sp.simplify(d1) == 0, "S2: maximum FAILED (not stationary)"
@@ -116,12 +121,16 @@ for (av, bv) in [(2, 1), (-3, 2), (-1, -4), (5, -1), (sp.Rational(1, 3), 7)]:
 print("theta* = atan2(b, a)/4: G'(theta*) = 0, G''(theta*) = -16 sqrt(a^2+b^2) <= 0")
 
 # ---------------------------------------------------------------------------
-section("S3 (symbolic): pair gradient = 4 b; stationarity and the converged-sweep condition")
+section(
+    "S3 (symbolic): pair gradient = 4 b; stationarity and the converged-sweep condition"
+)
 assert sp.expand(pair_grad - 4 * b_s) == 0, "S3: stationarity FAILED (gradient != 4b)"
 # at b = 0: theta* = 0 iff a > 0
 for av in (1, sp.Rational(5, 2)):
     assert pair_angle(sp.Integer(av), sp.Integer(0)) == 0, "S3: stationarity FAILED"
-assert pair_angle(sp.Integer(-1), sp.Integer(0)) == sp.pi / 4, "S3: saddle branch FAILED"
+assert pair_angle(sp.Integer(-1), sp.Integer(0)) == sp.pi / 4, (
+    "S3: saddle branch FAILED"
+)
 print(
     "pair gradient = 4b; stationary <=> b_pq = 0 for all p<q; theta* = 0 there iff a_pq > 0"
 )
@@ -142,14 +151,18 @@ def boys_theta(Ab_, Bb_):
 
 
 # the Boys rotation by theta_b is the code's rotation by -theta_b
-for (av, bv) in [(2, 1), (-3, 2), (-1, -4), (5, -1)]:
+for av, bv in [(2, 1), (-3, 2), (-1, -4), (5, -1)]:
     tb = boys_theta(sp.Integer(av), sp.Integer(bv))
     tl = pair_angle(sp.Integer(av), sp.Integer(bv))
     assert sp.simplify(tl + tb) == 0, "S4: Boys FAILED (angle)"
-print("lambda = 0: a = A_Boys, b = B_Boys, and the code's angle = -theta_Boys (same rotation)")
+print(
+    "lambda = 0: a = A_Boys, b = B_Boys, and the code's angle = -theta_Boys (same rotation)"
+)
 
 # ---------------------------------------------------------------------------
-section("Numerical cross-check: FD via the matrix exponential, Jacobi optimum, Hessian sign")
+section(
+    "Numerical cross-check: FD via the matrix exponential, Jacobi optimum, Hessian sign"
+)
 
 
 def G_num(Xm, Fm, lam_v):
@@ -241,12 +254,16 @@ for _ in range(3):
     h = 1e-5
     fd = (G_along(K, h, X0, F0) - G_along(K, -h, X0, F0)) / (2 * h)
     an = sum(gm[pp, qq] * K[qq, pp] for pp in range(n) for qq in range(pp + 1, n))
-    assert abs(fd - an) < 1e-6 * max(1.0, abs(an)), f"S1: gradient FAILED (FD {fd} vs {an})"
+    assert abs(fd - an) < 1e-6 * max(1.0, abs(an)), (
+        f"S1: gradient FAILED (FD {fd} vs {an})"
+    )
 print("analytic pair gradient == FD of G along exp(sK), 3 random directions")
 
 Xc, Fc, Uc, fell = jacobi(X0, F0, lam_v)
 gmax = np.abs(grad_mat(Xc, Fc, lam_v)).max()
-assert gmax < 1e-10, f"S3: stationarity FAILED (max |grad| {gmax:.2e} at the Jacobi optimum)"
+assert gmax < 1e-10, (
+    f"S3: stationarity FAILED (max |grad| {gmax:.2e} at the Jacobi optimum)"
+)
 assert not fell, "S2: maximum FAILED (G fell in a Jacobi step)"
 # the lambda-dependent stationarity condition holds; the lambda = 0 one does not
 d0 = np.abs(grad_mat(Xc, Fc, 0.0)).max()
@@ -256,7 +273,9 @@ for _ in range(10):
     K = rng.normal(size=(n, n))
     K = np.triu(K, 1) - np.triu(K, 1).T
     h = 1e-3
-    d2 = (G_along(K, h, Xc, Fc) - 2 * G_num(Xc, Fc, lam_v) + G_along(K, -h, Xc, Fc)) / h**2
+    d2 = (
+        G_along(K, h, Xc, Fc) - 2 * G_num(Xc, Fc, lam_v) + G_along(K, -h, Xc, Fc)
+    ) / h**2
     assert d2 < 1e-6, f"S2: maximum FAILED (FD curvature {d2:.3e} > 0 at the optimum)"
 print(
     f"Jacobi optimum: max |grad| {gmax:.1e}, lambda=0 gradient there {d0:.1e} (F term live); "
