@@ -94,6 +94,32 @@ when the reference already has the requested convention, $-v_M$ to go from
 conversion is exact because the orbitals are the same under both. Section
 @sec:mp2-drpa-large-cell-limit shows which convention approaches the molecule.
 
+For H2/STO-3G in an 8 Bohr cubic cell, from the `589b50832` build, an `ewald`
+and a `none` reference give the same correlation energy for the same requested
+denominators; only `occ_shift` differs:
+
+```python
+import ferric
+
+BOHR = 0.529177210903
+mol = ferric.Molecule.from_xyz_string("2\nH2\nH 0 0 0\nH 0 0 0.74\n")
+basis = ferric.BasisSet.bundled("sto-3g")
+a = 8.0 * BOHR
+lat = [[a, 0, 0], [0, a, 0], [0, 0, a]]
+for den in ("shifted", "unshifted"):
+    for exx in ("ewald", "none"):
+        r = ferric.run_mp2_gamma(mol, lat, basis, exxdiv=exx, denominators=den)
+        print(f"denominators={den:9s} reference exxdiv={exx:5s}  "
+              f"E_corr={r.correlation_energy:.12f}  occ_shift={r.occ_shift:+.10f}  v_M={r.madelung:.10f}")
+```
+
+```text
+denominators=shifted   reference exxdiv=ewald  E_corr=-0.011726901617  occ_shift=+0.0000000000  v_M=0.3546621849
+denominators=shifted   reference exxdiv=none   E_corr=-0.011726901617  occ_shift=-0.3546621849  v_M=0.3546621849
+denominators=unshifted reference exxdiv=ewald  E_corr=-0.016161580433  occ_shift=+0.3546621849  v_M=0.3546621849
+denominators=unshifted reference exxdiv=none   E_corr=-0.016161580433  occ_shift=+0.0000000000  v_M=0.3546621849
+```
+
 ## The k-point energies {#mp2-drpa-k-point-energies}
 
 **Momentum conservation.** With per-cell normalized $C(k)$ (`kcorr.rs`), the
@@ -317,6 +343,34 @@ amount that falls as $v_M$ does (the test requires a local exponent between
 0.6 and 1.4). The
 Madelung-shifted denominators are the ones that approach the molecule at
 the rate of the integrals.
+
+The $1/a$ part can be seen without a molecular reference. From the
+`589b50832` build, for H2/STO-3G at 0.74 Å on the $z$ axis (not the test's
+geometry, so the energies are not the table's), the unshifted minus shifted
+correlation energy times $a$ stays between 0.033 and 0.034 Ha·Bohr from 16 to
+24 Bohr:
+
+```python
+import ferric
+
+BOHR = 0.529177210903
+mol = ferric.Molecule.from_xyz_string("2\nH2\nH 0 0 0\nH 0 0 0.74\n")
+basis = ferric.BasisSet.bundled("sto-3g")
+# The book's table subtracts ferric's canonical molecular MP2 (tests/pbc_mp2.rs);
+# the difference unshifted - shifted printed here is the v_M-driven 1/a part.
+for a_bohr in (16.0, 20.0, 24.0):
+    a = a_bohr * BOHR
+    lat = [[a, 0, 0], [0, a, 0], [0, 0, a]]
+    s = ferric.run_mp2_gamma(mol, lat, basis, exxdiv="ewald", denominators="shifted").correlation_energy
+    u = ferric.run_mp2_gamma(mol, lat, basis, exxdiv="ewald", denominators="unshifted").correlation_energy
+    print(f"a={a_bohr:5.1f}  E_shifted={s:.10f}  E_unshifted={u:.10f}  unshifted-shifted={u - s:+.6e}")
+```
+
+```text
+a= 16.0  E_shifted=-0.0129738471  E_unshifted=-0.0151125955  unshifted-shifted=-2.138748e-03
+a= 20.0  E_shifted=-0.0130540831  E_unshifted=-0.0147231652  unshifted-shifted=-1.669082e-03
+a= 24.0  E_shifted=-0.0130895087  E_unshifted=-0.0144559536  unshifted-shifted=-1.366445e-03
+```
 
 ## The algorithm {#mp2-drpa-algorithm}
 

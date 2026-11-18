@@ -140,6 +140,34 @@ $X(k) = \sum_{\mathbf L}e^{ik\cdot\mathbf L}X^\text{sc}_{(\mu0),(\nu\mathbf L)}$
 maps the supercell Fock matrix to $F(k)$. A shifted mesh is a
 twisted-boundary supercell and has no such anchor.
 
+The anchor in numbers, from the `589b50832` build: H2/STO-3G in a 5 Bohr cubic
+cell on a $1\times1\times3$ Gamma-centred mesh, against the tripled cell at
+$\Gamma$, per primitive cell. The two agree to $5\times10^{-14}$ Ha under both
+`exxdiv` conventions:
+
+```python
+import ferric
+
+BOHR = 0.529177210903
+basis = ferric.BasisSet.bundled("sto-3g")
+a = 5.0 * BOHR
+prim = ferric.Molecule.from_xyz_string("2\nH2\nH 0 0 0\nH 0 0 0.74\n")
+lat = [[a, 0, 0], [0, a, 0], [0, 0, a]]
+sc_xyz = "6\nH2x3\n" + "".join(f"H 0 0 {i * a:.10f}\nH 0 0 {i * a + 0.74:.10f}\n" for i in range(3))
+sc = ferric.Molecule.from_xyz_string(sc_xyz)
+lat3 = [[a, 0, 0], [0, a, 0], [0, 0, 3 * a]]
+for exx in ("ewald", "none"):
+    k = ferric.run_rhf_kpts(prim, lat, basis, (1, 1, 3), exxdiv=exx)
+    g = ferric.run_rhf_gamma(sc, lat3, basis, exxdiv=exx)
+    print(f"exxdiv={exx:5s}  E(1x1x3 mesh)/cell={k.energy:.12f}  "
+          f"E(supercell)/3={g.energy / 3:.12f}  diff={k.energy - g.energy / 3:.2e}")
+```
+
+```text
+exxdiv=ewald  E(1x1x3 mesh)/cell=-1.228803447495  E(supercell)/3=-1.228803447495  diff=-4.88e-14
+exxdiv=none   E(1x1x3 mesh)/cell=-1.077069004631  E(supercell)/3=-1.077069004631  diff=-4.91e-14
+```
+
 **Check the Gamma limit.** With $N_k = 1$ the only point is $k = 0$, every
 phase is 1, $q = 0$, $v_M$ is the cell's own constant, and the formulas are
 those of sections @sec:exchange-divergence and @sec:rsgdf. The force and stress tests in sections @sec:forces

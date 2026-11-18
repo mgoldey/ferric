@@ -192,6 +192,33 @@ Check the large-cell limit. $v_M$ is homogeneous of degree $-1$ in lengths
 energy $-v_M/2$ of one charge with its images and background goes to zero as
 the cell grows, as it must for an isolated charge.
 
+H2 in STO-3G in cubic cells of 6, 8 and 10 Bohr, from the `589b50832`
+build. $v_Ma$ stays at the simple-cubic constant, so $v_M$ falls as $1/a$, and
+the `none` and `ewald` energies differ by $Nv_M/2$ with $N = 2$ electrons:
+
+```python
+import ferric
+
+BOHR = 0.529177210903
+mol = ferric.Molecule.from_xyz_string("2\nH2\nH 0 0 0\nH 0 0 0.74\n")
+basis = ferric.BasisSet.bundled("sto-3g")
+for a_bohr in (6.0, 8.0, 10.0):
+    a = a_bohr * BOHR
+    lat = [[a, 0, 0], [0, a, 0], [0, 0, a]]
+    ew = ferric.run_rhf_gamma(mol, lat, basis, exxdiv="ewald")
+    no = ferric.run_rhf_gamma(mol, lat, basis, exxdiv="none")
+    vm = ew.madelung
+    print(f"a={a_bohr:5.1f} Bohr  e_nuc={ew.e_nuc:.10f}  v_M={vm:.10f}  "
+          f"v_M*a={vm * a_bohr:.10f} (simple cubic 2.8372974794806)  "
+          f"E_none-E_ewald={no.energy - ew.energy:.10f}  N v_M/2={vm:.10f}")
+```
+
+```text
+a=  6.0 Bohr  e_nuc=-0.2101515940  v_M=0.4728829133  v_M*a=2.8372974796 (simple cubic 2.8372974794806)  E_none-E_ewald=0.4728829133  N v_M/2=0.4728829133
+a=  8.0 Bohr  e_nuc=0.0141443639  v_M=0.3546621849  v_M*a=2.8372974796 (simple cubic 2.8372974794806)  E_none-E_ewald=0.3546621849  N v_M/2=0.3546621849
+a= 10.0 Bohr  e_nuc=0.1518598009  v_M=0.2837297480  v_M*a=2.8372974796 (simple cubic 2.8372974794806)  E_none-E_ewald=0.2837297480  N v_M/2=0.2837297480
+```
+
 `ferric-pbc/src/ewald.rs::madelung_constant` evaluates $v_M$ at
 $\eta = \sqrt\pi/\Omega^{1/3}$. A $k$-point mesh $N_1\times N_2\times N_3$ uses
 the Gamma constant of the $\operatorname{diag}(N)$ supercell
