@@ -334,8 +334,7 @@ pub(crate) fn run_rs_mp2_rpa(
             points.push((c, r));
         }
     } else {
-        let r =
-            ferric_rpa::rs_mp2_lr_rpa(&mol.inner, &prep, &dfbs, &rhf, &cfg)
+        let r = ferric_rpa::rs_mp2_lr_rpa(&mol.inner, &prep, &dfbs, &rhf, &cfg)
             .map_err(make_ferric_err)?;
         points.push((cfg.clone(), r));
     }

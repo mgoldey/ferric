@@ -2590,7 +2590,9 @@ mod tests {
             msg.contains("occupieds") && msg.contains("Boys localization did not converge"),
             "{msg}"
         );
-        assert!(localized_spaces_capped(&mol, &obs, &rhf, 4, &vvhv, LMP2_BOYS_MAX_SWEEPS, 0.0).is_ok());
+        assert!(
+            localized_spaces_capped(&mol, &obs, &rhf, 4, &vvhv, LMP2_BOYS_MAX_SWEEPS, 0.0).is_ok()
+        );
     }
 
     /// λ-Boys exactness anchors on C4/6-31G (frozen core 4, cc-pvdz-ri):
@@ -2658,7 +2660,10 @@ mod tests {
         );
         let l10 = localized_spaces_lambda(&mol, &obs, &rhf, 4, &vvhv, 10.0).unwrap();
         let rep = l10.lambda_boys;
-        assert!(rep.sweeps >= 1 && rep.objective_end > rep.objective_start, "{rep:?}");
+        assert!(
+            rep.sweeps >= 1 && rep.objective_end > rep.objective_start,
+            "{rep:?}"
+        );
         let off = |f: &Array2<f64>| {
             let mut s = 0.0;
             for i in 0..f.nrows() {
@@ -2670,7 +2675,12 @@ mod tests {
             }
             s
         };
-        assert!(off(&l10.f_oo) < off(&plain.f_oo), "{} vs {}", off(&l10.f_oo), off(&plain.f_oo));
+        assert!(
+            off(&l10.f_oo) < off(&plain.f_oo),
+            "{} vs {}",
+            off(&l10.f_oo),
+            off(&plain.f_oo)
+        );
     }
 
     /// B1 anchor: the one-Cholesky multi-RHS `solve_spd` reproduces the

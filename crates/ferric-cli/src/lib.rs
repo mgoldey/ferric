@@ -2393,8 +2393,14 @@ fn lmp2_local_json_with_vs(
         }
         let lb = &r.lambda_boys;
         obj.insert("lambda_boys".to_string(), serde_json::json!(lb.lambda));
-        obj.insert("lambda_boys_sweeps".to_string(), serde_json::json!(lb.sweeps));
-        obj.insert("lambda_boys_max_grad".to_string(), serde_json::json!(lb.max_grad));
+        obj.insert(
+            "lambda_boys_sweeps".to_string(),
+            serde_json::json!(lb.sweeps),
+        );
+        obj.insert(
+            "lambda_boys_max_grad".to_string(),
+            serde_json::json!(lb.max_grad),
+        );
         obj.insert("lambda_boys_t_s".to_string(), serde_json::json!(lb.t_s));
     }
     j
@@ -2692,7 +2698,10 @@ fn run_rimp2_local(
     };
     println!("{}", model_label("MP2", Some(&local)));
     print_lmp2_certificate(&cert);
-    println!("  occupied localization = {}", lambda_boys_line(&r.lambda_boys));
+    println!(
+        "  occupied localization = {}",
+        lambda_boys_line(&r.lambda_boys)
+    );
     println!("  basis / aux           = {} / {aux_name}", bs.name);
     if cfg.method.kind == "att-rimp2" {
         // Name the correlation operator: a local number from the attenuated

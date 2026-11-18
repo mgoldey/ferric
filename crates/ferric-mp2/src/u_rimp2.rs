@@ -778,7 +778,10 @@ pub fn u_ri_mp2_signed_from_parts(
             pos_a.naux, pos_b.naux, neg_a.naux, neg_b.naux
         )));
     }
-    for (label, p, n, eps) in [("alpha", pos_a, neg_a, eps_a), ("beta", pos_b, neg_b, eps_b)] {
+    for (label, p, n, eps) in [
+        ("alpha", pos_a, neg_a, eps_a),
+        ("beta", pos_b, neg_b, eps_b),
+    ] {
         let same = (p.nocc, p.nvir, p.first_occ, p.nocc_total)
             == (n.nocc, n.nvir, n.first_occ, n.nocc_total);
         if !same

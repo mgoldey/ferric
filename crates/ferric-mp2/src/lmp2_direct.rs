@@ -60,8 +60,8 @@ use ferric_integrals::operator::Operator;
 use ferric_scf::result::ScfResult;
 
 use crate::lmp2_amplitude::{
-    checked_vvhv_with, localized_spaces_lambda, pair_gate_keep, solve_and_count, AmplitudeLmp2Config,
-    AmplitudeLmp2Result, LocalizedSpaces, StageTimings, VvHv,
+    checked_vvhv_with, localized_spaces_lambda, pair_gate_keep, solve_and_count,
+    AmplitudeLmp2Config, AmplitudeLmp2Result, LocalizedSpaces, StageTimings, VvHv,
 };
 use crate::ragged::{pair_blocks_screened, PairBlock, Ragged};
 use crate::rimp2::{ri_mp2, RiMp2Config};
@@ -3464,8 +3464,8 @@ pub fn amplitude_lmp2_direct_with_virtuals(
 #[cfg(test)]
 mod stage_b_tests {
     use super::*;
-    use crate::lmp2_amplitude::localized_spaces;
     use crate::lmp2_amplitude::checked_vvhv;
+    use crate::lmp2_amplitude::localized_spaces;
     use ferric_core::parallel::ParallelContext;
     use ferric_scf::rhf::{solve_rhf, RhfConfig};
     use ferric_scf::screening::SchwarzBounds;

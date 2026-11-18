@@ -130,8 +130,8 @@ fn raw(sys: &Sys, op: Operator) -> (Array2<f64>, Array2<f64>) {
     let c = sys.rhf.mos_r();
     let co = c.slice(ndarray::s![.., ..nocc]).to_owned();
     let cv = c.slice(ndarray::s![.., nocc..]).to_owned();
-    let j = ferric_mp2::rimp2::eri3_mo_ov_blocked(op, &sys.obs, &sys.dfbs, &co, &cv, 1 << 30)
-        .unwrap();
+    let j =
+        ferric_mp2::rimp2::eri3_mo_ov_blocked(op, &sys.obs, &sys.dfbs, &co, &cv, 1 << 30).unwrap();
     let naux = j.shape()[0];
     let nov = j.shape()[1] * j.shape()[2];
     let j = j.into_shape_with_order((naux, nov)).unwrap();
@@ -166,7 +166,11 @@ fn pinv(v: &Array2<f64>, signed: bool) -> (Array2<f64>, usize) {
         if w[k] < -1e-10 {
             n_neg += 1;
         }
-        let keep = if signed { w[k].abs() > 1e-10 } else { w[k] > 1e-10 };
+        let keep = if signed {
+            w[k].abs() > 1e-10
+        } else {
+            w[k] > 1e-10
+        };
         let s = if keep { 1.0 / w[k] } else { 0.0 };
         us.column_mut(k).mapv_inplace(|x| x * s);
     }
@@ -195,7 +199,9 @@ fn plasmon(k: &Array2<f64>, d: &Array1<f64>) -> f64 {
     });
     let (w, _) = m.eigh(UPLO::Lower).unwrap();
     assert!(w[0] > 0.0, "unstable dRPA: {}", w[0]);
-    0.5 * (w.iter().map(|x| x.sqrt()).sum::<f64>() - d.sum() - 2.0 * (0..n).map(|p| k[(p, p)]).sum::<f64>())
+    0.5 * (w.iter().map(|x| x.sqrt()).sum::<f64>()
+        - d.sum()
+        - 2.0 * (0..n).map(|p| k[(p, p)]).sum::<f64>())
 }
 
 fn drpa_cfg() -> PdepRpaConfig {
@@ -250,7 +256,10 @@ fn evaluate(sys: &Sys) -> Vec<Point> {
     .unwrap()
     .e_rpa;
     let p_c = plasmon(&kc, &d);
-    eprintln!("Coulomb dRPA: ferric {e_c:.12} plasmon {p_c:.12} diff {:.2e}", e_c - p_c);
+    eprintln!(
+        "Coulomb dRPA: ferric {e_c:.12} plasmon {p_c:.12} diff {:.2e}",
+        e_c - p_c
+    );
     assert!(
         (e_c - p_c).abs() < QUAD_BAR,
         "quadrature bar not reached on the Coulomb dRPA: {e_c} vs {p_c}"
@@ -311,13 +320,24 @@ fn terf_lr_matches_independent_constructions_ne2() {
         eprintln!("SKIP terf_lr_matches_independent_constructions_ne2: terf tables absent");
         return;
     }
-    let dim = setup("2\nNe2\nNe 0 0 0\nNe 0 0 3.6\n", "aug-cc-pvdz", "aug-cc-pvdz-rifit");
-    let mon = setup("2\nNe2\nNe 0 0 0\n@Ne 0 0 3.6\n", "aug-cc-pvdz", "aug-cc-pvdz-rifit");
+    let dim = setup(
+        "2\nNe2\nNe 0 0 0\nNe 0 0 3.6\n",
+        "aug-cc-pvdz",
+        "aug-cc-pvdz-rifit",
+    );
+    let mon = setup(
+        "2\nNe2\nNe 0 0 0\n@Ne 0 0 3.6\n",
+        "aug-cc-pvdz",
+        "aug-cc-pvdz-rifit",
+    );
     let pd = evaluate(&dim);
     let pm = evaluate(&mon);
     for (k, (d, m)) in pd.iter().zip(&pm).enumerate() {
         let c = CS[k];
-        assert!(d.n_neg > 0, "r0w={c}: the terf metric must be indefinite here");
+        assert!(
+            d.n_neg > 0,
+            "r0w={c}: the terf metric must be indefinite here"
+        );
         // Identity: ferric is the c_minus_sr algebra, on the dimer and the monomer.
         for (who, p) in [("dimer", d), ("monomer", m)] {
             let e_mp2 = (p.ferric.0 - p.c_minus_sr.0).abs();
@@ -383,7 +403,9 @@ fn terf_lr_matches_independent_constructions_ne2() {
 fn pin(misses: &mut Vec<String>, label: &str, got: f64, want: f64) {
     eprintln!("PIN {label} = {got:.17e} bits=0x{:016x}", got.to_bits());
     if (got - want).abs() > 1e-12 {
-        misses.push(format!("{label}: {got:.17e} moved from the pinned {want:.17e}"));
+        misses.push(format!(
+            "{label}: {got:.17e} moved from the pinned {want:.17e}"
+        ));
     }
 }
 
@@ -407,9 +429,19 @@ fn paths_without_a_terf_fit_are_unchanged() {
     .unwrap();
     let mut misses = Vec::new();
     for (k, r) in erf.iter().enumerate() {
-        pin(&mut misses, &format!("erf[{k}].e_corr"), r.e_corr, PIN_ERF[k]);
+        pin(
+            &mut misses,
+            &format!("erf[{k}].e_corr"),
+            r.e_corr,
+            PIN_ERF[k],
+        );
     }
-    pin(&mut misses, "erf[0].e_lr_mp2", erf[0].e_lr_mp2, PIN_ERF_LR_MP2);
+    pin(
+        &mut misses,
+        "erf[0].e_lr_mp2",
+        erf[0].e_lr_mp2,
+        PIN_ERF_LR_MP2,
+    );
     if !tables() {
         eprintln!("SKIP terfc / terf-T pins: terf tables absent");
         assert!(misses.is_empty(), "{misses:#?}");
@@ -424,7 +456,12 @@ fn paths_without_a_terf_fit_are_unchanged() {
         &ferric_mp2::rimp2::RiMp2Config::default(),
     )
     .unwrap();
-    pin(&mut misses, "terfc RI-MP2 e_total", sc.e_total, PIN_TERFC_MP2);
+    pin(
+        &mut misses,
+        "terfc RI-MP2 e_total",
+        sc.e_total,
+        PIN_TERFC_MP2,
+    );
     let t = rs_mp2_lr_rpa(
         &sys.mol,
         &sys.obs,

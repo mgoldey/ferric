@@ -801,9 +801,13 @@ mod tests {
 
     /// Deterministic fill in [-1, 1).
     fn fill(rows: usize, cols: usize, seed: u64) -> Array2<f64> {
-        let mut x = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        let mut x = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         Array2::from_shape_fn((rows, cols), |_| {
-            x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            x = x
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             ((x >> 11) as f64 / (1u64 << 53) as f64) * 2.0 - 1.0
         })
     }
@@ -862,7 +866,10 @@ mod tests {
             use ndarray_linalg::{Eigh, UPLO};
             k.eigh(UPLO::Upper).unwrap()
         };
-        assert!(w[0] < -1e-3 && w[w.len() - 1] > 1e-3, "K must be indefinite: {w}");
+        assert!(
+            w[0] < -1e-3 && w[w.len() - 1] > 1e-3,
+            "K must be indefinite: {w}"
+        );
         let d = gaps(&eo, &ev);
         let want = plasmon(&k, &d, 4.0);
         let ch = SignedChannel {
@@ -954,8 +961,15 @@ mod tests {
         let mut bumped = pos.clone();
         bumped[(0, 0)] += 1e-12;
         let pb = eval_trace_log_summands_aux_budgeted(&bumped, &eo, &ev, &freqs, None).unwrap();
-        let d = signed.iter().zip(&pb).map(|(s, p)| (s - p).abs()).fold(0.0, f64::max);
-        assert!(d > bar, "a 1e-12 perturbation ({d:.1e}) must exceed the bar {bar:.1e}");
+        let d = signed
+            .iter()
+            .zip(&pb)
+            .map(|(s, p)| (s - p).abs())
+            .fold(0.0, f64::max);
+        assert!(
+            d > bar,
+            "a 1e-12 perturbation ({d:.1e}) must exceed the bar {bar:.1e}"
+        );
     }
 
     /// A zero or negative orbital gap is an error, not a NaN.

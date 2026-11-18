@@ -6727,21 +6727,33 @@ mod compat_guard_tests {
     #[test]
     fn local_lambda_boys_is_strict_and_mp2_only() {
         let at = "[local]\nscheme = \"amplitude-threshold\"\neps = 1e-4\n";
-        let model = |kind: &str, extra: &str| {
-            cfg(kind, "energy", &format!("{at}{extra}")).local_model()
-        };
+        let model =
+            |kind: &str, extra: &str| cfg(kind, "energy", &format!("{at}{extra}")).local_model();
         let lam = |m: Result<Option<LocalModel>, String>| m.unwrap().unwrap().lambda_boys;
-        assert_eq!(lam(model("rimp2", "")), ferric_mp2::boys::LAMBDA_BOYS_DEFAULT);
+        assert_eq!(
+            lam(model("rimp2", "")),
+            ferric_mp2::boys::LAMBDA_BOYS_DEFAULT
+        );
         assert_eq!(lam(model("rimp2", "lambda_boys = 0.0\n")), 0.0);
         assert_eq!(lam(model("rimp2", "lambda_boys = 3.5\n")), 3.5);
         for bad in ["-1.0", "nan", "inf"] {
             let e = model("rimp2", &format!("lambda_boys = {bad}\n")).unwrap_err();
-            assert!(e.contains("lambda_boys") && e.contains(">= 0"), "{bad}: {e}");
+            assert!(
+                e.contains("lambda_boys") && e.contains(">= 0"),
+                "{bad}: {e}"
+            );
         }
-        let e = cfg("rimp2", "energy", "[local]\nscheme = \"none\"\nlambda_boys = 10.0\n")
-            .local_model()
-            .unwrap_err();
-        assert!(e.contains("lambda_boys") && e.contains("scheme = \"none\""), "{e}");
+        let e = cfg(
+            "rimp2",
+            "energy",
+            "[local]\nscheme = \"none\"\nlambda_boys = 10.0\n",
+        )
+        .local_model()
+        .unwrap_err();
+        assert!(
+            e.contains("lambda_boys") && e.contains("scheme = \"none\""),
+            "{e}"
+        );
         let ok = |kind: &str| {
             cfg(kind, "energy", &format!("{at}lambda_boys = 10.0\n")).validate_task_compat()
         };

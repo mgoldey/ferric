@@ -769,9 +769,16 @@ mod tests {
             };
             let th = lambda_boys_pair_angle(&x, &f, lam, p, q);
             let best = (0..2000)
-                .map(|k| g(-std::f64::consts::FRAC_PI_4 + k as f64 * std::f64::consts::FRAC_PI_2 / 2000.0))
+                .map(|k| {
+                    g(-std::f64::consts::FRAC_PI_4
+                        + k as f64 * std::f64::consts::FRAC_PI_2 / 2000.0)
+                })
                 .fold(f64::MIN, f64::max);
-            assert!(g(th) >= best - 1e-10, "pair ({p},{q}): G(θ*) {} < grid max {best}", g(th));
+            assert!(
+                g(th) >= best - 1e-10,
+                "pair ({p},{q}): G(θ*) {} < grid max {best}",
+                g(th)
+            );
         }
     }
 
@@ -810,7 +817,9 @@ mod tests {
         // plane rotations; 1e-12 is far above that and far below any real
         // non-orthogonality.
         let utu = r1.u.t().dot(&r1.u);
-        let dev = (&utu - &Array2::<f64>::eye(6)).mapv(f64::abs).fold(0.0f64, |a, &b| a.max(b));
+        let dev = (&utu - &Array2::<f64>::eye(6))
+            .mapv(f64::abs)
+            .fold(0.0f64, |a, &b| a.max(b));
         assert!(dev < 1e-12, "UᵀU − 1 = {dev}");
     }
 
@@ -846,25 +855,26 @@ mod tests {
         assert_eq!(rep0.sweeps, 0);
         // λ = 10 with a one-sweep cap: refused; with the production cap: ok.
         let e = lambda_boys_localize_checked(&c_occ, &dip, &f_ao, 10.0, 200, 1);
-        assert!(matches!(e, Err(ferric_core::FerricError::Convergence(_))), "{e:?}");
-        let (b10, rep10) = lambda_boys_localize_checked(
-            &c_occ,
-            &dip,
-            &f_ao,
-            10.0,
-            200,
-            LAMBDA_BOYS_MAX_SWEEPS,
-        )
-        .unwrap();
+        assert!(
+            matches!(e, Err(ferric_core::FerricError::Convergence(_))),
+            "{e:?}"
+        );
+        let (b10, rep10) =
+            lambda_boys_localize_checked(&c_occ, &dip, &f_ao, 10.0, 200, LAMBDA_BOYS_MAX_SWEEPS)
+                .unwrap();
         assert!(rep10.max_grad < LAMBDA_BOYS_GRAD_TOL && rep10.sweeps >= 1);
         // still orthonormal occupied orbitals spanning the same space
         let s_ao = ferric_integrals::oneelectron::overlap(&prep);
         let o = b10.c_loc.t().dot(&s_ao).dot(&b10.c_loc);
-        let dev = (&o - &Array2::<f64>::eye(4)).mapv(f64::abs).fold(0.0f64, |a, &b| a.max(b));
+        let dev = (&o - &Array2::<f64>::eye(4))
+            .mapv(f64::abs)
+            .fold(0.0f64, |a, &b| a.max(b));
         assert!(dev < 1e-12, "CᵀSC − 1 = {dev}");
         let proj = boys.c_loc.t().dot(&s_ao).dot(&b10.c_loc); // 4×4 orthogonal
         let pp = proj.t().dot(&proj);
-        let dev = (&pp - &Array2::<f64>::eye(4)).mapv(f64::abs).fold(0.0f64, |a, &b| a.max(b));
+        let dev = (&pp - &Array2::<f64>::eye(4))
+            .mapv(f64::abs)
+            .fold(0.0f64, |a, &b| a.max(b));
         assert!(dev < 1e-12, "span changed: {dev}");
     }
 

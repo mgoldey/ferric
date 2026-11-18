@@ -341,7 +341,10 @@ fn signed_drpa_bytes(shapes: &[crate::budget::PeakEstimateShape], cfg: &RsMp2Rpa
 /// and are refused rather than ignored.
 fn refuse_unsupported_signed_drpa(cfg: &RsMp2RpaConfig, mol: &Molecule) -> Result<(), FerricError> {
     let why = if cfg.drpa.trunc_thresh > 0.0 {
-        Some(format!("trunc_thresh = {} (PDEP truncation)", cfg.drpa.trunc_thresh))
+        Some(format!(
+            "trunc_thresh = {} (PDEP truncation)",
+            cfg.drpa.trunc_thresh
+        ))
     } else if !matches!(cfg.drpa.chi0_backend, crate::config::Chi0Backend::Dense) {
         Some(format!("chi0_backend = {:?}", cfg.drpa.chi0_backend))
     } else if let crate::Chi0Sparsity::BoysScreened { .. } =
