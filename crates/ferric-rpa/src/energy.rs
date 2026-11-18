@@ -938,9 +938,24 @@ mod tests {
         };
         let signed = eval_signed_trace_log_summands(&[ch], &freqs, None).unwrap();
         let plain = eval_trace_log_summands_aux_budgeted(&pos, &eo, &ev, &freqs, None).unwrap();
+        // Bar, derived: each summand is ln det(ε) + (m − tr ε) with tr ε ≈ m,
+        // so its rounding is absolute and of order m·ε_mach whatever the
+        // summand's size. The two routes differ only in rounding: a 12×12 LU
+        // here against 7×7 (the zero rows add identity) and SYRK against GEMM
+        // summation order. Bar = 16·m·ε_mach with m = 12 rows.
+        let m = (pos.nrows() + zero.nrows()) as f64;
+        let bar = 16.0 * m * f64::EPSILON;
         for (s, p) in signed.iter().zip(&plain) {
-            assert!((s - p).abs() <= 1e-14 * p.abs().max(1e-3), "{s} vs {p}");
+            assert!((s - p).abs() <= bar, "{s} vs {p} (bar {bar:.1e})");
         }
+        // Negative control: perturbing one plus-block entry by 1e-12 must
+        // trip the bar (measured: a 1e-12 bump moves a summand by 1.6e-13,
+        // a 1e-13 bump by 1.7e-14, below it).
+        let mut bumped = pos.clone();
+        bumped[(0, 0)] += 1e-12;
+        let pb = eval_trace_log_summands_aux_budgeted(&bumped, &eo, &ev, &freqs, None).unwrap();
+        let d = signed.iter().zip(&pb).map(|(s, p)| (s - p).abs()).fold(0.0, f64::max);
+        assert!(d > bar, "a 1e-12 perturbation ({d:.1e}) must exceed the bar {bar:.1e}");
     }
 
     /// A zero or negative orbital gap is an error, not a NaN.
