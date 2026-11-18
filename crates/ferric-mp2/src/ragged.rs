@@ -467,11 +467,7 @@ where
             rg,
             rtol,
             max_iter,
-            |p, ap, flops| {
-                for (slot, v) in ap.iter_mut().zip(matvec_indexed(rg, f_oo, p, flops)) {
-                    *slot = v;
-                }
-            },
+            |p, ap, flops| matvec_indexed_into(rg, f_oo, p, ap, flops),
             steer,
         );
         return BudgetedSolve {
@@ -735,12 +731,29 @@ pub fn matvec_indexed(
     t: &[Array2<f64>],
     flops: &mut u64,
 ) -> Vec<Array2<f64>> {
+    let mut out: Vec<Array2<f64>> = rg.pairs.iter().map(|_| Array2::zeros((0, 0))).collect();
+    matvec_indexed_into(rg, f_oo, t, &mut out, flops);
+    out
+}
+
+/// [`matvec_indexed`] writing each block into its slot of `out` (prior
+/// contents replaced) as soon as it is computed, so the matvec holds one
+/// block per rayon worker beside `out` instead of a second full
+/// amplitude-shaped vector. Same per-block arithmetic: bitwise
+/// [`matvec_indexed`].
+pub fn matvec_indexed_into(
+    rg: &Ragged,
+    f_oo: &Array2<f64>,
+    t: &[Array2<f64>],
+    out: &mut [Array2<f64>],
+    flops: &mut u64,
+) {
     use rayon::prelude::*;
-    let results: Vec<(Array2<f64>, u64)> = rg
-        .pairs
-        .par_iter()
+    let fl: u64 = out
+        .par_iter_mut()
+        .zip(rg.pairs.par_iter())
         .enumerate()
-        .map(|(p_idx, pb)| {
+        .map(|(p_idx, (slot, pb))| {
             let (na, nb) = (pb.da.len(), pb.db.len());
             let mut fl = (na * na * nb + na * nb * nb) as u64;
             let mut r = pb.fvv_aa.dot(&t[p_idx]);
@@ -762,15 +775,11 @@ pub fn matvec_indexed(
                 gather_into(&mut r, qb, pb, -f, &t[q], &mut fl);
             }
             apply_pattern(&mut r, &pb.pat, nb);
-            (r, fl)
+            *slot = r;
+            fl
         })
-        .collect();
-    let mut out = Vec::with_capacity(results.len());
-    for (r, fl) in results {
-        *flops += fl;
-        out.push(r);
-    }
-    out
+        .sum();
+    *flops += fl;
 }
 
 /// One Fock-coupling edge of an output pair's matvec, pre-resolved from the

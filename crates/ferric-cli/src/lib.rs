@@ -2474,8 +2474,11 @@ fn lmp2_timings_json(
             own_w_bytes_held,
             group_scratch_bytes_max,
             t_loc_s,
+            memory,
+            group_concurrency,
+            group_scratch_bound_bytes,
         } = d;
-        serde_json::json!({
+        let mut out = serde_json::json!({
             "strip_rows_mean": strip_rows_mean,
             "strip_rows_max": strip_rows_max,
             "strip_cols_mean": strip_cols_mean,
@@ -2515,7 +2518,24 @@ fn lmp2_timings_json(
             "own_w_bytes_held": own_w_bytes_held,
             "group_scratch_bytes_max": group_scratch_bytes_max,
             "t_loc_s": t_loc_s,
-        })
+        });
+        // A second object: one json! literal this long hits the macro
+        // recursion limit.
+        let gate = serde_json::json!({
+            "group_concurrency": group_concurrency,
+            "group_scratch_bound_bytes": group_scratch_bound_bytes,
+            "memory_strips_bytes": memory.strips_bytes,
+            "memory_metric_bytes": memory.metric_bytes,
+            "memory_stage3_scratch_bytes": memory.stage3_scratch_bytes,
+            "memory_pair_block_bytes": memory.pair_block_bytes,
+            "memory_pcg_vector_bytes": memory.pcg_vector_bytes,
+            "memory_exact": memory.exact,
+            "memory_resident_peak_bytes": memory.resident_peak(),
+        });
+        if let (Some(o), serde_json::Value::Object(g)) = (out.as_object_mut(), gate) {
+            o.extend(g);
+        }
+        out
     });
     serde_json::json!({
         "t_spaces_s": t_spaces_s,
@@ -9018,6 +9038,16 @@ mod local_printout_tests {
             own_w_bytes_held: 37,
             group_scratch_bytes_max: 38,
             t_loc_s: 31.5,
+            memory: ferric_mp2::lmp2_direct::DirectMemoryEstimate {
+                strips_bytes: 50,
+                metric_bytes: 51,
+                stage3_scratch_bytes: 52,
+                pair_block_bytes: 53,
+                pcg_vector_bytes: 54,
+                exact: true,
+            },
+            group_concurrency: 55,
+            group_scratch_bound_bytes: 56,
         };
         let stage: &[(&str, f64)] = &[
             ("t_spaces_s", 1.5),
@@ -9065,6 +9095,15 @@ mod local_printout_tests {
             ("own_w_bytes_held", 37.0),
             ("group_scratch_bytes_max", 38.0),
             ("t_loc_s", 31.5),
+            ("group_concurrency", 55.0),
+            ("group_scratch_bound_bytes", 56.0),
+            ("memory_strips_bytes", 50.0),
+            ("memory_metric_bytes", 51.0),
+            ("memory_stage3_scratch_bytes", 52.0),
+            ("memory_pair_block_bytes", 53.0),
+            ("memory_pcg_vector_bytes", 54.0),
+            // max(50 + 51 + 53, 53 + 5·54)
+            ("memory_resident_peak_bytes", 323.0),
         ];
         // round trip through text, as a log reader sees it
         let j: serde_json::Value =
@@ -9075,7 +9114,8 @@ mod local_printout_tests {
             assert_eq!(j[*k].as_f64(), Some(*v), "{k}: {j}");
         }
         let dj = j["direct"].as_object().unwrap();
-        assert_eq!(dj.len(), direct.len() + 1, "{j}");
+        assert_eq!(dj.len(), direct.len() + 2, "{j}");
+        assert_eq!(dj["memory_exact"], true, "{j}");
         for (k, v) in direct {
             assert_eq!(j["direct"][*k].as_f64(), Some(*v), "{k}: {j}");
         }
