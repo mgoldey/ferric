@@ -13,6 +13,35 @@ few orbitals near the Fermi level, the active space, and diagonalizing $H$
 over every determinant that places the active electrons in them; the other
 orbitals stay doubly occupied (core) or empty (virtual).
 
+H2 in STO-3G with a CAS(2,2), from the `589b50832` build, at four bond
+lengths. At 0.74 Å the CAS-CI is 20 mHa below RHF and $|\sigma_g^2\rangle$
+carries almost all the weight. By 4 Å the two coefficients are nearly equal
+in magnitude, the natural occupations approach 1 and 1, and RHF sits 318 mHa
+above the CAS-CI. The mixed coefficient `c12` is zero by symmetry, and the trace of
+the 1-RDM (section @sec:rdms) is the electron count:
+
+```python
+import numpy as np
+import ferric
+
+bs = ferric.BasisSet.bundled("sto-3g")
+for r in (0.74, 1.5, 2.5, 4.0):
+    mol = ferric.Molecule.from_xyz_string(f"2\nH2\nH 0 0 0\nH 0 0 {r}\n")
+    res = ferric.run_casci(mol, bs, n_active=2, n_elec_active=(1, 1))
+    c = np.asarray(res.ci_vector)          # (alpha strings, beta strings), strings 0b01, 0b10
+    occ = np.linalg.eigvalsh(np.asarray(res.dm1))[::-1]
+    print(f"R={r:4.2f} A  E_RHF={res.rhf_energy:.8f}  E_CAS={res.e_total:.8f}  "
+          f"n_det={res.n_determinants}  c11={c[0,0]:+.5f} c22={c[1,1]:+.5f}  "
+          f"c12={c[0,1]:+.1e}  occupations={occ.round(5)}  tr(dm1)={np.trace(res.dm1):.6f}")
+```
+
+```text
+R=0.74 A  E_RHF=-1.11675931  E_CAS=-1.13728383  n_det=4  c11=-0.99365 c22=+0.11254  c12=+8.7e-17  occupations=[1.97467 0.02533]  tr(dm1)=2.000000
+R=1.50 A  E_RHF=-0.91087356  E_CAS=-0.99814935  n_det=4  c11=-0.93471 c22=+0.35540  c12=+2.1e-16  occupations=[1.74738 0.25262]  tr(dm1)=2.000000
+R=2.50 A  E_RHF=-0.70294360  E_CAS=-0.93605492  n_det=4  c11=-0.77099 c22=+0.63685  c12=+1.1e-14  occupations=[1.18884 0.81116]  tr(dm1)=2.000000
+R=4.00 A  E_RHF=-0.61486998  E_CAS=-0.93317136  n_det=4  c11=-0.71026 c22=+0.70394  c12=-3.8e-17  occupations=[1.00893 0.99107]  tr(dm1)=2.000000
+```
+
 A CAS-CI wavefunction is a linear combination of every determinant with
 $n_\alpha$ and $n_\beta$ electrons in $n_a$ active orbitals. Each spin
 channel is chosen independently, so the count is a product of two

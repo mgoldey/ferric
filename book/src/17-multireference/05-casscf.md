@@ -11,6 +11,28 @@ wavefunction prefers. ferric does it in two steps per macro iteration: a
 CAS-CI in the current orbitals (sections @sec:determinants–@sec:rdms), then an orbital step
 $C \leftarrow C\exp(K)$ from the gradient at those fixed RDMs.
 
+Water in a CAS(4,4) in 6-31G shows the size of the effect, from the
+`589b50832` build. The CAS-CI on RHF orbitals is 1.1 mHa below RHF; letting
+the orbitals relax lowers the energy by another 52 mHa:
+
+```python
+import ferric
+
+mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
+bs = ferric.BasisSet.bundled("6-31g")
+ci = ferric.run_casci(mol, bs, n_active=4, n_elec_active=(2, 2))
+sc = ferric.run_casscf(mol, bs, n_active=4, n_elec_active=(2, 2))
+print(f"E_RHF    = {ci.rhf_energy:.10f}")
+print(f"E_CASCI  = {ci.e_total:.10f}  ({ci.n_determinants} determinants)")
+print(f"E_CASSCF = {sc.e_total:.10f}  iterations={sc.iterations}  |g|={sc.grad_norm:.2e}  converged={sc.converged}")
+```
+
+```text
+E_RHF    = -75.9838311136
+E_CASCI  = -75.9849549438  (36 determinants)
+E_CASSCF = -76.0369690965  iterations=22  |g|=2.15e-08  converged=True
+```
+
 The orbital gradient is a generalized Fock matrix built from $\gamma$,
 $\Gamma$ and the core and active Fock matrices. The step is an
 augmented-Hessian Newton step on the exact fixed-RDM orbital Hessian

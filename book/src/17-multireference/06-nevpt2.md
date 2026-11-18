@@ -110,6 +110,44 @@ external labels. Counting electrons gives the change of the active-space
 electron number: `Sijrs` and `Sir` leave it unchanged, `Sijr`, `Si` add
 one, `Sij` adds two, `Srsi`, `Sr` remove one and `Srs` removes two.
 
+The class energies of N2 in a CAS(6,6) in 6-31G at the equilibrium bond
+length and at 2.2 Å, from the `589b50832` build. `E_ref` is the CASSCF
+energy; the eight classes sum to `E_corr`. Stretching the bond moves weight
+from `Sir` to `Srsi`:
+
+```python
+import ferric
+
+bs = ferric.BasisSet.bundled("6-31g")
+for r in (1.0977, 2.2):
+    mol = ferric.Molecule.from_xyz_string(f"2\nN2\nN 0 0 0\nN 0 0 {r}\n")
+    res = ferric.run_nevpt2(mol, bs, n_active=6, n_elec_active=(3, 3))
+    print(f"R={r} A  E_ref={res.e_reference:.10f}  E_corr={res.e_corr:.10f}  E_total={res.e_total:.10f}")
+    for name, e in res.energies.items():
+        print(f"    {name:6s} {e:+.10f}")
+```
+
+```text
+R=1.0977 A  E_ref=-109.0155467897  E_corr=-0.0677331057  E_total=-109.0832798954
+    Sr     -0.0036056773
+    Si     -0.0018705679
+    Sijrs  -0.0083581900
+    Sijr   -0.0018545956
+    Srsi   -0.0161200562
+    Srs    -0.0099970511
+    Sij    -0.0054974237
+    Sir    -0.0204295439
+R=2.2 A  E_ref=-108.7665723034  E_corr=-0.0609713557  E_total=-108.8275436591
+    Sr     -0.0038105195
+    Si     -0.0003100652
+    Sijrs  -0.0064997922
+    Sijr   -0.0034957496
+    Srsi   -0.0247685751
+    Srs    -0.0119003578
+    Sij    -0.0008708970
+    Sir    -0.0093153993
+```
+
 ### Orbitals
 
 $F^I = h + J[D^c] - \tfrac12 K[D^c]$ with $D^c = 2C_cC_c^\mathsf{T}$, and

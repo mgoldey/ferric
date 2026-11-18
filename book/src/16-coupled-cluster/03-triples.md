@@ -305,6 +305,31 @@ partial += wt * v / (k.eijk[n] - e_abc);                                   // W~
 >
 > <!-- verified: id=cc.t.kernel; script=scripts/cc_triples_weights_and_linlccd_spin_adaptation_sympy.py; claim=4b; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-cc/src/ccsd_t_closed_shell.rs::{raw_w_pair,triple_energy,pair_job_energy,ccsd_t_closed_shell}; rust_test=ferric-cc/src/ccsd_t_closed_shell.rs::closed_shell_t_matches_spin_orbital_t_h2o_ccpvdz; registry=ccsd-t -->
 
+For scale, from the `589b50832` build: on water in cc-pVDZ the closed-shell
+(T) adds $-3.07$ mHa to a CCSD correlation energy of $-213.5$ mHa, 1.4 per
+cent of it.
+
+```python
+# Water/cc-pVDZ CCSD(T): the closed-shell (T) correction next to the CCSD
+# correlation energy it is added to.
+import ferric
+
+mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
+bs = ferric.BasisSet.bundled("cc-pvdz")
+aux = ferric.BasisSet.bundled("cc-pvdz-ri")
+r = ferric.run_ccsd_t(mol, bs, aux)
+print(f"E_c(CCSD) = {r.correlation_energy:.10f}")
+print(f"E_(T)     = {r.t_correction:.10f}")
+print(f"(T) / E_c(CCSD) = {r.t_correction / r.correlation_energy:.4f}")
+```
+
+```text
+closed-shell CCSD converged in 10 iterations. E_corr = -0.2135061893
+E_c(CCSD) = -0.2135061893
+E_(T)     = -0.0030670582
+(T) / E_c(CCSD) = 0.0144
+```
+
 **DLPNO-(T).** `ferric-cc/src/dlpno_ccsd_t.rs::screened_triple_energy` keeps
 the occupied-banded form of the same identity, because it screens occupied
 triples and so needs $f$ summed per occupied triple. With

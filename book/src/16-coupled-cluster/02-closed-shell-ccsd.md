@@ -190,6 +190,34 @@ The term-by-term factorization is also in the module documentation of
 `ri_ladder.rs`. The route taken is printed (`ladder = dense (auto)`), logged
 and returned in `CcResult::ladder_route`.
 
+The two routes on water in cc-pVDZ, from the `589b50832` build. The
+correlation energies agree to $10^{-16}$ Ha; `ladder_block` is the panel
+width the RI route chose:
+
+```python
+# Water/cc-pVDZ CCSD with the dense and the RI particle-particle ladder: the
+# two routes rewrite the same W_abcd over the same B, so the energies agree
+# to round-off.
+import ferric
+
+mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
+bs = ferric.BasisSet.bundled("cc-pvdz")
+aux = ferric.BasisSet.bundled("cc-pvdz-ri")
+dense = ferric.run_ccsd(mol, bs, aux, ladder="dense")
+ri = ferric.run_ccsd(mol, bs, aux, ladder="ri")
+print(f"dense: {dense.correlation_energy:.12f}  route={dense.ladder_route}")
+print(f"ri:    {ri.correlation_energy:.12f}  route={ri.ladder_route} block={ri.ladder_block}")
+print(f"difference: {abs(dense.correlation_energy - ri.correlation_energy):.2e} Ha")
+```
+
+```text
+closed-shell CCSD converged in 10 iterations. E_corr = -0.2135061893
+closed-shell CCSD converged in 10 iterations. E_corr = -0.2135061893
+dense: -0.213506189269  route=dense
+ri:    -0.213506189269  route=ri block=19
+difference: 1.39e-16 Ha
+```
+
 **Why two routes.** The dense route holds an $n_v^4$ block, a ceiling set
 by the basis size. The RI route lowers that ceiling to one panel and pays
 for it in time, since it rebuilds the integrals every iteration (measured

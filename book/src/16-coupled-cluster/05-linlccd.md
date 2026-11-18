@@ -68,6 +68,32 @@ size-consistent, size-extensive and orbital-invariant.
   correlation energy (`scripts/validation/gen_linlccd.py`, quoted in the
   documentation of `LadderVariant::Full`).
 
+The first limit and the size of the other two variants on water in
+cc-pVDZ, from the `589b50832` build. `drivers-only` matches RI-MP2 to every
+printed digit, and each ladder makes the correlation energy less negative:
+
+```python
+# Water/cc-pVDZ: LinLCCD drivers-only against RI-MP2 (the same amplitude
+# equation), then LinLCCD(hh) and full LinLCCD.
+import ferric
+
+mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
+bs = ferric.BasisSet.bundled("cc-pvdz")
+aux = ferric.BasisSet.bundled("cc-pvdz-ri")
+mp2 = ferric.run_rimp2(mol, bs, aux)
+print(f"RI-MP2            {mp2.mp2_corr:.12f}")
+for v in ("drivers-only", "hh", "full"):
+    d = ferric.run_linlccd(mol, bs, aux, variant=v)
+    print(f"LinLCCD {v:12s} {d['e_corr']:.12f}")
+```
+
+```text
+RI-MP2            -0.204033456682
+LinLCCD drivers-only -0.204033456682
+LinLCCD hh           -0.174085347014
+LinLCCD full         -0.151102449778
+```
+
 **Spin-orbital solver** (`linlccd.rs`, restricted orbitals; `linlccd_u.rs`,
 unrestricted). With canonical orbitals the Fock part is $\Delta t$, so the
 solver is the CCD loop with terms removed: Jacobi iteration with DIIS on

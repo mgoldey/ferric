@@ -167,6 +167,34 @@ that scales $R$ to unit norm.
 >
 > <!-- verified: id=cc.eom.cis-limit; script=scripts/cc_ccsd_eom_brute_force_sympy.py; claim=cis-limit; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-cc/src/eom_ccsd.rs::{EomCcsdOperator,spin_norm}; rust_test=ferric-cc/tests/eom_ccsd_anchors.rs::t_zero_singles_block_is_cis; registry=eom-ccsd -->
 
+The singles weight is how the output tells single from double excitations.
+The three lowest singlet roots of water in cc-pVDZ, from the `589b50832`
+build, are all about 95 per cent singles:
+
+```python
+# Water/cc-pVDZ EOM-CCSD: the three lowest singlet excitation energies, their
+# singles weights 2|r1|^2/|R|^2 and the final residual norms.
+import ferric
+
+HARTREE_TO_EV = 27.211386245988
+mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
+bs = ferric.BasisSet.bundled("cc-pvdz")
+aux = ferric.BasisSet.bundled("cc-pvdz-ri")
+r = ferric.run_eom_ccsd(mol, bs, aux, n_roots=3)
+for k, (w, s, res) in enumerate(zip(r.excitation_energies, r.singles_weight, r.residuals)):
+    print(f"root {k}: omega = {w:.8f} Ha = {w * HARTREE_TO_EV:.4f} eV, "
+          f"singles weight {s:.4f}, residual {res:.1e}")
+print("ladder route:", r.ladder_route, " Davidson iterations:", r.iterations)
+```
+
+```text
+closed-shell CCSD converged in 10 iterations. E_corr = -0.2135061893
+root 0: omega = 0.29994798 Ha = 8.1620 eV, singles weight 0.9515, residual 7.8e-07
+root 1: omega = 0.37568493 Ha = 10.2229 eV, singles weight 0.9537, residual 3.0e-07
+root 2: omega = 0.39810274 Ha = 10.8329 eV, singles weight 0.9506, residual 4.1e-07
+ladder route: dense  Davidson iterations: 12
+```
+
 The boxes prove the matrix the code must represent and the CIS and norm
 pieces of the product. The closed-shell intermediates of `sigma` are a
 transcription of PySCF `eom_rccsd`; the comparison with PySCF in the anchors

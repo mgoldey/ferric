@@ -180,6 +180,42 @@ zero on its own, and so does the gradient. The Rust tests check this sum
 (`test_analytical_gradient_translational_invariance` in
 `crates/ferric-mp2/src/gradient.rs`).
 
+The sum on water in cc-pVDZ (cc-pVDZ-RI fit), from the `589b50832` build,
+once with an exact four-centre reference and once with RI-JK. Each column of
+the gradient sums to zero at the level of rounding on both routes:
+
+```python
+import numpy as np
+import ferric
+
+mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
+bs = ferric.BasisSet.bundled("cc-pvdz")
+aux = ferric.BasisSet.bundled("cc-pvdz-ri")
+
+for jk in ("exact", "rijk"):
+    r = ferric.run_rimp2(mol, bs, aux, scf_jk=jk, with_gradient=True, scf_density_conv=1e-10)
+    g = r.gradient()
+    print(f"[{jk}] E_total = {r.total_energy:.10f}  E_corr = {r.mp2_corr:.10f}")
+    print(f"[{jk}] gradient (Ha/Bohr):\n{g}")
+    # translational invariance: every Cartesian column sums to zero
+    print(f"[{jk}] column sums: {g.sum(axis=0)}")
+```
+
+```text
+[exact] E_total = -76.2308014544  E_corr = -0.2040334571
+[exact] gradient (Ha/Bohr):
+[[ 4.60607537e-16 -1.22090380e-14 -1.15880548e-02]
+ [-7.36944339e-16 -2.38280741e-03  5.79402742e-03]
+ [ 2.76336802e-16  2.38280741e-03  5.79402742e-03]]
+[exact] column sums: [ 2.26797510e-30 -1.51788304e-15 -2.04176953e-14]
+[rijk] E_total = -76.2307439925  E_corr = -0.2040085497
+[rijk] gradient (Ha/Bohr):
+[[ 2.14433932e-16  5.36246310e-15 -1.15645579e-02]
+ [-1.38393024e-15 -2.37992275e-03  5.78227894e-03]
+ [ 1.16949631e-15  2.37992275e-03  5.78227894e-03]]
+[rijk] column sums: [-9.69492303e-26 -1.03346151e-15 -1.64694647e-14]
+```
+
 ### The overlap weight in code
 
 `ferric-mp2/src/gradient.rs::mp2_relaxed_lagrangian_gradient` adds the three

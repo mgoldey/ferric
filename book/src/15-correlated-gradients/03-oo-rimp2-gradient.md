@@ -37,6 +37,45 @@ not invariant in the occupied–occupied and virtual–virtual blocks would leav
 a non-zero gradient there at its converged point, and a $z = 0$ gradient
 would then be wrong.
 
+The OO-RI-MP2 gradient is therefore a gradient of a different energy, not a
+correction to the RI-MP2 one. Water in cc-pVDZ, from the `589b50832` build:
+orbital optimization lowers the energy by 0.9 mHa and moves the forces by up
+to $1.4\times10^{-3}$ Ha/Bohr, and the OO gradient still sums to zero over
+the atoms:
+
+```python
+import numpy as np
+import ferric
+
+mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
+bs = ferric.BasisSet.bundled("cc-pvdz")
+aux = ferric.BasisSet.bundled("cc-pvdz-ri")
+
+oo = ferric.run_oo_rimp2(mol, bs, aux, with_gradient=True, grad_conv=1e-8)
+mp2 = ferric.run_rimp2(mol, bs, aux, with_gradient=True)
+print(f"OO-RI-MP2: E = {oo.total_energy:.10f}, converged = {oo.converged}, |g_orb| = {oo.grad_norm:.2e}")
+print(f"RI-MP2:    E = {mp2.total_energy:.10f}")
+print("OO-RI-MP2 nuclear gradient:\n", oo.gradient())
+print("RI-MP2 nuclear gradient:\n", mp2.gradient())
+print("difference (max abs):", np.max(np.abs(oo.gradient() - mp2.gradient())))
+print("OO column sums:", oo.gradient().sum(axis=0))
+```
+
+```text
+OO-RI-MP2: E = -76.2317003688, converged = True, |g_orb| = 7.28e-08
+RI-MP2:    E = -76.2308014541
+OO-RI-MP2 nuclear gradient:
+ [[-3.00434952e-18 -9.43581151e-16 -1.30298665e-02]
+ [ 1.09869673e-16 -3.02047945e-03  6.51493327e-03]
+ [-1.06865324e-16  3.02047945e-03  6.51493327e-03]]
+RI-MP2 nuclear gradient:
+ [[ 1.54964619e-17 -6.12080915e-15 -1.15882284e-02]
+ [ 2.62402135e-16 -2.38280667e-03  5.79411421e-03]
+ [-2.77898597e-16  2.38280667e-03  5.79411421e-03]]
+difference (max abs): 0.0014416381145162457
+OO column sums: [ 2.95822839e-30 -7.91207377e-15 -1.86725635e-14]
+```
+
 The gradient is the assembly of section @sec:rimp2-gradient with $z = 0$,
 $D^{\mathrm{corr}} = \mathbf CW\mathbf C^{\mathsf T}$, and
 

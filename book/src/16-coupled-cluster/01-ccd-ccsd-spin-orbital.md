@@ -252,6 +252,57 @@ integral turns the two $t_1t_1$ terms of $\tau$ into twice one of them.
 >
 > <!-- verified: id=cc.ccsd.spin-orbital; script=scripts/cc_ccsd_eom_brute_force_sympy.py; claim=ccsd-residual; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-cc/src/ccsd.rs::ccsd; rust_test=ferric-cc/tests/validation_cc.rs::ccsd_spin_orbital_matches_df_reference; registry=ccsd -->
 
+Both limits from Python, from the `589b50832` build. For water in cc-pVDZ,
+RI-MP2 is the energy of the first CCD iterate, and CCD and CCSD go below it.
+For H2 in cc-pVDZ, CCSD equals a CAS-CI over all ten orbitals, which is full
+CI, and (T) vanishes because there is no third electron to excite. The H2
+CCSD uses a large RI basis (def2-QZVPP-RIFIT) and the CAS-CI exact
+integrals, so the $10^{-6}$ Ha left over is fitting error. The first three
+output lines are the solvers' own log:
+
+```python
+# Water/cc-pVDZ: RI-MP2 (the energy of the first CCD iterate), CCD and CCSD
+# correlation energies on the same RI integrals. Then H2/cc-pVDZ: CCSD against
+# full CI in the whole orbital space (CASCI over all orbitals), and (T) = 0.
+# The H2 CCSD uses RI integrals and CASCI exact ones, so their difference is
+# the RI fitting error, not a CC error.
+import ferric
+
+bs = ferric.BasisSet.bundled("cc-pvdz")
+aux = ferric.BasisSet.bundled("cc-pvdz-ri")
+
+water = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
+mp2 = ferric.run_rimp2(water, bs, aux)
+ccd = ferric.run_ccd(water, bs, aux)
+ccsd = ferric.run_ccsd(water, bs, aux)
+print(f"water  E_c(MP2)  = {mp2.mp2_corr:.10f}")
+print(f"water  E_c(CCD)  = {ccd.correlation_energy:.10f}")
+print(f"water  E_c(CCSD) = {ccsd.correlation_energy:.10f}")
+
+h2 = ferric.Molecule.from_xyz("testdata/molecules/h2.xyz")
+rhf = ferric.run_rhf(h2, bs)
+cc = ferric.run_ccsd_t(h2, bs, ferric.BasisSet.bundled("def2-qzvpp-rifit"))
+nbf = 10  # cc-pVDZ on two H atoms: 2 x (2s1p) = 10 functions
+fci = ferric.run_casci(h2, bs, n_active=nbf, n_elec_active=(1, 1), active_start=0)
+print(f"H2  E(CCSD)  = {rhf.energy + cc.correlation_energy:.10f}")
+print(f"H2  E(FCI)   = {fci.e_total:.10f}")
+print(f"H2  CCSD-FCI = {rhf.energy + cc.correlation_energy - fci.e_total:.2e}  (RI error)")
+print(f"H2  (T)      = {cc.t_correction:.2e}")
+```
+
+```text
+spin-orbital CCD converged in 13 iterations. E_corr = -0.2127715786
+closed-shell CCSD converged in 10 iterations. E_corr = -0.2135061893
+closed-shell CCSD converged in 8 iterations. E_corr = -0.0347001387
+water  E_c(MP2)  = -0.2040334567
+water  E_c(CCD)  = -0.2127715786
+water  E_c(CCSD) = -0.2135061893
+H2  E(CCSD)  = -1.1634150977
+H2  E(FCI)   = -1.1634139335
+H2  CCSD-FCI = -1.16e-06  (RI error)
+H2  (T)      = 2.81e-20
+```
+
 The proof builds $\hat H$, $\hat T$ and $e^{-\hat T}\hat He^{\hat T}$ as
 Jordan–Wigner matrices on the model and compares $r + \Delta t$ and $E_c$
 with the projections. It checks the equations the code evaluates; it does

@@ -222,6 +222,37 @@ a fixed order. The class energies are reported.
 >
 > <!-- verified: id=cc.ut.classes; script=scripts/cc_uccsd_spin_blocks_sympy.py; claim=2; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-cc/src/u_ccsd_t.rs::u_ccsd_t; rust_test=ferric-cc/tests/uccsd_anchors.rs::nh2_spin_blocked_matches_spin_orbital; registry=u-ccsd-t -->
 
+The spin blocks and the (T) classes on the OH doublet in cc-pVDZ with a UHF
+reference, from the `589b50832` build. The three CCSD blocks add up to the
+correlation energy and the four weighted classes to $E_{(T)}$:
+
+```python
+# OH doublet / cc-pVDZ: UCCSD(T) on a UHF reference, with the CCSD energy split
+# into aa / ab / bb and the (T) energy into its four classes (already weighted
+# by CLASS_WEIGHTS); the parts sum to the totals.
+import ferric
+
+mol = ferric.Molecule.from_xyz("testdata/molecules/oh.xyz", charge=0, multiplicity=2)
+bs = ferric.BasisSet.bundled("cc-pvdz")
+aux = ferric.BasisSet.bundled("cc-pvdz-ri")
+r = ferric.run_ccsd_t(mol, bs, aux)
+s = r.spin_components
+print("reference:", r.reference)
+print(f"E_aa + E_ab + E_bb = {s['e_aa']:.10f} + {s['e_ab']:.10f} + {s['e_bb']:.10f}"
+      f" = {s['e_aa'] + s['e_ab'] + s['e_bb']:.10f}  (E_c = {r.correlation_energy:.10f})")
+t = [s[k] for k in ("t_aaa", "t_aab", "t_abb", "t_bbb")]
+print("(T) classes aaa, aab, abb, bbb:", ", ".join(f"{x:.3e}" for x in t))
+print(f"sum = {sum(t):.10f}  (E_(T) = {r.t_correction:.10f})")
+```
+
+```text
+UCCSD converged in 14 iterations. E_corr = -0.1656309441 (last step 8.6e-9)
+reference: uhf
+E_aa + E_ab + E_bb = -0.0239666087 + -0.1307179666 + -0.0109463687 = -0.1656309441  (E_c = -0.1656309441)
+(T) classes aaa, aab, abb, bbb: -4.003e-05, -1.033e-03, -6.709e-04, -9.353e-06
+sum = -0.0017530828  (E_(T) = -0.0017530828)
+```
+
 **Frozen core.** `frozen_core` drops the lowest `frozen_core` orbitals of
 each spin, as `rimp2::active_occ` does for U-RI-MP2.
 
