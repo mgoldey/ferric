@@ -853,8 +853,8 @@ pub(crate) fn run_rimp2_local(
     model: &ferric_cli::LocalModel,
     att_keys: Option<&ferric_cli::Mp2Cfg>,
 ) -> PyResult<PyRiMp2Result> {
-    use ferric_mp2::lmp2_amplitude::{amplitude_lmp2, AmplitudeLmp2Config};
-    use ferric_mp2::lmp2_direct::{amplitude_lmp2_direct, DirectConfig};
+    use ferric_mp2::lmp2_amplitude::amplitude_lmp2;
+    use ferric_mp2::lmp2_direct::amplitude_lmp2_direct;
     if mol.inner.multiplicity > 1 {
         return Err(pyo3::exceptions::PyValueError::new_err(format!(
             "run_rimp2: local=\"amplitude-threshold\" is closed-shell only (it localizes a \
@@ -874,26 +874,11 @@ pub(crate) fn run_rimp2_local(
     let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
     let rhf = converged_rhf(&mol.inner, &prep, rhf_config)?;
     let eps = model.eps[0];
-    let lcfg = AmplitudeLmp2Config {
-        eps,
-        frozen_core: frozen_core.unwrap_or(0),
-        eri3_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
-        pair_gate_cal: model.direct.as_ref().and_then(|d| d.gate_cal),
-        fock_screen: model.direct.as_ref().and_then(|d| d.fock_screen),
-        compute_reference: model.reference,
-        virtual_space: model.virtual_space.clone(),
-        lambda_boys: model.lambda_boys,
-        ..Default::default()
-    };
-    let dcfg = model.direct.as_ref().map(|d| DirectConfig {
-        aux_radius_bohr: d.aux_radius,
-        virt_radius_bohr: Some(d.virt_radius),
-        ao_tail: d.ao_tail,
-        schwarz_skip: d.schwarz_skip,
-        batch_merge: d.batch_merge,
-        virt_schwarz_kappa: d.virt_schwarz_kappa,
-        ..Default::default()
-    });
+    // The same builder as the CLI's `[local]` run (`LocalModel::rimp2_configs`).
+    let (lcfg, dcfg) = model.rimp2_configs(
+        frozen_core.unwrap_or(0),
+        budget_bytes_from_gb(memory_budget_gb),
+    );
     let (r, st) = match &dcfg {
         None => (
             amplitude_lmp2(&mol.inner, &prep, &basis_set.inner, &dfbs, op, &rhf, &lcfg)

@@ -77,6 +77,22 @@ use crate::rimp2::{ri_mp2, RiMp2Config};
 /// §amplitude-lmp2-fock-screen-default.
 pub const DIRECT_FOCK_SCREEN_KAPPA: f64 = 1.0;
 
+/// Production default of [`DirectConfig::aux_radius_bohr`] (Bohr) on the
+/// user-facing integral-direct entry points. The CLI `[local]` parser and
+/// Python `run_rimp2(..., integral_direct=True)` both read the defaults from
+/// [`DirectConfig::production`], the one place they are written down.
+pub const DIRECT_DEFAULT_AUX_RADIUS_BOHR: f64 = 10.0;
+/// Production default of [`DirectConfig::virt_radius_bohr`] (Bohr). Raised
+/// from 12 with `ao_tail` 1e-3 → 1e-4 after the ε = 0 map ablation on folded
+/// C20H42 conformers (book chapter 13, options table).
+pub const DIRECT_DEFAULT_VIRT_RADIUS_BOHR: f64 = 20.0;
+/// Production default of [`DirectConfig::ao_tail`].
+pub const DIRECT_DEFAULT_AO_TAIL: f64 = 1e-4;
+/// Production default of [`DirectConfig::schwarz_skip`].
+pub const DIRECT_DEFAULT_SCHWARZ_SKIP: f64 = 1e-5;
+/// Production default of [`DirectConfig::batch_merge`].
+pub const DIRECT_DEFAULT_BATCH_MERGE: usize = 4;
+
 /// Locality knobs of the integral-direct path. Every knob has a trivial
 /// limit in which it is a no-op (the exactness-anchor configuration).
 #[derive(Debug, Clone)]
@@ -137,6 +153,27 @@ pub struct DirectConfig {
     pub split_eri3_timers: bool,
     /// How stage 3 walks the (P|μν) triples. See [`Eri3Pass`].
     pub eri3_pass: Eri3Pass,
+}
+
+impl DirectConfig {
+    /// The locality maps the user-facing integral-direct entry points run
+    /// when no map key is given: aux radius 10 Bohr, virtual radius 20 Bohr,
+    /// AO tail 1e-4, Schwarz skip 1e-5, batch merge 4, no ε-linked virtual
+    /// screen. ([`Default`] is instead the exactness-anchor configuration,
+    /// every map at or near its no-op limit.) The pair gate, the Fock screen
+    /// (on, κ = [`DIRECT_FOCK_SCREEN_KAPPA`]) and λ-Boys live on
+    /// [`AmplitudeLmp2Config`], not here.
+    pub fn production() -> Self {
+        Self {
+            aux_radius_bohr: DIRECT_DEFAULT_AUX_RADIUS_BOHR,
+            virt_radius_bohr: Some(DIRECT_DEFAULT_VIRT_RADIUS_BOHR),
+            ao_tail: DIRECT_DEFAULT_AO_TAIL,
+            schwarz_skip: DIRECT_DEFAULT_SCHWARZ_SKIP,
+            batch_merge: DIRECT_DEFAULT_BATCH_MERGE,
+            virt_schwarz_kappa: None,
+            ..Self::default()
+        }
+    }
 }
 
 /// Stage-3 integral pass. Both build the same strips to round-off: every strip

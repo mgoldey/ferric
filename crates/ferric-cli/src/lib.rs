@@ -2647,32 +2647,13 @@ fn run_rimp2_local(
     budget_bytes: Option<usize>,
     scf_cert: &Certificate,
 ) {
-    use ferric_mp2::lmp2_amplitude::{amplitude_lmp2, AmplitudeLmp2Config};
-    use ferric_mp2::lmp2_direct::{amplitude_lmp2_direct, DirectConfig};
+    use ferric_mp2::lmp2_amplitude::amplitude_lmp2;
+    use ferric_mp2::lmp2_direct::amplitude_lmp2_direct;
     require_restricted(result, "rimp2");
     let (aux_name, dfbs) = correlation_aux(cfg, mol);
     let eps = model.eps[0];
     let want_ref = model.reference;
-    let lcfg = AmplitudeLmp2Config {
-        eps,
-        frozen_core: cfg.mp2.frozen_core.resolve(mol),
-        eri3_budget_bytes: budget_bytes,
-        compute_reference: want_ref,
-        pair_gate_cal: model.direct.as_ref().and_then(|d| d.gate_cal),
-        fock_screen: model.direct.as_ref().and_then(|d| d.fock_screen),
-        virtual_space: model.virtual_space.clone(),
-        lambda_boys: model.lambda_boys,
-        ..Default::default()
-    };
-    let dcfg = model.direct.as_ref().map(|d| DirectConfig {
-        aux_radius_bohr: d.aux_radius,
-        virt_radius_bohr: Some(d.virt_radius),
-        ao_tail: d.ao_tail,
-        schwarz_skip: d.schwarz_skip,
-        batch_merge: d.batch_merge,
-        virt_schwarz_kappa: d.virt_schwarz_kappa,
-        ..Default::default()
-    });
+    let (lcfg, dcfg) = model.rimp2_configs(cfg.mp2.frozen_core.resolve(mol), budget_bytes);
     let (r, maps) = match (&model.direct, &dcfg) {
         (Some(d), Some(dc)) => {
             let (r, st) = amplitude_lmp2_direct(mol, prep, bs, &dfbs, op, result, &lcfg, dc)
