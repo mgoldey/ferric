@@ -565,7 +565,7 @@ pub struct SignedChannel<'a> {
 ///
 /// All channels share `n₊` and `n₋` (one aux basis per sign). The per-worker
 /// scratch is `(n₊ + n₋) × panel` plus the `(n₊ + n₋)²` dielectric, with the
-/// panel from [`quad_panel_width`] at `m = n₊ + n₋`.
+/// panel from `quad_panel_width` at `m = n₊ + n₋`.
 ///
 /// # Errors
 /// No channel, mismatched shapes, a non-positive or non-finite `e_ia`, or a

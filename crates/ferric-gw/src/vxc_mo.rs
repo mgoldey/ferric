@@ -6,7 +6,7 @@
 //! where v_mf is everything in the KS Fock besides h + J: the semilocal
 //! v_xc (+ VV10) AND, for a hybrid or range-separated hybrid, the exact
 //! exchange the SCF put there,
-//!   v_mf,σ = v_xc,σ − [c_sr K_erfc(ω)[D_σ] + c_lr K_erf(ω)[D_σ]]
+//!   `v_mf,σ = v_xc,σ − [c_sr K_erfc(ω)[D_σ] + c_lr K_erf(ω)[D_σ]]`
 //! (global hybrid: ω = 0, c_sr = c_lr = c_x, one Coulomb K). Σ_x^GW is the
 //! FULL exchange, so leaving the K term out counts the exact-exchange
 //! fraction twice (book/src/19-gw-bse/05-continuation-and-qp-equation.md,
