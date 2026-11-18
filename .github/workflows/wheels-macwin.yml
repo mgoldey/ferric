@@ -149,6 +149,9 @@ jobs:
             export PATH="$MSVC_BIN:/c/Program Files/LLVM/bin:$PATH"
             export CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER="$MSVC_BIN/link.exe"
             export CC=clang-cl CXX=clang-cl
+            # MSVC STL 14.52 (VS 18 image) rejects Clang < 22 (STL1000); see scripts/ci-platform-env.sh.
+            export CFLAGS="${CFLAGS:+$CFLAGS }-D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH"
+            export CXXFLAGS="${CXXFLAGS:+$CXXFLAGS }-D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH"
             which link clang-cl; clang-cl --version | head -1
           else
             P="$GITHUB_WORKSPACE/native"

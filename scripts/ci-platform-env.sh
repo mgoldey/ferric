@@ -32,6 +32,11 @@ case "${RUNNER_OS:-}" in
     export PATH="$MSVC_BIN:/c/Program Files/LLVM/bin:$(cygpath -u "$LIBS_PREFIX")/bin:$(cygpath -u "$DEPS_PREFIX")/bin:$PATH"
     export CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER="$MSVC_BIN/link.exe"
     export CC=clang-cl CXX=clang-cl
+    # The VS 18 runner image ships MSVC STL 14.52, whose yvals_core.h
+    # static_asserts on Clang < 22 (STL1000); the LLVM on the image is older.
+    # The STL's own escape hatch skips that check; the ABI is unchanged.
+    export CFLAGS="${CFLAGS:+$CFLAGS }-D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH"
+    export CXXFLAGS="${CXXFLAGS:+$CXXFLAGS }-D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH"
     ;;
   macOS)
     # The native deps (native-deps-macwin.yml) are built for macOS 11.0.

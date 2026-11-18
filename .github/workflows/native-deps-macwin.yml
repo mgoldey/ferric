@@ -120,6 +120,9 @@ jobs:
             export PATH="$MSVC_BIN:/c/Program Files/LLVM/bin:$PATH"
             echo "CC=clang-cl" >> "$GITHUB_ENV"
             echo "CXX=clang-cl" >> "$GITHUB_ENV"
+            # MSVC STL 14.52 (VS 18 image) rejects Clang < 22 (STL1000); see scripts/ci-platform-env.sh.
+            echo "CFLAGS=-D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH" >> "$GITHUB_ENV"
+            echo "CXXFLAGS=-D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH" >> "$GITHUB_ENV"
             echo "EIGEN_PREFIX=$(cygpath -m "$CONDA_PREFIX/Library")" >> "$GITHUB_ENV"
             echo "PREFIX=$(cygpath -m "$GITHUB_WORKSPACE/native-$NATIVE_PART")" >> "$GITHUB_ENV"
           else
